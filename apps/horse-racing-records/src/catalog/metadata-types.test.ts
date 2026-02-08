@@ -82,10 +82,22 @@ describe("metadata types", () => {
 
   it("should create a valid CommitTableRequest", () => {
     const request: CommitTableRequest = {
-      requirements: [{ type: "assert-current-snapshot-id", "snapshot-id": "100" }],
-      updates: [{ action: "add-snapshot" }],
+      requirements: [{ type: "assert-ref-snapshot-id", ref: "main", "snapshot-id": "100" }],
+      updates: [
+        {
+          action: "add-snapshot",
+          snapshot: {
+            "snapshot-id": "100",
+            "sequence-number": 1,
+            "timestamp-ms": 1000,
+            summary: { operation: "delete" },
+            "manifest-list": "s3://bucket/metadata/snap-100.avro",
+            "schema-id": 0,
+          },
+        },
+      ],
     };
-    expect(request.requirements[0]?.type).toStrictEqual("assert-current-snapshot-id");
+    expect(request.requirements[0]?.type).toStrictEqual("assert-ref-snapshot-id");
     expect(request.updates[0]?.action).toStrictEqual("add-snapshot");
   });
 
