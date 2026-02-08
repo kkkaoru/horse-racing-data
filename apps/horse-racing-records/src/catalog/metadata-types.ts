@@ -84,19 +84,27 @@ interface LoadTableResponse {
   readonly metadata: TableMetadata;
 }
 
-interface TableRequirement {
-  readonly type: string;
-  readonly ref?: string;
-  readonly "snapshot-id"?: string;
+interface AssertRefSnapshotIdRequirement {
+  readonly type: "assert-ref-snapshot-id";
+  readonly ref: string;
+  readonly "snapshot-id": string;
 }
 
-interface TableUpdate {
-  readonly action: string;
-  readonly snapshot?: SnapshotJson;
-  readonly "ref-name"?: string;
-  readonly type?: string;
-  readonly "snapshot-id"?: string;
+type TableRequirement = AssertRefSnapshotIdRequirement;
+
+interface AddSnapshotUpdate {
+  readonly action: "add-snapshot";
+  readonly snapshot: SnapshotJson;
 }
+
+interface SetSnapshotRefUpdate {
+  readonly action: "set-snapshot-ref";
+  readonly "ref-name": string;
+  readonly type: string;
+  readonly "snapshot-id": string;
+}
+
+type TableUpdate = AddSnapshotUpdate | SetSnapshotRefUpdate;
 
 interface CommitTableRequest {
   readonly requirements: ReadonlyArray<TableRequirement>;
@@ -115,7 +123,10 @@ export type {
   TableMetadata,
   SnapshotLogEntry,
   LoadTableResponse,
+  AssertRefSnapshotIdRequirement,
   TableRequirement,
+  AddSnapshotUpdate,
+  SetSnapshotRefUpdate,
   TableUpdate,
   CommitTableRequest,
 };
