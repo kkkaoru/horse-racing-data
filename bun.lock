@@ -21,7 +21,7 @@
       "name": "horse-racing-records",
       "dependencies": {
         "avsc": "5.7.9",
-        "hono": "4.7.5",
+        "hono": "4.11.9",
       },
       "devDependencies": {
         "@types/node": "22.19.10",
@@ -341,7 +341,7 @@
 
     "has-flag": ["has-flag@4.0.0", "", {}, "sha512-EykJT/Q1KjTWctppgIAgfSO0tKVuZUjhgMr17kqTumMl6Afv3EISleU7qZUzoXDFTAHTDC4NOoG/ZxU3EvlMPQ=="],
 
-    "hono": ["hono@4.7.5", "", {}, "sha512-fDOK5W2C1vZACsgLONigdZTRZxuBqFtcKh7bUQ5cVSbwI2RWjloJDcgFOVzbQrlI6pCmhlTsVYZ7zpLj4m4qMQ=="],
+    "hono": ["hono@4.11.9", "", {}, "sha512-Eaw2YTGM6WOxA6CXbckaEvslr2Ne4NFsKrvc0v97JD5awbmeBLO5w9Ho9L9kmKonrwF9RJlW6BxT1PVv/agBHQ=="],
 
     "horse-racing-records": ["horse-racing-records@workspace:apps/horse-racing-records"],
 
