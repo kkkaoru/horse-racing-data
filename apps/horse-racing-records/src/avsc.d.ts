@@ -22,7 +22,14 @@ declare module "avsc" {
   interface AvroType {
     toBuffer: (val: unknown) => Buffer;
     fromBuffer: (buf: Buffer) => unknown;
-    isValid: (val: unknown) => boolean;
+    isValid: (
+      val: unknown,
+      opts?: { readonly errorHook?: (val: unknown, type: unknown) => void },
+    ) => boolean;
+    clone: (val: unknown, opts?: unknown) => unknown;
+    compare: (val1: unknown, val2: unknown) => number;
+    wrap: (val: unknown) => unknown;
+    toString: (val?: unknown) => string;
   }
 
   interface BlockDecoderInstance extends Transform {
