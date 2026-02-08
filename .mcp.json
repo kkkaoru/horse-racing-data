@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "context7": {
+      "command": "bunx",
+      "args": ["@upstash/context7-mcp"]
+    },
+    "cloudflare": {
+      "command": "bunx",
+      "args": ["mcp-remote", "https://docs.mcp.cloudflare.com/mcp"]
+    }
+  }
+}
