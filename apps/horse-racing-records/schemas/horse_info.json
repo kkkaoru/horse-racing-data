@@ -1,0 +1,35 @@
+{
+  "fields": [
+    { "name": "id", "type": "string", "required": true },
+
+    { "name": "horse_hash", "type": "string", "required": true },
+    { "name": "horse_name", "type": "string", "required": true },
+    { "name": "horse_sex", "type": "string", "required": false },
+    { "name": "foling_date", "type": "timestamp", "required": true },
+    { "name": "foled_in", "type": "string", "required": true },
+    { "name": "trainer_name", "type": "string", "required": true },
+    { "name": "owner_name", "type": "string", "required": true },
+    { "name": "breeder_name", "type": "string", "required": true },
+
+    { "name": "bloodline_sire", "type": "string", "required": true },
+    { "name": "bloodline_dam", "type": "string", "required": true },
+    { "name": "bloodline_grandsire", "type": "string", "required": true },
+    { "name": "bloodline_granddam", "type": "string", "required": true },
+    { "name": "bloodline_maternal_grandsire", "type": "string", "required": true },
+    { "name": "bloodline_maternal_granddam", "type": "string", "required": true },
+
+    { "name": "race_hash", "type": "string", "required": true },
+    { "name": "race_name", "type": "string", "required": true },
+    { "name": "race_date", "type": "timestamp", "required": true },
+    { "name": "race_number", "type": "int32", "required": true },
+    { "name": "race_category", "type": "string", "required": true },
+    { "name": "race_course", "type": "string", "required": true },
+    { "name": "race_organization", "type": "string", "required": true },
+    { "name": "race_is_only_female", "type": "bool", "required": true },
+    { "name": "race_surface", "type": "string", "required": true },
+    { "name": "race_distance", "type": "int32", "required": true },
+    { "name": "race_direction", "type": "string", "required": true },
+    { "name": "race_weather", "type": "string", "required": true },
+    { "name": "race_condition", "type": "string", "required": true }
+  ]
+}
