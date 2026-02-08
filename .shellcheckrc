@@ -1,0 +1,9 @@
+# shellcheck configuration
+# https://www.shellcheck.net/wiki/
+
+# Default shell dialect
+shell=bash
+
+# Disable specific rules if needed (uncomment as necessary)
+# disable=SC1091  # Not following sourced files
+# disable=SC2034  # Variable appears unused
