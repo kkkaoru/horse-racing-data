@@ -1,0 +1,17 @@
+pre-commit:
+  commands:
+    shellcheck:
+      glob: "*.sh"
+      run: shellcheck {staged_files}
+    oxfmt:
+      glob: "*.{ts,json,jsonc,yaml,yml,md,toml,css,html}"
+      run: bunx oxfmt --check {staged_files}
+    oxlint:
+      glob: "*.ts"
+      run: bunx oxlint {staged_files}
+    tsc:
+      glob: "*.ts"
+      run: bun run --filter horse-racing-records tsc
+    vitest:
+      glob: "*.ts"
+      run: bun run --filter horse-racing-records test
