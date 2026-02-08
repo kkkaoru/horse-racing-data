@@ -1,0 +1,25 @@
+{
+  "name": "horse-racing-data",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "type": "module",
+  "module": "index.ts",
+  "scripts": {
+    "shellcheck": "shellcheck **/*.sh"
+  },
+  "dependencies": {
+    "@ducklings/workers": "1.4.4"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "4.20260207.0",
+    "@types/bun": "1.3.8",
+    "oxfmt": "0.28.0",
+    "wrangler": "4.63.0"
+  },
+  "peerDependencies": {
+    "typescript": "5.9.3"
+  }
+}
