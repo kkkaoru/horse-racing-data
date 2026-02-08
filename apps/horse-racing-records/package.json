@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "avsc": "5.7.9",
-    "hono": "4.7.5"
+    "hono": "4.11.9"
   },
   "devDependencies": {
     "@types/node": "22.19.10",
