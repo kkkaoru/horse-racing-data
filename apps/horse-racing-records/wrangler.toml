@@ -1,0 +1,9 @@
+#:schema node_modules/wrangler/config-schema.json
+main = "src/app.ts"
+compatibility_date = "2025-02-07"
+compatibility_flags = ["nodejs_compat", "allow_eval_during_startup"]
+
+[[rules]]
+type = "CompiledWasm"
+globs = ["**/*.wasm"]
+fallthrough = false
