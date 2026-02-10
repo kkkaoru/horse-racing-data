@@ -23,18 +23,32 @@ const S3_PREFIX_PATTERN = /^s3:\/\/[^/]+\//;
 
 const toR2Key = (s3Path: string): string => s3Path.replace(S3_PREFIX_PATTERN, "");
 
-interface EqualityDeleteArgs {
+interface EqualityDeleteByFilters {
   readonly env: CloudflareBindings;
   readonly table: TableName;
-  readonly filters?: ReadonlyArray<QueryFilter>;
-  readonly ids?: ReadonlyArray<string>;
+  readonly filters: ReadonlyArray<QueryFilter>;
 }
 
-interface EqualityDeleteResult {
-  readonly success: boolean;
-  readonly deletedCount: number;
-  readonly error?: string;
+interface EqualityDeleteByIds {
+  readonly env: CloudflareBindings;
+  readonly table: TableName;
+  readonly ids: ReadonlyArray<string>;
 }
+
+type EqualityDeleteArgs = EqualityDeleteByFilters | EqualityDeleteByIds;
+
+interface EqualityDeleteSuccess {
+  readonly success: true;
+  readonly deletedCount: number;
+}
+
+interface EqualityDeleteFailure {
+  readonly success: false;
+  readonly deletedCount: number;
+  readonly error: string;
+}
+
+type EqualityDeleteResult = EqualityDeleteSuccess | EqualityDeleteFailure;
 
 const buildCatalogConfig = async (env: CloudflareBindings): Promise<CatalogConfig> => {
   const warehouse = `${env.CLOUDFLARE_ACCOUNT_ID}_${env.R2_BUCKET_NAME}`;
@@ -113,6 +127,15 @@ const loadExistingManifestEntries = async (
   return parseManifestList(manifestListBuffer);
 };
 
+const resolveDeleteIds = async (
+  args: EqualityDeleteArgs,
+  sqlConfig: R2SqlConfig,
+): Promise<ReadonlyArray<string>> => {
+  if ("ids" in args && args.ids.length > 0) return args.ids;
+  const filters = "filters" in args ? args.filters : [];
+  return fetchMatchingIds(sqlConfig, args.env.ICEBERG_NAMESPACE, args.table, filters);
+};
+
 const executeDeleteAttempt = async (args: EqualityDeleteArgs): Promise<EqualityDeleteResult> => {
   const catalogConfig = await buildCatalogConfig(args.env);
   const sqlConfig = buildSqlConfig(args.env);
@@ -123,15 +146,7 @@ const executeDeleteAttempt = async (args: EqualityDeleteArgs): Promise<EqualityD
   const metadata = tableResponse.metadata;
 
   // Step 2: Resolve IDs (direct ids or query via filters)
-  const matchingIds =
-    args.ids && args.ids.length > 0
-      ? args.ids
-      : await fetchMatchingIds(
-          sqlConfig,
-          args.env.ICEBERG_NAMESPACE,
-          args.table,
-          args.filters ?? [],
-        );
+  const matchingIds = await resolveDeleteIds(args, sqlConfig);
 
   // Step 3: Guard - no matching rows
   if (matchingIds.length === 0) {
@@ -273,6 +288,7 @@ const executeEqualityDelete = async (args: EqualityDeleteArgs): Promise<Equality
 export {
   executeEqualityDelete,
   executeDeleteAttempt,
+  resolveDeleteIds,
   fetchMatchingIds,
   buildCatalogConfig,
   buildSqlConfig,
@@ -287,4 +303,11 @@ export {
   ID_COLUMN_NAME,
   ID_FIELD_ID,
 };
-export type { EqualityDeleteArgs, EqualityDeleteResult };
+export type {
+  EqualityDeleteByFilters,
+  EqualityDeleteByIds,
+  EqualityDeleteArgs,
+  EqualityDeleteSuccess,
+  EqualityDeleteFailure,
+  EqualityDeleteResult,
+};
