@@ -158,6 +158,63 @@ describe("POST /tables/:table/query", () => {
     expect(body).toStrictEqual({ data: [{ id: "1" }], count: 1 });
   });
 
+  it("should handle query without filters field", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            success: true,
+            result: { rows: [{ id: "1" }] },
+            errors: [],
+          }),
+      }),
+    );
+
+    const app = new Hono<AppEnv>();
+    app.route("/", queryRoute);
+
+    const request = new Request("http://localhost/tables/horse_info/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+    const response = await app.request(request, undefined, createMockEnv());
+    expect(response.status).toStrictEqual(200);
+
+    const body = await response.json();
+    expect(body).toStrictEqual({ data: [{ id: "1" }], count: 1 });
+  });
+
+  it("should return 500 with fallback message when result.error is undefined", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            success: false,
+            result: { rows: [] },
+            errors: [{ code: 500, message: "Error" }],
+          }),
+      }),
+    );
+
+    const app = new Hono<AppEnv>();
+    app.route("/", queryRoute);
+
+    const request = new Request("http://localhost/tables/horse_info/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filters: [] }),
+    });
+
+    const response = await app.request(request, undefined, createMockEnv());
+    expect(response.status).toStrictEqual(500);
+  });
+
   it("should handle race_info table", async () => {
     vi.stubGlobal(
       "fetch",

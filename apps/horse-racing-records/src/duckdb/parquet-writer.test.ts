@@ -90,6 +90,31 @@ describe("writeDeleteParquet", () => {
     expect(executeMock).toHaveBeenCalledWith("INSERT INTO delete_ids VALUES ('O''Brien')");
   });
 
+  it("should convert ArrayBuffer content to Uint8Array", async () => {
+    const arrayBuffer = new ArrayBuffer(4);
+    const view = new Uint8Array(arrayBuffer);
+    view[0] = 10;
+    view[1] = 20;
+    view[2] = 30;
+    view[3] = 40;
+
+    const executeMock = vi.fn().mockResolvedValue(0);
+    const mockConn = {
+      execute: executeMock,
+      query: vi.fn().mockResolvedValue([{ content: arrayBuffer }]),
+      close: vi.fn(),
+    } as unknown as Connection;
+
+    const result = await writeDeleteParquet({
+      conn: mockConn,
+      deleteIds: ["id-001"],
+      columnName: "id",
+    });
+
+    expect(result.bytes).toStrictEqual(new Uint8Array([10, 20, 30, 40]));
+    expect(result.recordCount).toStrictEqual(1);
+  });
+
   it("should handle single ID", async () => {
     const mockBytes = new Uint8Array([7]);
     const executeMock = vi.fn().mockResolvedValue(0);
