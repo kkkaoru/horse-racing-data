@@ -14,11 +14,17 @@ interface TableIdentifier {
   readonly table: string;
 }
 
-interface CommitResult {
-  readonly success: boolean;
-  readonly error?: string;
-  readonly status?: number;
+interface CommitSuccess {
+  readonly success: true;
 }
+
+interface CommitFailure {
+  readonly success: false;
+  readonly error: string;
+  readonly status: number;
+}
+
+type CommitResult = CommitSuccess | CommitFailure;
 
 interface CatalogConfigResponse {
   readonly overrides: { readonly prefix: string };
@@ -133,4 +139,11 @@ export {
   numberifySnapshotIds,
   CONFLICT_STATUS,
 };
-export type { CatalogConfig, CatalogConfigResponse, TableIdentifier, CommitResult };
+export type {
+  CatalogConfig,
+  CatalogConfigResponse,
+  TableIdentifier,
+  CommitSuccess,
+  CommitFailure,
+  CommitResult,
+};
