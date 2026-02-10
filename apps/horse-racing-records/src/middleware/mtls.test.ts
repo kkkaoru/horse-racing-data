@@ -93,4 +93,49 @@ describe("mtlsMiddleware", () => {
       status: 403,
     });
   });
+
+  it("should allow request with valid mTLS certificate", async () => {
+    const app = createTestApp();
+    const request = new Request("http://localhost/test");
+    Object.defineProperty(request, "cf", {
+      value: { tlsClientAuth: { certPresented: "1", certVerified: "SUCCESS" } },
+    });
+    const env = createMockEnv(undefined);
+
+    const response = await app.request(request, undefined, env);
+    expect(response.status).toStrictEqual(200);
+
+    const body = await response.json();
+    expect(body).toStrictEqual({ status: "ok" });
+  });
+
+  it("should return 403 when cf exists but tlsClientAuth is undefined", async () => {
+    const app = createTestApp();
+    const request = new Request("http://localhost/test");
+    Object.defineProperty(request, "cf", {
+      value: {},
+    });
+    const env = createMockEnv(undefined);
+
+    const response = await app.request(request, undefined, env);
+    expect(response.status).toStrictEqual(403);
+
+    const body = await response.json();
+    expect(body).toStrictEqual({
+      error: "Forbidden: valid mTLS client certificate required",
+      status: 403,
+    });
+  });
+
+  it("should return 403 when cert is presented but not verified", async () => {
+    const app = createTestApp();
+    const request = new Request("http://localhost/test");
+    Object.defineProperty(request, "cf", {
+      value: { tlsClientAuth: { certPresented: "1", certVerified: "FAILED" } },
+    });
+    const env = createMockEnv(undefined);
+
+    const response = await app.request(request, undefined, env);
+    expect(response.status).toStrictEqual(403);
+  });
 });
