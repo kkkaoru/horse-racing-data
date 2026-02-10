@@ -42,18 +42,13 @@ deleteRoute.post("/tables/:table/delete", async (c) => {
     );
   }
 
-  const result = await executeEqualityDelete({
-    env: c.env,
-    table: tableName,
-    filters: body.filters,
-    ids: body.ids,
-  });
+  const result =
+    body.ids && body.ids.length >= MIN_IDS_COUNT
+      ? await executeEqualityDelete({ env: c.env, table: tableName, ids: body.ids })
+      : await executeEqualityDelete({ env: c.env, table: tableName, filters: body.filters ?? [] });
 
   if (!result.success) {
-    return c.json(
-      { error: result.error ?? "Delete operation failed", status: INTERNAL_ERROR_STATUS },
-      INTERNAL_ERROR_STATUS,
-    );
+    return c.json({ error: result.error, status: INTERNAL_ERROR_STATUS }, INTERNAL_ERROR_STATUS);
   }
 
   return c.json({ success: true, deletedCount: result.deletedCount });

@@ -39,6 +39,27 @@ describe("errorHandler", () => {
     });
   });
 
+  it("should handle error without stack trace", async () => {
+    const app = new Hono<AppEnv>();
+    app.onError(errorHandler);
+    app.get("/no-stack", () => {
+      const err = new Error("No stack");
+      err.stack = undefined;
+      throw err;
+    });
+
+    const request = new Request("http://localhost/no-stack");
+    const response = await app.request(request, undefined, createMockEnv());
+
+    expect(response.status).toStrictEqual(500);
+
+    const body = await response.json();
+    expect(body).toStrictEqual({
+      error: "Internal server error",
+      status: 500,
+    });
+  });
+
   it("should handle TypeError", async () => {
     const app = new Hono<AppEnv>();
     app.onError(errorHandler);
