@@ -196,6 +196,35 @@ describe("POST /tables/:table/delete", () => {
     });
   });
 
+  it("should return 500 with error message from delete result", async () => {
+    vi.mocked(executeEqualityDelete).mockResolvedValue({
+      success: false,
+      deletedCount: 0,
+      error: "Delete operation failed",
+    });
+
+    const app = new Hono<AppEnv>();
+    app.route("/", deleteRoute);
+
+    const request = new Request("http://localhost/tables/horse_info/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        filters: [{ column: "id", op: "eq", value: "hi-001" }],
+        confirm: true,
+      }),
+    });
+
+    const response = await app.request(request, undefined, createMockEnv());
+    expect(response.status).toStrictEqual(500);
+
+    const body = await response.json();
+    expect(body).toStrictEqual({
+      error: "Delete operation failed",
+      status: 500,
+    });
+  });
+
   it("should return success with 0 count when no rows match", async () => {
     vi.mocked(executeEqualityDelete).mockResolvedValue({
       success: true,
