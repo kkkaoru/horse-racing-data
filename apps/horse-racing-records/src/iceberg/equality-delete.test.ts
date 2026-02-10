@@ -372,9 +372,11 @@ describe("executeDeleteAttempt with filters", () => {
 
     expect(result.success).toStrictEqual(false);
     expect(result.deletedCount).toStrictEqual(0);
-    expect(result.error).toStrictEqual(
-      `Delete would affect ${String(MAX_DELETE_ROWS + 2)} rows, exceeding limit of ${String(MAX_DELETE_ROWS)}`,
-    );
+    if (!result.success) {
+      expect(result.error).toStrictEqual(
+        `Delete would affect ${String(MAX_DELETE_ROWS + 2)} rows, exceeding limit of ${String(MAX_DELETE_ROWS)}`,
+      );
+    }
   });
 
   it("should complete delete flow successfully with filters", async () => {
@@ -415,6 +417,7 @@ describe("executeDeleteAttempt with filters", () => {
     vi.mocked(commitTable).mockResolvedValue({
       success: false,
       error: "Commit failed: 500 Server Error",
+      status: 500,
     });
 
     const env = createMockEnv();
@@ -425,7 +428,9 @@ describe("executeDeleteAttempt with filters", () => {
     });
 
     expect(result.success).toStrictEqual(false);
-    expect(result.error).toStrictEqual("Commit failed: 500 Server Error");
+    if (!result.success) {
+      expect(result.error).toStrictEqual("Commit failed: 500 Server Error");
+    }
   });
 });
 
@@ -482,9 +487,11 @@ describe("executeDeleteAttempt with ids", () => {
 
     expect(result.success).toStrictEqual(false);
     expect(result.deletedCount).toStrictEqual(0);
-    expect(result.error).toStrictEqual(
-      `Delete would affect ${String(MAX_DELETE_ROWS + 1)} rows, exceeding limit of ${String(MAX_DELETE_ROWS)}`,
-    );
+    if (!result.success) {
+      expect(result.error).toStrictEqual(
+        `Delete would affect ${String(MAX_DELETE_ROWS + 1)} rows, exceeding limit of ${String(MAX_DELETE_ROWS)}`,
+      );
+    }
   });
 
   it("should pass ids to writeDeleteParquet correctly", async () => {
@@ -614,7 +621,11 @@ describe("executeEqualityDelete", () => {
     });
 
     expect(result.success).toStrictEqual(false);
-    expect(result.error).toStrictEqual("Max retry count exceeded due to concurrent modifications");
+    if (!result.success) {
+      expect(result.error).toStrictEqual(
+        "Max retry count exceeded due to concurrent modifications",
+      );
+    }
   });
 
   it("should not retry on non-conflict errors", async () => {
@@ -644,6 +655,8 @@ describe("executeEqualityDelete", () => {
     });
 
     expect(result.success).toStrictEqual(false);
-    expect(result.error).toStrictEqual("Commit failed: 500 Server Error");
+    if (!result.success) {
+      expect(result.error).toStrictEqual("Commit failed: 500 Server Error");
+    }
   });
 });
