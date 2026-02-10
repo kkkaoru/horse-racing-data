@@ -188,8 +188,20 @@ describe("commitTable", () => {
     );
 
     const result = await commitTable(TEST_CONFIG, TEST_TABLE_ID, {
-      requirements: [{ type: "assert-ref-snapshot-id", "snapshot-id": "1" }],
-      updates: [{ action: "add-snapshot" }],
+      requirements: [{ type: "assert-ref-snapshot-id", ref: "main", "snapshot-id": "1" }],
+      updates: [
+        {
+          action: "add-snapshot",
+          snapshot: {
+            "snapshot-id": "1",
+            "sequence-number": 1,
+            "timestamp-ms": 1000,
+            summary: { operation: "delete" },
+            "manifest-list": "s3://bucket/snap-1.avro",
+            "schema-id": 0,
+          },
+        },
+      ],
     });
     expect(result).toStrictEqual({ success: true });
   });
@@ -199,8 +211,12 @@ describe("commitTable", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await commitTable(TEST_CONFIG, TEST_TABLE_ID, {
-      requirements: [{ type: "assert-ref-snapshot-id", "snapshot-id": "2265529103060093806" }],
-      updates: [{ action: "set-snapshot-ref", "snapshot-id": "12345" }],
+      requirements: [
+        { type: "assert-ref-snapshot-id", ref: "main", "snapshot-id": "2265529103060093806" },
+      ],
+      updates: [
+        { action: "set-snapshot-ref", "ref-name": "main", type: "branch", "snapshot-id": "12345" },
+      ],
     });
 
     const callArgs = fetchMock.mock.calls[0] ?? [];
@@ -219,8 +235,20 @@ describe("commitTable", () => {
     );
 
     const result = await commitTable(TEST_CONFIG, TEST_TABLE_ID, {
-      requirements: [{ type: "assert-ref-snapshot-id", "snapshot-id": "1" }],
-      updates: [{ action: "add-snapshot" }],
+      requirements: [{ type: "assert-ref-snapshot-id", ref: "main", "snapshot-id": "1" }],
+      updates: [
+        {
+          action: "add-snapshot",
+          snapshot: {
+            "snapshot-id": "1",
+            "sequence-number": 1,
+            "timestamp-ms": 1000,
+            summary: { operation: "delete" },
+            "manifest-list": "s3://bucket/snap-1.avro",
+            "schema-id": 0,
+          },
+        },
+      ],
     });
     expect(result).toStrictEqual({
       success: false,
