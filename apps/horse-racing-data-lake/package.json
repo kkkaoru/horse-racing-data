@@ -1,0 +1,12 @@
+{
+  "name": "horse-racing-data-lake",
+  "private": true,
+  "scripts": {
+    "setup": "bash scripts/setup.sh",
+    "verify": "bash scripts/verify.sh",
+    "maintenance": "bash scripts/maintenance.sh"
+  },
+  "dependencies": {
+    "horse-racing-schema": "workspace:*"
+  }
+}
