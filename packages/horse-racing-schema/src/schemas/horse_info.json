@@ -1,0 +1,24 @@
+{
+  "fields": [
+    { "name": "id", "type": "string", "required": true },
+    { "name": "horse_slug", "type": "string", "required": true },
+    { "name": "horse_hash", "type": "string", "required": true },
+    { "name": "horse_name", "type": "string", "required": true },
+    { "name": "horse_sex", "type": "string", "required": false },
+    { "name": "foling_date", "type": "timestamp", "required": true },
+    { "name": "foled_in", "type": "string", "required": true },
+    { "name": "trainer_slug", "type": "string", "required": true },
+    { "name": "trainer_name", "type": "string", "required": true },
+    { "name": "owner_slug", "type": "string", "required": true },
+    { "name": "owner_name", "type": "string", "required": true },
+    { "name": "breeder_slug", "type": "string", "required": true },
+    { "name": "breeder_name", "type": "string", "required": true },
+
+    { "name": "bloodline_sire", "type": "string", "required": true },
+    { "name": "bloodline_dam", "type": "string", "required": true },
+    { "name": "bloodline_grandsire", "type": "string", "required": true },
+    { "name": "bloodline_granddam", "type": "string", "required": true },
+    { "name": "bloodline_maternal_grandsire", "type": "string", "required": true },
+    { "name": "bloodline_maternal_granddam", "type": "string", "required": true }
+  ]
+}
