@@ -1,0 +1,7 @@
+{
+  "fields": [
+    { "name": "id", "type": "string", "required": true },
+    { "name": "trainer_slug", "type": "string", "required": true },
+    { "name": "trainer_name", "type": "string", "required": true }
+  ]
+}

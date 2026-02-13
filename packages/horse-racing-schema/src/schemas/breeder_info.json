@@ -1,0 +1,7 @@
+{
+  "fields": [
+    { "name": "id", "type": "string", "required": true },
+    { "name": "breeder_slug", "type": "string", "required": true },
+    { "name": "breeder_name", "type": "string", "required": true }
+  ]
+}

@@ -1,0 +1,210 @@
+{
+  "fields": [
+    { "name": "id", "type": "string", "required": true },
+
+    { "name": "horse_slug", "type": "string", "required": true },
+    { "name": "horse_hash", "type": "string", "required": true },
+    { "name": "horse_name", "type": "string", "required": true },
+    { "name": "horse_sex", "type": "string", "required": false },
+    { "name": "foling_date", "type": "timestamp", "required": true },
+    { "name": "foled_in", "type": "string", "required": true },
+    { "name": "trainer_slug", "type": "string", "required": true },
+    { "name": "trainer_name", "type": "string", "required": true },
+    { "name": "owner_slug", "type": "string", "required": true },
+    { "name": "owner_name", "type": "string", "required": true },
+    { "name": "breeder_slug", "type": "string", "required": true },
+    { "name": "breeder_name", "type": "string", "required": true },
+
+    { "name": "bloodline_sire", "type": "string", "required": true },
+    { "name": "bloodline_dam", "type": "string", "required": true },
+    { "name": "bloodline_grandsire", "type": "string", "required": true },
+    { "name": "bloodline_granddam", "type": "string", "required": true },
+    { "name": "bloodline_maternal_grandsire", "type": "string", "required": true },
+    { "name": "bloodline_maternal_granddam", "type": "string", "required": true },
+
+    { "name": "race_slug", "type": "string", "required": true },
+    { "name": "race_hash", "type": "string", "required": true },
+    { "name": "race_name", "type": "string", "required": true },
+    { "name": "race_date", "type": "timestamp", "required": true },
+    { "name": "race_number", "type": "int32", "required": true },
+    { "name": "race_category", "type": "string", "required": true },
+    { "name": "race_course", "type": "string", "required": true },
+    { "name": "race_organization", "type": "string", "required": true },
+    { "name": "race_is_only_female", "type": "bool", "required": false },
+    { "name": "race_distance", "type": "int32", "required": true },
+    { "name": "race_direction", "type": "string", "required": false },
+    { "name": "race_surface", "type": "string", "required": true },
+    { "name": "race_surface_condition", "type": "string", "required": true },
+    { "name": "race_weather", "type": "string", "required": false },
+
+    {
+      "name": "race_finishing_order",
+      "type": "list",
+      "required": true,
+      "items": { "type": "int32" }
+    },
+    {
+      "name": "race_result_all_corner_positions",
+      "type": "list",
+      "required": false,
+      "items": { "type": "string" }
+    },
+    {
+      "name": "race_furlong_splits",
+      "type": "list",
+      "required": false,
+      "items": { "type": "float64" }
+    },
+
+    {
+      "name": "ticket_win",
+      "type": "list",
+      "required": false,
+      "items": {
+        "type": "struct",
+        "fields": [
+          { "name": "number", "type": "int32", "required": true },
+          { "name": "payout", "type": "int32", "required": true },
+          { "name": "popularity_rank", "type": "int32", "required": true }
+        ]
+      }
+    },
+    {
+      "name": "ticket_place",
+      "type": "list",
+      "required": false,
+      "items": {
+        "type": "struct",
+        "fields": [
+          { "name": "number", "type": "int32", "required": true },
+          { "name": "payout", "type": "int32", "required": true },
+          { "name": "popularity_rank", "type": "int32", "required": true }
+        ]
+      }
+    },
+    {
+      "name": "ticket_bracket_quinella",
+      "type": "list",
+      "required": false,
+      "items": {
+        "type": "struct",
+        "fields": [
+          {
+            "name": "numbers",
+            "type": "list",
+            "required": true,
+            "items": { "type": "int32" }
+          },
+          { "name": "payout", "type": "int32", "required": true },
+          { "name": "popularity_rank", "type": "int32", "required": true }
+        ]
+      }
+    },
+    {
+      "name": "ticket_quinella",
+      "type": "list",
+      "required": false,
+      "items": {
+        "type": "struct",
+        "fields": [
+          {
+            "name": "numbers",
+            "type": "list",
+            "required": true,
+            "items": { "type": "int32" }
+          },
+          { "name": "payout", "type": "int32", "required": true },
+          { "name": "popularity_rank", "type": "int32", "required": true }
+        ]
+      }
+    },
+    {
+      "name": "ticket_quinella_place",
+      "type": "list",
+      "required": false,
+      "items": {
+        "type": "struct",
+        "fields": [
+          {
+            "name": "numbers",
+            "type": "list",
+            "required": true,
+            "items": { "type": "int32" }
+          },
+          { "name": "payout", "type": "int32", "required": true },
+          { "name": "popularity_rank", "type": "int32", "required": true }
+        ]
+      }
+    },
+    {
+      "name": "ticket_exacta",
+      "type": "list",
+      "required": false,
+      "items": {
+        "type": "struct",
+        "fields": [
+          {
+            "name": "numbers",
+            "type": "list",
+            "required": true,
+            "items": { "type": "int32" }
+          },
+          { "name": "payout", "type": "int32", "required": true },
+          { "name": "popularity_rank", "type": "int32", "required": true }
+        ]
+      }
+    },
+    {
+      "name": "ticket_trio",
+      "type": "list",
+      "required": false,
+      "items": {
+        "type": "struct",
+        "fields": [
+          {
+            "name": "numbers",
+            "type": "list",
+            "required": true,
+            "items": { "type": "int32" }
+          },
+          { "name": "payout", "type": "int32", "required": true },
+          { "name": "popularity_rank", "type": "int32", "required": true }
+        ]
+      }
+    },
+    {
+      "name": "ticket_trifecta",
+      "type": "list",
+      "required": false,
+      "items": {
+        "type": "struct",
+        "fields": [
+          {
+            "name": "numbers",
+            "type": "list",
+            "required": true,
+            "items": { "type": "int32" }
+          },
+          { "name": "payout", "type": "int32", "required": true },
+          { "name": "popularity_rank", "type": "int32", "required": true }
+        ]
+      }
+    },
+
+    { "name": "finishing_position", "type": "int32", "required": false },
+    { "name": "gate_number", "type": "int32", "required": false },
+    { "name": "horse_number", "type": "int32", "required": true },
+    { "name": "sex_and_age", "type": "string", "required": true },
+    { "name": "weight_carried", "type": "int32", "required": false },
+    { "name": "jockey_slug", "type": "string", "required": true },
+    { "name": "jockey_name", "type": "string", "required": true },
+    { "name": "time", "type": "float64", "required": false },
+    { "name": "margin", "type": "string", "required": false },
+    { "name": "horse_corner_positions", "type": "string", "required": false },
+    { "name": "horse_closing_section_time", "type": "float64", "required": false },
+    { "name": "odds", "type": "float64", "required": false },
+    { "name": "odds_rank", "type": "int32", "required": true },
+    { "name": "horse_weight", "type": "int32", "required": false },
+    { "name": "prize_money", "type": "float64", "required": false }
+  ]
+}
