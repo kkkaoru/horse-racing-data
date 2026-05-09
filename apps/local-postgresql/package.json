@@ -1,0 +1,11 @@
+{
+  "name": "local-postgresql",
+  "private": true,
+  "scripts": {
+    "start": "./scripts/start.sh",
+    "stop": "./scripts/stop.sh",
+    "logs": "docker compose --env-file .env logs -f postgres",
+    "psql": "./scripts/psql.sh",
+    "status": "docker compose --env-file .env ps"
+  }
+}
