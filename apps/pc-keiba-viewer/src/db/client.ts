@@ -14,7 +14,7 @@ type Db = NodePgDatabase<typeof schema>;
 const isDatabaseTarget = (value: string | undefined): value is DatabaseTarget =>
   value === "local" || value === "neon" || value === "cloudflare";
 
-const getDatabaseTarget = (): DatabaseTarget =>
+export const getDatabaseTarget = (): DatabaseTarget =>
   isDatabaseTarget(process.env.PC_KEIBA_DATABASE_TARGET)
     ? process.env.PC_KEIBA_DATABASE_TARGET
     : "local";

@@ -23,6 +23,7 @@
   },
   "vars": {
     "PC_KEIBA_DATABASE_TARGET": "cloudflare",
+    "PC_KEIBA_DB_CACHE_TTL_SECONDS": "3600",
   },
   "hyperdrive": [
     {
