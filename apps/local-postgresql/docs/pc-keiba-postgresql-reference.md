@@ -5,7 +5,7 @@ MotherDuck agent skill などから参照しやすいように、`PC-KEIBAテー
 ## Source
 
 - Generated at: 2026-05-06 00:42:59 JST
-- Database: `horse_racing` on local PostgreSQL 17
+- Database: `horse_racing` on local PostgreSQL 18
 - Excel definition: `apps/local-postgresql/docs/PC-KEIBAテーブル定義書.xlsx`
 - Scope: `public` schema base tables present in PostgreSQL
 

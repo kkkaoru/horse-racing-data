@@ -1,11 +1,21 @@
 {
   "name": "local-postgresql",
   "private": true,
+  "type": "module",
   "scripts": {
     "start": "./scripts/start.sh",
     "stop": "./scripts/stop.sh",
     "logs": "docker compose --env-file .env logs -f postgres",
     "psql": "./scripts/psql.sh",
-    "status": "docker compose --env-file .env ps"
+    "replica:create-subscription": "./scripts/create-neon-subscription.sh",
+    "replica:push": "bun run ./scripts/push-neon-sync.ts",
+    "status": "docker compose --env-file .env ps",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.10",
+    "@vitest/coverage-v8": "3.0.5",
+    "vitest": "3.0.5"
   }
 }
