@@ -1,0 +1,5 @@
+.env.local
+.next/
+coverage/
+node_modules/
+tsconfig.tsbuildinfo
