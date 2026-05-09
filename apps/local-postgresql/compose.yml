@@ -1,10 +1,20 @@
 services:
   postgres:
-    image: postgres:17-alpine
+    image: postgres:18-alpine
     container_name: horse-racing-local-postgresql
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      PGDATA: /var/lib/postgresql/data
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_wal_senders=10
+      - -c
+      - max_replication_slots=10
     ports:
       - "${POSTGRES_HOST_BIND:-0.0.0.0}:${POSTGRES_PORT:-5432}:5432"
     volumes:
