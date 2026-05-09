@@ -1,0 +1,54 @@
+{
+  "plugins": [
+    "import",
+    "jsx-a11y",
+    "nextjs",
+    "node",
+    "promise",
+    "react",
+    "typescript",
+    "vitest",
+    "unicorn",
+    "oxc"
+  ],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "perf": "error"
+  },
+  "rules": {
+    "import/group-exports": "off",
+    "import/no-named-export": "off",
+    "import/no-unassigned-import": "off",
+    "nextjs/no-html-link-for-pages": "off",
+    "no-ternary": "off",
+    "react/react-in-jsx-scope": "off",
+    "typescript/no-magic-numbers": "off",
+    "typescript/prefer-readonly-parameter-types": "off",
+    "unicorn/filename-case": "off"
+  },
+  "overrides": [
+    {
+      "files": ["**/*.test.ts", "**/*.test.tsx"],
+      "rules": {
+        "vitest/max-expects": "off",
+        "vitest/no-hooks": "off",
+        "vitest/no-importing-vitest-globals": "off",
+        "vitest/prefer-expect-assertions": "off",
+        "vitest/require-test-timeout": "off"
+      }
+    }
+  ],
+  "env": {
+    "builtin": true,
+    "browser": true,
+    "node": true
+  },
+  "ignorePatterns": [
+    ".next/**",
+    "coverage/**",
+    "next-env.d.ts",
+    "node_modules/**",
+    "tsconfig.tsbuildinfo"
+  ]
+}
