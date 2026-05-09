@@ -1,5 +1,7 @@
 .env.local
+.open-next/
 .next/
+.wrangler/
 coverage/
 node_modules/
 tsconfig.tsbuildinfo
