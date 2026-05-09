@@ -1106,6 +1106,16 @@ h3 {
   width: 100%;
 }
 
+.bloodline-score-table {
+  min-width: 1260px;
+}
+
+.bloodline-score-cell,
+.stats-score-cell {
+  color: var(--accent-strong);
+  font-weight: 900;
+}
+
 .stats-table th,
 .stats-table td {
   border-bottom: 1px solid var(--line);

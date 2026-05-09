@@ -4,17 +4,15 @@ import { useRouter, useSearchParams } from "next/navigation";
 import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
 
-import type { SimilarRaceStatsRow, SimilarRaceStatsSettings } from "../../../lib/race-types";
+import { cleanText } from "../../../lib/format";
+import type { BloodlineStatsRow, Runner, SimilarRaceStatsSettings } from "../../../lib/race-types";
+import { formatRunnerNumber } from "../../../lib/runner-format";
 
-type RateSortKey = "score" | "showRate" | "quinellaRate" | "winRate";
+type BloodlineCategory = BloodlineStatsRow["category"];
+type RateSortKey = "showRate" | "quinellaRate" | "winRate";
 type SortDirection = "asc" | "desc";
-type StatsCategory = SimilarRaceStatsRow["category"];
 
-interface ScoredSimilarRaceStatsRow extends SimilarRaceStatsRow {
-  score: number;
-}
-
-interface SimilarRaceStatsTableProps {
+interface BloodlineStatsTableProps {
   conditionLabels: {
     age: string | null;
     class: string | null;
@@ -28,30 +26,36 @@ interface SimilarRaceStatsTableProps {
     turn: string | null;
     venue: string | null;
   };
-  rows: SimilarRaceStatsRow[];
+  rows: BloodlineStatsRow[];
+  runners: Runner[];
   settings: SimilarRaceStatsSettings;
 }
 
 const SORT_LABELS: Record<RateSortKey, string> = {
   quinellaRate: "連対率",
-  score: "スコア",
   showRate: "複勝率",
   winRate: "勝率",
 };
 
-const CATEGORY_LABELS: Record<StatsCategory, string> = {
-  jockey: "騎手",
-  owner: "馬主",
-  trainer: "調教師",
+const CATEGORY_LABELS: Record<BloodlineCategory, string> = {
+  damSire: "母父",
+  sire: "父",
+  sireSire: "父父",
 };
 
-const CATEGORY_TITLE_LABELS: Record<StatsCategory, string> = {
-  jockey: "騎手の勝率",
-  owner: "馬主の勝率",
-  trainer: "調教師の勝率",
+const CATEGORY_TITLE_LABELS: Record<BloodlineCategory, string> = {
+  damSire: "母父の勝率",
+  sire: "父の勝率",
+  sireSire: "父父の勝率",
 };
 
-const CATEGORY_ORDER: StatsCategory[] = ["jockey", "trainer", "owner"];
+const CATEGORY_ORDER: BloodlineCategory[] = ["sire", "damSire", "sireSire"];
+
+const CATEGORY_SCORE_WEIGHTS: Record<BloodlineCategory, number> = {
+  damSire: 0.35,
+  sire: 0.45,
+  sireSire: 0.2,
+};
 
 const METRIC_SCORE_WEIGHTS = {
   horseCount: 0.05,
@@ -81,61 +85,103 @@ const formatRate = (value: number): string => `${value.toFixed(1)}%`;
 
 const formatScore = (value: number): string => value.toFixed(2);
 
+const splitHorseNumbers = (value: string): string[] =>
+  value
+    .split(",")
+    .map((horseNumber) => cleanText(horseNumber, ""))
+    .filter(Boolean);
+
 const normalize = (value: number, max: number): number => (max > 0 ? value / max : 0);
 
-const calculateScore = (
-  row: SimilarRaceStatsRow,
-  maxStarts: number,
-  maxHorseCount: number,
-): number =>
-  (row.showRate / 100) * METRIC_SCORE_WEIGHTS.showRate +
-  (row.quinellaRate / 100) * METRIC_SCORE_WEIGHTS.quinellaRate +
-  (row.winRate / 100) * METRIC_SCORE_WEIGHTS.winRate +
-  normalize(row.starts, maxStarts) * METRIC_SCORE_WEIGHTS.starts +
-  normalize(row.horseCount, maxHorseCount) * METRIC_SCORE_WEIGHTS.horseCount;
-
-const toScoredRows = (rows: SimilarRaceStatsRow[]): ScoredSimilarRaceStatsRow[] => {
-  const maxStarts = Math.max(...rows.map((row) => row.starts), 0);
-  const maxHorseCount = Math.max(...rows.map((row) => row.horseCount), 0);
-  const rawRows = rows.map((row) => ({
-    rawScore: calculateScore(row, maxStarts, maxHorseCount),
-    row,
-  }));
-  const maxScore = Math.max(...rawRows.map((row) => row.rawScore), 0);
-  const minScore = rawRows.length > 0 ? Math.min(...rawRows.map((row) => row.rawScore)) : 0;
-  const scoreRange = maxScore - minScore;
-
-  return rawRows.map(({ rawScore, row }) =>
-    Object.assign({}, row, {
-      score: scoreRange > 0 ? (rawScore - minScore) / scoreRange : rawScore > 0 ? 1 : 0,
-    }),
-  );
-};
-
-export function SimilarRaceStatsTable({
+export function BloodlineStatsTable({
   conditionLabels,
   rows,
+  runners,
   settings,
-}: SimilarRaceStatsTableProps) {
+}: BloodlineStatsTableProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [sortKey, setSortKey] = useState<RateSortKey>("score");
+  const [sortKey, setSortKey] = useState<RateSortKey>("showRate");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
 
   const groupedRows = useMemo(() => {
+    const sortedRows = rows.toSorted((left, right) => {
+      const compared =
+        sortDirection === "asc" ? left[sortKey] - right[sortKey] : right[sortKey] - left[sortKey];
+      return compared === 0 ? right.starts - left.starts : compared;
+    });
+
     return CATEGORY_ORDER.map((category) => ({
       category,
-      rows: toScoredRows(rows.filter((row) => row.category === category)).toSorted(
-        (left, right) => {
-          const compared =
-            sortDirection === "asc"
-              ? left[sortKey] - right[sortKey]
-              : right[sortKey] - left[sortKey];
-          return compared === 0 ? right.starts - left.starts : compared;
-        },
-      ),
+      rows: sortedRows.filter((row) => row.category === category),
     }));
   }, [rows, sortDirection, sortKey]);
+
+  const scoreRows = useMemo(() => {
+    const maxStarts = Math.max(...rows.map((row) => row.starts), 0);
+    const maxHorseCount = Math.max(...rows.map((row) => row.horseCount), 0);
+    const rowScores = new Map<BloodlineStatsRow, number>();
+
+    for (const row of rows) {
+      rowScores.set(
+        row,
+        (row.showRate / 100) * METRIC_SCORE_WEIGHTS.showRate +
+          (row.quinellaRate / 100) * METRIC_SCORE_WEIGHTS.quinellaRate +
+          (row.winRate / 100) * METRIC_SCORE_WEIGHTS.winRate +
+          normalize(row.starts, maxStarts) * METRIC_SCORE_WEIGHTS.starts +
+          normalize(row.horseCount, maxHorseCount) * METRIC_SCORE_WEIGHTS.horseCount,
+      );
+    }
+
+    const categoryRowsByHorse = new Map<
+      string,
+      Partial<Record<BloodlineCategory, BloodlineStatsRow>>
+    >();
+    for (const row of rows) {
+      for (const horseNumber of splitHorseNumbers(row.currentHorseNumbers)) {
+        const currentRows = categoryRowsByHorse.get(horseNumber);
+        categoryRowsByHorse.set(horseNumber, { ...currentRows, [row.category]: row });
+      }
+    }
+
+    const rawRows = runners.map((runner) => {
+      const horseNumber = formatRunnerNumber(runner.umaban);
+      const categoryRows = categoryRowsByHorse.get(horseNumber) ?? {};
+      const categoryScores: Record<BloodlineCategory, number> = {
+        damSire: categoryRows.damSire ? (rowScores.get(categoryRows.damSire) ?? 0) : 0,
+        sire: categoryRows.sire ? (rowScores.get(categoryRows.sire) ?? 0) : 0,
+        sireSire: categoryRows.sireSire ? (rowScores.get(categoryRows.sireSire) ?? 0) : 0,
+      };
+      const rawScore = CATEGORY_ORDER.reduce(
+        (total, category) => total + categoryScores[category] * CATEGORY_SCORE_WEIGHTS[category],
+        0,
+      );
+
+      return {
+        categoryRows,
+        categoryScores,
+        horseName: cleanText(runner.bamei),
+        horseNumber,
+        rawScore,
+      };
+    });
+
+    const maxScore = Math.max(...rawRows.map((row) => row.rawScore), 0);
+    const minScore = rawRows.length > 0 ? Math.min(...rawRows.map((row) => row.rawScore)) : 0;
+    const scoreRange = maxScore - minScore;
+
+    return rawRows
+      .map((row) =>
+        Object.assign(row, {
+          score: scoreRange > 0 ? (row.rawScore - minScore) / scoreRange : row.rawScore > 0 ? 1 : 0,
+        }),
+      )
+      .toSorted((left, right) =>
+        right.score === left.score
+          ? Number(left.horseNumber) - Number(right.horseNumber)
+          : right.score - left.score,
+      );
+  }, [rows, runners]);
 
   const updateParam = (name: string, value: string) => {
     const next = new URLSearchParams(searchParams.toString());
@@ -194,7 +240,7 @@ export function SimilarRaceStatsTable({
     );
   };
 
-  const renderStatsTable = (category: StatsCategory, categoryRows: ScoredSimilarRaceStatsRow[]) => (
+  const renderStatsTable = (category: BloodlineCategory, categoryRows: BloodlineStatsRow[]) => (
     <section className="stats-category-section" key={category}>
       <div className="section-heading compact">
         <h3>{CATEGORY_TITLE_LABELS[category]}</h3>
@@ -208,8 +254,7 @@ export function SimilarRaceStatsTable({
             <thead>
               <tr>
                 <th>馬番号</th>
-                <th>名前</th>
-                <th>{renderSortButton("score")}</th>
+                <th>{CATEGORY_LABELS[category]}</th>
                 <th>{renderSortButton("showRate")}</th>
                 <th>{renderSortButton("quinellaRate")}</th>
                 <th>{renderSortButton("winRate")}</th>
@@ -222,7 +267,6 @@ export function SimilarRaceStatsTable({
                 <tr key={`${row.category}-${row.name}`}>
                   <td>{row.currentHorseNumbers}</td>
                   <td className="stats-name-cell">{row.name}</td>
-                  <td className="stats-score-cell">{formatScore(row.score)}</td>
                   <td>{formatRate(row.showRate)}</td>
                   <td>{formatRate(row.quinellaRate)}</td>
                   <td>{formatRate(row.winRate)}</td>
@@ -239,7 +283,7 @@ export function SimilarRaceStatsTable({
 
   return (
     <>
-      <section className="stats-control-panel" aria-label="similar race stats controls">
+      <section className="stats-control-panel" aria-label="bloodline stats controls">
         <label>
           <span>期間</span>
           <select
@@ -270,6 +314,44 @@ export function SimilarRaceStatsTable({
       </section>
 
       <div className="stats-category-list">
+        <section className="stats-category-section">
+          <div className="section-heading compact">
+            <h3>血統スコア</h3>
+            <span>{scoreRows.length} 頭</span>
+          </div>
+          <div className="stats-table-wrap">
+            <table className="stats-table bloodline-score-table">
+              <thead>
+                <tr>
+                  <th>馬番号</th>
+                  <th>馬名</th>
+                  <th>スコア</th>
+                  <th>父</th>
+                  <th>父スコア</th>
+                  <th>母父</th>
+                  <th>母父スコア</th>
+                  <th>父父</th>
+                  <th>父父スコア</th>
+                </tr>
+              </thead>
+              <tbody>
+                {scoreRows.map((row) => (
+                  <tr key={row.horseNumber}>
+                    <td>{row.horseNumber}</td>
+                    <td className="stats-name-cell">{row.horseName}</td>
+                    <td className="bloodline-score-cell">{formatScore(row.score)}</td>
+                    <td className="stats-name-cell">{row.categoryRows.sire?.name ?? "-"}</td>
+                    <td>{formatScore(row.categoryScores.sire)}</td>
+                    <td className="stats-name-cell">{row.categoryRows.damSire?.name ?? "-"}</td>
+                    <td>{formatScore(row.categoryScores.damSire)}</td>
+                    <td className="stats-name-cell">{row.categoryRows.sireSire?.name ?? "-"}</td>
+                    <td>{formatScore(row.categoryScores.sireSire)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
         {groupedRows.map(({ category, rows: categoryRows }) =>
           renderStatsTable(category, categoryRows),
         )}

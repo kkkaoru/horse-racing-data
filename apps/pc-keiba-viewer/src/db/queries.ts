@@ -4,6 +4,7 @@ import { cache } from "react";
 
 import { TRACK_LABELS, type RaceSource } from "../lib/codes";
 import type {
+  BloodlineStatsRow,
   CourseInfo,
   HorseRaceResult,
   RaceDaySummary,
@@ -16,7 +17,7 @@ import type {
   Training,
 } from "../lib/race-types";
 import { db } from "./client";
-import { jvdCs, jvdRa, jvdSe, nvdRa, nvdSe } from "./schema";
+import { jvdCs, jvdRa, jvdSe, jvdUm, nvdRa, nvdSe, nvdUm } from "./schema";
 
 export const getRaceYears = cache(async (): Promise<RaceYearSummary[]> => {
   const result = await db.execute<{
@@ -595,6 +596,229 @@ const getTrackCodesByTurn = (turn: string): string[] =>
 
 const trackCodeIn = (codes: string[]) =>
   codes.length > 0 ? sql`ra.track_code in (${sql.join(codes, sql`, `)})` : sql`false`;
+
+export const getBloodlineStats = cache(
+  async (race: RaceDetail, settings: SimilarRaceStatsSettings): Promise<BloodlineStatsRow[]> => {
+    const raceTable = race.source === "jra" ? jvdRa : nvdRa;
+    const runnerTable = race.source === "jra" ? jvdSe : nvdSe;
+    const horseTable = race.source === "jra" ? jvdUm : nvdUm;
+    const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
+    const surfaceCodes = getTrackCodesBySurface(getTrackSurface(race.trackCode));
+    const turnCodes = getTrackCodesByTurn(getTrackTurn(race.trackCode));
+    const classCondition =
+      cleanDbText(race.kyosoJokenCode) === "000" && settings.classConditionName
+        ? sql`regexp_replace(ra.kyoso_joken_meisho, '[[:space:]　]+', ' ', 'g') like ${`%${settings.classConditionName}%`}`
+        : sql`ra.kyoso_joken_code = ${race.kyosoJokenCode}`;
+    const raceTitleCondition = cleanDbText(race.kyosomeiHondai)
+      ? sql`ra.kyosomei_hondai = ${race.kyosomeiHondai}`
+      : sql`false`;
+    const raceSubtitleCondition = cleanDbText(race.kyosomeiFukudai)
+      ? sql`ra.kyosomei_fukudai = ${race.kyosomeiFukudai}`
+      : cleanDbText(race.kyosomeiKakkonai)
+        ? sql`ra.kyosomei_kakkonai = ${race.kyosomeiKakkonai}`
+        : sql`false`;
+    const result = await db.execute<{
+      category: "damSire" | "sire" | "sireSire";
+      currentHorseNumbers: string;
+      name: string;
+      starts: string;
+      horseCount: string;
+      winCount: string;
+      quinellaCount: string;
+      showCount: string;
+      winRate: string;
+      quinellaRate: string;
+      showRate: string;
+    }>(sql`
+      with current_entries as (
+        select
+          coalesce(nullif(regexp_replace(se.umaban, '^0+', ''), ''), '0') as umaban,
+          se.umaban::int as "umabanSort",
+          se.wakuban,
+          coalesce(nullif(regexp_replace(um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') as sire,
+          coalesce(nullif(regexp_replace(um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') as "sireSire",
+          coalesce(nullif(regexp_replace(um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') as "damSire"
+        from ${runnerTable} se
+        left join ${horseTable} um
+          on um.ketto_toroku_bango = se.ketto_toroku_bango
+        where
+          se.kaisai_nen = ${race.kaisaiNen}
+          and se.kaisai_tsukihi = ${race.kaisaiTsukihi}
+          and se.keibajo_code = ${race.keibajoCode}
+          and se.race_bango = ${race.raceBango}
+      ),
+      target_entries as (
+        select 'sire'::text as category, sire as name, umaban, "umabanSort", wakuban
+        from current_entries
+        union all
+        select 'damSire'::text as category, "damSire" as name, umaban, "umabanSort", wakuban
+        from current_entries
+        union all
+        select 'sireSire'::text as category, "sireSire" as name, umaban, "umabanSort", wakuban
+        from current_entries
+      ),
+      targets as (
+        select
+          category,
+          name,
+          string_agg(umaban, ', ' order by "umabanSort") as "currentHorseNumbers"
+        from target_entries
+        where name <> '不明'
+        group by category, name
+      ),
+      matched_entries as (
+        select
+          se.wakuban,
+          ra.race_bango,
+          se.kakutei_chakujun,
+          se.ketto_toroku_bango,
+          coalesce(nullif(regexp_replace(um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') as sire,
+          coalesce(nullif(regexp_replace(um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') as "sireSire",
+          coalesce(nullif(regexp_replace(um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') as "damSire"
+        from ${raceTable} ra
+        join ${runnerTable} se
+          on se.kaisai_nen = ra.kaisai_nen
+          and se.kaisai_tsukihi = ra.kaisai_tsukihi
+          and se.keibajo_code = ra.keibajo_code
+          and se.race_bango = ra.race_bango
+        left join ${horseTable} um
+          on um.ketto_toroku_bango = se.ketto_toroku_bango
+        where
+          ra.kaisai_nen || ra.kaisai_tsukihi < ${raceDate}
+          and (
+            ${settings.years}::int is null
+            or ra.kaisai_nen || ra.kaisai_tsukihi >= to_char(
+              to_date(${raceDate}, 'YYYYMMDD') - (${settings.years}::int * interval '1 year'),
+              'YYYYMMDD'
+            )
+          )
+          and (${settings.includeVenue} = false or ra.keibajo_code = ${race.keibajoCode})
+          and (${settings.includeRaceTitle} = false or ${raceTitleCondition})
+          and (${settings.includeRaceSubtitle} = false or ${raceSubtitleCondition})
+          and (${settings.includeAge} = false or ra.kyoso_shubetsu_code = ${race.kyosoShubetsuCode})
+          and (
+            ${settings.includeClass} = false
+            or ${classCondition}
+          )
+          and (${settings.includeSex} = false or ra.kyoso_kigo_code = ${race.kyosoKigoCode})
+          and (${settings.includeSurface} = false or ${trackCodeIn(surfaceCodes)})
+          and (${settings.includeTurn} = false or ${trackCodeIn(turnCodes)})
+          and (${settings.includeDistance} = false or ra.kyori = ${race.kyori})
+      ),
+      grouped_entries as (
+        select
+          'sire'::text as category,
+          sire as name,
+          wakuban,
+          race_bango,
+          kakutei_chakujun,
+          ketto_toroku_bango
+        from matched_entries
+        union all
+        select
+          'damSire'::text as category,
+          "damSire" as name,
+          wakuban,
+          race_bango,
+          kakutei_chakujun,
+          ketto_toroku_bango
+        from matched_entries
+        union all
+        select
+          'sireSire'::text as category,
+          "sireSire" as name,
+          wakuban,
+          race_bango,
+          kakutei_chakujun,
+          ketto_toroku_bango
+        from matched_entries
+      ),
+      stats as (
+        select
+          grouped_entries.category,
+          grouped_entries.name,
+          targets."currentHorseNumbers",
+          count(*)::text as "starts",
+          count(distinct ketto_toroku_bango)::text as "horseCount",
+          count(*) filter (where kakutei_chakujun = '01')::text as "winCount",
+          count(*) filter (where kakutei_chakujun in ('01', '02'))::text as "quinellaCount",
+          count(*) filter (where kakutei_chakujun in ('01', '02', '03'))::text as "showCount",
+          round(
+            count(*) filter (where kakutei_chakujun = '01') * 100.0 / nullif(count(*), 0),
+            1
+          )::text as "winRate",
+          round(
+            count(*) filter (where kakutei_chakujun in ('01', '02')) * 100.0 / nullif(count(*), 0),
+            1
+          )::text as "quinellaRate",
+          round(
+            count(*) filter (where kakutei_chakujun in ('01', '02', '03')) * 100.0 / nullif(count(*), 0),
+            1
+          )::text as "showRate"
+        from grouped_entries
+        join targets
+          on targets.category = grouped_entries.category
+          and targets.name = grouped_entries.name
+        where
+          grouped_entries.name <> '不明'
+          and (
+            ${settings.includeFrame} = false
+            or exists (
+              select 1
+              from target_entries
+              where
+                target_entries.category = grouped_entries.category
+                and target_entries.name = grouped_entries.name
+                and target_entries.wakuban = grouped_entries.wakuban
+            )
+          )
+          and (${settings.includeRaceNumber} = false or grouped_entries.race_bango = ${race.raceBango})
+        group by
+          grouped_entries.category,
+          grouped_entries.name,
+          targets."currentHorseNumbers"
+      ),
+      ranked as (
+        select
+          *,
+          row_number() over (
+            partition by category
+            order by "showRate"::numeric desc, "starts"::numeric desc, name asc
+          ) as rank
+        from stats
+      )
+      select
+        category,
+        "currentHorseNumbers",
+        name,
+        "starts",
+        "horseCount",
+        "winCount",
+        "quinellaCount",
+        "showCount",
+        "winRate",
+        "quinellaRate",
+        "showRate"
+      from ranked
+      where rank <= 100
+      order by category asc, rank asc
+    `);
+
+    return result.rows.map((row) => ({
+      category: row.category,
+      currentHorseNumbers: row.currentHorseNumbers,
+      horseCount: toCount(row.horseCount),
+      name: row.name,
+      quinellaCount: toCount(row.quinellaCount),
+      quinellaRate: toRate(row.quinellaRate),
+      showCount: toCount(row.showCount),
+      showRate: toRate(row.showRate),
+      starts: toCount(row.starts),
+      winCount: toCount(row.winCount),
+      winRate: toRate(row.winRate),
+    }));
+  },
+);
 
 export const getSimilarRaceStats = cache(
   async (race: RaceDetail, settings: SimilarRaceStatsSettings): Promise<SimilarRaceStatsRow[]> => {
