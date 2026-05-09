@@ -158,6 +158,20 @@ export interface SimilarRaceStatsRow extends Record<string, unknown> {
   showRate: number;
 }
 
+export interface BloodlineStatsRow extends Record<string, unknown> {
+  category: "damSire" | "sire" | "sireSire";
+  currentHorseNumbers: string;
+  name: string;
+  starts: number;
+  horseCount: number;
+  winCount: number;
+  quinellaCount: number;
+  showCount: number;
+  winRate: number;
+  quinellaRate: number;
+  showRate: number;
+}
+
 export interface SimilarRaceStatsSettings {
   classConditionName: string | null;
   includeAge: boolean;

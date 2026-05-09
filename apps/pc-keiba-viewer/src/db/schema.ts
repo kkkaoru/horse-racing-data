@@ -51,6 +51,15 @@ const runnerColumns = {
   kohan3f: varchar("kohan_3f", { length: 3 }),
 };
 
+const horseMasterColumns = {
+  kettoTorokuBango: varchar("ketto_toroku_bango", { length: 10 }).notNull(),
+  bamei: varchar("bamei", { length: 36 }),
+  sireName: varchar("ketto_joho_01b", { length: 36 }),
+  damName: varchar("ketto_joho_02b", { length: 36 }),
+  sireSireName: varchar("ketto_joho_03b", { length: 36 }),
+  damSireName: varchar("ketto_joho_05b", { length: 36 }),
+};
+
 export const jvdCs = pgTable("jvd_cs", {
   keibajoCode: varchar("keibajo_code", { length: 2 }).notNull(),
   kyori: varchar("kyori", { length: 4 }).notNull(),
@@ -63,3 +72,5 @@ export const jvdRa = pgTable("jvd_ra", raceColumns);
 export const nvdRa = pgTable("nvd_ra", raceColumns);
 export const jvdSe = pgTable("jvd_se", runnerColumns);
 export const nvdSe = pgTable("nvd_se", runnerColumns);
+export const jvdUm = pgTable("jvd_um", horseMasterColumns);
+export const nvdUm = pgTable("nvd_um", horseMasterColumns);

@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import {
+  getBloodlineStats,
   getHorseRaceResults,
   getRaceCourseInfo,
   getRaceDetail,
@@ -37,6 +38,7 @@ import {
   getRaceTags,
   getWeightLabel,
 } from "../../../../../../../../../lib/race-classification";
+import { BloodlineStatsTable } from "../../../../../../bloodline-stats-table";
 import { HorseRaceResultsTable } from "../../../../../../horse-race-results-table";
 import { RunnersTable } from "../../../../../../runners-table";
 import { SimilarRaceStatsTable } from "../../../../../../similar-race-stats-table";
@@ -94,10 +96,10 @@ const LISTED_OR_HIGHER_GRADE_CODES = new Set(["A", "B", "C", "D", "F", "G", "H",
 
 const getStatsYears = (
   value: string | string[] | undefined,
-  defaultYears: number,
+  defaultYears: number | null,
 ): number | null => {
   const firstValue = getFirstSearchParam(value);
-  if (firstValue === "all") {
+  if (firstValue === "all" || (firstValue === undefined && defaultYears === null)) {
     return null;
   }
 
@@ -204,6 +206,10 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
     includeVenue: banEiRace ? false : getFlag(query.statsVenue),
     years: getStatsYears(query.statsYears, defaultStatsYears),
   };
+  const bloodlineStatsSettings = {
+    ...statsSettings,
+    years: getStatsYears(query.statsYears, null),
+  };
   const statsConditionLabels = {
     age: getAgeLabel(race.kyosoShubetsuCode),
     class: classConditionLabel,
@@ -217,13 +223,15 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
     turn: banEiRace ? null : getTrackTurnLabel(race.trackCode),
     venue: banEiRace ? null : formatKeibajo(keibajoCode),
   };
-  const [courseInfo, runners, raceResults, trainings, similarStats] = await Promise.all([
-    getRaceCourseInfo(keibajoCode, race.kyori, race.trackCode),
-    getRaceRunners(raceSource, year, month, day, keibajoCode, raceNumber),
-    getHorseRaceResults(raceSource, year, month, day, keibajoCode, raceNumber),
-    getRaceTrainings(raceSource, year, month, day, keibajoCode, raceNumber),
-    getSimilarRaceStats(race, statsSettings),
-  ]);
+  const [courseInfo, runners, raceResults, trainings, bloodlineStats, similarStats] =
+    await Promise.all([
+      getRaceCourseInfo(keibajoCode, race.kyori, race.trackCode),
+      getRaceRunners(raceSource, year, month, day, keibajoCode, raceNumber),
+      getHorseRaceResults(raceSource, year, month, day, keibajoCode, raceNumber),
+      getRaceTrainings(raceSource, year, month, day, keibajoCode, raceNumber),
+      getBloodlineStats(race, bloodlineStatsSettings),
+      getSimilarRaceStats(race, statsSettings),
+    ]);
   const courseText = cleanText(courseInfo?.courseSetsumei, "");
   const courseFacts = getCourseFacts(courseText, race.kyori, race.trackCode);
   const courseParagraphs = courseText
@@ -402,6 +410,23 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
           <span>{trainings.length} 件</span>
         </div>
         <TrainingTable sourceLabel={SOURCE_LABELS[raceSource]} trainings={trainings} />
+      </section>
+
+      <section className="similar-stats-section">
+        <div className="section-heading compact">
+          <h2>血統成績</h2>
+          <span>
+            {bloodlineStatsSettings.years === null
+              ? "全期間"
+              : `過去${bloodlineStatsSettings.years}年`}
+          </span>
+        </div>
+        <BloodlineStatsTable
+          conditionLabels={statsConditionLabels}
+          rows={bloodlineStats}
+          runners={runners}
+          settings={bloodlineStatsSettings}
+        />
       </section>
 
       <section className="similar-stats-section">
