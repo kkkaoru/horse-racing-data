@@ -3,11 +3,11 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { drizzle } from "drizzle-orm/node-postgres";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
+import { cache } from "react";
 
 import * as schema from "./schema";
 
 const DATABASE_TARGETS = ["local", "neon", "cloudflare"] as const;
-
 type DatabaseTarget = (typeof DATABASE_TARGETS)[number];
 type Db = NodePgDatabase<typeof schema>;
 
@@ -53,8 +53,24 @@ const globalForDb = globalThis as typeof globalThis & {
   pcKeibaViewerDbs?: Partial<Record<DatabaseTarget, Db>>;
 };
 
+const createDb = (databaseTarget: DatabaseTarget): Db => {
+  const pool = new Pool({
+    connectionString: getConnectionString(databaseTarget),
+    max: databaseTarget === "cloudflare" ? 1 : 8,
+  });
+
+  return drizzle(pool, { schema });
+};
+
+const getCloudflareDb = cache((): Db => createDb("cloudflare"));
+
 export const getDb = (): Db => {
   const databaseTarget = getDatabaseTarget();
+
+  if (databaseTarget === "cloudflare") {
+    return getCloudflareDb();
+  }
+
   const existingDb = globalForDb.pcKeibaViewerDbs?.[databaseTarget];
 
   if (existingDb) {
@@ -63,12 +79,7 @@ export const getDb = (): Db => {
 
   const existingPool = globalForDb.pcKeibaViewerPools?.[databaseTarget];
   const pool =
-    existingPool ??
-    new Pool({
-      connectionString: getConnectionString(databaseTarget),
-      max: databaseTarget === "cloudflare" ? 1 : 8,
-    });
-
+    existingPool ?? new Pool({ connectionString: getConnectionString(databaseTarget), max: 8 });
   const createdDb = drizzle(pool, { schema });
 
   globalForDb.pcKeibaViewerPools = {
