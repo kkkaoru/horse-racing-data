@@ -8,6 +8,7 @@
     "dev": "next dev",
     "dev:local": "PC_KEIBA_DATABASE_TARGET=local next dev",
     "dev:neon": "PC_KEIBA_DATABASE_TARGET=neon next dev",
+    "deploy:worker": "opennextjs-cloudflare build && OPEN_NEXT_DEPLOY=true wrangler deploy",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "lint": "oxlint . --tsconfig ./tsconfig.json --type-aware --import-plugin --react-plugin --jsx-a11y-plugin --nextjs-plugin --vitest-plugin --promise-plugin --node-plugin --deny-warnings --max-warnings=0 --report-unused-disable-directives",
@@ -15,14 +16,17 @@
     "start": "next start",
     "start:local": "PC_KEIBA_DATABASE_TARGET=local next start",
     "start:neon": "PC_KEIBA_DATABASE_TARGET=neon next start",
+    "preview:worker": "opennextjs-cloudflare build && wrangler dev",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "tsc": "tsc --noEmit"
   },
   "dependencies": {
+    "@opennextjs/cloudflare": "1.19.8",
     "drizzle-orm": "0.45.2",
     "next": "16.2.6",
     "pg": "8.16.3",
+    "pg-cloudflare": "1.3.0",
     "react": "19.2.6",
     "react-dom": "19.2.6"
   },
@@ -38,6 +42,7 @@
     "oxlint": "1.63.0",
     "oxlint-tsgolint": "0.22.1",
     "typescript": "5.9.3",
-    "vitest": "4.1.5"
+    "vitest": "4.1.5",
+    "wrangler": "4.90.0"
   }
 }

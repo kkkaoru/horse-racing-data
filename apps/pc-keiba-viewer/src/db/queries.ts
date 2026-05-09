@@ -16,11 +16,11 @@ import type {
   SimilarRaceStatsSettings,
   Training,
 } from "../lib/race-types";
-import { db } from "./client";
+import { getDb } from "./client";
 import { jvdCs, jvdRa, jvdSe, jvdUm, nvdRa, nvdSe, nvdUm } from "./schema";
 
 export const getRaceYears = cache(async (): Promise<RaceYearSummary[]> => {
-  const result = await db.execute<{
+  const result = await getDb().execute<{
     year: string;
     race_count: string;
     day_count: string;
@@ -50,7 +50,7 @@ export const getRaceYears = cache(async (): Promise<RaceYearSummary[]> => {
 });
 
 export const getRaceDaySummaries = cache(async (year: string): Promise<RaceDaySummary[]> => {
-  const result = await db.execute<{
+  const result = await getDb().execute<{
     year: string;
     month: string;
     day: string;
@@ -90,7 +90,7 @@ export const getRaceDaySummaries = cache(async (year: string): Promise<RaceDaySu
 export const getRacesByDate = cache(
   async (year: string, month: string, day: string): Promise<RaceListItem[]> => {
     const monthDay = `${month}${day}`;
-    const result = await db.execute<RaceListItem>(sql`
+    const result = await getDb().execute<RaceListItem>(sql`
     select *
     from (
       select
@@ -152,7 +152,7 @@ export const getRaceDetail = cache(
     raceNumber: string,
   ): Promise<RaceDetail | null> => {
     const table = source === "jra" ? jvdRa : nvdRa;
-    const [race] = await db
+    const [race] = await getDb()
       .select({
         kaisaiNen: table.kaisaiNen,
         kaisaiTsukihi: table.kaisaiTsukihi,
@@ -201,7 +201,7 @@ export const getRaceRunners = cache(
     raceNumber: string,
   ): Promise<Runner[]> => {
     const table = source === "jra" ? jvdSe : nvdSe;
-    return db
+    return getDb()
       .select({
         wakuban: table.wakuban,
         umaban: table.umaban,
@@ -246,7 +246,7 @@ export const getRaceCourseInfo = cache(
       return null;
     }
 
-    const [course] = await db
+    const [course] = await getDb()
       .select({
         courseKaishuNengappi: jvdCs.courseKaishuNengappi,
         courseSetsumei: jvdCs.courseSetsumei,
@@ -280,7 +280,7 @@ export const getHorseRaceResults = cache(
     const monthDay = `${month}${day}`;
     const raceDate = `${year}${monthDay}`;
 
-    const result = await db.execute<HorseRaceResult>(sql`
+    const result = await getDb().execute<HorseRaceResult>(sql`
       with current_horses as (
         select
           umaban as "currentUmaban",
@@ -420,7 +420,7 @@ export const getRaceTrainings = cache(
     }
 
     const monthDay = `${month}${day}`;
-    const result = await db.execute<Training>(sql`
+    const result = await getDb().execute<Training>(sql`
       with runners as (
         select
           umaban,
@@ -617,7 +617,7 @@ export const getBloodlineStats = cache(
       : cleanDbText(race.kyosomeiKakkonai)
         ? sql`ra.kyosomei_kakkonai = ${race.kyosomeiKakkonai}`
         : sql`false`;
-    const result = await db.execute<{
+    const result = await getDb().execute<{
       category: "damSire" | "sire" | "sireSire";
       currentHorseNumbers: string;
       name: string;
@@ -839,7 +839,7 @@ export const getSimilarRaceStats = cache(
       : cleanDbText(race.kyosomeiKakkonai)
         ? sql`ra.kyosomei_kakkonai = ${race.kyosomeiKakkonai}`
         : sql`false`;
-    const result = await db.execute<{
+    const result = await getDb().execute<{
       category: "jockey" | "owner" | "trainer";
       currentHorseNumbers: string;
       name: string;
