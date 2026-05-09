@@ -17,14 +17,17 @@ import type {
   Training,
 } from "../lib/race-types";
 import { getDb } from "./client";
+import { withDbQueryCache } from "./query-cache";
 import { jvdCs, jvdRa, jvdSe, jvdUm, nvdRa, nvdSe, nvdUm } from "./schema";
 
-export const getRaceYears = cache(async (): Promise<RaceYearSummary[]> => {
-  const result = await getDb().execute<{
-    year: string;
-    race_count: string;
-    day_count: string;
-  }>(sql`
+export const getRaceYears = cache(
+  async (): Promise<RaceYearSummary[]> =>
+    withDbQueryCache(["getRaceYears"], async () => {
+      const result = await getDb().execute<{
+        year: string;
+        race_count: string;
+        day_count: string;
+      }>(sql`
     select
       kaisai_nen as year,
       sum(race_count) as race_count,
@@ -42,21 +45,24 @@ export const getRaceYears = cache(async (): Promise<RaceYearSummary[]> => {
     order by kaisai_nen desc
   `);
 
-  return result.rows.map((row) => ({
-    year: row.year,
-    raceCount: Number(row.race_count),
-    dayCount: Number(row.day_count),
-  }));
-});
+      return result.rows.map((row) => ({
+        year: row.year,
+        raceCount: Number(row.race_count),
+        dayCount: Number(row.day_count),
+      }));
+    }),
+);
 
-export const getRaceDaySummaries = cache(async (year: string): Promise<RaceDaySummary[]> => {
-  const result = await getDb().execute<{
-    year: string;
-    month: string;
-    day: string;
-    jra_count: string;
-    nar_count: string;
-  }>(sql`
+export const getRaceDaySummaries = cache(
+  async (year: string): Promise<RaceDaySummary[]> =>
+    withDbQueryCache(["getRaceDaySummaries", year], async () => {
+      const result = await getDb().execute<{
+        year: string;
+        month: string;
+        day: string;
+        jra_count: string;
+        nar_count: string;
+      }>(sql`
     select
       kaisai_nen as year,
       substring(kaisai_tsukihi from 1 for 2) as month,
@@ -78,19 +84,21 @@ export const getRaceDaySummaries = cache(async (year: string): Promise<RaceDaySu
     order by kaisai_nen desc, kaisai_tsukihi desc
   `);
 
-  return result.rows.map((row) => ({
-    year: row.year,
-    month: row.month,
-    day: row.day,
-    jraCount: Number(row.jra_count),
-    narCount: Number(row.nar_count),
-  }));
-});
+      return result.rows.map((row) => ({
+        year: row.year,
+        month: row.month,
+        day: row.day,
+        jraCount: Number(row.jra_count),
+        narCount: Number(row.nar_count),
+      }));
+    }),
+);
 
 export const getRacesByDate = cache(
   async (year: string, month: string, day: string): Promise<RaceListItem[]> => {
-    const monthDay = `${month}${day}`;
-    const result = await getDb().execute<RaceListItem>(sql`
+    return withDbQueryCache(["getRacesByDate", year, month, day], async () => {
+      const monthDay = `${month}${day}`;
+      const result = await getDb().execute<RaceListItem>(sql`
     select *
     from (
       select
@@ -138,7 +146,8 @@ export const getRacesByDate = cache(
     order by "hassoJikoku" asc nulls last, "keibajoCode" asc, "raceBango" asc, source asc
   `);
 
-    return result.rows;
+      return result.rows;
+    });
   },
 );
 
@@ -151,43 +160,48 @@ export const getRaceDetail = cache(
     keibajoCode: string,
     raceNumber: string,
   ): Promise<RaceDetail | null> => {
-    const table = source === "jra" ? jvdRa : nvdRa;
-    const [race] = await getDb()
-      .select({
-        kaisaiNen: table.kaisaiNen,
-        kaisaiTsukihi: table.kaisaiTsukihi,
-        keibajoCode: table.keibajoCode,
-        raceBango: table.raceBango,
-        kyosomeiHondai: table.kyosomeiHondai,
-        kyosomeiFukudai: table.kyosomeiFukudai,
-        kyosomeiKakkonai: table.kyosomeiKakkonai,
-        gradeCode: table.gradeCode,
-        kyosoShubetsuCode: table.kyosoShubetsuCode,
-        kyosoKigoCode: table.kyosoKigoCode,
-        juryoShubetsuCode: table.juryoShubetsuCode,
-        kyosoJokenCode: table.kyosoJokenCode,
-        kyosoJokenMeisho: table.kyosoJokenMeisho,
-        kyori: table.kyori,
-        trackCode: table.trackCode,
-        hassoJikoku: table.hassoJikoku,
-        torokuTosu: table.torokuTosu,
-        shussoTosu: table.shussoTosu,
-        tenkoCode: table.tenkoCode,
-        babajotaiCodeShiba: table.babajotaiCodeShiba,
-        babajotaiCodeDirt: table.babajotaiCodeDirt,
-      })
-      .from(table)
-      .where(
-        and(
-          eq(table.kaisaiNen, year),
-          eq(table.kaisaiTsukihi, `${month}${day}`),
-          eq(table.keibajoCode, keibajoCode),
-          eq(table.raceBango, raceNumber),
-        ),
-      )
-      .limit(1);
+    return withDbQueryCache(
+      ["getRaceDetail", source, year, month, day, keibajoCode, raceNumber],
+      async () => {
+        const table = source === "jra" ? jvdRa : nvdRa;
+        const [race] = await getDb()
+          .select({
+            kaisaiNen: table.kaisaiNen,
+            kaisaiTsukihi: table.kaisaiTsukihi,
+            keibajoCode: table.keibajoCode,
+            raceBango: table.raceBango,
+            kyosomeiHondai: table.kyosomeiHondai,
+            kyosomeiFukudai: table.kyosomeiFukudai,
+            kyosomeiKakkonai: table.kyosomeiKakkonai,
+            gradeCode: table.gradeCode,
+            kyosoShubetsuCode: table.kyosoShubetsuCode,
+            kyosoKigoCode: table.kyosoKigoCode,
+            juryoShubetsuCode: table.juryoShubetsuCode,
+            kyosoJokenCode: table.kyosoJokenCode,
+            kyosoJokenMeisho: table.kyosoJokenMeisho,
+            kyori: table.kyori,
+            trackCode: table.trackCode,
+            hassoJikoku: table.hassoJikoku,
+            torokuTosu: table.torokuTosu,
+            shussoTosu: table.shussoTosu,
+            tenkoCode: table.tenkoCode,
+            babajotaiCodeShiba: table.babajotaiCodeShiba,
+            babajotaiCodeDirt: table.babajotaiCodeDirt,
+          })
+          .from(table)
+          .where(
+            and(
+              eq(table.kaisaiNen, year),
+              eq(table.kaisaiTsukihi, `${month}${day}`),
+              eq(table.keibajoCode, keibajoCode),
+              eq(table.raceBango, raceNumber),
+            ),
+          )
+          .limit(1);
 
-    return race ? { ...race, source } : null;
+        return race ? { ...race, source } : null;
+      },
+    );
   },
 );
 
@@ -200,39 +214,44 @@ export const getRaceRunners = cache(
     keibajoCode: string,
     raceNumber: string,
   ): Promise<Runner[]> => {
-    const table = source === "jra" ? jvdSe : nvdSe;
-    return getDb()
-      .select({
-        wakuban: table.wakuban,
-        umaban: table.umaban,
-        kettoTorokuBango: table.kettoTorokuBango,
-        bamei: table.bamei,
-        seibetsuCode: table.seibetsuCode,
-        barei: table.barei,
-        futanJuryo: table.futanJuryo,
-        kishumeiRyakusho: table.kishumeiRyakusho,
-        chokyoshimeiRyakusho: table.chokyoshimeiRyakusho,
-        banushimei: table.banushimei,
-        bataiju: table.bataiju,
-        zogenFugo: table.zogenFugo,
-        zogenSa: table.zogenSa,
-        kakuteiChakujun: table.kakuteiChakujun,
-        tanshoOdds: table.tanshoOdds,
-        tanshoNinkijun: table.tanshoNinkijun,
-        sohaTime: table.sohaTime,
-        timeSa: table.timeSa,
-        kohan3f: table.kohan3f,
-      })
-      .from(table)
-      .where(
-        and(
-          eq(table.kaisaiNen, year),
-          eq(table.kaisaiTsukihi, `${month}${day}`),
-          eq(table.keibajoCode, keibajoCode),
-          eq(table.raceBango, raceNumber),
-        ),
-      )
-      .orderBy(asc(table.umaban), asc(table.kettoTorokuBango));
+    return withDbQueryCache(
+      ["getRaceRunners", source, year, month, day, keibajoCode, raceNumber],
+      async () => {
+        const table = source === "jra" ? jvdSe : nvdSe;
+        return getDb()
+          .select({
+            wakuban: table.wakuban,
+            umaban: table.umaban,
+            kettoTorokuBango: table.kettoTorokuBango,
+            bamei: table.bamei,
+            seibetsuCode: table.seibetsuCode,
+            barei: table.barei,
+            futanJuryo: table.futanJuryo,
+            kishumeiRyakusho: table.kishumeiRyakusho,
+            chokyoshimeiRyakusho: table.chokyoshimeiRyakusho,
+            banushimei: table.banushimei,
+            bataiju: table.bataiju,
+            zogenFugo: table.zogenFugo,
+            zogenSa: table.zogenSa,
+            kakuteiChakujun: table.kakuteiChakujun,
+            tanshoOdds: table.tanshoOdds,
+            tanshoNinkijun: table.tanshoNinkijun,
+            sohaTime: table.sohaTime,
+            timeSa: table.timeSa,
+            kohan3f: table.kohan3f,
+          })
+          .from(table)
+          .where(
+            and(
+              eq(table.kaisaiNen, year),
+              eq(table.kaisaiTsukihi, `${month}${day}`),
+              eq(table.keibajoCode, keibajoCode),
+              eq(table.raceBango, raceNumber),
+            ),
+          )
+          .orderBy(asc(table.umaban), asc(table.kettoTorokuBango));
+      },
+    );
   },
 );
 
@@ -246,23 +265,25 @@ export const getRaceCourseInfo = cache(
       return null;
     }
 
-    const [course] = await getDb()
-      .select({
-        courseKaishuNengappi: jvdCs.courseKaishuNengappi,
-        courseSetsumei: jvdCs.courseSetsumei,
-      })
-      .from(jvdCs)
-      .where(
-        and(
-          eq(jvdCs.keibajoCode, keibajoCode),
-          eq(jvdCs.kyori, kyori),
-          eq(jvdCs.trackCode, trackCode),
-        ),
-      )
-      .orderBy(desc(jvdCs.courseKaishuNengappi))
-      .limit(1);
+    return withDbQueryCache(["getRaceCourseInfo", keibajoCode, kyori, trackCode], async () => {
+      const [course] = await getDb()
+        .select({
+          courseKaishuNengappi: jvdCs.courseKaishuNengappi,
+          courseSetsumei: jvdCs.courseSetsumei,
+        })
+        .from(jvdCs)
+        .where(
+          and(
+            eq(jvdCs.keibajoCode, keibajoCode),
+            eq(jvdCs.kyori, kyori),
+            eq(jvdCs.trackCode, trackCode),
+          ),
+        )
+        .orderBy(desc(jvdCs.courseKaishuNengappi))
+        .limit(1);
 
-    return course ?? null;
+      return course ?? null;
+    });
   },
 );
 
@@ -275,12 +296,15 @@ export const getHorseRaceResults = cache(
     keibajoCode: string,
     raceNumber: string,
   ): Promise<HorseRaceResult[]> => {
-    const raceTable = source === "jra" ? jvdRa : nvdRa;
-    const runnerTable = source === "jra" ? jvdSe : nvdSe;
-    const monthDay = `${month}${day}`;
-    const raceDate = `${year}${monthDay}`;
+    return withDbQueryCache(
+      ["getHorseRaceResults", source, year, month, day, keibajoCode, raceNumber],
+      async () => {
+        const raceTable = source === "jra" ? jvdRa : nvdRa;
+        const runnerTable = source === "jra" ? jvdSe : nvdSe;
+        const monthDay = `${month}${day}`;
+        const raceDate = `${year}${monthDay}`;
 
-    const result = await getDb().execute<HorseRaceResult>(sql`
+        const result = await getDb().execute<HorseRaceResult>(sql`
       with current_horses as (
         select
           umaban as "currentUmaban",
@@ -402,7 +426,9 @@ export const getHorseRaceResults = cache(
       order by "currentUmaban"::int asc, "kaisaiNen" desc, "kaisaiTsukihi" desc, "raceBango" desc
     `);
 
-    return result.rows;
+        return result.rows;
+      },
+    );
   },
 );
 
@@ -419,8 +445,11 @@ export const getRaceTrainings = cache(
       return [];
     }
 
-    const monthDay = `${month}${day}`;
-    const result = await getDb().execute<Training>(sql`
+    return withDbQueryCache(
+      ["getRaceTrainings", source, year, month, day, keibajoCode, raceNumber],
+      async () => {
+        const monthDay = `${month}${day}`;
+        const result = await getDb().execute<Training>(sql`
       with runners as (
         select
           umaban,
@@ -551,7 +580,9 @@ export const getRaceTrainings = cache(
       order by umaban asc, "chokyoNengappi" desc, "chokyoJikoku" desc, "trainingType" asc
     `);
 
-    return result.rows;
+        return result.rows;
+      },
+    );
   },
 );
 
@@ -599,37 +630,38 @@ const trackCodeIn = (codes: string[]) =>
 
 export const getBloodlineStats = cache(
   async (race: RaceDetail, settings: SimilarRaceStatsSettings): Promise<BloodlineStatsRow[]> => {
-    const raceTable = race.source === "jra" ? jvdRa : nvdRa;
-    const runnerTable = race.source === "jra" ? jvdSe : nvdSe;
-    const horseTable = race.source === "jra" ? jvdUm : nvdUm;
-    const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
-    const surfaceCodes = getTrackCodesBySurface(getTrackSurface(race.trackCode));
-    const turnCodes = getTrackCodesByTurn(getTrackTurn(race.trackCode));
-    const classCondition =
-      cleanDbText(race.kyosoJokenCode) === "000" && settings.classConditionName
-        ? sql`regexp_replace(ra.kyoso_joken_meisho, '[[:space:]　]+', ' ', 'g') like ${`%${settings.classConditionName}%`}`
-        : sql`ra.kyoso_joken_code = ${race.kyosoJokenCode}`;
-    const raceTitleCondition = cleanDbText(race.kyosomeiHondai)
-      ? sql`ra.kyosomei_hondai = ${race.kyosomeiHondai}`
-      : sql`false`;
-    const raceSubtitleCondition = cleanDbText(race.kyosomeiFukudai)
-      ? sql`ra.kyosomei_fukudai = ${race.kyosomeiFukudai}`
-      : cleanDbText(race.kyosomeiKakkonai)
-        ? sql`ra.kyosomei_kakkonai = ${race.kyosomeiKakkonai}`
+    return withDbQueryCache(["getBloodlineStats", race, settings], async () => {
+      const raceTable = race.source === "jra" ? jvdRa : nvdRa;
+      const runnerTable = race.source === "jra" ? jvdSe : nvdSe;
+      const horseTable = race.source === "jra" ? jvdUm : nvdUm;
+      const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
+      const surfaceCodes = getTrackCodesBySurface(getTrackSurface(race.trackCode));
+      const turnCodes = getTrackCodesByTurn(getTrackTurn(race.trackCode));
+      const classCondition =
+        cleanDbText(race.kyosoJokenCode) === "000" && settings.classConditionName
+          ? sql`regexp_replace(ra.kyoso_joken_meisho, '[[:space:]　]+', ' ', 'g') like ${`%${settings.classConditionName}%`}`
+          : sql`ra.kyoso_joken_code = ${race.kyosoJokenCode}`;
+      const raceTitleCondition = cleanDbText(race.kyosomeiHondai)
+        ? sql`ra.kyosomei_hondai = ${race.kyosomeiHondai}`
         : sql`false`;
-    const result = await getDb().execute<{
-      category: "damSire" | "sire" | "sireSire";
-      currentHorseNumbers: string;
-      name: string;
-      starts: string;
-      horseCount: string;
-      winCount: string;
-      quinellaCount: string;
-      showCount: string;
-      winRate: string;
-      quinellaRate: string;
-      showRate: string;
-    }>(sql`
+      const raceSubtitleCondition = cleanDbText(race.kyosomeiFukudai)
+        ? sql`ra.kyosomei_fukudai = ${race.kyosomeiFukudai}`
+        : cleanDbText(race.kyosomeiKakkonai)
+          ? sql`ra.kyosomei_kakkonai = ${race.kyosomeiKakkonai}`
+          : sql`false`;
+      const result = await getDb().execute<{
+        category: "damSire" | "sire" | "sireSire";
+        currentHorseNumbers: string;
+        name: string;
+        starts: string;
+        horseCount: string;
+        winCount: string;
+        quinellaCount: string;
+        showCount: string;
+        winRate: string;
+        quinellaRate: string;
+        showRate: string;
+      }>(sql`
       with current_entries as (
         select
           coalesce(nullif(regexp_replace(se.umaban, '^0+', ''), ''), '0') as umaban,
@@ -804,54 +836,56 @@ export const getBloodlineStats = cache(
       order by category asc, rank asc
     `);
 
-    return result.rows.map((row) => ({
-      category: row.category,
-      currentHorseNumbers: row.currentHorseNumbers,
-      horseCount: toCount(row.horseCount),
-      name: row.name,
-      quinellaCount: toCount(row.quinellaCount),
-      quinellaRate: toRate(row.quinellaRate),
-      showCount: toCount(row.showCount),
-      showRate: toRate(row.showRate),
-      starts: toCount(row.starts),
-      winCount: toCount(row.winCount),
-      winRate: toRate(row.winRate),
-    }));
+      return result.rows.map((row) => ({
+        category: row.category,
+        currentHorseNumbers: row.currentHorseNumbers,
+        horseCount: toCount(row.horseCount),
+        name: row.name,
+        quinellaCount: toCount(row.quinellaCount),
+        quinellaRate: toRate(row.quinellaRate),
+        showCount: toCount(row.showCount),
+        showRate: toRate(row.showRate),
+        starts: toCount(row.starts),
+        winCount: toCount(row.winCount),
+        winRate: toRate(row.winRate),
+      }));
+    });
   },
 );
 
 export const getSimilarRaceStats = cache(
   async (race: RaceDetail, settings: SimilarRaceStatsSettings): Promise<SimilarRaceStatsRow[]> => {
-    const raceTable = race.source === "jra" ? jvdRa : nvdRa;
-    const runnerTable = race.source === "jra" ? jvdSe : nvdSe;
-    const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
-    const surfaceCodes = getTrackCodesBySurface(getTrackSurface(race.trackCode));
-    const turnCodes = getTrackCodesByTurn(getTrackTurn(race.trackCode));
-    const classCondition =
-      cleanDbText(race.kyosoJokenCode) === "000" && settings.classConditionName
-        ? sql`regexp_replace(ra.kyoso_joken_meisho, '[[:space:]　]+', ' ', 'g') like ${`%${settings.classConditionName}%`}`
-        : sql`ra.kyoso_joken_code = ${race.kyosoJokenCode}`;
-    const raceTitleCondition = cleanDbText(race.kyosomeiHondai)
-      ? sql`ra.kyosomei_hondai = ${race.kyosomeiHondai}`
-      : sql`false`;
-    const raceSubtitleCondition = cleanDbText(race.kyosomeiFukudai)
-      ? sql`ra.kyosomei_fukudai = ${race.kyosomeiFukudai}`
-      : cleanDbText(race.kyosomeiKakkonai)
-        ? sql`ra.kyosomei_kakkonai = ${race.kyosomeiKakkonai}`
+    return withDbQueryCache(["getSimilarRaceStats", race, settings], async () => {
+      const raceTable = race.source === "jra" ? jvdRa : nvdRa;
+      const runnerTable = race.source === "jra" ? jvdSe : nvdSe;
+      const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
+      const surfaceCodes = getTrackCodesBySurface(getTrackSurface(race.trackCode));
+      const turnCodes = getTrackCodesByTurn(getTrackTurn(race.trackCode));
+      const classCondition =
+        cleanDbText(race.kyosoJokenCode) === "000" && settings.classConditionName
+          ? sql`regexp_replace(ra.kyoso_joken_meisho, '[[:space:]　]+', ' ', 'g') like ${`%${settings.classConditionName}%`}`
+          : sql`ra.kyoso_joken_code = ${race.kyosoJokenCode}`;
+      const raceTitleCondition = cleanDbText(race.kyosomeiHondai)
+        ? sql`ra.kyosomei_hondai = ${race.kyosomeiHondai}`
         : sql`false`;
-    const result = await getDb().execute<{
-      category: "jockey" | "owner" | "trainer";
-      currentHorseNumbers: string;
-      name: string;
-      starts: string;
-      horseCount: string;
-      winCount: string;
-      quinellaCount: string;
-      showCount: string;
-      winRate: string;
-      quinellaRate: string;
-      showRate: string;
-    }>(sql`
+      const raceSubtitleCondition = cleanDbText(race.kyosomeiFukudai)
+        ? sql`ra.kyosomei_fukudai = ${race.kyosomeiFukudai}`
+        : cleanDbText(race.kyosomeiKakkonai)
+          ? sql`ra.kyosomei_kakkonai = ${race.kyosomeiKakkonai}`
+          : sql`false`;
+      const result = await getDb().execute<{
+        category: "jockey" | "owner" | "trainer";
+        currentHorseNumbers: string;
+        name: string;
+        starts: string;
+        horseCount: string;
+        winCount: string;
+        quinellaCount: string;
+        showCount: string;
+        winRate: string;
+        quinellaRate: string;
+        showRate: string;
+      }>(sql`
       with current_entries as (
         select
           coalesce(nullif(regexp_replace(umaban, '^0+', ''), ''), '0') as umaban,
@@ -1020,18 +1054,19 @@ export const getSimilarRaceStats = cache(
       order by category asc, rank asc
     `);
 
-    return result.rows.map((row) => ({
-      category: row.category,
-      currentHorseNumbers: row.currentHorseNumbers,
-      horseCount: toCount(row.horseCount),
-      name: row.name,
-      quinellaCount: toCount(row.quinellaCount),
-      quinellaRate: toRate(row.quinellaRate),
-      showCount: toCount(row.showCount),
-      showRate: toRate(row.showRate),
-      starts: toCount(row.starts),
-      winCount: toCount(row.winCount),
-      winRate: toRate(row.winRate),
-    }));
+      return result.rows.map((row) => ({
+        category: row.category,
+        currentHorseNumbers: row.currentHorseNumbers,
+        horseCount: toCount(row.horseCount),
+        name: row.name,
+        quinellaCount: toCount(row.quinellaCount),
+        quinellaRate: toRate(row.quinellaRate),
+        showCount: toCount(row.showCount),
+        showRate: toRate(row.showRate),
+        starts: toCount(row.starts),
+        winCount: toCount(row.winCount),
+        winRate: toRate(row.winRate),
+      }));
+    });
   },
 );
