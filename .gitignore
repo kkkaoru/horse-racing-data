@@ -147,3 +147,4 @@ wrangler.deploy.toml
 
 # DuckDB WASM binary (copied from node_modules at build time)
 *.wasm
+*.xlsx
