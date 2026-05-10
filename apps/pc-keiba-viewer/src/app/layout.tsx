@@ -1,16 +1,8 @@
 import type { Metadata } from "next";
-import { M_PLUS_2 } from "next/font/google";
 import Link from "next/link";
 import type { ReactNode } from "react";
 
 import "./globals.css";
-
-const mPlus2 = M_PLUS_2({
-  display: "swap",
-  subsets: ["latin"],
-  variable: "--font-m-plus-2",
-  weight: ["400", "600", "800"],
-});
 
 export const metadata: Metadata = {
   title: "PC-KEIBA Viewer",
@@ -23,7 +15,7 @@ interface RootLayoutProps {
 
 export default function RootLayout({ children }: RootLayoutProps) {
   return (
-    <html className={mPlus2.variable} lang="ja">
+    <html lang="ja">
       <body>
         <header className="app-header">
           <Link className="brand" href="/">
