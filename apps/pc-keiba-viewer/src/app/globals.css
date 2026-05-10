@@ -25,7 +25,6 @@ body {
   background: linear-gradient(180deg, rgba(15, 107, 79, 0.08), transparent 220px), var(--bg);
   color: var(--ink);
   font-family:
-    var(--font-m-plus-2),
     system-ui,
     -apple-system,
     BlinkMacSystemFont,
