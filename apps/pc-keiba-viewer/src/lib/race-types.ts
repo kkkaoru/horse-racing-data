@@ -266,6 +266,85 @@ export interface SimilarRaceStatsSettings {
   years: number | null;
 }
 
+export interface EntityListQuery {
+  dateFrom: string;
+  dateTo: string;
+  distanceMax: string;
+  distanceMin: string;
+  keibajoCode: string;
+  order: string;
+  q: string;
+  rank: string;
+  source: RaceSource | "all";
+  surface: string;
+}
+
+export interface HorseListRow extends Record<string, unknown> {
+  kettoTorokuBango: string;
+  bamei: string;
+  starts: number;
+  winCount: number;
+  showCount: number;
+  winRate: number;
+  showRate: number;
+  latestDate: string;
+  latestRaceName: string;
+  latestSource: RaceSource;
+  primarySource: RaceSource;
+}
+
+export interface PersonListRow extends Record<string, unknown> {
+  name: string;
+  starts: number;
+  winCount: number;
+  showCount: number;
+  winRate: number;
+  showRate: number;
+  latestDate: string;
+  latestRaceName: string;
+  latestSource: RaceSource;
+  primarySource: RaceSource;
+}
+
+export interface EntityRaceResult extends Record<string, unknown> {
+  source: RaceSource;
+  kaisaiNen: string;
+  kaisaiTsukihi: string;
+  keibajoCode: string;
+  raceBango: string;
+  raceName: string;
+  kyori: string | null;
+  trackCode: string | null;
+  horseName: string;
+  jockeyName: string;
+  trainerName: string;
+  horseNumber: string | null;
+  frameNumber: string | null;
+  rank: string | null;
+  popularity: string | null;
+  winOdds: string | null;
+  raceTime: string | null;
+  last3f: string | null;
+  isUpcoming: boolean;
+}
+
+export interface EntityDetailSummary extends Record<string, unknown> {
+  name: string;
+  starts: number;
+  winCount: number;
+  quinellaCount: number;
+  showCount: number;
+  winRate: number;
+  quinellaRate: number;
+  showRate: number;
+  averagePopularity: number | null;
+  averageOdds: number | null;
+}
+
+export interface TopRaceSummary extends RaceListItem {
+  raceStartAt: string;
+}
+
 export interface RaceTimeStats extends Record<string, unknown> {
   raceCount: number;
   fastestRaceTime: number | null;

@@ -179,10 +179,10 @@ const useSectionPayload = (
   );
 
   useEffect(() => {
-    const controller = new AbortController();
+    let isActive = true;
     setState({ error: null, payload: null, status: "loading" });
 
-    fetch(url, { signal: controller.signal })
+    fetch(url)
       .then(async (response) => {
         if (!response.ok) {
           throw new Error(`${response.status} ${response.statusText}`.trim());
@@ -194,11 +194,14 @@ const useSectionPayload = (
         return payload;
       })
       .then((payload) => {
+        if (!isActive) {
+          return undefined;
+        }
         setState({ error: null, payload, status: "ready" });
         return undefined;
       })
       .catch((error: unknown) => {
-        if (controller.signal.aborted) {
+        if (!isActive) {
           return;
         }
         setState({
@@ -209,7 +212,7 @@ const useSectionPayload = (
       });
 
     return () => {
-      controller.abort();
+      isActive = false;
     };
   }, [section, url]);
 

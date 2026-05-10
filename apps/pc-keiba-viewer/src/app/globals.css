@@ -84,6 +84,13 @@ main {
   width: 34px;
 }
 
+.app-header nav {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
 .app-header nav a {
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -207,6 +214,223 @@ main {
 
 .page-title-row {
   margin-bottom: 28px;
+}
+
+.page-count {
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  padding: 8px 10px;
+}
+
+.home-shell {
+  display: grid;
+  gap: 20px;
+}
+
+.home-heading h1 {
+  font-size: clamp(30px, 5vw, 48px);
+  line-height: 1.1;
+  margin: 0;
+}
+
+.home-link-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.home-link-grid a {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--accent-strong);
+  font-weight: 800;
+  padding: 14px;
+}
+
+.home-live-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.home-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+}
+
+.home-panel-wide {
+  grid-column: 1 / -1;
+}
+
+.home-race-list {
+  display: grid;
+  gap: 8px;
+}
+
+.home-race-list a {
+  align-items: center;
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 10px;
+}
+
+.home-race-list strong {
+  font-size: 14px;
+}
+
+.home-race-list span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-align: right;
+}
+
+.entity-filter-panel {
+  align-items: end;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(220px, 2fr) repeat(2, minmax(140px, 1fr)) auto;
+  margin-bottom: 16px;
+  padding: 14px;
+}
+
+.entity-detail-filter-panel {
+  grid-template-columns: minmax(220px, 2fr) repeat(4, minmax(120px, 1fr)) auto;
+}
+
+.entity-filter-panel label {
+  display: grid;
+  gap: 6px;
+}
+
+.entity-filter-panel span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.entity-filter-panel input,
+.entity-filter-panel select {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink);
+  font: inherit;
+  min-height: 40px;
+  padding: 8px 10px;
+}
+
+.entity-filter-panel button {
+  background: var(--accent);
+  border: 1px solid var(--accent-strong);
+  border-radius: 6px;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 800;
+  min-height: 40px;
+  padding: 8px 14px;
+}
+
+.entity-table-wrap {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.entity-table {
+  border-collapse: collapse;
+  min-width: 920px;
+  width: 100%;
+}
+
+.entity-results-table {
+  min-width: 1180px;
+}
+
+.entity-table th,
+.entity-table td {
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  padding: 10px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.entity-table th {
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.entity-name-cell {
+  font-weight: 800;
+}
+
+.entity-name-cell a {
+  color: var(--accent-strong);
+}
+
+.entity-result-row-win td {
+  background: linear-gradient(90deg, #fff1a8 0%, #ffe08a 42%, #fff7d6 100%);
+  color: #4f3000;
+  font-weight: 800;
+}
+
+.entity-result-row-place td {
+  background: #eef5ff;
+}
+
+.entity-result-row-show td {
+  background: #f4edff;
+}
+
+.entity-result-row-upcoming td {
+  background: #e9f8ef;
+}
+
+.entity-summary-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  margin-bottom: 16px;
+}
+
+.entity-summary-grid div {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+}
+
+.entity-summary-grid span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.entity-summary-grid strong {
+  font-size: 22px;
 }
 
 .eyebrow {
