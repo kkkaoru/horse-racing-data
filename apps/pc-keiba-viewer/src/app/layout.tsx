@@ -24,12 +24,17 @@ export default function RootLayout({ children }: RootLayoutProps) {
               <strong>PC-KEIBA Viewer</strong>
             </span>
           </Link>
-          <nav>
-            <Link href="/races">開催日一覧</Link>
-            <Link href="/horses">馬</Link>
-            <Link href="/jockeys">騎手</Link>
-            <Link href="/trainers">調教師</Link>
-          </nav>
+          <details className="header-menu">
+            <summary aria-label="メニューを開閉">
+              <span aria-hidden="true" />
+            </summary>
+            <nav aria-label="page navigation">
+              <Link href="/races">開催日一覧</Link>
+              <Link href="/horses">馬一覧</Link>
+              <Link href="/jockeys">騎手一覧</Link>
+              <Link href="/trainers">調教師一覧</Link>
+            </nav>
+          </details>
         </header>
         <main>{children}</main>
       </body>
