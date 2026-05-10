@@ -919,58 +919,17 @@ h3 {
 }
 
 .odds-trend-chart {
-  display: grid;
-  gap: 10px;
-  min-height: 260px;
-}
-
-.odds-trend-chart svg {
   background: #fbfdfb;
   border: 1px solid var(--line);
   border-radius: 8px;
-  display: block;
-  height: 220px;
-  width: 100%;
+  min-height: 360px;
+  overflow: hidden;
+  padding: 12px;
 }
 
-.odds-trend-chart line {
-  stroke: #cfd8d2;
-  stroke-width: 1.4;
-}
-
-.odds-trend-chart path {
-  fill: none;
-  stroke: hsl(calc(28 + (var(--trend-index) * 41)) 72% 38%);
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 2.2;
-}
-
-.odds-trend-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.odds-trend-legend span {
-  align-items: center;
-  background: var(--surface-muted);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  color: var(--ink);
-  display: inline-flex;
-  font-size: 12px;
-  font-weight: 800;
-  gap: 6px;
-  padding: 6px 9px;
-}
-
-.odds-trend-legend span::before {
-  background: hsl(calc(28 + (var(--trend-index) * 41)) 72% 38%);
-  border-radius: 999px;
-  content: "";
-  height: 8px;
-  width: 8px;
+.odds-trend-chart .recharts-cartesian-axis-tick-value,
+.odds-trend-chart .recharts-legend-item-text {
+  font-family: inherit;
 }
 
 .race-results-table-wrap {

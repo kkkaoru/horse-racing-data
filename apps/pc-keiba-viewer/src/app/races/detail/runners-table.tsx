@@ -1,5 +1,6 @@
 "use client";
 
+import type { RealtimeRacePayload } from "horse-racing-realtime/types";
 import { useMemo, useState } from "react";
 
 import { cleanText } from "../../../lib/format";
@@ -10,11 +11,15 @@ import {
   formatRunnerValue,
   formatSexAge,
 } from "../../../lib/runner-format";
+import type { RealtimeRaceRequest } from "./realtime-client";
+import { useRealtimeRacePayload } from "./realtime-client";
 
 type SortKey = "umaban" | "tanshoOdds" | "kakuteiChakujun";
 type SortDirection = "asc" | "desc";
 
 interface RunnersTableProps {
+  initialRealtimePayload?: RealtimeRacePayload | null;
+  realtimeRequest?: RealtimeRaceRequest;
   runners: Runner[];
 }
 
@@ -55,8 +60,17 @@ const compareNullableNumber = (
   return direction === "asc" ? left - right : right - left;
 };
 
-const getSortValue = (runner: Runner, key: SortKey): number | null => {
+const getSortValue = (
+  runner: Runner,
+  key: SortKey,
+  realtimeOddsByHorse: Map<string, number>,
+): number | null => {
   if (key === "tanshoOdds") {
+    const horseNumber = formatRunnerNumber(runner.umaban);
+    const realtimeOdds = realtimeOddsByHorse.get(horseNumber);
+    if (realtimeOdds !== undefined) {
+      return realtimeOdds;
+    }
     return parseSortValue(runner.tanshoOdds, "0000");
   }
   if (key === "kakuteiChakujun") {
@@ -65,8 +79,50 @@ const getSortValue = (runner: Runner, key: SortKey): number | null => {
   return parseSortValue(runner.umaban);
 };
 
-export function RunnersTable({ runners }: RunnersTableProps) {
+const formatRealtimeOdds = (value: number | undefined): string =>
+  value === undefined ? "-" : value.toFixed(1);
+
+export function RunnersTable({
+  initialRealtimePayload = null,
+  realtimeRequest,
+  runners,
+}: RunnersTableProps) {
   const [sort, setSort] = useState<SortState>({ direction: "asc", key: "umaban" });
+  const { payload } = useRealtimeRacePayload(
+    realtimeRequest ?? {
+      apiBaseUrl: "",
+      day: "",
+      keibajoCode: "",
+      month: "",
+      raceNumber: "",
+      source: "",
+      year: "",
+    },
+    initialRealtimePayload,
+  );
+  const realtimeOddsByHorse = useMemo(
+    () =>
+      new Map(
+        (payload?.odds?.latest.tansho ?? [])
+          .filter((row) => row.odds !== undefined)
+          .map((row) => [row.combination, Number(row.odds)] as const),
+      ),
+    [payload],
+  );
+  const realtimeWeightByHorse = useMemo(
+    () =>
+      new Map(
+        (payload?.horseWeights?.horses ?? []).map((horse) => [
+          horse.horseNumber,
+          formatHorseWeight(
+            horse.weight === null ? null : String(horse.weight),
+            horse.changeSign,
+            horse.changeAmount === null ? null : String(horse.changeAmount),
+          ),
+        ]),
+      ),
+    [payload],
+  );
 
   const sortedRunners = useMemo(
     () =>
@@ -74,14 +130,14 @@ export function RunnersTable({ runners }: RunnersTableProps) {
         .map((runner, index) => ({ index, runner }))
         .toSorted((left, right) => {
           const compared = compareNullableNumber(
-            getSortValue(left.runner, sort.key),
-            getSortValue(right.runner, sort.key),
+            getSortValue(left.runner, sort.key, realtimeOddsByHorse),
+            getSortValue(right.runner, sort.key, realtimeOddsByHorse),
             sort.direction,
           );
           return compared === 0 ? left.index - right.index : compared;
         })
         .map(({ runner }) => runner),
-    [runners, sort],
+    [realtimeOddsByHorse, runners, sort],
   );
 
   const changeSort = (key: SortKey) => {
@@ -108,6 +164,36 @@ export function RunnersTable({ runners }: RunnersTableProps) {
         <span>{SORT_LABELS[key]}</span>
         <small>{isCurrent ? directionLabel : "並替"}</small>
       </button>
+    );
+  };
+
+  const renderRunnerRow = (runner: Runner) => {
+    const horseNumber = formatRunnerNumber(runner.umaban);
+    const realtimeOdds = realtimeOddsByHorse.get(horseNumber);
+    const realtimeWeight = realtimeWeightByHorse.get(horseNumber);
+
+    return (
+      <tr key={`${runner.umaban}-${runner.kettoTorokuBango}`}>
+        <td>{horseNumber}</td>
+        <td>{cleanText(runner.wakuban)}</td>
+        <td className="runner-horse-cell">
+          <strong>{cleanText(runner.bamei)}</strong>
+        </td>
+        <td>{formatSexAge(runner.seibetsuCode, runner.barei)}</td>
+        <td>{cleanText(runner.futanJuryo)}</td>
+        <td>{cleanText(runner.kishumeiRyakusho)}</td>
+        <td>{cleanText(runner.chokyoshimeiRyakusho)}</td>
+        <td>{cleanText(runner.banushimei)}</td>
+        <td>
+          {realtimeWeight ?? formatHorseWeight(runner.bataiju, runner.zogenFugo, runner.zogenSa)}
+        </td>
+        <td>
+          {realtimeOdds === undefined
+            ? formatRunnerValue(runner.tanshoOdds, "0000")
+            : formatRealtimeOdds(realtimeOdds)}
+        </td>
+        <td>{formatRunnerValue(runner.kakuteiChakujun, "00")}</td>
+      </tr>
     );
   };
 
@@ -142,25 +228,7 @@ export function RunnersTable({ runners }: RunnersTableProps) {
             <th>{renderSortButton("kakuteiChakujun")}</th>
           </tr>
         </thead>
-        <tbody>
-          {sortedRunners.map((runner) => (
-            <tr key={`${runner.umaban}-${runner.kettoTorokuBango}`}>
-              <td>{formatRunnerNumber(runner.umaban)}</td>
-              <td>{cleanText(runner.wakuban)}</td>
-              <td className="runner-horse-cell">
-                <strong>{cleanText(runner.bamei)}</strong>
-              </td>
-              <td>{formatSexAge(runner.seibetsuCode, runner.barei)}</td>
-              <td>{cleanText(runner.futanJuryo)}</td>
-              <td>{cleanText(runner.kishumeiRyakusho)}</td>
-              <td>{cleanText(runner.chokyoshimeiRyakusho)}</td>
-              <td>{cleanText(runner.banushimei)}</td>
-              <td>{formatHorseWeight(runner.bataiju, runner.zogenFugo, runner.zogenSa)}</td>
-              <td>{formatRunnerValue(runner.tanshoOdds, "0000")}</td>
-              <td>{formatRunnerValue(runner.kakuteiChakujun, "00")}</td>
-            </tr>
-          ))}
-        </tbody>
+        <tbody>{sortedRunners.map(renderRunnerRow)}</tbody>
       </table>
     </div>
   );

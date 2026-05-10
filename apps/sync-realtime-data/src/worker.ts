@@ -211,6 +211,10 @@ const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<void> =>
   const fetchedAt = toJstIsoString();
   const html = await fetchRacePage(race.debaUrl);
   const weights = parseHorseWeights(html);
+  if (weights.length > 0 && weights.length < 2) {
+    await insertHorseWeightSnapshot(env.REALTIME_DB, raceKey, fetchedAt, []);
+    throw new Error(`horse weight rows are unexpectedly sparse: ${weights.length}`);
+  }
   await insertHorseWeightSnapshot(env.REALTIME_DB, raceKey, fetchedAt, weights);
   await updateLastFetch(env.REALTIME_DB, raceKey, "last_weight_fetch_at", fetchedAt);
 };

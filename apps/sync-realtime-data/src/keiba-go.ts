@@ -446,27 +446,32 @@ export const fetchOdds = async (
 };
 
 export const parseHorseWeights = (html: string) => {
-  const rows = Array.from(html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi));
-  return rows
-    .map((row) => {
-      const cells = Array.from((row[1] ?? "").matchAll(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi)).map(
-        (cell) => stripHtmlTags(cell[1] ?? "").replace(/\s+/g, " "),
+  const horseBlocks = html.split(/<tr[^>]*class=["'][^"']*tBorder[^"']*["'][^>]*>/giu).slice(1);
+  return horseBlocks
+    .map((block) => {
+      const horseNumber = block.match(
+        /class=["'][^"']*horseNum[^"']*["'][^>]*>\s*(\d{1,2})\s*</iu,
+      )?.[1];
+      const horseName = block.match(
+        /class=["'][^"']*horseName[^"']*["'][^>]*>([\s\S]*?)<\/a>/iu,
+      )?.[1];
+      const oddsWeightHtml =
+        block.match(/<td[^>]*class=["'][^"']*odds_weight[^"']*["'][^>]*>([\s\S]*?)<\/td>/iu)?.[1] ??
+        "";
+      const oddsWeightText = stripHtmlTags(oddsWeightHtml.replace(/<br\s*\/?>/giu, " ")).replace(
+        /\s+/g,
+        " ",
       );
-      const horseNumber = cells.find((cell) => /^\d{1,2}$/u.test(cell));
-      const weightCell = cells.find((cell) => /^[3-9]\d{2}(?:\s*\([+-]?\d+\))?$/u.test(cell));
-      if (!horseNumber || !weightCell || !isValidHorseNum(horseNumber)) {
+      const match = oddsWeightText.match(
+        /(?:^|[^0-9])([3-6]\d{2})(?:\s*\(([+-]?)(\d+)\))?(?:[^0-9]|$)/u,
+      );
+      if (!horseNumber || !isValidHorseNum(horseNumber) || !match?.[1]) {
         return null;
       }
-      const match = weightCell.match(/^(\d{3})(?:\s*\(([+-]?)(\d+)\))?$/u);
-      if (!match?.[1]) {
-        return null;
-      }
-      const horseName =
-        cells.find((cell) => cell.length > 0 && !/^\d+$/.test(cell) && cell !== weightCell) ?? null;
       return {
         changeAmount: match[3] ? Number(match[3]) : null,
         changeSign: match[2] || null,
-        horseName,
+        horseName: horseName ? stripHtmlTags(horseName) : null,
         horseNumber,
         weight: Number(match[1]),
       };

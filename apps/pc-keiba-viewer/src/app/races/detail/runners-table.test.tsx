@@ -71,4 +71,49 @@ describe("runners table", () => {
     expect(rowTexts()[0]).toContain("一番");
     expect(rowTexts()[2]).toContain("二番");
   });
+
+  it("uses realtime odds and horse weights when available", () => {
+    render(
+      <RunnersTable
+        initialRealtimePayload={{
+          horseWeights: {
+            fetchedAt: "2026-05-10T18:40:00+09:00",
+            horses: [
+              {
+                changeAmount: 8,
+                changeSign: "+",
+                horseName: "一番",
+                horseNumber: "1",
+                weight: 512,
+              },
+            ],
+          },
+          odds: {
+            fetchedAt: "2026-05-10T18:40:00+09:00",
+            history: [],
+            horseTrends: [],
+            latest: {
+              tansho: [
+                { combination: "1", odds: 9.8, rank: 2 },
+                { combination: "2", odds: 1.4, rank: 1 },
+              ],
+            },
+          },
+          raceKey: "nar:2026:0510:83:09",
+          source: null,
+        }}
+        runners={[
+          runner({ bamei: "一番", tanshoOdds: "9999", umaban: "01" }),
+          runner({ bamei: "二番", tanshoOdds: "9999", umaban: "02" }),
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("512kg (+8)")).toBeTruthy();
+    expect(screen.getByText("9.8")).toBeTruthy();
+    expect(screen.getByText("1.4")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "単勝を昇順で並び替え" }));
+    expect(rowTexts()[0]).toContain("二番");
+  });
 });

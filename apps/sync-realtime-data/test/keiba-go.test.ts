@@ -31,8 +31,17 @@ describe("keiba.go realtime helpers", () => {
   it("parses horse weights from table rows", () => {
     const html = `
       <table>
-        <tr><td>1</td><td>テストホース</td><td>482(+4)</td></tr>
-        <tr><td>12</td><td>別馬</td><td>510(-2)</td></tr>
+        <tr class="tBorder">
+          <td rowspan="5" class="horseNum">1</td>
+          <td colspan="3"><a class="horseName">テストホース</a></td>
+          <td class="odds_weight" rowspan="2">1.8<br>482(+4)</td>
+          <td>26.05.02　2.6　8頭<br>帯広　直200　8番</td>
+        </tr>
+        <tr class="tBorder">
+          <td rowspan="5" class="horseNum">12</td>
+          <td colspan="3"><a class="horseName">別馬</a></td>
+          <td class="odds_weight" rowspan="2">7.2<br>510(-2)</td>
+        </tr>
       </table>
     `;
     expect(parseHorseWeights(html)).toEqual([
@@ -51,5 +60,17 @@ describe("keiba.go realtime helpers", () => {
         weight: 510,
       },
     ]);
+  });
+
+  it("does not parse past-race distances as horse weights", () => {
+    const html = `
+      <tr class="tBorder">
+        <td rowspan="5" class="horseNum">6</td>
+        <td colspan="3"><a class="horseName">ダイリンファイター</a></td>
+        <td class="odds_weight" rowspan="2"><span>22.3</span><br>(8人気)</td>
+        <td>26.05.02　2.6　8頭<br>帯広　直200　8番</td>
+      </tr>
+    `;
+    expect(parseHorseWeights(html)).toEqual([]);
   });
 });
