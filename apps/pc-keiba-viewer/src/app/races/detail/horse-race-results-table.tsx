@@ -596,7 +596,14 @@ export function HorseRaceResultsTable({
                     </td>
                     <td>{formatSexAge(result.seibetsuCode, result.barei)}</td>
                     <td>{cleanText(result.futanJuryo)}</td>
-                    <td>{formatHorseWeight(result.bataiju, result.zogenFugo, result.zogenSa)}</td>
+                    <td>
+                      {formatHorseWeight(
+                        result.bataiju,
+                        result.zogenFugo,
+                        result.zogenSa,
+                        result.keibajoCode === "83",
+                      )}
+                    </td>
                     <td>{formatOdds(result.tanshoOdds)}</td>
                     <td>{formatRunnerValue(result.tanshoNinkijun, "00")}</td>
                     <td>{formatTimeDifference(result.timeSa)}</td>

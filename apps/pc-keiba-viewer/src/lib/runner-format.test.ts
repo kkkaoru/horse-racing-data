@@ -11,6 +11,9 @@ describe("runner format helpers", () => {
   it("formats horse weight with and without diff", () => {
     expect(formatHorseWeight("480", "+", "12")).toBe("480kg (+12)");
     expect(formatHorseWeight("480", "", "")).toBe("480kg");
+    expect(formatHorseWeight("4AE", "+", "008", true)).toBe("1198kg (+8)");
+    expect(formatHorseWeight("406", "+", "00B", true)).toBe("1030kg (+11)");
+    expect(formatHorseWeight("FFF", "+", "FFF", true)).toBe("-");
     expect(formatHorseWeight(" ", "+", "12")).toBe("-");
   });
 

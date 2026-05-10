@@ -116,4 +116,15 @@ describe("runners table", () => {
     fireEvent.click(screen.getByRole("button", { name: "単勝を昇順で並び替え" }));
     expect(rowTexts()[0]).toContain("二番");
   });
+
+  it("decodes ban-ei hexadecimal horse weights", () => {
+    render(
+      <RunnersTable
+        decodeHexHorseWeight
+        runners={[runner({ bataiju: "4AE", bamei: "ばんえい馬", umaban: "01", zogenSa: "008" })]}
+      />,
+    );
+
+    expect(screen.getByText("1198kg (+8)")).toBeTruthy();
+  });
 });
