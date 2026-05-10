@@ -46,10 +46,12 @@ import {
   getWeightLabel,
 } from "../../../../../../../../../lib/race-classification";
 import type {
+  BloodlineStatsRow,
   FinishPositionStatsRow,
   FrameStatsRow,
   PayoutStatsRow,
   RaceTimeStats,
+  SimilarRaceStatsRow,
   SimilarRaceStatsSettings,
 } from "../../../../../../../../../lib/race-types";
 import { BloodlineStatsTable } from "../../../../../../bloodline-stats-table";
@@ -274,7 +276,6 @@ const CONDITION_ANALYSIS_OVERRIDE_PARAMS = [
 ];
 
 const CONDITION_ANALYSIS_RELAX_KEYS = [
-  "includeMonthWindow",
   "includeRaceTitle",
   "includeRaceSubtitle",
   "includeAge",
@@ -287,6 +288,7 @@ const CONDITION_ANALYSIS_RELAX_KEYS = [
   "includeRunnerCount",
   "includeFrame",
   "includeRaceNumber",
+  "includeMonthWindow",
 ] as const;
 
 type ConditionAnalysisStats = [
@@ -302,6 +304,16 @@ const hasConditionAnalysisRows = (stats: ConditionAnalysisStats): boolean => {
     timeStats.raceCount > 0 ||
     payoutRows.some((row) => row.count > 0) ||
     finishRows.some((row) => row.count > 0) ||
+    frameRows.some((row) => row.count > 0)
+  );
+};
+
+const hasCompleteConditionAnalysisRows = (stats: ConditionAnalysisStats): boolean => {
+  const [timeStats, payoutRows, finishRows, frameRows] = stats;
+  return (
+    timeStats.raceCount > 0 &&
+    payoutRows.some((row) => row.count > 0) &&
+    finishRows.some((row) => row.count > 0) &&
     frameRows.some((row) => row.count > 0)
   );
 };
@@ -322,6 +334,9 @@ const getConditionAnalysisSettingCandidates = <T extends SimilarRaceStatsSetting
 
   return candidates;
 };
+
+const hasRateRows = (rows: readonly (BloodlineStatsRow | SimilarRaceStatsRow)[]): boolean =>
+  rows.some((row) => row.starts > 0);
 
 export default async function RaceDetailPage({ params, searchParams }: RaceDetailPageProps) {
   const { source, year, month, day, keibajoCode, raceNumber } = await params;
@@ -367,7 +382,7 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
     includeSex: getDefaultFlag(query.statsSex, defaultSimilarStatsIncludeSex),
     includeSurface: banEiRace ? false : getFlag(query.statsSurface ?? query.statsTrack),
     includeTurn: banEiRace ? false : getFlag(query.statsTurn ?? query.statsTrack),
-    includeVenue: banEiRace ? false : getFlag(query.statsVenue),
+    includeVenue: banEiRace ? false : getDefaultFlag(query.statsVenue, true),
     includeWeight: getFlag(query.statsWeight),
     runnerCount: null,
     years: getStatsYears(query.statsYears, defaultStatsYears),
@@ -438,23 +453,63 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
   let conditionAnalysisStats = await getConditionAnalysisStats(conditionAnalysisSettings);
   if (
     !hasSearchParam(query, CONDITION_ANALYSIS_OVERRIDE_PARAMS) &&
-    !hasConditionAnalysisRows(conditionAnalysisStats)
+    !hasCompleteConditionAnalysisRows(conditionAnalysisStats)
   ) {
     const candidates = getConditionAnalysisSettingCandidates(conditionAnalysisSettings).slice(1);
     const candidateStats = await Promise.all(candidates.map(getConditionAnalysisStats));
-    const matchedIndex = candidateStats.findIndex(hasConditionAnalysisRows);
+    const matchedIndex = candidateStats.findIndex(hasCompleteConditionAnalysisRows);
+    const fallbackMatchedIndex =
+      matchedIndex >= 0 ? matchedIndex : candidateStats.findIndex(hasConditionAnalysisRows);
     const matchedSettings = candidates[matchedIndex];
-    const matchedStats = candidateStats[matchedIndex];
+    const fallbackMatchedSettings = candidates[fallbackMatchedIndex];
+    const matchedStats = candidateStats[matchedIndex] ?? candidateStats[fallbackMatchedIndex];
     if (matchedSettings && matchedStats) {
       conditionAnalysisSettings = matchedSettings;
+      conditionAnalysisStats = matchedStats;
+    } else if (fallbackMatchedSettings && matchedStats) {
+      conditionAnalysisSettings = fallbackMatchedSettings;
       conditionAnalysisStats = matchedStats;
     }
   }
   const [raceTimeStats, payoutStats, finishPositionStats, frameStats] = conditionAnalysisStats;
-  const [bloodlineStats, similarStats] = await Promise.all([
-    getBloodlineStats(race, bloodlineStatsSettings),
-    getSimilarRaceStats(race, statsSettings),
+  let resolvedBloodlineStatsSettings = bloodlineStatsSettings;
+  let resolvedStatsSettings = statsSettings;
+  const [initialBloodlineStats, initialSimilarStats] = await Promise.all([
+    getBloodlineStats(race, resolvedBloodlineStatsSettings),
+    getSimilarRaceStats(race, resolvedStatsSettings),
   ]);
+  let bloodlineStats = initialBloodlineStats;
+  let similarStats = initialSimilarStats;
+
+  if (!hasSearchParam(query, CONDITION_ANALYSIS_OVERRIDE_PARAMS) && !hasRateRows(bloodlineStats)) {
+    const candidates = getConditionAnalysisSettingCandidates(resolvedBloodlineStatsSettings).slice(
+      1,
+    );
+    const candidateStats = await Promise.all(
+      candidates.map((candidate) => getBloodlineStats(race, candidate)),
+    );
+    const matchedIndex = candidateStats.findIndex(hasRateRows);
+    const matchedSettings = candidates[matchedIndex];
+    const matchedStats = candidateStats[matchedIndex];
+    if (matchedSettings && matchedStats) {
+      resolvedBloodlineStatsSettings = matchedSettings;
+      bloodlineStats = matchedStats;
+    }
+  }
+
+  if (!hasSearchParam(query, CONDITION_ANALYSIS_OVERRIDE_PARAMS) && !hasRateRows(similarStats)) {
+    const candidates = getConditionAnalysisSettingCandidates(resolvedStatsSettings).slice(1);
+    const candidateStats = await Promise.all(
+      candidates.map((candidate) => getSimilarRaceStats(race, candidate)),
+    );
+    const matchedIndex = candidateStats.findIndex(hasRateRows);
+    const matchedSettings = candidates[matchedIndex];
+    const matchedStats = candidateStats[matchedIndex];
+    if (matchedSettings && matchedStats) {
+      resolvedStatsSettings = matchedSettings;
+      similarStats = matchedStats;
+    }
+  }
   const courseText = cleanText(courseInfo?.courseSetsumei, "");
   const courseFacts = getCourseFacts(courseText, race.kyori, race.trackCode);
   const courseParagraphs = courseText
@@ -747,28 +802,32 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
         <div className="section-heading compact">
           <h2>血統成績</h2>
           <span>
-            {bloodlineStatsSettings.years === null
+            {resolvedBloodlineStatsSettings.years === null
               ? "全期間"
-              : `過去${bloodlineStatsSettings.years}年`}
+              : `過去${resolvedBloodlineStatsSettings.years}年`}
           </span>
         </div>
         <BloodlineStatsTable
           conditionLabels={statsConditionLabels}
           rows={bloodlineStats}
           runners={runners}
-          settings={bloodlineStatsSettings}
+          settings={resolvedBloodlineStatsSettings}
         />
       </section>
 
       <section className="similar-stats-section">
         <div className="section-heading compact">
           <h2>同条件成績</h2>
-          <span>{statsSettings.years === null ? "全期間" : `過去${statsSettings.years}年`}</span>
+          <span>
+            {resolvedStatsSettings.years === null
+              ? "全期間"
+              : `過去${resolvedStatsSettings.years}年`}
+          </span>
         </div>
         <SimilarRaceStatsTable
           conditionLabels={statsConditionLabels}
           rows={similarStats}
-          settings={statsSettings}
+          settings={resolvedStatsSettings}
         />
       </section>
     </section>
