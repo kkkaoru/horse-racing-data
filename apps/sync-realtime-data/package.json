@@ -1,0 +1,29 @@
+{
+  "name": "sync-realtime-data",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "d1:migrate": "wrangler d1 migrations apply sync-realtime-data --remote",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
+    "lint": "oxlint . --tsconfig ./tsconfig.json --type-aware --import-plugin --node-plugin --promise-plugin --deny-warnings --max-warnings=0",
+    "test": "vitest run",
+    "tsc": "tsc --noEmit"
+  },
+  "dependencies": {
+    "horse-racing-realtime": "workspace:*",
+    "pg": "8.16.3",
+    "pg-cloudflare": "1.3.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.9.10",
+    "@types/pg": "8.15.6",
+    "oxfmt": "0.48.0",
+    "oxlint": "1.63.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.5",
+    "wrangler": "4.90.0"
+  }
+}

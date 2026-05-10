@@ -54,6 +54,7 @@ import type {
 import { BloodlineStatsTable } from "../../../../../../bloodline-stats-table";
 import { HorseRaceResultsTable } from "../../../../../../horse-race-results-table";
 import { RaceConditionAnalysisSection } from "../../../../../../race-condition-analysis-section";
+import { RealtimeRaceSection } from "../../../../../../realtime-race-section";
 import { RunnersTable } from "../../../../../../runners-table";
 import { SimilarRaceStatsTable } from "../../../../../../similar-race-stats-table";
 import { TrainingTable } from "../../../../../../training-table";
@@ -425,6 +426,8 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
     ? formatCourseParagraphs(courseText)
     : ["このコースの説明データは見つかりませんでした。"];
   const courseImagePath = getCourseImagePath(keibajoCode, race.trackCode, race.kyori);
+  const realtimeApiBaseUrl =
+    process.env.NEXT_PUBLIC_REALTIME_DATA_API_BASE_URL ?? "https://sync-realtime-data.kkk4oru.com";
 
   return (
     <section className="page-shell">
@@ -630,6 +633,17 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
           <RunnersTable runners={runners} />
         )}
       </section>
+
+      <RealtimeRaceSection
+        apiBaseUrl={realtimeApiBaseUrl}
+        day={day}
+        keibajoCode={keibajoCode}
+        month={month}
+        raceNumber={raceNumber}
+        runners={runners}
+        source={raceSource}
+        year={year}
+      />
 
       <section className="race-results-section">
         <div className="section-heading compact">

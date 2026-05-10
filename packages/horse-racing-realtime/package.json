@@ -1,0 +1,17 @@
+{
+  "name": "horse-racing-realtime",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./nar": "./src/nar.ts",
+    "./types": "./src/types.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "tsc": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vitest": "4.1.5"
+  }
+}

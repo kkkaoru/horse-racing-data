@@ -1,0 +1,67 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sync-realtime-data",
+  "main": "src/index.ts",
+  "account_id": "78109ec18c7c85b194b19fb32e3bb149",
+  "compatibility_date": "2026-05-10",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "observability": {
+    "enabled": true,
+  },
+  "vars": {
+    "ODDS_DO_TTL_SECONDS": "7200",
+    "REALTIME_API_CACHE_SECONDS": "20",
+    "DATABASE_TARGET": "cloudflare",
+  },
+  "triggers": {
+    "crons": ["5 0 * * *", "*/3 1-12 * * *"],
+  },
+  "queues": {
+    "producers": [
+      {
+        "binding": "REALTIME_JOBS",
+        "queue": "sync-realtime-data-jobs",
+      },
+    ],
+    "consumers": [
+      {
+        "queue": "sync-realtime-data-jobs",
+        "max_batch_size": 8,
+        "max_batch_timeout": 10,
+      },
+    ],
+  },
+  "d1_databases": [
+    {
+      "binding": "REALTIME_DB",
+      "database_name": "sync-realtime-data",
+      "database_id": "d12ebd45-2aff-4d74-8556-295c1da9177e",
+    },
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ODDS_CACHE",
+        "class_name": "OddsCache",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["OddsCache"],
+    },
+  ],
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "9b214701ab3f4a3ab406de8cdd26e0ae",
+    },
+  ],
+  "routes": [
+    {
+      "pattern": "sync-realtime-data.kkk4oru.com",
+      "custom_domain": true,
+    },
+  ],
+}
