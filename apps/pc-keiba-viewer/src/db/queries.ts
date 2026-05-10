@@ -1313,55 +1313,153 @@ export const getTopRaceWindows = cache(
   async (): Promise<{ finished: TopRaceSummary[]; upcoming: TopRaceSummary[] }> =>
     withDbQueryCache(["getTopRaceWindows"], async () => {
       const result = await getDb().execute<TopRaceSummary & { bucket: number }>(sql`
-        with races as (
-          select *, 'jra'::text as source from ${jvdRa}
+        with bounds as (
+          select to_char(now() at time zone 'Asia/Tokyo', 'YYYYMMDDHH24MI') now_key
+        ),
+        candidates as (
+          (
+            select
+              'jra'::text source,
+              kaisai_nen "kaisaiNen",
+              kaisai_tsukihi "kaisaiTsukihi",
+              keibajo_code "keibajoCode",
+              race_bango "raceBango",
+              kyosomei_hondai "kyosomeiHondai",
+              kyosomei_fukudai "kyosomeiFukudai",
+              grade_code "gradeCode",
+              kyoso_shubetsu_code "kyosoShubetsuCode",
+              kyoso_kigo_code "kyosoKigoCode",
+              juryo_shubetsu_code "juryoShubetsuCode",
+              kyoso_joken_code "kyosoJokenCode",
+              kyoso_joken_meisho "kyosoJokenMeisho",
+              kyori,
+              track_code "trackCode",
+              hasso_jikoku "hassoJikoku",
+              shusso_tosu "shussoTosu",
+              kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') start_key,
+              0 bucket
+            from ${jvdRa}, bounds
+            where kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') >= bounds.now_key
+            order by kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') asc
+            limit 5
+          )
           union all
-          select *, 'nar'::text as source from ${nvdRa}
-        ),
-        normalized as (
-          select
-            source,
-            kaisai_nen as "kaisaiNen",
-            kaisai_tsukihi as "kaisaiTsukihi",
-            keibajo_code as "keibajoCode",
-            race_bango as "raceBango",
-            kyosomei_hondai as "kyosomeiHondai",
-            kyosomei_fukudai as "kyosomeiFukudai",
-            grade_code as "gradeCode",
-            kyoso_shubetsu_code as "kyosoShubetsuCode",
-            kyoso_kigo_code as "kyosoKigoCode",
-            juryo_shubetsu_code as "juryoShubetsuCode",
-            kyoso_joken_code as "kyosoJokenCode",
-            kyoso_joken_meisho as "kyosoJokenMeisho",
-            kyori,
-            track_code as "trackCode",
-            hasso_jikoku as "hassoJikoku",
-            shusso_tosu as "shussoTosu",
-            (kaisai_nen || '-' || substring(kaisai_tsukihi from 1 for 2) || '-' || substring(kaisai_tsukihi from 3 for 2) || 'T' || substring(coalesce(nullif(hasso_jikoku, ''), '0000') from 1 for 2) || ':' || substring(coalesce(nullif(hasso_jikoku, ''), '0000') from 3 for 2) || ':00+09:00') as "raceStartAt"
-          from races
-        ),
-        upcoming as (
-          select *, 0 as bucket
-          from normalized
-          where "raceStartAt"::timestamptz >= now()
-          order by "raceStartAt"::timestamptz asc
-          limit 5
-        ),
-        finished as (
-          select *, 1 as bucket
-          from normalized
-          where "raceStartAt"::timestamptz < now()
-          order by "raceStartAt"::timestamptz desc
-          limit 5
+          (
+            select
+              'nar'::text source,
+              kaisai_nen "kaisaiNen",
+              kaisai_tsukihi "kaisaiTsukihi",
+              keibajo_code "keibajoCode",
+              race_bango "raceBango",
+              kyosomei_hondai "kyosomeiHondai",
+              kyosomei_fukudai "kyosomeiFukudai",
+              grade_code "gradeCode",
+              kyoso_shubetsu_code "kyosoShubetsuCode",
+              kyoso_kigo_code "kyosoKigoCode",
+              juryo_shubetsu_code "juryoShubetsuCode",
+              kyoso_joken_code "kyosoJokenCode",
+              kyoso_joken_meisho "kyosoJokenMeisho",
+              kyori,
+              track_code "trackCode",
+              hasso_jikoku "hassoJikoku",
+              shusso_tosu "shussoTosu",
+              kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') start_key,
+              0 bucket
+            from ${nvdRa}, bounds
+            where kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') >= bounds.now_key
+            order by kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') asc
+            limit 5
+          )
+          union all
+          (
+            select
+              'jra'::text source,
+              kaisai_nen "kaisaiNen",
+              kaisai_tsukihi "kaisaiTsukihi",
+              keibajo_code "keibajoCode",
+              race_bango "raceBango",
+              kyosomei_hondai "kyosomeiHondai",
+              kyosomei_fukudai "kyosomeiFukudai",
+              grade_code "gradeCode",
+              kyoso_shubetsu_code "kyosoShubetsuCode",
+              kyoso_kigo_code "kyosoKigoCode",
+              juryo_shubetsu_code "juryoShubetsuCode",
+              kyoso_joken_code "kyosoJokenCode",
+              kyoso_joken_meisho "kyosoJokenMeisho",
+              kyori,
+              track_code "trackCode",
+              hasso_jikoku "hassoJikoku",
+              shusso_tosu "shussoTosu",
+              kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') start_key,
+              1 bucket
+            from ${jvdRa}, bounds
+            where kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') < bounds.now_key
+            order by kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') desc
+            limit 5
+          )
+          union all
+          (
+            select
+              'nar'::text source,
+              kaisai_nen "kaisaiNen",
+              kaisai_tsukihi "kaisaiTsukihi",
+              keibajo_code "keibajoCode",
+              race_bango "raceBango",
+              kyosomei_hondai "kyosomeiHondai",
+              kyosomei_fukudai "kyosomeiFukudai",
+              grade_code "gradeCode",
+              kyoso_shubetsu_code "kyosoShubetsuCode",
+              kyoso_kigo_code "kyosoKigoCode",
+              juryo_shubetsu_code "juryoShubetsuCode",
+              kyoso_joken_code "kyosoJokenCode",
+              kyoso_joken_meisho "kyosoJokenMeisho",
+              kyori,
+              track_code "trackCode",
+              hasso_jikoku "hassoJikoku",
+              shusso_tosu "shussoTosu",
+              kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') start_key,
+              1 bucket
+            from ${nvdRa}, bounds
+            where kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') < bounds.now_key
+            order by kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') desc
+            limit 5
+          )
         )
-        select * from upcoming
-        union all
-        select * from finished
-        order by bucket asc, "raceStartAt" asc
+        select
+          source,
+          "kaisaiNen",
+          "kaisaiTsukihi",
+          "keibajoCode",
+          "raceBango",
+          "kyosomeiHondai",
+          "kyosomeiFukudai",
+          "gradeCode",
+          "kyosoShubetsuCode",
+          "kyosoKigoCode",
+          "juryoShubetsuCode",
+          "kyosoJokenCode",
+          "kyosoJokenMeisho",
+          kyori,
+          "trackCode",
+          "hassoJikoku",
+          "shussoTosu",
+          (
+            substring(start_key from 1 for 4) || '-' ||
+            substring(start_key from 5 for 2) || '-' ||
+            substring(start_key from 7 for 2) || 'T' ||
+            substring(start_key from 9 for 2) || ':' ||
+            substring(start_key from 11 for 2) || ':00+09:00'
+          ) "raceStartAt",
+          bucket
+        from candidates
+        order by bucket asc, start_key asc
       `);
       return {
-        finished: result.rows.filter((row) => row.bucket === 1).toReversed(),
-        upcoming: result.rows.filter((row) => row.bucket === 0),
+        finished: result.rows
+          .filter((row) => row.bucket === 1)
+          .slice(-5)
+          .toReversed(),
+        upcoming: result.rows.filter((row) => row.bucket === 0).slice(0, 5),
       };
     }),
 );

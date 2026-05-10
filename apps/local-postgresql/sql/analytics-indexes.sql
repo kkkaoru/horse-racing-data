@@ -43,6 +43,44 @@ create index concurrently if not exists nvd_ra_detail_stats_idx
     grade_code
   );
 
+create index concurrently if not exists jvd_ra_start_key_idx
+  on public.jvd_ra ((kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000')))
+  include (
+    keibajo_code,
+    race_bango,
+    kyori,
+    track_code,
+    hasso_jikoku,
+    shusso_tosu,
+    kyosomei_hondai,
+    kyosomei_fukudai,
+    grade_code,
+    kyoso_shubetsu_code,
+    kyoso_kigo_code,
+    juryo_shubetsu_code,
+    kyoso_joken_code,
+    kyoso_joken_meisho
+  );
+
+create index concurrently if not exists nvd_ra_start_key_idx
+  on public.nvd_ra ((kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000')))
+  include (
+    keibajo_code,
+    race_bango,
+    kyori,
+    track_code,
+    hasso_jikoku,
+    shusso_tosu,
+    kyosomei_hondai,
+    kyosomei_fukudai,
+    grade_code,
+    kyoso_shubetsu_code,
+    kyoso_kigo_code,
+    juryo_shubetsu_code,
+    kyoso_joken_code,
+    kyoso_joken_meisho
+  );
+
 create index concurrently if not exists nvd_ns_ketto_date_idx
   on public.nvd_ns (ketto_toroku_bango, kaisai_nen, kaisai_tsukihi);
 
