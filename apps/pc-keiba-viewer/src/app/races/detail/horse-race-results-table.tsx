@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
   cleanText,
@@ -28,8 +28,10 @@ type SortKey = "date" | "kohan3f" | "sohaTime";
 interface HorseRaceResultsTableProps {
   currentDistance: string | null | undefined;
   currentKeibajoCode: string;
+  currentRaceDate: string;
   results: HorseRaceResult[];
   runners: Runner[];
+  source: "jra" | "nar";
 }
 
 const SORT_LABELS: Record<SortKey, string> = {
@@ -146,6 +148,21 @@ const getRaceDateValue = (result: HorseRaceResult): number | null =>
 
 const getDistanceValue = (result: HorseRaceResult): number | null => parseNumber(result.kyori);
 
+const getDateMonthsBefore = (date: string, months: number): number | null => {
+  if (!/^\d{8}$/.test(date)) {
+    return null;
+  }
+  const parsed = new Date(
+    Number(date.slice(0, 4)),
+    Number(date.slice(4, 6)) - 1,
+    Number(date.slice(6, 8)),
+  );
+  parsed.setMonth(parsed.getMonth() - months);
+  return Number(
+    `${parsed.getFullYear()}${String(parsed.getMonth() + 1).padStart(2, "0")}${String(parsed.getDate()).padStart(2, "0")}`,
+  );
+};
+
 const getRunnerNumberOptions = (runners: Runner[], results: HorseRaceResult[]): string[] => {
   const runnerNumbers =
     runners.length > 0
@@ -171,19 +188,24 @@ const compareByTimeAndDate = (left: HorseRaceResult, right: HorseRaceResult): nu
 export function HorseRaceResultsTable({
   currentDistance,
   currentKeibajoCode,
+  currentRaceDate,
   results,
   runners,
+  source,
 }: HorseRaceResultsTableProps) {
   const baseDistance = Number(cleanText(currentDistance, ""));
+  const defaultNarFilterEnabled = source === "nar";
   const [distanceMin, setDistanceMin] = useState(
     Number.isFinite(baseDistance) && baseDistance > 0 ? String(baseDistance - 100) : "",
   );
   const [distanceMax, setDistanceMax] = useState(
     Number.isFinite(baseDistance) && baseDistance > 0 ? String(baseDistance + 200) : "",
   );
-  const [limit, setLimit] = useState<ResultLimit>("1");
+  const [limit, setLimit] = useState<ResultLimit>("5");
   const [includeOutOfRangeFallback, setIncludeOutOfRangeFallback] = useState(true);
-  const [sameJockeyOnly, setSameJockeyOnly] = useState(false);
+  const [sameJockeyOnly, setSameJockeyOnly] = useState(defaultNarFilterEnabled);
+  const [sameJockeyTouched, setSameJockeyTouched] = useState(false);
+  const [recentMonths, setRecentMonths] = useState(defaultNarFilterEnabled ? "18" : "");
   const [sort, setSort] = useState<{ direction: SortDirection; key: SortKey }>({
     direction: "asc",
     key: "sohaTime",
@@ -199,6 +221,34 @@ export function HorseRaceResultsTable({
     () => new Set(selectedRunnerNumbers),
     [selectedRunnerNumbers],
   );
+  const shouldDisableDefaultSameJockey = useMemo(() => {
+    if (
+      source !== "nar" ||
+      sameJockeyTouched ||
+      !sameJockeyOnly ||
+      runnerNumberOptions.length === 0
+    ) {
+      return false;
+    }
+
+    const matchedRunnerNumbers = new Set(
+      results
+        .filter(
+          (result) =>
+            normalizeText(result.currentJockey) === normalizeText(result.kishumeiRyakusho),
+        )
+        .map((result) => cleanText(result.currentUmaban, ""))
+        .filter(Boolean),
+    );
+
+    return runnerNumberOptions.some((runnerNumber) => !matchedRunnerNumbers.has(runnerNumber));
+  }, [results, runnerNumberOptions, sameJockeyOnly, sameJockeyTouched, source]);
+
+  useEffect(() => {
+    if (shouldDisableDefaultSameJockey) {
+      setSameJockeyOnly(false);
+    }
+  }, [shouldDisableDefaultSameJockey]);
 
   const debutRunners = useMemo(() => {
     const resultRunnerNumbers = new Set(
@@ -219,6 +269,11 @@ export function HorseRaceResultsTable({
     const limitCount = limit === "all" ? null : Number(limit);
     const perHorseCount = new Map<string, number>();
     const groupedResults = new Map<string, HorseRaceResult[]>();
+    const recentMonthsValue = Number(recentMonths);
+    const recentDateMin =
+      recentMonths.trim() !== "" && Number.isFinite(recentMonthsValue) && recentMonthsValue > 0
+        ? getDateMonthsBefore(currentRaceDate, recentMonthsValue)
+        : null;
 
     const isDistanceMatched = (result: HorseRaceResult): boolean => {
       const distance = getDistanceValue(result);
@@ -241,6 +296,10 @@ export function HorseRaceResultsTable({
         !sameJockeyOnly ||
         normalizeText(result.currentJockey) === normalizeText(result.kishumeiRyakusho);
       if (!jockeyMatched) {
+        continue;
+      }
+      const raceDate = getRaceDateValue(result);
+      if (recentDateMin !== null && (raceDate === null || raceDate < recentDateMin)) {
         continue;
       }
       const key = result.currentUmaban ?? "";
@@ -317,10 +376,12 @@ export function HorseRaceResultsTable({
       });
   }, [
     baseDistance,
+    currentRaceDate,
     distanceMax,
     distanceMin,
     includeOutOfRangeFallback,
     limit,
+    recentMonths,
     results,
     runnerNumberOptions.length,
     sameJockeyOnly,
@@ -421,10 +482,24 @@ export function HorseRaceResultsTable({
               checked={sameJockeyOnly}
               type="checkbox"
               onChange={(event) => {
+                setSameJockeyTouched(true);
                 setSameJockeyOnly(event.currentTarget.checked);
               }}
             />
           </span>
+        </label>
+        <label>
+          <span>出走日からnヶ月以内</span>
+          <input
+            inputMode="numeric"
+            min="1"
+            placeholder="制限なし"
+            type="number"
+            value={recentMonths}
+            onChange={(event) => {
+              setRecentMonths(event.currentTarget.value);
+            }}
+          />
         </label>
         <label className="race-results-checkbox-label">
           <span>距離範囲外の近い成績も補完</span>

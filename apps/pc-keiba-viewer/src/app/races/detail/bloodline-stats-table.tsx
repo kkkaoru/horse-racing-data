@@ -12,6 +12,17 @@ type BloodlineCategory = BloodlineStatsRow["category"];
 type RateSortKey = "showRate" | "quinellaRate" | "winRate";
 type SortDirection = "asc" | "desc";
 
+type BloodlineScoreRow = {
+  categoryRows: Partial<Record<BloodlineCategory, BloodlineStatsRow>>;
+  categoryScores: Record<BloodlineCategory, number>;
+  horseCount: number;
+  horseName: string;
+  horseNumber: string;
+  rawScore: number;
+  score: number;
+  starts: number;
+};
+
 interface BloodlineStatsTableProps {
   conditionLabels: {
     age: string | null;
@@ -146,6 +157,7 @@ export function BloodlineStatsTable({
   const [sortKey, setSortKey] = useState<RateSortKey>("showRate");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [expandedRowKey, setExpandedRowKey] = useState<string | null>(null);
+  const [expandedScoreRowKey, setExpandedScoreRowKey] = useState<string | null>(null);
 
   const groupedRows = useMemo(() => {
     const sortedRows = rows.toSorted((left, right) => {
@@ -199,13 +211,18 @@ export function BloodlineStatsTable({
         (total, category) => total + categoryScores[category] * CATEGORY_SCORE_WEIGHTS[category],
         0,
       );
+      const categoryRowValues = Object.values(categoryRows).filter(
+        (row): row is BloodlineStatsRow => row !== undefined,
+      );
 
       return {
         categoryRows,
         categoryScores,
+        horseCount: categoryRowValues.reduce((total, row) => total + row.horseCount, 0),
         horseName: cleanText(runner.bamei),
         horseNumber,
         rawScore,
+        starts: categoryRowValues.reduce((total, row) => total + row.starts, 0),
       };
     });
 
@@ -337,6 +354,75 @@ export function BloodlineStatsTable({
     );
   };
 
+  const renderScoreDetailRows = (row: BloodlineScoreRow, colSpan: number) => {
+    const details = CATEGORY_ORDER.flatMap((category) => {
+      const categoryRow = row.categoryRows[category];
+      if (!categoryRow) {
+        return [];
+      }
+      return categoryRow.details.map((detail) => ({
+        bloodlineCategory: CATEGORY_LABELS[category],
+        bloodlineName: categoryRow.name,
+        detail,
+      }));
+    }).toSorted(
+      (left, right) =>
+        right.detail.date.localeCompare(left.detail.date) ||
+        right.detail.raceNumber.localeCompare(left.detail.raceNumber) ||
+        right.detail.horseNumber.localeCompare(left.detail.horseNumber) ||
+        left.bloodlineCategory.localeCompare(right.bloodlineCategory),
+    );
+
+    return (
+      <tr className="stats-detail-row">
+        <td colSpan={colSpan}>
+          <div className="stats-detail-panel">
+            <table className="stats-detail-table">
+              <thead>
+                <tr>
+                  <th>血統</th>
+                  <th>名前</th>
+                  <th>日付</th>
+                  <th>競馬場</th>
+                  <th>R</th>
+                  <th>レース名</th>
+                  <th>馬名</th>
+                  <th>枠</th>
+                  <th>馬番</th>
+                  <th>着順</th>
+                  <th>レースタイム</th>
+                  <th>人気</th>
+                  <th>単勝</th>
+                </tr>
+              </thead>
+              <tbody>
+                {details.map(({ bloodlineCategory, bloodlineName, detail }) => (
+                  <tr
+                    key={`${bloodlineCategory}-${bloodlineName}-${detail.date}-${detail.keibajoCode}-${detail.raceNumber}-${detail.frameNumber}-${detail.horseNumber}-${detail.rank}`}
+                  >
+                    <td>{bloodlineCategory}</td>
+                    <td className="stats-detail-horse-name">{bloodlineName}</td>
+                    <td>{formatDetailDate(detail.date)}</td>
+                    <td>{formatKeibajo(detail.keibajoCode)}</td>
+                    <td>{formatRaceNumber(detail.raceNumber)}</td>
+                    <td className="stats-detail-race-name">{detail.raceName || "-"}</td>
+                    <td className="stats-detail-horse-name">{detail.horseName || "-"}</td>
+                    <td>{detail.frameNumber || "-"}</td>
+                    <td>{detail.horseNumber || "-"}</td>
+                    <td>{formatRank(detail.rank)}</td>
+                    <td>{formatTenthsTime(detail.raceTime)}</td>
+                    <td>{formatRank(detail.popularity)}</td>
+                    <td>{formatOdds(detail.winOdds)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </td>
+      </tr>
+    );
+  };
+
   const renderStatsTable = (category: BloodlineCategory, categoryRows: BloodlineStatsRow[]) => (
     <section className="stats-category-section" key={category}>
       <div className="section-heading compact">
@@ -348,6 +434,15 @@ export function BloodlineStatsTable({
       ) : (
         <div className="stats-table-wrap">
           <table className="stats-table">
+            <colgroup>
+              <col className="bloodline-stats-col-horse-number" />
+              <col className="bloodline-stats-col-name" />
+              <col className="bloodline-stats-col-rate" />
+              <col className="bloodline-stats-col-rate" />
+              <col className="bloodline-stats-col-rate" />
+              <col className="bloodline-stats-col-count" />
+              <col className="bloodline-stats-col-count" />
+            </colgroup>
             <thead>
               <tr>
                 <th>馬番号</th>
@@ -444,11 +539,26 @@ export function BloodlineStatsTable({
           </div>
           <div className="stats-table-wrap">
             <table className="stats-table bloodline-score-table">
+              <colgroup>
+                <col className="bloodline-stats-col-horse-number" />
+                <col className="bloodline-score-col-horse-name" />
+                <col className="bloodline-score-col-score" />
+                <col className="bloodline-stats-col-count" />
+                <col className="bloodline-stats-col-count" />
+                <col className="bloodline-score-col-name" />
+                <col className="bloodline-score-col-score" />
+                <col className="bloodline-score-col-name" />
+                <col className="bloodline-score-col-score" />
+                <col className="bloodline-score-col-name" />
+                <col className="bloodline-score-col-score" />
+              </colgroup>
               <thead>
                 <tr>
                   <th>馬番号</th>
                   <th>馬名</th>
                   <th>スコア</th>
+                  <th>出走数</th>
+                  <th>出馬数</th>
                   <th>父</th>
                   <th>父スコア</th>
                   <th>母父</th>
@@ -458,19 +568,50 @@ export function BloodlineStatsTable({
                 </tr>
               </thead>
               <tbody>
-                {scoreRows.map((row) => (
-                  <tr key={row.horseNumber}>
-                    <td>{row.horseNumber}</td>
-                    <td className="stats-name-cell">{row.horseName}</td>
-                    <td className="bloodline-score-cell">{formatScore(row.score)}</td>
-                    <td className="stats-name-cell">{row.categoryRows.sire?.name ?? "-"}</td>
-                    <td>{formatScore(row.categoryScores.sire)}</td>
-                    <td className="stats-name-cell">{row.categoryRows.damSire?.name ?? "-"}</td>
-                    <td>{formatScore(row.categoryScores.damSire)}</td>
-                    <td className="stats-name-cell">{row.categoryRows.sireSire?.name ?? "-"}</td>
-                    <td>{formatScore(row.categoryScores.sireSire)}</td>
-                  </tr>
-                ))}
+                {scoreRows.map((row) => {
+                  const isExpanded = expandedScoreRowKey === row.horseNumber;
+                  const canExpand = CATEGORY_ORDER.some(
+                    (category) => (row.categoryRows[category]?.details.length ?? 0) > 0,
+                  );
+
+                  return (
+                    <Fragment key={row.horseNumber}>
+                      <tr className={isExpanded ? "stats-row-expanded" : undefined}>
+                        <td>{row.horseNumber}</td>
+                        <td className="stats-name-cell">
+                          {canExpand ? (
+                            <button
+                              aria-expanded={isExpanded}
+                              className="stats-detail-toggle"
+                              type="button"
+                              onClick={() => {
+                                setExpandedScoreRowKey((current) =>
+                                  current === row.horseNumber ? null : row.horseNumber,
+                                );
+                              }}
+                            >
+                              {row.horseName}
+                            </button>
+                          ) : (
+                            row.horseName
+                          )}
+                        </td>
+                        <td className="bloodline-score-cell">{formatScore(row.score)}</td>
+                        <td>{row.starts.toLocaleString("ja-JP")}</td>
+                        <td>{row.horseCount.toLocaleString("ja-JP")}</td>
+                        <td className="stats-name-cell">{row.categoryRows.sire?.name ?? "-"}</td>
+                        <td>{formatScore(row.categoryScores.sire)}</td>
+                        <td className="stats-name-cell">{row.categoryRows.damSire?.name ?? "-"}</td>
+                        <td>{formatScore(row.categoryScores.damSire)}</td>
+                        <td className="stats-name-cell">
+                          {row.categoryRows.sireSire?.name ?? "-"}
+                        </td>
+                        <td>{formatScore(row.categoryScores.sireSire)}</td>
+                      </tr>
+                      {isExpanded ? renderScoreDetailRows(row, 11) : null}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>

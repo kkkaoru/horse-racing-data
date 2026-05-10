@@ -90,7 +90,7 @@ export function RunnersTable({
   realtimeRequest,
   runners,
 }: RunnersTableProps) {
-  const [sort, setSort] = useState<SortState>({ direction: "asc", key: "umaban" });
+  const [sort, setSort] = useState<SortState | null>(null);
   const { payload } = useRealtimeRacePayload(
     realtimeRequest ?? {
       apiBaseUrl: "",
@@ -126,6 +126,22 @@ export function RunnersTable({
       ),
     [payload],
   );
+  const defaultSort = useMemo<SortState>(() => {
+    if (
+      runners.some(
+        (runner) => getSortValue(runner, "kakuteiChakujun", realtimeOddsByHorse) !== null,
+      )
+    ) {
+      return { direction: "asc", key: "kakuteiChakujun" };
+    }
+    if (
+      runners.some((runner) => getSortValue(runner, "tanshoOdds", realtimeOddsByHorse) !== null)
+    ) {
+      return { direction: "asc", key: "tanshoOdds" };
+    }
+    return { direction: "asc", key: "umaban" };
+  }, [realtimeOddsByHorse, runners]);
+  const activeSort = sort ?? defaultSort;
 
   const sortedRunners = useMemo(
     () =>
@@ -133,27 +149,30 @@ export function RunnersTable({
         .map((runner, index) => ({ index, runner }))
         .toSorted((left, right) => {
           const compared = compareNullableNumber(
-            getSortValue(left.runner, sort.key, realtimeOddsByHorse),
-            getSortValue(right.runner, sort.key, realtimeOddsByHorse),
-            sort.direction,
+            getSortValue(left.runner, activeSort.key, realtimeOddsByHorse),
+            getSortValue(right.runner, activeSort.key, realtimeOddsByHorse),
+            activeSort.direction,
           );
           return compared === 0 ? left.index - right.index : compared;
         })
         .map(({ runner }) => runner),
-    [realtimeOddsByHorse, runners, sort],
+    [activeSort, realtimeOddsByHorse, runners],
   );
 
   const changeSort = (key: SortKey) => {
     setSort((current) => ({
-      direction: current.key === key && current.direction === "asc" ? "desc" : "asc",
+      direction:
+        (current ?? activeSort).key === key && (current ?? activeSort).direction === "asc"
+          ? "desc"
+          : "asc",
       key,
     }));
   };
 
   const renderSortButton = (key: SortKey) => {
-    const isCurrent = sort.key === key;
-    const directionLabel = sort.direction === "asc" ? "昇順" : "降順";
-    const nextDirectionLabel = isCurrent && sort.direction === "asc" ? "降順" : "昇順";
+    const isCurrent = activeSort.key === key;
+    const directionLabel = activeSort.direction === "asc" ? "昇順" : "降順";
+    const nextDirectionLabel = isCurrent && activeSort.direction === "asc" ? "降順" : "昇順";
 
     return (
       <button

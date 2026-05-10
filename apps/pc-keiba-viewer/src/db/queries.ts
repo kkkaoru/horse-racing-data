@@ -4,6 +4,7 @@ import { cache } from "react";
 
 import { TRACK_LABELS, type RaceSource } from "../lib/codes";
 import type {
+  AbilityTest,
   BloodlineStatsRow,
   CourseInfo,
   FinishPositionStatsRow,
@@ -641,6 +642,105 @@ export const getRaceTrainings = cache(
       where rn <= 3
       order by umaban asc, "chokyoNengappi" desc, "chokyoJikoku" desc, "trainingType" asc
     `);
+
+        return result.rows;
+      },
+    );
+  },
+);
+
+export const getRaceAbilityTests = cache(
+  async (
+    source: RaceSource,
+    year: string,
+    month: string,
+    day: string,
+    keibajoCode: string,
+    raceNumber: string,
+  ): Promise<AbilityTest[]> => {
+    if (source !== "nar") {
+      return [];
+    }
+
+    return withDbQueryCache(
+      ["getRaceAbilityTests", source, year, month, day, keibajoCode, raceNumber],
+      async () => {
+        const monthDay = `${month}${day}`;
+        const raceDate = `${year}${monthDay}`;
+        const result = await getDb().execute<AbilityTest>(sql`
+          with current_runners as (
+            select
+              umaban as "currentUmaban",
+              bamei as "currentBamei",
+              ketto_toroku_bango
+            from ${nvdSe}
+            where
+              kaisai_nen = ${year}
+              and kaisai_tsukihi = ${monthDay}
+              and keibajo_code = ${keibajoCode}
+              and race_bango = ${raceNumber}
+              and nullif(ketto_toroku_bango, '') is not null
+          )
+          select
+            current_runners."currentUmaban",
+            current_runners."currentBamei",
+            ns.kaisai_nen as "kaisaiNen",
+            ns.kaisai_tsukihi as "kaisaiTsukihi",
+            ns.keibajo_code as "keibajoCode",
+            ns.race_bango as "raceBango",
+            ns.umaban,
+            ns.ketto_toroku_bango as "kettoTorokuBango",
+            ns.bamei,
+            ns.seibetsu_code as "seibetsuCode",
+            ns.barei,
+            ns.chokyoshimei_ryakusho as "chokyoshimeiRyakusho",
+            ns.futan_juryo as "futanJuryo",
+            ns.kishumei_ryakusho as "kishumeiRyakusho",
+            ns.bataiju,
+            ns.zogen_fugo as "zogenFugo",
+            ns.zogen_sa as "zogenSa",
+            ns.ijo_kubun_code as "ijoKubunCode",
+            ns.juni,
+            ns.soha_time as "sohaTime",
+            ns.chakusa_code_1 as "chakusaCode1",
+            ns.chakusa_code_2 as "chakusaCode2",
+            ns.chakusa_code_3 as "chakusaCode3",
+            ns.noryoku_shiken_code as "noryokuShikenCode",
+            ns.gohi_code as "gohiCode",
+            ns.riyu_code as "riyuCode",
+            ns.gohi_nengappi as "gohiNengappi",
+            ns.ashiiro_code as "ashiiroCode",
+            ns.corner_1 as "corner1",
+            ns.corner_2 as "corner2",
+            ns.corner_3 as "corner3",
+            ns.corner_4 as "corner4",
+            ns.kohan_4f as "kohan4f",
+            ns.kohan_3f as "kohan3f",
+            ns.aiteuma_joho_1 as "aiteumaJoho1",
+            ns.aiteuma_joho_2 as "aiteumaJoho2",
+            ns.aiteuma_joho_3 as "aiteumaJoho3",
+            ns.kyakushitsu_hantei as "kyakushitsuHantei",
+            nr.kyori,
+            nr.track_code as "trackCode",
+            nr.hasso_jikoku as "hassoJikoku",
+            nr.tenko_code as "tenkoCode",
+            nr.babajotai_code_dirt as "babajotaiCodeDirt"
+          from current_runners
+          join nvd_ns ns
+            on ns.ketto_toroku_bango = current_runners.ketto_toroku_bango
+          left join nvd_nr nr
+            on nr.kaisai_nen = ns.kaisai_nen
+            and nr.kaisai_tsukihi = ns.kaisai_tsukihi
+            and nr.keibajo_code = ns.keibajo_code
+            and nr.race_bango = ns.race_bango
+          where ns.kaisai_nen || ns.kaisai_tsukihi <= ${raceDate}
+          order by
+            current_runners."currentUmaban"::int asc,
+            ns.kaisai_nen desc,
+            ns.kaisai_tsukihi desc,
+            ns.race_bango::int desc,
+            ns.umaban::int asc
+        `);
 
         return result.rows;
       },
@@ -1624,22 +1724,22 @@ export const getPayoutStats = cache(
         select * from fallback_matched_races
         where not exists (select 1 from strict_matched_races)
       ),
-      payout_values as (
+      strict_payout_values as (
         select
           payouts.bet_type,
           payouts.bet_order,
-          matched_races.kaisai_nen,
-          matched_races.kaisai_tsukihi,
-          matched_races.keibajo_code,
-          matched_races.race_bango,
-          matched_races.race_name,
+          strict_matched_races.kaisai_nen,
+          strict_matched_races.kaisai_tsukihi,
+          strict_matched_races.keibajo_code,
+          strict_matched_races.race_bango,
+          strict_matched_races.race_name,
           nullif(regexp_replace(coalesce(payouts.payout_text, ''), '[^0-9]', '', 'g'), '')::numeric as payout
-        from matched_races
+        from strict_matched_races
         join ${payoutTable} hr
-          on hr.kaisai_nen = matched_races.kaisai_nen
-          and hr.kaisai_tsukihi = matched_races.kaisai_tsukihi
-          and hr.keibajo_code = matched_races.keibajo_code
-          and hr.race_bango = matched_races.race_bango
+          on hr.kaisai_nen = strict_matched_races.kaisai_nen
+          and hr.kaisai_tsukihi = strict_matched_races.kaisai_tsukihi
+          and hr.keibajo_code = strict_matched_races.keibajo_code
+          and hr.race_bango = strict_matched_races.race_bango
         cross join lateral (
           values
             ('単勝', 1, hr.haraimodoshi_tansho_1b),
@@ -1681,6 +1781,70 @@ export const getPayoutStats = cache(
         ) as payouts(bet_type, bet_order, payout_text)
         where
           nullif(regexp_replace(coalesce(payouts.payout_text, ''), '[^0-9]', '', 'g'), '') !~ '^0+$'
+      ),
+      fallback_payout_values as (
+        select
+          payouts.bet_type,
+          payouts.bet_order,
+          fallback_matched_races.kaisai_nen,
+          fallback_matched_races.kaisai_tsukihi,
+          fallback_matched_races.keibajo_code,
+          fallback_matched_races.race_bango,
+          fallback_matched_races.race_name,
+          nullif(regexp_replace(coalesce(payouts.payout_text, ''), '[^0-9]', '', 'g'), '')::numeric as payout
+        from fallback_matched_races
+        join ${payoutTable} hr
+          on hr.kaisai_nen = fallback_matched_races.kaisai_nen
+          and hr.kaisai_tsukihi = fallback_matched_races.kaisai_tsukihi
+          and hr.keibajo_code = fallback_matched_races.keibajo_code
+          and hr.race_bango = fallback_matched_races.race_bango
+        cross join lateral (
+          values
+            ('単勝', 1, hr.haraimodoshi_tansho_1b),
+            ('単勝', 1, hr.haraimodoshi_tansho_2b),
+            ('単勝', 1, hr.haraimodoshi_tansho_3b),
+            ('複勝', 2, hr.haraimodoshi_fukusho_1b),
+            ('複勝', 2, hr.haraimodoshi_fukusho_2b),
+            ('複勝', 2, hr.haraimodoshi_fukusho_3b),
+            ('複勝', 2, hr.haraimodoshi_fukusho_4b),
+            ('複勝', 2, hr.haraimodoshi_fukusho_5b),
+            ('枠連', 3, hr.haraimodoshi_wakuren_1b),
+            ('枠連', 3, hr.haraimodoshi_wakuren_2b),
+            ('枠連', 3, hr.haraimodoshi_wakuren_3b),
+            ('馬連', 4, hr.haraimodoshi_umaren_1b),
+            ('馬連', 4, hr.haraimodoshi_umaren_2b),
+            ('馬連', 4, hr.haraimodoshi_umaren_3b),
+            ('ワイド', 5, hr.haraimodoshi_wide_1b),
+            ('ワイド', 5, hr.haraimodoshi_wide_2b),
+            ('ワイド', 5, hr.haraimodoshi_wide_3b),
+            ('ワイド', 5, hr.haraimodoshi_wide_4b),
+            ('ワイド', 5, hr.haraimodoshi_wide_5b),
+            ('ワイド', 5, hr.haraimodoshi_wide_6b),
+            ('ワイド', 5, hr.haraimodoshi_wide_7b),
+            ('馬単', 6, hr.haraimodoshi_umatan_1b),
+            ('馬単', 6, hr.haraimodoshi_umatan_2b),
+            ('馬単', 6, hr.haraimodoshi_umatan_3b),
+            ('馬単', 6, hr.haraimodoshi_umatan_4b),
+            ('馬単', 6, hr.haraimodoshi_umatan_5b),
+            ('馬単', 6, hr.haraimodoshi_umatan_6b),
+            ('3連複', 7, hr.haraimodoshi_sanrenpuku_1b),
+            ('3連複', 7, hr.haraimodoshi_sanrenpuku_2b),
+            ('3連複', 7, hr.haraimodoshi_sanrenpuku_3b),
+            ('3連単', 8, hr.haraimodoshi_sanrentan_1b),
+            ('3連単', 8, hr.haraimodoshi_sanrentan_2b),
+            ('3連単', 8, hr.haraimodoshi_sanrentan_3b),
+            ('3連単', 8, hr.haraimodoshi_sanrentan_4b),
+            ('3連単', 8, hr.haraimodoshi_sanrentan_5b),
+            ('3連単', 8, hr.haraimodoshi_sanrentan_6b)
+        ) as payouts(bet_type, bet_order, payout_text)
+        where
+          nullif(regexp_replace(coalesce(payouts.payout_text, ''), '[^0-9]', '', 'g'), '') !~ '^0+$'
+      ),
+      payout_values as (
+        select * from strict_payout_values
+        union all
+        select * from fallback_payout_values
+        where not exists (select 1 from strict_payout_values)
       )
       select
         bet_type as "betType",
