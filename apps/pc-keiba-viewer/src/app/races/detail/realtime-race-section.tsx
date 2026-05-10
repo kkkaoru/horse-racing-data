@@ -44,6 +44,9 @@ const TREND_COLORS = [
   "#7c2d12",
   "#4338ca",
 ];
+const LOW_ODDS_TICK_MAX = 10;
+const LOW_ODDS_TICK_STEP = 0.5;
+const HIGH_ODDS_TICK_STEP = 5;
 
 const formatFetchedAt = (value: string): string => {
   const date = new Date(value);
@@ -118,6 +121,26 @@ const getTooltipSortValue = (entry: OddsTrendHoverEntry): number => {
   return Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
 };
 
+const buildOddsYAxisTicks = (maxOdds: number): number[] => {
+  const yAxisMax = Math.max(
+    LOW_ODDS_TICK_MAX,
+    Math.ceil(maxOdds / HIGH_ODDS_TICK_STEP) * HIGH_ODDS_TICK_STEP,
+  );
+  const lowTicks = Array.from(
+    { length: Math.floor(LOW_ODDS_TICK_MAX / LOW_ODDS_TICK_STEP) + 1 },
+    (_, index) => Number((index * LOW_ODDS_TICK_STEP).toFixed(2)),
+  );
+  const highTicks: number[] = [];
+  for (
+    let value = LOW_ODDS_TICK_MAX + HIGH_ODDS_TICK_STEP;
+    value <= yAxisMax;
+    value += HIGH_ODDS_TICK_STEP
+  ) {
+    highTicks.push(value);
+  }
+  return [...lowTicks, ...highTicks];
+};
+
 function OddsTrendTooltip({ active, label, payload }: OddsTrendTooltipProps) {
   const entries = (payload ?? [])
     .filter((entry) => typeof entry.value === "number")
@@ -161,9 +184,17 @@ export function RealtimeRaceSection(props: RealtimeRaceSectionProps) {
   const oddsValues = allTrendPoints
     .map((point) => point.odds)
     .filter((value): value is number => typeof value === "number");
-  const minOdds = oddsValues.length > 0 ? Math.min(...oddsValues) : 0;
   const maxOdds = oddsValues.length > 0 ? Math.max(...oddsValues) : 1;
+  const minOdds = oddsValues.length > 0 ? Math.min(...oddsValues) : 0;
   const oddsDomainPadding = Math.max((maxOdds - minOdds) * 0.08, 0.5);
+  const oddsYAxisMax = Math.max(
+    LOW_ODDS_TICK_MAX,
+    Math.ceil((maxOdds + oddsDomainPadding) / HIGH_ODDS_TICK_STEP) * HIGH_ODDS_TICK_STEP,
+  );
+  const oddsYAxisTicks = useMemo(
+    () => buildOddsYAxisTicks(maxOdds + oddsDomainPadding),
+    [maxOdds, oddsDomainPadding],
+  );
   const getSeriesName = (horseNumber: string): string =>
     `${horseNumber} ${names.get(horseNumber) ?? ""}`.trim();
   const activeTrendEntries =
@@ -230,11 +261,11 @@ export function RealtimeRaceSection(props: RealtimeRaceSectionProps) {
                 />
                 <YAxis
                   allowDecimals
-                  domain={[Math.max(0, minOdds - oddsDomainPadding), maxOdds + oddsDomainPadding]}
+                  domain={[0, oddsYAxisMax]}
                   tick={{ fill: "#5a6a60", fontSize: 11 }}
-                  tickCount={9}
-                  tickFormatter={(value) => Number(value).toFixed(1)}
-                  width={48}
+                  tickFormatter={(value) => Number(value).toFixed(2)}
+                  ticks={oddsYAxisTicks}
+                  width={58}
                 />
                 <Tooltip
                   allowEscapeViewBox={{ x: false, y: true }}

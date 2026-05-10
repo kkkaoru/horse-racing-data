@@ -134,20 +134,22 @@ export async function RaceDetailView({
           <span className="race-nav-icon" aria-hidden="true" />
         </Link>
       ) : null}
-      <div className="breadcrumbs">
-        <Link href="/races">開催日一覧</Link>
-        <Link href={`/races/${year}`}>{year}年</Link>
-        <Link href={`/races/${year}/${month}`}>{Number(month)}月</Link>
-        <Link href={`/races/${year}/${month}/${day}`}>
-          {formatDisplayDate(year, `${month}${day}`)}
-        </Link>
-        <Link href={`/races/${year}/${month}/${day}/${keibajoCode}`}>
-          {formatKeibajo(keibajoCode)}
-        </Link>
-        <span>
-          {formatKeibajo(keibajoCode)} {formatRaceNumber(raceNumber)}
-        </span>
-      </div>
+      <details className="race-detail-list-menu">
+        <summary aria-label="一覧ページへのリンクを開閉">
+          <span aria-hidden="true" />
+        </summary>
+        <nav aria-label="race list navigation">
+          <Link href="/races">開催日一覧</Link>
+          <Link href={`/races/${year}`}>{year}年の一覧</Link>
+          <Link href={`/races/${year}/${month}`}>{Number(month)}月の一覧</Link>
+          <Link href={`/races/${year}/${month}/${day}`}>
+            {formatDisplayDate(year, `${month}${day}`)}の一覧
+          </Link>
+          <Link href={`/races/${year}/${month}/${day}/${keibajoCode}`}>
+            {formatKeibajo(keibajoCode)}の一覧
+          </Link>
+        </nav>
+      </details>
       {previousRace || nextRace ? (
         <nav className="race-mobile-nav" aria-label="same venue race navigation">
           {previousRace ? (

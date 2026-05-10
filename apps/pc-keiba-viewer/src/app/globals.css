@@ -61,7 +61,7 @@ main {
   padding: 0 32px;
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: 20;
 }
 
 .brand {
@@ -83,33 +83,95 @@ main {
   width: 34px;
 }
 
-.app-header nav {
-  display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  white-space: nowrap;
+.header-menu {
+  position: relative;
+  z-index: 40;
 }
 
-.app-header nav a {
+.header-menu summary {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+  display: inline-flex;
+  height: 42px;
+  justify-content: center;
+  list-style: none;
+  width: 42px;
+}
+
+.header-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.header-menu summary span,
+.header-menu summary span::before,
+.header-menu summary span::after {
+  background: var(--accent-strong);
+  border-radius: 999px;
+  display: block;
+  height: 2px;
+  width: 18px;
+}
+
+.header-menu summary span {
+  position: relative;
+}
+
+.header-menu summary span::before,
+.header-menu summary span::after {
+  content: "";
+  left: 0;
+  position: absolute;
+}
+
+.header-menu summary span::before {
+  top: -6px;
+}
+
+.header-menu summary span::after {
+  top: 6px;
+}
+
+.header-menu nav {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 18px 42px rgba(23, 33, 28, 0.16);
+  display: grid;
+  gap: 6px;
+  min-width: 190px;
+  padding: 8px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+}
+
+.header-menu nav a {
   border: 1px solid var(--line);
   border-radius: 6px;
   color: var(--accent-strong);
-  display: inline-flex;
+  display: flex;
   font-size: 14px;
+  font-weight: 800;
   padding: 9px 12px;
+  white-space: nowrap;
 }
 
 .race-global-summary {
   align-items: center;
   display: flex;
   height: 72px;
-  left: 260px;
+  justify-content: center;
+  left: 50%;
   overflow: hidden;
   pointer-events: none;
   position: fixed;
-  right: 160px;
   top: 0;
-  z-index: 11;
+  transform: translateX(-50%);
+  width: min(760px, calc(100vw - 430px));
+  z-index: 21;
 }
 
 .race-global-summary div {
@@ -572,7 +634,8 @@ h3 {
 
 .day-link:hover,
 .race-row:hover,
-.app-header nav a:hover {
+.app-header nav a:hover,
+.race-detail-list-menu nav a:hover {
   border-color: var(--accent);
 }
 
@@ -605,6 +668,85 @@ h3 {
   color: var(--line);
   content: "/";
   margin-right: 8px;
+}
+
+.race-detail-list-menu {
+  margin-bottom: 18px;
+  position: relative;
+  width: fit-content;
+  z-index: 8;
+}
+
+.race-detail-list-menu summary {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 10px 26px rgba(23, 33, 28, 0.1);
+  cursor: pointer;
+  display: inline-flex;
+  height: 42px;
+  justify-content: center;
+  list-style: none;
+  width: 42px;
+}
+
+.race-detail-list-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.race-detail-list-menu summary span,
+.race-detail-list-menu summary span::before,
+.race-detail-list-menu summary span::after {
+  background: var(--accent-strong);
+  border-radius: 999px;
+  display: block;
+  height: 2px;
+  width: 18px;
+}
+
+.race-detail-list-menu summary span {
+  position: relative;
+}
+
+.race-detail-list-menu summary span::before,
+.race-detail-list-menu summary span::after {
+  content: "";
+  left: 0;
+  position: absolute;
+}
+
+.race-detail-list-menu summary span::before {
+  top: -6px;
+}
+
+.race-detail-list-menu summary span::after {
+  top: 6px;
+}
+
+.race-detail-list-menu nav {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 18px 42px rgba(23, 33, 28, 0.16);
+  display: grid;
+  gap: 6px;
+  left: 0;
+  min-width: 240px;
+  padding: 8px;
+  position: absolute;
+  top: calc(100% + 8px);
+}
+
+.race-detail-list-menu nav a {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--accent-strong);
+  display: flex;
+  font-size: 14px;
+  font-weight: 800;
+  padding: 9px 12px;
+  white-space: nowrap;
 }
 
 .race-list-section {
@@ -2331,26 +2473,27 @@ h3 {
 
 @media (max-width: 720px) {
   .app-header {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 12px;
-    height: auto;
-    padding: 16px;
+    height: 64px;
+    padding: 0 16px;
+  }
+
+  .header-menu nav {
+    max-width: calc(100vw - 32px);
+    min-width: 176px;
   }
 
   .race-global-summary {
-    height: 40px;
-    left: 174px;
-    right: 16px;
-    top: 8px;
+    height: 64px;
+    left: 64px;
+    right: 66px;
+    top: 0;
+    transform: none;
+    width: auto;
+    z-index: 21;
   }
 
   body:has(.race-global-summary) .brand strong {
     display: none;
-  }
-
-  body:has(.race-global-summary) .race-global-summary {
-    left: 66px;
   }
 
   .race-global-summary div {
