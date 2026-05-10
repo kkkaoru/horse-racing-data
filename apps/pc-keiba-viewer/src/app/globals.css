@@ -368,15 +368,17 @@ main {
   background: var(--surface-muted);
   border: 1px solid var(--line);
   border-radius: 6px;
-  display: flex;
+  display: grid;
   gap: 10px;
-  justify-content: space-between;
+  grid-template-columns: minmax(96px, 0.7fr) minmax(128px, 1fr);
   min-height: 42px;
   padding: 10px;
 }
 
 .home-race-skeleton-item .skeleton-text {
   margin: 0;
+  min-width: 0;
+  width: 100%;
 }
 
 .entity-filter-panel {
@@ -2585,6 +2587,16 @@ h3 {
   .home-link-grid,
   .home-live-grid {
     grid-template-columns: 1fr;
+  }
+
+  .home-race-list-skeleton {
+    min-height: 228px;
+  }
+
+  .home-race-skeleton-item {
+    grid-template-columns: minmax(74px, 0.58fr) minmax(0, 1fr);
+    min-height: 44px;
+    padding: 9px;
   }
 
   .home-panel-wide {
