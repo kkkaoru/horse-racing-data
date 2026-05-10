@@ -1,7 +1,7 @@
-import type { RealtimeRacePayload } from "horse-racing-realtime/types";
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { Suspense } from "react";
 
 import {
   getRaceAbilityTests,
@@ -80,12 +80,6 @@ interface RaceDetailPageProps {
 }
 
 const isRaceSource = (source: string): source is RaceSource => source === "jra" || source === "nar";
-
-const isRealtimeRacePayload = (value: unknown): value is RealtimeRacePayload =>
-  typeof value === "object" &&
-  value !== null &&
-  "raceKey" in value &&
-  typeof value.raceKey === "string";
 
 const isValidParams = (
   source: string,
@@ -233,33 +227,6 @@ const getAdjacentRaceLabel = (race: {
     formatDistance(race.kyori),
   ].join(" / ");
 
-const fetchRealtimeRacePayload = async (
-  apiBaseUrl: string,
-  source: RaceSource,
-  year: string,
-  month: string,
-  day: string,
-  keibajoCode: string,
-  raceNumber: string,
-): Promise<RealtimeRacePayload | null> => {
-  if (source !== "nar") {
-    return null;
-  }
-  try {
-    const response = await fetch(
-      `${apiBaseUrl.replace(/\/$/u, "")}/api/nar/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/realtime`,
-      { cache: "no-store" },
-    );
-    if (!response.ok) {
-      return null;
-    }
-    const payload: unknown = await response.json();
-    return isRealtimeRacePayload(payload) ? payload : null;
-  } catch {
-    return null;
-  }
-};
-
 const CONDITION_ANALYSIS_OVERRIDE_PARAMS = [
   "statsAge",
   "statsClass",
@@ -397,6 +364,327 @@ const findRateStatsCandidate = async <
   return findRateStatsCandidate(candidates, getStats, index + 1);
 };
 
+const SectionSkeleton = ({ title }: { title: string }) => (
+  <section className="detail-loading-section" aria-busy="true">
+    <div className="section-heading compact">
+      <h2>{title}</h2>
+      <span>読み込み中</span>
+    </div>
+    <div className="detail-section-skeleton">
+      <span />
+      <span />
+      <span />
+      <span />
+    </div>
+  </section>
+);
+
+async function RaceResultsSection({
+  classConditionName,
+  currentDistance,
+  currentKeibajoCode,
+  currentRaceDate,
+  defaultIncludeClass,
+  day,
+  keibajoCode,
+  month,
+  raceNumber,
+  raceSource,
+  runners,
+  year,
+}: {
+  classConditionName: string | null;
+  currentDistance: string | null;
+  currentKeibajoCode: string;
+  currentRaceDate: string;
+  day: string;
+  defaultIncludeClass: boolean;
+  keibajoCode: string;
+  month: string;
+  raceNumber: string;
+  raceSource: RaceSource;
+  runners: Awaited<ReturnType<typeof getRaceRunners>>;
+  year: string;
+}) {
+  const raceResults = await getHorseRaceResults(
+    raceSource,
+    year,
+    month,
+    day,
+    keibajoCode,
+    raceNumber,
+  );
+
+  return (
+    <section className="race-results-section">
+      <div className="section-heading compact">
+        <h2>競走成績</h2>
+        <span>{raceResults.length} 件</span>
+      </div>
+      <HorseRaceResultsTable
+        classConditionName={classConditionName}
+        currentDistance={currentDistance}
+        currentKeibajoCode={currentKeibajoCode}
+        currentRaceDate={currentRaceDate}
+        defaultIncludeClass={defaultIncludeClass}
+        results={raceResults}
+        runners={runners}
+        source={raceSource}
+      />
+    </section>
+  );
+}
+
+async function TrainingSection({
+  day,
+  keibajoCode,
+  month,
+  raceNumber,
+  raceSource,
+  year,
+}: {
+  day: string;
+  keibajoCode: string;
+  month: string;
+  raceNumber: string;
+  raceSource: RaceSource;
+  year: string;
+}) {
+  const trainings = await getRaceTrainings(raceSource, year, month, day, keibajoCode, raceNumber);
+
+  return (
+    <section className="training-section">
+      <div className="section-heading compact">
+        <h2>調教・追い切り</h2>
+        <span>{trainings.length} 件</span>
+      </div>
+      <TrainingTable sourceLabel={SOURCE_LABELS[raceSource]} trainings={trainings} />
+    </section>
+  );
+}
+
+async function AbilityTestSection({
+  day,
+  keibajoCode,
+  month,
+  raceNumber,
+  raceSource,
+  year,
+}: {
+  day: string;
+  keibajoCode: string;
+  month: string;
+  raceNumber: string;
+  raceSource: RaceSource;
+  year: string;
+}) {
+  if (raceSource !== "nar") {
+    return null;
+  }
+
+  const abilityTests = await getRaceAbilityTests(
+    raceSource,
+    year,
+    month,
+    day,
+    keibajoCode,
+    raceNumber,
+  );
+
+  return (
+    <section className="ability-test-section">
+      <div className="section-heading compact">
+        <h2>能力検査</h2>
+        <span>{abilityTests.length} 件</span>
+      </div>
+      <AbilityTestTable abilityTests={abilityTests} />
+    </section>
+  );
+}
+
+async function ConditionAnalysisSection({
+  conditionAnalysisLabels,
+  conditionAnalysisSettings,
+  query,
+  race,
+}: {
+  conditionAnalysisLabels: {
+    age: string | null;
+    class: string | null;
+    distance: string | null;
+    frame: string;
+    monthWindow: string;
+    raceNumber: string;
+    raceSubtitle: string | null;
+    raceTitle: string | null;
+    runnerCount: string | null;
+    sex: string | null;
+    surface: string | null;
+    turn: string | null;
+    venue: string | null;
+    weight: string | null;
+  };
+  conditionAnalysisSettings: SimilarRaceStatsSettings;
+  query: Record<string, string | string[] | undefined>;
+  race: NonNullable<Awaited<ReturnType<typeof getRaceDetail>>>;
+}) {
+  let resolvedSettings = conditionAnalysisSettings;
+  const getConditionAnalysisStats = async (settings: typeof resolvedSettings) =>
+    Promise.all([
+      getRaceTimeStats(race, settings),
+      getPayoutStats(race, settings),
+      getFinishPositionStats(race, settings),
+      getFrameStats(race, settings),
+    ]) satisfies Promise<ConditionAnalysisStats>;
+  let conditionAnalysisStats = await getConditionAnalysisStats(resolvedSettings);
+  if (
+    !hasSearchParam(query, CONDITION_ANALYSIS_OVERRIDE_PARAMS) &&
+    !hasCompleteConditionAnalysisRows(conditionAnalysisStats)
+  ) {
+    const candidates = getConditionAnalysisSettingCandidates(resolvedSettings).slice(1);
+    const matched = await findConditionAnalysisCandidate(candidates, getConditionAnalysisStats);
+    if (matched) {
+      resolvedSettings = matched.settings;
+      conditionAnalysisStats = matched.stats;
+    }
+  }
+  const [raceTimeStats, payoutStats, finishPositionStats, frameStats] = conditionAnalysisStats;
+
+  return (
+    <section className="similar-stats-section">
+      <div className="section-heading compact">
+        <h2>同条件レース分析</h2>
+        <span>
+          {resolvedSettings.years === null ? "全期間" : `過去${resolvedSettings.years}年`}
+        </span>
+      </div>
+      <RaceConditionAnalysisSection
+        conditionLabels={conditionAnalysisLabels}
+        frameStats={frameStats}
+        finishPositionStats={finishPositionStats}
+        payoutStats={payoutStats}
+        raceTimeStats={raceTimeStats}
+        settings={resolvedSettings}
+      />
+    </section>
+  );
+}
+
+async function BloodlineStatsSection({
+  conditionLabels,
+  query,
+  race,
+  runners,
+  settings,
+}: {
+  conditionLabels: {
+    age: string | null;
+    class: string | null;
+    distance: string | null;
+    frame: string;
+    monthWindow: string;
+    raceNumber: string;
+    raceSubtitle: string | null;
+    raceTitle: string | null;
+    sex: string | null;
+    surface: string | null;
+    turn: string | null;
+    venue: string | null;
+    weight: string | null;
+  };
+  query: Record<string, string | string[] | undefined>;
+  race: NonNullable<Awaited<ReturnType<typeof getRaceDetail>>>;
+  runners: Awaited<ReturnType<typeof getRaceRunners>>;
+  settings: SimilarRaceStatsSettings;
+}) {
+  let resolvedSettings = settings;
+  let bloodlineStats = await getBloodlineStats(race, resolvedSettings);
+
+  if (!hasSearchParam(query, CONDITION_ANALYSIS_OVERRIDE_PARAMS) && !hasRateRows(bloodlineStats)) {
+    const candidates = getConditionAnalysisSettingCandidates(resolvedSettings).slice(1);
+    const matched = await findRateStatsCandidate(candidates, (candidate) =>
+      getBloodlineStats(race, candidate),
+    );
+    if (matched) {
+      resolvedSettings = matched.settings;
+      bloodlineStats = matched.stats;
+    }
+  }
+
+  return (
+    <section className="similar-stats-section">
+      <div className="section-heading compact">
+        <h2>血統成績</h2>
+        <span>
+          {resolvedSettings.years === null ? "全期間" : `過去${resolvedSettings.years}年`}
+        </span>
+      </div>
+      <BloodlineStatsTable
+        conditionLabels={conditionLabels}
+        rows={bloodlineStats}
+        runners={runners}
+        settings={resolvedSettings}
+      />
+    </section>
+  );
+}
+
+async function SimilarStatsSection({
+  conditionLabels,
+  query,
+  race,
+  settings,
+}: {
+  conditionLabels: {
+    age: string | null;
+    class: string | null;
+    distance: string | null;
+    frame: string;
+    monthWindow: string;
+    raceNumber: string;
+    raceSubtitle: string | null;
+    raceTitle: string | null;
+    sex: string | null;
+    surface: string | null;
+    turn: string | null;
+    venue: string | null;
+    weight: string | null;
+  };
+  query: Record<string, string | string[] | undefined>;
+  race: NonNullable<Awaited<ReturnType<typeof getRaceDetail>>>;
+  settings: SimilarRaceStatsSettings;
+}) {
+  let resolvedSettings = settings;
+  let similarStats = await getSimilarRaceStats(race, resolvedSettings);
+
+  if (!hasSearchParam(query, CONDITION_ANALYSIS_OVERRIDE_PARAMS) && !hasRateRows(similarStats)) {
+    const candidates = getConditionAnalysisSettingCandidates(resolvedSettings).slice(1);
+    const matched = await findRateStatsCandidate(candidates, (candidate) =>
+      getSimilarRaceStats(race, candidate),
+    );
+    if (matched) {
+      resolvedSettings = matched.settings;
+      similarStats = matched.stats;
+    }
+  }
+
+  return (
+    <section className="similar-stats-section">
+      <div className="section-heading compact">
+        <h2>同条件成績</h2>
+        <span>
+          {resolvedSettings.years === null ? "全期間" : `過去${resolvedSettings.years}年`}
+        </span>
+      </div>
+      <SimilarRaceStatsTable
+        conditionLabels={conditionLabels}
+        rows={similarStats}
+        settings={resolvedSettings}
+      />
+    </section>
+  );
+}
+
 export default async function RaceDetailPage({ params, searchParams }: RaceDetailPageProps) {
   const { source, year, month, day, keibajoCode, raceNumber } = await params;
   const query = await searchParams;
@@ -469,15 +757,11 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
     venue: banEiRace ? null : formatKeibajo(keibajoCode),
     weight: getWeightLabel(race.juryoShubetsuCode),
   };
-  const [courseInfo, runners, raceResults, trainings, abilityTests, raceDayRaces] =
-    await Promise.all([
-      getRaceCourseInfo(keibajoCode, race.kyori, race.trackCode),
-      getRaceRunners(raceSource, year, month, day, keibajoCode, raceNumber),
-      getHorseRaceResults(raceSource, year, month, day, keibajoCode, raceNumber),
-      getRaceTrainings(raceSource, year, month, day, keibajoCode, raceNumber),
-      getRaceAbilityTests(raceSource, year, month, day, keibajoCode, raceNumber),
-      getRacesByDate(year, month, day),
-    ]);
+  const [courseInfo, runners, raceDayRaces] = await Promise.all([
+    getRaceCourseInfo(keibajoCode, race.kyori, race.trackCode),
+    getRaceRunners(raceSource, year, month, day, keibajoCode, raceNumber),
+    getRacesByDate(year, month, day),
+  ]);
   const sameVenueRaces = raceDayRaces
     .filter((item) => item.source === raceSource && item.keibajoCode === keibajoCode)
     .toSorted((left, right) => Number(left.raceBango) - Number(right.raceBango));
@@ -504,58 +788,6 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
     ...statsConditionLabels,
     runnerCount: currentRunnerCount === null ? null : `${currentRunnerCount}頭`,
   };
-  const getConditionAnalysisStats = async (settings: typeof conditionAnalysisSettings) =>
-    Promise.all([
-      getRaceTimeStats(race, settings),
-      getPayoutStats(race, settings),
-      getFinishPositionStats(race, settings),
-      getFrameStats(race, settings),
-    ]) satisfies Promise<ConditionAnalysisStats>;
-  let conditionAnalysisStats = await getConditionAnalysisStats(conditionAnalysisSettings);
-  if (
-    !hasSearchParam(query, CONDITION_ANALYSIS_OVERRIDE_PARAMS) &&
-    !hasCompleteConditionAnalysisRows(conditionAnalysisStats)
-  ) {
-    const candidates = getConditionAnalysisSettingCandidates(conditionAnalysisSettings).slice(1);
-    const matched = await findConditionAnalysisCandidate(candidates, getConditionAnalysisStats);
-    if (matched) {
-      conditionAnalysisSettings = matched.settings;
-      conditionAnalysisStats = matched.stats;
-    }
-  }
-  const [raceTimeStats, payoutStats, finishPositionStats, frameStats] = conditionAnalysisStats;
-  let resolvedBloodlineStatsSettings = bloodlineStatsSettings;
-  let resolvedStatsSettings = statsSettings;
-  const [initialBloodlineStats, initialSimilarStats] = await Promise.all([
-    getBloodlineStats(race, resolvedBloodlineStatsSettings),
-    getSimilarRaceStats(race, resolvedStatsSettings),
-  ]);
-  let bloodlineStats = initialBloodlineStats;
-  let similarStats = initialSimilarStats;
-
-  if (!hasSearchParam(query, CONDITION_ANALYSIS_OVERRIDE_PARAMS) && !hasRateRows(bloodlineStats)) {
-    const candidates = getConditionAnalysisSettingCandidates(resolvedBloodlineStatsSettings).slice(
-      1,
-    );
-    const matched = await findRateStatsCandidate(candidates, (candidate) =>
-      getBloodlineStats(race, candidate),
-    );
-    if (matched) {
-      resolvedBloodlineStatsSettings = matched.settings;
-      bloodlineStats = matched.stats;
-    }
-  }
-
-  if (!hasSearchParam(query, CONDITION_ANALYSIS_OVERRIDE_PARAMS) && !hasRateRows(similarStats)) {
-    const candidates = getConditionAnalysisSettingCandidates(resolvedStatsSettings).slice(1);
-    const matched = await findRateStatsCandidate(candidates, (candidate) =>
-      getSimilarRaceStats(race, candidate),
-    );
-    if (matched) {
-      resolvedStatsSettings = matched.settings;
-      similarStats = matched.stats;
-    }
-  }
   const courseText = cleanText(courseInfo?.courseSetsumei, "");
   const courseFacts = getCourseFacts(courseText, race.kyori, race.trackCode);
   const courseParagraphs = courseText
@@ -564,16 +796,6 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
   const courseImagePath = getCourseImagePath(keibajoCode, race.trackCode, race.kyori);
   const realtimeApiBaseUrl =
     process.env.NEXT_PUBLIC_REALTIME_DATA_API_BASE_URL ?? "https://sync-realtime-data.kkk4oru.com";
-  const realtimePayload = await fetchRealtimeRacePayload(
-    realtimeApiBaseUrl,
-    raceSource,
-    year,
-    month,
-    day,
-    keibajoCode,
-    raceNumber,
-  );
-
   return (
     <section className="page-shell">
       <div className="race-global-summary" aria-label="race summary in global header">
@@ -777,7 +999,7 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
         ) : (
           <RunnersTable
             decodeHexHorseWeight={raceSource === "nar" && isBanEiKeibajoCode(keibajoCode)}
-            initialRealtimePayload={realtimePayload}
+            initialRealtimePayload={null}
             realtimeRequest={{
               apiBaseUrl: realtimeApiBaseUrl,
               day,
@@ -795,7 +1017,7 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
       <RealtimeRaceSection
         apiBaseUrl={realtimeApiBaseUrl}
         day={day}
-        initialPayload={realtimePayload}
+        initialPayload={null}
         keibajoCode={keibajoCode}
         month={month}
         raceNumber={raceNumber}
@@ -804,92 +1026,74 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
         year={year}
       />
 
-      <section className="race-results-section">
-        <div className="section-heading compact">
-          <h2>競走成績</h2>
-          <span>{raceResults.length} 件</span>
-        </div>
-        <HorseRaceResultsTable
+      <Suspense fallback={<SectionSkeleton title="競走成績" />}>
+        <RaceResultsSection
           classConditionName={statsClassConditionLabel}
           currentDistance={race.kyori}
           currentKeibajoCode={race.keibajoCode}
           currentRaceDate={`${year}${month}${day}`}
+          day={day}
           defaultIncludeClass={statsSettings.includeClass}
-          results={raceResults}
+          keibajoCode={keibajoCode}
+          month={month}
+          raceNumber={raceNumber}
+          raceSource={raceSource}
           runners={runners}
-          source={raceSource}
+          year={year}
         />
-      </section>
+      </Suspense>
 
-      <section className="training-section">
-        <div className="section-heading compact">
-          <h2>調教・追い切り</h2>
-          <span>{trainings.length} 件</span>
-        </div>
-        <TrainingTable sourceLabel={SOURCE_LABELS[raceSource]} trainings={trainings} />
-      </section>
+      <Suspense fallback={<SectionSkeleton title="調教・追い切り" />}>
+        <TrainingSection
+          day={day}
+          keibajoCode={keibajoCode}
+          month={month}
+          raceNumber={raceNumber}
+          raceSource={raceSource}
+          year={year}
+        />
+      </Suspense>
 
       {raceSource === "nar" ? (
-        <section className="ability-test-section">
-          <div className="section-heading compact">
-            <h2>能力検査</h2>
-            <span>{abilityTests.length} 件</span>
-          </div>
-          <AbilityTestTable abilityTests={abilityTests} />
-        </section>
+        <Suspense fallback={<SectionSkeleton title="能力検査" />}>
+          <AbilityTestSection
+            day={day}
+            keibajoCode={keibajoCode}
+            month={month}
+            raceNumber={raceNumber}
+            raceSource={raceSource}
+            year={year}
+          />
+        </Suspense>
       ) : null}
 
-      <section className="similar-stats-section">
-        <div className="section-heading compact">
-          <h2>同条件レース分析</h2>
-          <span>
-            {conditionAnalysisSettings.years === null
-              ? "全期間"
-              : `過去${conditionAnalysisSettings.years}年`}
-          </span>
-        </div>
-        <RaceConditionAnalysisSection
-          conditionLabels={conditionAnalysisLabels}
-          frameStats={frameStats}
-          finishPositionStats={finishPositionStats}
-          payoutStats={payoutStats}
-          raceTimeStats={raceTimeStats}
-          settings={conditionAnalysisSettings}
+      <Suspense fallback={<SectionSkeleton title="同条件レース分析" />}>
+        <ConditionAnalysisSection
+          conditionAnalysisLabels={conditionAnalysisLabels}
+          conditionAnalysisSettings={conditionAnalysisSettings}
+          query={query}
+          race={race}
         />
-      </section>
+      </Suspense>
 
-      <section className="similar-stats-section">
-        <div className="section-heading compact">
-          <h2>血統成績</h2>
-          <span>
-            {resolvedBloodlineStatsSettings.years === null
-              ? "全期間"
-              : `過去${resolvedBloodlineStatsSettings.years}年`}
-          </span>
-        </div>
-        <BloodlineStatsTable
+      <Suspense fallback={<SectionSkeleton title="血統成績" />}>
+        <BloodlineStatsSection
           conditionLabels={statsConditionLabels}
-          rows={bloodlineStats}
+          query={query}
+          race={race}
           runners={runners}
-          settings={resolvedBloodlineStatsSettings}
+          settings={bloodlineStatsSettings}
         />
-      </section>
+      </Suspense>
 
-      <section className="similar-stats-section">
-        <div className="section-heading compact">
-          <h2>同条件成績</h2>
-          <span>
-            {resolvedStatsSettings.years === null
-              ? "全期間"
-              : `過去${resolvedStatsSettings.years}年`}
-          </span>
-        </div>
-        <SimilarRaceStatsTable
+      <Suspense fallback={<SectionSkeleton title="同条件成績" />}>
+        <SimilarStatsSection
           conditionLabels={statsConditionLabels}
-          rows={similarStats}
-          settings={resolvedStatsSettings}
+          query={query}
+          race={race}
+          settings={statsSettings}
         />
-      </section>
+      </Suspense>
     </section>
   );
 }
