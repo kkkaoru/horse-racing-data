@@ -49,6 +49,19 @@ export const formatHorseWeight = (
   return `${displayWeight}kg (${cleanSign}${displayDiff})`;
 };
 
+export const formatCarriedWeight = (
+  weight: string | null | undefined,
+  decodeHex = false,
+): string => {
+  const cleaned = cleanText(weight, "");
+  if (!cleaned || cleaned.toUpperCase() === "FFF") {
+    return "-";
+  }
+
+  const parsed = decodeHex ? Number.parseInt(cleaned, 16) : Number(cleaned);
+  return Number.isFinite(parsed) ? String(parsed) : cleaned;
+};
+
 export const formatRunnerValue = (value: string | null | undefined, emptyValue: string): string => {
   const cleaned = cleanText(value, "");
   return cleaned === emptyValue ? "-" : cleanText(value);

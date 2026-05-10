@@ -121,10 +121,19 @@ describe("runners table", () => {
     render(
       <RunnersTable
         decodeHexHorseWeight
-        runners={[runner({ bataiju: "4AE", bamei: "ばんえい馬", umaban: "01", zogenSa: "008" })]}
+        runners={[
+          runner({
+            bataiju: "4AE",
+            bamei: "ばんえい馬",
+            futanJuryo: "26C",
+            umaban: "01",
+            zogenSa: "008",
+          }),
+        ]}
       />,
     );
 
     expect(screen.getByText("1198kg (+8)")).toBeTruthy();
+    expect(screen.getByText("620")).toBeTruthy();
   });
 });

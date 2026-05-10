@@ -14,6 +14,7 @@ import {
 import { getRaceTags } from "../../../lib/race-classification";
 import type { HorseRaceResult, Runner } from "../../../lib/race-types";
 import {
+  formatCarriedWeight,
   formatHorseWeight,
   formatRunnerNumber,
   formatRunnerValue,
@@ -595,7 +596,7 @@ export function HorseRaceResultsTable({
                       {cleanText(result.kishumeiRyakusho)}
                     </td>
                     <td>{formatSexAge(result.seibetsuCode, result.barei)}</td>
-                    <td>{cleanText(result.futanJuryo)}</td>
+                    <td>{formatCarriedWeight(result.futanJuryo, result.keibajoCode === "83")}</td>
                     <td>
                       {formatHorseWeight(
                         result.bataiju,
