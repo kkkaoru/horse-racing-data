@@ -6,6 +6,7 @@ import { useMemo, useState } from "react";
 import { cleanText } from "../../../lib/format";
 import type { Runner } from "../../../lib/race-types";
 import {
+  formatCarriedWeight,
   formatHorseWeight,
   formatRunnerNumber,
   formatRunnerValue,
@@ -182,7 +183,7 @@ export function RunnersTable({
           <strong>{cleanText(runner.bamei)}</strong>
         </td>
         <td>{formatSexAge(runner.seibetsuCode, runner.barei)}</td>
-        <td>{cleanText(runner.futanJuryo)}</td>
+        <td>{formatCarriedWeight(runner.futanJuryo, decodeHexHorseWeight)}</td>
         <td>{cleanText(runner.kishumeiRyakusho)}</td>
         <td>{cleanText(runner.chokyoshimeiRyakusho)}</td>
         <td>{cleanText(runner.banushimei)}</td>

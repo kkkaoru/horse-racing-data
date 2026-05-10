@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  formatCarriedWeight,
   formatHorseWeight,
   formatRunnerNumber,
   formatRunnerValue,
@@ -15,6 +16,13 @@ describe("runner format helpers", () => {
     expect(formatHorseWeight("406", "+", "00B", true)).toBe("1030kg (+11)");
     expect(formatHorseWeight("FFF", "+", "FFF", true)).toBe("-");
     expect(formatHorseWeight(" ", "+", "12")).toBe("-");
+  });
+
+  it("formats carried weight with ban-ei hexadecimal values", () => {
+    expect(formatCarriedWeight("55")).toBe("55");
+    expect(formatCarriedWeight("262", true)).toBe("610");
+    expect(formatCarriedWeight("26C", true)).toBe("620");
+    expect(formatCarriedWeight("FFF", true)).toBe("-");
   });
 
   it("replaces sentinel runner values with dash", () => {
