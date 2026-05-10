@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { getRacesByDate } from "../../../../../db/queries";
-import { formatDate, formatDisplayDate } from "../../../../../lib/format";
+import { formatDate, formatDisplayDate, formatKeibajo } from "../../../../../lib/format";
 import { RaceDateFilter } from "./race-date-filter";
 
 export const dynamic = "force-dynamic";
@@ -25,13 +25,20 @@ export default async function RaceDatePage({ params }: RaceDatePageProps) {
   }
 
   const races = await getRacesByDate(year, month, day);
+  const venues = [...new Set(races.map((race) => race.keibajoCode))]
+    .map((keibajoCode) => ({
+      keibajoCode,
+      name: formatKeibajo(keibajoCode),
+      raceCount: races.filter((race) => race.keibajoCode === keibajoCode).length,
+    }))
+    .toSorted((left, right) => left.name.localeCompare(right.name, "ja"));
 
   return (
     <section className="page-shell">
       <div className="breadcrumbs">
         <Link href="/races">開催日一覧</Link>
-        <span>{year}年</span>
-        <span>{Number(month)}月</span>
+        <Link href={`/races/${year}`}>{year}年</Link>
+        <Link href={`/races/${year}/${month}`}>{Number(month)}月</Link>
         <span>{Number(day)}日</span>
       </div>
 
@@ -49,7 +56,20 @@ export default async function RaceDatePage({ params }: RaceDatePageProps) {
       {races.length === 0 ? (
         <p className="empty-state">この日のレースは見つかりませんでした。</p>
       ) : (
-        <RaceDateFilter day={day} month={month} races={races} year={year} />
+        <>
+          <nav className="year-nav venue-nav" aria-label="venue navigation">
+            {venues.map((venue) => (
+              <Link
+                href={`/races/${year}/${month}/${day}/${venue.keibajoCode}`}
+                key={venue.keibajoCode}
+              >
+                <strong>{venue.name}</strong>
+                <span>{venue.raceCount}R</span>
+              </Link>
+            ))}
+          </nav>
+          <RaceDateFilter day={day} month={month} races={races} year={year} />
+        </>
       )}
     </section>
   );

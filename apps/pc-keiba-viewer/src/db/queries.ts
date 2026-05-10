@@ -158,6 +158,46 @@ export const getRacesByDate = cache(
   },
 );
 
+export const getRaceSourceByRoute = cache(
+  async (
+    year: string,
+    month: string,
+    day: string,
+    keibajoCode: string,
+    raceNumber: string,
+  ): Promise<RaceSource | null> =>
+    withDbQueryCache(
+      ["getRaceSourceByRoute", year, month, day, keibajoCode, raceNumber],
+      async () => {
+        const monthDay = `${month}${day}`;
+        const result = await getDb().execute<{ source: RaceSource }>(sql`
+    select source
+    from (
+      select 'jra'::text as source
+      from ${jvdRa}
+      where
+        kaisai_nen = ${year}
+        and kaisai_tsukihi = ${monthDay}
+        and keibajo_code = ${keibajoCode}
+        and race_bango = ${raceNumber}
+      union all
+      select 'nar'::text as source
+      from ${nvdRa}
+      where
+        kaisai_nen = ${year}
+        and kaisai_tsukihi = ${monthDay}
+        and keibajo_code = ${keibajoCode}
+        and race_bango = ${raceNumber}
+    ) races
+    order by source asc
+    limit 1
+  `);
+
+        return result.rows[0]?.source ?? null;
+      },
+    ),
+);
+
 export const getRaceDetail = cache(
   async (
     source: RaceSource,

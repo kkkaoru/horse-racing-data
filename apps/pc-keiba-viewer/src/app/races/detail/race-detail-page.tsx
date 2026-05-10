@@ -17,13 +17,9 @@ import {
   getRaceTrainings,
   getRacesByDate,
   getSimilarRaceStats,
-} from "../../../../../../../../../db/queries";
-import { SOURCE_LABELS, type RaceSource } from "../../../../../../../../../lib/codes";
-import {
-  formatCourseParagraphs,
-  getCourseFacts,
-  getCourseImagePath,
-} from "../../../../../../../../../lib/course";
+} from "../../../db/queries";
+import { SOURCE_LABELS, type RaceSource } from "../../../lib/codes";
+import { formatCourseParagraphs, getCourseFacts, getCourseImagePath } from "../../../lib/course";
 import {
   cleanText,
   formatBaba,
@@ -37,7 +33,7 @@ import {
   formatWeather,
   getTrackSurfaceLabel,
   getTrackTurnLabel,
-} from "../../../../../../../../../lib/format";
+} from "../../../lib/format";
 import {
   getAgeLabel,
   getConditionLabel,
@@ -45,7 +41,7 @@ import {
   getRaceSymbolLabel,
   getRaceTags,
   getWeightLabel,
-} from "../../../../../../../../../lib/race-classification";
+} from "../../../lib/race-classification";
 import type {
   BloodlineStatsRow,
   FinishPositionStatsRow,
@@ -54,47 +50,28 @@ import type {
   RaceTimeStats,
   SimilarRaceStatsRow,
   SimilarRaceStatsSettings,
-} from "../../../../../../../../../lib/race-types";
-import { isBanEiKeibajoCode } from "../../../../../../../../../lib/runner-format";
-import { AbilityTestTable } from "../../../../../../ability-test-table";
-import { BloodlineStatsTable } from "../../../../../../bloodline-stats-table";
-import { HorseRaceResultsTable } from "../../../../../../horse-race-results-table";
-import { RaceConditionAnalysisSection } from "../../../../../../race-condition-analysis-section";
-import { RealtimeRaceSection } from "../../../../../../realtime-race-section";
-import { RunnersTable } from "../../../../../../runners-table";
-import { SimilarRaceStatsTable } from "../../../../../../similar-race-stats-table";
-import { TrainingTable } from "../../../../../../training-table";
+} from "../../../lib/race-types";
+import { isBanEiKeibajoCode } from "../../../lib/runner-format";
+import { AbilityTestTable } from "./ability-test-table";
+import { BloodlineStatsTable } from "./bloodline-stats-table";
+import { HorseRaceResultsTable } from "./horse-race-results-table";
+import { RaceConditionAnalysisSection } from "./race-condition-analysis-section";
+import { RealtimeRaceSection } from "./realtime-race-section";
+import { RunnersTable } from "./runners-table";
+import { SimilarRaceStatsTable } from "./similar-race-stats-table";
+import { TrainingTable } from "./training-table";
 
 export const dynamic = "force-dynamic";
 
-interface RaceDetailPageProps {
-  params: Promise<{
-    source: string;
-    year: string;
-    month: string;
-    day: string;
-    keibajoCode: string;
-    raceNumber: string;
-  }>;
-  searchParams: Promise<Record<string, string | string[] | undefined>>;
+interface RaceDetailViewProps {
+  day: string;
+  keibajoCode: string;
+  month: string;
+  raceNumber: string;
+  searchParams: Record<string, string | string[] | undefined>;
+  source: RaceSource;
+  year: string;
 }
-
-const isRaceSource = (source: string): source is RaceSource => source === "jra" || source === "nar";
-
-const isValidParams = (
-  source: string,
-  year: string,
-  month: string,
-  day: string,
-  keibajoCode: string,
-  raceNumber: string,
-): boolean =>
-  isRaceSource(source) &&
-  /^\d{4}$/.test(year) &&
-  /^\d{2}$/.test(month) &&
-  /^\d{2}$/.test(day) &&
-  /^[0-9A-Z]{2}$/.test(keibajoCode) &&
-  /^\d{2}$/.test(raceNumber);
 
 const getFirstSearchParam = (value: string | string[] | undefined): string | undefined =>
   Array.isArray(value) ? value[0] : value;
@@ -212,7 +189,7 @@ const getRaceDetailPath = (race: {
   keibajoCode: string;
   raceBango: string;
 }): string =>
-  `/races/detail/${race.source}/${race.kaisaiNen}/${race.kaisaiTsukihi.slice(0, 2)}/${race.kaisaiTsukihi.slice(2, 4)}/${race.keibajoCode}/${race.raceBango}`;
+  `/races/${race.kaisaiNen}/${race.kaisaiTsukihi.slice(0, 2)}/${race.kaisaiTsukihi.slice(2, 4)}/${race.keibajoCode}/${race.raceBango}`;
 
 const getAdjacentRaceLabel = (race: {
   hassoJikoku: string | null;
@@ -685,14 +662,15 @@ async function SimilarStatsSection({
   );
 }
 
-export default async function RaceDetailPage({ params, searchParams }: RaceDetailPageProps) {
-  const { source, year, month, day, keibajoCode, raceNumber } = await params;
-  const query = await searchParams;
-  if (!isValidParams(source, year, month, day, keibajoCode, raceNumber)) {
-    notFound();
-  }
-
-  const raceSource = isRaceSource(source) ? source : notFound();
+export async function RaceDetailView({
+  day,
+  keibajoCode,
+  month,
+  raceNumber,
+  searchParams: query,
+  source: raceSource,
+  year,
+}: RaceDetailViewProps) {
   const race = await getRaceDetail(raceSource, year, month, day, keibajoCode, raceNumber);
 
   if (!race) {
@@ -827,8 +805,13 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
       ) : null}
       <div className="breadcrumbs">
         <Link href="/races">開催日一覧</Link>
+        <Link href={`/races/${year}`}>{year}年</Link>
+        <Link href={`/races/${year}/${month}`}>{Number(month)}月</Link>
         <Link href={`/races/${year}/${month}/${day}`}>
           {formatDisplayDate(year, `${month}${day}`)}
+        </Link>
+        <Link href={`/races/${year}/${month}/${day}/${keibajoCode}`}>
+          {formatKeibajo(keibajoCode)}
         </Link>
         <span>
           {formatKeibajo(keibajoCode)} {formatRaceNumber(raceNumber)}

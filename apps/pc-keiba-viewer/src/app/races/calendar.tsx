@@ -50,7 +50,9 @@ export function RaceCalendar({ days, selectedYear, years }: RaceCalendarProps) {
         <div className="month-grid">
           {Array.from(monthGroups.entries()).map(([month, monthDays]) => (
             <section className="month-panel" key={`${selectedYear}-${month}`}>
-              <h3>{Number(month)}月</h3>
+              <h3>
+                <Link href={`/races/${selectedYear}/${month}`}>{Number(month)}月</Link>
+              </h3>
               <div className="day-grid">
                 {monthDays.map((day) => (
                   <Link
