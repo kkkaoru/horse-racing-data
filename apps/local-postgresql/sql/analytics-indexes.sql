@@ -84,6 +84,14 @@ create index concurrently if not exists nvd_ra_start_key_idx
 create index concurrently if not exists nvd_ns_ketto_date_idx
   on public.nvd_ns (ketto_toroku_bango, kaisai_nen, kaisai_tsukihi);
 
+create index concurrently if not exists jvd_se_horse_list_idx
+  on public.jvd_se (ketto_toroku_bango, kaisai_nen desc, kaisai_tsukihi desc, race_bango desc)
+  include (bamei, kakutei_chakujun, keibajo_code);
+
+create index concurrently if not exists nvd_se_horse_list_idx
+  on public.nvd_se (ketto_toroku_bango, kaisai_nen desc, kaisai_tsukihi desc, race_bango desc)
+  include (bamei, kakutei_chakujun, keibajo_code);
+
 -- Indexes for pc-keiba-viewer horse / jockey / trainer list pages.
 -- These keep latest-list rendering fast while still showing all-time stats.
 
