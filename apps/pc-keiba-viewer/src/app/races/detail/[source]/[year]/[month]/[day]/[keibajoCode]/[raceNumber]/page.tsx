@@ -55,6 +55,7 @@ import type {
   SimilarRaceStatsRow,
   SimilarRaceStatsSettings,
 } from "../../../../../../../../../lib/race-types";
+import { isBanEiKeibajoCode } from "../../../../../../../../../lib/runner-format";
 import { AbilityTestTable } from "../../../../../../ability-test-table";
 import { BloodlineStatsTable } from "../../../../../../bloodline-stats-table";
 import { HorseRaceResultsTable } from "../../../../../../horse-race-results-table";
@@ -150,7 +151,8 @@ const getLocalConditionLabel = (value: string | null | undefined): string => {
     const opMatch = cleaned.match(/[ＯO]Ｐ|OP/i);
     return opMatch?.[0] ?? "OP";
   }
-  return cleaned.split(" ")[0] ?? "";
+  const localClass = normalized.split(" ")[0] ?? "";
+  return /^[A-Z][0-9]+(?:-[0-9]+)?$/.test(localClass) ? localClass : "";
 };
 
 const getClassConditionLabel = (race: Awaited<ReturnType<typeof getRaceDetail>>): string | null => {
@@ -191,7 +193,7 @@ const getRaceNameFilterLabels = (
 };
 
 const isBanEi = (race: Awaited<ReturnType<typeof getRaceDetail>>): boolean =>
-  race?.source === "nar" && ["81", "82", "83", "84"].includes(race.keibajoCode);
+  race?.source === "nar" && isBanEiKeibajoCode(race.keibajoCode);
 
 const isListedOrHigher = (race: Awaited<ReturnType<typeof getRaceDetail>>): boolean =>
   race ? LISTED_OR_HIGHER_GRADE_CODES.has(cleanText(race.gradeCode, "")) : false;
@@ -774,7 +776,7 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
           <p className="empty-state">出走馬情報はまだありません。</p>
         ) : (
           <RunnersTable
-            decodeHexHorseWeight={raceSource === "nar" && keibajoCode === "83"}
+            decodeHexHorseWeight={raceSource === "nar" && isBanEiKeibajoCode(keibajoCode)}
             initialRealtimePayload={realtimePayload}
             realtimeRequest={{
               apiBaseUrl: realtimeApiBaseUrl,
@@ -808,9 +810,11 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
           <span>{raceResults.length} 件</span>
         </div>
         <HorseRaceResultsTable
+          classConditionName={statsClassConditionLabel}
           currentDistance={race.kyori}
           currentKeibajoCode={race.keibajoCode}
           currentRaceDate={`${year}${month}${day}`}
+          defaultIncludeClass={statsSettings.includeClass}
           results={raceResults}
           runners={runners}
           source={raceSource}

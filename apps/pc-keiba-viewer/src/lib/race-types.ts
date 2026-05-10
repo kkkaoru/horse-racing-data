@@ -221,10 +221,13 @@ export interface BloodlineStatsRow extends Record<string, unknown> {
 }
 
 export interface StatsDetail extends Record<string, unknown> {
+  damSireName?: string;
   date: string;
   keibajoCode: string;
   raceNumber: string;
   raceName: string;
+  sireName?: string;
+  sireSireName?: string;
   horseName: string;
   frameNumber: string;
   horseNumber: string;

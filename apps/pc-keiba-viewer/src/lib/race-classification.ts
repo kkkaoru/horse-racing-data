@@ -140,8 +140,8 @@ const getConditionNameLabel = (value: string | null | undefined): string => {
     return clean(value);
   }
 
-  const localClass = getFirstToken(clean(value));
-  return /[Ａ-ＺA-Z][0-9０-９]+[－ー―‐-][0-9０-９]+/.test(localClass) ? localClass : "";
+  const localClass = getFirstToken(normalized);
+  return /^[A-Z][0-9]+(?:-[0-9]+)?$/.test(localClass) ? localClass : "";
 };
 
 export const getRaceTags = (

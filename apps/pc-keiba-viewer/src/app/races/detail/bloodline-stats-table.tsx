@@ -146,6 +146,9 @@ const splitHorseNumbers = (value: string): string[] =>
 
 const normalize = (value: number, max: number): number => (max > 0 ? value / max : 0);
 
+const isTargetBloodline = (value: string | undefined, targetName: string): boolean =>
+  cleanText(value, "") === cleanText(targetName, "");
+
 export function BloodlineStatsTable({
   conditionLabels,
   rows,
@@ -315,6 +318,10 @@ export function BloodlineStatsTable({
             <table className="stats-detail-table">
               <thead>
                 <tr>
+                  <th>父</th>
+                  <th>父父</th>
+                  <th>母父</th>
+                  <th>名前</th>
                   <th>日付</th>
                   <th>競馬場</th>
                   <th>R</th>
@@ -333,6 +340,34 @@ export function BloodlineStatsTable({
                   <tr
                     key={`${detail.date}-${detail.keibajoCode}-${detail.raceNumber}-${detail.frameNumber}-${detail.horseNumber}-${detail.rank}`}
                   >
+                    <td
+                      className={
+                        isTargetBloodline(detail.sireName, row.name)
+                          ? "bloodline-detail-target"
+                          : undefined
+                      }
+                    >
+                      {detail.sireName || "-"}
+                    </td>
+                    <td
+                      className={
+                        isTargetBloodline(detail.sireSireName, row.name)
+                          ? "bloodline-detail-target"
+                          : undefined
+                      }
+                    >
+                      {detail.sireSireName || "-"}
+                    </td>
+                    <td
+                      className={
+                        isTargetBloodline(detail.damSireName, row.name)
+                          ? "bloodline-detail-target"
+                          : undefined
+                      }
+                    >
+                      {detail.damSireName || "-"}
+                    </td>
+                    <td className="stats-detail-horse-name">{detail.horseName || "-"}</td>
                     <td>{formatDetailDate(detail.date)}</td>
                     <td>{formatKeibajo(detail.keibajoCode)}</td>
                     <td>{formatRaceNumber(detail.raceNumber)}</td>
@@ -363,6 +398,7 @@ export function BloodlineStatsTable({
       return categoryRow.details.map((detail) => ({
         bloodlineCategory: CATEGORY_LABELS[category],
         bloodlineName: categoryRow.name,
+        category,
         detail,
       }));
     }).toSorted(
@@ -380,7 +416,9 @@ export function BloodlineStatsTable({
             <table className="stats-detail-table">
               <thead>
                 <tr>
-                  <th>血統</th>
+                  <th>父</th>
+                  <th>父父</th>
+                  <th>母父</th>
                   <th>名前</th>
                   <th>日付</th>
                   <th>競馬場</th>
@@ -400,8 +438,34 @@ export function BloodlineStatsTable({
                   <tr
                     key={`${bloodlineCategory}-${bloodlineName}-${detail.date}-${detail.keibajoCode}-${detail.raceNumber}-${detail.frameNumber}-${detail.horseNumber}-${detail.rank}`}
                   >
-                    <td>{bloodlineCategory}</td>
-                    <td className="stats-detail-horse-name">{bloodlineName}</td>
+                    <td
+                      className={
+                        isTargetBloodline(detail.sireName, bloodlineName)
+                          ? "bloodline-detail-target"
+                          : undefined
+                      }
+                    >
+                      {detail.sireName || "-"}
+                    </td>
+                    <td
+                      className={
+                        isTargetBloodline(detail.sireSireName, bloodlineName)
+                          ? "bloodline-detail-target"
+                          : undefined
+                      }
+                    >
+                      {detail.sireSireName || "-"}
+                    </td>
+                    <td
+                      className={
+                        isTargetBloodline(detail.damSireName, bloodlineName)
+                          ? "bloodline-detail-target"
+                          : undefined
+                      }
+                    >
+                      {detail.damSireName || "-"}
+                    </td>
+                    <td className="stats-detail-horse-name">{detail.horseName || "-"}</td>
                     <td>{formatDetailDate(detail.date)}</td>
                     <td>{formatKeibajo(detail.keibajoCode)}</td>
                     <td>{formatRaceNumber(detail.raceNumber)}</td>

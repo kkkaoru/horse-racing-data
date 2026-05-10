@@ -19,6 +19,7 @@ import {
   formatRunnerNumber,
   formatRunnerValue,
   formatSexAge,
+  isBanEiKeibajoCode,
 } from "../../../lib/runner-format";
 
 type ResultLimit = "all" | "1" | "3" | "5" | "10";
@@ -26,9 +27,11 @@ type SortDirection = "asc" | "desc";
 type SortKey = "date" | "kohan3f" | "sohaTime";
 
 interface HorseRaceResultsTableProps {
+  classConditionName: string | null;
   currentDistance: string | null | undefined;
   currentKeibajoCode: string;
   currentRaceDate: string;
+  defaultIncludeClass: boolean;
   results: HorseRaceResult[];
   runners: Runner[];
   source: "jra" | "nar";
@@ -133,6 +136,50 @@ const formatRank = (value: string | null | undefined): string => {
 const normalizeText = (value: string | null | undefined): string =>
   cleanText(value, "").replace(/\s+/g, "").replace(/　+/g, "");
 
+const normalizeConditionText = (value: string | null | undefined): string =>
+  cleanText(value, "")
+    .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xfee0))
+    .replace(/[－ー―‐]/g, "-")
+    .replace(/\s+/g, " ")
+    .replace(/　+/g, " ")
+    .trim();
+
+const getRaceResultClassLabel = (result: HorseRaceResult): string => {
+  const localClass = normalizeConditionText(result.kyosoJokenMeisho).split(" ")[0] ?? "";
+  if (/^[A-Z][0-9]+(?:-[0-9]+)?$/.test(localClass)) {
+    return localClass;
+  }
+  const tags = getRaceTags(result);
+  return tags.find((tag) => /^[A-Z][0-9]+(?:-[0-9]+)?$/.test(tag)) ?? "";
+};
+
+const getClassFilterOptions = (classConditionName: string | null): string[] => {
+  const normalized = normalizeConditionText(classConditionName);
+  const match = normalized.match(/^([A-Z])([0-9]+)(?:-[0-9]+)?$/);
+  if (!match) {
+    return normalized ? [normalized] : [];
+  }
+  const [, alphabet, number] = match;
+  if (!alphabet || !number) {
+    return normalized ? [normalized] : [];
+  }
+  return [...new Set([alphabet, `${alphabet}${number}`, normalized])];
+};
+
+const isClassMatched = (result: HorseRaceResult, classFilter: string): boolean => {
+  const resultClass = getRaceResultClassLabel(result);
+  if (!resultClass) {
+    return false;
+  }
+  if (/^[A-Z]$/.test(classFilter)) {
+    return resultClass.startsWith(classFilter);
+  }
+  if (/^[A-Z][0-9]+$/.test(classFilter)) {
+    return resultClass === classFilter || resultClass.startsWith(`${classFilter}-`);
+  }
+  return resultClass === classFilter;
+};
+
 const getSortValue = (result: HorseRaceResult, key: SortKey): number | null => {
   if (key === "date") {
     return Number(`${result.kaisaiNen}${result.kaisaiTsukihi}`);
@@ -186,9 +233,11 @@ const compareByTimeAndDate = (left: HorseRaceResult, right: HorseRaceResult): nu
 };
 
 export function HorseRaceResultsTable({
+  classConditionName,
   currentDistance,
   currentKeibajoCode,
   currentRaceDate,
+  defaultIncludeClass,
   results,
   runners,
   source,
@@ -213,6 +262,15 @@ export function HorseRaceResultsTable({
   const runnerNumberOptions = useMemo(
     () => getRunnerNumberOptions(runners, results),
     [results, runners],
+  );
+  const classFilterOptions = useMemo(
+    () => getClassFilterOptions(classConditionName),
+    [classConditionName],
+  );
+  const [classFilter, setClassFilter] = useState<string>(() =>
+    defaultIncludeClass && classFilterOptions.length > 0
+      ? (classFilterOptions.at(-1) ?? "all")
+      : "all",
   );
   const [selectedRunnerNumbers, setSelectedRunnerNumbers] = useState<string[]>(() =>
     getRunnerNumberOptions(runners, results),
@@ -298,6 +356,9 @@ export function HorseRaceResultsTable({
       if (!jockeyMatched) {
         continue;
       }
+      if (classFilter !== "all" && !isClassMatched(result, classFilter)) {
+        continue;
+      }
       const raceDate = getRaceDateValue(result);
       if (recentDateMin !== null && (raceDate === null || raceDate < recentDateMin)) {
         continue;
@@ -376,6 +437,7 @@ export function HorseRaceResultsTable({
       });
   }, [
     baseDistance,
+    classFilter,
     currentRaceDate,
     distanceMax,
     distanceMin,
@@ -474,6 +536,24 @@ export function HorseRaceResultsTable({
             <option value="10">10件</option>
           </select>
         </label>
+        {classFilterOptions.length > 0 ? (
+          <label>
+            <span>条件</span>
+            <select
+              value={classFilter}
+              onChange={(event) => {
+                setClassFilter(event.currentTarget.value);
+              }}
+            >
+              <option value="all">全条件</option>
+              {classFilterOptions.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         <label className="race-results-checkbox-label">
           <span>出走予定と同じ騎手</span>
           <span className="race-results-checkbox-control">
@@ -671,13 +751,18 @@ export function HorseRaceResultsTable({
                       {cleanText(result.kishumeiRyakusho)}
                     </td>
                     <td>{formatSexAge(result.seibetsuCode, result.barei)}</td>
-                    <td>{formatCarriedWeight(result.futanJuryo, result.keibajoCode === "83")}</td>
+                    <td>
+                      {formatCarriedWeight(
+                        result.futanJuryo,
+                        isBanEiKeibajoCode(result.keibajoCode),
+                      )}
+                    </td>
                     <td>
                       {formatHorseWeight(
                         result.bataiju,
                         result.zogenFugo,
                         result.zogenSa,
-                        result.keibajoCode === "83",
+                        isBanEiKeibajoCode(result.keibajoCode),
                       )}
                     </td>
                     <td>{formatOdds(result.tanshoOdds)}</td>

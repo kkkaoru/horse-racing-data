@@ -1563,6 +1563,12 @@ h3 {
   font-weight: 900;
 }
 
+.bloodline-detail-target {
+  background: #e8f3ff;
+  color: #075985;
+  font-weight: 900;
+}
+
 .stats-table th,
 .stats-table td {
   border-bottom: 1px solid var(--line);

@@ -104,7 +104,25 @@ describe("race classification", () => {
           kyosoShubetsuCode: "04",
         }),
       ),
-    ).toEqual(["3歳以上", "Ｂ２－４"]);
+    ).toEqual(["3歳以上", "B2-4"]);
+
+    expect(
+      getRaceTags(
+        race({
+          kyosoJokenMeisho: "　　　Ｃ２　　　　　　　　　　　　　　　　　　　　　　　　　",
+          kyosoShubetsuCode: "49",
+        }),
+      ),
+    ).toEqual(["一般", "C2"]);
+
+    expect(
+      getRaceTags(
+        race({
+          kyosoJokenMeisho: "　　　Ｃ１－７　　　　　　　　　　　      　　　 340.0万未満",
+          kyosoShubetsuCode: "49",
+        }),
+      ),
+    ).toEqual(["一般", "C1-7"]);
 
     expect(
       getRaceTags(
