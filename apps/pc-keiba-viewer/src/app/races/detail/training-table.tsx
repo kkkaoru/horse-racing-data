@@ -73,6 +73,39 @@ const getSortValue = (training: Training, key: SortKey): number | null => {
   return parseTime(training[key]);
 };
 
+const getTrainingDateTimeValue = (training: Training): number | null => {
+  const parsed = Number(`${training.chokyoNengappi}${training.chokyoJikoku}`);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const compareByFastestTraining = (left: Training, right: Training): number => {
+  const timeKeys: SortKey[] = [
+    "lapTime1f",
+    "timeGokei2f",
+    "timeGokei3f",
+    "timeGokei4f",
+    "timeGokei5f",
+    "timeGokei6f",
+  ];
+
+  for (const key of timeKeys) {
+    const compared = compareNullableNumber(
+      getSortValue(left, key),
+      getSortValue(right, key),
+      "asc",
+    );
+    if (compared !== 0) {
+      return compared;
+    }
+  }
+
+  return compareNullableNumber(
+    getTrainingDateTimeValue(left),
+    getTrainingDateTimeValue(right),
+    "desc",
+  );
+};
+
 const getTrainingCourseLabel = (training: Training): string =>
   formatWoodCourse(training.course, training.babamawari);
 
@@ -86,6 +119,7 @@ export function TrainingTable({ sourceLabel, trainings }: TrainingTableProps) {
   const [typeFilter, setTypeFilter] = useState(ALL_FILTER);
   const [tracenFilter, setTracenFilter] = useState(ALL_FILTER);
   const [courseFilter, setCourseFilter] = useState(ALL_FILTER);
+  const [fastestOnly, setFastestOnly] = useState(true);
 
   const filterOptions = useMemo(
     () => ({
@@ -96,22 +130,37 @@ export function TrainingTable({ sourceLabel, trainings }: TrainingTableProps) {
     [trainings],
   );
 
-  const filteredTrainings = useMemo(
-    () =>
-      trainings.filter((training) => {
-        if (typeFilter !== ALL_FILTER && training.trainingType !== typeFilter) {
-          return false;
-        }
-        if (tracenFilter !== ALL_FILTER && formatTracen(training.tracenKubun) !== tracenFilter) {
-          return false;
-        }
-        if (courseFilter !== ALL_FILTER && getTrainingCourseLabel(training) !== courseFilter) {
-          return false;
-        }
-        return true;
-      }),
-    [courseFilter, tracenFilter, trainings, typeFilter],
-  );
+  const filteredTrainings = useMemo(() => {
+    const matchedTrainings = trainings.filter((training) => {
+      if (typeFilter !== ALL_FILTER && training.trainingType !== typeFilter) {
+        return false;
+      }
+      if (tracenFilter !== ALL_FILTER && formatTracen(training.tracenKubun) !== tracenFilter) {
+        return false;
+      }
+      if (courseFilter !== ALL_FILTER && getTrainingCourseLabel(training) !== courseFilter) {
+        return false;
+      }
+      return true;
+    });
+
+    if (!fastestOnly) {
+      return matchedTrainings;
+    }
+
+    return [
+      ...matchedTrainings
+        .reduce((byRunner, training) => {
+          const key = cleanText(training.umaban, "");
+          const current = byRunner.get(key);
+          if (!current || compareByFastestTraining(training, current) < 0) {
+            byRunner.set(key, training);
+          }
+          return byRunner;
+        }, new Map<string, Training>())
+        .values(),
+    ];
+  }, [courseFilter, fastestOnly, tracenFilter, trainings, typeFilter]);
 
   const sortedTrainings = useMemo(
     () =>
@@ -214,6 +263,19 @@ export function TrainingTable({ sourceLabel, trainings }: TrainingTableProps) {
               </option>
             ))}
           </select>
+        </label>
+        <label className="training-checkbox-label">
+          <span>最速のレコードのみを表示</span>
+          <span className="training-checkbox-control">
+            <input
+              aria-label="最速のレコードのみを表示"
+              checked={fastestOnly}
+              type="checkbox"
+              onChange={(event) => {
+                setFastestOnly(event.currentTarget.checked);
+              }}
+            />
+          </span>
         </label>
         <span className="training-filter-count">
           {sortedTrainings.length} / {trainings.length} 件
