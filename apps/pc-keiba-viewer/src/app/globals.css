@@ -1804,13 +1804,13 @@ h3 {
 .race-results-match-cell {
   background: #fff4d6;
   color: #6f4714;
-  font-weight: 900;
+  font-weight: 800;
 }
 
 .race-results-jockey-match-cell {
   background: #dff5ec;
   color: var(--accent-strong);
-  font-weight: 900;
+  font-weight: 800;
 }
 
 .race-results-sort-button {
@@ -2014,19 +2014,19 @@ h3 {
 .analysis-metric-grid strong {
   color: var(--ink);
   font-size: 20px;
-  font-weight: 900;
+  font-weight: 800;
 }
 
 .bloodline-score-cell,
 .stats-score-cell {
   color: var(--accent-strong);
-  font-weight: 900;
+  font-weight: 800;
 }
 
 .bloodline-detail-target {
   background: #e8f3ff;
   color: #075985;
-  font-weight: 900;
+  font-weight: 800;
 }
 
 .stats-table th,
@@ -2068,7 +2068,7 @@ h3 {
   cursor: pointer;
   display: inline-flex;
   font: inherit;
-  font-weight: 900;
+  font-weight: 800;
   gap: 6px;
   margin: 0;
   padding: 0;
