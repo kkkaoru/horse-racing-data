@@ -1,6 +1,7 @@
 import {
   BABA_CODE_TO_LOCAL_KEIBAJO,
   buildRaceListUrl,
+  buildRaceResultUrl,
   buildRaceKey,
   extractOddsLinks,
   fetchOdds,
@@ -8,6 +9,7 @@ import {
   fetchRacePage,
   fetchTodayRaceListUrls,
   parseHorseWeights,
+  parseRaceResultHorseWeights,
 } from "./keiba-go";
 import { mergeJsonHeaders } from "./http";
 import { readCachedOdds, writeCachedOdds } from "./odds-cache";
@@ -18,7 +20,7 @@ import {
   getLatestOddsFromD1,
   insertHorseWeightSnapshot,
   insertOddsSnapshot,
-  listFutureRaceSources,
+  listRaceSourcesByDate,
   listTanshoHistory,
   logFetch,
   toHorseTrends,
@@ -150,7 +152,7 @@ const planRealtimeFetches = async (env: Env, targetDate: string): Promise<number
   if (!isJstPollingWindow()) {
     return 0;
   }
-  const races = await listFutureRaceSources(env.REALTIME_DB, targetDate, toJstIsoString());
+  const races = await listRaceSourcesByDate(env.REALTIME_DB, targetDate);
   if (races.length === 0) {
     return 0;
   }
@@ -158,12 +160,12 @@ const planRealtimeFetches = async (env: Env, targetDate: string): Promise<number
   let queued = 0;
   for (const race of races) {
     const minutes = minutesUntilRace(race);
-    if (minutes === null || minutes <= 0) {
+    if (minutes === null) {
       continue;
     }
 
     const oddsInterval = minutes <= 30 ? 3 : 10;
-    if (isDue(race.lastOddsFetchAt, oddsInterval)) {
+    if (minutes > 0 && isDue(race.lastOddsFetchAt, oddsInterval)) {
       await env.REALTIME_JOBS.send({ raceKey: race.raceKey, type: "fetch-odds" });
       queued += 1;
     }
@@ -210,13 +212,19 @@ const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<void> =>
   }
   const fetchedAt = toJstIsoString();
   const html = await fetchRacePage(race.debaUrl);
-  const weights = parseHorseWeights(html);
+  let weights = parseHorseWeights(html);
+  if (weights.length === 0) {
+    const resultHtml = await fetchRacePage(buildRaceResultUrl(race.debaUrl));
+    weights = parseRaceResultHorseWeights(resultHtml);
+  }
   if (weights.length > 0 && weights.length < 2) {
     await insertHorseWeightSnapshot(env.REALTIME_DB, raceKey, fetchedAt, []);
     throw new Error(`horse weight rows are unexpectedly sparse: ${weights.length}`);
   }
   await insertHorseWeightSnapshot(env.REALTIME_DB, raceKey, fetchedAt, weights);
-  await updateLastFetch(env.REALTIME_DB, raceKey, "last_weight_fetch_at", fetchedAt);
+  if (weights.length > 0) {
+    await updateLastFetch(env.REALTIME_DB, raceKey, "last_weight_fetch_at", fetchedAt);
+  }
 };
 
 export const handleJob = async (env: Env, job: Job): Promise<void> => {
