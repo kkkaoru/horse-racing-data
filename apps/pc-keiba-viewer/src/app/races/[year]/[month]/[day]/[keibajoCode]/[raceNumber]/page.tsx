@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 
-import { getRaceSourceByRoute } from "../../../../../../../db/queries";
+import { getRaceDetail, getRaceSourceByRoute } from "../../../../../../../db/queries";
 import { RaceDetailView } from "../../../../../../races/detail/race-detail-page";
 
 export const dynamic = "force-dynamic";
@@ -42,10 +42,15 @@ export default async function RaceDetailRoutePage({
   if (!source) {
     notFound();
   }
+  const race = await getRaceDetail(source, year, month, day, keibajoCode, raceNumber);
+  if (!race) {
+    notFound();
+  }
 
   return (
     <RaceDetailView
       day={day}
+      initialRace={race}
       keibajoCode={keibajoCode}
       month={month}
       raceNumber={raceNumber}
