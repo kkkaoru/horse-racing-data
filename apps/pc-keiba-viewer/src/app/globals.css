@@ -1288,9 +1288,35 @@ h3 {
   background: #fbfdfb;
   border: 1px solid var(--line);
   border-radius: 8px;
-  min-height: 540px;
-  overflow: hidden;
+  min-height: 1060px;
+  overflow: visible;
   padding: 12px;
+}
+
+.odds-trend-legend {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 10px;
+  padding-top: 10px;
+}
+
+.odds-trend-legend-item {
+  align-items: center;
+  color: var(--muted);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 800;
+  gap: 5px;
+}
+
+.odds-trend-legend-marker {
+  border-radius: 999px;
+  display: inline-block;
+  height: 8px;
+  width: 18px;
 }
 
 .odds-trend-hover-panel {
@@ -1357,6 +1383,8 @@ h3 {
   box-shadow: 0 10px 24px rgb(24 44 32 / 16%);
   color: var(--text);
   max-width: min(620px, calc(100vw - 48px));
+  max-height: min(460px, calc(100vh - 96px));
+  overflow: auto;
   padding: 8px 10px;
 }
 
@@ -1402,8 +1430,75 @@ h3 {
 }
 
 @media (max-width: 760px) {
+  .odds-trend-chart {
+    margin-inline: -6px;
+    min-height: 1080px;
+    padding: 8px 6px;
+  }
+
+  .odds-trend-hover-panel {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 176px;
+    overflow: auto;
+    white-space: normal;
+  }
+
+  .odds-trend-hover-values {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 6px;
+    overflow: visible;
+  }
+
+  .odds-trend-hover-value {
+    border-radius: 6px;
+    gap: 4px;
+    padding: 4px 6px;
+  }
+
+  .odds-trend-hover-value span {
+    max-width: 116px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .odds-trend-tooltip {
+    max-height: 320px;
+    max-width: 260px;
+    padding: 7px 8px;
+  }
+
   .odds-trend-tooltip-grid {
-    grid-template-columns: repeat(2, minmax(118px, 1fr));
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .odds-trend-tooltip-name {
+    font-size: 10px;
+  }
+
+  .odds-trend-legend {
+    align-items: stretch;
+    display: grid;
+    gap: 6px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    max-height: 180px;
+    overflow: auto;
+  }
+
+  .odds-trend-legend-item {
+    font-size: 10px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .odds-trend-legend-marker {
+    flex: 0 0 auto;
+    width: 14px;
   }
 }
 
