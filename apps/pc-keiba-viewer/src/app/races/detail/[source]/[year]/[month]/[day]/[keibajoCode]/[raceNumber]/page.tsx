@@ -1,3 +1,4 @@
+import type { RealtimeRacePayload } from "horse-racing-realtime/types";
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -74,6 +75,12 @@ interface RaceDetailPageProps {
 }
 
 const isRaceSource = (source: string): source is RaceSource => source === "jra" || source === "nar";
+
+const isRealtimeRacePayload = (value: unknown): value is RealtimeRacePayload =>
+  typeof value === "object" &&
+  value !== null &&
+  "raceKey" in value &&
+  typeof value.raceKey === "string";
 
 const isValidParams = (
   source: string,
@@ -218,6 +225,33 @@ const getAdjacentRaceLabel = (race: {
     getTrackSurfaceLabel(race.trackCode) ?? formatTrack(race.trackCode),
     formatDistance(race.kyori),
   ].join(" / ");
+
+const fetchRealtimeRacePayload = async (
+  apiBaseUrl: string,
+  source: RaceSource,
+  year: string,
+  month: string,
+  day: string,
+  keibajoCode: string,
+  raceNumber: string,
+): Promise<RealtimeRacePayload | null> => {
+  if (source !== "nar") {
+    return null;
+  }
+  try {
+    const response = await fetch(
+      `${apiBaseUrl.replace(/\/$/u, "")}/api/nar/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/realtime`,
+      { cache: "no-store" },
+    );
+    if (!response.ok) {
+      return null;
+    }
+    const payload: unknown = await response.json();
+    return isRealtimeRacePayload(payload) ? payload : null;
+  } catch {
+    return null;
+  }
+};
 
 const CONDITION_ANALYSIS_OVERRIDE_PARAMS = [
   "statsAge",
@@ -428,6 +462,15 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
   const courseImagePath = getCourseImagePath(keibajoCode, race.trackCode, race.kyori);
   const realtimeApiBaseUrl =
     process.env.NEXT_PUBLIC_REALTIME_DATA_API_BASE_URL ?? "https://sync-realtime-data.kkk4oru.com";
+  const realtimePayload = await fetchRealtimeRacePayload(
+    realtimeApiBaseUrl,
+    raceSource,
+    year,
+    month,
+    day,
+    keibajoCode,
+    raceNumber,
+  );
 
   return (
     <section className="page-shell">
@@ -630,13 +673,26 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
         {runners.length === 0 ? (
           <p className="empty-state">出走馬情報はまだありません。</p>
         ) : (
-          <RunnersTable runners={runners} />
+          <RunnersTable
+            initialRealtimePayload={realtimePayload}
+            realtimeRequest={{
+              apiBaseUrl: realtimeApiBaseUrl,
+              day,
+              keibajoCode,
+              month,
+              raceNumber,
+              source: raceSource,
+              year,
+            }}
+            runners={runners}
+          />
         )}
       </section>
 
       <RealtimeRaceSection
         apiBaseUrl={realtimeApiBaseUrl}
         day={day}
+        initialPayload={realtimePayload}
         keibajoCode={keibajoCode}
         month={month}
         raceNumber={raceNumber}
