@@ -14,9 +14,24 @@ interface HomeRealtimeProps {
   realtimeApiBaseUrl: string;
 }
 
+type RaceWindowsPayload = {
+  finished: TopRaceSummary[];
+  upcoming: TopRaceSummary[];
+};
+
 type OddsUpdate = {
   fetchedAt: string;
   race: TopRaceSummary;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const isRaceWindowsPayload = (data: unknown): data is RaceWindowsPayload => {
+  if (!isRecord(data)) {
+    return false;
+  }
+  return Array.isArray(data.finished) && Array.isArray(data.upcoming);
 };
 
 const racePath = (race: TopRaceSummary): string =>
@@ -63,21 +78,29 @@ export function HomeRealtime({
   realtimeApiBaseUrl,
 }: HomeRealtimeProps) {
   const [now, setNow] = useState(() => Date.now());
+  const [raceWindows, setRaceWindows] = useState<RaceWindowsPayload>({
+    finished: initialFinished,
+    upcoming: initialUpcoming,
+  });
   const [updates, setUpdates] = useState<OddsUpdate[]>([]);
   const [nextOddsFetchAt, setNextOddsFetchAt] = useState<string | null>(null);
   const races = useMemo(
     () =>
-      [...initialFinished, ...initialUpcoming].toSorted(
+      [...raceWindows.finished, ...raceWindows.upcoming].toSorted(
         (left, right) =>
           new Date(left.raceStartAt).getTime() - new Date(right.raceStartAt).getTime(),
       ),
-    [initialFinished, initialUpcoming],
+    [raceWindows],
   );
   const upcoming = races.filter((race) => new Date(race.raceStartAt).getTime() >= now).slice(0, 5);
   const finished = races
     .filter((race) => new Date(race.raceStartAt).getTime() < now)
     .slice(-5)
     .toReversed();
+  const upcomingOddsRaces = useMemo(
+    () => raceWindows.upcoming.filter((race) => race.source === "nar").slice(0, 5),
+    [raceWindows.upcoming],
+  );
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -86,29 +109,49 @@ export function HomeRealtime({
 
   useEffect(() => {
     const load = async () => {
-      const narRaces = upcoming.filter((race) => race.source === "nar").slice(0, 5);
+      try {
+        const response = await fetch("/api/top-races", { cache: "no-store" });
+        if (!response.ok) {
+          return;
+        }
+        const data: unknown = await response.json();
+        if (isRaceWindowsPayload(data)) {
+          setRaceWindows(data);
+        }
+      } catch {
+        // Keep the initial server-rendered race windows if refresh fails.
+      }
+    };
+    const timer = window.setInterval(() => void load(), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const load = async () => {
       const payloads = await Promise.all(
-        narRaces.map(async (race): Promise<[TopRaceSummary, RealtimeRacePayload] | null> => {
-          const url = buildRealtimeUrl({
-            apiBaseUrl: realtimeApiBaseUrl,
-            day: race.kaisaiTsukihi.slice(2, 4),
-            keibajoCode: race.keibajoCode,
-            month: race.kaisaiTsukihi.slice(0, 2),
-            raceNumber: race.raceBango,
-            source: race.source,
-            year: race.kaisaiNen,
-          });
-          if (!url) {
-            return null;
-          }
-          try {
-            const response = await fetch(url, { cache: "no-store" });
-            const data: unknown = await response.json();
-            return isRealtimeRacePayload(data) ? [race, data] : null;
-          } catch {
-            return null;
-          }
-        }),
+        upcomingOddsRaces.map(
+          async (race): Promise<[TopRaceSummary, RealtimeRacePayload] | null> => {
+            const url = buildRealtimeUrl({
+              apiBaseUrl: realtimeApiBaseUrl,
+              day: race.kaisaiTsukihi.slice(2, 4),
+              keibajoCode: race.keibajoCode,
+              month: race.kaisaiTsukihi.slice(0, 2),
+              raceNumber: race.raceBango,
+              source: race.source,
+              year: race.kaisaiNen,
+            });
+            if (!url) {
+              return null;
+            }
+            try {
+              const response = await fetch(url, { cache: "no-store" });
+              const data: unknown = await response.json();
+              return isRealtimeRacePayload(data) ? [race, data] : null;
+            } catch {
+              return null;
+            }
+          },
+        ),
       );
       const validPayloads = payloads.filter(
         (payload): payload is [TopRaceSummary, RealtimeRacePayload] => payload !== null,
@@ -133,7 +176,7 @@ export function HomeRealtime({
     void load();
     const timer = window.setInterval(() => void load(), 30_000);
     return () => window.clearInterval(timer);
-  }, [realtimeApiBaseUrl, upcoming]);
+  }, [realtimeApiBaseUrl, upcomingOddsRaces]);
 
   return (
     <div className="home-live-grid">
