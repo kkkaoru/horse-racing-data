@@ -26,7 +26,7 @@ export default function RootLayout({ children }: RootLayoutProps) {
     <html className={mPlus2.variable} lang="ja">
       <body>
         <header className="app-header">
-          <Link className="brand" href="/races">
+          <Link className="brand" href="/">
             <span className="brand-mark" aria-hidden="true" />
             <span>
               <strong>PC-KEIBA Viewer</strong>
@@ -34,6 +34,9 @@ export default function RootLayout({ children }: RootLayoutProps) {
           </Link>
           <nav>
             <Link href="/races">開催日一覧</Link>
+            <Link href="/horses">馬</Link>
+            <Link href="/jockeys">騎手</Link>
+            <Link href="/trainers">調教師</Link>
           </nav>
         </header>
         <main>{children}</main>

@@ -21,6 +21,7 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const appDir = resolve(scriptDir, "..");
 const envPath = resolve(appDir, ".env");
 const replicaEnvPath = resolve(appDir, ".env.replica");
+const analyticsIndexesPath = resolve(appDir, "sql", "analytics-indexes.sql");
 
 type CommandResult = {
   stdout: string;
@@ -143,13 +144,15 @@ async function loadTableMetadata(
 }
 
 function printUsage(): void {
-  console.log(`Usage: bun run ./scripts/push-neon-sync.ts
+  console.log(`Usage: bun run ./scripts/push-neon-sync.ts [--indexes-only]
 
 Environment:
   REPLICA_SYNC_TABLES             Comma-separated table list. Empty means all PK tables.
   REPLICA_SYNC_CONCURRENCY        Number of tables to sync in parallel. Default: auto.
                                   Use "auto" to choose per dependency level from row counts.
   REPLICA_SYNC_DELETE             Delete Neon rows missing locally. Default: true.
+  REPLICA_SYNC_INDEXES            Apply sql/analytics-indexes.sql to Neon after rows sync.
+                                  Default: true.
   NEON_CONNECT_TIMEOUT_SECONDS    Wait timeout for Neon cold start. Default: 120.
   NEON_CONNECT_RETRY_SECONDS      Retry interval while Neon is warming. Default: 5.
 `);
@@ -252,6 +255,25 @@ function formatNow(): string {
   });
 }
 
+function shouldSyncIndexes(env: Record<string, string | undefined>): boolean {
+  return env.REPLICA_SYNC_INDEXES !== "false";
+}
+
+async function syncAnalyticsIndexes(env: Record<string, string | undefined>): Promise<void> {
+  if (!shouldSyncIndexes(env)) {
+    console.log("Skipping Neon analytics index sync: REPLICA_SYNC_INDEXES=false");
+    return;
+  }
+  if (!existsSync(analyticsIndexesPath)) {
+    throw new Error(`Missing ${analyticsIndexesPath}`);
+  }
+
+  console.log(`[${formatNow()}] Applying analytics indexes to Neon`);
+  const sql = readFileSync(analyticsIndexesPath, "utf8");
+  await runCommand("docker", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]), sql);
+  console.log(`[${formatNow()}] Applied analytics indexes to Neon`);
+}
+
 function reportProgress(event: ProgressEvent): void {
   switch (event.type) {
     case "start":
@@ -302,6 +324,11 @@ async function main(): Promise<void> {
   }
 
   const env = loadEnvironment();
+  if (process.argv.includes("--indexes-only")) {
+    await syncAnalyticsIndexes(env);
+    return;
+  }
+
   const config = buildConfig(env);
   const tables = await loadTableMetadata(env);
   const dependencyEdges = await loadDependencyEdges(env);
@@ -319,6 +346,7 @@ async function main(): Promise<void> {
     },
     dependencyEdges,
   );
+  await syncAnalyticsIndexes(env);
 }
 
 main().catch((error: unknown) => {

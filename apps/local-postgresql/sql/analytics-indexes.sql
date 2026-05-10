@@ -45,3 +45,22 @@ create index concurrently if not exists nvd_ra_detail_stats_idx
 
 create index concurrently if not exists nvd_ns_ketto_date_idx
   on public.nvd_ns (ketto_toroku_bango, kaisai_nen, kaisai_tsukihi);
+
+-- Indexes for pc-keiba-viewer horse / jockey / trainer list pages.
+-- These keep latest-list rendering fast while still showing all-time stats.
+
+create index concurrently if not exists jvd_se_jockey_name_stats_idx
+  on public.jvd_se ((coalesce(nullif(btrim(kishumei_ryakusho, ' 　'), ''), '-')))
+  include (kakutei_chakujun);
+
+create index concurrently if not exists nvd_se_jockey_name_stats_idx
+  on public.nvd_se ((coalesce(nullif(btrim(kishumei_ryakusho, ' 　'), ''), '-')))
+  include (kakutei_chakujun);
+
+create index concurrently if not exists jvd_se_trainer_name_stats_idx
+  on public.jvd_se ((coalesce(nullif(btrim(chokyoshimei_ryakusho, ' 　'), ''), '-')))
+  include (kakutei_chakujun);
+
+create index concurrently if not exists nvd_se_trainer_name_stats_idx
+  on public.nvd_se ((coalesce(nullif(btrim(chokyoshimei_ryakusho, ' 　'), ''), '-')))
+  include (kakutei_chakujun);
