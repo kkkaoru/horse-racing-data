@@ -137,10 +137,9 @@ export const getRaceSource = async (
   return row ? toRaceSource(row) : null;
 };
 
-export const listFutureRaceSources = async (
+export const listRaceSourcesByDate = async (
   db: D1Database,
   targetDate: string,
-  nowJst: string,
 ): Promise<NarRaceSource[]> => {
   const result = await db
     .prepare(
@@ -149,11 +148,10 @@ export const listFutureRaceSources = async (
         from nar_race_sources
         where kaisai_nen = ?
           and kaisai_tsukihi = ?
-          and race_start_at_jst > ?
         order by race_start_at_jst asc
       `,
     )
-    .bind(targetDate.slice(0, 4), targetDate.slice(4, 8), nowJst)
+    .bind(targetDate.slice(0, 4), targetDate.slice(4, 8))
     .all<RaceSourceRow>();
   return result.results.map(toRaceSource);
 };

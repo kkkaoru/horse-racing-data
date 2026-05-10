@@ -195,6 +195,9 @@ export const extractOddsLinks = (
 
 export const fetchRacePage = fetchHtml;
 
+export const buildRaceResultUrl = (debaUrl: string): string =>
+  debaUrl.replace("/DebaTable?", "/RaceMarkTable?");
+
 export const convertToAbsoluteKeibaGoUrl = (oddsPath: string, baseUrl: string): string => {
   if (oddsPath.startsWith("http")) {
     return oddsPath;
@@ -463,7 +466,7 @@ export const parseHorseWeights = (html: string) => {
         " ",
       );
       const match = oddsWeightText.match(
-        /(?:^|[^0-9])([3-6]\d{2})(?:\s*\(([+-]?)(\d+)\))?(?:[^0-9]|$)/u,
+        /(?:^|[^0-9.])([3-9]\d{2}|1[0-3]\d{2})(?:\s*\(([+-]?)(\d+)\))?(?![0-9.])/u,
       );
       if (!horseNumber || !isValidHorseNum(horseNumber) || !match?.[1]) {
         return null;
@@ -478,3 +481,35 @@ export const parseHorseWeights = (html: string) => {
     })
     .filter((item): item is NonNullable<typeof item> => item !== null);
 };
+
+const normalizeRaceResultCell = (cell: string): string =>
+  stripHtmlTags(cell.replace(/<br\s*\/?>/giu, " ")).replace(/\s+/g, " ");
+
+export const parseRaceResultHorseWeights = (html: string) =>
+  Array.from(html.matchAll(/<tr[^>]*bgcolor=["']#FFFFFF["'][^>]*>([\s\S]*?)<\/tr>/giu))
+    .map((row) => {
+      const cells = Array.from((row[1] ?? "").matchAll(/<td[^>]*>([\s\S]*?)<\/td>/giu)).map(
+        (cell) => normalizeRaceResultCell(cell[1] ?? ""),
+      );
+      const horseNumber = cells[2];
+      const horseName = cells[3];
+      const weight = cells[9];
+      const changeAmount = cells[10];
+      if (
+        !horseNumber ||
+        !isValidHorseNum(horseNumber) ||
+        !weight ||
+        !/^(?:[3-9]\d{2}|1[0-3]\d{2})$/u.test(weight)
+      ) {
+        return null;
+      }
+      return {
+        changeAmount:
+          changeAmount && /^-?\d+$/u.test(changeAmount) ? Math.abs(Number(changeAmount)) : null,
+        changeSign: changeAmount?.startsWith("-") ? "-" : changeAmount ? "+" : null,
+        horseName: horseName || null,
+        horseNumber,
+        weight: Number(weight),
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => item !== null);
