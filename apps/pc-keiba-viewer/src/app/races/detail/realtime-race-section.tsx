@@ -1,10 +1,9 @@
 "use client";
 
 import type { RealtimeRacePayload } from "horse-racing-realtime/types";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useSyncExternalStore } from "react";
 import {
   CartesianGrid,
-  Legend,
   Line,
   LineChart,
   ResponsiveContainer,
@@ -46,7 +45,10 @@ const TREND_COLORS = [
 ];
 const LOW_ODDS_TICK_MAX = 10;
 const LOW_ODDS_TICK_STEP = 0.5;
+const MID_ODDS_TICK_MAX = 20;
+const MID_ODDS_TICK_STEP = 1;
 const HIGH_ODDS_TICK_STEP = 5;
+const MOBILE_TOOLTIP_QUERY = "(max-width: 760px)";
 
 const formatFetchedAt = (value: string): string => {
   const date = new Date(value);
@@ -61,6 +63,17 @@ const formatFetchedAt = (value: string): string => {
     second: "2-digit",
   }).format(date);
 };
+
+const subscribeMobileTooltip = (onStoreChange: () => void): (() => void) => {
+  const mediaQuery = window.matchMedia(MOBILE_TOOLTIP_QUERY);
+  mediaQuery.addEventListener("change", onStoreChange);
+  return () => mediaQuery.removeEventListener("change", onStoreChange);
+};
+
+const getMobileTooltipSnapshot = (): boolean =>
+  typeof window !== "undefined" && window.matchMedia(MOBILE_TOOLTIP_QUERY).matches;
+
+const getMobileTooltipServerSnapshot = (): boolean => false;
 
 const runnerNameByNumber = (runners: Runner[]): Map<string, string> =>
   new Map(
@@ -123,22 +136,26 @@ const getTooltipSortValue = (entry: OddsTrendHoverEntry): number => {
 
 const buildOddsYAxisTicks = (maxOdds: number): number[] => {
   const yAxisMax = Math.max(
-    LOW_ODDS_TICK_MAX,
+    MID_ODDS_TICK_MAX,
     Math.ceil(maxOdds / HIGH_ODDS_TICK_STEP) * HIGH_ODDS_TICK_STEP,
   );
   const lowTicks = Array.from(
     { length: Math.floor(LOW_ODDS_TICK_MAX / LOW_ODDS_TICK_STEP) + 1 },
     (_, index) => Number((index * LOW_ODDS_TICK_STEP).toFixed(2)),
   );
+  const midTicks = Array.from(
+    { length: Math.floor((MID_ODDS_TICK_MAX - LOW_ODDS_TICK_MAX) / MID_ODDS_TICK_STEP) },
+    (_, index) => LOW_ODDS_TICK_MAX + (index + 1) * MID_ODDS_TICK_STEP,
+  );
   const highTicks: number[] = [];
   for (
-    let value = LOW_ODDS_TICK_MAX + HIGH_ODDS_TICK_STEP;
+    let value = MID_ODDS_TICK_MAX + HIGH_ODDS_TICK_STEP;
     value <= yAxisMax;
     value += HIGH_ODDS_TICK_STEP
   ) {
     highTicks.push(value);
   }
-  return [...lowTicks, ...highTicks];
+  return [...lowTicks, ...midTicks, ...highTicks];
 };
 
 function OddsTrendTooltip({ active, label, payload }: OddsTrendTooltipProps) {
@@ -173,6 +190,11 @@ export function RealtimeRaceSection(props: RealtimeRaceSectionProps) {
   const { error, payload } = useRealtimeRacePayload(props, props.initialPayload);
   const names = useMemo(() => runnerNameByNumber(props.runners), [props.runners]);
   const [activeTrend, setActiveTrend] = useState<OddsTrendHoverState | null>(null);
+  const isMobileTooltip = useSyncExternalStore(
+    subscribeMobileTooltip,
+    getMobileTooltipSnapshot,
+    getMobileTooltipServerSnapshot,
+  );
 
   if (props.source !== "nar") {
     return null;
@@ -188,7 +210,7 @@ export function RealtimeRaceSection(props: RealtimeRaceSectionProps) {
   const minOdds = oddsValues.length > 0 ? Math.min(...oddsValues) : 0;
   const oddsDomainPadding = Math.max((maxOdds - minOdds) * 0.08, 0.5);
   const oddsYAxisMax = Math.max(
-    LOW_ODDS_TICK_MAX,
+    MID_ODDS_TICK_MAX,
     Math.ceil((maxOdds + oddsDomainPadding) / HIGH_ODDS_TICK_STEP) * HIGH_ODDS_TICK_STEP,
   );
   const oddsYAxisTicks = useMemo(
@@ -199,8 +221,8 @@ export function RealtimeRaceSection(props: RealtimeRaceSectionProps) {
     `${horseNumber} ${names.get(horseNumber) ?? ""}`.trim();
   const activeTrendEntries =
     activeTrend?.activePayload?.filter((entry) => typeof entry.value === "number") ?? [];
-  const chartTopMargin = Math.min(260, Math.max(110, Math.ceil(history.length / 3) * 30 + 46));
-  const chartHeight = Math.max(460, chartTopMargin + 320);
+  const chartTopMargin = Math.min(260, Math.max(96, Math.ceil(history.length / 4) * 26 + 40));
+  const chartHeight = Math.max(980, chartTopMargin + 780);
 
   return (
     <section className="realtime-section">
@@ -241,7 +263,7 @@ export function RealtimeRaceSection(props: RealtimeRaceSectionProps) {
             <ResponsiveContainer height={chartHeight} width="100%">
               <LineChart
                 data={trendRows}
-                margin={{ bottom: 30, left: 8, right: 24, top: chartTopMargin }}
+                margin={{ bottom: 42, left: 4, right: 18, top: chartTopMargin }}
                 onMouseLeave={() => setActiveTrend(null)}
                 onMouseMove={(state: OddsTrendHoverState) => {
                   if (state.isTooltipActive) {
@@ -262,21 +284,21 @@ export function RealtimeRaceSection(props: RealtimeRaceSectionProps) {
                 <YAxis
                   allowDecimals
                   domain={[0, oddsYAxisMax]}
+                  scale="sqrt"
                   tick={{ fill: "#5a6a60", fontSize: 11 }}
                   tickFormatter={(value) => Number(value).toFixed(2)}
                   ticks={oddsYAxisTicks}
-                  width={58}
+                  width={62}
                 />
                 <Tooltip
-                  allowEscapeViewBox={{ x: false, y: true }}
+                  allowEscapeViewBox={{ x: true, y: true }}
                   content={<OddsTrendTooltip />}
                   cursor={{ stroke: "#6f8378", strokeDasharray: "4 4", strokeWidth: 1 }}
                   offset={18}
-                  position={{ y: 8 }}
-                  reverseDirection={{ x: true, y: false }}
-                  wrapperStyle={{ zIndex: 5 }}
+                  position={isMobileTooltip ? { x: 12, y: 12 } : undefined}
+                  reverseDirection={isMobileTooltip ? undefined : { x: true, y: false }}
+                  wrapperStyle={{ maxWidth: "calc(100vw - 32px)", zIndex: 5 }}
                 />
-                <Legend wrapperStyle={{ fontSize: 12, paddingTop: 10 }} />
                 {history.map((trend, index) => (
                   <Line
                     connectNulls
@@ -291,6 +313,17 @@ export function RealtimeRaceSection(props: RealtimeRaceSectionProps) {
                 ))}
               </LineChart>
             </ResponsiveContainer>
+            <div className="odds-trend-legend" aria-label="オッズ推移の線の説明">
+              {history.map((trend, index) => (
+                <span className="odds-trend-legend-item" key={trend.horseNumber}>
+                  <span
+                    className="odds-trend-legend-marker"
+                    style={{ backgroundColor: TREND_COLORS[index % TREND_COLORS.length] }}
+                  />
+                  {getSeriesName(trend.horseNumber)}
+                </span>
+              ))}
+            </div>
           </div>
         )}
       </div>
