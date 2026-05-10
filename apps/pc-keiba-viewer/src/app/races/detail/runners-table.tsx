@@ -18,6 +18,7 @@ type SortKey = "umaban" | "tanshoOdds" | "kakuteiChakujun";
 type SortDirection = "asc" | "desc";
 
 interface RunnersTableProps {
+  decodeHexHorseWeight?: boolean;
   initialRealtimePayload?: RealtimeRacePayload | null;
   realtimeRequest?: RealtimeRaceRequest;
   runners: Runner[];
@@ -83,6 +84,7 @@ const formatRealtimeOdds = (value: number | undefined): string =>
   value === undefined ? "-" : value.toFixed(1);
 
 export function RunnersTable({
+  decodeHexHorseWeight = false,
   initialRealtimePayload = null,
   realtimeRequest,
   runners,
@@ -185,7 +187,13 @@ export function RunnersTable({
         <td>{cleanText(runner.chokyoshimeiRyakusho)}</td>
         <td>{cleanText(runner.banushimei)}</td>
         <td>
-          {realtimeWeight ?? formatHorseWeight(runner.bataiju, runner.zogenFugo, runner.zogenSa)}
+          {realtimeWeight ??
+            formatHorseWeight(
+              runner.bataiju,
+              runner.zogenFugo,
+              runner.zogenSa,
+              decodeHexHorseWeight,
+            )}
         </td>
         <td>
           {realtimeOdds === undefined

@@ -29,15 +29,24 @@ export const formatHorseWeight = (
   weight: string | null | undefined,
   sign: string | null | undefined,
   diff: string | null | undefined,
+  decodeHex = false,
 ): string => {
   const cleanWeight = cleanText(weight, "");
-  if (!cleanWeight) {
+  if (!cleanWeight || cleanWeight === "000" || cleanWeight.toUpperCase() === "FFF") {
     return "-";
   }
 
   const cleanDiff = cleanText(diff, "");
   const cleanSign = cleanText(sign, "");
-  return cleanDiff ? `${cleanWeight}kg (${cleanSign}${Number(cleanDiff)})` : `${cleanWeight}kg`;
+  const parsedWeight = decodeHex ? Number.parseInt(cleanWeight, 16) : Number(cleanWeight);
+  const displayWeight = Number.isFinite(parsedWeight) ? String(parsedWeight) : cleanWeight;
+  if (!cleanDiff || cleanDiff === "000" || cleanDiff.toUpperCase() === "FFF") {
+    return `${displayWeight}kg`;
+  }
+
+  const parsedDiff = decodeHex ? Number.parseInt(cleanDiff, 16) : Number(cleanDiff);
+  const displayDiff = Number.isFinite(parsedDiff) ? String(parsedDiff) : String(Number(cleanDiff));
+  return `${displayWeight}kg (${cleanSign}${displayDiff})`;
 };
 
 export const formatRunnerValue = (value: string | null | undefined, emptyValue: string): string => {

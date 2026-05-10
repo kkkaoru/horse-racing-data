@@ -224,6 +224,62 @@ export const getRaceRunners = cache(
       ["getRaceRunners", source, year, month, day, keibajoCode, raceNumber],
       async () => {
         const table = source === "jra" ? jvdSe : nvdSe;
+        const monthDay = `${month}${day}`;
+        const raceDateKey = `${year}${monthDay}${raceNumber}`;
+
+        if (source === "nar") {
+          const result = await getDb().execute<Runner & Record<string, unknown>>(sql`
+            with current_runners as (
+              select
+                se.*,
+                row_number() over (
+                  partition by se.ketto_toroku_bango
+                  order by hist.kaisai_nen desc, hist.kaisai_tsukihi desc, hist.race_bango desc
+                ) as latest_weight_rank,
+                hist.bataiju as latest_bataiju,
+                hist.zogen_fugo as latest_zogen_fugo,
+                hist.zogen_sa as latest_zogen_sa
+              from ${nvdSe} se
+              left join ${nvdSe} hist
+                on hist.ketto_toroku_bango = se.ketto_toroku_bango
+                and hist.ketto_toroku_bango is not null
+                and btrim(hist.ketto_toroku_bango) <> ''
+                and hist.kaisai_nen || hist.kaisai_tsukihi || hist.race_bango < ${raceDateKey}
+                and nullif(btrim(hist.bataiju), '') is not null
+                and upper(btrim(hist.bataiju)) <> 'FFF'
+              where
+                se.kaisai_nen = ${year}
+                and se.kaisai_tsukihi = ${monthDay}
+                and se.keibajo_code = ${keibajoCode}
+                and se.race_bango = ${raceNumber}
+            )
+            select
+              wakuban,
+              umaban,
+              ketto_toroku_bango as "kettoTorokuBango",
+              bamei,
+              seibetsu_code as "seibetsuCode",
+              barei,
+              futan_juryo as "futanJuryo",
+              kishumei_ryakusho as "kishumeiRyakusho",
+              chokyoshimei_ryakusho as "chokyoshimeiRyakusho",
+              banushimei,
+              coalesce(nullif(btrim(bataiju), ''), latest_bataiju) as bataiju,
+              coalesce(nullif(btrim(zogen_fugo), ''), latest_zogen_fugo) as "zogenFugo",
+              coalesce(nullif(btrim(zogen_sa), ''), latest_zogen_sa) as "zogenSa",
+              kakutei_chakujun as "kakuteiChakujun",
+              tansho_odds as "tanshoOdds",
+              tansho_ninkijun as "tanshoNinkijun",
+              soha_time as "sohaTime",
+              time_sa as "timeSa",
+              kohan_3f as "kohan3f"
+            from current_runners
+            where latest_weight_rank = 1
+            order by cast(umaban as integer) asc
+          `);
+          return result.rows;
+        }
+
         return getDb()
           .select({
             wakuban: table.wakuban,
@@ -250,7 +306,7 @@ export const getRaceRunners = cache(
           .where(
             and(
               eq(table.kaisaiNen, year),
-              eq(table.kaisaiTsukihi, `${month}${day}`),
+              eq(table.kaisaiTsukihi, monthDay),
               eq(table.keibajoCode, keibajoCode),
               eq(table.raceBango, raceNumber),
             ),

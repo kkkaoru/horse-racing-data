@@ -15,7 +15,7 @@ import {
 
 import { cleanText } from "../../../lib/format";
 import type { Runner } from "../../../lib/race-types";
-import { formatHorseWeight, formatRunnerNumber } from "../../../lib/runner-format";
+import { formatRunnerNumber } from "../../../lib/runner-format";
 import { useRealtimeRacePayload } from "./realtime-client";
 
 interface RealtimeRaceSectionProps {
@@ -59,9 +59,6 @@ const formatFetchedAt = (value: string): string => {
   }).format(date);
 };
 
-const formatOdds = (value: number | undefined): string =>
-  typeof value === "number" ? value.toFixed(1) : "-";
-
 const runnerNameByNumber = (runners: Runner[]): Map<string, string> =>
   new Map(
     runners.map((runner) => [
@@ -104,9 +101,7 @@ export function RealtimeRaceSection(props: RealtimeRaceSectionProps) {
     return null;
   }
 
-  const tansho = payload?.odds?.latest.tansho ?? [];
   const history = useMemo(() => payload?.odds?.horseTrends ?? [], [payload]);
-  const latestWeight = payload?.horseWeights;
   const trendRows = useMemo(() => buildOddsTrendRows(history), [history]);
   const allTrendPoints = history.flatMap((trend) => trend.points);
   const oddsValues = allTrendPoints
@@ -127,77 +122,6 @@ export function RealtimeRaceSection(props: RealtimeRaceSectionProps) {
         </span>
       </div>
       {error ? <p className="empty-state">リアルタイムデータを取得できません: {error}</p> : null}
-      <div className="realtime-grid">
-        <div className="realtime-panel">
-          <div className="section-heading compact">
-            <h3>単勝オッズ</h3>
-            <span>{tansho.length} 件</span>
-          </div>
-          {tansho.length === 0 ? (
-            <p className="empty-state">単勝オッズはまだありません。</p>
-          ) : (
-            <div className="realtime-table-wrap">
-              <table className="realtime-table">
-                <thead>
-                  <tr>
-                    <th>馬番号</th>
-                    <th>馬名</th>
-                    <th>単勝</th>
-                    <th>人気</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {tansho.map((row) => (
-                    <tr key={row.combination}>
-                      <td>{row.combination}</td>
-                      <td>{names.get(row.combination) ?? "-"}</td>
-                      <td>{formatOdds(row.odds)}</td>
-                      <td>{row.rank ?? "-"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-
-        <div className="realtime-panel">
-          <div className="section-heading compact">
-            <h3>馬体重</h3>
-            <span>{latestWeight ? formatFetchedAt(latestWeight.fetchedAt) : "取得待ち"}</span>
-          </div>
-          {!latestWeight || latestWeight.horses.length === 0 ? (
-            <p className="empty-state">馬体重はまだありません。</p>
-          ) : (
-            <div className="realtime-table-wrap">
-              <table className="realtime-table">
-                <thead>
-                  <tr>
-                    <th>馬番号</th>
-                    <th>馬名</th>
-                    <th>馬体重</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {latestWeight.horses.map((horse) => (
-                    <tr key={horse.horseNumber}>
-                      <td>{horse.horseNumber}</td>
-                      <td>{names.get(horse.horseNumber) ?? horse.horseName ?? "-"}</td>
-                      <td>
-                        {formatHorseWeight(
-                          horse.weight === null ? null : String(horse.weight),
-                          horse.changeSign,
-                          horse.changeAmount === null ? null : String(horse.changeAmount),
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      </div>
 
       <div className="realtime-panel odds-trend-panel">
         <div className="section-heading compact">

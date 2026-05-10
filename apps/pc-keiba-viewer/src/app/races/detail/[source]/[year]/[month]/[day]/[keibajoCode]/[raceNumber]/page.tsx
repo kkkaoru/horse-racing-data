@@ -674,6 +674,7 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
           <p className="empty-state">出走馬情報はまだありません。</p>
         ) : (
           <RunnersTable
+            decodeHexHorseWeight={raceSource === "nar" && keibajoCode === "83"}
             initialRealtimePayload={realtimePayload}
             realtimeRequest={{
               apiBaseUrl: realtimeApiBaseUrl,
