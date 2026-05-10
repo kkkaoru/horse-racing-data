@@ -610,36 +610,87 @@ export const getHorseList = cache(
         latestRaceName: string;
         latestSource: RaceSource;
       }>(sql`
-        with entries as (
+        with stat_source as (
           select
-            'jra'::text as source,
-            kaisai_nen,
-            kaisai_tsukihi,
-            keibajo_code,
-            race_bango,
+            'jra'::text source,
             ketto_toroku_bango,
-            coalesce(nullif(regexp_replace(bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') as bamei,
-            kakutei_chakujun
+            min(coalesce(nullif(regexp_replace(bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-')) bamei,
+            count(*) starts,
+            count(*) filter (where kakutei_chakujun = '01') win_count,
+            count(*) filter (where kakutei_chakujun in ('01','02','03')) show_count,
+            max(kaisai_nen || kaisai_tsukihi) latest_date
           from ${jvdSe}
+          where ${query.source === "nar" ? sql`false` : sql`true`}
+            and btrim(coalesce(ketto_toroku_bango, '')) <> ''
+            and (
+              ${query.q} = ''
+              or coalesce(nullif(regexp_replace(bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') ilike ${`%${query.q}%`}
+              or ketto_toroku_bango = ${query.q}
+            )
+          group by ketto_toroku_bango
           union all
           select
-            'nar'::text as source,
-            kaisai_nen,
-            kaisai_tsukihi,
-            keibajo_code,
-            race_bango,
+            'nar'::text source,
             ketto_toroku_bango,
-            coalesce(nullif(regexp_replace(bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') as bamei,
-            kakutei_chakujun
+            min(coalesce(nullif(regexp_replace(bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-')) bamei,
+            count(*) starts,
+            count(*) filter (where kakutei_chakujun = '01') win_count,
+            count(*) filter (where kakutei_chakujun in ('01','02','03')) show_count,
+            max(kaisai_nen || kaisai_tsukihi) latest_date
           from ${nvdSe}
-        ),
-        filtered as (
-          select *
-          from entries
-          where
-            ${getEntitySourceCondition(query.source)}
+          where ${query.source === "jra" ? sql`false` : sql`true`}
             and btrim(coalesce(ketto_toroku_bango, '')) <> ''
-            and (${query.q} = '' or bamei ilike ${`%${query.q}%`} or ketto_toroku_bango = ${query.q})
+            and (
+              ${query.q} = ''
+              or coalesce(nullif(regexp_replace(bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') ilike ${`%${query.q}%`}
+              or ketto_toroku_bango = ${query.q}
+            )
+          group by ketto_toroku_bango
+        ),
+        stats as (
+          select
+            ketto_toroku_bango "kettoTorokuBango",
+            min(bamei) bamei,
+            sum(starts)::text starts,
+            sum(win_count)::text "winCount",
+            sum(show_count)::text "showCount",
+            round(sum(win_count) * 100.0 / nullif(sum(starts), 0), 1)::text "winRate",
+            round(sum(show_count) * 100.0 / nullif(sum(starts), 0), 1)::text "showRate",
+            max(latest_date) "latestDate"
+          from stat_source
+          group by ketto_toroku_bango
+        ),
+        ordered as (
+          select
+            *
+          from stats
+          order by ${getHorseOrder(query.order)}
+          limit 200
+        ),
+        latest_rows as (
+          select
+            'jra'::text source,
+            se.kaisai_nen,
+            se.kaisai_tsukihi,
+            se.keibajo_code,
+            se.race_bango,
+            se.ketto_toroku_bango,
+            coalesce(nullif(regexp_replace(se.bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') bamei
+          from ${jvdSe} se
+          join ordered stats on stats."kettoTorokuBango" = se.ketto_toroku_bango
+          where ${query.source === "nar" ? sql`false` : sql`true`}
+          union all
+          select
+            'nar'::text source,
+            se.kaisai_nen,
+            se.kaisai_tsukihi,
+            se.keibajo_code,
+            se.race_bango,
+            se.ketto_toroku_bango,
+            coalesce(nullif(regexp_replace(se.bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') bamei
+          from ${nvdSe} se
+          join ordered stats on stats."kettoTorokuBango" = se.ketto_toroku_bango
+          where ${query.source === "jra" ? sql`false` : sql`true`}
         ),
         latest as (
           select distinct on (ketto_toroku_bango)
@@ -649,67 +700,36 @@ export const getHorseList = cache(
             kaisai_nen,
             kaisai_tsukihi,
             keibajo_code,
-            race_bango,
-            kaisai_nen || kaisai_tsukihi as latest_date
-          from filtered
+            race_bango
+          from latest_rows
           order by ketto_toroku_bango, kaisai_nen desc, kaisai_tsukihi desc, race_bango desc
-        ),
-        stats as (
-          select
-            ketto_toroku_bango as "kettoTorokuBango",
-            count(*)::text as starts,
-            count(*) filter (where kakutei_chakujun = '01')::text as "winCount",
-            count(*) filter (where kakutei_chakujun in ('01','02','03'))::text as "showCount",
-            round(count(*) filter (where kakutei_chakujun = '01') * 100.0 / nullif(count(*), 0), 1)::text as "winRate",
-            round(count(*) filter (where kakutei_chakujun in ('01','02','03')) * 100.0 / nullif(count(*), 0), 1)::text as "showRate"
-          from filtered
-          group by ketto_toroku_bango
-        ),
-        ordered as (
-          select
-            stats."kettoTorokuBango",
-            latest.bamei,
-            stats.starts,
-            stats."winCount",
-            stats."showCount",
-            stats."winRate",
-            stats."showRate",
-            latest.latest_date as "latestDate",
-            latest.source as "latestSource",
-            latest.kaisai_nen,
-            latest.kaisai_tsukihi,
-            latest.keibajo_code,
-            latest.race_bango
-          from stats
-          join latest on latest.ketto_toroku_bango = stats."kettoTorokuBango"
-          order by ${getHorseOrder(query.order)}
-          limit 200
         )
         select
           stats."kettoTorokuBango",
-          stats.bamei,
+          coalesce(latest.bamei, stats.bamei) bamei,
           stats.starts,
           stats."winCount",
           stats."showCount",
           stats."winRate",
           stats."showRate",
           stats."latestDate",
-          stats."latestSource",
-          coalesce(nullif(regexp_replace(ra.kyosomei_hondai, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '一般競走') as "latestRaceName"
+          latest.source "latestSource",
+          coalesce(nullif(regexp_replace(ra.kyosomei_hondai, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '一般競走') "latestRaceName"
         from ordered stats
+        left join latest on latest.ketto_toroku_bango = stats."kettoTorokuBango"
         left join ${jvdRa} jra
-          on stats."latestSource" = 'jra'
-          and jra.kaisai_nen = stats.kaisai_nen
-          and jra.kaisai_tsukihi = stats.kaisai_tsukihi
-          and jra.keibajo_code = stats.keibajo_code
-          and jra.race_bango = stats.race_bango
+          on latest.source = 'jra'
+          and jra.kaisai_nen = latest.kaisai_nen
+          and jra.kaisai_tsukihi = latest.kaisai_tsukihi
+          and jra.keibajo_code = latest.keibajo_code
+          and jra.race_bango = latest.race_bango
         left join ${nvdRa} nar
-          on stats."latestSource" = 'nar'
-          and nar.kaisai_nen = stats.kaisai_nen
-          and nar.kaisai_tsukihi = stats.kaisai_tsukihi
-          and nar.keibajo_code = stats.keibajo_code
-          and nar.race_bango = stats.race_bango
-        cross join lateral (select coalesce(jra.kyosomei_hondai, nar.kyosomei_hondai) as kyosomei_hondai) ra
+          on latest.source = 'nar'
+          and nar.kaisai_nen = latest.kaisai_nen
+          and nar.kaisai_tsukihi = latest.kaisai_tsukihi
+          and nar.keibajo_code = latest.keibajo_code
+          and nar.race_bango = latest.race_bango
+        cross join lateral (select coalesce(jra.kyosomei_hondai, nar.kyosomei_hondai) kyosomei_hondai) ra
       `);
 
       return result.rows.map((row) => ({
