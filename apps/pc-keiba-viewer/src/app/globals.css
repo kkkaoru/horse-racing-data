@@ -2164,12 +2164,10 @@ h3 {
 @keyframes detail-page-enter {
   from {
     opacity: 0.82;
-    transform: translateY(6px);
   }
 
   to {
     opacity: 1;
-    transform: translateY(0);
   }
 }
 
@@ -2484,8 +2482,8 @@ h3 {
 
   .race-global-summary {
     height: 64px;
-    left: 64px;
-    right: 66px;
+    left: 56px;
+    right: 58px;
     top: 0;
     transform: none;
     width: auto;
@@ -2497,12 +2495,12 @@ h3 {
   }
 
   .race-global-summary div {
-    font-size: 13px;
-    gap: 6px;
+    font-size: 12px;
+    gap: 4px;
   }
 
   .race-global-summary span {
-    padding: 6px 8px;
+    padding: 5px 6px;
   }
 
   .race-side-nav {
@@ -2587,15 +2585,11 @@ h3 {
 
 .race-page-transition {
   opacity: 0.98;
-  transform: translateY(6px);
-  transition:
-    opacity 180ms ease,
-    transform 180ms ease;
+  transition: opacity 180ms ease;
 }
 
 .race-page-transition.ready {
   opacity: 1;
-  transform: translateY(0);
 }
 
 .lazy-detail-section {
