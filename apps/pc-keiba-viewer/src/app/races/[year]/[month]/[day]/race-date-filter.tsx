@@ -202,7 +202,7 @@ export function RaceDateFilter({ day, month, races, year }: RaceDateFilterProps)
                     return (
                       <Link
                         className="race-row"
-                        href={`/races/detail/${race.source}/${year}/${month}/${day}/${race.keibajoCode}/${race.raceBango}`}
+                        href={`/races/${year}/${month}/${day}/${race.keibajoCode}/${race.raceBango}`}
                         key={`${race.source}-${race.keibajoCode}-${race.raceBango}`}
                       >
                         <span className="race-time">{formatTime(race.hassoJikoku)}</span>

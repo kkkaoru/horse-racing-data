@@ -68,7 +68,7 @@ describe("race date filter", () => {
     expect(screen.getByText("一般競走")).toBeTruthy();
     expect(screen.getAllByText("牝馬限定").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByRole("link", { name: /新潟 1R/ }).getAttribute("href")).toBe(
-      "/races/detail/jra/2026/05/10/04/01",
+      "/races/2026/05/10/04/01",
     );
   });
 
