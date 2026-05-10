@@ -24,6 +24,7 @@
   "dependencies": {
     "@opennextjs/cloudflare": "1.19.8",
     "drizzle-orm": "0.45.2",
+    "horse-racing-realtime": "workspace:*",
     "next": "16.2.6",
     "pg": "8.16.3",
     "pg-cloudflare": "1.3.0",

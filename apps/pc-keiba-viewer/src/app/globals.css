@@ -851,6 +851,128 @@ h3 {
   border-color: var(--accent);
 }
 
+.realtime-section {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 38px;
+  margin-top: 12px;
+}
+
+.realtime-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+}
+
+.realtime-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  min-width: 0;
+  padding: 14px;
+}
+
+.realtime-table-wrap {
+  min-height: 82px;
+  overflow-x: auto;
+}
+
+.realtime-table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.realtime-table th,
+.realtime-table td {
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  overflow: hidden;
+  padding: 9px 8px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.realtime-table th {
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.realtime-table td:first-child,
+.realtime-table th:first-child {
+  width: 64px;
+}
+
+.realtime-table td:nth-child(3),
+.realtime-table th:nth-child(3),
+.realtime-table td:nth-child(4),
+.realtime-table th:nth-child(4) {
+  width: 76px;
+}
+
+.odds-trend-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.odds-trend-chart {
+  display: grid;
+  gap: 10px;
+  min-height: 260px;
+}
+
+.odds-trend-chart svg {
+  background: #fbfdfb;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: block;
+  height: 220px;
+  width: 100%;
+}
+
+.odds-trend-chart line {
+  stroke: #cfd8d2;
+  stroke-width: 1.4;
+}
+
+.odds-trend-chart path {
+  fill: none;
+  stroke: hsl(calc(28 + (var(--trend-index) * 41)) 72% 38%);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.2;
+}
+
+.odds-trend-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.odds-trend-legend span {
+  align-items: center;
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ink);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 800;
+  gap: 6px;
+  padding: 6px 9px;
+}
+
+.odds-trend-legend span::before {
+  background: hsl(calc(28 + (var(--trend-index) * 41)) 72% 38%);
+  border-radius: 999px;
+  content: "";
+  height: 8px;
+  width: 8px;
+}
+
 .race-results-table-wrap {
   background: var(--surface);
   border: 1px solid var(--line);
