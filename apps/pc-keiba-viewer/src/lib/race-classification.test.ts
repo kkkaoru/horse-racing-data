@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   getAgeLabel,
   getConditionLabel,
+  getGradeLabel,
   getRaceClassLabel,
   getRaceSymbolLabel,
   getRaceTagText,
@@ -66,10 +67,20 @@ describe("race classification", () => {
 
   it("formats class and symbol labels", () => {
     expect(getAgeLabel("02")).toBe("3歳");
+    expect(getAgeLabel("99")).toBe("年齢条件 99");
+    expect(getAgeLabel(null)).toBe("-");
     expect(getConditionLabel("703")).toBe("未勝利");
+    expect(getConditionLabel("123")).toBe("条件 123");
+    expect(getConditionLabel(null)).toBe("-");
     expect(getRaceClassLabel("02", "703")).toBe("3歳 未勝利");
     expect(getRaceSymbolLabel("023")).toBe("牝馬限定");
     expect(getRaceSymbolLabel("999")).toBe("競走記号 999");
+  });
+
+  it("formats grade labels", () => {
+    expect(getGradeLabel("B")).toBe("G2");
+    expect(getGradeLabel("Z")).toBe("グレード Z");
+    expect(getGradeLabel(null)).toBe("-");
   });
 
   it("falls back to open condition when no other tag exists", () => {
@@ -94,5 +105,24 @@ describe("race classification", () => {
         }),
       ),
     ).toEqual(["3歳以上", "Ｂ２－４"]);
+
+    expect(
+      getRaceTags(
+        race({
+          kyosoJokenMeisho: "3歳上OP サラブレッド系",
+        }),
+      ),
+    ).toEqual(["3歳上OP"]);
+  });
+
+  it("does not add unsupported condition names as tags", () => {
+    expect(
+      getRaceTags(
+        race({
+          gradeCode: "E",
+          kyosoJokenMeisho: "一般普通競走",
+        }),
+      ),
+    ).toEqual([]);
   });
 });

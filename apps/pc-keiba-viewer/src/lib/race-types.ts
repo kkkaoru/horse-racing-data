@@ -148,6 +148,7 @@ export interface SimilarRaceStatsRow extends Record<string, unknown> {
   category: "jockey" | "owner" | "trainer";
   currentHorseNumbers: string;
   name: string;
+  details: StatsDetail[];
   starts: number;
   horseCount: number;
   winCount: number;
@@ -162,6 +163,7 @@ export interface BloodlineStatsRow extends Record<string, unknown> {
   category: "damSire" | "sire" | "sireSire";
   currentHorseNumbers: string;
   name: string;
+  details: StatsDetail[];
   starts: number;
   horseCount: number;
   winCount: number;
@@ -172,18 +174,88 @@ export interface BloodlineStatsRow extends Record<string, unknown> {
   showRate: number;
 }
 
+export interface StatsDetail extends Record<string, unknown> {
+  date: string;
+  keibajoCode: string;
+  raceNumber: string;
+  raceName: string;
+  horseName: string;
+  frameNumber: string;
+  horseNumber: string;
+  jockeyName: string;
+  popularity: string;
+  rank: string;
+  raceTime: string;
+  winOdds: string;
+}
+
+export interface PayoutStatsDetail extends Record<string, unknown> {
+  date: string;
+  keibajoCode: string;
+  raceNumber: string;
+  raceName: string;
+  payout: number;
+}
+
 export interface SimilarRaceStatsSettings {
   classConditionName: string | null;
   includeAge: boolean;
   includeClass: boolean;
   includeDistance: boolean;
   includeFrame: boolean;
+  includeMonthWindow: boolean;
   includeRaceNumber: boolean;
   includeRaceSubtitle: boolean;
   includeRaceTitle: boolean;
+  includeRunnerCount: boolean;
   includeSex: boolean;
   includeSurface: boolean;
   includeTurn: boolean;
   includeVenue: boolean;
+  includeWeight: boolean;
+  runnerCount: number | null;
   years: number | null;
+}
+
+export interface RaceTimeStats extends Record<string, unknown> {
+  raceCount: number;
+  fastestRaceTime: number | null;
+  fastestKohan3f: number | null;
+  averageRaceTime: number | null;
+  averageKohan3f: number | null;
+  medianRaceTime: number | null;
+  medianKohan3f: number | null;
+  fastestDetail: StatsDetail | null;
+}
+
+export interface PayoutStatsRow extends Record<string, unknown> {
+  betType: string;
+  count: number;
+  minPayout: number | null;
+  maxPayout: number | null;
+  averagePayout: number | null;
+  medianPayout: number | null;
+  details: PayoutStatsDetail[];
+}
+
+export interface FinishPositionStatsRow extends Record<string, unknown> {
+  finishPosition: number;
+  count: number;
+  averagePopularity: number | null;
+  medianPopularity: number | null;
+  averageOdds: number | null;
+  medianOdds: number | null;
+  details: StatsDetail[];
+}
+
+export interface FrameStatsRow extends Record<string, unknown> {
+  frameNumber: string;
+  runnerCount: number | null;
+  count: number;
+  score: number;
+  averageFinish: number | null;
+  medianFinish: number | null;
+  averagePopularity: number | null;
+  medianPopularity: number | null;
+  details: StatsDetail[];
 }

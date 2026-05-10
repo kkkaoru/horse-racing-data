@@ -145,6 +145,16 @@ const getRaceDateValue = (result: HorseRaceResult): number | null =>
 
 const getDistanceValue = (result: HorseRaceResult): number | null => parseNumber(result.kyori);
 
+const getRunnerNumberOptions = (runners: Runner[], results: HorseRaceResult[]): string[] => {
+  const runnerNumbers =
+    runners.length > 0
+      ? runners.map((runner) => cleanText(runner.umaban, ""))
+      : results.map((result) => cleanText(result.currentUmaban, ""));
+  return [...new Set(runnerNumbers.filter(Boolean))].toSorted(
+    (left, right) => Number(left) - Number(right),
+  );
+};
+
 const compareByTimeAndDate = (left: HorseRaceResult, right: HorseRaceResult): number => {
   const timeCompared = compareNullable(
     getSortValue(left, "sohaTime"),
@@ -170,20 +180,35 @@ export function HorseRaceResultsTable({
   const [distanceMax, setDistanceMax] = useState(
     Number.isFinite(baseDistance) && baseDistance > 0 ? String(baseDistance + 200) : "",
   );
-  const [limit, setLimit] = useState<ResultLimit>("5");
+  const [limit, setLimit] = useState<ResultLimit>("1");
   const [includeOutOfRangeFallback, setIncludeOutOfRangeFallback] = useState(true);
   const [sameJockeyOnly, setSameJockeyOnly] = useState(false);
   const [sort, setSort] = useState<{ direction: SortDirection; key: SortKey }>({
     direction: "asc",
     key: "sohaTime",
   });
+  const runnerNumberOptions = useMemo(
+    () => getRunnerNumberOptions(runners, results),
+    [results, runners],
+  );
+  const [selectedRunnerNumbers, setSelectedRunnerNumbers] = useState<string[]>(() =>
+    getRunnerNumberOptions(runners, results),
+  );
+  const selectedRunnerNumberSet = useMemo(
+    () => new Set(selectedRunnerNumbers),
+    [selectedRunnerNumbers],
+  );
 
   const debutRunners = useMemo(() => {
     const resultRunnerNumbers = new Set(
       results.map((result) => cleanText(result.currentUmaban, "")).filter(Boolean),
     );
-    return runners.filter((runner) => !resultRunnerNumbers.has(cleanText(runner.umaban, "")));
-  }, [results, runners]);
+    return runners.filter(
+      (runner) =>
+        selectedRunnerNumberSet.has(cleanText(runner.umaban, "")) &&
+        !resultRunnerNumbers.has(cleanText(runner.umaban, "")),
+    );
+  }, [results, runners, selectedRunnerNumberSet]);
 
   const visibleResults = useMemo(() => {
     const min = Number(distanceMin);
@@ -203,6 +228,10 @@ export function HorseRaceResultsTable({
     };
 
     for (const result of results) {
+      const runnerNumber = cleanText(result.currentUmaban, "");
+      if (runnerNumberOptions.length > 0 && !selectedRunnerNumberSet.has(runnerNumber)) {
+        continue;
+      }
       const distance = getDistanceValue(result);
       if (distance === null) {
         continue;
@@ -292,9 +321,19 @@ export function HorseRaceResultsTable({
     includeOutOfRangeFallback,
     limit,
     results,
+    runnerNumberOptions.length,
     sameJockeyOnly,
+    selectedRunnerNumberSet,
     sort,
   ]);
+
+  const toggleRunnerNumber = (runnerNumber: string) => {
+    setSelectedRunnerNumbers((current) =>
+      current.includes(runnerNumber)
+        ? current.filter((number) => number !== runnerNumber)
+        : [...current, runnerNumber].toSorted((left, right) => Number(left) - Number(right)),
+    );
+  };
 
   const changeSort = (key: SortKey) => {
     setSort((current) => ({
@@ -374,25 +413,68 @@ export function HorseRaceResultsTable({
           </select>
         </label>
         <label className="race-results-checkbox-label">
-          <input
-            checked={sameJockeyOnly}
-            type="checkbox"
-            onChange={(event) => {
-              setSameJockeyOnly(event.currentTarget.checked);
-            }}
-          />
-          出走予定と同じ騎手
+          <span>出走予定と同じ騎手</span>
+          <span className="race-results-checkbox-control">
+            <input
+              aria-label="出走予定と同じ騎手"
+              checked={sameJockeyOnly}
+              type="checkbox"
+              onChange={(event) => {
+                setSameJockeyOnly(event.currentTarget.checked);
+              }}
+            />
+          </span>
         </label>
         <label className="race-results-checkbox-label">
-          <input
-            checked={includeOutOfRangeFallback}
-            type="checkbox"
-            onChange={(event) => {
-              setIncludeOutOfRangeFallback(event.currentTarget.checked);
-            }}
-          />
-          範囲内がない馬は近い距離を表示
+          <span>距離範囲外の近い成績も補完</span>
+          <span className="race-results-checkbox-control">
+            <input
+              aria-label="距離範囲外の近い成績も補完"
+              checked={includeOutOfRangeFallback}
+              type="checkbox"
+              onChange={(event) => {
+                setIncludeOutOfRangeFallback(event.currentTarget.checked);
+              }}
+            />
+          </span>
         </label>
+        {runnerNumberOptions.length > 0 ? (
+          <fieldset className="race-results-runner-filter">
+            <legend>馬番号</legend>
+            <div className="race-results-runner-filter-actions">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedRunnerNumbers(runnerNumberOptions);
+                }}
+              >
+                全てチェック
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedRunnerNumbers([]);
+                }}
+              >
+                全て外す
+              </button>
+            </div>
+            <div>
+              {runnerNumberOptions.map((runnerNumber) => (
+                <label key={runnerNumber}>
+                  <input
+                    checked={selectedRunnerNumberSet.has(runnerNumber)}
+                    type="checkbox"
+                    onChange={() => {
+                      toggleRunnerNumber(runnerNumber);
+                    }}
+                  />
+                  <span>{formatRunnerNumber(runnerNumber)}</span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+        ) : null}
         <span className="race-results-filter-count">
           {visibleResults.length} / {results.length} 件
         </span>
@@ -418,6 +500,7 @@ export function HorseRaceResultsTable({
             <colgroup>
               <col className="race-results-col-runner-number" />
               <col className="race-results-col-dynamic" />
+              <col className="race-results-col-person" />
               <col className="race-results-col-sex-age" />
               <col className="race-results-col-date" />
               <col className="race-results-col-keibajo" />
@@ -444,6 +527,7 @@ export function HorseRaceResultsTable({
               <tr>
                 <th>馬番号</th>
                 <th>馬名</th>
+                <th>予定騎手</th>
                 <th>現在性齢</th>
                 <th>{renderSortButton("date")}</th>
                 <th>競馬場</th>
@@ -451,7 +535,7 @@ export function HorseRaceResultsTable({
                 <th>着順</th>
                 <th>{renderSortButton("sohaTime")}</th>
                 <th>{renderSortButton("kohan3f")}</th>
-                <th>騎手</th>
+                <th>過去騎手</th>
                 <th>過去性齢</th>
                 <th>負担</th>
                 <th>馬体重</th>
@@ -468,54 +552,64 @@ export function HorseRaceResultsTable({
               </tr>
             </thead>
             <tbody>
-              {visibleResults.map((result) => (
-                <tr
-                  key={[
-                    result.currentUmaban,
-                    result.kaisaiNen,
-                    result.kaisaiTsukihi,
-                    result.keibajoCode,
-                    result.raceBango,
-                    result.kettoTorokuBango,
-                  ].join("-")}
-                >
-                  <td>{formatRunnerNumber(result.currentUmaban)}</td>
-                  <td className="race-results-horse-cell">{cleanText(result.bamei)}</td>
-                  <td>{formatSexAge(result.currentSeibetsuCode, result.currentBarei)}</td>
-                  <td>{formatDate(result.kaisaiNen, result.kaisaiTsukihi)}</td>
-                  <td
-                    className={
-                      isCurrentKeibajo(result.keibajoCode) ? "race-results-match-cell" : undefined
-                    }
+              {visibleResults.map((result) => {
+                const jockeyMatched =
+                  normalizeText(result.currentJockey) === normalizeText(result.kishumeiRyakusho);
+
+                return (
+                  <tr
+                    key={[
+                      result.currentUmaban,
+                      result.kaisaiNen,
+                      result.kaisaiTsukihi,
+                      result.keibajoCode,
+                      result.raceBango,
+                      result.kettoTorokuBango,
+                    ].join("-")}
                   >
-                    {formatKeibajo(result.keibajoCode)}
-                  </td>
-                  <td
-                    className={
-                      isCurrentDistance(result.kyori) ? "race-results-match-cell" : undefined
-                    }
-                  >
-                    {formatDistance(result.kyori)}
-                  </td>
-                  <td>{formatRank(result.kakuteiChakujun)}</td>
-                  <td>{formatTenthsTime(result.sohaTime)}</td>
-                  <td>{formatDecimalTenths(result.kohan3f)}</td>
-                  <td>{cleanText(result.kishumeiRyakusho)}</td>
-                  <td>{formatSexAge(result.seibetsuCode, result.barei)}</td>
-                  <td>{cleanText(result.futanJuryo)}</td>
-                  <td>{formatHorseWeight(result.bataiju, result.zogenFugo, result.zogenSa)}</td>
-                  <td>{formatOdds(result.tanshoOdds)}</td>
-                  <td>{formatRunnerValue(result.tanshoNinkijun, "00")}</td>
-                  <td>{formatTimeDifference(result.timeSa)}</td>
-                  <td>{formatRaceConditions(result)}</td>
-                  <td className="race-results-name-cell">{formatRaceName(result)}</td>
-                  <td>{formatRaceNumber(result.raceBango)}</td>
-                  <td>{formatTrack(result.trackCode)}</td>
-                  <td>{formatWeather(result.tenkoCode)}</td>
-                  <td>{cleanText(result.wakuban)}</td>
-                  <td>{formatRunnerNumber(result.umaban)}</td>
-                </tr>
-              ))}
+                    <td>{formatRunnerNumber(result.currentUmaban)}</td>
+                    <td className="race-results-horse-cell">{cleanText(result.bamei)}</td>
+                    <td className={jockeyMatched ? "race-results-jockey-match-cell" : undefined}>
+                      {cleanText(result.currentJockey)}
+                    </td>
+                    <td>{formatSexAge(result.currentSeibetsuCode, result.currentBarei)}</td>
+                    <td>{formatDate(result.kaisaiNen, result.kaisaiTsukihi)}</td>
+                    <td
+                      className={
+                        isCurrentKeibajo(result.keibajoCode) ? "race-results-match-cell" : undefined
+                      }
+                    >
+                      {formatKeibajo(result.keibajoCode)}
+                    </td>
+                    <td
+                      className={
+                        isCurrentDistance(result.kyori) ? "race-results-match-cell" : undefined
+                      }
+                    >
+                      {formatDistance(result.kyori)}
+                    </td>
+                    <td>{formatRank(result.kakuteiChakujun)}</td>
+                    <td>{formatTenthsTime(result.sohaTime)}</td>
+                    <td>{formatDecimalTenths(result.kohan3f)}</td>
+                    <td className={jockeyMatched ? "race-results-jockey-match-cell" : undefined}>
+                      {cleanText(result.kishumeiRyakusho)}
+                    </td>
+                    <td>{formatSexAge(result.seibetsuCode, result.barei)}</td>
+                    <td>{cleanText(result.futanJuryo)}</td>
+                    <td>{formatHorseWeight(result.bataiju, result.zogenFugo, result.zogenSa)}</td>
+                    <td>{formatOdds(result.tanshoOdds)}</td>
+                    <td>{formatRunnerValue(result.tanshoNinkijun, "00")}</td>
+                    <td>{formatTimeDifference(result.timeSa)}</td>
+                    <td>{formatRaceConditions(result)}</td>
+                    <td className="race-results-name-cell">{formatRaceName(result)}</td>
+                    <td>{formatRaceNumber(result.raceBango)}</td>
+                    <td>{formatTrack(result.trackCode)}</td>
+                    <td>{formatWeather(result.tenkoCode)}</td>
+                    <td>{cleanText(result.wakuban)}</td>
+                    <td>{formatRunnerNumber(result.umaban)}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

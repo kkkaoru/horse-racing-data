@@ -78,6 +78,11 @@ const GRADE_LABELS: Record<string, string> = {
   L: "リステッド",
 };
 
+export const getGradeLabel = (value: string | null | undefined): string => {
+  const code = clean(value);
+  return code ? (GRADE_LABELS[code] ?? `グレード ${code}`) : "-";
+};
+
 const WEIGHT_LABELS: Record<string, string> = {
   "1": "ハンデ",
   "2": "別定",

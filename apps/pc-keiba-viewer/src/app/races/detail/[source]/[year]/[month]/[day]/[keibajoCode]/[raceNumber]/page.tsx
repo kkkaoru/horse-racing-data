@@ -4,11 +4,16 @@ import { notFound } from "next/navigation";
 
 import {
   getBloodlineStats,
+  getFinishPositionStats,
+  getFrameStats,
   getHorseRaceResults,
+  getPayoutStats,
   getRaceCourseInfo,
   getRaceDetail,
   getRaceRunners,
+  getRaceTimeStats,
   getRaceTrainings,
+  getRacesByDate,
   getSimilarRaceStats,
 } from "../../../../../../../../../db/queries";
 import { SOURCE_LABELS, type RaceSource } from "../../../../../../../../../lib/codes";
@@ -34,12 +39,21 @@ import {
 import {
   getAgeLabel,
   getConditionLabel,
+  getGradeLabel,
   getRaceSymbolLabel,
   getRaceTags,
   getWeightLabel,
 } from "../../../../../../../../../lib/race-classification";
+import type {
+  FinishPositionStatsRow,
+  FrameStatsRow,
+  PayoutStatsRow,
+  RaceTimeStats,
+  SimilarRaceStatsSettings,
+} from "../../../../../../../../../lib/race-types";
 import { BloodlineStatsTable } from "../../../../../../bloodline-stats-table";
 import { HorseRaceResultsTable } from "../../../../../../horse-race-results-table";
+import { RaceConditionAnalysisSection } from "../../../../../../race-condition-analysis-section";
 import { RunnersTable } from "../../../../../../runners-table";
 import { SimilarRaceStatsTable } from "../../../../../../similar-race-stats-table";
 import { TrainingTable } from "../../../../../../training-table";
@@ -91,6 +105,11 @@ const getDefaultFlag = (value: string | string[] | undefined, defaultValue: bool
   }
   return firstValue !== "0";
 };
+
+const hasSearchParam = (
+  query: Record<string, string | string[] | undefined>,
+  names: string[],
+): boolean => names.some((name) => getFirstSearchParam(query[name]) !== undefined);
 
 const LISTED_OR_HIGHER_GRADE_CODES = new Set(["A", "B", "C", "D", "F", "G", "H", "L", "S"]);
 
@@ -164,6 +183,111 @@ const isBanEi = (race: Awaited<ReturnType<typeof getRaceDetail>>): boolean =>
 const isListedOrHigher = (race: Awaited<ReturnType<typeof getRaceDetail>>): boolean =>
   race ? LISTED_OR_HIGHER_GRADE_CODES.has(cleanText(race.gradeCode, "")) : false;
 
+const isJraG1ToG3 = (race: Awaited<ReturnType<typeof getRaceDetail>>): boolean =>
+  race?.source === "jra" && ["A", "B", "C"].includes(cleanText(race.gradeCode, ""));
+
+const getStatsClassConditionLabel = (
+  race: Awaited<ReturnType<typeof getRaceDetail>>,
+): string | null => {
+  if (race?.source === "jra" && isListedOrHigher(race)) {
+    const label = getGradeLabel(race.gradeCode);
+    return label === "-" ? null : label;
+  }
+  return getClassConditionLabel(race);
+};
+
+const getRaceDetailPath = (race: {
+  source: RaceSource;
+  kaisaiNen: string;
+  kaisaiTsukihi: string;
+  keibajoCode: string;
+  raceBango: string;
+}): string =>
+  `/races/detail/${race.source}/${race.kaisaiNen}/${race.kaisaiTsukihi.slice(0, 2)}/${race.kaisaiTsukihi.slice(2, 4)}/${race.keibajoCode}/${race.raceBango}`;
+
+const getAdjacentRaceLabel = (race: {
+  hassoJikoku: string | null;
+  kyori: string | null;
+  raceBango: string;
+  trackCode: string | null;
+}): string =>
+  [
+    formatRaceNumber(race.raceBango),
+    formatTime(race.hassoJikoku),
+    getTrackSurfaceLabel(race.trackCode) ?? formatTrack(race.trackCode),
+    formatDistance(race.kyori),
+  ].join(" / ");
+
+const CONDITION_ANALYSIS_OVERRIDE_PARAMS = [
+  "statsAge",
+  "statsClass",
+  "statsDistance",
+  "statsFrame",
+  "statsMonthWindow",
+  "statsRaceMonth",
+  "statsRaceName",
+  "statsRaceNumber",
+  "statsRaceSubtitle",
+  "statsRaceTitle",
+  "statsRunnerCount",
+  "statsSex",
+  "statsSurface",
+  "statsTrack",
+  "statsTurn",
+  "statsVenue",
+  "statsWeight",
+];
+
+const CONDITION_ANALYSIS_RELAX_KEYS = [
+  "includeMonthWindow",
+  "includeRaceTitle",
+  "includeRaceSubtitle",
+  "includeAge",
+  "includeClass",
+  "includeSex",
+  "includeWeight",
+  "includeSurface",
+  "includeTurn",
+  "includeDistance",
+  "includeRunnerCount",
+  "includeFrame",
+  "includeRaceNumber",
+] as const;
+
+type ConditionAnalysisStats = [
+  RaceTimeStats,
+  PayoutStatsRow[],
+  FinishPositionStatsRow[],
+  FrameStatsRow[],
+];
+
+const hasConditionAnalysisRows = (stats: ConditionAnalysisStats): boolean => {
+  const [timeStats, payoutRows, finishRows, frameRows] = stats;
+  return (
+    timeStats.raceCount > 0 ||
+    payoutRows.some((row) => row.count > 0) ||
+    finishRows.some((row) => row.count > 0) ||
+    frameRows.some((row) => row.count > 0)
+  );
+};
+
+const getConditionAnalysisSettingCandidates = <T extends SimilarRaceStatsSettings>(
+  settings: T,
+): T[] => {
+  const candidates = [settings];
+  const relaxedSettings = { ...settings };
+
+  for (const key of CONDITION_ANALYSIS_RELAX_KEYS) {
+    if (!relaxedSettings[key]) {
+      continue;
+    }
+    relaxedSettings[key] = false;
+    candidates.push({ ...relaxedSettings });
+  }
+
+  return candidates;
+};
+
 export default async function RaceDetailPage({ params, searchParams }: RaceDetailPageProps) {
   const { source, year, month, day, keibajoCode, raceNumber } = await params;
   const query = await searchParams;
@@ -181,16 +305,19 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
   const raceName = cleanText(race.kyosomeiHondai, "一般競走");
   const raceTags = getRaceTags(race);
   const banEiRace = isBanEi(race);
-  const classConditionLabel = getClassConditionLabel(race);
+  const statsClassConditionLabel = getStatsClassConditionLabel(race);
   const raceNameFilterLabels = getRaceNameFilterLabels(race);
   const raceSymbolLabel = getRaceSymbolLabel(race.kyosoKigoCode);
-  const defaultStatsYears = isListedOrHigher(race) ? 10 : 5;
+  const defaultStatsYears = isJraG1ToG3(race) ? null : isListedOrHigher(race) ? 10 : 5;
+  const defaultStatsIncludeAge = !getAgeLabel(race.kyosoShubetsuCode).includes("4歳以上");
+  const defaultSimilarStatsIncludeSex = raceSymbolLabel !== "牝馬限定";
   const statsSettings = {
-    classConditionName: classConditionLabel,
-    includeAge: getFlag(query.statsAge ?? query.statsClass),
-    includeClass: getDefaultFlag(query.statsClass, Boolean(classConditionLabel)),
+    classConditionName: statsClassConditionLabel,
+    includeAge: getDefaultFlag(query.statsAge ?? query.statsClass, defaultStatsIncludeAge),
+    includeClass: getDefaultFlag(query.statsClass, Boolean(statsClassConditionLabel)),
     includeDistance: banEiRace ? false : getFlag(query.statsDistance),
     includeFrame: getOptionalFlag(query.statsFrame),
+    includeMonthWindow: getOptionalFlag(query.statsRaceMonth ?? query.statsMonthWindow),
     includeRaceNumber: getOptionalFlag(query.statsRaceNumber),
     includeRaceSubtitle: getDefaultFlag(
       query.statsRaceSubtitle ?? query.statsRaceName,
@@ -200,38 +327,98 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
       query.statsRaceTitle ?? query.statsRaceName,
       Boolean(raceNameFilterLabels.title),
     ),
-    includeSex: getFlag(query.statsSex),
+    includeRunnerCount: false,
+    includeSex: getDefaultFlag(query.statsSex, defaultSimilarStatsIncludeSex),
     includeSurface: banEiRace ? false : getFlag(query.statsSurface ?? query.statsTrack),
     includeTurn: banEiRace ? false : getFlag(query.statsTurn ?? query.statsTrack),
     includeVenue: banEiRace ? false : getFlag(query.statsVenue),
+    includeWeight: getFlag(query.statsWeight),
+    runnerCount: null,
     years: getStatsYears(query.statsYears, defaultStatsYears),
   };
   const bloodlineStatsSettings = {
     ...statsSettings,
+    includeRunnerCount: false,
+    includeSex: getFlag(query.statsSex),
+    runnerCount: null,
     years: getStatsYears(query.statsYears, null),
   };
   const statsConditionLabels = {
     age: getAgeLabel(race.kyosoShubetsuCode),
-    class: classConditionLabel,
+    class: statsClassConditionLabel,
     distance: banEiRace ? null : formatDistance(race.kyori),
     frame: "枠番号",
+    monthWindow: "開催月±1か月",
     raceNumber: formatRaceNumber(race.raceBango),
     raceSubtitle: raceNameFilterLabels.subtitle,
     raceTitle: raceNameFilterLabels.title,
+    runnerCount: null,
     sex: raceSymbolLabel.startsWith("競走記号") ? null : raceSymbolLabel,
     surface: banEiRace ? null : getTrackSurfaceLabel(race.trackCode),
     turn: banEiRace ? null : getTrackTurnLabel(race.trackCode),
     venue: banEiRace ? null : formatKeibajo(keibajoCode),
+    weight: getWeightLabel(race.juryoShubetsuCode),
   };
-  const [courseInfo, runners, raceResults, trainings, bloodlineStats, similarStats] =
-    await Promise.all([
-      getRaceCourseInfo(keibajoCode, race.kyori, race.trackCode),
-      getRaceRunners(raceSource, year, month, day, keibajoCode, raceNumber),
-      getHorseRaceResults(raceSource, year, month, day, keibajoCode, raceNumber),
-      getRaceTrainings(raceSource, year, month, day, keibajoCode, raceNumber),
-      getBloodlineStats(race, bloodlineStatsSettings),
-      getSimilarRaceStats(race, statsSettings),
-    ]);
+  const [courseInfo, runners, raceResults, trainings, raceDayRaces] = await Promise.all([
+    getRaceCourseInfo(keibajoCode, race.kyori, race.trackCode),
+    getRaceRunners(raceSource, year, month, day, keibajoCode, raceNumber),
+    getHorseRaceResults(raceSource, year, month, day, keibajoCode, raceNumber),
+    getRaceTrainings(raceSource, year, month, day, keibajoCode, raceNumber),
+    getRacesByDate(year, month, day),
+  ]);
+  const sameVenueRaces = raceDayRaces
+    .filter((item) => item.source === raceSource && item.keibajoCode === keibajoCode)
+    .toSorted((left, right) => Number(left.raceBango) - Number(right.raceBango));
+  const currentRaceIndex = sameVenueRaces.findIndex((item) => item.raceBango === raceNumber);
+  const previousRace = currentRaceIndex > 0 ? sameVenueRaces[currentRaceIndex - 1] : null;
+  const nextRace =
+    currentRaceIndex >= 0 && currentRaceIndex < sameVenueRaces.length - 1
+      ? sameVenueRaces[currentRaceIndex + 1]
+      : null;
+  const parsedRaceRunnerCount = Number(cleanText(race.shussoTosu, "").replace(/[^0-9]/g, ""));
+  const currentRunnerCount =
+    runners.length > 0
+      ? runners.length
+      : Number.isFinite(parsedRaceRunnerCount) && parsedRaceRunnerCount > 0
+        ? parsedRaceRunnerCount
+        : null;
+  let conditionAnalysisSettings = {
+    ...statsSettings,
+    includeRunnerCount: getDefaultFlag(query.statsRunnerCount, currentRunnerCount !== null),
+    runnerCount: currentRunnerCount,
+    years: getStatsYears(query.statsYears, null),
+  };
+  const conditionAnalysisLabels = {
+    ...statsConditionLabels,
+    runnerCount: currentRunnerCount === null ? null : `${currentRunnerCount}頭`,
+  };
+  const getConditionAnalysisStats = async (settings: typeof conditionAnalysisSettings) =>
+    Promise.all([
+      getRaceTimeStats(race, settings),
+      getPayoutStats(race, settings),
+      getFinishPositionStats(race, settings),
+      getFrameStats(race, settings),
+    ]) satisfies Promise<ConditionAnalysisStats>;
+  let conditionAnalysisStats = await getConditionAnalysisStats(conditionAnalysisSettings);
+  if (
+    !hasSearchParam(query, CONDITION_ANALYSIS_OVERRIDE_PARAMS) &&
+    !hasConditionAnalysisRows(conditionAnalysisStats)
+  ) {
+    const candidates = getConditionAnalysisSettingCandidates(conditionAnalysisSettings).slice(1);
+    const candidateStats = await Promise.all(candidates.map(getConditionAnalysisStats));
+    const matchedIndex = candidateStats.findIndex(hasConditionAnalysisRows);
+    const matchedSettings = candidates[matchedIndex];
+    const matchedStats = candidateStats[matchedIndex];
+    if (matchedSettings && matchedStats) {
+      conditionAnalysisSettings = matchedSettings;
+      conditionAnalysisStats = matchedStats;
+    }
+  }
+  const [raceTimeStats, payoutStats, finishPositionStats, frameStats] = conditionAnalysisStats;
+  const [bloodlineStats, similarStats] = await Promise.all([
+    getBloodlineStats(race, bloodlineStatsSettings),
+    getSimilarRaceStats(race, statsSettings),
+  ]);
   const courseText = cleanText(courseInfo?.courseSetsumei, "");
   const courseFacts = getCourseFacts(courseText, race.kyori, race.trackCode);
   const courseParagraphs = courseText
@@ -241,6 +428,33 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
 
   return (
     <section className="page-shell">
+      <div className="race-global-summary" aria-label="race summary in global header">
+        <div>
+          <span>{formatTime(race.hassoJikoku)}発走</span>
+          <span>{formatKeibajo(keibajoCode)}</span>
+          <span>{formatRaceNumber(raceNumber)}</span>
+          <span>{getTrackSurfaceLabel(race.trackCode) ?? formatTrack(race.trackCode)}</span>
+          <span>{formatDistance(race.kyori)}</span>
+        </div>
+      </div>
+      {previousRace ? (
+        <Link
+          aria-label={`前のレース ${getAdjacentRaceLabel(previousRace)}`}
+          className="race-side-nav race-side-nav-prev"
+          href={getRaceDetailPath(previousRace)}
+        >
+          <span className="race-nav-icon" aria-hidden="true" />
+        </Link>
+      ) : null}
+      {nextRace ? (
+        <Link
+          aria-label={`次のレース ${getAdjacentRaceLabel(nextRace)}`}
+          className="race-side-nav race-side-nav-next"
+          href={getRaceDetailPath(nextRace)}
+        >
+          <span className="race-nav-icon" aria-hidden="true" />
+        </Link>
+      ) : null}
       <div className="breadcrumbs">
         <Link href="/races">開催日一覧</Link>
         <Link href={`/races/${year}/${month}/${day}`}>
@@ -250,6 +464,32 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
           {formatKeibajo(keibajoCode)} {formatRaceNumber(raceNumber)}
         </span>
       </div>
+      {previousRace || nextRace ? (
+        <nav className="race-mobile-nav" aria-label="same venue race navigation">
+          {previousRace ? (
+            <Link
+              aria-label={`前のレース ${getAdjacentRaceLabel(previousRace)}`}
+              className="race-mobile-nav-prev"
+              href={getRaceDetailPath(previousRace)}
+            >
+              <span className="race-nav-icon" aria-hidden="true" />
+            </Link>
+          ) : (
+            <span aria-hidden="true" />
+          )}
+          {nextRace ? (
+            <Link
+              aria-label={`次のレース ${getAdjacentRaceLabel(nextRace)}`}
+              className="race-mobile-nav-next"
+              href={getRaceDetailPath(nextRace)}
+            >
+              <span className="race-nav-icon" aria-hidden="true" />
+            </Link>
+          ) : (
+            <span aria-hidden="true" />
+          )}
+        </nav>
+      ) : null}
 
       <div className="detail-hero">
         <div>
@@ -328,7 +568,7 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
 
       <section className="course-section">
         <div className="section-heading compact">
-          <h2>走るコース</h2>
+          <h2>コース情報</h2>
           <span>
             {formatKeibajo(keibajoCode)} {formatTrack(race.trackCode)} {formatDistance(race.kyori)}
           </span>
@@ -410,6 +650,25 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
           <span>{trainings.length} 件</span>
         </div>
         <TrainingTable sourceLabel={SOURCE_LABELS[raceSource]} trainings={trainings} />
+      </section>
+
+      <section className="similar-stats-section">
+        <div className="section-heading compact">
+          <h2>同条件レース分析</h2>
+          <span>
+            {conditionAnalysisSettings.years === null
+              ? "全期間"
+              : `過去${conditionAnalysisSettings.years}年`}
+          </span>
+        </div>
+        <RaceConditionAnalysisSection
+          conditionLabels={conditionAnalysisLabels}
+          frameStats={frameStats}
+          finishPositionStats={finishPositionStats}
+          payoutStats={payoutStats}
+          raceTimeStats={raceTimeStats}
+          settings={conditionAnalysisSettings}
+        />
       </section>
 
       <section className="similar-stats-section">
