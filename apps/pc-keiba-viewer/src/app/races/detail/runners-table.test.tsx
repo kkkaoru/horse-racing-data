@@ -60,6 +60,7 @@ describe("runners table", () => {
 
     expect(rowTexts()[0]).toContain("一番");
 
+    fireEvent.click(screen.getByRole("button", { name: "馬番号を昇順で並び替え" }));
     fireEvent.click(screen.getByRole("button", { name: "馬番号を降順で並び替え" }));
     expect(rowTexts()[0]).toContain("三番");
 
@@ -70,6 +71,36 @@ describe("runners table", () => {
     fireEvent.click(screen.getByRole("button", { name: "着順を昇順で並び替え" }));
     expect(rowTexts()[0]).toContain("一番");
     expect(rowTexts()[2]).toContain("二番");
+  });
+
+  it("uses odds as the default sort when finish order is empty", () => {
+    render(
+      <RunnersTable
+        runners={[
+          runner({ bamei: "一番", tanshoOdds: "0120", umaban: "01" }),
+          runner({ bamei: "二番", tanshoOdds: "0050", umaban: "02" }),
+          runner({ bamei: "三番", tanshoOdds: "0000", umaban: "03" }),
+        ]}
+      />,
+    );
+
+    expect(rowTexts()[0]).toContain("二番");
+    expect(rowTexts()[2]).toContain("三番");
+  });
+
+  it("uses runner number as the default sort when finish order and odds are empty", () => {
+    render(
+      <RunnersTable
+        runners={[
+          runner({ bamei: "三番", umaban: "03" }),
+          runner({ bamei: "一番", umaban: "01" }),
+          runner({ bamei: "二番", umaban: "02" }),
+        ]}
+      />,
+    );
+
+    expect(rowTexts()[0]).toContain("一番");
+    expect(rowTexts()[2]).toContain("三番");
   });
 
   it("uses realtime odds and horse weights when available", () => {
@@ -113,7 +144,6 @@ describe("runners table", () => {
     expect(screen.getByText("9.8")).toBeTruthy();
     expect(screen.getByText("1.4")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "単勝を昇順で並び替え" }));
     expect(rowTexts()[0]).toContain("二番");
   });
 

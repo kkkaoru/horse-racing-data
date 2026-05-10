@@ -4,6 +4,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import {
+  getRaceAbilityTests,
   getBloodlineStats,
   getFinishPositionStats,
   getFrameStats,
@@ -54,6 +55,7 @@ import type {
   SimilarRaceStatsRow,
   SimilarRaceStatsSettings,
 } from "../../../../../../../../../lib/race-types";
+import { AbilityTestTable } from "../../../../../../ability-test-table";
 import { BloodlineStatsTable } from "../../../../../../bloodline-stats-table";
 import { HorseRaceResultsTable } from "../../../../../../horse-race-results-table";
 import { RaceConditionAnalysisSection } from "../../../../../../race-condition-analysis-section";
@@ -172,15 +174,16 @@ const getRaceNameFilterLabels = (
   const tags = getRaceTags(race).join(" ");
   const grade = cleanText(race.gradeCode, "");
   const condition = cleanConditionText(race.kyosoJokenMeisho);
+  const title = cleanText(race.kyosomeiHondai, "");
+  const subtitle = cleanText(race.kyosomeiFukudai, "") || cleanText(race.kyosomeiKakkonai, "");
   const hasNamedClass =
     grade.length > 0 || /G[1-3]|Jpn[1-3]|リステッド|OP|ＯＰ|オープン/.test(`${tags} ${condition}`);
+  const hasSpecialRaceName = title.includes("ファイナルレース") || subtitle.includes("一発逆転");
 
-  if (!hasNamedClass) {
+  if (!hasNamedClass && !hasSpecialRaceName) {
     return { subtitle: null, title: null };
   }
 
-  const title = cleanText(race.kyosomeiHondai, "");
-  const subtitle = cleanText(race.kyosomeiFukudai, "") || cleanText(race.kyosomeiKakkonai, "");
   return {
     subtitle: subtitle || null,
     title: title || null,
@@ -338,6 +341,60 @@ const getConditionAnalysisSettingCandidates = <T extends SimilarRaceStatsSetting
 const hasRateRows = (rows: readonly (BloodlineStatsRow | SimilarRaceStatsRow)[]): boolean =>
   rows.some((row) => row.starts > 0);
 
+type ConditionAnalysisCandidateMatch<T extends SimilarRaceStatsSettings> = {
+  settings: T;
+  stats: ConditionAnalysisStats;
+};
+
+const findConditionAnalysisCandidate = async <T extends SimilarRaceStatsSettings>(
+  candidates: readonly T[],
+  getStats: (settings: T) => Promise<ConditionAnalysisStats>,
+  index = 0,
+  partialMatch: ConditionAnalysisCandidateMatch<T> | null = null,
+): Promise<ConditionAnalysisCandidateMatch<T> | null> => {
+  const settings = candidates[index];
+
+  if (!settings) {
+    return partialMatch;
+  }
+
+  const stats = await getStats(settings);
+
+  if (hasCompleteConditionAnalysisRows(stats)) {
+    return { settings, stats };
+  }
+
+  return findConditionAnalysisCandidate(
+    candidates,
+    getStats,
+    index + 1,
+    partialMatch ?? (hasConditionAnalysisRows(stats) ? { settings, stats } : null),
+  );
+};
+
+const findRateStatsCandidate = async <
+  T extends SimilarRaceStatsSettings,
+  R extends readonly (BloodlineStatsRow | SimilarRaceStatsRow)[],
+>(
+  candidates: readonly T[],
+  getStats: (settings: T) => Promise<R>,
+  index = 0,
+): Promise<{ settings: T; stats: R } | null> => {
+  const settings = candidates[index];
+
+  if (!settings) {
+    return null;
+  }
+
+  const stats = await getStats(settings);
+
+  if (hasRateRows(stats)) {
+    return { settings, stats };
+  }
+
+  return findRateStatsCandidate(candidates, getStats, index + 1);
+};
+
 export default async function RaceDetailPage({ params, searchParams }: RaceDetailPageProps) {
   const { source, year, month, day, keibajoCode, raceNumber } = await params;
   const query = await searchParams;
@@ -410,13 +467,15 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
     venue: banEiRace ? null : formatKeibajo(keibajoCode),
     weight: getWeightLabel(race.juryoShubetsuCode),
   };
-  const [courseInfo, runners, raceResults, trainings, raceDayRaces] = await Promise.all([
-    getRaceCourseInfo(keibajoCode, race.kyori, race.trackCode),
-    getRaceRunners(raceSource, year, month, day, keibajoCode, raceNumber),
-    getHorseRaceResults(raceSource, year, month, day, keibajoCode, raceNumber),
-    getRaceTrainings(raceSource, year, month, day, keibajoCode, raceNumber),
-    getRacesByDate(year, month, day),
-  ]);
+  const [courseInfo, runners, raceResults, trainings, abilityTests, raceDayRaces] =
+    await Promise.all([
+      getRaceCourseInfo(keibajoCode, race.kyori, race.trackCode),
+      getRaceRunners(raceSource, year, month, day, keibajoCode, raceNumber),
+      getHorseRaceResults(raceSource, year, month, day, keibajoCode, raceNumber),
+      getRaceTrainings(raceSource, year, month, day, keibajoCode, raceNumber),
+      getRaceAbilityTests(raceSource, year, month, day, keibajoCode, raceNumber),
+      getRacesByDate(year, month, day),
+    ]);
   const sameVenueRaces = raceDayRaces
     .filter((item) => item.source === raceSource && item.keibajoCode === keibajoCode)
     .toSorted((left, right) => Number(left.raceBango) - Number(right.raceBango));
@@ -456,19 +515,10 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
     !hasCompleteConditionAnalysisRows(conditionAnalysisStats)
   ) {
     const candidates = getConditionAnalysisSettingCandidates(conditionAnalysisSettings).slice(1);
-    const candidateStats = await Promise.all(candidates.map(getConditionAnalysisStats));
-    const matchedIndex = candidateStats.findIndex(hasCompleteConditionAnalysisRows);
-    const fallbackMatchedIndex =
-      matchedIndex >= 0 ? matchedIndex : candidateStats.findIndex(hasConditionAnalysisRows);
-    const matchedSettings = candidates[matchedIndex];
-    const fallbackMatchedSettings = candidates[fallbackMatchedIndex];
-    const matchedStats = candidateStats[matchedIndex] ?? candidateStats[fallbackMatchedIndex];
-    if (matchedSettings && matchedStats) {
-      conditionAnalysisSettings = matchedSettings;
-      conditionAnalysisStats = matchedStats;
-    } else if (fallbackMatchedSettings && matchedStats) {
-      conditionAnalysisSettings = fallbackMatchedSettings;
-      conditionAnalysisStats = matchedStats;
+    const matched = await findConditionAnalysisCandidate(candidates, getConditionAnalysisStats);
+    if (matched) {
+      conditionAnalysisSettings = matched.settings;
+      conditionAnalysisStats = matched.stats;
     }
   }
   const [raceTimeStats, payoutStats, finishPositionStats, frameStats] = conditionAnalysisStats;
@@ -485,29 +535,23 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
     const candidates = getConditionAnalysisSettingCandidates(resolvedBloodlineStatsSettings).slice(
       1,
     );
-    const candidateStats = await Promise.all(
-      candidates.map((candidate) => getBloodlineStats(race, candidate)),
+    const matched = await findRateStatsCandidate(candidates, (candidate) =>
+      getBloodlineStats(race, candidate),
     );
-    const matchedIndex = candidateStats.findIndex(hasRateRows);
-    const matchedSettings = candidates[matchedIndex];
-    const matchedStats = candidateStats[matchedIndex];
-    if (matchedSettings && matchedStats) {
-      resolvedBloodlineStatsSettings = matchedSettings;
-      bloodlineStats = matchedStats;
+    if (matched) {
+      resolvedBloodlineStatsSettings = matched.settings;
+      bloodlineStats = matched.stats;
     }
   }
 
   if (!hasSearchParam(query, CONDITION_ANALYSIS_OVERRIDE_PARAMS) && !hasRateRows(similarStats)) {
     const candidates = getConditionAnalysisSettingCandidates(resolvedStatsSettings).slice(1);
-    const candidateStats = await Promise.all(
-      candidates.map((candidate) => getSimilarRaceStats(race, candidate)),
+    const matched = await findRateStatsCandidate(candidates, (candidate) =>
+      getSimilarRaceStats(race, candidate),
     );
-    const matchedIndex = candidateStats.findIndex(hasRateRows);
-    const matchedSettings = candidates[matchedIndex];
-    const matchedStats = candidateStats[matchedIndex];
-    if (matchedSettings && matchedStats) {
-      resolvedStatsSettings = matchedSettings;
-      similarStats = matchedStats;
+    if (matched) {
+      resolvedStatsSettings = matched.settings;
+      similarStats = matched.stats;
     }
   }
   const courseText = cleanText(courseInfo?.courseSetsumei, "");
@@ -766,8 +810,10 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
         <HorseRaceResultsTable
           currentDistance={race.kyori}
           currentKeibajoCode={race.keibajoCode}
+          currentRaceDate={`${year}${month}${day}`}
           results={raceResults}
           runners={runners}
+          source={raceSource}
         />
       </section>
 
@@ -778,6 +824,16 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
         </div>
         <TrainingTable sourceLabel={SOURCE_LABELS[raceSource]} trainings={trainings} />
       </section>
+
+      {raceSource === "nar" ? (
+        <section className="ability-test-section">
+          <div className="section-heading compact">
+            <h2>能力検査</h2>
+            <span>{abilityTests.length} 件</span>
+          </div>
+          <AbilityTestTable abilityTests={abilityTests} />
+        </section>
+      ) : null}
 
       <section className="similar-stats-section">
         <div className="section-heading compact">

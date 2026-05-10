@@ -144,6 +144,52 @@ export interface Training extends Record<string, unknown> {
   lapTime1f: string | null;
 }
 
+export interface AbilityTest extends Record<string, unknown> {
+  currentUmaban: string | null;
+  currentBamei: string | null;
+  kaisaiNen: string;
+  kaisaiTsukihi: string;
+  keibajoCode: string;
+  raceBango: string;
+  umaban: string | null;
+  kettoTorokuBango: string | null;
+  bamei: string | null;
+  seibetsuCode: string | null;
+  barei: string | null;
+  chokyoshimeiRyakusho: string | null;
+  futanJuryo: string | null;
+  kishumeiRyakusho: string | null;
+  bataiju: string | null;
+  zogenFugo: string | null;
+  zogenSa: string | null;
+  ijoKubunCode: string | null;
+  juni: string | null;
+  sohaTime: string | null;
+  chakusaCode1: string | null;
+  chakusaCode2: string | null;
+  chakusaCode3: string | null;
+  noryokuShikenCode: string | null;
+  gohiCode: string | null;
+  riyuCode: string | null;
+  gohiNengappi: string | null;
+  ashiiroCode: string | null;
+  corner1: string | null;
+  corner2: string | null;
+  corner3: string | null;
+  corner4: string | null;
+  kohan4f: string | null;
+  kohan3f: string | null;
+  aiteumaJoho1: string | null;
+  aiteumaJoho2: string | null;
+  aiteumaJoho3: string | null;
+  kyakushitsuHantei: string | null;
+  kyori: string | null;
+  trackCode: string | null;
+  hassoJikoku: string | null;
+  tenkoCode: string | null;
+  babajotaiCodeDirt: string | null;
+}
+
 export interface SimilarRaceStatsRow extends Record<string, unknown> {
   category: "jockey" | "owner" | "trainer";
   currentHorseNumbers: string;

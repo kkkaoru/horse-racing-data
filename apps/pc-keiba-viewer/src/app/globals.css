@@ -923,14 +923,123 @@ h3 {
   background: #fbfdfb;
   border: 1px solid var(--line);
   border-radius: 8px;
-  min-height: 360px;
+  min-height: 540px;
   overflow: hidden;
   padding: 12px;
+}
+
+.odds-trend-hover-panel {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex;
+  gap: 10px;
+  min-height: 44px;
+  overflow-x: auto;
+  padding: 8px 10px;
+  white-space: nowrap;
+}
+
+.odds-trend-hover-time,
+.odds-trend-hover-placeholder {
+  color: var(--muted);
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.odds-trend-hover-values {
+  align-items: center;
+  display: flex;
+  flex: 1 1 auto;
+  gap: 8px;
+  overflow-x: auto;
+}
+
+.odds-trend-hover-value {
+  align-items: center;
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text);
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  padding: 5px 9px;
+}
+
+.odds-trend-hover-value span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.odds-trend-hover-value strong {
+  font-size: 13px;
+  font-weight: 800;
 }
 
 .odds-trend-chart .recharts-cartesian-axis-tick-value,
 .odds-trend-chart .recharts-legend-item-text {
   font-family: inherit;
+}
+
+.odds-trend-tooltip {
+  background: #fff;
+  border: 1px solid #cdd8d0;
+  border-radius: 8px;
+  box-shadow: 0 10px 24px rgb(24 44 32 / 16%);
+  color: var(--text);
+  max-width: min(620px, calc(100vw - 48px));
+  padding: 8px 10px;
+}
+
+.odds-trend-tooltip-label {
+  color: #2f4437;
+  font-size: 12px;
+  font-weight: 800;
+  margin-bottom: 6px;
+}
+
+.odds-trend-tooltip-grid {
+  display: grid;
+  gap: 5px 8px;
+  grid-template-columns: repeat(3, minmax(132px, 1fr));
+}
+
+.odds-trend-tooltip-item {
+  align-items: center;
+  display: grid;
+  gap: 5px;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  min-width: 0;
+}
+
+.odds-trend-tooltip-marker {
+  border-radius: 999px;
+  height: 8px;
+  width: 8px;
+}
+
+.odds-trend-tooltip-name {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.odds-trend-tooltip-item strong {
+  font-size: 12px;
+  font-weight: 800;
+}
+
+@media (max-width: 760px) {
+  .odds-trend-tooltip-grid {
+    grid-template-columns: repeat(2, minmax(118px, 1fr));
+  }
 }
 
 .race-results-table-wrap {
@@ -1377,6 +1486,34 @@ h3 {
   min-width: 1260px;
 }
 
+.bloodline-stats-col-horse-number {
+  width: 60px;
+}
+
+.bloodline-stats-col-name {
+  width: 300px;
+}
+
+.bloodline-stats-col-rate {
+  width: 112px;
+}
+
+.bloodline-stats-col-count {
+  width: 86px;
+}
+
+.bloodline-score-col-horse-name {
+  width: 180px;
+}
+
+.bloodline-score-col-name {
+  width: 180px;
+}
+
+.bloodline-score-col-score {
+  width: 82px;
+}
+
 .analysis-table {
   min-width: 760px;
 }
@@ -1703,6 +1840,68 @@ h3 {
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
+}
+
+.ability-test-table-wrap {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  min-height: 96px;
+  overflow-x: auto;
+}
+
+.ability-test-table {
+  border-collapse: collapse;
+  min-width: 2440px;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.ability-test-table th,
+.ability-test-table td {
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  overflow: hidden;
+  padding: 10px 9px;
+  text-align: left;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.ability-test-table th {
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.ability-test-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.ability-test-table th:first-child,
+.ability-test-table td:first-child {
+  font-weight: 800;
+  left: 0;
+  position: sticky;
+  z-index: 1;
+}
+
+.ability-test-table th:first-child {
+  background: var(--surface-muted);
+}
+
+.ability-test-table td:first-child {
+  background: var(--surface);
+}
+
+.ability-test-name-cell,
+.ability-test-opponent-cell {
+  font-weight: 800;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  word-break: keep-all;
 }
 
 .training-sort-button {
