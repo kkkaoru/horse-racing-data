@@ -2219,6 +2219,24 @@ h3 {
   }
 }
 
+.race-page-transition {
+  opacity: 0.98;
+  transform: translateY(6px);
+  transition:
+    opacity 180ms ease,
+    transform 180ms ease;
+}
+
+.race-page-transition.ready {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.lazy-detail-section {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 520px;
+}
+
 @media (min-width: 1440px) {
   .page-shell {
     width: min(calc(100% - 64px), 1360px);
