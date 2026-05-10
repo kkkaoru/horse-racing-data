@@ -343,7 +343,8 @@ export default async function RaceDetailPage({ params, searchParams }: RaceDetai
   const statsClassConditionLabel = getStatsClassConditionLabel(race);
   const raceNameFilterLabels = getRaceNameFilterLabels(race);
   const raceSymbolLabel = getRaceSymbolLabel(race.kyosoKigoCode);
-  const defaultStatsYears = isJraG1ToG3(race) ? null : isListedOrHigher(race) ? 10 : 5;
+  const defaultStatsYears =
+    raceSource === "nar" ? null : isJraG1ToG3(race) ? null : isListedOrHigher(race) ? 10 : 5;
   const defaultStatsIncludeAge = !getAgeLabel(race.kyosoShubetsuCode).includes("4歳以上");
   const defaultSimilarStatsIncludeSex = raceSymbolLabel !== "牝馬限定";
   const statsSettings = {
