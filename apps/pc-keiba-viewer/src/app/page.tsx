@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Suspense } from "react";
 
 import { getTopRaceWindows } from "../db/queries";
 import { HomeRealtime } from "./home-realtime";
@@ -12,11 +13,44 @@ const links = [
   { href: "/trainers", label: "調教師一覧" },
 ];
 
-export default async function HomePage() {
+async function HomeRealtimePanel() {
   const { finished, upcoming } = await getTopRaceWindows();
   const realtimeApiBaseUrl =
     process.env.NEXT_PUBLIC_REALTIME_DATA_API_BASE_URL ?? "https://sync-realtime-data.kkk4oru.com";
 
+  return (
+    <HomeRealtime
+      initialFinished={finished}
+      initialUpcoming={upcoming}
+      realtimeApiBaseUrl={realtimeApiBaseUrl}
+    />
+  );
+}
+
+function HomeRealtimeSkeleton() {
+  return (
+    <div className="home-live-grid" aria-label="トップページのレース情報を読み込み中">
+      {["次のレース", "直近の発走済み", "オッズ更新"].map((title, index) => (
+        <section className={index === 2 ? "home-panel home-panel-wide" : "home-panel"} key={title}>
+          <div className="section-heading compact">
+            <h2>{title}</h2>
+            <span>読み込み中</span>
+          </div>
+          <div className="home-race-list home-race-list-skeleton">
+            {Array.from({ length: index === 2 ? 3 : 5 }, (_, itemIndex) => (
+              <div className="home-race-skeleton-item" key={itemIndex}>
+                <span className="skeleton-text short" />
+                <span className="skeleton-text medium" />
+              </div>
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+export default function HomePage() {
   return (
     <section className="page-shell home-shell">
       <div className="home-heading">
@@ -30,11 +64,9 @@ export default async function HomePage() {
           </Link>
         ))}
       </nav>
-      <HomeRealtime
-        initialFinished={finished}
-        initialUpcoming={upcoming}
-        realtimeApiBaseUrl={realtimeApiBaseUrl}
-      />
+      <Suspense fallback={<HomeRealtimeSkeleton />}>
+        <HomeRealtimePanel />
+      </Suspense>
     </section>
   );
 }
