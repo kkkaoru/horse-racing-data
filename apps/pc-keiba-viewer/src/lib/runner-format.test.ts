@@ -19,7 +19,8 @@ describe("runner format helpers", () => {
   });
 
   it("formats carried weight with ban-ei hexadecimal values", () => {
-    expect(formatCarriedWeight("55")).toBe("55");
+    expect(formatCarriedWeight("550")).toBe("55.0");
+    expect(formatCarriedWeight("525")).toBe("52.5");
     expect(formatCarriedWeight("262", true)).toBe("610");
     expect(formatCarriedWeight("26C", true)).toBe("620");
     expect(formatCarriedWeight("FFF", true)).toBe("-");

@@ -6,6 +6,9 @@ const SEX_LABELS: Record<string, string> = {
   "3": "セ",
 };
 
+export const isBanEiKeibajoCode = (value: string | null | undefined): boolean =>
+  ["81", "82", "83", "84"].includes(cleanText(value, ""));
+
 export const formatRunnerNumber = (value: string | null | undefined): string => {
   const parsed = Number(cleanText(value, ""));
   return Number.isFinite(parsed) && parsed > 0 ? String(parsed) : "-";
@@ -59,7 +62,10 @@ export const formatCarriedWeight = (
   }
 
   const parsed = decodeHex ? Number.parseInt(cleaned, 16) : Number(cleaned);
-  return Number.isFinite(parsed) ? String(parsed) : cleaned;
+  if (!Number.isFinite(parsed)) {
+    return cleaned;
+  }
+  return decodeHex ? String(parsed) : (parsed / 10).toFixed(1);
 };
 
 export const formatRunnerValue = (value: string | null | undefined, emptyValue: string): string => {

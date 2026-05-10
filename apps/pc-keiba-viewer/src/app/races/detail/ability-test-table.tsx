@@ -16,6 +16,7 @@ import {
   formatRunnerNumber,
   formatRunnerValue,
   formatSexAge,
+  isBanEiKeibajoCode,
 } from "../../../lib/runner-format";
 
 interface AbilityTestTableProps {
@@ -163,7 +164,7 @@ export function AbilityTestTable({ abilityTests }: AbilityTestTableProps) {
               <td>{formatRunnerNumber(test.umaban)}</td>
               <td className="ability-test-name-cell">{cleanText(test.bamei)}</td>
               <td>{formatSexAge(test.seibetsuCode, test.barei)}</td>
-              <td>{formatCarriedWeight(test.futanJuryo, test.keibajoCode === "83")}</td>
+              <td>{formatCarriedWeight(test.futanJuryo, isBanEiKeibajoCode(test.keibajoCode))}</td>
               <td>{cleanText(test.kishumeiRyakusho, "-")}</td>
               <td>{cleanText(test.chokyoshimeiRyakusho, "-")}</td>
               <td>
@@ -171,7 +172,7 @@ export function AbilityTestTable({ abilityTests }: AbilityTestTableProps) {
                   test.bataiju,
                   test.zogenFugo,
                   test.zogenSa,
-                  test.keibajoCode === "83",
+                  isBanEiKeibajoCode(test.keibajoCode),
                 )}
               </td>
               <td>{formatRunnerValue(test.juni, "00")}</td>
