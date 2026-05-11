@@ -1,16 +1,77 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  buildRaceListUrl,
   buildRaceKey,
   buildRaceResultUrl,
+  convertToAbsoluteKeibaGoUrl,
   extractOddsLinks,
+  fetchOdds,
+  fetchRaceLinksFromRaceList,
+  fetchRacePage,
+  fetchTodayRaceListUrls,
   parseHorseWeights,
   parseRaceResultHorseWeights,
 } from "../src/keiba-go";
 
+const mockFetchHtml = (htmlByUrl: Record<string, string | Response>): void => {
+  vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const value = htmlByUrl[url];
+    if (value instanceof Response) {
+      return Promise.resolve(value);
+    }
+    return Promise.resolve(
+      new Response(value ?? "", {
+        headers: { "content-type": "text/html" },
+        status: value === undefined ? 404 : 200,
+      }),
+    );
+  });
+};
+
 describe("keiba.go realtime helpers", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("builds normalized NAR race keys", () => {
     expect(buildRaceKey("2026", "0510", "55", "4")).toBe("nar:2026:0510:55:04");
+  });
+
+  it("builds race list URLs", () => {
+    expect(buildRaceListUrl("20260510", "22")).toEqual({
+      babaCode: "22",
+      url: "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2f05%2f10&k_babaCode=22",
+    });
+  });
+
+  it("converts relative odds URLs for normal and IPAT pages", () => {
+    expect(
+      convertToAbsoluteKeibaGoUrl(
+        "../Odds/OddsTanFuku?k=1",
+        "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k=1",
+      ),
+    ).toBe("https://www.keiba.go.jp/KeibaWeb/Odds/OddsTanFuku?k=1");
+    expect(
+      convertToAbsoluteKeibaGoUrl(
+        "./Odds/OddsWide?k=1",
+        "https://www.keiba.go.jp/KeibaWeb_IPAT/TodayRaceInfo/DebaTable?k=1",
+      ),
+    ).toBe("https://www.keiba.go.jp/KeibaWeb_IPAT/Odds/OddsWide?k=1");
+    expect(
+      convertToAbsoluteKeibaGoUrl(
+        "Odds/OddsWide?k=1",
+        "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k=1",
+      ),
+    ).toBe("https://www.keiba.go.jp/KeibaWeb/Odds/OddsWide?k=1");
+    expect(
+      convertToAbsoluteKeibaGoUrl(
+        "https://example.test/odds",
+        "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k=1",
+      ),
+    ).toBe("https://example.test/odds");
   });
 
   it("extracts odds links from keiba.go navigation", () => {
@@ -31,6 +92,259 @@ describe("keiba.go realtime helpers", () => {
     ).toEqual({
       tansho: "https://www.keiba.go.jp/KeibaWeb/Odds/OddsTanFuku?k=1",
       wide: "https://www.keiba.go.jp/KeibaWeb/Odds/OddsWide?k=1",
+    });
+  });
+
+  it("returns empty odds links when the odds nav is missing", () => {
+    expect(extractOddsLinks("<nav><div></div></nav>", "https://example.test")).toEqual({});
+  });
+
+  it("ignores unknown odds nav links", () => {
+    expect(
+      extractOddsLinks(
+        `
+          <nav>
+            <div></div><div></div>
+            <div>
+              <a href="/KeibaWeb/Odds/Unknown">不明</a>
+              <a href="/KeibaWeb/Odds/Empty"></a>
+            </div>
+          </nav>
+        `,
+        "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k=1",
+      ),
+    ).toEqual({});
+  });
+
+  it("fetches today's race list URLs for the requested date", async () => {
+    mockFetchHtml({
+      "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/TodayRaceInfoTop": `
+        <article class="todayRace">
+          <a href="/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2f05%2f10&k_babaCode=22">target</a>
+          <a href="/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2f05%2f10&k_babaCode=22">dupe</a>
+          <a href="/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2f05%2f11&k_babaCode=22">other date</a>
+          <a href="/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2f05%2f10&k_babaCode=99">unknown</a>
+        </article>
+      `,
+    });
+
+    expect(await fetchTodayRaceListUrls("20260510")).toEqual([
+      {
+        babaCode: "22",
+        url: "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2f05%2f10&k_babaCode=22",
+      },
+    ]);
+  });
+
+  it("falls back to the full page when today's race article is missing", async () => {
+    mockFetchHtml({
+      "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/TodayRaceInfoTop": `
+        <a href="/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2f05%2f10&k_babaCode=22">target</a>
+      `,
+    });
+
+    expect(await fetchTodayRaceListUrls("20260510")).toHaveLength(1);
+  });
+
+  it("fetches race links from a race list", async () => {
+    const raceListUrl =
+      "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2F05%2F10&k_babaCode=22";
+    mockFetchHtml({
+      [raceListUrl]: `
+        <a href="DebaTable?k_raceDate=2026%2F05%2F10&k_raceNo=12&k_babaCode=22">12</a>
+        <a href="DebaTable?k_raceDate=2026%2F05%2F10&k_raceNo=2&k_babaCode=22">2</a>
+        <a href="DebaTable?k_raceDate=2026%2F05%2F10&k_raceNo=2&k_babaCode=22">dupe</a>
+        <a href="DebaTable?k_raceDate=2026%2F05%2F11&k_raceNo=1&k_babaCode=22">other date</a>
+        <a href="DebaTable?k_raceDate=2026%2F05%2F10&k_raceNo=3&k_babaCode=23">other baba</a>
+      `,
+    });
+
+    expect(await fetchRaceLinksFromRaceList(raceListUrl)).toEqual([
+      {
+        babaCode: "22",
+        raceNumber: "02",
+        url: "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F05%2F10&k_raceNo=2&k_babaCode=22",
+      },
+      {
+        babaCode: "22",
+        raceNumber: "12",
+        url: "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F05%2F10&k_raceNo=12&k_babaCode=22",
+      },
+    ]);
+  });
+
+  it("returns no race links when list URL query is invalid", async () => {
+    expect(
+      await fetchRaceLinksFromRaceList("https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList"),
+    ).toEqual([]);
+  });
+
+  it("throws on failed page fetches", async () => {
+    mockFetchHtml({
+      "https://example.test/fail": new Response("ng", { status: 503 }),
+    });
+
+    await expect(fetchRacePage("https://example.test/fail")).rejects.toThrow(
+      "Failed to fetch https://example.test/fail: 503",
+    );
+  });
+
+  it("fetches and parses all supported odds types", async () => {
+    const baseUrl = "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k=1";
+    mockFetchHtml({
+      "https://www.keiba.go.jp/KeibaWeb/Odds/tansho": `
+        <tbody>
+          <tr><td></td><td>2</td><td></td><td>3.456</td></tr>
+          <tr><td></td><td>1</td><td></td><td>1.2</td></tr>
+          <tr><td></td><td>19</td><td></td><td>9.9</td></tr>
+        </tbody>
+      `,
+      "https://www.keiba.go.jp/KeibaWeb/Odds/wakuren": `
+        <ul class="odd_horse_number_list">
+          <table>
+            <th class="odd_post1">1</th>
+            <tr><td>2</td><td>4.444</td></tr>
+          </table>
+          <table>
+            <th class="odd_post2">2</th>
+            <tr><td>1</td><td>5.555</td></tr>
+            <tr><td>9</td><td>99.9</td></tr>
+          </table>
+        </ul>
+      `,
+      "https://www.keiba.go.jp/KeibaWeb/Odds/umaren": `
+        <table class="odd_ranking_table">
+          <tr><td>2-1</td><td>8.888</td></tr>
+          <tr><td>1-2</td><td>9.9</td></tr>
+        </table>
+      `,
+      "https://www.keiba.go.jp/KeibaWeb/Odds/umatan": `
+        <table class="odd_ranking_table">
+          <tr><td>2-1</td><td>7.777</td></tr>
+        </table>
+      `,
+      "https://www.keiba.go.jp/KeibaWeb/Odds/wide": `
+        <table class="odd_ranking_table">
+          <tr><td>3-1</td><td>2.0</br> - 4.0</td></tr>
+          <tr><td>1-2</td><td>1.0</br> - 3.0</td></tr>
+        </table>
+      `,
+      "https://www.keiba.go.jp/KeibaWeb/Odds/3renpuku": "3-1-2 12.345",
+      "https://www.keiba.go.jp/KeibaWeb/Odds/3rentan": "3→1→2 123.456",
+    });
+
+    await expect(
+      fetchOdds(baseUrl, {
+        "3renpuku": "/KeibaWeb/Odds/3renpuku",
+        "3rentan": "/KeibaWeb/Odds/3rentan",
+        tansho: "/KeibaWeb/Odds/tansho",
+        umaren: "/KeibaWeb/Odds/umaren",
+        umatan: "/KeibaWeb/Odds/umatan",
+        wakuren: "/KeibaWeb/Odds/wakuren",
+        wide: "/KeibaWeb/Odds/wide",
+      }),
+    ).resolves.toMatchObject({
+      "3renpuku": [{ combination: "1-2-3", odds: 12.35, rank: 1 }],
+      "3rentan": [{ combination: "3-1-2", odds: 123.46, rank: 1 }],
+      tansho: [
+        { combination: "1", odds: 1.2, rank: 1 },
+        { combination: "2", odds: 3.46, rank: 2 },
+      ],
+      umaren: [{ combination: "1-2", odds: 9.9, rank: 1 }],
+      umatan: [{ combination: "2-1", odds: 7.78, rank: 1 }],
+      wakuren: [{ combination: "1-2", odds: 5.56, rank: 1 }],
+      wide: [
+        { averageOdds: 2, combination: "1-2", maxOdds: 3, minOdds: 1, rank: 1 },
+        { averageOdds: 3, combination: "1-3", maxOdds: 4, minOdds: 2, rank: 2 },
+      ],
+    });
+  });
+
+  it("skips odds links that fail to fetch", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockFetchHtml({
+      "https://www.keiba.go.jp/KeibaWeb/Odds/tansho": new Response("ng", { status: 500 }),
+    });
+
+    await expect(
+      fetchOdds("https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k=1", {
+        tansho: "/KeibaWeb/Odds/tansho",
+      }),
+    ).resolves.toEqual({});
+    expect(console.warn).toHaveBeenCalledOnce();
+  });
+
+  it("handles empty and malformed odds pages", async () => {
+    const baseUrl = "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k=1";
+    mockFetchHtml({
+      "https://www.keiba.go.jp/KeibaWeb/Odds/tansho": `
+        <tbody>
+          <tr><td></td><td>A</td><td></td><td>1.2</td></tr>
+          <tr><td></td><td></td><td></td><td>1.2</td></tr>
+          <tr><td></td><td>1</td><td></td><td>bad</td></tr>
+        </tbody>
+      `,
+      "https://www.keiba.go.jp/KeibaWeb/Odds/wakuren": `
+        <ul class="odd_horse_number_list">
+          <table><th class="odd_post9">9</th><tr><td>1</td><td>2.0</td></tr></table>
+          <table><th class="odd_post2">2</th><tr><td>9</td><td>2.0</td></tr></table>
+        </ul>
+      `,
+      "https://www.keiba.go.jp/KeibaWeb/Odds/umaren": `
+        <table class="odd_ranking_table">
+          <tr><td>bad</td><td>1.0</td></tr>
+          <tr><td>1-2</td><td>bad</td></tr>
+        </table>
+      `,
+      "https://www.keiba.go.jp/KeibaWeb/Odds/umatan": `
+        <table class="odd_ranking_table"><tr><td></td><td>1.0</td></tr></table>
+      `,
+      "https://www.keiba.go.jp/KeibaWeb/Odds/wide": `
+        <table class="odd_ranking_table">
+          <tr><td>1-2</td><td>bad</td></tr>
+          <tr><td></td><td>2.0</br> - 4.0</td></tr>
+        </table>
+      `,
+      "https://www.keiba.go.jp/KeibaWeb/Odds/3renpuku": "19-1-2 10.0",
+      "https://www.keiba.go.jp/KeibaWeb/Odds/3rentan": "1-2-19 10.0",
+    });
+
+    await expect(
+      fetchOdds(baseUrl, {
+        "3renpuku": "/KeibaWeb/Odds/3renpuku",
+        "3rentan": "/KeibaWeb/Odds/3rentan",
+        tansho: "/KeibaWeb/Odds/tansho",
+        umaren: "/KeibaWeb/Odds/umaren",
+        umatan: "/KeibaWeb/Odds/umatan",
+        wakuren: "/KeibaWeb/Odds/wakuren",
+        wide: "/KeibaWeb/Odds/wide",
+      }),
+    ).resolves.toEqual({
+      "3renpuku": [],
+      "3rentan": [],
+      tansho: [],
+      umaren: [],
+      umatan: [],
+      wakuren: [],
+      wide: [],
+    });
+  });
+
+  it("returns empty odds arrays for missing odds containers", async () => {
+    const baseUrl = "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k=1";
+    mockFetchHtml({
+      "https://www.keiba.go.jp/KeibaWeb/Odds/tansho": "<table></table>",
+      "https://www.keiba.go.jp/KeibaWeb/Odds/wakuren": "<table></table>",
+    });
+
+    await expect(
+      fetchOdds(baseUrl, {
+        tansho: "/KeibaWeb/Odds/tansho",
+        wakuren: "/KeibaWeb/Odds/wakuren",
+      }),
+    ).resolves.toEqual({
+      tansho: [],
+      wakuren: [],
     });
   });
 
@@ -74,6 +388,24 @@ describe("keiba.go realtime helpers", () => {
         horseName: "別馬",
         horseNumber: "12",
         weight: 510,
+      },
+    ]);
+  });
+
+  it("parses horse weights without change amounts or names", () => {
+    const html = `
+      <tr class="tBorder">
+        <td class="horseNum">3</td>
+        <td class="odds_weight">399</td>
+      </tr>
+    `;
+    expect(parseHorseWeights(html)).toEqual([
+      {
+        changeAmount: null,
+        changeSign: null,
+        horseName: null,
+        horseNumber: "3",
+        weight: 399,
       },
     ]);
   });
@@ -145,6 +477,23 @@ describe("keiba.go realtime helpers", () => {
         horseName: "ピカピカピロコ",
         horseNumber: "12",
         weight: 446,
+      },
+    ]);
+  });
+
+  it("ignores invalid race result weight rows", () => {
+    const html = `
+      <tr bgcolor="#FFFFFF"><td></td><td></td><td>A</td><td>invalid</td><td></td><td></td><td></td><td></td><td></td><td>500</td><td>0</td></tr>
+      <tr bgcolor="#FFFFFF"><td></td><td></td><td>20</td><td>invalid</td><td></td><td></td><td></td><td></td><td></td><td>200</td><td>abc</td></tr>
+      <tr bgcolor="#FFFFFF"><td></td><td></td><td>5</td><td>valid</td><td></td><td></td><td></td><td></td><td></td><td>500</td><td></td></tr>
+    `;
+    expect(parseRaceResultHorseWeights(html)).toEqual([
+      {
+        changeAmount: null,
+        changeSign: null,
+        horseName: "valid",
+        horseNumber: "5",
+        weight: 500,
       },
     ]);
   });
