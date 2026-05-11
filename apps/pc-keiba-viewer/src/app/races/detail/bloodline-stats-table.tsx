@@ -7,6 +7,7 @@ import { Fragment, useMemo, useState } from "react";
 import { cleanText, formatDate, formatKeibajo, formatRaceNumber } from "../../../lib/format";
 import type { BloodlineStatsRow, Runner, SimilarRaceStatsSettings } from "../../../lib/race-types";
 import { formatRunnerNumber } from "../../../lib/runner-format";
+import { MobileFilterDisclosure } from "./mobile-filter-disclosure";
 
 type BloodlineCategory = BloodlineStatsRow["category"];
 type RateSortKey = "showRate" | "quinellaRate" | "winRate";
@@ -491,7 +492,6 @@ export function BloodlineStatsTable({
     <section className="stats-category-section" key={category}>
       <div className="section-heading compact">
         <h3>{CATEGORY_TITLE_LABELS[category]}</h3>
-        <span>{categoryRows.length} 件</span>
       </div>
       {categoryRows.length === 0 ? (
         <p className="empty-state">{CATEGORY_LABELS[category]}別の過去成績はありません。</p>
@@ -563,43 +563,44 @@ export function BloodlineStatsTable({
 
   return (
     <>
-      <section className="stats-control-panel" aria-label="bloodline stats controls">
-        <label>
-          <span>期間</span>
-          <select
-            value={settings.years === null ? "all" : String(settings.years)}
-            onChange={(event) => {
-              updateParam("statsYears", event.currentTarget.value);
-            }}
-          >
-            {[1, 2, 3, 5, 10].map((year) => (
-              <option value={year} key={year}>
-                {year}年
-              </option>
-            ))}
-            <option value="all">全期間</option>
-          </select>
-        </label>
-        {renderConditionToggle("includeVenue", conditionLabels.venue)}
-        {renderConditionToggle("includeMonthWindow", conditionLabels.monthWindow)}
-        {renderConditionToggle("includeRaceTitle", conditionLabels.raceTitle)}
-        {renderConditionToggle("includeRaceSubtitle", conditionLabels.raceSubtitle)}
-        {renderConditionToggle("includeAge", conditionLabels.age)}
-        {renderConditionToggle("includeClass", conditionLabels.class)}
-        {renderConditionToggle("includeSex", conditionLabels.sex)}
-        {renderConditionToggle("includeWeight", conditionLabels.weight)}
-        {renderConditionToggle("includeSurface", conditionLabels.surface)}
-        {renderConditionToggle("includeTurn", conditionLabels.turn)}
-        {renderConditionToggle("includeDistance", conditionLabels.distance)}
-        {renderConditionToggle("includeFrame", conditionLabels.frame)}
-        {renderConditionToggle("includeRaceNumber", conditionLabels.raceNumber)}
-      </section>
+      <MobileFilterDisclosure title="条件設定">
+        <section className="stats-control-panel" aria-label="bloodline stats controls">
+          <label>
+            <span>期間</span>
+            <select
+              value={settings.years === null ? "all" : String(settings.years)}
+              onChange={(event) => {
+                updateParam("statsYears", event.currentTarget.value);
+              }}
+            >
+              {[1, 2, 3, 5, 10].map((year) => (
+                <option value={year} key={year}>
+                  {year}年
+                </option>
+              ))}
+              <option value="all">全期間</option>
+            </select>
+          </label>
+          {renderConditionToggle("includeVenue", conditionLabels.venue)}
+          {renderConditionToggle("includeMonthWindow", conditionLabels.monthWindow)}
+          {renderConditionToggle("includeRaceTitle", conditionLabels.raceTitle)}
+          {renderConditionToggle("includeRaceSubtitle", conditionLabels.raceSubtitle)}
+          {renderConditionToggle("includeAge", conditionLabels.age)}
+          {renderConditionToggle("includeClass", conditionLabels.class)}
+          {renderConditionToggle("includeSex", conditionLabels.sex)}
+          {renderConditionToggle("includeWeight", conditionLabels.weight)}
+          {renderConditionToggle("includeSurface", conditionLabels.surface)}
+          {renderConditionToggle("includeTurn", conditionLabels.turn)}
+          {renderConditionToggle("includeDistance", conditionLabels.distance)}
+          {renderConditionToggle("includeFrame", conditionLabels.frame)}
+          {renderConditionToggle("includeRaceNumber", conditionLabels.raceNumber)}
+        </section>
+      </MobileFilterDisclosure>
 
       <div className="stats-category-list">
         <section className="stats-category-section">
           <div className="section-heading compact">
             <h3>血統スコア</h3>
-            <span>{scoreRows.length} 頭</span>
           </div>
           <div className="stats-table-wrap">
             <table className="stats-table bloodline-score-table">

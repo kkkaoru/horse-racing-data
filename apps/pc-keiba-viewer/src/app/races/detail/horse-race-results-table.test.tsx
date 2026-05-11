@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -55,6 +55,58 @@ const result = (overrides: Partial<HorseRaceResult>): HorseRaceResult => ({
 afterEach(cleanup);
 
 describe("horse race results table", () => {
+  it("shows only fifth-place or better results by default while matching rows remain", () => {
+    render(
+      <HorseRaceResultsTable
+        classConditionName={null}
+        currentDistance="1800"
+        currentKeibajoCode="05"
+        currentRaceDate="20260322"
+        defaultIncludeClass={false}
+        results={[
+          result({ bamei: "ランク内", currentUmaban: "01", kakuteiChakujun: "05" }),
+          result({
+            bamei: "ランク外",
+            currentUmaban: "02",
+            kakuteiChakujun: "06",
+            kettoTorokuBango: "2022100002",
+            umaban: "02",
+          }),
+        ]}
+        runners={[]}
+        source="jra"
+      />,
+    );
+
+    expect(screen.getByText("ランク内")).toBeTruthy();
+    expect(screen.queryByText("ランク外")).toBeNull();
+  });
+
+  it("disables the finish rank filter when it alone removes all rows", async () => {
+    render(
+      <HorseRaceResultsTable
+        classConditionName={null}
+        currentDistance="1800"
+        currentKeibajoCode="05"
+        currentRaceDate="20260322"
+        defaultIncludeClass={false}
+        results={[
+          result({
+            bamei: "ランク外",
+            currentUmaban: "01",
+            kakuteiChakujun: "06",
+          }),
+        ]}
+        runners={[]}
+        source="jra"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("ランク外")).toBeTruthy();
+    });
+  });
+
   it("hides last 3F sort and values for ban-ei race detail pages", () => {
     render(
       <HorseRaceResultsTable
