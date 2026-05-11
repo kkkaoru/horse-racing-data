@@ -65,6 +65,37 @@ const getAdjacentRaceLabel = (race: {
     formatDistance(race.kyori),
   ].join(" / ");
 
+const hasDetailValue = (value: string | null | undefined): boolean => {
+  const normalized = cleanText(value, "").replace(/\s+/g, "").replace(/　+/g, "");
+  return (
+    normalized !== "" && normalized !== "-" && normalized !== "未設定" && !/^0+$/.test(normalized)
+  );
+};
+
+const DetailCell = ({
+  label,
+  suffix = "",
+  value,
+}: {
+  label: string;
+  suffix?: string;
+  value: string | null | undefined;
+}) => {
+  if (!hasDetailValue(value)) {
+    return null;
+  }
+
+  return (
+    <div className="detail-cell">
+      <span>{label}</span>
+      <strong>
+        {cleanText(value)}
+        {suffix}
+      </strong>
+    </div>
+  );
+};
+
 export async function RaceDetailView({
   day,
   initialRace,
@@ -200,52 +231,20 @@ export async function RaceDetailView({
       </div>
 
       <section className="detail-grid" aria-label="race details">
-        <div className="detail-cell">
-          <span>副題</span>
-          <strong>{cleanText(race.kyosomeiFukudai)}</strong>
-        </div>
-        <div className="detail-cell">
-          <span>括弧内名称</span>
-          <strong>{cleanText(race.kyosomeiKakkonai)}</strong>
-        </div>
-        <div className="detail-cell">
-          <span>条件</span>
-          <strong>
-            {raceTags.length > 0 ? raceTags.join(" / ") : cleanText(race.kyosoJokenMeisho)}
-          </strong>
-        </div>
-        <div className="detail-cell">
-          <span>グレード</span>
-          <strong>{cleanText(race.gradeCode)}</strong>
-        </div>
-        <div className="detail-cell">
-          <span>競走記号</span>
-          <strong>{cleanText(race.kyosoKigoCode)}</strong>
-        </div>
-        <div className="detail-cell">
-          <span>重量種別</span>
-          <strong>{getWeightLabel(race.juryoShubetsuCode)}</strong>
-        </div>
-        <div className="detail-cell">
-          <span>出走頭数</span>
-          <strong>{cleanText(race.shussoTosu)} 頭</strong>
-        </div>
-        <div className="detail-cell">
-          <span>登録頭数</span>
-          <strong>{cleanText(race.torokuTosu)} 頭</strong>
-        </div>
-        <div className="detail-cell">
-          <span>天候</span>
-          <strong>{formatWeather(race.tenkoCode)}</strong>
-        </div>
-        <div className="detail-cell">
-          <span>芝馬場</span>
-          <strong>{formatBaba(race.babajotaiCodeShiba)}</strong>
-        </div>
-        <div className="detail-cell">
-          <span>ダート馬場</span>
-          <strong>{formatBaba(race.babajotaiCodeDirt)}</strong>
-        </div>
+        <DetailCell label="副題" value={race.kyosomeiFukudai} />
+        <DetailCell label="括弧内名称" value={race.kyosomeiKakkonai} />
+        <DetailCell
+          label="条件"
+          value={raceTags.length > 0 ? raceTags.join(" / ") : cleanText(race.kyosoJokenMeisho)}
+        />
+        <DetailCell label="グレード" value={race.gradeCode} />
+        <DetailCell label="競走記号" value={race.kyosoKigoCode} />
+        <DetailCell label="重量種別" value={getWeightLabel(race.juryoShubetsuCode)} />
+        <DetailCell label="出走頭数" suffix=" 頭" value={race.shussoTosu} />
+        <DetailCell label="登録頭数" suffix=" 頭" value={race.torokuTosu} />
+        <DetailCell label="天候" value={formatWeather(race.tenkoCode)} />
+        <DetailCell label="芝馬場" value={formatBaba(race.babajotaiCodeShiba)} />
+        <DetailCell label="ダート馬場" value={formatBaba(race.babajotaiCodeDirt)} />
       </section>
 
       <section className="course-section">
@@ -304,7 +303,6 @@ export async function RaceDetailView({
       <section className="runners-section">
         <div className="section-heading compact">
           <h2>出走馬</h2>
-          <span>{runners.length} 頭</span>
         </div>
         {runners.length === 0 ? (
           <p className="empty-state">出走馬情報はまだありません。</p>
