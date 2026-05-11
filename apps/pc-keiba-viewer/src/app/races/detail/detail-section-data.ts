@@ -481,6 +481,7 @@ export const getDetailSectionPayload = async (
       frameStats,
       payoutStats,
       raceTimeStats,
+      runners,
       settings: resolvedSettings,
       type: section,
     };
