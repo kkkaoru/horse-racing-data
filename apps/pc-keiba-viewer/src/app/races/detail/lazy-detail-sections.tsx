@@ -81,6 +81,7 @@ type ConditionPayload = {
   frameStats: FrameStatsRow[];
   payoutStats: PayoutStatsRow[];
   raceTimeStats: RaceTimeStats;
+  runners: Runner[];
   settings: SimilarRaceStatsSettings;
   type: "condition";
 };
@@ -126,7 +127,6 @@ const SectionSkeleton = ({ title }: { title: string }) => (
   <section className="detail-loading-section lazy-detail-section" aria-busy="true">
     <div className="section-heading compact">
       <h2>{title}</h2>
-      <span>読み込み中</span>
     </div>
     <div className="detail-section-skeleton">
       <span />
@@ -141,7 +141,6 @@ const SectionError = ({ error, title }: { error: string; title: string }) => (
   <section className="detail-loading-section lazy-detail-section">
     <div className="section-heading compact">
       <h2>{title}</h2>
-      <span>取得失敗</span>
     </div>
     <p className="empty-state">データを取得できませんでした: {error}</p>
   </section>
@@ -236,7 +235,6 @@ function LazyResultsSection(props: LazyDetailSectionsProps) {
     <section className="race-results-section lazy-detail-section">
       <div className="section-heading compact">
         <h2>競走成績</h2>
-        <span>{payload.results.length} 件</span>
       </div>
       <HorseRaceResultsTable
         classConditionName={payload.classConditionName}
@@ -265,11 +263,13 @@ function LazyTrainingSection(props: LazyDetailSectionsProps) {
   if (payload.type !== "training") {
     return <SectionError error="Invalid section payload" title={SECTION_TITLES.training} />;
   }
+  if (payload.trainings.length === 0) {
+    return null;
+  }
   return (
     <section className="training-section lazy-detail-section">
       <div className="section-heading compact">
         <h2>調教・追い切り</h2>
-        <span>{payload.trainings.length} 件</span>
       </div>
       <TrainingTable sourceLabel={payload.sourceLabel} trainings={payload.trainings} />
     </section>
@@ -289,11 +289,13 @@ function LazyAbilitySection(props: LazyDetailSectionsProps) {
   if (payload.type !== "ability") {
     return <SectionError error="Invalid section payload" title={SECTION_TITLES.ability} />;
   }
+  if (payload.abilityTests.length === 0) {
+    return null;
+  }
   return (
     <section className="ability-test-section lazy-detail-section">
       <div className="section-heading compact">
         <h2>能力検査</h2>
-        <span>{payload.abilityTests.length} 件</span>
       </div>
       <AbilityTestTable abilityTests={payload.abilityTests} />
     </section>
@@ -317,9 +319,6 @@ function LazyConditionSection(props: LazyDetailSectionsProps) {
     <section className="similar-stats-section lazy-detail-section">
       <div className="section-heading compact">
         <h2>同条件レース分析</h2>
-        <span>
-          {payload.settings.years === null ? "全期間" : `過去${payload.settings.years}年`}
-        </span>
       </div>
       <RaceConditionAnalysisSection
         conditionLabels={payload.conditionLabels}
@@ -327,6 +326,7 @@ function LazyConditionSection(props: LazyDetailSectionsProps) {
         frameStats={payload.frameStats}
         payoutStats={payload.payoutStats}
         raceTimeStats={payload.raceTimeStats}
+        runners={payload.runners}
         settings={payload.settings}
       />
     </section>
@@ -350,9 +350,6 @@ function LazyBloodlineSection(props: LazyDetailSectionsProps) {
     <section className="similar-stats-section lazy-detail-section">
       <div className="section-heading compact">
         <h2>血統成績</h2>
-        <span>
-          {payload.settings.years === null ? "全期間" : `過去${payload.settings.years}年`}
-        </span>
       </div>
       <BloodlineStatsTable
         conditionLabels={payload.conditionLabels}
@@ -381,9 +378,6 @@ function LazySimilarSection(props: LazyDetailSectionsProps) {
     <section className="similar-stats-section lazy-detail-section">
       <div className="section-heading compact">
         <h2>同条件成績</h2>
-        <span>
-          {payload.settings.years === null ? "全期間" : `過去${payload.settings.years}年`}
-        </span>
       </div>
       <SimilarRaceStatsTable
         conditionLabels={payload.conditionLabels}

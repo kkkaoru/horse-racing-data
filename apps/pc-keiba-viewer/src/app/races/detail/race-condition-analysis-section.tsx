@@ -10,9 +10,12 @@ import type {
   FrameStatsRow,
   PayoutStatsRow,
   RaceTimeStats,
+  Runner,
   SimilarRaceStatsSettings,
   StatsDetail,
 } from "../../../lib/race-types";
+import { formatRunnerNumber } from "../../../lib/runner-format";
+import { MobileFilterDisclosure } from "./mobile-filter-disclosure";
 
 interface RaceConditionAnalysisSectionProps {
   conditionLabels: {
@@ -35,6 +38,7 @@ interface RaceConditionAnalysisSectionProps {
   finishPositionStats: FinishPositionStatsRow[];
   payoutStats: PayoutStatsRow[];
   raceTimeStats: RaceTimeStats;
+  runners: Runner[];
   settings: SimilarRaceStatsSettings;
 }
 
@@ -151,6 +155,7 @@ export function RaceConditionAnalysisSection({
   finishPositionStats,
   payoutStats,
   raceTimeStats,
+  runners,
   settings,
 }: RaceConditionAnalysisSectionProps) {
   const router = useRouter();
@@ -193,47 +198,60 @@ export function RaceConditionAnalysisSection({
       right.count - left.count ||
       left.frameNumber.localeCompare(right.frameNumber),
   );
+  const runnerNumbersByFrame = new Map<string, string[]>();
+  for (const runner of runners) {
+    const frameNumber = runner.wakuban?.trim();
+    const horseNumber = formatRunnerNumber(runner.umaban);
+    if (!frameNumber || horseNumber === "-") {
+      continue;
+    }
+    runnerNumbersByFrame.set(frameNumber, [
+      ...(runnerNumbersByFrame.get(frameNumber) ?? []),
+      horseNumber,
+    ]);
+  }
 
   return (
     <>
-      <section className="stats-control-panel" aria-label="race condition analysis controls">
-        <label>
-          <span>期間</span>
-          <select
-            value={settings.years === null ? "all" : String(settings.years)}
-            onChange={(event) => {
-              updateParam("statsYears", event.currentTarget.value);
-            }}
-          >
-            {[1, 2, 3, 5, 10].map((year) => (
-              <option value={year} key={year}>
-                {year}年
-              </option>
-            ))}
-            <option value="all">全期間</option>
-          </select>
-        </label>
-        {renderConditionToggle("includeVenue", conditionLabels.venue)}
-        {renderConditionToggle("includeMonthWindow", conditionLabels.monthWindow)}
-        {renderConditionToggle("includeRaceTitle", conditionLabels.raceTitle)}
-        {renderConditionToggle("includeRaceSubtitle", conditionLabels.raceSubtitle)}
-        {renderConditionToggle("includeAge", conditionLabels.age)}
-        {renderConditionToggle("includeClass", conditionLabels.class)}
-        {renderConditionToggle("includeSex", conditionLabels.sex)}
-        {renderConditionToggle("includeWeight", conditionLabels.weight)}
-        {renderConditionToggle("includeSurface", conditionLabels.surface)}
-        {renderConditionToggle("includeTurn", conditionLabels.turn)}
-        {renderConditionToggle("includeDistance", conditionLabels.distance)}
-        {renderConditionToggle("includeRunnerCount", conditionLabels.runnerCount)}
-        {renderConditionToggle("includeFrame", conditionLabels.frame)}
-        {renderConditionToggle("includeRaceNumber", conditionLabels.raceNumber)}
-      </section>
+      <MobileFilterDisclosure title="条件設定">
+        <section className="stats-control-panel" aria-label="race condition analysis controls">
+          <label>
+            <span>期間</span>
+            <select
+              value={settings.years === null ? "all" : String(settings.years)}
+              onChange={(event) => {
+                updateParam("statsYears", event.currentTarget.value);
+              }}
+            >
+              {[1, 2, 3, 5, 10].map((year) => (
+                <option value={year} key={year}>
+                  {year}年
+                </option>
+              ))}
+              <option value="all">全期間</option>
+            </select>
+          </label>
+          {renderConditionToggle("includeVenue", conditionLabels.venue)}
+          {renderConditionToggle("includeMonthWindow", conditionLabels.monthWindow)}
+          {renderConditionToggle("includeRaceTitle", conditionLabels.raceTitle)}
+          {renderConditionToggle("includeRaceSubtitle", conditionLabels.raceSubtitle)}
+          {renderConditionToggle("includeAge", conditionLabels.age)}
+          {renderConditionToggle("includeClass", conditionLabels.class)}
+          {renderConditionToggle("includeSex", conditionLabels.sex)}
+          {renderConditionToggle("includeWeight", conditionLabels.weight)}
+          {renderConditionToggle("includeSurface", conditionLabels.surface)}
+          {renderConditionToggle("includeTurn", conditionLabels.turn)}
+          {renderConditionToggle("includeDistance", conditionLabels.distance)}
+          {renderConditionToggle("includeRunnerCount", conditionLabels.runnerCount)}
+          {renderConditionToggle("includeFrame", conditionLabels.frame)}
+          {renderConditionToggle("includeRaceNumber", conditionLabels.raceNumber)}
+        </section>
+      </MobileFilterDisclosure>
 
       <div className="stats-category-list">
         <section className="stats-category-section">
           <div className="section-heading compact">
             <h3>タイム傾向</h3>
-            <span>{raceTimeStats.raceCount.toLocaleString("ja-JP")} 件</span>
           </div>
           <div className="analysis-metric-grid">
             <div>
@@ -267,13 +285,13 @@ export function RaceConditionAnalysisSection({
         <section className="stats-category-section">
           <div className="section-heading compact">
             <h3>枠順分析</h3>
-            <span>{frameStats.length} 枠</span>
           </div>
           <div className="stats-table-wrap">
             <table className="stats-table analysis-table">
               <thead>
                 <tr>
                   <th>枠</th>
+                  <th>該当馬番</th>
                   <th>頭数</th>
                   <th>スコア</th>
                   <th>着順平均</th>
@@ -289,6 +307,8 @@ export function RaceConditionAnalysisSection({
                     settings.includeRunnerCount && row.runnerCount !== null
                       ? `${row.runnerCount}頭`
                       : "-";
+                  const runnerNumbers =
+                    runnerNumbersByFrame.get(row.frameNumber)?.join(", ") ?? "-";
 
                   return (
                     <Fragment key={row.frameNumber}>
@@ -311,6 +331,7 @@ export function RaceConditionAnalysisSection({
                             `${row.frameNumber}枠`
                           )}
                         </td>
+                        <td>{runnerNumbers}</td>
                         <td>{runnerCountLabel}</td>
                         <td className="stats-score-cell">{row.score.toFixed(2)}</td>
                         <td>{formatNumber(row.averageFinish)}</td>
@@ -320,7 +341,7 @@ export function RaceConditionAnalysisSection({
                       </tr>
                       {isExpanded ? (
                         <tr className="stats-detail-row">
-                          <td colSpan={7}>
+                          <td colSpan={8}>
                             <div className="stats-detail-panel">
                               <table className="stats-detail-table">
                                 <thead>
@@ -379,7 +400,6 @@ export function RaceConditionAnalysisSection({
         <section className="stats-category-section">
           <div className="section-heading compact">
             <h3>払い戻し傾向</h3>
-            <span>{payoutStats.length} 種</span>
           </div>
           <div className="stats-table-wrap">
             <table className="stats-table analysis-table">
@@ -469,7 +489,6 @@ export function RaceConditionAnalysisSection({
         <section className="stats-category-section">
           <div className="section-heading compact">
             <h3>着順別 人気・オッズ</h3>
-            <span>{finishPositionStats.length} 着順</span>
           </div>
           <div className="stats-table-wrap">
             <table className="stats-table analysis-table">
