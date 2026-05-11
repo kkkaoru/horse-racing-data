@@ -86,7 +86,7 @@ const toFullKeibaGoUrl = (path: string): string =>
 
 const extractBabaCode = (url: string): string | null => {
   const code = new URL(url).searchParams.get("k_babaCode");
-  return code?.padStart(2, "0") ?? null;
+  return code ? code.padStart(2, "0") : null;
 };
 
 export const fetchTodayRaceListUrls = async (targetDate: string): Promise<RaceListUrl[]> => {
@@ -123,12 +123,9 @@ export const fetchRaceLinksFromRaceList = async (
   const links: KeibaGoRaceLink[] = [];
 
   for (const match of html.matchAll(RACE_LINK_PATTERN)) {
-    const linkDate = match[1];
-    const raceNo = match[2];
-    const linkBabaCode = match[3]?.padStart(2, "0");
-    if (!linkDate || !raceNo || !linkBabaCode) {
-      continue;
-    }
+    const linkDate = match[1]!;
+    const raceNo = match[2]!;
+    const linkBabaCode = match[3]!.padStart(2, "0");
     if (decodeURIComponent(linkDate) !== raceDate || linkBabaCode !== babaCode) {
       continue;
     }
@@ -155,7 +152,7 @@ const collectOddsLinksFromNav = (nav: string): Partial<Record<OddsType, string>>
   for (const divMatch of divMatches) {
     divIndex += 1;
     if (divIndex === TARGET_ODDS_NAV_DIV_INDEX) {
-      targetDiv = divMatch[1] ?? "";
+      targetDiv = divMatch[1]!;
       break;
     }
   }
@@ -217,17 +214,11 @@ export const convertToAbsoluteKeibaGoUrl = (oddsPath: string, baseUrl: string): 
 };
 
 const isValidHorseNum = (horseNum: string): boolean => {
-  if (!/^\d+$/.test(horseNum)) {
-    return false;
-  }
   const parsed = Number(horseNum);
   return parsed >= 1 && parsed <= 18;
 };
 
 const isValidFrameNum = (frameNum: string): boolean => {
-  if (!/^\d+$/.test(frameNum)) {
-    return false;
-  }
   const parsed = Number(frameNum);
   return parsed >= 1 && parsed <= 8;
 };
@@ -246,8 +237,8 @@ const parseTanshoOdds = (html: string): OddsData[] => {
   }
   return Array.from(tbody.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi))
     .map((row) =>
-      Array.from((row[1] ?? "").matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)).map((cell) =>
-        stripHtmlTags(cell[1] ?? ""),
+      Array.from(row[1]!.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)).map((cell) =>
+        stripHtmlTags(cell[1]!),
       ),
     )
     .map((cells): OddsData | null => {
@@ -268,14 +259,12 @@ const extractRankingRows = (html: string): string[] =>
   Array.from(
     html.matchAll(/<table[^>]*class="odd_ranking_table"[^>]*>([\s\S]*?)<\/table>/gi),
   ).flatMap((table) =>
-    Array.from((table[1] ?? "").matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi))
-      .map((row) => row[1])
-      .filter((row): row is string => Boolean(row)),
+    Array.from(table[1]!.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)).map((row) => row[1]!),
   );
 
 const parsePairOddsRow = (row: string, ordered: boolean): OddsData | null => {
   const cells = Array.from(row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)).map((cell) =>
-    stripHtmlTags(cell[1] ?? ""),
+    stripHtmlTags(cell[1]!),
   );
   const combination = cells[0];
   const oddsText = cells[1];
@@ -341,7 +330,7 @@ const parseWakurenOdds = (html: string): OddsData[] => {
     return [];
   }
   const values = Array.from(list.matchAll(/<table[^>]*>([\s\S]*?)<\/table>/gi)).flatMap((table) => {
-    const tableHtml = table[1] ?? "";
+    const tableHtml = table[1]!;
     const base = tableHtml.match(/<th[^>]*class="odd_post\d+"[^>]*>\s*(\d+)\s*<\/th>/i)?.[1];
     if (!base || !isValidFrameNum(base)) {
       return [];
