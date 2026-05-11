@@ -73,4 +73,5 @@ export const nvdRa = pgTable("nvd_ra", raceColumns);
 export const jvdSe = pgTable("jvd_se", runnerColumns);
 export const nvdSe = pgTable("nvd_se", runnerColumns);
 export const jvdUm = pgTable("jvd_um", horseMasterColumns);
+export const nvdNu = pgTable("nvd_nu", horseMasterColumns);
 export const nvdUm = pgTable("nvd_um", horseMasterColumns);
