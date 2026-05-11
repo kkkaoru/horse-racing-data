@@ -21,6 +21,7 @@ import {
   formatSexAge,
   isBanEiKeibajoCode,
 } from "../../../lib/runner-format";
+import { MobileFilterDisclosure } from "./mobile-filter-disclosure";
 
 type ResultLimit = "all" | "1" | "3" | "5" | "10";
 type SortDirection = "asc" | "desc";
@@ -257,6 +258,7 @@ export function HorseRaceResultsTable({
     Number.isFinite(baseDistance) && baseDistance > 0 ? String(baseDistance + 200) : "",
   );
   const [limit, setLimit] = useState<ResultLimit>("5");
+  const [finishRankLimit, setFinishRankLimit] = useState("5");
   const [includeOutOfRangeFallback, setIncludeOutOfRangeFallback] = useState(true);
   const [sameJockeyOnly, setSameJockeyOnly] = useState(defaultNarFilterEnabled);
   const [sameJockeyTouched, setSameJockeyTouched] = useState(false);
@@ -325,14 +327,17 @@ export function HorseRaceResultsTable({
     );
   }, [results, runners, selectedRunnerNumberSet]);
 
-  const visibleResults = useMemo(() => {
+  const visibleResultsState = useMemo(() => {
     const min = Number(distanceMin);
     const max = Number(distanceMax);
     const hasMin = Number.isFinite(min);
     const hasMax = Number.isFinite(max);
     const limitCount = limit === "all" ? null : Number(limit);
-    const perHorseCount = new Map<string, number>();
-    const groupedResults = new Map<string, HorseRaceResult[]>();
+    const parsedFinishRankLimit = Number(finishRankLimit);
+    const hasFinishRankLimit =
+      finishRankLimit.trim() !== "" &&
+      Number.isInteger(parsedFinishRankLimit) &&
+      parsedFinishRankLimit > 0;
     const recentMonthsValue = Number(recentMonths);
     const recentDateMin =
       recentMonths.trim() !== "" && Number.isFinite(recentMonthsValue) && recentMonthsValue > 0
@@ -347,106 +352,129 @@ export function HorseRaceResultsTable({
       return (!hasMin || distance >= min) && (!hasMax || distance <= max);
     };
 
-    for (const result of results) {
-      const runnerNumber = cleanText(result.currentUmaban, "");
-      if (runnerNumberOptions.length > 0 && !selectedRunnerNumberSet.has(runnerNumber)) {
-        continue;
-      }
-      const distance = getDistanceValue(result);
-      if (distance === null) {
-        continue;
-      }
-      const jockeyMatched =
-        !sameJockeyOnly ||
-        normalizeText(result.currentJockey) === normalizeText(result.kishumeiRyakusho);
-      if (!jockeyMatched) {
-        continue;
-      }
-      if (classFilter !== "all" && !isClassMatched(result, classFilter)) {
-        continue;
-      }
-      const raceDate = getRaceDateValue(result);
-      if (recentDateMin !== null && (raceDate === null || raceDate < recentDateMin)) {
-        continue;
-      }
-      const key = result.currentUmaban ?? "";
-      groupedResults.set(key, [...(groupedResults.get(key) ?? []), result]);
-    }
+    const getVisibleResults = (useFinishRankFilter: boolean): HorseRaceResult[] => {
+      const perHorseCount = new Map<string, number>();
+      const groupedResults = new Map<string, HorseRaceResult[]>();
 
-    const selectedResults = [...groupedResults.values()].flatMap((horseResults) => {
-      const inRangeResults = horseResults.filter(isDistanceMatched);
-      const shouldUseFallback = inRangeResults.length === 0 && includeOutOfRangeFallback;
-      const prioritizedResults = shouldUseFallback
-        ? horseResults.toSorted((left, right) => {
-            const leftDistance = getDistanceValue(left);
-            const rightDistance = getDistanceValue(right);
-            const leftDiff =
-              leftDistance === null || !Number.isFinite(baseDistance)
-                ? null
-                : Math.abs(leftDistance - baseDistance);
-            const rightDiff =
-              rightDistance === null || !Number.isFinite(baseDistance)
-                ? null
-                : Math.abs(rightDistance - baseDistance);
-            const distanceCompared = compareNullable(leftDiff, rightDiff, "asc");
-            return distanceCompared !== 0 ? distanceCompared : compareByTimeAndDate(left, right);
-          })
-        : inRangeResults.toSorted(compareByTimeAndDate);
-
-      return prioritizedResults.filter((result) => {
-        if (limitCount === null) {
-          return true;
+      for (const result of results) {
+        const runnerNumber = cleanText(result.currentUmaban, "");
+        if (runnerNumberOptions.length > 0 && !selectedRunnerNumberSet.has(runnerNumber)) {
+          continue;
+        }
+        const distance = getDistanceValue(result);
+        if (distance === null) {
+          continue;
+        }
+        const finishRank = parseNumber(result.kakuteiChakujun);
+        if (
+          useFinishRankFilter &&
+          hasFinishRankLimit &&
+          (finishRank === null || finishRank > parsedFinishRankLimit)
+        ) {
+          continue;
+        }
+        const jockeyMatched =
+          !sameJockeyOnly ||
+          normalizeText(result.currentJockey) === normalizeText(result.kishumeiRyakusho);
+        if (!jockeyMatched) {
+          continue;
+        }
+        if (classFilter !== "all" && !isClassMatched(result, classFilter)) {
+          continue;
+        }
+        const raceDate = getRaceDateValue(result);
+        if (recentDateMin !== null && (raceDate === null || raceDate < recentDateMin)) {
+          continue;
         }
         const key = result.currentUmaban ?? "";
-        const current = perHorseCount.get(key) ?? 0;
-        if (current >= limitCount) {
-          return false;
-        }
-        perHorseCount.set(key, current + 1);
-        return true;
-      });
-    });
+        groupedResults.set(key, [...(groupedResults.get(key) ?? []), result]);
+      }
 
-    return selectedResults
-      .filter((result) => {
-        const distance = getDistanceValue(result);
-        return distance !== null;
-      })
-      .toSorted((left, right) => {
-        const primary = compareNullable(
-          getSortValue(left, sort.key),
-          getSortValue(right, sort.key),
-          sort.direction,
-        );
-        if (primary !== 0) {
-          return primary;
-        }
-        if (sort.key !== "sohaTime") {
-          const timeCompared = compareNullable(
-            getSortValue(left, "sohaTime"),
-            getSortValue(right, "sohaTime"),
-            "asc",
-          );
-          if (timeCompared !== 0) {
-            return timeCompared;
+      const selectedResults = [...groupedResults.values()].flatMap((horseResults) => {
+        const inRangeResults = horseResults.filter(isDistanceMatched);
+        const shouldUseFallback = inRangeResults.length === 0 && includeOutOfRangeFallback;
+        const prioritizedResults = shouldUseFallback
+          ? horseResults.toSorted((left, right) => {
+              const leftDistance = getDistanceValue(left);
+              const rightDistance = getDistanceValue(right);
+              const leftDiff =
+                leftDistance === null || !Number.isFinite(baseDistance)
+                  ? null
+                  : Math.abs(leftDistance - baseDistance);
+              const rightDiff =
+                rightDistance === null || !Number.isFinite(baseDistance)
+                  ? null
+                  : Math.abs(rightDistance - baseDistance);
+              const distanceCompared = compareNullable(leftDiff, rightDiff, "asc");
+              return distanceCompared !== 0 ? distanceCompared : compareByTimeAndDate(left, right);
+            })
+          : inRangeResults.toSorted(compareByTimeAndDate);
+
+        return prioritizedResults.filter((result) => {
+          if (limitCount === null) {
+            return true;
           }
-        }
-        const dateCompared = compareNullable(
-          getRaceDateValue(left),
-          getRaceDateValue(right),
-          "desc",
-        );
-        if (dateCompared !== 0) {
-          return dateCompared;
-        }
-        return Number(left.currentUmaban ?? 0) - Number(right.currentUmaban ?? 0);
+          const key = result.currentUmaban ?? "";
+          const current = perHorseCount.get(key) ?? 0;
+          if (current >= limitCount) {
+            return false;
+          }
+          perHorseCount.set(key, current + 1);
+          return true;
+        });
       });
+
+      return selectedResults
+        .filter((result) => {
+          const distance = getDistanceValue(result);
+          return distance !== null;
+        })
+        .toSorted((left, right) => {
+          const primary = compareNullable(
+            getSortValue(left, sort.key),
+            getSortValue(right, sort.key),
+            sort.direction,
+          );
+          if (primary !== 0) {
+            return primary;
+          }
+          if (sort.key !== "sohaTime") {
+            const timeCompared = compareNullable(
+              getSortValue(left, "sohaTime"),
+              getSortValue(right, "sohaTime"),
+              "asc",
+            );
+            if (timeCompared !== 0) {
+              return timeCompared;
+            }
+          }
+          const dateCompared = compareNullable(
+            getRaceDateValue(left),
+            getRaceDateValue(right),
+            "desc",
+          );
+          if (dateCompared !== 0) {
+            return dateCompared;
+          }
+          return Number(left.currentUmaban ?? 0) - Number(right.currentUmaban ?? 0);
+        });
+    };
+
+    const filteredResults = getVisibleResults(true);
+    const relaxedResults =
+      hasFinishRankLimit && filteredResults.length === 0 ? getVisibleResults(false) : [];
+
+    return {
+      shouldRelaxFinishRankLimit: hasFinishRankLimit && relaxedResults.length > 0,
+      results: filteredResults,
+    };
   }, [
     baseDistance,
     classFilter,
     currentRaceDate,
     distanceMax,
     distanceMin,
+    finishRankLimit,
     includeOutOfRangeFallback,
     limit,
     recentMonths,
@@ -456,6 +484,13 @@ export function HorseRaceResultsTable({
     selectedRunnerNumberSet,
     sort,
   ]);
+  const visibleResults = visibleResultsState.results;
+
+  useEffect(() => {
+    if (visibleResultsState.shouldRelaxFinishRankLimit) {
+      setFinishRankLimit("");
+    }
+  }, [visibleResultsState.shouldRelaxFinishRankLimit]);
 
   const toggleRunnerNumber = (runnerNumber: string) => {
     setSelectedRunnerNumbers((current) =>
@@ -504,143 +539,158 @@ export function HorseRaceResultsTable({
 
   return (
     <>
-      <section className="race-results-filter-panel" aria-label="race result filters">
-        <label>
-          <span>距離 下限</span>
-          <input
-            inputMode="numeric"
-            type="number"
-            value={distanceMin}
-            onChange={(event) => {
-              setDistanceMin(event.currentTarget.value);
-            }}
-          />
-        </label>
-        <label>
-          <span>距離 上限</span>
-          <input
-            inputMode="numeric"
-            type="number"
-            value={distanceMax}
-            onChange={(event) => {
-              setDistanceMax(event.currentTarget.value);
-            }}
-          />
-        </label>
-        <label>
-          <span>馬ごとの表示数</span>
-          <select
-            value={limit}
-            onChange={(event) => {
-              setLimit(toResultLimit(event.currentTarget.value));
-            }}
-          >
-            <option value="all">全件</option>
-            <option value="1">1件</option>
-            <option value="3">3件</option>
-            <option value="5">5件</option>
-            <option value="10">10件</option>
-          </select>
-        </label>
-        {classFilterOptions.length > 0 ? (
+      <MobileFilterDisclosure title="条件設定">
+        <section className="race-results-filter-panel" aria-label="race result filters">
           <label>
-            <span>条件</span>
-            <select
-              value={classFilter}
+            <span>距離 下限</span>
+            <input
+              inputMode="numeric"
+              type="number"
+              value={distanceMin}
               onChange={(event) => {
-                setClassFilter(event.currentTarget.value);
+                setDistanceMin(event.currentTarget.value);
+              }}
+            />
+          </label>
+          <label>
+            <span>距離 上限</span>
+            <input
+              inputMode="numeric"
+              type="number"
+              value={distanceMax}
+              onChange={(event) => {
+                setDistanceMax(event.currentTarget.value);
+              }}
+            />
+          </label>
+          <label>
+            <span>馬ごとの表示数</span>
+            <select
+              value={limit}
+              onChange={(event) => {
+                setLimit(toResultLimit(event.currentTarget.value));
               }}
             >
-              <option value="all">全条件</option>
-              {classFilterOptions.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
+              <option value="all">全件</option>
+              <option value="1">1件</option>
+              <option value="3">3件</option>
+              <option value="5">5件</option>
+              <option value="10">10件</option>
             </select>
           </label>
-        ) : null}
-        <label className="race-results-checkbox-label">
-          <span>出走予定と同じ騎手</span>
-          <span className="race-results-checkbox-control">
+          <label>
+            <span>着順 n着以内</span>
             <input
-              aria-label="出走予定と同じ騎手"
-              checked={sameJockeyOnly}
-              type="checkbox"
+              inputMode="numeric"
+              min="1"
+              placeholder="制限なし"
+              type="number"
+              value={finishRankLimit}
               onChange={(event) => {
-                setSameJockeyTouched(true);
-                setSameJockeyOnly(event.currentTarget.checked);
+                setFinishRankLimit(event.currentTarget.value);
               }}
             />
-          </span>
-        </label>
-        <label>
-          <span>出走日からnヶ月以内</span>
-          <input
-            inputMode="numeric"
-            min="1"
-            placeholder="制限なし"
-            type="number"
-            value={recentMonths}
-            onChange={(event) => {
-              setRecentMonths(event.currentTarget.value);
-            }}
-          />
-        </label>
-        <label className="race-results-checkbox-label">
-          <span>距離範囲外の近い成績も補完</span>
-          <span className="race-results-checkbox-control">
+          </label>
+          {classFilterOptions.length > 0 ? (
+            <label>
+              <span>条件</span>
+              <select
+                value={classFilter}
+                onChange={(event) => {
+                  setClassFilter(event.currentTarget.value);
+                }}
+              >
+                <option value="all">全条件</option>
+                {classFilterOptions.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          <label className="race-results-checkbox-label">
+            <span>出走予定と同じ騎手</span>
+            <span className="race-results-checkbox-control">
+              <input
+                aria-label="出走予定と同じ騎手"
+                checked={sameJockeyOnly}
+                type="checkbox"
+                onChange={(event) => {
+                  setSameJockeyTouched(true);
+                  setSameJockeyOnly(event.currentTarget.checked);
+                }}
+              />
+            </span>
+          </label>
+          <label>
+            <span>出走日からnヶ月以内</span>
             <input
-              aria-label="距離範囲外の近い成績も補完"
-              checked={includeOutOfRangeFallback}
-              type="checkbox"
+              inputMode="numeric"
+              min="1"
+              placeholder="制限なし"
+              type="number"
+              value={recentMonths}
               onChange={(event) => {
-                setIncludeOutOfRangeFallback(event.currentTarget.checked);
+                setRecentMonths(event.currentTarget.value);
               }}
             />
+          </label>
+          <label className="race-results-checkbox-label">
+            <span>距離範囲外の近い成績も補完</span>
+            <span className="race-results-checkbox-control">
+              <input
+                aria-label="距離範囲外の近い成績も補完"
+                checked={includeOutOfRangeFallback}
+                type="checkbox"
+                onChange={(event) => {
+                  setIncludeOutOfRangeFallback(event.currentTarget.checked);
+                }}
+              />
+            </span>
+          </label>
+          {runnerNumberOptions.length > 0 ? (
+            <fieldset className="race-results-runner-filter">
+              <legend>馬番号</legend>
+              <div className="race-results-runner-filter-actions">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedRunnerNumbers(runnerNumberOptions);
+                  }}
+                >
+                  全てチェック
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedRunnerNumbers([]);
+                  }}
+                >
+                  全て外す
+                </button>
+              </div>
+              <div>
+                {runnerNumberOptions.map((runnerNumber) => (
+                  <label key={runnerNumber}>
+                    <input
+                      checked={selectedRunnerNumberSet.has(runnerNumber)}
+                      type="checkbox"
+                      onChange={() => {
+                        toggleRunnerNumber(runnerNumber);
+                      }}
+                    />
+                    <span>{formatRunnerNumber(runnerNumber)}</span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          ) : null}
+          <span className="race-results-filter-count">
+            {visibleResults.length} / {results.length} 件
           </span>
-        </label>
-        {runnerNumberOptions.length > 0 ? (
-          <fieldset className="race-results-runner-filter">
-            <legend>馬番号</legend>
-            <div className="race-results-runner-filter-actions">
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedRunnerNumbers(runnerNumberOptions);
-                }}
-              >
-                全てチェック
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedRunnerNumbers([]);
-                }}
-              >
-                全て外す
-              </button>
-            </div>
-            <div>
-              {runnerNumberOptions.map((runnerNumber) => (
-                <label key={runnerNumber}>
-                  <input
-                    checked={selectedRunnerNumberSet.has(runnerNumber)}
-                    type="checkbox"
-                    onChange={() => {
-                      toggleRunnerNumber(runnerNumber);
-                    }}
-                  />
-                  <span>{formatRunnerNumber(runnerNumber)}</span>
-                </label>
-              ))}
-            </div>
-          </fieldset>
-        ) : null}
-        <span className="race-results-filter-count">
-          {visibleResults.length} / {results.length} 件
-        </span>
-      </section>
+        </section>
+      </MobileFilterDisclosure>
       {debutRunners.length > 0 ? (
         <section className="race-results-newcomer-panel" aria-label="newcomer runners">
           <h3>新馬</h3>
