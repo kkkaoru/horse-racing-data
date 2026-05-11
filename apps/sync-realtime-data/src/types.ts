@@ -48,4 +48,5 @@ export interface Env {
   REALTIME_API_CACHE_SECONDS?: string;
   REALTIME_DB: D1Database;
   REALTIME_JOBS: Queue<Job>;
+  REALTIME_TEST_NOW?: string;
 }

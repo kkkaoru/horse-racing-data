@@ -16,20 +16,42 @@ import { readCachedOdds, writeCachedOdds } from "./odds-cache";
 import { fetchNarRacesByDate } from "./postgres";
 import {
   buildRealtimePayload,
+  claimOddsFetch,
+  completeOddsFetch,
+  failOddsFetch,
   getRaceSource,
   getLatestOddsFromD1,
   insertHorseWeightSnapshot,
   insertOddsSnapshot,
-  listRaceSourcesByDate,
+  listSchedulableRaceSourcesByDate,
   listTanshoHistory,
   logFetch,
+  markOddsFetchQueued,
   toHorseTrends,
   updateLastFetch,
   updateOddsLinks,
   upsertNarRaceSource,
 } from "./storage";
-import { getTodayJst, isJstPollingWindow, parseRaceStartJst, toJstIsoString } from "./time";
+import {
+  getOddsFetchIntervalMinutes,
+  getTodayJst,
+  isJstPollingWindow,
+  parseRaceStartJst,
+  toJstIsoString,
+} from "./time";
 import type { Env, Job, NarRaceSource, OddsType } from "./types";
+
+const QUEUE_SEND_BATCH_SIZE = 100;
+const ODDS_FETCH_LOCK_MINUTES = 10;
+const QUEUE_RETRY_DELAY_SECONDS = 60;
+
+const getNow = (env: Env): Date => {
+  if (!env.REALTIME_TEST_NOW) {
+    return new Date();
+  }
+  const date = new Date(env.REALTIME_TEST_NOW);
+  return Number.isNaN(date.getTime()) ? new Date() : date;
+};
 
 const json = (body: unknown, init?: ResponseInit): Response =>
   new Response(JSON.stringify(body), {
@@ -148,34 +170,68 @@ const isDue = (
   return Number.isNaN(last) || now.getTime() - last >= intervalMinutes * 60_000;
 };
 
+const latestTimestamp = (...timestamps: (string | null)[]): string | null => {
+  const latest = timestamps
+    .map((timestamp) => (timestamp ? new Date(timestamp).getTime() : Number.NaN))
+    .filter((timestamp) => !Number.isNaN(timestamp))
+    .sort((left, right) => right - left)[0];
+  return latest === undefined ? null : new Date(latest).toISOString();
+};
+
+const isThreeMinuteTick = (date: Date): boolean => date.getUTCMinutes() % 3 === 0;
+
+const enqueueJobs = async (env: Env, jobs: Job[]): Promise<void> => {
+  for (let index = 0; index < jobs.length; index += QUEUE_SEND_BATCH_SIZE) {
+    const chunk = jobs.slice(index, index + QUEUE_SEND_BATCH_SIZE);
+    if (chunk.length === 1) {
+      await env.REALTIME_JOBS.send(chunk[0] as Job);
+      continue;
+    }
+    await env.REALTIME_JOBS.sendBatch(chunk.map((body) => ({ body })));
+  }
+};
+
 const planRealtimeFetches = async (env: Env, targetDate: string): Promise<number> => {
-  if (!isJstPollingWindow()) {
+  const now = getNow(env);
+  if (!isJstPollingWindow(now)) {
     return 0;
   }
-  const races = await listRaceSourcesByDate(env.REALTIME_DB, targetDate);
+  const races = await listSchedulableRaceSourcesByDate(env.REALTIME_DB, targetDate);
   if (races.length === 0) {
     return 0;
   }
 
-  let queued = 0;
+  const jobs: Job[] = [];
   for (const race of races) {
-    const minutes = minutesUntilRace(race);
+    const minutes = minutesUntilRace(race, now);
     if (minutes === null) {
       continue;
     }
 
-    const oddsInterval = minutes <= 30 ? 3 : 10;
-    if (minutes > 0 && isDue(race.lastOddsFetchAt, oddsInterval)) {
-      await env.REALTIME_JOBS.send({ raceKey: race.raceKey, type: "fetch-odds" });
-      queued += 1;
+    const oddsInterval = getOddsFetchIntervalMinutes(minutes);
+    const oddsLockUntil = race.oddsFetchLockUntil
+      ? new Date(race.oddsFetchLockUntil).getTime()
+      : Number.NaN;
+    const lastOddsActivity = latestTimestamp(race.lastOddsFetchAt, race.lastOddsQueuedAt);
+    if (
+      oddsInterval &&
+      (Number.isNaN(oddsLockUntil) || oddsLockUntil <= now.getTime()) &&
+      isDue(lastOddsActivity, oddsInterval, now)
+    ) {
+      jobs.push({ raceKey: race.raceKey, type: "fetch-odds" });
     }
 
-    if (minutes <= 20 && isDue(race.lastWeightFetchAt, 24 * 60)) {
-      await env.REALTIME_JOBS.send({ raceKey: race.raceKey, type: "fetch-weights" });
-      queued += 1;
+    if (isThreeMinuteTick(now) && minutes <= 20 && isDue(race.lastWeightFetchAt, 24 * 60, now)) {
+      jobs.push({ raceKey: race.raceKey, type: "fetch-weights" });
     }
   }
-  return queued;
+  await enqueueJobs(env, jobs);
+  await markOddsFetchQueued(
+    env.REALTIME_DB,
+    jobs.flatMap((job) => (job.type === "fetch-odds" ? [job.raceKey] : [])),
+    toJstIsoString(now),
+  );
+  return jobs.length;
 };
 
 const ensureOddsLinks = async (
@@ -192,17 +248,38 @@ const ensureOddsLinks = async (
 };
 
 const fetchAndStoreOdds = async (env: Env, raceKey: string): Promise<void> => {
+  const now = getNow(env);
+  const lockUntil = toJstIsoString(new Date(now.getTime() + ODDS_FETCH_LOCK_MINUTES * 60_000));
+  const claimed = await claimOddsFetch(env.REALTIME_DB, raceKey, lockUntil, toJstIsoString(now));
+  if (!claimed) {
+    return;
+  }
   const race = await getRaceSource(env.REALTIME_DB, raceKey);
   if (!race) {
+    await failOddsFetch(env.REALTIME_DB, raceKey);
     throw new Error(`race source not found: ${raceKey}`);
   }
-  const fetchedAt = toJstIsoString();
-  const oddsLinks = await ensureOddsLinks(env, race);
-  const latest = await fetchOdds(race.debaUrl, oddsLinks);
-  await insertOddsSnapshot(env.REALTIME_DB, raceKey, fetchedAt, latest);
-  await updateLastFetch(env.REALTIME_DB, raceKey, "last_odds_fetch_at", fetchedAt);
-  const history = await listTanshoHistory(env.REALTIME_DB, raceKey);
-  await writeCachedOdds(env, raceKey, { fetchedAt, history, latest });
+  try {
+    const minutes = minutesUntilRace(race, now);
+    const oddsInterval = minutes === null ? null : getOddsFetchIntervalMinutes(minutes);
+    if (!oddsInterval || !isDue(race.lastOddsFetchAt, oddsInterval, now)) {
+      await failOddsFetch(env.REALTIME_DB, raceKey);
+      return;
+    }
+    const fetchedAt = toJstIsoString();
+    const oddsLinks = await ensureOddsLinks(env, race);
+    const latest = await fetchOdds(race.debaUrl, oddsLinks);
+    const inserted = await insertOddsSnapshot(env.REALTIME_DB, raceKey, fetchedAt, latest);
+    if (inserted === 0) {
+      throw new Error(`odds rows are empty: ${raceKey}`);
+    }
+    await completeOddsFetch(env.REALTIME_DB, raceKey, fetchedAt);
+    const history = await listTanshoHistory(env.REALTIME_DB, raceKey);
+    await writeCachedOdds(env, raceKey, { fetchedAt, history, latest });
+  } catch (error) {
+    await failOddsFetch(env.REALTIME_DB, raceKey);
+    throw error;
+  }
 };
 
 const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<void> => {
@@ -322,8 +399,16 @@ export default {
 
   async queue(batch, env): Promise<void> {
     for (const message of batch.messages) {
-      await handleJob(env, message.body);
-      message.ack();
+      try {
+        await handleJob(env, message.body);
+        message.ack();
+      } catch {
+        if (message.body.type === "fetch-odds") {
+          message.ack();
+        } else {
+          message.retry({ delaySeconds: QUEUE_RETRY_DELAY_SECONDS });
+        }
+      }
     }
   },
 } satisfies ExportedHandler<Env, Job>;
