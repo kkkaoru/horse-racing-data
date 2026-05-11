@@ -16,11 +16,11 @@ const partsToRecord = (date: Date): Record<string, string> =>
 
 export const getJstDateParts = (date = new Date()) => {
   const parts = partsToRecord(date);
-  const year = parts.year ?? "1970";
-  const month = parts.month ?? "01";
-  const day = parts.day ?? "01";
-  const hour = parts.hour ?? "00";
-  const minute = parts.minute ?? "00";
+  const year = parts.year;
+  const month = parts.month;
+  const day = parts.day;
+  const hour = parts.hour;
+  const minute = parts.minute;
   return {
     day,
     hour,
@@ -53,6 +53,19 @@ export const parseRaceStartJst = (
 
 export const formatRaceStartJst = (year: string, monthDay: string, hhmm: string): string =>
   `${year}-${monthDay.slice(0, 2)}-${monthDay.slice(2, 4)}T${hhmm.slice(0, 2)}:${hhmm.slice(2, 4)}:00+09:00`;
+
+export const getOddsFetchIntervalMinutes = (minutesUntilRace: number): number | null => {
+  if (minutesUntilRace >= 60) {
+    return 60;
+  }
+  if (minutesUntilRace >= 10) {
+    return 10;
+  }
+  if (minutesUntilRace >= 1) {
+    return 1;
+  }
+  return null;
+};
 
 export const isJstPollingWindow = (date = new Date()): boolean => {
   const { hour } = getJstDateParts(date);

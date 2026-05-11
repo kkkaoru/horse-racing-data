@@ -10,6 +10,8 @@ import type {
   RealtimeRacePayload,
 } from "./types";
 
+const D1_BATCH_SIZE = 100;
+
 interface RaceSourceRow {
   baba_code: string;
   deba_url: string;
@@ -17,7 +19,9 @@ interface RaceSourceRow {
   kaisai_tsukihi: string;
   keibajo_code: string;
   last_odds_fetch_at: string | null;
+  last_odds_queued_at: string | null;
   last_weight_fetch_at: string | null;
+  odds_fetch_lock_until: string | null;
   odds_links_json: string;
   race_bango: string;
   race_key: string;
@@ -54,6 +58,11 @@ export interface LocalRaceRow {
   race_bango: string;
 }
 
+export interface SchedulableRaceSource extends NarRaceSource {
+  lastOddsQueuedAt: string | null;
+  oddsFetchLockUntil: string | null;
+}
+
 const parseOddsLinks = (value: string): Partial<Record<OddsType, string>> => {
   try {
     const parsed = JSON.parse(value);
@@ -77,6 +86,18 @@ const toRaceSource = (row: RaceSourceRow): NarRaceSource => ({
   raceName: row.race_name,
   raceStartAtJst: row.race_start_at_jst,
 });
+
+const toSchedulableRaceSource = (row: RaceSourceRow): SchedulableRaceSource => ({
+  ...toRaceSource(row),
+  lastOddsQueuedAt: row.last_odds_queued_at,
+  oddsFetchLockUntil: row.odds_fetch_lock_until,
+});
+
+const runD1Batches = async (db: D1Database, statements: D1PreparedStatement[]): Promise<void> => {
+  for (let index = 0; index < statements.length; index += D1_BATCH_SIZE) {
+    await db.batch(statements.slice(index, index + D1_BATCH_SIZE));
+  }
+};
 
 export const upsertNarRaceSource = async (
   db: D1Database,
@@ -137,10 +158,10 @@ export const getRaceSource = async (
   return row ? toRaceSource(row) : null;
 };
 
-export const listRaceSourcesByDate = async (
+export const listSchedulableRaceSourcesByDate = async (
   db: D1Database,
   targetDate: string,
-): Promise<NarRaceSource[]> => {
+): Promise<SchedulableRaceSource[]> => {
   const result = await db
     .prepare(
       `
@@ -153,7 +174,7 @@ export const listRaceSourcesByDate = async (
     )
     .bind(targetDate.slice(0, 4), targetDate.slice(4, 8))
     .all<RaceSourceRow>();
-  return result.results.map(toRaceSource);
+  return result.results.map(toSchedulableRaceSource);
 };
 
 export const updateOddsLinks = async (
@@ -179,12 +200,94 @@ export const updateLastFetch = async (
     .run();
 };
 
+export const markOddsFetchQueued = async (
+  db: D1Database,
+  raceKeys: string[],
+  queuedAt: string,
+): Promise<void> => {
+  if (raceKeys.length === 0) {
+    return;
+  }
+  await runD1Batches(
+    db,
+    raceKeys.map((raceKey) =>
+      db
+        .prepare(
+          `
+            update nar_race_sources
+            set last_odds_queued_at = ?, updated_at = ?
+            where race_key = ?
+              and (last_odds_fetch_at is null or last_odds_fetch_at <= ?)
+          `,
+        )
+        .bind(queuedAt, queuedAt, raceKey, queuedAt),
+    ),
+  );
+};
+
+export const claimOddsFetch = async (
+  db: D1Database,
+  raceKey: string,
+  lockUntil: string,
+  now = toJstIsoString(),
+): Promise<boolean> => {
+  const result = await db
+    .prepare(
+      `
+        update nar_race_sources
+        set odds_fetch_lock_until = ?, updated_at = ?
+        where race_key = ?
+          and (odds_fetch_lock_until is null or odds_fetch_lock_until <= ?)
+      `,
+    )
+    .bind(lockUntil, now, raceKey, now)
+    .run();
+  return result.meta.changes > 0;
+};
+
+export const completeOddsFetch = async (
+  db: D1Database,
+  raceKey: string,
+  fetchedAt: string,
+): Promise<void> => {
+  const now = toJstIsoString();
+  await db
+    .prepare(
+      `
+        update nar_race_sources
+        set last_odds_fetch_at = ?,
+            last_odds_queued_at = null,
+            odds_fetch_lock_until = null,
+            updated_at = ?
+        where race_key = ?
+      `,
+    )
+    .bind(fetchedAt, now, raceKey)
+    .run();
+};
+
+export const failOddsFetch = async (db: D1Database, raceKey: string): Promise<void> => {
+  const now = toJstIsoString();
+  await db
+    .prepare(
+      `
+        update nar_race_sources
+        set last_odds_queued_at = null,
+            odds_fetch_lock_until = null,
+            updated_at = ?
+        where race_key = ?
+      `,
+    )
+    .bind(now, raceKey)
+    .run();
+};
+
 export const insertOddsSnapshot = async (
   db: D1Database,
   raceKey: string,
   fetchedAt: string,
   odds: Partial<Record<OddsType, OddsData[]>>,
-): Promise<void> => {
+): Promise<number> => {
   const statements = Object.entries(odds).flatMap(([type, rows]) =>
     (rows ?? []).map((row) =>
       db
@@ -211,8 +314,9 @@ export const insertOddsSnapshot = async (
     ),
   );
   if (statements.length > 0) {
-    await db.batch(statements);
+    await runD1Batches(db, statements);
   }
+  return statements.length;
 };
 
 export const insertHorseWeightSnapshot = async (
@@ -225,7 +329,8 @@ export const insertHorseWeightSnapshot = async (
   if (weights.length === 0) {
     return;
   }
-  await db.batch(
+  await runD1Batches(
+    db,
     weights.map((weight) =>
       db
         .prepare(
