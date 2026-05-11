@@ -31,7 +31,7 @@ import type {
 } from "../lib/race-types";
 import { getDb } from "./client";
 import { withDbQueryCache } from "./query-cache";
-import { jvdCs, jvdRa, jvdSe, jvdUm, nvdRa, nvdSe, nvdUm } from "./schema";
+import { jvdCs, jvdRa, jvdSe, jvdUm, nvdNu, nvdRa, nvdSe, nvdUm } from "./schema";
 
 export const getRaceYears = cache(
   async (): Promise<RaceYearSummary[]> =>
@@ -2077,8 +2077,9 @@ export const getBloodlineStats = cache(
     return withDbQueryCache(["getBloodlineStats", race, settings], async () => {
       const raceTable = race.source === "jra" ? jvdRa : nvdRa;
       const runnerTable = race.source === "jra" ? jvdSe : nvdSe;
-      const primaryHorseTable = race.source === "jra" ? jvdUm : nvdUm;
-      const secondaryHorseTable = race.source === "jra" ? nvdUm : jvdUm;
+      const primaryHorseTable = race.source === "jra" ? jvdUm : nvdNu;
+      const secondaryHorseTable = nvdUm;
+      const tertiaryHorseTable = race.source === "jra" ? nvdNu : jvdUm;
       const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
       const surfaceCodes = getTrackCodesBySurface(getTrackSurface(race.trackCode));
       const turnCodes = getTrackCodesByTurn(getTrackTurn(race.trackCode));
@@ -2114,16 +2115,19 @@ export const getBloodlineStats = cache(
           coalesce(
             nullif(regexp_replace(primary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
             nullif(regexp_replace(secondary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+            nullif(regexp_replace(tertiary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
             '不明'
           ) as sire,
           coalesce(
             nullif(regexp_replace(primary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
             nullif(regexp_replace(secondary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+            nullif(regexp_replace(tertiary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
             '不明'
           ) as "sireSire",
           coalesce(
             nullif(regexp_replace(primary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
             nullif(regexp_replace(secondary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+            nullif(regexp_replace(tertiary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
             '不明'
           ) as "damSire"
         from ${runnerTable} se
@@ -2131,6 +2135,8 @@ export const getBloodlineStats = cache(
           on primary_um.ketto_toroku_bango = se.ketto_toroku_bango
         left join ${secondaryHorseTable} secondary_um
           on secondary_um.ketto_toroku_bango = se.ketto_toroku_bango
+        left join ${tertiaryHorseTable} tertiary_um
+          on tertiary_um.ketto_toroku_bango = se.ketto_toroku_bango
         where
           se.kaisai_nen = ${race.kaisaiNen}
           and se.kaisai_tsukihi = ${race.kaisaiTsukihi}
@@ -2232,21 +2238,26 @@ export const getBloodlineStats = cache(
           on primary_um.ketto_toroku_bango = horse_keys.ketto_toroku_bango
         left join ${secondaryHorseTable} secondary_um
           on secondary_um.ketto_toroku_bango = horse_keys.ketto_toroku_bango
+        left join ${tertiaryHorseTable} tertiary_um
+          on tertiary_um.ketto_toroku_bango = horse_keys.ketto_toroku_bango
         cross join lateral (
           select
             coalesce(
               nullif(regexp_replace(primary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
               nullif(regexp_replace(secondary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+              nullif(regexp_replace(tertiary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
               '不明'
             ) as sire,
             coalesce(
               nullif(regexp_replace(primary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
               nullif(regexp_replace(secondary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+              nullif(regexp_replace(tertiary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
               '不明'
             ) as "sireSire",
             coalesce(
               nullif(regexp_replace(primary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
               nullif(regexp_replace(secondary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+              nullif(regexp_replace(tertiary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
               '不明'
             ) as "damSire"
         ) bloodline
@@ -2361,54 +2372,67 @@ export const getBloodlineStats = cache(
       ),
       stats as (
         select
-          category,
-          name,
-          "currentHorseNumbers",
+          targets.category,
+          targets.name,
+          targets."currentHorseNumbers",
           coalesce(
             jsonb_agg(
               jsonb_build_object(
-                'date', kaisai_nen || kaisai_tsukihi,
-                'sireName', sire,
-                'sireSireName', "sireSire",
-                'damSireName', "damSire",
-                'keibajoCode', keibajo_code,
-                'raceNumber', race_bango,
-                'raceName', race_name,
-                'horseName', bamei,
-                'frameNumber', wakuban,
-                'horseNumber', umaban,
+                'date', ranked_details.kaisai_nen || ranked_details.kaisai_tsukihi,
+                'sireName', ranked_details.sire,
+                'sireSireName', ranked_details."sireSire",
+                'damSireName', ranked_details."damSire",
+                'keibajoCode', ranked_details.keibajo_code,
+                'raceNumber', ranked_details.race_bango,
+                'raceName', ranked_details.race_name,
+                'horseName', ranked_details.bamei,
+                'frameNumber', ranked_details.wakuban,
+                'horseNumber', ranked_details.umaban,
                 'jockeyName', '',
-                'rank', kakutei_chakujun,
-                'raceTime', soha_time,
-                'popularity', tansho_ninkijun,
-                'winOdds', tansho_odds
+                'rank', ranked_details.kakutei_chakujun,
+                'raceTime', ranked_details.soha_time,
+                'popularity', ranked_details.tansho_ninkijun,
+                'winOdds', ranked_details.tansho_odds
               )
-              order by kaisai_nen desc, kaisai_tsukihi desc, race_bango asc, umaban asc
-            ) filter (where "detailRank" <= 200),
+              order by ranked_details.kaisai_nen desc, ranked_details.kaisai_tsukihi desc, ranked_details.race_bango asc, ranked_details.umaban asc
+            ) filter (where ranked_details."detailRank" <= 200),
             '[]'::jsonb
           ) as details,
-          count(*)::text as "starts",
-          count(distinct ketto_toroku_bango)::text as "horseCount",
-          count(*) filter (where kakutei_chakujun = '01')::text as "winCount",
-          count(*) filter (where kakutei_chakujun in ('01', '02'))::text as "quinellaCount",
-          count(*) filter (where kakutei_chakujun in ('01', '02', '03'))::text as "showCount",
-          round(
-            count(*) filter (where kakutei_chakujun = '01') * 100.0 / nullif(count(*), 0),
-            1
-          )::text as "winRate",
-          round(
-            count(*) filter (where kakutei_chakujun in ('01', '02')) * 100.0 / nullif(count(*), 0),
-            1
-          )::text as "quinellaRate",
-          round(
-            count(*) filter (where kakutei_chakujun in ('01', '02', '03')) * 100.0 / nullif(count(*), 0),
-            1
-          )::text as "showRate"
-        from ranked_details
+          count(ranked_details.ketto_toroku_bango)::text "starts",
+          count(distinct ranked_details.ketto_toroku_bango)::text "horseCount",
+          count(ranked_details.ketto_toroku_bango) filter (where ranked_details.kakutei_chakujun = '01')::text "winCount",
+          count(ranked_details.ketto_toroku_bango) filter (where ranked_details.kakutei_chakujun in ('01', '02'))::text "quinellaCount",
+          count(ranked_details.ketto_toroku_bango) filter (where ranked_details.kakutei_chakujun in ('01', '02', '03'))::text "showCount",
+          coalesce(
+            round(
+              count(ranked_details.ketto_toroku_bango) filter (where ranked_details.kakutei_chakujun = '01') * 100.0 / nullif(count(ranked_details.ketto_toroku_bango), 0),
+              1
+            ),
+            0
+          )::text "winRate",
+          coalesce(
+            round(
+              count(ranked_details.ketto_toroku_bango) filter (where ranked_details.kakutei_chakujun in ('01', '02')) * 100.0 / nullif(count(ranked_details.ketto_toroku_bango), 0),
+              1
+            ),
+            0
+          )::text "quinellaRate",
+          coalesce(
+            round(
+              count(ranked_details.ketto_toroku_bango) filter (where ranked_details.kakutei_chakujun in ('01', '02', '03')) * 100.0 / nullif(count(ranked_details.ketto_toroku_bango), 0),
+              1
+            ),
+            0
+          )::text "showRate"
+        from targets
+        left join ranked_details
+          on ranked_details.category = targets.category
+          and ranked_details.name = targets.name
+        where targets.name <> '不明'
         group by
-          category,
-          name,
-          "currentHorseNumbers"
+          targets.category,
+          targets.name,
+          targets."currentHorseNumbers"
       ),
       ranked as (
         select
