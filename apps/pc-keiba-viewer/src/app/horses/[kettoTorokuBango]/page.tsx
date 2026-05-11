@@ -38,7 +38,7 @@ export default async function HorseDetailPage({ params, searchParams }: HorseDet
         query={query}
         searchPlaceholder="詳細内検索"
       />
-      <EntityRaceResultsTable rows={data.results} />
+      <EntityRaceResultsTable rows={data.results} showRaceTimeColumns />
     </section>
   );
 }
