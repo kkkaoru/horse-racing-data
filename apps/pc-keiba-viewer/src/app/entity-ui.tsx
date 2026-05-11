@@ -15,6 +15,7 @@ import type {
   HorseListRow,
   PersonListRow,
 } from "../lib/race-types";
+import { isBanEiKeibajoCode } from "../lib/runner-format";
 
 const sourceLabel = (source: EntityListQuery["source"]): string => {
   if (source === "jra") {
@@ -301,6 +302,29 @@ const formatOdds = (value: string | null | undefined): string => {
   return Number.isFinite(parsed) && parsed > 0 ? (parsed / 10).toFixed(1) : "-";
 };
 
+const formatRaceTime = (value: string | null | undefined, decodeBanEi = false): string => {
+  const cleaned = cleanText(value, "");
+  const parsed = Number(cleaned);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return "-";
+  }
+  if (decodeBanEi) {
+    const padded = cleaned.padStart(4, "0");
+    return `${Number(padded.slice(0, -3))}:${padded.slice(-3, -1)}.${padded.slice(-1)}`;
+  }
+  const minutes = Math.floor(parsed / 600);
+  const seconds = Math.floor((parsed % 600) / 10);
+  const remainder = parsed % 10;
+  return minutes > 0
+    ? `${minutes}:${String(seconds).padStart(2, "0")}.${remainder}`
+    : `${seconds}.${remainder}`;
+};
+
+const formatLast3f = (value: string | null | undefined): string => {
+  const parsed = Number(cleanText(value, ""));
+  return Number.isFinite(parsed) && parsed > 0 ? (parsed / 10).toFixed(1) : "-";
+};
+
 const formatRank = (value: string | null | undefined): string => {
   const parsed = Number(cleanText(value, ""));
   return Number.isFinite(parsed) && parsed > 0 ? String(parsed) : "-";
@@ -322,10 +346,19 @@ const getEntityResultRowClassName = (row: EntityRaceResult): string | undefined 
   return undefined;
 };
 
-export function EntityRaceResultsTable({ rows }: { rows: EntityRaceResult[] }) {
+export function EntityRaceResultsTable({
+  rows,
+  showRaceTimeColumns = false,
+}: {
+  rows: EntityRaceResult[];
+  showRaceTimeColumns?: boolean;
+}) {
   if (rows.length === 0) {
     return <p className="empty-state">条件に一致する成績はありません。</p>;
   }
+  const showLast3fColumn =
+    showRaceTimeColumns &&
+    !rows.some((row) => row.source === "nar" && isBanEiKeibajoCode(row.keibajoCode));
   return (
     <div className="entity-table-wrap">
       <table className="entity-table entity-results-table">
@@ -340,6 +373,8 @@ export function EntityRaceResultsTable({ rows }: { rows: EntityRaceResult[] }) {
             <th>距離</th>
             <th>コース</th>
             <th>着順</th>
+            {showRaceTimeColumns ? <th>レースタイム</th> : null}
+            {showLast3fColumn ? <th>上がり3F</th> : null}
             <th>人気</th>
             <th>単勝</th>
             <th>レース</th>
@@ -368,6 +403,10 @@ export function EntityRaceResultsTable({ rows }: { rows: EntityRaceResult[] }) {
               <td>{formatDistance(row.kyori)}</td>
               <td>{formatTrack(row.trackCode)}</td>
               <td>{formatRank(row.rank)}</td>
+              {showRaceTimeColumns ? (
+                <td>{formatRaceTime(row.raceTime, isBanEiKeibajoCode(row.keibajoCode))}</td>
+              ) : null}
+              {showLast3fColumn ? <td>{formatLast3f(row.last3f)}</td> : null}
               <td>{formatRank(row.popularity)}</td>
               <td>{formatOdds(row.winOdds)}</td>
               <td className="entity-name-cell">

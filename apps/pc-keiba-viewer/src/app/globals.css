@@ -473,9 +473,13 @@ main {
 }
 
 .entity-result-row-win td {
-  background: linear-gradient(90deg, #fff1a8 0%, #ffe08a 42%, #fff7d6 100%);
-  color: #4f3000;
+  background: #fff9ea;
+  color: var(--ink);
   font-weight: 800;
+}
+
+.entity-result-row-win td:first-child {
+  box-shadow: inset 4px 0 0 #d8a62b;
 }
 
 .entity-result-row-place td {
@@ -1118,6 +1122,19 @@ h3 {
 
 .runner-horse-cell strong {
   white-space: nowrap;
+}
+
+.runner-horse-cell a,
+.runner-person-link {
+  color: var(--accent-strong);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.runner-horse-cell a:hover,
+.runner-person-link:hover {
+  color: var(--accent);
 }
 
 .runner-table tr:last-child td {

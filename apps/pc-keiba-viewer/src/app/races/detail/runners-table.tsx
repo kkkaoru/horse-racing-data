@@ -1,6 +1,7 @@
 "use client";
 
 import type { RealtimeRacePayload } from "horse-racing-realtime/types";
+import Link from "next/link";
 import { useMemo, useState } from "react";
 
 import { cleanText } from "../../../lib/format";
@@ -83,6 +84,8 @@ const getSortValue = (
 
 const formatRealtimeOdds = (value: number | undefined): string =>
   value === undefined ? "-" : value.toFixed(1);
+
+const isLinkableText = (value: string): boolean => value !== "" && value !== "-";
 
 export function RunnersTable({
   decodeHexHorseWeight = false,
@@ -193,18 +196,50 @@ export function RunnersTable({
     const horseNumber = formatRunnerNumber(runner.umaban);
     const realtimeOdds = realtimeOddsByHorse.get(horseNumber);
     const realtimeWeight = realtimeWeightByHorse.get(horseNumber);
+    const horseName = cleanText(runner.bamei);
+    const horseId = cleanText(runner.kettoTorokuBango);
+    const jockeyName = cleanText(runner.kishumeiRyakusho);
+    const trainerName = cleanText(runner.chokyoshimeiRyakusho);
 
     return (
       <tr key={`${runner.umaban}-${runner.kettoTorokuBango}`}>
         <td>{horseNumber}</td>
         <td>{cleanText(runner.wakuban)}</td>
         <td className="runner-horse-cell">
-          <strong>{cleanText(runner.bamei)}</strong>
+          {isLinkableText(horseName) && isLinkableText(horseId) ? (
+            <Link href={`/horses/${encodeURIComponent(horseId)}`}>
+              <strong>{horseName}</strong>
+            </Link>
+          ) : (
+            <strong>{horseName}</strong>
+          )}
         </td>
         <td>{formatSexAge(runner.seibetsuCode, runner.barei)}</td>
         <td>{formatCarriedWeight(runner.futanJuryo, decodeHexHorseWeight)}</td>
-        <td>{cleanText(runner.kishumeiRyakusho)}</td>
-        <td>{cleanText(runner.chokyoshimeiRyakusho)}</td>
+        <td>
+          {isLinkableText(jockeyName) ? (
+            <Link
+              className="runner-person-link"
+              href={`/jockeys/${encodeURIComponent(jockeyName)}`}
+            >
+              {jockeyName}
+            </Link>
+          ) : (
+            jockeyName
+          )}
+        </td>
+        <td>
+          {isLinkableText(trainerName) ? (
+            <Link
+              className="runner-person-link"
+              href={`/trainers/${encodeURIComponent(trainerName)}`}
+            >
+              {trainerName}
+            </Link>
+          ) : (
+            trainerName
+          )}
+        </td>
         <td>{cleanText(runner.banushimei)}</td>
         <td>
           {realtimeWeight ??

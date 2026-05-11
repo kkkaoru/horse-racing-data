@@ -97,10 +97,15 @@ const formatRaceConditions = (result: HorseRaceResult): string => {
   return tags.length > 0 ? tags.join(" / ") : cleanText(result.kyosoJokenMeisho);
 };
 
-const formatTenthsTime = (value: string | null | undefined): string => {
-  const tenths = parseNumber(value);
+const formatTenthsTime = (value: string | null | undefined, decodeBanEi = false): string => {
+  const cleaned = cleanText(value, "");
+  const tenths = parseNumber(cleaned);
   if (tenths === null) {
     return "-";
+  }
+  if (decodeBanEi) {
+    const padded = cleaned.padStart(4, "0");
+    return `${Number(padded.slice(0, -3))}:${padded.slice(-3, -1)}.${padded.slice(-1)}`;
   }
   const minutes = Math.floor(tenths / 600);
   const seconds = Math.floor((tenths % 600) / 10);
@@ -243,6 +248,7 @@ export function HorseRaceResultsTable({
   source,
 }: HorseRaceResultsTableProps) {
   const baseDistance = Number(cleanText(currentDistance, ""));
+  const showLast3fColumn = !(source === "nar" && isBanEiKeibajoCode(currentKeibajoCode));
   const defaultNarFilterEnabled = source === "nar";
   const [distanceMin, setDistanceMin] = useState(
     Number.isFinite(baseDistance) && baseDistance > 0 ? String(baseDistance - 100) : "",
@@ -662,7 +668,7 @@ export function HorseRaceResultsTable({
               <col className="race-results-col-keibajo" />
               <col className="race-results-col-distance" />
               <col className="race-results-col-rank" />
-              <col className="race-results-col-sort" />
+              {showLast3fColumn ? <col className="race-results-col-sort" /> : null}
               <col className="race-results-col-sort" />
               <col className="race-results-col-person" />
               <col className="race-results-col-sex-age" />
@@ -690,7 +696,7 @@ export function HorseRaceResultsTable({
                 <th>距離</th>
                 <th>着順</th>
                 <th>{renderSortButton("sohaTime")}</th>
-                <th>{renderSortButton("kohan3f")}</th>
+                {showLast3fColumn ? <th>{renderSortButton("kohan3f")}</th> : null}
                 <th>過去騎手</th>
                 <th>過去性齢</th>
                 <th>負担</th>
@@ -745,8 +751,10 @@ export function HorseRaceResultsTable({
                       {formatDistance(result.kyori)}
                     </td>
                     <td>{formatRank(result.kakuteiChakujun)}</td>
-                    <td>{formatTenthsTime(result.sohaTime)}</td>
-                    <td>{formatDecimalTenths(result.kohan3f)}</td>
+                    <td>
+                      {formatTenthsTime(result.sohaTime, isBanEiKeibajoCode(result.keibajoCode))}
+                    </td>
+                    {showLast3fColumn ? <td>{formatDecimalTenths(result.kohan3f)}</td> : null}
                     <td className={jockeyMatched ? "race-results-jockey-match-cell" : undefined}>
                       {cleanText(result.kishumeiRyakusho)}
                     </td>
