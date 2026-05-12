@@ -357,6 +357,10 @@ export interface EntityRaceResult extends Record<string, unknown> {
   winOdds: string | null;
   raceTime: string | null;
   last3f: string | null;
+  corner1: string | null;
+  corner2: string | null;
+  corner3: string | null;
+  corner4: string | null;
   isUpcoming: boolean;
 }
 

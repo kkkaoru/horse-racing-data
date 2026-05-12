@@ -420,6 +420,25 @@ const formatRank = (value: string | null | undefined): string => {
   return Number.isFinite(parsed) && parsed > 0 ? String(parsed) : "-";
 };
 
+const formatCornerRank = (value: string | null | undefined): string => {
+  const cleaned = cleanText(value, "");
+  if (cleaned === "" || cleaned === "00") {
+    return "";
+  }
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) && parsed > 0 ? String(parsed) : cleaned;
+};
+
+const formatCornerRanks = (row: EntityRaceResult): string => {
+  const corners = [
+    formatCornerRank(row.corner1),
+    formatCornerRank(row.corner2),
+    formatCornerRank(row.corner3),
+    formatCornerRank(row.corner4),
+  ].filter(Boolean);
+  return corners.length > 0 ? corners.join("-") : "-";
+};
+
 const raceDatePath = (row: EntityRaceResult): string =>
   `/races/${row.kaisaiNen}/${row.kaisaiTsukihi.slice(0, 2)}/${row.kaisaiTsukihi.slice(2, 4)}`;
 
@@ -476,6 +495,7 @@ export function EntityRaceResultsTable({
             <th>距離</th>
             <th>コース</th>
             <th>着順</th>
+            <th>コーナー順位</th>
             {showRaceTimeColumns ? <th>レースタイム</th> : null}
             {showLast3fColumn ? <th>上がり3F</th> : null}
             <th>人気</th>
@@ -541,6 +561,7 @@ export function EntityRaceResultsTable({
               <td>{formatDistance(row.kyori)}</td>
               <td>{formatTrack(row.trackCode)}</td>
               <td>{formatRank(row.rank)}</td>
+              <td>{formatCornerRanks(row)}</td>
               {showRaceTimeColumns ? (
                 <td>{formatRaceTime(row.raceTime, isBanEiKeibajoCode(row.keibajoCode))}</td>
               ) : null}

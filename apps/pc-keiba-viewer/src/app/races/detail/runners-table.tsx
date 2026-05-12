@@ -90,6 +90,25 @@ const formatStoredOdds = (value: string | null | undefined): string => {
   return parsed === null ? "-" : (parsed / 10).toFixed(1);
 };
 
+const formatCornerRank = (value: string | null | undefined): string | null => {
+  const cleaned = cleanText(value, "");
+  if (cleaned === "" || cleaned === "00") {
+    return null;
+  }
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) && parsed > 0 ? String(parsed) : cleaned;
+};
+
+const formatCornerRanks = (runner: Runner): string => {
+  const corners = [
+    formatCornerRank(runner.corner1),
+    formatCornerRank(runner.corner2),
+    formatCornerRank(runner.corner3),
+    formatCornerRank(runner.corner4),
+  ].filter((rank): rank is string => rank !== null);
+  return corners.length > 0 ? corners.join("-") : "-";
+};
+
 const isLinkableText = (value: string): boolean => value !== "" && value !== "-";
 
 export function RunnersTable({
@@ -150,6 +169,9 @@ export function RunnersTable({
     return { direction: "asc", key: "umaban" };
   }, [realtimeOddsByHorse, runners]);
   const activeSort = sort ?? defaultSort;
+  const showCornerRanks = runners.some(
+    (runner) => parseSortValue(runner.kakuteiChakujun, "00") !== null,
+  );
 
   const sortedRunners = useMemo(
     () =>
@@ -268,6 +290,7 @@ export function RunnersTable({
             : formatRealtimeOdds(realtimeOdds)}
         </td>
         <td>{formatRunnerValue(runner.kakuteiChakujun, "00")}</td>
+        {showCornerRanks ? <td>{formatCornerRanks(runner)}</td> : null}
       </tr>
     );
   };
@@ -287,6 +310,7 @@ export function RunnersTable({
           <col className="runner-col-body" />
           <col className="runner-col-odds" />
           <col className="runner-col-finish" />
+          {showCornerRanks ? <col className="runner-col-corner" /> : null}
         </colgroup>
         <thead>
           <tr>
@@ -301,6 +325,7 @@ export function RunnersTable({
             <th>馬体重</th>
             <th>{renderSortButton("tanshoOdds")}</th>
             <th>{renderSortButton("kakuteiChakujun")}</th>
+            {showCornerRanks ? <th>コーナー通過順</th> : null}
           </tr>
         </thead>
         <tbody>{sortedRunners.map(renderRunnerRow)}</tbody>
