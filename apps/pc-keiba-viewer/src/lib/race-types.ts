@@ -453,6 +453,25 @@ export interface OverallScoreRow extends Record<string, unknown> {
   storedPopularity: number | null;
 }
 
+export interface RacePacePredictionDetail extends Record<string, unknown> {
+  label: string;
+  reason: string;
+  value: number | null;
+  weight: number;
+}
+
+export interface RacePacePredictionRow extends Record<string, unknown> {
+  confidence: number;
+  corner1: number | null;
+  corner2: number | null;
+  corner3: number | null;
+  corner4: number | null;
+  details: RacePacePredictionDetail[];
+  horseName: string;
+  horseNumber: string;
+  predictedCorners: string;
+}
+
 export interface RaceTimeStats extends Record<string, unknown> {
   raceCount: number;
   fastestRaceTime: number | null;

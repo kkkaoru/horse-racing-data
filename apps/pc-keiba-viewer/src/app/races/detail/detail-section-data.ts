@@ -23,6 +23,10 @@ import {
   getTrackTurnLabel,
 } from "../../../lib/format";
 import {
+  buildRacePacePredictionRowsFromResults,
+  isCornerPacePredictionSupported,
+} from "../../../lib/race-pace-prediction";
+import {
   getAgeLabel,
   getConditionLabel,
   getGradeLabel,
@@ -51,6 +55,7 @@ export type DetailSection =
   | "bloodline"
   | "condition"
   | "overall-score"
+  | "pace-prediction"
   | "results"
   | "similar"
   | "time-score"
@@ -868,6 +873,41 @@ export const getDetailSectionPayload = async (
         runners,
         timeRows,
       }),
+      type: section,
+    };
+  }
+
+  if (section === "pace-prediction") {
+    if (
+      !isCornerPacePredictionSupported({
+        distance: race.kyori,
+        keibajoCode: race.keibajoCode,
+        source: race.source,
+      })
+    ) {
+      return {
+        rows: [],
+        supported: false,
+        type: section,
+      };
+    }
+    const results = await getHorseRaceResults(
+      race.source,
+      year,
+      month,
+      day,
+      keibajoCode,
+      raceNumber,
+      getResultsSourceScope(params.query),
+    );
+    return {
+      rows: buildRacePacePredictionRowsFromResults({
+        currentDistance: race.kyori,
+        currentRaceDate: `${race.kaisaiNen}${race.kaisaiTsukihi}`,
+        results,
+        runners,
+      }),
+      supported: true,
       type: section,
     };
   }

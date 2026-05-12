@@ -14,6 +14,11 @@ import {
   formatWeather,
 } from "../../../lib/format";
 import { getRaceTags } from "../../../lib/race-classification";
+import {
+  buildRacePacePredictionRowsFromResults,
+  isCornerPacePredictionSupported,
+  RACE_PACE_PREDICTION_RESULTS_EVENT,
+} from "../../../lib/race-pace-prediction";
 import type { HorseRaceResult, Runner } from "../../../lib/race-types";
 import {
   formatCarriedWeight,
@@ -707,6 +712,29 @@ export function HorseRaceResultsTable({
     sort,
   ]);
   const visibleResults = visibleResultsState.results;
+  const showRacePacePrediction = isCornerPacePredictionSupported({
+    distance: currentDistance,
+    keibajoCode: currentKeibajoCode,
+    source,
+  });
+
+  useEffect(() => {
+    if (!showRacePacePrediction) {
+      return;
+    }
+    window.dispatchEvent(
+      new CustomEvent(RACE_PACE_PREDICTION_RESULTS_EVENT, {
+        detail: {
+          rows: buildRacePacePredictionRowsFromResults({
+            currentDistance,
+            currentRaceDate,
+            results: visibleResults,
+            runners,
+          }),
+        },
+      }),
+    );
+  }, [currentDistance, currentRaceDate, runners, showRacePacePrediction, visibleResults]);
 
   useEffect(() => {
     if (visibleResultsState.shouldRelaxFinishRankLimit) {

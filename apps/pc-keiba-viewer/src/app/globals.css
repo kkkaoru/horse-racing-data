@@ -2488,6 +2488,72 @@ h3 {
   overflow-x: auto;
 }
 
+.race-pace-corner-table-wrap {
+  margin-bottom: 14px;
+}
+
+.race-pace-corner-table {
+  border-collapse: collapse;
+  min-width: 520px;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.race-pace-corner-table th,
+.race-pace-corner-table td {
+  border-bottom: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  font-size: 0.86rem;
+  padding: 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.race-pace-corner-table th {
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-weight: 750;
+}
+
+.race-pace-corner-table th:first-child {
+  color: var(--text);
+  width: 120px;
+}
+
+.race-pace-corner-table td:last-child,
+.race-pace-corner-table th:last-child {
+  border-right: 0;
+}
+
+.race-pace-corner-table tbody tr:last-child td,
+.race-pace-corner-table tbody tr:last-child th {
+  border-bottom: 0;
+}
+
+.race-pace-corner-table td {
+  color: var(--text);
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+.race-pace-horse-details {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.race-pace-horse-details summary {
+  cursor: pointer;
+  font-weight: 700;
+  padding: 13px 14px;
+}
+
+.race-pace-horse-details .stats-table-wrap {
+  border: 0;
+  border-radius: 0 0 8px 8px;
+  border-top: 1px solid var(--line);
+}
+
 .stats-category-list,
 .stats-category-section {
   display: grid;

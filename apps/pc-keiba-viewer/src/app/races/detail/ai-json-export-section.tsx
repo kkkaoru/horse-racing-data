@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { RaceSource } from "../../../lib/codes";
+import { isCornerPacePredictionSupported } from "../../../lib/race-pace-prediction";
 import type { CourseInfo, RaceDetail, RaceListItem, Runner } from "../../../lib/race-types";
 
 interface AiJsonExportSectionProps {
@@ -54,6 +55,7 @@ const SECTIONS = [
   "condition",
   "bloodline",
   "similar",
+  "pace-prediction",
   "overall-score",
 ];
 
@@ -77,13 +79,11 @@ const getSectionUrl = ({
 };
 
 const fetchSectionPayloads = async (
-  props: Pick<
-    AiJsonExportSectionProps,
-    "day" | "keibajoCode" | "month" | "raceNumber" | "year"
-  >,
+  props: Pick<AiJsonExportSectionProps, "day" | "keibajoCode" | "month" | "raceNumber" | "year">,
+  sections: string[],
 ): Promise<SectionPayloads> => {
   const entries = await Promise.all(
-    SECTIONS.map(async (section) => {
+    sections.map(async (section) => {
       const response = await fetch(getSectionUrl({ ...props, section }));
       if (!response.ok) {
         return [
@@ -116,6 +116,17 @@ export function AiJsonExportSection({
   const [showJson, setShowJson] = useState(false);
   const [sectionPayloads, setSectionPayloads] = useState<SectionPayloads | null>(null);
   const copyStatusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sections = useMemo(
+    () =>
+      isCornerPacePredictionSupported({
+        distance: basePostgresqlData.race.kyori,
+        keibajoCode,
+        source,
+      })
+        ? SECTIONS
+        : SECTIONS.filter((section) => section !== "pace-prediction"),
+    [basePostgresqlData.race.kyori, keibajoCode, source],
+  );
 
   useEffect(
     () => () => {
@@ -178,19 +189,22 @@ export function AiJsonExportSection({
     setIsLoading(true);
     setCopyStatus("idle");
     try {
-      const payloads = await fetchSectionPayloads({
-        day,
-        keibajoCode,
-        month,
-        raceNumber,
-        year,
-      });
+      const payloads = await fetchSectionPayloads(
+        {
+          day,
+          keibajoCode,
+          month,
+          raceNumber,
+          year,
+        },
+        sections,
+      );
       setSectionPayloads(payloads);
       return payloads;
     } finally {
       setIsLoading(false);
     }
-  }, [day, keibajoCode, month, raceNumber, sectionPayloads, year]);
+  }, [day, keibajoCode, month, raceNumber, sectionPayloads, sections, year]);
 
   const generateJson = useCallback(
     async (payloads: SectionPayloads | null): Promise<string> => {
