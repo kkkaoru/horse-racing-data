@@ -107,9 +107,33 @@ const OVERALL_SCORE_WEIGHTS = {
   trainer: 0.1,
 };
 
+const STORED_ODDS_EMPTY = "0000";
+const STORED_POPULARITY_EMPTY = "00";
+const STORED_ODDS_DECIMAL_DIVISOR = 10;
+
 const clampScore = (value: number): number => Math.max(0, Math.min(1, value));
 
 const roundScore = (value: number): number => Math.round(value * 100) / 100;
+
+const parseStoredNumber = (
+  value: string | null | undefined,
+  emptyValue: string,
+): number | null => {
+  const cleaned = (value ?? "").trim();
+  if (!cleaned || cleaned === emptyValue) {
+    return null;
+  }
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const parseStoredOdds = (value: string | null | undefined): number | null => {
+  const parsed = parseStoredNumber(value, STORED_ODDS_EMPTY);
+  return parsed === null ? null : parsed / STORED_ODDS_DECIMAL_DIVISOR;
+};
+
+const parseStoredPopularity = (value: string | null | undefined): number | null =>
+  parseStoredNumber(value, STORED_POPULARITY_EMPTY);
 
 const splitHorseNumbers = (value: string): string[] =>
   value
@@ -229,6 +253,8 @@ const buildOverallScoreRows = ({
         score: roundScore(
           details.reduce((total, detail) => total + detail.score * detail.weight, 0),
         ),
+        storedOdds: parseStoredOdds(runner.tanshoOdds),
+        storedPopularity: parseStoredPopularity(runner.tanshoNinkijun),
       };
     })
     .toSorted(

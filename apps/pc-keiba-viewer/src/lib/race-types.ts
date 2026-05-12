@@ -449,6 +449,8 @@ export interface OverallScoreRow extends Record<string, unknown> {
   horseNumber: string;
   jockeyName: string;
   score: number;
+  storedOdds: number | null;
+  storedPopularity: number | null;
 }
 
 export interface RaceTimeStats extends Record<string, unknown> {

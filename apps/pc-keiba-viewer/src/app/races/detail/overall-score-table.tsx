@@ -134,8 +134,8 @@ export function OverallScoreTable({ realtimeRequest, rows }: OverallScoreTablePr
                 <OverallScoreTableRow
                   isExpanded={expandedHorseNumber === row.horseNumber}
                   key={row.horseNumber}
-                  realtimeOdds={realtimeOdds?.odds}
-                  realtimePopularity={realtimeOdds?.popularity}
+                  realtimeOdds={realtimeOdds?.odds ?? row.storedOdds}
+                  realtimePopularity={realtimeOdds?.popularity ?? row.storedPopularity}
                   row={row}
                   onToggle={toggleExpandedHorse}
                 />
