@@ -145,6 +145,9 @@ vite.config.ts.timestamp-*
 .dev.vars
 wrangler.deploy.toml
 
+# Playwright test output
+test-results/
+
 # DuckDB WASM binary (copied from node_modules at build time)
 *.wasm
 *.xlsx
