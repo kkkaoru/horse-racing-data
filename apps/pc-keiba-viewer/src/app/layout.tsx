@@ -32,6 +32,7 @@ export default function RootLayout({ children }: RootLayoutProps) {
               <Link href="/races">開催日一覧</Link>
               <Link href="/horses">馬一覧</Link>
               <Link href="/jockeys">騎手一覧</Link>
+              <Link href="/owners">馬主一覧</Link>
               <Link href="/trainers">調教師一覧</Link>
             </nav>
           </details>

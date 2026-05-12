@@ -10,6 +10,7 @@ const links = [
   { href: "/races", label: "開催日一覧" },
   { href: "/horses", label: "馬一覧" },
   { href: "/jockeys", label: "騎手一覧" },
+  { href: "/owners", label: "馬主一覧" },
   { href: "/trainers", label: "調教師一覧" },
 ];
 

@@ -29,9 +29,17 @@ export function MobileFilterDisclosure({ children, title }: MobileFilterDisclosu
     };
 
     updateMode();
-    mediaQuery.addEventListener("change", updateMode);
+    if (mediaQuery.addEventListener) {
+      mediaQuery.addEventListener("change", updateMode);
+    } else {
+      mediaQuery.addListener(updateMode);
+    }
     return () => {
-      mediaQuery.removeEventListener("change", updateMode);
+      if (mediaQuery.removeEventListener) {
+        mediaQuery.removeEventListener("change", updateMode);
+      } else {
+        mediaQuery.removeListener(updateMode);
+      }
     };
   }, []);
 

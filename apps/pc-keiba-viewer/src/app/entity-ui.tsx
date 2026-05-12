@@ -16,6 +16,7 @@ import type {
   PersonListRow,
 } from "../lib/race-types";
 import { isBanEiKeibajoCode } from "../lib/runner-format";
+import { MobileFilterDisclosure } from "./races/detail/mobile-filter-disclosure";
 
 const sourceLabel = (source: EntityListQuery["source"]): string => {
   if (source === "jra") {
@@ -36,16 +37,29 @@ export const parseEntityListQuery = (
   };
   const source = getValue("source", "all");
   return {
+    date: getValue("date", ""),
     dateFrom: getValue("dateFrom", ""),
     dateTo: getValue("dateTo", ""),
     distanceMax: getValue("distanceMax", ""),
     distanceMin: getValue("distanceMin", ""),
+    jockeyName: getValue("jockeyName", "").trim(),
     keibajoCode: getValue("keibajoCode", "").trim(),
+    last3fMax: getValue("last3fMax", ""),
+    last3fMin: getValue("last3fMin", ""),
     order: getValue("order", "latest"),
+    oddsMax: getValue("oddsMax", ""),
+    oddsMin: getValue("oddsMin", ""),
+    popularityMax: getValue("popularityMax", ""),
+    popularityMin: getValue("popularityMin", ""),
     q: getValue("q", "").trim(),
     rank: getValue("rank", "all"),
+    raceNumber: getValue("raceNumber", "").trim(),
+    raceTimeMax: getValue("raceTimeMax", ""),
+    raceTimeMin: getValue("raceTimeMin", ""),
     source: source === "jra" || source === "nar" ? source : "all",
     surface: getValue("surface", "all"),
+    trainerName: getValue("trainerName", "").trim(),
+    turn: getValue("turn", "all"),
   };
 };
 
@@ -94,89 +108,153 @@ export function EntityDetailFilterForm({
   searchPlaceholder,
 }: EntityFilterFormProps) {
   return (
-    <form action={action} className="entity-filter-panel entity-detail-filter-panel">
-      <label>
-        <span>検索</span>
-        <input defaultValue={query.q} name="q" placeholder={searchPlaceholder} />
-      </label>
-      <label>
-        <span>対象</span>
-        <select defaultValue={query.source} name="source">
-          <option value="all">全て</option>
-          <option value="jra">JRA</option>
-          <option value="nar">NAR</option>
-        </select>
-      </label>
-      <label>
-        <span>着順</span>
-        <select defaultValue={query.rank} name="rank">
-          <option value="all">全て</option>
-          <option value="win">1着</option>
-          <option value="top2">連対</option>
-          <option value="top3">複勝圏</option>
-          <option value="out">4着以下</option>
-          <option value="upcoming">出走予定</option>
-        </select>
-      </label>
-      <label>
-        <span>馬場</span>
-        <select defaultValue={query.surface} name="surface">
-          <option value="all">全て</option>
-          <option value="turf">芝</option>
-          <option value="dirt">ダート</option>
-          <option value="obstacle">障害</option>
-        </select>
-      </label>
-      <label>
-        <span>競馬場コード</span>
-        <input
-          defaultValue={query.keibajoCode}
-          inputMode="numeric"
-          name="keibajoCode"
-          placeholder="05"
-        />
-      </label>
-      <label>
-        <span>距離 min</span>
-        <input
-          defaultValue={query.distanceMin}
-          inputMode="numeric"
-          name="distanceMin"
-          placeholder="1200"
-        />
-      </label>
-      <label>
-        <span>距離 max</span>
-        <input
-          defaultValue={query.distanceMax}
-          inputMode="numeric"
-          name="distanceMax"
-          placeholder="2000"
-        />
-      </label>
-      <label>
-        <span>日付 from</span>
-        <input defaultValue={query.dateFrom} name="dateFrom" type="date" />
-      </label>
-      <label>
-        <span>日付 to</span>
-        <input defaultValue={query.dateTo} name="dateTo" type="date" />
-      </label>
-      <label>
-        <span>並び替え</span>
-        <select defaultValue={query.order} name="order">
-          <option value="latest">最新出走</option>
-          <option value="rank">着順</option>
-          <option value="odds">単勝</option>
-          <option value="time">タイム</option>
-        </select>
-      </label>
-      <button type="submit">絞り込み</button>
-    </form>
+    <MobileFilterDisclosure title="条件設定">
+      <form action={action} className="entity-filter-panel entity-detail-filter-panel">
+        <label>
+          <span>検索</span>
+          <input defaultValue={query.q} name="q" placeholder={searchPlaceholder} />
+        </label>
+        <label>
+          <span>対象</span>
+          <select defaultValue={query.source} name="source">
+            <option value="all">全て</option>
+            <option value="jra">JRA</option>
+            <option value="nar">NAR</option>
+          </select>
+        </label>
+        <label>
+          <span>日付指定</span>
+          <input defaultValue={query.date} name="date" type="date" />
+        </label>
+        <label>
+          <span>日付 from</span>
+          <input defaultValue={query.dateFrom} name="dateFrom" type="date" />
+        </label>
+        <label>
+          <span>日付 to</span>
+          <input defaultValue={query.dateTo} name="dateTo" type="date" />
+        </label>
+        <label>
+          <span>競馬場コード</span>
+          <input
+            defaultValue={query.keibajoCode}
+            inputMode="numeric"
+            name="keibajoCode"
+            placeholder="05"
+          />
+        </label>
+        <label>
+          <span>R</span>
+          <input defaultValue={query.raceNumber} inputMode="numeric" name="raceNumber" />
+        </label>
+        <label>
+          <span>騎手</span>
+          <input defaultValue={query.jockeyName} name="jockeyName" />
+        </label>
+        <label>
+          <span>調教師</span>
+          <input defaultValue={query.trainerName} name="trainerName" />
+        </label>
+        <label>
+          <span>距離 min</span>
+          <input
+            defaultValue={query.distanceMin}
+            inputMode="numeric"
+            name="distanceMin"
+            placeholder="1200"
+          />
+        </label>
+        <label>
+          <span>距離 max</span>
+          <input
+            defaultValue={query.distanceMax}
+            inputMode="numeric"
+            name="distanceMax"
+            placeholder="2000"
+          />
+        </label>
+        <label>
+          <span>馬場</span>
+          <select defaultValue={query.surface} name="surface">
+            <option value="all">全て</option>
+            <option value="turf">芝</option>
+            <option value="dirt">ダート</option>
+            <option value="obstacle">障害</option>
+          </select>
+        </label>
+        <label>
+          <span>回り</span>
+          <select defaultValue={query.turn} name="turn">
+            <option value="all">全て</option>
+            <option value="left">左</option>
+            <option value="right">右</option>
+          </select>
+        </label>
+        <label>
+          <span>レースタイム min</span>
+          <input defaultValue={query.raceTimeMin} inputMode="decimal" name="raceTimeMin" />
+        </label>
+        <label>
+          <span>レースタイム max</span>
+          <input defaultValue={query.raceTimeMax} inputMode="decimal" name="raceTimeMax" />
+        </label>
+        <label>
+          <span>上がり3F min</span>
+          <input defaultValue={query.last3fMin} inputMode="decimal" name="last3fMin" />
+        </label>
+        <label>
+          <span>上がり3F max</span>
+          <input defaultValue={query.last3fMax} inputMode="decimal" name="last3fMax" />
+        </label>
+        <label>
+          <span>人気 min</span>
+          <input defaultValue={query.popularityMin} inputMode="numeric" name="popularityMin" />
+        </label>
+        <label>
+          <span>人気 max</span>
+          <input defaultValue={query.popularityMax} inputMode="numeric" name="popularityMax" />
+        </label>
+        <label>
+          <span>単勝 min</span>
+          <input defaultValue={query.oddsMin} inputMode="decimal" name="oddsMin" />
+        </label>
+        <label>
+          <span>単勝 max</span>
+          <input defaultValue={query.oddsMax} inputMode="decimal" name="oddsMax" />
+        </label>
+        <label>
+          <span>着順</span>
+          <select defaultValue={query.rank} name="rank">
+            <option value="all">全て</option>
+            <option value="win">1着</option>
+            <option value="top2">連対</option>
+            <option value="top3">複勝圏</option>
+            <option value="out">4着以下</option>
+            <option value="upcoming">出走予定</option>
+          </select>
+        </label>
+        <label>
+          <span>並び替え</span>
+          <select defaultValue={query.order} name="order">
+            <option value="latest">最新出走</option>
+            <option value="rank">着順</option>
+            <option value="odds">単勝</option>
+            <option value="time">タイム</option>
+          </select>
+        </label>
+        <button type="submit">絞り込み</button>
+      </form>
+    </MobileFilterDisclosure>
   );
 }
 
 const formatRate = (value: number): string => `${value.toFixed(1)}%`;
+
+const raceDatePathFromDate = (date: string): string =>
+  `/races/${date.slice(0, 4)}/${date.slice(4, 6)}/${date.slice(6, 8)}`;
+
+const latestRacePath = (row: HorseListRow | PersonListRow): string =>
+  `${raceDatePathFromDate(row.latestDate)}/${row.latestKeibajoCode}/${row.latestRaceBango}`;
 
 export function HorseListTable({ rows }: { rows: HorseListRow[] }) {
   if (rows.length === 0) {
@@ -210,8 +288,14 @@ export function HorseListTable({ rows }: { rows: HorseListRow[] }) {
               <td>{row.winCount.toLocaleString("ja-JP")}</td>
               <td>{formatRate(row.winRate)}</td>
               <td>{formatRate(row.showRate)}</td>
-              <td>{formatDate(row.latestDate.slice(0, 4), row.latestDate.slice(4, 8))}</td>
-              <td>{cleanText(row.latestRaceName)}</td>
+              <td className="entity-name-cell">
+                <Link href={raceDatePathFromDate(row.latestDate)}>
+                  {formatDate(row.latestDate.slice(0, 4), row.latestDate.slice(4, 8))}
+                </Link>
+              </td>
+              <td className="entity-name-cell">
+                <Link href={latestRacePath(row)}>{cleanText(row.latestRaceName)}</Link>
+              </td>
             </tr>
           ))}
         </tbody>
@@ -224,7 +308,7 @@ export function PersonListTable({
   basePath,
   rows,
 }: {
-  basePath: "/jockeys" | "/trainers";
+  basePath: "/jockeys" | "/owners" | "/trainers";
   rows: PersonListRow[];
 }) {
   if (rows.length === 0) {
@@ -256,8 +340,14 @@ export function PersonListTable({
               <td>{row.winCount.toLocaleString("ja-JP")}</td>
               <td>{formatRate(row.winRate)}</td>
               <td>{formatRate(row.showRate)}</td>
-              <td>{formatDate(row.latestDate.slice(0, 4), row.latestDate.slice(4, 8))}</td>
-              <td>{cleanText(row.latestRaceName)}</td>
+              <td className="entity-name-cell">
+                <Link href={raceDatePathFromDate(row.latestDate)}>
+                  {formatDate(row.latestDate.slice(0, 4), row.latestDate.slice(4, 8))}
+                </Link>
+              </td>
+              <td className="entity-name-cell">
+                <Link href={latestRacePath(row)}>{cleanText(row.latestRaceName)}</Link>
+              </td>
             </tr>
           ))}
         </tbody>
@@ -330,6 +420,18 @@ const formatRank = (value: string | null | undefined): string => {
   return Number.isFinite(parsed) && parsed > 0 ? String(parsed) : "-";
 };
 
+const raceDatePath = (row: EntityRaceResult): string =>
+  `/races/${row.kaisaiNen}/${row.kaisaiTsukihi.slice(0, 2)}/${row.kaisaiTsukihi.slice(2, 4)}`;
+
+const raceVenuePath = (row: EntityRaceResult): string => `${raceDatePath(row)}/${row.keibajoCode}`;
+
+const raceDetailPath = (row: EntityRaceResult): string => `${raceVenuePath(row)}/${row.raceBango}`;
+
+const isLinkableText = (value: string | null | undefined): boolean => {
+  const cleaned = cleanText(value, "");
+  return cleaned !== "" && cleaned !== "-";
+};
+
 const getEntityResultRowClassName = (row: EntityRaceResult): string | undefined => {
   if (row.isUpcoming) {
     return "entity-result-row-upcoming";
@@ -370,6 +472,7 @@ export function EntityRaceResultsTable({
             <th>馬名</th>
             <th>騎手</th>
             <th>調教師</th>
+            <th>馬主</th>
             <th>距離</th>
             <th>コース</th>
             <th>着順</th>
@@ -394,12 +497,47 @@ export function EntityRaceResultsTable({
                 row.horseName,
               ].join("-")}
             >
-              <td>{formatDate(row.kaisaiNen, row.kaisaiTsukihi)}</td>
-              <td>{formatKeibajo(row.keibajoCode)}</td>
+              <td className="entity-name-cell">
+                <Link href={raceDatePath(row)}>{formatDate(row.kaisaiNen, row.kaisaiTsukihi)}</Link>
+              </td>
+              <td className="entity-name-cell">
+                <Link href={raceVenuePath(row)}>{formatKeibajo(row.keibajoCode)}</Link>
+              </td>
               <td>{formatRaceNumber(row.raceBango)}</td>
-              <td>{row.horseName}</td>
-              <td>{row.jockeyName}</td>
-              <td>{row.trainerName}</td>
+              <td className="entity-name-cell">
+                {isLinkableText(row.horseName) && isLinkableText(row.kettoTorokuBango) ? (
+                  <Link href={`/horses/${encodeURIComponent(cleanText(row.kettoTorokuBango))}`}>
+                    {row.horseName}
+                  </Link>
+                ) : (
+                  row.horseName
+                )}
+              </td>
+              <td className="entity-name-cell">
+                {isLinkableText(row.jockeyName) ? (
+                  <Link href={`/jockeys/${encodeURIComponent(row.jockeyName)}`}>
+                    {row.jockeyName}
+                  </Link>
+                ) : (
+                  row.jockeyName
+                )}
+              </td>
+              <td className="entity-name-cell">
+                {isLinkableText(row.trainerName) ? (
+                  <Link href={`/trainers/${encodeURIComponent(row.trainerName)}`}>
+                    {row.trainerName}
+                  </Link>
+                ) : (
+                  row.trainerName
+                )}
+              </td>
+              <td className="entity-name-cell">
+                {isLinkableText(row.ownerName) ? (
+                  <Link href={`/owners/${encodeURIComponent(row.ownerName)}`}>{row.ownerName}</Link>
+                ) : (
+                  row.ownerName
+                )}
+              </td>
               <td>{formatDistance(row.kyori)}</td>
               <td>{formatTrack(row.trackCode)}</td>
               <td>{formatRank(row.rank)}</td>
@@ -410,11 +548,7 @@ export function EntityRaceResultsTable({
               <td>{formatRank(row.popularity)}</td>
               <td>{formatOdds(row.winOdds)}</td>
               <td className="entity-name-cell">
-                <Link
-                  href={`/races/${row.kaisaiNen}/${row.kaisaiTsukihi.slice(0, 2)}/${row.kaisaiTsukihi.slice(2, 4)}/${row.keibajoCode}/${row.raceBango}`}
-                >
-                  {row.raceName}
-                </Link>
+                <Link href={raceDetailPath(row)}>{row.raceName}</Link>
               </td>
             </tr>
           ))}
