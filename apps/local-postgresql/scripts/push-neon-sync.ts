@@ -102,6 +102,80 @@ function runCommand(command: string, args: string[], input?: string): Promise<Co
   });
 }
 
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function runCopyPipeline(
+  env: Record<string, string | undefined>,
+  localCopySql: string,
+  neonCopySql: string,
+): Promise<void> {
+  return new Promise((resolvePipeline, reject) => {
+    const command = [
+      "docker",
+      "compose",
+      "--env-file",
+      shellQuote(envPath),
+      "--project-directory",
+      shellQuote(appDir),
+      "exec",
+      "-T",
+      "postgres",
+      "psql",
+      "-U",
+      '"$POSTGRES_USER"',
+      "-d",
+      '"$POSTGRES_DB"',
+      "-At",
+      "-F",
+      '"$(printf \'\\t\')"',
+      "-c",
+      '"$LOCAL_COPY_SQL"',
+      "|",
+      "docker",
+      "run",
+      "--rm",
+      "-i",
+      "postgres:18-alpine",
+      "psql",
+      '"$NEON_DIRECT_DATABASE_URL"',
+      "-v",
+      "ON_ERROR_STOP=1",
+      "-q",
+      "-c",
+      '"$NEON_COPY_SQL"',
+    ].join(" ");
+
+    const child = spawn("bash", ["-o", "pipefail", "-c", command], {
+      env: {
+        ...process.env,
+        POSTGRES_USER: env.POSTGRES_USER ?? "",
+        POSTGRES_DB: env.POSTGRES_DB ?? "",
+        NEON_DIRECT_DATABASE_URL: env.NEON_DIRECT_DATABASE_URL ?? "",
+        LOCAL_COPY_SQL: localCopySql,
+        NEON_COPY_SQL: neonCopySql,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    const stderrChunks: Buffer[] = [];
+    child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolvePipeline();
+        return;
+      }
+      reject(
+        new Error(
+          `COPY pipeline exited with code ${code}\n${Buffer.concat(stderrChunks).toString("utf8")}`,
+        ),
+      );
+    });
+  });
+}
+
 function dockerComposeArgs(env: Record<string, string | undefined>, sql: string): string[] {
   return [
     "compose",
@@ -150,6 +224,12 @@ Environment:
   REPLICA_SYNC_TABLES             Comma-separated table list. Empty means all PK tables.
   REPLICA_SYNC_CONCURRENCY        Number of tables to sync in parallel. Default: auto.
                                   Use "auto" to choose per dependency level from row counts.
+  REPLICA_SYNC_APPLY_MODE         "replace" or "upsert". Default: replace.
+                                  replace truncates the Neon table and inserts staged rows in one
+                                  transaction; upsert preserves row-level conflict behavior.
+  REPLICA_SYNC_SKIP_UNCHANGED     Skip tables whose local and Neon row checksums match.
+                                  Default: true.
+  REPLICA_SYNC_COPY_BATCH_ROWS    Optional rows per COPY batch. Empty means one COPY per table.
   REPLICA_SYNC_DELETE             Delete Neon rows missing locally. Default: true.
   REPLICA_SYNC_INDEXES            Apply sql/analytics-indexes.sql to Neon after rows sync.
                                   Default: true.
@@ -167,6 +247,61 @@ async function checkNeonReady(env: Record<string, string | undefined>): Promise<
   }
 }
 
+function copyBatchRows(env: Record<string, string | undefined>): number | undefined {
+  if (env.REPLICA_SYNC_COPY_BATCH_ROWS === undefined || env.REPLICA_SYNC_COPY_BATCH_ROWS === "") {
+    return undefined;
+  }
+  const parsed = Number(env.REPLICA_SYNC_COPY_BATCH_ROWS);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function shouldSkipUnchanged(env: Record<string, string | undefined>): boolean {
+  return env.REPLICA_SYNC_SKIP_UNCHANGED !== "false";
+}
+
+function buildTableChecksumSql(table: TableMetadata): string {
+  const quotedTable = quoteIdentifier(table.tableName);
+  const rowJsonSql = "row_to_json(row_data)::text";
+  const hashSql = `md5(${rowJsonSql})`;
+
+  return `
+SELECT
+  count(*)::text,
+  coalesce(sum((('x' || substr(${hashSql}, 1, 16))::bit(64)::bigint)::numeric), 0)::text,
+  coalesce(sum((('x' || substr(${hashSql}, 17, 16))::bit(64)::bigint)::numeric), 0)::text
+FROM (
+  SELECT ${table.columnList}
+  FROM public.${quotedTable}
+) AS row_data;
+`.trim();
+}
+
+async function loadTableChecksum(
+  env: Record<string, string | undefined>,
+  table: TableMetadata,
+  target: "local" | "neon",
+): Promise<string> {
+  const sql = buildTableChecksumSql(table);
+  const result =
+    target === "local"
+      ? await runCommand("docker", dockerComposeArgs(env, sql))
+      : await runCommand("docker", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-qAt", "-F", "\t", "-c", sql]));
+
+  return result.stdout.trim();
+}
+
+async function tableIsUnchanged(
+  env: Record<string, string | undefined>,
+  table: TableMetadata,
+): Promise<boolean> {
+  const [localChecksum, neonChecksum] = await Promise.all([
+    loadTableChecksum(env, table, "local"),
+    loadTableChecksum(env, table, "neon"),
+  ]);
+
+  return localChecksum === neonChecksum;
+}
+
 async function loadDependencyEdges(
   env: Record<string, string | undefined>,
 ): Promise<DependencyEdge[]> {
@@ -176,75 +311,50 @@ async function loadDependencyEdges(
   return parseDependencyEdges(stdout);
 }
 
-function syncTableWithPsql(
+async function syncTableWithPsql(
   env: Record<string, string | undefined>,
   table: TableMetadata,
   deleteMissingRows: boolean,
+  applyMode: "replace" | "upsert",
 ): Promise<void> {
-  return new Promise((resolveSync, reject) => {
-    const quotedTable = quoteIdentifier(table.tableName);
-    const localCopySql = `COPY (SELECT ${table.columnList} FROM public.${quotedTable}) TO STDOUT WITH (FORMAT csv, NULL '\\N');`;
-    const neonSql = buildNeonApplySql(table, deleteMissingRows);
+  const quotedTable = quoteIdentifier(table.tableName);
+  const stageTableName = `replica_sync_stage_${process.pid}_${table.tableName.replaceAll(/[^A-Za-z0-9_]/g, "_")}`;
+  const neonSql = buildNeonApplySql(table, deleteMissingRows, stageTableName, false, applyMode);
+  const batchRows = copyBatchRows(env);
 
-    const local = spawn("docker", dockerComposeArgs(env, localCopySql), {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const neon = spawn("docker", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]), {
-      stdio: ["pipe", "ignore", "pipe"],
-    });
+  if (shouldSkipUnchanged(env) && (await tableIsUnchanged(env, table))) {
+    console.log(`[${formatNow()}] Skipping public.${table.tableName}: unchanged`);
+    return;
+  }
 
-    const errors: string[] = [];
-    let settled = false;
+  await runCommand("docker", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]), neonSql.preCopySql);
 
-    const fail = (error: Error) => {
-      if (settled) {
-        return;
+  try {
+    if (batchRows === undefined) {
+      const localCopySql = `COPY (SELECT ${table.columnList} FROM public.${quotedTable}) TO STDOUT WITH (FORMAT csv, NULL '\\N');`;
+      await runCopyPipeline(env, localCopySql, neonSql.copySql).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Failed to copy ${table.tableName}\n${message}`);
+      });
+    } else {
+      const { stdout: countOutput } = await runCommand(
+        "docker",
+        dockerComposeArgs(env, `SELECT count(*) FROM public.${quotedTable};`),
+      );
+      const rowCount = Number(countOutput.trim());
+      for (let offset = 0; offset < rowCount; offset += batchRows) {
+        const localCopySql = `COPY (SELECT ${table.columnList} FROM public.${quotedTable} ORDER BY ${table.primaryKeyList} LIMIT ${batchRows} OFFSET ${offset}) TO STDOUT WITH (FORMAT csv, NULL '\\N');`;
+        await runCopyPipeline(env, localCopySql, neonSql.copySql).catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(`Failed to copy ${table.tableName} offset=${offset}\n${message}`);
+        });
       }
-      settled = true;
-      local.kill();
-      neon.kill();
-      reject(error);
-    };
-
-    local.on("error", fail);
-    neon.on("error", fail);
-    local.stderr.on("data", (chunk: Buffer) => errors.push(`local ${table.tableName}: ${chunk}`));
-    neon.stderr.on("data", (chunk: Buffer) => errors.push(`neon ${table.tableName}: ${chunk}`));
-
-    neon.stdin.write(`${neonSql.preCopySql}\n`);
-    local.stdout.pipe(neon.stdin, { end: false });
-    local.stdout.on("end", () => {
-      neon.stdin.end(`${neonSql.postCopySql}\n`);
-    });
-
-    let localExitCode: number | null = null;
-    let neonExitCode: number | null = null;
-
-    const maybeResolve = () => {
-      if (settled || localExitCode === null || neonExitCode === null) {
-        return;
-      }
-      settled = true;
-      if (localExitCode === 0 && neonExitCode === 0) {
-        resolveSync();
-      } else {
-        reject(
-          new Error(
-            `Failed to sync ${table.tableName}: local=${localExitCode}, neon=${neonExitCode}\n${errors.join("")}`,
-          ),
-        );
-      }
-    };
-
-    local.on("close", (code) => {
-      localExitCode = code;
-      maybeResolve();
-    });
-    neon.on("close", (code) => {
-      neonExitCode = code;
-      maybeResolve();
-    });
-  });
+    }
+    await runCommand("docker", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]), neonSql.postCopySql);
+  } catch (error) {
+    await runCommand("docker", neonPsqlArgs(env, ["-q"]), neonSql.cleanupSql).catch(() => undefined);
+    throw error;
+  }
 }
 
 function formatNow(): string {
@@ -253,6 +363,35 @@ function formatNow(): string {
     hour12: false,
     timeZoneName: "short",
   });
+}
+
+function formatDuration(seconds: number): string {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainingSeconds = seconds % 60;
+  if (hours > 0) {
+    return `${hours}h${minutes}m${remainingSeconds}s`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m${remainingSeconds}s`;
+  }
+  return `${remainingSeconds}s`;
+}
+
+function formatTableList(tableNames: string[]): string {
+  return tableNames.length > 0 ? tableNames.join(", ") : "(none)";
+}
+
+function printProgressTargets(event: {
+  completedTableNames: string[];
+  runningTableNames: string[];
+  remainingTableNames: string[];
+  etaSeconds: number;
+}): void {
+  console.log(`  completed_targets=${event.completedTableNames.length}: ${formatTableList(event.completedTableNames)}`);
+  console.log(`  running_targets=${event.runningTableNames.length}: ${formatTableList(event.runningTableNames)}`);
+  console.log(`  remaining_targets=${event.remainingTableNames.length}: ${formatTableList(event.remainingTableNames)}`);
+  console.log(`  estimated_time_remaining=${formatDuration(event.etaSeconds)}`);
 }
 
 function shouldSyncIndexes(env: Record<string, string | undefined>): boolean {
@@ -303,11 +442,13 @@ function reportProgress(event: ProgressEvent): void {
       console.log(
         `[${formatNow()}] Syncing public.${event.tableName}: level=${event.dependencyLevel}, level_concurrency=${event.levelConcurrency}, est_rows=${event.estimatedRows}, running_tables=${event.runningTables}, completed_tables=${event.completedTables}, remaining_tables=${event.remainingTables}, remaining_est_rows=${event.remainingEstimatedRows}, elapsed=${event.elapsedSeconds}s, eta=${event.etaSeconds}s`,
       );
+      printProgressTargets(event);
       break;
     case "table-done":
       console.log(
         `[${formatNow()}] Done public.${event.tableName}: level=${event.dependencyLevel}, level_concurrency=${event.levelConcurrency}, table_elapsed=${event.tableElapsedSeconds}s, progress=${event.completedTables}/${event.totalTables}, running_tables=${event.runningTables}, synced_est_rows=${event.syncedEstimatedRows}/${event.totalEstimatedRows}, remaining_tables=${event.remainingTables}, remaining_est_rows=${event.remainingEstimatedRows}, elapsed=${event.elapsedSeconds}s, eta=${event.etaSeconds}s`,
       );
+      printProgressTargets(event);
       break;
     case "complete":
       console.log(
@@ -341,7 +482,7 @@ async function main(): Promise<void> {
       sleep: (milliseconds) =>
         new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds)),
       checkNeonReady: () => checkNeonReady(env),
-      syncTable: (table) => syncTableWithPsql(env, table, config.deleteMissingRows),
+      syncTable: (table) => syncTableWithPsql(env, table, config.deleteMissingRows, config.applyMode),
       report: reportProgress,
     },
     dependencyEdges,
