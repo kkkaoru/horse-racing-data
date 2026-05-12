@@ -5,6 +5,8 @@ const raceColumns = {
   kaisaiNen: varchar("kaisai_nen", { length: 4 }).notNull(),
   kaisaiTsukihi: varchar("kaisai_tsukihi", { length: 4 }).notNull(),
   keibajoCode: varchar("keibajo_code", { length: 2 }).notNull(),
+  kaisaiKai: varchar("kaisai_kai", { length: 2 }),
+  kaisaiNichime: varchar("kaisai_nichime", { length: 2 }),
   raceBango: varchar("race_bango", { length: 2 }).notNull(),
   kyosomeiHondai: varchar("kyosomei_hondai", { length: 60 }),
   kyosomeiFukudai: varchar("kyosomei_fukudai", { length: 60 }),

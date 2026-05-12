@@ -1040,6 +1040,15 @@ h3 {
   font-size: 15px;
 }
 
+.detail-cell a {
+  color: var(--accent-strong);
+  text-decoration: none;
+}
+
+.detail-cell a:hover {
+  text-decoration: underline;
+}
+
 .runner-table-wrap {
   background: var(--surface);
   border: 1px solid var(--line);

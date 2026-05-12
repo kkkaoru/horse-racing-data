@@ -35,6 +35,8 @@ export interface RaceListItem extends Record<string, unknown> {
 }
 
 export interface RaceDetail extends RaceListItem {
+  kaisaiKai: string | null;
+  kaisaiNichime: string | null;
   kyosomeiKakkonai: string | null;
   torokuTosu: string | null;
   tenkoCode: string | null;
