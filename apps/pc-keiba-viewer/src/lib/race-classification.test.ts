@@ -20,6 +20,7 @@ const race = (overrides: Partial<RaceTagInput>): RaceTagInput => ({
   kyosoKigoCode: null,
   kyosoShubetsuCode: null,
   juryoShubetsuCode: null,
+  source: "jra",
   ...overrides,
 });
 
@@ -79,8 +80,15 @@ describe("race classification", () => {
 
   it("formats grade labels", () => {
     expect(getGradeLabel("B")).toBe("G2");
+    expect(getGradeLabel("B", "nar")).toBe("Jpn2");
     expect(getGradeLabel("Z")).toBe("グレード Z");
     expect(getGradeLabel(null)).toBe("-");
+  });
+
+  it("uses Japan grade labels for NAR graded races", () => {
+    expect(
+      getRaceTags(race({ gradeCode: "B", kyosoJokenCode: "000", source: "nar" })),
+    ).toEqual(["Jpn2"]);
   });
 
   it("falls back to open condition when no other tag exists", () => {

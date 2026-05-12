@@ -1,4 +1,5 @@
 import type { RaceListItem } from "./race-types";
+import type { RaceSource } from "./codes";
 
 const clean = (value: string | null | undefined): string => value?.trim() ?? "";
 
@@ -78,9 +79,18 @@ const GRADE_LABELS: Record<string, string> = {
   L: "リステッド",
 };
 
-export const getGradeLabel = (value: string | null | undefined): string => {
+const NAR_GRADE_LABELS: Record<string, string> = {
+  A: "Jpn1",
+  B: "Jpn2",
+  C: "Jpn3",
+};
+
+export const getGradeLabel = (
+  value: string | null | undefined,
+  source?: RaceSource | null,
+): string => {
   const code = clean(value);
-  return code ? (GRADE_LABELS[code] ?? `グレード ${code}`) : "-";
+  return code ? ((source === "nar" ? NAR_GRADE_LABELS[code] : undefined) ?? GRADE_LABELS[code] ?? `グレード ${code}`) : "-";
 };
 
 const WEIGHT_LABELS: Record<string, string> = {
@@ -144,24 +154,26 @@ const getConditionNameLabel = (value: string | null | undefined): string => {
   return /^[A-Z][0-9]+(?:-[0-9]+)?$/.test(localClass) ? localClass : "";
 };
 
-export const getRaceTags = (
-  race: Pick<
-    RaceListItem,
-    | "kyosoShubetsuCode"
-    | "kyosoKigoCode"
-    | "juryoShubetsuCode"
-    | "kyosoJokenCode"
-    | "kyosoJokenMeisho"
-    | "gradeCode"
-  >,
-): string[] => {
+type RaceTagInput = Pick<
+  RaceListItem,
+  | "kyosoShubetsuCode"
+  | "kyosoKigoCode"
+  | "juryoShubetsuCode"
+  | "kyosoJokenCode"
+  | "kyosoJokenMeisho"
+  | "gradeCode"
+> & {
+  source?: RaceSource | null;
+};
+
+export const getRaceTags = (race: RaceTagInput): string[] => {
   const tags: string[] = [];
   appendUnique(tags, AGE_LABELS[clean(race.kyosoShubetsuCode)] ?? "");
 
-  const grade = GRADE_LABELS[clean(race.gradeCode)] ?? "";
+  const grade = getGradeLabel(race.gradeCode, race.source);
   const condition =
     CONDITION_LABELS[clean(race.kyosoJokenCode)] ?? getConditionNameLabel(race.kyosoJokenMeisho);
-  if (grade === "G1" || grade === "G2" || grade === "G3") {
+  if (/^(?:G|Jpn)[1-3]$/.test(grade)) {
     appendUnique(tags, grade);
   } else if (grade === "リステッド") {
     appendUnique(tags, "リステッド競走");
