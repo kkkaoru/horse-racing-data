@@ -68,50 +68,6 @@ export interface DetailSectionParams {
 
 const LISTED_OR_HIGHER_GRADE_CODES = new Set(["A", "B", "C", "D", "F", "G", "H", "L", "S"]);
 
-const CONDITION_ANALYSIS_OVERRIDE_PARAMS = [
-  "similarStatsAge",
-  "similarStatsClass",
-  "similarStatsDistance",
-  "similarStatsFrame",
-  "similarStatsMonthWindow",
-  "similarStatsNarOnly",
-  "similarStatsRaceMonth",
-  "similarStatsRaceName",
-  "similarStatsRaceNumber",
-  "similarStatsRaceSubtitle",
-  "similarStatsRaceTitle",
-  "similarStatsRunnerCount",
-  "similarStatsSex",
-  "similarStatsSourceScope",
-  "similarStatsSurface",
-  "similarStatsTrack",
-  "similarStatsTurn",
-  "similarStatsVenue",
-  "similarStatsWeight",
-  "similarStatsYears",
-  "bloodlineStatsOffspringOnly",
-  "statsAge",
-  "statsClass",
-  "statsDistance",
-  "statsFrame",
-  "statsMonthWindow",
-  "statsNarOnly",
-  "statsRaceMonth",
-  "statsRaceName",
-  "statsRaceNumber",
-  "statsRaceSubtitle",
-  "statsRaceTitle",
-  "statsRunnerCount",
-  "statsSex",
-  "statsSourceScope",
-  "statsSurface",
-  "statsTrack",
-  "statsTurn",
-  "statsVenue",
-  "statsWeight",
-  "statsYears",
-];
-
 const CONDITION_ANALYSIS_RELAX_KEYS = [
   "includeRaceTitle",
   "includeRaceSubtitle",
@@ -310,16 +266,20 @@ const getStatsQueryParam = (
   return scopedValue === undefined ? query[name] : scopedValue;
 };
 
-const hasStatsSearchParam = (
+const hasExplicitStatsState = (
   query: Record<string, string | string[] | undefined>,
   prefix: string,
-  names: string[],
 ): boolean =>
-  names.some(
-    (name) =>
-      getFirstSearchParam(query[getScopedStatsParamName(prefix, name)]) !== undefined ||
-      getFirstSearchParam(query[name]) !== undefined,
-  );
+  Object.keys(query).some((name) => {
+    if (getFirstSearchParam(query[name]) === undefined) {
+      return false;
+    }
+    return (
+      name.startsWith(`${prefix}Stats`) ||
+      name.startsWith("stats") ||
+      (prefix === "analysis" && name === "similarStatsVenue")
+    );
+  });
 
 const getStatsSourceScope = (
   query: Record<string, string | string[] | undefined>,
@@ -837,7 +797,7 @@ export const getDetailSectionPayload = async (
       ]) satisfies Promise<ConditionAnalysisStats>;
     let stats = await getConditionAnalysisStats(resolvedSettings);
     if (
-      !hasStatsSearchParam(query, "analysis", CONDITION_ANALYSIS_OVERRIDE_PARAMS) &&
+      !hasExplicitStatsState(query, "analysis") &&
       !hasCompleteConditionAnalysisRows(stats)
     ) {
       const candidates = getConditionAnalysisSettingCandidates(resolvedSettings).slice(1);
@@ -890,7 +850,7 @@ export const getDetailSectionPayload = async (
     let resolvedSettings = context.bloodlineStatsSettings;
     let rows = await getBloodlineStats(race, resolvedSettings);
     if (
-      !hasStatsSearchParam(query, "bloodline", CONDITION_ANALYSIS_OVERRIDE_PARAMS) &&
+      !hasExplicitStatsState(query, "bloodline") &&
       !hasBloodlineScoreCoverage(rows, runners)
     ) {
       const candidates = getConditionAnalysisSettingCandidates(resolvedSettings).slice(1);
@@ -917,7 +877,7 @@ export const getDetailSectionPayload = async (
   let resolvedSettings = context.statsSettings;
   let rows = await getSimilarRaceStats(race, resolvedSettings);
   if (
-    !hasStatsSearchParam(query, "similar", CONDITION_ANALYSIS_OVERRIDE_PARAMS) &&
+    !hasExplicitStatsState(query, "similar") &&
     !hasSimilarJockeyTrainerCoverage(rows, runners)
   ) {
     const candidates = getConditionAnalysisSettingCandidates(resolvedSettings).slice(1);
