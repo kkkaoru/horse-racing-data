@@ -33,7 +33,7 @@ import {
   upsertNarRaceSource,
 } from "./storage";
 import {
-  getOddsFetchIntervalMinutes,
+  getOddsFetchSlotAt,
   getTodayJst,
   isJstPollingWindow,
   parseRaceStartJst,
@@ -146,16 +146,27 @@ const upsertDiscoveredUrls = async (
   };
 };
 
-const minutesUntilRace = (race: NarRaceSource, now = new Date()): number | null => {
-  const raceStart = parseRaceStartJst(
+const getRaceStart = (race: NarRaceSource): Date | null =>
+  parseRaceStartJst(
     race.kaisaiNen,
     race.kaisaiTsukihi,
     race.raceStartAtJst.slice(11, 16).replace(":", ""),
   );
+
+const minutesUntilRace = (race: NarRaceSource, now = new Date()): number | null => {
+  const raceStart = getRaceStart(race);
   if (!raceStart) {
     return null;
   }
   return (raceStart.getTime() - now.getTime()) / 60_000;
+};
+
+const getCurrentOddsSlotAt = (race: NarRaceSource, now: Date): string | null => {
+  const raceStart = getRaceStart(race);
+  if (!raceStart) {
+    return null;
+  }
+  return getOddsFetchSlotAt(raceStart, now);
 };
 
 const isDue = (
@@ -168,6 +179,13 @@ const isDue = (
   }
   const last = new Date(lastFetchedAt).getTime();
   return Number.isNaN(last) || now.getTime() - last >= intervalMinutes * 60_000;
+};
+
+const isSlotDue = (lastActivityAt: string | null, slotAt: string): boolean => {
+  if (!lastActivityAt) {
+    return true;
+  }
+  return new Date(lastActivityAt).getTime() < new Date(slotAt).getTime();
 };
 
 const latestTimestamp = (...timestamps: (string | null)[]): string | null => {
@@ -208,15 +226,15 @@ const planRealtimeFetches = async (env: Env, targetDate: string): Promise<number
       continue;
     }
 
-    const oddsInterval = getOddsFetchIntervalMinutes(minutes);
+    const oddsSlotAt = getCurrentOddsSlotAt(race, now);
     const oddsLockUntil = race.oddsFetchLockUntil
       ? new Date(race.oddsFetchLockUntil).getTime()
       : Number.NaN;
     const lastOddsActivity = latestTimestamp(race.lastOddsFetchAt, race.lastOddsQueuedAt);
     if (
-      oddsInterval &&
+      oddsSlotAt &&
       (Number.isNaN(oddsLockUntil) || oddsLockUntil <= now.getTime()) &&
-      isDue(lastOddsActivity, oddsInterval, now)
+      isSlotDue(lastOddsActivity, oddsSlotAt)
     ) {
       jobs.push({ raceKey: race.raceKey, type: "fetch-odds" });
     }
@@ -260,9 +278,8 @@ const fetchAndStoreOdds = async (env: Env, raceKey: string): Promise<void> => {
     throw new Error(`race source not found: ${raceKey}`);
   }
   try {
-    const minutes = minutesUntilRace(race, now);
-    const oddsInterval = minutes === null ? null : getOddsFetchIntervalMinutes(minutes);
-    if (!oddsInterval || !isDue(race.lastOddsFetchAt, oddsInterval, now)) {
+    const oddsSlotAt = getCurrentOddsSlotAt(race, now);
+    if (!oddsSlotAt || !isSlotDue(race.lastOddsFetchAt, oddsSlotAt)) {
       await failOddsFetch(env.REALTIME_DB, raceKey);
       return;
     }
