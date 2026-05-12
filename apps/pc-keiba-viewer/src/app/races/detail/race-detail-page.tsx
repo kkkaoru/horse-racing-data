@@ -25,6 +25,7 @@ import {
 } from "../../../lib/format";
 import { buildJraRaceEntryUrl, buildJraRaceResultUrl } from "../../../lib/jra-url";
 import { getGradeLabel, getRaceTags, getWeightLabel } from "../../../lib/race-classification";
+import { isCornerPacePredictionSupported } from "../../../lib/race-pace-prediction";
 import type { RaceDetail } from "../../../lib/race-types";
 import {
   formatCarriedWeight,
@@ -35,7 +36,11 @@ import {
   isBanEiKeibajoCode,
 } from "../../../lib/runner-format";
 import { AiJsonExportSection } from "./ai-json-export-section";
-import { LazyDetailSections, LazyOverallScoreSection } from "./lazy-detail-sections";
+import {
+  LazyDetailSections,
+  LazyOverallScoreSection,
+  LazyRacePacePredictionSection,
+} from "./lazy-detail-sections";
 import { PaddockSection } from "./paddock-section";
 import { RaceShareControls } from "./race-share-controls";
 import { RaceStartCountdown } from "./race-start-countdown";
@@ -209,6 +214,11 @@ export async function RaceDetailView({
   const jraRaceEntryUrl = buildJraRaceEntryUrl(race);
   const jraRaceResultUrl = buildJraRaceResultUrl(race);
   const decodeHexHorseWeight = raceSource === "nar" && isBanEiKeibajoCode(keibajoCode);
+  const showRacePacePrediction = isCornerPacePredictionSupported({
+    distance: race.kyori,
+    keibajoCode,
+    source: raceSource,
+  });
   const baseProcessedData = {
     adjacentRaces: {
       next: nextRace
@@ -484,6 +494,18 @@ export async function RaceDetailView({
           />
         )}
       </section>
+
+      {showRacePacePrediction ? (
+        <LazyRacePacePredictionSection
+          day={day}
+          keibajoCode={keibajoCode}
+          month={month}
+          raceNumber={raceNumber}
+          realtimeApiBaseUrl={realtimeApiBaseUrl}
+          source={raceSource}
+          year={year}
+        />
+      ) : null}
 
       <LazyOverallScoreSection
         day={day}

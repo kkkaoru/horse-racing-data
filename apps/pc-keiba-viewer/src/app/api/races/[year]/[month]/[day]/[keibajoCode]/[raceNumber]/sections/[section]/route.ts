@@ -24,6 +24,7 @@ const SECTIONS = [
   "bloodline",
   "condition",
   "overall-score",
+  "pace-prediction",
   "results",
   "similar",
   "time-score",

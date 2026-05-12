@@ -12,6 +12,7 @@ import type {
   HorseRaceResult,
   OverallScoreRow,
   PayoutStatsRow,
+  RacePacePredictionRow,
   RaceTimeStats,
   Runner,
   SimilarRaceStatsRow,
@@ -23,6 +24,7 @@ import { AbilityTestTable } from "./ability-test-table";
 import { BloodlineStatsTable } from "./bloodline-stats-table";
 import { HorseRaceResultsTable } from "./horse-race-results-table";
 import { OverallScoreTable } from "./overall-score-table";
+import { RacePacePredictionTable } from "./race-pace-prediction-table";
 import { RaceConditionAnalysisSection } from "./race-condition-analysis-section";
 import { SimilarRaceStatsTable } from "./similar-race-stats-table";
 import { TimeScoreTable } from "./time-score-table";
@@ -33,6 +35,7 @@ type DetailSection =
   | "bloodline"
   | "condition"
   | "overall-score"
+  | "pace-prediction"
   | "results"
   | "similar"
   | "time-score"
@@ -128,11 +131,18 @@ type OverallScorePayload = {
   type: "overall-score";
 };
 
+type RacePacePredictionPayload = {
+  rows: RacePacePredictionRow[];
+  supported?: boolean;
+  type: "pace-prediction";
+};
+
 type SectionPayload =
   | AbilityPayload
   | BloodlinePayload
   | ConditionPayload
   | OverallScorePayload
+  | RacePacePredictionPayload
   | ResultsPayload
   | SimilarPayload
   | TimeScorePayload
@@ -148,6 +158,7 @@ const SECTION_TITLES: Record<DetailSection, string> = {
   bloodline: "血統成績",
   condition: "同条件レース分析",
   "overall-score": "総合スコア",
+  "pace-prediction": "レース展開予測",
   results: "競走成績",
   similar: "同条件成績",
   "time-score": "タイムスコア",
@@ -192,6 +203,16 @@ const shouldIncludeSectionQueryParam = (section: DetailSection, name: string): b
     return (
       name.startsWith("analysisStats") ||
       name.startsWith("bloodlineStats") ||
+      name === "similarStatsVenue" ||
+      GENERIC_STATS_QUERY_KEYS.has(name)
+    );
+  }
+  if (section === "pace-prediction") {
+    return (
+      name === "resultsSourceScope" ||
+      name.startsWith("analysisStats") ||
+      name.startsWith("bloodlineStats") ||
+      name.startsWith("similarStats") ||
       name === "similarStatsVenue" ||
       GENERIC_STATS_QUERY_KEYS.has(name)
     );
@@ -392,6 +413,37 @@ export function LazyOverallScoreSection(props: LazyDetailSectionsProps) {
         }}
         rows={payload.rows}
       />
+    </section>
+  );
+}
+
+export function LazyRacePacePredictionSection(props: LazyDetailSectionsProps) {
+  const searchParams = useSearchParams();
+  const state = useSectionPayload("pace-prediction", props, searchParams);
+  if (state.status === "loading" && state.payload === null) {
+    return <SectionSkeleton title={SECTION_TITLES["pace-prediction"]} />;
+  }
+  if (state.status === "error") {
+    return <SectionError error={state.error} title={SECTION_TITLES["pace-prediction"]} />;
+  }
+  const payload = state.payload;
+  if (!payload || payload.type !== "pace-prediction") {
+    return (
+      <SectionError error="Invalid section payload" title={SECTION_TITLES["pace-prediction"]} />
+    );
+  }
+  if (payload.supported === false) {
+    return null;
+  }
+  return (
+    <section
+      aria-busy={state.status === "loading"}
+      className="similar-stats-section lazy-detail-section"
+    >
+      <div className="section-heading compact">
+        <h2>レース展開予測</h2>
+      </div>
+      <RacePacePredictionTable rows={payload.rows} />
     </section>
   );
 }
