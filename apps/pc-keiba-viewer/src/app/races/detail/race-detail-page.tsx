@@ -23,6 +23,7 @@ import {
   formatWeather,
   getTrackSurfaceLabel,
 } from "../../../lib/format";
+import { buildJraRaceEntryUrl, buildJraRaceResultUrl } from "../../../lib/jra-url";
 import { getGradeLabel, getRaceTags, getWeightLabel } from "../../../lib/race-classification";
 import type { RaceDetail } from "../../../lib/race-types";
 import { isBanEiKeibajoCode } from "../../../lib/runner-format";
@@ -115,6 +116,31 @@ const DetailCell = ({
   );
 };
 
+const DetailLinkCell = ({
+  href,
+  label,
+  value,
+}: {
+  href: string | null;
+  label: string;
+  value: string;
+}) => {
+  if (!href) {
+    return null;
+  }
+
+  return (
+    <div className="detail-cell">
+      <span>{label}</span>
+      <strong>
+        <a href={href} rel="noreferrer" target="_blank">
+          {value}
+        </a>
+      </strong>
+    </div>
+  );
+};
+
 export async function RaceDetailView({
   day,
   initialRace,
@@ -163,6 +189,8 @@ export async function RaceDetailView({
     raceBango: raceNumber,
     source: raceSource,
   });
+  const jraRaceEntryUrl = buildJraRaceEntryUrl(race);
+  const jraRaceResultUrl = buildJraRaceResultUrl(race);
   return (
     <section className="page-shell">
       <RaceShareControls path={sharePath} />
@@ -271,6 +299,8 @@ export async function RaceDetailView({
         <DetailCell label="重量種別" value={getWeightLabel(race.juryoShubetsuCode)} />
         <DetailCell label="出走頭数" suffix=" 頭" value={race.shussoTosu} />
         <DetailCell label="登録頭数" suffix=" 頭" value={race.torokuTosu} />
+        <DetailLinkCell href={jraRaceEntryUrl} label="JRA出馬表" value="公式ページ" />
+        <DetailLinkCell href={jraRaceResultUrl} label="JRA成績" value="公式ページ" />
         <DetailCell label="天候" value={formatWeather(race.tenkoCode)} />
         <DetailCell label="芝馬場" value={formatBaba(race.babajotaiCodeShiba)} />
         <DetailCell label="ダート馬場" value={formatBaba(race.babajotaiCodeDirt)} />

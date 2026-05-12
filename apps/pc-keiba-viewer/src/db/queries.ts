@@ -227,6 +227,8 @@ export const getRaceDetail = cache(
             kaisaiNen: table.kaisaiNen,
             kaisaiTsukihi: table.kaisaiTsukihi,
             keibajoCode: table.keibajoCode,
+            kaisaiKai: table.kaisaiKai,
+            kaisaiNichime: table.kaisaiNichime,
             raceBango: table.raceBango,
             kyosomeiHondai: table.kyosomeiHondai,
             kyosomeiFukudai: table.kyosomeiFukudai,
