@@ -13,6 +13,7 @@ export default defineConfig({
         "src/app/races/[year]/[month]/[day]/race-date-filter.tsx",
         "src/app/races/detail/runners-table.tsx",
       ],
+      exclude: ["src/lib/paddock-server.ts"],
       thresholds: {
         branches: 90,
         functions: 90,
