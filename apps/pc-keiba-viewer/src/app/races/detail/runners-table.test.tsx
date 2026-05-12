@@ -55,13 +55,34 @@ describe("runners table", () => {
     render(
       <RunnersTable
         runners={[
-          runner({ bamei: "三番", kakuteiChakujun: "02", tanshoOdds: "0050", umaban: "03" }),
-          runner({ bamei: "一番", kakuteiChakujun: "01", tanshoOdds: "0120", umaban: "01" }),
+          runner({
+            bamei: "三番",
+            corner1: "04",
+            corner2: "04",
+            corner3: "03",
+            corner4: "02",
+            kakuteiChakujun: "02",
+            tanshoOdds: "0050",
+            umaban: "03",
+          }),
+          runner({
+            bamei: "一番",
+            corner1: "01",
+            corner2: "01",
+            corner3: "01",
+            corner4: "01",
+            kakuteiChakujun: "01",
+            tanshoOdds: "0120",
+            umaban: "01",
+          }),
           runner({ bamei: "二番", kakuteiChakujun: "00", tanshoOdds: "0000", umaban: "02" }),
         ]}
       />,
     );
 
+    expect(screen.getByRole("columnheader", { name: "コーナー通過順" })).toBeTruthy();
+    expect(screen.getByText("1-1-1-1")).toBeTruthy();
+    expect(screen.getByText("4-4-3-2")).toBeTruthy();
     expect(rowTexts()[0]).toContain("一番");
 
     fireEvent.click(screen.getByRole("button", { name: "馬番号を昇順で並び替え" }));
@@ -88,6 +109,7 @@ describe("runners table", () => {
       />,
     );
 
+    expect(screen.queryByRole("columnheader", { name: "コーナー通過順" })).toBeNull();
     expect(rowTexts()[0]).toContain("二番");
     expect(rowTexts()[2]).toContain("三番");
   });

@@ -434,6 +434,10 @@ const entityRaceRowsSql = sql`
     se.tansho_odds,
     se.soha_time,
     se.kohan_3f,
+    se.corner_1,
+    se.corner_2,
+    se.corner_3,
+    se.corner_4,
     (
       ra.kaisai_nen || ra.kaisai_tsukihi >= to_char((now() at time zone 'Asia/Tokyo')::date, 'YYYYMMDD')
       and coalesce(nullif(se.kakutei_chakujun, '00'), '') = ''
@@ -466,6 +470,10 @@ const entityRaceRowsSql = sql`
     se.tansho_odds,
     se.soha_time,
     se.kohan_3f,
+    se.corner_1,
+    se.corner_2,
+    se.corner_3,
+    se.corner_4,
     (
       ra.kaisai_nen || ra.kaisai_tsukihi >= to_char((now() at time zone 'Asia/Tokyo')::date, 'YYYYMMDD')
       and coalesce(nullif(se.kakutei_chakujun, '00'), '') = ''
@@ -1191,6 +1199,10 @@ const getEntityResultRows = async (
     winOdds: string | null;
     raceTime: string | null;
     last3f: string | null;
+    corner1: string | null;
+    corner2: string | null;
+    corner3: string | null;
+    corner4: string | null;
     isUpcoming: boolean;
   }>(sql`
     with rows as (${entityRaceRowsSql}),
@@ -1224,6 +1236,10 @@ const getEntityResultRows = async (
       tansho_odds as "winOdds",
       soha_time as "raceTime",
       kohan_3f as "last3f",
+      corner_1 as "corner1",
+      corner_2 as "corner2",
+      corner_3 as "corner3",
+      corner_4 as "corner4",
       is_upcoming as "isUpcoming"
     from filtered
     order by ${entityResultsOrder(order)}
@@ -1264,6 +1280,10 @@ const getPersonResultRows = async (
     winOdds: string | null;
     raceTime: string | null;
     last3f: string | null;
+    corner1: string | null;
+    corner2: string | null;
+    corner3: string | null;
+    corner4: string | null;
     isUpcoming: boolean;
   }>(sql`
     with rows as (
@@ -1288,6 +1308,10 @@ const getPersonResultRows = async (
         se.tansho_odds,
         se.soha_time,
         se.kohan_3f,
+        se.corner_1,
+        se.corner_2,
+        se.corner_3,
+        se.corner_4,
         (
           ra.kaisai_nen || ra.kaisai_tsukihi >= to_char((now() at time zone 'Asia/Tokyo')::date, 'YYYYMMDD')
           and coalesce(nullif(se.kakutei_chakujun, '00'), '') = ''
@@ -1323,6 +1347,10 @@ const getPersonResultRows = async (
         se.tansho_odds,
         se.soha_time,
         se.kohan_3f,
+        se.corner_1,
+        se.corner_2,
+        se.corner_3,
+        se.corner_4,
         (
           ra.kaisai_nen || ra.kaisai_tsukihi >= to_char((now() at time zone 'Asia/Tokyo')::date, 'YYYYMMDD')
           and coalesce(nullif(se.kakutei_chakujun, '00'), '') = ''
@@ -1369,6 +1397,10 @@ const getPersonResultRows = async (
       tansho_odds as "winOdds",
       soha_time as "raceTime",
       kohan_3f as "last3f",
+      corner_1 as "corner1",
+      corner_2 as "corner2",
+      corner_3 as "corner3",
+      corner_4 as "corner4",
       is_upcoming as "isUpcoming"
     from filtered
     order by ${entityResultsOrder(query.order)}

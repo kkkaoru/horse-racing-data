@@ -10,6 +10,10 @@ const row = (overrides: Partial<EntityRaceResult>): EntityRaceResult => ({
   horseName: "テストホース",
   horseNumber: "1",
   isUpcoming: false,
+  corner1: "03",
+  corner2: "04",
+  corner3: "05",
+  corner4: "06",
   jockeyName: "騎手",
   kaisaiNen: "2026",
   kaisaiTsukihi: "0322",
@@ -38,8 +42,10 @@ describe("entity race results table", () => {
 
     expect(screen.getByRole("columnheader", { name: "レースタイム" })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "上がり3F" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "コーナー順位" })).toBeTruthy();
     expect(screen.getByText("1:52.3")).toBeTruthy();
     expect(screen.getByText("37.8")).toBeTruthy();
+    expect(screen.getByText("3-4-5-6")).toBeTruthy();
   });
 
   it("keeps race time and hides last 3F for ban-ei horse detail rows", () => {
@@ -54,5 +60,16 @@ describe("entity race results table", () => {
     expect(screen.queryByRole("columnheader", { name: "上がり3F" })).toBeNull();
     expect(screen.getByText("3:18.8")).toBeTruthy();
     expect(screen.queryByText("37.8")).toBeNull();
+  });
+
+  it("shows a dash when all corner ranks are missing", () => {
+    render(
+      <EntityRaceResultsTable
+        rows={[row({ corner1: "00", corner2: null, corner3: "", corner4: "00" })]}
+      />,
+    );
+
+    expect(screen.getByRole("columnheader", { name: "コーナー順位" })).toBeTruthy();
+    expect(screen.getAllByText("-").length).toBeGreaterThan(0);
   });
 });
