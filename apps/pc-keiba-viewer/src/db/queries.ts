@@ -2353,6 +2353,11 @@ const RACE_NAME_TOKEN_PATTERN = /[\p{L}\p{N}ー・－-]+(?:杯|賞|記念|ステ
 
 const getStatsRaceNameToken = (race: RaceDetail): string | null => {
   const subtitle = `${cleanDbText(race.kyosomeiFukudai)} ${cleanDbText(race.kyosomeiKakkonai)}`;
+  const combined = `${cleanDbText(race.kyosomeiHondai)} ${subtitle}`;
+  if (combined.includes("ジョッキーズカップ")) {
+    return "ジョッキーズカップ";
+  }
+
   const subtitleMatch = [...subtitle.matchAll(RACE_NAME_TOKEN_PATTERN)].at(-1)?.[0] ?? "";
   if (subtitleMatch) {
     return subtitleMatch;
@@ -2368,6 +2373,15 @@ const getStatsRaceTitleCondition = (race: RaceDetail, tableName = "ra") => {
   const table = sql.raw(tableName);
   const token = getStatsRaceNameToken(race);
   if (token) {
+    if (token === "ジョッキーズカップ") {
+      const pattern = `%${token}%`;
+      return sql`(
+        ${table}.kyosomei_hondai like ${pattern}
+        or ${table}.kyosomei_fukudai like ${pattern}
+        or ${table}.kyosomei_kakkonai like ${pattern}
+      )`;
+    }
+
     const pattern = `(^|[[:space:]　])${escapePostgresRegex(token)}([[:space:]　]|$)`;
     return sql`(
       ${table}.kyosomei_hondai ~ ${pattern}
