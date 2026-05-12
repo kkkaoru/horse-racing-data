@@ -4,6 +4,7 @@ import {
   formatRaceStartJst,
   getJstDateParts,
   getOddsFetchIntervalMinutes,
+  getOddsFetchSlotAt,
   getTodayJst,
   isJstPollingWindow,
   parseRaceStartJst,
@@ -23,6 +24,17 @@ describe("odds fetch schedule", () => {
     [-1, null],
   ])("returns %s-minute pre-race interval", (minutesUntilRace, expected) => {
     expect(getOddsFetchIntervalMinutes(minutesUntilRace)).toBe(expected);
+  });
+
+  it("aligns odds fetch slots to race start instead of previous fetch time", () => {
+    const raceStart = new Date("2026-05-12T11:40:00+09:00");
+    expect(getOddsFetchSlotAt(raceStart, new Date("2026-05-12T10:49:39+09:00"))).toBe(
+      "2026-05-12T10:40:00+09:00",
+    );
+    expect(getOddsFetchSlotAt(raceStart, new Date("2026-05-12T10:50:39+09:00"))).toBe(
+      "2026-05-12T10:50:00+09:00",
+    );
+    expect(getOddsFetchSlotAt(raceStart, new Date("2026-05-12T11:39:30+09:00"))).toBeNull();
   });
 });
 

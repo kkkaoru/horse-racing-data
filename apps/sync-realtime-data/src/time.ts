@@ -67,6 +67,16 @@ export const getOddsFetchIntervalMinutes = (minutesUntilRace: number): number | 
   return null;
 };
 
+export const getOddsFetchSlotAt = (raceStart: Date, now: Date): string | null => {
+  const minutes = (raceStart.getTime() - now.getTime()) / 60_000;
+  const interval = getOddsFetchIntervalMinutes(minutes);
+  if (!interval) {
+    return null;
+  }
+  const slotMinutesBeforeRace = Math.ceil(minutes / interval) * interval;
+  return toJstIsoString(new Date(raceStart.getTime() - slotMinutesBeforeRace * 60_000));
+};
+
 export const isJstPollingWindow = (date = new Date()): boolean => {
   const { hour } = getJstDateParts(date);
   const parsedHour = Number(hour);
