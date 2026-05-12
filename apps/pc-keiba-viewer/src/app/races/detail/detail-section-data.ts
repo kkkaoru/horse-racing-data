@@ -367,6 +367,11 @@ const getStatsRaceNameToken = (race: RaceDetail): string | null => {
   const subtitle = `${cleanConditionText(race.kyosomeiFukudai)} ${cleanConditionText(
     race.kyosomeiKakkonai,
   )}`;
+  const combined = `${cleanConditionText(race.kyosomeiHondai)} ${subtitle}`;
+  if (combined.includes("ジョッキーズカップ")) {
+    return "ジョッキーズカップ";
+  }
+
   const subtitleMatch = [...subtitle.matchAll(RACE_NAME_TOKEN_PATTERN)].at(-1)?.[0] ?? "";
   if (subtitleMatch) {
     return subtitleMatch;
@@ -424,7 +429,10 @@ const getRaceNameFilterLabels = (
   const statsRaceNameToken = getStatsRaceNameToken(race);
   const hasNamedClass =
     grade.length > 0 || /G[1-3]|Jpn[1-3]|リステッド|OP|ＯＰ|オープン/.test(`${tags} ${condition}`);
-  const hasSpecialRaceName = title.includes("ファイナルレース") || subtitle.includes("一発逆転");
+  const hasSpecialRaceName =
+    title.includes("ファイナルレース") ||
+    subtitle.includes("一発逆転") ||
+    Boolean(statsRaceNameToken);
 
   if (!hasNamedClass && !hasSpecialRaceName) {
     return { subtitle: null, title: null };
