@@ -8,6 +8,7 @@ import {
   buildTableFilterSql,
   calculateEtaSeconds,
   parseConcurrency,
+  parseApplyMode,
   parseDependencyEdges,
   parseBoolean,
   parsePositiveInteger,
@@ -25,6 +26,7 @@ import {
 const tableA: TableMetadata = {
   tableName: "table_a",
   estimatedRows: 100,
+  estimatedBytes: 1_000,
   columnList: '"id", "name"',
   primaryKeyList: '"id"',
   primaryKeyJoin: 'target."id" = stage."id"',
@@ -34,6 +36,7 @@ const tableA: TableMetadata = {
 const tableB: TableMetadata = {
   tableName: 'weird"table',
   estimatedRows: 50,
+  estimatedBytes: 500,
   columnList: '"id"',
   primaryKeyList: '"id"',
   primaryKeyJoin: 'target."id" = stage."id"',
@@ -67,11 +70,19 @@ describe("config parsing", () => {
     expect(parseBoolean(undefined, false)).toBe(false);
   });
 
+  it("parses apply mode", () => {
+    expect(parseApplyMode("upsert")).toBe("upsert");
+    expect(parseApplyMode("replace")).toBe("replace");
+    expect(parseApplyMode(undefined)).toBe("replace");
+    expect(parseApplyMode("unknown")).toBe("replace");
+  });
+
   it("builds config from env", () => {
     expect(
       buildConfig({
         REPLICA_SYNC_CONCURRENCY: "6",
         REPLICA_SYNC_DELETE: "false",
+        REPLICA_SYNC_APPLY_MODE: "upsert",
         NEON_CONNECT_TIMEOUT_SECONDS: "30",
         NEON_CONNECT_RETRY_SECONDS: "3",
         REPLICA_SYNC_TABLES: " jvd_ra, nvd_ra ,, ",
@@ -79,6 +90,7 @@ describe("config parsing", () => {
     ).toEqual({
       concurrency: 6,
       deleteMissingRows: false,
+      applyMode: "upsert",
       neonConnectTimeoutSeconds: 30,
       neonConnectRetrySeconds: 3,
       selectedTables: ["jvd_ra", "nvd_ra"],
@@ -118,12 +130,13 @@ describe("SQL helpers", () => {
 
   it("parses table metadata", () => {
     const rows = parseTableMetadata(
-      'jvd_ra\t123\t"id", "name"\t"id"\ttarget."id" = stage."id"\t"name" = excluded."name"\n',
+      'jvd_ra\t123\t456\t"id", "name"\t"id"\ttarget."id" = stage."id"\t"name" = excluded."name"\n',
     );
     expect(rows).toEqual([
       {
         tableName: "jvd_ra",
         estimatedRows: 123,
+        estimatedBytes: 456,
         columnList: '"id", "name"',
         primaryKeyList: '"id"',
         primaryKeyJoin: 'target."id" = stage."id"',
@@ -145,24 +158,35 @@ describe("SQL helpers", () => {
 
   it("clamps negative estimated rows", () => {
     expect(
-      parseTableMetadata('t\t-5\t"id"\t"id"\ttarget."id" = stage."id"\t')[0]?.estimatedRows,
+      parseTableMetadata('t\t-5\t10\t"id"\t"id"\ttarget."id" = stage."id"\t')[0]?.estimatedRows,
     ).toBe(0);
   });
 
   it("builds Neon apply SQL for upsert and delete", () => {
-    const sql = buildNeonApplySql(tableA, true);
-    expect(sql.preCopySql).toContain('CREATE TEMP TABLE replica_sync_stage (LIKE public."table_a"');
-    expect(sql.preCopySql).toContain('COPY replica_sync_stage ("id", "name")');
+    const sql = buildNeonApplySql(tableA, true, "replica_sync_stage", true, "upsert");
+    expect(sql.preCopySql).toContain('CREATE TEMP TABLE "replica_sync_stage"');
+    expect(sql.copySql).toContain('COPY "replica_sync_stage" ("id", "name")');
+    expect(sql.copySql).toContain("FORMAT csv");
     expect(sql.postCopySql).toContain(
-      'CREATE UNIQUE INDEX replica_sync_stage_pk ON replica_sync_stage ("id")',
+      'CREATE UNIQUE INDEX "replica_sync_stage_pk" ON "replica_sync_stage" ("id")',
     );
     expect(sql.postCopySql).toContain('ON CONFLICT ("id") DO UPDATE SET "name" = excluded."name"');
     expect(sql.postCopySql).toContain('DELETE FROM public."table_a" AS target');
     expect(sql.postCopySql).toContain("COMMIT;");
   });
 
+  it("builds Neon apply SQL for replace mode", () => {
+    const sql = buildNeonApplySql(tableA, true);
+    expect(sql.postCopySql).toContain('TRUNCATE TABLE public."table_a"');
+    expect(sql.postCopySql).toContain(
+      'INSERT INTO public."table_a" ("id", "name") SELECT "id", "name" FROM "replica_sync_stage" AS stage',
+    );
+    expect(sql.postCopySql).not.toContain("ON CONFLICT");
+    expect(sql.postCopySql).not.toContain("DELETE FROM");
+  });
+
   it("builds Neon apply SQL without update/delete when requested", () => {
-    const sql = buildNeonApplySql(tableB, false);
+    const sql = buildNeonApplySql(tableB, false, "replica_sync_stage", true, "upsert");
     expect(sql.preCopySql).toContain('public."weird""table"');
     expect(sql.postCopySql).toContain('ON CONFLICT ("id") DO NOTHING');
     expect(sql.postCopySql).not.toContain("DELETE FROM");
@@ -248,6 +272,7 @@ describe("Neon warm wait", () => {
       {
         concurrency: 2,
         deleteMissingRows: true,
+        applyMode: "replace",
         neonConnectTimeoutSeconds: 20,
         neonConnectRetrySeconds: 5,
       },
@@ -281,6 +306,7 @@ describe("Neon warm wait", () => {
         {
           concurrency: 2,
           deleteMissingRows: true,
+          applyMode: "replace",
           neonConnectTimeoutSeconds: 10,
           neonConnectRetrySeconds: 5,
         },
@@ -307,10 +333,11 @@ describe("parallel push runner", () => {
     const resolvers: Array<() => void> = [];
 
     const run = runPushSync(
-      [tableA, tableB, { ...tableA, tableName: "table_c", estimatedRows: 25 }],
+      [tableA, tableB, { ...tableA, tableName: "table_c", estimatedRows: 25, estimatedBytes: 25 }],
       {
         concurrency: 2,
         deleteMissingRows: true,
+        applyMode: "replace",
         neonConnectTimeoutSeconds: 10,
         neonConnectRetrySeconds: 1,
       },
@@ -366,6 +393,7 @@ describe("parallel push runner", () => {
       {
         concurrency: "auto",
         deleteMissingRows: true,
+        applyMode: "replace",
         neonConnectTimeoutSeconds: 1,
         neonConnectRetrySeconds: 1,
       },
@@ -391,6 +419,7 @@ describe("parallel push runner", () => {
         {
           concurrency: 1,
           deleteMissingRows: true,
+          applyMode: "replace",
           neonConnectTimeoutSeconds: 1,
           neonConnectRetrySeconds: 1,
         },

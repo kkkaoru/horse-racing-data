@@ -1,6 +1,7 @@
 export type TableMetadata = {
   tableName: string;
   estimatedRows: number;
+  estimatedBytes: number;
   columnList: string;
   primaryKeyList: string;
   primaryKeyJoin: string;
@@ -17,6 +18,7 @@ export type SyncConcurrency = number | "auto";
 export type PushSyncConfig = {
   concurrency: SyncConcurrency;
   deleteMissingRows: boolean;
+  applyMode: "replace" | "upsert";
   neonConnectTimeoutSeconds: number;
   neonConnectRetrySeconds: number;
   selectedTables?: string[];
@@ -58,8 +60,11 @@ export type ProgressEvent =
       dependencyLevel: number;
       levelConcurrency: number;
       runningTables: number;
+      runningTableNames: string[];
       completedTables: number;
+      completedTableNames: string[];
       remainingTables: number;
+      remainingTableNames: string[];
       syncedEstimatedRows: number;
       remainingEstimatedRows: number;
       elapsedSeconds: number;
@@ -73,11 +78,14 @@ export type ProgressEvent =
       levelConcurrency: number;
       tableElapsedSeconds: number;
       runningTables: number;
+      runningTableNames: string[];
       completedTables: number;
+      completedTableNames: string[];
       totalTables: number;
       syncedEstimatedRows: number;
       totalEstimatedRows: number;
       remainingTables: number;
+      remainingTableNames: string[];
       remainingEstimatedRows: number;
       elapsedSeconds: number;
       etaSeconds: number;
@@ -139,6 +147,14 @@ export function parseBoolean(value: string | undefined, fallback: boolean): bool
   return fallback;
 }
 
+export function parseApplyMode(value: string | undefined): "replace" | "upsert" {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "upsert") {
+    return "upsert";
+  }
+  return "replace";
+}
+
 export function parseSelectedTables(value: string | undefined): string[] | undefined {
   const tables = value
     ?.split(",")
@@ -152,6 +168,7 @@ export function buildConfig(env: Record<string, string | undefined>): PushSyncCo
   return {
     concurrency: parseConcurrency(env.REPLICA_SYNC_CONCURRENCY),
     deleteMissingRows: parseBoolean(env.REPLICA_SYNC_DELETE, true),
+    applyMode: parseApplyMode(env.REPLICA_SYNC_APPLY_MODE),
     neonConnectTimeoutSeconds: parsePositiveInteger(env.NEON_CONNECT_TIMEOUT_SECONDS, 120),
     neonConnectRetrySeconds: parsePositiveInteger(env.NEON_CONNECT_RETRY_SECONDS, 5),
     selectedTables: parseSelectedTables(env.REPLICA_SYNC_TABLES),
@@ -195,6 +212,7 @@ cols as (
     c.oid,
     c.relname,
     greatest(c.reltuples::bigint, 0) as est_rows,
+    pg_total_relation_size(c.oid) as est_bytes,
     a.attnum,
     a.attname,
     pk.pk_names,
@@ -211,6 +229,7 @@ cols as (
 select
   relname,
   max(est_rows) as est_rows,
+  max(est_bytes) as est_bytes,
   string_agg(format('%I', attname), ', ' order by attnum) as column_list,
   max(pk_list) as pk_list,
   max(pk_join) as pk_join,
@@ -257,6 +276,7 @@ export function parseTableMetadata(output: string): TableMetadata[] {
       const [
         tableName,
         estimatedRows,
+        estimatedBytes,
         columnList,
         primaryKeyList,
         primaryKeyJoin,
@@ -266,6 +286,7 @@ export function parseTableMetadata(output: string): TableMetadata[] {
       if (
         !tableName ||
         estimatedRows === undefined ||
+        estimatedBytes === undefined ||
         !columnList ||
         !primaryKeyList ||
         !primaryKeyJoin
@@ -276,6 +297,7 @@ export function parseTableMetadata(output: string): TableMetadata[] {
       return {
         tableName,
         estimatedRows: Math.max(Number(estimatedRows), 0),
+        estimatedBytes: Math.max(Number(estimatedBytes), 0),
         columnList,
         primaryKeyList,
         primaryKeyJoin,
@@ -301,30 +323,59 @@ export function parseDependencyEdges(output: string): DependencyEdge[] {
 export function buildNeonApplySql(
   table: TableMetadata,
   deleteMissingRows: boolean,
+  stageTableName = "replica_sync_stage",
+  temporaryStage = true,
+  applyMode: "replace" | "upsert" = "replace",
 ): {
   preCopySql: string;
+  copySql: string;
   postCopySql: string;
+  cleanupSql: string;
 } {
   const quotedTableName = quoteIdentifier(table.tableName);
+  const quotedStageTableName = quoteIdentifier(stageTableName);
+  const quotedStageIndexName = quoteIdentifier(`${stageTableName}_pk`);
+  const stageTableReference = temporaryStage
+    ? quotedStageTableName
+    : `public.${quotedStageTableName}`;
+  const stageCreateSql = temporaryStage
+    ? `CREATE TEMP TABLE ${quotedStageTableName} (LIKE public.${quotedTableName} INCLUDING DEFAULTS) ON COMMIT DROP;`
+    : [
+        `DROP TABLE IF EXISTS ${stageTableReference};`,
+        `CREATE UNLOGGED TABLE ${stageTableReference} (LIKE public.${quotedTableName} INCLUDING DEFAULTS);`,
+      ].join("\n");
+  const cleanupSql = temporaryStage ? "ROLLBACK;" : `DROP TABLE IF EXISTS ${stageTableReference};`;
   const conflictAction =
     table.updateList.length > 0 ? `DO UPDATE SET ${table.updateList}` : "DO NOTHING";
 
   const deleteSql = deleteMissingRows
-    ? `DELETE FROM public.${quotedTableName} AS target WHERE NOT EXISTS (SELECT 1 FROM replica_sync_stage AS stage WHERE ${table.primaryKeyJoin});\n`
+    ? `DELETE FROM public.${quotedTableName} AS target WHERE NOT EXISTS (SELECT 1 FROM ${stageTableReference} AS stage WHERE ${table.primaryKeyJoin});\n`
     : "";
+  const dropStageSql = temporaryStage ? "" : `DROP TABLE ${stageTableReference};\n`;
+  const applySql =
+    applyMode === "replace"
+      ? [
+          `TRUNCATE TABLE public.${quotedTableName};`,
+          `INSERT INTO public.${quotedTableName} (${table.columnList}) SELECT ${table.columnList} FROM ${stageTableReference} AS stage;`,
+        ].join("\n")
+      : [
+          `CREATE UNIQUE INDEX ${quotedStageIndexName} ON ${stageTableReference} (${table.primaryKeyList});`,
+          `INSERT INTO public.${quotedTableName} (${table.columnList}) SELECT ${table.columnList} FROM ${stageTableReference} AS stage ON CONFLICT (${table.primaryKeyList}) ${conflictAction};`,
+          deleteSql,
+        ].join("\n");
 
   return {
     preCopySql: [
-      "BEGIN;",
-      `CREATE TEMP TABLE replica_sync_stage (LIKE public.${quotedTableName} INCLUDING DEFAULTS) ON COMMIT DROP;`,
-      `COPY replica_sync_stage (${table.columnList}) FROM STDIN WITH (FORMAT csv, NULL '\\N');`,
+      temporaryStage ? "BEGIN;" : "",
+      stageCreateSql,
     ].join("\n"),
+    copySql: `COPY ${stageTableReference} (${table.columnList}) FROM STDIN WITH (FORMAT csv, NULL '\\N');`,
     postCopySql: [
-      "\\.",
-      `CREATE UNIQUE INDEX replica_sync_stage_pk ON replica_sync_stage (${table.primaryKeyList});`,
-      `INSERT INTO public.${quotedTableName} (${table.columnList}) SELECT ${table.columnList} FROM replica_sync_stage ON CONFLICT (${table.primaryKeyList}) ${conflictAction};`,
-      `${deleteSql}COMMIT;`,
+      temporaryStage ? "" : "BEGIN;",
+      applySql,
+      `${dropStageSql}COMMIT;`,
     ].join("\n"),
+    cleanupSql,
   };
 }
 
@@ -368,7 +419,9 @@ export function buildDependencyPlan(
   const sortTables = (levelTables: TableMetadata[]) =>
     levelTables.sort(
       (left, right) =>
-        right.estimatedRows - left.estimatedRows || left.tableName.localeCompare(right.tableName),
+        right.estimatedBytes - left.estimatedBytes ||
+        right.estimatedRows - left.estimatedRows ||
+        left.tableName.localeCompare(right.tableName),
     );
 
   let currentLevel = sortTables(
@@ -486,6 +539,15 @@ export async function runPushSync(
   let completedTables = 0;
   let runningTables = 0;
   let syncedEstimatedRows = 0;
+  const allTableNames = dependencyPlan.flat().map((table) => table.tableName);
+  const completedTableNames: string[] = [];
+  const runningTableNames = new Set<string>();
+
+  const remainingTableNames = () =>
+    allTableNames.filter(
+      (tableName) =>
+        !completedTableNames.includes(tableName) && !runningTableNames.has(tableName),
+    );
 
   dependencies.report({
     type: "start",
@@ -516,6 +578,7 @@ export async function runPushSync(
         }
         nextIndex += 1;
         runningTables += 1;
+        runningTableNames.add(table.tableName);
 
         const tableStartedAt = dependencies.nowSeconds();
         const elapsedSeconds = tableStartedAt - startedAt;
@@ -526,8 +589,11 @@ export async function runPushSync(
           dependencyLevel,
           levelConcurrency,
           runningTables,
+          runningTableNames: Array.from(runningTableNames),
           completedTables,
+          completedTableNames: [...completedTableNames],
           remainingTables: totalTables - completedTables - runningTables,
+          remainingTableNames: remainingTableNames(),
           syncedEstimatedRows,
           remainingEstimatedRows: Math.max(totalEstimatedRows - syncedEstimatedRows, 0),
           elapsedSeconds,
@@ -537,7 +603,9 @@ export async function runPushSync(
         await dependencies.syncTable(table);
 
         runningTables -= 1;
+        runningTableNames.delete(table.tableName);
         completedTables += 1;
+        completedTableNames.push(table.tableName);
         syncedEstimatedRows += table.estimatedRows;
         const doneAt = dependencies.nowSeconds();
         const doneElapsedSeconds = doneAt - startedAt;
@@ -550,11 +618,14 @@ export async function runPushSync(
           levelConcurrency,
           tableElapsedSeconds: doneAt - tableStartedAt,
           runningTables,
+          runningTableNames: Array.from(runningTableNames),
           completedTables,
+          completedTableNames: [...completedTableNames],
           totalTables,
           syncedEstimatedRows,
           totalEstimatedRows,
           remainingTables: totalTables - completedTables,
+          remainingTableNames: remainingTableNames(),
           remainingEstimatedRows: Math.max(totalEstimatedRows - syncedEstimatedRows, 0),
           elapsedSeconds: doneElapsedSeconds,
           etaSeconds: calculateEtaSeconds(
