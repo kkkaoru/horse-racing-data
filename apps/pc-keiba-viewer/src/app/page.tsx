@@ -4,7 +4,7 @@ import { Suspense } from "react";
 import { getTopRaceWindows } from "../db/queries";
 import { HomeRealtime } from "./home-realtime";
 
-export const dynamic = "force-dynamic";
+export const revalidate = 15;
 
 const links = [
   { href: "/races", label: "開催日一覧" },
