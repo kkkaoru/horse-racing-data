@@ -48,6 +48,10 @@ const runnerColumns = {
   tanshoNinkijun: varchar("tansho_ninkijun", { length: 2 }),
   sohaTime: varchar("soha_time", { length: 4 }),
   timeSa: varchar("time_sa", { length: 4 }),
+  corner1: varchar("corner_1", { length: 2 }),
+  corner2: varchar("corner_2", { length: 2 }),
+  corner3: varchar("corner_3", { length: 2 }),
+  corner4: varchar("corner_4", { length: 2 }),
   kohan3f: varchar("kohan_3f", { length: 3 }),
 };
 

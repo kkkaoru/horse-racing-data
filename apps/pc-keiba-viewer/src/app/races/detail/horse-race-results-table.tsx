@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 
+import type { RaceSource } from "../../../lib/codes";
 import {
   cleanText,
   formatDate,
@@ -35,7 +37,8 @@ interface HorseRaceResultsTableProps {
   defaultIncludeClass: boolean;
   results: HorseRaceResult[];
   runners: Runner[];
-  source: "jra" | "nar";
+  source: RaceSource;
+  sourceScope: RaceSource | "all";
 }
 
 const SORT_LABELS: Record<SortKey, string> = {
@@ -139,6 +142,21 @@ const formatRank = (value: string | null | undefined): string => {
   return rank === null ? "-" : String(rank);
 };
 
+const formatCornerRank = (value: string | null | undefined): string | null => {
+  const rank = parseNumber(value);
+  return rank === null ? null : String(rank);
+};
+
+const formatCornerRanks = (result: HorseRaceResult): string => {
+  const corners = [
+    formatCornerRank(result.corner1),
+    formatCornerRank(result.corner2),
+    formatCornerRank(result.corner3),
+    formatCornerRank(result.corner4),
+  ].filter((rank): rank is string => rank !== null);
+  return corners.length > 0 ? corners.join("-") : "-";
+};
+
 const normalizeText = (value: string | null | undefined): string =>
   cleanText(value, "").replace(/\s+/g, "").replace(/　+/g, "");
 
@@ -226,6 +244,9 @@ const getRunnerNumberOptions = (runners: Runner[], results: HorseRaceResult[]): 
   );
 };
 
+const getCoveredRunnerNumbers = (results: HorseRaceResult[]): Set<string> =>
+  new Set(results.map((result) => cleanText(result.currentUmaban, "")).filter(Boolean));
+
 const compareByTimeAndDate = (left: HorseRaceResult, right: HorseRaceResult): number => {
   const timeCompared = compareNullable(
     getSortValue(left, "sohaTime"),
@@ -247,7 +268,11 @@ export function HorseRaceResultsTable({
   results,
   runners,
   source,
+  sourceScope,
 }: HorseRaceResultsTableProps) {
+  const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const baseDistance = Number(cleanText(currentDistance, ""));
   const showLast3fColumn = !(source === "nar" && isBanEiKeibajoCode(currentKeibajoCode));
   const defaultNarFilterEnabled = source === "nar";
@@ -257,16 +282,34 @@ export function HorseRaceResultsTable({
   const [distanceMax, setDistanceMax] = useState(
     Number.isFinite(baseDistance) && baseDistance > 0 ? String(baseDistance + 200) : "",
   );
-  const [limit, setLimit] = useState<ResultLimit>("5");
+  const [limit, setLimit] = useState<ResultLimit>("1");
   const [finishRankLimit, setFinishRankLimit] = useState("5");
+  const [finishRankLimitTouched, setFinishRankLimitTouched] = useState(false);
   const [includeOutOfRangeFallback, setIncludeOutOfRangeFallback] = useState(true);
+  const [distanceMinTouched, setDistanceMinTouched] = useState(false);
+  const [sameDistanceOnly, setSameDistanceOnly] = useState(false);
+  const [sameKeibajoOnly, setSameKeibajoOnly] = useState(false);
   const [sameJockeyOnly, setSameJockeyOnly] = useState(defaultNarFilterEnabled);
   const [sameJockeyTouched, setSameJockeyTouched] = useState(false);
+  const [expandedRunnerNumber, setExpandedRunnerNumber] = useState<string | null>(null);
   const [recentMonths, setRecentMonths] = useState(defaultNarFilterEnabled ? "18" : "");
+  const [recentMonthsTouched, setRecentMonthsTouched] = useState(false);
   const [sort, setSort] = useState<{ direction: SortDirection; key: SortKey }>({
     direction: "asc",
     key: "sohaTime",
   });
+  const sourceScopeChecked = sourceScope === source;
+  const sourceScopeLabel = source === "jra" ? "中央競馬のみ" : "地方競馬のみ";
+  const updateSourceScope = (checked: boolean) => {
+    const nextParams = new URLSearchParams(searchParams.toString());
+    if (checked) {
+      nextParams.set("resultsSourceScope", source);
+    } else {
+      nextParams.delete("resultsSourceScope");
+    }
+    const query = nextParams.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  };
   const runnerNumberOptions = useMemo(
     () => getRunnerNumberOptions(runners, results),
     [results, runners],
@@ -280,6 +323,7 @@ export function HorseRaceResultsTable({
       ? (classFilterOptions.at(-1) ?? "all")
       : "all",
   );
+  const [classFilterTouched, setClassFilterTouched] = useState(false);
   const [selectedRunnerNumbers, setSelectedRunnerNumbers] = useState<string[]>(() =>
     getRunnerNumberOptions(runners, results),
   );
@@ -327,6 +371,18 @@ export function HorseRaceResultsTable({
     );
   }, [results, runners, selectedRunnerNumberSet]);
 
+  const isCurrentKeibajo = useCallback(
+    (keibajoCode: string | null | undefined): boolean =>
+      cleanText(keibajoCode, "") === cleanText(currentKeibajoCode, ""),
+    [currentKeibajoCode],
+  );
+
+  const isCurrentDistance = useCallback(
+    (distance: string | null | undefined): boolean =>
+      cleanText(distance, "") === cleanText(currentDistance, ""),
+    [currentDistance],
+  );
+
   const visibleResultsState = useMemo(() => {
     const min = Number(distanceMin);
     const max = Number(distanceMax);
@@ -343,18 +399,49 @@ export function HorseRaceResultsTable({
       recentMonths.trim() !== "" && Number.isFinite(recentMonthsValue) && recentMonthsValue > 0
         ? getDateMonthsBefore(currentRaceDate, recentMonthsValue)
         : null;
+    const resultRunnerNumbers = getCoveredRunnerNumbers(results);
+    const requiredRunnerNumbers =
+      runners.length > 0
+        ? selectedRunnerNumbers
+            .filter((runnerNumber) => resultRunnerNumbers.has(runnerNumber))
+            .toSorted((left, right) => Number(left) - Number(right))
+        : [];
+    const coversRequiredRunners = (visibleRows: HorseRaceResult[]): boolean => {
+      if (requiredRunnerNumbers.length === 0) {
+        return true;
+      }
 
-    const isDistanceMatched = (result: HorseRaceResult): boolean => {
+      const visibleRunnerNumbers = getCoveredRunnerNumbers(visibleRows);
+      return requiredRunnerNumbers.every((runnerNumber) => visibleRunnerNumbers.has(runnerNumber));
+    };
+
+    const distanceMinRelaxSteps =
+      !sameDistanceOnly && hasMin && min > 0 ? Math.max(0, Math.floor(min / 100)) : 0;
+
+    const isDistanceMatched = (result: HorseRaceResult, activeMin: number): boolean => {
       const distance = getDistanceValue(result);
       if (distance === null) {
         return false;
       }
-      return (!hasMin || distance >= min) && (!hasMax || distance <= max);
+      return (!hasMin || distance >= activeMin) && (!hasMax || distance <= max);
     };
 
-    const getVisibleResults = (useFinishRankFilter: boolean): HorseRaceResult[] => {
+    const getVisibleResults = ({
+      activeClassFilter,
+      activeRecentDateMin,
+      activeSameJockeyOnly,
+      distanceRelaxSteps,
+      useFinishRankFilter,
+    }: {
+      activeClassFilter: string;
+      activeRecentDateMin: number | null;
+      activeSameJockeyOnly: boolean;
+      distanceRelaxSteps: number;
+      useFinishRankFilter: boolean;
+    }): HorseRaceResult[] => {
       const perHorseCount = new Map<string, number>();
       const groupedResults = new Map<string, HorseRaceResult[]>();
+      const activeMin = hasMin ? Math.max(0, min - distanceRelaxSteps * 100) : min;
 
       for (const result of results) {
         const runnerNumber = cleanText(result.currentUmaban, "");
@@ -374,16 +461,25 @@ export function HorseRaceResultsTable({
           continue;
         }
         const jockeyMatched =
-          !sameJockeyOnly ||
+          !activeSameJockeyOnly ||
           normalizeText(result.currentJockey) === normalizeText(result.kishumeiRyakusho);
         if (!jockeyMatched) {
           continue;
         }
-        if (classFilter !== "all" && !isClassMatched(result, classFilter)) {
+        if (sameKeibajoOnly && !isCurrentKeibajo(result.keibajoCode)) {
+          continue;
+        }
+        if (sameDistanceOnly && !isCurrentDistance(result.kyori)) {
+          continue;
+        }
+        if (activeClassFilter !== "all" && !isClassMatched(result, activeClassFilter)) {
           continue;
         }
         const raceDate = getRaceDateValue(result);
-        if (recentDateMin !== null && (raceDate === null || raceDate < recentDateMin)) {
+        if (
+          activeRecentDateMin !== null &&
+          (raceDate === null || raceDate < activeRecentDateMin)
+        ) {
           continue;
         }
         const key = result.currentUmaban ?? "";
@@ -391,8 +487,11 @@ export function HorseRaceResultsTable({
       }
 
       const selectedResults = [...groupedResults.values()].flatMap((horseResults) => {
-        const inRangeResults = horseResults.filter(isDistanceMatched);
-        const shouldUseFallback = inRangeResults.length === 0 && includeOutOfRangeFallback;
+        const inRangeResults = horseResults.filter((result) =>
+          isDistanceMatched(result, activeMin),
+        );
+        const shouldUseFallback =
+          !sameDistanceOnly && inRangeResults.length === 0 && includeOutOfRangeFallback;
         const prioritizedResults = shouldUseFallback
           ? horseResults.toSorted((left, right) => {
               const leftDistance = getDistanceValue(left);
@@ -460,27 +559,150 @@ export function HorseRaceResultsTable({
         });
     };
 
-    const filteredResults = getVisibleResults(true);
-    const relaxedResults =
-      hasFinishRankLimit && filteredResults.length === 0 ? getVisibleResults(false) : [];
+    const initialOptions = {
+      activeClassFilter: classFilter,
+      activeRecentDateMin: recentDateMin,
+      activeSameJockeyOnly: sameJockeyOnly,
+      distanceRelaxSteps: 0,
+      useFinishRankFilter: true,
+    };
+    let currentOptions = initialOptions;
+    let filteredResults = getVisibleResults(currentOptions);
+    let relaxedDistanceMin: string | null = null;
+    let relaxedClassFilter: string | null = null;
+    let relaxedRecentMonths: string | null = null;
+    let relaxedSameJockeyOnly: boolean | null = null;
+    let shouldRelaxFinishRankLimit = false;
+
+    const shouldUseCandidate = (candidate: HorseRaceResult[]): boolean => {
+      const currentCovers = coversRequiredRunners(filteredResults);
+      const candidateCovers = coversRequiredRunners(candidate);
+      if (candidateCovers && !currentCovers) {
+        return true;
+      }
+      if (candidate.length > filteredResults.length && !currentCovers) {
+        return true;
+      }
+      return filteredResults.length === 0 && candidate.length > 0;
+    };
+
+    const applyCandidate = (
+      nextOptions: typeof currentOptions,
+      onApply: () => void,
+    ): boolean => {
+      if (coversRequiredRunners(filteredResults) && filteredResults.length > 0) {
+        return true;
+      }
+      const candidate = getVisibleResults(nextOptions);
+      if (!shouldUseCandidate(candidate) && candidate.length < filteredResults.length) {
+        return false;
+      }
+      currentOptions = nextOptions;
+      filteredResults = candidate;
+      onApply();
+      return coversRequiredRunners(filteredResults) && filteredResults.length > 0;
+    };
+    const needsRelaxation = (): boolean =>
+      filteredResults.length === 0 || !coversRequiredRunners(filteredResults);
+
+    if (
+      !finishRankLimitTouched &&
+      hasFinishRankLimit &&
+      needsRelaxation()
+    ) {
+      applyCandidate(
+        { ...currentOptions, useFinishRankFilter: false },
+        () => {
+          shouldRelaxFinishRankLimit = true;
+        },
+      );
+    }
+
+    if (
+      !distanceMinTouched &&
+      needsRelaxation() &&
+      distanceMinRelaxSteps > 0
+    ) {
+      for (let relaxStep = 1; relaxStep <= distanceMinRelaxSteps; relaxStep += 1) {
+        const applied = applyCandidate(
+          { ...currentOptions, distanceRelaxSteps: relaxStep },
+          () => {
+            relaxedDistanceMin = String(Math.max(0, min - relaxStep * 100));
+          },
+        );
+        if (applied || relaxedDistanceMin !== null) {
+          break;
+        }
+      }
+    }
+
+    if (!classFilterTouched && classFilter !== "all" && needsRelaxation()) {
+      applyCandidate(
+        { ...currentOptions, activeClassFilter: "all" },
+        () => {
+          relaxedClassFilter = "all";
+        },
+      );
+    }
+
+    if (
+      !recentMonthsTouched &&
+      recentDateMin !== null &&
+      needsRelaxation()
+    ) {
+      applyCandidate(
+        { ...currentOptions, activeRecentDateMin: null },
+        () => {
+          relaxedRecentMonths = "";
+        },
+      );
+    }
+
+    if (
+      !sameJockeyTouched &&
+      sameJockeyOnly &&
+      needsRelaxation()
+    ) {
+      applyCandidate(
+        { ...currentOptions, activeSameJockeyOnly: false },
+        () => {
+          relaxedSameJockeyOnly = false;
+        },
+      );
+    }
 
     return {
-      shouldRelaxFinishRankLimit: hasFinishRankLimit && relaxedResults.length > 0,
+      relaxedClassFilter,
+      relaxedDistanceMin,
+      relaxedRecentMonths,
+      relaxedSameJockeyOnly,
+      shouldRelaxFinishRankLimit,
       results: filteredResults,
     };
   }, [
     baseDistance,
     classFilter,
     currentRaceDate,
+    distanceMinTouched,
     distanceMax,
     distanceMin,
+    classFilterTouched,
     finishRankLimit,
+    finishRankLimitTouched,
     includeOutOfRangeFallback,
+    isCurrentDistance,
+    isCurrentKeibajo,
     limit,
     recentMonths,
+    recentMonthsTouched,
     results,
     runnerNumberOptions.length,
+    runners.length,
+    sameDistanceOnly,
+    sameKeibajoOnly,
     sameJockeyOnly,
+    sameJockeyTouched,
+    selectedRunnerNumbers,
     selectedRunnerNumberSet,
     sort,
   ]);
@@ -491,6 +713,57 @@ export function HorseRaceResultsTable({
       setFinishRankLimit("");
     }
   }, [visibleResultsState.shouldRelaxFinishRankLimit]);
+
+  useEffect(() => {
+    if (visibleResultsState.relaxedDistanceMin !== null) {
+      setDistanceMin(visibleResultsState.relaxedDistanceMin);
+    }
+  }, [visibleResultsState.relaxedDistanceMin]);
+
+  useEffect(() => {
+    if (visibleResultsState.relaxedClassFilter !== null) {
+      setClassFilter(visibleResultsState.relaxedClassFilter);
+    }
+  }, [visibleResultsState.relaxedClassFilter]);
+
+  useEffect(() => {
+    if (visibleResultsState.relaxedRecentMonths !== null) {
+      setRecentMonths(visibleResultsState.relaxedRecentMonths);
+    }
+  }, [visibleResultsState.relaxedRecentMonths]);
+
+  useEffect(() => {
+    if (visibleResultsState.relaxedSameJockeyOnly !== null) {
+      setSameJockeyOnly(visibleResultsState.relaxedSameJockeyOnly);
+    }
+  }, [visibleResultsState.relaxedSameJockeyOnly]);
+
+  const raceResultsByRunnerNumber = useMemo(() => {
+    const groupedResults = new Map<string, HorseRaceResult[]>();
+    for (const result of results) {
+      const runnerNumber = cleanText(result.currentUmaban, "");
+      if (!runnerNumber) {
+        continue;
+      }
+      groupedResults.set(runnerNumber, [...(groupedResults.get(runnerNumber) ?? []), result]);
+    }
+    return new Map(
+      [...groupedResults.entries()].map(([runnerNumber, horseResults]) => [
+        runnerNumber,
+        horseResults.toSorted((left, right) => {
+          const dateCompared = compareNullable(
+            getRaceDateValue(left),
+            getRaceDateValue(right),
+            "desc",
+          );
+          if (dateCompared !== 0) {
+            return dateCompared;
+          }
+          return Number(right.raceBango ?? 0) - Number(left.raceBango ?? 0);
+        }),
+      ]),
+    );
+  }, [results]);
 
   const toggleRunnerNumber = (runnerNumber: string) => {
     setSelectedRunnerNumbers((current) =>
@@ -507,11 +780,55 @@ export function HorseRaceResultsTable({
     }));
   };
 
-  const isCurrentKeibajo = (keibajoCode: string | null | undefined): boolean =>
-    cleanText(keibajoCode, "") === cleanText(currentKeibajoCode, "");
+  const renderResultCells = (result: HorseRaceResult) => {
+    const jockeyMatched =
+      normalizeText(result.currentJockey) === normalizeText(result.kishumeiRyakusho);
 
-  const isCurrentDistance = (distance: string | null | undefined): boolean =>
-    cleanText(distance, "") === cleanText(currentDistance, "");
+    return (
+      <>
+        <td className={jockeyMatched ? "race-results-jockey-match-cell" : undefined}>
+          {cleanText(result.currentJockey)}
+        </td>
+        <td>{formatSexAge(result.currentSeibetsuCode, result.currentBarei)}</td>
+        <td>{formatDate(result.kaisaiNen, result.kaisaiTsukihi)}</td>
+        <td
+          className={isCurrentKeibajo(result.keibajoCode) ? "race-results-match-cell" : undefined}
+        >
+          {formatKeibajo(result.keibajoCode)}
+        </td>
+        <td className={isCurrentDistance(result.kyori) ? "race-results-match-cell" : undefined}>
+          {formatDistance(result.kyori)}
+        </td>
+        <td>{formatRank(result.kakuteiChakujun)}</td>
+        <td>{formatCornerRanks(result)}</td>
+        <td>{formatTenthsTime(result.sohaTime, isBanEiKeibajoCode(result.keibajoCode))}</td>
+        {showLast3fColumn ? <td>{formatDecimalTenths(result.kohan3f)}</td> : null}
+        <td className={jockeyMatched ? "race-results-jockey-match-cell" : undefined}>
+          {cleanText(result.kishumeiRyakusho)}
+        </td>
+        <td>{formatSexAge(result.seibetsuCode, result.barei)}</td>
+        <td>{formatCarriedWeight(result.futanJuryo, isBanEiKeibajoCode(result.keibajoCode))}</td>
+        <td>
+          {formatHorseWeight(
+            result.bataiju,
+            result.zogenFugo,
+            result.zogenSa,
+            isBanEiKeibajoCode(result.keibajoCode),
+          )}
+        </td>
+        <td>{formatOdds(result.tanshoOdds)}</td>
+        <td>{formatRunnerValue(result.tanshoNinkijun, "00")}</td>
+        <td>{formatTimeDifference(result.timeSa)}</td>
+        <td>{formatRaceConditions(result)}</td>
+        <td className="race-results-name-cell">{formatRaceName(result)}</td>
+        <td>{formatRaceNumber(result.raceBango)}</td>
+        <td>{formatTrack(result.trackCode)}</td>
+        <td>{formatWeather(result.tenkoCode)}</td>
+        <td>{cleanText(result.wakuban)}</td>
+        <td>{formatRunnerNumber(result.umaban)}</td>
+      </>
+    );
+  };
 
   const renderSortButton = (key: SortKey) => {
     const isCurrent = sort.key === key;
@@ -548,6 +865,7 @@ export function HorseRaceResultsTable({
               type="number"
               value={distanceMin}
               onChange={(event) => {
+                setDistanceMinTouched(true);
                 setDistanceMin(event.currentTarget.value);
               }}
             />
@@ -587,6 +905,7 @@ export function HorseRaceResultsTable({
               type="number"
               value={finishRankLimit}
               onChange={(event) => {
+                setFinishRankLimitTouched(true);
                 setFinishRankLimit(event.currentTarget.value);
               }}
             />
@@ -597,6 +916,7 @@ export function HorseRaceResultsTable({
               <select
                 value={classFilter}
                 onChange={(event) => {
+                  setClassFilterTouched(true);
                   setClassFilter(event.currentTarget.value);
                 }}
               >
@@ -609,6 +929,19 @@ export function HorseRaceResultsTable({
               </select>
             </label>
           ) : null}
+          <label className="race-results-checkbox-label">
+            <span>{sourceScopeLabel}</span>
+            <span className="race-results-checkbox-control">
+              <input
+                aria-label={sourceScopeLabel}
+                checked={sourceScopeChecked}
+                type="checkbox"
+                onChange={(event) => {
+                  updateSourceScope(event.currentTarget.checked);
+                }}
+              />
+            </span>
+          </label>
           <label className="race-results-checkbox-label">
             <span>出走予定と同じ騎手</span>
             <span className="race-results-checkbox-control">
@@ -623,8 +956,34 @@ export function HorseRaceResultsTable({
               />
             </span>
           </label>
+          <label className="race-results-checkbox-label">
+            <span>出走予定と同じ競馬場</span>
+            <span className="race-results-checkbox-control">
+              <input
+                aria-label="出走予定と同じ競馬場"
+                checked={sameKeibajoOnly}
+                type="checkbox"
+                onChange={(event) => {
+                  setSameKeibajoOnly(event.currentTarget.checked);
+                }}
+              />
+            </span>
+          </label>
+          <label className="race-results-checkbox-label">
+            <span>同距離のみ</span>
+            <span className="race-results-checkbox-control">
+              <input
+                aria-label="出走予定と同じ距離のみ"
+                checked={sameDistanceOnly}
+                type="checkbox"
+                onChange={(event) => {
+                  setSameDistanceOnly(event.currentTarget.checked);
+                }}
+              />
+            </span>
+          </label>
           <label>
-            <span>出走日からnヶ月以内</span>
+            <span>直近nヶ月</span>
             <input
               inputMode="numeric"
               min="1"
@@ -632,16 +991,18 @@ export function HorseRaceResultsTable({
               type="number"
               value={recentMonths}
               onChange={(event) => {
+                setRecentMonthsTouched(true);
                 setRecentMonths(event.currentTarget.value);
               }}
             />
           </label>
           <label className="race-results-checkbox-label">
-            <span>距離範囲外の近い成績も補完</span>
+            <span>近い距離も表示</span>
             <span className="race-results-checkbox-control">
               <input
-                aria-label="距離範囲外の近い成績も補完"
+                aria-label="近い距離も表示"
                 checked={includeOutOfRangeFallback}
+                disabled={sameDistanceOnly}
                 type="checkbox"
                 onChange={(event) => {
                   setIncludeOutOfRangeFallback(event.currentTarget.checked);
@@ -711,13 +1072,14 @@ export function HorseRaceResultsTable({
           <table className="race-results-table">
             <colgroup>
               <col className="race-results-col-runner-number" />
-              <col className="race-results-col-dynamic" />
+              <col className="race-results-col-horse-name" />
               <col className="race-results-col-person" />
               <col className="race-results-col-sex-age" />
               <col className="race-results-col-date" />
               <col className="race-results-col-keibajo" />
               <col className="race-results-col-distance" />
               <col className="race-results-col-rank" />
+              <col className="race-results-col-dynamic" />
               {showLast3fColumn ? <col className="race-results-col-sort" /> : null}
               <col className="race-results-col-sort" />
               <col className="race-results-col-person" />
@@ -745,6 +1107,7 @@ export function HorseRaceResultsTable({
                 <th>競馬場</th>
                 <th>距離</th>
                 <th>着順</th>
+                <th>コーナー順位</th>
                 <th>{renderSortButton("sohaTime")}</th>
                 {showLast3fColumn ? <th>{renderSortButton("kohan3f")}</th> : null}
                 <th>過去騎手</th>
@@ -765,12 +1128,14 @@ export function HorseRaceResultsTable({
             </thead>
             <tbody>
               {visibleResults.map((result) => {
-                const jockeyMatched =
-                  normalizeText(result.currentJockey) === normalizeText(result.kishumeiRyakusho);
+                const runnerNumber = cleanText(result.currentUmaban, "");
+                const expanded = expandedRunnerNumber === runnerNumber;
+                const detailResults = raceResultsByRunnerNumber.get(runnerNumber) ?? [];
 
                 return (
-                  <tr
+                  <Fragment
                     key={[
+                      "result-group",
                       result.currentUmaban,
                       result.kaisaiNen,
                       result.kaisaiTsukihi,
@@ -779,61 +1144,97 @@ export function HorseRaceResultsTable({
                       result.kettoTorokuBango,
                     ].join("-")}
                   >
-                    <td>{formatRunnerNumber(result.currentUmaban)}</td>
-                    <td className="race-results-horse-cell">{cleanText(result.bamei)}</td>
-                    <td className={jockeyMatched ? "race-results-jockey-match-cell" : undefined}>
-                      {cleanText(result.currentJockey)}
-                    </td>
-                    <td>{formatSexAge(result.currentSeibetsuCode, result.currentBarei)}</td>
-                    <td>{formatDate(result.kaisaiNen, result.kaisaiTsukihi)}</td>
-                    <td
-                      className={
-                        isCurrentKeibajo(result.keibajoCode) ? "race-results-match-cell" : undefined
-                      }
+                    <tr
+                      key={[
+                        result.currentUmaban,
+                        result.kaisaiNen,
+                        result.kaisaiTsukihi,
+                        result.keibajoCode,
+                        result.raceBango,
+                        result.kettoTorokuBango,
+                      ].join("-")}
                     >
-                      {formatKeibajo(result.keibajoCode)}
-                    </td>
-                    <td
-                      className={
-                        isCurrentDistance(result.kyori) ? "race-results-match-cell" : undefined
-                      }
-                    >
-                      {formatDistance(result.kyori)}
-                    </td>
-                    <td>{formatRank(result.kakuteiChakujun)}</td>
-                    <td>
-                      {formatTenthsTime(result.sohaTime, isBanEiKeibajoCode(result.keibajoCode))}
-                    </td>
-                    {showLast3fColumn ? <td>{formatDecimalTenths(result.kohan3f)}</td> : null}
-                    <td className={jockeyMatched ? "race-results-jockey-match-cell" : undefined}>
-                      {cleanText(result.kishumeiRyakusho)}
-                    </td>
-                    <td>{formatSexAge(result.seibetsuCode, result.barei)}</td>
-                    <td>
-                      {formatCarriedWeight(
-                        result.futanJuryo,
-                        isBanEiKeibajoCode(result.keibajoCode),
-                      )}
-                    </td>
-                    <td>
-                      {formatHorseWeight(
-                        result.bataiju,
-                        result.zogenFugo,
-                        result.zogenSa,
-                        isBanEiKeibajoCode(result.keibajoCode),
-                      )}
-                    </td>
-                    <td>{formatOdds(result.tanshoOdds)}</td>
-                    <td>{formatRunnerValue(result.tanshoNinkijun, "00")}</td>
-                    <td>{formatTimeDifference(result.timeSa)}</td>
-                    <td>{formatRaceConditions(result)}</td>
-                    <td className="race-results-name-cell">{formatRaceName(result)}</td>
-                    <td>{formatRaceNumber(result.raceBango)}</td>
-                    <td>{formatTrack(result.trackCode)}</td>
-                    <td>{formatWeather(result.tenkoCode)}</td>
-                    <td>{cleanText(result.wakuban)}</td>
-                    <td>{formatRunnerNumber(result.umaban)}</td>
-                  </tr>
+                      <td>{formatRunnerNumber(result.currentUmaban)}</td>
+                      <td className="race-results-horse-cell">
+                        <span>{cleanText(result.bamei)}</span>
+                        <button
+                          className="race-results-detail-button"
+                          type="button"
+                          onClick={() => {
+                            setExpandedRunnerNumber((current) =>
+                              current === runnerNumber ? null : runnerNumber,
+                            );
+                          }}
+                        >
+                          詳細
+                        </button>
+                      </td>
+                      {renderResultCells(result)}
+                    </tr>
+                    {expanded ? (
+                      <tr className="race-results-detail-row" key={`detail-${runnerNumber}`}>
+                        <td colSpan={showLast3fColumn ? 25 : 24}>
+                          <div className="race-results-detail-panel">
+                            <table className="race-results-detail-table">
+                              <thead>
+                                <tr>
+                                  <th>日付</th>
+                                  <th>競馬場</th>
+                                  <th>R</th>
+                                  <th>距離</th>
+                                  <th>着順</th>
+                                  <th>コーナー順位</th>
+                                  <th>レースタイム</th>
+                                  {showLast3fColumn ? <th>上がり3F</th> : null}
+                                  <th>過去騎手</th>
+                                  <th>単勝</th>
+                                  <th>人気</th>
+                                  <th>レース名</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {detailResults.map((detail) => (
+                                  <tr
+                                    key={[
+                                      "detail",
+                                      detail.currentUmaban,
+                                      detail.kaisaiNen,
+                                      detail.kaisaiTsukihi,
+                                      detail.keibajoCode,
+                                      detail.raceBango,
+                                      detail.umaban,
+                                    ].join("-")}
+                                  >
+                                    <td>{formatDate(detail.kaisaiNen, detail.kaisaiTsukihi)}</td>
+                                    <td>{formatKeibajo(detail.keibajoCode)}</td>
+                                    <td>{formatRaceNumber(detail.raceBango)}</td>
+                                    <td>{formatDistance(detail.kyori)}</td>
+                                    <td>{formatRank(detail.kakuteiChakujun)}</td>
+                                    <td>{formatCornerRanks(detail)}</td>
+                                    <td>
+                                      {formatTenthsTime(
+                                        detail.sohaTime,
+                                        isBanEiKeibajoCode(detail.keibajoCode),
+                                      )}
+                                    </td>
+                                    {showLast3fColumn ? (
+                                      <td>{formatDecimalTenths(detail.kohan3f)}</td>
+                                    ) : null}
+                                    <td>{cleanText(detail.kishumeiRyakusho)}</td>
+                                    <td>{formatOdds(detail.tanshoOdds)}</td>
+                                    <td>{formatRunnerValue(detail.tanshoNinkijun, "00")}</td>
+                                    <td className="race-results-name-cell">
+                                      {formatRaceName(detail)}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
                 );
               })}
             </tbody>

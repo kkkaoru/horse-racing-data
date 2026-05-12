@@ -11,6 +11,7 @@ import {
   getRaceTimeStats,
   getRaceTrainings,
   getSimilarRaceStats,
+  getTimeScoreRows,
 } from "../../../db/queries";
 import { SOURCE_LABELS, type RaceSource } from "../../../lib/codes";
 import {
@@ -33,11 +34,15 @@ import type {
   BloodlineStatsRow,
   FinishPositionStatsRow,
   FrameStatsRow,
+  OverallScoreDetail,
+  OverallScoreRow,
   PayoutStatsRow,
   RaceDetail,
   RaceTimeStats,
+  Runner,
   SimilarRaceStatsRow,
   SimilarRaceStatsSettings,
+  TimeScoreRow,
 } from "../../../lib/race-types";
 import { isBanEiKeibajoCode } from "../../../lib/runner-format";
 
@@ -45,8 +50,10 @@ export type DetailSection =
   | "ability"
   | "bloodline"
   | "condition"
+  | "overall-score"
   | "results"
   | "similar"
+  | "time-score"
   | "training";
 
 export interface DetailSectionParams {
@@ -62,11 +69,33 @@ export interface DetailSectionParams {
 const LISTED_OR_HIGHER_GRADE_CODES = new Set(["A", "B", "C", "D", "F", "G", "H", "L", "S"]);
 
 const CONDITION_ANALYSIS_OVERRIDE_PARAMS = [
+  "similarStatsAge",
+  "similarStatsClass",
+  "similarStatsDistance",
+  "similarStatsFrame",
+  "similarStatsMonthWindow",
+  "similarStatsNarOnly",
+  "similarStatsRaceMonth",
+  "similarStatsRaceName",
+  "similarStatsRaceNumber",
+  "similarStatsRaceSubtitle",
+  "similarStatsRaceTitle",
+  "similarStatsRunnerCount",
+  "similarStatsSex",
+  "similarStatsSourceScope",
+  "similarStatsSurface",
+  "similarStatsTrack",
+  "similarStatsTurn",
+  "similarStatsVenue",
+  "similarStatsWeight",
+  "similarStatsYears",
+  "bloodlineStatsOffspringOnly",
   "statsAge",
   "statsClass",
   "statsDistance",
   "statsFrame",
   "statsMonthWindow",
+  "statsNarOnly",
   "statsRaceMonth",
   "statsRaceName",
   "statsRaceNumber",
@@ -74,11 +103,13 @@ const CONDITION_ANALYSIS_OVERRIDE_PARAMS = [
   "statsRaceTitle",
   "statsRunnerCount",
   "statsSex",
+  "statsSourceScope",
   "statsSurface",
   "statsTrack",
   "statsTurn",
   "statsVenue",
   "statsWeight",
+  "statsYears",
 ];
 
 const CONDITION_ANALYSIS_RELAX_KEYS = [
@@ -97,6 +128,8 @@ const CONDITION_ANALYSIS_RELAX_KEYS = [
   "includeMonthWindow",
 ] as const;
 
+const RATE_STATS_CANDIDATE_BATCH_SIZE = 3;
+
 type ConditionAnalysisStats = [
   RaceTimeStats,
   PayoutStatsRow[],
@@ -107,6 +140,145 @@ type ConditionAnalysisStats = [
 type ConditionAnalysisCandidateMatch<T extends SimilarRaceStatsSettings> = {
   settings: T;
   stats: ConditionAnalysisStats;
+};
+
+const OVERALL_SCORE_WEIGHTS = {
+  bloodline: 0.2,
+  correlation: 0.2,
+  jockey: 0.1,
+  owner: 0.1,
+  time: 0.3,
+  trainer: 0.1,
+};
+
+const clampScore = (value: number): number => Math.max(0, Math.min(1, value));
+
+const roundScore = (value: number): number => Math.round(value * 100) / 100;
+
+const splitHorseNumbers = (value: string): string[] =>
+  value
+    .split(",")
+    .map((item) => item.trim().replace(/^0+/u, "") || item.trim())
+    .filter(Boolean);
+
+const getBloodlineScoreByHorse = (rows: BloodlineStatsRow[]): Map<string, number> => {
+  const scoreTotals = new Map<string, { score: number; weight: number }>();
+  const categoryWeights: Record<BloodlineStatsRow["category"], number> = {
+    damSire: 0.35,
+    sire: 0.45,
+    sireSire: 0.2,
+  };
+
+  for (const row of rows) {
+    const categoryWeight = categoryWeights[row.category];
+    const startsScore = clampScore(row.starts / 30);
+    const horseCountScore = clampScore(row.horseCount / 5);
+    const score =
+      clampScore(row.showRate / 100) * 0.35 +
+      clampScore(row.quinellaRate / 100) * 0.25 +
+      clampScore(row.winRate / 100) * 0.25 +
+      startsScore * 0.1 +
+      horseCountScore * 0.05;
+
+    for (const horseNumber of splitHorseNumbers(row.currentHorseNumbers)) {
+      const current = scoreTotals.get(horseNumber) ?? { score: 0, weight: 0 };
+      scoreTotals.set(horseNumber, {
+        score: current.score + score * categoryWeight,
+        weight: current.weight + categoryWeight,
+      });
+    }
+  }
+
+  const scores = new Map<string, number>();
+  for (const [horseNumber, total] of scoreTotals) {
+    scores.set(horseNumber, total.weight > 0 ? total.score / total.weight : 0.5);
+  }
+  return scores;
+};
+
+const findCorrelationDetailScore = (
+  row: RaceTimeStats["correlationRows"][number] | undefined,
+  key: "jockeyShow" | "ownerShow" | "trainerShow",
+): number => row?.details.find((detail) => detail.key === key)?.score ?? 0.5;
+
+const buildOverallScoreRows = ({
+  bloodlineRows,
+  correlationRows,
+  runners,
+  timeRows,
+}: {
+  bloodlineRows: BloodlineStatsRow[];
+  correlationRows: RaceTimeStats["correlationRows"];
+  runners: Runner[];
+  timeRows: TimeScoreRow[];
+}): OverallScoreRow[] => {
+  const bloodlineScores = getBloodlineScoreByHorse(bloodlineRows);
+  const correlationByHorse = new Map(correlationRows.map((row) => [row.horseNumber, row]));
+  const timeByHorse = new Map(timeRows.map((row) => [row.horseNumber, row]));
+
+  return runners
+    .map((runner): OverallScoreRow => {
+      const rawHorseNumber = runner.umaban ?? "";
+      const horseNumber = rawHorseNumber.replace(/^0+/u, "") || rawHorseNumber;
+      const timeScore = timeByHorse.get(horseNumber)?.score ?? 0.5;
+      const correlationRow = correlationByHorse.get(horseNumber);
+      const correlationScore = correlationRow?.score ?? 0.5;
+      const bloodlineScore = bloodlineScores.get(horseNumber) ?? 0.5;
+      const jockeyScore = findCorrelationDetailScore(correlationRow, "jockeyShow");
+      const trainerScore = findCorrelationDetailScore(correlationRow, "trainerShow");
+      const ownerScore = findCorrelationDetailScore(correlationRow, "ownerShow");
+      const details: OverallScoreDetail[] = [
+        {
+          label: "タイムスコア",
+          reason: "過去競走成績と同条件1〜3着馬のタイム傾向を距離・日付・年齢で重み付けして評価",
+          score: timeScore,
+          weight: OVERALL_SCORE_WEIGHTS.time,
+        },
+        {
+          label: "1〜3着相関スコア",
+          reason: "同条件レースで1〜3着に入った馬の傾向との近さを評価",
+          score: correlationScore,
+          weight: OVERALL_SCORE_WEIGHTS.correlation,
+        },
+        {
+          label: "血統スコア",
+          reason: "父・母父・父父の同条件成績を出走馬ごとに合成して評価",
+          score: bloodlineScore,
+          weight: OVERALL_SCORE_WEIGHTS.bloodline,
+        },
+        {
+          label: "騎手スコア",
+          reason: "今回騎乗予定騎手の同条件傾向との相性を評価",
+          score: jockeyScore,
+          weight: OVERALL_SCORE_WEIGHTS.jockey,
+        },
+        {
+          label: "調教師スコア",
+          reason: "今回出走馬の調教師の同条件傾向との相性を評価",
+          score: trainerScore,
+          weight: OVERALL_SCORE_WEIGHTS.trainer,
+        },
+        {
+          label: "馬主スコア",
+          reason: "今回出走馬の馬主の同条件傾向との相性を評価",
+          score: ownerScore,
+          weight: OVERALL_SCORE_WEIGHTS.owner,
+        },
+      ];
+      return {
+        details,
+        horseName: runner.bamei?.trim() || "-",
+        horseNumber,
+        jockeyName: runner.kishumeiRyakusho?.trim() || "-",
+        score: roundScore(
+          details.reduce((total, detail) => total + detail.score * detail.weight, 0),
+        ),
+      };
+    })
+    .toSorted(
+      (left, right) =>
+        right.score - left.score || Number(left.horseNumber) - Number(right.horseNumber),
+    );
 };
 
 const getFirstSearchParam = (value: string | string[] | undefined): string | undefined =>
@@ -126,10 +298,52 @@ const getDefaultFlag = (value: string | string[] | undefined, defaultValue: bool
   return firstValue !== "0";
 };
 
-const hasSearchParam = (
+const getScopedStatsParamName = (prefix: string, name: string): string =>
+  prefix ? `${prefix}${name.charAt(0).toUpperCase()}${name.slice(1)}` : name;
+
+const getStatsQueryParam = (
   query: Record<string, string | string[] | undefined>,
+  prefix: string,
+  name: string,
+): string | string[] | undefined => {
+  const scopedValue = query[getScopedStatsParamName(prefix, name)];
+  return scopedValue === undefined ? query[name] : scopedValue;
+};
+
+const hasStatsSearchParam = (
+  query: Record<string, string | string[] | undefined>,
+  prefix: string,
   names: string[],
-): boolean => names.some((name) => getFirstSearchParam(query[name]) !== undefined);
+): boolean =>
+  names.some(
+    (name) =>
+      getFirstSearchParam(query[getScopedStatsParamName(prefix, name)]) !== undefined ||
+      getFirstSearchParam(query[name]) !== undefined,
+  );
+
+const getStatsSourceScope = (
+  query: Record<string, string | string[] | undefined>,
+  prefix: string,
+): RaceSource | "all" => {
+  const value = getFirstSearchParam(getStatsQueryParam(query, prefix, "statsSourceScope"));
+  if (value === "jra" || value === "nar") {
+    return value;
+  }
+  if (value === "all") {
+    return "all";
+  }
+  return getOptionalFlag(getStatsQueryParam(query, prefix, "statsNarOnly")) ? "nar" : "all";
+};
+
+const getResultsSourceScope = (
+  query: Record<string, string | string[] | undefined>,
+): RaceSource | "all" => {
+  const value = getFirstSearchParam(query.resultsSourceScope);
+  if (value === "jra" || value === "nar") {
+    return value;
+  }
+  return "all";
+};
 
 const getStatsYears = (
   value: string | string[] | undefined,
@@ -146,6 +360,23 @@ const getStatsYears = (
 
 const cleanConditionText = (value: string | null | undefined): string =>
   cleanText(value, "").replace(/\s+/g, " ").replace(/　+/g, " ").trim();
+
+const RACE_NAME_TOKEN_PATTERN = /[\p{L}\p{N}ー・－-]+(?:杯|賞|記念|ステークス|カップ)/gu;
+
+const getStatsRaceNameToken = (race: RaceDetail): string | null => {
+  const subtitle = `${cleanConditionText(race.kyosomeiFukudai)} ${cleanConditionText(
+    race.kyosomeiKakkonai,
+  )}`;
+  const subtitleMatch = [...subtitle.matchAll(RACE_NAME_TOKEN_PATTERN)].at(-1)?.[0] ?? "";
+  if (subtitleMatch) {
+    return subtitleMatch;
+  }
+
+  return (
+    [...cleanConditionText(race.kyosomeiHondai).matchAll(RACE_NAME_TOKEN_PATTERN)].at(-1)?.[0] ??
+    null
+  );
+};
 
 const getLocalConditionLabel = (value: string | null | undefined): string => {
   const cleaned = cleanConditionText(value);
@@ -190,12 +421,20 @@ const getRaceNameFilterLabels = (
   const condition = cleanConditionText(race.kyosoJokenMeisho);
   const title = cleanText(race.kyosomeiHondai, "");
   const subtitle = cleanText(race.kyosomeiFukudai, "") || cleanText(race.kyosomeiKakkonai, "");
+  const statsRaceNameToken = getStatsRaceNameToken(race);
   const hasNamedClass =
     grade.length > 0 || /G[1-3]|Jpn[1-3]|リステッド|OP|ＯＰ|オープン/.test(`${tags} ${condition}`);
   const hasSpecialRaceName = title.includes("ファイナルレース") || subtitle.includes("一発逆転");
 
   if (!hasNamedClass && !hasSpecialRaceName) {
     return { subtitle: null, title: null };
+  }
+
+  if (statsRaceNameToken) {
+    return {
+      subtitle: null,
+      title: statsRaceNameToken,
+    };
   }
 
   return {
@@ -215,10 +454,9 @@ const hasConditionAnalysisRows = (stats: ConditionAnalysisStats): boolean => {
 };
 
 const hasCompleteConditionAnalysisRows = (stats: ConditionAnalysisStats): boolean => {
-  const [timeStats, payoutRows, finishRows, frameRows] = stats;
+  const [timeStats, , finishRows, frameRows] = stats;
   return (
     timeStats.raceCount > 0 &&
-    payoutRows.some((row) => row.count > 0) &&
     finishRows.some((row) => row.count > 0) &&
     frameRows.some((row) => row.count > 0)
   );
@@ -243,6 +481,70 @@ const getConditionAnalysisSettingCandidates = <T extends SimilarRaceStatsSetting
 
 const hasRateRows = (rows: readonly (BloodlineStatsRow | SimilarRaceStatsRow)[]): boolean =>
   rows.some((row) => row.starts > 0);
+
+const hasBloodlineScoreCoverage = (
+  rows: readonly BloodlineStatsRow[],
+  runners: readonly Runner[],
+): boolean => {
+  if (runners.length === 0) {
+    return hasRateRows(rows);
+  }
+
+  const startsByHorse = new Map<string, number>();
+  for (const row of rows) {
+    for (const horseNumber of splitHorseNumbers(row.currentHorseNumbers)) {
+      startsByHorse.set(horseNumber, (startsByHorse.get(horseNumber) ?? 0) + row.starts);
+    }
+  }
+
+  const coveredCount = runners.filter((runner) => {
+    const rawHorseNumber = runner.umaban ?? "";
+    const horseNumber = rawHorseNumber.replace(/^0+/u, "") || rawHorseNumber;
+    return (startsByHorse.get(horseNumber) ?? 0) >= 1;
+  }).length;
+  const requiredCount = Math.ceil((runners.length * 2) / 3);
+  return coveredCount >= requiredCount;
+};
+
+const hasSimilarJockeyTrainerCoverage = (
+  rows: readonly SimilarRaceStatsRow[],
+  runners: readonly Runner[],
+): boolean => {
+  if (runners.length === 0) {
+    return hasRateRows(rows);
+  }
+
+  const startsByCategoryHorse = new Map<SimilarRaceStatsRow["category"], Map<string, number>>([
+    ["jockey", new Map()],
+    ["trainer", new Map()],
+  ]);
+  for (const row of rows) {
+    if (row.category !== "jockey" && row.category !== "trainer") {
+      continue;
+    }
+    const startsByHorse = startsByCategoryHorse.get(row.category);
+    if (!startsByHorse) {
+      continue;
+    }
+    for (const horseNumber of splitHorseNumbers(row.currentHorseNumbers)) {
+      startsByHorse.set(horseNumber, (startsByHorse.get(horseNumber) ?? 0) + row.starts);
+    }
+  }
+
+  const requiredCount = Math.ceil((runners.length * 2) / 3);
+  return (["jockey", "trainer"] as const).every((category) => {
+    const startsByHorse = startsByCategoryHorse.get(category);
+    if (!startsByHorse) {
+      return false;
+    }
+    const coveredCount = runners.filter((runner) => {
+      const rawHorseNumber = runner.umaban ?? "";
+      const horseNumber = rawHorseNumber.replace(/^0+/u, "") || rawHorseNumber;
+      return (startsByHorse.get(horseNumber) ?? 0) >= 2;
+    }).length;
+    return coveredCount >= requiredCount;
+  });
+};
 
 const findConditionAnalysisCandidate = async <T extends SimilarRaceStatsSettings>(
   candidates: readonly T[],
@@ -276,21 +578,33 @@ const findRateStatsCandidate = async <
 >(
   candidates: readonly T[],
   getStats: (settings: T) => Promise<R>,
+  hasEnoughStats: (stats: R) => boolean = hasRateRows,
   index = 0,
 ): Promise<{ settings: T; stats: R } | null> => {
-  const settings = candidates[index];
+  const candidateBatch = candidates.slice(index, index + RATE_STATS_CANDIDATE_BATCH_SIZE);
 
-  if (!settings) {
+  if (candidateBatch.length === 0) {
     return null;
   }
 
-  const stats = await getStats(settings);
+  const batchStats = await Promise.all(
+    candidateBatch.map(async (settings) => ({
+      settings,
+      stats: await getStats(settings),
+    })),
+  );
 
-  if (hasRateRows(stats)) {
-    return { settings, stats };
+  const matched = batchStats.find(({ stats }) => hasEnoughStats(stats));
+  if (matched) {
+    return matched;
   }
 
-  return findRateStatsCandidate(candidates, getStats, index + 1);
+  return findRateStatsCandidate(
+    candidates,
+    getStats,
+    hasEnoughStats,
+    index + RATE_STATS_CANDIDATE_BATCH_SIZE,
+  );
 };
 
 export const getDetailStatsContext = async ({
@@ -317,6 +631,7 @@ export const getDetailStatsContext = async ({
   const raceSymbolLabel = getRaceSymbolLabel(race.kyosoKigoCode);
   const defaultStatsYears =
     raceSource === "nar" ? null : isJraG1ToG3(race) ? null : isListedOrHigher(race) ? 10 : 5;
+  const defaultBloodlineStatsYears = 10;
   const defaultStatsIncludeAge = !getAgeLabel(race.kyosoShubetsuCode).includes("4歳以上");
   const defaultSimilarStatsIncludeSex = raceSymbolLabel !== "牝馬限定";
   const parsedRaceRunnerCount = Number(cleanText(race.shussoTosu, "").replace(/[^0-9]/g, ""));
@@ -326,38 +641,83 @@ export const getDetailStatsContext = async ({
       : Number.isFinite(parsedRaceRunnerCount) && parsedRaceRunnerCount > 0
         ? parsedRaceRunnerCount
         : null;
-
-  const statsSettings: SimilarRaceStatsSettings = {
+  const buildStatsSettings = (
+    prefix: string,
+    defaultYearsForPrefix: number | null,
+    defaultIncludeSex: boolean,
+  ): SimilarRaceStatsSettings => ({
     classConditionName: statsClassConditionLabel,
-    includeAge: getDefaultFlag(query.statsAge ?? query.statsClass, defaultStatsIncludeAge),
-    includeClass: getDefaultFlag(query.statsClass, Boolean(statsClassConditionLabel)),
-    includeDistance: banEiRace ? false : getFlag(query.statsDistance),
-    includeFrame: getOptionalFlag(query.statsFrame),
-    includeMonthWindow: getOptionalFlag(query.statsRaceMonth ?? query.statsMonthWindow),
-    includeRaceNumber: getOptionalFlag(query.statsRaceNumber),
+    includeAge: getDefaultFlag(
+      getStatsQueryParam(query, prefix, "statsAge") ??
+        getStatsQueryParam(query, prefix, "statsClass"),
+      defaultStatsIncludeAge,
+    ),
+    includeBloodlineAncestors: true,
+    includeClass: getDefaultFlag(
+      getStatsQueryParam(query, prefix, "statsClass"),
+      Boolean(statsClassConditionLabel),
+    ),
+    includeDistance: banEiRace
+      ? false
+      : getFlag(getStatsQueryParam(query, prefix, "statsDistance")),
+    includeFrame: getOptionalFlag(getStatsQueryParam(query, prefix, "statsFrame")),
+    includeMonthWindow: getOptionalFlag(
+      getStatsQueryParam(query, prefix, "statsRaceMonth") ??
+        getStatsQueryParam(query, prefix, "statsMonthWindow"),
+    ),
+    includeNarOnly: getStatsSourceScope(query, prefix) === "nar",
+    includeRaceNumber: getOptionalFlag(getStatsQueryParam(query, prefix, "statsRaceNumber")),
     includeRaceSubtitle: getDefaultFlag(
-      query.statsRaceSubtitle ?? query.statsRaceName,
+      getStatsQueryParam(query, prefix, "statsRaceSubtitle") ??
+        getStatsQueryParam(query, prefix, "statsRaceName"),
       Boolean(raceNameFilterLabels.subtitle),
     ),
     includeRaceTitle: getDefaultFlag(
-      query.statsRaceTitle ?? query.statsRaceName,
+      getStatsQueryParam(query, prefix, "statsRaceTitle") ??
+        getStatsQueryParam(query, prefix, "statsRaceName"),
       Boolean(raceNameFilterLabels.title),
     ),
     includeRunnerCount: false,
-    includeSex: getDefaultFlag(query.statsSex, defaultSimilarStatsIncludeSex),
-    includeSurface: banEiRace ? false : getFlag(query.statsSurface ?? query.statsTrack),
-    includeTurn: banEiRace ? false : getFlag(query.statsTurn ?? query.statsTrack),
-    includeVenue: banEiRace ? false : getDefaultFlag(query.statsVenue, true),
-    includeWeight: getFlag(query.statsWeight),
+    includeSex: getDefaultFlag(getStatsQueryParam(query, prefix, "statsSex"), defaultIncludeSex),
+    includeSurface: banEiRace
+      ? false
+      : getFlag(
+          getStatsQueryParam(query, prefix, "statsSurface") ??
+            getStatsQueryParam(query, prefix, "statsTrack"),
+        ),
+    includeTurn: banEiRace
+      ? false
+      : getFlag(
+          getStatsQueryParam(query, prefix, "statsTurn") ??
+            getStatsQueryParam(query, prefix, "statsTrack"),
+        ),
+    includeVenue: banEiRace
+      ? false
+      : getDefaultFlag(
+          getStatsQueryParam(query, prefix, "statsVenue") ??
+            (prefix === "analysis"
+              ? getStatsQueryParam(query, "similar", "statsVenue")
+              : undefined),
+          true,
+        ),
+    includeWeight: getFlag(getStatsQueryParam(query, prefix, "statsWeight")),
     runnerCount: null,
-    years: getStatsYears(query.statsYears, defaultStatsYears),
-  };
+    sourceScope: getStatsSourceScope(query, prefix),
+    years: getStatsYears(getStatsQueryParam(query, prefix, "statsYears"), defaultYearsForPrefix),
+  });
+
+  const statsSettings = buildStatsSettings(
+    "similar",
+    defaultStatsYears,
+    defaultSimilarStatsIncludeSex,
+  );
   const bloodlineStatsSettings: SimilarRaceStatsSettings = {
-    ...statsSettings,
+    ...buildStatsSettings("bloodline", defaultBloodlineStatsYears, true),
+    includeBloodlineAncestors: !getOptionalFlag(
+      getStatsQueryParam(query, "bloodline", "statsOffspringOnly"),
+    ),
     includeRunnerCount: false,
-    includeSex: getFlag(query.statsSex),
     runnerCount: null,
-    years: getStatsYears(query.statsYears, null),
   };
   const statsConditionLabels = {
     age: getAgeLabel(race.kyosoShubetsuCode),
@@ -376,10 +736,12 @@ export const getDetailStatsContext = async ({
     weight: getWeightLabel(race.juryoShubetsuCode),
   };
   const conditionAnalysisSettings: SimilarRaceStatsSettings = {
-    ...statsSettings,
-    includeRunnerCount: getDefaultFlag(query.statsRunnerCount, currentRunnerCount !== null),
+    ...buildStatsSettings("analysis", null, defaultSimilarStatsIncludeSex),
+    includeRunnerCount: getDefaultFlag(
+      getStatsQueryParam(query, "analysis", "statsRunnerCount"),
+      currentRunnerCount !== null,
+    ),
     runnerCount: currentRunnerCount,
-    years: getStatsYears(query.statsYears, null),
   };
   const conditionAnalysisLabels = {
     ...statsConditionLabels,
@@ -421,6 +783,7 @@ export const getDetailSectionPayload = async (
   const { race, runners } = context;
 
   if (section === "results") {
+    const resultsSourceScope = getResultsSourceScope(query);
     const results = await getHorseRaceResults(
       raceSource,
       year,
@@ -428,6 +791,7 @@ export const getDetailSectionPayload = async (
       day,
       keibajoCode,
       raceNumber,
+      resultsSourceScope,
     );
     return {
       classConditionName: context.statsClassConditionLabel,
@@ -438,6 +802,7 @@ export const getDetailSectionPayload = async (
       results,
       runners,
       source: raceSource,
+      sourceScope: resultsSourceScope,
       type: section,
     };
   }
@@ -464,7 +829,7 @@ export const getDetailSectionPayload = async (
       ]) satisfies Promise<ConditionAnalysisStats>;
     let stats = await getConditionAnalysisStats(resolvedSettings);
     if (
-      !hasSearchParam(query, CONDITION_ANALYSIS_OVERRIDE_PARAMS) &&
+      !hasStatsSearchParam(query, "analysis", CONDITION_ANALYSIS_OVERRIDE_PARAMS) &&
       !hasCompleteConditionAnalysisRows(stats)
     ) {
       const candidates = getConditionAnalysisSettingCandidates(resolvedSettings).slice(1);
@@ -483,6 +848,32 @@ export const getDetailSectionPayload = async (
       raceTimeStats,
       runners,
       settings: resolvedSettings,
+      source: race.source,
+      type: section,
+    };
+  }
+
+  if (section === "time-score") {
+    const rows: TimeScoreRow[] = await getTimeScoreRows(race, context.conditionAnalysisSettings);
+    return {
+      rows,
+      type: section,
+    };
+  }
+
+  if (section === "overall-score") {
+    const [timeRows, raceTimeStats, bloodlineRows] = await Promise.all([
+      getTimeScoreRows(race, context.conditionAnalysisSettings),
+      getRaceTimeStats(race, context.conditionAnalysisSettings),
+      getBloodlineStats(race, context.bloodlineStatsSettings),
+    ]);
+    return {
+      rows: buildOverallScoreRows({
+        bloodlineRows,
+        correlationRows: raceTimeStats.correlationRows,
+        runners,
+        timeRows,
+      }),
       type: section,
     };
   }
@@ -490,10 +881,15 @@ export const getDetailSectionPayload = async (
   if (section === "bloodline") {
     let resolvedSettings = context.bloodlineStatsSettings;
     let rows = await getBloodlineStats(race, resolvedSettings);
-    if (!hasSearchParam(query, CONDITION_ANALYSIS_OVERRIDE_PARAMS) && !hasRateRows(rows)) {
+    if (
+      !hasStatsSearchParam(query, "bloodline", CONDITION_ANALYSIS_OVERRIDE_PARAMS) &&
+      !hasBloodlineScoreCoverage(rows, runners)
+    ) {
       const candidates = getConditionAnalysisSettingCandidates(resolvedSettings).slice(1);
-      const matched = await findRateStatsCandidate(candidates, (candidate) =>
-        getBloodlineStats(race, candidate),
+      const matched = await findRateStatsCandidate(
+        candidates,
+        (candidate) => getBloodlineStats(race, candidate),
+        (stats) => hasBloodlineScoreCoverage(stats, runners),
       );
       if (matched) {
         resolvedSettings = matched.settings;
@@ -505,16 +901,22 @@ export const getDetailSectionPayload = async (
       rows,
       runners,
       settings: resolvedSettings,
+      source: race.source,
       type: section,
     };
   }
 
   let resolvedSettings = context.statsSettings;
   let rows = await getSimilarRaceStats(race, resolvedSettings);
-  if (!hasSearchParam(query, CONDITION_ANALYSIS_OVERRIDE_PARAMS) && !hasRateRows(rows)) {
+  if (
+    !hasStatsSearchParam(query, "similar", CONDITION_ANALYSIS_OVERRIDE_PARAMS) &&
+    !hasSimilarJockeyTrainerCoverage(rows, runners)
+  ) {
     const candidates = getConditionAnalysisSettingCandidates(resolvedSettings).slice(1);
-    const matched = await findRateStatsCandidate(candidates, (candidate) =>
-      getSimilarRaceStats(race, candidate),
+    const matched = await findRateStatsCandidate(
+      candidates,
+      (candidate) => getSimilarRaceStats(race, candidate),
+      (stats) => hasSimilarJockeyTrainerCoverage(stats, runners),
     );
     if (matched) {
       resolvedSettings = matched.settings;
@@ -526,6 +928,7 @@ export const getDetailSectionPayload = async (
     conditionLabels: context.statsConditionLabels,
     rows,
     settings: resolvedSettings,
+    source: race.source,
     type: "similar" satisfies DetailSection,
   };
 };

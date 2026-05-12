@@ -61,6 +61,10 @@ export interface Runner {
   tanshoNinkijun: string | null;
   sohaTime: string | null;
   timeSa: string | null;
+  corner1: string | null;
+  corner2: string | null;
+  corner3: string | null;
+  corner4: string | null;
   kohan3f: string | null;
 }
 
@@ -106,6 +110,10 @@ export interface HorseRaceResult extends Record<string, unknown> {
   tanshoNinkijun: string | null;
   sohaTime: string | null;
   timeSa: string | null;
+  corner1: string | null;
+  corner2: string | null;
+  corner3: string | null;
+  corner4: string | null;
   kohan3f: string | null;
 }
 
@@ -249,10 +257,12 @@ export interface PayoutStatsDetail extends Record<string, unknown> {
 export interface SimilarRaceStatsSettings {
   classConditionName: string | null;
   includeAge: boolean;
+  includeBloodlineAncestors: boolean;
   includeClass: boolean;
   includeDistance: boolean;
   includeFrame: boolean;
   includeMonthWindow: boolean;
+  includeNarOnly: boolean;
   includeRaceNumber: boolean;
   includeRaceSubtitle: boolean;
   includeRaceTitle: boolean;
@@ -263,20 +273,34 @@ export interface SimilarRaceStatsSettings {
   includeVenue: boolean;
   includeWeight: boolean;
   runnerCount: number | null;
+  sourceScope: RaceSource | "all";
   years: number | null;
 }
 
 export interface EntityListQuery {
+  date: string;
   dateFrom: string;
   dateTo: string;
   distanceMax: string;
   distanceMin: string;
+  jockeyName: string;
   keibajoCode: string;
+  last3fMax: string;
+  last3fMin: string;
   order: string;
+  oddsMax: string;
+  oddsMin: string;
+  popularityMax: string;
+  popularityMin: string;
   q: string;
   rank: string;
+  raceNumber: string;
+  raceTimeMax: string;
+  raceTimeMin: string;
   source: RaceSource | "all";
   surface: string;
+  trainerName: string;
+  turn: string;
 }
 
 export interface HorseListRow extends Record<string, unknown> {
@@ -288,6 +312,8 @@ export interface HorseListRow extends Record<string, unknown> {
   winRate: number;
   showRate: number;
   latestDate: string;
+  latestKeibajoCode: string;
+  latestRaceBango: string;
   latestRaceName: string;
   latestSource: RaceSource;
   primarySource: RaceSource;
@@ -301,6 +327,8 @@ export interface PersonListRow extends Record<string, unknown> {
   winRate: number;
   showRate: number;
   latestDate: string;
+  latestKeibajoCode: string;
+  latestRaceBango: string;
   latestRaceName: string;
   latestSource: RaceSource;
   primarySource: RaceSource;
@@ -315,9 +343,11 @@ export interface EntityRaceResult extends Record<string, unknown> {
   raceName: string;
   kyori: string | null;
   trackCode: string | null;
+  kettoTorokuBango: string | null;
   horseName: string;
   jockeyName: string;
   trainerName: string;
+  ownerName: string;
   horseNumber: string | null;
   frameNumber: string | null;
   rank: string | null;
@@ -345,6 +375,76 @@ export interface TopRaceSummary extends RaceListItem {
   raceStartAt: string;
 }
 
+export interface RaceTimeTargetRace extends Record<string, unknown> {
+  date: string;
+  horseName: string;
+  horseNumber: string;
+  jockeyName: string;
+  keibajoCode: string;
+  kohan3f: string;
+  ownerName: string;
+  popularity: string;
+  raceName: string;
+  raceNumber: string;
+  raceTime: string;
+  trainerName: string;
+}
+
+export interface ConditionCorrelationDetail extends Record<string, unknown> {
+  key:
+    | "horseShow"
+    | "horseWin"
+    | "jockeyShow"
+    | "odds"
+    | "ownerShow"
+    | "popularity"
+    | "trainerShow";
+  label: string;
+  reason: string;
+  score: number;
+  target: number | null;
+  value: number | null;
+  weight: number;
+}
+
+export interface ConditionCorrelationRow extends Record<string, unknown> {
+  details: ConditionCorrelationDetail[];
+  horseName: string;
+  horseNumber: string;
+  score: number;
+}
+
+export interface TimeScoreDetail extends Record<string, unknown> {
+  label: string;
+  reason: string;
+  score: number;
+  target: number | null;
+  value: number | null;
+  weight: number;
+}
+
+export interface TimeScoreRow extends Record<string, unknown> {
+  details: TimeScoreDetail[];
+  horseName: string;
+  horseNumber: string;
+  score: number;
+}
+
+export interface OverallScoreDetail extends Record<string, unknown> {
+  label: string;
+  reason: string;
+  score: number;
+  weight: number;
+}
+
+export interface OverallScoreRow extends Record<string, unknown> {
+  details: OverallScoreDetail[];
+  horseName: string;
+  horseNumber: string;
+  jockeyName: string;
+  score: number;
+}
+
 export interface RaceTimeStats extends Record<string, unknown> {
   raceCount: number;
   fastestRaceTime: number | null;
@@ -354,6 +454,8 @@ export interface RaceTimeStats extends Record<string, unknown> {
   medianRaceTime: number | null;
   medianKohan3f: number | null;
   fastestDetail: StatsDetail | null;
+  correlationRows: ConditionCorrelationRow[];
+  targetRaces: RaceTimeTargetRace[];
 }
 
 export interface PayoutStatsRow extends Record<string, unknown> {

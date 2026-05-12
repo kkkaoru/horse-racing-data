@@ -1,9 +1,10 @@
 "use client";
 
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import type { ReactNode } from "react";
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, memo, useEffect, useMemo, useState } from "react";
 
+import type { RaceSource } from "../../../lib/codes";
 import { formatDate, formatKeibajo, formatRaceNumber } from "../../../lib/format";
 import type { SimilarRaceStatsRow, SimilarRaceStatsSettings } from "../../../lib/race-types";
 import { MobileFilterDisclosure } from "./mobile-filter-disclosure";
@@ -34,6 +35,7 @@ interface SimilarRaceStatsTableProps {
   };
   rows: SimilarRaceStatsRow[];
   settings: SimilarRaceStatsSettings;
+  source: RaceSource;
 }
 
 const SORT_LABELS: Record<RateSortKey, string> = {
@@ -67,24 +69,46 @@ const METRIC_SCORE_WEIGHTS = {
 
 type ToggleSettingKey = keyof Omit<
   SimilarRaceStatsSettings,
-  "classConditionName" | "includeRunnerCount" | "runnerCount" | "years"
+  | "classConditionName"
+  | "includeBloodlineAncestors"
+  | "includeNarOnly"
+  | "includeRunnerCount"
+  | "runnerCount"
+  | "sourceScope"
+  | "years"
 >;
 
 const SETTING_PARAMS: Record<ToggleSettingKey, string> = {
-  includeAge: "statsAge",
-  includeClass: "statsClass",
-  includeDistance: "statsDistance",
-  includeFrame: "statsFrame",
-  includeMonthWindow: "statsMonthWindow",
-  includeRaceNumber: "statsRaceNumber",
-  includeRaceSubtitle: "statsRaceSubtitle",
-  includeRaceTitle: "statsRaceTitle",
-  includeSex: "statsSex",
-  includeSurface: "statsSurface",
-  includeTurn: "statsTurn",
-  includeVenue: "statsVenue",
-  includeWeight: "statsWeight",
+  includeAge: "similarStatsAge",
+  includeClass: "similarStatsClass",
+  includeDistance: "similarStatsDistance",
+  includeFrame: "similarStatsFrame",
+  includeMonthWindow: "similarStatsMonthWindow",
+  includeRaceNumber: "similarStatsRaceNumber",
+  includeRaceSubtitle: "similarStatsRaceSubtitle",
+  includeRaceTitle: "similarStatsRaceTitle",
+  includeSex: "similarStatsSex",
+  includeSurface: "similarStatsSurface",
+  includeTurn: "similarStatsTurn",
+  includeVenue: "similarStatsVenue",
+  includeWeight: "similarStatsWeight",
 };
+
+const ALL_CONDITION_KEYS: ToggleSettingKey[] = [
+  "includeVenue",
+  "includeMonthWindow",
+  "includeRaceTitle",
+  "includeRaceSubtitle",
+  "includeAge",
+  "includeClass",
+  "includeSex",
+  "includeWeight",
+  "includeSurface",
+  "includeTurn",
+  "includeDistance",
+  "includeFrame",
+  "includeRaceNumber",
+];
 
 const formatRate = (value: number): string => `${value.toFixed(1)}%`;
 
@@ -156,16 +180,21 @@ const toScoredRows = (rows: SimilarRaceStatsRow[]): ScoredSimilarRaceStatsRow[] 
   );
 };
 
-export function SimilarRaceStatsTable({
+export const SimilarRaceStatsTable = memo(function SimilarRaceStatsTable({
   conditionLabels,
   rows,
   settings,
+  source,
 }: SimilarRaceStatsTableProps) {
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const [displaySettings, setDisplaySettings] = useState(settings);
   const [sortKey, setSortKey] = useState<RateSortKey>("score");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [expandedRowKey, setExpandedRowKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDisplaySettings(settings);
+  }, [settings]);
 
   const groupedRows = useMemo(() => {
     return CATEGORY_ORDER.map((category) => ({
@@ -182,15 +211,51 @@ export function SimilarRaceStatsTable({
     }));
   }, [rows, sortDirection, sortKey]);
 
-  const updateParam = (name: string, value: string) => {
-    const next = new URLSearchParams(searchParams.toString());
-    next.set(name, value);
+  const replaceParams = (next: URLSearchParams) => {
+    const scrollY = window.scrollY;
     router.replace(`?${next.toString()}`, { scroll: false });
+    window.requestAnimationFrame(() => {
+      window.scrollTo({ top: scrollY });
+    });
+  };
+
+  const updateParam = (name: string, value: string) => {
+    const next = new URLSearchParams(window.location.search);
+    next.set(name, value);
+    replaceParams(next);
   };
 
   const toggleSetting = (key: ToggleSettingKey) => {
-    updateParam(SETTING_PARAMS[key], settings[key] ? "0" : "1");
+    const enabled = !displaySettings[key];
+    setDisplaySettings((current) => ({ ...current, [key]: enabled }));
+    updateParam(SETTING_PARAMS[key], enabled ? "1" : "0");
   };
+
+  const clearConditionSettings = () => {
+    const next = new URLSearchParams(window.location.search);
+    for (const key of ALL_CONDITION_KEYS) {
+      next.set(SETTING_PARAMS[key], "0");
+    }
+    setDisplaySettings((current) => ({
+      ...current,
+      includeAge: false,
+      includeClass: false,
+      includeDistance: false,
+      includeFrame: false,
+      includeMonthWindow: false,
+      includeRaceNumber: false,
+      includeRaceSubtitle: false,
+      includeRaceTitle: false,
+      includeSex: false,
+      includeSurface: false,
+      includeTurn: false,
+      includeVenue: false,
+      includeWeight: false,
+    }));
+    replaceParams(next);
+  };
+  const sourceScopeChecked = displaySettings.sourceScope === source;
+  const sourceScopeLabel = source === "jra" ? "中央競馬のみ" : "地方競馬のみ";
 
   const renderConditionToggle = (key: ToggleSettingKey, label: string | null): ReactNode => {
     if (!label || label === "-") {
@@ -200,7 +265,7 @@ export function SimilarRaceStatsTable({
     return (
       <label>
         <input
-          checked={settings[key]}
+          checked={displaySettings[key]}
           type="checkbox"
           onChange={() => {
             toggleSetting(key);
@@ -366,9 +431,12 @@ export function SimilarRaceStatsTable({
           <label>
             <span>期間</span>
             <select
-              value={settings.years === null ? "all" : String(settings.years)}
+              value={displaySettings.years === null ? "all" : String(displaySettings.years)}
               onChange={(event) => {
-                updateParam("statsYears", event.currentTarget.value);
+                const years =
+                  event.currentTarget.value === "all" ? null : Number(event.currentTarget.value);
+                setDisplaySettings((current) => ({ ...current, years }));
+                updateParam("similarStatsYears", event.currentTarget.value);
               }}
             >
               {[1, 2, 3, 5, 10].map((year) => (
@@ -378,6 +446,18 @@ export function SimilarRaceStatsTable({
               ))}
               <option value="all">全期間</option>
             </select>
+          </label>
+          <label>
+            <input
+              checked={sourceScopeChecked}
+              type="checkbox"
+              onChange={() => {
+                const sourceScope = sourceScopeChecked ? "all" : source;
+                setDisplaySettings((current) => ({ ...current, sourceScope }));
+                updateParam("similarStatsSourceScope", sourceScope);
+              }}
+            />
+            {sourceScopeLabel}
           </label>
           {renderConditionToggle("includeVenue", conditionLabels.venue)}
           {renderConditionToggle("includeMonthWindow", conditionLabels.monthWindow)}
@@ -392,6 +472,9 @@ export function SimilarRaceStatsTable({
           {renderConditionToggle("includeDistance", conditionLabels.distance)}
           {renderConditionToggle("includeFrame", conditionLabels.frame)}
           {renderConditionToggle("includeRaceNumber", conditionLabels.raceNumber)}
+          <button className="stats-control-button" type="button" onClick={clearConditionSettings}>
+            全ての条件を外す
+          </button>
         </section>
       </MobileFilterDisclosure>
 
@@ -402,4 +485,4 @@ export function SimilarRaceStatsTable({
       </div>
     </>
   );
-}
+});

@@ -148,7 +148,8 @@ main {
   top: calc(100% + 8px);
 }
 
-.header-menu nav a {
+.header-menu nav a,
+.header-menu nav .race-share-button {
   border: 1px solid var(--line);
   border-radius: 6px;
   color: var(--accent-strong);
@@ -157,6 +158,14 @@ main {
   font-weight: 800;
   padding: 9px 12px;
   white-space: nowrap;
+}
+
+.header-menu nav .race-share-button {
+  background: #ffffff;
+  font-family: inherit;
+  justify-content: flex-start;
+  min-height: 38px;
+  width: 100%;
 }
 
 .race-global-summary {
@@ -199,6 +208,18 @@ main {
   border-radius: 6px;
   flex: 0 0 auto;
   padding: 7px 9px;
+}
+
+.race-global-summary-countdown {
+  background: #fff4d6;
+  color: #6f4714;
+  font-variant-numeric: tabular-nums;
+  min-width: 118px;
+  text-align: center;
+}
+
+.race-global-summary-countdown-prefix {
+  font: inherit;
 }
 
 .race-side-nav {
@@ -386,20 +407,27 @@ main {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 8px;
+  box-sizing: border-box;
   display: grid;
   gap: 12px;
   grid-template-columns: minmax(220px, 2fr) repeat(2, minmax(140px, 1fr)) auto;
   margin-bottom: 16px;
   padding: 14px;
+  width: 100%;
 }
 
 .entity-detail-filter-panel {
-  grid-template-columns: minmax(220px, 2fr) repeat(4, minmax(120px, 1fr)) auto;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+}
+
+.entity-detail-filter-panel label:first-child {
+  grid-column: span 2;
 }
 
 .entity-filter-panel label {
   display: grid;
   gap: 6px;
+  min-width: 0;
 }
 
 .entity-filter-panel span {
@@ -413,16 +441,19 @@ main {
   background: #fff;
   border: 1px solid var(--line);
   border-radius: 6px;
+  box-sizing: border-box;
   color: var(--ink);
   font: inherit;
   min-height: 40px;
   padding: 8px 10px;
+  width: 100%;
 }
 
 .entity-filter-panel button {
   background: var(--accent);
   border: 1px solid var(--accent-strong);
   border-radius: 6px;
+  box-sizing: border-box;
   color: #fff;
   cursor: pointer;
   font: inherit;
@@ -576,6 +607,7 @@ h3 {
 .race-results-section,
 .race-day-layout,
 .runners-section,
+.paddock-section,
 .similar-stats-section,
 .training-section {
   display: grid;
@@ -583,6 +615,7 @@ h3 {
 }
 
 .course-section,
+.paddock-section,
 .race-results-section,
 .runners-section,
 .similar-stats-section,
@@ -881,6 +914,106 @@ h3 {
   font-size: 20px;
 }
 
+.race-share-button {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--accent-strong);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  gap: 6px;
+  justify-content: center;
+  min-height: 36px;
+  padding: 8px 10px;
+  white-space: nowrap;
+}
+
+.race-share-button:hover {
+  background: var(--surface-muted);
+  border-color: var(--accent);
+}
+
+.race-share-button-icon {
+  border: 1.5px solid currentcolor;
+  border-radius: 3px;
+  display: inline-block;
+  height: 14px;
+  position: relative;
+  width: 12px;
+}
+
+.race-share-button-icon::before {
+  border: 1.5px solid currentcolor;
+  border-radius: 3px;
+  content: "";
+  height: 14px;
+  left: 3px;
+  position: absolute;
+  top: -5px;
+  width: 12px;
+}
+
+.race-share-floating {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  bottom: 24px;
+  box-shadow: 0 14px 36px rgba(23, 33, 28, 0.16);
+  display: flex;
+  gap: 8px;
+  padding: 10px;
+  position: fixed;
+  right: 24px;
+  z-index: 28;
+}
+
+.race-share-floating-label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.race-share-floating-close {
+  align-items: center;
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  height: 24px;
+  justify-content: center;
+  padding: 0;
+  width: 24px;
+}
+
+.race-share-floating-close span,
+.race-share-floating-close span::after {
+  background: currentcolor;
+  border-radius: 999px;
+  display: block;
+  height: 2px;
+  width: 10px;
+}
+
+.race-share-floating-close span {
+  position: relative;
+  transform: rotate(45deg);
+}
+
+.race-share-floating-close span::after {
+  content: "";
+  left: 0;
+  position: absolute;
+  top: 0;
+  transform: rotate(90deg);
+}
+
 .detail-grid {
   display: grid;
   gap: 10px;
@@ -1009,8 +1142,8 @@ h3 {
   color: var(--accent-strong);
   cursor: pointer;
   font-weight: 800;
-  list-style-position: outside;
-  padding: 4px 0;
+  list-style-position: inside;
+  padding: 4px 0 4px 8px;
 }
 
 .course-description div {
@@ -1030,6 +1163,308 @@ h3 {
   margin: 0;
   padding: 10px 12px;
   white-space: normal;
+}
+
+.paddock-board {
+  display: grid;
+  gap: 14px;
+}
+
+.paddock-section-edit {
+  gap: 20px;
+}
+
+.paddock-table-wrap {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.paddock-table {
+  min-width: 0;
+  table-layout: fixed;
+  width: max-content;
+}
+
+.paddock-col-number,
+.paddock-col-score,
+.paddock-col-rank {
+  width: 76px;
+}
+
+.paddock-col-name {
+  width: clamp(132px, 24vw, 220px);
+}
+
+.paddock-table th,
+.paddock-table td {
+  font-variant-numeric: tabular-nums;
+}
+
+.paddock-horse-row {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+}
+
+.paddock-section-edit .paddock-horse-row {
+  padding: 16px;
+}
+
+.paddock-horse-summary {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 42px minmax(0, 1fr) 48px;
+}
+
+.paddock-horse-summary strong,
+.paddock-horse-summary b {
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-variant-numeric: tabular-nums;
+  padding: 7px 8px;
+  text-align: center;
+}
+
+.paddock-horse-summary span {
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.paddock-score-controls {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.paddock-score-readout {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.paddock-score-readout span {
+  align-items: center;
+  background: #f8fbf7;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex;
+  justify-content: space-between;
+  min-height: 42px;
+  padding: 8px 10px;
+}
+
+.paddock-score-readout small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.paddock-score-readout strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.paddock-score-control {
+  align-items: center;
+  background: #f8fbf7;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: minmax(48px, 1fr) 42px 42px 42px;
+  padding: 8px;
+}
+
+.paddock-official-rank-control {
+  grid-column: 1 / -1;
+}
+
+.paddock-score-control span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.paddock-score-control button {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 18px;
+  font-weight: 900;
+  height: 42px;
+}
+
+.paddock-score-control button:hover {
+  background: var(--surface-muted);
+}
+
+.paddock-score-control output {
+  font-variant-numeric: tabular-nums;
+  font-weight: 900;
+  text-align: center;
+}
+
+.paddock-official-rank-control {
+  background: #f8fbf7;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+}
+
+.paddock-official-rank-control span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.paddock-rank-buttons {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.paddock-rank-buttons button {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--accent-strong);
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 900;
+  height: 42px;
+  padding: 0;
+}
+
+.paddock-rank-buttons button.selected {
+  background: var(--rank-color);
+  border-color: var(--rank-color);
+  color: #ffffff;
+}
+
+.paddock-rank-buttons button.clear {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.paddock-rank-badge {
+  background: color-mix(in srgb, var(--rank-color) 14%, #ffffff);
+  border: 1px solid color-mix(in srgb, var(--rank-color) 42%, #ffffff);
+  border-radius: 999px;
+  color: color-mix(in srgb, var(--rank-color) 72%, #17211c);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 900;
+  justify-content: center;
+  min-width: 54px;
+  padding: 4px 8px;
+}
+
+.paddock-rank-buttons .rank-1,
+.paddock-rank-badge.rank-1 {
+  --rank-color: #b7791f;
+}
+
+.paddock-rank-buttons .rank-2,
+.paddock-rank-badge.rank-2 {
+  --rank-color: #6b7280;
+}
+
+.paddock-rank-buttons .rank-3,
+.paddock-rank-badge.rank-3 {
+  --rank-color: #9a5a20;
+}
+
+.paddock-rank-buttons .rank-4,
+.paddock-rank-badge.rank-4 {
+  --rank-color: #2563a6;
+}
+
+.paddock-rank-buttons .rank-5,
+.paddock-rank-badge.rank-5 {
+  --rank-color: #0f766e;
+}
+
+.paddock-rank-buttons .rank-6,
+.paddock-rank-badge.rank-6 {
+  --rank-color: #7c3aed;
+}
+
+.paddock-history {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.paddock-history summary {
+  cursor: pointer;
+  font-weight: 900;
+}
+
+.paddock-history ol {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+}
+
+.paddock-history li {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 120px minmax(0, 1fr) 96px;
+  padding-top: 8px;
+}
+
+.paddock-history time {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.paddock-history span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.paddock-history strong {
+  color: var(--accent-strong);
+  font-size: 13px;
+  text-align: right;
+}
+
+.paddock-edit-link {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--accent-strong);
+  display: inline-flex;
+  font-size: 13px;
+  font-weight: 900;
+  min-height: 38px;
+  padding: 0 12px;
+}
+
+.paddock-edit-link:hover {
+  background: var(--surface-muted);
 }
 
 .runner-table {
@@ -1524,8 +1959,9 @@ h3 {
   background: #ffffff;
   border: 1px solid var(--line);
   border-radius: 6px;
+  box-sizing: border-box;
   display: flex;
-  min-height: 40px;
+  min-height: 44px;
   padding: 8px 10px;
 }
 
@@ -1619,11 +2055,39 @@ h3 {
   background: #ffffff;
   border: 1px solid var(--line);
   border-radius: 6px;
+  box-sizing: border-box;
   color: var(--ink);
   font: inherit;
-  min-height: 40px;
+  min-height: 44px;
   padding: 8px 10px;
   width: 100%;
+}
+
+.race-results-filter-panel .race-results-checkbox-control {
+  height: 44px;
+  min-height: 44px;
+  padding: 0 10px;
+}
+
+.race-results-filter-panel .race-results-checkbox-control input {
+  flex: 0 0 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  width: 24px;
+}
+
+.race-results-filter-panel .race-results-runner-filter input {
+  flex: 0 0 18px;
+  height: 18px;
+  min-height: 18px;
+  padding: 0;
+  width: 18px;
+}
+
+.race-results-filter-panel .race-results-runner-filter label span {
+  color: var(--ink);
+  flex: 0 0 auto;
 }
 
 .race-results-filter-count {
@@ -1675,13 +2139,17 @@ h3 {
 
 .race-results-table {
   border-collapse: collapse;
-  min-width: 2060px;
+  min-width: 2240px;
   table-layout: fixed;
   width: 100%;
 }
 
 .race-results-col-runner-number {
   width: 64px;
+}
+
+.race-results-col-horse-name {
+  width: 240px;
 }
 
 .race-results-col-past-runner-number {
@@ -1781,6 +2249,91 @@ h3 {
   font-weight: 800;
 }
 
+.race-results-horse-cell {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.race-results-horse-cell > span {
+  flex: 0 0 auto;
+}
+
+.race-results-detail-button {
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 800;
+  flex: 0 0 auto;
+  line-height: 1;
+  min-height: 26px;
+  padding: 6px 8px;
+}
+
+.race-results-detail-button:hover {
+  background: var(--surface-muted);
+  border-color: var(--accent);
+}
+
+.race-results-detail-row > td {
+  background: #f8faf9;
+  box-shadow: none;
+  left: auto;
+  padding: 10px;
+  position: static;
+  z-index: auto;
+}
+
+.race-results-detail-panel {
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.race-results-detail-table {
+  border-collapse: collapse;
+  min-width: 760px;
+  width: 100%;
+}
+
+.race-results-detail-table th,
+.race-results-detail-table td {
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  overflow: hidden;
+  padding: 8px 9px;
+  text-align: left;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.race-results-detail-table th {
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.race-results-detail-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.race-results-detail-table th:first-child,
+.race-results-detail-table td:first-child {
+  box-shadow: none;
+  font-weight: 400;
+  left: auto;
+  position: static;
+  z-index: auto;
+}
+
 .race-results-match-cell {
   background: #fff4d6;
   color: #6f4714;
@@ -1849,10 +2402,11 @@ h3 {
   background: #ffffff;
   border: 1px solid var(--line);
   border-radius: 8px;
+  box-sizing: border-box;
   color: var(--ink);
   display: flex;
   gap: 8px;
-  min-height: 40px;
+  min-height: 44px;
   min-width: 0;
   padding: 9px 10px;
 }
@@ -1886,11 +2440,31 @@ h3 {
   background: #ffffff;
   border: 1px solid var(--line);
   border-radius: 6px;
+  box-sizing: border-box;
   color: var(--ink);
   font: inherit;
-  min-height: 40px;
+  min-height: 44px;
   padding: 8px 10px;
   width: 100%;
+}
+
+.stats-control-button {
+  align-self: stretch;
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--accent-strong);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  min-height: 44px;
+  padding: 9px 10px;
+}
+
+.stats-control-button:hover {
+  background: var(--surface-muted);
+  border-color: var(--accent);
 }
 
 .stats-table-wrap {
@@ -1955,7 +2529,17 @@ h3 {
 }
 
 .analysis-table {
-  min-width: 760px;
+  min-width: 1120px;
+}
+
+.correlation-score-table th:first-child,
+.correlation-score-table td:first-child,
+.overall-score-table th:first-child,
+.overall-score-table td:first-child,
+.time-score-table th:first-child,
+.time-score-table td:first-child {
+  max-width: 64px;
+  width: 64px;
 }
 
 .analysis-detail-table {
@@ -1964,6 +2548,20 @@ h3 {
 
 .analysis-payout-detail-table {
   min-width: 720px;
+}
+
+.correlation-detail-table {
+  min-width: 920px;
+}
+
+.correlation-detail-table th:first-child,
+.correlation-detail-table td:first-child,
+.overall-score-detail-table th:first-child,
+.overall-score-detail-table td:first-child {
+  min-width: 180px;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
 }
 
 .analysis-detail-wrap {
@@ -1997,10 +2595,66 @@ h3 {
   font-weight: 800;
 }
 
+.analysis-pagination-controls {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.analysis-pagination-controls label {
+  display: grid;
+  gap: 6px;
+  min-width: 140px;
+}
+
+.analysis-pagination-controls label span,
+.analysis-pagination-controls div span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.analysis-pagination-controls select,
+.analysis-pagination-controls button {
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink);
+  font: inherit;
+  min-height: 40px;
+  padding: 8px 10px;
+}
+
+.analysis-pagination-controls div {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.analysis-pagination-controls button {
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.analysis-pagination-controls button:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .bloodline-score-cell,
 .stats-score-cell {
   color: var(--accent-strong);
   font-weight: 800;
+}
+
+.time-score-actions {
+  align-items: center;
+  display: inline-flex;
+  gap: 10px;
 }
 
 .bloodline-detail-target {
@@ -2558,7 +3212,7 @@ h3 {
   .race-global-summary {
     height: 64px;
     left: 56px;
-    right: 58px;
+    right: 74px;
     top: 0;
     transform: none;
     width: auto;
@@ -2570,12 +3224,21 @@ h3 {
   }
 
   .race-global-summary div {
-    font-size: 12px;
-    gap: 4px;
+    font-size: 10px;
+    gap: 3px;
+    justify-content: flex-start;
   }
 
   .race-global-summary span {
-    padding: 5px 6px;
+    padding: 5px 4px;
+  }
+
+  .race-global-summary-countdown {
+    min-width: 50px;
+  }
+
+  .race-global-summary-countdown-prefix {
+    display: none;
   }
 
   .race-side-nav {
@@ -2648,6 +3311,19 @@ h3 {
     grid-template-columns: 1fr;
   }
 
+  .entity-filter-panel,
+  .entity-detail-filter-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .entity-detail-filter-panel label:first-child {
+    grid-column: auto;
+  }
+
+  .entity-filter-panel button {
+    width: 100%;
+  }
+
   .training-filter-panel {
     grid-template-columns: 1fr;
   }
@@ -2689,6 +3365,39 @@ h3 {
     grid-template-columns: 1fr;
   }
 
+  .paddock-horse-summary {
+    grid-template-columns: 38px minmax(0, 1fr) 44px;
+  }
+
+  .paddock-score-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .paddock-score-readout {
+    grid-template-columns: 1fr;
+  }
+
+  .paddock-score-control {
+    grid-template-columns: minmax(52px, 1fr) 48px 42px 48px;
+  }
+
+  .paddock-rank-buttons {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .paddock-score-control button {
+    height: 46px;
+  }
+
+  .paddock-history li {
+    align-items: start;
+    grid-template-columns: 1fr;
+  }
+
+  .paddock-history strong {
+    text-align: left;
+  }
+
   .race-results-filter-count,
   .training-filter-count {
     justify-self: start;
@@ -2700,8 +3409,17 @@ h3 {
   }
 
   .race-badge {
+    align-items: flex-start;
     min-width: 0;
     text-align: left;
+  }
+
+  .race-share-button {
+    width: max-content;
+  }
+
+  .race-share-floating {
+    display: none;
   }
 }
 
