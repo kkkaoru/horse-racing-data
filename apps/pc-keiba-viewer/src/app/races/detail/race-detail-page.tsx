@@ -23,10 +23,13 @@ import {
   formatWeather,
   getTrackSurfaceLabel,
 } from "../../../lib/format";
-import { getRaceTags, getWeightLabel } from "../../../lib/race-classification";
+import { getGradeLabel, getRaceTags, getWeightLabel } from "../../../lib/race-classification";
 import type { RaceDetail } from "../../../lib/race-types";
 import { isBanEiKeibajoCode } from "../../../lib/runner-format";
-import { LazyDetailSections } from "./lazy-detail-sections";
+import { LazyDetailSections, LazyOverallScoreSection } from "./lazy-detail-sections";
+import { PaddockSection } from "./paddock-section";
+import { RaceShareControls } from "./race-share-controls";
+import { RaceStartCountdown } from "./race-start-countdown";
 import { RealtimeRaceSection } from "./realtime-race-section";
 import { RunnersTable } from "./runners-table";
 
@@ -70,6 +73,22 @@ const hasDetailValue = (value: string | null | undefined): boolean => {
   return (
     normalized !== "" && normalized !== "-" && normalized !== "未設定" && !/^0+$/.test(normalized)
   );
+};
+
+const getRaceStartsAt = (
+  year: string,
+  month: string,
+  day: string,
+  hassoJikoku: string | null,
+): string | null => {
+  const normalizedTime = cleanText(hassoJikoku, "").padStart(4, "0");
+  if (!/^\d{4}$/.test(normalizedTime)) {
+    return null;
+  }
+
+  const hour = normalizedTime.slice(0, 2);
+  const minute = normalizedTime.slice(2, 4);
+  return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}T${hour}:${minute}:00+09:00`;
 };
 
 const DetailCell = ({
@@ -136,11 +155,21 @@ export async function RaceDetailView({
   const courseImagePath = getCourseImagePath(keibajoCode, race.trackCode, race.kyori);
   const realtimeApiBaseUrl =
     process.env.NEXT_PUBLIC_REALTIME_DATA_API_BASE_URL ?? "https://sync-realtime-data.kkk4oru.com";
+  const raceStartsAt = getRaceStartsAt(year, month, day, race.hassoJikoku);
+  const sharePath = getRaceDetailPath({
+    kaisaiNen: year,
+    kaisaiTsukihi: `${month}${day}`,
+    keibajoCode,
+    raceBango: raceNumber,
+    source: raceSource,
+  });
   return (
     <section className="page-shell">
+      <RaceShareControls path={sharePath} />
       <div className="race-global-summary" aria-label="race summary in global header">
         <div>
           <span>{formatTime(race.hassoJikoku)}発走</span>
+          <RaceStartCountdown startsAt={raceStartsAt} />
           <span>{formatKeibajo(keibajoCode)}</span>
           <span>{formatRaceNumber(raceNumber)}</span>
           <span>{getTrackSurfaceLabel(race.trackCode) ?? formatTrack(race.trackCode)}</span>
@@ -237,7 +266,7 @@ export async function RaceDetailView({
           label="条件"
           value={raceTags.length > 0 ? raceTags.join(" / ") : cleanText(race.kyosoJokenMeisho)}
         />
-        <DetailCell label="グレード" value={race.gradeCode} />
+        <DetailCell label="グレード" value={getGradeLabel(race.gradeCode, race.source)} />
         <DetailCell label="競走記号" value={race.kyosoKigoCode} />
         <DetailCell label="重量種別" value={getWeightLabel(race.juryoShubetsuCode)} />
         <DetailCell label="出走頭数" suffix=" 頭" value={race.shussoTosu} />
@@ -246,6 +275,15 @@ export async function RaceDetailView({
         <DetailCell label="芝馬場" value={formatBaba(race.babajotaiCodeShiba)} />
         <DetailCell label="ダート馬場" value={formatBaba(race.babajotaiCodeDirt)} />
       </section>
+
+      <PaddockSection
+        day={day}
+        keibajoCode={keibajoCode}
+        month={month}
+        raceNumber={raceNumber}
+        runners={runners}
+        year={year}
+      />
 
       <section className="course-section">
         <div className="section-heading compact">
@@ -324,6 +362,16 @@ export async function RaceDetailView({
         )}
       </section>
 
+      <LazyOverallScoreSection
+        day={day}
+        keibajoCode={keibajoCode}
+        month={month}
+        raceNumber={raceNumber}
+        realtimeApiBaseUrl={realtimeApiBaseUrl}
+        source={raceSource}
+        year={year}
+      />
+
       <RealtimeRaceSection
         apiBaseUrl={realtimeApiBaseUrl}
         day={day}
@@ -341,6 +389,7 @@ export async function RaceDetailView({
         keibajoCode={keibajoCode}
         month={month}
         raceNumber={raceNumber}
+        realtimeApiBaseUrl={realtimeApiBaseUrl}
         source={raceSource}
         year={year}
       />

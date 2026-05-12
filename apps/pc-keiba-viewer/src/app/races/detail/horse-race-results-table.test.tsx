@@ -1,9 +1,15 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { HorseRaceResult } from "../../../lib/race-types";
+import type { HorseRaceResult, Runner } from "../../../lib/race-types";
 import { HorseRaceResultsTable } from "./horse-race-results-table";
+
+vi.mock("next/navigation", () => ({
+  usePathname: () => "/races/2026/03/22/05/01",
+  useRouter: () => ({ replace: vi.fn<() => void>() }),
+  useSearchParams: () => new URLSearchParams(),
+}));
 
 const result = (overrides: Partial<HorseRaceResult>): HorseRaceResult => ({
   babajotaiCodeDirt: "1",
@@ -17,6 +23,10 @@ const result = (overrides: Partial<HorseRaceResult>): HorseRaceResult => ({
   currentJockey: "騎手",
   currentSeibetsuCode: "1",
   currentUmaban: "01",
+  corner1: "03",
+  corner2: "04",
+  corner3: "05",
+  corner4: "06",
   futanJuryo: "550",
   gradeCode: "00",
   hassoJikoku: "1200",
@@ -52,6 +62,33 @@ const result = (overrides: Partial<HorseRaceResult>): HorseRaceResult => ({
   ...overrides,
 });
 
+const runner = (overrides: Partial<Runner>): Runner => ({
+  bamei: "出走馬",
+  banushimei: "馬主",
+  barei: "04",
+  bataiju: "480",
+  chokyoshimeiRyakusho: "調教師",
+  futanJuryo: "550",
+  kakuteiChakujun: null,
+  kettoTorokuBango: "2022100001",
+  kishumeiRyakusho: "騎手",
+  corner1: null,
+  corner2: null,
+  corner3: null,
+  corner4: null,
+  kohan3f: null,
+  seibetsuCode: "1",
+  sohaTime: null,
+  tanshoNinkijun: null,
+  tanshoOdds: null,
+  timeSa: null,
+  umaban: "01",
+  wakuban: "1",
+  zogenFugo: null,
+  zogenSa: null,
+  ...overrides,
+});
+
 afterEach(cleanup);
 
 describe("horse race results table", () => {
@@ -75,10 +112,12 @@ describe("horse race results table", () => {
         ]}
         runners={[]}
         source="jra"
+        sourceScope="all"
       />,
     );
 
     expect(screen.getByText("ランク内")).toBeTruthy();
+    expect(screen.getByText("3-4-5-6")).toBeTruthy();
     expect(screen.queryByText("ランク外")).toBeNull();
   });
 
@@ -99,12 +138,114 @@ describe("horse race results table", () => {
         ]}
         runners={[]}
         source="jra"
+        sourceScope="all"
       />,
     );
 
     await waitFor(() => {
       expect(screen.getByText("ランク外")).toBeTruthy();
     });
+  });
+
+  it("relaxes the default finish rank filter so every runner with history is visible", async () => {
+    render(
+      <HorseRaceResultsTable
+        classConditionName={null}
+        currentDistance="1800"
+        currentKeibajoCode="05"
+        currentRaceDate="20260322"
+        defaultIncludeClass={false}
+        results={[
+          result({ bamei: "ランク内", currentUmaban: "01", kakuteiChakujun: "05" }),
+          result({
+            bamei: "ランク外",
+            currentUmaban: "02",
+            kakuteiChakujun: "06",
+            kettoTorokuBango: "2022100002",
+            umaban: "02",
+          }),
+        ]}
+        runners={[
+          runner({ bamei: "ランク内", kettoTorokuBango: "2022100001", umaban: "01" }),
+          runner({ bamei: "ランク外", kettoTorokuBango: "2022100002", umaban: "02" }),
+        ]}
+        source="jra"
+        sourceScope="all"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("ランク外")).toBeTruthy();
+    });
+  });
+
+  it("relaxes default nar filters so every non-debut runner with history is visible", async () => {
+    render(
+      <HorseRaceResultsTable
+        classConditionName="C2"
+        currentDistance="900"
+        currentKeibajoCode="45"
+        currentRaceDate="20260512"
+        defaultIncludeClass={true}
+        results={[
+          result({
+            bamei: "履歴あり",
+            currentJockey: "予定騎手",
+            currentUmaban: "01",
+            kakuteiChakujun: "09",
+            kaisaiNen: "2024",
+            kaisaiTsukihi: "0101",
+            keibajoCode: "43",
+            kishumeiRyakusho: "過去騎手",
+            kyori: "1200",
+            kyosoJokenMeisho: "B1",
+          }),
+        ]}
+        runners={[runner({ bamei: "履歴あり", kettoTorokuBango: "2022100001", umaban: "01" })]}
+        source="nar"
+        sourceScope="all"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("履歴あり")).toBeTruthy();
+    });
+    expect(screen.queryByText("条件に一致する競走成績はありません。")).toBeNull();
+  });
+
+  it("keeps a manually entered finish rank limit even when it filters out rows", async () => {
+    render(
+      <HorseRaceResultsTable
+        classConditionName={null}
+        currentDistance="1800"
+        currentKeibajoCode="05"
+        currentRaceDate="20260322"
+        defaultIncludeClass={false}
+        results={[
+          result({
+            bamei: "ランク外",
+            currentUmaban: "01",
+            kakuteiChakujun: "06",
+          }),
+        ]}
+        runners={[]}
+        source="jra"
+        sourceScope="all"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("ランク外")).toBeTruthy();
+    });
+
+    const finishRankInput = screen.getByLabelText("着順 n着以内");
+    if (!(finishRankInput instanceof HTMLInputElement)) {
+      throw new TypeError("finish rank control is not an input");
+    }
+    fireEvent.change(finishRankInput, { target: { value: "2" } });
+
+    expect(finishRankInput.value).toBe("2");
+    expect(screen.queryByText("ランク外")).toBeNull();
   });
 
   it("hides last 3F sort and values for ban-ei race detail pages", () => {
@@ -127,6 +268,7 @@ describe("horse race results table", () => {
         ]}
         runners={[]}
         source="nar"
+        sourceScope="all"
       />,
     );
 

@@ -1,11 +1,15 @@
 "use client";
 
-import { useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import type { ReactNode } from "react";
-import { Fragment, useState } from "react";
+import { Fragment, memo, useEffect, useMemo, useState } from "react";
 
+import type { RaceSource } from "../../../lib/codes";
 import { formatDate, formatKeibajo, formatRaceNumber } from "../../../lib/format";
 import type {
+  ConditionCorrelationDetail,
+  ConditionCorrelationRow,
   FinishPositionStatsRow,
   FrameStatsRow,
   PayoutStatsRow,
@@ -16,6 +20,8 @@ import type {
 } from "../../../lib/race-types";
 import { formatRunnerNumber } from "../../../lib/runner-format";
 import { MobileFilterDisclosure } from "./mobile-filter-disclosure";
+import type { RealtimeRaceRequest } from "./realtime-client";
+import { useRealtimeRacePayload } from "./realtime-client";
 
 interface RaceConditionAnalysisSectionProps {
   conditionLabels: {
@@ -39,30 +45,57 @@ interface RaceConditionAnalysisSectionProps {
   payoutStats: PayoutStatsRow[];
   raceTimeStats: RaceTimeStats;
   runners: Runner[];
+  realtimeRequest?: RealtimeRaceRequest;
   settings: SimilarRaceStatsSettings;
+  source: RaceSource;
 }
 
 type ToggleSettingKey = keyof Omit<
   SimilarRaceStatsSettings,
-  "classConditionName" | "runnerCount" | "years"
+  | "classConditionName"
+  | "includeBloodlineAncestors"
+  | "includeNarOnly"
+  | "runnerCount"
+  | "sourceScope"
+  | "years"
 >;
 
 const SETTING_PARAMS: Record<ToggleSettingKey, string> = {
-  includeAge: "statsAge",
-  includeClass: "statsClass",
-  includeDistance: "statsDistance",
-  includeFrame: "statsFrame",
-  includeMonthWindow: "statsMonthWindow",
-  includeRaceNumber: "statsRaceNumber",
-  includeRaceSubtitle: "statsRaceSubtitle",
-  includeRaceTitle: "statsRaceTitle",
-  includeRunnerCount: "statsRunnerCount",
-  includeSex: "statsSex",
-  includeSurface: "statsSurface",
-  includeTurn: "statsTurn",
-  includeVenue: "statsVenue",
-  includeWeight: "statsWeight",
+  includeAge: "analysisStatsAge",
+  includeClass: "analysisStatsClass",
+  includeDistance: "analysisStatsDistance",
+  includeFrame: "analysisStatsFrame",
+  includeMonthWindow: "analysisStatsMonthWindow",
+  includeRaceNumber: "analysisStatsRaceNumber",
+  includeRaceSubtitle: "analysisStatsRaceSubtitle",
+  includeRaceTitle: "analysisStatsRaceTitle",
+  includeRunnerCount: "analysisStatsRunnerCount",
+  includeSex: "analysisStatsSex",
+  includeSurface: "analysisStatsSurface",
+  includeTurn: "analysisStatsTurn",
+  includeVenue: "analysisStatsVenue",
+  includeWeight: "analysisStatsWeight",
 };
+
+const TARGET_RACE_PAGE_SIZE_OPTIONS = [5, 10, 20, 50];
+
+const normalizeHorseNumber = (value: string): string =>
+  value.replace(/^0+/u, "") || (value ? "0" : "");
+
+const ALL_CONDITION_KEYS: ToggleSettingKey[] = [
+  "includeAge",
+  "includeClass",
+  "includeFrame",
+  "includeMonthWindow",
+  "includeRaceNumber",
+  "includeRaceSubtitle",
+  "includeRaceTitle",
+  "includeRunnerCount",
+  "includeSex",
+  "includeSurface",
+  "includeTurn",
+  "includeWeight",
+];
 
 const formatDetailDate = (date: string): string =>
   date.length === 8 ? formatDate(date.slice(0, 4), date.slice(4, 8)) : "-";
@@ -103,6 +136,172 @@ const parseTenths = (value: string): number | null => {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 };
+
+const buildRaceHref = (date: string, keibajoCode: string, raceNumber: string): string => {
+  const year = date.slice(0, 4);
+  const month = date.slice(4, 6);
+  const day = date.slice(6, 8);
+  return `/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}`;
+};
+
+const similarityScore = (value: number | null, target: number | null, scale: number): number => {
+  if (value === null || target === null) {
+    return 0.5;
+  }
+  return Math.max(0, Math.min(1, 1 - Math.abs(value - target) / Math.max(target, scale)));
+};
+
+const roundScore = (value: number): number => Math.round(value * 100) / 100;
+
+const applyRealtimeCorrelationRows = (
+  rows: ConditionCorrelationRow[],
+  realtimeValues: Map<string, { odds: number | null; popularity: number | null }>,
+): ConditionCorrelationRow[] => {
+  if (realtimeValues.size === 0) {
+    return rows;
+  }
+
+  return rows
+    .map((row) => {
+      const realtime = realtimeValues.get(normalizeHorseNumber(row.horseNumber));
+      if (!realtime) {
+        return row;
+      }
+      const details = row.details.map((detail): ConditionCorrelationDetail => {
+        if (detail.key === "popularity" && realtime.popularity !== null) {
+          return {
+            ...detail,
+            reason: `${detail.reason}。最新オッズ取得値で再計算`,
+            score: roundScore(similarityScore(realtime.popularity, detail.target, 5)),
+            value: realtime.popularity,
+          };
+        }
+        if (detail.key === "odds" && realtime.odds !== null) {
+          return {
+            ...detail,
+            reason: `${detail.reason}。最新オッズ取得値で再計算`,
+            score: roundScore(similarityScore(realtime.odds, detail.target, 10)),
+            value: realtime.odds,
+          };
+        }
+        return detail;
+      });
+      const score = roundScore(
+        details.reduce((total, detail) => total + detail.score * detail.weight, 0),
+      );
+      return { ...row, details, score };
+    })
+    .toSorted((left, right) => right.score - left.score || Number(left.horseNumber) - Number(right.horseNumber));
+};
+
+function CorrelationScoreTable({
+  realtimeRequest,
+  rows,
+}: {
+  realtimeRequest?: RealtimeRaceRequest;
+  rows: ConditionCorrelationRow[];
+}) {
+  const { payload } = useRealtimeRacePayload(
+    realtimeRequest ?? {
+      apiBaseUrl: "",
+      day: "",
+      keibajoCode: "",
+      month: "",
+      raceNumber: "",
+      source: "jra",
+      year: "",
+    },
+    null,
+  );
+  const [expandedHorseNumber, setExpandedHorseNumber] = useState<string | null>(null);
+  const realtimeValues = useMemo(() => {
+    const values = new Map<string, { odds: number | null; popularity: number | null }>();
+    for (const row of payload?.odds?.latest.tansho ?? []) {
+      values.set(normalizeHorseNumber(row.combination), {
+        odds: row.odds ?? null,
+        popularity: row.rank ?? null,
+      });
+    }
+    return values;
+  }, [payload]);
+  const displayedRows = useMemo(
+    () => applyRealtimeCorrelationRows(rows, realtimeValues),
+    [realtimeValues, rows],
+  );
+
+  return (
+    <div className="stats-table-wrap">
+      <table className="stats-table analysis-table correlation-score-table">
+        <thead>
+          <tr>
+            <th>馬番</th>
+            <th>馬名</th>
+            <th>スコア</th>
+          </tr>
+        </thead>
+        <tbody>
+          {displayedRows.map((row) => {
+            const isExpanded = expandedHorseNumber === row.horseNumber;
+            return (
+              <Fragment key={row.horseNumber}>
+                <tr className={isExpanded ? "stats-row-expanded" : undefined}>
+                  <td>{formatRunnerNumber(row.horseNumber)}</td>
+                  <td className="stats-name-cell">{row.horseName || "-"}</td>
+                  <td>
+                    <button
+                      aria-expanded={isExpanded}
+                      className="stats-detail-toggle"
+                      type="button"
+                      onClick={() => {
+                        setExpandedHorseNumber((current) =>
+                          current === row.horseNumber ? null : row.horseNumber,
+                        );
+                      }}
+                    >
+                      {row.score.toFixed(2)}
+                    </button>
+                  </td>
+                </tr>
+                {isExpanded ? (
+                  <tr className="stats-detail-row">
+                    <td colSpan={3}>
+                      <div className="stats-detail-panel">
+                        <table className="stats-detail-table correlation-detail-table">
+                          <thead>
+                            <tr>
+                              <th>項目</th>
+                              <th>現在値</th>
+                              <th>対象平均</th>
+                              <th>スコア</th>
+                              <th>重み</th>
+                              <th>理由</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {row.details.map((detail) => (
+                              <tr key={detail.key}>
+                                <td>{detail.label}</td>
+                                <td>{formatNumber(detail.value)}</td>
+                                <td>{formatNumber(detail.target)}</td>
+                                <td>{detail.score.toFixed(2)}</td>
+                                <td>{detail.weight.toFixed(3)}</td>
+                                <td className="stats-name-cell">{detail.reason}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </td>
+                  </tr>
+                ) : null}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 const renderFastestDetail = (detail: StatsDetail | null) => {
   if (!detail) {
@@ -149,30 +348,77 @@ const renderFastestDetail = (detail: StatsDetail | null) => {
   );
 };
 
-export function RaceConditionAnalysisSection({
+export const RaceConditionAnalysisSection = memo(function RaceConditionAnalysisSection({
   conditionLabels,
   frameStats,
   finishPositionStats,
   payoutStats,
   raceTimeStats,
+  realtimeRequest,
   runners,
   settings,
+  source,
 }: RaceConditionAnalysisSectionProps) {
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const [displaySettings, setDisplaySettings] = useState(settings);
   const [expandedPayoutKey, setExpandedPayoutKey] = useState<string | null>(null);
   const [expandedFinishKey, setExpandedFinishKey] = useState<number | null>(null);
   const [expandedFrameKey, setExpandedFrameKey] = useState<string | null>(null);
+  const [targetRacePage, setTargetRacePage] = useState(1);
+  const [targetRacePageSize, setTargetRacePageSize] = useState(5);
+
+  useEffect(() => {
+    setDisplaySettings(settings);
+  }, [settings]);
+
+  useEffect(() => {
+    setTargetRacePage(1);
+  }, [raceTimeStats.targetRaces, targetRacePageSize]);
+
+  const replaceParams = (next: URLSearchParams) => {
+    const scrollY = window.scrollY;
+    router.replace(`?${next.toString()}`, { scroll: false });
+    window.requestAnimationFrame(() => {
+      window.scrollTo({ top: scrollY });
+    });
+  };
 
   const updateParam = (name: string, value: string) => {
-    const next = new URLSearchParams(searchParams.toString());
+    const next = new URLSearchParams(window.location.search);
     next.set(name, value);
-    router.replace(`?${next.toString()}`, { scroll: false });
+    replaceParams(next);
   };
 
   const toggleSetting = (key: ToggleSettingKey) => {
-    updateParam(SETTING_PARAMS[key], settings[key] ? "0" : "1");
+    const enabled = !displaySettings[key];
+    setDisplaySettings((current) => ({ ...current, [key]: enabled }));
+    updateParam(SETTING_PARAMS[key], enabled ? "1" : "0");
   };
+
+  const clearConditionSettings = () => {
+    const next = new URLSearchParams(window.location.search);
+    for (const key of ALL_CONDITION_KEYS) {
+      next.set(SETTING_PARAMS[key], "0");
+    }
+    setDisplaySettings((current) => ({
+      ...current,
+      includeAge: false,
+      includeClass: false,
+      includeFrame: false,
+      includeMonthWindow: false,
+      includeRaceNumber: false,
+      includeRaceSubtitle: false,
+      includeRaceTitle: false,
+      includeRunnerCount: false,
+      includeSex: false,
+      includeSurface: false,
+      includeTurn: false,
+      includeWeight: false,
+    }));
+    replaceParams(next);
+  };
+  const sourceScopeChecked = displaySettings.sourceScope === source;
+  const sourceScopeLabel = source === "jra" ? "中央競馬のみ" : "地方競馬のみ";
 
   const renderConditionToggle = (key: ToggleSettingKey, label: string | null): ReactNode => {
     if (!label || label === "-") {
@@ -182,7 +428,7 @@ export function RaceConditionAnalysisSection({
     return (
       <label>
         <input
-          checked={settings[key]}
+          checked={displaySettings[key]}
           type="checkbox"
           onChange={() => {
             toggleSetting(key);
@@ -210,6 +456,16 @@ export function RaceConditionAnalysisSection({
       horseNumber,
     ]);
   }
+  const targetRaceTotalPages = Math.max(
+    1,
+    Math.ceil(raceTimeStats.targetRaces.length / targetRacePageSize),
+  );
+  const normalizedTargetRacePage = Math.min(targetRacePage, targetRaceTotalPages);
+  const targetRaceStartIndex = (normalizedTargetRacePage - 1) * targetRacePageSize;
+  const visibleTargetRaces = raceTimeStats.targetRaces.slice(
+    targetRaceStartIndex,
+    targetRaceStartIndex + targetRacePageSize,
+  );
 
   return (
     <>
@@ -218,9 +474,12 @@ export function RaceConditionAnalysisSection({
           <label>
             <span>期間</span>
             <select
-              value={settings.years === null ? "all" : String(settings.years)}
+              value={displaySettings.years === null ? "all" : String(displaySettings.years)}
               onChange={(event) => {
-                updateParam("statsYears", event.currentTarget.value);
+                const years =
+                  event.currentTarget.value === "all" ? null : Number(event.currentTarget.value);
+                setDisplaySettings((current) => ({ ...current, years }));
+                updateParam("analysisStatsYears", event.currentTarget.value);
               }}
             >
               {[1, 2, 3, 5, 10].map((year) => (
@@ -230,6 +489,18 @@ export function RaceConditionAnalysisSection({
               ))}
               <option value="all">全期間</option>
             </select>
+          </label>
+          <label>
+            <input
+              checked={sourceScopeChecked}
+              type="checkbox"
+              onChange={() => {
+                const sourceScope = sourceScopeChecked ? "all" : source;
+                setDisplaySettings((current) => ({ ...current, sourceScope }));
+                updateParam("analysisStatsSourceScope", sourceScope);
+              }}
+            />
+            {sourceScopeLabel}
           </label>
           {renderConditionToggle("includeVenue", conditionLabels.venue)}
           {renderConditionToggle("includeMonthWindow", conditionLabels.monthWindow)}
@@ -245,6 +516,9 @@ export function RaceConditionAnalysisSection({
           {renderConditionToggle("includeRunnerCount", conditionLabels.runnerCount)}
           {renderConditionToggle("includeFrame", conditionLabels.frame)}
           {renderConditionToggle("includeRaceNumber", conditionLabels.raceNumber)}
+          <button className="stats-control-button" type="button" onClick={clearConditionSettings}>
+            全ての条件を外す
+          </button>
         </section>
       </MobileFilterDisclosure>
 
@@ -280,6 +554,118 @@ export function RaceConditionAnalysisSection({
             </div>
           </div>
           {renderFastestDetail(raceTimeStats.fastestDetail)}
+        </section>
+
+        <section className="stats-category-section">
+          <div className="section-heading compact">
+            <h3>1〜3着相関スコア</h3>
+          </div>
+          <CorrelationScoreTable
+            realtimeRequest={realtimeRequest}
+            rows={raceTimeStats.correlationRows}
+          />
+        </section>
+
+        <section className="stats-category-section">
+          <div className="section-heading compact">
+            <h3>対象レース一覧</h3>
+          </div>
+          <div className="analysis-pagination-controls">
+            <label>
+              <span>表示件数</span>
+              <select
+                value={targetRacePageSize}
+                onChange={(event) => {
+                  setTargetRacePageSize(Number(event.currentTarget.value));
+                }}
+              >
+                {TARGET_RACE_PAGE_SIZE_OPTIONS.map((pageSize) => (
+                  <option key={pageSize} value={pageSize}>
+                    {pageSize}件
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div>
+              <button
+                disabled={normalizedTargetRacePage <= 1}
+                type="button"
+                onClick={() => {
+                  setTargetRacePage((current) => Math.max(1, current - 1));
+                }}
+              >
+                前へ
+              </button>
+              <span>
+                {normalizedTargetRacePage} / {targetRaceTotalPages}
+              </span>
+              <button
+                disabled={normalizedTargetRacePage >= targetRaceTotalPages}
+                type="button"
+                onClick={() => {
+                  setTargetRacePage((current) => Math.min(targetRaceTotalPages, current + 1));
+                }}
+              >
+                次へ
+              </button>
+            </div>
+          </div>
+          <div className="stats-table-wrap">
+            <table className="stats-table analysis-table">
+              <thead>
+                <tr>
+                  <th>日付</th>
+                  <th>競馬場</th>
+                  <th>R</th>
+                  <th>レース名</th>
+                  <th>1着馬番</th>
+                  <th>1着馬名</th>
+                  <th>騎手</th>
+                  <th>調教師</th>
+                  <th>馬主</th>
+                  <th>レースタイム</th>
+                  <th>上がり3F</th>
+                  <th>人気</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleTargetRaces.length > 0 ? (
+                  visibleTargetRaces.map((targetRace) => (
+                    <tr
+                      key={`${targetRace.date}-${targetRace.keibajoCode}-${targetRace.raceNumber}`}
+                    >
+                      <td>{formatDetailDate(targetRace.date)}</td>
+                      <td>{formatKeibajo(targetRace.keibajoCode)}</td>
+                      <td>{formatRaceNumber(targetRace.raceNumber)}</td>
+                      <td className="stats-name-cell">
+                        <Link
+                          href={buildRaceHref(
+                            targetRace.date,
+                            targetRace.keibajoCode,
+                            targetRace.raceNumber,
+                          )}
+                        >
+                          {targetRace.raceName || "一般競走"}
+                        </Link>
+                      </td>
+                      <td>{formatRunnerNumber(targetRace.horseNumber)}</td>
+                      <td className="stats-name-cell">{targetRace.horseName || "-"}</td>
+                      <td>{targetRace.jockeyName || "-"}</td>
+                      <td>{targetRace.trainerName || "-"}</td>
+                      <td className="stats-name-cell">{targetRace.ownerName || "-"}</td>
+                      <td>{formatTenthsTime(parseTenths(targetRace.raceTime))}</td>
+                      <td>{formatDecimalTenths(parseTenths(targetRace.kohan3f))}</td>
+                      <td>{parseRank(targetRace.popularity)}</td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={12}>対象レースはありません。</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </section>
 
         <section className="stats-category-section">
@@ -593,4 +979,4 @@ export function RaceConditionAnalysisSection({
       </div>
     </>
   );
-}
+});

@@ -6,6 +6,8 @@ import { TRACK_LABELS, type RaceSource } from "../lib/codes";
 import type {
   AbilityTest,
   BloodlineStatsRow,
+  ConditionCorrelationDetail,
+  ConditionCorrelationRow,
   CourseInfo,
   EntityDetailSummary,
   EntityListQuery,
@@ -21,6 +23,7 @@ import type {
   RaceDetail,
   RaceListItem,
   RaceTimeStats,
+  RaceTimeTargetRace,
   RaceYearSummary,
   Runner,
   SimilarRaceStatsRow,
@@ -28,6 +31,8 @@ import type {
   StatsDetail,
   TopRaceSummary,
   Training,
+  TimeScoreDetail,
+  TimeScoreRow,
 } from "../lib/race-types";
 import { getDb } from "./client";
 import { withDbQueryCache } from "./query-cache";
@@ -319,6 +324,10 @@ export const getRaceRunners = cache(
               tansho_ninkijun as "tanshoNinkijun",
               soha_time as "sohaTime",
               time_sa as "timeSa",
+              corner_1 as "corner1",
+              corner_2 as "corner2",
+              corner_3 as "corner3",
+              corner_4 as "corner4",
               kohan_3f as "kohan3f"
             from current_runners
             where latest_weight_rank = 1
@@ -347,6 +356,10 @@ export const getRaceRunners = cache(
             tanshoNinkijun: table.tanshoNinkijun,
             sohaTime: table.sohaTime,
             timeSa: table.timeSa,
+            corner1: table.corner1,
+            corner2: table.corner2,
+            corner3: table.corner3,
+            corner4: table.corner4,
             kohan3f: table.kohan3f,
           })
           .from(table)
@@ -413,6 +426,7 @@ const entityRaceRowsSql = sql`
     coalesce(nullif(regexp_replace(se.bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') as bamei,
     coalesce(nullif(regexp_replace(se.kishumei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') as jockey_name,
     coalesce(nullif(regexp_replace(se.chokyoshimei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') as trainer_name,
+    coalesce(nullif(regexp_replace(se.banushimei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') owner_name,
     se.kakutei_chakujun,
     se.tansho_ninkijun,
     se.tansho_odds,
@@ -444,6 +458,7 @@ const entityRaceRowsSql = sql`
     coalesce(nullif(regexp_replace(se.bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') as bamei,
     coalesce(nullif(regexp_replace(se.kishumei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') as jockey_name,
     coalesce(nullif(regexp_replace(se.chokyoshimei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') as trainer_name,
+    coalesce(nullif(regexp_replace(se.banushimei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') owner_name,
     se.kakutei_chakujun,
     se.tansho_ninkijun,
     se.tansho_odds,
@@ -474,6 +489,8 @@ export const getHorseList = cache(
           winRate: string;
           showRate: string;
           latestDate: string;
+          latestKeibajoCode: string;
+          latestRaceBango: string;
           latestRaceName: string;
           latestSource: RaceSource;
           primarySource: RaceSource;
@@ -563,6 +580,8 @@ export const getHorseList = cache(
             coalesce(stats."winRate", '0') as "winRate",
             coalesce(stats."showRate", '0') as "showRate",
             c.latest_date as "latestDate",
+            c.keibajo_code "latestKeibajoCode",
+            c.race_bango "latestRaceBango",
             c.source as "latestSource",
             coalesce(nullif(regexp_replace(ra.kyosomei_hondai, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '一般競走') as "latestRaceName"
           from candidates c
@@ -587,6 +606,8 @@ export const getHorseList = cache(
           bamei: row.bamei,
           kettoTorokuBango: row.kettoTorokuBango,
           latestDate: row.latestDate,
+          latestKeibajoCode: row.latestKeibajoCode,
+          latestRaceBango: row.latestRaceBango,
           latestRaceName: row.latestRaceName,
           latestSource: row.latestSource,
           primarySource: row.latestSource,
@@ -607,6 +628,8 @@ export const getHorseList = cache(
         winRate: string;
         showRate: string;
         latestDate: string;
+        latestKeibajoCode: string;
+        latestRaceBango: string;
         latestRaceName: string;
         latestSource: RaceSource;
       }>(sql`
@@ -628,7 +651,7 @@ export const getHorseList = cache(
               or ketto_toroku_bango = ${query.q}
             )
           group by ketto_toroku_bango
-          union all
+          union
           select
             'nar'::text source,
             ketto_toroku_bango,
@@ -713,6 +736,8 @@ export const getHorseList = cache(
           stats."winRate",
           stats."showRate",
           stats."latestDate",
+          latest.keibajo_code "latestKeibajoCode",
+          latest.race_bango "latestRaceBango",
           latest.source "latestSource",
           coalesce(nullif(regexp_replace(ra.kyosomei_hondai, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '一般競走') "latestRaceName"
         from ordered stats
@@ -736,6 +761,8 @@ export const getHorseList = cache(
         bamei: row.bamei,
         kettoTorokuBango: row.kettoTorokuBango,
         latestDate: row.latestDate,
+        latestKeibajoCode: row.latestKeibajoCode,
+        latestRaceBango: row.latestRaceBango,
         latestRaceName: row.latestRaceName,
         latestSource: row.latestSource,
         primarySource: row.latestSource,
@@ -749,10 +776,23 @@ export const getHorseList = cache(
 );
 
 export const getPersonList = cache(
-  async (kind: "jockeys" | "trainers", query: EntityListQuery): Promise<PersonListRow[]> =>
+  async (
+    kind: "jockeys" | "owners" | "trainers",
+    query: EntityListQuery,
+  ): Promise<PersonListRow[]> =>
     withDbQueryCache(["getPersonList", kind, query], async () => {
-      const rawColumn = kind === "jockeys" ? sql`kishumei_ryakusho` : sql`chokyoshimei_ryakusho`;
-      const column = kind === "jockeys" ? sql`jockey_name` : sql`trainer_name`;
+      const rawColumn =
+        kind === "jockeys"
+          ? sql`kishumei_ryakusho`
+          : kind === "trainers"
+            ? sql`chokyoshimei_ryakusho`
+            : sql`banushimei`;
+      const column =
+        kind === "jockeys"
+          ? sql`jockey_name`
+          : kind === "trainers"
+            ? sql`trainer_name`
+            : sql`owner_name`;
       if (query.q === "" && query.order === "latest") {
         const result = await getDb().execute<{
           name: string;
@@ -762,6 +802,8 @@ export const getPersonList = cache(
           winRate: string;
           showRate: string;
           latestDate: string;
+          latestKeibajoCode: string;
+          latestRaceBango: string;
           latestRaceName: string;
           latestSource: RaceSource;
           primarySource: RaceSource;
@@ -841,6 +883,8 @@ export const getPersonList = cache(
             coalesce(stats."winRate", '0') as "winRate",
             coalesce(stats."showRate", '0') as "showRate",
             c.latest_date as "latestDate",
+            c.keibajo_code "latestKeibajoCode",
+            c.race_bango "latestRaceBango",
             c.source as "latestSource",
             coalesce(stats."primarySource", c.source) as "primarySource",
             coalesce(nullif(regexp_replace(ra.kyosomei_hondai, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '一般競走') as "latestRaceName"
@@ -864,6 +908,8 @@ export const getPersonList = cache(
 
         return result.rows.map((row) => ({
           latestDate: row.latestDate,
+          latestKeibajoCode: row.latestKeibajoCode,
+          latestRaceBango: row.latestRaceBango,
           latestRaceName: row.latestRaceName,
           latestSource: row.latestSource,
           name: row.name,
@@ -884,6 +930,8 @@ export const getPersonList = cache(
         winRate: string;
         showRate: string;
         latestDate: string;
+        latestKeibajoCode: string;
+        latestRaceBango: string;
         latestRaceName: string;
         latestSource: RaceSource;
         primarySource: RaceSource;
@@ -974,6 +1022,8 @@ export const getPersonList = cache(
           stats."showRate",
           stats."primarySource",
           stats."latestDate",
+          stats.keibajo_code "latestKeibajoCode",
+          stats.race_bango "latestRaceBango",
           stats."latestSource",
           coalesce(nullif(regexp_replace(ra.kyosomei_hondai, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '一般競走') as "latestRaceName"
         from ordered stats
@@ -994,6 +1044,8 @@ export const getPersonList = cache(
 
       return result.rows.map((row) => ({
         latestDate: row.latestDate,
+        latestKeibajoCode: row.latestKeibajoCode,
+        latestRaceBango: row.latestRaceBango,
         latestRaceName: row.latestRaceName,
         latestSource: row.latestSource,
         name: row.name,
@@ -1028,17 +1080,54 @@ const normalizeEntityNumber = (value: string): number | null => {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 };
 
+const normalizeEntityDecimalTenths = (value: string): number | null => {
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return null;
+  }
+  if (trimmed.includes(":")) {
+    const parts = trimmed.split(":");
+    if (parts.length !== 2) {
+      return null;
+    }
+    const minutes = Number(parts[0]);
+    const seconds = Number(parts[1]);
+    return Number.isFinite(minutes) && Number.isFinite(seconds)
+      ? Math.round((minutes * 60 + seconds) * 10)
+      : null;
+  }
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed * 10) : null;
+};
+
 const getEntityDetailFilterCondition = (query: EntityListQuery) => {
+  const date = normalizeEntityDate(query.date);
   const dateFrom = normalizeEntityDate(query.dateFrom);
   const dateTo = normalizeEntityDate(query.dateTo);
   const distanceMin = normalizeEntityNumber(query.distanceMin);
   const distanceMax = normalizeEntityNumber(query.distanceMax);
+  const jockeyName = query.jockeyName.trim();
   const keibajoCode = query.keibajoCode.trim();
+  const last3fMin = normalizeEntityDecimalTenths(query.last3fMin);
+  const last3fMax = normalizeEntityDecimalTenths(query.last3fMax);
+  const oddsMin = normalizeEntityDecimalTenths(query.oddsMin);
+  const oddsMax = normalizeEntityDecimalTenths(query.oddsMax);
+  const popularityMin = normalizeEntityNumber(query.popularityMin);
+  const popularityMax = normalizeEntityNumber(query.popularityMax);
+  const rawRaceNumber = query.raceNumber.trim();
+  const raceNumber = rawRaceNumber.padStart(2, "0");
+  const raceTimeMin = normalizeEntityDecimalTenths(query.raceTimeMin);
+  const raceTimeMax = normalizeEntityDecimalTenths(query.raceTimeMax);
+  const trainerName = query.trainerName.trim();
 
   return sql`
     and (${keibajoCode} = '' or keibajo_code = ${keibajoCode})
+    and (${date} = '' or race_date = ${date})
     and (${dateFrom} = '' or race_date >= ${dateFrom})
     and (${dateTo} = '' or race_date <= ${dateTo})
+    and (${rawRaceNumber} = '' or race_bango = ${raceNumber})
+    and (${jockeyName} = '' or jockey_name ilike ${`%${jockeyName}%`})
+    and (${trainerName} = '' or trainer_name ilike ${`%${trainerName}%`})
     and (${distanceMin}::int is null or nullif(kyori, '')::int >= ${distanceMin})
     and (${distanceMax}::int is null or nullif(kyori, '')::int <= ${distanceMax})
     and (
@@ -1047,6 +1136,19 @@ const getEntityDetailFilterCondition = (query: EntityListQuery) => {
       or (${query.surface} = 'dirt' and track_code like '2%')
       or (${query.surface} = 'obstacle' and track_code like '3%')
     )
+    and (
+      ${query.turn} = 'all'
+      or (${query.turn} = 'left' and track_code in ('11', '12', '13', '14', '15', '16', '23', '25', '27'))
+      or (${query.turn} = 'right' and track_code in ('17', '18', '19', '20', '21', '22', '24', '26', '28'))
+    )
+    and (${raceTimeMin}::int is null or nullif(soha_time, '0000')::int >= ${raceTimeMin})
+    and (${raceTimeMax}::int is null or nullif(soha_time, '0000')::int <= ${raceTimeMax})
+    and (${last3fMin}::int is null or nullif(kohan_3f, '000')::int >= ${last3fMin})
+    and (${last3fMax}::int is null or nullif(kohan_3f, '000')::int <= ${last3fMax})
+    and (${popularityMin}::int is null or nullif(tansho_ninkijun, '00')::int >= ${popularityMin})
+    and (${popularityMax}::int is null or nullif(tansho_ninkijun, '00')::int <= ${popularityMax})
+    and (${oddsMin}::int is null or nullif(tansho_odds, '0000')::int >= ${oddsMin})
+    and (${oddsMax}::int is null or nullif(tansho_odds, '0000')::int <= ${oddsMax})
     and (
       ${query.rank} = 'all'
       or (${query.rank} = 'win' and kakutei_chakujun = '01')
@@ -1075,9 +1177,11 @@ const getEntityResultRows = async (
     raceName: string;
     kyori: string | null;
     trackCode: string | null;
+    kettoTorokuBango: string | null;
     horseName: string;
     jockeyName: string;
     trainerName: string;
+    ownerName: string;
     horseNumber: string | null;
     frameNumber: string | null;
     rank: string | null;
@@ -1106,9 +1210,11 @@ const getEntityResultRows = async (
       race_name as "raceName",
       kyori,
       track_code as "trackCode",
+      ketto_toroku_bango "kettoTorokuBango",
       bamei as "horseName",
       jockey_name as "jockeyName",
       trainer_name as "trainerName",
+      owner_name "ownerName",
       umaban as "horseNumber",
       wakuban as "frameNumber",
       kakutei_chakujun as rank,
@@ -1125,11 +1231,16 @@ const getEntityResultRows = async (
 };
 
 const getPersonResultRows = async (
-  kind: "jockeys" | "trainers",
+  kind: "jockeys" | "owners" | "trainers",
   name: string,
   query: EntityListQuery,
 ): Promise<EntityRaceResult[]> => {
-  const rawColumn = kind === "jockeys" ? sql`se.kishumei_ryakusho` : sql`se.chokyoshimei_ryakusho`;
+  const rawColumn =
+    kind === "jockeys"
+      ? sql`se.kishumei_ryakusho`
+      : kind === "trainers"
+        ? sql`se.chokyoshimei_ryakusho`
+        : sql`se.banushimei`;
   const result = await getDb().execute<{
     source: RaceSource;
     kaisaiNen: string;
@@ -1139,9 +1250,11 @@ const getPersonResultRows = async (
     raceName: string;
     kyori: string | null;
     trackCode: string | null;
+    kettoTorokuBango: string | null;
     horseName: string;
     jockeyName: string;
     trainerName: string;
+    ownerName: string;
     horseNumber: string | null;
     frameNumber: string | null;
     rank: string | null;
@@ -1167,6 +1280,7 @@ const getPersonResultRows = async (
         coalesce(nullif(regexp_replace(se.bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') as bamei,
         coalesce(nullif(regexp_replace(se.kishumei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') as jockey_name,
         coalesce(nullif(regexp_replace(se.chokyoshimei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') as trainer_name,
+        coalesce(nullif(regexp_replace(se.banushimei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') owner_name,
         se.kakutei_chakujun,
         se.tansho_ninkijun,
         se.tansho_odds,
@@ -1201,6 +1315,7 @@ const getPersonResultRows = async (
         coalesce(nullif(regexp_replace(se.bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') as bamei,
         coalesce(nullif(regexp_replace(se.kishumei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') as jockey_name,
         coalesce(nullif(regexp_replace(se.chokyoshimei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') as trainer_name,
+        coalesce(nullif(regexp_replace(se.banushimei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') owner_name,
         se.kakutei_chakujun,
         se.tansho_ninkijun,
         se.tansho_odds,
@@ -1240,9 +1355,11 @@ const getPersonResultRows = async (
       race_name as "raceName",
       kyori,
       track_code as "trackCode",
+      ketto_toroku_bango "kettoTorokuBango",
       bamei as "horseName",
       jockey_name as "jockeyName",
       trainer_name as "trainerName",
+      owner_name "ownerName",
       umaban as "horseNumber",
       wakuban as "frameNumber",
       kakutei_chakujun as rank,
@@ -1305,7 +1422,29 @@ export const getHorseDetailData = cache(
         query.order,
       );
       if (rows.length === 0) {
-        return null;
+        const nameResult = await getDb().execute<{ bamei: string }>(sql`
+          (
+            select coalesce(nullif(regexp_replace(bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), ${kettoTorokuBango}) bamei
+            from ${jvdSe}
+            where ketto_toroku_bango = ${kettoTorokuBango}
+            limit 1
+          )
+          union all
+          (
+            select coalesce(nullif(regexp_replace(bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), ${kettoTorokuBango}) bamei
+            from ${nvdSe}
+            where ketto_toroku_bango = ${kettoTorokuBango}
+            limit 1
+          )
+          limit 1
+        `);
+        const name = nameResult.rows[0]?.bamei;
+        return name
+          ? {
+              results: [],
+              summary: summarizeEntityResults(name, []),
+            }
+          : null;
       }
       return {
         results: rows,
@@ -1316,7 +1455,7 @@ export const getHorseDetailData = cache(
 
 export const getPersonDetailData = cache(
   async (
-    kind: "jockeys" | "trainers",
+    kind: "jockeys" | "owners" | "trainers",
     name: string,
     query: EntityListQuery,
   ): Promise<{ results: EntityRaceResult[]; summary: EntityDetailSummary } | null> =>
@@ -1329,12 +1468,27 @@ export const getPersonDetailData = cache(
     }),
 );
 
+const getJstMinuteKey = (): string => {
+  const parts = new Intl.DateTimeFormat("ja-JP", {
+    day: "2-digit",
+    hour: "2-digit",
+    hourCycle: "h23",
+    minute: "2-digit",
+    month: "2-digit",
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+  }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}${values.month}${values.day}${values.hour}${values.minute}`;
+};
+
 export const getTopRaceWindows = cache(
-  async (): Promise<{ finished: TopRaceSummary[]; upcoming: TopRaceSummary[] }> =>
-    withDbQueryCache(["getTopRaceWindows"], async () => {
+  async (): Promise<{ finished: TopRaceSummary[]; upcoming: TopRaceSummary[] }> => {
+    const nowKey = getJstMinuteKey();
+    return withDbQueryCache(["getTopRaceWindows", nowKey], async () => {
       const result = await getDb().execute<TopRaceSummary & { bucket: number }>(sql`
         with bounds as (
-          select to_char(now() at time zone 'Asia/Tokyo', 'YYYYMMDDHH24MI') now_key
+          select ${nowKey} now_key
         ),
         candidates as (
           (
@@ -1481,7 +1635,8 @@ export const getTopRaceWindows = cache(
           .toReversed(),
         upcoming: result.rows.filter((row) => row.bucket === 0).slice(0, 5),
       };
-    }),
+    });
+  },
 );
 
 export const getRaceCourseInfo = cache(
@@ -1524,12 +1679,14 @@ export const getHorseRaceResults = cache(
     day: string,
     keibajoCode: string,
     raceNumber: string,
+    sourceScope: RaceSource | "all" = "all",
   ): Promise<HorseRaceResult[]> => {
     return withDbQueryCache(
-      ["getHorseRaceResults", source, year, month, day, keibajoCode, raceNumber],
+      ["getHorseRaceResults", source, year, month, day, keibajoCode, raceNumber, sourceScope],
       async () => {
-        const raceTable = source === "jra" ? jvdRa : nvdRa;
-        const runnerTable = source === "jra" ? jvdSe : nvdSe;
+        const currentRunnerTable = source === "jra" ? jvdSe : nvdSe;
+        const includeJraHistory = sourceScope === "all" || sourceScope === "jra";
+        const includeNarHistory = sourceScope === "all" || sourceScope === "nar";
         const monthDay = `${month}${day}`;
         const raceDate = `${year}${monthDay}`;
 
@@ -1541,7 +1698,7 @@ export const getHorseRaceResults = cache(
           seibetsu_code as "currentSeibetsuCode",
           barei as "currentBarei",
           coalesce(nullif(regexp_replace(kishumei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') as "currentJockey"
-        from ${runnerTable}
+        from ${currentRunnerTable}
         where
           kaisai_nen = ${year}
           and kaisai_tsukihi = ${monthDay}
@@ -1556,57 +1713,164 @@ export const getHorseRaceResults = cache(
           ch."currentBarei",
           ch."currentSeibetsuCode",
           ch."currentUmaban",
-          ra.kaisai_nen as "kaisaiNen",
-          ra.kaisai_tsukihi as "kaisaiTsukihi",
-          ra.keibajo_code as "keibajoCode",
-          ra.race_bango as "raceBango",
-          ra.kyosomei_hondai as "kyosomeiHondai",
-          ra.kyosomei_fukudai as "kyosomeiFukudai",
-          ra.kyosomei_kakkonai as "kyosomeiKakkonai",
-          ra.grade_code as "gradeCode",
-          ra.kyoso_shubetsu_code as "kyosoShubetsuCode",
-          ra.kyoso_kigo_code as "kyosoKigoCode",
-          ra.juryo_shubetsu_code as "juryoShubetsuCode",
-          ra.kyoso_joken_code as "kyosoJokenCode",
-          ra.kyoso_joken_meisho as "kyosoJokenMeisho",
-          ra.kyori,
-          ra.track_code as "trackCode",
-          ra.hasso_jikoku as "hassoJikoku",
-          ra.tenko_code as "tenkoCode",
-          ra.babajotai_code_shiba as "babajotaiCodeShiba",
-          ra.babajotai_code_dirt as "babajotaiCodeDirt",
-          se.wakuban,
-          se.umaban,
-          se.ketto_toroku_bango as "kettoTorokuBango",
-          se.bamei,
-          se.seibetsu_code as "seibetsuCode",
-          se.barei,
-          se.futan_juryo as "futanJuryo",
-          se.kishumei_ryakusho as "kishumeiRyakusho",
-          se.chokyoshimei_ryakusho as "chokyoshimeiRyakusho",
-          se.banushimei,
-          se.bataiju,
-          se.zogen_fugo as "zogenFugo",
-          se.zogen_sa as "zogenSa",
-          se.kakutei_chakujun as "kakuteiChakujun",
-          se.tansho_odds as "tanshoOdds",
-          se.tansho_ninkijun as "tanshoNinkijun",
-          se.soha_time as "sohaTime",
-          se.time_sa as "timeSa",
-          se.kohan_3f as "kohan3f",
+          past."kaisaiNen",
+          past."kaisaiTsukihi",
+          past."keibajoCode",
+          past."raceBango",
+          past."kyosomeiHondai",
+          past."kyosomeiFukudai",
+          past."kyosomeiKakkonai",
+          past."gradeCode",
+          past."kyosoShubetsuCode",
+          past."kyosoKigoCode",
+          past."juryoShubetsuCode",
+          past."kyosoJokenCode",
+          past."kyosoJokenMeisho",
+          past.kyori,
+          past."trackCode",
+          past."hassoJikoku",
+          past."tenkoCode",
+          past."babajotaiCodeShiba",
+          past."babajotaiCodeDirt",
+          past.wakuban,
+          past.umaban,
+          past."kettoTorokuBango",
+          past.bamei,
+          past."seibetsuCode",
+          past.barei,
+          past."futanJuryo",
+          past."kishumeiRyakusho",
+          past."chokyoshimeiRyakusho",
+          past.banushimei,
+          past.bataiju,
+          past."zogenFugo",
+          past."zogenSa",
+          past."kakuteiChakujun",
+          past."tanshoOdds",
+          past."tanshoNinkijun",
+          past."sohaTime",
+          past."timeSa",
+          past."corner1",
+          past."corner2",
+          past."corner3",
+          past."corner4",
+          past."kohan3f",
           row_number() over (
             partition by ch."currentUmaban"
-            order by ra.kaisai_nen desc, ra.kaisai_tsukihi desc, ra.race_bango desc
+            order by past."kaisaiNen" desc, past."kaisaiTsukihi" desc, past."raceBango" desc
           ) as rn
         from current_horses ch
-        join ${runnerTable} se
-          on se.ketto_toroku_bango = ch.ketto_toroku_bango
-        join ${raceTable} ra
-          on ra.kaisai_nen = se.kaisai_nen
-          and ra.kaisai_tsukihi = se.kaisai_tsukihi
-          and ra.keibajo_code = se.keibajo_code
-          and ra.race_bango = se.race_bango
-        where ra.kaisai_nen || ra.kaisai_tsukihi < ${raceDate}
+        join (
+          select
+            ra.kaisai_nen || ra.kaisai_tsukihi raceDate,
+            ra.kaisai_nen "kaisaiNen",
+            ra.kaisai_tsukihi "kaisaiTsukihi",
+            ra.keibajo_code "keibajoCode",
+            ra.race_bango "raceBango",
+            ra.kyosomei_hondai "kyosomeiHondai",
+            ra.kyosomei_fukudai "kyosomeiFukudai",
+            ra.kyosomei_kakkonai "kyosomeiKakkonai",
+            ra.grade_code "gradeCode",
+            ra.kyoso_shubetsu_code "kyosoShubetsuCode",
+            ra.kyoso_kigo_code "kyosoKigoCode",
+            ra.juryo_shubetsu_code "juryoShubetsuCode",
+            ra.kyoso_joken_code "kyosoJokenCode",
+            ra.kyoso_joken_meisho "kyosoJokenMeisho",
+            ra.kyori,
+            ra.track_code "trackCode",
+            ra.hasso_jikoku "hassoJikoku",
+            ra.tenko_code "tenkoCode",
+            ra.babajotai_code_shiba "babajotaiCodeShiba",
+            ra.babajotai_code_dirt "babajotaiCodeDirt",
+            se.wakuban,
+            se.umaban,
+            se.ketto_toroku_bango "kettoTorokuBango",
+            se.bamei,
+            se.seibetsu_code "seibetsuCode",
+            se.barei,
+            se.futan_juryo "futanJuryo",
+            se.kishumei_ryakusho "kishumeiRyakusho",
+            se.chokyoshimei_ryakusho "chokyoshimeiRyakusho",
+            se.banushimei,
+            se.bataiju,
+            se.zogen_fugo "zogenFugo",
+            se.zogen_sa "zogenSa",
+            se.kakutei_chakujun "kakuteiChakujun",
+            se.tansho_odds "tanshoOdds",
+            se.tansho_ninkijun "tanshoNinkijun",
+            se.soha_time "sohaTime",
+            se.time_sa "timeSa",
+            se.corner_1 "corner1",
+            se.corner_2 "corner2",
+            se.corner_3 "corner3",
+            se.corner_4 "corner4",
+            se.kohan_3f "kohan3f"
+          from ${jvdSe} se
+          join ${jvdRa} ra
+            on ra.kaisai_nen = se.kaisai_nen
+            and ra.kaisai_tsukihi = se.kaisai_tsukihi
+            and ra.keibajo_code = se.keibajo_code
+            and ra.race_bango = se.race_bango
+          where
+            ${includeJraHistory} = true
+            and se.ketto_toroku_bango in (select ketto_toroku_bango from current_horses)
+          union all
+          select
+            ra.kaisai_nen || ra.kaisai_tsukihi raceDate,
+            ra.kaisai_nen "kaisaiNen",
+            ra.kaisai_tsukihi "kaisaiTsukihi",
+            ra.keibajo_code "keibajoCode",
+            ra.race_bango "raceBango",
+            ra.kyosomei_hondai "kyosomeiHondai",
+            ra.kyosomei_fukudai "kyosomeiFukudai",
+            ra.kyosomei_kakkonai "kyosomeiKakkonai",
+            ra.grade_code "gradeCode",
+            ra.kyoso_shubetsu_code "kyosoShubetsuCode",
+            ra.kyoso_kigo_code "kyosoKigoCode",
+            ra.juryo_shubetsu_code "juryoShubetsuCode",
+            ra.kyoso_joken_code "kyosoJokenCode",
+            ra.kyoso_joken_meisho "kyosoJokenMeisho",
+            ra.kyori,
+            ra.track_code "trackCode",
+            ra.hasso_jikoku "hassoJikoku",
+            ra.tenko_code "tenkoCode",
+            ra.babajotai_code_shiba "babajotaiCodeShiba",
+            ra.babajotai_code_dirt "babajotaiCodeDirt",
+            se.wakuban,
+            se.umaban,
+            se.ketto_toroku_bango "kettoTorokuBango",
+            se.bamei,
+            se.seibetsu_code "seibetsuCode",
+            se.barei,
+            se.futan_juryo "futanJuryo",
+            se.kishumei_ryakusho "kishumeiRyakusho",
+            se.chokyoshimei_ryakusho "chokyoshimeiRyakusho",
+            se.banushimei,
+            se.bataiju,
+            se.zogen_fugo "zogenFugo",
+            se.zogen_sa "zogenSa",
+            se.kakutei_chakujun "kakuteiChakujun",
+            se.tansho_odds "tanshoOdds",
+            se.tansho_ninkijun "tanshoNinkijun",
+            se.soha_time "sohaTime",
+            se.time_sa "timeSa",
+            se.corner_1 "corner1",
+            se.corner_2 "corner2",
+            se.corner_3 "corner3",
+            se.corner_4 "corner4",
+            se.kohan_3f "kohan3f"
+          from ${nvdSe} se
+          join ${nvdRa} ra
+            on ra.kaisai_nen = se.kaisai_nen
+            and ra.kaisai_tsukihi = se.kaisai_tsukihi
+            and ra.keibajo_code = se.keibajo_code
+            and ra.race_bango = se.race_bango
+          where
+            ${includeNarHistory} = true
+            and se.ketto_toroku_bango in (select ketto_toroku_bango from current_horses)
+        ) past
+          on past."kettoTorokuBango" = ch.ketto_toroku_bango
+        where past.raceDate < ${raceDate}
       )
       select
         "currentJockey",
@@ -1650,12 +1914,31 @@ export const getHorseRaceResults = cache(
         "tanshoNinkijun",
         "sohaTime",
         "timeSa",
+        "corner1",
+        "corner2",
+        "corner3",
+        "corner4",
         "kohan3f"
       from history
       order by "currentUmaban"::int asc, "kaisaiNen" desc, "kaisaiTsukihi" desc, "raceBango" desc
     `);
 
-        return result.rows;
+        const rowsByRaceKey = new Map<string, HorseRaceResult>();
+        for (const row of result.rows) {
+          const raceKey = [
+            row.currentUmaban,
+            row.kaisaiNen,
+            row.kaisaiTsukihi,
+            row.keibajoCode,
+            row.raceBango,
+            row.kettoTorokuBango,
+          ].join("-");
+          if (!rowsByRaceKey.has(raceKey)) {
+            rowsByRaceKey.set(raceKey, row);
+          }
+        }
+
+        return [...rowsByRaceKey.values()];
       },
     );
   },
@@ -1923,6 +2206,12 @@ const toNullableNumber = (value: string | number | null | undefined): number | n
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 };
+const toNullableUnknownNumber = (value: unknown): number | null => {
+  if (typeof value !== "string" && typeof value !== "number") {
+    return null;
+  }
+  return toNullableNumber(value);
+};
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 const toStringValue = (value: unknown): string => (typeof value === "string" ? value : "");
@@ -1974,8 +2263,132 @@ const toPayoutStatsDetails = (value: unknown): PayoutStatsDetail[] => {
     raceNumber: toStringValue(detail.raceNumber),
   }));
 };
+const toRaceTimeTargetRaces = (value: unknown): RaceTimeTargetRace[] => {
+  const parsedValue = parseJsonValue(value);
+  if (!Array.isArray(parsedValue)) {
+    return [];
+  }
+
+  return parsedValue.filter(isRecord).map((race) => ({
+    date: toStringValue(race.date),
+    horseName: toStringValue(race.horseName),
+    horseNumber: toStringValue(race.horseNumber),
+    jockeyName: toStringValue(race.jockeyName),
+    keibajoCode: toStringValue(race.keibajoCode),
+    kohan3f: toStringValue(race.kohan3f),
+    ownerName: toStringValue(race.ownerName),
+    popularity: toStringValue(race.popularity),
+    raceName: toStringValue(race.raceName),
+    raceNumber: toStringValue(race.raceNumber),
+    raceTime: toStringValue(race.raceTime),
+    trainerName: toStringValue(race.trainerName),
+  }));
+};
+const isCorrelationDetailKey = (
+  value: string,
+): value is ConditionCorrelationDetail["key"] =>
+  value === "horseShow" ||
+  value === "horseWin" ||
+  value === "jockeyShow" ||
+  value === "odds" ||
+  value === "ownerShow" ||
+  value === "popularity" ||
+  value === "trainerShow";
+const toConditionCorrelationRows = (value: unknown): ConditionCorrelationRow[] => {
+  const parsedValue = parseJsonValue(value);
+  if (!Array.isArray(parsedValue)) {
+    return [];
+  }
+
+  return parsedValue.filter(isRecord).map((row) => {
+    const rawDetails = Array.isArray(row.details) ? row.details : [];
+    return {
+      details: rawDetails.filter(isRecord).map((detail) => {
+        const key = toStringValue(detail.key);
+        return {
+          key: isCorrelationDetailKey(key) ? key : "horseShow",
+          label: toStringValue(detail.label),
+          reason: toStringValue(detail.reason),
+          score: Number(detail.score ?? 0),
+          target: toNullableUnknownNumber(detail.target),
+          value: toNullableUnknownNumber(detail.value),
+          weight: Number(detail.weight ?? 0),
+        };
+      }),
+      horseName: toStringValue(row.horseName),
+      horseNumber: toStringValue(row.horseNumber),
+      score: Number(row.score ?? 0),
+    };
+  });
+};
+const toTimeScoreRows = (value: unknown): TimeScoreRow[] => {
+  const parsedValue = parseJsonValue(value);
+  if (!Array.isArray(parsedValue)) {
+    return [];
+  }
+
+  return parsedValue.filter(isRecord).map((row) => {
+    const rawDetails = Array.isArray(row.details) ? row.details : [];
+    return {
+      details: rawDetails.filter(isRecord).map(
+        (detail): TimeScoreDetail => ({
+          label: toStringValue(detail.label),
+          reason: toStringValue(detail.reason),
+          score: Number(detail.score ?? 0),
+          target: toNullableUnknownNumber(detail.target),
+          value: toNullableUnknownNumber(detail.value),
+          weight: Number(detail.weight ?? 0),
+        }),
+      ),
+      horseName: toStringValue(row.horseName),
+      horseNumber: toStringValue(row.horseNumber),
+      score: Number(row.score ?? 0),
+    };
+  });
+};
 const cleanDbText = (value: string | null | undefined): string =>
   (value ?? "").replace(/\s+/g, " ").replace(/　+/g, " ").trim();
+
+const RACE_NAME_TOKEN_PATTERN = /[\p{L}\p{N}ー・－-]+(?:杯|賞|記念|ステークス|カップ)/gu;
+
+const getStatsRaceNameToken = (race: RaceDetail): string | null => {
+  const subtitle = `${cleanDbText(race.kyosomeiFukudai)} ${cleanDbText(race.kyosomeiKakkonai)}`;
+  const subtitleMatch = [...subtitle.matchAll(RACE_NAME_TOKEN_PATTERN)].at(-1)?.[0] ?? "";
+  if (subtitleMatch) {
+    return subtitleMatch;
+  }
+
+  return [...cleanDbText(race.kyosomeiHondai).matchAll(RACE_NAME_TOKEN_PATTERN)].at(-1)?.[0] ?? null;
+};
+
+const escapePostgresRegex = (value: string): string =>
+  value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+
+const getStatsRaceTitleCondition = (race: RaceDetail, tableName = "ra") => {
+  const table = sql.raw(tableName);
+  const token = getStatsRaceNameToken(race);
+  if (token) {
+    const pattern = `(^|[[:space:]　])${escapePostgresRegex(token)}([[:space:]　]|$)`;
+    return sql`(
+      ${table}.kyosomei_hondai ~ ${pattern}
+      or ${table}.kyosomei_fukudai ~ ${pattern}
+      or ${table}.kyosomei_kakkonai ~ ${pattern}
+    )`;
+  }
+
+  return cleanDbText(race.kyosomeiHondai)
+    ? sql`${table}.kyosomei_hondai = ${race.kyosomeiHondai}`
+    : sql`false`;
+};
+
+const getStatsRaceSubtitleCondition = (race: RaceDetail, tableName = "ra") => {
+  const table = sql.raw(tableName);
+  return cleanDbText(race.kyosomeiFukudai)
+    ? sql`${table}.kyosomei_fukudai = ${race.kyosomeiFukudai}`
+    : cleanDbText(race.kyosomeiKakkonai)
+      ? sql`${table}.kyosomei_kakkonai = ${race.kyosomeiKakkonai}`
+      : sql`false`;
+};
 
 const getTrackSurface = (trackCode: string | null | undefined): string => {
   const label = trackCode ? TRACK_LABELS[trackCode.trim()] : undefined;
@@ -2011,19 +2424,24 @@ const getTrackCodesByTurn = (turn: string): string[] =>
     })
     .map(([code]) => code);
 
-const trackCodeIn = (codes: string[]) =>
-  codes.length > 0 ? sql`ra.track_code in (${sql.join(codes, sql`, `)})` : sql`false`;
+const trackCodeIn = (codes: string[], tableName = "ra") => {
+  const table = sql.raw(tableName);
+  return codes.length > 0 ? sql`${table}.track_code in (${sql.join(codes, sql`, `)})` : sql`false`;
+};
 
-const monthWindowCondition = (raceDate: string, enabled: boolean) => sql`
+const monthWindowCondition = (raceDate: string, enabled: boolean, tableName = "ra") => {
+  const table = sql.raw(tableName);
+  return sql`
   (
     ${enabled} = false
-    or substring(ra.kaisai_tsukihi from 1 for 2) in (
+    or substring(${table}.kaisai_tsukihi from 1 for 2) in (
       to_char(to_date(${raceDate}, 'YYYYMMDD') - interval '1 month', 'MM'),
       to_char(to_date(${raceDate}, 'YYYYMMDD'), 'MM'),
       to_char(to_date(${raceDate}, 'YYYYMMDD') + interval '1 month', 'MM')
     )
   )
 `;
+};
 
 const runnerCountCondition = (
   runnerTable: typeof jvdSe | typeof nvdSe,
@@ -2052,9 +2470,14 @@ const normalizeClassConditionName = (value: string): string =>
     .replace(/[－ー―‐]/g, "-")
     .trim();
 
-const getStatsClassCondition = (race: RaceDetail, classConditionName: string | null) => {
+const getStatsClassCondition = (
+  race: RaceDetail,
+  classConditionName: string | null,
+  tableName = "ra",
+) => {
+  const table = sql.raw(tableName);
   if (race.source === "jra" && JRA_STATS_GRADE_CODES.has(cleanDbText(race.gradeCode))) {
-    return sql`ra.grade_code = ${race.gradeCode}`;
+    return sql`${table}.grade_code = ${race.gradeCode}`;
   }
 
   const normalizedClassConditionName = classConditionName
@@ -2064,18 +2487,45 @@ const getStatsClassCondition = (race: RaceDetail, classConditionName: string | n
   return cleanDbText(race.kyosoJokenCode) === "000" && classConditionName
     ? sql`
         translate(
-          regexp_replace(ra.kyoso_joken_meisho, '[[:space:]　]+', ' ', 'g'),
+          regexp_replace(${table}.kyoso_joken_meisho, '[[:space:]　]+', ' ', 'g'),
           'ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚ０１２３４５６７８９－ー―‐',
           'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789----'
         ) like ${`%${normalizedClassConditionName}%`}
       `
-    : sql`ra.kyoso_joken_code = ${race.kyosoJokenCode}`;
+    : sql`${table}.kyoso_joken_code = ${race.kyosoJokenCode}`;
 };
+
+const shouldUseJraStats = (race: RaceDetail, settings: SimilarRaceStatsSettings): boolean => {
+  if (settings.sourceScope === "jra") {
+    return true;
+  }
+  if (settings.sourceScope === "nar") {
+    return false;
+  }
+  return race.source === "jra" || !settings.includeVenue;
+};
+
+const shouldUseNarStats = (race: RaceDetail, settings: SimilarRaceStatsSettings): boolean => {
+  if (settings.sourceScope === "nar") {
+    return true;
+  }
+  if (settings.sourceScope === "jra") {
+    return false;
+  }
+  return race.source === "nar" || !settings.includeVenue;
+};
+
+const getSingleStatsSource = (
+  race: RaceDetail,
+  settings: SimilarRaceStatsSettings,
+): RaceDetail["source"] =>
+  settings.sourceScope === "jra" || settings.sourceScope === "nar"
+    ? settings.sourceScope
+    : race.source;
 
 export const getBloodlineStats = cache(
   async (race: RaceDetail, settings: SimilarRaceStatsSettings): Promise<BloodlineStatsRow[]> => {
     return withDbQueryCache(["getBloodlineStats", race, settings], async () => {
-      const raceTable = race.source === "jra" ? jvdRa : nvdRa;
       const runnerTable = race.source === "jra" ? jvdSe : nvdSe;
       const primaryHorseTable = race.source === "jra" ? jvdUm : nvdNu;
       const secondaryHorseTable = nvdUm;
@@ -2084,14 +2534,8 @@ export const getBloodlineStats = cache(
       const surfaceCodes = getTrackCodesBySurface(getTrackSurface(race.trackCode));
       const turnCodes = getTrackCodesByTurn(getTrackTurn(race.trackCode));
       const classCondition = getStatsClassCondition(race, settings.classConditionName);
-      const raceTitleCondition = cleanDbText(race.kyosomeiHondai)
-        ? sql`ra.kyosomei_hondai = ${race.kyosomeiHondai}`
-        : sql`false`;
-      const raceSubtitleCondition = cleanDbText(race.kyosomeiFukudai)
-        ? sql`ra.kyosomei_fukudai = ${race.kyosomeiFukudai}`
-        : cleanDbText(race.kyosomeiKakkonai)
-          ? sql`ra.kyosomei_kakkonai = ${race.kyosomeiKakkonai}`
-          : sql`false`;
+      const raceTitleCondition = getStatsRaceTitleCondition(race);
+      const raceSubtitleCondition = getStatsRaceSubtitleCondition(race);
       const result = await getDb().execute<{
         category: "damSire" | "sire" | "sireSire";
         currentHorseNumbers: string;
@@ -2166,18 +2610,215 @@ export const getBloodlineStats = cache(
         select distinct name
         from targets
       ),
-      filtered_races as materialized (
+      filtered_horse_keys as (
+        select primary_um.ketto_toroku_bango
+        from ${primaryHorseTable} primary_um
+        join targets
+          on targets.category = 'sire'
+          and targets.name = nullif(regexp_replace(primary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')
+        union
+        select primary_um.ketto_toroku_bango
+        from ${primaryHorseTable} primary_um
+        join targets
+          on targets.category = 'sireSire'
+          and targets.name = nullif(regexp_replace(primary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')
+        union
+        select primary_um.ketto_toroku_bango
+        from ${primaryHorseTable} primary_um
+        join targets
+          on targets.category = 'damSire'
+          and targets.name = nullif(regexp_replace(primary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')
+        union
+        select secondary_um.ketto_toroku_bango
+        from ${secondaryHorseTable} secondary_um
+        join targets
+          on targets.category = 'sire'
+          and targets.name = nullif(regexp_replace(secondary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')
+        union
+        select secondary_um.ketto_toroku_bango
+        from ${secondaryHorseTable} secondary_um
+        join targets
+          on targets.category = 'sireSire'
+          and targets.name = nullif(regexp_replace(secondary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')
+        union
+        select secondary_um.ketto_toroku_bango
+        from ${secondaryHorseTable} secondary_um
+        join targets
+          on targets.category = 'damSire'
+          and targets.name = nullif(regexp_replace(secondary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')
+        union
+        select tertiary_um.ketto_toroku_bango
+        from ${tertiaryHorseTable} tertiary_um
+        join targets
+          on targets.category = 'sire'
+          and targets.name = nullif(regexp_replace(tertiary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')
+        union
+        select tertiary_um.ketto_toroku_bango
+        from ${tertiaryHorseTable} tertiary_um
+        join targets
+          on targets.category = 'sireSire'
+          and targets.name = nullif(regexp_replace(tertiary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')
+        union
+        select tertiary_um.ketto_toroku_bango
+        from ${tertiaryHorseTable} tertiary_um
+        join targets
+          on targets.category = 'damSire'
+          and targets.name = nullif(regexp_replace(tertiary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')
+      ),
+      filtered_horse_bloodlines as materialized (
         select
+          horse_keys.ketto_toroku_bango,
+          bloodline.sire,
+          bloodline."sireSire",
+          bloodline."damSire"
+        from filtered_horse_keys horse_keys
+        left join ${primaryHorseTable} primary_um
+          on primary_um.ketto_toroku_bango = horse_keys.ketto_toroku_bango
+        left join ${secondaryHorseTable} secondary_um
+          on secondary_um.ketto_toroku_bango = horse_keys.ketto_toroku_bango
+        left join ${tertiaryHorseTable} tertiary_um
+          on tertiary_um.ketto_toroku_bango = horse_keys.ketto_toroku_bango
+        cross join lateral (
+          select
+            coalesce(
+              nullif(regexp_replace(primary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+              nullif(regexp_replace(secondary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+              nullif(regexp_replace(tertiary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+              '不明'
+            ) sire,
+            coalesce(
+              nullif(regexp_replace(primary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+              nullif(regexp_replace(secondary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+              nullif(regexp_replace(tertiary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+              '不明'
+            ) "sireSire",
+            coalesce(
+              nullif(regexp_replace(primary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+              nullif(regexp_replace(secondary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+              nullif(regexp_replace(tertiary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+              '不明'
+            ) "damSire"
+        ) bloodline
+      ),
+      ancestor_horse_keys as (
+        select targets.category, targets.name, primary_um.ketto_toroku_bango
+        from ${primaryHorseTable} primary_um
+        join targets
+          on targets.name = nullif(regexp_replace(primary_um.bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')
+        where ${settings.includeBloodlineAncestors} = true
+        union
+        select targets.category, targets.name, secondary_um.ketto_toroku_bango
+        from ${secondaryHorseTable} secondary_um
+        join targets
+          on targets.name = nullif(regexp_replace(secondary_um.bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')
+        where ${settings.includeBloodlineAncestors} = true
+        union
+        select targets.category, targets.name, tertiary_um.ketto_toroku_bango
+        from ${tertiaryHorseTable} tertiary_um
+        join targets
+          on targets.name = nullif(regexp_replace(tertiary_um.bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')
+        where ${settings.includeBloodlineAncestors} = true
+      ),
+      ancestor_horse_bloodlines as materialized (
+        select
+          horse_keys.category,
+          horse_keys.name,
+          horse_keys.ketto_toroku_bango,
+          bloodline.sire,
+          bloodline."sireSire",
+          bloodline."damSire"
+        from ancestor_horse_keys horse_keys
+        left join ${primaryHorseTable} primary_um
+          on primary_um.ketto_toroku_bango = horse_keys.ketto_toroku_bango
+        left join ${secondaryHorseTable} secondary_um
+          on secondary_um.ketto_toroku_bango = horse_keys.ketto_toroku_bango
+        left join ${tertiaryHorseTable} tertiary_um
+          on tertiary_um.ketto_toroku_bango = horse_keys.ketto_toroku_bango
+        cross join lateral (
+          select
+            coalesce(
+              nullif(regexp_replace(primary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+              nullif(regexp_replace(secondary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+              nullif(regexp_replace(tertiary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+              '不明'
+            ) sire,
+            coalesce(
+              nullif(regexp_replace(primary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+              nullif(regexp_replace(secondary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+              nullif(regexp_replace(tertiary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+              '不明'
+            ) "sireSire",
+            coalesce(
+              nullif(regexp_replace(primary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+              nullif(regexp_replace(secondary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+              nullif(regexp_replace(tertiary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+              '不明'
+            ) "damSire"
+        ) bloodline
+      ),
+      matched_entries as (
+        select
+          targets.category,
+          targets.name,
           ra.kaisai_nen,
           ra.kaisai_tsukihi,
           ra.keibajo_code,
+          se.wakuban,
+          se.umaban,
+          coalesce(nullif(regexp_replace(se.bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') bamei,
           ra.race_bango,
           coalesce(
             nullif(regexp_replace(ra.kyosomei_hondai, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
             '一般競走'
-          ) as race_name
-        from ${raceTable} ra
+          ) as race_name,
+          se.kakutei_chakujun,
+          se.soha_time,
+          se.tansho_ninkijun,
+          se.tansho_odds,
+          se.ketto_toroku_bango,
+          filtered_horse_bloodlines.sire,
+          filtered_horse_bloodlines."sireSire",
+          filtered_horse_bloodlines."damSire"
+        from filtered_horse_bloodlines
+        join targets
+          on (
+            targets.category = 'sire'
+            and targets.name = filtered_horse_bloodlines.sire
+          )
+          or (
+            targets.category = 'sireSire'
+            and targets.name = filtered_horse_bloodlines."sireSire"
+          )
+          or (
+            targets.category = 'damSire'
+            and targets.name = filtered_horse_bloodlines."damSire"
+          )
+        join ${jvdSe} se
+          on se.ketto_toroku_bango = filtered_horse_bloodlines.ketto_toroku_bango
+          and se.kaisai_nen <= ${race.kaisaiNen}
+          and (
+            ${settings.years}::int is null
+            or se.kaisai_nen >= to_char(
+              to_date(${raceDate}, 'YYYYMMDD') - (${settings.years}::int * interval '1 year'),
+              'YYYY'
+            )
+          )
+          and se.kaisai_nen || se.kaisai_tsukihi < ${raceDate}
+          and (
+            ${settings.years}::int is null
+            or se.kaisai_nen || se.kaisai_tsukihi >= to_char(
+              to_date(${raceDate}, 'YYYYMMDD') - (${settings.years}::int * interval '1 year'),
+              'YYYYMMDD'
+            )
+          )
+        join ${jvdRa} ra
+          on ra.kaisai_nen = se.kaisai_nen
+          and ra.kaisai_tsukihi = se.kaisai_tsukihi
+          and ra.keibajo_code = se.keibajo_code
+          and ra.race_bango = se.race_bango
         where
+          ${shouldUseJraStats(race, settings)} = true
+          and
           ra.kaisai_nen || ra.kaisai_tsukihi < ${raceDate}
           and (
             ${settings.years}::int is null
@@ -2200,99 +2841,244 @@ export const getBloodlineStats = cache(
           and (${settings.includeSurface} = false or ${trackCodeIn(surfaceCodes)})
           and (${settings.includeTurn} = false or ${trackCodeIn(turnCodes)})
           and (${settings.includeDistance} = false or ra.kyori = ${race.kyori})
-      ),
-      filtered_runners as materialized (
+          and nullif(regexp_replace(coalesce(se.kakutei_chakujun, ''), '[^0-9]', '', 'g'), '') !~ '^0+$'
+        union all
         select
+          targets.category,
+          targets.name,
           ra.kaisai_nen,
           ra.kaisai_tsukihi,
           ra.keibajo_code,
-          ra.race_bango,
-          ra.race_name,
           se.wakuban,
           se.umaban,
-          coalesce(nullif(regexp_replace(se.bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') as bamei,
+          coalesce(nullif(regexp_replace(se.bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') bamei,
+          ra.race_bango,
+          coalesce(
+            nullif(regexp_replace(ra.kyosomei_hondai, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+            '一般競走'
+          ) race_name,
           se.kakutei_chakujun,
           se.soha_time,
           se.tansho_ninkijun,
           se.tansho_odds,
-          se.ketto_toroku_bango
-        from filtered_races ra
-        join ${runnerTable} se
-          on se.kaisai_nen = ra.kaisai_nen
-          and se.kaisai_tsukihi = ra.kaisai_tsukihi
-          and se.keibajo_code = ra.keibajo_code
-          and se.race_bango = ra.race_bango
-      ),
-      filtered_horse_keys as (
-        select distinct ketto_toroku_bango
-        from filtered_runners
-      ),
-      filtered_horse_bloodlines as materialized (
-        select
-          horse_keys.ketto_toroku_bango,
-          bloodline.sire,
-          bloodline."sireSire",
-          bloodline."damSire"
-        from filtered_horse_keys horse_keys
-        left join ${primaryHorseTable} primary_um
-          on primary_um.ketto_toroku_bango = horse_keys.ketto_toroku_bango
-        left join ${secondaryHorseTable} secondary_um
-          on secondary_um.ketto_toroku_bango = horse_keys.ketto_toroku_bango
-        left join ${tertiaryHorseTable} tertiary_um
-          on tertiary_um.ketto_toroku_bango = horse_keys.ketto_toroku_bango
-        cross join lateral (
-          select
-            coalesce(
-              nullif(regexp_replace(primary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              nullif(regexp_replace(secondary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              nullif(regexp_replace(tertiary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              '不明'
-            ) as sire,
-            coalesce(
-              nullif(regexp_replace(primary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              nullif(regexp_replace(secondary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              nullif(regexp_replace(tertiary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              '不明'
-            ) as "sireSire",
-            coalesce(
-              nullif(regexp_replace(primary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              nullif(regexp_replace(secondary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              nullif(regexp_replace(tertiary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-              '不明'
-            ) as "damSire"
-        ) bloodline
-        where exists (
-          select 1
-          from target_names
-          where target_names.name in (bloodline.sire, bloodline."sireSire", bloodline."damSire")
-          )
-      ),
-      matched_entries as (
-        select
-          filtered_runners.kaisai_nen,
-          filtered_runners.kaisai_tsukihi,
-          filtered_runners.keibajo_code,
-          filtered_runners.wakuban,
-          filtered_runners.umaban,
-          filtered_runners.bamei,
-          filtered_runners.race_bango,
-          filtered_runners.race_name,
-          filtered_runners.kakutei_chakujun,
-          filtered_runners.soha_time,
-          filtered_runners.tansho_ninkijun,
-          filtered_runners.tansho_odds,
-          filtered_runners.ketto_toroku_bango,
+          se.ketto_toroku_bango,
           filtered_horse_bloodlines.sire,
           filtered_horse_bloodlines."sireSire",
           filtered_horse_bloodlines."damSire"
-        from filtered_runners
-        join filtered_horse_bloodlines
-          on filtered_horse_bloodlines.ketto_toroku_bango = filtered_runners.ketto_toroku_bango
+        from filtered_horse_bloodlines
+        join targets
+          on (
+            targets.category = 'sire'
+            and targets.name = filtered_horse_bloodlines.sire
+          )
+          or (
+            targets.category = 'sireSire'
+            and targets.name = filtered_horse_bloodlines."sireSire"
+          )
+          or (
+            targets.category = 'damSire'
+            and targets.name = filtered_horse_bloodlines."damSire"
+          )
+        join ${nvdSe} se
+          on se.ketto_toroku_bango = filtered_horse_bloodlines.ketto_toroku_bango
+          and se.kaisai_nen <= ${race.kaisaiNen}
+          and (
+            ${settings.years}::int is null
+            or se.kaisai_nen >= to_char(
+              to_date(${raceDate}, 'YYYYMMDD') - (${settings.years}::int * interval '1 year'),
+              'YYYY'
+            )
+          )
+          and se.kaisai_nen || se.kaisai_tsukihi < ${raceDate}
+          and (
+            ${settings.years}::int is null
+            or se.kaisai_nen || se.kaisai_tsukihi >= to_char(
+              to_date(${raceDate}, 'YYYYMMDD') - (${settings.years}::int * interval '1 year'),
+              'YYYYMMDD'
+            )
+          )
+        join ${nvdRa} ra
+          on ra.kaisai_nen = se.kaisai_nen
+          and ra.kaisai_tsukihi = se.kaisai_tsukihi
+          and ra.keibajo_code = se.keibajo_code
+          and ra.race_bango = se.race_bango
+        where
+          ${shouldUseNarStats(race, settings)} = true
+          and
+          ra.kaisai_nen || ra.kaisai_tsukihi < ${raceDate}
+          and (
+            ${settings.years}::int is null
+            or ra.kaisai_nen || ra.kaisai_tsukihi >= to_char(
+              to_date(${raceDate}, 'YYYYMMDD') - (${settings.years}::int * interval '1 year'),
+              'YYYYMMDD'
+            )
+          )
+          and (${settings.includeVenue} = false or ra.keibajo_code = ${race.keibajoCode})
+          and ${monthWindowCondition(raceDate, settings.includeMonthWindow)}
+          and (${settings.includeRaceTitle} = false or ${raceTitleCondition})
+          and (${settings.includeRaceSubtitle} = false or ${raceSubtitleCondition})
+          and (${settings.includeAge} = false or ra.kyoso_shubetsu_code = ${race.kyosoShubetsuCode})
+          and (
+            ${settings.includeClass} = false
+            or ${classCondition}
+          )
+          and (${settings.includeSex} = false or ra.kyoso_kigo_code = ${race.kyosoKigoCode})
+          and (${settings.includeWeight} = false or ra.juryo_shubetsu_code = ${race.juryoShubetsuCode})
+          and (${settings.includeSurface} = false or ${trackCodeIn(surfaceCodes)})
+          and (${settings.includeTurn} = false or ${trackCodeIn(turnCodes)})
+          and (${settings.includeDistance} = false or ra.kyori = ${race.kyori})
+          and nullif(regexp_replace(coalesce(se.kakutei_chakujun, ''), '[^0-9]', '', 'g'), '') !~ '^0+$'
+        union all
+        select
+          ancestor_horse_bloodlines.category,
+          ancestor_horse_bloodlines.name,
+          ra.kaisai_nen,
+          ra.kaisai_tsukihi,
+          ra.keibajo_code,
+          se.wakuban,
+          se.umaban,
+          coalesce(nullif(regexp_replace(se.bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') bamei,
+          ra.race_bango,
+          coalesce(
+            nullif(regexp_replace(ra.kyosomei_hondai, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+            '一般競走'
+          ) race_name,
+          se.kakutei_chakujun,
+          se.soha_time,
+          se.tansho_ninkijun,
+          se.tansho_odds,
+          se.ketto_toroku_bango,
+          ancestor_horse_bloodlines.sire,
+          ancestor_horse_bloodlines."sireSire",
+          ancestor_horse_bloodlines."damSire"
+        from ancestor_horse_bloodlines
+        join ${jvdSe} se
+          on se.ketto_toroku_bango = ancestor_horse_bloodlines.ketto_toroku_bango
+          and se.kaisai_nen <= ${race.kaisaiNen}
+          and (
+            ${settings.years}::int is null
+            or se.kaisai_nen >= to_char(
+              to_date(${raceDate}, 'YYYYMMDD') - (${settings.years}::int * interval '1 year'),
+              'YYYY'
+            )
+          )
+          and se.kaisai_nen || se.kaisai_tsukihi < ${raceDate}
+          and (
+            ${settings.years}::int is null
+            or se.kaisai_nen || se.kaisai_tsukihi >= to_char(
+              to_date(${raceDate}, 'YYYYMMDD') - (${settings.years}::int * interval '1 year'),
+              'YYYYMMDD'
+            )
+          )
+        join ${jvdRa} ra
+          on ra.kaisai_nen = se.kaisai_nen
+          and ra.kaisai_tsukihi = se.kaisai_tsukihi
+          and ra.keibajo_code = se.keibajo_code
+          and ra.race_bango = se.race_bango
+        where
+          ${shouldUseJraStats(race, settings)} = true
+          and
+          ra.kaisai_nen || ra.kaisai_tsukihi < ${raceDate}
+          and (
+            ${settings.years}::int is null
+            or ra.kaisai_nen || ra.kaisai_tsukihi >= to_char(
+              to_date(${raceDate}, 'YYYYMMDD') - (${settings.years}::int * interval '1 year'),
+              'YYYYMMDD'
+            )
+          )
+          and (${settings.includeVenue} = false or ra.keibajo_code = ${race.keibajoCode})
+          and ${monthWindowCondition(raceDate, settings.includeMonthWindow)}
+          and (${settings.includeRaceTitle} = false or ${raceTitleCondition})
+          and (${settings.includeRaceSubtitle} = false or ${raceSubtitleCondition})
+          and (${settings.includeAge} = false or ra.kyoso_shubetsu_code = ${race.kyosoShubetsuCode})
+          and (
+            ${settings.includeClass} = false
+            or ${classCondition}
+          )
+          and (${settings.includeSex} = false or ra.kyoso_kigo_code = ${race.kyosoKigoCode})
+          and (${settings.includeWeight} = false or ra.juryo_shubetsu_code = ${race.juryoShubetsuCode})
+          and (${settings.includeSurface} = false or ${trackCodeIn(surfaceCodes)})
+          and (${settings.includeTurn} = false or ${trackCodeIn(turnCodes)})
+          and (${settings.includeDistance} = false or ra.kyori = ${race.kyori})
+          and nullif(regexp_replace(coalesce(se.kakutei_chakujun, ''), '[^0-9]', '', 'g'), '') !~ '^0+$'
+        union all
+        select
+          ancestor_horse_bloodlines.category,
+          ancestor_horse_bloodlines.name,
+          ra.kaisai_nen,
+          ra.kaisai_tsukihi,
+          ra.keibajo_code,
+          se.wakuban,
+          se.umaban,
+          coalesce(nullif(regexp_replace(se.bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') bamei,
+          ra.race_bango,
+          coalesce(
+            nullif(regexp_replace(ra.kyosomei_hondai, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+            '一般競走'
+          ) race_name,
+          se.kakutei_chakujun,
+          se.soha_time,
+          se.tansho_ninkijun,
+          se.tansho_odds,
+          se.ketto_toroku_bango,
+          ancestor_horse_bloodlines.sire,
+          ancestor_horse_bloodlines."sireSire",
+          ancestor_horse_bloodlines."damSire"
+        from ancestor_horse_bloodlines
+        join ${nvdSe} se
+          on se.ketto_toroku_bango = ancestor_horse_bloodlines.ketto_toroku_bango
+          and se.kaisai_nen <= ${race.kaisaiNen}
+          and (
+            ${settings.years}::int is null
+            or se.kaisai_nen >= to_char(
+              to_date(${raceDate}, 'YYYYMMDD') - (${settings.years}::int * interval '1 year'),
+              'YYYY'
+            )
+          )
+          and se.kaisai_nen || se.kaisai_tsukihi < ${raceDate}
+          and (
+            ${settings.years}::int is null
+            or se.kaisai_nen || se.kaisai_tsukihi >= to_char(
+              to_date(${raceDate}, 'YYYYMMDD') - (${settings.years}::int * interval '1 year'),
+              'YYYYMMDD'
+            )
+          )
+        join ${nvdRa} ra
+          on ra.kaisai_nen = se.kaisai_nen
+          and ra.kaisai_tsukihi = se.kaisai_tsukihi
+          and ra.keibajo_code = se.keibajo_code
+          and ra.race_bango = se.race_bango
+        where
+          ${shouldUseNarStats(race, settings)} = true
+          and
+          ra.kaisai_nen || ra.kaisai_tsukihi < ${raceDate}
+          and (
+            ${settings.years}::int is null
+            or ra.kaisai_nen || ra.kaisai_tsukihi >= to_char(
+              to_date(${raceDate}, 'YYYYMMDD') - (${settings.years}::int * interval '1 year'),
+              'YYYYMMDD'
+            )
+          )
+          and (${settings.includeVenue} = false or ra.keibajo_code = ${race.keibajoCode})
+          and ${monthWindowCondition(raceDate, settings.includeMonthWindow)}
+          and (${settings.includeRaceTitle} = false or ${raceTitleCondition})
+          and (${settings.includeRaceSubtitle} = false or ${raceSubtitleCondition})
+          and (${settings.includeAge} = false or ra.kyoso_shubetsu_code = ${race.kyosoShubetsuCode})
+          and (
+            ${settings.includeClass} = false
+            or ${classCondition}
+          )
+          and (${settings.includeSex} = false or ra.kyoso_kigo_code = ${race.kyosoKigoCode})
+          and (${settings.includeWeight} = false or ra.juryo_shubetsu_code = ${race.juryoShubetsuCode})
+          and (${settings.includeSurface} = false or ${trackCodeIn(surfaceCodes)})
+          and (${settings.includeTurn} = false or ${trackCodeIn(turnCodes)})
+          and (${settings.includeDistance} = false or ra.kyori = ${race.kyori})
+          and nullif(regexp_replace(coalesce(se.kakutei_chakujun, ''), '[^0-9]', '', 'g'), '') !~ '^0+$'
       ),
       grouped_entries as (
-        select
-          targets.category,
-          targets.name,
+        select distinct
+          matched_entries.category,
+          matched_entries.name,
           matched_entries.kaisai_nen,
           matched_entries.kaisai_tsukihi,
           matched_entries.keibajo_code,
@@ -2310,8 +3096,6 @@ export const getBloodlineStats = cache(
           matched_entries."sireSire",
           matched_entries."damSire"
         from matched_entries
-        join targets
-          on targets.name in (matched_entries.sire, matched_entries."sireSire", matched_entries."damSire")
       ),
       stats_source as (
         select
@@ -2482,20 +3266,11 @@ export const getBloodlineStats = cache(
 export const getSimilarRaceStats = cache(
   async (race: RaceDetail, settings: SimilarRaceStatsSettings): Promise<SimilarRaceStatsRow[]> => {
     return withDbQueryCache(["getSimilarRaceStats", race, settings], async () => {
-      const raceTable = race.source === "jra" ? jvdRa : nvdRa;
       const runnerTable = race.source === "jra" ? jvdSe : nvdSe;
       const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
       const surfaceCodes = getTrackCodesBySurface(getTrackSurface(race.trackCode));
       const turnCodes = getTrackCodesByTurn(getTrackTurn(race.trackCode));
-      const classCondition = getStatsClassCondition(race, settings.classConditionName);
-      const raceTitleCondition = cleanDbText(race.kyosomeiHondai)
-        ? sql`ra.kyosomei_hondai = ${race.kyosomeiHondai}`
-        : sql`false`;
-      const raceSubtitleCondition = cleanDbText(race.kyosomeiFukudai)
-        ? sql`ra.kyosomei_fukudai = ${race.kyosomeiFukudai}`
-        : cleanDbText(race.kyosomeiKakkonai)
-          ? sql`ra.kyosomei_kakkonai = ${race.kyosomeiKakkonai}`
-          : sql`false`;
+      const classCondition = getStatsClassCondition(race, settings.classConditionName, "history");
       const result = await getDb().execute<{
         category: "jockey" | "owner" | "trainer";
         currentHorseNumbers: string;
@@ -2545,54 +3320,112 @@ export const getSimilarRaceStats = cache(
       ),
       matched_entries as (
         select
-          ra.kaisai_nen,
-          ra.kaisai_tsukihi,
-          ra.keibajo_code,
-          se.wakuban,
-          se.umaban,
-          coalesce(nullif(regexp_replace(se.bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') as bamei,
-          ra.race_bango,
-          coalesce(
-            nullif(regexp_replace(ra.kyosomei_hondai, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-            '一般競走'
-          ) as race_name,
-          se.kakutei_chakujun,
-          se.soha_time,
-          se.tansho_ninkijun,
-          se.tansho_odds,
-          se.ketto_toroku_bango,
-          coalesce(nullif(regexp_replace(se.kishumei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') as jockey,
-          coalesce(nullif(regexp_replace(se.chokyoshimei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') as trainer,
-          coalesce(nullif(regexp_replace(se.banushimei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') as owner
-        from ${raceTable} ra
-        join ${runnerTable} se
-          on se.kaisai_nen = ra.kaisai_nen
-          and se.kaisai_tsukihi = ra.kaisai_tsukihi
-          and se.keibajo_code = ra.keibajo_code
-          and se.race_bango = ra.race_bango
+          *
+        from (
+          select
+            ra.kaisai_nen,
+            ra.kaisai_tsukihi,
+            ra.keibajo_code,
+            ra.race_bango,
+            ra.kyosomei_hondai,
+            ra.kyosomei_fukudai,
+            ra.kyosomei_kakkonai,
+            ra.kyoso_shubetsu_code,
+            ra.kyoso_joken_code,
+            ra.kyoso_joken_meisho,
+            ra.grade_code,
+            ra.kyoso_kigo_code,
+            ra.juryo_shubetsu_code,
+            ra.kyori,
+            ra.track_code,
+            se.wakuban,
+            se.umaban,
+            coalesce(nullif(regexp_replace(se.bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') bamei,
+            coalesce(
+              nullif(regexp_replace(ra.kyosomei_hondai, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+              '一般競走'
+            ) race_name,
+            se.kakutei_chakujun,
+            se.soha_time,
+            se.tansho_ninkijun,
+            se.tansho_odds,
+            se.ketto_toroku_bango,
+            coalesce(nullif(regexp_replace(se.kishumei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') jockey,
+            coalesce(nullif(regexp_replace(se.chokyoshimei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') trainer,
+            coalesce(nullif(regexp_replace(se.banushimei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') owner
+          from ${jvdRa} ra
+          join ${jvdSe} se
+            on se.kaisai_nen = ra.kaisai_nen
+            and se.kaisai_tsukihi = ra.kaisai_tsukihi
+            and se.keibajo_code = ra.keibajo_code
+            and se.race_bango = ra.race_bango
+          where ${shouldUseJraStats(race, settings)} = true
+          union all
+          select
+            ra.kaisai_nen,
+            ra.kaisai_tsukihi,
+            ra.keibajo_code,
+            ra.race_bango,
+            ra.kyosomei_hondai,
+            ra.kyosomei_fukudai,
+            ra.kyosomei_kakkonai,
+            ra.kyoso_shubetsu_code,
+            ra.kyoso_joken_code,
+            ra.kyoso_joken_meisho,
+            ra.grade_code,
+            ra.kyoso_kigo_code,
+            ra.juryo_shubetsu_code,
+            ra.kyori,
+            ra.track_code,
+            se.wakuban,
+            se.umaban,
+            coalesce(nullif(regexp_replace(se.bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') bamei,
+            coalesce(
+              nullif(regexp_replace(ra.kyosomei_hondai, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+              '一般競走'
+            ) race_name,
+            se.kakutei_chakujun,
+            se.soha_time,
+            se.tansho_ninkijun,
+            se.tansho_odds,
+            se.ketto_toroku_bango,
+            coalesce(nullif(regexp_replace(se.kishumei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') jockey,
+            coalesce(nullif(regexp_replace(se.chokyoshimei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') trainer,
+            coalesce(nullif(regexp_replace(se.banushimei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '不明') owner
+          from ${nvdRa} ra
+          join ${nvdSe} se
+            on se.kaisai_nen = ra.kaisai_nen
+            and se.kaisai_tsukihi = ra.kaisai_tsukihi
+            and se.keibajo_code = ra.keibajo_code
+            and se.race_bango = ra.race_bango
+          where ${shouldUseNarStats(race, settings)} = true
+        ) history
         where
-          ra.kaisai_nen || ra.kaisai_tsukihi < ${raceDate}
+          history.kaisai_nen || history.kaisai_tsukihi < ${raceDate}
           and (
             ${settings.years}::int is null
-            or ra.kaisai_nen || ra.kaisai_tsukihi >= to_char(
+            or history.kaisai_nen || history.kaisai_tsukihi >= to_char(
               to_date(${raceDate}, 'YYYYMMDD') - (${settings.years}::int * interval '1 year'),
               'YYYYMMDD'
             )
           )
-          and (${settings.includeVenue} = false or ra.keibajo_code = ${race.keibajoCode})
-          and ${monthWindowCondition(raceDate, settings.includeMonthWindow)}
-          and (${settings.includeRaceTitle} = false or ${raceTitleCondition})
-          and (${settings.includeRaceSubtitle} = false or ${raceSubtitleCondition})
-          and (${settings.includeAge} = false or ra.kyoso_shubetsu_code = ${race.kyosoShubetsuCode})
+          and (${settings.includeVenue} = false or history.keibajo_code = ${race.keibajoCode})
+          and ${monthWindowCondition(raceDate, settings.includeMonthWindow, "history")}
+          and (${settings.includeRaceTitle} = false or ${getStatsRaceTitleCondition(race, "history")})
+          and (
+            ${settings.includeRaceSubtitle} = false
+            or ${getStatsRaceSubtitleCondition(race, "history")}
+          )
+          and (${settings.includeAge} = false or history.kyoso_shubetsu_code = ${race.kyosoShubetsuCode})
           and (
             ${settings.includeClass} = false
             or ${classCondition}
           )
-          and (${settings.includeSex} = false or ra.kyoso_kigo_code = ${race.kyosoKigoCode})
-          and (${settings.includeWeight} = false or ra.juryo_shubetsu_code = ${race.juryoShubetsuCode})
-          and (${settings.includeSurface} = false or ${trackCodeIn(surfaceCodes)})
-          and (${settings.includeTurn} = false or ${trackCodeIn(turnCodes)})
-          and (${settings.includeDistance} = false or ra.kyori = ${race.kyori})
+          and (${settings.includeSex} = false or history.kyoso_kigo_code = ${race.kyosoKigoCode})
+          and (${settings.includeWeight} = false or history.juryo_shubetsu_code = ${race.juryoShubetsuCode})
+          and (${settings.includeSurface} = false or ${trackCodeIn(surfaceCodes, "history")})
+          and (${settings.includeTurn} = false or ${trackCodeIn(turnCodes, "history")})
+          and (${settings.includeDistance} = false or history.kyori = ${race.kyori})
       ),
       grouped_entries as (
         select
@@ -2775,23 +3608,344 @@ export const getSimilarRaceStats = cache(
   },
 );
 
-export const getRaceTimeStats = cache(
-  async (race: RaceDetail, settings: SimilarRaceStatsSettings): Promise<RaceTimeStats> => {
-    return withDbQueryCache(["getRaceTimeStats", race, settings], async () => {
-      const raceTable = race.source === "jra" ? jvdRa : nvdRa;
-      const runnerTable = race.source === "jra" ? jvdSe : nvdSe;
+export const getTimeScoreRows = cache(
+  async (race: RaceDetail, settings: SimilarRaceStatsSettings): Promise<TimeScoreRow[]> => {
+    return withDbQueryCache(["getTimeScoreRows", race, settings], async () => {
+      const statsSource = getSingleStatsSource(race, settings);
+      const raceTable = statsSource === "jra" ? jvdRa : nvdRa;
+      const runnerTable = statsSource === "jra" ? jvdSe : nvdSe;
+      const currentRunnerTable = race.source === "jra" ? jvdSe : nvdSe;
       const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
       const surfaceCodes = getTrackCodesBySurface(getTrackSurface(race.trackCode));
       const turnCodes = getTrackCodesByTurn(getTrackTurn(race.trackCode));
       const classCondition = getStatsClassCondition(race, settings.classConditionName);
-      const raceTitleCondition = cleanDbText(race.kyosomeiHondai)
-        ? sql`ra.kyosomei_hondai = ${race.kyosomeiHondai}`
-        : sql`false`;
-      const raceSubtitleCondition = cleanDbText(race.kyosomeiFukudai)
-        ? sql`ra.kyosomei_fukudai = ${race.kyosomeiFukudai}`
-        : cleanDbText(race.kyosomeiKakkonai)
-          ? sql`ra.kyosomei_kakkonai = ${race.kyosomeiKakkonai}`
-          : sql`false`;
+      const raceTitleCondition = getStatsRaceTitleCondition(race);
+      const raceSubtitleCondition = getStatsRaceSubtitleCondition(race);
+      const result = await getDb().execute<{ rows: unknown }>(sql`
+      with current_horses as (
+        select
+          coalesce(nullif(regexp_replace(se.umaban, '^0+', ''), ''), '0') horse_number,
+          se.umaban::int horse_number_sort,
+          coalesce(nullif(regexp_replace(se.bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') horse_name,
+          se.ketto_toroku_bango,
+          nullif(regexp_replace(coalesce(se.barei, ''), '[^0-9]', '', 'g'), '')::numeric current_age
+        from ${currentRunnerTable} se
+        where
+          se.kaisai_nen = ${race.kaisaiNen}
+          and se.kaisai_tsukihi = ${race.kaisaiTsukihi}
+          and se.keibajo_code = ${race.keibajoCode}
+          and se.race_bango = ${race.raceBango}
+          and btrim(coalesce(se.ketto_toroku_bango, '')) <> ''
+      ),
+      matched_races as (
+        select
+          ra.kaisai_nen,
+          ra.kaisai_tsukihi,
+          ra.keibajo_code,
+          ra.race_bango
+        from ${raceTable} ra
+        where
+          ra.kaisai_nen || ra.kaisai_tsukihi < ${raceDate}
+          and (
+            ${settings.years}::int is null
+            or ra.kaisai_nen || ra.kaisai_tsukihi >= to_char(
+              to_date(${raceDate}, 'YYYYMMDD') - (${settings.years}::int * interval '1 year'),
+              'YYYYMMDD'
+            )
+          )
+          and (${settings.includeVenue} = false or ra.keibajo_code = ${race.keibajoCode})
+          and ${monthWindowCondition(raceDate, settings.includeMonthWindow)}
+          and ${runnerCountCondition(runnerTable, settings)}
+          and (${settings.includeRaceTitle} = false or ${raceTitleCondition})
+          and (${settings.includeRaceSubtitle} = false or ${raceSubtitleCondition})
+          and (${settings.includeAge} = false or ra.kyoso_shubetsu_code = ${race.kyosoShubetsuCode})
+          and (${settings.includeClass} = false or ${classCondition})
+          and (${settings.includeSex} = false or ra.kyoso_kigo_code = ${race.kyosoKigoCode})
+          and (${settings.includeWeight} = false or ra.juryo_shubetsu_code = ${race.juryoShubetsuCode})
+          and (${settings.includeSurface} = false or ${trackCodeIn(surfaceCodes)})
+          and (${settings.includeTurn} = false or ${trackCodeIn(turnCodes)})
+          and (${settings.includeDistance} = false or ra.kyori = ${race.kyori})
+          and (${settings.includeRaceNumber} = false or ra.race_bango = ${race.raceBango})
+      ),
+      target_profile as (
+        select
+          avg(nullif(regexp_replace(coalesce(se.soha_time, ''), '[^0-9]', '', 'g'), '')::numeric) target_race_time,
+          avg(nullif(regexp_replace(coalesce(se.kohan_3f, ''), '[^0-9]', '', 'g'), '')::numeric) target_last3f,
+          avg(nullif(regexp_replace(coalesce(se.bataiju, ''), '[^0-9]', '', 'g'), '')::numeric) target_body_weight,
+          avg(nullif(regexp_replace(coalesce(se.futan_juryo, ''), '[^0-9]', '', 'g'), '')::numeric) target_carried_weight,
+          avg(nullif(regexp_replace(coalesce(se.time_sa, ''), '[^0-9]', '', 'g'), '')::numeric) target_margin
+        from matched_races
+        join ${runnerTable} se
+          on se.kaisai_nen = matched_races.kaisai_nen
+          and se.kaisai_tsukihi = matched_races.kaisai_tsukihi
+          and se.keibajo_code = matched_races.keibajo_code
+          and se.race_bango = matched_races.race_bango
+        where se.kakutei_chakujun in ('01', '02', '03')
+      ),
+      history as (
+        select
+          current_horses.horse_number,
+          current_horses.horse_number_sort,
+          current_horses.horse_name,
+          past.keibajo_code,
+          past.race_date,
+          past.distance,
+          past.race_time,
+          past.last3f,
+          past.body_weight,
+          past.carried_weight,
+          past.margin,
+          1.0 / (
+            1.0 + greatest(
+              0,
+              to_date(${raceDate}, 'YYYYMMDD') - to_date(past.race_date, 'YYYYMMDD')
+            ) / case
+              when current_horses.current_age is null then 365.0
+              when current_horses.current_age <= 3 then 180.0
+              when current_horses.current_age = 4 then 270.0
+              else 365.0
+            end
+          ) recency_weight,
+          case
+            when past.distance is null or nullif(regexp_replace(coalesce(${race.kyori}, ''), '[^0-9]', '', 'g'), '')::numeric is null then 0.5
+            else greatest(
+              0,
+              1 - abs(past.distance - nullif(regexp_replace(coalesce(${race.kyori}, ''), '[^0-9]', '', 'g'), '')::numeric)
+                / greatest(nullif(regexp_replace(coalesce(${race.kyori}, ''), '[^0-9]', '', 'g'), '')::numeric * 0.5, 400)
+            )
+          end distance_score
+        from current_horses
+        join (
+          select
+            se.ketto_toroku_bango,
+            se.kaisai_nen || se.kaisai_tsukihi race_date,
+            se.keibajo_code,
+            nullif(regexp_replace(coalesce(ra.kyori, ''), '[^0-9]', '', 'g'), '')::numeric distance,
+            nullif(regexp_replace(coalesce(se.soha_time, ''), '[^0-9]', '', 'g'), '')::numeric race_time,
+            nullif(regexp_replace(coalesce(se.kohan_3f, ''), '[^0-9]', '', 'g'), '')::numeric last3f,
+            nullif(regexp_replace(coalesce(se.bataiju, ''), '[^0-9]', '', 'g'), '')::numeric body_weight,
+            nullif(regexp_replace(coalesce(se.futan_juryo, ''), '[^0-9]', '', 'g'), '')::numeric carried_weight,
+            nullif(regexp_replace(coalesce(se.time_sa, ''), '[^0-9]', '', 'g'), '')::numeric margin
+          from ${jvdSe} se
+          join ${jvdRa} ra
+            on ra.kaisai_nen = se.kaisai_nen
+            and ra.kaisai_tsukihi = se.kaisai_tsukihi
+            and ra.keibajo_code = se.keibajo_code
+            and ra.race_bango = se.race_bango
+          where se.ketto_toroku_bango in (select ketto_toroku_bango from current_horses)
+          union all
+          select
+            se.ketto_toroku_bango,
+            se.kaisai_nen || se.kaisai_tsukihi race_date,
+            se.keibajo_code,
+            nullif(regexp_replace(coalesce(ra.kyori, ''), '[^0-9]', '', 'g'), '')::numeric distance,
+            nullif(regexp_replace(coalesce(se.soha_time, ''), '[^0-9]', '', 'g'), '')::numeric race_time,
+            nullif(regexp_replace(coalesce(se.kohan_3f, ''), '[^0-9]', '', 'g'), '')::numeric last3f,
+            nullif(regexp_replace(coalesce(se.bataiju, ''), '[^0-9]', '', 'g'), '')::numeric body_weight,
+            nullif(regexp_replace(coalesce(se.futan_juryo, ''), '[^0-9]', '', 'g'), '')::numeric carried_weight,
+            nullif(regexp_replace(coalesce(se.time_sa, ''), '[^0-9]', '', 'g'), '')::numeric margin
+          from ${nvdSe} se
+          join ${nvdRa} ra
+            on ra.kaisai_nen = se.kaisai_nen
+            and ra.kaisai_tsukihi = se.kaisai_tsukihi
+            and ra.keibajo_code = se.keibajo_code
+            and ra.race_bango = se.race_bango
+          where se.ketto_toroku_bango in (select ketto_toroku_bango from current_horses)
+        ) past
+          on past.ketto_toroku_bango = current_horses.ketto_toroku_bango
+        where past.race_date < ${raceDate}
+      ),
+      current_profile as (
+        select
+          current_horses.horse_number,
+          current_horses.horse_number_sort,
+          current_horses.horse_name,
+          coalesce(
+            sum(history.race_time * history.recency_weight * (0.5 + history.distance_score * 0.5))
+              / nullif(sum(history.recency_weight * (0.5 + history.distance_score * 0.5)) filter (where history.race_time is not null), 0),
+            null
+          ) weighted_race_time,
+          coalesce(
+            sum(history.last3f * history.recency_weight * (0.5 + history.distance_score * 0.5))
+              / nullif(sum(history.recency_weight * (0.5 + history.distance_score * 0.5)) filter (where history.last3f is not null), 0),
+            null
+          ) weighted_last3f,
+          coalesce(
+            sum(history.body_weight * history.recency_weight * (0.5 + history.distance_score * 0.5))
+              / nullif(sum(history.recency_weight * (0.5 + history.distance_score * 0.5)) filter (where history.body_weight is not null), 0),
+            null
+          ) weighted_body_weight,
+          coalesce(
+            sum(history.carried_weight * history.recency_weight * (0.5 + history.distance_score * 0.5))
+              / nullif(sum(history.recency_weight * (0.5 + history.distance_score * 0.5)) filter (where history.carried_weight is not null), 0),
+            null
+          ) weighted_carried_weight,
+          coalesce(
+            sum(history.margin * history.recency_weight * (0.5 + history.distance_score * 0.5))
+              / nullif(sum(history.recency_weight * (0.5 + history.distance_score * 0.5)) filter (where history.margin is not null), 0),
+            null
+          ) weighted_margin,
+          coalesce(
+            sum(case when history.keibajo_code = ${race.keibajoCode} then history.recency_weight * (0.5 + history.distance_score * 0.5) else 0 end)
+              / nullif(sum(history.recency_weight * (0.5 + history.distance_score * 0.5)), 0),
+            0.5
+          ) venue_score,
+          coalesce(
+            sum(history.distance_score * history.recency_weight)
+              / nullif(sum(history.recency_weight), 0),
+            0.5
+          ) distance_score
+        from current_horses
+        left join history on history.horse_number = current_horses.horse_number
+        group by current_horses.horse_number, current_horses.horse_number_sort, current_horses.horse_name
+      ),
+      score_base as (
+        select
+          current_profile.horse_number,
+          current_profile.horse_number_sort,
+          current_profile.horse_name,
+          current_profile.weighted_race_time,
+          current_profile.weighted_last3f,
+          current_profile.weighted_body_weight,
+          current_profile.weighted_carried_weight,
+          current_profile.weighted_margin,
+          current_profile.distance_score,
+          target_profile.target_race_time,
+          target_profile.target_last3f,
+          target_profile.target_body_weight,
+          target_profile.target_carried_weight,
+          target_profile.target_margin,
+          case
+            when current_profile.weighted_race_time is null or target_profile.target_race_time is null then 0.5
+            else greatest(0, 1 - abs(current_profile.weighted_race_time - target_profile.target_race_time) / greatest(target_profile.target_race_time * 0.08, 80))
+          end race_time_score,
+          case
+            when current_profile.weighted_last3f is null or target_profile.target_last3f is null then 0.5
+            else greatest(0, 1 - abs(current_profile.weighted_last3f - target_profile.target_last3f) / 30.0)
+          end last3f_score,
+          case
+            when current_profile.weighted_body_weight is null or target_profile.target_body_weight is null then 0.5
+            else greatest(0, 1 - abs(current_profile.weighted_body_weight - target_profile.target_body_weight) / 80.0)
+          end body_weight_score,
+          case
+            when current_profile.weighted_carried_weight is null or target_profile.target_carried_weight is null then 0.5
+            else greatest(0, 1 - abs(current_profile.weighted_carried_weight - target_profile.target_carried_weight) / 30.0)
+          end carried_weight_score,
+          case
+            when current_profile.weighted_margin is null or target_profile.target_margin is null then 0.5
+            else greatest(0, 1 - abs(current_profile.weighted_margin - target_profile.target_margin) / 50.0)
+          end margin_score,
+          current_profile.venue_score
+        from current_profile
+        cross join target_profile
+      )
+      select coalesce(
+        jsonb_agg(
+          jsonb_build_object(
+            'horseNumber', score_base.horse_number,
+            'horseName', score_base.horse_name,
+            'score', round((
+              score_base.race_time_score * 0.30 +
+              score_base.last3f_score * 0.20 +
+              score_base.distance_score * 0.15 +
+              score_base.venue_score * 0.15 +
+              score_base.body_weight_score * 0.10 +
+              score_base.carried_weight_score * 0.05 +
+              score_base.margin_score * 0.05
+            )::numeric, 2),
+            'details', jsonb_build_array(
+              jsonb_build_object(
+                'label', 'レースタイム',
+                'value', round(score_base.weighted_race_time::numeric, 1),
+                'target', round(score_base.target_race_time::numeric, 1),
+                'score', round(score_base.race_time_score::numeric, 2),
+                'weight', 0.30,
+                'reason', '全ての過去成績を日付と今回距離への近さで重み付けし、同条件1〜3着馬の平均レースタイムに近いほど高評価'
+              ),
+              jsonb_build_object(
+                'label', '上がり3F',
+                'value', round(score_base.weighted_last3f::numeric, 1),
+                'target', round(score_base.target_last3f::numeric, 1),
+                'score', round(score_base.last3f_score::numeric, 2),
+                'weight', 0.20,
+                'reason', '全ての過去成績を日付と今回距離への近さで重み付けし、同条件1〜3着馬の平均上がり3Fに近いほど高評価'
+              ),
+              jsonb_build_object(
+                'label', '距離適性',
+                'value', round((score_base.distance_score * 100)::numeric, 1),
+                'target', 100,
+                'score', round(score_base.distance_score::numeric, 2),
+                'weight', 0.15,
+                'reason', '全ての過去成績について、今回レース距離に近い成績ほど高く評価'
+              ),
+              jsonb_build_object(
+                'label', '競馬場',
+                'value', round((score_base.venue_score * 100)::numeric, 1),
+                'target', 100,
+                'score', round(score_base.venue_score::numeric, 2),
+                'weight', 0.15,
+                'reason', '過去成績のうち今回と同じ競馬場の比率を日付の新しさで重み付け'
+              ),
+              jsonb_build_object(
+                'label', '馬体重',
+                'value', round(score_base.weighted_body_weight::numeric, 1),
+                'target', round(score_base.target_body_weight::numeric, 1),
+                'score', round(score_base.body_weight_score::numeric, 2),
+                'weight', 0.10,
+                'reason', '過去成績の馬体重を日付が新しいほど重く見て、同条件1〜3着馬の平均に近いほど高評価'
+              ),
+              jsonb_build_object(
+                'label', '負担重量',
+                'value', round(score_base.weighted_carried_weight::numeric, 1),
+                'target', round(score_base.target_carried_weight::numeric, 1),
+                'score', round(score_base.carried_weight_score::numeric, 2),
+                'weight', 0.05,
+                'reason', '全ての過去成績の負担重量を日付と今回距離への近さで重み付けし、同条件1〜3着馬の平均に近いほど高評価'
+              ),
+              jsonb_build_object(
+                'label', '着差',
+                'value', round(score_base.weighted_margin::numeric, 1),
+                'target', round(score_base.target_margin::numeric, 1),
+                'score', round(score_base.margin_score::numeric, 2),
+                'weight', 0.05,
+                'reason', '全ての過去成績の着差を日付と今回距離への近さで重み付けし、同条件1〜3着馬の平均に近いほど高評価'
+              )
+            )
+          )
+          order by
+            (
+              score_base.race_time_score * 0.30 +
+              score_base.last3f_score * 0.20 +
+              score_base.distance_score * 0.15 +
+              score_base.venue_score * 0.15 +
+              score_base.body_weight_score * 0.10 +
+              score_base.carried_weight_score * 0.05 +
+              score_base.margin_score * 0.05
+            ) desc,
+            score_base.horse_number_sort asc
+        ),
+        '[]'::jsonb
+      ) rows
+      from score_base
+    `);
+
+      return toTimeScoreRows(result.rows[0]?.rows);
+    });
+  },
+);
+
+export const getRaceTimeStats = cache(
+  async (race: RaceDetail, settings: SimilarRaceStatsSettings): Promise<RaceTimeStats> => {
+    return withDbQueryCache(["getRaceTimeStats", race, settings], async () => {
+      const statsSource = getSingleStatsSource(race, settings);
+      const raceTable = statsSource === "jra" ? jvdRa : nvdRa;
+      const runnerTable = statsSource === "jra" ? jvdSe : nvdSe;
+      const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
+      const surfaceCodes = getTrackCodesBySurface(getTrackSurface(race.trackCode));
+      const turnCodes = getTrackCodesByTurn(getTrackTurn(race.trackCode));
+      const classCondition = getStatsClassCondition(race, settings.classConditionName);
+      const raceTitleCondition = getStatsRaceTitleCondition(race);
+      const raceSubtitleCondition = getStatsRaceSubtitleCondition(race);
       const result = await getDb().execute<{
         raceCount: string;
         fastestRaceTime: string | null;
@@ -2811,6 +3965,8 @@ export const getRaceTimeStats = cache(
         fastestRank: string | null;
         fastestPopularity: string | null;
         fastestWinOdds: string | null;
+        correlationRows: unknown;
+        targetRaces: unknown;
       }>(sql`
       with matched_races as (
         select
@@ -2858,6 +4014,8 @@ export const getRaceTimeStats = cache(
           coalesce(nullif(regexp_replace(se.bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') as bamei,
           se.kakutei_chakujun,
           coalesce(nullif(regexp_replace(se.kishumei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') as jockey_name,
+          coalesce(nullif(regexp_replace(se.chokyoshimei_ryakusho, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') as trainer_name,
+          coalesce(nullif(regexp_replace(se.banushimei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') as owner_name,
           se.tansho_ninkijun,
           se.tansho_odds,
           nullif(regexp_replace(coalesce(se.soha_time, ''), '[^0-9]', '', 'g'), '')::numeric as race_time,
@@ -2871,6 +4029,202 @@ export const getRaceTimeStats = cache(
         where
           se.kakutei_chakujun = '01'
           and nullif(regexp_replace(coalesce(se.soha_time, ''), '[^0-9]', '', 'g'), '') !~ '^0+$'
+      ),
+      target_top3 as (
+        select
+          matched_races.kaisai_nen,
+          matched_races.kaisai_tsukihi,
+          matched_races.kaisai_nen || matched_races.kaisai_tsukihi race_date,
+          matched_races.keibajo_code,
+          matched_races.race_bango,
+          se.ketto_toroku_bango,
+          se.kakutei_chakujun,
+          coalesce(nullif(btrim(se.kishumei_ryakusho, ' 　'), ''), '-') jockey_name,
+          coalesce(nullif(btrim(se.chokyoshimei_ryakusho, ' 　'), ''), '-') trainer_name,
+          coalesce(nullif(btrim(se.banushimei, ' 　'), ''), '-') owner_name,
+          nullif(regexp_replace(coalesce(se.tansho_ninkijun, ''), '[^0-9]', '', 'g'), '')::numeric popularity,
+          nullif(regexp_replace(coalesce(se.tansho_odds, ''), '[^0-9]', '', 'g'), '')::numeric / 10.0 odds
+        from matched_races
+        join ${runnerTable} se
+          on se.kaisai_nen = matched_races.kaisai_nen
+          and se.kaisai_tsukihi = matched_races.kaisai_tsukihi
+          and se.keibajo_code = matched_races.keibajo_code
+          and se.race_bango = matched_races.race_bango
+        where se.kakutei_chakujun in ('01', '02', '03')
+      ),
+      target_averages as (
+        select
+          count(*) filter (where target_top3.kakutei_chakujun = '01') * 100.0 / nullif(count(*), 0) target_horse_win,
+          count(*) filter (where target_top3.kakutei_chakujun in ('01', '02', '03')) * 100.0 / nullif(count(*), 0) target_horse_show,
+          avg(target_top3.popularity) target_popularity,
+          avg(target_top3.odds) target_odds,
+          null::numeric target_jockey_show,
+          null::numeric target_trainer_show,
+          null::numeric target_owner_show
+        from target_top3
+      ),
+      current_entries as (
+        select
+          coalesce(nullif(regexp_replace(se.umaban, '^0+', ''), ''), '0') horse_number,
+          se.umaban::int horse_number_sort,
+          coalesce(nullif(regexp_replace(se.bamei, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '-') horse_name,
+          se.ketto_toroku_bango,
+          coalesce(nullif(btrim(se.kishumei_ryakusho, ' 　'), ''), '-') jockey_name,
+          coalesce(nullif(btrim(se.chokyoshimei_ryakusho, ' 　'), ''), '-') trainer_name,
+          coalesce(nullif(btrim(se.banushimei, ' 　'), ''), '-') owner_name,
+          nullif(regexp_replace(coalesce(se.tansho_ninkijun, ''), '[^0-9]', '', 'g'), '')::numeric popularity,
+          nullif(regexp_replace(coalesce(se.tansho_odds, ''), '[^0-9]', '', 'g'), '')::numeric / 10.0 odds
+        from ${runnerTable} se
+        where
+          se.kaisai_nen = ${race.kaisaiNen}
+          and se.kaisai_tsukihi = ${race.kaisaiTsukihi}
+          and se.keibajo_code = ${race.keibajoCode}
+          and se.race_bango = ${race.raceBango}
+      ),
+      current_horse_stats as (
+        select
+          current_entries.horse_number,
+          count(hist.*) starts,
+          count(hist.*) filter (where hist.kakutei_chakujun = '01') win_count,
+          count(hist.*) filter (where hist.kakutei_chakujun in ('01', '02', '03')) show_count
+        from current_entries
+        left join ${runnerTable} hist
+          on hist.ketto_toroku_bango = current_entries.ketto_toroku_bango
+          and (
+            hist.kaisai_nen < ${race.kaisaiNen}
+            or (hist.kaisai_nen = ${race.kaisaiNen} and hist.kaisai_tsukihi < ${race.kaisaiTsukihi})
+          )
+          and nullif(regexp_replace(coalesce(hist.kakutei_chakujun, ''), '[^0-9]', '', 'g'), '') !~ '^0+$'
+        group by current_entries.horse_number
+      ),
+      current_jockey_stats as (
+        select
+          current_entries.jockey_name,
+          count(hist.*) starts,
+          count(hist.*) filter (where hist.kakutei_chakujun in ('01', '02', '03')) show_count
+        from (select distinct jockey_name from current_entries) current_entries
+        left join ${runnerTable} hist
+          on coalesce(nullif(btrim(hist.kishumei_ryakusho, ' 　'), ''), '-') = current_entries.jockey_name
+          and (
+            hist.kaisai_nen < ${race.kaisaiNen}
+            or (hist.kaisai_nen = ${race.kaisaiNen} and hist.kaisai_tsukihi < ${race.kaisaiTsukihi})
+          )
+          and nullif(regexp_replace(coalesce(hist.kakutei_chakujun, ''), '[^0-9]', '', 'g'), '') !~ '^0+$'
+        group by current_entries.jockey_name
+      ),
+      current_trainer_stats as (
+        select
+          current_entries.trainer_name,
+          count(hist.*) starts,
+          count(hist.*) filter (where hist.kakutei_chakujun in ('01', '02', '03')) show_count
+        from (select distinct trainer_name from current_entries) current_entries
+        left join ${runnerTable} hist
+          on coalesce(nullif(btrim(hist.chokyoshimei_ryakusho, ' 　'), ''), '-') = current_entries.trainer_name
+          and (
+            hist.kaisai_nen < ${race.kaisaiNen}
+            or (hist.kaisai_nen = ${race.kaisaiNen} and hist.kaisai_tsukihi < ${race.kaisaiTsukihi})
+          )
+          and nullif(regexp_replace(coalesce(hist.kakutei_chakujun, ''), '[^0-9]', '', 'g'), '') !~ '^0+$'
+        group by current_entries.trainer_name
+      ),
+      current_owner_stats as (
+        select
+          current_entries.owner_name,
+          count(hist.*) starts,
+          count(hist.*) filter (where hist.kakutei_chakujun in ('01', '02', '03')) show_count
+        from (select distinct owner_name from current_entries) current_entries
+        left join ${runnerTable} hist
+          on coalesce(nullif(btrim(hist.banushimei, ' 　'), ''), '-') = current_entries.owner_name
+          and (
+            hist.kaisai_nen < ${race.kaisaiNen}
+            or (hist.kaisai_nen = ${race.kaisaiNen} and hist.kaisai_tsukihi < ${race.kaisaiTsukihi})
+          )
+          and nullif(regexp_replace(coalesce(hist.kakutei_chakujun, ''), '[^0-9]', '', 'g'), '') !~ '^0+$'
+        group by current_entries.owner_name
+      ),
+      current_profiles as (
+        select
+          current_entries.*,
+          current_horse_stats.starts horse_starts,
+          current_horse_stats.win_count horse_win_count,
+          current_horse_stats.show_count horse_show_count,
+          current_jockey_stats.starts jockey_starts,
+          current_jockey_stats.show_count jockey_show_count,
+          current_trainer_stats.starts trainer_starts,
+          current_trainer_stats.show_count trainer_show_count,
+          current_owner_stats.starts owner_starts,
+          current_owner_stats.show_count owner_show_count
+        from current_entries
+        left join current_horse_stats on current_horse_stats.horse_number = current_entries.horse_number
+        left join current_jockey_stats on current_jockey_stats.jockey_name = current_entries.jockey_name
+        left join current_trainer_stats on current_trainer_stats.trainer_name = current_entries.trainer_name
+        left join current_owner_stats on current_owner_stats.owner_name = current_entries.owner_name
+      ),
+      current_features as (
+        select
+          *,
+          horse_win_count * 100.0 / nullif(horse_starts, 0) horse_win,
+          horse_show_count * 100.0 / nullif(horse_starts, 0) horse_show,
+          jockey_show_count * 100.0 / nullif(jockey_starts, 0) jockey_show,
+          trainer_show_count * 100.0 / nullif(trainer_starts, 0) trainer_show,
+          owner_show_count * 100.0 / nullif(owner_starts, 0) owner_show
+        from current_profiles
+      ),
+      correlation_base as (
+        select
+          current_features.*,
+          target_averages.*,
+          case when current_features.horse_show is null or target_averages.target_horse_show is null then 0.5 else greatest(0, 1 - abs(current_features.horse_show - target_averages.target_horse_show) / 100.0) end horse_show_score,
+          case when current_features.horse_win is null or target_averages.target_horse_win is null then 0.5 else greatest(0, 1 - abs(current_features.horse_win - target_averages.target_horse_win) / 100.0) end horse_win_score,
+          case when current_features.jockey_show is null then 0.5 else greatest(0, least(1, current_features.jockey_show / 100.0)) end jockey_show_score,
+          case when current_features.trainer_show is null then 0.5 else greatest(0, least(1, current_features.trainer_show / 100.0)) end trainer_show_score,
+          case when current_features.owner_show is null then 0.5 else greatest(0, least(1, current_features.owner_show / 100.0)) end owner_show_score,
+          case when current_features.popularity is null or target_averages.target_popularity is null then 0.5 else greatest(0, 1 - abs(current_features.popularity - target_averages.target_popularity) / greatest(target_averages.target_popularity, 5.0)) end popularity_score,
+          case when current_features.odds is null or target_averages.target_odds is null then 0.5 else greatest(0, 1 - abs(current_features.odds - target_averages.target_odds) / greatest(target_averages.target_odds, 10.0)) end odds_score
+        from current_features
+        cross join target_averages
+      ),
+      correlation_rows as (
+        select
+          coalesce(
+            jsonb_agg(
+              jsonb_build_object(
+                'horseNumber', correlation_base.horse_number,
+                'horseName', correlation_base.horse_name,
+                'score', round((
+                  correlation_base.horse_show_score * 0.20 +
+                  correlation_base.horse_win_score * 0.10 +
+                  correlation_base.jockey_show_score * 0.15 +
+                  correlation_base.trainer_show_score * 0.15 +
+                  correlation_base.owner_show_score * 0.15 +
+                  correlation_base.popularity_score * 0.125 +
+                  correlation_base.odds_score * 0.125
+                )::numeric, 2),
+                'details', jsonb_build_array(
+                  jsonb_build_object('key', 'horseShow', 'label', '出走馬の複勝率', 'value', round(correlation_base.horse_show::numeric, 1), 'target', round(correlation_base.target_horse_show::numeric, 1), 'score', round(correlation_base.horse_show_score::numeric, 2), 'weight', 0.20, 'reason', '対象レース1〜3着馬の対象レース前の複勝率平均との差'),
+                  jsonb_build_object('key', 'horseWin', 'label', '出走馬の勝率', 'value', round(correlation_base.horse_win::numeric, 1), 'target', round(correlation_base.target_horse_win::numeric, 1), 'score', round(correlation_base.horse_win_score::numeric, 2), 'weight', 0.10, 'reason', '対象レース1〜3着馬の対象レース前の勝率平均との差'),
+                  jsonb_build_object('key', 'jockeyShow', 'label', '騎手の複勝率', 'value', round(correlation_base.jockey_show::numeric, 1), 'target', null, 'score', round(correlation_base.jockey_show_score::numeric, 2), 'weight', 0.15, 'reason', '今回騎乗予定騎手の今回レース前の複勝率を評価'),
+                  jsonb_build_object('key', 'trainerShow', 'label', '調教師の複勝率', 'value', round(correlation_base.trainer_show::numeric, 1), 'target', null, 'score', round(correlation_base.trainer_show_score::numeric, 2), 'weight', 0.15, 'reason', '今回出走馬の調教師の今回レース前の複勝率を評価'),
+                  jsonb_build_object('key', 'ownerShow', 'label', '馬主の複勝率', 'value', round(correlation_base.owner_show::numeric, 1), 'target', null, 'score', round(correlation_base.owner_show_score::numeric, 2), 'weight', 0.15, 'reason', '今回出走馬の馬主の今回レース前の複勝率を評価'),
+                  jsonb_build_object('key', 'popularity', 'label', '人気順', 'value', correlation_base.popularity, 'target', round(correlation_base.target_popularity::numeric, 1), 'score', round(correlation_base.popularity_score::numeric, 2), 'weight', 0.125, 'reason', '対象レース1〜3着馬の人気平均との差'),
+                  jsonb_build_object('key', 'odds', 'label', '単勝オッズ', 'value', correlation_base.odds, 'target', round(correlation_base.target_odds::numeric, 1), 'score', round(correlation_base.odds_score::numeric, 2), 'weight', 0.125, 'reason', '対象レース1〜3着馬の単勝オッズ平均との差')
+                )
+              )
+              order by
+                (
+                  correlation_base.horse_show_score * 0.20 +
+                  correlation_base.horse_win_score * 0.10 +
+                  correlation_base.jockey_show_score * 0.15 +
+                  correlation_base.trainer_show_score * 0.15 +
+                  correlation_base.owner_show_score * 0.15 +
+                  correlation_base.popularity_score * 0.125 +
+                  correlation_base.odds_score * 0.125
+                ) desc,
+                correlation_base.horse_number_sort asc
+            ),
+            '[]'::jsonb
+          ) "correlationRows"
+        from correlation_base
       ),
       stats as (
         select
@@ -2888,6 +4242,35 @@ export const getRaceTimeStats = cache(
         from winner_rows
         order by race_time asc, kohan_3f asc nulls last, kaisai_nen desc, kaisai_tsukihi desc
         limit 1
+      ),
+      target_races as (
+        select
+          coalesce(
+            jsonb_agg(
+              jsonb_build_object(
+                'date', limited_winner_rows.kaisai_nen || limited_winner_rows.kaisai_tsukihi,
+                'keibajoCode', limited_winner_rows.keibajo_code,
+                'raceNumber', limited_winner_rows.race_bango,
+                'raceName', limited_winner_rows.race_name,
+                'horseNumber', limited_winner_rows.umaban,
+                'horseName', limited_winner_rows.bamei,
+                'jockeyName', limited_winner_rows.jockey_name,
+                'trainerName', limited_winner_rows.trainer_name,
+                'ownerName', limited_winner_rows.owner_name,
+                'raceTime', limited_winner_rows.race_time::text,
+                'kohan3f', limited_winner_rows.kohan_3f::text,
+                'popularity', limited_winner_rows.tansho_ninkijun
+              )
+              order by limited_winner_rows.kaisai_nen desc, limited_winner_rows.kaisai_tsukihi desc, limited_winner_rows.race_bango asc
+            ),
+            '[]'::jsonb
+          ) "targetRaces"
+        from (
+          select *
+          from winner_rows
+          order by kaisai_nen desc, kaisai_tsukihi desc, race_bango asc
+          limit 500
+        ) limited_winner_rows
       )
       select
         stats."raceCount",
@@ -2907,9 +4290,13 @@ export const getRaceTimeStats = cache(
         fastest.jockey_name as "fastestJockeyName",
         fastest.kakutei_chakujun as "fastestRank",
         fastest.tansho_ninkijun as "fastestPopularity",
-        fastest.tansho_odds as "fastestWinOdds"
+        fastest.tansho_odds as "fastestWinOdds",
+        target_races."targetRaces",
+        correlation_rows."correlationRows"
       from stats
       left join fastest on true
+      cross join target_races
+      cross join correlation_rows
     `);
 
       const row = result.rows[0];
@@ -2937,9 +4324,11 @@ export const getRaceTimeStats = cache(
         fastestDetail,
         fastestKohan3f: toNullableNumber(row?.fastestKohan3f),
         fastestRaceTime: toNullableNumber(row?.fastestRaceTime),
+        correlationRows: toConditionCorrelationRows(row?.correlationRows),
         medianKohan3f: toNullableNumber(row?.medianKohan3f),
         medianRaceTime: toNullableNumber(row?.medianRaceTime),
         raceCount: toCount(row?.raceCount),
+        targetRaces: toRaceTimeTargetRaces(row?.targetRaces),
       };
     });
   },
@@ -2948,21 +4337,22 @@ export const getRaceTimeStats = cache(
 export const getPayoutStats = cache(
   async (race: RaceDetail, settings: SimilarRaceStatsSettings): Promise<PayoutStatsRow[]> => {
     return withDbQueryCache(["getPayoutStats", race, settings], async () => {
-      const raceTable = race.source === "jra" ? jvdRa : nvdRa;
-      const runnerTable = race.source === "jra" ? jvdSe : nvdSe;
-      const payoutTable = sql.raw(race.source === "jra" ? "jvd_hr" : "nvd_hr");
+      const statsSource = getSingleStatsSource(race, settings);
+      const raceTable = statsSource === "jra" ? jvdRa : nvdRa;
+      const runnerTable = statsSource === "jra" ? jvdSe : nvdSe;
+      const payoutTable = sql.raw(statsSource === "jra" ? "jvd_hr" : "nvd_hr");
+      const odds1Table = sql.raw(statsSource === "jra" ? "jvd_o1" : "nvd_o1");
+      const odds2Table = sql.raw(statsSource === "jra" ? "jvd_o2" : "nvd_o2");
+      const odds3Table = sql.raw(statsSource === "jra" ? "jvd_o3" : "nvd_o3");
+      const odds4Table = sql.raw(statsSource === "jra" ? "jvd_o4" : "nvd_o4");
+      const odds5Table = sql.raw(statsSource === "jra" ? "jvd_o5" : "nvd_o5");
+      const odds6Table = sql.raw(statsSource === "jra" ? "jvd_o6" : "nvd_o6");
       const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
       const surfaceCodes = getTrackCodesBySurface(getTrackSurface(race.trackCode));
       const turnCodes = getTrackCodesByTurn(getTrackTurn(race.trackCode));
       const classCondition = getStatsClassCondition(race, settings.classConditionName);
-      const raceTitleCondition = cleanDbText(race.kyosomeiHondai)
-        ? sql`ra.kyosomei_hondai = ${race.kyosomeiHondai}`
-        : sql`false`;
-      const raceSubtitleCondition = cleanDbText(race.kyosomeiFukudai)
-        ? sql`ra.kyosomei_fukudai = ${race.kyosomeiFukudai}`
-        : cleanDbText(race.kyosomeiKakkonai)
-          ? sql`ra.kyosomei_kakkonai = ${race.kyosomeiKakkonai}`
-          : sql`false`;
+      const raceTitleCondition = getStatsRaceTitleCondition(race);
+      const raceSubtitleCondition = getStatsRaceSubtitleCondition(race);
       const result = await getDb().execute<{
         betType: string;
         count: string;
@@ -3005,38 +4395,6 @@ export const getPayoutStats = cache(
           and (${settings.includeTurn} = false or ${trackCodeIn(turnCodes)})
           and (${settings.includeDistance} = false or ra.kyori = ${race.kyori})
           and (${settings.includeRaceNumber} = false or ra.race_bango = ${race.raceBango})
-      ),
-      fallback_matched_races as (
-        select
-          ra.kaisai_nen,
-          ra.kaisai_tsukihi,
-          ra.keibajo_code,
-          ra.race_bango,
-          coalesce(
-            nullif(regexp_replace(ra.kyosomei_hondai, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
-            '一般競走'
-          ) as race_name
-        from ${raceTable} ra
-        where
-          ra.kaisai_nen || ra.kaisai_tsukihi < ${raceDate}
-          and (
-            ${settings.years}::int is null
-            or ra.kaisai_nen || ra.kaisai_tsukihi >= to_char(
-              to_date(${raceDate}, 'YYYYMMDD') - (${settings.years}::int * interval '1 year'),
-              'YYYYMMDD'
-            )
-          )
-          and (${settings.includeVenue} = false or ra.keibajo_code = ${race.keibajoCode})
-          and ${monthWindowCondition(raceDate, settings.includeMonthWindow)}
-          and ${runnerCountCondition(runnerTable, settings)}
-          and (${settings.includeSurface} = false or ${trackCodeIn(surfaceCodes)})
-          and (${settings.includeTurn} = false or ${trackCodeIn(turnCodes)})
-      ),
-      matched_races as (
-        select * from strict_matched_races
-        union all
-        select * from fallback_matched_races
-        where not exists (select 1 from strict_matched_races)
       ),
       strict_payout_values as (
         select
@@ -3096,68 +4454,142 @@ export const getPayoutStats = cache(
         where
           nullif(regexp_replace(coalesce(payouts.payout_text, ''), '[^0-9]', '', 'g'), '') !~ '^0+$'
       ),
-      fallback_payout_values as (
+      finish_rows as (
         select
-          payouts.bet_type,
-          payouts.bet_order,
-          fallback_matched_races.kaisai_nen,
-          fallback_matched_races.kaisai_tsukihi,
-          fallback_matched_races.keibajo_code,
-          fallback_matched_races.race_bango,
-          fallback_matched_races.race_name,
-          nullif(regexp_replace(coalesce(payouts.payout_text, ''), '[^0-9]', '', 'g'), '')::numeric as payout
-        from fallback_matched_races
-        join ${payoutTable} hr
-          on hr.kaisai_nen = fallback_matched_races.kaisai_nen
-          and hr.kaisai_tsukihi = fallback_matched_races.kaisai_tsukihi
-          and hr.keibajo_code = fallback_matched_races.keibajo_code
-          and hr.race_bango = fallback_matched_races.race_bango
+          strict_matched_races.*,
+          se.wakuban,
+          se.umaban,
+          nullif(regexp_replace(coalesce(se.kakutei_chakujun, ''), '[^0-9]', '', 'g'), '')::int finish_rank
+        from strict_matched_races
+        join ${runnerTable} se
+          on se.kaisai_nen = strict_matched_races.kaisai_nen
+          and se.kaisai_tsukihi = strict_matched_races.kaisai_tsukihi
+          and se.keibajo_code = strict_matched_races.keibajo_code
+          and se.race_bango = strict_matched_races.race_bango
+        where nullif(regexp_replace(coalesce(se.kakutei_chakujun, ''), '[^0-9]', '', 'g'), '')::int between 1 and 3
+      ),
+      finish_orders as (
+        select
+          kaisai_nen,
+          kaisai_tsukihi,
+          keibajo_code,
+          race_bango,
+          race_name,
+          max(nullif(regexp_replace(umaban, '[^0-9]', '', 'g'), '')::int) filter (where finish_rank = 1) winner_umaban,
+          max(nullif(regexp_replace(umaban, '[^0-9]', '', 'g'), '')::int) filter (where finish_rank = 2) second_umaban,
+          max(nullif(regexp_replace(umaban, '[^0-9]', '', 'g'), '')::int) filter (where finish_rank = 3) third_umaban,
+          max(nullif(regexp_replace(wakuban, '[^0-9]', '', 'g'), '')::int) filter (where finish_rank = 1) winner_wakuban,
+          max(nullif(regexp_replace(wakuban, '[^0-9]', '', 'g'), '')::int) filter (where finish_rank = 2) second_wakuban
+        from finish_rows
+        group by kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, race_name
+      ),
+      fallback_odds_values as (
+        select
+          fallback_rows.bet_type,
+          fallback_rows.bet_order,
+          fallback_rows.kaisai_nen,
+          fallback_rows.kaisai_tsukihi,
+          fallback_rows.keibajo_code,
+          fallback_rows.race_bango,
+          fallback_rows.race_name,
+          fallback_rows.payout
+        from finish_orders
+        left join ${odds1Table} o1
+          on o1.kaisai_nen = finish_orders.kaisai_nen
+          and o1.kaisai_tsukihi = finish_orders.kaisai_tsukihi
+          and o1.keibajo_code = finish_orders.keibajo_code
+          and o1.race_bango = finish_orders.race_bango
+        left join ${odds2Table} o2
+          on o2.kaisai_nen = finish_orders.kaisai_nen
+          and o2.kaisai_tsukihi = finish_orders.kaisai_tsukihi
+          and o2.keibajo_code = finish_orders.keibajo_code
+          and o2.race_bango = finish_orders.race_bango
+        left join ${odds3Table} o3
+          on o3.kaisai_nen = finish_orders.kaisai_nen
+          and o3.kaisai_tsukihi = finish_orders.kaisai_tsukihi
+          and o3.keibajo_code = finish_orders.keibajo_code
+          and o3.race_bango = finish_orders.race_bango
+        left join ${odds4Table} o4
+          on o4.kaisai_nen = finish_orders.kaisai_nen
+          and o4.kaisai_tsukihi = finish_orders.kaisai_tsukihi
+          and o4.keibajo_code = finish_orders.keibajo_code
+          and o4.race_bango = finish_orders.race_bango
+        left join ${odds5Table} o5
+          on o5.kaisai_nen = finish_orders.kaisai_nen
+          and o5.kaisai_tsukihi = finish_orders.kaisai_tsukihi
+          and o5.keibajo_code = finish_orders.keibajo_code
+          and o5.race_bango = finish_orders.race_bango
+        left join ${odds6Table} o6
+          on o6.kaisai_nen = finish_orders.kaisai_nen
+          and o6.kaisai_tsukihi = finish_orders.kaisai_tsukihi
+          and o6.keibajo_code = finish_orders.keibajo_code
+          and o6.race_bango = finish_orders.race_bango
         cross join lateral (
-          values
-            ('単勝', 1, hr.haraimodoshi_tansho_1b),
-            ('単勝', 1, hr.haraimodoshi_tansho_2b),
-            ('単勝', 1, hr.haraimodoshi_tansho_3b),
-            ('複勝', 2, hr.haraimodoshi_fukusho_1b),
-            ('複勝', 2, hr.haraimodoshi_fukusho_2b),
-            ('複勝', 2, hr.haraimodoshi_fukusho_3b),
-            ('複勝', 2, hr.haraimodoshi_fukusho_4b),
-            ('複勝', 2, hr.haraimodoshi_fukusho_5b),
-            ('枠連', 3, hr.haraimodoshi_wakuren_1b),
-            ('枠連', 3, hr.haraimodoshi_wakuren_2b),
-            ('枠連', 3, hr.haraimodoshi_wakuren_3b),
-            ('馬連', 4, hr.haraimodoshi_umaren_1b),
-            ('馬連', 4, hr.haraimodoshi_umaren_2b),
-            ('馬連', 4, hr.haraimodoshi_umaren_3b),
-            ('ワイド', 5, hr.haraimodoshi_wide_1b),
-            ('ワイド', 5, hr.haraimodoshi_wide_2b),
-            ('ワイド', 5, hr.haraimodoshi_wide_3b),
-            ('ワイド', 5, hr.haraimodoshi_wide_4b),
-            ('ワイド', 5, hr.haraimodoshi_wide_5b),
-            ('ワイド', 5, hr.haraimodoshi_wide_6b),
-            ('ワイド', 5, hr.haraimodoshi_wide_7b),
-            ('馬単', 6, hr.haraimodoshi_umatan_1b),
-            ('馬単', 6, hr.haraimodoshi_umatan_2b),
-            ('馬単', 6, hr.haraimodoshi_umatan_3b),
-            ('馬単', 6, hr.haraimodoshi_umatan_4b),
-            ('馬単', 6, hr.haraimodoshi_umatan_5b),
-            ('馬単', 6, hr.haraimodoshi_umatan_6b),
-            ('3連複', 7, hr.haraimodoshi_sanrenpuku_1b),
-            ('3連複', 7, hr.haraimodoshi_sanrenpuku_2b),
-            ('3連複', 7, hr.haraimodoshi_sanrenpuku_3b),
-            ('3連単', 8, hr.haraimodoshi_sanrentan_1b),
-            ('3連単', 8, hr.haraimodoshi_sanrentan_2b),
-            ('3連単', 8, hr.haraimodoshi_sanrentan_3b),
-            ('3連単', 8, hr.haraimodoshi_sanrentan_4b),
-            ('3連単', 8, hr.haraimodoshi_sanrentan_5b),
-            ('3連単', 8, hr.haraimodoshi_sanrentan_6b)
-        ) as payouts(bet_type, bet_order, payout_text)
-        where
-          nullif(regexp_replace(coalesce(payouts.payout_text, ''), '[^0-9]', '', 'g'), '') !~ '^0+$'
+          select '単勝' bet_type, 1 bet_order, finish_orders.kaisai_nen, finish_orders.kaisai_tsukihi, finish_orders.keibajo_code, finish_orders.race_bango, finish_orders.race_name,
+            nullif(regexp_replace(substr(coalesce(o1.odds_tansho, ''), ((finish_orders.winner_umaban - 1) * 8 + 3)::int, 4), '[^0-9]', '', 'g'), '')::numeric * 10 payout
+          where finish_orders.winner_umaban is not null
+          union all
+          select '複勝', 2, finish_orders.kaisai_nen, finish_orders.kaisai_tsukihi, finish_orders.keibajo_code, finish_orders.race_bango, finish_orders.race_name,
+            round((nullif(regexp_replace(substr(coalesce(o1.odds_fukusho, ''), ((hit_umaban - 1) * 12 + 3)::int, 4), '[^0-9]', '', 'g'), '')::numeric + nullif(regexp_replace(substr(coalesce(o1.odds_fukusho, ''), ((hit_umaban - 1) * 12 + 7)::int, 4), '[^0-9]', '', 'g'), '')::numeric) / 2) * 10
+          from (
+            values (finish_orders.winner_umaban), (finish_orders.second_umaban), (finish_orders.third_umaban)
+          ) hit_rows(hit_umaban)
+          where hit_umaban is not null
+          union all
+          select '枠連', 3, finish_orders.kaisai_nen, finish_orders.kaisai_tsukihi, finish_orders.keibajo_code, finish_orders.race_bango, finish_orders.race_name,
+            nullif(regexp_replace(substr(coalesce(o1.odds_wakuren, ''), (((((least(finish_orders.winner_wakuban, finish_orders.second_wakuban) - 1) * 8 - ((least(finish_orders.winner_wakuban, finish_orders.second_wakuban) - 1) * least(finish_orders.winner_wakuban, finish_orders.second_wakuban)) / 2 + greatest(finish_orders.winner_wakuban, finish_orders.second_wakuban) - least(finish_orders.winner_wakuban, finish_orders.second_wakuban)) - 1) * 9 + 3))::int, 5), '[^0-9]', '', 'g'), '')::numeric * 10
+          where finish_orders.winner_wakuban is not null and finish_orders.second_wakuban is not null and finish_orders.winner_wakuban <> finish_orders.second_wakuban
+          union all
+          select '馬連', 4, finish_orders.kaisai_nen, finish_orders.kaisai_tsukihi, finish_orders.keibajo_code, finish_orders.race_bango, finish_orders.race_name,
+            nullif(regexp_replace(substr(coalesce(o2.odds_umaren, ''), (((((least(finish_orders.winner_umaban, finish_orders.second_umaban) - 1) * 18 - ((least(finish_orders.winner_umaban, finish_orders.second_umaban) - 1) * least(finish_orders.winner_umaban, finish_orders.second_umaban)) / 2 + greatest(finish_orders.winner_umaban, finish_orders.second_umaban) - least(finish_orders.winner_umaban, finish_orders.second_umaban)) - 1) * 13 + 5))::int, 6), '[^0-9]', '', 'g'), '')::numeric * 10
+          where finish_orders.winner_umaban is not null and finish_orders.second_umaban is not null and finish_orders.winner_umaban <> finish_orders.second_umaban
+          union all
+          select 'ワイド', 5, finish_orders.kaisai_nen, finish_orders.kaisai_tsukihi, finish_orders.keibajo_code, finish_orders.race_bango, finish_orders.race_name,
+            round((
+              nullif(regexp_replace(substr(coalesce(o3.odds_wide, ''), (((((least(left_umaban, right_umaban) - 1) * 18 - ((least(left_umaban, right_umaban) - 1) * least(left_umaban, right_umaban)) / 2 + greatest(left_umaban, right_umaban) - least(left_umaban, right_umaban)) - 1) * 17 + 5))::int, 5), '[^0-9]', '', 'g'), '')::numeric +
+              nullif(regexp_replace(substr(coalesce(o3.odds_wide, ''), (((((least(left_umaban, right_umaban) - 1) * 18 - ((least(left_umaban, right_umaban) - 1) * least(left_umaban, right_umaban)) / 2 + greatest(left_umaban, right_umaban) - least(left_umaban, right_umaban)) - 1) * 17 + 10))::int, 5), '[^0-9]', '', 'g'), '')::numeric
+            ) / 2) * 10
+          from (
+            values
+              (least(finish_orders.winner_umaban, finish_orders.second_umaban), greatest(finish_orders.winner_umaban, finish_orders.second_umaban)),
+              (least(finish_orders.winner_umaban, finish_orders.third_umaban), greatest(finish_orders.winner_umaban, finish_orders.third_umaban)),
+              (least(finish_orders.second_umaban, finish_orders.third_umaban), greatest(finish_orders.second_umaban, finish_orders.third_umaban))
+          ) wide_hit_rows(left_umaban, right_umaban)
+          where left_umaban is not null and right_umaban is not null and left_umaban <> right_umaban
+          union all
+          select '馬単', 6, finish_orders.kaisai_nen, finish_orders.kaisai_tsukihi, finish_orders.keibajo_code, finish_orders.race_bango, finish_orders.race_name,
+            nullif(regexp_replace(substr(coalesce(o4.odds_umatan, ''), ((((finish_orders.winner_umaban - 1) * 17 + finish_orders.second_umaban - case when finish_orders.second_umaban > finish_orders.winner_umaban then 1 else 0 end) - 1) * 13 + 5)::int, 6), '[^0-9]', '', 'g'), '')::numeric * 10
+          where finish_orders.winner_umaban is not null and finish_orders.second_umaban is not null and finish_orders.winner_umaban <> finish_orders.second_umaban
+          union all
+          select '3連複', 7, finish_orders.kaisai_nen, finish_orders.kaisai_tsukihi, finish_orders.keibajo_code, finish_orders.race_bango, finish_orders.race_name,
+            nullif(regexp_replace(substr(coalesce(o5.odds_sanrenpuku, ''), ((trio_index - 1) * 15 + 7)::int, 6), '[^0-9]', '', 'g'), '')::numeric * 10
+          from lateral (
+            select
+              least(finish_orders.winner_umaban, finish_orders.second_umaban, finish_orders.third_umaban) first_umaban,
+              finish_orders.winner_umaban + finish_orders.second_umaban + finish_orders.third_umaban - least(finish_orders.winner_umaban, finish_orders.second_umaban, finish_orders.third_umaban) - greatest(finish_orders.winner_umaban, finish_orders.second_umaban, finish_orders.third_umaban) second_umaban,
+              greatest(finish_orders.winner_umaban, finish_orders.second_umaban, finish_orders.third_umaban) third_umaban
+          ) trio_numbers
+          cross join lateral (
+            select
+              (
+                coalesce((select sum((18 - first_index) * (17 - first_index) / 2) from generate_series(1, trio_numbers.first_umaban - 1) first_indexes(first_index)), 0) +
+                coalesce((select sum(18 - second_index) from generate_series(trio_numbers.first_umaban + 1, trio_numbers.second_umaban - 1) second_indexes(second_index)), 0) +
+                trio_numbers.third_umaban - trio_numbers.second_umaban +
+                1
+              ) trio_index
+          ) trio_indexes
+          where finish_orders.winner_umaban is not null and finish_orders.second_umaban is not null and finish_orders.third_umaban is not null
+          union all
+          select '3連単', 8, finish_orders.kaisai_nen, finish_orders.kaisai_tsukihi, finish_orders.keibajo_code, finish_orders.race_bango, finish_orders.race_name,
+            nullif(regexp_replace(substr(coalesce(o6.odds_sanrentan, ''), ((((finish_orders.winner_umaban - 1) * 272 + (finish_orders.second_umaban - 1 - case when finish_orders.winner_umaban < finish_orders.second_umaban then 1 else 0 end) * 16 + finish_orders.third_umaban - 1 - case when finish_orders.winner_umaban < finish_orders.third_umaban then 1 else 0 end - case when finish_orders.second_umaban < finish_orders.third_umaban then 1 else 0 end + 1) - 1) * 17 + 7)::int, 7), '[^0-9]', '', 'g'), '')::numeric * 10
+          where finish_orders.winner_umaban is not null and finish_orders.second_umaban is not null and finish_orders.third_umaban is not null
+        ) fallback_rows
+        where fallback_rows.payout is not null and fallback_rows.payout > 0
       ),
       payout_values as (
         select * from strict_payout_values
         union all
-        select * from fallback_payout_values
+        select * from fallback_odds_values
         where not exists (select 1 from strict_payout_values)
       ),
       ranked_payout_values as (
@@ -3189,7 +4621,7 @@ export const getPayoutStats = cache(
             kaisai_tsukihi desc,
             race_bango asc,
             payout desc
-        ) filter (where "detailRank" <= 200) as details
+        ) filter (where "detailRank" <= 100) as details
       from ranked_payout_values
       group by bet_type, bet_order
       order by bet_order asc
@@ -3214,20 +4646,15 @@ export const getFinishPositionStats = cache(
     settings: SimilarRaceStatsSettings,
   ): Promise<FinishPositionStatsRow[]> => {
     return withDbQueryCache(["getFinishPositionStats", race, settings], async () => {
-      const raceTable = race.source === "jra" ? jvdRa : nvdRa;
-      const runnerTable = race.source === "jra" ? jvdSe : nvdSe;
+      const statsSource = getSingleStatsSource(race, settings);
+      const raceTable = statsSource === "jra" ? jvdRa : nvdRa;
+      const runnerTable = statsSource === "jra" ? jvdSe : nvdSe;
       const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
       const surfaceCodes = getTrackCodesBySurface(getTrackSurface(race.trackCode));
       const turnCodes = getTrackCodesByTurn(getTrackTurn(race.trackCode));
       const classCondition = getStatsClassCondition(race, settings.classConditionName);
-      const raceTitleCondition = cleanDbText(race.kyosomeiHondai)
-        ? sql`ra.kyosomei_hondai = ${race.kyosomeiHondai}`
-        : sql`false`;
-      const raceSubtitleCondition = cleanDbText(race.kyosomeiFukudai)
-        ? sql`ra.kyosomei_fukudai = ${race.kyosomeiFukudai}`
-        : cleanDbText(race.kyosomeiKakkonai)
-          ? sql`ra.kyosomei_kakkonai = ${race.kyosomeiKakkonai}`
-          : sql`false`;
+      const raceTitleCondition = getStatsRaceTitleCondition(race);
+      const raceSubtitleCondition = getStatsRaceSubtitleCondition(race);
       const result = await getDb().execute<{
         finishPosition: string;
         count: string;
@@ -3336,7 +4763,7 @@ export const getFinishPositionStats = cache(
             kaisai_tsukihi desc,
             race_bango asc,
             umaban asc
-        ) filter (where "detailRank" <= 200) as details
+        ) filter (where "detailRank" <= 100) as details
       from ranked_finish_rows
       group by finish_position
       order by finish_position asc
@@ -3358,20 +4785,15 @@ export const getFinishPositionStats = cache(
 export const getFrameStats = cache(
   async (race: RaceDetail, settings: SimilarRaceStatsSettings): Promise<FrameStatsRow[]> => {
     return withDbQueryCache(["getFrameStats", race, settings], async () => {
-      const raceTable = race.source === "jra" ? jvdRa : nvdRa;
-      const runnerTable = race.source === "jra" ? jvdSe : nvdSe;
+      const statsSource = getSingleStatsSource(race, settings);
+      const raceTable = statsSource === "jra" ? jvdRa : nvdRa;
+      const runnerTable = statsSource === "jra" ? jvdSe : nvdSe;
       const raceDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
       const surfaceCodes = getTrackCodesBySurface(getTrackSurface(race.trackCode));
       const turnCodes = getTrackCodesByTurn(getTrackTurn(race.trackCode));
       const classCondition = getStatsClassCondition(race, settings.classConditionName);
-      const raceTitleCondition = cleanDbText(race.kyosomeiHondai)
-        ? sql`ra.kyosomei_hondai = ${race.kyosomeiHondai}`
-        : sql`false`;
-      const raceSubtitleCondition = cleanDbText(race.kyosomeiFukudai)
-        ? sql`ra.kyosomei_fukudai = ${race.kyosomeiFukudai}`
-        : cleanDbText(race.kyosomeiKakkonai)
-          ? sql`ra.kyosomei_kakkonai = ${race.kyosomeiKakkonai}`
-          : sql`false`;
+      const raceTitleCondition = getStatsRaceTitleCondition(race);
+      const raceSubtitleCondition = getStatsRaceSubtitleCondition(race);
       const result = await getDb().execute<{
         frameNumber: string;
         runnerCount: string | null;
@@ -3516,7 +4938,7 @@ export const getFrameStats = cache(
               kaisai_tsukihi desc,
               race_bango asc,
               umaban asc
-          ) filter (where "detailRank" <= 200) as details
+          ) filter (where "detailRank" <= 100) as details
         from ranked_frame_rows
         group by wakuban
       ),

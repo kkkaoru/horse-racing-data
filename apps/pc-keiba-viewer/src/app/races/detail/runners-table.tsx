@@ -85,6 +85,11 @@ const getSortValue = (
 const formatRealtimeOdds = (value: number | undefined): string =>
   value === undefined ? "-" : value.toFixed(1);
 
+const formatStoredOdds = (value: string | null | undefined): string => {
+  const parsed = parseSortValue(value, "0000");
+  return parsed === null ? "-" : (parsed / 10).toFixed(1);
+};
+
 const isLinkableText = (value: string): boolean => value !== "" && value !== "-";
 
 export function RunnersTable({
@@ -200,6 +205,7 @@ export function RunnersTable({
     const horseId = cleanText(runner.kettoTorokuBango);
     const jockeyName = cleanText(runner.kishumeiRyakusho);
     const trainerName = cleanText(runner.chokyoshimeiRyakusho);
+    const ownerName = cleanText(runner.banushimei);
 
     return (
       <tr key={`${runner.umaban}-${runner.kettoTorokuBango}`}>
@@ -240,7 +246,13 @@ export function RunnersTable({
             trainerName
           )}
         </td>
-        <td>{cleanText(runner.banushimei)}</td>
+        <td>
+          {isLinkableText(ownerName) ? (
+            <Link href={`/owners/${encodeURIComponent(ownerName)}`}>{ownerName}</Link>
+          ) : (
+            ownerName
+          )}
+        </td>
         <td>
           {realtimeWeight ??
             formatHorseWeight(
@@ -252,7 +264,7 @@ export function RunnersTable({
         </td>
         <td>
           {realtimeOdds === undefined
-            ? formatRunnerValue(runner.tanshoOdds, "0000")
+            ? formatStoredOdds(runner.tanshoOdds)
             : formatRealtimeOdds(realtimeOdds)}
         </td>
         <td>{formatRunnerValue(runner.kakuteiChakujun, "00")}</td>

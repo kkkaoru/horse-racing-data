@@ -65,13 +65,29 @@ const formatFetchedAt = (value: string): string => {
 };
 
 const subscribeMobileTooltip = (onStoreChange: () => void): (() => void) => {
+  if (typeof window === "undefined" || !window.matchMedia) {
+    return () => {};
+  }
+
   const mediaQuery = window.matchMedia(MOBILE_TOOLTIP_QUERY);
-  mediaQuery.addEventListener("change", onStoreChange);
-  return () => mediaQuery.removeEventListener("change", onStoreChange);
+  if (mediaQuery.addEventListener) {
+    mediaQuery.addEventListener("change", onStoreChange);
+  } else {
+    mediaQuery.addListener(onStoreChange);
+  }
+  return () => {
+    if (mediaQuery.removeEventListener) {
+      mediaQuery.removeEventListener("change", onStoreChange);
+    } else {
+      mediaQuery.removeListener(onStoreChange);
+    }
+  };
 };
 
 const getMobileTooltipSnapshot = (): boolean =>
-  typeof window !== "undefined" && window.matchMedia(MOBILE_TOOLTIP_QUERY).matches;
+  typeof window !== "undefined" &&
+  Boolean(window.matchMedia) &&
+  window.matchMedia(MOBILE_TOOLTIP_QUERY).matches;
 
 const getMobileTooltipServerSnapshot = (): boolean => false;
 

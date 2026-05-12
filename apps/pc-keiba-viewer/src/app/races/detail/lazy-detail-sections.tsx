@@ -10,27 +10,40 @@ import type {
   FinishPositionStatsRow,
   FrameStatsRow,
   HorseRaceResult,
+  OverallScoreRow,
   PayoutStatsRow,
   RaceTimeStats,
   Runner,
   SimilarRaceStatsRow,
   SimilarRaceStatsSettings,
+  TimeScoreRow,
   Training,
 } from "../../../lib/race-types";
 import { AbilityTestTable } from "./ability-test-table";
 import { BloodlineStatsTable } from "./bloodline-stats-table";
 import { HorseRaceResultsTable } from "./horse-race-results-table";
+import { OverallScoreTable } from "./overall-score-table";
 import { RaceConditionAnalysisSection } from "./race-condition-analysis-section";
 import { SimilarRaceStatsTable } from "./similar-race-stats-table";
+import { TimeScoreTable } from "./time-score-table";
 import { TrainingTable } from "./training-table";
 
-type DetailSection = "ability" | "bloodline" | "condition" | "results" | "similar" | "training";
+type DetailSection =
+  | "ability"
+  | "bloodline"
+  | "condition"
+  | "overall-score"
+  | "results"
+  | "similar"
+  | "time-score"
+  | "training";
 
 interface LazyDetailSectionsProps {
   day: string;
   keibajoCode: string;
   month: string;
   raceNumber: string;
+  realtimeApiBaseUrl: string;
   source: RaceSource;
   year: string;
 }
@@ -61,6 +74,7 @@ type ResultsPayload = {
   results: HorseRaceResult[];
   runners: Runner[];
   source: RaceSource;
+  sourceScope: RaceSource | "all";
   type: "results";
 };
 
@@ -83,6 +97,7 @@ type ConditionPayload = {
   raceTimeStats: RaceTimeStats;
   runners: Runner[];
   settings: SimilarRaceStatsSettings;
+  source: RaceSource;
   type: "condition";
 };
 
@@ -91,6 +106,7 @@ type BloodlinePayload = {
   rows: BloodlineStatsRow[];
   runners: Runner[];
   settings: SimilarRaceStatsSettings;
+  source: RaceSource;
   type: "bloodline";
 };
 
@@ -98,29 +114,115 @@ type SimilarPayload = {
   conditionLabels: ConditionLabels;
   rows: SimilarRaceStatsRow[];
   settings: SimilarRaceStatsSettings;
+  source: RaceSource;
   type: "similar";
+};
+
+type TimeScorePayload = {
+  rows: TimeScoreRow[];
+  type: "time-score";
+};
+
+type OverallScorePayload = {
+  rows: OverallScoreRow[];
+  type: "overall-score";
 };
 
 type SectionPayload =
   | AbilityPayload
   | BloodlinePayload
   | ConditionPayload
+  | OverallScorePayload
   | ResultsPayload
   | SimilarPayload
+  | TimeScorePayload
   | TrainingPayload;
 
 type SectionState =
   | { error: string; payload: null; status: "error" }
-  | { error: null; payload: null; status: "loading" }
+  | { error: null; payload: SectionPayload | null; status: "loading" }
   | { error: null; payload: SectionPayload; status: "ready" };
 
 const SECTION_TITLES: Record<DetailSection, string> = {
   ability: "能力検査",
   bloodline: "血統成績",
   condition: "同条件レース分析",
+  "overall-score": "総合スコア",
   results: "競走成績",
   similar: "同条件成績",
+  "time-score": "タイムスコア",
   training: "調教・追い切り",
+};
+
+const GENERIC_STATS_QUERY_KEYS = new Set([
+  "statsAge",
+  "statsClass",
+  "statsDistance",
+  "statsFrame",
+  "statsMonthWindow",
+  "statsNarOnly",
+  "statsRaceMonth",
+  "statsRaceName",
+  "statsRaceNumber",
+  "statsRaceSubtitle",
+  "statsRaceTitle",
+  "statsRunnerCount",
+  "statsSex",
+  "statsSourceScope",
+  "statsSurface",
+  "statsTrack",
+  "statsTurn",
+  "statsVenue",
+  "statsWeight",
+  "statsYears",
+]);
+
+const shouldIncludeSectionQueryParam = (section: DetailSection, name: string): boolean => {
+  if (section === "bloodline") {
+    return name.startsWith("bloodlineStats") || GENERIC_STATS_QUERY_KEYS.has(name);
+  }
+  if (section === "condition") {
+    return (
+      name.startsWith("analysisStats") ||
+      name === "similarStatsVenue" ||
+      GENERIC_STATS_QUERY_KEYS.has(name)
+    );
+  }
+  if (section === "overall-score") {
+    return (
+      name.startsWith("analysisStats") ||
+      name.startsWith("bloodlineStats") ||
+      name === "similarStatsVenue" ||
+      GENERIC_STATS_QUERY_KEYS.has(name)
+    );
+  }
+  if (section === "results") {
+    return name === "resultsSourceScope";
+  }
+  if (section === "time-score") {
+    return (
+      name.startsWith("analysisStats") ||
+      name === "similarStatsVenue" ||
+      GENERIC_STATS_QUERY_KEYS.has(name)
+    );
+  }
+  if (section === "similar") {
+    return name.startsWith("similarStats") || GENERIC_STATS_QUERY_KEYS.has(name);
+  }
+  return false;
+};
+
+const getSectionSearchParams = (
+  section: DetailSection,
+  searchParams: URLSearchParams,
+): URLSearchParams => {
+  const next = new URLSearchParams();
+  searchParams.forEach((value, name) => {
+    if (shouldIncludeSectionQueryParam(section, name)) {
+      next.append(name, value);
+    }
+  });
+  return next;
 };
 
 const SectionSkeleton = ({ title }: { title: string }) => (
@@ -151,7 +253,7 @@ const getSectionUrl = (
   { day, keibajoCode, month, raceNumber, year }: LazyDetailSectionsProps,
   searchParams: URLSearchParams,
 ): string => {
-  const query = searchParams.toString();
+  const query = getSectionSearchParams(section, searchParams).toString();
   const base = `/api/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/sections/${section}`;
   return query ? `${base}?${query}` : base;
 };
@@ -179,7 +281,7 @@ const useSectionPayload = (
 
   useEffect(() => {
     let isActive = true;
-    setState({ error: null, payload: null, status: "loading" });
+    setState((current) => ({ error: null, payload: current.payload, status: "loading" }));
 
     fetch(url)
       .then(async (response) => {
@@ -203,6 +305,9 @@ const useSectionPayload = (
         if (!isActive) {
           return;
         }
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return;
+        }
         setState({
           error: error instanceof Error ? error.message : "unknown error",
           payload: null,
@@ -221,18 +326,21 @@ const useSectionPayload = (
 function LazyResultsSection(props: LazyDetailSectionsProps) {
   const searchParams = useSearchParams();
   const state = useSectionPayload("results", props, searchParams);
-  if (state.status === "loading") {
+  if (state.status === "loading" && state.payload === null) {
     return <SectionSkeleton title={SECTION_TITLES.results} />;
   }
   if (state.status === "error") {
     return <SectionError error={state.error} title={SECTION_TITLES.results} />;
   }
   const payload = state.payload;
-  if (payload.type !== "results") {
+  if (!payload || payload.type !== "results") {
     return <SectionError error="Invalid section payload" title={SECTION_TITLES.results} />;
   }
   return (
-    <section className="race-results-section lazy-detail-section">
+    <section
+      aria-busy={state.status === "loading"}
+      className="race-results-section lazy-detail-section"
+    >
       <div className="section-heading compact">
         <h2>競走成績</h2>
       </div>
@@ -245,6 +353,44 @@ function LazyResultsSection(props: LazyDetailSectionsProps) {
         results={payload.results}
         runners={payload.runners}
         source={payload.source}
+        sourceScope={payload.sourceScope}
+      />
+    </section>
+  );
+}
+
+export function LazyOverallScoreSection(props: LazyDetailSectionsProps) {
+  const searchParams = useSearchParams();
+  const state = useSectionPayload("overall-score", props, searchParams);
+  if (state.status === "loading" && state.payload === null) {
+    return <SectionSkeleton title={SECTION_TITLES["overall-score"]} />;
+  }
+  if (state.status === "error") {
+    return <SectionError error={state.error} title={SECTION_TITLES["overall-score"]} />;
+  }
+  const payload = state.payload;
+  if (!payload || payload.type !== "overall-score") {
+    return <SectionError error="Invalid section payload" title={SECTION_TITLES["overall-score"]} />;
+  }
+  return (
+    <section
+      aria-busy={state.status === "loading"}
+      className="similar-stats-section lazy-detail-section"
+    >
+      <div className="section-heading compact">
+        <h2>総合スコア</h2>
+      </div>
+      <OverallScoreTable
+        realtimeRequest={{
+          apiBaseUrl: props.realtimeApiBaseUrl,
+          day: props.day,
+          keibajoCode: props.keibajoCode,
+          month: props.month,
+          raceNumber: props.raceNumber,
+          source: props.source,
+          year: props.year,
+        }}
+        rows={payload.rows}
       />
     </section>
   );
@@ -253,14 +399,14 @@ function LazyResultsSection(props: LazyDetailSectionsProps) {
 function LazyTrainingSection(props: LazyDetailSectionsProps) {
   const searchParams = useSearchParams();
   const state = useSectionPayload("training", props, searchParams);
-  if (state.status === "loading") {
+  if (state.status === "loading" && state.payload === null) {
     return <SectionSkeleton title={SECTION_TITLES.training} />;
   }
   if (state.status === "error") {
     return <SectionError error={state.error} title={SECTION_TITLES.training} />;
   }
   const payload = state.payload;
-  if (payload.type !== "training") {
+  if (!payload || payload.type !== "training") {
     return <SectionError error="Invalid section payload" title={SECTION_TITLES.training} />;
   }
   if (payload.trainings.length === 0) {
@@ -279,14 +425,14 @@ function LazyTrainingSection(props: LazyDetailSectionsProps) {
 function LazyAbilitySection(props: LazyDetailSectionsProps) {
   const searchParams = useSearchParams();
   const state = useSectionPayload("ability", props, searchParams);
-  if (state.status === "loading") {
+  if (state.status === "loading" && state.payload === null) {
     return <SectionSkeleton title={SECTION_TITLES.ability} />;
   }
   if (state.status === "error") {
     return <SectionError error={state.error} title={SECTION_TITLES.ability} />;
   }
   const payload = state.payload;
-  if (payload.type !== "ability") {
+  if (!payload || payload.type !== "ability") {
     return <SectionError error="Invalid section payload" title={SECTION_TITLES.ability} />;
   }
   if (payload.abilityTests.length === 0) {
@@ -305,18 +451,21 @@ function LazyAbilitySection(props: LazyDetailSectionsProps) {
 function LazyConditionSection(props: LazyDetailSectionsProps) {
   const searchParams = useSearchParams();
   const state = useSectionPayload("condition", props, searchParams);
-  if (state.status === "loading") {
+  if (state.status === "loading" && state.payload === null) {
     return <SectionSkeleton title={SECTION_TITLES.condition} />;
   }
   if (state.status === "error") {
     return <SectionError error={state.error} title={SECTION_TITLES.condition} />;
   }
   const payload = state.payload;
-  if (payload.type !== "condition") {
+  if (!payload || payload.type !== "condition") {
     return <SectionError error="Invalid section payload" title={SECTION_TITLES.condition} />;
   }
   return (
-    <section className="similar-stats-section lazy-detail-section">
+    <section
+      aria-busy={state.status === "loading"}
+      className="similar-stats-section lazy-detail-section"
+    >
       <div className="section-heading compact">
         <h2>同条件レース分析</h2>
       </div>
@@ -326,9 +475,45 @@ function LazyConditionSection(props: LazyDetailSectionsProps) {
         frameStats={payload.frameStats}
         payoutStats={payload.payoutStats}
         raceTimeStats={payload.raceTimeStats}
+        realtimeRequest={{
+          apiBaseUrl: props.realtimeApiBaseUrl,
+          day: props.day,
+          keibajoCode: props.keibajoCode,
+          month: props.month,
+          raceNumber: props.raceNumber,
+          source: props.source,
+          year: props.year,
+        }}
         runners={payload.runners}
         settings={payload.settings}
+        source={payload.source}
       />
+    </section>
+  );
+}
+
+function LazyTimeScoreSection(props: LazyDetailSectionsProps) {
+  const searchParams = useSearchParams();
+  const state = useSectionPayload("time-score", props, searchParams);
+  if (state.status === "loading" && state.payload === null) {
+    return <SectionSkeleton title={SECTION_TITLES["time-score"]} />;
+  }
+  if (state.status === "error") {
+    return <SectionError error={state.error} title={SECTION_TITLES["time-score"]} />;
+  }
+  const payload = state.payload;
+  if (!payload || payload.type !== "time-score") {
+    return <SectionError error="Invalid section payload" title={SECTION_TITLES["time-score"]} />;
+  }
+  return (
+    <section
+      aria-busy={state.status === "loading"}
+      className="similar-stats-section lazy-detail-section"
+    >
+      <div className="section-heading compact">
+        <h2>タイムスコア</h2>
+      </div>
+      <TimeScoreTable rows={payload.rows} />
     </section>
   );
 }
@@ -336,18 +521,21 @@ function LazyConditionSection(props: LazyDetailSectionsProps) {
 function LazyBloodlineSection(props: LazyDetailSectionsProps) {
   const searchParams = useSearchParams();
   const state = useSectionPayload("bloodline", props, searchParams);
-  if (state.status === "loading") {
+  if (state.status === "loading" && state.payload === null) {
     return <SectionSkeleton title={SECTION_TITLES.bloodline} />;
   }
   if (state.status === "error") {
     return <SectionError error={state.error} title={SECTION_TITLES.bloodline} />;
   }
   const payload = state.payload;
-  if (payload.type !== "bloodline") {
+  if (!payload || payload.type !== "bloodline") {
     return <SectionError error="Invalid section payload" title={SECTION_TITLES.bloodline} />;
   }
   return (
-    <section className="similar-stats-section lazy-detail-section">
+    <section
+      aria-busy={state.status === "loading"}
+      className="similar-stats-section lazy-detail-section"
+    >
       <div className="section-heading compact">
         <h2>血統成績</h2>
       </div>
@@ -356,6 +544,7 @@ function LazyBloodlineSection(props: LazyDetailSectionsProps) {
         rows={payload.rows}
         runners={payload.runners}
         settings={payload.settings}
+        source={payload.source}
       />
     </section>
   );
@@ -364,18 +553,21 @@ function LazyBloodlineSection(props: LazyDetailSectionsProps) {
 function LazySimilarSection(props: LazyDetailSectionsProps) {
   const searchParams = useSearchParams();
   const state = useSectionPayload("similar", props, searchParams);
-  if (state.status === "loading") {
+  if (state.status === "loading" && state.payload === null) {
     return <SectionSkeleton title={SECTION_TITLES.similar} />;
   }
   if (state.status === "error") {
     return <SectionError error={state.error} title={SECTION_TITLES.similar} />;
   }
   const payload = state.payload;
-  if (payload.type !== "similar") {
+  if (!payload || payload.type !== "similar") {
     return <SectionError error="Invalid section payload" title={SECTION_TITLES.similar} />;
   }
   return (
-    <section className="similar-stats-section lazy-detail-section">
+    <section
+      aria-busy={state.status === "loading"}
+      className="similar-stats-section lazy-detail-section"
+    >
       <div className="section-heading compact">
         <h2>同条件成績</h2>
       </div>
@@ -383,6 +575,7 @@ function LazySimilarSection(props: LazyDetailSectionsProps) {
         conditionLabels={payload.conditionLabels}
         rows={payload.rows}
         settings={payload.settings}
+        source={payload.source}
       />
     </section>
   );
@@ -392,6 +585,7 @@ export function LazyDetailSections(props: LazyDetailSectionsProps) {
   return (
     <>
       <LazyResultsSection {...props} />
+      <LazyTimeScoreSection {...props} />
       <LazyTrainingSection {...props} />
       {props.source === "nar" ? <LazyAbilitySection {...props} /> : null}
       <LazyConditionSection {...props} />

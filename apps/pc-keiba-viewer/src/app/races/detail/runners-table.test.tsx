@@ -11,6 +11,10 @@ const runner = (overrides: Partial<Runner>): Runner => ({
   bamei: "テストホース",
   bataiju: "480",
   chokyoshimeiRyakusho: "調教師",
+  corner1: null,
+  corner2: null,
+  corner3: null,
+  corner4: null,
   futanJuryo: "550",
   kakuteiChakujun: "00",
   kettoTorokuBango: "2023100001",
@@ -86,6 +90,20 @@ describe("runners table", () => {
 
     expect(rowTexts()[0]).toContain("二番");
     expect(rowTexts()[2]).toContain("三番");
+  });
+
+  it("formats stored win odds as decimal odds", () => {
+    render(
+      <RunnersTable
+        runners={[
+          runner({ bamei: "二番", tanshoOdds: "0046", umaban: "02" }),
+          runner({ bamei: "九番", tanshoOdds: "1138", umaban: "09" }),
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("4.6")).toBeTruthy();
+    expect(screen.getByText("113.8")).toBeTruthy();
   });
 
   it("uses runner number as the default sort when finish order and odds are empty", () => {

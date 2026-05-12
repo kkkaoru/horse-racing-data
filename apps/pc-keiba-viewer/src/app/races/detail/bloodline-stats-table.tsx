@@ -1,9 +1,10 @@
 "use client";
 
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import type { ReactNode } from "react";
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, memo, useEffect, useMemo, useState } from "react";
 
+import type { RaceSource } from "../../../lib/codes";
 import { cleanText, formatDate, formatKeibajo, formatRaceNumber } from "../../../lib/format";
 import type { BloodlineStatsRow, Runner, SimilarRaceStatsSettings } from "../../../lib/race-types";
 import { formatRunnerNumber } from "../../../lib/runner-format";
@@ -43,6 +44,7 @@ interface BloodlineStatsTableProps {
   rows: BloodlineStatsRow[];
   runners: Runner[];
   settings: SimilarRaceStatsSettings;
+  source: RaceSource;
 }
 
 const SORT_LABELS: Record<RateSortKey, string> = {
@@ -81,24 +83,46 @@ const METRIC_SCORE_WEIGHTS = {
 
 type ToggleSettingKey = keyof Omit<
   SimilarRaceStatsSettings,
-  "classConditionName" | "includeRunnerCount" | "runnerCount" | "years"
+  | "classConditionName"
+  | "includeBloodlineAncestors"
+  | "includeNarOnly"
+  | "includeRunnerCount"
+  | "runnerCount"
+  | "sourceScope"
+  | "years"
 >;
 
 const SETTING_PARAMS: Record<ToggleSettingKey, string> = {
-  includeAge: "statsAge",
-  includeClass: "statsClass",
-  includeDistance: "statsDistance",
-  includeFrame: "statsFrame",
-  includeMonthWindow: "statsMonthWindow",
-  includeRaceNumber: "statsRaceNumber",
-  includeRaceSubtitle: "statsRaceSubtitle",
-  includeRaceTitle: "statsRaceTitle",
-  includeSex: "statsSex",
-  includeSurface: "statsSurface",
-  includeTurn: "statsTurn",
-  includeVenue: "statsVenue",
-  includeWeight: "statsWeight",
+  includeAge: "bloodlineStatsAge",
+  includeClass: "bloodlineStatsClass",
+  includeDistance: "bloodlineStatsDistance",
+  includeFrame: "bloodlineStatsFrame",
+  includeMonthWindow: "bloodlineStatsMonthWindow",
+  includeRaceNumber: "bloodlineStatsRaceNumber",
+  includeRaceSubtitle: "bloodlineStatsRaceSubtitle",
+  includeRaceTitle: "bloodlineStatsRaceTitle",
+  includeSex: "bloodlineStatsSex",
+  includeSurface: "bloodlineStatsSurface",
+  includeTurn: "bloodlineStatsTurn",
+  includeVenue: "bloodlineStatsVenue",
+  includeWeight: "bloodlineStatsWeight",
 };
+
+const ALL_CONDITION_KEYS: ToggleSettingKey[] = [
+  "includeVenue",
+  "includeMonthWindow",
+  "includeRaceTitle",
+  "includeRaceSubtitle",
+  "includeAge",
+  "includeClass",
+  "includeSex",
+  "includeWeight",
+  "includeSurface",
+  "includeTurn",
+  "includeDistance",
+  "includeFrame",
+  "includeRaceNumber",
+];
 
 const formatRate = (value: number): string => `${value.toFixed(1)}%`;
 
@@ -150,18 +174,23 @@ const normalize = (value: number, max: number): number => (max > 0 ? value / max
 const isTargetBloodline = (value: string | undefined, targetName: string): boolean =>
   cleanText(value, "") === cleanText(targetName, "");
 
-export function BloodlineStatsTable({
+export const BloodlineStatsTable = memo(function BloodlineStatsTable({
   conditionLabels,
   rows,
   runners,
   settings,
+  source,
 }: BloodlineStatsTableProps) {
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const [displaySettings, setDisplaySettings] = useState(settings);
   const [sortKey, setSortKey] = useState<RateSortKey>("showRate");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [expandedRowKey, setExpandedRowKey] = useState<string | null>(null);
   const [expandedScoreRowKey, setExpandedScoreRowKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDisplaySettings(settings);
+  }, [settings]);
 
   const groupedRows = useMemo(() => {
     const sortedRows = rows.toSorted((left, right) => {
@@ -247,15 +276,54 @@ export function BloodlineStatsTable({
       );
   }, [rows, runners]);
 
-  const updateParam = (name: string, value: string) => {
-    const next = new URLSearchParams(searchParams.toString());
-    next.set(name, value);
+  const replaceParams = (next: URLSearchParams) => {
+    const scrollY = window.scrollY;
     router.replace(`?${next.toString()}`, { scroll: false });
+    window.requestAnimationFrame(() => {
+      window.scrollTo({ top: scrollY });
+    });
+  };
+
+  const updateParam = (name: string, value: string) => {
+    const next = new URLSearchParams(window.location.search);
+    next.set(name, value);
+    replaceParams(next);
   };
 
   const toggleSetting = (key: ToggleSettingKey) => {
-    updateParam(SETTING_PARAMS[key], settings[key] ? "0" : "1");
+    const enabled = !displaySettings[key];
+    setDisplaySettings((current) => ({ ...current, [key]: enabled }));
+    updateParam(SETTING_PARAMS[key], enabled ? "1" : "0");
   };
+
+  const clearConditionSettings = () => {
+    const next = new URLSearchParams(window.location.search);
+    for (const key of ALL_CONDITION_KEYS) {
+      next.set(SETTING_PARAMS[key], "0");
+    }
+    next.delete("bloodlineStatsOffspringOnly");
+    setDisplaySettings((current) => ({
+      ...current,
+      includeAge: false,
+      includeBloodlineAncestors: true,
+      includeClass: false,
+      includeDistance: false,
+      includeFrame: false,
+      includeMonthWindow: false,
+      includeRaceNumber: false,
+      includeRaceSubtitle: false,
+      includeRaceTitle: false,
+      includeSex: false,
+      includeSurface: false,
+      includeTurn: false,
+      includeVenue: false,
+      includeWeight: false,
+    }));
+    replaceParams(next);
+  };
+  const sourceScopeChecked = displaySettings.sourceScope === source;
+  const sourceScopeLabel = source === "jra" ? "中央競馬のみ" : "地方競馬のみ";
+  const offspringOnlyChecked = !displaySettings.includeBloodlineAncestors;
 
   const renderConditionToggle = (key: ToggleSettingKey, label: string | null): ReactNode => {
     if (!label || label === "-") {
@@ -265,7 +333,7 @@ export function BloodlineStatsTable({
     return (
       <label>
         <input
-          checked={settings[key]}
+          checked={displaySettings[key]}
           type="checkbox"
           onChange={() => {
             toggleSetting(key);
@@ -568,9 +636,12 @@ export function BloodlineStatsTable({
           <label>
             <span>期間</span>
             <select
-              value={settings.years === null ? "all" : String(settings.years)}
+              value={displaySettings.years === null ? "all" : String(displaySettings.years)}
               onChange={(event) => {
-                updateParam("statsYears", event.currentTarget.value);
+                const years =
+                  event.currentTarget.value === "all" ? null : Number(event.currentTarget.value);
+                setDisplaySettings((current) => ({ ...current, years }));
+                updateParam("bloodlineStatsYears", event.currentTarget.value);
               }}
             >
               {[1, 2, 3, 5, 10].map((year) => (
@@ -580,6 +651,33 @@ export function BloodlineStatsTable({
               ))}
               <option value="all">全期間</option>
             </select>
+          </label>
+          <label>
+            <input
+              checked={sourceScopeChecked}
+              type="checkbox"
+              onChange={() => {
+                const sourceScope = sourceScopeChecked ? "all" : source;
+                setDisplaySettings((current) => ({ ...current, sourceScope }));
+                updateParam("bloodlineStatsSourceScope", sourceScope);
+              }}
+            />
+            {sourceScopeLabel}
+          </label>
+          <label>
+            <input
+              checked={offspringOnlyChecked}
+              type="checkbox"
+              onChange={() => {
+                const offspringOnly = !offspringOnlyChecked;
+                setDisplaySettings((current) => ({
+                  ...current,
+                  includeBloodlineAncestors: !offspringOnly,
+                }));
+                updateParam("bloodlineStatsOffspringOnly", offspringOnly ? "1" : "0");
+              }}
+            />
+            産駒のみ
           </label>
           {renderConditionToggle("includeVenue", conditionLabels.venue)}
           {renderConditionToggle("includeMonthWindow", conditionLabels.monthWindow)}
@@ -594,6 +692,9 @@ export function BloodlineStatsTable({
           {renderConditionToggle("includeDistance", conditionLabels.distance)}
           {renderConditionToggle("includeFrame", conditionLabels.frame)}
           {renderConditionToggle("includeRaceNumber", conditionLabels.raceNumber)}
+          <button className="stats-control-button" type="button" onClick={clearConditionSettings}>
+            全ての条件を外す
+          </button>
         </section>
       </MobileFilterDisclosure>
 
@@ -687,4 +788,4 @@ export function BloodlineStatsTable({
       </div>
     </>
   );
-}
+});

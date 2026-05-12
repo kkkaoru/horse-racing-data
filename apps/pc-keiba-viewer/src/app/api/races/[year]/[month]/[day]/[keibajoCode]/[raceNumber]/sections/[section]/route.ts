@@ -23,8 +23,10 @@ const SECTIONS = [
   "ability",
   "bloodline",
   "condition",
+  "overall-score",
   "results",
   "similar",
+  "time-score",
   "training",
 ] as const satisfies readonly DetailSection[];
 
