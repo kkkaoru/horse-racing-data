@@ -8,7 +8,7 @@ export async function GET() {
   const raceWindows = await getTopRaceWindows();
   return NextResponse.json(raceWindows, {
     headers: {
-      "Cache-Control": "private, max-age=0, no-store",
+      "Cache-Control": "public, s-maxage=15, stale-while-revalidate=45",
     },
   });
 }
