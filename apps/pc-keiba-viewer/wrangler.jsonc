@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "pc-keiba-viewer",
-  "main": ".open-next/worker.js",
+  "main": "src/worker.ts",
   "account_id": "78109ec18c7c85b194b19fb32e3bb149",
   "compatibility_date": "2026-05-09",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
@@ -18,6 +18,26 @@
   "images": {
     "binding": "IMAGES",
   },
+  "kv_namespaces": [
+    {
+      "binding": "PADDOCK_STATE_KV",
+      "id": "1cb633c48a084a428d3ce3e0f844f7d1",
+    },
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "PADDOCK_ROOM",
+        "class_name": "PaddockRoom",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "paddock-room-v1",
+      "new_sqlite_classes": ["PaddockRoom"],
+    },
+  ],
   "observability": {
     "enabled": true,
   },
