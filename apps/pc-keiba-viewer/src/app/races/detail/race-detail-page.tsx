@@ -26,7 +26,15 @@ import {
 import { buildJraRaceEntryUrl, buildJraRaceResultUrl } from "../../../lib/jra-url";
 import { getGradeLabel, getRaceTags, getWeightLabel } from "../../../lib/race-classification";
 import type { RaceDetail } from "../../../lib/race-types";
-import { isBanEiKeibajoCode } from "../../../lib/runner-format";
+import {
+  formatCarriedWeight,
+  formatHorseWeight,
+  formatRunnerNumber,
+  formatRunnerValue,
+  formatSexAge,
+  isBanEiKeibajoCode,
+} from "../../../lib/runner-format";
+import { AiJsonExportSection } from "./ai-json-export-section";
 import { LazyDetailSections, LazyOverallScoreSection } from "./lazy-detail-sections";
 import { PaddockSection } from "./paddock-section";
 import { RaceShareControls } from "./race-share-controls";
@@ -90,6 +98,15 @@ const getRaceStartsAt = (
   const hour = normalizedTime.slice(0, 2);
   const minute = normalizedTime.slice(2, 4);
   return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}T${hour}:${minute}:00+09:00`;
+};
+
+const formatStoredOddsForExport = (value: string | null | undefined): string => {
+  const cleaned = cleanText(value, "");
+  if (!cleaned || cleaned === "0000") {
+    return "-";
+  }
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? (parsed / 10).toFixed(1) : "-";
 };
 
 const DetailCell = ({
@@ -191,6 +208,82 @@ export async function RaceDetailView({
   });
   const jraRaceEntryUrl = buildJraRaceEntryUrl(race);
   const jraRaceResultUrl = buildJraRaceResultUrl(race);
+  const decodeHexHorseWeight = raceSource === "nar" && isBanEiKeibajoCode(keibajoCode);
+  const baseProcessedData = {
+    adjacentRaces: {
+      next: nextRace
+        ? {
+            label: getAdjacentRaceLabel(nextRace),
+            path: getRaceDetailPath(nextRace),
+            race: nextRace,
+          }
+        : null,
+      previous: previousRace
+        ? {
+            label: getAdjacentRaceLabel(previousRace),
+            path: getRaceDetailPath(previousRace),
+            race: previousRace,
+          }
+        : null,
+    },
+    course: {
+      facts: courseFacts,
+      imagePath: courseImagePath,
+      paragraphs: courseParagraphs,
+      text: courseText,
+    },
+    detailCells: {
+      condition: raceTags.length > 0 ? raceTags.join(" / ") : cleanText(race.kyosoJokenMeisho),
+      dirtCondition: formatBaba(race.babajotaiCodeDirt),
+      entryUrl: jraRaceEntryUrl,
+      grade: getGradeLabel(race.gradeCode, race.source),
+      raceSymbol: race.kyosoKigoCode,
+      registeredRunnerCount: race.torokuTosu,
+      resultUrl: jraRaceResultUrl,
+      runnerCount: race.shussoTosu,
+      turfCondition: formatBaba(race.babajotaiCodeShiba),
+      weather: formatWeather(race.tenkoCode),
+      weightType: getWeightLabel(race.juryoShubetsuCode),
+    },
+    globalSummary: {
+      distance: formatDistance(race.kyori),
+      raceNumber: formatRaceNumber(raceNumber),
+      startsAt: raceStartsAt,
+      startTime: `${formatTime(race.hassoJikoku)}発走`,
+      surface: getTrackSurfaceLabel(race.trackCode) ?? formatTrack(race.trackCode),
+      venue: formatKeibajo(keibajoCode),
+    },
+    hero: {
+      badgeDistance: formatDistance(race.kyori),
+      badgeTrack: formatTrack(race.trackCode),
+      date: formatDate(year, `${month}${day}`),
+      raceName,
+      sourceLabel: SOURCE_LABELS[raceSource],
+      subtitle: `${formatKeibajo(keibajoCode)} ${formatRaceNumber(raceNumber)} ${formatTime(
+        race.hassoJikoku,
+      )}発走`,
+      tags: raceTags,
+    },
+    runnerRows: runners.map((runner) => ({
+      carriedWeight: formatCarriedWeight(runner.futanJuryo, decodeHexHorseWeight),
+      finishOrder: formatRunnerValue(runner.kakuteiChakujun, "00"),
+      frameNumber: cleanText(runner.wakuban),
+      horseName: cleanText(runner.bamei),
+      horseNumber: formatRunnerNumber(runner.umaban),
+      horseWeight: formatHorseWeight(
+        runner.bataiju,
+        runner.zogenFugo,
+        runner.zogenSa,
+        decodeHexHorseWeight,
+      ),
+      jockeyName: cleanText(runner.kishumeiRyakusho),
+      ownerName: cleanText(runner.banushimei),
+      sexAge: formatSexAge(runner.seibetsuCode, runner.barei),
+      storedWinOdds: formatStoredOddsForExport(runner.tanshoOdds),
+      trainerName: cleanText(runner.chokyoshimeiRyakusho),
+    })),
+    sharePath,
+  };
   return (
     <section className="page-shell">
       <RaceShareControls path={sharePath} />
@@ -376,7 +469,7 @@ export async function RaceDetailView({
           <p className="empty-state">出走馬情報はまだありません。</p>
         ) : (
           <RunnersTable
-            decodeHexHorseWeight={raceSource === "nar" && isBanEiKeibajoCode(keibajoCode)}
+            decodeHexHorseWeight={decodeHexHorseWeight}
             initialRealtimePayload={null}
             realtimeRequest={{
               apiBaseUrl: realtimeApiBaseUrl,
@@ -420,6 +513,21 @@ export async function RaceDetailView({
         month={month}
         raceNumber={raceNumber}
         realtimeApiBaseUrl={realtimeApiBaseUrl}
+        source={raceSource}
+        year={year}
+      />
+      <AiJsonExportSection
+        basePostgresqlData={{
+          courseInfo,
+          race,
+          raceDayRaces,
+          runners,
+        }}
+        baseProcessedData={baseProcessedData}
+        day={day}
+        keibajoCode={keibajoCode}
+        month={month}
+        raceNumber={raceNumber}
         source={raceSource}
         year={year}
       />
