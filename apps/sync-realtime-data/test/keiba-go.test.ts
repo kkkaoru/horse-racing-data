@@ -571,13 +571,14 @@ describe("keiba.go realtime helpers", () => {
         <td rowspan="5" class="horseNum">7</td>
         <td colspan="3"><a class="horseName">取消ホース</a></td>
         <td><a class="jockeyName">新騎手<span class="jockeyarea">（川崎）</span></a></td>
-        <td class="odds_weight"><span>出走取消</span></td>
+        <td class="info"><span>出走取消</span></td>
       </tr>
       <tr class="tBorder">
         <td rowspan="5" class="horseNum">8</td>
         <td colspan="3"><a class="horseName">乗替ホース</a></td>
         <td><a class="jockeyName">替騎手<span class="jockeyarea">（船橋）</span></a></td>
         <td class="odds_weight"><span>5.5</span></td>
+        <td><span class="pastRank ">取消</span></td>
       </tr>
     `;
 

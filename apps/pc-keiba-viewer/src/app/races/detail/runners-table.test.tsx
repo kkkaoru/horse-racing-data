@@ -251,7 +251,7 @@ describe("runners table", () => {
 
     expect(screen.getByText("替騎手")).toBeTruthy();
     expect(screen.getByText("元 元騎手")).toBeTruthy();
-    expect(screen.getByText("取消")).toBeTruthy();
+    expect(screen.getAllByText("取消").length).toBeGreaterThan(0);
   });
 
   it("does not show changed jockey notes for names with the same first three characters", () => {
@@ -290,8 +290,10 @@ describe("runners table", () => {
       />,
     );
 
-    expect(screen.getByText("増田充宏")).toBeTruthy();
-    expect(screen.getByText("シャベス")).toBeTruthy();
+    expect(screen.getByText("増田充")).toBeTruthy();
+    expect(screen.getByText("シャベ")).toBeTruthy();
+    expect(screen.queryByText("増田充宏")).toBeNull();
+    expect(screen.queryByText("シャベス")).toBeNull();
     expect(screen.queryByText("元 増田充")).toBeNull();
     expect(screen.queryByText("元 シャベ")).toBeNull();
   });

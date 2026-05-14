@@ -1,13 +1,36 @@
 import { cleanText } from "./format";
 
 const SAME_JOCKEY_PREFIX_LENGTH = 3;
+const JOCKEY_NAME_CHARACTER_REPLACEMENTS: Record<string, string> = {
+  櫻: "桜",
+};
 
 export const normalizeJockeyNameForComparison = (value: string | null | undefined): string => {
-  return cleanText(value, "").replace(/\s+/gu, "");
+  return Array.from(cleanText(value, "").replace(/\s+/gu, ""))
+    .map((character) => JOCKEY_NAME_CHARACTER_REPLACEMENTS[character] ?? character)
+    .join("");
 };
 
 const getJockeyNamePrefix = (value: string): string =>
   Array.from(value).slice(0, SAME_JOCKEY_PREFIX_LENGTH).join("");
+
+const isHanCharacter = (value: string): boolean => /\p{Script=Han}/u.test(value);
+
+const hasSameLocalKeibaAbbreviatedName = (left: string, right: string): boolean => {
+  const leftCharacters = Array.from(left);
+  const rightCharacters = Array.from(right);
+  if (leftCharacters.length < 3 || rightCharacters.length < 3) {
+    return false;
+  }
+  const leftPrefix = leftCharacters.slice(0, 2);
+  const rightPrefix = rightCharacters.slice(0, 2);
+  return (
+    leftPrefix.every(isHanCharacter) &&
+    rightPrefix.every(isHanCharacter) &&
+    leftPrefix.join("") === rightPrefix.join("") &&
+    leftCharacters.at(-1) === rightCharacters.at(-1)
+  );
+};
 
 export const isSameJockeyName = (
   left: string | null | undefined,
@@ -21,6 +44,9 @@ export const isSameJockeyName = (
   if (normalizedLeft === normalizedRight) {
     return true;
   }
+  if (hasSameLocalKeibaAbbreviatedName(normalizedLeft, normalizedRight)) {
+    return true;
+  }
   if (
     Array.from(normalizedLeft).length < SAME_JOCKEY_PREFIX_LENGTH ||
     Array.from(normalizedRight).length < SAME_JOCKEY_PREFIX_LENGTH
@@ -28,4 +54,16 @@ export const isSameJockeyName = (
     return false;
   }
   return getJockeyNamePrefix(normalizedLeft) === getJockeyNamePrefix(normalizedRight);
+};
+
+export const getPreferredJockeyName = (
+  storedName: string | null | undefined,
+  realtimeName: string | null | undefined,
+): string => {
+  const cleanedStoredName = cleanText(storedName, "");
+  const cleanedRealtimeName = cleanText(realtimeName, "");
+  if (cleanedStoredName !== "" && isSameJockeyName(cleanedStoredName, cleanedRealtimeName)) {
+    return cleanedStoredName;
+  }
+  return cleanedRealtimeName || cleanedStoredName;
 };

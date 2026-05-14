@@ -5,7 +5,7 @@ import { memo, useCallback, useEffect, useMemo, useState } from "react";
 
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
 import { cleanText } from "../../../lib/format";
-import { isSameJockeyName } from "../../../lib/jockey-name";
+import { getPreferredJockeyName, isSameJockeyName } from "../../../lib/jockey-name";
 import {
   isPaddockState,
   normalizePaddockHorseScore,
@@ -160,15 +160,22 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
   const setOfficialRank = (rank: PaddockOfficialRank | null) => {
     onOfficialRank({ horseName, horseNumber, rank, type: "official-rank" });
   };
-  const displayJockeyName = realtimeJockeyName || jockeyName;
+  const displayJockeyName = getPreferredJockeyName(jockeyName, realtimeJockeyName);
+  const isScratched = Boolean(status);
 
   return (
-    <div className="paddock-horse-row">
+    <div
+      className={
+        isScratched ? "paddock-horse-row paddock-horse-row-scratched" : "paddock-horse-row"
+      }
+      data-entry-status={status ?? undefined}
+    >
       <div className="paddock-horse-summary">
         <div className="paddock-horse-ids">
           <span>
             <small>馬番</small>
             <strong>{formatRunnerNumber(horseNumber)}</strong>
+            {status ? <em className="entry-status-mini">{status}</em> : null}
           </span>
           <span>
             <small>枠番</small>
@@ -205,7 +212,12 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
         </div>
         <b>{formatPaddockScore(scores.total)}</b>
       </div>
-      {editable ? (
+      {editable && isScratched ? (
+        <div className="paddock-score-unavailable" aria-disabled="true">
+          <strong>{status}</strong>
+          <span>評価対象外</span>
+        </div>
+      ) : editable ? (
         <div className="paddock-score-controls">
           {METRIC_ORDER.map((metric) => (
             <div className="paddock-score-control" key={metric}>
@@ -437,18 +449,29 @@ export function PaddockSection({
   );
   const runnerRows = useMemo(
     () =>
-      runners.map((runner) => {
-        const horseNumber = formatRunnerNumber(runner.umaban);
-        return {
-          horseName: cleanText(runner.bamei),
-          horseNumber,
-          frameNumber: cleanText(runner.wakuban, ""),
-          jockeyName: cleanText(runner.kishumeiRyakusho),
-          moshokuCode: runner.moshokuCode,
-          sexAge: formatSexAge(runner.seibetsuCode, runner.barei),
-        };
-      }),
-    [runners],
+      runners
+        .map((runner, index) => {
+          const horseNumber = formatRunnerNumber(runner.umaban);
+          return {
+            horseName: cleanText(runner.bamei),
+            horseNumber,
+            frameNumber: cleanText(runner.wakuban, ""),
+            index,
+            jockeyName: cleanText(runner.kishumeiRyakusho),
+            moshokuCode: runner.moshokuCode,
+            sexAge: formatSexAge(runner.seibetsuCode, runner.barei),
+            status: realtimeEntryByHorse.get(horseNumber)?.status || "",
+          };
+        })
+        .toSorted((left, right) => {
+          const leftScratched = left.status !== "";
+          const rightScratched = right.status !== "";
+          if (leftScratched !== rightScratched) {
+            return leftScratched ? 1 : -1;
+          }
+          return left.index - right.index;
+        }),
+    [realtimeEntryByHorse, runners],
   );
 
   useEffect(() => {
@@ -550,6 +573,7 @@ export function PaddockSection({
           {runnerRows.map((runner) => {
             const scores = normalizePaddockHorseScore(state?.horses[runner.horseNumber], runner);
             const realtimeEntry = realtimeEntryByHorse.get(runner.horseNumber);
+            const status = realtimeEntry?.status || runner.status || null;
             return (
               <PaddockHorseRow
                 editable
@@ -565,7 +589,7 @@ export function PaddockSection({
                 realtimePopularity={realtimeOddsByHorse.get(runner.horseNumber)?.popularity ?? null}
                 scores={scores}
                 sexAge={runner.sexAge}
-                status={realtimeEntry?.status || null}
+                status={status}
                 onOfficialRank={submitScore}
                 onScore={submitScore}
               />

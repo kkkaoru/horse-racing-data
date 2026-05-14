@@ -14,8 +14,10 @@ import {
   formatRaceNumber,
   formatTime,
   formatTrack,
+  getTrackSurfaceLabel,
 } from "../../../../../../../../lib/format";
 import { PaddockSection } from "../../../../../../../races/detail/paddock-section";
+import { RaceStartCountdown } from "../../../../../../../races/detail/race-start-countdown";
 
 export const dynamic = "force-dynamic";
 
@@ -42,6 +44,22 @@ const isValidRouteParams = (
   /^[0-9A-Z]{2}$/.test(keibajoCode) &&
   /^\d{2}$/.test(raceNumber);
 
+const getRaceStartsAt = (
+  year: string,
+  month: string,
+  day: string,
+  hassoJikoku: string | null,
+): string | null => {
+  const normalizedTime = cleanText(hassoJikoku, "").padStart(4, "0");
+  if (!/^\d{4}$/.test(normalizedTime)) {
+    return null;
+  }
+
+  const hour = normalizedTime.slice(0, 2);
+  const minute = normalizedTime.slice(2, 4);
+  return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}T${hour}:${minute}:00+09:00`;
+};
+
 export default async function PaddockEditPage({ params }: PaddockEditPageProps) {
   const { day, keibajoCode, month, raceNumber, year } = await params;
   if (!isValidRouteParams(year, month, day, keibajoCode, raceNumber)) {
@@ -62,11 +80,22 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
   }
 
   const raceDetailPath = `/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}`;
+  const raceStartsAt = getRaceStartsAt(year, month, day, race.hassoJikoku);
   const realtimeApiBaseUrl =
     process.env.NEXT_PUBLIC_REALTIME_DATA_API_BASE_URL ?? "https://sync-realtime-data.kkk4oru.com";
 
   return (
     <section className="page-shell">
+      <div className="race-global-summary" aria-label="race summary in global header">
+        <div>
+          <span>{formatTime(race.hassoJikoku)}発走</span>
+          <RaceStartCountdown startsAt={raceStartsAt} />
+          <span>{formatKeibajo(keibajoCode)}</span>
+          <span>{formatRaceNumber(raceNumber)}</span>
+          <span>{getTrackSurfaceLabel(race.trackCode) ?? formatTrack(race.trackCode)}</span>
+          <span>{formatDistance(race.kyori)}</span>
+        </div>
+      </div>
       <div className="breadcrumbs">
         <Link href="/races">開催日一覧</Link>
         <Link href={`/races/${year}/${month}/${day}/${keibajoCode}`}>
