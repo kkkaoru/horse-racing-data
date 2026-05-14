@@ -1352,9 +1352,10 @@ h3 {
 }
 
 .paddock-horse-ids strong {
-  font-size: 15px;
+  font-size: 20px;
   font-variant-numeric: tabular-nums;
-  font-weight: 900;
+  font-weight: 950;
+  line-height: 1;
 }
 
 .entry-status-mini {
@@ -1923,6 +1924,13 @@ h3 {
 
 .runner-table td {
   font-size: 14px;
+}
+
+.runner-number-cell > span {
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 950;
+  line-height: 1;
 }
 
 .runner-row-scratched {
