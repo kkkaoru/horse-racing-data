@@ -39,6 +39,7 @@ interface HorseRaceResultsTableProps {
   currentDistance: string | null | undefined;
   currentKeibajoCode: string;
   currentRaceDate: string;
+  currentTrackCode: string | null;
   defaultIncludeClass: boolean;
   results: HorseRaceResult[];
   runners: Runner[];
@@ -269,6 +270,7 @@ export function HorseRaceResultsTable({
   currentDistance,
   currentKeibajoCode,
   currentRaceDate,
+  currentTrackCode,
   defaultIncludeClass,
   results,
   runners,
@@ -481,10 +483,7 @@ export function HorseRaceResultsTable({
           continue;
         }
         const raceDate = getRaceDateValue(result);
-        if (
-          activeRecentDateMin !== null &&
-          (raceDate === null || raceDate < activeRecentDateMin)
-        ) {
+        if (activeRecentDateMin !== null && (raceDate === null || raceDate < activeRecentDateMin)) {
           continue;
         }
         const key = result.currentUmaban ?? "";
@@ -591,10 +590,7 @@ export function HorseRaceResultsTable({
       return filteredResults.length === 0 && candidate.length > 0;
     };
 
-    const applyCandidate = (
-      nextOptions: typeof currentOptions,
-      onApply: () => void,
-    ): boolean => {
+    const applyCandidate = (nextOptions: typeof currentOptions, onApply: () => void): boolean => {
       if (coversRequiredRunners(filteredResults) && filteredResults.length > 0) {
         return true;
       }
@@ -610,31 +606,17 @@ export function HorseRaceResultsTable({
     const needsRelaxation = (): boolean =>
       filteredResults.length === 0 || !coversRequiredRunners(filteredResults);
 
-    if (
-      !finishRankLimitTouched &&
-      hasFinishRankLimit &&
-      needsRelaxation()
-    ) {
-      applyCandidate(
-        { ...currentOptions, useFinishRankFilter: false },
-        () => {
-          shouldRelaxFinishRankLimit = true;
-        },
-      );
+    if (!finishRankLimitTouched && hasFinishRankLimit && needsRelaxation()) {
+      applyCandidate({ ...currentOptions, useFinishRankFilter: false }, () => {
+        shouldRelaxFinishRankLimit = true;
+      });
     }
 
-    if (
-      !distanceMinTouched &&
-      needsRelaxation() &&
-      distanceMinRelaxSteps > 0
-    ) {
+    if (!distanceMinTouched && needsRelaxation() && distanceMinRelaxSteps > 0) {
       for (let relaxStep = 1; relaxStep <= distanceMinRelaxSteps; relaxStep += 1) {
-        const applied = applyCandidate(
-          { ...currentOptions, distanceRelaxSteps: relaxStep },
-          () => {
-            relaxedDistanceMin = String(Math.max(0, min - relaxStep * 100));
-          },
-        );
+        const applied = applyCandidate({ ...currentOptions, distanceRelaxSteps: relaxStep }, () => {
+          relaxedDistanceMin = String(Math.max(0, min - relaxStep * 100));
+        });
         if (applied || relaxedDistanceMin !== null) {
           break;
         }
@@ -642,38 +624,21 @@ export function HorseRaceResultsTable({
     }
 
     if (!classFilterTouched && classFilter !== "all" && needsRelaxation()) {
-      applyCandidate(
-        { ...currentOptions, activeClassFilter: "all" },
-        () => {
-          relaxedClassFilter = "all";
-        },
-      );
+      applyCandidate({ ...currentOptions, activeClassFilter: "all" }, () => {
+        relaxedClassFilter = "all";
+      });
     }
 
-    if (
-      !recentMonthsTouched &&
-      recentDateMin !== null &&
-      needsRelaxation()
-    ) {
-      applyCandidate(
-        { ...currentOptions, activeRecentDateMin: null },
-        () => {
-          relaxedRecentMonths = "";
-        },
-      );
+    if (!recentMonthsTouched && recentDateMin !== null && needsRelaxation()) {
+      applyCandidate({ ...currentOptions, activeRecentDateMin: null }, () => {
+        relaxedRecentMonths = "";
+      });
     }
 
-    if (
-      !sameJockeyTouched &&
-      sameJockeyOnly &&
-      needsRelaxation()
-    ) {
-      applyCandidate(
-        { ...currentOptions, activeSameJockeyOnly: false },
-        () => {
-          relaxedSameJockeyOnly = false;
-        },
-      );
+    if (!sameJockeyTouched && sameJockeyOnly && needsRelaxation()) {
+      applyCandidate({ ...currentOptions, activeSameJockeyOnly: false }, () => {
+        relaxedSameJockeyOnly = false;
+      });
     }
 
     return {
@@ -726,15 +691,27 @@ export function HorseRaceResultsTable({
       new CustomEvent(RACE_PACE_PREDICTION_RESULTS_EVENT, {
         detail: {
           rows: buildRacePacePredictionRowsFromResults({
+            currentConditionName: classConditionName,
             currentDistance,
             currentRaceDate,
+            currentSource: source,
+            currentTrackCode,
             results: visibleResults,
             runners,
           }),
         },
       }),
     );
-  }, [currentDistance, currentRaceDate, runners, showRacePacePrediction, visibleResults]);
+  }, [
+    classConditionName,
+    currentDistance,
+    currentRaceDate,
+    currentTrackCode,
+    runners,
+    showRacePacePrediction,
+    source,
+    visibleResults,
+  ]);
 
   useEffect(() => {
     if (visibleResultsState.shouldRelaxFinishRankLimit) {

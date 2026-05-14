@@ -86,9 +86,9 @@ describe("race classification", () => {
   });
 
   it("uses Japan grade labels for NAR graded races", () => {
-    expect(
-      getRaceTags(race({ gradeCode: "B", kyosoJokenCode: "000", source: "nar" })),
-    ).toEqual(["Jpn2"]);
+    expect(getRaceTags(race({ gradeCode: "B", kyosoJokenCode: "000", source: "nar" }))).toEqual([
+      "Jpn2",
+    ]);
   });
 
   it("falls back to open condition when no other tag exists", () => {

@@ -1,12 +1,13 @@
 export const PADDOCK_HISTORY_LIMIT = 100;
 
-export type PaddockMetric = "attention" | "paddock" | "preference";
+export type PaddockMetric = "attention" | "kaeshi" | "paddock" | "preference";
 export type PaddockOfficialRank = 1 | 2 | 3 | 4 | 5 | 6;
 
 export interface PaddockHorseScore {
   attention: number;
   horseName: string;
   horseNumber: string;
+  kaeshi: number;
   officialRank: PaddockOfficialRank | null;
   paddock: number;
   preference: number;
@@ -23,7 +24,7 @@ export interface PaddockHistoryEntry {
   officialRank?: PaddockOfficialRank | null;
   scores: Pick<
     PaddockHorseScore,
-    "attention" | "officialRank" | "paddock" | "preference" | "total"
+    "attention" | "kaeshi" | "officialRank" | "paddock" | "preference" | "total"
   >;
   type: "official-rank" | "score";
 }
@@ -52,10 +53,10 @@ export interface PaddockOfficialRankAction {
 
 export type PaddockAction = PaddockOfficialRankAction | PaddockScoreAction;
 
-const PADDOCK_METRICS = new Set<PaddockMetric>(["attention", "paddock", "preference"]);
+const PADDOCK_METRICS = new Set<PaddockMetric>(["attention", "kaeshi", "paddock", "preference"]);
 
 const isPaddockMetric = (value: unknown): value is PaddockMetric =>
-  value === "attention" || value === "paddock" || value === "preference";
+  value === "attention" || value === "kaeshi" || value === "paddock" || value === "preference";
 
 export const createPaddockState = (
   raceKey: string,
@@ -87,8 +88,8 @@ const normalizeHorseNumber = (value: string): string =>
   value.trim().replace(/^0+/u, "") || value.trim();
 
 const calculateTotal = (
-  horse: Pick<PaddockHorseScore, "attention" | "paddock" | "preference">,
-): number => horse.paddock + horse.attention + horse.preference * 0.5;
+  horse: Pick<PaddockHorseScore, "attention" | "kaeshi" | "paddock" | "preference">,
+): number => horse.paddock + horse.kaeshi + horse.attention + horse.preference * 0.5;
 
 export const normalizePaddockHorseScore = (
   value: Partial<PaddockHorseScore> | undefined,
@@ -98,6 +99,7 @@ export const normalizePaddockHorseScore = (
     attention: value?.attention ?? 0,
     horseName: value?.horseName || fallback.horseName,
     horseNumber: value?.horseNumber || fallback.horseNumber,
+    kaeshi: value?.kaeshi ?? 0,
     officialRank: value?.officialRank ?? null,
     paddock: value?.paddock ?? 0,
     preference: value?.preference ?? 0,
@@ -177,6 +179,7 @@ export const applyPaddockAction = (
       officialRank: action.rank,
       scores: {
         attention: nextHorse.attention,
+        kaeshi: nextHorse.kaeshi,
         officialRank: nextHorse.officialRank,
         paddock: nextHorse.paddock,
         preference: nextHorse.preference,
@@ -209,6 +212,7 @@ export const applyPaddockAction = (
     id: `${now}:${horseNumber}:${action.category}:${state.history.length}`,
     scores: {
       attention: nextHorse.attention,
+      kaeshi: nextHorse.kaeshi,
       officialRank: nextHorse.officialRank,
       paddock: nextHorse.paddock,
       preference: nextHorse.preference,

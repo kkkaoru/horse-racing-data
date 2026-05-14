@@ -99,6 +99,12 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
         runners={runners}
         year={year}
       />
+
+      <div className="paddock-edit-footer">
+        <Link className="paddock-edit-link" href={raceDetailPath}>
+          詳細へ戻る
+        </Link>
+      </div>
     </section>
   );
 }

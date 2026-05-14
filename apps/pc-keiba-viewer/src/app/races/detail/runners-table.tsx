@@ -67,9 +67,10 @@ const getSortValue = (
   runner: Runner,
   key: SortKey,
   realtimeOddsByHorse: Map<string, number>,
+  realtimeResultByHorse: Map<string, string>,
 ): number | null => {
+  const horseNumber = formatRunnerNumber(runner.umaban);
   if (key === "tanshoOdds") {
-    const horseNumber = formatRunnerNumber(runner.umaban);
     const realtimeOdds = realtimeOddsByHorse.get(horseNumber);
     if (realtimeOdds !== undefined) {
       return realtimeOdds;
@@ -77,6 +78,10 @@ const getSortValue = (
     return parseSortValue(runner.tanshoOdds, "0000");
   }
   if (key === "kakuteiChakujun") {
+    const realtimeResult = realtimeResultByHorse.get(horseNumber);
+    if (realtimeResult !== undefined) {
+      return parseSortValue(realtimeResult, "00");
+    }
     return parseSortValue(runner.kakuteiChakujun, "00");
   }
   return parseSortValue(runner.umaban);
@@ -153,21 +158,36 @@ export function RunnersTable({
       ),
     [payload],
   );
+  const realtimeResultByHorse = useMemo(
+    () =>
+      new Map(
+        (payload?.raceResults?.horses ?? []).map((horse) => [
+          horse.horseNumber,
+          horse.finishPosition,
+        ]),
+      ),
+    [payload],
+  );
   const defaultSort = useMemo<SortState>(() => {
     if (
       runners.some(
-        (runner) => getSortValue(runner, "kakuteiChakujun", realtimeOddsByHorse) !== null,
+        (runner) =>
+          getSortValue(runner, "kakuteiChakujun", realtimeOddsByHorse, realtimeResultByHorse) !==
+          null,
       )
     ) {
       return { direction: "asc", key: "kakuteiChakujun" };
     }
     if (
-      runners.some((runner) => getSortValue(runner, "tanshoOdds", realtimeOddsByHorse) !== null)
+      runners.some(
+        (runner) =>
+          getSortValue(runner, "tanshoOdds", realtimeOddsByHorse, realtimeResultByHorse) !== null,
+      )
     ) {
       return { direction: "asc", key: "tanshoOdds" };
     }
     return { direction: "asc", key: "umaban" };
-  }, [realtimeOddsByHorse, runners]);
+  }, [realtimeOddsByHorse, realtimeResultByHorse, runners]);
   const activeSort = sort ?? defaultSort;
   const showCornerRanks = runners.some(
     (runner) => parseSortValue(runner.kakuteiChakujun, "00") !== null,
@@ -179,14 +199,14 @@ export function RunnersTable({
         .map((runner, index) => ({ index, runner }))
         .toSorted((left, right) => {
           const compared = compareNullableNumber(
-            getSortValue(left.runner, activeSort.key, realtimeOddsByHorse),
-            getSortValue(right.runner, activeSort.key, realtimeOddsByHorse),
+            getSortValue(left.runner, activeSort.key, realtimeOddsByHorse, realtimeResultByHorse),
+            getSortValue(right.runner, activeSort.key, realtimeOddsByHorse, realtimeResultByHorse),
             activeSort.direction,
           );
           return compared === 0 ? left.index - right.index : compared;
         })
         .map(({ runner }) => runner),
-    [activeSort, realtimeOddsByHorse, runners],
+    [activeSort, realtimeOddsByHorse, realtimeResultByHorse, runners],
   );
 
   const changeSort = (key: SortKey) => {
@@ -223,6 +243,7 @@ export function RunnersTable({
     const horseNumber = formatRunnerNumber(runner.umaban);
     const realtimeOdds = realtimeOddsByHorse.get(horseNumber);
     const realtimeWeight = realtimeWeightByHorse.get(horseNumber);
+    const realtimeFinishPosition = realtimeResultByHorse.get(horseNumber);
     const horseName = cleanText(runner.bamei);
     const horseId = cleanText(runner.kettoTorokuBango);
     const jockeyName = cleanText(runner.kishumeiRyakusho);
@@ -289,7 +310,7 @@ export function RunnersTable({
             ? formatStoredOdds(runner.tanshoOdds)
             : formatRealtimeOdds(realtimeOdds)}
         </td>
-        <td>{formatRunnerValue(runner.kakuteiChakujun, "00")}</td>
+        <td>{formatRunnerValue(realtimeFinishPosition ?? runner.kakuteiChakujun, "00")}</td>
         {showCornerRanks ? <td>{formatCornerRanks(runner)}</td> : null}
       </tr>
     );

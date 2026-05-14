@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 
+import { fetchWithRetry } from "../../../lib/fetch-with-retry";
 import { cleanText } from "../../../lib/format";
 import {
   isPaddockState,
@@ -29,10 +30,12 @@ interface PaddockHorseRowProps {
   editable: boolean;
   horseName: string;
   horseNumber: string;
+  jockeyName: string;
   onOfficialRank: (action: PaddockAction) => void;
   onScore: (action: PaddockAction) => void;
   scores: {
     attention: number;
+    kaeshi: number;
     officialRank: PaddockOfficialRank | null;
     paddock: number;
     preference: number;
@@ -42,9 +45,11 @@ interface PaddockHorseRowProps {
 
 const METRIC_LABELS: Record<PaddockMetric, { minus: string; plus: string; title: string }> = {
   attention: { minus: "注目-", plus: "注目+", title: "注目度" },
+  kaeshi: { minus: "返し-", plus: "返し+", title: "返し" },
   paddock: { minus: "気配-", plus: "気配+", title: "パドック" },
   preference: { minus: "嫌い", plus: "好き", title: "好み" },
 };
+const METRIC_ORDER = ["paddock", "attention", "preference", "kaeshi"] as const satisfies readonly PaddockMetric[];
 const DEFAULT_REMOTE_PADDOCK_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
 const OFFICIAL_RANK_OPTIONS: PaddockOfficialRank[] = [1, 2, 3, 4, 5, 6];
 
@@ -109,6 +114,7 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
   editable,
   horseName,
   horseNumber,
+  jockeyName,
   onOfficialRank,
   onScore,
   scores,
@@ -125,11 +131,12 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
       <div className="paddock-horse-summary">
         <strong>{formatRunnerNumber(horseNumber)}</strong>
         <span>{horseName}</span>
+        {jockeyName ? <em className="paddock-horse-jockey">{jockeyName}</em> : null}
         <b>{formatPaddockScore(scores.total)}</b>
       </div>
       {editable ? (
         <div className="paddock-score-controls">
-          {(["paddock", "attention", "preference"] as const).map((metric) => (
+          {METRIC_ORDER.map((metric) => (
             <div className="paddock-score-control" key={metric}>
               <span>{METRIC_LABELS[metric].title}</span>
               <button
@@ -189,7 +196,7 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
               {formatOfficialRank(scores.officialRank)}
             </strong>
           </span>
-          {(["paddock", "attention", "preference"] as const).map((metric) => (
+          {METRIC_ORDER.map((metric) => (
             <span key={metric}>
               <small>{METRIC_LABELS[metric].title}</small>
               <strong>{scores[metric]}</strong>
@@ -205,7 +212,7 @@ function PaddockReadOnlyTable({
   rows,
   state,
 }: {
-  rows: { horseName: string; horseNumber: string }[];
+  rows: { horseName: string; horseNumber: string; jockeyName: string }[];
   state: PaddockState | null;
 }) {
   const evaluatedRows = rows
@@ -217,8 +224,16 @@ function PaddockReadOnlyTable({
     }))
     .filter((row) => row.scores !== undefined)
     .toSorted((left, right) => {
-      const compared = (right.scores?.total ?? 0) - (left.scores?.total ?? 0);
-      return compared === 0 ? Number(left.horseNumber) - Number(right.horseNumber) : compared;
+      const leftRank = left.scores?.officialRank ?? Number.POSITIVE_INFINITY;
+      const rightRank = right.scores?.officialRank ?? Number.POSITIVE_INFINITY;
+      if (leftRank !== rightRank) {
+        return leftRank - rightRank;
+      }
+      const totalDiff = (right.scores?.total ?? 0) - (left.scores?.total ?? 0);
+      if (totalDiff !== 0) {
+        return totalDiff;
+      }
+      return Number(left.horseNumber) - Number(right.horseNumber);
     });
 
   if (evaluatedRows.length === 0) {
@@ -231,8 +246,9 @@ function PaddockReadOnlyTable({
         <colgroup>
           <col className="paddock-col-number" />
           <col className="paddock-col-name" />
-          <col className="paddock-col-score" />
           <col className="paddock-col-rank" />
+          <col className="paddock-col-score" />
+          <col className="paddock-col-score" />
           <col className="paddock-col-score" />
           <col className="paddock-col-score" />
           <col className="paddock-col-score" />
@@ -241,9 +257,10 @@ function PaddockReadOnlyTable({
           <tr>
             <th>馬番</th>
             <th>馬名</th>
-            <th>合計</th>
             <th>公式評価順</th>
+            <th>合計</th>
             <th>パドック</th>
+            <th>返し</th>
             <th>注目度</th>
             <th>好み</th>
           </tr>
@@ -253,7 +270,6 @@ function PaddockReadOnlyTable({
             <tr key={row.horseNumber}>
               <td>{formatRunnerNumber(row.horseNumber)}</td>
               <td className="stats-name-cell">{row.horseName}</td>
-              <td className="stats-score-cell">{formatPaddockScore(row.scores?.total ?? 0)}</td>
               <td>
                 {row.scores?.officialRank ? (
                   <span className={getOfficialRankClassName(row.scores.officialRank)}>
@@ -263,7 +279,9 @@ function PaddockReadOnlyTable({
                   "-"
                 )}
               </td>
+              <td className="stats-score-cell">{formatPaddockScore(row.scores?.total ?? 0)}</td>
               <td>{row.scores?.paddock ?? 0}</td>
+              <td>{row.scores?.kaeshi ?? 0}</td>
               <td>{row.scores?.attention ?? 0}</td>
               <td>{row.scores?.preference ?? 0}</td>
             </tr>
@@ -297,6 +315,7 @@ export function PaddockSection({
         return {
           horseName: cleanText(runner.bamei),
           horseNumber,
+          jockeyName: cleanText(runner.kishumeiRyakusho),
         };
       }),
     [runners],
@@ -307,7 +326,10 @@ export function PaddockSection({
     const requestUrl = getPaddockRequestUrl(apiPath);
     const load = async () => {
       try {
-        const response = await fetch(requestUrl, { cache: "no-store", credentials: "include" });
+        const response = await fetchWithRetry(requestUrl, {
+          cache: "no-store",
+          credentials: "include",
+        });
         if (!response.ok) {
           throw new Error(`paddock api ${response.status}`);
         }
@@ -402,6 +424,7 @@ export function PaddockSection({
                 editable
                 horseName={runner.horseName}
                 horseNumber={runner.horseNumber}
+                jockeyName={runner.jockeyName}
                 key={runner.horseNumber}
                 scores={scores}
                 onOfficialRank={submitScore}

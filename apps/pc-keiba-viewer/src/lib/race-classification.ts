@@ -1,5 +1,5 @@
-import type { RaceListItem } from "./race-types";
 import type { RaceSource } from "./codes";
+import type { RaceListItem } from "./race-types";
 
 const clean = (value: string | null | undefined): string => value?.trim() ?? "";
 
@@ -90,7 +90,11 @@ export const getGradeLabel = (
   source?: RaceSource | null,
 ): string => {
   const code = clean(value);
-  return code ? ((source === "nar" ? NAR_GRADE_LABELS[code] : undefined) ?? GRADE_LABELS[code] ?? `グレード ${code}`) : "-";
+  return code
+    ? ((source === "nar" ? NAR_GRADE_LABELS[code] : undefined) ??
+        GRADE_LABELS[code] ??
+        `グレード ${code}`)
+    : "-";
 };
 
 const WEIGHT_LABELS: Record<string, string> = {

@@ -22,6 +22,8 @@ import type {
   RaceDaySummary,
   RaceDetail,
   RaceListItem,
+  RacePaceModelPredictionFeature,
+  RacePaceSimilarityFeature,
   RaceTimeStats,
   RaceTimeTargetRace,
   RaceYearSummary,
@@ -121,45 +123,61 @@ export const getRacesByDate = cache(
     from (
       select
         'jra' as source,
-        kaisai_nen as "kaisaiNen",
-        kaisai_tsukihi as "kaisaiTsukihi",
-        keibajo_code as "keibajoCode",
-        race_bango as "raceBango",
-        kyosomei_hondai as "kyosomeiHondai",
-        kyosomei_fukudai as "kyosomeiFukudai",
-        grade_code as "gradeCode",
-        kyoso_shubetsu_code as "kyosoShubetsuCode",
-        kyoso_kigo_code as "kyosoKigoCode",
-        juryo_shubetsu_code as "juryoShubetsuCode",
-        kyoso_joken_code as "kyosoJokenCode",
-        kyoso_joken_meisho as "kyosoJokenMeisho",
-        kyori,
-        track_code as "trackCode",
-        hasso_jikoku as "hassoJikoku",
-        shusso_tosu as "shussoTosu"
-      from ${jvdRa}
-      where kaisai_nen = ${year} and kaisai_tsukihi = ${monthDay}
+        ra.kaisai_nen as "kaisaiNen",
+        ra.kaisai_tsukihi as "kaisaiTsukihi",
+        ra.keibajo_code as "keibajoCode",
+        ra.race_bango as "raceBango",
+        ra.kyosomei_hondai as "kyosomeiHondai",
+        ra.kyosomei_fukudai as "kyosomeiFukudai",
+        ra.grade_code as "gradeCode",
+        ra.kyoso_shubetsu_code as "kyosoShubetsuCode",
+        ra.kyoso_kigo_code as "kyosoKigoCode",
+        ra.juryo_shubetsu_code as "juryoShubetsuCode",
+        coalesce((
+          select array_remove(array_agg(distinct nullif(btrim(se.kishumei_ryakusho), '')), null)
+          from ${jvdSe} se
+          where se.kaisai_nen = ra.kaisai_nen
+            and se.kaisai_tsukihi = ra.kaisai_tsukihi
+            and se.keibajo_code = ra.keibajo_code
+            and se.race_bango = ra.race_bango
+        ), array[]::text[]) as "jockeyNames",
+        ra.kyoso_joken_code as "kyosoJokenCode",
+        ra.kyoso_joken_meisho as "kyosoJokenMeisho",
+        ra.kyori,
+        ra.track_code as "trackCode",
+        ra.hasso_jikoku as "hassoJikoku",
+        ra.shusso_tosu as "shussoTosu"
+      from ${jvdRa} ra
+      where ra.kaisai_nen = ${year} and ra.kaisai_tsukihi = ${monthDay}
       union all
       select
         'nar' as source,
-        kaisai_nen as "kaisaiNen",
-        kaisai_tsukihi as "kaisaiTsukihi",
-        keibajo_code as "keibajoCode",
-        race_bango as "raceBango",
-        kyosomei_hondai as "kyosomeiHondai",
-        kyosomei_fukudai as "kyosomeiFukudai",
-        grade_code as "gradeCode",
-        kyoso_shubetsu_code as "kyosoShubetsuCode",
-        kyoso_kigo_code as "kyosoKigoCode",
-        juryo_shubetsu_code as "juryoShubetsuCode",
-        kyoso_joken_code as "kyosoJokenCode",
-        kyoso_joken_meisho as "kyosoJokenMeisho",
-        kyori,
-        track_code as "trackCode",
-        hasso_jikoku as "hassoJikoku",
-        shusso_tosu as "shussoTosu"
-      from ${nvdRa}
-      where kaisai_nen = ${year} and kaisai_tsukihi = ${monthDay}
+        ra.kaisai_nen as "kaisaiNen",
+        ra.kaisai_tsukihi as "kaisaiTsukihi",
+        ra.keibajo_code as "keibajoCode",
+        ra.race_bango as "raceBango",
+        ra.kyosomei_hondai as "kyosomeiHondai",
+        ra.kyosomei_fukudai as "kyosomeiFukudai",
+        ra.grade_code as "gradeCode",
+        ra.kyoso_shubetsu_code as "kyosoShubetsuCode",
+        ra.kyoso_kigo_code as "kyosoKigoCode",
+        ra.juryo_shubetsu_code as "juryoShubetsuCode",
+        coalesce((
+          select array_remove(array_agg(distinct nullif(btrim(se.kishumei_ryakusho), '')), null)
+          from ${nvdSe} se
+          where se.kaisai_nen = ra.kaisai_nen
+            and se.kaisai_tsukihi = ra.kaisai_tsukihi
+            and se.keibajo_code = ra.keibajo_code
+            and se.race_bango = ra.race_bango
+        ), array[]::text[]) as "jockeyNames",
+        ra.kyoso_joken_code as "kyosoJokenCode",
+        ra.kyoso_joken_meisho as "kyosoJokenMeisho",
+        ra.kyori,
+        ra.track_code as "trackCode",
+        ra.hasso_jikoku as "hassoJikoku",
+        ra.shusso_tosu as "shussoTosu"
+      from ${nvdRa} ra
+      where ra.kaisai_nen = ${year} and ra.kaisai_tsukihi = ${monthDay}
     ) races
     order by "hassoJikoku" asc nulls last, "keibajoCode" asc, "raceBango" asc, source asc
   `);
@@ -1521,10 +1539,7 @@ export const getTopRaceWindows = cache(
     const nowKey = getJstMinuteKey();
     return withDbQueryCache(["getTopRaceWindows", nowKey], async () => {
       const result = await getDb().execute<TopRaceSummary & { bucket: number }>(sql`
-        with bounds as (
-          select ${nowKey} now_key
-        ),
-        candidates as (
+        with candidates as (
           (
             select
               'jra'::text source,
@@ -1546,8 +1561,8 @@ export const getTopRaceWindows = cache(
               shusso_tosu "shussoTosu",
               kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') start_key,
               0 bucket
-            from ${jvdRa}, bounds
-            where kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') >= bounds.now_key
+            from ${jvdRa}
+            where kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') >= ${nowKey}
             order by kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') asc
             limit 5
           )
@@ -1573,8 +1588,8 @@ export const getTopRaceWindows = cache(
               shusso_tosu "shussoTosu",
               kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') start_key,
               0 bucket
-            from ${nvdRa}, bounds
-            where kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') >= bounds.now_key
+            from ${nvdRa}
+            where kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') >= ${nowKey}
             order by kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') asc
             limit 5
           )
@@ -1600,8 +1615,8 @@ export const getTopRaceWindows = cache(
               shusso_tosu "shussoTosu",
               kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') start_key,
               1 bucket
-            from ${jvdRa}, bounds
-            where kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') < bounds.now_key
+            from ${jvdRa}
+            where kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') < ${nowKey}
             order by kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') desc
             limit 5
           )
@@ -1627,8 +1642,8 @@ export const getTopRaceWindows = cache(
               shusso_tosu "shussoTosu",
               kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') start_key,
               1 bucket
-            from ${nvdRa}, bounds
-            where kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') < bounds.now_key
+            from ${nvdRa}
+            where kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') < ${nowKey}
             order by kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') desc
             limit 5
           )
@@ -1763,6 +1778,7 @@ export const getHorseRaceResults = cache(
           past.kyori,
           past."trackCode",
           past."hassoJikoku",
+          past."shussoTosu",
           past."tenkoCode",
           past."babajotaiCodeShiba",
           past."babajotaiCodeDirt",
@@ -1813,6 +1829,7 @@ export const getHorseRaceResults = cache(
             ra.kyori,
             ra.track_code "trackCode",
             ra.hasso_jikoku "hassoJikoku",
+            ra.shusso_tosu "shussoTosu",
             ra.tenko_code "tenkoCode",
             ra.babajotai_code_shiba "babajotaiCodeShiba",
             ra.babajotai_code_dirt "babajotaiCodeDirt",
@@ -1867,6 +1884,7 @@ export const getHorseRaceResults = cache(
             ra.kyori,
             ra.track_code "trackCode",
             ra.hasso_jikoku "hassoJikoku",
+            ra.shusso_tosu "shussoTosu",
             ra.tenko_code "tenkoCode",
             ra.babajotai_code_shiba "babajotaiCodeShiba",
             ra.babajotai_code_dirt "babajotaiCodeDirt",
@@ -1927,6 +1945,7 @@ export const getHorseRaceResults = cache(
         kyori,
         "trackCode",
         "hassoJikoku",
+        "shussoTosu",
         "tenkoCode",
         "babajotaiCodeShiba",
         "babajotaiCodeDirt",
@@ -1973,6 +1992,217 @@ export const getHorseRaceResults = cache(
         }
 
         return [...rowsByRaceKey.values()];
+      },
+    );
+  },
+);
+
+const parseNumericText = (value: string | null | undefined, emptyValue: string): number | null => {
+  const cleaned = value?.trim() ?? "";
+  if (!cleaned || cleaned === emptyValue) {
+    return null;
+  }
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const buildCornerSimilarityVector = (
+  race: RaceDetail,
+  runner: Runner,
+  runnerCount: number,
+): string => {
+  const distance = parseNumericText(race.kyori, "") ?? 0;
+  const horseNumber = parseNumericText(runner.umaban, "") ?? 0;
+  const popularity = parseNumericText(runner.tanshoNinkijun, "00") ?? runnerCount;
+  const odds = (parseNumericText(runner.tanshoOdds, "0000") ?? 10) / 10;
+  const trackCode = race.trackCode?.trim() ?? "";
+  const venue = parseNumericText(race.keibajoCode, "") ?? 0;
+  const raceNumber = parseNumericText(race.raceBango, "") ?? 0;
+  const values = [
+    Math.min(1, Math.max(0, distance / 3600)),
+    Math.min(1, Math.max(0, runnerCount / 18)),
+    Math.min(1, Math.max(0, horseNumber / Math.max(runnerCount, 1))),
+    Math.min(1, Math.max(0, popularity / Math.max(runnerCount, 1))),
+    Math.min(1, Math.max(0, Math.log(Math.max(odds, 1)) / Math.log(300))),
+    trackCode.startsWith("1") ? 0 : 1,
+    Math.min(1, Math.max(0, venue / 99)),
+    Math.min(1, Math.max(0, raceNumber / 12)),
+  ];
+  return `[${values.map((value) => value.toFixed(6)).join(",")}]`;
+};
+
+export const getRacePaceSimilarityFeatures = cache(
+  async (race: RaceDetail, runners: Runner[]): Promise<RacePaceSimilarityFeature[]> => {
+    return withDbQueryCache(
+      [
+        "getRacePaceSimilarityFeatures",
+        race.source,
+        race.kaisaiNen,
+        race.kaisaiTsukihi,
+        race.keibajoCode,
+        race.raceBango,
+        runners.map((runner) => runner.umaban).join(","),
+        runners.map((runner) => runner.tanshoNinkijun).join(","),
+        runners.map((runner) => runner.tanshoOdds).join(","),
+      ],
+      async () => {
+        const runnerCount = runners.length;
+        if (runnerCount <= 1) {
+          return [];
+        }
+        const rows = await Promise.all(
+          runners.map(async (runner): Promise<RacePaceSimilarityFeature | null> => {
+            const horseNumber = runner.umaban?.replace(/^0+/u, "") || runner.umaban || "";
+            if (!horseNumber) {
+              return null;
+            }
+            const distance = parseNumericText(race.kyori, "");
+            const vector = buildCornerSimilarityVector(race, runner, runnerCount);
+            try {
+              const result = await getDb().execute<{
+                corner1: string | null;
+                corner2: string | null;
+                corner3: string | null;
+                corner4: string | null;
+                neighbor_count: string;
+                similarity_score: string | null;
+              }>(sql`
+              with nearest as (
+                select *
+                from (
+                  select
+                    corner1_norm,
+                    corner2_norm,
+                    corner3_norm,
+                    corner4_norm,
+                    feature_vector
+                  from race_entry_corner_features
+                  where
+                    source = ${race.source}
+                    and race_date < ${`${race.kaisaiNen}${race.kaisaiTsukihi}`}
+                    and (${distance}::integer is null or kyori between ${distance}::integer - 400 and ${distance}::integer + 400)
+                    and left(coalesce(track_code, ''), 1) = left(coalesce(${race.trackCode}, ''), 1)
+                    and keibajo_code = ${race.keibajoCode}
+                    and race_date >= ${`${Number(race.kaisaiNen) - 3}${race.kaisaiTsukihi}`}
+                  order by race_date desc
+                  limit 2500
+                ) candidates
+                order by feature_vector <-> ${vector}::vector
+                limit 40
+              ),
+              weighted_nearest as (
+                select
+                  corner1_norm,
+                  corner2_norm,
+                  corner3_norm,
+                  corner4_norm,
+                  1 / (1 + (feature_vector <-> ${vector}::vector)) weight
+                from nearest
+              )
+              select
+                sum(corner1_norm * weight) / nullif(sum(weight), 0) corner1,
+                sum(corner2_norm * weight) / nullif(sum(weight), 0) corner2,
+                sum(corner3_norm * weight) / nullif(sum(weight), 0) corner3,
+                sum(corner4_norm * weight) / nullif(sum(weight), 0) corner4,
+                count(*)::text neighbor_count,
+                avg(weight)::text similarity_score
+              from weighted_nearest
+            `);
+              const row = result.rows[0];
+              const neighborCount = Number(row?.neighbor_count ?? 0);
+              if (!row || neighborCount === 0) {
+                return null;
+              }
+              const scaleCorner = (value: string | null): number | null => {
+                if (value === null) {
+                  return null;
+                }
+                const parsed = Number(value);
+                return Number.isFinite(parsed) ? parsed * (runnerCount - 1) + 1 : null;
+              };
+              return {
+                corner1: scaleCorner(row.corner1),
+                corner2: scaleCorner(row.corner2),
+                corner3: scaleCorner(row.corner3),
+                corner4: scaleCorner(row.corner4),
+                horseNumber,
+                neighborCount,
+                similarityScore: Number(row.similarity_score ?? 0),
+              };
+            } catch {
+              return null;
+            }
+          }),
+        );
+        return rows.filter((row): row is RacePaceSimilarityFeature => row !== null);
+      },
+    );
+  },
+);
+
+const getCornerModelVersion = (): string =>
+  process.env.PC_KEIBA_CORNER_MODEL_VERSION?.trim() || "lightgbm-jra-20260508";
+
+export const getRacePaceModelPredictionFeatures = cache(
+  async (race: RaceDetail, runners: Runner[]): Promise<RacePaceModelPredictionFeature[]> => {
+    return withDbQueryCache(
+      [
+        "getRacePaceModelPredictionFeatures",
+        getCornerModelVersion(),
+        race.source,
+        race.kaisaiNen,
+        race.kaisaiTsukihi,
+        race.keibajoCode,
+        race.raceBango,
+        runners.map((runner) => runner.umaban).join(","),
+      ],
+      async () => {
+        if (runners.length <= 1) {
+          return [];
+        }
+        try {
+          const result = await getDb().execute<{
+            model_version: string;
+            umaban: number;
+            predicted_corner1_norm: string | null;
+            predicted_corner2_norm: string | null;
+            predicted_corner3_norm: string | null;
+            predicted_corner4_norm: string | null;
+          }>(sql`
+            select
+              model_version,
+              umaban,
+              predicted_corner1_norm,
+              predicted_corner2_norm,
+              predicted_corner3_norm,
+              predicted_corner4_norm
+            from race_entry_corner_model_predictions
+            where
+              model_version = ${getCornerModelVersion()}
+              and source = ${race.source}
+              and kaisai_nen = ${race.kaisaiNen}
+              and kaisai_tsukihi = ${race.kaisaiTsukihi}
+              and keibajo_code = ${race.keibajoCode}
+              and race_bango = ${race.raceBango}
+          `);
+          const scaleCorner = (value: string | null): number | null => {
+            if (value === null) {
+              return null;
+            }
+            const parsed = Number(value);
+            return Number.isFinite(parsed) ? parsed * (runners.length - 1) + 1 : null;
+          };
+          return result.rows.map((row) => ({
+            corner1: scaleCorner(row.predicted_corner1_norm),
+            corner2: scaleCorner(row.predicted_corner2_norm),
+            corner3: scaleCorner(row.predicted_corner3_norm),
+            corner4: scaleCorner(row.predicted_corner4_norm),
+            horseNumber: String(row.umaban),
+            modelVersion: row.model_version,
+          }));
+        } catch {
+          return [];
+        }
       },
     );
   },
@@ -2318,9 +2548,7 @@ const toRaceTimeTargetRaces = (value: unknown): RaceTimeTargetRace[] => {
     trainerName: toStringValue(race.trainerName),
   }));
 };
-const isCorrelationDetailKey = (
-  value: string,
-): value is ConditionCorrelationDetail["key"] =>
+const isCorrelationDetailKey = (value: string): value is ConditionCorrelationDetail["key"] =>
   value === "horseShow" ||
   value === "horseWin" ||
   value === "jockeyShow" ||
@@ -2397,11 +2625,12 @@ const getStatsRaceNameToken = (race: RaceDetail): string | null => {
     return subtitleMatch;
   }
 
-  return [...cleanDbText(race.kyosomeiHondai).matchAll(RACE_NAME_TOKEN_PATTERN)].at(-1)?.[0] ?? null;
+  return (
+    [...cleanDbText(race.kyosomeiHondai).matchAll(RACE_NAME_TOKEN_PATTERN)].at(-1)?.[0] ?? null
+  );
 };
 
-const escapePostgresRegex = (value: string): string =>
-  value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+const escapePostgresRegex = (value: string): string => value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
 
 const getStatsRaceTitleCondition = (race: RaceDetail, tableName = "ra") => {
   const table = sql.raw(tableName);

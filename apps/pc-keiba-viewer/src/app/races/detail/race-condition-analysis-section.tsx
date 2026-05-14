@@ -191,7 +191,10 @@ const applyRealtimeCorrelationRows = (
       );
       return { ...row, details, score };
     })
-    .toSorted((left, right) => right.score - left.score || Number(left.horseNumber) - Number(right.horseNumber));
+    .toSorted(
+      (left, right) =>
+        right.score - left.score || Number(left.horseNumber) - Number(right.horseNumber),
+    );
 };
 
 function CorrelationScoreTable({

@@ -99,6 +99,7 @@ describe("horse race results table", () => {
         currentDistance="1800"
         currentKeibajoCode="05"
         currentRaceDate="20260322"
+        currentTrackCode="24"
         defaultIncludeClass={false}
         results={[
           result({ bamei: "ランク内", currentUmaban: "01", kakuteiChakujun: "05" }),
@@ -128,6 +129,7 @@ describe("horse race results table", () => {
         currentDistance="1800"
         currentKeibajoCode="05"
         currentRaceDate="20260322"
+        currentTrackCode="24"
         defaultIncludeClass={false}
         results={[
           result({
@@ -154,6 +156,7 @@ describe("horse race results table", () => {
         currentDistance="1800"
         currentKeibajoCode="05"
         currentRaceDate="20260322"
+        currentTrackCode="24"
         defaultIncludeClass={false}
         results={[
           result({ bamei: "ランク内", currentUmaban: "01", kakuteiChakujun: "05" }),
@@ -186,6 +189,7 @@ describe("horse race results table", () => {
         currentDistance="900"
         currentKeibajoCode="45"
         currentRaceDate="20260512"
+        currentTrackCode="24"
         defaultIncludeClass={true}
         results={[
           result({
@@ -220,6 +224,7 @@ describe("horse race results table", () => {
         currentDistance="1800"
         currentKeibajoCode="05"
         currentRaceDate="20260322"
+        currentTrackCode="24"
         defaultIncludeClass={false}
         results={[
           result({
@@ -255,6 +260,7 @@ describe("horse race results table", () => {
         currentDistance="200"
         currentKeibajoCode="83"
         currentRaceDate="20260322"
+        currentTrackCode="90"
         defaultIncludeClass={false}
         results={[
           result({
