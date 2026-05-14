@@ -359,7 +359,7 @@ function PaddockReadOnlyTable({
         <tbody>
           {evaluatedRows.map((row) => (
             <tr key={row.horseNumber}>
-              <td>{formatRunnerNumber(row.horseNumber)}</td>
+              <td className="paddock-table-horse-number">{formatRunnerNumber(row.horseNumber)}</td>
               <td>
                 <FrameNumberBadge value={row.frameNumber} />
               </td>
