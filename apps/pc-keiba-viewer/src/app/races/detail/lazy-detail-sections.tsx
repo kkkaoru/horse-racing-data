@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import type { RaceSource } from "../../../lib/codes";
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
+import type { FinishPredictionEvaluationMetrics } from "../../../lib/finish-position-prediction-evaluation";
 import type {
   AbilityTest,
   BloodlineStatsRow,
@@ -137,6 +138,7 @@ type OverallScorePayload = {
 };
 
 type FinishPredictionPayload = {
+  evaluation: FinishPredictionEvaluationMetrics;
   rows: FinishPredictionRow[];
   type: "finish-prediction";
 };
@@ -454,6 +456,7 @@ export function LazyFinishPredictionSection(props: LazyDetailSectionsProps) {
         <h2>着順予測</h2>
       </div>
       <FinishPositionPredictionTable
+        evaluation={payload.evaluation}
         realtimeRequest={{
           apiBaseUrl: props.realtimeApiBaseUrl,
           day: props.day,

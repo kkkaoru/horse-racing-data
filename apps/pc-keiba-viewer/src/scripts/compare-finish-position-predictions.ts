@@ -28,6 +28,17 @@ type Prediction = {
   score: number;
 };
 
+type EvaluationSummary = {
+  place1Accuracy: number;
+  place2Accuracy: number;
+  place3Accuracy: number;
+  top3BoxAccuracy: number;
+  top3ExactOrderAccuracy: number;
+  top3PlaceRelation: number;
+  top3WinnerCapture: number;
+  top5WinnerCapture: number;
+};
+
 type PredictionQueryRow = RaceKey & {
   avg_finish: string | null;
   finish_position: number;
@@ -160,6 +171,78 @@ const raceKey = (row: RaceKey): string =>
     row.keibajo_code,
     row.race_bango,
   ].join(":");
+
+const roundPercent = (value: number): number => Math.round(value * 10000) / 100;
+
+const calculateEvaluationSummary = (evaluated: Prediction[][]): EvaluationSummary => {
+  if (evaluated.length === 0) {
+    return {
+      place1Accuracy: 0,
+      place2Accuracy: 0,
+      place3Accuracy: 0,
+      top3BoxAccuracy: 0,
+      top3ExactOrderAccuracy: 0,
+      top3PlaceRelation: 0,
+      top3WinnerCapture: 0,
+      top5WinnerCapture: 0,
+    };
+  }
+
+  let place1Hits = 0;
+  let place2Hits = 0;
+  let place3Hits = 0;
+  let top3WinnerHits = 0;
+  let top5WinnerHits = 0;
+  let top3ExactOrderHits = 0;
+  let top3BoxHits = 0;
+  let top3PlaceRelationTotal = 0;
+
+  for (const rows of evaluated) {
+    if (rows[0]?.actual === 1) {
+      place1Hits += 1;
+    }
+    if (rows[1]?.actual === 2) {
+      place2Hits += 1;
+    }
+    if (rows[2]?.actual === 3) {
+      place3Hits += 1;
+    }
+    if (rows.slice(0, 3).some((row) => row.actual === 1)) {
+      top3WinnerHits += 1;
+    }
+    if (rows.slice(0, 5).some((row) => row.actual === 1)) {
+      top5WinnerHits += 1;
+    }
+
+    const predictedTop3 = rows.slice(0, 3);
+    const predictedTop3Actuals = predictedTop3.map((row) => row.actual);
+    if (
+      predictedTop3Actuals[0] === 1 &&
+      predictedTop3Actuals[1] === 2 &&
+      predictedTop3Actuals[2] === 3
+    ) {
+      top3ExactOrderHits += 1;
+    }
+
+    const actualTop3Set = new Set([1, 2, 3]);
+    const matchedTop3Count = predictedTop3.filter((row) => actualTop3Set.has(row.actual)).length;
+    if (matchedTop3Count === 3) {
+      top3BoxHits += 1;
+    }
+    top3PlaceRelationTotal += matchedTop3Count / 3;
+  }
+
+  return {
+    place1Accuracy: roundPercent(place1Hits / evaluated.length),
+    place2Accuracy: roundPercent(place2Hits / evaluated.length),
+    place3Accuracy: roundPercent(place3Hits / evaluated.length),
+    top3BoxAccuracy: roundPercent(top3BoxHits / evaluated.length),
+    top3ExactOrderAccuracy: roundPercent(top3ExactOrderHits / evaluated.length),
+    top3PlaceRelation: roundPercent(top3PlaceRelationTotal / evaluated.length),
+    top3WinnerCapture: roundPercent(top3WinnerHits / evaluated.length),
+    top5WinnerCapture: roundPercent(top5WinnerHits / evaluated.length),
+  };
+};
 
 const loadPredictions = async (pool: Pool, options: Options): Promise<Prediction[][]> => {
   if (options.category === "ban-ei") {
@@ -367,13 +450,7 @@ const main = async () => {
   const pool = new Pool({ connectionString: getConnectionString(options.target) });
   try {
     const evaluated = (await loadPredictions(pool, options)).filter((rows) => rows.length > 0);
-    const top1Hits = evaluated.filter((rows) => rows[0]?.actual === 1).length;
-    const top3Hits = evaluated.filter((rows) =>
-      rows.slice(0, 3).some((row) => row.actual === 1),
-    ).length;
-    const top5Hits = evaluated.filter((rows) =>
-      rows.slice(0, 5).some((row) => row.actual === 1),
-    ).length;
+    const evaluationSummary = calculateEvaluationSummary(evaluated);
     const pairScores = evaluated.map((rows) => {
       let correct = 0;
       let total = 0;
@@ -404,15 +481,18 @@ const main = async () => {
           category: options.category,
           fromDate: options.fromDate,
           pairScore: Math.round(pairScore * 10000) / 100,
+          place1Accuracy: evaluationSummary.place1Accuracy,
+          place2Accuracy: evaluationSummary.place2Accuracy,
+          place3Accuracy: evaluationSummary.place3Accuracy,
           raceCount: evaluated.length,
           target: options.target,
           toDate: options.toDate,
-          top1Accuracy:
-            evaluated.length > 0 ? Math.round((top1Hits / evaluated.length) * 10000) / 100 : 0,
-          top3WinnerCapture:
-            evaluated.length > 0 ? Math.round((top3Hits / evaluated.length) * 10000) / 100 : 0,
-          top5WinnerCapture:
-            evaluated.length > 0 ? Math.round((top5Hits / evaluated.length) * 10000) / 100 : 0,
+          top1Accuracy: evaluationSummary.place1Accuracy,
+          top3BoxAccuracy: evaluationSummary.top3BoxAccuracy,
+          top3ExactOrderAccuracy: evaluationSummary.top3ExactOrderAccuracy,
+          top3PlaceRelation: evaluationSummary.top3PlaceRelation,
+          top3WinnerCapture: evaluationSummary.top3WinnerCapture,
+          top5WinnerCapture: evaluationSummary.top5WinnerCapture,
         },
         null,
         2,

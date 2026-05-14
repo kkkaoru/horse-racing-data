@@ -18,6 +18,8 @@ import {
   getTimeScoreRows,
 } from "../../../db/queries";
 import { SOURCE_LABELS, type RaceSource } from "../../../lib/codes";
+import { buildFinishPredictionRowsFromResults } from "../../../lib/finish-position-prediction";
+import { getFinishPredictionEvaluation } from "../../../lib/finish-position-prediction-evaluation";
 import {
   cleanText,
   formatDistance,
@@ -34,7 +36,6 @@ import {
   getRaceTags,
   getWeightLabel,
 } from "../../../lib/race-classification";
-import { buildFinishPredictionRowsFromResults } from "../../../lib/finish-position-prediction";
 import {
   buildRacePacePredictionRowsFromResults,
   isCornerPacePredictionSupported,
@@ -876,6 +877,10 @@ export const getDetailSectionPayload = async (
       getFinishPositionModelPredictionFeatures(race, runners),
     ]);
     return {
+      evaluation: getFinishPredictionEvaluation({
+        keibajoCode: race.keibajoCode,
+        source: race.source,
+      }),
       rows: buildFinishPredictionRowsFromResults({
         currentDistance: race.kyori,
         currentKeibajoCode: race.keibajoCode,
