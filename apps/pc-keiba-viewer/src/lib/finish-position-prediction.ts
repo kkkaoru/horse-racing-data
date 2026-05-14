@@ -284,6 +284,17 @@ const getConditionAdjustedConfig = ({
 
   if (category === "jra") {
     config.sameDayJockeyWeight = 0;
+    config.horseWeight *= 0.95;
+    config.oddsWeight *= 1.05;
+    config.popularityWeight *= 1.05;
+    config.recentWeight *= 0.95;
+  }
+
+  if (category === "nar" && !graded && distanceBand !== "sprint") {
+    config.horseWeight *= 0.95;
+    config.oddsWeight *= 1.1;
+    config.popularityWeight *= 1.2;
+    config.recentWeight *= 0.95;
   }
 
   if (distanceBand === "sprint") {
@@ -418,6 +429,84 @@ const calculateScore = (candidates: ScoreCandidate[]): { confidence: number; sco
   };
 };
 
+const getModelKind = (modelVersion: string): "LightGBM" | "LSTM" | "Transformer" | "モデル" => {
+  const normalized = modelVersion.toLowerCase();
+  if (normalized.includes("lightgbm")) {
+    return "LightGBM";
+  }
+  if (normalized.includes("lstm")) {
+    return "LSTM";
+  }
+  if (normalized.includes("transformer")) {
+    return "Transformer";
+  }
+  return "モデル";
+};
+
+const getModelBaseWeight = (modelVersion: string): number => {
+  const kind = getModelKind(modelVersion);
+  if (kind === "LightGBM") {
+    return 0.5;
+  }
+  if (kind === "Transformer") {
+    return 0.3;
+  }
+  if (kind === "LSTM") {
+    return 0.2;
+  }
+  return 1;
+};
+
+const getModelCandidates = (
+  models: FinishPositionModelPredictionFeature[],
+  modelWeight: number,
+): ScoreCandidate[] => {
+  const usableModels = models.filter((model) => model.predictedFinishNorm !== null);
+  if (usableModels.length === 0) {
+    return [
+      {
+        label: "モデル",
+        reason: "モデル予測なし",
+        value: null,
+        weight: modelWeight,
+      },
+    ];
+  }
+  const baseWeightTotal = usableModels.reduce(
+    (total, model) => total + getModelBaseWeight(model.modelVersion),
+    0,
+  );
+  return usableModels.map((model) => {
+    const kind = getModelKind(model.modelVersion);
+    return {
+      label: kind === "モデル" ? "モデル" : `${kind}モデル`,
+      reason: `${model.modelVersion} の予測値をモデルアンサンブルに利用`,
+      value: model.predictedFinishNorm,
+      weight: (modelWeight * getModelBaseWeight(model.modelVersion)) / baseWeightTotal,
+    };
+  });
+};
+
+const getModelProbability = (
+  models: FinishPositionModelPredictionFeature[],
+  key: "showProbability" | "winProbability",
+): number | null => {
+  const usableModels = models.filter((model) => model[key] !== null);
+  if (usableModels.length === 0) {
+    return null;
+  }
+  const baseWeightTotal = usableModels.reduce(
+    (total, model) => total + getModelBaseWeight(model.modelVersion),
+    0,
+  );
+  return (
+    usableModels.reduce(
+      (total, model) => total + (model[key] ?? 0) * getModelBaseWeight(model.modelVersion),
+      0,
+    ) / baseWeightTotal
+  );
+};
+
 const getSameDayJockeyScore = (
   jockeyName: string | null | undefined,
   sameDayVenueJockeyWins: SameDayVenueJockeyWinFeature[],
@@ -473,12 +562,14 @@ export const buildFinishPredictionRowsFromResults = ({
       feature,
     ]),
   );
-  const modelByHorse = new Map(
-    modelPredictionFeatures.map((feature) => [
-      cleanText(feature.horseNumber, "").replace(/^0+/u, ""),
-      feature,
-    ]),
-  );
+  const modelsByHorse = new Map<string, FinishPositionModelPredictionFeature[]>();
+  for (const feature of modelPredictionFeatures) {
+    const horseNumber = cleanText(feature.horseNumber, "").replace(/^0+/u, "");
+    if (!horseNumber) {
+      continue;
+    }
+    modelsByHorse.set(horseNumber, [...(modelsByHorse.get(horseNumber) ?? []), feature]);
+  }
 
   const provisionalRows = runners.map((runner) => {
     const horseNumber = cleanText(runner.umaban, "").replace(/^0+/u, "");
@@ -510,7 +601,7 @@ export const buildFinishPredictionRowsFromResults = ({
     const jockeyAverage = weightedAverage(jockeyResults, averageParams);
     const trainerAverage = weightedAverage(trainerResults, averageParams);
     const similarity = similarityByHorse.get(horseNumber);
-    const model = modelByHorse.get(horseNumber);
+    const models = modelsByHorse.get(horseNumber) ?? [];
     const sameDayJockey = getSameDayJockeyScore(runner.kishumeiRyakusho, sameDayVenueJockeyWins);
     const candidates: ScoreCandidate[] = [
       {
@@ -569,12 +660,7 @@ export const buildFinishPredictionRowsFromResults = ({
             : clampScore((similarity.averageFinishPosition - 1) / (runnerCount - 1)),
         weight: config.similarityWeight,
       },
-      {
-        label: "モデル",
-        reason: model ? `モデル ${model.modelVersion} の予測値` : "モデル予測なし",
-        value: model?.predictedFinishNorm ?? null,
-        weight: config.modelWeight,
-      },
+      ...getModelCandidates(models, config.modelWeight),
     ];
     const { confidence, score } = calculateScore(candidates);
     return {
@@ -602,17 +688,18 @@ export const buildFinishPredictionRowsFromResults = ({
     const rank = index + 1;
     const baseWinProbability =
       winWeightTotal > 0 ? (winWeights[index] ?? 0) / winWeightTotal : 1 / runnerCount;
-    const model = modelByHorse.get(row.horseNumber);
+    const models = modelsByHorse.get(row.horseNumber) ?? [];
+    const modelWinProbability = getModelProbability(models, "winProbability");
+    const modelShowProbability = getModelProbability(models, "showProbability");
     const winProbability =
-      model?.winProbability === null || model?.winProbability === undefined
+      modelWinProbability === null || modelWinProbability === undefined
         ? baseWinProbability
-        : baseWinProbability * 0.55 + model.winProbability * 0.45;
+        : baseWinProbability * 0.55 + modelWinProbability * 0.45;
     const rankShowProbability = clampScore((runnerCount - rank + 1) / runnerCount);
-    const modelShow = model?.showProbability;
     const showProbability =
-      modelShow === null || modelShow === undefined
+      modelShowProbability === null || modelShowProbability === undefined
         ? rankShowProbability
-        : rankShowProbability * 0.55 + modelShow * 0.45;
+        : rankShowProbability * 0.55 + modelShowProbability * 0.45;
     return {
       confidence: row.confidence,
       details: row.details,
