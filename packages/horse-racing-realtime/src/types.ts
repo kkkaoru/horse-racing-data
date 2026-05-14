@@ -24,6 +24,14 @@ export interface RealtimeHorseWeight {
   weight: number | null;
 }
 
+export interface RealtimeRaceResult {
+  fetchedAt: string;
+  finishPosition: string;
+  horseName: string | null;
+  horseNumber: string;
+  time: string | null;
+}
+
 export interface RealtimeOddsHistoryPoint {
   fetchedAt: string;
   horseNumber: string;
@@ -61,6 +69,10 @@ export interface RealtimeRacePayload {
     horseTrends: RealtimeHorseOddsTrend[];
     history: RealtimeOddsHistoryPoint[];
     latest: Partial<Record<RealtimeOddsType, RealtimeOddsData[]>>;
+  } | null;
+  raceResults: {
+    fetchedAt: string;
+    horses: RealtimeRaceResult[];
   } | null;
   raceKey: string;
   source: RealtimeRaceSource | null;

@@ -9,6 +9,7 @@ import {
   fetchRacePage,
   fetchTodayRaceListUrls,
   parseHorseWeights,
+  parseRaceResults,
   parseRaceResultHorseWeights,
 } from "./keiba-go";
 import { mergeJsonHeaders } from "./http";
@@ -17,16 +18,22 @@ import { fetchNarRacesByDate } from "./postgres";
 import {
   buildRealtimePayload,
   claimOddsFetch,
+  claimResultFetch,
   completeOddsFetch,
+  completeResultFetch,
+  countRaceSourcesByDate,
   failOddsFetch,
+  failResultFetch,
   getRaceSource,
   getLatestOddsFromD1,
+  insertRaceResultSnapshot,
   insertHorseWeightSnapshot,
   insertOddsSnapshot,
   listSchedulableRaceSourcesByDate,
   listTanshoHistory,
   logFetch,
   markOddsFetchQueued,
+  markResultFetchQueued,
   toHorseTrends,
   updateLastFetch,
   updateOddsLinks,
@@ -43,6 +50,7 @@ import type { Env, Job, NarRaceSource, OddsType } from "./types";
 
 const QUEUE_SEND_BATCH_SIZE = 100;
 const ODDS_FETCH_LOCK_MINUTES = 10;
+const RESULT_FETCH_LOCK_MINUTES = 10;
 const QUEUE_RETRY_DELAY_SECONDS = 60;
 
 const getNow = (env: Env): Date => {
@@ -198,6 +206,25 @@ const latestTimestamp = (...timestamps: (string | null)[]): string | null => {
 
 const isThreeMinuteTick = (date: Date): boolean => date.getUTCMinutes() % 3 === 0;
 
+const isRaceFinished = (race: NarRaceSource, now: Date): boolean => {
+  const minutes = minutesUntilRace(race, now);
+  return minutes !== null && minutes <= 0;
+};
+
+const ensureDiscoveredUrlsAreCurrent = async (
+  env: Env,
+  targetDate: string,
+): Promise<void> => {
+  const [d1RaceCount, localRaces] = await Promise.all([
+    countRaceSourcesByDate(env.REALTIME_DB, targetDate),
+    fetchNarRacesByDate(env, targetDate),
+  ]);
+  if (d1RaceCount >= localRaces.length) {
+    return;
+  }
+  await upsertDiscoveredUrls(env, targetDate);
+};
+
 const enqueueJobs = async (env: Env, jobs: Job[]): Promise<void> => {
   for (let index = 0; index < jobs.length; index += QUEUE_SEND_BATCH_SIZE) {
     const chunk = jobs.slice(index, index + QUEUE_SEND_BATCH_SIZE);
@@ -214,6 +241,7 @@ const planRealtimeFetches = async (env: Env, targetDate: string): Promise<number
   if (!isJstPollingWindow(now)) {
     return 0;
   }
+  await ensureDiscoveredUrlsAreCurrent(env, targetDate);
   const races = await listSchedulableRaceSourcesByDate(env.REALTIME_DB, targetDate);
   if (races.length === 0) {
     return 0;
@@ -242,12 +270,30 @@ const planRealtimeFetches = async (env: Env, targetDate: string): Promise<number
     if (isThreeMinuteTick(now) && minutes <= 20 && isDue(race.lastWeightFetchAt, 24 * 60, now)) {
       jobs.push({ raceKey: race.raceKey, type: "fetch-weights" });
     }
+
+    const resultLockUntil = race.resultFetchLockUntil
+      ? new Date(race.resultFetchLockUntil).getTime()
+      : Number.NaN;
+    if (
+      minutes <= 0 &&
+      !race.lastResultFetchAt &&
+      (Number.isNaN(resultLockUntil) || resultLockUntil <= now.getTime()) &&
+      !race.lastResultQueuedAt
+    ) {
+      jobs.push({ raceKey: race.raceKey, type: "fetch-results" });
+    }
   }
   await enqueueJobs(env, jobs);
+  const queuedAt = toJstIsoString(now);
   await markOddsFetchQueued(
     env.REALTIME_DB,
     jobs.flatMap((job) => (job.type === "fetch-odds" ? [job.raceKey] : [])),
-    toJstIsoString(now),
+    queuedAt,
+  );
+  await markResultFetchQueued(
+    env.REALTIME_DB,
+    jobs.flatMap((job) => (job.type === "fetch-results" ? [job.raceKey] : [])),
+    queuedAt,
   );
   return jobs.length;
 };
@@ -321,6 +367,43 @@ const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<void> =>
   }
 };
 
+const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> => {
+  const now = getNow(env);
+  const lockUntil = toJstIsoString(new Date(now.getTime() + RESULT_FETCH_LOCK_MINUTES * 60_000));
+  const claimed = await claimResultFetch(env.REALTIME_DB, raceKey, lockUntil, toJstIsoString(now));
+  if (!claimed) {
+    return;
+  }
+  const race = await getRaceSource(env.REALTIME_DB, raceKey);
+  if (!race) {
+    await failResultFetch(env.REALTIME_DB, raceKey);
+    throw new Error(`race source not found: ${raceKey}`);
+  }
+  if (!isRaceFinished(race, now)) {
+    await failResultFetch(env.REALTIME_DB, raceKey);
+    return;
+  }
+
+  try {
+    const fetchedAt = toJstIsoString();
+    const html = await fetchRacePage(buildRaceResultUrl(race.debaUrl));
+    const results = parseRaceResults(html);
+    if (results.length > 0 && results.length < 2) {
+      await failResultFetch(env.REALTIME_DB, raceKey);
+      throw new Error(`race result rows are unexpectedly sparse: ${results.length}`);
+    }
+    const inserted = await insertRaceResultSnapshot(env.REALTIME_DB, raceKey, fetchedAt, results);
+    if (inserted === 0) {
+      await failResultFetch(env.REALTIME_DB, raceKey);
+      return;
+    }
+    await completeResultFetch(env.REALTIME_DB, raceKey, fetchedAt);
+  } catch (error) {
+    await failResultFetch(env.REALTIME_DB, raceKey);
+    throw error;
+  }
+};
+
 export const handleJob = async (env: Env, job: Job): Promise<void> => {
   try {
     if (job.type === "discover-urls") {
@@ -335,6 +418,11 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
     }
     if (job.type === "fetch-odds") {
       await fetchAndStoreOdds(env, job.raceKey);
+      await logFetch(env.REALTIME_DB, job.type, "ok", job.raceKey, null);
+      return;
+    }
+    if (job.type === "fetch-results") {
+      await fetchAndStoreResults(env, job.raceKey);
       await logFetch(env.REALTIME_DB, job.type, "ok", job.raceKey, null);
       return;
     }

@@ -5,6 +5,7 @@ import type {
   RealtimeOddsHistoryPoint,
   RealtimeOddsType,
   RealtimeRacePayload as SharedRealtimeRacePayload,
+  RealtimeRaceResult,
   RealtimeRaceSource,
 } from "horse-racing-realtime/types";
 
@@ -24,9 +25,14 @@ export type Job =
   | {
       type: "fetch-weights";
       raceKey: string;
+    }
+  | {
+      type: "fetch-results";
+      raceKey: string;
     };
 
 export type HorseOddsTrend = RealtimeHorseOddsTrend;
+export type RaceResult = RealtimeRaceResult;
 export type HorseWeight = RealtimeHorseWeight;
 export type NarRaceSource = RealtimeRaceSource;
 export type OddsData = RealtimeOddsData;

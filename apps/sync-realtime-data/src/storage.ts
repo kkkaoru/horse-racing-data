@@ -7,6 +7,7 @@ import type {
   OddsData,
   OddsHistoryPoint,
   OddsType,
+  RaceResult,
   RealtimeRacePayload,
 } from "./types";
 
@@ -20,6 +21,8 @@ interface RaceSourceRow {
   keibajo_code: string;
   last_odds_fetch_at: string | null;
   last_odds_queued_at: string | null;
+  last_result_fetch_at: string | null;
+  last_result_queued_at: string | null;
   last_weight_fetch_at: string | null;
   odds_fetch_lock_until: string | null;
   odds_links_json: string;
@@ -27,6 +30,7 @@ interface RaceSourceRow {
   race_key: string;
   race_name: string | null;
   race_start_at_jst: string;
+  result_fetch_lock_until: string | null;
 }
 
 interface OddsSnapshotRow {
@@ -49,6 +53,14 @@ interface WeightSnapshotRow {
   weight: number | null;
 }
 
+interface RaceResultSnapshotRow {
+  fetched_at: string;
+  finish_position: string;
+  horse_name: string | null;
+  horse_number: string;
+  time: string | null;
+}
+
 export interface LocalRaceRow {
   hasso_jikoku: string | null;
   kaisai_nen: string;
@@ -60,7 +72,10 @@ export interface LocalRaceRow {
 
 export interface SchedulableRaceSource extends NarRaceSource {
   lastOddsQueuedAt: string | null;
+  lastResultFetchAt: string | null;
+  lastResultQueuedAt: string | null;
   oddsFetchLockUntil: string | null;
+  resultFetchLockUntil: string | null;
 }
 
 const parseOddsLinks = (value: string): Partial<Record<OddsType, string>> => {
@@ -90,7 +105,10 @@ const toRaceSource = (row: RaceSourceRow): NarRaceSource => ({
 const toSchedulableRaceSource = (row: RaceSourceRow): SchedulableRaceSource => ({
   ...toRaceSource(row),
   lastOddsQueuedAt: row.last_odds_queued_at,
+  lastResultFetchAt: row.last_result_fetch_at,
+  lastResultQueuedAt: row.last_result_queued_at,
   oddsFetchLockUntil: row.odds_fetch_lock_until,
+  resultFetchLockUntil: row.result_fetch_lock_until,
 });
 
 const runD1Batches = async (db: D1Database, statements: D1PreparedStatement[]): Promise<void> => {
@@ -177,6 +195,24 @@ export const listSchedulableRaceSourcesByDate = async (
   return result.results.map(toSchedulableRaceSource);
 };
 
+export const countRaceSourcesByDate = async (
+  db: D1Database,
+  targetDate: string,
+): Promise<number> => {
+  const row = await db
+    .prepare(
+      `
+        select count(*) count
+        from nar_race_sources
+        where kaisai_nen = ?
+          and kaisai_tsukihi = ?
+      `,
+    )
+    .bind(targetDate.slice(0, 4), targetDate.slice(4, 8))
+    .first<{ count: number }>();
+  return Number(row?.count ?? 0);
+};
+
 export const updateOddsLinks = async (
   db: D1Database,
   raceKey: string,
@@ -191,13 +227,39 @@ export const updateOddsLinks = async (
 export const updateLastFetch = async (
   db: D1Database,
   raceKey: string,
-  column: "last_odds_fetch_at" | "last_weight_fetch_at",
+  column: "last_odds_fetch_at" | "last_result_fetch_at" | "last_weight_fetch_at",
   fetchedAt: string,
 ): Promise<void> => {
   await db
     .prepare(`update nar_race_sources set ${column} = ?, updated_at = ? where race_key = ?`)
     .bind(fetchedAt, toJstIsoString(), raceKey)
     .run();
+};
+
+export const markResultFetchQueued = async (
+  db: D1Database,
+  raceKeys: string[],
+  queuedAt: string,
+): Promise<void> => {
+  if (raceKeys.length === 0) {
+    return;
+  }
+  await runD1Batches(
+    db,
+    raceKeys.map((raceKey) =>
+      db
+        .prepare(
+          `
+            update nar_race_sources
+            set last_result_queued_at = ?, updated_at = ?
+            where race_key = ?
+              and last_result_fetch_at is null
+              and (last_result_queued_at is null or last_result_queued_at <= ?)
+          `,
+        )
+        .bind(queuedAt, queuedAt, raceKey, queuedAt),
+    ),
+  );
 };
 
 export const markOddsFetchQueued = async (
@@ -245,6 +307,27 @@ export const claimOddsFetch = async (
   return result.meta.changes > 0;
 };
 
+export const claimResultFetch = async (
+  db: D1Database,
+  raceKey: string,
+  lockUntil: string,
+  now = toJstIsoString(),
+): Promise<boolean> => {
+  const result = await db
+    .prepare(
+      `
+        update nar_race_sources
+        set result_fetch_lock_until = ?, updated_at = ?
+        where race_key = ?
+          and last_result_fetch_at is null
+          and (result_fetch_lock_until is null or result_fetch_lock_until <= ?)
+      `,
+    )
+    .bind(lockUntil, now, raceKey, now)
+    .run();
+  return result.meta.changes > 0;
+};
+
 export const completeOddsFetch = async (
   db: D1Database,
   raceKey: string,
@@ -276,6 +359,44 @@ export const failOddsFetch = async (db: D1Database, raceKey: string): Promise<vo
             odds_fetch_lock_until = null,
             updated_at = ?
         where race_key = ?
+      `,
+    )
+    .bind(now, raceKey)
+    .run();
+};
+
+export const completeResultFetch = async (
+  db: D1Database,
+  raceKey: string,
+  fetchedAt: string,
+): Promise<void> => {
+  const now = toJstIsoString();
+  await db
+    .prepare(
+      `
+        update nar_race_sources
+        set last_result_fetch_at = ?,
+            last_result_queued_at = null,
+            result_fetch_lock_until = null,
+            updated_at = ?
+        where race_key = ?
+      `,
+    )
+    .bind(fetchedAt, now, raceKey)
+    .run();
+};
+
+export const failResultFetch = async (db: D1Database, raceKey: string): Promise<void> => {
+  const now = toJstIsoString();
+  await db
+    .prepare(
+      `
+        update nar_race_sources
+        set last_result_queued_at = null,
+            result_fetch_lock_until = null,
+            updated_at = ?
+        where race_key = ?
+          and last_result_fetch_at is null
       `,
     )
     .bind(now, raceKey)
@@ -353,6 +474,42 @@ export const insertHorseWeightSnapshot = async (
         ),
     ),
   );
+};
+
+export const insertRaceResultSnapshot = async (
+  db: D1Database,
+  raceKey: string,
+  fetchedAt: string,
+  results: Omit<RaceResult, "fetchedAt">[],
+): Promise<number> => {
+  if (results.length === 0) {
+    return 0;
+  }
+  await db.prepare("delete from race_result_snapshots where race_key = ?").bind(raceKey).run();
+  await runD1Batches(
+    db,
+    results.map((result) =>
+      db
+        .prepare(
+          `
+            insert into race_result_snapshots (
+              race_key, fetched_at, horse_number, horse_name,
+              finish_position, time
+            )
+            values (?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .bind(
+          raceKey,
+          fetchedAt,
+          result.horseNumber,
+          result.horseName,
+          result.finishPosition,
+          result.time,
+        ),
+    ),
+  );
+  return results.length;
 };
 
 export const logFetch = async (
@@ -485,6 +642,40 @@ export const getLatestHorseWeights = async (
   };
 };
 
+export const getLatestRaceResults = async (
+  db: D1Database,
+  raceKey: string,
+): Promise<{ fetchedAt: string; horses: RaceResult[] } | null> => {
+  const latest = await db
+    .prepare("select max(fetched_at) as fetched_at from race_result_snapshots where race_key = ?")
+    .bind(raceKey)
+    .first<{ fetched_at: string | null }>();
+  if (!latest?.fetched_at) {
+    return null;
+  }
+  const result = await db
+    .prepare(
+      `
+        select *
+        from race_result_snapshots
+        where race_key = ? and fetched_at = ?
+        order by cast(finish_position as integer) asc, cast(horse_number as integer) asc
+      `,
+    )
+    .bind(raceKey, latest.fetched_at)
+    .all<RaceResultSnapshotRow>();
+  return {
+    fetchedAt: latest.fetched_at,
+    horses: result.results.map((row) => ({
+      fetchedAt: row.fetched_at,
+      finishPosition: row.finish_position,
+      horseName: row.horse_name,
+      horseNumber: row.horse_number,
+      time: row.time,
+    })),
+  };
+};
+
 export const buildRealtimePayload = async (
   db: D1Database,
   raceKey: string,
@@ -505,6 +696,7 @@ export const buildRealtimePayload = async (
           latest: odds.latest,
         }
       : null,
+    raceResults: await getLatestRaceResults(db, raceKey),
     raceKey,
     source,
   };
