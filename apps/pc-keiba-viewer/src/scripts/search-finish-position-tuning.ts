@@ -117,7 +117,12 @@ const randomParameterKinds: RandomParameterKind[] = [
 ];
 
 const isRandomParameterKind = (value: string): value is RandomParameterKind =>
-  randomParameterKinds.includes(value as RandomParameterKind);
+  value === "component-models" ||
+  value === "ensemble-mode" ||
+  value === "ensemble-weights" ||
+  value === "mixed-weighted-share" ||
+  value === "score-base" ||
+  value === "score-rules";
 
 const parseRunUntil = (value: string): Date => {
   if (/^\d{1,2}:\d{2}$/u.test(value)) {
@@ -220,6 +225,9 @@ const getString = (record: Record<string, unknown>, key: string): string | undef
 
 const getNumber = (record: Record<string, unknown>, key: string): number | undefined =>
   typeof record[key] === "number" ? record[key] : undefined;
+
+const getArray = (record: Record<string, unknown>, key: string): unknown[] =>
+  Array.isArray(record[key]) ? record[key] : [];
 
 const getCategory = (record: Record<string, unknown>): CompareArgs["category"] => {
   const value = getString(record, "category");
@@ -339,7 +347,9 @@ const stableStringify = (value: unknown): string => {
 };
 
 const parameterHash = (version: string, category: string, value: unknown): string =>
-  createHash("sha256").update(`${version}:${category}:${stableStringify(value)}`).digest("hex");
+  createHash("sha256")
+    .update(`${version}:${category}:${stableStringify(value)}`)
+    .digest("hex");
 
 const randomFloat = (min: number, max: number): number =>
   Math.round((min + Math.random() * (max - min)) * 1000) / 1000;
@@ -456,11 +466,7 @@ const buildRandomOverrideForKind = (
   };
 };
 
-const buildRandomOverride = (
-  options: CliOptions,
-  category: CompareArgs["category"],
-  index: number,
-): unknown => {
+const buildRandomOverride = (options: CliOptions, category: CompareArgs["category"]): unknown => {
   const availableKinds = options.randomParameterKinds ?? randomParameterKinds;
   const count = randomInt(
     options.randomMinChanges,
@@ -472,7 +478,7 @@ const buildRandomOverride = (
     {},
   );
   return deepMerge(override, {
-    version: `${options.parameterSchemaVersion}-${category}-random-${String(index).padStart(6, "0")}`,
+    version: `${options.parameterSchemaVersion}-${category}-random`,
   });
 };
 
@@ -491,6 +497,37 @@ const ensureRandomTrialTable = async (pool: Pool) => {
       completed_at timestamptz,
       unique (parameter_schema_version, category, parameter_hash)
     )
+  `);
+  await pool.query(`
+    alter table finish_position_tuning_random_trials
+      add column if not exists pair_score numeric,
+      add column if not exists place1_accuracy numeric,
+      add column if not exists place2_accuracy numeric,
+      add column if not exists place3_accuracy numeric,
+      add column if not exists race_count integer,
+      add column if not exists top3_box_accuracy numeric,
+      add column if not exists top3_exact_order_accuracy numeric,
+      add column if not exists top3_place_relation numeric,
+      add column if not exists top3_winner_capture numeric,
+      add column if not exists top5_winner_capture numeric,
+      add column if not exists changed_improved_count integer,
+      add column if not exists changed_worsened_count integer,
+      add column if not exists newly_exact_top3_count integer,
+      add column if not exists top3_place_match_rate_decreased_count integer,
+      add column if not exists changed_top_improved_races jsonb,
+      add column if not exists changed_top_worsened_races jsonb,
+      add column if not exists result_summary jsonb
+  `);
+  await pool.query(`
+    create index if not exists finish_position_tuning_random_trials_best_idx
+      on finish_position_tuning_random_trials (
+        parameter_schema_version,
+        category,
+        status,
+        top3_exact_order_accuracy desc,
+        top3_box_accuracy desc,
+        top3_place_relation desc
+      )
   `);
 };
 
@@ -520,15 +557,80 @@ const reserveRandomTrial = async (
 };
 
 const completeRandomTrial = async (pool: Pool, id: number, result: TrialResult) => {
+  const changedRaces = isRecord(result.changedRaces) ? result.changedRaces : {};
+  const changedImprovedCount = getNumber(changedRaces, "improvedCount") ?? 0;
+  const changedWorsenedCount = getNumber(changedRaces, "worsenedCount") ?? 0;
+  const newlyExactTop3Count = getNumber(changedRaces, "newlyExactTop3Count") ?? 0;
+  const top3PlaceMatchRateDecreasedCount =
+    getNumber(changedRaces, "top3PlaceMatchRateDecreasedCount") ?? 0;
+  const changedTopImprovedRaces = getArray(changedRaces, "improvedSamples").slice(0, 30);
+  const changedTopWorsenedRaces = getArray(changedRaces, "worsenedSamples").slice(0, 30);
+  const resultSummary = {
+    changedRaceCounts: {
+      changedImprovedCount,
+      changedWorsenedCount,
+      newlyExactTop3Count,
+      top3PlaceMatchRateDecreasedCount,
+    },
+    changedTopImprovedRaces,
+    changedTopWorsenedRaces,
+    name: result.name,
+    pairScore: result.pairScore,
+    place1Accuracy: result.place1Accuracy,
+    place2Accuracy: result.place2Accuracy,
+    place3Accuracy: result.place3Accuracy,
+    raceCount: result.raceCount,
+    top3BoxAccuracy: result.top3BoxAccuracy,
+    top3ExactOrderAccuracy: result.top3ExactOrderAccuracy,
+    top3PlaceRelation: result.top3PlaceRelation,
+    top3WinnerCapture: result.top3WinnerCapture,
+    top5WinnerCapture: result.top5WinnerCapture,
+  };
   await pool.query(
     `
       update finish_position_tuning_random_trials
       set status = 'completed',
-          result = $2::jsonb,
+          result = null,
+          pair_score = $2,
+          place1_accuracy = $3,
+          place2_accuracy = $4,
+          place3_accuracy = $5,
+          race_count = $6,
+          top3_box_accuracy = $7,
+          top3_exact_order_accuracy = $8,
+          top3_place_relation = $9,
+          top3_winner_capture = $10,
+          top5_winner_capture = $11,
+          changed_improved_count = $12,
+          changed_worsened_count = $13,
+          newly_exact_top3_count = $14,
+          top3_place_match_rate_decreased_count = $15,
+          changed_top_improved_races = $16::jsonb,
+          changed_top_worsened_races = $17::jsonb,
+          result_summary = $18::jsonb,
           completed_at = now()
       where id = $1
     `,
-    [id, JSON.stringify(result)],
+    [
+      id,
+      result.pairScore,
+      result.place1Accuracy,
+      result.place2Accuracy,
+      result.place3Accuracy,
+      result.raceCount,
+      result.top3BoxAccuracy,
+      result.top3ExactOrderAccuracy,
+      result.top3PlaceRelation,
+      result.top3WinnerCapture,
+      result.top5WinnerCapture,
+      changedImprovedCount,
+      changedWorsenedCount,
+      newlyExactTop3Count,
+      top3PlaceMatchRateDecreasedCount,
+      JSON.stringify(changedTopImprovedRaces),
+      JSON.stringify(changedTopWorsenedRaces),
+      JSON.stringify(resultSummary),
+    ],
   );
 };
 
@@ -702,16 +804,39 @@ const toTrialResult = (name: string, value: unknown): TrialResult => {
   };
 };
 
-const main = async () => {
-  const { searchConfigPath } = parseArgs(process.argv.slice(2));
-  const searchConfig = await loadSearchConfig(searchConfigPath);
-  const startedAt = new Date();
+const writeOutput = async ({
+  category,
+  output,
+  searchConfig,
+  timestamp,
+}: {
+  category: string;
+  output: unknown;
+  searchConfig: SearchConfig;
+  timestamp: string;
+}): Promise<string> => {
+  const logPath = join(
+    process.cwd(),
+    "logs",
+    `${timestamp}-${category}-finish-position-tuning-search.json`,
+  );
+  await mkdir(dirname(logPath), { recursive: true });
+  await writeFile(logPath, JSON.stringify(output, null, 2));
+  if (searchConfig.output !== undefined) {
+    await mkdir(dirname(searchConfig.output), { recursive: true });
+    await writeFile(searchConfig.output, JSON.stringify(output, null, 2));
+  }
+  console.log(`log=${logPath}`);
+  return logPath;
+};
+
+const runConfiguredTrials = async (
+  searchConfig: SearchConfig,
+  searchConfigPath: string,
+  startedAt: Date,
+  timestamp: string,
+) => {
   const category = getLogCategoryLabel(searchConfig);
-  const timestamp = startedAt
-    .toISOString()
-    .replaceAll(":", "")
-    .replaceAll("-", "")
-    .replace(".", "-");
   const tempDir = join(process.cwd(), "tmp", "finish-position-tuning-search", timestamp);
   await rm(tempDir, { force: true, recursive: true });
   await mkdir(tempDir, { recursive: true });
@@ -733,18 +858,7 @@ const main = async () => {
     searchConfigPath,
     startedAt: startedAt.toISOString(),
   };
-  const logPath = join(
-    process.cwd(),
-    "logs",
-    `${timestamp}-${category}-finish-position-tuning-search.json`,
-  );
-  await mkdir(dirname(logPath), { recursive: true });
-  await writeFile(logPath, JSON.stringify(output, null, 2));
-  if (searchConfig.output !== undefined) {
-    await mkdir(dirname(searchConfig.output), { recursive: true });
-    await writeFile(searchConfig.output, JSON.stringify(output, null, 2));
-  }
-  console.log(`log=${logPath}`);
+  await writeOutput({ category, output, searchConfig, timestamp });
   console.log(
     JSON.stringify(
       {
@@ -756,6 +870,125 @@ const main = async () => {
       2,
     ),
   );
+};
+
+const runRandomTrialsUntil = async (
+  options: CliOptions,
+  searchConfig: SearchConfig,
+  searchConfigPath: string,
+  startedAt: Date,
+  timestamp: string,
+) => {
+  if (options.runUntil === undefined) {
+    throw new Error("runUntil is required for random mode.");
+  }
+  await loadEnv();
+  const category = options.randomCategory ?? searchConfig.baseArgs?.category ?? "jra";
+  const target = searchConfig.baseArgs?.target ?? "local";
+  const pool = new Pool({ connectionString: getConnectionString(target) });
+  const tempDir = join(process.cwd(), "tmp", "finish-position-tuning-search", timestamp);
+  await rm(tempDir, { force: true, recursive: true });
+  await mkdir(tempDir, { recursive: true });
+  const results: TrialResult[] = [];
+  let duplicateCount = 0;
+  let generatedCount = 0;
+  try {
+    await ensureRandomTrialTable(pool);
+    /* eslint-disable no-await-in-loop -- The time-boxed search must finish one validation before deciding whether another validation can start. */
+    while (Date.now() < options.runUntil.getTime()) {
+      generatedCount += 1;
+      let reserved: RandomTrialRecord | null = null;
+      let tuningConfig: unknown = {};
+      for (let attempts = 0; attempts < 100 && reserved === null; attempts += 1) {
+        const override = buildRandomOverride(options, category);
+        tuningConfig = deepMerge(searchConfig.baseTuningConfig ?? {}, override);
+        reserved = await reserveRandomTrial(pool, options, category, tuningConfig);
+        if (reserved === null) {
+          duplicateCount += 1;
+        }
+      }
+      if (reserved === null) {
+        console.log("random search skipped: could not find an untried parameter set.");
+        continue;
+      }
+      const trial: SearchConfig["trials"][number] = {
+        args: {
+          category,
+          ensembleMode: "auto",
+        },
+        name: `${category}-random-${reserved.id}`,
+        tuningConfig,
+      };
+      try {
+        const result = await runTrial(searchConfig, trial, reserved.id, tempDir);
+        results.push(result);
+        await completeRandomTrial(pool, reserved.id, result);
+        console.log(
+          `${result.name}: exact=${result.top3ExactOrderAccuracy} box=${result.top3BoxAccuracy} place1=${result.place1Accuracy}`,
+        );
+      } catch (error) {
+        await failRandomTrial(pool, reserved.id, error);
+        throw error;
+      }
+    }
+    /* eslint-enable no-await-in-loop */
+  } finally {
+    await pool.end();
+  }
+  const sorted = sortResults(results);
+  const output = {
+    baseArgs: {
+      ...searchConfig.baseArgs,
+      category,
+    },
+    best: sorted[0] ?? null,
+    duplicateCount,
+    finishedAt: new Date().toISOString(),
+    mode: "random-until",
+    parameterSchemaVersion: options.parameterSchemaVersion,
+    randomMaxChanges: options.randomMaxChanges,
+    randomMinChanges: options.randomMinChanges,
+    randomParameterKinds: options.randomParameterKinds ?? randomParameterKinds,
+    resultCount: sorted.length,
+    results: sorted,
+    runUntil: options.runUntil.toISOString(),
+    searchConfigPath,
+    startedAt: startedAt.toISOString(),
+  };
+  await writeOutput({ category, output, searchConfig, timestamp });
+  console.log(
+    JSON.stringify(
+      {
+        ...output,
+        best: sorted[0] === undefined ? null : toConsoleResult(sorted[0]),
+        results: sorted.map(toConsoleResult),
+      },
+      null,
+      2,
+    ),
+  );
+};
+
+const main = async () => {
+  const options = parseArgs(process.argv.slice(2));
+  const searchConfig = await loadSearchConfig(options.searchConfigPath);
+  const startedAt = new Date();
+  const timestamp = startedAt
+    .toISOString()
+    .replaceAll(":", "")
+    .replaceAll("-", "")
+    .replace(".", "-");
+  if (options.runUntil !== undefined) {
+    await runRandomTrialsUntil(
+      options,
+      searchConfig,
+      options.searchConfigPath,
+      startedAt,
+      timestamp,
+    );
+    return;
+  }
+  await runConfiguredTrials(searchConfig, options.searchConfigPath, startedAt, timestamp);
 };
 
 await main();
