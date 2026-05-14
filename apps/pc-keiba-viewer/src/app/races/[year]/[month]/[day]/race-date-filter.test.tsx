@@ -19,6 +19,7 @@ const race = (overrides: Partial<RaceListItem>): RaceListItem => ({
   kyosoKigoCode: null,
   kyosoShubetsuCode: null,
   juryoShubetsuCode: null,
+  jockeyNames: [],
   raceBango: "01",
   shussoTosu: "15",
   source: "jra",
@@ -33,6 +34,7 @@ const races: RaceListItem[] = [
     kyosoJokenCode: "703",
     kyosoKigoCode: "023",
     kyosoShubetsuCode: "02",
+    jockeyNames: ["新潟騎手"],
   }),
   race({
     hassoJikoku: "1015",
@@ -43,6 +45,7 @@ const races: RaceListItem[] = [
     source: "jra",
     trackCode: "11",
     gradeCode: "A",
+    jockeyNames: ["東京太郎", "東京次郎"],
     kyosoShubetsuCode: "12",
   }),
   race({
@@ -51,6 +54,7 @@ const races: RaceListItem[] = [
     kyori: "1200",
     kyosomeiHondai: "地方特別",
     raceBango: "03",
+    jockeyNames: ["地方花子"],
     source: "nar",
     trackCode: "24",
   }),
@@ -112,5 +116,34 @@ describe("race date filter", () => {
     fireEvent.change(screen.getByRole("searchbox"), { target: { value: "存在しない" } });
     expect(screen.getByText("0 / 3 レース")).toBeTruthy();
     expect(screen.getByText("条件に一致するレースはありません。")).toBeTruthy();
+  });
+
+  it("filters by start time, end time, and selected jockeys", () => {
+    render(<RaceDateFilter day="10" month="05" races={races} year="2026" />);
+
+    fireEvent.change(screen.getByLabelText("開始時間"), { target: { value: "10:00" } });
+    expect(screen.getByText("2 / 3 レース")).toBeTruthy();
+    expect(screen.queryByText("一般競走")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("終了時間"), { target: { value: "10:30" } });
+    expect(screen.getByText("1 / 3 レース")).toBeTruthy();
+    expect(screen.getByText("ＮＨＫマイルカップ")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("騎手"), { target: { value: "東京太郎" } });
+    fireEvent.mouseDown(screen.getByRole("button", { name: "東京太郎" }));
+    expect(screen.getByLabelText("selected jockey filters").textContent).toContain("東京太郎");
+    expect(screen.getByText("1 / 3 レース")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /東京太郎/ }));
+    expect(screen.queryByLabelText("selected jockey filters")).toBeNull();
+  });
+
+  it("keeps venue fixed on venue pages", () => {
+    render(<RaceDateFilter day="10" fixedVenueCode="05" month="05" races={races} year="2026" />);
+
+    expect(screen.queryByText("競馬場")).toBeNull();
+    expect(screen.getByText("1 / 3 レース")).toBeTruthy();
+    expect(screen.getByText("ＮＨＫマイルカップ")).toBeTruthy();
+    expect(screen.queryByText("地方特別")).toBeNull();
   });
 });
