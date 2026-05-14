@@ -2318,15 +2318,21 @@ export const getFinishPositionSimilarityFeatures = cache(
   },
 );
 
-const getFinishModelVersion = (): string =>
-  process.env.PC_KEIBA_FINISH_MODEL_VERSION?.trim() || "finish-ensemble-10y-20260514";
+const getFinishModelVersions = (): string[] => {
+  const configured = process.env.PC_KEIBA_FINISH_MODEL_VERSION?.trim();
+  const versions = (configured || "finish-ensemble-10y-20260514")
+    .split(",")
+    .map((version) => version.trim())
+    .filter(Boolean);
+  return versions.length > 0 ? versions : ["finish-ensemble-10y-20260514"];
+};
 
 export const getFinishPositionModelPredictionFeatures = cache(
   async (race: RaceDetail, runners: Runner[]): Promise<FinishPositionModelPredictionFeature[]> => {
     return withDbQueryCache(
       [
         "getFinishPositionModelPredictionFeatures",
-        getFinishModelVersion(),
+        getFinishModelVersions().join(","),
         race.source,
         race.kaisaiNen,
         race.kaisaiTsukihi,
@@ -2338,6 +2344,7 @@ export const getFinishPositionModelPredictionFeatures = cache(
         if (runners.length <= 1) {
           return [];
         }
+        const modelVersions = getFinishModelVersions();
         try {
           const result = await getDb().execute<{
             model_version: string;
@@ -2354,7 +2361,7 @@ export const getFinishPositionModelPredictionFeatures = cache(
               show_probability
             from race_entry_finish_model_predictions
             where
-              model_version = ${getFinishModelVersion()}
+              model_version in (${sql.join(modelVersions, sql`, `)})
               and source = ${race.source}
               and kaisai_nen = ${race.kaisaiNen}
               and kaisai_tsukihi = ${race.kaisaiTsukihi}
