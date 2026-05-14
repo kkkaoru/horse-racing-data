@@ -5,6 +5,7 @@ import { memo, useCallback, useEffect, useMemo, useState } from "react";
 
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
 import { cleanText } from "../../../lib/format";
+import { isSameJockeyName } from "../../../lib/jockey-name";
 import {
   isPaddockState,
   normalizePaddockHorseScore,
@@ -108,7 +109,7 @@ const formatRealtimeOdds = (value: number | null): string =>
   value === null ? "-" : value.toFixed(1);
 
 const isChangedJockey = (storedName: string, realtimeName: string | null): boolean =>
-  Boolean(realtimeName) && storedName !== "" && realtimeName !== storedName;
+  Boolean(realtimeName) && storedName !== "" && !isSameJockeyName(storedName, realtimeName);
 
 const getOfficialRankClassName = (rank: PaddockOfficialRank | null | undefined): string =>
   rank ? `paddock-rank-badge rank-${rank}` : "paddock-rank-badge";

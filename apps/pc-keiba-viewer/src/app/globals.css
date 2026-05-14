@@ -1308,17 +1308,14 @@ h3 {
   align-items: center;
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(108px, auto) minmax(0, 1fr) minmax(156px, auto) 48px;
+  grid-template-columns: minmax(108px, auto) minmax(0, 1fr) 48px;
   justify-items: start;
 }
 
 .paddock-horse-summary b {
-  background: var(--surface-muted);
-  border: 1px solid var(--line);
-  border-radius: 6px;
   font-variant-numeric: tabular-nums;
   justify-self: end;
-  padding: 7px 8px;
+  padding: 2px 0;
   text-align: center;
 }
 
@@ -1330,14 +1327,10 @@ h3 {
 
 .paddock-horse-ids > span {
   align-items: center;
-  background: var(--surface-muted);
-  border: 1px solid var(--line);
-  border-radius: 7px;
   display: grid;
   gap: 4px;
   justify-items: start;
-  min-height: 52px;
-  padding: 5px 7px;
+  min-height: 34px;
   text-align: left;
 }
 
@@ -1417,20 +1410,19 @@ h3 {
 .paddock-horse-race-facts {
   display: grid;
   gap: 6px;
+  grid-column: 2;
   grid-template-columns: repeat(3, minmax(46px, 1fr));
   justify-self: start;
+  max-width: 220px;
+  width: 100%;
 }
 
 .paddock-horse-race-facts span {
   align-items: center;
-  background: var(--surface-muted);
-  border: 1px solid var(--line);
-  border-radius: 7px;
   display: grid;
   gap: 4px;
   justify-items: start;
-  min-height: 52px;
-  padding: 5px 7px;
+  min-height: 34px;
   text-align: left;
 }
 
@@ -2057,6 +2049,8 @@ h3 {
 }
 
 .odds-trend-plot {
+  background: #eaf2ec;
+  border-radius: 6px;
   height: min(880px, calc(100vh - 220px));
   min-height: 420px;
 }

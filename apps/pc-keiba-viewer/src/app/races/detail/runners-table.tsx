@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 
 import { cleanText } from "../../../lib/format";
+import { isSameJockeyName } from "../../../lib/jockey-name";
 import type { Runner } from "../../../lib/race-types";
 import {
   formatCarriedWeight,
@@ -118,7 +119,9 @@ const formatCornerRanks = (runner: Runner): string => {
 const isLinkableText = (value: string): boolean => value !== "" && value !== "-";
 
 const isChangedJockey = (storedName: string, realtimeName: string | null | undefined): boolean =>
-  Boolean(realtimeName) && isLinkableText(storedName) && realtimeName !== storedName;
+  Boolean(realtimeName) &&
+  isLinkableText(storedName) &&
+  !isSameJockeyName(storedName, realtimeName);
 
 export function RunnersTable({
   decodeHexHorseWeight = false,

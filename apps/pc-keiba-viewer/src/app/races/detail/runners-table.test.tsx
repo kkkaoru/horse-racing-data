@@ -254,6 +254,48 @@ describe("runners table", () => {
     expect(screen.getByText("取消")).toBeTruthy();
   });
 
+  it("does not show changed jockey notes for names with the same first three characters", () => {
+    render(
+      <RunnersTable
+        initialRealtimePayload={{
+          horseWeights: null,
+          odds: null,
+          raceEntries: {
+            fetchedAt: "2026-05-10T18:30:00+09:00",
+            horses: [
+              {
+                fetchedAt: "2026-05-10T18:30:00+09:00",
+                horseName: "一番",
+                horseNumber: "1",
+                jockeyName: "増田充宏",
+                status: null,
+              },
+              {
+                fetchedAt: "2026-05-10T18:30:00+09:00",
+                horseName: "二番",
+                horseNumber: "2",
+                jockeyName: "シャベス",
+                status: null,
+              },
+            ],
+          },
+          raceResults: null,
+          raceKey: "nar:2026:0510:83:09",
+          source: null,
+        }}
+        runners={[
+          runner({ bamei: "一番", kishumeiRyakusho: "増田充", umaban: "01" }),
+          runner({ bamei: "二番", kishumeiRyakusho: "シャベ", umaban: "02" }),
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("増田充宏")).toBeTruthy();
+    expect(screen.getByText("シャベス")).toBeTruthy();
+    expect(screen.queryByText("元 増田充")).toBeNull();
+    expect(screen.queryByText("元 シャベ")).toBeNull();
+  });
+
   it("formats realtime horse weights with missing values", () => {
     render(
       <RunnersTable
