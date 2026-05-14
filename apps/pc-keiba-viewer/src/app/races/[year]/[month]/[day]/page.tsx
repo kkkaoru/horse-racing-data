@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 
 import { getRacesByDate } from "../../../../../db/queries";
 import { formatDate, formatDisplayDate, formatKeibajo } from "../../../../../lib/format";
+import { getDefaultRaceStartFilterTime } from "./race-date-defaults";
 import { RaceDateFilter } from "./race-date-filter";
 
 export const dynamic = "force-dynamic";
@@ -68,7 +69,13 @@ export default async function RaceDatePage({ params }: RaceDatePageProps) {
               </Link>
             ))}
           </nav>
-          <RaceDateFilter day={day} month={month} races={races} year={year} />
+          <RaceDateFilter
+            day={day}
+            defaultStartTime={getDefaultRaceStartFilterTime(year, month, day)}
+            month={month}
+            races={races}
+            year={year}
+          />
         </>
       )}
     </section>

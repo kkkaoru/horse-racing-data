@@ -2,18 +2,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { getRacesByDate } from "../../../../../../db/queries";
-import { SOURCE_LABELS } from "../../../../../../lib/codes";
-import {
-  cleanText,
-  formatDate,
-  formatDisplayDate,
-  formatDistance,
-  formatKeibajo,
-  formatRaceNumber,
-  formatTime,
-  formatTrack,
-} from "../../../../../../lib/format";
-import { getRaceTags } from "../../../../../../lib/race-classification";
+import { formatDate, formatDisplayDate, formatKeibajo } from "../../../../../../lib/format";
+import { getDefaultRaceStartFilterTime } from "../race-date-defaults";
+import { RaceDateFilter } from "../race-date-filter";
 
 export const dynamic = "force-dynamic";
 
@@ -75,39 +66,14 @@ export default async function RaceVenuePage({ params }: RaceVenuePageProps) {
         </div>
       </div>
 
-      <div className="race-list">
-        {races.map((race) => {
-          const tags = getRaceTags(race);
-
-          return (
-            <Link
-              className="race-row"
-              href={`/races/${year}/${month}/${day}/${race.keibajoCode}/${race.raceBango}`}
-              key={`${race.source}-${race.keibajoCode}-${race.raceBango}`}
-            >
-              <span className="race-time">{formatTime(race.hassoJikoku)}</span>
-              <span className="race-main">
-                <strong>
-                  {SOURCE_LABELS[race.source]} {formatRaceNumber(race.raceBango)}
-                </strong>
-                <span>{cleanText(race.kyosomeiHondai, "一般競走")}</span>
-                {tags.length > 0 ? (
-                  <span className="tag-list">
-                    {tags.map((raceTag) => (
-                      <span className="race-tag" key={raceTag}>
-                        {raceTag}
-                      </span>
-                    ))}
-                  </span>
-                ) : null}
-              </span>
-              <span className="race-meta">
-                {formatTrack(race.trackCode)} {formatDistance(race.kyori)}
-              </span>
-            </Link>
-          );
-        })}
-      </div>
+      <RaceDateFilter
+        day={day}
+        defaultStartTime={getDefaultRaceStartFilterTime(year, month, day)}
+        fixedVenueCode={keibajoCode}
+        month={month}
+        races={races}
+        year={year}
+      />
     </section>
   );
 }
