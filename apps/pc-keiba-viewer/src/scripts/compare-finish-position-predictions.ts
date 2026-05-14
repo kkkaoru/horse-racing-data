@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+
 import { Pool } from "pg";
 
 import { getConnectionString, loadEnv } from "./compare-corner-predictions";
@@ -10,6 +12,7 @@ type Options = {
   changedRaceLimit: number;
   changedRaces: boolean;
   concurrency: number;
+  ensembleMode: "auto" | "mixed" | "off" | "vote" | "weighted";
   fromDate: string;
   historyWeightMultiplier: number;
   oddsWeightMultiplier: number;
@@ -17,8 +20,83 @@ type Options = {
   recentWeightMultiplier: number;
   sameDayJockeyWeight: number;
   target: "local" | "neon";
+  tuningConfig?: FinishPredictionTuningConfig;
+  tuningConfigPath: string | null;
   toDate: string;
 };
+
+type ScoreComponentKey =
+  | "avgFinish"
+  | "lightgbm"
+  | "lstm"
+  | "odds"
+  | "popularity"
+  | "recentFinish"
+  | "sameDayJockey"
+  | "transformer";
+
+type ConditionMatcher = {
+  conditionBands?: string[];
+  distanceBands?: string[];
+  fromDate?: string;
+  gradeBands?: string[];
+  keibajoCodes?: string[];
+  raceBangos?: string[];
+  sources?: string[];
+  toDate?: string;
+};
+
+type ScoreWeightRule = {
+  multiply?: Partial<Record<ScoreComponentKey, number>>;
+  set?: Partial<Record<ScoreComponentKey, number>>;
+  when?: ConditionMatcher;
+};
+
+type EnsembleRule = {
+  mixedWeightedShare?: number;
+  mode?: "mixed" | "off" | "vote" | "weighted";
+  weights?: Partial<Record<"lightgbm" | "lstm" | "transformer", number>>;
+  when?: ConditionMatcher;
+};
+
+type ComponentModelConfig = {
+  fallback?: number;
+  weights?: Partial<
+    Record<"avgFinish" | "odds" | "popularity" | "recentFinish" | "sameDayJockey", number>
+  >;
+};
+
+type FinishPredictionTuningConfig = {
+  baneiScoreWeights?: Partial<Record<"odds" | "popularity" | "sameDayJockey", number>>;
+  componentModels?: {
+    lstmLike?: ComponentModelConfig;
+    transformerLike?: ComponentModelConfig;
+  };
+  ensemble?: {
+    defaultMode?: "auto" | "mixed" | "off" | "vote" | "weighted";
+    mixedWeightedShare?: number;
+    rules?: EnsembleRule[];
+    weights?: Partial<Record<"lightgbm" | "lstm" | "transformer", number>>;
+  };
+  scoreWeights?: {
+    base?: Partial<
+      Record<"avgFinish" | "odds" | "popularity" | "recentFinish" | "sameDayJockey", number>
+    >;
+    rules?: ScoreWeightRule[];
+  };
+  version?: string;
+};
+
+const scoreComponentKeys: ScoreComponentKey[] = [
+  "avgFinish",
+  "lightgbm",
+  "lstm",
+  "odds",
+  "popularity",
+  "recentFinish",
+  "sameDayJockey",
+  "transformer",
+];
 
 type RaceKey = {
   source: string;
@@ -35,10 +113,18 @@ type Prediction = {
   distanceBand: string;
   gradeBand: string;
   horseNumber: number;
+  kaisaiNen: string;
+  kaisaiTsukihi: string;
+  keibajoCode: string;
+  lightgbmScore: number;
+  lstmScore: number;
   predictedRank: number;
+  raceBango: string;
   raceKey: string;
+  raceUrl: string;
   score: number;
   source: string;
+  transformerScore: number;
 };
 
 type EvaluationSummary = {
@@ -86,6 +172,7 @@ const parseArgs = (args: string[]): Options => {
     changedRaceLimit: 40,
     changedRaces: false,
     concurrency: 6,
+    ensembleMode: "off",
     fromDate: defaultFromDate.toISOString().slice(0, 10).replaceAll("-", ""),
     historyWeightMultiplier: 1,
     oddsWeightMultiplier: 1,
@@ -93,6 +180,7 @@ const parseArgs = (args: string[]): Options => {
     recentWeightMultiplier: 1,
     sameDayJockeyWeight: 0.02,
     target: "local",
+    tuningConfigPath: null,
     toDate: defaultToDate,
   };
   for (let index = 0; index < args.length; index += 1) {
@@ -131,6 +219,18 @@ const parseArgs = (args: string[]): Options => {
     } else if (name === "--concurrency") {
       options.concurrency = Math.max(1, Number(value));
       index += 1;
+    } else if (name === "--ensemble-mode") {
+      if (
+        value !== "off" &&
+        value !== "weighted" &&
+        value !== "vote" &&
+        value !== "mixed" &&
+        value !== "auto"
+      ) {
+        throw new Error("--ensemble-mode must be off, weighted, vote, mixed, or auto.");
+      }
+      options.ensembleMode = value;
+      index += 1;
     } else if (name === "--same-day-jockey-weight") {
       options.sameDayJockeyWeight = Math.max(0, Number(value));
       index += 1;
@@ -145,6 +245,12 @@ const parseArgs = (args: string[]): Options => {
       index += 1;
     } else if (name === "--odds-weight-multiplier") {
       options.oddsWeightMultiplier = Math.max(0, Number(value));
+      index += 1;
+    } else if (name === "--tuning-config") {
+      if (value === undefined) {
+        throw new Error("--tuning-config requires a file path.");
+      }
+      options.tuningConfigPath = value;
       index += 1;
     } else if (name === "--breakdown") {
       options.breakdown = true;
@@ -165,11 +271,13 @@ Options:
   --from-year YYYY
   --to-year YYYY
   --concurrency N
+  --ensemble-mode off|weighted|vote|mixed|auto
   --same-day-jockey-weight N
   --history-weight-multiplier N
   --recent-weight-multiplier N
   --popularity-weight-multiplier N
   --odds-weight-multiplier N
+  --tuning-config path/to/config.json
   --breakdown
   --changed-races
   --changed-race-limit N
@@ -202,6 +310,17 @@ const toNumber = (value: string | null): number | null => {
   }
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+};
+
+const readTuningConfig = async (
+  path: string | null,
+): Promise<FinishPredictionTuningConfig | undefined> => {
+  if (path === null) {
+    return undefined;
+  }
+  const raw = await readFile(path, "utf8");
+  const parsed: unknown = JSON.parse(raw);
+  return typeof parsed === "object" && parsed !== null ? parsed : {};
 };
 
 const gradedRaceCodes = new Set(["A", "B", "C", "D", "E", "F", "G", "H", "L"]);
@@ -237,29 +356,136 @@ const getConditionBand = (row: PredictionQueryRow): string => {
   return isNarClassRace(row) ? "nar_class" : "nar_non_class";
 };
 
+const arrayIncludes = (values: string[] | undefined, value: string): boolean =>
+  values === undefined || values.includes(value);
+
+const dateInRange = (matcher: ConditionMatcher | undefined, date: string): boolean => {
+  if (matcher?.fromDate !== undefined && date < matcher.fromDate.replaceAll("-", "")) {
+    return false;
+  }
+  if (matcher?.toDate !== undefined && date > matcher.toDate.replaceAll("-", "")) {
+    return false;
+  }
+  return true;
+};
+
+const matchesRowCondition = (
+  matcher: ConditionMatcher | undefined,
+  row: PredictionQueryRow,
+): boolean => {
+  if (matcher === undefined) {
+    return true;
+  }
+  return (
+    arrayIncludes(
+      matcher.sources,
+      row.source === "nar" && row.keibajo_code === "83" ? "ban-ei" : row.source,
+    ) &&
+    arrayIncludes(matcher.distanceBands, getDistanceBand(row.kyori)) &&
+    arrayIncludes(matcher.gradeBands, getGradeBand(row.grade_code)) &&
+    arrayIncludes(matcher.conditionBands, getConditionBand(row)) &&
+    arrayIncludes(matcher.keibajoCodes, row.keibajo_code) &&
+    arrayIncludes(matcher.raceBangos, row.race_bango) &&
+    dateInRange(matcher, row.race_date)
+  );
+};
+
+const matchesPredictionCondition = (
+  matcher: ConditionMatcher | undefined,
+  row: Prediction,
+): boolean => {
+  if (matcher === undefined) {
+    return true;
+  }
+  return (
+    arrayIncludes(matcher.sources, row.source) &&
+    arrayIncludes(matcher.distanceBands, row.distanceBand) &&
+    arrayIncludes(matcher.gradeBands, row.gradeBand) &&
+    arrayIncludes(matcher.conditionBands, row.conditionBand) &&
+    arrayIncludes(matcher.keibajoCodes, row.keibajoCode) &&
+    arrayIncludes(matcher.raceBangos, row.raceBango) &&
+    dateInRange(matcher, `${row.kaisaiNen}${row.kaisaiTsukihi}`)
+  );
+};
+
+const applyWeightRules = (
+  weights: Partial<Record<ScoreComponentKey, number>>,
+  row: PredictionQueryRow,
+  rules: ScoreWeightRule[] | undefined,
+): Partial<Record<ScoreComponentKey, number>> => {
+  if (rules === undefined) {
+    return weights;
+  }
+  for (const rule of rules) {
+    if (!matchesRowCondition(rule.when, row)) {
+      continue;
+    }
+    for (const key of scoreComponentKeys) {
+      const value = rule.multiply?.[key];
+      const current = weights[key];
+      if (value !== undefined && current !== undefined) {
+        weights[key] = current * value;
+      }
+    }
+    for (const key of scoreComponentKeys) {
+      const value = rule.set?.[key];
+      if (value !== undefined) {
+        weights[key] = value;
+      }
+    }
+  }
+  return weights;
+};
+
 const getScoreWeights = (row: PredictionQueryRow, options: Options) => {
   const distanceBand = getDistanceBand(row.kyori);
-  const appliesRequestedMultipliers = row.source !== "nar" || distanceBand !== "sprint";
+  const gradeBand = getGradeBand(row.grade_code);
+  const appliesNarRefinedMarket =
+    row.source === "nar" && distanceBand !== "sprint" && gradeBand !== "graded";
+  const appliesRequestedMultipliers =
+    row.source !== "nar" || (distanceBand !== "sprint" && gradeBand !== "graded");
   const marketPopularityMultiplier = 1.1;
   const marketOddsMultiplier = row.source === "jra" ? 1.1 : 1;
   const historyMultiplier = row.source === "jra" ? 0.9 : 1;
   const recentMultiplier = row.source === "jra" ? 0.9 : 1;
+  const jraHistoryMultiplier = row.source === "jra" ? 0.95 : 1;
+  const jraRecentMultiplier = row.source === "jra" ? 0.95 : 1;
+  const jraPopularityMultiplier = row.source === "jra" ? 1.05 : 1;
+  const jraOddsMultiplier = row.source === "jra" ? 1.05 : 1;
+  const narHistoryMultiplier = appliesNarRefinedMarket ? 0.95 : 1;
+  const narRecentMultiplier = appliesNarRefinedMarket ? 0.95 : 1;
+  const narPopularityMultiplier = appliesNarRefinedMarket ? 1.2 : 1;
+  const narOddsMultiplier = appliesNarRefinedMarket ? 1.1 : 1;
+  const baseWeights = options.tuningConfig?.scoreWeights?.base;
   const weights = {
     avgFinish:
-      0.18 *
+      (baseWeights?.avgFinish ?? 0.18) *
       historyMultiplier *
+      jraHistoryMultiplier *
+      narHistoryMultiplier *
       (appliesRequestedMultipliers ? options.historyWeightMultiplier : 1),
     odds:
-      0.12 *
+      (baseWeights?.odds ?? 0.12) *
       marketOddsMultiplier *
+      jraOddsMultiplier *
+      narOddsMultiplier *
       (appliesRequestedMultipliers ? options.oddsWeightMultiplier : 1),
     popularity:
-      0.6 *
+      (baseWeights?.popularity ?? 0.6) *
       marketPopularityMultiplier *
+      jraPopularityMultiplier *
+      narPopularityMultiplier *
       (appliesRequestedMultipliers ? options.popularityWeightMultiplier : 1),
     recentFinish:
-      0.1 * recentMultiplier * (appliesRequestedMultipliers ? options.recentWeightMultiplier : 1),
-    sameDayJockey: row.source === "nar" ? options.sameDayJockeyWeight : 0,
+      (baseWeights?.recentFinish ?? 0.1) *
+      recentMultiplier *
+      jraRecentMultiplier *
+      narRecentMultiplier *
+      (appliesRequestedMultipliers ? options.recentWeightMultiplier : 1),
+    sameDayJockey:
+      row.source === "nar"
+        ? (baseWeights?.sameDayJockey ?? options.sameDayJockeyWeight)
+        : (baseWeights?.sameDayJockey ?? 0),
   };
   const graded = gradedRaceCodes.has(row.grade_code?.trim() ?? "");
   const narClass = row.source === "nar" && isNarClassRace(row);
@@ -276,7 +502,7 @@ const getScoreWeights = (row: PredictionQueryRow, options: Options) => {
     weights.sameDayJockey *= 0.75;
   }
 
-  return weights;
+  return applyWeightRules(weights, row, options.tuningConfig?.scoreWeights?.rules);
 };
 
 const scorePrediction = (row: PredictionQueryRow, options: Options): number => {
@@ -296,6 +522,201 @@ const scorePrediction = (row: PredictionQueryRow, options: Options): number => {
   }
   const weightTotal = values.reduce((total, item) => total + item.weight, 0);
   return values.reduce((total, item) => total + item.value * item.weight, 0) / weightTotal;
+};
+
+const weightedComponentScore = (
+  values: Array<{ value: number | null; weight: number }>,
+  fallback = 0.5,
+): number => {
+  const available = values.filter(
+    (item): item is { value: number; weight: number } => item.value !== null && item.weight > 0,
+  );
+  if (available.length === 0) {
+    return fallback;
+  }
+  const weightTotal = available.reduce((total, item) => total + item.weight, 0);
+  return available.reduce((total, item) => total + item.value * item.weight, 0) / weightTotal;
+};
+
+const getLstmLikeScore = (row: PredictionQueryRow, options: Options): number => {
+  const configured = options.tuningConfig?.componentModels?.lstmLike;
+  return weightedComponentScore(
+    [
+      {
+        value: toNumber(row.recent_finish),
+        weight: configured?.weights?.recentFinish ?? (row.source === "jra" ? 0.52 : 0.46),
+      },
+      {
+        value: toNumber(row.avg_finish),
+        weight: configured?.weights?.avgFinish ?? (row.source === "jra" ? 0.2 : 0.24),
+      },
+      {
+        value: toNumber(row.popularity_score),
+        weight: configured?.weights?.popularity ?? (row.source === "jra" ? 0.18 : 0.2),
+      },
+      { value: toNumber(row.odds_score), weight: configured?.weights?.odds ?? 0.1 },
+      {
+        value: toNumber(row.same_day_jockey_win_score),
+        weight: configured?.weights?.sameDayJockey ?? 0,
+      },
+    ],
+    configured?.fallback ?? 0.5,
+  );
+};
+
+const getTransformerLikeScore = (row: PredictionQueryRow, options: Options): number => {
+  const distanceBand = getDistanceBand(row.kyori);
+  const gradeBand = getGradeBand(row.grade_code);
+  const marketWeight = row.source === "jra" || distanceBand !== "sprint" ? 1.1 : 0.95;
+  const conditionMarketWeight = gradeBand === "graded" ? 0.9 : 1;
+  const configured = options.tuningConfig?.componentModels?.transformerLike;
+  return weightedComponentScore(
+    [
+      {
+        value: toNumber(row.popularity_score),
+        weight: configured?.weights?.popularity ?? 0.4 * marketWeight * conditionMarketWeight,
+      },
+      { value: toNumber(row.odds_score), weight: configured?.weights?.odds ?? 0.32 * marketWeight },
+      { value: toNumber(row.avg_finish), weight: configured?.weights?.avgFinish ?? 0.11 },
+      { value: toNumber(row.recent_finish), weight: configured?.weights?.recentFinish ?? 0.1 },
+      {
+        value: toNumber(row.same_day_jockey_win_score),
+        weight: configured?.weights?.sameDayJockey ?? (row.source === "nar" ? 0.07 : 0),
+      },
+    ],
+    configured?.fallback ?? 0.5,
+  );
+};
+
+const getEnsembleWeights = (
+  source: string,
+  distanceBand: string,
+  gradeBand: string,
+  options: Options,
+) => {
+  const configured = options.tuningConfig?.ensemble?.weights;
+  if (configured !== undefined) {
+    return {
+      lightgbm: configured.lightgbm ?? 0.45,
+      lstm: configured.lstm ?? 0.16,
+      transformer: configured.transformer ?? 0.39,
+    };
+  }
+  if (source === "ban-ei") {
+    return { lightgbm: 0.42, lstm: 0.08, transformer: 0.5 };
+  }
+  if (source === "jra") {
+    return gradeBand === "graded"
+      ? { lightgbm: 0.5, lstm: 0.18, transformer: 0.32 }
+      : { lightgbm: 0.45, lstm: 0.16, transformer: 0.39 };
+  }
+  if (distanceBand === "sprint" || gradeBand === "graded") {
+    return { lightgbm: 0.55, lstm: 0.16, transformer: 0.29 };
+  }
+  return { lightgbm: 0.38, lstm: 0.14, transformer: 0.48 };
+};
+
+const getScoreRanks = (
+  rows: Prediction[],
+  key: "lightgbmScore" | "lstmScore" | "transformerScore",
+) =>
+  new Map(
+    rows
+      .toSorted((left, right) => left[key] - right[key] || left.horseNumber - right.horseNumber)
+      .map((row, index) => [row.horseNumber, index + 1] as const),
+  );
+
+const getEffectiveEnsembleMode = (
+  requestedMode: Options["ensembleMode"],
+  rows: Prediction[],
+  options: Options,
+): "mixed" | "off" | "vote" | "weighted" => {
+  const first = rows[0];
+  const matchingRule = options.tuningConfig?.ensemble?.rules?.find((rule) =>
+    first === undefined ? false : matchesPredictionCondition(rule.when, first),
+  );
+  if (matchingRule?.mode !== undefined) {
+    return matchingRule.mode;
+  }
+  const configuredDefault = options.tuningConfig?.ensemble?.defaultMode;
+  if (configuredDefault !== undefined && configuredDefault !== "auto") {
+    return configuredDefault;
+  }
+  if (requestedMode !== "auto") {
+    return requestedMode;
+  }
+  if (first?.source === "jra" && first.distanceBand === "sprint" && first.gradeBand === "graded") {
+    return "mixed";
+  }
+  return "off";
+};
+
+const applyEnsembleRanking = (rows: Prediction[], options: Options): Prediction[] => {
+  if (rows.length === 0) {
+    return rows;
+  }
+  const ensembleMode = getEffectiveEnsembleMode(options.ensembleMode, rows, options);
+  if (ensembleMode === "off") {
+    return rows
+      .toSorted(
+        (left, right) =>
+          left.lightgbmScore - right.lightgbmScore || left.horseNumber - right.horseNumber,
+      )
+      .map((row, index) =>
+        Object.assign(row, { predictedRank: index + 1, score: row.lightgbmScore }),
+      );
+  }
+  const lightgbmRanks = getScoreRanks(rows, "lightgbmScore");
+  const lstmRanks = getScoreRanks(rows, "lstmScore");
+  const transformerRanks = getScoreRanks(rows, "transformerScore");
+  const denominator = Math.max(1, rows.length - 1);
+  return rows
+    .map((row) => {
+      const matchingRule = options.tuningConfig?.ensemble?.rules?.find((rule) =>
+        matchesPredictionCondition(rule.when, row),
+      );
+      const defaultWeights = getEnsembleWeights(
+        row.source,
+        row.distanceBand,
+        row.gradeBand,
+        options,
+      );
+      const weights =
+        matchingRule?.weights === undefined
+          ? defaultWeights
+          : {
+              lightgbm: matchingRule.weights.lightgbm ?? defaultWeights.lightgbm,
+              lstm: matchingRule.weights.lstm ?? defaultWeights.lstm,
+              transformer: matchingRule.weights.transformer ?? defaultWeights.transformer,
+            };
+      const weightedScore =
+        row.lightgbmScore * weights.lightgbm +
+        row.lstmScore * weights.lstm +
+        row.transformerScore * weights.transformer;
+      const voteRank =
+        ((lightgbmRanks.get(row.horseNumber) ?? rows.length) * weights.lightgbm +
+          (lstmRanks.get(row.horseNumber) ?? rows.length) * weights.lstm +
+          (transformerRanks.get(row.horseNumber) ?? rows.length) * weights.transformer) /
+        (weights.lightgbm + weights.lstm + weights.transformer);
+      const voteScore = (voteRank - 1) / denominator;
+      const score =
+        ensembleMode === "weighted"
+          ? weightedScore
+          : ensembleMode === "vote"
+            ? voteScore
+            : weightedScore *
+                (matchingRule?.mixedWeightedShare ??
+                  options.tuningConfig?.ensemble?.mixedWeightedShare ??
+                  0.72) +
+              voteScore *
+                (1 -
+                  (matchingRule?.mixedWeightedShare ??
+                    options.tuningConfig?.ensemble?.mixedWeightedShare ??
+                    0.72));
+      return Object.assign(row, { score });
+    })
+    .toSorted((left, right) => left.score - right.score || left.horseNumber - right.horseNumber)
+    .map((row, index) => Object.assign(row, { predictedRank: index + 1 }));
 };
 
 const raceKey = (row: RaceKey): string =>
@@ -399,11 +820,9 @@ const calculateBreakdowns = (evaluated: Prediction[][]) => {
     }
   }
   return [...groups.entries()]
-    .map(([key, rows]) => ({
-      key,
-      raceCount: rows.length,
-      ...calculateEvaluationSummary(rows),
-    }))
+    .map(([key, rows]) =>
+      Object.assign({ key, raceCount: rows.length }, calculateEvaluationSummary(rows)),
+    )
     .filter((row) => row.raceCount >= 200)
     .toSorted(
       (left, right) => left.key.localeCompare(right.key) || right.raceCount - left.raceCount,
@@ -415,8 +834,23 @@ const isExactTop3 = (rows: Prediction[]): boolean =>
 
 const getTop3Actuals = (rows: Prediction[]): number[] => rows.slice(0, 3).map((row) => row.actual);
 
+const getTop3PlaceMatchCount = (rows: Prediction[]): number => {
+  const actualTop3Set = new Set([1, 2, 3]);
+  return rows.slice(0, 3).filter((row) => actualTop3Set.has(row.actual)).length;
+};
+
+const getTop3PlaceMatchRate = (rows: Prediction[]): number => getTop3PlaceMatchCount(rows) / 3;
+
 const getTop3HorseNumbers = (rows: Prediction[]): number[] =>
   rows.slice(0, 3).map((row) => row.horseNumber);
+
+const formatRacePath = (row: {
+  kaisaiNen: string;
+  kaisaiTsukihi: string;
+  keibajoCode: string;
+  raceBango: string;
+}): string =>
+  `/races/${row.kaisaiNen}/${row.kaisaiTsukihi.slice(0, 2)}/${row.kaisaiTsukihi.slice(2, 4)}/${row.keibajoCode}/${row.raceBango}`;
 
 const countChangedGroups = (
   rows: Array<{ conditionBand: string; distanceBand: string; gradeBand: string; outcome: string }>,
@@ -440,11 +874,7 @@ const countChangedGroups = (
     }
   }
   return [...groups.entries()]
-    .map(([key, value]) => ({
-      key,
-      ...value,
-      net: value.improved - value.worsened,
-    }))
+    .map(([key, value]) => Object.assign({ key }, value, { net: value.improved - value.worsened }))
     .toSorted((left, right) => right.net - left.net || right.improved - left.improved);
 };
 
@@ -467,30 +897,58 @@ const calculateChangedRaces = (
     }
     const baselineExact = isExactTop3(baselineRows);
     const candidateExact = isExactTop3(candidateRows);
-    if (baselineExact === candidateExact) {
+    const baselineTop3PlaceMatchRate = getTop3PlaceMatchRate(baselineRows);
+    const candidateTop3PlaceMatchRate = getTop3PlaceMatchRate(candidateRows);
+    const top3PlaceMatchRateDelta = candidateTop3PlaceMatchRate - baselineTop3PlaceMatchRate;
+    if (baselineExact === candidateExact && top3PlaceMatchRateDelta === 0) {
       return [];
     }
     return [
       {
         baselineTop3Actuals: getTop3Actuals(baselineRows),
         baselineTop3HorseNumbers: getTop3HorseNumbers(baselineRows),
+        baselineTop3PlaceMatchRate: roundPercent(baselineTop3PlaceMatchRate),
         candidateTop3Actuals: getTop3Actuals(candidateRows),
         candidateTop3HorseNumbers: getTop3HorseNumbers(candidateRows),
+        candidateTop3PlaceMatchRate: roundPercent(candidateTop3PlaceMatchRate),
         conditionBand: first.conditionBand,
         distanceBand: first.distanceBand,
         gradeBand: first.gradeBand,
-        outcome: candidateExact ? "improved" : "worsened",
+        isNewlyExactTop3: candidateExact && !baselineExact,
+        kaisaiNen: first.kaisaiNen,
+        kaisaiTsukihi: first.kaisaiTsukihi,
+        keibajoCode: first.keibajoCode,
+        outcome:
+          candidateExact && !baselineExact
+            ? "improved"
+            : !candidateExact && baselineExact
+              ? "worsened"
+              : top3PlaceMatchRateDelta > 0
+                ? "improved"
+                : "worsened",
+        raceBango: first.raceBango,
         raceKey: first.raceKey,
+        racePath: formatRacePath(first),
+        raceUrl: `http://localhost:3000${formatRacePath(first)}`,
         source: first.source,
+        top3PlaceMatchRateDelta: roundPercent(top3PlaceMatchRateDelta),
       },
     ];
   });
   const improved = changed.filter((row) => row.outcome === "improved");
   const worsened = changed.filter((row) => row.outcome === "worsened");
+  const newlyExactTop3 = changed.filter((row) => row.isNewlyExactTop3);
+  const top3PlaceMatchRateDecreased = changed
+    .filter((row) => row.top3PlaceMatchRateDelta < 0)
+    .toSorted((left, right) => left.top3PlaceMatchRateDelta - right.top3PlaceMatchRateDelta);
   return {
     groups: countChangedGroups(changed),
     improvedCount: improved.length,
     improvedSamples: improved.slice(0, limit),
+    newlyExactTop3Count: newlyExactTop3.length,
+    newlyExactTop3Samples: newlyExactTop3.slice(0, limit),
+    top3PlaceMatchRateDecreasedCount: top3PlaceMatchRateDecreased.length,
+    top3PlaceMatchRateDecreasedSamples: top3PlaceMatchRateDecreased.slice(0, limit),
     worsenedCount: worsened.length,
     worsenedSamples: worsened.slice(0, limit),
   };
@@ -577,8 +1035,8 @@ const loadPredictions = async (pool: Pool, options: Options): Promise<Prediction
       grouped.set(row.race_key, [...(grouped.get(row.race_key) ?? []), row]);
     }
     return [...grouped.values()].map((rows) =>
-      rows
-        .map((row) => {
+      applyEnsembleRanking(
+        rows.map((row) => {
           const values = [
             {
               value: toNumber(row.popularity_score),
@@ -592,24 +1050,41 @@ const loadPredictions = async (pool: Pool, options: Options): Promise<Prediction
             weightTotal > 0
               ? values.reduce((total, item) => total + item.value * item.weight, 0) / weightTotal
               : 0.5;
+          const lstmScore = weightedComponentScore([
+            { value: toNumber(row.popularity_score), weight: 0.62 },
+            { value: toNumber(row.odds_score), weight: 0.38 },
+          ]);
+          const transformerScore = weightedComponentScore([
+            { value: toNumber(row.popularity_score), weight: 0.52 },
+            { value: toNumber(row.odds_score), weight: 0.48 },
+          ]);
           return {
             actual: row.finish_position,
             conditionBand: "ban_ei",
             distanceBand: "unknown",
             gradeBand: "non_graded",
             horseNumber: row.horseNumber,
+            kaisaiNen: row.race_key.slice(0, 4),
+            kaisaiTsukihi: row.race_key.slice(4, 8),
+            keibajoCode: row.race_key.split(":")[1] ?? "",
+            lightgbmScore: score,
+            lstmScore,
             predictedRank: 0,
+            raceBango: row.race_key.split(":")[2] ?? "",
             raceKey: row.race_key,
+            raceUrl: `http://localhost:3000${formatRacePath({
+              kaisaiNen: row.race_key.slice(0, 4),
+              kaisaiTsukihi: row.race_key.slice(4, 8),
+              keibajoCode: row.race_key.split(":")[1] ?? "",
+              raceBango: row.race_key.split(":")[2] ?? "",
+            })}`,
             score,
             source: "ban-ei",
+            transformerScore,
           };
-        })
-        .toSorted((left, right) => left.score - right.score || left.horseNumber - right.horseNumber)
-        .map((row, index) =>
-          Object.assign(row, {
-            predictedRank: index + 1,
-          }),
-        ),
+        }),
+        options,
+      ),
     );
   }
 
@@ -777,30 +1252,43 @@ const loadPredictions = async (pool: Pool, options: Options): Promise<Prediction
     grouped.set(key, [...(grouped.get(key) ?? []), row]);
   }
   return [...grouped.values()].map((rows) =>
-    rows
-      .map((row) => ({
-        actual: row.finish_position,
-        conditionBand: getConditionBand(row),
-        distanceBand: getDistanceBand(row.kyori),
-        gradeBand: getGradeBand(row.grade_code),
-        horseNumber: row.horseNumber,
-        predictedRank: 0,
-        raceKey: raceKey(row),
-        score: scorePrediction(row, options),
-        source: row.source === "nar" && row.keibajo_code === "83" ? "ban-ei" : row.source,
-      }))
-      .toSorted((left, right) => left.score - right.score || left.horseNumber - right.horseNumber)
-      .map((row, index) =>
-        Object.assign(row, {
-          predictedRank: index + 1,
-        }),
-      ),
+    applyEnsembleRanking(
+      rows.map((row) => {
+        const score = scorePrediction(row, options);
+        return {
+          actual: row.finish_position,
+          conditionBand: getConditionBand(row),
+          distanceBand: getDistanceBand(row.kyori),
+          gradeBand: getGradeBand(row.grade_code),
+          horseNumber: row.horseNumber,
+          kaisaiNen: row.kaisai_nen,
+          kaisaiTsukihi: row.kaisai_tsukihi,
+          keibajoCode: row.keibajo_code,
+          lightgbmScore: score,
+          lstmScore: getLstmLikeScore(row, options),
+          predictedRank: 0,
+          raceBango: row.race_bango,
+          raceKey: raceKey(row),
+          raceUrl: `http://localhost:3000${formatRacePath({
+            kaisaiNen: row.kaisai_nen,
+            kaisaiTsukihi: row.kaisai_tsukihi,
+            keibajoCode: row.keibajo_code,
+            raceBango: row.race_bango,
+          })}`,
+          score,
+          source: row.source === "nar" && row.keibajo_code === "83" ? "ban-ei" : row.source,
+          transformerScore: getTransformerLikeScore(row, options),
+        };
+      }),
+      options,
+    ),
   );
 };
 
 const main = async () => {
   const options = parseArgs(process.argv.slice(2));
   await loadEnv();
+  options.tuningConfig = await readTuningConfig(options.tuningConfigPath);
   const pool = new Pool({ connectionString: getConnectionString(options.target) });
   try {
     const evaluated = (await loadPredictions(pool, options)).filter((rows) => rows.length > 0);
@@ -837,10 +1325,13 @@ const main = async () => {
             await loadPredictions(pool, {
               ...options,
               historyWeightMultiplier: 1,
+              ensembleMode: "off",
               oddsWeightMultiplier: 1,
               popularityWeightMultiplier: 1,
               recentWeightMultiplier: 1,
               sameDayJockeyWeight: 0.02,
+              tuningConfig: undefined,
+              tuningConfigPath: null,
             }),
             evaluated,
             options.changedRaceLimit,
