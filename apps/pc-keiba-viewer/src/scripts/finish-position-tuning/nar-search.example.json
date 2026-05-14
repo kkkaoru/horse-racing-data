@@ -1,0 +1,119 @@
+{
+  "baseArgs": {
+    "category": "nar",
+    "concurrency": 8,
+    "fromYear": "2024",
+    "target": "local",
+    "toYear": "2024"
+  },
+  "baseTuningConfigPath": "default-parameters.json",
+  "changedRaceLimit": 30,
+  "baseTuningConfig": {
+    "version": "nar-base-externalized",
+    "scoreWeights": {
+      "base": {
+        "avgFinish": 0.2,
+        "recentFinish": 0.12,
+        "popularity": 0.54,
+        "odds": 0.1,
+        "sameDayJockey": 0.04
+      },
+      "rules": [
+        {
+          "when": {
+            "sources": ["nar"]
+          },
+          "multiply": {
+            "avgFinish": 0.95,
+            "recentFinish": 0.95,
+            "popularity": 1.2,
+            "odds": 1.1,
+            "sameDayJockey": 0.7
+          }
+        }
+      ]
+    },
+    "componentModels": {
+      "lstmLike": {
+        "weights": {
+          "recentFinish": 0.46,
+          "avgFinish": 0.24,
+          "popularity": 0.2,
+          "odds": 0.1,
+          "sameDayJockey": 0
+        }
+      },
+      "transformerLike": {
+        "weights": {
+          "popularity": 0.38,
+          "odds": 0.28,
+          "avgFinish": 0.14,
+          "recentFinish": 0.13,
+          "sameDayJockey": 0.07
+        }
+      }
+    },
+    "ensemble": {
+      "defaultMode": "mixed",
+      "mixedWeightedShare": 0.7,
+      "weights": {
+        "lightgbm": 0.46,
+        "lstm": 0.22,
+        "transformer": 0.32
+      },
+      "rules": []
+    }
+  },
+  "output": "tmp/finish-position-tuning-search/nar-results.json",
+  "trials": [
+    {
+      "name": "nar-baseline-externalized",
+      "args": {
+        "ensembleMode": "auto"
+      }
+    },
+    {
+      "name": "nar-class-distance-refined",
+      "args": {
+        "ensembleMode": "auto"
+      },
+      "tuningConfigOverrides": {
+        "version": "nar-class-distance-refined",
+        "scoreWeights": {
+          "rules": [
+            {
+              "when": {
+                "sources": ["nar"],
+                "gradeBands": ["nar_class"]
+              },
+              "multiply": {
+                "avgFinish": 1.04,
+                "recentFinish": 1.03,
+                "popularity": 0.98,
+                "odds": 0.98,
+                "sameDayJockey": 1.05
+              }
+            }
+          ]
+        },
+        "ensemble": {
+          "rules": [
+            {
+              "when": {
+                "sources": ["nar"],
+                "gradeBands": ["nar_class"]
+              },
+              "mode": "mixed",
+              "mixedWeightedShare": 0.68,
+              "weights": {
+                "lightgbm": 0.44,
+                "lstm": 0.24,
+                "transformer": 0.32
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

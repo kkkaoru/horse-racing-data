@@ -1,0 +1,110 @@
+{
+  "baseArgs": {
+    "category": "ban-ei",
+    "concurrency": 8,
+    "fromYear": "2024",
+    "target": "local",
+    "toYear": "2024"
+  },
+  "baseTuningConfigPath": "default-parameters.json",
+  "changedRaceLimit": 30,
+  "baseTuningConfig": {
+    "version": "ban-ei-base-externalized",
+    "scoreWeights": {
+      "base": {
+        "avgFinish": 0.22,
+        "recentFinish": 0.14,
+        "popularity": 0.5,
+        "odds": 0.1,
+        "sameDayJockey": 0.04
+      },
+      "rules": [
+        {
+          "when": {
+            "sources": ["ban-ei"]
+          },
+          "multiply": {
+            "avgFinish": 1.08,
+            "recentFinish": 1.04,
+            "popularity": 0.95,
+            "odds": 0.95,
+            "sameDayJockey": 1.05
+          }
+        }
+      ]
+    },
+    "componentModels": {
+      "lstmLike": {
+        "weights": {
+          "recentFinish": 0.48,
+          "avgFinish": 0.26,
+          "popularity": 0.17,
+          "odds": 0.09,
+          "sameDayJockey": 0
+        }
+      },
+      "transformerLike": {
+        "weights": {
+          "popularity": 0.34,
+          "odds": 0.26,
+          "avgFinish": 0.18,
+          "recentFinish": 0.15,
+          "sameDayJockey": 0.07
+        }
+      }
+    },
+    "ensemble": {
+      "defaultMode": "mixed",
+      "mixedWeightedShare": 0.66,
+      "weights": {
+        "lightgbm": 0.42,
+        "lstm": 0.28,
+        "transformer": 0.3
+      },
+      "rules": []
+    }
+  },
+  "output": "tmp/finish-position-tuning-search/ban-ei-results.json",
+  "trials": [
+    {
+      "name": "ban-ei-baseline-externalized",
+      "args": {
+        "ensembleMode": "auto"
+      }
+    },
+    {
+      "name": "ban-ei-history-heavy",
+      "args": {
+        "ensembleMode": "auto"
+      },
+      "tuningConfigOverrides": {
+        "version": "ban-ei-history-heavy",
+        "scoreWeights": {
+          "base": {
+            "avgFinish": 0.25,
+            "recentFinish": 0.16,
+            "popularity": 0.46,
+            "odds": 0.09,
+            "sameDayJockey": 0.04
+          }
+        },
+        "ensemble": {
+          "rules": [
+            {
+              "when": {
+                "sources": ["ban-ei"]
+              },
+              "mode": "mixed",
+              "mixedWeightedShare": 0.64,
+              "weights": {
+                "lightgbm": 0.4,
+                "lstm": 0.3,
+                "transformer": 0.3
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

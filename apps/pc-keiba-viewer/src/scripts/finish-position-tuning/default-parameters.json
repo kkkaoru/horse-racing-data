@@ -1,0 +1,55 @@
+{
+  "version": "default-finish-position-parameters",
+  "scoreWeights": {
+    "base": {
+      "avgFinish": 0.18,
+      "recentFinish": 0.1,
+      "popularity": 0.6,
+      "odds": 0.12,
+      "sameDayJockey": 0
+    },
+    "rules": [
+      {
+        "when": {
+          "sources": ["jra"]
+        },
+        "multiply": {
+          "avgFinish": 0.855,
+          "recentFinish": 0.855,
+          "popularity": 1.155,
+          "odds": 1.155
+        }
+      }
+    ]
+  },
+  "componentModels": {
+    "lstmLike": {
+      "weights": {
+        "recentFinish": 0.52,
+        "avgFinish": 0.2,
+        "popularity": 0.18,
+        "odds": 0.1,
+        "sameDayJockey": 0
+      }
+    },
+    "transformerLike": {
+      "weights": {
+        "popularity": 0.4,
+        "odds": 0.32,
+        "avgFinish": 0.11,
+        "recentFinish": 0.1,
+        "sameDayJockey": 0
+      }
+    }
+  },
+  "ensemble": {
+    "defaultMode": "off",
+    "mixedWeightedShare": 0.72,
+    "weights": {
+      "lightgbm": 0.5,
+      "lstm": 0.18,
+      "transformer": 0.32
+    },
+    "rules": []
+  }
+}

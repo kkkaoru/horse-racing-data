@@ -9,6 +9,7 @@
     "dev:build-corner-features": "bun run src/scripts/build-corner-feature-table.ts",
     "dev:compare-corners": "bun run src/scripts/compare-corner-predictions.ts",
     "dev:compare-finish": "bun run src/scripts/compare-finish-position-predictions.ts",
+    "dev:search-finish-tuning": "bun run src/scripts/search-finish-position-tuning.ts",
     "dev:export-corner-lightgbm": "bun run src/scripts/export-corner-lightgbm-dataset.ts",
     "dev:import-corner-lightgbm": "bun run src/scripts/import-corner-lightgbm-predictions.ts",
     "dev:setup-lightgbm-gpu-macos": "bun run src/scripts/setup-lightgbm-gpu-macos.ts",
