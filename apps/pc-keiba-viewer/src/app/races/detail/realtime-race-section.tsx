@@ -236,8 +236,11 @@ export function RealtimeRaceSection(props: RealtimeRaceSectionProps) {
   );
   const getSeriesName = (horseNumber: string): string =>
     `${horseNumber} ${names.get(horseNumber) ?? ""}`.trim();
+  const isWhiteFrameSeries = (horseNumber: string): boolean => frames.get(horseNumber) === "1";
   const getSeriesColor = (horseNumber: string): string =>
     getFrameColor(frames.get(horseNumber)) ?? FALLBACK_TREND_COLOR;
+  const getSeriesStrokeWidth = (horseNumber: string): number =>
+    isWhiteFrameSeries(horseNumber) ? 3.2 : 2.4;
   const activeTrendEntries =
     activeTrend?.activePayload?.filter((entry) => typeof entry.value === "number") ?? [];
   const chartTopMargin = Math.min(260, Math.max(96, Math.ceil(history.length / 4) * 26 + 40));
@@ -326,7 +329,7 @@ export function RealtimeRaceSection(props: RealtimeRaceSectionProps) {
                       key={trend.horseNumber}
                       name={getSeriesName(trend.horseNumber)}
                       stroke={getSeriesColor(trend.horseNumber)}
-                      strokeWidth={2.4}
+                      strokeWidth={getSeriesStrokeWidth(trend.horseNumber)}
                       type="monotone"
                     />
                   ))}
