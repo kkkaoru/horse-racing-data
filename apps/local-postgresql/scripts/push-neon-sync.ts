@@ -22,11 +22,45 @@ const appDir = resolve(scriptDir, "..");
 const envPath = resolve(appDir, ".env");
 const replicaEnvPath = resolve(appDir, ".env.replica");
 const analyticsIndexesPath = resolve(appDir, "sql", "analytics-indexes.sql");
+const defaultExcludedLogTables = new Set(["finish_position_tuning_random_trials"]);
 
 type CommandResult = {
   stdout: string;
   stderr: string;
 };
+
+type CliOptions = {
+  allowLogTables: Set<string>;
+  indexesOnly: boolean;
+};
+
+function parseArgs(args: string[]): CliOptions {
+  const options: CliOptions = {
+    allowLogTables: new Set(),
+    indexesOnly: false,
+  };
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--indexes-only") {
+      options.indexesOnly = true;
+    } else if (arg === "--allow-log-table" || arg === "--allow-log-tables") {
+      const value = args[index + 1];
+      if (value === undefined) {
+        throw new Error(`${arg} requires a comma-separated table list.`);
+      }
+      for (const tableName of value.split(",")) {
+        const trimmed = tableName.trim();
+        if (trimmed !== "") {
+          options.allowLogTables.add(trimmed);
+        }
+      }
+      index += 1;
+    } else if (arg !== "--help" && arg !== "-h") {
+      throw new Error(`Unknown argument: ${arg}`);
+    }
+  }
+  return options;
+}
 
 function parseEnvFile(path: string): Record<string, string> {
   const values: Record<string, string> = {};
@@ -139,7 +173,7 @@ function runCopyPipeline(
       '"$POSTGRES_DB"',
       "-At",
       "-F",
-      '"$(printf \'\\t\')"',
+      "\"$(printf '\\t')\"",
       "-c",
       '"$LOCAL_COPY_SQL"',
       "|",
@@ -228,7 +262,7 @@ async function loadTableMetadata(
 }
 
 function printUsage(): void {
-  console.log(`Usage: bun run ./scripts/push-neon-sync.ts [--indexes-only]
+  console.log(`Usage: bun run ./scripts/push-neon-sync.ts [--indexes-only] [--allow-log-table TABLE[,TABLE...]]
 
 Environment:
   REPLICA_SYNC_TABLES             Comma-separated table list. Empty means all PK tables.
@@ -245,6 +279,10 @@ Environment:
                                   Default: true.
   NEON_CONNECT_TIMEOUT_SECONDS    Wait timeout for Neon cold start. Default: 120.
   NEON_CONNECT_RETRY_SECONDS      Retry interval while Neon is warming. Default: 5.
+
+Options:
+  --allow-log-table TABLE          Allow syncing a log/experiment table that is excluded by
+                                  default. Repeat or pass comma-separated names.
 `);
 }
 
@@ -295,7 +333,10 @@ async function loadTableChecksum(
   const result =
     target === "local"
       ? await runCommand("docker", dockerComposeArgs(env, sql))
-      : await runCommand("docker", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-qAt", "-F", "\t", "-c", sql]));
+      : await runCommand(
+          "docker",
+          neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-qAt", "-F", "\t", "-c", sql]),
+        );
 
   return result.stdout.trim();
 }
@@ -337,7 +378,11 @@ async function syncTableWithPsql(
     return;
   }
 
-  await runCommand("docker", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]), neonSql.preCopySql);
+  await runCommand(
+    "docker",
+    neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]),
+    neonSql.preCopySql,
+  );
 
   try {
     if (batchRows === undefined) {
@@ -360,9 +405,15 @@ async function syncTableWithPsql(
         });
       }
     }
-    await runCommand("docker", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]), neonSql.postCopySql);
+    await runCommand(
+      "docker",
+      neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]),
+      neonSql.postCopySql,
+    );
   } catch (error) {
-    await runCommand("docker", neonPsqlArgs(env, ["-q"]), neonSql.cleanupSql).catch(() => undefined);
+    await runCommand("docker", neonPsqlArgs(env, ["-q"]), neonSql.cleanupSql).catch(
+      () => undefined,
+    );
     throw error;
   }
 }
@@ -392,15 +443,48 @@ function formatTableList(tableNames: string[]): string {
   return tableNames.length > 0 ? tableNames.join(", ") : "(none)";
 }
 
+function filterDefaultExcludedLogTables<T extends { tableName: string }>(
+  rows: T[],
+  allowLogTables: Set<string>,
+): T[] {
+  const excluded = rows.filter(
+    (row) => defaultExcludedLogTables.has(row.tableName) && !allowLogTables.has(row.tableName),
+  );
+  if (excluded.length > 0) {
+    console.log(
+      `Skipping log tables by default: ${formatTableList(excluded.map((row) => row.tableName))}. Use --allow-log-table to sync them.`,
+    );
+  }
+  return rows.filter(
+    (row) => !defaultExcludedLogTables.has(row.tableName) || allowLogTables.has(row.tableName),
+  );
+}
+
+function filterDependencyEdgesByTables(
+  edges: DependencyEdge[],
+  tables: TableMetadata[],
+): DependencyEdge[] {
+  const tableNames = new Set(tables.map((table) => table.tableName));
+  return edges.filter(
+    (edge) => tableNames.has(edge.childTable) && tableNames.has(edge.parentTable),
+  );
+}
+
 function printProgressTargets(event: {
   completedTableNames: string[];
   runningTableNames: string[];
   remainingTableNames: string[];
   etaSeconds: number;
 }): void {
-  console.log(`  completed_targets=${event.completedTableNames.length}: ${formatTableList(event.completedTableNames)}`);
-  console.log(`  running_targets=${event.runningTableNames.length}: ${formatTableList(event.runningTableNames)}`);
-  console.log(`  remaining_targets=${event.remainingTableNames.length}: ${formatTableList(event.remainingTableNames)}`);
+  console.log(
+    `  completed_targets=${event.completedTableNames.length}: ${formatTableList(event.completedTableNames)}`,
+  );
+  console.log(
+    `  running_targets=${event.runningTableNames.length}: ${formatTableList(event.runningTableNames)}`,
+  );
+  console.log(
+    `  remaining_targets=${event.remainingTableNames.length}: ${formatTableList(event.remainingTableNames)}`,
+  );
   console.log(`  estimated_time_remaining=${formatDuration(event.etaSeconds)}`);
 }
 
@@ -469,20 +553,24 @@ function reportProgress(event: ProgressEvent): void {
 }
 
 async function main(): Promise<void> {
+  const cliOptions = parseArgs(process.argv.slice(2));
   if (process.argv.includes("--help") || process.argv.includes("-h")) {
     printUsage();
     return;
   }
 
   const env = loadEnvironment();
-  if (process.argv.includes("--indexes-only")) {
+  if (cliOptions.indexesOnly) {
     await syncAnalyticsIndexes(env);
     return;
   }
 
   const config = buildConfig(env);
-  const tables = await loadTableMetadata(env);
-  const dependencyEdges = await loadDependencyEdges(env);
+  const tables = filterDefaultExcludedLogTables(
+    await loadTableMetadata(env),
+    cliOptions.allowLogTables,
+  );
+  const dependencyEdges = filterDependencyEdgesByTables(await loadDependencyEdges(env), tables);
 
   await runPushSync(
     tables,
@@ -492,7 +580,8 @@ async function main(): Promise<void> {
       sleep: (milliseconds) =>
         new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds)),
       checkNeonReady: () => checkNeonReady(env),
-      syncTable: (table) => syncTableWithPsql(env, table, config.deleteMissingRows, config.applyMode),
+      syncTable: (table) =>
+        syncTableWithPsql(env, table, config.deleteMissingRows, config.applyMode),
       report: reportProgress,
     },
     dependencyEdges,
