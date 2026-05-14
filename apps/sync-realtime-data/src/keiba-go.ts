@@ -1,5 +1,5 @@
 import { buildNarRaceKey, NAR_BABA_CODE_TO_LOCAL_KEIBAJO } from "horse-racing-realtime/nar";
-import type { OddsData, OddsType } from "./types";
+import type { OddsData, OddsType, RaceResult } from "./types";
 
 const KEIBA_GO_ORIGIN = "https://www.keiba.go.jp";
 const TOP_PAGE_URL = `${KEIBA_GO_ORIGIN}/KeibaWeb/TodayRaceInfo/TodayRaceInfoTop`;
@@ -53,7 +53,7 @@ export const buildRaceKey = (
 ): string => buildNarRaceKey(year, monthDay, keibajoCode, raceNumber);
 
 export const buildRaceListUrl = (targetDate: string, babaCode: string): RaceListUrl => {
-  const raceDate = `${targetDate.slice(0, 4)}%2f${targetDate.slice(4, 6)}%2f${targetDate.slice(6, 8)}`;
+  const raceDate = `${targetDate.slice(0, 4)}%2F${targetDate.slice(4, 6)}%2F${targetDate.slice(6, 8)}`;
   return {
     babaCode,
     url: `${KEIBA_GO_BASE_URL}/RaceList?k_raceDate=${raceDate}&k_babaCode=${babaCode}`,
@@ -92,18 +92,16 @@ const extractBabaCode = (url: string): string | null => {
 export const fetchTodayRaceListUrls = async (targetDate: string): Promise<RaceListUrl[]> => {
   const html = await fetchHtml(TOP_PAGE_URL);
   const article = html.match(TODAY_RACE_ARTICLE_PATTERN)?.[1] ?? html;
-  const target = `${targetDate.slice(0, 4)}%2f${targetDate.slice(4, 6)}%2f${targetDate.slice(6, 8)}`;
+  const target = `${targetDate.slice(0, 4)}/${targetDate.slice(4, 6)}/${targetDate.slice(6, 8)}`;
   const paths = dedupe(
     Array.from(article.matchAll(RACE_LIST_LINK_PATTERN))
       .map((match) => match[1])
-      .filter(
-        (path): path is string =>
-          typeof path === "string" && path.includes(`k_raceDate=${target}&`),
-      ),
+      .filter((path): path is string => typeof path === "string"),
   );
 
   return paths
     .map(toFullKeibaGoUrl)
+    .filter((url) => new URL(url).searchParams.get("k_raceDate") === target)
     .map((url) => ({ babaCode: extractBabaCode(url) ?? "", url }))
     .filter((item) => item.babaCode in BABA_CODE_TO_LOCAL_KEIBAJO);
 };
@@ -502,3 +500,35 @@ export const parseRaceResultHorseWeights = (html: string) =>
       };
     })
     .filter((item): item is NonNullable<typeof item> => item !== null);
+
+export const parseRaceResults = (html: string): Omit<RaceResult, "fetchedAt">[] =>
+  Array.from(html.matchAll(/<tr[^>]*bgcolor=["']#FFFFFF["'][^>]*>([\s\S]*?)<\/tr>/giu))
+    .map((row) => {
+      const cells = Array.from((row[1] ?? "").matchAll(/<td[^>]*>([\s\S]*?)<\/td>/giu)).map(
+        (cell) => normalizeRaceResultCell(cell[1] ?? ""),
+      );
+      const finishPosition = cells[0];
+      const horseNumber = cells[2];
+      const horseName = cells[3];
+      const time = cells[11];
+      if (
+        !finishPosition ||
+        !/^\d+$/u.test(finishPosition) ||
+        !horseNumber ||
+        !isValidHorseNum(horseNumber)
+      ) {
+        return null;
+      }
+      return {
+        finishPosition: finishPosition.padStart(2, "0"),
+        horseName: horseName || null,
+        horseNumber,
+        time: time || null,
+      };
+    })
+    .filter((item): item is Omit<RaceResult, "fetchedAt"> => item !== null)
+    .toSorted(
+      (left, right) =>
+        Number(left.finishPosition) - Number(right.finishPosition) ||
+        Number(left.horseNumber) - Number(right.horseNumber),
+    );
