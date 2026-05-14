@@ -22,10 +22,17 @@ import { useRealtimeRacePayload } from "./realtime-client";
 
 interface PaddockSectionProps {
   day: string;
+  detailUrl?: string;
+  editFooterDetailPath?: string;
   editable?: boolean;
   keibajoCode: string;
   month: string;
   raceNumber: string;
+  raceNumberLabel?: string;
+  racePlace?: string;
+  raceMeta?: string;
+  raceStartsAtLabel?: string;
+  raceTitle?: string;
   realtimeRequest?: RealtimeRaceRequest;
   runners: Runner[];
   year: string;
@@ -136,6 +143,9 @@ const getPaddockApiPath = ({
   year,
 }: Omit<PaddockSectionProps, "runners">): string =>
   `/api/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/paddock`;
+
+const getPaddockDiscordApiPath = (props: Omit<PaddockSectionProps, "runners">): string =>
+  `${getPaddockApiPath(props)}/discord`;
 
 const PaddockHorseRow = memo(function PaddockHorseRow({
   editable,
@@ -292,9 +302,17 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
 });
 
 function PaddockReadOnlyTable({
+  oddsByHorse,
   rows,
   state,
 }: {
+  oddsByHorse: Map<
+    string,
+    {
+      odds: number | null;
+      popularity: number | null;
+    }
+  >;
   rows: {
     frameNumber: string | null;
     horseName: string;
@@ -336,6 +354,8 @@ function PaddockReadOnlyTable({
           <col className="paddock-col-number" />
           <col className="paddock-col-number" />
           <col className="paddock-col-name" />
+          <col className="paddock-col-score" />
+          <col className="paddock-col-score" />
           <col className="paddock-col-rank" />
           <col className="paddock-col-score" />
           <col className="paddock-col-score" />
@@ -348,6 +368,8 @@ function PaddockReadOnlyTable({
             <th>馬番</th>
             <th>枠</th>
             <th>馬名</th>
+            <th>人気</th>
+            <th>単勝</th>
             <th>公式評価順</th>
             <th>合計</th>
             <th>パドック</th>
@@ -370,6 +392,10 @@ function PaddockReadOnlyTable({
                   showCoatLabel={false}
                 />
               </td>
+              <td>
+                {formatRealtimePopularity(oddsByHorse.get(row.horseNumber)?.popularity ?? null)}
+              </td>
+              <td>{formatRealtimeOdds(oddsByHorse.get(row.horseNumber)?.odds ?? null)}</td>
               <td>
                 {row.scores?.officialRank ? (
                   <span className={getOfficialRankClassName(row.scores.officialRank)}>
@@ -394,10 +420,17 @@ function PaddockReadOnlyTable({
 
 export function PaddockSection({
   day,
+  detailUrl,
+  editFooterDetailPath,
   editable = false,
   keibajoCode,
   month,
+  raceNumberLabel = "",
+  racePlace = "",
+  raceMeta = "",
   raceNumber,
+  raceStartsAtLabel = "",
+  raceTitle = "",
   realtimeRequest,
   runners,
   year,
@@ -406,7 +439,11 @@ export function PaddockSection({
   const [error, setError] = useState<string | null>(null);
   const [liveUrl, setLiveUrl] = useState<string | null>(null);
   const [realtimeEnabled, setRealtimeEnabled] = useState(false);
+  const [discordStatus, setDiscordStatus] = useState<"idle" | "sending" | "sent" | "failed">(
+    "idle",
+  );
   const apiPath = getPaddockApiPath({ day, keibajoCode, month, raceNumber, year });
+  const discordApiPath = getPaddockDiscordApiPath({ day, keibajoCode, month, raceNumber, year });
   const livePath = `${apiPath}/live`;
   const editPath = `/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/paddock`;
   const { payload: realtimePayload } = useRealtimeRacePayload(
@@ -556,6 +593,72 @@ export function PaddockSection({
     [apiPath],
   );
 
+  const notifyDiscord = useCallback(() => {
+    if (!detailUrl || discordStatus === "sending") {
+      return;
+    }
+
+    void (async () => {
+      setDiscordStatus("sending");
+      const horses = runnerRows.map((runner) => {
+        const scores = normalizePaddockHorseScore(state?.horses[runner.horseNumber], runner);
+        const realtimeEntry = realtimeEntryByHorse.get(runner.horseNumber);
+        const displayJockeyName = getPreferredJockeyName(
+          runner.jockeyName,
+          realtimeEntry?.jockeyName || null,
+        );
+        const realtimeOdds = realtimeOddsByHorse.get(runner.horseNumber);
+        return {
+          attention: scores.attention,
+          horseName: runner.horseName,
+          horseNumber: formatRunnerNumber(runner.horseNumber),
+          jockeyName: displayJockeyName,
+          kaeshi: scores.kaeshi,
+          odds: formatRealtimeOdds(realtimeOdds?.odds ?? null),
+          officialRank: formatOfficialRank(scores.officialRank),
+          paddock: scores.paddock,
+          popularity: formatRealtimePopularity(realtimeOdds?.popularity ?? null),
+          preference: scores.preference,
+          sexAge: runner.sexAge,
+          total: formatPaddockScore(scores.total),
+        };
+      });
+
+      const response = await fetch(getPaddockRequestUrl(discordApiPath), {
+        body: JSON.stringify({
+          detailUrl,
+          horses,
+          raceNumberLabel,
+          racePlace,
+          raceMeta,
+          raceStartsAtLabel,
+          raceTitle,
+        }),
+        credentials: "include",
+        method: "POST",
+      });
+
+      setDiscordStatus(response.ok ? "sent" : "failed");
+      window.setTimeout(() => setDiscordStatus("idle"), 3_000);
+    })().catch(() => {
+      setDiscordStatus("failed");
+      window.setTimeout(() => setDiscordStatus("idle"), 3_000);
+    });
+  }, [
+    detailUrl,
+    discordApiPath,
+    discordStatus,
+    raceMeta,
+    raceNumberLabel,
+    racePlace,
+    raceStartsAtLabel,
+    raceTitle,
+    realtimeEntryByHorse,
+    realtimeOddsByHorse,
+    runnerRows,
+    state,
+  ]);
+
   return (
     <section className={editable ? "paddock-section paddock-section-edit" : "paddock-section"}>
       <div className="section-heading compact">
@@ -597,7 +700,7 @@ export function PaddockSection({
           })}
         </div>
       ) : (
-        <PaddockReadOnlyTable rows={runnerRows} state={state} />
+        <PaddockReadOnlyTable oddsByHorse={realtimeOddsByHorse} rows={runnerRows} state={state} />
       )}
       {editable ? (
         <details className="paddock-history">
@@ -624,6 +727,32 @@ export function PaddockSection({
             <p className="empty-state">履歴はまだありません。</p>
           )}
         </details>
+      ) : null}
+      {editable && editFooterDetailPath ? (
+        <div className="paddock-edit-footer paddock-edit-footer-sticky">
+          <Link className="paddock-edit-link" href={editFooterDetailPath}>
+            詳細へ戻る
+          </Link>
+          <button
+            className="paddock-discord-button"
+            disabled={discordStatus === "sending"}
+            type="button"
+            onClick={notifyDiscord}
+          >
+            <span className="paddock-discord-icon" aria-hidden="true">
+              Discord
+            </span>
+            <span>
+              {discordStatus === "sending"
+                ? "通知中"
+                : discordStatus === "sent"
+                  ? "通知済み"
+                  : discordStatus === "failed"
+                    ? "通知失敗"
+                    : "Discordへ通知"}
+            </span>
+          </button>
+        </div>
       ) : null}
     </section>
   );

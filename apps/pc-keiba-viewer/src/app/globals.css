@@ -366,8 +366,8 @@ main {
 }
 
 .home-running-horse {
-  animation: home-horse-run 7.6s linear infinite;
-  bottom: calc(4px + (var(--horse-run-lane, 0) * 8px));
+  animation: home-horse-run var(--horse-run-duration, 7.6s) linear infinite;
+  bottom: calc(4px + (var(--horse-run-lane, 0) * 1px));
   display: inline-block;
   filter: var(--horse-run-filter, none);
   font-size: var(--horse-run-size, 26px);
@@ -1394,9 +1394,16 @@ h3 {
 }
 
 .paddock-table-horse-number {
-  font-size: 20px;
+  color: var(--ink);
+  font-size: 26px;
   font-weight: 950;
   line-height: 1;
+  text-align: center;
+}
+
+.stats-table td.paddock-table-horse-number {
+  font-size: 26px;
+  font-weight: 950;
 }
 
 .paddock-horse-row {
@@ -1819,12 +1826,92 @@ h3 {
   background: var(--surface-muted);
 }
 
+.paddock-discord-button {
+  align-items: center;
+  background: #5865f2;
+  border: 1px solid #4752c4;
+  border-radius: 8px;
+  color: #ffffff;
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 900;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 12px;
+}
+
+.paddock-discord-icon {
+  align-items: center;
+  background: #ffffff;
+  border-radius: 50%;
+  color: #5865f2;
+  display: inline-flex;
+  font-size: 0;
+  height: 20px;
+  justify-content: center;
+  width: 20px;
+}
+
+.paddock-discord-icon::before {
+  content: "";
+  height: 12px;
+  width: 14px;
+  background: currentColor;
+  clip-path: polygon(
+    14% 24%,
+    32% 14%,
+    45% 20%,
+    55% 20%,
+    68% 14%,
+    86% 24%,
+    94% 72%,
+    76% 86%,
+    64% 76%,
+    36% 76%,
+    24% 86%,
+    6% 72%
+  );
+}
+
+.paddock-discord-button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
 .paddock-edit-footer {
+  align-items: center;
+  gap: 10px;
   display: flex;
   justify-content: center;
   margin-top: 24px;
   padding-top: 16px;
   border-top: 1px solid var(--line);
+}
+
+.paddock-edit-footer-sticky {
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  border-top: 1px solid var(--line);
+  bottom: 0;
+  box-shadow: 0 -8px 24px rgb(20 32 28 / 12%);
+  left: 0;
+  margin: 0;
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+  position: fixed;
+  right: 0;
+  z-index: 30;
+}
+
+.paddock-edit-footer-sticky .paddock-edit-link,
+.paddock-edit-footer-sticky .paddock-discord-button {
+  justify-content: center;
+  min-height: 46px;
+  min-width: 180px;
+}
+
+body:has(.paddock-edit-footer-sticky) .page-shell {
+  padding-bottom: 104px;
 }
 
 .frame-number-badge {
@@ -4308,26 +4395,15 @@ h3 {
   }
 
   .paddock-edit-footer-sticky {
-    background: color-mix(in srgb, var(--surface) 94%, transparent);
-    border-top: 1px solid var(--line);
-    bottom: 0;
-    box-shadow: 0 -8px 24px rgb(20 32 28 / 12%);
-    left: 0;
-    margin: 0;
-    padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
-    position: fixed;
-    right: 0;
-    z-index: 30;
+    align-items: stretch;
   }
 
-  .paddock-edit-footer-sticky .paddock-edit-link {
+  .paddock-edit-footer-sticky .paddock-edit-link,
+  .paddock-edit-footer-sticky .paddock-discord-button {
     justify-content: center;
     min-height: 46px;
-    width: min(100%, 480px);
-  }
-
-  body:has(.paddock-edit-footer-sticky) .page-shell {
-    padding-bottom: 104px;
+    min-width: 0;
+    width: min(50%, 240px);
   }
 
   .paddock-score-controls {

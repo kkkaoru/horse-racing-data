@@ -80,7 +80,13 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
   }
 
   const raceDetailPath = `/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}`;
+  const raceDetailUrl = `https://pc-keiba-viewer.kkk4oru.com${raceDetailPath}`;
   const raceStartsAt = getRaceStartsAt(year, month, day, race.hassoJikoku);
+  const raceTitle = cleanText(race.kyosomeiHondai, "一般競走");
+  const racePlace = formatKeibajo(keibajoCode);
+  const raceNumberLabel = formatRaceNumber(raceNumber);
+  const raceStartsAtLabel = `${formatDate(year, `${month}${day}`)} ${formatTime(race.hassoJikoku)}発走`;
+  const raceMeta = `${formatDate(year, `${month}${day}`)} ${formatKeibajo(keibajoCode)} ${formatRaceNumber(raceNumber)} / ${formatTime(race.hassoJikoku)}発走 / ${formatTrack(race.trackCode)} ${formatDistance(race.kyori)}`;
   const realtimeApiBaseUrl =
     process.env.NEXT_PUBLIC_REALTIME_DATA_API_BASE_URL ?? "https://sync-realtime-data.kkk4oru.com";
 
@@ -110,7 +116,7 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
           <p className="eyebrow">
             {formatDate(year, `${month}${day}`)} / {formatTime(race.hassoJikoku)}
           </p>
-          <h1>{cleanText(race.kyosomeiHondai, "一般競走")} パドック編集</h1>
+          <h1>{raceTitle} パドック編集</h1>
           <p className="race-meta">
             {formatKeibajo(keibajoCode)} {formatRaceNumber(raceNumber)} /{" "}
             {formatTrack(race.trackCode)} {formatDistance(race.kyori)}
@@ -122,11 +128,18 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
       </div>
 
       <PaddockSection
+        detailUrl={raceDetailUrl}
+        editFooterDetailPath={raceDetailPath}
         editable
         day={day}
         keibajoCode={keibajoCode}
         month={month}
+        raceNumberLabel={raceNumberLabel}
+        racePlace={racePlace}
+        raceMeta={raceMeta}
         raceNumber={raceNumber}
+        raceStartsAtLabel={raceStartsAtLabel}
+        raceTitle={raceTitle}
         realtimeRequest={{
           apiBaseUrl: realtimeApiBaseUrl,
           day,
@@ -139,12 +152,6 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
         runners={runners}
         year={year}
       />
-
-      <div className="paddock-edit-footer paddock-edit-footer-sticky">
-        <Link className="paddock-edit-link" href={raceDetailPath}>
-          詳細へ戻る
-        </Link>
-      </div>
     </section>
   );
 }
