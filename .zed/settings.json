@@ -19,9 +19,30 @@
           "run": "onSave"
         }
       }
+    },
+    "basedpyright": {
+      "settings": {
+        "python.pythonPath": "apps/pc-keiba-viewer/.venv/bin/python",
+        "python.venvPath": "apps/pc-keiba-viewer",
+        "basedpyright.analysis": {
+          "diagnosticMode": "workspace",
+          "extraPaths": ["apps/pc-keiba-viewer/src/scripts"],
+          "typeCheckingMode": "strict",
+          "diagnosticSeverityOverrides": {
+            "reportAny": "none",
+            "reportUnknownArgumentType": "none",
+            "reportUnknownLambdaType": "none",
+            "reportUnknownMemberType": "none",
+            "reportUnknownVariableType": "none"
+          }
+        }
+      }
     }
   },
   "languages": {
+    "Python": {
+      "language_servers": ["basedpyright", "!pyright", "..."]
+    },
     "JavaScript": {
       "language_servers": ["!biome", "..."],
       "format_on_save": "on",

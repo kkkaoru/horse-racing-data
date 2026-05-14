@@ -1,0 +1,24 @@
+{
+  "include": ["apps/pc-keiba-viewer/src/scripts", "apps/pc-keiba-viewer/tests"],
+  "exclude": [
+    "**/.next",
+    "**/.open-next",
+    "**/node_modules",
+    "**/tmp"
+  ],
+  "extraPaths": ["apps/pc-keiba-viewer/src/scripts"],
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "strict",
+  "reportAny": "none",
+  "reportExplicitAny": "error",
+  "reportImplicitOverride": "error",
+  "reportImportCycles": "error",
+  "reportMissingTypeStubs": "error",
+  "reportPrivateLocalImportUsage": "error",
+  "reportUnannotatedClassAttribute": "error",
+  "reportUnknownArgumentType": "none",
+  "reportUnknownLambdaType": "none",
+  "reportUnknownMemberType": "none",
+  "reportUnknownParameterType": "error",
+  "reportUnknownVariableType": "none"
+}

@@ -3,5 +3,6 @@
 .next/
 .wrangler/
 coverage/
+.coverage
 node_modules/
 tsconfig.tsbuildinfo

@@ -1,0 +1,60 @@
+[project]
+name = "pc-keiba-viewer-python"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = [
+  "lightgbm>=4.6.0",
+  "mlx>=0.31.0",
+  "numpy>=2.0.0",
+  "pandas>=2.2.0",
+  "scikit-learn>=1.6.0",
+]
+
+[dependency-groups]
+dev = [
+  "basedpyright>=1.34.0",
+  "mccabe>=0.7.0",
+  "pandas-stubs>=2.2.0",
+  "pytest>=8.4.0",
+  "pytest-cov>=7.0.0",
+  "scikit-learn-stubs>=0.0.3",
+  "ty>=0.0.35",
+]
+
+[tool.basedpyright]
+include = ["src/scripts", "tests"]
+exclude = ["tmp", ".next", ".open-next", "node_modules"]
+extraPaths = ["src/scripts"]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+reportAny = "none"
+reportExplicitAny = "error"
+reportImplicitOverride = "error"
+reportImportCycles = "error"
+reportMissingTypeStubs = "error"
+reportPrivateLocalImportUsage = "error"
+reportUnannotatedClassAttribute = "error"
+reportUnknownArgumentType = "none"
+reportUnknownLambdaType = "none"
+reportUnknownMemberType = "none"
+reportUnknownParameterType = "error"
+reportUnknownVariableType = "none"
+
+[tool.ty.environment]
+extra-paths = ["src/scripts"]
+python = ".venv/bin/python"
+
+[tool.pytest.ini_options]
+addopts = "--cov=corner_lightgbm --cov-report=term-missing --cov-fail-under=90"
+pythonpath = ["src/scripts"]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+  "if __name__ == .__main__.:",
+  "raise SystemExit",
+]
+show_missing = true
