@@ -281,4 +281,90 @@ describe("race pace prediction", () => {
     expect(rows[0]?.corner1).toBeGreaterThan(1);
     expect(rows[0]?.corner1).toBeLessThan(3);
   });
+
+  it("adjusts JRA weights for graded races and young or maiden races", () => {
+    const gradedRows = buildRacePacePredictionRowsFromResults({
+      currentDistance: "1600",
+      currentGradeCode: "A",
+      currentRaceDate: "20260512",
+      currentSource: "jra",
+      results: [result({ corner1: "02", kyori: "1600" })],
+      runners: [runner({ umaban: "01" })],
+    });
+    const maidenRows = buildRacePacePredictionRowsFromResults({
+      currentConditionName: "3歳未勝利",
+      currentDistance: "1600",
+      currentRaceAgeCode: "11",
+      currentRaceDate: "20260512",
+      currentSource: "jra",
+      results: [result({ corner1: "02", kyori: "1600" })],
+      runners: [runner({ umaban: "01" })],
+    });
+
+    expect(gradedRows[0]?.details[0]?.weight).toBe(0.64);
+    expect(gradedRows[0]?.details[1]?.weight).toBe(0.19);
+    expect(maidenRows[0]?.details[0]?.weight).toBe(0.52);
+    expect(maidenRows[0]?.details[1]?.weight).toBe(0.25);
+  });
+
+  it("adjusts NAR weights for non-class races and graded races", () => {
+    const nonClassRows = buildRacePacePredictionRowsFromResults({
+      currentConditionCode: "999",
+      currentConditionName: "特別競走",
+      currentDistance: "1400",
+      currentRaceDate: "20260512",
+      currentSource: "nar",
+      results: [result({ corner1: "02", kyori: "1400" })],
+      runners: [runner({ umaban: "01" })],
+    });
+    const gradedRows = buildRacePacePredictionRowsFromResults({
+      currentConditionCode: "999",
+      currentConditionName: "重賞",
+      currentDistance: "1400",
+      currentGradeCode: "A",
+      currentRaceDate: "20260512",
+      currentSource: "nar",
+      results: [result({ corner1: "02", kyori: "1400" })],
+      runners: [runner({ umaban: "01" })],
+    });
+
+    expect(nonClassRows[0]?.details[0]?.weight).toBeCloseTo(0.58);
+    expect(nonClassRows[0]?.details[1]?.weight).toBeCloseTo(0.21);
+    expect(gradedRows[0]?.details[0]?.weight).toBe(0.64);
+    expect(gradedRows[0]?.details[2]?.weight).toBeCloseTo(0.17);
+  });
+
+  it("handles malformed historical dates and different track groups", () => {
+    const rows = buildRacePacePredictionRowsFromResults({
+      currentDistance: "1200",
+      currentRaceDate: "20260512",
+      currentSource: "jra",
+      currentTrackCode: "11",
+      model: {
+        ...DEFAULT_RACE_PACE_PREDICTION_MODEL,
+        jraPopularityPriorFloorWeight: 0,
+      },
+      results: [
+        result({
+          corner1: "02",
+          currentUmaban: "01",
+          kaisaiNen: "不正",
+          kaisaiTsukihi: "日付",
+          trackCode: "24",
+        }),
+        result({
+          corner1: "03",
+          currentUmaban: "02",
+          trackCode: "24",
+        }),
+      ],
+      runners: [
+        runner({ tanshoNinkijun: "00", umaban: "01" }),
+        runner({ kettoTorokuBango: "2020000002", tanshoNinkijun: "00", umaban: "02" }),
+      ],
+    });
+
+    expect(rows.some((row) => row.horseNumber === "1" && row.predictedCorners === "-")).toBe(true);
+    expect(rows.find((row) => row.horseNumber === "2")?.corner1).not.toBeNull();
+  });
 });

@@ -15,7 +15,10 @@ const links = [
 ];
 
 async function HomeRealtimePanel() {
-  const { finished, upcoming } = await getTopRaceWindows();
+  const { finished, upcoming } = await getTopRaceWindows().catch((error: unknown) => {
+    console.error("Failed to load top race windows", error);
+    return { finished: [], upcoming: [] };
+  });
   const realtimeApiBaseUrl =
     process.env.NEXT_PUBLIC_REALTIME_DATA_API_BASE_URL ?? "https://sync-realtime-data.kkk4oru.com";
 

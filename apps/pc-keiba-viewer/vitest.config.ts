@@ -15,7 +15,7 @@ export default defineConfig({
       ],
       exclude: ["src/lib/paddock-server.ts"],
       thresholds: {
-        branches: 90,
+        branches: 95,
         functions: 90,
         lines: 90,
         statements: 90,

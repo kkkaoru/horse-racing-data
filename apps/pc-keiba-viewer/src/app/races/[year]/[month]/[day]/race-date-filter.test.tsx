@@ -138,6 +138,82 @@ describe("race date filter", () => {
     expect(screen.queryByLabelText("selected jockey filters")).toBeNull();
   });
 
+  it("supports keyboard selection for jockey suggestions", () => {
+    render(<RaceDateFilter day="10" month="05" races={races} year="2026" />);
+
+    const jockeyInput = screen.getByLabelText("騎手");
+    fireEvent.focus(jockeyInput);
+    expect(screen.getByRole("button", { name: "地方花子" })).toBeTruthy();
+
+    fireEvent.keyDown(jockeyInput, { key: "Escape" });
+    expect(screen.queryByRole("button", { name: "地方花子" })).toBeNull();
+
+    fireEvent.change(jockeyInput, { target: { value: "東京" } });
+    fireEvent.keyDown(jockeyInput, { key: "ArrowDown" });
+    fireEvent.keyDown(jockeyInput, { key: "ArrowUp" });
+    fireEvent.keyDown(jockeyInput, { key: "ArrowDown" });
+    fireEvent.keyDown(jockeyInput, { key: "Enter" });
+
+    expect(screen.getByLabelText("selected jockey filters").textContent).toContain("東京太郎");
+    expect(screen.getByText("1 / 3 レース")).toBeTruthy();
+  });
+
+  it("excludes races without start times when time filters are set", () => {
+    render(
+      <RaceDateFilter
+        day="10"
+        month="05"
+        races={[...races, race({ kyosomeiHondai: "時刻未定", raceBango: "02" })]}
+        year="2026"
+      />,
+    );
+
+    expect(screen.getByText("4 / 4 レース")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("開始時間"), { target: { value: "09:00" } });
+    expect(screen.getByText("3 / 4 レース")).toBeTruthy();
+    expect(screen.queryByText("時刻未定")).toBeNull();
+  });
+
+  it("excludes races with malformed or impossible start times when time filters are set", () => {
+    render(
+      <RaceDateFilter
+        day="10"
+        month="05"
+        races={[
+          race({ hassoJikoku: "0905", kyosomeiHondai: "有効時刻", raceBango: "01" }),
+          race({ hassoJikoku: "abcd", kyosomeiHondai: "不正時刻", raceBango: "02" }),
+          race({ hassoJikoku: "2460", kyosomeiHondai: "範囲外時刻", raceBango: "03" }),
+        ]}
+        year="2026"
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("開始時間"), { target: { value: "09:00" } });
+
+    expect(screen.getByText("1 / 3 レース")).toBeTruthy();
+    expect(screen.getByText("有効時刻")).toBeTruthy();
+    expect(screen.queryByText("不正時刻")).toBeNull();
+    expect(screen.queryByText("範囲外時刻")).toBeNull();
+  });
+
+  it("keeps all races visible when time filter values are invalid", () => {
+    render(<RaceDateFilter day="10" month="05" races={races} year="2026" />);
+
+    fireEvent.change(screen.getByLabelText("開始時間"), { target: { value: "99:99" } });
+    fireEvent.change(screen.getByLabelText("終了時間"), { target: { value: "aa:bb" } });
+
+    expect(screen.getByText("3 / 3 レース")).toBeTruthy();
+  });
+
+  it("shows empty jockey suggestions when no candidate matches", () => {
+    render(<RaceDateFilter day="10" month="05" races={races} year="2026" />);
+
+    fireEvent.change(screen.getByLabelText("騎手"), { target: { value: "該当なし" } });
+
+    expect(screen.getByText("候補なし")).toBeTruthy();
+  });
+
   it("keeps venue fixed on venue pages", () => {
     render(<RaceDateFilter day="10" fixedVenueCode="05" month="05" races={races} year="2026" />);
 

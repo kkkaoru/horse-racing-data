@@ -1,5 +1,6 @@
 import type {
   RealtimeHorseOddsTrend,
+  RealtimeRaceEntry,
   RealtimeHorseWeight,
   RealtimeOddsData,
   RealtimeOddsHistoryPoint,
@@ -32,6 +33,7 @@ export type Job =
     };
 
 export type HorseOddsTrend = RealtimeHorseOddsTrend;
+export type RaceEntry = RealtimeRaceEntry;
 export type RaceResult = RealtimeRaceResult;
 export type HorseWeight = RealtimeHorseWeight;
 export type NarRaceSource = RealtimeRaceSource;

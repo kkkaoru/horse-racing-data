@@ -13,6 +13,7 @@ import {
   formatRunnerValue,
   formatSexAge,
 } from "../../../lib/runner-format";
+import { FrameNumberBadge, HorseNameBadge } from "./frame-number-badge";
 import type { RealtimeRaceRequest } from "./realtime-client";
 import { useRealtimeRacePayload } from "./realtime-client";
 
@@ -116,6 +117,9 @@ const formatCornerRanks = (runner: Runner): string => {
 
 const isLinkableText = (value: string): boolean => value !== "" && value !== "-";
 
+const isChangedJockey = (storedName: string, realtimeName: string | null | undefined): boolean =>
+  Boolean(realtimeName) && isLinkableText(storedName) && realtimeName !== storedName;
+
 export function RunnersTable({
   decodeHexHorseWeight = false,
   initialRealtimePayload = null,
@@ -164,6 +168,19 @@ export function RunnersTable({
         (payload?.raceResults?.horses ?? []).map((horse) => [
           horse.horseNumber,
           horse.finishPosition,
+        ]),
+      ),
+    [payload],
+  );
+  const realtimeEntryByHorse = useMemo(
+    () =>
+      new Map(
+        (payload?.raceEntries?.horses ?? []).map((horse) => [
+          formatRunnerNumber(horse.horseNumber),
+          {
+            jockeyName: cleanText(horse.jockeyName, ""),
+            status: cleanText(horse.status, ""),
+          },
         ]),
       ),
     [payload],
@@ -244,38 +261,47 @@ export function RunnersTable({
     const realtimeOdds = realtimeOddsByHorse.get(horseNumber);
     const realtimeWeight = realtimeWeightByHorse.get(horseNumber);
     const realtimeFinishPosition = realtimeResultByHorse.get(horseNumber);
+    const realtimeEntry = realtimeEntryByHorse.get(horseNumber);
     const horseName = cleanText(runner.bamei);
     const horseId = cleanText(runner.kettoTorokuBango);
     const jockeyName = cleanText(runner.kishumeiRyakusho);
+    const displayJockeyName = realtimeEntry?.jockeyName || jockeyName;
     const trainerName = cleanText(runner.chokyoshimeiRyakusho);
     const ownerName = cleanText(runner.banushimei);
+    const entryStatus = realtimeEntry?.status || "";
 
     return (
       <tr key={`${runner.umaban}-${runner.kettoTorokuBango}`}>
         <td>{horseNumber}</td>
-        <td>{cleanText(runner.wakuban)}</td>
+        <td>
+          <FrameNumberBadge value={runner.wakuban} />
+        </td>
         <td className="runner-horse-cell">
           {isLinkableText(horseName) && isLinkableText(horseId) ? (
             <Link href={`/horses/${encodeURIComponent(horseId)}`}>
-              <strong>{horseName}</strong>
+              <HorseNameBadge coatCode={runner.moshokuCode} name={horseName} />
             </Link>
           ) : (
-            <strong>{horseName}</strong>
+            <HorseNameBadge coatCode={runner.moshokuCode} name={horseName} />
           )}
+          {entryStatus ? <span className="runner-status-badge">{entryStatus}</span> : null}
         </td>
         <td>{formatSexAge(runner.seibetsuCode, runner.barei)}</td>
         <td>{formatCarriedWeight(runner.futanJuryo, decodeHexHorseWeight)}</td>
         <td>
-          {isLinkableText(jockeyName) ? (
+          {isLinkableText(displayJockeyName) ? (
             <Link
               className="runner-person-link"
-              href={`/jockeys/${encodeURIComponent(jockeyName)}`}
+              href={`/jockeys/${encodeURIComponent(displayJockeyName)}`}
             >
-              {jockeyName}
+              {displayJockeyName}
             </Link>
           ) : (
-            jockeyName
+            displayJockeyName
           )}
+          {isChangedJockey(jockeyName, realtimeEntry?.jockeyName) ? (
+            <small className="runner-change-note">元 {jockeyName}</small>
+          ) : null}
         </td>
         <td>
           {isLinkableText(trainerName) ? (

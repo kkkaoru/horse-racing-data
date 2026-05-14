@@ -143,6 +143,40 @@ describe("runners table", () => {
     expect(rowTexts()[2]).toContain("三番");
   });
 
+  it("keeps original order when sortable values are all unavailable", () => {
+    render(
+      <RunnersTable
+        runners={[
+          runner({ bamei: "先頭維持", tanshoOdds: "abc", umaban: null }),
+          runner({ bamei: "二番目維持", tanshoOdds: null, umaban: "" }),
+        ]}
+      />,
+    );
+
+    expect(rowTexts()[0]).toContain("先頭維持");
+    expect(rowTexts()[1]).toContain("二番目維持");
+  });
+
+  it("renders plain text when horse and person link keys are unavailable", () => {
+    render(
+      <RunnersTable
+        runners={[
+          runner({
+            banushimei: "-",
+            bamei: "",
+            chokyoshimeiRyakusho: "",
+            kettoTorokuBango: "",
+            kishumeiRyakusho: "-",
+            umaban: "01",
+          }),
+        ]}
+      />,
+    );
+
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.getAllByText("-").length).toBeGreaterThanOrEqual(3);
+  });
+
   it("uses realtime odds and horse weights when available", () => {
     render(
       <RunnersTable
@@ -170,6 +204,7 @@ describe("runners table", () => {
               ],
             },
           },
+          raceEntries: null,
           raceResults: null,
           raceKey: "nar:2026:0510:83:09",
           source: null,
@@ -188,12 +223,80 @@ describe("runners table", () => {
     expect(rowTexts()[0]).toContain("二番");
   });
 
+  it("uses realtime race entries for changed jockeys and status", () => {
+    render(
+      <RunnersTable
+        initialRealtimePayload={{
+          horseWeights: null,
+          odds: null,
+          raceEntries: {
+            fetchedAt: "2026-05-10T18:30:00+09:00",
+            horses: [
+              {
+                fetchedAt: "2026-05-10T18:30:00+09:00",
+                horseName: "一番",
+                horseNumber: "1",
+                jockeyName: "替騎手",
+                status: "取消",
+              },
+            ],
+          },
+          raceResults: null,
+          raceKey: "nar:2026:0510:83:09",
+          source: null,
+        }}
+        runners={[runner({ bamei: "一番", kishumeiRyakusho: "元騎手", umaban: "01" })]}
+      />,
+    );
+
+    expect(screen.getByText("替騎手")).toBeTruthy();
+    expect(screen.getByText("元 元騎手")).toBeTruthy();
+    expect(screen.getByText("取消")).toBeTruthy();
+  });
+
+  it("formats realtime horse weights with missing values", () => {
+    render(
+      <RunnersTable
+        initialRealtimePayload={{
+          horseWeights: {
+            fetchedAt: "2026-05-10T18:40:00+09:00",
+            horses: [
+              {
+                changeAmount: null,
+                changeSign: null,
+                horseName: "一番",
+                horseNumber: "1",
+                weight: null,
+              },
+            ],
+          },
+          odds: {
+            fetchedAt: "2026-05-10T18:40:00+09:00",
+            history: [],
+            horseTrends: [],
+            latest: {
+              tansho: [{ combination: "1" }],
+            },
+          },
+          raceEntries: null,
+          raceResults: null,
+          raceKey: "nar:2026:0510:83:09",
+          source: null,
+        }}
+        runners={[runner({ bamei: "一番", umaban: "01" })]}
+      />,
+    );
+
+    expect(screen.getAllByText("-").length).toBeGreaterThanOrEqual(2);
+  });
+
   it("uses realtime race results for finish order display and default sort", () => {
     render(
       <RunnersTable
         initialRealtimePayload={{
           horseWeights: null,
           odds: null,
+          raceEntries: null,
           raceResults: {
             fetchedAt: "2026-05-10T18:50:00+09:00",
             horses: [

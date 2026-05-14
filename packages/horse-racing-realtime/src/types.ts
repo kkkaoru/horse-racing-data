@@ -24,6 +24,14 @@ export interface RealtimeHorseWeight {
   weight: number | null;
 }
 
+export interface RealtimeRaceEntry {
+  fetchedAt: string;
+  horseName: string | null;
+  horseNumber: string;
+  jockeyName: string | null;
+  status: string | null;
+}
+
 export interface RealtimeRaceResult {
   fetchedAt: string;
   finishPosition: string;
@@ -60,6 +68,10 @@ export interface RealtimeRaceSource {
 }
 
 export interface RealtimeRacePayload {
+  raceEntries?: {
+    fetchedAt: string;
+    horses: RealtimeRaceEntry[];
+  } | null;
   horseWeights: {
     fetchedAt: string;
     horses: RealtimeHorseWeight[];

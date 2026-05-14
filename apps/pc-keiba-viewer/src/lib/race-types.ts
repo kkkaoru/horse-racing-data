@@ -50,6 +50,7 @@ export interface Runner {
   umaban: string | null;
   kettoTorokuBango: string | null;
   bamei: string | null;
+  moshokuCode?: string | null;
   seibetsuCode: string | null;
   barei: string | null;
   futanJuryo: string | null;
@@ -491,6 +492,43 @@ export interface RacePacePredictionRow extends Record<string, unknown> {
   horseName: string;
   horseNumber: string;
   predictedCorners: string;
+}
+
+export interface FinishPredictionDetail extends Record<string, unknown> {
+  label: string;
+  reason: string;
+  value: number | null;
+  weight: number;
+}
+
+export interface FinishPositionSimilarityFeature extends Record<string, unknown> {
+  averageFinishPosition: number | null;
+  horseNumber: string;
+  neighborCount: number;
+  showRate: number | null;
+  similarityScore: number;
+  winRate: number | null;
+}
+
+export interface FinishPositionModelPredictionFeature extends Record<string, unknown> {
+  horseNumber: string;
+  modelVersion: string;
+  predictedFinishNorm: number | null;
+  showProbability: number | null;
+  winProbability: number | null;
+}
+
+export interface FinishPredictionRow extends Record<string, unknown> {
+  confidence: number;
+  details: FinishPredictionDetail[];
+  horseName: string;
+  horseNumber: string;
+  predictedRank: number;
+  score: number;
+  showProbability: number;
+  storedOdds: number | null;
+  storedPopularity: number | null;
+  winProbability: number;
 }
 
 export interface RaceTimeStats extends Record<string, unknown> {

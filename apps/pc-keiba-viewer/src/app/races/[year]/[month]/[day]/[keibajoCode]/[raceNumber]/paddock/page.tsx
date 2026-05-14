@@ -62,6 +62,8 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
   }
 
   const raceDetailPath = `/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}`;
+  const realtimeApiBaseUrl =
+    process.env.NEXT_PUBLIC_REALTIME_DATA_API_BASE_URL ?? "https://sync-realtime-data.kkk4oru.com";
 
   return (
     <section className="page-shell">
@@ -96,11 +98,20 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
         keibajoCode={keibajoCode}
         month={month}
         raceNumber={raceNumber}
+        realtimeRequest={{
+          apiBaseUrl: realtimeApiBaseUrl,
+          day,
+          keibajoCode,
+          month,
+          raceNumber,
+          source,
+          year,
+        }}
         runners={runners}
         year={year}
       />
 
-      <div className="paddock-edit-footer">
+      <div className="paddock-edit-footer paddock-edit-footer-sticky">
         <Link className="paddock-edit-link" href={raceDetailPath}>
           詳細へ戻る
         </Link>

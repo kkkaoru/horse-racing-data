@@ -1,0 +1,49 @@
+import { describe, expect, it } from "vitest";
+
+import { getNextOddsFetchAt, getOddsFetchIntervalMinutes } from "./odds-schedule";
+
+describe("odds schedule", () => {
+  it("uses hourly slots until one hour before the race", () => {
+    expect(getOddsFetchIntervalMinutes(120)).toBe(60);
+    expect(
+      getNextOddsFetchAt(
+        "2026-05-14T16:00:00+09:00",
+        new Date("2026-05-14T13:40:00+09:00").getTime(),
+      ),
+    ).toBe(new Date("2026-05-14T14:00:00+09:00").toISOString());
+  });
+
+  it("uses ten minute slots from ten minutes to less than one hour before the race", () => {
+    expect(getOddsFetchIntervalMinutes(50)).toBe(10);
+    expect(
+      getNextOddsFetchAt(
+        "2026-05-14T16:25:00+09:00",
+        new Date("2026-05-14T15:37:00+09:00").getTime(),
+      ),
+    ).toBe(new Date("2026-05-14T15:45:00+09:00").toISOString());
+  });
+
+  it("uses one minute slots from one minute to less than ten minutes before the race", () => {
+    expect(getOddsFetchIntervalMinutes(5)).toBe(1);
+    expect(
+      getNextOddsFetchAt(
+        "2026-05-14T16:00:00+09:00",
+        new Date("2026-05-14T15:55:30+09:00").getTime(),
+      ),
+    ).toBe(new Date("2026-05-14T15:56:00+09:00").toISOString());
+  });
+
+  it("does not schedule odds after the final minute window has passed", () => {
+    expect(getOddsFetchIntervalMinutes(0.5)).toBeNull();
+    expect(
+      getNextOddsFetchAt(
+        "2026-05-14T16:00:00+09:00",
+        new Date("2026-05-14T15:59:30+09:00").getTime(),
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects invalid race start timestamps", () => {
+    expect(getNextOddsFetchAt("invalid")).toBeNull();
+  });
+});

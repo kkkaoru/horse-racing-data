@@ -1,6 +1,7 @@
 "use client";
 
 import type { RealtimeRacePayload } from "horse-racing-realtime/types";
+import type { CSSProperties } from "react";
 import { useMemo, useState, useSyncExternalStore } from "react";
 import {
   CartesianGrid,
@@ -15,6 +16,7 @@ import {
 import { cleanText } from "../../../lib/format";
 import type { Runner } from "../../../lib/race-types";
 import { formatRunnerNumber } from "../../../lib/runner-format";
+import { getFrameColor, PlainHorseNumberBadge } from "./frame-number-badge";
 import { useRealtimeRacePayload } from "./realtime-client";
 
 interface RealtimeRaceSectionProps {
@@ -29,20 +31,7 @@ interface RealtimeRaceSectionProps {
   year: string;
 }
 
-const TREND_COLORS = [
-  "#0f766e",
-  "#b45309",
-  "#2563eb",
-  "#be123c",
-  "#6d28d9",
-  "#15803d",
-  "#c2410c",
-  "#0369a1",
-  "#a21caf",
-  "#4d7c0f",
-  "#7c2d12",
-  "#4338ca",
-];
+const FALLBACK_TREND_COLOR = "#6f8378";
 const LOW_ODDS_TICK_MAX = 10;
 const LOW_ODDS_TICK_STEP = 0.5;
 const MID_ODDS_TICK_MAX = 20;
@@ -99,6 +88,11 @@ const runnerNameByNumber = (runners: Runner[]): Map<string, string> =>
     ]),
   );
 
+const frameNumberByHorseNumber = (runners: Runner[]): Map<string, string> =>
+  new Map(
+    runners.map((runner) => [formatRunnerNumber(runner.umaban), cleanText(runner.wakuban, "")]),
+  );
+
 type OddsTrendRow = {
   fetchedAt: string;
   timeLabel: string;
@@ -121,6 +115,10 @@ type OddsTrendTooltipProps = {
   active?: boolean;
   label?: string | number;
   payload?: OddsTrendHoverEntry[];
+};
+
+type OddsTrendLegendStyle = CSSProperties & {
+  "--series-color": string;
 };
 
 const buildOddsTrendRows = (
@@ -174,6 +172,8 @@ const buildOddsYAxisTicks = (maxOdds: number): number[] => {
   return [...lowTicks, ...midTicks, ...highTicks];
 };
 
+const getLegendStyle = (color: string): OddsTrendLegendStyle => ({ "--series-color": color });
+
 function OddsTrendTooltip({ active, label, payload }: OddsTrendTooltipProps) {
   const entries = (payload ?? [])
     .filter((entry) => typeof entry.value === "number")
@@ -205,6 +205,7 @@ function OddsTrendTooltip({ active, label, payload }: OddsTrendTooltipProps) {
 export function RealtimeRaceSection(props: RealtimeRaceSectionProps) {
   const { error, payload } = useRealtimeRacePayload(props, props.initialPayload);
   const names = useMemo(() => runnerNameByNumber(props.runners), [props.runners]);
+  const frames = useMemo(() => frameNumberByHorseNumber(props.runners), [props.runners]);
   const [activeTrend, setActiveTrend] = useState<OddsTrendHoverState | null>(null);
   const isMobileTooltip = useSyncExternalStore(
     subscribeMobileTooltip,
@@ -235,10 +236,11 @@ export function RealtimeRaceSection(props: RealtimeRaceSectionProps) {
   );
   const getSeriesName = (horseNumber: string): string =>
     `${horseNumber} ${names.get(horseNumber) ?? ""}`.trim();
+  const getSeriesColor = (horseNumber: string): string =>
+    getFrameColor(frames.get(horseNumber)) ?? FALLBACK_TREND_COLOR;
   const activeTrendEntries =
     activeTrend?.activePayload?.filter((entry) => typeof entry.value === "number") ?? [];
   const chartTopMargin = Math.min(260, Math.max(96, Math.ceil(history.length / 4) * 26 + 40));
-  const chartHeight = Math.max(980, chartTopMargin + 780);
 
   return (
     <section className="realtime-section">
@@ -276,67 +278,76 @@ export function RealtimeRaceSection(props: RealtimeRaceSectionProps) {
                 <span className="odds-trend-hover-placeholder">グラフにカーソルを合わせて表示</span>
               )}
             </div>
-            <ResponsiveContainer height={chartHeight} width="100%">
-              <LineChart
-                data={trendRows}
-                margin={{ bottom: 42, left: 4, right: 18, top: chartTopMargin }}
-                onMouseLeave={() => setActiveTrend(null)}
-                onMouseMove={(state: OddsTrendHoverState) => {
-                  if (state.isTooltipActive) {
-                    setActiveTrend(state);
-                    return;
-                  }
-                  setActiveTrend(null);
-                }}
-              >
-                <CartesianGrid stroke="#d8e0da" strokeDasharray="3 3" />
-                <XAxis
-                  dataKey="timeLabel"
-                  interval="preserveStartEnd"
-                  minTickGap={20}
-                  tick={{ fill: "#5a6a60", fontSize: 11 }}
-                  tickMargin={10}
-                />
-                <YAxis
-                  allowDecimals
-                  domain={[0, oddsYAxisMax]}
-                  scale="sqrt"
-                  tick={{ fill: "#5a6a60", fontSize: 11 }}
-                  tickFormatter={(value) => Number(value).toFixed(2)}
-                  ticks={oddsYAxisTicks}
-                  width={62}
-                />
-                <Tooltip
-                  allowEscapeViewBox={{ x: true, y: true }}
-                  content={<OddsTrendTooltip />}
-                  cursor={{ stroke: "#6f8378", strokeDasharray: "4 4", strokeWidth: 1 }}
-                  offset={18}
-                  position={isMobileTooltip ? { x: 12, y: 12 } : undefined}
-                  reverseDirection={isMobileTooltip ? undefined : { x: true, y: false }}
-                  wrapperStyle={{ maxWidth: "calc(100vw - 32px)", zIndex: 5 }}
-                />
-                {history.map((trend, index) => (
-                  <Line
-                    connectNulls
-                    dataKey={trend.horseNumber}
-                    dot={{ r: 2 }}
-                    key={trend.horseNumber}
-                    name={getSeriesName(trend.horseNumber)}
-                    stroke={TREND_COLORS[index % TREND_COLORS.length]}
-                    strokeWidth={2}
-                    type="monotone"
+            <div className="odds-trend-plot">
+              <ResponsiveContainer height="100%" width="100%">
+                <LineChart
+                  data={trendRows}
+                  margin={{ bottom: 42, left: 4, right: 18, top: chartTopMargin }}
+                  onMouseLeave={() => setActiveTrend(null)}
+                  onMouseMove={(state: OddsTrendHoverState) => {
+                    if (state.isTooltipActive) {
+                      setActiveTrend(state);
+                      return;
+                    }
+                    setActiveTrend(null);
+                  }}
+                >
+                  <CartesianGrid stroke="#d8e0da" strokeDasharray="3 3" />
+                  <XAxis
+                    dataKey="timeLabel"
+                    interval="preserveStartEnd"
+                    minTickGap={20}
+                    tick={{ fill: "#5a6a60", fontSize: 11 }}
+                    tickMargin={10}
                   />
-                ))}
-              </LineChart>
-            </ResponsiveContainer>
+                  <YAxis
+                    allowDecimals
+                    domain={[0, oddsYAxisMax]}
+                    scale="sqrt"
+                    tick={{ fill: "#5a6a60", fontSize: 11 }}
+                    tickFormatter={(value) => Number(value).toFixed(2)}
+                    ticks={oddsYAxisTicks}
+                    width={62}
+                  />
+                  <Tooltip
+                    allowEscapeViewBox={{ x: true, y: true }}
+                    content={<OddsTrendTooltip />}
+                    cursor={{ stroke: "#6f8378", strokeDasharray: "4 4", strokeWidth: 1 }}
+                    offset={18}
+                    position={isMobileTooltip ? { x: 12, y: 12 } : undefined}
+                    reverseDirection={isMobileTooltip ? undefined : { x: true, y: false }}
+                    wrapperStyle={{ maxWidth: "calc(100vw - 32px)", zIndex: 5 }}
+                  />
+                  {history.map((trend) => (
+                    <Line
+                      connectNulls
+                      dataKey={trend.horseNumber}
+                      dot={{ r: 2 }}
+                      key={trend.horseNumber}
+                      name={getSeriesName(trend.horseNumber)}
+                      stroke={getSeriesColor(trend.horseNumber)}
+                      strokeWidth={2.4}
+                      type="monotone"
+                    />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
             <div className="odds-trend-legend" aria-label="オッズ推移の線の説明">
-              {history.map((trend, index) => (
-                <span className="odds-trend-legend-item" key={trend.horseNumber}>
+              {history.map((trend) => (
+                <span
+                  className="odds-trend-legend-item"
+                  key={trend.horseNumber}
+                  style={getLegendStyle(getSeriesColor(trend.horseNumber))}
+                >
                   <span
                     className="odds-trend-legend-marker"
-                    style={{ backgroundColor: TREND_COLORS[index % TREND_COLORS.length] }}
+                    style={{ backgroundColor: getSeriesColor(trend.horseNumber) }}
                   />
-                  {getSeriesName(trend.horseNumber)}
+                  <PlainHorseNumberBadge horseNumber={trend.horseNumber} />
+                  <span className="odds-trend-legend-name">
+                    {names.get(trend.horseNumber) ?? trend.horseNumber}
+                  </span>
                 </span>
               ))}
             </div>

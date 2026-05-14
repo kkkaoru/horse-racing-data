@@ -19,6 +19,7 @@ import type {
   StatsDetail,
 } from "../../../lib/race-types";
 import { formatRunnerNumber } from "../../../lib/runner-format";
+import { FrameNumberBadge } from "./frame-number-badge";
 import { MobileFilterDisclosure } from "./mobile-filter-disclosure";
 import type { RealtimeRaceRequest } from "./realtime-client";
 import { useRealtimeRacePayload } from "./realtime-client";
@@ -338,7 +339,9 @@ const renderFastestDetail = (detail: StatsDetail | null) => {
             <td className="stats-name-cell">{detail.raceName || "-"}</td>
             <td className="stats-name-cell">{detail.horseName || "-"}</td>
             <td>{detail.jockeyName || "-"}</td>
-            <td>{detail.frameNumber || "-"}</td>
+            <td>
+              <FrameNumberBadge value={detail.frameNumber} />
+            </td>
             <td>{detail.horseNumber || "-"}</td>
             <td>{parseRank(detail.rank)}</td>
             <td>{formatTenthsTime(parseTenths(detail.raceTime))}</td>
@@ -706,6 +709,7 @@ export const RaceConditionAnalysisSection = memo(function RaceConditionAnalysisS
                           {row.details.length > 0 ? (
                             <button
                               aria-expanded={isExpanded}
+                              aria-label={`${row.frameNumber}枠の詳細を${isExpanded ? "閉じる" : "開く"}`}
                               className="stats-detail-toggle"
                               type="button"
                               onClick={() => {
@@ -714,10 +718,10 @@ export const RaceConditionAnalysisSection = memo(function RaceConditionAnalysisS
                                 );
                               }}
                             >
-                              {row.frameNumber}枠
+                              <FrameNumberBadge value={row.frameNumber} />
                             </button>
                           ) : (
-                            `${row.frameNumber}枠`
+                            <FrameNumberBadge value={row.frameNumber} />
                           )}
                         </td>
                         <td>{runnerNumbers}</td>
@@ -764,7 +768,9 @@ export const RaceConditionAnalysisSection = memo(function RaceConditionAnalysisS
                                         {detail.horseName || "-"}
                                       </td>
                                       <td>{detail.jockeyName || "-"}</td>
-                                      <td>{detail.frameNumber || "-"}</td>
+                                      <td>
+                                        <FrameNumberBadge value={detail.frameNumber} />
+                                      </td>
                                       <td>{detail.horseNumber || "-"}</td>
                                       <td>{parseRank(detail.rank)}</td>
                                       <td>{formatTenthsTime(parseTenths(detail.raceTime))}</td>
@@ -958,7 +964,9 @@ export const RaceConditionAnalysisSection = memo(function RaceConditionAnalysisS
                                         {detail.horseName || "-"}
                                       </td>
                                       <td>{detail.jockeyName || "-"}</td>
-                                      <td>{detail.frameNumber || "-"}</td>
+                                      <td>
+                                        <FrameNumberBadge value={detail.frameNumber} />
+                                      </td>
                                       <td>{detail.horseNumber || "-"}</td>
                                       <td>{parseRank(detail.rank)}</td>
                                       <td>{formatTenthsTime(parseTenths(detail.raceTime))}</td>

@@ -105,3 +105,20 @@ it("respects a custom retryStatuses set", async () => {
   expect(response.status).toBe(200);
   expect(fetchMock).toHaveBeenCalledTimes(2);
 });
+
+it("delegates retry decisions to a custom shouldRetry callback", async () => {
+  const fetchMock = vi.fn<FetchSignature>().mockRejectedValue(new TypeError("network failure"));
+  const shouldRetry = vi.fn<(error: unknown, attempt: number) => boolean>().mockReturnValue(false);
+  vi.stubGlobal("fetch", fetchMock);
+
+  await expect(
+    fetchWithRetry("https://example.test/data", undefined, {
+      attempts: 3,
+      shouldRetry,
+      sleep: noSleep,
+    }),
+  ).rejects.toThrow("network failure");
+
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(shouldRetry).toHaveBeenCalledTimes(1);
+});

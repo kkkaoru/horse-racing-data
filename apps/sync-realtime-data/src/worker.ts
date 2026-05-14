@@ -8,9 +8,14 @@ import {
   fetchRaceLinksFromRaceList,
   fetchRacePage,
   fetchTodayRaceListUrls,
+  parseRaceMetadata,
+  parseRaceEntries,
   parseHorseWeights,
+  parseRaceEntryHorseNumbers,
+  parseRaceResultExcludedHorseNumbers,
   parseRaceResults,
   parseRaceResultHorseWeights,
+  type KeibaGoRaceLink,
 } from "./keiba-go";
 import { mergeJsonHeaders } from "./http";
 import { readCachedOdds, writeCachedOdds } from "./odds-cache";
@@ -26,9 +31,11 @@ import {
   failResultFetch,
   getRaceSource,
   getLatestOddsFromD1,
+  insertRaceEntrySnapshot,
   insertRaceResultSnapshot,
   insertHorseWeightSnapshot,
   insertOddsSnapshot,
+  listRaceSourceKeibajoCodesByDate,
   listSchedulableRaceSourcesByDate,
   listTanshoHistory,
   logFetch,
@@ -38,6 +45,7 @@ import {
   updateLastFetch,
   updateOddsLinks,
   upsertNarRaceSource,
+  type LocalRaceRow,
 } from "./storage";
 import {
   getOddsFetchSlotAt,
@@ -46,11 +54,12 @@ import {
   parseRaceStartJst,
   toJstIsoString,
 } from "./time";
-import type { Env, Job, NarRaceSource, OddsType } from "./types";
+import type { Env, Job, NarRaceSource } from "./types";
 
 const QUEUE_SEND_BATCH_SIZE = 100;
 const ODDS_FETCH_LOCK_MINUTES = 10;
 const RESULT_FETCH_LOCK_MINUTES = 10;
+const RESULT_FETCH_INTERVAL_MINUTES = 5;
 const QUEUE_RETRY_DELAY_SECONDS = 60;
 
 const getNow = (env: Env): Date => {
@@ -79,6 +88,29 @@ const getCronJob = (cron: string): Job => {
     return { date: getTodayJst(), type: "discover-urls" };
   }
   return { date: getTodayJst(), type: "plan-realtime-fetches" };
+};
+
+const buildFallbackRaceRow = (
+  targetDate: string,
+  link: KeibaGoRaceLink,
+  html: string,
+): LocalRaceRow | null => {
+  const keibajoCode = BABA_CODE_TO_LOCAL_KEIBAJO[link.babaCode];
+  if (!keibajoCode) {
+    return null;
+  }
+  const metadata = parseRaceMetadata(html);
+  if (!metadata.startTime) {
+    return null;
+  }
+  return {
+    hasso_jikoku: metadata.startTime,
+    kaisai_nen: targetDate.slice(0, 4),
+    kaisai_tsukihi: targetDate.slice(4, 8),
+    keibajo_code: keibajoCode,
+    kyosomei_hondai: metadata.raceName,
+    race_bango: link.raceNumber,
+  };
 };
 
 const upsertDiscoveredUrls = async (
@@ -132,11 +164,12 @@ const upsertDiscoveredUrls = async (
         keibajoCode,
         link.raceNumber,
       );
-      const race = localRaceMap.get(raceKey);
+      const racePageHtml = await fetchRacePage(link.url);
+      const race =
+        localRaceMap.get(raceKey) ?? buildFallbackRaceRow(targetDate, link, racePageHtml);
       if (!race) {
         continue;
       }
-      const racePageHtml = await fetchRacePage(link.url);
       await upsertNarRaceSource(
         env.REALTIME_DB,
         link,
@@ -211,15 +244,22 @@ const isRaceFinished = (race: NarRaceSource, now: Date): boolean => {
   return minutes !== null && minutes <= 0;
 };
 
-const ensureDiscoveredUrlsAreCurrent = async (
-  env: Env,
-  targetDate: string,
-): Promise<void> => {
+const ensureDiscoveredUrlsAreCurrent = async (env: Env, targetDate: string): Promise<void> => {
   const [d1RaceCount, localRaces] = await Promise.all([
     countRaceSourcesByDate(env.REALTIME_DB, targetDate),
     fetchNarRacesByDate(env, targetDate),
   ]);
-  if (d1RaceCount >= localRaces.length) {
+  const raceListUrls = await fetchTodayRaceListUrls(targetDate);
+  const expectedKeibajoCodes = raceListUrls
+    .map((raceList) => BABA_CODE_TO_LOCAL_KEIBAJO[raceList.babaCode])
+    .filter((keibajoCode): keibajoCode is string => Boolean(keibajoCode));
+  const discoveredKeibajoCodes = new Set(
+    await listRaceSourceKeibajoCodesByDate(env.REALTIME_DB, targetDate),
+  );
+  const hasAllExpectedKeibajoCodes = expectedKeibajoCodes.every((keibajoCode) =>
+    discoveredKeibajoCodes.has(keibajoCode),
+  );
+  if (d1RaceCount >= localRaces.length && hasAllExpectedKeibajoCodes) {
     return;
   }
   await upsertDiscoveredUrls(env, targetDate);
@@ -276,7 +316,8 @@ const planRealtimeFetches = async (env: Env, targetDate: string): Promise<number
       : Number.NaN;
     if (
       minutes <= 0 &&
-      !race.lastResultFetchAt &&
+      !race.resultCompleteAt &&
+      isDue(race.lastResultFetchAt, RESULT_FETCH_INTERVAL_MINUTES, now) &&
       (Number.isNaN(resultLockUntil) || resultLockUntil <= now.getTime()) &&
       !race.lastResultQueuedAt
     ) {
@@ -298,19 +339,6 @@ const planRealtimeFetches = async (env: Env, targetDate: string): Promise<number
   return jobs.length;
 };
 
-const ensureOddsLinks = async (
-  env: Env,
-  race: NarRaceSource,
-): Promise<Partial<Record<OddsType, string>>> => {
-  if (Object.keys(race.oddsLinks).length > 0) {
-    return race.oddsLinks;
-  }
-  const html = await fetchRacePage(race.debaUrl);
-  const oddsLinks = extractOddsLinks(html, race.debaUrl);
-  await updateOddsLinks(env.REALTIME_DB, race.raceKey, oddsLinks);
-  return oddsLinks;
-};
-
 const fetchAndStoreOdds = async (env: Env, raceKey: string): Promise<void> => {
   const now = getNow(env);
   const lockUntil = toJstIsoString(new Date(now.getTime() + ODDS_FETCH_LOCK_MINUTES * 60_000));
@@ -330,7 +358,13 @@ const fetchAndStoreOdds = async (env: Env, raceKey: string): Promise<void> => {
       return;
     }
     const fetchedAt = toJstIsoString();
-    const oddsLinks = await ensureOddsLinks(env, race);
+    const entryHtml = await fetchRacePage(race.debaUrl);
+    await insertRaceEntrySnapshot(env.REALTIME_DB, raceKey, fetchedAt, parseRaceEntries(entryHtml));
+    const oddsLinks =
+      Object.keys(race.oddsLinks).length > 0 ? race.oddsLinks : extractOddsLinks(entryHtml, race.debaUrl);
+    if (Object.keys(race.oddsLinks).length === 0) {
+      await updateOddsLinks(env.REALTIME_DB, race.raceKey, oddsLinks);
+    }
     const latest = await fetchOdds(race.debaUrl, oddsLinks);
     const inserted = await insertOddsSnapshot(env.REALTIME_DB, raceKey, fetchedAt, latest);
     if (inserted === 0) {
@@ -352,6 +386,8 @@ const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<void> =>
   }
   const fetchedAt = toJstIsoString();
   const html = await fetchRacePage(race.debaUrl);
+  const entries = parseRaceEntries(html);
+  await insertRaceEntrySnapshot(env.REALTIME_DB, raceKey, fetchedAt, entries);
   let weights = parseHorseWeights(html);
   if (weights.length === 0) {
     const resultHtml = await fetchRacePage(buildRaceResultUrl(race.debaUrl));
@@ -386,18 +422,24 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
 
   try {
     const fetchedAt = toJstIsoString();
-    const html = await fetchRacePage(buildRaceResultUrl(race.debaUrl));
-    const results = parseRaceResults(html);
-    if (results.length > 0 && results.length < 2) {
-      await failResultFetch(env.REALTIME_DB, raceKey);
-      throw new Error(`race result rows are unexpectedly sparse: ${results.length}`);
-    }
+    const [entryHtml, resultHtml] = await Promise.all([
+      fetchRacePage(race.debaUrl),
+      fetchRacePage(buildRaceResultUrl(race.debaUrl)),
+    ]);
+    const entries = parseRaceEntries(entryHtml);
+    await insertRaceEntrySnapshot(env.REALTIME_DB, raceKey, fetchedAt, entries);
+    const entryHorseNumbers = parseRaceEntryHorseNumbers(entryHtml);
+    const excludedHorseNumbers = new Set(parseRaceResultExcludedHorseNumbers(resultHtml));
+    const expectedHorseCount = entryHorseNumbers.filter(
+      (horseNumber) => !excludedHorseNumbers.has(horseNumber),
+    ).length;
+    const results = parseRaceResults(resultHtml);
     const inserted = await insertRaceResultSnapshot(env.REALTIME_DB, raceKey, fetchedAt, results);
-    if (inserted === 0) {
-      await failResultFetch(env.REALTIME_DB, raceKey);
-      return;
-    }
-    await completeResultFetch(env.REALTIME_DB, raceKey, fetchedAt);
+    await completeResultFetch(env.REALTIME_DB, raceKey, fetchedAt, {
+      expectedHorseCount,
+      isComplete: expectedHorseCount > 0 && inserted >= expectedHorseCount,
+      savedHorseCount: inserted,
+    });
   } catch (error) {
     await failResultFetch(env.REALTIME_DB, raceKey);
     throw error;

@@ -7,6 +7,7 @@ import { Fragment, memo, useEffect, useMemo, useState } from "react";
 import type { RaceSource } from "../../../lib/codes";
 import { formatDate, formatKeibajo, formatRaceNumber } from "../../../lib/format";
 import type { SimilarRaceStatsRow, SimilarRaceStatsSettings } from "../../../lib/race-types";
+import { FrameNumberBadge } from "./frame-number-badge";
 import { MobileFilterDisclosure } from "./mobile-filter-disclosure";
 
 type RateSortKey = "score" | "showRate" | "quinellaRate" | "winRate";
@@ -342,7 +343,9 @@ export const SimilarRaceStatsTable = memo(function SimilarRaceStatsTable({
                     <td>{formatRaceNumber(detail.raceNumber)}</td>
                     <td className="stats-detail-race-name">{detail.raceName || "-"}</td>
                     <td className="stats-detail-horse-name">{detail.horseName || "-"}</td>
-                    <td>{detail.frameNumber || "-"}</td>
+                    <td>
+                      <FrameNumberBadge value={detail.frameNumber} />
+                    </td>
                     <td>{detail.horseNumber || "-"}</td>
                     <td>{formatRank(detail.rank)}</td>
                     <td>{formatTenthsTime(detail.raceTime)}</td>

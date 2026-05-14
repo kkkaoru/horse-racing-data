@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
 import { formatDistance, formatKeibajo, formatRaceNumber, formatTime } from "../lib/format";
+import { getNextOddsFetchAt } from "../lib/odds-schedule";
 import type { TopRaceSummary } from "../lib/race-types";
 import { buildRealtimeUrl, isRealtimeRacePayload } from "./races/detail/realtime-client";
 
@@ -19,8 +20,9 @@ type RaceWindowsPayload = {
   upcoming: TopRaceSummary[];
 };
 
-type OddsUpdate = {
-  fetchedAt: string;
+type OddsSchedule = {
+  lastFetchedAt: string | null;
+  nextFetchAt: string;
   race: TopRaceSummary;
 };
 
@@ -57,21 +59,6 @@ const formatRaceLine = (race: TopRaceSummary): string =>
     formatDistance(race.kyori),
   ].join(" / ");
 
-const getNextOddsFetchAt = (payload: RealtimeRacePayload): string | null => {
-  const fetchedAt = payload.odds?.fetchedAt ?? payload.source?.lastOddsFetchAt;
-  if (!fetchedAt || !payload.source?.raceStartAtJst) {
-    return null;
-  }
-  const raceStart = new Date(payload.source.raceStartAtJst).getTime();
-  const fetched = new Date(fetchedAt).getTime();
-  if (!Number.isFinite(raceStart) || !Number.isFinite(fetched)) {
-    return null;
-  }
-  const minutesToStart = (raceStart - Date.now()) / 60_000;
-  const intervalMinutes = minutesToStart <= 30 ? 3 : 10;
-  return new Date(fetched + intervalMinutes * 60_000).toISOString();
-};
-
 export function HomeRealtime({
   initialFinished,
   initialUpcoming,
@@ -82,7 +69,7 @@ export function HomeRealtime({
     finished: initialFinished,
     upcoming: initialUpcoming,
   });
-  const [updates, setUpdates] = useState<OddsUpdate[]>([]);
+  const [oddsSchedules, setOddsSchedules] = useState<OddsSchedule[]>([]);
   const [nextOddsFetchAt, setNextOddsFetchAt] = useState<string | null>(null);
   const races = useMemo(
     () =>
@@ -98,7 +85,7 @@ export function HomeRealtime({
     .slice(-5)
     .toReversed();
   const upcomingOddsRaces = useMemo(
-    () => raceWindows.upcoming.filter((race) => race.source === "nar").slice(0, 5),
+    () => raceWindows.upcoming.filter((race) => race.source === "nar"),
     [raceWindows.upcoming],
   );
 
@@ -156,22 +143,35 @@ export function HomeRealtime({
       const validPayloads = payloads.filter(
         (payload): payload is [TopRaceSummary, RealtimeRacePayload] => payload !== null,
       );
-      const nextFetches = validPayloads
-        .map(([, payload]) => getNextOddsFetchAt(payload))
-        .filter((value): value is string => value !== null)
-        .toSorted((left, right) => new Date(left).getTime() - new Date(right).getTime());
-      setNextOddsFetchAt(nextFetches[0] ?? null);
-      setUpdates(
-        validPayloads
-          .flatMap(([race, payload]) =>
-            payload.odds?.fetchedAt ? [{ fetchedAt: payload.odds.fetchedAt, race }] : [],
-          )
-          .toSorted(
-            (left, right) =>
-              new Date(right.fetchedAt).getTime() - new Date(left.fetchedAt).getTime(),
-          )
-          .slice(0, 5),
+      const payloadsByRace = new Map(
+        validPayloads.map(([race, payload]) => [
+          `${race.source}-${race.keibajoCode}-${race.raceBango}`,
+          payload,
+        ]),
       );
+      const schedules = upcomingOddsRaces
+        .flatMap((race): OddsSchedule[] => {
+          const nextFetchAt = getNextOddsFetchAt(race.raceStartAt);
+          if (!nextFetchAt) {
+            return [];
+          }
+          const payload = payloadsByRace.get(
+            `${race.source}-${race.keibajoCode}-${race.raceBango}`,
+          );
+          return [
+            {
+              lastFetchedAt: payload?.odds?.fetchedAt ?? payload?.source?.lastOddsFetchAt ?? null,
+              nextFetchAt,
+              race,
+            },
+          ];
+        })
+        .toSorted(
+          (left, right) =>
+            new Date(left.nextFetchAt).getTime() - new Date(right.nextFetchAt).getTime(),
+        );
+      setNextOddsFetchAt(schedules[0]?.nextFetchAt ?? null);
+      setOddsSchedules(schedules.slice(0, 5));
     };
     void load();
     const timer = window.setInterval(() => void load(), 30_000);
@@ -222,18 +222,23 @@ export function HomeRealtime({
           </span>
         </div>
         <div className="home-race-list">
-          {updates.length > 0 ? (
-            updates.map((update) => (
+          {oddsSchedules.length > 0 ? (
+            oddsSchedules.map((schedule) => (
               <Link
-                href={racePath(update.race)}
-                key={`${update.race.keibajoCode}-${update.race.raceBango}-${update.fetchedAt}`}
+                href={racePath(schedule.race)}
+                key={`${schedule.race.keibajoCode}-${schedule.race.raceBango}-${schedule.nextFetchAt}`}
               >
-                <strong>{formatRaceLine(update.race)}</strong>
-                <span>{new Date(update.fetchedAt).toLocaleString("ja-JP")} 更新</span>
+                <strong>{formatRaceLine(schedule.race)}</strong>
+                <span>
+                  次回 {new Date(schedule.nextFetchAt).toLocaleTimeString("ja-JP")}
+                  {schedule.lastFetchedAt
+                    ? ` / 更新 ${new Date(schedule.lastFetchedAt).toLocaleTimeString("ja-JP")}`
+                    : ""}
+                </span>
               </Link>
             ))
           ) : (
-            <p className="empty-state">取得済みのオッズ更新はまだありません。</p>
+            <p className="empty-state">対象のオッズ更新予定はありません。</p>
           )}
         </div>
       </section>

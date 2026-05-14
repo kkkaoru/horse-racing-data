@@ -8,6 +8,7 @@ import { fetchWithRetry } from "../../../lib/fetch-with-retry";
 import type {
   AbilityTest,
   BloodlineStatsRow,
+  FinishPredictionRow,
   FinishPositionStatsRow,
   FrameStatsRow,
   HorseRaceResult,
@@ -23,6 +24,7 @@ import type {
 } from "../../../lib/race-types";
 import { AbilityTestTable } from "./ability-test-table";
 import { BloodlineStatsTable } from "./bloodline-stats-table";
+import { FinishPositionPredictionTable } from "./finish-position-prediction-table";
 import { HorseRaceResultsTable } from "./horse-race-results-table";
 import { OverallScoreTable } from "./overall-score-table";
 import { RaceConditionAnalysisSection } from "./race-condition-analysis-section";
@@ -35,6 +37,7 @@ type DetailSection =
   | "ability"
   | "bloodline"
   | "condition"
+  | "finish-prediction"
   | "overall-score"
   | "pace-prediction"
   | "results"
@@ -133,6 +136,11 @@ type OverallScorePayload = {
   type: "overall-score";
 };
 
+type FinishPredictionPayload = {
+  rows: FinishPredictionRow[];
+  type: "finish-prediction";
+};
+
 type RacePacePredictionPayload = {
   rows: RacePacePredictionRow[];
   supported?: boolean;
@@ -143,6 +151,7 @@ type SectionPayload =
   | AbilityPayload
   | BloodlinePayload
   | ConditionPayload
+  | FinishPredictionPayload
   | OverallScorePayload
   | RacePacePredictionPayload
   | ResultsPayload
@@ -159,6 +168,7 @@ const SECTION_TITLES: Record<DetailSection, string> = {
   ability: "能力検査",
   bloodline: "血統成績",
   condition: "同条件レース分析",
+  "finish-prediction": "着順予測",
   "overall-score": "総合スコア",
   "pace-prediction": "レース展開予測",
   results: "競走成績",
@@ -201,7 +211,7 @@ const shouldIncludeSectionQueryParam = (section: DetailSection, name: string): b
       GENERIC_STATS_QUERY_KEYS.has(name)
     );
   }
-  if (section === "overall-score") {
+  if (section === "overall-score" || section === "finish-prediction") {
     return (
       name.startsWith("analysisStats") ||
       name.startsWith("bloodlineStats") ||
@@ -405,6 +415,45 @@ export function LazyOverallScoreSection(props: LazyDetailSectionsProps) {
         <h2>総合スコア</h2>
       </div>
       <OverallScoreTable
+        realtimeRequest={{
+          apiBaseUrl: props.realtimeApiBaseUrl,
+          day: props.day,
+          keibajoCode: props.keibajoCode,
+          month: props.month,
+          raceNumber: props.raceNumber,
+          source: props.source,
+          year: props.year,
+        }}
+        rows={payload.rows}
+      />
+    </section>
+  );
+}
+
+export function LazyFinishPredictionSection(props: LazyDetailSectionsProps) {
+  const searchParams = useSearchParams();
+  const state = useSectionPayload("finish-prediction", props, searchParams);
+  if (state.status === "loading" && state.payload === null) {
+    return <SectionSkeleton title={SECTION_TITLES["finish-prediction"]} />;
+  }
+  if (state.status === "error") {
+    return <SectionError error={state.error} title={SECTION_TITLES["finish-prediction"]} />;
+  }
+  const payload = state.payload;
+  if (!payload || payload.type !== "finish-prediction") {
+    return (
+      <SectionError error="Invalid section payload" title={SECTION_TITLES["finish-prediction"]} />
+    );
+  }
+  return (
+    <section
+      aria-busy={state.status === "loading"}
+      className="similar-stats-section lazy-detail-section"
+    >
+      <div className="section-heading compact">
+        <h2>着順予測</h2>
+      </div>
+      <FinishPositionPredictionTable
         realtimeRequest={{
           apiBaseUrl: props.realtimeApiBaseUrl,
           day: props.day,
