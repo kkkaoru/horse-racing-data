@@ -7,6 +7,8 @@ import {
   getPayoutStats,
   getRaceAbilityTests,
   getRaceDetail,
+  getRacePaceModelPredictionFeatures,
+  getRacePaceSimilarityFeatures,
   getRaceRunners,
   getRaceTimeStats,
   getRaceTrainings,
@@ -23,10 +25,6 @@ import {
   getTrackTurnLabel,
 } from "../../../lib/format";
 import {
-  buildRacePacePredictionRowsFromResults,
-  isCornerPacePredictionSupported,
-} from "../../../lib/race-pace-prediction";
-import {
   getAgeLabel,
   getConditionLabel,
   getGradeLabel,
@@ -34,6 +32,10 @@ import {
   getRaceTags,
   getWeightLabel,
 } from "../../../lib/race-classification";
+import {
+  buildRacePacePredictionRowsFromResults,
+  isCornerPacePredictionSupported,
+} from "../../../lib/race-pace-prediction";
 import type {
   BloodlineStatsRow,
   FinishPositionStatsRow,
@@ -120,10 +122,7 @@ const clampScore = (value: number): number => Math.max(0, Math.min(1, value));
 
 const roundScore = (value: number): number => Math.round(value * 100) / 100;
 
-const parseStoredNumber = (
-  value: string | null | undefined,
-  emptyValue: string,
-): number | null => {
+const parseStoredNumber = (value: string | null | undefined, emptyValue: string): number | null => {
   const cleaned = (value ?? "").trim();
   if (!cleaned || cleaned === emptyValue) {
     return null;
@@ -797,6 +796,7 @@ export const getDetailSectionPayload = async (
       currentDistance: race.kyori,
       currentKeibajoCode: race.keibajoCode,
       currentRaceDate: `${year}${month}${day}`,
+      currentTrackCode: race.trackCode,
       defaultIncludeClass: context.statsSettings.includeClass,
       results,
       runners,
@@ -827,10 +827,7 @@ export const getDetailSectionPayload = async (
         getFrameStats(race, settings),
       ]) satisfies Promise<ConditionAnalysisStats>;
     let stats = await getConditionAnalysisStats(resolvedSettings);
-    if (
-      !hasExplicitStatsState(query, "analysis") &&
-      !hasCompleteConditionAnalysisRows(stats)
-    ) {
+    if (!hasExplicitStatsState(query, "analysis") && !hasCompleteConditionAnalysisRows(stats)) {
       const candidates = getConditionAnalysisSettingCandidates(resolvedSettings).slice(1);
       const matched = await findConditionAnalysisCandidate(candidates, getConditionAnalysisStats);
       if (matched) {
@@ -900,12 +897,24 @@ export const getDetailSectionPayload = async (
       raceNumber,
       getResultsSourceScope(params.query),
     );
+    const [similarityFeatures, modelPredictionFeatures] = await Promise.all([
+      getRacePaceSimilarityFeatures(race, runners),
+      getRacePaceModelPredictionFeatures(race, runners),
+    ]);
     return {
       rows: buildRacePacePredictionRowsFromResults({
+        currentConditionCode: race.kyosoJokenCode,
+        currentConditionName: race.kyosoJokenMeisho,
         currentDistance: race.kyori,
+        currentGradeCode: race.gradeCode,
+        currentRaceAgeCode: race.kyosoShubetsuCode,
         currentRaceDate: `${race.kaisaiNen}${race.kaisaiTsukihi}`,
+        currentSource: race.source,
+        currentTrackCode: race.trackCode,
+        modelPredictionFeatures,
         results,
         runners,
+        similarityFeatures,
       }),
       supported: true,
       type: section,
@@ -915,10 +924,7 @@ export const getDetailSectionPayload = async (
   if (section === "bloodline") {
     let resolvedSettings = context.bloodlineStatsSettings;
     let rows = await getBloodlineStats(race, resolvedSettings);
-    if (
-      !hasExplicitStatsState(query, "bloodline") &&
-      !hasBloodlineScoreCoverage(rows, runners)
-    ) {
+    if (!hasExplicitStatsState(query, "bloodline") && !hasBloodlineScoreCoverage(rows, runners)) {
       const candidates = getConditionAnalysisSettingCandidates(resolvedSettings).slice(1);
       const matched = await findRateStatsCandidate(
         candidates,
@@ -942,10 +948,7 @@ export const getDetailSectionPayload = async (
 
   let resolvedSettings = context.statsSettings;
   let rows = await getSimilarRaceStats(race, resolvedSettings);
-  if (
-    !hasExplicitStatsState(query, "similar") &&
-    !hasSimilarJockeyTrainerCoverage(rows, runners)
-  ) {
+  if (!hasExplicitStatsState(query, "similar") && !hasSimilarJockeyTrainerCoverage(rows, runners)) {
     const candidates = getConditionAnalysisSettingCandidates(resolvedSettings).slice(1);
     const matched = await findRateStatsCandidate(
       candidates,

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { RaceSource } from "../../../lib/codes";
+import { fetchWithRetry } from "../../../lib/fetch-with-retry";
 import { isCornerPacePredictionSupported } from "../../../lib/race-pace-prediction";
 import type { CourseInfo, RaceDetail, RaceListItem, Runner } from "../../../lib/race-types";
 
@@ -84,7 +85,7 @@ const fetchSectionPayloads = async (
 ): Promise<SectionPayloads> => {
   const entries = await Promise.all(
     sections.map(async (section) => {
-      const response = await fetch(getSectionUrl({ ...props, section }));
+      const response = await fetchWithRetry(getSectionUrl({ ...props, section }));
       if (!response.ok) {
         return [
           section,
@@ -291,13 +292,13 @@ export function AiJsonExportSection({
               ? "取得中"
               : isGenerating
                 ? "JSON生成中"
-              : copyStatus === "copied"
-                ? "コピーしました"
-                : copyStatus === "error"
-                  ? "コピーできませんでした"
-                  : sectionPayloads
-                    ? "取得済み"
-                    : "未取得"}
+                : copyStatus === "copied"
+                  ? "コピーしました"
+                  : copyStatus === "error"
+                    ? "コピーできませんでした"
+                    : sectionPayloads
+                      ? "取得済み"
+                      : "未取得"}
           </span>
         </div>
         {showJson && jsonText ? <pre className="ai-json-export-code">{jsonText}</pre> : null}

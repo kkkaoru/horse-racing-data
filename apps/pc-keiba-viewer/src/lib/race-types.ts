@@ -26,6 +26,7 @@ export interface RaceListItem extends Record<string, unknown> {
   kyosoShubetsuCode: string | null;
   kyosoKigoCode: string | null;
   juryoShubetsuCode: string | null;
+  jockeyNames?: string[];
   kyosoJokenCode: string | null;
   kyosoJokenMeisho: string | null;
   kyori: string | null;
@@ -91,6 +92,7 @@ export interface HorseRaceResult extends Record<string, unknown> {
   kyori: string | null;
   trackCode: string | null;
   hassoJikoku: string | null;
+  shussoTosu?: string | null;
   tenkoCode: string | null;
   babajotaiCodeShiba: string | null;
   babajotaiCodeDirt: string | null;
@@ -458,6 +460,25 @@ export interface RacePacePredictionDetail extends Record<string, unknown> {
   reason: string;
   value: number | null;
   weight: number;
+}
+
+export interface RacePaceSimilarityFeature extends Record<string, unknown> {
+  corner1: number | null;
+  corner2: number | null;
+  corner3: number | null;
+  corner4: number | null;
+  horseNumber: string;
+  neighborCount: number;
+  similarityScore: number;
+}
+
+export interface RacePaceModelPredictionFeature extends Record<string, unknown> {
+  corner1: number | null;
+  corner2: number | null;
+  corner3: number | null;
+  corner4: number | null;
+  horseNumber: string;
+  modelVersion: string;
 }
 
 export interface RacePacePredictionRow extends Record<string, unknown> {

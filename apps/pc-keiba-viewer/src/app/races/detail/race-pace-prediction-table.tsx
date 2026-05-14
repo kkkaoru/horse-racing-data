@@ -126,6 +126,10 @@ export function RacePacePredictionTable({ rows }: RacePacePredictionTableProps) 
                 <th>馬番</th>
                 <th>馬名</th>
                 <th>コーナー通過予測</th>
+                <th>1C予測値</th>
+                <th>2C予測値</th>
+                <th>3C予測値</th>
+                <th>4C予測値</th>
                 <th>信頼度</th>
               </tr>
             </thead>
@@ -153,11 +157,15 @@ export function RacePacePredictionTable({ rows }: RacePacePredictionTableProps) 
                           />
                         </span>
                       </td>
+                      <td>{formatValue(row.corner1)}</td>
+                      <td>{formatValue(row.corner2)}</td>
+                      <td>{formatValue(row.corner3)}</td>
+                      <td>{formatValue(row.corner4)}</td>
                       <td>{row.confidence.toFixed(2)}</td>
                     </tr>
                     {isExpanded ? (
                       <tr className="stats-detail-row">
-                        <td colSpan={4}>
+                        <td colSpan={8}>
                           <div className="stats-detail-panel">
                             <table className="stats-detail-table correlation-detail-table">
                               <thead>

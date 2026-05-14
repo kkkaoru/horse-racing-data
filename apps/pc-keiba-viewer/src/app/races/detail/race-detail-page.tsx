@@ -1,3 +1,4 @@
+import type { RealtimeRacePayload } from "horse-racing-realtime/types";
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -114,6 +115,47 @@ const formatStoredOddsForExport = (value: string | null | undefined): string => 
   return Number.isFinite(parsed) ? (parsed / 10).toFixed(1) : "-";
 };
 
+const isRealtimeRacePayload = (value: unknown): value is RealtimeRacePayload =>
+  typeof value === "object" &&
+  value !== null &&
+  "raceKey" in value &&
+  typeof value.raceKey === "string";
+
+const fetchInitialRealtimePayload = async ({
+  apiBaseUrl,
+  day,
+  keibajoCode,
+  month,
+  raceNumber,
+  source,
+  year,
+}: {
+  apiBaseUrl: string;
+  day: string;
+  keibajoCode: string;
+  month: string;
+  raceNumber: string;
+  source: RaceSource;
+  year: string;
+}): Promise<RealtimeRacePayload | null> => {
+  if (source !== "nar") {
+    return null;
+  }
+  try {
+    const response = await fetch(
+      `${apiBaseUrl.replace(/\/$/u, "")}/api/nar/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/realtime`,
+      { cache: "no-store" },
+    );
+    if (!response.ok) {
+      return null;
+    }
+    const data: unknown = await response.json();
+    return isRealtimeRacePayload(data) ? data : null;
+  } catch {
+    return null;
+  }
+};
+
 const DetailCell = ({
   label,
   suffix = "",
@@ -203,6 +245,15 @@ export async function RaceDetailView({
   const courseImagePath = getCourseImagePath(keibajoCode, race.trackCode, race.kyori);
   const realtimeApiBaseUrl =
     process.env.NEXT_PUBLIC_REALTIME_DATA_API_BASE_URL ?? "https://sync-realtime-data.kkk4oru.com";
+  const initialRealtimePayload = await fetchInitialRealtimePayload({
+    apiBaseUrl: realtimeApiBaseUrl,
+    day,
+    keibajoCode,
+    month,
+    raceNumber,
+    source: raceSource,
+    year,
+  });
   const raceStartsAt = getRaceStartsAt(year, month, day, race.hassoJikoku);
   const sharePath = getRaceDetailPath({
     kaisaiNen: year,
@@ -480,7 +531,7 @@ export async function RaceDetailView({
         ) : (
           <RunnersTable
             decodeHexHorseWeight={decodeHexHorseWeight}
-            initialRealtimePayload={null}
+            initialRealtimePayload={initialRealtimePayload}
             realtimeRequest={{
               apiBaseUrl: realtimeApiBaseUrl,
               day,
@@ -520,7 +571,7 @@ export async function RaceDetailView({
       <RealtimeRaceSection
         apiBaseUrl={realtimeApiBaseUrl}
         day={day}
-        initialPayload={null}
+        initialPayload={initialRealtimePayload}
         keibajoCode={keibajoCode}
         month={month}
         raceNumber={raceNumber}

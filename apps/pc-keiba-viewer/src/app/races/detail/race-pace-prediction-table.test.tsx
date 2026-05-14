@@ -2,8 +2,8 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import React from "react";
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { RacePacePredictionRow } from "../../../lib/race-types";
 import { RACE_PACE_PREDICTION_RESULTS_EVENT } from "../../../lib/race-pace-prediction";
+import type { RacePacePredictionRow } from "../../../lib/race-types";
 import { RacePacePredictionTable } from "./race-pace-prediction-table";
 
 const row = (overrides: Partial<RacePacePredictionRow>): RacePacePredictionRow => ({
@@ -62,7 +62,15 @@ describe("race pace prediction table", () => {
     fireEvent.click(screen.getByText("馬ごとの予測"));
 
     expect(screen.getByRole("columnheader", { name: "コーナー通過予測" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "1C予測値" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "2C予測値" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "3C予測値" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "4C予測値" })).toBeTruthy();
     expect(screen.getByText("1-2-2-2")).toBeTruthy();
+    expect(screen.getByText("1.2")).toBeTruthy();
+    expect(screen.getByText("1.5")).toBeTruthy();
+    expect(screen.getByText("2.1")).toBeTruthy();
+    expect(screen.getByText("2.2")).toBeTruthy();
     expect(screen.getByText("0.82")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "テストホースのレース展開予測詳細" }));

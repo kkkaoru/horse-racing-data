@@ -37,17 +37,48 @@ describe("paddock helpers", () => {
   it("normalizes horse scores with fallbacks and totals", () => {
     expect(
       normalizePaddockHorseScore(
-        { attention: 2, horseName: "", horseNumber: "", officialRank: 3, paddock: 4, preference: 6 },
+        {
+          attention: 2,
+          horseName: "",
+          horseNumber: "",
+          kaeshi: 1,
+          officialRank: 3,
+          paddock: 4,
+          preference: 6,
+        },
         { horseName: "テストホース", horseNumber: "01" },
       ),
     ).toEqual({
       attention: 2,
       horseName: "テストホース",
       horseNumber: "01",
+      kaeshi: 1,
       officialRank: 3,
       paddock: 4,
       preference: 6,
-      total: 9,
+      total: 10,
+    });
+  });
+
+  it("defaults kaeshi to zero for legacy data missing the field", () => {
+    expect(
+      normalizePaddockHorseScore(
+        {
+          attention: 1,
+          paddock: 2,
+          preference: 0,
+        },
+        { horseName: "旧データ", horseNumber: "5" },
+      ),
+    ).toEqual({
+      attention: 1,
+      horseName: "旧データ",
+      horseNumber: "5",
+      kaeshi: 0,
+      officialRank: null,
+      paddock: 2,
+      preference: 0,
+      total: 3,
     });
   });
 
@@ -69,12 +100,18 @@ describe("paddock helpers", () => {
       }),
     ).toBe(true);
     expect(isPaddockAction(null)).toBe(false);
-    expect(isPaddockAction({ category: "bad", delta: 1, horseName: "一番", horseNumber: "01" }))
-      .toBe(false);
-    expect(isPaddockAction({ category: "paddock", delta: 2, horseName: "一番", horseNumber: "01" }))
-      .toBe(false);
-    expect(isPaddockAction({ horseName: "一番", horseNumber: "01", rank: 7, type: "official-rank" }))
-      .toBe(false);
+    expect(
+      isPaddockAction({ category: "kaeshi", delta: 1, horseName: "一番", horseNumber: "01" }),
+    ).toBe(true);
+    expect(
+      isPaddockAction({ category: "bad", delta: 1, horseName: "一番", horseNumber: "01" }),
+    ).toBe(false);
+    expect(
+      isPaddockAction({ category: "paddock", delta: 2, horseName: "一番", horseNumber: "01" }),
+    ).toBe(false);
+    expect(
+      isPaddockAction({ horseName: "一番", horseNumber: "01", rank: 7, type: "official-rank" }),
+    ).toBe(false);
   });
 
   it("applies score actions and normalizes horse numbers", () => {
@@ -132,6 +169,7 @@ describe("paddock helpers", () => {
           attention: 0,
           horseName: "一番",
           horseNumber: "1",
+          kaeshi: 0,
           officialRank: 1,
           paddock: 0,
           preference: 0,

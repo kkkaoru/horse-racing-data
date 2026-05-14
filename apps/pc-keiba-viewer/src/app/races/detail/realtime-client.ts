@@ -3,6 +3,8 @@
 import type { RealtimeRacePayload } from "horse-racing-realtime/types";
 import { useEffect, useState } from "react";
 
+import { fetchWithRetry } from "../../../lib/fetch-with-retry";
+
 export interface RealtimeRaceRequest {
   apiBaseUrl: string;
   day: string;
@@ -54,7 +56,7 @@ export const useRealtimeRacePayload = (
     let cancelled = false;
     const load = async () => {
       try {
-        const response = await fetch(realtimeUrl, { cache: "no-store" });
+        const response = await fetchWithRetry(realtimeUrl, { cache: "no-store" });
         if (!response.ok) {
           throw new Error(`realtime api ${response.status}`);
         }

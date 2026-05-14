@@ -170,6 +170,7 @@ describe("runners table", () => {
               ],
             },
           },
+          raceResults: null,
           raceKey: "nar:2026:0510:83:09",
           source: null,
         }}
@@ -185,6 +186,47 @@ describe("runners table", () => {
     expect(screen.getByText("1.4")).toBeTruthy();
 
     expect(rowTexts()[0]).toContain("二番");
+  });
+
+  it("uses realtime race results for finish order display and default sort", () => {
+    render(
+      <RunnersTable
+        initialRealtimePayload={{
+          horseWeights: null,
+          odds: null,
+          raceResults: {
+            fetchedAt: "2026-05-10T18:50:00+09:00",
+            horses: [
+              {
+                fetchedAt: "2026-05-10T18:50:00+09:00",
+                finishPosition: "02",
+                horseName: "一番",
+                horseNumber: "1",
+                time: "1:54.3",
+              },
+              {
+                fetchedAt: "2026-05-10T18:50:00+09:00",
+                finishPosition: "01",
+                horseName: "二番",
+                horseNumber: "2",
+                time: "1:53.9",
+              },
+            ],
+          },
+          raceKey: "nar:2026:0510:83:09",
+          source: null,
+        }}
+        runners={[
+          runner({ bamei: "一番", kakuteiChakujun: "00", umaban: "01" }),
+          runner({ bamei: "二番", kakuteiChakujun: "00", umaban: "02" }),
+        ]}
+      />,
+    );
+
+    expect(rowTexts()[0]).toContain("二番");
+    expect(rowTexts()[0]).toContain("1");
+    expect(rowTexts()[1]).toContain("一番");
+    expect(rowTexts()[1]).toContain("2");
   });
 
   it("decodes ban-ei hexadecimal horse weights", () => {

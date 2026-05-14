@@ -4,6 +4,7 @@ import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
 import type { RaceSource } from "../../../lib/codes";
+import { fetchWithRetry } from "../../../lib/fetch-with-retry";
 import type {
   AbilityTest,
   BloodlineStatsRow,
@@ -24,8 +25,8 @@ import { AbilityTestTable } from "./ability-test-table";
 import { BloodlineStatsTable } from "./bloodline-stats-table";
 import { HorseRaceResultsTable } from "./horse-race-results-table";
 import { OverallScoreTable } from "./overall-score-table";
-import { RacePacePredictionTable } from "./race-pace-prediction-table";
 import { RaceConditionAnalysisSection } from "./race-condition-analysis-section";
+import { RacePacePredictionTable } from "./race-pace-prediction-table";
 import { SimilarRaceStatsTable } from "./similar-race-stats-table";
 import { TimeScoreTable } from "./time-score-table";
 import { TrainingTable } from "./training-table";
@@ -73,6 +74,7 @@ type ResultsPayload = {
   currentDistance: string | null;
   currentKeibajoCode: string;
   currentRaceDate: string;
+  currentTrackCode: string | null;
   defaultIncludeClass: boolean;
   results: HorseRaceResult[];
   runners: Runner[];
@@ -304,7 +306,7 @@ const useSectionPayload = (
     let isActive = true;
     setState((current) => ({ error: null, payload: current.payload, status: "loading" }));
 
-    fetch(url)
+    fetchWithRetry(url)
       .then(async (response) => {
         if (!response.ok) {
           throw new Error(`${response.status} ${response.statusText}`.trim());
@@ -370,6 +372,7 @@ function LazyResultsSection(props: LazyDetailSectionsProps) {
         currentDistance={payload.currentDistance}
         currentKeibajoCode={payload.currentKeibajoCode}
         currentRaceDate={payload.currentRaceDate}
+        currentTrackCode={payload.currentTrackCode}
         defaultIncludeClass={payload.defaultIncludeClass}
         results={payload.results}
         runners={payload.runners}
