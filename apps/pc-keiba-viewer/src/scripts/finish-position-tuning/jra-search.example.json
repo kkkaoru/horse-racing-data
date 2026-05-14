@@ -1,0 +1,95 @@
+{
+  "baseArgs": {
+    "category": "jra",
+    "concurrency": 8,
+    "fromYear": "2024",
+    "target": "local",
+    "toYear": "2024"
+  },
+  "baseTuningConfigPath": "default-parameters.json",
+  "changedRaceLimit": 30,
+  "output": "tmp/finish-position-tuning-search/results.json",
+  "trials": [
+    {
+      "name": "baseline-externalized",
+      "args": {
+        "ensembleMode": "off"
+      }
+    },
+    {
+      "name": "jra-graded-sprint-mixed",
+      "args": {
+        "ensembleMode": "auto"
+      },
+      "tuningConfigOverrides": {
+        "version": "jra-graded-sprint-mixed",
+        "scoreWeights": {
+          "rules": [
+            {
+              "when": {
+                "sources": ["jra"]
+              },
+              "multiply": {
+                "avgFinish": 0.855,
+                "recentFinish": 0.855,
+                "popularity": 1.155,
+                "odds": 1.155
+              }
+            },
+            {
+              "when": {
+                "sources": ["jra"],
+                "gradeBands": ["graded"],
+                "distanceBands": ["sprint"]
+              },
+              "multiply": {
+                "avgFinish": 1.02,
+                "recentFinish": 1.04,
+                "popularity": 0.98,
+                "odds": 0.98
+              }
+            }
+          ]
+        },
+        "componentModels": {
+          "lstmLike": {
+            "weights": {
+              "recentFinish": 0.56,
+              "avgFinish": 0.22,
+              "popularity": 0.14,
+              "odds": 0.08,
+              "sameDayJockey": 0
+            }
+          },
+          "transformerLike": {
+            "weights": {
+              "popularity": 0.36,
+              "odds": 0.34,
+              "avgFinish": 0.12,
+              "recentFinish": 0.12,
+              "sameDayJockey": 0
+            }
+          }
+        },
+        "ensemble": {
+          "rules": [
+            {
+              "when": {
+                "sources": ["jra"],
+                "gradeBands": ["graded"],
+                "distanceBands": ["sprint"]
+              },
+              "mode": "mixed",
+              "mixedWeightedShare": 0.72,
+              "weights": {
+                "lightgbm": 0.5,
+                "lstm": 0.18,
+                "transformer": 0.32
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
