@@ -12,6 +12,8 @@ import type {
   EntityDetailSummary,
   EntityListQuery,
   EntityRaceResult,
+  FinishPositionModelPredictionFeature,
+  FinishPositionSimilarityFeature,
   FinishPositionStatsRow,
   FrameStatsRow,
   HorseListRow,
@@ -330,6 +332,7 @@ export const getRaceRunners = cache(
               umaban,
               ketto_toroku_bango as "kettoTorokuBango",
               bamei,
+              moshoku_code as "moshokuCode",
               seibetsu_code as "seibetsuCode",
               barei,
               futan_juryo as "futanJuryo",
@@ -362,6 +365,7 @@ export const getRaceRunners = cache(
             umaban: table.umaban,
             kettoTorokuBango: table.kettoTorokuBango,
             bamei: table.bamei,
+            moshokuCode: table.moshokuCode,
             seibetsuCode: table.seibetsuCode,
             barei: table.barei,
             futanJuryo: table.futanJuryo,
@@ -2199,6 +2203,171 @@ export const getRacePaceModelPredictionFeatures = cache(
             corner4: scaleCorner(row.predicted_corner4_norm),
             horseNumber: String(row.umaban),
             modelVersion: row.model_version,
+          }));
+        } catch {
+          return [];
+        }
+      },
+    );
+  },
+);
+
+export const getFinishPositionSimilarityFeatures = cache(
+  async (race: RaceDetail, runners: Runner[]): Promise<FinishPositionSimilarityFeature[]> => {
+    return withDbQueryCache(
+      [
+        "getFinishPositionSimilarityFeatures",
+        race.source,
+        race.kaisaiNen,
+        race.kaisaiTsukihi,
+        race.keibajoCode,
+        race.raceBango,
+        runners.map((runner) => runner.umaban).join(","),
+        runners.map((runner) => runner.tanshoNinkijun).join(","),
+        runners.map((runner) => runner.tanshoOdds).join(","),
+      ],
+      async () => {
+        const runnerCount = runners.length;
+        if (runnerCount <= 1) {
+          return [];
+        }
+        const rows = await Promise.all(
+          runners.map(async (runner): Promise<FinishPositionSimilarityFeature | null> => {
+            const horseNumber = runner.umaban?.replace(/^0+/u, "") || runner.umaban || "";
+            if (!horseNumber) {
+              return null;
+            }
+            const distance = parseNumericText(race.kyori, "");
+            const vector = buildCornerSimilarityVector(race, runner, runnerCount);
+            const isBanEi = race.source === "nar" && race.keibajoCode === "83";
+            try {
+              const result = await getDb().execute<{
+                average_finish_norm: string | null;
+                neighbor_count: string;
+                show_rate: string | null;
+                similarity_score: string | null;
+                win_rate: string | null;
+              }>(sql`
+              with nearest as (
+                select *
+                from (
+                  select
+                    feature_vector,
+                    finish_norm,
+                    finish_position
+                  from race_entry_corner_features
+                  where
+                    source = ${race.source}
+                    and race_date < ${`${race.kaisaiNen}${race.kaisaiTsukihi}`}
+                    and race_date >= ${`${Number(race.kaisaiNen) - 10}${race.kaisaiTsukihi}`}
+                    and finish_norm is not null
+                    and (${distance}::integer is null or kyori between ${distance}::integer - 500 and ${distance}::integer + 500)
+                    and (${isBanEi}::boolean or left(coalesce(track_code, ''), 1) = left(coalesce(${race.trackCode}, ''), 1))
+                    and (
+                      ${race.source} <> 'nar'
+                      or (${isBanEi}::boolean and keibajo_code = '83')
+                      or (not ${isBanEi}::boolean and keibajo_code <> '83')
+                    )
+                  order by race_date desc
+                  limit 8000
+                ) candidates
+                order by feature_vector <-> ${vector}::vector
+                limit 80
+              ),
+              weighted_nearest as (
+                select
+                  finish_norm,
+                  finish_position,
+                  1 / (1 + (feature_vector <-> ${vector}::vector)) weight
+                from nearest
+              )
+              select
+                sum(finish_norm * weight) / nullif(sum(weight), 0) average_finish_norm,
+                count(*)::text neighbor_count,
+                avg(case when finish_position = 1 then 1 else 0 end)::text win_rate,
+                avg(case when finish_position between 1 and 3 then 1 else 0 end)::text show_rate,
+                avg(weight)::text similarity_score
+              from weighted_nearest
+            `);
+              const row = result.rows[0];
+              const neighborCount = Number(row?.neighbor_count ?? 0);
+              if (!row || neighborCount === 0) {
+                return null;
+              }
+              const averageFinishNorm =
+                row.average_finish_norm === null ? null : Number(row.average_finish_norm);
+              return {
+                averageFinishPosition:
+                  averageFinishNorm === null || !Number.isFinite(averageFinishNorm)
+                    ? null
+                    : averageFinishNorm * (runnerCount - 1) + 1,
+                horseNumber,
+                neighborCount,
+                showRate: row.show_rate === null ? null : Number(row.show_rate),
+                similarityScore: Number(row.similarity_score ?? 0),
+                winRate: row.win_rate === null ? null : Number(row.win_rate),
+              };
+            } catch {
+              return null;
+            }
+          }),
+        );
+        return rows.filter((row): row is FinishPositionSimilarityFeature => row !== null);
+      },
+    );
+  },
+);
+
+const getFinishModelVersion = (): string =>
+  process.env.PC_KEIBA_FINISH_MODEL_VERSION?.trim() || "finish-ensemble-10y-20260514";
+
+export const getFinishPositionModelPredictionFeatures = cache(
+  async (race: RaceDetail, runners: Runner[]): Promise<FinishPositionModelPredictionFeature[]> => {
+    return withDbQueryCache(
+      [
+        "getFinishPositionModelPredictionFeatures",
+        getFinishModelVersion(),
+        race.source,
+        race.kaisaiNen,
+        race.kaisaiTsukihi,
+        race.keibajoCode,
+        race.raceBango,
+        runners.map((runner) => runner.umaban).join(","),
+      ],
+      async () => {
+        if (runners.length <= 1) {
+          return [];
+        }
+        try {
+          const result = await getDb().execute<{
+            model_version: string;
+            predicted_finish_norm: string | null;
+            show_probability: string | null;
+            umaban: number;
+            win_probability: string | null;
+          }>(sql`
+            select
+              model_version,
+              umaban,
+              predicted_finish_norm,
+              win_probability,
+              show_probability
+            from race_entry_finish_model_predictions
+            where
+              model_version = ${getFinishModelVersion()}
+              and source = ${race.source}
+              and kaisai_nen = ${race.kaisaiNen}
+              and kaisai_tsukihi = ${race.kaisaiTsukihi}
+              and keibajo_code = ${race.keibajoCode}
+              and race_bango = ${race.raceBango}
+          `);
+          return result.rows.map((row) => ({
+            horseNumber: String(row.umaban),
+            modelVersion: row.model_version,
+            predictedFinishNorm:
+              row.predicted_finish_norm === null ? null : Number(row.predicted_finish_norm),
+            showProbability: row.show_probability === null ? null : Number(row.show_probability),
+            winProbability: row.win_probability === null ? null : Number(row.win_probability),
           }));
         } catch {
           return [];

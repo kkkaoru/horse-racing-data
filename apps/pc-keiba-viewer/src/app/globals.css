@@ -1308,36 +1308,144 @@ h3 {
   align-items: center;
   display: grid;
   gap: 10px;
-  grid-template-columns: 42px minmax(0, 1fr) minmax(0, auto) 48px;
+  grid-template-columns: minmax(108px, auto) minmax(0, 1fr) minmax(156px, auto) 48px;
+  justify-items: start;
 }
 
-.paddock-horse-summary strong,
 .paddock-horse-summary b {
   background: var(--surface-muted);
   border: 1px solid var(--line);
   border-radius: 6px;
   font-variant-numeric: tabular-nums;
+  justify-self: end;
   padding: 7px 8px;
   text-align: center;
 }
 
-.paddock-horse-summary span {
+.paddock-horse-ids {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.paddock-horse-ids > span {
+  align-items: center;
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+  min-height: 52px;
+  padding: 5px 7px;
+  text-align: left;
+}
+
+.paddock-horse-ids small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.paddock-horse-ids strong {
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 900;
+}
+
+.paddock-horse-name-block {
+  display: grid;
+  gap: 5px;
+  justify-self: start;
+  min-width: 0;
+}
+
+.paddock-horse-name {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.paddock-horse-summary span:not(.horse-name-badge):not(.horse-name-badge span) {
   font-weight: 800;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.paddock-horse-jockey {
-  color: var(--muted);
+.paddock-horse-jockey-line {
+  align-items: center;
+  display: flex;
+  gap: 7px;
+  min-width: 0;
+}
+
+.paddock-horse-jockey-line strong {
+  color: var(--text);
   font-size: 12px;
-  font-style: normal;
-  font-weight: 700;
-  max-width: 7rem;
+  font-weight: 900;
   overflow: hidden;
-  text-align: right;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.paddock-horse-jockey-line small,
+.runner-change-note {
+  color: var(--muted);
+  display: block;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.paddock-status-badge,
+.runner-status-badge {
+  background: #fff4e5;
+  border: 1px solid #f4b35f;
+  border-radius: 999px;
+  color: #7a3e00;
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+  padding: 4px 7px;
+  width: fit-content;
+}
+
+.paddock-horse-race-facts {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(3, minmax(46px, 1fr));
+  justify-self: start;
+}
+
+.paddock-horse-race-facts span {
+  align-items: center;
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+  min-height: 52px;
+  padding: 5px 7px;
+  text-align: left;
+}
+
+.paddock-horse-race-facts small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.paddock-horse-race-facts strong {
+  color: var(--text);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 900;
 }
 
 .paddock-score-controls {
@@ -1576,6 +1684,143 @@ h3 {
   border-top: 1px solid var(--line);
 }
 
+.frame-number-badge {
+  align-items: center;
+  border: 1px solid var(--frame-border, transparent);
+  border-radius: 4px;
+  color: var(--frame-color);
+  display: inline-flex;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 900;
+  height: 28px;
+  justify-content: center;
+  min-width: 28px;
+}
+
+.frame-number-badge.frame-1 {
+  --frame-border: #cfd6dc;
+  --frame-color: #111827;
+  background: #ffffff;
+}
+
+.frame-number-badge.frame-2 {
+  --frame-color: #ffffff;
+  background: #111111;
+}
+
+.frame-number-badge.frame-3 {
+  --frame-color: #ffffff;
+  background: #d71920;
+}
+
+.frame-number-badge.frame-4 {
+  --frame-color: #ffffff;
+  background: #005bac;
+}
+
+.frame-number-badge.frame-5 {
+  --frame-border: #d8b600;
+  --frame-color: #111827;
+  background: #ffd400;
+}
+
+.frame-number-badge.frame-6 {
+  --frame-color: #ffffff;
+  background: #009944;
+}
+
+.frame-number-badge.frame-7 {
+  --frame-color: #111827;
+  background: #f39800;
+}
+
+.frame-number-badge.frame-8 {
+  --frame-color: #111827;
+  background: #f4a3c4;
+}
+
+.horse-number-badge {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--frame-color, var(--line));
+  border-radius: 6px;
+  color: var(--text);
+  display: inline-flex;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 900;
+  height: 30px;
+  justify-content: center;
+  min-width: 34px;
+}
+
+.horse-number-badge.plain {
+  border-left-width: 1px;
+}
+
+.horse-name-badge {
+  align-items: center;
+  background: transparent;
+  color: var(--text);
+  display: inline-flex;
+  gap: 8px;
+  max-width: 100%;
+  min-height: 28px;
+}
+
+.horse-name-badge i {
+  background: var(--coat-color);
+  border: 1px solid rgb(17 24 39 / 24%);
+  border-radius: 999px;
+  flex: 0 0 auto;
+  height: 12px;
+  width: 12px;
+}
+
+.horse-name-badge > span {
+  font-weight: 900;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.horse-name-badge small {
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 6px;
+}
+
+.horse-name-coat-dot {
+  align-items: center;
+  color: var(--text);
+  display: inline-flex;
+  gap: 7px;
+  min-width: 0;
+}
+
+.horse-name-coat-dot i {
+  background: var(--coat-color);
+  border: 1px solid rgb(17 24 39 / 24%);
+  border-radius: 999px;
+  flex: 0 0 auto;
+  height: 11px;
+  width: 11px;
+}
+
+.horse-name-coat-dot span {
+  font-weight: 900;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .runner-table {
   border-collapse: collapse;
   min-width: 1320px;
@@ -1807,35 +2052,56 @@ h3 {
   background: #fbfdfb;
   border: 1px solid var(--line);
   border-radius: 8px;
-  min-height: 1060px;
   overflow: visible;
   padding: 12px;
+}
+
+.odds-trend-plot {
+  height: min(880px, calc(100vh - 220px));
+  min-height: 420px;
 }
 
 .odds-trend-legend {
   align-items: center;
   border-top: 1px solid var(--line);
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 12px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   margin-top: 10px;
   padding-top: 10px;
 }
 
 .odds-trend-legend-item {
   align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
   color: var(--muted);
-  display: inline-flex;
+  display: grid;
   font-size: 12px;
   font-weight: 800;
-  gap: 5px;
+  gap: 7px;
+  grid-template-columns: 24px 34px minmax(0, 1fr);
+  min-height: 38px;
+  min-width: 0;
+  padding: 6px 8px;
 }
 
 .odds-trend-legend-marker {
-  border-radius: 999px;
+  border: 2px solid #26332b;
+  border-radius: 5px;
+  box-shadow: inset 0 0 0 1px transparent;
   display: inline-block;
-  height: 8px;
-  width: 18px;
+  height: 18px;
+  width: 24px;
+}
+
+.odds-trend-legend-name {
+  color: var(--text);
+  font-weight: 900;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .odds-trend-hover-panel {
@@ -1951,8 +2217,12 @@ h3 {
 @media (max-width: 760px) {
   .odds-trend-chart {
     margin-inline: -6px;
-    min-height: 1080px;
     padding: 8px 6px;
+  }
+
+  .odds-trend-plot {
+    height: min(760px, calc(100vh - 168px));
+    min-height: 420px;
   }
 
   .odds-trend-hover-panel {
@@ -2017,7 +2287,7 @@ h3 {
 
   .odds-trend-legend-marker {
     flex: 0 0 auto;
-    width: 14px;
+    width: 20px;
   }
 }
 
@@ -2780,6 +3050,23 @@ h3 {
   min-width: 1120px;
 }
 
+.finish-prediction-table {
+  min-width: 1040px;
+}
+
+.finish-prediction-col-number,
+.finish-prediction-col-rank,
+.finish-prediction-col-popularity,
+.finish-prediction-col-odds,
+.finish-prediction-col-score,
+.finish-prediction-col-rate {
+  width: 82px;
+}
+
+.finish-prediction-col-horse {
+  width: 240px;
+}
+
 .correlation-score-table th:first-child,
 .correlation-score-table td:first-child,
 .overall-score-table th:first-child,
@@ -3049,9 +3336,16 @@ h3 {
 .skeleton-line span,
 .skeleton-summary span,
 .skeleton-text {
-  animation: skeleton-shimmer 1.15s ease-in-out infinite;
-  background: linear-gradient(90deg, #edf2ef 0%, #f8faf9 42%, #edf2ef 82%);
-  background-size: 240% 100%;
+  animation: skeleton-shimmer 1.2s linear infinite;
+  background: linear-gradient(
+    90deg,
+    #edf2ef 0%,
+    #f5f8f6 24%,
+    #edf2ef 48%,
+    #f8faf9 72%,
+    #edf2ef 100%
+  );
+  background-size: 200% 100%;
   border-radius: 7px;
   display: block;
 }
@@ -3094,6 +3388,7 @@ h3 {
 .skeleton-text {
   height: 16px;
   margin: 0;
+  max-width: 100%;
 }
 
 .skeleton-text.short {
@@ -3114,6 +3409,7 @@ h3 {
 
 .skeleton-badge {
   height: 88px;
+  max-width: 100%;
   min-width: 180px;
 }
 
@@ -3130,11 +3426,11 @@ h3 {
 
 @keyframes skeleton-shimmer {
   0% {
-    background-position: 120% 0;
+    background-position: 0% 0;
   }
 
   100% {
-    background-position: -120% 0;
+    background-position: -200% 0;
   }
 }
 
@@ -3547,6 +3843,25 @@ h3 {
     flex-direction: column;
   }
 
+  .detail-hero > * {
+    max-width: 100%;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .skeleton-text.short {
+    width: min(180px, 100%);
+  }
+
+  .skeleton-text.medium {
+    width: min(320px, 100%);
+  }
+
+  .skeleton-badge {
+    min-width: 0;
+    width: min(180px, 100%);
+  }
+
   h1 {
     font-size: 28px;
   }
@@ -3614,12 +3929,42 @@ h3 {
   }
 
   .paddock-horse-summary {
-    grid-template-columns: 38px minmax(0, 1fr) minmax(0, auto) 44px;
+    align-items: start;
+    grid-template-columns: minmax(88px, auto) minmax(0, 1fr) 44px;
   }
 
-  .paddock-horse-jockey {
-    font-size: 11px;
-    max-width: 5rem;
+  .paddock-horse-race-facts {
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .paddock-horse-name {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .paddock-edit-footer-sticky {
+    background: color-mix(in srgb, var(--surface) 94%, transparent);
+    border-top: 1px solid var(--line);
+    bottom: 0;
+    box-shadow: 0 -8px 24px rgb(20 32 28 / 12%);
+    left: 0;
+    margin: 0;
+    padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+    position: fixed;
+    right: 0;
+    z-index: 30;
+  }
+
+  .paddock-edit-footer-sticky .paddock-edit-link {
+    justify-content: center;
+    min-height: 46px;
+    width: min(100%, 480px);
+  }
+
+  body:has(.paddock-edit-footer-sticky) .page-shell {
+    padding-bottom: 104px;
   }
 
   .paddock-score-controls {

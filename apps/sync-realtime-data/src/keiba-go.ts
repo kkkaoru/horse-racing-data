@@ -1,5 +1,5 @@
 import { buildNarRaceKey, NAR_BABA_CODE_TO_LOCAL_KEIBAJO } from "horse-racing-realtime/nar";
-import type { OddsData, OddsType, RaceResult } from "./types";
+import type { OddsData, OddsType, RaceEntry, RaceResult } from "./types";
 
 const KEIBA_GO_ORIGIN = "https://www.keiba.go.jp";
 const TOP_PAGE_URL = `${KEIBA_GO_ORIGIN}/KeibaWeb/TodayRaceInfo/TodayRaceInfoTop`;
@@ -45,6 +45,11 @@ export interface KeibaGoRaceLink {
   url: string;
 }
 
+export interface KeibaGoRaceMetadata {
+  raceName: string | null;
+  startTime: string | null;
+}
+
 export const buildRaceKey = (
   year: string,
   monthDay: string,
@@ -78,6 +83,8 @@ const stripHtmlTags = (text: string): string =>
     .replace(/<[^>]*>/g, "")
     .replace(/&nbsp;/g, " ")
     .trim();
+
+const normalizeText = (text: string): string => stripHtmlTags(text).replace(/\s+/gu, " ").trim();
 
 const dedupe = <T>(values: readonly T[]): T[] => Array.from(new Set(values));
 
@@ -186,6 +193,23 @@ export const extractOddsLinks = (
     }
   }
   return {};
+};
+
+export const parseRaceMetadata = (html: string): KeibaGoRaceMetadata => {
+  const heading = html.match(/<h4[^>]*>([\s\S]*?)<\/h4>/iu)?.[1] ?? "";
+  const startTime = normalizeText(heading).match(/(\d{1,2}):(\d{2})発走/u);
+  const titleSection = html.match(
+    /<section[^>]*class=["'][^"']*raceTitle[^"']*["'][^>]*>([\s\S]*?)<\/section>/iu,
+  )?.[1];
+  const raceName = titleSection
+    ? normalizeText(titleSection.match(/<h3[^>]*>([\s\S]*?)<\/h3>/iu)?.[1] ?? "")
+    : "";
+
+  return {
+    raceName: raceName.length > 0 ? raceName : null,
+    startTime:
+      startTime?.[1] && startTime[2] ? `${startTime[1].padStart(2, "0")}${startTime[2]}` : null,
+  };
 };
 
 export const fetchRacePage = fetchHtml;
@@ -472,6 +496,45 @@ export const parseHorseWeights = (html: string) => {
 const normalizeRaceResultCell = (cell: string): string =>
   stripHtmlTags(cell.replace(/<br\s*\/?>/giu, " ")).replace(/\s+/g, " ");
 
+const ENTRY_STATUS_LABELS = ["出場停止", "出走取消", "取消", "競走除外", "除外"] as const;
+
+const normalizeEntryStatus = (text: string): string | null => {
+  const normalized = normalizeRaceResultCell(text);
+  return ENTRY_STATUS_LABELS.find((status) => normalized.includes(status)) ?? null;
+};
+
+export const parseRaceEntries = (html: string): Omit<RaceEntry, "fetchedAt">[] =>
+  html
+    .split(/<tr[^>]*class=["'][^"']*tBorder[^"']*["'][^>]*>/giu)
+    .slice(1)
+    .map((block) => {
+      const horseNumber = block.match(
+        /class=["'][^"']*horseNum[^"']*["'][^>]*>\s*(\d{1,2})\s*</iu,
+      )?.[1];
+      const horseName = block.match(
+        /class=["'][^"']*horseName[^"']*["'][^>]*>([\s\S]*?)<\/a>/iu,
+      )?.[1];
+      const jockeyName = block.match(
+        /class=["'][^"']*jockeyName[^"']*["'][^>]*>([\s\S]*?)<\/a>/iu,
+      )?.[1];
+      if (!horseNumber || !isValidHorseNum(horseNumber)) {
+        return null;
+      }
+      return {
+        horseName: horseName ? normalizeRaceResultCell(horseName) : null,
+        horseNumber,
+        jockeyName: jockeyName ? normalizeRaceResultCell(jockeyName).replace(/（.*?）/gu, "") : null,
+        status: normalizeEntryStatus(block),
+      };
+    })
+    .filter((entry): entry is Omit<RaceEntry, "fetchedAt"> => entry !== null);
+
+export const parseRaceEntryHorseNumbers = (html: string): string[] =>
+  parseRaceEntries(html)
+    .map((entry) => entry.horseNumber)
+    .filter((horseNumber, index, values) => values.indexOf(horseNumber) === index)
+    .toSorted((left, right) => Number(left) - Number(right));
+
 export const parseRaceResultHorseWeights = (html: string) =>
   Array.from(html.matchAll(/<tr[^>]*bgcolor=["']#FFFFFF["'][^>]*>([\s\S]*?)<\/tr>/giu))
     .map((row) => {
@@ -501,6 +564,10 @@ export const parseRaceResultHorseWeights = (html: string) =>
     })
     .filter((item): item is NonNullable<typeof item> => item !== null);
 
+const RESULT_EXCLUDED_STATUSES = new Set<string>(ENTRY_STATUS_LABELS);
+
+const isResultExcludedStatus = (status: string): boolean => RESULT_EXCLUDED_STATUSES.has(status);
+
 export const parseRaceResults = (html: string): Omit<RaceResult, "fetchedAt">[] =>
   Array.from(html.matchAll(/<tr[^>]*bgcolor=["']#FFFFFF["'][^>]*>([\s\S]*?)<\/tr>/giu))
     .map((row) => {
@@ -513,14 +580,16 @@ export const parseRaceResults = (html: string): Omit<RaceResult, "fetchedAt">[] 
       const time = cells[11];
       if (
         !finishPosition ||
-        !/^\d+$/u.test(finishPosition) ||
+        isResultExcludedStatus(finishPosition) ||
         !horseNumber ||
         !isValidHorseNum(horseNumber)
       ) {
         return null;
       }
       return {
-        finishPosition: finishPosition.padStart(2, "0"),
+        finishPosition: /^\d+$/u.test(finishPosition)
+          ? finishPosition.padStart(2, "0")
+          : finishPosition,
         horseName: horseName || null,
         horseNumber,
         time: time || null,
@@ -529,6 +598,28 @@ export const parseRaceResults = (html: string): Omit<RaceResult, "fetchedAt">[] 
     .filter((item): item is Omit<RaceResult, "fetchedAt"> => item !== null)
     .toSorted(
       (left, right) =>
-        Number(left.finishPosition) - Number(right.finishPosition) ||
+        (Number(left.finishPosition) || 999) - (Number(right.finishPosition) || 999) ||
         Number(left.horseNumber) - Number(right.horseNumber),
     );
+
+export const parseRaceResultExcludedHorseNumbers = (html: string): string[] =>
+  Array.from(html.matchAll(/<tr[^>]*bgcolor=["']#FFFFFF["'][^>]*>([\s\S]*?)<\/tr>/giu))
+    .map((row) => {
+      const cells = Array.from((row[1] ?? "").matchAll(/<td[^>]*>([\s\S]*?)<\/td>/giu)).map(
+        (cell) => normalizeRaceResultCell(cell[1] ?? ""),
+      );
+      const finishPosition = cells[0];
+      const horseNumber = cells[2];
+      if (
+        !finishPosition ||
+        !isResultExcludedStatus(finishPosition) ||
+        !horseNumber ||
+        !isValidHorseNum(horseNumber)
+      ) {
+        return null;
+      }
+      return horseNumber;
+    })
+    .filter((horseNumber): horseNumber is string => horseNumber !== null)
+    .filter((horseNumber, index, values) => values.indexOf(horseNumber) === index)
+    .toSorted((left, right) => Number(left) - Number(right));

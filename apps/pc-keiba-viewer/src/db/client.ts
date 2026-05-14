@@ -11,6 +11,9 @@ const DATABASE_TARGETS = ["local", "neon", "cloudflare"] as const;
 type DatabaseTarget = (typeof DATABASE_TARGETS)[number];
 type Db = NodePgDatabase<typeof schema>;
 
+const DEFAULT_STATEMENT_TIMEOUT_MS = 15_000;
+const DEFAULT_IDLE_IN_TRANSACTION_TIMEOUT_MS = 15_000;
+
 const isDatabaseTarget = (value: string | undefined): value is DatabaseTarget =>
   value === "local" || value === "neon" || value === "cloudflare";
 
@@ -53,11 +56,23 @@ const globalForDb = globalThis as typeof globalThis & {
   pcKeibaViewerDbs?: Partial<Record<DatabaseTarget, Db>>;
 };
 
-const createDb = (databaseTarget: DatabaseTarget): Db => {
-  const pool = new Pool({
+const getPoolOptions = (databaseTarget: DatabaseTarget): ConstructorParameters<typeof Pool>[0] => {
+  const statementTimeoutMs = Number(process.env.PC_KEIBA_DB_STATEMENT_TIMEOUT_MS);
+  const idleInTransactionTimeoutMs = Number(process.env.PC_KEIBA_DB_IDLE_IN_TRANSACTION_TIMEOUT_MS);
+  return {
     connectionString: getConnectionString(databaseTarget),
+    idle_in_transaction_session_timeout: Number.isFinite(idleInTransactionTimeoutMs)
+      ? idleInTransactionTimeoutMs
+      : DEFAULT_IDLE_IN_TRANSACTION_TIMEOUT_MS,
     max: databaseTarget === "cloudflare" ? 1 : 8,
-  });
+    statement_timeout: Number.isFinite(statementTimeoutMs)
+      ? statementTimeoutMs
+      : DEFAULT_STATEMENT_TIMEOUT_MS,
+  };
+};
+
+const createDb = (databaseTarget: DatabaseTarget): Db => {
+  const pool = new Pool(getPoolOptions(databaseTarget));
 
   return drizzle(pool, { schema });
 };
@@ -78,8 +93,7 @@ export const getDb = (): Db => {
   }
 
   const existingPool = globalForDb.pcKeibaViewerPools?.[databaseTarget];
-  const pool =
-    existingPool ?? new Pool({ connectionString: getConnectionString(databaseTarget), max: 8 });
+  const pool = existingPool ?? new Pool(getPoolOptions(databaseTarget));
   const createdDb = drizzle(pool, { schema });
 
   globalForDb.pcKeibaViewerPools = {

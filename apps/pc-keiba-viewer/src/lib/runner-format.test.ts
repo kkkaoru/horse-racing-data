@@ -12,6 +12,7 @@ describe("runner format helpers", () => {
   it("formats horse weight with and without diff", () => {
     expect(formatHorseWeight("480", "+", "12")).toBe("480kg (+12)");
     expect(formatHorseWeight("480", "", "")).toBe("480kg");
+    expect(formatHorseWeight("不明", "+", "増減不明")).toBe("不明kg (+NaN)");
     expect(formatHorseWeight("4AE", "+", "008", true)).toBe("1198kg (+8)");
     expect(formatHorseWeight("406", "+", "00B", true)).toBe("1030kg (+11)");
     expect(formatHorseWeight("FFF", "+", "FFF", true)).toBe("-");
@@ -24,6 +25,7 @@ describe("runner format helpers", () => {
     expect(formatCarriedWeight("262", true)).toBe("610");
     expect(formatCarriedWeight("26C", true)).toBe("620");
     expect(formatCarriedWeight("FFF", true)).toBe("-");
+    expect(formatCarriedWeight("不明")).toBe("不明");
   });
 
   it("replaces sentinel runner values with dash", () => {
@@ -44,6 +46,7 @@ describe("runner format helpers", () => {
     expect(formatSexAge("2", "04")).toBe("牝 / 4歳");
     expect(formatSexAge("3", "05")).toBe("セ / 5歳");
     expect(formatSexAge(null, "03")).toBe("3歳");
+    expect(formatSexAge("1", null)).toBe("牡");
     expect(formatSexAge("9", null)).toBe("-");
   });
 });

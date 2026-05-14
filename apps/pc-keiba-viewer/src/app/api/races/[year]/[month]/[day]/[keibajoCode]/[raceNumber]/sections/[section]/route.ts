@@ -23,6 +23,7 @@ const SECTIONS = [
   "ability",
   "bloodline",
   "condition",
+  "finish-prediction",
   "overall-score",
   "pace-prediction",
   "results",

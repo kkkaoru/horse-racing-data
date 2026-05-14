@@ -48,6 +48,7 @@ describe("course helpers", () => {
 
   it("estimates corner count from track and course text", () => {
     expect(estimateCornerCount(courseText, "23")).toBe(4);
+    expect(estimateCornerCount("向正面から1～4コーナーを通るコース", "23")).toBe(4);
     expect(estimateCornerCount("説明", "10")).toBe(0);
     expect(estimateCornerCount("説明", "21")).toBe(8);
     expect(estimateCornerCount("説明", "23")).toBeNull();
@@ -77,5 +78,6 @@ describe("course helpers", () => {
   it("returns null when course image lookup inputs are missing", () => {
     expect(getCourseImagePath("04", "", "1800")).toBeNull();
     expect(getCourseImagePath("04", "23", "")).toBeNull();
+    expect(getCourseImagePath("04", "23", "9999")).toBeNull();
   });
 });

@@ -6,7 +6,7 @@ type Target = "local" | "neon";
 
 type Options = {
   buildVectorIndex: boolean;
-  sourceScope: "all" | "jra" | "nar";
+  sourceScope: "all" | "ban-ei" | "jra" | "nar";
   target: Target;
 };
 
@@ -26,8 +26,8 @@ const parseArgs = (args: string[]): Options => {
       options.target = value;
       index += 1;
     } else if (name === "--source-scope") {
-      if (value !== "all" && value !== "jra" && value !== "nar") {
-        throw new Error("--source-scope must be all, jra, or nar.");
+      if (value !== "all" && value !== "jra" && value !== "nar" && value !== "ban-ei") {
+        throw new Error("--source-scope must be all, jra, nar, or ban-ei.");
       }
       options.sourceScope = value;
       index += 1;
@@ -37,7 +37,7 @@ const parseArgs = (args: string[]): Options => {
 
 Options:
   --target local|neon
-  --source-scope all|jra|nar
+  --source-scope all|jra|nar|ban-ei
   --with-vector-index
 `);
       process.exit(0);
@@ -52,7 +52,7 @@ Options:
 
 const buildSql = (sourceScope: Options["sourceScope"], buildVectorIndex: boolean): string => {
   const includeJra = sourceScope === "all" || sourceScope === "jra";
-  const includeNar = sourceScope === "all" || sourceScope === "nar";
+  const includeNar = sourceScope === "all" || sourceScope === "nar" || sourceScope === "ban-ei";
   const selects: string[] = [];
   if (includeJra) {
     selects.push(`
@@ -147,7 +147,14 @@ const buildSql = (sourceScope: Options["sourceScope"], buildVectorIndex: boolean
       where
         se.ketto_toroku_bango is not null
         and btrim(se.ketto_toroku_bango) <> ''
-        and nullif(se.corner_4, '00') is not null
+        ${
+          sourceScope === "ban-ei"
+            ? "and ra.keibajo_code = '83'"
+            : sourceScope === "nar"
+              ? "and ra.keibajo_code <> '83'"
+              : ""
+        }
+        and (ra.keibajo_code = '83' or nullif(se.corner_4, '00') is not null)
     `);
   }
 
@@ -423,6 +430,14 @@ const buildSql = (sourceScope: Options["sourceScope"], buildVectorIndex: boolean
 
     create index if not exists race_entry_corner_features_venue_prefilter_idx
       on race_entry_corner_features (source, left(coalesce(track_code, ''), 1), keibajo_code, kyori, race_date desc);
+
+    create index if not exists race_entry_corner_features_finish_prefilter_idx
+      on race_entry_corner_features (source, race_date desc, left(coalesce(track_code, ''), 1), kyori, keibajo_code)
+      where finish_norm is not null;
+
+    create index if not exists race_entry_corner_features_horse_history_idx
+      on race_entry_corner_features (source, ketto_toroku_bango, race_date desc)
+      where finish_norm is not null;
     ${
       buildVectorIndex
         ? `

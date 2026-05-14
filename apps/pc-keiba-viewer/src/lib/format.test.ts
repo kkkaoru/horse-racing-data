@@ -49,12 +49,15 @@ describe("format helpers", () => {
     expect(getTrackTurnLabel("24")).toBe("右");
     expect(getTrackTurnLabel("10")).toBe("直線");
     expect(getTrackSurfaceLabel(" ")).toBe("-");
+    expect(getTrackSurfaceLabel("99")).toBe("コース 99");
     expect(getTrackTurnLabel("99")).toBe("-");
     expect(formatTrack("99")).toBe("コース 99");
     expect(formatTrack(" ")).toBe("-");
     expect(formatWeather("1")).toBe("晴");
     expect(formatWeather("9")).toBe("天候 9");
+    expect(formatWeather(null)).toBe("-");
     expect(formatBaba("1")).toBe("良");
     expect(formatBaba("9")).toBe("馬場 9");
+    expect(formatBaba(undefined)).toBe("-");
   });
 });

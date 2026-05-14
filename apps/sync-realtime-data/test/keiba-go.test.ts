@@ -10,7 +10,11 @@ import {
   fetchRaceLinksFromRaceList,
   fetchRacePage,
   fetchTodayRaceListUrls,
+  parseRaceMetadata,
+  parseRaceEntries,
   parseHorseWeights,
+  parseRaceEntryHorseNumbers,
+  parseRaceResultExcludedHorseNumbers,
   parseRaceResults,
   parseRaceResultHorseWeights,
 } from "../src/keiba-go";
@@ -183,6 +187,23 @@ describe("keiba.go realtime helpers", () => {
     expect(
       await fetchRaceLinksFromRaceList("https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList"),
     ).toEqual([]);
+  });
+
+  it("parses race metadata from a deba page", () => {
+    expect(
+      parseRaceMetadata(`
+        <article class="raceCard">
+          <h4>2026年5月14日（木）　川　崎　第4競走　16:30発走</h4>
+          <section class="raceTitle">
+            <p class="subTitle"></p>
+            <h3>Ｃ２五 六</h3>
+          </section>
+        </article>
+      `),
+    ).toEqual({
+      raceName: "Ｃ２五 六",
+      startTime: "1630",
+    });
   });
 
   it("throws on failed page fetches", async () => {
@@ -532,6 +553,71 @@ describe("keiba.go realtime helpers", () => {
         time: "1:54.3",
       },
     ]);
+  });
+
+  it("parses entry horse numbers from entry tables", () => {
+    const html = `
+      <tr class="tBorder"><td class="horseNum">12</td><td>horse</td></tr>
+      <tr class="tBorder"><td class="horseNum">3</td><td>horse</td></tr>
+      <tr class="tBorder"><td class="horseNum">12</td><td>duplicate</td></tr>
+      <tr class="tBorder"><td class="horseNum">20</td><td>invalid</td></tr>
+    `;
+    expect(parseRaceEntryHorseNumbers(html)).toEqual(["3", "12"]);
+  });
+
+  it("parses realtime race entries with cancellations and jockey changes", () => {
+    const html = `
+      <tr class="tBorder">
+        <td rowspan="5" class="horseNum">7</td>
+        <td colspan="3"><a class="horseName">取消ホース</a></td>
+        <td><a class="jockeyName">新騎手<span class="jockeyarea">（川崎）</span></a></td>
+        <td class="odds_weight"><span>出走取消</span></td>
+      </tr>
+      <tr class="tBorder">
+        <td rowspan="5" class="horseNum">8</td>
+        <td colspan="3"><a class="horseName">乗替ホース</a></td>
+        <td><a class="jockeyName">替騎手<span class="jockeyarea">（船橋）</span></a></td>
+        <td class="odds_weight"><span>5.5</span></td>
+      </tr>
+    `;
+
+    expect(parseRaceEntries(html)).toEqual([
+      {
+        horseName: "取消ホース",
+        horseNumber: "7",
+        jockeyName: "新騎手",
+        status: "出走取消",
+      },
+      {
+        horseName: "乗替ホース",
+        horseNumber: "8",
+        jockeyName: "替騎手",
+        status: null,
+      },
+    ]);
+  });
+
+  it("keeps non-excluded race result statuses and detects excluded horses", () => {
+    const html = `
+      <tr bgcolor="#FFFFFF" align="center">
+        <td nowrap>中止</td><td></td><td>5</td><td>競走中止馬</td>
+      </tr>
+      <tr bgcolor="#FFFFFF" align="center">
+        <td nowrap>出場停止</td><td></td><td>7</td><td>対象外</td>
+      </tr>
+      <tr bgcolor="#FFFFFF" align="center">
+        <td nowrap>除外</td><td></td><td>8</td><td>対象外</td>
+      </tr>
+    `;
+    expect(parseRaceResults(html)).toEqual([
+      {
+        finishPosition: "中止",
+        horseName: "競走中止馬",
+        horseNumber: "5",
+        time: null,
+      },
+    ]);
+    expect(parseRaceResultExcludedHorseNumbers(html)).toEqual(["7", "8"]);
   });
 
   it("ignores invalid race result rows", () => {

@@ -36,6 +36,7 @@ const runnerColumns = {
   umaban: varchar("umaban", { length: 2 }),
   kettoTorokuBango: varchar("ketto_toroku_bango", { length: 10 }),
   bamei: varchar("bamei", { length: 36 }),
+  moshokuCode: varchar("moshoku_code", { length: 2 }),
   seibetsuCode: varchar("seibetsu_code", { length: 1 }),
   barei: varchar("barei", { length: 2 }),
   futanJuryo: varchar("futan_juryo", { length: 3 }),

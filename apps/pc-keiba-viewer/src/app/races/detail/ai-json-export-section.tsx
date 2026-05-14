@@ -57,6 +57,7 @@ const SECTIONS = [
   "bloodline",
   "similar",
   "pace-prediction",
+  "finish-prediction",
   "overall-score",
 ];
 

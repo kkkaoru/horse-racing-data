@@ -39,12 +39,13 @@ import {
 import { AiJsonExportSection } from "./ai-json-export-section";
 import {
   LazyDetailSections,
-  LazyOverallScoreSection,
+  LazyFinishPredictionSection,
   LazyRacePacePredictionSection,
 } from "./lazy-detail-sections";
 import { PaddockSection } from "./paddock-section";
 import { RaceShareControls } from "./race-share-controls";
 import { RaceStartCountdown } from "./race-start-countdown";
+import { RealtimeRaceProvider, type RealtimeRaceRequest } from "./realtime-client";
 import { RealtimeRaceSection } from "./realtime-race-section";
 import { RunnersTable } from "./runners-table";
 
@@ -138,14 +139,20 @@ const fetchInitialRealtimePayload = async ({
   source: RaceSource;
   year: string;
 }): Promise<RealtimeRacePayload | null> => {
-  if (source !== "nar") {
+  const realtimeUrl = buildRealtimeRaceUrl({
+    apiBaseUrl,
+    day,
+    keibajoCode,
+    month,
+    raceNumber,
+    source,
+    year,
+  });
+  if (!realtimeUrl) {
     return null;
   }
   try {
-    const response = await fetch(
-      `${apiBaseUrl.replace(/\/$/u, "")}/api/nar/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/realtime`,
-      { cache: "no-store" },
-    );
+    const response = await fetch(realtimeUrl, { cache: "no-store" });
     if (!response.ok) {
       return null;
     }
@@ -154,6 +161,24 @@ const fetchInitialRealtimePayload = async ({
   } catch {
     return null;
   }
+};
+
+const buildRealtimeRaceUrl = ({
+  apiBaseUrl,
+  day,
+  keibajoCode,
+  month,
+  raceNumber,
+  source,
+  year,
+}: RealtimeRaceRequest): string | null => {
+  if (source !== "nar") {
+    return null;
+  }
+  if (!apiBaseUrl) {
+    return null;
+  }
+  return `${apiBaseUrl.replace(/\/$/u, "")}/api/nar/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/realtime`;
 };
 
 const DetailCell = ({
@@ -245,7 +270,7 @@ export async function RaceDetailView({
   const courseImagePath = getCourseImagePath(keibajoCode, race.trackCode, race.kyori);
   const realtimeApiBaseUrl =
     process.env.NEXT_PUBLIC_REALTIME_DATA_API_BASE_URL ?? "https://sync-realtime-data.kkk4oru.com";
-  const initialRealtimePayload = await fetchInitialRealtimePayload({
+  const realtimeRequest = {
     apiBaseUrl: realtimeApiBaseUrl,
     day,
     keibajoCode,
@@ -253,7 +278,8 @@ export async function RaceDetailView({
     raceNumber,
     source: raceSource,
     year,
-  });
+  } satisfies RealtimeRaceRequest;
+  const initialRealtimePayload = await fetchInitialRealtimePayload(realtimeRequest);
   const raceStartsAt = getRaceStartsAt(year, month, day, race.hassoJikoku);
   const sharePath = getRaceDetailPath({
     kaisaiNen: year,
@@ -346,208 +372,213 @@ export async function RaceDetailView({
     sharePath,
   };
   return (
-    <section className="page-shell">
-      <RaceShareControls path={sharePath} />
-      <div className="race-global-summary" aria-label="race summary in global header">
-        <div>
-          <span>{formatTime(race.hassoJikoku)}発走</span>
-          <RaceStartCountdown startsAt={raceStartsAt} />
-          <span>{formatKeibajo(keibajoCode)}</span>
+    <RealtimeRaceProvider initialPayload={initialRealtimePayload} request={realtimeRequest}>
+      <section className="page-shell">
+        <RaceShareControls path={sharePath} />
+        <div className="race-global-summary" aria-label="race summary in global header">
+          <div>
+            <span>{formatTime(race.hassoJikoku)}発走</span>
+            <RaceStartCountdown startsAt={raceStartsAt} />
+            <span>{formatKeibajo(keibajoCode)}</span>
+            <span>{formatRaceNumber(raceNumber)}</span>
+            <span>{getTrackSurfaceLabel(race.trackCode) ?? formatTrack(race.trackCode)}</span>
+            <span>{formatDistance(race.kyori)}</span>
+          </div>
+        </div>
+        {previousRace ? (
+          <Link
+            aria-label={`前のレース ${getAdjacentRaceLabel(previousRace)}`}
+            className="race-side-nav race-side-nav-prev"
+            href={getRaceDetailPath(previousRace)}
+          >
+            <span className="race-nav-icon" aria-hidden="true" />
+          </Link>
+        ) : null}
+        {nextRace ? (
+          <Link
+            aria-label={`次のレース ${getAdjacentRaceLabel(nextRace)}`}
+            className="race-side-nav race-side-nav-next"
+            href={getRaceDetailPath(nextRace)}
+          >
+            <span className="race-nav-icon" aria-hidden="true" />
+          </Link>
+        ) : null}
+        <div className="breadcrumbs">
+          <Link href="/races">開催日一覧</Link>
+          <Link href={`/races/${year}`}>{year}年</Link>
+          <Link href={`/races/${year}/${month}`}>{Number(month)}月</Link>
+          <Link href={`/races/${year}/${month}/${day}`}>
+            {formatDisplayDate(year, `${month}${day}`)}
+          </Link>
+          <Link href={`/races/${year}/${month}/${day}/${keibajoCode}`}>
+            {formatKeibajo(keibajoCode)}
+          </Link>
           <span>{formatRaceNumber(raceNumber)}</span>
-          <span>{getTrackSurfaceLabel(race.trackCode) ?? formatTrack(race.trackCode)}</span>
-          <span>{formatDistance(race.kyori)}</span>
         </div>
-      </div>
-      {previousRace ? (
-        <Link
-          aria-label={`前のレース ${getAdjacentRaceLabel(previousRace)}`}
-          className="race-side-nav race-side-nav-prev"
-          href={getRaceDetailPath(previousRace)}
-        >
-          <span className="race-nav-icon" aria-hidden="true" />
-        </Link>
-      ) : null}
-      {nextRace ? (
-        <Link
-          aria-label={`次のレース ${getAdjacentRaceLabel(nextRace)}`}
-          className="race-side-nav race-side-nav-next"
-          href={getRaceDetailPath(nextRace)}
-        >
-          <span className="race-nav-icon" aria-hidden="true" />
-        </Link>
-      ) : null}
-      <div className="breadcrumbs">
-        <Link href="/races">開催日一覧</Link>
-        <Link href={`/races/${year}`}>{year}年</Link>
-        <Link href={`/races/${year}/${month}`}>{Number(month)}月</Link>
-        <Link href={`/races/${year}/${month}/${day}`}>
-          {formatDisplayDate(year, `${month}${day}`)}
-        </Link>
-        <Link href={`/races/${year}/${month}/${day}/${keibajoCode}`}>
-          {formatKeibajo(keibajoCode)}
-        </Link>
-        <span>{formatRaceNumber(raceNumber)}</span>
-      </div>
-      {previousRace || nextRace ? (
-        <nav className="race-mobile-nav" aria-label="same venue race navigation">
-          {previousRace ? (
-            <Link
-              aria-label={`前のレース ${getAdjacentRaceLabel(previousRace)}`}
-              className="race-mobile-nav-prev"
-              href={getRaceDetailPath(previousRace)}
-            >
-              <span className="race-nav-icon" aria-hidden="true" />
-            </Link>
-          ) : (
-            <span aria-hidden="true" />
-          )}
-          {nextRace ? (
-            <Link
-              aria-label={`次のレース ${getAdjacentRaceLabel(nextRace)}`}
-              className="race-mobile-nav-next"
-              href={getRaceDetailPath(nextRace)}
-            >
-              <span className="race-nav-icon" aria-hidden="true" />
-            </Link>
-          ) : (
-            <span aria-hidden="true" />
-          )}
-        </nav>
-      ) : null}
+        {previousRace || nextRace ? (
+          <nav className="race-mobile-nav" aria-label="same venue race navigation">
+            {previousRace ? (
+              <Link
+                aria-label={`前のレース ${getAdjacentRaceLabel(previousRace)}`}
+                className="race-mobile-nav-prev"
+                href={getRaceDetailPath(previousRace)}
+              >
+                <span className="race-nav-icon" aria-hidden="true" />
+              </Link>
+            ) : (
+              <span aria-hidden="true" />
+            )}
+            {nextRace ? (
+              <Link
+                aria-label={`次のレース ${getAdjacentRaceLabel(nextRace)}`}
+                className="race-mobile-nav-next"
+                href={getRaceDetailPath(nextRace)}
+              >
+                <span className="race-nav-icon" aria-hidden="true" />
+              </Link>
+            ) : (
+              <span aria-hidden="true" />
+            )}
+          </nav>
+        ) : null}
 
-      <div className="detail-hero">
-        <div>
-          <p className="eyebrow">
-            {SOURCE_LABELS[raceSource]} / {formatDate(year, `${month}${day}`)}
-          </p>
-          <h1>{raceName}</h1>
-          <p className="sub-title">
-            {formatKeibajo(keibajoCode)} {formatRaceNumber(raceNumber)}{" "}
-            {formatTime(race.hassoJikoku)}発走
-          </p>
-          {raceTags.length > 0 ? (
-            <div className="hero-tags">
-              {raceTags.map((tag) => (
-                <span className="race-tag prominent" key={tag}>
-                  {tag}
-                </span>
-              ))}
-            </div>
-          ) : null}
-        </div>
-        <div className="race-badge">
-          <span>{formatTrack(race.trackCode)}</span>
-          <strong>{formatDistance(race.kyori)}</strong>
-        </div>
-      </div>
-
-      <section className="detail-grid" aria-label="race details">
-        <DetailCell label="副題" value={race.kyosomeiFukudai} />
-        <DetailCell label="括弧内名称" value={race.kyosomeiKakkonai} />
-        <DetailCell
-          label="条件"
-          value={raceTags.length > 0 ? raceTags.join(" / ") : cleanText(race.kyosoJokenMeisho)}
-        />
-        <DetailCell label="グレード" value={getGradeLabel(race.gradeCode, race.source)} />
-        <DetailCell label="競走記号" value={race.kyosoKigoCode} />
-        <DetailCell label="重量種別" value={getWeightLabel(race.juryoShubetsuCode)} />
-        <DetailCell label="出走頭数" suffix=" 頭" value={race.shussoTosu} />
-        <DetailCell label="登録頭数" suffix=" 頭" value={race.torokuTosu} />
-        <DetailLinkCell href={jraRaceEntryUrl} label="JRA出馬表" value="公式ページ" />
-        <DetailLinkCell href={jraRaceResultUrl} label="JRA成績" value="公式ページ" />
-        <DetailCell label="天候" value={formatWeather(race.tenkoCode)} />
-        <DetailCell label="芝馬場" value={formatBaba(race.babajotaiCodeShiba)} />
-        <DetailCell label="ダート馬場" value={formatBaba(race.babajotaiCodeDirt)} />
-      </section>
-
-      <PaddockSection
-        day={day}
-        keibajoCode={keibajoCode}
-        month={month}
-        raceNumber={raceNumber}
-        runners={runners}
-        year={year}
-      />
-
-      <section className="course-section">
-        <div className="section-heading compact">
-          <h2>コース情報</h2>
-          <span>
-            {formatKeibajo(keibajoCode)} {formatTrack(race.trackCode)} {formatDistance(race.kyori)}
-          </span>
-        </div>
-        <div className="course-panel">
-          <div className="course-summary">
+        <div className="detail-hero">
+          <div>
+            <p className="eyebrow">
+              {SOURCE_LABELS[raceSource]} / {formatDate(year, `${month}${day}`)}
+            </p>
+            <h1>{raceName}</h1>
+            <p className="sub-title">
+              {formatKeibajo(keibajoCode)} {formatRaceNumber(raceNumber)}{" "}
+              {formatTime(race.hassoJikoku)}発走
+            </p>
+            {raceTags.length > 0 ? (
+              <div className="hero-tags">
+                {raceTags.map((tag) => (
+                  <span className="race-tag prominent" key={tag}>
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          <div className="race-badge">
             <span>{formatTrack(race.trackCode)}</span>
             <strong>{formatDistance(race.kyori)}</strong>
+          </div>
+        </div>
+
+        <section className="detail-grid" aria-label="race details">
+          <DetailCell label="副題" value={race.kyosomeiFukudai} />
+          <DetailCell label="括弧内名称" value={race.kyosomeiKakkonai} />
+          <DetailCell
+            label="条件"
+            value={raceTags.length > 0 ? raceTags.join(" / ") : cleanText(race.kyosoJokenMeisho)}
+          />
+          <DetailCell label="グレード" value={getGradeLabel(race.gradeCode, race.source)} />
+          <DetailCell label="競走記号" value={race.kyosoKigoCode} />
+          <DetailCell label="重量種別" value={getWeightLabel(race.juryoShubetsuCode)} />
+          <DetailCell label="出走頭数" suffix=" 頭" value={race.shussoTosu} />
+          <DetailCell label="登録頭数" suffix=" 頭" value={race.torokuTosu} />
+          <DetailLinkCell href={jraRaceEntryUrl} label="JRA出馬表" value="公式ページ" />
+          <DetailLinkCell href={jraRaceResultUrl} label="JRA成績" value="公式ページ" />
+          <DetailCell label="天候" value={formatWeather(race.tenkoCode)} />
+          <DetailCell label="芝馬場" value={formatBaba(race.babajotaiCodeShiba)} />
+          <DetailCell label="ダート馬場" value={formatBaba(race.babajotaiCodeDirt)} />
+        </section>
+
+        <PaddockSection
+          day={day}
+          keibajoCode={keibajoCode}
+          month={month}
+          raceNumber={raceNumber}
+          runners={runners}
+          year={year}
+        />
+
+        <section className="course-section">
+          <div className="section-heading compact">
+            <h2>コース情報</h2>
             <span>
-              改修日{" "}
-              {courseInfo
-                ? formatDate(
-                    courseInfo.courseKaishuNengappi.slice(0, 4),
-                    courseInfo.courseKaishuNengappi.slice(4, 8),
-                  )
-                : "-"}
+              {formatKeibajo(keibajoCode)} {formatTrack(race.trackCode)}{" "}
+              {formatDistance(race.kyori)}
             </span>
           </div>
-          {courseFacts.length > 0 ? (
-            <dl className="course-facts">
-              {courseFacts.map((fact) => (
-                <div key={fact.label}>
-                  <dt>{fact.label}</dt>
-                  <dd>{fact.value}</dd>
-                </div>
-              ))}
-            </dl>
-          ) : null}
-          {courseImagePath ? (
-            <figure className="course-image">
-              <Image
-                src={courseImagePath}
-                alt={`${formatKeibajo(keibajoCode)} ${formatTrack(race.trackCode)} ${formatDistance(race.kyori)} コース図`}
-                width={900}
-                height={480}
-                sizes="(max-width: 720px) 100vw, 900px"
-              />
-            </figure>
-          ) : null}
-          <details className="course-description">
-            <summary>コース説明を表示</summary>
-            <div>
-              {courseParagraphs.map((paragraph) => (
-                <p key={paragraph}>{paragraph}</p>
-              ))}
+          <div className="course-panel">
+            <div className="course-summary">
+              <span>{formatTrack(race.trackCode)}</span>
+              <strong>{formatDistance(race.kyori)}</strong>
+              <span>
+                改修日{" "}
+                {courseInfo
+                  ? formatDate(
+                      courseInfo.courseKaishuNengappi.slice(0, 4),
+                      courseInfo.courseKaishuNengappi.slice(4, 8),
+                    )
+                  : "-"}
+              </span>
             </div>
-          </details>
-        </div>
-      </section>
+            {courseFacts.length > 0 ? (
+              <dl className="course-facts">
+                {courseFacts.map((fact) => (
+                  <div key={fact.label}>
+                    <dt>{fact.label}</dt>
+                    <dd>{fact.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            ) : null}
+            {courseImagePath ? (
+              <figure className="course-image">
+                <Image
+                  src={courseImagePath}
+                  alt={`${formatKeibajo(keibajoCode)} ${formatTrack(race.trackCode)} ${formatDistance(race.kyori)} コース図`}
+                  width={900}
+                  height={480}
+                  sizes="(max-width: 720px) 100vw, 900px"
+                />
+              </figure>
+            ) : null}
+            <details className="course-description">
+              <summary>コース説明を表示</summary>
+              <div>
+                {courseParagraphs.map((paragraph) => (
+                  <p key={paragraph}>{paragraph}</p>
+                ))}
+              </div>
+            </details>
+          </div>
+        </section>
 
-      <section className="runners-section">
-        <div className="section-heading compact">
-          <h2>出走馬</h2>
-        </div>
-        {runners.length === 0 ? (
-          <p className="empty-state">出走馬情報はまだありません。</p>
-        ) : (
-          <RunnersTable
-            decodeHexHorseWeight={decodeHexHorseWeight}
-            initialRealtimePayload={initialRealtimePayload}
-            realtimeRequest={{
-              apiBaseUrl: realtimeApiBaseUrl,
-              day,
-              keibajoCode,
-              month,
-              raceNumber,
-              source: raceSource,
-              year,
-            }}
-            runners={runners}
+        <section className="runners-section">
+          <div className="section-heading compact">
+            <h2>出走馬</h2>
+          </div>
+          {runners.length === 0 ? (
+            <p className="empty-state">出走馬情報はまだありません。</p>
+          ) : (
+            <RunnersTable
+              decodeHexHorseWeight={decodeHexHorseWeight}
+              initialRealtimePayload={initialRealtimePayload}
+              realtimeRequest={realtimeRequest}
+              runners={runners}
+            />
+          )}
+        </section>
+
+        {showRacePacePrediction ? (
+          <LazyRacePacePredictionSection
+            day={day}
+            keibajoCode={keibajoCode}
+            month={month}
+            raceNumber={raceNumber}
+            realtimeApiBaseUrl={realtimeApiBaseUrl}
+            source={raceSource}
+            year={year}
           />
-        )}
-      </section>
+        ) : null}
 
-      {showRacePacePrediction ? (
-        <LazyRacePacePredictionSection
+        <LazyFinishPredictionSection
           day={day}
           keibajoCode={keibajoCode}
           month={month}
@@ -556,54 +587,44 @@ export async function RaceDetailView({
           source={raceSource}
           year={year}
         />
-      ) : null}
 
-      <LazyOverallScoreSection
-        day={day}
-        keibajoCode={keibajoCode}
-        month={month}
-        raceNumber={raceNumber}
-        realtimeApiBaseUrl={realtimeApiBaseUrl}
-        source={raceSource}
-        year={year}
-      />
+        <RealtimeRaceSection
+          apiBaseUrl={realtimeApiBaseUrl}
+          day={day}
+          initialPayload={initialRealtimePayload}
+          keibajoCode={keibajoCode}
+          month={month}
+          raceNumber={raceNumber}
+          runners={runners}
+          source={raceSource}
+          year={year}
+        />
 
-      <RealtimeRaceSection
-        apiBaseUrl={realtimeApiBaseUrl}
-        day={day}
-        initialPayload={initialRealtimePayload}
-        keibajoCode={keibajoCode}
-        month={month}
-        raceNumber={raceNumber}
-        runners={runners}
-        source={raceSource}
-        year={year}
-      />
-
-      <LazyDetailSections
-        day={day}
-        keibajoCode={keibajoCode}
-        month={month}
-        raceNumber={raceNumber}
-        realtimeApiBaseUrl={realtimeApiBaseUrl}
-        source={raceSource}
-        year={year}
-      />
-      <AiJsonExportSection
-        basePostgresqlData={{
-          courseInfo,
-          race,
-          raceDayRaces,
-          runners,
-        }}
-        baseProcessedData={baseProcessedData}
-        day={day}
-        keibajoCode={keibajoCode}
-        month={month}
-        raceNumber={raceNumber}
-        source={raceSource}
-        year={year}
-      />
-    </section>
+        <LazyDetailSections
+          day={day}
+          keibajoCode={keibajoCode}
+          month={month}
+          raceNumber={raceNumber}
+          realtimeApiBaseUrl={realtimeApiBaseUrl}
+          source={raceSource}
+          year={year}
+        />
+        <AiJsonExportSection
+          basePostgresqlData={{
+            courseInfo,
+            race,
+            raceDayRaces,
+            runners,
+          }}
+          baseProcessedData={baseProcessedData}
+          day={day}
+          keibajoCode={keibajoCode}
+          month={month}
+          raceNumber={raceNumber}
+          source={raceSource}
+          year={year}
+        />
+      </section>
+    </RealtimeRaceProvider>
   );
 }

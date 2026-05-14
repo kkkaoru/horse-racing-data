@@ -14,7 +14,10 @@ import {
   type PaddockState,
 } from "../../../lib/paddock";
 import type { Runner } from "../../../lib/race-types";
-import { formatRunnerNumber } from "../../../lib/runner-format";
+import { formatRunnerNumber, formatSexAge } from "../../../lib/runner-format";
+import { FrameNumberBadge, HorseNameBadge } from "./frame-number-badge";
+import type { RealtimeRaceRequest } from "./realtime-client";
+import { useRealtimeRacePayload } from "./realtime-client";
 
 interface PaddockSectionProps {
   day: string;
@@ -22,6 +25,7 @@ interface PaddockSectionProps {
   keibajoCode: string;
   month: string;
   raceNumber: string;
+  realtimeRequest?: RealtimeRaceRequest;
   runners: Runner[];
   year: string;
 }
@@ -30,9 +34,15 @@ interface PaddockHorseRowProps {
   editable: boolean;
   horseName: string;
   horseNumber: string;
+  frameNumber: string | null;
   jockeyName: string;
+  moshokuCode?: string | null;
   onOfficialRank: (action: PaddockAction) => void;
   onScore: (action: PaddockAction) => void;
+  originalJockeyName: string;
+  realtimeOdds: number | null;
+  realtimeJockeyName: string | null;
+  realtimePopularity: number | null;
   scores: {
     attention: number;
     kaeshi: number;
@@ -41,6 +51,8 @@ interface PaddockHorseRowProps {
     preference: number;
     total: number;
   };
+  sexAge: string;
+  status: string | null;
 }
 
 const METRIC_LABELS: Record<PaddockMetric, { minus: string; plus: string; title: string }> = {
@@ -49,7 +61,12 @@ const METRIC_LABELS: Record<PaddockMetric, { minus: string; plus: string; title:
   paddock: { minus: "気配-", plus: "気配+", title: "パドック" },
   preference: { minus: "嫌い", plus: "好き", title: "好み" },
 };
-const METRIC_ORDER = ["paddock", "attention", "preference", "kaeshi"] as const satisfies readonly PaddockMetric[];
+const METRIC_ORDER = [
+  "paddock",
+  "attention",
+  "preference",
+  "kaeshi",
+] as const satisfies readonly PaddockMetric[];
 const DEFAULT_REMOTE_PADDOCK_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
 const OFFICIAL_RANK_OPTIONS: PaddockOfficialRank[] = [1, 2, 3, 4, 5, 6];
 
@@ -84,6 +101,15 @@ const formatOfficialRank = (rank: PaddockOfficialRank | null | undefined): strin
 const formatPaddockScore = (value: number): string =>
   Number.isInteger(value) ? String(value) : value.toFixed(1);
 
+const formatRealtimePopularity = (value: number | null): string =>
+  value === null ? "-" : `${value}`;
+
+const formatRealtimeOdds = (value: number | null): string =>
+  value === null ? "-" : value.toFixed(1);
+
+const isChangedJockey = (storedName: string, realtimeName: string | null): boolean =>
+  Boolean(realtimeName) && storedName !== "" && realtimeName !== storedName;
+
 const getOfficialRankClassName = (rank: PaddockOfficialRank | null | undefined): string =>
   rank ? `paddock-rank-badge rank-${rank}` : "paddock-rank-badge";
 
@@ -112,12 +138,20 @@ const getPaddockApiPath = ({
 
 const PaddockHorseRow = memo(function PaddockHorseRow({
   editable,
+  frameNumber,
   horseName,
   horseNumber,
   jockeyName,
+  moshokuCode,
   onOfficialRank,
   onScore,
+  originalJockeyName,
+  realtimeOdds,
+  realtimeJockeyName,
+  realtimePopularity,
   scores,
+  sexAge,
+  status,
 }: PaddockHorseRowProps) {
   const score = (category: PaddockMetric, delta: -1 | 1) => {
     onScore({ category, delta, horseName, horseNumber });
@@ -125,13 +159,52 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
   const setOfficialRank = (rank: PaddockOfficialRank | null) => {
     onOfficialRank({ horseName, horseNumber, rank, type: "official-rank" });
   };
+  const displayJockeyName = realtimeJockeyName || jockeyName;
 
   return (
     <div className="paddock-horse-row">
       <div className="paddock-horse-summary">
-        <strong>{formatRunnerNumber(horseNumber)}</strong>
-        <span>{horseName}</span>
-        {jockeyName ? <em className="paddock-horse-jockey">{jockeyName}</em> : null}
+        <div className="paddock-horse-ids">
+          <span>
+            <small>馬番</small>
+            <strong>{formatRunnerNumber(horseNumber)}</strong>
+          </span>
+          <span>
+            <small>枠番</small>
+            <FrameNumberBadge value={frameNumber} />
+          </span>
+        </div>
+        <span className="paddock-horse-name-block">
+          <span className="paddock-horse-name">
+            <HorseNameBadge coatCode={moshokuCode} name={horseName} showCoatLabel={false} />
+          </span>
+          {displayJockeyName ? (
+            <span
+              aria-label={`騎手名 ${displayJockeyName}`}
+              className="paddock-horse-jockey-line"
+            >
+              <strong>{displayJockeyName}</strong>
+              {isChangedJockey(originalJockeyName, realtimeJockeyName) ? (
+                <small>元 {originalJockeyName}</small>
+              ) : null}
+            </span>
+          ) : null}
+          {status ? <span className="paddock-status-badge">{status}</span> : null}
+        </span>
+        <div className="paddock-horse-race-facts">
+          <span>
+            <small>性齢</small>
+            <strong>{sexAge}</strong>
+          </span>
+          <span>
+            <small>人気</small>
+            <strong>{formatRealtimePopularity(realtimePopularity)}</strong>
+          </span>
+          <span>
+            <small>単勝</small>
+            <strong>{formatRealtimeOdds(realtimeOdds)}</strong>
+          </span>
+        </div>
         <b>{formatPaddockScore(scores.total)}</b>
       </div>
       {editable ? (
@@ -212,7 +285,13 @@ function PaddockReadOnlyTable({
   rows,
   state,
 }: {
-  rows: { horseName: string; horseNumber: string; jockeyName: string }[];
+  rows: {
+    frameNumber: string | null;
+    horseName: string;
+    horseNumber: string;
+    jockeyName: string;
+    moshokuCode?: string | null;
+  }[];
   state: PaddockState | null;
 }) {
   const evaluatedRows = rows
@@ -245,6 +324,7 @@ function PaddockReadOnlyTable({
       <table className="stats-table paddock-table">
         <colgroup>
           <col className="paddock-col-number" />
+          <col className="paddock-col-number" />
           <col className="paddock-col-name" />
           <col className="paddock-col-rank" />
           <col className="paddock-col-score" />
@@ -256,6 +336,7 @@ function PaddockReadOnlyTable({
         <thead>
           <tr>
             <th>馬番</th>
+            <th>枠</th>
             <th>馬名</th>
             <th>公式評価順</th>
             <th>合計</th>
@@ -269,7 +350,16 @@ function PaddockReadOnlyTable({
           {evaluatedRows.map((row) => (
             <tr key={row.horseNumber}>
               <td>{formatRunnerNumber(row.horseNumber)}</td>
-              <td className="stats-name-cell">{row.horseName}</td>
+              <td>
+                <FrameNumberBadge value={row.frameNumber} />
+              </td>
+              <td className="stats-name-cell">
+                <HorseNameBadge
+                  coatCode={row.moshokuCode}
+                  name={row.horseName}
+                  showCoatLabel={false}
+                />
+              </td>
               <td>
                 {row.scores?.officialRank ? (
                   <span className={getOfficialRankClassName(row.scores.officialRank)}>
@@ -298,6 +388,7 @@ export function PaddockSection({
   keibajoCode,
   month,
   raceNumber,
+  realtimeRequest,
   runners,
   year,
 }: PaddockSectionProps) {
@@ -308,6 +399,44 @@ export function PaddockSection({
   const apiPath = getPaddockApiPath({ day, keibajoCode, month, raceNumber, year });
   const livePath = `${apiPath}/live`;
   const editPath = `/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/paddock`;
+  const { payload: realtimePayload } = useRealtimeRacePayload(
+    realtimeRequest ?? {
+      apiBaseUrl: "",
+      day: "",
+      keibajoCode: "",
+      month: "",
+      raceNumber: "",
+      source: "",
+      year: "",
+    },
+    null,
+  );
+  const realtimeOddsByHorse = useMemo(
+    () =>
+      new Map(
+        (realtimePayload?.odds?.latest.tansho ?? []).map((row) => [
+          formatRunnerNumber(row.combination),
+          {
+            odds: row.odds ?? null,
+            popularity: row.rank ?? null,
+          },
+        ]),
+      ),
+    [realtimePayload],
+  );
+  const realtimeEntryByHorse = useMemo(
+    () =>
+      new Map(
+        (realtimePayload?.raceEntries?.horses ?? []).map((horse) => [
+          formatRunnerNumber(horse.horseNumber),
+          {
+            jockeyName: cleanText(horse.jockeyName, ""),
+            status: cleanText(horse.status, ""),
+          },
+        ]),
+      ),
+    [realtimePayload],
+  );
   const runnerRows = useMemo(
     () =>
       runners.map((runner) => {
@@ -315,7 +444,10 @@ export function PaddockSection({
         return {
           horseName: cleanText(runner.bamei),
           horseNumber,
+          frameNumber: cleanText(runner.wakuban, ""),
           jockeyName: cleanText(runner.kishumeiRyakusho),
+          moshokuCode: runner.moshokuCode,
+          sexAge: formatSexAge(runner.seibetsuCode, runner.barei),
         };
       }),
     [runners],
@@ -419,14 +551,23 @@ export function PaddockSection({
         <div className="paddock-board">
           {runnerRows.map((runner) => {
             const scores = normalizePaddockHorseScore(state?.horses[runner.horseNumber], runner);
+            const realtimeEntry = realtimeEntryByHorse.get(runner.horseNumber);
             return (
               <PaddockHorseRow
                 editable
+                frameNumber={runner.frameNumber}
                 horseName={runner.horseName}
                 horseNumber={runner.horseNumber}
                 jockeyName={runner.jockeyName}
+                moshokuCode={runner.moshokuCode}
                 key={runner.horseNumber}
+                originalJockeyName={runner.jockeyName}
+                realtimeOdds={realtimeOddsByHorse.get(runner.horseNumber)?.odds ?? null}
+                realtimeJockeyName={realtimeEntry?.jockeyName || null}
+                realtimePopularity={realtimeOddsByHorse.get(runner.horseNumber)?.popularity ?? null}
                 scores={scores}
+                sexAge={runner.sexAge}
+                status={realtimeEntry?.status || null}
                 onOfficialRank={submitScore}
                 onScore={submitScore}
               />

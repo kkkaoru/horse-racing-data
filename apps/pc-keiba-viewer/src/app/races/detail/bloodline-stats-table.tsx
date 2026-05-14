@@ -8,6 +8,7 @@ import type { RaceSource } from "../../../lib/codes";
 import { cleanText, formatDate, formatKeibajo, formatRaceNumber } from "../../../lib/format";
 import type { BloodlineStatsRow, Runner, SimilarRaceStatsSettings } from "../../../lib/race-types";
 import { formatRunnerNumber } from "../../../lib/runner-format";
+import { FrameNumberBadge } from "./frame-number-badge";
 import { MobileFilterDisclosure } from "./mobile-filter-disclosure";
 
 type BloodlineCategory = BloodlineStatsRow["category"];
@@ -442,7 +443,9 @@ export const BloodlineStatsTable = memo(function BloodlineStatsTable({
                     <td>{formatRaceNumber(detail.raceNumber)}</td>
                     <td className="stats-detail-race-name">{detail.raceName || "-"}</td>
                     <td className="stats-detail-horse-name">{detail.horseName || "-"}</td>
-                    <td>{detail.frameNumber || "-"}</td>
+                    <td>
+                      <FrameNumberBadge value={detail.frameNumber} />
+                    </td>
                     <td>{detail.horseNumber || "-"}</td>
                     <td>{formatRank(detail.rank)}</td>
                     <td>{formatTenthsTime(detail.raceTime)}</td>
@@ -540,7 +543,9 @@ export const BloodlineStatsTable = memo(function BloodlineStatsTable({
                     <td>{formatRaceNumber(detail.raceNumber)}</td>
                     <td className="stats-detail-race-name">{detail.raceName || "-"}</td>
                     <td className="stats-detail-horse-name">{detail.horseName || "-"}</td>
-                    <td>{detail.frameNumber || "-"}</td>
+                    <td>
+                      <FrameNumberBadge value={detail.frameNumber} />
+                    </td>
                     <td>{detail.horseNumber || "-"}</td>
                     <td>{formatRank(detail.rank)}</td>
                     <td>{formatTenthsTime(detail.raceTime)}</td>

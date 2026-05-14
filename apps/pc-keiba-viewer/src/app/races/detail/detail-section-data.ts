@@ -1,6 +1,8 @@
 import "server-only";
 import {
   getBloodlineStats,
+  getFinishPositionModelPredictionFeatures,
+  getFinishPositionSimilarityFeatures,
   getFinishPositionStats,
   getFrameStats,
   getHorseRaceResults,
@@ -32,6 +34,7 @@ import {
   getRaceTags,
   getWeightLabel,
 } from "../../../lib/race-classification";
+import { buildFinishPredictionRowsFromResults } from "../../../lib/finish-position-prediction";
 import {
   buildRacePacePredictionRowsFromResults,
   isCornerPacePredictionSupported,
@@ -56,6 +59,7 @@ export type DetailSection =
   | "ability"
   | "bloodline"
   | "condition"
+  | "finish-prediction"
   | "overall-score"
   | "pace-prediction"
   | "results"
@@ -853,6 +857,36 @@ export const getDetailSectionPayload = async (
     const rows: TimeScoreRow[] = await getTimeScoreRows(race, context.conditionAnalysisSettings);
     return {
       rows,
+      type: section,
+    };
+  }
+
+  if (section === "finish-prediction") {
+    const results = await getHorseRaceResults(
+      race.source,
+      year,
+      month,
+      day,
+      keibajoCode,
+      raceNumber,
+      getResultsSourceScope(params.query),
+    );
+    const [similarityFeatures, modelPredictionFeatures] = await Promise.all([
+      getFinishPositionSimilarityFeatures(race, runners),
+      getFinishPositionModelPredictionFeatures(race, runners),
+    ]);
+    return {
+      rows: buildFinishPredictionRowsFromResults({
+        currentDistance: race.kyori,
+        currentKeibajoCode: race.keibajoCode,
+        currentRaceDate: `${race.kaisaiNen}${race.kaisaiTsukihi}`,
+        currentSource: race.source,
+        currentTrackCode: race.trackCode,
+        modelPredictionFeatures,
+        results,
+        runners,
+        similarityFeatures,
+      }),
       type: section,
     };
   }

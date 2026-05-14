@@ -39,6 +39,8 @@ const seedRace = async (
     lastOddsFetchAt?: string | null;
     lastOddsQueuedAt?: string | null;
     oddsFetchLockUntil?: string | null;
+    resultCompleteAt?: string | null;
+    lastResultFetchAt?: string | null;
   } = {},
 ): Promise<void> => {
   await db
@@ -48,10 +50,10 @@ const seedRace = async (
           race_key, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
           baba_code, race_start_at_jst, race_name, deba_url, odds_links_json,
           discovered_at, updated_at, last_odds_fetch_at, last_odds_queued_at,
-          odds_fetch_lock_until, last_weight_fetch_at
+          odds_fetch_lock_until, last_weight_fetch_at, last_result_fetch_at, result_complete_at
         )
         values (?, 'nar', '2026', '0512', '55', '01', '22', ?, 'test race',
-          'https://example.test/deba', '{}', ?, ?, ?, ?, ?, null)
+          'https://example.test/deba', '{}', ?, ?, ?, ?, ?, null, ?, ?)
       `,
     )
     .bind(
@@ -62,6 +64,8 @@ const seedRace = async (
       options.lastOddsFetchAt ?? null,
       options.lastOddsQueuedAt ?? null,
       options.oddsFetchLockUntil ?? null,
+      options.lastResultFetchAt ?? null,
+      options.resultCompleteAt ?? null,
     )
     .run();
 };
@@ -85,8 +89,7 @@ beforeAll(async () => {
             path: "postgres",
           }));
           build.onLoad({ filter: /.*/, namespace: "stub-postgres" }, () => ({
-            contents:
-              "export const fetchNarRacesByDate = async () => [];",
+            contents: "export const fetchNarRacesByDate = async () => [];",
             loader: "js",
           }));
         },
@@ -115,6 +118,7 @@ beforeAll(async () => {
   await applySqlFile(join(root, "migrations/0001_init.sql"));
   await applySqlFile(join(root, "migrations/0002_odds_fetch_state.sql"));
   await applySqlFile(join(root, "migrations/0003_race_results.sql"));
+  await applySqlFile(join(root, "migrations/0004_result_completion.sql"));
   worker = (await mf.getWorker()) as typeof worker;
 });
 
@@ -173,11 +177,9 @@ describe("worker scheduling with Miniflare", () => {
 
   it("queues finished races for result fetches and skips completed results", async () => {
     await seedRace("nar:2026:0512:55:03", "2026-05-12T11:55:00+09:00");
-    await seedRace("nar:2026:0512:55:04", "2026-05-12T11:50:00+09:00");
-    await db
-      .prepare("update nar_race_sources set last_result_fetch_at = ? where race_key = ?")
-      .bind("2026-05-12T11:58:00+09:00", "nar:2026:0512:55:04")
-      .run();
+    await seedRace("nar:2026:0512:55:04", "2026-05-12T11:50:00+09:00", {
+      resultCompleteAt: "2026-05-12T11:58:00+09:00",
+    });
 
     await worker.queue(TEST_QUEUE, [
       {
@@ -207,6 +209,46 @@ describe("worker scheduling with Miniflare", () => {
       {
         last_result_queued_at: null,
         race_key: "nar:2026:0512:55:04",
+      },
+    ]);
+  });
+
+  it("queues incomplete result fetches every five minutes", async () => {
+    await seedRace("nar:2026:0512:55:05", "2026-05-12T11:50:00+09:00", {
+      lastResultFetchAt: "2026-05-12T11:56:00+09:00",
+    });
+    await seedRace("nar:2026:0512:55:06", "2026-05-12T11:50:00+09:00", {
+      lastResultFetchAt: "2026-05-12T11:55:00+09:00",
+    });
+
+    await worker.queue(TEST_QUEUE, [
+      {
+        attempts: 1,
+        body: { date: TEST_DATE, type: "plan-realtime-fetches" },
+        id: "plan-results-2",
+        timestamp: new Date(TEST_NOW),
+      },
+    ]);
+
+    const queued = await db
+      .prepare(
+        `
+          select race_key, last_result_queued_at
+          from nar_race_sources
+          where race_key in (?, ?)
+          order by race_key
+        `,
+      )
+      .bind("nar:2026:0512:55:05", "nar:2026:0512:55:06")
+      .all<{ last_result_queued_at: string | null; race_key: string }>();
+    expect(queued.results).toEqual([
+      {
+        last_result_queued_at: null,
+        race_key: "nar:2026:0512:55:05",
+      },
+      {
+        last_result_queued_at: "2026-05-12T12:00:00+09:00",
+        race_key: "nar:2026:0512:55:06",
       },
     ]);
   });
