@@ -1,8 +1,9 @@
-import type { RealtimeRacePayload } from "horse-racing-realtime/types";
 import { cleanup, render, screen } from "@testing-library/react";
+import type { RealtimeRacePayload } from "horse-racing-realtime/types";
 import React from "react";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { FINISH_POSITION_PREDICTION_EVALUATIONS } from "../../../lib/finish-position-prediction-evaluation";
 import type { FinishPredictionRow, OverallScoreRow } from "../../../lib/race-types";
 import { FinishPositionPredictionTable } from "./finish-position-prediction-table";
 import { OverallScoreTable } from "./overall-score-table";
@@ -106,6 +107,7 @@ describe("prediction tables scratched runners", () => {
   it("moves scratched finish prediction rows last and hides score and probabilities", () => {
     renderWithRealtime(
       <FinishPositionPredictionTable
+        evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.nar}
         realtimeRequest={realtimeRequest}
         rows={[
           finishRow({ horseName: "取消馬", horseNumber: "02", predictedRank: 1, score: 0.99 }),

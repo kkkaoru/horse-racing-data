@@ -3125,6 +3125,140 @@ h3 {
   width: 240px;
 }
 
+.finish-prediction-evaluation-panel {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.finish-prediction-evaluation-summary {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.finish-prediction-evaluation-summary span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.finish-prediction-evaluation-summary strong {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.finish-prediction-evaluation-summary small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.finish-prediction-metric-grid {
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+}
+
+.finish-prediction-metric-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: help;
+  display: grid;
+  gap: 6px;
+  min-height: 72px;
+  padding: 12px;
+  position: relative;
+  text-align: left;
+}
+
+.finish-prediction-metric-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.finish-prediction-metric-card span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.finish-prediction-metric-card strong {
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.finish-prediction-metric-tooltip {
+  background: var(--ink);
+  border-radius: 6px;
+  bottom: calc(100% + 8px);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+  color: var(--surface);
+  font-size: 12px;
+  font-weight: 700;
+  left: 0;
+  line-height: 1.55;
+  max-width: min(280px, 72vw);
+  opacity: 0;
+  padding: 8px 10px;
+  pointer-events: none;
+  position: absolute;
+  transform: translateY(4px);
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s ease;
+  visibility: hidden;
+  width: max-content;
+  z-index: 20;
+}
+
+.finish-prediction-metric-tooltip::after {
+  border-color: var(--ink) transparent transparent transparent;
+  border-style: solid;
+  border-width: 6px 6px 0 6px;
+  content: "";
+  left: 18px;
+  position: absolute;
+  top: 100%;
+}
+
+.finish-prediction-metric-card:hover .finish-prediction-metric-tooltip,
+.finish-prediction-metric-card:focus-visible .finish-prediction-metric-tooltip,
+.finish-prediction-metric-card.tooltip-open .finish-prediction-metric-tooltip {
+  opacity: 1;
+  transform: translateY(0);
+  visibility: visible;
+}
+
+@media (max-width: 720px) {
+  .finish-prediction-metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .finish-prediction-metric-tooltip {
+    bottom: auto;
+    left: 50%;
+    top: calc(100% + 8px);
+    transform: translate(-50%, -4px);
+  }
+
+  .finish-prediction-metric-tooltip::after {
+    border-color: transparent transparent var(--ink) transparent;
+    border-width: 0 6px 6px 6px;
+    left: 50%;
+    top: -6px;
+    transform: translateX(-50%);
+  }
+
+  .finish-prediction-metric-card:hover .finish-prediction-metric-tooltip,
+  .finish-prediction-metric-card:focus-visible .finish-prediction-metric-tooltip,
+  .finish-prediction-metric-card.tooltip-open .finish-prediction-metric-tooltip {
+    transform: translate(-50%, 0);
+  }
+}
+
 .correlation-score-table th:first-child,
 .correlation-score-table td:first-child,
 .overall-score-table th:first-child,
