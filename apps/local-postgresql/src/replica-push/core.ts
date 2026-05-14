@@ -347,6 +347,14 @@ export function buildNeonApplySql(
   const cleanupSql = temporaryStage ? "ROLLBACK;" : `DROP TABLE IF EXISTS ${stageTableReference};`;
   const conflictAction =
     table.updateList.length > 0 ? `DO UPDATE SET ${table.updateList}` : "DO NOTHING";
+  const deduplicatedStageSelect = [
+    `SELECT ${table.columnList}`,
+    "FROM (",
+    `  SELECT DISTINCT ON (${table.primaryKeyList}) ${table.columnList}`,
+    `  FROM ${stageTableReference}`,
+    `  ORDER BY ${table.primaryKeyList}`,
+    ") AS stage",
+  ].join("\n");
 
   const deleteSql = deleteMissingRows
     ? `DELETE FROM public.${quotedTableName} AS target WHERE NOT EXISTS (SELECT 1 FROM ${stageTableReference} AS stage WHERE ${table.primaryKeyJoin});\n`
@@ -356,11 +364,11 @@ export function buildNeonApplySql(
     applyMode === "replace"
       ? [
           `TRUNCATE TABLE public.${quotedTableName};`,
-          `INSERT INTO public.${quotedTableName} (${table.columnList}) SELECT ${table.columnList} FROM ${stageTableReference} AS stage;`,
+          `INSERT INTO public.${quotedTableName} (${table.columnList}) ${deduplicatedStageSelect};`,
         ].join("\n")
       : [
-          `CREATE UNIQUE INDEX ${quotedStageIndexName} ON ${stageTableReference} (${table.primaryKeyList});`,
-          `INSERT INTO public.${quotedTableName} (${table.columnList}) SELECT ${table.columnList} FROM ${stageTableReference} AS stage ON CONFLICT (${table.primaryKeyList}) ${conflictAction};`,
+          `CREATE INDEX ${quotedStageIndexName} ON ${stageTableReference} (${table.primaryKeyList});`,
+          `INSERT INTO public.${quotedTableName} (${table.columnList}) ${deduplicatedStageSelect} ON CONFLICT (${table.primaryKeyList}) ${conflictAction};`,
           deleteSql,
         ].join("\n");
 

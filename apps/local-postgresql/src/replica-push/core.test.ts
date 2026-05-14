@@ -168,8 +168,9 @@ describe("SQL helpers", () => {
     expect(sql.copySql).toContain('COPY "replica_sync_stage" ("id", "name")');
     expect(sql.copySql).toContain("FORMAT csv");
     expect(sql.postCopySql).toContain(
-      'CREATE UNIQUE INDEX "replica_sync_stage_pk" ON "replica_sync_stage" ("id")',
+      'CREATE INDEX "replica_sync_stage_pk" ON "replica_sync_stage" ("id")',
     );
+    expect(sql.postCopySql).toContain('SELECT DISTINCT ON ("id") "id", "name"');
     expect(sql.postCopySql).toContain('ON CONFLICT ("id") DO UPDATE SET "name" = excluded."name"');
     expect(sql.postCopySql).toContain('DELETE FROM public."table_a" AS target');
     expect(sql.postCopySql).toContain("COMMIT;");
@@ -179,8 +180,9 @@ describe("SQL helpers", () => {
     const sql = buildNeonApplySql(tableA, true);
     expect(sql.postCopySql).toContain('TRUNCATE TABLE public."table_a"');
     expect(sql.postCopySql).toContain(
-      'INSERT INTO public."table_a" ("id", "name") SELECT "id", "name" FROM "replica_sync_stage" AS stage',
+      'INSERT INTO public."table_a" ("id", "name") SELECT "id", "name"\nFROM (',
     );
+    expect(sql.postCopySql).toContain('SELECT DISTINCT ON ("id") "id", "name"');
     expect(sql.postCopySql).not.toContain("ON CONFLICT");
     expect(sql.postCopySql).not.toContain("DELETE FROM");
   });

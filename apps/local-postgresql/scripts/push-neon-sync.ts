@@ -72,6 +72,12 @@ function loadEnvironment(): Record<string, string | undefined> {
   };
 }
 
+function redactSecrets(value: string): string {
+  return value
+    .replaceAll(/postgres(?:ql)?:\/\/[^\s"']+/g, "postgresql://[redacted]")
+    .replaceAll(/npg_[A-Za-z0-9_-]+/g, "npg_[redacted]");
+}
+
 function runCommand(command: string, args: string[], input?: string): Promise<CommandResult> {
   return new Promise((resolveCommand, reject) => {
     const child = spawn(command, args, {
@@ -90,7 +96,11 @@ function runCommand(command: string, args: string[], input?: string): Promise<Co
       if (code === 0) {
         resolveCommand({ stdout, stderr });
       } else {
-        reject(new Error(`${command} ${args.join(" ")} exited with code ${code}\n${stderr}`));
+        reject(
+          new Error(
+            redactSecrets(`${command} ${args.join(" ")} exited with code ${code}\n${stderr}`),
+          ),
+        );
       }
     });
 
