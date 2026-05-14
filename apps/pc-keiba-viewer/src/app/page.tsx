@@ -27,7 +27,16 @@ const runnerFilters = [
   "sepia(0.2) saturate(1.35) brightness(0.96)",
 ] as const;
 const runnerSizes = ["18px", "26px", "36px"] as const;
-const racePatterns = ["pack", "runaway", "closer", "duel"] as const;
+const racePatterns = [
+  "pack",
+  "runaway",
+  "closer",
+  "duel",
+  "wide",
+  "late-pack",
+  "front-pack",
+  "staggered",
+] as const;
 const pacePatterns = [
   "steady",
   "accelerate-early",
@@ -44,6 +53,7 @@ type HomeTrackRunnerStyle = CSSProperties & {
   "--horse-accelerate-position": string;
   "--horse-decelerate-position": string;
   "--horse-end-position": string;
+  "--horse-run-duration": string;
   "--horse-run-filter": string;
   "--horse-pre-accelerate-position": string;
   "--horse-run-lane": string;
@@ -63,33 +73,62 @@ function getRacePattern() {
 }
 
 function getRunnerRaceOffsets(index: number, pattern: RacePattern) {
-  const randomJitter = Math.random() * 12 - 6;
+  const randomJitter = Math.random() * 28 - 14;
+  const groupRank = index - (homeTrackRunnerCount - 1) / 2;
 
   if (pattern === "runaway" && index === 0) {
-    return { start: -18 + randomJitter, finish: -210 + randomJitter };
+    return { start: -72 + randomJitter, finish: -250 + randomJitter };
   }
 
   if (pattern === "closer" && index === homeTrackRunnerCount - 1) {
-    return { start: 104 + randomJitter, finish: -182 + randomJitter };
+    return { start: 170 + randomJitter, finish: -240 + randomJitter };
   }
 
   if (pattern === "duel" && index < 2) {
     return {
-      start: index * 10 + randomJitter,
-      finish: -154 + index * 6 + randomJitter,
+      start: -24 + index * 18 + randomJitter,
+      finish: -210 + index * 10 + randomJitter,
+    };
+  }
+
+  if (pattern === "wide") {
+    return {
+      start: groupRank * 18 + randomJitter,
+      finish: groupRank * -16 + randomJitter,
+    };
+  }
+
+  if (pattern === "late-pack") {
+    return {
+      start: groupRank * 20 + randomJitter,
+      finish: randomJitter - 48,
+    };
+  }
+
+  if (pattern === "front-pack") {
+    return {
+      start: randomJitter - 24,
+      finish: groupRank * 18 + randomJitter,
+    };
+  }
+
+  if (pattern === "staggered") {
+    return {
+      start: ((index % 4) - 1.5) * 46 + randomJitter,
+      finish: ((index % 5) - 2) * 38 + randomJitter,
     };
   }
 
   if (pattern === "pack") {
     return {
       start: randomJitter,
-      finish: randomJitter - 24,
+      finish: randomJitter - 36,
     };
   }
 
   return {
     start: randomJitter,
-    finish: randomJitter - 28,
+    finish: randomJitter - 44,
   };
 }
 
@@ -116,6 +155,11 @@ function getProgressPosition(progress: number, pxOffset: number) {
 function getHomeTrackRunners(): HomeTrackRunner[] {
   const horseOnlySlots = new Set<number>();
   const racePattern = getRacePattern();
+  const raceDuration = 6.5 + Math.random() * 3.2;
+  const laneShift = Math.floor(Math.random() * 6);
+  const laneStep = 7 + Math.floor(Math.random() * 4);
+  const startSpread = 55 + Math.random() * 90;
+  const finishSpread = 16 + Math.random() * 54;
 
   if (Math.random() < 0.1) {
     horseOnlySlots.add(3 + Math.floor(Math.random() * (homeTrackRunnerCount - 3)));
@@ -124,16 +168,24 @@ function getHomeTrackRunners(): HomeTrackRunner[] {
   return Array.from({ length: homeTrackRunnerCount }, (_, index) => {
     const isContender = index < 3;
     const startOffset = isContender
-      ? index * 0.05
-      : 0.08 + (index % 8) * 0.035 + Math.random() * 0.04;
-    const lane = isContender ? index : (index + Math.floor(index / 3)) % 6;
+      ? index * 0.04
+      : 0.04 + (index % 8) * 0.028 + Math.random() * 0.08;
+    const lane = isContender
+      ? (index + laneShift) % 6
+      : (index + Math.floor(index / 3) + laneShift) % 6;
     const size = runnerSizes[Math.floor(Math.random() * runnerSizes.length)] ?? "26px";
     const filter = runnerFilters[Math.floor(Math.random() * runnerFilters.length)] ?? "none";
-    const scatterOffset = (index - (homeTrackRunnerCount - 1) / 2) * 9 + (Math.random() * 10 - 5);
+    const scatterOffset =
+      (index - (homeTrackRunnerCount - 1) / 2) * (startSpread / homeTrackRunnerCount) +
+      (Math.random() * 20 - 10);
     const raceOffsets = getRunnerRaceOffsets(index, racePattern);
     const pacePattern = getPacePattern(index, racePattern);
     const startPosition = `${(startOffset * 90 + raceOffsets.start + scatterOffset).toFixed(1)}px`;
-    const finishOffset = raceOffsets.finish + Math.random() * 12 - 6;
+    const finishOffset =
+      raceOffsets.finish +
+      (index - (homeTrackRunnerCount - 1) / 2) * (finishSpread / homeTrackRunnerCount) +
+      Math.random() * 24 -
+      12;
     const accelerateProgress = 0.16 + Math.random() * 0.5;
     const decelerateProgress = Math.min(0.86, accelerateProgress + 0.18 + Math.random() * 0.18);
     const acceleratePosition = getProgressPosition(
@@ -154,8 +206,9 @@ function getHomeTrackRunners(): HomeTrackRunner[] {
       "--horse-accelerate-position": acceleratePosition,
       "--horse-decelerate-position": deceleratePosition,
       "--horse-end-position": `calc(-150vw + ${(-148 + finishOffset).toFixed(1)}px)`,
+      "--horse-run-duration": `${raceDuration.toFixed(2)}s`,
       "--horse-run-filter": filter,
-      "--horse-run-lane": `${lane}`,
+      "--horse-run-lane": `${lane * laneStep}`,
       "--horse-run-size": size,
     };
 
