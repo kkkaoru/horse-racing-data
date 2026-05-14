@@ -34,7 +34,7 @@
     },
     "transformerLike": {
       "weights": {
-        "popularity": 0.4,
+        "popularity": 0.127,
         "odds": 0.32,
         "avgFinish": 0.11,
         "recentFinish": 0.1,
@@ -43,12 +43,12 @@
     }
   },
   "ensemble": {
-    "defaultMode": "off",
-    "mixedWeightedShare": 0.72,
+    "defaultMode": "vote",
+    "mixedWeightedShare": 0.491,
     "weights": {
-      "lightgbm": 0.5,
-      "lstm": 0.18,
-      "transformer": 0.32
+      "lightgbm": 0.293,
+      "lstm": 0.314,
+      "transformer": 0.114
     },
     "rules": []
   }
