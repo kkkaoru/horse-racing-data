@@ -1,5 +1,6 @@
 import "server-only";
 import { getDatabaseTarget } from "./client";
+import { withDbRetry } from "./db-retry";
 
 const DEFAULT_TTL_SECONDS = 60 * 60;
 const CACHE_NAMESPACE = "pc-keiba-viewer:db-query:v1";
@@ -64,16 +65,17 @@ export const withDbQueryCache = async <T>(
   load: () => Promise<T>,
 ): Promise<T> => {
   const ttlSeconds = getCacheTtlSeconds();
+  const loadWithRetry = (): Promise<T> => withDbRetry(load);
 
   if (ttlSeconds <= 0 || !canUseQueryCache()) {
-    return load();
+    return loadWithRetry();
   }
 
   const request = createCacheRequest(keyParts);
   const defaultCache = caches.default;
 
   if (!defaultCache) {
-    return load();
+    return loadWithRetry();
   }
 
   const cached = await defaultCache.match(request);
@@ -87,7 +89,7 @@ export const withDbQueryCache = async <T>(
     }
   }
 
-  const value = await load();
+  const value = await loadWithRetry();
   await defaultCache.put(
     request,
     new Response(JSON.stringify(value), {

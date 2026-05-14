@@ -151,3 +151,5 @@ test-results/
 # DuckDB WASM binary (copied from node_modules at build time)
 *.wasm
 *.xlsx
+
+apps/**/tmp/**
