@@ -70,8 +70,11 @@ main {
   gap: 12px;
 }
 
-.brand strong {
+.brand-title {
   display: block;
+  font-size: 16px;
+  line-height: 1.1;
+  margin: 0;
 }
 
 .brand-mark {
@@ -313,10 +316,109 @@ main {
   gap: 20px;
 }
 
-.home-heading h1 {
+.home-title {
+  display: grid;
   font-size: clamp(30px, 5vw, 48px);
+  gap: 14px;
   line-height: 1.1;
   margin: 0;
+}
+
+.home-horse-track {
+  background:
+    linear-gradient(90deg, transparent, rgb(15 107 79 / 12%), transparent),
+    repeating-linear-gradient(90deg, transparent 0 72px, rgb(15 107 79 / 12%) 72px 74px);
+  border-bottom: 2px solid rgb(15 107 79 / 30%);
+  display: block;
+  height: 76px;
+  margin-left: calc(50% - 50vw);
+  overflow: hidden;
+  position: relative;
+  width: 100vw;
+}
+
+.home-horse-track::after {
+  background: repeating-linear-gradient(180deg, rgb(255 255 255) 0 8px, rgb(28 36 42) 8px 16px);
+  border: 1px solid rgb(28 36 42 / 40%);
+  bottom: 0;
+  content: "";
+  left: 18px;
+  position: absolute;
+  top: 18px;
+  width: 10px;
+  z-index: 1;
+}
+
+.home-finish-gate {
+  background: rgb(255 255 255 / 92%);
+  border: 1px solid rgb(28 36 42 / 35%);
+  border-radius: 4px;
+  color: rgb(28 36 42);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0;
+  line-height: 1;
+  padding: 4px 5px;
+  position: absolute;
+  left: 2px;
+  top: 0;
+  z-index: 2;
+}
+
+.home-running-horse {
+  animation: home-horse-run 7.6s linear infinite;
+  bottom: calc(4px + (var(--horse-run-lane, 0) * 8px));
+  display: inline-block;
+  filter: var(--horse-run-filter, none);
+  font-size: var(--horse-run-size, 26px);
+  left: calc(100% + 52px);
+  position: absolute;
+  transform: translateX(0);
+  z-index: 3;
+}
+
+.home-running-horse.pace-accelerate-early {
+  animation-name: home-horse-run-accelerate-gradual;
+  animation-timing-function: cubic-bezier(0.55, 0, 1, 1);
+}
+
+.home-running-horse.pace-accelerate-middle {
+  animation-name: home-horse-run-accelerate-gradual;
+  animation-timing-function: cubic-bezier(0.55, 0, 1, 1);
+}
+
+.home-running-horse.pace-accelerate-late {
+  animation-name: home-horse-run-accelerate-gradual;
+  animation-timing-function: cubic-bezier(0.55, 0, 1, 1);
+}
+
+.home-running-horse.pace-surge-fade-early {
+  animation-name: home-horse-run-surge-fade-gradual;
+  animation-timing-function: cubic-bezier(0.45, 0, 0.55, 1);
+}
+
+.home-running-horse.pace-surge-fade-middle {
+  animation-name: home-horse-run-surge-fade-gradual;
+  animation-timing-function: cubic-bezier(0.45, 0, 0.55, 1);
+}
+
+.home-running-horse.pace-surge-fade-late {
+  animation-name: home-horse-run-surge-fade-gradual;
+  animation-timing-function: cubic-bezier(0.45, 0, 0.55, 1);
+}
+
+.home-running-horse.runner-2 {
+  z-index: 4;
+}
+
+.home-running-horse.runner-3 {
+  z-index: 5;
+}
+
+.home-running-horse.runner-1,
+.home-running-horse.runner-2,
+.home-running-horse.runner-3 {
+  filter: var(--horse-run-filter, none) drop-shadow(0 2px 0 rgb(255 255 255 / 80%));
 }
 
 .home-link-grid {
@@ -2138,7 +2240,7 @@ h3 {
   border-top: 1px solid var(--line);
   display: grid;
   gap: 8px;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   margin-top: 10px;
   padding-top: 10px;
 }
@@ -2153,7 +2255,7 @@ h3 {
   font-size: 12px;
   font-weight: 800;
   gap: 7px;
-  grid-template-columns: 24px 34px minmax(0, 1fr);
+  grid-template-columns: 24px 34px max-content;
   min-height: 38px;
   min-width: 0;
   padding: 6px 8px;
@@ -2171,8 +2273,6 @@ h3 {
 .odds-trend-legend-name {
   color: var(--text);
   font-weight: 900;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -2344,7 +2444,7 @@ h3 {
     align-items: stretch;
     display: grid;
     gap: 6px;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: 1fr;
     max-height: 180px;
     overflow: auto;
   }
@@ -2352,8 +2452,7 @@ h3 {
   .odds-trend-legend-item {
     font-size: 10px;
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    overflow-x: auto;
     white-space: nowrap;
   }
 
@@ -3650,6 +3749,64 @@ h3 {
   }
 }
 
+@keyframes home-horse-run {
+  0% {
+    transform: translateX(var(--horse-start-position, 0px));
+  }
+
+  100% {
+    transform: translateX(var(--horse-end-position, calc(-150vw - 148px)));
+  }
+}
+
+@keyframes home-horse-run-accelerate-gradual {
+  0% {
+    transform: translateX(var(--horse-start-position, 0px));
+  }
+
+  100% {
+    transform: translateX(var(--horse-end-position, calc(-150vw - 148px)));
+  }
+}
+
+@keyframes home-horse-run-surge-fade-gradual {
+  0% {
+    transform: translateX(var(--horse-start-position, 0px));
+  }
+
+  100% {
+    transform: translateX(var(--horse-end-position, calc(-150vw - 148px)));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-running-horse {
+    animation: none;
+    left: auto;
+    right: 8px;
+    transform: none;
+  }
+
+  .home-running-horse.runner-2,
+  .home-running-horse.runner-5,
+  .home-running-horse.runner-8,
+  .home-running-horse.runner-11,
+  .home-running-horse.runner-14,
+  .home-running-horse.runner-17 {
+    left: 56px;
+    right: auto;
+  }
+
+  .home-running-horse.runner-3,
+  .home-running-horse.runner-6,
+  .home-running-horse.runner-9,
+  .home-running-horse.runner-12,
+  .home-running-horse.runner-15 {
+    left: 104px;
+    right: auto;
+  }
+}
+
 .stats-sort-button {
   align-items: center;
   background: #ffffff;
@@ -3969,7 +4126,7 @@ h3 {
     z-index: 21;
   }
 
-  body:has(.race-global-summary) .brand strong {
+  body:has(.race-global-summary) .brand-title {
     display: none;
   }
 
