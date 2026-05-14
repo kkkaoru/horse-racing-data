@@ -179,10 +179,7 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
             <HorseNameBadge coatCode={moshokuCode} name={horseName} showCoatLabel={false} />
           </span>
           {displayJockeyName ? (
-            <span
-              aria-label={`騎手名 ${displayJockeyName}`}
-              className="paddock-horse-jockey-line"
-            >
+            <span aria-label={`騎手名 ${displayJockeyName}`} className="paddock-horse-jockey-line">
               <strong>{displayJockeyName}</strong>
               {isChangedJockey(originalJockeyName, realtimeJockeyName) ? (
                 <small>元 {originalJockeyName}</small>
