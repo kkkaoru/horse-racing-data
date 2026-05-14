@@ -361,7 +361,9 @@ const fetchAndStoreOdds = async (env: Env, raceKey: string): Promise<void> => {
     const entryHtml = await fetchRacePage(race.debaUrl);
     await insertRaceEntrySnapshot(env.REALTIME_DB, raceKey, fetchedAt, parseRaceEntries(entryHtml));
     const oddsLinks =
-      Object.keys(race.oddsLinks).length > 0 ? race.oddsLinks : extractOddsLinks(entryHtml, race.debaUrl);
+      Object.keys(race.oddsLinks).length > 0
+        ? race.oddsLinks
+        : extractOddsLinks(entryHtml, race.debaUrl);
     if (Object.keys(race.oddsLinks).length === 0) {
       await updateOddsLinks(env.REALTIME_DB, race.raceKey, oddsLinks);
     }

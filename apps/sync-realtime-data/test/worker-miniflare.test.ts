@@ -119,6 +119,7 @@ beforeAll(async () => {
   await applySqlFile(join(root, "migrations/0002_odds_fetch_state.sql"));
   await applySqlFile(join(root, "migrations/0003_race_results.sql"));
   await applySqlFile(join(root, "migrations/0004_result_completion.sql"));
+  await applySqlFile(join(root, "migrations/0005_race_entry_snapshots.sql"));
   worker = (await mf.getWorker()) as typeof worker;
 });
 
@@ -126,6 +127,7 @@ beforeEach(async () => {
   await db.exec(`
     delete from fetch_logs;
     delete from odds_snapshots;
+    delete from race_entry_snapshots;
     delete from race_result_snapshots;
     delete from horse_weight_snapshots;
     delete from nar_race_sources;

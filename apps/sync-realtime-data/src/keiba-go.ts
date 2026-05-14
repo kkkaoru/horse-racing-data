@@ -523,7 +523,9 @@ export const parseRaceEntries = (html: string): Omit<RaceEntry, "fetchedAt">[] =
       return {
         horseName: horseName ? normalizeRaceResultCell(horseName) : null,
         horseNumber,
-        jockeyName: jockeyName ? normalizeRaceResultCell(jockeyName).replace(/（.*?）/gu, "") : null,
+        jockeyName: jockeyName
+          ? normalizeRaceResultCell(jockeyName).replace(/（.*?）/gu, "")
+          : null,
         status: normalizeEntryStatus(block),
       };
     })
