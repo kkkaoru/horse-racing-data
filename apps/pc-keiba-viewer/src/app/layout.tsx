@@ -20,9 +20,7 @@ export default function RootLayout({ children }: RootLayoutProps) {
         <header className="app-header">
           <Link className="brand" href="/">
             <span className="brand-mark" aria-hidden="true" />
-            <span>
-              <strong>PC-KEIBA Viewer</strong>
-            </span>
+            <h1 className="brand-title">PC-KEIBA Viewer</h1>
           </Link>
           <details className="header-menu">
             <summary aria-label="メニューを開閉">
