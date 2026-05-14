@@ -201,6 +201,45 @@ describe("buildFinishPredictionRowsFromResults", () => {
     expect(sprintWeight).toBeGreaterThan(gradedLongWeight ?? 0);
   });
 
+  it("applies refined market weights to NAR non-graded non-sprint races", () => {
+    const middleRows = buildFinishPredictionRowsFromResults({
+      currentDistance: "1600",
+      currentGradeCode: null,
+      currentKeibajoCode: "35",
+      currentRaceDate: "20260514",
+      currentSource: "nar",
+      currentTrackCode: "24",
+      results: [],
+      runners: [runner({ tanshoNinkijun: "02", tanshoOdds: "0040" })],
+    });
+    const sprintRows = buildFinishPredictionRowsFromResults({
+      currentDistance: "1200",
+      currentGradeCode: null,
+      currentKeibajoCode: "35",
+      currentRaceDate: "20260514",
+      currentSource: "nar",
+      currentTrackCode: "24",
+      results: [],
+      runners: [runner({ tanshoNinkijun: "02", tanshoOdds: "0040" })],
+    });
+
+    const middlePopularityWeight = middleRows[0]?.details.find(
+      (detail) => detail.label === "人気",
+    )?.weight;
+    const sprintPopularityWeight = sprintRows[0]?.details.find(
+      (detail) => detail.label === "人気",
+    )?.weight;
+    const middleOddsWeight = middleRows[0]?.details.find(
+      (detail) => detail.label === "単勝",
+    )?.weight;
+    const sprintOddsWeight = sprintRows[0]?.details.find(
+      (detail) => detail.label === "単勝",
+    )?.weight;
+
+    expect(middlePopularityWeight).toBeGreaterThan(sprintPopularityWeight ?? 0);
+    expect(middleOddsWeight).toBeGreaterThan(sprintOddsWeight ?? 0);
+  });
+
   it("uses similarity and model predictions when available", () => {
     const rows = buildFinishPredictionRowsFromResults({
       currentDistance: "1400",
@@ -241,6 +280,110 @@ describe("buildFinishPredictionRowsFromResults", () => {
 
     expect(rows[0]?.details.some((detail) => detail.reason.includes("test-model"))).toBe(true);
     expect(rows[0]?.winProbability).toBeGreaterThan(0);
+  });
+
+  it("uses LightGBM, LSTM, and Transformer model predictions as an ensemble", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      currentDistance: "1600",
+      currentKeibajoCode: "05",
+      currentRaceDate: "20260514",
+      currentSource: "jra",
+      modelPredictionFeatures: [
+        {
+          horseNumber: "01",
+          modelVersion: "finish-lightgbm-10y",
+          predictedFinishNorm: 0.1,
+          showProbability: 0.8,
+          winProbability: 0.5,
+        },
+        {
+          horseNumber: "01",
+          modelVersion: "finish-lstm-10y",
+          predictedFinishNorm: 0.2,
+          showProbability: 0.7,
+          winProbability: 0.4,
+        },
+        {
+          horseNumber: "01",
+          modelVersion: "finish-transformer-10y",
+          predictedFinishNorm: 0.15,
+          showProbability: 0.75,
+          winProbability: 0.45,
+        },
+      ],
+      results: [],
+      runners: [runner({ bamei: "モデル統合馬", tanshoNinkijun: "00", tanshoOdds: "0000" })],
+    });
+
+    const labels = rows[0]?.details.map((detail) => detail.label) ?? [];
+    expect(labels).toContain("LightGBMモデル");
+    expect(labels).toContain("LSTMモデル");
+    expect(labels).toContain("Transformerモデル");
+  });
+
+  it("keeps generic model labels and ignores null model values", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      currentDistance: "1600",
+      currentKeibajoCode: "05",
+      currentRaceDate: "20260514",
+      currentSource: "jra",
+      modelPredictionFeatures: [
+        {
+          horseNumber: "01",
+          modelVersion: "finish-generic-10y",
+          predictedFinishNorm: 0.2,
+          showProbability: null,
+          winProbability: null,
+        },
+        {
+          horseNumber: "01",
+          modelVersion: "finish-lightgbm-null",
+          predictedFinishNorm: null,
+          showProbability: null,
+          winProbability: null,
+        },
+      ],
+      results: [],
+      runners: [runner({ bamei: "汎用モデル馬", tanshoNinkijun: "00", tanshoOdds: "0000" })],
+    });
+
+    expect(rows[0]?.details.some((detail) => detail.label === "モデル")).toBe(true);
+    expect(rows[0]?.details.some((detail) => detail.reason.includes("finish-lightgbm-null"))).toBe(
+      false,
+    );
+  });
+
+  it("keeps base history weights for moderate history and skips blank model horse numbers", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      currentDistance: "1600",
+      currentKeibajoCode: "05",
+      currentRaceDate: "20260514",
+      currentSource: "jra",
+      modelPredictionFeatures: [
+        {
+          horseNumber: "",
+          modelVersion: "finish-lightgbm-blank",
+          predictedFinishNorm: 0.01,
+          showProbability: 0.9,
+          winProbability: 0.9,
+        },
+      ],
+      results: Array.from({ length: 3 }, (_, index) =>
+        result({
+          currentUmaban: "01",
+          kakuteiChakujun: "03",
+          kaisaiTsukihi: `050${index + 1}`,
+        }),
+      ),
+      runners: [runner({ bamei: "中程度履歴馬", tanshoNinkijun: "00", tanshoOdds: "0000" })],
+    });
+
+    expect(rows[0]?.details.some((detail) => detail.reason.includes("finish-lightgbm-blank"))).toBe(
+      false,
+    );
+    expect(rows[0]?.details.find((detail) => detail.label === "競走成績")?.weight).toBeGreaterThan(
+      0,
+    );
   });
 
   it("falls back to a neutral score when no usable data exists", () => {
