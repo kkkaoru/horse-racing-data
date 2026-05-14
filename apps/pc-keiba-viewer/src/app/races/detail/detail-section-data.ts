@@ -50,6 +50,7 @@ import type {
   RaceDetail,
   RaceTimeStats,
   Runner,
+  SameDayVenueJockeyWinFeature,
   SimilarRaceStatsRow,
   SimilarRaceStatsSettings,
   TimeScoreRow,
@@ -117,6 +118,53 @@ const OVERALL_SCORE_WEIGHTS = {
   owner: 0.1,
   time: 0.3,
   trainer: 0.1,
+};
+
+const isSameDayVenueJockeyWinsPayload = (
+  value: unknown,
+): value is { jockeyWins: SameDayVenueJockeyWinFeature[] } => {
+  if (typeof value !== "object" || value === null || !("jockeyWins" in value)) {
+    return false;
+  }
+  const jockeyWins = value.jockeyWins;
+  return (
+    Array.isArray(jockeyWins) &&
+    jockeyWins.every((row) => {
+      if (typeof row !== "object" || row === null) {
+        return false;
+      }
+      return (
+        "jockeyName" in row &&
+        "latestRaceNumber" in row &&
+        "winCount" in row &&
+        typeof row.jockeyName === "string" &&
+        typeof row.latestRaceNumber === "string" &&
+        typeof row.winCount === "number"
+      );
+    })
+  );
+};
+
+const getRealtimeApiBaseUrl = (): string =>
+  process.env.NEXT_PUBLIC_REALTIME_DATA_API_BASE_URL ?? "https://sync-realtime-data.kkk4oru.com";
+
+const fetchSameDayVenueJockeyWins = async (
+  race: RaceDetail,
+): Promise<SameDayVenueJockeyWinFeature[]> => {
+  if (race.source !== "nar") {
+    return [];
+  }
+  const url = `${getRealtimeApiBaseUrl().replace(/\/$/u, "")}/api/nar/races/${race.kaisaiNen}/${race.kaisaiTsukihi.slice(0, 2)}/${race.kaisaiTsukihi.slice(2, 4)}/${race.keibajoCode}/${race.raceBango}/jockey-wins`;
+  try {
+    const response = await fetch(url, { cache: "no-store" });
+    if (!response.ok) {
+      return [];
+    }
+    const data: unknown = await response.json();
+    return isSameDayVenueJockeyWinsPayload(data) ? data.jockeyWins : [];
+  } catch {
+    return [];
+  }
 };
 
 const STORED_ODDS_EMPTY = "0000";
@@ -872,10 +920,13 @@ export const getDetailSectionPayload = async (
       raceNumber,
       getResultsSourceScope(params.query),
     );
-    const [similarityFeatures, modelPredictionFeatures] = await Promise.all([
-      getFinishPositionSimilarityFeatures(race, runners),
-      getFinishPositionModelPredictionFeatures(race, runners),
-    ]);
+    const [similarityFeatures, modelPredictionFeatures, sameDayVenueJockeyWins] = await Promise.all(
+      [
+        getFinishPositionSimilarityFeatures(race, runners),
+        getFinishPositionModelPredictionFeatures(race, runners),
+        fetchSameDayVenueJockeyWins(race),
+      ],
+    );
     return {
       evaluation: getFinishPredictionEvaluation({
         keibajoCode: race.keibajoCode,
@@ -883,13 +934,17 @@ export const getDetailSectionPayload = async (
       }),
       rows: buildFinishPredictionRowsFromResults({
         currentDistance: race.kyori,
+        currentGradeCode: race.gradeCode,
         currentKeibajoCode: race.keibajoCode,
+        currentKyosoJokenCode: race.kyosoJokenCode,
+        currentKyosoJokenMeisho: race.kyosoJokenMeisho,
         currentRaceDate: `${race.kaisaiNen}${race.kaisaiTsukihi}`,
         currentSource: race.source,
         currentTrackCode: race.trackCode,
         modelPredictionFeatures,
         results,
         runners,
+        sameDayVenueJockeyWins,
         similarityFeatures,
       }),
       type: section,

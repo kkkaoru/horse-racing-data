@@ -31,6 +31,7 @@ import {
   failResultFetch,
   getRaceSource,
   getLatestOddsFromD1,
+  getSameDayVenueJockeyWins,
   insertRaceEntrySnapshot,
   insertRaceResultSnapshot,
   insertHorseWeightSnapshot,
@@ -494,6 +495,30 @@ const raceKeyFromRequest = (url: URL): string | null => {
   return buildRaceKey(match[1], `${match[2]}${match[3]}`, match[4], match[5]);
 };
 
+const sameDayVenueJockeyWinsFromRequest = (
+  url: URL,
+): {
+  day: string;
+  keibajoCode: string;
+  month: string;
+  raceNumber: string;
+  year: string;
+} | null => {
+  const match = url.pathname.match(
+    /^\/api\/nar\/races\/(\d{4})\/(\d{2})\/(\d{2})\/([0-9A-Z]{2})\/(\d{2})\/jockey-wins$/u,
+  );
+  if (!match?.[1] || !match[2] || !match[3] || !match[4] || !match[5]) {
+    return null;
+  }
+  return {
+    day: match[3],
+    keibajoCode: match[4],
+    month: match[2],
+    raceNumber: match[5],
+    year: match[1],
+  };
+};
+
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
@@ -537,6 +562,25 @@ export default {
           "cache-control": `public, max-age=${Number(env.REALTIME_API_CACHE_SECONDS ?? "20")}`,
         },
       });
+    }
+
+    const sameDayVenueJockeyWins = sameDayVenueJockeyWinsFromRequest(url);
+    if (sameDayVenueJockeyWins && request.method === "GET") {
+      return json(
+        {
+          jockeyWins: await getSameDayVenueJockeyWins(env.REALTIME_DB, {
+            beforeRaceBango: sameDayVenueJockeyWins.raceNumber,
+            kaisaiNen: sameDayVenueJockeyWins.year,
+            kaisaiTsukihi: `${sameDayVenueJockeyWins.month}${sameDayVenueJockeyWins.day}`,
+            keibajoCode: sameDayVenueJockeyWins.keibajoCode,
+          }),
+        },
+        {
+          headers: {
+            "cache-control": `public, max-age=${Number(env.REALTIME_API_CACHE_SECONDS ?? "20")}`,
+          },
+        },
+      );
     }
 
     return json({ error: "not found" }, { status: 404 });

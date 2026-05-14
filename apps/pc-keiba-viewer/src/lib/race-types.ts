@@ -518,6 +518,12 @@ export interface FinishPositionModelPredictionFeature extends Record<string, unk
   winProbability: number | null;
 }
 
+export interface SameDayVenueJockeyWinFeature extends Record<string, unknown> {
+  jockeyName: string;
+  latestRaceNumber: string;
+  winCount: number;
+}
+
 export interface FinishPredictionRow extends Record<string, unknown> {
   confidence: number;
   details: FinishPredictionDetail[];
