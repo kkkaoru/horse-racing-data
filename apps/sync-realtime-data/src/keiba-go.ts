@@ -498,9 +498,18 @@ const normalizeRaceResultCell = (cell: string): string =>
 
 const ENTRY_STATUS_LABELS = ["出場停止", "出走取消", "取消", "競走除外", "除外"] as const;
 
-const normalizeEntryStatus = (text: string): string | null => {
-  const normalized = normalizeRaceResultCell(text);
-  return ENTRY_STATUS_LABELS.find((status) => normalized.includes(status)) ?? null;
+const normalizeEntryStatus = (block: string): string | null => {
+  const currentInfoCells = block.matchAll(
+    /<td[^>]*class=["'][^"']*\binfo\b[^"']*["'][^>]*>([\s\S]*?)<\/td>/giu,
+  );
+  for (const cell of currentInfoCells) {
+    const normalized = normalizeRaceResultCell(cell[1] ?? "");
+    const status = ENTRY_STATUS_LABELS.find((label) => normalized.includes(label));
+    if (status) {
+      return status;
+    }
+  }
+  return null;
 };
 
 export const parseRaceEntries = (html: string): Omit<RaceEntry, "fetchedAt">[] =>

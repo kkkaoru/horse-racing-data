@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 
 import { cleanText } from "../../../lib/format";
-import { isSameJockeyName } from "../../../lib/jockey-name";
+import { getPreferredJockeyName, isSameJockeyName } from "../../../lib/jockey-name";
 import type { Runner } from "../../../lib/race-types";
 import {
   formatCarriedWeight,
@@ -268,14 +268,20 @@ export function RunnersTable({
     const horseName = cleanText(runner.bamei);
     const horseId = cleanText(runner.kettoTorokuBango);
     const jockeyName = cleanText(runner.kishumeiRyakusho);
-    const displayJockeyName = realtimeEntry?.jockeyName || jockeyName;
+    const displayJockeyName = getPreferredJockeyName(jockeyName, realtimeEntry?.jockeyName);
     const trainerName = cleanText(runner.chokyoshimeiRyakusho);
     const ownerName = cleanText(runner.banushimei);
     const entryStatus = realtimeEntry?.status || "";
 
     return (
-      <tr key={`${runner.umaban}-${runner.kettoTorokuBango}`}>
-        <td>{horseNumber}</td>
+      <tr
+        className={entryStatus ? "runner-row-scratched" : undefined}
+        data-entry-status={entryStatus || undefined}
+        key={`${runner.umaban}-${runner.kettoTorokuBango}`}
+      >
+        <td className="runner-number-cell">
+          <span>{horseNumber}</span>
+        </td>
         <td>
           <FrameNumberBadge value={runner.wakuban} />
         </td>

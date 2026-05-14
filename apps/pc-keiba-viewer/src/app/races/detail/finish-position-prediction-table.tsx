@@ -14,6 +14,7 @@ interface FinishPositionPredictionTableProps {
 }
 
 interface FinishPredictionTableRowProps {
+  entryStatus: string;
   isExpanded: boolean;
   onToggle: (horseNumber: string) => void;
   realtimeOdds: number | null | undefined;
@@ -59,6 +60,7 @@ const formatPopularity = (value: number | null): string => (value === null ? "-"
 const formatOdds = (value: number | null): string => (value === null ? "-" : value.toFixed(1));
 
 const FinishPredictionTableRow = memo(function FinishPredictionTableRow({
+  entryStatus,
   isExpanded,
   onToggle,
   realtimeOdds,
@@ -67,34 +69,50 @@ const FinishPredictionTableRow = memo(function FinishPredictionTableRow({
 }: FinishPredictionTableRowProps) {
   const displayedPopularity = realtimePopularity ?? row.storedPopularity;
   const displayedOdds = realtimeOdds ?? row.storedOdds;
+  const isScratched = entryStatus !== "";
 
   return (
     <Fragment>
-      <tr className={isExpanded ? "stats-row-expanded" : undefined}>
+      <tr
+        className={[
+          isExpanded ? "stats-row-expanded" : "",
+          isScratched ? "stats-row-scratched" : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
+        data-entry-status={entryStatus || undefined}
+      >
         <td>{formatRunnerNumber(row.horseNumber)}</td>
-        <td className="stats-name-cell">{row.horseName || "-"}</td>
-        <td>{row.predictedRank}</td>
-        <td>{formatPopularity(displayedPopularity)}</td>
-        <td>{formatOdds(displayedOdds)}</td>
-        <td className="stats-score-cell">
-          <span className="time-score-actions">
-            <span>{row.score.toFixed(2)}</span>
-            <button
-              aria-expanded={isExpanded}
-              aria-label={`${row.horseName || row.horseNumber}の着順予測詳細`}
-              className="stats-detail-toggle"
-              type="button"
-              onClick={() => {
-                onToggle(row.horseNumber);
-              }}
-            />
-          </span>
+        <td className="stats-name-cell">
+          {row.horseName || "-"}
+          {entryStatus ? <span className="runner-status-badge">{entryStatus}</span> : null}
         </td>
-        <td>{row.winProbability.toFixed(2)}</td>
-        <td>{row.showProbability.toFixed(2)}</td>
-        <td>{row.confidence.toFixed(2)}</td>
+        <td>{isScratched ? "対象外" : row.predictedRank}</td>
+        <td>{isScratched ? "-" : formatPopularity(displayedPopularity)}</td>
+        <td>{isScratched ? "-" : formatOdds(displayedOdds)}</td>
+        <td className="stats-score-cell">
+          {isScratched ? (
+            "対象外"
+          ) : (
+            <span className="time-score-actions">
+              <span>{row.score.toFixed(2)}</span>
+              <button
+                aria-expanded={isExpanded}
+                aria-label={`${row.horseName || row.horseNumber}の着順予測詳細`}
+                className="stats-detail-toggle"
+                type="button"
+                onClick={() => {
+                  onToggle(row.horseNumber);
+                }}
+              />
+            </span>
+          )}
+        </td>
+        <td>{isScratched ? "-" : row.winProbability.toFixed(2)}</td>
+        <td>{isScratched ? "-" : row.showProbability.toFixed(2)}</td>
+        <td>{isScratched ? "-" : row.confidence.toFixed(2)}</td>
       </tr>
-      {isExpanded ? (
+      {isExpanded && !isScratched ? (
         <tr className="stats-detail-row">
           <td colSpan={9}>
             <div className="stats-detail-panel">
@@ -137,11 +155,33 @@ export function FinishPositionPredictionTable({
     () =>
       new Map(
         (payload?.odds?.latest.tansho ?? []).map((row) => [
-          row.combination,
+          formatRunnerNumber(row.combination),
           { odds: row.odds ?? null, popularity: row.rank ?? null },
         ]),
       ),
     [payload],
+  );
+  const entryStatusByHorse = useMemo(
+    () =>
+      new Map(
+        (payload?.raceEntries?.horses ?? []).map((horse) => [
+          formatRunnerNumber(horse.horseNumber),
+          horse.status ?? "",
+        ]),
+      ),
+    [payload],
+  );
+  const sortedDisplayRows = useMemo(
+    () =>
+      displayRows.toSorted((left, right) => {
+        const leftStatus = entryStatusByHorse.get(formatRunnerNumber(left.horseNumber)) ?? "";
+        const rightStatus = entryStatusByHorse.get(formatRunnerNumber(right.horseNumber)) ?? "";
+        if (leftStatus !== "" || rightStatus !== "") {
+          return leftStatus === rightStatus ? 0 : leftStatus ? 1 : -1;
+        }
+        return 0;
+      }),
+    [displayRows, entryStatusByHorse],
   );
   const toggleExpandedHorse = useCallback((horseNumber: string) => {
     setExpandedHorseNumber((current) => (current === horseNumber ? null : horseNumber));
@@ -199,10 +239,12 @@ export function FinishPositionPredictionTable({
           </tr>
         </thead>
         <tbody>
-          {displayRows.map((row) => {
-            const realtimeOdds = realtimeOddsByHorse.get(row.horseNumber);
+          {sortedDisplayRows.map((row) => {
+            const horseNumber = formatRunnerNumber(row.horseNumber);
+            const realtimeOdds = realtimeOddsByHorse.get(horseNumber);
             return (
               <FinishPredictionTableRow
+                entryStatus={entryStatusByHorse.get(horseNumber) ?? ""}
                 isExpanded={expandedHorseNumber === row.horseNumber}
                 key={row.horseNumber}
                 realtimeOdds={realtimeOdds?.odds}

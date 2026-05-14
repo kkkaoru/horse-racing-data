@@ -13,6 +13,7 @@ interface OverallScoreTableProps {
 }
 
 interface OverallScoreTableRowProps {
+  entryStatus: string;
   isExpanded: boolean;
   onToggle: (horseNumber: string) => void;
   realtimeOdds: number | null | undefined;
@@ -27,36 +28,54 @@ const formatRealtimeOdds = (value: number | null | undefined): string =>
   value === null || value === undefined ? "-" : value.toFixed(1);
 
 const OverallScoreTableRow = memo(function OverallScoreTableRow({
+  entryStatus,
   isExpanded,
   onToggle,
   realtimeOdds,
   realtimePopularity,
   row,
 }: OverallScoreTableRowProps) {
+  const isScratched = entryStatus !== "";
+
   return (
     <Fragment>
-      <tr className={isExpanded ? "stats-row-expanded" : undefined}>
+      <tr
+        className={[
+          isExpanded ? "stats-row-expanded" : "",
+          isScratched ? "stats-row-scratched" : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
+        data-entry-status={entryStatus || undefined}
+      >
         <td>{formatRunnerNumber(row.horseNumber)}</td>
-        <td className="stats-name-cell">{row.horseName || "-"}</td>
+        <td className="stats-name-cell">
+          {row.horseName || "-"}
+          {entryStatus ? <span className="runner-status-badge">{entryStatus}</span> : null}
+        </td>
         <td className="stats-name-cell">{row.jockeyName || "-"}</td>
         <td className="stats-score-cell">
-          <span className="time-score-actions">
-            <span>{row.score.toFixed(2)}</span>
-            <button
-              aria-expanded={isExpanded}
-              aria-label={`${row.horseName || row.horseNumber}の総合スコア詳細`}
-              className="stats-detail-toggle"
-              type="button"
-              onClick={() => {
-                onToggle(row.horseNumber);
-              }}
-            />
-          </span>
+          {isScratched ? (
+            "対象外"
+          ) : (
+            <span className="time-score-actions">
+              <span>{row.score.toFixed(2)}</span>
+              <button
+                aria-expanded={isExpanded}
+                aria-label={`${row.horseName || row.horseNumber}の総合スコア詳細`}
+                className="stats-detail-toggle"
+                type="button"
+                onClick={() => {
+                  onToggle(row.horseNumber);
+                }}
+              />
+            </span>
+          )}
         </td>
-        <td>{formatRealtimePopularity(realtimePopularity)}</td>
-        <td>{formatRealtimeOdds(realtimeOdds)}</td>
+        <td>{isScratched ? "-" : formatRealtimePopularity(realtimePopularity)}</td>
+        <td>{isScratched ? "-" : formatRealtimeOdds(realtimeOdds)}</td>
       </tr>
-      {isExpanded ? (
+      {isExpanded && !isScratched ? (
         <tr className="stats-detail-row">
           <td colSpan={6}>
             <div className="stats-detail-panel">
@@ -91,23 +110,37 @@ const OverallScoreTableRow = memo(function OverallScoreTableRow({
 export function OverallScoreTable({ realtimeRequest, rows }: OverallScoreTableProps) {
   const [expandedHorseNumber, setExpandedHorseNumber] = useState<string | null>(null);
   const { payload } = useRealtimeRacePayload(realtimeRequest, null);
-  const sortedRows = useMemo(
-    () =>
-      rows.toSorted(
-        (left, right) =>
-          right.score - left.score || Number(left.horseNumber) - Number(right.horseNumber),
-      ),
-    [rows],
-  );
   const realtimeOddsByHorse = useMemo(
     () =>
       new Map(
         (payload?.odds?.latest.tansho ?? []).map((row) => [
-          row.combination,
+          formatRunnerNumber(row.combination),
           { odds: row.odds ?? null, popularity: row.rank ?? null },
         ]),
       ),
     [payload],
+  );
+  const entryStatusByHorse = useMemo(
+    () =>
+      new Map(
+        (payload?.raceEntries?.horses ?? []).map((horse) => [
+          formatRunnerNumber(horse.horseNumber),
+          horse.status ?? "",
+        ]),
+      ),
+    [payload],
+  );
+  const sortedRows = useMemo(
+    () =>
+      rows.toSorted((left, right) => {
+        const leftStatus = entryStatusByHorse.get(formatRunnerNumber(left.horseNumber)) ?? "";
+        const rightStatus = entryStatusByHorse.get(formatRunnerNumber(right.horseNumber)) ?? "";
+        if (leftStatus !== "" || rightStatus !== "") {
+          return leftStatus === rightStatus ? 0 : leftStatus ? 1 : -1;
+        }
+        return right.score - left.score || Number(left.horseNumber) - Number(right.horseNumber);
+      }),
+    [entryStatusByHorse, rows],
   );
   const toggleExpandedHorse = useCallback((horseNumber: string) => {
     setExpandedHorseNumber((current) => (current === horseNumber ? null : horseNumber));
@@ -129,9 +162,11 @@ export function OverallScoreTable({ realtimeRequest, rows }: OverallScoreTablePr
         <tbody>
           {sortedRows.length > 0 ? (
             sortedRows.map((row) => {
-              const realtimeOdds = realtimeOddsByHorse.get(row.horseNumber);
+              const horseNumber = formatRunnerNumber(row.horseNumber);
+              const realtimeOdds = realtimeOddsByHorse.get(horseNumber);
               return (
                 <OverallScoreTableRow
+                  entryStatus={entryStatusByHorse.get(horseNumber) ?? ""}
                   isExpanded={expandedHorseNumber === row.horseNumber}
                   key={row.horseNumber}
                   realtimeOdds={realtimeOdds?.odds ?? row.storedOdds}
