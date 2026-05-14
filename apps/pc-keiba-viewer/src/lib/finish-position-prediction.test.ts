@@ -121,6 +121,86 @@ describe("buildFinishPredictionRowsFromResults", () => {
     expect(rows[0]?.predictedRank).toBe(1);
   });
 
+  it("boosts jockeys who already won at the same venue on the same day", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      currentDistance: "1400",
+      currentKeibajoCode: "45",
+      currentRaceDate: "20260514",
+      currentSource: "nar",
+      currentTrackCode: "24",
+      results: [],
+      runners: [
+        runner({
+          bamei: "当日勝利騎手",
+          kishumeiRyakusho: "山田太郎",
+          tanshoNinkijun: "03",
+          tanshoOdds: "0060",
+          umaban: "01",
+        }),
+        runner({
+          bamei: "通常騎手",
+          kishumeiRyakusho: "佐藤次郎",
+          tanshoNinkijun: "03",
+          tanshoOdds: "0060",
+          umaban: "02",
+        }),
+      ],
+      sameDayVenueJockeyWins: [
+        {
+          jockeyName: "山田太郎",
+          latestRaceNumber: "05",
+          winCount: 1,
+        },
+      ],
+    });
+
+    expect(rows.map((row) => row.horseName)).toEqual(["当日勝利騎手", "通常騎手"]);
+    expect(rows[0]?.details.some((detail) => detail.label === "同日同場の騎手勝利")).toBe(true);
+  });
+
+  it("adjusts same-day jockey weight by grade, condition, distance, and history amount", () => {
+    const sprintClassRows = buildFinishPredictionRowsFromResults({
+      currentDistance: "1200",
+      currentKeibajoCode: "35",
+      currentKyosoJokenCode: "000",
+      currentKyosoJokenMeisho: "C2",
+      currentRaceDate: "20260514",
+      currentSource: "nar",
+      currentTrackCode: "24",
+      results: [],
+      runners: [runner({ kishumeiRyakusho: "山田太郎", tanshoNinkijun: "00", tanshoOdds: "0000" })],
+      sameDayVenueJockeyWins: [{ jockeyName: "山田太郎", latestRaceNumber: "03", winCount: 1 }],
+    });
+    const gradedLongRows = buildFinishPredictionRowsFromResults({
+      currentDistance: "2100",
+      currentGradeCode: "B",
+      currentKeibajoCode: "45",
+      currentRaceDate: "20260514",
+      currentSource: "nar",
+      currentTrackCode: "24",
+      results: Array.from({ length: 6 }, (_, index) =>
+        result({
+          currentUmaban: "01",
+          kakuteiChakujun: "03",
+          kaisaiTsukihi: `050${index + 1}`,
+          kyori: "2100",
+          trackCode: "24",
+        }),
+      ),
+      runners: [runner({ kishumeiRyakusho: "山田太郎", tanshoNinkijun: "00", tanshoOdds: "0000" })],
+      sameDayVenueJockeyWins: [{ jockeyName: "山田太郎", latestRaceNumber: "03", winCount: 1 }],
+    });
+
+    const sprintWeight = sprintClassRows[0]?.details.find(
+      (detail) => detail.label === "同日同場の騎手勝利",
+    )?.weight;
+    const gradedLongWeight = gradedLongRows[0]?.details.find(
+      (detail) => detail.label === "同日同場の騎手勝利",
+    )?.weight;
+
+    expect(sprintWeight).toBeGreaterThan(gradedLongWeight ?? 0);
+  });
+
   it("uses similarity and model predictions when available", () => {
     const rows = buildFinishPredictionRowsFromResults({
       currentDistance: "1400",

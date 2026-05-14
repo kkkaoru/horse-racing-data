@@ -1,5 +1,6 @@
 import type { RaceSource } from "./codes";
 import { cleanText } from "./format";
+import { isSameJockeyName } from "./jockey-name";
 import type {
   FinishPositionModelPredictionFeature,
   FinishPositionSimilarityFeature,
@@ -7,6 +8,7 @@ import type {
   FinishPredictionRow,
   HorseRaceResult,
   Runner,
+  SameDayVenueJockeyWinFeature,
 } from "./race-types";
 import { isBanEiKeibajoCode } from "./runner-format";
 
@@ -14,24 +16,32 @@ type FinishPredictionCategory = "ban-ei" | "jra" | "nar";
 
 interface BuildFinishPredictionRowsParams {
   currentDistance: string | null | undefined;
+  currentGradeCode?: string | null;
   currentKeibajoCode: string | null | undefined;
+  currentKyosoJokenCode?: string | null;
+  currentKyosoJokenMeisho?: string | null;
   currentRaceDate: string;
   currentSource: RaceSource;
   currentTrackCode?: string | null;
   modelPredictionFeatures?: FinishPositionModelPredictionFeature[];
   results: HorseRaceResult[];
   runners: Runner[];
+  sameDayVenueJockeyWins?: SameDayVenueJockeyWinFeature[];
   similarityFeatures?: FinishPositionSimilarityFeature[];
 }
 
 type FinishPredictionConfig = {
+  decayDays: number;
+  distanceBandMeters: number;
   distanceScale: number;
   horseWeight: number;
   jockeyWeight: number;
+  minDistanceWeight: number;
   modelWeight: number;
   oddsWeight: number;
   popularityWeight: number;
   recentWeight: number;
+  sameDayJockeyWeight: number;
   similarityWeight: number;
   trainerWeight: number;
 };
@@ -47,39 +57,53 @@ export const RACE_FINISH_PREDICTION_RESULTS_EVENT = "pc-keiba:finish-prediction-
 
 const CATEGORY_CONFIG: Record<FinishPredictionCategory, FinishPredictionConfig> = {
   "ban-ei": {
+    decayDays: 90,
+    distanceBandMeters: 100,
     distanceScale: 300,
     horseWeight: 0.36,
     jockeyWeight: 0.08,
+    minDistanceWeight: 0.4,
     modelWeight: 0.08,
     oddsWeight: 0.1,
     popularityWeight: 0.14,
     recentWeight: 0.18,
+    sameDayJockeyWeight: 0,
     similarityWeight: 0.1,
     trainerWeight: 0.06,
   },
   jra: {
+    decayDays: 75,
+    distanceBandMeters: 400,
     distanceScale: 500,
-    horseWeight: 0.18,
+    horseWeight: 0.162,
     jockeyWeight: 0.04,
+    minDistanceWeight: 0.25,
     modelWeight: 0.08,
-    oddsWeight: 0.12,
-    popularityWeight: 0.42,
-    recentWeight: 0.1,
+    oddsWeight: 0.132,
+    popularityWeight: 0.462,
+    recentWeight: 0.09,
+    sameDayJockeyWeight: 0.03,
     similarityWeight: 0.04,
     trainerWeight: 0.02,
   },
   nar: {
+    decayDays: 35,
+    distanceBandMeters: 400,
     distanceScale: 400,
     horseWeight: 0.22,
     jockeyWeight: 0.08,
+    minDistanceWeight: 0.25,
     modelWeight: 0.06,
     oddsWeight: 0.1,
-    popularityWeight: 0.32,
+    popularityWeight: 0.352,
     recentWeight: 0.12,
+    sameDayJockeyWeight: 0.02,
     similarityWeight: 0.06,
     trainerWeight: 0.04,
   },
 };
+
+const GRADED_RACE_CODES = new Set(["A", "B", "C", "D", "E", "F", "G", "H", "L"]);
 
 const clampScore = (value: number): number => Math.max(0, Math.min(1, value));
 
@@ -120,22 +144,50 @@ const getRaceDateValue = (value: string | null | undefined): number => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
-const getDateWeight = (raceDate: string | null | undefined, currentRaceDate: string): number => {
-  const diff = Math.max(0, getRaceDateValue(currentRaceDate) - getRaceDateValue(raceDate));
-  return 1 / (1 + diff / 10000);
+const toJstDate = (raceDate: string | null | undefined): Date | null => {
+  const cleaned = cleanText(raceDate, "");
+  if (!/^\d{8}$/u.test(cleaned)) {
+    return null;
+  }
+  return new Date(
+    `${cleaned.slice(0, 4)}-${cleaned.slice(4, 6)}-${cleaned.slice(6, 8)}T00:00:00+09:00`,
+  );
+};
+
+const getDateWeight = (
+  raceDate: string | null | undefined,
+  currentRaceDate: string,
+  decayDays: number,
+): number => {
+  const currentDate = toJstDate(currentRaceDate);
+  const pastDate = toJstDate(raceDate);
+  if (currentDate === null || pastDate === null) {
+    const diff = Math.max(0, getRaceDateValue(currentRaceDate) - getRaceDateValue(raceDate));
+    return 1 / (1 + diff / 10000);
+  }
+  const elapsedDays = Math.max(0, (currentDate.getTime() - pastDate.getTime()) / 86_400_000);
+  return 1 / (1 + elapsedDays / Math.max(1, decayDays));
 };
 
 const getDistanceWeight = (
   distance: string | null | undefined,
   currentDistance: string | null | undefined,
-  scale: number,
+  config: Pick<
+    FinishPredictionConfig,
+    "distanceBandMeters" | "distanceScale" | "minDistanceWeight"
+  >,
 ): number => {
   const parsedDistance = parseDistance(distance);
   const parsedCurrentDistance = parseDistance(currentDistance);
   if (parsedDistance === null || parsedCurrentDistance === null) {
     return 0.75;
   }
-  return 1 / (1 + Math.abs(parsedDistance - parsedCurrentDistance) / scale);
+  return Math.max(
+    config.minDistanceWeight,
+    1 -
+      Math.abs(parsedDistance - parsedCurrentDistance) /
+        Math.max(parsedCurrentDistance * config.distanceScale, config.distanceBandMeters),
+  );
 };
 
 const getTrackWeight = (
@@ -147,7 +199,10 @@ const getTrackWeight = (
   if (!track || !currentTrack) {
     return 0.85;
   }
-  return track.slice(0, 1) === currentTrack.slice(0, 1) ? 1 : 0.72;
+  if (track === currentTrack) {
+    return 1.15;
+  }
+  return track.slice(0, 1) === currentTrack.slice(0, 1) ? 1 : 0.58;
 };
 
 const getCategory = ({
@@ -161,6 +216,112 @@ const getCategory = ({
     return "ban-ei";
   }
   return source === "jra" ? "jra" : "nar";
+};
+
+const isGradedRace = (gradeCode: string | null | undefined): boolean =>
+  GRADED_RACE_CODES.has(cleanText(gradeCode, ""));
+
+const isNarClassRace = ({
+  conditionCode,
+  conditionName,
+}: {
+  conditionCode: string | null | undefined;
+  conditionName: string | null | undefined;
+}): boolean => {
+  const code = cleanText(conditionCode, "");
+  const condition = cleanText(conditionName, "");
+  return code === "000" || /^[ABC]\d?/u.test(condition);
+};
+
+const getDistanceBand = (
+  distance: string | null | undefined,
+): "long" | "middle" | "sprint" | "unknown" => {
+  const parsed = parseDistance(distance);
+  if (parsed === null) {
+    return "unknown";
+  }
+  if (parsed <= 1400) {
+    return "sprint";
+  }
+  if (parsed >= 2000) {
+    return "long";
+  }
+  return "middle";
+};
+
+const getConditionAdjustedConfig = ({
+  baseConfig,
+  category,
+  currentDistance,
+  currentGradeCode,
+  currentKyosoJokenCode,
+  currentKyosoJokenMeisho,
+}: {
+  baseConfig: FinishPredictionConfig;
+  category: FinishPredictionCategory;
+  currentDistance: string | null | undefined;
+  currentGradeCode: string | null | undefined;
+  currentKyosoJokenCode: string | null | undefined;
+  currentKyosoJokenMeisho: string | null | undefined;
+}): FinishPredictionConfig => {
+  const distanceBand = getDistanceBand(currentDistance);
+  const graded = isGradedRace(currentGradeCode);
+  const narClass = isNarClassRace({
+    conditionCode: currentKyosoJokenCode,
+    conditionName: currentKyosoJokenMeisho,
+  });
+  const config = { ...baseConfig };
+
+  if (category === "ban-ei") {
+    return config;
+  }
+
+  if (graded) {
+    config.sameDayJockeyWeight *= category === "nar" ? 0.7 : 0;
+  } else if (category === "nar" && narClass) {
+    config.sameDayJockeyWeight *= 0.8;
+  }
+
+  if (category === "jra") {
+    config.sameDayJockeyWeight = 0;
+  }
+
+  if (distanceBand === "sprint") {
+    config.sameDayJockeyWeight *= 1.2;
+  } else if (distanceBand === "long") {
+    config.sameDayJockeyWeight *= 0.75;
+  }
+
+  return config;
+};
+
+const getHorseHistoryAdjustedConfig = (
+  baseConfig: FinishPredictionConfig,
+  horseResultsCount: number,
+): FinishPredictionConfig => {
+  if (horseResultsCount <= 1) {
+    return {
+      ...baseConfig,
+      horseWeight: Math.max(0.12, baseConfig.horseWeight - 0.04),
+      jockeyWeight: baseConfig.jockeyWeight + 0.025,
+      oddsWeight: baseConfig.oddsWeight + 0.015,
+      popularityWeight: baseConfig.popularityWeight + 0.035,
+      sameDayJockeyWeight: baseConfig.sameDayJockeyWeight + 0.015,
+      trainerWeight: baseConfig.trainerWeight + 0.015,
+    };
+  }
+  if (horseResultsCount >= 6) {
+    return {
+      ...baseConfig,
+      horseWeight: baseConfig.horseWeight + 0.04,
+      jockeyWeight: Math.max(0.02, baseConfig.jockeyWeight - 0.015),
+      oddsWeight: Math.max(0.04, baseConfig.oddsWeight - 0.01),
+      popularityWeight: Math.max(0.16, baseConfig.popularityWeight - 0.025),
+      sameDayJockeyWeight: Math.max(0, baseConfig.sameDayJockeyWeight - 0.01),
+      trainerWeight: Math.max(0.02, baseConfig.trainerWeight - 0.01),
+    };
+  }
+  return baseConfig;
 };
 
 const normalizeFinish = ({
@@ -182,7 +343,10 @@ const weightedAverage = (
     currentDistance: string | null | undefined;
     currentRaceDate: string;
     currentTrackCode: string | null | undefined;
-    distanceScale: number;
+    config: Pick<
+      FinishPredictionConfig,
+      "decayDays" | "distanceBandMeters" | "distanceScale" | "minDistanceWeight"
+    >;
   },
 ): { count: number; value: number | null } => {
   let total = 0;
@@ -196,8 +360,12 @@ const weightedAverage = (
       continue;
     }
     const weight =
-      getDateWeight(`${result.kaisaiNen}${result.kaisaiTsukihi}`, params.currentRaceDate) *
-      getDistanceWeight(result.kyori, params.currentDistance, params.distanceScale) *
+      getDateWeight(
+        `${result.kaisaiNen}${result.kaisaiTsukihi}`,
+        params.currentRaceDate,
+        params.config.decayDays,
+      ) *
+      getDistanceWeight(result.kyori, params.currentDistance, params.config) *
       getTrackWeight(result.trackCode, params.currentTrackCode);
     total += finishNorm * weight;
     weightTotal += weight;
@@ -250,19 +418,46 @@ const calculateScore = (candidates: ScoreCandidate[]): { confidence: number; sco
   };
 };
 
+const getSameDayJockeyScore = (
+  jockeyName: string | null | undefined,
+  sameDayVenueJockeyWins: SameDayVenueJockeyWinFeature[],
+): { feature: SameDayVenueJockeyWinFeature; value: number } | null => {
+  const matched = sameDayVenueJockeyWins
+    .filter((feature) => isSameJockeyName(jockeyName, feature.jockeyName))
+    .toSorted((left, right) => right.winCount - left.winCount)[0];
+  if (!matched) {
+    return null;
+  }
+  return {
+    feature: matched,
+    value: clampScore(0.28 - Math.min(3, matched.winCount) * 0.07),
+  };
+};
+
 export const buildFinishPredictionRowsFromResults = ({
   currentDistance,
+  currentGradeCode,
   currentKeibajoCode,
+  currentKyosoJokenCode,
+  currentKyosoJokenMeisho,
   currentRaceDate,
   currentSource,
   currentTrackCode,
   modelPredictionFeatures = [],
   results,
   runners,
+  sameDayVenueJockeyWins = [],
   similarityFeatures = [],
 }: BuildFinishPredictionRowsParams): FinishPredictionRow[] => {
   const category = getCategory({ keibajoCode: currentKeibajoCode, source: currentSource });
-  const config = CATEGORY_CONFIG[category];
+  const config = getConditionAdjustedConfig({
+    baseConfig: CATEGORY_CONFIG[category],
+    category,
+    currentDistance,
+    currentGradeCode,
+    currentKyosoJokenCode,
+    currentKyosoJokenMeisho,
+  });
   const runnerCount = Math.max(2, runners.length);
   const resultsByHorse = new Map<string, HorseRaceResult[]>();
   for (const result of results) {
@@ -303,11 +498,12 @@ export const buildFinishPredictionRowsFromResults = ({
         cleanText(result.chokyoshimeiRyakusho, "") &&
         cleanText(result.chokyoshimeiRyakusho, "") === cleanText(runner.chokyoshimeiRyakusho, ""),
     );
+    const runnerConfig = getHorseHistoryAdjustedConfig(config, horseResults.length);
     const averageParams = {
+      config: runnerConfig,
       currentDistance,
       currentRaceDate,
       currentTrackCode,
-      distanceScale: config.distanceScale,
     };
     const horseAverage = weightedAverage(horseResults, averageParams);
     const recentAverage = weightedAverage(recentResults, averageParams);
@@ -315,42 +511,51 @@ export const buildFinishPredictionRowsFromResults = ({
     const trainerAverage = weightedAverage(trainerResults, averageParams);
     const similarity = similarityByHorse.get(horseNumber);
     const model = modelByHorse.get(horseNumber);
+    const sameDayJockey = getSameDayJockeyScore(runner.kishumeiRyakusho, sameDayVenueJockeyWins);
     const candidates: ScoreCandidate[] = [
       {
         label: "競走成績",
         reason: `${category}向け重みで過去${horseAverage.count}走の着順、距離、馬場、日付を評価`,
         value: horseAverage.value,
-        weight: config.horseWeight,
+        weight: runnerConfig.horseWeight,
       },
       {
         label: "近走",
         reason: `直近${recentAverage.count}走を強めに評価`,
         value: recentAverage.value,
-        weight: config.recentWeight,
+        weight: runnerConfig.recentWeight,
       },
       {
         label: "騎手",
         reason: `今回騎手と一致する過去${jockeyAverage.count}走を評価`,
         value: jockeyAverage.value,
-        weight: config.jockeyWeight,
+        weight: runnerConfig.jockeyWeight,
       },
       {
         label: "調教師",
         reason: `今回調教師と一致する過去${trainerAverage.count}走を評価`,
         value: trainerAverage.value,
-        weight: config.trainerWeight,
+        weight: runnerConfig.trainerWeight,
       },
       {
         label: "人気",
         reason: "最新の人気順を出走頭数で正規化",
         value: normalizePopularity(runner.tanshoNinkijun, runnerCount),
-        weight: config.popularityWeight,
+        weight: runnerConfig.popularityWeight,
       },
       {
         label: "単勝",
         reason: "最新の単勝オッズを対数で正規化",
         value: normalizeOdds(runner.tanshoOdds),
-        weight: config.oddsWeight,
+        weight: runnerConfig.oddsWeight,
+      },
+      {
+        label: "同日同場の騎手勝利",
+        reason: sameDayJockey
+          ? `${sameDayJockey.feature.jockeyName}騎手が同じ競馬場の当日${sameDayJockey.feature.latestRaceNumber}Rまでに${sameDayJockey.feature.winCount}勝`
+          : "同じ競馬場の当日勝利情報なし",
+        value: sameDayJockey?.value ?? null,
+        weight: runnerConfig.sameDayJockeyWeight,
       },
       {
         label: "類似レース",

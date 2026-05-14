@@ -73,6 +73,12 @@ interface RaceResultSnapshotRow {
   time: string | null;
 }
 
+interface SameDayVenueJockeyWinRow {
+  jockey_name: string;
+  latest_race_bango: string;
+  win_count: number;
+}
+
 export interface LocalRaceRow {
   hasso_jikoku: string | null;
   kaisai_nen: string;
@@ -794,6 +800,82 @@ export const getLatestRaceResults = async (
       time: row.time,
     })),
   };
+};
+
+export const getSameDayVenueJockeyWins = async (
+  db: D1Database,
+  params: {
+    kaisaiNen: string;
+    kaisaiTsukihi: string;
+    keibajoCode: string;
+    beforeRaceBango: string;
+  },
+): Promise<
+  {
+    jockeyName: string;
+    latestRaceNumber: string;
+    winCount: number;
+  }[]
+> => {
+  const result = await db
+    .prepare(
+      `
+        with target_races as (
+          select race_key, race_bango
+          from nar_race_sources
+          where kaisai_nen = ?
+            and kaisai_tsukihi = ?
+            and keibajo_code = ?
+            and cast(race_bango as integer) < cast(? as integer)
+        ),
+        latest_results as (
+          select race_key, max(fetched_at) fetched_at
+          from race_result_snapshots
+          where race_key in (select race_key from target_races)
+          group by race_key
+        ),
+        latest_entries as (
+          select race_key, max(fetched_at) fetched_at
+          from race_entry_snapshots
+          where race_key in (select race_key from target_races)
+          group by race_key
+        ),
+        winners as (
+          select
+            target_races.race_bango,
+            entries.jockey_name
+          from target_races
+          join latest_results
+            on latest_results.race_key = target_races.race_key
+          join race_result_snapshots results
+            on results.race_key = latest_results.race_key
+            and results.fetched_at = latest_results.fetched_at
+            and results.finish_position in ('1', '01')
+          join latest_entries
+            on latest_entries.race_key = target_races.race_key
+          join race_entry_snapshots entries
+            on entries.race_key = latest_entries.race_key
+            and entries.fetched_at = latest_entries.fetched_at
+            and entries.horse_number = results.horse_number
+          where entries.jockey_name is not null
+            and trim(entries.jockey_name) <> ''
+        )
+        select
+          jockey_name,
+          count(*) win_count,
+          max(race_bango) latest_race_bango
+        from winners
+        group by jockey_name
+        order by win_count desc, latest_race_bango desc, jockey_name asc
+      `,
+    )
+    .bind(params.kaisaiNen, params.kaisaiTsukihi, params.keibajoCode, params.beforeRaceBango)
+    .all<SameDayVenueJockeyWinRow>();
+  return result.results.map((row) => ({
+    jockeyName: row.jockey_name,
+    latestRaceNumber: row.latest_race_bango,
+    winCount: row.win_count,
+  }));
 };
 
 export const buildRealtimePayload = async (
