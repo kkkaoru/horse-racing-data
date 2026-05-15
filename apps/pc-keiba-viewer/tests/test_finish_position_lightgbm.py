@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import override
 
 import numpy as np
 import pandas as pd
@@ -488,6 +489,86 @@ def test_run_walk_forward_command_writes_report_and_predictions(
     assert parsed["aggregate"]["fold_count"] == 1
     assert (predictions_dir / "2021.jsonl").exists()
     assert captured
+
+
+def test_suggest_hpo_params_uses_sampling_ranges():
+    import optuna
+
+    captured: dict[str, tuple[object, ...]] = {}
+
+    class FakeTrial(optuna.trial.Trial):
+        def __init__(self):
+            pass
+
+        @override
+        def suggest_int(self, name: str, low: int, high: int, **kwargs: object) -> int:
+            captured[name] = (low, high)
+            return low
+
+        @override
+        def suggest_float(self, name: str, low: float, high: float, **kwargs: object) -> float:
+            captured[name] = (low, high, bool(kwargs.get("log", False)))
+            return low
+
+    fake_trial = FakeTrial()
+    params = subject.suggest_hpo_params(fake_trial, num_iterations=100)
+    assert params["num_iterations"] == 100
+    assert captured["num_leaves"] == (15, 255)
+    assert captured["learning_rate"] == (0.01, 0.3, True)
+    assert captured["min_child_samples"] == (5, 100)
+    assert captured["lambda_l2"] == (0.0, 10.0, False)
+
+
+def test_write_hpo_summary_persists_json(tmp_path: Path):
+    summary: subject.HpoSummary = {
+        "best_params": {
+            "lambda_l2": 0.5,
+            "learning_rate": 0.05,
+            "min_child_samples": 10,
+            "num_iterations": 100,
+            "num_leaves": 31,
+        },
+        "best_value": 0.42,
+        "n_trials": 5,
+    }
+    output_path = tmp_path / "best.json"
+    subject.write_hpo_summary(summary, output_path)
+    parsed = json.loads(output_path.read_text(encoding="utf-8"))
+    assert parsed["best_value"] == 0.42
+    assert parsed["best_params"]["num_leaves"] == 31
+
+
+def test_run_hpo_command_writes_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    df = make_walk_forward_dataset()
+    csv_path = tmp_path / "full.csv"
+    df.to_csv(csv_path, index=False)
+    output_path = tmp_path / "best.json"
+    captured: list[str] = []
+    monkeypatch.setattr("builtins.print", lambda line: captured.append(line))
+    summary = subject.run_hpo_command(
+        subject.parse_args(
+            [
+                "hpo",
+                "--csv",
+                str(csv_path),
+                "--train-start-date",
+                "20200101",
+                "--validation-years",
+                "2021",
+                "--output-best-params",
+                str(output_path),
+                "--n-trials",
+                "2",
+                "--num-iterations",
+                "5",
+            ]
+        )
+    )
+    assert summary["n_trials"] == 2
+    assert output_path.exists()
+    parsed = json.loads(output_path.read_text(encoding="utf-8"))
+    assert parsed["n_trials"] == 2
+    assert "num_leaves" in parsed["best_params"]
 
 
 def test_run_train_command_writes_model_predictions_and_metadata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

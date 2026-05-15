@@ -20,6 +20,7 @@ from typing import TypedDict, cast
 
 import lightgbm as lgb
 import numpy as np
+import optuna
 import pandas as pd
 from numpy.typing import NDArray
 
@@ -53,6 +54,17 @@ DEFAULT_LAMBDA_L2 = 0.0
 DEFAULT_NUM_ITERATIONS = 500
 DEFAULT_EARLY_STOPPING_ROUNDS = 50
 DEFAULT_VERBOSE_EVAL = 50
+HPO_NUM_ITERATIONS = 200
+HPO_NUM_LEAVES_MIN = 15
+HPO_NUM_LEAVES_MAX = 255
+HPO_LEARNING_RATE_MIN = 0.01
+HPO_LEARNING_RATE_MAX = 0.3
+HPO_MIN_CHILD_SAMPLES_MIN = 5
+HPO_MIN_CHILD_SAMPLES_MAX = 100
+HPO_LAMBDA_L2_MIN = 0.0
+HPO_LAMBDA_L2_MAX = 10.0
+HPO_DEFAULT_N_TRIALS = 30
+HPO_DEFAULT_SEED = 20260515
 
 
 class TrainingParams(TypedDict):
@@ -286,6 +298,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     walk.add_argument("--num-leaves", type=int, default=DEFAULT_NUM_LEAVES)
     walk.add_argument("--min-child-samples", type=int, default=DEFAULT_MIN_CHILD_SAMPLES)
     walk.add_argument("--lambda-l2", type=float, default=DEFAULT_LAMBDA_L2)
+    hpo = subparsers.add_parser("hpo")
+    hpo.add_argument("--csv", type=Path, required=True)
+    hpo.add_argument("--train-start-date", type=str, default="20160101")
+    hpo.add_argument("--validation-years", type=str, default="2021,2022,2023,2024,2025")
+    hpo.add_argument("--output-best-params", type=Path, required=True)
+    hpo.add_argument("--output-trials-csv", type=Path)
+    hpo.add_argument("--n-trials", type=int, default=HPO_DEFAULT_N_TRIALS)
+    hpo.add_argument("--num-iterations", type=int, default=HPO_NUM_ITERATIONS)
+    hpo.add_argument("--seed", type=int, default=HPO_DEFAULT_SEED)
     return parser.parse_args(argv)
 
 
@@ -476,6 +497,82 @@ def run_walk_forward_command(args: argparse.Namespace) -> None:
     print(json.dumps({"aggregate": aggregate, "folds": fold_metrics}, ensure_ascii=False))
 
 
+def suggest_hpo_params(trial: optuna.trial.Trial, num_iterations: int) -> TrainingParams:
+    return {
+        "lambda_l2": trial.suggest_float("lambda_l2", HPO_LAMBDA_L2_MIN, HPO_LAMBDA_L2_MAX),
+        "learning_rate": trial.suggest_float(
+            "learning_rate", HPO_LEARNING_RATE_MIN, HPO_LEARNING_RATE_MAX, log=True
+        ),
+        "min_child_samples": trial.suggest_int(
+            "min_child_samples", HPO_MIN_CHILD_SAMPLES_MIN, HPO_MIN_CHILD_SAMPLES_MAX
+        ),
+        "num_iterations": num_iterations,
+        "num_leaves": trial.suggest_int("num_leaves", HPO_NUM_LEAVES_MIN, HPO_NUM_LEAVES_MAX),
+    }
+
+
+def evaluate_fold_set(
+    df: pd.DataFrame,
+    train_start: str,
+    validation_years: list[int],
+    params: TrainingParams,
+) -> dict[str, float | int]:
+    fold_metrics: list[FoldMetrics] = []
+    for valid_year in validation_years:
+        fold = split_walk_forward(df, train_start, valid_year)
+        _booster, _predictions, metrics = run_walk_forward_fold(fold, params)
+        fold_metrics.append(metrics)
+    return aggregate_fold_metrics(fold_metrics)
+
+
+class HpoSummary(TypedDict):
+    best_params: TrainingParams
+    best_value: float
+    n_trials: int
+
+
+def write_hpo_summary(summary: HpoSummary, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as handle:
+        json.dump(summary, handle, ensure_ascii=False, indent=2)
+
+
+def write_optuna_trials_csv(study: optuna.Study, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    study.trials_dataframe().to_csv(output_path, index=False)
+
+
+def run_hpo_command(args: argparse.Namespace) -> HpoSummary:
+    df = load_dataset_csv(args.csv)
+    validation_years = parse_year_list(args.validation_years)
+
+    def objective(trial: optuna.trial.Trial) -> float:
+        params = suggest_hpo_params(trial, int(args.num_iterations))
+        aggregate = evaluate_fold_set(df, args.train_start_date, validation_years, params)
+        return float(aggregate["ndcg_at_3_mean"])
+
+    sampler = optuna.samplers.TPESampler(seed=int(args.seed))
+    study = optuna.create_study(direction="maximize", sampler=sampler)
+    study.optimize(objective, n_trials=int(args.n_trials), show_progress_bar=False)
+    best_params: TrainingParams = {
+        "lambda_l2": float(study.best_params["lambda_l2"]),
+        "learning_rate": float(study.best_params["learning_rate"]),
+        "min_child_samples": int(study.best_params["min_child_samples"]),
+        "num_iterations": int(args.num_iterations),
+        "num_leaves": int(study.best_params["num_leaves"]),
+    }
+    summary: HpoSummary = {
+        "best_params": best_params,
+        "best_value": float(study.best_value),
+        "n_trials": len(study.trials),
+    }
+    write_hpo_summary(summary, args.output_best_params)
+    if args.output_trials_csv is not None:
+        write_optuna_trials_csv(study, args.output_trials_csv)
+    print(json.dumps(summary, ensure_ascii=False))
+    return summary
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     if args.command == "train":
@@ -483,6 +580,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "walk-forward":
         run_walk_forward_command(args)
+        return
+    if args.command == "hpo":
+        run_hpo_command(args)
         return
     raise ValueError(f"Unknown command: {args.command}")
 
