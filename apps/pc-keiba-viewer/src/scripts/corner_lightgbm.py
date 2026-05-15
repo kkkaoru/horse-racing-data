@@ -1177,31 +1177,31 @@ def neural_sequence_tensor(df: pd.DataFrame) -> FloatArray:
     return cast(FloatArray, sequences[inverse_order])
 
 
-class CornerLstmModel(import_mlx_nn().Module):  # pragma: no cover
+class CornerLstmModel(import_mlx_nn().Module):  # ty: ignore[unresolved-attribute]  # pragma: no cover
     def __init__(self, input_size: int, hidden_size: int) -> None:
         super().__init__()
         nn = import_mlx_nn()
-        self.lstm = nn.LSTM(input_size, hidden_size)
-        self.output = nn.Linear(hidden_size, 1)
+        self.lstm = nn.LSTM(input_size, hidden_size)  # ty: ignore[unresolved-attribute]
+        self.output = nn.Linear(hidden_size, 1)  # ty: ignore[unresolved-attribute]
 
     def __call__(self, x):
         hidden, _cell = self.lstm(x)
         return self.output(hidden[:, -1, :]).squeeze(-1)
 
 
-class CornerTransformerModel(import_mlx_nn().Module):  # pragma: no cover
+class CornerTransformerModel(import_mlx_nn().Module):  # ty: ignore[unresolved-attribute]  # pragma: no cover
     def __init__(self, input_size: int, hidden_size: int) -> None:
         super().__init__()
         nn = import_mlx_nn()
-        self.input = nn.Linear(input_size, hidden_size)
-        self.encoder = nn.TransformerEncoder(
+        self.input = nn.Linear(input_size, hidden_size)  # ty: ignore[unresolved-attribute]
+        self.encoder = nn.TransformerEncoder(  # ty: ignore[unresolved-attribute]
             num_layers=2,
             dims=hidden_size,
             num_heads=4,
             mlp_dims=hidden_size * 2,
             dropout=0.0,
         )
-        self.output = nn.Linear(hidden_size, 1)
+        self.output = nn.Linear(hidden_size, 1)  # ty: ignore[unresolved-attribute]
 
     def __call__(self, x):
         encoded = self.encoder(self.input(x), None)
@@ -1217,24 +1217,24 @@ def train_neural_corner_model(
     mx = import_mlx_core()
     nn = import_mlx_nn()
     optimizers = import_mlx_optimizers()
-    optimizer = optimizers.Adam(learning_rate=0.002)
+    optimizer = optimizers.Adam(learning_rate=0.002)  # ty: ignore[unresolved-attribute]
     target_values = target.to_numpy(dtype=np.float32)
     batch_size = 4096
 
     def loss_fn(model_arg, batch_x, batch_y):
         prediction = model_arg(batch_x)
-        return nn.losses.mse_loss(prediction, batch_y)
+        return nn.losses.mse_loss(prediction, batch_y)  # ty: ignore[unresolved-attribute]
 
-    loss_and_grad = nn.value_and_grad(model, loss_fn)
+    loss_and_grad = nn.value_and_grad(model, loss_fn)  # ty: ignore[unresolved-attribute]
     for epoch in range(epochs):
         rng = np.random.default_rng(20260514 + epoch)
         for start in range(0, len(train_sequences), batch_size):
             batch_index = rng.permutation(len(train_sequences))[start : start + batch_size]
-            batch_x = mx.array(train_sequences[batch_index])
-            batch_y = mx.array(target_values[batch_index])
+            batch_x = mx.array(train_sequences[batch_index])  # ty: ignore[unresolved-attribute]
+            batch_y = mx.array(target_values[batch_index])  # ty: ignore[unresolved-attribute]
             loss, gradients = loss_and_grad(model, batch_x, batch_y)
             optimizer.update(model, gradients)
-            mx.eval(model.parameters(), optimizer.state, loss)
+            mx.eval(model.parameters(), optimizer.state, loss)  # ty: ignore[unresolved-attribute]
     return model
 
 
@@ -1242,7 +1242,7 @@ def predict_neural_corner_model(model, sequences: FloatArray) -> pd.Series:  # p
     mx = import_mlx_core()
     predictions: list[np.ndarray] = []
     for start in range(0, len(sequences), 8192):
-        batch = mx.array(sequences[start : start + 8192])
+        batch = mx.array(sequences[start : start + 8192])  # ty: ignore[unresolved-attribute]
         predictions.append(np.asarray(model(batch), dtype=float))
     return clipped_prediction(pd.Series(np.concatenate(predictions)))
 
