@@ -53,8 +53,5 @@ testpaths = ["tests"]
 branch = true
 
 [tool.coverage.report]
-exclude_lines = [
-  "if __name__ == .__main__.:",
-  "raise SystemExit",
-]
+exclude_lines = ["if __name__ == .__main__.:", "raise SystemExit"]
 show_missing = true
