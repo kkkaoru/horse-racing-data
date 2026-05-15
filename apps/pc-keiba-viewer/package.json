@@ -14,6 +14,7 @@
     "dev:export-finish-features": "bun run src/scripts/finish-position-features/export-finish-position-dataset.ts",
     "dev:import-finish-predictions": "bun run src/scripts/finish-position-features/import-finish-position-predictions.ts",
     "dev:upload-finish-model": "bun run src/scripts/finish-position-features/upload-finish-model.ts",
+    "dev:evaluate-predictions": "bun run src/scripts/finish-position-features/evaluate-predictions.ts",
     "dev:finish-lightgbm": "uv run --with lightgbm --with pandas --with numpy --with optuna --with pyarrow python src/scripts/finish_position_lightgbm.py",
     "dev:build-finish-features-duckdb": "uv run python src/scripts/finish_position_features_duckdb.py",
     "dev:walk-forward-finish-eval": "bun run src/scripts/walk-forward-finish-position-eval.ts",
