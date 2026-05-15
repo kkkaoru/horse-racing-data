@@ -52,6 +52,12 @@
       "id": "9b214701ab3f4a3ab406de8cdd26e0ae",
     },
   ],
+  "r2_buckets": [
+    {
+      "binding": "FINISH_POSITION_MODELS",
+      "bucket_name": "pc-keiba-finish-position-models",
+    },
+  ],
   "routes": [
     {
       "pattern": "pc-keiba-viewer.kkk4oru.com",
