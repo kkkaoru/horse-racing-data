@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
 from typing import TypedDict
@@ -566,6 +567,138 @@ def legacy_five_cte() -> str:
     """
 
 
+def materialize_pedigree_stats(con: duckdb.DuckDBPyConnection, category: str) -> None:
+    binding_text = pedigree_cte(category)
+    log_event("pedigree.sire_distance_stats", "start", 0.0)
+    started = perf_counter()
+    con.execute(
+        f"create or replace temp table sire_distance_stats_t as with {binding_text} select * from sire_distance_stats"
+    )
+    log_event("pedigree.sire_distance_stats", "done", perf_counter() - started)
+    log_event("pedigree.sire_track_stats", "start", 0.0)
+    started = perf_counter()
+    con.execute(
+        f"create or replace temp table sire_track_stats_t as with {binding_text} select * from sire_track_stats"
+    )
+    log_event("pedigree.sire_track_stats", "done", perf_counter() - started)
+    log_event("pedigree.damsire_distance_stats", "start", 0.0)
+    started = perf_counter()
+    con.execute(
+        f"create or replace temp table damsire_distance_stats_t as with {binding_text} select * from damsire_distance_stats"
+    )
+    log_event("pedigree.damsire_distance_stats", "done", perf_counter() - started)
+    log_event("pedigree.damsire_track_stats", "start", 0.0)
+    started = perf_counter()
+    con.execute(
+        f"create or replace temp table damsire_track_stats_t as with {binding_text} select * from damsire_track_stats"
+    )
+    log_event("pedigree.damsire_track_stats", "done", perf_counter() - started)
+    log_event("pedigree.target_pedigree", "start", 0.0)
+    started = perf_counter()
+    con.execute(
+        f"create or replace temp table target_pedigree_t as with {binding_text} select * from target_pedigree"
+    )
+    log_event("pedigree.target_pedigree", "done", perf_counter() - started)
+
+
+def materialize_race_context(con: duckdb.DuckDBPyConnection) -> None:
+    cte_text = race_context_cte()
+    materialize_temp_table(con, "race_field_aggregates", "race_field_aggregates_t", cte_text, "race_field_aggregates")
+    materialize_temp_table(con, "race_top3_speed", "race_top3_speed_t", cte_text, "race_top3_speed")
+
+
+def materialize_legacy_features(con: duckdb.DuckDBPyConnection) -> None:
+    cte_text = legacy_five_cte()
+    materialize_temp_table(con, "legacy_features", "legacy_features_t", cte_text, "legacy_features")
+
+
+def materialize_weather_lookup(con: duckdb.DuckDBPyConnection) -> None:
+    log_event("weather.weather_lookup", "start", 0.0)
+    started = perf_counter()
+    con.execute(
+        """
+        create or replace temp table weather_lookup_t as
+        select t.source, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango, t.ketto_toroku_bango,
+          coalesce(jr.tenko_code, nr.tenko_code) as tenko_code
+        from target t
+        left join jra_ra jr on t.source='jra' and jr.kaisai_nen=t.kaisai_nen and jr.kaisai_tsukihi=t.kaisai_tsukihi
+          and jr.keibajo_code=t.keibajo_code and jr.race_bango=t.race_bango
+        left join nar_ra nr on t.source='nar' and nr.kaisai_nen=t.kaisai_nen and nr.kaisai_tsukihi=t.kaisai_tsukihi
+          and nr.keibajo_code=t.keibajo_code and nr.race_bango=t.race_bango
+        """
+    )
+    log_event("weather.weather_lookup", "done", perf_counter() - started)
+
+
+def assemble_final_select_from_temp_tables(category: str) -> str:
+    return f"""
+    select
+      t.source, t.race_date, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango,
+      t.ketto_toroku_bango, t.umaban, t.category, t.kyori, t.track_code, t.grade_code, t.shusso_tosu,
+      t.finish_position, t.finish_norm,
+      hc.speed_index_avg_5, hc.speed_index_best_5, hc.kohan3f_avg_5, hc.corner_pass_avg_5,
+      hc.career_win_rate, hc.career_place_rate, hc.career_top1_count,
+      hc.same_keibajo_win_rate, hc.same_distance_win_rate, hc.same_track_win_rate, hc.same_grade_win_rate,
+      wa.weight_avg_5,
+      cast(wa.current_bataiju_kept as double) - wa.weight_avg_5 as weight_diff_from_avg,
+      hc.days_since_last_race, hc.consecutive_race_count,
+      jc.jockey_career_win_rate, jc.jockey_recent_win_rate, jc.jockey_keibajo_win_rate,
+      jc.jockey_distance_win_rate, jc.jockey_track_win_rate, jc.jockey_grade_win_rate,
+      jc.jockey_horse_pair_count, jc.jockey_horse_pair_win_rate,
+      tc.trainer_career_win_rate, tc.trainer_keibajo_win_rate, tc.trainer_distance_win_rate, tc.trainer_horse_win_rate,
+      case when sds.race_count >= {PEDIGREE_MIN_RACES} then sds.sire_distance_win_rate_val else null end as sire_distance_win_rate,
+      case when sts.race_count >= {PEDIGREE_MIN_RACES} then sts.sire_track_win_rate_val else null end as sire_track_win_rate,
+      case when dsd.race_count >= {PEDIGREE_MIN_RACES} then dsd.dam_sire_distance_win_rate_val else null end as dam_sire_distance_win_rate,
+      case when sds.race_count >= {PEDIGREE_MIN_RACES} then sds.sire_avg_finish_at_distance_val else null end as sire_avg_finish_at_distance,
+      case when dst.race_count >= {PEDIGREE_MIN_RACES} then dst.damsire_avg_finish_at_track_val else null end as damsire_avg_finish_at_track,
+      (
+        coalesce(sds.sire_distance_win_rate_val, 0) +
+        coalesce(dsd.dam_sire_distance_win_rate_val, 0) +
+        coalesce(sts.sire_track_win_rate_val, 0)
+      ) / {PEDIGREE_COMPOSITE_DIVISOR}::double as pedigree_score_for_race,
+      rfa.race_avg_speed as field_strength_avg_speed,
+      rts.race_top_speed as field_strength_top3_speed,
+      greatest(0, rfa.race_strong_count - case when hc.same_distance_win_rate > {RIVAL_DISTANCE_THRESHOLD} then 1 else 0 end) as rival_count_at_distance,
+      tb.track_bias_inside,
+      tb.track_bias_front,
+      case wl.tenko_code
+        when '1' then 0::double when '2' then 0.3::double
+        when '3' then 0.7::double when '4' then 0.7::double
+        when '5' then 1.0::double when '6' then 1.0::double
+        else null end as weather_normalized,
+      case
+        when left(coalesce(t.track_code, ''), 1) = '1' then
+          case t.babajotai_code_shiba when '1' then 0::double when '2' then 0.3::double when '3' then 0.6::double when '4' then 1.0::double else null end
+        else
+          case t.babajotai_code_dirt when '1' then 0::double when '2' then 0.3::double when '3' then 0.6::double when '4' then 1.0::double else null end
+      end as track_condition_normalized,
+      least(1::double, greatest(0::double, coalesce(t.shusso_tosu, 0)::double / {MAX_FIELD_SIZE})) as field_size_normalized,
+      case when trim(coalesce(t.grade_code, '')) in ('A', 'B', 'C', 'D', 'G', 'H') then 1 else 0 end::int as is_grade_race,
+      rf.last_race_finish_norm, rf.last_race_margin_to_winner, rf.last_race_corner_pass_norm,
+      rf.last_race_class_diff, rf.last_race_distance_diff, rf.finish_trend_5, rf.last_3_avg_finish_norm,
+      lf.avg_finish, lf.recent_finish, lf.popularity_score, lf.odds_score,
+      t.feature_schema_version,
+      t.race_year,
+      t.source || ':' || t.kaisai_nen || ':' || t.kaisai_tsukihi || ':' || t.keibajo_code || ':' || t.race_bango as race_id
+    from target t
+    left join horse_career_t hc using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
+    left join jockey_career_t jc using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
+    left join trainer_career_t tc using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
+    left join target_pedigree_t tp using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
+    left join sire_distance_stats_t sds on sds.sire = tp.target_sire and sds.kyori_band = tp.kyori_band
+    left join sire_track_stats_t sts on sts.sire = tp.target_sire and sts.surface = tp.surface
+    left join damsire_distance_stats_t dsd on dsd.damsire = tp.target_damsire and dsd.kyori_band = tp.kyori_band
+    left join damsire_track_stats_t dst on dst.damsire = tp.target_damsire and dst.surface = tp.surface
+    left join race_field_aggregates_t rfa using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
+    left join race_top3_speed_t rts using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
+    left join track_bias_t tb using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
+    left join weight_agg_t wa using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
+    left join recent_form_t rf using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
+    left join legacy_features_t lf using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
+    left join weather_lookup_t wl using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
+    """
+
+
 def assemble_final_query(category: str) -> str:
     return f"""
     with
@@ -675,6 +808,36 @@ class BuildResult(TypedDict):
     rows_written: int
 
 
+def log_event(stage: str, status: str, elapsed_seconds: float, rows: int | None = None) -> None:
+    payload: dict[str, object] = {
+        "stage": stage,
+        "status": status,
+        "elapsed_seconds": round(elapsed_seconds, 2),
+        "timestamp": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+    }
+    if rows is not None:
+        payload["rows"] = rows
+    print(json.dumps(payload, ensure_ascii=False), flush=True)
+
+
+def materialize_temp_table(
+    con: duckdb.DuckDBPyConnection,
+    stage: str,
+    temp_name: str,
+    cte_text: str,
+    final_cte: str,
+) -> int:
+    log_event(stage, "start", 0.0)
+    started = perf_counter()
+    sql = f"create or replace temp table {temp_name} as with {cte_text} select * from {final_cte}"
+    con.execute(sql)
+    row_result = con.execute(f"select count(*) from {temp_name}").fetchone()
+    row_count = int(row_result[0]) if row_result is not None else 0
+    elapsed = perf_counter() - started
+    log_event(stage, "done", elapsed, row_count)
+    return row_count
+
+
 def count_output_rows(output_dir: Path) -> int:
     parquet_files = list(output_dir.glob("race_year=*/data_0.parquet"))
     if not parquet_files:
@@ -690,19 +853,50 @@ def count_output_rows(output_dir: Path) -> int:
 
 def run(args: argparse.Namespace) -> BuildResult:
     pg_url = resolve_pg_url(args.pg_url)
-    started = perf_counter()
+    overall_started = perf_counter()
+    log_event("run", "start", 0.0)
     con = duckdb.connect(":memory:")
     con.execute(f"set threads to {int(args.threads)}")
     con.execute(f"set memory_limit = '{args.memory_limit}'")
+    try:
+        con.execute("PRAGMA enable_progress_bar")
+    except duckdb.Error:
+        pass
+    log_event("source.stage", "start", 0.0)
+    started = perf_counter()
     install_and_attach_pg(con, pg_url)
     stage_source_tables(con, args.from_date, args.to_date)
+    log_event("source.stage", "done", perf_counter() - started)
+    log_event("target.build", "start", 0.0)
+    started = perf_counter()
     build_target_table(con, args.category, args.from_date, args.to_date)
-    final_query = assemble_final_query(args.category)
-    write_parquet(con, final_query, args.output_dir)
+    target_row_result = con.execute("select count(*) from target").fetchone()
+    target_rows = int(target_row_result[0]) if target_row_result is not None else 0
+    log_event("target.build", "done", perf_counter() - started, target_rows)
+    materialize_temp_table(
+        con, "horse_career", "horse_career_t", horse_career_cte(), "horse_career"
+    )
+    materialize_temp_table(con, "jockey_career", "jockey_career_t", jockey_cte(), "jockey_career")
+    materialize_temp_table(
+        con, "trainer_career", "trainer_career_t", trainer_cte(), "trainer_career"
+    )
+    materialize_pedigree_stats(con, args.category)
+    materialize_race_context(con)
+    materialize_temp_table(con, "track_bias", "track_bias_t", track_bias_cte(), "track_bias")
+    materialize_temp_table(con, "weight_agg", "weight_agg_t", weight_cte(), "weight_agg")
+    materialize_temp_table(con, "recent_form", "recent_form_t", recent_form_cte(), "recent_form")
+    materialize_legacy_features(con)
+    materialize_weather_lookup(con)
+    log_event("parquet.write", "start", 0.0)
+    started = perf_counter()
+    write_parquet(con, assemble_final_select_from_temp_tables(args.category), args.output_dir)
+    log_event("parquet.write", "done", perf_counter() - started)
     rows = count_output_rows(args.output_dir)
+    elapsed = perf_counter() - overall_started
+    log_event("run", "done", elapsed, rows)
     con.close()
     return {
-        "elapsed_seconds": perf_counter() - started,
+        "elapsed_seconds": elapsed,
         "output_dir": args.output_dir.as_posix(),
         "rows_written": rows,
     }
