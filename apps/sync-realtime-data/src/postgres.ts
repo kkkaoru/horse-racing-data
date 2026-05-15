@@ -5,6 +5,8 @@ import type { Env } from "./types";
 
 interface PgRaceRow {
   hasso_jikoku: string | null;
+  kaisai_kai?: string | null;
+  kaisai_nichime?: string | null;
   kaisai_nen: string;
   kaisai_tsukihi: string;
   keibajo_code: string;
@@ -48,6 +50,29 @@ export const fetchNarRacesByDate = async (env: Env, targetDate: string): Promise
         hasso_jikoku,
         kyosomei_hondai
       from nvd_ra
+      where kaisai_nen = $1
+        and kaisai_tsukihi = $2
+        and hasso_jikoku is not null
+      order by hasso_jikoku asc, keibajo_code asc, race_bango asc
+    `,
+    [targetDate.slice(0, 4), targetDate.slice(4, 8)],
+  );
+  return result.rows;
+};
+
+export const fetchJraRacesByDate = async (env: Env, targetDate: string): Promise<PgRaceRow[]> => {
+  const result = await getPool(env).query<PgRaceRow>(
+    `
+      select
+        kaisai_nen,
+        kaisai_tsukihi,
+        keibajo_code,
+        race_bango,
+        hasso_jikoku,
+        kyosomei_hondai,
+        kaisai_kai,
+        kaisai_nichime
+      from jvd_ra
       where kaisai_nen = $1
         and kaisai_tsukihi = $2
         and hasso_jikoku is not null

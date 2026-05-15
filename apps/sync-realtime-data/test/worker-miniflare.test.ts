@@ -41,23 +41,28 @@ const seedRace = async (
     oddsFetchLockUntil?: string | null;
     resultCompleteAt?: string | null;
     lastResultFetchAt?: string | null;
+    source?: "jra" | "nar";
   } = {},
 ): Promise<void> => {
+  const source = options.source ?? "nar";
   await db
     .prepare(
       `
-        insert into nar_race_sources (
+        insert into realtime_race_sources (
           race_key, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
           baba_code, race_start_at_jst, race_name, deba_url, odds_links_json,
           discovered_at, updated_at, last_odds_fetch_at, last_odds_queued_at,
           odds_fetch_lock_until, last_weight_fetch_at, last_result_fetch_at, result_complete_at
         )
-        values (?, 'nar', '2026', '0512', '55', '01', '22', ?, 'test race',
+        values (?, ?, '2026', '0512', ?, '01', ?, ?, 'test race',
           'https://example.test/deba', '{}', ?, ?, ?, ?, ?, null, ?, ?)
       `,
     )
     .bind(
       raceKey,
+      source,
+      source === "jra" ? "08" : "55",
+      source === "jra" ? "08" : "22",
       raceStartAtJst,
       TEST_NOW,
       TEST_NOW,
@@ -88,8 +93,18 @@ beforeAll(async () => {
             namespace: "stub-postgres",
             path: "postgres",
           }));
+          build.onResolve({ filter: /^@cloudflare\/playwright$/ }, () => ({
+            namespace: "stub-playwright",
+            path: "playwright",
+          }));
           build.onLoad({ filter: /.*/, namespace: "stub-postgres" }, () => ({
-            contents: "export const fetchNarRacesByDate = async () => [];",
+            contents:
+              "export const fetchJraRacesByDate = async () => []; export const fetchNarRacesByDate = async () => [];",
+            loader: "js",
+          }));
+          build.onLoad({ filter: /.*/, namespace: "stub-playwright" }, () => ({
+            contents:
+              "export const launch = async () => { throw new Error('playwright unavailable in test'); };",
             loader: "js",
           }));
         },
@@ -120,7 +135,10 @@ beforeAll(async () => {
   await applySqlFile(join(root, "migrations/0003_race_results.sql"));
   await applySqlFile(join(root, "migrations/0004_result_completion.sql"));
   await applySqlFile(join(root, "migrations/0005_race_entry_snapshots.sql"));
-  worker = (await mf.getWorker()) as typeof worker;
+  await applySqlFile(join(root, "migrations/0006_realtime_race_sources.sql"));
+  await applySqlFile(join(root, "migrations/0007_jra_track_conditions.sql"));
+  await applySqlFile(join(root, "migrations/0008_jra_race_keys.sql"));
+  worker = (await mf.getWorker()) as unknown as typeof worker;
 });
 
 beforeEach(async () => {
@@ -130,7 +148,9 @@ beforeEach(async () => {
     delete from race_entry_snapshots;
     delete from race_result_snapshots;
     delete from horse_weight_snapshots;
-    delete from nar_race_sources;
+    delete from jra_track_condition_snapshots;
+    delete from jra_track_condition_fetch_state;
+    delete from realtime_race_sources;
   `);
 });
 
@@ -167,7 +187,7 @@ describe("worker scheduling with Miniflare", () => {
       .prepare(
         `
           select last_odds_queued_at, odds_fetch_lock_until
-          from nar_race_sources
+          from realtime_race_sources
           where race_key = ?
         `,
       )
@@ -196,7 +216,7 @@ describe("worker scheduling with Miniflare", () => {
       .prepare(
         `
           select race_key, last_result_queued_at
-          from nar_race_sources
+          from realtime_race_sources
           where race_key in (?, ?)
           order by race_key
         `,
@@ -236,7 +256,7 @@ describe("worker scheduling with Miniflare", () => {
       .prepare(
         `
           select race_key, last_result_queued_at
-          from nar_race_sources
+          from realtime_race_sources
           where race_key in (?, ?)
           order by race_key
         `,
@@ -275,7 +295,7 @@ describe("worker scheduling with Miniflare", () => {
       .prepare(
         `
           select last_odds_fetch_at, last_odds_queued_at, odds_fetch_lock_until
-          from nar_race_sources
+          from realtime_race_sources
           where race_key = ?
         `,
       )
@@ -288,5 +308,39 @@ describe("worker scheduling with Miniflare", () => {
     expect(race?.last_odds_fetch_at).toBe("2026-05-12T11:59:30+09:00");
     expect(race?.last_odds_queued_at).toBeNull();
     expect(race?.odds_fetch_lock_until).toBeNull();
+  });
+
+  it("queues one JRA track condition job per venue on a thirty-minute slot", async () => {
+    await seedRace("jra:2026:0512:08:01", "2026-05-12T10:00:00+09:00", { source: "jra" });
+    await seedRace("jra:2026:0512:08:12", "2026-05-12T16:30:00+09:00", { source: "jra" });
+
+    await worker.queue(TEST_QUEUE, [
+      {
+        attempts: 1,
+        body: { date: TEST_DATE, type: "plan-realtime-fetches" },
+        id: "plan-track-condition-1",
+        timestamp: new Date(TEST_NOW),
+      },
+    ]);
+
+    const state = await db
+      .prepare(
+        `
+          select kaisai_nen, kaisai_tsukihi, keibajo_code, last_queued_at
+          from jra_track_condition_fetch_state
+        `,
+      )
+      .first<{
+        kaisai_nen: string;
+        kaisai_tsukihi: string;
+        keibajo_code: string;
+        last_queued_at: string | null;
+      }>();
+    expect(state).toEqual({
+      kaisai_nen: "2026",
+      kaisai_tsukihi: "0512",
+      keibajo_code: "08",
+      last_queued_at: "2026-05-12T12:00:00+09:00",
+    });
   });
 });

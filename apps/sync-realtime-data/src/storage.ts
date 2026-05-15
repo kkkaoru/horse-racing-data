@@ -1,4 +1,5 @@
 import { BABA_CODE_TO_LOCAL_KEIBAJO, buildRaceKey, type KeibaGoRaceLink } from "./keiba-go";
+import { buildRealtimeRaceKey } from "./race-key";
 import { formatRaceStartJst, toJstIsoString } from "./time";
 import type {
   HorseOddsTrend,
@@ -10,6 +11,7 @@ import type {
   RaceEntry,
   RaceResult,
   RealtimeRacePayload,
+  TrackCondition,
 } from "./types";
 
 const D1_BATCH_SIZE = 100;
@@ -35,6 +37,7 @@ interface RaceSourceRow {
   result_expected_horse_count: number | null;
   result_fetch_lock_until: string | null;
   result_saved_horse_count: number | null;
+  source: "jra" | "nar";
 }
 
 interface OddsSnapshotRow {
@@ -79,8 +82,40 @@ interface SameDayVenueJockeyWinRow {
   win_count: number;
 }
 
+interface JraVenueScheduleRow {
+  first_race_start_at_jst: string;
+  keibajo_code: string;
+  last_fetch_at: string | null;
+  last_queued_at: string | null;
+  last_race_start_at_jst: string;
+}
+
+interface TrackConditionSnapshotRow {
+  dirt_condition: string | null;
+  dirt_measurement_date: string | null;
+  dirt_moisture_final_bend: string | null;
+  dirt_moisture_final_furlong: string | null;
+  dirt_moisture_measured_at: string | null;
+  fetched_at: string;
+  source_updated_at: string | null;
+  turf_condition: string | null;
+  turf_course_layout: string | null;
+  turf_cushion_measured_at: string | null;
+  turf_cushion_value: string | null;
+  turf_going: string | null;
+  turf_height_japanese_zoysia_grass: string | null;
+  turf_height_perennial_ryegrass: string | null;
+  turf_measurement_date: string | null;
+  turf_moisture_final_bend: string | null;
+  turf_moisture_final_furlong: string | null;
+  turf_moisture_measured_at: string | null;
+  weather: string | null;
+}
+
 export interface LocalRaceRow {
   hasso_jikoku: string | null;
+  kaisai_kai?: string | null;
+  kaisai_nichime?: string | null;
   kaisai_nen: string;
   kaisai_tsukihi: string;
   keibajo_code: string;
@@ -95,6 +130,14 @@ export interface SchedulableRaceSource extends NarRaceSource {
   oddsFetchLockUntil: string | null;
   resultCompleteAt: string | null;
   resultFetchLockUntil: string | null;
+}
+
+export interface JraVenueTrackConditionSchedule {
+  firstRaceStartAtJst: string;
+  keibajoCode: string;
+  lastFetchAt: string | null;
+  lastQueuedAt: string | null;
+  lastRaceStartAtJst: string;
 }
 
 const parseOddsLinks = (value: string): Partial<Record<OddsType, string>> => {
@@ -119,6 +162,7 @@ const toRaceSource = (row: RaceSourceRow): NarRaceSource => ({
   raceKey: row.race_key,
   raceName: row.race_name,
   raceStartAtJst: row.race_start_at_jst,
+  source: row.source,
 });
 
 const toSchedulableRaceSource = (row: RaceSourceRow): SchedulableRaceSource => ({
@@ -153,7 +197,7 @@ export const upsertNarRaceSource = async (
   await db
     .prepare(
       `
-        insert into nar_race_sources (
+        insert into realtime_race_sources (
           race_key, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
           baba_code, race_start_at_jst, race_name, deba_url, odds_links_json,
           discovered_at, updated_at
@@ -185,6 +229,57 @@ export const upsertNarRaceSource = async (
     .run();
 };
 
+export const upsertJraRaceSource = async (
+  db: D1Database,
+  race: LocalRaceRow,
+  entryUrl: string | null,
+): Promise<void> => {
+  if (!race.hasso_jikoku || !entryUrl) {
+    return;
+  }
+  const raceBango = race.race_bango.padStart(2, "0");
+  const raceKey = buildRealtimeRaceKey(
+    "jra",
+    race.kaisai_nen,
+    race.kaisai_tsukihi,
+    race.keibajo_code,
+    raceBango,
+  );
+  const now = toJstIsoString();
+  await db
+    .prepare(
+      `
+        insert into realtime_race_sources (
+          race_key, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+          baba_code, race_start_at_jst, race_name, deba_url, odds_links_json,
+          discovered_at, updated_at
+        )
+        values (?, 'jra', ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)
+        on conflict(race_key) do update set
+          source = excluded.source,
+          baba_code = excluded.baba_code,
+          race_start_at_jst = excluded.race_start_at_jst,
+          race_name = excluded.race_name,
+          deba_url = excluded.deba_url,
+          updated_at = excluded.updated_at
+      `,
+    )
+    .bind(
+      raceKey,
+      race.kaisai_nen,
+      race.kaisai_tsukihi,
+      race.keibajo_code,
+      raceBango,
+      race.keibajo_code,
+      formatRaceStartJst(race.kaisai_nen, race.kaisai_tsukihi, race.hasso_jikoku),
+      race.kyosomei_hondai,
+      entryUrl,
+      now,
+      now,
+    )
+    .run();
+};
+
 export const listRaceSourceKeibajoCodesByDate = async (
   db: D1Database,
   targetDate: string,
@@ -193,7 +288,7 @@ export const listRaceSourceKeibajoCodesByDate = async (
     .prepare(
       `
         select distinct keibajo_code
-        from nar_race_sources
+        from realtime_race_sources
         where kaisai_nen = ?
           and kaisai_tsukihi = ?
         order by keibajo_code
@@ -209,7 +304,7 @@ export const getRaceSource = async (
   raceKey: string,
 ): Promise<NarRaceSource | null> => {
   const row = await db
-    .prepare("select * from nar_race_sources where race_key = ?")
+    .prepare("select * from realtime_race_sources where race_key = ?")
     .bind(raceKey)
     .first<RaceSourceRow>();
   return row ? toRaceSource(row) : null;
@@ -223,7 +318,7 @@ export const listSchedulableRaceSourcesByDate = async (
     .prepare(
       `
         select *
-        from nar_race_sources
+        from realtime_race_sources
         where kaisai_nen = ?
           and kaisai_tsukihi = ?
         order by race_start_at_jst asc
@@ -242,7 +337,7 @@ export const countRaceSourcesByDate = async (
     .prepare(
       `
         select count(*) count
-        from nar_race_sources
+        from realtime_race_sources
         where kaisai_nen = ?
           and kaisai_tsukihi = ?
       `,
@@ -252,13 +347,171 @@ export const countRaceSourcesByDate = async (
   return Number(row?.count ?? 0);
 };
 
+export const listJraVenueTrackConditionSchedulesByDate = async (
+  db: D1Database,
+  targetDate: string,
+): Promise<JraVenueTrackConditionSchedule[]> => {
+  const result = await db
+    .prepare(
+      `
+        select
+          races.keibajo_code,
+          min(races.race_start_at_jst) first_race_start_at_jst,
+          max(races.race_start_at_jst) last_race_start_at_jst,
+          state.last_fetch_at,
+          state.last_queued_at
+        from realtime_race_sources races
+        left join jra_track_condition_fetch_state state
+          on state.kaisai_nen = races.kaisai_nen
+          and state.kaisai_tsukihi = races.kaisai_tsukihi
+          and state.keibajo_code = races.keibajo_code
+        where races.source = 'jra'
+          and races.kaisai_nen = ?
+          and races.kaisai_tsukihi = ?
+        group by races.keibajo_code
+        order by races.keibajo_code
+      `,
+    )
+    .bind(targetDate.slice(0, 4), targetDate.slice(4, 8))
+    .all<JraVenueScheduleRow>();
+  return result.results.map((row) => ({
+    firstRaceStartAtJst: row.first_race_start_at_jst,
+    keibajoCode: row.keibajo_code,
+    lastFetchAt: row.last_fetch_at,
+    lastQueuedAt: row.last_queued_at,
+    lastRaceStartAtJst: row.last_race_start_at_jst,
+  }));
+};
+
+export const markTrackConditionQueued = async (
+  db: D1Database,
+  jobs: { date: string; keibajoCode: string }[],
+  queuedAt: string,
+): Promise<void> => {
+  if (jobs.length === 0) {
+    return;
+  }
+  await runD1Batches(
+    db,
+    jobs.map((job) =>
+      db
+        .prepare(
+          `
+            insert into jra_track_condition_fetch_state (
+              kaisai_nen, kaisai_tsukihi, keibajo_code, last_queued_at, updated_at
+            )
+            values (?, ?, ?, ?, ?)
+            on conflict(kaisai_nen, kaisai_tsukihi, keibajo_code) do update set
+              last_queued_at = excluded.last_queued_at,
+              updated_at = excluded.updated_at
+          `,
+        )
+        .bind(job.date.slice(0, 4), job.date.slice(4, 8), job.keibajoCode, queuedAt, queuedAt),
+    ),
+  );
+};
+
+export const claimTrackConditionFetch = async (
+  db: D1Database,
+  params: {
+    date: string;
+    keibajoCode: string;
+    lockUntil: string;
+    now: string;
+  },
+): Promise<boolean> => {
+  await db
+    .prepare(
+      `
+        insert into jra_track_condition_fetch_state (
+          kaisai_nen, kaisai_tsukihi, keibajo_code, updated_at
+        )
+        values (?, ?, ?, ?)
+        on conflict(kaisai_nen, kaisai_tsukihi, keibajo_code) do nothing
+      `,
+    )
+    .bind(params.date.slice(0, 4), params.date.slice(4, 8), params.keibajoCode, params.now)
+    .run();
+  const result = await db
+    .prepare(
+      `
+        update jra_track_condition_fetch_state
+        set fetch_lock_until = ?, updated_at = ?
+        where kaisai_nen = ?
+          and kaisai_tsukihi = ?
+          and keibajo_code = ?
+          and (fetch_lock_until is null or fetch_lock_until <= ?)
+      `,
+    )
+    .bind(
+      params.lockUntil,
+      params.now,
+      params.date.slice(0, 4),
+      params.date.slice(4, 8),
+      params.keibajoCode,
+      params.now,
+    )
+    .run();
+  return result.meta.changes > 0;
+};
+
+export const failTrackConditionFetch = async (
+  db: D1Database,
+  params: { date: string; keibajoCode: string; now?: string },
+): Promise<void> => {
+  const now = params.now ?? toJstIsoString();
+  await db
+    .prepare(
+      `
+        update jra_track_condition_fetch_state
+        set last_queued_at = null,
+            fetch_lock_until = null,
+            updated_at = ?
+        where kaisai_nen = ?
+          and kaisai_tsukihi = ?
+          and keibajo_code = ?
+      `,
+    )
+    .bind(now, params.date.slice(0, 4), params.date.slice(4, 8), params.keibajoCode)
+    .run();
+};
+
+export const completeTrackConditionFetch = async (
+  db: D1Database,
+  params: { date: string; fetchedAt: string; keibajoCode: string },
+): Promise<void> => {
+  await db
+    .prepare(
+      `
+        update jra_track_condition_fetch_state
+        set last_fetch_at = ?,
+            last_queued_at = null,
+            fetch_lock_until = null,
+            updated_at = ?
+        where kaisai_nen = ?
+          and kaisai_tsukihi = ?
+          and keibajo_code = ?
+      `,
+    )
+    .bind(
+      params.fetchedAt,
+      toJstIsoString(),
+      params.date.slice(0, 4),
+      params.date.slice(4, 8),
+      params.keibajoCode,
+    )
+    .run();
+};
+
 export const updateOddsLinks = async (
   db: D1Database,
   raceKey: string,
   oddsLinks: Partial<Record<OddsType, string>>,
 ): Promise<void> => {
   await db
-    .prepare("update nar_race_sources set odds_links_json = ?, updated_at = ? where race_key = ?")
+    .prepare(
+      "update realtime_race_sources set odds_links_json = ?, updated_at = ? where race_key = ?",
+    )
     .bind(JSON.stringify(oddsLinks), toJstIsoString(), raceKey)
     .run();
 };
@@ -270,7 +523,7 @@ export const updateLastFetch = async (
   fetchedAt: string,
 ): Promise<void> => {
   await db
-    .prepare(`update nar_race_sources set ${column} = ?, updated_at = ? where race_key = ?`)
+    .prepare(`update realtime_race_sources set ${column} = ?, updated_at = ? where race_key = ?`)
     .bind(fetchedAt, toJstIsoString(), raceKey)
     .run();
 };
@@ -289,7 +542,7 @@ export const markResultFetchQueued = async (
       db
         .prepare(
           `
-            update nar_race_sources
+            update realtime_race_sources
             set last_result_queued_at = ?, updated_at = ?
             where race_key = ?
               and result_complete_at is null
@@ -315,7 +568,7 @@ export const markOddsFetchQueued = async (
       db
         .prepare(
           `
-            update nar_race_sources
+            update realtime_race_sources
             set last_odds_queued_at = ?, updated_at = ?
             where race_key = ?
               and (last_odds_fetch_at is null or last_odds_fetch_at <= ?)
@@ -335,7 +588,7 @@ export const claimOddsFetch = async (
   const result = await db
     .prepare(
       `
-        update nar_race_sources
+        update realtime_race_sources
         set odds_fetch_lock_until = ?, updated_at = ?
         where race_key = ?
           and (odds_fetch_lock_until is null or odds_fetch_lock_until <= ?)
@@ -355,7 +608,7 @@ export const claimResultFetch = async (
   const result = await db
     .prepare(
       `
-        update nar_race_sources
+        update realtime_race_sources
         set result_fetch_lock_until = ?, updated_at = ?
         where race_key = ?
           and result_complete_at is null
@@ -376,7 +629,7 @@ export const completeOddsFetch = async (
   await db
     .prepare(
       `
-        update nar_race_sources
+        update realtime_race_sources
         set last_odds_fetch_at = ?,
             last_odds_queued_at = null,
             odds_fetch_lock_until = null,
@@ -393,7 +646,7 @@ export const failOddsFetch = async (db: D1Database, raceKey: string): Promise<vo
   await db
     .prepare(
       `
-        update nar_race_sources
+        update realtime_race_sources
         set last_odds_queued_at = null,
             odds_fetch_lock_until = null,
             updated_at = ?
@@ -418,7 +671,7 @@ export const completeResultFetch = async (
   await db
     .prepare(
       `
-        update nar_race_sources
+        update realtime_race_sources
         set last_result_fetch_at = ?,
             last_result_queued_at = null,
             result_fetch_lock_until = null,
@@ -446,7 +699,7 @@ export const failResultFetch = async (db: D1Database, raceKey: string): Promise<
   await db
     .prepare(
       `
-        update nar_race_sources
+        update realtime_race_sources
         set last_result_queued_at = null,
             result_fetch_lock_until = null,
             updated_at = ?
@@ -802,6 +1055,139 @@ export const getLatestRaceResults = async (
   };
 };
 
+const toTrackCondition = (row: TrackConditionSnapshotRow): TrackCondition => ({
+  dirt: {
+    condition: row.dirt_condition,
+    measurementDate: row.dirt_measurement_date,
+    moisture: {
+      finalBend: row.dirt_moisture_final_bend,
+      finalFurlong: row.dirt_moisture_final_furlong,
+      measuredAt: row.dirt_moisture_measured_at,
+    },
+  },
+  fetchedAt: row.fetched_at,
+  sourceUpdatedAt: row.source_updated_at,
+  turf: {
+    condition: row.turf_condition,
+    courseLayout: row.turf_course_layout,
+    cushionMeasuredAt: row.turf_cushion_measured_at,
+    cushionValue: row.turf_cushion_value,
+    going: row.turf_going,
+    height: {
+      japaneseZoysiaGrass: row.turf_height_japanese_zoysia_grass,
+      perennialRyegrass: row.turf_height_perennial_ryegrass,
+    },
+    measurementDate: row.turf_measurement_date,
+    moisture: {
+      finalBend: row.turf_moisture_final_bend,
+      finalFurlong: row.turf_moisture_final_furlong,
+      measuredAt: row.turf_moisture_measured_at,
+    },
+  },
+  weather: row.weather,
+});
+
+export const getLatestTrackConditionForRace = async (
+  db: D1Database,
+  raceKey: string,
+): Promise<TrackCondition | null> => {
+  const row = await db
+    .prepare(
+      `
+        select track.*
+        from jra_track_condition_snapshots track
+        join realtime_race_sources races
+          on races.race_key = track.race_key
+        where track.race_key = ?
+          and track.fetched_at <= races.race_start_at_jst
+        order by track.fetched_at desc, track.id desc
+        limit 1
+      `,
+    )
+    .bind(raceKey)
+    .first<TrackConditionSnapshotRow>();
+  return row ? toTrackCondition(row) : null;
+};
+
+export const insertJraTrackConditionSnapshot = async (
+  db: D1Database,
+  params: {
+    condition: TrackCondition;
+    date: string;
+    fetchedAt: string;
+    keibajoCode: string;
+  },
+): Promise<{ raceKey: string; raceStartAtJst: string }[]> => {
+  const races = await db
+    .prepare(
+      `
+        select race_key, race_start_at_jst
+        from realtime_race_sources
+        where source = 'jra'
+          and kaisai_nen = ?
+          and kaisai_tsukihi = ?
+          and keibajo_code = ?
+        order by race_start_at_jst asc
+      `,
+    )
+    .bind(params.date.slice(0, 4), params.date.slice(4, 8), params.keibajoCode)
+    .all<{ race_key: string; race_start_at_jst: string }>();
+  if (races.results.length === 0) {
+    return [];
+  }
+
+  await runD1Batches(
+    db,
+    races.results.map((race) =>
+      db
+        .prepare(
+          `
+            insert into jra_track_condition_snapshots (
+              race_key, kaisai_nen, kaisai_tsukihi, keibajo_code, fetched_at,
+              source_updated_at, weather, turf_condition, turf_measurement_date,
+              turf_cushion_value, turf_cushion_measured_at, turf_moisture_measured_at,
+              turf_moisture_final_furlong, turf_moisture_final_bend,
+              turf_height_japanese_zoysia_grass, turf_height_perennial_ryegrass,
+              turf_course_layout, turf_going, dirt_condition, dirt_measurement_date,
+              dirt_moisture_measured_at, dirt_moisture_final_furlong, dirt_moisture_final_bend
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .bind(
+          race.race_key,
+          params.date.slice(0, 4),
+          params.date.slice(4, 8),
+          params.keibajoCode,
+          params.fetchedAt,
+          params.condition.sourceUpdatedAt,
+          params.condition.weather,
+          params.condition.turf.condition,
+          params.condition.turf.measurementDate,
+          params.condition.turf.cushionValue,
+          params.condition.turf.cushionMeasuredAt,
+          params.condition.turf.moisture.measuredAt,
+          params.condition.turf.moisture.finalFurlong,
+          params.condition.turf.moisture.finalBend,
+          params.condition.turf.height.japaneseZoysiaGrass,
+          params.condition.turf.height.perennialRyegrass,
+          params.condition.turf.courseLayout,
+          params.condition.turf.going,
+          params.condition.dirt.condition,
+          params.condition.dirt.measurementDate,
+          params.condition.dirt.moisture.measuredAt,
+          params.condition.dirt.moisture.finalFurlong,
+          params.condition.dirt.moisture.finalBend,
+        ),
+    ),
+  );
+
+  return races.results.map((race) => ({
+    raceKey: race.race_key,
+    raceStartAtJst: race.race_start_at_jst,
+  }));
+};
+
 export const getSameDayVenueJockeyWins = async (
   db: D1Database,
   params: {
@@ -822,7 +1208,7 @@ export const getSameDayVenueJockeyWins = async (
       `
         with target_races as (
           select race_key, race_bango
-          from nar_race_sources
+          from realtime_race_sources
           where kaisai_nen = ?
             and kaisai_tsukihi = ?
             and keibajo_code = ?
@@ -886,6 +1272,7 @@ export const buildRealtimePayload = async (
     fetchedAt: string;
     latest: Partial<Record<OddsType, OddsData[]>>;
   } | null,
+  trackCondition: TrackCondition | null = null,
 ): Promise<RealtimeRacePayload> => {
   const history = await listTanshoHistory(db, raceKey);
   return {
@@ -902,5 +1289,6 @@ export const buildRealtimePayload = async (
     raceResults: await getLatestRaceResults(db, raceKey),
     raceKey,
     source,
+    trackCondition,
   };
 };

@@ -8,7 +8,9 @@ import type {
   RealtimeRacePayload as SharedRealtimeRacePayload,
   RealtimeRaceResult,
   RealtimeRaceSource,
+  RealtimeTrackCondition,
 } from "horse-racing-realtime/types";
+import type { BrowserWorker } from "@cloudflare/playwright";
 
 export type Job =
   | {
@@ -30,6 +32,11 @@ export type Job =
   | {
       type: "fetch-results";
       raceKey: string;
+    }
+  | {
+      type: "fetch-jra-track-condition";
+      date: string;
+      keibajoCode: string;
     };
 
 export type HorseOddsTrend = RealtimeHorseOddsTrend;
@@ -41,6 +48,7 @@ export type OddsData = RealtimeOddsData;
 export type OddsHistoryPoint = RealtimeOddsHistoryPoint;
 export type OddsType = RealtimeOddsType;
 export type RealtimeRacePayload = SharedRealtimeRacePayload;
+export type TrackCondition = RealtimeTrackCondition;
 
 export interface HyperdriveBinding {
   connectionString: string;
@@ -50,6 +58,7 @@ export interface Env {
   DATABASE_TARGET?: string;
   DATABASE_URL_NEON?: string;
   HYPERDRIVE?: HyperdriveBinding;
+  JRA_BROWSER?: BrowserWorker;
   ODDS_CACHE: DurableObjectNamespace;
   ODDS_DO_TTL_SECONDS?: string;
   REALTIME_ADMIN_TOKEN?: string;
@@ -57,4 +66,6 @@ export interface Env {
   REALTIME_DB: D1Database;
   REALTIME_JOBS: Queue<Job>;
   REALTIME_TEST_NOW?: string;
+  TRACK_CONDITION_CACHE: DurableObjectNamespace;
+  TRACK_CONDITION_DO_TTL_SECONDS?: string;
 }
