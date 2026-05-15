@@ -15,6 +15,7 @@ import type {
   FeatureCategory,
   FeatureTarget,
 } from "./build-finish-position-features-types";
+import { buildHorseCareerUpdateSql } from "./build-horse-career-sql";
 
 const DEFAULT_FEATURE_SCHEMA_VERSION = "v1";
 const DEFAULT_FROM_DATE = "20160101";
@@ -130,9 +131,18 @@ const upsertSkeletonBatch = async (pool: Pool, options: BuildOptions): Promise<n
   return result.rowCount ?? 0;
 };
 
-const logSummary = (options: BuildOptions, insertedCount: number): void => {
+const applyHorseCareerStage = async (pool: Pool, options: BuildOptions): Promise<number> => {
+  const sql = buildHorseCareerUpdateSql(options.category);
+  const result = await pool.query(sql, [options.fromDate, options.toDate]);
+  return result.rowCount ?? 0;
+};
+
+const logSummary = (options: BuildOptions, stageCounts: Record<string, number>): void => {
+  const stages = Object.entries(stageCounts)
+    .map(([stage, count]) => `${stage}=${count}`)
+    .join(" ");
   console.log(
-    `[build-finish-position-features] table=${FEATURE_TABLE_NAME} target=${options.target} category=${options.category} range=${options.fromDate}..${options.toDate} upserted=${insertedCount}`,
+    `[build-finish-position-features] table=${FEATURE_TABLE_NAME} target=${options.target} category=${options.category} range=${options.fromDate}..${options.toDate} ${stages}`,
   );
 };
 
@@ -144,11 +154,12 @@ const main = async (): Promise<void> => {
     await ensureTable(pool);
     await ensureIndexes(pool);
     if (options.dryRun) {
-      logSummary(options, 0);
+      logSummary(options, { skeleton: 0, horse_career: 0 });
       return;
     }
-    const insertedCount = await upsertSkeletonBatch(pool, options);
-    logSummary(options, insertedCount);
+    const skeletonCount = await upsertSkeletonBatch(pool, options);
+    const horseCareerCount = await applyHorseCareerStage(pool, options);
+    logSummary(options, { horse_career: horseCareerCount, skeleton: skeletonCount });
   } finally {
     await pool.end();
   }
