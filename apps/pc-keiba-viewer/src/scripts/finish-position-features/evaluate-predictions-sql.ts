@@ -27,6 +27,7 @@ export const buildEvaluationsDdl = (): string => `
       place3_accuracy numeric,
       top3_winner_capture numeric,
       top5_winner_capture numeric,
+      top3_place_relation numeric,
       pair_score numeric,
       ndcg_at_3 numeric,
       evaluated_at timestamptz not null default now(),
@@ -87,7 +88,8 @@ export const buildAggregateMetricsSql = ({
              max(case when predicted_rank = 2 and finish_position = 2 then 1 else 0 end) place2_hit,
              max(case when predicted_rank = 3 and finish_position = 3 then 1 else 0 end) place3_hit,
              max(case when predicted_rank <= 3 and finish_position = 1 then 1 else 0 end) top3_winner_capture_hit,
-             max(case when predicted_rank <= 5 and finish_position = 1 then 1 else 0 end) top5_winner_capture_hit
+             max(case when predicted_rank <= 5 and finish_position = 1 then 1 else 0 end) top5_winner_capture_hit,
+             sum(case when predicted_rank <= 3 and finish_position <= 3 then 1.0 else 0.0 end) / 3.0 top3_place_relation_val
       from joined
       group by source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango
     ),
@@ -133,9 +135,13 @@ export const buildAggregateMetricsSql = ({
       (select avg(place3_hit::numeric) from per_race) place3_accuracy,
       (select avg(top3_winner_capture_hit::numeric) from per_race) top3_winner_capture,
       (select avg(top5_winner_capture_hit::numeric) from per_race) top5_winner_capture,
+      (select avg(top3_place_relation_val) from per_race) top3_place_relation,
       (select avg(pair_correct) from pair_per_race) pair_score,
       (select avg(case when ideal_dcg > 0 then dcg / ideal_dcg else null end) from ndcg_per_race) ndcg_at_3
   `;
+
+export const buildEvaluationsAlterColumnsSql = (): string =>
+  `alter table ${EVALUATIONS_TABLE} add column if not exists top3_place_relation numeric`;
 
 export const buildUpsertSql = (): string => `
     insert into ${EVALUATIONS_TABLE} (
@@ -144,10 +150,10 @@ export const buildUpsertSql = (): string => `
       top1_accuracy, top3_box_accuracy, top3_exact_accuracy,
       place1_accuracy, place2_accuracy, place3_accuracy,
       top3_winner_capture, top5_winner_capture,
-      pair_score, ndcg_at_3, evaluated_at
+      pair_score, ndcg_at_3, top3_place_relation, evaluated_at
     )
     values (
-      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, now()
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, now()
     )
     on conflict (model_version, category, evaluation_window_from, evaluation_window_to)
     do update set
@@ -163,6 +169,7 @@ export const buildUpsertSql = (): string => `
       top5_winner_capture = excluded.top5_winner_capture,
       pair_score = excluded.pair_score,
       ndcg_at_3 = excluded.ndcg_at_3,
+      top3_place_relation = excluded.top3_place_relation,
       evaluated_at = now()
   `;
 

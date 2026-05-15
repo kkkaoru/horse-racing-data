@@ -8,6 +8,7 @@ import { getConnectionString, loadEnv } from "../compare-corner-predictions";
 import type { FeatureCategory, FeatureTarget } from "./build-finish-position-features-types";
 import {
   buildAggregateMetricsSql,
+  buildEvaluationsAlterColumnsSql,
   buildEvaluationsDdl,
   buildUpsertSql,
 } from "./evaluate-predictions-sql";
@@ -34,6 +35,7 @@ interface MetricsRow {
   place3_accuracy: string | null;
   top3_winner_capture: string | null;
   top5_winner_capture: string | null;
+  top3_place_relation: string | null;
   pair_score: string | null;
   ndcg_at_3: string | null;
 }
@@ -126,6 +128,7 @@ export const parseArgs = (argv: readonly string[]): EvalOptions => {
 
 const ensureTable = async (pool: Pool): Promise<void> => {
   await pool.query(buildEvaluationsDdl());
+  await pool.query(buildEvaluationsAlterColumnsSql());
 };
 
 const computeMetrics = async (pool: Pool, options: EvalOptions): Promise<MetricsRow> => {
@@ -163,6 +166,7 @@ const persistMetrics = async (
     metrics.top5_winner_capture,
     metrics.pair_score,
     metrics.ndcg_at_3,
+    metrics.top3_place_relation,
   ]);
 };
 

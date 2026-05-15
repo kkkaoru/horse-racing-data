@@ -2,6 +2,7 @@ import "server-only";
 import {
   getBloodlineStats,
   getActiveFinishPositionPredictions,
+  getActiveFinishPredictionEvaluation,
   getFinishPositionSimilarityFeatures,
   getFinishPositionStats,
   getFrameStats,
@@ -19,7 +20,12 @@ import {
 } from "../../../db/queries";
 import { SOURCE_LABELS, type RaceSource } from "../../../lib/codes";
 import { buildFinishPredictionRowsFromResults } from "../../../lib/finish-position-prediction";
-import { getFinishPredictionEvaluation } from "../../../lib/finish-position-prediction-evaluation";
+import {
+  type FinishPredictionEvaluationMetrics,
+  FINISH_POSITION_PREDICTION_EVALUATIONS,
+  getFinishPredictionEvaluation,
+  getFinishPredictionEvaluationCategory,
+} from "../../../lib/finish-position-prediction-evaluation";
 import {
   cleanText,
   formatDistance,
@@ -920,18 +926,77 @@ export const getDetailSectionPayload = async (
       raceNumber,
       getResultsSourceScope(params.query),
     );
-    const [similarityFeatures, modelPredictionFeatures, sameDayVenueJockeyWins] = await Promise.all(
-      [
+    const evaluationCategory = getFinishPredictionEvaluationCategory({
+      keibajoCode: race.keibajoCode,
+      source: race.source,
+    });
+    const [similarityFeatures, modelPredictionFeatures, sameDayVenueJockeyWins, dbEvaluation] =
+      await Promise.all([
         getFinishPositionSimilarityFeatures(race, runners),
         getActiveFinishPositionPredictions(race, runners),
         fetchSameDayVenueJockeyWins(race),
-      ],
-    );
+        getActiveFinishPredictionEvaluation(evaluationCategory),
+      ]);
+    const staticEvaluation: FinishPredictionEvaluationMetrics =
+      FINISH_POSITION_PREDICTION_EVALUATIONS[evaluationCategory];
+    const evaluationFromDb: FinishPredictionEvaluationMetrics | null =
+      dbEvaluation === null
+        ? null
+        : {
+            category: evaluationCategory,
+            categoryLabel: staticEvaluation.categoryLabel,
+            fromDate: dbEvaluation.evaluationWindowFrom,
+            pairScore:
+              dbEvaluation.pairScore === null
+                ? staticEvaluation.pairScore
+                : dbEvaluation.pairScore * 100,
+            place1Accuracy:
+              dbEvaluation.place1Accuracy === null
+                ? staticEvaluation.place1Accuracy
+                : dbEvaluation.place1Accuracy * 100,
+            place2Accuracy:
+              dbEvaluation.place2Accuracy === null
+                ? staticEvaluation.place2Accuracy
+                : dbEvaluation.place2Accuracy * 100,
+            place3Accuracy:
+              dbEvaluation.place3Accuracy === null
+                ? staticEvaluation.place3Accuracy
+                : dbEvaluation.place3Accuracy * 100,
+            raceCount: dbEvaluation.raceCount,
+            target: staticEvaluation.target,
+            toDate: dbEvaluation.evaluationWindowTo,
+            top1Accuracy:
+              dbEvaluation.top1Accuracy === null
+                ? staticEvaluation.top1Accuracy
+                : dbEvaluation.top1Accuracy * 100,
+            top3BoxAccuracy:
+              dbEvaluation.top3BoxAccuracy === null
+                ? staticEvaluation.top3BoxAccuracy
+                : dbEvaluation.top3BoxAccuracy * 100,
+            top3ExactOrderAccuracy:
+              dbEvaluation.top3ExactAccuracy === null
+                ? staticEvaluation.top3ExactOrderAccuracy
+                : dbEvaluation.top3ExactAccuracy * 100,
+            top3PlaceRelation:
+              dbEvaluation.top3PlaceRelation === null
+                ? staticEvaluation.top3PlaceRelation
+                : dbEvaluation.top3PlaceRelation * 100,
+            top3WinnerCapture:
+              dbEvaluation.top3WinnerCapture === null
+                ? staticEvaluation.top3WinnerCapture
+                : dbEvaluation.top3WinnerCapture * 100,
+            top5WinnerCapture:
+              dbEvaluation.top5WinnerCapture === null
+                ? staticEvaluation.top5WinnerCapture
+                : dbEvaluation.top5WinnerCapture * 100,
+          };
     return {
-      evaluation: getFinishPredictionEvaluation({
-        keibajoCode: race.keibajoCode,
-        source: race.source,
-      }),
+      evaluation:
+        evaluationFromDb ??
+        getFinishPredictionEvaluation({
+          keibajoCode: race.keibajoCode,
+          source: race.source,
+        }),
       rows: buildFinishPredictionRowsFromResults({
         currentDistance: race.kyori,
         currentGradeCode: race.gradeCode,
