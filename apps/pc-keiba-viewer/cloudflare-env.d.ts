@@ -29,6 +29,33 @@ declare global {
     put(key: string, value: string): Promise<void>;
   }
 
+  interface PcKeibaR2Object {
+    body: ReadableStream;
+    arrayBuffer(): Promise<ArrayBuffer>;
+    text(): Promise<string>;
+    json<T = unknown>(): Promise<T>;
+    httpMetadata?: { contentType?: string };
+    customMetadata?: Record<string, string>;
+    size: number;
+    uploaded: Date;
+  }
+
+  interface PcKeibaR2PutOptions {
+    httpMetadata?: { contentType?: string };
+    customMetadata?: Record<string, string>;
+  }
+
+  interface PcKeibaR2Bucket {
+    get(key: string): Promise<PcKeibaR2Object | null>;
+    put(
+      key: string,
+      value: ArrayBuffer | ArrayBufferView | ReadableStream | string,
+      options?: PcKeibaR2PutOptions,
+    ): Promise<PcKeibaR2Object>;
+    delete(key: string): Promise<void>;
+    head(key: string): Promise<PcKeibaR2Object | null>;
+  }
+
   const WebSocketPair: {
     new (): { 0: WebSocket; 1: WebSocket };
   };
@@ -42,6 +69,7 @@ declare global {
   }
 
   interface CloudflareEnv {
+    FINISH_POSITION_MODELS?: PcKeibaR2Bucket;
     HYPERDRIVE?: PcKeibaHyperdriveBinding;
     PADDOCK_ROOM?: PcKeibaDurableObjectNamespace;
     PADDOCK_STATE_KV?: PcKeibaKvNamespace;
