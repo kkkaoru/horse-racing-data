@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   formatRaceStartJst,
+  getJraAdvanceOddsFetchSlotAt,
   getJstDateParts,
   getOddsFetchIntervalMinutes,
   getOddsFetchSlotAt,
@@ -36,6 +37,25 @@ describe("odds fetch schedule", () => {
     );
     expect(getOddsFetchSlotAt(raceStart, new Date("2026-05-12T11:39:30+09:00"))).toBeNull();
   });
+
+  it("aligns JRA advance odds slots hourly from previous-day 19:00 until one hour before post time", () => {
+    const raceStart = new Date("2026-05-16T09:45:00+09:00");
+    expect(
+      getJraAdvanceOddsFetchSlotAt(raceStart, new Date("2026-05-15T18:59:59+09:00")),
+    ).toBeNull();
+    expect(getJraAdvanceOddsFetchSlotAt(raceStart, new Date("2026-05-15T19:00:00+09:00"))).toBe(
+      "2026-05-15T19:00:00+09:00",
+    );
+    expect(getJraAdvanceOddsFetchSlotAt(raceStart, new Date("2026-05-15T19:59:59+09:00"))).toBe(
+      "2026-05-15T19:00:00+09:00",
+    );
+    expect(getJraAdvanceOddsFetchSlotAt(raceStart, new Date("2026-05-16T08:44:59+09:00"))).toBe(
+      "2026-05-16T08:00:00+09:00",
+    );
+    expect(
+      getJraAdvanceOddsFetchSlotAt(raceStart, new Date("2026-05-16T08:45:00+09:00")),
+    ).toBeNull();
+  });
 });
 
 describe("JST time helpers", () => {
@@ -66,8 +86,8 @@ describe("JST time helpers", () => {
   });
 
   it("detects JST polling windows", () => {
-    expect(isJstPollingWindow(new Date("2026-05-12T00:59:00.000Z"))).toBe(false);
-    expect(isJstPollingWindow(new Date("2026-05-12T01:00:00.000Z"))).toBe(true);
+    expect(isJstPollingWindow(new Date("2026-05-11T20:59:00.000Z"))).toBe(false);
+    expect(isJstPollingWindow(new Date("2026-05-11T21:00:00.000Z"))).toBe(true);
     expect(isJstPollingWindow(new Date("2026-05-12T12:59:00.000Z"))).toBe(true);
     expect(isJstPollingWindow(new Date("2026-05-12T13:00:00.000Z"))).toBe(false);
   });

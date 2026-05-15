@@ -65,6 +65,39 @@ export interface RealtimeRaceSource {
   raceKey: string;
   raceName: string | null;
   raceStartAtJst: string;
+  source: "jra" | "nar";
+}
+
+export interface RealtimeTrackCondition {
+  dirt: {
+    condition: string | null;
+    measurementDate: string | null;
+    moisture: {
+      finalBend: string | null;
+      finalFurlong: string | null;
+      measuredAt: string | null;
+    };
+  };
+  fetchedAt: string;
+  sourceUpdatedAt: string | null;
+  turf: {
+    condition: string | null;
+    courseLayout: string | null;
+    cushionValue: string | null;
+    cushionMeasuredAt: string | null;
+    going: string | null;
+    height: {
+      japaneseZoysiaGrass: string | null;
+      perennialRyegrass: string | null;
+    };
+    measurementDate: string | null;
+    moisture: {
+      finalBend: string | null;
+      finalFurlong: string | null;
+      measuredAt: string | null;
+    };
+  };
+  weather: string | null;
 }
 
 export interface RealtimeRacePayload {
@@ -86,6 +119,7 @@ export interface RealtimeRacePayload {
     fetchedAt: string;
     horses: RealtimeRaceResult[];
   } | null;
+  trackCondition?: RealtimeTrackCondition | null;
   raceKey: string;
   source: RealtimeRaceSource | null;
 }

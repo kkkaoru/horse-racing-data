@@ -12,9 +12,10 @@
     "ODDS_DO_TTL_SECONDS": "7200",
     "REALTIME_API_CACHE_SECONDS": "20",
     "DATABASE_TARGET": "cloudflare",
+    "TRACK_CONDITION_DO_TTL_SECONDS": "172800",
   },
   "triggers": {
-    "crons": ["5 0 * * *", "* 1-12 * * *"],
+    "crons": ["5 0 * * *", "* * * * *"],
   },
   "queues": {
     "producers": [
@@ -26,10 +27,14 @@
     "consumers": [
       {
         "queue": "sync-realtime-data-jobs",
-        "max_batch_size": 2,
+        "max_batch_size": 1,
         "max_batch_timeout": 5,
+        "max_concurrency": 1,
       },
     ],
+  },
+  "browser": {
+    "binding": "JRA_BROWSER",
   },
   "d1_databases": [
     {
@@ -44,12 +49,20 @@
         "name": "ODDS_CACHE",
         "class_name": "OddsCache",
       },
+      {
+        "name": "TRACK_CONDITION_CACHE",
+        "class_name": "TrackConditionCache",
+      },
     ],
   },
   "migrations": [
     {
       "tag": "v1",
       "new_sqlite_classes": ["OddsCache"],
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["TrackConditionCache"],
     },
   ],
   "hyperdrive": [

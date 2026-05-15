@@ -77,8 +77,22 @@ export const getOddsFetchSlotAt = (raceStart: Date, now: Date): string | null =>
   return toJstIsoString(new Date(raceStart.getTime() - slotMinutesBeforeRace * 60_000));
 };
 
+const floorToHourJstSlot = (date: Date): string =>
+  `${toJstIsoString(date).slice(0, 14)}00:00+09:00`;
+
+export const getJraAdvanceOddsFetchSlotAt = (raceStart: Date, now: Date): string | null => {
+  const raceDate = toJstIsoString(raceStart).slice(0, 10);
+  const raceDayStart = new Date(`${raceDate}T00:00:00+09:00`);
+  const saleStart = new Date(raceDayStart.getTime() - 5 * 60 * 60_000);
+  const oneHourBeforeRace = new Date(raceStart.getTime() - 60 * 60_000);
+  if (now.getTime() < saleStart.getTime() || now.getTime() >= oneHourBeforeRace.getTime()) {
+    return null;
+  }
+  return floorToHourJstSlot(now);
+};
+
 export const isJstPollingWindow = (date = new Date()): boolean => {
   const { hour } = getJstDateParts(date);
   const parsedHour = Number(hour);
-  return parsedHour >= 10 && parsedHour <= 21;
+  return parsedHour >= 6 && parsedHour <= 21;
 };
