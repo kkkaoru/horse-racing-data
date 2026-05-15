@@ -1,7 +1,7 @@
 import "server-only";
 import {
   getBloodlineStats,
-  getFinishPositionModelPredictionFeatures,
+  getActiveFinishPositionPredictions,
   getFinishPositionSimilarityFeatures,
   getFinishPositionStats,
   getFrameStats,
@@ -923,7 +923,7 @@ export const getDetailSectionPayload = async (
     const [similarityFeatures, modelPredictionFeatures, sameDayVenueJockeyWins] = await Promise.all(
       [
         getFinishPositionSimilarityFeatures(race, runners),
-        getFinishPositionModelPredictionFeatures(race, runners),
+        getActiveFinishPositionPredictions(race, runners),
         fetchSameDayVenueJockeyWins(race),
       ],
     );
