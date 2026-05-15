@@ -515,61 +515,168 @@ export function MyPageClient({ initialFavorites }: { initialFavorites: FavoriteI
         )}
       </section>
 
-      {loading ? <p className="empty-state">お気に入りのレースを読み込み中です。</p> : null}
-      <section className="mypage-filters">
-        <label>
-          <span>絞り込み</span>
-          <input
-            type="search"
-            value={filterText}
-            onChange={(event) => setFilterText(event.target.value)}
-            placeholder="競馬場、レース名、お気に入り名"
-          />
-        </label>
-        <label>
-          <span>お気に入り項目</span>
-          <select
-            value={filterFavoriteKey}
-            onChange={(event) => setFilterFavoriteKey(event.target.value)}
-          >
-            <option value="all">すべて</option>
-            {favorites.map((item) => (
-              <option key={favoriteItemKey(item)} value={favoriteItemKey(item)}>
-                {FAVORITE_KIND_LABELS[item.kind]}: {item.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span>種別</span>
-          <select
-            value={filterKind}
-            onChange={(event) => {
-              const nextKind = event.target.value;
-              setFilterKind(isFavoriteKind(nextKind) ? nextKind : "all");
-            }}
-          >
-            <option value="all">すべて</option>
-            <option value="horse">馬</option>
-            <option value="jockey">騎手</option>
-            <option value="trainer">調教師</option>
-            <option value="owner">馬主</option>
-          </select>
-        </label>
+      <section className="mypage-filter-block">
+        <div className="section-heading compact">
+          <h2>お気に入り項目で絞り込み</h2>
+          <span>
+            {selectedFavoriteKeys.length === 0
+              ? "すべて"
+              : `${selectedFavoriteKeys.length} 件選択中`}
+          </span>
+        </div>
+        {favorites.length === 0 ? (
+          <p className="empty-state">絞り込みに使えるお気に入りはありません。</p>
+        ) : (
+          <div className="mypage-favorite-filter-list">
+            {favorites.map((item) => {
+              const key = favoriteItemKey(item);
+              const active = selectedFavoriteKeys.includes(key);
+              return (
+                <button
+                  className={active ? "active" : undefined}
+                  key={key}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => toggleFavoriteFilter(item)}
+                >
+                  <span>{FAVORITE_KIND_LABELS[item.kind]}</span>
+                  {item.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </section>
+
+      <details className="mypage-filter-details">
+        <summary>詳細な絞り込み</summary>
+        <section className="filter-panel mypage-detailed-filter-panel" aria-label="mypage filters">
+          <label>
+            <span>主催</span>
+            <select
+              value={source}
+              onChange={(event) => {
+                const nextSource = event.currentTarget.value;
+                if (isSourceFilter(nextSource)) {
+                  setSource(nextSource);
+                }
+              }}
+            >
+              <option value="all">すべて</option>
+              <option value="jra">JRA</option>
+              <option value="nar">NAR</option>
+            </select>
+          </label>
+          <label>
+            <span>競馬場</span>
+            <select value={venue} onChange={(event) => setVenue(event.currentTarget.value)}>
+              <option value="all">すべて</option>
+              {venueOptions.map((option) => (
+                <option value={option.code} key={option.code}>
+                  {option.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {hasJraRaces ? (
+            <label>
+              <span>馬場</span>
+              <select
+                value={surface}
+                onChange={(event) => {
+                  const nextSurface = event.currentTarget.value;
+                  if (isSurfaceFilter(nextSurface)) {
+                    setSurface(nextSurface);
+                  }
+                }}
+              >
+                <option value="all">すべて</option>
+                <option value="turf">芝</option>
+                <option value="dirt">ダート</option>
+              </select>
+            </label>
+          ) : null}
+          <label>
+            <span>開始時間</span>
+            <input
+              type="time"
+              value={startTime}
+              onChange={(event) => setStartTime(event.currentTarget.value)}
+            />
+          </label>
+          <label>
+            <span>終了時間</span>
+            <input
+              type="time"
+              value={endTime}
+              onChange={(event) => setEndTime(event.currentTarget.value)}
+            />
+          </label>
+          <label>
+            <span>距離 下限</span>
+            <input
+              inputMode="numeric"
+              min="0"
+              placeholder="例 1200"
+              step="100"
+              type="number"
+              value={minDistance}
+              onChange={(event) => setMinDistance(event.currentTarget.value)}
+            />
+          </label>
+          <label>
+            <span>距離 上限</span>
+            <input
+              inputMode="numeric"
+              min="0"
+              placeholder="例 1800"
+              step="100"
+              type="number"
+              value={maxDistance}
+              onChange={(event) => setMaxDistance(event.currentTarget.value)}
+            />
+          </label>
+          <label className="filter-search">
+            <span>検索</span>
+            <input
+              placeholder="レース名、競馬場、お気に入り名"
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.currentTarget.value)}
+            />
+          </label>
+          <label>
+            <span>種別</span>
+            <select
+              value={filterKind}
+              onChange={(event) => {
+                const nextKind = event.target.value;
+                setFilterKind(isFavoriteKind(nextKind) ? nextKind : "all");
+              }}
+            >
+              <option value="all">すべて</option>
+              <option value="horse">馬</option>
+              <option value="jockey">騎手</option>
+              <option value="trainer">調教師</option>
+              <option value="owner">馬主</option>
+            </select>
+          </label>
+          <button type="button" onClick={resetDetailedFilters}>
+            リセット
+          </button>
+        </section>
+      </details>
       <FavoriteRaceList
         emptyText="発走予定のレースは見つかりませんでした。"
-        filterFavoriteKey={filterFavoriteKey}
-        filterKind={filterKind}
-        filterText={filterText}
+        filters={filters}
+        loading={loading}
         rows={payload?.upcoming ?? []}
         title="発走予定"
       />
       <FavoriteRaceList
         emptyText="直近のレースは見つかりませんでした。"
-        filterFavoriteKey={filterFavoriteKey}
-        filterKind={filterKind}
-        filterText={filterText}
+        filters={filters}
+        loading={loading}
         rows={payload?.recent ?? []}
         title="直近のレース"
       />
