@@ -53,10 +53,10 @@ export const buildRealtimeUrl = ({
   source,
   year,
 }: RealtimeRaceRequest): string | null => {
-  if (!apiBaseUrl || source !== "nar") {
+  if (!apiBaseUrl || (source !== "nar" && source !== "jra")) {
     return null;
   }
-  return `${apiBaseUrl.replace(/\/$/u, "")}/api/nar/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/realtime`;
+  return `${apiBaseUrl.replace(/\/$/u, "")}/api/${source}/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/realtime`;
 };
 
 export const isRealtimeRacePayload = (value: unknown): value is RealtimeRacePayload =>

@@ -25,7 +25,12 @@ import {
   getTrackSurfaceLabel,
 } from "../../../lib/format";
 import { buildJraRaceEntryUrl, buildJraRaceResultUrl } from "../../../lib/jra-url";
-import { getGradeLabel, getRaceTags, getWeightLabel } from "../../../lib/race-classification";
+import {
+  getGradeLabel,
+  getRaceSymbolDetailLabel,
+  getRaceTags,
+  getWeightLabel,
+} from "../../../lib/race-classification";
 import { isCornerPacePredictionSupported } from "../../../lib/race-pace-prediction";
 import type { RaceDetail } from "../../../lib/race-types";
 import {
@@ -48,6 +53,7 @@ import { RaceStartCountdown } from "./race-start-countdown";
 import { RealtimeRaceProvider, type RealtimeRaceRequest } from "./realtime-client";
 import { RealtimeRaceSection } from "./realtime-race-section";
 import { RunnersTable } from "./runners-table";
+import { TrackConditionSection } from "./track-condition-section";
 
 export const dynamic = "force-dynamic";
 
@@ -172,13 +178,13 @@ const buildRealtimeRaceUrl = ({
   source,
   year,
 }: RealtimeRaceRequest): string | null => {
-  if (source !== "nar") {
+  if (source !== "nar" && source !== "jra") {
     return null;
   }
   if (!apiBaseUrl) {
     return null;
   }
-  return `${apiBaseUrl.replace(/\/$/u, "")}/api/nar/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/realtime`;
+  return `${apiBaseUrl.replace(/\/$/u, "")}/api/${source}/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/realtime`;
 };
 
 const DetailCell = ({
@@ -324,7 +330,7 @@ export async function RaceDetailView({
       dirtCondition: formatBaba(race.babajotaiCodeDirt),
       entryUrl: jraRaceEntryUrl,
       grade: getGradeLabel(race.gradeCode, race.source),
-      raceSymbol: race.kyosoKigoCode,
+      raceSymbol: getRaceSymbolDetailLabel(race.kyosoKigoCode),
       registeredRunnerCount: race.torokuTosu,
       resultUrl: jraRaceResultUrl,
       runnerCount: race.shussoTosu,
@@ -476,7 +482,7 @@ export async function RaceDetailView({
             value={raceTags.length > 0 ? raceTags.join(" / ") : cleanText(race.kyosoJokenMeisho)}
           />
           <DetailCell label="グレード" value={getGradeLabel(race.gradeCode, race.source)} />
-          <DetailCell label="競走記号" value={race.kyosoKigoCode} />
+          <DetailCell label="競走記号" value={getRaceSymbolDetailLabel(race.kyosoKigoCode)} />
           <DetailCell label="重量種別" value={getWeightLabel(race.juryoShubetsuCode)} />
           <DetailCell label="出走頭数" suffix=" 頭" value={race.shussoTosu} />
           <DetailCell label="登録頭数" suffix=" 頭" value={race.torokuTosu} />
@@ -487,8 +493,11 @@ export async function RaceDetailView({
           <DetailCell label="ダート馬場" value={formatBaba(race.babajotaiCodeDirt)} />
         </section>
 
+        <TrackConditionSection trackCode={race.trackCode} />
+
         <PaddockSection
           day={day}
+          decodeHexHorseWeight={decodeHexHorseWeight}
           keibajoCode={keibajoCode}
           month={month}
           raceNumber={raceNumber}

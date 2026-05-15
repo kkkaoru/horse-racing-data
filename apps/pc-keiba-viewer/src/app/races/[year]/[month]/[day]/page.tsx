@@ -14,18 +14,20 @@ interface RaceDatePageProps {
     month: string;
     day: string;
   }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }
 
 const isValidDateParams = (year: string, month: string, day: string): boolean =>
   /^\d{4}$/.test(year) && /^\d{2}$/.test(month) && /^\d{2}$/.test(day);
 
-export default async function RaceDatePage({ params }: RaceDatePageProps) {
+export default async function RaceDatePage({ params, searchParams }: RaceDatePageProps) {
   const { year, month, day } = await params;
   if (!isValidDateParams(year, month, day)) {
     notFound();
   }
 
   const races = await getRacesByDate(year, month, day);
+  const initialSearchParams = await searchParams;
   const venues = [...new Set(races.map((race) => race.keibajoCode))]
     .map((keibajoCode) => ({
       keibajoCode,
@@ -72,6 +74,7 @@ export default async function RaceDatePage({ params }: RaceDatePageProps) {
           <RaceDateFilter
             day={day}
             defaultStartTime={getDefaultRaceStartFilterTime(year, month, day)}
+            initialSearchParams={initialSearchParams}
             month={month}
             races={races}
             year={year}

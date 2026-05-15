@@ -129,9 +129,55 @@ const KIGO_LABELS: Record<string, string> = {
   N24: "牝馬限定",
 };
 
+const KIGO_DETAIL_LABELS: Record<string, string> = {
+  "001": "(指定)",
+  "002": "若手騎手",
+  "003": "[指定]",
+  "004": "(特指)",
+  "010": "牡馬限定",
+  "020": "牝馬限定",
+  "021": "牝馬限定 (指定)",
+  "023": "牝馬限定 [指定]",
+  "024": "牝馬限定 (特指)",
+  "030": "牡馬・せん馬限定",
+  "040": "牡馬・牝馬限定",
+  "041": "牡馬・牝馬限定 (指定)",
+  A00: "混合",
+  A01: "混合 (指定)",
+  A02: "混合 若手騎手",
+  A03: "混合 [指定]",
+  A04: "混合 (特指)",
+  A20: "混合 牝馬限定",
+  A21: "混合 牝馬限定 (指定)",
+  A23: "混合 牝馬限定 [指定]",
+  A24: "混合 牝馬限定 (特指)",
+  A30: "混合 牡馬・せん馬限定",
+  A31: "混合 牡馬・せん馬限定 (指定)",
+  A34: "混合 牡馬・せん馬限定 (特指)",
+  B00: "父内国産馬限定",
+  C00: "市場取引馬限定",
+  D00: "抽せん馬限定",
+  E00: "抽せん馬限定",
+  N00: "国際競走",
+  N01: "国際競走 (指定)",
+  N03: "国際競走 [指定]",
+  N04: "国際競走 (特指)",
+  N20: "国際競走 牝馬限定",
+  N21: "国際競走 牝馬限定 (指定)",
+  N23: "国際競走 牝馬限定 [指定]",
+  N24: "国際競走 牝馬限定 (特指)",
+  X00: "認定競走",
+  Y00: "指定競走",
+};
+
 export const getRaceSymbolLabel = (value: string | null | undefined): string => {
   const code = clean(value);
   return code ? (KIGO_LABELS[code] ?? `競走記号 ${code}`) : "-";
+};
+
+export const getRaceSymbolDetailLabel = (value: string | null | undefined): string => {
+  const code = clean(value);
+  return code ? (KIGO_DETAIL_LABELS[code] ?? getRaceSymbolLabel(code)) : "-";
 };
 
 const appendUnique = (items: string[], value: string): void => {
