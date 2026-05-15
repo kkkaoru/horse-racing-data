@@ -24,8 +24,16 @@ test("LABEL_COLUMNS exposes finish position and finish_norm", () => {
   expect(LABEL_COLUMNS).toStrictEqual(["finish_position", "finish_norm"]);
 });
 
-test("FEATURE_COLUMNS covers 49 columns (5 deferred slots remain NULL until later commits)", () => {
-  expect(FEATURE_COLUMNS.length).toBe(49);
+test("FEATURE_COLUMNS covers all 54 v1 columns", () => {
+  expect(FEATURE_COLUMNS.length).toBe(54);
+});
+
+test("FEATURE_COLUMNS exposes the deferred-then-completed columns", () => {
+  expect(FEATURE_COLUMNS).toContain("weight_avg_5");
+  expect(FEATURE_COLUMNS).toContain("weight_diff_from_avg");
+  expect(FEATURE_COLUMNS).toContain("weather_normalized");
+  expect(FEATURE_COLUMNS).toContain("track_bias_inside");
+  expect(FEATURE_COLUMNS).toContain("track_bias_front");
 });
 
 test("FEATURE_COLUMNS preserves the heuristic five at the tail", () => {
