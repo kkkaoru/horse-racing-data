@@ -16,6 +16,11 @@ import type {
   FeatureTarget,
 } from "./build-finish-position-features-types";
 import { buildHorseCareerUpdateSql } from "./build-horse-career-sql";
+import {
+  buildJockeyUpdateSql,
+  buildSourceFeatureLookupIndexSqls,
+  buildTrainerUpdateSql,
+} from "./build-jockey-trainer-sql";
 
 const DEFAULT_FEATURE_SCHEMA_VERSION = "v1";
 const DEFAULT_FROM_DATE = "20160101";
@@ -121,7 +126,7 @@ const ensureTable = async (pool: Pool): Promise<void> => {
 };
 
 const ensureIndexes = async (pool: Pool): Promise<void> => {
-  const statements = buildIndexSqls();
+  const statements = [...buildIndexSqls(), ...buildSourceFeatureLookupIndexSqls()];
   await Promise.all(statements.map((statement) => pool.query(statement)));
 };
 
@@ -133,6 +138,18 @@ const upsertSkeletonBatch = async (pool: Pool, options: BuildOptions): Promise<n
 
 const applyHorseCareerStage = async (pool: Pool, options: BuildOptions): Promise<number> => {
   const sql = buildHorseCareerUpdateSql(options.category);
+  const result = await pool.query(sql, [options.fromDate, options.toDate]);
+  return result.rowCount ?? 0;
+};
+
+const applyJockeyStage = async (pool: Pool, options: BuildOptions): Promise<number> => {
+  const sql = buildJockeyUpdateSql(options.category);
+  const result = await pool.query(sql, [options.fromDate, options.toDate]);
+  return result.rowCount ?? 0;
+};
+
+const applyTrainerStage = async (pool: Pool, options: BuildOptions): Promise<number> => {
+  const sql = buildTrainerUpdateSql(options.category);
   const result = await pool.query(sql, [options.fromDate, options.toDate]);
   return result.rowCount ?? 0;
 };
@@ -154,12 +171,19 @@ const main = async (): Promise<void> => {
     await ensureTable(pool);
     await ensureIndexes(pool);
     if (options.dryRun) {
-      logSummary(options, { skeleton: 0, horse_career: 0 });
+      logSummary(options, { skeleton: 0, horse_career: 0, jockey: 0, trainer: 0 });
       return;
     }
     const skeletonCount = await upsertSkeletonBatch(pool, options);
     const horseCareerCount = await applyHorseCareerStage(pool, options);
-    logSummary(options, { horse_career: horseCareerCount, skeleton: skeletonCount });
+    const jockeyCount = await applyJockeyStage(pool, options);
+    const trainerCount = await applyTrainerStage(pool, options);
+    logSummary(options, {
+      horse_career: horseCareerCount,
+      jockey: jockeyCount,
+      skeleton: skeletonCount,
+      trainer: trainerCount,
+    });
   } finally {
     await pool.end();
   }
