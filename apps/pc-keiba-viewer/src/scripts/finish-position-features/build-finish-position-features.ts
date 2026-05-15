@@ -1,7 +1,7 @@
 // Run with: bun run src/scripts/finish-position-features/build-finish-position-features.ts \
 //   --target local --category jra --from-date 20160101 --to-date 20261231
 
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 
 import { getConnectionString, loadEnv } from "../compare-corner-predictions";
 import {
@@ -31,6 +31,8 @@ import { buildWeightUpdateSql } from "./build-weight-sql";
 const DEFAULT_FEATURE_SCHEMA_VERSION = "v1";
 const DEFAULT_FROM_DATE = "20160101";
 const DEFAULT_TO_DATE = "20261231";
+const SESSION_WORK_MEM = "128MB";
+const SESSION_HASH_MEM_MULTIPLIER = "2.0";
 
 const CATEGORY_SET = new Set<FeatureCategory>(["all", "ban-ei", "jra", "nar"]);
 const TARGET_SET = new Set<FeatureTarget>(["local", "neon"]);
@@ -131,6 +133,21 @@ const ensureTable = async (pool: Pool): Promise<void> => {
   await pool.query(buildCreateTableSql());
 };
 
+const registerSessionMemoryTuning = (pool: Pool): void => {
+  pool.on("connect", (client: PoolClient) => {
+    client
+      .query(
+        `set work_mem = '${SESSION_WORK_MEM}'; set hash_mem_multiplier = ${SESSION_HASH_MEM_MULTIPLIER}`,
+      )
+      .catch((error: unknown) => {
+        console.error(
+          "Failed to apply session memory tuning:",
+          error instanceof Error ? error.message : error,
+        );
+      });
+  });
+};
+
 const ensureIndexes = async (pool: Pool): Promise<void> => {
   const statements = [
     ...buildIndexSqls(),
@@ -213,6 +230,7 @@ const main = async (): Promise<void> => {
   const options = parseArgs(process.argv.slice(2));
   await loadEnv();
   const pool = new Pool({ connectionString: getConnectionString(options.target) });
+  registerSessionMemoryTuning(pool);
   try {
     await ensureTable(pool);
     await ensureIndexes(pool);
