@@ -127,9 +127,22 @@ def test_trainer_cte_filters_on_chokyoshimei_ryakusho():
 
 
 def test_pedigree_cte_handles_sire_and_damsire():
-    cte = subject.pedigree_cte()
+    cte = subject.pedigree_cte("jra")
     assert "ketto_joho_01b as sire" in cte
     assert "ketto_joho_05b as damsire" in cte
+    assert "jra_um" in cte
+
+
+def test_pedigree_cte_uses_nar_horse_master_for_nar():
+    cte = subject.pedigree_cte("nar")
+    assert "nar_um" in cte
+    assert "rec.source = 'nar' and rec.keibajo_code <> '83'" in cte
+
+
+def test_pedigree_cte_uses_nar_horse_master_for_ban_ei():
+    cte = subject.pedigree_cte("ban-ei")
+    assert "nar_um" in cte
+    assert "rec.source = 'nar' and rec.keibajo_code = '83'" in cte
 
 
 def test_race_context_cte_ranks_top_three_by_lowest_time_sa():

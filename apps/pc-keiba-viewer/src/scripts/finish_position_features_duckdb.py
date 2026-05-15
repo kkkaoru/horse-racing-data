@@ -134,6 +134,9 @@ def stage_source_tables(con: duckdb.DuckDBPyConnection, from_date: str, to_date:
     )
     con.execute("create or replace temp table jra_um as select * from pg.jvd_um")
     con.execute(
+        "create or replace temp table nar_um as select * from pg.nvd_um"
+    )
+    con.execute(
         f"""
         create or replace temp table jra_ra as
         select kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, tenko_code
@@ -299,7 +302,20 @@ def trainer_cte() -> str:
     return template.replace("{aggregations}", aggregations)
 
 
-def pedigree_cte() -> str:
+def pedigree_cte(category: str) -> str:
+    if category == "jra":
+        um_table = "jra_um"
+        source_filter = "rec.source = 'jra'"
+    elif category in ("nar", "ban-ei"):
+        um_table = "nar_um"
+        source_filter = "rec.source = 'nar'"
+        if category == "ban-ei":
+            source_filter = "rec.source = 'nar' and rec.keibajo_code = '83'"
+        else:
+            source_filter = "rec.source = 'nar' and rec.keibajo_code <> '83'"
+    else:
+        um_table = "jra_um"
+        source_filter = "true"
     return f"""
     sire_distance_stats as (
       select
@@ -308,8 +324,8 @@ def pedigree_cte() -> str:
         avg(case when rec.finish_position = 1 then 1 else 0 end) as sire_distance_win_rate_val,
         avg(rec.finish_norm) as sire_avg_finish_at_distance_val,
         count(*) as race_count
-      from rec join jra_um um using (ketto_toroku_bango)
-      where rec.source='jra' and rec.finish_position is not null
+      from rec join {um_table} um using (ketto_toroku_bango)
+      where {source_filter} and rec.finish_position is not null
         and um.ketto_joho_01b is not null and trim(um.ketto_joho_01b) <> ''
       group by 1, 2
     ),
@@ -319,8 +335,8 @@ def pedigree_cte() -> str:
         left(coalesce(rec.track_code, ''), 1) as surface,
         avg(case when rec.finish_position = 1 then 1 else 0 end) as sire_track_win_rate_val,
         count(*) as race_count
-      from rec join jra_um um using (ketto_toroku_bango)
-      where rec.source='jra' and rec.finish_position is not null
+      from rec join {um_table} um using (ketto_toroku_bango)
+      where {source_filter} and rec.finish_position is not null
         and um.ketto_joho_01b is not null and trim(um.ketto_joho_01b) <> ''
       group by 1, 2
     ),
@@ -330,8 +346,8 @@ def pedigree_cte() -> str:
         cast(coalesce(rec.kyori, 0) as int) / {DISTANCE_BAND_METERS} as kyori_band,
         avg(case when rec.finish_position = 1 then 1 else 0 end) as dam_sire_distance_win_rate_val,
         count(*) as race_count
-      from rec join jra_um um using (ketto_toroku_bango)
-      where rec.source='jra' and rec.finish_position is not null
+      from rec join {um_table} um using (ketto_toroku_bango)
+      where {source_filter} and rec.finish_position is not null
         and um.ketto_joho_05b is not null and trim(um.ketto_joho_05b) <> ''
       group by 1, 2
     ),
@@ -341,8 +357,8 @@ def pedigree_cte() -> str:
         left(coalesce(rec.track_code, ''), 1) as surface,
         avg(rec.finish_norm) as damsire_avg_finish_at_track_val,
         count(*) as race_count
-      from rec join jra_um um using (ketto_toroku_bango)
-      where rec.source='jra' and rec.finish_position is not null
+      from rec join {um_table} um using (ketto_toroku_bango)
+      where {source_filter} and rec.finish_position is not null
         and um.ketto_joho_05b is not null and trim(um.ketto_joho_05b) <> ''
       group by 1, 2
     ),
@@ -354,7 +370,7 @@ def pedigree_cte() -> str:
         um.ketto_joho_01b as target_sire,
         um.ketto_joho_05b as target_damsire
       from target t
-      left join jra_um um using (ketto_toroku_bango)
+      left join {um_table} um using (ketto_toroku_bango)
     )
     """
 
@@ -556,7 +572,7 @@ def assemble_final_query(category: str) -> str:
     {horse_career_cte()},
     {jockey_cte()},
     {trainer_cte()},
-    {pedigree_cte()},
+    {pedigree_cte(category)},
     {race_context_cte()},
     {track_bias_cte()},
     {weight_cte()},

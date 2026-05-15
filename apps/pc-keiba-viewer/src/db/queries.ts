@@ -1545,6 +1545,7 @@ const getPersonResultRows = async (
     keibajoCode: string;
     raceBango: string;
     raceName: string;
+    hassoJikoku: string | null;
     kyori: string | null;
     trackCode: string | null;
     kettoTorokuBango: string | null;
@@ -1573,6 +1574,7 @@ const getPersonResultRows = async (
         ra.keibajo_code,
         ra.race_bango,
         coalesce(nullif(regexp_replace(ra.kyosomei_hondai, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '一般競走') as race_name,
+        ra.hasso_jikoku,
         ra.kyori,
         ra.track_code,
         se.wakuban,
@@ -1612,6 +1614,7 @@ const getPersonResultRows = async (
         ra.keibajo_code,
         ra.race_bango,
         coalesce(nullif(regexp_replace(ra.kyosomei_hondai, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '一般競走') as race_name,
+        ra.hasso_jikoku,
         ra.kyori,
         ra.track_code,
         se.wakuban,
@@ -1662,6 +1665,7 @@ const getPersonResultRows = async (
       keibajo_code as "keibajoCode",
       race_bango as "raceBango",
       race_name as "raceName",
+      hasso_jikoku as "hassoJikoku",
       kyori,
       track_code as "trackCode",
       ketto_toroku_bango "kettoTorokuBango",
@@ -2727,6 +2731,87 @@ export const getActiveFinishPositionPredictions = cache(
     const lambdaRows = await getFinishPositionLambdarankPredictions(race, runners);
     if (lambdaRows.length > 0) return lambdaRows;
     return getFinishPositionModelPredictionFeatures(race, runners);
+  },
+);
+
+export interface DbFinishPredictionEvaluation {
+  evaluationWindowFrom: string;
+  evaluationWindowTo: string;
+  modelVersion: string;
+  ndcgAt3: number | null;
+  pairScore: number | null;
+  place1Accuracy: number | null;
+  place2Accuracy: number | null;
+  place3Accuracy: number | null;
+  predictionCount: number;
+  raceCount: number;
+  top1Accuracy: number | null;
+  top3BoxAccuracy: number | null;
+  top3ExactAccuracy: number | null;
+  top3PlaceRelation: number | null;
+  top3WinnerCapture: number | null;
+  top5WinnerCapture: number | null;
+}
+
+const toNullableNumberFromText = (value: string | null): number | null =>
+  value === null ? null : Number(value);
+
+export const getActiveFinishPredictionEvaluation = cache(
+  async (category: string): Promise<DbFinishPredictionEvaluation | null> => {
+    return withDbQueryCache(["getActiveFinishPredictionEvaluation", category], async () => {
+      try {
+        const result = await getDb().execute<{
+          evaluation_window_from: string;
+          evaluation_window_to: string;
+          model_version: string;
+          ndcg_at_3: string | null;
+          pair_score: string | null;
+          place1_accuracy: string | null;
+          place2_accuracy: string | null;
+          place3_accuracy: string | null;
+          prediction_count: number;
+          race_count: number;
+          top1_accuracy: string | null;
+          top3_box_accuracy: string | null;
+          top3_exact_accuracy: string | null;
+          top3_place_relation: string | null;
+          top3_winner_capture: string | null;
+          top5_winner_capture: string | null;
+        }>(sql`
+          with active as (
+            select model_version from finish_position_active_models where category = ${category} limit 1
+          )
+          select e.*
+          from model_prediction_evaluations e
+          join active on active.model_version = e.model_version
+          where e.category = ${category}
+          order by e.evaluated_at desc
+          limit 1
+        `);
+        const row = result.rows[0];
+        if (row === undefined) return null;
+        return {
+          evaluationWindowFrom: row.evaluation_window_from,
+          evaluationWindowTo: row.evaluation_window_to,
+          modelVersion: row.model_version,
+          ndcgAt3: toNullableNumberFromText(row.ndcg_at_3),
+          pairScore: toNullableNumberFromText(row.pair_score),
+          place1Accuracy: toNullableNumberFromText(row.place1_accuracy),
+          place2Accuracy: toNullableNumberFromText(row.place2_accuracy),
+          place3Accuracy: toNullableNumberFromText(row.place3_accuracy),
+          predictionCount: row.prediction_count,
+          raceCount: row.race_count,
+          top1Accuracy: toNullableNumberFromText(row.top1_accuracy),
+          top3BoxAccuracy: toNullableNumberFromText(row.top3_box_accuracy),
+          top3ExactAccuracy: toNullableNumberFromText(row.top3_exact_accuracy),
+          top3PlaceRelation: toNullableNumberFromText(row.top3_place_relation),
+          top3WinnerCapture: toNullableNumberFromText(row.top3_winner_capture),
+          top5WinnerCapture: toNullableNumberFromText(row.top5_winner_capture),
+        };
+      } catch {
+        return null;
+      }
+    });
   },
 );
 
