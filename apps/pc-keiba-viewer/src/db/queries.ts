@@ -1091,6 +1091,153 @@ export const getPersonList = cache(
     }),
 );
 
+export interface FavoriteSearchCandidate {
+  id: string;
+  label: string;
+  latestDate: string;
+  starts: number;
+}
+
+const favoriteSearchPattern = (q: string) => `%${q}%`;
+const favoriteSearchPrefixPattern = (q: string) => `${q}%`;
+const favoriteSearchRecentRowLimit = 60_000;
+
+export const searchFavoriteHorses = cache(
+  async (q: string, limit = 20): Promise<FavoriteSearchCandidate[]> =>
+    withDbQueryCache(["searchFavoriteHorses", q, limit], async () => {
+      const result = await getDb().execute<{
+        id: string;
+        label: string;
+        latestDate: string;
+        starts: string;
+      }>(sql`
+        with entries as (
+          (
+            select
+              ketto_toroku_bango as id,
+              nullif(btrim(coalesce(bamei, '')), '') as label,
+              kaisai_nen || kaisai_tsukihi as race_date
+            from ${jvdSe}
+            where btrim(coalesce(ketto_toroku_bango, '')) <> ''
+            order by kaisai_nen || kaisai_tsukihi desc, race_bango desc
+            limit ${favoriteSearchRecentRowLimit}
+          )
+          union all
+          (
+            select
+              ketto_toroku_bango as id,
+              nullif(btrim(coalesce(bamei, '')), '') as label,
+              kaisai_nen || kaisai_tsukihi as race_date
+            from ${nvdSe}
+            where btrim(coalesce(ketto_toroku_bango, '')) <> ''
+            order by kaisai_nen || kaisai_tsukihi desc, race_bango desc
+            limit ${favoriteSearchRecentRowLimit}
+          )
+        ),
+        filtered as (
+          select *
+          from entries
+          where id = ${q} or label ilike ${favoriteSearchPattern(q)}
+        ),
+        grouped as (
+          select
+            id,
+            coalesce(min(label) filter (where label is not null), id) as label,
+            max(race_date) as "latestDate",
+            count(*)::text as starts,
+            case
+              when coalesce(min(label) filter (where label is not null), '') ilike ${favoriteSearchPrefixPattern(q)}
+                or id = ${q}
+              then 0
+              else 1
+            end as priority
+          from filtered
+          group by id
+        )
+        select id, label, "latestDate", starts
+        from grouped
+        order by priority asc, "latestDate" desc, starts::numeric desc, label asc
+        limit ${limit}
+      `);
+
+      return result.rows.map((row) => ({
+        id: row.id,
+        label: row.label,
+        latestDate: row.latestDate,
+        starts: toCount(row.starts),
+      }));
+    }),
+);
+
+export const searchFavoritePeople = cache(
+  async (
+    kind: "jockeys" | "owners" | "trainers",
+    q: string,
+    limit = 20,
+  ): Promise<FavoriteSearchCandidate[]> =>
+    withDbQueryCache(["searchFavoritePeople", kind, q, limit], async () => {
+      const rawColumn =
+        kind === "jockeys"
+          ? sql`kishumei_ryakusho`
+          : kind === "trainers"
+            ? sql`chokyoshimei_ryakusho`
+            : sql`banushimei`;
+      const result = await getDb().execute<{
+        id: string;
+        label: string;
+        latestDate: string;
+        starts: string;
+      }>(sql`
+        with entries as (
+          (
+            select
+              nullif(btrim(coalesce(${rawColumn}, '')), '') as name,
+              kaisai_nen || kaisai_tsukihi as race_date
+            from ${jvdSe}
+            order by kaisai_nen || kaisai_tsukihi desc, race_bango desc
+            limit ${favoriteSearchRecentRowLimit}
+          )
+          union all
+          (
+            select
+              nullif(btrim(coalesce(${rawColumn}, '')), '') as name,
+              kaisai_nen || kaisai_tsukihi as race_date
+            from ${nvdSe}
+            order by kaisai_nen || kaisai_tsukihi desc, race_bango desc
+            limit ${favoriteSearchRecentRowLimit}
+          )
+        ),
+        filtered as (
+          select *
+          from entries
+          where name ilike ${favoriteSearchPattern(q)}
+        ),
+        grouped as (
+          select
+            name as id,
+            name as label,
+            max(race_date) as "latestDate",
+            count(*)::text as starts,
+            case when name ilike ${favoriteSearchPrefixPattern(q)} then 0 else 1 end as priority
+          from filtered
+          where name is not null
+          group by name
+        )
+        select id, label, "latestDate", starts
+        from grouped
+        order by priority asc, "latestDate" desc, starts::numeric desc, label asc
+        limit ${limit}
+      `);
+
+      return result.rows.map((row) => ({
+        id: row.id,
+        label: row.label,
+        latestDate: row.latestDate,
+        starts: toCount(row.starts),
+      }));
+    }),
+);
+
 const entityResultsOrder = (order: string) => {
   switch (order) {
     case "rank":
@@ -2381,6 +2528,95 @@ export const getFinishPositionModelPredictionFeatures = cache(
         }
       },
     );
+  },
+);
+
+const CATEGORY_FROM_RACE = (race: RaceDetail): string => {
+  if (race.source === "jra") return "jra";
+  if (race.keibajoCode === "83") return "ban-ei";
+  return "nar";
+};
+
+export const getFinishPositionLambdarankPredictions = cache(
+  async (race: RaceDetail, runners: Runner[]): Promise<FinishPositionModelPredictionFeature[]> => {
+    return withDbQueryCache(
+      [
+        "getFinishPositionLambdarankPredictions",
+        race.source,
+        race.kaisaiNen,
+        race.kaisaiTsukihi,
+        race.keibajoCode,
+        race.raceBango,
+        runners.map((runner) => runner.umaban).join(","),
+      ],
+      async () => {
+        if (runners.length <= 1) return [];
+        const category = CATEGORY_FROM_RACE(race);
+        try {
+          const result = await getDb().execute<{
+            model_version: string;
+            predicted_rank: number;
+            predicted_score: string | null;
+            shusso_tosu: number | null;
+            umaban: number;
+          }>(sql`
+            with active as (
+              select model_version
+              from finish_position_active_models
+              where category = ${category}
+              limit 1
+            )
+            select
+              p.model_version,
+              p.umaban,
+              p.predicted_score,
+              p.predicted_rank,
+              (
+                select count(*)
+                from race_finish_position_model_predictions p2
+                where p2.model_version = p.model_version
+                  and p2.source = p.source
+                  and p2.kaisai_nen = p.kaisai_nen
+                  and p2.kaisai_tsukihi = p.kaisai_tsukihi
+                  and p2.keibajo_code = p.keibajo_code
+                  and p2.race_bango = p.race_bango
+              )::integer as shusso_tosu
+            from race_finish_position_model_predictions p
+            join active on active.model_version = p.model_version
+            where p.source = ${race.source}
+              and p.kaisai_nen = ${race.kaisaiNen}
+              and p.kaisai_tsukihi = ${race.kaisaiTsukihi}
+              and p.keibajo_code = ${race.keibajoCode}
+              and p.race_bango = ${race.raceBango}
+          `);
+          return result.rows.map((row) => {
+            const fieldSize = Math.max(1, row.shusso_tosu ?? runners.length);
+            const denominator = Math.max(1, fieldSize - 1);
+            const predictedFinishNorm = Math.min(
+              1,
+              Math.max(0, (row.predicted_rank - 1) / denominator),
+            );
+            return {
+              horseNumber: String(row.umaban),
+              modelVersion: row.model_version,
+              predictedFinishNorm,
+              showProbability: null,
+              winProbability: null,
+            };
+          });
+        } catch {
+          return [];
+        }
+      },
+    );
+  },
+);
+
+export const getActiveFinishPositionPredictions = cache(
+  async (race: RaceDetail, runners: Runner[]): Promise<FinishPositionModelPredictionFeature[]> => {
+    const lambdaRows = await getFinishPositionLambdarankPredictions(race, runners);
+    if (lambdaRows.length > 0) return lambdaRows;
+    return getFinishPositionModelPredictionFeatures(race, runners);
   },
 );
 
