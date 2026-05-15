@@ -26,6 +26,7 @@ import { buildRaceContextUpdateSql } from "./build-race-context-sql";
 import { buildRecentFormUpdateSql } from "./build-recent-form-sql";
 import { buildTrackBiasIndexSqls, buildTrackBiasUpdateSql } from "./build-track-bias-sql";
 import { buildWeatherUpdateSql } from "./build-weather-sql";
+import { buildWeightUpdateSql } from "./build-weight-sql";
 
 const DEFAULT_FEATURE_SCHEMA_VERSION = "v1";
 const DEFAULT_FROM_DATE = "20160101";
@@ -193,6 +194,12 @@ const applyTrackBiasStage = async (pool: Pool, options: BuildOptions): Promise<n
   return result.rowCount ?? 0;
 };
 
+const applyWeightStage = async (pool: Pool, options: BuildOptions): Promise<number> => {
+  const sql = buildWeightUpdateSql(options.category);
+  const result = await pool.query(sql, [options.fromDate, options.toDate]);
+  return result.rowCount ?? 0;
+};
+
 const logSummary = (options: BuildOptions, stageCounts: Record<string, number>): void => {
   const stages = Object.entries(stageCounts)
     .map(([stage, count]) => `${stage}=${count}`)
@@ -220,6 +227,7 @@ const main = async (): Promise<void> => {
         track_bias: 0,
         trainer: 0,
         weather: 0,
+        weight: 0,
       });
       return;
     }
@@ -232,6 +240,7 @@ const main = async (): Promise<void> => {
     const recentFormCount = await applyRecentFormStage(pool, options);
     const weatherCount = await applyWeatherStage(pool, options);
     const trackBiasCount = await applyTrackBiasStage(pool, options);
+    const weightCount = await applyWeightStage(pool, options);
     logSummary(options, {
       horse_career: horseCareerCount,
       jockey: jockeyCount,
@@ -242,6 +251,7 @@ const main = async (): Promise<void> => {
       track_bias: trackBiasCount,
       trainer: trainerCount,
       weather: weatherCount,
+      weight: weightCount,
     });
   } finally {
     await pool.end();
