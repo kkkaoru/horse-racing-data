@@ -95,6 +95,7 @@ describe("keiba.go realtime helpers", () => {
         "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2f05%2f10&k_raceNo=9&k_babaCode=22",
       ),
     ).toEqual({
+      fukusho: "https://www.keiba.go.jp/KeibaWeb/Odds/OddsTanFuku?k=1",
       tansho: "https://www.keiba.go.jp/KeibaWeb/Odds/OddsTanFuku?k=1",
       wide: "https://www.keiba.go.jp/KeibaWeb/Odds/OddsWide?k=1",
     });

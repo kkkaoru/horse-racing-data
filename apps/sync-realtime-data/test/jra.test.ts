@@ -38,13 +38,13 @@ describe("JRA realtime helpers", () => {
       <tr>
         <td class="num">2</td>
         <td class="horseName"><a>テストホース</a></td>
-        <td class="jockey"><a>武豊</a></td>
+        <td class="jockey"><a>△武 豊</a></td>
         <td class="weight">460(+4)</td>
       </tr>
       <tr>
         <td class="num">9</td>
         <td class="horseName"><a>取消馬</a></td>
-        <td class="jockey">騎手変更 ルメール</td>
+        <td class="jockey">騎手変更 ▲ルメール</td>
         <td class="weight">454(-2)</td>
         <td>出走取消</td>
       </tr>
@@ -59,7 +59,7 @@ describe("JRA realtime helpers", () => {
       {
         horseName: "取消馬",
         horseNumber: "9",
-        jockeyName: "騎手変更 ルメール",
+        jockeyName: "騎手変更ルメール",
         status: "出走取消",
       },
     ]);
@@ -77,6 +77,32 @@ describe("JRA realtime helpers", () => {
         horseName: "取消馬",
         horseNumber: "9",
         weight: 454,
+      },
+    ]);
+  });
+
+  it("parses current jockey from the nested JRA entry cell", () => {
+    const html = `
+      <tr>
+        <td class="num">1</td>
+        <td class="horse">
+          <div class="name_line">
+            <div class="name"><a>メイショウルビー</a></div>
+          </div>
+        </td>
+        <td class="jockey">
+          <p class="age">牝3/鹿</p>
+          <p class="weight">55.0<span>kg</span></p>
+          <p class="jockey"><a>△田口 貫太</a></p>
+        </td>
+      </tr>
+    `;
+    expect(parseJraRaceEntries(html)).toEqual([
+      {
+        horseName: "メイショウルビー",
+        horseNumber: "1",
+        jockeyName: "田口貫太",
+        status: null,
       },
     ]);
   });

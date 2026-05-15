@@ -1,6 +1,10 @@
 "use client";
 
-import type { RealtimeRacePayload } from "horse-racing-realtime/types";
+import type {
+  RealtimeOddsTrend,
+  RealtimeOddsType,
+  RealtimeRacePayload,
+} from "horse-racing-realtime/types";
 import type { CSSProperties } from "react";
 import { useMemo, useState, useSyncExternalStore } from "react";
 import {
@@ -38,6 +42,38 @@ const MID_ODDS_TICK_MAX = 20;
 const MID_ODDS_TICK_STEP = 1;
 const HIGH_ODDS_TICK_STEP = 5;
 const MOBILE_TOOLTIP_QUERY = "(max-width: 760px)";
+const ODDS_TYPE_ORDER: RealtimeOddsType[] = [
+  "tansho",
+  "fukusho",
+  "wakuren",
+  "umaren",
+  "wide",
+  "umatan",
+  "3renpuku",
+  "3rentan",
+];
+const ODDS_TYPE_LABELS: Record<RealtimeOddsType, string> = {
+  "3renpuku": "3連複",
+  "3rentan": "3連単",
+  fukusho: "複勝",
+  tansho: "単勝",
+  umaren: "馬連",
+  umatan: "馬単",
+  wakuren: "枠連",
+  wide: "ワイド",
+};
+const COMBINATION_TREND_COLORS = [
+  "#2f6f4e",
+  "#8f4f24",
+  "#355f9f",
+  "#8d3d71",
+  "#5f6f2f",
+  "#a23d3d",
+  "#2f7f82",
+  "#6b55a3",
+  "#a0802f",
+  "#3f5d66",
+];
 
 const formatFetchedAt = (value: string): string => {
   const date = new Date(value);
@@ -121,9 +157,7 @@ type OddsTrendLegendStyle = CSSProperties & {
   "--series-color": string;
 };
 
-const buildOddsTrendRows = (
-  history: NonNullable<RealtimeRacePayload["odds"]>["horseTrends"],
-): OddsTrendRow[] => {
+const buildOddsTrendRows = (history: RealtimeOddsTrend[]): OddsTrendRow[] => {
   const rows = new Map<string, OddsTrendRow>();
   for (const trend of history) {
     for (const point of trend.points) {
@@ -133,7 +167,7 @@ const buildOddsTrendRows = (
           fetchedAt: point.fetchedAt,
           timeLabel: formatFetchedAt(point.fetchedAt),
         } satisfies OddsTrendRow);
-      row[trend.horseNumber] = point.odds;
+      row[trend.combination] = point.odds;
       rows.set(point.fetchedAt, row);
     }
   }
@@ -174,6 +208,22 @@ const buildOddsYAxisTicks = (maxOdds: number): number[] => {
 
 const getLegendStyle = (color: string): OddsTrendLegendStyle => ({ "--series-color": color });
 
+const toCombinationTrends = (
+  trends: NonNullable<RealtimeRacePayload["odds"]>["horseTrends"],
+): RealtimeOddsTrend[] =>
+  trends.map((trend) => ({
+    combination: trend.horseNumber,
+    points: trend.points.map((point) => ({
+      combination: trend.horseNumber,
+      fetchedAt: point.fetchedAt,
+      odds: point.odds,
+      rank: point.popularity,
+    })),
+  }));
+
+const hasTrendPoints = (trend: RealtimeOddsTrend): boolean =>
+  trend.points.some((point) => typeof point.odds === "number");
+
 function OddsTrendTooltip({ active, label, payload }: OddsTrendTooltipProps) {
   const entries = (payload ?? [])
     .filter((entry) => typeof entry.value === "number")
@@ -207,17 +257,41 @@ export function RealtimeRaceSection(props: RealtimeRaceSectionProps) {
   const names = useMemo(() => runnerNameByNumber(props.runners), [props.runners]);
   const frames = useMemo(() => frameNumberByHorseNumber(props.runners), [props.runners]);
   const [activeTrend, setActiveTrend] = useState<OddsTrendHoverState | null>(null);
+  const [activeOddsType, setActiveOddsType] = useState<RealtimeOddsType>("tansho");
   const isMobileTooltip = useSyncExternalStore(
     subscribeMobileTooltip,
     getMobileTooltipSnapshot,
     getMobileTooltipServerSnapshot,
   );
 
-  if (props.source !== "nar") {
+  if (props.source !== "nar" && props.source !== "jra") {
     return null;
   }
 
-  const history = useMemo(() => payload?.odds?.horseTrends ?? [], [payload]);
+  const trendsByType = useMemo(() => {
+    const typedTrends = payload?.odds?.trendsByType ?? {};
+    return {
+      ...typedTrends,
+      tansho:
+        typedTrends.tansho && typedTrends.tansho.length > 0
+          ? typedTrends.tansho
+          : toCombinationTrends(payload?.odds?.horseTrends ?? []),
+    } satisfies Partial<Record<RealtimeOddsType, RealtimeOddsTrend[]>>;
+  }, [payload]);
+  const availableOddsTypes = useMemo(
+    () =>
+      ODDS_TYPE_ORDER.filter((oddsType) =>
+        (trendsByType[oddsType] ?? []).some((trend) => hasTrendPoints(trend)),
+      ),
+    [trendsByType],
+  );
+  const displayOddsType = availableOddsTypes.includes(activeOddsType)
+    ? activeOddsType
+    : (availableOddsTypes[0] ?? "tansho");
+  const history = useMemo(
+    () => trendsByType[displayOddsType] ?? [],
+    [displayOddsType, trendsByType],
+  );
   const trendRows = useMemo(() => buildOddsTrendRows(history), [history]);
   const allTrendPoints = history.flatMap((trend) => trend.points);
   const oddsValues = allTrendPoints
@@ -234,13 +308,17 @@ export function RealtimeRaceSection(props: RealtimeRaceSectionProps) {
     () => buildOddsYAxisTicks(maxOdds + oddsDomainPadding),
     [maxOdds, oddsDomainPadding],
   );
-  const getSeriesName = (horseNumber: string): string =>
-    `${horseNumber} ${names.get(horseNumber) ?? ""}`.trim();
-  const isWhiteFrameSeries = (horseNumber: string): boolean => frames.get(horseNumber) === "1";
-  const getSeriesColor = (horseNumber: string): string =>
-    getFrameColor(frames.get(horseNumber)) ?? FALLBACK_TREND_COLOR;
-  const getSeriesStrokeWidth = (horseNumber: string): number =>
-    isWhiteFrameSeries(horseNumber) ? 3.2 : 2.4;
+  const isHorseNumberOddsType = displayOddsType === "tansho" || displayOddsType === "fukusho";
+  const getSeriesName = (combination: string): string =>
+    isHorseNumberOddsType ? `${combination} ${names.get(combination) ?? ""}`.trim() : combination;
+  const isWhiteFrameSeries = (combination: string): boolean =>
+    isHorseNumberOddsType && frames.get(combination) === "1";
+  const getSeriesColor = (combination: string, index: number): string =>
+    (isHorseNumberOddsType ? getFrameColor(frames.get(combination)) : null) ??
+    COMBINATION_TREND_COLORS[index % COMBINATION_TREND_COLORS.length] ??
+    FALLBACK_TREND_COLOR;
+  const getSeriesStrokeWidth = (combination: string): number =>
+    isWhiteFrameSeries(combination) ? 3.2 : 2.4;
   const activeTrendEntries =
     activeTrend?.activePayload?.filter((entry) => typeof entry.value === "number") ?? [];
   const chartTopMargin = Math.min(260, Math.max(96, Math.ceil(history.length / 4) * 26 + 40));
@@ -258,12 +336,38 @@ export function RealtimeRaceSection(props: RealtimeRaceSectionProps) {
       <div className="realtime-panel odds-trend-panel">
         <div className="section-heading compact">
           <h3>オッズ推移</h3>
-          <span>馬番号別 / 横軸 時間 / 縦軸 単勝オッズ</span>
+          <span>
+            {ODDS_TYPE_LABELS[displayOddsType]} / 横軸 時間 / 縦軸 オッズ
+            {isHorseNumberOddsType ? "" : " / 最新上位を表示"}
+          </span>
         </div>
+        {availableOddsTypes.length > 1 ? (
+          <div className="odds-trend-tabs" role="tablist" aria-label="馬券種類">
+            {availableOddsTypes.map((oddsType) => (
+              <button
+                aria-selected={oddsType === displayOddsType}
+                className="odds-trend-tab"
+                key={oddsType}
+                onClick={() => {
+                  setActiveOddsType(oddsType);
+                  setActiveTrend(null);
+                }}
+                role="tab"
+                type="button"
+              >
+                {ODDS_TYPE_LABELS[oddsType]}
+              </button>
+            ))}
+          </div>
+        ) : null}
         {history.length === 0 || trendRows.length === 0 ? (
-          <p className="empty-state">人気推移はまだありません。</p>
+          <p className="empty-state">オッズ推移はまだありません。</p>
         ) : (
-          <div className="odds-trend-chart" role="img" aria-label="馬番号ごとの単勝オッズ推移">
+          <div
+            className="odds-trend-chart"
+            role="img"
+            aria-label={`${ODDS_TYPE_LABELS[displayOddsType]}のオッズ推移`}
+          >
             <div className="odds-trend-hover-panel" aria-live="polite">
               {activeTrend && activeTrendEntries.length > 0 ? (
                 <>
@@ -321,15 +425,15 @@ export function RealtimeRaceSection(props: RealtimeRaceSectionProps) {
                     reverseDirection={isMobileTooltip ? undefined : { x: true, y: false }}
                     wrapperStyle={{ maxWidth: "calc(100vw - 32px)", zIndex: 5 }}
                   />
-                  {history.map((trend) => (
+                  {history.map((trend, index) => (
                     <Line
                       connectNulls
-                      dataKey={trend.horseNumber}
+                      dataKey={trend.combination}
                       dot={{ r: 2 }}
-                      key={trend.horseNumber}
-                      name={getSeriesName(trend.horseNumber)}
-                      stroke={getSeriesColor(trend.horseNumber)}
-                      strokeWidth={getSeriesStrokeWidth(trend.horseNumber)}
+                      key={trend.combination}
+                      name={getSeriesName(trend.combination)}
+                      stroke={getSeriesColor(trend.combination, index)}
+                      strokeWidth={getSeriesStrokeWidth(trend.combination)}
                       type="monotone"
                     />
                   ))}
@@ -337,19 +441,27 @@ export function RealtimeRaceSection(props: RealtimeRaceSectionProps) {
               </ResponsiveContainer>
             </div>
             <div className="odds-trend-legend" aria-label="オッズ推移の線の説明">
-              {history.map((trend) => (
+              {history.map((trend, index) => (
                 <span
                   className="odds-trend-legend-item"
-                  key={trend.horseNumber}
-                  style={getLegendStyle(getSeriesColor(trend.horseNumber))}
+                  key={trend.combination}
+                  style={getLegendStyle(getSeriesColor(trend.combination, index))}
                 >
                   <span
                     className="odds-trend-legend-marker"
-                    style={{ backgroundColor: getSeriesColor(trend.horseNumber) }}
+                    style={{
+                      backgroundColor: getSeriesColor(trend.combination, index),
+                    }}
                   />
-                  <PlainHorseNumberBadge horseNumber={trend.horseNumber} />
+                  {isHorseNumberOddsType ? (
+                    <PlainHorseNumberBadge horseNumber={trend.combination} />
+                  ) : (
+                    <span className="odds-trend-combination-badge">{trend.combination}</span>
+                  )}
                   <span className="odds-trend-legend-name">
-                    {names.get(trend.horseNumber) ?? trend.horseNumber}
+                    {isHorseNumberOddsType
+                      ? (names.get(trend.combination) ?? trend.combination)
+                      : ODDS_TYPE_LABELS[displayOddsType]}
                   </span>
                 </span>
               ))}

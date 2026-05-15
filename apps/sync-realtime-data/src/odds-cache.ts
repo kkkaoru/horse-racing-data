@@ -1,11 +1,12 @@
 import type { DurableObjectState } from "@cloudflare/workers-types";
 import { mergeJsonHeaders } from "./http";
-import type { Env, OddsData, OddsHistoryPoint, OddsType } from "./types";
+import type { Env, OddsData, OddsHistoryPoint, OddsTrendPoint, OddsType } from "./types";
 
 interface CachedOddsPayload {
   expiresAt: number;
   fetchedAt: string;
   history: OddsHistoryPoint[];
+  historyByType?: Partial<Record<OddsType, OddsTrendPoint[]>>;
   latest: Partial<Record<OddsType, OddsData[]>>;
 }
 
@@ -77,6 +78,7 @@ export const readCachedOdds = async (
 ): Promise<{
   fetchedAt: string;
   history: OddsHistoryPoint[];
+  historyByType?: Partial<Record<OddsType, OddsTrendPoint[]>>;
   latest: Partial<Record<OddsType, OddsData[]>>;
 } | null> => {
   const stub = env.ODDS_CACHE.get(getOddsCacheId(env, raceKey));
@@ -93,6 +95,7 @@ export const writeCachedOdds = async (
   payload: {
     fetchedAt: string;
     history: OddsHistoryPoint[];
+    historyByType?: Partial<Record<OddsType, OddsTrendPoint[]>>;
     latest: Partial<Record<OddsType, OddsData[]>>;
   },
 ): Promise<void> => {

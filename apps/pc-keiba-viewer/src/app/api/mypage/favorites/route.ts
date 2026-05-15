@@ -29,10 +29,10 @@ interface FavoriteRaceEntry {
 }
 
 interface FavoriteRaceGroup extends Pick<
-    EntityRaceResult,
-    | "hassoJikoku"
-    | "isUpcoming"
-    | "kaisaiNen"
+  EntityRaceResult,
+  | "hassoJikoku"
+  | "isUpcoming"
+  | "kaisaiNen"
   | "kaisaiTsukihi"
   | "keibajoCode"
   | "kyori"

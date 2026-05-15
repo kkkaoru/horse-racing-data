@@ -18,6 +18,8 @@ interface SearchResult extends FavoriteItem {
 
 const kinds: FavoriteKind[] = ["horse", "jockey", "trainer", "owner"];
 
+const favoriteKindClass = (kind: FavoriteKind): string => `favorite-kind-${kind}`;
+
 const isSearchPayload = (value: unknown): value is { results?: SearchResult[] } =>
   typeof value === "object" &&
   value !== null &&
@@ -188,12 +190,16 @@ export function FavoritesManager() {
             {favorites.map((item) => (
               <button
                 type="button"
+                className={favoriteKindClass(item.kind)}
                 key={`${item.kind}:${item.id}`}
+                aria-label={`${FAVORITE_KIND_LABELS[item.kind]} ${item.label} を削除`}
                 onClick={() => removeFavorite(item)}
               >
-                <span>{FAVORITE_KIND_LABELS[item.kind]}</span>
-                {item.label}
-                <small>削除</small>
+                <span className="favorite-kind-label">{FAVORITE_KIND_LABELS[item.kind]}</span>
+                <strong className="favorite-name">{item.label}</strong>
+                <small className="favorite-remove-mark" aria-hidden="true">
+                  ×
+                </small>
               </button>
             ))}
           </div>

@@ -47,6 +47,9 @@ describe("runners table", () => {
     expect(screen.getAllByText("1")).toHaveLength(2);
     expect(screen.getByText("牝 / 3歳")).toBeTruthy();
     expect(screen.getAllByText("馬主")).toHaveLength(2);
+    expect(screen.getByRole("link", { name: "馬主" }).getAttribute("href")).toBe(
+      "/owners/%E9%A6%AC%E4%B8%BB",
+    );
     expect(screen.queryByText("2023100001")).toBeNull();
     expect(screen.getAllByText("-").length).toBeGreaterThanOrEqual(2);
   });
@@ -296,6 +299,36 @@ describe("runners table", () => {
     expect(screen.queryByText("シャベス")).toBeNull();
     expect(screen.queryByText("元 増田充")).toBeNull();
     expect(screen.queryByText("元 シャベ")).toBeNull();
+  });
+
+  it("does not show changed jockey notes for whitespace-only name differences", () => {
+    render(
+      <RunnersTable
+        initialRealtimePayload={{
+          horseWeights: null,
+          odds: null,
+          raceEntries: {
+            fetchedAt: "2026-05-10T18:30:00+09:00",
+            horses: [
+              {
+                fetchedAt: "2026-05-10T18:30:00+09:00",
+                horseName: "一番",
+                horseNumber: "1",
+                jockeyName: "坂井 瑠星",
+                status: null,
+              },
+            ],
+          },
+          raceResults: null,
+          raceKey: "jra:2026:0510:08:01",
+          source: null,
+        }}
+        runners={[runner({ bamei: "一番", kishumeiRyakusho: "坂井瑠星", umaban: "01" })]}
+      />,
+    );
+
+    expect(screen.getByText("坂井瑠星")).toBeTruthy();
+    expect(screen.queryByText("元 坂井瑠星")).toBeNull();
   });
 
   it("formats realtime horse weights with missing values", () => {

@@ -18,4 +18,19 @@ describe("favorites url helpers", () => {
       { id: "田口貫太", kind: "jockey", label: "田口貫太" },
     ]);
   });
+
+  it("normalizes full-width padding in favorite labels", () => {
+    const params = new URLSearchParams();
+    params.append("horse", "2023102979");
+    params.set("horseLabel:2023102979", "　ジュウリョクピエロ　　　　　");
+
+    expect(parseFavoritesFromSearchParams(params)).toEqual([
+      { id: "2023102979", kind: "horse", label: "ジュウリョクピエロ" },
+    ]);
+    expect(
+      buildFavoritesSearchParams([
+        { id: "2023102979", kind: "horse", label: "ジュウリョクピエロ　　　　　" },
+      ]).get("horseLabel:2023102979"),
+    ).toBe("ジュウリョクピエロ");
+  });
 });

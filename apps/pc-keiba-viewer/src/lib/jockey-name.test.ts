@@ -3,14 +3,26 @@ import { describe, expect, it } from "vitest";
 import {
   getPreferredJockeyName,
   isSameJockeyName,
+  normalizeJockeyNameForDisplay,
   normalizeJockeyNameForComparison,
 } from "./jockey-name";
 
 describe("jockey name helpers", () => {
   it("normalizes whitespace for comparison", () => {
     expect(normalizeJockeyNameForComparison(" 増田 充 ")).toBe("増田充");
+    expect(normalizeJockeyNameForComparison("団野 大成")).toBe("団野大成");
+    expect(normalizeJockeyNameForComparison("団野　大成")).toBe("団野大成");
+    expect(normalizeJockeyNameForComparison("団野\u200B大成")).toBe("団野大成");
     expect(normalizeJockeyNameForComparison("シャ ベス")).toBe("シャベス");
     expect(normalizeJockeyNameForComparison("櫻井光")).toBe("桜井光");
+  });
+
+  it("normalizes realtime JRA entry text for display and comparison", () => {
+    expect(normalizeJockeyNameForDisplay("牝3/鹿 55.0kg 田口 貫太")).toBe("田口貫太");
+    expect(normalizeJockeyNameForDisplay("▲森田 誠也")).toBe("森田誠也");
+    expect(normalizeJockeyNameForDisplay("牝3/青 53.0kg △田山 旺佑")).toBe("田山旺佑");
+    expect(isSameJockeyName("田口貫太", "牝3/鹿 55.0kg 田口 貫太")).toBe(true);
+    expect(getPreferredJockeyName("田口貫太", "牝3/鹿 55.0kg 田口 貫太")).toBe("田口貫太");
   });
 
   it("treats names with the same first three characters as the same jockey", () => {
@@ -35,6 +47,7 @@ describe("jockey name helpers", () => {
   });
 
   it("prefers stored names when realtime names refer to the same jockey", () => {
+    expect(getPreferredJockeyName("団野大成", "団野 大成")).toBe("団野大成");
     expect(getPreferredJockeyName("櫻井光", "桜井光輔")).toBe("櫻井光");
     expect(getPreferredJockeyName("増田充", "増田充宏")).toBe("増田充");
     expect(getPreferredJockeyName("本田正重", "本田重")).toBe("本田正重");

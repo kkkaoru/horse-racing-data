@@ -9,6 +9,7 @@ const row = (overrides: Partial<EntityRaceResult>): EntityRaceResult => ({
   frameNumber: "1",
   horseName: "テストホース",
   horseNumber: "1",
+  hassoJikoku: "1010",
   isUpcoming: false,
   corner1: "03",
   corner2: "04",

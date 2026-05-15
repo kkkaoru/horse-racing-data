@@ -19,6 +19,7 @@ import type {
   RaceTimeStats,
   Runner,
   SimilarRaceStatsRow,
+  StableComment,
   SimilarRaceStatsSettings,
   TimeScoreRow,
   Training,
@@ -89,6 +90,7 @@ type ResultsPayload = {
 
 type TrainingPayload = {
   sourceLabel: string;
+  stableComments: StableComment[];
   trainings: Training[];
   type: "training";
 };
@@ -282,6 +284,73 @@ const SectionError = ({ error, title }: { error: string; title: string }) => (
     <p className="empty-state">データを取得できませんでした: {error}</p>
   </section>
 );
+
+const STABLE_COMMENT_LABELS = {
+  comment: process.env.NEXT_PUBLIC_PREMIUM_RACE_COMMENT_LABEL_TEXT ?? "コメント",
+  evaluation: process.env.NEXT_PUBLIC_PREMIUM_RACE_COMMENT_LABEL_EVALUATION ?? "評価",
+  horseName: process.env.NEXT_PUBLIC_PREMIUM_RACE_COMMENT_LABEL_HORSE_NAME ?? "馬名",
+  horseNumber: process.env.NEXT_PUBLIC_PREMIUM_RACE_COMMENT_LABEL_HORSE_NUMBER ?? "馬番",
+};
+
+const getStableEvaluationLabel = (grade: number | null): string => {
+  if (grade === 1) {
+    return "とてもよい";
+  }
+  if (grade === 2) {
+    return "よい";
+  }
+  if (grade === 3) {
+    return "まあまあ";
+  }
+  return "-";
+};
+
+const StableCommentsTable = ({ rows }: { rows: StableComment[] }) => {
+  if (rows.length === 0) {
+    return null;
+  }
+  const sortedRows = rows.toSorted((left, right) => {
+    const leftGrade = left.evaluationGrade ?? 99;
+    const rightGrade = right.evaluationGrade ?? 99;
+    if (leftGrade !== rightGrade) {
+      return leftGrade - rightGrade;
+    }
+    return Number(left.horseNumber) - Number(right.horseNumber);
+  });
+  return (
+    <section className="detail-subsection">
+      <div className="section-heading compact">
+        <h3>厩舎コメント</h3>
+      </div>
+      <div className="stable-comment-table-wrap">
+        <table className="stable-comment-table">
+          <thead>
+            <tr>
+              <th>{STABLE_COMMENT_LABELS.horseNumber}</th>
+              <th>{STABLE_COMMENT_LABELS.horseName}</th>
+              <th>{STABLE_COMMENT_LABELS.evaluation}</th>
+              <th>{STABLE_COMMENT_LABELS.comment}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sortedRows.map((row) => (
+              <tr key={row.horseNumber}>
+                <td>{row.horseNumber}</td>
+                <td>{row.horseName ?? "-"}</td>
+                <td>
+                  <span className={`stable-comment-grade grade-${row.evaluationGrade ?? "none"}`}>
+                    {getStableEvaluationLabel(row.evaluationGrade)}
+                  </span>
+                </td>
+                <td className="stable-comment-text-cell">{row.commentText}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+};
 
 const getSectionUrl = (
   section: DetailSection,
@@ -525,6 +594,7 @@ function LazyTrainingSection(props: LazyDetailSectionsProps) {
         <h2>調教・追い切り</h2>
       </div>
       <TrainingTable sourceLabel={payload.sourceLabel} trainings={payload.trainings} />
+      <StableCommentsTable rows={payload.stableComments} />
     </section>
   );
 }

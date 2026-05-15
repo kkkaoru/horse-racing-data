@@ -1,6 +1,7 @@
 export type RealtimeOddsType =
   | "3renpuku"
   | "3rentan"
+  | "fukusho"
   | "tansho"
   | "umaren"
   | "umatan"
@@ -50,6 +51,18 @@ export interface RealtimeOddsHistoryPoint {
 export interface RealtimeHorseOddsTrend {
   horseNumber: string;
   points: RealtimeOddsHistoryPoint[];
+}
+
+export interface RealtimeOddsTrendPoint {
+  combination: string;
+  fetchedAt: string;
+  odds: number | null;
+  rank: number | null;
+}
+
+export interface RealtimeOddsTrend {
+  combination: string;
+  points: RealtimeOddsTrendPoint[];
 }
 
 export interface RealtimeRaceSource {
@@ -113,7 +126,9 @@ export interface RealtimeRacePayload {
     fetchedAt: string;
     horseTrends: RealtimeHorseOddsTrend[];
     history: RealtimeOddsHistoryPoint[];
+    historyByType?: Partial<Record<RealtimeOddsType, RealtimeOddsTrendPoint[]>>;
     latest: Partial<Record<RealtimeOddsType, RealtimeOddsData[]>>;
+    trendsByType?: Partial<Record<RealtimeOddsType, RealtimeOddsTrend[]>>;
   } | null;
   raceResults: {
     fetchedAt: string;

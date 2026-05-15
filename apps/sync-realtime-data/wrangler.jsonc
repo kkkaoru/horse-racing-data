@@ -10,6 +10,8 @@
   },
   "vars": {
     "ODDS_DO_TTL_SECONDS": "7200",
+    "PREMIUM_PADDOCK_DO_TTL_SECONDS": "1800",
+    "PREMIUM_RACE_QUEUE_DELAY_SECONDS": "15",
     "REALTIME_API_CACHE_SECONDS": "20",
     "DATABASE_TARGET": "cloudflare",
     "TRACK_CONDITION_DO_TTL_SECONDS": "172800",
@@ -23,10 +25,20 @@
         "binding": "REALTIME_JOBS",
         "queue": "sync-realtime-data-jobs",
       },
+      {
+        "binding": "PREMIUM_RACE_JOBS",
+        "queue": "sync-realtime-data-premium-race-jobs",
+      },
     ],
     "consumers": [
       {
         "queue": "sync-realtime-data-jobs",
+        "max_batch_size": 1,
+        "max_batch_timeout": 5,
+        "max_concurrency": 1,
+      },
+      {
+        "queue": "sync-realtime-data-premium-race-jobs",
         "max_batch_size": 1,
         "max_batch_timeout": 5,
         "max_concurrency": 1,
@@ -53,6 +65,10 @@
         "name": "TRACK_CONDITION_CACHE",
         "class_name": "TrackConditionCache",
       },
+      {
+        "name": "PREMIUM_PADDOCK_CACHE",
+        "class_name": "PremiumPaddockCache",
+      },
     ],
   },
   "migrations": [
@@ -63,6 +79,10 @@
     {
       "tag": "v2",
       "new_sqlite_classes": ["TrackConditionCache"],
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["PremiumPaddockCache"],
     },
   ],
   "hyperdrive": [

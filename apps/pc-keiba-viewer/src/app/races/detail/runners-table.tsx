@@ -5,7 +5,11 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 
 import { cleanText } from "../../../lib/format";
-import { getPreferredJockeyName, isSameJockeyName } from "../../../lib/jockey-name";
+import {
+  getPreferredJockeyName,
+  isSameJockeyName,
+  normalizeJockeyNameForComparison,
+} from "../../../lib/jockey-name";
 import type { Runner } from "../../../lib/race-types";
 import {
   formatCarriedWeight,
@@ -118,10 +122,21 @@ const formatCornerRanks = (runner: Runner): string => {
 
 const isLinkableText = (value: string): boolean => value !== "" && value !== "-";
 
-const isChangedJockey = (storedName: string, realtimeName: string | null | undefined): boolean =>
-  Boolean(realtimeName) &&
-  isLinkableText(storedName) &&
-  !isSameJockeyName(storedName, realtimeName);
+const isChangedJockey = (
+  storedName: string,
+  realtimeName: string | null | undefined,
+  displayName: string,
+): boolean => {
+  if (!realtimeName || !isLinkableText(storedName)) {
+    return false;
+  }
+  if (
+    normalizeJockeyNameForComparison(storedName) === normalizeJockeyNameForComparison(displayName)
+  ) {
+    return false;
+  }
+  return !isSameJockeyName(storedName, realtimeName);
+};
 
 export function RunnersTable({
   decodeHexHorseWeight = false,
@@ -279,11 +294,11 @@ export function RunnersTable({
         data-entry-status={entryStatus || undefined}
         key={`${runner.umaban}-${runner.kettoTorokuBango}`}
       >
-        <td className="runner-number-cell">
-          <span>{horseNumber}</span>
-        </td>
         <td>
           <FrameNumberBadge value={runner.wakuban} />
+        </td>
+        <td className="runner-number-cell">
+          <span>{horseNumber}</span>
         </td>
         <td className="runner-horse-cell">
           {isLinkableText(horseName) && isLinkableText(horseId) ? (
@@ -308,7 +323,7 @@ export function RunnersTable({
           ) : (
             displayJockeyName
           )}
-          {isChangedJockey(jockeyName, realtimeEntry?.jockeyName) ? (
+          {isChangedJockey(jockeyName, realtimeEntry?.jockeyName, displayJockeyName) ? (
             <small className="runner-change-note">元 {jockeyName}</small>
           ) : null}
         </td>
@@ -326,7 +341,9 @@ export function RunnersTable({
         </td>
         <td>
           {isLinkableText(ownerName) ? (
-            <Link href={`/owners/${encodeURIComponent(ownerName)}`}>{ownerName}</Link>
+            <Link className="runner-person-link" href={`/owners/${encodeURIComponent(ownerName)}`}>
+              {ownerName}
+            </Link>
           ) : (
             ownerName
           )}
@@ -355,8 +372,8 @@ export function RunnersTable({
     <div className="runner-table-wrap">
       <table className="runner-table">
         <colgroup>
-          <col className="runner-col-number" />
           <col className="runner-col-frame" />
+          <col className="runner-col-number" />
           <col className="runner-col-horse" />
           <col className="runner-col-sex-age" />
           <col className="runner-col-weight" />
@@ -370,8 +387,8 @@ export function RunnersTable({
         </colgroup>
         <thead>
           <tr>
-            <th>{renderSortButton("umaban")}</th>
             <th className="runner-frame-header">枠</th>
+            <th>{renderSortButton("umaban")}</th>
             <th>馬名</th>
             <th>性齢</th>
             <th>負担</th>

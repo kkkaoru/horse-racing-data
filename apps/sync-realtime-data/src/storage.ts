@@ -7,14 +7,43 @@ import type {
   NarRaceSource,
   OddsData,
   OddsHistoryPoint,
+  OddsTrend,
+  OddsTrendPoint,
   OddsType,
   RaceEntry,
   RaceResult,
   RealtimeRacePayload,
   TrackCondition,
 } from "./types";
+import type {
+  PremiumPaddockBulletin,
+  PremiumRaceLink,
+  PremiumStableComment,
+  PremiumTrainingReview,
+} from "./premium-race";
 
 const D1_BATCH_SIZE = 100;
+
+const ODDS_TREND_LIMITS: Record<OddsType, number> = {
+  "3renpuku": 30,
+  "3rentan": 30,
+  fukusho: 32,
+  tansho: 32,
+  umaren: 30,
+  umatan: 30,
+  wakuren: 18,
+  wide: 30,
+};
+
+const normalizeStoredJockeyName = (value: string | null | undefined): string | null => {
+  if (!value) {
+    return null;
+  }
+  const normalized = value
+    .replace(/[△▲☆★◇◆□■▽▼]/gu, "")
+    .replace(/[\s\p{Separator}\u200B-\u200D\uFEFF]+/gu, "");
+  return normalized === "" ? null : normalized;
+};
 
 interface RaceSourceRow {
   baba_code: string;
@@ -112,6 +141,62 @@ interface TrackConditionSnapshotRow {
   weather: string | null;
 }
 
+interface PremiumRaceLinkRow {
+  entry_url: string;
+  race_key: string;
+  source_race_id: string;
+}
+
+interface PremiumTrainingReviewRow {
+  comment_text: string | null;
+  evaluation_grade: string | null;
+  evaluation_text: string | null;
+  fetched_at: string;
+  horse_name: string | null;
+  horse_number: string;
+  training_date: string;
+}
+
+interface PremiumStableCommentRow {
+  comment_text: string;
+  evaluation_grade: number | null;
+  evaluation_text: string | null;
+  fetched_at: string;
+  frame_number: string | null;
+  horse_name: string | null;
+  horse_number: string;
+}
+
+interface PremiumPaddockBulletinRow {
+  comment_text: string | null;
+  evaluation_text: string | null;
+  fetched_at: string;
+  frame_number: string | null;
+  group_key: "favorite" | "value";
+  horse_name: string | null;
+  horse_number: string;
+}
+
+interface PremiumPaddockFetchStateRow {
+  last_fetch_at: string | null;
+  last_queued_at: string | null;
+  retry_after: string | null;
+  status: string;
+}
+
+interface PremiumRaceDataFetchStateRow {
+  last_fetch_at: string | null;
+  last_queued_at: string | null;
+  retry_after: string | null;
+  status: string;
+}
+
+export interface PremiumRacePayload {
+  paddockBulletins: (PremiumPaddockBulletin & { fetchedAt: string })[];
+  stableComments: (PremiumStableComment & { fetchedAt: string })[];
+  trainingReviews: (PremiumTrainingReview & { fetchedAt: string })[];
+}
+
 export interface LocalRaceRow {
   hasso_jikoku: string | null;
   kaisai_kai?: string | null;
@@ -138,6 +223,10 @@ export interface JraVenueTrackConditionSchedule {
   lastFetchAt: string | null;
   lastQueuedAt: string | null;
   lastRaceStartAtJst: string;
+}
+
+export interface PremiumRaceDataFetchCandidate {
+  raceKey: string;
 }
 
 const parseOddsLinks = (value: string): Partial<Record<OddsType, string>> => {
@@ -811,7 +900,7 @@ export const insertRaceEntrySnapshot = async (
           fetchedAt,
           entry.horseNumber,
           entry.horseName,
-          entry.jockeyName,
+          normalizeStoredJockeyName(entry.jockeyName),
           entry.status,
         ),
     ),
@@ -870,6 +959,464 @@ export const logFetch = async (
     .run();
 };
 
+export const upsertPremiumRaceLink = async (
+  db: D1Database,
+  raceKey: string,
+  link: PremiumRaceLink,
+): Promise<void> => {
+  const now = toJstIsoString();
+  await db
+    .prepare(
+      `
+        insert into premium_race_links (
+          race_key, source_race_id, entry_url, discovered_at, updated_at
+        )
+        values (?, ?, ?, ?, ?)
+        on conflict(race_key) do update set
+          source_race_id = excluded.source_race_id,
+          entry_url = excluded.entry_url,
+          updated_at = excluded.updated_at
+      `,
+    )
+    .bind(raceKey, link.sourceRaceId, link.entryUrl, now, now)
+    .run();
+};
+
+export const getPremiumRaceLink = async (
+  db: D1Database,
+  raceKey: string,
+): Promise<PremiumRaceLink | null> => {
+  const row = await db
+    .prepare(
+      "select race_key, source_race_id, entry_url from premium_race_links where race_key = ?",
+    )
+    .bind(raceKey)
+    .first<PremiumRaceLinkRow>();
+  return row ? { entryUrl: row.entry_url, sourceRaceId: row.source_race_id } : null;
+};
+
+export const replacePremiumRaceData = async (
+  db: D1Database,
+  params: {
+    fetchedAt: string;
+    link: PremiumRaceLink;
+    paddockBulletins?: PremiumPaddockBulletin[];
+    raceKey: string;
+    stableComments?: PremiumStableComment[];
+    trainingReviews?: PremiumTrainingReview[];
+  },
+): Promise<void> => {
+  const now = toJstIsoString();
+  const statements: D1PreparedStatement[] = [
+    ...(params.trainingReviews
+      ? [db.prepare("delete from premium_training_reviews where race_key = ?").bind(params.raceKey)]
+      : []),
+    ...(params.stableComments
+      ? [db.prepare("delete from premium_stable_comments where race_key = ?").bind(params.raceKey)]
+      : []),
+    ...(params.paddockBulletins
+      ? [
+          db
+            .prepare("delete from premium_paddock_bulletins where race_key = ?")
+            .bind(params.raceKey),
+        ]
+      : []),
+    ...(params.trainingReviews ?? []).map((row) =>
+      db
+        .prepare(
+          `
+            insert into premium_training_reviews (
+              race_key, source_race_id, fetched_at, horse_number, horse_name,
+              training_date, evaluation_text, evaluation_grade, comment_text, created_at
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(race_key, horse_number, training_date) do update set
+              source_race_id = excluded.source_race_id,
+              fetched_at = excluded.fetched_at,
+              horse_name = excluded.horse_name,
+              evaluation_text = excluded.evaluation_text,
+              evaluation_grade = excluded.evaluation_grade,
+              comment_text = excluded.comment_text,
+              created_at = excluded.created_at
+          `,
+        )
+        .bind(
+          params.raceKey,
+          params.link.sourceRaceId,
+          params.fetchedAt,
+          row.horseNumber,
+          row.horseName,
+          row.trainingDate,
+          row.evaluationText,
+          row.evaluationGrade,
+          row.commentText,
+          now,
+        ),
+    ),
+    ...(params.stableComments ?? []).map((row) =>
+      db
+        .prepare(
+          `
+            insert into premium_stable_comments (
+              race_key, source_race_id, fetched_at, frame_number, horse_number,
+              horse_name, comment_text, evaluation_text, evaluation_grade, created_at
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(race_key, horse_number) do update set
+              source_race_id = excluded.source_race_id,
+              fetched_at = excluded.fetched_at,
+              frame_number = excluded.frame_number,
+              horse_name = excluded.horse_name,
+              comment_text = excluded.comment_text,
+              evaluation_text = excluded.evaluation_text,
+              evaluation_grade = excluded.evaluation_grade,
+              created_at = excluded.created_at
+          `,
+        )
+        .bind(
+          params.raceKey,
+          params.link.sourceRaceId,
+          params.fetchedAt,
+          row.frameNumber,
+          row.horseNumber,
+          row.horseName,
+          row.commentText,
+          row.evaluationText,
+          row.evaluationGrade,
+          now,
+        ),
+    ),
+    ...(params.paddockBulletins ?? []).map((row) =>
+      db
+        .prepare(
+          `
+            insert into premium_paddock_bulletins (
+              race_key, source_race_id, fetched_at, group_key, frame_number,
+              horse_number, horse_name, evaluation_text, comment_text, created_at
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(race_key, group_key, horse_number) do update set
+              source_race_id = excluded.source_race_id,
+              fetched_at = excluded.fetched_at,
+              frame_number = excluded.frame_number,
+              horse_name = excluded.horse_name,
+              evaluation_text = excluded.evaluation_text,
+              comment_text = excluded.comment_text,
+              created_at = excluded.created_at
+          `,
+        )
+        .bind(
+          params.raceKey,
+          params.link.sourceRaceId,
+          params.fetchedAt,
+          row.groupKey,
+          row.frameNumber,
+          row.horseNumber,
+          row.horseName,
+          row.evaluationText,
+          row.commentText,
+          now,
+        ),
+    ),
+  ];
+  await runD1Batches(db, statements);
+};
+
+export const getPremiumRacePayload = async (
+  db: D1Database,
+  raceKey: string,
+): Promise<PremiumRacePayload> => {
+  const [trainingRows, commentRows, paddockRows] = await Promise.all([
+    db
+      .prepare(
+        `
+          select *
+          from premium_training_reviews
+          where race_key = ?
+          order by cast(horse_number as integer), training_date desc
+        `,
+      )
+      .bind(raceKey)
+      .all<PremiumTrainingReviewRow>(),
+    db
+      .prepare(
+        `
+          select *
+          from premium_stable_comments
+          where race_key = ?
+          order by coalesce(evaluation_grade, 99), cast(horse_number as integer)
+        `,
+      )
+      .bind(raceKey)
+      .all<PremiumStableCommentRow>(),
+    db
+      .prepare(
+        `
+          select *
+          from premium_paddock_bulletins
+          where race_key = ?
+          order by group_key, cast(horse_number as integer)
+        `,
+      )
+      .bind(raceKey)
+      .all<PremiumPaddockBulletinRow>(),
+  ]);
+  return {
+    paddockBulletins: paddockRows.results.map((row) => ({
+      commentText: row.comment_text,
+      evaluationText: row.evaluation_text,
+      fetchedAt: row.fetched_at,
+      frameNumber: row.frame_number,
+      groupKey: row.group_key,
+      horseName: row.horse_name,
+      horseNumber: row.horse_number,
+    })),
+    stableComments: commentRows.results.map((row) => ({
+      commentText: row.comment_text,
+      evaluationGrade: row.evaluation_grade,
+      evaluationText: row.evaluation_text,
+      fetchedAt: row.fetched_at,
+      frameNumber: row.frame_number,
+      horseName: row.horse_name,
+      horseNumber: row.horse_number,
+    })),
+    trainingReviews: trainingRows.results.map((row) => ({
+      commentText: row.comment_text,
+      evaluationGrade: row.evaluation_grade,
+      evaluationText: row.evaluation_text,
+      fetchedAt: row.fetched_at,
+      horseName: row.horse_name,
+      horseNumber: row.horse_number,
+      trainingDate: row.training_date,
+    })),
+  };
+};
+
+export const listPremiumRaceDataFetchCandidatesByDate = async (
+  db: D1Database,
+  targetDate: string,
+  now: string,
+): Promise<PremiumRaceDataFetchCandidate[]> => {
+  const rows = await db
+    .prepare(
+      `
+        select rs.race_key
+        from realtime_race_sources rs
+        inner join premium_race_links link on link.race_key = rs.race_key
+        left join premium_race_data_fetch_state state on state.race_key = rs.race_key
+        where rs.source = 'jra'
+          and rs.kaisai_nen = ?
+          and rs.kaisai_tsukihi = ?
+          and (
+            state.race_key is null
+            or state.status in ('idle', 'failed')
+            or (state.status = 'pending' and (state.retry_after is null or state.retry_after <= ?))
+          )
+          and (
+            state.last_queued_at is null
+            or datetime(state.last_queued_at) <= datetime(?, '-20 minutes')
+          )
+        order by rs.keibajo_code, rs.race_bango
+      `,
+    )
+    .bind(targetDate.slice(0, 4), targetDate.slice(4, 8), now, now)
+    .all<{ race_key: string }>();
+  return rows.results.map((row) => ({ raceKey: row.race_key }));
+};
+
+export const markPremiumRaceDataQueued = async (
+  db: D1Database,
+  raceKeys: string[],
+  queuedAt: string,
+): Promise<void> => {
+  if (raceKeys.length === 0) {
+    return;
+  }
+  await runD1Batches(
+    db,
+    raceKeys.map((raceKey) =>
+      db
+        .prepare(
+          `
+            insert into premium_race_data_fetch_state (
+              race_key, status, message, last_queued_at, updated_at
+            )
+            values (?, 'queued', null, ?, ?)
+            on conflict(race_key) do update set
+              status = 'queued',
+              message = null,
+              last_queued_at = excluded.last_queued_at,
+              updated_at = excluded.updated_at
+          `,
+        )
+        .bind(raceKey, queuedAt, queuedAt),
+    ),
+  );
+};
+
+export const getPremiumRaceDataFetchState = async (
+  db: D1Database,
+  raceKey: string,
+): Promise<{
+  lastFetchAt: string | null;
+  lastQueuedAt: string | null;
+  retryAfter: string | null;
+  status: string;
+} | null> => {
+  const row = await db
+    .prepare(
+      `
+        select status, last_queued_at, last_fetch_at, retry_after
+        from premium_race_data_fetch_state
+        where race_key = ?
+      `,
+    )
+    .bind(raceKey)
+    .first<PremiumRaceDataFetchStateRow>();
+  return row
+    ? {
+        lastFetchAt: row.last_fetch_at,
+        lastQueuedAt: row.last_queued_at,
+        retryAfter: row.retry_after,
+        status: row.status,
+      }
+    : null;
+};
+
+export const updatePremiumRaceDataFetchState = async (
+  db: D1Database,
+  params: {
+    fetchedAt?: string | null;
+    message?: string | null;
+    raceKey: string;
+    retryAfter?: string | null;
+    status: string;
+  },
+): Promise<void> => {
+  const now = toJstIsoString();
+  await db
+    .prepare(
+      `
+        insert into premium_race_data_fetch_state (
+          race_key, status, message, last_fetch_at, retry_after, updated_at
+        )
+        values (?, ?, ?, ?, ?, ?)
+        on conflict(race_key) do update set
+          status = excluded.status,
+          message = excluded.message,
+          last_fetch_at = coalesce(excluded.last_fetch_at, premium_race_data_fetch_state.last_fetch_at),
+          retry_after = excluded.retry_after,
+          updated_at = excluded.updated_at
+      `,
+    )
+    .bind(
+      params.raceKey,
+      params.status,
+      params.message ?? null,
+      params.fetchedAt ?? null,
+      params.retryAfter ?? null,
+      now,
+    )
+    .run();
+};
+
+export const markPremiumPaddockQueued = async (
+  db: D1Database,
+  raceKeys: string[],
+  queuedAt: string,
+): Promise<void> => {
+  if (raceKeys.length === 0) {
+    return;
+  }
+  await runD1Batches(
+    db,
+    raceKeys.map((raceKey) =>
+      db
+        .prepare(
+          `
+            insert into premium_paddock_fetch_state (
+              race_key, status, last_queued_at, updated_at
+            )
+            values (?, 'queued', ?, ?)
+            on conflict(race_key) do update set
+              status = 'queued',
+              last_queued_at = excluded.last_queued_at,
+              updated_at = excluded.updated_at
+          `,
+        )
+        .bind(raceKey, queuedAt, queuedAt),
+    ),
+  );
+};
+
+export const getPremiumPaddockFetchState = async (
+  db: D1Database,
+  raceKey: string,
+): Promise<{
+  lastFetchAt: string | null;
+  lastQueuedAt: string | null;
+  retryAfter: string | null;
+  status: string;
+} | null> => {
+  const row = await db
+    .prepare(
+      `
+        select status, last_queued_at, last_fetch_at, retry_after
+        from premium_paddock_fetch_state
+        where race_key = ?
+      `,
+    )
+    .bind(raceKey)
+    .first<PremiumPaddockFetchStateRow>();
+  return row
+    ? {
+        lastFetchAt: row.last_fetch_at,
+        lastQueuedAt: row.last_queued_at,
+        retryAfter: row.retry_after,
+        status: row.status,
+      }
+    : null;
+};
+
+export const updatePremiumPaddockFetchState = async (
+  db: D1Database,
+  params: {
+    fetchedAt?: string | null;
+    message?: string | null;
+    raceKey: string;
+    retryAfter?: string | null;
+    status: string;
+  },
+): Promise<void> => {
+  const now = toJstIsoString();
+  await db
+    .prepare(
+      `
+        insert into premium_paddock_fetch_state (
+          race_key, status, message, last_fetch_at, retry_after, updated_at
+        )
+        values (?, ?, ?, ?, ?, ?)
+        on conflict(race_key) do update set
+          status = excluded.status,
+          message = excluded.message,
+          last_fetch_at = excluded.last_fetch_at,
+          retry_after = excluded.retry_after,
+          last_queued_at = null,
+          fetch_lock_until = null,
+          updated_at = excluded.updated_at
+      `,
+    )
+    .bind(
+      params.raceKey,
+      params.status,
+      params.message ?? null,
+      params.fetchedAt ?? null,
+      params.retryAfter ?? null,
+      now,
+    )
+    .run();
+};
+
 export const listTanshoHistory = async (
   db: D1Database,
   raceKey: string,
@@ -892,6 +1439,60 @@ export const listTanshoHistory = async (
     odds: row.odds,
     popularity: row.rank,
   }));
+};
+
+export const listOddsHistoryByType = async (
+  db: D1Database,
+  raceKey: string,
+): Promise<Partial<Record<OddsType, OddsTrendPoint[]>>> => {
+  const result = await db
+    .prepare(
+      `
+        select odds_type, fetched_at, combination, odds, rank
+        from odds_snapshots
+        where race_key = ?
+        order by odds_type asc, fetched_at asc, coalesce(rank, 999999) asc, combination asc
+      `,
+    )
+    .bind(raceKey)
+    .all<OddsSnapshotRow>();
+  const rowsByType = new Map<OddsType, OddsSnapshotRow[]>();
+  for (const row of result.results) {
+    const oddsType = row.odds_type as OddsType | undefined;
+    if (!oddsType) {
+      continue;
+    }
+    rowsByType.set(oddsType, [...(rowsByType.get(oddsType) ?? []), row]);
+  }
+
+  const historyByType: Partial<Record<OddsType, OddsTrendPoint[]>> = {};
+  for (const [oddsType, rows] of rowsByType) {
+    const latestFetchedAt = rows.at(-1)?.fetched_at;
+    if (!latestFetchedAt) {
+      continue;
+    }
+    const selectedCombinations = new Set(
+      rows
+        .filter((row) => row.fetched_at === latestFetchedAt)
+        .toSorted(
+          (left, right) =>
+            (left.rank ?? Number.MAX_SAFE_INTEGER) - (right.rank ?? Number.MAX_SAFE_INTEGER) ||
+            (left.odds ?? Number.MAX_SAFE_INTEGER) - (right.odds ?? Number.MAX_SAFE_INTEGER) ||
+            left.combination.localeCompare(right.combination, "ja-JP", { numeric: true }),
+        )
+        .slice(0, ODDS_TREND_LIMITS[oddsType])
+        .map((row) => row.combination),
+    );
+    historyByType[oddsType] = rows
+      .filter((row) => selectedCombinations.has(row.combination))
+      .map((row) => ({
+        combination: row.combination,
+        fetchedAt: row.fetched_at,
+        odds: row.odds,
+        rank: row.rank,
+      }));
+  }
+  return historyByType;
 };
 
 export const getLatestOddsFromD1 = async (
@@ -949,6 +1550,29 @@ export const toHorseTrends = (history: OddsHistoryPoint[]): HorseOddsTrend[] => 
     byHorse.set(point.horseNumber, [...(byHorse.get(point.horseNumber) ?? []), point]);
   }
   return Array.from(byHorse.entries()).map(([horseNumber, points]) => ({ horseNumber, points }));
+};
+
+export const toOddsTrendsByType = (
+  historyByType: Partial<Record<OddsType, OddsTrendPoint[]>>,
+): Partial<Record<OddsType, OddsTrend[]>> => {
+  const result: Partial<Record<OddsType, OddsTrend[]>> = {};
+  for (const [oddsType, history] of Object.entries(historyByType) as [
+    OddsType,
+    OddsTrendPoint[],
+  ][]) {
+    const byCombination = new Map<string, OddsTrendPoint[]>();
+    for (const point of history) {
+      byCombination.set(point.combination, [
+        ...(byCombination.get(point.combination) ?? []),
+        point,
+      ]);
+    }
+    result[oddsType] = Array.from(byCombination.entries()).map(([combination, points]) => ({
+      combination,
+      points,
+    }));
+  }
+  return result;
 };
 
 export const getLatestHorseWeights = async (
@@ -1275,6 +1899,7 @@ export const buildRealtimePayload = async (
   trackCondition: TrackCondition | null = null,
 ): Promise<RealtimeRacePayload> => {
   const history = await listTanshoHistory(db, raceKey);
+  const historyByType = await listOddsHistoryByType(db, raceKey);
   return {
     raceEntries: await getLatestRaceEntries(db, raceKey),
     horseWeights: await getLatestHorseWeights(db, raceKey),
@@ -1282,8 +1907,10 @@ export const buildRealtimePayload = async (
       ? {
           fetchedAt: odds.fetchedAt,
           history,
+          historyByType,
           horseTrends: toHorseTrends(history),
           latest: odds.latest,
+          trendsByType: toOddsTrendsByType(historyByType),
         }
       : null,
     raceResults: await getLatestRaceResults(db, raceKey),

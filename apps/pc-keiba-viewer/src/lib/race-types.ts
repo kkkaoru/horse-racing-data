@@ -155,6 +155,29 @@ export interface Training extends Record<string, unknown> {
   timeGokei2f: string | null;
   lapTime2f: string | null;
   lapTime1f: string | null;
+  premiumCommentText?: string | null;
+  premiumEvaluationGrade?: string | null;
+  premiumEvaluationText?: string | null;
+}
+
+export interface StableComment extends Record<string, unknown> {
+  commentText: string;
+  evaluationGrade: number | null;
+  evaluationText: string | null;
+  fetchedAt: string;
+  frameNumber: string | null;
+  horseName: string | null;
+  horseNumber: string;
+}
+
+export interface PremiumPaddockBulletin extends Record<string, unknown> {
+  commentText: string | null;
+  evaluationText: string | null;
+  fetchedAt: string;
+  frameNumber: string | null;
+  groupKey: "favorite" | "value";
+  horseName: string | null;
+  horseNumber: string;
 }
 
 export interface AbilityTest extends Record<string, unknown> {
