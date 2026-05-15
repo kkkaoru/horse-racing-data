@@ -22,6 +22,7 @@ import {
   buildTrainerUpdateSql,
 } from "./build-jockey-trainer-sql";
 import { buildPedigreeUpdateSql } from "./build-pedigree-sql";
+import { buildRaceContextUpdateSql } from "./build-race-context-sql";
 
 const DEFAULT_FEATURE_SCHEMA_VERSION = "v1";
 const DEFAULT_FROM_DATE = "20160101";
@@ -161,6 +162,12 @@ const applyPedigreeStage = async (pool: Pool, options: BuildOptions): Promise<nu
   return result.rowCount ?? 0;
 };
 
+const applyRaceContextStage = async (pool: Pool, options: BuildOptions): Promise<number> => {
+  const sql = buildRaceContextUpdateSql(options.category);
+  const result = await pool.query(sql, [options.fromDate, options.toDate]);
+  return result.rowCount ?? 0;
+};
+
 const logSummary = (options: BuildOptions, stageCounts: Record<string, number>): void => {
   const stages = Object.entries(stageCounts)
     .map(([stage, count]) => `${stage}=${count}`)
@@ -182,6 +189,7 @@ const main = async (): Promise<void> => {
         horse_career: 0,
         jockey: 0,
         pedigree: 0,
+        race_context: 0,
         skeleton: 0,
         trainer: 0,
       });
@@ -192,10 +200,12 @@ const main = async (): Promise<void> => {
     const jockeyCount = await applyJockeyStage(pool, options);
     const trainerCount = await applyTrainerStage(pool, options);
     const pedigreeCount = await applyPedigreeStage(pool, options);
+    const raceContextCount = await applyRaceContextStage(pool, options);
     logSummary(options, {
       horse_career: horseCareerCount,
       jockey: jockeyCount,
       pedigree: pedigreeCount,
+      race_context: raceContextCount,
       skeleton: skeletonCount,
       trainer: trainerCount,
     });
