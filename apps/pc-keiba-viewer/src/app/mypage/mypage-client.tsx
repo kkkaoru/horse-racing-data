@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
+import { SOURCE_LABELS, type RaceSource } from "../../lib/codes";
 import {
   buildFavoritesSearchParams,
   dedupeFavorites,
@@ -13,7 +14,6 @@ import {
   type FavoriteKind,
 } from "../../lib/favorites";
 import { getFavorites, saveFavorites } from "../../lib/favorites-indexeddb";
-import { SOURCE_LABELS, type RaceSource } from "../../lib/codes";
 import {
   cleanText,
   formatDate,
@@ -37,9 +37,9 @@ interface FavoriteRaceEntry {
 }
 
 interface FavoriteRaceGroup extends Pick<
-    EntityRaceResult,
-    | "hassoJikoku"
-    | "isUpcoming"
+  EntityRaceResult,
+  | "hassoJikoku"
+  | "isUpcoming"
   | "kaisaiNen"
   | "kaisaiTsukihi"
   | "keibajoCode"
@@ -73,6 +73,14 @@ const raceDetailPath = (
   row: Pick<EntityRaceResult, "kaisaiNen" | "kaisaiTsukihi" | "keibajoCode" | "raceBango">,
 ): string =>
   `/races/${row.kaisaiNen}/${row.kaisaiTsukihi.slice(0, 2)}/${row.kaisaiTsukihi.slice(2, 4)}/${row.keibajoCode}/${row.raceBango}`;
+
+const raceKey = (
+  row: Pick<
+    FavoriteRaceGroup,
+    "kaisaiNen" | "kaisaiTsukihi" | "keibajoCode" | "raceBango" | "source"
+  >,
+): string =>
+  [row.source, row.kaisaiNen, row.kaisaiTsukihi, row.keibajoCode, row.raceBango].join(":");
 
 const favoriteKindClass = (kind: FavoriteKind): string => `favorite-kind-${kind}`;
 const favoriteItemKey = (item: Pick<FavoriteItem, "id" | "kind">): string =>
@@ -129,6 +137,80 @@ const parseRaceStartMinutes = (value: string | null): number | null => {
   const hours = Number(normalized.slice(0, 2));
   const minutes = Number(normalized.slice(2, 4));
   return hours <= 23 && minutes <= 59 ? hours * 60 + minutes : null;
+};
+
+const getRaceStartAt = (
+  row: Pick<FavoriteRaceGroup, "hassoJikoku" | "kaisaiNen" | "kaisaiTsukihi">,
+): Date | null => {
+  const minutes = parseRaceStartMinutes(row.hassoJikoku);
+  if (minutes === null) {
+    return null;
+  }
+  const month = row.kaisaiTsukihi.slice(0, 2);
+  const day = row.kaisaiTsukihi.slice(2, 4);
+  return new Date(
+    Number(row.kaisaiNen),
+    Number(month) - 1,
+    Number(day),
+    Math.floor(minutes / 60),
+    minutes % 60,
+  );
+};
+
+const formatCountdown = (
+  row: FavoriteRaceGroup,
+  now: number,
+  includeSeconds: boolean,
+): string | null => {
+  if (!row.isUpcoming) {
+    return null;
+  }
+  const startAt = getRaceStartAt(row);
+  if (!startAt) {
+    return null;
+  }
+  const remainingSeconds = Math.max(0, Math.floor((startAt.getTime() - now) / 1000));
+  const hours = Math.floor(remainingSeconds / 3600);
+  const minutes = Math.floor((remainingSeconds % 3600) / 60);
+  const seconds = remainingSeconds % 60;
+  if (includeSeconds) {
+    return hours > 0
+      ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+      : `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+  if (hours > 0) {
+    return `${hours}時間${String(minutes).padStart(2, "0")}分`;
+  }
+  return `${minutes}分`;
+};
+
+const countdownIcon = (row: FavoriteRaceGroup, now: number): string => {
+  const startAt = getRaceStartAt(row);
+  if (!startAt) {
+    return "⏱️";
+  }
+  const remainingMinutes = Math.max(0, Math.floor((startAt.getTime() - now) / 60000));
+  if (remainingMinutes <= 5) {
+    return "🔥";
+  }
+  if (remainingMinutes <= 30) {
+    return "⏱️";
+  }
+  return "🕒";
+};
+
+const isRaceStarted = (row: FavoriteRaceGroup, now: number): boolean => {
+  const startAt = getRaceStartAt(row);
+  return Boolean(startAt && startAt.getTime() <= now);
+};
+
+const isRaceToday = (row: FavoriteRaceGroup, now: number): boolean => {
+  const date = new Date(now);
+  return (
+    row.kaisaiNen === String(date.getFullYear()) &&
+    row.kaisaiTsukihi ===
+      `${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}`
+  );
 };
 
 const parseFilterTimeMinutes = (value: string): number | null => {
@@ -257,15 +339,19 @@ const filterRaceRows = (rows: FavoriteRaceGroup[], filters: MyPageFilters): Favo
 };
 
 function FavoriteRaceList({
+  closestCountdownRaceKey,
   emptyText,
   filters,
   loading,
+  now,
   rows,
   title,
 }: {
+  closestCountdownRaceKey?: string;
   emptyText: string;
   filters: MyPageFilters;
   loading: boolean;
+  now: number;
   rows: FavoriteRaceGroup[];
   title: string;
 }) {
@@ -283,9 +369,22 @@ function FavoriteRaceList({
         <div className="mypage-race-list" aria-label={`${title}を読み込み中`}>
           {Array.from({ length: 4 }, (_value, index) => (
             <div className="mypage-race-row mypage-race-skeleton" key={index}>
-              <span className="skeleton-line short" />
-              <span className="skeleton-line long" />
-              <span className="skeleton-line medium" />
+              <span className="mypage-race-date">
+                <span className="skeleton-line mypage-race-skeleton-date" />
+                <span className="skeleton-line mypage-race-skeleton-countdown" />
+              </span>
+              <span className="mypage-race-main">
+                <span className="skeleton-line mypage-race-skeleton-title" />
+              </span>
+              <span className="mypage-race-meta">
+                <span className="mypage-race-condition">
+                  <span className="skeleton-line mypage-race-skeleton-condition" />
+                </span>
+                <span className="mypage-race-favorites">
+                  <span className="skeleton-line mypage-race-skeleton-chip" />
+                  <span className="skeleton-line mypage-race-skeleton-chip wide" />
+                </span>
+              </span>
             </div>
           ))}
         </div>
@@ -293,47 +392,57 @@ function FavoriteRaceList({
         <p className="empty-state">{emptyText}</p>
       ) : (
         <div className="mypage-race-list">
-          {filteredRows.map((row) => (
-            <Link
-              className="mypage-race-row"
-              href={raceDetailPath(row)}
-              key={[
-                row.source,
-                row.kaisaiNen,
-                row.kaisaiTsukihi,
-                row.keibajoCode,
-                row.raceBango,
-              ].join(":")}
-            >
-              <span className="mypage-race-date">
-                {formatDate(row.kaisaiNen, row.kaisaiTsukihi)}
-              </span>
-              <span className="mypage-race-main">
-                <strong>
-                  {formatKeibajo(row.keibajoCode)} {formatRaceNumber(row.raceBango)}{" "}
-                  {cleanText(row.raceName, "一般競走")}
-                </strong>
-              </span>
-              <span className="mypage-race-meta">
-                <span className="mypage-race-condition">
-                  {formatTime(row.hassoJikoku)} / {SOURCE_LABELS[row.source]} /{" "}
-                  {formatTrack(row.trackCode)} {formatDistance(row.kyori)} /{" "}
-                  {row.isUpcoming ? "発走予定" : "結果確定済み"}
-                </span>
-                <span className="mypage-race-favorites">
-                  {row.entries.map((entry) => (
-                    <span
-                      className={`mypage-race-favorite-chip ${favoriteKindClass(entry.favoriteKind)}`}
-                      key={`${entry.favoriteKind}:${entry.favoriteId}:${entry.favoriteLabel}`}
-                    >
-                      <small>{FAVORITE_KIND_LABELS[entry.favoriteKind]}</small>
-                      {entry.favoriteLabel}
+          {filteredRows.map((row) => {
+            const countdown = formatCountdown(row, now, raceKey(row) === closestCountdownRaceKey);
+            const statusLabel =
+              title === "発走済み" ? "発走済み" : row.isUpcoming ? "発走予定" : "結果確定済み";
+            return (
+              <Link
+                className="mypage-race-row"
+                href={raceDetailPath(row)}
+                key={[
+                  row.source,
+                  row.kaisaiNen,
+                  row.kaisaiTsukihi,
+                  row.keibajoCode,
+                  row.raceBango,
+                ].join(":")}
+              >
+                <span className="mypage-race-date">
+                  <span>{formatDate(row.kaisaiNen, row.kaisaiTsukihi)}</span>
+                  {countdown ? (
+                    <span className="mypage-race-countdown">
+                      <span aria-hidden="true">{countdownIcon(row, now)}</span>
+                      {countdown}
                     </span>
-                  ))}
+                  ) : null}
                 </span>
-              </span>
-            </Link>
-          ))}
+                <span className="mypage-race-main">
+                  <strong>
+                    {formatKeibajo(row.keibajoCode)} {formatRaceNumber(row.raceBango)}{" "}
+                    {cleanText(row.raceName, "一般競走")}
+                  </strong>
+                </span>
+                <span className="mypage-race-meta">
+                  <span className="mypage-race-condition">
+                    {formatTime(row.hassoJikoku)} / {SOURCE_LABELS[row.source]} /{" "}
+                    {formatTrack(row.trackCode)} {formatDistance(row.kyori)} / {statusLabel}
+                  </span>
+                  <span className="mypage-race-favorites">
+                    {row.entries.map((entry) => (
+                      <span
+                        className={`mypage-race-favorite-chip ${favoriteKindClass(entry.favoriteKind)}`}
+                        key={`${entry.favoriteKind}:${entry.favoriteId}:${entry.favoriteLabel}`}
+                      >
+                        <small>{FAVORITE_KIND_LABELS[entry.favoriteKind]}</small>
+                        <span className="mypage-race-favorite-name">{entry.favoriteLabel}</span>
+                      </span>
+                    ))}
+                  </span>
+                </span>
+              </Link>
+            );
+          })}
         </div>
       )}
     </section>
@@ -344,8 +453,10 @@ export function MyPageClient({ initialFavorites }: { initialFavorites: FavoriteI
   const [favorites, setFavorites] = useState<FavoriteItem[]>(initialFavorites);
   const [payload, setPayload] = useState<FavoritesPayload | null>(null);
   const [loading, setLoading] = useState(true);
+  const [now, setNow] = useState(() => Date.now());
   const [shareStatus, setShareStatus] = useState("共有URLをコピー");
   const [selectedFavoriteKeys, setSelectedFavoriteKeys] = useState<string[]>([]);
+  const [hidePastScheduledRaces, setHidePastScheduledRaces] = useState(false);
   const [filterKind, setFilterKind] = useState<FavoriteKind | "all">("all");
   const [source, setSource] = useState<SourceFilter>("all");
   const [venue, setVenue] = useState("all");
@@ -373,6 +484,15 @@ export function MyPageClient({ initialFavorites }: { initialFavorites: FavoriteI
     void load();
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+    return () => {
+      window.clearInterval(timer);
     };
   }, []);
 
@@ -410,6 +530,49 @@ export function MyPageClient({ initialFavorites }: { initialFavorites: FavoriteI
       venue,
     ],
   );
+  const scheduledUpcomingRows = useMemo(
+    () => (payload?.upcoming ?? []).filter((row) => !isRaceStarted(row, now)),
+    [now, payload],
+  );
+  const startedFromUpcomingRows = useMemo(
+    () => (payload?.upcoming ?? []).filter((row) => isRaceStarted(row, now)),
+    [now, payload],
+  );
+  const todayRecentRows = useMemo(
+    () => (payload?.recent ?? []).filter((row) => isRaceToday(row, now)),
+    [now, payload],
+  );
+  const recentRows = useMemo(
+    () => (payload?.recent ?? []).filter((row) => !isRaceToday(row, now)),
+    [now, payload],
+  );
+  const startedRows = useMemo(
+    () =>
+      Array.from(
+        new Map(
+          [...(hidePastScheduledRaces ? [] : startedFromUpcomingRows), ...todayRecentRows].map(
+            (row) => [raceKey(row), row],
+          ),
+        ).values(),
+      ),
+    [hidePastScheduledRaces, startedFromUpcomingRows, todayRecentRows],
+  );
+  const closestCountdownRaceKey = useMemo(() => {
+    let closest: FavoriteRaceGroup | null = null;
+    let closestStart = Number.POSITIVE_INFINITY;
+    for (const row of scheduledUpcomingRows) {
+      const startAt = getRaceStartAt(row);
+      if (!startAt) {
+        continue;
+      }
+      const startTimeValue = startAt.getTime();
+      if (startTimeValue >= now && startTimeValue < closestStart) {
+        closest = row;
+        closestStart = startTimeValue;
+      }
+    }
+    return closest ? raceKey(closest) : undefined;
+  }, [now, scheduledUpcomingRows]);
 
   useEffect(() => {
     const nextUrl = `${window.location.pathname}${shareParams.toString() ? `?${shareParams}` : ""}`;
@@ -423,10 +586,13 @@ export function MyPageClient({ initialFavorites }: { initialFavorites: FavoriteI
     let cancelled = false;
     const load = async () => {
       setLoading(true);
-      const query = buildFavoritesSearchParams(favorites).toString();
-      const response = await fetch(`/api/mypage/favorites${query ? `?${query}` : ""}`, {
-        cache: "no-store",
-      });
+      const favoriteQuery = buildFavoritesSearchParams(favorites).toString();
+      const response = await fetch(
+        `/api/mypage/favorites${favoriteQuery ? `?${favoriteQuery}` : ""}`,
+        {
+          cache: "no-store",
+        },
+      );
       const value: unknown = await response.json();
       if (!cancelled) {
         setPayload(isFavoritesPayload(value) ? value : { favorites: [], recent: [], upcoming: [] });
@@ -503,12 +669,16 @@ export function MyPageClient({ initialFavorites }: { initialFavorites: FavoriteI
             {favorites.map((item) => (
               <button
                 type="button"
+                className={favoriteKindClass(item.kind)}
                 key={`${item.kind}:${item.id}`}
+                aria-label={`${FAVORITE_KIND_LABELS[item.kind]} ${item.label} を解除`}
                 onClick={() => removeFavorite(item)}
               >
-                <span>{FAVORITE_KIND_LABELS[item.kind]}</span>
-                <strong>{item.label}</strong>
-                <small>解除</small>
+                <span className="favorite-kind-label">{FAVORITE_KIND_LABELS[item.kind]}</span>
+                <strong className="favorite-name">{item.label}</strong>
+                <small className="favorite-remove-mark" aria-hidden="true">
+                  ×
+                </small>
               </button>
             ))}
           </div>
@@ -533,20 +703,29 @@ export function MyPageClient({ initialFavorites }: { initialFavorites: FavoriteI
               const active = selectedFavoriteKeys.includes(key);
               return (
                 <button
-                  className={active ? "active" : undefined}
+                  className={`${favoriteKindClass(item.kind)}${active ? " active" : ""}`}
                   key={key}
                   type="button"
                   aria-pressed={active}
                   onClick={() => toggleFavoriteFilter(item)}
                 >
                   <span>{FAVORITE_KIND_LABELS[item.kind]}</span>
-                  {item.label}
+                  <strong>{item.label}</strong>
                 </button>
               );
             })}
           </div>
         )}
       </section>
+
+      <label className="mypage-hide-past-toggle">
+        <input
+          type="checkbox"
+          checked={hidePastScheduledRaces}
+          onChange={(event) => setHidePastScheduledRaces(event.currentTarget.checked)}
+        />
+        <span>現在日時より古い発走予定レースを除外</span>
+      </label>
 
       <details className="mypage-filter-details">
         <summary>詳細な絞り込み</summary>
@@ -667,17 +846,28 @@ export function MyPageClient({ initialFavorites }: { initialFavorites: FavoriteI
         </section>
       </details>
       <FavoriteRaceList
+        closestCountdownRaceKey={closestCountdownRaceKey}
         emptyText="発走予定のレースは見つかりませんでした。"
         filters={filters}
         loading={loading}
-        rows={payload?.upcoming ?? []}
+        now={now}
+        rows={scheduledUpcomingRows}
         title="発走予定"
+      />
+      <FavoriteRaceList
+        emptyText="発走済みのレースは見つかりませんでした。"
+        filters={filters}
+        loading={loading}
+        now={now}
+        rows={startedRows}
+        title="発走済み"
       />
       <FavoriteRaceList
         emptyText="直近のレースは見つかりませんでした。"
         filters={filters}
         loading={loading}
-        rows={payload?.recent ?? []}
+        now={now}
+        rows={recentRows}
         title="直近のレース"
       />
     </>

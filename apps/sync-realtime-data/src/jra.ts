@@ -12,6 +12,7 @@ const CONTENT_PROBE_LENGTH = 128;
 
 const ODDS_PAGE_LABELS: ReadonlyArray<{ label: string; type: OddsType }> = [
   { label: "単勝・複勝", type: "tansho" },
+  { label: "単勝・複勝", type: "fukusho" },
   { label: "枠連", type: "wakuren" },
   { label: "馬連", type: "umaren" },
   { label: "ワイド", type: "wide" },
@@ -43,6 +44,11 @@ const stripHtmlTags = (text: string): string =>
     .replace(/\s+/gu, " ")
     .trim();
 
+const normalizeJockeyName = (text: string): string =>
+  stripHtmlTags(text)
+    .replace(/[△▲☆★◇◆□■▽▼]/gu, "")
+    .replace(/[\s\p{Separator}\u200B-\u200D\uFEFF]+/gu, "");
+
 const normalizeHorseNumber = (value: string): string => String(Number(value));
 
 const isValidHorseNumber = (value: string): boolean => {
@@ -68,6 +74,35 @@ const uniqueByCombination = (rows: OddsData[]): OddsData[] =>
 const extractRows = (html: string): string[] =>
   Array.from(html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/giu)).map((match) => match[1] ?? "");
 
+const extractClassCell = (row: string, className: string): string | null =>
+  row.match(
+    new RegExp(
+      `<td[^>]*class=["'][^"']*\\b${className}\\b[^"']*["'][^>]*>([\\s\\S]*?)<\\/td>`,
+      "iu",
+    ),
+  )?.[1] ?? null;
+
+const extractFirstAnchorText = (html: string | null): string | null =>
+  html?.match(/<a\b[^>]*>([\s\S]*?)<\/a>/iu)?.[1] ?? null;
+
+const extractJraHorseName = (row: string): string | null => {
+  const horseNameCell = extractClassCell(row, "horseName") ?? extractClassCell(row, "horse") ?? row;
+  return (
+    extractFirstAnchorText(
+      horseNameCell.match(/class=["'][^"']*\bname\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/iu)?.[1] ??
+        horseNameCell,
+    ) ?? null
+  );
+};
+
+const extractJraJockeyName = (row: string): string | null => {
+  const jockeyCell = extractClassCell(row, "jockey");
+  const currentJockey =
+    jockeyCell?.match(/<p[^>]*class=["'][^"']*\bjockey\b[^"']*["'][^>]*>([\s\S]*?)<\/p>/iu)?.[1] ??
+    jockeyCell;
+  return extractFirstAnchorText(currentJockey) ?? currentJockey ?? null;
+};
+
 export const parseJraRaceEntries = (html: string): Omit<RaceEntry, "fetchedAt">[] =>
   extractRows(html)
     .map((row) => {
@@ -77,19 +112,15 @@ export const parseJraRaceEntries = (html: string): Omit<RaceEntry, "fetchedAt">[
       if (!horseNumber || !isValidHorseNumber(horseNumber)) {
         return null;
       }
-      const horseName =
-        row.match(/class=["'][^"']*horseName[^"']*["'][^>]*>([\s\S]*?)<\/a>/iu)?.[1] ??
-        row.match(/<td[^>]*class=["'][^"']*\bname\b[^"']*["'][^>]*>([\s\S]*?)<\/td>/iu)?.[1];
-      const jockeyName =
-        row.match(/class=["'][^"']*jockey[^"']*["'][^>]*>([\s\S]*?)<\/a>/iu)?.[1] ??
-        row.match(/class=["'][^"']*jockey[^"']*["'][^>]*>([\s\S]*?)<\/td>/iu)?.[1];
+      const horseName = extractJraHorseName(row);
+      const jockeyName = extractJraJockeyName(row);
       const rowText = stripHtmlTags(row);
       const status: string | null =
         ENTRY_STATUS_LABELS.find((label) => rowText.includes(label)) ?? null;
       return {
         horseName: horseName ? stripHtmlTags(horseName) : null,
         horseNumber: normalizeHorseNumber(horseNumber),
-        jockeyName: jockeyName ? stripHtmlTags(jockeyName) : null,
+        jockeyName: jockeyName ? normalizeJockeyName(jockeyName) : null,
         status,
       };
     })
@@ -104,9 +135,7 @@ export const parseJraHorseWeights = (html: string): HorseWeight[] =>
       if (!horseNumber || !isValidHorseNumber(horseNumber)) {
         return null;
       }
-      const horseName =
-        row.match(/class=["'][^"']*horseName[^"']*["'][^>]*>([\s\S]*?)<\/a>/iu)?.[1] ??
-        row.match(/<td[^>]*class=["'][^"']*\bname\b[^"']*["'][^>]*>([\s\S]*?)<\/td>/iu)?.[1];
+      const horseName = extractJraHorseName(row);
       const weightCell =
         row.match(
           /<td[^>]*class=["'][^"']*(?:weight|odds_weight)[^"']*["'][^>]*>([\s\S]*?)<\/td>/iu,
@@ -151,6 +180,41 @@ const parseTanshoOdds = (html: string): OddsData[] =>
         return Number.isFinite(odds)
           ? { combination: normalizeHorseNumber(horseNumber), odds: roundOdds(odds) }
           : null;
+      }),
+    )
+    .filter((row): row is OddsData => row !== null)
+    .sort(sortByOdds)
+    .map(addRank);
+
+const parseFukushoOdds = (html: string): OddsData[] =>
+  Array.from(
+    html.matchAll(/<table[^>]*class=["'][^"']*tanpuku[^"']*["'][^>]*>([\s\S]*?)<\/table>/giu),
+  )
+    .flatMap((table) =>
+      extractRows(table[1] ?? "").map((row): OddsData | null => {
+        const horseNumber = row.match(
+          /<td[^>]*class=["']num["'][^>]*>\s*(\d{1,2})\s*<\/td>/iu,
+        )?.[1];
+        const fukushoCell = row.match(
+          /<td[^>]*class=["'][^"']*odds_fuku[^"']*["'][^>]*>([\s\S]*?)<\/td>/iu,
+        )?.[1];
+        if (!horseNumber || !fukushoCell || !isValidHorseNumber(horseNumber)) {
+          return null;
+        }
+        const values = Array.from(fukushoCell.matchAll(/[\d]+(?:\.[\d]+)?/gu))
+          .map((match) => Number(match[0]))
+          .filter((value) => Number.isFinite(value));
+        if (values.length === 0) {
+          return null;
+        }
+        const minOdds = Math.min(...values);
+        const maxOdds = Math.max(...values);
+        return {
+          averageOdds: roundOdds((minOdds + maxOdds) / 2),
+          combination: normalizeHorseNumber(horseNumber),
+          maxOdds: roundOdds(maxOdds),
+          minOdds: roundOdds(minOdds),
+        };
       }),
     )
     .filter((row): row is OddsData => row !== null)
@@ -329,6 +393,8 @@ export const parseJraOddsByType = (type: OddsType, html: string): OddsData[] => 
       return parseTripleOdds(html, false);
     case "3rentan":
       return parseTripleOdds(html, true);
+    case "fukusho":
+      return parseFukushoOdds(html);
     case "tansho":
       return parseTanshoOdds(html);
     case "umaren":

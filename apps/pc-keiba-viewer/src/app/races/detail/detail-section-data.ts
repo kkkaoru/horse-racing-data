@@ -58,8 +58,10 @@ import type {
   Runner,
   SameDayVenueJockeyWinFeature,
   SimilarRaceStatsRow,
+  StableComment,
   SimilarRaceStatsSettings,
   TimeScoreRow,
+  Training,
 } from "../../../lib/race-types";
 import { isBanEiKeibajoCode } from "../../../lib/runner-format";
 
@@ -153,6 +155,114 @@ const isSameDayVenueJockeyWinsPayload = (
 
 const getRealtimeApiBaseUrl = (): string =>
   process.env.NEXT_PUBLIC_REALTIME_DATA_API_BASE_URL ?? "https://sync-realtime-data.kkk4oru.com";
+
+interface PremiumTrainingReview {
+  commentText: string | null;
+  evaluationGrade: string | null;
+  evaluationText: string | null;
+  horseNumber: string;
+  trainingDate: string;
+}
+
+const isPremiumTrainingReview = (value: unknown): value is PremiumTrainingReview => {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  return (
+    "horseNumber" in value &&
+    "trainingDate" in value &&
+    typeof value.horseNumber === "string" &&
+    typeof value.trainingDate === "string"
+  );
+};
+
+const isStableComment = (value: unknown): value is StableComment => {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  return (
+    "commentText" in value &&
+    "fetchedAt" in value &&
+    "horseNumber" in value &&
+    typeof value.commentText === "string" &&
+    (!("evaluationGrade" in value) ||
+      value.evaluationGrade === null ||
+      typeof value.evaluationGrade === "number") &&
+    typeof value.fetchedAt === "string" &&
+    typeof value.horseNumber === "string"
+  );
+};
+
+const fetchPremiumRacePayload = async (
+  race: RaceDetail,
+): Promise<{
+  stableComments: StableComment[];
+  trainingReviews: PremiumTrainingReview[];
+}> => {
+  if (race.source !== "jra") {
+    return { stableComments: [], trainingReviews: [] };
+  }
+  const url = `${getRealtimeApiBaseUrl().replace(/\/$/u, "")}/api/jra/races/${race.kaisaiNen}/${race.kaisaiTsukihi.slice(0, 2)}/${race.kaisaiTsukihi.slice(2, 4)}/${race.keibajoCode}/${race.raceBango}/premium`;
+  try {
+    const response = await fetch(url, { cache: "no-store" });
+    if (!response.ok) {
+      return { stableComments: [], trainingReviews: [] };
+    }
+    const data: unknown = await response.json();
+    if (typeof data !== "object" || data === null) {
+      return { stableComments: [], trainingReviews: [] };
+    }
+    const trainingReviews = "trainingReviews" in data ? data.trainingReviews : [];
+    const stableComments = "stableComments" in data ? data.stableComments : [];
+    return {
+      stableComments: Array.isArray(stableComments) ? stableComments.filter(isStableComment) : [],
+      trainingReviews: Array.isArray(trainingReviews)
+        ? trainingReviews.filter(isPremiumTrainingReview)
+        : [],
+    };
+  } catch {
+    return { stableComments: [], trainingReviews: [] };
+  }
+};
+
+const normalizeTrainingDate = (value: string): string => value.replace(/[^\d]/gu, "");
+
+const mergePremiumTrainingReviews = (
+  trainings: Training[],
+  reviews: Awaited<ReturnType<typeof fetchPremiumRacePayload>>["trainingReviews"],
+): Training[] => {
+  if (reviews.length === 0) {
+    return trainings;
+  }
+  const reviewByHorseAndDate = new Map(
+    reviews
+      .filter((review) => normalizeTrainingDate(review.trainingDate))
+      .map((review) => [
+        `${review.horseNumber}-${normalizeTrainingDate(review.trainingDate)}`,
+        review,
+      ]),
+  );
+  const reviewByHorse = new Map(
+    reviews
+      .filter((review) => !normalizeTrainingDate(review.trainingDate))
+      .map((review) => [review.horseNumber, review]),
+  );
+  return trainings.map((training) => {
+    const horseNumber = training.umaban ? String(Number(training.umaban)) : "";
+    const key = `${training.umaban ? String(Number(training.umaban)) : ""}-${normalizeTrainingDate(
+      training.chokyoNengappi,
+    )}`;
+    const review = reviewByHorseAndDate.get(key) ?? reviewByHorse.get(horseNumber);
+    return review
+      ? {
+          ...training,
+          premiumCommentText: review.commentText,
+          premiumEvaluationGrade: review.evaluationGrade,
+          premiumEvaluationText: review.evaluationText,
+        }
+      : training;
+  });
+};
 
 const fetchSameDayVenueJockeyWins = async (
   race: RaceDetail,
@@ -824,10 +934,17 @@ export const getDetailSectionPayload = async (
   const { day, keibajoCode, month, query, raceNumber, raceSource, year } = params;
 
   if (section === "training") {
-    const trainings = await getRaceTrainings(raceSource, year, month, day, keibajoCode, raceNumber);
+    const [race, trainings] = await Promise.all([
+      getRaceDetail(raceSource, year, month, day, keibajoCode, raceNumber),
+      getRaceTrainings(raceSource, year, month, day, keibajoCode, raceNumber),
+    ]);
+    const premiumPayload = race
+      ? await fetchPremiumRacePayload(race)
+      : { stableComments: [], trainingReviews: [] };
     return {
       sourceLabel: SOURCE_LABELS[raceSource],
-      trainings,
+      stableComments: premiumPayload.stableComments,
+      trainings: mergePremiumTrainingReviews(trainings, premiumPayload.trainingReviews),
       type: section,
     };
   }

@@ -156,6 +156,7 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
         }}
         recentResults={recentResults}
         runners={runners}
+        source={source}
         year={year}
       />
     </main>

@@ -28,6 +28,9 @@ export const favoriteKey = (item: Pick<FavoriteItem, "id" | "kind">): string =>
 export const isFavoriteKind = (value: string): value is FavoriteKind =>
   value === "horse" || value === "jockey" || value === "owner" || value === "trainer";
 
+export const normalizeFavoriteLabel = (value: string): string =>
+  value.replace(/[\s\u3000]+/gu, " ").trim();
+
 export const parseFavoriteKey = (key: string): { id: string; kind: FavoriteKind } | null => {
   const separator = key.indexOf(":");
   if (separator <= 0) {
@@ -42,7 +45,9 @@ export const parseFavoritesFromSearchParams = (params: URLSearchParams): Favorit
   const items: FavoriteItem[] = [];
   for (const kind of FAVORITE_KINDS) {
     for (const id of params.getAll(FAVORITE_QUERY_KEYS[kind]).filter(Boolean)) {
-      const label = params.get(`${FAVORITE_QUERY_KEYS[kind]}Label:${id}`) ?? id;
+      const label = normalizeFavoriteLabel(
+        params.get(`${FAVORITE_QUERY_KEYS[kind]}Label:${id}`) ?? id,
+      );
       items.push({ id, kind, label });
     }
   }
@@ -50,9 +55,14 @@ export const parseFavoritesFromSearchParams = (params: URLSearchParams): Favorit
 };
 
 export const dedupeFavorites = (items: FavoriteItem[]): FavoriteItem[] =>
-  Array.from(new Map(items.map((item) => [favoriteKey(item), item])).values()).toSorted((a, b) =>
-    `${a.kind}:${a.label}`.localeCompare(`${b.kind}:${b.label}`, "ja"),
-  );
+  Array.from(
+    new Map(
+      items.map((item) => [
+        favoriteKey(item),
+        { ...item, label: normalizeFavoriteLabel(item.label) || item.id },
+      ]),
+    ).values(),
+  ).toSorted((a, b) => `${a.kind}:${a.label}`.localeCompare(`${b.kind}:${b.label}`, "ja"));
 
 export const buildFavoritesSearchParams = (items: FavoriteItem[]): URLSearchParams => {
   const params = new URLSearchParams();

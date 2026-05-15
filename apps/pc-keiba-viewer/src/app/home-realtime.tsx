@@ -4,7 +4,13 @@ import type { RealtimeRacePayload } from "horse-racing-realtime/types";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
-import { formatDistance, formatKeibajo, formatRaceNumber, formatTime } from "../lib/format";
+import {
+  formatDistance,
+  formatKeibajo,
+  formatRaceNumber,
+  formatTime,
+  getTrackSurfaceLabel,
+} from "../lib/format";
 import { getNextOddsFetchAt } from "../lib/odds-schedule";
 import type { TopRaceSummary } from "../lib/race-types";
 import { buildRealtimeUrl, isRealtimeRacePayload } from "./races/detail/realtime-client";
@@ -39,7 +45,7 @@ const isRaceWindowsPayload = (data: unknown): data is RaceWindowsPayload => {
 const racePath = (race: TopRaceSummary): string =>
   `/races/${race.kaisaiNen}/${race.kaisaiTsukihi.slice(0, 2)}/${race.kaisaiTsukihi.slice(2, 4)}/${race.keibajoCode}/${race.raceBango}`;
 
-const formatCountdown = (target: string, now: number): string => {
+const formatCountdown = (target: string, now: number, includeSeconds: boolean): string => {
   const diff = new Date(target).getTime() - now;
   if (diff <= 0) {
     return "発走済み";
@@ -48,7 +54,26 @@ const formatCountdown = (target: string, now: number): string => {
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
-  return `${hours}時間${String(minutes).padStart(2, "0")}分${String(seconds).padStart(2, "0")}秒`;
+  if (includeSeconds) {
+    return hours > 0
+      ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+      : `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+  if (hours > 0) {
+    return `${hours}時間${String(minutes).padStart(2, "0")}分`;
+  }
+  return `${minutes}分`;
+};
+
+const countdownIcon = (target: string, now: number): string => {
+  const remainingMinutes = Math.max(0, Math.floor((new Date(target).getTime() - now) / 60000));
+  if (remainingMinutes <= 5) {
+    return "🔥";
+  }
+  if (remainingMinutes <= 30) {
+    return "⏱️";
+  }
+  return "🕒";
 };
 
 const formatRaceLine = (race: TopRaceSummary): string =>
@@ -56,6 +81,7 @@ const formatRaceLine = (race: TopRaceSummary): string =>
     formatKeibajo(race.keibajoCode),
     formatRaceNumber(race.raceBango),
     formatTime(race.hassoJikoku),
+    getTrackSurfaceLabel(race.trackCode),
     formatDistance(race.kyori),
   ].join(" / ");
 
@@ -85,7 +111,7 @@ export function HomeRealtime({
     .slice(-5)
     .toReversed();
   const upcomingOddsRaces = useMemo(
-    () => raceWindows.upcoming.filter((race) => race.source === "nar"),
+    () => raceWindows.upcoming.filter((race) => race.source === "nar" || race.source === "jra"),
     [raceWindows.upcoming],
   );
 
@@ -151,7 +177,7 @@ export function HomeRealtime({
       );
       const schedules = upcomingOddsRaces
         .flatMap((race): OddsSchedule[] => {
-          const nextFetchAt = getNextOddsFetchAt(race.raceStartAt);
+          const nextFetchAt = getNextOddsFetchAt(race.raceStartAt, Date.now(), race.source);
           if (!nextFetchAt) {
             return [];
           }
@@ -186,12 +212,17 @@ export function HomeRealtime({
           <span>自動更新</span>
         </div>
         <div className="home-race-list">
-          {upcoming.map((race) => (
+          {upcoming.map((race, index) => (
             <Link
               href={racePath(race)}
               key={`${race.source}-${race.keibajoCode}-${race.raceBango}`}
             >
-              <strong>{formatCountdown(race.raceStartAt, now)}</strong>
+              <strong className="home-race-countdown">
+                <span className="home-race-countdown-icon" aria-hidden="true">
+                  {countdownIcon(race.raceStartAt, now)}
+                </span>
+                <span>{formatCountdown(race.raceStartAt, now, index === 0)}</span>
+              </strong>
               <span>{formatRaceLine(race)}</span>
             </Link>
           ))}

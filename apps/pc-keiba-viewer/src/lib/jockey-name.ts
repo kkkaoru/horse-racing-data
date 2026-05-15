@@ -5,8 +5,16 @@ const JOCKEY_NAME_CHARACTER_REPLACEMENTS: Record<string, string> = {
   櫻: "桜",
 };
 
+export const normalizeJockeyNameForDisplay = (value: string | null | undefined): string => {
+  const cleaned = cleanText(value, "")
+    .replace(/^[牡牝騙せセ]\d+\/[^\s　]+\s*[0-9]+(?:\.[0-9]+)?kg\s*/u, "")
+    .replace(/[△▲☆★◇◆□■▽▼]/gu, "")
+    .replace(/[\s\p{Separator}\u200B-\u200D\uFEFF]+/gu, "");
+  return cleaned;
+};
+
 export const normalizeJockeyNameForComparison = (value: string | null | undefined): string => {
-  return Array.from(cleanText(value, "").replace(/\s+/gu, ""))
+  return Array.from(normalizeJockeyNameForDisplay(value))
     .map((character) => JOCKEY_NAME_CHARACTER_REPLACEMENTS[character] ?? character)
     .join("");
 };
@@ -60,8 +68,8 @@ export const getPreferredJockeyName = (
   storedName: string | null | undefined,
   realtimeName: string | null | undefined,
 ): string => {
-  const cleanedStoredName = cleanText(storedName, "");
-  const cleanedRealtimeName = cleanText(realtimeName, "");
+  const cleanedStoredName = normalizeJockeyNameForDisplay(storedName);
+  const cleanedRealtimeName = normalizeJockeyNameForDisplay(realtimeName);
   if (cleanedStoredName !== "" && isSameJockeyName(cleanedStoredName, cleanedRealtimeName)) {
     return cleanedStoredName;
   }

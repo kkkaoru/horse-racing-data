@@ -26,8 +26,21 @@ import {
 } from "./jra";
 import { fetchJraTrackConditionWithPlaywright } from "./jra-track-condition";
 import { readCachedOdds, writeCachedOdds } from "./odds-cache";
+import {
+  buildPremiumUrl,
+  discoverPremiumRaceLinks,
+  fetchPremiumHtml,
+  getPremiumRaceConfig,
+  hasPremiumRaceFetchConfig,
+  matchPremiumLinkToRace,
+  parsePremiumPaddockBulletins,
+  parsePremiumStableComments,
+  parsePremiumTrainingReviews,
+  summarizePremiumStableCommentHtml,
+} from "./premium-race";
+import { readCachedPremiumPaddock, writeCachedPremiumPaddock } from "./premium-paddock-cache";
 import { fetchJraRacesByDate, fetchNarRacesByDate } from "./postgres";
-import { raceKeyFromRealtimePath } from "./race-key";
+import { buildRealtimeRaceKey, raceKeyFromRealtimePath, type RealtimeSource } from "./race-key";
 import {
   buildRealtimePayload,
   claimOddsFetch,
@@ -40,6 +53,9 @@ import {
   failTrackConditionFetch,
   failOddsFetch,
   failResultFetch,
+  getPremiumRaceLink,
+  getPremiumRacePayload,
+  getPremiumPaddockFetchState,
   getRaceSource,
   getLatestTrackConditionForRace,
   getLatestOddsFromD1,
@@ -50,18 +66,27 @@ import {
   insertJraTrackConditionSnapshot,
   insertOddsSnapshot,
   listJraVenueTrackConditionSchedulesByDate,
+  listPremiumRaceDataFetchCandidatesByDate,
   listRaceSourceKeibajoCodesByDate,
   listSchedulableRaceSourcesByDate,
+  listOddsHistoryByType,
   listTanshoHistory,
   logFetch,
   markOddsFetchQueued,
+  markPremiumPaddockQueued,
+  markPremiumRaceDataQueued,
   markResultFetchQueued,
   markTrackConditionQueued,
+  replacePremiumRaceData,
   toHorseTrends,
+  toOddsTrendsByType,
   updateLastFetch,
   updateOddsLinks,
+  updatePremiumRaceDataFetchState,
+  updatePremiumPaddockFetchState,
   upsertJraRaceSource,
   upsertNarRaceSource,
+  upsertPremiumRaceLink,
   type LocalRaceRow,
 } from "./storage";
 import { readCachedTrackCondition, writeCachedTrackCondition } from "./track-condition-cache";
@@ -81,6 +106,9 @@ const RESULT_FETCH_LOCK_MINUTES = 10;
 const RESULT_FETCH_INTERVAL_MINUTES = 5;
 const TRACK_CONDITION_FETCH_LOCK_MINUTES = 15;
 const QUEUE_RETRY_DELAY_SECONDS = 60;
+const PREMIUM_RACE_DATA_RETRY_DELAY_SECONDS = 20 * 60;
+const PREMIUM_PADDOCK_RETRY_DELAY_SECONDS = 120;
+const DEFAULT_PREMIUM_RACE_QUEUE_DELAY_SECONDS = 15;
 
 const getNow = (env: Env): Date => {
   if (!env.REALTIME_TEST_NOW) {
@@ -251,6 +279,49 @@ const ensureJraRaceSourcesAreCurrent = async (env: Env, targetDate: string): Pro
   }
 };
 
+const discoverPremiumRacesForDate = async (
+  env: Env,
+  targetDate: string,
+): Promise<{ configured: boolean; discovered: number; linked: number }> => {
+  const config = getPremiumRaceConfig(env);
+  if (!hasPremiumRaceFetchConfig(config) || !config.topPathTemplate) {
+    return { configured: false, discovered: 0, linked: 0 };
+  }
+  await ensureJraRaceSourcesAreCurrent(env, targetDate);
+  const topUrl = buildPremiumUrl(config, config.topPathTemplate, { date: targetDate });
+  if (!topUrl) {
+    return { configured: false, discovered: 0, linked: 0 };
+  }
+  const [html, races] = await Promise.all([
+    fetchPremiumHtml(config, topUrl),
+    listSchedulableRaceSourcesByDate(env.REALTIME_DB, targetDate),
+  ]);
+  const links = discoverPremiumRaceLinks(html, config);
+  let linked = 0;
+  for (const race of races.filter((item) => item.source === "jra")) {
+    const link = matchPremiumLinkToRace(links, race);
+    if (!link) {
+      continue;
+    }
+    await upsertPremiumRaceLink(env.REALTIME_DB, race.raceKey, link);
+    linked += 1;
+  }
+  return { configured: true, discovered: links.length, linked };
+};
+
+const ensurePremiumRaceLink = async (
+  env: Env,
+  race: NarRaceSource,
+): Promise<Awaited<ReturnType<typeof getPremiumRaceLink>>> => {
+  const existing = await getPremiumRaceLink(env.REALTIME_DB, race.raceKey);
+  if (existing || race.source !== "jra") {
+    return existing;
+  }
+  const targetDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
+  await discoverPremiumRacesForDate(env, targetDate);
+  return getPremiumRaceLink(env.REALTIME_DB, race.raceKey);
+};
+
 const getRaceStart = (race: NarRaceSource): Date | null =>
   parseRaceStartJst(
     race.kaisaiNen,
@@ -305,6 +376,11 @@ const latestTimestamp = (...timestamps: (string | null)[]): string | null => {
 };
 
 const isThreeMinuteTick = (date: Date): boolean => date.getUTCMinutes() % 3 === 0;
+
+const isPremiumRaceDiscoveryTick = (date: Date): boolean => {
+  const jst = toJstIsoString(date);
+  return jst.slice(11, 16) === "20:00";
+};
 
 const getJstDayStart = (targetDate: string): Date =>
   new Date(
@@ -397,8 +473,27 @@ const ensureDiscoveredUrlsAreCurrent = async (env: Env, targetDate: string): Pro
 };
 
 const enqueueJobs = async (env: Env, jobs: Job[]): Promise<void> => {
+  const premiumQueue = env.PREMIUM_RACE_JOBS ?? env.REALTIME_JOBS;
+  const premiumDelaySeconds = Math.max(
+    1,
+    Number(env.PREMIUM_RACE_QUEUE_DELAY_SECONDS ?? DEFAULT_PREMIUM_RACE_QUEUE_DELAY_SECONDS),
+  );
+  let premiumJobIndex = 0;
   for (let index = 0; index < jobs.length; index += QUEUE_SEND_BATCH_SIZE) {
     const chunk = jobs.slice(index, index + QUEUE_SEND_BATCH_SIZE);
+    if (chunk.some(isPremiumRaceJob)) {
+      for (const job of chunk) {
+        if (isPremiumRaceJob(job)) {
+          await premiumQueue.send(job, {
+            delaySeconds: premiumJobIndex * premiumDelaySeconds,
+          });
+          premiumJobIndex += 1;
+        } else {
+          await env.REALTIME_JOBS.send(job);
+        }
+      }
+      continue;
+    }
     if (chunk.length === 1) {
       await env.REALTIME_JOBS.send(chunk[0] as Job);
       continue;
@@ -406,6 +501,11 @@ const enqueueJobs = async (env: Env, jobs: Job[]): Promise<void> => {
     await env.REALTIME_JOBS.sendBatch(chunk.map((body) => ({ body })));
   }
 };
+
+const isPremiumRaceJob = (job: Job): boolean =>
+  job.type === "discover-premium-races" ||
+  job.type === "fetch-premium-paddock" ||
+  job.type === "fetch-premium-race-data";
 
 const planTrackConditionFetchesForDate = async (
   env: Env,
@@ -447,6 +547,65 @@ const planJraAdvanceOddsFetchesForDate = async (
     }
     return [];
   });
+};
+
+const planPremiumPaddockFetchesForDate = async (
+  env: Env,
+  targetDate: string,
+  now: Date,
+): Promise<Job[]> => {
+  if (!hasPremiumRaceFetchConfig(getPremiumRaceConfig(env))) {
+    return [];
+  }
+  await ensureJraRaceSourcesAreCurrent(env, targetDate);
+  const races = await listSchedulableRaceSourcesByDate(env.REALTIME_DB, targetDate);
+  const jobs: Job[] = [];
+  for (const race of races) {
+    if (race.source !== "jra") {
+      continue;
+    }
+    const minutes = minutesUntilRace(race, now);
+    if (minutes === null || minutes > 18 || minutes < -10) {
+      continue;
+    }
+    const state = await getPremiumPaddockFetchState(env.REALTIME_DB, race.raceKey);
+    if (state?.status === "ok" || state?.status === "unavailable") {
+      continue;
+    }
+    if (state?.retryAfter && new Date(state.retryAfter).getTime() > now.getTime()) {
+      continue;
+    }
+    if (
+      state?.lastQueuedAt &&
+      new Date(state.lastQueuedAt).getTime() > now.getTime() - 20 * 60_000
+    ) {
+      continue;
+    }
+    if (state?.lastFetchAt && new Date(state.lastFetchAt).getTime() > now.getTime() - 20 * 60_000) {
+      continue;
+    }
+    jobs.push({ raceKey: race.raceKey, type: "fetch-premium-paddock" });
+  }
+  return jobs;
+};
+
+const planPremiumRaceDataFetchesForDate = async (
+  env: Env,
+  targetDate: string,
+  now: Date,
+): Promise<Job[]> => {
+  if (!hasPremiumRaceFetchConfig(getPremiumRaceConfig(env))) {
+    return [];
+  }
+  const candidates = await listPremiumRaceDataFetchCandidatesByDate(
+    env.REALTIME_DB,
+    targetDate,
+    toJstIsoString(now),
+  );
+  return candidates.map((candidate) => ({
+    raceKey: candidate.raceKey,
+    type: "fetch-premium-race-data",
+  }));
 };
 
 const planRealtimeFetches = async (env: Env, targetDate: string): Promise<number> => {
@@ -503,6 +662,17 @@ const planRealtimeFetches = async (env: Env, targetDate: string): Promise<number
   jobs.push(
     ...(await planTrackConditionFetchesForDate(env, addDaysToYyyymmdd(targetDate, 1), now)),
   );
+  if (isPremiumRaceDiscoveryTick(now)) {
+    jobs.push({ date: addDaysToYyyymmdd(targetDate, 1), type: "discover-premium-races" });
+  }
+  jobs.push(...(await planPremiumRaceDataFetchesForDate(env, targetDate, now)));
+  jobs.push(
+    ...(await planPremiumRaceDataFetchesForDate(env, addDaysToYyyymmdd(targetDate, 1), now)),
+  );
+  jobs.push(...(await planPremiumPaddockFetchesForDate(env, targetDate, now)));
+  jobs.push(
+    ...(await planPremiumPaddockFetchesForDate(env, addDaysToYyyymmdd(targetDate, 1), now)),
+  );
   await enqueueJobs(env, jobs);
   const queuedAt = toJstIsoString(now);
   await markOddsFetchQueued(
@@ -522,6 +692,16 @@ const planRealtimeFetches = async (env: Env, targetDate: string): Promise<number
         ? [{ date: job.date, keibajoCode: job.keibajoCode }]
         : [],
     ),
+    queuedAt,
+  );
+  await markPremiumPaddockQueued(
+    env.REALTIME_DB,
+    jobs.flatMap((job) => (job.type === "fetch-premium-paddock" ? [job.raceKey] : [])),
+    queuedAt,
+  );
+  await markPremiumRaceDataQueued(
+    env.REALTIME_DB,
+    jobs.flatMap((job) => (job.type === "fetch-premium-race-data" ? [job.raceKey] : [])),
     queuedAt,
   );
   return jobs.length;
@@ -583,8 +763,11 @@ const fetchAndStoreOdds = async (env: Env, raceKey: string): Promise<void> => {
       throw new Error(`odds rows are empty: ${raceKey}`);
     }
     await completeOddsFetch(env.REALTIME_DB, raceKey, fetchedAt);
-    const history = await listTanshoHistory(env.REALTIME_DB, raceKey);
-    await writeCachedOdds(env, raceKey, { fetchedAt, history, latest });
+    const [history, historyByType] = await Promise.all([
+      listTanshoHistory(env.REALTIME_DB, raceKey),
+      listOddsHistoryByType(env.REALTIME_DB, raceKey),
+    ]);
+    await writeCachedOdds(env, raceKey, { fetchedAt, history, historyByType, latest });
   } catch (error) {
     await failOddsFetch(env.REALTIME_DB, raceKey);
     throw error;
@@ -710,16 +893,202 @@ const fetchAndStoreJraTrackCondition = async (
   }
 };
 
+const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<void> => {
+  const race = await getRaceSource(env.REALTIME_DB, raceKey);
+  if (!race || race.source !== "jra") {
+    return;
+  }
+  const config = getPremiumRaceConfig(env);
+  if (!hasPremiumRaceFetchConfig(config)) {
+    return;
+  }
+  const link = await ensurePremiumRaceLink(env, race);
+  if (!link) {
+    throw new Error(`premium race link not found: ${raceKey}`);
+  }
+  const [workUrl, commentUrl] = [
+    buildPremiumUrl(config, config.workPathTemplate, { sourceRaceId: link.sourceRaceId }),
+    buildPremiumUrl(config, config.commentPathTemplate, { sourceRaceId: link.sourceRaceId }),
+  ];
+  const fetchedAt = toJstIsoString();
+  const [workResult, commentResult] = await Promise.allSettled([
+    workUrl ? fetchPremiumHtml(config, workUrl) : Promise.resolve(""),
+    commentUrl ? fetchPremiumHtml(config, commentUrl) : Promise.resolve(""),
+  ]);
+  const workHtml = workResult.status === "fulfilled" ? workResult.value : "";
+  const commentHtml = commentResult.status === "fulfilled" ? commentResult.value : "";
+  if (!workHtml && !commentHtml) {
+    const retryAfter = toJstIsoString(
+      new Date(getNow(env).getTime() + PREMIUM_RACE_DATA_RETRY_DELAY_SECONDS * 1000),
+    );
+    await updatePremiumRaceDataFetchState(env.REALTIME_DB, {
+      message: [workResult, commentResult]
+        .flatMap((result) =>
+          result.status === "rejected"
+            ? [result.reason instanceof Error ? result.reason.message : String(result.reason)]
+            : [],
+        )
+        .join("; "),
+      raceKey,
+      retryAfter,
+      status: "failed",
+    });
+    throw new Error(`premium race data fetch failed: ${raceKey}`);
+  }
+  const trainingReviews = workHtml ? parsePremiumTrainingReviews(workHtml, env) : undefined;
+  const stableComments = commentHtml ? parsePremiumStableComments(commentHtml, env) : undefined;
+  await replacePremiumRaceData(env.REALTIME_DB, {
+    fetchedAt,
+    link,
+    raceKey,
+    stableComments,
+    trainingReviews,
+  });
+  await updatePremiumRaceDataFetchState(env.REALTIME_DB, {
+    fetchedAt,
+    message: JSON.stringify({
+      commentError:
+        commentResult.status === "rejected"
+          ? commentResult.reason instanceof Error
+            ? commentResult.reason.message
+            : String(commentResult.reason)
+          : null,
+      commentHtmlLength: commentHtml.length,
+      stableCommentCount: stableComments?.length ?? null,
+      stableCommentSample:
+        commentHtml && (stableComments?.length ?? 0) === 0
+          ? summarizePremiumStableCommentHtml(commentHtml)
+          : null,
+      trainingReviewCount: trainingReviews?.length ?? null,
+      workError:
+        workResult.status === "rejected"
+          ? workResult.reason instanceof Error
+            ? workResult.reason.message
+            : String(workResult.reason)
+          : null,
+      workHtmlLength: workHtml.length,
+    }),
+    raceKey,
+    status:
+      (trainingReviews?.length ?? 0) > 0 || (stableComments?.length ?? 0) > 0 ? "ok" : "empty",
+  });
+};
+
+const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<void> => {
+  const race = await getRaceSource(env.REALTIME_DB, raceKey);
+  if (!race || race.source !== "jra") {
+    return;
+  }
+  const config = getPremiumRaceConfig(env);
+  if (!hasPremiumRaceFetchConfig(config)) {
+    return;
+  }
+  const link = await ensurePremiumRaceLink(env, race);
+  if (!link) {
+    throw new Error(`premium race link not found: ${raceKey}`);
+  }
+  const paddockUrl = buildPremiumUrl(config, config.paddockPathTemplate, {
+    sourceRaceId: link.sourceRaceId,
+  });
+  if (!paddockUrl) {
+    return;
+  }
+  const html = await fetchPremiumHtml(config, paddockUrl);
+  const parsed = parsePremiumPaddockBulletins(html, env);
+  const fetchedAt = toJstIsoString();
+  if (parsed.unavailable) {
+    await updatePremiumPaddockFetchState(env.REALTIME_DB, {
+      fetchedAt,
+      message: "unavailable",
+      raceKey,
+      status: "unavailable",
+    });
+    return;
+  }
+  if (parsed.pending) {
+    const retryAfter = toJstIsoString(
+      new Date(getNow(env).getTime() + PREMIUM_PADDOCK_RETRY_DELAY_SECONDS * 1000),
+    );
+    await updatePremiumPaddockFetchState(env.REALTIME_DB, {
+      message: "pending",
+      raceKey,
+      retryAfter,
+      status: "pending",
+    });
+    await (env.PREMIUM_RACE_JOBS ?? env.REALTIME_JOBS).send(
+      { raceKey, type: "fetch-premium-paddock" },
+      { delaySeconds: PREMIUM_PADDOCK_RETRY_DELAY_SECONDS },
+    );
+    return;
+  }
+  await replacePremiumRaceData(env.REALTIME_DB, {
+    fetchedAt,
+    link,
+    paddockBulletins: parsed.bulletins,
+    raceKey,
+  });
+  const payload = await getPremiumRacePayload(env.REALTIME_DB, raceKey);
+  await writeCachedPremiumPaddock(env, raceKey, {
+    fetchedAt,
+    paddockBulletins: payload.paddockBulletins,
+  });
+  await updatePremiumPaddockFetchState(env.REALTIME_DB, {
+    fetchedAt,
+    message: null,
+    raceKey,
+    status: parsed.bulletins.length > 0 ? "ok" : "empty",
+  });
+};
+
 export const handleJob = async (env: Env, job: Job): Promise<void> => {
   try {
     if (job.type === "discover-urls") {
-      const result = await upsertDiscoveredUrls(env, job.date);
+      const [result, premiumResult] = await Promise.all([
+        upsertDiscoveredUrls(env, job.date),
+        discoverPremiumRacesForDate(env, job.date),
+      ]);
+      const races = await listSchedulableRaceSourcesByDate(env.REALTIME_DB, job.date);
+      await enqueueJobs(
+        env,
+        races
+          .filter((race) => race.source === "jra")
+          .map((race) => ({ raceKey: race.raceKey, type: "fetch-premium-race-data" })),
+      );
       await logFetch(env.REALTIME_DB, job.type, "ok", null, JSON.stringify(result));
+      await logFetch(
+        env.REALTIME_DB,
+        "discover-premium-races",
+        "ok",
+        null,
+        JSON.stringify(premiumResult),
+      );
       return;
     }
     if (job.type === "plan-realtime-fetches") {
       const count = await planRealtimeFetches(env, job.date);
       await logFetch(env.REALTIME_DB, job.type, "ok", null, `${count} jobs queued`);
+      return;
+    }
+    if (job.type === "discover-premium-races") {
+      const result = await discoverPremiumRacesForDate(env, job.date);
+      const races = await listSchedulableRaceSourcesByDate(env.REALTIME_DB, job.date);
+      await enqueueJobs(
+        env,
+        races
+          .filter((race) => race.source === "jra")
+          .map((race) => ({ raceKey: race.raceKey, type: "fetch-premium-race-data" })),
+      );
+      await logFetch(env.REALTIME_DB, job.type, "ok", null, JSON.stringify(result));
+      return;
+    }
+    if (job.type === "fetch-premium-race-data") {
+      await fetchAndStorePremiumRaceData(env, job.raceKey);
+      await logFetch(env.REALTIME_DB, job.type, "ok", job.raceKey, null);
+      return;
+    }
+    if (job.type === "fetch-premium-paddock") {
+      await fetchAndStorePremiumPaddock(env, job.raceKey);
+      await logFetch(env.REALTIME_DB, job.type, "ok", job.raceKey, null);
       return;
     }
     if (job.type === "fetch-odds") {
@@ -759,6 +1128,22 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
 
 const raceKeyFromRequest = (url: URL): string | null => {
   return raceKeyFromRealtimePath(url.pathname);
+};
+
+const premiumRaceKeyFromRequest = (url: URL): string | null => {
+  const match = url.pathname.match(
+    /^\/api\/(jra|nar)\/races\/(\d{4})\/(\d{2})\/(\d{2})\/([0-9A-Z]{2})\/(\d{2})\/premium$/u,
+  );
+  if (!match?.[1] || !match[2] || !match[3] || !match[4] || !match[5] || !match[6]) {
+    return null;
+  }
+  return buildRealtimeRaceKey(
+    match[1] as RealtimeSource,
+    match[2],
+    `${match[3]}${match[4]}`,
+    match[5],
+    match[6],
+  );
 };
 
 const sameDayVenueJockeyWinsFromRequest = (
@@ -808,8 +1193,26 @@ export default {
         return json({ error: "forbidden" }, { status: 403 });
       }
       const job = (await request.json()) as Job;
-      await env.REALTIME_JOBS.send(job);
+      await enqueueJobs(env, [job]);
       return json({ ok: true });
+    }
+
+    const premiumRaceKey = premiumRaceKeyFromRequest(url);
+    if (premiumRaceKey && request.method === "GET") {
+      const [payload, cachedPaddock] = await Promise.all([
+        getPremiumRacePayload(env.REALTIME_DB, premiumRaceKey),
+        readCachedPremiumPaddock(env, premiumRaceKey),
+      ]);
+      return json(
+        cachedPaddock && typeof cachedPaddock === "object"
+          ? { ...payload, ...cachedPaddock }
+          : payload,
+        {
+          headers: {
+            "cache-control": `public, max-age=${Number(env.REALTIME_API_CACHE_SECONDS ?? "20")}`,
+          },
+        },
+      );
     }
 
     const raceKey = raceKeyFromRequest(url);
@@ -831,6 +1234,9 @@ export default {
       );
       if (payload.odds && payload.odds.horseTrends.length === 0) {
         payload.odds.horseTrends = toHorseTrends(payload.odds.history);
+      }
+      if (payload.odds?.historyByType && !payload.odds.trendsByType) {
+        payload.odds.trendsByType = toOddsTrendsByType(payload.odds.historyByType);
       }
       return json(payload, {
         headers: {

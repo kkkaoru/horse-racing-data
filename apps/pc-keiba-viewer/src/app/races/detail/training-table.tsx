@@ -39,6 +39,11 @@ const SORT_LABELS: Record<SortKey, string> = {
   lapTime1f: "1F",
 };
 
+const PREMIUM_REVIEW_LABELS = {
+  grade: process.env.NEXT_PUBLIC_PREMIUM_RACE_WORK_LABEL_GRADE ?? "記号",
+  text: process.env.NEXT_PUBLIC_PREMIUM_RACE_WORK_LABEL_TEXT ?? "評価",
+};
+
 const parseTime = (value: string | null | undefined): number | null => {
   const formatted = formatTrainingTime(value);
   if (formatted === "-") {
@@ -120,6 +125,11 @@ export function TrainingTable({ sourceLabel, trainings }: TrainingTableProps) {
   const [tracenFilter, setTracenFilter] = useState(ALL_FILTER);
   const [courseFilter, setCourseFilter] = useState(ALL_FILTER);
   const [fastestOnly, setFastestOnly] = useState(true);
+  const hasPremiumReviews = trainings.some(
+    (training) =>
+      cleanText(training.premiumEvaluationText, "") ||
+      cleanText(training.premiumEvaluationGrade, ""),
+  );
 
   const filterOptions = useMemo(
     () => ({
@@ -296,6 +306,8 @@ export function TrainingTable({ sourceLabel, trainings }: TrainingTableProps) {
             <col className="training-col-time" />
             <col className="training-col-time" />
             <col className="training-col-time" />
+            {hasPremiumReviews ? <col className="training-col-review" /> : null}
+            {hasPremiumReviews ? <col className="training-col-review" /> : null}
           </colgroup>
           <thead>
             <tr>
@@ -311,6 +323,8 @@ export function TrainingTable({ sourceLabel, trainings }: TrainingTableProps) {
               <th>{renderSortButton("timeGokei3f")}</th>
               <th>{renderSortButton("timeGokei2f")}</th>
               <th>{renderSortButton("lapTime1f")}</th>
+              {hasPremiumReviews ? <th>{PREMIUM_REVIEW_LABELS.text}</th> : null}
+              {hasPremiumReviews ? <th>{PREMIUM_REVIEW_LABELS.grade}</th> : null}
             </tr>
           </thead>
           <tbody>
@@ -335,6 +349,12 @@ export function TrainingTable({ sourceLabel, trainings }: TrainingTableProps) {
                 <td>{formatTrainingTime(training.timeGokei3f)}</td>
                 <td>{formatTrainingTime(training.timeGokei2f)}</td>
                 <td>{formatTrainingTime(training.lapTime1f)}</td>
+                {hasPremiumReviews ? (
+                  <td>{cleanText(training.premiumEvaluationText, "-")}</td>
+                ) : null}
+                {hasPremiumReviews ? (
+                  <td>{cleanText(training.premiumEvaluationGrade, "-")}</td>
+                ) : null}
               </tr>
             ))}
           </tbody>

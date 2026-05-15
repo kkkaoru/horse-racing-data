@@ -13,6 +13,7 @@ const links = [
   { href: "/jockeys", label: "騎手一覧" },
   { href: "/owners", label: "馬主一覧" },
   { href: "/trainers", label: "調教師一覧" },
+  { href: "/mypage", label: "マイページ" },
 ];
 
 const homeTrackRunnerCount = 16;

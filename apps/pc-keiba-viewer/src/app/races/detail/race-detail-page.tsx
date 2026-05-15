@@ -502,6 +502,7 @@ export async function RaceDetailView({
           month={month}
           raceNumber={raceNumber}
           runners={runners}
+          source={race.source}
           year={year}
         />
 

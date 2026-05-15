@@ -13,6 +13,36 @@ describe("odds schedule", () => {
     ).toBe(new Date("2026-05-14T14:00:00+09:00").toISOString());
   });
 
+  it("schedules JRA odds from the previous day at 19:00", () => {
+    expect(
+      getNextOddsFetchAt(
+        "2026-05-16T09:45:00+09:00",
+        new Date("2026-05-15T18:30:00+09:00").getTime(),
+        "jra",
+      ),
+    ).toBe(new Date("2026-05-15T19:00:00+09:00").toISOString());
+  });
+
+  it("uses hourly JRA advance odds slots until one hour before the race", () => {
+    expect(
+      getNextOddsFetchAt(
+        "2026-05-16T09:45:00+09:00",
+        new Date("2026-05-16T01:21:00+09:00").getTime(),
+        "jra",
+      ),
+    ).toBe(new Date("2026-05-16T02:00:00+09:00").toISOString());
+  });
+
+  it("transitions JRA advance odds to the one-hour-before race schedule", () => {
+    expect(
+      getNextOddsFetchAt(
+        "2026-05-16T09:45:00+09:00",
+        new Date("2026-05-16T08:40:00+09:00").getTime(),
+        "jra",
+      ),
+    ).toBe(new Date("2026-05-16T08:45:00+09:00").toISOString());
+  });
+
   it("uses ten minute slots from ten minutes to less than one hour before the race", () => {
     expect(getOddsFetchIntervalMinutes(50)).toBe(10);
     expect(

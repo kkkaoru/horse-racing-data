@@ -475,6 +475,29 @@ main {
   font-size: 14px;
 }
 
+.home-race-countdown {
+  align-items: center;
+  color: var(--accent-strong);
+  display: inline-flex;
+  gap: 4px;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.home-race-list .home-race-countdown-icon {
+  color: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: left;
+}
+
+.home-race-list .home-race-countdown span {
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  text-align: left;
+}
+
 .home-race-list span {
   color: var(--muted);
   font-size: 12px;
@@ -1601,68 +1624,140 @@ h3 {
   color: var(--ink);
   cursor: pointer;
   display: inline-flex;
-  font: inherit;
-  gap: 6px;
-  line-height: 1.2;
-  max-width: min(100%, 280px);
-  padding: 6px 8px;
-}
-
-.mypage-favorite-list span {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 800;
   flex: 0 0 auto;
+  font: inherit;
+  gap: 5px;
+  justify-content: start;
+  line-height: 1.2;
+  max-inline-size: none;
+  padding: 5px 7px;
+  white-space: nowrap;
+  width: max-content;
 }
 
-.mypage-favorite-list strong {
+.mypage-favorite-list .favorite-kind-label {
+  color: var(--muted);
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.mypage-favorite-list .favorite-name {
+  flex: 0 0 auto;
   font-size: 14px;
   font-weight: 800;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow: visible;
   white-space: nowrap;
 }
 
-.mypage-favorite-list small {
-  color: var(--accent-strong);
-  flex: 0 0 auto;
-  font-size: 11px;
-  font-weight: 800;
+.mypage-favorite-list button.favorite-kind-horse .favorite-name {
+  max-inline-size: none;
 }
 
-.mypage-filters {
-  align-items: end;
+.mypage-favorite-list .favorite-remove-mark {
+  color: var(--accent-strong);
+  flex: 0 0 auto;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+  margin-inline-start: 1px;
+}
+
+.mypage-filter-block,
+.mypage-filter-details {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 8px;
-  display: grid;
-  gap: 12px;
-  grid-template-columns: minmax(240px, 1fr) minmax(220px, 320px) minmax(140px, 180px);
   margin-bottom: 24px;
   padding: 14px;
 }
 
-.mypage-filters label {
-  display: grid;
-  gap: 6px;
-}
-
-.mypage-filters span {
-  color: var(--muted);
-  font-size: 12px;
+.mypage-hide-past-toggle {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 14px;
   font-weight: 800;
+  gap: 8px;
+  margin: 0 0 24px;
+  min-height: 40px;
+  padding: 9px 12px;
 }
 
-.mypage-filters input,
-.mypage-filters select {
+.mypage-hide-past-toggle input {
+  accent-color: var(--accent);
+  height: 16px;
+  width: 16px;
+}
+
+.mypage-filter-details summary {
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-weight: 800;
+  list-style-position: inside;
+}
+
+.mypage-detailed-filter-panel {
+  border: 0;
+  margin: 12px 0 0;
+  padding: 0;
+}
+
+.mypage-favorite-filter-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mypage-favorite-filter-list button {
+  align-items: center;
   background: #ffffff;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--ink);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
   font: inherit;
-  min-height: 40px;
-  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 800;
+  gap: 6px;
+  justify-content: start;
+  max-inline-size: none;
+  min-height: 34px;
+  overflow: visible;
+  padding: 6px 9px;
+  text-align: left;
+  white-space: nowrap;
+  width: max-content;
+}
+
+.mypage-favorite-filter-list button.favorite-kind-horse {
+  max-inline-size: none;
+}
+
+.mypage-favorite-filter-list button.active {
+  background: #eef6f2;
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.mypage-favorite-filter-list span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.mypage-favorite-filter-list strong {
+  flex: 0 0 auto;
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
 }
 
 .mypage-race-list {
@@ -1677,7 +1772,7 @@ h3 {
   border-radius: 8px;
   color: inherit;
   display: grid;
-  gap: 12px;
+  gap: 6px 12px;
   grid-template-columns: 92px minmax(0, 1fr);
   padding: 12px;
   text-decoration: none;
@@ -1689,8 +1784,22 @@ h3 {
 
 .mypage-race-date {
   color: var(--muted);
+  display: inline-flex;
+  flex-direction: column;
   font-size: 13px;
   font-weight: 800;
+  gap: 4px;
+  grid-row: 1 / span 2;
+}
+
+.mypage-race-countdown {
+  align-items: center;
+  color: var(--accent-strong);
+  display: inline-flex;
+  font-size: 12px;
+  gap: 4px;
+  line-height: 1.25;
+  white-space: nowrap;
 }
 
 .mypage-race-main {
@@ -1706,11 +1815,19 @@ h3 {
 }
 
 .mypage-race-meta {
+  align-items: center;
   color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
   font-size: 12px;
+  gap: 8px 16px;
+  grid-column: 2;
+  line-height: 1.5;
+  text-align: left;
 }
 
 .mypage-race-favorites {
+  align-items: center;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
@@ -1718,70 +1835,178 @@ h3 {
 
 .mypage-race-favorite-chip {
   align-items: center;
-  background: #eef7f1;
-  border: 1px solid #cfe5d5;
+  background: #ffffff;
+  border: 1px solid #6b7280;
   border-radius: 7px;
-  color: #153c25;
+  color: #111827;
   display: inline-flex;
+  flex: 0 0 auto;
   font-size: 13px;
   font-weight: 800;
   gap: 5px;
+  justify-content: start;
   line-height: 1.2;
-  max-width: 100%;
+  max-inline-size: none;
   padding: 5px 7px;
+  white-space: nowrap;
+  width: max-content;
 }
 
 .mypage-race-favorite-chip small {
-  color: #4d6c58;
+  color: #4b5563;
   flex: 0 0 auto;
   font-size: 11px;
-  font-weight: 900;
+  font-weight: 600;
+}
+
+.mypage-race-favorite-name {
+  color: inherit;
+  flex: 0 0 auto;
+  min-width: 0;
+  overflow: visible;
+  white-space: nowrap;
 }
 
 .mypage-race-favorite-chip.favorite-kind-horse {
-  background: #fff4e5;
-  border-color: #f3c88b;
-  color: #5a3000;
+  max-inline-size: none;
+}
+
+.mypage-race-favorite-chip.favorite-kind-horse .mypage-race-favorite-name {
+  max-inline-size: none;
+}
+
+.mypage-race-favorite-chip.favorite-kind-horse {
+  background: #ffffff;
+  border-color: #d6841e;
+  color: #111827;
 }
 
 .mypage-race-favorite-chip.favorite-kind-jockey {
-  background: #eaf3ff;
-  border-color: #abcdf5;
-  color: #123a63;
+  background: #ffffff;
+  border-color: #1e40af;
+  color: #111827;
 }
 
 .mypage-race-favorite-chip.favorite-kind-trainer {
-  background: #eef7ef;
-  border-color: #abd8b6;
-  color: #173d22;
+  background: #ffffff;
+  border-color: #4f9a62;
+  color: #111827;
 }
 
 .mypage-race-favorite-chip.favorite-kind-owner {
-  background: #f4edff;
-  border-color: #cbb5f4;
-  color: #3d2867;
+  background: #ffffff;
+  border-color: #8a68cf;
+  color: #111827;
 }
 
 .mypage-race-favorite-chip.favorite-kind-horse small {
-  color: #8a530c;
+  color: #92400e;
+  font-weight: 600;
 }
 
 .mypage-race-favorite-chip.favorite-kind-jockey small {
-  color: #37658d;
+  color: #1e3a8a;
+  font-weight: 600;
 }
 
 .mypage-race-favorite-chip.favorite-kind-trainer small {
-  color: #44734c;
+  color: #166534;
+  font-weight: 600;
 }
 
 .mypage-race-favorite-chip.favorite-kind-owner small {
-  color: #654d94;
+  color: #6d28d9;
+  font-weight: 600;
 }
 
-.mypage-race-meta {
-  line-height: 1.5;
-  text-align: left;
+.mypage-race-condition {
+  align-items: center;
+  display: inline-flex;
+  font-weight: 700;
+  min-height: 26px;
+}
+
+.mypage-race-skeleton {
+  pointer-events: none;
+}
+
+.mypage-race-skeleton .mypage-race-date {
+  min-height: 31px;
+}
+
+.mypage-race-skeleton .mypage-race-main {
+  align-items: center;
+  min-height: 19px;
+}
+
+.mypage-race-skeleton .mypage-race-condition {
+  min-width: min(100%, 340px);
+}
+
+.mypage-race-skeleton-date {
+  height: 14px;
+  width: 78px;
+}
+
+.mypage-race-skeleton-countdown {
+  height: 13px;
+  width: 66px;
+}
+
+.mypage-race-skeleton-title {
+  height: 17px;
+  width: min(100%, 240px);
+}
+
+.mypage-race-skeleton-condition {
+  height: 15px;
+  width: min(100%, 340px);
+}
+
+.mypage-race-skeleton-chip {
+  border-radius: 7px;
+  height: 26px;
+  width: 74px;
+}
+
+.mypage-race-skeleton-chip.wide {
+  width: 92px;
+}
+
+.skeleton-line {
+  background: linear-gradient(90deg, #eef2ef 0%, #f8faf8 45%, #eef2ef 90%);
+  background-size: 220% 100%;
+  border-radius: 6px;
+  display: block;
+  height: 14px;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  width: 100%;
+  animation: skeleton-shimmer 1.4s linear infinite;
+}
+
+.skeleton-line.short {
+  width: 72px;
+}
+
+.skeleton-line.medium {
   grid-column: 2;
+  width: min(100%, 360px);
+}
+
+.skeleton-line.long {
+  width: min(100%, 680px);
+}
+
+@keyframes skeleton-shimmer {
+  from {
+    background-position: 220% 0;
+  }
+
+  to {
+    background-position: -220% 0;
+  }
 }
 
 .course-description div {
@@ -1893,33 +2118,41 @@ h3 {
 
 .paddock-horse-ids {
   display: grid;
-  gap: 6px;
+  gap: 12px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   margin: 0;
 }
 
 .paddock-horse-ids > div {
-  align-items: center;
+  align-content: start;
+  align-items: start;
   display: grid;
-  gap: 4px;
-  justify-items: start;
-  min-height: 34px;
-  text-align: left;
+  gap: 5px;
+  grid-template-rows: 10px 24px;
+  justify-items: center;
+  min-height: 39px;
+  text-align: center;
 }
 
 .paddock-horse-ids dt {
   color: var(--muted);
+  display: block;
   font-size: 10px;
   font-weight: 900;
   line-height: 1;
+  width: 100%;
 }
 
 .paddock-horse-ids dd {
+  align-items: center;
+  display: inline-flex;
   font-size: 20px;
   font-variant-numeric: tabular-nums;
   font-weight: 950;
-  line-height: 1;
+  justify-content: center;
+  line-height: 24px;
   margin: 0;
+  min-height: 24px;
 }
 
 .entry-status-mini {
@@ -2070,7 +2303,7 @@ h3 {
 }
 
 .paddock-recent-results {
-  background: #fbfcf8;
+  background: #f8fbf7;
   border: 1px solid var(--line);
   border-radius: 8px;
   display: grid;
@@ -2099,7 +2332,8 @@ h3 {
   border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
   display: grid;
   gap: 8px;
-  grid-template-columns: 44px minmax(160px, 1fr) 58px 58px 86px;
+  grid-template-columns: 44px minmax(0, max-content) max-content;
+  justify-content: start;
   min-height: 42px;
   padding-top: 6px;
 }
@@ -2118,26 +2352,41 @@ h3 {
 }
 
 .paddock-recent-race {
-  display: grid;
-  gap: 3px;
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  max-width: 520px;
   min-width: 0;
+  white-space: nowrap;
 }
 
 .paddock-recent-race strong,
 .paddock-recent-race small {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .paddock-recent-race strong {
+  flex: 0 1 auto;
   color: var(--text);
   font-size: 12px;
   font-weight: 900;
 }
 
+.paddock-recent-race small {
+  flex: 0 1 280px;
+}
+
 .paddock-recent-stats {
-  display: contents;
+  align-items: center;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 10px;
+  justify-content: flex-start;
+  justify-self: start;
+  min-width: 0;
 }
 
 .paddock-recent-race small,
@@ -2151,20 +2400,40 @@ h3 {
 }
 
 .paddock-recent-results-empty {
-  align-items: center;
-  grid-template-columns: auto 1fr;
+  align-items: stretch;
+  background: #f8fbf7;
+  border-color: var(--line);
+  grid-template-columns: 44px minmax(0, 1fr);
 }
 
 .paddock-recent-results-empty p {
-  background: #fff7ed;
-  border: 1px solid #fed7aa;
-  border-radius: 999px;
-  color: #9a3412;
-  font-size: 12px;
-  font-weight: 950;
-  justify-self: start;
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #bfd7c7;
+  border-radius: 8px;
+  color: var(--accent-strong);
+  display: flex;
+  gap: 8px;
+  justify-content: flex-start;
   margin: 0;
-  padding: 5px 9px;
+  min-height: 42px;
+  padding: 8px 10px;
+}
+
+.paddock-recent-results-empty p strong {
+  background: #ea580c;
+  border-radius: 999px;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 950;
+  line-height: 1;
+  padding: 6px 10px;
+}
+
+.paddock-recent-results-empty p span {
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 900;
 }
 
 .paddock-score-controls {
@@ -2930,6 +3199,33 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   gap: 10px;
 }
 
+.odds-trend-tabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.odds-trend-tab {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 900;
+  min-height: 38px;
+  padding: 8px 12px;
+}
+
+.odds-trend-tab[aria-selected="true"] {
+  background: #2f4437;
+  border-color: #2f4437;
+  color: #fff;
+}
+
 .odds-trend-chart {
   background: #fbfdfb;
   border: 1px solid var(--line);
@@ -2983,6 +3279,22 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 .odds-trend-legend-name {
   color: var(--text);
   font-weight: 900;
+  white-space: nowrap;
+}
+
+.odds-trend-combination-badge {
+  align-items: center;
+  background: #f1f5f2;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--text);
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 900;
+  justify-content: center;
+  min-height: 24px;
+  min-width: 34px;
+  padding: 2px 6px;
   white-space: nowrap;
 }
 
@@ -3100,6 +3412,16 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   .odds-trend-chart {
     margin-inline: -6px;
     padding: 8px 6px;
+  }
+
+  .odds-trend-tabs {
+    gap: 6px;
+  }
+
+  .odds-trend-tab {
+    font-size: 11px;
+    min-height: 36px;
+    padding: 7px 10px;
   }
 
   .odds-trend-plot {
@@ -4683,6 +5005,89 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   font-weight: 800;
 }
 
+.stable-comment-table-wrap {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.stable-comment-table {
+  border-collapse: collapse;
+  min-width: 920px;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.stable-comment-table th,
+.stable-comment-table td {
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  padding: 10px 11px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.stable-comment-table th {
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.stable-comment-table th:nth-child(1),
+.stable-comment-table td:nth-child(1) {
+  width: 64px;
+}
+
+.stable-comment-table th:nth-child(2),
+.stable-comment-table td:nth-child(2) {
+  width: 180px;
+}
+
+.stable-comment-table th:nth-child(3),
+.stable-comment-table td:nth-child(3) {
+  width: 112px;
+}
+
+.stable-comment-grade {
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 700;
+  justify-content: center;
+  line-height: 1;
+  min-width: 72px;
+  padding: 6px 9px;
+  white-space: nowrap;
+}
+
+.stable-comment-grade.grade-1 {
+  background: rgba(220, 38, 38, 0.12);
+  color: #b91c1c;
+}
+
+.stable-comment-grade.grade-2 {
+  background: rgba(37, 99, 235, 0.12);
+  color: #1d4ed8;
+}
+
+.stable-comment-grade.grade-3 {
+  background: rgba(234, 179, 8, 0.16);
+  color: #92400e;
+}
+
+.stable-comment-grade.grade-none {
+  background: var(--surface-muted);
+  color: var(--muted);
+}
+
+.stable-comment-text-cell {
+  line-height: 1.7;
+  white-space: normal;
+}
+
 .ability-test-table-wrap {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -5018,14 +5423,16 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
     min-height: 58px;
   }
 
+  .paddock-recent-race {
+    align-items: start;
+    display: grid;
+    gap: 3px;
+  }
+
   .paddock-recent-stats {
-    display: flex;
     flex-wrap: wrap;
-    gap: 6px 10px;
     grid-column: 2;
-    justify-content: flex-start;
     justify-self: stretch;
-    min-width: 0;
   }
 
   .paddock-horse-name {
@@ -5190,15 +5597,26 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
     grid-template-columns: 1fr;
   }
 
-  .mypage-filters,
+  .mypage-race-date,
+  .mypage-race-meta,
+  .skeleton-line.medium {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
   .favorite-manager-form,
   .favorite-search-row {
     grid-template-columns: 1fr;
   }
 
   .mypage-race-meta {
-    grid-column: auto;
     text-align: left;
+  }
+
+  .mypage-race-date {
+    align-items: center;
+    flex-direction: row;
+    gap: 10px;
   }
 }
 

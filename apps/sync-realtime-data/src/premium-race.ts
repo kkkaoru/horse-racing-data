@@ -1,0 +1,528 @@
+import type { NarRaceSource } from "./types";
+
+export interface PremiumRaceConfig {
+  commentPathTemplate: string | null;
+  entryLinkPattern: string | null;
+  origin: string | null;
+  paddockPathTemplate: string | null;
+  proxyBearer: string | null;
+  proxyUrl: string | null;
+  proxyUserId: string | null;
+  responseCharset: string | null;
+  sourceIdQueryKey: string;
+  topPathTemplate: string | null;
+  workPathTemplate: string | null;
+}
+
+export interface PremiumRaceLink {
+  entryUrl: string;
+  sourceRaceId: string;
+}
+
+export interface PremiumTrainingReview {
+  commentText: string | null;
+  evaluationGrade: string | null;
+  evaluationText: string | null;
+  horseName: string | null;
+  horseNumber: string;
+  trainingDate: string;
+}
+
+export interface PremiumStableComment {
+  commentText: string;
+  evaluationGrade: number | null;
+  evaluationText: string | null;
+  frameNumber: string | null;
+  horseName: string | null;
+  horseNumber: string;
+}
+
+export interface PremiumPaddockBulletin {
+  commentText: string | null;
+  evaluationText: string | null;
+  frameNumber: string | null;
+  groupKey: "favorite" | "value";
+  horseName: string | null;
+  horseNumber: string;
+}
+
+export interface PremiumPaddockParseResult {
+  bulletins: PremiumPaddockBulletin[];
+  pending: boolean;
+  unavailable: boolean;
+}
+
+type EnvLike = {
+  PREMIUM_RACE_COMMENT_PATH_TEMPLATE?: string;
+  PREMIUM_RACE_ENTRY_LINK_PATTERN?: string;
+  PREMIUM_RACE_ORIGIN?: string;
+  PREMIUM_RACE_PADDOCK_PATH_TEMPLATE?: string;
+  PREMIUM_RACE_PROXY_BEARER?: string;
+  PREMIUM_RACE_PROXY_URL?: string;
+  PREMIUM_RACE_PROXY_USER_ID?: string;
+  PREMIUM_RACE_RESPONSE_CHARSET?: string;
+  PREMIUM_RACE_SOURCE_ID_QUERY_KEY?: string;
+  PREMIUM_RACE_TOP_PATH_TEMPLATE?: string;
+  PREMIUM_RACE_WORK_PATH_TEMPLATE?: string;
+};
+
+const HTML_ENTITY_MAP: Record<string, string> = {
+  amp: "&",
+  gt: ">",
+  lt: "<",
+  nbsp: " ",
+  quot: '"',
+};
+
+export const getPremiumRaceConfig = (env: EnvLike): PremiumRaceConfig => ({
+  commentPathTemplate: env.PREMIUM_RACE_COMMENT_PATH_TEMPLATE ?? null,
+  entryLinkPattern: env.PREMIUM_RACE_ENTRY_LINK_PATTERN ?? null,
+  origin: env.PREMIUM_RACE_ORIGIN ?? null,
+  paddockPathTemplate: env.PREMIUM_RACE_PADDOCK_PATH_TEMPLATE ?? null,
+  proxyBearer: env.PREMIUM_RACE_PROXY_BEARER ?? null,
+  proxyUrl: env.PREMIUM_RACE_PROXY_URL ?? null,
+  proxyUserId: env.PREMIUM_RACE_PROXY_USER_ID ?? null,
+  responseCharset: env.PREMIUM_RACE_RESPONSE_CHARSET ?? null,
+  sourceIdQueryKey: env.PREMIUM_RACE_SOURCE_ID_QUERY_KEY ?? "race_id",
+  topPathTemplate: env.PREMIUM_RACE_TOP_PATH_TEMPLATE ?? null,
+  workPathTemplate: env.PREMIUM_RACE_WORK_PATH_TEMPLATE ?? null,
+});
+
+export const hasPremiumRaceFetchConfig = (config: PremiumRaceConfig): boolean =>
+  Boolean(config.origin);
+
+export const renderPremiumTemplate = (template: string, params: Record<string, string>): string =>
+  Object.entries(params).reduce(
+    (current, [key, value]) => current.replaceAll(`{${key}}`, value),
+    template,
+  );
+
+export const buildPremiumUrl = (
+  config: PremiumRaceConfig,
+  template: string | null,
+  params: Record<string, string>,
+): string | null => {
+  if (!config.origin || !template) {
+    return null;
+  }
+  const path = renderPremiumTemplate(template, params);
+  return new URL(path, config.origin).toString();
+};
+
+export const fetchPremiumHtml = async (
+  config: PremiumRaceConfig,
+  targetUrl: string,
+): Promise<string> => {
+  if (!hasPremiumRaceFetchConfig(config)) {
+    throw new Error("premium race fetch config is incomplete");
+  }
+  const hasProxy = Boolean(config.proxyUrl && config.proxyUserId && config.proxyBearer);
+  const requestUrl = hasProxy ? new URL(config.proxyUrl as string) : new URL(targetUrl);
+  if (hasProxy) {
+    requestUrl.searchParams.set("url", targetUrl);
+    requestUrl.searchParams.set("user_id", config.proxyUserId as string);
+  }
+  const response = await fetch(requestUrl.toString(), {
+    headers: hasProxy ? { Authorization: `Bearer ${config.proxyBearer}` } : undefined,
+  });
+  if (!response.ok) {
+    throw new Error(`premium race fetch failed: ${response.status}`);
+  }
+  const buffer = await response.arrayBuffer();
+  const charset = config.responseCharset ?? detectHtmlCharset(buffer) ?? "utf-8";
+  return new TextDecoder(charset).decode(buffer);
+};
+
+const detectHtmlCharset = (buffer: ArrayBuffer): string | null => {
+  const head = String.fromCharCode(...new Uint8Array(buffer.slice(0, 1024)));
+  const charset =
+    head.match(/charset=["']?([a-z0-9_-]+)/iu)?.[1] ??
+    head.match(/content=["'][^"']*charset=([a-z0-9_-]+)/iu)?.[1] ??
+    null;
+  return charset ? charset.toLowerCase() : null;
+};
+
+export const extractPremiumSourceRaceId = (
+  value: string,
+  sourceIdQueryKey: string,
+): string | null => {
+  try {
+    return new URL(value, "https://local.invalid").searchParams.get(sourceIdQueryKey);
+  } catch {
+    return null;
+  }
+};
+
+const cleanText = (value: string | null | undefined): string =>
+  (value ?? "")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/giu, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/giu, " ")
+    .replace(/<br\s*\/?>/giu, " ")
+    .replace(/<[^>]*>/gu, "")
+    .replace(/&([a-z]+);/giu, (_, key: string) => HTML_ENTITY_MAP[key.toLowerCase()] ?? "")
+    .replace(/&#(\d+);/gu, (_, key: string) => String.fromCodePoint(Number(key)))
+    .replace(/\s+/gu, " ")
+    .trim();
+
+const normalizeHorseNumber = (value: string | null | undefined): string | null => {
+  const text = cleanText(value).replace(/[^\d]/gu, "");
+  if (!text) {
+    return null;
+  }
+  const parsed = Number(text);
+  return Number.isInteger(parsed) && parsed > 0 ? String(parsed) : null;
+};
+
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+
+const extractClassCell = (row: string, className: string | null | undefined): string | null => {
+  if (!className) {
+    return null;
+  }
+  const classPattern = className.endsWith("*")
+    ? `${escapeRegExp(className.slice(0, -1))}[^"']*`
+    : `\\b${escapeRegExp(className)}\\b`;
+  return (
+    row.match(
+      new RegExp(
+        `<(?:td|th|div|span)[^>]*class=["'][^"']*${classPattern}[^"']*["'][^>]*>([\\s\\S]*?)<\\/(?:td|th|div|span)>`,
+        "iu",
+      ),
+    )?.[1] ?? null
+  );
+};
+
+const extractRowsByClass = (html: string, className: string | null | undefined): string[] => {
+  if (className === "*") {
+    return Array.from(html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/giu)).map((match) => match[1] ?? "");
+  }
+  if (!className) {
+    return [];
+  }
+  const escaped = escapeRegExp(className);
+  return Array.from(
+    html.matchAll(
+      new RegExp(
+        `<tr[^>]*class=["'][^"']*\\b${escaped}\\b[^"']*["'][^>]*>([\\s\\S]*?)<\\/tr>`,
+        "giu",
+      ),
+    ),
+  ).map((match) => match[1] ?? "");
+};
+
+const extractTablesByClass = (
+  html: string,
+  className: string | null | undefined,
+): { before: string; html: string }[] => {
+  if (!className) {
+    return [];
+  }
+  const escaped = escapeRegExp(className);
+  const matches = Array.from(
+    html.matchAll(
+      new RegExp(
+        `<table[^>]*class=["'][^"']*\\b${escaped}\\b[^"']*["'][^>]*>([\\s\\S]*?)<\\/table>`,
+        "giu",
+      ),
+    ),
+  );
+  return matches.map((match, index) => {
+    const startIndex = match.index ?? 0;
+    const previousEnd =
+      index === 0
+        ? Math.max(0, startIndex - 1200)
+        : (matches[index - 1]?.index ?? 0) + (matches[index - 1]?.[0].length ?? 0);
+    return {
+      before: html.slice(previousEnd, startIndex),
+      html: match[1] ?? "",
+    };
+  });
+};
+
+const extractTableCellRows = (html: string): string[][] =>
+  Array.from(html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/giu))
+    .map((rowMatch) =>
+      Array.from((rowMatch[1] ?? "").matchAll(/<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/giu))
+        .map((cellMatch) => cleanText(cellMatch[1] ?? ""))
+        .filter((cell) => cell !== ""),
+    )
+    .filter((cells) => cells.length > 0);
+
+const extractRawTableCellRows = (html: string): { html: string; text: string }[][] =>
+  Array.from(html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/giu))
+    .map((rowMatch) =>
+      Array.from((rowMatch[1] ?? "").matchAll(/<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/giu)).map(
+        (cellMatch) => ({
+          html: cellMatch[1] ?? "",
+          text: cleanText(cellMatch[1] ?? ""),
+        }),
+      ),
+    )
+    .filter((cells) => cells.some((cell) => cell.text || cell.html));
+
+const extractStableEvaluationGrade = (
+  row: string,
+  className: string | null | undefined,
+): number | null => {
+  const evaluationCell = extractClassCell(row, className);
+  const mark = evaluationCell?.match(/Icon_Mark_0([123])\b/u)?.[1] ?? null;
+  return mark ? Number(mark) : null;
+};
+
+const extractStableEvaluationGradeFromCells = (
+  cells: { html: string; text: string }[],
+): number | null => {
+  const mark = cells
+    .map((cell) => cell.html)
+    .join(" ")
+    .match(/Icon_Mark_0([123])\b/u)?.[1];
+  return mark ? Number(mark) : null;
+};
+
+export const discoverPremiumRaceLinks = (
+  html: string,
+  config: PremiumRaceConfig,
+): PremiumRaceLink[] => {
+  const pattern =
+    config.entryLinkPattern ??
+    `href=["']([^"']*\\?(?:[^"']*&)?${escapeRegExp(config.sourceIdQueryKey)}=\\d+[^"']*)["']`;
+  const links = Array.from(html.matchAll(new RegExp(pattern, "giu")))
+    .map((match) => match[1])
+    .filter((value): value is string => Boolean(value))
+    .map((href) => {
+      const entryUrl = config.origin ? new URL(href, config.origin).toString() : href;
+      const sourceRaceId = extractPremiumSourceRaceId(entryUrl, config.sourceIdQueryKey);
+      return sourceRaceId ? { entryUrl, sourceRaceId } : null;
+    })
+    .filter((link): link is PremiumRaceLink => link !== null);
+  return Array.from(new Map(links.map((link) => [link.sourceRaceId, link])).values());
+};
+
+export const sourceRaceIdCandidates = (race: NarRaceSource): string[] => [
+  `${race.kaisaiNen}${race.keibajoCode}${race.raceBango}`,
+  `${race.kaisaiNen}${race.keibajoCode}${race.raceBango.replace(/^0+/u, "")}`,
+];
+
+export const matchPremiumLinkToRace = (
+  links: PremiumRaceLink[],
+  race: NarRaceSource,
+): PremiumRaceLink | null => {
+  const raceNumber = race.raceBango.replace(/^0+/u, "");
+  return (
+    links.find((link) =>
+      sourceRaceIdCandidates(race).some((item) => link.sourceRaceId.endsWith(item)),
+    ) ??
+    links.find((link) => link.sourceRaceId.endsWith(race.raceBango)) ??
+    links.find((link) => link.sourceRaceId.endsWith(raceNumber)) ??
+    null
+  );
+};
+
+export const parsePremiumTrainingReviews = (
+  html: string,
+  env: {
+    PREMIUM_RACE_WORK_COMMENT_CLASS?: string;
+    PREMIUM_RACE_WORK_DATE_CLASS?: string;
+    PREMIUM_RACE_WORK_GRADE_CLASS?: string;
+    PREMIUM_RACE_WORK_HORSE_NAME_CLASS?: string;
+    PREMIUM_RACE_WORK_HORSE_NUMBER_CLASS?: string;
+    PREMIUM_RACE_WORK_ROW_CLASS?: string;
+    PREMIUM_RACE_WORK_TEXT_CLASS?: string;
+  },
+): PremiumTrainingReview[] => {
+  const rows = extractRowsByClass(html, env.PREMIUM_RACE_WORK_ROW_CLASS);
+  const reviews: PremiumTrainingReview[] = [];
+  let currentHorse: {
+    actionComment: string | null;
+    horseName: string | null;
+    horseNumber: string;
+  } | null = null;
+
+  for (const row of rows) {
+    const rowHorseNumber = normalizeHorseNumber(
+      extractClassCell(row, env.PREMIUM_RACE_WORK_HORSE_NUMBER_CLASS),
+    );
+    if (rowHorseNumber) {
+      currentHorse = {
+        actionComment:
+          cleanText(extractClassCell(row, env.PREMIUM_RACE_WORK_COMMENT_CLASS)) || null,
+        horseName: cleanText(extractClassCell(row, env.PREMIUM_RACE_WORK_HORSE_NAME_CLASS)) || null,
+        horseNumber: rowHorseNumber,
+      };
+    }
+
+    const horseNumber = rowHorseNumber ?? currentHorse?.horseNumber ?? null;
+    const trainingDate = cleanText(extractClassCell(row, env.PREMIUM_RACE_WORK_DATE_CLASS));
+    const evaluationText = cleanText(extractClassCell(row, env.PREMIUM_RACE_WORK_TEXT_CLASS));
+    const evaluationGrade = cleanText(extractClassCell(row, env.PREMIUM_RACE_WORK_GRADE_CLASS));
+    if (!horseNumber || (!trainingDate && !evaluationText && !evaluationGrade)) {
+      continue;
+    }
+    reviews.push({
+      commentText:
+        cleanText(extractClassCell(row, env.PREMIUM_RACE_WORK_COMMENT_CLASS)) ||
+        currentHorse?.actionComment ||
+        null,
+      evaluationGrade: evaluationGrade || null,
+      evaluationText: evaluationText || null,
+      horseName:
+        cleanText(extractClassCell(row, env.PREMIUM_RACE_WORK_HORSE_NAME_CLASS)) ||
+        currentHorse?.horseName ||
+        null,
+      horseNumber,
+      trainingDate,
+    });
+  }
+
+  return reviews;
+};
+
+export const parsePremiumStableComments = (
+  html: string,
+  env: {
+    PREMIUM_RACE_COMMENT_LABEL_EVALUATION?: string;
+    PREMIUM_RACE_COMMENT_LABEL_FRAME?: string;
+    PREMIUM_RACE_COMMENT_LABEL_HORSE_NAME?: string;
+    PREMIUM_RACE_COMMENT_LABEL_HORSE_NUMBER?: string;
+    PREMIUM_RACE_COMMENT_LABEL_TEXT?: string;
+    PREMIUM_RACE_COMMENT_ROW_CLASS?: string;
+  },
+): PremiumStableComment[] => {
+  const classBasedRows = extractRowsByClass(html, env.PREMIUM_RACE_COMMENT_ROW_CLASS)
+    .map((row): PremiumStableComment | null => {
+      const horseNumber = normalizeHorseNumber(
+        extractClassCell(row, env.PREMIUM_RACE_COMMENT_LABEL_HORSE_NUMBER),
+      );
+      const commentText = cleanText(extractClassCell(row, env.PREMIUM_RACE_COMMENT_LABEL_TEXT));
+      if (!horseNumber || !commentText) {
+        return null;
+      }
+      return {
+        commentText,
+        evaluationGrade: extractStableEvaluationGrade(
+          row,
+          env.PREMIUM_RACE_COMMENT_LABEL_EVALUATION,
+        ),
+        evaluationText:
+          cleanText(extractClassCell(row, env.PREMIUM_RACE_COMMENT_LABEL_EVALUATION)) || null,
+        frameNumber: normalizeHorseNumber(
+          extractClassCell(row, env.PREMIUM_RACE_COMMENT_LABEL_FRAME),
+        ),
+        horseName:
+          cleanText(extractClassCell(row, env.PREMIUM_RACE_COMMENT_LABEL_HORSE_NAME)) || null,
+        horseNumber,
+      };
+    })
+    .filter((row): row is PremiumStableComment => row !== null);
+  if (classBasedRows.length > 0) {
+    return classBasedRows;
+  }
+
+  return extractRawTableCellRows(html)
+    .map((cells): PremiumStableComment | null => {
+      const textCells = cells.map((cell) => cell.text);
+      const nonEmptyTextCells = textCells.filter((cell) => cell !== "");
+      const horseNumber =
+        normalizeHorseNumber(textCells[1]) ??
+        normalizeHorseNumber(textCells[2]) ??
+        normalizeHorseNumber(nonEmptyTextCells[1]);
+      const commentText =
+        cleanText(textCells[3]) || cleanText(textCells[4]) || cleanText(nonEmptyTextCells[3]);
+      if (!horseNumber || !commentText || commentText === "コメント") {
+        return null;
+      }
+      return {
+        commentText,
+        evaluationGrade: extractStableEvaluationGradeFromCells(cells),
+        evaluationText: cleanText(textCells[4]) || null,
+        frameNumber:
+          normalizeHorseNumber(textCells[0]) ?? normalizeHorseNumber(nonEmptyTextCells[0]),
+        horseName: cleanText(textCells[2]) || cleanText(nonEmptyTextCells[2]) || null,
+        horseNumber,
+      };
+    })
+    .filter((row): row is PremiumStableComment => row !== null);
+};
+
+export const summarizePremiumStableCommentHtml = (
+  html: string,
+): {
+  cellRowCount: number;
+  textSample: string;
+  samples: string[][];
+} => {
+  const cellRows = extractTableCellRows(html);
+  return {
+    cellRowCount: cellRows.length,
+    textSample: cleanText(html).slice(0, 1200),
+    samples: cellRows
+      .filter((cells) => cells.some((cell) => cell.length > 0))
+      .slice(0, 12)
+      .map((cells) => cells.slice(0, 8).map((cell) => cell.slice(0, 80))),
+  };
+};
+
+export const parsePremiumPaddockBulletins = (
+  html: string,
+  env: {
+    PREMIUM_RACE_PADDOCK_GROUP_FAVORITE_LABEL?: string;
+    PREMIUM_RACE_PADDOCK_GROUP_VALUE_LABEL?: string;
+    PREMIUM_RACE_PADDOCK_LABEL_COMMENT?: string;
+    PREMIUM_RACE_PADDOCK_LABEL_EVALUATION?: string;
+    PREMIUM_RACE_PADDOCK_LABEL_FRAME?: string;
+    PREMIUM_RACE_PADDOCK_LABEL_HORSE_NAME?: string;
+    PREMIUM_RACE_PADDOCK_LABEL_HORSE_NUMBER?: string;
+    PREMIUM_RACE_PADDOCK_PENDING_TEXT?: string;
+    PREMIUM_RACE_PADDOCK_ROW_CLASS?: string;
+    PREMIUM_RACE_PADDOCK_TABLE_CLASS?: string;
+    PREMIUM_RACE_PADDOCK_UNAVAILABLE_TEXT?: string;
+  },
+): PremiumPaddockParseResult => {
+  const pageText = cleanText(html);
+  const unavailableText = env.PREMIUM_RACE_PADDOCK_UNAVAILABLE_TEXT;
+  const pendingText = env.PREMIUM_RACE_PADDOCK_PENDING_TEXT;
+  const unavailable = unavailableText ? pageText.includes(unavailableText) : false;
+  const pending = pendingText ? pageText.includes(pendingText) : false;
+  const tableSections = extractTablesByClass(html, env.PREMIUM_RACE_PADDOCK_TABLE_CLASS);
+  const rowGroups =
+    tableSections.length > 0
+      ? tableSections.flatMap((table) => {
+          const heading = cleanText(table.before);
+          const groupKey: "favorite" | "value" =
+            env.PREMIUM_RACE_PADDOCK_GROUP_VALUE_LABEL &&
+            heading.includes(env.PREMIUM_RACE_PADDOCK_GROUP_VALUE_LABEL)
+              ? "value"
+              : "favorite";
+          return extractRowsByClass(table.html, "*").map((row) => ({ groupKey, row }));
+        })
+      : extractRowsByClass(html, env.PREMIUM_RACE_PADDOCK_ROW_CLASS).map((row, index, rows) => ({
+          groupKey: (index < Math.ceil(rows.length / 2) ? "favorite" : "value") as
+            | "favorite"
+            | "value",
+          row,
+        }));
+  const bulletins = rowGroups
+    .map(({ groupKey, row }): PremiumPaddockBulletin | null => {
+      const horseNumber = normalizeHorseNumber(
+        extractClassCell(row, env.PREMIUM_RACE_PADDOCK_LABEL_HORSE_NUMBER),
+      );
+      if (!horseNumber) {
+        return null;
+      }
+      return {
+        commentText:
+          cleanText(extractClassCell(row, env.PREMIUM_RACE_PADDOCK_LABEL_COMMENT)) || null,
+        evaluationText:
+          cleanText(extractClassCell(row, env.PREMIUM_RACE_PADDOCK_LABEL_EVALUATION)) || null,
+        frameNumber: normalizeHorseNumber(
+          extractClassCell(row, env.PREMIUM_RACE_PADDOCK_LABEL_FRAME),
+        ),
+        groupKey,
+        horseName:
+          cleanText(extractClassCell(row, env.PREMIUM_RACE_PADDOCK_LABEL_HORSE_NAME)) || null,
+        horseNumber,
+      };
+    })
+    .filter((row): row is PremiumPaddockBulletin => row !== null);
+  return { bulletins, pending, unavailable };
+};
