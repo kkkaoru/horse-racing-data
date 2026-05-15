@@ -442,6 +442,7 @@ const entityRaceRowsSql = sql`
     ra.keibajo_code,
     ra.race_bango,
     coalesce(nullif(regexp_replace(ra.kyosomei_hondai, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '一般競走') as race_name,
+    ra.hasso_jikoku,
     ra.kyori,
     ra.track_code,
     se.wakuban,
@@ -478,6 +479,7 @@ const entityRaceRowsSql = sql`
     ra.keibajo_code,
     ra.race_bango,
     coalesce(nullif(regexp_replace(ra.kyosomei_hondai, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''), '一般競走') as race_name,
+    ra.hasso_jikoku,
     ra.kyori,
     ra.track_code,
     se.wakuban,
@@ -1137,7 +1139,9 @@ export const searchFavoriteHorses = cache(
         filtered as (
           select *
           from entries
-          where id = ${q} or label ilike ${favoriteSearchPattern(q)}
+          where
+            id = ${q}
+            or label ilike ${favoriteSearchPattern(q)}
         ),
         grouped as (
           select
@@ -1160,7 +1164,66 @@ export const searchFavoriteHorses = cache(
         limit ${limit}
       `);
 
-      return result.rows.map((row) => ({
+      if (result.rows.length > 0) {
+        return result.rows.map((row) => ({
+          id: row.id,
+          label: row.label,
+          latestDate: row.latestDate,
+          starts: toCount(row.starts),
+        }));
+      }
+
+      const fallback = await getDb().execute<{
+        id: string;
+        label: string;
+        latestDate: string;
+        starts: string;
+      }>(sql`
+        with entries as (
+          select
+            ketto_toroku_bango as id,
+            nullif(btrim(coalesce(bamei, '')), '') as label,
+            kaisai_nen || kaisai_tsukihi as race_date
+          from ${jvdSe}
+          where btrim(coalesce(ketto_toroku_bango, '')) <> ''
+            and (
+              ketto_toroku_bango = ${q}
+              or bamei ilike ${favoriteSearchPattern(q)}
+            )
+          union all
+          select
+            ketto_toroku_bango as id,
+            nullif(btrim(coalesce(bamei, '')), '') as label,
+            kaisai_nen || kaisai_tsukihi as race_date
+          from ${nvdSe}
+          where btrim(coalesce(ketto_toroku_bango, '')) <> ''
+            and (
+              ketto_toroku_bango = ${q}
+              or bamei ilike ${favoriteSearchPattern(q)}
+            )
+        ),
+        grouped as (
+          select
+            id,
+            coalesce(min(label) filter (where label is not null), id) as label,
+            max(race_date) as "latestDate",
+            count(*)::text as starts,
+            case
+              when coalesce(min(label) filter (where label is not null), '') ilike ${favoriteSearchPrefixPattern(q)}
+                or id = ${q}
+              then 0
+              else 1
+            end as priority
+          from entries
+          group by id
+        )
+        select id, label, "latestDate", starts
+        from grouped
+        order by priority asc, "latestDate" desc, starts::numeric desc, label asc
+        limit ${limit}
+      `);
+
+      return fallback.rows.map((row) => ({
         id: row.id,
         label: row.label,
         latestDate: row.latestDate,
@@ -1229,7 +1292,52 @@ export const searchFavoritePeople = cache(
         limit ${limit}
       `);
 
-      return result.rows.map((row) => ({
+      if (result.rows.length > 0) {
+        return result.rows.map((row) => ({
+          id: row.id,
+          label: row.label,
+          latestDate: row.latestDate,
+          starts: toCount(row.starts),
+        }));
+      }
+
+      const fallback = await getDb().execute<{
+        id: string;
+        label: string;
+        latestDate: string;
+        starts: string;
+      }>(sql`
+        with entries as (
+          select
+            nullif(btrim(coalesce(${rawColumn}, '')), '') as name,
+            kaisai_nen || kaisai_tsukihi as race_date
+          from ${jvdSe}
+          where ${rawColumn} ilike ${favoriteSearchPattern(q)}
+          union all
+          select
+            nullif(btrim(coalesce(${rawColumn}, '')), '') as name,
+            kaisai_nen || kaisai_tsukihi as race_date
+          from ${nvdSe}
+          where ${rawColumn} ilike ${favoriteSearchPattern(q)}
+        ),
+        grouped as (
+          select
+            name as id,
+            name as label,
+            max(race_date) as "latestDate",
+            count(*)::text as starts,
+            case when name ilike ${favoriteSearchPrefixPattern(q)} then 0 else 1 end as priority
+          from entries
+          where name is not null
+          group by name
+        )
+        select id, label, "latestDate", starts
+        from grouped
+        order by priority asc, "latestDate" desc, starts::numeric desc, label asc
+        limit ${limit}
+      `);
+
+      return fallback.rows.map((row) => ({
         id: row.id,
         label: row.label,
         latestDate: row.latestDate,
@@ -1354,6 +1462,7 @@ const getEntityResultRows = async (
     keibajoCode: string;
     raceBango: string;
     raceName: string;
+    hassoJikoku: string | null;
     kyori: string | null;
     trackCode: string | null;
     kettoTorokuBango: string | null;
@@ -1391,6 +1500,7 @@ const getEntityResultRows = async (
       keibajo_code as "keibajoCode",
       race_bango as "raceBango",
       race_name as "raceName",
+      hasso_jikoku as "hassoJikoku",
       kyori,
       track_code as "trackCode",
       ketto_toroku_bango "kettoTorokuBango",

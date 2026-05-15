@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -138,6 +138,39 @@ describe("race date filter", () => {
     expect(screen.queryByLabelText("selected jockey filters")).toBeNull();
   });
 
+  it("filters by surface and distance range when JRA races are present", () => {
+    render(<RaceDateFilter day="10" month="05" races={races} year="2026" />);
+
+    fireEvent.change(screen.getByLabelText("馬場"), { target: { value: "turf" } });
+    expect(screen.getByText("1 / 3 レース")).toBeTruthy();
+    expect(screen.getByText("ＮＨＫマイルカップ")).toBeTruthy();
+    expect(screen.queryByText("地方特別")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("馬場"), { target: { value: "all" } });
+    fireEvent.change(screen.getByLabelText("距離 下限"), { target: { value: "1500" } });
+    fireEvent.change(screen.getByLabelText("距離 上限"), { target: { value: "1700" } });
+    expect(screen.getByText("1 / 3 レース")).toBeTruthy();
+    expect(screen.getByText("ＮＨＫマイルカップ")).toBeTruthy();
+    expect(screen.queryByText("一般競走")).toBeNull();
+    expect(screen.getByLabelText("距離 下限").getAttribute("step")).toBe("100");
+    expect(screen.getByLabelText("距離 上限").getAttribute("step")).toBe("100");
+  });
+
+  it("hides surface filter when JRA races are absent", () => {
+    render(
+      <RaceDateFilter
+        day="10"
+        month="05"
+        races={[race({ keibajoCode: "44", source: "nar", trackCode: "24" })]}
+        year="2026"
+      />,
+    );
+
+    expect(screen.queryByLabelText("馬場")).toBeNull();
+    expect(screen.getByLabelText("距離 下限")).toBeTruthy();
+    expect(screen.getByLabelText("距離 上限")).toBeTruthy();
+  });
+
   it("supports keyboard selection for jockey suggestions", () => {
     render(<RaceDateFilter day="10" month="05" races={races} year="2026" />);
 
@@ -221,5 +254,45 @@ describe("race date filter", () => {
     expect(screen.getByText("1 / 3 レース")).toBeTruthy();
     expect(screen.getByText("ＮＨＫマイルカップ")).toBeTruthy();
     expect(screen.queryByText("地方特別")).toBeNull();
+  });
+
+  it("restores filters from URL query values", () => {
+    render(
+      <RaceDateFilter
+        day="10"
+        initialSearchParams={{
+          jockey: "東京太郎",
+          maxDistance: "1700",
+          minDistance: "1500",
+          q: "東京",
+          source: "jra",
+          surface: "turf",
+        }}
+        month="05"
+        races={races}
+        year="2026"
+      />,
+    );
+
+    expect(screen.getByText("1 / 3 レース")).toBeTruthy();
+    expect(screen.getByText("ＮＨＫマイルカップ")).toBeTruthy();
+    expect(screen.getByLabelText("selected jockey filters").textContent).toContain("東京太郎");
+    expect(screen.getByLabelText("距離 下限")).toHaveProperty("value", "1500");
+    expect(screen.getByLabelText("距離 上限")).toHaveProperty("value", "1700");
+  });
+
+  it("updates query string without navigating when filter values change", async () => {
+    window.history.pushState(null, "", "/races/2026/05/10");
+    render(<RaceDateFilter day="10" month="05" races={races} year="2026" />);
+
+    fireEvent.change(screen.getByLabelText("馬場"), { target: { value: "turf" } });
+    fireEvent.change(screen.getByLabelText("距離 下限"), { target: { value: "1500" } });
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "東京" } });
+
+    await waitFor(() => {
+      expect(window.location.search).toContain("surface=turf");
+      expect(window.location.search).toContain("minDistance=1500");
+      expect(window.location.search).toContain("q=%E6%9D%B1%E4%BA%AC");
+    });
   });
 });

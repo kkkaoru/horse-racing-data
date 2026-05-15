@@ -28,6 +28,7 @@ interface DiscordPaddockHorsePayload {
   preference: number;
   sexAge: string;
   total: string;
+  weight: string;
 }
 
 interface DiscordPaddockPayload {
@@ -69,6 +70,18 @@ const getDiscordWebhookUrl = (): string | null => {
   }
 };
 
+const getDiscordBotName = (): string => {
+  if (process.env.PC_KEIBA_PADDOCK_DISCORD_BOT_NAME) {
+    return process.env.PC_KEIBA_PADDOCK_DISCORD_BOT_NAME;
+  }
+
+  try {
+    return getCloudflareContext().env.PC_KEIBA_PADDOCK_DISCORD_BOT_NAME ?? "PC-KEIBA Paddock";
+  } catch {
+    return "PC-KEIBA Paddock";
+  }
+};
+
 const isFiniteNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value);
 
@@ -85,6 +98,8 @@ const isDiscordHorsePayload = (value: unknown): value is DiscordPaddockHorsePayl
     isString(value.horseName) &&
     "sexAge" in value &&
     isString(value.sexAge) &&
+    "weight" in value &&
+    isString(value.weight) &&
     "jockeyName" in value &&
     isString(value.jockeyName) &&
     "popularity" in value &&
@@ -160,8 +175,8 @@ const formatHorseLine = (horse: DiscordPaddockHorsePayload, index: number): stri
   const rankIcon = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : "▫️";
   return [
     `${rankIcon} **${horse.horseNumber} ${horse.horseName}**（${horse.sexAge || "-"}）`,
-    `　👤 ${horse.jockeyName || "-"}　📈 ${horse.popularity}人気　💴 ${horse.odds}`,
-    `　⭐ **${horse.total}**　🏅 ${horse.officialRank}　👀 気配${horse.paddock} 返し${horse.kaeshi} 注目${horse.attention} 好み${horse.preference}`,
+    `　👤 ${horse.jockeyName || "-"}　⚖️ ${horse.weight || "-"}　📈 ${horse.popularity}人気　💴 ${horse.odds}`,
+    `　⭐ **${horse.total}**　🏅 公式${horse.officialRank}　👀 気配${horse.paddock} 返し${horse.kaeshi} 注目${horse.attention} 好み${horse.preference}`,
   ].join("\n");
 };
 
@@ -169,6 +184,13 @@ const buildDiscordEmbed = (payload: DiscordPaddockPayload) => {
   const sortedHorses = payload.horses.toSorted(sortByPaddockScore);
   const topHorses = sortedHorses.slice(0, 3);
   const horseLines = topHorses.map((horse, index) => formatHorseLine(horse, index));
+  const officialRankLines = payload.horses
+    .filter((horse) => Number.isFinite(Number(horse.officialRank)))
+    .toSorted((left, right) => Number(left.officialRank) - Number(right.officialRank))
+    .map(
+      (horse) =>
+        `${horse.officialRank}. **${horse.horseNumber} ${horse.horseName}** / ⭐ ${horse.total} / ⚖️ ${horse.weight || "-"}`,
+    );
   const topHorse = sortedHorses[0];
 
   return {
@@ -192,9 +214,18 @@ const buildDiscordEmbed = (payload: DiscordPaddockPayload) => {
         name: "上位3頭",
         value: truncate(horseLines.join("\n\n"), 1024),
       },
+      ...(officialRankLines.length > 0
+        ? [
+            {
+              inline: false,
+              name: "公式評価順",
+              value: truncate(officialRankLines.join("\n"), 1024),
+            },
+          ]
+        : []),
     ],
     footer: {
-      text: `全${payload.horses.length}頭から総合順で上位3頭のみ表示`,
+      text: `全${payload.horses.length}頭から総合順で上位3頭を表示`,
     },
     timestamp: new Date().toISOString(),
     title: "🏇 パドック評価通知",
@@ -224,7 +255,7 @@ export async function POST(request: Request, { params }: DiscordPaddockRouteProp
   const response = await fetch(webhookUrl, {
     body: JSON.stringify({
       embeds: [buildDiscordEmbed(payload)],
-      username: "PC-KEIBA Paddock",
+      username: getDiscordBotName(),
     }),
     headers: { "Content-Type": "application/json" },
     method: "POST",

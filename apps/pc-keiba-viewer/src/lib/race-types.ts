@@ -346,6 +346,7 @@ export interface EntityRaceResult extends Record<string, unknown> {
   keibajoCode: string;
   raceBango: string;
   raceName: string;
+  hassoJikoku: string | null;
   kyori: string | null;
   trackCode: string | null;
   kettoTorokuBango: string | null;

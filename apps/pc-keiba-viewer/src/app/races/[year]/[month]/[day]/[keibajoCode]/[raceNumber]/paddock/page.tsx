@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 
 import {
   getRaceDetail,
+  getHorseRaceResults,
   getRaceRunners,
   getRaceSourceByRoute,
 } from "../../../../../../../../db/queries";
@@ -16,6 +17,7 @@ import {
   formatTrack,
   getTrackSurfaceLabel,
 } from "../../../../../../../../lib/format";
+import { isBanEiKeibajoCode } from "../../../../../../../../lib/runner-format";
 import { PaddockSection } from "../../../../../../../races/detail/paddock-section";
 import { RaceStartCountdown } from "../../../../../../../races/detail/race-start-countdown";
 
@@ -71,9 +73,10 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
     notFound();
   }
 
-  const [race, runners] = await Promise.all([
+  const [race, runners, recentResults] = await Promise.all([
     getRaceDetail(source, year, month, day, keibajoCode, raceNumber),
     getRaceRunners(source, year, month, day, keibajoCode, raceNumber),
+    getHorseRaceResults(source, year, month, day, keibajoCode, raceNumber),
   ]);
   if (!race) {
     notFound();
@@ -89,10 +92,11 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
   const raceMeta = `${formatDate(year, `${month}${day}`)} ${formatKeibajo(keibajoCode)} ${formatRaceNumber(raceNumber)} / ${formatTime(race.hassoJikoku)}発走 / ${formatTrack(race.trackCode)} ${formatDistance(race.kyori)}`;
   const realtimeApiBaseUrl =
     process.env.NEXT_PUBLIC_REALTIME_DATA_API_BASE_URL ?? "https://sync-realtime-data.kkk4oru.com";
+  const decodeHexHorseWeight = source === "nar" && isBanEiKeibajoCode(keibajoCode);
 
   return (
-    <section className="page-shell">
-      <div className="race-global-summary" aria-label="race summary in global header">
+    <main className="page-shell">
+      <section className="race-global-summary" aria-label="レース概要">
         <div>
           <span>{formatTime(race.hassoJikoku)}発走</span>
           <RaceStartCountdown startsAt={raceStartsAt} />
@@ -101,17 +105,17 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
           <span>{getTrackSurfaceLabel(race.trackCode) ?? formatTrack(race.trackCode)}</span>
           <span>{formatDistance(race.kyori)}</span>
         </div>
-      </div>
-      <div className="breadcrumbs">
+      </section>
+      <nav className="breadcrumbs" aria-label="パンくずリスト">
         <Link href="/races">開催日一覧</Link>
         <Link href={`/races/${year}/${month}/${day}/${keibajoCode}`}>
           {formatKeibajo(keibajoCode)}
         </Link>
         <Link href={raceDetailPath}>{formatRaceNumber(raceNumber)}</Link>
         <span>パドック編集</span>
-      </div>
+      </nav>
 
-      <div className="page-title-row">
+      <header className="page-title-row">
         <div>
           <p className="eyebrow">
             {formatDate(year, `${month}${day}`)} / {formatTime(race.hassoJikoku)}
@@ -125,10 +129,11 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
         <Link className="paddock-edit-link" href={raceDetailPath}>
           詳細へ戻る
         </Link>
-      </div>
+      </header>
 
       <PaddockSection
         detailUrl={raceDetailUrl}
+        decodeHexHorseWeight={decodeHexHorseWeight}
         editFooterDetailPath={raceDetailPath}
         editable
         day={day}
@@ -149,9 +154,10 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
           source,
           year,
         }}
+        recentResults={recentResults}
         runners={runners}
         year={year}
       />
-    </section>
+    </main>
   );
 }

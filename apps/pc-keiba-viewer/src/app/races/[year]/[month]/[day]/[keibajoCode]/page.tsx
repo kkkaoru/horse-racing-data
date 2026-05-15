@@ -15,6 +15,7 @@ interface RaceVenuePageProps {
     month: string;
     year: string;
   }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }
 
 const isValidVenueParams = (
@@ -28,7 +29,7 @@ const isValidVenueParams = (
   /^\d{2}$/.test(day) &&
   /^[0-9A-Z]{2}$/.test(keibajoCode);
 
-export default async function RaceVenuePage({ params }: RaceVenuePageProps) {
+export default async function RaceVenuePage({ params, searchParams }: RaceVenuePageProps) {
   const { day, keibajoCode, month, year } = await params;
   if (!isValidVenueParams(year, month, day, keibajoCode)) {
     notFound();
@@ -37,6 +38,7 @@ export default async function RaceVenuePage({ params }: RaceVenuePageProps) {
   const races = (await getRacesByDate(year, month, day)).filter(
     (race) => race.keibajoCode === keibajoCode,
   );
+  const initialSearchParams = await searchParams;
   if (races.length === 0) {
     notFound();
   }
@@ -70,6 +72,7 @@ export default async function RaceVenuePage({ params }: RaceVenuePageProps) {
         day={day}
         defaultStartTime={getDefaultRaceStartFilterTime(year, month, day)}
         fixedVenueCode={keibajoCode}
+        initialSearchParams={initialSearchParams}
         month={month}
         races={races}
         year={year}

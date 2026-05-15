@@ -183,10 +183,7 @@ export const buildUploadSteps = (options: UploadOptions): UploadStep[] => {
   return steps;
 };
 
-export const runUpload = (
-  options: UploadOptions,
-  spawner: WranglerSpawner,
-): Promise<string[]> =>
+export const runUpload = (options: UploadOptions, spawner: WranglerSpawner): Promise<string[]> =>
   buildUploadSteps(options).reduce<Promise<string[]>>(
     (accPromise, step) =>
       accPromise.then(async (acc) => {

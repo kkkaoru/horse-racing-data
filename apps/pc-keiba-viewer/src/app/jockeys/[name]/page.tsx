@@ -7,6 +7,7 @@ import {
   EntitySummary,
   parseEntityListQuery,
 } from "../../entity-ui";
+import { FavoriteButton } from "../../favorite-button";
 
 export const dynamic = "force-dynamic";
 
@@ -31,7 +32,10 @@ export default async function JockeyDetailPage({ params, searchParams }: JockeyD
           <p className="eyebrow">Jockey Detail</p>
           <h1>{data.summary.name}</h1>
         </div>
-        <span className="page-count">{data.results.length} 件</span>
+        <div className="entity-title-actions">
+          <FavoriteButton item={{ id: decodedName, kind: "jockey", label: data.summary.name }} />
+          <span className="page-count">{data.results.length} 件</span>
+        </div>
       </div>
       <EntitySummary summary={data.summary} />
       <EntityDetailFilterForm

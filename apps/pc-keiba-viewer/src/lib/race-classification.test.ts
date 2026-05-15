@@ -5,6 +5,7 @@ import {
   getConditionLabel,
   getGradeLabel,
   getRaceClassLabel,
+  getRaceSymbolDetailLabel,
   getRaceSymbolLabel,
   getRaceTagText,
   getRaceTags,
@@ -75,7 +76,10 @@ describe("race classification", () => {
     expect(getConditionLabel(null)).toBe("-");
     expect(getRaceClassLabel("02", "703")).toBe("3歳 未勝利");
     expect(getRaceSymbolLabel("023")).toBe("牝馬限定");
+    expect(getRaceSymbolDetailLabel("023")).toBe("牝馬限定 [指定]");
+    expect(getRaceSymbolDetailLabel("N23")).toBe("国際競走 牝馬限定 [指定]");
     expect(getRaceSymbolLabel("999")).toBe("競走記号 999");
+    expect(getRaceSymbolDetailLabel("999")).toBe("競走記号 999");
   });
 
   it("formats grade labels", () => {
