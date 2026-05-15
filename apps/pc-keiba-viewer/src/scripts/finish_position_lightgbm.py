@@ -275,6 +275,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     train.add_argument("--num-leaves", type=int, default=DEFAULT_NUM_LEAVES)
     train.add_argument("--min-child-samples", type=int, default=DEFAULT_MIN_CHILD_SAMPLES)
     train.add_argument("--lambda-l2", type=float, default=DEFAULT_LAMBDA_L2)
+    walk = subparsers.add_parser("walk-forward")
+    walk.add_argument("--csv", type=Path, required=True)
+    walk.add_argument("--train-start-date", type=str, default="20160101")
+    walk.add_argument("--validation-years", type=str, default="2021,2022,2023,2024,2025")
+    walk.add_argument("--output-report", type=Path, required=True)
+    walk.add_argument("--output-predictions-dir", type=Path)
+    walk.add_argument("--num-iterations", type=int, default=DEFAULT_NUM_ITERATIONS)
+    walk.add_argument("--learning-rate", type=float, default=DEFAULT_LEARNING_RATE)
+    walk.add_argument("--num-leaves", type=int, default=DEFAULT_NUM_LEAVES)
+    walk.add_argument("--min-child-samples", type=int, default=DEFAULT_MIN_CHILD_SAMPLES)
+    walk.add_argument("--lambda-l2", type=float, default=DEFAULT_LAMBDA_L2)
     return parser.parse_args(argv)
 
 
@@ -304,10 +315,174 @@ def run_train_command(args: argparse.Namespace) -> None:
     print(json.dumps(result, ensure_ascii=False))
 
 
+def parse_year_list(raw: str) -> list[int]:
+    pieces = [piece.strip() for piece in raw.split(",") if piece.strip()]
+    parsed = [int(piece) for piece in pieces]
+    if not parsed:
+        raise ValueError("validation years must be a non-empty comma-separated list")
+    return sorted(set(parsed))
+
+
+def filter_by_date_range(df: pd.DataFrame, from_date: str, to_date: str) -> pd.DataFrame:
+    mask = (df["race_date"].astype(str) >= from_date) & (df["race_date"].astype(str) <= to_date)
+    return df.loc[mask].reset_index(drop=True)
+
+
+class FoldSplit(TypedDict):
+    train_df: pd.DataFrame
+    valid_df: pd.DataFrame
+    valid_year: int
+
+
+def split_walk_forward(df: pd.DataFrame, train_start: str, valid_year: int) -> FoldSplit:
+    train_end = f"{valid_year - 1}1231"
+    valid_start = f"{valid_year}0101"
+    valid_end = f"{valid_year}1231"
+    return {
+        "train_df": filter_by_date_range(df, train_start, train_end),
+        "valid_df": filter_by_date_range(df, valid_start, valid_end),
+        "valid_year": valid_year,
+    }
+
+
+class FoldMetrics(TypedDict):
+    ndcg_at_3: float
+    race_count: int
+    top1_accuracy: float
+    top3_box_accuracy: float
+    top3_exact_accuracy: float
+    valid_rows: int
+    valid_year: int
+
+
+def compute_top_k_actuals(group: pd.DataFrame, k: int) -> list[str]:
+    actual_top = group.nsmallest(k, "finish_position").sort_values("finish_position")
+    return actual_top["ketto_toroku_bango"].tolist()
+
+
+def compute_top_k_predicted(group: pd.DataFrame, k: int) -> list[str]:
+    predicted_top = group.nsmallest(k, "predicted_rank").sort_values("predicted_rank")
+    return predicted_top["ketto_toroku_bango"].tolist()
+
+
+def race_top3_box_hit(actual_top3: list[str], predicted_top3: list[str]) -> bool:
+    return set(actual_top3) == set(predicted_top3)
+
+
+def race_top3_exact_hit(actual_top3: list[str], predicted_top3: list[str]) -> bool:
+    return actual_top3 == predicted_top3
+
+
+def race_top1_hit(actual_top3: list[str], predicted_top3: list[str]) -> bool:
+    if not actual_top3 or not predicted_top3:
+        return False
+    return actual_top3[0] == predicted_top3[0]
+
+
+def evaluate_predictions(predictions: pd.DataFrame, ground_truth: pd.DataFrame) -> dict[str, float | int]:
+    joined = predictions.merge(
+        ground_truth[["race_id", "ketto_toroku_bango", "finish_position"]],
+        on=["race_id", "ketto_toroku_bango"],
+        how="inner",
+    )
+    box_hits = 0
+    exact_hits = 0
+    top1_hits = 0
+    race_count = 0
+    for _race_id, group in joined.groupby("race_id"):
+        actual = compute_top_k_actuals(group, TOP3_K)
+        predicted = compute_top_k_predicted(group, TOP3_K)
+        race_count += 1
+        if race_top3_box_hit(actual, predicted):
+            box_hits += 1
+        if race_top3_exact_hit(actual, predicted):
+            exact_hits += 1
+        if race_top1_hit(actual, predicted):
+            top1_hits += 1
+    safe_total = max(race_count, 1)
+    return {
+        "race_count": race_count,
+        "top1_accuracy": top1_hits / safe_total,
+        "top3_box_accuracy": box_hits / safe_total,
+        "top3_exact_accuracy": exact_hits / safe_total,
+    }
+
+
+def run_walk_forward_fold(
+    fold: FoldSplit,
+    params: TrainingParams,
+) -> tuple["lgb.Booster", pd.DataFrame, FoldMetrics]:
+    train_bundle = prepare_lgb_dataset(fold["train_df"])
+    valid_bundle = prepare_lgb_dataset(fold["valid_df"])
+    booster, training_result = train_lambdarank(train_bundle, valid_bundle, params)
+    predictions = score_dataset(booster, fold["valid_df"])
+    eval_metrics = evaluate_predictions(predictions, fold["valid_df"])
+    metrics: FoldMetrics = {
+        "ndcg_at_3": training_result["best_ndcg_at_3"] or 0.0,
+        "race_count": int(eval_metrics["race_count"]),
+        "top1_accuracy": float(eval_metrics["top1_accuracy"]),
+        "top3_box_accuracy": float(eval_metrics["top3_box_accuracy"]),
+        "top3_exact_accuracy": float(eval_metrics["top3_exact_accuracy"]),
+        "valid_rows": training_result["valid_rows"],
+        "valid_year": fold["valid_year"],
+    }
+    return booster, predictions, metrics
+
+
+def aggregate_fold_metrics(folds: list[FoldMetrics]) -> dict[str, float | int]:
+    if not folds:
+        return {
+            "fold_count": 0,
+            "ndcg_at_3_mean": 0.0,
+            "top1_accuracy_mean": 0.0,
+            "top3_box_accuracy_mean": 0.0,
+            "top3_exact_accuracy_mean": 0.0,
+        }
+    fold_count = len(folds)
+    return {
+        "fold_count": fold_count,
+        "ndcg_at_3_mean": sum(fold["ndcg_at_3"] for fold in folds) / fold_count,
+        "top1_accuracy_mean": sum(fold["top1_accuracy"] for fold in folds) / fold_count,
+        "top3_box_accuracy_mean": sum(fold["top3_box_accuracy"] for fold in folds) / fold_count,
+        "top3_exact_accuracy_mean": sum(fold["top3_exact_accuracy"] for fold in folds) / fold_count,
+    }
+
+
+def write_walk_forward_report(
+    fold_metrics: list[FoldMetrics],
+    aggregate: dict[str, float | int],
+    output_path: Path,
+) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"aggregate": aggregate, "folds": fold_metrics}
+    with output_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+
+
+def run_walk_forward_command(args: argparse.Namespace) -> None:
+    full_df = load_dataset_csv(args.csv)
+    validation_years = parse_year_list(args.validation_years)
+    params = training_params_from_args(args)
+    fold_metrics: list[FoldMetrics] = []
+    for valid_year in validation_years:
+        fold = split_walk_forward(full_df, args.train_start_date, valid_year)
+        _booster, predictions, metrics = run_walk_forward_fold(fold, params)
+        fold_metrics.append(metrics)
+        if args.output_predictions_dir is not None:
+            predictions_path = args.output_predictions_dir / f"{valid_year}.jsonl"
+            write_predictions_jsonl(predictions, predictions_path)
+    aggregate = aggregate_fold_metrics(fold_metrics)
+    write_walk_forward_report(fold_metrics, aggregate, args.output_report)
+    print(json.dumps({"aggregate": aggregate, "folds": fold_metrics}, ensure_ascii=False))
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     if args.command == "train":
         run_train_command(args)
+        return
+    if args.command == "walk-forward":
+        run_walk_forward_command(args)
         return
     raise ValueError(f"Unknown command: {args.command}")
 

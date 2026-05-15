@@ -297,6 +297,199 @@ def test_main_rejects_unknown_command():
         subject.main(["bogus"])
 
 
+def test_parse_year_list_sorts_and_deduplicates():
+    assert subject.parse_year_list("2023,2021,2023,2022") == [2021, 2022, 2023]
+
+
+def test_parse_year_list_rejects_empty():
+    with pytest.raises(ValueError, match="non-empty"):
+        subject.parse_year_list(" , ,")
+
+
+def test_filter_by_date_range_inclusive():
+    df = pd.DataFrame({"race_date": ["20200101", "20210601", "20211231", "20220101"]})
+    filtered = subject.filter_by_date_range(df, "20210101", "20211231")
+    assert filtered["race_date"].tolist() == ["20210601", "20211231"]
+
+
+def test_split_walk_forward_uses_year_window():
+    df = pd.DataFrame(
+        {
+            "race_date": ["20191231", "20200101", "20201231", "20210101", "20210601", "20211231", "20220101"],
+            "value": ["a", "b", "c", "d", "e", "f", "g"],
+        }
+    )
+    fold = subject.split_walk_forward(df, "20160101", 2021)
+    assert fold["valid_year"] == 2021
+    assert fold["train_df"]["value"].tolist() == ["a", "b", "c"]
+    assert fold["valid_df"]["value"].tolist() == ["d", "e", "f"]
+
+
+def test_evaluate_predictions_computes_box_and_exact_hits():
+    truth = pd.DataFrame(
+        {
+            "race_id": ["r1", "r1", "r1", "r2", "r2", "r2"],
+            "ketto_toroku_bango": ["a", "b", "c", "d", "e", "f"],
+            "finish_position": [1, 2, 3, 1, 2, 3],
+        }
+    )
+    predictions = pd.DataFrame(
+        {
+            "race_id": ["r1", "r1", "r1", "r2", "r2", "r2"],
+            "ketto_toroku_bango": ["a", "b", "c", "f", "e", "d"],
+            "predicted_rank": [1, 2, 3, 1, 2, 3],
+        }
+    )
+    metrics = subject.evaluate_predictions(predictions, truth)
+    assert metrics["race_count"] == 2
+    assert metrics["top1_accuracy"] == 0.5
+    assert metrics["top3_box_accuracy"] == 1.0
+    assert metrics["top3_exact_accuracy"] == 0.5
+
+
+def test_aggregate_fold_metrics_averages():
+    folds: list[subject.FoldMetrics] = [
+        {
+            "ndcg_at_3": 0.5,
+            "race_count": 100,
+            "top1_accuracy": 0.4,
+            "top3_box_accuracy": 0.2,
+            "top3_exact_accuracy": 0.05,
+            "valid_rows": 1000,
+            "valid_year": 2021,
+        },
+        {
+            "ndcg_at_3": 0.7,
+            "race_count": 110,
+            "top1_accuracy": 0.6,
+            "top3_box_accuracy": 0.3,
+            "top3_exact_accuracy": 0.09,
+            "valid_rows": 1100,
+            "valid_year": 2022,
+        },
+    ]
+    aggregate = subject.aggregate_fold_metrics(folds)
+    assert aggregate["fold_count"] == 2
+    assert aggregate["ndcg_at_3_mean"] == pytest.approx(0.6)
+    assert aggregate["top1_accuracy_mean"] == pytest.approx(0.5)
+
+
+def test_aggregate_fold_metrics_handles_empty():
+    aggregate = subject.aggregate_fold_metrics([])
+    assert aggregate["fold_count"] == 0
+    assert aggregate["top1_accuracy_mean"] == 0.0
+
+
+def test_write_walk_forward_report_writes_json(tmp_path: Path):
+    output_path = tmp_path / "walk-forward.json"
+    fold: subject.FoldMetrics = {
+        "ndcg_at_3": 0.5,
+        "race_count": 100,
+        "top1_accuracy": 0.4,
+        "top3_box_accuracy": 0.2,
+        "top3_exact_accuracy": 0.05,
+        "valid_rows": 1000,
+        "valid_year": 2021,
+    }
+    aggregate = {"fold_count": 1, "ndcg_at_3_mean": 0.5}
+    subject.write_walk_forward_report([fold], aggregate, output_path)
+    parsed = json.loads(output_path.read_text(encoding="utf-8"))
+    assert parsed["aggregate"]["fold_count"] == 1
+    assert parsed["folds"][0]["valid_year"] == 2021
+
+
+def make_walk_forward_dataset(seed: int = 7) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    rows: list[dict[str, object]] = []
+    horses_per_race = 6
+    for year in (2020, 2021):
+        for race_index in range(8):
+            race_id = f"{year}-r{race_index}"
+            race_date = f"{year}{1 + race_index // 4:02d}{1 + race_index:02d}"
+            ordering = rng.permutation(horses_per_race)
+            for slot in range(horses_per_race):
+                rows.append(
+                    {
+                        "source": "jra",
+                        "race_date": race_date,
+                        "kaisai_nen": str(year),
+                        "kaisai_tsukihi": race_date[4:],
+                        "keibajo_code": "05",
+                        "race_bango": f"{race_index + 1:02d}",
+                        "ketto_toroku_bango": f"{year}{race_index}{slot}",
+                        "umaban": slot + 1,
+                        "category": "jra",
+                        "race_id": race_id,
+                        "finish_position": int(ordering[slot]) + 1,
+                        "finish_norm": (int(ordering[slot]) + 1) / horses_per_race,
+                        "track_code": "10",
+                        "grade_code": " ",
+                        "feat_a": float(rng.standard_normal()),
+                        "feat_b": float(rng.standard_normal()),
+                        "feat_c": float(rng.standard_normal()),
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+def test_run_walk_forward_fold_returns_metrics():
+    df = make_walk_forward_dataset()
+    fold = subject.split_walk_forward(df, "20200101", 2021)
+    _booster, predictions, metrics = subject.run_walk_forward_fold(
+        fold,
+        {
+            "lambda_l2": 0.0,
+            "learning_rate": 0.1,
+            "min_child_samples": 2,
+            "num_iterations": 10,
+            "num_leaves": 7,
+        },
+    )
+    assert metrics["valid_year"] == 2021
+    assert metrics["race_count"] == 8
+    assert len(predictions) == len(fold["valid_df"])
+
+
+def test_run_walk_forward_command_writes_report_and_predictions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    df = make_walk_forward_dataset()
+    csv_path = tmp_path / "full.csv"
+    df.to_csv(csv_path, index=False)
+    report_path = tmp_path / "report.json"
+    predictions_dir = tmp_path / "predictions"
+    captured: list[str] = []
+    monkeypatch.setattr("builtins.print", lambda line: captured.append(line))
+    subject.run_walk_forward_command(
+        subject.parse_args(
+            [
+                "walk-forward",
+                "--csv",
+                str(csv_path),
+                "--train-start-date",
+                "20200101",
+                "--validation-years",
+                "2021",
+                "--output-report",
+                str(report_path),
+                "--output-predictions-dir",
+                str(predictions_dir),
+                "--num-iterations",
+                "5",
+                "--num-leaves",
+                "7",
+                "--min-child-samples",
+                "2",
+            ]
+        )
+    )
+    assert report_path.exists()
+    parsed = json.loads(report_path.read_text(encoding="utf-8"))
+    assert parsed["aggregate"]["fold_count"] == 1
+    assert (predictions_dir / "2021.jsonl").exists()
+    assert captured
+
+
 def test_run_train_command_writes_model_predictions_and_metadata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     df = make_synthetic_dataset()
     train_csv = tmp_path / "train.csv"
