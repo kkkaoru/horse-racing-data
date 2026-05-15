@@ -40,6 +40,8 @@ META_COLUMNS: tuple[str, ...] = (
     "umaban",
     "category",
     "race_id",
+    "race_year",
+    "feature_schema_version",
 )
 LABEL_COLUMNS: tuple[str, ...] = ("finish_position", "finish_norm")
 CATEGORICAL_FEATURE_COLUMNS: tuple[str, ...] = ("track_code", "grade_code")
@@ -111,10 +113,13 @@ def load_dataset_csv(path: Path) -> pd.DataFrame:
 
 def load_dataset_parquet(path: Path) -> pd.DataFrame:
     if path.is_dir():
-        frames = [pd.read_parquet(child) for child in sorted(path.glob("race_year=*/*.parquet"))]
-        if not frames:
-            raise ValueError(f"No parquet files found under {path}")
-        return pd.concat(frames, ignore_index=True)
+        partitioned = sorted(path.glob("race_year=*/*.parquet"))
+        if partitioned:
+            return pd.concat([pd.read_parquet(child) for child in partitioned], ignore_index=True)
+        flat = sorted(path.glob("*.parquet"))
+        if flat:
+            return pd.concat([pd.read_parquet(child) for child in flat], ignore_index=True)
+        raise ValueError(f"No parquet files found under {path}")
     return pd.read_parquet(path)
 
 
@@ -313,6 +318,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     walk.add_argument("--num-leaves", type=int, default=DEFAULT_NUM_LEAVES)
     walk.add_argument("--min-child-samples", type=int, default=DEFAULT_MIN_CHILD_SAMPLES)
     walk.add_argument("--lambda-l2", type=float, default=DEFAULT_LAMBDA_L2)
+    predict = subparsers.add_parser("predict")
+    predict.add_argument("--model-path", type=Path, required=True)
+    predict.add_argument("--input-csv", type=Path, required=True)
+    predict.add_argument("--output-predictions", type=Path, required=True)
     hpo = subparsers.add_parser("hpo")
     hpo.add_argument("--csv", type=Path, required=True)
     hpo.add_argument("--train-start-date", type=str, default="20160101")
@@ -588,6 +597,24 @@ def run_hpo_command(args: argparse.Namespace) -> HpoSummary:
     return summary
 
 
+def run_predict_command(args: argparse.Namespace) -> None:
+    booster = load_booster(args.model_path)
+    df = load_dataset(args.input_csv)
+    predictions = score_dataset(booster, df)
+    write_predictions_jsonl(predictions, args.output_predictions)
+    print(
+        json.dumps(
+            {
+                "input_rows": len(df),
+                "model_path": str(args.model_path),
+                "output_predictions": str(args.output_predictions),
+                "scored_rows": len(predictions),
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     if args.command == "train":
@@ -598,6 +625,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "hpo":
         run_hpo_command(args)
+        return
+    if args.command == "predict":
+        run_predict_command(args)
         return
     raise ValueError(f"Unknown command: {args.command}")
 
