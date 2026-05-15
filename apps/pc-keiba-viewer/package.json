@@ -13,6 +13,7 @@
     "dev:build-finish-features": "bun run src/scripts/finish-position-features/build-finish-position-features.ts",
     "dev:export-finish-features": "bun run src/scripts/finish-position-features/export-finish-position-dataset.ts",
     "dev:import-finish-predictions": "bun run src/scripts/finish-position-features/import-finish-position-predictions.ts",
+    "dev:upload-finish-model": "bun run src/scripts/finish-position-features/upload-finish-model.ts",
     "dev:finish-lightgbm": "uv run --with lightgbm --with pandas --with numpy --with optuna python src/scripts/finish_position_lightgbm.py",
     "dev:walk-forward-finish-eval": "bun run src/scripts/walk-forward-finish-position-eval.ts",
     "dev:export-corner-lightgbm": "bun run src/scripts/export-corner-lightgbm-dataset.ts",
