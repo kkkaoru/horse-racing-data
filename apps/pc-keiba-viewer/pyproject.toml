@@ -6,6 +6,7 @@ dependencies = [
   "lightgbm>=4.6.0",
   "mlx>=0.31.0",
   "numpy>=2.0.0",
+  "optuna>=4.0.0",
   "pandas>=2.2.0",
   "scikit-learn>=1.6.0",
 ]
