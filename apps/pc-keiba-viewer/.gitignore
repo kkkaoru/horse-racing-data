@@ -2,6 +2,9 @@
 .open-next/
 .next/
 .wrangler/
+__pycache__/
+.pytest_cache/
+.venv/
 coverage/
 .coverage
 node_modules/
