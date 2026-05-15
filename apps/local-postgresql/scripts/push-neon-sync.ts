@@ -22,7 +22,10 @@ const appDir = resolve(scriptDir, "..");
 const envPath = resolve(appDir, ".env");
 const replicaEnvPath = resolve(appDir, ".env.replica");
 const analyticsIndexesPath = resolve(appDir, "sql", "analytics-indexes.sql");
-const defaultExcludedLogTables = new Set(["finish_position_tuning_random_trials"]);
+const defaultExcludedLogTables = new Set([
+  "finish_position_tuning_random_trials",
+  "race_finish_position_features",
+]);
 
 type CommandResult = {
   stdout: string;
@@ -283,6 +286,9 @@ Environment:
 Options:
   --allow-log-table TABLE          Allow syncing a log/experiment table that is excluded by
                                   default. Repeat or pass comma-separated names.
+
+Default exclusions (local-only training tables): finish_position_tuning_random_trials,
+race_finish_position_features. Use --allow-log-table to opt them back in.
 `);
 }
 
