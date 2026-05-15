@@ -109,6 +109,21 @@ def load_dataset_csv(path: Path) -> pd.DataFrame:
     return pd.read_csv(path, dtype={"track_code": "string", "grade_code": "string"})
 
 
+def load_dataset_parquet(path: Path) -> pd.DataFrame:
+    if path.is_dir():
+        frames = [pd.read_parquet(child) for child in sorted(path.glob("race_year=*/*.parquet"))]
+        if not frames:
+            raise ValueError(f"No parquet files found under {path}")
+        return pd.concat(frames, ignore_index=True)
+    return pd.read_parquet(path)
+
+
+def load_dataset(path: Path) -> pd.DataFrame:
+    if path.suffix == ".parquet" or path.is_dir():
+        return load_dataset_parquet(path)
+    return load_dataset_csv(path)
+
+
 def sort_for_grouping(df: pd.DataFrame) -> pd.DataFrame:
     return df.sort_values(["race_id", "umaban"]).reset_index(drop=True)
 
@@ -321,8 +336,8 @@ def training_params_from_args(args: argparse.Namespace) -> TrainingParams:
 
 
 def run_train_command(args: argparse.Namespace) -> None:
-    train_df = load_dataset_csv(args.train_csv)
-    valid_df = load_dataset_csv(args.valid_csv) if args.valid_csv is not None else None
+    train_df = load_dataset(args.train_csv)
+    valid_df = load_dataset(args.valid_csv) if args.valid_csv is not None else None
     train_bundle = prepare_lgb_dataset(train_df)
     valid_bundle = prepare_lgb_dataset(valid_df) if valid_df is not None else None
     booster, result = train_lambdarank(train_bundle, valid_bundle, training_params_from_args(args))
@@ -481,7 +496,7 @@ def write_walk_forward_report(
 
 
 def run_walk_forward_command(args: argparse.Namespace) -> None:
-    full_df = load_dataset_csv(args.csv)
+    full_df = load_dataset(args.csv)
     validation_years = parse_year_list(args.validation_years)
     params = training_params_from_args(args)
     fold_metrics: list[FoldMetrics] = []
@@ -543,7 +558,7 @@ def write_optuna_trials_csv(study: optuna.Study, output_path: Path) -> None:
 
 
 def run_hpo_command(args: argparse.Namespace) -> HpoSummary:
-    df = load_dataset_csv(args.csv)
+    df = load_dataset(args.csv)
     validation_years = parse_year_list(args.validation_years)
 
     def objective(trial: optuna.trial.Trial) -> float:

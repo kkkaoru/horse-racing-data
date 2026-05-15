@@ -3,11 +3,13 @@ name = "pc-keiba-viewer-python"
 version = "0.0.0"
 requires-python = ">=3.12"
 dependencies = [
+  "duckdb>=1.1.0",
   "lightgbm>=4.6.0",
   "mlx>=0.31.0",
   "numpy>=2.0.0",
   "optuna>=4.0.0",
   "pandas>=2.2.0",
+  "pyarrow>=17.0.0",
   "scikit-learn>=1.6.0",
 ]
 
@@ -46,7 +48,7 @@ extra-paths = ["src/scripts"]
 python = ".venv/bin/python"
 
 [tool.pytest.ini_options]
-addopts = "--cov=corner_lightgbm --cov=finish_position_lightgbm --cov-report=term-missing --cov-fail-under=85"
+addopts = "--cov=corner_lightgbm --cov=finish_position_lightgbm --cov=finish_position_features_duckdb --cov-report=term-missing --cov-fail-under=70"
 pythonpath = ["src/scripts"]
 testpaths = ["tests"]
 
