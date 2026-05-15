@@ -24,6 +24,7 @@ import {
 import { buildPedigreeUpdateSql } from "./build-pedigree-sql";
 import { buildRaceContextUpdateSql } from "./build-race-context-sql";
 import { buildRecentFormUpdateSql } from "./build-recent-form-sql";
+import { buildTrackBiasIndexSqls, buildTrackBiasUpdateSql } from "./build-track-bias-sql";
 import { buildWeatherUpdateSql } from "./build-weather-sql";
 
 const DEFAULT_FEATURE_SCHEMA_VERSION = "v1";
@@ -130,7 +131,11 @@ const ensureTable = async (pool: Pool): Promise<void> => {
 };
 
 const ensureIndexes = async (pool: Pool): Promise<void> => {
-  const statements = [...buildIndexSqls(), ...buildSourceFeatureLookupIndexSqls()];
+  const statements = [
+    ...buildIndexSqls(),
+    ...buildSourceFeatureLookupIndexSqls(),
+    ...buildTrackBiasIndexSqls(),
+  ];
   await Promise.all(statements.map((statement) => pool.query(statement)));
 };
 
@@ -182,6 +187,12 @@ const applyWeatherStage = async (pool: Pool, options: BuildOptions): Promise<num
   return result.rowCount ?? 0;
 };
 
+const applyTrackBiasStage = async (pool: Pool, options: BuildOptions): Promise<number> => {
+  const sql = buildTrackBiasUpdateSql(options.category);
+  const result = await pool.query(sql, [options.fromDate, options.toDate]);
+  return result.rowCount ?? 0;
+};
+
 const logSummary = (options: BuildOptions, stageCounts: Record<string, number>): void => {
   const stages = Object.entries(stageCounts)
     .map(([stage, count]) => `${stage}=${count}`)
@@ -206,6 +217,7 @@ const main = async (): Promise<void> => {
         race_context: 0,
         recent_form: 0,
         skeleton: 0,
+        track_bias: 0,
         trainer: 0,
         weather: 0,
       });
@@ -219,6 +231,7 @@ const main = async (): Promise<void> => {
     const raceContextCount = await applyRaceContextStage(pool, options);
     const recentFormCount = await applyRecentFormStage(pool, options);
     const weatherCount = await applyWeatherStage(pool, options);
+    const trackBiasCount = await applyTrackBiasStage(pool, options);
     logSummary(options, {
       horse_career: horseCareerCount,
       jockey: jockeyCount,
@@ -226,6 +239,7 @@ const main = async (): Promise<void> => {
       race_context: raceContextCount,
       recent_form: recentFormCount,
       skeleton: skeletonCount,
+      track_bias: trackBiasCount,
       trainer: trainerCount,
       weather: weatherCount,
     });
