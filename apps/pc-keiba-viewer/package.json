@@ -11,6 +11,7 @@
     "dev:compare-finish": "bun run src/scripts/compare-finish-position-predictions.ts",
     "dev:search-finish-tuning": "bun run src/scripts/search-finish-position-tuning.ts",
     "dev:build-finish-features": "bun run src/scripts/finish-position-features/build-finish-position-features.ts",
+    "dev:export-finish-features": "bun run src/scripts/finish-position-features/export-finish-position-dataset.ts",
     "dev:walk-forward-finish-eval": "bun run src/scripts/walk-forward-finish-position-eval.ts",
     "dev:export-corner-lightgbm": "bun run src/scripts/export-corner-lightgbm-dataset.ts",
     "dev:import-corner-lightgbm": "bun run src/scripts/import-corner-lightgbm-predictions.ts",
