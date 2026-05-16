@@ -387,6 +387,11 @@ export const discoverPremiumRaceLinks = (
 };
 
 export const sourceRaceIdCandidates = (race: NarRaceSource): string[] => [
+  ...(race.source === "jra" && race.kaisaiKai && race.kaisaiNichime
+    ? [
+        `${race.kaisaiNen}${race.keibajoCode}${race.kaisaiKai}${race.kaisaiNichime}${race.raceBango.padStart(2, "0")}`,
+      ]
+    : []),
   `${race.kaisaiNen}${race.keibajoCode}${race.raceBango}`,
   `${race.kaisaiNen}${race.keibajoCode}${race.raceBango.replace(/^0+/u, "")}`,
 ];

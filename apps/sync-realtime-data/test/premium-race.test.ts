@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parsePremiumPaddockBulletins } from "../src/premium-race";
+import { matchPremiumLinkToRace, parsePremiumPaddockBulletins } from "../src/premium-race";
 
 const paddockEnv = {
   PREMIUM_RACE_PADDOCK_GROUP_VALUE_LABEL: "穴馬",
@@ -136,5 +136,39 @@ describe("premium race parsing", () => {
       pending: true,
       unavailable: false,
     });
+  });
+
+  it("matches JRA premium links by meeting number and day", () => {
+    const link = matchPremiumLinkToRace(
+      [
+        {
+          entryUrl: "https://race.netkeiba.com/race/shutuba.html?race_id=202604010601",
+          sourceRaceId: "202604010601",
+        },
+        {
+          entryUrl: "https://race.netkeiba.com/race/shutuba.html?race_id=202605020811",
+          sourceRaceId: "202605020811",
+        },
+      ],
+      {
+        babaCode: "05",
+        debaUrl: "https://www.jra.go.jp/JRADB/accessD.html",
+        kaisaiKai: "02",
+        kaisaiNen: "2026",
+        kaisaiNichime: "08",
+        kaisaiTsukihi: "0517",
+        keibajoCode: "05",
+        lastOddsFetchAt: null,
+        lastWeightFetchAt: null,
+        oddsLinks: {},
+        raceBango: "11",
+        raceKey: "jra:2026:0517:05:11",
+        raceName: "ヴィクトリアマイル",
+        raceStartAtJst: "2026-05-17T15:40:00+09:00",
+        source: "jra",
+      },
+    );
+
+    expect(link?.sourceRaceId).toBe("202605020811");
   });
 });
