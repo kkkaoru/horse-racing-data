@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { RaceSource } from "../../../lib/codes";
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
@@ -19,6 +19,7 @@ import {
 } from "../../../lib/jockey-name";
 import {
   isPaddockState,
+  applyPaddockAction,
   normalizePaddockHorseScore,
   type PaddockAction,
   type PaddockMetric,
@@ -48,6 +49,7 @@ interface PaddockSectionProps {
   raceNumberLabel?: string;
   racePlace?: string;
   raceMeta?: string;
+  raceStartsAt?: string | null;
   raceStartsAtLabel?: string;
   raceTitle?: string;
   realtimeRequest?: RealtimeRaceRequest;
@@ -64,7 +66,6 @@ interface PaddockHorseRowProps {
   frameNumber: string | null;
   jockeyName: string;
   moshokuCode?: string | null;
-  onOfficialRank: (action: PaddockAction) => void;
   onScore: (action: PaddockAction) => void;
   originalJockeyName: string;
   recentResults: HorseRaceResult[] | null;
@@ -81,8 +82,41 @@ interface PaddockHorseRowProps {
   };
   sexAge: string;
   status: string | null;
+  trainingEvaluationGrade: string | null;
   weight: string;
 }
+
+interface PaddockRunnerRow {
+  horseName: string;
+  horseNumber: string;
+  frameNumber: string | null;
+  index: number;
+  jockeyName: string;
+  moshokuCode?: string | null;
+  sexAge: string;
+  status: string;
+  weight: string;
+}
+
+type PaddockTableRowStyle = CSSProperties & {
+  "--paddock-row-cell-padding-y": string;
+  "--paddock-row-font-size": string;
+};
+
+type PaddockTableStyle = CSSProperties & {
+  "--paddock-jockey-col-width": string;
+  "--paddock-mobile-table-width": string;
+  "--paddock-name-col-width": string;
+};
+
+type PaddockScoreTooltipState = {
+  horseName: string;
+  horseNumber: string;
+  left: number;
+  placement: "bottom" | "top";
+  top: number;
+  total: number;
+};
 
 const METRIC_LABELS: Record<PaddockMetric, { minus: string; plus: string; title: string }> = {
   attention: { minus: "注目-", plus: "注目+", title: "注目度" },
@@ -97,7 +131,9 @@ const METRIC_ORDER = [
   "kaeshi",
 ] as const satisfies readonly PaddockMetric[];
 const DEFAULT_REMOTE_PADDOCK_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
+const PUBLIC_DETAIL_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
 const OFFICIAL_RANK_OPTIONS: PaddockOfficialRank[] = [1, 2, 3, 4, 5, 6];
+const PAST_RACE_EDIT_UNLOCK_MS = 10 * 60 * 1000;
 
 const isLocalHost = (hostname: string): boolean =>
   hostname === "localhost" || hostname === "127.0.0.1" || hostname === "0.0.0.0";
@@ -124,11 +160,57 @@ const getPaddockLiveUrl = (path: string): string => {
   return liveUrl.toString();
 };
 
+const getPastRaceEditSessionKey = ({
+  day,
+  keibajoCode,
+  month,
+  raceNumber,
+  year,
+}: {
+  day: string;
+  keibajoCode: string;
+  month: string;
+  raceNumber: string;
+  year: string;
+}): string => `paddock:past-edit-until:${year}${month}${day}:${keibajoCode}:${raceNumber}`;
+
+const isPastRace = (raceStartsAt: string | null | undefined): boolean => {
+  if (!raceStartsAt) {
+    return false;
+  }
+  const startsAt = new Date(raceStartsAt).getTime();
+  return Number.isFinite(startsAt) && startsAt <= Date.now();
+};
+
+const readPastRaceEditUnlocked = (storageKey: string): boolean => {
+  try {
+    const expiresAt = Number(window.sessionStorage.getItem(storageKey));
+    return Number.isFinite(expiresAt) && expiresAt > Date.now();
+  } catch {
+    return false;
+  }
+};
+
+const writePastRaceEditUnlocked = (storageKey: string): void => {
+  try {
+    window.sessionStorage.setItem(storageKey, String(Date.now() + PAST_RACE_EDIT_UNLOCK_MS));
+  } catch {
+    // sessionStorage が使えない環境でも、その場の編集操作は許可する。
+  }
+};
+
 const formatOfficialRank = (rank: PaddockOfficialRank | null | undefined): string =>
   rank ? `${rank}` : "-";
 
 const formatPaddockScore = (value: number): string =>
   Number.isInteger(value) ? String(value) : value.toFixed(1);
+
+const CIRCLED_NUMBER_LABELS = ["", "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩"] as const;
+
+const formatPaddockScoreRuby = (value: number): string =>
+  Number.isInteger(value) && value >= 1 && value <= 10
+    ? (CIRCLED_NUMBER_LABELS[value] ?? String(value))
+    : formatPaddockScore(value);
 
 const parseHorseWeightLabel = (
   value: string,
@@ -145,10 +227,17 @@ const parseHorseWeightLabel = (
 
 function PaddockWeightValue({ value }: { value: string }) {
   const parsed = parseHorseWeightLabel(value);
+  const changeClassName = parsed.change?.startsWith("+")
+    ? "paddock-weight-change-plus"
+    : parsed.change?.startsWith("-")
+      ? "paddock-weight-change-minus"
+      : parsed.change === "0"
+        ? "paddock-weight-change-zero"
+        : "paddock-weight-change-neutral";
   return (
     <span className="paddock-weight-value">
       <strong>{parsed.weight}</strong>
-      {parsed.change ? <em>{parsed.change}</em> : null}
+      {parsed.change ? <em className={changeClassName}>{parsed.change}</em> : null}
     </span>
   );
 }
@@ -180,7 +269,7 @@ const formatPastOdds = (value: string | null | undefined): string => {
 
 const formatPastPopularity = (value: string | null | undefined): string => {
   const popularity = parseStoredNumber(value, "00");
-  return popularity === null ? "-" : `${popularity}人気`;
+  return popularity === null ? "-" : `${popularity}番 人気`;
 };
 
 const formatPastRaceName = (result: HorseRaceResult): string => {
@@ -232,7 +321,7 @@ function PaddockRecentResults({ results }: { results: HorseRaceResult[] | null }
             </span>
             <span className="paddock-recent-stats">
               <span>{formatPastPopularity(result.tanshoNinkijun)}</span>
-              <span>単 {formatPastOdds(result.tanshoOdds)}</span>
+              <span>{formatPastOdds(result.tanshoOdds)}</span>
               <span>
                 {formatHorseWeight(
                   result.bataiju,
@@ -267,6 +356,86 @@ const isChangedJockey = (
 
 const getOfficialRankClassName = (rank: PaddockOfficialRank | null | undefined): string =>
   rank ? `paddock-rank-badge rank-${rank}` : "paddock-rank-badge";
+
+function PaddockOfficialRankQuickPanel({
+  rows,
+  state,
+  onOfficialRank,
+}: {
+  rows: PaddockRunnerRow[];
+  state: PaddockState | null;
+  onOfficialRank: (action: PaddockAction) => void;
+}) {
+  const scoredRows = rows.map((runner) => ({
+    runner,
+    scores: normalizePaddockHorseScore(state?.horses[runner.horseNumber], runner),
+  }));
+  const activeRows = scoredRows.filter(({ runner }) => runner.status === "");
+  const selectedByRank = new Map<PaddockOfficialRank, (typeof scoredRows)[number]>();
+  for (const row of scoredRows) {
+    if (row.scores.officialRank) {
+      selectedByRank.set(row.scores.officialRank, row);
+    }
+  }
+
+  const submitOfficialRank = (
+    runner: PaddockRunnerRow,
+    currentRank: PaddockOfficialRank | null,
+    nextRank: PaddockOfficialRank | null,
+  ) => {
+    onOfficialRank({
+      horseName: runner.horseName,
+      horseNumber: runner.horseNumber,
+      rank: currentRank === nextRank ? null : nextRank,
+      type: "official-rank",
+    });
+  };
+
+  return (
+    <section className="paddock-official-rank-quick" aria-label="公式評価順の馬番指定">
+      <header>
+        <h3>公式評価順</h3>
+        <span>馬番だけで指定</span>
+      </header>
+      <div className="paddock-official-rank-quick-list">
+        {OFFICIAL_RANK_OPTIONS.map((rank) => {
+          const selected = selectedByRank.get(rank);
+          return (
+            <section className={`paddock-official-rank-slot rank-${rank}`} key={rank}>
+              <div className="paddock-official-rank-slot-head">
+                <span>{rank}</span>
+                <strong>{selected ? formatRunnerNumber(selected.runner.horseNumber) : "-"}</strong>
+                {selected ? (
+                  <button
+                    aria-label={`公式評価順 ${rank} を解除`}
+                    type="button"
+                    onClick={() => submitOfficialRank(selected.runner, rank, null)}
+                  >
+                    解除
+                  </button>
+                ) : null}
+              </div>
+              <div className="paddock-official-horse-number-grid">
+                {activeRows.map(({ runner, scores }) => (
+                  <button
+                    aria-label={`公式評価順 ${rank} に ${runner.horseNumber}番を指定`}
+                    aria-pressed={scores.officialRank === rank}
+                    className={scores.officialRank === rank ? "selected" : undefined}
+                    key={runner.horseNumber}
+                    type="button"
+                    onClick={() => submitOfficialRank(runner, scores.officialRank, rank)}
+                  >
+                    {formatRunnerNumber(runner.horseNumber)}
+                  </button>
+                ))}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
 
 const formatHistoryDate = (value: string): string => {
   const date = new Date(value);
@@ -319,18 +488,115 @@ const isPremiumPaddockBulletin = (value: unknown): value is PremiumPaddockBullet
   );
 };
 
-function PremiumPaddockBulletinTable({ rows }: { rows: PremiumPaddockBulletin[] }) {
+interface PremiumTrainingReview {
+  evaluationGrade: string | null;
+  horseNumber: string;
+  trainingDate: string;
+}
+
+const isPremiumTrainingReview = (value: unknown): value is PremiumTrainingReview => {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  return (
+    "horseNumber" in value &&
+    "trainingDate" in value &&
+    typeof value.horseNumber === "string" &&
+    typeof value.trainingDate === "string" &&
+    (!("evaluationGrade" in value) ||
+      value.evaluationGrade === null ||
+      typeof value.evaluationGrade === "string")
+  );
+};
+
+const TRAINING_GRADE_PRIORITY = new Map<string, number>([
+  ["1", 0],
+  ["◎", 0],
+  ["SS", 0],
+  ["S", 1],
+  ["2", 2],
+  ["○", 2],
+  ["◯", 2],
+  ["A+", 2],
+  ["A", 3],
+  ["3", 4],
+  ["▲", 4],
+  ["B", 4],
+  ["△", 5],
+  ["C", 5],
+  ["D", 6],
+]);
+
+const getTrainingGradePriority = (value: string): number => {
+  const normalized = cleanText(value, "").toUpperCase();
+  if (!normalized) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return TRAINING_GRADE_PRIORITY.get(normalized) ?? 100 + (normalized.codePointAt(0) ?? 0);
+};
+
+const toBestTrainingGradeByHorse = (reviews: PremiumTrainingReview[]): Map<string, string> => {
+  const byHorse = new Map<string, string>();
+  for (const review of reviews) {
+    const horseNumber = formatRunnerNumber(review.horseNumber);
+    const grade = cleanText(review.evaluationGrade, "");
+    if (!horseNumber || horseNumber === "-" || !grade) {
+      continue;
+    }
+    const current = byHorse.get(horseNumber);
+    if (!current || getTrainingGradePriority(grade) < getTrainingGradePriority(current)) {
+      byHorse.set(horseNumber, grade);
+    }
+  }
+  return byHorse;
+};
+
+const getPremiumPaddockEvaluationRank = (evaluationText: string | null | undefined): number => {
+  const normalized = cleanText(evaluationText, "").toUpperCase();
+  const grade = normalized.match(/[ABC]/)?.[0];
+  if (grade === "A") {
+    return 0;
+  }
+  if (grade === "B") {
+    return 1;
+  }
+  if (grade === "C") {
+    return 2;
+  }
+  return 3;
+};
+
+const comparePremiumPaddockBulletins = (
+  left: PremiumPaddockBulletin,
+  right: PremiumPaddockBulletin,
+): number => {
+  const gradeDiff =
+    getPremiumPaddockEvaluationRank(left.evaluationText) -
+    getPremiumPaddockEvaluationRank(right.evaluationText);
+  if (gradeDiff !== 0) {
+    return gradeDiff;
+  }
+  return Number(left.horseNumber) - Number(right.horseNumber);
+};
+
+function PremiumPaddockBulletinTable({
+  notifyDisabled,
+  notifyLabel,
+  onNotify,
+  rows,
+}: {
+  notifyDisabled: boolean;
+  notifyLabel: string;
+  onNotify: () => void;
+  rows: PremiumPaddockBulletin[];
+}) {
   if (rows.length === 0) {
     return null;
   }
-  const groupLabels: Record<PremiumPaddockBulletin["groupKey"], string> = {
-    favorite: process.env.NEXT_PUBLIC_PREMIUM_RACE_PADDOCK_GROUP_FAVORITE_LABEL ?? "人気馬",
-    value: process.env.NEXT_PUBLIC_PREMIUM_RACE_PADDOCK_GROUP_VALUE_LABEL ?? "穴馬",
-  };
+  const sortedRows = rows.toSorted(comparePremiumPaddockBulletins);
   const labels = {
     comment: process.env.NEXT_PUBLIC_PREMIUM_RACE_PADDOCK_LABEL_COMMENT ?? "コメント",
     evaluation: process.env.NEXT_PUBLIC_PREMIUM_RACE_PADDOCK_LABEL_EVALUATION ?? "評価",
-    frame: process.env.NEXT_PUBLIC_PREMIUM_RACE_PADDOCK_LABEL_FRAME ?? "枠",
     horseName: process.env.NEXT_PUBLIC_PREMIUM_RACE_PADDOCK_LABEL_HORSE_NAME ?? "馬名",
     horseNumber: process.env.NEXT_PUBLIC_PREMIUM_RACE_PADDOCK_LABEL_HORSE_NUMBER ?? "馬番",
   };
@@ -338,13 +604,19 @@ function PremiumPaddockBulletinTable({ rows }: { rows: PremiumPaddockBulletin[] 
     <section className="premium-paddock-section">
       <div className="section-heading compact">
         <h2>パドック速報</h2>
+        <button
+          className="paddock-external-discord-button"
+          disabled={notifyDisabled}
+          type="button"
+          onClick={onNotify}
+        >
+          {notifyLabel}
+        </button>
       </div>
-      <div className="stats-table-scroll">
-        <table className="stats-table compact">
+      <div className="stats-table-wrap premium-paddock-table-wrap">
+        <table className="stats-table premium-paddock-table">
           <thead>
             <tr>
-              <th>区分</th>
-              <th>{labels.frame}</th>
               <th>{labels.horseNumber}</th>
               <th>{labels.horseName}</th>
               <th>{labels.evaluation}</th>
@@ -352,14 +624,12 @@ function PremiumPaddockBulletinTable({ rows }: { rows: PremiumPaddockBulletin[] 
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => (
+            {sortedRows.map((row) => (
               <tr key={`${row.groupKey}-${row.horseNumber}`}>
-                <td>{groupLabels[row.groupKey]}</td>
-                <td>{row.frameNumber ?? "-"}</td>
                 <td>{row.horseNumber}</td>
                 <td>{row.horseName ?? "-"}</td>
-                <td>{row.evaluationText ?? "-"}</td>
-                <td>{row.commentText ?? "-"}</td>
+                <td className="stats-score-cell">{row.evaluationText ?? "-"}</td>
+                <td className="premium-paddock-comment-cell">{row.commentText ?? "-"}</td>
               </tr>
             ))}
           </tbody>
@@ -376,7 +646,6 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
   horseNumber,
   jockeyName,
   moshokuCode,
-  onOfficialRank,
   onScore,
   originalJockeyName,
   recentResults,
@@ -386,13 +655,11 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
   scores,
   sexAge,
   status,
+  trainingEvaluationGrade,
   weight,
 }: PaddockHorseRowProps) {
   const score = (category: PaddockMetric, delta: -1 | 1) => {
     onScore({ category, delta, horseName, horseNumber });
-  };
-  const setOfficialRank = (rank: PaddockOfficialRank | null) => {
-    onOfficialRank({ horseName, horseNumber, rank, type: "official-rank" });
   };
   const displayJockeyName = getPreferredJockeyName(jockeyName, realtimeJockeyName);
   const isScratched = Boolean(status);
@@ -452,6 +719,14 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
             <dt>単勝</dt>
             <dd>{formatRealtimeOdds(realtimeOdds)}</dd>
           </div>
+          {editable && trainingEvaluationGrade ? (
+            <div className="paddock-training-grade-fact">
+              <dt>調教</dt>
+              <dd>
+                <span className="paddock-training-grade-badge">{trainingEvaluationGrade}</span>
+              </dd>
+            </div>
+          ) : null}
         </dl>
         <b>{formatPaddockScore(scores.total)}</b>
       </header>
@@ -463,33 +738,6 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
         </div>
       ) : editable ? (
         <ul className="paddock-score-controls" aria-label={`${horseName}のパドック評価`}>
-          <li className="paddock-official-rank-control">
-            <span>公式評価順</span>
-            <div className="paddock-rank-buttons">
-              {OFFICIAL_RANK_OPTIONS.map((rank) => (
-                <button
-                  aria-label={`${horseName} 公式パドック評価 ${rank}番手`}
-                  aria-pressed={scores.officialRank === rank}
-                  className={`rank-${rank}${scores.officialRank === rank ? " selected" : ""}`}
-                  type="button"
-                  key={rank}
-                  onClick={() => {
-                    setOfficialRank(scores.officialRank === rank ? null : rank);
-                  }}
-                >
-                  {rank}
-                </button>
-              ))}
-              <button
-                aria-label={`${horseName} 公式パドック評価を解除`}
-                className="clear"
-                type="button"
-                onClick={() => setOfficialRank(null)}
-              >
-                解除
-              </button>
-            </div>
-          </li>
           {METRIC_ORDER.map((metric) => (
             <li className="paddock-score-control" key={metric}>
               <span>{METRIC_LABELS[metric].title}</span>
@@ -558,6 +806,9 @@ function PaddockReadOnlyTable({
   }[];
   state: PaddockState | null;
 }) {
+  const [activeScoreTooltip, setActiveScoreTooltip] = useState<PaddockScoreTooltipState | null>(
+    null,
+  );
   const evaluatedRows = rows
     .map((runner) => ({
       ...runner,
@@ -579,82 +830,226 @@ function PaddockReadOnlyTable({
       return Number(left.horseNumber) - Number(right.horseNumber);
     });
 
+  const showScoreTooltip = useCallback(
+    (row: (typeof evaluatedRows)[number], target: HTMLElement) => {
+      const total = row.scores?.total ?? 0;
+      if (total === 0) {
+        setActiveScoreTooltip(null);
+        return;
+      }
+      const rect = target.getBoundingClientRect();
+      const estimatedWidth = 280;
+      const edgePadding = 16;
+      const left = Math.min(
+        window.innerWidth - estimatedWidth / 2 - edgePadding,
+        Math.max(estimatedWidth / 2 + edgePadding, rect.left + rect.width / 2),
+      );
+      const showAbove = rect.top > 92;
+      setActiveScoreTooltip({
+        horseName: row.horseName,
+        horseNumber: row.horseNumber,
+        left,
+        placement: showAbove ? "top" : "bottom",
+        top: showAbove ? rect.top - 10 : rect.bottom + 10,
+        total,
+      });
+    },
+    [],
+  );
+
   if (evaluatedRows.length === 0) {
     return <p className="empty-state">パドック評価はまだありません。</p>;
   }
+  const maxTotal = Math.max(...evaluatedRows.map((row) => row.scores?.total ?? 0));
+  const minTotal = Math.min(...evaluatedRows.map((row) => row.scores?.total ?? 0));
+  const totalRange = Math.max(1, maxTotal - minTotal);
+  const requiredNameWidth = Math.max(
+    ...evaluatedRows.map((row) => {
+      const total = row.scores?.total ?? 0;
+      const scoreRatio = (total - minTotal) / totalRange;
+      const fontSize = 16 + scoreRatio * 9.6;
+      const nameLength = Array.from(row.horseName).length;
+      return nameLength * fontSize * 0.9 + 56;
+    }),
+  );
+  const requiredJockeyWidth = Math.max(
+    ...evaluatedRows.map((row) => {
+      const total = row.scores?.total ?? 0;
+      const scoreRatio = (total - minTotal) / totalRange;
+      const fontSize = 16 + scoreRatio * 9.6;
+      const jockeyLength = Array.from(row.jockeyName || "-").length;
+      return jockeyLength * fontSize * 0.88 + 40;
+    }),
+  );
+  const nameColumnWidth = Math.round(Math.min(360, Math.max(176, requiredNameWidth)));
+  const mobileNameColumnWidth = Math.round(Math.min(300, Math.max(164, requiredNameWidth)));
+  const jockeyColumnWidth = Math.round(Math.min(260, Math.max(112, requiredJockeyWidth)));
+  const mobileJockeyColumnWidth = Math.round(Math.min(230, Math.max(104, requiredJockeyWidth)));
+  const tableStyle: PaddockTableStyle = {
+    "--paddock-jockey-col-width": `${jockeyColumnWidth}px`,
+    "--paddock-mobile-table-width": `${1012 + mobileNameColumnWidth + mobileJockeyColumnWidth}px`,
+    "--paddock-name-col-width": `${nameColumnWidth}px`,
+  };
 
   return (
-    <div className="paddock-table-wrap">
-      <table className="stats-table paddock-table">
-        <colgroup>
-          <col className="paddock-col-number" />
-          <col className="paddock-col-number" />
-          <col className="paddock-col-name" />
-          <col className="paddock-col-score" />
-          <col className="paddock-col-score" />
-          <col className="paddock-col-score" />
-          <col className="paddock-col-rank" />
-          <col className="paddock-col-score" />
-          <col className="paddock-col-score" />
-          <col className="paddock-col-score" />
-          <col className="paddock-col-score" />
-          <col className="paddock-col-score" />
-        </colgroup>
-        <thead>
-          <tr>
-            <th>枠</th>
-            <th>馬番</th>
-            <th>馬名</th>
-            <th>人気</th>
-            <th>単勝</th>
-            <th>馬体重</th>
-            <th>公式評価順</th>
-            <th>合計</th>
-            <th>パドック</th>
-            <th>返し</th>
-            <th>注目度</th>
-            <th>好み</th>
-          </tr>
-        </thead>
-        <tbody>
-          {evaluatedRows.map((row) => (
-            <tr key={row.horseNumber}>
-              <td>
-                <FrameNumberBadge value={row.frameNumber} />
-              </td>
-              <td className="paddock-table-horse-number">{formatRunnerNumber(row.horseNumber)}</td>
-              <td className="stats-name-cell">
-                <HorseNameBadge
-                  coatCode={row.moshokuCode}
-                  name={row.horseName}
-                  showCoatLabel={false}
-                />
-              </td>
-              <td>
-                {formatRealtimePopularity(oddsByHorse.get(row.horseNumber)?.popularity ?? null)}
-              </td>
-              <td>{formatRealtimeOdds(oddsByHorse.get(row.horseNumber)?.odds ?? null)}</td>
-              <td className="paddock-table-weight">
-                <PaddockWeightValue value={row.weight} />
-              </td>
-              <td>
-                {row.scores?.officialRank ? (
-                  <span className={getOfficialRankClassName(row.scores.officialRank)}>
-                    {formatOfficialRank(row.scores.officialRank)}
-                  </span>
-                ) : (
-                  "-"
-                )}
-              </td>
-              <td className="stats-score-cell">{formatPaddockScore(row.scores?.total ?? 0)}</td>
-              <td>{row.scores?.paddock ?? 0}</td>
-              <td>{row.scores?.kaeshi ?? 0}</td>
-              <td>{row.scores?.attention ?? 0}</td>
-              <td>{row.scores?.preference ?? 0}</td>
+    <div className="paddock-table-shell">
+      <div className="paddock-table-wrap">
+        <table className="stats-table paddock-table" style={tableStyle}>
+          <colgroup>
+            <col className="paddock-col-frame" />
+            <col className="paddock-col-horse-number" />
+            <col className="paddock-col-name" />
+            <col className="paddock-col-jockey" />
+            <col className="paddock-col-popularity" />
+            <col className="paddock-col-odds" />
+            <col className="paddock-col-weight" />
+            <col className="paddock-col-rank" />
+            <col className="paddock-col-score" />
+            <col className="paddock-col-score" />
+            <col className="paddock-col-score" />
+            <col className="paddock-col-score" />
+            <col className="paddock-col-score" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>枠</th>
+              <th>馬番</th>
+              <th>馬名</th>
+              <th>騎手名</th>
+              <th>人気</th>
+              <th>単勝</th>
+              <th>馬体重</th>
+              <th>公式評価順</th>
+              <th>合計</th>
+              <th>パドック</th>
+              <th>返し</th>
+              <th>注目度</th>
+              <th>好み</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {evaluatedRows.map((row) => {
+              const total = row.scores?.total ?? 0;
+              const scoreTooltipId = `paddock-horse-number-score-${row.horseNumber}`;
+              const isScoreTooltipOpen = activeScoreTooltip?.horseNumber === row.horseNumber;
+              const scoreRatio = (total - minTotal) / totalRange;
+              const fontSize = 16 + scoreRatio * 9.6;
+              const cellPaddingY = 7 + scoreRatio * 7;
+              const isTopTotal = total === maxTotal;
+              const rowStyle: PaddockTableRowStyle = {
+                "--paddock-row-cell-padding-y": `${cellPaddingY.toFixed(1)}px`,
+                "--paddock-row-font-size": `${fontSize.toFixed(1)}px`,
+              };
+              return (
+                <tr
+                  className={isTopTotal ? "paddock-table-top-total-row" : undefined}
+                  key={row.horseNumber}
+                  style={rowStyle}
+                >
+                  <td>
+                    <FrameNumberBadge value={row.frameNumber} />
+                  </td>
+                  <td
+                    className="paddock-table-horse-number"
+                    onMouseEnter={(event) => showScoreTooltip(row, event.currentTarget)}
+                    onMouseLeave={() => setActiveScoreTooltip(null)}
+                  >
+                    <button
+                      aria-describedby={total !== 0 ? scoreTooltipId : undefined}
+                      aria-expanded={isScoreTooltipOpen}
+                      aria-label={`${row.horseName}の馬番${formatRunnerNumber(row.horseNumber)}${total !== 0 ? `、パドック合計値 ${formatPaddockScore(total)} の説明` : ""}`}
+                      className={`paddock-horse-number-cell-trigger${isScoreTooltipOpen ? " tooltip-open" : ""}`}
+                      type="button"
+                      onBlur={() => setActiveScoreTooltip(null)}
+                      onClick={(event) => {
+                        if (isScoreTooltipOpen) {
+                          setActiveScoreTooltip(null);
+                          return;
+                        }
+                        showScoreTooltip(row, event.currentTarget);
+                      }}
+                      onFocus={(event) => showScoreTooltip(row, event.currentTarget)}
+                    >
+                      <span className="paddock-horse-number-with-score">
+                        <span>{formatRunnerNumber(row.horseNumber)}</span>
+                        {total !== 0 ? (
+                          <span className="paddock-horse-number-score" aria-hidden="true">
+                            {formatPaddockScoreRuby(total)}
+                          </span>
+                        ) : null}
+                      </span>
+                    </button>
+                  </td>
+                  <td className="stats-name-cell" data-label="馬名">
+                    <HorseNameBadge
+                      coatCode={row.moshokuCode}
+                      name={row.horseName}
+                      showCoatLabel={false}
+                    />
+                  </td>
+                  <td className="paddock-table-jockey-name-cell" data-label="騎手名">
+                    {row.jockeyName ? (
+                      <span className="paddock-table-jockey-name">{row.jockeyName}</span>
+                    ) : (
+                      "-"
+                    )}
+                  </td>
+                  <td className="paddock-table-dynamic-cell" data-label="人気">
+                    {formatRealtimePopularity(oddsByHorse.get(row.horseNumber)?.popularity ?? null)}
+                  </td>
+                  <td className="paddock-table-dynamic-cell" data-label="単勝">
+                    {formatRealtimeOdds(oddsByHorse.get(row.horseNumber)?.odds ?? null)}
+                  </td>
+                  <td className="paddock-table-weight" data-label="馬体重">
+                    <PaddockWeightValue value={row.weight} />
+                  </td>
+                  <td className="paddock-table-dynamic-cell" data-label="公式評価順">
+                    {row.scores?.officialRank ? (
+                      <span className={getOfficialRankClassName(row.scores.officialRank)}>
+                        {formatOfficialRank(row.scores.officialRank)}
+                      </span>
+                    ) : (
+                      "-"
+                    )}
+                  </td>
+                  <td className="stats-score-cell" data-label="合計">
+                    {formatPaddockScore(total)}
+                  </td>
+                  <td className="paddock-table-dynamic-cell" data-label="パドック">
+                    {row.scores?.paddock ?? 0}
+                  </td>
+                  <td className="paddock-table-dynamic-cell" data-label="返し">
+                    {row.scores?.kaeshi ?? 0}
+                  </td>
+                  <td className="paddock-table-dynamic-cell" data-label="注目度">
+                    {row.scores?.attention ?? 0}
+                  </td>
+                  <td className="paddock-table-dynamic-cell" data-label="好み">
+                    {row.scores?.preference ?? 0}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {activeScoreTooltip ? (
+        <div
+          className={`paddock-horse-number-score-tooltip ${activeScoreTooltip.placement}`}
+          id={`paddock-horse-number-score-${activeScoreTooltip.horseNumber}`}
+          role="tooltip"
+          style={{
+            left: `${activeScoreTooltip.left}px`,
+            top: `${activeScoreTooltip.top}px`,
+          }}
+        >
+          <strong>{activeScoreTooltip.horseName}</strong>
+          <span>
+            合計値 <b>{formatPaddockScore(activeScoreTooltip.total)}</b>
+          </span>
+          <small>パドック・返し + 注目度x0.5 + 好みx0.3</small>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -671,6 +1066,7 @@ export function PaddockSection({
   racePlace = "",
   raceMeta = "",
   raceNumber,
+  raceStartsAt = null,
   raceStartsAtLabel = "",
   raceTitle = "",
   realtimeRequest,
@@ -682,14 +1078,29 @@ export function PaddockSection({
   const [state, setState] = useState<PaddockState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [premiumBulletins, setPremiumBulletins] = useState<PremiumPaddockBulletin[]>([]);
+  const [premiumTrainingGradesByHorse, setPremiumTrainingGradesByHorse] = useState<
+    Map<string, string>
+  >(new Map());
   const [liveUrl, setLiveUrl] = useState<string | null>(null);
   const [realtimeEnabled, setRealtimeEnabled] = useState(false);
   const [discordStatus, setDiscordStatus] = useState<"idle" | "sending" | "sent" | "failed">(
     "idle",
   );
+  const [externalDiscordStatus, setExternalDiscordStatus] = useState<
+    "idle" | "sending" | "sent" | "failed"
+  >("idle");
   const [lastDiscordSentAt, setLastDiscordSentAt] = useState<number | null>(null);
   const [discordCooldownNow, setDiscordCooldownNow] = useState(() => Date.now());
+  const submitSequenceRef = useRef(0);
+  const optimisticUntilRef = useRef(0);
   const apiPath = getPaddockApiPath({ day, keibajoCode, month, raceNumber, year });
+  const pastRaceEditSessionKey = getPastRaceEditSessionKey({
+    day,
+    keibajoCode,
+    month,
+    raceNumber,
+    year,
+  });
   const discordApiPath = getPaddockDiscordApiPath({ day, keibajoCode, month, raceNumber, year });
   const premiumApiPath = getPremiumRaceRequestPath({
     day,
@@ -701,6 +1112,8 @@ export function PaddockSection({
   });
   const livePath = `${apiPath}/live`;
   const editPath = `/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/paddock`;
+  const raceDetailPath = `/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}`;
+  const publicRaceDetailUrl = `${PUBLIC_DETAIL_ORIGIN}${raceDetailPath}`;
   const { payload: realtimePayload } = useRealtimeRacePayload(
     realtimeRequest ?? {
       apiBaseUrl: "",
@@ -764,7 +1177,7 @@ export function PaddockSection({
       ),
     [realtimePayload],
   );
-  const runnerRows = useMemo(
+  const runnerRows = useMemo<PaddockRunnerRow[]>(
     () =>
       runners
         .map((runner, index) => {
@@ -828,7 +1241,7 @@ export function PaddockSection({
         if (!isPaddockState(payload)) {
           throw new Error("invalid paddock payload");
         }
-        if (!cancelled) {
+        if (!cancelled && Date.now() >= optimisticUntilRef.current) {
           setState(payload);
           setLiveUrl(response.headers.get("x-paddock-live-url"));
           setRealtimeEnabled(response.headers.get("x-paddock-realtime") === "1");
@@ -864,12 +1277,22 @@ export function PaddockSection({
           typeof payload === "object" && payload !== null && "paddockBulletins" in payload
             ? payload.paddockBulletins
             : [];
+        const trainingReviews =
+          typeof payload === "object" && payload !== null && "trainingReviews" in payload
+            ? payload.trainingReviews
+            : [];
         if (!cancelled && Array.isArray(rows)) {
           setPremiumBulletins(rows.filter(isPremiumPaddockBulletin));
+        }
+        if (!cancelled && Array.isArray(trainingReviews)) {
+          setPremiumTrainingGradesByHorse(
+            toBestTrainingGradeByHorse(trainingReviews.filter(isPremiumTrainingReview)),
+          );
         }
       } catch {
         if (!cancelled) {
           setPremiumBulletins([]);
+          setPremiumTrainingGradesByHorse(new Map());
         }
       }
     };
@@ -893,7 +1316,7 @@ export function PaddockSection({
         typeof payload === "object" && payload !== null && "state" in payload
           ? payload.state
           : null;
-      if (isPaddockState(nextState)) {
+      if (isPaddockState(nextState) && Date.now() >= optimisticUntilRef.current) {
         setState(nextState);
       }
     });
@@ -907,24 +1330,61 @@ export function PaddockSection({
 
   const submitScore = useCallback(
     (action: PaddockAction) => {
+      if (
+        editable &&
+        isPastRace(raceStartsAt) &&
+        !readPastRaceEditUnlocked(pastRaceEditSessionKey)
+      ) {
+        window.alert(
+          "発走済みのレースは誤操作防止のためデフォルトでは編集できません。編集する場合は次の確認で許可してください。",
+        );
+        const accepted = window.confirm(
+          "この発走済みレースのパドック編集を10分間だけ許可しますか？",
+        );
+        if (!accepted) {
+          return;
+        }
+        writePastRaceEditUnlocked(pastRaceEditSessionKey);
+      }
+
+      const sequence = submitSequenceRef.current + 1;
+      submitSequenceRef.current = sequence;
+      optimisticUntilRef.current = Date.now() + 8_000;
+      setState((current) => (current ? applyPaddockAction(current, action) : current));
+      setError(null);
       void (async () => {
-        const response = await fetch(getPaddockRequestUrl(apiPath), {
-          body: JSON.stringify(action),
-          credentials: "include",
-          method: "POST",
-        });
+        const response = await fetchWithRetry(
+          getPaddockRequestUrl(apiPath),
+          {
+            body: JSON.stringify(action),
+            credentials: "include",
+            method: "POST",
+          },
+          { attempts: 4, baseDelayMs: 250, maxDelayMs: 2000 },
+        );
         if (response.ok) {
           const payload: unknown = await response.json();
-          if (isPaddockState(payload)) {
+          if (submitSequenceRef.current === sequence) {
+            optimisticUntilRef.current = 0;
+          }
+          if (isPaddockState(payload) && submitSequenceRef.current === sequence) {
             setState(payload);
           }
           setError(null);
         } else {
+          if (submitSequenceRef.current === sequence) {
+            optimisticUntilRef.current = 0;
+          }
           setError(`paddock api ${response.status}`);
         }
-      })();
+      })().catch((caught) => {
+        if (submitSequenceRef.current === sequence) {
+          optimisticUntilRef.current = 0;
+        }
+        setError(caught instanceof Error ? caught.message : String(caught));
+      });
     },
-    [apiPath],
+    [apiPath, editable, pastRaceEditSessionKey, raceStartsAt],
   );
 
   const notifyDiscord = useCallback(() => {
@@ -1002,12 +1462,70 @@ export function PaddockSection({
     runnerRows,
     state,
   ]);
+  const notifyExternalDiscord = useCallback(() => {
+    if (premiumBulletins.length === 0 || externalDiscordStatus === "sending") {
+      return;
+    }
+    const groupLabels: Record<PremiumPaddockBulletin["groupKey"], string> = {
+      favorite: process.env.NEXT_PUBLIC_PREMIUM_RACE_PADDOCK_GROUP_FAVORITE_LABEL ?? "人気馬",
+      value: process.env.NEXT_PUBLIC_PREMIUM_RACE_PADDOCK_GROUP_VALUE_LABEL ?? "穴馬",
+    };
+
+    void (async () => {
+      setExternalDiscordStatus("sending");
+      const response = await fetch(getPaddockRequestUrl(discordApiPath), {
+        body: JSON.stringify({
+          bulletins: premiumBulletins.map((row) => ({
+            commentText: row.commentText ?? "",
+            evaluationText: row.evaluationText ?? "",
+            frameNumber: row.frameNumber ?? "",
+            groupLabel: groupLabels[row.groupKey],
+            horseName: row.horseName ?? "",
+            horseNumber: row.horseNumber,
+          })),
+          detailUrl: detailUrl ?? publicRaceDetailUrl,
+          raceMeta,
+          raceNumberLabel,
+          racePlace,
+          raceStartsAtLabel,
+          raceTitle,
+          type: "external-paddock",
+        }),
+        credentials: "include",
+        method: "POST",
+      });
+      setExternalDiscordStatus(response.ok ? "sent" : "failed");
+      window.setTimeout(() => setExternalDiscordStatus("idle"), 3_000);
+    })().catch(() => {
+      setExternalDiscordStatus("failed");
+      window.setTimeout(() => setExternalDiscordStatus("idle"), 3_000);
+    });
+  }, [
+    detailUrl,
+    discordApiPath,
+    externalDiscordStatus,
+    premiumBulletins,
+    publicRaceDetailUrl,
+    raceMeta,
+    raceNumberLabel,
+    racePlace,
+    raceStartsAtLabel,
+    raceTitle,
+  ]);
   const discordCooldownRemainingSeconds =
     lastDiscordSentAt === null
       ? 0
       : Math.ceil(Math.max(0, 30_000 - (discordCooldownNow - lastDiscordSentAt)) / 1_000);
   const isDiscordButtonDisabled =
     discordStatus === "sending" || discordCooldownRemainingSeconds > 0;
+  const externalDiscordLabel =
+    externalDiscordStatus === "sending"
+      ? "外部速報を通知中"
+      : externalDiscordStatus === "sent"
+        ? "外部速報を通知済み"
+        : externalDiscordStatus === "failed"
+          ? "外部速報の通知失敗"
+          : "外部速報を通知";
 
   return (
     <section className={editable ? "paddock-section paddock-section-edit" : "paddock-section"}>
@@ -1048,8 +1566,10 @@ export function PaddockSection({
                 scores={scores}
                 sexAge={runner.sexAge}
                 status={status}
+                trainingEvaluationGrade={
+                  premiumTrainingGradesByHorse.get(runner.horseNumber) ?? null
+                }
                 weight={runner.weight}
-                onOfficialRank={submitScore}
                 onScore={submitScore}
               />
             );
@@ -1084,6 +1604,13 @@ export function PaddockSection({
           )}
         </details>
       ) : null}
+      {editable ? (
+        <PaddockOfficialRankQuickPanel
+          rows={runnerRows}
+          state={state}
+          onOfficialRank={submitScore}
+        />
+      ) : null}
       {editable && editFooterDetailPath ? (
         <footer className="paddock-edit-footer paddock-edit-footer-sticky">
           <Link className="paddock-edit-link" href={editFooterDetailPath}>
@@ -1112,7 +1639,14 @@ export function PaddockSection({
           </button>
         </footer>
       ) : null}
-      {!editable ? <PremiumPaddockBulletinTable rows={premiumBulletins} /> : null}
+      {!editable ? (
+        <PremiumPaddockBulletinTable
+          notifyDisabled={externalDiscordStatus === "sending"}
+          notifyLabel={externalDiscordLabel}
+          rows={premiumBulletins}
+          onNotify={notifyExternalDiscord}
+        />
+      ) : null}
     </section>
   );
 }
