@@ -45,6 +45,14 @@ export type Job =
       date: string;
     }
   | {
+      type: "discover-premium-race-links";
+      date: string;
+    }
+  | {
+      type: "plan-premium-race-data-fetches";
+      date: string;
+    }
+  | {
       type: "fetch-premium-race-data";
       raceKey: string;
     }
