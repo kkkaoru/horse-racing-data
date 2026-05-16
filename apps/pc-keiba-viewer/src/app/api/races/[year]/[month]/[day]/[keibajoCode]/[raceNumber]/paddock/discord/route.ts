@@ -39,7 +39,30 @@ interface DiscordPaddockPayload {
   racePlace: string;
   raceStartsAtLabel: string;
   raceTitle: string;
+  type?: "user-paddock";
 }
+
+interface DiscordExternalPaddockBulletinPayload {
+  commentText: string;
+  evaluationText: string;
+  frameNumber: string;
+  groupLabel: string;
+  horseName: string;
+  horseNumber: string;
+}
+
+interface DiscordExternalPaddockPayload {
+  bulletins: DiscordExternalPaddockBulletinPayload[];
+  detailUrl: string;
+  raceMeta: string;
+  raceNumberLabel: string;
+  racePlace: string;
+  raceStartsAtLabel: string;
+  raceTitle: string;
+  type: "external-paddock";
+}
+
+type DiscordPayload = DiscordPaddockPayload | DiscordExternalPaddockPayload;
 
 const getCorsHeaders = (request: Request): Record<string, string> => {
   const origin = request.headers.get("origin");
@@ -58,19 +81,39 @@ const getCorsHeaders = (request: Request): Record<string, string> => {
   };
 };
 
-const getDiscordWebhookUrl = (): string | null => {
-  if (process.env.PC_KEIBA_PADDOCK_DISCORD_WEBHOOK_URL) {
-    return process.env.PC_KEIBA_PADDOCK_DISCORD_WEBHOOK_URL;
+const getEnvValue = (key: string): string | null => {
+  const value = process.env[key];
+  if (value) {
+    return value;
   }
 
   try {
-    return getCloudflareContext().env.PC_KEIBA_PADDOCK_DISCORD_WEBHOOK_URL ?? null;
+    const { env } = getCloudflareContext();
+    if (key === "PC_KEIBA_EXTERNAL_PADDOCK_DISCORD_BOT_NAME") {
+      return env.PC_KEIBA_EXTERNAL_PADDOCK_DISCORD_BOT_NAME ?? null;
+    }
+    if (key === "PC_KEIBA_EXTERNAL_PADDOCK_DISCORD_WEBHOOK_URL") {
+      return env.PC_KEIBA_EXTERNAL_PADDOCK_DISCORD_WEBHOOK_URL ?? null;
+    }
+    if (key === "PC_KEIBA_PADDOCK_DISCORD_WEBHOOK_URL") {
+      return env.PC_KEIBA_PADDOCK_DISCORD_WEBHOOK_URL ?? null;
+    }
+    return null;
   } catch {
     return null;
   }
 };
 
-const getDiscordBotName = (): string => {
+const getDiscordWebhookUrl = (payload: DiscordPayload): string | null =>
+  "type" in payload && payload.type === "external-paddock"
+    ? getEnvValue("PC_KEIBA_EXTERNAL_PADDOCK_DISCORD_WEBHOOK_URL")
+    : getEnvValue("PC_KEIBA_PADDOCK_DISCORD_WEBHOOK_URL");
+
+const getDiscordBotName = (payload: DiscordPayload): string => {
+  if ("type" in payload && payload.type === "external-paddock") {
+    return getEnvValue("PC_KEIBA_EXTERNAL_PADDOCK_DISCORD_BOT_NAME") ?? "外部パドック速報";
+  }
+
   if (process.env.PC_KEIBA_PADDOCK_DISCORD_BOT_NAME) {
     return process.env.PC_KEIBA_PADDOCK_DISCORD_BOT_NAME;
   }
@@ -146,6 +189,59 @@ const isDiscordPayload = (value: unknown): value is DiscordPaddockPayload => {
     value.horses.every(isDiscordHorsePayload)
   );
 };
+
+const isDiscordExternalBulletinPayload = (
+  value: unknown,
+): value is DiscordExternalPaddockBulletinPayload => {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  return (
+    "groupLabel" in value &&
+    isString(value.groupLabel) &&
+    "frameNumber" in value &&
+    isString(value.frameNumber) &&
+    "horseNumber" in value &&
+    isString(value.horseNumber) &&
+    "horseName" in value &&
+    isString(value.horseName) &&
+    "evaluationText" in value &&
+    isString(value.evaluationText) &&
+    "commentText" in value &&
+    isString(value.commentText)
+  );
+};
+
+const isDiscordExternalPayload = (value: unknown): value is DiscordExternalPaddockPayload => {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  return (
+    "type" in value &&
+    value.type === "external-paddock" &&
+    "detailUrl" in value &&
+    isString(value.detailUrl) &&
+    value.detailUrl.startsWith("https://pc-keiba-viewer.kkk4oru.com/") &&
+    "raceMeta" in value &&
+    isString(value.raceMeta) &&
+    "raceNumberLabel" in value &&
+    isString(value.raceNumberLabel) &&
+    "racePlace" in value &&
+    isString(value.racePlace) &&
+    "raceStartsAtLabel" in value &&
+    isString(value.raceStartsAtLabel) &&
+    "raceTitle" in value &&
+    isString(value.raceTitle) &&
+    "bulletins" in value &&
+    Array.isArray(value.bulletins) &&
+    value.bulletins.length > 0 &&
+    value.bulletins.length <= 18 &&
+    value.bulletins.every(isDiscordExternalBulletinPayload)
+  );
+};
+
+const isKnownDiscordPayload = (value: unknown): value is DiscordPayload =>
+  isDiscordPayload(value) || isDiscordExternalPayload(value);
 
 const truncate = (value: string, maxLength: number): string =>
   value.length <= maxLength ? value : `${value.slice(0, Math.max(0, maxLength - 1))}…`;
@@ -232,6 +328,40 @@ const buildDiscordEmbed = (payload: DiscordPaddockPayload) => {
   };
 };
 
+const formatExternalBulletinLine = (row: DiscordExternalPaddockBulletinPayload): string =>
+  [
+    `**${row.horseNumber} 番 ${truncate(row.horseName || "-", 32)}**　${row.groupLabel || "-"} / ${row.evaluationText || "-"}`,
+    row.commentText ? `> ${truncate(row.commentText, 140)}` : "> コメントなし",
+  ].join("\n");
+
+const formatExternalRaceStart = (value: string): string =>
+  value.includes("JST") ? value : `${value || "-"}（JST）`;
+
+const buildExternalDiscordEmbed = (payload: DiscordExternalPaddockPayload) => ({
+  author: {
+    name: "External Paddock Feed",
+  },
+  color: 0xf97316,
+  description: [
+    `🏟️ **${payload.racePlace || "-"} ${payload.raceNumberLabel || "-"}**`,
+    `🏷️ **${truncate(payload.raceTitle, 120)}**`,
+    `🕒 ${formatExternalRaceStart(payload.raceStartsAtLabel)}`,
+    `[レース詳細を開く](${payload.detailUrl})`,
+    "",
+    truncate(payload.bulletins.map(formatExternalBulletinLine).join("\n────────────\n"), 1400),
+  ].join("\n"),
+  footer: {
+    text: `外部速報 ${payload.bulletins.length}件`,
+  },
+  timestamp: new Date().toISOString(),
+  title: "🚨 外部パドック速報",
+});
+
+const buildEmbed = (payload: DiscordPayload) =>
+  "type" in payload && payload.type === "external-paddock"
+    ? buildExternalDiscordEmbed(payload)
+    : buildDiscordEmbed(payload);
+
 export async function OPTIONS(request: Request) {
   return new Response(null, { headers: getCorsHeaders(request), status: 204 });
 }
@@ -243,19 +373,19 @@ export async function POST(request: Request, { params }: DiscordPaddockRouteProp
   }
 
   const payload: unknown = await request.json().catch(() => null);
-  if (!isDiscordPayload(payload)) {
+  if (!isKnownDiscordPayload(payload)) {
     return NextResponse.json({ error: "invalid_payload" }, { status: 400 });
   }
 
-  const webhookUrl = getDiscordWebhookUrl();
+  const webhookUrl = getDiscordWebhookUrl(payload);
   if (!webhookUrl) {
     return NextResponse.json({ error: "discord_webhook_not_configured" }, { status: 503 });
   }
 
   const response = await fetch(webhookUrl, {
     body: JSON.stringify({
-      embeds: [buildDiscordEmbed(payload)],
-      username: getDiscordBotName(),
+      embeds: [buildEmbed(payload)],
+      username: getDiscordBotName(payload),
     }),
     headers: { "Content-Type": "application/json" },
     method: "POST",

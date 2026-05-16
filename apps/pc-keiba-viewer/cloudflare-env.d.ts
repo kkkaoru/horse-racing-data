@@ -73,6 +73,8 @@ declare global {
     HYPERDRIVE?: PcKeibaHyperdriveBinding;
     PADDOCK_ROOM?: PcKeibaDurableObjectNamespace;
     PADDOCK_STATE_KV?: PcKeibaKvNamespace;
+    PC_KEIBA_EXTERNAL_PADDOCK_DISCORD_BOT_NAME?: string;
+    PC_KEIBA_EXTERNAL_PADDOCK_DISCORD_WEBHOOK_URL?: string;
     PC_KEIBA_PADDOCK_DISCORD_BOT_NAME?: string;
     PC_KEIBA_PADDOCK_DISCORD_WEBHOOK_URL?: string;
   }

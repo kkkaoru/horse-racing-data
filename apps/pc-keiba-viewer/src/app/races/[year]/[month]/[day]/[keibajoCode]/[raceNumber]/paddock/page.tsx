@@ -62,6 +62,19 @@ const getRaceStartsAt = (
   return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}T${hour}:${minute}:00+09:00`;
 };
 
+const buildFullRaceTitle = (race: {
+  kyosomeiFukudai: string | null;
+  kyosomeiHondai: string | null;
+  kyosomeiKakkonai: string | null;
+}): string => {
+  const titleParts = [
+    cleanText(race.kyosomeiHondai, ""),
+    cleanText(race.kyosomeiFukudai, ""),
+    cleanText(race.kyosomeiKakkonai, ""),
+  ].filter((part) => part.length > 0);
+  return titleParts.length > 0 ? titleParts.join(" ") : "一般競走";
+};
+
 export default async function PaddockEditPage({ params }: PaddockEditPageProps) {
   const { day, keibajoCode, month, raceNumber, year } = await params;
   if (!isValidRouteParams(year, month, day, keibajoCode, raceNumber)) {
@@ -85,7 +98,7 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
   const raceDetailPath = `/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}`;
   const raceDetailUrl = `https://pc-keiba-viewer.kkk4oru.com${raceDetailPath}`;
   const raceStartsAt = getRaceStartsAt(year, month, day, race.hassoJikoku);
-  const raceTitle = cleanText(race.kyosomeiHondai, "一般競走");
+  const raceTitle = buildFullRaceTitle(race);
   const racePlace = formatKeibajo(keibajoCode);
   const raceNumberLabel = formatRaceNumber(raceNumber);
   const raceStartsAtLabel = `${formatDate(year, `${month}${day}`)} ${formatTime(race.hassoJikoku)}発走`;
@@ -115,7 +128,7 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
         <span>パドック編集</span>
       </nav>
 
-      <header className="page-title-row">
+      <header className="page-title-row paddock-edit-title-row">
         <div>
           <p className="eyebrow">
             {formatDate(year, `${month}${day}`)} / {formatTime(race.hassoJikoku)}
@@ -143,6 +156,7 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
         racePlace={racePlace}
         raceMeta={raceMeta}
         raceNumber={raceNumber}
+        raceStartsAt={raceStartsAt}
         raceStartsAtLabel={raceStartsAtLabel}
         raceTitle={raceTitle}
         realtimeRequest={{
