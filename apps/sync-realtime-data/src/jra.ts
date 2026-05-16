@@ -1,8 +1,15 @@
 import type { Browser, BrowserContext, BrowserWorker, Page, Route } from "@cloudflare/playwright";
 
-import { buildJraRaceEntryUrl } from "../../pc-keiba-viewer/src/lib/jra-url";
+import { buildJraRaceEntryUrl, buildJraRaceResultUrl } from "../../pc-keiba-viewer/src/lib/jra-url";
 import type { LocalRaceRow } from "./storage";
-import type { HorseWeight, OddsData, OddsType, RaceEntry } from "./types";
+import type {
+  HorseWeight,
+  NarRaceSource,
+  OddsData,
+  OddsType,
+  RaceEntry,
+  RaceResult,
+} from "./types";
 
 const ODDS_LIST_SELECTOR = "#odds_list";
 const NAVIGATION_TIMEOUT_MS = 15_000;
@@ -22,7 +29,16 @@ const ODDS_PAGE_LABELS: ReadonlyArray<{ label: string; type: OddsType }> = [
 ];
 
 const BLOCKED_RESOURCE_TYPES = new Set(["font", "image", "media", "stylesheet"]);
-const ENTRY_STATUS_LABELS = ["出走取消", "取消", "競走除外", "除外", "騎手変更"] as const;
+const ENTRY_SCRATCH_STATUS_LABELS = ["出走取消", "取消", "競走除外", "除外"] as const;
+const RESULT_EXCLUDED_STATUS_LABELS = [
+  "出走取消",
+  "取消",
+  "競走除外",
+  "除外",
+  "競走中止",
+  "競争中止",
+  "中止",
+] as const;
 
 export const buildJraEntryUrlFromRace = (race: LocalRaceRow): string | null =>
   buildJraRaceEntryUrl({
@@ -33,6 +49,17 @@ export const buildJraEntryUrlFromRace = (race: LocalRaceRow): string | null =>
     keibajoCode: race.keibajo_code,
     raceBango: race.race_bango.padStart(2, "0"),
     source: "jra",
+  });
+
+export const buildJraResultUrlFromRaceSource = (race: NarRaceSource): string | null =>
+  buildJraRaceResultUrl({
+    kaisaiKai: race.kaisaiKai ?? null,
+    kaisaiNen: race.kaisaiNen,
+    kaisaiNichime: race.kaisaiNichime ?? null,
+    kaisaiTsukihi: race.kaisaiTsukihi,
+    keibajoCode: race.keibajoCode,
+    raceBango: race.raceBango.padStart(2, "0"),
+    source: race.source,
   });
 
 const stripHtmlTags = (text: string): string =>
@@ -85,6 +112,49 @@ const extractClassCell = (row: string, className: string): string | null =>
 const extractFirstAnchorText = (html: string | null): string | null =>
   html?.match(/<a\b[^>]*>([\s\S]*?)<\/a>/iu)?.[1] ?? null;
 
+const extractCells = (row: string): { attrs: string; html: string }[] =>
+  Array.from(row.matchAll(/<td\b([^>]*)>([\s\S]*?)<\/td>/giu)).map((match) => ({
+    attrs: match[1] ?? "",
+    html: match[2] ?? "",
+  }));
+
+const extractJraHorseNumber = (row: string): string | null =>
+  row.match(/<td[^>]*class=["'][^"']*\bnum\b[^"']*["'][^>]*>\s*(\d{1,2})\b/iu)?.[1] ??
+  row.match(/class=["'][^"']*horseNum[^"']*["'][^>]*>\s*(\d{1,2})\s*</iu)?.[1] ??
+  null;
+
+const hasClassLike = (html: string, pattern: RegExp): boolean =>
+  Array.from(html.matchAll(/class=["']([^"']*)["']/giu)).some((match) =>
+    pattern.test(match[1] ?? ""),
+  );
+
+const isPastEntryStatusCell = (attrs: string, html: string): boolean =>
+  hasClassLike(`${attrs} ${html}`, /past|history|recent|previous/iu);
+
+const extractJraEntryStatus = (row: string): string | null => {
+  let hasCurrentJockeyChange = false;
+  for (const { attrs, html } of extractCells(row)) {
+    if (isPastEntryStatusCell(attrs, html)) {
+      continue;
+    }
+    const text = stripHtmlTags(html);
+    if (!text) {
+      continue;
+    }
+    if (text.includes("騎手変更")) {
+      hasCurrentJockeyChange = true;
+      continue;
+    }
+    const scratchStatus = ENTRY_SCRATCH_STATUS_LABELS.find((label) =>
+      label.length > 2 ? text === label || text.startsWith(label) : text === label,
+    );
+    if (scratchStatus) {
+      return scratchStatus;
+    }
+  }
+  return hasCurrentJockeyChange ? "騎手変更" : null;
+};
+
 const extractJraHorseName = (row: string): string | null => {
   const horseNameCell = extractClassCell(row, "horseName") ?? extractClassCell(row, "horse") ?? row;
   return (
@@ -103,20 +173,57 @@ const extractJraJockeyName = (row: string): string | null => {
   return extractFirstAnchorText(currentJockey) ?? currentJockey ?? null;
 };
 
+const extractJraHorseWeightMatch = (row: string): RegExpMatchArray | null => {
+  const weightCell =
+    row.match(
+      /<div[^>]*class=["'][^"']*\bcell\b[^"']*\bweight\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/iu,
+    )?.[1] ??
+    row.match(
+      /<td[^>]*class=["'][^"']*(?:weight|odds_weight)[^"']*["'][^>]*>([\s\S]*?)<\/td>/iu,
+    )?.[1];
+  if (!weightCell) {
+    return null;
+  }
+  const weightText = stripHtmlTags(weightCell);
+  return weightText.match(/(?:^|[^0-9.])([3-9]\d{2})\s*(?:kg)?(?:\s*\(([+-]?)(\d+)\))?(?![0-9.])/u);
+};
+
+export const isJraScratchStatus = (status: string): boolean =>
+  (ENTRY_SCRATCH_STATUS_LABELS as readonly string[]).includes(status);
+
+export const sanitizeJraRaceEntriesWithOdds = (
+  entries: Omit<RaceEntry, "fetchedAt">[],
+  latest: Partial<Record<OddsType, OddsData[]>> | null | undefined,
+): Omit<RaceEntry, "fetchedAt">[] => {
+  const activeHorseNumbers = new Set(
+    (latest?.tansho ?? [])
+      .map((odds) => normalizeHorseNumber(odds.combination))
+      .filter((combination) => isValidHorseNumber(combination)),
+  );
+  if (activeHorseNumbers.size === 0) {
+    return entries;
+  }
+  return entries.map((entry) =>
+    entry.status && isJraScratchStatus(entry.status) && activeHorseNumbers.has(entry.horseNumber)
+      ? { ...entry, status: null }
+      : entry,
+  );
+};
+
 export const parseJraRaceEntries = (html: string): Omit<RaceEntry, "fetchedAt">[] =>
   extractRows(html)
     .map((row) => {
-      const horseNumber =
-        row.match(/<td[^>]*class=["'][^"']*\bnum\b[^"']*["'][^>]*>\s*(\d{1,2})\s*<\/td>/iu)?.[1] ??
-        row.match(/class=["'][^"']*horseNum[^"']*["'][^>]*>\s*(\d{1,2})\s*</iu)?.[1];
+      const horseNumber = extractJraHorseNumber(row);
       if (!horseNumber || !isValidHorseNumber(horseNumber)) {
         return null;
       }
       const horseName = extractJraHorseName(row);
       const jockeyName = extractJraJockeyName(row);
-      const rowText = stripHtmlTags(row);
-      const status: string | null =
-        ENTRY_STATUS_LABELS.find((label) => rowText.includes(label)) ?? null;
+      const rowStatus = extractJraEntryStatus(row);
+      const status =
+        rowStatus && isJraScratchStatus(rowStatus) && extractJraHorseWeightMatch(row)
+          ? null
+          : rowStatus;
       return {
         horseName: horseName ? stripHtmlTags(horseName) : null,
         horseNumber: normalizeHorseNumber(horseNumber),
@@ -129,21 +236,12 @@ export const parseJraRaceEntries = (html: string): Omit<RaceEntry, "fetchedAt">[
 export const parseJraHorseWeights = (html: string): HorseWeight[] =>
   extractRows(html)
     .map((row) => {
-      const horseNumber =
-        row.match(/<td[^>]*class=["'][^"']*\bnum\b[^"']*["'][^>]*>\s*(\d{1,2})\s*<\/td>/iu)?.[1] ??
-        row.match(/class=["'][^"']*horseNum[^"']*["'][^>]*>\s*(\d{1,2})\s*</iu)?.[1];
+      const horseNumber = extractJraHorseNumber(row);
       if (!horseNumber || !isValidHorseNumber(horseNumber)) {
         return null;
       }
       const horseName = extractJraHorseName(row);
-      const weightCell =
-        row.match(
-          /<td[^>]*class=["'][^"']*(?:weight|odds_weight)[^"']*["'][^>]*>([\s\S]*?)<\/td>/iu,
-        )?.[1] ?? row;
-      const weightText = stripHtmlTags(weightCell);
-      const match = weightText.match(
-        /(?:^|[^0-9.])([3-9]\d{2})(?:\s*\(([+-]?)(\d+)\))?(?![0-9.])/u,
-      );
+      const match = extractJraHorseWeightMatch(row);
       if (!match?.[1]) {
         return null;
       }
@@ -157,6 +255,71 @@ export const parseJraHorseWeights = (html: string): HorseWeight[] =>
       return weight;
     })
     .filter((weight): weight is NonNullable<typeof weight> => weight !== null);
+
+const normalizeFinishPosition = (value: string): string | null => {
+  const cleaned = stripHtmlTags(value);
+  if (/^\d{1,2}$/u.test(cleaned)) {
+    return cleaned.padStart(2, "0");
+  }
+  return null;
+};
+
+const isJraResultExcludedStatus = (value: string): boolean => {
+  const cleaned = stripHtmlTags(value);
+  return (RESULT_EXCLUDED_STATUS_LABELS as readonly string[]).some(
+    (label) => cleaned === label || cleaned.startsWith(label),
+  );
+};
+
+const extractJraResultHorseName = (row: string): string | null => {
+  const horseCell = extractClassCell(row, "horse");
+  if (!horseCell) {
+    return null;
+  }
+  const anchorText = extractFirstAnchorText(horseCell);
+  const horseName = stripHtmlTags(anchorText ?? horseCell);
+  return horseName || null;
+};
+
+export const parseJraRaceResults = (html: string): Omit<RaceResult, "fetchedAt">[] =>
+  extractRows(html)
+    .map((row): Omit<RaceResult, "fetchedAt"> | null => {
+      const placeCell = extractClassCell(row, "place");
+      const horseNumberCell = extractClassCell(row, "num");
+      if (!placeCell || !horseNumberCell) {
+        return null;
+      }
+      if (isJraResultExcludedStatus(placeCell)) {
+        return null;
+      }
+      const finishPosition = normalizeFinishPosition(placeCell);
+      const horseNumber = stripHtmlTags(horseNumberCell);
+      if (!finishPosition || !isValidHorseNumber(horseNumber)) {
+        return null;
+      }
+      const time = stripHtmlTags(extractClassCell(row, "time") ?? "");
+      return {
+        finishPosition,
+        horseName: extractJraResultHorseName(row),
+        horseNumber: normalizeHorseNumber(horseNumber),
+        time: time || null,
+      };
+    })
+    .filter((result): result is Omit<RaceResult, "fetchedAt"> => result !== null)
+    .toSorted((left, right) => Number(left.finishPosition) - Number(right.finishPosition));
+
+export const parseJraRaceResultExcludedHorseNumbers = (html: string): string[] =>
+  extractRows(html)
+    .map((row): string | null => {
+      const placeCell = extractClassCell(row, "place");
+      const horseNumberCell = extractClassCell(row, "num");
+      if (!placeCell || !horseNumberCell || !isJraResultExcludedStatus(placeCell)) {
+        return null;
+      }
+      const horseNumber = stripHtmlTags(horseNumberCell);
+      return isValidHorseNumber(horseNumber) ? normalizeHorseNumber(horseNumber) : null;
+    })
+    .filter((horseNumber): horseNumber is string => horseNumber !== null);
 
 const parseTanshoOdds = (html: string): OddsData[] =>
   Array.from(
@@ -523,6 +686,27 @@ export const fetchJraOddsWithPlaywright = async (
       }
     }
     return { entryHtml, latest };
+  } finally {
+    await browser?.close();
+  }
+};
+
+export const fetchJraResultHtmlWithPlaywright = async (
+  browserBinding: BrowserWorker | undefined,
+  resultUrl: string,
+): Promise<string> => {
+  if (!browserBinding) {
+    throw new Error("JRA_BROWSER binding is required to fetch JRA results.");
+  }
+  const { launch } = await import("@cloudflare/playwright");
+  let browser: Browser | null = null;
+  try {
+    browser = await launch(browserBinding);
+    const context = await browser.newContext();
+    await setupResourceBlocker(context);
+    const page = await context.newPage();
+    await page.goto(resultUrl, { timeout: NAVIGATION_TIMEOUT_MS, waitUntil: "domcontentloaded" });
+    return await page.content();
   } finally {
     await browser?.close();
   }
