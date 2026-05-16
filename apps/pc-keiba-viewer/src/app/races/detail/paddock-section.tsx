@@ -1531,12 +1531,12 @@ export function PaddockSection({
     <section className={editable ? "paddock-section paddock-section-edit" : "paddock-section"}>
       <header className="section-heading compact">
         <h2>パドック</h2>
-        <span>{state ? `更新 ${formatHistoryDate(state.updatedAt)}` : "読み込み中"}</span>
         {editable ? null : (
           <Link className="paddock-edit-link" href={editPath}>
             編集
           </Link>
         )}
+        <span>{state ? `更新 ${formatHistoryDate(state.updatedAt)}` : "読み込み中"}</span>
       </header>
       {error ? <p className="empty-state">パドック評価を取得できません: {error}</p> : null}
       {editable ? (

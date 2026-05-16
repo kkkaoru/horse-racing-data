@@ -72,6 +72,50 @@ export interface Runner {
   kohan3f: string | null;
 }
 
+export interface RaceTrendStarterRow extends Record<string, unknown> {
+  source: RaceSource;
+  kaisaiNen: string;
+  kaisaiTsukihi: string;
+  keibajoCode: string;
+  raceBango: string;
+  raceName: string | null;
+  wakuban: string | null;
+  umaban: string | null;
+  bamei: string | null;
+  jockeyName: string | null;
+  finishPosition: number;
+  sohaTime: string | null;
+}
+
+export interface RaceTrendDetail {
+  source: RaceSource;
+  date: string;
+  keibajoCode: string;
+  raceNumber: string;
+  raceName: string | null;
+  frameNumber: string | null;
+  horseNumber: string | null;
+  horseName: string | null;
+  jockeyName: string | null;
+  finishPosition: number;
+  time: string | null;
+}
+
+export interface RaceTrendRateRow {
+  key: string;
+  label: string;
+  starts: number;
+  showRate: number;
+  quinellaRate: number;
+  winRate: number;
+  details: RaceTrendDetail[];
+}
+
+export interface RaceTrendPayload {
+  frameRows: RaceTrendRateRow[];
+  jockeyRows: RaceTrendRateRow[];
+}
+
 export interface HorseRaceResult extends Record<string, unknown> {
   currentJockey: string | null;
   currentBarei: string | null;
