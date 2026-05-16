@@ -68,20 +68,34 @@ HPO_LAMBDA_L2_MAX = 10.0
 HPO_DEFAULT_N_TRIALS = 30
 HPO_DEFAULT_SEED = 20260515
 
+OBJECTIVE_LAMBDARANK = "lambdarank"
+OBJECTIVE_BINARY_TOP1 = "binary-top1"
+OBJECTIVE_BINARY_TOP3 = "binary-top3"
+OBJECTIVE_CHOICES: tuple[str, ...] = (
+    OBJECTIVE_LAMBDARANK,
+    OBJECTIVE_BINARY_TOP1,
+    OBJECTIVE_BINARY_TOP3,
+)
+BINARY_OBJECTIVES: tuple[str, ...] = (OBJECTIVE_BINARY_TOP1, OBJECTIVE_BINARY_TOP3)
+TOP3_UPPER_BOUND = 3
+
 
 class TrainingParams(TypedDict):
+    lambda_l2: float
     learning_rate: float
     min_child_samples: int
     num_iterations: int
     num_leaves: int
-    lambda_l2: float
+    objective: str
 
 
 class TrainingResult(TypedDict):
+    best_binary_logloss: float | None
     best_iteration: int
     best_ndcg_at_3: float | None
     elapsed_seconds: float
     feature_columns: list[str]
+    objective: str
     train_rows: int
     valid_rows: int
 
@@ -92,6 +106,17 @@ def to_relevance(finish_position: int) -> int:
 
 def to_relevance_series(finish_positions: pd.Series) -> pd.Series:
     return finish_positions.fillna(0).astype(int).map(to_relevance).astype(int)
+
+
+def build_label_array(finish_positions: pd.Series, objective: str) -> IntArray:
+    if objective == OBJECTIVE_BINARY_TOP1:
+        fp_int = finish_positions.fillna(0).astype(int)
+        return cast(IntArray, (fp_int == 1).astype(np.int64).to_numpy())
+    if objective == OBJECTIVE_BINARY_TOP3:
+        fp_int = finish_positions.fillna(0).astype(int)
+        binary = (fp_int >= 1) & (fp_int <= TOP3_UPPER_BOUND)
+        return cast(IntArray, binary.astype(np.int64).to_numpy())
+    return cast(IntArray, to_relevance_series(finish_positions).to_numpy(dtype=np.int64))
 
 
 def resolve_feature_columns(df_columns: list[str]) -> list[str]:
@@ -156,17 +181,20 @@ class LgbDatasetBundle(TypedDict):
     relevance: IntArray
 
 
-def prepare_lgb_dataset(df: pd.DataFrame) -> LgbDatasetBundle:
+def prepare_lgb_dataset(
+    df: pd.DataFrame, objective: str = OBJECTIVE_LAMBDARANK
+) -> LgbDatasetBundle:
     sorted_df = sort_for_grouping(df)
     feature_columns = resolve_feature_columns(list(sorted_df.columns))
     categorical_features = detect_categorical_features(feature_columns)
     frame = encode_categoricals(select_feature_frame(sorted_df, feature_columns), categorical_features)
-    relevance_array = cast(IntArray, to_relevance_series(sorted_df["finish_position"]).to_numpy(dtype=np.int64))
+    label_array = build_label_array(sorted_df["finish_position"], objective)
     group_sizes = build_group_sizes(sorted_df)
+    group_array = np.array(group_sizes, dtype=np.int64) if objective == OBJECTIVE_LAMBDARANK else None
     dataset = lgb.Dataset(
         data=frame,
-        label=relevance_array,
-        group=np.array(group_sizes, dtype=np.int64),
+        label=label_array,
+        group=group_array,
         categorical_feature=categorical_features,
         free_raw_data=False,
     )
@@ -175,15 +203,12 @@ def prepare_lgb_dataset(df: pd.DataFrame) -> LgbDatasetBundle:
         "dataset": dataset,
         "feature_columns": feature_columns,
         "group_sizes": group_sizes,
-        "relevance": relevance_array,
+        "relevance": label_array,
     }
 
 
 def build_lightgbm_params(params: TrainingParams) -> dict[str, object]:
-    return {
-        "objective": "lambdarank",
-        "metric": "ndcg",
-        "eval_at": [TOP3_K],
+    base: dict[str, object] = {
         "boosting_type": "gbdt",
         "learning_rate": params["learning_rate"],
         "num_leaves": params["num_leaves"],
@@ -191,6 +216,9 @@ def build_lightgbm_params(params: TrainingParams) -> dict[str, object]:
         "lambda_l2": params["lambda_l2"],
         "verbose": -1,
     }
+    if params["objective"] == OBJECTIVE_LAMBDARANK:
+        return {**base, "objective": "lambdarank", "metric": "ndcg", "eval_at": [TOP3_K]}
+    return {**base, "objective": "binary", "metric": "binary_logloss"}
 
 
 def train_lambdarank(
@@ -225,13 +253,19 @@ def train_lambdarank(
     best_iteration = (
         raw_best_iteration if raw_best_iteration > 0 else params["num_iterations"]
     )
-    best_ndcg = extract_best_ndcg(booster, valid_bundle is not None)
+    has_valid = valid_bundle is not None
+    best_ndcg = extract_best_ndcg(booster, has_valid) if params["objective"] == OBJECTIVE_LAMBDARANK else None
+    best_logloss = (
+        extract_best_binary_logloss(booster, has_valid) if params["objective"] in BINARY_OBJECTIVES else None
+    )
     valid_rows = sum(valid_bundle["group_sizes"]) if valid_bundle is not None else 0
     return booster, {
+        "best_binary_logloss": best_logloss,
         "best_iteration": int(best_iteration),
         "best_ndcg_at_3": best_ndcg,
         "elapsed_seconds": perf_counter() - started,
         "feature_columns": train_bundle["feature_columns"],
+        "objective": params["objective"],
         "train_rows": sum(train_bundle["group_sizes"]),
         "valid_rows": valid_rows,
     }
@@ -245,6 +279,14 @@ def extract_best_ndcg(booster: "lgb.Booster", has_valid: bool) -> float | None:
         if key.startswith("ndcg@"):
             return float(value)
     return None
+
+
+def extract_best_binary_logloss(booster: "lgb.Booster", has_valid: bool) -> float | None:
+    if not has_valid:
+        return None
+    best_score = booster.best_score.get("valid", {})
+    value = best_score.get("binary_logloss")
+    return float(value) if value is not None else None
 
 
 class PredictionRow(TypedDict):
@@ -307,6 +349,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     train.add_argument("--num-leaves", type=int, default=DEFAULT_NUM_LEAVES)
     train.add_argument("--min-child-samples", type=int, default=DEFAULT_MIN_CHILD_SAMPLES)
     train.add_argument("--lambda-l2", type=float, default=DEFAULT_LAMBDA_L2)
+    train.add_argument("--objective", choices=OBJECTIVE_CHOICES, default=OBJECTIVE_LAMBDARANK)
     walk = subparsers.add_parser("walk-forward")
     walk.add_argument("--csv", type=Path, required=True)
     walk.add_argument("--train-start-date", type=str, default="20160101")
@@ -318,6 +361,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     walk.add_argument("--num-leaves", type=int, default=DEFAULT_NUM_LEAVES)
     walk.add_argument("--min-child-samples", type=int, default=DEFAULT_MIN_CHILD_SAMPLES)
     walk.add_argument("--lambda-l2", type=float, default=DEFAULT_LAMBDA_L2)
+    walk.add_argument("--objective", choices=OBJECTIVE_CHOICES, default=OBJECTIVE_LAMBDARANK)
     predict = subparsers.add_parser("predict")
     predict.add_argument("--model-path", type=Path, required=True)
     predict.add_argument("--input-csv", type=Path, required=True)
@@ -331,25 +375,31 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     hpo.add_argument("--n-trials", type=int, default=HPO_DEFAULT_N_TRIALS)
     hpo.add_argument("--num-iterations", type=int, default=HPO_NUM_ITERATIONS)
     hpo.add_argument("--seed", type=int, default=HPO_DEFAULT_SEED)
+    hpo.add_argument("--objective", choices=OBJECTIVE_CHOICES, default=OBJECTIVE_LAMBDARANK)
     return parser.parse_args(argv)
 
 
 def training_params_from_args(args: argparse.Namespace) -> TrainingParams:
+    objective_value: str = getattr(args, "objective", OBJECTIVE_LAMBDARANK)
     return {
         "lambda_l2": float(args.lambda_l2),
         "learning_rate": float(args.learning_rate),
         "min_child_samples": int(args.min_child_samples),
         "num_iterations": int(args.num_iterations),
         "num_leaves": int(args.num_leaves),
+        "objective": objective_value,
     }
 
 
 def run_train_command(args: argparse.Namespace) -> None:
+    params = training_params_from_args(args)
     train_df = load_dataset(args.train_csv)
     valid_df = load_dataset(args.valid_csv) if args.valid_csv is not None else None
-    train_bundle = prepare_lgb_dataset(train_df)
-    valid_bundle = prepare_lgb_dataset(valid_df) if valid_df is not None else None
-    booster, result = train_lambdarank(train_bundle, valid_bundle, training_params_from_args(args))
+    train_bundle = prepare_lgb_dataset(train_df, params["objective"])
+    valid_bundle = (
+        prepare_lgb_dataset(valid_df, params["objective"]) if valid_df is not None else None
+    )
+    booster, result = train_lambdarank(train_bundle, valid_bundle, params)
     save_booster(booster, args.output_model)
     if args.output_predictions is not None:
         source_df = valid_df if valid_df is not None else train_df
@@ -457,13 +507,14 @@ def run_walk_forward_fold(
     fold: FoldSplit,
     params: TrainingParams,
 ) -> tuple["lgb.Booster", pd.DataFrame, FoldMetrics]:
-    train_bundle = prepare_lgb_dataset(fold["train_df"])
-    valid_bundle = prepare_lgb_dataset(fold["valid_df"])
+    train_bundle = prepare_lgb_dataset(fold["train_df"], params["objective"])
+    valid_bundle = prepare_lgb_dataset(fold["valid_df"], params["objective"])
     booster, training_result = train_lambdarank(train_bundle, valid_bundle, params)
     predictions = score_dataset(booster, fold["valid_df"])
     eval_metrics = evaluate_predictions(predictions, fold["valid_df"])
+    ndcg_value = eval_metrics.get("ndcg_at_3", training_result["best_ndcg_at_3"])
     metrics: FoldMetrics = {
-        "ndcg_at_3": training_result["best_ndcg_at_3"] or 0.0,
+        "ndcg_at_3": float(ndcg_value) if ndcg_value is not None else 0.0,
         "race_count": int(eval_metrics["race_count"]),
         "top1_accuracy": float(eval_metrics["top1_accuracy"]),
         "top3_box_accuracy": float(eval_metrics["top3_box_accuracy"]),
@@ -521,7 +572,11 @@ def run_walk_forward_command(args: argparse.Namespace) -> None:
     print(json.dumps({"aggregate": aggregate, "folds": fold_metrics}, ensure_ascii=False))
 
 
-def suggest_hpo_params(trial: optuna.trial.Trial, num_iterations: int) -> TrainingParams:
+def suggest_hpo_params(
+    trial: optuna.trial.Trial,
+    num_iterations: int,
+    objective: str = OBJECTIVE_LAMBDARANK,
+) -> TrainingParams:
     return {
         "lambda_l2": trial.suggest_float("lambda_l2", HPO_LAMBDA_L2_MIN, HPO_LAMBDA_L2_MAX),
         "learning_rate": trial.suggest_float(
@@ -532,6 +587,7 @@ def suggest_hpo_params(trial: optuna.trial.Trial, num_iterations: int) -> Traini
         ),
         "num_iterations": num_iterations,
         "num_leaves": trial.suggest_int("num_leaves", HPO_NUM_LEAVES_MIN, HPO_NUM_LEAVES_MAX),
+        "objective": objective,
     }
 
 
@@ -569,9 +625,10 @@ def write_optuna_trials_csv(study: optuna.Study, output_path: Path) -> None:
 def run_hpo_command(args: argparse.Namespace) -> HpoSummary:
     df = load_dataset(args.csv)
     validation_years = parse_year_list(args.validation_years)
+    objective_value: str = getattr(args, "objective", OBJECTIVE_LAMBDARANK)
 
     def objective(trial: optuna.trial.Trial) -> float:
-        params = suggest_hpo_params(trial, int(args.num_iterations))
+        params = suggest_hpo_params(trial, int(args.num_iterations), objective_value)
         aggregate = evaluate_fold_set(df, args.train_start_date, validation_years, params)
         return float(aggregate["ndcg_at_3_mean"])
 
@@ -584,6 +641,7 @@ def run_hpo_command(args: argparse.Namespace) -> HpoSummary:
         "min_child_samples": int(study.best_params["min_child_samples"]),
         "num_iterations": int(args.num_iterations),
         "num_leaves": int(study.best_params["num_leaves"]),
+        "objective": objective_value,
     }
     summary: HpoSummary = {
         "best_params": best_params,
