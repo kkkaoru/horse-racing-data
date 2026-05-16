@@ -65,7 +65,9 @@ const parseDateInput = (value: string | null, fallbackYmd: string): string => {
 };
 
 const addDays = (ymd: string, days: number): string => {
-  const date = new Date(Date.UTC(Number(ymd.slice(0, 4)), Number(ymd.slice(4, 6)) - 1, Number(ymd.slice(6, 8))));
+  const date = new Date(
+    Date.UTC(Number(ymd.slice(0, 4)), Number(ymd.slice(4, 6)) - 1, Number(ymd.slice(6, 8))),
+  );
   date.setUTCDate(date.getUTCDate() + days);
   const year = String(date.getUTCFullYear()).padStart(4, "0");
   const month = String(date.getUTCMonth() + 1).padStart(2, "0");
@@ -84,8 +86,20 @@ const enumerateDates = (startYmd: string, endYmd: string): string[] => {
 const isYmdInRange = (ymd: string, startYmd: string, endYmd: string): boolean =>
   ymd >= startYmd && ymd <= endYmd;
 
-const starterKey = (row: Pick<RaceTrendStarterRow, "source" | "kaisaiNen" | "kaisaiTsukihi" | "keibajoCode" | "raceBango" | "umaban">): string =>
-  [row.source, row.kaisaiNen, row.kaisaiTsukihi, row.keibajoCode, row.raceBango, row.umaban ?? ""].join(":");
+const starterKey = (
+  row: Pick<
+    RaceTrendStarterRow,
+    "source" | "kaisaiNen" | "kaisaiTsukihi" | "keibajoCode" | "raceBango" | "umaban"
+  >,
+): string =>
+  [
+    row.source,
+    row.kaisaiNen,
+    row.kaisaiTsukihi,
+    row.keibajoCode,
+    row.raceBango,
+    row.umaban ?? "",
+  ].join(":");
 
 const detailFromStarter = (row: RaceTrendStarterRow): RaceTrendDetail => ({
   source: row.source,
@@ -143,22 +157,27 @@ const aggregateRows = (
         showRate: starts > 0 ? (showCount / starts) * 100 : 0,
         quinellaRate: starts > 0 ? (quinellaCount / starts) * 100 : 0,
         winRate: starts > 0 ? (winCount / starts) * 100 : 0,
-        details: groupRows
-          .map(detailFromStarter)
-          .toSorted((a, b) => {
-            const dateOrder = b.date.localeCompare(a.date);
-            if (dateOrder !== 0) {
-              return dateOrder;
-            }
-            const raceOrder = a.raceNumber.localeCompare(b.raceNumber, "ja", { numeric: true });
-            if (raceOrder !== 0) {
-              return raceOrder;
-            }
-            return (a.horseNumber ?? "").localeCompare(b.horseNumber ?? "", "ja", { numeric: true });
-          }),
+        details: groupRows.map(detailFromStarter).toSorted((a, b) => {
+          const dateOrder = b.date.localeCompare(a.date);
+          if (dateOrder !== 0) {
+            return dateOrder;
+          }
+          const raceOrder = a.raceNumber.localeCompare(b.raceNumber, "ja", { numeric: true });
+          if (raceOrder !== 0) {
+            return raceOrder;
+          }
+          return (a.horseNumber ?? "").localeCompare(b.horseNumber ?? "", "ja", { numeric: true });
+        }),
       };
     })
-    .toSorted((a, b) => b.showRate - a.showRate || b.quinellaRate - a.quinellaRate || b.winRate - a.winRate || b.starts - a.starts || a.label.localeCompare(b.label, "ja"));
+    .toSorted(
+      (a, b) =>
+        b.showRate - a.showRate ||
+        b.quinellaRate - a.quinellaRate ||
+        b.winRate - a.winRate ||
+        b.starts - a.starts ||
+        a.label.localeCompare(b.label, "ja"),
+    );
 };
 
 const mapLimit = async <T, U>(
@@ -215,9 +234,14 @@ const buildRealtimeStarterRows = async (race: RaceListItem): Promise<RaceTrendSt
     race.keibajoCode,
     race.raceBango,
   );
-  const runnerByHorseNumber = new Map(runners.map((runner) => [normalizeNumberText(runner.umaban), runner]));
+  const runnerByHorseNumber = new Map(
+    runners.map((runner) => [normalizeNumberText(runner.umaban), runner]),
+  );
   const entryByHorseNumber = new Map(
-    (payload?.raceEntries?.horses ?? []).map((entry) => [normalizeNumberText(entry.horseNumber), entry]),
+    (payload?.raceEntries?.horses ?? []).map((entry) => [
+      normalizeNumberText(entry.horseNumber),
+      entry,
+    ]),
   );
 
   return resultHorses.flatMap((resultHorse) => {
@@ -235,10 +259,14 @@ const buildRealtimeStarterRows = async (race: RaceListItem): Promise<RaceTrendSt
         kaisaiTsukihi: race.kaisaiTsukihi,
         keibajoCode: race.keibajoCode,
         raceBango: race.raceBango,
-        raceName: normalizeText(race.kyosomeiHondai) ?? normalizeText(race.kyosomeiFukudai) ?? "一般競走",
+        raceName:
+          normalizeText(race.kyosomeiHondai) ?? normalizeText(race.kyosomeiFukudai) ?? "一般競走",
         wakuban: normalizeNumberText(runner?.wakuban),
         umaban: horseNumber,
-        bamei: normalizeText(resultHorse.horseName) ?? normalizeText(runner?.bamei) ?? normalizeText(entry?.horseName),
+        bamei:
+          normalizeText(resultHorse.horseName) ??
+          normalizeText(runner?.bamei) ??
+          normalizeText(entry?.horseName),
         jockeyName: normalizeText(entry?.jockeyName) ?? normalizeText(runner?.kishumeiRyakusho),
         finishPosition,
         sohaTime: normalizeText(resultHorse.time),
@@ -259,18 +287,30 @@ const buildRaceTrendPayload = async (
   },
 ): Promise<RaceTrendPayload> => {
   const jockeyNames = Array.from(
-    new Set(runners.map((runner) => normalizeText(runner.kishumeiRyakusho)).filter(isNonEmptyString)),
+    new Set(
+      runners.map((runner) => normalizeText(runner.kishumeiRyakusho)).filter(isNonEmptyString),
+    ),
   );
   const frameNumbers = Array.from(
     new Set(runners.map((runner) => normalizeNumberText(runner.wakuban)).filter(isNonEmptyString)),
+  );
+  const targetHorseNumberByJockey = new Map(
+    runners
+      .map((runner) => [
+        normalizeText(runner.kishumeiRyakusho),
+        normalizeNumberText(runner.umaban),
+      ] as const)
+      .filter((entry): entry is readonly [string, string] => Boolean(entry[0]) && Boolean(entry[1])),
   );
   const historicalRows = await getRaceTrendHistoricalStarterRows(race, {
     ...options,
     frameNumbers,
     jockeyNames,
   });
-  const minYmd = [options.jockeyStartYmd, options.frameStartYmd].toSorted()[0] ?? options.jockeyStartYmd;
-  const maxYmd = [options.jockeyEndYmd, options.frameEndYmd].toSorted().at(-1) ?? options.jockeyEndYmd;
+  const minYmd =
+    [options.jockeyStartYmd, options.frameStartYmd].toSorted()[0] ?? options.jockeyStartYmd;
+  const maxYmd =
+    [options.jockeyEndYmd, options.frameEndYmd].toSorted().at(-1) ?? options.jockeyEndYmd;
   const dateRaces = (
     await Promise.all(
       enumerateDates(minYmd, maxYmd).map((ymd) =>
@@ -305,14 +345,16 @@ const buildRaceTrendPayload = async (
       keibajoCode: options.jockeySameVenue ? race.keibajoCode : undefined,
       validKeys: new Set(jockeyNames),
       getGroupKey: (row) => normalizeText(row.jockeyName),
-    }),
+    }).map((row) =>
+      Object.assign(row, { targetHorseNumber: targetHorseNumberByJockey.get(row.key) ?? null }),
+    ),
     frameRows: aggregateRows(rows, {
       startYmd: options.frameStartYmd,
       endYmd: options.frameEndYmd,
       keibajoCode: race.keibajoCode,
       validKeys: new Set(frameNumbers),
       getGroupKey: (row) => normalizeNumberText(row.wakuban),
-    }).map((row) => Object.assign(row, { label: `${row.label}枠` })),
+    }),
   };
 };
 

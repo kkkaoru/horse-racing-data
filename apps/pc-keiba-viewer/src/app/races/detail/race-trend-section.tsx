@@ -81,6 +81,7 @@ function TrendTable({
   labelColumn,
   rows,
   showStarts,
+  showTargetHorseNumber,
   sortKey,
   title,
   onSortChange,
@@ -91,6 +92,7 @@ function TrendTable({
   labelColumn: string;
   rows: RaceTrendRateRow[];
   showStarts?: boolean;
+  showTargetHorseNumber?: boolean;
   sortKey: SortKey;
   title: string;
   onSortChange: (sortKey: SortKey) => void;
@@ -105,9 +107,10 @@ function TrendTable({
         <span>{SORT_LABELS[sortKey]}順</span>
       </div>
       <div className="stats-table-wrap">
-        <table className="stats-table race-trend-table">
+        <table className={`stats-table race-trend-table ${kind}`}>
           <thead>
             <tr>
+              {showTargetHorseNumber ? <th>馬番</th> : null}
               <th>{labelColumn}</th>
               {showStarts ? <th>出走回数</th> : null}
               {(["showRate", "quinellaRate", "winRate"] as const).map((key) => (
@@ -128,6 +131,11 @@ function TrendTable({
             {isLoading ? (
               Array.from({ length: 5 }, (_, index) => (
                 <tr className="race-trend-skeleton-row" key={`race-trend-skeleton-${index}`}>
+                  {showTargetHorseNumber ? (
+                    <td>
+                      <span className="race-trend-skeleton race-trend-skeleton-count" />
+                    </td>
+                  ) : null}
                   <td>
                     <span className="race-trend-skeleton race-trend-skeleton-name" />
                   </td>
@@ -158,13 +166,17 @@ function TrendTable({
                     labelColumn={labelColumn}
                     row={row}
                     showStarts={showStarts}
+                    showTargetHorseNumber={showTargetHorseNumber}
                     onToggle={() => setExpandedKey(isExpanded ? null : row.key)}
                   />
                 );
               })
             ) : (
               <tr>
-                <td className="race-trend-empty-cell" colSpan={showStarts ? 5 : 4}>
+                <td
+                  className="race-trend-empty-cell"
+                  colSpan={(showStarts ? 5 : 4) + (showTargetHorseNumber ? 1 : 0)}
+                >
                   {emptyLabel}
                 </td>
               </tr>
@@ -182,6 +194,7 @@ function FragmentRow({
   labelColumn,
   row,
   showStarts,
+  showTargetHorseNumber,
   onToggle,
 }: {
   isExpanded: boolean;
@@ -189,11 +202,15 @@ function FragmentRow({
   labelColumn: string;
   row: RaceTrendRateRow;
   showStarts?: boolean;
+  showTargetHorseNumber?: boolean;
   onToggle: () => void;
 }) {
   return (
     <>
       <tr className={isExpanded ? "stats-row-expanded" : undefined}>
+        {showTargetHorseNumber ? (
+          <td className="race-trend-horse-number-cell">{row.targetHorseNumber ?? "-"}</td>
+        ) : null}
         <td className="stats-name-cell">
           <button
             aria-expanded={isExpanded}
@@ -211,18 +228,29 @@ function FragmentRow({
       </tr>
       {isExpanded ? (
         <tr className="stats-detail-row">
-          <td colSpan={showStarts ? 5 : 4}>
+          <td colSpan={(showStarts ? 5 : 4) + (showTargetHorseNumber ? 1 : 0)}>
             <div className="stats-detail-panel">
-              <table className="stats-detail-table race-trend-detail-table">
+              <table className={`stats-detail-table race-trend-detail-table ${kind}`}>
+                <colgroup>
+                  <col className="race-trend-detail-col-finish" />
+                  <col className="race-trend-detail-col-primary" />
+                  {kind === "frame" ? <col className="race-trend-detail-col-horse-number" /> : null}
+                  <col className="race-trend-detail-col-date" />
+                  <col className="race-trend-detail-col-race-name" />
+                  <col className="race-trend-detail-col-race-number" />
+                  {kind === "jockey" ? <col className="race-trend-detail-col-horse-number" /> : null}
+                  <col className="race-trend-detail-col-secondary" />
+                </colgroup>
                 <thead>
                   <tr>
                     <th>着順</th>
                     <th>{kind === "jockey" ? "騎手名" : "枠番"}</th>
+                    {kind === "frame" ? <th>馬番</th> : null}
                     <th>日付</th>
                     <th>レース名</th>
                     <th>レースナンバー</th>
-                    <th>馬番</th>
-                    {kind === "jockey" ? <th>枠番</th> : <th>騎手名</th>}
+                    {kind === "jockey" ? <th>馬番</th> : null}
+                    <th>{kind === "jockey" ? "枠番" : "騎手名"}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -235,17 +263,18 @@ function FragmentRow({
                         {kind === "jockey"
                           ? (detail.jockeyName ?? "-")
                           : detail.frameNumber
-                            ? `${detail.frameNumber}枠`
+                            ? detail.frameNumber
                             : "-"}
                       </td>
+                      {kind === "frame" ? <td>{detail.horseNumber ?? "-"}</td> : null}
                       <td>{detail.date}</td>
                       <td>{detail.raceName ?? "-"}</td>
                       <td>{detail.raceNumber}</td>
-                      <td>{detail.horseNumber ?? "-"}</td>
+                      {kind === "jockey" ? <td>{detail.horseNumber ?? "-"}</td> : null}
                       <td>
                         {kind === "jockey"
                           ? detail.frameNumber
-                            ? `${detail.frameNumber}枠`
+                            ? detail.frameNumber
                             : "-"
                           : (detail.jockeyName ?? "-")}
                       </td>
@@ -349,11 +378,19 @@ export function RaceTrendSection({
           <div className="race-trend-controls">
             <label>
               <span>開始日</span>
-              <input type="date" value={jockeyStart} onChange={(event) => setJockeyStart(event.target.value)} />
+              <input
+                type="date"
+                value={jockeyStart}
+                onChange={(event) => setJockeyStart(event.target.value)}
+              />
             </label>
             <label>
               <span>終了日</span>
-              <input type="date" value={jockeyEnd} onChange={(event) => setJockeyEnd(event.target.value)} />
+              <input
+                type="date"
+                value={jockeyEnd}
+                onChange={(event) => setJockeyEnd(event.target.value)}
+              />
             </label>
             <label className="race-trend-checkbox">
               <input
@@ -371,6 +408,7 @@ export function RaceTrendSection({
             labelColumn="騎手名"
             rows={payload?.jockeyRows ?? []}
             showStarts
+            showTargetHorseNumber
             sortKey={jockeySortKey}
             title="騎手ごとの勝率"
             onSortChange={setJockeySortKey}
@@ -381,11 +419,19 @@ export function RaceTrendSection({
           <div className="race-trend-controls">
             <label>
               <span>開始日</span>
-              <input type="date" value={frameStart} onChange={(event) => setFrameStart(event.target.value)} />
+              <input
+                type="date"
+                value={frameStart}
+                onChange={(event) => setFrameStart(event.target.value)}
+              />
             </label>
             <label>
               <span>終了日</span>
-              <input type="date" value={frameEnd} onChange={(event) => setFrameEnd(event.target.value)} />
+              <input
+                type="date"
+                value={frameEnd}
+                onChange={(event) => setFrameEnd(event.target.value)}
+              />
             </label>
           </div>
           <TrendTable
@@ -401,7 +447,9 @@ export function RaceTrendSection({
         </div>
       </div>
 
-      {status === "error" ? <p className="race-trend-error">レース傾向を取得できませんでした。</p> : null}
+      {status === "error" ? (
+        <p className="race-trend-error">レース傾向を取得できませんでした。</p>
+      ) : null}
     </section>
   );
 }
