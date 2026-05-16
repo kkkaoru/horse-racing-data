@@ -45,7 +45,6 @@ const createRealtimeRaceStore = (initialPayload: RealtimeRacePayload | null): Re
   }));
 
 export const buildRealtimeUrl = ({
-  apiBaseUrl,
   day,
   keibajoCode,
   month,
@@ -53,10 +52,10 @@ export const buildRealtimeUrl = ({
   source,
   year,
 }: RealtimeRaceRequest): string | null => {
-  if (!apiBaseUrl || (source !== "nar" && source !== "jra")) {
+  if (source !== "nar" && source !== "jra") {
     return null;
   }
-  return `${apiBaseUrl.replace(/\/$/u, "")}/api/${source}/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/realtime`;
+  return `/api/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/realtime?source=${encodeURIComponent(source)}`;
 };
 
 export const isRealtimeRacePayload = (value: unknown): value is RealtimeRacePayload =>

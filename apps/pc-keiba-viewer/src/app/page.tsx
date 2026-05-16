@@ -228,21 +228,25 @@ function getHomeTrackRunners(): HomeTrackRunner[] {
 }
 
 async function HomeRealtimePanel() {
+  let initialLoadFailed = false;
   const { finished, upcoming } = await getTopRaceWindows().catch((error: unknown) => {
     console.error("Failed to load top race windows", error);
+    initialLoadFailed = true;
     return { finished: [], upcoming: [] };
   });
-  const realtimeApiBaseUrl =
-    process.env.NEXT_PUBLIC_REALTIME_DATA_API_BASE_URL ?? "https://sync-realtime-data.kkk4oru.com";
 
   return (
     <HomeRealtime
       initialFinished={finished}
+      initialLoadFailed={initialLoadFailed}
+      initialNow={Date.now()}
       initialUpcoming={upcoming}
-      realtimeApiBaseUrl={realtimeApiBaseUrl}
     />
   );
 }
+
+const homeRaceListMinHeight = (count: number): string =>
+  `${count * 42 + Math.max(0, count - 1) * 8}px`;
 
 function HomeRealtimeSkeleton() {
   return (
@@ -253,7 +257,10 @@ function HomeRealtimeSkeleton() {
             <h2>{title}</h2>
             <span>読み込み中</span>
           </div>
-          <div className="home-race-list home-race-list-skeleton">
+          <div
+            className="home-race-list home-race-list-skeleton"
+            style={{ minHeight: homeRaceListMinHeight(index === 2 ? 3 : 5) }}
+          >
             {Array.from({ length: index === 2 ? 3 : 5 }, (_, itemIndex) => (
               <div className="home-race-skeleton-item" key={itemIndex}>
                 <span className="skeleton-text short" />
