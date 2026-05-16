@@ -68,6 +68,8 @@ export interface RealtimeOddsTrend {
 export interface RealtimeRaceSource {
   babaCode: string;
   debaUrl: string;
+  kaisaiKai?: string | null;
+  kaisaiNichime?: string | null;
   kaisaiNen: string;
   kaisaiTsukihi: string;
   keibajoCode: string;
