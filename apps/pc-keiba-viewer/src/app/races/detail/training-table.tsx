@@ -6,6 +6,7 @@ import { cleanText, formatDate } from "../../../lib/format";
 import type { Training } from "../../../lib/race-types";
 import { formatRunnerNumber } from "../../../lib/runner-format";
 import { formatTracen, formatTrainingTime, formatWoodCourse } from "../../../lib/training-format";
+import { MobileFilterDisclosure } from "./mobile-filter-disclosure";
 
 interface TrainingTableProps {
   sourceLabel: string;
@@ -43,6 +44,22 @@ const PREMIUM_REVIEW_LABELS = {
   grade: process.env.NEXT_PUBLIC_PREMIUM_RACE_WORK_LABEL_GRADE ?? "記号",
   text: process.env.NEXT_PUBLIC_PREMIUM_RACE_WORK_LABEL_TEXT ?? "評価",
 };
+
+const FURLONG_COLUMNS = [
+  { key: "timeGokei6f", label: "6F" },
+  { key: "timeGokei5f", label: "5F" },
+  { key: "timeGokei4f", label: "4F" },
+  { key: "timeGokei3f", label: "3F" },
+  { key: "timeGokei2f", label: "2F" },
+  { key: "lapTime1f", label: "1F" },
+] as const satisfies readonly { key: SortKey; label: string }[];
+
+const DEFAULT_VISIBLE_FURLONG_KEYS: SortKey[] = [
+  "timeGokei4f",
+  "timeGokei3f",
+  "timeGokei2f",
+  "lapTime1f",
+];
 
 const parseTime = (value: string | null | undefined): number | null => {
   const formatted = formatTrainingTime(value);
@@ -111,8 +128,64 @@ const compareByFastestTraining = (left: Training, right: Training): number => {
   );
 };
 
+const GRADE_PRIORITY = new Map<string, number>([
+  ["◎", 1],
+  ["SS", 1],
+  ["S", 1],
+  ["○", 2],
+  ["◯", 2],
+  ["A", 2],
+  ["▲", 3],
+  ["B", 3],
+  ["△", 4],
+  ["C", 4],
+]);
+
+const getTrainingGradePriority = (training: Training): number => {
+  const grade = cleanText(training.premiumEvaluationGrade, "").toUpperCase();
+  if (!grade) {
+    return Number.POSITIVE_INFINITY;
+  }
+  const numericGrade = Number(grade);
+  if (Number.isFinite(numericGrade)) {
+    return numericGrade;
+  }
+  return GRADE_PRIORITY.get(grade) ?? Number.POSITIVE_INFINITY;
+};
+
+const compareByBestGradeThenOneF = (left: Training, right: Training): number => {
+  const gradeCompared = compareNullableNumber(
+    getTrainingGradePriority(left),
+    getTrainingGradePriority(right),
+    "asc",
+  );
+  if (gradeCompared !== 0) {
+    return gradeCompared;
+  }
+
+  const oneFCompared = compareNullableNumber(
+    getSortValue(left, "lapTime1f"),
+    getSortValue(right, "lapTime1f"),
+    "asc",
+  );
+  if (oneFCompared !== 0) {
+    return oneFCompared;
+  }
+
+  return compareByFastestTraining(left, right);
+};
+
 const getTrainingCourseLabel = (training: Training): string =>
   formatWoodCourse(training.course, training.babamawari);
+
+const getTrainingPlaceSummary = (training: Training): string => {
+  const values = [
+    formatTracen(training.tracenKubun),
+    cleanText(training.trainingType, "-"),
+    getTrainingCourseLabel(training),
+  ].filter((value) => value && value !== "-");
+  return values.length > 0 ? values.join(" / ") : "-";
+};
 
 const getUniqueOptions = (values: string[]): string[] =>
   [...new Set(values)]
@@ -125,10 +198,17 @@ export function TrainingTable({ sourceLabel, trainings }: TrainingTableProps) {
   const [tracenFilter, setTracenFilter] = useState(ALL_FILTER);
   const [courseFilter, setCourseFilter] = useState(ALL_FILTER);
   const [fastestOnly, setFastestOnly] = useState(true);
+  const [gradeOnly, setGradeOnly] = useState(true);
+  const [visibleFurlongKeys, setVisibleFurlongKeys] = useState<SortKey[]>(
+    DEFAULT_VISIBLE_FURLONG_KEYS,
+  );
   const hasPremiumReviews = trainings.some(
     (training) =>
       cleanText(training.premiumEvaluationText, "") ||
       cleanText(training.premiumEvaluationGrade, ""),
+  );
+  const hasPremiumGrades = trainings.some((training) =>
+    Boolean(cleanText(training.premiumEvaluationGrade, "")),
   );
 
   const filterOptions = useMemo(
@@ -151,6 +231,9 @@ export function TrainingTable({ sourceLabel, trainings }: TrainingTableProps) {
       if (courseFilter !== ALL_FILTER && getTrainingCourseLabel(training) !== courseFilter) {
         return false;
       }
+      if (hasPremiumGrades && gradeOnly && !cleanText(training.premiumEvaluationGrade, "")) {
+        return false;
+      }
       return true;
     });
 
@@ -163,14 +246,22 @@ export function TrainingTable({ sourceLabel, trainings }: TrainingTableProps) {
         .reduce((byRunner, training) => {
           const key = cleanText(training.umaban, "");
           const current = byRunner.get(key);
-          if (!current || compareByFastestTraining(training, current) < 0) {
+          const compared =
+            hasPremiumGrades && gradeOnly
+              ? current
+                ? compareByBestGradeThenOneF(training, current)
+                : -1
+              : current
+                ? compareByFastestTraining(training, current)
+                : -1;
+          if (compared < 0) {
             byRunner.set(key, training);
           }
           return byRunner;
         }, new Map<string, Training>())
         .values(),
     ];
-  }, [courseFilter, fastestOnly, tracenFilter, trainings, typeFilter]);
+  }, [courseFilter, fastestOnly, gradeOnly, hasPremiumGrades, tracenFilter, trainings, typeFilter]);
 
   const sortedTrainings = useMemo(
     () =>
@@ -187,6 +278,28 @@ export function TrainingTable({ sourceLabel, trainings }: TrainingTableProps) {
         .map(({ training }) => training),
     [filteredTrainings, sort],
   );
+  const visibleFurlongColumns = useMemo(
+    () => FURLONG_COLUMNS.filter((column) => visibleFurlongKeys.includes(column.key)),
+    [visibleFurlongKeys],
+  );
+
+  const toggleFurlongColumn = (key: SortKey) => {
+    setVisibleFurlongKeys((current) => {
+      if (current.includes(key)) {
+        if (current.length === 1) {
+          return current;
+        }
+        const next = current.filter((item) => item !== key);
+        setSort((currentSort) =>
+          currentSort.key === key ? { direction: "asc", key: "lapTime1f" } : currentSort,
+        );
+        return next;
+      }
+      return FURLONG_COLUMNS.map((column) => column.key).filter(
+        (item) => item === key || current.includes(item),
+      );
+    });
+  };
 
   const changeSort = (key: SortKey) => {
     setSort((current) => ({
@@ -225,87 +338,120 @@ export function TrainingTable({ sourceLabel, trainings }: TrainingTableProps) {
 
   return (
     <>
-      <section className="training-filter-panel" aria-label="training filters">
-        <label>
-          <span>種別</span>
-          <select
-            value={typeFilter}
-            onChange={(event) => {
-              setTypeFilter(event.currentTarget.value);
-            }}
-          >
-            <option value={ALL_FILTER}>すべて</option>
-            {filterOptions.types.map((option) => (
-              <option value={option} key={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span>場所</span>
-          <select
-            value={tracenFilter}
-            onChange={(event) => {
-              setTracenFilter(event.currentTarget.value);
-            }}
-          >
-            <option value={ALL_FILTER}>すべて</option>
-            {filterOptions.tracens.map((option) => (
-              <option value={option} key={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span>コース</span>
-          <select
-            value={courseFilter}
-            onChange={(event) => {
-              setCourseFilter(event.currentTarget.value);
-            }}
-          >
-            <option value={ALL_FILTER}>すべて</option>
-            {filterOptions.courses.map((option) => (
-              <option value={option} key={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="training-checkbox-label">
-          <span>最速のレコードのみを表示</span>
-          <span className="training-checkbox-control">
-            <input
-              aria-label="最速のレコードのみを表示"
-              checked={fastestOnly}
-              type="checkbox"
+      <MobileFilterDisclosure title="検索メニュー">
+        <section className="training-filter-panel" aria-label="training filters">
+          <label>
+            <span>種別</span>
+            <select
+              value={typeFilter}
               onChange={(event) => {
-                setFastestOnly(event.currentTarget.checked);
+                setTypeFilter(event.currentTarget.value);
               }}
-            />
+            >
+              <option value={ALL_FILTER}>すべて</option>
+              {filterOptions.types.map((option) => (
+                <option value={option} key={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>場所</span>
+            <select
+              value={tracenFilter}
+              onChange={(event) => {
+                setTracenFilter(event.currentTarget.value);
+              }}
+            >
+              <option value={ALL_FILTER}>すべて</option>
+              {filterOptions.tracens.map((option) => (
+                <option value={option} key={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>コース</span>
+            <select
+              value={courseFilter}
+              onChange={(event) => {
+                setCourseFilter(event.currentTarget.value);
+              }}
+            >
+              <option value={ALL_FILTER}>すべて</option>
+              {filterOptions.courses.map((option) => (
+                <option value={option} key={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="training-checkbox-label">
+            <span>最速のレコードのみを表示</span>
+            <span className="training-checkbox-control">
+              <input
+                aria-label="最速のレコードのみを表示"
+                checked={fastestOnly}
+                type="checkbox"
+                onChange={(event) => {
+                  setFastestOnly(event.currentTarget.checked);
+                }}
+              />
+            </span>
+          </label>
+          {hasPremiumGrades ? (
+            <label className="training-checkbox-label">
+              <span>記号ありのみ</span>
+              <span className="training-checkbox-control">
+                <input
+                  aria-label="記号ありのみを表示"
+                  checked={gradeOnly}
+                  type="checkbox"
+                  onChange={(event) => {
+                    setGradeOnly(event.currentTarget.checked);
+                  }}
+                />
+              </span>
+            </label>
+          ) : null}
+          <fieldset className="training-furlong-fieldset">
+            <legend>表示ハロン</legend>
+            <span className="training-furlong-control">
+              {FURLONG_COLUMNS.map((column) => (
+                <label className="training-furlong-option" key={column.key}>
+                  <input
+                    aria-label={`${column.label}を表示`}
+                    checked={visibleFurlongKeys.includes(column.key)}
+                    type="checkbox"
+                    onChange={() => {
+                      toggleFurlongColumn(column.key);
+                    }}
+                  />
+                  <span>{column.label}</span>
+                </label>
+              ))}
+            </span>
+          </fieldset>
+          <span className="training-filter-count">
+            {sortedTrainings.length} / {trainings.length} 件
           </span>
-        </label>
-        <span className="training-filter-count">
-          {sortedTrainings.length} / {trainings.length} 件
-        </span>
-      </section>
+        </section>
+      </MobileFilterDisclosure>
       <div className="training-table-wrap">
         <table className="training-table">
           <colgroup>
             <col className="training-col-runner-number" />
             <col className="training-col-horse" />
+            <col className="training-col-jockey" />
+            <col className="training-col-rider" />
+            <col className="training-col-trainer" />
             <col className="training-col-date" />
-            <col className="training-col-place" />
-            <col className="training-col-type" />
-            <col className="training-col-course" />
-            <col className="training-col-time" />
-            <col className="training-col-time" />
-            <col className="training-col-time" />
-            <col className="training-col-time" />
-            <col className="training-col-time" />
-            <col className="training-col-time" />
+            <col className="training-col-place-summary" />
+            {visibleFurlongColumns.map((column) => (
+              <col className="training-col-time" key={column.key} />
+            ))}
             {hasPremiumReviews ? <col className="training-col-review" /> : null}
             {hasPremiumReviews ? <col className="training-col-review" /> : null}
           </colgroup>
@@ -313,16 +459,14 @@ export function TrainingTable({ sourceLabel, trainings }: TrainingTableProps) {
             <tr>
               <th>{renderSortButton("umaban")}</th>
               <th>馬名</th>
+              <th>騎手名</th>
+              <th>騎乗</th>
+              <th>調教師名</th>
               <th>日付</th>
-              <th>場所</th>
-              <th>種別</th>
-              <th>コース</th>
-              <th>{renderSortButton("timeGokei6f")}</th>
-              <th>{renderSortButton("timeGokei5f")}</th>
-              <th>{renderSortButton("timeGokei4f")}</th>
-              <th>{renderSortButton("timeGokei3f")}</th>
-              <th>{renderSortButton("timeGokei2f")}</th>
-              <th>{renderSortButton("lapTime1f")}</th>
+              <th>場所 / 種別 / コース</th>
+              {visibleFurlongColumns.map((column) => (
+                <th key={column.key}>{renderSortButton(column.key)}</th>
+              ))}
               {hasPremiumReviews ? <th>{PREMIUM_REVIEW_LABELS.text}</th> : null}
               {hasPremiumReviews ? <th>{PREMIUM_REVIEW_LABELS.grade}</th> : null}
             </tr>
@@ -334,21 +478,19 @@ export function TrainingTable({ sourceLabel, trainings }: TrainingTableProps) {
               >
                 <td>{formatRunnerNumber(training.umaban)}</td>
                 <td className="training-horse-cell">{cleanText(training.bamei)}</td>
+                <td>{cleanText(training.currentJockeyName, "-")}</td>
+                <td>{cleanText(training.trainingRiderName, "-")}</td>
+                <td>{cleanText(training.trainerName, "-")}</td>
                 <td className="training-date-cell">
                   {formatDate(
                     training.chokyoNengappi.slice(0, 4),
                     training.chokyoNengappi.slice(4),
                   )}
                 </td>
-                <td>{formatTracen(training.tracenKubun)}</td>
-                <td>{training.trainingType}</td>
-                <td className="training-course-cell">{getTrainingCourseLabel(training)}</td>
-                <td>{formatTrainingTime(training.timeGokei6f)}</td>
-                <td>{formatTrainingTime(training.timeGokei5f)}</td>
-                <td>{formatTrainingTime(training.timeGokei4f)}</td>
-                <td>{formatTrainingTime(training.timeGokei3f)}</td>
-                <td>{formatTrainingTime(training.timeGokei2f)}</td>
-                <td>{formatTrainingTime(training.lapTime1f)}</td>
+                <td className="training-course-cell">{getTrainingPlaceSummary(training)}</td>
+                {visibleFurlongColumns.map((column) => (
+                  <td key={column.key}>{formatTrainingTime(training[column.key])}</td>
+                ))}
                 {hasPremiumReviews ? (
                   <td>{cleanText(training.premiumEvaluationText, "-")}</td>
                 ) : null}

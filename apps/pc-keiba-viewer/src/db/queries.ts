@@ -2837,6 +2837,8 @@ export const getRaceTrainings = cache(
         select
           umaban,
           bamei,
+          kishumei_ryakusho as "currentJockeyName",
+          chokyoshimei_ryakusho as "trainerName",
           ketto_toroku_bango
         from ${jvdSe}
         where
@@ -2854,6 +2856,9 @@ export const getRaceTrainings = cache(
         select
           r.umaban,
           r.bamei,
+          r."currentJockeyName",
+          r."trainerName",
+          null::varchar as "trainingRiderName",
           '坂路' as "trainingType",
           h.tracen_kubun as "tracenKubun",
           h.chokyo_nengappi as "chokyoNengappi",
@@ -2889,6 +2894,9 @@ export const getRaceTrainings = cache(
         select
           r.umaban,
           r.bamei,
+          r."currentJockeyName",
+          r."trainerName",
+          null::varchar as "trainingRiderName",
           'ウッド' as "trainingType",
           w.tracen_kubun as "tracenKubun",
           w.chokyo_nengappi as "chokyoNengappi",
@@ -2933,6 +2941,9 @@ export const getRaceTrainings = cache(
       select
         umaban,
         bamei,
+        "currentJockeyName",
+        "trainerName",
+        "trainingRiderName",
         "trainingType",
         "tracenKubun",
         "chokyoNengappi",

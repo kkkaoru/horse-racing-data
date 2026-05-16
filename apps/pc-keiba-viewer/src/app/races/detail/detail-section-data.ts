@@ -161,6 +161,7 @@ interface PremiumTrainingReview {
   evaluationGrade: string | null;
   evaluationText: string | null;
   horseNumber: string;
+  riderName?: string | null;
   trainingDate: string;
 }
 
@@ -259,6 +260,7 @@ const mergePremiumTrainingReviews = (
           premiumCommentText: review.commentText,
           premiumEvaluationGrade: review.evaluationGrade,
           premiumEvaluationText: review.evaluationText,
+          trainingRiderName: review.riderName ?? training.trainingRiderName,
         }
       : training;
   });

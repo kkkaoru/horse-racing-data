@@ -130,6 +130,9 @@ export interface CourseInfo {
 export interface Training extends Record<string, unknown> {
   umaban: string | null;
   bamei: string | null;
+  currentJockeyName?: string | null;
+  trainerName?: string | null;
+  trainingRiderName?: string | null;
   trainingType: string;
   tracenKubun: string | null;
   chokyoNengappi: string;
