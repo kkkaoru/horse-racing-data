@@ -34,6 +34,7 @@ import {
   getTrackSurfaceLabel,
   getTrackTurnLabel,
 } from "../../../lib/format";
+import { buildNetkeibaRaceId, parseNetkeibaTrainingReviews } from "../../../lib/netkeiba-training";
 import {
   getAgeLabel,
   getConditionLabel,
@@ -207,22 +208,59 @@ const fetchPremiumRacePayload = async (
   try {
     const response = await fetch(url, { cache: "no-store" });
     if (!response.ok) {
-      return { stableComments: [], trainingReviews: [] };
+      return { stableComments: [], trainingReviews: await fetchNetkeibaTrainingReviews(race) };
     }
     const data: unknown = await response.json();
     if (typeof data !== "object" || data === null) {
-      return { stableComments: [], trainingReviews: [] };
+      return { stableComments: [], trainingReviews: await fetchNetkeibaTrainingReviews(race) };
     }
     const trainingReviews = "trainingReviews" in data ? data.trainingReviews : [];
     const stableComments = "stableComments" in data ? data.stableComments : [];
-    return {
+    const payload = {
       stableComments: Array.isArray(stableComments) ? stableComments.filter(isStableComment) : [],
       trainingReviews: Array.isArray(trainingReviews)
         ? trainingReviews.filter(isPremiumTrainingReview)
         : [],
     };
+    if (payload.trainingReviews.length > 0) {
+      return payload;
+    }
+    return {
+      ...payload,
+      trainingReviews: await fetchNetkeibaTrainingReviews(race),
+    };
   } catch {
-    return { stableComments: [], trainingReviews: [] };
+    return { stableComments: [], trainingReviews: await fetchNetkeibaTrainingReviews(race) };
+  }
+};
+
+const fetchNetkeibaTrainingReviews = async (race: RaceDetail): Promise<PremiumTrainingReview[]> => {
+  const raceId = buildNetkeibaRaceId({
+    kaisaiKai: race.kaisaiKai,
+    kaisaiNen: race.kaisaiNen,
+    kaisaiNichime: race.kaisaiNichime,
+    keibajoCode: race.keibajoCode,
+    raceBango: race.raceBango,
+    source: race.source,
+  });
+  if (!raceId) {
+    return [];
+  }
+  try {
+    const response = await fetch(`https://race.netkeiba.com/race/oikiri.html?race_id=${raceId}`, {
+      cache: "no-store",
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36",
+      },
+    });
+    if (!response.ok) {
+      return [];
+    }
+    const html = new TextDecoder("euc-jp").decode(await response.arrayBuffer());
+    return parseNetkeibaTrainingReviews(html);
+  } catch {
+    return [];
   }
 };
 
