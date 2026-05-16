@@ -60,3 +60,7 @@ export const writeCachedPremiumPaddock = async (
     method: "PUT",
   });
 };
+
+export const clearCachedPremiumPaddock = async (env: Env, raceKey: string): Promise<void> => {
+  await getStub(env, raceKey).fetch("https://cache.local/clear", { method: "POST" });
+};
