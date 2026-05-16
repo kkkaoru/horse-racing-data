@@ -107,11 +107,25 @@ def test_category_expression_uses_case_when_all():
     assert "ban-ei" in expr
 
 
-def test_horse_career_cte_uses_strict_less_than_for_history():
+def test_horse_career_cte_reads_from_horse_history_base():
     cte = subject.horse_career_cte()
-    assert "h.race_date < t.race_date" in cte
-    assert "row_number()" in cte
+    assert "from horse_history_base" in cte
     assert "speed_index_avg_5" in cte
+    assert "days_since_last_race" in cte
+
+
+def test_horse_history_base_select_defines_strict_history_window():
+    select_text = subject.HORSE_HISTORY_BASE_SELECT
+    assert "row_number() over" in select_text
+    assert "target_race_dt" in select_text
+    assert "history_race_dt" in select_text
+    assert "target_class_level" in select_text
+    assert "history_class_level" in select_text
+
+
+def test_compute_history_start_subtracts_years_from_yyyy_prefix():
+    assert subject.compute_history_start("20160101", 10) == "20060101"
+    assert subject.compute_history_start("20251231", 5) == "20201231"
 
 
 def test_jockey_cte_filters_on_kishumei_ryakusho():
@@ -145,6 +159,31 @@ def test_pedigree_cte_uses_nar_horse_master_for_ban_ei():
     assert "rec.source = 'nar' and rec.keibajo_code = '83'" in cte
 
 
+def test_pedigree_cte_all_unions_jra_and_nar_masters():
+    cte = subject.pedigree_cte("all")
+    assert "jra_um" in cte
+    assert "nar_um" in cte
+    assert "union all" in cte
+
+
+def test_pedigree_cte_applies_history_cutoff_to_stats():
+    cte = subject.pedigree_cte("jra", "20200101")
+    assert "race_date < '20200101'" in cte
+
+
+def test_pedigree_rec_um_subquery_returns_distinct_clauses_per_category():
+    assert "where rec.source = 'jra'" in subject.pedigree_rec_um_subquery("jra")
+    assert (
+        "where rec.source = 'nar' and rec.keibajo_code <> '83'"
+        in subject.pedigree_rec_um_subquery("nar")
+    )
+    assert (
+        "where rec.source = 'nar' and rec.keibajo_code = '83'"
+        in subject.pedigree_rec_um_subquery("ban-ei")
+    )
+    assert "union all" in subject.pedigree_rec_um_subquery("all")
+
+
 def test_race_context_cte_ranks_top_three_by_lowest_time_sa():
     cte = subject.race_context_cte()
     assert "order by speed_index_best_5 asc nulls last" in cte
@@ -176,8 +215,8 @@ def test_legacy_five_cte_emits_popularity_and_odds_scoring():
     assert "(t.ninkijun - 1)" in cte
 
 
-def test_assemble_final_query_contains_all_feature_groups():
-    sql = subject.assemble_final_query("jra")
+def test_assemble_final_select_from_temp_tables_contains_all_feature_groups():
+    sql = subject.assemble_final_select_from_temp_tables("jra")
     expected_keywords = [
         "speed_index_avg_5",
         "jockey_career_win_rate",
