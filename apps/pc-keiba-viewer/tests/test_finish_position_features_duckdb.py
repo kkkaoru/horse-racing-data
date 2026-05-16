@@ -142,15 +142,16 @@ def test_trainer_cte_filters_on_chokyoshimei_ryakusho():
 
 def test_pedigree_monthly_stat_sql_includes_target_months_join():
     spec = subject.PEDIGREE_STAT_SPECS[0]
-    sql = subject.pedigree_monthly_stat_sql(spec, "select * from rec join jra_um using (ketto_toroku_bango)")
+    sql = subject.pedigree_monthly_stat_sql(spec)
     assert "join monthly m on m.race_year_month < tm.stats_year_month" in sql
     assert "stats_year_month" in sql
     assert "race_year_month" in sql
 
 
-def test_pedigree_monthly_stat_sql_uses_spec_key_and_bucket():
+def test_pedigree_monthly_stat_sql_reads_from_pedigree_rec_um():
     spec = subject.PEDIGREE_STAT_SPECS[0]
-    sql = subject.pedigree_monthly_stat_sql(spec, "select * from rec")
+    sql = subject.pedigree_monthly_stat_sql(spec)
+    assert "from pedigree_rec_um" in sql
     assert "ketto_joho_01b as sire" in sql
     assert "kyori_band" in sql
 
@@ -167,14 +168,14 @@ def test_pedigree_stat_specs_cover_four_tables():
 
 def test_sire_distance_stats_uses_finish_norm_count_in_denominator():
     spec = subject.PEDIGREE_STAT_SPECS[0]
-    sql = subject.pedigree_monthly_stat_sql(spec, "select * from rec")
+    sql = subject.pedigree_monthly_stat_sql(spec)
     assert "count(finish_norm) as finish_norm_count" in sql
     assert "nullif(sum(m.finish_norm_count), 0)" in sql
 
 
 def test_damsire_track_stats_uses_finish_norm_count_in_denominator():
     spec = subject.PEDIGREE_STAT_SPECS[3]
-    sql = subject.pedigree_monthly_stat_sql(spec, "select * from rec")
+    sql = subject.pedigree_monthly_stat_sql(spec)
     assert "count(finish_norm) as finish_norm_count" in sql
     assert "nullif(sum(m.finish_norm_count), 0)" in sql
 
@@ -182,11 +183,26 @@ def test_damsire_track_stats_uses_finish_norm_count_in_denominator():
 def test_win_rate_specs_still_use_race_count_in_denominator():
     sire_track = subject.PEDIGREE_STAT_SPECS[1]
     damsire_distance = subject.PEDIGREE_STAT_SPECS[2]
-    sire_track_sql = subject.pedigree_monthly_stat_sql(sire_track, "select * from rec")
-    damsire_distance_sql = subject.pedigree_monthly_stat_sql(damsire_distance, "select * from rec")
+    sire_track_sql = subject.pedigree_monthly_stat_sql(sire_track)
+    damsire_distance_sql = subject.pedigree_monthly_stat_sql(damsire_distance)
     assert "sire_track_win_rate_val" in sire_track_sql
     assert "nullif(sum(m.race_count), 0) as sire_track_win_rate_val" in sire_track_sql
     assert "nullif(sum(m.race_count), 0) as dam_sire_distance_win_rate_val" in damsire_distance_sql
+
+
+def test_pedigree_rec_um_sql_projects_required_columns():
+    sql = subject.pedigree_rec_um_sql("jra")
+    assert "create or replace temp table pedigree_rec_um as" in sql
+    assert "race_year_month" in sql
+    assert "ketto_joho_01b" in sql
+    assert "ketto_joho_05b" in sql
+
+
+def test_pedigree_rec_um_sql_uses_category_specific_join():
+    jra_sql = subject.pedigree_rec_um_sql("jra")
+    all_sql = subject.pedigree_rec_um_sql("all")
+    assert "jra_um" in jra_sql
+    assert "union all" in all_sql
 
 
 def test_target_pedigree_sql_joins_both_horse_masters():

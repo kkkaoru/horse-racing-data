@@ -4,6 +4,7 @@ import argparse
 import json
 import time
 from pathlib import Path
+from typing import cast
 
 import duckdb
 import pandas as pd
@@ -176,6 +177,121 @@ def test_parse_args_supports_skip_count_and_keep_existing_output():
     assert args.force_clean_output is True
 
 
+def test_parse_args_supports_temp_dir(tmp_path: Path):
+    args = subject.parse_args(["--temp-dir", str(tmp_path / "duck-temp")])
+    assert args.temp_dir == tmp_path / "duck-temp"
+
+
+def test_parse_args_temp_dir_defaults_to_none():
+    args = subject.parse_args([])
+    assert args.temp_dir is None
+
+
+def test_configure_duckdb_session_applies_temp_dir(tmp_path: Path):
+    con = duckdb.connect(":memory:")
+    target = tmp_path / "duck-temp"
+    subject.configure_duckdb_session(con, 2, "1GB", target)
+    assert target.exists()
+    row = con.execute("select current_setting('temp_directory')").fetchone()
+    assert row is not None
+    assert row[0] == target.as_posix()
+
+
+def test_run_staged_sql_emits_start_and_done_events(capsys: pytest.CaptureFixture[str]):
+    con = duckdb.connect(":memory:")
+    subject.run_staged_sql(con, "demo.stage", "create or replace temp table demo as select 1 as x")
+    output_lines = capsys.readouterr().out.splitlines()
+    payloads = [json.loads(line) for line in output_lines]
+    statuses = [payload["status"] for payload in payloads]
+    stages = [payload["stage"] for payload in payloads]
+    assert statuses == ["start", "done"]
+    assert stages == ["demo.stage", "demo.stage"]
+
+
+class _ExecCaptureCon:
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    def execute(self, sql: str) -> object:
+        self.statements.append(sql)
+        return None
+
+
+def test_stage_rec_table_loads_columns_and_indexes(capsys: pytest.CaptureFixture[str]):
+    captured = _ExecCaptureCon()
+    subject.stage_rec_table(cast(duckdb.DuckDBPyConnection, captured), "20100101", "20251231")
+    joined = "\n".join(captured.statements)
+    assert "race_date between '20100101' and '20251231'" in joined
+    assert "create index rec_horse_date on rec" in joined
+    assert "create index rec_jockey_date on rec" in joined
+    assert "create index rec_trainer_date on rec" in joined
+    assert "create index rec_keibajo_date on rec" in joined
+    output = capsys.readouterr().out
+    assert "source.rec" in output
+    assert "source.rec.indexes" in output
+
+
+def test_stage_se_table_filters_by_concatenated_date(capsys: pytest.CaptureFixture[str]):
+    captured = _ExecCaptureCon()
+    subject.stage_se_table(
+        cast(duckdb.DuckDBPyConnection, captured),
+        "source.jra_se",
+        "jra_se",
+        "jvd_se",
+        "20100101",
+        "20251231",
+    )
+    joined = "\n".join(captured.statements)
+    assert "from pg.jvd_se" in joined
+    assert "(kaisai_nen || kaisai_tsukihi) between '20100101' and '20251231'" in joined
+    assert "source.jra_se" in capsys.readouterr().out
+
+
+def test_stage_um_table_selects_pedigree_columns(capsys: pytest.CaptureFixture[str]):
+    captured = _ExecCaptureCon()
+    subject.stage_um_table(
+        cast(duckdb.DuckDBPyConnection, captured), "source.jra_um", "jra_um", "jvd_um"
+    )
+    joined = "\n".join(captured.statements)
+    assert "from pg.jvd_um" in joined
+    assert "ketto_joho_01b" in joined
+    assert "source.jra_um" in capsys.readouterr().out
+
+
+def test_stage_ra_table_uses_target_date_range(capsys: pytest.CaptureFixture[str]):
+    captured = _ExecCaptureCon()
+    subject.stage_ra_table(
+        cast(duckdb.DuckDBPyConnection, captured),
+        "source.jra_ra",
+        "jra_ra",
+        "jvd_ra",
+        "20200101",
+        "20201231",
+    )
+    joined = "\n".join(captured.statements)
+    assert "from pg.jvd_ra" in joined
+    assert "(kaisai_nen || kaisai_tsukihi) between '20200101' and '20201231'" in joined
+    assert "source.jra_ra" in capsys.readouterr().out
+
+
+def test_stage_source_tables_orchestrates_all_seven_tables(capsys: pytest.CaptureFixture[str]):
+    captured = _ExecCaptureCon()
+    subject.stage_source_tables(
+        cast(duckdb.DuckDBPyConnection, captured), "20200101", "20201231"
+    )
+    output = capsys.readouterr().out
+    for stage in (
+        "source.rec",
+        "source.jra_se",
+        "source.nar_se",
+        "source.jra_um",
+        "source.nar_um",
+        "source.jra_ra",
+        "source.nar_ra",
+    ):
+        assert stage in output
+
+
 def test_parse_args_supports_heartbeat_interval():
     args = subject.parse_args(["--heartbeat-interval", "2.5"])
     assert args.heartbeat_interval == 2.5
@@ -330,6 +446,29 @@ def test_materialize_pedigree_stats_includes_target_months_table(
     row = seeded_con.execute("select count(*) from target_months").fetchone()
     assert row is not None
     assert row[0] == 1
+
+
+def test_materialize_pedigree_stats_materializes_pedigree_rec_um(
+    seeded_con: duckdb.DuckDBPyConnection,
+):
+    subject.materialize_pedigree_stats(seeded_con, "jra")
+    row = seeded_con.execute("select count(*) from pedigree_rec_um").fetchone()
+    assert row is not None
+    assert row[0] > 0
+
+
+def test_pedigree_rec_um_has_precomputed_race_year_month(
+    seeded_con: duckdb.DuckDBPyConnection,
+):
+    seeded_con.execute(subject.target_pedigree_sql())
+    seeded_con.execute(subject.target_months_sql())
+    seeded_con.execute(subject.pedigree_rec_um_sql("jra"))
+    row = seeded_con.execute(
+        "select min(race_year_month), max(race_year_month) from pedigree_rec_um"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == 201801
+    assert row[1] == 202001
 
 
 def test_pedigree_stats_avg_uses_non_null_count_only(tmp_path: Path):
