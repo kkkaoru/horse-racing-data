@@ -51,6 +51,7 @@ import {
 import { PaddockSection } from "./paddock-section";
 import { RaceShareControls } from "./race-share-controls";
 import { RaceStartCountdown } from "./race-start-countdown";
+import { RaceTrendSection } from "./race-trend-section";
 import { RealtimeRaceProvider, type RealtimeRaceRequest } from "./realtime-client";
 import { RealtimeRaceSection } from "./realtime-race-section";
 import { RunnersTable } from "./runners-table";
@@ -77,6 +78,16 @@ const getRaceDetailPath = (race: {
   raceBango: string;
 }): string =>
   `/races/${race.kaisaiNen}/${race.kaisaiTsukihi.slice(0, 2)}/${race.kaisaiTsukihi.slice(2, 4)}/${race.keibajoCode}/${race.raceBango}`;
+
+const addDaysToIsoDate = (year: string, month: string, day: string, days: number): string => {
+  const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  date.setUTCDate(date.getUTCDate() + days);
+  return [
+    String(date.getUTCFullYear()).padStart(4, "0"),
+    String(date.getUTCMonth() + 1).padStart(2, "0"),
+    String(date.getUTCDate()).padStart(2, "0"),
+  ].join("-");
+};
 
 const getAdjacentRaceLabel = (race: {
   hassoJikoku: string | null;
@@ -301,6 +312,13 @@ export async function RaceDetailView({
   const visibleJraRaceEntryUrl = showJraResultLink ? null : jraRaceEntryUrl;
   const visibleJraRaceResultUrl = showJraResultLink ? jraRaceResultUrl : null;
   const decodeHexHorseWeight = raceSource === "nar" && isBanEiKeibajoCode(keibajoCode);
+  const raceTrendDefaultStartDate = addDaysToIsoDate(
+    year,
+    month,
+    day,
+    raceSource === "jra" ? -1 : -3,
+  );
+  const raceTrendDefaultEndDate = `${year}-${month}-${day}`;
   const showRacePacePrediction = isCornerPacePredictionSupported({
     distance: race.kyori,
     keibajoCode,
@@ -507,6 +525,17 @@ export async function RaceDetailView({
           raceNumber={raceNumber}
           runners={runners}
           source={race.source}
+          year={year}
+        />
+
+        <RaceTrendSection
+          day={day}
+          defaultEndDate={raceTrendDefaultEndDate}
+          defaultStartDate={raceTrendDefaultStartDate}
+          keibajoCode={keibajoCode}
+          month={month}
+          raceNumber={raceNumber}
+          source={raceSource}
           year={year}
         />
 

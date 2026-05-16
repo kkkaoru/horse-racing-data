@@ -28,6 +28,7 @@ import type {
   RacePaceSimilarityFeature,
   RaceTimeStats,
   RaceTimeTargetRace,
+  RaceTrendStarterRow,
   RaceYearSummary,
   Runner,
   SimilarRaceStatsRow,
@@ -398,6 +399,99 @@ export const getRaceRunners = cache(
           .orderBy(asc(table.umaban), asc(table.kettoTorokuBango));
       },
     );
+  },
+);
+
+interface RaceTrendHistoricalRowsParams {
+  frameEndYmd: string;
+  frameNumbers: string[];
+  frameStartYmd: string;
+  jockeyEndYmd: string;
+  jockeyNames: string[];
+  jockeySameVenue: boolean;
+  jockeyStartYmd: string;
+}
+
+const normalizeTextSql = (value: unknown) =>
+  sql`nullif(regexp_replace(coalesce(${value}, ''), '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')`;
+
+export const getRaceTrendHistoricalStarterRows = cache(
+  async (
+    race: RaceDetail,
+    params: RaceTrendHistoricalRowsParams,
+  ): Promise<RaceTrendStarterRow[]> => {
+    return withDbQueryCache(["getRaceTrendHistoricalStarterRows", race, params], async () => {
+      const raceTable = race.source === "jra" ? jvdRa : nvdRa;
+      const runnerTable = race.source === "jra" ? jvdSe : nvdSe;
+      const jockeyNames = Array.from(new Set(params.jockeyNames.map((name) => name.trim()))).filter(
+        Boolean,
+      );
+      const frameNumbers = Array.from(
+        new Set(params.frameNumbers.map((frameNumber) => frameNumber.trim())),
+      ).filter(Boolean);
+      const jockeyNameCondition =
+        jockeyNames.length > 0
+          ? sql`${normalizeTextSql(sql`${runnerTable}.kishumei_ryakusho`)} in (${sql.join(
+              jockeyNames,
+              sql`, `,
+            )})`
+          : sql`false`;
+      const frameNumberCondition =
+        frameNumbers.length > 0
+          ? sql`${normalizeTextSql(sql`${runnerTable}.wakuban`)} in (${sql.join(
+              frameNumbers,
+              sql`, `,
+            )})`
+          : sql`false`;
+      const result = await getDb().execute<RaceTrendStarterRow>(sql`
+        select
+          ${race.source}::text as source,
+          ra.kaisai_nen as "kaisaiNen",
+          ra.kaisai_tsukihi as "kaisaiTsukihi",
+          ra.keibajo_code as "keibajoCode",
+          ra.race_bango as "raceBango",
+          coalesce(
+            ${normalizeTextSql(sql`ra.kyosomei_hondai`)},
+            ${normalizeTextSql(sql`ra.kyosomei_fukudai`)},
+            '一般競走'
+          ) as "raceName",
+          ${normalizeTextSql(sql`${runnerTable}.wakuban`)} as wakuban,
+          ${normalizeTextSql(sql`${runnerTable}.umaban`)} as umaban,
+          ${normalizeTextSql(sql`${runnerTable}.bamei`)} as bamei,
+          ${normalizeTextSql(sql`${runnerTable}.kishumei_ryakusho`)} as "jockeyName",
+          nullif(
+            regexp_replace(coalesce(${runnerTable}.kakutei_chakujun, ''), '[^0-9]', '', 'g'),
+            ''
+          )::int as "finishPosition",
+          ${normalizeTextSql(sql`${runnerTable}.soha_time`)} as "sohaTime"
+        from ${runnerTable}
+        join ${raceTable} ra
+          on ra.kaisai_nen = ${runnerTable}.kaisai_nen
+          and ra.kaisai_tsukihi = ${runnerTable}.kaisai_tsukihi
+          and ra.keibajo_code = ${runnerTable}.keibajo_code
+          and ra.race_bango = ${runnerTable}.race_bango
+        where
+          nullif(
+            regexp_replace(coalesce(${runnerTable}.kakutei_chakujun, ''), '[^0-9]', '', 'g'),
+            ''
+          )::int > 0
+          and (
+            (
+              ra.kaisai_nen || ra.kaisai_tsukihi between ${params.jockeyStartYmd} and ${params.jockeyEndYmd}
+              and ${jockeyNameCondition}
+              and (${params.jockeySameVenue} = false or ra.keibajo_code = ${race.keibajoCode})
+            )
+            or (
+              ra.kaisai_nen || ra.kaisai_tsukihi between ${params.frameStartYmd} and ${params.frameEndYmd}
+              and ra.keibajo_code = ${race.keibajoCode}
+              and ${frameNumberCondition}
+            )
+          )
+        order by ra.kaisai_nen desc, ra.kaisai_tsukihi desc, ra.keibajo_code asc, ra.race_bango asc, ${runnerTable}.umaban asc
+      `);
+
+      return result.rows;
+    });
   },
 );
 
