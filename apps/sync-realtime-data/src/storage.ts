@@ -48,6 +48,8 @@ const normalizeStoredJockeyName = (value: string | null | undefined): string | n
 interface RaceSourceRow {
   baba_code: string;
   deba_url: string;
+  kaisai_kai: string | null;
+  kaisai_nichime: string | null;
   kaisai_nen: string;
   kaisai_tsukihi: string;
   keibajo_code: string;
@@ -154,6 +156,7 @@ interface PremiumTrainingReviewRow {
   fetched_at: string;
   horse_name: string | null;
   horse_number: string;
+  rider_name: string | null;
   training_date: string;
 }
 
@@ -181,6 +184,16 @@ interface PremiumPaddockFetchStateRow {
   last_fetch_at: string | null;
   last_queued_at: string | null;
   retry_after: string | null;
+  status: string;
+}
+
+interface PremiumPaddockNotificationStateRow {
+  last_payload_fetched_at: string | null;
+  last_notified_at: string | null;
+  last_send_attempt_at: string | null;
+  message: string | null;
+  payload_signature: string | null;
+  skip_reason: string | null;
   status: string;
 }
 
@@ -241,6 +254,8 @@ const parseOddsLinks = (value: string): Partial<Record<OddsType, string>> => {
 const toRaceSource = (row: RaceSourceRow): NarRaceSource => ({
   babaCode: row.baba_code,
   debaUrl: row.deba_url,
+  kaisaiKai: row.kaisai_kai,
+  kaisaiNichime: row.kaisai_nichime,
   kaisaiNen: row.kaisai_nen,
   kaisaiTsukihi: row.kaisai_tsukihi,
   keibajoCode: row.keibajo_code,
@@ -288,10 +303,10 @@ export const upsertNarRaceSource = async (
       `
         insert into realtime_race_sources (
           race_key, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-          baba_code, race_start_at_jst, race_name, deba_url, odds_links_json,
+          baba_code, kaisai_kai, kaisai_nichime, race_start_at_jst, race_name, deba_url, odds_links_json,
           discovered_at, updated_at
         )
-        values (?, 'nar', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        values (?, 'nar', ?, ?, ?, ?, ?, null, null, ?, ?, ?, ?, ?, ?)
         on conflict(race_key) do update set
           baba_code = excluded.baba_code,
           race_start_at_jst = excluded.race_start_at_jst,
@@ -340,13 +355,15 @@ export const upsertJraRaceSource = async (
       `
         insert into realtime_race_sources (
           race_key, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-          baba_code, race_start_at_jst, race_name, deba_url, odds_links_json,
+          baba_code, kaisai_kai, kaisai_nichime, race_start_at_jst, race_name, deba_url, odds_links_json,
           discovered_at, updated_at
         )
-        values (?, 'jra', ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)
+        values (?, 'jra', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)
         on conflict(race_key) do update set
           source = excluded.source,
           baba_code = excluded.baba_code,
+          kaisai_kai = excluded.kaisai_kai,
+          kaisai_nichime = excluded.kaisai_nichime,
           race_start_at_jst = excluded.race_start_at_jst,
           race_name = excluded.race_name,
           deba_url = excluded.deba_url,
@@ -360,6 +377,8 @@ export const upsertJraRaceSource = async (
       race.keibajo_code,
       raceBango,
       race.keibajo_code,
+      race.kaisai_kai ?? null,
+      race.kaisai_nichime ?? null,
       formatRaceStartJst(race.kaisai_nen, race.kaisai_tsukihi, race.hasso_jikoku),
       race.kyosomei_hondai,
       entryUrl,
@@ -429,6 +448,26 @@ export const countRaceSourcesByDate = async (
         from realtime_race_sources
         where kaisai_nen = ?
           and kaisai_tsukihi = ?
+      `,
+    )
+    .bind(targetDate.slice(0, 4), targetDate.slice(4, 8))
+    .first<{ count: number }>();
+  return Number(row?.count ?? 0);
+};
+
+export const countJraRaceSourcesMissingRaceDateFieldsByDate = async (
+  db: D1Database,
+  targetDate: string,
+): Promise<number> => {
+  const row = await db
+    .prepare(
+      `
+        select count(*) count
+        from realtime_race_sources
+        where source = 'jra'
+          and kaisai_nen = ?
+          and kaisai_tsukihi = ?
+          and (kaisai_kai is null or kaisai_nichime is null)
       `,
     )
     .bind(targetDate.slice(0, 4), targetDate.slice(4, 8))
@@ -1027,9 +1066,9 @@ export const replacePremiumRaceData = async (
           `
             insert into premium_training_reviews (
               race_key, source_race_id, fetched_at, horse_number, horse_name,
-              training_date, evaluation_text, evaluation_grade, comment_text, created_at
+              training_date, evaluation_text, evaluation_grade, comment_text, rider_name, created_at
             )
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             on conflict(race_key, horse_number, training_date) do update set
               source_race_id = excluded.source_race_id,
               fetched_at = excluded.fetched_at,
@@ -1037,6 +1076,7 @@ export const replacePremiumRaceData = async (
               evaluation_text = excluded.evaluation_text,
               evaluation_grade = excluded.evaluation_grade,
               comment_text = excluded.comment_text,
+              rider_name = excluded.rider_name,
               created_at = excluded.created_at
           `,
         )
@@ -1050,6 +1090,7 @@ export const replacePremiumRaceData = async (
           row.evaluationText,
           row.evaluationGrade,
           row.commentText,
+          row.riderName,
           now,
         ),
     ),
@@ -1187,6 +1228,7 @@ export const getPremiumRacePayload = async (
       fetchedAt: row.fetched_at,
       horseName: row.horse_name,
       horseNumber: row.horse_number,
+      riderName: row.rider_name,
       trainingDate: row.training_date,
     })),
   };
@@ -1412,6 +1454,162 @@ export const updatePremiumPaddockFetchState = async (
       params.message ?? null,
       params.fetchedAt ?? null,
       params.retryAfter ?? null,
+      now,
+    )
+    .run();
+};
+
+export const getPremiumPaddockNotificationState = async (
+  db: D1Database,
+  raceKey: string,
+): Promise<{
+  lastPayloadFetchedAt: string | null;
+  lastNotifiedAt: string | null;
+  lastSendAttemptAt: string | null;
+  message: string | null;
+  payloadSignature: string | null;
+  skipReason: string | null;
+  status: string;
+} | null> => {
+  const row = await db
+    .prepare(
+      `
+        select
+          status,
+          payload_signature,
+          last_payload_fetched_at,
+          last_send_attempt_at,
+          last_notified_at,
+          skip_reason,
+          message
+        from premium_paddock_notification_state
+        where race_key = ?
+      `,
+    )
+    .bind(raceKey)
+    .first<PremiumPaddockNotificationStateRow>();
+  return row
+    ? {
+        lastPayloadFetchedAt: row.last_payload_fetched_at,
+        lastNotifiedAt: row.last_notified_at,
+        lastSendAttemptAt: row.last_send_attempt_at,
+        message: row.message,
+        payloadSignature: row.payload_signature,
+        skipReason: row.skip_reason,
+        status: row.status,
+      }
+    : null;
+};
+
+export const updatePremiumPaddockNotificationState = async (
+  db: D1Database,
+  params: {
+    message?: string | null;
+    payloadFetchedAt?: string | null;
+    notifiedAt?: string | null;
+    payloadSignature: string;
+    raceKey: string;
+    sendAttemptAt?: string | null;
+    skipReason?: string | null;
+    status: string;
+  },
+): Promise<void> => {
+  const now = toJstIsoString();
+  await db
+    .prepare(
+      `
+        insert into premium_paddock_notification_state (
+          race_key,
+          status,
+          payload_signature,
+          last_payload_fetched_at,
+          last_send_attempt_at,
+          last_notified_at,
+          skip_reason,
+          message,
+          updated_at
+        )
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        on conflict(race_key) do update set
+          status = excluded.status,
+          payload_signature = excluded.payload_signature,
+          last_payload_fetched_at = coalesce(
+            excluded.last_payload_fetched_at,
+            premium_paddock_notification_state.last_payload_fetched_at
+          ),
+          last_send_attempt_at = coalesce(
+            excluded.last_send_attempt_at,
+            premium_paddock_notification_state.last_send_attempt_at
+          ),
+          last_notified_at = coalesce(
+            excluded.last_notified_at,
+            premium_paddock_notification_state.last_notified_at
+          ),
+          skip_reason = excluded.skip_reason,
+          message = excluded.message,
+          updated_at = excluded.updated_at
+      `,
+    )
+    .bind(
+      params.raceKey,
+      params.status,
+      params.payloadSignature,
+      params.payloadFetchedAt ?? null,
+      params.sendAttemptAt ?? null,
+      params.notifiedAt ?? null,
+      params.skipReason ?? null,
+      params.message ?? null,
+      now,
+    )
+    .run();
+};
+
+export const recordPremiumPaddockNotificationEvent = async (
+  db: D1Database,
+  params: {
+    fetchedAt: string;
+    message?: string | null;
+    payloadSignature: string;
+    raceKey: string;
+    sentAt?: string | null;
+    skipReason?: string | null;
+    status: string;
+  },
+): Promise<void> => {
+  const now = toJstIsoString();
+  await db
+    .prepare(
+      `
+        insert into premium_paddock_notification_events (
+          race_key,
+          fetched_at,
+          payload_signature,
+          status,
+          skip_reason,
+          message,
+          sent_at,
+          created_at,
+          updated_at
+        )
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        on conflict(race_key, fetched_at) do update set
+          payload_signature = excluded.payload_signature,
+          status = excluded.status,
+          skip_reason = excluded.skip_reason,
+          message = excluded.message,
+          sent_at = coalesce(excluded.sent_at, premium_paddock_notification_events.sent_at),
+          updated_at = excluded.updated_at
+      `,
+    )
+    .bind(
+      params.raceKey,
+      params.fetchedAt,
+      params.payloadSignature,
+      params.status,
+      params.skipReason ?? null,
+      params.message ?? null,
+      params.sentAt ?? null,
+      now,
       now,
     )
     .run();

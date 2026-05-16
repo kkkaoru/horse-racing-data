@@ -20,9 +20,15 @@ import {
 import { mergeJsonHeaders } from "./http";
 import {
   buildJraEntryUrlFromRace,
+  buildJraResultUrlFromRaceSource,
+  fetchJraResultHtmlWithPlaywright,
   fetchJraOddsWithPlaywright,
+  isJraScratchStatus,
+  parseJraRaceResultExcludedHorseNumbers,
+  parseJraRaceResults,
   parseJraHorseWeights,
   parseJraRaceEntries,
+  sanitizeJraRaceEntriesWithOdds,
 } from "./jra";
 import { fetchJraTrackConditionWithPlaywright } from "./jra-track-condition";
 import { readCachedOdds, writeCachedOdds } from "./odds-cache";
@@ -30,6 +36,7 @@ import {
   buildPremiumUrl,
   discoverPremiumRaceLinks,
   fetchPremiumHtml,
+  fetchPremiumHtmlAttempts,
   getPremiumRaceConfig,
   hasPremiumRaceFetchConfig,
   matchPremiumLinkToRace,
@@ -37,8 +44,13 @@ import {
   parsePremiumStableComments,
   parsePremiumTrainingReviews,
   summarizePremiumStableCommentHtml,
+  type PremiumPaddockBulletin,
 } from "./premium-race";
-import { readCachedPremiumPaddock, writeCachedPremiumPaddock } from "./premium-paddock-cache";
+import {
+  clearCachedPremiumPaddock,
+  readCachedPremiumPaddock,
+  writeCachedPremiumPaddock,
+} from "./premium-paddock-cache";
 import { fetchJraRacesByDate, fetchNarRacesByDate } from "./postgres";
 import { buildRealtimeRaceKey, raceKeyFromRealtimePath, type RealtimeSource } from "./race-key";
 import {
@@ -49,6 +61,7 @@ import {
   completeOddsFetch,
   completeResultFetch,
   completeTrackConditionFetch,
+  countJraRaceSourcesMissingRaceDateFieldsByDate,
   countRaceSourcesByDate,
   failTrackConditionFetch,
   failOddsFetch,
@@ -56,6 +69,7 @@ import {
   getPremiumRaceLink,
   getPremiumRacePayload,
   getPremiumPaddockFetchState,
+  getPremiumPaddockNotificationState,
   getRaceSource,
   getLatestTrackConditionForRace,
   getLatestOddsFromD1,
@@ -77,6 +91,7 @@ import {
   markPremiumRaceDataQueued,
   markResultFetchQueued,
   markTrackConditionQueued,
+  recordPremiumPaddockNotificationEvent,
   replacePremiumRaceData,
   toHorseTrends,
   toOddsTrendsByType,
@@ -84,6 +99,7 @@ import {
   updateOddsLinks,
   updatePremiumRaceDataFetchState,
   updatePremiumPaddockFetchState,
+  updatePremiumPaddockNotificationState,
   upsertJraRaceSource,
   upsertNarRaceSource,
   upsertPremiumRaceLink,
@@ -98,7 +114,7 @@ import {
   parseRaceStartJst,
   toJstIsoString,
 } from "./time";
-import type { Env, Job, NarRaceSource } from "./types";
+import type { Env, HorseWeight, Job, NarRaceSource, RaceEntry } from "./types";
 
 const QUEUE_SEND_BATCH_SIZE = 100;
 const ODDS_FETCH_LOCK_MINUTES = 10;
@@ -108,7 +124,25 @@ const TRACK_CONDITION_FETCH_LOCK_MINUTES = 15;
 const QUEUE_RETRY_DELAY_SECONDS = 60;
 const PREMIUM_RACE_DATA_RETRY_DELAY_SECONDS = 20 * 60;
 const PREMIUM_PADDOCK_RETRY_DELAY_SECONDS = 120;
+const PREMIUM_PADDOCK_RECHECK_MINUTES = 3;
+const PREMIUM_PADDOCK_WINDOW_BEFORE_MINUTES = 35;
+const PREMIUM_PADDOCK_WINDOW_AFTER_MINUTES = 2;
 const DEFAULT_PREMIUM_RACE_QUEUE_DELAY_SECONDS = 15;
+const DEFAULT_PREMIUM_PADDOCK_DISCORD_BOT_NAME = "外部パドック速報";
+const DEFAULT_DETAIL_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
+const PREMIUM_PADDOCK_NOTIFICATION_FORMAT_VERSION = "2026-05-16-v2";
+const JRA_KEIBAJO_NAMES: Record<string, string> = {
+  "01": "札幌",
+  "02": "函館",
+  "03": "福島",
+  "04": "新潟",
+  "05": "東京",
+  "06": "中山",
+  "07": "中京",
+  "08": "京都",
+  "09": "阪神",
+  "10": "小倉",
+};
 
 const getNow = (env: Env): Date => {
   if (!env.REALTIME_TEST_NOW) {
@@ -255,14 +289,15 @@ const upsertDiscoveredUrls = async (
 };
 
 const ensureJraRaceSourcesAreCurrent = async (env: Env, targetDate: string): Promise<void> => {
-  const [d1RaceCount, jraRaces] = await Promise.all([
+  const [d1RaceCount, missingRaceDateFieldCount, jraRaces] = await Promise.all([
     countRaceSourcesByDate(env.REALTIME_DB, targetDate),
+    countJraRaceSourcesMissingRaceDateFieldsByDate(env.REALTIME_DB, targetDate),
     fetchJraRacesByDate(env, targetDate),
   ]);
   if (jraRaces.length === 0) {
     return;
   }
-  if (d1RaceCount >= jraRaces.length) {
+  if (d1RaceCount >= jraRaces.length && missingRaceDateFieldCount === 0) {
     const discoveredKeibajoCodes = new Set(
       await listRaceSourceKeibajoCodesByDate(env.REALTIME_DB, targetDate),
     );
@@ -426,7 +461,7 @@ const isTrackConditionDue = (
   }
 
   if (nowMs < new Date(schedule.firstRaceStartAtJst).getTime()) {
-    const slotAt = ["0600", "0900"]
+    const slotAt = ["0600", "0700", "0900"]
       .map((hhmm) => toJstSlotIso(targetDate, hhmm))
       .filter((candidate) => nowMs >= new Date(candidate).getTime())
       .toSorted((left, right) => new Date(right).getTime() - new Date(left).getTime())[0];
@@ -473,19 +508,30 @@ const ensureDiscoveredUrlsAreCurrent = async (env: Env, targetDate: string): Pro
 };
 
 const enqueueJobs = async (env: Env, jobs: Job[]): Promise<void> => {
-  const premiumQueue = env.PREMIUM_RACE_JOBS ?? env.REALTIME_JOBS;
   const premiumDelaySeconds = Math.max(
     1,
     Number(env.PREMIUM_RACE_QUEUE_DELAY_SECONDS ?? DEFAULT_PREMIUM_RACE_QUEUE_DELAY_SECONDS),
   );
+  const orderedJobs = jobs.toSorted((left, right) => {
+    if (left.type === "fetch-premium-paddock" && right.type !== "fetch-premium-paddock") {
+      return -1;
+    }
+    if (left.type !== "fetch-premium-paddock" && right.type === "fetch-premium-paddock") {
+      return 1;
+    }
+    return 0;
+  });
   let premiumJobIndex = 0;
-  for (let index = 0; index < jobs.length; index += QUEUE_SEND_BATCH_SIZE) {
-    const chunk = jobs.slice(index, index + QUEUE_SEND_BATCH_SIZE);
+  for (let index = 0; index < orderedJobs.length; index += QUEUE_SEND_BATCH_SIZE) {
+    const chunk = orderedJobs.slice(index, index + QUEUE_SEND_BATCH_SIZE);
     if (chunk.some(isPremiumRaceJob)) {
       for (const job of chunk) {
         if (isPremiumRaceJob(job)) {
-          await premiumQueue.send(job, {
-            delaySeconds: premiumJobIndex * premiumDelaySeconds,
+          await (env.PREMIUM_RACE_JOBS ?? env.REALTIME_JOBS).send(job, {
+            delaySeconds:
+              job.type === "fetch-premium-paddock"
+                ? premiumJobIndex
+                : premiumJobIndex * premiumDelaySeconds,
           });
           premiumJobIndex += 1;
         } else {
@@ -565,11 +611,11 @@ const planPremiumPaddockFetchesForDate = async (
       continue;
     }
     const minutes = minutesUntilRace(race, now);
-    if (minutes === null || minutes > 18 || minutes < -10) {
+    if (minutes === null || minutes > PREMIUM_PADDOCK_WINDOW_BEFORE_MINUTES) {
       continue;
     }
     const state = await getPremiumPaddockFetchState(env.REALTIME_DB, race.raceKey);
-    if (state?.status === "ok" || state?.status === "unavailable") {
+    if (minutes < -PREMIUM_PADDOCK_WINDOW_AFTER_MINUTES) {
       continue;
     }
     if (state?.retryAfter && new Date(state.retryAfter).getTime() > now.getTime()) {
@@ -577,11 +623,16 @@ const planPremiumPaddockFetchesForDate = async (
     }
     if (
       state?.lastQueuedAt &&
-      new Date(state.lastQueuedAt).getTime() > now.getTime() - 20 * 60_000
+      new Date(state.lastQueuedAt).getTime() >
+        now.getTime() - PREMIUM_PADDOCK_RECHECK_MINUTES * 60_000
     ) {
       continue;
     }
-    if (state?.lastFetchAt && new Date(state.lastFetchAt).getTime() > now.getTime() - 20 * 60_000) {
+    if (
+      state?.lastFetchAt &&
+      new Date(state.lastFetchAt).getTime() >
+        now.getTime() - PREMIUM_PADDOCK_RECHECK_MINUTES * 60_000
+    ) {
       continue;
     }
     jobs.push({ raceKey: race.raceKey, type: "fetch-premium-paddock" });
@@ -608,12 +659,296 @@ const planPremiumRaceDataFetchesForDate = async (
   }));
 };
 
+const tryEnsureDiscoveredUrlsAreCurrent = async (env: Env, targetDate: string): Promise<void> => {
+  try {
+    await ensureDiscoveredUrlsAreCurrent(env, targetDate);
+  } catch (error) {
+    await logFetch(
+      env.REALTIME_DB,
+      "discover-urls",
+      "error",
+      null,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+};
+
+const truncate = (value: string, maxLength: number): string =>
+  value.length <= maxLength ? value : `${value.slice(0, Math.max(0, maxLength - 1))}…`;
+
+const buildPremiumPaddockSignature = async (
+  bulletins: readonly PremiumPaddockBulletin[],
+): Promise<string> => {
+  const signaturePayload = {
+    formatVersion: PREMIUM_PADDOCK_NOTIFICATION_FORMAT_VERSION,
+    rows: bulletins
+      .map((row) => ({
+        commentText: row.commentText ?? "",
+        evaluationText: row.evaluationText ?? "",
+        frameNumber: row.frameNumber ?? "",
+        groupKey: row.groupKey,
+        horseName: row.horseName ?? "",
+        horseNumber: row.horseNumber,
+      }))
+      .toSorted((left, right) =>
+        `${left.groupKey}:${left.horseNumber}`.localeCompare(
+          `${right.groupKey}:${right.horseNumber}`,
+        ),
+      ),
+  };
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(JSON.stringify(signaturePayload)),
+  );
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+};
+
+const formatPremiumPaddockBulletinLine = (row: PremiumPaddockBulletin): string =>
+  [
+    `**${row.horseNumber} 番 ${truncate(row.horseName ?? "-", 32)}**　${row.groupKey === "value" ? "穴馬" : "人気馬"} / ${row.evaluationText ?? "-"}`,
+    row.commentText ? `> ${truncate(row.commentText, 140)}` : "> コメントなし",
+  ].join("\n");
+
+const buildDetailUrl = (race: NarRaceSource): string => {
+  const origin = DEFAULT_DETAIL_ORIGIN;
+  return `${origin}/races/${race.kaisaiNen}/${race.kaisaiTsukihi.slice(0, 2)}/${race.kaisaiTsukihi.slice(2, 4)}/${race.keibajoCode}/${race.raceBango}`;
+};
+
+const formatRaceStartForDiscord = (raceStartAtJst: string): string =>
+  new Intl.DateTimeFormat("ja-JP", {
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    month: "long",
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+  }).format(new Date(raceStartAtJst));
+
+const formatMinutesUntilRace = (raceStartAtJst: string, now: Date): string => {
+  const diffMinutes = Math.ceil((new Date(raceStartAtJst).getTime() - now.getTime()) / 60_000);
+  if (diffMinutes > 0) {
+    return `発走まで残り${diffMinutes}分`;
+  }
+  if (diffMinutes === 0) {
+    return "まもなく発走";
+  }
+  return `発走から${Math.abs(diffMinutes)}分経過`;
+};
+
+const notifyPremiumPaddockIfNeeded = async (
+  env: Env,
+  race: NarRaceSource,
+  bulletins: readonly PremiumPaddockBulletin[],
+  fetchedAt: string,
+): Promise<void> => {
+  const payloadSignature = await buildPremiumPaddockSignature(bulletins);
+  if (new Date(race.raceStartAtJst).getTime() <= getNow(env).getTime()) {
+    await recordPremiumPaddockNotificationEvent(env.REALTIME_DB, {
+      fetchedAt,
+      message: "race already started",
+      payloadSignature,
+      raceKey: race.raceKey,
+      skipReason: "race_started",
+      status: "skipped_started",
+    });
+    await updatePremiumPaddockNotificationState(env.REALTIME_DB, {
+      message: "race already started",
+      payloadFetchedAt: fetchedAt,
+      payloadSignature,
+      raceKey: race.raceKey,
+      skipReason: "race_started",
+      status: "skipped_started",
+    });
+    return;
+  }
+  if (bulletins.length === 0) {
+    await recordPremiumPaddockNotificationEvent(env.REALTIME_DB, {
+      fetchedAt,
+      message: "premium paddock rows are empty",
+      payloadSignature,
+      raceKey: race.raceKey,
+      skipReason: "empty",
+      status: "skipped_empty",
+    });
+    await updatePremiumPaddockNotificationState(env.REALTIME_DB, {
+      message: "premium paddock rows are empty",
+      payloadFetchedAt: fetchedAt,
+      payloadSignature,
+      raceKey: race.raceKey,
+      skipReason: "empty",
+      status: "skipped_empty",
+    });
+    return;
+  }
+  if (!env.PREMIUM_PADDOCK_DISCORD_WEBHOOK_URL) {
+    await recordPremiumPaddockNotificationEvent(env.REALTIME_DB, {
+      fetchedAt,
+      message: "discord webhook is not configured",
+      payloadSignature,
+      raceKey: race.raceKey,
+      skipReason: "webhook_not_configured",
+      status: "skipped_unconfigured",
+    });
+    await updatePremiumPaddockNotificationState(env.REALTIME_DB, {
+      message: "discord webhook is not configured",
+      payloadFetchedAt: fetchedAt,
+      payloadSignature,
+      raceKey: race.raceKey,
+      skipReason: "webhook_not_configured",
+      status: "skipped_unconfigured",
+    });
+    return;
+  }
+  const currentNotification = await getPremiumPaddockNotificationState(
+    env.REALTIME_DB,
+    race.raceKey,
+  );
+  if (
+    currentNotification?.status === "ok" &&
+    currentNotification.payloadSignature === payloadSignature &&
+    currentNotification.lastNotifiedAt
+  ) {
+    await recordPremiumPaddockNotificationEvent(env.REALTIME_DB, {
+      fetchedAt,
+      payloadSignature,
+      raceKey: race.raceKey,
+      skipReason: "duplicate_payload",
+      status: "skipped_duplicate",
+    });
+    await updatePremiumPaddockNotificationState(env.REALTIME_DB, {
+      message: null,
+      payloadFetchedAt: fetchedAt,
+      payloadSignature,
+      raceKey: race.raceKey,
+      skipReason: "duplicate_payload",
+      status: "skipped_duplicate",
+    });
+    return;
+  }
+
+  const raceNumberLabel = `${Number(race.raceBango)}R`;
+  const raceOrderLabel = `${Number(race.raceBango)}番目`;
+  const racePlace = JRA_KEIBAJO_NAMES[race.keibajoCode] ?? `競馬場 ${race.keibajoCode}`;
+  const raceName = race.raceName ?? "レース名未取得";
+  const startLabel = `${formatRaceStartForDiscord(race.raceStartAtJst)}発走（JST）`;
+  const remainingLabel = formatMinutesUntilRace(race.raceStartAtJst, getNow(env));
+  const sendAttemptAt = toJstIsoString();
+  const response = await fetch(env.PREMIUM_PADDOCK_DISCORD_WEBHOOK_URL, {
+    body: JSON.stringify({
+      embeds: [
+        {
+          author: { name: "External Paddock Feed" },
+          color: 0xf97316,
+          description: [
+            `🏟️ **${racePlace} ${raceNumberLabel}（${raceOrderLabel}のレース）**`,
+            `🏷️ **${truncate(raceName, 120)}**`,
+            `🕒 ${startLabel}`,
+            `⏳ ${remainingLabel}`,
+            `[レース詳細を開く](${buildDetailUrl(race)})`,
+            "",
+            truncate(
+              bulletins.map(formatPremiumPaddockBulletinLine).join("\n────────────\n"),
+              1400,
+            ),
+          ].join("\n"),
+          footer: {
+            text: `外部速報 ${bulletins.length}件 / 取得 ${fetchedAt}`,
+          },
+          timestamp: new Date().toISOString(),
+          title: "🚨 外部パドック速報",
+        },
+      ],
+      username: env.PREMIUM_PADDOCK_DISCORD_BOT_NAME ?? DEFAULT_PREMIUM_PADDOCK_DISCORD_BOT_NAME,
+    }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+
+  if (!response.ok) {
+    await recordPremiumPaddockNotificationEvent(env.REALTIME_DB, {
+      fetchedAt,
+      message: `discord webhook failed: ${response.status}`,
+      payloadSignature,
+      raceKey: race.raceKey,
+      sentAt: sendAttemptAt,
+      status: "failed",
+    });
+    await updatePremiumPaddockNotificationState(env.REALTIME_DB, {
+      message: `discord webhook failed: ${response.status}`,
+      payloadFetchedAt: fetchedAt,
+      payloadSignature,
+      raceKey: race.raceKey,
+      sendAttemptAt,
+      skipReason: null,
+      status: "failed",
+    });
+    throw new Error(`premium paddock notification failed: ${response.status}`);
+  }
+
+  await recordPremiumPaddockNotificationEvent(env.REALTIME_DB, {
+    fetchedAt,
+    payloadSignature,
+    raceKey: race.raceKey,
+    sentAt: sendAttemptAt,
+    status: "ok",
+  });
+  await updatePremiumPaddockNotificationState(env.REALTIME_DB, {
+    message: null,
+    notifiedAt: fetchedAt,
+    payloadFetchedAt: fetchedAt,
+    payloadSignature,
+    raceKey: race.raceKey,
+    sendAttemptAt,
+    skipReason: null,
+    status: "ok",
+  });
+};
+
+const retryPremiumPaddockWhileInWindow = async (env: Env, race: NarRaceSource): Promise<void> => {
+  const minutes = minutesUntilRace(race, getNow(env));
+  if (minutes === null || minutes < -PREMIUM_PADDOCK_WINDOW_AFTER_MINUTES) {
+    return;
+  }
+  await (env.PREMIUM_RACE_JOBS ?? env.REALTIME_JOBS).send(
+    { raceKey: race.raceKey, type: "fetch-premium-paddock" },
+    { delaySeconds: PREMIUM_PADDOCK_RETRY_DELAY_SECONDS },
+  );
+};
+
+const assertJraHorseWeightsComplete = (
+  raceKey: string,
+  entries: Omit<RaceEntry, "fetchedAt">[],
+  weights: HorseWeight[],
+): void => {
+  if (weights.length === 0) {
+    return;
+  }
+  const expectedHorseNumbers = new Set(
+    entries
+      .filter((entry) => !entry.status || !isJraScratchStatus(entry.status))
+      .map((entry) => entry.horseNumber),
+  );
+  const actualHorseNumbers = new Set(weights.map((weight) => weight.horseNumber));
+  const missingHorseNumbers = Array.from(expectedHorseNumbers).filter(
+    (horseNumber) => !actualHorseNumbers.has(horseNumber),
+  );
+  if (missingHorseNumbers.length > 0) {
+    throw new Error(
+      `JRA horse weight rows are sparse: ${raceKey} missing=${missingHorseNumbers.join(",")}`,
+    );
+  }
+};
+
 const planRealtimeFetches = async (env: Env, targetDate: string): Promise<number> => {
   const now = getNow(env);
   const jobs: Job[] = [];
+  jobs.push(...(await planTrackConditionFetchesForDate(env, targetDate, now)));
+  jobs.push(
+    ...(await planTrackConditionFetchesForDate(env, addDaysToYyyymmdd(targetDate, 1), now)),
+  );
   const shouldRunGeneralPolling = isJstPollingWindow(now);
   if (shouldRunGeneralPolling) {
-    await ensureDiscoveredUrlsAreCurrent(env, targetDate);
+    await tryEnsureDiscoveredUrlsAreCurrent(env, targetDate);
     const races = await listSchedulableRaceSourcesByDate(env.REALTIME_DB, targetDate);
     for (const race of races) {
       const minutes = minutesUntilRace(race, now);
@@ -643,7 +978,7 @@ const planRealtimeFetches = async (env: Env, targetDate: string): Promise<number
         : Number.NaN;
       if (
         minutes <= 0 &&
-        race.source === "nar" &&
+        (race.source === "nar" || race.source === "jra") &&
         !race.resultCompleteAt &&
         isDue(race.lastResultFetchAt, RESULT_FETCH_INTERVAL_MINUTES, now) &&
         (Number.isNaN(resultLockUntil) || resultLockUntil <= now.getTime()) &&
@@ -657,10 +992,6 @@ const planRealtimeFetches = async (env: Env, targetDate: string): Promise<number
   }
   jobs.push(
     ...(await planJraAdvanceOddsFetchesForDate(env, addDaysToYyyymmdd(targetDate, 1), now)),
-  );
-  jobs.push(...(await planTrackConditionFetchesForDate(env, targetDate, now)));
-  jobs.push(
-    ...(await planTrackConditionFetchesForDate(env, addDaysToYyyymmdd(targetDate, 1), now)),
   );
   if (isPremiumRaceDiscoveryTick(now)) {
     jobs.push({ date: addDaysToYyyymmdd(targetDate, 1), type: "discover-premium-races" });
@@ -729,18 +1060,19 @@ const fetchAndStoreOdds = async (env: Env, raceKey: string): Promise<void> => {
     let latest;
     if (race.source === "jra") {
       const result = await fetchJraOddsWithPlaywright(env.JRA_BROWSER, race.debaUrl);
+      latest = result.latest;
       await insertRaceEntrySnapshot(
         env.REALTIME_DB,
         raceKey,
         fetchedAt,
-        parseJraRaceEntries(result.entryHtml),
+        sanitizeJraRaceEntriesWithOdds(parseJraRaceEntries(result.entryHtml), latest),
       );
       const weights = parseJraHorseWeights(result.entryHtml);
       if (weights.length > 0) {
+        assertJraHorseWeightsComplete(raceKey, parseJraRaceEntries(result.entryHtml), weights);
         await insertHorseWeightSnapshot(env.REALTIME_DB, raceKey, fetchedAt, weights);
         await updateLastFetch(env.REALTIME_DB, raceKey, "last_weight_fetch_at", fetchedAt);
       }
-      latest = result.latest;
     } else {
       const entryHtml = await fetchRacePage(race.debaUrl);
       await insertRaceEntrySnapshot(
@@ -781,12 +1113,20 @@ const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<void> =>
   }
   const fetchedAt = toJstIsoString();
   const html = await fetchRacePage(race.debaUrl);
-  const entries = race.source === "jra" ? parseJraRaceEntries(html) : parseRaceEntries(html);
+  const latestOdds =
+    race.source === "jra" ? await getLatestOddsFromD1(env.REALTIME_DB, raceKey) : null;
+  const entries =
+    race.source === "jra"
+      ? sanitizeJraRaceEntriesWithOdds(parseJraRaceEntries(html), latestOdds?.latest)
+      : parseRaceEntries(html);
   await insertRaceEntrySnapshot(env.REALTIME_DB, raceKey, fetchedAt, entries);
   let weights = race.source === "jra" ? parseJraHorseWeights(html) : parseHorseWeights(html);
   if (race.source === "nar" && weights.length === 0) {
     const resultHtml = await fetchRacePage(buildRaceResultUrl(race.debaUrl));
     weights = parseRaceResultHorseWeights(resultHtml);
+  }
+  if (race.source === "jra") {
+    assertJraHorseWeightsComplete(raceKey, entries, weights);
   }
   if (weights.length > 0 && weights.length < 2) {
     await insertHorseWeightSnapshot(env.REALTIME_DB, raceKey, fetchedAt, []);
@@ -810,10 +1150,6 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
     await failResultFetch(env.REALTIME_DB, raceKey);
     throw new Error(`race source not found: ${raceKey}`);
   }
-  if (race.source !== "nar") {
-    await failResultFetch(env.REALTIME_DB, raceKey);
-    return;
-  }
   if (!isRaceFinished(race, now)) {
     await failResultFetch(env.REALTIME_DB, raceKey);
     return;
@@ -821,18 +1157,45 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
 
   try {
     const fetchedAt = toJstIsoString();
+    const resultUrl =
+      race.source === "jra"
+        ? buildJraResultUrlFromRaceSource(race)
+        : buildRaceResultUrl(race.debaUrl);
+    if (!resultUrl) {
+      throw new Error(`race result url is unavailable: ${raceKey}`);
+    }
     const [entryHtml, resultHtml] = await Promise.all([
-      fetchRacePage(race.debaUrl),
-      fetchRacePage(buildRaceResultUrl(race.debaUrl)),
+      race.source === "jra"
+        ? fetchJraResultHtmlWithPlaywright(env.JRA_BROWSER, race.debaUrl)
+        : fetchRacePage(race.debaUrl),
+      race.source === "jra"
+        ? fetchJraResultHtmlWithPlaywright(env.JRA_BROWSER, resultUrl)
+        : fetchRacePage(resultUrl),
     ]);
-    const entries = parseRaceEntries(entryHtml);
+    const entries =
+      race.source === "jra"
+        ? sanitizeJraRaceEntriesWithOdds(parseJraRaceEntries(entryHtml), null)
+        : parseRaceEntries(entryHtml);
     await insertRaceEntrySnapshot(env.REALTIME_DB, raceKey, fetchedAt, entries);
-    const entryHorseNumbers = parseRaceEntryHorseNumbers(entryHtml);
-    const excludedHorseNumbers = new Set(parseRaceResultExcludedHorseNumbers(resultHtml));
+    const entryHorseNumbers =
+      race.source === "jra"
+        ? entries.map((entry) => entry.horseNumber)
+        : parseRaceEntryHorseNumbers(entryHtml);
+    const excludedHorseNumbers = new Set(
+      race.source === "jra"
+        ? [
+            ...entries
+              .filter((entry) => entry.status && isJraScratchStatus(entry.status))
+              .map((entry) => entry.horseNumber),
+            ...parseJraRaceResultExcludedHorseNumbers(resultHtml),
+          ]
+        : parseRaceResultExcludedHorseNumbers(resultHtml),
+    );
     const expectedHorseCount = entryHorseNumbers.filter(
       (horseNumber) => !excludedHorseNumbers.has(horseNumber),
     ).length;
-    const results = parseRaceResults(resultHtml);
+    const results =
+      race.source === "jra" ? parseJraRaceResults(resultHtml) : parseRaceResults(resultHtml);
     const inserted = await insertRaceResultSnapshot(env.REALTIME_DB, raceKey, fetchedAt, results);
     await completeResultFetch(env.REALTIME_DB, raceKey, fetchedAt, {
       expectedHorseCount,
@@ -979,6 +1342,13 @@ const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<v
   if (!race || race.source !== "jra") {
     return;
   }
+  const currentState = await getPremiumPaddockFetchState(env.REALTIME_DB, raceKey);
+  if (
+    currentState?.retryAfter &&
+    new Date(currentState.retryAfter).getTime() > getNow(env).getTime()
+  ) {
+    return;
+  }
   const config = getPremiumRaceConfig(env);
   if (!hasPremiumRaceFetchConfig(config)) {
     return;
@@ -993,32 +1363,160 @@ const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<v
   if (!paddockUrl) {
     return;
   }
-  const html = await fetchPremiumHtml(config, paddockUrl);
-  const parsed = parsePremiumPaddockBulletins(html, env);
-  const fetchedAt = toJstIsoString();
-  if (parsed.unavailable) {
-    await updatePremiumPaddockFetchState(env.REALTIME_DB, {
-      fetchedAt,
-      message: "unavailable",
-      raceKey,
-      status: "unavailable",
-    });
-    return;
+  const attempts = await fetchPremiumHtmlAttempts(config, paddockUrl).catch(
+    async (error: unknown) => {
+      const retryAfter = toJstIsoString(
+        new Date(getNow(env).getTime() + PREMIUM_PADDOCK_RETRY_DELAY_SECONDS * 1000),
+      );
+      await updatePremiumPaddockFetchState(env.REALTIME_DB, {
+        message: error instanceof Error ? error.message : String(error),
+        raceKey,
+        retryAfter,
+        status: "failed",
+      });
+      throw error;
+    },
+  );
+  const parsedAttempts = attempts.map((attempt) => ({
+    mode: attempt.mode,
+    parsed: parsePremiumPaddockBulletins(attempt.html, env),
+  }));
+  const selectedAttempt =
+    parsedAttempts.find((attempt) => attempt.parsed.bulletins.length > 0) ??
+    parsedAttempts.find((attempt) => attempt.mode === "proxy" && attempt.parsed.authRequired) ??
+    parsedAttempts.find((attempt) => attempt.parsed.pending) ??
+    parsedAttempts[0];
+  if (!selectedAttempt) {
+    throw new Error(`premium paddock fetch returned no attempts: ${raceKey}`);
   }
-  if (parsed.pending) {
+  const parsed = selectedAttempt.parsed;
+  const fetchedAt = toJstIsoString();
+  if (parsed.authRequired) {
+    await clearCachedPremiumPaddock(env, raceKey);
     const retryAfter = toJstIsoString(
       new Date(getNow(env).getTime() + PREMIUM_PADDOCK_RETRY_DELAY_SECONDS * 1000),
     );
+    const payloadSignature = await buildPremiumPaddockSignature([]);
     await updatePremiumPaddockFetchState(env.REALTIME_DB, {
-      message: "pending",
+      fetchedAt,
+      message: `auth_required:${selectedAttempt.mode}`,
+      raceKey,
+      retryAfter,
+      status: "auth_required",
+    });
+    await recordPremiumPaddockNotificationEvent(env.REALTIME_DB, {
+      fetchedAt,
+      message: `premium paddock auth required: ${selectedAttempt.mode}`,
+      payloadSignature,
+      raceKey,
+      skipReason: "auth_required",
+      status: "skipped_auth_required",
+    });
+    await updatePremiumPaddockNotificationState(env.REALTIME_DB, {
+      message: `premium paddock auth required: ${selectedAttempt.mode}`,
+      payloadFetchedAt: fetchedAt,
+      payloadSignature,
+      raceKey,
+      skipReason: "auth_required",
+      status: "skipped_auth_required",
+    });
+    await retryPremiumPaddockWhileInWindow(env, race);
+    return;
+  }
+  if (parsed.unavailable) {
+    await clearCachedPremiumPaddock(env, raceKey);
+    const retryAfter = toJstIsoString(
+      new Date(getNow(env).getTime() + PREMIUM_PADDOCK_RETRY_DELAY_SECONDS * 1000),
+    );
+    const payloadSignature = await buildPremiumPaddockSignature([]);
+    await updatePremiumPaddockFetchState(env.REALTIME_DB, {
+      fetchedAt,
+      message: `unavailable:${selectedAttempt.mode}`,
+      raceKey,
+      retryAfter,
+      status: "unavailable",
+    });
+    await recordPremiumPaddockNotificationEvent(env.REALTIME_DB, {
+      fetchedAt,
+      message: `premium paddock is unavailable: ${selectedAttempt.mode}`,
+      payloadSignature,
+      raceKey,
+      skipReason: "unavailable",
+      status: "skipped_unavailable",
+    });
+    await updatePremiumPaddockNotificationState(env.REALTIME_DB, {
+      message: `premium paddock is unavailable: ${selectedAttempt.mode}`,
+      payloadFetchedAt: fetchedAt,
+      payloadSignature,
+      raceKey,
+      skipReason: "unavailable",
+      status: "skipped_unavailable",
+    });
+    await retryPremiumPaddockWhileInWindow(env, race);
+    return;
+  }
+  if (parsed.pending) {
+    await clearCachedPremiumPaddock(env, raceKey);
+    const retryAfter = toJstIsoString(
+      new Date(getNow(env).getTime() + PREMIUM_PADDOCK_RETRY_DELAY_SECONDS * 1000),
+    );
+    const payloadSignature = await buildPremiumPaddockSignature([]);
+    await updatePremiumPaddockFetchState(env.REALTIME_DB, {
+      fetchedAt,
+      message: `pending:${selectedAttempt.mode}`,
       raceKey,
       retryAfter,
       status: "pending",
     });
-    await (env.PREMIUM_RACE_JOBS ?? env.REALTIME_JOBS).send(
-      { raceKey, type: "fetch-premium-paddock" },
-      { delaySeconds: PREMIUM_PADDOCK_RETRY_DELAY_SECONDS },
+    await recordPremiumPaddockNotificationEvent(env.REALTIME_DB, {
+      fetchedAt,
+      message: `premium paddock is pending: ${selectedAttempt.mode}`,
+      payloadSignature,
+      raceKey,
+      skipReason: "pending",
+      status: "skipped_pending",
+    });
+    await updatePremiumPaddockNotificationState(env.REALTIME_DB, {
+      message: `premium paddock is pending: ${selectedAttempt.mode}`,
+      payloadFetchedAt: fetchedAt,
+      payloadSignature,
+      raceKey,
+      skipReason: "pending",
+      status: "skipped_pending",
+    });
+    await retryPremiumPaddockWhileInWindow(env, race);
+    return;
+  }
+  if (parsed.bulletins.length === 0) {
+    await clearCachedPremiumPaddock(env, raceKey);
+    const retryAfter = toJstIsoString(
+      new Date(getNow(env).getTime() + PREMIUM_PADDOCK_RETRY_DELAY_SECONDS * 1000),
     );
+    const payloadSignature = await buildPremiumPaddockSignature([]);
+    await updatePremiumPaddockFetchState(env.REALTIME_DB, {
+      fetchedAt,
+      message: `empty:${selectedAttempt.mode}`,
+      raceKey,
+      retryAfter,
+      status: "empty",
+    });
+    await recordPremiumPaddockNotificationEvent(env.REALTIME_DB, {
+      fetchedAt,
+      message: `premium paddock rows are empty: ${selectedAttempt.mode}`,
+      payloadSignature,
+      raceKey,
+      skipReason: "empty",
+      status: "skipped_empty",
+    });
+    await updatePremiumPaddockNotificationState(env.REALTIME_DB, {
+      message: `premium paddock rows are empty: ${selectedAttempt.mode}`,
+      payloadFetchedAt: fetchedAt,
+      payloadSignature,
+      raceKey,
+      skipReason: "empty",
+      status: "skipped_empty",
+    });
+    await retryPremiumPaddockWhileInWindow(env, race);
     return;
   }
   await replacePremiumRaceData(env.REALTIME_DB, {
@@ -1038,6 +1536,7 @@ const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<v
     raceKey,
     status: parsed.bulletins.length > 0 ? "ok" : "empty",
   });
+  await notifyPremiumPaddockIfNeeded(env, race, parsed.bulletins, fetchedAt);
 };
 
 export const handleJob = async (env: Env, job: Job): Promise<void> => {
@@ -1204,7 +1703,7 @@ export default {
         readCachedPremiumPaddock(env, premiumRaceKey),
       ]);
       return json(
-        cachedPaddock && typeof cachedPaddock === "object"
+        payload.paddockBulletins.length > 0 && cachedPaddock && typeof cachedPaddock === "object"
           ? { ...payload, ...cachedPaddock }
           : payload,
         {
@@ -1268,7 +1767,7 @@ export default {
   },
 
   async scheduled(controller, env, ctx): Promise<void> {
-    ctx.waitUntil(env.REALTIME_JOBS.send(getCronJob(controller.cron)));
+    ctx.waitUntil(handleJob(env, getCronJob(controller.cron)));
   },
 
   async queue(batch, env): Promise<void> {

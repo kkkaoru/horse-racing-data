@@ -8,6 +8,7 @@ import { Miniflare } from "miniflare";
 const TEST_NOW = "2026-05-12T03:00:00.000Z";
 const TEST_DATE = "20260512";
 const TEST_QUEUE = "sync-realtime-data-jobs";
+const TEST_PREMIUM_QUEUE = "sync-realtime-data-premium-race-jobs";
 
 let db: D1Database;
 let mf: Miniflare;
@@ -50,11 +51,11 @@ const seedRace = async (
       `
         insert into realtime_race_sources (
           race_key, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-          baba_code, race_start_at_jst, race_name, deba_url, odds_links_json,
+          baba_code, kaisai_kai, kaisai_nichime, race_start_at_jst, race_name, deba_url, odds_links_json,
           discovered_at, updated_at, last_odds_fetch_at, last_odds_queued_at,
           odds_fetch_lock_until, last_weight_fetch_at, last_result_fetch_at, result_complete_at
         )
-        values (?, ?, '2026', '0512', ?, '01', ?, ?, 'test race',
+        values (?, ?, '2026', '0512', ?, '01', ?, '01', '05', ?, 'test race',
           'https://example.test/deba', '{}', ?, ?, ?, ?, ?, null, ?, ?)
       `,
     )
@@ -116,6 +117,7 @@ beforeAll(async () => {
   mf = new Miniflare({
     bindings: {
       DATABASE_TARGET: "cloudflare",
+      PREMIUM_RACE_ORIGIN: "https://example.test",
       REALTIME_TEST_NOW: TEST_NOW,
     },
     compatibilityDate: "2026-05-10",
@@ -125,6 +127,7 @@ beforeAll(async () => {
     },
     modules: true,
     queueProducers: {
+      PREMIUM_RACE_JOBS: TEST_PREMIUM_QUEUE,
       REALTIME_JOBS: TEST_QUEUE,
     },
     scriptPath: bundlePath,
@@ -138,12 +141,28 @@ beforeAll(async () => {
   await applySqlFile(join(root, "migrations/0006_realtime_race_sources.sql"));
   await applySqlFile(join(root, "migrations/0007_jra_track_conditions.sql"));
   await applySqlFile(join(root, "migrations/0008_jra_race_keys.sql"));
+  await applySqlFile(join(root, "migrations/0009_premium_race_data.sql"));
+  await applySqlFile(join(root, "migrations/0010_premium_race_data_fetch_state.sql"));
+  await applySqlFile(join(root, "migrations/0011_premium_stable_comment_grade.sql"));
+  await applySqlFile(join(root, "migrations/0012_premium_training_rider.sql"));
+  await applySqlFile(join(root, "migrations/0013_premium_paddock_notification_state.sql"));
+  await applySqlFile(join(root, "migrations/0014_premium_paddock_notification_audit.sql"));
+  await applySqlFile(join(root, "migrations/0015_premium_paddock_notification_events.sql"));
+  await applySqlFile(join(root, "migrations/0016_jra_realtime_source_race_dates.sql"));
   worker = (await mf.getWorker()) as unknown as typeof worker;
 });
 
 beforeEach(async () => {
   await db.exec(`
     delete from fetch_logs;
+    delete from premium_paddock_notification_events;
+    delete from premium_paddock_notification_state;
+    delete from premium_paddock_fetch_state;
+    delete from premium_race_data_fetch_state;
+    delete from premium_paddock_bulletins;
+    delete from premium_stable_comments;
+    delete from premium_training_reviews;
+    delete from premium_race_links;
     delete from odds_snapshots;
     delete from race_entry_snapshots;
     delete from race_result_snapshots;
@@ -160,7 +179,7 @@ afterAll(async () => {
 });
 
 describe("worker scheduling with Miniflare", () => {
-  it("dispatches scheduled events without processing realtime work inline", async () => {
+  it("processes scheduled planning inline", async () => {
     await expect(worker.scheduled({ cron: "* 1-12 * * *" })).resolves.toMatchObject({
       outcome: "ok",
     });
@@ -168,8 +187,8 @@ describe("worker scheduling with Miniflare", () => {
     const logCount = await db.prepare("select count(*) as count from fetch_logs").first<{
       count: number;
     }>();
-    expect(logCount?.count).toBe(0);
-  });
+    expect(logCount?.count).toBe(1);
+  }, 20_000);
 
   it("marks due races queued through the queue planner", async () => {
     await seedRace("nar:2026:0512:55:01", "2026-05-12T13:10:00+09:00");
@@ -199,6 +218,9 @@ describe("worker scheduling with Miniflare", () => {
 
   it("queues finished races for result fetches and skips completed results", async () => {
     await seedRace("nar:2026:0512:55:03", "2026-05-12T11:55:00+09:00");
+    await seedRace("jra:2026:0512:08:03", "2026-05-12T11:55:00+09:00", {
+      source: "jra",
+    });
     await seedRace("nar:2026:0512:55:04", "2026-05-12T11:50:00+09:00", {
       resultCompleteAt: "2026-05-12T11:58:00+09:00",
     });
@@ -217,13 +239,17 @@ describe("worker scheduling with Miniflare", () => {
         `
           select race_key, last_result_queued_at
           from realtime_race_sources
-          where race_key in (?, ?)
+          where race_key in (?, ?, ?)
           order by race_key
         `,
       )
-      .bind("nar:2026:0512:55:03", "nar:2026:0512:55:04")
+      .bind("jra:2026:0512:08:03", "nar:2026:0512:55:03", "nar:2026:0512:55:04")
       .all<{ last_result_queued_at: string | null; race_key: string }>();
     expect(queued.results).toEqual([
+      {
+        last_result_queued_at: "2026-05-12T12:00:00+09:00",
+        race_key: "jra:2026:0512:08:03",
+      },
       {
         last_result_queued_at: "2026-05-12T12:00:00+09:00",
         race_key: "nar:2026:0512:55:03",
@@ -341,6 +367,178 @@ describe("worker scheduling with Miniflare", () => {
       kaisai_tsukihi: "0512",
       keibajo_code: "08",
       last_queued_at: "2026-05-12T12:00:00+09:00",
+    });
+  });
+
+  it("queues premium paddock fetches in the race-window and rechecks saved bulletins", async () => {
+    await seedRace("jra:2026:0512:08:01", "2026-05-12T12:20:00+09:00", { source: "jra" });
+    await db
+      .prepare(
+        `
+          insert into premium_race_links (
+            race_key, source_race_id, entry_url, discovered_at, updated_at
+          )
+          values (?, '202605120801', 'https://example.test/race', ?, ?)
+        `,
+      )
+      .bind("jra:2026:0512:08:01", TEST_NOW, TEST_NOW)
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_paddock_fetch_state (
+            race_key, status, last_fetch_at, updated_at
+          )
+          values (?, 'ok', '2026-05-12T11:56:30+09:00', '2026-05-12T11:56:30+09:00')
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_race_data_fetch_state (
+            race_key, status, last_fetch_at, updated_at
+          )
+          values (?, 'ok', ?, ?)
+        `,
+      )
+      .bind("jra:2026:0512:08:01", TEST_NOW, TEST_NOW)
+      .run();
+
+    await worker.queue(TEST_QUEUE, [
+      {
+        attempts: 1,
+        body: { date: TEST_DATE, type: "plan-realtime-fetches" },
+        id: "plan-premium-paddock-1",
+        timestamp: new Date(TEST_NOW),
+      },
+    ]);
+
+    const state = await db
+      .prepare(
+        `
+          select status, last_queued_at
+          from premium_paddock_fetch_state
+          where race_key = ?
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .first<{ last_queued_at: string | null; status: string }>();
+    expect(state).toEqual({
+      last_queued_at: "2026-05-12T12:00:00+09:00",
+      status: "queued",
+    });
+  });
+
+  it("does not requeue premium paddock fetches inside the recheck interval", async () => {
+    await seedRace("jra:2026:0512:08:01", "2026-05-12T12:20:00+09:00", { source: "jra" });
+    await db
+      .prepare(
+        `
+          insert into premium_race_links (
+            race_key, source_race_id, entry_url, discovered_at, updated_at
+          )
+          values (?, '202605120801', 'https://example.test/race', ?, ?)
+        `,
+      )
+      .bind("jra:2026:0512:08:01", TEST_NOW, TEST_NOW)
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_paddock_fetch_state (
+            race_key, status, last_fetch_at, updated_at
+          )
+          values (?, 'ok', '2026-05-12T11:58:00+09:00', '2026-05-12T11:58:00+09:00')
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_race_data_fetch_state (
+            race_key, status, last_fetch_at, updated_at
+          )
+          values (?, 'ok', ?, ?)
+        `,
+      )
+      .bind("jra:2026:0512:08:01", TEST_NOW, TEST_NOW)
+      .run();
+
+    await worker.queue(TEST_QUEUE, [
+      {
+        attempts: 1,
+        body: { date: TEST_DATE, type: "plan-realtime-fetches" },
+        id: "plan-premium-paddock-2",
+        timestamp: new Date(TEST_NOW),
+      },
+    ]);
+
+    const state = await db
+      .prepare(
+        `
+          select status, last_queued_at
+          from premium_paddock_fetch_state
+          where race_key = ?
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .first<{ last_queued_at: string | null; status: string }>();
+    expect(state).toEqual({
+      last_queued_at: null,
+      status: "ok",
+    });
+  });
+
+  it("does not requeue missed premium paddock notifications after the race window", async () => {
+    await seedRace("jra:2026:0512:08:01", "2026-05-12T11:50:00+09:00", { source: "jra" });
+    await db
+      .prepare(
+        `
+          insert into premium_race_links (
+            race_key, source_race_id, entry_url, discovered_at, updated_at
+          )
+          values (?, '202605120801', 'https://example.test/race', ?, ?)
+        `,
+      )
+      .bind("jra:2026:0512:08:01", TEST_NOW, TEST_NOW)
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_paddock_fetch_state (
+            race_key, status, message, retry_after, updated_at
+          )
+          values (?, 'failed', 'premium race fetch failed: proxy: 500', ?, ?)
+        `,
+      )
+      .bind("jra:2026:0512:08:01", "2026-05-12T11:59:00+09:00", TEST_NOW)
+      .run();
+
+    await worker.queue(TEST_QUEUE, [
+      {
+        attempts: 1,
+        body: { date: TEST_DATE, type: "plan-realtime-fetches" },
+        id: "plan-premium-paddock-recovery",
+        timestamp: new Date(TEST_NOW),
+      },
+    ]);
+
+    const state = await db
+      .prepare(
+        `
+          select status, last_queued_at
+          from premium_paddock_fetch_state
+          where race_key = ?
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .first<{ last_queued_at: string | null; status: string }>();
+    expect(state).toEqual({
+      last_queued_at: null,
+      status: "failed",
     });
   });
 });
