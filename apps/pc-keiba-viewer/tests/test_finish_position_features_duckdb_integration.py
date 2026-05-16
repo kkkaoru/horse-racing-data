@@ -300,16 +300,38 @@ def test_stage_horse_history_derived_creates_four_tables(seeded_con: duckdb.Duck
         assert row[0] > 0
 
 
-def test_materialize_pedigree_stats_creates_year_partitioned_stats(
+def test_materialize_pedigree_stats_creates_month_partitioned_stats(
     seeded_con: duckdb.DuckDBPyConnection,
 ):
-    subject.materialize_pedigree_stats(seeded_con, "jra", [2020])
+    subject.materialize_pedigree_stats(seeded_con, "jra")
     for table in subject.PEDIGREE_STAT_TABLES:
         row = seeded_con.execute(
-            f"select count(*) from pragma_table_info('{table}') where name = 'stats_year'"
+            f"select count(*) from pragma_table_info('{table}') where name = 'stats_year_month'"
         ).fetchone()
         assert row is not None
         assert row[0] == 1
+
+
+def test_materialize_pedigree_stats_excludes_current_month_data(
+    seeded_con: duckdb.DuckDBPyConnection,
+):
+    subject.materialize_pedigree_stats(seeded_con, "jra")
+    row = seeded_con.execute(
+        "select count(*) from sire_distance_stats where stats_year_month = 202001"
+    ).fetchone()
+    assert row is not None
+    assert row[0] > 0
+
+
+def test_materialize_pedigree_stats_includes_target_months_table(
+    seeded_con: duckdb.DuckDBPyConnection,
+):
+    subject.materialize_pedigree_stats(seeded_con, "jra")
+    row = seeded_con.execute("select count(*) from target_months").fetchone()
+    assert row is not None
+    assert row[0] == 1
+
+
 
 
 def test_materialize_race_context_builds_aggregates(seeded_con: duckdb.DuckDBPyConnection):
@@ -403,7 +425,7 @@ def test_write_parquet_cleans_output_dir(seeded_con: duckdb.DuckDBPyConnection, 
     stale.write_text("stale")
     subject.stage_horse_history_derived(seeded_con, [2020], _silent_heartbeat())
     subject.stage_partner_features(seeded_con, [2020], _silent_heartbeat())
-    subject.materialize_pedigree_stats(seeded_con, "jra", [2020])
+    subject.materialize_pedigree_stats(seeded_con, "jra")
     subject.materialize_race_context(seeded_con)
     subject.stage_track_bias(seeded_con, [2020], _silent_heartbeat())
     subject.materialize_weather_lookup(seeded_con)
@@ -425,7 +447,7 @@ def test_count_output_rows_counts_written_parquet(
     output_dir = tmp_path / "out"
     subject.stage_horse_history_derived(seeded_con, [2020], _silent_heartbeat())
     subject.stage_partner_features(seeded_con, [2020], _silent_heartbeat())
-    subject.materialize_pedigree_stats(seeded_con, "jra", [2020])
+    subject.materialize_pedigree_stats(seeded_con, "jra")
     subject.materialize_race_context(seeded_con)
     subject.stage_track_bias(seeded_con, [2020], _silent_heartbeat())
     subject.materialize_weather_lookup(seeded_con)
