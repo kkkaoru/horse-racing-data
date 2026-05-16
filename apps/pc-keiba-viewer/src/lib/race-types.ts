@@ -104,6 +104,7 @@ export interface RaceTrendDetail {
 export interface RaceTrendRateRow {
   key: string;
   label: string;
+  targetHorseNumber?: string | null;
   starts: number;
   showRate: number;
   quinellaRate: number;
