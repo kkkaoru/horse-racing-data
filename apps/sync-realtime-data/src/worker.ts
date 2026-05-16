@@ -173,11 +173,21 @@ const addDaysToYyyymmdd = (yyyymmdd: string, days: number): string => {
   return toJstIsoString(date).slice(0, 10).replace(/-/g, "");
 };
 
-const getCronJob = (cron: string): Job => {
-  if (cron === "5 0 * * *") {
-    return { date: getTodayJst(), type: "discover-urls" };
+const JRA_PREMIUM_LINK_CRONS = new Set(["0 4 * * 5", "0 4 * * 6"]);
+const JRA_PREMIUM_DATA_CRONS = new Set(["0 5 * * 5", "0 5 * * 6"]);
+
+const getCronJob = (cron: string, now = new Date()): Job => {
+  const today = getTodayJst(now);
+  if (JRA_PREMIUM_LINK_CRONS.has(cron)) {
+    return { date: addDaysToYyyymmdd(today, 1), type: "discover-premium-race-links" };
   }
-  return { date: getTodayJst(), type: "plan-realtime-fetches" };
+  if (JRA_PREMIUM_DATA_CRONS.has(cron)) {
+    return { date: addDaysToYyyymmdd(today, 1), type: "plan-premium-race-data-fetches" };
+  }
+  if (cron === "5 0 * * *") {
+    return { date: today, type: "discover-urls" };
+  }
+  return { date: today, type: "plan-realtime-fetches" };
 };
 
 const buildFallbackRaceRow = (
@@ -549,7 +559,9 @@ const enqueueJobs = async (env: Env, jobs: Job[]): Promise<void> => {
 };
 
 const isPremiumRaceJob = (job: Job): boolean =>
+  job.type === "discover-premium-race-links" ||
   job.type === "discover-premium-races" ||
+  job.type === "plan-premium-race-data-fetches" ||
   job.type === "fetch-premium-paddock" ||
   job.type === "fetch-premium-race-data";
 
@@ -1580,6 +1592,31 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
       await logFetch(env.REALTIME_DB, job.type, "ok", null, JSON.stringify(result));
       return;
     }
+    if (job.type === "discover-premium-race-links") {
+      const result = await discoverPremiumRacesForDate(env, job.date);
+      await logFetch(env.REALTIME_DB, job.type, "ok", null, JSON.stringify(result));
+      return;
+    }
+    if (job.type === "plan-premium-race-data-fetches") {
+      const premiumResult = await discoverPremiumRacesForDate(env, job.date);
+      const jobs = await planPremiumRaceDataFetchesForDate(env, job.date, getNow(env));
+      await enqueueJobs(env, jobs);
+      await markPremiumRaceDataQueued(
+        env.REALTIME_DB,
+        jobs.flatMap((queuedJob) =>
+          queuedJob.type === "fetch-premium-race-data" ? [queuedJob.raceKey] : [],
+        ),
+        toJstIsoString(getNow(env)),
+      );
+      await logFetch(
+        env.REALTIME_DB,
+        job.type,
+        "ok",
+        null,
+        JSON.stringify({ premiumResult, queued: jobs.length }),
+      );
+      return;
+    }
     if (job.type === "fetch-premium-race-data") {
       await fetchAndStorePremiumRaceData(env, job.raceKey);
       await logFetch(env.REALTIME_DB, job.type, "ok", job.raceKey, null);
@@ -1767,7 +1804,11 @@ export default {
   },
 
   async scheduled(controller, env, ctx): Promise<void> {
-    ctx.waitUntil(handleJob(env, getCronJob(controller.cron)));
+    const scheduledAt =
+      typeof controller.scheduledTime === "number"
+        ? new Date(controller.scheduledTime)
+        : new Date();
+    ctx.waitUntil(handleJob(env, getCronJob(controller.cron, scheduledAt)));
   },
 
   async queue(batch, env): Promise<void> {
