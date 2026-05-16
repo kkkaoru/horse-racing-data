@@ -282,6 +282,38 @@ def test_assemble_final_select_from_temp_tables_contains_all_feature_groups():
         assert keyword in sql
 
 
+def test_assemble_final_select_appends_race_internal_relative_features():
+    sql = subject.assemble_final_select_from_temp_tables("jra")
+    expected_new_columns = [
+        "speed_index_avg_5_rank_in_race",
+        "speed_index_best_5_rank_in_race",
+        "jockey_recent_win_rate_rank_in_race",
+        "trainer_career_win_rate_rank_in_race",
+        "pedigree_score_for_race_rank_in_race",
+        "same_distance_win_rate_rank_in_race",
+        "speed_index_avg_5_diff_from_race_avg",
+        "jockey_recent_win_rate_diff_from_race_avg",
+        "pedigree_score_diff_from_race_avg",
+    ]
+    for column in expected_new_columns:
+        assert column in sql
+
+
+def test_assemble_final_select_uses_race_partition_window():
+    sql = subject.assemble_final_select_from_temp_tables("jra")
+    assert "with base_features as" in sql
+    assert "partition by b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango" in sql
+    assert "order by b.speed_index_avg_5 asc nulls last" in sql
+    assert "order by b.jockey_recent_win_rate desc nulls last" in sql
+
+
+def test_base_features_select_sql_contains_existing_columns():
+    sql = subject.base_features_select_sql("jra")
+    assert "speed_index_avg_5" in sql
+    assert "pedigree_score_for_race" in sql
+    assert "weight_diff_from_avg" in sql
+
+
 def test_count_output_rows_returns_zero_for_missing_dir(tmp_path: Path):
     assert subject.count_output_rows(tmp_path / "missing") == 0
 

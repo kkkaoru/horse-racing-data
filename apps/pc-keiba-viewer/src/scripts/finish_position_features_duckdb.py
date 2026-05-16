@@ -735,7 +735,7 @@ def materialize_weather_lookup(con: duckdb.DuckDBPyConnection) -> None:
     log_event("weather.weather_lookup", "done", perf_counter() - started)
 
 
-def assemble_final_select_from_temp_tables(category: str) -> str:
+def base_features_select_sql(category: str) -> str:
     return f"""
     select
       t.source, t.race_date, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango,
@@ -801,6 +801,51 @@ def assemble_final_select_from_temp_tables(category: str) -> str:
     left join recent_form rf using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
     left join legacy_features lf using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
     left join weather_lookup wl using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
+    """
+
+
+RACE_PARTITION_COLUMNS = "b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango"
+
+
+def assemble_final_select_from_temp_tables(category: str) -> str:
+    base = base_features_select_sql(category)
+    return f"""
+    with base_features as ({base})
+    select
+      b.*,
+      rank() over race_by_speed_avg_asc as speed_index_avg_5_rank_in_race,
+      rank() over race_by_speed_best_asc as speed_index_best_5_rank_in_race,
+      rank() over race_by_jockey_recent_desc as jockey_recent_win_rate_rank_in_race,
+      rank() over race_by_trainer_career_desc as trainer_career_win_rate_rank_in_race,
+      rank() over race_by_pedigree_desc as pedigree_score_for_race_rank_in_race,
+      rank() over race_by_same_distance_desc as same_distance_win_rate_rank_in_race,
+      b.speed_index_avg_5 - avg(b.speed_index_avg_5) over race_partition
+        as speed_index_avg_5_diff_from_race_avg,
+      b.jockey_recent_win_rate - avg(b.jockey_recent_win_rate) over race_partition
+        as jockey_recent_win_rate_diff_from_race_avg,
+      b.pedigree_score_for_race - avg(b.pedigree_score_for_race) over race_partition
+        as pedigree_score_diff_from_race_avg
+    from base_features b
+    window
+      race_partition as (partition by {RACE_PARTITION_COLUMNS}),
+      race_by_speed_avg_asc as (
+        partition by {RACE_PARTITION_COLUMNS} order by b.speed_index_avg_5 asc nulls last
+      ),
+      race_by_speed_best_asc as (
+        partition by {RACE_PARTITION_COLUMNS} order by b.speed_index_best_5 asc nulls last
+      ),
+      race_by_jockey_recent_desc as (
+        partition by {RACE_PARTITION_COLUMNS} order by b.jockey_recent_win_rate desc nulls last
+      ),
+      race_by_trainer_career_desc as (
+        partition by {RACE_PARTITION_COLUMNS} order by b.trainer_career_win_rate desc nulls last
+      ),
+      race_by_pedigree_desc as (
+        partition by {RACE_PARTITION_COLUMNS} order by b.pedigree_score_for_race desc nulls last
+      ),
+      race_by_same_distance_desc as (
+        partition by {RACE_PARTITION_COLUMNS} order by b.same_distance_win_rate desc nulls last
+      )
     """
 
 

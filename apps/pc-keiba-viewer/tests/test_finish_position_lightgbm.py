@@ -127,6 +127,7 @@ def test_training_params_from_args_casts_to_expected_types():
         "min_child_samples": 5,
         "num_iterations": 10,
         "num_leaves": 31,
+        "objective": "lambdarank",
     }
 
 
@@ -138,11 +139,71 @@ def test_build_lightgbm_params_uses_lambdarank_with_ndcg_at_3():
             "min_child_samples": 20,
             "num_iterations": 100,
             "num_leaves": 63,
+            "objective": "lambdarank",
         }
     )
     assert lgb_params["objective"] == "lambdarank"
     assert lgb_params["metric"] == "ndcg"
     assert lgb_params["eval_at"] == [3]
+
+
+def test_build_lightgbm_params_switches_to_binary_for_top1():
+    lgb_params = subject.build_lightgbm_params(
+        {
+            "lambda_l2": 0.0,
+            "learning_rate": 0.05,
+            "min_child_samples": 20,
+            "num_iterations": 100,
+            "num_leaves": 63,
+            "objective": "binary-top1",
+        }
+    )
+    assert lgb_params["objective"] == "binary"
+    assert lgb_params["metric"] == "binary_logloss"
+
+
+def test_build_lightgbm_params_switches_to_binary_for_top3():
+    lgb_params = subject.build_lightgbm_params(
+        {
+            "lambda_l2": 0.0,
+            "learning_rate": 0.05,
+            "min_child_samples": 20,
+            "num_iterations": 100,
+            "num_leaves": 63,
+            "objective": "binary-top3",
+        }
+    )
+    assert lgb_params["objective"] == "binary"
+
+
+def test_build_label_array_for_binary_top1():
+    labels = subject.build_label_array(pd.Series([1, 2, 3, 4, None]), "binary-top1")
+    assert labels.tolist() == [1, 0, 0, 0, 0]
+
+
+def test_build_label_array_for_binary_top3():
+    labels = subject.build_label_array(pd.Series([1, 2, 3, 4, None]), "binary-top3")
+    assert labels.tolist() == [1, 1, 1, 0, 0]
+
+
+def test_build_label_array_for_lambdarank_uses_relevance_tiers():
+    labels = subject.build_label_array(pd.Series([1, 2, 3, 4]), "lambdarank")
+    assert labels.tolist() == [3, 2, 1, 0]
+
+
+def test_parse_args_supports_objective_flag(tmp_path: Path):
+    args = subject.parse_args(
+        [
+            "train",
+            "--train-csv",
+            str(tmp_path / "x.csv"),
+            "--output-model",
+            str(tmp_path / "m.lgb"),
+            "--objective",
+            "binary-top1",
+        ]
+    )
+    assert args.objective == "binary-top1"
 
 
 def make_synthetic_dataset(seed: int = 42) -> pd.DataFrame:
@@ -205,12 +266,33 @@ def test_train_lambdarank_returns_booster_and_metadata():
             "min_child_samples": 5,
             "num_iterations": 20,
             "num_leaves": 7,
+            "objective": "lambdarank",
         },
     )
     assert booster is not None
     assert result["train_rows"] == len(df)
     assert result["valid_rows"] == 0
     assert result["best_iteration"] >= 1
+
+
+def test_train_binary_top1_returns_booster_and_objective_in_result():
+    df = make_synthetic_dataset()
+    bundle = subject.prepare_lgb_dataset(df, "binary-top1")
+    booster, result = subject.train_lambdarank(
+        bundle,
+        None,
+        {
+            "lambda_l2": 0.0,
+            "learning_rate": 0.1,
+            "min_child_samples": 5,
+            "num_iterations": 10,
+            "num_leaves": 7,
+            "objective": "binary-top1",
+        },
+    )
+    assert booster is not None
+    assert result["objective"] == "binary-top1"
+    assert result["best_ndcg_at_3"] is None
 
 
 def test_score_dataset_returns_predictions_per_row():
@@ -225,6 +307,7 @@ def test_score_dataset_returns_predictions_per_row():
             "min_child_samples": 5,
             "num_iterations": 20,
             "num_leaves": 7,
+            "objective": "lambdarank",
         },
     )
     predictions = subject.score_dataset(booster, df)
@@ -260,10 +343,12 @@ def test_write_predictions_jsonl_writes_one_record_per_line(tmp_path: Path):
 
 def test_write_training_metadata_persists_json(tmp_path: Path):
     result: subject.TrainingResult = {
+        "best_binary_logloss": None,
         "best_iteration": 10,
         "best_ndcg_at_3": 0.42,
         "elapsed_seconds": 1.5,
         "feature_columns": ["a", "b"],
+        "objective": "lambdarank",
         "train_rows": 100,
         "valid_rows": 0,
     }
@@ -286,6 +371,7 @@ def test_save_and_load_booster_round_trip(tmp_path: Path):
             "min_child_samples": 5,
             "num_iterations": 5,
             "num_leaves": 7,
+            "objective": "lambdarank",
         },
     )
     path = tmp_path / "model.lgb"
@@ -445,6 +531,7 @@ def test_run_walk_forward_fold_returns_metrics():
             "min_child_samples": 2,
             "num_iterations": 10,
             "num_leaves": 7,
+            "objective": "lambdarank",
         },
     )
     assert metrics["valid_year"] == 2021
@@ -528,6 +615,7 @@ def test_write_hpo_summary_persists_json(tmp_path: Path):
             "min_child_samples": 10,
             "num_iterations": 100,
             "num_leaves": 31,
+            "objective": "lambdarank",
         },
         "best_value": 0.42,
         "n_trials": 5,

@@ -832,6 +832,67 @@ def test_run_full_pipeline_with_seeded_sources(
     assert (tmp_path / "out").exists()
 
 
+def test_assemble_final_select_emits_race_internal_rank_values(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    captured_columns: dict[str, list[str]] = {}
+    captured_values: dict[str, list[float]] = {}
+
+    def fake_stage_source(con: duckdb.DuckDBPyConnection, *_args: object) -> None:
+        _seed_rec(con)
+        _seed_horse_masters(con)
+        _seed_weight_tables(con)
+        _seed_weather_tables(con)
+
+    def capture_parquet(
+        con: duckdb.DuckDBPyConnection,
+        category: str,
+        output_dir: Path,
+        keep_existing: bool,
+        force_clean: bool,
+    ) -> None:
+        sql = subject.assemble_final_select_from_temp_tables(category)
+        rows = con.execute(f"with final as ({sql}) select * from final").fetchdf()
+        captured_columns["names"] = [str(name) for name in rows.columns]
+        captured_values["speed_rank"] = [float(value) for value in rows["speed_index_avg_5_rank_in_race"]]
+        captured_values["jockey_diff"] = [
+            float(value) for value in rows["jockey_recent_win_rate_diff_from_race_avg"]
+        ]
+        subject.prepare_output_dir(output_dir, keep_existing, force_clean)
+
+    monkeypatch.setattr(subject, "stage_source", fake_stage_source)
+    monkeypatch.setattr(subject, "write_parquet", capture_parquet)
+    args = subject.parse_args(
+        [
+            "--category",
+            "jra",
+            "--from-date",
+            "20200101",
+            "--to-date",
+            "20201231",
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--heartbeat-interval",
+            "0",
+            "--skip-count",
+        ]
+    )
+    subject.run(args)
+    for column in (
+        "speed_index_avg_5_rank_in_race",
+        "speed_index_best_5_rank_in_race",
+        "jockey_recent_win_rate_rank_in_race",
+        "trainer_career_win_rate_rank_in_race",
+        "pedigree_score_for_race_rank_in_race",
+        "same_distance_win_rate_rank_in_race",
+        "speed_index_avg_5_diff_from_race_avg",
+        "jockey_recent_win_rate_diff_from_race_avg",
+        "pedigree_score_diff_from_race_avg",
+    ):
+        assert column in captured_columns["names"]
+    assert sorted(captured_values["speed_rank"]) == [1.0, 2.0]
+
+
 def test_heartbeat_supports_repeated_stage_changes():
     heartbeat = subject.Heartbeat(0.0, None)
     heartbeat.start()
