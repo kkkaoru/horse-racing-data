@@ -332,6 +332,43 @@ def test_materialize_pedigree_stats_includes_target_months_table(
     assert row[0] == 1
 
 
+def test_pedigree_stats_avg_uses_non_null_count_only(tmp_path: Path):
+    con = duckdb.connect(":memory:")
+    rows = [
+        ("jra", "20180101", "2018", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.4, 0.5, "1", None, 1, 2.0),
+        ("jra", "20180102", "2018", "0102", "01", "01", "h001", 2, "j1", "t1", 1600, "10", "A", "000", 10, 2, None, 1.0, 35.0, 0.3, 0.4, 0.5, "1", None, 2, 3.0),
+        ("jra", "20200101", "2020", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 0.0, 34.0, 0.2, 0.3, 0.4, "1", None, 1, 2.0),
+    ]
+    df = pd.DataFrame(rows, columns=REC_COLUMNS)
+    con.register("rec_null_df", df)
+    con.execute(
+        """
+        create or replace temp table rec as
+        select source, race_date,
+          strptime(race_date, '%Y%m%d')::date as race_dt,
+          kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+          ketto_toroku_bango, umaban,
+          kishumei_ryakusho, chokyoshimei_ryakusho,
+          kyori, track_code, grade_code, kyoso_joken_code,
+          shusso_tosu, finish_position,
+          cast(finish_norm as double) as finish_norm,
+          time_sa, kohan_3f, corner1_norm, corner3_norm, corner4_norm,
+          babajotai_code_shiba, babajotai_code_dirt,
+          tansho_ninkijun, tansho_odds
+        from rec_null_df
+        """
+    )
+    _seed_horse_masters(con)
+    _seed_weight_tables(con)
+    _seed_weather_tables(con)
+    subject.build_target_table(con, "jra", "20200101", "20201231")
+    subject.materialize_pedigree_stats(con, "jra")
+    row = con.execute(
+        "select sire_avg_finish_at_distance_val from sire_distance_stats "
+        "where stats_year_month = 202001"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == pytest.approx(0.0)
 
 
 def test_materialize_race_context_builds_aggregates(seeded_con: duckdb.DuckDBPyConnection):

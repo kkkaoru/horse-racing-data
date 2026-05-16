@@ -165,6 +165,30 @@ def test_pedigree_stat_specs_cover_four_tables():
     ]
 
 
+def test_sire_distance_stats_uses_finish_norm_count_in_denominator():
+    spec = subject.PEDIGREE_STAT_SPECS[0]
+    sql = subject.pedigree_monthly_stat_sql(spec, "select * from rec")
+    assert "count(finish_norm) as finish_norm_count" in sql
+    assert "nullif(sum(m.finish_norm_count), 0)" in sql
+
+
+def test_damsire_track_stats_uses_finish_norm_count_in_denominator():
+    spec = subject.PEDIGREE_STAT_SPECS[3]
+    sql = subject.pedigree_monthly_stat_sql(spec, "select * from rec")
+    assert "count(finish_norm) as finish_norm_count" in sql
+    assert "nullif(sum(m.finish_norm_count), 0)" in sql
+
+
+def test_win_rate_specs_still_use_race_count_in_denominator():
+    sire_track = subject.PEDIGREE_STAT_SPECS[1]
+    damsire_distance = subject.PEDIGREE_STAT_SPECS[2]
+    sire_track_sql = subject.pedigree_monthly_stat_sql(sire_track, "select * from rec")
+    damsire_distance_sql = subject.pedigree_monthly_stat_sql(damsire_distance, "select * from rec")
+    assert "sire_track_win_rate_val" in sire_track_sql
+    assert "nullif(sum(m.race_count), 0) as sire_track_win_rate_val" in sire_track_sql
+    assert "nullif(sum(m.race_count), 0) as dam_sire_distance_win_rate_val" in damsire_distance_sql
+
+
 def test_target_pedigree_sql_joins_both_horse_masters():
     sql = subject.target_pedigree_sql()
     assert "left join jra_um" in sql
