@@ -390,11 +390,12 @@ PEDIGREE_STAT_SPECS: list[PedigreeStatSpec] = [
         "bucket_alias": "kyori_band",
         "monthly_metrics_select": (
             "sum(case when finish_position = 1 then 1 else 0 end) as win_count,"
-            " sum(finish_norm) as finish_norm_sum"
+            " sum(finish_norm) as finish_norm_sum,"
+            " count(finish_norm) as finish_norm_count"
         ),
         "accum_metrics_select": (
             "sum(m.win_count)::double / nullif(sum(m.race_count), 0) as sire_distance_win_rate_val,"
-            " sum(m.finish_norm_sum)::double / nullif(sum(m.race_count), 0)"
+            " sum(m.finish_norm_sum)::double / nullif(sum(m.finish_norm_count), 0)"
             " as sire_avg_finish_at_distance_val"
         ),
     },
@@ -426,9 +427,12 @@ PEDIGREE_STAT_SPECS: list[PedigreeStatSpec] = [
         "key_alias": "damsire",
         "bucket_expr": "left(coalesce(track_code, ''), 1)",
         "bucket_alias": "surface",
-        "monthly_metrics_select": "sum(finish_norm) as finish_norm_sum",
+        "monthly_metrics_select": (
+            "sum(finish_norm) as finish_norm_sum,"
+            " count(finish_norm) as finish_norm_count"
+        ),
         "accum_metrics_select": (
-            "sum(m.finish_norm_sum)::double / nullif(sum(m.race_count), 0)"
+            "sum(m.finish_norm_sum)::double / nullif(sum(m.finish_norm_count), 0)"
             " as damsire_avg_finish_at_track_val"
         ),
     },
