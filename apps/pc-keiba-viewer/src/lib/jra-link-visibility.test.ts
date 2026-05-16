@@ -14,4 +14,10 @@ describe("jra link visibility", () => {
       isJraResultLinkAvailable("2026", "05", "09", Date.parse("2026-05-14T00:00:00+09:00")),
     ).toBe(true);
   });
+
+  it("hides the result link when the race date cannot be parsed", () => {
+    expect(
+      isJraResultLinkAvailable("2026", "13", "40", Date.parse("2026-12-31T00:00:00+09:00")),
+    ).toBe(false);
+  });
 });

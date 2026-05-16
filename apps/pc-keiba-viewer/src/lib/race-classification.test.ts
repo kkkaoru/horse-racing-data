@@ -155,4 +155,14 @@ describe("race classification", () => {
       ),
     ).toEqual([]);
   });
+
+  it("returns OP condition label when normalized name matches the OP keyword", () => {
+    expect(
+      getRaceTags(
+        race({
+          kyosoJokenMeisho: "OP 特別",
+        }),
+      ),
+    ).toEqual(["OP 特別"]);
+  });
 });

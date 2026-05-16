@@ -16,6 +16,8 @@ describe("training format helpers", () => {
     expect(formatTracen("0")).toBe("美浦");
     expect(formatTracen("1")).toBe("栗東");
     expect(formatTracen("9")).toBe("トレセン9");
+    expect(formatTracen(null)).toBe("-");
+    expect(formatTracen("")).toBe("-");
     expect(formatWoodCourse("2", "1")).toBe("Bコース / 外");
     expect(formatWoodCourse("9", "9")).toBe("9コース / 9");
     expect(formatWoodCourse("2", null)).toBe("Bコース");
