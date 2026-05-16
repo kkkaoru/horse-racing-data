@@ -190,6 +190,60 @@ describe("worker scheduling with Miniflare", () => {
     expect(logCount?.count).toBe(1);
   }, 20_000);
 
+  it("runs scheduled JRA premium link discovery for the next race day", async () => {
+    await expect(
+      worker.scheduled({
+        cron: "0 4 * * 5",
+        scheduledTime: new Date("2026-05-15T04:00:00.000Z"),
+      }),
+    ).resolves.toMatchObject({
+      outcome: "ok",
+    });
+
+    const log = await db
+      .prepare(
+        `
+          select job_type, status, message
+          from fetch_logs
+          order by rowid desc
+          limit 1
+        `,
+      )
+      .first<{ job_type: string; message: string | null; status: string }>();
+    expect(log).toMatchObject({
+      job_type: "discover-premium-race-links",
+      status: "ok",
+    });
+    expect(log?.message).toContain('"configured":false');
+  }, 20_000);
+
+  it("runs scheduled JRA premium training fetch planning for the next race day", async () => {
+    await expect(
+      worker.scheduled({
+        cron: "0 5 * * 6",
+        scheduledTime: new Date("2026-05-16T05:00:00.000Z"),
+      }),
+    ).resolves.toMatchObject({
+      outcome: "ok",
+    });
+
+    const log = await db
+      .prepare(
+        `
+          select job_type, status, message
+          from fetch_logs
+          order by rowid desc
+          limit 1
+        `,
+      )
+      .first<{ job_type: string; message: string | null; status: string }>();
+    expect(log).toMatchObject({
+      job_type: "plan-premium-race-data-fetches",
+      status: "ok",
+    });
+    expect(log?.message).toContain('"queued":0');
+  }, 20_000);
+
   it("marks due races queued through the queue planner", async () => {
     await seedRace("nar:2026:0512:55:01", "2026-05-12T13:10:00+09:00");
 
