@@ -170,9 +170,10 @@ def test_non_negative_float_rejects_negative():
 
 
 def test_parse_args_supports_skip_count_and_keep_existing_output():
-    args = subject.parse_args(["--skip-count", "--keep-existing-output"])
+    args = subject.parse_args(["--skip-count", "--keep-existing-output", "--force-clean-output"])
     assert args.skip_count is True
     assert args.keep_existing_output is True
+    assert args.force_clean_output is True
 
 
 def test_parse_args_supports_heartbeat_interval():
@@ -351,11 +352,11 @@ def test_configure_duckdb_session_applies_threads_and_memory():
     assert int(row[0]) == 2
 
 
-def test_prepare_output_dir_removes_existing(tmp_path: Path):
+def test_prepare_output_dir_removes_existing_partition(tmp_path: Path):
     leftover = tmp_path / "out" / "race_year=2024" / "data_0.parquet"
     leftover.parent.mkdir(parents=True)
     leftover.write_text("stale")
-    subject.prepare_output_dir(tmp_path / "out", keep_existing=False)
+    subject.prepare_output_dir(tmp_path / "out", keep_existing=False, force_clean=False)
     assert not leftover.exists()
     assert (tmp_path / "out").exists()
 
@@ -364,8 +365,34 @@ def test_prepare_output_dir_keeps_existing_when_requested(tmp_path: Path):
     leftover = tmp_path / "out" / "race_year=2024" / "data_0.parquet"
     leftover.parent.mkdir(parents=True)
     leftover.write_text("stale")
-    subject.prepare_output_dir(tmp_path / "out", keep_existing=True)
+    subject.prepare_output_dir(tmp_path / "out", keep_existing=True, force_clean=False)
     assert leftover.exists()
+
+
+def test_prepare_output_dir_refuses_unknown_entries_without_force(tmp_path: Path):
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    foreign = out_dir / "important_other_file.txt"
+    foreign.write_text("do not delete")
+    with pytest.raises(ValueError, match="refusing to clean"):
+        subject.prepare_output_dir(out_dir, keep_existing=False, force_clean=False)
+    assert foreign.exists()
+
+
+def test_prepare_output_dir_force_clean_removes_unknown_entries(tmp_path: Path):
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    (out_dir / "important_other_file.txt").write_text("will be deleted")
+    subject.prepare_output_dir(out_dir, keep_existing=False, force_clean=True)
+    assert not (out_dir / "important_other_file.txt").exists()
+    assert out_dir.exists()
+
+
+def test_directory_only_contains_partitions_detects_foreign_files(tmp_path: Path):
+    (tmp_path / "race_year=2020").mkdir()
+    assert subject.directory_only_contains_partitions(tmp_path) is True
+    (tmp_path / "unexpected.txt").write_text("x")
+    assert subject.directory_only_contains_partitions(tmp_path) is False
 
 
 def test_write_parquet_cleans_output_dir(seeded_con: duckdb.DuckDBPyConnection, tmp_path: Path):
@@ -385,6 +412,7 @@ def test_write_parquet_cleans_output_dir(seeded_con: duckdb.DuckDBPyConnection, 
         subject.assemble_final_select_from_temp_tables("jra"),
         output_dir,
         keep_existing=False,
+        force_clean=True,
     )
     assert not stale.exists()
     written = list(output_dir.glob("race_year=*/data_*.parquet"))
@@ -406,6 +434,7 @@ def test_count_output_rows_counts_written_parquet(
         subject.assemble_final_select_from_temp_tables("jra"),
         output_dir,
         keep_existing=False,
+        force_clean=True,
     )
     assert subject.count_output_rows(output_dir) == 2
 
@@ -501,6 +530,47 @@ def test_run_returns_empty_result_when_no_years(
     result = subject.run(args)
     assert result["rows_written"] == 0
     assert result["output_dir"] == (tmp_path / "empty").as_posix()
+    assert (tmp_path / "empty").exists()
+
+
+def test_run_empty_years_cleans_stale_partitions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    def fake_stage_source(con: duckdb.DuckDBPyConnection, *_args: object) -> None:
+        con.execute("create or replace temp table rec (source varchar)")
+        con.execute("create or replace temp table jra_um (ketto_toroku_bango varchar)")
+        con.execute("create or replace temp table nar_um (ketto_toroku_bango varchar)")
+        con.execute("create or replace temp table jra_se (kaisai_nen varchar)")
+        con.execute("create or replace temp table nar_se (kaisai_nen varchar)")
+        con.execute("create or replace temp table jra_ra (kaisai_nen varchar)")
+        con.execute("create or replace temp table nar_ra (kaisai_nen varchar)")
+
+    def fake_stage_target(con: duckdb.DuckDBPyConnection, *_args: object) -> int:
+        con.execute(
+            "create or replace temp table target (race_year integer, kaisai_nen varchar)"
+        )
+        return 0
+
+    monkeypatch.setattr(subject, "stage_source", fake_stage_source)
+    monkeypatch.setattr(subject, "stage_target", fake_stage_target)
+    output_dir = tmp_path / "out"
+    stale = output_dir / "race_year=2099" / "data_0.parquet"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("stale")
+    args = subject.parse_args(
+        [
+            "--from-date",
+            "20990101",
+            "--to-date",
+            "20991231",
+            "--output-dir",
+            str(output_dir),
+            "--heartbeat-interval",
+            "0",
+        ]
+    )
+    subject.run(args)
+    assert not stale.exists()
 
 
 def test_execute_derived_stage_creates_then_inserts(seeded_con: duckdb.DuckDBPyConnection):
