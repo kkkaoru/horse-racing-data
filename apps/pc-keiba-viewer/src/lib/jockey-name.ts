@@ -8,6 +8,7 @@ const JOCKEY_NAME_CHARACTER_REPLACEMENTS: Record<string, string> = {
 export const normalizeJockeyNameForDisplay = (value: string | null | undefined): string => {
   const cleaned = cleanText(value, "")
     .replace(/^[牡牝騙せセ]\d+\/[^\s　]+\s*[0-9]+(?:\.[0-9]+)?kg\s*/u, "")
+    .replace(/^[A-Za-zＡ-Ｚａ-ｚ][.．]/u, "")
     .replace(/[△▲☆★◇◆□■▽▼]/gu, "")
     .replace(/[\s\p{Separator}\u200B-\u200D\uFEFF]+/gu, "");
   return cleaned;
