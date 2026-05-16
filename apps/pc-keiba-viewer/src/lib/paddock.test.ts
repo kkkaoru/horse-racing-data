@@ -56,7 +56,7 @@ describe("paddock helpers", () => {
       officialRank: 3,
       paddock: 4,
       preference: 6,
-      total: 10,
+      total: 7.8,
     });
   });
 
@@ -78,7 +78,7 @@ describe("paddock helpers", () => {
       officialRank: null,
       paddock: 2,
       preference: 0,
-      total: 3,
+      total: 2.5,
     });
   });
 
@@ -133,7 +133,7 @@ describe("paddock helpers", () => {
       horseNumber: "1",
       paddock: 0,
       preference: 1,
-      total: 0.5,
+      total: 0.3,
     });
     expect(state.history[0]).toMatchObject({
       category: "preference",
@@ -157,7 +157,7 @@ describe("paddock helpers", () => {
       horseName: "一番",
       paddock: -1,
       preference: 1,
-      total: -0.5,
+      total: -0.7,
     });
   });
 

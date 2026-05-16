@@ -89,7 +89,7 @@ const normalizeHorseNumber = (value: string): string =>
 
 const calculateTotal = (
   horse: Pick<PaddockHorseScore, "attention" | "kaeshi" | "paddock" | "preference">,
-): number => horse.paddock + horse.kaeshi + horse.attention + horse.preference * 0.5;
+): number => horse.paddock + horse.kaeshi + horse.attention * 0.5 + horse.preference * 0.3;
 
 export const normalizePaddockHorseScore = (
   value: Partial<PaddockHorseScore> | undefined,
