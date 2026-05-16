@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import override
+from typing import cast, override
 
+import lightgbm as lgb
 import numpy as np
 import pandas as pd
 import pytest
@@ -605,3 +606,280 @@ def test_run_train_command_writes_model_predictions_and_metadata(tmp_path: Path,
     assert predictions_path.exists()
     assert metadata_path.exists()
     assert captured
+
+
+def test_run_train_command_without_predictions_or_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    df = make_synthetic_dataset()
+    train_csv = tmp_path / "train.csv"
+    df.to_csv(train_csv, index=False)
+    model_path = tmp_path / "model.lgb"
+    captured: list[str] = []
+    monkeypatch.setattr("builtins.print", lambda line: captured.append(line))
+    subject.run_train_command(
+        subject.parse_args(
+            [
+                "train",
+                "--train-csv",
+                str(train_csv),
+                "--output-model",
+                str(model_path),
+                "--num-iterations",
+                "5",
+                "--num-leaves",
+                "7",
+                "--min-child-samples",
+                "5",
+            ]
+        )
+    )
+    assert model_path.exists()
+    assert captured
+
+
+def test_load_dataset_reads_partitioned_parquet_directory(tmp_path: Path):
+    df = make_synthetic_dataset()
+    partition_dir = tmp_path / "race_year=2021"
+    partition_dir.mkdir(parents=True)
+    df.to_parquet(partition_dir / "data_0.parquet", index=False)
+    loaded = subject.load_dataset(tmp_path)
+    assert len(loaded) == len(df)
+
+
+def test_load_dataset_reads_flat_parquet_directory(tmp_path: Path):
+    df = make_synthetic_dataset()
+    df.to_parquet(tmp_path / "data_0.parquet", index=False)
+    loaded = subject.load_dataset(tmp_path)
+    assert len(loaded) == len(df)
+
+
+def test_load_dataset_parquet_raises_when_directory_empty(tmp_path: Path):
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    with pytest.raises(ValueError, match="No parquet files"):
+        subject.load_dataset_parquet(empty_dir)
+
+
+def test_load_dataset_reads_parquet_file_directly(tmp_path: Path):
+    df = make_synthetic_dataset()
+    parquet_path = tmp_path / "dataset.parquet"
+    df.to_parquet(parquet_path, index=False)
+    loaded = subject.load_dataset(parquet_path)
+    assert len(loaded) == len(df)
+
+
+class _StubBooster:
+    def __init__(self, best_score: dict[str, dict[str, float]]) -> None:
+        self.best_score: dict[str, dict[str, float]] = best_score
+
+
+def test_extract_best_ndcg_returns_none_when_no_valid():
+    stub = cast(lgb.Booster, _StubBooster({}))
+    assert subject.extract_best_ndcg(stub, has_valid=False) is None
+
+
+def test_extract_best_ndcg_returns_none_when_valid_lacks_ndcg_key():
+    stub = cast(lgb.Booster, _StubBooster({"valid": {"map@3": 0.5}}))
+    assert subject.extract_best_ndcg(stub, has_valid=True) is None
+
+
+def test_extract_best_ndcg_returns_value_when_ndcg_key_present():
+    stub = cast(lgb.Booster, _StubBooster({"valid": {"ndcg@3": 0.875}}))
+    assert subject.extract_best_ndcg(stub, has_valid=True) == 0.875
+
+
+def test_race_top1_hit_returns_false_for_empty_actual():
+    assert subject.race_top1_hit([], ["a"]) is False
+
+
+def test_race_top1_hit_returns_false_for_empty_predicted():
+    assert subject.race_top1_hit(["a"], []) is False
+
+
+def test_race_top1_hit_returns_true_when_first_match():
+    assert subject.race_top1_hit(["a", "b", "c"], ["a", "x", "y"]) is True
+
+
+def test_run_walk_forward_command_without_predictions_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    df = make_walk_forward_dataset()
+    csv_path = tmp_path / "full.csv"
+    df.to_csv(csv_path, index=False)
+    report_path = tmp_path / "report.json"
+    captured: list[str] = []
+    monkeypatch.setattr("builtins.print", lambda line: captured.append(line))
+    subject.run_walk_forward_command(
+        subject.parse_args(
+            [
+                "walk-forward",
+                "--csv",
+                str(csv_path),
+                "--train-start-date",
+                "20200101",
+                "--validation-years",
+                "2021",
+                "--output-report",
+                str(report_path),
+                "--num-iterations",
+                "5",
+                "--num-leaves",
+                "7",
+                "--min-child-samples",
+                "2",
+            ]
+        )
+    )
+    assert report_path.exists()
+    assert captured
+
+
+def test_write_optuna_trials_csv_writes_file(tmp_path: Path):
+    import optuna
+
+    study = optuna.create_study(direction="maximize")
+    study.optimize(lambda trial: trial.suggest_float("x", 0.0, 1.0), n_trials=2)
+    output_path = tmp_path / "trials.csv"
+    subject.write_optuna_trials_csv(study, output_path)
+    assert output_path.exists()
+    text = output_path.read_text(encoding="utf-8")
+    assert "value" in text.splitlines()[0]
+
+
+def test_run_hpo_command_writes_trials_csv_when_requested(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    df = make_walk_forward_dataset()
+    csv_path = tmp_path / "full.csv"
+    df.to_csv(csv_path, index=False)
+    best_params_path = tmp_path / "best.json"
+    trials_csv_path = tmp_path / "trials.csv"
+    captured: list[str] = []
+    monkeypatch.setattr("builtins.print", lambda line: captured.append(line))
+    subject.run_hpo_command(
+        subject.parse_args(
+            [
+                "hpo",
+                "--csv",
+                str(csv_path),
+                "--train-start-date",
+                "20200101",
+                "--validation-years",
+                "2021",
+                "--output-best-params",
+                str(best_params_path),
+                "--output-trials-csv",
+                str(trials_csv_path),
+                "--n-trials",
+                "2",
+                "--num-iterations",
+                "5",
+            ]
+        )
+    )
+    assert trials_csv_path.exists()
+
+
+def test_run_predict_command_emits_predictions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    df = make_synthetic_dataset()
+    train_csv = tmp_path / "train.csv"
+    df.to_csv(train_csv, index=False)
+    model_path = tmp_path / "model.lgb"
+    captured: list[str] = []
+    monkeypatch.setattr("builtins.print", lambda line: captured.append(line))
+    subject.run_train_command(
+        subject.parse_args(
+            [
+                "train",
+                "--train-csv",
+                str(train_csv),
+                "--output-model",
+                str(model_path),
+                "--num-iterations",
+                "3",
+                "--num-leaves",
+                "5",
+                "--min-child-samples",
+                "5",
+            ]
+        )
+    )
+    predictions_path = tmp_path / "predictions.jsonl"
+    subject.run_predict_command(
+        subject.parse_args(
+            [
+                "predict",
+                "--model-path",
+                str(model_path),
+                "--input-csv",
+                str(train_csv),
+                "--output-predictions",
+                str(predictions_path),
+            ]
+        )
+    )
+    assert predictions_path.exists()
+    lines = predictions_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == len(df)
+
+
+def test_main_dispatches_train_walk_forward_hpo_and_predict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    seen: list[str] = []
+    monkeypatch.setattr(subject, "run_train_command", lambda args: seen.append("train"))
+    monkeypatch.setattr(subject, "run_walk_forward_command", lambda args: seen.append("walk"))
+    monkeypatch.setattr(subject, "run_hpo_command", lambda args: seen.append("hpo"))
+    monkeypatch.setattr(subject, "run_predict_command", lambda args: seen.append("predict"))
+    csv_path = tmp_path / "fake.csv"
+    csv_path.write_text("a\n1\n", encoding="utf-8")
+    subject.main(
+        [
+            "train",
+            "--train-csv",
+            str(csv_path),
+            "--output-model",
+            str(tmp_path / "model.lgb"),
+        ]
+    )
+    subject.main(
+        [
+            "walk-forward",
+            "--csv",
+            str(csv_path),
+            "--train-start-date",
+            "20200101",
+            "--validation-years",
+            "2021",
+            "--output-report",
+            str(tmp_path / "report.json"),
+        ]
+    )
+    subject.main(
+        [
+            "hpo",
+            "--csv",
+            str(csv_path),
+            "--train-start-date",
+            "20200101",
+            "--validation-years",
+            "2021",
+            "--output-best-params",
+            str(tmp_path / "best.json"),
+        ]
+    )
+    subject.main(
+        [
+            "predict",
+            "--model-path",
+            str(tmp_path / "model.lgb"),
+            "--input-csv",
+            str(csv_path),
+            "--output-predictions",
+            str(tmp_path / "pred.jsonl"),
+        ]
+    )
+    assert seen == ["train", "walk", "hpo", "predict"]
