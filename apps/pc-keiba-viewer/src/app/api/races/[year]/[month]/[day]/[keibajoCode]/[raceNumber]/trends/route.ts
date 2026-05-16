@@ -296,11 +296,13 @@ const buildRaceTrendPayload = async (
   );
   const targetHorseNumberByJockey = new Map(
     runners
-      .map((runner) => [
-        normalizeText(runner.kishumeiRyakusho),
-        normalizeNumberText(runner.umaban),
-      ] as const)
-      .filter((entry): entry is readonly [string, string] => Boolean(entry[0]) && Boolean(entry[1])),
+      .map(
+        (runner) =>
+          [normalizeText(runner.kishumeiRyakusho), normalizeNumberText(runner.umaban)] as const,
+      )
+      .filter(
+        (entry): entry is readonly [string, string] => Boolean(entry[0]) && Boolean(entry[1]),
+      ),
   );
   const historicalRows = await getRaceTrendHistoricalStarterRows(race, {
     ...options,

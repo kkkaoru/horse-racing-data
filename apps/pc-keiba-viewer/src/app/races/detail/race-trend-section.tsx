@@ -238,7 +238,9 @@ function FragmentRow({
                   <col className="race-trend-detail-col-date" />
                   <col className="race-trend-detail-col-race-name" />
                   <col className="race-trend-detail-col-race-number" />
-                  {kind === "jockey" ? <col className="race-trend-detail-col-horse-number" /> : null}
+                  {kind === "jockey" ? (
+                    <col className="race-trend-detail-col-horse-number" />
+                  ) : null}
                   <col className="race-trend-detail-col-secondary" />
                 </colgroup>
                 <thead>
