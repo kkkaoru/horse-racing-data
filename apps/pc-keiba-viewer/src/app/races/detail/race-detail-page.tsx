@@ -24,6 +24,7 @@ import {
   formatWeather,
   getTrackSurfaceLabel,
 } from "../../../lib/format";
+import { isJraResultLinkAvailable } from "../../../lib/jra-link-visibility";
 import { buildJraRaceEntryUrl, buildJraRaceResultUrl } from "../../../lib/jra-url";
 import {
   getGradeLabel,
@@ -296,6 +297,9 @@ export async function RaceDetailView({
   });
   const jraRaceEntryUrl = buildJraRaceEntryUrl(race);
   const jraRaceResultUrl = buildJraRaceResultUrl(race);
+  const showJraResultLink = raceSource === "jra" && isJraResultLinkAvailable(year, month, day);
+  const visibleJraRaceEntryUrl = showJraResultLink ? null : jraRaceEntryUrl;
+  const visibleJraRaceResultUrl = showJraResultLink ? jraRaceResultUrl : null;
   const decodeHexHorseWeight = raceSource === "nar" && isBanEiKeibajoCode(keibajoCode);
   const showRacePacePrediction = isCornerPacePredictionSupported({
     distance: race.kyori,
@@ -328,11 +332,11 @@ export async function RaceDetailView({
     detailCells: {
       condition: raceTags.length > 0 ? raceTags.join(" / ") : cleanText(race.kyosoJokenMeisho),
       dirtCondition: formatBaba(race.babajotaiCodeDirt),
-      entryUrl: jraRaceEntryUrl,
+      entryUrl: visibleJraRaceEntryUrl,
       grade: getGradeLabel(race.gradeCode, race.source),
       raceSymbol: getRaceSymbolDetailLabel(race.kyosoKigoCode),
       registeredRunnerCount: race.torokuTosu,
-      resultUrl: jraRaceResultUrl,
+      resultUrl: visibleJraRaceResultUrl,
       runnerCount: race.shussoTosu,
       turfCondition: formatBaba(race.babajotaiCodeShiba),
       weather: formatWeather(race.tenkoCode),
@@ -486,8 +490,8 @@ export async function RaceDetailView({
           <DetailCell label="重量種別" value={getWeightLabel(race.juryoShubetsuCode)} />
           <DetailCell label="出走頭数" suffix=" 頭" value={race.shussoTosu} />
           <DetailCell label="登録頭数" suffix=" 頭" value={race.torokuTosu} />
-          <DetailLinkCell href={jraRaceEntryUrl} label="JRA出馬表" value="公式ページ" />
-          <DetailLinkCell href={jraRaceResultUrl} label="JRA成績" value="公式ページ" />
+          <DetailLinkCell href={visibleJraRaceEntryUrl} label="JRA出馬表" value="公式ページ" />
+          <DetailLinkCell href={visibleJraRaceResultUrl} label="JRA成績" value="公式ページ" />
           <DetailCell label="天候" value={formatWeather(race.tenkoCode)} />
           <DetailCell label="芝馬場" value={formatBaba(race.babajotaiCodeShiba)} />
           <DetailCell label="ダート馬場" value={formatBaba(race.babajotaiCodeDirt)} />
