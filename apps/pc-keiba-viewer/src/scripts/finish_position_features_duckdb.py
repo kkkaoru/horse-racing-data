@@ -371,71 +371,120 @@ def pedigree_rec_um_subquery(category: str) -> str:
     )
 
 
-def pedigree_cte(category: str, history_cutoff: str = "99999999") -> str:
-    rec_um_subquery = pedigree_rec_um_subquery(category)
+class PedigreeStatSpec(TypedDict):
+    table: str
+    key_column: str
+    key_alias: str
+    bucket_expr: str
+    bucket_alias: str
+    monthly_metrics_select: str
+    accum_metrics_select: str
+
+
+PEDIGREE_STAT_SPECS: list[PedigreeStatSpec] = [
+    {
+        "table": "sire_distance_stats",
+        "key_column": "ketto_joho_01b",
+        "key_alias": "sire",
+        "bucket_expr": f"cast(coalesce(kyori, 0) as int) / {DISTANCE_BAND_METERS}",
+        "bucket_alias": "kyori_band",
+        "monthly_metrics_select": (
+            "sum(case when finish_position = 1 then 1 else 0 end) as win_count,"
+            " sum(finish_norm) as finish_norm_sum"
+        ),
+        "accum_metrics_select": (
+            "sum(m.win_count)::double / nullif(sum(m.race_count), 0) as sire_distance_win_rate_val,"
+            " sum(m.finish_norm_sum)::double / nullif(sum(m.race_count), 0)"
+            " as sire_avg_finish_at_distance_val"
+        ),
+    },
+    {
+        "table": "sire_track_stats",
+        "key_column": "ketto_joho_01b",
+        "key_alias": "sire",
+        "bucket_expr": "left(coalesce(track_code, ''), 1)",
+        "bucket_alias": "surface",
+        "monthly_metrics_select": "sum(case when finish_position = 1 then 1 else 0 end) as win_count",
+        "accum_metrics_select": (
+            "sum(m.win_count)::double / nullif(sum(m.race_count), 0) as sire_track_win_rate_val"
+        ),
+    },
+    {
+        "table": "damsire_distance_stats",
+        "key_column": "ketto_joho_05b",
+        "key_alias": "damsire",
+        "bucket_expr": f"cast(coalesce(kyori, 0) as int) / {DISTANCE_BAND_METERS}",
+        "bucket_alias": "kyori_band",
+        "monthly_metrics_select": "sum(case when finish_position = 1 then 1 else 0 end) as win_count",
+        "accum_metrics_select": (
+            "sum(m.win_count)::double / nullif(sum(m.race_count), 0) as dam_sire_distance_win_rate_val"
+        ),
+    },
+    {
+        "table": "damsire_track_stats",
+        "key_column": "ketto_joho_05b",
+        "key_alias": "damsire",
+        "bucket_expr": "left(coalesce(track_code, ''), 1)",
+        "bucket_alias": "surface",
+        "monthly_metrics_select": "sum(finish_norm) as finish_norm_sum",
+        "accum_metrics_select": (
+            "sum(m.finish_norm_sum)::double / nullif(sum(m.race_count), 0)"
+            " as damsire_avg_finish_at_track_val"
+        ),
+    },
+]
+
+
+def pedigree_monthly_stat_sql(spec: PedigreeStatSpec, rec_um_subquery: str) -> str:
     return f"""
-    rec_um as ({rec_um_subquery}),
-    sire_distance_stats as (
+    create or replace temp table {spec["table"]} as
+    with rec_um as ({rec_um_subquery}),
+    monthly as (
       select
-        ketto_joho_01b as sire,
-        cast(coalesce(kyori, 0) as int) / {DISTANCE_BAND_METERS} as kyori_band,
-        avg(case when finish_position = 1 then 1 else 0 end) as sire_distance_win_rate_val,
-        avg(finish_norm) as sire_avg_finish_at_distance_val,
+        cast(substr(race_date, 1, 4) as int) * 100 + cast(substr(race_date, 5, 2) as int) as race_year_month,
+        {spec["key_column"]} as {spec["key_alias"]},
+        {spec["bucket_expr"]} as {spec["bucket_alias"]},
+        {spec["monthly_metrics_select"]},
         count(*) as race_count
       from rec_um
       where finish_position is not null
-        and ketto_joho_01b is not null and trim(ketto_joho_01b) <> ''
-        and race_date < '{history_cutoff}'
-      group by 1, 2
-    ),
-    sire_track_stats as (
-      select
-        ketto_joho_01b as sire,
-        left(coalesce(track_code, ''), 1) as surface,
-        avg(case when finish_position = 1 then 1 else 0 end) as sire_track_win_rate_val,
-        count(*) as race_count
-      from rec_um
-      where finish_position is not null
-        and ketto_joho_01b is not null and trim(ketto_joho_01b) <> ''
-        and race_date < '{history_cutoff}'
-      group by 1, 2
-    ),
-    damsire_distance_stats as (
-      select
-        ketto_joho_05b as damsire,
-        cast(coalesce(kyori, 0) as int) / {DISTANCE_BAND_METERS} as kyori_band,
-        avg(case when finish_position = 1 then 1 else 0 end) as dam_sire_distance_win_rate_val,
-        count(*) as race_count
-      from rec_um
-      where finish_position is not null
-        and ketto_joho_05b is not null and trim(ketto_joho_05b) <> ''
-        and race_date < '{history_cutoff}'
-      group by 1, 2
-    ),
-    damsire_track_stats as (
-      select
-        ketto_joho_05b as damsire,
-        left(coalesce(track_code, ''), 1) as surface,
-        avg(finish_norm) as damsire_avg_finish_at_track_val,
-        count(*) as race_count
-      from rec_um
-      where finish_position is not null
-        and ketto_joho_05b is not null and trim(ketto_joho_05b) <> ''
-        and race_date < '{history_cutoff}'
-      group by 1, 2
-    ),
-    target_pedigree as (
-      select
-        t.source, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango, t.ketto_toroku_bango,
-        cast(coalesce(t.kyori, 0) as int) / {DISTANCE_BAND_METERS} as kyori_band,
-        left(coalesce(t.track_code, ''), 1) as surface,
-        coalesce(j_um.ketto_joho_01b, n_um.ketto_joho_01b) as target_sire,
-        coalesce(j_um.ketto_joho_05b, n_um.ketto_joho_05b) as target_damsire
-      from target t
-      left join jra_um j_um on t.source = 'jra' and j_um.ketto_toroku_bango = t.ketto_toroku_bango
-      left join nar_um n_um on t.source = 'nar' and n_um.ketto_toroku_bango = t.ketto_toroku_bango
+        and {spec["key_column"]} is not null and trim({spec["key_column"]}) <> ''
+      group by 1, 2, 3
     )
+    select
+      tm.stats_year_month,
+      m.{spec["key_alias"]},
+      m.{spec["bucket_alias"]},
+      {spec["accum_metrics_select"]},
+      sum(m.race_count) as race_count
+    from target_months tm
+    join monthly m on m.race_year_month < tm.stats_year_month
+    group by tm.stats_year_month, m.{spec["key_alias"]}, m.{spec["bucket_alias"]}
     """
+
+
+def target_pedigree_sql() -> str:
+    return f"""
+    create or replace temp table target_pedigree as
+    select
+      t.source, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango, t.ketto_toroku_bango,
+      cast(coalesce(t.kyori, 0) as int) / {DISTANCE_BAND_METERS} as kyori_band,
+      left(coalesce(t.track_code, ''), 1) as surface,
+      coalesce(j_um.ketto_joho_01b, n_um.ketto_joho_01b) as target_sire,
+      coalesce(j_um.ketto_joho_05b, n_um.ketto_joho_05b) as target_damsire
+    from target t
+    left join jra_um j_um on t.source = 'jra' and j_um.ketto_toroku_bango = t.ketto_toroku_bango
+    left join nar_um n_um on t.source = 'nar' and n_um.ketto_toroku_bango = t.ketto_toroku_bango
+    """
+
+
+def target_months_sql() -> str:
+    return (
+        "create or replace temp table target_months as"
+        " select distinct cast(kaisai_nen as int) * 100"
+        " + cast(substr(kaisai_tsukihi, 1, 2) as int) as stats_year_month"
+        " from target order by 1"
+    )
 
 
 def race_context_cte() -> str:
@@ -584,44 +633,28 @@ def legacy_five_cte(target_filter: str = "true") -> str:
     """
 
 
-PEDIGREE_STAT_TABLES = (
-    "sire_distance_stats",
-    "sire_track_stats",
-    "damsire_distance_stats",
-    "damsire_track_stats",
-)
+PEDIGREE_STAT_TABLES = tuple(spec["table"] for spec in PEDIGREE_STAT_SPECS)
 
 
 def materialize_pedigree_stats(
     con: duckdb.DuckDBPyConnection,
     category: str,
-    years: list[int],
 ) -> None:
-    target_binding = pedigree_cte(category)
     log_event("pedigree.target_pedigree", "start", 0.0)
     started = perf_counter()
-    con.execute(
-        f"create or replace temp table target_pedigree as with {target_binding} select * from target_pedigree"
-    )
+    con.execute(target_pedigree_sql())
     log_event("pedigree.target_pedigree", "done", perf_counter() - started)
-    for idx, year in enumerate(years):
-        year_cutoff = f"{year:04d}0101"
-        cte_text = pedigree_cte(category, year_cutoff)
-        for table in PEDIGREE_STAT_TABLES:
-            stage = f"pedigree.{table}.year{year}"
-            log_event(stage, "start", 0.0)
-            started = perf_counter()
-            if idx == 0:
-                con.execute(
-                    f"create or replace temp table {table} as "
-                    f"with {cte_text} select {year} as stats_year, * from {table}"
-                )
-            else:
-                con.execute(
-                    f"insert into {table} "
-                    f"with {cte_text} select {year} as stats_year, * from {table}"
-                )
-            log_event(stage, "done", perf_counter() - started)
+    log_event("pedigree.target_months", "start", 0.0)
+    started = perf_counter()
+    con.execute(target_months_sql())
+    log_event("pedigree.target_months", "done", perf_counter() - started)
+    rec_um_subquery = pedigree_rec_um_subquery(category)
+    for spec in PEDIGREE_STAT_SPECS:
+        stage = f"pedigree.{spec['table']}"
+        log_event(stage, "start", 0.0)
+        started = perf_counter()
+        con.execute(pedigree_monthly_stat_sql(spec, rec_um_subquery))
+        log_event(stage, "done", perf_counter() - started)
 
 
 def materialize_race_context(con: duckdb.DuckDBPyConnection) -> None:
@@ -714,10 +747,10 @@ def assemble_final_select_from_temp_tables(category: str) -> str:
     left join jockey_career jc using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
     left join trainer_career tc using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
     left join target_pedigree tp using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
-    left join sire_distance_stats sds on sds.sire = tp.target_sire and sds.kyori_band = tp.kyori_band and sds.stats_year = cast(t.kaisai_nen as int)
-    left join sire_track_stats sts on sts.sire = tp.target_sire and sts.surface = tp.surface and sts.stats_year = cast(t.kaisai_nen as int)
-    left join damsire_distance_stats dsd on dsd.damsire = tp.target_damsire and dsd.kyori_band = tp.kyori_band and dsd.stats_year = cast(t.kaisai_nen as int)
-    left join damsire_track_stats dst on dst.damsire = tp.target_damsire and dst.surface = tp.surface and dst.stats_year = cast(t.kaisai_nen as int)
+    left join sire_distance_stats sds on sds.sire = tp.target_sire and sds.kyori_band = tp.kyori_band and sds.stats_year_month = cast(t.kaisai_nen as int) * 100 + cast(substr(t.kaisai_tsukihi, 1, 2) as int)
+    left join sire_track_stats sts on sts.sire = tp.target_sire and sts.surface = tp.surface and sts.stats_year_month = cast(t.kaisai_nen as int) * 100 + cast(substr(t.kaisai_tsukihi, 1, 2) as int)
+    left join damsire_distance_stats dsd on dsd.damsire = tp.target_damsire and dsd.kyori_band = tp.kyori_band and dsd.stats_year_month = cast(t.kaisai_nen as int) * 100 + cast(substr(t.kaisai_tsukihi, 1, 2) as int)
+    left join damsire_track_stats dst on dst.damsire = tp.target_damsire and dst.surface = tp.surface and dst.stats_year_month = cast(t.kaisai_nen as int) * 100 + cast(substr(t.kaisai_tsukihi, 1, 2) as int)
     left join race_field_aggregates rfa using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
     left join race_top3_speed rts using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
     left join track_bias tb using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
@@ -1165,7 +1198,7 @@ def run(args: argparse.Namespace) -> BuildResult:
         stage_horse_history_derived(con, years, heartbeat)
         stage_partner_features(con, years, heartbeat)
         heartbeat.set_stage("pedigree")
-        materialize_pedigree_stats(con, args.category, years)
+        materialize_pedigree_stats(con, args.category)
         heartbeat.set_stage("race_context")
         materialize_race_context(con)
         stage_track_bias(con, years, heartbeat)

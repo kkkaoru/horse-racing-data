@@ -140,35 +140,42 @@ def test_trainer_cte_filters_on_chokyoshimei_ryakusho():
     assert "trainer_career_win_rate" in cte
 
 
-def test_pedigree_cte_handles_sire_and_damsire():
-    cte = subject.pedigree_cte("jra")
-    assert "ketto_joho_01b as sire" in cte
-    assert "ketto_joho_05b as damsire" in cte
-    assert "jra_um" in cte
+def test_pedigree_monthly_stat_sql_includes_target_months_join():
+    spec = subject.PEDIGREE_STAT_SPECS[0]
+    sql = subject.pedigree_monthly_stat_sql(spec, "select * from rec join jra_um using (ketto_toroku_bango)")
+    assert "join monthly m on m.race_year_month < tm.stats_year_month" in sql
+    assert "stats_year_month" in sql
+    assert "race_year_month" in sql
 
 
-def test_pedigree_cte_uses_nar_horse_master_for_nar():
-    cte = subject.pedigree_cte("nar")
-    assert "nar_um" in cte
-    assert "rec.source = 'nar' and rec.keibajo_code <> '83'" in cte
+def test_pedigree_monthly_stat_sql_uses_spec_key_and_bucket():
+    spec = subject.PEDIGREE_STAT_SPECS[0]
+    sql = subject.pedigree_monthly_stat_sql(spec, "select * from rec")
+    assert "ketto_joho_01b as sire" in sql
+    assert "kyori_band" in sql
 
 
-def test_pedigree_cte_uses_nar_horse_master_for_ban_ei():
-    cte = subject.pedigree_cte("ban-ei")
-    assert "nar_um" in cte
-    assert "rec.source = 'nar' and rec.keibajo_code = '83'" in cte
+def test_pedigree_stat_specs_cover_four_tables():
+    table_names = [spec["table"] for spec in subject.PEDIGREE_STAT_SPECS]
+    assert table_names == [
+        "sire_distance_stats",
+        "sire_track_stats",
+        "damsire_distance_stats",
+        "damsire_track_stats",
+    ]
 
 
-def test_pedigree_cte_all_unions_jra_and_nar_masters():
-    cte = subject.pedigree_cte("all")
-    assert "jra_um" in cte
-    assert "nar_um" in cte
-    assert "union all" in cte
+def test_target_pedigree_sql_joins_both_horse_masters():
+    sql = subject.target_pedigree_sql()
+    assert "left join jra_um" in sql
+    assert "left join nar_um" in sql
+    assert "coalesce(j_um.ketto_joho_01b, n_um.ketto_joho_01b)" in sql
 
 
-def test_pedigree_cte_applies_history_cutoff_to_stats():
-    cte = subject.pedigree_cte("jra", "20200101")
-    assert "race_date < '20200101'" in cte
+def test_target_months_sql_groups_distinct_year_months():
+    sql = subject.target_months_sql()
+    assert "distinct" in sql
+    assert "stats_year_month" in sql
 
 
 def test_pedigree_rec_um_subquery_returns_distinct_clauses_per_category():
