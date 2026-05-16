@@ -234,7 +234,7 @@ function CorrelationScoreTable({
   );
 
   return (
-    <div className="stats-table-wrap">
+    <div className="stats-table-wrap correlation-score-table-wrap">
       <table className="stats-table analysis-table correlation-score-table">
         <thead>
           <tr>
@@ -251,7 +251,7 @@ function CorrelationScoreTable({
                 <tr className={isExpanded ? "stats-row-expanded" : undefined}>
                   <td>{formatRunnerNumber(row.horseNumber)}</td>
                   <td className="stats-name-cell">{row.horseName || "-"}</td>
-                  <td>
+                  <td className="stats-score-cell">
                     <button
                       aria-expanded={isExpanded}
                       className="stats-detail-toggle"

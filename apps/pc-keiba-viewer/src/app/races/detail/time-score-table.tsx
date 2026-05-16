@@ -15,7 +15,7 @@ export function TimeScoreTable({ rows }: TimeScoreTableProps) {
   const [expandedHorseNumber, setExpandedHorseNumber] = useState<string | null>(null);
 
   return (
-    <div className="stats-table-wrap">
+    <div className="stats-table-wrap time-score-table-wrap">
       <table className="stats-table analysis-table time-score-table">
         <thead>
           <tr>
