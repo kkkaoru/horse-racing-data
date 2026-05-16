@@ -60,4 +60,15 @@ describe("format helpers", () => {
     expect(formatBaba("9")).toBe("馬場 9");
     expect(formatBaba(undefined)).toBe("-");
   });
+
+  it("formats null and undefined counts as zero", () => {
+    expect(formatCount(null)).toBe("0");
+    expect(formatCount(undefined)).toBe("0");
+  });
+
+  it("returns hyphen for distance and race number with blank input", () => {
+    expect(formatDistance(null)).toBe("-");
+    expect(formatRaceNumber(null)).toBe("-");
+    expect(formatTime(null)).toBe("--:--");
+  });
 });

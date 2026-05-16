@@ -76,4 +76,14 @@ describe("odds schedule", () => {
   it("rejects invalid race start timestamps", () => {
     expect(getNextOddsFetchAt("invalid")).toBeNull();
   });
+
+  it("falls back to general slot when JRA race is within one hour", () => {
+    expect(
+      getNextOddsFetchAt(
+        "2026-05-16T09:45:00+09:00",
+        new Date("2026-05-16T09:10:00+09:00").getTime(),
+        "jra",
+      ),
+    ).toBe(new Date("2026-05-16T09:15:00+09:00").toISOString());
+  });
 });
