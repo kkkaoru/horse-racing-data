@@ -60,6 +60,7 @@ class BuildArgs(TypedDict):
     pg_url: str
     skip_count: bool
     status_file: Path | None
+    temp_dir: Path | None
     threads: int
     to_date: str
 
@@ -93,6 +94,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--skip-count", action="store_true")
     parser.add_argument("--keep-existing-output", action="store_true")
     parser.add_argument("--force-clean-output", action="store_true")
+    parser.add_argument("--temp-dir", type=Path, default=None)
     return parser.parse_args(argv)
 
 
@@ -135,11 +137,23 @@ def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
     con.execute("INSTALL postgres")
     con.execute("LOAD postgres")
     con.execute(f"ATTACH '{pg_url}' AS pg (TYPE postgres, READ_ONLY)")
+    try:
+        con.execute("SET pg_experimental_filter_pushdown = true")
+    except duckdb.Error:
+        pass
 
 
-def stage_source_tables(con: duckdb.DuckDBPyConnection, from_date: str, to_date: str) -> None:
-    history_start = compute_history_start(from_date, HISTORY_LOOKBACK_YEARS)
-    con.execute(
+def run_staged_sql(con: duckdb.DuckDBPyConnection, stage: str, sql: str) -> None:
+    log_event(stage, "start", 0.0)
+    started = perf_counter()
+    con.execute(sql)
+    log_event(stage, "done", perf_counter() - started)
+
+
+def stage_rec_table(con: duckdb.DuckDBPyConnection, history_start: str, to_date: str) -> None:
+    run_staged_sql(
+        con,
+        "source.rec",
         f"""
         create or replace temp table rec as
         select
@@ -155,58 +169,80 @@ def stage_source_tables(con: duckdb.DuckDBPyConnection, from_date: str, to_date:
           tansho_ninkijun, tansho_odds
         from pg.race_entry_corner_features
         where race_date between '{history_start}' and '{to_date}'
-        """
+        """,
     )
+    log_event("source.rec.indexes", "start", 0.0)
+    started = perf_counter()
     con.execute("create index rec_horse_date on rec (source, ketto_toroku_bango, race_date)")
     con.execute("create index rec_jockey_date on rec (source, kishumei_ryakusho, race_date)")
     con.execute("create index rec_trainer_date on rec (source, chokyoshimei_ryakusho, race_date)")
     con.execute("create index rec_keibajo_date on rec (source, keibajo_code, race_date)")
-    con.execute(
+    log_event("source.rec.indexes", "done", perf_counter() - started)
+
+
+def stage_se_table(
+    con: duckdb.DuckDBPyConnection,
+    stage: str,
+    table: str,
+    pg_table: str,
+    history_start: str,
+    to_date: str,
+) -> None:
+    run_staged_sql(
+        con,
+        stage,
         f"""
-        create or replace temp table jra_se as
+        create or replace temp table {table} as
         select kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango,
                nullif(bataiju, '') as bataiju
-        from pg.jvd_se
+        from pg.{pg_table}
         where (kaisai_nen || kaisai_tsukihi) between '{history_start}' and '{to_date}'
-        """
+        """,
     )
-    con.execute(
+
+
+def stage_um_table(
+    con: duckdb.DuckDBPyConnection, stage: str, table: str, pg_table: str
+) -> None:
+    run_staged_sql(
+        con,
+        stage,
         f"""
-        create or replace temp table nar_se as
-        select kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango,
-               nullif(bataiju, '') as bataiju
-        from pg.nvd_se
-        where (kaisai_nen || kaisai_tsukihi) between '{history_start}' and '{to_date}'
-        """
+        create or replace temp table {table} as
+        select ketto_toroku_bango, ketto_joho_01b, ketto_joho_05b from pg.{pg_table}
+        """,
     )
-    con.execute(
-        """
-        create or replace temp table jra_um as
-        select ketto_toroku_bango, ketto_joho_01b, ketto_joho_05b from pg.jvd_um
-        """
-    )
-    con.execute(
-        """
-        create or replace temp table nar_um as
-        select ketto_toroku_bango, ketto_joho_01b, ketto_joho_05b from pg.nvd_um
-        """
-    )
-    con.execute(
+
+
+def stage_ra_table(
+    con: duckdb.DuckDBPyConnection,
+    stage: str,
+    table: str,
+    pg_table: str,
+    from_date: str,
+    to_date: str,
+) -> None:
+    run_staged_sql(
+        con,
+        stage,
         f"""
-        create or replace temp table jra_ra as
+        create or replace temp table {table} as
         select kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, tenko_code
-        from pg.jvd_ra
+        from pg.{pg_table}
         where (kaisai_nen || kaisai_tsukihi) between '{from_date}' and '{to_date}'
-        """
+        """,
     )
-    con.execute(
-        f"""
-        create or replace temp table nar_ra as
-        select kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, tenko_code
-        from pg.nvd_ra
-        where (kaisai_nen || kaisai_tsukihi) between '{from_date}' and '{to_date}'
-        """
-    )
+
+
+def stage_source_tables(con: duckdb.DuckDBPyConnection, from_date: str, to_date: str) -> None:
+    history_start = compute_history_start(from_date, HISTORY_LOOKBACK_YEARS)
+    stage_rec_table(con, history_start, to_date)
+    stage_se_table(con, "source.jra_se", "jra_se", "jvd_se", history_start, to_date)
+    stage_se_table(con, "source.nar_se", "nar_se", "nvd_se", history_start, to_date)
+    stage_um_table(con, "source.jra_um", "jra_um", "jvd_um")
+    stage_um_table(con, "source.nar_um", "nar_um", "nvd_um")
+    stage_ra_table(con, "source.jra_ra", "jra_ra", "jvd_ra", from_date, to_date)
+    stage_ra_table(con, "source.nar_ra", "nar_ra", "nvd_ra", from_date, to_date)
 
 
 def build_target_table(con: duckdb.DuckDBPyConnection, category: str, from_date: str, to_date: str) -> None:
@@ -439,18 +475,31 @@ PEDIGREE_STAT_SPECS: list[PedigreeStatSpec] = [
 ]
 
 
-def pedigree_monthly_stat_sql(spec: PedigreeStatSpec, rec_um_subquery: str) -> str:
+def pedigree_rec_um_sql(category: str) -> str:
+    subquery = pedigree_rec_um_subquery(category)
+    return f"""
+    create or replace temp table pedigree_rec_um as
+    with src as ({subquery})
+    select
+      source, race_date,
+      cast(substr(race_date, 1, 4) as int) * 100 + cast(substr(race_date, 5, 2) as int) as race_year_month,
+      ketto_toroku_bango, kyori, track_code, finish_position, finish_norm,
+      keibajo_code, ketto_joho_01b, ketto_joho_05b
+    from src
+    """
+
+
+def pedigree_monthly_stat_sql(spec: PedigreeStatSpec) -> str:
     return f"""
     create or replace temp table {spec["table"]} as
-    with rec_um as ({rec_um_subquery}),
-    monthly as (
+    with monthly as (
       select
-        cast(substr(race_date, 1, 4) as int) * 100 + cast(substr(race_date, 5, 2) as int) as race_year_month,
+        race_year_month,
         {spec["key_column"]} as {spec["key_alias"]},
         {spec["bucket_expr"]} as {spec["bucket_alias"]},
         {spec["monthly_metrics_select"]},
         count(*) as race_count
-      from rec_um
+      from pedigree_rec_um
       where finish_position is not null
         and {spec["key_column"]} is not null and trim({spec["key_column"]}) <> ''
       group by 1, 2, 3
@@ -644,21 +693,11 @@ def materialize_pedigree_stats(
     con: duckdb.DuckDBPyConnection,
     category: str,
 ) -> None:
-    log_event("pedigree.target_pedigree", "start", 0.0)
-    started = perf_counter()
-    con.execute(target_pedigree_sql())
-    log_event("pedigree.target_pedigree", "done", perf_counter() - started)
-    log_event("pedigree.target_months", "start", 0.0)
-    started = perf_counter()
-    con.execute(target_months_sql())
-    log_event("pedigree.target_months", "done", perf_counter() - started)
-    rec_um_subquery = pedigree_rec_um_subquery(category)
+    run_staged_sql(con, "pedigree.target_pedigree", target_pedigree_sql())
+    run_staged_sql(con, "pedigree.target_months", target_months_sql())
+    run_staged_sql(con, "pedigree.rec_um", pedigree_rec_um_sql(category))
     for spec in PEDIGREE_STAT_SPECS:
-        stage = f"pedigree.{spec['table']}"
-        log_event(stage, "start", 0.0)
-        started = perf_counter()
-        con.execute(pedigree_monthly_stat_sql(spec, rec_um_subquery))
-        log_event(stage, "done", perf_counter() - started)
+        run_staged_sql(con, f"pedigree.{spec['table']}", pedigree_monthly_stat_sql(spec))
 
 
 def materialize_race_context(con: duckdb.DuckDBPyConnection) -> None:
@@ -1089,9 +1128,17 @@ def stage_horse_history_derived(
     log_event("horse_history_derived", "done", perf_counter() - overall_start)
 
 
-def configure_duckdb_session(con: duckdb.DuckDBPyConnection, threads: int, memory_limit: str) -> None:
+def configure_duckdb_session(
+    con: duckdb.DuckDBPyConnection,
+    threads: int,
+    memory_limit: str,
+    temp_dir: Path | None = None,
+) -> None:
     con.execute(f"set threads to {int(threads)}")
     con.execute(f"set memory_limit = '{memory_limit}'")
+    if temp_dir is not None:
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        con.execute(f"set temp_directory = '{temp_dir.as_posix()}'")
     try:
         con.execute("PRAGMA enable_object_cache=true")
     except duckdb.Error:
@@ -1187,7 +1234,7 @@ def run(args: argparse.Namespace) -> BuildResult:
     heartbeat.start()
     con = duckdb.connect(":memory:")
     try:
-        configure_duckdb_session(con, args.threads, args.memory_limit)
+        configure_duckdb_session(con, args.threads, args.memory_limit, args.temp_dir)
         heartbeat.set_stage("source.stage")
         stage_source(con, pg_url, args.from_date, args.to_date)
         heartbeat.set_stage("target.build")
