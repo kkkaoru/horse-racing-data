@@ -42,6 +42,7 @@ const MID_ODDS_TICK_MAX = 20;
 const MID_ODDS_TICK_STEP = 1;
 const HIGH_ODDS_TICK_STEP = 5;
 const MOBILE_TOOLTIP_QUERY = "(max-width: 760px)";
+const NON_TANSHO_TREND_LIMIT = 20;
 const ODDS_TYPE_ORDER: RealtimeOddsType[] = [
   "tansho",
   "fukusho",
@@ -224,10 +225,56 @@ const toCombinationTrends = (
 const hasTrendPoints = (trend: RealtimeOddsTrend): boolean =>
   trend.points.some((point) => typeof point.odds === "number");
 
+const getLatestTrendOdds = (trend: RealtimeOddsTrend): number | null => {
+  let latestTime = Number.NEGATIVE_INFINITY;
+  let latestOdds: number | null = null;
+  for (const point of trend.points) {
+    if (typeof point.odds !== "number") {
+      continue;
+    }
+    const time = new Date(point.fetchedAt).getTime();
+    if (Number.isFinite(time) && time >= latestTime) {
+      latestTime = time;
+      latestOdds = point.odds;
+    }
+  }
+  return latestOdds;
+};
+
+const compareTrendsByLatestOdds = (left: RealtimeOddsTrend, right: RealtimeOddsTrend): number => {
+  const leftOdds = getLatestTrendOdds(left) ?? Number.POSITIVE_INFINITY;
+  const rightOdds = getLatestTrendOdds(right) ?? Number.POSITIVE_INFINITY;
+  if (leftOdds !== rightOdds) {
+    return leftOdds - rightOdds;
+  }
+  return left.combination.localeCompare(right.combination, "ja-JP", {
+    numeric: true,
+    sensitivity: "base",
+  });
+};
+
+const getDisplayTrends = (
+  oddsType: RealtimeOddsType,
+  history: RealtimeOddsTrend[],
+): RealtimeOddsTrend[] =>
+  oddsType === "tansho"
+    ? history
+    : history
+        .filter(hasTrendPoints)
+        .toSorted(compareTrendsByLatestOdds)
+        .slice(0, NON_TANSHO_TREND_LIMIT);
+
 function OddsTrendTooltip({ active, label, payload }: OddsTrendTooltipProps) {
   const entries = (payload ?? [])
     .filter((entry) => typeof entry.value === "number")
-    .toSorted((left, right) => getTooltipSortValue(left) - getTooltipSortValue(right));
+    .toSorted((left, right) => {
+      const leftOdds = Number(left.value);
+      const rightOdds = Number(right.value);
+      if (leftOdds !== rightOdds) {
+        return leftOdds - rightOdds;
+      }
+      return getTooltipSortValue(left) - getTooltipSortValue(right);
+    });
 
   if (!active || entries.length === 0) {
     return null;
@@ -288,9 +335,13 @@ export function RealtimeRaceSection(props: RealtimeRaceSectionProps) {
   const displayOddsType = availableOddsTypes.includes(activeOddsType)
     ? activeOddsType
     : (availableOddsTypes[0] ?? "tansho");
-  const history = useMemo(
+  const rawHistory = useMemo(
     () => trendsByType[displayOddsType] ?? [],
     [displayOddsType, trendsByType],
+  );
+  const history = useMemo(
+    () => getDisplayTrends(displayOddsType, rawHistory),
+    [displayOddsType, rawHistory],
   );
   const trendRows = useMemo(() => buildOddsTrendRows(history), [history]);
   const allTrendPoints = history.flatMap((trend) => trend.points);
