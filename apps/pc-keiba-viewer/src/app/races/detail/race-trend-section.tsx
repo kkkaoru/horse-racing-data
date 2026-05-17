@@ -99,6 +99,8 @@ function TrendTable({
 }) {
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const sortedRows = useMemo(() => sortRows(rows, sortKey), [rows, sortKey]);
+  const showTargetBeforeLabel = showTargetHorseNumber && kind === "jockey";
+  const showTargetAfterLabel = showTargetHorseNumber && kind === "frame";
 
   return (
     <div className="race-trend-table-panel">
@@ -110,8 +112,9 @@ function TrendTable({
         <table className={`stats-table race-trend-table ${kind}`}>
           <thead>
             <tr>
-              {showTargetHorseNumber ? <th>馬番</th> : null}
+              {showTargetBeforeLabel ? <th>馬番</th> : null}
               <th>{labelColumn}</th>
+              {showTargetAfterLabel ? <th>馬番</th> : null}
               {showStarts ? <th>出走回数</th> : null}
               {(["showRate", "quinellaRate", "winRate"] as const).map((key) => (
                 <th key={key}>
@@ -131,7 +134,7 @@ function TrendTable({
             {isLoading ? (
               Array.from({ length: 5 }, (_, index) => (
                 <tr className="race-trend-skeleton-row" key={`race-trend-skeleton-${index}`}>
-                  {showTargetHorseNumber ? (
+                  {showTargetBeforeLabel ? (
                     <td>
                       <span className="race-trend-skeleton race-trend-skeleton-count" />
                     </td>
@@ -139,6 +142,11 @@ function TrendTable({
                   <td>
                     <span className="race-trend-skeleton race-trend-skeleton-name" />
                   </td>
+                  {showTargetAfterLabel ? (
+                    <td>
+                      <span className="race-trend-skeleton race-trend-skeleton-count" />
+                    </td>
+                  ) : null}
                   {showStarts ? (
                     <td>
                       <span className="race-trend-skeleton race-trend-skeleton-count" />
@@ -205,10 +213,13 @@ function FragmentRow({
   showTargetHorseNumber?: boolean;
   onToggle: () => void;
 }) {
+  const showTargetBeforeLabel = showTargetHorseNumber && kind === "jockey";
+  const showTargetAfterLabel = showTargetHorseNumber && kind === "frame";
+
   return (
     <>
       <tr className={isExpanded ? "stats-row-expanded" : undefined}>
-        {showTargetHorseNumber ? (
+        {showTargetBeforeLabel ? (
           <td className="race-trend-horse-number-cell">{row.targetHorseNumber ?? "-"}</td>
         ) : null}
         <td className="stats-name-cell">
@@ -221,6 +232,9 @@ function FragmentRow({
             <span>{row.label}</span>
           </button>
         </td>
+        {showTargetAfterLabel ? (
+          <td className="race-trend-horse-number-cell">{row.targetHorseNumber ?? "-"}</td>
+        ) : null}
         {showStarts ? <td>{row.starts}</td> : null}
         <td>{formatRate(row.showRate)}</td>
         <td>{formatRate(row.quinellaRate)}</td>
@@ -442,6 +456,7 @@ export function RaceTrendSection({
             kind="frame"
             labelColumn="枠番"
             rows={payload?.frameRows ?? []}
+            showTargetHorseNumber
             sortKey={frameSortKey}
             title="枠ごとの勝率"
             onSortChange={setFrameSortKey}
