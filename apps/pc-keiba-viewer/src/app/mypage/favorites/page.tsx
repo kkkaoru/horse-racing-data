@@ -1,8 +1,13 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 
 import { FavoritesManager } from "./favorites-manager";
 
 export const dynamic = "force-dynamic";
+
+export const metadata: Metadata = {
+  title: "お気に入り管理",
+};
 
 export default function FavoritesPage() {
   return (

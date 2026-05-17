@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 
 import { getPersonDetailData } from "../../../db/queries";
@@ -14,6 +15,11 @@ export const dynamic = "force-dynamic";
 interface TrainerDetailPageProps {
   params: Promise<{ name: string }>;
   searchParams: Promise<Record<string, string | string[] | undefined>>;
+}
+
+export async function generateMetadata({ params }: TrainerDetailPageProps): Promise<Metadata> {
+  const { name } = await params;
+  return { title: `${decodeURIComponent(name)} 調教師詳細` };
 }
 
 export default async function TrainerDetailPage({ params, searchParams }: TrainerDetailPageProps) {

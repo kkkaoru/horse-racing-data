@@ -2,10 +2,14 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import type { ReactNode } from "react";
 
+import { BrandRunner } from "./brand-runner";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "PC-KEIBA Viewer",
+  title: {
+    default: "PC-KEIBA Viewer",
+    template: "%s | PC-KEIBA Viewer",
+  },
   description: "Local PostgreSQL viewer for PC-KEIBA race data",
 };
 
@@ -19,7 +23,7 @@ export default function RootLayout({ children }: RootLayoutProps) {
       <body>
         <header className="app-header">
           <Link className="brand" href="/">
-            <span className="brand-mark" aria-hidden="true" />
+            <BrandRunner />
             <h1 className="brand-title">PC-KEIBA Viewer</h1>
           </Link>
           <details className="header-menu">

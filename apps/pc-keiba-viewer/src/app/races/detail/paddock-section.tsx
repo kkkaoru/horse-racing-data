@@ -117,6 +117,8 @@ type PaddockTableStyle = CSSProperties & {
   "--paddock-jockey-col-width": string;
   "--paddock-mobile-table-width": string;
   "--paddock-name-col-width": string;
+  "--paddock-odds-col-width": string;
+  "--paddock-weight-col-width": string;
 };
 
 type PaddockScoreTooltipState = {
@@ -127,6 +129,8 @@ type PaddockScoreTooltipState = {
   top: number;
   total: number;
 };
+
+type PaddockTableSortMode = "officialRank" | "relativeScore";
 
 const METRIC_LABELS: Record<PaddockMetric, { minus: string; plus: string; title: string }> = {
   attention: { minus: "注目-", plus: "注目+", title: "注目度" },
@@ -287,8 +291,9 @@ function PaddockRemainingIndicator({
 
       const markerTop = Math.min(window.innerHeight, PADDOCK_REMAINING_MARKER_TOP);
       const boardReachedMarker = board.getBoundingClientRect().top <= markerTop;
-      const notYetReachedRows = rows.filter((row) => row.getBoundingClientRect().top >= markerTop)
-        .length;
+      const notYetReachedRows = rows.filter(
+        (row) => row.getBoundingClientRect().top >= markerTop,
+      ).length;
       setRemaining(Math.max(0, notYetReachedRows - (boardReachedMarker ? 1 : 0)));
     };
 
@@ -341,6 +346,56 @@ const parseStoredNumber = (value: string | null | undefined, emptyValue = ""): n
   }
   const parsed = Number(cleaned);
   return Number.isFinite(parsed) ? parsed : null;
+};
+
+const normalizeScoreRange = (value: number, min: number, max: number): number => {
+  if (max <= min) {
+    return 1;
+  }
+  return (value - min) / (max - min);
+};
+
+const normalizeRankRange = (rank: PaddockOfficialRank | null, min: number, max: number): number => {
+  if (rank === null) {
+    return 0;
+  }
+  if (max <= min) {
+    return 1;
+  }
+  return (max - rank) / (max - min);
+};
+
+const normalizeRelativePaddockScores = <
+  Row extends { scores?: { officialRank: PaddockOfficialRank | null; total: number } },
+>(
+  rows: Row[],
+): Array<Row & { relativeScore: number }> => {
+  if (rows.length === 0) {
+    return [];
+  }
+  if (rows.length === 1) {
+    return [Object.assign({}, rows[0], { relativeScore: 1 })];
+  }
+  const totals = rows.map((row) => row.scores?.total ?? 0);
+  const ranks = rows
+    .map((row) => row.scores?.officialRank ?? null)
+    .filter((rank): rank is PaddockOfficialRank => rank !== null);
+  const minTotal = Math.min(...totals);
+  const maxTotal = Math.max(...totals);
+  const minRank = ranks.length > 0 ? Math.min(...ranks) : 1;
+  const maxRank = ranks.length > 0 ? Math.max(...ranks) : 1;
+  const rawScores = rows.map((row) => {
+    const totalScore = normalizeScoreRange(row.scores?.total ?? 0, minTotal, maxTotal);
+    const rankScore = normalizeRankRange(row.scores?.officialRank ?? null, minRank, maxRank);
+    return (totalScore + rankScore) / 2;
+  });
+  const minRaw = Math.min(...rawScores);
+  const maxRaw = Math.max(...rawScores);
+  return rows.map((row, index) =>
+    Object.assign({}, row, {
+      relativeScore: normalizeScoreRange(rawScores[index] ?? 0, minRaw, maxRaw),
+    }),
+  );
 };
 
 const formatPastRank = (value: string | null | undefined): string => {
@@ -917,26 +972,33 @@ function PaddockReadOnlyTable({
   const [activeScoreTooltip, setActiveScoreTooltip] = useState<PaddockScoreTooltipState | null>(
     null,
   );
-  const evaluatedRows = rows
+  const [sortMode, setSortMode] = useState<PaddockTableSortMode>("officialRank");
+  const scoredRows = rows
     .map((runner) => ({
       ...runner,
       scores: state?.horses[runner.horseNumber]
         ? normalizePaddockHorseScore(state.horses[runner.horseNumber], runner)
         : undefined,
     }))
-    .filter((row) => row.scores !== undefined)
-    .toSorted((left, right) => {
-      const leftRank = left.scores?.officialRank ?? Number.POSITIVE_INFINITY;
-      const rightRank = right.scores?.officialRank ?? Number.POSITIVE_INFINITY;
-      if (leftRank !== rightRank) {
-        return leftRank - rightRank;
+    .filter((row) => row.scores !== undefined);
+  const evaluatedRows = normalizeRelativePaddockScores(scoredRows).toSorted((left, right) => {
+    if (sortMode === "relativeScore") {
+      const scoreDiff = right.relativeScore - left.relativeScore;
+      if (scoreDiff !== 0) {
+        return scoreDiff;
       }
-      const totalDiff = (right.scores?.total ?? 0) - (left.scores?.total ?? 0);
-      if (totalDiff !== 0) {
-        return totalDiff;
-      }
-      return Number(left.horseNumber) - Number(right.horseNumber);
-    });
+    }
+    const leftRank = left.scores?.officialRank ?? Number.POSITIVE_INFINITY;
+    const rightRank = right.scores?.officialRank ?? Number.POSITIVE_INFINITY;
+    if (leftRank !== rightRank) {
+      return leftRank - rightRank;
+    }
+    const totalDiff = (right.scores?.total ?? 0) - (left.scores?.total ?? 0);
+    if (totalDiff !== 0) {
+      return totalDiff;
+    }
+    return Number(left.horseNumber) - Number(right.horseNumber);
+  });
 
   const showScoreTooltip = useCallback(
     (row: (typeof evaluatedRows)[number], target: HTMLElement) => {
@@ -989,18 +1051,62 @@ function PaddockReadOnlyTable({
       return jockeyLength * fontSize * 0.88 + 40;
     }),
   );
+  const requiredOddsWidth = Math.max(
+    ...evaluatedRows.map((row) => {
+      const oddsLabel = formatRealtimeOdds(oddsByHorse.get(row.horseNumber)?.odds ?? null);
+      return Array.from(oddsLabel).length * 14 + 34;
+    }),
+  );
+  const requiredWeightWidth = Math.max(
+    ...evaluatedRows.map((row) => {
+      const total = row.scores?.total ?? 0;
+      const scoreRatio = (total - minTotal) / totalRange;
+      const fontSize = 16 + scoreRatio * 9.6;
+      const weightLength = Array.from(row.weight || "-").length;
+      return weightLength * fontSize * 0.78 + 92;
+    }),
+  );
   const nameColumnWidth = Math.round(Math.min(360, Math.max(176, requiredNameWidth)));
   const mobileNameColumnWidth = Math.round(Math.min(300, Math.max(164, requiredNameWidth)));
   const jockeyColumnWidth = Math.round(Math.min(260, Math.max(112, requiredJockeyWidth)));
   const mobileJockeyColumnWidth = Math.round(Math.min(230, Math.max(104, requiredJockeyWidth)));
+  const oddsColumnWidth = Math.round(Math.min(132, Math.max(78, requiredOddsWidth)));
+  const weightColumnWidth = Math.round(Math.min(280, Math.max(190, requiredWeightWidth)));
+  const fixedMobileTableWidth = 844;
   const tableStyle: PaddockTableStyle = {
     "--paddock-jockey-col-width": `${jockeyColumnWidth}px`,
-    "--paddock-mobile-table-width": `${1012 + mobileNameColumnWidth + mobileJockeyColumnWidth}px`,
+    "--paddock-mobile-table-width": `${
+      fixedMobileTableWidth +
+      mobileNameColumnWidth +
+      mobileJockeyColumnWidth +
+      oddsColumnWidth +
+      weightColumnWidth
+    }px`,
     "--paddock-name-col-width": `${nameColumnWidth}px`,
+    "--paddock-odds-col-width": `${oddsColumnWidth}px`,
+    "--paddock-weight-col-width": `${weightColumnWidth}px`,
   };
 
   return (
     <div className="paddock-table-shell">
+      <div className="paddock-table-controls" aria-label="パドックテーブルの並び替え">
+        <button
+          aria-pressed={sortMode === "officialRank"}
+          className="stats-control-button"
+          type="button"
+          onClick={() => setSortMode("officialRank")}
+        >
+          公式評価順
+        </button>
+        <button
+          aria-pressed={sortMode === "relativeScore"}
+          className="stats-control-button"
+          type="button"
+          onClick={() => setSortMode("relativeScore")}
+        >
+          スコア順
+        </button>
+      </div>
       <div className="paddock-table-wrap">
         <table className="stats-table paddock-table" style={tableStyle}>
           <colgroup>
@@ -1012,6 +1118,7 @@ function PaddockReadOnlyTable({
             <col className="paddock-col-odds" />
             <col className="paddock-col-weight" />
             <col className="paddock-col-rank" />
+            <col className="paddock-col-relative-score" />
             <col className="paddock-col-score" />
             <col className="paddock-col-score" />
             <col className="paddock-col-score" />
@@ -1028,6 +1135,7 @@ function PaddockReadOnlyTable({
               <th>単勝</th>
               <th>馬体重</th>
               <th>公式評価順</th>
+              <th>スコア</th>
               <th>合計</th>
               <th>パドック</th>
               <th>返し</th>
@@ -1119,6 +1227,9 @@ function PaddockReadOnlyTable({
                     ) : (
                       "-"
                     )}
+                  </td>
+                  <td className="stats-score-cell" data-label="スコア">
+                    {row.relativeScore.toFixed(2)}
                   </td>
                   <td className="stats-score-cell" data-label="合計">
                     {formatPaddockScore(total)}

@@ -78,12 +78,67 @@ main {
 }
 
 .brand-mark {
-  background: repeating-linear-gradient(90deg, #ffffff 0 5px, transparent 5px 10px), var(--accent);
+  background: linear-gradient(180deg, #f8fbf7 0 52%, #dfeee6 52% 100%);
   border: 1px solid var(--accent-strong);
   border-radius: 50%;
   display: block;
   height: 34px;
+  overflow: hidden;
+  position: relative;
   width: 34px;
+}
+
+.brand-runner {
+  animation: brand-runner-gallop 0.64s ease-in-out infinite;
+  display: block;
+  filter: var(--brand-runner-filter, saturate(0.85) contrast(1.05));
+  font-size: var(--brand-runner-size, 23px);
+  left: 5px;
+  line-height: 1;
+  position: absolute;
+  top: 4px;
+  transform-origin: center bottom;
+  z-index: 1;
+}
+
+.brand-track {
+  animation: brand-track-loop 0.72s linear infinite;
+  background: repeating-linear-gradient(90deg, var(--accent) 0 4px, transparent 4px 9px);
+  bottom: 5px;
+  display: block;
+  height: 3px;
+  left: 3px;
+  opacity: 0.75;
+  position: absolute;
+  width: 44px;
+}
+
+@keyframes brand-runner-gallop {
+  0%,
+  100% {
+    transform: translateX(0) translateY(0) rotate(var(--horse-gallop-rear-tilt, -2deg))
+      scale(var(--horse-run-scale, 1));
+  }
+
+  35% {
+    transform: translateX(0) translateY(calc(-1 * var(--horse-gallop-lift, 2px)))
+      rotate(var(--horse-gallop-forward-tilt, 2deg)) scale(var(--horse-run-scale, 1));
+  }
+
+  65% {
+    transform: translateX(0) translateY(var(--horse-gallop-land, 1px))
+      rotate(calc(var(--horse-gallop-rear-tilt, -2deg) * 0.5)) scale(var(--horse-run-scale, 1));
+  }
+}
+
+@keyframes brand-track-loop {
+  from {
+    transform: translateX(0);
+  }
+
+  to {
+    transform: translateX(10px);
+  }
 }
 
 .header-menu {
@@ -363,7 +418,7 @@ main {
     repeating-linear-gradient(90deg, transparent 0 72px, rgb(15 107 79 / 12%) 72px 74px);
   border-bottom: 2px solid rgb(15 107 79 / 30%);
   display: block;
-  height: 76px;
+  height: 124px;
   margin-left: calc(50% - 50vw);
   overflow: hidden;
   position: relative;
@@ -377,9 +432,36 @@ main {
   content: "";
   left: 18px;
   position: absolute;
-  top: 18px;
+  top: 26px;
   width: 10px;
   z-index: 1;
+}
+
+.home-start-gate {
+  background: rgb(255 255 255 / 92%);
+  border: 1px solid rgb(28 36 42 / 35%);
+  border-radius: 4px;
+  color: rgb(28 36 42);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0;
+  line-height: 1;
+  padding: 4px 5px;
+  position: absolute;
+  right: 18vw;
+  top: 0;
+  z-index: 2;
+}
+
+.home-start-gate::after {
+  background: repeating-linear-gradient(180deg, rgb(255 255 255) 0 8px, rgb(28 36 42) 8px 16px);
+  border: 1px solid rgb(28 36 42 / 40%);
+  bottom: -106px;
+  content: "";
+  position: absolute;
+  right: 8px;
+  top: 18px;
+  width: 10px;
 }
 
 .home-finish-gate {
@@ -400,44 +482,53 @@ main {
 
 .home-running-horse {
   animation: home-horse-run var(--horse-run-duration, 7.6s) linear infinite;
-  bottom: calc(4px + (var(--horse-run-lane, 0) * 1px));
-  display: inline-block;
+  bottom: calc(18px + (var(--horse-run-lane, 0) * 1px));
+  display: block;
   filter: var(--horse-run-filter, none);
   font-size: var(--horse-run-size, 26px);
   left: calc(100% + 52px);
+  opacity: var(--horse-run-opacity, 1);
   position: absolute;
   transform: translateX(0);
   z-index: 3;
 }
 
+.home-running-horse-gallop {
+  animation: brand-runner-gallop var(--horse-gallop-duration, 0.64s) ease-in-out infinite;
+  animation-delay: var(--horse-gallop-delay, 0s);
+  display: block;
+  line-height: 1;
+  transform-origin: center bottom;
+}
+
 .home-running-horse.pace-accelerate-early {
   animation-name: home-horse-run-accelerate-gradual;
-  animation-timing-function: cubic-bezier(0.55, 0, 1, 1);
+  animation-timing-function: linear;
 }
 
 .home-running-horse.pace-accelerate-middle {
   animation-name: home-horse-run-accelerate-gradual;
-  animation-timing-function: cubic-bezier(0.55, 0, 1, 1);
+  animation-timing-function: linear;
 }
 
 .home-running-horse.pace-accelerate-late {
   animation-name: home-horse-run-accelerate-gradual;
-  animation-timing-function: cubic-bezier(0.55, 0, 1, 1);
+  animation-timing-function: linear;
 }
 
 .home-running-horse.pace-surge-fade-early {
   animation-name: home-horse-run-surge-fade-gradual;
-  animation-timing-function: cubic-bezier(0.45, 0, 0.55, 1);
+  animation-timing-function: linear;
 }
 
 .home-running-horse.pace-surge-fade-middle {
   animation-name: home-horse-run-surge-fade-gradual;
-  animation-timing-function: cubic-bezier(0.45, 0, 0.55, 1);
+  animation-timing-function: linear;
 }
 
 .home-running-horse.pace-surge-fade-late {
   animation-name: home-horse-run-surge-fade-gradual;
-  animation-timing-function: cubic-bezier(0.45, 0, 0.55, 1);
+  animation-timing-function: linear;
 }
 
 .home-running-horse.runner-2 {
@@ -2148,6 +2239,26 @@ h3 {
   position: relative;
 }
 
+.paddock-table-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-bottom: 10px;
+}
+
+.paddock-table-controls .stats-control-button {
+  flex: 0 0 auto;
+  min-height: 36px;
+  min-width: 112px;
+}
+
+.paddock-table-controls .stats-control-button[aria-pressed="true"] {
+  background: #e8f3ee;
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
 .paddock-table {
   min-width: 0;
   table-layout: fixed;
@@ -2171,15 +2282,19 @@ h3 {
 }
 
 .paddock-col-odds {
-  width: 78px;
+  width: var(--paddock-odds-col-width, 78px);
 }
 
 .paddock-col-rank {
   width: 92px;
 }
 
+.paddock-col-relative-score {
+  width: 88px;
+}
+
 .paddock-col-weight {
-  width: 172px;
+  width: var(--paddock-weight-col-width, 190px);
 }
 
 .paddock-col-name {
@@ -2213,6 +2328,13 @@ h3 {
 .paddock-table td.paddock-table-dynamic-cell,
 .paddock-table td.paddock-table-weight {
   font-size: var(--paddock-row-font-size, 13px);
+}
+
+.paddock-table td.paddock-table-dynamic-cell[data-label="単勝"],
+.paddock-table td.paddock-table-weight {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
 }
 
 .paddock-table .horse-name-badge > span,
@@ -4934,7 +5056,7 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 }
 
 .finish-prediction-table {
-  min-width: 1168px;
+  min-width: 1332px;
 }
 
 .premium-paddock-table {
@@ -5081,29 +5203,78 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   width: 96px;
 }
 
+.race-trend-table.frame {
+  min-width: 0;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.race-trend-table.frame th,
+.race-trend-table.frame td {
+  overflow-wrap: anywhere;
+  padding-left: 6px;
+  padding-right: 6px;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.race-trend-table.frame th:first-child,
+.race-trend-table.frame td:first-child {
+  text-align: center;
+  width: 48px;
+}
+
+.race-trend-table.frame th:nth-child(2),
+.race-trend-table.frame td:nth-child(2) {
+  text-align: center;
+  width: 72px;
+}
+
+.race-trend-table.frame th:nth-child(n + 3),
+.race-trend-table.frame td:nth-child(n + 3) {
+  text-align: center;
+  width: calc((100% - 120px) / 4);
+}
+
 .race-trend-table.jockey {
-  min-width: 660px;
+  min-width: 0;
+  table-layout: fixed;
+  width: 100%;
 }
 
 .race-trend-table.jockey th:first-child,
 .race-trend-table.jockey td:first-child {
   text-align: center;
-  width: 64px;
+  width: 52px;
 }
 
 .race-trend-table.jockey th:nth-child(2),
 .race-trend-table.jockey td:nth-child(2) {
-  width: 30%;
+  width: 24%;
 }
 
-.race-trend-table.jockey th:nth-child(3),
-.race-trend-table.jockey td:nth-child(3) {
-  width: 82px;
+.race-trend-table.jockey th:nth-child(n + 3),
+.race-trend-table.jockey td:nth-child(n + 3) {
+  width: calc((76% - 124px) / 5);
 }
 
-.race-trend-table.jockey th:nth-child(n + 4),
-.race-trend-table.jockey td:nth-child(n + 4) {
-  width: 96px;
+.race-trend-table.jockey th:nth-child(6),
+.race-trend-table.jockey td:nth-child(6) {
+  width: 72px;
+}
+
+.race-trend-table.jockey th:nth-child(7),
+.race-trend-table.jockey td:nth-child(7) {
+  width: 72px;
+}
+
+.race-trend-table.jockey th,
+.race-trend-table.jockey td {
+  overflow-wrap: anywhere;
+  padding-left: 6px;
+  padding-right: 6px;
+  text-overflow: clip;
+  white-space: normal;
 }
 
 .race-trend-horse-number-cell {
@@ -5234,6 +5405,17 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 
 .finish-prediction-col-jockey {
   width: 128px;
+}
+
+.finish-prediction-header-label {
+  align-items: center;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  justify-content: center;
+  line-height: 1.15;
+  min-height: 2.3em;
+  white-space: normal;
 }
 
 .finish-prediction-evaluation-panel {
@@ -5974,6 +6156,18 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
     transform: translateX(var(--horse-start-position, 0px));
   }
 
+  24% {
+    transform: translateX(var(--horse-pre-accelerate-position, -45vw));
+  }
+
+  62% {
+    transform: translateX(var(--horse-accelerate-position, -130vw));
+  }
+
+  84% {
+    transform: translateX(var(--horse-decelerate-position, -141vw));
+  }
+
   100% {
     transform: translateX(var(--horse-end-position, calc(-150vw - 148px)));
   }
@@ -5982,6 +6176,18 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 @keyframes home-horse-run-accelerate-gradual {
   0% {
     transform: translateX(var(--horse-start-position, 0px));
+  }
+
+  24% {
+    transform: translateX(var(--horse-pre-accelerate-position, -45vw));
+  }
+
+  62% {
+    transform: translateX(var(--horse-accelerate-position, -130vw));
+  }
+
+  84% {
+    transform: translateX(var(--horse-decelerate-position, -141vw));
   }
 
   100% {
@@ -5994,12 +6200,28 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
     transform: translateX(var(--horse-start-position, 0px));
   }
 
+  24% {
+    transform: translateX(var(--horse-pre-accelerate-position, -45vw));
+  }
+
+  62% {
+    transform: translateX(var(--horse-accelerate-position, -130vw));
+  }
+
+  84% {
+    transform: translateX(var(--horse-decelerate-position, -141vw));
+  }
+
   100% {
     transform: translateX(var(--horse-end-position, calc(-150vw - 148px)));
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .home-running-horse-gallop {
+    animation: none;
+  }
+
   .home-running-horse {
     animation: none;
     left: auto;

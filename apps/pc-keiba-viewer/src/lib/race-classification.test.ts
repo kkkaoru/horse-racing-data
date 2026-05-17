@@ -63,7 +63,7 @@ describe("race classification", () => {
   it("formats weight type labels", () => {
     expect(getWeightLabel("3")).toBe("馬齢");
     expect(getWeightLabel("6")).toBe("騎手ハンデ");
-    expect(getWeightLabel("9")).toBe("重量種別 9");
+    expect(getWeightLabel("9")).toBe("その他");
     expect(getWeightLabel(null)).toBe("-");
   });
 
@@ -75,6 +75,7 @@ describe("race classification", () => {
     expect(getConditionLabel("123")).toBe("条件 123");
     expect(getConditionLabel(null)).toBe("-");
     expect(getRaceClassLabel("02", "703")).toBe("3歳 未勝利");
+    expect(getRaceSymbolDetailLabel("000")).toBe("制限なし");
     expect(getRaceSymbolLabel("023")).toBe("牝馬限定");
     expect(getRaceSymbolDetailLabel("023")).toBe("牝馬限定 [指定]");
     expect(getRaceSymbolDetailLabel("N23")).toBe("国際競走 牝馬限定 [指定]");

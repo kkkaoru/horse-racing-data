@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -15,6 +16,15 @@ interface RaceMonthPageProps {
 
 const isValidMonthParams = (year: string, month: string): boolean =>
   /^\d{4}$/.test(year) && /^\d{2}$/.test(month);
+
+export async function generateMetadata({ params }: RaceMonthPageProps): Promise<Metadata> {
+  const { month, year } = await params;
+  return {
+    title: isValidMonthParams(year, month)
+      ? `${year}年${Number(month)}月 開催日一覧`
+      : "開催日一覧",
+  };
+}
 
 export default async function RaceMonthPage({ params }: RaceMonthPageProps) {
   const { month, year } = await params;

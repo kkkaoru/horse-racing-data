@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -75,6 +76,23 @@ const buildFullRaceTitle = (race: {
   ].filter((part) => part.length > 0);
   return titleParts.length > 0 ? titleParts.join(" ") : "一般競走";
 };
+
+export async function generateMetadata({ params }: PaddockEditPageProps): Promise<Metadata> {
+  const { day, keibajoCode, month, raceNumber, year } = await params;
+  if (!isValidRouteParams(year, month, day, keibajoCode, raceNumber)) {
+    return { title: "パドック編集" };
+  }
+  const source = await getRaceSourceByRoute(year, month, day, keibajoCode, raceNumber);
+  if (!source) {
+    return { title: "パドック編集" };
+  }
+  const race = await getRaceDetail(source, year, month, day, keibajoCode, raceNumber);
+  return {
+    title: race
+      ? `${buildFullRaceTitle(race)} パドック編集 ${formatKeibajo(keibajoCode)} ${formatRaceNumber(raceNumber)}`
+      : "パドック編集",
+  };
+}
 
 export default async function PaddockEditPage({ params }: PaddockEditPageProps) {
   const { day, keibajoCode, month, raceNumber, year } = await params;

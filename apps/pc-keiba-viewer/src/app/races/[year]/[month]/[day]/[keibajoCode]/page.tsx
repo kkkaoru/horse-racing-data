@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -28,6 +29,15 @@ const isValidVenueParams = (
   /^\d{2}$/.test(month) &&
   /^\d{2}$/.test(day) &&
   /^[0-9A-Z]{2}$/.test(keibajoCode);
+
+export async function generateMetadata({ params }: RaceVenuePageProps): Promise<Metadata> {
+  const { day, keibajoCode, month, year } = await params;
+  return {
+    title: isValidVenueParams(year, month, day, keibajoCode)
+      ? `${formatDisplayDate(year, `${month}${day}`)} ${formatKeibajo(keibajoCode)}`
+      : "レース一覧",
+  };
+}
 
 export default async function RaceVenuePage({ params, searchParams }: RaceVenuePageProps) {
   const { day, keibajoCode, month, year } = await params;

@@ -189,7 +189,7 @@ const SECTION_TITLES: Record<DetailSection, string> = {
   "pace-prediction": "レース展開予測",
   results: "競走成績",
   similar: "同条件成績",
-  "time-score": "タイム・相関・血統・同条件スコア",
+  "time-score": "総合評価スコア",
   training: "調教・追い切り",
 };
 
@@ -522,6 +522,7 @@ export function LazyOverallScoreSection(props: LazyDetailSectionsProps) {
 export function LazyFinishPredictionSection(props: LazyDetailSectionsProps) {
   const searchParams = useSearchParams();
   const state = useSectionPayload("finish-prediction", props, searchParams);
+  const scoreState = useSectionPayload("time-score", props, searchParams);
   if (state.status === "loading" && state.payload === null) {
     return <SectionSkeleton title={SECTION_TITLES["finish-prediction"]} />;
   }
@@ -543,6 +544,18 @@ export function LazyFinishPredictionSection(props: LazyDetailSectionsProps) {
         <h2>着順予測</h2>
       </div>
       <FinishPositionPredictionTable
+        combinedScoreData={
+          scoreState.payload?.type === "time-score"
+            ? {
+                bloodlineRows: scoreState.payload.bloodlineRows,
+                correlationRows: scoreState.payload.correlationRows,
+                rows: scoreState.payload.similarRows,
+                runners: scoreState.payload.runners,
+                timeRows: scoreState.payload.rows,
+              }
+            : null
+        }
+        combinedScoreLoading={scoreState.status === "loading"}
         evaluation={payload.evaluation}
         realtimeRequest={{
           apiBaseUrl: props.realtimeApiBaseUrl,
@@ -699,7 +712,7 @@ function LazyTimeScoreSection(props: LazyDetailSectionsProps) {
       className="similar-stats-section lazy-detail-section"
     >
       <div className="section-heading compact">
-        <h2>タイム・相関・血統・同条件スコア</h2>
+        <h2>総合評価スコア</h2>
       </div>
       <div className="stats-category-list">
         <BloodlineSimilarCombinedTable

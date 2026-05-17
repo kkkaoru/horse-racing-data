@@ -1,6 +1,8 @@
+import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 
 import { getRaceDetail, getRaceSourceByRoute } from "../../../../../../../db/queries";
+import { cleanText, formatKeibajo, formatRaceNumber } from "../../../../../../../lib/format";
 import { RaceDetailView } from "../../../../../../races/detail/race-detail-page";
 
 export const dynamic = "force-dynamic";
@@ -28,6 +30,36 @@ const isValidRouteParams = (
   /^\d{2}$/.test(day) &&
   /^[0-9A-Z]{2}$/.test(keibajoCode) &&
   /^\d{2}$/.test(raceNumber);
+
+const buildMetadataRaceTitle = (race: {
+  kyosomeiFukudai: string | null;
+  kyosomeiHondai: string | null;
+  kyosomeiKakkonai: string | null;
+}): string => {
+  const titleParts = [
+    cleanText(race.kyosomeiHondai, ""),
+    cleanText(race.kyosomeiFukudai, ""),
+    cleanText(race.kyosomeiKakkonai, ""),
+  ].filter((part) => part.length > 0);
+  return titleParts.length > 0 ? titleParts.join(" ") : "一般競走";
+};
+
+export async function generateMetadata({ params }: RaceDetailRoutePageProps): Promise<Metadata> {
+  const { day, keibajoCode, month, raceNumber, year } = await params;
+  if (!isValidRouteParams(year, month, day, keibajoCode, raceNumber)) {
+    return { title: "レース詳細" };
+  }
+  const source = await getRaceSourceByRoute(year, month, day, keibajoCode, raceNumber);
+  if (!source) {
+    return { title: "レース詳細" };
+  }
+  const race = await getRaceDetail(source, year, month, day, keibajoCode, raceNumber);
+  return {
+    title: race
+      ? `${buildMetadataRaceTitle(race)} ${formatKeibajo(keibajoCode)} ${formatRaceNumber(raceNumber)}`
+      : "レース詳細",
+  };
+}
 
 export default async function RaceDetailRoutePage({
   params,
