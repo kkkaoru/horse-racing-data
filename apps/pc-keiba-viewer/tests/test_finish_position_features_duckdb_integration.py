@@ -150,6 +150,7 @@ def seeded_con() -> duckdb.DuckDBPyConnection:
     _seed_weight_tables(con)
     _seed_weather_tables(con)
     subject.build_target_table(con, "jra", "20200101", "20201231")
+    subject.materialize_se_lookup(con)
     return con
 
 
@@ -208,18 +209,25 @@ def test_run_staged_sql_emits_start_and_done_events(capsys: pytest.CaptureFixtur
     assert stages == ["demo.stage", "demo.stage"]
 
 
+class _ExecResultStub:
+    def fetchone(self) -> tuple[int]:
+        return (0,)
+
+
 class _ExecCaptureCon:
     def __init__(self) -> None:
         self.statements: list[str] = []
 
     def execute(self, sql: str) -> object:
         self.statements.append(sql)
-        return None
+        return _ExecResultStub()
 
 
 def test_stage_rec_table_loads_columns_and_indexes(capsys: pytest.CaptureFixture[str]):
     captured = _ExecCaptureCon()
-    subject.stage_rec_table(cast(duckdb.DuckDBPyConnection, captured), "20100101", "20251231")
+    subject.stage_rec_table(
+        cast(duckdb.DuckDBPyConnection, captured), "20100101", "20251231", "jra"
+    )
     joined = "\n".join(captured.statements)
     assert "race_date between '20100101' and '20251231'" in joined
     assert "create index rec_horse_date on rec" in joined
@@ -229,6 +237,22 @@ def test_stage_rec_table_loads_columns_and_indexes(capsys: pytest.CaptureFixture
     output = capsys.readouterr().out
     assert "source.rec" in output
     assert "source.rec.indexes" in output
+
+
+def test_build_rec_select_sql_jra_unions_corner_features_and_ban_ei():
+    sql = subject.build_rec_select_sql("jra", "20160101", "20251231")
+    assert "from pg.race_entry_corner_features" in sql
+    assert "union all" in sql
+    assert "from pg.nvd_se" in sql
+    assert "se.keibajo_code = '83'" in sql
+
+
+def test_build_rec_select_sql_ban_ei_uses_only_nvd_se_path():
+    sql = subject.build_rec_select_sql("ban-ei", "20160101", "20251231")
+    assert "from pg.race_entry_corner_features" not in sql
+    assert "from pg.nvd_se" in sql
+    assert "se.keibajo_code = '83'" in sql
+    assert "union all" not in sql
 
 
 def test_stage_se_table_filters_by_concatenated_date(capsys: pytest.CaptureFixture[str]):
@@ -274,13 +298,14 @@ def test_stage_ra_table_uses_target_date_range(capsys: pytest.CaptureFixture[str
     assert "source.jra_ra" in capsys.readouterr().out
 
 
-def test_stage_source_tables_orchestrates_all_seven_tables(capsys: pytest.CaptureFixture[str]):
+def test_stage_source_tables_jra_orchestrates_rec_se_um_ra(capsys: pytest.CaptureFixture[str]):
     captured = _ExecCaptureCon()
     subject.stage_source_tables(
-        cast(duckdb.DuckDBPyConnection, captured), "20200101", "20201231"
+        cast(duckdb.DuckDBPyConnection, captured), "20200101", "20201231", "jra"
     )
     output = capsys.readouterr().out
     for stage in (
+        "source.config",
         "source.rec",
         "source.jra_se",
         "source.nar_se",
@@ -290,6 +315,40 @@ def test_stage_source_tables_orchestrates_all_seven_tables(capsys: pytest.Captur
         "source.nar_ra",
     ):
         assert stage in output
+
+
+def test_stage_source_tables_ban_ei_skips_jra_pg_reads(capsys: pytest.CaptureFixture[str]):
+    captured = _ExecCaptureCon()
+    subject.stage_source_tables(
+        cast(duckdb.DuckDBPyConnection, captured), "20200101", "20201231", "ban-ei"
+    )
+    joined = "\n".join(captured.statements)
+    assert "from pg.jvd_se" not in joined
+    assert "from pg.jvd_ra" not in joined
+    assert "from pg.jvd_um" not in joined
+    assert "from pg.nvd_se" in joined
+    assert "and keibajo_code = '83'" in joined
+    output = capsys.readouterr().out
+    assert "source.jra_se.skip" in output
+    assert "source.jra_um.skip" in output
+    assert "source.jra_ra.skip" in output
+
+
+def test_stage_source_tables_nar_keeps_full_rec_for_history_precision(
+    capsys: pytest.CaptureFixture[str],
+):
+    captured = _ExecCaptureCon()
+    subject.stage_source_tables(
+        cast(duckdb.DuckDBPyConnection, captured), "20200101", "20201231", "nar"
+    )
+    joined = "\n".join(captured.statements)
+    assert "from pg.race_entry_corner_features" in joined
+    assert "union all" in joined
+    assert "from pg.jvd_se" in joined
+    assert "from pg.nvd_se" in joined
+    output = capsys.readouterr().out
+    assert "source.jra_se" in output
+    assert "source.nar_se" in output
 
 
 def test_parse_args_supports_heartbeat_interval():
