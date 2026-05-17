@@ -65,6 +65,41 @@ def _make_synthetic_frame(seed: int = 7) -> pd.DataFrame:
     return pd.DataFrame(races)
 
 
+def _make_walk_forward_frame(seed: int = 13) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    races: list[dict[str, object]] = []
+    for year in (2023, 2024):
+        for race_index in range(4):
+            runner_count = 4 + race_index % 2
+            finishes = rng.permutation(np.arange(1, runner_count + 1)).tolist()
+            month_day = "0101"
+            race_id = f"jra:{year}:{month_day}:01:{str(race_index + 1).zfill(2)}"
+            for slot in range(runner_count):
+                races.append(
+                    {
+                        "source": "jra",
+                        "race_date": f"{year}0101",
+                        "kaisai_nen": str(year),
+                        "kaisai_tsukihi": month_day,
+                        "keibajo_code": "01",
+                        "race_bango": str(race_index + 1).zfill(2),
+                        "ketto_toroku_bango": f"h{year}{race_index:02d}{slot:02d}",
+                        "umaban": slot + 1,
+                        "category": "jra",
+                        "race_id": race_id,
+                        "race_year": year,
+                        "feature_schema_version": "v1",
+                        "finish_position": int(finishes[slot]),
+                        "finish_norm": float(finishes[slot]) / runner_count,
+                        "track_code": "11",
+                        "grade_code": "A",
+                        "speed_index_avg_5": float(rng.normal()),
+                        "jockey_recent_win_rate": float(rng.random()),
+                    }
+                )
+    return pd.DataFrame(races)
+
+
 def test_resolve_transformer_feature_columns_splits_numeric_and_categorical():
     df = _make_synthetic_frame()
     cols = resolve_transformer_feature_columns(list(df.columns))
@@ -126,14 +161,19 @@ def test_build_padding_mask_marks_padding_with_neg_inf():
 
 
 def test_model_forward_returns_expected_shapes():
-    config = default_model_config(num_numeric_features=8, categorical_vocab_sizes=[5, 3])
+    config = default_model_config(
+        num_numeric_features=8,
+        categorical_vocab_sizes=[5, 3],
+        race_categorical_vocab_sizes=[10, 12],
+    )
     model = RaceSetTransformer(config)
     mx.eval(model.parameters())
     numeric = mx.zeros((3, MAX_RUNNERS, 8))
     cat = mx.zeros((3, MAX_RUNNERS, 2), dtype=mx.int32)
+    race_cat = mx.zeros((3, 2), dtype=mx.int32)
     umaban = mx.zeros((3, MAX_RUNNERS), dtype=mx.int32)
     mask = mx.ones((3, MAX_RUNNERS), dtype=mx.bool_)
-    output = model(numeric, cat, umaban, mask)
+    output = model(numeric, cat, race_cat, umaban, mask)
     assert output["top1_logit"].shape == (3, MAX_RUNNERS)
     assert output["top3_logit"].shape == (3, MAX_RUNNERS)
     assert output["rank_score"].shape == (3, MAX_RUNNERS)
@@ -142,16 +182,23 @@ def test_model_forward_returns_expected_shapes():
 
 
 def test_multitask_loss_returns_scalar_on_synthetic_batch():
-    config = default_model_config(num_numeric_features=4, categorical_vocab_sizes=[3])
+    config = default_model_config(
+        num_numeric_features=4,
+        categorical_vocab_sizes=[3],
+        race_categorical_vocab_sizes=[5, 7],
+    )
     model = RaceSetTransformer(config)
     mx.eval(model.parameters())
     numeric = mx.zeros((2, MAX_RUNNERS, 4))
     cat = mx.zeros((2, MAX_RUNNERS, 1), dtype=mx.int32)
+    race_cat = mx.zeros((2, 2), dtype=mx.int32)
     umaban = mx.zeros((2, MAX_RUNNERS), dtype=mx.int32)
     mask = mx.ones((2, MAX_RUNNERS), dtype=mx.bool_)
-    output = model(numeric, cat, umaban, mask)
+    output = model(numeric, cat, race_cat, umaban, mask)
     finish = mx.array(np.tile(np.arange(1, MAX_RUNNERS + 1), (2, 1)), dtype=mx.float32)
-    loss = multitask_loss(output, finish, mask, {"top1": 1.0, "top3": 1.0, "pairwise": 1.0})
+    loss = multitask_loss(
+        output, finish, mask, {"top1": 1.0, "top3": 1.0, "pairwise": 1.0, "listnet": 0.5}
+    )
     assert loss.shape == ()
     assert float(loss) >= 0
 
@@ -269,6 +316,7 @@ def test_training_config_from_args_picks_up_loss_weights(tmp_path: Path):
     assert config["loss_weights"]["top1"] == 0.5
     assert config["loss_weights"]["top3"] == 0.7
     assert config["loss_weights"]["pairwise"] == 0.9
+    assert config["loss_weights"]["listnet"] == 0.0
 
 
 def test_save_and_load_checkpoint_round_trip(tmp_path: Path):
@@ -291,7 +339,7 @@ def test_save_and_load_checkpoint_round_trip(tmp_path: Path):
 def test_run_walk_forward_command_writes_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    df = _make_synthetic_frame()
+    df = _make_walk_forward_frame()
     parquet_path = tmp_path / "data.parquet"
     df.to_parquet(parquet_path, index=False)
     captured: list[str] = []
@@ -307,14 +355,231 @@ def test_run_walk_forward_command_writes_report(
             "2024",
             "--output-report",
             str(tmp_path / "report.json"),
+            "--output-predictions-dir",
+            str(tmp_path / "preds"),
             "--max-epochs",
             "1",
             "--warmup-steps",
             "1",
             "--batch-size",
             "2",
+            "--listnet-weight",
+            "0.25",
+            "--embedding-dim",
+            "32",
+            "--num-layers",
+            "1",
+            "--num-heads",
+            "2",
         ]
     )
     cli_module.run_walk_forward_command(args)
     payload = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
-    assert payload["aggregate"]["fold_count"] >= 0
+    assert payload["aggregate"]["fold_count"] == 1
+    assert (tmp_path / "preds" / "2024.jsonl").exists()
+
+
+def test_run_train_command_writes_checkpoint_and_predictions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    df = _make_synthetic_frame()
+    train_parquet = tmp_path / "train.parquet"
+    valid_parquet = tmp_path / "valid.parquet"
+    df.to_parquet(train_parquet, index=False)
+    df.to_parquet(valid_parquet, index=False)
+    captured: list[str] = []
+    monkeypatch.setattr("builtins.print", lambda line: captured.append(line))
+    args = cli_module.parse_args(
+        [
+            "train",
+            "--train-parquet",
+            str(train_parquet),
+            "--valid-parquet",
+            str(valid_parquet),
+            "--output-model-dir",
+            str(tmp_path / "ckpt"),
+            "--output-metadata",
+            str(tmp_path / "meta.json"),
+            "--output-predictions",
+            str(tmp_path / "preds.jsonl"),
+            "--max-epochs",
+            "1",
+            "--warmup-steps",
+            "1",
+            "--batch-size",
+            "2",
+            "--embedding-dim",
+            "32",
+            "--num-layers",
+            "1",
+            "--num-heads",
+            "2",
+            "--dropout",
+            "0.0",
+        ]
+    )
+    cli_module.run_train_command(args)
+    assert (tmp_path / "ckpt" / "model.safetensors").exists()
+    assert (tmp_path / "meta.json").exists()
+    assert (tmp_path / "preds.jsonl").exists()
+
+
+def test_run_predict_command_uses_saved_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    df = _make_synthetic_frame()
+    cols = resolve_transformer_feature_columns(list(df.columns))
+    stats = fit_normalization_stats(df, cols)
+    vocab_sizes = [categorical_vocab_size(stats, column) for column in cols.categorical]
+    config = default_model_config(
+        num_numeric_features=len(cols.numeric),
+        categorical_vocab_sizes=vocab_sizes,
+    )
+    model = RaceSetTransformer(config)
+    mx.eval(model.parameters())
+    cli_module.save_checkpoint(model, config, stats, tmp_path / "ckpt")
+    input_parquet = tmp_path / "input.parquet"
+    df.to_parquet(input_parquet, index=False)
+    captured: list[str] = []
+    monkeypatch.setattr("builtins.print", lambda line: captured.append(line))
+    args = cli_module.parse_args(
+        [
+            "predict",
+            "--model-dir",
+            str(tmp_path / "ckpt"),
+            "--input-parquet",
+            str(input_parquet),
+            "--output-predictions",
+            str(tmp_path / "out.jsonl"),
+            "--batch-size",
+            "2",
+        ]
+    )
+    cli_module.run_predict_command(args)
+    assert (tmp_path / "out.jsonl").exists()
+
+
+def test_cli_main_dispatches_predict(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    df = _make_synthetic_frame()
+    cols = resolve_transformer_feature_columns(list(df.columns))
+    stats = fit_normalization_stats(df, cols)
+    vocab_sizes = [categorical_vocab_size(stats, column) for column in cols.categorical]
+    config = default_model_config(
+        num_numeric_features=len(cols.numeric),
+        categorical_vocab_sizes=vocab_sizes,
+    )
+    model = RaceSetTransformer(config)
+    mx.eval(model.parameters())
+    cli_module.save_checkpoint(model, config, stats, tmp_path / "ckpt")
+    input_parquet = tmp_path / "input.parquet"
+    df.to_parquet(input_parquet, index=False)
+    captured: list[str] = []
+    monkeypatch.setattr("builtins.print", lambda line: captured.append(line))
+    cli_module.main(
+        [
+            "predict",
+            "--model-dir",
+            str(tmp_path / "ckpt"),
+            "--input-parquet",
+            str(input_parquet),
+            "--output-predictions",
+            str(tmp_path / "out.jsonl"),
+            "--batch-size",
+            "2",
+        ]
+    )
+    assert (tmp_path / "out.jsonl").exists()
+
+
+def test_cli_main_dispatches_train_and_walk_forward(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    df = _make_walk_forward_frame()
+    train_parquet = tmp_path / "train.parquet"
+    df.to_parquet(train_parquet, index=False)
+    captured: list[str] = []
+    monkeypatch.setattr("builtins.print", lambda line: captured.append(line))
+    cli_module.main(
+        [
+            "train",
+            "--train-parquet",
+            str(train_parquet),
+            "--output-model-dir",
+            str(tmp_path / "ckpt"),
+            "--max-epochs",
+            "1",
+            "--warmup-steps",
+            "1",
+            "--batch-size",
+            "2",
+            "--embedding-dim",
+            "32",
+            "--num-layers",
+            "1",
+            "--num-heads",
+            "2",
+        ]
+    )
+    assert (tmp_path / "ckpt" / "model.safetensors").exists()
+    cli_module.main(
+        [
+            "walk-forward",
+            "--parquet",
+            str(train_parquet),
+            "--train-start-date",
+            "20230101",
+            "--validation-years",
+            "2024",
+            "--output-report",
+            str(tmp_path / "wf.json"),
+            "--max-epochs",
+            "1",
+            "--warmup-steps",
+            "1",
+            "--batch-size",
+            "2",
+            "--embedding-dim",
+            "32",
+            "--num-layers",
+            "1",
+            "--num-heads",
+            "2",
+        ]
+    )
+    assert (tmp_path / "wf.json").exists()
+
+
+def test_cli_main_rejects_unknown_command(monkeypatch: pytest.MonkeyPatch):
+    import argparse
+
+    monkeypatch.setattr(
+        cli_module,
+        "parse_args",
+        lambda _argv=None: argparse.Namespace(command="unknown"),
+    )
+    with pytest.raises(ValueError, match="Unknown command"):
+        cli_module.main(["unknown"])
+
+
+def test_race_categorical_vocab_size_counts_padding_slot():
+    from finish_position_transformer.dataset import race_categorical_vocab_size
+
+    df = _make_synthetic_frame()
+    cols = resolve_transformer_feature_columns(list(df.columns))
+    stats = fit_normalization_stats(df, cols)
+    assert race_categorical_vocab_size(stats, "keibajo_code") >= 2
+    assert race_categorical_vocab_size(stats, "month") >= 2
+
+
+def test_fit_normalization_stats_handles_missing_race_meta_columns():
+    df = pd.DataFrame(
+        {
+            "speed_index_avg_5": [1.0, 2.0, 3.0, 4.0],
+            "track_code": ["11", "11", "12", "12"],
+            "grade_code": ["A", "B", "A", "B"],
+        }
+    )
+    cols = resolve_transformer_feature_columns(list(df.columns))
+    stats = fit_normalization_stats(df, cols)
+    assert stats["race_categorical_vocab"]["keibajo_code"] == []
+    assert stats["race_categorical_vocab"]["month"] == []

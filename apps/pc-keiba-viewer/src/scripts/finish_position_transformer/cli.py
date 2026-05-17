@@ -39,9 +39,14 @@ from finish_position_transformer.dataset import (
     build_race_batches,
     categorical_vocab_size,
     fit_normalization_stats,
+    race_categorical_vocab_size,
     resolve_transformer_feature_columns,
 )
 from finish_position_transformer.model import (
+    DEFAULT_DROPOUT,
+    DEFAULT_EMBEDDING_DIM,
+    DEFAULT_NUM_HEADS,
+    DEFAULT_NUM_LAYERS,
     ModelConfig,
     RaceSetTransformer,
     default_model_config,
@@ -50,6 +55,7 @@ from finish_position_transformer.training import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_EARLY_STOPPING_EPOCHS,
     DEFAULT_LEARNING_RATE,
+    DEFAULT_LISTNET_WEIGHT,
     DEFAULT_MAX_EPOCHS,
     DEFAULT_PAIRWISE_WEIGHT,
     DEFAULT_SEED,
@@ -133,6 +139,11 @@ def _add_training_hparam_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--top1-weight", type=float, default=DEFAULT_TOP1_WEIGHT)
     parser.add_argument("--top3-weight", type=float, default=DEFAULT_TOP3_WEIGHT)
     parser.add_argument("--pairwise-weight", type=float, default=DEFAULT_PAIRWISE_WEIGHT)
+    parser.add_argument("--listnet-weight", type=float, default=DEFAULT_LISTNET_WEIGHT)
+    parser.add_argument("--embedding-dim", type=int, default=DEFAULT_EMBEDDING_DIM)
+    parser.add_argument("--num-layers", type=int, default=DEFAULT_NUM_LAYERS)
+    parser.add_argument("--num-heads", type=int, default=DEFAULT_NUM_HEADS)
+    parser.add_argument("--dropout", type=float, default=DEFAULT_DROPOUT)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
 
 
@@ -141,6 +152,7 @@ def training_config_from_args(args: argparse.Namespace) -> TrainingConfig:
         "top1": float(args.top1_weight),
         "top3": float(args.top3_weight),
         "pairwise": float(args.pairwise_weight),
+        "listnet": float(args.listnet_weight),
     }
     return {
         "batch_size": int(args.batch_size),
@@ -190,12 +202,27 @@ def load_checkpoint(model_dir: Path) -> tuple[RaceSetTransformer, NormalizationS
     return model, stats, config
 
 
-def _build_model_for_dataframe(df: pd.DataFrame) -> tuple[RaceSetTransformer, ModelConfig, NormalizationStats]:
+def _build_model_for_dataframe(
+    df: pd.DataFrame,
+    embedding_dim: int = DEFAULT_EMBEDDING_DIM,
+    num_layers: int = DEFAULT_NUM_LAYERS,
+    num_heads: int = DEFAULT_NUM_HEADS,
+    dropout: float = DEFAULT_DROPOUT,
+) -> tuple[RaceSetTransformer, ModelConfig, NormalizationStats]:
     columns = resolve_transformer_feature_columns(list(df.columns))
     stats = fit_normalization_stats(df, columns)
     vocab_sizes = [categorical_vocab_size(stats, column) for column in columns.categorical]
+    race_vocab_sizes = [
+        race_categorical_vocab_size(stats, column) for column in stats["race_categorical_columns"]
+    ]
     config = default_model_config(
-        num_numeric_features=len(columns.numeric), categorical_vocab_sizes=vocab_sizes
+        num_numeric_features=len(columns.numeric),
+        categorical_vocab_sizes=vocab_sizes,
+        race_categorical_vocab_sizes=race_vocab_sizes,
+        embedding_dim=embedding_dim,
+        num_layers=num_layers,
+        num_heads=num_heads,
+        dropout=dropout,
     )
     model = RaceSetTransformer(config)
     mx.eval(model.parameters())
@@ -246,7 +273,13 @@ def write_predictions(predictions: list[PredictionRow], path: Path) -> None:
 def run_train_command(args: argparse.Namespace) -> None:
     train_df = load_dataset(args.train_parquet)
     valid_df = load_dataset(args.valid_parquet) if args.valid_parquet is not None else None
-    model, config, stats = _build_model_for_dataframe(train_df)
+    model, config, stats = _build_model_for_dataframe(
+        train_df,
+        embedding_dim=int(args.embedding_dim),
+        num_layers=int(args.num_layers),
+        num_heads=int(args.num_heads),
+        dropout=float(args.dropout),
+    )
     train_arrays = build_race_batches(train_df, stats)
     valid_arrays = build_race_batches(valid_df, stats) if valid_df is not None else None
     training_config = training_config_from_args(args)
@@ -275,7 +308,13 @@ def run_walk_forward_command(args: argparse.Namespace) -> None:
         valid_df = fold["valid_df"]
         if len(train_df) == 0 or len(valid_df) == 0:
             continue
-        model, _config, stats = _build_model_for_dataframe(train_df)
+        model, _config, stats = _build_model_for_dataframe(
+            train_df,
+            embedding_dim=int(args.embedding_dim),
+            num_layers=int(args.num_layers),
+            num_heads=int(args.num_heads),
+            dropout=float(args.dropout),
+        )
         train_arrays = build_race_batches(train_df, stats)
         valid_arrays = build_race_batches(valid_df, stats)
         result = train_transformer(model, train_arrays, valid_arrays, training_config)

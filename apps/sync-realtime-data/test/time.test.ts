@@ -4,6 +4,7 @@ import {
   formatRaceStartJst,
   getJraAdvanceOddsFetchSlotAt,
   getJstDateParts,
+  getNextOddsFetchSlotAt,
   getOddsFetchIntervalMinutes,
   getOddsFetchSlotAt,
   getTodayJst,
@@ -55,6 +56,23 @@ describe("odds fetch schedule", () => {
     expect(
       getJraAdvanceOddsFetchSlotAt(raceStart, new Date("2026-05-16T08:45:00+09:00")),
     ).toBeNull();
+  });
+
+  it("returns the next JRA odds slot after the current fetch", () => {
+    const raceStart = new Date("2026-05-17T13:05:00+09:00");
+    expect(getNextOddsFetchSlotAt(raceStart, new Date("2026-05-17T12:18:09+09:00"), "jra")).toBe(
+      "2026-05-17T12:25:00+09:00",
+    );
+    expect(getNextOddsFetchSlotAt(raceStart, new Date("2026-05-17T12:56:30+09:00"), "jra")).toBe(
+      "2026-05-17T12:57:00+09:00",
+    );
+  });
+
+  it("returns the next JRA advance odds slot before the final hour", () => {
+    const raceStart = new Date("2026-05-17T16:30:00+09:00");
+    expect(getNextOddsFetchSlotAt(raceStart, new Date("2026-05-17T12:19:00+09:00"), "jra")).toBe(
+      "2026-05-17T13:00:00+09:00",
+    );
   });
 });
 
