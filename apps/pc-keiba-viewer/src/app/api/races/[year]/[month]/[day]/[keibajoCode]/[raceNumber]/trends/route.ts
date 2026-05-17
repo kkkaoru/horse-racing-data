@@ -304,6 +304,19 @@ const buildRaceTrendPayload = async (
         (entry): entry is readonly [string, string] => Boolean(entry[0]) && Boolean(entry[1]),
       ),
   );
+  const targetHorseNumbersByFrame = new Map<string, string>();
+  for (const runner of runners) {
+    const frameNumber = normalizeNumberText(runner.wakuban);
+    const horseNumber = normalizeNumberText(runner.umaban);
+    if (!frameNumber || !horseNumber) {
+      continue;
+    }
+    const current = targetHorseNumbersByFrame.get(frameNumber);
+    targetHorseNumbersByFrame.set(
+      frameNumber,
+      current ? `${current},${horseNumber}` : horseNumber,
+    );
+  }
   const historicalRows = await getRaceTrendHistoricalStarterRows(race, {
     ...options,
     frameNumbers,
@@ -356,7 +369,9 @@ const buildRaceTrendPayload = async (
       keibajoCode: race.keibajoCode,
       validKeys: new Set(frameNumbers),
       getGroupKey: (row) => normalizeNumberText(row.wakuban),
-    }),
+    }).map((row) =>
+      Object.assign(row, { targetHorseNumber: targetHorseNumbersByFrame.get(row.key) ?? null }),
+    ),
   };
 };
 
