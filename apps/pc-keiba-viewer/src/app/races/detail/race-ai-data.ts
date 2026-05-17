@@ -183,8 +183,23 @@ const parsePositiveCount = (value: string | null): number | null => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 };
 
+const hasText = (value: string | null | undefined): boolean => Boolean(value?.trim());
+
 const isPayloadAvailable = (payload: unknown): boolean =>
   payload !== null && payload !== undefined && (!isRecord(payload) || !("error" in payload));
+
+const getProcessedCourseUnits = (baseProcessedData: Record<string, unknown>): number => {
+  const course = isRecord(baseProcessedData.course) ? baseProcessedData.course : null;
+  if (!course) {
+    return 0;
+  }
+  return [
+    Array.isArray(course.facts) && course.facts.length > 0,
+    hasText(typeof course.imagePath === "string" ? course.imagePath : null),
+    hasText(typeof course.text === "string" ? course.text : null) ||
+      (Array.isArray(course.paragraphs) && course.paragraphs.length > 0),
+  ].filter(Boolean).length;
+};
 
 const buildReadinessItem = ({
   availableUnits,
@@ -223,12 +238,14 @@ const buildReadinessItem = ({
 
 const buildRaceAiDataReadiness = ({
   basePostgresqlData,
+  baseProcessedData,
   currentOutput,
   sectionPayloads,
   sections,
   supplementalPayloads,
 }: {
   basePostgresqlData: RaceAiDataBase["basePostgresqlData"];
+  baseProcessedData: RaceAiDataBase["baseProcessedData"];
   currentOutput: RaceAiExportData["aiReady"]["currentOutput"];
   sectionPayloads: RaceAiSectionPayloads | null;
   sections: string[];
@@ -236,6 +253,17 @@ const buildRaceAiDataReadiness = ({
 }): RaceAiDataReadiness => {
   const expectedRunnerCount =
     parsePositiveCount(basePostgresqlData.race.shussoTosu) ?? basePostgresqlData.runners.length;
+  const processedCourseUnits = getProcessedCourseUnits(baseProcessedData);
+  const courseAvailableUnits = basePostgresqlData.courseInfo
+    ? 3
+    : Math.max(
+        processedCourseUnits,
+        [
+          basePostgresqlData.race.keibajoCode,
+          basePostgresqlData.race.trackCode,
+          basePostgresqlData.race.kyori,
+        ].filter(hasText).length,
+      );
   const items: RaceAiDataReadinessItem[] = [
     buildReadinessItem({
       availableUnits: basePostgresqlData.race ? 1 : 0,
@@ -251,10 +279,21 @@ const buildRaceAiDataReadiness = ({
       totalUnits: Math.max(1, expectedRunnerCount),
     }),
     buildReadinessItem({
-      availableUnits: basePostgresqlData.courseInfo ? 1 : 0,
+      availableUnits: courseAvailableUnits,
       key: "courseInfo",
       label: "コース情報",
-      totalUnits: 1,
+      notes: [
+        basePostgresqlData.courseInfo
+          ? "DBコース情報あり"
+          : `画面用コース情報 ${processedCourseUnits}/3 / 競馬場・馬場・距離 ${
+              [
+                basePostgresqlData.race.keibajoCode,
+                basePostgresqlData.race.trackCode,
+                basePostgresqlData.race.kyori,
+              ].filter(hasText).length
+            }/3`,
+      ],
+      totalUnits: 3,
     }),
     buildReadinessItem({
       availableUnits: basePostgresqlData.raceDayRaces.length > 0 ? 1 : 0,
@@ -648,6 +687,7 @@ export const buildRaceAiExportData = ({
       currentOutput,
       dataReadiness: buildRaceAiDataReadiness({
         basePostgresqlData,
+        baseProcessedData,
         currentOutput,
         sectionPayloads,
         sections,

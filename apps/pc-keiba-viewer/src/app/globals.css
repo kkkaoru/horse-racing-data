@@ -7402,14 +7402,14 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   width: var(--space-100pct-12);
 }
 
-.race-ai-status-grid {
+.race-ai-readiness-status-grid {
   display: grid;
   gap: var(--space-12px-9);
   grid-template-columns: repeat(auto-fit, minmax(var(--space-180px-85), var(--space-1fr-51)));
 }
 
-.race-ai-status-grid > div {
-  background: var(--surface-muted);
+.race-ai-readiness-status-grid > div {
+  background: var(--surface);
   border: var(--space-1px-7) solid var(--border);
   border-radius: var(--space-6px-33);
   display: grid;
@@ -7470,7 +7470,7 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   accent-color: var(--danger);
 }
 
-.race-ai-status-grid span,
+.race-ai-readiness-status-grid span,
 .race-ai-log-grid li > span {
   color: var(--text-muted);
   font-size: var(--space-0-85rem-217);
