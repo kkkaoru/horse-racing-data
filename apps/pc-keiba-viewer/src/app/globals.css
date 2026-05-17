@@ -2661,6 +2661,14 @@ h3 {
   min-width: 0;
 }
 
+.paddock-recent-race .paddock-recent-condition {
+  background: color-mix(in srgb, var(--accent) 8%, #ffffff);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line));
+  border-radius: 999px;
+  color: var(--accent-strong);
+  padding: 3px 7px;
+}
+
 .paddock-recent-stats {
   align-items: center;
   display: flex;
