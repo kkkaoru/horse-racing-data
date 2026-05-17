@@ -26,6 +26,7 @@ import type {
   Training,
 } from "../../../lib/race-types";
 import { AbilityTestTable } from "./ability-test-table";
+import { BloodlineSimilarCombinedTable } from "./bloodline-similar-combined-table";
 import { BloodlineStatsTable } from "./bloodline-stats-table";
 import { FinishPositionPredictionTable } from "./finish-position-prediction-table";
 import { HorseRaceResultsTable } from "./horse-race-results-table";
@@ -123,6 +124,8 @@ type BloodlinePayload = {
 };
 
 type SimilarPayload = {
+  bloodlineRows: BloodlineStatsRow[];
+  bloodlineSettings: SimilarRaceStatsSettings;
   conditionLabels: ConditionLabels;
   rows: SimilarRaceStatsRow[];
   runners: Runner[];
@@ -247,7 +250,11 @@ const shouldIncludeSectionQueryParam = (section: DetailSection, name: string): b
     );
   }
   if (section === "similar") {
-    return name.startsWith("similarStats") || GENERIC_STATS_QUERY_KEYS.has(name);
+    return (
+      name.startsWith("similarStats") ||
+      name.startsWith("bloodlineStats") ||
+      GENERIC_STATS_QUERY_KEYS.has(name)
+    );
   }
   return false;
 };
@@ -701,40 +708,10 @@ function LazyTimeScoreSection(props: LazyDetailSectionsProps) {
   );
 }
 
-function LazyBloodlineSection(props: LazyDetailSectionsProps) {
-  const searchParams = useSearchParams();
-  const state = useSectionPayload("bloodline", props, searchParams);
-  if (state.status === "loading" && state.payload === null) {
-    return <SectionSkeleton title={SECTION_TITLES.bloodline} />;
-  }
-  if (state.status === "error") {
-    return <SectionError error={state.error} title={SECTION_TITLES.bloodline} />;
-  }
-  const payload = state.payload;
-  if (!payload || payload.type !== "bloodline") {
-    return <SectionError error="Invalid section payload" title={SECTION_TITLES.bloodline} />;
-  }
-  return (
-    <section
-      aria-busy={state.status === "loading"}
-      className="similar-stats-section lazy-detail-section"
-    >
-      <div className="section-heading compact">
-        <h2>血統成績</h2>
-      </div>
-      <BloodlineStatsTable
-        conditionLabels={payload.conditionLabels}
-        rows={payload.rows}
-        runners={payload.runners}
-        settings={payload.settings}
-        source={payload.source}
-      />
-    </section>
-  );
-}
-
 function LazySimilarSection(props: LazyDetailSectionsProps) {
   const searchParams = useSearchParams();
+  const [showBloodline, setShowBloodline] = useState(false);
+  const [showSimilar, setShowSimilar] = useState(false);
   const state = useSectionPayload("similar", props, searchParams);
   if (state.status === "loading" && state.payload === null) {
     return <SectionSkeleton title={SECTION_TITLES.similar} />;
@@ -752,15 +729,65 @@ function LazySimilarSection(props: LazyDetailSectionsProps) {
       className="similar-stats-section lazy-detail-section"
     >
       <div className="section-heading compact">
-        <h2>同条件成績</h2>
+        <h2>血統・同条件スコア</h2>
       </div>
-      <SimilarRaceStatsTable
-        conditionLabels={payload.conditionLabels}
-        rows={payload.rows}
-        runners={payload.runners}
-        settings={payload.settings}
-        source={payload.source}
-      />
+      <div className="stats-category-list">
+        <BloodlineSimilarCombinedTable
+          bloodlineRows={payload.bloodlineRows}
+          rows={payload.rows}
+          runners={payload.runners}
+        />
+        <div className="stats-section-toggle-wrap">
+          <button
+            aria-expanded={showBloodline}
+            className="stats-control-button stats-section-toggle"
+            type="button"
+            onClick={() => {
+              setShowBloodline((current) => !current);
+            }}
+          >
+            {showBloodline ? "血統成績を閉じる" : "血統成績を表示"}
+          </button>
+          <button
+            aria-expanded={showSimilar}
+            className="stats-control-button stats-section-toggle"
+            type="button"
+            onClick={() => {
+              setShowSimilar((current) => !current);
+            }}
+          >
+            {showSimilar ? "同条件成績を閉じる" : "同条件成績を表示"}
+          </button>
+        </div>
+        {showBloodline ? (
+          <section className="stats-category-section">
+            <div className="section-heading compact">
+              <h3>血統成績</h3>
+            </div>
+            <BloodlineStatsTable
+              conditionLabels={payload.conditionLabels}
+              rows={payload.bloodlineRows}
+              runners={payload.runners}
+              settings={payload.bloodlineSettings}
+              source={payload.source}
+            />
+          </section>
+        ) : null}
+        {showSimilar ? (
+          <section className="stats-category-section">
+            <div className="section-heading compact">
+              <h3>同条件成績</h3>
+            </div>
+            <SimilarRaceStatsTable
+              conditionLabels={payload.conditionLabels}
+              rows={payload.rows}
+              runners={payload.runners}
+              settings={payload.settings}
+              source={payload.source}
+            />
+          </section>
+        ) : null}
+      </div>
     </section>
   );
 }
@@ -773,7 +800,6 @@ export function LazyDetailSections(props: LazyDetailSectionsProps) {
       <LazyTrainingSection {...props} />
       {props.source === "nar" ? <LazyAbilitySection {...props} /> : null}
       <LazyConditionSection {...props} />
-      <LazyBloodlineSection {...props} />
       <LazySimilarSection {...props} />
     </>
   );

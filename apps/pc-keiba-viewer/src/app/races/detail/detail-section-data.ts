@@ -1290,8 +1290,27 @@ export const getDetailSectionPayload = async (
       rows = matched.stats;
     }
   }
+  let resolvedBloodlineSettings = context.bloodlineStatsSettings;
+  let bloodlineRows = await getBloodlineStats(race, resolvedBloodlineSettings);
+  if (
+    !hasExplicitStatsState(query, "bloodline") &&
+    !hasBloodlineScoreCoverage(bloodlineRows, runners)
+  ) {
+    const candidates = getConditionAnalysisSettingCandidates(resolvedBloodlineSettings).slice(1);
+    const matched = await findRateStatsCandidate(
+      candidates,
+      (candidate) => getBloodlineStats(race, candidate),
+      (stats) => hasBloodlineScoreCoverage(stats, runners),
+    );
+    if (matched) {
+      resolvedBloodlineSettings = matched.settings;
+      bloodlineRows = matched.stats;
+    }
+  }
 
   return {
+    bloodlineRows,
+    bloodlineSettings: resolvedBloodlineSettings,
     conditionLabels: context.statsConditionLabels,
     rows,
     runners,

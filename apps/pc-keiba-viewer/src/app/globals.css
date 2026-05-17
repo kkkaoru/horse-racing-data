@@ -4700,6 +4700,57 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   min-width: 1320px;
 }
 
+.combined-score-table {
+  min-width: 980px;
+}
+
+.combined-score-col-number {
+  width: 64px;
+}
+
+.combined-score-col-name {
+  width: 150px;
+}
+
+.combined-score-col-score {
+  width: 104px;
+}
+
+.combined-score-col-count {
+  width: 86px;
+}
+
+.combined-score-value {
+  display: inline-block;
+  min-width: 38px;
+}
+
+.combined-score-detail-toggle {
+  margin-left: 8px;
+}
+
+.combined-score-detail-table {
+  min-width: 880px;
+}
+
+.combined-score-detail-table th:nth-child(1),
+.combined-score-detail-table td:nth-child(1),
+.combined-score-detail-table th:nth-child(2),
+.combined-score-detail-table td:nth-child(2) {
+  width: 82px;
+}
+
+.combined-score-detail-table th:nth-child(3),
+.combined-score-detail-table td:nth-child(3) {
+  width: 160px;
+}
+
+.combined-score-detail-table th:nth-child(n + 4),
+.combined-score-detail-table td:nth-child(n + 4) {
+  text-align: center;
+  width: 86px;
+}
+
 .similar-score-col-number {
   width: 72px;
 }
@@ -4743,6 +4794,17 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 
 .similar-stats-table-toggle {
   min-width: 260px;
+}
+
+.stats-section-toggle-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-start;
+}
+
+.stats-section-toggle {
+  min-width: 180px;
 }
 
 .bloodline-stats-table-toggle-wrap {
