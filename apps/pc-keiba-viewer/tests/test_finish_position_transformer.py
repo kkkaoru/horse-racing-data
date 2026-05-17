@@ -176,6 +176,8 @@ def test_model_forward_returns_expected_shapes():
     output = model(numeric, cat, race_cat, umaban, mask)
     assert output["top1_logit"].shape == (3, MAX_RUNNERS)
     assert output["top3_logit"].shape == (3, MAX_RUNNERS)
+    assert output["place2_logit"].shape == (3, MAX_RUNNERS)
+    assert output["place3_logit"].shape == (3, MAX_RUNNERS)
     assert output["rank_score"].shape == (3, MAX_RUNNERS)
     assert config["embedding_dim"] == DEFAULT_EMBEDDING_DIM
     assert config["num_heads"] == DEFAULT_NUM_HEADS
@@ -197,7 +199,17 @@ def test_multitask_loss_returns_scalar_on_synthetic_batch():
     output = model(numeric, cat, race_cat, umaban, mask)
     finish = mx.array(np.tile(np.arange(1, MAX_RUNNERS + 1), (2, 1)), dtype=mx.float32)
     loss = multitask_loss(
-        output, finish, mask, {"top1": 1.0, "top3": 1.0, "pairwise": 1.0, "listnet": 0.5}
+        output,
+        finish,
+        mask,
+        {
+            "top1": 1.0,
+            "top3": 1.0,
+            "pairwise": 1.0,
+            "listnet": 0.5,
+            "place2": 1.0,
+            "place3": 1.0,
+        },
     )
     assert loss.shape == ()
     assert float(loss) >= 0
@@ -317,6 +329,8 @@ def test_training_config_from_args_picks_up_loss_weights(tmp_path: Path):
     assert config["loss_weights"]["top3"] == 0.7
     assert config["loss_weights"]["pairwise"] == 0.9
     assert config["loss_weights"]["listnet"] == 0.0
+    assert config["loss_weights"]["place2"] == 1.0
+    assert config["loss_weights"]["place3"] == 1.0
 
 
 def test_save_and_load_checkpoint_round_trip(tmp_path: Path):

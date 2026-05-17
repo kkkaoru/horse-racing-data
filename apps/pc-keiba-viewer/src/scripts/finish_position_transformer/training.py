@@ -27,6 +27,10 @@ DEFAULT_TOP1_WEIGHT = 1.0
 DEFAULT_TOP3_WEIGHT = 1.0
 DEFAULT_PAIRWISE_WEIGHT = 1.0
 DEFAULT_LISTNET_WEIGHT = 0.0
+DEFAULT_PLACE2_WEIGHT = 1.0
+DEFAULT_PLACE3_WEIGHT = 1.0
+PLACE2_POSITION = 2
+PLACE3_POSITION = 3
 TOP3_UPPER_BOUND = 3
 LISTNET_RELEVANCE_TIER_BASE = 4
 LISTNET_MASK_NEG_INF = -1e9
@@ -46,6 +50,8 @@ class LossWeights(TypedDict):
     top3: float
     pairwise: float
     listnet: float
+    place2: float
+    place3: float
 
 
 class TrainingConfig(TypedDict):
@@ -82,6 +88,8 @@ def default_training_config() -> TrainingConfig:
             "top3": DEFAULT_TOP3_WEIGHT,
             "pairwise": DEFAULT_PAIRWISE_WEIGHT,
             "listnet": DEFAULT_LISTNET_WEIGHT,
+            "place2": DEFAULT_PLACE2_WEIGHT,
+            "place3": DEFAULT_PLACE3_WEIGHT,
         },
         "max_epochs": DEFAULT_MAX_EPOCHS,
         "seed": DEFAULT_SEED,
@@ -152,13 +160,19 @@ def multitask_loss(
         mx.less_equal(finish_position, mx.array(float(TOP3_UPPER_BOUND))),
     )
     top3_label = in_top3.astype(mx.float32)
+    place2_label = mx.equal(finish_position, mx.array(float(PLACE2_POSITION))).astype(mx.float32)
+    place3_label = mx.equal(finish_position, mx.array(float(PLACE3_POSITION))).astype(mx.float32)
     top1_term = _masked_bce(output["top1_logit"], top1_label, mask_float)
     top3_term = _masked_bce(output["top3_logit"], top3_label, mask_float)
+    place2_term = _masked_bce(output["place2_logit"], place2_label, mask_float)
+    place3_term = _masked_bce(output["place3_logit"], place3_label, mask_float)
     pair_term = _pairwise_ranking_loss(output["rank_score"], finish_position, mask)
     listnet_term = _listnet_loss(output["rank_score"], finish_position, mask)
     return (
         weights["top1"] * top1_term
         + weights["top3"] * top3_term
+        + weights["place2"] * place2_term
+        + weights["place3"] * place3_term
         + weights["pairwise"] * pair_term
         + weights["listnet"] * listnet_term
     )
