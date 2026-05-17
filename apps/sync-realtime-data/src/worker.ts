@@ -106,6 +106,7 @@ import {
   upsertPremiumRaceLink,
   type LocalRaceRow,
 } from "./storage";
+import { RUNNING_STYLE_INFERENCE_CRON, runRunningStyleCronTick } from "./running-style-cron";
 import { readCachedTrackCondition, writeCachedTrackCondition } from "./track-condition-cache";
 import {
   getJraAdvanceOddsFetchSlotAt,
@@ -1952,6 +1953,10 @@ export default {
       typeof controller.scheduledTime === "number"
         ? new Date(controller.scheduledTime)
         : new Date();
+    if (controller.cron === RUNNING_STYLE_INFERENCE_CRON) {
+      ctx.waitUntil(runRunningStyleCronTick(env, scheduledAt).then(() => undefined));
+      return;
+    }
     const job = getCronJob(controller.cron, scheduledAt);
     ctx.waitUntil(handleJob(env, job));
     if (job.type === "plan-realtime-fetches") {

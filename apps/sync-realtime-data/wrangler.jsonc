@@ -15,9 +15,10 @@
     "REALTIME_API_CACHE_SECONDS": "20",
     "DATABASE_TARGET": "cloudflare",
     "TRACK_CONDITION_DO_TTL_SECONDS": "172800",
+    "RUNNING_STYLE_D1_WRITE_ENABLED": "0",
   },
   "triggers": {
-    "crons": ["5 0 * * *", "0 4 * * 5", "0 5 * * 5", "0 4 * * 6", "0 5 * * 6", "* * * * *"],
+    "crons": ["5 0 * * *", "0 4 * * 5", "0 5 * * 5", "0 4 * * 6", "0 5 * * 6", "* * * * *", "*/10 * * * *"],
   },
   "queues": {
     "producers": [
