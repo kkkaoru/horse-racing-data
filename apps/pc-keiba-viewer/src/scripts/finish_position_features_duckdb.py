@@ -834,7 +834,55 @@ def horse_running_style_history_cte(target_filter: str = "true") -> str:
           as horse_distance_corner_1_norm_avg,
         avg(b.corner1_norm) filter (where left(coalesce(b.history_track_code, ''), 1)
                                        = left(coalesce(b.target_track_code, ''), 1))
-          as horse_track_corner_1_norm_avg
+          as horse_track_corner_1_norm_avg,
+        avg(case when b.finish_position = 1 then 1.0 else 0.0 end)
+          filter (where b.corner1_norm = 0)
+          as past_nige_win_rate_self,
+        avg(case when b.finish_position = 1 then 1.0 else 0.0 end)
+          filter (where b.corner1_norm > 0
+                    and b.corner1_norm <= {RUNNING_STYLE_SENKOU_THRESHOLD})
+          as past_senkou_win_rate_self,
+        avg(case when b.finish_position = 1 then 1.0 else 0.0 end)
+          filter (where b.corner1_norm > {RUNNING_STYLE_SENKOU_THRESHOLD}
+                    and b.corner1_norm <= {RUNNING_STYLE_SASHI_THRESHOLD})
+          as past_sashi_win_rate_self,
+        avg(case when b.finish_position = 1 then 1.0 else 0.0 end)
+          filter (where b.corner1_norm > {RUNNING_STYLE_SASHI_THRESHOLD})
+          as past_oikomi_win_rate_self,
+        quantile_cont(b.corner1_norm, 0.75)
+          filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
+          - quantile_cont(b.corner1_norm, 0.25)
+            filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
+          as past_corner_1_norm_iqr_5,
+        count(*) filter (
+          where b.finish_position = 1
+            and trim(coalesce(b.history_grade_code, '')) in ('A', 'B', 'C')
+        )::bigint as top1_count_in_grade_races,
+        count(*) filter (
+          where b.finish_position between 1 and 3
+            and trim(coalesce(b.history_grade_code, '')) in ('A', 'B', 'C')
+        )::bigint as place_count_in_grade_races,
+        count(*) filter (where trim(coalesce(b.history_grade_code, '')) = 'A')::bigint
+          as experience_in_g1_race,
+        count(*) filter (where b.finish_position = 1
+                           and b.recent_rank <= {RECENT_WINDOW_SIZE})::bigint
+          as recent_win_count_5,
+        count(*) filter (where b.finish_position between 1 and 3
+                           and b.recent_rank <= {RECENT_WINDOW_SIZE})::bigint
+          as recent_top3_count_5,
+        greatest(
+          count(*) filter (where b.corner1_norm = 0 and b.recent_rank <= {RECENT_WINDOW_SIZE}),
+          count(*) filter (where b.corner1_norm > 0 and b.corner1_norm <= {RUNNING_STYLE_SENKOU_THRESHOLD}
+                                  and b.recent_rank <= {RECENT_WINDOW_SIZE}),
+          count(*) filter (where b.corner1_norm > {RUNNING_STYLE_SENKOU_THRESHOLD}
+                                  and b.corner1_norm <= {RUNNING_STYLE_SASHI_THRESHOLD}
+                                  and b.recent_rank <= {RECENT_WINDOW_SIZE}),
+          count(*) filter (where b.corner1_norm > {RUNNING_STYLE_SASHI_THRESHOLD}
+                                  and b.recent_rank <= {RECENT_WINDOW_SIZE})
+        )::double / nullif(
+          count(*) filter (where b.corner1_norm is not null
+                             and b.recent_rank <= {RECENT_WINDOW_SIZE}), 0
+        ) as past_dominant_label_consistency_5
       from horse_history_base b
       group by b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango, b.ketto_toroku_bango
     )
@@ -1034,6 +1082,17 @@ def base_features_select_sql(category: str) -> str:
       rsh.last_race_corner_progression,
       rsh.horse_distance_corner_1_norm_avg,
       rsh.horse_track_corner_1_norm_avg,
+      rsh.past_nige_win_rate_self,
+      rsh.past_senkou_win_rate_self,
+      rsh.past_sashi_win_rate_self,
+      rsh.past_oikomi_win_rate_self,
+      rsh.past_corner_1_norm_iqr_5,
+      rsh.top1_count_in_grade_races,
+      rsh.place_count_in_grade_races,
+      rsh.experience_in_g1_race,
+      rsh.recent_win_count_5,
+      rsh.recent_top3_count_5,
+      rsh.past_dominant_label_consistency_5,
       case
         when t.shusso_tosu is null or t.shusso_tosu < {UMABAN_NORM_MIN_FIELD} then null
         when t.umaban is null then null
