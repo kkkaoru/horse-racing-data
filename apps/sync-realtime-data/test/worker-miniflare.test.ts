@@ -15,6 +15,7 @@ let db: D1Database;
 let mf: Miniflare;
 let tempDir: string;
 let worker: {
+  fetch: (request: string) => Promise<Response>;
   queue: (
     queueName: string,
     messages: Array<{ attempts: number; body: unknown; id: string; timestamp: Date }>,
@@ -192,6 +193,37 @@ describe("worker scheduling with Miniflare", () => {
       }>();
     expect(planLog?.count).toBe(1);
   }, 20_000);
+
+  it("seeds the realtime planner watchdog from API traffic when stale", async () => {
+    const response = await worker.fetch("https://example.test/health");
+
+    expect(response.status).toBe(200);
+    await response.text();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const planLog = await db
+      .prepare(
+        `
+          select job_type, status, message
+          from fetch_logs
+          where job_type in ('plan-realtime-fetches', 'plan-realtime-fetches-self')
+          order by rowid desc
+          limit 2
+        `,
+      )
+      .all<{ job_type: string; message: string | null; status: string }>();
+    expect(planLog.results).toEqual([
+      {
+        job_type: "plan-realtime-fetches-self",
+        message: "0 jobs queued",
+        status: "ok",
+      },
+      {
+        job_type: "plan-realtime-fetches",
+        message: "0 jobs queued",
+        status: "ok",
+      },
+    ]);
+  });
 
   it("runs scheduled JRA premium link discovery for the next race day", async () => {
     await expect(

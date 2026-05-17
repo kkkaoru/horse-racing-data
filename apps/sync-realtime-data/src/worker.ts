@@ -432,12 +432,27 @@ const isPremiumRaceDiscoveryTick = (date: Date): boolean => {
   return jst.slice(11, 16) === "20:00";
 };
 
-const getLatestSelfRealtimePlanAt = async (env: Env): Promise<string | null> => {
+const getLatestSuccessfulRealtimePlanAt = async (env: Env): Promise<string | null> => {
+  const row = await env.REALTIME_DB.prepare(
+    `
+      select created_at
+      from fetch_logs
+      where job_type in ('plan-realtime-fetches', 'plan-realtime-fetches-self')
+        and status = 'ok'
+      order by created_at desc
+      limit 1
+    `,
+  ).first<{ created_at: string }>();
+  return row?.created_at ?? null;
+};
+
+const getLatestQueuedSelfRealtimePlanAt = async (env: Env): Promise<string | null> => {
   const row = await env.REALTIME_DB.prepare(
     `
       select created_at
       from fetch_logs
       where job_type = 'plan-realtime-fetches-self'
+        and status = 'queued'
       order by created_at desc
       limit 1
     `,
@@ -449,10 +464,18 @@ const enqueueSelfRealtimePlanIfStale = async (env: Env, date: string, now = getN
   if (!isJstPollingWindow(now)) {
     return;
   }
-  const latest = await getLatestSelfRealtimePlanAt(env);
+  const latest = await getLatestSuccessfulRealtimePlanAt(env);
   if (
     latest &&
     new Date(latest).getTime() > now.getTime() - REALTIME_PLAN_SELF_SCHEDULE_STALE_SECONDS * 1000
+  ) {
+    return;
+  }
+  const latestQueued = await getLatestQueuedSelfRealtimePlanAt(env);
+  if (
+    latestQueued &&
+    new Date(latestQueued).getTime() >
+      now.getTime() - REALTIME_PLAN_SELF_SCHEDULE_DELAY_SECONDS * 1000
   ) {
     return;
   }
@@ -471,6 +494,28 @@ const enqueueNextSelfRealtimePlan = async (env: Env, date: string, now = getNow(
     { date, selfSchedule: true, type: "plan-realtime-fetches" },
     { delaySeconds: REALTIME_PLAN_SELF_SCHEDULE_DELAY_SECONDS },
   );
+};
+
+const runRealtimePlannerWatchdogIfStale = async (env: Env, date: string, now = getNow(env)) => {
+  if (!isJstPollingWindow(now)) {
+    return;
+  }
+  const latest = await getLatestSuccessfulRealtimePlanAt(env);
+  if (
+    latest &&
+    new Date(latest).getTime() > now.getTime() - REALTIME_PLAN_SELF_SCHEDULE_STALE_SECONDS * 1000
+  ) {
+    return;
+  }
+  await handleJob(env, { date, selfSchedule: true, type: "plan-realtime-fetches" });
+};
+
+const seedRealtimePlannerWatchdog = (env: Env, ctx: ExecutionContext): void => {
+  const now = getNow(env);
+  if (!isJstPollingWindow(now)) {
+    return;
+  }
+  ctx.waitUntil(runRealtimePlannerWatchdogIfStale(env, getTodayJst(now), now));
 };
 
 const getJstDayStart = (targetDate: string): Date =>
@@ -1803,8 +1848,11 @@ const sameDayVenueJockeyWinsFromRequest = (
 };
 
 export default {
-  async fetch(request, env): Promise<Response> {
+  async fetch(request, env, ctx): Promise<Response> {
     const url = new URL(request.url);
+    if (request.method !== "OPTIONS") {
+      seedRealtimePlannerWatchdog(env, ctx);
+    }
     if (request.method === "OPTIONS") {
       return new Response(null, {
         headers: {
@@ -1907,7 +1955,7 @@ export default {
     const job = getCronJob(controller.cron, scheduledAt);
     ctx.waitUntil(handleJob(env, job));
     if (job.type === "plan-realtime-fetches") {
-      ctx.waitUntil(enqueueSelfRealtimePlanIfStale(env, job.date, scheduledAt));
+      ctx.waitUntil(enqueueSelfRealtimePlanIfStale(env, job.date));
     }
   },
 
