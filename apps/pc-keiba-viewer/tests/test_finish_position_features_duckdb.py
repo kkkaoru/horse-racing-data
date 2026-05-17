@@ -156,13 +156,14 @@ def test_pedigree_monthly_stat_sql_reads_from_pedigree_rec_um():
     assert "kyori_band" in sql
 
 
-def test_pedigree_stat_specs_cover_four_tables():
+def test_pedigree_stat_specs_cover_five_tables():
     table_names = [spec["table"] for spec in subject.PEDIGREE_STAT_SPECS]
     assert table_names == [
         "sire_distance_stats",
         "sire_track_stats",
         "damsire_distance_stats",
         "damsire_track_stats",
+        "sire_running_style_stats",
     ]
 
 
@@ -541,6 +542,31 @@ def test_base_features_select_sql_includes_recent_jockey_and_kohan():
     assert "jc.jockey_recent_corner_1_norm_avg_90d" in sql
     assert "jc.jockey_recent_nige_rate_90d" in sql
     assert "rsh.last_3_avg_kohan_3f" in sql
+
+
+def test_pedigree_stat_specs_includes_sire_running_style():
+    names = [spec["table"] for spec in subject.PEDIGREE_STAT_SPECS]
+    assert "sire_running_style_stats" in names
+
+
+def test_pedigree_rec_um_sql_propagates_corner_1_norm():
+    sql = subject.pedigree_rec_um_sql("jra")
+    assert "cast(corner1_norm as double) as corner1_norm" in sql
+
+
+def test_target_pedigree_sql_includes_running_style_bucket():
+    sql = subject.target_pedigree_sql()
+    assert "0 as rs_bucket" in sql
+
+
+def test_base_features_select_sql_includes_sire_running_style():
+    sql = subject.base_features_select_sql("jra")
+    assert "sire_nige_rate" in sql
+    assert "sire_senkou_rate" in sql
+    assert "sire_sashi_rate" in sql
+    assert "sire_oikomi_rate" in sql
+    assert "sire_corner_1_norm_avg" in sql
+    assert "left join sire_running_style_stats srs" in sql
 
 
 def test_base_features_select_sql_includes_extended_horse_features():

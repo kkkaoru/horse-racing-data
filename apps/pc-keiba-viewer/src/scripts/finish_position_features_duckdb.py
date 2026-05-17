@@ -695,6 +695,28 @@ PEDIGREE_STAT_SPECS: list[PedigreeStatSpec] = [
             " as damsire_avg_finish_at_track_val"
         ),
     },
+    {
+        "table": "sire_running_style_stats",
+        "key_column": "ketto_joho_01b",
+        "key_alias": "sire",
+        "bucket_expr": "0",
+        "bucket_alias": "rs_bucket",
+        "monthly_metrics_select": (
+            "sum(case when corner1_norm = 0 then 1 else 0 end) as nige_count,"
+            f" sum(case when corner1_norm > 0 and corner1_norm <= {RUNNING_STYLE_SENKOU_THRESHOLD} then 1 else 0 end) as senkou_count,"
+            f" sum(case when corner1_norm > {RUNNING_STYLE_SENKOU_THRESHOLD} and corner1_norm <= {RUNNING_STYLE_SASHI_THRESHOLD} then 1 else 0 end) as sashi_count,"
+            f" sum(case when corner1_norm > {RUNNING_STYLE_SASHI_THRESHOLD} then 1 else 0 end) as oikomi_count,"
+            " sum(corner1_norm) as corner1_norm_sum,"
+            " count(corner1_norm) as corner1_norm_count"
+        ),
+        "accum_metrics_select": (
+            "sum(m.nige_count)::double / nullif(sum(m.race_count), 0) as sire_nige_rate_val,"
+            " sum(m.senkou_count)::double / nullif(sum(m.race_count), 0) as sire_senkou_rate_val,"
+            " sum(m.sashi_count)::double / nullif(sum(m.race_count), 0) as sire_sashi_rate_val,"
+            " sum(m.oikomi_count)::double / nullif(sum(m.race_count), 0) as sire_oikomi_rate_val,"
+            " sum(m.corner1_norm_sum)::double / nullif(sum(m.corner1_norm_count), 0) as sire_corner_1_norm_avg_val"
+        ),
+    },
 ]
 
 
@@ -707,7 +729,8 @@ def pedigree_rec_um_sql(category: str) -> str:
       source, race_date,
       cast(substr(race_date, 1, 4) as int) * 100 + cast(substr(race_date, 5, 2) as int) as race_year_month,
       ketto_toroku_bango, kyori, track_code, finish_position, finish_norm,
-      keibajo_code, ketto_joho_01b, ketto_joho_05b
+      keibajo_code, ketto_joho_01b, ketto_joho_05b,
+      cast(corner1_norm as double) as corner1_norm
     from src
     """
 
@@ -746,6 +769,7 @@ def target_pedigree_sql() -> str:
       t.source, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango, t.ketto_toroku_bango,
       cast(coalesce(t.kyori, 0) as int) / {DISTANCE_BAND_METERS} as kyori_band,
       left(coalesce(t.track_code, ''), 1) as surface,
+      0 as rs_bucket,
       coalesce(j_um.ketto_joho_01b, n_um.ketto_joho_01b) as target_sire,
       coalesce(j_um.ketto_joho_05b, n_um.ketto_joho_05b) as target_damsire
     from target t
@@ -1071,6 +1095,11 @@ def base_features_select_sql(category: str) -> str:
       case when dsd.race_count >= {PEDIGREE_MIN_RACES} then dsd.dam_sire_distance_win_rate_val else null end as dam_sire_distance_win_rate,
       case when sds.race_count >= {PEDIGREE_MIN_RACES} then sds.sire_avg_finish_at_distance_val else null end as sire_avg_finish_at_distance,
       case when dst.race_count >= {PEDIGREE_MIN_RACES} then dst.damsire_avg_finish_at_track_val else null end as damsire_avg_finish_at_track,
+      case when srs.race_count >= {PEDIGREE_MIN_RACES} then srs.sire_nige_rate_val else null end as sire_nige_rate,
+      case when srs.race_count >= {PEDIGREE_MIN_RACES} then srs.sire_senkou_rate_val else null end as sire_senkou_rate,
+      case when srs.race_count >= {PEDIGREE_MIN_RACES} then srs.sire_sashi_rate_val else null end as sire_sashi_rate,
+      case when srs.race_count >= {PEDIGREE_MIN_RACES} then srs.sire_oikomi_rate_val else null end as sire_oikomi_rate,
+      case when srs.race_count >= {PEDIGREE_MIN_RACES} then srs.sire_corner_1_norm_avg_val else null end as sire_corner_1_norm_avg,
       (
         coalesce(sds.sire_distance_win_rate_val, 0) +
         coalesce(dsd.dam_sire_distance_win_rate_val, 0) +
@@ -1159,6 +1188,7 @@ def base_features_select_sql(category: str) -> str:
     left join sire_track_stats sts on sts.sire = tp.target_sire and sts.surface = tp.surface and sts.stats_year_month = cast(t.kaisai_nen as int) * 100 + cast(substr(t.kaisai_tsukihi, 1, 2) as int)
     left join damsire_distance_stats dsd on dsd.damsire = tp.target_damsire and dsd.kyori_band = tp.kyori_band and dsd.stats_year_month = cast(t.kaisai_nen as int) * 100 + cast(substr(t.kaisai_tsukihi, 1, 2) as int)
     left join damsire_track_stats dst on dst.damsire = tp.target_damsire and dst.surface = tp.surface and dst.stats_year_month = cast(t.kaisai_nen as int) * 100 + cast(substr(t.kaisai_tsukihi, 1, 2) as int)
+    left join sire_running_style_stats srs on srs.sire = tp.target_sire and srs.rs_bucket = tp.rs_bucket and srs.stats_year_month = cast(t.kaisai_nen as int) * 100 + cast(substr(t.kaisai_tsukihi, 1, 2) as int)
     left join race_field_aggregates rfa using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
     left join race_top3_speed rts using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
     left join track_bias tb using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
