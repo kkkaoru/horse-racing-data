@@ -866,6 +866,15 @@ def horse_running_style_history_cte(target_filter: str = "true") -> str:
         avg(b.corner1_norm)
           filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
           as past_corner_1_norm_avg_5,
+        avg(b.corner1_norm)
+          filter (where b.recent_rank <= 3)
+          as past_corner_1_norm_avg_3,
+        avg(b.corner1_norm)
+          filter (where b.recent_rank <= 10)
+          as past_corner_1_norm_avg_10,
+        avg(b.corner4_norm - b.corner1_norm)
+          filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
+          as past_corner_progression_avg_5,
         stddev_samp(b.corner1_norm)
           filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
           as past_corner_1_norm_std_5,
@@ -1143,6 +1152,9 @@ def base_features_select_sql(category: str) -> str:
       rf.last_race_class_diff, rf.last_race_distance_diff, rf.finish_trend_5, rf.last_3_avg_finish_norm,
       lf.avg_finish, lf.recent_finish, lf.popularity_score, lf.odds_score,
       rsh.past_corner_1_norm_avg_5,
+      rsh.past_corner_1_norm_avg_3,
+      rsh.past_corner_1_norm_avg_10,
+      rsh.past_corner_progression_avg_5,
       rsh.past_corner_1_norm_std_5,
       rsh.past_corner_1_norm_best_5,
       rsh.past_corner_1_norm_worst_5,
