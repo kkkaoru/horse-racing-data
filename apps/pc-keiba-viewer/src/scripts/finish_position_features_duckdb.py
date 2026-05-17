@@ -143,33 +143,116 @@ def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
         pass
 
 
-def run_staged_sql(con: duckdb.DuckDBPyConnection, stage: str, sql: str) -> None:
+def run_staged_sql(
+    con: duckdb.DuckDBPyConnection,
+    stage: str,
+    sql: str,
+    row_count_table: str | None = None,
+) -> None:
     log_event(stage, "start", 0.0)
     started = perf_counter()
     con.execute(sql)
-    log_event(stage, "done", perf_counter() - started)
+    elapsed = perf_counter() - started
+    rows: int | None = None
+    if row_count_table is not None:
+        rows = int(con.execute(f"select count(*) from {row_count_table}").fetchone()[0])
+    log_event(stage, "done", elapsed, rows=rows)
 
 
-def stage_rec_table(con: duckdb.DuckDBPyConnection, history_start: str, to_date: str) -> None:
+BAN_EI_KEIBAJO_CODE = "83"
+CATEGORY_BAN_EI = "ban-ei"
+CATEGORY_NAR = "nar"
+CATEGORY_JRA = "jra"
+
+
+def _rec_select_from_corner_features(history_start: str, to_date: str) -> str:
+    """Build rec SELECT from race_entry_corner_features (no bataiju enrichment).
+
+    bataiju lookup is done separately via stage_se_table / weight_cte to avoid
+    a heavy PG-side double LEFT JOIN that would dominate stage time.
+    """
+    return f"""
+    select
+      source, race_date,
+      strptime(race_date, '%Y%m%d')::date as race_dt,
+      kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+      ketto_toroku_bango, umaban,
+      kishumei_ryakusho, chokyoshimei_ryakusho,
+      kyori, track_code, grade_code, kyoso_joken_code,
+      shusso_tosu, finish_position, finish_norm,
+      time_sa, kohan_3f, corner1_norm, corner3_norm, corner4_norm,
+      babajotai_code_shiba, babajotai_code_dirt,
+      tansho_ninkijun, tansho_odds,
+      cast(null as int) as bataiju
+    from pg.race_entry_corner_features
+    where race_date between '{history_start}' and '{to_date}'
+    """
+
+
+def _rec_select_from_ban_ei(history_start: str, to_date: str) -> str:
+    return f"""
+    select
+      'nar' as source,
+      se.kaisai_nen || se.kaisai_tsukihi as race_date,
+      strptime(se.kaisai_nen || se.kaisai_tsukihi, '%Y%m%d')::date as race_dt,
+      se.kaisai_nen, se.kaisai_tsukihi, se.keibajo_code, se.race_bango,
+      se.ketto_toroku_bango,
+      try_cast(nullif(trim(se.umaban), '') as int) as umaban,
+      se.kishumei_ryakusho, se.chokyoshimei_ryakusho,
+      try_cast(nullif(trim(ra.kyori), '') as int) as kyori,
+      ra.track_code, ra.grade_code, ra.kyoso_joken_code,
+      try_cast(nullif(trim(ra.shusso_tosu), '') as int) as shusso_tosu,
+      try_cast(nullif(trim(se.kakutei_chakujun), '') as int) as finish_position,
+      case
+        when try_cast(nullif(trim(se.kakutei_chakujun), '') as double) is not null
+             and try_cast(nullif(trim(ra.shusso_tosu), '') as double) is not null
+             and try_cast(nullif(trim(ra.shusso_tosu), '') as double) > 0
+        then try_cast(nullif(trim(se.kakutei_chakujun), '') as double)
+             / try_cast(nullif(trim(ra.shusso_tosu), '') as double)
+        else null
+      end as finish_norm,
+      try_cast(nullif(trim(se.time_sa), '') as double) as time_sa,
+      try_cast(nullif(trim(se.kohan_3f), '') as double) as kohan_3f,
+      cast(null as double) as corner1_norm,
+      cast(null as double) as corner3_norm,
+      cast(null as double) as corner4_norm,
+      ra.babajotai_code_shiba, ra.babajotai_code_dirt,
+      try_cast(nullif(trim(se.tansho_ninkijun), '') as int) as tansho_ninkijun,
+      try_cast(nullif(trim(se.tansho_odds), '') as double) / 10 as tansho_odds,
+      try_cast(nullif(trim(se.bataiju), '') as int) as bataiju
+    from pg.nvd_se se
+
+    join pg.nvd_ra ra
+      on ra.kaisai_nen = se.kaisai_nen
+      and ra.kaisai_tsukihi = se.kaisai_tsukihi
+      and ra.keibajo_code = se.keibajo_code
+      and ra.race_bango = se.race_bango
+    where se.keibajo_code = '{BAN_EI_KEIBAJO_CODE}'
+      and (se.kaisai_nen || se.kaisai_tsukihi) between '{history_start}' and '{to_date}'
+      and se.ketto_toroku_bango is not null
+    """
+
+
+def build_rec_select_sql(category: str, history_start: str, to_date: str) -> str:
+    if category == CATEGORY_BAN_EI:
+        return _rec_select_from_ban_ei(history_start, to_date)
+    corner_sql = _rec_select_from_corner_features(history_start, to_date)
+    ban_ei_sql = _rec_select_from_ban_ei(history_start, to_date)
+    return f"{corner_sql}\nunion all\n{ban_ei_sql}"
+
+
+def stage_rec_table(
+    con: duckdb.DuckDBPyConnection,
+    history_start: str,
+    to_date: str,
+    category: str,
+) -> None:
+    select_sql = build_rec_select_sql(category, history_start, to_date)
     run_staged_sql(
         con,
         "source.rec",
-        f"""
-        create or replace temp table rec as
-        select
-          source, race_date,
-          strptime(race_date, '%Y%m%d')::date as race_dt,
-          kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-          ketto_toroku_bango, umaban,
-          kishumei_ryakusho, chokyoshimei_ryakusho,
-          kyori, track_code, grade_code, kyoso_joken_code,
-          shusso_tosu, finish_position, finish_norm,
-          time_sa, kohan_3f, corner1_norm, corner3_norm, corner4_norm,
-          babajotai_code_shiba, babajotai_code_dirt,
-          tansho_ninkijun, tansho_odds
-        from pg.race_entry_corner_features
-        where race_date between '{history_start}' and '{to_date}'
-        """,
+        f"create or replace temp table rec as {select_sql}",
+        row_count_table="rec",
     )
     log_event("source.rec.indexes", "start", 0.0)
     started = perf_counter()
@@ -187,18 +270,29 @@ def stage_se_table(
     pg_table: str,
     history_start: str,
     to_date: str,
+    keibajo_filter: str | None = None,
 ) -> None:
+    keibajo_clause = f"and keibajo_code = '{keibajo_filter}'" if keibajo_filter else ""
     run_staged_sql(
         con,
         stage,
         f"""
         create or replace temp table {table} as
         select kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango,
-               nullif(bataiju, '') as bataiju
+               try_cast(nullif(trim(bataiju), '') as int) as bataiju
         from pg.{pg_table}
         where (kaisai_nen || kaisai_tsukihi) between '{history_start}' and '{to_date}'
+          {keibajo_clause}
         """,
+        row_count_table=table,
     )
+    log_event(f"{stage}.index", "start", 0.0)
+    started = perf_counter()
+    con.execute(
+        f"create index {table}_jk_idx on {table} "
+        f"(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)"
+    )
+    log_event(f"{stage}.index", "done", perf_counter() - started)
 
 
 def stage_um_table(
@@ -211,6 +305,7 @@ def stage_um_table(
         create or replace temp table {table} as
         select ketto_toroku_bango, ketto_joho_01b, ketto_joho_05b from pg.{pg_table}
         """,
+        row_count_table=table,
     )
 
 
@@ -221,7 +316,9 @@ def stage_ra_table(
     pg_table: str,
     from_date: str,
     to_date: str,
+    keibajo_filter: str | None = None,
 ) -> None:
+    keibajo_clause = f"and keibajo_code = '{keibajo_filter}'" if keibajo_filter else ""
     run_staged_sql(
         con,
         stage,
@@ -230,19 +327,90 @@ def stage_ra_table(
         select kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, tenko_code
         from pg.{pg_table}
         where (kaisai_nen || kaisai_tsukihi) between '{from_date}' and '{to_date}'
+          {keibajo_clause}
         """,
+        row_count_table=table,
     )
 
 
-def stage_source_tables(con: duckdb.DuckDBPyConnection, from_date: str, to_date: str) -> None:
+def _log_source_config(category: str, history_start: str, from_date: str, to_date: str) -> None:
+    print(
+        json.dumps(
+            {
+                "stage": "source.config",
+                "status": "info",
+                "category": category,
+                "history_start": history_start,
+                "from_date": from_date,
+                "to_date": to_date,
+            },
+            ensure_ascii=False,
+        ),
+        flush=True,
+    )
+
+
+def _stage_empty_jra_stubs(con: duckdb.DuckDBPyConnection) -> None:
+    """For ban-ei builds, create empty stub tables for jra_se/jra_um/jra_ra.
+
+    weight_cte still references jra_se / nar_se via LEFT JOIN, and
+    pedigree_rec_um_subquery / weather_lookup reference jra_um / jra_ra for
+    the JRA branch of union queries. Empty stubs let those queries run
+    without PG round-trips.
+    """
+    run_staged_sql(
+        con,
+        "source.jra_se.skip",
+        "create or replace temp table jra_se as "
+        "select cast(null as varchar) as kaisai_nen, cast(null as varchar) as kaisai_tsukihi, "
+        "cast(null as varchar) as keibajo_code, cast(null as varchar) as race_bango, "
+        "cast(null as varchar) as ketto_toroku_bango, cast(null as int) as bataiju "
+        "where false",
+        row_count_table="jra_se",
+    )
+    run_staged_sql(
+        con,
+        "source.jra_um.skip",
+        "create or replace temp table jra_um as "
+        "select cast(null as varchar) as ketto_toroku_bango, "
+        "cast(null as varchar) as ketto_joho_01b, cast(null as varchar) as ketto_joho_05b "
+        "where false",
+        row_count_table="jra_um",
+    )
+    run_staged_sql(
+        con,
+        "source.jra_ra.skip",
+        "create or replace temp table jra_ra as "
+        "select cast(null as varchar) as kaisai_nen, cast(null as varchar) as kaisai_tsukihi, "
+        "cast(null as varchar) as keibajo_code, cast(null as varchar) as race_bango, "
+        "cast(null as varchar) as tenko_code "
+        "where false",
+        row_count_table="jra_ra",
+    )
+
+
+def stage_source_tables(
+    con: duckdb.DuckDBPyConnection, from_date: str, to_date: str, category: str
+) -> None:
     history_start = compute_history_start(from_date, HISTORY_LOOKBACK_YEARS)
-    stage_rec_table(con, history_start, to_date)
-    stage_se_table(con, "source.jra_se", "jra_se", "jvd_se", history_start, to_date)
-    stage_se_table(con, "source.nar_se", "nar_se", "nvd_se", history_start, to_date)
-    stage_um_table(con, "source.jra_um", "jra_um", "jvd_um")
+    _log_source_config(category, history_start, from_date, to_date)
+    stage_rec_table(con, history_start, to_date, category)
+    nar_keibajo_filter = BAN_EI_KEIBAJO_CODE if category == CATEGORY_BAN_EI else None
+    stage_se_table(
+        con, "source.nar_se", "nar_se", "nvd_se", history_start, to_date, nar_keibajo_filter
+    )
     stage_um_table(con, "source.nar_um", "nar_um", "nvd_um")
+    stage_ra_table(
+        con, "source.nar_ra", "nar_ra", "nvd_ra", from_date, to_date, nar_keibajo_filter
+    )
+    if category == CATEGORY_BAN_EI:
+        _stage_empty_jra_stubs(con)
+        return
+    stage_se_table(con, "source.jra_se", "jra_se", "jvd_se", history_start, to_date)
+    stage_um_table(con, "source.jra_um", "jra_um", "jvd_um")
     stage_ra_table(con, "source.jra_ra", "jra_ra", "jvd_ra", from_date, to_date)
-    stage_ra_table(con, "source.nar_ra", "nar_ra", "nvd_ra", from_date, to_date)
+    stage_um_table(con, "source.jra_um", "jra_um", "jvd_um")
+    stage_ra_table(con, "source.jra_ra", "jra_ra", "jvd_ra", from_date, to_date)
 
 
 def build_target_table(con: duckdb.DuckDBPyConnection, category: str, from_date: str, to_date: str) -> None:
@@ -593,38 +761,28 @@ def track_bias_cte(target_filter: str = "true") -> str:
 
 
 def weight_cte(target_filter: str = "true") -> str:
+    """Aggregate bataiju from pre-baked horse_history_base.history_bataiju.
+
+    history_bataiju is baked into horse_history_base at materialization time
+    via LEFT JOIN se_lookup (single UNION ALL of jra_se/nar_se with source col).
+    current_bataiju comes from target_current_bataiju (target × se_lookup).
+    weight_cte itself is a pure aggregation — no JOIN to jra_se/nar_se. This
+    eliminates the 36.7M × 2 LEFT JOIN probe explosion + weight_history
+    intermediate that previously dominated build time (>17 min on NAR v1).
+
+    target_filter is unused (per-year filtering is applied via per-year base).
+    Kept in signature for PER_YEAR_SPECS compatibility.
+    """
+    del target_filter
     return f"""
-    target_weight as (
-      select t.source, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango, t.ketto_toroku_bango,
-        coalesce(cast(j.bataiju as int), cast(n.bataiju as int)) as current_bataiju
-      from target t
-      left join jra_se j on t.source='jra' and j.kaisai_nen=t.kaisai_nen and j.kaisai_tsukihi=t.kaisai_tsukihi
-        and j.keibajo_code=t.keibajo_code and j.race_bango=t.race_bango and j.ketto_toroku_bango=t.ketto_toroku_bango
-      left join nar_se n on t.source='nar' and n.kaisai_nen=t.kaisai_nen and n.kaisai_tsukihi=t.kaisai_tsukihi
-        and n.keibajo_code=t.keibajo_code and n.race_bango=t.race_bango and n.ketto_toroku_bango=t.ketto_toroku_bango
-      where ({target_filter})
-    ),
-    weight_history as (
-      select
-        b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango, b.ketto_toroku_bango,
-        tw.current_bataiju,
-        coalesce(cast(hj.bataiju as int), cast(hn.bataiju as int)) as history_bataiju,
-        b.recent_rank
-      from horse_history_base b
-      join target_weight tw using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
-      left join jra_se hj on b.source='jra' and hj.kaisai_nen=b.history_kaisai_nen
-        and hj.kaisai_tsukihi=b.history_kaisai_tsukihi and hj.keibajo_code=b.history_keibajo
-        and hj.race_bango=b.history_race_bango and hj.ketto_toroku_bango=b.ketto_toroku_bango
-      left join nar_se hn on b.source='nar' and hn.kaisai_nen=b.history_kaisai_nen
-        and hn.kaisai_tsukihi=b.history_kaisai_tsukihi and hn.keibajo_code=b.history_keibajo
-        and hn.race_bango=b.history_race_bango and hn.ketto_toroku_bango=b.ketto_toroku_bango
-    ),
     weight_agg as (
-      select source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango,
-        max(current_bataiju) as current_bataiju_kept,
-        avg(history_bataiju) filter (where recent_rank <= {RECENT_WINDOW_SIZE}) as weight_avg_5
-      from weight_history
-      group by source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango
+      select b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango, b.ketto_toroku_bango,
+        max(tcb.current_bataiju) as current_bataiju_kept,
+        avg(b.history_bataiju) filter (where b.recent_rank <= {RECENT_WINDOW_SIZE}) as weight_avg_5
+      from horse_history_base b
+      left join target_current_bataiju tcb
+        using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
+      group by b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango, b.ketto_toroku_bango
     )
     """
 
@@ -1094,24 +1252,37 @@ HORSE_HISTORY_BASE_SELECT = """
         when '000' then 0 when '005' then 1 when '010' then 2 when '016' then 3
         when '701' then 4 when '703' then 5 when '999' then 6
         else null end) as history_class_level,
+      hs.bataiju as history_bataiju,
       row_number() over (
         partition by t.source, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango, t.ketto_toroku_bango
         order by h.race_date desc
       ) as recent_rank
 """
 
-
-def materialize_horse_history_base(con: duckdb.DuckDBPyConnection, target_filter: str) -> int:
-    con.execute(
-        f"""
-        create or replace temp table horse_history_base as
-        {HORSE_HISTORY_BASE_SELECT}
+HORSE_HISTORY_BASE_FROM = """
         from target t
         join rec h
           on h.source = t.source
           and h.ketto_toroku_bango = t.ketto_toroku_bango
           and h.race_date < t.race_date
-          and h.race_dt >= t.race_dt - interval '{HISTORY_LOOKBACK_YEARS} years'
+          and h.race_dt >= t.race_dt - interval '{years} years'
+        left join se_lookup hs
+          on hs.source = h.source
+          and hs.kaisai_nen = h.kaisai_nen
+          and hs.kaisai_tsukihi = h.kaisai_tsukihi
+          and hs.keibajo_code = h.keibajo_code
+          and hs.race_bango = h.race_bango
+          and hs.ketto_toroku_bango = h.ketto_toroku_bango
+"""
+
+
+def materialize_horse_history_base(con: duckdb.DuckDBPyConnection, target_filter: str) -> int:
+    from_clause = HORSE_HISTORY_BASE_FROM.format(years=HISTORY_LOOKBACK_YEARS)
+    con.execute(
+        f"""
+        create or replace temp table horse_history_base as
+        {HORSE_HISTORY_BASE_SELECT}
+        {from_clause}
         where h.finish_position is not null and ({target_filter})
         """
     )
@@ -1143,30 +1314,89 @@ def execute_derived_stage(
         )
 
 
+def materialize_se_lookup(con: duckdb.DuckDBPyConnection) -> int:
+    """Single UNION ALL bataiju lookup over jra_se / nar_se with source col.
+
+    Replaces the two-LEFT-JOIN pattern (jra_se + nar_se, source-conditional)
+    with a single LEFT JOIN to a unified lookup table. Cuts probe count in
+    half wherever bataiju is needed (horse_history_base + target_current_bataiju).
+    """
+    log_event("se_lookup.build", "start", 0.0)
+    started = perf_counter()
+    con.execute(
+        """
+        create or replace temp table se_lookup as
+        select 'jra' as source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango,
+               try_cast(nullif(trim(cast(bataiju as varchar)), '') as int) as bataiju
+        from jra_se where ketto_toroku_bango is not null
+        union all
+        select 'nar' as source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango,
+               try_cast(nullif(trim(cast(bataiju as varchar)), '') as int) as bataiju
+        from nar_se where ketto_toroku_bango is not null
+        """
+    )
+    con.execute(
+        "create index se_lookup_idx on se_lookup "
+        "(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)"
+    )
+    row = con.execute("select count(*) from se_lookup").fetchone()
+    rc = int(row[0]) if row is not None else 0
+    log_event("se_lookup.build", "done", perf_counter() - started, rc)
+    return rc
+
+
+def materialize_target_current_bataiju(con: duckdb.DuckDBPyConnection) -> int:
+    """Pre-compute current_bataiju per target row via single LEFT JOIN to se_lookup."""
+    log_event("target_current_bataiju.build", "start", 0.0)
+    started = perf_counter()
+    con.execute(
+        """
+        create or replace temp table target_current_bataiju as
+        select t.source, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango,
+               t.ketto_toroku_bango, s.bataiju as current_bataiju
+        from target t
+        left join se_lookup s
+          using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
+        """
+    )
+    row = con.execute("select count(*) from target_current_bataiju").fetchone()
+    rc = int(row[0]) if row is not None else 0
+    log_event("target_current_bataiju.build", "done", perf_counter() - started, rc)
+    return rc
+
+
+PER_YEAR_SPECS: list[DerivedStageSpec] = [
+    {"name": "horse_career", "cte_builder": lambda _: horse_career_cte(), "final_cte": "horse_career"},
+    {"name": "recent_form", "cte_builder": lambda _: recent_form_cte(), "final_cte": "recent_form"},
+    {"name": "legacy_features", "cte_builder": legacy_five_cte, "final_cte": "legacy_features"},
+    {"name": "weight_agg", "cte_builder": weight_cte, "final_cte": "weight_agg"},
+]
+
+
 def stage_horse_history_derived(
     con: duckdb.DuckDBPyConnection,
     years: list[int],
     heartbeat: Heartbeat,
 ) -> None:
-    specs: list[DerivedStageSpec] = [
-        {"name": "horse_career", "cte_builder": lambda _: horse_career_cte(), "final_cte": "horse_career"},
-        {"name": "recent_form", "cte_builder": lambda _: recent_form_cte(), "final_cte": "recent_form"},
-        {"name": "weight_agg", "cte_builder": weight_cte, "final_cte": "weight_agg"},
-        {"name": "legacy_features", "cte_builder": legacy_five_cte, "final_cte": "legacy_features"},
-    ]
     log_event("horse_history_derived", "start", 0.0)
     overall_start = perf_counter()
+    heartbeat.set_substage("se_lookup")
+    materialize_se_lookup(con)
+    heartbeat.set_substage("target_current_bataiju")
+    materialize_target_current_bataiju(con)
     for idx, year in enumerate(years):
         heartbeat.set_substage(f"year={year}")
         year_filter = f"t.kaisai_nen = '{year:04d}'"
         base_start = perf_counter()
         base_rows = materialize_horse_history_base(con, year_filter)
         log_event(f"horse_history_base.year{year}", "done", perf_counter() - base_start, base_rows)
-        for spec in specs:
+        for spec in PER_YEAR_SPECS:
             stage_start = perf_counter()
             execute_derived_stage(con, spec, year_filter, idx == 0)
             log_event(f"{spec['name']}.year{year}", "done", perf_counter() - stage_start)
-    for spec in specs:
+    for spec in PER_YEAR_SPECS:
         row_result = con.execute(f"select count(*) from {spec['final_cte']}").fetchone()
         rows = int(row_result[0]) if row_result is not None else 0
         log_event(f"{spec['name']}.total", "done", 0.0, rows)
@@ -1194,11 +1424,17 @@ def configure_duckdb_session(
         pass
 
 
-def stage_source(con: duckdb.DuckDBPyConnection, pg_url: str, from_date: str, to_date: str) -> None:
+def stage_source(
+    con: duckdb.DuckDBPyConnection,
+    pg_url: str,
+    from_date: str,
+    to_date: str,
+    category: str,
+) -> None:
     log_event("source.stage", "start", 0.0)
     started = perf_counter()
     install_and_attach_pg(con, pg_url)
-    stage_source_tables(con, from_date, to_date)
+    stage_source_tables(con, from_date, to_date, category)
     log_event("source.stage", "done", perf_counter() - started)
 
 
@@ -1209,7 +1445,63 @@ def stage_target(con: duckdb.DuckDBPyConnection, category: str, from_date: str, 
     target_row_result = con.execute("select count(*) from target").fetchone()
     target_rows = int(target_row_result[0]) if target_row_result is not None else 0
     log_event("target.build", "done", perf_counter() - started, target_rows)
+    shrink_se_tables_to_target_horses(con)
     return target_rows
+
+
+def shrink_se_tables_to_target_horses(con: duckdb.DuckDBPyConnection) -> None:
+    """Restrict jra_se / nar_se to bataiju lookup rows for target horses only.
+
+    weight_cte is the sole consumer of jra_se / nar_se (bataiju lookup).
+    Restricting them to ketto_toroku_bango that appear in target keeps full
+    historical bataiju (transferred horses included via source rec history),
+    while dramatically shrinking hash-join input size for large NAR/JRA builds.
+    """
+    log_event("target.shrink_se", "start", 0.0)
+    started = perf_counter()
+    con.execute(
+        "create or replace temp table _target_horse_ids as "
+        "select distinct ketto_toroku_bango from target"
+    )
+    horse_count_row = con.execute("select count(*) from _target_horse_ids").fetchone()
+    horse_count = int(horse_count_row[0]) if horse_count_row is not None else 0
+    con.execute(
+        "create or replace temp table jra_se as "
+        "select * from jra_se "
+        "where ketto_toroku_bango in (select ketto_toroku_bango from _target_horse_ids)"
+    )
+    con.execute(
+        "create index jra_se_jk_idx on jra_se "
+        "(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)"
+    )
+    jra_row = con.execute("select count(*) from jra_se").fetchone()
+    jra_rows = int(jra_row[0]) if jra_row is not None else 0
+    con.execute(
+        "create or replace temp table nar_se as "
+        "select * from nar_se "
+        "where ketto_toroku_bango in (select ketto_toroku_bango from _target_horse_ids)"
+    )
+    con.execute(
+        "create index nar_se_jk_idx on nar_se "
+        "(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)"
+    )
+    nar_row = con.execute("select count(*) from nar_se").fetchone()
+    nar_rows = int(nar_row[0]) if nar_row is not None else 0
+    elapsed = perf_counter() - started
+    print(
+        json.dumps(
+            {
+                "stage": "target.shrink_se",
+                "status": "done",
+                "elapsed_seconds": round(elapsed, 2),
+                "target_horses": horse_count,
+                "jra_se_rows": jra_rows,
+                "nar_se_rows": nar_rows,
+            },
+            ensure_ascii=False,
+        ),
+        flush=True,
+    )
 
 
 def stage_partner_features(
@@ -1281,7 +1573,7 @@ def run(args: argparse.Namespace) -> BuildResult:
     try:
         configure_duckdb_session(con, args.threads, args.memory_limit, args.temp_dir)
         heartbeat.set_stage("source.stage")
-        stage_source(con, pg_url, args.from_date, args.to_date)
+        stage_source(con, pg_url, args.from_date, args.to_date, args.category)
         heartbeat.set_stage("target.build")
         target_rows = stage_target(con, args.category, args.from_date, args.to_date)
         years = get_target_years(con)

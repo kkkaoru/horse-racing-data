@@ -243,10 +243,15 @@ def test_track_bias_cte_defines_inside_and_front_thresholds():
     assert f"<= {subject.FRONT_CORNER_THRESHOLD}" in cte
 
 
-def test_weight_cte_coalesces_jra_and_nar_bataiju():
+def test_weight_cte_aggregates_baked_bataiju_from_horse_history_base():
     cte = subject.weight_cte()
-    assert "coalesce(cast(j.bataiju as int), cast(n.bataiju as int))" in cte
+    assert "from horse_history_base" in cte
+    assert "target_current_bataiju" in cte
+    assert "history_bataiju" in cte
     assert "weight_avg_5" in cte
+    # se tables are not joined inside weight_cte anymore (bataiju is baked in)
+    assert "jra_se" not in cte
+    assert "nar_se" not in cte
 
 
 def test_recent_form_cte_uses_regr_slope_with_three_race_guard():
