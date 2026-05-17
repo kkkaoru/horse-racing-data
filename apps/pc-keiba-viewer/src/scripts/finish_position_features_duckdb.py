@@ -575,7 +575,14 @@ def jockey_cte(target_filter: str = "true") -> str:
                  when corner1_norm > {RUNNING_STYLE_SASHI_THRESHOLD} then 1.0
                  else 0.0 end) as jockey_oikomi_rate,
         avg(corner1_norm) as jockey_corner_1_norm_avg,
-        avg(corner1_norm) filter (where history_horse = target_horse) as jockey_horse_corner_1_norm_avg
+        avg(corner1_norm) filter (where history_horse = target_horse) as jockey_horse_corner_1_norm_avg,
+        avg(corner1_norm) filter (where history_race_dt >= target_race_dt - {JOCKEY_RECENT_DAYS})
+          as jockey_recent_corner_1_norm_avg_90d,
+        avg(case when corner1_norm = 0 then 1.0
+                 when corner1_norm is null then null
+                 else 0.0 end)
+          filter (where history_race_dt >= target_race_dt - {JOCKEY_RECENT_DAYS})
+          as jockey_recent_nige_rate_90d
     """
     return template.replace("{aggregations}", aggregations)
 
@@ -886,6 +893,7 @@ def horse_running_style_history_cte(target_filter: str = "true") -> str:
         count(*) filter (where b.finish_position between 1 and 3
                            and b.recent_rank <= {RECENT_WINDOW_SIZE})::bigint
           as recent_top3_count_5,
+        avg(b.kohan_3f) filter (where b.recent_rank <= 3) as last_3_avg_kohan_3f,
         greatest(
           count(*) filter (where b.corner1_norm = 0 and b.recent_rank <= {RECENT_WINDOW_SIZE}),
           count(*) filter (where b.corner1_norm > 0 and b.corner1_norm <= {RUNNING_STYLE_SENKOU_THRESHOLD}
@@ -1056,6 +1064,7 @@ def base_features_select_sql(category: str) -> str:
       jc.jockey_horse_pair_count, jc.jockey_horse_pair_win_rate,
       jc.jockey_nige_rate, jc.jockey_senkou_rate, jc.jockey_sashi_rate, jc.jockey_oikomi_rate,
       jc.jockey_corner_1_norm_avg, jc.jockey_horse_corner_1_norm_avg,
+      jc.jockey_recent_corner_1_norm_avg_90d, jc.jockey_recent_nige_rate_90d,
       tc.trainer_career_win_rate, tc.trainer_keibajo_win_rate, tc.trainer_distance_win_rate, tc.trainer_horse_win_rate,
       case when sds.race_count >= {PEDIGREE_MIN_RACES} then sds.sire_distance_win_rate_val else null end as sire_distance_win_rate,
       case when sts.race_count >= {PEDIGREE_MIN_RACES} then sts.sire_track_win_rate_val else null end as sire_track_win_rate,
@@ -1111,6 +1120,7 @@ def base_features_select_sql(category: str) -> str:
       rsh.recent_win_count_5,
       rsh.recent_top3_count_5,
       rsh.past_dominant_label_consistency_5,
+      rsh.last_3_avg_kohan_3f,
       case
         when t.shusso_tosu is null or t.shusso_tosu < {UMABAN_NORM_MIN_FIELD} then null
         when t.umaban is null then null

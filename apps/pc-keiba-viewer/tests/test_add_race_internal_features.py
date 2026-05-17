@@ -49,6 +49,21 @@ def test_append_features_sql_emits_intra_race_peer_aggregates():
     assert "field_avg_career_win_rate" in sql
 
 
+def test_append_features_sql_emits_field_extremes_and_layoff():
+    sql = subject.append_features_sql("dummy.parquet")
+    assert "field_max_past_corner_1_norm" in sql
+    assert "field_min_past_corner_1_norm" in sql
+    assert "field_spread_past_corner_1_norm" in sql
+    assert "field_has_pure_nige_horse" in sql
+    assert "is_returning_from_layoff" in sql
+    assert "days_since_last_race_log" in sql
+
+
+def test_layoff_threshold_and_pure_nige_threshold_constants():
+    assert subject.LAYOFF_DAYS_THRESHOLD == 90
+    assert subject.PURE_NIGE_THRESHOLD == 0.7
+
+
 def test_append_features_sql_keeps_existing_speed_diff_column():
     sql = subject.append_features_sql("dummy.parquet")
     assert "speed_index_avg_5_diff_from_race_avg" in sql
@@ -125,13 +140,16 @@ def test_appended_features_via_duckdb_match_expected_values(tmp_path: Path):
           values
             ('jra', '2025', '0101', '05', '01', 1, 'horse_a',
               0.10, 0.20, 0.40, 0.30, 0.5, 1.0, 0.2, 0.1,
-              0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0),
+              0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5,
+              0.40, 30, 0),
             ('jra', '2025', '0101', '05', '01', 2, 'horse_b',
               0.50, 0.20, 0.20, 0.10, 0.3, 1.5, 0.4, 0.2,
-              0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 1),
+              0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6,
+              0.10, 14, 1),
             ('jra', '2025', '0101', '05', '01', 3, 'horse_c',
               0.00, 0.40, 0.40, 0.20, 0.8, 1.2, 0.3, 0.3,
-              0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 2)
+              0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4,
+              0.80, 120, 2)
         ) as v(
           source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
           umaban, ketto_toroku_bango,
@@ -139,7 +157,8 @@ def test_appended_features_via_duckdb_match_expected_values(tmp_path: Path):
           umaban_norm, speed_index_avg_5, speed_index_best_5, career_win_rate,
           jockey_recent_win_rate, trainer_career_win_rate, pedigree_score_for_race,
           same_distance_win_rate, kohan3f_avg_5, corner_pass_avg_5,
-          field_strength_avg_speed, field_strength_top3_speed, finish_position, race_year
+          field_strength_avg_speed, field_strength_top3_speed, finish_position,
+          past_corner_1_norm_avg_5, days_since_last_race, race_year
         )
         """
     )

@@ -20,6 +20,8 @@ RACE_PARTITION = "source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango"
 NIGE_PRESSURE_WEIGHT = 2.0
 SENKOU_PRESSURE_WEIGHT = 1.0
 NIGE_CANDIDATE_THRESHOLD = 0.4
+PURE_NIGE_THRESHOLD = 0.7
+LAYOFF_DAYS_THRESHOLD = 90
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -69,7 +71,25 @@ def append_features_sql(input_glob: str) -> str:
       b.umaban_norm * coalesce(b.past_nige_rate_self, 0) as umaban_x_nige_history,
       avg(b.speed_index_avg_5) over race_partition as field_avg_speed_index,
       max(b.speed_index_best_5) over race_partition as field_top_speed_index,
-      avg(b.career_win_rate) over race_partition as field_avg_career_win_rate
+      avg(b.career_win_rate) over race_partition as field_avg_career_win_rate,
+      max(b.past_corner_1_norm_avg_5) over race_partition as field_max_past_corner_1_norm,
+      min(b.past_corner_1_norm_avg_5) over race_partition as field_min_past_corner_1_norm,
+      max(b.past_corner_1_norm_avg_5) over race_partition
+        - min(b.past_corner_1_norm_avg_5) over race_partition as field_spread_past_corner_1_norm,
+      case
+        when (
+          sum(case when b.past_nige_rate_self > {PURE_NIGE_THRESHOLD} then 1 else 0 end) over race_partition
+          - case when b.past_nige_rate_self > {PURE_NIGE_THRESHOLD} then 1 else 0 end
+        ) > 0 then 1 else 0
+      end as field_has_pure_nige_horse,
+      case
+        when b.days_since_last_race is null then null
+        when b.days_since_last_race > {LAYOFF_DAYS_THRESHOLD} then 1 else 0
+      end as is_returning_from_layoff,
+      case
+        when b.days_since_last_race is null then null
+        else ln(cast(b.days_since_last_race as double) + 1.0)
+      end as days_since_last_race_log
     from base_features b
     window
       race_partition as (partition by b.{RACE_PARTITION.replace(", ", ", b.")}),

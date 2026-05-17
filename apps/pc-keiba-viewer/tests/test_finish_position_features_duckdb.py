@@ -524,6 +524,25 @@ def test_base_features_select_sql_includes_jockey_running_style():
     assert "jc.jockey_horse_corner_1_norm_avg" in sql
 
 
+def test_jockey_cte_emits_recent_90d_window_aggregates():
+    cte = subject.jockey_cte()
+    assert "jockey_recent_corner_1_norm_avg_90d" in cte
+    assert "jockey_recent_nige_rate_90d" in cte
+    assert f"target_race_dt - {subject.JOCKEY_RECENT_DAYS}" in cte
+
+
+def test_horse_running_style_history_cte_emits_last_3_kohan_3f():
+    cte = subject.horse_running_style_history_cte()
+    assert "last_3_avg_kohan_3f" in cte
+
+
+def test_base_features_select_sql_includes_recent_jockey_and_kohan():
+    sql = subject.base_features_select_sql("jra")
+    assert "jc.jockey_recent_corner_1_norm_avg_90d" in sql
+    assert "jc.jockey_recent_nige_rate_90d" in sql
+    assert "rsh.last_3_avg_kohan_3f" in sql
+
+
 def test_base_features_select_sql_includes_extended_horse_features():
     sql = subject.base_features_select_sql("jra")
     assert "rsh.past_nige_win_rate_self" in sql
