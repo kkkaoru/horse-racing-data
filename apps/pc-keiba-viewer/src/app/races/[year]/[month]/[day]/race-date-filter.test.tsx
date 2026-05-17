@@ -1,6 +1,6 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { RaceListItem } from "../../../../../lib/race-types";
 import { RaceDateFilter } from "./race-date-filter";
@@ -60,7 +60,10 @@ const races: RaceListItem[] = [
   }),
 ];
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 describe("race date filter", () => {
   it("renders grouped races and generated tags", () => {
@@ -136,6 +139,37 @@ describe("race date filter", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /東京太郎/ }));
     expect(screen.queryByLabelText("selected jockey filters")).toBeNull();
+  });
+
+  it("automatically advances start time on 10-minute boundaries when it has a value", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-10T10:09:30+09:00"));
+
+    render(
+      <RaceDateFilter
+        day="10"
+        defaultStartTime="10:09"
+        month="05"
+        races={races}
+        year="2026"
+      />,
+    );
+
+    expect(screen.getByLabelText("開始時間")).toHaveProperty("value", "10:09");
+
+    act(() => {
+      vi.advanceTimersByTime(30_000);
+    });
+
+    expect(screen.getByLabelText("開始時間")).toHaveProperty("value", "10:10");
+    expect(screen.getByText("2 / 3 レース")).toBeTruthy();
+
+    act(() => {
+      vi.advanceTimersByTime(10 * 60 * 1000);
+    });
+
+    expect(screen.getByLabelText("開始時間")).toHaveProperty("value", "10:20");
+    expect(screen.getByText("1 / 3 レース")).toBeTruthy();
   });
 
   it("filters by surface and distance range when JRA races are present", () => {
