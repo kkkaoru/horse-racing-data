@@ -905,6 +905,11 @@ def horse_running_style_history_cte(target_filter: str = "true") -> str:
         avg(b.corner1_norm) filter (where left(coalesce(b.history_track_code, ''), 1)
                                        = left(coalesce(b.target_track_code, ''), 1))
           as horse_track_corner_1_norm_avg,
+        avg(b.corner1_norm) filter (where b.history_keibajo = b.target_keibajo)
+          as horse_keibajo_corner_1_norm_avg,
+        avg(b.corner1_norm) filter (where coalesce(b.history_grade_code, '')
+                                       = coalesce(b.target_grade_code, ''))
+          as horse_grade_corner_1_norm_avg,
         avg(case when b.finish_position = 1 then 1.0 else 0.0 end)
           filter (where b.corner1_norm = 0)
           as past_nige_win_rate_self,
@@ -1166,6 +1171,8 @@ def base_features_select_sql(category: str) -> str:
       rsh.last_race_corner_progression,
       rsh.horse_distance_corner_1_norm_avg,
       rsh.horse_track_corner_1_norm_avg,
+      rsh.horse_keibajo_corner_1_norm_avg,
+      rsh.horse_grade_corner_1_norm_avg,
       rsh.past_nige_win_rate_self,
       rsh.past_senkou_win_rate_self,
       rsh.past_sashi_win_rate_self,

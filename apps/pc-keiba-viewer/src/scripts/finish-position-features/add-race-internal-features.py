@@ -72,6 +72,8 @@ def append_features_sql(input_glob: str) -> str:
       avg(b.speed_index_avg_5) over race_partition as field_avg_speed_index,
       max(b.speed_index_best_5) over race_partition as field_top_speed_index,
       avg(b.career_win_rate) over race_partition as field_avg_career_win_rate,
+      avg(b.kohan3f_avg_5) over race_partition as field_avg_past_kohan_3f,
+      avg(b.past_corner_1_norm_avg_5) over race_partition as field_avg_past_corner_1_norm,
       max(b.past_corner_1_norm_avg_5) over race_partition as field_max_past_corner_1_norm,
       min(b.past_corner_1_norm_avg_5) over race_partition as field_min_past_corner_1_norm,
       max(b.past_corner_1_norm_avg_5) over race_partition
