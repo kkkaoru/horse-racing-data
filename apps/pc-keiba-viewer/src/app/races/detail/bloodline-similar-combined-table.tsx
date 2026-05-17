@@ -21,6 +21,11 @@ type CombinedRow = {
   similarScore: number;
 };
 
+type ScoreTargets = {
+  bloodline: Record<BloodlineCategory, boolean>;
+  similar: Record<SimilarCategory, boolean>;
+};
+
 type ScoreGroup<Category extends string> = {
   categoryRows: Partial<Record<Category, ScoredRateRow>>;
   categoryScores: Record<Category, number>;
@@ -65,6 +70,19 @@ const METRIC_SCORE_WEIGHTS = {
   showRate: 0.35,
   starts: 0.1,
   winRate: 0.25,
+};
+
+const DEFAULT_SCORE_TARGETS: ScoreTargets = {
+  bloodline: {
+    damSire: true,
+    sire: true,
+    sireSire: true,
+  },
+  similar: {
+    jockey: true,
+    owner: true,
+    trainer: true,
+  },
 };
 
 const formatRate = (value: number): string => `${value.toFixed(1)}%`;
@@ -137,6 +155,7 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
   runners,
 }: BloodlineSimilarCombinedTableProps) {
   const [expandedHorseNumber, setExpandedHorseNumber] = useState<string | null>(null);
+  const [scoreTargets, setScoreTargets] = useState<ScoreTargets>(DEFAULT_SCORE_TARGETS);
 
   const combinedRows = useMemo(() => {
     const scoredBloodlineRows = BLOODLINE_CATEGORY_ORDER.flatMap((category) =>
@@ -193,16 +212,35 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
       similar.starts = similarValues.reduce((total, row) => total + row.starts, 0);
       similar.horseCount = similarValues.reduce((total, row) => total + row.horseCount, 0);
 
-      const bloodlineScore = BLOODLINE_CATEGORY_ORDER.reduce(
-        (total, category) =>
-          total + bloodline.categoryScores[category] * BLOODLINE_SCORE_WEIGHTS[category],
+      const selectedBloodlineCategories = BLOODLINE_CATEGORY_ORDER.filter(
+        (category) => scoreTargets.bloodline[category],
+      );
+      const selectedBloodlineWeight = selectedBloodlineCategories.reduce(
+        (total, category) => total + BLOODLINE_SCORE_WEIGHTS[category],
         0,
       );
+      const bloodlineScore =
+        selectedBloodlineWeight > 0
+          ? selectedBloodlineCategories.reduce(
+              (total, category) =>
+                total + bloodline.categoryScores[category] * BLOODLINE_SCORE_WEIGHTS[category],
+              0,
+            ) / selectedBloodlineWeight
+          : 0;
+      const selectedSimilarCategories = SIMILAR_CATEGORY_ORDER.filter(
+        (category) => scoreTargets.similar[category],
+      );
       const similarScore =
-        SIMILAR_CATEGORY_ORDER.reduce(
-          (total, category) => total + similar.categoryScores[category],
-          0,
-        ) / SIMILAR_CATEGORY_ORDER.length;
+        selectedSimilarCategories.length > 0
+          ? selectedSimilarCategories.reduce(
+              (total, category) => total + similar.categoryScores[category],
+              0,
+            ) / selectedSimilarCategories.length
+          : 0;
+      const selectedGroupScores = [
+        selectedBloodlineCategories.length > 0 ? bloodlineScore : null,
+        selectedSimilarCategories.length > 0 ? similarScore : null,
+      ].filter((score): score is number => score !== null);
 
       return {
         bloodline,
@@ -210,7 +248,11 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
         horseName: cleanText(runner.bamei, "-"),
         horseNumber,
         jockeyName: cleanText(runner.kishumeiRyakusho, "-"),
-        rawScore: (bloodlineScore + similarScore) / 2,
+        rawScore:
+          selectedGroupScores.length > 0
+            ? selectedGroupScores.reduce((total, score) => total + score, 0) /
+              selectedGroupScores.length
+            : 0,
         similar,
         similarScore,
       };
@@ -224,7 +266,27 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
           ? Number(left.horseNumber) - Number(right.horseNumber)
           : right.score - left.score,
       );
-  }, [bloodlineRows, rows, runners]);
+  }, [bloodlineRows, rows, runners, scoreTargets]);
+
+  const toggleBloodlineTarget = (category: BloodlineCategory) => {
+    setScoreTargets((current) => ({
+      ...current,
+      bloodline: {
+        ...current.bloodline,
+        [category]: !current.bloodline[category],
+      },
+    }));
+  };
+
+  const toggleSimilarTarget = (category: SimilarCategory) => {
+    setScoreTargets((current) => ({
+      ...current,
+      similar: {
+        ...current.similar,
+        [category]: !current.similar[category],
+      },
+    }));
+  };
 
   const renderDetail = (row: CombinedRow) => {
     const bloodlineDetails = BLOODLINE_CATEGORY_ORDER.map((category) => ({
@@ -284,6 +346,38 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
     <section className="stats-category-section">
       <div className="section-heading compact">
         <h3>血統・同条件 合計スコア</h3>
+      </div>
+      <div className="combined-score-targets" aria-label="合計スコア対象">
+        <fieldset>
+          <legend>血統スコア</legend>
+          {BLOODLINE_CATEGORY_ORDER.map((category) => (
+            <label key={category}>
+              <input
+                checked={scoreTargets.bloodline[category]}
+                type="checkbox"
+                onChange={() => {
+                  toggleBloodlineTarget(category);
+                }}
+              />
+              <span>{BLOODLINE_CATEGORY_LABELS[category]}</span>
+            </label>
+          ))}
+        </fieldset>
+        <fieldset>
+          <legend>勝率スコア</legend>
+          {SIMILAR_CATEGORY_ORDER.map((category) => (
+            <label key={category}>
+              <input
+                checked={scoreTargets.similar[category]}
+                type="checkbox"
+                onChange={() => {
+                  toggleSimilarTarget(category);
+                }}
+              />
+              <span>{SIMILAR_CATEGORY_LABELS[category]}</span>
+            </label>
+          ))}
+        </fieldset>
       </div>
       <div className="stats-table-wrap">
         <table className="stats-table combined-score-table">

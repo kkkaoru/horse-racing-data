@@ -4720,6 +4720,52 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   width: 86px;
 }
 
+.combined-score-targets {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+}
+
+.combined-score-targets fieldset {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  min-width: 0;
+  padding: 12px;
+}
+
+.combined-score-targets legend {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+  padding: 0 4px;
+}
+
+.combined-score-targets label {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ink);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 800;
+  gap: 6px;
+  min-height: 34px;
+  padding: 6px 10px;
+}
+
+.combined-score-targets input {
+  accent-color: var(--accent);
+  height: 14px;
+  width: 14px;
+}
+
 .combined-score-value {
   display: inline-block;
   min-width: 38px;
