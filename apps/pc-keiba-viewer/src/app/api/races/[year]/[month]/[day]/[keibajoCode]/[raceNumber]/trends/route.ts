@@ -10,6 +10,7 @@ import {
 } from "../../../../../../../../../db/queries";
 import type { RaceSource } from "../../../../../../../../../lib/codes";
 import { fetchWithRetry } from "../../../../../../../../../lib/fetch-with-retry";
+import { normalizeJockeyNameForComparison } from "../../../../../../../../../lib/jockey-name";
 import type {
   RaceDetail,
   RaceListItem,
@@ -53,6 +54,18 @@ const isNonEmptyString = (value: string | null): value is string => value !== nu
 
 const isRealtimeRacePayload = (value: unknown): value is RealtimeRacePayload =>
   typeof value === "object" && value !== null && "raceResults" in value;
+
+const normalizeRaceTrendJockeyName = (value: string | null | undefined): string | null => {
+  const normalized = normalizeJockeyNameForComparison(value);
+  return normalized === "" ? null : normalized;
+};
+
+const getJockeyNameAliases = (value: string): string[] => {
+  if (normalizeRaceTrendJockeyName(value) !== "デムーロ") {
+    return [value];
+  }
+  return [value, "デムーロ", "Ｍ．デム", "M.デム"];
+};
 
 const toYmd = (year: string, monthDay: string): string => `${year}${monthDay}`;
 
@@ -286,19 +299,48 @@ const buildRaceTrendPayload = async (
     jockeyStartYmd: string;
   },
 ): Promise<RaceTrendPayload> => {
+  const currentRealtimePayload = await fetchRealtimePayload(race);
+  const currentRealtimeEntryByHorseNumber = new Map(
+    (currentRealtimePayload?.raceEntries?.horses ?? []).map((entry) => [
+      normalizeNumberText(entry.horseNumber),
+      entry,
+    ]),
+  );
+  const trendRunners = runners.map((runner) => {
+    const horseNumber = normalizeNumberText(runner.umaban);
+    const realtimeEntry = currentRealtimeEntryByHorseNumber.get(horseNumber);
+    return {
+      runner,
+      effectiveJockeyName:
+        normalizeText(realtimeEntry?.jockeyName) ?? normalizeText(runner.kishumeiRyakusho),
+    };
+  });
   const jockeyNames = Array.from(
     new Set(
-      runners.map((runner) => normalizeText(runner.kishumeiRyakusho)).filter(isNonEmptyString),
+      trendRunners
+        .map((entry) => entry.effectiveJockeyName)
+        .filter(isNonEmptyString)
+        .flatMap(getJockeyNameAliases),
+    ),
+  );
+  const jockeyKeys = Array.from(
+    new Set(
+      trendRunners
+        .map((entry) => normalizeRaceTrendJockeyName(entry.effectiveJockeyName))
+        .filter(isNonEmptyString),
     ),
   );
   const frameNumbers = Array.from(
     new Set(runners.map((runner) => normalizeNumberText(runner.wakuban)).filter(isNonEmptyString)),
   );
   const targetHorseNumberByJockey = new Map(
-    runners
+    trendRunners
       .map(
-        (runner) =>
-          [normalizeText(runner.kishumeiRyakusho), normalizeNumberText(runner.umaban)] as const,
+        ({ effectiveJockeyName, runner }) =>
+          [
+            normalizeRaceTrendJockeyName(effectiveJockeyName),
+            normalizeNumberText(runner.umaban),
+          ] as const,
       )
       .filter(
         (entry): entry is readonly [string, string] => Boolean(entry[0]) && Boolean(entry[1]),
@@ -312,10 +354,7 @@ const buildRaceTrendPayload = async (
       continue;
     }
     const current = targetHorseNumbersByFrame.get(frameNumber);
-    targetHorseNumbersByFrame.set(
-      frameNumber,
-      current ? `${current},${horseNumber}` : horseNumber,
-    );
+    targetHorseNumbersByFrame.set(frameNumber, current ? `${current},${horseNumber}` : horseNumber);
   }
   const historicalRows = await getRaceTrendHistoricalStarterRows(race, {
     ...options,
@@ -358,8 +397,8 @@ const buildRaceTrendPayload = async (
       startYmd: options.jockeyStartYmd,
       endYmd: options.jockeyEndYmd,
       keibajoCode: options.jockeySameVenue ? race.keibajoCode : undefined,
-      validKeys: new Set(jockeyNames),
-      getGroupKey: (row) => normalizeText(row.jockeyName),
+      validKeys: new Set(jockeyKeys),
+      getGroupKey: (row) => normalizeRaceTrendJockeyName(row.jockeyName),
     }).map((row) =>
       Object.assign(row, { targetHorseNumber: targetHorseNumberByJockey.get(row.key) ?? null }),
     ),

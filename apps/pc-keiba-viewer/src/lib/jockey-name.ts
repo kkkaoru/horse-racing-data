@@ -4,6 +4,9 @@ const SAME_JOCKEY_PREFIX_LENGTH = 3;
 const JOCKEY_NAME_CHARACTER_REPLACEMENTS: Record<string, string> = {
   櫻: "桜",
 };
+const JOCKEY_NAME_ALIASES: Record<string, string> = {
+  デム: "デムーロ",
+};
 
 export const normalizeJockeyNameForDisplay = (value: string | null | undefined): string => {
   const cleaned = cleanText(value, "")
@@ -15,9 +18,10 @@ export const normalizeJockeyNameForDisplay = (value: string | null | undefined):
 };
 
 export const normalizeJockeyNameForComparison = (value: string | null | undefined): string => {
-  return Array.from(normalizeJockeyNameForDisplay(value))
+  const normalized = Array.from(normalizeJockeyNameForDisplay(value))
     .map((character) => JOCKEY_NAME_CHARACTER_REPLACEMENTS[character] ?? character)
     .join("");
+  return JOCKEY_NAME_ALIASES[normalized] ?? normalized;
 };
 
 const getJockeyNamePrefix = (value: string): string =>

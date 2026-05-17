@@ -17,6 +17,7 @@ describe("jockey name helpers", () => {
     expect(normalizeJockeyNameForComparison("櫻井光")).toBe("桜井光");
     expect(normalizeJockeyNameForComparison("D.レーン")).toBe("レーン");
     expect(normalizeJockeyNameForComparison("Ｄ．レーン")).toBe("レーン");
+    expect(normalizeJockeyNameForComparison("Ｍ．デム")).toBe("デムーロ");
   });
 
   it("normalizes realtime JRA entry text for display and comparison", () => {
@@ -33,6 +34,7 @@ describe("jockey name helpers", () => {
     expect(isSameJockeyName("櫻井光", "桜井光輔")).toBe(true);
     expect(isSameJockeyName("山田太郎", "山田太一")).toBe(true);
     expect(isSameJockeyName("レーン", "D.レーン")).toBe(true);
+    expect(isSameJockeyName("デムーロ", "Ｍ．デム")).toBe(true);
   });
 
   it("treats local keiba abbreviated kanji names as the same jockey", () => {
