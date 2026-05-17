@@ -17,6 +17,9 @@ from pathlib import Path
 import duckdb
 
 RACE_PARTITION = "source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango"
+NIGE_PRESSURE_WEIGHT = 2.0
+SENKOU_PRESSURE_WEIGHT = 1.0
+NIGE_CANDIDATE_THRESHOLD = 0.4
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -44,7 +47,29 @@ def append_features_sql(input_glob: str) -> str:
       b.jockey_recent_win_rate - avg(b.jockey_recent_win_rate) over race_partition
         as jockey_recent_win_rate_diff_from_race_avg,
       b.pedigree_score_for_race - avg(b.pedigree_score_for_race) over race_partition
-        as pedigree_score_diff_from_race_avg
+        as pedigree_score_diff_from_race_avg,
+      sum(coalesce(b.past_nige_rate_self, 0)) over race_partition - coalesce(b.past_nige_rate_self, 0)
+        as field_nige_pressure,
+      sum(coalesce(b.past_senkou_rate_self, 0)) over race_partition - coalesce(b.past_senkou_rate_self, 0)
+        as field_senkou_pressure,
+      sum(coalesce(b.past_sashi_rate_self, 0)) over race_partition - coalesce(b.past_sashi_rate_self, 0)
+        as field_sashi_pressure,
+      sum(coalesce(b.past_oikomi_rate_self, 0)) over race_partition - coalesce(b.past_oikomi_rate_self, 0)
+        as field_oikomi_pressure,
+      (sum(coalesce(b.past_nige_rate_self, 0)) over race_partition - coalesce(b.past_nige_rate_self, 0)) * {NIGE_PRESSURE_WEIGHT}
+        + (sum(coalesce(b.past_senkou_rate_self, 0)) over race_partition - coalesce(b.past_senkou_rate_self, 0)) * {SENKOU_PRESSURE_WEIGHT}
+        as field_pace_index,
+      (sum(case when b.past_nige_rate_self > {NIGE_CANDIDATE_THRESHOLD} then 1 else 0 end) over race_partition)
+        - case when b.past_nige_rate_self > {NIGE_CANDIDATE_THRESHOLD} then 1 else 0 end
+        as field_nige_candidate_count,
+      b.past_nige_rate_self - (
+        (sum(coalesce(b.past_nige_rate_self, 0)) over race_partition - coalesce(b.past_nige_rate_self, 0))
+        / nullif(count(b.past_nige_rate_self) over race_partition - case when b.past_nige_rate_self is null then 0 else 1 end, 0)
+      ) as self_nige_rate_minus_field_avg,
+      b.umaban_norm * coalesce(b.past_nige_rate_self, 0) as umaban_x_nige_history,
+      avg(b.speed_index_avg_5) over race_partition as field_avg_speed_index,
+      max(b.speed_index_best_5) over race_partition as field_top_speed_index,
+      avg(b.career_win_rate) over race_partition as field_avg_career_win_rate
     from base_features b
     window
       race_partition as (partition by b.{RACE_PARTITION.replace(", ", ", b.")}),
