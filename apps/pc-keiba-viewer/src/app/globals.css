@@ -213,6 +213,12 @@ main {
   padding: 7px 9px;
 }
 
+.race-global-summary-condition {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .race-global-summary-countdown {
   background: #fff4d6;
   color: #6f4714;
@@ -6202,6 +6208,10 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 
   .race-global-summary span {
     padding: 5px 4px;
+  }
+
+  .race-global-summary-condition {
+    max-width: 96px;
   }
 
   .race-global-summary-countdown {

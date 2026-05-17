@@ -281,6 +281,8 @@ export async function RaceDetailView({
       ? sameVenueRaces[currentRaceIndex + 1]
       : null;
   const courseText = cleanText(courseInfo?.courseSetsumei, "");
+  const conditionLabel =
+    raceTags.length > 0 ? raceTags.join(" / ") : cleanText(race.kyosoJokenMeisho);
   const courseFacts = getCourseFacts(courseText, race.kyori, race.trackCode);
   const courseParagraphs = courseText
     ? formatCourseParagraphs(courseText)
@@ -348,7 +350,7 @@ export async function RaceDetailView({
       text: courseText,
     },
     detailCells: {
-      condition: raceTags.length > 0 ? raceTags.join(" / ") : cleanText(race.kyosoJokenMeisho),
+      condition: conditionLabel,
       dirtCondition: formatBaba(race.babajotaiCodeDirt),
       entryUrl: visibleJraRaceEntryUrl,
       grade: getGradeLabel(race.gradeCode, race.source),
@@ -409,6 +411,9 @@ export async function RaceDetailView({
             <RaceStartCountdown startsAt={raceStartsAt} />
             <span>{formatKeibajo(keibajoCode)}</span>
             <span>{formatRaceNumber(raceNumber)}</span>
+            {conditionLabel ? (
+              <span className="race-global-summary-condition">{conditionLabel}</span>
+            ) : null}
             <span>{getTrackSurfaceLabel(race.trackCode) ?? formatTrack(race.trackCode)}</span>
             <span>{formatDistance(race.kyori)}</span>
           </div>
@@ -501,7 +506,7 @@ export async function RaceDetailView({
           <DetailCell label="括弧内名称" value={race.kyosomeiKakkonai} />
           <DetailCell
             label="条件"
-            value={raceTags.length > 0 ? raceTags.join(" / ") : cleanText(race.kyosoJokenMeisho)}
+            value={conditionLabel}
           />
           <DetailCell label="グレード" value={getGradeLabel(race.gradeCode, race.source)} />
           <DetailCell label="競走記号" value={getRaceSymbolDetailLabel(race.kyosoKigoCode)} />

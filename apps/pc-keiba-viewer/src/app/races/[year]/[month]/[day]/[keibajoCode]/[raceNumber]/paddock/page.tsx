@@ -17,6 +17,7 @@ import {
   formatTrack,
   getTrackSurfaceLabel,
 } from "../../../../../../../../lib/format";
+import { getRaceTags } from "../../../../../../../../lib/race-classification";
 import { isBanEiKeibajoCode } from "../../../../../../../../lib/runner-format";
 import { PaddockSection } from "../../../../../../../races/detail/paddock-section";
 import { RaceStartCountdown } from "../../../../../../../races/detail/race-start-countdown";
@@ -99,6 +100,9 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
   const raceDetailUrl = `https://pc-keiba-viewer.kkk4oru.com${raceDetailPath}`;
   const raceStartsAt = getRaceStartsAt(year, month, day, race.hassoJikoku);
   const raceTitle = buildFullRaceTitle(race);
+  const raceTags = getRaceTags(race);
+  const conditionLabel =
+    raceTags.length > 0 ? raceTags.join(" / ") : cleanText(race.kyosoJokenMeisho);
   const racePlace = formatKeibajo(keibajoCode);
   const raceNumberLabel = formatRaceNumber(raceNumber);
   const raceStartsAtLabel = `${formatDate(year, `${month}${day}`)} ${formatTime(race.hassoJikoku)}発走`;
@@ -115,6 +119,9 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
           <RaceStartCountdown startsAt={raceStartsAt} />
           <span>{formatKeibajo(keibajoCode)}</span>
           <span>{formatRaceNumber(raceNumber)}</span>
+          {conditionLabel ? (
+            <span className="race-global-summary-condition">{conditionLabel}</span>
+          ) : null}
           <span>{getTrackSurfaceLabel(race.trackCode) ?? formatTrack(race.trackCode)}</span>
           <span>{formatDistance(race.kyori)}</span>
         </div>
