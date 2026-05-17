@@ -481,6 +481,15 @@ def build_target_table(con: duckdb.DuckDBPyConnection, category: str, from_date:
           and rec.ketto_toroku_bango is not null
         """
     )
+    con.execute(
+        "create index target_horse_idx on target (source, ketto_toroku_bango, race_date)"
+    )
+    con.execute(
+        "create index target_jockey_idx on target (source, kishumei_ryakusho)"
+    )
+    con.execute(
+        "create index target_trainer_idx on target (source, chokyoshimei_ryakusho)"
+    )
 
 
 def horse_career_cte() -> str:
@@ -1559,6 +1568,10 @@ def materialize_horse_history_base(con: duckdb.DuckDBPyConnection, target_filter
         {from_clause}
         where h.finish_position is not null and ({target_filter})
         """
+    )
+    con.execute(
+        "create index horse_history_base_target_idx on horse_history_base "
+        "(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)"
     )
     row_result = con.execute("select count(*) from horse_history_base").fetchone()
     return int(row_result[0]) if row_result is not None else 0
