@@ -127,7 +127,9 @@ export function RaceAiSettingsPanel() {
     >
       <summary className="section-heading compact">
         <h2>AI利用設定</h2>
-        <span>{supported ? "WebGPU対応" : "WebGPU非対応"}</span>
+        <span>
+          {supported ? "WebGPU対応" : "WebGPU非対応"} / {settingsOpen ? "閉じる" : "表示する"}
+        </span>
       </summary>
       {!supported ? (
         <p className="empty-state">このブラウザではWebGPU AI予想は利用できません。</p>
@@ -146,7 +148,7 @@ export function RaceAiSettingsPanel() {
                   }
                 }}
               />
-              <span>AI利用を許可</span>
+              <span>ブラウザでのAI利用を許可</span>
             </label>
             <label>
               <input

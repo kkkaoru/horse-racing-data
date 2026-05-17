@@ -70,7 +70,7 @@ export function RaceAiConsentManager() {
         <strong>{progressLabel}</strong>
       </div>
       <progress value={modelState.progress ?? undefined} max={1} />
-      <small>完了後、このブラウザ内に保存されます。</small>
+      <small>完了後、このブラウザ内に保存されます。サイト内を移動しても中止されません。</small>
     </dialog>
   );
 }

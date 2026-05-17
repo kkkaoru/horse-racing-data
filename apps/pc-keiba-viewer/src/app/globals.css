@@ -7355,22 +7355,26 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   color: var(--text);
   display: grid;
   gap: var(--space-8px-28);
+  inline-size: min(var(--space-360px-99), calc(var(--space-100vw-38) - var(--space-32px-24)));
   left: auto;
   margin: var(--number-0-2);
-  max-width: min(var(--space-360px-99), calc(var(--space-100vw-38) - var(--space-32px-24)));
+  max-inline-size: calc(var(--space-100vw-38) - var(--space-32px-24));
+  min-inline-size: var(--number-0-2);
+  overflow-wrap: anywhere;
   padding: var(--space-14px-55);
   position: fixed;
   right: var(--space-16px-10);
   top: auto;
-  width: var(--space-100pct-12);
+  width: auto;
   z-index: var(--number-30-45);
 }
 
 .race-ai-download-dialog div {
   align-items: center;
   display: flex;
-  justify-content: space-between;
   gap: var(--space-12px-9);
+  justify-content: space-between;
+  min-inline-size: var(--number-0-2);
 }
 
 .race-ai-download-dialog span,
@@ -7380,6 +7384,7 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 
 .race-ai-download-dialog progress {
   accent-color: var(--accent);
+  min-inline-size: var(--number-0-2);
   width: var(--space-100pct-12);
 }
 
@@ -7647,8 +7652,9 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   }
 
   .race-ai-download-dialog {
+    inline-size: auto;
     left: var(--space-12px-9);
-    max-width: calc(var(--space-100vw-38) - var(--space-24px-50));
+    max-inline-size: none;
     right: var(--space-12px-9);
   }
 
