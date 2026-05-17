@@ -95,7 +95,7 @@ describe("paddock helpers", () => {
       isPaddockAction({
         horseName: "一番",
         horseNumber: "01",
-        rank: 6,
+        rank: 10,
         type: "official-rank",
       }),
     ).toBe(true);
@@ -110,7 +110,7 @@ describe("paddock helpers", () => {
       isPaddockAction({ category: "paddock", delta: 2, horseName: "一番", horseNumber: "01" }),
     ).toBe(false);
     expect(
-      isPaddockAction({ horseName: "一番", horseNumber: "01", rank: 7, type: "official-rank" }),
+      isPaddockAction({ horseName: "一番", horseNumber: "01", rank: 11, type: "official-rank" }),
     ).toBe(false);
   });
 
@@ -212,6 +212,27 @@ describe("paddock helpers", () => {
     );
     expect(cleared.horses["2"]?.horseName).toBe("二番");
     expect(cleared.horses["2"]?.officialRank).toBeNull();
+  });
+
+  it("applies official ranks up to tenth place", () => {
+    const state = applyPaddockAction(
+      createPaddockState("race"),
+      {
+        horseName: "十番",
+        horseNumber: "10",
+        rank: 10,
+        type: "official-rank",
+      },
+      "2026-05-13T12:00:00.000Z",
+    );
+
+    expect(state.horses["10"]?.officialRank).toBe(10);
+    expect(state.history[0]).toMatchObject({
+      horseName: "十番",
+      horseNumber: "10",
+      officialRank: 10,
+      type: "official-rank",
+    });
   });
 
   it("limits history and validates state shape", () => {

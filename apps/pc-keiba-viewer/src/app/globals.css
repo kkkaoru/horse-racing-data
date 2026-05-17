@@ -2562,15 +2562,15 @@ h3 {
 }
 
 .paddock-weight-value em.paddock-weight-change-plus {
-  background: #fff1f2;
-  border-color: #fda4af;
-  color: #be123c;
+  background: #fff7f5;
+  border-color: #f1c8bf;
+  color: #8f4236;
 }
 
 .paddock-weight-value em.paddock-weight-change-minus {
-  background: #eff6ff;
-  border-color: #93c5fd;
-  color: #1d4ed8;
+  background: #f3f7fb;
+  border-color: #bfd0df;
+  color: #3f607c;
 }
 
 .paddock-weight-value em.paddock-weight-change-zero {
@@ -2910,6 +2910,30 @@ h3 {
 .paddock-rank-badge.rank-6,
 .paddock-official-rank-slot.rank-6 {
   --rank-color: #7c3aed;
+}
+
+.paddock-rank-buttons .rank-7,
+.paddock-rank-badge.rank-7,
+.paddock-official-rank-slot.rank-7 {
+  --rank-color: #be185d;
+}
+
+.paddock-rank-buttons .rank-8,
+.paddock-rank-badge.rank-8,
+.paddock-official-rank-slot.rank-8 {
+  --rank-color: #c2410c;
+}
+
+.paddock-rank-buttons .rank-9,
+.paddock-rank-badge.rank-9,
+.paddock-official-rank-slot.rank-9 {
+  --rank-color: #4d7c0f;
+}
+
+.paddock-rank-buttons .rank-10,
+.paddock-rank-badge.rank-10,
+.paddock-official-rank-slot.rank-10 {
+  --rank-color: #0369a1;
 }
 
 .paddock-official-rank-quick {

@@ -29,6 +29,10 @@ UNKNOWN_CATEGORICAL_INDEX = 0
 PAD_FINISH_POSITION = 0
 DEFAULT_UMABAN_PAD = 0
 TRANSFORMER_FEATURE_SCHEMA_VERSION = "v1"
+RACE_META_KEIBAJO_COLUMN = "keibajo_code"
+RACE_META_MONTH_COLUMN = "month"
+RACE_META_KAISAI_NEN_COLUMN = "kaisai_tsukihi"
+RACE_META_COLUMNS: tuple[str, ...] = (RACE_META_KEIBAJO_COLUMN, RACE_META_MONTH_COLUMN)
 
 FloatArray = NDArray[np.float32]
 IntArray = NDArray[np.int32]
@@ -46,11 +50,14 @@ class NormalizationStats(TypedDict):
     numeric_std: list[float]
     categorical_columns: list[str]
     categorical_vocab: dict[str, list[str]]
+    race_categorical_columns: list[str]
+    race_categorical_vocab: dict[str, list[str]]
 
 
 class RaceBatchArrays(TypedDict):
     numeric_features: FloatArray
     categorical_indices: IntArray
+    race_categorical_indices: IntArray
     umaban: IntArray
     finish_position: FloatArray
     mask: BoolArray
@@ -71,6 +78,20 @@ def resolve_transformer_feature_columns(df_columns: list[str]) -> FeatureColumns
     return FeatureColumns(numeric=numeric, categorical=categorical)
 
 
+def _extract_month(series: pd.Series) -> pd.Series:
+    return series.astype(str).str.slice(0, 2)
+
+
+def _race_meta_series(df: pd.DataFrame, column: str) -> pd.Series:
+    if column == RACE_META_MONTH_COLUMN:
+        if RACE_META_KAISAI_NEN_COLUMN not in df.columns:
+            return pd.Series(["" for _ in range(len(df))])
+        return _extract_month(df[RACE_META_KAISAI_NEN_COLUMN])
+    if column not in df.columns:
+        return pd.Series(["" for _ in range(len(df))])
+    return df[column].astype(str)
+
+
 def fit_normalization_stats(df: pd.DataFrame, columns: FeatureColumns) -> NormalizationStats:
     numeric_mean: list[float] = []
     numeric_std: list[float] = []
@@ -88,17 +109,28 @@ def fit_normalization_stats(df: pd.DataFrame, columns: FeatureColumns) -> Normal
     for column in columns.categorical:
         unique_values = sorted({str(v) for v in df[column].dropna().unique() if str(v).strip() != ""})
         vocab[column] = unique_values
+    race_vocab: dict[str, list[str]] = {}
+    for column in RACE_META_COLUMNS:
+        series = _race_meta_series(df, column)
+        unique_values = sorted({v for v in series.dropna().unique() if str(v).strip() != ""})
+        race_vocab[column] = list(unique_values)
     return {
         "numeric_columns": columns.numeric,
         "numeric_mean": numeric_mean,
         "numeric_std": numeric_std,
         "categorical_columns": columns.categorical,
         "categorical_vocab": vocab,
+        "race_categorical_columns": list(RACE_META_COLUMNS),
+        "race_categorical_vocab": race_vocab,
     }
 
 
 def categorical_vocab_size(stats: NormalizationStats, column: str) -> int:
     return len(stats["categorical_vocab"][column]) + 1
+
+
+def race_categorical_vocab_size(stats: NormalizationStats, column: str) -> int:
+    return len(stats["race_categorical_vocab"][column]) + 1
 
 
 def _encode_categorical_value(stats: NormalizationStats, column: str, value: object) -> int:
@@ -108,6 +140,19 @@ def _encode_categorical_value(stats: NormalizationStats, column: str, value: obj
     if raw == "" or raw == "nan":
         return UNKNOWN_CATEGORICAL_INDEX
     vocab = stats["categorical_vocab"][column]
+    try:
+        return vocab.index(raw) + 1
+    except ValueError:
+        return UNKNOWN_CATEGORICAL_INDEX
+
+
+def _encode_race_categorical_value(stats: NormalizationStats, column: str, value: object) -> int:
+    if value is None:
+        return UNKNOWN_CATEGORICAL_INDEX
+    raw = str(value).strip()
+    if raw == "" or raw == "nan":
+        return UNKNOWN_CATEGORICAL_INDEX
+    vocab = stats["race_categorical_vocab"][column]
     try:
         return vocab.index(raw) + 1
     except ValueError:
@@ -143,6 +188,18 @@ def _read_finish_position_float(df: pd.DataFrame) -> FloatArray:
     return series.to_numpy(dtype=np.float32, na_value=float(PAD_FINISH_POSITION))
 
 
+def _encode_race_categorical_per_race(
+    stats: NormalizationStats, df_first_per_race: pd.DataFrame
+) -> IntArray:
+    columns = stats["race_categorical_columns"]
+    out = np.zeros((len(df_first_per_race), len(columns)), dtype=np.int32)
+    for col_idx, column in enumerate(columns):
+        series = _race_meta_series(df_first_per_race, column)
+        values = series.tolist()
+        out[:, col_idx] = [_encode_race_categorical_value(stats, column, value) for value in values]
+    return out
+
+
 def build_race_batches(df: pd.DataFrame, stats: NormalizationStats) -> RaceBatchArrays:
     sorted_df = df.sort_values(["race_id", "umaban"]).reset_index(drop=True)
     sorted_df = sorted_df[sorted_df["race_id"].notna()].copy()
@@ -150,8 +207,10 @@ def build_race_batches(df: pd.DataFrame, stats: NormalizationStats) -> RaceBatch
     num_races = len(race_ids)
     numeric_cols = stats["numeric_columns"]
     categorical_cols = stats["categorical_columns"]
+    race_cat_cols = stats["race_categorical_columns"]
     numeric_features = np.zeros((num_races, MAX_RUNNERS, len(numeric_cols)), dtype=np.float32)
     categorical_indices = np.zeros((num_races, MAX_RUNNERS, len(categorical_cols)), dtype=np.int32)
+    race_categorical_indices = np.zeros((num_races, len(race_cat_cols)), dtype=np.int32)
     umaban_arr = np.zeros((num_races, MAX_RUNNERS), dtype=np.int32)
     finish_position_arr = np.zeros((num_races, MAX_RUNNERS), dtype=np.float32)
     mask = np.zeros((num_races, MAX_RUNNERS), dtype=np.bool_)
@@ -163,6 +222,14 @@ def build_race_batches(df: pd.DataFrame, stats: NormalizationStats) -> RaceBatch
     finish_block = _read_finish_position_float(sorted_df)
     horse_ids = sorted_df["ketto_toroku_bango"].astype(str).tolist()
     race_id_values = sorted_df["race_id"].astype(str).tolist()
+    first_per_race = sorted_df.drop_duplicates(subset=["race_id"]).reset_index(drop=True)
+    race_meta_block = _encode_race_categorical_per_race(stats, first_per_race)
+    race_meta_by_id = {
+        race_id: race_meta_block[idx]
+        for idx, race_id in enumerate(first_per_race["race_id"].astype(str).tolist())
+    }
+    for race_idx, race_id in enumerate(race_ids):
+        race_categorical_indices[race_idx] = race_meta_by_id[race_id]
     counters = np.zeros(num_races, dtype=np.int32)
     for row_idx, raw_race_id in enumerate(race_id_values):
         race_idx = race_index[raw_race_id]
@@ -179,6 +246,7 @@ def build_race_batches(df: pd.DataFrame, stats: NormalizationStats) -> RaceBatch
     return {
         "numeric_features": numeric_features,
         "categorical_indices": categorical_indices,
+        "race_categorical_indices": race_categorical_indices,
         "umaban": umaban_arr,
         "finish_position": finish_position_arr,
         "mask": mask,
@@ -209,6 +277,7 @@ def _select_indices(arrays: RaceBatchArrays, indices: NDArray[np.int_]) -> RaceB
     return {
         "numeric_features": arrays["numeric_features"][indices],
         "categorical_indices": arrays["categorical_indices"][indices],
+        "race_categorical_indices": arrays["race_categorical_indices"][indices],
         "umaban": arrays["umaban"][indices],
         "finish_position": arrays["finish_position"][indices],
         "mask": arrays["mask"][indices],

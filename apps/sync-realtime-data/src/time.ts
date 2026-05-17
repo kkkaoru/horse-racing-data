@@ -91,6 +91,39 @@ export const getJraAdvanceOddsFetchSlotAt = (raceStart: Date, now: Date): string
   return floorToHourJstSlot(now);
 };
 
+const ceilToNextHourJstSlot = (date: Date): Date => {
+  const current = toJstIsoString(date);
+  const floored = new Date(`${current.slice(0, 14)}00:00+09:00`);
+  return floored.getTime() > date.getTime() ? floored : new Date(floored.getTime() + 60 * 60_000);
+};
+
+export const getNextOddsFetchSlotAt = (
+  raceStart: Date,
+  now: Date,
+  source: "jra" | "nar",
+): string | null => {
+  const raceStartMs = raceStart.getTime();
+  if (source === "jra") {
+    const raceDate = toJstIsoString(raceStart).slice(0, 10);
+    const raceDayStart = new Date(`${raceDate}T00:00:00+09:00`);
+    const saleStart = new Date(raceDayStart.getTime() - 5 * 60 * 60_000);
+    const oneHourBeforeRace = new Date(raceStartMs - 60 * 60_000);
+    if (now.getTime() < oneHourBeforeRace.getTime()) {
+      const nextAdvanceSlot =
+        now.getTime() < saleStart.getTime() ? saleStart : ceilToNextHourJstSlot(now);
+      return nextAdvanceSlot.getTime() < oneHourBeforeRace.getTime()
+        ? toJstIsoString(nextAdvanceSlot)
+        : toJstIsoString(oneHourBeforeRace);
+    }
+  }
+
+  const regularOffsets = [60, 50, 40, 30, 20, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1];
+  const nextSlot = regularOffsets
+    .map((minutesBeforeRace) => new Date(raceStartMs - minutesBeforeRace * 60_000))
+    .find((slot) => slot.getTime() > now.getTime());
+  return nextSlot ? toJstIsoString(nextSlot) : null;
+};
+
 export const isJstPollingWindow = (date = new Date()): boolean => {
   const { hour } = getJstDateParts(date);
   const parsedHour = Number(hour);

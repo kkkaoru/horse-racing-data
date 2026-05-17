@@ -35,6 +35,7 @@ class ModelConfig(TypedDict):
     dropout: float
     num_numeric_features: int
     categorical_vocab_sizes: list[int]
+    race_categorical_vocab_sizes: list[int]
 
 
 class ModelOutput(TypedDict):
@@ -44,16 +45,23 @@ class ModelOutput(TypedDict):
 
 
 def default_model_config(
-    num_numeric_features: int, categorical_vocab_sizes: list[int]
+    num_numeric_features: int,
+    categorical_vocab_sizes: list[int],
+    race_categorical_vocab_sizes: list[int] | None = None,
+    embedding_dim: int = DEFAULT_EMBEDDING_DIM,
+    num_layers: int = DEFAULT_NUM_LAYERS,
+    num_heads: int = DEFAULT_NUM_HEADS,
+    dropout: float = DEFAULT_DROPOUT,
 ) -> ModelConfig:
     return {
-        "embedding_dim": DEFAULT_EMBEDDING_DIM,
-        "num_layers": DEFAULT_NUM_LAYERS,
-        "num_heads": DEFAULT_NUM_HEADS,
-        "ffn_dim": DEFAULT_EMBEDDING_DIM * DEFAULT_FFN_DIM_MULTIPLIER,
-        "dropout": DEFAULT_DROPOUT,
+        "embedding_dim": embedding_dim,
+        "num_layers": num_layers,
+        "num_heads": num_heads,
+        "ffn_dim": embedding_dim * DEFAULT_FFN_DIM_MULTIPLIER,
+        "dropout": dropout,
         "num_numeric_features": num_numeric_features,
         "categorical_vocab_sizes": categorical_vocab_sizes,
+        "race_categorical_vocab_sizes": race_categorical_vocab_sizes or [],
     }
 
 
@@ -74,6 +82,10 @@ class RaceSetTransformer(nn.Module):
             nn.Embedding(num_embeddings=vocab, dims=dims)
             for vocab in config["categorical_vocab_sizes"]
         ]
+        self.race_categorical_embeddings = [
+            nn.Embedding(num_embeddings=vocab, dims=dims)
+            for vocab in config["race_categorical_vocab_sizes"]
+        ]
         self.umaban_embedding = nn.Embedding(num_embeddings=UMABAN_VOCAB_SIZE, dims=dims)
         self.input_layer_norm = nn.LayerNorm(dims=dims)
         self.encoder = nn.TransformerEncoder(
@@ -92,11 +104,15 @@ class RaceSetTransformer(nn.Module):
         self,
         numeric_features: mx.array,
         categorical_indices: mx.array,
+        race_categorical_indices: mx.array,
         umaban: mx.array,
     ) -> mx.array:
         x = self.numeric_projection(numeric_features)
         for col_idx, embedding in enumerate(self.categorical_embeddings):
             x = x + embedding(categorical_indices[:, :, col_idx])
+        for col_idx, embedding in enumerate(self.race_categorical_embeddings):
+            race_embedding = embedding(race_categorical_indices[:, col_idx])
+            x = x + race_embedding[:, None, :]
         x = x + self.umaban_embedding(umaban)
         return self.input_layer_norm(x)
 
@@ -104,10 +120,11 @@ class RaceSetTransformer(nn.Module):
         self,
         numeric_features: mx.array,
         categorical_indices: mx.array,
+        race_categorical_indices: mx.array,
         umaban: mx.array,
         mask: mx.array,
     ) -> ModelOutput:
-        embedded = self.embed(numeric_features, categorical_indices, umaban)
+        embedded = self.embed(numeric_features, categorical_indices, race_categorical_indices, umaban)
         attention_mask = build_padding_mask(mask, self.config["num_heads"])
         encoded = self.encoder(embedded, attention_mask)
         top1_logit = self.top1_head(encoded).squeeze(-1)

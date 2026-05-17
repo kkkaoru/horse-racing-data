@@ -26,7 +26,10 @@ from finish_position_transformer.model import ModelOutput, RaceSetTransformer
 DEFAULT_TOP1_WEIGHT = 1.0
 DEFAULT_TOP3_WEIGHT = 1.0
 DEFAULT_PAIRWISE_WEIGHT = 1.0
+DEFAULT_LISTNET_WEIGHT = 0.0
 TOP3_UPPER_BOUND = 3
+LISTNET_RELEVANCE_TIER_BASE = 4
+LISTNET_MASK_NEG_INF = -1e9
 DEFAULT_LEARNING_RATE = 1e-3
 DEFAULT_WEIGHT_DECAY = 1e-4
 DEFAULT_WARMUP_STEPS = 500
@@ -42,6 +45,7 @@ class LossWeights(TypedDict):
     top1: float
     top3: float
     pairwise: float
+    listnet: float
 
 
 class TrainingConfig(TypedDict):
@@ -77,6 +81,7 @@ def default_training_config() -> TrainingConfig:
             "top1": DEFAULT_TOP1_WEIGHT,
             "top3": DEFAULT_TOP3_WEIGHT,
             "pairwise": DEFAULT_PAIRWISE_WEIGHT,
+            "listnet": DEFAULT_LISTNET_WEIGHT,
         },
         "max_epochs": DEFAULT_MAX_EPOCHS,
         "seed": DEFAULT_SEED,
@@ -89,6 +94,7 @@ def _to_mx_batch(batch: RaceBatchArrays) -> dict[str, mx.array]:
     return {
         "numeric_features": mx.array(batch["numeric_features"]),
         "categorical_indices": mx.array(batch["categorical_indices"]),
+        "race_categorical_indices": mx.array(batch["race_categorical_indices"]),
         "umaban": mx.array(batch["umaban"]),
         "finish_position": mx.array(batch["finish_position"]),
         "mask": mx.array(batch["mask"]),
@@ -115,6 +121,24 @@ def _pairwise_ranking_loss(rank_score: mx.array, finish: mx.array, mask: mx.arra
     return weighted.sum() / denom
 
 
+def _listnet_loss(rank_score: mx.array, finish: mx.array, mask: mx.array) -> mx.array:
+    mask_float = mask.astype(mx.float32)
+    has_finish = mx.greater(finish, mx.array(0.0)).astype(mx.float32)
+    valid = mask_float * has_finish
+    relevance = mx.maximum(
+        mx.array(0.0),
+        mx.array(float(LISTNET_RELEVANCE_TIER_BASE)) - finish,
+    ) * valid
+    target_logits = mx.where(valid > 0, relevance, mx.array(LISTNET_MASK_NEG_INF))
+    target_probs = mx.softmax(target_logits, axis=-1)
+    score_logits = mx.where(valid > 0, rank_score, mx.array(LISTNET_MASK_NEG_INF))
+    log_score_probs = nn.log_softmax(score_logits, axis=-1)
+    per_race = -mx.sum(target_probs * log_score_probs * (valid > 0).astype(mx.float32), axis=-1)
+    race_valid = (mx.sum(valid, axis=-1) > 0).astype(mx.float32)
+    denom = mx.maximum(race_valid.sum(), mx.array(1.0))
+    return (per_race * race_valid).sum() / denom
+
+
 def multitask_loss(
     output: ModelOutput,
     finish_position: mx.array,
@@ -131,10 +155,12 @@ def multitask_loss(
     top1_term = _masked_bce(output["top1_logit"], top1_label, mask_float)
     top3_term = _masked_bce(output["top3_logit"], top3_label, mask_float)
     pair_term = _pairwise_ranking_loss(output["rank_score"], finish_position, mask)
+    listnet_term = _listnet_loss(output["rank_score"], finish_position, mask)
     return (
         weights["top1"] * top1_term
         + weights["top3"] * top3_term
         + weights["pairwise"] * pair_term
+        + weights["listnet"] * listnet_term
     )
 
 
@@ -159,6 +185,7 @@ def predict_rank_scores(
         output = model(
             mx_batch["numeric_features"],
             mx_batch["categorical_indices"],
+            mx_batch["race_categorical_indices"],
             mx_batch["umaban"],
             mx_batch["mask"],
         )
@@ -264,6 +291,7 @@ def _make_loss_fn(weights: LossWeights):
         output = model(
             batch["numeric_features"],
             batch["categorical_indices"],
+            batch["race_categorical_indices"],
             batch["umaban"],
             batch["mask"],
         )

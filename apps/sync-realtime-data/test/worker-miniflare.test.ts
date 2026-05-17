@@ -184,10 +184,12 @@ describe("worker scheduling with Miniflare", () => {
       outcome: "ok",
     });
 
-    const logCount = await db.prepare("select count(*) as count from fetch_logs").first<{
-      count: number;
-    }>();
-    expect(logCount?.count).toBe(1);
+    const planLog = await db
+      .prepare("select count(*) as count from fetch_logs where job_type = 'plan-realtime-fetches'")
+      .first<{
+        count: number;
+      }>();
+    expect(planLog?.count).toBe(1);
   }, 20_000);
 
   it("runs scheduled JRA premium link discovery for the next race day", async () => {

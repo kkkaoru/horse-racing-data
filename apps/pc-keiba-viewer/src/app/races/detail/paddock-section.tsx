@@ -132,7 +132,7 @@ const METRIC_ORDER = [
 ] as const satisfies readonly PaddockMetric[];
 const DEFAULT_REMOTE_PADDOCK_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
 const PUBLIC_DETAIL_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
-const OFFICIAL_RANK_OPTIONS: PaddockOfficialRank[] = [1, 2, 3, 4, 5, 6];
+const OFFICIAL_RANK_OPTIONS: PaddockOfficialRank[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 const PAST_RACE_EDIT_UNLOCK_MS = 10 * 60 * 1000;
 
 const isLocalHost = (hostname: string): boolean =>
@@ -719,7 +719,17 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
             <dt>単勝</dt>
             <dd>{formatRealtimeOdds(realtimeOdds)}</dd>
           </div>
-          {editable && trainingEvaluationGrade ? (
+          {editable && scores.officialRank ? (
+            <div className="paddock-official-rank-fact">
+              <dt>公式評価順</dt>
+              <dd>
+                <span className={getOfficialRankClassName(scores.officialRank)}>
+                  {formatOfficialRank(scores.officialRank)}
+                </span>
+              </dd>
+            </div>
+          ) : null}
+          {trainingEvaluationGrade ? (
             <div className="paddock-training-grade-fact">
               <dt>調教</dt>
               <dd>

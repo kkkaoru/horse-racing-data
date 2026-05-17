@@ -22,6 +22,7 @@ export type Job =
   | {
       type: "plan-realtime-fetches";
       date: string;
+      selfSchedule?: boolean;
     }
   | {
       type: "fetch-odds";

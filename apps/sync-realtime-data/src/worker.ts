@@ -108,6 +108,7 @@ import {
 import { readCachedTrackCondition, writeCachedTrackCondition } from "./track-condition-cache";
 import {
   getJraAdvanceOddsFetchSlotAt,
+  getNextOddsFetchSlotAt,
   getOddsFetchSlotAt,
   getTodayJst,
   isJstPollingWindow,
@@ -127,6 +128,8 @@ const PREMIUM_PADDOCK_RETRY_DELAY_SECONDS = 120;
 const PREMIUM_PADDOCK_RECHECK_MINUTES = 3;
 const PREMIUM_PADDOCK_WINDOW_BEFORE_MINUTES = 35;
 const PREMIUM_PADDOCK_WINDOW_AFTER_MINUTES = 2;
+const REALTIME_PLAN_SELF_SCHEDULE_DELAY_SECONDS = 60;
+const REALTIME_PLAN_SELF_SCHEDULE_STALE_SECONDS = 90;
 const DEFAULT_PREMIUM_RACE_QUEUE_DELAY_SECONDS = 15;
 const DEFAULT_PREMIUM_PADDOCK_DISCORD_BOT_NAME = "外部パドック速報";
 const DEFAULT_DETAIL_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
@@ -427,6 +430,47 @@ const isPremiumRaceDiscoveryTick = (date: Date): boolean => {
   return jst.slice(11, 16) === "20:00";
 };
 
+const getLatestSelfRealtimePlanAt = async (env: Env): Promise<string | null> => {
+  const row = await env.REALTIME_DB.prepare(
+    `
+      select created_at
+      from fetch_logs
+      where job_type = 'plan-realtime-fetches-self'
+      order by created_at desc
+      limit 1
+    `,
+  ).first<{ created_at: string }>();
+  return row?.created_at ?? null;
+};
+
+const enqueueSelfRealtimePlanIfStale = async (env: Env, date: string, now = getNow(env)) => {
+  if (!isJstPollingWindow(now)) {
+    return;
+  }
+  const latest = await getLatestSelfRealtimePlanAt(env);
+  if (
+    latest &&
+    new Date(latest).getTime() > now.getTime() - REALTIME_PLAN_SELF_SCHEDULE_STALE_SECONDS * 1000
+  ) {
+    return;
+  }
+  await env.REALTIME_JOBS.send(
+    { date, selfSchedule: true, type: "plan-realtime-fetches" },
+    { delaySeconds: REALTIME_PLAN_SELF_SCHEDULE_DELAY_SECONDS },
+  );
+  await logFetch(env.REALTIME_DB, "plan-realtime-fetches-self", "queued", null, date);
+};
+
+const enqueueNextSelfRealtimePlan = async (env: Env, date: string, now = getNow(env)) => {
+  if (!isJstPollingWindow(now)) {
+    return;
+  }
+  await env.REALTIME_JOBS.send(
+    { date, selfSchedule: true, type: "plan-realtime-fetches" },
+    { delaySeconds: REALTIME_PLAN_SELF_SCHEDULE_DELAY_SECONDS },
+  );
+};
+
 const getJstDayStart = (targetDate: string): Date =>
   new Date(
     `${targetDate.slice(0, 4)}-${targetDate.slice(4, 6)}-${targetDate.slice(6, 8)}T00:00:00+09:00`,
@@ -562,7 +606,6 @@ const isPremiumRaceJob = (job: Job): boolean =>
   job.type === "discover-premium-race-links" ||
   job.type === "discover-premium-races" ||
   job.type === "plan-premium-race-data-fetches" ||
-  job.type === "fetch-premium-paddock" ||
   job.type === "fetch-premium-race-data";
 
 const planTrackConditionFetchesForDate = async (
@@ -921,7 +964,7 @@ const retryPremiumPaddockWhileInWindow = async (env: Env, race: NarRaceSource): 
   if (minutes === null || minutes < -PREMIUM_PADDOCK_WINDOW_AFTER_MINUTES) {
     return;
   }
-  await (env.PREMIUM_RACE_JOBS ?? env.REALTIME_JOBS).send(
+  await env.REALTIME_JOBS.send(
     { raceKey: race.raceKey, type: "fetch-premium-paddock" },
     { delaySeconds: PREMIUM_PADDOCK_RETRY_DELAY_SECONDS },
   );
@@ -1063,6 +1106,7 @@ const fetchAndStoreOdds = async (env: Env, raceKey: string): Promise<void> => {
     throw new Error(`race source not found: ${raceKey}`);
   }
   try {
+    const raceStart = getRaceStart(race);
     const oddsSlotAt = getCurrentOddsSlotAt(race, now);
     if (!oddsSlotAt || !isSlotDue(race.lastOddsFetchAt, oddsSlotAt)) {
       await failOddsFetch(env.REALTIME_DB, raceKey);
@@ -1107,6 +1151,15 @@ const fetchAndStoreOdds = async (env: Env, raceKey: string): Promise<void> => {
       throw new Error(`odds rows are empty: ${raceKey}`);
     }
     await completeOddsFetch(env.REALTIME_DB, raceKey, fetchedAt);
+    const nextSlotAt = raceStart ? getNextOddsFetchSlotAt(raceStart, now, race.source) : null;
+    if (nextSlotAt) {
+      const delaySeconds = Math.max(
+        1,
+        Math.ceil((new Date(nextSlotAt).getTime() - now.getTime()) / 1000),
+      );
+      await env.REALTIME_JOBS.send({ raceKey, type: "fetch-odds" }, { delaySeconds });
+      await markOddsFetchQueued(env.REALTIME_DB, [raceKey], nextSlotAt);
+    }
     const [history, historyByType] = await Promise.all([
       listTanshoHistory(env.REALTIME_DB, raceKey),
       listOddsHistoryByType(env.REALTIME_DB, raceKey),
@@ -1375,8 +1428,24 @@ const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<v
   if (!paddockUrl) {
     return;
   }
-  const attempts = await fetchPremiumHtmlAttempts(config, paddockUrl).catch(
-    async (error: unknown) => {
+  let attempts: Awaited<ReturnType<typeof fetchPremiumHtmlAttempts>>;
+  try {
+    attempts = await fetchPremiumHtmlAttempts(config, paddockUrl);
+  } catch (error: unknown) {
+    const existingPayload = await getPremiumRacePayload(env.REALTIME_DB, raceKey).catch(() => null);
+    if (existingPayload && existingPayload.paddockBulletins.length > 0) {
+      const latestFetchedAt = existingPayload.paddockBulletins.reduce<string | null>(
+        (latest, row) => (latest && latest > row.fetchedAt ? latest : row.fetchedAt),
+        null,
+      );
+      await updatePremiumPaddockFetchState(env.REALTIME_DB, {
+        fetchedAt: latestFetchedAt,
+        message: null,
+        raceKey,
+        status: "ok",
+      });
+      return;
+    }
       const retryAfter = toJstIsoString(
         new Date(getNow(env).getTime() + PREMIUM_PADDOCK_RETRY_DELAY_SECONDS * 1000),
       );
@@ -1387,8 +1456,7 @@ const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<v
         status: "failed",
       });
       throw error;
-    },
-  );
+  }
   const parsedAttempts = attempts.map((attempt) => ({
     mode: attempt.mode,
     parsed: parsePremiumPaddockBulletins(attempt.html, env),
@@ -1578,6 +1646,16 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
     if (job.type === "plan-realtime-fetches") {
       const count = await planRealtimeFetches(env, job.date);
       await logFetch(env.REALTIME_DB, job.type, "ok", null, `${count} jobs queued`);
+      if (job.selfSchedule) {
+        await logFetch(
+          env.REALTIME_DB,
+          "plan-realtime-fetches-self",
+          "ok",
+          null,
+          `${count} jobs queued`,
+        );
+        await enqueueNextSelfRealtimePlan(env, job.date);
+      }
       return;
     }
     if (job.type === "discover-premium-races") {
@@ -1808,7 +1886,11 @@ export default {
       typeof controller.scheduledTime === "number"
         ? new Date(controller.scheduledTime)
         : new Date();
-    ctx.waitUntil(handleJob(env, getCronJob(controller.cron, scheduledAt)));
+    const job = getCronJob(controller.cron, scheduledAt);
+    ctx.waitUntil(handleJob(env, job));
+    if (job.type === "plan-realtime-fetches") {
+      ctx.waitUntil(enqueueSelfRealtimePlanIfStale(env, job.date, scheduledAt));
+    }
   },
 
   async queue(batch, env): Promise<void> {

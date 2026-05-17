@@ -1,7 +1,7 @@
 export const PADDOCK_HISTORY_LIMIT = 100;
 
 export type PaddockMetric = "attention" | "kaeshi" | "paddock" | "preference";
-export type PaddockOfficialRank = 1 | 2 | 3 | 4 | 5 | 6;
+export type PaddockOfficialRank = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
 
 export interface PaddockHorseScore {
   attention: number;
@@ -54,9 +54,13 @@ export interface PaddockOfficialRankAction {
 export type PaddockAction = PaddockOfficialRankAction | PaddockScoreAction;
 
 const PADDOCK_METRICS = new Set<PaddockMetric>(["attention", "kaeshi", "paddock", "preference"]);
+const PADDOCK_OFFICIAL_RANKS: PaddockOfficialRank[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
 const isPaddockMetric = (value: unknown): value is PaddockMetric =>
   value === "attention" || value === "kaeshi" || value === "paddock" || value === "preference";
+
+const isPaddockOfficialRank = (value: unknown): value is PaddockOfficialRank =>
+  PADDOCK_OFFICIAL_RANKS.some((rank) => rank === value);
 
 export const createPaddockState = (
   raceKey: string,
@@ -124,15 +128,7 @@ export const isPaddockAction = (value: unknown): value is PaddockAction => {
     typeof value.horseName === "string" &&
     "rank" in value
   ) {
-    return (
-      value.rank === null ||
-      value.rank === 1 ||
-      value.rank === 2 ||
-      value.rank === 3 ||
-      value.rank === 4 ||
-      value.rank === 5 ||
-      value.rank === 6
-    );
+    return value.rank === null || isPaddockOfficialRank(value.rank);
   }
   return (
     "horseNumber" in value &&
