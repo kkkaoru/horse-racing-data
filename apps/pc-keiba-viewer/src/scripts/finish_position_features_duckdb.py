@@ -250,6 +250,7 @@ def _rec_select_from_ban_ei(history_start: str, to_date: str) -> str:
       and ra.keibajo_code = se.keibajo_code
       and ra.race_bango = se.race_bango
     where se.keibajo_code = '{BAN_EI_KEIBAJO_CODE}'
+      and se.kaisai_nen between '{history_start[:4]}' and '{to_date[:4]}'
       and (se.kaisai_nen || se.kaisai_tsukihi) between '{history_start}' and '{to_date}'
       and se.ketto_toroku_bango is not null
     """
@@ -295,6 +296,8 @@ def stage_se_table(
     keibajo_filter: str | None = None,
 ) -> None:
     keibajo_clause = f"and keibajo_code = '{keibajo_filter}'" if keibajo_filter else ""
+    history_year = history_start[:4]
+    to_year = to_date[:4]
     run_staged_sql(
         con,
         stage,
@@ -303,7 +306,8 @@ def stage_se_table(
         select kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango,
                try_cast(nullif(trim(bataiju), '') as int) as bataiju
         from pg.{pg_table}
-        where (kaisai_nen || kaisai_tsukihi) between '{history_start}' and '{to_date}'
+        where kaisai_nen between '{history_year}' and '{to_year}'
+          and (kaisai_nen || kaisai_tsukihi) between '{history_start}' and '{to_date}'
           {keibajo_clause}
         """,
         row_count_table=table,
@@ -341,6 +345,8 @@ def stage_ra_table(
     keibajo_filter: str | None = None,
 ) -> None:
     keibajo_clause = f"and keibajo_code = '{keibajo_filter}'" if keibajo_filter else ""
+    from_year = from_date[:4]
+    to_year = to_date[:4]
     run_staged_sql(
         con,
         stage,
@@ -348,7 +354,8 @@ def stage_ra_table(
         create or replace temp table {table} as
         select kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, tenko_code
         from pg.{pg_table}
-        where (kaisai_nen || kaisai_tsukihi) between '{from_date}' and '{to_date}'
+        where kaisai_nen between '{from_year}' and '{to_year}'
+          and (kaisai_nen || kaisai_tsukihi) between '{from_date}' and '{to_date}'
           {keibajo_clause}
         """,
         row_count_table=table,
