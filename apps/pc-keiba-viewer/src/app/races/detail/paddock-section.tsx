@@ -286,9 +286,8 @@ function PaddockRemainingIndicator({
       }
 
       const markerTop = Math.min(window.innerHeight, PADDOCK_REMAINING_MARKER_TOP);
-      const nextRemaining = rows.filter(
-        (row) => row.getBoundingClientRect().bottom > markerTop,
-      ).length;
+      const nextRemaining = rows.filter((row) => row.getBoundingClientRect().top >= markerTop)
+        .length;
       setRemaining(nextRemaining);
     };
 
