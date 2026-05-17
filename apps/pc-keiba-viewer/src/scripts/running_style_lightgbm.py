@@ -382,6 +382,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     walk.add_argument("--min-child-samples", type=int, default=DEFAULT_MIN_CHILD_SAMPLES)
     walk.add_argument("--num-iterations", type=int, default=DEFAULT_NUM_ITERATIONS)
     walk.add_argument("--early-stopping-rounds", type=int, default=DEFAULT_EARLY_STOPPING_ROUNDS)
+    train_prod = subparsers.add_parser("train-production")
+    train_prod.add_argument("--csv", type=Path, required=True, help="parquet directory or file")
+    train_prod.add_argument("--train-start-date", type=str, default="20160101")
+    train_prod.add_argument("--train-end-date", type=str, required=True, help="YYYYMMDD inclusive")
+    train_prod.add_argument("--model-version", type=str, required=True)
+    train_prod.add_argument("--output-model-dir", type=Path, required=True)
+    train_prod.add_argument("--num-leaves", type=int, default=DEFAULT_NUM_LEAVES)
+    train_prod.add_argument("--learning-rate", type=float, default=DEFAULT_LEARNING_RATE)
+    train_prod.add_argument("--min-child-samples", type=int, default=DEFAULT_MIN_CHILD_SAMPLES)
+    train_prod.add_argument("--num-iterations", type=int, default=DEFAULT_NUM_ITERATIONS)
     return parser.parse_args(argv)
 
 
@@ -391,7 +401,7 @@ def training_params_from_args(args: argparse.Namespace) -> TrainingParams:
     base["learning_rate"] = args.learning_rate
     base["min_child_samples"] = args.min_child_samples
     base["num_iterations"] = args.num_iterations
-    base["early_stopping_rounds"] = args.early_stopping_rounds
+    base["early_stopping_rounds"] = getattr(args, "early_stopping_rounds", DEFAULT_EARLY_STOPPING_ROUNDS)
     return base
 
 
@@ -425,10 +435,85 @@ def run_walk_forward_command(args: argparse.Namespace) -> None:
     print(json.dumps({"elapsed_seconds": elapsed, "predictions_jsonl": str(output_jsonl), "rows": len(combined)}))
 
 
+def filter_by_date_range(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
+    return df[(df["race_date"] >= start) & (df["race_date"] <= end)].copy()
+
+
+def train_full_dataset(
+    train_df: pd.DataFrame,
+    feature_columns: list[str],
+    categorical_features: list[str],
+    params: TrainingParams,
+) -> lgb.Booster:
+    train_subset = filter_labeled_rows(train_df)
+    train_weights = compute_inverse_frequency_weights(train_subset[TARGET_COLUMN])
+    train_dataset = build_lgb_dataset(
+        train_subset, train_subset[TARGET_COLUMN], train_weights,
+        feature_columns, categorical_features,
+    )
+    return lgb.train(
+        lgb_params_for_multiclass(params),
+        train_dataset,
+        num_boost_round=params["num_iterations"],
+        callbacks=[lgb.log_evaluation(period=DEFAULT_VERBOSE_EVAL)],
+    )
+
+
+def write_model_metadata(
+    output_dir: Path,
+    model_version: str,
+    feature_columns: list[str],
+    categorical_features: list[str],
+    train_rows: int,
+    train_start: str,
+    train_end: str,
+) -> None:
+    metadata: dict[str, object] = {
+        "model_version": model_version,
+        "num_classes": NUM_CLASSES,
+        "class_labels": list(CLASS_LABELS),
+        "feature_columns": feature_columns,
+        "categorical_features": categorical_features,
+        "train_rows": train_rows,
+        "train_start_date": train_start,
+        "train_end_date": train_end,
+        "feature_schema_version": "v1",
+    }
+    (output_dir / "metadata.json").write_text(
+        json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8",
+    )
+
+
+def run_train_production_command(args: argparse.Namespace) -> None:
+    started = perf_counter()
+    df = load_dataset_parquet(args.csv)
+    feature_columns = resolve_feature_columns(list(df.columns))
+    categorical_features = detect_categorical_features(feature_columns)
+    params = training_params_from_args(args)
+    train_subset_full = filter_by_date_range(df, args.train_start_date, args.train_end_date)
+    booster = train_full_dataset(train_subset_full, feature_columns, categorical_features, params)
+    args.output_model_dir.mkdir(parents=True, exist_ok=True)
+    model_path = args.output_model_dir / "model.txt"
+    booster.save_model(str(model_path))
+    write_model_metadata(
+        args.output_model_dir, args.model_version, feature_columns, categorical_features,
+        int(len(filter_labeled_rows(train_subset_full))),
+        args.train_start_date, args.train_end_date,
+    )
+    elapsed = perf_counter() - started
+    print(json.dumps({
+        "elapsed_seconds": elapsed,
+        "model_path": str(model_path),
+        "rows": int(len(train_subset_full)),
+    }))
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     if args.command == "walk-forward":
         run_walk_forward_command(args)
+    if args.command == "train-production":
+        run_train_production_command(args)
 
 
 if __name__ == "__main__":

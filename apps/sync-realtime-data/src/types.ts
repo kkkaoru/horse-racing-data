@@ -134,6 +134,7 @@ export interface Env {
   REALTIME_DB: D1Database;
   REALTIME_JOBS: Queue<Job>;
   REALTIME_TEST_NOW?: string;
+  RUNNING_STYLE_MODELS: R2Bucket;
   TRACK_CONDITION_CACHE: DurableObjectNamespace;
   TRACK_CONDITION_DO_TTL_SECONDS?: string;
 }
