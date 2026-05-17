@@ -146,13 +146,7 @@ describe("race date filter", () => {
     vi.setSystemTime(new Date("2026-05-10T10:09:30+09:00"));
 
     render(
-      <RaceDateFilter
-        day="10"
-        defaultStartTime="10:09"
-        month="05"
-        races={races}
-        year="2026"
-      />,
+      <RaceDateFilter day="10" defaultStartTime="10:09" month="05" races={races} year="2026" />,
     );
 
     expect(screen.getByLabelText("開始時間")).toHaveProperty("value", "10:09");
@@ -313,6 +307,37 @@ describe("race date filter", () => {
     expect(screen.getByLabelText("selected jockey filters").textContent).toContain("東京太郎");
     expect(screen.getByLabelText("距離 下限")).toHaveProperty("value", "1500");
     expect(screen.getByLabelText("距離 上限")).toHaveProperty("value", "1700");
+  });
+
+  it("normalizes invalid URL query filter values and fixed venue defaults", () => {
+    render(
+      <RaceDateFilter
+        day="10"
+        fixedVenueCode="05"
+        initialSearchParams={{
+          jockey: ["地方花子", "東京太郎"],
+          source: "invalid",
+          surface: "invalid",
+          venue: "44",
+        }}
+        month="05"
+        races={races}
+        year="2026"
+      />,
+    );
+
+    expect(screen.queryByText("競馬場")).toBeNull();
+    expect(screen.getByText("1 / 3 レース")).toBeTruthy();
+    expect(screen.getByText("ＮＨＫマイルカップ")).toBeTruthy();
+    expect(screen.getByLabelText("selected jockey filters").textContent).toContain("地方花子");
+    expect(screen.getByLabelText("selected jockey filters").textContent).toContain("東京太郎");
+  });
+
+  it("handles empty race lists", () => {
+    render(<RaceDateFilter day="10" month="05" races={[]} year="2026" />);
+
+    expect(screen.getByText("0 / 0 レース")).toBeTruthy();
+    expect(screen.getByText("条件に一致するレースはありません。")).toBeTruthy();
   });
 
   it("updates query string without navigating when filter values change", async () => {

@@ -83,6 +83,13 @@ const NAR_GRADE_LABELS: Record<string, string> = {
   A: "Jpn1",
   B: "Jpn2",
   C: "Jpn3",
+  D: "重賞",
+  E: "特別",
+  P: "地区限定重賞 1",
+  Q: "地区限定重賞 2",
+  R: "地区限定重賞 3",
+  S: "地区限定重賞",
+  T: "準重賞",
 };
 
 export const getGradeLabel = (
@@ -90,6 +97,10 @@ export const getGradeLabel = (
   source?: RaceSource | null,
 ): string => {
   const code = clean(value);
+  if (!code && source === "nar") {
+    return "普通";
+  }
+
   return code
     ? ((source === "nar" ? NAR_GRADE_LABELS[code] : undefined) ??
         GRADE_LABELS[code] ??
@@ -98,6 +109,7 @@ export const getGradeLabel = (
 };
 
 const WEIGHT_LABELS: Record<string, string> = {
+  "0": "指定なし",
   "1": "ハンデ",
   "2": "別定",
   "3": "馬齢",

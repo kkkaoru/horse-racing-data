@@ -214,7 +214,29 @@ describe("horse race results table", () => {
     await waitFor(() => {
       expect(screen.getByText("履歴あり")).toBeTruthy();
     });
+    await waitFor(() => {
+      expect(screen.getByLabelText("直近nヶ月")).toHaveProperty("value", "30");
+    });
     expect(screen.queryByText("条件に一致する競走成績はありません。")).toBeNull();
+  });
+
+  it("defaults recent months to 12", () => {
+    render(
+      <HorseRaceResultsTable
+        classConditionName={null}
+        currentDistance="1800"
+        currentKeibajoCode="05"
+        currentRaceDate="20260322"
+        currentTrackCode="24"
+        defaultIncludeClass={false}
+        results={[result({ bamei: "対象", currentUmaban: "01" })]}
+        runners={[]}
+        source="jra"
+        sourceScope="all"
+      />,
+    );
+
+    expect(screen.getByLabelText("直近nヶ月")).toHaveProperty("value", "12");
   });
 
   it("keeps a manually entered finish rank limit even when it filters out rows", async () => {

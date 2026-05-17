@@ -61,6 +61,7 @@ describe("race classification", () => {
   });
 
   it("formats weight type labels", () => {
+    expect(getWeightLabel("0")).toBe("指定なし");
     expect(getWeightLabel("3")).toBe("馬齢");
     expect(getWeightLabel("6")).toBe("騎手ハンデ");
     expect(getWeightLabel("9")).toBe("その他");
@@ -86,8 +87,23 @@ describe("race classification", () => {
   it("formats grade labels", () => {
     expect(getGradeLabel("B")).toBe("G2");
     expect(getGradeLabel("B", "nar")).toBe("Jpn2");
+    expect(getGradeLabel("P", "nar")).toBe("地区限定重賞 1");
+    expect(getGradeLabel("T", "nar")).toBe("準重賞");
+    expect(getGradeLabel("Z", "nar")).toBe("グレード Z");
     expect(getGradeLabel("Z")).toBe("グレード Z");
     expect(getGradeLabel(null)).toBe("-");
+    expect(getGradeLabel(" ", "nar")).toBe("普通");
+  });
+
+  it("keeps non-handicap weight labels out of tags", () => {
+    expect(
+      getRaceTags(
+        race({
+          kyosoJokenCode: "005",
+          juryoShubetsuCode: "0",
+        }),
+      ),
+    ).toEqual(["1勝クラス"]);
   });
 
   it("uses Japan grade labels for NAR graded races", () => {

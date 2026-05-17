@@ -2,13 +2,13 @@
 
 import { Fragment, useMemo, useState } from "react";
 
+import { getPreferredJockeyName } from "../../../lib/jockey-name";
 import type {
   ConditionCorrelationDetail,
   ConditionCorrelationRow,
   TimeScoreDetail,
   TimeScoreRow,
 } from "../../../lib/race-types";
-import { getPreferredJockeyName } from "../../../lib/jockey-name";
 import { formatRunnerNumber } from "../../../lib/runner-format";
 import type { RealtimeRaceRequest } from "./realtime-client";
 import { useRealtimeRacePayload } from "./realtime-client";

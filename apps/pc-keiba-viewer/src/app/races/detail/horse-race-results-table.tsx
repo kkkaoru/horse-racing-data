@@ -39,6 +39,9 @@ type ResultLimit = "all" | "1" | "3" | "5" | "10";
 type SortDirection = "asc" | "desc";
 type SortKey = "date" | "kohan3f" | "sohaTime";
 
+const DEFAULT_RECENT_MONTHS = 12;
+const RECENT_MONTHS_RELAX_STEP = 2;
+
 interface HorseRaceResultsTableProps {
   classConditionName: string | null;
   currentDistance: string | null | undefined;
@@ -245,6 +248,22 @@ const getDateMonthsBefore = (date: string, months: number): number | null => {
   );
 };
 
+const getMonthsBetweenRaceDates = (fromDate: string, toDate: string): number | null => {
+  if (!/^\d{8}$/.test(fromDate) || !/^\d{8}$/.test(toDate)) {
+    return null;
+  }
+
+  const fromYear = Number(fromDate.slice(0, 4));
+  const fromMonth = Number(fromDate.slice(4, 6));
+  const fromDay = Number(fromDate.slice(6, 8));
+  const toYear = Number(toDate.slice(0, 4));
+  const toMonth = Number(toDate.slice(4, 6));
+  const toDay = Number(toDate.slice(6, 8));
+  const monthDiff = (toYear - fromYear) * 12 + (toMonth - fromMonth);
+
+  return monthDiff + (toDay > fromDay ? 1 : 0);
+};
+
 const getRunnerNumberOptions = (runners: Runner[], results: HorseRaceResult[]): string[] => {
   const runnerNumbers =
     runners.length > 0
@@ -304,7 +323,7 @@ export function HorseRaceResultsTable({
   const [sameJockeyOnly, setSameJockeyOnly] = useState(defaultNarFilterEnabled);
   const [sameJockeyTouched, setSameJockeyTouched] = useState(false);
   const [expandedRunnerNumber, setExpandedRunnerNumber] = useState<string | null>(null);
-  const [recentMonths, setRecentMonths] = useState(defaultNarFilterEnabled ? "18" : "");
+  const [recentMonths, setRecentMonths] = useState(String(DEFAULT_RECENT_MONTHS));
   const [recentMonthsTouched, setRecentMonthsTouched] = useState(false);
   const [sort, setSort] = useState<{ direction: SortDirection; key: SortKey }>({
     direction: "asc",
@@ -411,6 +430,22 @@ export function HorseRaceResultsTable({
       recentMonths.trim() !== "" && Number.isFinite(recentMonthsValue) && recentMonthsValue > 0
         ? getDateMonthsBefore(currentRaceDate, recentMonthsValue)
         : null;
+    const oldestResultDate = results.reduce<number | null>((oldest, result) => {
+      const raceDate = getRaceDateValue(result);
+      if (raceDate === null || !Number.isFinite(raceDate)) {
+        return oldest;
+      }
+      return oldest === null ? raceDate : Math.min(oldest, raceDate);
+    }, null);
+    const oldestResultMonths =
+      oldestResultDate === null
+        ? recentMonthsValue
+        : (getMonthsBetweenRaceDates(String(oldestResultDate), currentRaceDate) ??
+          recentMonthsValue);
+    const recentMonthsRelaxLimit = Math.max(
+      recentMonthsValue,
+      Math.ceil(oldestResultMonths / RECENT_MONTHS_RELAX_STEP) * RECENT_MONTHS_RELAX_STEP,
+    );
     const resultRunnerNumbers = getCoveredRunnerNumbers(results);
     const requiredRunnerNumbers =
       runners.length > 0
@@ -634,10 +669,26 @@ export function HorseRaceResultsTable({
       });
     }
 
-    if (!recentMonthsTouched && recentDateMin !== null && needsRelaxation()) {
-      applyCandidate({ ...currentOptions, activeRecentDateMin: null }, () => {
-        relaxedRecentMonths = "";
-      });
+    if (
+      !recentMonthsTouched &&
+      recentDateMin !== null &&
+      Number.isFinite(recentMonthsValue) &&
+      recentMonthsValue > 0 &&
+      needsRelaxation()
+    ) {
+      for (
+        let activeRecentMonths = recentMonthsValue + RECENT_MONTHS_RELAX_STEP;
+        activeRecentMonths <= recentMonthsRelaxLimit;
+        activeRecentMonths += RECENT_MONTHS_RELAX_STEP
+      ) {
+        const activeRecentDateMin = getDateMonthsBefore(currentRaceDate, activeRecentMonths);
+        const applied = applyCandidate({ ...currentOptions, activeRecentDateMin }, () => {
+          relaxedRecentMonths = String(activeRecentMonths);
+        });
+        if (applied || relaxedRecentMonths !== null) {
+          break;
+        }
+      }
     }
 
     if (!sameJockeyTouched && sameJockeyOnly && needsRelaxation()) {
@@ -1025,7 +1076,7 @@ export function HorseRaceResultsTable({
             <input
               inputMode="numeric"
               min="1"
-              placeholder="制限なし"
+              placeholder={String(DEFAULT_RECENT_MONTHS)}
               type="number"
               value={recentMonths}
               onChange={(event) => {

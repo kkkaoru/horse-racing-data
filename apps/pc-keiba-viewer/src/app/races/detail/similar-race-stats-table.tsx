@@ -6,7 +6,11 @@ import { Fragment, memo, useEffect, useMemo, useState } from "react";
 
 import type { RaceSource } from "../../../lib/codes";
 import { cleanText, formatDate, formatKeibajo, formatRaceNumber } from "../../../lib/format";
-import type { Runner, SimilarRaceStatsRow, SimilarRaceStatsSettings } from "../../../lib/race-types";
+import type {
+  Runner,
+  SimilarRaceStatsRow,
+  SimilarRaceStatsSettings,
+} from "../../../lib/race-types";
 import { formatRunnerNumber } from "../../../lib/runner-format";
 import { FrameNumberBadge } from "./frame-number-badge";
 import { MobileFilterDisclosure } from "./mobile-filter-disclosure";
@@ -291,11 +295,7 @@ export const SimilarRaceStatsTable = memo(function SimilarRaceStatsTable({
             (fallbackRow) => fallbackRow.horseNumber === row.horseNumber,
           );
           score =
-            fallbackIndex === 0
-              ? 1
-              : fallbackIndex === sortedFallbackRows.length - 1
-                ? 0
-                : 0.5;
+            fallbackIndex === 0 ? 1 : fallbackIndex === sortedFallbackRows.length - 1 ? 0 : 0.5;
         } else {
           score = (row.rawScore - minScore) / (maxScore - minScore);
         }
@@ -708,7 +708,9 @@ export const SimilarRaceStatsTable = memo(function SimilarRaceStatsTable({
               setStatsTablesExpanded((current) => !current);
             }}
           >
-            {statsTablesExpanded ? "騎手・調教師・馬主の勝率を閉じる" : "騎手・調教師・馬主の勝率を表示"}
+            {statsTablesExpanded
+              ? "騎手・調教師・馬主の勝率を閉じる"
+              : "騎手・調教師・馬主の勝率を表示"}
           </button>
         </div>
         {statsTablesExpanded

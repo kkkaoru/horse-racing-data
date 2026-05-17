@@ -223,6 +223,19 @@ const DetailCell = ({
   );
 };
 
+const formatCountValue = (value: string | null | undefined): string | null => {
+  if (!hasDetailValue(value)) {
+    return null;
+  }
+
+  const normalized = cleanText(value);
+  const parsed = Number(normalized);
+  return Number.isInteger(parsed) ? String(parsed) : normalized;
+};
+
+const hideUnspecifiedDetailValue = (value: string): string | null =>
+  value === "指定なし" || value === "制限なし" ? null : value;
+
 const DetailLinkCell = ({
   href,
   label,
@@ -504,15 +517,21 @@ export async function RaceDetailView({
         <section className="detail-grid" aria-label="race details">
           <DetailCell label="副題" value={race.kyosomeiFukudai} />
           <DetailCell label="括弧内名称" value={race.kyosomeiKakkonai} />
+          <DetailCell label="条件" value={conditionLabel} />
           <DetailCell
-            label="条件"
-            value={conditionLabel}
+            label={race.source === "nar" ? "重賞種別" : "グレード"}
+            value={getGradeLabel(race.gradeCode, race.source)}
           />
-          <DetailCell label="グレード" value={getGradeLabel(race.gradeCode, race.source)} />
-          <DetailCell label="競走記号" value={getRaceSymbolDetailLabel(race.kyosoKigoCode)} />
-          <DetailCell label="重量種別" value={getWeightLabel(race.juryoShubetsuCode)} />
-          <DetailCell label="出走頭数" suffix=" 頭" value={race.shussoTosu} />
-          <DetailCell label="登録頭数" suffix=" 頭" value={race.torokuTosu} />
+          <DetailCell
+            label="競走記号"
+            value={hideUnspecifiedDetailValue(getRaceSymbolDetailLabel(race.kyosoKigoCode))}
+          />
+          <DetailCell
+            label="重量種別"
+            value={hideUnspecifiedDetailValue(getWeightLabel(race.juryoShubetsuCode))}
+          />
+          <DetailCell label="出走頭数" suffix=" 頭" value={formatCountValue(race.shussoTosu)} />
+          <DetailCell label="登録頭数" suffix=" 頭" value={formatCountValue(race.torokuTosu)} />
           <DetailLinkCell href={visibleJraRaceEntryUrl} label="JRA出馬表" value="公式ページ" />
           <DetailLinkCell href={visibleJraRaceResultUrl} label="JRA成績" value="公式ページ" />
           <DetailCell label="天候" value={formatWeather(race.tenkoCode)} />
