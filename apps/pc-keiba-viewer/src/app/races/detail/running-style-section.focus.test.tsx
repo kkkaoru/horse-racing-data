@@ -47,9 +47,9 @@ describe("RunningStyleSection - nige focus tab", () => {
     );
     const items = screen.getAllByRole("listitem");
     expect(items).toHaveLength(3);
-    expect(items[0].textContent).toBe("1番 ロードカナロア 逃げ 80%");
-    expect(items[1].textContent).toBe("2番 馬B 逃げ 50%");
-    expect(items[2].textContent).toBe("3番 馬C 逃げ 20%");
+    expect(items[0]?.textContent).toBe("1番 ロードカナロア 逃げ 80%");
+    expect(items[1]?.textContent).toBe("2番 馬B 逃げ 50%");
+    expect(items[2]?.textContent).toBe("3番 馬C 逃げ 20%");
   });
 
   test("flags top-3 entries with aria-current for visual highlight", () => {
@@ -66,10 +66,10 @@ describe("RunningStyleSection - nige focus tab", () => {
       />,
     );
     const items = screen.getAllByRole("listitem");
-    expect(items[0].getAttribute("aria-current")).toBe("true");
-    expect(items[1].getAttribute("aria-current")).toBe("true");
-    expect(items[2].getAttribute("aria-current")).toBe("true");
-    expect(items[3].getAttribute("aria-current")).toBe(null);
+    expect(items[0]?.getAttribute("aria-current")).toBe("true");
+    expect(items[1]?.getAttribute("aria-current")).toBe("true");
+    expect(items[2]?.getAttribute("aria-current")).toBe("true");
+    expect(items[3]?.getAttribute("aria-current")).toBe(null);
   });
 
   test("renders 馬名不明 when bamei is missing", () => {
