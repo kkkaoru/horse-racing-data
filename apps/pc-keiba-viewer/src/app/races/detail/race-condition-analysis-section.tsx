@@ -3,13 +3,11 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { ReactNode } from "react";
-import { Fragment, memo, useEffect, useMemo, useState } from "react";
+import { Fragment, memo, useEffect, useState } from "react";
 
 import type { RaceSource } from "../../../lib/codes";
 import { formatDate, formatKeibajo, formatRaceNumber } from "../../../lib/format";
 import type {
-  ConditionCorrelationDetail,
-  ConditionCorrelationRow,
   FinishPositionStatsRow,
   FrameStatsRow,
   PayoutStatsRow,
@@ -21,8 +19,6 @@ import type {
 import { formatRunnerNumber } from "../../../lib/runner-format";
 import { FrameNumberBadge } from "./frame-number-badge";
 import { MobileFilterDisclosure } from "./mobile-filter-disclosure";
-import type { RealtimeRaceRequest } from "./realtime-client";
-import { useRealtimeRacePayload } from "./realtime-client";
 
 interface RaceConditionAnalysisSectionProps {
   conditionLabels: {
@@ -46,7 +42,6 @@ interface RaceConditionAnalysisSectionProps {
   payoutStats: PayoutStatsRow[];
   raceTimeStats: RaceTimeStats;
   runners: Runner[];
-  realtimeRequest?: RealtimeRaceRequest;
   settings: SimilarRaceStatsSettings;
   source: RaceSource;
 }
@@ -79,9 +74,6 @@ const SETTING_PARAMS: Record<ToggleSettingKey, string> = {
 };
 
 const TARGET_RACE_PAGE_SIZE_OPTIONS = [5, 10, 20, 50];
-
-const normalizeHorseNumber = (value: string): string =>
-  value.replace(/^0+/u, "") || (value ? "0" : "");
 
 const ALL_CONDITION_KEYS: ToggleSettingKey[] = [
   "includeAge",
@@ -145,168 +137,6 @@ const buildRaceHref = (date: string, keibajoCode: string, raceNumber: string): s
   return `/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}`;
 };
 
-const similarityScore = (value: number | null, target: number | null, scale: number): number => {
-  if (value === null || target === null) {
-    return 0.5;
-  }
-  return Math.max(0, Math.min(1, 1 - Math.abs(value - target) / Math.max(target, scale)));
-};
-
-const roundScore = (value: number): number => Math.round(value * 100) / 100;
-
-const applyRealtimeCorrelationRows = (
-  rows: ConditionCorrelationRow[],
-  realtimeValues: Map<string, { odds: number | null; popularity: number | null }>,
-): ConditionCorrelationRow[] => {
-  if (realtimeValues.size === 0) {
-    return rows;
-  }
-
-  return rows
-    .map((row) => {
-      const realtime = realtimeValues.get(normalizeHorseNumber(row.horseNumber));
-      if (!realtime) {
-        return row;
-      }
-      const details = row.details.map((detail): ConditionCorrelationDetail => {
-        if (detail.key === "popularity" && realtime.popularity !== null) {
-          return {
-            ...detail,
-            reason: `${detail.reason}。最新オッズ取得値で再計算`,
-            score: roundScore(similarityScore(realtime.popularity, detail.target, 5)),
-            value: realtime.popularity,
-          };
-        }
-        if (detail.key === "odds" && realtime.odds !== null) {
-          return {
-            ...detail,
-            reason: `${detail.reason}。最新オッズ取得値で再計算`,
-            score: roundScore(similarityScore(realtime.odds, detail.target, 10)),
-            value: realtime.odds,
-          };
-        }
-        return detail;
-      });
-      const score = roundScore(
-        details.reduce((total, detail) => total + detail.score * detail.weight, 0),
-      );
-      return { ...row, details, score };
-    })
-    .toSorted(
-      (left, right) =>
-        right.score - left.score || Number(left.horseNumber) - Number(right.horseNumber),
-    );
-};
-
-function CorrelationScoreTable({
-  realtimeRequest,
-  rows,
-}: {
-  realtimeRequest?: RealtimeRaceRequest;
-  rows: ConditionCorrelationRow[];
-}) {
-  const { payload } = useRealtimeRacePayload(
-    realtimeRequest ?? {
-      apiBaseUrl: "",
-      day: "",
-      keibajoCode: "",
-      month: "",
-      raceNumber: "",
-      source: "jra",
-      year: "",
-    },
-    null,
-  );
-  const [expandedHorseNumber, setExpandedHorseNumber] = useState<string | null>(null);
-  const realtimeValues = useMemo(() => {
-    const values = new Map<string, { odds: number | null; popularity: number | null }>();
-    for (const row of payload?.odds?.latest.tansho ?? []) {
-      values.set(normalizeHorseNumber(row.combination), {
-        odds: row.odds ?? null,
-        popularity: row.rank ?? null,
-      });
-    }
-    return values;
-  }, [payload]);
-  const displayedRows = useMemo(
-    () => applyRealtimeCorrelationRows(rows, realtimeValues),
-    [realtimeValues, rows],
-  );
-
-  return (
-    <div className="stats-table-wrap correlation-score-table-wrap">
-      <table className="stats-table analysis-table correlation-score-table">
-        <thead>
-          <tr>
-            <th>馬番</th>
-            <th>馬名</th>
-            <th>スコア</th>
-          </tr>
-        </thead>
-        <tbody>
-          {displayedRows.map((row) => {
-            const isExpanded = expandedHorseNumber === row.horseNumber;
-            return (
-              <Fragment key={row.horseNumber}>
-                <tr className={isExpanded ? "stats-row-expanded" : undefined}>
-                  <td>{formatRunnerNumber(row.horseNumber)}</td>
-                  <td className="stats-name-cell">{row.horseName || "-"}</td>
-                  <td className="stats-score-cell">
-                    <button
-                      aria-expanded={isExpanded}
-                      className="stats-detail-toggle"
-                      type="button"
-                      onClick={() => {
-                        setExpandedHorseNumber((current) =>
-                          current === row.horseNumber ? null : row.horseNumber,
-                        );
-                      }}
-                    >
-                      {row.score.toFixed(2)}
-                    </button>
-                  </td>
-                </tr>
-                {isExpanded ? (
-                  <tr className="stats-detail-row">
-                    <td colSpan={3}>
-                      <div className="stats-detail-panel">
-                        <table className="stats-detail-table correlation-detail-table">
-                          <thead>
-                            <tr>
-                              <th>項目</th>
-                              <th>現在値</th>
-                              <th>対象平均</th>
-                              <th>スコア</th>
-                              <th>重み</th>
-                              <th>理由</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {row.details.map((detail) => (
-                              <tr key={detail.key}>
-                                <td>{detail.label}</td>
-                                <td>{formatNumber(detail.value)}</td>
-                                <td>{formatNumber(detail.target)}</td>
-                                <td>{detail.score.toFixed(2)}</td>
-                                <td>{detail.weight.toFixed(3)}</td>
-                                <td className="stats-name-cell">{detail.reason}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </td>
-                  </tr>
-                ) : null}
-              </Fragment>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 const renderFastestDetail = (detail: StatsDetail | null) => {
   if (!detail) {
     return <p className="empty-state">該当する最速レースはありません。</p>;
@@ -360,7 +190,6 @@ export const RaceConditionAnalysisSection = memo(function RaceConditionAnalysisS
   finishPositionStats,
   payoutStats,
   raceTimeStats,
-  realtimeRequest,
   runners,
   settings,
   source,
@@ -560,16 +389,6 @@ export const RaceConditionAnalysisSection = memo(function RaceConditionAnalysisS
             </div>
           </div>
           {renderFastestDetail(raceTimeStats.fastestDetail)}
-        </section>
-
-        <section className="stats-category-section">
-          <div className="section-heading compact">
-            <h3>1〜3着相関スコア</h3>
-          </div>
-          <CorrelationScoreTable
-            realtimeRequest={realtimeRequest}
-            rows={raceTimeStats.correlationRows}
-          />
         </section>
 
         <section className="stats-category-section">
