@@ -1,0 +1,13 @@
+{
+  "$schema": "../../../../node_modules/wrangler/config-schema.json",
+  "name": "pc-keiba-r2-model-upload-preview",
+  "main": "worker.js",
+  "account_id": "78109ec18c7c85b194b19fb32e3bb149",
+  "compatibility_date": "2026-05-09",
+  "r2_buckets": [
+    {
+      "binding": "FINISH_POSITION_MODELS",
+      "bucket_name": "pc-keiba-finish-position-models",
+    },
+  ],
+}

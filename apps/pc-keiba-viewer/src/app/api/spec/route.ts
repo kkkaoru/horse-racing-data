@@ -132,6 +132,33 @@ const apiSpec = {
         tags: ["spec"],
       },
     },
+    "/api/models/gemma-4-e2b/{version}/gemma-4-E2B-it-web.task": {
+      get: {
+        operationId: "getGemma4E2BWebModel",
+        parameters: [
+          {
+            description: "モデルバージョン。例: v20260518",
+            in: "path",
+            name: "version",
+            required: true,
+            schema: { pattern: "^v\\d{8}$", type: "string" },
+          },
+        ],
+        responses: {
+          "200": {
+            content: {
+              "application/octet-stream": {
+                schema: { format: "binary", type: "string" },
+              },
+            },
+            description: "MediaPipe LLM Inference 用 Gemma 4 E2B Web モデル。",
+          },
+          ...errorResponses,
+        },
+        summary: "ブラウザAI予想用の Gemma 4 E2B Web モデルを返します。",
+        tags: ["models"],
+      },
+    },
     "/api/top-races": {
       get: {
         operationId: "getTopRaces",
@@ -393,7 +420,13 @@ const apiSpec = {
       url: "/",
     },
   ],
-  tags: [{ name: "spec" }, { name: "races" }, { name: "paddock" }, { name: "mypage" }],
+  tags: [
+    { name: "spec" },
+    { name: "models" },
+    { name: "races" },
+    { name: "paddock" },
+    { name: "mypage" },
+  ],
 } as const;
 
 export function GET() {

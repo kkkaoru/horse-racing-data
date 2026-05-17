@@ -7336,6 +7336,160 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   white-space: pre;
 }
 
+.race-ai-assistant-section {
+  background: var(--surface);
+  border: var(--space-1px-7) solid var(--border);
+  border-radius: var(--space-8px-28);
+  display: grid;
+  gap: var(--space-14px-55);
+  padding: var(--space-16px-10);
+}
+
+.race-ai-status-grid {
+  display: grid;
+  gap: var(--space-10px-27);
+  grid-template-columns: repeat(auto-fit, minmax(var(--space-180px-85), var(--space-1fr-51)));
+}
+
+.race-ai-status-grid > div {
+  background: var(--surface-muted);
+  border: var(--space-1px-7) solid var(--border);
+  border-radius: var(--space-6px-33);
+  display: grid;
+  gap: var(--space-2px-25);
+  padding: var(--space-10px-27) var(--space-12px-9);
+}
+
+.race-ai-status-grid span,
+.race-ai-log-grid li > span {
+  color: var(--text-muted);
+  font-size: var(--space-0-85rem-217);
+}
+
+.race-ai-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-10px-27);
+}
+
+.race-ai-actions button,
+.race-ai-chat-form button {
+  background: var(--accent);
+  border: var(--space-1px-7) solid var(--accent-strong);
+  border-radius: var(--space-6px-33);
+  color: var(--surface);
+  font: inherit;
+  font-weight: var(--number-650-40);
+  min-height: var(--space-38px-35);
+  padding: var(--number-0-2) var(--space-14px-55);
+}
+
+.race-ai-actions button:disabled,
+.race-ai-chat-form button:disabled {
+  cursor: wait;
+  opacity: var(--number-0-55-48);
+}
+
+.race-ai-error {
+  color: var(--danger);
+  font-weight: var(--number-650-40);
+}
+
+.race-ai-table-wrap {
+  max-width: var(--space-100pct-12);
+  overflow-x: auto;
+}
+
+.race-ai-prediction-table {
+  border-collapse: collapse;
+  min-width: var(--space-720px-181);
+  width: var(--space-100pct-12);
+}
+
+.race-ai-prediction-table th,
+.race-ai-prediction-table td {
+  border-bottom: var(--space-1px-7) solid var(--border);
+  padding: var(--space-8px-28) var(--space-10px-27);
+  text-align: left;
+  vertical-align: top;
+}
+
+.race-ai-prediction-table th {
+  background: var(--surface-muted);
+  color: var(--text-muted);
+  font-weight: var(--number-650-40);
+  white-space: nowrap;
+}
+
+.race-ai-answer {
+  background: var(--surface-muted);
+  border-left: var(--space-3px-22) solid var(--accent);
+  margin: var(--number-0-2);
+  padding: var(--space-10px-27) var(--space-12px-9);
+}
+
+.race-ai-chat-form {
+  align-items: end;
+  display: grid;
+  gap: var(--space-10px-27);
+  grid-template-columns: var(--space-1fr-51) auto;
+}
+
+.race-ai-chat-form label {
+  display: grid;
+  gap: var(--space-6px-33);
+  font-weight: var(--number-650-40);
+}
+
+.race-ai-chat-form textarea {
+  border: var(--space-1px-7) solid var(--border);
+  border-radius: var(--space-6px-33);
+  color: var(--text);
+  font: inherit;
+  min-height: var(--space-96px-66);
+  padding: var(--space-10px-27) var(--space-12px-9);
+  resize: vertical;
+  width: var(--space-100pct-12);
+}
+
+.race-ai-log-grid {
+  display: grid;
+  gap: var(--space-12px-9);
+  grid-template-columns: repeat(auto-fit, minmax(var(--space-280px-175), var(--space-1fr-51)));
+}
+
+.race-ai-log-grid details {
+  border: var(--space-1px-7) solid var(--border);
+  border-radius: var(--space-6px-33);
+}
+
+.race-ai-log-grid summary {
+  cursor: pointer;
+  font-weight: var(--number-650-40);
+  padding: var(--space-10px-27) var(--space-12px-9);
+}
+
+.race-ai-log-grid ol {
+  display: grid;
+  gap: var(--space-10px-27);
+  list-style: none;
+  margin: var(--number-0-2);
+  max-height: var(--space-360px-99);
+  overflow: auto;
+  padding: var(--number-0-2) var(--space-12px-9) var(--space-12px-9);
+}
+
+.race-ai-log-grid li {
+  border-top: var(--space-1px-7) solid var(--border);
+  padding-top: var(--space-10px-27);
+}
+
+.race-ai-log-grid p {
+  margin: var(--space-4px-18) var(--number-0-2) var(--number-0-2);
+  white-space: pre-wrap;
+}
+
 @media (min-width: 1440px) {
   .page-shell {
     width: min(calc(var(--space-100pct-12) - var(--space-64px-48)), var(--space-1360px-218));
@@ -7347,6 +7501,15 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 }
 
 @media (max-width: 720px) {
+  .race-ai-chat-form,
+  .race-ai-log-grid {
+    grid-template-columns: var(--space-1fr-51);
+  }
+
+  .race-ai-chat-form button {
+    width: var(--space-100pct-12);
+  }
+
   .entity-title-actions {
     justify-content: flex-start;
   }
