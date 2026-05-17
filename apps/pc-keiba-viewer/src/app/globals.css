@@ -7345,6 +7345,44 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   padding: var(--space-16px-10);
 }
 
+.race-ai-download-dialog {
+  background: var(--surface);
+  border: var(--space-1px-7) solid var(--border);
+  border-radius: var(--space-8px-28);
+  bottom: var(--space-16px-10);
+  box-shadow: var(--number-0-2) var(--space-18px-31) var(--space-42px-29)
+    var(--color-rgba-23-33-28-0-16-6);
+  color: var(--text);
+  display: grid;
+  gap: var(--space-8px-28);
+  left: auto;
+  margin: var(--number-0-2);
+  max-width: min(var(--space-360px-99), calc(var(--space-100vw-38) - var(--space-32px-24)));
+  padding: var(--space-14px-55);
+  position: fixed;
+  right: var(--space-16px-10);
+  top: auto;
+  width: var(--space-100pct-12);
+  z-index: var(--number-30-45);
+}
+
+.race-ai-download-dialog div {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-12px-9);
+}
+
+.race-ai-download-dialog span,
+.race-ai-download-dialog small {
+  color: var(--text-muted);
+}
+
+.race-ai-download-dialog progress {
+  accent-color: var(--accent);
+  width: var(--space-100pct-12);
+}
+
 .race-ai-status-grid {
   display: grid;
   gap: var(--space-10px-27);
@@ -7490,6 +7528,78 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   white-space: pre-wrap;
 }
 
+.mypage-ai-panel {
+  background: var(--surface);
+  border: var(--space-1px-7) solid var(--border);
+  border-radius: var(--space-8px-28);
+  display: grid;
+  gap: var(--space-14px-55);
+  margin-bottom: var(--space-18px-31);
+  padding: var(--space-16px-10);
+}
+
+.mypage-ai-settings-grid {
+  display: grid;
+  gap: var(--space-10px-27);
+  grid-template-columns: repeat(auto-fit, minmax(var(--space-220px-3), var(--space-1fr-51)));
+}
+
+.mypage-ai-settings-grid label {
+  align-items: center;
+  background: var(--surface-muted);
+  border: var(--space-1px-7) solid var(--border);
+  border-radius: var(--space-6px-33);
+  display: flex;
+  gap: var(--space-10px-27);
+  min-height: var(--space-44px-23);
+  padding: var(--space-10px-27) var(--space-12px-9);
+}
+
+.mypage-ai-model-list {
+  display: grid;
+  gap: var(--space-8px-28);
+}
+
+.mypage-ai-model-row {
+  align-items: center;
+  border-bottom: var(--space-1px-7) solid var(--border);
+  display: grid;
+  gap: var(--space-10px-27);
+  grid-template-columns:
+    minmax(var(--space-180px-85), var(--space-1-35fr-116))
+    minmax(var(--space-92px-87), var(--space-0-7fr-67))
+    minmax(var(--space-92px-87), var(--space-0-7fr-67))
+    minmax(var(--space-120px-106), var(--space-0-8fr-120))
+    minmax(var(--space-84px-164), var(--space-0-7fr-67))
+    auto;
+  padding: var(--space-10px-27) var(--number-0-2);
+}
+
+.mypage-ai-model-row > span:first-child {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6px-33);
+}
+
+.mypage-ai-model-row small {
+  background: var(--surface-muted);
+  border: var(--space-1px-7) solid var(--border);
+  border-radius: var(--space-999px-30);
+  color: var(--text-muted);
+  font-size: var(--space-0-78rem-170);
+  padding: var(--space-2px-25) var(--space-6px-33);
+}
+
+.mypage-ai-model-row button {
+  background: var(--surface);
+  border: var(--space-1px-7) solid var(--border);
+  border-radius: var(--space-6px-33);
+  color: var(--text);
+  font: inherit;
+  min-height: var(--space-36px-81);
+  padding: var(--number-0-2) var(--space-12px-9);
+}
+
 @media (min-width: 1440px) {
   .page-shell {
     width: min(calc(var(--space-100pct-12) - var(--space-64px-48)), var(--space-1360px-218));
@@ -7517,6 +7627,17 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   .mypage-race-row {
     align-items: start;
     grid-template-columns: var(--space-1fr-51);
+  }
+
+  .mypage-ai-model-row {
+    align-items: start;
+    grid-template-columns: var(--space-1fr-51);
+  }
+
+  .race-ai-download-dialog {
+    left: var(--space-12px-9);
+    max-width: calc(var(--space-100vw-38) - var(--space-24px-50));
+    right: var(--space-12px-9);
   }
 
   .mypage-race-date,

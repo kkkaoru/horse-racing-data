@@ -13,11 +13,19 @@ import {
 } from "./race-ai-data";
 import { buildGemmaPrompt, RACE_AI_DEFAULT_PROMPT } from "./race-ai-default-prompt";
 import {
+  ensureRaceAiModelBuffer,
+  getRaceAiModelState,
+  LATEST_RACE_AI_MODEL,
+  subscribeRaceAiModelDownloads,
+  type RaceAiModelState,
+} from "./race-ai-model-manager";
+import {
   getRaceAiLog,
-  loadCachedModel,
-  saveCachedModel,
+  getRaceAiSettings,
   saveRaceAiLog,
+  subscribeRaceAiSettings,
   type RaceAiMessage,
+  type RaceAiSettings,
   type RaceAiThoughtLog,
 } from "./race-ai-storage";
 import { useRealtimeRaceSelector } from "./realtime-client";
@@ -65,10 +73,6 @@ interface ToolResult {
   url: string;
 }
 
-const MODEL_VERSION = "v20260518";
-const MODEL_FILE_NAME = "gemma-4-E2B-it-web.task";
-const MODEL_URL = `/api/models/gemma-4-e2b/${MODEL_VERSION}/${MODEL_FILE_NAME}`;
-const MODEL_CACHE_KEY = `gemma-4-e2b:${MODEL_VERSION}:${MODEL_FILE_NAME}`;
 const WASM_BASE_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-genai@0.10.27/wasm";
 const REALTIME_RETHINK_DELAY_MS = 3_000;
 const LOG_LIMIT = 20;
@@ -151,62 +155,6 @@ const parseModelResponse = (text: string): ParsedRaceAiResponse => {
   }
 };
 
-const fetchArrayBufferWithProgress = async (
-  url: string,
-  onProgress: (progress: number | null) => void,
-): Promise<ArrayBuffer> => {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`model api ${response.status}`);
-  }
-  const total = Number(response.headers.get("content-length"));
-  if (!response.body || !Number.isFinite(total) || total <= 0) {
-    onProgress(null);
-    return response.arrayBuffer();
-  }
-
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let received = 0;
-  const readChunk = async (): Promise<void> => {
-    const { done, value } = await reader.read();
-    if (done) {
-      return;
-    }
-    if (value) {
-      chunks.push(value);
-      received += value.byteLength;
-      onProgress(received / total);
-    }
-    await readChunk();
-  };
-  await readChunk();
-
-  const buffer = new Uint8Array(received);
-  let offset = 0;
-  for (const chunk of chunks) {
-    buffer.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return buffer.buffer;
-};
-
-const loadModelBuffer = async (onProgress: (progress: number | null) => void) => {
-  const cached = await loadCachedModel(MODEL_CACHE_KEY);
-  if (cached) {
-    onProgress(1);
-    return { buffer: cached, source: "cache" as const };
-  }
-  const buffer = await fetchArrayBufferWithProgress(MODEL_URL, onProgress);
-  await saveCachedModel({
-    buffer,
-    key: MODEL_CACHE_KEY,
-    modelVersion: MODEL_VERSION,
-    sourceUrl: MODEL_URL,
-  });
-  return { buffer, source: "network" as const };
-};
-
 const buildPrompt = ({
   data,
   messages,
@@ -261,8 +209,8 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const [supportState, setSupportState] = useState<WebGpuSupportState>("checking");
   const [modelStatus, setModelStatus] = useState<ModelStatus>("idle");
   const [generationStatus, setGenerationStatus] = useState<GenerationStatus>("idle");
-  const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
-  const [modelSource, setModelSource] = useState<"cache" | "network" | null>(null);
+  const [settings, setSettings] = useState<RaceAiSettings | null>(null);
+  const [modelState, setModelState] = useState<RaceAiModelState | null>(null);
   const [messages, setMessages] = useState<RaceAiMessage[]>([]);
   const [thoughtLogs, setThoughtLogs] = useState<RaceAiThoughtLog[]>([]);
   const [prediction, setPrediction] = useState<RaceAiPredictionRow[]>([]);
@@ -270,6 +218,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const llmRef = useRef<LlmInference | null>(null);
+  const autoStartedRaceKeyRef = useRef<string | null>(null);
   const runningRef = useRef(false);
   const messagesRef = useRef<RaceAiMessage[]>([]);
   const thoughtLogsRef = useRef<RaceAiThoughtLog[]>([]);
@@ -293,6 +242,20 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   }, []);
 
   useEffect(() => {
+    const refreshModelState = () => {
+      void getRaceAiModelState(LATEST_RACE_AI_MODEL).then(setModelState);
+    };
+    setSettings(getRaceAiSettings());
+    refreshModelState();
+    const unsubscribeSettings = subscribeRaceAiSettings(setSettings);
+    const unsubscribeDownloads = subscribeRaceAiModelDownloads(refreshModelState);
+    return () => {
+      unsubscribeSettings();
+      unsubscribeDownloads();
+    };
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     void (async () => {
       const log = await getRaceAiLog(raceKey);
@@ -307,6 +270,10 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     return () => {
       cancelled = true;
     };
+  }, [raceKey]);
+
+  useEffect(() => {
+    autoStartedRaceKeyRef.current = null;
   }, [raceKey]);
 
   useEffect(
@@ -336,12 +303,15 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     if (llmRef.current) {
       return llmRef.current;
     }
+    if (getRaceAiSettings().consent !== "granted") {
+      throw new Error("AI利用が許可されていません。マイページでAI利用を許可してください。");
+    }
     setError(null);
     setModelStatus("downloading");
-    const { buffer, source } = await loadModelBuffer((progress) => {
-      setDownloadProgress(progress);
+    const buffer = await ensureRaceAiModelBuffer({
+      confirmDownload: true,
+      model: LATEST_RACE_AI_MODEL,
     });
-    setModelSource(source);
     setModelStatus("initializing");
     const { FilesetResolver, LlmInference: LlmInferenceClass } =
       await import("@mediapipe/tasks-genai");
@@ -419,7 +389,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           createdAt: now,
           dataFingerprint,
           id: createId(),
-          modelVersion: MODEL_VERSION,
+          modelVersion: LATEST_RACE_AI_MODEL.version,
           trigger,
         };
         const nextMessages = appendLimited(
@@ -468,34 +438,60 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     };
   }, [generationStatus, realtimeFingerprint, runAi]);
 
-  if (supportState !== "supported") {
+  useEffect(() => {
+    if (
+      supportState !== "supported" ||
+      settings?.consent !== "granted" ||
+      !settings.autoStart ||
+      modelState?.status !== "downloaded" ||
+      generationStatus !== "idle" ||
+      autoStartedRaceKeyRef.current === raceKey
+    ) {
+      return;
+    }
+    autoStartedRaceKeyRef.current = raceKey;
+    void runAi("このレースの着順を予想してください。", "auto-start");
+  }, [generationStatus, modelState?.status, raceKey, runAi, settings, supportState]);
+
+  if (supportState !== "supported" || settings?.consent !== "granted") {
     return null;
   }
 
-  const isBusy =
-    modelStatus === "downloading" || modelStatus === "initializing" || generationStatus !== "idle";
   const progressLabel =
-    downloadProgress === null ? "取得中" : `${Math.round(downloadProgress * 100)}%`;
+    modelState?.progress === null || modelState?.progress === undefined
+      ? "取得中"
+      : `${Math.round(modelState.progress * 100)}%`;
+  const isModelDownloaded = modelState?.status === "downloaded";
+  const isModelDownloading = modelState?.status === "downloading";
+  const isBusy =
+    isModelDownloading ||
+    modelStatus === "downloading" ||
+    modelStatus === "initializing" ||
+    generationStatus !== "idle";
 
   return (
     <section className="race-ai-assistant-section">
       <div className="section-heading compact">
         <h2>WebGPU AI予想</h2>
-        <span>Gemma 4 E2B / {MODEL_VERSION}</span>
+        <span>
+          {LATEST_RACE_AI_MODEL.name} / {LATEST_RACE_AI_MODEL.version}
+        </span>
       </div>
       <div className="race-ai-status-grid">
         <div>
           <span>モデル</span>
           <strong>
             {modelStatus === "ready"
-              ? modelSource === "cache"
-                ? "ローカルキャッシュ"
-                : "読み込み済み"
+              ? "読み込み済み"
               : modelStatus === "downloading"
                 ? `ダウンロード ${progressLabel}`
                 : modelStatus === "initializing"
                   ? "初期化中"
-                  : "未起動"}
+                  : isModelDownloaded
+                    ? "ダウンロード済み"
+                    : isModelDownloading
+                      ? `ダウンロード ${progressLabel}`
+                      : "未ダウンロード"}
           </strong>
         </div>
         <div>
@@ -515,7 +511,11 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           disabled={isBusy}
           onClick={() => void runAi("このレースの着順を予想してください。", "manual")}
         >
-          {modelStatus === "ready" ? "AI予想を更新" : "AIを起動して予想"}
+          {modelStatus === "ready"
+            ? "AI予想を更新"
+            : isModelDownloaded
+              ? "AIを起動して予想"
+              : "モデルをダウンロードして予想"}
         </button>
         {error ? <span className="race-ai-error">{error}</span> : null}
       </div>
