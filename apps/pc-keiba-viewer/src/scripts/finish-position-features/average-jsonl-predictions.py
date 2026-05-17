@@ -48,6 +48,14 @@ def _row_key(row: dict[str, object]) -> tuple[str, str]:
     return (str(row["race_id"]), str(row["ketto_toroku_bango"]))
 
 
+def _as_float(value: object) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        return float(value)
+    raise TypeError(f"cannot convert {type(value)!r} to float")
+
+
 def _average_scores(
     inputs: list[Path],
 ) -> dict[tuple[str, str], dict[str, object]]:
@@ -57,7 +65,7 @@ def _average_scores(
         rows = _load_jsonl(path)
         for row in rows:
             key = _row_key(row)
-            accumulator[key].append(float(row["predicted_score"]))
+            accumulator[key].append(_as_float(row["predicted_score"]))
             if key not in metadata:
                 metadata[key] = {
                     "race_id": row["race_id"],
@@ -94,7 +102,7 @@ def _rerank_within_race(
         horses_sorted = sorted(
             horses,
             key=lambda row: (
-                -float(row["predicted_score"]),
+                -_as_float(row["predicted_score"]),
                 str(row["ketto_toroku_bango"]),
             ),
         )

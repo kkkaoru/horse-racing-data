@@ -58,6 +58,8 @@ from finish_position_transformer.training import (
     DEFAULT_LISTNET_WEIGHT,
     DEFAULT_MAX_EPOCHS,
     DEFAULT_PAIRWISE_WEIGHT,
+    DEFAULT_PLACE2_WEIGHT,
+    DEFAULT_PLACE3_WEIGHT,
     DEFAULT_SEED,
     DEFAULT_TOP1_WEIGHT,
     DEFAULT_TOP3_WEIGHT,
@@ -140,6 +142,8 @@ def _add_training_hparam_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--top3-weight", type=float, default=DEFAULT_TOP3_WEIGHT)
     parser.add_argument("--pairwise-weight", type=float, default=DEFAULT_PAIRWISE_WEIGHT)
     parser.add_argument("--listnet-weight", type=float, default=DEFAULT_LISTNET_WEIGHT)
+    parser.add_argument("--place2-weight", type=float, default=DEFAULT_PLACE2_WEIGHT)
+    parser.add_argument("--place3-weight", type=float, default=DEFAULT_PLACE3_WEIGHT)
     parser.add_argument("--embedding-dim", type=int, default=DEFAULT_EMBEDDING_DIM)
     parser.add_argument("--num-layers", type=int, default=DEFAULT_NUM_LAYERS)
     parser.add_argument("--num-heads", type=int, default=DEFAULT_NUM_HEADS)
@@ -153,6 +157,8 @@ def training_config_from_args(args: argparse.Namespace) -> TrainingConfig:
         "top3": float(args.top3_weight),
         "pairwise": float(args.pairwise_weight),
         "listnet": float(args.listnet_weight),
+        "place2": float(args.place2_weight),
+        "place3": float(args.place3_weight),
     }
     return {
         "batch_size": int(args.batch_size),

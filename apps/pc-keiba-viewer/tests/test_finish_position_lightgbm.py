@@ -176,6 +176,123 @@ def test_build_lightgbm_params_switches_to_binary_for_top3():
     assert lgb_params["objective"] == "binary"
 
 
+def test_resolve_monotone_constraints_marks_known_odds_features():
+    feature_columns = [
+        "speed_index_avg_5",
+        "popularity_score",
+        "inverse_odds_implied_prob",
+        "inverse_odds_market_share",
+        "tansho_odds_raw",
+        "popularity_rank_in_race",
+        "inverse_odds_rank_in_race",
+        "tansho_ninkijun_raw",
+        "odds_score",
+        "career_win_rate",
+    ]
+    constraints = subject.resolve_monotone_constraints(feature_columns)
+    assert constraints == [0, -1, 1, 1, -1, -1, -1, -1, -1, 0]
+
+
+def test_resolve_monotone_constraints_returns_zeros_for_unknown_features():
+    constraints = subject.resolve_monotone_constraints(["unknown_a", "unknown_b"])
+    assert constraints == [0, 0]
+
+
+def test_build_lightgbm_params_with_feature_columns_attaches_monotone_constraints():
+    feature_columns = ["speed_index_avg_5", "inverse_odds_implied_prob", "popularity_score"]
+    lgb_params = subject.build_lightgbm_params(
+        {
+            "lambda_l2": 0.0,
+            "learning_rate": 0.05,
+            "min_child_samples": 20,
+            "num_iterations": 100,
+            "num_leaves": 63,
+            "objective": "lambdarank",
+        },
+        feature_columns,
+    )
+    assert lgb_params["monotone_constraints"] == [0, 1, -1]
+    assert lgb_params["monotone_constraints_method"] == "advanced"
+
+
+def test_build_lightgbm_params_without_known_monotone_features_omits_constraints():
+    feature_columns = ["speed_index_avg_5", "career_win_rate"]
+    lgb_params = subject.build_lightgbm_params(
+        {
+            "lambda_l2": 0.0,
+            "learning_rate": 0.05,
+            "min_child_samples": 20,
+            "num_iterations": 100,
+            "num_leaves": 63,
+            "objective": "lambdarank",
+        },
+        feature_columns,
+    )
+    assert "monotone_constraints" not in lgb_params
+
+
+def test_compute_sample_weights_none_returns_none():
+    df = pd.DataFrame({"race_year": [2020, 2021, 2022]})
+    weights = subject.compute_sample_weights(df, subject.SAMPLE_WEIGHT_MODE_NONE)
+    assert weights is None
+
+
+def test_compute_sample_weights_time_decay_decreases_with_age():
+    df = pd.DataFrame({"race_year": [2025, 2024, 2023, 2022]})
+    weights = subject.compute_sample_weights(df, subject.SAMPLE_WEIGHT_MODE_TIME, time_decay=0.5)
+    assert weights is not None
+    assert weights.tolist() == [1.0, 0.5, 0.25, 0.125]
+
+
+def test_compute_sample_weights_unknown_mode_raises():
+    df = pd.DataFrame({"race_year": [2024]})
+    with pytest.raises(ValueError, match="unknown sample_weight mode"):
+        subject.compute_sample_weights(df, "exotic")
+
+
+def test_build_label_array_for_binary_place2():
+    labels = subject.build_label_array(pd.Series([1, 2, 3, 4, None]), "binary-place2")
+    assert labels.tolist() == [0, 1, 0, 0, 0]
+
+
+def test_build_label_array_for_binary_place3():
+    labels = subject.build_label_array(pd.Series([1, 2, 3, 4, None]), "binary-place3")
+    assert labels.tolist() == [0, 0, 1, 0, 0]
+
+
+def test_objective_choices_include_place2_and_place3():
+    assert "binary-place2" in subject.OBJECTIVE_CHOICES
+    assert "binary-place3" in subject.OBJECTIVE_CHOICES
+    assert "binary-place2" in subject.BINARY_OBJECTIVES
+    assert "binary-place3" in subject.BINARY_OBJECTIVES
+
+
+def test_resolve_relevance_tiers_default_falls_back_to_module_default():
+    assert subject.resolve_relevance_tiers(None) == subject.RELEVANCE_TIERS
+
+
+def test_resolve_relevance_tiers_place_weighted_emphasizes_second():
+    tiers = subject.resolve_relevance_tiers("place_weighted")
+    assert tiers == {1: 2, 2: 3, 3: 2}
+
+
+def test_resolve_relevance_tiers_sequence_aware_increases_with_position():
+    tiers = subject.resolve_relevance_tiers("sequence_aware")
+    assert tiers == {1: 1, 2: 2, 3: 3}
+
+
+def test_resolve_relevance_tiers_unknown_preset_raises():
+    with pytest.raises(ValueError, match="unknown relevance tier preset"):
+        subject.resolve_relevance_tiers("ultra_extreme")
+
+
+def test_build_label_array_for_lambdarank_uses_custom_tier():
+    labels = subject.build_label_array(
+        pd.Series([1, 2, 3, 4]), "lambdarank", {1: 5, 2: 7, 3: 9}
+    )
+    assert labels.tolist() == [5, 7, 9, 0]
+
+
 def test_build_label_array_for_binary_top1():
     labels = subject.build_label_array(pd.Series([1, 2, 3, 4, None]), "binary-top1")
     assert labels.tolist() == [1, 0, 0, 0, 0]

@@ -47,8 +47,28 @@ LABEL_COLUMNS: tuple[str, ...] = ("finish_position", "finish_norm")
 CATEGORICAL_FEATURE_COLUMNS: tuple[str, ...] = ("track_code", "grade_code")
 
 RELEVANCE_TIERS: dict[int, int] = {1: 3, 2: 2, 3: 1}
+RELEVANCE_TIER_PRESETS: dict[str, dict[int, int]] = {
+    "default": {1: 3, 2: 2, 3: 1},
+    "place_weighted": {1: 2, 2: 3, 3: 2},
+    "sequence_aware": {1: 1, 2: 2, 3: 3},
+}
+DEFAULT_RELEVANCE_TIER_NAME = "default"
 DEFAULT_RELEVANCE = 0
 TOP3_K = 3
+MONOTONE_CONSTRAINTS: dict[str, int] = {
+    "inverse_odds_implied_prob": 1,
+    "inverse_odds_market_share": 1,
+    "popularity_score": -1,
+    "popularity_rank_in_race": -1,
+    "inverse_odds_rank_in_race": -1,
+    "tansho_odds_raw": -1,
+    "tansho_ninkijun_raw": -1,
+    "odds_score": -1,
+}
+SAMPLE_WEIGHT_MODE_NONE = "none"
+SAMPLE_WEIGHT_MODE_TIME = "time"
+SAMPLE_WEIGHT_MODES: tuple[str, ...] = (SAMPLE_WEIGHT_MODE_NONE, SAMPLE_WEIGHT_MODE_TIME)
+DEFAULT_TIME_DECAY = 0.85
 DEFAULT_NUM_LEAVES = 63
 DEFAULT_LEARNING_RATE = 0.05
 DEFAULT_MIN_CHILD_SAMPLES = 20
@@ -71,12 +91,21 @@ HPO_DEFAULT_SEED = 20260515
 OBJECTIVE_LAMBDARANK = "lambdarank"
 OBJECTIVE_BINARY_TOP1 = "binary-top1"
 OBJECTIVE_BINARY_TOP3 = "binary-top3"
+OBJECTIVE_BINARY_PLACE2 = "binary-place2"
+OBJECTIVE_BINARY_PLACE3 = "binary-place3"
 OBJECTIVE_CHOICES: tuple[str, ...] = (
     OBJECTIVE_LAMBDARANK,
     OBJECTIVE_BINARY_TOP1,
     OBJECTIVE_BINARY_TOP3,
+    OBJECTIVE_BINARY_PLACE2,
+    OBJECTIVE_BINARY_PLACE3,
 )
-BINARY_OBJECTIVES: tuple[str, ...] = (OBJECTIVE_BINARY_TOP1, OBJECTIVE_BINARY_TOP3)
+BINARY_OBJECTIVES: tuple[str, ...] = (
+    OBJECTIVE_BINARY_TOP1,
+    OBJECTIVE_BINARY_TOP3,
+    OBJECTIVE_BINARY_PLACE2,
+    OBJECTIVE_BINARY_PLACE3,
+)
 TOP3_UPPER_BOUND = 3
 
 
@@ -100,15 +129,35 @@ class TrainingResult(TypedDict):
     valid_rows: int
 
 
-def to_relevance(finish_position: int) -> int:
-    return RELEVANCE_TIERS.get(int(finish_position), DEFAULT_RELEVANCE)
+def to_relevance(finish_position: int, tiers: dict[int, int] | None = None) -> int:
+    table = tiers if tiers is not None else RELEVANCE_TIERS
+    return table.get(int(finish_position), DEFAULT_RELEVANCE)
 
 
-def to_relevance_series(finish_positions: pd.Series) -> pd.Series:
-    return finish_positions.fillna(0).astype(int).map(to_relevance).astype(int)
+def to_relevance_series(finish_positions: pd.Series, tiers: dict[int, int] | None = None) -> pd.Series:
+    table = tiers if tiers is not None else RELEVANCE_TIERS
+    return (
+        finish_positions.fillna(0)
+        .astype(int)
+        .map(lambda pos: to_relevance(pos, table))
+        .astype(int)
+    )
 
 
-def build_label_array(finish_positions: pd.Series, objective: str) -> IntArray:
+def resolve_relevance_tiers(tier_name: str | None) -> dict[int, int]:
+    if tier_name is None:
+        return RELEVANCE_TIERS
+    preset = RELEVANCE_TIER_PRESETS.get(tier_name)
+    if preset is None:
+        raise ValueError(f"unknown relevance tier preset: {tier_name!r}")
+    return preset
+
+
+def build_label_array(
+    finish_positions: pd.Series,
+    objective: str,
+    relevance_tiers: dict[int, int] | None = None,
+) -> IntArray:
     if objective == OBJECTIVE_BINARY_TOP1:
         fp_int = finish_positions.fillna(0).astype(int)
         return cast(IntArray, (fp_int == 1).astype(np.int64).to_numpy())
@@ -116,7 +165,13 @@ def build_label_array(finish_positions: pd.Series, objective: str) -> IntArray:
         fp_int = finish_positions.fillna(0).astype(int)
         binary = (fp_int >= 1) & (fp_int <= TOP3_UPPER_BOUND)
         return cast(IntArray, binary.astype(np.int64).to_numpy())
-    return cast(IntArray, to_relevance_series(finish_positions).to_numpy(dtype=np.int64))
+    if objective == OBJECTIVE_BINARY_PLACE2:
+        fp_int = finish_positions.fillna(0).astype(int)
+        return cast(IntArray, (fp_int == 2).astype(np.int64).to_numpy())
+    if objective == OBJECTIVE_BINARY_PLACE3:
+        fp_int = finish_positions.fillna(0).astype(int)
+        return cast(IntArray, (fp_int == 3).astype(np.int64).to_numpy())
+    return cast(IntArray, to_relevance_series(finish_positions, relevance_tiers).to_numpy(dtype=np.int64))
 
 
 def resolve_feature_columns(df_columns: list[str]) -> list[str]:
@@ -181,20 +236,49 @@ class LgbDatasetBundle(TypedDict):
     relevance: IntArray
 
 
+def _year_series(df: pd.DataFrame) -> pd.Series:
+    if "race_year" in df.columns:
+        return pd.to_numeric(df["race_year"], errors="coerce")
+    if "kaisai_nen" in df.columns:
+        return pd.to_numeric(df["kaisai_nen"], errors="coerce")
+    if "race_date" in df.columns:
+        return pd.to_numeric(df["race_date"].astype(str).str.slice(0, 4), errors="coerce")
+    raise KeyError("no year column (race_year / kaisai_nen / race_date) in df")
+
+
+def compute_sample_weights(
+    df: pd.DataFrame, mode: str, time_decay: float = DEFAULT_TIME_DECAY
+) -> NDArray[np.float32] | None:
+    if mode == SAMPLE_WEIGHT_MODE_NONE:
+        return None
+    if mode == SAMPLE_WEIGHT_MODE_TIME:
+        year_series = _year_series(df)
+        max_year = int(year_series.max()) if year_series.notna().any() else 0
+        weights = np.power(time_decay, (max_year - year_series).fillna(0).to_numpy(dtype=np.float32))
+        return weights.astype(np.float32)
+    raise ValueError(f"unknown sample_weight mode: {mode!r}")
+
+
 def prepare_lgb_dataset(
-    df: pd.DataFrame, objective: str = OBJECTIVE_LAMBDARANK
+    df: pd.DataFrame,
+    objective: str = OBJECTIVE_LAMBDARANK,
+    sample_weight_mode: str = SAMPLE_WEIGHT_MODE_NONE,
+    relevance_tier_name: str | None = None,
 ) -> LgbDatasetBundle:
     sorted_df = sort_for_grouping(df)
     feature_columns = resolve_feature_columns(list(sorted_df.columns))
     categorical_features = detect_categorical_features(feature_columns)
     frame = encode_categoricals(select_feature_frame(sorted_df, feature_columns), categorical_features)
-    label_array = build_label_array(sorted_df["finish_position"], objective)
+    tiers = resolve_relevance_tiers(relevance_tier_name)
+    label_array = build_label_array(sorted_df["finish_position"], objective, tiers)
     group_sizes = build_group_sizes(sorted_df)
     group_array = np.array(group_sizes, dtype=np.int64) if objective == OBJECTIVE_LAMBDARANK else None
+    weight_array = compute_sample_weights(sorted_df, sample_weight_mode)
     dataset = lgb.Dataset(
         data=frame,
         label=label_array,
         group=group_array,
+        weight=weight_array,
         categorical_feature=categorical_features,
         free_raw_data=False,
     )
@@ -207,7 +291,13 @@ def prepare_lgb_dataset(
     }
 
 
-def build_lightgbm_params(params: TrainingParams) -> dict[str, object]:
+def resolve_monotone_constraints(feature_columns: list[str]) -> list[int]:
+    return [MONOTONE_CONSTRAINTS.get(column, 0) for column in feature_columns]
+
+
+def build_lightgbm_params(
+    params: TrainingParams, feature_columns: list[str] | None = None
+) -> dict[str, object]:
     base: dict[str, object] = {
         "boosting_type": "gbdt",
         "learning_rate": params["learning_rate"],
@@ -216,6 +306,11 @@ def build_lightgbm_params(params: TrainingParams) -> dict[str, object]:
         "lambda_l2": params["lambda_l2"],
         "verbose": -1,
     }
+    if feature_columns is not None:
+        constraints = resolve_monotone_constraints(feature_columns)
+        if any(constraints):
+            base["monotone_constraints"] = constraints
+            base["monotone_constraints_method"] = "advanced"
     if params["objective"] == OBJECTIVE_LAMBDARANK:
         return {**base, "objective": "lambdarank", "metric": "ndcg", "eval_at": [TOP3_K]}
     return {**base, "objective": "binary", "metric": "binary_logloss"}
@@ -227,7 +322,7 @@ def train_lambdarank(
     params: TrainingParams,
 ) -> tuple["lgb.Booster", TrainingResult]:
     started = perf_counter()
-    lgb_params = build_lightgbm_params(params)
+    lgb_params = build_lightgbm_params(params, train_bundle["feature_columns"])
     valid_sets: list[lgb.Dataset] = [train_bundle["dataset"]]
     valid_names: list[str] = ["train"]
     if valid_bundle is not None:
@@ -362,6 +457,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     walk.add_argument("--min-child-samples", type=int, default=DEFAULT_MIN_CHILD_SAMPLES)
     walk.add_argument("--lambda-l2", type=float, default=DEFAULT_LAMBDA_L2)
     walk.add_argument("--objective", choices=OBJECTIVE_CHOICES, default=OBJECTIVE_LAMBDARANK)
+    walk.add_argument(
+        "--sample-weight-mode",
+        choices=SAMPLE_WEIGHT_MODES,
+        default=SAMPLE_WEIGHT_MODE_NONE,
+    )
+    walk.add_argument(
+        "--relevance-tier",
+        choices=tuple(RELEVANCE_TIER_PRESETS.keys()),
+        default=DEFAULT_RELEVANCE_TIER_NAME,
+    )
     predict = subparsers.add_parser("predict")
     predict.add_argument("--model-path", type=Path, required=True)
     predict.add_argument("--input-csv", type=Path, required=True)
@@ -506,9 +611,15 @@ def evaluate_predictions(predictions: pd.DataFrame, ground_truth: pd.DataFrame) 
 def run_walk_forward_fold(
     fold: FoldSplit,
     params: TrainingParams,
+    sample_weight_mode: str = SAMPLE_WEIGHT_MODE_NONE,
+    relevance_tier_name: str | None = None,
 ) -> tuple["lgb.Booster", pd.DataFrame, FoldMetrics]:
-    train_bundle = prepare_lgb_dataset(fold["train_df"], params["objective"])
-    valid_bundle = prepare_lgb_dataset(fold["valid_df"], params["objective"])
+    train_bundle = prepare_lgb_dataset(
+        fold["train_df"], params["objective"], sample_weight_mode, relevance_tier_name
+    )
+    valid_bundle = prepare_lgb_dataset(
+        fold["valid_df"], params["objective"], SAMPLE_WEIGHT_MODE_NONE, relevance_tier_name
+    )
     booster, training_result = train_lambdarank(train_bundle, valid_bundle, params)
     predictions = score_dataset(booster, fold["valid_df"])
     eval_metrics = evaluate_predictions(predictions, fold["valid_df"])
@@ -559,10 +670,14 @@ def run_walk_forward_command(args: argparse.Namespace) -> None:
     full_df = load_dataset(args.csv)
     validation_years = parse_year_list(args.validation_years)
     params = training_params_from_args(args)
+    sample_weight_mode: str = getattr(args, "sample_weight_mode", SAMPLE_WEIGHT_MODE_NONE)
+    relevance_tier_name: str | None = getattr(args, "relevance_tier", None)
     fold_metrics: list[FoldMetrics] = []
     for valid_year in validation_years:
         fold = split_walk_forward(full_df, args.train_start_date, valid_year)
-        _booster, predictions, metrics = run_walk_forward_fold(fold, params)
+        _booster, predictions, metrics = run_walk_forward_fold(
+            fold, params, sample_weight_mode, relevance_tier_name
+        )
         fold_metrics.append(metrics)
         if args.output_predictions_dir is not None:
             predictions_path = args.output_predictions_dir / f"{valid_year}.jsonl"

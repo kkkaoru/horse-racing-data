@@ -41,6 +41,8 @@ class ModelConfig(TypedDict):
 class ModelOutput(TypedDict):
     top1_logit: mx.array
     top3_logit: mx.array
+    place2_logit: mx.array
+    place3_logit: mx.array
     rank_score: mx.array
 
 
@@ -98,6 +100,8 @@ class RaceSetTransformer(nn.Module):
         )
         self.top1_head = nn.Linear(dims, 1)
         self.top3_head = nn.Linear(dims, 1)
+        self.place2_head = nn.Linear(dims, 1)
+        self.place3_head = nn.Linear(dims, 1)
         self.rank_head = nn.Linear(dims, 1)
 
     def embed(
@@ -129,10 +133,14 @@ class RaceSetTransformer(nn.Module):
         encoded = self.encoder(embedded, attention_mask)
         top1_logit = self.top1_head(encoded).squeeze(-1)
         top3_logit = self.top3_head(encoded).squeeze(-1)
+        place2_logit = self.place2_head(encoded).squeeze(-1)
+        place3_logit = self.place3_head(encoded).squeeze(-1)
         rank_score = self.rank_head(encoded).squeeze(-1)
         return {
             "top1_logit": top1_logit,
             "top3_logit": top3_logit,
+            "place2_logit": place2_logit,
+            "place3_logit": place3_logit,
             "rank_score": rank_score,
         }
 
