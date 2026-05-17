@@ -126,11 +126,22 @@ def detect_categorical_features(feature_columns: list[str]) -> list[str]:
     return [column for column in feature_columns if column in CATEGORICAL_FEATURE_COLUMNS]
 
 
+def _read_partitioned_parquet(child: Path) -> pd.DataFrame:
+    frame = pd.read_parquet(child)
+    if "race_year" not in frame.columns:
+        year_token = child.parent.name
+        if year_token.startswith("race_year="):
+            frame["race_year"] = int(year_token.split("=", 1)[1])
+    return frame
+
+
 def load_dataset_parquet(path: Path) -> pd.DataFrame:
     if path.is_dir():
         partitioned = sorted(path.glob("race_year=*/*.parquet"))
         if partitioned:
-            return pd.concat([pd.read_parquet(child) for child in partitioned], ignore_index=True)
+            return pd.concat(
+                [_read_partitioned_parquet(child) for child in partitioned], ignore_index=True
+            )
         flat = sorted(path.glob("*.parquet"))
         if flat:
             return pd.concat([pd.read_parquet(child) for child in flat], ignore_index=True)
@@ -329,10 +340,21 @@ def run_walk_forward_for_year(
     return predictions_df, metrics
 
 
+def _sanitize_record_for_json(record: dict[str, object]) -> dict[str, object]:
+    sanitized: dict[str, object] = {}
+    for key, value in record.items():
+        if isinstance(value, float) and not np.isfinite(value):
+            sanitized[key] = None
+        else:
+            sanitized[key] = value
+    return sanitized
+
+
 def write_predictions_jsonl(predictions: pd.DataFrame, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as handle:
-        for record in predictions.to_dict(orient="records"):
+        for raw_record in predictions.to_dict(orient="records"):
+            record = _sanitize_record_for_json(raw_record)
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
