@@ -286,9 +286,10 @@ function PaddockRemainingIndicator({
       }
 
       const markerTop = Math.min(window.innerHeight, PADDOCK_REMAINING_MARKER_TOP);
-      const nextRemaining = rows.filter((row) => row.getBoundingClientRect().top >= markerTop)
+      const boardReachedMarker = board.getBoundingClientRect().top <= markerTop;
+      const notYetReachedRows = rows.filter((row) => row.getBoundingClientRect().top >= markerTop)
         .length;
-      setRemaining(nextRemaining);
+      setRemaining(Math.max(0, notYetReachedRows - (boardReachedMarker ? 1 : 0)));
     };
 
     const requestUpdate = () => {
