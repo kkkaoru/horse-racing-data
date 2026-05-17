@@ -17,12 +17,7 @@ const PRIMARY_KEY_COLUMNS = [
 const PROBABILITY_COLUMNS = ["p_nige", "p_senkou", "p_sashi", "p_oikomi"];
 const LABEL_COLUMNS = ["predicted_label", "predicted_class"];
 
-const INSERT_COLUMNS = [
-  ...PRIMARY_KEY_COLUMNS,
-  "umaban",
-  ...PROBABILITY_COLUMNS,
-  ...LABEL_COLUMNS,
-];
+const INSERT_COLUMNS = [...PRIMARY_KEY_COLUMNS, "umaban", ...PROBABILITY_COLUMNS, ...LABEL_COLUMNS];
 
 const UPDATABLE_COLUMNS = ["umaban", ...PROBABILITY_COLUMNS, ...LABEL_COLUMNS];
 
