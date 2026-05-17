@@ -56,6 +56,30 @@ declare global {
     head(key: string): Promise<PcKeibaR2Object | null>;
   }
 
+  interface PcKeibaD1Result<T = unknown> {
+    results: T[];
+    success: boolean;
+    meta?: Record<string, unknown>;
+  }
+
+  interface PcKeibaD1RunResult {
+    success: boolean;
+    meta?: Record<string, unknown>;
+  }
+
+  interface PcKeibaD1PreparedStatement {
+    bind(...values: unknown[]): PcKeibaD1PreparedStatement;
+    all<T = unknown>(): Promise<PcKeibaD1Result<T>>;
+    first<T = unknown>(): Promise<T | null>;
+    run(): Promise<PcKeibaD1RunResult>;
+  }
+
+  interface PcKeibaD1Database {
+    prepare(query: string): PcKeibaD1PreparedStatement;
+    batch<T = unknown>(statements: PcKeibaD1PreparedStatement[]): Promise<PcKeibaD1Result<T>[]>;
+    exec(query: string): Promise<PcKeibaD1RunResult>;
+  }
+
   const WebSocketPair: {
     new (): { 0: WebSocket; 1: WebSocket };
   };
@@ -77,5 +101,6 @@ declare global {
     PC_KEIBA_EXTERNAL_PADDOCK_DISCORD_WEBHOOK_URL?: string;
     PC_KEIBA_PADDOCK_DISCORD_BOT_NAME?: string;
     PC_KEIBA_PADDOCK_DISCORD_WEBHOOK_URL?: string;
+    REALTIME_DB?: PcKeibaD1Database;
   }
 }
