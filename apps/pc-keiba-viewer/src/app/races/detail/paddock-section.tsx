@@ -144,25 +144,12 @@ const METRIC_ORDER = [
   "preference",
   "kaeshi",
 ] as const satisfies readonly PaddockMetric[];
-const DEFAULT_REMOTE_PADDOCK_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
 const PUBLIC_DETAIL_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
 const OFFICIAL_RANK_OPTIONS: PaddockOfficialRank[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 const PAST_RACE_EDIT_UNLOCK_MS = 10 * 60 * 1000;
 const PADDOCK_REMAINING_MARKER_TOP = 112;
 
-const isLocalHost = (hostname: string): boolean =>
-  hostname === "localhost" || hostname === "127.0.0.1" || hostname === "0.0.0.0";
-
-const getPaddockRequestUrl = (path: string): string => {
-  if (
-    typeof window !== "undefined" &&
-    isLocalHost(window.location.hostname) &&
-    process.env.NEXT_PUBLIC_PC_KEIBA_PADDOCK_REMOTE_BINDINGS !== "0"
-  ) {
-    return `${process.env.NEXT_PUBLIC_PC_KEIBA_PADDOCK_REMOTE_ORIGIN ?? DEFAULT_REMOTE_PADDOCK_ORIGIN}${path}`;
-  }
-  return path;
-};
+const getPaddockRequestUrl = (path: string): string => path;
 
 const getPaddockLiveUrl = (path: string): string => {
   const requestUrl = getPaddockRequestUrl(path);

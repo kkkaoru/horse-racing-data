@@ -43,7 +43,7 @@ export const CornerPositionRaceSection = async ({
   if (isStraightCourse) {
     return <CornerPositionSection {...buildEmptyProps(true, bameiByUmaban)} />;
   }
-  const active = await getActiveCornerPositionModel(category);
+  const active = await getActiveCornerPositionModel(category).catch(() => null);
   if (active === null) {
     return <CornerPositionSection {...buildEmptyProps(false, bameiByUmaban)} />;
   }
@@ -51,8 +51,8 @@ export const CornerPositionRaceSection = async ({
     getRaceCornerPositionPredictions(
       { kaisaiNen, kaisaiTsukihi, keibajoCode, raceBango, source },
       active.modelVersion,
-    ),
-    getCornerPositionMetricsForActiveModel(category),
+    ).catch(() => []),
+    getCornerPositionMetricsForActiveModel(category).catch(() => null),
   ]);
   return (
     <CornerPositionSection

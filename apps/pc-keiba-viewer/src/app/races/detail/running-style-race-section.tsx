@@ -33,8 +33,8 @@ export const RunningStyleRaceSection = async ({
     source,
   });
   const [rows, metrics] = await Promise.all([
-    getRaceRunningStylesFromD1(raceKey),
-    getRunningStyleMetricsForActiveModel(category),
+    getRaceRunningStylesFromD1(raceKey).catch(() => []),
+    getRunningStyleMetricsForActiveModel(category).catch(() => null),
   ]);
   return (
     <RunningStyleSection
