@@ -257,15 +257,15 @@ const getDisplayTrends = (
   oddsType: RealtimeOddsType,
   history: RealtimeOddsTrend[],
 ): RealtimeOddsTrend[] =>
-  oddsType === "tansho"
-    ? history
+  oddsType === "tansho" || oddsType === "fukusho"
+    ? history.filter(hasTrendPoints).toSorted(compareTrendsByLatestOdds)
     : history
         .filter(hasTrendPoints)
         .toSorted(compareTrendsByLatestOdds)
         .slice(0, NON_TANSHO_TREND_LIMIT);
 
-function OddsTrendTooltip({ active, label, payload }: OddsTrendTooltipProps) {
-  const entries = (payload ?? [])
+const sortOddsTrendEntries = (entries: OddsTrendHoverEntry[]): OddsTrendHoverEntry[] =>
+  entries
     .filter((entry) => typeof entry.value === "number")
     .toSorted((left, right) => {
       const leftOdds = Number(left.value);
@@ -275,6 +275,9 @@ function OddsTrendTooltip({ active, label, payload }: OddsTrendTooltipProps) {
       }
       return getTooltipSortValue(left) - getTooltipSortValue(right);
     });
+
+function OddsTrendTooltip({ active, label, payload }: OddsTrendTooltipProps) {
+  const entries = sortOddsTrendEntries(payload ?? []);
 
   if (!active || entries.length === 0) {
     return null;
@@ -370,8 +373,7 @@ export function RealtimeRaceSection(props: RealtimeRaceSectionProps) {
     FALLBACK_TREND_COLOR;
   const getSeriesStrokeWidth = (combination: string): number =>
     isWhiteFrameSeries(combination) ? 3.2 : 2.4;
-  const activeTrendEntries =
-    activeTrend?.activePayload?.filter((entry) => typeof entry.value === "number") ?? [];
+  const activeTrendEntries = sortOddsTrendEntries(activeTrend?.activePayload ?? []);
   const chartTopMargin = Math.min(260, Math.max(96, Math.ceil(history.length / 4) * 26 + 40));
 
   return (

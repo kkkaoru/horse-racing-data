@@ -109,6 +109,7 @@ export interface RaceTrendRateRow {
   showRate: number;
   quinellaRate: number;
   winRate: number;
+  finishPositionMedian?: number | null;
   details: RaceTrendDetail[];
 }
 
