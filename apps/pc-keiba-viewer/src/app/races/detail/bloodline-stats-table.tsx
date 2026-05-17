@@ -188,6 +188,7 @@ export const BloodlineStatsTable = memo(function BloodlineStatsTable({
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [expandedRowKey, setExpandedRowKey] = useState<string | null>(null);
   const [expandedScoreRowKey, setExpandedScoreRowKey] = useState<string | null>(null);
+  const [statsTablesExpanded, setStatsTablesExpanded] = useState(false);
 
   useEffect(() => {
     setDisplaySettings(settings);
@@ -787,9 +788,23 @@ export const BloodlineStatsTable = memo(function BloodlineStatsTable({
             </table>
           </div>
         </section>
-        {groupedRows.map(({ category, rows: categoryRows }) =>
-          renderStatsTable(category, categoryRows),
-        )}
+        <div className="bloodline-stats-table-toggle-wrap">
+          <button
+            aria-expanded={statsTablesExpanded}
+            className="stats-control-button bloodline-stats-table-toggle"
+            type="button"
+            onClick={() => {
+              setStatsTablesExpanded((current) => !current);
+            }}
+          >
+            {statsTablesExpanded ? "父・母父・父父の勝率を閉じる" : "父・母父・父父の勝率を表示"}
+          </button>
+        </div>
+        {statsTablesExpanded
+          ? groupedRows.map(({ category, rows: categoryRows }) =>
+              renderStatsTable(category, categoryRows),
+            )
+          : null}
       </div>
     </>
   );
