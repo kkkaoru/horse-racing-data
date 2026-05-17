@@ -47,12 +47,16 @@ const progressLabel = (state: RaceAiModelState): string => {
 const isWebGpuSupported = (): boolean => typeof navigator !== "undefined" && "gpu" in navigator;
 
 export function RaceAiSettingsPanel() {
-  const [settings, setSettings] = useState<RaceAiSettings>(() => getRaceAiSettings());
+  const [settings, setSettings] = useState<RaceAiSettings | null>(null);
   const [modelStates, setModelStates] = useState<RaceAiModelState[]>([]);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [supported, setSupported] = useState(false);
 
   useEffect(() => {
     setSupported(isWebGpuSupported());
+    const initialSettings = getRaceAiSettings();
+    setSettings(initialSettings);
+    setSettingsOpen(initialSettings.consent === "granted" && initialSettings.autoStart);
     const refreshModelStates = () => {
       void getRaceAiModelStates().then(setModelStates);
     };
@@ -82,12 +86,12 @@ export function RaceAiSettingsPanel() {
     if (!checked) {
       const nextSettings = saveRaceAiSettings({
         autoStart: false,
-        consent: settings.consent,
+        consent: settings?.consent ?? "denied",
       });
       setSettings(nextSettings);
       return;
     }
-    if (settings.consent !== "granted") {
+    if (settings?.consent !== "granted") {
       enablePermission();
       return;
     }
@@ -114,11 +118,17 @@ export function RaceAiSettingsPanel() {
   };
 
   return (
-    <section className="mypage-ai-panel">
-      <div className="section-heading compact">
+    <details
+      className="mypage-ai-panel"
+      open={settingsOpen}
+      onToggle={(event) => {
+        setSettingsOpen(event.currentTarget.open);
+      }}
+    >
+      <summary className="section-heading compact">
         <h2>AI利用設定</h2>
         <span>{supported ? "WebGPU対応" : "WebGPU非対応"}</span>
-      </div>
+      </summary>
       {!supported ? (
         <p className="empty-state">このブラウザではWebGPU AI予想は利用できません。</p>
       ) : (
@@ -127,7 +137,7 @@ export function RaceAiSettingsPanel() {
             <label>
               <input
                 type="checkbox"
-                checked={settings.consent === "granted"}
+                checked={settings?.consent === "granted"}
                 onChange={(event) => {
                   if (event.currentTarget.checked) {
                     enablePermission();
@@ -141,7 +151,7 @@ export function RaceAiSettingsPanel() {
             <label>
               <input
                 type="checkbox"
-                checked={settings.consent === "granted" && settings.autoStart}
+                checked={settings?.consent === "granted" && settings.autoStart}
                 onChange={(event) => toggleAutoStart(event.currentTarget.checked)}
               />
               <span>レース詳細でAIを自動開始</span>
@@ -178,6 +188,6 @@ export function RaceAiSettingsPanel() {
           </div>
         </>
       )}
-    </section>
+    </details>
   );
 }

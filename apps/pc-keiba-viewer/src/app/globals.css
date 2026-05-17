@@ -7538,6 +7538,18 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   padding: var(--space-16px-10);
 }
 
+.mypage-ai-panel > summary {
+  cursor: pointer;
+}
+
+.mypage-ai-panel:not([open]) > summary {
+  margin-bottom: var(--number-0-2);
+}
+
+.mypage-ai-panel > summary::marker {
+  color: var(--text-muted);
+}
+
 .mypage-ai-settings-grid {
   display: grid;
   gap: var(--space-10px-27);
