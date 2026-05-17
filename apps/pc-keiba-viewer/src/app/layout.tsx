@@ -3,6 +3,8 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 
 import { BrandRunner } from "./brand-runner";
+
+import "./vars.css";
 import "./globals.css";
 
 export const metadata: Metadata = {

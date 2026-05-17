@@ -629,7 +629,7 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
               type="checkbox"
               onChange={toggleAllBloodlineTargets}
             />
-            <span>血統まとめて選択</span>
+            <span>血統全て</span>
           </label>
           {BLOODLINE_CATEGORY_ORDER.map((category) => (
             <label key={category}>

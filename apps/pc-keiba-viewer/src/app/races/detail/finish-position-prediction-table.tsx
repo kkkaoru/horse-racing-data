@@ -214,7 +214,8 @@ function FinishPredictionEvaluationPanel({
       value: evaluation.top5WinnerCapture,
     },
     {
-      description: "予想上位3頭のうち、実際の1着から3着に入った頭数の平均割合です。",
+      description:
+        "予想で上位3頭に選んだ馬が、実際の1着から3着に何頭入ったかを見ます。3頭中2頭が入れば約66.7%、3頭全て入れば100%として、検証レース全体で平均した値です。",
       key: "top3PlaceRelation",
       label: "1-3着重なり",
       value: evaluation.top3PlaceRelation,
@@ -261,6 +262,7 @@ function FinishPredictionEvaluationPanel({
               <strong>{formatPercent(metric.value)}</strong>
               <small className="finish-prediction-metric-tooltip" id={tooltipId} role="tooltip">
                 {metric.description}
+                <span>変数名: {metric.key}</span>
               </small>
             </button>
           );
