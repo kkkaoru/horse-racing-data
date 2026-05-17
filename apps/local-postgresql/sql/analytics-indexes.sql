@@ -322,3 +322,64 @@ create index concurrently if not exists jvd_se_owner_name_stats_idx
 create index concurrently if not exists nvd_se_owner_name_stats_idx
   on public.nvd_se ((coalesce(nullif(btrim(banushimei, ' 　'), ''), '-')), kaisai_nen, kaisai_tsukihi)
   include (kakutei_chakujun);
+
+-- Indexes for running-style + corner-position feature builder (Phase A-pre).
+-- The existing horse_results / jockey / trainer indexes lack corner_1..4 + shusso_tosu
+-- in INCLUDE. These dedicated indexes accelerate finish_position_features_duckdb.py
+-- when computing Tier 1+4 features for corner-position and running-style models.
+
+create index concurrently if not exists jvd_se_running_style_horse_idx
+  on public.jvd_se (ketto_toroku_bango, kaisai_nen, kaisai_tsukihi)
+  include (
+    corner_1,
+    corner_2,
+    corner_3,
+    corner_4,
+    kakutei_chakujun,
+    umaban,
+    keibajo_code,
+    kishumei_ryakusho,
+    chokyoshimei_ryakusho,
+    futan_juryo
+  );
+
+create index concurrently if not exists nvd_se_running_style_horse_idx
+  on public.nvd_se (ketto_toroku_bango, kaisai_nen, kaisai_tsukihi)
+  include (
+    corner_1,
+    corner_2,
+    corner_3,
+    corner_4,
+    kakutei_chakujun,
+    umaban,
+    keibajo_code,
+    kishumei_ryakusho,
+    chokyoshimei_ryakusho,
+    futan_juryo
+  );
+
+create index concurrently if not exists jvd_se_keibajo_date_corner_idx
+  on public.jvd_se (keibajo_code, kaisai_nen, kaisai_tsukihi)
+  include (
+    corner_1,
+    corner_2,
+    corner_3,
+    corner_4,
+    kakutei_chakujun,
+    umaban,
+    ketto_toroku_bango,
+    race_bango
+  );
+
+create index concurrently if not exists nvd_se_keibajo_date_corner_idx
+  on public.nvd_se (keibajo_code, kaisai_nen, kaisai_tsukihi)
+  include (
+    corner_1,
+    corner_2,
+    corner_3,
+    corner_4,
+    kakutei_chakujun,
+    umaban,
+    ketto_toroku_bango,
+    race_bango
+  );

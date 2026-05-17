@@ -48,6 +48,28 @@ DISTANCE_BAND_METERS = 400
 PEDIGREE_MIN_RACES = 5
 PEDIGREE_COMPOSITE_DIVISOR = 3
 TREND_MIN_RACES = 3
+RUNNING_STYLE_SENKOU_THRESHOLD = 0.30
+RUNNING_STYLE_SASHI_THRESHOLD = 0.70
+RUNNING_STYLE_CLASS_NIGE = 0
+RUNNING_STYLE_CLASS_SENKOU = 1
+RUNNING_STYLE_CLASS_SASHI = 2
+RUNNING_STYLE_CLASS_OIKOMI = 3
+KYORI_BAND_SPRINT_MAX = 1300
+KYORI_BAND_MILE_MAX = 1700
+KYORI_BAND_INTERMEDIATE_MAX = 2200
+KYORI_BAND_SPRINT = 0
+KYORI_BAND_MILE = 1
+KYORI_BAND_INTERMEDIATE = 2
+KYORI_BAND_LONG = 3
+SEASON_SPRING_MAX_MONTH = 5
+SEASON_SUMMER_MAX_MONTH = 8
+SEASON_AUTUMN_MAX_MONTH = 11
+SEASON_SPRING = 0
+SEASON_SUMMER = 1
+SEASON_AUTUMN = 2
+SEASON_WINTER = 3
+NEWCOMER_RACE_JOKEN_CODE = "000"
+UMABAN_NORM_MIN_FIELD = 2
 
 
 class BuildArgs(TypedDict):
@@ -441,6 +463,16 @@ def build_target_table(con: duckdb.DuckDBPyConnection, category: str, from_date:
           rec.kyoso_joken_code,
           rec.babajotai_code_shiba,
           rec.babajotai_code_dirt,
+          rec.corner1_norm as target_corner_1_norm,
+          rec.corner3_norm as target_corner_3_norm,
+          rec.corner4_norm as target_corner_4_norm,
+          case
+            when rec.corner1_norm is null then null
+            when rec.corner1_norm = 0 then {RUNNING_STYLE_CLASS_NIGE}
+            when rec.corner1_norm <= {RUNNING_STYLE_SENKOU_THRESHOLD} then {RUNNING_STYLE_CLASS_SENKOU}
+            when rec.corner1_norm <= {RUNNING_STYLE_SASHI_THRESHOLD} then {RUNNING_STYLE_CLASS_SASHI}
+            else {RUNNING_STYLE_CLASS_OIKOMI}
+          end as target_running_style_class,
           'v1' as feature_schema_version,
           cast(substr(rec.race_date, 1, 4) as int) as race_year
         from rec
@@ -760,6 +792,55 @@ def track_bias_cte(target_filter: str = "true") -> str:
     """
 
 
+def horse_running_style_history_cte(target_filter: str = "true") -> str:
+    """Per-horse running-style history aggregates from horse_history_base.
+
+    Pure aggregation on horse_history_base (no JOIN). target_filter unused
+    because per-year filtering is applied by the base materialization.
+    """
+    del target_filter
+    return f"""
+    horse_running_style_history as (
+      select b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango, b.ketto_toroku_bango,
+        avg(b.corner1_norm)
+          filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
+          as past_corner_1_norm_avg_5,
+        stddev_samp(b.corner1_norm)
+          filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
+          as past_corner_1_norm_std_5,
+        min(b.corner1_norm)
+          filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
+          as past_corner_1_norm_best_5,
+        max(b.corner1_norm)
+          filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
+          as past_corner_1_norm_worst_5,
+        avg(case when b.corner1_norm = 0 then 1.0
+                 when b.corner1_norm is null then null
+                 else 0.0 end) as past_nige_rate_self,
+        avg(case when b.corner1_norm is null then null
+                 when b.corner1_norm > 0 and b.corner1_norm <= {RUNNING_STYLE_SENKOU_THRESHOLD} then 1.0
+                 else 0.0 end) as past_senkou_rate_self,
+        avg(case when b.corner1_norm is null then null
+                 when b.corner1_norm > {RUNNING_STYLE_SENKOU_THRESHOLD}
+                  and b.corner1_norm <= {RUNNING_STYLE_SASHI_THRESHOLD} then 1.0
+                 else 0.0 end) as past_sashi_rate_self,
+        avg(case when b.corner1_norm is null then null
+                 when b.corner1_norm > {RUNNING_STYLE_SASHI_THRESHOLD} then 1.0
+                 else 0.0 end) as past_oikomi_rate_self,
+        max(b.corner1_norm) filter (where b.recent_rank = 1) as last_race_corner_1_norm,
+        max(b.corner4_norm - b.corner1_norm) filter (where b.recent_rank = 1)
+          as last_race_corner_progression,
+        avg(b.corner1_norm) filter (where abs(b.history_kyori - b.target_kyori) <= {SAME_DISTANCE_TOLERANCE})
+          as horse_distance_corner_1_norm_avg,
+        avg(b.corner1_norm) filter (where left(coalesce(b.history_track_code, ''), 1)
+                                       = left(coalesce(b.target_track_code, ''), 1))
+          as horse_track_corner_1_norm_avg
+      from horse_history_base b
+      group by b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango, b.ketto_toroku_bango
+    )
+    """
+
+
 def weight_cte(target_filter: str = "true") -> str:
     """Aggregate bataiju from pre-baked horse_history_base.history_bataiju.
 
@@ -899,6 +980,7 @@ def base_features_select_sql(category: str) -> str:
       t.source, t.race_date, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango,
       t.ketto_toroku_bango, t.umaban, t.category, t.kyori, t.track_code, t.grade_code, t.shusso_tosu,
       t.finish_position, t.finish_norm,
+      t.target_corner_1_norm, t.target_corner_3_norm, t.target_corner_4_norm, t.target_running_style_class,
       hc.speed_index_avg_5, hc.speed_index_best_5, hc.kohan3f_avg_5, hc.corner_pass_avg_5,
       hc.career_win_rate, hc.career_place_rate, hc.career_top1_count,
       hc.same_keibajo_win_rate, hc.same_distance_win_rate, hc.same_track_win_rate, hc.same_grade_win_rate,
@@ -940,6 +1022,44 @@ def base_features_select_sql(category: str) -> str:
       rf.last_race_finish_norm, rf.last_race_margin_to_winner, rf.last_race_corner_pass_norm,
       rf.last_race_class_diff, rf.last_race_distance_diff, rf.finish_trend_5, rf.last_3_avg_finish_norm,
       lf.avg_finish, lf.recent_finish, lf.popularity_score, lf.odds_score,
+      rsh.past_corner_1_norm_avg_5,
+      rsh.past_corner_1_norm_std_5,
+      rsh.past_corner_1_norm_best_5,
+      rsh.past_corner_1_norm_worst_5,
+      rsh.past_nige_rate_self,
+      rsh.past_senkou_rate_self,
+      rsh.past_sashi_rate_self,
+      rsh.past_oikomi_rate_self,
+      rsh.last_race_corner_1_norm,
+      rsh.last_race_corner_progression,
+      rsh.horse_distance_corner_1_norm_avg,
+      rsh.horse_track_corner_1_norm_avg,
+      case
+        when t.shusso_tosu is null or t.shusso_tosu < {UMABAN_NORM_MIN_FIELD} then null
+        when t.umaban is null then null
+        else least(1.0, greatest(0.0,
+          (cast(t.umaban as double) - 1) / (cast(t.shusso_tosu as double) - 1)
+        ))
+      end as umaban_norm,
+      case
+        when trim(coalesce(t.kyoso_joken_code, '')) = '{NEWCOMER_RACE_JOKEN_CODE}' then 1
+        else 0
+      end as is_newcomer_race,
+      case
+        when t.kyori is null then null
+        when t.kyori <= {KYORI_BAND_SPRINT_MAX} then {KYORI_BAND_SPRINT}
+        when t.kyori <= {KYORI_BAND_MILE_MAX} then {KYORI_BAND_MILE}
+        when t.kyori <= {KYORI_BAND_INTERMEDIATE_MAX} then {KYORI_BAND_INTERMEDIATE}
+        else {KYORI_BAND_LONG}
+      end as kyori_band,
+      case
+        when t.kaisai_tsukihi is null or length(t.kaisai_tsukihi) < 2 then null
+        when cast(substr(t.kaisai_tsukihi, 1, 2) as int) < 3 then {SEASON_WINTER}
+        when cast(substr(t.kaisai_tsukihi, 1, 2) as int) <= {SEASON_SPRING_MAX_MONTH} then {SEASON_SPRING}
+        when cast(substr(t.kaisai_tsukihi, 1, 2) as int) <= {SEASON_SUMMER_MAX_MONTH} then {SEASON_SUMMER}
+        when cast(substr(t.kaisai_tsukihi, 1, 2) as int) <= {SEASON_AUTUMN_MAX_MONTH} then {SEASON_AUTUMN}
+        else {SEASON_WINTER}
+      end as season_band,
       t.feature_schema_version,
       t.race_year,
       t.source || ':' || t.kaisai_nen || ':' || t.kaisai_tsukihi || ':' || t.keibajo_code || ':' || t.race_bango as race_id
@@ -959,6 +1079,7 @@ def base_features_select_sql(category: str) -> str:
     left join recent_form rf using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
     left join legacy_features lf using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
     left join weather_lookup wl using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
+    left join horse_running_style_history rsh using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
     """
 
 
@@ -1243,6 +1364,7 @@ HORSE_HISTORY_BASE_SELECT = """
       cast(h.finish_norm as double) as finish_norm,
       cast(h.time_sa as double) as time_sa,
       cast(h.kohan_3f as double) as kohan_3f,
+      cast(h.corner1_norm as double) as corner1_norm,
       cast(h.corner3_norm as double) as corner3_norm,
       cast(h.corner4_norm as double) as corner4_norm,
       h.kyori as history_kyori,
@@ -1372,6 +1494,11 @@ PER_YEAR_SPECS: list[DerivedStageSpec] = [
     {"name": "recent_form", "cte_builder": lambda _: recent_form_cte(), "final_cte": "recent_form"},
     {"name": "legacy_features", "cte_builder": legacy_five_cte, "final_cte": "legacy_features"},
     {"name": "weight_agg", "cte_builder": weight_cte, "final_cte": "weight_agg"},
+    {
+        "name": "horse_running_style_history",
+        "cte_builder": horse_running_style_history_cte,
+        "final_cte": "horse_running_style_history",
+    },
 ]
 
 
