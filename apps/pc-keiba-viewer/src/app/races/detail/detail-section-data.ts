@@ -1069,6 +1069,40 @@ export const getDetailSectionPayload = async (
       getTimeScoreRows(race, context.conditionAnalysisSettings),
       getRaceTimeStats(race, context.conditionAnalysisSettings),
     ]);
+    let resolvedSimilarSettings = context.statsSettings;
+    let similarRows = await getSimilarRaceStats(race, resolvedSimilarSettings);
+    if (
+      !hasExplicitStatsState(query, "similar") &&
+      !hasSimilarJockeyTrainerCoverage(similarRows, runners)
+    ) {
+      const candidates = getConditionAnalysisSettingCandidates(resolvedSimilarSettings).slice(1);
+      const matched = await findRateStatsCandidate(
+        candidates,
+        (candidate) => getSimilarRaceStats(race, candidate),
+        (stats) => hasSimilarJockeyTrainerCoverage(stats, runners),
+      );
+      if (matched) {
+        resolvedSimilarSettings = matched.settings;
+        similarRows = matched.stats;
+      }
+    }
+    let resolvedBloodlineSettings = context.bloodlineStatsSettings;
+    let bloodlineRows = await getBloodlineStats(race, resolvedBloodlineSettings);
+    if (
+      !hasExplicitStatsState(query, "bloodline") &&
+      !hasBloodlineScoreCoverage(bloodlineRows, runners)
+    ) {
+      const candidates = getConditionAnalysisSettingCandidates(resolvedBloodlineSettings).slice(1);
+      const matched = await findRateStatsCandidate(
+        candidates,
+        (candidate) => getBloodlineStats(race, candidate),
+        (stats) => hasBloodlineScoreCoverage(stats, runners),
+      );
+      if (matched) {
+        resolvedBloodlineSettings = matched.settings;
+        bloodlineRows = matched.stats;
+      }
+    }
     const jockeyNameByHorse = new Map(
       context.runners.map((runner) => [
         normalizeHorseNumber(runner.umaban),
@@ -1076,6 +1110,9 @@ export const getDetailSectionPayload = async (
       ]),
     );
     return {
+      bloodlineRows,
+      bloodlineSettings: resolvedBloodlineSettings,
+      conditionLabels: context.statsConditionLabels,
       correlationRows: raceTimeStats.correlationRows,
       rows: rows.map((row) =>
         Object.assign(row, {
@@ -1083,6 +1120,10 @@ export const getDetailSectionPayload = async (
             row.jockeyName || jockeyNameByHorse.get(normalizeHorseNumber(row.horseNumber)) || "-",
         }),
       ),
+      runners,
+      settings: resolvedSimilarSettings,
+      similarRows,
+      source: race.source,
       type: section,
     };
   }

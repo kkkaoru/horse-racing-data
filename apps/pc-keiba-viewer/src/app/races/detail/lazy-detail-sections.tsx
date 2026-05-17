@@ -34,7 +34,6 @@ import { OverallScoreTable } from "./overall-score-table";
 import { RaceConditionAnalysisSection } from "./race-condition-analysis-section";
 import { RacePacePredictionTable } from "./race-pace-prediction-table";
 import { SimilarRaceStatsTable } from "./similar-race-stats-table";
-import { TimeScoreTable } from "./time-score-table";
 import { TrainingTable } from "./training-table";
 
 type DetailSection =
@@ -135,8 +134,15 @@ type SimilarPayload = {
 };
 
 type TimeScorePayload = {
+  bloodlineRows: BloodlineStatsRow[];
+  bloodlineSettings: SimilarRaceStatsSettings;
+  conditionLabels: ConditionLabels;
   correlationRows: ConditionCorrelationRow[];
   rows: TimeScoreRow[];
+  runners: Runner[];
+  settings: SimilarRaceStatsSettings;
+  similarRows: SimilarRaceStatsRow[];
+  source: RaceSource;
   type: "time-score";
 };
 
@@ -245,6 +251,8 @@ const shouldIncludeSectionQueryParam = (section: DetailSection, name: string): b
   if (section === "time-score") {
     return (
       name.startsWith("analysisStats") ||
+      name.startsWith("bloodlineStats") ||
+      name.startsWith("similarStats") ||
       name === "similarStatsVenue" ||
       GENERIC_STATS_QUERY_KEYS.has(name)
     );
@@ -672,6 +680,8 @@ function LazyConditionSection(props: LazyDetailSectionsProps) {
 
 function LazyTimeScoreSection(props: LazyDetailSectionsProps) {
   const searchParams = useSearchParams();
+  const [showBloodline, setShowBloodline] = useState(false);
+  const [showSimilar, setShowSimilar] = useState(false);
   const state = useSectionPayload("time-score", props, searchParams);
   if (state.status === "loading" && state.payload === null) {
     return <SectionSkeleton title={SECTION_TITLES["time-score"]} />;
@@ -689,53 +699,24 @@ function LazyTimeScoreSection(props: LazyDetailSectionsProps) {
       className="similar-stats-section lazy-detail-section"
     >
       <div className="section-heading compact">
-        <h2>タイムスコアと1〜3着相関スコア</h2>
-      </div>
-      <TimeScoreTable
-        correlationRows={payload.correlationRows}
-        realtimeRequest={{
-          apiBaseUrl: props.realtimeApiBaseUrl,
-          day: props.day,
-          keibajoCode: props.keibajoCode,
-          month: props.month,
-          raceNumber: props.raceNumber,
-          source: props.source,
-          year: props.year,
-        }}
-        rows={payload.rows}
-      />
-    </section>
-  );
-}
-
-function LazySimilarSection(props: LazyDetailSectionsProps) {
-  const searchParams = useSearchParams();
-  const [showBloodline, setShowBloodline] = useState(false);
-  const [showSimilar, setShowSimilar] = useState(false);
-  const state = useSectionPayload("similar", props, searchParams);
-  if (state.status === "loading" && state.payload === null) {
-    return <SectionSkeleton title={SECTION_TITLES.similar} />;
-  }
-  if (state.status === "error") {
-    return <SectionError error={state.error} title={SECTION_TITLES.similar} />;
-  }
-  const payload = state.payload;
-  if (!payload || payload.type !== "similar") {
-    return <SectionError error="Invalid section payload" title={SECTION_TITLES.similar} />;
-  }
-  return (
-    <section
-      aria-busy={state.status === "loading"}
-      className="similar-stats-section lazy-detail-section"
-    >
-      <div className="section-heading compact">
-        <h2>血統・同条件スコア</h2>
+        <h2>タイム・相関・血統・同条件スコア</h2>
       </div>
       <div className="stats-category-list">
         <BloodlineSimilarCombinedTable
           bloodlineRows={payload.bloodlineRows}
-          rows={payload.rows}
+          correlationRows={payload.correlationRows}
+          realtimeRequest={{
+            apiBaseUrl: props.realtimeApiBaseUrl,
+            day: props.day,
+            keibajoCode: props.keibajoCode,
+            month: props.month,
+            raceNumber: props.raceNumber,
+            source: props.source,
+            year: props.year,
+          }}
+          rows={payload.similarRows}
           runners={payload.runners}
+          timeRows={payload.rows}
         />
         <div className="stats-section-toggle-wrap">
           <button
@@ -780,7 +761,7 @@ function LazySimilarSection(props: LazyDetailSectionsProps) {
             </div>
             <SimilarRaceStatsTable
               conditionLabels={payload.conditionLabels}
-              rows={payload.rows}
+              rows={payload.similarRows}
               runners={payload.runners}
               settings={payload.settings}
               source={payload.source}
@@ -800,7 +781,6 @@ export function LazyDetailSections(props: LazyDetailSectionsProps) {
       <LazyTrainingSection {...props} />
       {props.source === "nar" ? <LazyAbilitySection {...props} /> : null}
       <LazyConditionSection {...props} />
-      <LazySimilarSection {...props} />
     </>
   );
 }

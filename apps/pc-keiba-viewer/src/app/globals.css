@@ -4701,7 +4701,7 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 }
 
 .combined-score-table {
-  min-width: 980px;
+  min-width: 1180px;
 }
 
 .combined-score-col-number {
@@ -4776,7 +4776,7 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 }
 
 .combined-score-detail-table {
-  min-width: 880px;
+  min-width: 1240px;
 }
 
 .combined-score-detail-table th:nth-child(1),
@@ -4791,10 +4791,31 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   width: 160px;
 }
 
-.combined-score-detail-table th:nth-child(n + 4),
-.combined-score-detail-table td:nth-child(n + 4) {
+.combined-score-detail-table th:nth-child(4),
+.combined-score-detail-table td:nth-child(4),
+.combined-score-detail-table th:nth-child(5),
+.combined-score-detail-table td:nth-child(5),
+.combined-score-detail-table th:nth-child(6),
+.combined-score-detail-table td:nth-child(6),
+.combined-score-detail-table th:nth-child(7),
+.combined-score-detail-table td:nth-child(7),
+.combined-score-detail-table th:nth-child(8),
+.combined-score-detail-table td:nth-child(8),
+.combined-score-detail-table th:nth-child(9),
+.combined-score-detail-table td:nth-child(9),
+.combined-score-detail-table th:nth-child(10),
+.combined-score-detail-table td:nth-child(10),
+.combined-score-detail-table th:nth-child(11),
+.combined-score-detail-table td:nth-child(11),
+.combined-score-detail-table th:nth-child(12),
+.combined-score-detail-table td:nth-child(12) {
   text-align: center;
   width: 86px;
+}
+
+.combined-score-detail-table th:nth-child(13),
+.combined-score-detail-table td:nth-child(13) {
+  min-width: 260px;
 }
 
 .similar-score-col-number {

@@ -3,8 +3,19 @@
 import { Fragment, memo, useMemo, useState } from "react";
 
 import { cleanText } from "../../../lib/format";
-import type { BloodlineStatsRow, Runner, SimilarRaceStatsRow } from "../../../lib/race-types";
+import { getPreferredJockeyName } from "../../../lib/jockey-name";
+import type {
+  BloodlineStatsRow,
+  ConditionCorrelationDetail,
+  ConditionCorrelationRow,
+  Runner,
+  SimilarRaceStatsRow,
+  TimeScoreDetail,
+  TimeScoreRow,
+} from "../../../lib/race-types";
 import { formatRunnerNumber } from "../../../lib/runner-format";
+import type { RealtimeRaceRequest } from "./realtime-client";
+import { useRealtimeRacePayload } from "./realtime-client";
 
 type BloodlineCategory = BloodlineStatsRow["category"];
 type SimilarCategory = SimilarRaceStatsRow["category"];
@@ -12,6 +23,8 @@ type SimilarCategory = SimilarRaceStatsRow["category"];
 type CombinedRow = {
   bloodline: ScoreGroup<BloodlineCategory>;
   bloodlineScore: number;
+  correlationDetails: ConditionCorrelationDetail[];
+  correlationScore: number;
   horseName: string;
   horseNumber: string;
   jockeyName: string;
@@ -19,9 +32,15 @@ type CombinedRow = {
   score: number;
   similar: ScoreGroup<SimilarCategory>;
   similarScore: number;
+  timeDetails: TimeScoreDetail[];
+  timeScore: number;
 };
 
 type ScoreTargets = {
+  base: {
+    correlation: boolean;
+    time: boolean;
+  };
   bloodline: Record<BloodlineCategory, boolean>;
   similar: Record<SimilarCategory, boolean>;
 };
@@ -39,8 +58,11 @@ type ScoredRateRow = (BloodlineStatsRow | SimilarRaceStatsRow) & {
 
 interface BloodlineSimilarCombinedTableProps {
   bloodlineRows: BloodlineStatsRow[];
+  correlationRows: ConditionCorrelationRow[];
+  realtimeRequest?: RealtimeRaceRequest;
   rows: SimilarRaceStatsRow[];
   runners: Runner[];
+  timeRows: TimeScoreRow[];
 }
 
 const BLOODLINE_CATEGORY_LABELS: Record<BloodlineCategory, string> = {
@@ -73,6 +95,10 @@ const METRIC_SCORE_WEIGHTS = {
 };
 
 const DEFAULT_SCORE_TARGETS: ScoreTargets = {
+  base: {
+    correlation: true,
+    time: true,
+  },
   bloodline: {
     damSire: true,
     sire: true,
@@ -90,6 +116,23 @@ const formatRate = (value: number): string => `${value.toFixed(1)}%`;
 const formatScore = (value: number): string => value.toFixed(2);
 
 const normalize = (value: number, max: number): number => (max > 0 ? value / max : 0);
+
+const normalizeHorseNumber = (value: string): string =>
+  value.replace(/^0+/u, "") || (value ? "0" : "");
+
+const roundScore = (value: number): number => Math.round(value * 100) / 100;
+
+const clampScore = (value: number): number => Math.max(0, Math.min(1, value));
+
+const formatDetailNumber = (value: number | null): string =>
+  value === null ? "-" : value.toFixed(1);
+
+const similarityScore = (value: number | null, target: number | null, scale: number): number => {
+  if (value === null || target === null) {
+    return 0.5;
+  }
+  return Math.max(0, Math.min(1, 1 - Math.abs(value - target) / Math.max(target, scale)));
+};
 
 const splitHorseNumbers = (value: string): string[] =>
   value
@@ -149,15 +192,94 @@ const getRowsByHorse = <Category extends string>(
   return rowsByHorse;
 };
 
+const applyRealtimeCorrelationRows = (
+  rows: ConditionCorrelationRow[],
+  realtimeValues: Map<string, { odds: number | null; popularity: number | null }>,
+): ConditionCorrelationRow[] => {
+  if (realtimeValues.size === 0) {
+    return rows;
+  }
+
+  return rows.map((row) => {
+    const realtime = realtimeValues.get(normalizeHorseNumber(row.horseNumber));
+    if (!realtime) {
+      return row;
+    }
+    const details = row.details.map((detail): ConditionCorrelationDetail => {
+      if (detail.key === "popularity" && realtime.popularity !== null) {
+        return Object.assign({}, detail, {
+          reason: `${detail.reason}。最新オッズ取得値で再計算`,
+          score: roundScore(similarityScore(realtime.popularity, detail.target, 5)),
+          value: realtime.popularity,
+        });
+      }
+      if (detail.key === "odds" && realtime.odds !== null) {
+        return Object.assign({}, detail, {
+          reason: `${detail.reason}。最新オッズ取得値で再計算`,
+          score: roundScore(similarityScore(realtime.odds, detail.target, 10)),
+          value: realtime.odds,
+        });
+      }
+      return detail;
+    });
+    const score = roundScore(
+      details.reduce((total, detail) => total + detail.score * detail.weight, 0),
+    );
+    return Object.assign({}, row, { details, score });
+  });
+};
+
 export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombinedTable({
   bloodlineRows,
+  correlationRows,
+  realtimeRequest,
   rows,
   runners,
+  timeRows,
 }: BloodlineSimilarCombinedTableProps) {
   const [expandedHorseNumber, setExpandedHorseNumber] = useState<string | null>(null);
   const [scoreTargets, setScoreTargets] = useState<ScoreTargets>(DEFAULT_SCORE_TARGETS);
+  const { payload } = useRealtimeRacePayload(
+    realtimeRequest ?? {
+      apiBaseUrl: "",
+      day: "",
+      keibajoCode: "",
+      month: "",
+      raceNumber: "",
+      source: "jra",
+      year: "",
+    },
+    null,
+  );
+  const realtimeValues = useMemo(() => {
+    const values = new Map<string, { odds: number | null; popularity: number | null }>();
+    for (const row of payload?.odds?.latest.tansho ?? []) {
+      values.set(normalizeHorseNumber(row.combination), {
+        odds: row.odds ?? null,
+        popularity: row.rank ?? null,
+      });
+    }
+    return values;
+  }, [payload]);
+  const realtimeJockeyByHorse = useMemo(
+    () =>
+      new Map(
+        (payload?.raceEntries?.horses ?? []).map((horse) => [
+          normalizeHorseNumber(horse.horseNumber),
+          horse.jockeyName ?? "",
+        ]),
+      ),
+    [payload],
+  );
 
   const combinedRows = useMemo(() => {
+    const displayedCorrelationRows = applyRealtimeCorrelationRows(correlationRows, realtimeValues);
+    const timeByHorse = new Map(
+      timeRows.map((row) => [normalizeHorseNumber(row.horseNumber), row]),
+    );
+    const correlationByHorse = new Map(
+      displayedCorrelationRows.map((row) => [normalizeHorseNumber(row.horseNumber), row]),
+    );
     const scoredBloodlineRows = BLOODLINE_CATEGORY_ORDER.flatMap((category) =>
       toScoredRows(bloodlineRows.filter((row) => row.category === category)),
     );
@@ -169,6 +291,9 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
 
     const rawRows = runners.map((runner) => {
       const horseNumber = formatRunnerNumber(runner.umaban);
+      const normalizedHorseNumber = normalizeHorseNumber(horseNumber);
+      const timeRow = timeByHorse.get(normalizedHorseNumber);
+      const correlationRow = correlationByHorse.get(normalizedHorseNumber);
       const bloodlineCategoryRows = bloodlineRowsByHorse.get(horseNumber) ?? {};
       const similarCategoryRows = similarRowsByHorse.get(horseNumber) ?? {};
 
@@ -238,6 +363,8 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
             ) / selectedSimilarCategories.length
           : 0;
       const selectedGroupScores = [
+        scoreTargets.base.time ? clampScore(timeRow?.score ?? 0.5) : null,
+        scoreTargets.base.correlation ? clampScore(correlationRow?.score ?? 0.5) : null,
         selectedBloodlineCategories.length > 0 ? bloodlineScore : null,
         selectedSimilarCategories.length > 0 ? similarScore : null,
       ].filter((score): score is number => score !== null);
@@ -245,9 +372,15 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
       return {
         bloodline,
         bloodlineScore,
+        correlationDetails: correlationRow?.details ?? [],
+        correlationScore: clampScore(correlationRow?.score ?? 0.5),
         horseName: cleanText(runner.bamei, "-"),
         horseNumber,
-        jockeyName: cleanText(runner.kishumeiRyakusho, "-"),
+        jockeyName:
+          getPreferredJockeyName(
+            cleanText(timeRow?.jockeyName ?? runner.kishumeiRyakusho, "-"),
+            realtimeJockeyByHorse.get(normalizedHorseNumber),
+          ) || "-",
         rawScore:
           selectedGroupScores.length > 0
             ? selectedGroupScores.reduce((total, score) => total + score, 0) /
@@ -255,6 +388,8 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
             : 0,
         similar,
         similarScore,
+        timeDetails: timeRow?.details ?? [],
+        timeScore: clampScore(timeRow?.score ?? 0.5),
       };
     });
 
@@ -266,7 +401,17 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
           ? Number(left.horseNumber) - Number(right.horseNumber)
           : right.score - left.score,
       );
-  }, [bloodlineRows, rows, runners, scoreTargets]);
+  }, [bloodlineRows, correlationRows, realtimeJockeyByHorse, realtimeValues, rows, runners, scoreTargets, timeRows]);
+
+  const toggleBaseTarget = (key: keyof ScoreTargets["base"]) => {
+    setScoreTargets((current) => ({
+      ...current,
+      base: {
+        ...current.base,
+        [key]: !current.base[key],
+      },
+    }));
+  };
 
   const toggleBloodlineTarget = (category: BloodlineCategory) => {
     setScoreTargets((current) => ({
@@ -289,6 +434,26 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
   };
 
   const renderDetail = (row: CombinedRow) => {
+    const baseDetails = [
+      ...row.timeDetails.map((detail) => ({
+        current: formatDetailNumber(detail.value),
+        item: detail.label,
+        reason: detail.reason,
+        score: detail.score,
+        target: formatDetailNumber(detail.target),
+        type: "タイム",
+        weight: detail.weight.toFixed(3),
+      })),
+      ...row.correlationDetails.map((detail) => ({
+        current: formatDetailNumber(detail.value),
+        item: detail.label,
+        reason: detail.reason,
+        score: detail.score,
+        target: formatDetailNumber(detail.target),
+        type: "1〜3着相関",
+        weight: detail.weight.toFixed(3),
+      })),
+    ];
     const bloodlineDetails = BLOODLINE_CATEGORY_ORDER.map((category) => ({
       category: BLOODLINE_CATEGORY_LABELS[category],
       row: row.bloodline.categoryRows[category],
@@ -304,7 +469,7 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
 
     return (
       <tr className="stats-detail-row">
-        <td colSpan={8}>
+        <td colSpan={10}>
           <div className="stats-detail-panel">
             <table className="stats-detail-table combined-score-detail-table">
               <thead>
@@ -313,25 +478,50 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
                   <th>項目</th>
                   <th>名前</th>
                   <th>スコア</th>
+                  <th>現在値</th>
+                  <th>対象平均</th>
+                  <th>重み</th>
                   <th>複勝率</th>
                   <th>連対率</th>
                   <th>勝率</th>
                   <th>出走回数</th>
                   <th>出馬数</th>
+                  <th>理由</th>
                 </tr>
               </thead>
               <tbody>
+                {baseDetails.map((detail) => (
+                  <tr key={`${detail.type}-${detail.item}`}>
+                    <td>{detail.type}</td>
+                    <td>{detail.item}</td>
+                    <td className="stats-name-cell">-</td>
+                    <td className="stats-score-cell">{formatScore(detail.score)}</td>
+                    <td>{detail.current}</td>
+                    <td>{detail.target}</td>
+                    <td>{detail.weight}</td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td className="stats-name-cell">{detail.reason}</td>
+                  </tr>
+                ))}
                 {[...bloodlineDetails, ...similarDetails].map((detail) => (
                   <tr key={`${detail.type}-${detail.category}`}>
                     <td>{detail.type}</td>
                     <td>{detail.category}</td>
                     <td className="stats-name-cell">{detail.row?.name ?? "-"}</td>
                     <td className="stats-score-cell">{formatScore(detail.score)}</td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td>-</td>
                     <td>{detail.row ? formatRate(detail.row.showRate) : "-"}</td>
                     <td>{detail.row ? formatRate(detail.row.quinellaRate) : "-"}</td>
                     <td>{detail.row ? formatRate(detail.row.winRate) : "-"}</td>
                     <td>{detail.row ? detail.row.starts.toLocaleString("ja-JP") : "-"}</td>
                     <td>{detail.row ? detail.row.horseCount.toLocaleString("ja-JP") : "-"}</td>
+                    <td>-</td>
                   </tr>
                 ))}
               </tbody>
@@ -345,9 +535,32 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
   return (
     <section className="stats-category-section">
       <div className="section-heading compact">
-        <h3>血統・同条件 合計スコア</h3>
+        <h3>タイム・相関・血統・同条件 合計スコア</h3>
       </div>
       <div className="combined-score-targets" aria-label="合計スコア対象">
+        <fieldset>
+          <legend>基本スコア</legend>
+          <label>
+            <input
+              checked={scoreTargets.base.time}
+              type="checkbox"
+              onChange={() => {
+                toggleBaseTarget("time");
+              }}
+            />
+            <span>タイム</span>
+          </label>
+          <label>
+            <input
+              checked={scoreTargets.base.correlation}
+              type="checkbox"
+              onChange={() => {
+                toggleBaseTarget("correlation");
+              }}
+            />
+            <span>1〜3着相関</span>
+          </label>
+        </fieldset>
         <fieldset>
           <legend>血統スコア</legend>
           {BLOODLINE_CATEGORY_ORDER.map((category) => (
@@ -388,6 +601,8 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
             <col className="combined-score-col-score" />
             <col className="combined-score-col-score" />
             <col className="combined-score-col-score" />
+            <col className="combined-score-col-score" />
+            <col className="combined-score-col-score" />
             <col className="combined-score-col-count" />
             <col className="combined-score-col-count" />
           </colgroup>
@@ -397,8 +612,10 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
               <th>馬名</th>
               <th>騎手</th>
               <th>合計スコア</th>
+              <th>タイムスコア</th>
+              <th>1〜3着相関スコア</th>
               <th>血統スコア</th>
-              <th>勝率スコア</th>
+              <th>同条件スコア</th>
               <th>出走回数</th>
               <th>出馬数</th>
             </tr>
@@ -427,6 +644,8 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
                         {isExpanded ? "非表示" : "詳細"}
                       </button>
                     </td>
+                    <td>{formatScore(row.timeScore)}</td>
+                    <td>{formatScore(row.correlationScore)}</td>
                     <td>{formatScore(row.bloodlineScore)}</td>
                     <td>{formatScore(row.similarScore)}</td>
                     <td>{(row.bloodline.starts + row.similar.starts).toLocaleString("ja-JP")}</td>
