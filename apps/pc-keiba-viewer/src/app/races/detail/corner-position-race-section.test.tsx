@@ -5,9 +5,12 @@ import { describe, expect, test, vi } from "vitest";
 
 import type { RaceCornerPositionRow } from "../../../db/corner-running-style-queries";
 
-const getActiveCornerPositionModelMock = vi.fn<
-  (category: string) => Promise<{ modelVersion: string; category: string; activatedAt: Date } | null>
->();
+const getActiveCornerPositionModelMock =
+  vi.fn<
+    (
+      category: string,
+    ) => Promise<{ modelVersion: string; category: string; activatedAt: Date } | null>
+  >();
 const getRaceCornerPositionPredictionsMock = vi.fn<
   (
     keys: {
@@ -20,9 +23,8 @@ const getRaceCornerPositionPredictionsMock = vi.fn<
     modelVersion: string,
   ) => Promise<RaceCornerPositionRow[]>
 >();
-const getCornerPositionMetricsForActiveModelMock = vi.fn<
-  (category: string) => Promise<{ meanMae: number | null; modelVersion: string } | null>
->();
+const getCornerPositionMetricsForActiveModelMock =
+  vi.fn<(category: string) => Promise<{ meanMae: number | null; modelVersion: string } | null>>();
 
 vi.mock("../../../db/corner-running-style-queries", () => ({
   getActiveCornerPositionModel: (category: string) => getActiveCornerPositionModelMock(category),
