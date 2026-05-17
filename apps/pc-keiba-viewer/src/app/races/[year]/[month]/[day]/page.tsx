@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -19,6 +20,15 @@ interface RaceDatePageProps {
 
 const isValidDateParams = (year: string, month: string, day: string): boolean =>
   /^\d{4}$/.test(year) && /^\d{2}$/.test(month) && /^\d{2}$/.test(day);
+
+export async function generateMetadata({ params }: RaceDatePageProps): Promise<Metadata> {
+  const { day, month, year } = await params;
+  return {
+    title: isValidDateParams(year, month, day)
+      ? `${formatDisplayDate(year, `${month}${day}`)} レース一覧`
+      : "レース一覧",
+  };
+}
 
 export default async function RaceDatePage({ params, searchParams }: RaceDatePageProps) {
   const { year, month, day } = await params;

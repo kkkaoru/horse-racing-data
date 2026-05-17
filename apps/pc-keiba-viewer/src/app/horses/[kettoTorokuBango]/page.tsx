@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 
 import { getHorseDetailData } from "../../../db/queries";
@@ -14,6 +15,11 @@ export const dynamic = "force-dynamic";
 interface HorseDetailPageProps {
   params: Promise<{ kettoTorokuBango: string }>;
   searchParams: Promise<Record<string, string | string[] | undefined>>;
+}
+
+export async function generateMetadata({ params }: HorseDetailPageProps): Promise<Metadata> {
+  const { kettoTorokuBango } = await params;
+  return { title: `${decodeURIComponent(kettoTorokuBango)} 馬詳細` };
 }
 
 export default async function HorseDetailPage({ params, searchParams }: HorseDetailPageProps) {

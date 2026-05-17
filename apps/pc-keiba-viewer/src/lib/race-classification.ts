@@ -105,6 +105,7 @@ const WEIGHT_LABELS: Record<string, string> = {
   "6": "騎手ハンデ",
   "7": "賞金ハンデ",
   "8": "規定",
+  "9": "その他",
 };
 
 export const getWeightLabel = (value: string | null | undefined): string => {
@@ -113,6 +114,7 @@ export const getWeightLabel = (value: string | null | undefined): string => {
 };
 
 const KIGO_LABELS: Record<string, string> = {
+  "000": "制限なし",
   "002": "若手騎手",
   "020": "牝馬限定",
   "021": "牝馬限定",
@@ -130,6 +132,7 @@ const KIGO_LABELS: Record<string, string> = {
 };
 
 const KIGO_DETAIL_LABELS: Record<string, string> = {
+  "000": "制限なし",
   "001": "(指定)",
   "002": "若手騎手",
   "003": "[指定]",

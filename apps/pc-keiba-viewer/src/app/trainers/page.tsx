@@ -1,7 +1,13 @@
+import type { Metadata } from "next";
+
 import { getPersonList } from "../../db/queries";
 import { EntityFilterForm, parseEntityListQuery, PersonListTable } from "../entity-ui";
 
 export const dynamic = "force-dynamic";
+
+export const metadata: Metadata = {
+  title: "調教師一覧",
+};
 
 interface TrainersPageProps {
   searchParams: Promise<Record<string, string | string[] | undefined>>;

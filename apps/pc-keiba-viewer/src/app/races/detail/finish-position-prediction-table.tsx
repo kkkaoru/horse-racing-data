@@ -2,25 +2,53 @@
 
 import { Fragment, memo, useCallback, useEffect, useMemo, useState } from "react";
 
+import { fetchWithRetry } from "../../../lib/fetch-with-retry";
 import { RACE_FINISH_PREDICTION_RESULTS_EVENT } from "../../../lib/finish-position-prediction";
 import type { FinishPredictionEvaluationMetrics } from "../../../lib/finish-position-prediction-evaluation";
 import { getPreferredJockeyName } from "../../../lib/jockey-name";
-import type { FinishPredictionRow } from "../../../lib/race-types";
+import {
+  isPaddockState,
+  normalizePaddockHorseScore,
+  type PaddockOfficialRank,
+  type PaddockState,
+} from "../../../lib/paddock";
+import type {
+  BloodlineStatsRow,
+  ConditionCorrelationRow,
+  FinishPredictionRow,
+  Runner,
+  SimilarRaceStatsRow,
+  TimeScoreRow,
+} from "../../../lib/race-types";
 import { formatRunnerNumber } from "../../../lib/runner-format";
+import { buildCombinedScoreRows, type CombinedScoreRow } from "./bloodline-similar-combined-table";
 import type { RealtimeRaceRequest } from "./realtime-client";
 import { useRealtimeRacePayload } from "./realtime-client";
 
 interface FinishPositionPredictionTableProps {
+  combinedScoreData?: FinishPredictionCombinedScoreData | null;
+  combinedScoreLoading?: boolean;
   evaluation: FinishPredictionEvaluationMetrics;
   realtimeRequest: RealtimeRaceRequest;
   rows: FinishPredictionRow[];
 }
 
+interface FinishPredictionCombinedScoreData {
+  bloodlineRows: BloodlineStatsRow[];
+  correlationRows: ConditionCorrelationRow[];
+  rows: SimilarRaceStatsRow[];
+  runners: Runner[];
+  timeRows: TimeScoreRow[];
+}
+
 interface FinishPredictionTableRowProps {
+  combinedScore: CombinedScoreRow | null;
+  combinedScoreLoading: boolean;
   entryStatus: string;
   isExpanded: boolean;
   jockeyName: string;
   onToggle: (horseNumber: string) => void;
+  paddockScore: number | null;
   realtimeOdds: number | null | undefined;
   realtimePopularity: number | null | undefined;
   row: FinishPredictionRow;
@@ -70,6 +98,76 @@ const formatDate = (value: string): string =>
 const formatPercent = (value: number): string => `${value.toFixed(2)}%`;
 
 const formatRaceCount = (value: number): string => value.toLocaleString("ja-JP");
+
+const formatScore = (value: number): string => value.toFixed(2);
+
+const normalizeScoreRange = (value: number, min: number, max: number): number => {
+  if (max <= min) {
+    return 1;
+  }
+  return (value - min) / (max - min);
+};
+
+const normalizeRankRange = (rank: PaddockOfficialRank | null, min: number, max: number): number => {
+  if (rank === null) {
+    return 0;
+  }
+  if (max <= min) {
+    return 1;
+  }
+  return (max - rank) / (max - min);
+};
+
+const buildPaddockScoreByHorse = (
+  rows: FinishPredictionRow[],
+  state: PaddockState | null,
+): Map<string, number> => {
+  if (state === null) {
+    return new Map();
+  }
+  const scoredRows = rows
+    .map((row) => {
+      const horseNumber = formatRunnerNumber(row.horseNumber);
+      const scores = state.horses[horseNumber]
+        ? normalizePaddockHorseScore(state.horses[horseNumber], {
+            horseName: row.horseName,
+            horseNumber,
+          })
+        : null;
+      return { horseNumber, scores };
+    })
+    .filter(
+      (row): row is { horseNumber: string; scores: NonNullable<typeof row.scores> } =>
+        row.scores !== null,
+    );
+  if (scoredRows.length === 0) {
+    return new Map();
+  }
+  if (scoredRows.length === 1) {
+    return new Map([[scoredRows[0]?.horseNumber ?? "", 1]]);
+  }
+  const totals = scoredRows.map((row) => row.scores.total);
+  const ranks = scoredRows
+    .map((row) => row.scores.officialRank)
+    .filter((rank): rank is PaddockOfficialRank => rank !== null);
+  const minTotal = Math.min(...totals);
+  const maxTotal = Math.max(...totals);
+  const minRank = ranks.length > 0 ? Math.min(...ranks) : 1;
+  const maxRank = ranks.length > 0 ? Math.max(...ranks) : 1;
+  const rawScores = scoredRows.map((row) => {
+    const totalScore = normalizeScoreRange(row.scores.total, minTotal, maxTotal);
+    const rankScore = normalizeRankRange(row.scores.officialRank, minRank, maxRank);
+    return (totalScore + rankScore) / 2;
+  });
+  const minRaw = Math.min(...rawScores);
+  const maxRaw = Math.max(...rawScores);
+  return new Map(
+    scoredRows.map((row, index) => [
+      row.horseNumber,
+      normalizeScoreRange(rawScores[index] ?? 0, minRaw, maxRaw),
+    ]),
+  );
+};
 
 type EvaluationMetric = {
   description: string;
@@ -173,10 +271,13 @@ function FinishPredictionEvaluationPanel({
 }
 
 const FinishPredictionTableRow = memo(function FinishPredictionTableRow({
+  combinedScore,
+  combinedScoreLoading,
   entryStatus,
   isExpanded,
   jockeyName,
   onToggle,
+  paddockScore,
   realtimeOdds,
   realtimePopularity,
   row,
@@ -196,21 +297,12 @@ const FinishPredictionTableRow = memo(function FinishPredictionTableRow({
           .join(" ")}
         data-entry-status={entryStatus || undefined}
       >
-        <td>{formatRunnerNumber(row.horseNumber)}</td>
-        <td className="stats-name-cell">
-          {row.horseName || "-"}
-          {entryStatus ? <span className="runner-status-badge">{entryStatus}</span> : null}
-        </td>
-        <td className="stats-name-cell">{jockeyName || "-"}</td>
-        <td>{isScratched ? "対象外" : row.predictedRank}</td>
-        <td>{isScratched ? "-" : formatPopularity(displayedPopularity)}</td>
-        <td>{isScratched ? "-" : formatOdds(displayedOdds)}</td>
-        <td className="stats-score-cell">
+        <td>
           {isScratched ? (
-            "対象外"
+            formatRunnerNumber(row.horseNumber)
           ) : (
             <span className="time-score-actions">
-              <span>{row.score.toFixed(2)}</span>
+              <span>{formatRunnerNumber(row.horseNumber)}</span>
               <button
                 aria-expanded={isExpanded}
                 aria-label={`${row.horseName || row.horseNumber}の着順予測詳細`}
@@ -223,13 +315,34 @@ const FinishPredictionTableRow = memo(function FinishPredictionTableRow({
             </span>
           )}
         </td>
+        <td className="stats-name-cell">
+          {row.horseName || "-"}
+          {entryStatus ? <span className="runner-status-badge">{entryStatus}</span> : null}
+        </td>
+        <td className="stats-name-cell">{jockeyName || "-"}</td>
+        <td>{isScratched ? "対象外" : row.predictedRank}</td>
+        <td>{isScratched ? "-" : formatPopularity(displayedPopularity)}</td>
+        <td>{isScratched ? "-" : formatOdds(displayedOdds)}</td>
+        <td className="stats-score-cell">{isScratched ? "-" : formatScore(row.score)}</td>
+        <td className="stats-score-cell">
+          {isScratched
+            ? "-"
+            : combinedScore
+              ? formatScore(combinedScore.score)
+              : combinedScoreLoading
+                ? ""
+                : "-"}
+        </td>
+        <td className="stats-score-cell">
+          {isScratched ? "-" : paddockScore === null ? "-" : formatScore(paddockScore)}
+        </td>
         <td>{isScratched ? "-" : row.winProbability.toFixed(2)}</td>
         <td>{isScratched ? "-" : row.showProbability.toFixed(2)}</td>
         <td>{isScratched ? "-" : row.confidence.toFixed(2)}</td>
       </tr>
       {isExpanded && !isScratched ? (
         <tr className="stats-detail-row">
-          <td colSpan={10}>
+          <td colSpan={12}>
             <div className="stats-detail-panel">
               <table className="stats-detail-table correlation-detail-table overall-score-detail-table">
                 <thead>
@@ -260,12 +373,15 @@ const FinishPredictionTableRow = memo(function FinishPredictionTableRow({
 });
 
 export function FinishPositionPredictionTable({
+  combinedScoreData = null,
+  combinedScoreLoading = false,
   evaluation,
   realtimeRequest,
   rows,
 }: FinishPositionPredictionTableProps) {
   const [expandedHorseNumber, setExpandedHorseNumber] = useState<string | null>(null);
   const [displayRows, setDisplayRows] = useState<FinishPredictionRow[]>(rows);
+  const [paddockState, setPaddockState] = useState<PaddockState | null>(null);
   const { payload } = useRealtimeRacePayload(realtimeRequest, null);
   const realtimeOddsByHorse = useMemo(
     () =>
@@ -297,6 +413,35 @@ export function FinishPositionPredictionTable({
       ),
     [payload],
   );
+  const realtimeScoreValues = useMemo(
+    () =>
+      new Map(
+        (payload?.odds?.latest.tansho ?? []).map((row) => [
+          formatRunnerNumber(row.combination),
+          { odds: row.odds ?? null, popularity: row.rank ?? null },
+        ]),
+      ),
+    [payload],
+  );
+  const combinedScoreByHorse = useMemo(() => {
+    if (combinedScoreData === null) {
+      return new Map<string, CombinedScoreRow>();
+    }
+    return new Map(
+      buildCombinedScoreRows({
+        bloodlineRows: combinedScoreData.bloodlineRows,
+        correlationRows: combinedScoreData.correlationRows,
+        realtimeValues: realtimeScoreValues,
+        rows: combinedScoreData.rows,
+        runners: combinedScoreData.runners,
+        timeRows: combinedScoreData.timeRows,
+      }).map((row) => [formatRunnerNumber(row.horseNumber), row]),
+    );
+  }, [combinedScoreData, realtimeScoreValues]);
+  const paddockScoreByHorse = useMemo(
+    () => buildPaddockScoreByHorse(displayRows, paddockState),
+    [displayRows, paddockState],
+  );
   const sortedDisplayRows = useMemo(
     () =>
       displayRows.toSorted((left, right) => {
@@ -316,6 +461,41 @@ export function FinishPositionPredictionTable({
   useEffect(() => {
     setDisplayRows(rows);
   }, [rows]);
+
+  useEffect(() => {
+    let isActive = true;
+    const load = async () => {
+      try {
+        const response = await fetchWithRetry(
+          `/api/races/${realtimeRequest.year}/${realtimeRequest.month}/${realtimeRequest.day}/${realtimeRequest.keibajoCode}/${realtimeRequest.raceNumber}/paddock`,
+          { cache: "no-store" },
+        );
+        if (!response.ok) {
+          throw new Error(`paddock api ${response.status}`);
+        }
+        const paddockPayload: unknown = await response.json();
+        if (isActive && isPaddockState(paddockPayload)) {
+          setPaddockState(paddockPayload);
+        }
+      } catch {
+        if (isActive) {
+          setPaddockState(null);
+        }
+      }
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), 15000);
+    return () => {
+      isActive = false;
+      window.clearInterval(timer);
+    };
+  }, [
+    realtimeRequest.day,
+    realtimeRequest.keibajoCode,
+    realtimeRequest.month,
+    realtimeRequest.raceNumber,
+    realtimeRequest.year,
+  ]);
 
   useEffect(() => {
     const handleResultsUpdate = (event: Event) => {
@@ -355,22 +535,65 @@ export function FinishPositionPredictionTable({
             <col className="finish-prediction-col-popularity" />
             <col className="finish-prediction-col-odds" />
             <col className="finish-prediction-col-score" />
+            <col className="finish-prediction-col-score" />
+            <col className="finish-prediction-col-score" />
             <col className="finish-prediction-col-rate" />
             <col className="finish-prediction-col-rate" />
             <col className="finish-prediction-col-rate" />
           </colgroup>
           <thead>
             <tr>
-              <th>馬番</th>
-              <th>馬名</th>
-              <th>騎手名</th>
-              <th>予想着順</th>
-              <th>人気</th>
-              <th>単勝</th>
-              <th>スコア</th>
-              <th>勝率</th>
-              <th>3着内率</th>
-              <th>信頼度</th>
+              <th>
+                <span className="finish-prediction-header-label">馬番</span>
+              </th>
+              <th>
+                <span className="finish-prediction-header-label">馬名</span>
+              </th>
+              <th>
+                <span className="finish-prediction-header-label">騎手名</span>
+              </th>
+              <th>
+                <span className="finish-prediction-header-label">
+                  <span>予想</span>
+                  <span>着順</span>
+                </span>
+              </th>
+              <th>
+                <span className="finish-prediction-header-label">人気</span>
+              </th>
+              <th>
+                <span className="finish-prediction-header-label">単勝</span>
+              </th>
+              <th>
+                <span className="finish-prediction-header-label">
+                  <span>着順予測</span>
+                  <span>スコア</span>
+                </span>
+              </th>
+              <th>
+                <span className="finish-prediction-header-label">
+                  <span>総合評価</span>
+                  <span>スコア</span>
+                </span>
+              </th>
+              <th>
+                <span className="finish-prediction-header-label">
+                  <span>パドック</span>
+                  <span>スコア</span>
+                </span>
+              </th>
+              <th>
+                <span className="finish-prediction-header-label">勝率</span>
+              </th>
+              <th>
+                <span className="finish-prediction-header-label">
+                  <span>3着内</span>
+                  <span>率</span>
+                </span>
+              </th>
+              <th>
+                <span className="finish-prediction-header-label">信頼度</span>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -379,6 +602,8 @@ export function FinishPositionPredictionTable({
               const realtimeOdds = realtimeOddsByHorse.get(horseNumber);
               return (
                 <FinishPredictionTableRow
+                  combinedScore={combinedScoreByHorse.get(horseNumber) ?? null}
+                  combinedScoreLoading={combinedScoreLoading}
                   entryStatus={entryStatusByHorse.get(horseNumber) ?? ""}
                   isExpanded={expandedHorseNumber === row.horseNumber}
                   jockeyName={getPreferredJockeyName(
@@ -386,6 +611,7 @@ export function FinishPositionPredictionTable({
                     realtimeJockeyByHorse.get(horseNumber),
                   )}
                   key={row.horseNumber}
+                  paddockScore={paddockScoreByHorse.get(horseNumber) ?? null}
                   realtimeOdds={realtimeOdds?.odds}
                   realtimePopularity={realtimeOdds?.popularity}
                   row={row}

@@ -1,7 +1,13 @@
+import type { Metadata } from "next";
+
 import { parseFavoritesFromSearchParams } from "../../lib/favorites";
 import { MyPageClient } from "./mypage-client";
 
 export const dynamic = "force-dynamic";
+
+export const metadata: Metadata = {
+  title: "マイページ",
+};
 
 interface MyPageProps {
   searchParams: Promise<Record<string, string | string[] | undefined>>;

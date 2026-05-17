@@ -1,7 +1,13 @@
+import type { Metadata } from "next";
+
 import { getHorseList } from "../../db/queries";
 import { EntityFilterForm, HorseListTable, parseEntityListQuery } from "../entity-ui";
 
 export const dynamic = "force-dynamic";
+
+export const metadata: Metadata = {
+  title: "馬一覧",
+};
 
 interface HorsesPageProps {
   searchParams: Promise<Record<string, string | string[] | undefined>>;

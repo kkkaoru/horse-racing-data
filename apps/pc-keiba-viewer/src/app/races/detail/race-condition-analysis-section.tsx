@@ -457,7 +457,7 @@ export const RaceConditionAnalysisSection = memo(function RaceConditionAnalysisS
                 {visibleTargetRaces.length > 0 ? (
                   visibleTargetRaces.map((targetRace) => (
                     <tr
-                      key={`${targetRace.date}-${targetRace.keibajoCode}-${targetRace.raceNumber}`}
+                      key={`${targetRace.date}-${targetRace.keibajoCode}-${targetRace.raceNumber}-${targetRace.horseNumber}`}
                     >
                       <td>{formatDetailDate(targetRace.date)}</td>
                       <td>{formatKeibajo(targetRace.keibajoCode)}</td>

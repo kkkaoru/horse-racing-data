@@ -1,7 +1,13 @@
+import type { Metadata } from "next";
+
 import { getPersonList } from "../../db/queries";
 import { EntityFilterForm, parseEntityListQuery, PersonListTable } from "../entity-ui";
 
 export const dynamic = "force-dynamic";
+
+export const metadata: Metadata = {
+  title: "馬主一覧",
+};
 
 interface OwnersPageProps {
   searchParams: Promise<Record<string, string | string[] | undefined>>;

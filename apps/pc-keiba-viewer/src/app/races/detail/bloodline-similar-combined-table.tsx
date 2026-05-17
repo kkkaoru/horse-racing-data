@@ -20,7 +20,7 @@ import { useRealtimeRacePayload } from "./realtime-client";
 type BloodlineCategory = BloodlineStatsRow["category"];
 type SimilarCategory = SimilarRaceStatsRow["category"];
 
-type CombinedRow = {
+export type CombinedScoreRow = {
   bloodline: ScoreGroup<BloodlineCategory>;
   bloodlineScore: number;
   correlationDetails: ConditionCorrelationDetail[];
@@ -36,7 +36,7 @@ type CombinedRow = {
   timeScore: number;
 };
 
-type ScoreTargets = {
+export type ScoreTargets = {
   base: {
     correlation: boolean;
     time: boolean;
@@ -62,6 +62,16 @@ interface BloodlineSimilarCombinedTableProps {
   realtimeRequest?: RealtimeRaceRequest;
   rows: SimilarRaceStatsRow[];
   runners: Runner[];
+  timeRows: TimeScoreRow[];
+}
+
+interface BuildCombinedScoreRowsInput {
+  bloodlineRows: BloodlineStatsRow[];
+  correlationRows: ConditionCorrelationRow[];
+  realtimeValues?: Map<string, { odds: number | null; popularity: number | null }>;
+  rows: SimilarRaceStatsRow[];
+  runners: Runner[];
+  scoreTargets?: ScoreTargets;
   timeRows: TimeScoreRow[];
 }
 
@@ -229,6 +239,139 @@ const applyRealtimeCorrelationRows = (
   });
 };
 
+export const buildCombinedScoreRows = ({
+  bloodlineRows,
+  correlationRows,
+  realtimeValues = new Map(),
+  rows,
+  runners,
+  scoreTargets = DEFAULT_SCORE_TARGETS,
+  timeRows,
+}: BuildCombinedScoreRowsInput): CombinedScoreRow[] => {
+  const displayedCorrelationRows = applyRealtimeCorrelationRows(correlationRows, realtimeValues);
+  const timeByHorse = new Map(timeRows.map((row) => [normalizeHorseNumber(row.horseNumber), row]));
+  const correlationByHorse = new Map(
+    displayedCorrelationRows.map((row) => [normalizeHorseNumber(row.horseNumber), row]),
+  );
+  const scoredBloodlineRows = BLOODLINE_CATEGORY_ORDER.flatMap((category) =>
+    toScoredRows(bloodlineRows.filter((row) => row.category === category)),
+  );
+  const scoredSimilarRows = SIMILAR_CATEGORY_ORDER.flatMap((category) =>
+    toScoredRows(rows.filter((row) => row.category === category)),
+  );
+  const bloodlineRowsByHorse = getRowsByHorse(scoredBloodlineRows);
+  const similarRowsByHorse = getRowsByHorse(scoredSimilarRows);
+
+  const rawRows = runners.map((runner) => {
+    const horseNumber = formatRunnerNumber(runner.umaban);
+    const normalizedHorseNumber = normalizeHorseNumber(horseNumber);
+    const timeRow = timeByHorse.get(normalizedHorseNumber);
+    const correlationRow = correlationByHorse.get(normalizedHorseNumber);
+    const bloodlineCategoryRows = bloodlineRowsByHorse.get(horseNumber) ?? {};
+    const similarCategoryRows = similarRowsByHorse.get(horseNumber) ?? {};
+
+    const bloodline: ScoreGroup<BloodlineCategory> = {
+      categoryRows: {},
+      categoryScores: {
+        damSire: 0,
+        sire: 0,
+        sireSire: 0,
+      },
+      horseCount: 0,
+      starts: 0,
+    };
+    bloodline.categoryRows = bloodlineCategoryRows;
+    for (const category of BLOODLINE_CATEGORY_ORDER) {
+      bloodline.categoryScores[category] = bloodlineCategoryRows[category]?.score ?? 0;
+    }
+    const bloodlineValues = Object.values(bloodlineCategoryRows).filter(
+      (row): row is ScoredRateRow => row !== undefined,
+    );
+    bloodline.starts = bloodlineValues.reduce((total, row) => total + row.starts, 0);
+    bloodline.horseCount = bloodlineValues.reduce((total, row) => total + row.horseCount, 0);
+
+    const similar: ScoreGroup<SimilarCategory> = {
+      categoryRows: {},
+      categoryScores: {
+        jockey: 0,
+        owner: 0,
+        trainer: 0,
+      },
+      horseCount: 0,
+      starts: 0,
+    };
+    similar.categoryRows = similarCategoryRows;
+    for (const category of SIMILAR_CATEGORY_ORDER) {
+      similar.categoryScores[category] = similarCategoryRows[category]?.score ?? 0;
+    }
+    const similarValues = Object.values(similarCategoryRows).filter(
+      (row): row is ScoredRateRow => row !== undefined,
+    );
+    similar.starts = similarValues.reduce((total, row) => total + row.starts, 0);
+    similar.horseCount = similarValues.reduce((total, row) => total + row.horseCount, 0);
+
+    const selectedBloodlineCategories = BLOODLINE_CATEGORY_ORDER.filter(
+      (category) => scoreTargets.bloodline[category],
+    );
+    const selectedBloodlineWeight = selectedBloodlineCategories.reduce(
+      (total, category) => total + BLOODLINE_SCORE_WEIGHTS[category],
+      0,
+    );
+    const bloodlineScore =
+      selectedBloodlineWeight > 0
+        ? selectedBloodlineCategories.reduce(
+            (total, category) =>
+              total + bloodline.categoryScores[category] * BLOODLINE_SCORE_WEIGHTS[category],
+            0,
+          ) / selectedBloodlineWeight
+        : 0;
+    const selectedSimilarCategories = SIMILAR_CATEGORY_ORDER.filter(
+      (category) => scoreTargets.similar[category],
+    );
+    const similarScore =
+      selectedSimilarCategories.length > 0
+        ? selectedSimilarCategories.reduce(
+            (total, category) => total + similar.categoryScores[category],
+            0,
+          ) / selectedSimilarCategories.length
+        : 0;
+    const selectedGroupScores = [
+      scoreTargets.base.time ? clampScore(timeRow?.score ?? 0.5) : null,
+      scoreTargets.base.correlation ? clampScore(correlationRow?.score ?? 0.5) : null,
+      selectedBloodlineCategories.length > 0 ? bloodlineScore : null,
+      selectedSimilarCategories.length > 0 ? similarScore : null,
+    ].filter((score): score is number => score !== null);
+
+    return {
+      bloodline,
+      bloodlineScore,
+      correlationDetails: correlationRow?.details ?? [],
+      correlationScore: clampScore(correlationRow?.score ?? 0.5),
+      horseName: cleanText(runner.bamei, "-"),
+      horseNumber,
+      jockeyName: cleanText(timeRow?.jockeyName ?? runner.kishumeiRyakusho, "-") || "-",
+      rawScore:
+        selectedGroupScores.length > 0
+          ? selectedGroupScores.reduce((total, score) => total + score, 0) /
+            selectedGroupScores.length
+          : 0,
+      similar,
+      similarScore,
+      timeDetails: timeRow?.details ?? [],
+      timeScore: clampScore(timeRow?.score ?? 0.5),
+    };
+  });
+
+  const normalized = normalizeScores(rawRows.map((row) => row.rawScore));
+  return rawRows
+    .map((row, index) => Object.assign(row, { score: normalized[index] ?? 0 }))
+    .toSorted((left, right) =>
+      right.score === left.score
+        ? Number(left.horseNumber) - Number(right.horseNumber)
+        : right.score - left.score,
+    );
+};
+
 export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombinedTable({
   bloodlineRows,
   correlationRows,
@@ -273,135 +416,34 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
   );
 
   const combinedRows = useMemo(() => {
-    const displayedCorrelationRows = applyRealtimeCorrelationRows(correlationRows, realtimeValues);
-    const timeByHorse = new Map(
-      timeRows.map((row) => [normalizeHorseNumber(row.horseNumber), row]),
-    );
-    const correlationByHorse = new Map(
-      displayedCorrelationRows.map((row) => [normalizeHorseNumber(row.horseNumber), row]),
-    );
-    const scoredBloodlineRows = BLOODLINE_CATEGORY_ORDER.flatMap((category) =>
-      toScoredRows(bloodlineRows.filter((row) => row.category === category)),
-    );
-    const scoredSimilarRows = SIMILAR_CATEGORY_ORDER.flatMap((category) =>
-      toScoredRows(rows.filter((row) => row.category === category)),
-    );
-    const bloodlineRowsByHorse = getRowsByHorse(scoredBloodlineRows);
-    const similarRowsByHorse = getRowsByHorse(scoredSimilarRows);
-
-    const rawRows = runners.map((runner) => {
-      const horseNumber = formatRunnerNumber(runner.umaban);
-      const normalizedHorseNumber = normalizeHorseNumber(horseNumber);
-      const timeRow = timeByHorse.get(normalizedHorseNumber);
-      const correlationRow = correlationByHorse.get(normalizedHorseNumber);
-      const bloodlineCategoryRows = bloodlineRowsByHorse.get(horseNumber) ?? {};
-      const similarCategoryRows = similarRowsByHorse.get(horseNumber) ?? {};
-
-      const bloodline: ScoreGroup<BloodlineCategory> = {
-        categoryRows: {},
-        categoryScores: {
-          damSire: 0,
-          sire: 0,
-          sireSire: 0,
-        },
-        horseCount: 0,
-        starts: 0,
-      };
-      bloodline.categoryRows = bloodlineCategoryRows;
-      for (const category of BLOODLINE_CATEGORY_ORDER) {
-        bloodline.categoryScores[category] = bloodlineCategoryRows[category]?.score ?? 0;
-      }
-      const bloodlineValues = Object.values(bloodlineCategoryRows).filter(
-        (row): row is ScoredRateRow => row !== undefined,
-      );
-      bloodline.starts = bloodlineValues.reduce((total, row) => total + row.starts, 0);
-      bloodline.horseCount = bloodlineValues.reduce((total, row) => total + row.horseCount, 0);
-
-      const similar: ScoreGroup<SimilarCategory> = {
-        categoryRows: {},
-        categoryScores: {
-          jockey: 0,
-          owner: 0,
-          trainer: 0,
-        },
-        horseCount: 0,
-        starts: 0,
-      };
-      similar.categoryRows = similarCategoryRows;
-      for (const category of SIMILAR_CATEGORY_ORDER) {
-        similar.categoryScores[category] = similarCategoryRows[category]?.score ?? 0;
-      }
-      const similarValues = Object.values(similarCategoryRows).filter(
-        (row): row is ScoredRateRow => row !== undefined,
-      );
-      similar.starts = similarValues.reduce((total, row) => total + row.starts, 0);
-      similar.horseCount = similarValues.reduce((total, row) => total + row.horseCount, 0);
-
-      const selectedBloodlineCategories = BLOODLINE_CATEGORY_ORDER.filter(
-        (category) => scoreTargets.bloodline[category],
-      );
-      const selectedBloodlineWeight = selectedBloodlineCategories.reduce(
-        (total, category) => total + BLOODLINE_SCORE_WEIGHTS[category],
-        0,
-      );
-      const bloodlineScore =
-        selectedBloodlineWeight > 0
-          ? selectedBloodlineCategories.reduce(
-              (total, category) =>
-                total + bloodline.categoryScores[category] * BLOODLINE_SCORE_WEIGHTS[category],
-              0,
-            ) / selectedBloodlineWeight
-          : 0;
-      const selectedSimilarCategories = SIMILAR_CATEGORY_ORDER.filter(
-        (category) => scoreTargets.similar[category],
-      );
-      const similarScore =
-        selectedSimilarCategories.length > 0
-          ? selectedSimilarCategories.reduce(
-              (total, category) => total + similar.categoryScores[category],
-              0,
-            ) / selectedSimilarCategories.length
-          : 0;
-      const selectedGroupScores = [
-        scoreTargets.base.time ? clampScore(timeRow?.score ?? 0.5) : null,
-        scoreTargets.base.correlation ? clampScore(correlationRow?.score ?? 0.5) : null,
-        selectedBloodlineCategories.length > 0 ? bloodlineScore : null,
-        selectedSimilarCategories.length > 0 ? similarScore : null,
-      ].filter((score): score is number => score !== null);
-
-      return {
-        bloodline,
-        bloodlineScore,
-        correlationDetails: correlationRow?.details ?? [],
-        correlationScore: clampScore(correlationRow?.score ?? 0.5),
-        horseName: cleanText(runner.bamei, "-"),
-        horseNumber,
+    const scoreRows = buildCombinedScoreRows({
+      bloodlineRows,
+      correlationRows,
+      realtimeValues,
+      rows,
+      runners,
+      scoreTargets,
+      timeRows,
+    });
+    return scoreRows.map((row) =>
+      Object.assign({}, row, {
         jockeyName:
           getPreferredJockeyName(
-            cleanText(timeRow?.jockeyName ?? runner.kishumeiRyakusho, "-"),
-            realtimeJockeyByHorse.get(normalizedHorseNumber),
+            row.jockeyName,
+            realtimeJockeyByHorse.get(normalizeHorseNumber(row.horseNumber)),
           ) || "-",
-        rawScore:
-          selectedGroupScores.length > 0
-            ? selectedGroupScores.reduce((total, score) => total + score, 0) /
-              selectedGroupScores.length
-            : 0,
-        similar,
-        similarScore,
-        timeDetails: timeRow?.details ?? [],
-        timeScore: clampScore(timeRow?.score ?? 0.5),
-      };
-    });
-
-    const normalized = normalizeScores(rawRows.map((row) => row.rawScore));
-    return rawRows
-      .map((row, index) => Object.assign(row, { score: normalized[index] ?? 0 }))
-      .toSorted((left, right) =>
-        right.score === left.score
-          ? Number(left.horseNumber) - Number(right.horseNumber)
-          : right.score - left.score,
-      );
-  }, [bloodlineRows, correlationRows, realtimeJockeyByHorse, realtimeValues, rows, runners, scoreTargets, timeRows]);
+      }),
+    );
+  }, [
+    bloodlineRows,
+    correlationRows,
+    realtimeJockeyByHorse,
+    realtimeValues,
+    rows,
+    runners,
+    scoreTargets,
+    timeRows,
+  ]);
 
   const toggleBaseTarget = (key: keyof ScoreTargets["base"]) => {
     setScoreTargets((current) => ({
@@ -422,6 +464,24 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
       },
     }));
   };
+  const allBloodlineTargetsEnabled = BLOODLINE_CATEGORY_ORDER.every(
+    (category) => scoreTargets.bloodline[category],
+  );
+  const toggleAllBloodlineTargets = () => {
+    setScoreTargets((current) => {
+      const nextEnabled = !BLOODLINE_CATEGORY_ORDER.every(
+        (category) => current.bloodline[category],
+      );
+      return {
+        ...current,
+        bloodline: {
+          damSire: nextEnabled,
+          sire: nextEnabled,
+          sireSire: nextEnabled,
+        },
+      };
+    });
+  };
 
   const toggleSimilarTarget = (category: SimilarCategory) => {
     setScoreTargets((current) => ({
@@ -433,7 +493,7 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
     }));
   };
 
-  const renderDetail = (row: CombinedRow) => {
+  const renderDetail = (row: CombinedScoreRow) => {
     const baseDetails = [
       ...row.timeDetails.map((detail) => ({
         current: formatDetailNumber(detail.value),
@@ -535,7 +595,7 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
   return (
     <section className="stats-category-section">
       <div className="section-heading compact">
-        <h3>タイム・相関・血統・同条件 合計スコア</h3>
+        <h3>総合評価スコア</h3>
       </div>
       <div className="combined-score-targets" aria-label="合計スコア対象">
         <fieldset>
@@ -563,6 +623,14 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
         </fieldset>
         <fieldset>
           <legend>血統スコア</legend>
+          <label>
+            <input
+              checked={allBloodlineTargetsEnabled}
+              type="checkbox"
+              onChange={toggleAllBloodlineTargets}
+            />
+            <span>血統まとめて選択</span>
+          </label>
           {BLOODLINE_CATEGORY_ORDER.map((category) => (
             <label key={category}>
               <input
@@ -611,7 +679,7 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
               <th>馬番</th>
               <th>馬名</th>
               <th>騎手</th>
-              <th>合計スコア</th>
+              <th>総合評価スコア</th>
               <th>タイムスコア</th>
               <th>1〜3着相関スコア</th>
               <th>血統スコア</th>

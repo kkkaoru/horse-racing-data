@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 
 import { getRaceDaySummaries, getRaceYears } from "../../../db/queries";
@@ -9,6 +10,11 @@ interface RaceYearPageProps {
   params: Promise<{
     year: string;
   }>;
+}
+
+export async function generateMetadata({ params }: RaceYearPageProps): Promise<Metadata> {
+  const { year } = await params;
+  return { title: /^\d{4}$/.test(year) ? `${year}年 開催日一覧` : "開催日一覧" };
 }
 
 export default async function RaceYearPage({ params }: RaceYearPageProps) {
