@@ -1564,6 +1564,79 @@ export const updatePremiumPaddockNotificationState = async (
     .run();
 };
 
+export const claimPremiumPaddockNotificationSend = async (
+  db: D1Database,
+  params: {
+    lockBefore: string;
+    payloadFetchedAt: string;
+    payloadSignature: string;
+    raceKey: string;
+    sendAttemptAt: string;
+  },
+): Promise<boolean> => {
+  const now = toJstIsoString();
+  const inserted = await db
+    .prepare(
+      `
+        insert into premium_paddock_notification_state (
+          race_key,
+          status,
+          payload_signature,
+          last_payload_fetched_at,
+          last_send_attempt_at,
+          last_notified_at,
+          skip_reason,
+          message,
+          updated_at
+        )
+        values (?, 'sending', ?, ?, ?, null, null, null, ?)
+        on conflict(race_key) do nothing
+      `,
+    )
+    .bind(
+      params.raceKey,
+      params.payloadSignature,
+      params.payloadFetchedAt,
+      params.sendAttemptAt,
+      now,
+    )
+    .run();
+  if (inserted.meta.changes > 0) {
+    return true;
+  }
+
+  const result = await db
+    .prepare(
+      `
+        update premium_paddock_notification_state
+        set status = 'sending',
+          payload_signature = ?,
+          last_payload_fetched_at = ?,
+          last_send_attempt_at = ?,
+          skip_reason = null,
+          message = null,
+          updated_at = ?
+        where race_key = ?
+          and last_notified_at is null
+          and (
+            last_send_attempt_at is null
+            or last_send_attempt_at < ?
+            or status not in ('sending', 'ok')
+          )
+      `,
+    )
+    .bind(
+      params.payloadSignature,
+      params.payloadFetchedAt,
+      params.sendAttemptAt,
+      now,
+      params.raceKey,
+      params.lockBefore,
+    )
+    .run();
+  return result.meta.changes > 0;
+};
+
 export const recordPremiumPaddockNotificationEvent = async (
   db: D1Database,
   params: {

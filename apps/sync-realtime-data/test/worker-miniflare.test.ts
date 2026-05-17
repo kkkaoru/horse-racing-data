@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Miniflare } from "miniflare";
+import { claimPremiumPaddockNotificationSend } from "../src/storage";
 
 const TEST_NOW = "2026-05-12T03:00:00.000Z";
 const TEST_DATE = "20260512";
@@ -595,6 +596,103 @@ describe("worker scheduling with Miniflare", () => {
     expect(state).toEqual({
       last_queued_at: null,
       status: "failed",
+    });
+  });
+
+  it("claims only one premium paddock notification send per race at a time", async () => {
+    await seedRace("jra:2026:0512:08:01", "2026-05-12T12:20:00+09:00", { source: "jra" });
+
+    await expect(
+      claimPremiumPaddockNotificationSend(db, {
+        lockBefore: "2026-05-12T11:58:30+09:00",
+        payloadFetchedAt: "2026-05-12T12:00:00+09:00",
+        payloadSignature: "signature-a",
+        raceKey: "jra:2026:0512:08:01",
+        sendAttemptAt: "2026-05-12T12:00:00+09:00",
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      claimPremiumPaddockNotificationSend(db, {
+        lockBefore: "2026-05-12T11:58:40+09:00",
+        payloadFetchedAt: "2026-05-12T12:00:10+09:00",
+        payloadSignature: "signature-b",
+        raceKey: "jra:2026:0512:08:01",
+        sendAttemptAt: "2026-05-12T12:00:10+09:00",
+      }),
+    ).resolves.toBe(false);
+
+    const state = await db
+      .prepare(
+        `
+          select status, payload_signature, last_send_attempt_at, last_notified_at
+          from premium_paddock_notification_state
+          where race_key = ?
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .first<{
+        last_notified_at: string | null;
+        last_send_attempt_at: string | null;
+        payload_signature: string | null;
+        status: string;
+      }>();
+    expect(state).toEqual({
+      last_notified_at: null,
+      last_send_attempt_at: "2026-05-12T12:00:00+09:00",
+      payload_signature: "signature-a",
+      status: "sending",
+    });
+  });
+
+  it("does not claim premium paddock notification sends after a race was notified", async () => {
+    await seedRace("jra:2026:0512:08:01", "2026-05-12T12:20:00+09:00", { source: "jra" });
+    await db
+      .prepare(
+        `
+          insert into premium_paddock_notification_state (
+            race_key, status, payload_signature, last_payload_fetched_at,
+            last_send_attempt_at, last_notified_at, updated_at
+          )
+          values (?, 'ok', 'signature-a', ?, ?, ?, ?)
+        `,
+      )
+      .bind(
+        "jra:2026:0512:08:01",
+        "2026-05-12T12:00:00+09:00",
+        "2026-05-12T12:00:00+09:00",
+        "2026-05-12T12:00:00+09:00",
+        "2026-05-12T12:00:00+09:00",
+      )
+      .run();
+
+    await expect(
+      claimPremiumPaddockNotificationSend(db, {
+        lockBefore: "2026-05-12T12:01:30+09:00",
+        payloadFetchedAt: "2026-05-12T12:03:00+09:00",
+        payloadSignature: "signature-b",
+        raceKey: "jra:2026:0512:08:01",
+        sendAttemptAt: "2026-05-12T12:03:00+09:00",
+      }),
+    ).resolves.toBe(false);
+
+    const state = await db
+      .prepare(
+        `
+          select status, payload_signature, last_notified_at
+          from premium_paddock_notification_state
+          where race_key = ?
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .first<{
+        last_notified_at: string | null;
+        payload_signature: string | null;
+        status: string;
+      }>();
+    expect(state).toEqual({
+      last_notified_at: "2026-05-12T12:00:00+09:00",
+      payload_signature: "signature-a",
+      status: "ok",
     });
   });
 });

@@ -55,6 +55,7 @@ import { fetchJraRacesByDate, fetchNarRacesByDate } from "./postgres";
 import { buildRealtimeRaceKey, raceKeyFromRealtimePath, type RealtimeSource } from "./race-key";
 import {
   buildRealtimePayload,
+  claimPremiumPaddockNotificationSend,
   claimOddsFetch,
   claimResultFetch,
   claimTrackConditionFetch,
@@ -134,6 +135,7 @@ const DEFAULT_PREMIUM_RACE_QUEUE_DELAY_SECONDS = 15;
 const DEFAULT_PREMIUM_PADDOCK_DISCORD_BOT_NAME = "外部パドック速報";
 const DEFAULT_DETAIL_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
 const PREMIUM_PADDOCK_NOTIFICATION_FORMAT_VERSION = "2026-05-16-v2";
+const PREMIUM_PADDOCK_NOTIFICATION_LOCK_SECONDS = 90;
 const JRA_KEIBAJO_NAMES: Record<string, string> = {
   "01": "札幌",
   "02": "函館",
@@ -859,26 +861,39 @@ const notifyPremiumPaddockIfNeeded = async (
     env.REALTIME_DB,
     race.raceKey,
   );
-  if (
-    currentNotification?.status === "ok" &&
-    currentNotification.payloadSignature === payloadSignature &&
-    currentNotification.lastNotifiedAt
-  ) {
-    await recordPremiumPaddockNotificationEvent(env.REALTIME_DB, {
-      fetchedAt,
-      payloadSignature,
-      raceKey: race.raceKey,
-      skipReason: "duplicate_payload",
-      status: "skipped_duplicate",
-    });
+  if (currentNotification?.lastNotifiedAt) {
+    if (currentNotification.lastNotifiedAt !== fetchedAt) {
+      await recordPremiumPaddockNotificationEvent(env.REALTIME_DB, {
+        fetchedAt,
+        payloadSignature,
+        raceKey: race.raceKey,
+        skipReason: "already_notified",
+        status: "skipped_duplicate",
+      });
+    }
     await updatePremiumPaddockNotificationState(env.REALTIME_DB, {
-      message: null,
+      message: "premium paddock notification was already sent for this race",
       payloadFetchedAt: fetchedAt,
       payloadSignature,
       raceKey: race.raceKey,
-      skipReason: "duplicate_payload",
+      skipReason: "already_notified",
       status: "skipped_duplicate",
     });
+    return;
+  }
+
+  const sendAttemptAt = toJstIsoString(getNow(env));
+  const lockBefore = toJstIsoString(
+    new Date(getNow(env).getTime() - PREMIUM_PADDOCK_NOTIFICATION_LOCK_SECONDS * 1000),
+  );
+  const claimed = await claimPremiumPaddockNotificationSend(env.REALTIME_DB, {
+    lockBefore,
+    payloadFetchedAt: fetchedAt,
+    payloadSignature,
+    raceKey: race.raceKey,
+    sendAttemptAt,
+  });
+  if (!claimed) {
     return;
   }
 
@@ -888,7 +903,6 @@ const notifyPremiumPaddockIfNeeded = async (
   const raceName = race.raceName ?? "レース名未取得";
   const startLabel = `${formatRaceStartForDiscord(race.raceStartAtJst)}発走（JST）`;
   const remainingLabel = formatMinutesUntilRace(race.raceStartAtJst, getNow(env));
-  const sendAttemptAt = toJstIsoString();
   const response = await fetch(env.PREMIUM_PADDOCK_DISCORD_WEBHOOK_URL, {
     body: JSON.stringify({
       embeds: [
