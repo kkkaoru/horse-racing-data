@@ -4661,6 +4661,15 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   width: 82px;
 }
 
+.bloodline-stats-table-toggle-wrap {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.bloodline-stats-table-toggle {
+  min-width: 240px;
+}
+
 .analysis-table {
   min-width: 1120px;
 }
