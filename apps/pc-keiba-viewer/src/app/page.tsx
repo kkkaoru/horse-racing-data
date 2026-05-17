@@ -97,6 +97,11 @@ interface RunnerMotionProfile {
   }>;
 }
 
+interface RaceAccelerationProfile {
+  basePeakProgress: number;
+  fieldVariance: number;
+}
+
 function getRacePattern() {
   return racePatterns[Math.floor(Math.random() * racePatterns.length)] ?? "pack";
 }
@@ -193,14 +198,50 @@ function getMotionYPosition(progress: number) {
   return "var(--horse-y-end, 0px)";
 }
 
-function getRunnerMotionProfile(): RunnerMotionProfile {
+function getPaceAccelerationBias(pacePattern: PacePattern) {
+  if (pacePattern === "accelerate-early" || pacePattern === "surge-fade-early") {
+    return -0.14;
+  }
+
+  if (pacePattern === "accelerate-late" || pacePattern === "surge-fade-late") {
+    return 0.14;
+  }
+
+  if (pacePattern === "accelerate-middle" || pacePattern === "surge-fade-middle") {
+    return 0;
+  }
+
+  return Math.random() * 0.12 - 0.06;
+}
+
+function clampProgress(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function getRunnerMotionProfile({
+  pacePattern,
+  raceAccelerationProfile,
+}: {
+  pacePattern: PacePattern;
+  raceAccelerationProfile: RaceAccelerationProfile;
+}): RunnerMotionProfile {
+  const runnerAccelerationBias =
+    getPaceAccelerationBias(pacePattern) +
+    (Math.random() - 0.5) * raceAccelerationProfile.fieldVariance;
+  const peakProgress = clampProgress(
+    raceAccelerationProfile.basePeakProgress + runnerAccelerationBias,
+    0.38,
+    0.78,
+  );
+  const buildProgressStop = (offset: number, jitter: number, min: number, max: number) =>
+    clampProgress(peakProgress + offset + (Math.random() - 0.5) * jitter, min, max);
   const progressStops = [
-    0.12 + Math.random() * 0.03,
-    0.25 + Math.random() * 0.04,
-    0.4 + Math.random() * 0.05,
-    0.56 + Math.random() * 0.05,
-    0.72 + Math.random() * 0.05,
-    0.86 + Math.random() * 0.04,
+    buildProgressStop(-0.34, 0.05, 0.1, 0.22),
+    buildProgressStop(-0.22, 0.06, 0.2, 0.34),
+    buildProgressStop(-0.1, 0.07, 0.32, 0.5),
+    buildProgressStop(0.04, 0.07, 0.46, 0.66),
+    buildProgressStop(0.16, 0.08, 0.58, 0.82),
+    buildProgressStop(0.3, 0.07, 0.74, 0.92),
   ].toSorted((left, right) => left - right);
   const segmentDurations = [
     progressStops[0] ?? 0.14,
@@ -303,6 +344,10 @@ function getHomeTrackRunners(): HomeTrackRunner[] {
   const laneShift = Math.floor(Math.random() * 6);
   const laneStep = 9 + Math.floor(Math.random() * 3);
   const startSpread = 55 + Math.random() * 90;
+  const raceAccelerationProfile: RaceAccelerationProfile = {
+    basePeakProgress: 0.48 + Math.random() * 0.2,
+    fieldVariance: 0.18 + Math.random() * 0.18,
+  };
 
   if (runnerCount > 4 && Math.random() < 0.16) {
     horseOnlySlots.add(3 + Math.floor(Math.random() * (runnerCount - 3)));
@@ -345,7 +390,7 @@ function getHomeTrackRunners(): HomeTrackRunner[] {
       18,
       startOffset * 120 + raceOffsets.start + scatterOffset + 96 + Math.random() * 96,
     ).toFixed(1)}px`;
-    const motionProfile = getRunnerMotionProfile();
+    const motionProfile = getRunnerMotionProfile({ pacePattern, raceAccelerationProfile });
     const racePositionStyle: Partial<Record<`--horse-race-position-${number}`, string>> = {};
 
     motionProfile.stops.forEach((stop, stopIndex) => {
