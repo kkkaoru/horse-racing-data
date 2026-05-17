@@ -23,6 +23,7 @@ import {
   type RaceAiModelState,
 } from "./race-ai-model-manager";
 import {
+  deleteRaceAiLog,
   getRaceAiLog,
   getRaceAiSettings,
   saveRaceAiLog,
@@ -735,12 +736,14 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [debugEnabled, setDebugEnabled] = useState(false);
+  const [chatSessionVersion, setChatSessionVersion] = useState(0);
   const llmRef = useRef<LlmInference | null>(null);
   const autoStartedRaceKeyRef = useRef<string | null>(null);
   const runningRef = useRef(false);
   const resetVersionRef = useRef(0);
   const messagesRef = useRef<RaceAiMessage[]>([]);
   const thoughtLogsRef = useRef<RaceAiThoughtLog[]>([]);
+  const suppressChatErrorUntilRef = useRef(0);
   const handledDebugCommandIdsRef = useRef<Set<string>>(new Set());
   const handledServerCommandIdsRef = useRef<Set<string>>(new Set());
   const hydratedRaceKeyRef = useRef<string | null>(null);
@@ -754,6 +757,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   );
 
   const raceKey = `${props.source}:${props.year}${props.month}${props.day}:${props.keibajoCode}:${props.raceNumber}`;
+  const chatId = `${raceKey}:${chatSessionVersion}`;
 
   useEffect(() => {
     setDebugEnabled(isLocalhostBrowser());
@@ -784,9 +788,10 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
 
   useEffect(() => {
     let cancelled = false;
+    const loadResetVersion = resetVersionRef.current;
     void (async () => {
       const log = await getRaceAiLog(raceKey);
-      if (cancelled) {
+      if (cancelled || resetVersionRef.current !== loadResetVersion) {
         return;
       }
       setMessages(log.messages);
@@ -1020,7 +1025,9 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         }
         return finalResponse;
       } catch (caught) {
-        setError(caught instanceof Error ? caught.message : String(caught));
+        if (resetVersionRef.current === runResetVersion) {
+          setError(caught instanceof Error ? caught.message : String(caught));
+        }
         if (emit) {
           throw caught;
         }
@@ -1059,8 +1066,11 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     status: chatStatus,
     stop: stopChat,
   } = useChat({
-    id: raceKey,
+    id: chatId,
     onError: (caught) => {
+      if (Date.now() < suppressChatErrorUntilRef.current) {
+        return;
+      }
       setError(caught.message);
     },
     transport: localChatTransport,
@@ -1068,6 +1078,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
 
   const clearRaceAiState = useCallback(() => {
     resetVersionRef.current += 1;
+    suppressChatErrorUntilRef.current = Date.now() + 1_500;
     void stopChat();
     if (llmRef.current) {
       callOptionalLlmMethod(llmRef.current, "cancelProcessing");
@@ -1075,7 +1086,12 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     const nextMessages: RaceAiMessage[] = [];
     const nextThoughtLogs: RaceAiThoughtLog[] = [];
     runningRef.current = false;
+    messagesRef.current = nextMessages;
+    thoughtLogsRef.current = nextThoughtLogs;
+    setMessages(nextMessages);
+    setThoughtLogs(nextThoughtLogs);
     setChatMessages([]);
+    setChatSessionVersion((current) => current + 1);
     setPrediction([]);
     setAnswer("");
     setError(null);
@@ -1084,8 +1100,15 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     lastDebugSnapshotRef.current = "";
     lastRealtimeFingerprintRef.current = realtimeFingerprint;
     lastUserRequestRef.current = "このレースの着順を予想してください。";
-    void persistLogs(nextMessages, nextThoughtLogs);
-  }, [persistLogs, raceKey, realtimeFingerprint, setChatMessages, stopChat]);
+    void deleteRaceAiLog(raceKey).catch(() =>
+      saveRaceAiLog({
+        messages: nextMessages,
+        raceKey,
+        thoughtLogs: nextThoughtLogs,
+        updatedAt: new Date().toISOString(),
+      }).catch(() => {}),
+    );
+  }, [raceKey, realtimeFingerprint, setChatMessages, stopChat]);
 
   const resetRaceAiState = useCallback(() => {
     if (!window.confirm("このレースのAI予想、対話ログ、思考ログをリセットしますか？")) {
