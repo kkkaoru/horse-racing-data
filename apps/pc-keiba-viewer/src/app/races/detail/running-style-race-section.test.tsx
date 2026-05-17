@@ -9,9 +9,8 @@ import type {
 } from "../../../db/corner-running-style-parsers";
 
 const getRaceRunningStylesFromD1Mock = vi.fn<(raceKey: string) => Promise<RaceRunningStyleRow[]>>();
-const getRunningStyleMetricsForActiveModelMock = vi.fn<
-  (category: string) => Promise<{ modelVersion: string; macroF1: number | null } | null>
->();
+const getRunningStyleMetricsForActiveModelMock =
+  vi.fn<(category: string) => Promise<{ modelVersion: string; macroF1: number | null } | null>>();
 
 vi.mock("../../../db/corner-running-style-queries", () => ({
   buildRaceKey: ({
