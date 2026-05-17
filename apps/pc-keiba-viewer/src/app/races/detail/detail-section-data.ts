@@ -609,9 +609,6 @@ const getClassConditionLabel = (race: RaceDetail): string | null => {
 const isListedOrHigher = (race: RaceDetail): boolean =>
   LISTED_OR_HIGHER_GRADE_CODES.has(cleanText(race.gradeCode, ""));
 
-const isJraG1ToG3 = (race: RaceDetail): boolean =>
-  race.source === "jra" && ["A", "B", "C"].includes(cleanText(race.gradeCode, ""));
-
 const getStatsClassConditionLabel = (race: RaceDetail): string | null => {
   if (race.source === "jra" && isListedOrHigher(race)) {
     const label = getGradeLabel(race.gradeCode);
@@ -839,8 +836,7 @@ export const getDetailStatsContext = async ({
   const statsClassConditionLabel = getStatsClassConditionLabel(race);
   const raceNameFilterLabels = getRaceNameFilterLabels(race);
   const raceSymbolLabel = getRaceSymbolLabel(race.kyosoKigoCode);
-  const defaultStatsYears =
-    raceSource === "nar" ? null : isJraG1ToG3(race) ? null : isListedOrHigher(race) ? 10 : 5;
+  const defaultStatsYears = 10;
   const defaultBloodlineStatsYears = 10;
   const defaultStatsIncludeAge = !getAgeLabel(race.kyosoShubetsuCode).includes("4歳以上");
   const defaultSimilarStatsIncludeSex = raceSymbolLabel !== "牝馬限定";
