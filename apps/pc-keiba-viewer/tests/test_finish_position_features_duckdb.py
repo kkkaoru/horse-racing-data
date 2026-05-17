@@ -474,6 +474,40 @@ def test_horse_running_style_history_cte_uses_recent_window_filter():
     assert f"recent_rank <= {subject.RECENT_WINDOW_SIZE}" in cte
 
 
+def test_horse_running_style_history_cte_emits_style_win_rates():
+    cte = subject.horse_running_style_history_cte()
+    assert "past_nige_win_rate_self" in cte
+    assert "past_senkou_win_rate_self" in cte
+    assert "past_sashi_win_rate_self" in cte
+    assert "past_oikomi_win_rate_self" in cte
+
+
+def test_horse_running_style_history_cte_emits_iqr_and_grade_counts():
+    cte = subject.horse_running_style_history_cte()
+    assert "past_corner_1_norm_iqr_5" in cte
+    assert "quantile_cont(b.corner1_norm, 0.75)" in cte
+    assert "quantile_cont(b.corner1_norm, 0.25)" in cte
+    assert "top1_count_in_grade_races" in cte
+    assert "place_count_in_grade_races" in cte
+    assert "experience_in_g1_race" in cte
+
+
+def test_horse_running_style_history_cte_emits_recent_streak_proxies():
+    cte = subject.horse_running_style_history_cte()
+    assert "recent_win_count_5" in cte
+    assert "recent_top3_count_5" in cte
+    assert "past_dominant_label_consistency_5" in cte
+
+
+def test_base_features_select_sql_includes_extended_horse_features():
+    sql = subject.base_features_select_sql("jra")
+    assert "rsh.past_nige_win_rate_self" in sql
+    assert "rsh.past_corner_1_norm_iqr_5" in sql
+    assert "rsh.experience_in_g1_race" in sql
+    assert "rsh.recent_win_count_5" in sql
+    assert "rsh.past_dominant_label_consistency_5" in sql
+
+
 def test_per_year_specs_registers_horse_running_style_history():
     names = [spec["name"] for spec in subject.PER_YEAR_SPECS]
     assert "horse_running_style_history" in names
