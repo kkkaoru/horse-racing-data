@@ -189,7 +189,7 @@ const SECTION_TITLES: Record<DetailSection, string> = {
   "pace-prediction": "レース展開予測",
   results: "競走成績",
   similar: "同条件成績",
-  "time-score": "タイムスコアと1〜3着相関スコア",
+  "time-score": "タイム・相関・血統・同条件スコア",
   training: "調教・追い切り",
 };
 
@@ -776,8 +776,8 @@ function LazyTimeScoreSection(props: LazyDetailSectionsProps) {
 export function LazyDetailSections(props: LazyDetailSectionsProps) {
   return (
     <>
-      <LazyResultsSection {...props} />
       <LazyTimeScoreSection {...props} />
+      <LazyResultsSection {...props} />
       <LazyTrainingSection {...props} />
       {props.source === "nar" ? <LazyAbilitySection {...props} /> : null}
       <LazyConditionSection {...props} />

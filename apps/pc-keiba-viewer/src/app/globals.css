@@ -4773,6 +4773,12 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 
 .combined-score-detail-toggle {
   margin-left: 8px;
+  white-space: nowrap;
+}
+
+.stats-detail-toggle.combined-score-detail-toggle::after,
+.stats-detail-toggle.combined-score-detail-toggle[aria-expanded="true"]::after {
+  content: none;
 }
 
 .combined-score-detail-table {
@@ -5662,9 +5668,13 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 
 .stats-detail-toggle::after {
   color: var(--muted);
-  content: "詳細";
+  content: none;
   font-size: 11px;
   font-weight: 600;
+}
+
+.stats-detail-toggle:empty::after {
+  content: "詳細";
 }
 
 .stats-detail-toggle[aria-expanded="true"]::after {
@@ -5769,7 +5779,7 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 }
 
 .detail-loading-section {
-  margin-top: 42px;
+  margin-top: 28px;
 }
 
 .detail-section-skeleton {
@@ -5781,6 +5791,10 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   margin-top: 12px;
   overflow: hidden;
   padding: 16px;
+}
+
+.detail-section-skeleton.compact {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .detail-section-skeleton span,
@@ -5805,6 +5819,10 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 
 .detail-section-skeleton span {
   height: 24px;
+}
+
+.detail-section-skeleton.compact span {
+  height: 44px;
 }
 
 .detail-section-skeleton span:nth-child(2) {
@@ -5832,6 +5850,10 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 .skeleton-summary span {
   height: 16px;
   width: 92px;
+}
+
+.skeleton-summary span:nth-child(5) {
+  width: 150px;
 }
 
 .skeleton-hero {
@@ -5875,6 +5897,16 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   height: 22px;
   margin-top: 9px;
   width: 80%;
+}
+
+@media (max-width: 720px) {
+  .detail-section-skeleton.compact {
+    grid-template-columns: 1fr;
+  }
+
+  .detail-loading-section {
+    margin-top: 22px;
+  }
 }
 
 @keyframes skeleton-shimmer {

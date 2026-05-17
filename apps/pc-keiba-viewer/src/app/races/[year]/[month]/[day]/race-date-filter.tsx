@@ -76,6 +76,7 @@ const TURF_TRACK_CODES = new Set([
 ]);
 
 const DIRT_TRACK_CODES = new Set(["23", "24", "25", "26", "27", "28", "29", "53"]);
+const AUTO_START_TIME_INTERVAL_MS = 10 * 60 * 1000;
 
 const normalize = (value: string): string => value.trim().toLowerCase();
 
@@ -103,6 +104,32 @@ const parseFilterTimeMinutes = (value: string): number | null => {
     return null;
   }
   return hours * 60 + minutes;
+};
+
+const getJstTimeParts = (date: Date): { hour: number; minute: number } => {
+  const parts = new Intl.DateTimeFormat("ja-JP", {
+    hour: "2-digit",
+    hourCycle: "h23",
+    minute: "2-digit",
+    timeZone: "Asia/Tokyo",
+  }).formatToParts(date);
+  const getNumberPart = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find((part) => part.type === type)?.value ?? 0);
+  return {
+    hour: getNumberPart("hour"),
+    minute: getNumberPart("minute"),
+  };
+};
+
+const getAutoStartFilterTime = (date: Date): string => {
+  const { hour, minute } = getJstTimeParts(date);
+  const roundedMinute = Math.floor(minute / 10) * 10;
+  return `${String(hour).padStart(2, "0")}:${String(roundedMinute).padStart(2, "0")}`;
+};
+
+const getNextAutoStartTimeDelay = (date: Date): number => {
+  const remainder = date.getTime() % AUTO_START_TIME_INTERVAL_MS;
+  return remainder === 0 ? AUTO_START_TIME_INTERVAL_MS : AUTO_START_TIME_INTERVAL_MS - remainder;
 };
 
 const parseDistance = (value: string | null | undefined): number | null => {
@@ -250,6 +277,29 @@ export function RaceDateFilter({
       .filter((option) => normalizedQuery === "" || normalize(option).includes(normalizedQuery))
       .slice(0, 8);
   }, [jockeyOptions, jockeyQuery, selectedJockeys]);
+
+  useEffect(() => {
+    if (parseFilterTimeMinutes(startTime) === null) {
+      return undefined;
+    }
+
+    let timeoutId: number;
+
+    const scheduleNextUpdate = () => {
+      timeoutId = window.setTimeout(() => {
+        setStartTime((current) =>
+          parseFilterTimeMinutes(current) === null ? current : getAutoStartFilterTime(new Date()),
+        );
+        scheduleNextUpdate();
+      }, getNextAutoStartTimeDelay(new Date()));
+    };
+
+    scheduleNextUpdate();
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [startTime]);
 
   useEffect(() => {
     const url = new URL(window.location.href);

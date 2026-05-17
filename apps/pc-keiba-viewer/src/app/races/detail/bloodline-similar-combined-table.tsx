@@ -641,7 +641,7 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
                           );
                         }}
                       >
-                        {isExpanded ? "非表示" : "詳細"}
+                        {isExpanded ? "閉じる" : "詳細"}
                       </button>
                     </td>
                     <td>{formatScore(row.timeScore)}</td>
