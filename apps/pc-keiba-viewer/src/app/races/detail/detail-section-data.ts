@@ -479,6 +479,9 @@ const buildOverallScoreRows = ({
 const getFirstSearchParam = (value: string | string[] | undefined): string | undefined =>
   Array.isArray(value) ? value[0] : value;
 
+const normalizeHorseNumber = (value: string | null | undefined): string =>
+  cleanText(value, "").replace(/^0+/u, "") || (value ? "0" : "");
+
 const getFlag = (value: string | string[] | undefined): boolean =>
   getFirstSearchParam(value) !== "0";
 
@@ -1070,9 +1073,20 @@ export const getDetailSectionPayload = async (
       getTimeScoreRows(race, context.conditionAnalysisSettings),
       getRaceTimeStats(race, context.conditionAnalysisSettings),
     ]);
+    const jockeyNameByHorse = new Map(
+      context.runners.map((runner) => [
+        normalizeHorseNumber(runner.umaban),
+        cleanText(runner.kishumeiRyakusho, "-"),
+      ]),
+    );
     return {
       correlationRows: raceTimeStats.correlationRows,
-      rows,
+      rows: rows.map((row) =>
+        Object.assign(row, {
+          jockeyName:
+            row.jockeyName || jockeyNameByHorse.get(normalizeHorseNumber(row.horseNumber)) || "-",
+        }),
+      ),
       type: section,
     };
   }

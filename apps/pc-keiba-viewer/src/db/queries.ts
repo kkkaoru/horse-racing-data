@@ -3316,6 +3316,7 @@ const toTimeScoreRows = (value: unknown): TimeScoreRow[] => {
       ),
       horseName: toStringValue(row.horseName),
       horseNumber: toStringValue(row.horseNumber),
+      jockeyName: toStringValue(row.jockeyName),
       score: Number(row.score ?? 0),
     };
   });

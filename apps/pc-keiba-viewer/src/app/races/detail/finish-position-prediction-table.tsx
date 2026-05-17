@@ -4,6 +4,7 @@ import { Fragment, memo, useCallback, useEffect, useMemo, useState } from "react
 
 import { RACE_FINISH_PREDICTION_RESULTS_EVENT } from "../../../lib/finish-position-prediction";
 import type { FinishPredictionEvaluationMetrics } from "../../../lib/finish-position-prediction-evaluation";
+import { getPreferredJockeyName } from "../../../lib/jockey-name";
 import type { FinishPredictionRow } from "../../../lib/race-types";
 import { formatRunnerNumber } from "../../../lib/runner-format";
 import type { RealtimeRaceRequest } from "./realtime-client";
@@ -18,6 +19,7 @@ interface FinishPositionPredictionTableProps {
 interface FinishPredictionTableRowProps {
   entryStatus: string;
   isExpanded: boolean;
+  jockeyName: string;
   onToggle: (horseNumber: string) => void;
   realtimeOdds: number | null | undefined;
   realtimePopularity: number | null | undefined;
@@ -37,6 +39,7 @@ const isFinishPredictionRow = (value: unknown): value is FinishPredictionRow => 
   return (
     typeof value.horseNumber === "string" &&
     typeof value.horseName === "string" &&
+    typeof value.jockeyName === "string" &&
     typeof value.predictedRank === "number" &&
     typeof value.score === "number" &&
     typeof value.confidence === "number" &&
@@ -172,6 +175,7 @@ function FinishPredictionEvaluationPanel({
 const FinishPredictionTableRow = memo(function FinishPredictionTableRow({
   entryStatus,
   isExpanded,
+  jockeyName,
   onToggle,
   realtimeOdds,
   realtimePopularity,
@@ -197,6 +201,7 @@ const FinishPredictionTableRow = memo(function FinishPredictionTableRow({
           {row.horseName || "-"}
           {entryStatus ? <span className="runner-status-badge">{entryStatus}</span> : null}
         </td>
+        <td className="stats-name-cell">{jockeyName || "-"}</td>
         <td>{isScratched ? "対象外" : row.predictedRank}</td>
         <td>{isScratched ? "-" : formatPopularity(displayedPopularity)}</td>
         <td>{isScratched ? "-" : formatOdds(displayedOdds)}</td>
@@ -224,7 +229,7 @@ const FinishPredictionTableRow = memo(function FinishPredictionTableRow({
       </tr>
       {isExpanded && !isScratched ? (
         <tr className="stats-detail-row">
-          <td colSpan={9}>
+          <td colSpan={10}>
             <div className="stats-detail-panel">
               <table className="stats-detail-table correlation-detail-table overall-score-detail-table">
                 <thead>
@@ -282,6 +287,16 @@ export function FinishPositionPredictionTable({
       ),
     [payload],
   );
+  const realtimeJockeyByHorse = useMemo(
+    () =>
+      new Map(
+        (payload?.raceEntries?.horses ?? []).map((horse) => [
+          formatRunnerNumber(horse.horseNumber),
+          horse.jockeyName ?? "",
+        ]),
+      ),
+    [payload],
+  );
   const sortedDisplayRows = useMemo(
     () =>
       displayRows.toSorted((left, right) => {
@@ -335,6 +350,7 @@ export function FinishPositionPredictionTable({
           <colgroup>
             <col className="finish-prediction-col-number" />
             <col className="finish-prediction-col-horse" />
+            <col className="finish-prediction-col-jockey" />
             <col className="finish-prediction-col-rank" />
             <col className="finish-prediction-col-popularity" />
             <col className="finish-prediction-col-odds" />
@@ -347,6 +363,7 @@ export function FinishPositionPredictionTable({
             <tr>
               <th>馬番</th>
               <th>馬名</th>
+              <th>騎手名</th>
               <th>予想着順</th>
               <th>人気</th>
               <th>単勝</th>
@@ -364,6 +381,10 @@ export function FinishPositionPredictionTable({
                 <FinishPredictionTableRow
                   entryStatus={entryStatusByHorse.get(horseNumber) ?? ""}
                   isExpanded={expandedHorseNumber === row.horseNumber}
+                  jockeyName={getPreferredJockeyName(
+                    row.jockeyName,
+                    realtimeJockeyByHorse.get(horseNumber),
+                  )}
                   key={row.horseNumber}
                   realtimeOdds={realtimeOdds?.odds}
                   realtimePopularity={realtimeOdds?.popularity}

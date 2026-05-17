@@ -61,6 +61,7 @@ const finishRow = (overrides: Partial<FinishPredictionRow>): FinishPredictionRow
   ],
   horseName: "通常馬",
   horseNumber: "01",
+  jockeyName: "騎手",
   predictedRank: 1,
   score: 0.91,
   showProbability: 0.55,

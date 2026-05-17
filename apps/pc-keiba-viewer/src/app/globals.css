@@ -4681,7 +4681,7 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 }
 
 .finish-prediction-table {
-  min-width: 1040px;
+  min-width: 1168px;
 }
 
 .premium-paddock-table {
@@ -4963,7 +4963,11 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 }
 
 .finish-prediction-col-horse {
-  width: 240px;
+  width: 210px;
+}
+
+.finish-prediction-col-jockey {
+  width: 128px;
 }
 
 .finish-prediction-evaluation-panel {
@@ -5299,7 +5303,7 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 .time-score-table > tbody > tr > td:first-child {
   max-width: none;
   text-align: center;
-  width: 20%;
+  width: 16.666%;
 }
 
 .time-score-table > thead > tr > th:nth-child(2),
@@ -5311,17 +5315,17 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 
 .time-score-table > thead > tr > th:nth-child(3),
 .time-score-table > tbody > tr > td:nth-child(3) {
-  width: 20%;
+  width: 16.666%;
 }
 
-.time-score-table > thead > tr > th:nth-child(n + 3),
-.time-score-table > tbody > tr > td:nth-child(n + 3) {
+.time-score-table > thead > tr > th:nth-child(n + 4),
+.time-score-table > tbody > tr > td:nth-child(n + 4) {
   text-align: center;
 }
 
 .time-score-table > thead > tr > th,
 .time-score-table > tbody > tr > td {
-  width: 20%;
+  width: 16.666%;
 }
 
 .time-score-table > thead > tr > th {
@@ -5519,12 +5523,12 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   .time-score-table > thead > tr > th:first-child,
   .time-score-table > tbody > tr > td:first-child {
     max-width: 50px;
-    width: 20%;
+    width: 16.666%;
   }
 
   .time-score-table > thead > tr > th:nth-child(3),
   .time-score-table > tbody > tr > td:nth-child(3) {
-    width: 20%;
+    width: 16.666%;
   }
 
   .time-score-table .stats-detail-panel {

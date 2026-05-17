@@ -8,6 +8,7 @@ import type {
   TimeScoreDetail,
   TimeScoreRow,
 } from "../../../lib/race-types";
+import { getPreferredJockeyName } from "../../../lib/jockey-name";
 import { formatRunnerNumber } from "../../../lib/runner-format";
 import type { RealtimeRaceRequest } from "./realtime-client";
 import { useRealtimeRacePayload } from "./realtime-client";
@@ -23,6 +24,7 @@ interface CombinedScoreRow {
   correlationScore: number;
   horseName: string;
   horseNumber: string;
+  jockeyName: string;
   rawScore: number;
   timeDetails: TimeScoreDetail[];
   timeScore: number;
@@ -101,6 +103,7 @@ const buildCombinedRows = (
       correlationScore,
       horseName: row.horseName,
       horseNumber: row.horseNumber,
+      jockeyName: row.jockeyName,
       rawScore,
       timeDetails: row.details,
       timeScore,
@@ -166,6 +169,16 @@ export function TimeScoreTable({ correlationRows, realtimeRequest, rows }: TimeS
     }
     return values;
   }, [payload]);
+  const realtimeJockeyByHorse = useMemo(
+    () =>
+      new Map(
+        (payload?.raceEntries?.horses ?? []).map((horse) => [
+          normalizeHorseNumber(horse.horseNumber),
+          horse.jockeyName ?? "",
+        ]),
+      ),
+    [payload],
+  );
   const displayedRows = useMemo(
     () => buildCombinedRows(rows, applyRealtimeCorrelationRows(correlationRows, realtimeValues)),
     [correlationRows, realtimeValues, rows],
@@ -178,6 +191,7 @@ export function TimeScoreTable({ correlationRows, realtimeRequest, rows }: TimeS
           <tr>
             <th>馬番</th>
             <th>馬名</th>
+            <th>騎手名</th>
             <th>合計スコア</th>
             <th>タイムスコア</th>
             <th>1〜3着相関スコア</th>
@@ -192,6 +206,12 @@ export function TimeScoreTable({ correlationRows, realtimeRequest, rows }: TimeS
                   <tr className={isExpanded ? "stats-row-expanded" : undefined}>
                     <td>{formatRunnerNumber(row.horseNumber)}</td>
                     <td className="stats-name-cell">{row.horseName || "-"}</td>
+                    <td className="stats-name-cell">
+                      {getPreferredJockeyName(
+                        row.jockeyName,
+                        realtimeJockeyByHorse.get(normalizeHorseNumber(row.horseNumber)),
+                      ) || "-"}
+                    </td>
                     <td className="stats-score-cell">
                       <button
                         aria-expanded={isExpanded}
@@ -211,7 +231,7 @@ export function TimeScoreTable({ correlationRows, realtimeRequest, rows }: TimeS
                   </tr>
                   {isExpanded ? (
                     <tr className="stats-detail-row time-score-detail-row">
-                      <td colSpan={5}>
+                      <td colSpan={6}>
                         <div className="stats-detail-panel">
                           <table className="stats-detail-table time-score-detail-table">
                             <thead>
@@ -259,7 +279,7 @@ export function TimeScoreTable({ correlationRows, realtimeRequest, rows }: TimeS
             })
           ) : (
             <tr>
-              <td colSpan={5}>タイムスコアを表示できるデータがありません。</td>
+              <td colSpan={6}>タイムスコアを表示できるデータがありません。</td>
             </tr>
           )}
         </tbody>

@@ -508,6 +508,7 @@ export interface TimeScoreRow extends Record<string, unknown> {
   details: TimeScoreDetail[];
   horseName: string;
   horseNumber: string;
+  jockeyName: string;
   score: number;
 }
 
@@ -601,6 +602,7 @@ export interface FinishPredictionRow extends Record<string, unknown> {
   details: FinishPredictionDetail[];
   horseName: string;
   horseNumber: string;
+  jockeyName: string;
   predictedRank: number;
   score: number;
   showProbability: number;
