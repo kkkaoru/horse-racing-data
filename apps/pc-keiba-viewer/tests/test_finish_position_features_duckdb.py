@@ -499,6 +499,31 @@ def test_horse_running_style_history_cte_emits_recent_streak_proxies():
     assert "past_dominant_label_consistency_5" in cte
 
 
+def test_jockey_cte_emits_running_style_aggregates():
+    cte = subject.jockey_cte()
+    assert "jockey_nige_rate" in cte
+    assert "jockey_senkou_rate" in cte
+    assert "jockey_sashi_rate" in cte
+    assert "jockey_oikomi_rate" in cte
+    assert "jockey_corner_1_norm_avg" in cte
+    assert "jockey_horse_corner_1_norm_avg" in cte
+
+
+def test_partner_history_cte_propagates_corner_1_norm():
+    cte = subject.partner_history_cte("jockey_history", "kishumei_ryakusho", "jockey_career")
+    assert "cast(h.corner1_norm as double) as corner1_norm" in cte
+
+
+def test_base_features_select_sql_includes_jockey_running_style():
+    sql = subject.base_features_select_sql("jra")
+    assert "jc.jockey_nige_rate" in sql
+    assert "jc.jockey_senkou_rate" in sql
+    assert "jc.jockey_sashi_rate" in sql
+    assert "jc.jockey_oikomi_rate" in sql
+    assert "jc.jockey_corner_1_norm_avg" in sql
+    assert "jc.jockey_horse_corner_1_norm_avg" in sql
+
+
 def test_base_features_select_sql_includes_extended_horse_features():
     sql = subject.base_features_select_sql("jra")
     assert "rsh.past_nige_win_rate_self" in sql

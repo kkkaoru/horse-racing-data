@@ -522,6 +522,7 @@ def partner_history_cte(
         t.track_code as target_track_code, t.grade_code as target_grade_code,
         t.ketto_toroku_bango as target_horse,
         h.finish_position,
+        cast(h.corner1_norm as double) as corner1_norm,
         h.race_dt as history_race_dt,
         h.keibajo_code as history_keibajo,
         h.kyori as history_kyori,
@@ -559,7 +560,22 @@ def jockey_cte(target_filter: str = "true") -> str:
         avg(case when finish_position = 1 then 1 else 0 end) filter (where left(coalesce(history_track_code, ''), 1) = left(coalesce(target_track_code, ''), 1)) as jockey_track_win_rate,
         avg(case when finish_position = 1 then 1 else 0 end) filter (where coalesce(history_grade_code, '') = coalesce(target_grade_code, '')) as jockey_grade_win_rate,
         count(*) filter (where history_horse = target_horse) as jockey_horse_pair_count,
-        avg(case when finish_position = 1 then 1 else 0 end) filter (where history_horse = target_horse) as jockey_horse_pair_win_rate
+        avg(case when finish_position = 1 then 1 else 0 end) filter (where history_horse = target_horse) as jockey_horse_pair_win_rate,
+        avg(case when corner1_norm = 0 then 1.0
+                 when corner1_norm is null then null
+                 else 0.0 end) as jockey_nige_rate,
+        avg(case when corner1_norm is null then null
+                 when corner1_norm > 0 and corner1_norm <= {RUNNING_STYLE_SENKOU_THRESHOLD} then 1.0
+                 else 0.0 end) as jockey_senkou_rate,
+        avg(case when corner1_norm is null then null
+                 when corner1_norm > {RUNNING_STYLE_SENKOU_THRESHOLD}
+                  and corner1_norm <= {RUNNING_STYLE_SASHI_THRESHOLD} then 1.0
+                 else 0.0 end) as jockey_sashi_rate,
+        avg(case when corner1_norm is null then null
+                 when corner1_norm > {RUNNING_STYLE_SASHI_THRESHOLD} then 1.0
+                 else 0.0 end) as jockey_oikomi_rate,
+        avg(corner1_norm) as jockey_corner_1_norm_avg,
+        avg(corner1_norm) filter (where history_horse = target_horse) as jockey_horse_corner_1_norm_avg
     """
     return template.replace("{aggregations}", aggregations)
 
@@ -1038,6 +1054,8 @@ def base_features_select_sql(category: str) -> str:
       jc.jockey_career_win_rate, jc.jockey_recent_win_rate, jc.jockey_keibajo_win_rate,
       jc.jockey_distance_win_rate, jc.jockey_track_win_rate, jc.jockey_grade_win_rate,
       jc.jockey_horse_pair_count, jc.jockey_horse_pair_win_rate,
+      jc.jockey_nige_rate, jc.jockey_senkou_rate, jc.jockey_sashi_rate, jc.jockey_oikomi_rate,
+      jc.jockey_corner_1_norm_avg, jc.jockey_horse_corner_1_norm_avg,
       tc.trainer_career_win_rate, tc.trainer_keibajo_win_rate, tc.trainer_distance_win_rate, tc.trainer_horse_win_rate,
       case when sds.race_count >= {PEDIGREE_MIN_RACES} then sds.sire_distance_win_rate_val else null end as sire_distance_win_rate,
       case when sts.race_count >= {PEDIGREE_MIN_RACES} then sts.sire_track_win_rate_val else null end as sire_track_win_rate,
