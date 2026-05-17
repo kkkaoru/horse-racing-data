@@ -24,6 +24,7 @@ import {
   formatTrack,
 } from "../../lib/format";
 import type { EntityRaceResult } from "../../lib/race-types";
+import { RaceAiSettingsPanel } from "./race-ai-settings-panel";
 
 interface FavoriteRaceEntry {
   favoriteId: string;
@@ -639,6 +640,8 @@ export function MyPageClient({ initialFavorites }: { initialFavorites: FavoriteI
 
   return (
     <>
+      <RaceAiSettingsPanel />
+
       <section className="mypage-favorites-panel">
         <div className="section-heading compact">
           <h2>お気に入り</h2>
