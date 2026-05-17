@@ -2,6 +2,7 @@
 .open-next/
 .next/
 .wrangler/
+.claude/
 __pycache__/
 .pytest_cache/
 .venv/
