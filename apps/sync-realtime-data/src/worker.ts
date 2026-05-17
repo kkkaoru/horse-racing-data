@@ -606,7 +606,8 @@ const isPremiumRaceJob = (job: Job): boolean =>
   job.type === "discover-premium-race-links" ||
   job.type === "discover-premium-races" ||
   job.type === "plan-premium-race-data-fetches" ||
-  job.type === "fetch-premium-race-data";
+  job.type === "fetch-premium-race-data" ||
+  job.type === "fetch-premium-paddock";
 
 const planTrackConditionFetchesForDate = async (
   env: Env,
