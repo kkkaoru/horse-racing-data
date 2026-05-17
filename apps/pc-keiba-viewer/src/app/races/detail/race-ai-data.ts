@@ -736,18 +736,162 @@ export const fetchRaceAiExportData = async (props: RaceAiDataBase): Promise<Race
   });
 };
 
-export const compactRaceAiDataForPrompt = (data: RaceAiExportData): Record<string, unknown> => ({
-  aiReady: data.aiReady,
-  meta: data.meta,
-  postgresql: {
-    base: {
-      courseInfo: data.postgresql.base.courseInfo,
-      race: data.postgresql.base.race,
-      runners: data.postgresql.base.runners,
+const buildApiUrl = (path: string, params: Record<string, string> = {}): string => {
+  const searchParams =
+    typeof window === "undefined"
+      ? new URLSearchParams()
+      : new URLSearchParams(window.location.search);
+  Object.entries(params).forEach(([key, value]) => {
+    searchParams.set(key, value);
+  });
+  const query = searchParams.toString();
+  return query ? `${path}?${query}` : path;
+};
+
+const buildRaceApiBase = (route: RaceAiExportData["meta"]["route"]): string =>
+  `/api/races/${route.year}/${route.month}/${route.day}/${route.keibajoCode}/${route.raceNumber}`;
+
+export const buildRaceAiDataCatalogForPrompt = (
+  data: RaceAiExportData,
+): Record<string, unknown> => {
+  const route = data.meta.route;
+  const raceApiBase = buildRaceApiBase(route);
+  const sourceSections = data.aiReady.currentOutput.sourceSections;
+  return {
+    aiReady: {
+      dataReadiness: {
+        items: data.aiReady.dataReadiness.items.map((item) => ({
+          availableUnits: item.availableUnits,
+          key: item.key,
+          label: item.label,
+          missingPercent: item.missingPercent,
+          missingUnits: item.missingUnits,
+          notes: item.notes,
+          preparedPercent: item.preparedPercent,
+          status: item.status,
+          totalUnits: item.totalUnits,
+        })),
+        missingPercent: data.aiReady.dataReadiness.missingPercent,
+        preparedPercent: data.aiReady.dataReadiness.preparedPercent,
+        readyItems: data.aiReady.dataReadiness.readyItems,
+        totalItems: data.aiReady.dataReadiness.totalItems,
+      },
+      sourceSections,
     },
-  },
-  processedForDisplay: {
-    base: data.processedForDisplay.base,
-  },
-  realtime: data.realtime,
-});
+    availableData: {
+      endpoints: {
+        aiData: {
+          availableParts: [
+            "race",
+            "runners",
+            "courseInfo",
+            "courseDisplay",
+            "raceDayRaces",
+            "finishPrediction",
+            "overallScore",
+            "timeScore",
+            "realtime",
+          ],
+          description: "AI用に必要な部分だけを取得する軽量API。partsはカンマ区切りで指定します。",
+          examples: [
+            buildApiUrl(`${raceApiBase}/ai/data`, {
+              parts: "race,runners,courseInfo,courseDisplay,finishPrediction,overallScore,realtime",
+              realtimeParts: "entries,oddsTansho,weights,results,trackCondition",
+              source: route.source,
+            }),
+            buildApiUrl(`${raceApiBase}/ai/data`, {
+              parts: "race,runners,raceDayRaces",
+              source: route.source,
+            }),
+          ],
+          schemas: {
+            courseDisplay: ["facts", "paragraphs", "imagePath"],
+            finishPrediction: [
+              "horseNumber",
+              "horseName",
+              "jockeyName",
+              "predictedRank",
+              "confidence",
+              "finishPredictionScore",
+              "overallEvaluationScore",
+              "paddockScore",
+              "odds",
+              "popularity",
+              "entryStatus",
+            ],
+            overallScore: ["horseNumber", "horseName", "jockeyName", "score", "odds", "popularity"],
+            race: [
+              "source",
+              "kaisaiNen",
+              "kaisaiTsukihi",
+              "keibajoCode",
+              "raceBango",
+              "kyosomeiHondai",
+              "kyosoJokenMeisho",
+              "kyori",
+              "trackCode",
+              "hassoJikoku",
+              "shussoTosu",
+            ],
+            realtime: {
+              realtimeParts: [
+                "entries",
+                "oddsTansho",
+                "oddsFukusho",
+                "weights",
+                "results",
+                "trackCondition",
+                "source",
+              ],
+            },
+            runners: [
+              "umaban",
+              "wakuban",
+              "bamei",
+              "kishumeiRyakusho",
+              "chokyoshimeiRyakusho",
+              "banushimei",
+              "bataiju",
+              "tanshoOdds",
+              "tanshoNinkijun",
+              "kakuteiChakujun",
+            ],
+            timeScore: ["rows", "bloodlineRows", "correlationRows", "similarRows"],
+          },
+        },
+        apiSpec: {
+          description: "ブラウザから参照できるAPI仕様。",
+          url: "/api/spec",
+        },
+        paddock: {
+          description: "パドック編集・評価データ。",
+          url: `${raceApiBase}/paddock`,
+        },
+        realtime: {
+          description:
+            "リアルタイムデータの全量API。AIは通常、aiDataのparts=realtimeとrealtimeParts指定を優先してください。",
+          url: buildApiUrl(`${raceApiBase}/realtime`, { source: route.source }),
+        },
+        sections: sourceSections.map((section) => ({
+          description: `画面表示用の詳細セクション ${section}。必要な場合だけ取得してください。`,
+          section,
+          url: getSectionUrl({ ...route, section }),
+        })),
+        trends: {
+          description: "騎手別・枠番別のレース傾向。",
+          url: buildApiUrl(`${raceApiBase}/trends`, { source: route.source }),
+        },
+      },
+      promptPolicy: [
+        "初回プロンプトには実データの行や詳細配列を含めません。",
+        "具体的な予想やユーザー質問への回答に実データが必要な場合だけ、toolJavaScriptでfetchJsonを1回出力してください。",
+        "まずはaiDataのparts指定で必要最小限のデータを取得し、足りない場合だけ/api/specやsections APIを参照してください。",
+      ],
+    },
+    meta: {
+      generatedAt: data.meta.generatedAt,
+      purpose: "Gemmaへ渡す初期データカタログ。実データはオンデマンド取得します。",
+      route,
+    },
+  };
+};

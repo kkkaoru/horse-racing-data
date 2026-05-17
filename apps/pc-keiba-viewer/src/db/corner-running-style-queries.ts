@@ -74,8 +74,12 @@ export interface RunningStyleMetrics {
 }
 
 const getD1Database = (): PcKeibaD1Database | null => {
-  const { env } = getCloudflareContext();
-  return env.REALTIME_DB ?? null;
+  try {
+    const { env } = getCloudflareContext();
+    return env.REALTIME_DB ?? null;
+  } catch {
+    return null;
+  }
 };
 
 export const getRaceRunningStylesFromD1 = async (
