@@ -51,13 +51,13 @@ import {
 } from "./lazy-detail-sections";
 import { PaddockSection } from "./paddock-section";
 import { RaceAiAssistant } from "./race-ai-assistant";
-import { RunningStyleRaceSection } from "./running-style-race-section";
 import { RaceShareControls } from "./race-share-controls";
 import { RaceStartCountdown } from "./race-start-countdown";
 import { RaceTrendSection } from "./race-trend-section";
 import { RealtimeRaceProvider, type RealtimeRaceRequest } from "./realtime-client";
 import { RealtimeRaceSection } from "./realtime-race-section";
 import { RunnersTable } from "./runners-table";
+import { RunningStyleRaceSection } from "./running-style-race-section";
 import { TrackConditionSection } from "./track-condition-section";
 
 export const dynamic = "force-dynamic";
@@ -675,11 +675,7 @@ export async function RaceDetailView({
         />
 
         <RunningStyleRaceSection
-          category={
-            raceSource === "nar" && isBanEiKeibajoCode(keibajoCode)
-              ? "ban-ei"
-              : raceSource
-          }
+          category={raceSource === "nar" && isBanEiKeibajoCode(keibajoCode) ? "ban-ei" : raceSource}
           kaisaiNen={year}
           kaisaiTsukihi={`${month.padStart(2, "0")}${day.padStart(2, "0")}`}
           keibajoCode={keibajoCode}
@@ -691,11 +687,7 @@ export async function RaceDetailView({
           bameiByUmaban={Object.fromEntries(
             runners.map((runner) => [Number(runner.umaban ?? "0"), runner.bamei]),
           )}
-          category={
-            raceSource === "nar" && isBanEiKeibajoCode(keibajoCode)
-              ? "ban-ei"
-              : raceSource
-          }
+          category={raceSource === "nar" && isBanEiKeibajoCode(keibajoCode) ? "ban-ei" : raceSource}
           isStraightCourse={false}
           kaisaiNen={year}
           kaisaiTsukihi={`${month.padStart(2, "0")}${day.padStart(2, "0")}`}
