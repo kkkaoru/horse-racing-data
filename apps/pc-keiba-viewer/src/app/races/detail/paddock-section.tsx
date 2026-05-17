@@ -1,7 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { memo, type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  type CSSProperties,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import type { RaceSource } from "../../../lib/codes";
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
@@ -135,6 +144,7 @@ const DEFAULT_REMOTE_PADDOCK_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
 const PUBLIC_DETAIL_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
 const OFFICIAL_RANK_OPTIONS: PaddockOfficialRank[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 const PAST_RACE_EDIT_UNLOCK_MS = 10 * 60 * 1000;
+const PADDOCK_REMAINING_MARKER_TOP = 112;
 
 const isLocalHost = (hostname: string): boolean =>
   hostname === "localhost" || hostname === "127.0.0.1" || hostname === "0.0.0.0";
@@ -240,6 +250,81 @@ function PaddockWeightValue({ value }: { value: string }) {
       <strong>{parsed.weight}</strong>
       {parsed.change ? <em className={changeClassName}>{parsed.change}</em> : null}
     </span>
+  );
+}
+
+function PaddockRemainingIndicator({
+  boardRef,
+  total,
+}: {
+  boardRef: RefObject<HTMLElement | null>;
+  total: number;
+}) {
+  const [remaining, setRemaining] = useState(total);
+
+  useEffect(() => {
+    if (total <= 0) {
+      setRemaining(0);
+      return undefined;
+    }
+
+    let frameId: number | null = null;
+
+    const updateRemaining = () => {
+      const board = boardRef.current;
+      if (!board) {
+        setRemaining(total);
+        return;
+      }
+
+      const rows = Array.from(
+        board.querySelectorAll<HTMLElement>("[data-paddock-runner-row='true']"),
+      );
+      if (rows.length === 0) {
+        setRemaining(total);
+        return;
+      }
+
+      const markerTop = Math.min(window.innerHeight, PADDOCK_REMAINING_MARKER_TOP);
+      const nextRemaining = rows.filter(
+        (row) => row.getBoundingClientRect().bottom > markerTop,
+      ).length;
+      setRemaining(nextRemaining);
+    };
+
+    const requestUpdate = () => {
+      if (frameId !== null) {
+        return;
+      }
+      frameId = window.requestAnimationFrame(() => {
+        frameId = null;
+        updateRemaining();
+      });
+    };
+
+    updateRemaining();
+    window.addEventListener("scroll", requestUpdate, { passive: true });
+    window.addEventListener("resize", requestUpdate);
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+      window.removeEventListener("scroll", requestUpdate);
+      window.removeEventListener("resize", requestUpdate);
+    };
+  }, [boardRef, total]);
+
+  const completed = Math.max(0, total - remaining);
+
+  return (
+    <aside className="paddock-remaining-indicator" aria-live="polite" aria-label="残り出走馬数">
+      <span>残り</span>
+      <strong>{remaining}</strong>
+      <span>頭</span>
+      <small>
+        {completed}/{total}
+      </small>
+    </aside>
   );
 }
 
@@ -670,6 +755,7 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
   };
   const displayJockeyName = getPreferredJockeyName(jockeyName, realtimeJockeyName);
   const isScratched = Boolean(status);
+  const startsLabel = recentResults === null ? "-" : `${recentResults.length}回`;
 
   return (
     <article
@@ -678,6 +764,7 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
         isScratched ? "paddock-horse-row paddock-horse-row-scratched" : "paddock-horse-row"
       }
       data-entry-status={status ?? undefined}
+      data-paddock-runner-row="true"
     >
       <header className="paddock-horse-summary">
         <dl className="paddock-horse-ids">
@@ -725,6 +812,10 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
           <div>
             <dt>単勝</dt>
             <dd>{formatRealtimeOdds(realtimeOdds)}</dd>
+          </div>
+          <div>
+            <dt>出走回数</dt>
+            <dd>{startsLabel}</dd>
           </div>
           {editable && scores.officialRank ? (
             <div className="paddock-official-rank-fact">
@@ -1110,6 +1201,7 @@ export function PaddockSection({
   const [discordCooldownNow, setDiscordCooldownNow] = useState(() => Date.now());
   const submitSequenceRef = useRef(0);
   const optimisticUntilRef = useRef(0);
+  const paddockBoardRef = useRef<HTMLElement | null>(null);
   const apiPath = getPaddockApiPath({ day, keibajoCode, month, raceNumber, year });
   const pastRaceEditSessionKey = getPastRaceEditSessionKey({
     day,
@@ -1557,7 +1649,7 @@ export function PaddockSection({
       </header>
       {error ? <p className="empty-state">パドック評価を取得できません: {error}</p> : null}
       {editable ? (
-        <section className="paddock-board" aria-label="出走馬のパドック評価">
+        <section className="paddock-board" ref={paddockBoardRef} aria-label="出走馬のパドック評価">
           {runnerRows.map((runner) => {
             const scores = normalizePaddockHorseScore(state?.horses[runner.horseNumber], runner);
             const realtimeEntry = realtimeEntryByHorse.get(runner.horseNumber);
@@ -1595,6 +1687,9 @@ export function PaddockSection({
       ) : (
         <PaddockReadOnlyTable oddsByHorse={realtimeOddsByHorse} rows={runnerRows} state={state} />
       )}
+      {editable && runnerRows.length > 0 ? (
+        <PaddockRemainingIndicator boardRef={paddockBoardRef} total={runnerRows.length} />
+      ) : null}
       {editable ? (
         <details className="paddock-history">
           <summary>履歴</summary>
