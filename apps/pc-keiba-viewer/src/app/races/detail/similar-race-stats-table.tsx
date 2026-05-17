@@ -5,8 +5,9 @@ import type { ReactNode } from "react";
 import { Fragment, memo, useEffect, useMemo, useState } from "react";
 
 import type { RaceSource } from "../../../lib/codes";
-import { formatDate, formatKeibajo, formatRaceNumber } from "../../../lib/format";
-import type { SimilarRaceStatsRow, SimilarRaceStatsSettings } from "../../../lib/race-types";
+import { cleanText, formatDate, formatKeibajo, formatRaceNumber } from "../../../lib/format";
+import type { Runner, SimilarRaceStatsRow, SimilarRaceStatsSettings } from "../../../lib/race-types";
+import { formatRunnerNumber } from "../../../lib/runner-format";
 import { FrameNumberBadge } from "./frame-number-badge";
 import { MobileFilterDisclosure } from "./mobile-filter-disclosure";
 
@@ -17,6 +18,16 @@ type StatsCategory = SimilarRaceStatsRow["category"];
 interface ScoredSimilarRaceStatsRow extends SimilarRaceStatsRow {
   score: number;
 }
+
+type SimilarCompositeRow = {
+  categoryRows: Partial<Record<StatsCategory, ScoredSimilarRaceStatsRow>>;
+  categoryScores: Record<StatsCategory, number>;
+  horseCount: number;
+  horseName: string;
+  horseNumber: string;
+  score: number;
+  starts: number;
+};
 
 interface SimilarRaceStatsTableProps {
   conditionLabels: {
@@ -35,6 +46,7 @@ interface SimilarRaceStatsTableProps {
     weight: string | null;
   };
   rows: SimilarRaceStatsRow[];
+  runners: Runner[];
   settings: SimilarRaceStatsSettings;
   source: RaceSource;
 }
@@ -152,6 +164,12 @@ const formatRank = (value: string): string => {
 
 const normalize = (value: number, max: number): number => (max > 0 ? value / max : 0);
 
+const splitHorseNumbers = (value: string): string[] =>
+  value
+    .split(",")
+    .map((horseNumber) => cleanText(horseNumber, ""))
+    .filter(Boolean);
+
 const calculateScore = (
   row: SimilarRaceStatsRow,
   maxStarts: number,
@@ -184,6 +202,7 @@ const toScoredRows = (rows: SimilarRaceStatsRow[]): ScoredSimilarRaceStatsRow[] 
 export const SimilarRaceStatsTable = memo(function SimilarRaceStatsTable({
   conditionLabels,
   rows,
+  runners,
   settings,
   source,
 }: SimilarRaceStatsTableProps) {
@@ -192,6 +211,8 @@ export const SimilarRaceStatsTable = memo(function SimilarRaceStatsTable({
   const [sortKey, setSortKey] = useState<RateSortKey>("score");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [expandedRowKey, setExpandedRowKey] = useState<string | null>(null);
+  const [expandedScoreHorseNumber, setExpandedScoreHorseNumber] = useState<string | null>(null);
+  const [statsTablesExpanded, setStatsTablesExpanded] = useState(false);
 
   useEffect(() => {
     setDisplaySettings(settings);
@@ -211,6 +232,81 @@ export const SimilarRaceStatsTable = memo(function SimilarRaceStatsTable({
       ),
     }));
   }, [rows, sortDirection, sortKey]);
+
+  const compositeRows = useMemo(() => {
+    const scoredRows = CATEGORY_ORDER.flatMap((category) =>
+      toScoredRows(rows.filter((row) => row.category === category)),
+    );
+    const categoryRowsByHorse = new Map<
+      string,
+      Partial<Record<StatsCategory, ScoredSimilarRaceStatsRow>>
+    >();
+    for (const row of scoredRows) {
+      for (const horseNumber of splitHorseNumbers(row.currentHorseNumbers)) {
+        const currentRows = categoryRowsByHorse.get(horseNumber);
+        categoryRowsByHorse.set(horseNumber, { ...currentRows, [row.category]: row });
+      }
+    }
+
+    const rawRows = runners.map((runner) => {
+      const horseNumber = formatRunnerNumber(runner.umaban);
+      const categoryRows = categoryRowsByHorse.get(horseNumber) ?? {};
+      const categoryScores: Record<StatsCategory, number> = {
+        jockey: categoryRows.jockey?.score ?? 0,
+        owner: categoryRows.owner?.score ?? 0,
+        trainer: categoryRows.trainer?.score ?? 0,
+      };
+      const categoryRowValues = Object.values(categoryRows).filter(
+        (row): row is ScoredSimilarRaceStatsRow => row !== undefined,
+      );
+      return {
+        categoryRows,
+        categoryScores,
+        horseCount: categoryRowValues.reduce((total, row) => total + row.horseCount, 0),
+        horseName: cleanText(runner.bamei, "-"),
+        horseNumber,
+        rawScore:
+          (categoryScores.jockey + categoryScores.trainer + categoryScores.owner) /
+          CATEGORY_ORDER.length,
+        starts: categoryRowValues.reduce((total, row) => total + row.starts, 0),
+      };
+    });
+
+    if (rawRows.length === 0) {
+      return [];
+    }
+    const minScore = Math.min(...rawRows.map((row) => row.rawScore));
+    const maxScore = Math.max(...rawRows.map((row) => row.rawScore));
+    const sortedFallbackRows = rawRows.toSorted(
+      (left, right) => Number(left.horseNumber) - Number(right.horseNumber),
+    );
+
+    return rawRows
+      .map((row) => {
+        let score = 0;
+        if (rawRows.length === 1) {
+          score = 1;
+        } else if (maxScore === minScore) {
+          const fallbackIndex = sortedFallbackRows.findIndex(
+            (fallbackRow) => fallbackRow.horseNumber === row.horseNumber,
+          );
+          score =
+            fallbackIndex === 0
+              ? 1
+              : fallbackIndex === sortedFallbackRows.length - 1
+                ? 0
+                : 0.5;
+        } else {
+          score = (row.rawScore - minScore) / (maxScore - minScore);
+        }
+        return Object.assign(row, { score });
+      })
+      .toSorted((left, right) =>
+        right.score === left.score
+          ? Number(left.horseNumber) - Number(right.horseNumber)
+          : right.score - left.score,
+      );
+  }, [rows, runners]);
 
   const replaceParams = (next: URLSearchParams) => {
     const scrollY = window.scrollY;
@@ -361,6 +457,54 @@ export const SimilarRaceStatsTable = memo(function SimilarRaceStatsTable({
     );
   };
 
+  const renderCompositeDetailRows = (row: SimilarCompositeRow) => {
+    const detailRows = CATEGORY_ORDER.map((category) => {
+      const categoryRow = row.categoryRows[category];
+      return {
+        category,
+        categoryRow,
+        score: row.categoryScores[category],
+      };
+    });
+
+    return (
+      <tr className="stats-detail-row">
+        <td colSpan={11}>
+          <div className="stats-detail-panel">
+            <table className="stats-detail-table similar-score-detail-table">
+              <thead>
+                <tr>
+                  <th>種別</th>
+                  <th>名前</th>
+                  <th>スコア</th>
+                  <th>複勝率</th>
+                  <th>連対率</th>
+                  <th>勝率</th>
+                  <th>出走回数</th>
+                  <th>出馬数</th>
+                </tr>
+              </thead>
+              <tbody>
+                {detailRows.map(({ category, categoryRow, score }) => (
+                  <tr key={category}>
+                    <td>{CATEGORY_LABELS[category]}</td>
+                    <td className="stats-name-cell">{categoryRow?.name ?? "-"}</td>
+                    <td className="stats-score-cell">{formatScore(score)}</td>
+                    <td>{categoryRow ? formatRate(categoryRow.showRate) : "-"}</td>
+                    <td>{categoryRow ? formatRate(categoryRow.quinellaRate) : "-"}</td>
+                    <td>{categoryRow ? formatRate(categoryRow.winRate) : "-"}</td>
+                    <td>{categoryRow ? categoryRow.starts.toLocaleString("ja-JP") : "-"}</td>
+                    <td>{categoryRow ? categoryRow.horseCount.toLocaleString("ja-JP") : "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </td>
+      </tr>
+    );
+  };
+
   const renderStatsTable = (category: StatsCategory, categoryRows: ScoredSimilarRaceStatsRow[]) => (
     <section className="stats-category-section" key={category}>
       <div className="section-heading compact">
@@ -482,9 +626,96 @@ export const SimilarRaceStatsTable = memo(function SimilarRaceStatsTable({
       </MobileFilterDisclosure>
 
       <div className="stats-category-list">
-        {groupedRows.map(({ category, rows: categoryRows }) =>
-          renderStatsTable(category, categoryRows),
-        )}
+        <section className="stats-category-section">
+          <div className="section-heading compact">
+            <h3>合計勝率スコア</h3>
+          </div>
+          <div className="stats-table-wrap">
+            <table className="stats-table similar-score-table">
+              <colgroup>
+                <col className="similar-score-col-number" />
+                <col className="similar-score-col-name" />
+                <col className="similar-score-col-name" />
+                <col className="similar-score-col-name" />
+                <col className="similar-score-col-name" />
+                <col className="similar-score-col-score" />
+                <col className="similar-score-col-score" />
+                <col className="similar-score-col-score" />
+                <col className="similar-score-col-score" />
+                <col className="similar-score-col-count" />
+                <col className="similar-score-col-count" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>馬番号</th>
+                  <th>馬名</th>
+                  <th>騎手</th>
+                  <th>調教師</th>
+                  <th>馬主</th>
+                  <th>合計スコア</th>
+                  <th>騎手スコア</th>
+                  <th>調教師スコア</th>
+                  <th>馬主スコア</th>
+                  <th>出走回数</th>
+                  <th>出馬数</th>
+                </tr>
+              </thead>
+              <tbody>
+                {compositeRows.map((row) => {
+                  const isExpanded = expandedScoreHorseNumber === row.horseNumber;
+                  return (
+                    <Fragment key={row.horseNumber}>
+                      <tr className={isExpanded ? "stats-row-expanded" : undefined}>
+                        <td>{row.horseNumber}</td>
+                        <td className="stats-name-cell">{row.horseName}</td>
+                        <td className="stats-name-cell">{row.categoryRows.jockey?.name ?? "-"}</td>
+                        <td className="stats-name-cell">{row.categoryRows.trainer?.name ?? "-"}</td>
+                        <td className="stats-name-cell">{row.categoryRows.owner?.name ?? "-"}</td>
+                        <td className="stats-score-cell">
+                          <button
+                            aria-expanded={isExpanded}
+                            className="stats-detail-toggle"
+                            type="button"
+                            onClick={() => {
+                              setExpandedScoreHorseNumber((current) =>
+                                current === row.horseNumber ? null : row.horseNumber,
+                              );
+                            }}
+                          >
+                            {formatScore(row.score)}
+                          </button>
+                        </td>
+                        <td>{formatScore(row.categoryScores.jockey)}</td>
+                        <td>{formatScore(row.categoryScores.trainer)}</td>
+                        <td>{formatScore(row.categoryScores.owner)}</td>
+                        <td>{row.starts.toLocaleString("ja-JP")}</td>
+                        <td>{row.horseCount.toLocaleString("ja-JP")}</td>
+                      </tr>
+                      {isExpanded ? renderCompositeDetailRows(row) : null}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+        <div className="similar-stats-table-toggle-wrap">
+          <button
+            aria-expanded={statsTablesExpanded}
+            className="stats-control-button similar-stats-table-toggle"
+            type="button"
+            onClick={() => {
+              setStatsTablesExpanded((current) => !current);
+            }}
+          >
+            {statsTablesExpanded ? "騎手・調教師・馬主の勝率を閉じる" : "騎手・調教師・馬主の勝率を表示"}
+          </button>
+        </div>
+        {statsTablesExpanded
+          ? groupedRows.map(({ category, rows: categoryRows }) =>
+              renderStatsTable(category, categoryRows),
+            )
+          : null}
       </div>
     </>
   );
