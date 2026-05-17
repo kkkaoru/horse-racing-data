@@ -9,6 +9,7 @@ import type { CourseInfo, RaceDetail, RaceListItem, Runner } from "../../../lib/
 import {
   compactRaceAiDataForPrompt,
   fetchRaceAiExportData,
+  type RaceAiDataReadiness,
   type RaceAiExportData,
 } from "./race-ai-data";
 import { buildGemmaPrompt, RACE_AI_DEFAULT_PROMPT } from "./race-ai-default-prompt";
@@ -205,10 +206,25 @@ const runToolJavaScript = async (code: string): Promise<ToolResult> => {
 
 const appendLimited = <T,>(rows: T[], row: T): T[] => [...rows, row].slice(-LOG_LIMIT);
 
+const dataReadinessStatusLabel = (
+  status: RaceAiDataReadiness["items"][number]["status"],
+): string => {
+  if (status === "ready") {
+    return "準備済み";
+  }
+  if (status === "partial") {
+    return "一部準備";
+  }
+  return "未準備";
+};
+
 export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const [supportState, setSupportState] = useState<WebGpuSupportState>("checking");
   const [modelStatus, setModelStatus] = useState<ModelStatus>("idle");
   const [generationStatus, setGenerationStatus] = useState<GenerationStatus>("idle");
+  const [aiSectionOpen, setAiSectionOpen] = useState(true);
+  const [dataReadiness, setDataReadiness] = useState<RaceAiDataReadiness | null>(null);
+  const [dataReadinessStatus, setDataReadinessStatus] = useState<"idle" | "loading">("idle");
   const [settings, setSettings] = useState<RaceAiSettings | null>(null);
   const [modelState, setModelState] = useState<RaceAiModelState | null>(null);
   const [messages, setMessages] = useState<RaceAiMessage[]>([]);
@@ -333,6 +349,40 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     return instance;
   }, []);
 
+  const loadRaceDataSnapshot = useCallback(async (): Promise<RaceAiExportData> => {
+    setDataReadinessStatus("loading");
+    try {
+      const data = await fetchRaceAiExportData(props);
+      setDataReadiness(data.aiReady.dataReadiness);
+      return data;
+    } finally {
+      setDataReadinessStatus("idle");
+    }
+  }, [props]);
+
+  useEffect(() => {
+    if (supportState !== "supported" || settings?.consent !== "granted") {
+      return undefined;
+    }
+    let cancelled = false;
+    setDataReadinessStatus("loading");
+    void (async () => {
+      try {
+        const data = await fetchRaceAiExportData(props);
+        if (!cancelled) {
+          setDataReadiness(data.aiReady.dataReadiness);
+        }
+      } finally {
+        if (!cancelled) {
+          setDataReadinessStatus("idle");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [props, settings?.consent, supportState]);
+
   const runAi = useCallback(
     async (request: string, trigger: string) => {
       if (runningRef.current) {
@@ -344,9 +394,10 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       try {
         const llm = await ensureModel();
         setGenerationStatus("loading-data");
-        const data = await fetchRaceAiExportData(props);
+        const data = await loadRaceDataSnapshot();
         const dataFingerprint = stableStringify({
           aiReady: data.aiReady.currentOutput,
+          dataReadiness: data.aiReady.dataReadiness,
           realtime: data.realtime,
         });
         setGenerationStatus("generating");
@@ -407,7 +458,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         setGenerationStatus("idle");
       }
     },
-    [ensureModel, persistLogs, props],
+    [ensureModel, loadRaceDataSnapshot, persistLogs],
   );
 
   useEffect(() => {
@@ -468,15 +519,28 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     modelStatus === "downloading" ||
     modelStatus === "initializing" ||
     generationStatus !== "idle";
+  const readinessStatusLabel =
+    dataReadinessStatus === "loading"
+      ? "準備度を確認中"
+      : dataReadiness
+        ? `準備済み ${dataReadiness.preparedPercent.toFixed(1)}% / 未準備 ${dataReadiness.missingPercent.toFixed(1)}%`
+        : "準備度未確認";
 
   return (
-    <section className="race-ai-assistant-section">
-      <div className="section-heading compact">
+    <details
+      className="race-ai-assistant-section"
+      open={aiSectionOpen}
+      onToggle={(event) => {
+        setAiSectionOpen(event.currentTarget.open);
+      }}
+    >
+      <summary className="section-heading compact race-ai-summary">
         <h2>WebGPU AI予想</h2>
         <span>
-          {LATEST_RACE_AI_MODEL.name} / {LATEST_RACE_AI_MODEL.version}
+          {LATEST_RACE_AI_MODEL.name} / {LATEST_RACE_AI_MODEL.version} /{" "}
+          {aiSectionOpen ? "閉じる" : "表示する"}
         </span>
-      </div>
+      </summary>
       <div className="race-ai-status-grid">
         <div>
           <span>モデル</span>
@@ -501,9 +565,45 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
               ? "取得中"
               : generationStatus === "generating"
                 ? "予想中"
-                : "待機中"}
+                : readinessStatusLabel}
           </strong>
         </div>
+      </div>
+      <div className="race-ai-readiness-panel">
+        <div className="section-heading compact">
+          <h3>AIデータ準備度</h3>
+          <span>
+            {dataReadiness
+              ? `${dataReadiness.readyItems} / ${dataReadiness.totalItems} 項目`
+              : dataReadinessStatus === "loading"
+                ? "確認中"
+                : "未確認"}
+          </span>
+        </div>
+        {dataReadiness ? (
+          <div className="race-ai-readiness-list">
+            {dataReadiness.items.map((item) => (
+              <div className={`race-ai-readiness-row ${item.status}`} key={item.key}>
+                <span>
+                  <strong>{item.label}</strong>
+                  <small>{dataReadinessStatusLabel(item.status)}</small>
+                </span>
+                <span>
+                  渡せた {item.preparedPercent.toFixed(1)}% / 未準備{" "}
+                  {item.missingPercent.toFixed(1)}%
+                </span>
+                <progress value={item.preparedPercent} max={100} />
+                {item.notes.length > 0 ? <small>{item.notes.join(" / ")}</small> : null}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="empty-state">
+            {dataReadinessStatus === "loading"
+              ? "AIに渡すデータの準備度を確認しています。"
+              : "AIに渡すデータの準備度はまだ確認していません。"}
+          </p>
+        )}
       </div>
       <div className="race-ai-actions">
         <button
@@ -600,6 +700,6 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           </ol>
         </details>
       </div>
-    </section>
+    </details>
   );
 }
