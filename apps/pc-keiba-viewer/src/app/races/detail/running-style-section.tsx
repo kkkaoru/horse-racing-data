@@ -59,10 +59,7 @@ const resolveCurrentTab = (raw: string | null): StyleTab => {
   return isStyleTab(raw) ? raw : "all";
 };
 
-const sortRowsByTab = (
-  rows: RaceRunningStyleRow[],
-  tab: StyleTab,
-): RaceRunningStyleRow[] => {
+const sortRowsByTab = (rows: RaceRunningStyleRow[], tab: StyleTab): RaceRunningStyleRow[] => {
   if (tab === "all") {
     return rows.toSorted((a, b) => a.horseNumber - b.horseNumber);
   }
@@ -120,7 +117,9 @@ const FocusedList = ({ rows, tab }: FocusedListProps) => (
     {rows.map((row, index) => (
       <li
         key={`${row.raceKey}-${row.horseNumber}`}
-        className={index < TOP_HIGHLIGHT_COUNT ? "running-style-focus-chip top" : "running-style-focus-chip"}
+        className={
+          index < TOP_HIGHLIGHT_COUNT ? "running-style-focus-chip top" : "running-style-focus-chip"
+        }
         aria-current={index < TOP_HIGHLIGHT_COUNT ? "true" : undefined}
       >
         {explicitChipText(row, tab)}

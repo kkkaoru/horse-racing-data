@@ -5,7 +5,6 @@ import React from "react";
 import { afterEach, describe, expect, test } from "vitest";
 
 import type { RaceRunningStyleRow } from "../../../db/corner-running-style-parsers";
-
 import {
   chipText,
   formatRaceLabel,

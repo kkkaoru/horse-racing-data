@@ -50,7 +50,9 @@ const CornerPositionTable = ({ rows, bameiByUmaban }: CornerPositionTableProps) 
       </thead>
       <tbody>
         {sortedRows.map((row) => (
-          <tr key={`${row.source}-${row.kaisaiNen}-${row.kaisaiTsukihi}-${row.keibajoCode}-${row.raceBango}-${row.kettoTorokuBango}`}>
+          <tr
+            key={`${row.source}-${row.kaisaiNen}-${row.kaisaiTsukihi}-${row.keibajoCode}-${row.raceBango}-${row.kettoTorokuBango}`}
+          >
             <td>{horseNumberDisplay(row.umaban)}</td>
             <td>{bameiByUmaban[row.umaban] ?? "馬名不明"}</td>
             <td>{formatRank(row.corner1Pred, total)}</td>
