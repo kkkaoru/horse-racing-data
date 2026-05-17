@@ -144,6 +144,9 @@ export const buildInsertSqlForRow = (row: PredictionJoinedRow): string => {
 };
 
 export const buildFetchSql = (): string => `
+  with active_categories as (
+    select category, model_version from running_style_active_models
+  )
   select
     p.source,
     p.kaisai_nen,
@@ -165,6 +168,12 @@ export const buildFetchSql = (): string => `
     p.predicted_label,
     p.prediction_generated_at::text as predicted_at
   from race_running_style_model_predictions p
+  join active_categories ac
+    on ac.model_version = p.model_version
+   and ac.category = case
+     when p.source = 'nar' and p.keibajo_code = '83' then 'ban-ei'
+     else p.source
+   end
   left join jvd_se jvd
     on p.source = 'jra'
    and jvd.kaisai_nen = p.kaisai_nen
