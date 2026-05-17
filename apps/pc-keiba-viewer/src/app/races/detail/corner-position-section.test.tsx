@@ -117,9 +117,9 @@ describe("CornerPositionSection - populated table", () => {
       />,
     );
     const tableRows = screen.getAllByRole("row");
-    expect(tableRows[1].textContent).toContain("馬A");
-    expect(tableRows[2].textContent).toContain("馬B");
-    expect(tableRows[3].textContent).toContain("馬C");
+    expect(tableRows[1]?.textContent).toContain("馬A");
+    expect(tableRows[2]?.textContent).toContain("馬B");
+    expect(tableRows[3]?.textContent).toContain("馬C");
   });
 
   test("falls back to 馬名不明 when bamei is missing", () => {

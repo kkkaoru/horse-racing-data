@@ -49,6 +49,7 @@ import {
   LazyRacePacePredictionSection,
 } from "./lazy-detail-sections";
 import { PaddockSection } from "./paddock-section";
+import { RaceAiAssistant } from "./race-ai-assistant";
 import { RaceShareControls } from "./race-share-controls";
 import { RaceStartCountdown } from "./race-start-countdown";
 import { RaceTrendSection } from "./race-trend-section";
@@ -651,6 +652,22 @@ export async function RaceDetailView({
           month={month}
           raceNumber={raceNumber}
           realtimeApiBaseUrl={realtimeApiBaseUrl}
+          source={raceSource}
+          year={year}
+        />
+
+        <RaceAiAssistant
+          basePostgresqlData={{
+            courseInfo,
+            race,
+            raceDayRaces,
+            runners,
+          }}
+          baseProcessedData={baseProcessedData}
+          day={day}
+          keibajoCode={keibajoCode}
+          month={month}
+          raceNumber={raceNumber}
           source={raceSource}
           year={year}
         />

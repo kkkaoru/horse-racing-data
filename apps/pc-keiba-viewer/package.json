@@ -48,6 +48,7 @@
     "tsc": "tsc --noEmit"
   },
   "dependencies": {
+    "@mediapipe/tasks-genai": "0.10.27",
     "@opennextjs/cloudflare": "1.19.8",
     "drizzle-orm": "0.45.2",
     "horse-racing-realtime": "workspace:*",
@@ -67,6 +68,7 @@
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.3",
     "@vitest/coverage-v8": "4.1.5",
+    "@webgpu/types": "0.1.70",
     "eslint": "10.4.0",
     "fake-indexeddb": "6.2.5",
     "jsdom": "29.1.1",

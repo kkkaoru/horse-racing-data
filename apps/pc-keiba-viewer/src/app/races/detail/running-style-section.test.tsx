@@ -92,9 +92,9 @@ describe("RunningStyleSection - default tab", () => {
     );
     const rows = screen.getAllByRole("row");
     // first row is header, remaining 3 are body
-    expect(rows[1].textContent).toContain("馬A");
-    expect(rows[2].textContent).toContain("馬B");
-    expect(rows[3].textContent).toContain("馬C");
+    expect(rows[1]?.textContent).toContain("馬A");
+    expect(rows[2]?.textContent).toContain("馬B");
+    expect(rows[3]?.textContent).toContain("馬C");
   });
 
   test("renders the model version and macro-F1 in the metrics badge", () => {
@@ -117,7 +117,7 @@ describe("RunningStyleSection - tab interactions", () => {
     const nigeTab = screen.getByRole("tab", { name: "逃げ" });
     fireEvent.click(nigeTab);
     expect(replaceMock).toHaveBeenCalledTimes(1);
-    const [target] = replaceMock.mock.calls[0];
+    const [target] = replaceMock.mock.calls[0] ?? [];
     expect(target).toBe("?style=nige");
   });
 
@@ -125,7 +125,7 @@ describe("RunningStyleSection - tab interactions", () => {
     render(<RunningStyleSection rows={[buildRow({})]} modelMacroF1={null} modelVersion="v1" />);
     fireEvent.click(screen.getByRole("tab", { name: "全体" }));
     expect(replaceMock).toHaveBeenCalledTimes(1);
-    const [target] = replaceMock.mock.calls[0];
+    const [target] = replaceMock.mock.calls[0] ?? [];
     expect(target).toBe("?");
   });
 });
