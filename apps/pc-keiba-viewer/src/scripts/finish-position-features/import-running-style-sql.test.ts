@@ -121,7 +121,9 @@ describe("buildEvaluationsTableDdl", () => {
 describe("buildPredictionsLookupIndexSql", () => {
   test("creates idempotent race lookup index", () => {
     const sql = buildPredictionsLookupIndexSql();
-    expect(sql).toContain("create index if not exists race_running_style_model_predictions_race_lookup_idx");
+    expect(sql).toContain(
+      "create index if not exists race_running_style_model_predictions_race_lookup_idx",
+    );
     expect(sql).toContain("source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango");
   });
 });
@@ -144,9 +146,7 @@ describe("buildBatchInsertSql", () => {
   test("multi-row batch keeps placeholder numbering correct", () => {
     const sql = buildBatchInsertSql(2);
     expect(sql).toContain("($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)");
-    expect(sql).toContain(
-      "($15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)",
-    );
+    expect(sql).toContain("($15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)");
   });
 
   test("update clause overwrites probabilities and labels on conflict", () => {
@@ -169,7 +169,9 @@ describe("buildEvaluationUpsertSql", () => {
   test("upserts a row covering accuracy, macro_f1, per-class metrics and kyakushitsuhantei", () => {
     const sql = buildEvaluationUpsertSql();
     expect(sql).toContain("insert into running_style_model_evaluations");
-    expect(sql).toContain("on conflict (model_version, category, evaluation_window_from, evaluation_window_to)");
+    expect(sql).toContain(
+      "on conflict (model_version, category, evaluation_window_from, evaluation_window_to)",
+    );
     expect(sql).toContain("accuracy = excluded.accuracy");
     expect(sql).toContain("macro_f1 = excluded.macro_f1");
     expect(sql).toContain("kyakushitsuhantei_agreement = excluded.kyakushitsuhantei_agreement");

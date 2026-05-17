@@ -117,7 +117,9 @@ describe("buildEvaluationsTableDdl", () => {
 describe("buildPredictionsLookupIndexSql", () => {
   test("creates idempotent index on canonical race lookup columns", () => {
     const sql = buildPredictionsLookupIndexSql();
-    expect(sql).toContain("create index if not exists race_corner_position_model_predictions_race_lookup_idx");
+    expect(sql).toContain(
+      "create index if not exists race_corner_position_model_predictions_race_lookup_idx",
+    );
     expect(sql).toContain("source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango");
   });
 });
@@ -127,7 +129,9 @@ describe("buildBatchInsertSql", () => {
     const sql = buildBatchInsertSql(1);
     expect(sql).toContain("insert into race_corner_position_model_predictions");
     expect(sql).toContain("($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)");
-    expect(sql).toContain("on conflict (model_version, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)");
+    expect(sql).toContain(
+      "on conflict (model_version, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)",
+    );
   });
 
   test("multi-row batch uses sequential placeholders", () => {
@@ -160,7 +164,9 @@ describe("buildEvaluationUpsertSql", () => {
     const sql = buildEvaluationUpsertSql();
     expect(sql).toContain("insert into corner_position_model_evaluations");
     expect(sql).toContain("model_version, category, evaluation_window_from, evaluation_window_to");
-    expect(sql).toContain("on conflict (model_version, category, evaluation_window_from, evaluation_window_to)");
+    expect(sql).toContain(
+      "on conflict (model_version, category, evaluation_window_from, evaluation_window_to)",
+    );
     expect(sql).toContain("corner_1_mae = excluded.corner_1_mae");
     expect(sql).toContain("mean_mae = excluded.mean_mae");
     expect(sql).toContain("corner_1_top3_agreement = excluded.corner_1_top3_agreement");

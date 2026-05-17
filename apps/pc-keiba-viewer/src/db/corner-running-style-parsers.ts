@@ -98,9 +98,4 @@ export {
   stringOrNull,
 };
 
-export type {
-  RaceLookupKeys,
-  RaceRunningStyleRow,
-  RunningStyleLabel,
-  RunningStyleProbabilities,
-};
+export type { RaceLookupKeys, RaceRunningStyleRow, RunningStyleLabel, RunningStyleProbabilities };

@@ -142,7 +142,10 @@ const parsePredictionLine = (line: string): RunningStylePredictionRecord => {
   };
 };
 
-const flattenForInsert = (record: RunningStylePredictionRecord, modelVersion: string): unknown[] => {
+const flattenForInsert = (
+  record: RunningStylePredictionRecord,
+  modelVersion: string,
+): unknown[] => {
   const parts = parseRaceId(record.race_id);
   return [
     modelVersion,

@@ -14,22 +14,11 @@ const PRIMARY_KEY_COLUMNS = [
   "ketto_toroku_bango",
 ];
 
-const PREDICTION_COLUMNS = [
-  "corner_1_pred",
-  "corner_3_pred",
-  "corner_4_pred",
-];
+const PREDICTION_COLUMNS = ["corner_1_pred", "corner_3_pred", "corner_4_pred"];
 
-const INSERT_COLUMNS = [
-  ...PRIMARY_KEY_COLUMNS,
-  "umaban",
-  ...PREDICTION_COLUMNS,
-];
+const INSERT_COLUMNS = [...PRIMARY_KEY_COLUMNS, "umaban", ...PREDICTION_COLUMNS];
 
-const UPDATABLE_COLUMNS = [
-  "umaban",
-  ...PREDICTION_COLUMNS,
-];
+const UPDATABLE_COLUMNS = ["umaban", ...PREDICTION_COLUMNS];
 
 const EVALUATION_PRIMARY_KEYS = [
   "model_version",
@@ -123,7 +112,12 @@ const buildActivateModelSql = (): string =>
      do update set model_version = excluded.model_version, activated_at = now()`;
 
 const buildEvaluationUpsertSql = (): string => {
-  const allColumns = [...EVALUATION_PRIMARY_KEYS, "race_count", "prediction_count", ...EVALUATION_METRIC_COLUMNS];
+  const allColumns = [
+    ...EVALUATION_PRIMARY_KEYS,
+    "race_count",
+    "prediction_count",
+    ...EVALUATION_METRIC_COLUMNS,
+  ];
   const placeholders = allColumns.map((_, index) => `$${index + 1}`).join(", ");
   const updateAssignments = ["race_count", "prediction_count", ...EVALUATION_METRIC_COLUMNS]
     .map((column) => `${column} = excluded.${column}`)
