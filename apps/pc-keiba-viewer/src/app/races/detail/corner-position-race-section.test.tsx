@@ -112,6 +112,25 @@ describe("CornerPositionRaceSection", () => {
     expect(getRaceCornerPositionPredictionsMock).not.toHaveBeenCalled();
   });
 
+  test("renders empty state when active model lookup is unavailable", async () => {
+    getActiveCornerPositionModelMock.mockReset();
+    getActiveCornerPositionModelMock.mockRejectedValue(new Error("missing active model table"));
+    getRaceCornerPositionPredictionsMock.mockReset();
+    const element = await CornerPositionRaceSection({
+      bameiByUmaban: { 1: "テスト" },
+      category: "jra",
+      isStraightCourse: false,
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0518",
+      keibajoCode: "35",
+      raceBango: "01",
+      source: "nar",
+    });
+    const html = renderToString(element);
+    expect(html).toContain("このレースのコーナー予測データはまだありません");
+    expect(getRaceCornerPositionPredictionsMock).not.toHaveBeenCalled();
+  });
+
   test("loads predictions and metrics in parallel and forwards bamei map", async () => {
     getActiveCornerPositionModelMock.mockReset();
     getRaceCornerPositionPredictionsMock.mockReset();
@@ -150,5 +169,34 @@ describe("CornerPositionRaceSection", () => {
       },
       "jra-corner-v1.0",
     );
+  });
+
+  test("renders empty state when corner prediction data is unavailable", async () => {
+    getActiveCornerPositionModelMock.mockReset();
+    getRaceCornerPositionPredictionsMock.mockReset();
+    getCornerPositionMetricsForActiveModelMock.mockReset();
+    getActiveCornerPositionModelMock.mockResolvedValue({
+      activatedAt: new Date("2025-05-17T01:00:00Z"),
+      category: "jra",
+      modelVersion: "jra-corner-v1.0",
+    });
+    getRaceCornerPositionPredictionsMock.mockRejectedValue(
+      new Error("relation race_corner_position_predictions does not exist"),
+    );
+    getCornerPositionMetricsForActiveModelMock.mockRejectedValue(
+      new Error("missing metrics table"),
+    );
+    const element = await CornerPositionRaceSection({
+      bameiByUmaban: { 1: "馬A" },
+      category: "jra",
+      isStraightCourse: false,
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0518",
+      keibajoCode: "35",
+      raceBango: "01",
+      source: "nar",
+    });
+    const html = renderToString(element);
+    expect(html).toContain("このレースのコーナー予測データはまだありません");
   });
 });

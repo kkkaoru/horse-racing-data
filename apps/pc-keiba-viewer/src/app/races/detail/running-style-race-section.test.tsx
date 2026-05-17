@@ -108,4 +108,23 @@ describe("RunningStyleRaceSection", () => {
     const html = renderToString(element);
     expect(html).toContain("このレースの脚質予測データはまだありません");
   });
+
+  test("renders the empty state when D1 running-style data is unavailable", async () => {
+    getRaceRunningStylesFromD1Mock.mockReset();
+    getRunningStyleMetricsForActiveModelMock.mockReset();
+    getRaceRunningStylesFromD1Mock.mockRejectedValue(
+      new Error("D1_ERROR: no such table: race_running_styles: SQLITE_ERROR"),
+    );
+    getRunningStyleMetricsForActiveModelMock.mockRejectedValue(new Error("missing model table"));
+    const element = await RunningStyleRaceSection({
+      category: "nar",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0518",
+      keibajoCode: "35",
+      raceBango: "01",
+      source: "nar",
+    });
+    const html = renderToString(element);
+    expect(html).toContain("このレースの脚質予測データはまだありません");
+  });
 });
