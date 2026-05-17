@@ -323,8 +323,8 @@ function PaddockRecentResults({ results }: { results: HorseRaceResult[] | null }
             <span className="paddock-recent-finish">{formatPastRank(result.kakuteiChakujun)}</span>
             <span className="paddock-recent-race">
               <strong>{formatPastRaceName(result)}</strong>
+              <small>{formatPastRaceConditions(result)}</small>
               <small>{formatPastResultMeta(result)}</small>
-              <small className="paddock-recent-condition">{formatPastRaceConditions(result)}</small>
             </span>
             <span className="paddock-recent-stats">
               <span>{formatPastPopularity(result.tanshoNinkijun)}</span>
