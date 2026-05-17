@@ -28,6 +28,13 @@ const SORT_LABELS: Record<SortKey, string> = {
 
 const formatRate = (value: number): string => `${value.toFixed(1)}%`;
 
+const formatMedian = (value: number | null | undefined): string => {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "-";
+  }
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+};
+
 const isRaceTrendPayload = (value: unknown): value is RaceTrendPayload =>
   typeof value === "object" && value !== null && "jockeyRows" in value && "frameRows" in value;
 
@@ -101,6 +108,9 @@ function TrendTable({
   const sortedRows = useMemo(() => sortRows(rows, sortKey), [rows, sortKey]);
   const showTargetBeforeLabel = showTargetHorseNumber && kind === "jockey";
   const showTargetAfterLabel = showTargetHorseNumber && kind === "frame";
+  const showFinishPositionMedian = kind === "frame";
+  const colSpan =
+    (showStarts ? 5 : 4) + (showTargetHorseNumber ? 1 : 0) + (showFinishPositionMedian ? 1 : 0);
 
   return (
     <div className="race-trend-table-panel">
@@ -128,6 +138,7 @@ function TrendTable({
                   </button>
                 </th>
               ))}
+              {showFinishPositionMedian ? <th>着順中央値</th> : null}
             </tr>
           </thead>
           <tbody>
@@ -161,6 +172,11 @@ function TrendTable({
                   <td>
                     <span className="race-trend-skeleton race-trend-skeleton-rate" />
                   </td>
+                  {showFinishPositionMedian ? (
+                    <td>
+                      <span className="race-trend-skeleton race-trend-skeleton-rate" />
+                    </td>
+                  ) : null}
                 </tr>
               ))
             ) : sortedRows.length > 0 ? (
@@ -181,10 +197,7 @@ function TrendTable({
               })
             ) : (
               <tr>
-                <td
-                  className="race-trend-empty-cell"
-                  colSpan={(showStarts ? 5 : 4) + (showTargetHorseNumber ? 1 : 0)}
-                >
+                <td className="race-trend-empty-cell" colSpan={colSpan}>
                   {emptyLabel}
                 </td>
               </tr>
@@ -215,6 +228,9 @@ function FragmentRow({
 }) {
   const showTargetBeforeLabel = showTargetHorseNumber && kind === "jockey";
   const showTargetAfterLabel = showTargetHorseNumber && kind === "frame";
+  const showFinishPositionMedian = kind === "frame";
+  const colSpan =
+    (showStarts ? 5 : 4) + (showTargetHorseNumber ? 1 : 0) + (showFinishPositionMedian ? 1 : 0);
 
   return (
     <>
@@ -239,10 +255,11 @@ function FragmentRow({
         <td>{formatRate(row.showRate)}</td>
         <td>{formatRate(row.quinellaRate)}</td>
         <td>{formatRate(row.winRate)}</td>
+        {showFinishPositionMedian ? <td>{formatMedian(row.finishPositionMedian)}</td> : null}
       </tr>
       {isExpanded ? (
         <tr className="stats-detail-row">
-          <td colSpan={(showStarts ? 5 : 4) + (showTargetHorseNumber ? 1 : 0)}>
+          <td colSpan={colSpan}>
             <div className="stats-detail-panel">
               <table className={`stats-detail-table race-trend-detail-table ${kind}`}>
                 <colgroup>

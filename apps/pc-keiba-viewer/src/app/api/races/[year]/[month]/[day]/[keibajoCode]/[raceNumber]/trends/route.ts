@@ -128,6 +128,20 @@ const detailFromStarter = (row: RaceTrendStarterRow): RaceTrendDetail => ({
   time: row.sohaTime,
 });
 
+const calculateMedian = (values: number[]): number | null => {
+  if (values.length === 0) {
+    return null;
+  }
+  const sorted = values.toSorted((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) {
+    return sorted[middle] ?? null;
+  }
+  const left = sorted[middle - 1];
+  const right = sorted[middle];
+  return left === undefined || right === undefined ? null : (left + right) / 2;
+};
+
 const aggregateRows = (
   rows: RaceTrendStarterRow[],
   options: {
@@ -170,6 +184,7 @@ const aggregateRows = (
         showRate: starts > 0 ? (showCount / starts) * 100 : 0,
         quinellaRate: starts > 0 ? (quinellaCount / starts) * 100 : 0,
         winRate: starts > 0 ? (winCount / starts) * 100 : 0,
+        finishPositionMedian: calculateMedian(groupRows.map((row) => row.finishPosition)),
         details: groupRows.map(detailFromStarter).toSorted((a, b) => {
           const dateOrder = b.date.localeCompare(a.date);
           if (dateOrder !== 0) {

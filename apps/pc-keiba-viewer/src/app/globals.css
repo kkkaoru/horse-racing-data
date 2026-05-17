@@ -5063,7 +5063,7 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 }
 
 .race-trend-table {
-  min-width: 600px;
+  min-width: 700px;
 }
 
 .race-trend-table th:first-child,
