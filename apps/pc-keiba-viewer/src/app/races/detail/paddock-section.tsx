@@ -26,6 +26,7 @@ import {
   type PaddockOfficialRank,
   type PaddockState,
 } from "../../../lib/paddock";
+import { getRaceTags } from "../../../lib/race-classification";
 import type { HorseRaceResult, PremiumPaddockBulletin, Runner } from "../../../lib/race-types";
 import {
   formatHorseWeight,
@@ -281,6 +282,11 @@ const formatPastRaceName = (result: HorseRaceResult): string => {
   return names.length > 0 ? names.join(" / ") : "一般競走";
 };
 
+const formatPastRaceConditions = (result: HorseRaceResult): string => {
+  const tags = getRaceTags(result);
+  return tags.length > 0 ? tags.join(" / ") : cleanText(result.kyosoJokenMeisho, "-");
+};
+
 const formatPastResultMeta = (result: HorseRaceResult): string =>
   [
     formatDate(result.kaisaiNen, result.kaisaiTsukihi),
@@ -318,6 +324,7 @@ function PaddockRecentResults({ results }: { results: HorseRaceResult[] | null }
             <span className="paddock-recent-race">
               <strong>{formatPastRaceName(result)}</strong>
               <small>{formatPastResultMeta(result)}</small>
+              <small className="paddock-recent-condition">{formatPastRaceConditions(result)}</small>
             </span>
             <span className="paddock-recent-stats">
               <span>{formatPastPopularity(result.tanshoNinkijun)}</span>
