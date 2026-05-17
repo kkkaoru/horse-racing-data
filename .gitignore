@@ -153,6 +153,7 @@ test-results/
 *.xlsx
 
 apps/**/tmp/**
+tmp/
 **/.tmp
 
 # wrangler r2 object get local downloads
