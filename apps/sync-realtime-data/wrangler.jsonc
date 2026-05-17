@@ -55,6 +55,12 @@
       "database_id": "d12ebd45-2aff-4d74-8556-295c1da9177e",
     },
   ],
+  "r2_buckets": [
+    {
+      "binding": "RUNNING_STYLE_MODELS",
+      "bucket_name": "pc-keiba-finish-position-models",
+    },
+  ],
   "durable_objects": {
     "bindings": [
       {
