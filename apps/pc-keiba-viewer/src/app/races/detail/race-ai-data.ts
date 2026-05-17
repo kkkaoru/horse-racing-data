@@ -52,6 +52,26 @@ export type RaceAiSupplementalPayloads = {
   realtime: RealtimeRacePayload | null;
 };
 
+export interface RaceAiDataReadinessItem {
+  availableUnits: number;
+  key: string;
+  label: string;
+  missingPercent: number;
+  missingUnits: number;
+  notes: string[];
+  preparedPercent: number;
+  status: "missing" | "partial" | "ready";
+  totalUnits: number;
+}
+
+export interface RaceAiDataReadiness {
+  items: RaceAiDataReadinessItem[];
+  missingPercent: number;
+  preparedPercent: number;
+  readyItems: number;
+  totalItems: number;
+}
+
 type FinishPredictionPayloadForExport = {
   evaluation?: unknown;
   rows: FinishPredictionRow[];
@@ -79,6 +99,7 @@ export type RaceAiExportData = {
       overallScore: ReturnType<typeof buildOverallScoreOutput> | null;
       sourceSections: string[];
     };
+    dataReadiness: RaceAiDataReadiness;
   };
   meta: {
     generatedAt: string;
@@ -154,6 +175,150 @@ const getSectionUrl = ({
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
+
+const roundPercent = (value: number): number => Math.round(value * 10) / 10;
+
+const parsePositiveCount = (value: string | null): number | null => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+};
+
+const isPayloadAvailable = (payload: unknown): boolean =>
+  payload !== null && payload !== undefined && (!isRecord(payload) || !("error" in payload));
+
+const buildReadinessItem = ({
+  availableUnits,
+  key,
+  label,
+  notes = [],
+  totalUnits,
+}: {
+  availableUnits: number;
+  key: string;
+  label: string;
+  notes?: string[];
+  totalUnits: number;
+}): RaceAiDataReadinessItem => {
+  const normalizedTotal = Math.max(1, totalUnits);
+  const normalizedAvailable = Math.min(Math.max(0, availableUnits), normalizedTotal);
+  const preparedPercent = roundPercent((normalizedAvailable / normalizedTotal) * 100);
+  const missingPercent = roundPercent(100 - preparedPercent);
+  return {
+    availableUnits: normalizedAvailable,
+    key,
+    label,
+    missingPercent,
+    missingUnits: normalizedTotal - normalizedAvailable,
+    notes,
+    preparedPercent,
+    status:
+      normalizedAvailable === normalizedTotal
+        ? "ready"
+        : normalizedAvailable > 0
+          ? "partial"
+          : "missing",
+    totalUnits: normalizedTotal,
+  };
+};
+
+const buildRaceAiDataReadiness = ({
+  basePostgresqlData,
+  currentOutput,
+  sectionPayloads,
+  sections,
+  supplementalPayloads,
+}: {
+  basePostgresqlData: RaceAiDataBase["basePostgresqlData"];
+  currentOutput: RaceAiExportData["aiReady"]["currentOutput"];
+  sectionPayloads: RaceAiSectionPayloads | null;
+  sections: string[];
+  supplementalPayloads: RaceAiSupplementalPayloads | null;
+}): RaceAiDataReadiness => {
+  const expectedRunnerCount =
+    parsePositiveCount(basePostgresqlData.race.shussoTosu) ?? basePostgresqlData.runners.length;
+  const items: RaceAiDataReadinessItem[] = [
+    buildReadinessItem({
+      availableUnits: basePostgresqlData.race ? 1 : 0,
+      key: "race",
+      label: "レース基本情報",
+      totalUnits: 1,
+    }),
+    buildReadinessItem({
+      availableUnits: basePostgresqlData.runners.length,
+      key: "runners",
+      label: "出走馬",
+      notes: [`${basePostgresqlData.runners.length}/${Math.max(1, expectedRunnerCount)} 頭`],
+      totalUnits: Math.max(1, expectedRunnerCount),
+    }),
+    buildReadinessItem({
+      availableUnits: basePostgresqlData.courseInfo ? 1 : 0,
+      key: "courseInfo",
+      label: "コース情報",
+      totalUnits: 1,
+    }),
+    buildReadinessItem({
+      availableUnits: basePostgresqlData.raceDayRaces.length > 0 ? 1 : 0,
+      key: "raceDayRaces",
+      label: "同日レース一覧",
+      notes: [`${basePostgresqlData.raceDayRaces.length} レース`],
+      totalUnits: 1,
+    }),
+    ...sections.map((section) => {
+      const payload = sectionPayloads?.[section];
+      const error =
+        isRecord(payload) && typeof payload.error === "string"
+          ? [`取得エラー: ${payload.error}`]
+          : [];
+      return buildReadinessItem({
+        availableUnits: isPayloadAvailable(payload) ? 1 : 0,
+        key: `section:${section}`,
+        label: `詳細データ: ${section}`,
+        notes: error,
+        totalUnits: 1,
+      });
+    }),
+    buildReadinessItem({
+      availableUnits: supplementalPayloads?.realtime ? 1 : 0,
+      key: "realtime",
+      label: "リアルタイムデータ",
+      notes: supplementalPayloads?.errors.realtime
+        ? [`取得エラー: ${supplementalPayloads.errors.realtime}`]
+        : [],
+      totalUnits: 1,
+    }),
+    buildReadinessItem({
+      availableUnits: supplementalPayloads?.paddock ? 1 : 0,
+      key: "paddock",
+      label: "パドックデータ",
+      notes: supplementalPayloads?.errors.paddock
+        ? [`取得エラー: ${supplementalPayloads.errors.paddock}`]
+        : [],
+      totalUnits: 1,
+    }),
+    buildReadinessItem({
+      availableUnits: currentOutput.finishPrediction ? 1 : 0,
+      key: "aiOutput:finishPrediction",
+      label: "AI向け着順予測出力",
+      totalUnits: 1,
+    }),
+    buildReadinessItem({
+      availableUnits: currentOutput.overallScore ? 1 : 0,
+      key: "aiOutput:overallScore",
+      label: "AI向け総合スコア出力",
+      totalUnits: 1,
+    }),
+  ];
+  const preparedPercent = roundPercent(
+    items.reduce((sum, item) => sum + item.preparedPercent, 0) / Math.max(1, items.length),
+  );
+  return {
+    items,
+    missingPercent: roundPercent(100 - preparedPercent),
+    preparedPercent,
+    readyItems: items.filter((item) => item.status === "ready").length,
+    totalItems: items.length,
+  };
+};
 
 const isRowsPayload = (
   payload: unknown,
@@ -472,36 +637,46 @@ export const buildRaceAiExportData = ({
   sectionPayloads: RaceAiSectionPayloads | null;
   sections: string[];
   supplementalPayloads: RaceAiSupplementalPayloads | null;
-}): RaceAiExportData => ({
-  aiReady: {
-    currentOutput: {
-      finishPrediction: buildFinishPredictionOutput(sectionPayloads, supplementalPayloads),
-      overallScore: buildOverallScoreOutput(sectionPayloads, supplementalPayloads),
-      sourceSections: sections,
+}): RaceAiExportData => {
+  const currentOutput = {
+    finishPrediction: buildFinishPredictionOutput(sectionPayloads, supplementalPayloads),
+    overallScore: buildOverallScoreOutput(sectionPayloads, supplementalPayloads),
+    sourceSections: sections,
+  };
+  return {
+    aiReady: {
+      currentOutput,
+      dataReadiness: buildRaceAiDataReadiness({
+        basePostgresqlData,
+        currentOutput,
+        sectionPayloads,
+        sections,
+        supplementalPayloads,
+      }),
     },
-  },
-  meta: {
-    generatedAt: new Date().toISOString(),
-    purpose: "AIに渡すためのレース詳細ページ表示データ",
-    route: {
-      day,
-      keibajoCode,
-      month,
-      raceNumber,
-      source,
-      year,
+    meta: {
+      generatedAt: new Date().toISOString(),
+      purpose: "AIに渡すためのレース詳細ページ表示データ",
+      route: {
+        day,
+        keibajoCode,
+        month,
+        raceNumber,
+        source,
+        year,
+      },
     },
-  },
-  postgresql: {
-    base: basePostgresqlData,
-    sections: sectionPayloads,
-  },
-  processedForDisplay: {
-    base: baseProcessedData,
-    sections: sectionPayloads,
-  },
-  realtime: supplementalPayloads,
-});
+    postgresql: {
+      base: basePostgresqlData,
+      sections: sectionPayloads,
+    },
+    processedForDisplay: {
+      base: baseProcessedData,
+      sections: sectionPayloads,
+    },
+    realtime: supplementalPayloads,
+  };
+};
 
 export const fetchRaceAiExportData = async (props: RaceAiDataBase): Promise<RaceAiExportData> => {
   const sections = getRaceAiSections({

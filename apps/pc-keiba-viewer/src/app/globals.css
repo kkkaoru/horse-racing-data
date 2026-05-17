@@ -7341,8 +7341,22 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   border: var(--space-1px-7) solid var(--border);
   border-radius: var(--space-8px-28);
   display: grid;
-  gap: var(--space-14px-55);
-  padding: var(--space-16px-10);
+  gap: var(--space-18px-31);
+  padding: var(--space-20px-52);
+}
+
+.race-ai-assistant-section > summary {
+  cursor: pointer;
+  margin-bottom: var(--space-2px-25);
+  padding-bottom: var(--space-4px-18);
+}
+
+.race-ai-assistant-section:not([open]) > summary {
+  margin-bottom: var(--number-0-2);
+}
+
+.race-ai-assistant-section > summary::marker {
+  color: var(--text-muted);
 }
 
 .race-ai-download-dialog {
@@ -7390,7 +7404,7 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 
 .race-ai-status-grid {
   display: grid;
-  gap: var(--space-10px-27);
+  gap: var(--space-12px-9);
   grid-template-columns: repeat(auto-fit, minmax(var(--space-180px-85), var(--space-1fr-51)));
 }
 
@@ -7399,8 +7413,61 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   border: var(--space-1px-7) solid var(--border);
   border-radius: var(--space-6px-33);
   display: grid;
-  gap: var(--space-2px-25);
-  padding: var(--space-10px-27) var(--space-12px-9);
+  gap: var(--space-4px-18);
+  padding: var(--space-14px-55) var(--space-16px-10);
+}
+
+.race-ai-readiness-panel {
+  background: var(--surface-muted);
+  border: var(--space-1px-7) solid var(--border);
+  border-radius: var(--space-6px-33);
+  display: grid;
+  gap: var(--space-14px-55);
+  padding: var(--space-16px-10);
+}
+
+.race-ai-readiness-list {
+  display: grid;
+  gap: var(--space-10px-27);
+}
+
+.race-ai-readiness-row {
+  align-items: center;
+  background: var(--surface);
+  border: var(--space-1px-7) solid var(--border);
+  border-radius: var(--space-6px-33);
+  display: grid;
+  gap: var(--space-10px-27);
+  grid-template-columns:
+    minmax(var(--space-180px-85), var(--space-1-35fr-116))
+    minmax(var(--space-180px-85), var(--space-1fr-51))
+    minmax(var(--space-140px-70), var(--space-0-72fr-114));
+  padding: var(--space-12px-9) var(--space-14px-55);
+}
+
+.race-ai-readiness-row > span:first-child {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6px-33);
+}
+
+.race-ai-readiness-row progress {
+  accent-color: var(--accent);
+  min-inline-size: var(--number-0-2);
+  width: var(--space-100pct-12);
+}
+
+.race-ai-readiness-row > small,
+.race-ai-readiness-row small {
+  color: var(--text-muted);
+}
+
+.race-ai-readiness-row.partial progress {
+  accent-color: var(--gold);
+}
+
+.race-ai-readiness-row.missing progress {
+  accent-color: var(--danger);
 }
 
 .race-ai-status-grid span,
@@ -7413,7 +7480,8 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-10px-27);
+  gap: var(--space-12px-9);
+  padding-top: var(--space-2px-25);
 }
 
 .race-ai-actions button,
@@ -7442,6 +7510,7 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 .race-ai-table-wrap {
   max-width: var(--space-100pct-12);
   overflow-x: auto;
+  padding-top: var(--space-2px-25);
 }
 
 .race-ai-prediction-table {
@@ -7469,14 +7538,15 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   background: var(--surface-muted);
   border-left: var(--space-3px-22) solid var(--accent);
   margin: var(--number-0-2);
-  padding: var(--space-10px-27) var(--space-12px-9);
+  padding: var(--space-14px-55) var(--space-16px-10);
 }
 
 .race-ai-chat-form {
   align-items: end;
   display: grid;
-  gap: var(--space-10px-27);
+  gap: var(--space-14px-55);
   grid-template-columns: var(--space-1fr-51) auto;
+  padding-top: var(--space-2px-25);
 }
 
 .race-ai-chat-form label {
@@ -7486,7 +7556,8 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 }
 
 .race-ai-chat-form textarea {
-  border: var(--space-1px-7) solid var(--border);
+  background: var(--surface);
+  border: var(--space-1px-7) solid var(--accent);
   border-radius: var(--space-6px-33);
   color: var(--text);
   font: inherit;
@@ -7496,10 +7567,17 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   width: var(--space-100pct-12);
 }
 
+.race-ai-chat-form textarea:focus {
+  border-color: var(--accent-strong);
+  outline: var(--space-3px-22) solid var(--color-rgba-15-107-79-0-12-36);
+  outline-offset: var(--space-2px-25);
+}
+
 .race-ai-log-grid {
   display: grid;
-  gap: var(--space-12px-9);
+  gap: var(--space-14px-55);
   grid-template-columns: repeat(auto-fit, minmax(var(--space-280px-175), var(--space-1fr-51)));
+  padding-top: var(--space-2px-25);
 }
 
 .race-ai-log-grid details {
@@ -7647,6 +7725,11 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   }
 
   .mypage-ai-model-row {
+    align-items: start;
+    grid-template-columns: var(--space-1fr-51);
+  }
+
+  .race-ai-readiness-row {
     align-items: start;
     grid-template-columns: var(--space-1fr-51);
   }

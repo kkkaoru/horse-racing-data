@@ -542,6 +542,22 @@ export async function RaceDetailView({
 
         <TrackConditionSection trackCode={race.trackCode} />
 
+        <RaceAiAssistant
+          basePostgresqlData={{
+            courseInfo,
+            race,
+            raceDayRaces,
+            runners,
+          }}
+          baseProcessedData={baseProcessedData}
+          day={day}
+          keibajoCode={keibajoCode}
+          month={month}
+          raceNumber={raceNumber}
+          source={raceSource}
+          year={year}
+        />
+
         <PaddockSection
           day={day}
           decodeHexHorseWeight={decodeHexHorseWeight}
@@ -652,22 +668,6 @@ export async function RaceDetailView({
           month={month}
           raceNumber={raceNumber}
           realtimeApiBaseUrl={realtimeApiBaseUrl}
-          source={raceSource}
-          year={year}
-        />
-
-        <RaceAiAssistant
-          basePostgresqlData={{
-            courseInfo,
-            race,
-            raceDayRaces,
-            runners,
-          }}
-          baseProcessedData={baseProcessedData}
-          day={day}
-          keibajoCode={keibajoCode}
-          month={month}
-          raceNumber={raceNumber}
           source={raceSource}
           year={year}
         />
