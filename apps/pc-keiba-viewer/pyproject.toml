@@ -48,7 +48,7 @@ extra-paths = ["src/scripts"]
 python = ".venv/bin/python"
 
 [tool.pytest.ini_options]
-addopts = "--cov=corner_lightgbm --cov=finish_position_lightgbm --cov=finish_position_features_duckdb --cov-report=term-missing --cov-fail-under=90"
+addopts = "--cov=corner_lightgbm --cov=finish_position_lightgbm --cov=finish_position_features_duckdb --cov=finish_position_transformer --cov-report=term-missing --cov-fail-under=90"
 pythonpath = ["src/scripts"]
 testpaths = ["tests"]
 
