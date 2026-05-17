@@ -73,6 +73,22 @@ describe("odds fetch schedule", () => {
     expect(getNextOddsFetchSlotAt(raceStart, new Date("2026-05-17T12:19:00+09:00"), "jra")).toBe(
       "2026-05-17T13:00:00+09:00",
     );
+    expect(getNextOddsFetchSlotAt(raceStart, new Date("2026-05-16T18:00:00+09:00"), "jra")).toBe(
+      "2026-05-16T19:00:00+09:00",
+    );
+    expect(getNextOddsFetchSlotAt(raceStart, new Date("2026-05-17T15:30:00+09:00"), "jra")).toBe(
+      "2026-05-17T15:40:00+09:00",
+    );
+  });
+
+  it("returns the next regular odds slot for non-JRA races", () => {
+    const raceStart = new Date("2026-05-17T13:05:00+09:00");
+    expect(getNextOddsFetchSlotAt(raceStart, new Date("2026-05-17T12:18:09+09:00"), "nar")).toBe(
+      "2026-05-17T12:25:00+09:00",
+    );
+    expect(
+      getNextOddsFetchSlotAt(raceStart, new Date("2026-05-17T13:04:30+09:00"), "nar"),
+    ).toBeNull();
   });
 });
 
