@@ -974,6 +974,19 @@ const notifyPremiumPaddockIfNeeded = async (
   });
 };
 
+const getPremiumPaddockRetryDelaySeconds = (race: NarRaceSource, now = new Date()): number => {
+  const minutes = minutesUntilRace(race, now);
+  if (minutes !== null && minutes <= 15 && minutes >= -PREMIUM_PADDOCK_WINDOW_AFTER_MINUTES) {
+    return 30;
+  }
+  return PREMIUM_PADDOCK_RETRY_DELAY_SECONDS;
+};
+
+const getPremiumPaddockRetryAfter = (env: Env, race: NarRaceSource): string =>
+  toJstIsoString(
+    new Date(getNow(env).getTime() + getPremiumPaddockRetryDelaySeconds(race, getNow(env)) * 1000),
+  );
+
 const retryPremiumPaddockWhileInWindow = async (env: Env, race: NarRaceSource): Promise<void> => {
   const minutes = minutesUntilRace(race, getNow(env));
   if (minutes === null || minutes < -PREMIUM_PADDOCK_WINDOW_AFTER_MINUTES) {
@@ -981,7 +994,7 @@ const retryPremiumPaddockWhileInWindow = async (env: Env, race: NarRaceSource): 
   }
   await env.REALTIME_JOBS.send(
     { raceKey: race.raceKey, type: "fetch-premium-paddock" },
-    { delaySeconds: PREMIUM_PADDOCK_RETRY_DELAY_SECONDS },
+    { delaySeconds: getPremiumPaddockRetryDelaySeconds(race, getNow(env)) },
   );
 };
 
@@ -1461,16 +1474,14 @@ const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<v
       });
       return;
     }
-      const retryAfter = toJstIsoString(
-        new Date(getNow(env).getTime() + PREMIUM_PADDOCK_RETRY_DELAY_SECONDS * 1000),
-      );
-      await updatePremiumPaddockFetchState(env.REALTIME_DB, {
-        message: error instanceof Error ? error.message : String(error),
-        raceKey,
-        retryAfter,
-        status: "failed",
-      });
-      throw error;
+    const retryAfter = getPremiumPaddockRetryAfter(env, race);
+    await updatePremiumPaddockFetchState(env.REALTIME_DB, {
+      message: error instanceof Error ? error.message : String(error),
+      raceKey,
+      retryAfter,
+      status: "failed",
+    });
+    throw error;
   }
   const parsedAttempts = attempts.map((attempt) => ({
     mode: attempt.mode,
@@ -1488,9 +1499,7 @@ const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<v
   const fetchedAt = toJstIsoString();
   if (parsed.authRequired) {
     await clearCachedPremiumPaddock(env, raceKey);
-    const retryAfter = toJstIsoString(
-      new Date(getNow(env).getTime() + PREMIUM_PADDOCK_RETRY_DELAY_SECONDS * 1000),
-    );
+    const retryAfter = getPremiumPaddockRetryAfter(env, race);
     const payloadSignature = await buildPremiumPaddockSignature([]);
     await updatePremiumPaddockFetchState(env.REALTIME_DB, {
       fetchedAt,
@@ -1520,9 +1529,7 @@ const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<v
   }
   if (parsed.unavailable) {
     await clearCachedPremiumPaddock(env, raceKey);
-    const retryAfter = toJstIsoString(
-      new Date(getNow(env).getTime() + PREMIUM_PADDOCK_RETRY_DELAY_SECONDS * 1000),
-    );
+    const retryAfter = getPremiumPaddockRetryAfter(env, race);
     const payloadSignature = await buildPremiumPaddockSignature([]);
     await updatePremiumPaddockFetchState(env.REALTIME_DB, {
       fetchedAt,
@@ -1552,9 +1559,7 @@ const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<v
   }
   if (parsed.pending) {
     await clearCachedPremiumPaddock(env, raceKey);
-    const retryAfter = toJstIsoString(
-      new Date(getNow(env).getTime() + PREMIUM_PADDOCK_RETRY_DELAY_SECONDS * 1000),
-    );
+    const retryAfter = getPremiumPaddockRetryAfter(env, race);
     const payloadSignature = await buildPremiumPaddockSignature([]);
     await updatePremiumPaddockFetchState(env.REALTIME_DB, {
       fetchedAt,
@@ -1584,9 +1589,7 @@ const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<v
   }
   if (parsed.bulletins.length === 0) {
     await clearCachedPremiumPaddock(env, raceKey);
-    const retryAfter = toJstIsoString(
-      new Date(getNow(env).getTime() + PREMIUM_PADDOCK_RETRY_DELAY_SECONDS * 1000),
-    );
+    const retryAfter = getPremiumPaddockRetryAfter(env, race);
     const payloadSignature = await buildPremiumPaddockSignature([]);
     await updatePremiumPaddockFetchState(env.REALTIME_DB, {
       fetchedAt,
