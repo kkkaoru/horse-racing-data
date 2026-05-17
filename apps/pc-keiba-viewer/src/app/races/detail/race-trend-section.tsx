@@ -323,19 +323,21 @@ export function RaceTrendSection({
   const [frameEnd, setFrameEnd] = useState(defaultEndDate);
   const [jockeySortKey, setJockeySortKey] = useState<SortKey>("showRate");
   const [frameSortKey, setFrameSortKey] = useState<SortKey>("showRate");
-  const [payload, setPayload] = useState<RaceTrendPayload | null>(null);
-  const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
+  const [jockeyRows, setJockeyRows] = useState<RaceTrendRateRow[]>([]);
+  const [frameRows, setFrameRows] = useState<RaceTrendRateRow[]>([]);
+  const [jockeyStatus, setJockeyStatus] = useState<"idle" | "loading" | "error">("idle");
+  const [frameStatus, setFrameStatus] = useState<"idle" | "loading" | "error">("idle");
 
-  const fetchPayload = useCallback(async () => {
-    setStatus("loading");
+  const fetchJockeyRows = useCallback(async () => {
+    setJockeyStatus("loading");
     try {
       const response = await fetch(
         getApiPath({
           day,
           defaultEndDate,
           defaultStartDate,
-          frameEnd,
-          frameStart,
+          frameEnd: defaultEndDate,
+          frameStart: defaultStartDate,
           jockeyEnd,
           jockeySameVenue,
           jockeyStart,
@@ -354,18 +356,16 @@ export function RaceTrendSection({
       if (!isRaceTrendPayload(body)) {
         throw new Error("invalid race trend payload");
       }
-      setPayload(body);
-      setStatus("idle");
+      setJockeyRows(body.jockeyRows);
+      setJockeyStatus("idle");
     } catch {
-      setPayload(null);
-      setStatus("error");
+      setJockeyRows([]);
+      setJockeyStatus("error");
     }
   }, [
     day,
     defaultEndDate,
     defaultStartDate,
-    frameEnd,
-    frameStart,
     jockeyEnd,
     jockeySameVenue,
     jockeyStart,
@@ -377,8 +377,59 @@ export function RaceTrendSection({
   ]);
 
   useEffect(() => {
-    void fetchPayload();
-  }, [fetchPayload]);
+    void fetchJockeyRows();
+  }, [fetchJockeyRows]);
+
+  const fetchFrameRows = useCallback(async () => {
+    setFrameStatus("loading");
+    try {
+      const response = await fetch(
+        getApiPath({
+          day,
+          defaultEndDate,
+          defaultStartDate,
+          frameEnd,
+          frameStart,
+          jockeyEnd: defaultEndDate,
+          jockeySameVenue: true,
+          jockeyStart: defaultStartDate,
+          keibajoCode,
+          month,
+          raceNumber,
+          source,
+          year,
+        }),
+        { cache: "no-store" },
+      );
+      if (!response.ok) {
+        throw new Error(`race trend api ${response.status}`);
+      }
+      const body: unknown = await response.json();
+      if (!isRaceTrendPayload(body)) {
+        throw new Error("invalid race trend payload");
+      }
+      setFrameRows(body.frameRows);
+      setFrameStatus("idle");
+    } catch {
+      setFrameRows([]);
+      setFrameStatus("error");
+    }
+  }, [
+    day,
+    defaultEndDate,
+    defaultStartDate,
+    frameEnd,
+    frameStart,
+    keibajoCode,
+    month,
+    raceNumber,
+    source,
+    year,
+  ]);
+
+  useEffect(() => {
+    void fetchFrameRows();
+  }, [fetchFrameRows]);
 
   return (
     <section className="race-trend-section">
@@ -419,10 +470,10 @@ export function RaceTrendSection({
           </div>
           <TrendTable
             emptyLabel="該当する騎手成績はありません"
-            isLoading={status === "loading"}
+            isLoading={jockeyStatus === "loading"}
             kind="jockey"
             labelColumn="騎手名"
-            rows={payload?.jockeyRows ?? []}
+            rows={jockeyRows}
             showStarts
             showTargetHorseNumber
             sortKey={jockeySortKey}
@@ -452,10 +503,10 @@ export function RaceTrendSection({
           </div>
           <TrendTable
             emptyLabel="該当する枠成績はありません"
-            isLoading={status === "loading"}
+            isLoading={frameStatus === "loading"}
             kind="frame"
             labelColumn="枠番"
-            rows={payload?.frameRows ?? []}
+            rows={frameRows}
             showTargetHorseNumber
             sortKey={frameSortKey}
             title="枠ごとの勝率"
@@ -464,7 +515,7 @@ export function RaceTrendSection({
         </div>
       </div>
 
-      {status === "error" ? (
+      {jockeyStatus === "error" || frameStatus === "error" ? (
         <p className="race-trend-error">レース傾向を取得できませんでした。</p>
       ) : null}
     </section>
