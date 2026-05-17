@@ -338,3 +338,208 @@ def test_main_invokes_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     subject.main(["--category", "jra", "--output-dir", str(tmp_path)])
     assert captured
     assert "rows_written" in captured[0]
+
+
+def test_running_style_class_thresholds_are_documented():
+    assert subject.RUNNING_STYLE_SENKOU_THRESHOLD == 0.30
+    assert subject.RUNNING_STYLE_SASHI_THRESHOLD == 0.70
+    assert subject.RUNNING_STYLE_CLASS_NIGE == 0
+    assert subject.RUNNING_STYLE_CLASS_SENKOU == 1
+    assert subject.RUNNING_STYLE_CLASS_SASHI == 2
+    assert subject.RUNNING_STYLE_CLASS_OIKOMI == 3
+
+
+def _classify_running_style(corner1_norm: float | None) -> int | None:
+    """Reference Python implementation mirroring the SQL CASE in build_target_table()."""
+    if corner1_norm is None:
+        return None
+    if corner1_norm == 0:
+        return subject.RUNNING_STYLE_CLASS_NIGE
+    if corner1_norm <= subject.RUNNING_STYLE_SENKOU_THRESHOLD:
+        return subject.RUNNING_STYLE_CLASS_SENKOU
+    if corner1_norm <= subject.RUNNING_STYLE_SASHI_THRESHOLD:
+        return subject.RUNNING_STYLE_CLASS_SASHI
+    return subject.RUNNING_STYLE_CLASS_OIKOMI
+
+
+def test_running_style_label_nige_when_corner_1_first():
+    assert _classify_running_style(0.0) == 0
+
+
+def test_running_style_label_senkou_when_corner_1_norm_within_first_30_percent():
+    assert _classify_running_style(0.05) == 1
+    assert _classify_running_style(0.30) == 1
+
+
+def test_running_style_label_sashi_when_corner_1_norm_in_middle():
+    assert _classify_running_style(0.31) == 2
+    assert _classify_running_style(0.50) == 2
+    assert _classify_running_style(0.70) == 2
+
+
+def test_running_style_label_oikomi_when_corner_1_norm_exceeds_70_percent():
+    assert _classify_running_style(0.71) == 3
+    assert _classify_running_style(1.00) == 3
+
+
+def test_running_style_label_null_when_corner_1_norm_missing():
+    assert _classify_running_style(None) is None
+
+
+def test_build_target_table_emits_running_style_label_via_duckdb():
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        """
+        create or replace temp table rec as
+        select * from (
+          values
+            ('jra', '20250101', date '2025-01-01', '2025', '0101', '05', '01',
+              '2020100001', 3, 'jockey_a', 'trainer_a',
+              1600, '11', 'A', '99', 16, 1, 1.0/16,
+              'name_a', 'fukudai_a',
+              null::double, null::double, null::double, null::double,
+              '1', '1', 1, 50.0, null::int, 0.00),
+            ('jra', '20250101', date '2025-01-01', '2025', '0101', '05', '01',
+              '2020100002', 5, 'jockey_b', 'trainer_b',
+              1600, '11', 'A', '99', 16, 2, 2.0/16,
+              'name_b', 'fukudai_b',
+              null::double, null::double, null::double, null::double,
+              '1', '1', 2, 100.0, null::int, 0.20),
+            ('jra', '20250101', date '2025-01-01', '2025', '0101', '05', '01',
+              '2020100003', 8, 'jockey_c', 'trainer_c',
+              1600, '11', 'A', '99', 16, 10, 10.0/16,
+              'name_c', 'fukudai_c',
+              null::double, null::double, null::double, null::double,
+              '1', '1', 5, 500.0, null::int, 0.50),
+            ('jra', '20250101', date '2025-01-01', '2025', '0101', '05', '01',
+              '2020100004', 12, 'jockey_d', 'trainer_d',
+              1600, '11', 'A', '99', 16, 15, 15.0/16,
+              'name_d', 'fukudai_d',
+              null::double, null::double, null::double, null::double,
+              '1', '1', 12, 1500.0, null::int, 0.95),
+            ('jra', '20250101', date '2025-01-01', '2025', '0101', '05', '01',
+              '2020100005', 16, 'jockey_e', 'trainer_e',
+              1600, '11', 'A', '99', 16, null::int, null::double,
+              'name_e', 'fukudai_e',
+              null::double, null::double, null::double, null::double,
+              '1', '1', 16, 2000.0, null::int, null::double)
+        ) as v(
+          source, race_date, race_dt, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+          ketto_toroku_bango, umaban, kishumei_ryakusho, chokyoshimei_ryakusho,
+          kyori, track_code, grade_code, kyoso_joken_code, shusso_tosu, finish_position, finish_norm,
+          kyosomei_hondai, kyosomei_fukudai,
+          time_sa, kohan_3f, corner3_norm, corner4_norm,
+          babajotai_code_shiba, babajotai_code_dirt,
+          tansho_ninkijun, tansho_odds, bataiju, corner1_norm
+        )
+        """
+    )
+    subject.build_target_table(con, "jra", "20250101", "20251231")
+    rows = con.execute(
+        """
+        select ketto_toroku_bango, target_corner_1_norm, target_running_style_class
+        from target order by ketto_toroku_bango
+        """
+    ).fetchall()
+    assert rows == [
+        ("2020100001", 0.0, 0),
+        ("2020100002", 0.2, 1),
+        ("2020100003", 0.5, 2),
+        ("2020100004", 0.95, 3),
+        ("2020100005", None, None),
+    ]
+
+
+def test_horse_running_style_history_cte_aggregates_corner_1_norm():
+    cte = subject.horse_running_style_history_cte()
+    assert "past_corner_1_norm_avg_5" in cte
+    assert "past_corner_1_norm_std_5" in cte
+    assert "past_corner_1_norm_best_5" in cte
+    assert "past_corner_1_norm_worst_5" in cte
+    assert "past_nige_rate_self" in cte
+    assert "past_senkou_rate_self" in cte
+    assert "past_sashi_rate_self" in cte
+    assert "past_oikomi_rate_self" in cte
+    assert "last_race_corner_1_norm" in cte
+    assert "last_race_corner_progression" in cte
+    assert "horse_distance_corner_1_norm_avg" in cte
+    assert "horse_track_corner_1_norm_avg" in cte
+    assert "from horse_history_base" in cte
+
+
+def test_horse_running_style_history_cte_uses_recent_window_filter():
+    cte = subject.horse_running_style_history_cte()
+    assert f"recent_rank <= {subject.RECENT_WINDOW_SIZE}" in cte
+
+
+def test_per_year_specs_registers_horse_running_style_history():
+    names = [spec["name"] for spec in subject.PER_YEAR_SPECS]
+    assert "horse_running_style_history" in names
+
+
+def test_kyori_band_constants_partition_distance_range():
+    assert subject.KYORI_BAND_SPRINT_MAX < subject.KYORI_BAND_MILE_MAX
+    assert subject.KYORI_BAND_MILE_MAX < subject.KYORI_BAND_INTERMEDIATE_MAX
+    assert subject.KYORI_BAND_SPRINT == 0
+    assert subject.KYORI_BAND_LONG == 3
+
+
+def test_season_band_constants_distinct_values():
+    assert subject.SEASON_SPRING == 0
+    assert subject.SEASON_SUMMER == 1
+    assert subject.SEASON_AUTUMN == 2
+    assert subject.SEASON_WINTER == 3
+
+
+def test_base_features_select_sql_includes_running_style_history_columns():
+    sql = subject.base_features_select_sql("jra")
+    assert "rsh.past_corner_1_norm_avg_5" in sql
+    assert "rsh.past_nige_rate_self" in sql
+    assert "rsh.last_race_corner_1_norm" in sql
+    assert "rsh.horse_distance_corner_1_norm_avg" in sql
+    assert "rsh.horse_track_corner_1_norm_avg" in sql
+    assert "left join horse_running_style_history rsh" in sql
+
+
+def test_base_features_select_sql_includes_direct_target_features():
+    sql = subject.base_features_select_sql("jra")
+    assert "umaban_norm" in sql
+    assert "is_newcomer_race" in sql
+    assert "kyori_band" in sql
+    assert "season_band" in sql
+
+
+def test_build_target_table_keeps_finish_position_intact():
+    """Regression: adding target_* columns must not change existing finish_position output."""
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        """
+        create or replace temp table rec as
+        select * from (
+          values
+            ('jra', '20250101', date '2025-01-01', '2025', '0101', '05', '01',
+              '2020999999', 7, 'jockey_x', 'trainer_x',
+              1800, '11', 'A', '99', 12, 3, 3.0/12,
+              'name_x', 'fukudai_x',
+              null::double, null::double, null::double, null::double,
+              '1', '1', 3, 250.0, null::int, 0.18)
+        ) as v(
+          source, race_date, race_dt, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+          ketto_toroku_bango, umaban, kishumei_ryakusho, chokyoshimei_ryakusho,
+          kyori, track_code, grade_code, kyoso_joken_code, shusso_tosu, finish_position, finish_norm,
+          kyosomei_hondai, kyosomei_fukudai,
+          time_sa, kohan_3f, corner3_norm, corner4_norm,
+          babajotai_code_shiba, babajotai_code_dirt,
+          tansho_ninkijun, tansho_odds, bataiju, corner1_norm
+        )
+        """
+    )
+    subject.build_target_table(con, "jra", "20250101", "20251231")
+    row = con.execute(
+        "select finish_position, finish_norm from target"
+    ).fetchone()
+    assert row == (3, 3.0 / 12.0)
