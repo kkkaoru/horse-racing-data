@@ -125,6 +125,7 @@ type BloodlinePayload = {
 type SimilarPayload = {
   conditionLabels: ConditionLabels;
   rows: SimilarRaceStatsRow[];
+  runners: Runner[];
   settings: SimilarRaceStatsSettings;
   source: RaceSource;
   type: "similar";
@@ -756,6 +757,7 @@ function LazySimilarSection(props: LazyDetailSectionsProps) {
       <SimilarRaceStatsTable
         conditionLabels={payload.conditionLabels}
         rows={payload.rows}
+        runners={payload.runners}
         settings={payload.settings}
         source={payload.source}
       />

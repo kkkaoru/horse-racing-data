@@ -1298,6 +1298,7 @@ export const getDetailSectionPayload = async (
   return {
     conditionLabels: context.statsConditionLabels,
     rows,
+    runners,
     settings: resolvedSettings,
     source: race.source,
     type: "similar" satisfies DetailSection,

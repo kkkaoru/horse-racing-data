@@ -4667,6 +4667,55 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   width: 82px;
 }
 
+.similar-score-table {
+  min-width: 1320px;
+}
+
+.similar-score-col-number {
+  width: 72px;
+}
+
+.similar-score-col-name {
+  width: 150px;
+}
+
+.similar-score-col-score {
+  width: 96px;
+}
+
+.similar-score-col-count {
+  width: 86px;
+}
+
+.similar-score-detail-table {
+  min-width: 840px;
+}
+
+.similar-score-detail-table th:nth-child(1),
+.similar-score-detail-table td:nth-child(1) {
+  width: 96px;
+}
+
+.similar-score-detail-table th:nth-child(2),
+.similar-score-detail-table td:nth-child(2) {
+  width: 180px;
+}
+
+.similar-score-detail-table th:nth-child(n + 3),
+.similar-score-detail-table td:nth-child(n + 3) {
+  text-align: center;
+  width: 90px;
+}
+
+.similar-stats-table-toggle-wrap {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.similar-stats-table-toggle {
+  min-width: 260px;
+}
+
 .bloodline-stats-table-toggle-wrap {
   display: flex;
   justify-content: flex-start;
