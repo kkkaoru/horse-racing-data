@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 
+import { getHorseRecentRunningStylesFromD1 } from "../../../db/corner-running-style-queries";
 import { getHorseDetailData } from "../../../db/queries";
 import {
   EntityDetailFilterForm,
@@ -9,6 +10,9 @@ import {
   parseEntityListQuery,
 } from "../../entity-ui";
 import { FavoriteButton } from "../../favorite-button";
+import { HorseRunningStyleHistory } from "./horse-running-style-history";
+
+const RUNNING_STYLE_HISTORY_LIMIT = 10;
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +29,11 @@ export async function generateMetadata({ params }: HorseDetailPageProps): Promis
 export default async function HorseDetailPage({ params, searchParams }: HorseDetailPageProps) {
   const { kettoTorokuBango } = await params;
   const query = parseEntityListQuery(await searchParams);
-  const data = await getHorseDetailData(decodeURIComponent(kettoTorokuBango), query);
+  const decodedKettoTorokuBango = decodeURIComponent(kettoTorokuBango);
+  const [data, runningStyleHistory] = await Promise.all([
+    getHorseDetailData(decodedKettoTorokuBango, query),
+    getHorseRecentRunningStylesFromD1(decodedKettoTorokuBango, RUNNING_STYLE_HISTORY_LIMIT),
+  ]);
   if (!data) {
     notFound();
   }
@@ -49,6 +57,7 @@ export default async function HorseDetailPage({ params, searchParams }: HorseDet
         </div>
       </div>
       <EntitySummary summary={data.summary} />
+      <HorseRunningStyleHistory rows={runningStyleHistory} />
       <EntityDetailFilterForm
         action={`/horses/${encodeURIComponent(kettoTorokuBango)}`}
         query={query}

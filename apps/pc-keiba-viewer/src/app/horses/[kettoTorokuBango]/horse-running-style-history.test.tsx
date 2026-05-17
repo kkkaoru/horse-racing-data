@@ -83,8 +83,10 @@ describe("HorseRunningStyleHistory - chip list", () => {
     );
     const items = screen.getAllByRole("listitem");
     expect(items).toHaveLength(2);
-    expect(items[0].textContent).toBe("2025-05-17 jra:20250517:05:11 逃げ");
-    expect(items[1].textContent).toBe("2025-05-03 jra:20250503:05:09 差し");
+    const [first, second] = items;
+    if (first === undefined || second === undefined) throw new Error("missing items");
+    expect(first.textContent).toBe("2025-05-17 jra:20250517:05:11 逃げ");
+    expect(second.textContent).toBe("2025-05-03 jra:20250503:05:09 差し");
   });
 
   test("applies a style-specific css class to each chip", () => {
@@ -97,7 +99,9 @@ describe("HorseRunningStyleHistory - chip list", () => {
       />,
     );
     const items = screen.getAllByRole("listitem");
-    expect(items[0].className).toContain("nige");
-    expect(items[1].className).toContain("oikomi");
+    const [first, second] = items;
+    if (first === undefined || second === undefined) throw new Error("missing items");
+    expect(first.className).toContain("nige");
+    expect(second.className).toContain("oikomi");
   });
 });
