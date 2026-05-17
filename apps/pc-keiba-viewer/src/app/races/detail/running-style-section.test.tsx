@@ -49,8 +49,24 @@ describe("RunningStyleSection - default tab", () => {
     render(
       <RunningStyleSection
         rows={[
-          buildRow({ horseNumber: 3, bamei: "馬A", p_nige: 0.6, p_senkou: 0.2, p_sashi: 0.1, p_oikomi: 0.1, predictedLabel: "nige" }),
-          buildRow({ horseNumber: 1, bamei: "馬B", p_nige: 0.1, p_senkou: 0.7, p_sashi: 0.1, p_oikomi: 0.1, predictedLabel: "senkou" }),
+          buildRow({
+            horseNumber: 3,
+            bamei: "馬A",
+            p_nige: 0.6,
+            p_senkou: 0.2,
+            p_sashi: 0.1,
+            p_oikomi: 0.1,
+            predictedLabel: "nige",
+          }),
+          buildRow({
+            horseNumber: 1,
+            bamei: "馬B",
+            p_nige: 0.1,
+            p_senkou: 0.7,
+            p_sashi: 0.1,
+            p_oikomi: 0.1,
+            predictedLabel: "senkou",
+          }),
         ]}
         modelMacroF1={0.42}
         modelVersion="jra-rs-v1.0"
@@ -83,33 +99,21 @@ describe("RunningStyleSection - default tab", () => {
 
   test("renders the model version and macro-F1 in the metrics badge", () => {
     render(
-      <RunningStyleSection
-        rows={[buildRow({})]}
-        modelMacroF1={0.42}
-        modelVersion="jra-rs-v1.0"
-      />,
+      <RunningStyleSection rows={[buildRow({})]} modelMacroF1={0.42} modelVersion="jra-rs-v1.0" />,
     );
     expect(screen.getByText(/モデル: jra-rs-v1\.0/u)).toBeTruthy();
     expect(screen.getByText(/macro-F1: 0\.420/u)).toBeTruthy();
   });
 
   test("omits the metrics badge when modelVersion is null", () => {
-    render(
-      <RunningStyleSection rows={[buildRow({})]} modelMacroF1={null} modelVersion={null} />,
-    );
+    render(<RunningStyleSection rows={[buildRow({})]} modelMacroF1={null} modelVersion={null} />);
     expect(screen.queryByText(/モデル:/u)).toBe(null);
   });
 });
 
 describe("RunningStyleSection - tab interactions", () => {
   test("clicking a focus tab triggers router.replace with the style query parameter", () => {
-    render(
-      <RunningStyleSection
-        rows={[buildRow({})]}
-        modelMacroF1={null}
-        modelVersion="v1"
-      />,
-    );
+    render(<RunningStyleSection rows={[buildRow({})]} modelMacroF1={null} modelVersion="v1" />);
     const nigeTab = screen.getByRole("tab", { name: "逃げ" });
     fireEvent.click(nigeTab);
     expect(replaceMock).toHaveBeenCalledTimes(1);
@@ -118,13 +122,7 @@ describe("RunningStyleSection - tab interactions", () => {
   });
 
   test("clicking 全体 removes the style query parameter", () => {
-    render(
-      <RunningStyleSection
-        rows={[buildRow({})]}
-        modelMacroF1={null}
-        modelVersion="v1"
-      />,
-    );
+    render(<RunningStyleSection rows={[buildRow({})]} modelMacroF1={null} modelVersion="v1" />);
     fireEvent.click(screen.getByRole("tab", { name: "全体" }));
     expect(replaceMock).toHaveBeenCalledTimes(1);
     const [target] = replaceMock.mock.calls[0];

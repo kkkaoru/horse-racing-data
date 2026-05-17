@@ -5,7 +5,6 @@ import React from "react";
 import { afterEach, describe, expect, test } from "vitest";
 
 import type { RaceCornerPositionRow } from "../../../db/corner-running-style-queries";
-
 import {
   CornerPositionSection,
   formatPercent,
