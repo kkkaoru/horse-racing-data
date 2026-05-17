@@ -21,7 +21,7 @@ interface RootLayoutProps {
 
 export default function RootLayout({ children }: RootLayoutProps) {
   return (
-    <html lang="ja">
+    <html lang="ja" suppressHydrationWarning>
       <body>
         <header className="app-header">
           <Link className="brand" href="/">
