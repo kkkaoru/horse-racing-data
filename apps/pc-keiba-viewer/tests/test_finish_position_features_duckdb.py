@@ -587,6 +587,22 @@ def test_base_features_select_sql_includes_trainer_running_style():
     assert "tc.trainer_corner_1_norm_avg" in sql
 
 
+def test_horse_running_style_history_cte_emits_multi_window_aggregates():
+    cte = subject.horse_running_style_history_cte()
+    assert "past_corner_1_norm_avg_3" in cte
+    assert "past_corner_1_norm_avg_10" in cte
+    assert "past_corner_progression_avg_5" in cte
+    assert "recent_rank <= 3" in cte
+    assert "recent_rank <= 10" in cte
+
+
+def test_base_features_select_sql_includes_multi_window_corner_avgs():
+    sql = subject.base_features_select_sql("jra")
+    assert "rsh.past_corner_1_norm_avg_3" in sql
+    assert "rsh.past_corner_1_norm_avg_10" in sql
+    assert "rsh.past_corner_progression_avg_5" in sql
+
+
 def test_base_features_select_sql_includes_extended_horse_features():
     sql = subject.base_features_select_sql("jra")
     assert "rsh.past_nige_win_rate_self" in sql
