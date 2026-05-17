@@ -5275,37 +5275,50 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   width: 100%;
 }
 
-.time-score-table th,
-.time-score-table td {
+.time-score-table > thead > tr > th,
+.time-score-table > tbody > tr > td {
   padding: 8px 7px;
 }
 
-.time-score-table th:first-child,
-.time-score-table td:first-child {
+.time-score-table > thead > tr > th:first-child,
+.time-score-table > tbody > tr > td:first-child {
   max-width: none;
-  width: 33.333%;
+  text-align: center;
+  width: 20%;
 }
 
-.time-score-table th:nth-child(2),
-.time-score-table td:nth-child(2) {
+.time-score-table > thead > tr > th:nth-child(2),
+.time-score-table > tbody > tr > td:nth-child(2) {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.time-score-table th:nth-child(3),
-.time-score-table td:nth-child(3) {
-  width: 33.333%;
+.time-score-table > thead > tr > th:nth-child(3),
+.time-score-table > tbody > tr > td:nth-child(3) {
+  width: 20%;
 }
 
-.time-score-table th:nth-child(3),
-.time-score-table td:nth-child(3).stats-score-cell {
+.time-score-table > thead > tr > th:nth-child(n + 3),
+.time-score-table > tbody > tr > td:nth-child(n + 3) {
   text-align: center;
 }
 
-.time-score-table .time-score-actions {
+.time-score-table > thead > tr > th,
+.time-score-table > tbody > tr > td {
+  width: 20%;
+}
+
+.time-score-table > thead > tr > th {
+  line-height: 1.35;
+  white-space: normal;
+  word-break: keep-all;
+}
+
+.time-score-table .stats-detail-toggle {
   justify-content: center;
-  width: 100%;
+  min-width: 86px;
+  white-space: nowrap;
 }
 
 .time-score-table .stats-detail-panel {
@@ -5313,6 +5326,47 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   overflow-x: auto;
   padding: 8px;
   -webkit-overflow-scrolling: touch;
+}
+
+.time-score-detail-table {
+  min-width: 920px;
+}
+
+.time-score-detail-table th:nth-child(1),
+.time-score-detail-table td:nth-child(1) {
+  width: 112px;
+}
+
+.time-score-detail-table th:nth-child(2),
+.time-score-detail-table td:nth-child(2) {
+  width: 150px;
+}
+
+.time-score-detail-table th:nth-child(3),
+.time-score-detail-table td:nth-child(3),
+.time-score-detail-table th:nth-child(4),
+.time-score-detail-table td:nth-child(4) {
+  width: 104px;
+}
+
+.time-score-detail-table th:nth-child(5),
+.time-score-detail-table td:nth-child(5),
+.time-score-detail-table th:nth-child(6),
+.time-score-detail-table td:nth-child(6) {
+  text-align: center;
+  width: 92px;
+}
+
+.time-score-detail-table th:nth-child(7),
+.time-score-detail-table td:nth-child(7) {
+  min-width: 260px;
+}
+
+.time-score-detail-table td.stats-name-cell {
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.45;
+  white-space: normal;
 }
 
 .bloodline-detail-target {
@@ -5447,15 +5501,15 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
     padding-inline: 8px;
   }
 
-  .time-score-table th:first-child,
-  .time-score-table td:first-child {
+  .time-score-table > thead > tr > th:first-child,
+  .time-score-table > tbody > tr > td:first-child {
     max-width: 50px;
-    width: 50px;
+    width: 20%;
   }
 
-  .time-score-table th:nth-child(3),
-  .time-score-table td:nth-child(3) {
-    width: 104px;
+  .time-score-table > thead > tr > th:nth-child(3),
+  .time-score-table > tbody > tr > td:nth-child(3) {
+    width: 20%;
   }
 
   .time-score-table .stats-detail-panel {

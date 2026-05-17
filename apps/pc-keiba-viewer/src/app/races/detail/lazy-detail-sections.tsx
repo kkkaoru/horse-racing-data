@@ -9,6 +9,7 @@ import type { FinishPredictionEvaluationMetrics } from "../../../lib/finish-posi
 import type {
   AbilityTest,
   BloodlineStatsRow,
+  ConditionCorrelationRow,
   FinishPredictionRow,
   FinishPositionStatsRow,
   FrameStatsRow,
@@ -130,6 +131,7 @@ type SimilarPayload = {
 };
 
 type TimeScorePayload = {
+  correlationRows: ConditionCorrelationRow[];
   rows: TimeScoreRow[];
   type: "time-score";
 };
@@ -177,7 +179,7 @@ const SECTION_TITLES: Record<DetailSection, string> = {
   "pace-prediction": "レース展開予測",
   results: "競走成績",
   similar: "同条件成績",
-  "time-score": "タイムスコア",
+  "time-score": "タイムスコアと1〜3着相関スコア",
   training: "調教・追い切り",
 };
 
@@ -652,15 +654,6 @@ function LazyConditionSection(props: LazyDetailSectionsProps) {
         frameStats={payload.frameStats}
         payoutStats={payload.payoutStats}
         raceTimeStats={payload.raceTimeStats}
-        realtimeRequest={{
-          apiBaseUrl: props.realtimeApiBaseUrl,
-          day: props.day,
-          keibajoCode: props.keibajoCode,
-          month: props.month,
-          raceNumber: props.raceNumber,
-          source: props.source,
-          year: props.year,
-        }}
         runners={payload.runners}
         settings={payload.settings}
         source={payload.source}
@@ -688,9 +681,21 @@ function LazyTimeScoreSection(props: LazyDetailSectionsProps) {
       className="similar-stats-section lazy-detail-section"
     >
       <div className="section-heading compact">
-        <h2>タイムスコア</h2>
+        <h2>タイムスコアと1〜3着相関スコア</h2>
       </div>
-      <TimeScoreTable rows={payload.rows} />
+      <TimeScoreTable
+        correlationRows={payload.correlationRows}
+        realtimeRequest={{
+          apiBaseUrl: props.realtimeApiBaseUrl,
+          day: props.day,
+          keibajoCode: props.keibajoCode,
+          month: props.month,
+          raceNumber: props.raceNumber,
+          source: props.source,
+          year: props.year,
+        }}
+        rows={payload.rows}
+      />
     </section>
   );
 }

@@ -1066,8 +1066,12 @@ export const getDetailSectionPayload = async (
   }
 
   if (section === "time-score") {
-    const rows: TimeScoreRow[] = await getTimeScoreRows(race, context.conditionAnalysisSettings);
+    const [rows, raceTimeStats] = await Promise.all([
+      getTimeScoreRows(race, context.conditionAnalysisSettings),
+      getRaceTimeStats(race, context.conditionAnalysisSettings),
+    ]);
     return {
+      correlationRows: raceTimeStats.correlationRows,
       rows,
       type: section,
     };
