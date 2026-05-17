@@ -4499,8 +4499,13 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 8px;
+  max-width: 100%;
   min-height: 96px;
+  min-width: 0;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
+  width: 100%;
+  -webkit-overflow-scrolling: touch;
 }
 
 .race-pace-corner-table-wrap {
@@ -4787,15 +4792,28 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   max-width: 100%;
   min-width: 0;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
   width: 100%;
   -webkit-overflow-scrolling: touch;
+}
+
+.paddock-section,
+.paddock-board,
+.paddock-table-shell,
+.premium-paddock-section,
+.race-trend-section,
+.race-trend-grid,
+.race-trend-card,
+.race-trend-table-panel {
+  max-width: 100%;
+  min-width: 0;
 }
 
 .race-trend-grid {
   align-items: start;
   display: grid;
   gap: 16px;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
 }
 
 .race-trend-card {
@@ -6549,12 +6567,22 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
     gap: 6px 8px;
     grid-template-columns: 42px minmax(0, 1fr);
     min-height: 58px;
+    min-width: 0;
   }
 
   .paddock-recent-race {
     align-items: start;
     display: grid;
     gap: 3px;
+    min-width: 0;
+    white-space: normal;
+  }
+
+  .paddock-recent-race strong,
+  .paddock-recent-race small {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    white-space: normal;
   }
 
   .paddock-recent-stats {
