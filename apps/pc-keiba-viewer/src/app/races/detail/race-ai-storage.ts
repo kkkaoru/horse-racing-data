@@ -138,6 +138,12 @@ export const saveRaceAiLog = async (log: StoredRaceAiLog): Promise<void> => {
   });
 };
 
+export const deleteRaceAiLog = async (raceKey: string): Promise<void> => {
+  await withStore(LOG_STORE, "readwrite", (store) => {
+    store.delete(raceKey);
+  });
+};
+
 export const getRaceAiSettings = (): RaceAiSettings => {
   if (typeof window === "undefined") {
     return emptySettings();
