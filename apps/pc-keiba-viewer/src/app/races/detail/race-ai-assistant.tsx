@@ -519,12 +519,30 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     modelStatus === "downloading" ||
     modelStatus === "initializing" ||
     generationStatus !== "idle";
+  const modelStatusLabel =
+    modelStatus === "ready"
+      ? "読み込み済み"
+      : modelStatus === "downloading"
+        ? `ダウンロード ${progressLabel}`
+        : modelStatus === "initializing"
+          ? "初期化中"
+          : isModelDownloaded
+            ? "ダウンロード済み"
+            : isModelDownloading
+              ? `ダウンロード ${progressLabel}`
+              : "未ダウンロード";
   const readinessStatusLabel =
     dataReadinessStatus === "loading"
       ? "準備度を確認中"
       : dataReadiness
         ? `準備済み ${dataReadiness.preparedPercent.toFixed(1)}% / 未準備 ${dataReadiness.missingPercent.toFixed(1)}%`
         : "準備度未確認";
+  const dataStatusLabel =
+    generationStatus === "loading-data"
+      ? "取得中"
+      : generationStatus === "generating"
+        ? "予想中"
+        : readinessStatusLabel;
 
   return (
     <details
@@ -541,34 +559,6 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           {aiSectionOpen ? "閉じる" : "表示する"}
         </span>
       </summary>
-      <div className="race-ai-status-grid">
-        <div>
-          <span>モデル</span>
-          <strong>
-            {modelStatus === "ready"
-              ? "読み込み済み"
-              : modelStatus === "downloading"
-                ? `ダウンロード ${progressLabel}`
-                : modelStatus === "initializing"
-                  ? "初期化中"
-                  : isModelDownloaded
-                    ? "ダウンロード済み"
-                    : isModelDownloading
-                      ? `ダウンロード ${progressLabel}`
-                      : "未ダウンロード"}
-          </strong>
-        </div>
-        <div>
-          <span>データ</span>
-          <strong>
-            {generationStatus === "loading-data"
-              ? "取得中"
-              : generationStatus === "generating"
-                ? "予想中"
-                : readinessStatusLabel}
-          </strong>
-        </div>
-      </div>
       <div className="race-ai-readiness-panel">
         <div className="section-heading compact">
           <h3>AIデータ準備度</h3>
@@ -579,6 +569,16 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
                 ? "確認中"
                 : "未確認"}
           </span>
+        </div>
+        <div className="race-ai-readiness-status-grid">
+          <div>
+            <span>モデル</span>
+            <strong>{modelStatusLabel}</strong>
+          </div>
+          <div>
+            <span>データ</span>
+            <strong>{dataStatusLabel}</strong>
+          </div>
         </div>
         {dataReadiness ? (
           <div className="race-ai-readiness-list">
