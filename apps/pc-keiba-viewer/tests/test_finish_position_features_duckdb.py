@@ -569,6 +569,24 @@ def test_base_features_select_sql_includes_sire_running_style():
     assert "left join sire_running_style_stats srs" in sql
 
 
+def test_trainer_cte_emits_running_style_aggregates():
+    cte = subject.trainer_cte()
+    assert "trainer_nige_rate" in cte
+    assert "trainer_senkou_rate" in cte
+    assert "trainer_sashi_rate" in cte
+    assert "trainer_oikomi_rate" in cte
+    assert "trainer_corner_1_norm_avg" in cte
+
+
+def test_base_features_select_sql_includes_trainer_running_style():
+    sql = subject.base_features_select_sql("jra")
+    assert "tc.trainer_nige_rate" in sql
+    assert "tc.trainer_senkou_rate" in sql
+    assert "tc.trainer_sashi_rate" in sql
+    assert "tc.trainer_oikomi_rate" in sql
+    assert "tc.trainer_corner_1_norm_avg" in sql
+
+
 def test_base_features_select_sql_includes_extended_horse_features():
     sql = subject.base_features_select_sql("jra")
     assert "rsh.past_nige_win_rate_self" in sql

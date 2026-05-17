@@ -595,7 +595,21 @@ def trainer_cte(target_filter: str = "true") -> str:
         avg(case when finish_position = 1 then 1 else 0 end) as trainer_career_win_rate,
         avg(case when finish_position = 1 then 1 else 0 end) filter (where history_keibajo = target_keibajo) as trainer_keibajo_win_rate,
         avg(case when finish_position = 1 then 1 else 0 end) filter (where abs(history_kyori - target_kyori) <= {SAME_DISTANCE_TOLERANCE}) as trainer_distance_win_rate,
-        avg(case when finish_position = 1 then 1 else 0 end) filter (where history_horse = target_horse) as trainer_horse_win_rate
+        avg(case when finish_position = 1 then 1 else 0 end) filter (where history_horse = target_horse) as trainer_horse_win_rate,
+        avg(case when corner1_norm = 0 then 1.0
+                 when corner1_norm is null then null
+                 else 0.0 end) as trainer_nige_rate,
+        avg(case when corner1_norm is null then null
+                 when corner1_norm > 0 and corner1_norm <= {RUNNING_STYLE_SENKOU_THRESHOLD} then 1.0
+                 else 0.0 end) as trainer_senkou_rate,
+        avg(case when corner1_norm is null then null
+                 when corner1_norm > {RUNNING_STYLE_SENKOU_THRESHOLD}
+                  and corner1_norm <= {RUNNING_STYLE_SASHI_THRESHOLD} then 1.0
+                 else 0.0 end) as trainer_sashi_rate,
+        avg(case when corner1_norm is null then null
+                 when corner1_norm > {RUNNING_STYLE_SASHI_THRESHOLD} then 1.0
+                 else 0.0 end) as trainer_oikomi_rate,
+        avg(corner1_norm) as trainer_corner_1_norm_avg
     """
     return template.replace("{aggregations}", aggregations)
 
@@ -1090,6 +1104,8 @@ def base_features_select_sql(category: str) -> str:
       jc.jockey_corner_1_norm_avg, jc.jockey_horse_corner_1_norm_avg,
       jc.jockey_recent_corner_1_norm_avg_90d, jc.jockey_recent_nige_rate_90d,
       tc.trainer_career_win_rate, tc.trainer_keibajo_win_rate, tc.trainer_distance_win_rate, tc.trainer_horse_win_rate,
+      tc.trainer_nige_rate, tc.trainer_senkou_rate, tc.trainer_sashi_rate, tc.trainer_oikomi_rate,
+      tc.trainer_corner_1_norm_avg,
       case when sds.race_count >= {PEDIGREE_MIN_RACES} then sds.sire_distance_win_rate_val else null end as sire_distance_win_rate,
       case when sts.race_count >= {PEDIGREE_MIN_RACES} then sts.sire_track_win_rate_val else null end as sire_track_win_rate,
       case when dsd.race_count >= {PEDIGREE_MIN_RACES} then dsd.dam_sire_distance_win_rate_val else null end as dam_sire_distance_win_rate,
