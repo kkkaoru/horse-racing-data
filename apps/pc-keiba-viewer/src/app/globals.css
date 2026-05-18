@@ -5430,42 +5430,24 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 
 .race-trend-table.jockey {
   min-width: var(--number-0-2);
-  table-layout: fixed;
-  width: var(--space-100pct-12);
+  table-layout: auto;
+  width: auto;
+}
+
+.race-trend-table.jockey th,
+.race-trend-table.jockey td {
+  padding-left: var(--space-6px-33);
+  padding-right: var(--space-6px-33);
+  white-space: nowrap;
 }
 
 .race-trend-table.jockey th:first-child,
 .race-trend-table.jockey td:first-child {
   text-align: center;
-  width: var(--space-52px-63);
 }
 
-.race-trend-table.jockey th:nth-child(2),
 .race-trend-table.jockey td:nth-child(2) {
-  width: var(--space-24pct-131);
-}
-
-.race-trend-table.jockey th:nth-child(n + 3),
-.race-trend-table.jockey td:nth-child(n + 3) {
-  width: calc((var(--space-76pct-141) - var(--space-124px-57)) / var(--number-5-19));
-}
-
-.race-trend-table.jockey th:nth-child(6),
-.race-trend-table.jockey td:nth-child(6) {
-  width: var(--space-72px-6);
-}
-
-.race-trend-table.jockey th:nth-child(7),
-.race-trend-table.jockey td:nth-child(7) {
-  width: var(--space-72px-6);
-}
-
-.race-trend-table.jockey th,
-.race-trend-table.jockey td {
   overflow-wrap: anywhere;
-  padding-left: var(--space-6px-33);
-  padding-right: var(--space-6px-33);
-  text-overflow: clip;
   white-space: normal;
 }
 
@@ -7566,6 +7548,87 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   font-size: var(--space-0-85rem-217);
 }
 
+.race-ai-diagnostic-log {
+  background: var(--surface-muted);
+  border: var(--space-1px-7) solid var(--border);
+  border-radius: var(--space-6px-33);
+  display: grid;
+  gap: var(--space-8px-28);
+  padding: var(--space-12px-9) var(--space-14px-55);
+}
+
+.race-ai-diagnostic-log > summary {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  gap: var(--space-10px-27);
+  justify-content: space-between;
+}
+
+.race-ai-diagnostic-log > summary span,
+.race-ai-diagnostic-log p {
+  color: var(--text-muted);
+  font-size: var(--space-0-85rem-217);
+}
+
+.race-ai-diagnostic-log p {
+  margin: var(--number-0-2);
+}
+
+.race-ai-diagnostic-log ol {
+  display: grid;
+  gap: var(--space-6px-33);
+  list-style: none;
+  margin: var(--number-0-2);
+  max-height: var(--space-240px-77);
+  overflow: auto;
+  padding: var(--number-0-2);
+}
+
+.race-ai-diagnostic-log li {
+  align-items: start;
+  background: var(--surface);
+  border: var(--space-1px-7) solid var(--border);
+  border-radius: var(--space-6px-33);
+  display: grid;
+  gap: var(--space-6px-33);
+  grid-template-columns: var(--space-76px-79) var(--space-66px-93) minmax(
+      var(--number-0-2),
+      var(--space-1fr-51)
+    );
+  padding: var(--space-8px-28) var(--space-10px-27);
+}
+
+.race-ai-diagnostic-log time,
+.race-ai-diagnostic-log li > strong,
+.race-ai-diagnostic-log code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.race-ai-diagnostic-log time,
+.race-ai-diagnostic-log code {
+  color: var(--text-muted);
+  font-size: var(--space-0-78rem-170);
+}
+
+.race-ai-diagnostic-log li > span,
+.race-ai-diagnostic-log code {
+  overflow-wrap: anywhere;
+}
+
+.race-ai-diagnostic-log code {
+  grid-column: var(--number-1-7) / var(--number-1-9);
+  white-space: pre-wrap;
+}
+
+.race-ai-diagnostic-log-error {
+  border-color: var(--danger);
+}
+
+.race-ai-diagnostic-log-warn {
+  border-color: var(--accent);
+}
+
 .race-ai-actions,
 .race-ai-stop-actions,
 .race-ai-reset-actions {
@@ -7876,6 +7939,14 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 
   .race-ai-readiness-summary-title small {
     display: none;
+  }
+
+  .race-ai-diagnostic-log li {
+    grid-template-columns: var(--space-1fr-51);
+  }
+
+  .race-ai-diagnostic-log code {
+    grid-column: auto;
   }
 
   .race-ai-download-dialog {

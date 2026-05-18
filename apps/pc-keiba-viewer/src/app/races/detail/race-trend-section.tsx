@@ -3,8 +3,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { RaceSource } from "../../../lib/codes";
+import { fetchWithRetry } from "../../../lib/fetch-with-retry";
 import { formatKeibajo } from "../../../lib/format";
 import type { RaceTrendPayload, RaceTrendRateRow } from "../../../lib/race-types";
+
+const RACE_TREND_RETRY_OPTIONS = {
+  baseDelayMs: 300,
+  maxAttempts: 4,
+  maxDelayMs: 4000,
+} as const;
 
 type SortKey = "showRate" | "quinellaRate" | "winRate";
 type TrendTableKind = "frame" | "jockey";
@@ -360,7 +367,7 @@ export function RaceTrendSection({
   const fetchJockeyRows = useCallback(async () => {
     setJockeyStatus("loading");
     try {
-      const response = await fetch(
+      const response = await fetchWithRetry(
         getApiPath({
           day,
           defaultEndDate,
@@ -377,6 +384,7 @@ export function RaceTrendSection({
           year,
         }),
         { cache: "no-store" },
+        RACE_TREND_RETRY_OPTIONS,
       );
       if (!response.ok) {
         throw new Error(`race trend api ${response.status}`);
@@ -412,7 +420,7 @@ export function RaceTrendSection({
   const fetchFrameRows = useCallback(async () => {
     setFrameStatus("loading");
     try {
-      const response = await fetch(
+      const response = await fetchWithRetry(
         getApiPath({
           day,
           defaultEndDate,
@@ -429,6 +437,7 @@ export function RaceTrendSection({
           year,
         }),
         { cache: "no-store" },
+        RACE_TREND_RETRY_OPTIONS,
       );
       if (!response.ok) {
         throw new Error(`race trend api ${response.status}`);
