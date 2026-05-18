@@ -43,7 +43,14 @@ META_COLUMNS: tuple[str, ...] = (
     "race_year",
     "feature_schema_version",
 )
-LABEL_COLUMNS: tuple[str, ...] = ("finish_position", "finish_norm")
+LABEL_COLUMNS: tuple[str, ...] = (
+    "finish_position",
+    "finish_norm",
+    "target_corner_1_norm",
+    "target_corner_3_norm",
+    "target_corner_4_norm",
+    "target_running_style_class",
+)
 CATEGORICAL_FEATURE_COLUMNS: tuple[str, ...] = ("track_code", "grade_code")
 
 RELEVANCE_TIERS: dict[int, int] = {1: 3, 2: 2, 3: 1}
