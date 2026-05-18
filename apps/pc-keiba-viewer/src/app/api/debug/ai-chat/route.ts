@@ -27,6 +27,7 @@ interface DebugAiRuntimeLog {
   id: string;
   level: string;
   message: string;
+  sequence: number;
 }
 
 interface DebugAiCommand {
@@ -142,6 +143,7 @@ const parseRuntimeLog = (value: unknown): DebugAiRuntimeLog | null => {
     id,
     level: toStringValue(value.level) ?? "info",
     message,
+    sequence: toNumberValue(value.sequence),
   };
 };
 
@@ -150,7 +152,7 @@ const parseRuntimeLogs = (value: unknown): DebugAiRuntimeLog[] =>
     ? value
         .map(parseRuntimeLog)
         .filter((log): log is DebugAiRuntimeLog => log !== null)
-        .slice(-120)
+        .slice(-300)
     : [];
 
 const parseMessage = (value: unknown): DebugAiChatMessage | null => {
