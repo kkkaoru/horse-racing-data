@@ -20,6 +20,15 @@ interface DebugAiThoughtLog {
   trigger: string;
 }
 
+interface DebugAiRuntimeLog {
+  at: string;
+  details: Record<string, boolean | null | number | string> | null;
+  elapsedMs: number;
+  id: string;
+  level: string;
+  message: string;
+}
+
 interface DebugAiCommand {
   createdAt: string;
   dryRun?: boolean;
@@ -61,6 +70,7 @@ interface DebugAiChatSnapshot {
     isRunning: boolean;
     lastUserRequest: string;
     modelPartialLength: number;
+    runtimeLogs: DebugAiRuntimeLog[];
     runtimeStageLabel: string;
   };
   status: string;
@@ -98,6 +108,50 @@ const toNumberValue = (value: unknown): number =>
   typeof value === "number" && Number.isFinite(value) ? value : 0;
 
 const toBooleanValue = (value: unknown): boolean => value === true;
+
+const parseRuntimeLogDetails = (
+  value: unknown,
+): Record<string, boolean | null | number | string> | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const entries: Array<[string, boolean | null | number | string]> = [];
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item === "string" || typeof item === "number" || typeof item === "boolean") {
+      entries.push([key, item]);
+    } else if (item === null) {
+      entries.push([key, null]);
+    }
+  }
+  return entries.length > 0 ? Object.fromEntries(entries) : null;
+};
+
+const parseRuntimeLog = (value: unknown): DebugAiRuntimeLog | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const id = toStringValue(value.id);
+  const message = toStringValue(value.message);
+  if (!id || !message) {
+    return null;
+  }
+  return {
+    at: toStringValue(value.at) ?? new Date().toISOString(),
+    details: parseRuntimeLogDetails(value.details),
+    elapsedMs: toNumberValue(value.elapsedMs),
+    id,
+    level: toStringValue(value.level) ?? "info",
+    message,
+  };
+};
+
+const parseRuntimeLogs = (value: unknown): DebugAiRuntimeLog[] =>
+  Array.isArray(value)
+    ? value
+        .map(parseRuntimeLog)
+        .filter((log): log is DebugAiRuntimeLog => log !== null)
+        .slice(-120)
+    : [];
 
 const parseMessage = (value: unknown): DebugAiChatMessage | null => {
   if (!isRecord(value)) {
@@ -201,6 +255,7 @@ const parseSnapshot = (value: unknown, previous: DebugAiChatSnapshot | null) => 
           isRunning: toBooleanValue(value.runtime.isRunning),
           lastUserRequest: toStringValue(value.runtime.lastUserRequest) ?? "",
           modelPartialLength: toNumberValue(value.runtime.modelPartialLength),
+          runtimeLogs: parseRuntimeLogs(value.runtime.runtimeLogs),
           runtimeStageLabel: toStringValue(value.runtime.runtimeStageLabel) ?? "",
         }
       : {
@@ -213,6 +268,7 @@ const parseSnapshot = (value: unknown, previous: DebugAiChatSnapshot | null) => 
           isRunning: false,
           lastUserRequest: "",
           modelPartialLength: 0,
+          runtimeLogs: [],
           runtimeStageLabel: "",
         },
     status: toStringValue(value.status) ?? "idle",
@@ -333,6 +389,7 @@ export async function POST(request: Request) {
         isRunning: false,
         lastUserRequest: "",
         modelPartialLength: 0,
+        runtimeLogs: [],
         runtimeStageLabel: "",
       },
       status: "idle",
