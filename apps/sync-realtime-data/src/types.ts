@@ -79,6 +79,17 @@ export interface HyperdriveBinding {
   connectionString: string;
 }
 
+export interface FinishPositionLiteJob {
+  type: "finish-position-lite-infer";
+  source: string;
+  kaisaiNen: string;
+  kaisaiTsukihi: string;
+  keibajoCode: string;
+  raceBango: string;
+  modelVersion: string;
+  predictedAt: string;
+}
+
 export interface Env {
   DATABASE_TARGET?: string;
   DATABASE_URL_NEON?: string;
@@ -134,6 +145,8 @@ export interface Env {
   REALTIME_DB: D1Database;
   REALTIME_JOBS: Queue<Job>;
   REALTIME_TEST_NOW?: string;
+  FINISH_POSITION_LITE_ENABLED?: string;
+  FINISH_POSITION_LITE_JOBS: Queue<FinishPositionLiteJob>;
   RUNNING_STYLE_D1_WRITE_ENABLED?: string;
   RUNNING_STYLE_MODELS: R2Bucket;
   TRACK_CONDITION_CACHE: DurableObjectNamespace;
