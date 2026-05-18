@@ -3,7 +3,7 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import type {
   RaceRunningStyleRow,
@@ -164,10 +164,12 @@ export const RunningStyleSection = ({
 }: RunningStyleSectionProps) => {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const currentTab = resolveCurrentTab(searchParams?.get(SEARCH_PARAM_KEY) ?? null);
+  const initialTab = resolveCurrentTab(searchParams?.get(SEARCH_PARAM_KEY) ?? null);
+  const [currentTab, setCurrentTab] = useState<StyleTab>(initialTab);
   const visibleRows = useMemo(() => sortRowsByTab(rows, currentTab), [rows, currentTab]);
 
   const handleSelect = (tab: StyleTab): void => {
+    setCurrentTab(tab);
     const params = new URLSearchParams(searchParams?.toString() ?? "");
     if (tab === DEFAULT_TAB) {
       params.delete(SEARCH_PARAM_KEY);
