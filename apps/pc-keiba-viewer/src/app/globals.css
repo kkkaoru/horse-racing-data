@@ -7053,6 +7053,25 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
     width: calc(var(--space-100pct-12) - var(--space-32px-8));
   }
 
+  .home-heading,
+  .home-title {
+    min-width: var(--number-0-2);
+    overflow-x: hidden;
+  }
+
+  .home-horse-track {
+    margin-left: var(--number-0-2);
+    max-width: var(--space-100pct-12);
+    width: var(--space-100pct-12);
+  }
+
+  .home-link-grid,
+  .home-live-grid,
+  .home-panel,
+  .home-race-list {
+    min-width: var(--number-0-2);
+  }
+
   .home-link-grid,
   .home-live-grid {
     grid-template-columns: var(--space-1fr-51);
