@@ -117,12 +117,18 @@ const GENERATION_STAGE_LABELS: Record<GenerationStage, string> = {
   "generating-tool-request": "必要データを判断中",
   idle: "待機中",
   "loading-data": "レースデータ取得中",
-  "model-download": "AIモデル取得中",
+  "model-download": "AIモデル読込中",
   "model-initialize": "AIモデル初期化中",
   "preparing-prompt": "入力データを整理中",
   queued: "処理を開始中",
   "streaming-answer": "回答を表示中",
 };
+
+let sharedRaceAiModel: {
+  instance: LlmInference;
+  modelId: string;
+} | null = null;
+let sharedRaceAiModelPromise: Promise<LlmInference> | null = null;
 
 const createId = (): string => `${Date.now().toString(36)}-${crypto.randomUUID()}`;
 
@@ -795,6 +801,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const handledDebugCommandIdsRef = useRef<Set<string>>(new Set());
   const handledServerCommandIdsRef = useRef<Set<string>>(new Set());
   const hydratedRaceKeyRef = useRef<string | null>(null);
+  const modelWarmupStartedRef = useRef(false);
   const lastDebugSnapshotRef = useRef("");
   const lastRealtimeFingerprintRef = useRef("");
   const lastUserRequestRef = useRef("このレースの着順を予想してください。");
@@ -876,13 +883,6 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     autoStartedRaceKeyRef.current = null;
   }, [raceKey]);
 
-  useEffect(
-    () => () => {
-      llmRef.current?.close();
-    },
-    [],
-  );
-
   const persistLogs = useCallback(
     async (nextMessages: RaceAiMessage[], nextThoughtLogs: RaceAiThoughtLog[]) => {
       messagesRef.current = nextMessages;
@@ -903,8 +903,27 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     if (llmRef.current) {
       return llmRef.current;
     }
+    if (sharedRaceAiModel?.modelId === LATEST_RACE_AI_MODEL.id) {
+      llmRef.current = sharedRaceAiModel.instance;
+      setModelStatus("ready");
+      return sharedRaceAiModel.instance;
+    }
     if (getRaceAiSettings().consent !== "granted") {
       throw new Error("AI利用が許可されていません。マイページでAI利用を許可してください。");
+    }
+    if (sharedRaceAiModelPromise) {
+      setRuntimeStage("model-initialize");
+      setModelStatus("initializing");
+      await yieldToBrowser();
+      try {
+        const sharedInstance = await sharedRaceAiModelPromise;
+        llmRef.current = sharedInstance;
+        setModelStatus("ready");
+        return sharedInstance;
+      } catch (caught) {
+        setModelStatus("idle");
+        throw caught;
+      }
     }
     setError(null);
     setRuntimeStage("model-download");
@@ -917,25 +936,71 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     setRuntimeStage("model-initialize");
     setModelStatus("initializing");
     await yieldToBrowser();
-    const { FilesetResolver, LlmInference: LlmInferenceClass } =
-      await import("@mediapipe/tasks-genai");
-    const genai = await FilesetResolver.forGenAiTasks(WASM_BASE_URL);
-    const device = await LlmInferenceClass.createWebGpuDevice();
-    const instance = await LlmInferenceClass.createFromOptions(genai, {
-      baseOptions: {
-        delegate: "GPU",
-        gpuOptions: { device },
-        modelAssetBuffer: new Uint8Array(buffer),
-      },
-      maxTokens: 16_384,
-      randomSeed: 20260518,
-      temperature: 0.25,
-      topK: 40,
-    });
-    llmRef.current = instance;
-    setModelStatus("ready");
-    return instance;
+    sharedRaceAiModelPromise = (async () => {
+      const { FilesetResolver, LlmInference: LlmInferenceClass } =
+        await import("@mediapipe/tasks-genai");
+      const genai = await FilesetResolver.forGenAiTasks(WASM_BASE_URL);
+      const device = await LlmInferenceClass.createWebGpuDevice();
+      const instance = await LlmInferenceClass.createFromOptions(genai, {
+        baseOptions: {
+          delegate: "GPU",
+          gpuOptions: { device },
+          modelAssetBuffer: new Uint8Array(buffer),
+        },
+        maxTokens: 16_384,
+        randomSeed: 20260518,
+        temperature: 0.25,
+        topK: 40,
+      });
+      sharedRaceAiModel = {
+        instance,
+        modelId: LATEST_RACE_AI_MODEL.id,
+      };
+      return instance;
+    })();
+    try {
+      const instance = await sharedRaceAiModelPromise;
+      llmRef.current = instance;
+      setModelStatus("ready");
+      return instance;
+    } catch (caught) {
+      setModelStatus("idle");
+      throw caught;
+    } finally {
+      sharedRaceAiModelPromise = null;
+    }
   }, [setRuntimeStage]);
+
+  useEffect(() => {
+    if (
+      supportState !== "supported" ||
+      settings?.consent !== "granted" ||
+      modelState?.status !== "downloaded" ||
+      modelWarmupStartedRef.current ||
+      llmRef.current
+    ) {
+      return undefined;
+    }
+    modelWarmupStartedRef.current = true;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void ensureModel()
+        .catch((caught) => {
+          if (!cancelled) {
+            setError(caught instanceof Error ? caught.message : String(caught));
+          }
+        })
+        .finally(() => {
+          if (!cancelled && !runningRef.current) {
+            setRuntimeStage("idle");
+          }
+        });
+    }, 1_200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [ensureModel, modelState?.status, settings?.consent, setRuntimeStage, supportState]);
 
   const loadRaceDataSnapshot = useCallback(async (): Promise<RaceAiExportData> => {
     setDataReadinessStatus("loading");

@@ -5,6 +5,7 @@
 html {
   font-size: var(--space-15px-1);
   line-height: var(--number-2-1);
+  overflow-x: hidden;
   scrollbar-gutter: stable;
 }
 
@@ -35,7 +36,15 @@ body {
   font-kerning: normal;
   letter-spacing: var(--number-0-2);
   line-height: var(--number-2-1);
+  overflow-x: hidden;
   text-rendering: optimizeLegibility;
+}
+
+@supports (overflow: clip) {
+  html,
+  body {
+    overflow-x: clip;
+  }
 }
 
 body :where(a, button, input, label, option, p, select, small, span, td, textarea, th) {
@@ -422,6 +431,7 @@ main {
 .home-shell {
   display: grid;
   gap: var(--space-20px-52);
+  overflow-x: clip;
 }
 
 .home-title {
@@ -430,6 +440,7 @@ main {
   gap: var(--space-14px-55);
   line-height: var(--number-1-1-4);
   margin: var(--number-0-2);
+  min-width: var(--number-0-2);
 }
 
 .home-horse-track {
@@ -636,19 +647,28 @@ main {
   gap: var(--space-10px-27);
   justify-content: space-between;
   min-height: var(--space-42px-29);
+  min-width: var(--number-0-2);
   padding: var(--space-10px-27);
 }
 
 .home-race-list strong {
+  flex: var(--number-1-7) var(--number-1-7) auto;
   font-size: var(--space-15px-1);
+  min-width: var(--number-0-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .home-race-countdown {
   align-items: center;
   color: var(--accent-strong);
   display: inline-flex;
+  flex: var(--number-0-2) var(--number-0-2) auto;
   gap: var(--space-4px-18);
   line-height: var(--number-1-25-20);
+  overflow: visible;
+  text-overflow: clip;
   white-space: nowrap;
 }
 
@@ -670,7 +690,11 @@ main {
   color: var(--muted);
   font-size: var(--space-15px-1);
   font-weight: var(--number-700-14);
+  min-width: var(--number-0-2);
+  overflow: hidden;
   text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .home-race-list-skeleton {
@@ -941,7 +965,7 @@ h3 {
 }
 
 .running-style-section .runner-table {
-  min-width: 0;
+  min-width: var(--number-0-2);
   table-layout: auto;
   width: auto;
 }
