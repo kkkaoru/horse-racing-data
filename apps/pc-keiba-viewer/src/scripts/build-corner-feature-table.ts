@@ -99,7 +99,6 @@ const buildSql = (sourceScope: Options["sourceScope"], buildVectorIndex: boolean
       where
         se.ketto_toroku_bango is not null
         and btrim(se.ketto_toroku_bango) <> ''
-        and nullif(se.corner_4, '00') is not null
     `);
   }
   if (includeNar) {
@@ -154,7 +153,6 @@ const buildSql = (sourceScope: Options["sourceScope"], buildVectorIndex: boolean
               ? "and ra.keibajo_code <> '83'"
               : ""
         }
-        and (ra.keibajo_code = '83' or nullif(se.corner_4, '00') is not null)
     `);
   }
 
@@ -239,7 +237,7 @@ const buildSql = (sourceScope: Options["sourceScope"], buildVectorIndex: boolean
         keibajo_code,
         race_bango,
         ketto_toroku_bango,
-        nullif(umaban, '')::integer umaban,
+        case when umaban ~ '^[0-9]+$' then nullif(umaban, '')::integer else null end umaban,
         bamei,
         track_code,
         grade_code,
@@ -248,51 +246,69 @@ const buildSql = (sourceScope: Options["sourceScope"], buildVectorIndex: boolean
         kyoso_joken_code,
         babajotai_code_shiba,
         babajotai_code_dirt,
-        nullif(kyori, '')::integer kyori,
-        nullif(shusso_tosu, '00')::integer shusso_tosu,
+        case when kyori ~ '^[0-9]+$' then nullif(kyori, '')::integer else null end kyori,
+        case when shusso_tosu ~ '^[0-9]+$' then nullif(shusso_tosu, '00')::integer else null end shusso_tosu,
         seibetsu_code,
-        nullif(barei, '00')::integer barei,
-        nullif(futan_juryo, '000')::numeric / 10 futan_juryo,
+        case when barei ~ '^[0-9]+$' then nullif(barei, '00')::integer else null end barei,
+        case when futan_juryo ~ '^[0-9]+$' then nullif(futan_juryo, '000')::numeric / 10 else null end futan_juryo,
         kishumei_ryakusho,
         chokyoshimei_ryakusho,
         banushimei,
-        nullif(kakutei_chakujun, '00')::integer finish_position,
+        case when kakutei_chakujun ~ '^[0-9]+$' then nullif(kakutei_chakujun, '00')::integer else null end finish_position,
         case
-          when nullif(kakutei_chakujun, '00') is not null and nullif(shusso_tosu, '00')::numeric > 1
-            then (nullif(kakutei_chakujun, '00')::numeric - 1) / (nullif(shusso_tosu, '00')::numeric - 1)
+          when shusso_tosu ~ '^[0-9]+$' and kakutei_chakujun ~ '^[0-9]+$' then
+            case when nullif(kakutei_chakujun, '00') is not null and nullif(shusso_tosu, '00')::numeric > 1
+              then (nullif(kakutei_chakujun, '00')::numeric - 1) / (nullif(shusso_tosu, '00')::numeric - 1)
+              else null
+            end
           else null
         end finish_norm,
-        nullif(tansho_ninkijun, '00')::integer tansho_ninkijun,
-        nullif(tansho_odds, '0000')::numeric / 10 tansho_odds,
-        nullif(soha_time, '0000')::integer soha_time,
-        nullif(time_sa, '0000')::numeric / 10 time_sa,
-        nullif(kohan_3f, '000')::numeric / 10 kohan_3f,
+        case when tansho_ninkijun ~ '^[0-9]+$' then nullif(tansho_ninkijun, '00')::integer else null end tansho_ninkijun,
+        case when tansho_odds ~ '^[0-9]+$' then nullif(tansho_odds, '0000')::numeric / 10 else null end tansho_odds,
+        case when soha_time ~ '^[0-9]+$' then nullif(soha_time, '0000')::integer else null end soha_time,
+        case when time_sa ~ '^[0-9]+$' then nullif(time_sa, '0000')::numeric / 10 else null end time_sa,
+        case when kohan_3f ~ '^[0-9]+$' then nullif(kohan_3f, '000')::numeric / 10 else null end kohan_3f,
         case
-          when nullif(corner_1, '00') is not null and nullif(shusso_tosu, '00')::numeric > 1
-            then (nullif(corner_1, '00')::numeric - 1) / (nullif(shusso_tosu, '00')::numeric - 1)
+          when shusso_tosu ~ '^[0-9]+$' and corner_1 ~ '^[0-9]+$' then
+            case when nullif(corner_1, '00') is not null and nullif(shusso_tosu, '00')::numeric > 1
+              then (nullif(corner_1, '00')::numeric - 1) / (nullif(shusso_tosu, '00')::numeric - 1)
+              else null
+            end
           else null
         end corner1_norm,
         case
-          when nullif(corner_2, '00') is not null and nullif(shusso_tosu, '00')::numeric > 1
-            then (nullif(corner_2, '00')::numeric - 1) / (nullif(shusso_tosu, '00')::numeric - 1)
+          when shusso_tosu ~ '^[0-9]+$' and corner_2 ~ '^[0-9]+$' then
+            case when nullif(corner_2, '00') is not null and nullif(shusso_tosu, '00')::numeric > 1
+              then (nullif(corner_2, '00')::numeric - 1) / (nullif(shusso_tosu, '00')::numeric - 1)
+              else null
+            end
           else null
         end corner2_norm,
         case
-          when nullif(corner_3, '00') is not null and nullif(shusso_tosu, '00')::numeric > 1
-            then (nullif(corner_3, '00')::numeric - 1) / (nullif(shusso_tosu, '00')::numeric - 1)
+          when shusso_tosu ~ '^[0-9]+$' and corner_3 ~ '^[0-9]+$' then
+            case when nullif(corner_3, '00') is not null and nullif(shusso_tosu, '00')::numeric > 1
+              then (nullif(corner_3, '00')::numeric - 1) / (nullif(shusso_tosu, '00')::numeric - 1)
+              else null
+            end
           else null
         end corner3_norm,
         case
-          when nullif(corner_4, '00') is not null and nullif(shusso_tosu, '00')::numeric > 1
-            then (nullif(corner_4, '00')::numeric - 1) / (nullif(shusso_tosu, '00')::numeric - 1)
+          when shusso_tosu ~ '^[0-9]+$' and corner_4 ~ '^[0-9]+$' then
+            case when nullif(corner_4, '00') is not null and nullif(shusso_tosu, '00')::numeric > 1
+              then (nullif(corner_4, '00')::numeric - 1) / (nullif(shusso_tosu, '00')::numeric - 1)
+              else null
+            end
           else null
         end corner4_norm
       from raw_rows
       where
         nullif(umaban, '') is not null
+        and umaban ~ '^[0-9]+$'
         and nullif(kyori, '') is not null
-        and nullif(shusso_tosu, '00') is not null
-        and nullif(shusso_tosu, '00')::numeric > 1
+        and kyori ~ '^[0-9]+$'
+        and shusso_tosu ~ '^[0-9]+$'
+        and keibajo_code ~ '^[0-9]+$'
+        and race_bango ~ '^[0-9]+$'
     )
     insert into race_entry_corner_features (
       source,
@@ -376,8 +392,8 @@ const buildSql = (sourceScope: Options["sourceScope"], buildVectorIndex: boolean
         least(1, greatest(0, coalesce(tansho_ninkijun, shusso_tosu, 0)::numeric / greatest(coalesce(shusso_tosu, 1), 1))),
         least(1, greatest(0, ln(greatest(coalesce(tansho_odds, 1), 1)) / ln(300))),
         case when left(coalesce(track_code, ''), 1) = '1' then 0 else 1 end,
-        least(1, greatest(0, coalesce(nullif(keibajo_code, '')::numeric, 0) / 99)),
-        least(1, greatest(0, coalesce(nullif(race_bango, '')::numeric, 0) / 12))
+        least(1, greatest(0, coalesce(case when keibajo_code ~ '^[0-9]+$' then nullif(keibajo_code, '')::numeric else null end, 0) / 99)),
+        least(1, greatest(0, coalesce(case when race_bango ~ '^[0-9]+$' then nullif(race_bango, '')::numeric else null end, 0) / 12))
       ]::vector,
       now()
     from normalized_rows
