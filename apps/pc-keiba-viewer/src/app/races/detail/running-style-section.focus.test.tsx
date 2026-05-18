@@ -43,6 +43,7 @@ describe("RunningStyleSection - nige focus tab", () => {
         ]}
         modelMacroF1={0.42}
         modelVersion="jra-rs-v1.0"
+        runnersByUmaban={{}}
       />,
     );
     const items = screen.getAllByRole("listitem");
@@ -63,6 +64,7 @@ describe("RunningStyleSection - nige focus tab", () => {
         ]}
         modelMacroF1={null}
         modelVersion="v1"
+        runnersByUmaban={{}}
       />,
     );
     const items = screen.getAllByRole("listitem");
@@ -78,6 +80,7 @@ describe("RunningStyleSection - nige focus tab", () => {
         rows={[buildRow({ horseNumber: 5, bamei: null, p_nige: 0.6 })]}
         modelMacroF1={null}
         modelVersion="v1"
+        runnersByUmaban={{}}
       />,
     );
     expect(screen.getByText("5番 馬名不明 逃げ 60%")).toBeTruthy();
