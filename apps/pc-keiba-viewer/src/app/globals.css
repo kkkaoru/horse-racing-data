@@ -953,6 +953,31 @@ h3 {
   white-space: nowrap;
 }
 
+.running-style-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8px-28);
+}
+
+.running-style-tab {
+  background: var(--surface);
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-6px-33);
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--space-15px-1);
+  font-weight: var(--number-900-16);
+  min-height: var(--space-38px-35);
+  padding: var(--space-8px-28) var(--space-12px-9);
+}
+
+.running-style-tab[aria-selected="true"] {
+  background: var(--color-hex-2f4437-95);
+  border-color: var(--color-hex-2f4437-95);
+  color: var(--color-hex-fff-19);
+}
+
 .year-nav {
   display: flex;
   gap: var(--space-8px-28);
