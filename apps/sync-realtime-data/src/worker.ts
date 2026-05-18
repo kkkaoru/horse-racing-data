@@ -1870,6 +1870,48 @@ export default {
       return json({ ok: true });
     }
 
+    if (url.pathname === "/admin/finish-position-lite/infer" && request.method === "POST") {
+      const expectedToken = env.REALTIME_ADMIN_TOKEN;
+      if (!expectedToken || request.headers.get("authorization") !== `Bearer ${expectedToken}`) {
+        return json({ error: "forbidden" }, { status: 403 });
+      }
+      const source = url.searchParams.get("source");
+      const kaisaiNen = url.searchParams.get("kaisai_nen");
+      const kaisaiTsukihi = url.searchParams.get("kaisai_tsukihi");
+      const keibajoCode = url.searchParams.get("keibajo_code");
+      const raceBango = url.searchParams.get("race_bango");
+      if (!source || !kaisaiNen || !kaisaiTsukihi || !keibajoCode || !raceBango) {
+        return json({ error: "missing_params" }, { status: 400 });
+      }
+      const modelVersion = `${source}-lite-lgbm-v1.0`;
+      const nowIso = new Date().toISOString();
+      const raceKey = `${source}:${kaisaiNen}${kaisaiTsukihi}:${keibajoCode}:${raceBango}`;
+      await env.REALTIME_DB
+        .prepare(
+          `insert or replace into finish_position_inference_state
+            (race_key, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, status, model_version, attempted_at)
+           values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(raceKey, source, kaisaiNen, kaisaiTsukihi, keibajoCode, raceBango, "pending", modelVersion, nowIso)
+        .run();
+      try {
+        await handleFinishPositionLiteJob(env, {
+          kaisaiNen,
+          kaisaiTsukihi,
+          keibajoCode,
+          modelVersion,
+          predictedAt: nowIso,
+          raceBango,
+          source,
+          type: "finish-position-lite-infer",
+        });
+        return json({ ok: true, raceKey });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return json({ error: message, raceKey }, { status: 500 });
+      }
+    }
+
     if (url.pathname === "/api/jobs" && request.method === "POST") {
       const expectedToken = env.REALTIME_ADMIN_TOKEN;
       if (!expectedToken || request.headers.get("authorization") !== `Bearer ${expectedToken}`) {
