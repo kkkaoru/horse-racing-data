@@ -677,3 +677,65 @@ export const buildRacePacePredictionRowsFromResults = ({
         Number(left.horseNumber) - Number(right.horseNumber),
     );
 };
+
+export interface RunningStylePositionProbabilities {
+  umaban: number;
+  pNige: number;
+  pSenkou: number;
+  pSashi: number;
+  pOikomi: number;
+}
+
+const POSITION_WEIGHT_NIGE = 0;
+const POSITION_WEIGHT_SENKOU = 0.25;
+const POSITION_WEIGHT_SASHI = 0.6;
+const POSITION_WEIGHT_OIKOMI = 1.0;
+
+const computePositionScore = (probs: RunningStylePositionProbabilities): number =>
+  probs.pNige * POSITION_WEIGHT_NIGE +
+  probs.pSenkou * POSITION_WEIGHT_SENKOU +
+  probs.pSashi * POSITION_WEIGHT_SASHI +
+  probs.pOikomi * POSITION_WEIGHT_OIKOMI;
+
+const compareByPositionScoreThenUmaban = (
+  left: RunningStylePositionProbabilities,
+  right: RunningStylePositionProbabilities,
+): number => computePositionScore(left) - computePositionScore(right) || left.umaban - right.umaban;
+
+const buildRankByUmaban = (
+  probabilities: ReadonlyArray<RunningStylePositionProbabilities>,
+): Map<number, number> => {
+  const sorted = probabilities.toSorted(compareByPositionScoreThenUmaban);
+  const rankByUmaban = new Map<number, number>();
+  sorted.forEach((entry, index) => {
+    rankByUmaban.set(entry.umaban, index + 1);
+  });
+  return rankByUmaban;
+};
+
+const overrideRowWithRank = (row: RacePacePredictionRow, rank: number): RacePacePredictionRow => ({
+  ...row,
+  corner1: rank,
+  corner2: rank,
+  corner3: rank,
+  corner4: rank,
+  predictedCorners: `${rank}-${rank}-${rank}-${rank}`,
+});
+
+export const applyRunningStyleSortToRacePaceRows = (
+  rows: RacePacePredictionRow[],
+  probabilities: ReadonlyArray<RunningStylePositionProbabilities>,
+): RacePacePredictionRow[] => {
+  if (probabilities.length === 0) return rows;
+  const rankByUmaban = buildRankByUmaban(probabilities);
+  return rows
+    .map((row) => {
+      const rank = rankByUmaban.get(Number(row.horseNumber));
+      return rank === undefined ? row : overrideRowWithRank(row, rank);
+    })
+    .toSorted(
+      (left, right) =>
+        (left.corner1 ?? Number.POSITIVE_INFINITY) - (right.corner1 ?? Number.POSITIVE_INFINITY) ||
+        Number(left.horseNumber) - Number(right.horseNumber),
+    );
+};
