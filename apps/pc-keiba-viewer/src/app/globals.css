@@ -5295,6 +5295,15 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   min-width: var(--number-0-2);
 }
 
+.paddock-section {
+  grid-template-columns: minmax(var(--number-0-2), var(--space-1fr-51));
+  overflow-x: clip;
+}
+
+.paddock-table-shell {
+  overflow-x: clip;
+}
+
 .race-trend-grid {
   align-items: start;
   display: grid;
