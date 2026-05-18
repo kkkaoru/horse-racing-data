@@ -661,7 +661,10 @@ export async function RaceDetailView({
           runnersByUmaban={Object.fromEntries(
             runners.map((runner) => [
               Number(runner.umaban ?? "0"),
-              { bamei: runner.bamei, jockey: runner.kishumeiRyakusho },
+              {
+                bamei: cleanText(runner.bamei, "") || null,
+                jockey: cleanText(runner.kishumeiRyakusho, "") || null,
+              },
             ]),
           )}
           source={raceSource}
