@@ -106,6 +106,8 @@ import {
   upsertPremiumRaceLink,
   type LocalRaceRow,
 } from "./storage";
+import { runFinishPositionLiteCronTick } from "./finish-position-lite-cron";
+import { handleFinishPositionLiteJob } from "./finish-position-lite-queue";
 import { RUNNING_STYLE_INFERENCE_CRON, runRunningStyleCronTick } from "./running-style-cron";
 import { readCachedTrackCondition, writeCachedTrackCondition } from "./track-condition-cache";
 import {
@@ -1957,6 +1959,10 @@ export default {
       ctx.waitUntil(runRunningStyleCronTick(env, scheduledAt).then(() => undefined));
       return;
     }
+    if (controller.cron === "*/15 * * * *") {
+      ctx.waitUntil(runFinishPositionLiteCronTick(env, scheduledAt).then(() => undefined));
+      return;
+    }
     const job = getCronJob(controller.cron, scheduledAt);
     ctx.waitUntil(handleJob(env, job));
     if (job.type === "plan-realtime-fetches") {
@@ -1966,6 +1972,16 @@ export default {
 
   async queue(batch, env): Promise<void> {
     for (const message of batch.messages) {
+      const body = message.body as { type?: string };
+      if (body.type === "finish-position-lite-infer") {
+        try {
+          await handleFinishPositionLiteJob(env, message.body as never);
+          message.ack();
+        } catch {
+          message.retry({ delaySeconds: QUEUE_RETRY_DELAY_SECONDS });
+        }
+        continue;
+      }
       try {
         await handleJob(env, message.body);
         message.ack();
