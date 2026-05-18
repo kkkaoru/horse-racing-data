@@ -942,6 +942,17 @@ h3 {
   padding-top: var(--space-18px-31);
 }
 
+.running-style-section .runner-table {
+  min-width: 0;
+  table-layout: auto;
+  width: auto;
+}
+
+.running-style-section .runner-table th,
+.running-style-section .runner-table td {
+  white-space: nowrap;
+}
+
 .year-nav {
   display: flex;
   gap: var(--space-8px-28);
