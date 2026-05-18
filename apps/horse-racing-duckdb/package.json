@@ -10,7 +10,7 @@
     "oxlint": "bunx oxlint ."
   },
   "dependencies": {
-    "@ducklings/workers": "1.4.4",
+    "@ducklings/workers": "1.5.2",
     "hono": "4.7.5",
     "horse-racing-schema": "workspace:*"
   },
