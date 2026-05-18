@@ -10,3 +10,4 @@ coverage/
 .coverage
 node_modules/
 tsconfig.tsbuildinfo
+certificates/

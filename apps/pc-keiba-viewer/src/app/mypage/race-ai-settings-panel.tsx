@@ -23,6 +23,19 @@ import {
 
 const DELETE_MODEL_CONFIRM_MESSAGE = "ダウンロード済みのAIモデルをこのブラウザから削除しますか？";
 const ABORT_MODEL_CONFIRM_MESSAGE = "AIモデルのダウンロードを中止しますか？";
+const TONE_PROMPT_MAX_LENGTH = 4_000;
+
+type TonePromptStatus = "idle" | "loading" | "saved" | "saving";
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const readTonePromptFromPayload = (payload: unknown): string => {
+  if (!isRecord(payload) || typeof payload.prompt !== "string") {
+    return "";
+  }
+  return payload.prompt;
+};
 
 const statusLabel = (status: RaceAiModelState["status"]): string => {
   if (status === "downloaded") {
@@ -51,6 +64,10 @@ export function RaceAiSettingsPanel() {
   const [modelStates, setModelStates] = useState<RaceAiModelState[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [supported, setSupported] = useState(false);
+  const [tonePrompt, setTonePrompt] = useState("");
+  const [tonePromptDraft, setTonePromptDraft] = useState("");
+  const [tonePromptError, setTonePromptError] = useState<string | null>(null);
+  const [tonePromptStatus, setTonePromptStatus] = useState<TonePromptStatus>("loading");
 
   useEffect(() => {
     setSupported(isWebGpuSupported());
@@ -69,6 +86,37 @@ export function RaceAiSettingsPanel() {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    setTonePromptStatus("loading");
+    void (async () => {
+      try {
+        const response = await fetch("/api/race-ai/tone-prompt", { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error("口調プロンプトを読み込めませんでした。");
+        }
+        const payload: unknown = await response.json();
+        if (cancelled) {
+          return;
+        }
+        const nextTonePrompt = readTonePromptFromPayload(payload);
+        setTonePrompt(nextTonePrompt);
+        setTonePromptDraft(nextTonePrompt);
+        setTonePromptError(null);
+        setTonePromptStatus("idle");
+      } catch (caught) {
+        if (cancelled) {
+          return;
+        }
+        setTonePromptError(caught instanceof Error ? caught.message : String(caught));
+        setTonePromptStatus("idle");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const enablePermission = () => {
     const nextSettings = requestRaceAiConsent();
     setSettings(nextSettings);
@@ -78,7 +126,11 @@ export function RaceAiSettingsPanel() {
   };
 
   const disablePermission = () => {
-    const nextSettings = saveRaceAiSettings({ autoStart: false, consent: "denied" });
+    const nextSettings = saveRaceAiSettings({
+      autoStart: false,
+      consent: "denied",
+      showSystemMessages: settings?.showSystemMessages ?? false,
+    });
     setSettings(nextSettings);
   };
 
@@ -87,6 +139,7 @@ export function RaceAiSettingsPanel() {
       const nextSettings = saveRaceAiSettings({
         autoStart: false,
         consent: settings?.consent ?? "denied",
+        showSystemMessages: settings?.showSystemMessages ?? false,
       });
       setSettings(nextSettings);
       return;
@@ -95,7 +148,11 @@ export function RaceAiSettingsPanel() {
       enablePermission();
       return;
     }
-    const nextSettings = saveRaceAiSettings({ autoStart: true, consent: "granted" });
+    const nextSettings = saveRaceAiSettings({
+      autoStart: true,
+      consent: "granted",
+      showSystemMessages: settings.showSystemMessages,
+    });
     setSettings(nextSettings);
   };
 
@@ -116,6 +173,39 @@ export function RaceAiSettingsPanel() {
       void downloadRaceAiModel(state.model).catch(() => {});
     }
   };
+
+  const saveTonePrompt = () => {
+    const nextTonePrompt = tonePromptDraft.trim();
+    if (nextTonePrompt.length > TONE_PROMPT_MAX_LENGTH) {
+      setTonePromptError("口調プロンプトは4000文字以内で入力してください。");
+      return;
+    }
+    setTonePromptStatus("saving");
+    setTonePromptError(null);
+    void (async () => {
+      try {
+        const response = await fetch("/api/race-ai/tone-prompt", {
+          body: JSON.stringify({ prompt: nextTonePrompt }),
+          headers: { "content-type": "application/json" },
+          method: "PUT",
+        });
+        if (!response.ok) {
+          throw new Error("口調プロンプトを保存できませんでした。");
+        }
+        const payload: unknown = await response.json();
+        const savedTonePrompt = readTonePromptFromPayload(payload);
+        setTonePrompt(savedTonePrompt);
+        setTonePromptDraft(savedTonePrompt);
+        setTonePromptStatus("saved");
+      } catch (caught) {
+        setTonePromptError(caught instanceof Error ? caught.message : String(caught));
+        setTonePromptStatus("idle");
+      }
+    })();
+  };
+
+  const tonePromptChanged = tonePromptDraft.trim() !== tonePrompt.trim();
+  const canSaveTonePrompt = tonePromptStatus !== "loading" && tonePromptStatus !== "saving";
 
   return (
     <details
@@ -159,37 +249,84 @@ export function RaceAiSettingsPanel() {
               <span>レース詳細でAIを自動開始</span>
             </label>
           </div>
-          <div className="mypage-ai-model-list" aria-label="AIモデル一覧">
-            {modelStates.length === 0
-              ? RACE_AI_MODELS.map((model) => (
-                  <div className="mypage-ai-model-row" key={model.id}>
-                    <strong>{model.name}</strong>
-                    <span>{model.version}</span>
-                    <span>確認中</span>
-                  </div>
-                ))
-              : modelStates.map((state) => (
-                  <div className="mypage-ai-model-row" key={state.model.id}>
-                    <span>
-                      <strong>{state.model.name}</strong>
-                      {state.model.isLatest ? <small>最新</small> : null}
-                    </span>
-                    <span>{state.model.version}</span>
-                    <span>{formatRaceAiModelSize(state.totalBytes)}</span>
-                    <span>{statusLabel(state.status)}</span>
-                    <span>{progressLabel(state)}</span>
-                    <button type="button" onClick={() => runModelAction(state)}>
-                      {state.status === "downloaded"
-                        ? "削除"
-                        : state.status === "downloading"
-                          ? "中止"
-                          : "ダウンロード"}
-                    </button>
-                  </div>
-                ))}
-          </div>
         </>
       )}
+      <section className="mypage-ai-tone-panel" aria-label="AI口調プロンプト">
+        <div>
+          <h3>AI口調プロンプト</h3>
+          <span>
+            {tonePromptStatus === "loading"
+              ? "読み込み中"
+              : tonePromptStatus === "saving"
+                ? "保存中"
+                : tonePromptStatus === "saved"
+                  ? "保存済み"
+                  : tonePromptChanged
+                    ? "未保存"
+                    : "保存済み"}
+          </span>
+        </div>
+        <textarea
+          value={tonePromptDraft}
+          maxLength={TONE_PROMPT_MAX_LENGTH}
+          rows={6}
+          onChange={(event) => {
+            setTonePromptDraft(event.currentTarget.value);
+            setTonePromptStatus("idle");
+          }}
+        />
+        <div className="mypage-ai-tone-actions">
+          <button type="button" disabled={!canSaveTonePrompt} onClick={saveTonePrompt}>
+            保存
+          </button>
+          <button
+            type="button"
+            disabled={!canSaveTonePrompt || !tonePromptDraft}
+            onClick={() => {
+              setTonePromptDraft("");
+              setTonePromptStatus("idle");
+            }}
+          >
+            空にする
+          </button>
+          <span>
+            {tonePromptDraft.length.toLocaleString("ja-JP")} /{" "}
+            {TONE_PROMPT_MAX_LENGTH.toLocaleString("ja-JP")}
+          </span>
+        </div>
+        {tonePromptError ? <p>{tonePromptError}</p> : null}
+      </section>
+      {supported ? (
+        <div className="mypage-ai-model-list" aria-label="AIモデル一覧">
+          {modelStates.length === 0
+            ? RACE_AI_MODELS.map((model) => (
+                <div className="mypage-ai-model-row" key={model.id}>
+                  <strong>{model.name}</strong>
+                  <span>{model.version}</span>
+                  <span>確認中</span>
+                </div>
+              ))
+            : modelStates.map((state) => (
+                <div className="mypage-ai-model-row" key={state.model.id}>
+                  <span>
+                    <strong>{state.model.name}</strong>
+                    {state.model.isLatest ? <small>最新</small> : null}
+                  </span>
+                  <span>{state.model.version}</span>
+                  <span>{formatRaceAiModelSize(state.totalBytes)}</span>
+                  <span>{statusLabel(state.status)}</span>
+                  <span>{progressLabel(state)}</span>
+                  <button type="button" onClick={() => runModelAction(state)}>
+                    {state.status === "downloaded"
+                      ? "削除"
+                      : state.status === "downloading"
+                        ? "中止"
+                        : "ダウンロード"}
+                  </button>
+                </div>
+              ))}
+        </div>
+      ) : null}
     </details>
   );
 }

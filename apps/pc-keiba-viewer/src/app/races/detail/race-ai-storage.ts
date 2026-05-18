@@ -9,11 +9,12 @@ const SETTINGS_EVENT_NAME = "pc-keiba-race-ai-settings";
 
 export type RaceAiConsent = "denied" | "granted" | "unanswered";
 
-export type RaceAiMessageRole = "assistant" | "user";
+export type RaceAiMessageRole = "assistant" | "system" | "user";
 
 export interface RaceAiSettings {
   autoStart: boolean;
   consent: RaceAiConsent;
+  showSystemMessages: boolean;
   updatedAt: string;
 }
 
@@ -57,7 +58,7 @@ export interface RaceAiCachedModelInfo {
 }
 
 export const RACE_AI_USAGE_CONFIRM_MESSAGE =
-  "このブラウザでWebGPU AI予想を利用しますか？\n\nはいを選ぶとAI利用を許可し、AI利用の自動開始をオンにします。必要なAIモデルはブラウザ内に保存されます。";
+  "このブラウザでアーモンドAI予想を利用しますか？\n\nはいを選ぶとAI利用を許可し、AI利用の自動開始をオンにします。必要なAIモデルはブラウザ内に保存されます。";
 
 export const RACE_AI_MODEL_DOWNLOAD_CONFIRM_MESSAGE =
   "AIモデルをこのブラウザにダウンロードしますか？\n\nモデルは大きいため、通信量と保存容量を使用します。";
@@ -65,6 +66,7 @@ export const RACE_AI_MODEL_DOWNLOAD_CONFIRM_MESSAGE =
 const emptySettings = (): RaceAiSettings => ({
   autoStart: false,
   consent: "unanswered",
+  showSystemMessages: false,
   updatedAt: new Date().toISOString(),
 });
 
@@ -159,6 +161,7 @@ export const getRaceAiSettings = (): RaceAiSettings => {
     }
     const consent = Reflect.get(parsed, "consent");
     const autoStart = Reflect.get(parsed, "autoStart");
+    const showSystemMessages = Reflect.get(parsed, "showSystemMessages");
     const updatedAt = Reflect.get(parsed, "updatedAt");
     if (consent !== "granted" && consent !== "denied" && consent !== "unanswered") {
       return emptySettings();
@@ -166,6 +169,7 @@ export const getRaceAiSettings = (): RaceAiSettings => {
     return {
       autoStart: typeof autoStart === "boolean" ? autoStart : false,
       consent,
+      showSystemMessages: typeof showSystemMessages === "boolean" ? showSystemMessages : false,
       updatedAt: typeof updatedAt === "string" ? updatedAt : new Date().toISOString(),
     };
   } catch {
@@ -207,6 +211,7 @@ export const requestRaceAiConsent = (): RaceAiSettings => {
   return saveRaceAiSettings({
     autoStart: allowed,
     consent: allowed ? "granted" : "denied",
+    showSystemMessages: false,
   });
 };
 

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-type DebugAiChatRole = "assistant" | "user";
+type DebugAiChatRole = "assistant" | "system" | "user";
 type DebugAiCommandType =
   | "replace-messages"
   | "reset"
@@ -166,7 +166,10 @@ const parseMessage = (value: unknown): DebugAiChatMessage | null => {
   }
   const content = toStringValue(value.content);
   const id = toStringValue(value.id);
-  const role = value.role === "assistant" || value.role === "user" ? value.role : null;
+  const role =
+    value.role === "assistant" || value.role === "system" || value.role === "user"
+      ? value.role
+      : null;
   if (!content || !id || !role) {
     return null;
   }

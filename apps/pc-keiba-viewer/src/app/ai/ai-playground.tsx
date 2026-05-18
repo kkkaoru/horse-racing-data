@@ -63,6 +63,8 @@ const DEBUG_HEARTBEAT_INTERVAL_MS = 3_000;
 const DEBUG_FLUSH_DEBOUNCE_MS = 250;
 const MODEL_PROGRESS_LOG_STEP = 256;
 const MODEL_HEAD_TIMEOUT_MS = 10_000;
+const DEBUG_TEXT_LIMIT = 2_000;
+const DEBUG_SAMPLE_TEXT_LIMIT = 240;
 
 const createId = (): string => `${Date.now().toString(36)}-${crypto.randomUUID()}`;
 
@@ -75,6 +77,12 @@ const createSafeId = (): string => {
 
 const formatCaughtError = (caught: unknown): string =>
   caught instanceof Error ? caught.message : String(caught);
+
+const truncateDebugText = (text: string, limit = DEBUG_TEXT_LIMIT): string =>
+  text.length > limit ? `${text.slice(0, limit)}...` : text;
+
+const truncateDebugSample = (text: string): string =>
+  truncateDebugText(text, DEBUG_SAMPLE_TEXT_LIMIT);
 
 const normalizeDebugDetails = (
   details?: Record<string, unknown>,
@@ -159,16 +167,167 @@ const uiMessageText = (message: UIMessage | undefined): string =>
     .join("")
     .trim();
 
+const MODEL_CONTROL_TOKEN_PATTERN = /<\/?(?:start_of_turn|end_of_turn|bos|eos)>/gu;
+const MODEL_CONTROL_TOKEN_FRAGMENT_PATTERN = /<\/?(?:start|end)_[a-z_]*>?/gu;
+const MODEL_CONTROL_TOKEN_FRAGMENT_START_PATTERN = /^<\/?(?:start|end)_[a-z_]*>?/u;
+const MODEL_PROTOCOL_ROLE_HEADER_LINE_PATTERN =
+  /(?:^|\n)[ \t\r]*(?:user|model|assistant)[ \t\r]*(?::)?(?=\n|$)/giu;
+const MODEL_CONTROL_TOKENS = [
+  "<start_of_turn>",
+  "</start_of_turn>",
+  "<end_of_turn>",
+  "</end_of_turn>",
+  "<bos>",
+  "</bos>",
+  "<eos>",
+  "</eos>",
+] as const;
+const MODEL_PROTOCOL_ROLES = ["user", "model", "assistant"] as const;
+const EMPTY_ASSISTANT_FALLBACK =
+  "AIから表示できる本文が返りませんでした。質問を少し具体的にして、もう一度送信してください。";
+
 const cleanModelText = (text: string): string =>
   text
-    .replace(/<start_of_turn>|<end_of_turn>|<bos>|<eos>/gu, "")
+    .replace(MODEL_CONTROL_TOKEN_PATTERN, "")
+    .replace(MODEL_CONTROL_TOKEN_FRAGMENT_PATTERN, "")
+    .replace(MODEL_PROTOCOL_ROLE_HEADER_LINE_PATTERN, "\n")
     .replace(/^```(?:json|markdown|text)?\s*/u, "")
     .replace(/\s*```$/u, "")
     .trim();
 
+const isModelProtocolRole = (
+  value: string | undefined,
+): value is (typeof MODEL_PROTOCOL_ROLES)[number] =>
+  MODEL_PROTOCOL_ROLES.some((role) => role === value);
+
+const matchProtocolRoleHeader = (
+  text: string,
+  flush: boolean,
+): { length: number; role: (typeof MODEL_PROTOCOL_ROLES)[number] } | null => {
+  const match = /^[ \t\r]*(user|model|assistant)[ \t\r]*(?::)?(\n|$)/iu.exec(text);
+  if (!match) {
+    return null;
+  }
+  if (!flush && match[2] !== "\n") {
+    return null;
+  }
+  const role = match[1]?.toLowerCase();
+  if (!isModelProtocolRole(role)) {
+    return null;
+  }
+  return { length: match[0].length, role };
+};
+
+const isProtocolRoleHeaderPrefix = (text: string): boolean => {
+  const candidate = text.replace(/^[ \t\r]*/u, "").toLowerCase();
+  if (!candidate) {
+    return true;
+  }
+  return MODEL_PROTOCOL_ROLES.some(
+    (role) =>
+      role.startsWith(candidate) ||
+      candidate === role ||
+      candidate.startsWith(`${role} `) ||
+      candidate.startsWith(`${role}:`),
+  );
+};
+
+const createModelStreamCleaner = (): {
+  flush: () => string;
+  push: (chunk: string) => string;
+} => {
+  let buffer = "";
+  let protocolBuffer = "";
+  let protocolLineStart = true;
+  let suppressUserTurn = false;
+  const filterProtocolText = (text: string, flush: boolean): string => {
+    protocolBuffer += text;
+    let output = "";
+    while (protocolBuffer) {
+      if (protocolLineStart) {
+        const roleHeader = matchProtocolRoleHeader(protocolBuffer, flush);
+        if (roleHeader) {
+          protocolBuffer = protocolBuffer.slice(roleHeader.length);
+          suppressUserTurn = roleHeader.role === "user";
+          protocolLineStart = true;
+          continue;
+        }
+        if (!flush && isProtocolRoleHeaderPrefix(protocolBuffer)) {
+          break;
+        }
+      }
+      const nextChar = protocolBuffer[0];
+      protocolBuffer = protocolBuffer.slice(1);
+      if (!suppressUserTurn) {
+        output += nextChar;
+      }
+      protocolLineStart = nextChar === "\n";
+    }
+    return output;
+  };
+  const drain = (flush: boolean): string => {
+    let output = "";
+    while (buffer) {
+      const tagStart = buffer.indexOf("<");
+      if (tagStart < 0) {
+        output += buffer;
+        buffer = "";
+        break;
+      }
+      if (tagStart > 0) {
+        output += buffer.slice(0, tagStart);
+        buffer = buffer.slice(tagStart);
+        continue;
+      }
+      const token = MODEL_CONTROL_TOKENS.find((candidate) => buffer.startsWith(candidate));
+      if (token) {
+        buffer = buffer.slice(token.length);
+        continue;
+      }
+      if (!flush && MODEL_CONTROL_TOKENS.some((candidate) => candidate.startsWith(buffer))) {
+        break;
+      }
+      const fragmentMatch = MODEL_CONTROL_TOKEN_FRAGMENT_START_PATTERN.exec(buffer);
+      if (fragmentMatch) {
+        buffer = buffer.slice(fragmentMatch[0].length);
+        continue;
+      }
+      output += buffer[0];
+      buffer = buffer.slice(1);
+    }
+    const cleaned = output
+      .replace(MODEL_CONTROL_TOKEN_PATTERN, "")
+      .replace(MODEL_CONTROL_TOKEN_FRAGMENT_PATTERN, "");
+    return filterProtocolText(cleaned, flush);
+  };
+  return {
+    flush: () => drain(true),
+    push: (chunk: string) => {
+      buffer += chunk;
+      return drain(false);
+    },
+  };
+};
+
+const assistantDisplayText = (message: UIMessage): string => {
+  const text = uiMessageText(message);
+  if (message.role !== "assistant") {
+    return text;
+  }
+  return cleanModelText(text) || EMPTY_ASSISTANT_FALLBACK;
+};
+
 const isLocalhostBrowser = (): boolean =>
   typeof window !== "undefined" &&
   ["localhost", "127.0.0.1", "0.0.0.0", "::1"].includes(window.location.hostname);
+
+const isDebugDisplayAllowed = (): boolean => {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  const normalizedPathname = window.location.pathname.replace(/\/$/u, "");
+  return window.location.origin === "https://192.168.1.219" && normalizedPathname === "/ai";
+};
 
 const isMockMode = (): boolean =>
   isLocalhostBrowser() &&
@@ -258,20 +417,48 @@ const createLocalChatStream = ({
     },
   });
 
+const promptRoleLabel = (role: UIMessage["role"]): string => {
+  if (role === "user") {
+    return "ユーザー";
+  }
+  if (role === "assistant") {
+    return "AI";
+  }
+  return role;
+};
+
 const buildPrompt = (messages: UIMessage[], request: string): string => {
-  const recentMessages = messages.slice(-8).map((message) => ({
-    role: message.role,
-    text: uiMessageText(message),
-  }));
+  const currentRequest = request.trim();
+  const priorMessages =
+    messages.at(-1)?.role === "user" && uiMessageText(messages.at(-1)).trim() === currentRequest
+      ? messages.slice(0, -1)
+      : messages;
+  const recentConversation =
+    priorMessages
+      .slice(-6)
+      .map((message) => ({
+        role: promptRoleLabel(message.role),
+        text:
+          message.role === "assistant"
+            ? cleanModelText(uiMessageText(message))
+            : uiMessageText(message),
+      }))
+      .filter((message) => message.text.length > 0)
+      .map((message) => `${message.role}: ${message.text}`)
+      .join("\n") || "なし";
   return buildGemmaPrompt(
     [
       "あなたはPC-KEIBA Viewerの動作確認用AIです。",
-      "日本語で、簡潔に、ユーザーの入力に直接返答してください。",
+      "次のユーザー入力に対する回答本文だけを日本語で出力してください。",
+      "ユーザー入力を引用、復唱、翻訳しないでください。",
+      "制御トークン、XML風タグ、Markdownコードフェンス、role名（user/model/assistant）は出力しないでください。",
+      "このページは外部情報を取得しません。天気や最新情報など外部情報が必要な質問では、取得できないことを短く伝えてください。",
       "競馬データの取得や予想はこのページでは行わず、モデル応答の疎通確認として回答してください。",
-      "直近の対話:",
-      JSON.stringify(recentMessages),
-      "今回のユーザー入力:",
-      request,
+      "過去の会話（参考）:",
+      recentConversation,
+      "ユーザー入力:",
+      currentRequest || request,
+      "回答:",
     ].join("\n\n"),
   );
 };
@@ -323,6 +510,7 @@ export function AiPlayground() {
   const [mockMode, setMockMode] = useState(false);
   const [modelPartialLength, setModelPartialLength] = useState(0);
   const [sessionId, setSessionId] = useState("");
+  const [debugEnabled, setDebugEnabled] = useState(false);
   const [debugLogs, setDebugLogs] = useState<AiPlaygroundDebugLog[]>([]);
   const [serverDebugAck, setServerDebugAck] = useState<ServerDebugAck | null>(null);
   const [debugFlushError, setDebugFlushError] = useState<string | null>(null);
@@ -338,6 +526,7 @@ export function AiPlayground() {
   const lastHeartbeatReasonRef = useRef("initial");
   const lastModelProgressLogLengthRef = useRef(0);
   const autoInitializeStartedRef = useRef(false);
+  const chatThreadRef = useRef<HTMLDivElement | null>(null);
 
   const addDebugLog = useCallback(
     (level: DebugLogLevel, event: string, details?: Record<string, unknown>) => {
@@ -360,6 +549,7 @@ export function AiPlayground() {
     if (typeof window === "undefined") {
       return;
     }
+    setDebugEnabled(isDebugDisplayAllowed());
     const storageKey = "pc-keiba-ai-playground-session-id";
     const existingSessionId = window.sessionStorage.getItem(storageKey);
     const nextSessionId = existingSessionId || createSafeId();
@@ -690,6 +880,7 @@ export function AiPlayground() {
       setStatusMessage("AIに送信しています。");
       addDebugLog("info", "chat send started", {
         messageCount: messages.length,
+        request: truncateDebugText(request),
         requestLength: request.length,
       });
       if (isMockMode()) {
@@ -716,48 +907,88 @@ export function AiPlayground() {
         abortSignal?.addEventListener("abort", cancelProcessing, { once: true });
         try {
           const prompt = buildPrompt(messages, request);
-          let emittedLength = 0;
+          const streamCleaner = createModelStreamCleaner();
+          let emittedText = "";
+          let emittedTextLength = 0;
+          let rawStreamedText = "";
           addDebugLog("info", "model generation started", {
             promptLength: prompt.length,
+            promptSample: truncateDebugSample(prompt),
           });
           const response = await llm.generateResponse(prompt, (partialResult, done) => {
             if (abortSignal?.aborted) {
               return;
             }
-            const cleaned = cleanModelText(partialResult);
-            setModelPartialLength(partialResult.length);
+            const delta =
+              rawStreamedText && partialResult.startsWith(rawStreamedText)
+                ? partialResult.slice(rawStreamedText.length)
+                : partialResult;
+            rawStreamedText += delta;
+            const visibleDelta = streamCleaner.push(delta);
+            if (visibleDelta) {
+              emittedText += visibleDelta;
+              emittedTextLength += visibleDelta.length;
+              emit(visibleDelta);
+            }
+            setModelPartialLength(rawStreamedText.length);
             setStatusMessage(
               done
-                ? `AI生成の最終処理中です。${cleaned.length.toLocaleString("ja-JP")}文字`
-                : `AI生成中です。${cleaned.length.toLocaleString("ja-JP")}文字受信`,
+                ? `AI生成の最終処理中です。${emittedTextLength.toLocaleString("ja-JP")}文字`
+                : `AI生成中です。${emittedTextLength.toLocaleString("ja-JP")}文字受信`,
             );
             if (
-              partialResult.length - lastModelProgressLogLengthRef.current >=
+              rawStreamedText.length - lastModelProgressLogLengthRef.current >=
                 MODEL_PROGRESS_LOG_STEP ||
               done
             ) {
-              lastModelProgressLogLengthRef.current = partialResult.length;
+              lastModelProgressLogLengthRef.current = rawStreamedText.length;
               addDebugLog("debug", "model generation progress", {
-                cleanedLength: cleaned.length,
                 done,
+                emittedTextLength,
+                partialDeltaLength: delta.length,
                 partialLength: partialResult.length,
+                rawSample: done ? truncateDebugSample(rawStreamedText) : undefined,
+                rawLength: rawStreamedText.length,
+                visibleSample: done ? truncateDebugSample(cleanModelText(emittedText)) : undefined,
               });
             }
-            const delta = cleaned.slice(emittedLength);
-            if (delta) {
-              emittedLength = cleaned.length;
-              emit(delta);
-            }
           });
-          const finalText = cleanModelText(response);
-          const remaining = finalText.slice(emittedLength);
-          if (remaining) {
-            emit(remaining);
+          const finalDelta =
+            response && rawStreamedText
+              ? response.startsWith(rawStreamedText)
+                ? response.slice(rawStreamedText.length)
+                : ""
+              : response;
+          if (finalDelta) {
+            rawStreamedText += finalDelta;
+            const visibleFinalDelta = streamCleaner.push(finalDelta);
+            if (visibleFinalDelta) {
+              emittedText += visibleFinalDelta;
+              emittedTextLength += visibleFinalDelta.length;
+              emit(visibleFinalDelta);
+            }
           }
-          setModelPartialLength(response.length);
+          const tail = streamCleaner.flush();
+          if (tail) {
+            emittedText += tail;
+            emittedTextLength += tail.length;
+            emit(tail);
+          }
+          if (emittedTextLength === 0 && !abortSignal?.aborted) {
+            emittedText = EMPTY_ASSISTANT_FALLBACK;
+            emit(EMPTY_ASSISTANT_FALLBACK);
+            setStatusMessage("AIから表示できる本文が返りませんでした。");
+            addDebugLog("warn", "model response empty after cleanup", {
+              rawSample: truncateDebugSample(rawStreamedText),
+              responseLength: rawStreamedText.length,
+            });
+          }
+          setModelPartialLength(rawStreamedText.length);
           addDebugLog("info", "model generation completed", {
-            emittedLength: Math.max(emittedLength, finalText.length),
-            responseLength: response.length,
+            emittedSample: truncateDebugSample(cleanModelText(emittedText)),
+            emittedLength: emittedTextLength,
+            rawSample: truncateDebugSample(rawStreamedText),
+            responseLength: rawStreamedText.length,
           });
         } finally {
           abortSignal?.removeEventListener("abort", cancelProcessing);
@@ -791,6 +1022,7 @@ export function AiPlayground() {
           execute: async (emit) => {
             const request = uiMessageText(messages.at(-1)) || "こんにちは。";
             addDebugLog("info", "chat transport execute started", {
+              request: truncateDebugText(request),
               requestLength: request.length,
             });
             await generateAnswer({ abortSignal, emit, messages, request });
@@ -1058,6 +1290,27 @@ export function AiPlayground() {
   }, [flushDebugSnapshot]);
 
   const isSending = chatStatus === "submitted" || chatStatus === "streaming";
+  const submitChatInput = useCallback(() => {
+    const value = input.trim();
+    if (!value || isSending) {
+      return;
+    }
+    addDebugLog("info", "chat form submitted", {
+      input: truncateDebugText(value),
+      inputLength: value.length,
+    });
+    setInput("");
+    void sendMessage({ text: value });
+  }, [addDebugLog, input, isSending, sendMessage]);
+
+  useEffect(() => {
+    const chatThread = chatThreadRef.current;
+    if (!chatThread) {
+      return;
+    }
+    chatThread.scrollTop = chatThread.scrollHeight;
+  }, [messages, isSending, statusMessage]);
+
   const debugUrl = sessionId
     ? `/api/debug/ai-playground?sessionId=${encodeURIComponent(sessionId)}`
     : "/api/debug/ai-playground";
@@ -1136,7 +1389,7 @@ export function AiPlayground() {
             このブラウザではWebGPU AIの動作確認はできません。
           </p>
         </div>
-        {diagnosticLog}
+        {debugEnabled ? diagnosticLog : null}
       </section>
     );
   }
@@ -1154,26 +1407,28 @@ export function AiPlayground() {
             <span>{progressLabel(modelState)}</span>
           </span>
         </div>
-        <div className="race-ai-readiness-status-grid">
-          <div>
-            <span>WebGPU</span>
-            <strong>{mockMode ? "mock" : "対応"}</strong>
+        {debugEnabled ? (
+          <div className="race-ai-readiness-status-grid">
+            <div>
+              <span>WebGPU</span>
+              <strong>{mockMode ? "mock" : "対応"}</strong>
+            </div>
+            <div>
+              <span>モデル</span>
+              <strong>{modelReadyLabel}</strong>
+            </div>
+            <div>
+              <span>キャッシュ</span>
+              <strong>{mockMode ? "mock" : statusLabel(modelState?.status)}</strong>
+            </div>
+            <div>
+              <span>サイズ</span>
+              <strong>
+                {formatRaceAiModelSize(modelState?.totalBytes ?? LATEST_RACE_AI_MODEL.sizeBytes)}
+              </strong>
+            </div>
           </div>
-          <div>
-            <span>モデル</span>
-            <strong>{modelReadyLabel}</strong>
-          </div>
-          <div>
-            <span>キャッシュ</span>
-            <strong>{mockMode ? "mock" : statusLabel(modelState?.status)}</strong>
-          </div>
-          <div>
-            <span>サイズ</span>
-            <strong>
-              {formatRaceAiModelSize(modelState?.totalBytes ?? LATEST_RACE_AI_MODEL.sizeBytes)}
-            </strong>
-          </div>
-        </div>
+        ) : null}
         <p className="race-ai-readiness-note">{statusMessage}</p>
         <div className="race-ai-actions">
           <button
@@ -1209,16 +1464,18 @@ export function AiPlayground() {
         <strong>
           {isSending ? statusMessage : modelStatus === "loading" ? "AIを読み込み中" : "待機中"}
         </strong>
-        <small>
-          {modelPartialLength > 0
-            ? `モデル応答 ${modelPartialLength.toLocaleString("ja-JP")} 文字受信`
-            : `debug ${sessionId || "initializing"}`}
-        </small>
+        {modelPartialLength > 0 || debugEnabled ? (
+          <small>
+            {modelPartialLength > 0
+              ? `モデル応答 ${modelPartialLength.toLocaleString("ja-JP")} 文字受信`
+              : `debug ${sessionId || "initializing"}`}
+          </small>
+        ) : null}
       </div>
 
-      {diagnosticLog}
+      {debugEnabled ? diagnosticLog : null}
 
-      <div className="race-ai-chat-thread" aria-live="polite">
+      <div className="race-ai-chat-thread" ref={chatThreadRef} aria-live="polite">
         {messages.length === 0 ? (
           <p className="empty-state">AIへの入力と返答はここに表示されます。</p>
         ) : (
@@ -1226,7 +1483,7 @@ export function AiPlayground() {
             <article className={`race-ai-chat-message ${message.role}`} key={message.id}>
               <span>{message.role === "user" ? "あなた" : "AI"}</span>
               <div>
-                <p>{uiMessageText(message)}</p>
+                <p>{assistantDisplayText(message)}</p>
               </div>
             </article>
           ))
@@ -1240,15 +1497,7 @@ export function AiPlayground() {
         className="race-ai-chat-form"
         onSubmit={(event) => {
           event.preventDefault();
-          const value = input.trim();
-          if (!value || isSending) {
-            return;
-          }
-          addDebugLog("info", "chat form submitted", {
-            inputLength: value.length,
-          });
-          setInput("");
-          void sendMessage({ text: value });
+          submitChatInput();
         }}
       >
         <label>
@@ -1258,6 +1507,13 @@ export function AiPlayground() {
             rows={4}
             onChange={(event) => {
               setInput(event.currentTarget.value);
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) {
+                return;
+              }
+              event.preventDefault();
+              submitChatInput();
             }}
           />
         </label>

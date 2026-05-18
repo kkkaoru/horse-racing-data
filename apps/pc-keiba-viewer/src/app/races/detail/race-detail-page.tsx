@@ -61,6 +61,19 @@ import { TrackConditionSection } from "./track-condition-section";
 
 export const dynamic = "force-dynamic";
 
+const DEFAULT_RACE_AI_ASSISTANT_NAME = "アーモンドAI";
+const DEFAULT_RACE_AI_ASSISTANT_ICON_URL = "/ai/almondeye_top.png";
+const DEFAULT_RACE_AI_ASSISTANT_ACCENT_COLOR = "#69a9e9";
+
+const getRaceAiAssistantName = (): string =>
+  process.env.PC_KEIBA_RACE_AI_NAME?.trim() || DEFAULT_RACE_AI_ASSISTANT_NAME;
+
+const getRaceAiAssistantIconUrl = (): string =>
+  process.env.PC_KEIBA_RACE_AI_ICON_URL?.trim() || DEFAULT_RACE_AI_ASSISTANT_ICON_URL;
+
+const getRaceAiAssistantAccentColor = (): string =>
+  process.env.PC_KEIBA_RACE_AI_ACCENT_COLOR?.trim() || DEFAULT_RACE_AI_ASSISTANT_ACCENT_COLOR;
+
 interface RaceDetailViewProps {
   day: string;
   initialRace?: RaceDetail;
@@ -544,6 +557,9 @@ export async function RaceDetailView({
         <TrackConditionSection trackCode={race.trackCode} />
 
         <RaceAiAssistant
+          assistantAccentColor={getRaceAiAssistantAccentColor()}
+          assistantIconUrl={getRaceAiAssistantIconUrl()}
+          assistantName={getRaceAiAssistantName()}
           basePostgresqlData={{
             courseInfo,
             race,

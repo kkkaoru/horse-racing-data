@@ -4,7 +4,8 @@ import { useChat } from "@ai-sdk/react";
 import type { LlmInference } from "@mediapipe/tasks-genai";
 import type { ChatTransport, UIMessage, UIMessageChunk } from "ai";
 import type { RealtimeRacePayload } from "horse-racing-realtime/types";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Image from "next/image";
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { RaceSource } from "../../../lib/codes";
 import type { CourseInfo, RaceDetail, RaceListItem, Runner } from "../../../lib/race-types";
@@ -27,14 +28,19 @@ import {
   getRaceAiLog,
   getRaceAiSettings,
   saveRaceAiLog,
+  saveRaceAiSettings,
   subscribeRaceAiSettings,
   type RaceAiMessage,
+  type RaceAiMessageRole,
   type RaceAiSettings,
   type RaceAiThoughtLog,
 } from "./race-ai-storage";
 import { useRealtimeRaceSelector } from "./realtime-client";
 
 interface RaceAiAssistantProps {
+  assistantAccentColor: string;
+  assistantIconUrl: string;
+  assistantName: string;
   basePostgresqlData: {
     courseInfo: CourseInfo | null;
     race: RaceDetail;
@@ -112,6 +118,9 @@ interface RaceAiRuntimeLog {
 
 const WASM_BASE_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-genai@0.10.27/wasm";
 const REALTIME_RETHINK_DELAY_MS = 3_000;
+const DEFAULT_RACE_AI_REQUEST = "このレースの着順を予想してください。";
+const REALTIME_REEVALUATION_REQUEST =
+  "リアルタイムデータが更新されました。最新データで再評価してください。";
 const DEBUG_SYNC_INTERVAL_MS = 1_200;
 const SERVER_COMMAND_SYNC_INTERVAL_MS = 5_000;
 const MODEL_INITIALIZATION_TIMEOUT_MS = 180_000;
@@ -129,6 +138,21 @@ const TOOL_RESULT_CHAR_LIMIT = 4_000;
 const MIN_TOOL_RESULT_CHAR_LIMIT = 1_500;
 const TOOL_ROW_LIMIT = 16;
 const TOOL_TEXT_LIMIT = 240;
+const RUNTIME_LOG_TEXT_LIMIT = 2_000;
+const MACHINE_RESPONSE_FORMAT_FALLBACK_SOURCE =
+  "回答の形式が整わず、表示できる本文を作成できませんでした。データ取得後に再試行してください。";
+const MACHINE_TOOL_LIMIT_SOURCE =
+  "追加データ取得の上限に達したため、取得済みデータの範囲で回答しました。";
+const MACHINE_NATURAL_TEXT_THOUGHT_SOURCE =
+  "モデルが指定形式のJSONではなく自然文を返したため、回答本文を表示用に整形しました。";
+
+interface RaceAiToneSettings {
+  prompt: string;
+}
+
+const EMPTY_RACE_AI_TONE_SETTINGS: RaceAiToneSettings = {
+  prompt: "",
+};
 
 const GENERATION_STAGE_LABELS: Record<GenerationStage, string> = {
   "fetching-tool-data": "追加データ取得中",
@@ -154,6 +178,9 @@ const modelInitializationTimeoutMessage = (timeoutMs: number): string =>
   `AIモデル初期化が${Math.round(timeoutMs / 1000)}秒を超えたため停止しました。ブラウザのWebGPUが不安定な可能性があります。ページを再読み込みして再試行してください。`;
 
 const createId = (): string => `${Date.now().toString(36)}-${crypto.randomUUID()}`;
+
+const truncateRuntimeLogText = (text: string): string =>
+  text.length > RUNTIME_LOG_TEXT_LIMIT ? `${text.slice(0, RUNTIME_LOG_TEXT_LIMIT)}...` : text;
 
 const yieldToBrowser = (): Promise<void> =>
   new Promise((resolve) => {
@@ -276,12 +303,31 @@ const stableStringify = (value: unknown): string => {
 };
 
 const buildRealtimeFingerprint = (payload: RealtimeRacePayload | null): string =>
-  stableStringify({
-    entries: payload?.raceEntries ?? null,
-    odds: payload?.odds?.latest ?? null,
-    results: payload?.raceResults ?? null,
-    trackCondition: payload?.trackCondition ?? null,
-  });
+  stableStringify(
+    normalizeRealtimeFingerprintValue({
+      entries: payload?.raceEntries ?? null,
+      odds: payload?.odds?.latest ?? null,
+      results: payload?.raceResults ?? null,
+      trackCondition: payload?.trackCondition ?? null,
+    }),
+  );
+
+const normalizeRealtimeFingerprintValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return value.map(normalizeRealtimeFingerprintValue);
+  }
+  if (!isRecord(value)) {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(
+        ([key]) =>
+          key !== "fetchedAt" && key !== "receivedAt" && key !== "updatedAt" && key !== "timestamp",
+      )
+      .map(([key, entryValue]) => [key, normalizeRealtimeFingerprintValue(entryValue)]),
+  );
+};
 
 const stripJsonFence = (text: string): string => {
   const trimmed = text.trim();
@@ -291,7 +337,7 @@ const stripJsonFence = (text: string): string => {
 
 const cleanModelText = (text: string): string =>
   text
-    .replace(/<start_of_turn>|<end_of_turn>|<bos>|<eos>/gu, "")
+    .replace(/<\/?(?:start_of_turn|end_of_turn|bos|eos)>/gu, "")
     .replace(/^```(?:json|markdown|text)?\s*/u, "")
     .replace(/\s*```$/u, "")
     .trim();
@@ -299,9 +345,102 @@ const cleanModelText = (text: string): string =>
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
+const removeTrailingCommasOutsideStrings = (text: string): string => {
+  let result = "";
+  let escaped = false;
+  let inString = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index] ?? "";
+    if (inString) {
+      result += character;
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      result += character;
+      continue;
+    }
+    if (character === ",") {
+      let lookaheadIndex = index + 1;
+      while (/\s/u.test(text[lookaheadIndex] ?? "")) {
+        lookaheadIndex += 1;
+      }
+      const nextCharacter = text[lookaheadIndex];
+      if (nextCharacter === "}" || nextCharacter === "]") {
+        continue;
+      }
+    }
+    result += character;
+  }
+  return result;
+};
+
+const parseModelJsonObject = (jsonText: string): Record<string, unknown> | null => {
+  const repairedJsonText = removeTrailingCommasOutsideStrings(jsonText);
+  const candidates = repairedJsonText === jsonText ? [jsonText] : [jsonText, repairedJsonText];
+  for (const candidate of candidates) {
+    try {
+      const parsed: unknown = JSON.parse(candidate);
+      if (isRecord(parsed)) {
+        return parsed;
+      }
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return null;
+};
+
+const extractJsonStringField = (text: string, fieldName: string): string | null => {
+  const fieldPattern = new RegExp(`"${fieldName}"\\s*:\\s*"`, "u");
+  const match = fieldPattern.exec(text);
+  if (!match) {
+    return null;
+  }
+  let value = "";
+  let escaped = false;
+  for (let index = match.index + match[0].length; index < text.length; index += 1) {
+    const character = text[index] ?? "";
+    if (escaped) {
+      value += `\\${character}`;
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (character === '"') {
+      try {
+        const parsed: unknown = JSON.parse(`"${value}"`);
+        return typeof parsed === "string" ? parsed : value;
+      } catch {
+        return value;
+      }
+    }
+    value += character;
+  }
+  return null;
+};
+
 const isLocalhostBrowser = (): boolean =>
   typeof window !== "undefined" &&
   ["localhost", "127.0.0.1", "0.0.0.0", "::1"].includes(window.location.hostname);
+
+const isDebugDisplayAllowed = (): boolean => {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  const normalizedPathname = window.location.pathname.replace(/\/$/u, "");
+  return window.location.origin === "https://192.168.1.219" && normalizedPathname === "/ai";
+};
 
 const getModelInitializationTimeoutMs = (): number => {
   if (isLocalhostBrowser()) {
@@ -316,7 +455,7 @@ const getModelInitializationTimeoutMs = (): number => {
 };
 
 const uiMessageToRaceMessage = (message: UIMessage): RaceAiMessage | null => {
-  if (message.role !== "assistant" && message.role !== "user") {
+  if (message.role !== "assistant" && message.role !== "system" && message.role !== "user") {
     return null;
   }
   const content = uiMessageText(message);
@@ -337,7 +476,7 @@ const parseDebugRaceMessage = (value: unknown): RaceAiMessage | null => {
   if (!isRecord(value)) {
     return null;
   }
-  if (value.role !== "assistant" && value.role !== "user") {
+  if (value.role !== "assistant" && value.role !== "system" && value.role !== "user") {
     return null;
   }
   return {
@@ -408,11 +547,17 @@ const compactPromptValue = (value: unknown, depth = 0): unknown => {
 };
 
 const formatMessagesForPrompt = (messages: RaceAiMessage[]): unknown =>
-  messages.slice(-3).map((message) => ({
-    content: truncatePromptText(message.content, 360),
-    createdAt: message.createdAt,
-    role: message.role,
-  }));
+  messages
+    .slice(-3)
+    .map((message) => ({
+      content: truncatePromptText(
+        message.role === "assistant" ? cleanModelText(message.content) : message.content,
+        360,
+      ),
+      createdAt: message.createdAt,
+      role: message.role,
+    }))
+    .filter((message) => message.content.length > 0);
 
 const formatThoughtLogsForPrompt = (thoughtLogs: RaceAiThoughtLog[]): unknown =>
   thoughtLogs.slice(-1).map((log) => ({
@@ -604,14 +749,17 @@ const compactToolResultForPrompt = (result: ToolResult): Record<string, unknown>
   };
 };
 
-const parseModelResponse = (text: string): ParsedRaceAiResponse => {
+const parseModelResponse = (
+  text: string,
+  { fallbackAnswer = MACHINE_RESPONSE_FORMAT_FALLBACK_SOURCE }: { fallbackAnswer?: string } = {},
+): ParsedRaceAiResponse => {
   const cleaned = cleanModelText(stripJsonFence(text));
   const start = cleaned.indexOf("{");
   const end = cleaned.lastIndexOf("}");
   const jsonText = start >= 0 && end > start ? cleaned.slice(start, end + 1) : cleaned;
   try {
-    const parsed: unknown = JSON.parse(jsonText);
-    if (!isRecord(parsed)) {
+    const parsed = parseModelJsonObject(jsonText);
+    if (!parsed) {
       throw new Error("model response is not an object");
     }
     const prediction = Array.isArray(parsed.prediction)
@@ -646,17 +794,29 @@ const parseModelResponse = (text: string): ParsedRaceAiResponse => {
           : null,
     };
   } catch {
+    const extractedAnswer = extractJsonStringField(jsonText, "answer");
     return {
-      answer:
-        cleaned || "AIの応答をJSONとして解析できませんでした。データ取得後に再試行してください。",
+      answer: extractedAnswer ?? (cleaned || fallbackAnswer),
       format: "text",
       needsTool: false,
       prediction: [],
-      thoughtLog:
-        "モデルが指定形式のJSONではなく自然文を返したため、回答本文を表示用に整形しました。",
+      thoughtLog: MACHINE_NATURAL_TEXT_THOUGHT_SOURCE,
       toolJavaScript: null,
     };
   }
+};
+
+const formatAssistantTextForDisplay = (
+  text: string,
+  fallbackAnswer = MACHINE_RESPONSE_FORMAT_FALLBACK_SOURCE,
+): string => parseModelResponse(text, { fallbackAnswer }).answer;
+
+const uiMessageDisplayText = (
+  message: UIMessage,
+  fallbackAnswer = MACHINE_RESPONSE_FORMAT_FALLBACK_SOURCE,
+): string => {
+  const text = uiMessageText(message);
+  return message.role === "assistant" ? formatAssistantTextForDisplay(text, fallbackAnswer) : text;
 };
 
 const buildDefaultRaceAiDataUrl = (data: RaceAiExportData): string => {
@@ -676,8 +836,140 @@ const answerBlocks = (text: string): string[] =>
     .map((block) => block.trim())
     .filter(Boolean);
 
+const answerBlockItems = (text: string): Array<{ key: string; text: string }> => {
+  const blockCounts = new Map<string, number>();
+  return answerBlocks(text).map((block) => {
+    const count = blockCounts.get(block) ?? 0;
+    blockCounts.set(block, count + 1);
+    return {
+      key: `${block}:${count}`,
+      text: block,
+    };
+  });
+};
+
+const parseRaceAiToneSettings = (payload: unknown): RaceAiToneSettings => {
+  if (!isRecord(payload)) {
+    return EMPTY_RACE_AI_TONE_SETTINGS;
+  }
+  return {
+    prompt: typeof payload.prompt === "string" ? payload.prompt.trim() : "",
+  };
+};
+
+const fetchRaceAiToneSettings = async (): Promise<RaceAiToneSettings> => {
+  const response = await fetch("/api/race-ai/tone-prompt", { cache: "no-store" });
+  if (!response.ok) {
+    return EMPTY_RACE_AI_TONE_SETTINGS;
+  }
+  return parseRaceAiToneSettings(await response.json());
+};
+
 const responseNeedsFinalAnswer = (toolResults: ToolResult[], formatRetryCount: number): boolean =>
   toolResults.length > 0 && formatRetryCount > 0;
+
+const buildTonePromptSection = (tonePrompt: string): string | null => {
+  const normalizedTonePrompt = tonePrompt.trim();
+  if (!normalizedTonePrompt) {
+    return null;
+  }
+  return [
+    "口調・振る舞い設定:",
+    normalizedTonePrompt,
+    "口調適用範囲:",
+    "- answerの各文、prediction[].reasonの各根拠、thoughtLogなど、ユーザーに表示される日本語文には必ずこの口調・振る舞い設定を反映する。",
+    "- horseName、jockeyName、horseNumber、rank、confidence、JSONキー、toolJavaScript、URL、数値、固有名詞は口調に合わせて改変しない。",
+    "- 回答冒頭の定型説明やデータ不足の注記でも、通常文体へ戻さない。",
+    "- 予想の根拠は短くても、口調設定を省略せず自然に反映する。",
+  ].join("\n");
+};
+
+const buildToneRewritePrompt = ({
+  response,
+  tonePrompt,
+}: {
+  response: ParsedRaceAiResponse;
+  tonePrompt: string;
+}): string =>
+  buildGemmaPrompt(
+    [
+      "次のJSONの表示用日本語文だけを、指定された口調・振る舞い設定に従って自然に書き換えてください。",
+      "JSON以外は出力しないでください。",
+      "answer、prediction[].reason、thoughtLogだけを書き換え対象にしてください。",
+      "rank、horseNumber、horseName、jockeyName、confidence、needsTool、toolJavaScript、JSONキー、数値、固有名詞は変更しないでください。",
+      "口調・振る舞い設定:",
+      tonePrompt,
+      "書き換え対象JSON:",
+      JSON.stringify({
+        answer: response.answer,
+        needsTool: false,
+        prediction: response.prediction,
+        thoughtLog: response.thoughtLog,
+        toolJavaScript: null,
+      }),
+    ].join("\n\n"),
+  );
+
+const applyToneToResponse = async ({
+  abortSignal,
+  addRuntimeLog,
+  llm,
+  response,
+  toneSettings,
+}: {
+  abortSignal?: AbortSignal;
+  addRuntimeLog: (
+    level: RaceAiRuntimeLogLevel,
+    message: string,
+    details?: Record<string, unknown>,
+  ) => void;
+  llm: LlmInference;
+  response: ParsedRaceAiResponse;
+  toneSettings: RaceAiToneSettings;
+}): Promise<ParsedRaceAiResponse> => {
+  const tonePrompt = toneSettings.prompt.trim();
+  if (!tonePrompt || response.needsTool) {
+    return response;
+  }
+  addRuntimeLog("info", "tone rewrite started", {
+    predictionCount: response.prediction.length,
+  });
+  try {
+    const rewritten = parseModelResponse(
+      await generateModelResponse({
+        abortSignal,
+        llm,
+        prompt: buildToneRewritePrompt({ response, tonePrompt }),
+      }),
+      { fallbackAnswer: response.answer },
+    );
+    if (rewritten.format !== "json") {
+      addRuntimeLog("warn", "tone rewrite returned non-json response");
+      return response;
+    }
+    const prediction = response.prediction.map((row, index) => {
+      const rewrittenRow = rewritten.prediction[index];
+      return {
+        ...row,
+        reason: rewrittenRow?.reason.trim() || row.reason,
+      };
+    });
+    addRuntimeLog("info", "tone rewrite completed", {
+      predictionCount: prediction.length,
+    });
+    return {
+      ...response,
+      answer: rewritten.answer.trim() || response.answer,
+      prediction,
+      thoughtLog: rewritten.thoughtLog.trim() || response.thoughtLog,
+    };
+  } catch (caught) {
+    addRuntimeLog("warn", "tone rewrite failed", {
+      error: caught instanceof Error ? caught.message : String(caught),
+    });
+    return response;
+  }
+};
 
 const buildPrompt = ({
   data,
@@ -685,6 +977,7 @@ const buildPrompt = ({
   promptCharLimit = PROMPT_CHAR_LIMIT,
   request,
   thoughtLogs,
+  tonePrompt,
   toolResultCharLimit = TOOL_RESULT_CHAR_LIMIT,
   toolResults,
 }: {
@@ -693,6 +986,7 @@ const buildPrompt = ({
   promptCharLimit?: number;
   request: string;
   thoughtLogs: RaceAiThoughtLog[];
+  tonePrompt: string;
   toolResultCharLimit?: number;
   toolResults: ToolResult[];
 }): string => {
@@ -705,6 +999,7 @@ const buildPrompt = ({
     : "なし";
   const promptBody = [
     RACE_AI_DEFAULT_PROMPT,
+    buildTonePromptSection(tonePrompt),
     "現在のユーザー依頼:",
     request,
     "データ取得方針:",
@@ -719,7 +1014,9 @@ const buildPrompt = ({
     JSON.stringify(buildRaceAiDataCatalogForPrompt(data)),
     "取得済みツール結果:",
     toolResultsText,
-  ].join("\n\n");
+  ]
+    .filter((part): part is string => typeof part === "string" && part.length > 0)
+    .join("\n\n");
   return buildGemmaPrompt(truncatePromptText(promptBody, promptCharLimit));
 };
 
@@ -729,6 +1026,7 @@ const buildTokenSafePrompt = ({
   messages,
   request,
   thoughtLogs,
+  tonePrompt,
   toolResults,
 }: {
   data: RaceAiExportData;
@@ -736,6 +1034,7 @@ const buildTokenSafePrompt = ({
   messages: RaceAiMessage[];
   request: string;
   thoughtLogs: RaceAiThoughtLog[];
+  tonePrompt: string;
   toolResults: ToolResult[];
 }): string => {
   let promptCharLimit = PROMPT_CHAR_LIMIT;
@@ -746,6 +1045,7 @@ const buildTokenSafePrompt = ({
     promptCharLimit,
     request,
     thoughtLogs,
+    tonePrompt,
     toolResultCharLimit,
     toolResults,
   });
@@ -767,6 +1067,7 @@ const buildTokenSafePrompt = ({
       promptCharLimit,
       request,
       thoughtLogs,
+      tonePrompt,
       toolResultCharLimit,
       toolResults,
     });
@@ -867,6 +1168,12 @@ const createLocalChatStream = ({
 const appendLimited = <T,>(rows: T[], row: T): T[] => [...rows, row].slice(-LOG_LIMIT);
 
 export function RaceAiAssistant(props: RaceAiAssistantProps) {
+  const assistantName = props.assistantName.trim() || "アーモンドAI";
+  const assistantIconUrl = props.assistantIconUrl.trim() || "/ai/almondeye_top.png";
+  const assistantAccentColor = props.assistantAccentColor.trim() || "#69a9e9";
+  const assistantStyle = {
+    "--race-ai-accent-color": assistantAccentColor,
+  } as CSSProperties & Record<"--race-ai-accent-color", string>;
   const [supportState, setSupportState] = useState<WebGpuSupportState>("checking");
   const [modelStatus, setModelStatus] = useState<ModelStatus>("idle");
   const [generationStatus, setGenerationStatus] = useState<GenerationStatus>("idle");
@@ -886,6 +1193,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const [error, setError] = useState<string | null>(null);
   const [modelPartialLength, setModelPartialLength] = useState(0);
   const [debugEnabled, setDebugEnabled] = useState(false);
+  const [toneSettingsStatus, setToneSettingsStatus] = useState<"loading" | "ready">("loading");
   const [chatSessionVersion, setChatSessionVersion] = useState(0);
   const [runtimeLogs, setRuntimeLogs] = useState<RaceAiRuntimeLog[]>([]);
   const llmRef = useRef<LlmInference | null>(null);
@@ -907,7 +1215,8 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const modelWarmupStartedRef = useRef(false);
   const lastDebugSnapshotRef = useRef("");
   const lastRealtimeFingerprintRef = useRef("");
-  const lastUserRequestRef = useRef("このレースの着順を予想してください。");
+  const lastUserRequestRef = useRef(DEFAULT_RACE_AI_REQUEST);
+  const chatThreadRef = useRef<HTMLDivElement | null>(null);
   const realtimePayload = useRealtimeRaceSelector((state) => state.payload);
   const realtimeFingerprint = useMemo(
     () => buildRealtimeFingerprint(realtimePayload),
@@ -1019,7 +1328,27 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   }, [generationStage]);
 
   useEffect(() => {
-    setDebugEnabled(isLocalhostBrowser());
+    setDebugEnabled(isDebugDisplayAllowed());
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setToneSettingsStatus("loading");
+    void (async () => {
+      try {
+        await fetchRaceAiToneSettings();
+        if (!cancelled) {
+          setToneSettingsStatus("ready");
+        }
+      } catch {
+        if (!cancelled) {
+          setToneSettingsStatus("ready");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -1053,6 +1382,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       autoStart: nextSettings.autoStart,
       consent: nextSettings.consent,
       modelVersion: LATEST_RACE_AI_MODEL.version,
+      showSystemMessages: nextSettings.showSystemMessages,
     });
     refreshModelState();
     const unsubscribeSettings = subscribeRaceAiSettings(setSettings);
@@ -1364,6 +1694,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       trigger: string,
       emit?: (delta: string) => void,
       abortSignal?: AbortSignal,
+      requestRole: RaceAiMessageRole = "user",
     ) => {
       if (runningRef.current) {
         throw new Error("AI応答を生成中です。");
@@ -1373,9 +1704,15 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       setError(null);
       setModelPartialLength(0);
       setRuntimeStage("queued");
-      lastUserRequestRef.current = request;
+      setPrediction([]);
+      setAnswer("");
+      if (requestRole === "user") {
+        lastUserRequestRef.current = request;
+      }
       addRuntimeLog("info", "AI request queued", {
+        request: truncateRuntimeLogText(request),
         requestLength: request.length,
+        requestRole,
         trigger,
       });
       try {
@@ -1415,7 +1752,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
             content: request,
             createdAt: now,
             id: createId(),
-            role: "user",
+            role: requestRole,
           };
           const assistantMessage: RaceAiMessage = {
             content: dryRunAnswer,
@@ -1436,9 +1773,6 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
             assistantMessage,
           );
           const nextThoughtLogs = appendLimited(thoughtLogsRef.current, thoughtLog);
-          setPrediction([]);
-          setAnswer(dryRunAnswer);
-          await persistLogs(nextMessages, nextThoughtLogs);
           if (emit) {
             await streamDisplayText({
               abortSignal,
@@ -1446,6 +1780,9 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
               text: dryRunAnswer,
             });
           }
+          setPrediction([]);
+          setAnswer(dryRunAnswer);
+          await persistLogs(nextMessages, nextThoughtLogs);
           addRuntimeLog("info", "debug dry-run completed");
           return {
             answer: dryRunAnswer,
@@ -1456,6 +1793,8 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
             toolJavaScript: null,
           } satisfies ParsedRaceAiResponse;
         }
+        const currentToneSettings = await fetchRaceAiToneSettings();
+        setToneSettingsStatus("ready");
         const llm = await ensureModel();
         setRuntimeStage("loading-data");
         setGenerationStatus("loading-data");
@@ -1499,6 +1838,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
             messages: messagesRef.current,
             request: promptRequest,
             thoughtLogs: thoughtLogsRef.current,
+            tonePrompt: currentToneSettings.prompt,
             toolResults,
           });
           const promptTokenCount = llm.sizeInTokens(prompt);
@@ -1526,6 +1866,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
               },
               prompt,
             }),
+            { fallbackAnswer: MACHINE_RESPONSE_FORMAT_FALLBACK_SOURCE },
           );
           addRuntimeLog("info", "model generation completed", {
             elapsedMs: Date.now() - generationStartedAt,
@@ -1545,7 +1886,10 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
               status: toolResult.status,
               url: toolResult.url,
             });
-            return runWithToolResults({ formatRetryCount: 0, toolResults: [toolResult] });
+            return runWithToolResults({
+              formatRetryCount: 0,
+              toolResults: [toolResult],
+            });
           }
           if (response.format === "text" && formatRetryCount < 1) {
             addRuntimeLog("warn", "model returned text; retrying JSON response", {
@@ -1577,16 +1921,26 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
             toolResults: [...toolResults, toolResult],
           });
         };
-        let finalResponse = await runWithToolResults({ formatRetryCount: 0, toolResults: [] });
+        let finalResponse = await runWithToolResults({
+          formatRetryCount: 0,
+          toolResults: [],
+        });
         if (finalResponse.needsTool) {
           addRuntimeLog("warn", "tool request limit reached; finalizing with fetched data");
           finalResponse = {
             ...finalResponse,
-            answer: `${finalResponse.answer}\n\n追加データ取得の上限に達したため、取得済みデータの範囲で回答しました。`,
+            answer: `${finalResponse.answer}\n\n${MACHINE_TOOL_LIMIT_SOURCE}`,
             needsTool: false,
             toolJavaScript: null,
           };
         }
+        finalResponse = await applyToneToResponse({
+          abortSignal,
+          addRuntimeLog,
+          llm,
+          response: finalResponse,
+          toneSettings: currentToneSettings,
+        });
         if (resetVersionRef.current !== runResetVersion) {
           addRuntimeLog("warn", "AI request ignored because runtime was reset");
           return null;
@@ -1597,7 +1951,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           content: request,
           createdAt: now,
           id: createId(),
-          role: "user",
+          role: requestRole,
         };
         const assistantMessage: RaceAiMessage = {
           content: finalResponse.answer,
@@ -1618,14 +1972,6 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           assistantMessage,
         );
         const nextThoughtLogs = appendLimited(thoughtLogsRef.current, thoughtLog);
-        setPrediction(finalResponse.prediction);
-        setAnswer(finalResponse.answer);
-        await persistLogs(nextMessages, nextThoughtLogs);
-        addRuntimeLog("info", "AI response persisted", {
-          answerLength: finalResponse.answer.length,
-          predictionCount: finalResponse.prediction.length,
-          thoughtLogLength: thoughtLog.content.length,
-        });
         if (emit) {
           setRuntimeStage("streaming-answer");
           await yieldToBrowser();
@@ -1635,6 +1981,14 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
             text: finalResponse.answer,
           });
         }
+        setAnswer(finalResponse.answer);
+        setPrediction(finalResponse.prediction);
+        await persistLogs(nextMessages, nextThoughtLogs);
+        addRuntimeLog("info", "AI response persisted", {
+          answerLength: finalResponse.answer.length,
+          predictionCount: finalResponse.prediction.length,
+          thoughtLogLength: thoughtLog.content.length,
+        });
         addRuntimeLog("info", "AI request completed");
         return finalResponse;
       } catch (caught) {
@@ -1665,11 +2019,11 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         createLocalChatStream({
           abortSignal,
           execute: async (emit) => {
-            const request =
-              uiMessageText(uiMessages.at(-1)) || "このレースの着順を予想してください。";
+            const request = uiMessageText(uiMessages.at(-1)) || DEFAULT_RACE_AI_REQUEST;
             const trigger =
               isRecord(body) && typeof body.trigger === "string" ? body.trigger : "chat";
-            await runAi(request, trigger, emit, abortSignal);
+            const requestRole = isRecord(body) && body.requestRole === "system" ? "system" : "user";
+            await runAi(request, trigger, emit, abortSignal, requestRole);
           },
         }),
     }),
@@ -1693,6 +2047,24 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     },
     transport: localChatTransport,
   });
+
+  const sendSystemMessage = useCallback(
+    (text: string, trigger: string) =>
+      sendMessage(
+        {
+          metadata: { createdAt: new Date().toISOString() },
+          parts: [{ text, type: "text" }],
+          role: "system",
+        },
+        {
+          body: {
+            requestRole: "system",
+            trigger,
+          },
+        },
+      ),
+    [sendMessage],
+  );
 
   useEffect(() => {
     if (modelStatus !== "initializing") {
@@ -1752,52 +2124,56 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     stopChat,
   ]);
 
-  const clearRaceAiState = useCallback(() => {
-    resetRuntimeLogs("race-ai-state-reset", {
-      previousMessageCount: messagesRef.current.length,
-      previousThoughtLogCount: thoughtLogsRef.current.length,
-      realtimeFingerprint,
-    });
-    resetVersionRef.current += 1;
-    suppressChatErrorUntilRef.current = Date.now() + 1_500;
-    void stopChat();
-    if (llmRef.current) {
-      callOptionalLlmMethod(llmRef.current, "cancelProcessing");
-    }
-    const nextMessages: RaceAiMessage[] = [];
-    const nextThoughtLogs: RaceAiThoughtLog[] = [];
-    runningRef.current = false;
-    messagesRef.current = nextMessages;
-    thoughtLogsRef.current = nextThoughtLogs;
-    setMessages(nextMessages);
-    setThoughtLogs(nextThoughtLogs);
-    setChatMessages([]);
-    setChatSessionVersion((current) => current + 1);
-    setPrediction([]);
-    setAnswer("");
-    setError(null);
-    setModelPartialLength(0);
-    setGenerationStatus("idle");
-    setRuntimeStage("idle");
-    autoStartedRaceKeyRef.current = raceKey;
-    lastDebugSnapshotRef.current = "";
-    lastRealtimeFingerprintRef.current = realtimeFingerprint;
-    lastUserRequestRef.current = "このレースの着順を予想してください。";
-    void deleteRaceAiLog(raceKey).catch(() =>
-      saveRaceAiLog({
-        messages: nextMessages,
-        raceKey,
-        thoughtLogs: nextThoughtLogs,
-        updatedAt: new Date().toISOString(),
-      }).catch(() => {}),
-    );
-  }, [raceKey, realtimeFingerprint, resetRuntimeLogs, setChatMessages, setRuntimeStage, stopChat]);
+  const clearRaceAiState = useCallback(
+    ({ allowAutoStart = false }: { allowAutoStart?: boolean } = {}) => {
+      resetRuntimeLogs("race-ai-state-reset", {
+        allowAutoStart,
+        previousMessageCount: messagesRef.current.length,
+        previousThoughtLogCount: thoughtLogsRef.current.length,
+        realtimeFingerprint,
+      });
+      resetVersionRef.current += 1;
+      suppressChatErrorUntilRef.current = Date.now() + 1_500;
+      void stopChat();
+      if (llmRef.current) {
+        callOptionalLlmMethod(llmRef.current, "cancelProcessing");
+      }
+      const nextMessages: RaceAiMessage[] = [];
+      const nextThoughtLogs: RaceAiThoughtLog[] = [];
+      runningRef.current = false;
+      messagesRef.current = nextMessages;
+      thoughtLogsRef.current = nextThoughtLogs;
+      setMessages(nextMessages);
+      setThoughtLogs(nextThoughtLogs);
+      setChatMessages([]);
+      setChatSessionVersion((current) => current + 1);
+      setPrediction([]);
+      setAnswer("");
+      setError(null);
+      setModelPartialLength(0);
+      setGenerationStatus("idle");
+      setRuntimeStage("idle");
+      autoStartedRaceKeyRef.current = allowAutoStart ? null : raceKey;
+      lastDebugSnapshotRef.current = "";
+      lastRealtimeFingerprintRef.current = realtimeFingerprint;
+      lastUserRequestRef.current = DEFAULT_RACE_AI_REQUEST;
+      void deleteRaceAiLog(raceKey).catch(() =>
+        saveRaceAiLog({
+          messages: nextMessages,
+          raceKey,
+          thoughtLogs: nextThoughtLogs,
+          updatedAt: new Date().toISOString(),
+        }).catch(() => {}),
+      );
+    },
+    [raceKey, realtimeFingerprint, resetRuntimeLogs, setChatMessages, setRuntimeStage, stopChat],
+  );
 
   const resetRaceAiState = useCallback(() => {
     if (!window.confirm("このレースのAI予想、対話ログ、思考ログをリセットしますか？")) {
       return;
     }
-    clearRaceAiState();
+    clearRaceAiState({ allowAutoStart: true });
   }, [clearRaceAiState]);
 
   useEffect(() => {
@@ -1827,22 +2203,16 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       return undefined;
     }
     const timer = window.setTimeout(() => {
-      void sendMessage(
-        {
-          text: `${lastUserRequestRef.current}\n\nリアルタイムデータが更新されました。最新データで再評価してください。`,
-        },
-        {
-          body: {
-            trigger: "realtime-update",
-          },
-        },
+      void sendSystemMessage(
+        `${lastUserRequestRef.current}\n\n${REALTIME_REEVALUATION_REQUEST}`,
+        "realtime-update",
       );
     }, REALTIME_RETHINK_DELAY_MS);
     lastRealtimeFingerprintRef.current = realtimeFingerprint;
     return () => {
       window.clearTimeout(timer);
     };
-  }, [generationStatus, realtimeFingerprint, sendMessage]);
+  }, [generationStatus, realtimeFingerprint, sendSystemMessage]);
 
   useEffect(() => {
     if (
@@ -1850,6 +2220,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       settings?.consent !== "granted" ||
       !settings.autoStart ||
       modelState?.status !== "downloaded" ||
+      toneSettingsStatus !== "ready" ||
       generationStatus !== "idle" ||
       hydratedRaceKeyRef.current !== raceKey ||
       autoStartedRaceKeyRef.current === raceKey
@@ -1857,15 +2228,16 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       return;
     }
     autoStartedRaceKeyRef.current = raceKey;
-    void sendMessage(
-      { text: "このレースの着順を予想してください。" },
-      {
-        body: {
-          trigger: "auto-start",
-        },
-      },
-    );
-  }, [generationStatus, modelState?.status, raceKey, sendMessage, settings, supportState]);
+    void sendSystemMessage(DEFAULT_RACE_AI_REQUEST, "auto-start");
+  }, [
+    generationStatus,
+    modelState?.status,
+    raceKey,
+    sendSystemMessage,
+    settings,
+    supportState,
+    toneSettingsStatus,
+  ]);
 
   const progressLabel =
     modelState?.progress === null || modelState?.progress === undefined
@@ -1878,6 +2250,37 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const isChatBusy =
     generationStatus !== "idle" || chatStatus === "submitted" || chatStatus === "streaming";
   const canSubmitChat = !isChatBusy;
+  const submitUserChatInput = useCallback(() => {
+    const value = input.trim();
+    if (!value || !canSubmitChat) {
+      return;
+    }
+    setInput("");
+    void sendMessage({ text: value });
+  }, [canSubmitChat, input, sendMessage]);
+  const showSystemMessages = settings?.showSystemMessages ?? false;
+  const displayedChatMessages = useMemo(
+    () =>
+      showSystemMessages
+        ? chatMessages
+        : chatMessages.filter((message) => message.role !== "system"),
+    [chatMessages, showSystemMessages],
+  );
+  const updateShowSystemMessages = useCallback(
+    (showSystemMessagesNext: boolean) => {
+      if (!settings) {
+        return;
+      }
+      setSettings(
+        saveRaceAiSettings({
+          autoStart: settings.autoStart,
+          consent: settings.consent,
+          showSystemMessages: showSystemMessagesNext,
+        }),
+      );
+    },
+    [settings],
+  );
   const modelStatusLabel =
     modelStatus === "ready"
       ? "読み込み済み"
@@ -1942,6 +2345,14 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const debugUrl = `/api/debug/ai-chat?raceKey=${encodeURIComponent(raceKey)}`;
   const serverLogUrl = `/api/races/${props.year}/${props.month}/${props.day}/${props.keibajoCode}/${props.raceNumber}/ai/logs?source=${encodeURIComponent(props.source)}`;
   const debugStatus = chatStatus === "ready" ? generationStatus : chatStatus;
+
+  useEffect(() => {
+    const chatThread = chatThreadRef.current;
+    if (!chatThread) {
+      return;
+    }
+    chatThread.scrollTop = chatThread.scrollHeight;
+  }, [chatRuntimeLabel, chatStatus, displayedChatMessages]);
 
   useEffect(() => {
     const visibleAiState = isChatBusy ? chatRuntimeLabel : "待機中";
@@ -2192,14 +2603,27 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     <details
       className="race-ai-assistant-section"
       open={aiSectionOpen}
+      style={assistantStyle}
       onToggle={(event) => {
         setAiSectionOpen(event.currentTarget.open);
       }}
     >
       <summary className="section-heading compact race-ai-summary">
-        <h2>WebGPU AI予想</h2>
+        <h2 className="race-ai-brand-title">
+          <Image
+            src={assistantIconUrl}
+            alt=""
+            aria-hidden="true"
+            height={72}
+            loading="eager"
+            priority
+            unoptimized
+            width={72}
+          />
+          <span>{assistantName}予想</span>
+        </h2>
         <span>
-          {LATEST_RACE_AI_MODEL.name} / {LATEST_RACE_AI_MODEL.version} /{" "}
+          {debugEnabled ? `${LATEST_RACE_AI_MODEL.name} / ${LATEST_RACE_AI_MODEL.version} / ` : ""}
           {aiSectionOpen ? "閉じる" : "表示する"}
         </span>
       </summary>
@@ -2214,47 +2638,57 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
             <span>現在参照可能 {readinessPreparedPercent.toFixed(1)}%</span>
           </span>
         </div>
-        <div className="race-ai-readiness-status-grid">
-          <div>
-            <span>モデル</span>
-            <strong>{modelStatusLabel}</strong>
-          </div>
-          <div>
-            <span>データ参照</span>
-            <strong>{dataStatusLabel}</strong>
-          </div>
+        {debugEnabled ? (
+          <>
+            <div className="race-ai-readiness-status-grid">
+              <div>
+                <span>モデル</span>
+                <strong>{modelStatusLabel}</strong>
+              </div>
+              <div>
+                <span>データ参照</span>
+                <strong>{dataStatusLabel}</strong>
+              </div>
+            </div>
+            <p className="race-ai-readiness-note">{missingDataLabel}</p>
+          </>
+        ) : null}
+      </div>
+      {debugEnabled ? (
+        <div className="race-ai-runtime-panel" aria-live="polite">
+          <span>AI状態</span>
+          <strong>{isChatBusy ? chatRuntimeLabel : "待機中"}</strong>
+          {isChatBusy ? <small>送信後の処理はこの表示で追跡できます。</small> : null}
+          {!isChatBusy && isModelPreparing ? (
+            <small>AIの準備中でも依頼は送信できます。</small>
+          ) : null}
         </div>
-        <p className="race-ai-readiness-note">{missingDataLabel}</p>
-      </div>
-      <div className="race-ai-runtime-panel" aria-live="polite">
-        <span>AI状態</span>
-        <strong>{isChatBusy ? chatRuntimeLabel : "待機中"}</strong>
-        {isChatBusy ? <small>送信後の処理はこの表示で追跡できます。</small> : null}
-        {!isChatBusy && isModelPreparing ? <small>AIの準備中でも依頼は送信できます。</small> : null}
-      </div>
-      <details
-        className="race-ai-diagnostic-log"
-        open={isChatBusy || isModelPreparing || Boolean(error || chatError)}
-      >
-        <summary>
-          <strong>診断ログ</strong>
-          <span>{runtimeLogs.length}件</span>
-        </summary>
-        {runtimeLogs.length === 0 ? (
-          <p>診断ログはまだありません。</p>
-        ) : (
-          <ol>
-            {runtimeLogs.map((log) => (
-              <li className={`race-ai-diagnostic-log-${log.level}`} key={log.id}>
-                <time dateTime={log.at}>{log.at.slice(11, 19)}</time>
-                <strong>{log.level}</strong>
-                <span>{log.message}</span>
-                {log.details ? <code>{formatRuntimeLogDetails(log.details)}</code> : null}
-              </li>
-            ))}
-          </ol>
-        )}
-      </details>
+      ) : null}
+      {debugEnabled ? (
+        <details
+          className="race-ai-diagnostic-log"
+          open={isChatBusy || isModelPreparing || Boolean(error || chatError)}
+        >
+          <summary>
+            <strong>診断ログ</strong>
+            <span>{runtimeLogs.length}件</span>
+          </summary>
+          {runtimeLogs.length === 0 ? (
+            <p>診断ログはまだありません。</p>
+          ) : (
+            <ol>
+              {runtimeLogs.map((log) => (
+                <li className={`race-ai-diagnostic-log-${log.level}`} key={log.id}>
+                  <time dateTime={log.at}>{log.at.slice(11, 19)}</time>
+                  <strong>{log.level}</strong>
+                  <span>{log.message}</span>
+                  {log.details ? <code>{formatRuntimeLogDetails(log.details)}</code> : null}
+                </li>
+              ))}
+            </ol>
+          )}
+        </details>
+      ) : null}
       {error || chatError ? <p className="race-ai-error">{error ?? chatError?.message}</p> : null}
       {prediction.length > 0 ? (
         <div className="race-ai-table-wrap">
@@ -2284,17 +2718,37 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           </table>
         </div>
       ) : null}
-      <div className="race-ai-chat-thread" aria-live="polite">
-        {chatMessages.length === 0 ? (
+      <div className="race-ai-chat-thread" ref={chatThreadRef} aria-live="polite">
+        {displayedChatMessages.length === 0 ? (
           <p className="empty-state">AIとのやりとりはまだありません。</p>
         ) : (
-          chatMessages.map((message) => (
+          displayedChatMessages.map((message) => (
             <article className={`race-ai-chat-message ${message.role}`} key={message.id}>
-              <span>{message.role === "user" ? "あなた" : "AI"}</span>
-              <div>
-                {answerBlocks(uiMessageText(message)).map((block) => (
-                  <p key={block}>{block}</p>
-                ))}
+              {message.role === "assistant" ? (
+                <span className="race-ai-chat-avatar" aria-hidden="true">
+                  <Image
+                    src={assistantIconUrl}
+                    alt=""
+                    height={64}
+                    loading="eager"
+                    unoptimized
+                    width={64}
+                  />
+                </span>
+              ) : null}
+              <div className="race-ai-chat-message-body">
+                <span className="race-ai-chat-role">
+                  {message.role === "user"
+                    ? "あなた"
+                    : message.role === "system"
+                      ? "システム"
+                      : assistantName}
+                </span>
+                <div className="race-ai-chat-content">
+                  {answerBlockItems(uiMessageDisplayText(message)).map((block) => (
+                    <p key={`${message.id}-${block.key}`}>{block.text}</p>
+                  ))}
+                </div>
               </div>
             </article>
           ))
@@ -2308,8 +2762,8 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       </div>
       {answer && chatMessages.length === 0 ? (
         <div className="race-ai-answer">
-          {answerBlocks(answer).map((block) => (
-            <p key={block}>{block}</p>
+          {answerBlockItems(formatAssistantTextForDisplay(answer)).map((block) => (
+            <p key={`answer-${block.key}`}>{block.text}</p>
           ))}
         </div>
       ) : null}
@@ -2317,12 +2771,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         className="race-ai-chat-form"
         onSubmit={(event) => {
           event.preventDefault();
-          const value = input.trim();
-          if (!value || !canSubmitChat) {
-            return;
-          }
-          setInput("");
-          void sendMessage({ text: value });
+          submitUserChatInput();
         }}
       >
         <label>
@@ -2332,6 +2781,13 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
             rows={3}
             onChange={(event) => {
               setInput(event.currentTarget.value);
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) {
+                return;
+              }
+              event.preventDefault();
+              submitUserChatInput();
             }}
           />
         </label>
@@ -2355,6 +2811,19 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         <button type="button" disabled={!hasRaceAiState} onClick={resetRaceAiState}>
           このレースのAIログをリセット
         </button>
+      </div>
+      <div className="race-ai-chat-options">
+        <label>
+          <input
+            type="checkbox"
+            checked={showSystemMessages}
+            onChange={(event) => {
+              updateShowSystemMessages(event.currentTarget.checked);
+            }}
+          />
+          <span className="race-ai-checkbox-control" aria-hidden="true" />
+          <span>システムメッセージを表示</span>
+        </label>
       </div>
     </details>
   );
