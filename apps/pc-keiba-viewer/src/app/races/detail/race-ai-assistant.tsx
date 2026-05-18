@@ -101,6 +101,8 @@ const WASM_BASE_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-genai@0.10.
 const REALTIME_RETHINK_DELAY_MS = 3_000;
 const DEBUG_SYNC_INTERVAL_MS = 1_200;
 const SERVER_COMMAND_SYNC_INTERVAL_MS = 5_000;
+const MODEL_INITIALIZATION_TIMEOUT_MS = 180_000;
+const MODEL_INITIALIZATION_TIMEOUT_SECONDS = MODEL_INITIALIZATION_TIMEOUT_MS / 1000;
 const LOG_LIMIT = 20;
 const MAX_TOOL_CALLS = 3;
 const MAX_INPUT_TOKENS = 10_000;
@@ -130,6 +132,8 @@ let sharedRaceAiModel: {
 } | null = null;
 let sharedRaceAiModelPromise: Promise<LlmInference> | null = null;
 
+const modelInitializationTimeoutMessage = `AIモデル初期化が${MODEL_INITIALIZATION_TIMEOUT_SECONDS}秒を超えたため停止しました。ブラウザのWebGPUが不安定な可能性があります。ページを再読み込みして再試行してください。`;
+
 const createId = (): string => `${Date.now().toString(36)}-${crypto.randomUUID()}`;
 
 const yieldToBrowser = (): Promise<void> =>
@@ -143,6 +147,35 @@ const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => {
     window.setTimeout(resolve, ms);
   });
+
+const withTimeout = async <T,>({
+  message,
+  ms,
+  promise,
+}: {
+  message: string;
+  ms: number;
+  promise: Promise<T>;
+}): Promise<T> => {
+  let timeoutId: number | null = null;
+  const timeoutPromise = new Promise<T>((_, reject) => {
+    timeoutId = window.setTimeout(() => reject(new Error(message)), ms);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+    }
+  }
+};
+
+const formatGenerationStageElapsedLabel = (stage: GenerationStage, seconds: number): string => {
+  if (stage === "model-initialize" && seconds >= MODEL_INITIALIZATION_TIMEOUT_SECONDS) {
+    return `${MODEL_INITIALIZATION_TIMEOUT_SECONDS}秒以上`;
+  }
+  return `${seconds}秒`;
+};
 
 const raceMessageToUiMessage = (message: RaceAiMessage): UIMessage => ({
   id: message.id,
@@ -916,11 +949,22 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       setModelStatus("initializing");
       await yieldToBrowser();
       try {
-        const sharedInstance = await sharedRaceAiModelPromise;
+        const sharedInstance = await withTimeout({
+          message: modelInitializationTimeoutMessage,
+          ms: MODEL_INITIALIZATION_TIMEOUT_MS,
+          promise: sharedRaceAiModelPromise,
+        });
         llmRef.current = sharedInstance;
         setModelStatus("ready");
         return sharedInstance;
       } catch (caught) {
+        if (
+          caught instanceof Error &&
+          caught.message === modelInitializationTimeoutMessage &&
+          sharedRaceAiModel === null
+        ) {
+          sharedRaceAiModelPromise = null;
+        }
         setModelStatus("idle");
         throw caught;
       }
@@ -959,7 +1003,11 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       return instance;
     })();
     try {
-      const instance = await sharedRaceAiModelPromise;
+      const instance = await withTimeout({
+        message: modelInitializationTimeoutMessage,
+        ms: MODEL_INITIALIZATION_TIMEOUT_MS,
+        promise: sharedRaceAiModelPromise,
+      });
       llmRef.current = instance;
       setModelStatus("ready");
       return instance;
@@ -1454,6 +1502,10 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     generationStageStartedAt === null
       ? 0
       : Math.max(0, Math.floor((runtimeNow - generationStageStartedAt) / 1000));
+  const generationStageElapsedLabel = formatGenerationStageElapsedLabel(
+    generationStage,
+    generationStageElapsedSeconds,
+  );
   const generationStageLabel =
     generationStage === "generating-final" && modelPartialLength > 0
       ? `${GENERATION_STAGE_LABELS[generationStage]} / モデル応答 ${modelPartialLength.toLocaleString("ja-JP")} 文字受信`
@@ -1461,7 +1513,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const runtimeStageLabel =
     generationStage === "idle"
       ? GENERATION_STAGE_LABELS.idle
-      : `${generationStageLabel}（${generationStageElapsedSeconds}秒）`;
+      : `${generationStageLabel}（${generationStageElapsedLabel}）`;
   const dataStatusLabel =
     generationStage !== "idle"
       ? runtimeStageLabel
