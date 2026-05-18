@@ -101,6 +101,9 @@ declare global {
     PC_KEIBA_EXTERNAL_PADDOCK_DISCORD_WEBHOOK_URL?: string;
     PC_KEIBA_PADDOCK_DISCORD_BOT_NAME?: string;
     PC_KEIBA_PADDOCK_DISCORD_WEBHOOK_URL?: string;
+    PC_KEIBA_RACE_AI_ACCENT_COLOR?: string;
+    PC_KEIBA_RACE_AI_ICON_URL?: string;
+    PC_KEIBA_RACE_AI_NAME?: string;
     REALTIME_DB?: PcKeibaD1Database;
   }
 }
