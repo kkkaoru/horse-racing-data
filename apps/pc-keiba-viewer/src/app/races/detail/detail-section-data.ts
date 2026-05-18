@@ -44,9 +44,14 @@ import {
   getWeightLabel,
 } from "../../../lib/race-classification";
 import {
+  applyRunningStyleSortToRacePaceRows,
   buildRacePacePredictionRowsFromResults,
   isCornerPacePredictionSupported,
 } from "../../../lib/race-pace-prediction";
+import {
+  buildRaceKey as buildRunningStyleRaceKey,
+  queryRaceRunningStylesFromD1,
+} from "../../../db/corner-running-style-queries";
 import type {
   BloodlineStatsRow,
   FinishPositionStatsRow,
@@ -1268,25 +1273,42 @@ export const getDetailSectionPayload = async (
       raceNumber,
       getResultsSourceScope(params.query),
     );
-    const [similarityFeatures, modelPredictionFeatures] = await Promise.all([
+    const [similarityFeatures, modelPredictionFeatures, runningStyleRows] = await Promise.all([
       getRacePaceSimilarityFeatures(race, runners),
       getRacePaceModelPredictionFeatures(race, runners),
+      queryRaceRunningStylesFromD1(
+        buildRunningStyleRaceKey({
+          kaisaiNen: race.kaisaiNen,
+          kaisaiTsukihi: race.kaisaiTsukihi,
+          keibajoCode: race.keibajoCode,
+          raceBango: race.raceBango,
+          source: race.source,
+        }),
+      ).catch(() => []),
     ]);
+    const paceRows = buildRacePacePredictionRowsFromResults({
+      currentConditionCode: race.kyosoJokenCode,
+      currentConditionName: race.kyosoJokenMeisho,
+      currentDistance: race.kyori,
+      currentGradeCode: race.gradeCode,
+      currentRaceAgeCode: race.kyosoShubetsuCode,
+      currentRaceDate: `${race.kaisaiNen}${race.kaisaiTsukihi}`,
+      currentSource: race.source,
+      currentTrackCode: race.trackCode,
+      modelPredictionFeatures,
+      results,
+      runners,
+      similarityFeatures,
+    });
+    const probabilities = runningStyleRows.map((row) => ({
+      pNige: row.p_nige,
+      pOikomi: row.p_oikomi,
+      pSashi: row.p_sashi,
+      pSenkou: row.p_senkou,
+      umaban: row.horseNumber,
+    }));
     return {
-      rows: buildRacePacePredictionRowsFromResults({
-        currentConditionCode: race.kyosoJokenCode,
-        currentConditionName: race.kyosoJokenMeisho,
-        currentDistance: race.kyori,
-        currentGradeCode: race.gradeCode,
-        currentRaceAgeCode: race.kyosoShubetsuCode,
-        currentRaceDate: `${race.kaisaiNen}${race.kaisaiTsukihi}`,
-        currentSource: race.source,
-        currentTrackCode: race.trackCode,
-        modelPredictionFeatures,
-        results,
-        runners,
-        similarityFeatures,
-      }),
+      rows: applyRunningStyleSortToRacePaceRows(paceRows, probabilities),
       supported: true,
       type: section,
     };
