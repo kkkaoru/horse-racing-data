@@ -67,8 +67,11 @@ const requireRunningStyleLabel = (value: unknown): RunningStyleLabel => {
   throw new Error("D1 row predicted_label not in nige/senkou/sashi/oikomi");
 };
 
+const RACE_BANGO_PAD_WIDTH = 2;
+const KEIBAJO_PAD_WIDTH = 2;
+
 const buildRaceKey = (keys: RaceLookupKeys): string =>
-  `${keys.source}:${keys.kaisaiNen}${keys.kaisaiTsukihi}:${keys.keibajoCode}:${keys.raceBango}`;
+  `${keys.source}:${keys.kaisaiNen}${keys.kaisaiTsukihi}:${keys.keibajoCode.padStart(KEIBAJO_PAD_WIDTH, "0")}:${keys.raceBango.padStart(RACE_BANGO_PAD_WIDTH, "0")}`;
 
 const parseRaceRunningStyleRow = (raw: Record<string, unknown>): RaceRunningStyleRow => ({
   bamei: stringOrNull(raw.bamei),
