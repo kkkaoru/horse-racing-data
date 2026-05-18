@@ -450,6 +450,45 @@ const apiSpec = {
         tags: ["debug"],
       },
     },
+    "/api/debug/ai-playground": {
+      get: {
+        operationId: "getAiPlaygroundDebugSnapshot",
+        parameters: [
+          {
+            description:
+              "/ai ページのブラウザ診断セッションID。省略時は最新セッションのサマリー一覧を返します。",
+            in: "query",
+            name: "sessionId",
+            required: false,
+            schema: { type: "string" },
+          },
+        ],
+        responses: {
+          "200": jsonResponse,
+          ...errorResponses,
+        },
+        summary: "/ai ページのブラウザログ、AI状態、ハートビート、サーバー同期状態を参照します。",
+        tags: ["debug"],
+      },
+      post: {
+        operationId: "clearAiPlaygroundDebugSnapshot",
+        responses: {
+          "200": jsonResponse,
+          ...errorResponses,
+        },
+        summary: "/ai ページの指定セッション診断ログをサーバー側でリセットします。",
+        tags: ["debug"],
+      },
+      put: {
+        operationId: "writeAiPlaygroundDebugSnapshot",
+        responses: {
+          "200": jsonResponse,
+          ...errorResponses,
+        },
+        summary: "/ai ページのブラウザログ、AI状態、ハートビートをサーバーへ書き込みます。",
+        tags: ["debug"],
+      },
+    },
     "/api/races/{year}/{month}/{day}/{keibajoCode}/{raceNumber}/sections/{section}": {
       get: {
         operationId: "getRaceDetailSection",
