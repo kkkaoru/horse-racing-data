@@ -1,5 +1,9 @@
 import "server-only";
 import {
+  buildRaceKey as buildRunningStyleRaceKey,
+  queryRaceRunningStylesFromD1,
+} from "../../../db/corner-running-style-queries";
+import {
   getBloodlineStats,
   getActiveFinishPositionPredictions,
   getActiveFinishPredictionEvaluation,
@@ -48,10 +52,6 @@ import {
   buildRacePacePredictionRowsFromResults,
   isCornerPacePredictionSupported,
 } from "../../../lib/race-pace-prediction";
-import {
-  buildRaceKey as buildRunningStyleRaceKey,
-  queryRaceRunningStylesFromD1,
-} from "../../../db/corner-running-style-queries";
 import type {
   BloodlineStatsRow,
   FinishPositionStatsRow,
