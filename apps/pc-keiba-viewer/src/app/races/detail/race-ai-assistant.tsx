@@ -1,8 +1,7 @@
 "use client";
 
-import { useChat } from "@ai-sdk/react";
 import type { LlmInference } from "@mediapipe/tasks-genai";
-import type { ChatTransport, UIMessage, UIMessageChunk } from "ai";
+import type { UIMessage } from "ai";
 import type { RealtimeRacePayload } from "horse-racing-realtime/types";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -53,6 +52,7 @@ interface RaceAiAssistantProps {
 type WebGpuSupportState = "checking" | "supported" | "unsupported";
 type ModelStatus = "downloading" | "idle" | "initializing" | "ready";
 type GenerationStatus = "generating" | "idle" | "loading-data";
+type LocalChatStatus = "ready" | "streaming" | "submitted";
 
 interface RaceAiPredictionRow {
   confidence: number | null;
@@ -648,10 +648,12 @@ const callOptionalLlmMethod = (
 const generateModelResponse = async ({
   abortSignal,
   llm,
+  onProgress,
   prompt,
 }: {
   abortSignal: AbortSignal | undefined;
   llm: LlmInference;
+  onProgress?: (partialResult: string, done: boolean) => void;
   prompt: string;
 }): Promise<string> => {
   if (abortSignal?.aborted) {
@@ -663,7 +665,7 @@ const generateModelResponse = async ({
   callOptionalLlmMethod(llm, "clearCancelSignals");
   abortSignal?.addEventListener("abort", cancelProcessing, { once: true });
   try {
-    return await llm.generateResponse(prompt);
+    return await llm.generateResponse(prompt, onProgress);
   } finally {
     abortSignal?.removeEventListener("abort", cancelProcessing);
     callOptionalLlmMethod(llm, "clearCancelSignals");
@@ -688,36 +690,6 @@ const runToolJavaScript = async (code: string): Promise<ToolResult> => {
   };
 };
 
-const createLocalChatStream = ({
-  abortSignal,
-  execute,
-}: {
-  abortSignal: AbortSignal | undefined;
-  execute: (emit: (delta: string) => void) => Promise<void>;
-}): ReadableStream<UIMessageChunk> =>
-  new ReadableStream<UIMessageChunk>({
-    async start(controller) {
-      const textId = createId();
-      controller.enqueue({ type: "start" });
-      controller.enqueue({ id: textId, type: "text-start" });
-      try {
-        await execute((delta) => {
-          if (!abortSignal?.aborted && delta) {
-            controller.enqueue({ delta, id: textId, type: "text-delta" });
-          }
-        });
-        controller.enqueue({ id: textId, type: "text-end" });
-        controller.enqueue({ finishReason: "stop", type: "finish" });
-      } catch (caught) {
-        const message = caught instanceof Error ? caught.message : String(caught);
-        controller.enqueue({ errorText: message, type: "error" });
-        controller.enqueue({ finishReason: "error", type: "finish" });
-      } finally {
-        controller.close();
-      }
-    },
-  });
-
 const appendLimited = <T,>(rows: T[], row: T): T[] => [...rows, row].slice(-LOG_LIMIT);
 
 export function RaceAiAssistant(props: RaceAiAssistantProps) {
@@ -731,13 +703,16 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const [modelState, setModelState] = useState<RaceAiModelState | null>(null);
   const [messages, setMessages] = useState<RaceAiMessage[]>([]);
   const [thoughtLogs, setThoughtLogs] = useState<RaceAiThoughtLog[]>([]);
+  const [chatMessages, setChatMessages] = useState<UIMessage[]>([]);
+  const [chatStatus, setChatStatus] = useState<LocalChatStatus>("ready");
   const [prediction, setPrediction] = useState<RaceAiPredictionRow[]>([]);
   const [answer, setAnswer] = useState<string>("");
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [modelPartialLength, setModelPartialLength] = useState(0);
   const [debugEnabled, setDebugEnabled] = useState(false);
-  const [chatSessionVersion, setChatSessionVersion] = useState(0);
   const llmRef = useRef<LlmInference | null>(null);
+  const activeChatAbortControllerRef = useRef<AbortController | null>(null);
   const autoStartedRaceKeyRef = useRef<string | null>(null);
   const runningRef = useRef(false);
   const resetVersionRef = useRef(0);
@@ -757,7 +732,6 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   );
 
   const raceKey = `${props.source}:${props.year}${props.month}${props.day}:${props.keibajoCode}:${props.raceNumber}`;
-  const chatId = `${raceKey}:${chatSessionVersion}`;
 
   useEffect(() => {
     setDebugEnabled(isLocalhostBrowser());
@@ -913,6 +887,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       runningRef.current = true;
       const runResetVersion = resetVersionRef.current;
       setError(null);
+      setModelPartialLength(0);
       lastUserRequestRef.current = request;
       try {
         const llm = await ensureModel();
@@ -940,6 +915,11 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
             await generateModelResponse({
               abortSignal,
               llm,
+              onProgress: (partialResult) => {
+                if (!abortSignal?.aborted && resetVersionRef.current === runResetVersion) {
+                  setModelPartialLength(partialResult.length);
+                }
+              },
               prompt: buildTokenSafePrompt({
                 data,
                 llm,
@@ -1040,46 +1020,105 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     [ensureModel, loadRaceDataSnapshot, persistLogs],
   );
 
-  const localChatTransport = useMemo<ChatTransport<UIMessage>>(
-    () => ({
-      reconnectToStream: async () => null,
-      sendMessages: async ({ abortSignal, body, messages: uiMessages }) =>
-        createLocalChatStream({
-          abortSignal,
-          execute: async (emit) => {
-            const request =
-              uiMessageText(uiMessages.at(-1)) || "このレースの着順を予想してください。";
-            const trigger =
-              isRecord(body) && typeof body.trigger === "string" ? body.trigger : "chat";
-            await runAi(request, trigger, emit, abortSignal);
-          },
-        }),
-    }),
-    [runAi],
-  );
+  const stopChat = useCallback(() => {
+    activeChatAbortControllerRef.current?.abort();
+    activeChatAbortControllerRef.current = null;
+    if (llmRef.current) {
+      callOptionalLlmMethod(llmRef.current, "cancelProcessing");
+    }
+    runningRef.current = false;
+    setChatStatus("ready");
+    setGenerationStatus("idle");
+  }, []);
 
-  const {
-    error: chatError,
-    messages: chatMessages,
-    sendMessage,
-    setMessages: setChatMessages,
-    status: chatStatus,
-    stop: stopChat,
-  } = useChat({
-    id: chatId,
-    onError: (caught) => {
-      if (Date.now() < suppressChatErrorUntilRef.current) {
+  const sendMessage = useCallback(
+    async (
+      message: { text: string },
+      options?: {
+        body?: Record<string, unknown>;
+      },
+    ) => {
+      const request = message.text.trim() || "このレースの着順を予想してください。";
+      if (runningRef.current) {
+        setError("AI応答を生成中です。");
         return;
       }
-      setError(caught.message);
+
+      const now = new Date().toISOString();
+      const userUiMessage: UIMessage = {
+        id: createId(),
+        metadata: { createdAt: now },
+        parts: [{ text: request, type: "text" }],
+        role: "user",
+      };
+      const assistantId = createId();
+      const assistantUiMessage: UIMessage = {
+        id: assistantId,
+        metadata: { createdAt: now },
+        parts: [{ text: "", type: "text" }],
+        role: "assistant",
+      };
+      const abortController = new AbortController();
+      activeChatAbortControllerRef.current = abortController;
+      setError(null);
+      setChatStatus("submitted");
+      setChatMessages((current) => [...current, userUiMessage, assistantUiMessage]);
+
+      let assistantText = "";
+      const setAssistantText = (text: string) => {
+        setChatMessages((current) =>
+          current.map((item) =>
+            item.id === assistantId
+              ? {
+                  ...item,
+                  parts: [{ text, type: "text" }],
+                }
+              : item,
+          ),
+        );
+      };
+
+      try {
+        const trigger =
+          isRecord(options?.body) && typeof options.body.trigger === "string"
+            ? options.body.trigger
+            : "chat";
+        const result = await runAi(
+          request,
+          trigger,
+          (delta) => {
+            assistantText = `${assistantText}${delta}`;
+            setChatStatus("streaming");
+            setAssistantText(assistantText);
+          },
+          abortController.signal,
+        );
+        if (!assistantText && result?.answer) {
+          assistantText = cleanModelText(result.answer);
+          setAssistantText(assistantText);
+        }
+        if (!assistantText) {
+          setChatMessages((current) => current.filter((item) => item.id !== assistantId));
+        }
+      } catch (caught) {
+        if (Date.now() >= suppressChatErrorUntilRef.current) {
+          setError(caught instanceof Error ? caught.message : String(caught));
+        }
+        setChatMessages((current) => current.filter((item) => item.id !== assistantId));
+      } finally {
+        if (activeChatAbortControllerRef.current === abortController) {
+          activeChatAbortControllerRef.current = null;
+        }
+        setChatStatus("ready");
+      }
     },
-    transport: localChatTransport,
-  });
+    [runAi],
+  );
 
   const clearRaceAiState = useCallback(() => {
     resetVersionRef.current += 1;
     suppressChatErrorUntilRef.current = Date.now() + 1_500;
-    void stopChat();
+    stopChat();
     if (llmRef.current) {
       callOptionalLlmMethod(llmRef.current, "cancelProcessing");
     }
@@ -1091,10 +1130,10 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     setMessages(nextMessages);
     setThoughtLogs(nextThoughtLogs);
     setChatMessages([]);
-    setChatSessionVersion((current) => current + 1);
     setPrediction([]);
     setAnswer("");
     setError(null);
+    setModelPartialLength(0);
     setGenerationStatus("idle");
     autoStartedRaceKeyRef.current = raceKey;
     lastDebugSnapshotRef.current = "";
@@ -1108,7 +1147,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         updatedAt: new Date().toISOString(),
       }).catch(() => {}),
     );
-  }, [raceKey, realtimeFingerprint, setChatMessages, stopChat]);
+  }, [raceKey, realtimeFingerprint, stopChat]);
 
   const resetRaceAiState = useCallback(() => {
     if (!window.confirm("このレースのAI予想、対話ログ、思考ログをリセットしますか？")) {
@@ -1125,7 +1164,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       return;
     }
     setChatMessages(messages.map(raceMessageToUiMessage));
-  }, [chatStatus, messages, raceKey, setChatMessages]);
+  }, [chatStatus, messages, raceKey]);
 
   useEffect(() => {
     if (!realtimeFingerprint) {
@@ -1219,7 +1258,9 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     generationStatus === "loading-data"
       ? "取得中"
       : generationStatus === "generating"
-        ? "予想中"
+        ? modelPartialLength > 0
+          ? `予想中 / モデル応答 ${modelPartialLength.toLocaleString("ja-JP")} 文字受信`
+          : "予想中"
         : dataAvailabilityLabel;
   const readinessPreparedPercent = dataReadiness?.preparedPercent ?? 0;
   const missingDataLabel =
@@ -1285,7 +1326,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         modelStatus: modelStatusLabel,
         runtimeStatus: dataStatusLabel,
       },
-      error: error ?? chatError?.message ?? null,
+      error,
       messages,
       prediction,
       raceKey,
@@ -1312,7 +1353,6 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     }).catch(() => {});
   }, [
     answer,
-    chatError,
     chatMessages,
     dataAvailabilityLabel,
     dataReadiness,
@@ -1424,7 +1464,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         </div>
         <p className="race-ai-readiness-note">{missingDataLabel}</p>
       </div>
-      {error || chatError ? <p className="race-ai-error">{error ?? chatError?.message}</p> : null}
+      {error ? <p className="race-ai-error">{error}</p> : null}
       {prediction.length > 0 ? (
         <div className="race-ai-table-wrap">
           <table className="race-ai-prediction-table">
@@ -1468,7 +1508,9 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
             </article>
           ))
         )}
-        {chatStatus === "submitted" ? <p className="race-ai-stream-status">準備中...</p> : null}
+        {chatStatus === "submitted" ? (
+          <p className="race-ai-stream-status">{dataStatusLabel}</p>
+        ) : null}
         {chatStatus === "streaming" ? (
           <p className="race-ai-stream-status">応答を生成中...</p>
         ) : null}
