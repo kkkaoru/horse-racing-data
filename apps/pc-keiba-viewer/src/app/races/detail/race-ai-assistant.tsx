@@ -97,6 +97,18 @@ interface RaceAiDebugCommand {
   type: "replace-messages" | "reset" | "send-message";
 }
 
+type RaceAiRuntimeLogLevel = "debug" | "error" | "info" | "warn";
+type RaceAiRuntimeLogDetails = Record<string, boolean | null | number | string>;
+
+interface RaceAiRuntimeLog {
+  at: string;
+  details: RaceAiRuntimeLogDetails | null;
+  elapsedMs: number;
+  id: string;
+  level: RaceAiRuntimeLogLevel;
+  message: string;
+}
+
 const WASM_BASE_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-genai@0.10.27/wasm";
 const REALTIME_RETHINK_DELAY_MS = 3_000;
 const DEBUG_SYNC_INTERVAL_MS = 1_200;
@@ -104,6 +116,7 @@ const SERVER_COMMAND_SYNC_INTERVAL_MS = 5_000;
 const MODEL_INITIALIZATION_TIMEOUT_MS = 180_000;
 const MODEL_INITIALIZATION_TIMEOUT_SECONDS = MODEL_INITIALIZATION_TIMEOUT_MS / 1000;
 const LOG_LIMIT = 20;
+const RUNTIME_LOG_LIMIT = 120;
 const MAX_TOOL_CALLS = 3;
 const MAX_INPUT_TOKENS = 10_000;
 const PROMPT_CHAR_LIMIT = 11_000;
@@ -176,6 +189,37 @@ const formatGenerationStageElapsedLabel = (stage: GenerationStage, seconds: numb
   }
   return `${seconds}秒`;
 };
+
+const toRuntimeLogDetails = (
+  details: Record<string, unknown> | undefined,
+): RaceAiRuntimeLogDetails | null => {
+  if (!details) {
+    return null;
+  }
+  const entries: Array<[string, boolean | null | number | string]> = [];
+  for (const [key, value] of Object.entries(details)) {
+    if (typeof value === "string" || typeof value === "boolean" || value === null) {
+      entries.push([key, value]);
+      continue;
+    }
+    if (typeof value === "number") {
+      entries.push([key, Number.isFinite(value) ? value : String(value)]);
+      continue;
+    }
+    if (value === undefined) {
+      continue;
+    }
+    try {
+      entries.push([key, JSON.stringify(value)]);
+    } catch {
+      entries.push([key, "unserializable"]);
+    }
+  }
+  return entries.length > 0 ? Object.fromEntries(entries) : null;
+};
+
+const formatRuntimeLogDetails = (details: RaceAiRuntimeLogDetails | null): string =>
+  details ? JSON.stringify(details) : "";
 
 const raceMessageToUiMessage = (message: RaceAiMessage): UIMessage => ({
   id: message.id,
@@ -824,10 +868,13 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const [modelPartialLength, setModelPartialLength] = useState(0);
   const [debugEnabled, setDebugEnabled] = useState(false);
   const [chatSessionVersion, setChatSessionVersion] = useState(0);
+  const [runtimeLogs, setRuntimeLogs] = useState<RaceAiRuntimeLog[]>([]);
   const llmRef = useRef<LlmInference | null>(null);
   const autoStartedRaceKeyRef = useRef<string | null>(null);
   const runningRef = useRef(false);
   const resetVersionRef = useRef(0);
+  const runtimeLogBaseAtRef = useRef(Date.now());
+  const lastModelStateLogRef = useRef("");
   const messagesRef = useRef<RaceAiMessage[]>([]);
   const thoughtLogsRef = useRef<RaceAiThoughtLog[]>([]);
   const suppressChatErrorUntilRef = useRef(0);
@@ -847,12 +894,70 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const raceKey = `${props.source}:${props.year}${props.month}${props.day}:${props.keibajoCode}:${props.raceNumber}`;
   const chatId = `${raceKey}:${chatSessionVersion}`;
 
-  const setRuntimeStage = useCallback((stage: GenerationStage) => {
+  const addRuntimeLog = useCallback(
+    (level: RaceAiRuntimeLogLevel, message: string, details?: Record<string, unknown>): void => {
+      const now = Date.now();
+      const log: RaceAiRuntimeLog = {
+        at: new Date(now).toISOString(),
+        details: toRuntimeLogDetails(details),
+        elapsedMs: Math.max(0, now - runtimeLogBaseAtRef.current),
+        id: createId(),
+        level,
+        message,
+      };
+      setRuntimeLogs((current) => [...current, log].slice(-RUNTIME_LOG_LIMIT));
+      const consolePayload = { details: log.details, elapsedMs: log.elapsedMs, raceKey };
+      if (level === "error") {
+        console.error(`[race-ai] ${message}`, consolePayload);
+      } else if (level === "warn") {
+        console.warn(`[race-ai] ${message}`, consolePayload);
+      } else if (level === "info") {
+        console.info(`[race-ai] ${message}`, consolePayload);
+      } else {
+        console.debug(`[race-ai] ${message}`, consolePayload);
+      }
+    },
+    [raceKey],
+  );
+
+  const setRuntimeStage = useCallback(
+    (stage: GenerationStage) => {
+      const now = Date.now();
+      setGenerationStage(stage);
+      setGenerationStageStartedAt(stage === "idle" ? null : now);
+      setRuntimeNow(now);
+      addRuntimeLog("debug", "runtime stage changed", { stage });
+    },
+    [addRuntimeLog],
+  );
+
+  useEffect(() => {
     const now = Date.now();
-    setGenerationStage(stage);
-    setGenerationStageStartedAt(stage === "idle" ? null : now);
-    setRuntimeNow(now);
-  }, []);
+    runtimeLogBaseAtRef.current = now;
+    lastModelStateLogRef.current = "";
+    setRuntimeLogs([
+      {
+        at: new Date(now).toISOString(),
+        details: {
+          raceKey,
+          route: `${props.year}/${props.month}/${props.day}/${props.keibajoCode}/${props.raceNumber}`,
+          source: props.source,
+        },
+        elapsedMs: 0,
+        id: createId(),
+        level: "info",
+        message: "race AI runtime log started",
+      },
+    ]);
+  }, [
+    props.day,
+    props.keibajoCode,
+    props.month,
+    props.raceNumber,
+    props.source,
+    props.year,
+    raceKey,
+  ]);
 
   useEffect(() => {
     if (generationStage === "idle") {
@@ -871,19 +976,37 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   }, []);
 
   useEffect(() => {
+    addRuntimeLog("info", "checking WebGPU support", {
+      hasNavigator: typeof navigator !== "undefined",
+      hasWebGpu: typeof navigator !== "undefined" && "gpu" in navigator,
+    });
     setSupportState("checking");
     if (typeof navigator === "undefined" || !("gpu" in navigator)) {
       setSupportState("unsupported");
+      addRuntimeLog("warn", "WebGPU unsupported");
       return;
     }
     setSupportState("supported");
-  }, []);
+    addRuntimeLog("info", "WebGPU supported");
+  }, [addRuntimeLog]);
 
   useEffect(() => {
     const refreshModelState = () => {
-      void getRaceAiModelState(LATEST_RACE_AI_MODEL).then(setModelState);
+      void getRaceAiModelState(LATEST_RACE_AI_MODEL)
+        .then(setModelState)
+        .catch((caught: unknown) => {
+          addRuntimeLog("error", "failed to refresh AI model state", {
+            error: caught instanceof Error ? caught.message : String(caught),
+          });
+        });
     };
-    setSettings(getRaceAiSettings());
+    const nextSettings = getRaceAiSettings();
+    setSettings(nextSettings);
+    addRuntimeLog("info", "AI settings loaded", {
+      autoStart: nextSettings.autoStart,
+      consent: nextSettings.consent,
+      modelVersion: LATEST_RACE_AI_MODEL.version,
+    });
     refreshModelState();
     const unsubscribeSettings = subscribeRaceAiSettings(setSettings);
     const unsubscribeDownloads = subscribeRaceAiModelDownloads(refreshModelState);
@@ -891,7 +1014,37 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       unsubscribeSettings();
       unsubscribeDownloads();
     };
-  }, []);
+  }, [addRuntimeLog]);
+
+  useEffect(() => {
+    if (!modelState) {
+      return;
+    }
+    const progressBucket =
+      modelState.progress === null || modelState.progress === undefined
+        ? "none"
+        : `${Math.floor(modelState.progress * 10) * 10}%`;
+    const fingerprint = [
+      modelState.status,
+      progressBucket,
+      modelState.error ?? "",
+      modelState.totalBytes ?? "",
+    ].join(":");
+    if (lastModelStateLogRef.current === fingerprint) {
+      return;
+    }
+    lastModelStateLogRef.current = fingerprint;
+    addRuntimeLog(modelState.error ? "error" : "debug", "AI model state changed", {
+      downloadedBytes: modelState.downloadedBytes,
+      error: modelState.error,
+      progress:
+        modelState.progress === null || modelState.progress === undefined
+          ? null
+          : Math.round(modelState.progress * 100),
+      status: modelState.status,
+      totalBytes: modelState.totalBytes,
+    });
+  }, [addRuntimeLog, modelState]);
 
   useEffect(() => {
     let cancelled = false;
@@ -933,18 +1086,29 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   );
 
   const ensureModel = useCallback(async (): Promise<LlmInference> => {
+    addRuntimeLog("info", "ensure AI model started", {
+      hasLocalInstance: Boolean(llmRef.current),
+      hasSharedInstance: sharedRaceAiModel?.modelId === LATEST_RACE_AI_MODEL.id,
+      hasSharedPromise: Boolean(sharedRaceAiModelPromise),
+    });
     if (llmRef.current) {
+      addRuntimeLog("debug", "using local AI model instance");
       return llmRef.current;
     }
     if (sharedRaceAiModel?.modelId === LATEST_RACE_AI_MODEL.id) {
       llmRef.current = sharedRaceAiModel.instance;
       setModelStatus("ready");
+      addRuntimeLog("debug", "using shared AI model instance", {
+        modelId: sharedRaceAiModel.modelId,
+      });
       return sharedRaceAiModel.instance;
     }
     if (getRaceAiSettings().consent !== "granted") {
+      addRuntimeLog("warn", "AI model initialization blocked by consent setting");
       throw new Error("AI利用が許可されていません。マイページでAI利用を許可してください。");
     }
     if (sharedRaceAiModelPromise) {
+      addRuntimeLog("info", "waiting for existing AI model initialization");
       setRuntimeStage("model-initialize");
       setModelStatus("initializing");
       await yieldToBrowser();
@@ -956,6 +1120,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         });
         llmRef.current = sharedInstance;
         setModelStatus("ready");
+        addRuntimeLog("info", "existing AI model initialization completed");
         return sharedInstance;
       } catch (caught) {
         if (
@@ -965,6 +1130,9 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         ) {
           sharedRaceAiModelPromise = null;
         }
+        addRuntimeLog("error", "existing AI model initialization failed", {
+          error: caught instanceof Error ? caught.message : String(caught),
+        });
         setModelStatus("idle");
         throw caught;
       }
@@ -973,18 +1141,46 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     setRuntimeStage("model-download");
     setModelStatus("downloading");
     await yieldToBrowser();
+    const downloadStartedAt = Date.now();
+    addRuntimeLog("info", "AI model buffer ensure started", {
+      modelSizeBytes: LATEST_RACE_AI_MODEL.sizeBytes,
+      modelVersion: LATEST_RACE_AI_MODEL.version,
+    });
     const buffer = await ensureRaceAiModelBuffer({
       confirmDownload: true,
       model: LATEST_RACE_AI_MODEL,
+    });
+    addRuntimeLog("info", "AI model buffer ready", {
+      bufferBytes: buffer.byteLength,
+      elapsedMs: Date.now() - downloadStartedAt,
     });
     setRuntimeStage("model-initialize");
     setModelStatus("initializing");
     await yieldToBrowser();
     sharedRaceAiModelPromise = (async () => {
+      const initializationStartedAt = Date.now();
+      addRuntimeLog("info", "MediaPipe tasks-genai import started");
       const { FilesetResolver, LlmInference: LlmInferenceClass } =
         await import("@mediapipe/tasks-genai");
+      addRuntimeLog("info", "MediaPipe tasks-genai import completed", {
+        elapsedMs: Date.now() - initializationStartedAt,
+      });
+      addRuntimeLog("info", "MediaPipe WASM resolver started", {
+        wasmBaseUrl: WASM_BASE_URL,
+      });
       const genai = await FilesetResolver.forGenAiTasks(WASM_BASE_URL);
+      addRuntimeLog("info", "MediaPipe WASM resolver completed", {
+        elapsedMs: Date.now() - initializationStartedAt,
+      });
+      addRuntimeLog("info", "WebGPU device creation started");
       const device = await LlmInferenceClass.createWebGpuDevice();
+      addRuntimeLog("info", "WebGPU device creation completed", {
+        elapsedMs: Date.now() - initializationStartedAt,
+      });
+      addRuntimeLog("info", "LlmInference createFromOptions started", {
+        maxTokens: 16_384,
+        modelBytes: buffer.byteLength,
+      });
       const instance = await LlmInferenceClass.createFromOptions(genai, {
         baseOptions: {
           delegate: "GPU",
@@ -995,6 +1191,9 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         randomSeed: 20260518,
         temperature: 0.25,
         topK: 40,
+      });
+      addRuntimeLog("info", "LlmInference createFromOptions completed", {
+        elapsedMs: Date.now() - initializationStartedAt,
       });
       sharedRaceAiModel = {
         instance,
@@ -1010,14 +1209,20 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       });
       llmRef.current = instance;
       setModelStatus("ready");
+      addRuntimeLog("info", "AI model ready", {
+        modelId: LATEST_RACE_AI_MODEL.id,
+      });
       return instance;
     } catch (caught) {
+      addRuntimeLog("error", "AI model initialization failed", {
+        error: caught instanceof Error ? caught.message : String(caught),
+      });
       setModelStatus("idle");
       throw caught;
     } finally {
       sharedRaceAiModelPromise = null;
     }
-  }, [setRuntimeStage]);
+  }, [addRuntimeLog, setRuntimeStage]);
 
   useEffect(() => {
     if (
@@ -1100,9 +1305,14 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       setModelPartialLength(0);
       setRuntimeStage("queued");
       lastUserRequestRef.current = request;
+      addRuntimeLog("info", "AI request queued", {
+        requestLength: request.length,
+        trigger,
+      });
       try {
         await yieldToBrowser();
         if (trigger === "debug-dry-run") {
+          addRuntimeLog("info", "debug dry-run started");
           const dryRunStages: GenerationStage[] = [
             "loading-data",
             "preparing-prompt",
@@ -1126,6 +1336,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           };
           const dryRunCompleted = await playDryRunStage(0);
           if (!dryRunCompleted) {
+            addRuntimeLog("warn", "debug dry-run stopped before completion");
             return null;
           }
           const now = new Date().toISOString();
@@ -1166,6 +1377,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
               text: dryRunAnswer,
             });
           }
+          addRuntimeLog("info", "debug dry-run completed");
           return {
             answer: dryRunAnswer,
             format: "text",
@@ -1179,7 +1391,14 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         setRuntimeStage("loading-data");
         setGenerationStatus("loading-data");
         await yieldToBrowser();
+        const dataLoadStartedAt = Date.now();
+        addRuntimeLog("info", "race AI data load started");
         const data = await loadRaceDataSnapshot();
+        addRuntimeLog("info", "race AI data load completed", {
+          elapsedMs: Date.now() - dataLoadStartedAt,
+          missingPercent: data.aiReady.dataReadiness.missingPercent,
+          preparedPercent: data.aiReady.dataReadiness.preparedPercent,
+        });
         const dataFingerprint = stableStringify({
           aiReady: data.aiReady.currentOutput,
           dataReadiness: data.aiReady.dataReadiness,
@@ -1200,6 +1419,11 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
               : request;
           setRuntimeStage("preparing-prompt");
           await yieldToBrowser();
+          const promptStartedAt = Date.now();
+          addRuntimeLog("debug", "prompt build started", {
+            formatRetryCount,
+            toolResultCount: toolResults.length,
+          });
           const prompt = buildTokenSafePrompt({
             data,
             llm,
@@ -1208,10 +1432,20 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
             thoughtLogs: thoughtLogsRef.current,
             toolResults,
           });
+          const promptTokenCount = llm.sizeInTokens(prompt);
+          addRuntimeLog("debug", "prompt build completed", {
+            elapsedMs: Date.now() - promptStartedAt,
+            promptChars: prompt.length,
+            promptTokens: promptTokenCount,
+          });
           setRuntimeStage(
             toolResults.length === 0 ? "generating-tool-request" : "generating-final",
           );
           await yieldToBrowser();
+          const generationStartedAt = Date.now();
+          addRuntimeLog("info", "model generation started", {
+            mode: toolResults.length === 0 ? "tool-request" : "final-answer",
+          });
           const response = parseModelResponse(
             await generateModelResponse({
               abortSignal,
@@ -1224,15 +1458,30 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
               prompt,
             }),
           );
+          addRuntimeLog("info", "model generation completed", {
+            elapsedMs: Date.now() - generationStartedAt,
+            format: response.format,
+            needsTool: response.needsTool,
+            predictionCount: response.prediction.length,
+            toolJavaScriptLength: response.toolJavaScript?.length ?? 0,
+          });
           if (response.format === "text" && toolResults.length === 0) {
             setRuntimeStage("fetching-tool-data");
             await yieldToBrowser();
+            addRuntimeLog("warn", "model returned text before tool request; fetching default data");
             const toolResult = await runToolJavaScript(
               `return await fetchJson("${buildDefaultRaceAiDataUrl(data)}");`,
             );
+            addRuntimeLog("info", "default tool data fetched", {
+              status: toolResult.status,
+              url: toolResult.url,
+            });
             return runWithToolResults({ formatRetryCount: 0, toolResults: [toolResult] });
           }
           if (response.format === "text" && formatRetryCount < 1) {
+            addRuntimeLog("warn", "model returned text; retrying JSON response", {
+              formatRetryCount,
+            });
             return runWithToolResults({
               formatRetryCount: formatRetryCount + 1,
               toolResults,
@@ -1246,7 +1495,14 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           }
           setRuntimeStage("fetching-tool-data");
           await yieldToBrowser();
+          addRuntimeLog("info", "tool JavaScript fetch started", {
+            toolJavaScriptLength: response.toolJavaScript.length,
+          });
           const toolResult = await runToolJavaScript(response.toolJavaScript);
+          addRuntimeLog("info", "tool JavaScript fetch completed", {
+            status: toolResult.status,
+            url: toolResult.url,
+          });
           return runWithToolResults({
             formatRetryCount: 0,
             toolResults: [...toolResults, toolResult],
@@ -1254,6 +1510,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         };
         let finalResponse = await runWithToolResults({ formatRetryCount: 0, toolResults: [] });
         if (finalResponse.needsTool) {
+          addRuntimeLog("warn", "tool request limit reached; finalizing with fetched data");
           finalResponse = {
             ...finalResponse,
             answer: `${finalResponse.answer}\n\n追加データ取得の上限に達したため、取得済みデータの範囲で回答しました。`,
@@ -1262,6 +1519,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           };
         }
         if (resetVersionRef.current !== runResetVersion) {
+          addRuntimeLog("warn", "AI request ignored because runtime was reset");
           return null;
         }
 
@@ -1294,6 +1552,11 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         setPrediction(finalResponse.prediction);
         setAnswer(finalResponse.answer);
         await persistLogs(nextMessages, nextThoughtLogs);
+        addRuntimeLog("info", "AI response persisted", {
+          answerLength: finalResponse.answer.length,
+          predictionCount: finalResponse.prediction.length,
+          thoughtLogLength: thoughtLog.content.length,
+        });
         if (emit) {
           setRuntimeStage("streaming-answer");
           await yieldToBrowser();
@@ -1303,11 +1566,16 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
             text: finalResponse.answer,
           });
         }
+        addRuntimeLog("info", "AI request completed");
         return finalResponse;
       } catch (caught) {
         if (resetVersionRef.current === runResetVersion) {
           setError(caught instanceof Error ? caught.message : String(caught));
         }
+        addRuntimeLog("error", "AI request failed", {
+          error: caught instanceof Error ? caught.message : String(caught),
+          trigger,
+        });
         if (emit) {
           throw caught;
         }
@@ -1318,7 +1586,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         setRuntimeStage("idle");
       }
     },
-    [ensureModel, loadRaceDataSnapshot, persistLogs, setRuntimeStage],
+    [addRuntimeLog, ensureModel, loadRaceDataSnapshot, persistLogs, setRuntimeStage],
   );
 
   const localChatTransport = useMemo<ChatTransport<UIMessage>>(
@@ -1358,6 +1626,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   });
 
   const clearRaceAiState = useCallback(() => {
+    addRuntimeLog("warn", "race AI state reset requested");
     resetVersionRef.current += 1;
     suppressChatErrorUntilRef.current = Date.now() + 1_500;
     void stopChat();
@@ -1391,7 +1660,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         updatedAt: new Date().toISOString(),
       }).catch(() => {}),
     );
-  }, [raceKey, realtimeFingerprint, setChatMessages, setRuntimeStage, stopChat]);
+  }, [addRuntimeLog, raceKey, realtimeFingerprint, setChatMessages, setRuntimeStage, stopChat]);
 
   const resetRaceAiState = useCallback(() => {
     if (!window.confirm("このレースのAI予想、対話ログ、思考ログをリセットしますか？")) {
@@ -1616,6 +1885,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         isRunning: runningRef.current,
         lastUserRequest: lastUserRequestRef.current,
         modelPartialLength,
+        runtimeLogs,
         runtimeStageLabel,
       },
       status: debugStatus,
@@ -1659,6 +1929,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     props.year,
     raceKey,
     runtimeStageLabel,
+    runtimeLogs,
     thoughtLogs,
   ]);
 
@@ -1758,6 +2029,26 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         <strong>{isBusy ? chatRuntimeLabel : "待機中"}</strong>
         {isBusy ? <small>送信後の処理はこの表示で追跡できます。</small> : null}
       </div>
+      <details className="race-ai-diagnostic-log" open={isBusy || Boolean(error || chatError)}>
+        <summary>
+          <strong>診断ログ</strong>
+          <span>{runtimeLogs.length}件</span>
+        </summary>
+        {runtimeLogs.length === 0 ? (
+          <p>診断ログはまだありません。</p>
+        ) : (
+          <ol>
+            {runtimeLogs.map((log) => (
+              <li className={`race-ai-diagnostic-log-${log.level}`} key={log.id}>
+                <time dateTime={log.at}>{log.at.slice(11, 19)}</time>
+                <strong>{log.level}</strong>
+                <span>{log.message}</span>
+                {log.details ? <code>{formatRuntimeLogDetails(log.details)}</code> : null}
+              </li>
+            ))}
+          </ol>
+        )}
+      </details>
       {error || chatError ? <p className="race-ai-error">{error ?? chatError?.message}</p> : null}
       {prediction.length > 0 ? (
         <div className="race-ai-table-wrap">
