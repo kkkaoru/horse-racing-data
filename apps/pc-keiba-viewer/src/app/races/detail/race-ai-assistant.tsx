@@ -94,7 +94,7 @@ interface RaceAiDebugCommand {
   id: string;
   messages?: RaceAiMessage[];
   text?: string;
-  type: "replace-messages" | "reset" | "send-message";
+  type: "replace-messages" | "reset" | "send-message" | "simulate-model-initialize";
 }
 
 type RaceAiRuntimeLogLevel = "debug" | "error" | "info" | "warn";
@@ -116,6 +116,9 @@ const DEBUG_SYNC_INTERVAL_MS = 1_200;
 const SERVER_COMMAND_SYNC_INTERVAL_MS = 5_000;
 const MODEL_INITIALIZATION_TIMEOUT_MS = 180_000;
 const MODEL_INITIALIZATION_TIMEOUT_SECONDS = MODEL_INITIALIZATION_TIMEOUT_MS / 1000;
+const MODEL_INITIALIZATION_WATCHDOG_INTERVAL_MS = 1_000;
+const LOCAL_MODEL_INITIALIZATION_TIMEOUT_STORAGE_KEY =
+  "pc-keiba-race-ai-model-initialization-timeout-ms";
 const LOG_LIMIT = 20;
 const RUNTIME_LOG_LIMIT = 300;
 const MAX_TOOL_CALLS = 3;
@@ -145,8 +148,10 @@ let sharedRaceAiModel: {
   modelId: string;
 } | null = null;
 let sharedRaceAiModelPromise: Promise<LlmInference> | null = null;
+let sharedRaceAiModelInitializationGeneration = 0;
 
-const modelInitializationTimeoutMessage = `AIモデル初期化が${MODEL_INITIALIZATION_TIMEOUT_SECONDS}秒を超えたため停止しました。ブラウザのWebGPUが不安定な可能性があります。ページを再読み込みして再試行してください。`;
+const modelInitializationTimeoutMessage = (timeoutMs: number): string =>
+  `AIモデル初期化が${Math.round(timeoutMs / 1000)}秒を超えたため停止しました。ブラウザのWebGPUが不安定な可能性があります。ページを再読み込みして再試行してください。`;
 
 const createId = (): string => `${Date.now().toString(36)}-${crypto.randomUUID()}`;
 
@@ -298,6 +303,18 @@ const isLocalhostBrowser = (): boolean =>
   typeof window !== "undefined" &&
   ["localhost", "127.0.0.1", "0.0.0.0", "::1"].includes(window.location.hostname);
 
+const getModelInitializationTimeoutMs = (): number => {
+  if (isLocalhostBrowser()) {
+    const timeout = Number(
+      window.localStorage.getItem(LOCAL_MODEL_INITIALIZATION_TIMEOUT_STORAGE_KEY),
+    );
+    if (Number.isFinite(timeout) && timeout >= 1_000) {
+      return Math.min(MODEL_INITIALIZATION_TIMEOUT_MS, Math.floor(timeout));
+    }
+  }
+  return MODEL_INITIALIZATION_TIMEOUT_MS;
+};
+
 const uiMessageToRaceMessage = (message: UIMessage): RaceAiMessage | null => {
   if (message.role !== "assistant" && message.role !== "user") {
     return null;
@@ -338,7 +355,8 @@ const parseDebugCommand = (value: unknown): RaceAiDebugCommand | null => {
   if (
     value.type !== "replace-messages" &&
     value.type !== "reset" &&
-    value.type !== "send-message"
+    value.type !== "send-message" &&
+    value.type !== "simulate-model-initialize"
   ) {
     return null;
   }
@@ -879,6 +897,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const runtimeLogsRef = useRef<RaceAiRuntimeLog[]>([]);
   const lastModelStateLogRef = useRef("");
   const lastRuntimeUiSnapshotLogRef = useRef("");
+  const modelInitializationTimeoutHandledAtRef = useRef<number | null>(null);
   const messagesRef = useRef<RaceAiMessage[]>([]);
   const thoughtLogsRef = useRef<RaceAiThoughtLog[]>([]);
   const suppressChatErrorUntilRef = useRef(0);
@@ -1136,15 +1155,18 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       throw new Error("AI利用が許可されていません。マイページでAI利用を許可してください。");
     }
     if (sharedRaceAiModelPromise) {
+      const timeoutMs = getModelInitializationTimeoutMs();
+      const timeoutMessage = modelInitializationTimeoutMessage(timeoutMs);
+      const existingPromise = sharedRaceAiModelPromise;
       addRuntimeLog("info", "waiting for existing AI model initialization");
       setRuntimeStage("model-initialize");
       setModelStatus("initializing");
       await yieldToBrowser();
       try {
         const sharedInstance = await withTimeout({
-          message: modelInitializationTimeoutMessage,
-          ms: MODEL_INITIALIZATION_TIMEOUT_MS,
-          promise: sharedRaceAiModelPromise,
+          message: timeoutMessage,
+          ms: timeoutMs,
+          promise: existingPromise,
         });
         llmRef.current = sharedInstance;
         setModelStatus("ready");
@@ -1153,9 +1175,10 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       } catch (caught) {
         if (
           caught instanceof Error &&
-          caught.message === modelInitializationTimeoutMessage &&
+          caught.message === timeoutMessage &&
           sharedRaceAiModel === null
         ) {
+          sharedRaceAiModelInitializationGeneration += 1;
           sharedRaceAiModelPromise = null;
         }
         addRuntimeLog("error", "existing AI model initialization failed", {
@@ -1185,7 +1208,11 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     setRuntimeStage("model-initialize");
     setModelStatus("initializing");
     await yieldToBrowser();
-    sharedRaceAiModelPromise = (async () => {
+    const timeoutMs = getModelInitializationTimeoutMs();
+    const timeoutMessage = modelInitializationTimeoutMessage(timeoutMs);
+    const initializationGeneration = sharedRaceAiModelInitializationGeneration + 1;
+    sharedRaceAiModelInitializationGeneration = initializationGeneration;
+    const initializationPromise = (async () => {
       const initializationStartedAt = Date.now();
       addRuntimeLog("info", "MediaPipe tasks-genai import started");
       const { FilesetResolver, LlmInference: LlmInferenceClass } =
@@ -1220,6 +1247,10 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         temperature: 0.25,
         topK: 40,
       });
+      if (initializationGeneration !== sharedRaceAiModelInitializationGeneration) {
+        callOptionalLlmMethod(instance, "cancelProcessing");
+        throw new Error("AIモデル初期化がキャンセルされました。");
+      }
       addRuntimeLog("info", "LlmInference createFromOptions completed", {
         elapsedMs: Date.now() - initializationStartedAt,
       });
@@ -1229,11 +1260,12 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       };
       return instance;
     })();
+    sharedRaceAiModelPromise = initializationPromise;
     try {
       const instance = await withTimeout({
-        message: modelInitializationTimeoutMessage,
-        ms: MODEL_INITIALIZATION_TIMEOUT_MS,
-        promise: sharedRaceAiModelPromise,
+        message: timeoutMessage,
+        ms: timeoutMs,
+        promise: initializationPromise,
       });
       llmRef.current = instance;
       setModelStatus("ready");
@@ -1242,13 +1274,22 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       });
       return instance;
     } catch (caught) {
+      if (
+        caught instanceof Error &&
+        caught.message === timeoutMessage &&
+        sharedRaceAiModel === null
+      ) {
+        sharedRaceAiModelInitializationGeneration += 1;
+      }
       addRuntimeLog("error", "AI model initialization failed", {
         error: caught instanceof Error ? caught.message : String(caught),
       });
       setModelStatus("idle");
       throw caught;
     } finally {
-      sharedRaceAiModelPromise = null;
+      if (sharedRaceAiModelPromise === initializationPromise) {
+        sharedRaceAiModelPromise = null;
+      }
     }
   }, [addRuntimeLog, setRuntimeStage]);
 
@@ -1653,6 +1694,64 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     transport: localChatTransport,
   });
 
+  useEffect(() => {
+    if (modelStatus !== "initializing") {
+      return undefined;
+    }
+    if (generationStage !== "model-initialize" || generationStageStartedAt === null) {
+      addRuntimeLog("warn", "orphaned AI model initialization state cleared", {
+        generationStage,
+        modelStatus,
+      });
+      setModelStatus("idle");
+      return undefined;
+    }
+
+    const initializationStartedAt = generationStageStartedAt;
+    const timeoutMs = getModelInitializationTimeoutMs();
+    const timeoutMessage = modelInitializationTimeoutMessage(timeoutMs);
+    const stopInitialization = () => {
+      const elapsedMs = Date.now() - initializationStartedAt;
+      if (elapsedMs < timeoutMs) {
+        return;
+      }
+      if (modelInitializationTimeoutHandledAtRef.current === initializationStartedAt) {
+        return;
+      }
+      modelInitializationTimeoutHandledAtRef.current = initializationStartedAt;
+      sharedRaceAiModelInitializationGeneration += 1;
+      sharedRaceAiModelPromise = null;
+      runningRef.current = false;
+      suppressChatErrorUntilRef.current = Date.now() + 1_500;
+      void stopChat();
+      if (llmRef.current) {
+        callOptionalLlmMethod(llmRef.current, "cancelProcessing");
+      }
+      setModelStatus("idle");
+      setGenerationStatus("idle");
+      setRuntimeStage("idle");
+      setModelPartialLength(0);
+      setError(timeoutMessage);
+      addRuntimeLog("error", "AI model initialization watchdog timeout", {
+        elapsedMs,
+        timeoutMs,
+      });
+    };
+
+    stopInitialization();
+    const timer = window.setInterval(stopInitialization, MODEL_INITIALIZATION_WATCHDOG_INTERVAL_MS);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [
+    addRuntimeLog,
+    generationStage,
+    generationStageStartedAt,
+    modelStatus,
+    setRuntimeStage,
+    stopChat,
+  ]);
+
   const clearRaceAiState = useCallback(() => {
     resetRuntimeLogs("race-ai-state-reset", {
       previousMessageCount: messagesRef.current.length,
@@ -2032,6 +2131,13 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
             },
           },
         );
+      } else if (command.type === "simulate-model-initialize") {
+        setError(null);
+        runningRef.current = true;
+        setGenerationStatus("generating");
+        setModelStatus("initializing");
+        setRuntimeStage("model-initialize");
+        addRuntimeLog("warn", "debug simulated AI model initialization stall");
       } else if (command.type === "reset") {
         clearRaceAiState();
       } else if (command.type === "replace-messages" && command.messages) {
@@ -2061,7 +2167,16 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     return () => {
       window.clearInterval(timer);
     };
-  }, [clearRaceAiState, debugEnabled, debugUrl, persistLogs, raceKey, sendMessage]);
+  }, [
+    addRuntimeLog,
+    clearRaceAiState,
+    debugEnabled,
+    debugUrl,
+    persistLogs,
+    raceKey,
+    sendMessage,
+    setRuntimeStage,
+  ]);
 
   if (supportState !== "supported" || settings?.consent !== "granted") {
     return null;
