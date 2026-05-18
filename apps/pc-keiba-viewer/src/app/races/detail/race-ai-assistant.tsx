@@ -107,6 +107,7 @@ interface RaceAiRuntimeLog {
   id: string;
   level: RaceAiRuntimeLogLevel;
   message: string;
+  sequence: number;
 }
 
 const WASM_BASE_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-genai@0.10.27/wasm";
@@ -116,7 +117,7 @@ const SERVER_COMMAND_SYNC_INTERVAL_MS = 5_000;
 const MODEL_INITIALIZATION_TIMEOUT_MS = 180_000;
 const MODEL_INITIALIZATION_TIMEOUT_SECONDS = MODEL_INITIALIZATION_TIMEOUT_MS / 1000;
 const LOG_LIMIT = 20;
-const RUNTIME_LOG_LIMIT = 120;
+const RUNTIME_LOG_LIMIT = 300;
 const MAX_TOOL_CALLS = 3;
 const MAX_INPUT_TOKENS = 10_000;
 const PROMPT_CHAR_LIMIT = 11_000;
@@ -874,7 +875,10 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const runningRef = useRef(false);
   const resetVersionRef = useRef(0);
   const runtimeLogBaseAtRef = useRef(Date.now());
+  const runtimeLogSequenceRef = useRef(0);
+  const runtimeLogsRef = useRef<RaceAiRuntimeLog[]>([]);
   const lastModelStateLogRef = useRef("");
+  const lastRuntimeUiSnapshotLogRef = useRef("");
   const messagesRef = useRef<RaceAiMessage[]>([]);
   const thoughtLogsRef = useRef<RaceAiThoughtLog[]>([]);
   const suppressChatErrorUntilRef = useRef(0);
@@ -894,9 +898,53 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const raceKey = `${props.source}:${props.year}${props.month}${props.day}:${props.keibajoCode}:${props.raceNumber}`;
   const chatId = `${raceKey}:${chatSessionVersion}`;
 
+  const resetRuntimeLogs = useCallback(
+    (reason: string, details?: Record<string, unknown>): void => {
+      const now = Date.now();
+      runtimeLogBaseAtRef.current = now;
+      runtimeLogSequenceRef.current = 1;
+      lastModelStateLogRef.current = "";
+      lastRuntimeUiSnapshotLogRef.current = "";
+      const log: RaceAiRuntimeLog = {
+        at: new Date(now).toISOString(),
+        details: toRuntimeLogDetails({
+          raceKey,
+          reason,
+          route: `${props.year}/${props.month}/${props.day}/${props.keibajoCode}/${props.raceNumber}`,
+          source: props.source,
+          ...details,
+        }),
+        elapsedMs: 0,
+        id: createId(),
+        level: "info",
+        message: "race AI runtime log initialized",
+        sequence: 1,
+      };
+      runtimeLogsRef.current = [log];
+      setRuntimeLogs([log]);
+      console.info("[race-ai] race AI runtime log initialized", {
+        details: log.details,
+        elapsedMs: log.elapsedMs,
+        raceKey,
+        sequence: log.sequence,
+      });
+    },
+    [
+      props.day,
+      props.keibajoCode,
+      props.month,
+      props.raceNumber,
+      props.source,
+      props.year,
+      raceKey,
+    ],
+  );
+
   const addRuntimeLog = useCallback(
     (level: RaceAiRuntimeLogLevel, message: string, details?: Record<string, unknown>): void => {
       const now = Date.now();
+      const sequence = runtimeLogSequenceRef.current + 1;
+      runtimeLogSequenceRef.current = sequence;
       const log: RaceAiRuntimeLog = {
         at: new Date(now).toISOString(),
         details: toRuntimeLogDetails(details),
@@ -904,9 +952,17 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         id: createId(),
         level,
         message,
+        sequence,
       };
-      setRuntimeLogs((current) => [...current, log].slice(-RUNTIME_LOG_LIMIT));
-      const consolePayload = { details: log.details, elapsedMs: log.elapsedMs, raceKey };
+      const nextLogs = [...runtimeLogsRef.current, log].slice(-RUNTIME_LOG_LIMIT);
+      runtimeLogsRef.current = nextLogs;
+      setRuntimeLogs(nextLogs);
+      const consolePayload = {
+        details: log.details,
+        elapsedMs: log.elapsedMs,
+        raceKey,
+        sequence,
+      };
       if (level === "error") {
         console.error(`[race-ai] ${message}`, consolePayload);
       } else if (level === "warn") {
@@ -920,44 +976,16 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     [raceKey],
   );
 
-  const setRuntimeStage = useCallback(
-    (stage: GenerationStage) => {
-      const now = Date.now();
-      setGenerationStage(stage);
-      setGenerationStageStartedAt(stage === "idle" ? null : now);
-      setRuntimeNow(now);
-      addRuntimeLog("debug", "runtime stage changed", { stage });
-    },
-    [addRuntimeLog],
-  );
+  const setRuntimeStage = useCallback((stage: GenerationStage) => {
+    const now = Date.now();
+    setGenerationStage(stage);
+    setGenerationStageStartedAt(stage === "idle" ? null : now);
+    setRuntimeNow(now);
+  }, []);
 
   useEffect(() => {
-    const now = Date.now();
-    runtimeLogBaseAtRef.current = now;
-    lastModelStateLogRef.current = "";
-    setRuntimeLogs([
-      {
-        at: new Date(now).toISOString(),
-        details: {
-          raceKey,
-          route: `${props.year}/${props.month}/${props.day}/${props.keibajoCode}/${props.raceNumber}`,
-          source: props.source,
-        },
-        elapsedMs: 0,
-        id: createId(),
-        level: "info",
-        message: "race AI runtime log started",
-      },
-    ]);
-  }, [
-    props.day,
-    props.keibajoCode,
-    props.month,
-    props.raceNumber,
-    props.source,
-    props.year,
-    raceKey,
-  ]);
+    resetRuntimeLogs("race-mounted-or-changed");
+  }, [resetRuntimeLogs]);
 
   useEffect(() => {
     if (generationStage === "idle") {
@@ -1626,7 +1654,11 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   });
 
   const clearRaceAiState = useCallback(() => {
-    addRuntimeLog("warn", "race AI state reset requested");
+    resetRuntimeLogs("race-ai-state-reset", {
+      previousMessageCount: messagesRef.current.length,
+      previousThoughtLogCount: thoughtLogsRef.current.length,
+      realtimeFingerprint,
+    });
     resetVersionRef.current += 1;
     suppressChatErrorUntilRef.current = Date.now() + 1_500;
     void stopChat();
@@ -1660,7 +1692,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         updatedAt: new Date().toISOString(),
       }).catch(() => {}),
     );
-  }, [addRuntimeLog, raceKey, realtimeFingerprint, setChatMessages, setRuntimeStage, stopChat]);
+  }, [raceKey, realtimeFingerprint, resetRuntimeLogs, setChatMessages, setRuntimeStage, stopChat]);
 
   const resetRaceAiState = useCallback(() => {
     if (!window.confirm("このレースのAI予想、対話ログ、思考ログをリセットしますか？")) {
@@ -1813,6 +1845,55 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const debugUrl = `/api/debug/ai-chat?raceKey=${encodeURIComponent(raceKey)}`;
   const serverLogUrl = `/api/races/${props.year}/${props.month}/${props.day}/${props.keibajoCode}/${props.raceNumber}/ai/logs?source=${encodeURIComponent(props.source)}`;
   const debugStatus = chatStatus === "ready" ? generationStatus : chatStatus;
+
+  useEffect(() => {
+    const visibleAiState = isBusy ? chatRuntimeLabel : "待機中";
+    const fingerprint = stableStringify({
+      chatRuntimeLabel,
+      chatStatus,
+      dataStatusLabel,
+      generationStage,
+      generationStageElapsedSeconds,
+      generationStatus,
+      isBusy,
+      modelPartialLength,
+      modelStatus,
+      modelStatusLabel,
+      supportState,
+      visibleAiState,
+    });
+    if (lastRuntimeUiSnapshotLogRef.current === fingerprint) {
+      return;
+    }
+    lastRuntimeUiSnapshotLogRef.current = fingerprint;
+    addRuntimeLog("debug", "UI runtime display committed", {
+      chatRuntimeLabel,
+      chatStatus,
+      dataStatusLabel,
+      generationStage,
+      generationStageElapsedSeconds,
+      generationStatus,
+      isBusy,
+      modelPartialLength,
+      modelStatus,
+      modelStatusLabel,
+      supportState,
+      visibleAiState,
+    });
+  }, [
+    addRuntimeLog,
+    chatRuntimeLabel,
+    chatStatus,
+    dataStatusLabel,
+    generationStage,
+    generationStageElapsedSeconds,
+    generationStatus,
+    isBusy,
+    modelPartialLength,
+    modelStatus,
+    modelStatusLabel,
+    supportState,
+  ]);
 
   useEffect(() => {
     const handleServerCommand = async (command: unknown) => {
