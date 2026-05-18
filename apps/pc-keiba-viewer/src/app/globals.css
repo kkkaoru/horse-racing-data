@@ -7473,6 +7473,22 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   margin: var(--number-0-2);
 }
 
+.race-ai-runtime-panel {
+  align-items: center;
+  background: var(--surface);
+  border: var(--space-1px-7) solid var(--accent-soft);
+  border-radius: var(--space-6px-33);
+  display: grid;
+  gap: var(--space-4px-18);
+  padding: var(--space-12px-9) var(--space-16px-10);
+}
+
+.race-ai-runtime-panel span,
+.race-ai-runtime-panel small {
+  color: var(--text-muted);
+  font-size: var(--space-0-85rem-217);
+}
+
 .race-ai-actions,
 .race-ai-stop-actions,
 .race-ai-reset-actions {

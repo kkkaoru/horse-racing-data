@@ -22,6 +22,7 @@ interface DebugAiThoughtLog {
 
 interface DebugAiCommand {
   createdAt: string;
+  dryRun?: boolean;
   id: string;
   messages?: DebugAiChatMessage[];
   text?: string;
@@ -50,6 +51,18 @@ interface DebugAiChatSnapshot {
     source: string;
     year: string;
   } | null;
+  runtime: {
+    chatStatus: string;
+    generationStage: string;
+    generationStageElapsedSeconds: number;
+    generationStageLabel: string;
+    generationStatus: string;
+    isBusy: boolean;
+    isRunning: boolean;
+    lastUserRequest: string;
+    modelPartialLength: number;
+    runtimeStageLabel: string;
+  };
   status: string;
   thoughtLogs: DebugAiThoughtLog[];
   updatedAt: string;
@@ -80,6 +93,11 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const toStringValue = (value: unknown): string | null =>
   typeof value === "string" && value.trim() ? value : null;
+
+const toNumberValue = (value: unknown): number =>
+  typeof value === "number" && Number.isFinite(value) ? value : 0;
+
+const toBooleanValue = (value: unknown): boolean => value === true;
 
 const parseMessage = (value: unknown): DebugAiChatMessage | null => {
   if (!isRecord(value)) {
@@ -172,6 +190,31 @@ const parseSnapshot = (value: unknown, previous: DebugAiChatSnapshot | null) => 
           year: toStringValue(value.route.year) ?? "",
         }
       : null,
+    runtime: isRecord(value.runtime)
+      ? {
+          chatStatus: toStringValue(value.runtime.chatStatus) ?? "",
+          generationStage: toStringValue(value.runtime.generationStage) ?? "",
+          generationStageElapsedSeconds: toNumberValue(value.runtime.generationStageElapsedSeconds),
+          generationStageLabel: toStringValue(value.runtime.generationStageLabel) ?? "",
+          generationStatus: toStringValue(value.runtime.generationStatus) ?? "",
+          isBusy: toBooleanValue(value.runtime.isBusy),
+          isRunning: toBooleanValue(value.runtime.isRunning),
+          lastUserRequest: toStringValue(value.runtime.lastUserRequest) ?? "",
+          modelPartialLength: toNumberValue(value.runtime.modelPartialLength),
+          runtimeStageLabel: toStringValue(value.runtime.runtimeStageLabel) ?? "",
+        }
+      : {
+          chatStatus: "",
+          generationStage: "",
+          generationStageElapsedSeconds: 0,
+          generationStageLabel: "",
+          generationStatus: "",
+          isBusy: false,
+          isRunning: false,
+          lastUserRequest: "",
+          modelPartialLength: 0,
+          runtimeStageLabel: "",
+        },
     status: toStringValue(value.status) ?? "idle",
     thoughtLogs: parseThoughtLogs(value.thoughtLogs),
     updatedAt: new Date().toISOString(),
@@ -188,6 +231,7 @@ const createCommand = (value: unknown): DebugAiCommand | null => {
   }
   return {
     createdAt: new Date().toISOString(),
+    dryRun: value.dryRun === true,
     id: crypto.randomUUID(),
     messages: type === "replace-messages" ? parseMessages(value.messages) : undefined,
     text: type === "send-message" ? (toStringValue(value.text) ?? "") : undefined,
@@ -279,6 +323,18 @@ export async function POST(request: Request) {
       prediction: [],
       raceKey,
       route: null,
+      runtime: {
+        chatStatus: "",
+        generationStage: "",
+        generationStageElapsedSeconds: 0,
+        generationStageLabel: "",
+        generationStatus: "",
+        isBusy: false,
+        isRunning: false,
+        lastUserRequest: "",
+        modelPartialLength: 0,
+        runtimeStageLabel: "",
+      },
       status: "idle",
       thoughtLogs: [],
       updatedAt: now,
