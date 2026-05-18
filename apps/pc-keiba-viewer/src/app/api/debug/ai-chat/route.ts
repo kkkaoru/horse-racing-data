@@ -3,7 +3,11 @@ import { NextResponse } from "next/server";
 export const dynamic = "force-dynamic";
 
 type DebugAiChatRole = "assistant" | "user";
-type DebugAiCommandType = "replace-messages" | "reset" | "send-message";
+type DebugAiCommandType =
+  | "replace-messages"
+  | "reset"
+  | "send-message"
+  | "simulate-model-initialize";
 
 interface DebugAiChatMessage {
   content: string;
@@ -284,7 +288,12 @@ const createCommand = (value: unknown): DebugAiCommand | null => {
     return null;
   }
   const type = value.type;
-  if (type !== "replace-messages" && type !== "reset" && type !== "send-message") {
+  if (
+    type !== "replace-messages" &&
+    type !== "reset" &&
+    type !== "send-message" &&
+    type !== "simulate-model-initialize"
+  ) {
     return null;
   }
   return {
