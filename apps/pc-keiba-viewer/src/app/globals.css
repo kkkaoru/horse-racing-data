@@ -923,8 +923,7 @@ h3 {
 .track-condition-section,
 .similar-stats-section,
 .training-section,
-.running-style-section,
-.corner-position-section {
+.running-style-section {
   display: grid;
   gap: var(--space-28px-42);
 }
@@ -937,8 +936,7 @@ h3 {
 .track-condition-section,
 .similar-stats-section,
 .training-section,
-.running-style-section,
-.corner-position-section {
+.running-style-section {
   padding-top: var(--space-18px-31);
 }
 

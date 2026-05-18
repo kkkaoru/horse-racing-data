@@ -43,7 +43,6 @@ import {
   isBanEiKeibajoCode,
 } from "../../../lib/runner-format";
 import { AiJsonExportSection } from "./ai-json-export-section";
-import { CornerPositionRaceSection } from "./corner-position-race-section";
 import {
   LazyDetailSections,
   LazyFinishPredictionSection,
@@ -690,19 +689,6 @@ export async function RaceDetailView({
           realtimeApiBaseUrl={realtimeApiBaseUrl}
           source={raceSource}
           year={year}
-        />
-
-        <CornerPositionRaceSection
-          bameiByUmaban={Object.fromEntries(
-            runners.map((runner) => [Number(runner.umaban ?? "0"), runner.bamei]),
-          )}
-          category={raceSource === "nar" && isBanEiKeibajoCode(keibajoCode) ? "ban-ei" : raceSource}
-          isStraightCourse={false}
-          kaisaiNen={year}
-          kaisaiTsukihi={`${month.padStart(2, "0")}${day.padStart(2, "0")}`}
-          keibajoCode={keibajoCode}
-          raceBango={raceNumber}
-          source={raceSource}
         />
 
         <RealtimeRaceSection
