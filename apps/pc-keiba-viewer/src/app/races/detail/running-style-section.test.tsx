@@ -39,7 +39,14 @@ afterEach(() => {
 
 describe("RunningStyleSection - empty state", () => {
   test("renders an empty placeholder when no rows are passed", () => {
-    render(<RunningStyleSection rows={[]} modelMacroF1={null} modelVersion={null} />);
+    render(
+      <RunningStyleSection
+        rows={[]}
+        modelMacroF1={null}
+        modelVersion={null}
+        runnersByUmaban={{}}
+      />,
+    );
     expect(screen.getByText("このレースの脚質予測データはまだありません。")).toBeTruthy();
   });
 });
@@ -70,10 +77,11 @@ describe("RunningStyleSection - default tab", () => {
         ]}
         modelMacroF1={0.42}
         modelVersion="jra-rs-v1.0"
+        runnersByUmaban={{}}
       />,
     );
     expect(screen.getByText("馬番")).toBeTruthy();
-    expect(screen.getByText("予測ラベル")).toBeTruthy();
+    expect(screen.getByText("脚質")).toBeTruthy();
     expect(screen.getByText("1番")).toBeTruthy();
     expect(screen.getByText("3番")).toBeTruthy();
   });
@@ -88,6 +96,7 @@ describe("RunningStyleSection - default tab", () => {
         ]}
         modelMacroF1={null}
         modelVersion="v1"
+        runnersByUmaban={{}}
       />,
     );
     const rows = screen.getAllByRole("row");
@@ -99,21 +108,40 @@ describe("RunningStyleSection - default tab", () => {
 
   test("renders the model version and macro-F1 in the metrics badge", () => {
     render(
-      <RunningStyleSection rows={[buildRow({})]} modelMacroF1={0.42} modelVersion="jra-rs-v1.0" />,
+      <RunningStyleSection
+        rows={[buildRow({})]}
+        modelMacroF1={0.42}
+        modelVersion="jra-rs-v1.0"
+        runnersByUmaban={{}}
+      />,
     );
     expect(screen.getByText(/モデル: jra-rs-v1\.0/u)).toBeTruthy();
     expect(screen.getByText(/macro-F1: 0\.420/u)).toBeTruthy();
   });
 
   test("omits the metrics badge when modelVersion is null", () => {
-    render(<RunningStyleSection rows={[buildRow({})]} modelMacroF1={null} modelVersion={null} />);
+    render(
+      <RunningStyleSection
+        rows={[buildRow({})]}
+        modelMacroF1={null}
+        modelVersion={null}
+        runnersByUmaban={{}}
+      />,
+    );
     expect(screen.queryByText(/モデル:/u)).toBe(null);
   });
 });
 
 describe("RunningStyleSection - tab interactions", () => {
   test("clicking a focus tab triggers router.replace with the style query parameter", () => {
-    render(<RunningStyleSection rows={[buildRow({})]} modelMacroF1={null} modelVersion="v1" />);
+    render(
+      <RunningStyleSection
+        rows={[buildRow({})]}
+        modelMacroF1={null}
+        modelVersion="v1"
+        runnersByUmaban={{}}
+      />,
+    );
     const nigeTab = screen.getByRole("tab", { name: "逃げ" });
     fireEvent.click(nigeTab);
     expect(replaceMock).toHaveBeenCalledTimes(1);
@@ -122,7 +150,14 @@ describe("RunningStyleSection - tab interactions", () => {
   });
 
   test("clicking 全体 removes the style query parameter", () => {
-    render(<RunningStyleSection rows={[buildRow({})]} modelMacroF1={null} modelVersion="v1" />);
+    render(
+      <RunningStyleSection
+        rows={[buildRow({})]}
+        modelMacroF1={null}
+        modelVersion="v1"
+        runnersByUmaban={{}}
+      />,
+    );
     fireEvent.click(screen.getByRole("tab", { name: "全体" }));
     expect(replaceMock).toHaveBeenCalledTimes(1);
     const [target] = replaceMock.mock.calls[0] ?? [];

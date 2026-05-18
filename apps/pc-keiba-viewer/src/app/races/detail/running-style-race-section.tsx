@@ -5,7 +5,7 @@ import {
   getRaceRunningStylesFromD1,
   getRunningStyleMetricsForActiveModel,
 } from "../../../db/corner-running-style-queries";
-import { RunningStyleSection } from "./running-style-section";
+import { RunningStyleSection, type RunnerDisplayInfo } from "./running-style-section";
 
 interface RunningStyleRaceSectionProps {
   source: string;
@@ -14,6 +14,7 @@ interface RunningStyleRaceSectionProps {
   keibajoCode: string;
   raceBango: string;
   category: string;
+  runnersByUmaban: Record<number, RunnerDisplayInfo>;
 }
 
 export const RunningStyleRaceSection = async ({
@@ -23,6 +24,7 @@ export const RunningStyleRaceSection = async ({
   keibajoCode,
   raceBango,
   category,
+  runnersByUmaban,
 }: RunningStyleRaceSectionProps) => {
   if (category === "ban-ei") return null;
   const raceKey = buildRaceKey({
@@ -41,6 +43,7 @@ export const RunningStyleRaceSection = async ({
       modelMacroF1={metrics?.macroF1 ?? null}
       modelVersion={metrics?.modelVersion ?? null}
       rows={rows}
+      runnersByUmaban={runnersByUmaban}
     />
   );
 };

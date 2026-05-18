@@ -63,6 +63,7 @@ describe("RunningStyleRaceSection", () => {
       kaisaiTsukihi: "0517",
       keibajoCode: "83",
       raceBango: "01",
+      runnersByUmaban: {},
       source: "nar",
     });
     expect(element).toBe(null);
@@ -82,6 +83,7 @@ describe("RunningStyleRaceSection", () => {
       kaisaiTsukihi: "0517",
       keibajoCode: "05",
       raceBango: "11",
+      runnersByUmaban: {},
       source: "jra",
     });
     const html = renderToString(element);
@@ -103,6 +105,7 @@ describe("RunningStyleRaceSection", () => {
       kaisaiTsukihi: "0228",
       keibajoCode: "42",
       raceBango: "07",
+      runnersByUmaban: {},
       source: "nar",
     });
     const html = renderToString(element);
@@ -122,6 +125,7 @@ describe("RunningStyleRaceSection", () => {
       kaisaiTsukihi: "0518",
       keibajoCode: "35",
       raceBango: "01",
+      runnersByUmaban: {},
       source: "nar",
     });
     const html = renderToString(element);

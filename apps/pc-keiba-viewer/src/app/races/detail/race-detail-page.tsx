@@ -652,6 +652,21 @@ export async function RaceDetailView({
           )}
         </section>
 
+        <RunningStyleRaceSection
+          category={raceSource === "nar" && isBanEiKeibajoCode(keibajoCode) ? "ban-ei" : raceSource}
+          kaisaiNen={year}
+          kaisaiTsukihi={`${month.padStart(2, "0")}${day.padStart(2, "0")}`}
+          keibajoCode={keibajoCode}
+          raceBango={raceNumber}
+          runnersByUmaban={Object.fromEntries(
+            runners.map((runner) => [
+              Number(runner.umaban ?? "0"),
+              { bamei: runner.bamei, jockey: runner.kishumeiRyakusho },
+            ]),
+          )}
+          source={raceSource}
+        />
+
         {showRacePacePrediction ? (
           <LazyRacePacePredictionSection
             day={day}
@@ -672,15 +687,6 @@ export async function RaceDetailView({
           realtimeApiBaseUrl={realtimeApiBaseUrl}
           source={raceSource}
           year={year}
-        />
-
-        <RunningStyleRaceSection
-          category={raceSource === "nar" && isBanEiKeibajoCode(keibajoCode) ? "ban-ei" : raceSource}
-          kaisaiNen={year}
-          kaisaiTsukihi={`${month.padStart(2, "0")}${day.padStart(2, "0")}`}
-          keibajoCode={keibajoCode}
-          raceBango={raceNumber}
-          source={raceSource}
         />
 
         <CornerPositionRaceSection
