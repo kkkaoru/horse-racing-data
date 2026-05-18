@@ -14,6 +14,12 @@ import {
   subscribeRaceAiModelDownloads,
   type RaceAiModelState,
 } from "../races/detail/race-ai-model-manager";
+import {
+  getRaceAiSettings,
+  RACE_AI_MODEL_DOWNLOAD_CONFIRM_MESSAGE,
+  subscribeRaceAiSettings,
+  type RaceAiSettings,
+} from "../races/detail/race-ai-storage";
 
 type AiPlaygroundModelStatus = "error" | "idle" | "loading" | "ready";
 type WebGpuSupportState = "checking" | "supported" | "unsupported";
@@ -56,6 +62,7 @@ const DEBUG_LOG_LIMIT = 300;
 const DEBUG_HEARTBEAT_INTERVAL_MS = 3_000;
 const DEBUG_FLUSH_DEBOUNCE_MS = 250;
 const MODEL_PROGRESS_LOG_STEP = 256;
+const MODEL_HEAD_TIMEOUT_MS = 10_000;
 
 const createId = (): string => `${Date.now().toString(36)}-${crypto.randomUUID()}`;
 
@@ -122,6 +129,28 @@ const toConsoleArgumentText = (value: unknown): string => {
     return value;
   }
   return stringifyDebugValue(value);
+};
+
+const copyTextToClipboard = async (text: string): Promise<void> => {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.left = "-9999px";
+  textarea.style.position = "fixed";
+  textarea.style.top = "0";
+  document.body.append(textarea);
+  textarea.select();
+  try {
+    if (!document.execCommand("copy")) {
+      throw new Error("clipboard copy command failed");
+    }
+  } finally {
+    textarea.remove();
+  }
 };
 
 const uiMessageText = (message: UIMessage | undefined): string =>
@@ -257,6 +286,33 @@ const callOptionalLlmMethod = (
   }
 };
 
+const fetchModelHead = async (): Promise<{
+  contentLength: string | null;
+  contentType: string | null;
+  ok: boolean;
+  status: number;
+}> => {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => {
+    controller.abort();
+  }, MODEL_HEAD_TIMEOUT_MS);
+  try {
+    const response = await fetch(LATEST_RACE_AI_MODEL.url, {
+      cache: "no-store",
+      method: "HEAD",
+      signal: controller.signal,
+    });
+    return {
+      contentLength: response.headers.get("content-length"),
+      contentType: response.headers.get("content-type"),
+      ok: response.ok,
+      status: response.status,
+    };
+  } finally {
+    window.clearTimeout(timer);
+  }
+};
+
 export function AiPlayground() {
   const [supportState, setSupportState] = useState<WebGpuSupportState>("checking");
   const [modelState, setModelState] = useState<RaceAiModelState | null>(null);
@@ -270,6 +326,8 @@ export function AiPlayground() {
   const [debugLogs, setDebugLogs] = useState<AiPlaygroundDebugLog[]>([]);
   const [serverDebugAck, setServerDebugAck] = useState<ServerDebugAck | null>(null);
   const [debugFlushError, setDebugFlushError] = useState<string | null>(null);
+  const [settings, setSettings] = useState<RaceAiSettings | null>(null);
+  const [copyLogStatus, setCopyLogStatus] = useState<string | null>(null);
   const llmRef = useRef<LlmInference | null>(null);
   const sessionIdRef = useRef("");
   const debugLogsRef = useRef<AiPlaygroundDebugLog[]>([]);
@@ -279,6 +337,7 @@ export function AiPlayground() {
   const lastDebugPayloadRef = useRef("");
   const lastHeartbeatReasonRef = useRef("initial");
   const lastModelProgressLogLengthRef = useRef(0);
+  const autoInitializeStartedRef = useRef(false);
 
   const addDebugLog = useCallback(
     (level: DebugLogLevel, event: string, details?: Record<string, unknown>) => {
@@ -312,6 +371,20 @@ export function AiPlayground() {
       route: window.location.pathname,
       sessionId: nextSessionId,
       userAgent: window.navigator.userAgent,
+    });
+  }, [addDebugLog]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+    setSettings(getRaceAiSettings());
+    return subscribeRaceAiSettings((nextSettings) => {
+      setSettings(nextSettings);
+      addDebugLog("info", "ai settings changed", {
+        autoStart: nextSettings.autoStart,
+        consent: nextSettings.consent,
+      });
     });
   }, [addDebugLog]);
 
@@ -474,10 +547,57 @@ export function AiPlayground() {
         window.setTimeout(resolve, 0);
       });
     });
-    const buffer = await ensureRaceAiModelBuffer({
-      confirmDownload: true,
-      model: LATEST_RACE_AI_MODEL,
-    });
+    let buffer: ArrayBuffer;
+    try {
+      const beforeDownloadState = await getRaceAiModelState(LATEST_RACE_AI_MODEL);
+      addDebugLog("info", "model cache state before buffer ensure", {
+        downloadedBytes: beforeDownloadState.downloadedBytes,
+        progress: beforeDownloadState.progress,
+        status: beforeDownloadState.status,
+        totalBytes: beforeDownloadState.totalBytes,
+      });
+      if (
+        beforeDownloadState.status !== "downloaded" &&
+        beforeDownloadState.status !== "downloading"
+      ) {
+        addDebugLog("info", "model route head check started", {
+          url: LATEST_RACE_AI_MODEL.url,
+        });
+        await fetchModelHead()
+          .then((result) => {
+            addDebugLog("info", "model route head check completed", result);
+            return undefined;
+          })
+          .catch((caught: unknown) => {
+            addDebugLog("warn", "model route head check failed", {
+              message: formatCaughtError(caught),
+            });
+          });
+        addDebugLog("info", "model download confirmation requested", {
+          sizeBytes: LATEST_RACE_AI_MODEL.sizeBytes,
+        });
+        const allowed = window.confirm(RACE_AI_MODEL_DOWNLOAD_CONFIRM_MESSAGE);
+        addDebugLog(allowed ? "info" : "warn", "model download confirmation answered", {
+          allowed,
+        });
+        if (!allowed) {
+          throw new Error("AIモデルのダウンロードがキャンセルされました。");
+        }
+      }
+      buffer = await ensureRaceAiModelBuffer({
+        confirmDownload: false,
+        model: LATEST_RACE_AI_MODEL,
+      });
+    } catch (caught) {
+      const message = formatCaughtError(caught);
+      setModelStatus("error");
+      setStatusMessage("AIモデルを読み込めませんでした。");
+      setError(message);
+      addDebugLog("error", "model buffer ensure failed", {
+        message,
+      });
+      throw caught;
+    }
     addDebugLog("info", "model buffer ensure completed", {
       byteLength: buffer.byteLength,
     });
@@ -531,6 +651,26 @@ export function AiPlayground() {
       refreshModelState();
     }
   }, [addDebugLog, refreshModelState]);
+
+  useEffect(() => {
+    const shouldAutoInitialize =
+      isMockMode() || settings?.consent === "granted" || modelState?.status === "downloaded";
+    if (supportState !== "supported" || autoInitializeStartedRef.current || !shouldAutoInitialize) {
+      return;
+    }
+    autoInitializeStartedRef.current = true;
+    addDebugLog("info", "auto model initialization started", {
+      mockMode: isMockMode(),
+      modelCacheStatus: modelState?.status ?? "unknown",
+      modelStatus,
+      settingsConsent: settings?.consent ?? "unknown",
+    });
+    void ensureModel().catch((caught: unknown) => {
+      addDebugLog("error", "auto model initialization failed", {
+        message: formatCaughtError(caught),
+      });
+    });
+  }, [addDebugLog, ensureModel, modelState?.status, modelStatus, settings?.consent, supportState]);
 
   const generateAnswer = useCallback(
     async ({
@@ -815,6 +955,80 @@ export function AiPlayground() {
     addDebugLog("info", "debug logs reset", { sessionId: activeSessionId });
   }, [addDebugLog]);
 
+  const copyAllDebugLogs = useCallback(async () => {
+    const activeSessionId = sessionIdRef.current;
+    addDebugLog("info", "copy all debug logs requested", {
+      localLogCount: debugLogsRef.current.length,
+      sessionId: activeSessionId,
+    });
+    setCopyLogStatus("全ログを準備しています。");
+    let serverSnapshot: unknown = null;
+    let serverSnapshotError: string | null = null;
+    try {
+      await flushDebugSnapshot("copy-all-logs");
+      if (activeSessionId) {
+        const response = await fetch(
+          `/api/debug/ai-playground?sessionId=${encodeURIComponent(activeSessionId)}`,
+          { cache: "no-store" },
+        );
+        if (!response.ok) {
+          throw new Error(`debug snapshot fetch failed: ${response.status}`);
+        }
+        serverSnapshot = await response.json();
+      }
+    } catch (caught) {
+      serverSnapshotError = formatCaughtError(caught);
+      addDebugLog("warn", "copy all debug logs server snapshot failed", {
+        message: serverSnapshotError,
+      });
+    }
+
+    const payload = {
+      clientSnapshot: latestClientSnapshotRef.current,
+      copiedAt: new Date().toISOString(),
+      debugUrl: activeSessionId
+        ? `/api/debug/ai-playground?sessionId=${encodeURIComponent(activeSessionId)}`
+        : "/api/debug/ai-playground",
+      localLogs: debugLogsRef.current,
+      location:
+        typeof window === "undefined"
+          ? null
+          : {
+              href: window.location.href,
+              userAgent: window.navigator.userAgent,
+            },
+      messages: messages.map((message) => ({
+        id: message.id,
+        role: message.role,
+        text: uiMessageText(message),
+      })),
+      modelState,
+      serverDebugAck,
+      serverSnapshot,
+      serverSnapshotError,
+      sessionId: activeSessionId,
+      settings,
+    };
+
+    try {
+      const text = JSON.stringify(payload, null, 2);
+      await copyTextToClipboard(text);
+      setCopyLogStatus(`全ログをコピーしました。${debugLogsRef.current.length}件`);
+      addDebugLog("info", "copy all debug logs completed", {
+        localLogCount: debugLogsRef.current.length,
+        textLength: text.length,
+      });
+      void flushDebugSnapshot("copy-all-logs-completed");
+    } catch (caught) {
+      const message = formatCaughtError(caught);
+      setCopyLogStatus(`コピーに失敗しました: ${message}`);
+      addDebugLog("error", "copy all debug logs failed", {
+        message,
+      });
+      void flushDebugSnapshot("copy-all-logs-failed");
+    }
+  }, [addDebugLog, flushDebugSnapshot, messages, modelState, serverDebugAck, settings]);
+
   useEffect(() => {
     latestClientSnapshotRef.current = clientSnapshot;
   }, [clientSnapshot]);
@@ -888,7 +1102,16 @@ export function AiPlayground() {
           ))}
         </ol>
       )}
+      {copyLogStatus ? <p aria-live="polite">{copyLogStatus}</p> : null}
       <div className="race-ai-actions">
+        <button
+          type="button"
+          onClick={() => {
+            void copyAllDebugLogs();
+          }}
+        >
+          全ログをコピー
+        </button>
         <button type="button" onClick={resetDebugLogs}>
           診断ログをリセット
         </button>
