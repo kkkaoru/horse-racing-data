@@ -58,6 +58,10 @@
       "binding": "REALTIME_DB",
       "database_name": "sync-realtime-data",
       "database_id": "d12ebd45-2aff-4d74-8556-295c1da9177e",
+      // dev-only: make `next dev` (via wrangler getPlatformProxy) query the
+      // production D1 instead of an empty local Miniflare copy. Ignored
+      // when the Worker actually runs on Cloudflare.
+      "remote": true,
     },
   ],
   "r2_buckets": [

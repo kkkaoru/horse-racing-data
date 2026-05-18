@@ -73,6 +73,8 @@ export interface RunningStyleMetrics {
   evaluatedAt: Date;
 }
 
+const DEFAULT_REMOTE_RUNNING_STYLE_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
+
 const getD1Database = (): PcKeibaD1Database | null => {
   try {
     const { env } = getCloudflareContext();
@@ -82,7 +84,66 @@ const getD1Database = (): PcKeibaD1Database | null => {
   }
 };
 
-export const getRaceRunningStylesFromD1 = async (
+const useRemoteRunningStyleProxy = (): boolean =>
+  process.env.NODE_ENV === "development" && process.env.PC_KEIBA_RUNNING_STYLE_REMOTE_PROXY !== "0";
+
+const getRemoteRunningStyleOrigin = (): string =>
+  process.env.PC_KEIBA_RUNNING_STYLE_REMOTE_ORIGIN ?? DEFAULT_REMOTE_RUNNING_STYLE_ORIGIN;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const parseRaceKey = (
+  raceKey: string,
+): {
+  source: string;
+  year: string;
+  month: string;
+  day: string;
+  keibajoCode: string;
+  raceBango: string;
+} | null => {
+  const parts = raceKey.split(":");
+  if (parts.length !== 4) return null;
+  const source = parts[0] ?? "";
+  const date = parts[1] ?? "";
+  const keibajoCode = parts[2] ?? "";
+  const raceBango = parts[3] ?? "";
+  if (date.length !== 8) return null;
+  return {
+    day: date.slice(6, 8),
+    keibajoCode,
+    month: date.slice(4, 6),
+    raceBango,
+    source,
+    year: date.slice(0, 4),
+  };
+};
+
+const fetchRunningStylesRemote = async (raceKey: string): Promise<RaceRunningStyleRow[]> => {
+  const parsed = parseRaceKey(raceKey);
+  if (parsed === null) return [];
+  const url = `${getRemoteRunningStyleOrigin()}/api/races/${parsed.year}/${parsed.month}/${parsed.day}/${parsed.keibajoCode}/${parsed.raceBango}/running-styles`;
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) return [];
+  const payload: unknown = await response.json();
+  if (!Array.isArray(payload)) return [];
+  return payload.filter(isRecord).map(parseRaceRunningStyleRow);
+};
+
+const fetchHorseRunningStylesRemote = async (
+  kettoTorokuBango: string,
+  limit: number,
+): Promise<RaceRunningStyleRow[]> => {
+  const url = `${getRemoteRunningStyleOrigin()}/api/horses/${kettoTorokuBango}/running-styles?limit=${limit}`;
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) return [];
+  const payload: unknown = await response.json();
+  if (!Array.isArray(payload)) return [];
+  return payload.filter(isRecord).map(parseRaceRunningStyleRow);
+};
+
+export const queryRaceRunningStylesFromD1 = async (
   raceKey: string,
 ): Promise<RaceRunningStyleRow[]> => {
   const db = getD1Database();
@@ -101,7 +162,7 @@ export const getRaceRunningStylesFromD1 = async (
   return results.map(parseRaceRunningStyleRow);
 };
 
-export const getHorseRecentRunningStylesFromD1 = async (
+export const queryHorseRecentRunningStylesFromD1 = async (
   kettoTorokuBango: string,
   limit: number,
 ): Promise<RaceRunningStyleRow[]> => {
@@ -120,6 +181,25 @@ export const getHorseRecentRunningStylesFromD1 = async (
     .bind(kettoTorokuBango, limit);
   const { results } = await statement.all<Record<string, unknown>>();
   return results.map(parseRaceRunningStyleRow);
+};
+
+export const getRaceRunningStylesFromD1 = async (
+  raceKey: string,
+): Promise<RaceRunningStyleRow[]> => {
+  const direct = await queryRaceRunningStylesFromD1(raceKey);
+  if (direct.length > 0) return direct;
+  if (!useRemoteRunningStyleProxy()) return direct;
+  return fetchRunningStylesRemote(raceKey).catch(() => []);
+};
+
+export const getHorseRecentRunningStylesFromD1 = async (
+  kettoTorokuBango: string,
+  limit: number,
+): Promise<RaceRunningStyleRow[]> => {
+  const direct = await queryHorseRecentRunningStylesFromD1(kettoTorokuBango, limit);
+  if (direct.length > 0) return direct;
+  if (!useRemoteRunningStyleProxy()) return direct;
+  return fetchHorseRunningStylesRemote(kettoTorokuBango, limit).catch(() => []);
 };
 
 export const getActiveRunningStyleModel = async (
