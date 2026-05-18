@@ -137,7 +137,7 @@ const GENERATION_STAGE_LABELS: Record<GenerationStage, string> = {
   idle: "待機中",
   "loading-data": "レースデータ取得中",
   "model-download": "AIモデル読込中",
-  "model-initialize": "AIモデル初期化中",
+  "model-initialize": "AI準備中",
   "preparing-prompt": "入力データを整理中",
   queued: "処理を開始中",
   "streaming-answer": "回答を表示中",
@@ -1873,20 +1873,18 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       : `${Math.round(modelState.progress * 100)}%`;
   const isModelDownloaded = modelState?.status === "downloaded";
   const isModelDownloading = modelState?.status === "downloading";
-  const isBusy =
-    isModelDownloading ||
-    modelStatus === "downloading" ||
-    modelStatus === "initializing" ||
-    generationStatus !== "idle" ||
-    chatStatus === "submitted" ||
-    chatStatus === "streaming";
+  const isModelPreparing =
+    isModelDownloading || modelStatus === "downloading" || modelStatus === "initializing";
+  const isChatBusy =
+    generationStatus !== "idle" || chatStatus === "submitted" || chatStatus === "streaming";
+  const canSubmitChat = !isChatBusy;
   const modelStatusLabel =
     modelStatus === "ready"
       ? "読み込み済み"
       : modelStatus === "downloading"
         ? `ダウンロード ${progressLabel}`
         : modelStatus === "initializing"
-          ? "初期化中"
+          ? "準備中"
           : isModelDownloaded
             ? "ダウンロード済み"
             : isModelDownloading
@@ -1915,7 +1913,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       ? GENERATION_STAGE_LABELS.idle
       : `${generationStageLabel}（${generationStageElapsedLabel}）`;
   const dataStatusLabel =
-    generationStage !== "idle"
+    isChatBusy && generationStage !== "idle"
       ? runtimeStageLabel
       : generationStatus === "loading-data"
         ? "取得中"
@@ -1946,15 +1944,17 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const debugStatus = chatStatus === "ready" ? generationStatus : chatStatus;
 
   useEffect(() => {
-    const visibleAiState = isBusy ? chatRuntimeLabel : "待機中";
+    const visibleAiState = isChatBusy ? chatRuntimeLabel : "待機中";
     const fingerprint = stableStringify({
+      canSubmitChat,
       chatRuntimeLabel,
       chatStatus,
       dataStatusLabel,
       generationStage,
       generationStageElapsedSeconds,
       generationStatus,
-      isBusy,
+      isChatBusy,
+      isModelPreparing,
       modelPartialLength,
       modelStatus,
       modelStatusLabel,
@@ -1966,13 +1966,15 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     }
     lastRuntimeUiSnapshotLogRef.current = fingerprint;
     addRuntimeLog("debug", "UI runtime display committed", {
+      canSubmitChat,
       chatRuntimeLabel,
       chatStatus,
       dataStatusLabel,
       generationStage,
       generationStageElapsedSeconds,
       generationStatus,
-      isBusy,
+      isChatBusy,
+      isModelPreparing,
       modelPartialLength,
       modelStatus,
       modelStatusLabel,
@@ -1981,13 +1983,15 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     });
   }, [
     addRuntimeLog,
+    canSubmitChat,
     chatRuntimeLabel,
     chatStatus,
     dataStatusLabel,
     generationStage,
     generationStageElapsedSeconds,
     generationStatus,
-    isBusy,
+    isChatBusy,
+    isModelPreparing,
     modelPartialLength,
     modelStatus,
     modelStatusLabel,
@@ -2061,7 +2065,8 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         generationStageElapsedSeconds,
         generationStageLabel,
         generationStatus,
-        isBusy,
+        isBusy: isChatBusy,
+        isModelPreparing,
         isRunning: runningRef.current,
         lastUserRequest: lastUserRequestRef.current,
         modelPartialLength,
@@ -2096,7 +2101,8 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     generationStageElapsedSeconds,
     generationStageLabel,
     generationStatus,
-    isBusy,
+    isChatBusy,
+    isModelPreparing,
     messages,
     modelStatusLabel,
     modelPartialLength,
@@ -2133,11 +2139,11 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         );
       } else if (command.type === "simulate-model-initialize") {
         setError(null);
-        runningRef.current = true;
-        setGenerationStatus("generating");
+        runningRef.current = false;
+        setGenerationStatus("idle");
         setModelStatus("initializing");
         setRuntimeStage("model-initialize");
-        addRuntimeLog("warn", "debug simulated AI model initialization stall");
+        addRuntimeLog("warn", "debug simulated AI model warmup stall");
       } else if (command.type === "reset") {
         clearRaceAiState();
       } else if (command.type === "replace-messages" && command.messages) {
@@ -2222,10 +2228,14 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       </div>
       <div className="race-ai-runtime-panel" aria-live="polite">
         <span>AI状態</span>
-        <strong>{isBusy ? chatRuntimeLabel : "待機中"}</strong>
-        {isBusy ? <small>送信後の処理はこの表示で追跡できます。</small> : null}
+        <strong>{isChatBusy ? chatRuntimeLabel : "待機中"}</strong>
+        {isChatBusy ? <small>送信後の処理はこの表示で追跡できます。</small> : null}
+        {!isChatBusy && isModelPreparing ? <small>AIの準備中でも依頼は送信できます。</small> : null}
       </div>
-      <details className="race-ai-diagnostic-log" open={isBusy || Boolean(error || chatError)}>
+      <details
+        className="race-ai-diagnostic-log"
+        open={isChatBusy || isModelPreparing || Boolean(error || chatError)}
+      >
         <summary>
           <strong>診断ログ</strong>
           <span>{runtimeLogs.length}件</span>
@@ -2308,7 +2318,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         onSubmit={(event) => {
           event.preventDefault();
           const value = input.trim();
-          if (!value || isBusy) {
+          if (!value || !canSubmitChat) {
             return;
           }
           setInput("");
@@ -2325,11 +2335,11 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
             }}
           />
         </label>
-        <button type="submit" disabled={isBusy || !input.trim()}>
-          {isBusy ? "送信中" : "送信"}
+        <button type="submit" disabled={!canSubmitChat || !input.trim()}>
+          {isChatBusy ? "送信中" : "送信"}
         </button>
       </form>
-      {isBusy ? (
+      {isChatBusy ? (
         <div className="race-ai-stop-actions">
           <button type="button" onClick={stopChat}>
             応答を停止

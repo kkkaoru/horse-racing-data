@@ -72,6 +72,7 @@ interface DebugAiChatSnapshot {
     generationStageLabel: string;
     generationStatus: string;
     isBusy: boolean;
+    isModelPreparing: boolean;
     isRunning: boolean;
     lastUserRequest: string;
     modelPartialLength: number;
@@ -258,6 +259,7 @@ const parseSnapshot = (value: unknown, previous: DebugAiChatSnapshot | null) => 
           generationStageLabel: toStringValue(value.runtime.generationStageLabel) ?? "",
           generationStatus: toStringValue(value.runtime.generationStatus) ?? "",
           isBusy: toBooleanValue(value.runtime.isBusy),
+          isModelPreparing: toBooleanValue(value.runtime.isModelPreparing),
           isRunning: toBooleanValue(value.runtime.isRunning),
           lastUserRequest: toStringValue(value.runtime.lastUserRequest) ?? "",
           modelPartialLength: toNumberValue(value.runtime.modelPartialLength),
@@ -271,6 +273,7 @@ const parseSnapshot = (value: unknown, previous: DebugAiChatSnapshot | null) => 
           generationStageLabel: "",
           generationStatus: "",
           isBusy: false,
+          isModelPreparing: false,
           isRunning: false,
           lastUserRequest: "",
           modelPartialLength: 0,
@@ -397,6 +400,7 @@ export async function POST(request: Request) {
         generationStageLabel: "",
         generationStatus: "",
         isBusy: false,
+        isModelPreparing: false,
         isRunning: false,
         lastUserRequest: "",
         modelPartialLength: 0,
