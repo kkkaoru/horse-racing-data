@@ -1,7 +1,7 @@
 import "server-only";
 import {
   buildRaceKey as buildRunningStyleRaceKey,
-  queryRaceRunningStylesFromD1,
+  getRaceRunningStylesFromD1,
 } from "../../../db/corner-running-style-queries";
 import {
   getBloodlineStats,
@@ -1276,7 +1276,7 @@ export const getDetailSectionPayload = async (
     const [similarityFeatures, modelPredictionFeatures, runningStyleRows] = await Promise.all([
       getRacePaceSimilarityFeatures(race, runners),
       getRacePaceModelPredictionFeatures(race, runners),
-      queryRaceRunningStylesFromD1(
+      getRaceRunningStylesFromD1(
         buildRunningStyleRaceKey({
           kaisaiNen: race.kaisaiNen,
           kaisaiTsukihi: race.kaisaiTsukihi,

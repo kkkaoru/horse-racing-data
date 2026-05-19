@@ -1,5 +1,6 @@
 const JST_TIME_ZONE = "Asia/Tokyo";
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
+const FINAL_ODDS_FETCH_DELAY_MINUTES = 2;
 
 const jstFormatter = new Intl.DateTimeFormat("ja-JP-u-ca-gregory", {
   day: "2-digit",
@@ -70,11 +71,13 @@ export const getOddsFetchIntervalMinutes = (minutesUntilRace: number): number | 
 export const getOddsFetchSlotAt = (raceStart: Date, now: Date): string | null => {
   const minutes = (raceStart.getTime() - now.getTime()) / 60_000;
   const interval = getOddsFetchIntervalMinutes(minutes);
-  if (!interval) {
-    return null;
+  if (interval) {
+    const slotMinutesBeforeRace = Math.ceil(minutes / interval) * interval;
+    return toJstIsoString(new Date(raceStart.getTime() - slotMinutesBeforeRace * 60_000));
   }
-  const slotMinutesBeforeRace = Math.ceil(minutes / interval) * interval;
-  return toJstIsoString(new Date(raceStart.getTime() - slotMinutesBeforeRace * 60_000));
+
+  const finalOddsSlot = new Date(raceStart.getTime() + FINAL_ODDS_FETCH_DELAY_MINUTES * 60_000);
+  return now.getTime() >= finalOddsSlot.getTime() ? toJstIsoString(finalOddsSlot) : null;
 };
 
 const floorToHourJstSlot = (date: Date): string =>
@@ -117,7 +120,7 @@ export const getNextOddsFetchSlotAt = (
     }
   }
 
-  const regularOffsets = [60, 50, 40, 30, 20, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1];
+  const regularOffsets = [60, 50, 40, 30, 20, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, -2];
   const nextSlot = regularOffsets
     .map((minutesBeforeRace) => new Date(raceStartMs - minutesBeforeRace * 60_000))
     .find((slot) => slot.getTime() > now.getTime());

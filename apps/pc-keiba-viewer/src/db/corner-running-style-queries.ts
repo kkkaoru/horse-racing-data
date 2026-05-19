@@ -73,7 +73,18 @@ export interface RunningStyleMetrics {
   evaluatedAt: Date;
 }
 
-const DEFAULT_REMOTE_RUNNING_STYLE_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
+const LOCAL_D1_CLI_CACHE_TTL_MS = 30_000;
+const LOCAL_D1_CLI_TIMEOUT_MS = 15_000;
+const LOCAL_D1_CLI_MAX_BUFFER = 1024 * 1024;
+const DEFAULT_LOCAL_D1_DATABASE = "sync-realtime-data";
+const D1_RACE_KEY_BATCH_SIZE = 50;
+
+interface LocalD1CacheEntry {
+  expiresAt: number;
+  rows: Record<string, unknown>[];
+}
+
+const localD1CliCache = new Map<string, LocalD1CacheEntry>();
 
 const getD1Database = (): PcKeibaD1Database | null => {
   try {
@@ -84,63 +95,153 @@ const getD1Database = (): PcKeibaD1Database | null => {
   }
 };
 
-const useRemoteRunningStyleProxy = (): boolean =>
-  process.env.NODE_ENV === "development" && process.env.PC_KEIBA_RUNNING_STYLE_REMOTE_PROXY !== "0";
+const useLocalD1CliFallback = (): boolean =>
+  process.env.NODE_ENV === "development" && process.env.PC_KEIBA_RUNNING_STYLE_LOCAL_D1_CLI !== "0";
 
-const getRemoteRunningStyleOrigin = (): string =>
-  process.env.PC_KEIBA_RUNNING_STYLE_REMOTE_ORIGIN ?? DEFAULT_REMOTE_RUNNING_STYLE_ORIGIN;
+const getLocalD1DatabaseName = (): string =>
+  process.env.PC_KEIBA_RUNNING_STYLE_D1_DATABASE ?? DEFAULT_LOCAL_D1_DATABASE;
+
+const getLocalD1WranglerConfig = (): string =>
+  process.env.PC_KEIBA_RUNNING_STYLE_D1_CONFIG ??
+  (process.cwd().endsWith("/apps/pc-keiba-viewer")
+    ? "wrangler.jsonc"
+    : "apps/pc-keiba-viewer/wrangler.jsonc");
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
-const parseRaceKey = (
+const sqlStringLiteral = (value: string): string => `'${value.replaceAll("'", "''")}'`;
+
+const buildPlaceholders = (count: number): string =>
+  Array.from({ length: count }, () => "?").join(",");
+
+const chunkArray = <T>(items: ReadonlyArray<T>, size: number): T[][] => {
+  const chunks: T[][] = [];
+  items.forEach((item, index) => {
+    if (index % size === 0) chunks.push([]);
+    chunks[chunks.length - 1]?.push(item);
+  });
+  return chunks;
+};
+
+const uniqueNonEmptyStrings = (values: ReadonlyArray<string>): string[] =>
+  Array.from(new Set(values.filter((value) => value.length > 0)));
+
+type ChildProcessModule = typeof import("node:child_process");
+
+const getChildProcess = (): ChildProcessModule => {
+  if (typeof process.getBuiltinModule !== "function") {
+    throw new Error("local D1 cli query requires a Node.js runtime");
+  }
+  return process.getBuiltinModule("child_process") as ChildProcessModule;
+};
+
+const runLocalD1CliQuery = async (
+  cacheKey: string,
+  command: string,
+): Promise<Record<string, unknown>[]> => {
+  if (!useLocalD1CliFallback()) return [];
+
+  const now = Date.now();
+  const cached = localD1CliCache.get(cacheKey);
+  if (cached !== undefined && cached.expiresAt > now) return cached.rows;
+
+  const { execFile } = getChildProcess();
+  const stdout = await new Promise<string>((resolve, reject) => {
+    execFile(
+      "bunx",
+      [
+        "wrangler",
+        "d1",
+        "execute",
+        getLocalD1DatabaseName(),
+        "--remote",
+        "--json",
+        "--config",
+        getLocalD1WranglerConfig(),
+        "--command",
+        command,
+      ],
+      {
+        maxBuffer: LOCAL_D1_CLI_MAX_BUFFER,
+        timeout: LOCAL_D1_CLI_TIMEOUT_MS,
+      },
+      (error, stdoutValue, stderrValue) => {
+        if (error !== null) {
+          reject(new Error(`local D1 cli query failed: ${stderrValue.trim() || error.message}`));
+          return;
+        }
+        resolve(stdoutValue);
+      },
+    );
+  });
+
+  const payload: unknown = JSON.parse(stdout);
+  if (!Array.isArray(payload) || !isRecord(payload[0]) || !Array.isArray(payload[0].results)) {
+    throw new Error("local D1 cli query returned an unexpected payload");
+  }
+
+  const rows = payload[0].results.filter(isRecord);
+  localD1CliCache.set(cacheKey, {
+    expiresAt: now + LOCAL_D1_CLI_CACHE_TTL_MS,
+    rows,
+  });
+  return rows;
+};
+
+const queryRaceRunningStylesFromLocalD1Cli = async (
   raceKey: string,
-): {
-  source: string;
-  year: string;
-  month: string;
-  day: string;
-  keibajoCode: string;
-  raceBango: string;
-} | null => {
-  const parts = raceKey.split(":");
-  if (parts.length !== 4) return null;
-  const source = parts[0] ?? "";
-  const date = parts[1] ?? "";
-  const keibajoCode = parts[2] ?? "";
-  const raceBango = parts[3] ?? "";
-  if (date.length !== 8) return null;
-  return {
-    day: date.slice(6, 8),
-    keibajoCode,
-    month: date.slice(4, 6),
-    raceBango,
-    source,
-    year: date.slice(0, 4),
-  };
+): Promise<RaceRunningStyleRow[]> => {
+  const rows = await runLocalD1CliQuery(
+    `race:${raceKey}`,
+    `select race_key, horse_number, ketto_toroku_bango, bamei, category, kaisai_nen,
+            model_version, p_nige, p_senkou, p_sashi, p_oikomi,
+            predicted_label, predicted_at
+       from race_running_styles
+      where race_key = ${sqlStringLiteral(raceKey)}
+      order by horse_number`,
+  );
+  return rows.map(parseRaceRunningStyleRow);
 };
 
-const fetchRunningStylesRemote = async (raceKey: string): Promise<RaceRunningStyleRow[]> => {
-  const parsed = parseRaceKey(raceKey);
-  if (parsed === null) return [];
-  const url = `${getRemoteRunningStyleOrigin()}/api/races/${parsed.year}/${parsed.month}/${parsed.day}/${parsed.keibajoCode}/${parsed.raceBango}/running-styles`;
-  const response = await fetch(url, { cache: "no-store" });
-  if (!response.ok) return [];
-  const payload: unknown = await response.json();
-  if (!Array.isArray(payload)) return [];
-  return payload.filter(isRecord).map(parseRaceRunningStyleRow);
+const queryRaceRunningStylesByRaceKeysFromLocalD1Cli = async (
+  raceKeys: ReadonlyArray<string>,
+): Promise<RaceRunningStyleRow[]> => {
+  const uniqueRaceKeys = uniqueNonEmptyStrings(raceKeys);
+  if (uniqueRaceKeys.length === 0) return [];
+  const chunks = chunkArray(uniqueRaceKeys, D1_RACE_KEY_BATCH_SIZE);
+  const rows = await Promise.all(
+    chunks.map((chunk) =>
+      runLocalD1CliQuery(
+        `races:${chunk.join("|")}`,
+        `select race_key, horse_number, ketto_toroku_bango, bamei, category, kaisai_nen,
+                model_version, p_nige, p_senkou, p_sashi, p_oikomi,
+                predicted_label, predicted_at
+           from race_running_styles
+          where race_key in (${chunk.map(sqlStringLiteral).join(",")})
+          order by race_key, horse_number`,
+      ),
+    ),
+  );
+  return rows.flat().map(parseRaceRunningStyleRow);
 };
 
-const fetchHorseRunningStylesRemote = async (
+const queryHorseRecentRunningStylesFromLocalD1Cli = async (
   kettoTorokuBango: string,
   limit: number,
 ): Promise<RaceRunningStyleRow[]> => {
-  const url = `${getRemoteRunningStyleOrigin()}/api/horses/${kettoTorokuBango}/running-styles?limit=${limit}`;
-  const response = await fetch(url, { cache: "no-store" });
-  if (!response.ok) return [];
-  const payload: unknown = await response.json();
-  if (!Array.isArray(payload)) return [];
-  return payload.filter(isRecord).map(parseRaceRunningStyleRow);
+  const safeLimit = Math.max(1, Math.min(Math.trunc(limit), 100));
+  const rows = await runLocalD1CliQuery(
+    `horse:${kettoTorokuBango}:${safeLimit}`,
+    `select race_key, horse_number, ketto_toroku_bango, bamei, category, kaisai_nen,
+            model_version, p_nige, p_senkou, p_sashi, p_oikomi,
+            predicted_label, predicted_at
+       from race_running_styles
+      where ketto_toroku_bango = ${sqlStringLiteral(kettoTorokuBango)}
+      order by predicted_at desc
+      limit ${safeLimit}`,
+  );
+  return rows.map(parseRaceRunningStyleRow);
 };
 
 export const queryRaceRunningStylesFromD1 = async (
@@ -160,6 +261,31 @@ export const queryRaceRunningStylesFromD1 = async (
     .bind(raceKey);
   const { results } = await statement.all<Record<string, unknown>>();
   return results.map(parseRaceRunningStyleRow);
+};
+
+export const queryRaceRunningStylesByRaceKeysFromD1 = async (
+  raceKeys: ReadonlyArray<string>,
+): Promise<RaceRunningStyleRow[]> => {
+  const db = getD1Database();
+  const uniqueRaceKeys = uniqueNonEmptyStrings(raceKeys);
+  if (db === null || uniqueRaceKeys.length === 0) return [];
+  const rows = await Promise.all(
+    chunkArray(uniqueRaceKeys, D1_RACE_KEY_BATCH_SIZE).map(async (chunk) => {
+      const statement = db
+        .prepare(
+          `select race_key, horse_number, ketto_toroku_bango, bamei, category, kaisai_nen,
+                model_version, p_nige, p_senkou, p_sashi, p_oikomi,
+                predicted_label, predicted_at
+           from race_running_styles
+          where race_key in (${buildPlaceholders(chunk.length)})
+          order by race_key, horse_number`,
+        )
+        .bind(...chunk);
+      const { results } = await statement.all<Record<string, unknown>>();
+      return results.map(parseRaceRunningStyleRow);
+    }),
+  );
+  return rows.flat();
 };
 
 export const queryHorseRecentRunningStylesFromD1 = async (
@@ -186,20 +312,33 @@ export const queryHorseRecentRunningStylesFromD1 = async (
 export const getRaceRunningStylesFromD1 = async (
   raceKey: string,
 ): Promise<RaceRunningStyleRow[]> => {
-  const direct = await queryRaceRunningStylesFromD1(raceKey);
-  if (direct.length > 0) return direct;
-  if (!useRemoteRunningStyleProxy()) return direct;
-  return fetchRunningStylesRemote(raceKey).catch(() => []);
+  const direct = await queryRaceRunningStylesFromD1(raceKey).catch(() => null);
+  if (direct !== null && direct.length > 0) return direct;
+  if (!useLocalD1CliFallback()) return direct ?? [];
+  return queryRaceRunningStylesFromLocalD1Cli(raceKey).catch(() => direct ?? []);
+};
+
+export const getRaceRunningStylesByRaceKeysFromD1 = async (
+  raceKeys: ReadonlyArray<string>,
+): Promise<RaceRunningStyleRow[]> => {
+  const direct = await queryRaceRunningStylesByRaceKeysFromD1(raceKeys).catch(() => null);
+  if (direct !== null && direct.length > 0) return direct;
+  if (!useLocalD1CliFallback()) return direct ?? [];
+  return queryRaceRunningStylesByRaceKeysFromLocalD1Cli(raceKeys).catch(() => direct ?? []);
 };
 
 export const getHorseRecentRunningStylesFromD1 = async (
   kettoTorokuBango: string,
   limit: number,
 ): Promise<RaceRunningStyleRow[]> => {
-  const direct = await queryHorseRecentRunningStylesFromD1(kettoTorokuBango, limit);
-  if (direct.length > 0) return direct;
-  if (!useRemoteRunningStyleProxy()) return direct;
-  return fetchHorseRunningStylesRemote(kettoTorokuBango, limit).catch(() => []);
+  const direct = await queryHorseRecentRunningStylesFromD1(kettoTorokuBango, limit).catch(
+    () => null,
+  );
+  if (direct !== null && direct.length > 0) return direct;
+  if (!useLocalD1CliFallback()) return direct ?? [];
+  return queryHorseRecentRunningStylesFromLocalD1Cli(kettoTorokuBango, limit).catch(
+    () => direct ?? [],
+  );
 };
 
 export const getActiveRunningStyleModel = async (

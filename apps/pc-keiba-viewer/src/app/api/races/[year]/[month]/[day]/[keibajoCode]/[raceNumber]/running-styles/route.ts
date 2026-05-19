@@ -1,13 +1,11 @@
-// Run with bun. Read-only D1 query endpoint that the local `next dev`
-// runtime hits to fetch race-by-race running-style predictions when it
-// cannot see the production D1 binding directly. Production server
-// components read D1 in-process, so this route is mainly a dev proxy.
+// Run with bun. Read-only D1 query endpoint for race-by-race
+// running-style predictions.
 
 import { NextResponse } from "next/server";
 
 import {
   buildRaceKey,
-  queryRaceRunningStylesFromD1,
+  getRaceRunningStylesFromD1,
 } from "../../../../../../../../../db/corner-running-style-queries";
 
 export const dynamic = "force-dynamic";
@@ -58,7 +56,7 @@ const collectRowsForSources = async (
   );
   const lookups = await Promise.all(
     orderedSources.map((source) =>
-      queryRaceRunningStylesFromD1(buildRaceKey({ ...raceParams, source })),
+      getRaceRunningStylesFromD1(buildRaceKey({ ...raceParams, source })),
     ),
   );
   return lookups.find((rows) => rows.length > 0) ?? [];
