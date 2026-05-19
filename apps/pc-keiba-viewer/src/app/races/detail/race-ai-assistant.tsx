@@ -10,8 +10,8 @@ import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState }
 import type { RaceSource } from "../../../lib/codes";
 import type { CourseInfo, RaceDetail, RaceListItem, Runner } from "../../../lib/race-types";
 import {
+  buildRaceAiInitialExportData,
   buildRaceAiDataCatalogForPrompt,
-  fetchRaceAiExportData,
   type RaceAiDataReadiness,
   type RaceAiExportData,
 } from "./race-ai-data";
@@ -630,15 +630,26 @@ const compactPromptValue = (value: unknown, depth = 0): unknown => {
 
 const formatMessagesForPrompt = (messages: RaceAiMessage[]): unknown =>
   messages
-    .slice(-3)
+    .slice(-8)
     .map((message) => ({
       content: truncatePromptText(
         message.role === "assistant"
           ? extractDisplayAnswerFromModelText(message.content)
           : message.content,
-        360,
+        700,
       ),
       createdAt: message.createdAt,
+      prediction:
+        message.role === "assistant" && Array.isArray(message.prediction)
+          ? message.prediction.slice(0, 8).map((row) => ({
+              horseName: row.horseName,
+              horseNumber: row.horseNumber,
+              odds: row.odds,
+              popularity: row.popularity,
+              rank: row.rank,
+              reason: truncatePromptText(row.reason, 180),
+            }))
+          : undefined,
       role: message.role,
     }))
     .filter((message) => message.content.length > 0);
@@ -911,6 +922,41 @@ const isPredictionRequest = (request: string, trigger: string): boolean =>
   trigger === "auto-start" ||
   trigger === "realtime-update" ||
   /予想|着順|順位|本命|対抗|穴|買い目|馬券|勝ち馬|上位|連対|複勝|単勝/iu.test(request);
+
+const isBettingRequest = (request: string): boolean =>
+  /馬券|買い目|買う|購入|投資|予算|いくら|金額|券種|単勝|複勝|馬連|馬単|ワイド|三連複|3連複|三連単|3連単|流し|全流し|マルチ|フォーメーション|ボックス|軸|相手/iu.test(
+    request,
+  );
+
+const buildRequestGuidance = (request: string, trigger: string): string => {
+  const predictionRequest = isPredictionRequest(request, trigger);
+  const bettingRequest = isBettingRequest(request);
+  const guidance = [
+    `predictionRequest: ${predictionRequest}`,
+    `bettingRequest: ${bettingRequest}`,
+    "過去の対話ログにassistantの過去回答やpredictionがある場合は、同じ話題への続きとして参照する。過去の結論を無視せず、変更点や補足点があれば説明する。",
+    "ただし、取得済みAPIデータやリアルタイムデータが過去回答と矛盾する場合は最新データを優先する。",
+  ];
+  if (bettingRequest) {
+    guidance.push(
+      "今回の主目的は馬券相談です。answerの中心を買い目提案にし、着順予想表だけで回答を終えない。",
+      "必要データは、出走馬、着順予測、総合スコア、単勝人気・オッズ、リアルタイム出走状況を優先して取得する。",
+      "answerには、推奨する馬券種別、馬番号、買い方、1点あたり金額、合計金額、抑えや見送り条件を具体的に書く。",
+      "answerは、根拠、推奨買い目、金額、抑えまたは見送り条件の順に整理する。",
+      "流し、全流し、マルチ、フォーメーション、ボックスが有効な場合は、その組み合わせを人間がそのまま買える表現で示す。",
+      "predictionは買い目の根拠を補助する表として必要な場合だけ使う。predictionを出す場合も、answerには必ず馬券提案を書く。",
+    );
+  } else if (predictionRequest) {
+    guidance.push(
+      "今回の主目的は着順予想です。predictionに上位候補を入れ、answerではレース条件、人気、単勝オッズ、主な根拠、注意点を短く説明する。",
+    );
+  } else {
+    guidance.push(
+      "今回の主目的は自由質問への回答です。着順表や買い目を求められていない場合、predictionは空配列にして質問へ直接答える。",
+    );
+  }
+  return guidance.join("\n");
+};
 
 const uiMessagePredictionRows = (message: UIMessage): RaceAiPredictionRow[] => {
   const metadata = isRecord(message.metadata) ? message.metadata : null;
@@ -1313,6 +1359,7 @@ const buildPrompt = ({
   messages,
   promptCharLimit = PROMPT_CHAR_LIMIT,
   request,
+  trigger,
   thoughtLogs,
   tonePrompt,
   toolResultCharLimit = TOOL_RESULT_CHAR_LIMIT,
@@ -1322,6 +1369,7 @@ const buildPrompt = ({
   messages: RaceAiMessage[];
   promptCharLimit?: number;
   request: string;
+  trigger: string;
   thoughtLogs: RaceAiThoughtLog[];
   tonePrompt: string;
   toolResultCharLimit?: number;
@@ -1340,6 +1388,7 @@ const buildPrompt = ({
         "- answerには、取得済みツール結果のbodyが何を示しているかを人間向けに解釈して必ず含める。",
         "- 単に「データを取得しました」とだけ書かず、主な項目、注目値、欠損や限界、予想への影響を1〜3文で説明する。",
         "- オッズ、馬体重、出走状況、結果、総合スコア、着順予測、パドック、リアルタイム情報がbodyにある場合は、回答の根拠として具体的に触れる。",
+        "- 馬券相談では、answerの中心を買い目提案にし、着順予想や順位表だけで終えない。",
         "- 着順予想や馬券提案では、人気と単勝オッズをpredictionに補完し、answerには買い目、馬券種別、馬番号、1点あたり金額、合計金額を具体的に含める。",
         "- APIのJSONキー名をそのまま羅列せず、ユーザーが読める自然な表現へ言い換える。",
       ].join("\n")
@@ -1349,12 +1398,14 @@ const buildPrompt = ({
     buildTonePromptSection(tonePrompt),
     "現在のユーザー依頼:",
     request,
+    "依頼分類と回答方針:",
+    buildRequestGuidance(request, trigger),
     "データ取得方針:",
     hasToolResults
       ? "取得済みツール結果を根拠に、ユーザー依頼へ直接回答してください。まだ不足する場合だけ追加でfetchJsonを1回要求できます。"
-      : "初回入力にはレース基礎情報とデータカタログだけがあります。ユーザー依頼を読んで必要なAPIを自律的に選び、予想や事実回答に必要な最小限のfetchJsonを1回要求してください。騎手や枠番の成績・傾向はtrends APIを優先し、着順予想でない質問ではpredictionを空配列にしてください。",
+      : "初回入力には標準的なレース基礎情報、出走馬の最小情報、データカタログだけがあります。ユーザー依頼を読んで必要なAPIを自律的に選び、予想や事実回答に必要な最小限のfetchJsonを1回要求してください。騎手や枠番の成績・傾向はtrends APIを優先し、着順予想でない質問ではpredictionを空配列にしてください。",
     toolResultInterpretationRule,
-    "直近の対話ログ:",
+    "直近の対話ログ（過去のassistant回答と予想表を含む）:",
     JSON.stringify(formatMessagesForPrompt(messages)),
     "直近の内部根拠要約:",
     JSON.stringify(formatThoughtLogsForPrompt(thoughtLogs)),
@@ -1373,6 +1424,7 @@ const buildTokenSafePrompt = ({
   llm,
   messages,
   request,
+  trigger,
   thoughtLogs,
   tonePrompt,
   toolResults,
@@ -1381,6 +1433,7 @@ const buildTokenSafePrompt = ({
   llm: LlmInference;
   messages: RaceAiMessage[];
   request: string;
+  trigger: string;
   thoughtLogs: RaceAiThoughtLog[];
   tonePrompt: string;
   toolResults: ToolResult[];
@@ -1392,6 +1445,7 @@ const buildTokenSafePrompt = ({
     messages,
     promptCharLimit,
     request,
+    trigger,
     thoughtLogs,
     tonePrompt,
     toolResultCharLimit,
@@ -1414,6 +1468,7 @@ const buildTokenSafePrompt = ({
       messages,
       promptCharLimit,
       request,
+      trigger,
       thoughtLogs,
       tonePrompt,
       toolResultCharLimit,
@@ -2087,7 +2142,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const loadRaceDataSnapshot = useCallback(async (): Promise<RaceAiExportData> => {
     setDataReadinessStatus("loading");
     try {
-      const data = await fetchRaceAiExportData(props);
+      const data = buildRaceAiInitialExportData(props);
       setDataReadiness(data.aiReady.dataReadiness);
       return data;
     } finally {
@@ -2101,18 +2156,16 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     }
     let cancelled = false;
     setDataReadinessStatus("loading");
-    void (async () => {
-      try {
-        const data = await fetchRaceAiExportData(props);
-        if (!cancelled) {
-          setDataReadiness(data.aiReady.dataReadiness);
-        }
-      } finally {
-        if (!cancelled) {
-          setDataReadinessStatus("idle");
-        }
+    try {
+      const data = buildRaceAiInitialExportData(props);
+      if (!cancelled) {
+        setDataReadiness(data.aiReady.dataReadiness);
       }
-    })();
+    } finally {
+      if (!cancelled) {
+        setDataReadinessStatus("idle");
+      }
+    }
     return () => {
       cancelled = true;
     };
@@ -2269,6 +2322,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
             llm,
             messages: messagesRef.current,
             request: promptRequest,
+            trigger,
             thoughtLogs: thoughtLogsRef.current,
             tonePrompt: currentToneSettings.prompt,
             toolResults,
