@@ -84,6 +84,31 @@ def append_features_sql(input_glob: str) -> str:
           - case when b.past_nige_rate_self > {PURE_NIGE_THRESHOLD} then 1 else 0 end
         ) > 0 then 1 else 0
       end as field_has_pure_nige_horse,
+      greatest(
+        coalesce(b.past_nige_rate_self, 0),
+        coalesce(b.past_senkou_rate_self, 0),
+        coalesce(b.past_sashi_rate_self, 0),
+        coalesce(b.past_oikomi_rate_self, 0)
+      ) as self_style_dominant_rate,
+      avg(greatest(
+        coalesce(b.past_nige_rate_self, 0),
+        coalesce(b.past_senkou_rate_self, 0),
+        coalesce(b.past_sashi_rate_self, 0),
+        coalesce(b.past_oikomi_rate_self, 0)
+      )) over race_partition as field_avg_style_concentration,
+      1.0 - (
+        greatest(
+          sum(coalesce(b.past_nige_rate_self, 0)) over race_partition,
+          sum(coalesce(b.past_senkou_rate_self, 0)) over race_partition,
+          sum(coalesce(b.past_sashi_rate_self, 0)) over race_partition,
+          sum(coalesce(b.past_oikomi_rate_self, 0)) over race_partition
+        ) / nullif(
+          sum(coalesce(b.past_nige_rate_self, 0)) over race_partition
+          + sum(coalesce(b.past_senkou_rate_self, 0)) over race_partition
+          + sum(coalesce(b.past_sashi_rate_self, 0)) over race_partition
+          + sum(coalesce(b.past_oikomi_rate_self, 0)) over race_partition, 0
+        )
+      ) as field_style_diversity,
       case
         when b.days_since_last_race is null then null
         when b.days_since_last_race > {LAYOFF_DAYS_THRESHOLD} then 1 else 0

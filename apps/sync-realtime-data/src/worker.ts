@@ -106,9 +106,12 @@ import {
   upsertPremiumRaceLink,
   type LocalRaceRow,
 } from "./storage";
-import { runFinishPositionLiteCronTick } from "./finish-position-lite-cron";
-import { handleFinishPositionLiteJob } from "./finish-position-lite-queue";
-import { RUNNING_STYLE_INFERENCE_CRON, runRunningStyleCronTick } from "./running-style-cron";
+import {
+  RUNNING_STYLE_INFERENCE_CRON,
+  planRunningStylePredictionsForDate,
+  runRunningStyleCronTick,
+} from "./running-style-cron";
+import { handleRunningStylePredictionJob } from "./running-style-queue";
 import { readCachedTrackCondition, writeCachedTrackCondition } from "./track-condition-cache";
 import {
   getJraAdvanceOddsFetchSlotAt,
@@ -1792,6 +1795,16 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
       );
       return;
     }
+    if (job.type === "plan-running-style-predictions") {
+      const summary = await planRunningStylePredictionsForDate(env, job.date, getNow(env));
+      await logFetch(env.REALTIME_DB, job.type, "ok", null, JSON.stringify(summary));
+      return;
+    }
+    if (job.type === "generate-running-style-predictions") {
+      const summary = await handleRunningStylePredictionJob(env, job);
+      await logFetch(env.REALTIME_DB, job.type, "ok", job.raceKey, JSON.stringify(summary));
+      return;
+    }
     await fetchAndStoreWeights(env, job.raceKey);
     await logFetch(env.REALTIME_DB, job.type, "ok", job.raceKey, null);
   } catch (error) {
@@ -1868,48 +1881,6 @@ export default {
 
     if (url.pathname === "/health") {
       return json({ ok: true });
-    }
-
-    if (url.pathname === "/admin/finish-position-lite/infer" && request.method === "POST") {
-      const expectedToken = env.REALTIME_ADMIN_TOKEN;
-      if (!expectedToken || request.headers.get("authorization") !== `Bearer ${expectedToken}`) {
-        return json({ error: "forbidden" }, { status: 403 });
-      }
-      const source = url.searchParams.get("source");
-      const kaisaiNen = url.searchParams.get("kaisai_nen");
-      const kaisaiTsukihi = url.searchParams.get("kaisai_tsukihi");
-      const keibajoCode = url.searchParams.get("keibajo_code");
-      const raceBango = url.searchParams.get("race_bango");
-      if (!source || !kaisaiNen || !kaisaiTsukihi || !keibajoCode || !raceBango) {
-        return json({ error: "missing_params" }, { status: 400 });
-      }
-      const modelVersion = `${source}-lite-lgbm-v1.0`;
-      const nowIso = new Date().toISOString();
-      const raceKey = `${source}:${kaisaiNen}${kaisaiTsukihi}:${keibajoCode}:${raceBango}`;
-      await env.REALTIME_DB
-        .prepare(
-          `insert or replace into finish_position_inference_state
-            (race_key, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, status, model_version, attempted_at)
-           values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .bind(raceKey, source, kaisaiNen, kaisaiTsukihi, keibajoCode, raceBango, "pending", modelVersion, nowIso)
-        .run();
-      try {
-        await handleFinishPositionLiteJob(env, {
-          kaisaiNen,
-          kaisaiTsukihi,
-          keibajoCode,
-          modelVersion,
-          predictedAt: nowIso,
-          raceBango,
-          source,
-          type: "finish-position-lite-infer",
-        });
-        return json({ ok: true, raceKey });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return json({ error: message, raceKey }, { status: 500 });
-      }
     }
 
     if (url.pathname === "/api/jobs" && request.method === "POST") {
@@ -1998,11 +1969,28 @@ export default {
         ? new Date(controller.scheduledTime)
         : new Date();
     if (controller.cron === RUNNING_STYLE_INFERENCE_CRON) {
-      ctx.waitUntil(runRunningStyleCronTick(env, scheduledAt).then(() => undefined));
-      return;
-    }
-    if (controller.cron === "*/15 * * * *") {
-      ctx.waitUntil(runFinishPositionLiteCronTick(env, scheduledAt).then(() => undefined));
+      ctx.waitUntil(
+        runRunningStyleCronTick(env, scheduledAt)
+          .then((summary) =>
+            logFetch(
+              env.REALTIME_DB,
+              "plan-running-style-predictions",
+              "ok",
+              null,
+              JSON.stringify(summary),
+            ),
+          )
+          .catch((error: unknown) =>
+            logFetch(
+              env.REALTIME_DB,
+              "plan-running-style-predictions",
+              "error",
+              null,
+              error instanceof Error ? error.message : String(error),
+            ),
+          )
+          .then(() => undefined),
+      );
       return;
     }
     const job = getCronJob(controller.cron, scheduledAt);
@@ -2014,16 +2002,6 @@ export default {
 
   async queue(batch, env): Promise<void> {
     for (const message of batch.messages) {
-      const body = message.body as { type?: string };
-      if (body.type === "finish-position-lite-infer") {
-        try {
-          await handleFinishPositionLiteJob(env, message.body as never);
-          message.ack();
-        } catch {
-          message.retry({ delaySeconds: QUEUE_RETRY_DELAY_SECONDS });
-        }
-        continue;
-      }
       try {
         await handleJob(env, message.body);
         message.ack();

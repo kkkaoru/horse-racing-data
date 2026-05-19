@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { RaceSource } from "../../../lib/codes";
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
-import { formatKeibajo } from "../../../lib/format";
+import { formatKeibajo, formatRaceNumber } from "../../../lib/format";
 import type { RaceTrendPayload, RaceTrendRateRow } from "../../../lib/race-types";
 
 const RACE_TREND_RETRY_OPTIONS = {
@@ -41,6 +41,12 @@ const formatMedian = (value: number | null | undefined): string => {
   }
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 };
+
+const formatTrendPopularity = (value: number | null | undefined): string =>
+  typeof value === "number" && Number.isFinite(value) ? String(value) : "-";
+
+const formatTrendWinOdds = (value: number | null | undefined): string =>
+  typeof value === "number" && Number.isFinite(value) ? value.toFixed(1) : "-";
 
 const countDistinctTrendRaces = (rows: RaceTrendRateRow[]): number =>
   new Set(
@@ -282,27 +288,29 @@ function FragmentRow({
             <div className="stats-detail-panel">
               <table className={`stats-detail-table race-trend-detail-table ${kind}`}>
                 <colgroup>
-                  <col className="race-trend-detail-col-finish" />
-                  <col className="race-trend-detail-col-primary" />
-                  {kind === "frame" ? <col className="race-trend-detail-col-horse-number" /> : null}
                   <col className="race-trend-detail-col-date" />
-                  <col className="race-trend-detail-col-race-name" />
+                  <col className="race-trend-detail-col-venue" />
                   <col className="race-trend-detail-col-race-number" />
-                  {kind === "jockey" ? (
-                    <col className="race-trend-detail-col-horse-number" />
-                  ) : null}
-                  <col className="race-trend-detail-col-secondary" />
+                  <col className="race-trend-detail-col-race-name" />
+                  <col className="race-trend-detail-col-finish" />
+                  <col className="race-trend-detail-col-popularity" />
+                  <col className="race-trend-detail-col-odds" />
+                  <col className="race-trend-detail-col-horse-number" />
+                  <col className="race-trend-detail-col-frame" />
+                  <col className="race-trend-detail-col-jockey" />
                 </colgroup>
                 <thead>
                   <tr>
-                    <th>着順</th>
-                    <th>{kind === "jockey" ? "騎手名" : "枠番"}</th>
-                    {kind === "frame" ? <th>馬番</th> : null}
                     <th>日付</th>
+                    <th>場</th>
+                    <th>R</th>
                     <th>レース名</th>
-                    <th>レースナンバー</th>
-                    {kind === "jockey" ? <th>馬番</th> : null}
-                    <th>{kind === "jockey" ? "枠番" : "騎手名"}</th>
+                    <th>着順</th>
+                    <th>人気</th>
+                    <th>単勝</th>
+                    <th>馬番</th>
+                    <th>枠</th>
+                    <th>騎手</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -310,26 +318,16 @@ function FragmentRow({
                     <tr
                       key={`${detail.date}:${detail.keibajoCode}:${detail.raceNumber}:${detail.horseNumber}:${labelColumn}`}
                     >
-                      <td>{detail.finishPosition}</td>
-                      <td>
-                        {kind === "jockey"
-                          ? (detail.jockeyName ?? "-")
-                          : detail.frameNumber
-                            ? detail.frameNumber
-                            : "-"}
-                      </td>
-                      {kind === "frame" ? <td>{detail.horseNumber ?? "-"}</td> : null}
                       <td>{detail.date}</td>
-                      <td>{detail.raceName ?? "-"}</td>
-                      <td>{detail.raceNumber}</td>
-                      {kind === "jockey" ? <td>{detail.horseNumber ?? "-"}</td> : null}
-                      <td>
-                        {kind === "jockey"
-                          ? detail.frameNumber
-                            ? detail.frameNumber
-                            : "-"
-                          : (detail.jockeyName ?? "-")}
-                      </td>
+                      <td>{formatKeibajo(detail.keibajoCode)}</td>
+                      <td>{formatRaceNumber(detail.raceNumber)}</td>
+                      <td className="race-trend-detail-race-name">{detail.raceName ?? "-"}</td>
+                      <td>{detail.finishPosition}</td>
+                      <td>{formatTrendPopularity(detail.popularity)}</td>
+                      <td>{formatTrendWinOdds(detail.winOdds)}</td>
+                      <td>{detail.horseNumber ?? "-"}</td>
+                      <td>{detail.frameNumber ? detail.frameNumber : "-"}</td>
+                      <td>{detail.jockeyName ?? "-"}</td>
                     </tr>
                   ))}
                 </tbody>

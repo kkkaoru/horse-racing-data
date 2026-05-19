@@ -459,6 +459,8 @@ export const getRaceTrendHistoricalStarterRows = cache(
           ${normalizeTextSql(sql`${runnerTable}.umaban`)} as umaban,
           ${normalizeTextSql(sql`${runnerTable}.bamei`)} as bamei,
           ${normalizeTextSql(sql`${runnerTable}.kishumei_ryakusho`)} as "jockeyName",
+          ${normalizeTextSql(sql`${runnerTable}.tansho_odds`)} as "tanshoOdds",
+          ${normalizeTextSql(sql`${runnerTable}.tansho_ninkijun`)} as "tanshoPopularity",
           nullif(
             regexp_replace(coalesce(${runnerTable}.kakutei_chakujun, ''), '[^0-9]', '', 'g'),
             ''

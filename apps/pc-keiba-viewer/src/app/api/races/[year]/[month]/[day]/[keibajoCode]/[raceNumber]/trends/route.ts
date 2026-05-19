@@ -50,6 +50,36 @@ const normalizeNumberText = (value: string | null | undefined): string | null =>
   return normalized.replace(/^0+(?=\d)/, "");
 };
 
+const parseStoredInteger = (
+  value: string | null | undefined,
+  emptyValue: string,
+): number | null => {
+  const normalized = normalizeText(value);
+  if (!normalized || normalized === emptyValue) {
+    return null;
+  }
+  const parsed = Number(normalized.replace(/[^\d]/g, ""));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+};
+
+const parseStoredPopularity = (value: string | null | undefined): number | null =>
+  parseStoredInteger(value, "00");
+
+const parseStoredWinOdds = (value: string | null | undefined): number | null => {
+  const odds = parseStoredInteger(value, "0000");
+  return odds === null ? null : odds / 10;
+};
+
+const formatRealtimeInteger = (value: number | null | undefined): string | null =>
+  typeof value === "number" && Number.isFinite(value) && value > 0
+    ? String(Math.trunc(value))
+    : null;
+
+const formatRealtimeWinOdds = (value: number | null | undefined): string | null =>
+  typeof value === "number" && Number.isFinite(value) && value > 0
+    ? String(Math.round(value * 10))
+    : null;
+
 const isNonEmptyString = (value: string | null): value is string => value !== null && value !== "";
 
 const isRealtimeRacePayload = (value: unknown): value is RealtimeRacePayload =>
@@ -124,6 +154,8 @@ const detailFromStarter = (row: RaceTrendStarterRow): RaceTrendDetail => ({
   horseNumber: row.umaban,
   horseName: row.bamei,
   jockeyName: row.jockeyName,
+  popularity: parseStoredPopularity(row.tanshoPopularity),
+  winOdds: parseStoredWinOdds(row.tanshoOdds),
   finishPosition: row.finishPosition,
   time: row.sohaTime,
 });
@@ -271,6 +303,12 @@ const buildRealtimeStarterRows = async (race: RaceListItem): Promise<RaceTrendSt
       entry,
     ]),
   );
+  const latestTanshoByHorseNumber = new Map(
+    (payload?.odds?.latest.tansho ?? []).map((entry) => [
+      normalizeNumberText(entry.combination),
+      entry,
+    ]),
+  );
 
   return resultHorses.flatMap((resultHorse) => {
     const finishPosition = Number(resultHorse.finishPosition.replace(/[^\d]/g, ""));
@@ -280,6 +318,7 @@ const buildRealtimeStarterRows = async (race: RaceListItem): Promise<RaceTrendSt
     const horseNumber = normalizeNumberText(resultHorse.horseNumber);
     const runner = runnerByHorseNumber.get(horseNumber);
     const entry = entryByHorseNumber.get(horseNumber);
+    const latestTansho = latestTanshoByHorseNumber.get(horseNumber);
     return [
       {
         source: race.source,
@@ -296,6 +335,9 @@ const buildRealtimeStarterRows = async (race: RaceListItem): Promise<RaceTrendSt
           normalizeText(runner?.bamei) ??
           normalizeText(entry?.horseName),
         jockeyName: normalizeText(entry?.jockeyName) ?? normalizeText(runner?.kishumeiRyakusho),
+        tanshoOdds: formatRealtimeWinOdds(latestTansho?.odds) ?? normalizeText(runner?.tanshoOdds),
+        tanshoPopularity:
+          formatRealtimeInteger(latestTansho?.rank) ?? normalizeText(runner?.tanshoNinkijun),
         finishPosition,
         sohaTime: normalizeText(resultHorse.time),
       },

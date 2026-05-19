@@ -14,6 +14,7 @@ from typing import TypedDict
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as opt
+import mlx.utils
 import numpy as np
 
 from finish_position_transformer.dataset import (
@@ -217,6 +218,8 @@ def _ndcg_at_3_for_race(predicted_ranks: np.ndarray, finish: np.ndarray, mask: n
         if rank > NDCG_K:
             continue
         finish_pos = int(finish[slot])
+        if finish_pos < 1:
+            continue
         gain = max(0, 4 - finish_pos)
         dcg += gain / np.log(2 + rank)
     return dcg / IDEAL_DCG_AT_3
@@ -265,6 +268,7 @@ def train_transformer(
     loss_and_grad = nn.value_and_grad(model, loss_fn)
     best_score = -float("inf")
     best_epoch = 0
+    best_params: dict[str, mx.array] | None = None
     history: list[EpochMetrics] = []
     no_improve = 0
     for epoch in range(1, config["max_epochs"] + 1):
@@ -275,14 +279,18 @@ def train_transformer(
             else 0.0
         )
         history.append({"epoch": epoch, "train_loss": train_loss, "valid_ndcg_at_3": valid_score})
-        if valid_score > best_score:
+        if valid_score > best_score and np.isfinite(valid_score):
             best_score = valid_score
             best_epoch = epoch
             no_improve = 0
+            best_params = dict(mlx.utils.tree_flatten(model.parameters()))
         else:
             no_improve += 1
         if no_improve >= config["early_stopping_epochs"]:
             break
+    if best_params is not None:
+        model.update(mlx.utils.tree_unflatten(list(best_params.items())))
+        mx.eval(model.parameters())
     return {
         "best_epoch": best_epoch,
         "best_valid_ndcg_at_3": float(best_score) if best_score > -float("inf") else 0.0,
@@ -314,6 +322,20 @@ def _make_loss_fn(weights: LossWeights):
     return loss_fn
 
 
+GRADIENT_CLIP_NORM = 1.0
+
+
+def _clip_grad_norm(grads: dict[str, object], max_norm: float) -> dict[str, object]:
+    flat = list(mlx.utils.tree_flatten(grads))
+    squared_sum = mx.array(0.0)
+    for _name, value in flat:
+        squared_sum = squared_sum + (value * value).sum()
+    total_norm = mx.sqrt(squared_sum)
+    scale = mx.minimum(mx.array(1.0), mx.array(max_norm) / (total_norm + mx.array(1e-8)))
+    scaled = mlx.utils.tree_map(lambda value: value * scale, grads)
+    return scaled
+
+
 def _run_epoch(
     model: RaceSetTransformer,
     optimizer: opt.AdamW,
@@ -327,9 +349,13 @@ def _run_epoch(
     for batch in iter_race_batches(arrays, batch_size=batch_size, shuffle=True, rng=rng):
         mx_batch = _to_mx_batch(batch)
         loss, grads = loss_and_grad(model, mx_batch)
+        loss_value = float(loss)
+        if not np.isfinite(loss_value):
+            continue
+        grads = _clip_grad_norm(grads, GRADIENT_CLIP_NORM)
         optimizer.update(model, grads)
         mx.eval(model.parameters(), optimizer.state)
-        total_loss += float(loss)
+        total_loss += loss_value
         num_batches += 1
     return total_loss / max(num_batches, 1)
 
