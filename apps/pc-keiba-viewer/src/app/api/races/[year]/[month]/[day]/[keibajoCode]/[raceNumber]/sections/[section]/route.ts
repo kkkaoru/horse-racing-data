@@ -1,6 +1,15 @@
 import { NextResponse } from "next/server";
 
-import { getRaceSourceByRoute } from "../../../../../../../../../../db/queries";
+import { getRaceDetail, getRaceSourceByRoute } from "../../../../../../../../../../db/queries";
+import {
+  buildDetailSectionCacheKey,
+  isDefaultDetailSectionCacheRequest,
+  stripDetailSectionCacheWarmParams,
+} from "../../../../../../../../../../lib/race-detail-section-cache";
+import {
+  getCachedDetailSectionResponse,
+  putDetailSectionCache,
+} from "../../../../../../../../../../lib/race-detail-section-cache.server";
 import {
   getDetailSectionPayload,
   type DetailSection,
@@ -57,16 +66,33 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }
 
+  const requestUrl = new URL(request.url);
+  const sectionSearchParams = stripDetailSectionCacheWarmParams(requestUrl.searchParams);
+  const cacheableDefaultRequest = isDefaultDetailSectionCacheRequest(
+    section,
+    requestUrl.searchParams,
+  );
+  const cacheKey = cacheableDefaultRequest
+    ? buildDetailSectionCacheKey({ day, keibajoCode, month, raceNumber, section, year })
+    : null;
+  const cachedResponse = cacheKey ? await getCachedDetailSectionResponse(cacheKey) : null;
+  if (cachedResponse) {
+    return cachedResponse;
+  }
+
   const raceSource = await getRaceSourceByRoute(year, month, day, keibajoCode, raceNumber);
   if (!raceSource) {
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }
 
+  const race = cacheKey
+    ? await getRaceDetail(raceSource, year, month, day, keibajoCode, raceNumber)
+    : null;
   const payload = await getDetailSectionPayload(section, {
     day,
     keibajoCode,
     month,
-    query: searchParamsToRecord(new URL(request.url).searchParams),
+    query: searchParamsToRecord(sectionSearchParams),
     raceNumber,
     raceSource,
     year,
@@ -75,9 +101,16 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }
 
-  return NextResponse.json(payload, {
+  const body = JSON.stringify(payload);
+  if (cacheKey && race) {
+    await putDetailSectionCache({ body, cacheKey, race });
+  }
+
+  return new NextResponse(body, {
     headers: {
       "Cache-Control": "private, max-age=0, no-store",
+      "Content-Type": "application/json; charset=utf-8",
+      "X-Detail-Section-Cache": cacheKey ? "MISS-STORED" : "BYPASS",
     },
   });
 }

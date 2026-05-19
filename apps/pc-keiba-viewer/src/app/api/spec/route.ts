@@ -170,6 +170,33 @@ const apiSpec = {
         tags: ["races"],
       },
     },
+    "/api/cache-warm/race-detail-sections": {
+      post: {
+        operationId: "scheduleRaceDetailSectionCacheWarm",
+        parameters: [
+          {
+            description: "デバッグ用。1 の場合のみ手動実行を許可します。",
+            in: "query",
+            name: "debug",
+            required: false,
+            schema: { enum: ["1"], type: "string" },
+          },
+          {
+            description: "対象日。YYYY-MM-DD。省略時は Asia/Tokyo 基準の明日を対象にします。",
+            in: "query",
+            name: "date",
+            required: false,
+            schema: { pattern: "^\\d{4}-\\d{2}-\\d{2}$", type: "string" },
+          },
+        ],
+        responses: {
+          "200": jsonResponse,
+          ...errorResponses,
+        },
+        summary: "レース詳細のデフォルト遅延セクションキャッシュ作成をQueueへ投入します。",
+        tags: ["cache"],
+      },
+    },
     "/api/mypage/favorites": {
       get: {
         operationId: "getFavoriteRaces",

@@ -25,8 +25,33 @@ declare global {
   }
 
   interface PcKeibaKvNamespace {
+    get(key: string): Promise<string | null>;
     get<T = unknown>(key: string, options: { type: "json" }): Promise<T | null>;
-    put(key: string, value: string): Promise<void>;
+    put(
+      key: string,
+      value: string,
+      options?: { expirationTtl?: number; metadata?: Record<string, string> },
+    ): Promise<void>;
+  }
+
+  interface PcKeibaQueue<Body = unknown> {
+    send(body: Body, options?: { delaySeconds?: number }): Promise<void>;
+    sendBatch(messages: Array<{ body: Body }>): Promise<void>;
+  }
+
+  interface PcKeibaMessage<Body = unknown> {
+    ack(): void;
+    body: Body;
+    retry(): void;
+  }
+
+  interface PcKeibaMessageBatch<Body = unknown> {
+    messages: PcKeibaMessage<Body>[];
+    queue: string;
+  }
+
+  interface PcKeibaExecutionContext {
+    waitUntil(promise: Promise<unknown>): void;
   }
 
   interface PcKeibaR2Object {
@@ -94,9 +119,12 @@ declare global {
 
   interface CloudflareEnv {
     FINISH_POSITION_MODELS?: PcKeibaR2Bucket;
+    DETAIL_SECTION_CACHE_KV?: PcKeibaKvNamespace;
+    DETAIL_SECTION_CACHE_QUEUE?: PcKeibaQueue;
     HYPERDRIVE?: PcKeibaHyperdriveBinding;
     PADDOCK_ROOM?: PcKeibaDurableObjectNamespace;
     PADDOCK_STATE_KV?: PcKeibaKvNamespace;
+    PC_KEIBA_DETAIL_SECTION_CACHE_AFTER_START_SECONDS?: string;
     PC_KEIBA_EXTERNAL_PADDOCK_DISCORD_BOT_NAME?: string;
     PC_KEIBA_EXTERNAL_PADDOCK_DISCORD_WEBHOOK_URL?: string;
     PC_KEIBA_PADDOCK_DISCORD_BOT_NAME?: string;
@@ -104,6 +132,7 @@ declare global {
     PC_KEIBA_RACE_AI_ACCENT_COLOR?: string;
     PC_KEIBA_RACE_AI_ICON_URL?: string;
     PC_KEIBA_RACE_AI_NAME?: string;
+    PC_KEIBA_RUNNING_STYLE_CACHE_ORIGIN?: string;
     REALTIME_DB?: PcKeibaD1Database;
   }
 }

@@ -20,10 +20,34 @@
   },
   "kv_namespaces": [
     {
+      "binding": "DETAIL_SECTION_CACHE_KV",
+      "id": "a013fdf6e7224c3ab0c227be3c899073",
+    },
+    {
       "binding": "PADDOCK_STATE_KV",
       "id": "1cb633c48a084a428d3ce3e0f844f7d1",
     },
   ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "DETAIL_SECTION_CACHE_QUEUE",
+        "queue": "pc-keiba-detail-section-cache-warm",
+      },
+    ],
+    "consumers": [
+      {
+        "queue": "pc-keiba-detail-section-cache-warm",
+        "max_batch_size": 10,
+        "max_batch_timeout": 30,
+        "max_retries": 3,
+      },
+    ],
+  },
+  "triggers": {
+    // 21:00 JST on the day before each race date.
+    "crons": ["0 12 * * *"],
+  },
   "durable_objects": {
     "bindings": [
       {
@@ -48,6 +72,8 @@
     "PC_KEIBA_RACE_AI_ACCENT_COLOR": "#69a9e9",
     "PC_KEIBA_DATABASE_TARGET": "cloudflare",
     "PC_KEIBA_DB_CACHE_TTL_SECONDS": "3600",
+    "PC_KEIBA_DETAIL_SECTION_CACHE_AFTER_START_SECONDS": "21600",
+    "PC_KEIBA_RUNNING_STYLE_CACHE_ORIGIN": "https://pc-keiba-viewer.kkk4oru.com",
     "PC_KEIBA_PADDOCK_DISCORD_BOT_NAME": "ジョーカー八重樫",
   },
   "hyperdrive": [
