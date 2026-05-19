@@ -2,12 +2,19 @@
 
 import {
   deleteCachedModel,
+  deleteCachedModelParts,
   getCachedModelInfo,
+  listAllCachedModelPartInfos,
   listCachedModelInfos,
+  listCachedModelPartInfos,
   loadCachedModel,
+  loadCachedModelPart,
+  modelPartCacheKey,
   RACE_AI_MODEL_DOWNLOAD_CONFIRM_MESSAGE,
   saveCachedModel,
+  saveCachedModelPart,
   type RaceAiCachedModelInfo,
+  type RaceAiCachedModelPartInfo,
 } from "./race-ai-storage";
 
 export interface RaceAiModelDefinition {
@@ -22,7 +29,7 @@ export interface RaceAiModelDefinition {
   version: string;
 }
 
-export type RaceAiModelStatus = "downloaded" | "downloading" | "not-downloaded";
+export type RaceAiModelStatus = "downloaded" | "downloading" | "not-downloaded" | "partial";
 
 export interface RaceAiModelState {
   attempt: number | null;
@@ -173,21 +180,171 @@ const toIncompleteCachedState = (
   totalBytes: model.sizeBytes,
 });
 
+const isUsableModelPart = ({
+  end,
+  part,
+  start,
+  totalBytes,
+}: {
+  end: number;
+  part: RaceAiCachedModelPartInfo | undefined;
+  start: number;
+  totalBytes: number;
+}): boolean => {
+  if (!part) {
+    return false;
+  }
+  const expectedBytes = end - start + 1;
+  return (
+    part.start === start &&
+    part.end === end &&
+    part.totalBytes === totalBytes &&
+    part.size === expectedBytes
+  );
+};
+
+interface CachedModelPartSnapshot {
+  cachedAt: string | null;
+  downloadedBytes: number;
+  isComplete: boolean;
+  parts: RaceAiCachedModelPartInfo[];
+  progress: number | null;
+  totalBytes: number;
+}
+
+const expectedModelPartRanges = (totalBytes: number) => {
+  const ranges: { end: number; partIndex: number; start: number }[] = [];
+  let partIndex = 0;
+  for (let start = 0; start < totalBytes; start += MODEL_DOWNLOAD_RANGE_BYTES) {
+    ranges.push({
+      end: Math.min(start + MODEL_DOWNLOAD_RANGE_BYTES - 1, totalBytes - 1),
+      partIndex,
+      start,
+    });
+    partIndex += 1;
+  }
+  return ranges;
+};
+
+const latestCachedAt = (parts: readonly RaceAiCachedModelPartInfo[]): string | null =>
+  parts.toSorted((left, right) => right.cachedAt.localeCompare(left.cachedAt))[0]?.cachedAt ?? null;
+
+const toCachedModelPartSnapshot = (
+  model: RaceAiModelDefinition,
+  parts: readonly RaceAiCachedModelPartInfo[],
+): CachedModelPartSnapshot | null => {
+  const candidateTotals = [
+    ...new Set(
+      parts
+        .map((part) => part.totalBytes)
+        .filter((totalBytes) => isAcceptableModelSize(model, totalBytes)),
+    ),
+  ];
+  if (candidateTotals.length === 0) {
+    return null;
+  }
+
+  let bestSnapshot: CachedModelPartSnapshot | null = null;
+  for (const totalBytes of candidateTotals) {
+    const partsByKey = new Map(
+      parts
+        .filter((part) => part.totalBytes === totalBytes)
+        .map((part) => [part.key, part] as const),
+    );
+    const usableParts: RaceAiCachedModelPartInfo[] = [];
+    for (const range of expectedModelPartRanges(totalBytes)) {
+      const key = modelPartCacheKey({
+        end: range.end,
+        modelCacheKey: model.cacheKey,
+        partIndex: range.partIndex,
+        start: range.start,
+      });
+      const part = partsByKey.get(key);
+      if (part && isUsableModelPart({ end: range.end, part, start: range.start, totalBytes })) {
+        usableParts.push(part);
+      }
+    }
+    const downloadedBytes = usableParts.reduce((total, part) => total + (part.size ?? 0), 0);
+    if (downloadedBytes <= 0) {
+      continue;
+    }
+    const snapshot: CachedModelPartSnapshot = {
+      cachedAt: latestCachedAt(usableParts),
+      downloadedBytes,
+      isComplete: downloadedBytes === totalBytes,
+      parts: usableParts.toSorted((left, right) => left.partIndex - right.partIndex),
+      progress: totalBytes > 0 ? Math.min(downloadedBytes / totalBytes, 1) : null,
+      totalBytes,
+    };
+    if (
+      !bestSnapshot ||
+      (snapshot.isComplete && !bestSnapshot.isComplete) ||
+      snapshot.downloadedBytes > bestSnapshot.downloadedBytes
+    ) {
+      bestSnapshot = snapshot;
+    }
+  }
+
+  return bestSnapshot;
+};
+
+const toCachedModelPartState = (
+  model: RaceAiModelDefinition,
+  parts: readonly RaceAiCachedModelPartInfo[],
+): RaceAiModelState | null => {
+  const snapshot = toCachedModelPartSnapshot(model, parts);
+  if (!snapshot) {
+    return null;
+  }
+  return {
+    attempt: null,
+    cachedAt: snapshot.cachedAt,
+    downloadedBytes: snapshot.downloadedBytes,
+    error: null,
+    maxAttempts: null,
+    model,
+    progress: snapshot.progress,
+    status: snapshot.isComplete ? "downloaded" : "partial",
+    totalBytes: snapshot.totalBytes,
+  };
+};
+
+const loadCompleteCachedModelParts = async (
+  model: RaceAiModelDefinition,
+): Promise<ArrayBuffer | null> => {
+  const snapshot = toCachedModelPartSnapshot(model, await listCachedModelPartInfos(model.cacheKey));
+  if (!snapshot?.isComplete) {
+    return null;
+  }
+  const buffer = new Uint8Array(snapshot.totalBytes);
+  for (const part of snapshot.parts) {
+    // eslint-disable-next-line no-await-in-loop -- model ranges must be assembled in order.
+    const cachedPart = await loadCachedModelPart(part.key);
+    const expectedBytes = part.end - part.start + 1;
+    if (!cachedPart || cachedPart.byteLength !== expectedBytes) {
+      return null;
+    }
+    buffer.set(new Uint8Array(cachedPart), part.start);
+  }
+  return buffer.buffer;
+};
+
 const loadCompleteCachedModel = async (
   model: RaceAiModelDefinition,
 ): Promise<ArrayBuffer | null> => {
   const cachedInfo = await getCompleteCachedModelInfo(model);
   if (!cachedInfo) {
-    return null;
+    return loadCompleteCachedModelParts(model);
   }
   const cached = await loadCachedModel(model.cacheKey);
   if (!cached) {
-    return null;
+    return loadCompleteCachedModelParts(model);
   }
   if (!isAcceptableModelSize(model, cached.byteLength)) {
     markIncompleteCachedModel(model, cachedInfo);
-    return null;
+    return loadCompleteCachedModelParts(model);
   }
+  await deleteCachedModelParts(model.cacheKey);
   return cached;
 };
 
@@ -209,10 +366,15 @@ export const getRaceAiModelState = async (
     };
   }
   const cached = await getCachedModelInfo(model.cacheKey);
+  const partState = toCachedModelPartState(model, await listCachedModelPartInfos(model.cacheKey));
   if (cached) {
-    return isCompleteCachedModelInfo(model, cached)
-      ? toDownloadedState(model, cached)
-      : toIncompleteCachedState(model, cached);
+    if (isCompleteCachedModelInfo(model, cached)) {
+      return toDownloadedState(model, cached);
+    }
+    return partState ?? toIncompleteCachedState(model, cached);
+  }
+  if (partState) {
+    return partState;
   }
   return {
     attempt: null,
@@ -283,14 +445,55 @@ const toStoredOnlyState = (info: RaceAiCachedModelInfo): RaceAiModelState => {
   };
 };
 
+const toStoredOnlyPartState = (parts: RaceAiCachedModelPartInfo[]): RaceAiModelState | null => {
+  const first = parts[0];
+  if (!first) {
+    return null;
+  }
+  const model = toStoredOnlyModel({
+    cachedAt: first.cachedAt,
+    key: first.modelCacheKey,
+    modelVersion: first.modelVersion,
+    size: first.totalBytes,
+    sourceUrl: first.sourceUrl,
+  });
+  const snapshot = toCachedModelPartSnapshot(model, parts);
+  if (!snapshot) {
+    return null;
+  }
+  return {
+    attempt: null,
+    cachedAt: snapshot.cachedAt,
+    downloadedBytes: snapshot.downloadedBytes,
+    error: null,
+    maxAttempts: null,
+    model,
+    progress: snapshot.progress,
+    status: snapshot.isComplete ? "downloaded" : "partial",
+    totalBytes: snapshot.totalBytes,
+  };
+};
+
 export const getRaceAiModelStates = async (): Promise<RaceAiModelState[]> => {
   const knownStates = await Promise.all(RACE_AI_MODELS.map((model) => getRaceAiModelState(model)));
   const knownCacheKeys = new Set(RACE_AI_MODELS.map((model) => model.cacheKey));
-  const storedOnlyStates = (await listCachedModelInfos())
+  const storedModelInfos = await listCachedModelInfos();
+  const storedOnlyStates = storedModelInfos
     .filter((info) => !knownCacheKeys.has(info.key))
     .toSorted((left, right) => right.cachedAt.localeCompare(left.cachedAt))
     .map(toStoredOnlyState);
-  return [...knownStates, ...storedOnlyStates];
+  const storedModelKeys = new Set(storedModelInfos.map((info) => info.key));
+  const partGroups = new Map<string, RaceAiCachedModelPartInfo[]>();
+  for (const part of await listAllCachedModelPartInfos()) {
+    const group = partGroups.get(part.modelCacheKey) ?? [];
+    group.push(part);
+    partGroups.set(part.modelCacheKey, group);
+  }
+  const storedOnlyPartStates = [...partGroups.entries()]
+    .filter(([cacheKey]) => !knownCacheKeys.has(cacheKey) && !storedModelKeys.has(cacheKey))
+    .map(([, parts]) => toStoredOnlyPartState(parts))
+    .filter((state): state is RaceAiModelState => state !== null);
+  return [...knownStates, ...storedOnlyStates, ...storedOnlyPartStates];
 };
 
 const updateActiveDownload = (
@@ -443,12 +646,38 @@ const fetchModelBuffer = async (
 ): Promise<ArrayBuffer> => {
   const totalBytes = await fetchRemoteModelSize(model, controller, attempt);
   updateActiveDownload(model, { error: null, totalBytes });
+  const storedParts = new Map(
+    (await listCachedModelPartInfos(model.cacheKey)).map((part) => [part.key, part]),
+  );
   const buffer = new Uint8Array(totalBytes);
   let downloadedBytes = 0;
   let rangeIndex = 0;
 
   for (let start = 0; start < totalBytes; start += MODEL_DOWNLOAD_RANGE_BYTES) {
     const end = Math.min(start + MODEL_DOWNLOAD_RANGE_BYTES - 1, totalBytes - 1);
+    const partKey = modelPartCacheKey({
+      end,
+      modelCacheKey: model.cacheKey,
+      partIndex: rangeIndex,
+      start,
+    });
+    const storedPart = storedParts.get(partKey);
+    if (isUsableModelPart({ end, part: storedPart, start, totalBytes })) {
+      // eslint-disable-next-line no-await-in-loop -- model ranges must be assembled in sequence.
+      const cachedPart = await loadCachedModelPart(partKey);
+      if (cachedPart && cachedPart.byteLength === end - start + 1) {
+        buffer.set(new Uint8Array(cachedPart), start);
+        downloadedBytes += cachedPart.byteLength;
+        updateActiveDownload(model, {
+          downloadedBytes,
+          error: "保存済みの途中データから再開しています。",
+          progress: Math.min(downloadedBytes / totalBytes, 1),
+          totalBytes,
+        });
+        rangeIndex += 1;
+        continue;
+      }
+    }
     // eslint-disable-next-line no-await-in-loop -- model ranges must be written in sequence.
     const rangeBuffer = await fetchModelRangeWithRetries({
       attempt,
@@ -457,6 +686,18 @@ const fetchModelBuffer = async (
       model,
       rangeIndex,
       start,
+    });
+    // eslint-disable-next-line no-await-in-loop -- each completed range must be persisted before continuing.
+    await saveCachedModelPart({
+      buffer: rangeBuffer,
+      end,
+      key: partKey,
+      modelCacheKey: model.cacheKey,
+      modelVersion: model.version,
+      partIndex: rangeIndex,
+      sourceUrl: model.url,
+      start,
+      totalBytes,
     });
     buffer.set(rangeBuffer, start);
     downloadedBytes += rangeBuffer.byteLength;
@@ -526,15 +767,26 @@ export const downloadRaceAiModel = async (
     await Promise.resolve();
     try {
       const buffer = await fetchModelBufferWithRetries(model, controller);
-      await saveCachedModel({
-        buffer,
-        key: model.cacheKey,
-        modelVersion: model.version,
-        sourceUrl: model.url,
-      });
-      const saved = await getCompleteCachedModelInfo(model);
-      if (!saved) {
-        throw new Error("保存後のAIモデルサイズを確認できませんでした。");
+      try {
+        await saveCachedModel({
+          buffer,
+          key: model.cacheKey,
+          modelVersion: model.version,
+          sourceUrl: model.url,
+        });
+        const saved = await getCompleteCachedModelInfo(model);
+        if (!saved) {
+          throw new Error("保存後のAIモデルサイズを確認できませんでした。");
+        }
+        await deleteCachedModelParts(model.cacheKey);
+      } catch (saveError) {
+        const snapshot = toCachedModelPartSnapshot(
+          model,
+          await listCachedModelPartInfos(model.cacheKey),
+        );
+        if (!snapshot?.isComplete) {
+          throw saveError;
+        }
       }
       lastModelErrors.delete(model.id);
       return buffer;
@@ -594,6 +846,7 @@ export const abortRaceAiModelDownload = (model: RaceAiModelDefinition): void => 
 export const deleteRaceAiModel = async (model: RaceAiModelDefinition): Promise<void> => {
   abortRaceAiModelDownload(model);
   await deleteCachedModel(model.cacheKey);
+  await deleteCachedModelParts(model.cacheKey);
   lastModelErrors.delete(model.id);
   notify();
 };

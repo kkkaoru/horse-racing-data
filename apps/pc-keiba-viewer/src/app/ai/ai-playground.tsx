@@ -340,6 +340,9 @@ const statusLabel = (status: RaceAiModelState["status"] | undefined): string => 
   if (status === "downloading") {
     return "ダウンロード中";
   }
+  if (status === "partial") {
+    return "途中まで保存";
+  }
   return "未ダウンロード";
 };
 
@@ -350,7 +353,7 @@ const progressLabel = (state: RaceAiModelState | null): string => {
   if (state.status === "downloaded") {
     return "100%";
   }
-  if (state.status !== "downloading") {
+  if (state.status !== "downloading" && state.status !== "partial") {
     return "-";
   }
   return state.progress === null ? "取得中" : `${Math.round(state.progress * 100)}%`;

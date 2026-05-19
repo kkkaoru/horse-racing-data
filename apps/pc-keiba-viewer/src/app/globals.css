@@ -8151,6 +8151,11 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   width: fit-content;
 }
 
+.mypage-ai-model-actions {
+  display: grid;
+  gap: var(--space-6px-33);
+}
+
 .mypage-ai-model-row button {
   background: var(--surface);
   border: var(--space-1px-7) solid var(--border);
@@ -8217,6 +8222,10 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 
   .mypage-ai-model-row button {
     justify-self: stretch;
+    width: var(--space-100pct-12);
+  }
+
+  .mypage-ai-model-actions {
     width: var(--space-100pct-12);
   }
 
