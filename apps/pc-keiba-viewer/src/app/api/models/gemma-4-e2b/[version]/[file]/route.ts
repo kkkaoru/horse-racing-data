@@ -19,6 +19,11 @@ interface RouteContext {
   }>;
 }
 
+interface ByteRange {
+  end: number;
+  start: number;
+}
+
 const getCloudflareEnv = (): CloudflareEnv | null => {
   try {
     return getCloudflareContext().env;
@@ -75,6 +80,68 @@ const getModelHeaders = (size: number, contentType = MODEL_CONTENT_TYPE) => ({
   "Content-Type": contentType,
 });
 
+const getModelRangeHeaders = (
+  range: ByteRange,
+  totalSize: number,
+  contentType = MODEL_CONTENT_TYPE,
+) => ({
+  ...getModelHeaders(range.end - range.start + 1, contentType),
+  "Content-Range": `bytes ${range.start}-${range.end}/${totalSize}`,
+});
+
+const parseRangeHeader = (rangeHeader: string | null, totalSize: number): ByteRange | null => {
+  if (!rangeHeader) {
+    return null;
+  }
+  const match = /^bytes=(\d+)-(\d+)$/u.exec(rangeHeader.trim());
+  if (!match) {
+    return null;
+  }
+  const start = Number(match[1]);
+  const end = Number(match[2]);
+  if (
+    !Number.isSafeInteger(start) ||
+    !Number.isSafeInteger(end) ||
+    start < 0 ||
+    end < start ||
+    end >= totalSize
+  ) {
+    return null;
+  }
+  return { end, start };
+};
+
+const rangeNotSatisfiable = (totalSize: number): Response =>
+  new Response(null, {
+    headers: {
+      "Content-Range": `bytes */${totalSize}`,
+    },
+    status: 416,
+  });
+
+interface PcKeibaR2RangeGetOptions {
+  range: {
+    length: number;
+    offset: number;
+  };
+}
+
+interface PcKeibaR2RangeBucket extends PcKeibaR2Bucket {
+  get(key: string, options?: PcKeibaR2RangeGetOptions): Promise<PcKeibaR2Object | null>;
+}
+
+const getRangedObject = (
+  bucket: PcKeibaR2Bucket,
+  key: string,
+  range: ByteRange,
+): Promise<PcKeibaR2Object | null> =>
+  (bucket as PcKeibaR2RangeBucket).get(key, {
+    range: {
+      length: range.end - range.start + 1,
+      offset: range.start,
+    },
+  });
+
 const readChunkManifest = async (
   bucket: PcKeibaR2Bucket,
   key: string,
@@ -121,17 +188,36 @@ const readChunkManifest = async (
 const createChunkStream = (
   bucket: PcKeibaR2Bucket,
   manifest: ModelChunkManifest,
+  range?: ByteRange,
 ): ReadableStream<Uint8Array> =>
   new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
+        let chunkStart = 0;
         for (const chunk of manifest.chunks) {
-          // eslint-disable-next-line no-await-in-loop -- model chunks must be streamed in manifest order.
-          const object = await bucket.get(chunk.key);
+          const chunkEnd = chunkStart + chunk.size - 1;
+          const readStart = range ? Math.max(range.start, chunkStart) : chunkStart;
+          const readEnd = range ? Math.min(range.end, chunkEnd) : chunkEnd;
+          chunkStart += chunk.size;
+          if (readEnd < readStart) {
+            continue;
+          }
+          const objectRange = {
+            end: readEnd - (chunkStart - chunk.size),
+            start: readStart - (chunkStart - chunk.size),
+          };
+          let object: PcKeibaR2Object | null;
+          if (range) {
+            // eslint-disable-next-line no-await-in-loop -- model chunks must be streamed in manifest order.
+            object = await getRangedObject(bucket, chunk.key, objectRange);
+          } else {
+            // eslint-disable-next-line no-await-in-loop -- model chunks must be streamed in manifest order.
+            object = await bucket.get(chunk.key);
+          }
           if (!object) {
             throw new Error(`missing model chunk: ${chunk.key}`);
           }
-          if (object.size !== chunk.size) {
+          if (!range && object.size !== chunk.size) {
             throw new Error(`model chunk size mismatch: ${chunk.key}`);
           }
           const reader = object.body.getReader();
@@ -197,27 +283,46 @@ export async function GET(_request: Request, context: RouteContext) {
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }
 
-  const object = bucket ? await bucket.get(key) : null;
+  const objectHead = bucket ? await bucket.head(key) : null;
+  const rangeHeader = _request.headers.get("range");
 
-  if (object && isAcceptableModelSize(object.size)) {
+  if (bucket && objectHead && isAcceptableModelSize(objectHead.size)) {
+    const range = parseRangeHeader(rangeHeader, objectHead.size);
+    if (rangeHeader && !range) {
+      return rangeNotSatisfiable(objectHead.size);
+    }
+    const object = range ? await getRangedObject(bucket, key, range) : await bucket.get(key);
+    if (!object) {
+      return NextResponse.json({ error: "model_not_found" }, { status: 404 });
+    }
     return new Response(object.body, {
-      headers: getModelHeaders(object.size, object.httpMetadata?.contentType),
+      headers: range
+        ? getModelRangeHeaders(range, objectHead.size, objectHead.httpMetadata?.contentType)
+        : getModelHeaders(objectHead.size, objectHead.httpMetadata?.contentType),
+      status: range ? 206 : 200,
     });
   }
 
   const manifest = bucket ? await readChunkManifest(bucket, key, version) : null;
   if (bucket && manifest) {
-    return new Response(createChunkStream(bucket, manifest), {
-      headers: getModelHeaders(manifest.size, manifest.contentType),
+    const range = parseRangeHeader(rangeHeader, manifest.size);
+    if (rangeHeader && !range) {
+      return rangeNotSatisfiable(manifest.size);
+    }
+    return new Response(createChunkStream(bucket, manifest, range ?? undefined), {
+      headers: range
+        ? getModelRangeHeaders(range, manifest.size, manifest.contentType)
+        : getModelHeaders(manifest.size, manifest.contentType),
+      status: range ? 206 : 200,
     });
   }
 
-  if (object) {
+  if (objectHead) {
     return NextResponse.json(
       {
         error: "model_object_incomplete",
         expectedSize: MODEL_SIZE_BYTES,
-        size: object.size,
+        size: objectHead.size,
       },
       { status: 502 },
     );
