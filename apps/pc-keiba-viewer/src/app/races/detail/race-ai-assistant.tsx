@@ -16,6 +16,7 @@ import {
   type RaceAiExportData,
 } from "./race-ai-data";
 import { buildGemmaPrompt, RACE_AI_DEFAULT_PROMPT } from "./race-ai-default-prompt";
+import { isLikelyMobileBrowser } from "./race-ai-device";
 import {
   ensureRaceAiModelBuffer,
   getRaceAiModelState,
@@ -1503,6 +1504,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const [error, setError] = useState<string | null>(null);
   const [modelPartialLength, setModelPartialLength] = useState(0);
   const [debugEnabled, setDebugEnabled] = useState(false);
+  const [hideOnMobile, setHideOnMobile] = useState(false);
   const [toneSettingsStatus, setToneSettingsStatus] = useState<"loading" | "ready">("loading");
   const [chatSessionVersion, setChatSessionVersion] = useState(0);
   const [runtimeLogs, setRuntimeLogs] = useState<RaceAiRuntimeLog[]>([]);
@@ -1642,6 +1644,20 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   }, []);
 
   useEffect(() => {
+    const shouldHide = isLikelyMobileBrowser();
+    setHideOnMobile(shouldHide);
+    if (shouldHide) {
+      setSupportState("unsupported");
+      addRuntimeLog("info", "race AI hidden on mobile browser", {
+        userAgent: navigator.userAgent,
+      });
+    }
+  }, [addRuntimeLog]);
+
+  useEffect(() => {
+    if (hideOnMobile) {
+      return undefined;
+    }
     let cancelled = false;
     setToneSettingsStatus("loading");
     void (async () => {
@@ -1659,9 +1675,13 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [hideOnMobile]);
 
   useEffect(() => {
+    if (hideOnMobile) {
+      setSupportState("unsupported");
+      return;
+    }
     addRuntimeLog("info", "checking WebGPU support", {
       hasNavigator: typeof navigator !== "undefined",
       hasWebGpu: typeof navigator !== "undefined" && "gpu" in navigator,
@@ -1674,9 +1694,12 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     }
     setSupportState("supported");
     addRuntimeLog("info", "WebGPU supported");
-  }, [addRuntimeLog]);
+  }, [addRuntimeLog, hideOnMobile]);
 
   useEffect(() => {
+    if (hideOnMobile) {
+      return undefined;
+    }
     const refreshModelState = () => {
       void getRaceAiModelState(LATEST_RACE_AI_MODEL)
         .then(setModelState)
@@ -1701,7 +1724,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       unsubscribeSettings();
       unsubscribeDownloads();
     };
-  }, [addRuntimeLog]);
+  }, [addRuntimeLog, hideOnMobile]);
 
   useEffect(() => {
     if (!modelState) {
@@ -1937,6 +1960,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   useEffect(() => {
     if (
       supportState !== "supported" ||
+      hideOnMobile ||
       settings?.consent !== "granted" ||
       modelState?.status !== "downloaded" ||
       modelWarmupStartedRef.current ||
@@ -1963,7 +1987,14 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [ensureModel, modelState?.status, settings?.consent, setRuntimeStage, supportState]);
+  }, [
+    ensureModel,
+    hideOnMobile,
+    modelState?.status,
+    settings?.consent,
+    setRuntimeStage,
+    supportState,
+  ]);
 
   const loadRaceDataSnapshot = useCallback(async (): Promise<RaceAiExportData> => {
     setDataReadinessStatus("loading");
@@ -1977,7 +2008,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   }, [props]);
 
   useEffect(() => {
-    if (supportState !== "supported" || settings?.consent !== "granted") {
+    if (hideOnMobile || supportState !== "supported" || settings?.consent !== "granted") {
       return undefined;
     }
     let cancelled = false;
@@ -1997,7 +2028,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     return () => {
       cancelled = true;
     };
-  }, [props, settings?.consent, supportState]);
+  }, [hideOnMobile, props, settings?.consent, supportState]);
 
   const runAi = useCallback(
     async (
@@ -2552,6 +2583,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       return undefined;
     }
     if (
+      hideOnMobile ||
       lastRealtimeFingerprintRef.current === realtimeFingerprint ||
       !llmRef.current ||
       generationStatus !== "idle"
@@ -2569,11 +2601,12 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     return () => {
       window.clearTimeout(timer);
     };
-  }, [generationStatus, realtimeFingerprint, sendSystemMessage]);
+  }, [generationStatus, hideOnMobile, realtimeFingerprint, sendSystemMessage]);
 
   useEffect(() => {
     if (
       supportState !== "supported" ||
+      hideOnMobile ||
       settings?.consent !== "granted" ||
       !settings.autoStart ||
       modelState?.status !== "downloaded" ||
@@ -2588,6 +2621,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     void sendSystemMessage(DEFAULT_RACE_AI_REQUEST, "auto-start");
   }, [
     generationStatus,
+    hideOnMobile,
     modelState?.status,
     raceKey,
     sendSystemMessage,
@@ -2769,6 +2803,9 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   ]);
 
   useEffect(() => {
+    if (hideOnMobile) {
+      return undefined;
+    }
     const handleServerCommand = async (command: unknown) => {
       if (!isRecord(command) || command.action !== "reset" || typeof command.id !== "string") {
         return;
@@ -2799,10 +2836,10 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     return () => {
       window.clearInterval(timer);
     };
-  }, [clearRaceAiState, serverLogUrl]);
+  }, [clearRaceAiState, hideOnMobile, serverLogUrl]);
 
   useEffect(() => {
-    if (!debugEnabled) {
+    if (hideOnMobile || !debugEnabled) {
       return;
     }
     const chatRaceMessages = chatMessages
@@ -2871,6 +2908,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     generationStageElapsedSeconds,
     generationStageLabel,
     generationStatus,
+    hideOnMobile,
     isChatBusy,
     isModelPreparing,
     messages,
@@ -2890,7 +2928,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   ]);
 
   useEffect(() => {
-    if (!debugEnabled) {
+    if (hideOnMobile || !debugEnabled) {
       return undefined;
     }
     const handleCommand = async (command: RaceAiDebugCommand) => {
@@ -2948,13 +2986,14 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     clearRaceAiState,
     debugEnabled,
     debugUrl,
+    hideOnMobile,
     persistLogs,
     raceKey,
     sendMessage,
     setRuntimeStage,
   ]);
 
-  if (supportState !== "supported" || settings?.consent !== "granted") {
+  if (hideOnMobile || supportState !== "supported" || settings?.consent !== "granted") {
     return null;
   }
 

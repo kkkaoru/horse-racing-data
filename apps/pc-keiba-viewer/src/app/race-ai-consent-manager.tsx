@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { isLikelyMobileBrowser } from "./races/detail/race-ai-device";
 import {
   downloadRaceAiModel,
   getRaceAiModelState,
@@ -16,7 +17,8 @@ import {
   type RaceAiSettings,
 } from "./races/detail/race-ai-storage";
 
-const isWebGpuSupported = (): boolean => typeof navigator !== "undefined" && "gpu" in navigator;
+const canPromptForRaceAiUsage = (): boolean =>
+  typeof navigator !== "undefined" && "gpu" in navigator && !isLikelyMobileBrowser();
 
 export function RaceAiConsentManager() {
   const [settings, setSettings] = useState<RaceAiSettings | null>(null);
@@ -26,7 +28,7 @@ export function RaceAiConsentManager() {
   const promptedRef = useRef(false);
 
   useEffect(() => {
-    const nextSupported = isWebGpuSupported();
+    const nextSupported = canPromptForRaceAiUsage();
     setSupported(nextSupported);
     if (!nextSupported) {
       return undefined;
