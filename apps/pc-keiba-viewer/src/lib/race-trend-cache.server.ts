@@ -2,17 +2,20 @@ import "server-only";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 
 import {
-  DETAIL_SECTION_CACHE_AFTER_START_SECONDS,
-  buildDetailSectionCacheKey,
-  type DetailSectionCacheWarmMessage,
-} from "./race-detail-section-cache";
+  RACE_TREND_CACHE_AFTER_START_SECONDS,
+  buildRaceTrendCacheKey,
+  getRaceTrendCacheTtlSeconds,
+  type RaceTrendCacheOptions,
+} from "./race-trend-cache";
 import type { RaceDetail } from "./race-types";
 
 const CACHE_CONTROL_HEADER = "public, max-age=%d";
-const CACHE_URL_BASE = "https://pc-keiba-viewer.local/detail-section-cache/";
+const CACHE_URL_BASE = "https://pc-keiba-viewer.local/race-trend-cache/";
 const DEFAULT_CONTENT_TYPE = "application/json; charset=utf-8";
 
 type CacheSource = "cache-api" | "kv";
+
+const memoryCache = new Map<string, { body: string; expiresAt: number }>();
 
 const getCloudflareRuntime = async (): Promise<{
   ctx: PcKeibaExecutionContext | null;
@@ -28,65 +31,53 @@ const getCloudflareRuntime = async (): Promise<{
   }
 };
 
-const getCacheRequest = (cacheKey: string): Request =>
-  new Request(`${CACHE_URL_BASE}${encodeURIComponent(cacheKey)}`);
-
 const getDefaultCache = (): Cache | null =>
   typeof caches === "undefined" || !caches.default ? null : caches.default;
 
+const getCacheRequest = (cacheKey: string): Request =>
+  new Request(`${CACHE_URL_BASE}${encodeURIComponent(cacheKey)}`);
+
 const getConfiguredAfterStartSeconds = (env: CloudflareEnv | null): number => {
-  const parsed = Number(env?.PC_KEIBA_DETAIL_SECTION_CACHE_AFTER_START_SECONDS);
+  const parsed = Number(env?.PC_KEIBA_RACE_TREND_CACHE_AFTER_START_SECONDS);
   return Number.isFinite(parsed) && parsed >= 60
     ? Math.floor(parsed)
-    : DETAIL_SECTION_CACHE_AFTER_START_SECONDS;
+    : RACE_TREND_CACHE_AFTER_START_SECONDS;
 };
 
-const getRaceStartTimeMs = (race: RaceDetail): number | null => {
-  const normalizedTime = race.hassoJikoku?.trim().padStart(4, "0");
-  if (!normalizedTime || !/^\d{4}$/u.test(normalizedTime)) {
-    return null;
-  }
-  const startTime = Date.parse(
-    `${race.kaisaiNen}-${race.kaisaiTsukihi.slice(0, 2)}-${race.kaisaiTsukihi.slice(
-      2,
-      4,
-    )}T${normalizedTime.slice(0, 2)}:${normalizedTime.slice(2, 4)}:00+09:00`,
-  );
-  return Number.isFinite(startTime) ? startTime : null;
-};
-
-const getRaceDayFallbackBaseTimeMs = (race: RaceDetail): number =>
-  Date.parse(
-    `${race.kaisaiNen}-${race.kaisaiTsukihi.slice(0, 2)}-${race.kaisaiTsukihi.slice(
-      2,
-      4,
-    )}T23:59:59+09:00`,
-  );
-
-export const getDetailSectionCacheTtlSeconds = (
-  race: RaceDetail,
-  env: CloudflareEnv | null,
-  nowMs = Date.now(),
-): number => {
-  const afterStartSeconds = getConfiguredAfterStartSeconds(env);
-  const raceStartTime = getRaceStartTimeMs(race);
-  const expiresAt =
-    (raceStartTime ?? getRaceDayFallbackBaseTimeMs(race)) + afterStartSeconds * 1000;
-  return Math.max(0, Math.floor((expiresAt - nowMs) / 1000));
-};
-
-const buildCachedResponse = (body: string, source: CacheSource): Response =>
+const buildCachedResponse = (body: string, source: CacheSource | "memory"): Response =>
   new Response(body, {
     headers: {
       "Cache-Control": "public, max-age=60",
       "Content-Type": DEFAULT_CONTENT_TYPE,
-      "X-Detail-Section-Cache": `HIT-${source}`,
+      "X-Race-Trend-Cache": `HIT-${source}`,
     },
   });
 
-export const getCachedDetailSectionResponse = async (
-  cacheKey: string,
-): Promise<Response | null> => {
+export const buildRaceTrendCacheKeyForRequest = ({
+  day,
+  keibajoCode,
+  month,
+  options,
+  raceNumber,
+  year,
+}: {
+  day: string;
+  keibajoCode: string;
+  month: string;
+  options: RaceTrendCacheOptions;
+  raceNumber: string;
+  year: string;
+}): string => buildRaceTrendCacheKey({ day, keibajoCode, month, options, raceNumber, year });
+
+export const getCachedRaceTrendResponse = async (cacheKey: string): Promise<Response | null> => {
+  const cachedMemory = memoryCache.get(cacheKey);
+  if (cachedMemory) {
+    if (cachedMemory.expiresAt > Date.now()) {
+      return buildCachedResponse(cachedMemory.body, "memory");
+    }
+    memoryCache.delete(cacheKey);
+  }
+
   const defaultCache = getDefaultCache();
   const cacheRequest = getCacheRequest(cacheKey);
   const cachedResponse = await defaultCache?.match(cacheRequest);
@@ -115,7 +106,7 @@ export const getCachedDetailSectionResponse = async (
   return buildCachedResponse(kvBody, "kv");
 };
 
-export const putDetailSectionCache = async ({
+export const putRaceTrendCache = async ({
   body,
   cacheKey,
   race,
@@ -125,10 +116,14 @@ export const putDetailSectionCache = async ({
   race: RaceDetail;
 }): Promise<void> => {
   const { env } = await getCloudflareRuntime();
-  const ttlSeconds = getDetailSectionCacheTtlSeconds(race, env);
+  const ttlSeconds = getRaceTrendCacheTtlSeconds(race, getConfiguredAfterStartSeconds(env));
   if (ttlSeconds <= 0) {
     return;
   }
+  memoryCache.set(cacheKey, {
+    body,
+    expiresAt: Date.now() + ttlSeconds * 1000,
+  });
 
   const cacheControl = CACHE_CONTROL_HEADER.replace("%d", String(ttlSeconds));
   await Promise.all([
@@ -144,7 +139,3 @@ export const putDetailSectionCache = async ({
     env?.DETAIL_SECTION_CACHE_KV?.put(cacheKey, body, { expirationTtl: ttlSeconds }),
   ]);
 };
-
-export const buildDetailSectionCacheKeyForMessage = (
-  message: Omit<DetailSectionCacheWarmMessage, "source">,
-): string => buildDetailSectionCacheKey(message);

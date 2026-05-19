@@ -2,7 +2,6 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { NextResponse } from "next/server";
 
 import { getRacesByDate } from "../../../../db/queries";
-import { isCornerPacePredictionSupported } from "../../../../lib/race-pace-prediction";
 import {
   DEFAULT_RACE_DETAIL_CACHE_WARM_SECTIONS,
   getTomorrowJstDateParts,
@@ -10,6 +9,7 @@ import {
   type DetailSectionCacheWarmMessage,
   type DetailSectionCacheableSection,
 } from "../../../../lib/race-detail-section-cache";
+import { isCornerPacePredictionSupported } from "../../../../lib/race-pace-prediction";
 
 export const dynamic = "force-dynamic";
 

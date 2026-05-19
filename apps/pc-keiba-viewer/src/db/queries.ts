@@ -455,6 +455,7 @@ export const getRaceTrendHistoricalStarterRows = cache(
             ${normalizeTextSql(sql`ra.kyosomei_fukudai`)},
             '一般競走'
           ) as "raceName",
+          ${normalizeTextSql(sql`ra.hasso_jikoku`)} as "hassoJikoku",
           ${normalizeTextSql(sql`ra.toroku_tosu`)} as "runnerCount",
           ${normalizeTextSql(sql`${runnerTable}.wakuban`)} as wakuban,
           ${normalizeTextSql(sql`${runnerTable}.umaban`)} as umaban,
