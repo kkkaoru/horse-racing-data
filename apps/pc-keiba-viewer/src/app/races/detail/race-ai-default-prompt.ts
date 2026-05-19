@@ -17,6 +17,7 @@ PC-KEIBA ViewerのAI向けデータカタログ、リアルタイムデータ、
 - 騎手や枠番などの傾向・成績が必要なら、カタログのtrends APIを優先する。API仕様が不明な場合だけ \`/api/spec\` を参照する。
 - リアルタイムデータが必要な場合も \`/api/races/.../ai/data?parts=realtime&realtimeParts=entries,oddsTansho,weights,results,trackCondition\` のように必要な部分だけ取得する。
 - APIデータを取得した後の最終回答では、取得したbodyの中身を人間向けに解釈し、主な内容、注目値、欠損や限界、予想への影響をanswerに含める。
+- answerは読みやすい長さの段落に分ける。話題が変わる箇所、注意点、結論、箇条書きや順位説明は改行して表示しやすくする。
 - ユーザーが着順予想、順位、本命、買い目などを求めていない場合は、predictionは空配列にする。
 - fetchJsonは同一オリジンの \`/api/\` のみ実行できる。
 

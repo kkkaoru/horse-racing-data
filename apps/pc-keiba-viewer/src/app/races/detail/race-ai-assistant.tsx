@@ -142,6 +142,7 @@ const TOOL_ROW_LIMIT = 16;
 const TOOL_TEXT_LIMIT = 240;
 const RUNTIME_LOG_TEXT_LIMIT = 2_000;
 const CHAT_AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 48;
+const ANSWER_DISPLAY_PARAGRAPH_MAX_CHARS = 96;
 const MACHINE_RESPONSE_FORMAT_FALLBACK_SOURCE =
   "回答の形式が整わず、表示できる本文を作成できませんでしたわ。データ取得後に、もう一度お試しくださいませ。";
 const MACHINE_NATURAL_TEXT_THOUGHT_SOURCE =
@@ -1051,8 +1052,58 @@ const uiMessageDisplayText = (message: UIMessage, fallbackAnswer = ""): string =
 const answerBlocks = (text: string): string[] =>
   cleanModelText(text)
     .split(/\n{2,}/u)
-    .map((block) => block.trim())
+    .flatMap((block) => splitAnswerDisplayBlock(block))
     .filter(Boolean);
+
+const splitAnswerSentences = (text: string): string[] => {
+  const sentences: string[] = [];
+  let current = "";
+  for (const character of text) {
+    current += character;
+    if ("。！？!?".includes(character)) {
+      const sentence = current.trim();
+      if (sentence) {
+        sentences.push(sentence);
+      }
+      current = "";
+    }
+  }
+  const trailing = current.trim();
+  if (trailing) {
+    sentences.push(trailing);
+  }
+  return sentences;
+};
+
+const splitAnswerDisplayLine = (line: string): string[] => {
+  const normalizedLine = line.replace(/[ \t]+/gu, " ").trim();
+  if (!normalizedLine) {
+    return [];
+  }
+  const sentences = splitAnswerSentences(normalizedLine);
+  const blocks: string[] = [];
+  let current = "";
+  for (const sentence of sentences) {
+    if (!current) {
+      current = sentence;
+      continue;
+    }
+    const next = `${current}${sentence}`;
+    if (next.length <= ANSWER_DISPLAY_PARAGRAPH_MAX_CHARS) {
+      current = next;
+      continue;
+    }
+    blocks.push(current);
+    current = sentence;
+  }
+  if (current) {
+    blocks.push(current);
+  }
+  return blocks;
+};
+
+const splitAnswerDisplayBlock = (block: string): string[] =>
+  block.replace(/\r\n?/gu, "\n").split("\n").flatMap(splitAnswerDisplayLine);
 
 const answerBlockItems = (text: string): Array<{ key: string; text: string }> => {
   const blockCounts = new Map<string, number>();
