@@ -159,3 +159,4 @@ apps/sync-realtime-data/running-style/
 
 # wrangler r2 object get local downloads
 apps/pc-keiba-viewer/finish-position/
+catboost_info/
