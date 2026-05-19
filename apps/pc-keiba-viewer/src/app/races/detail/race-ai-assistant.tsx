@@ -342,6 +342,62 @@ const cleanModelText = (text: string): string =>
     .replace(/\s*```$/u, "")
     .trim();
 
+const STRUCTURED_RESPONSE_FIELD_PATTERN =
+  /(?:^|[\s{,[])"?(?:answer|prediction|thoughtLog|needsTool|toolJavaScript)"?\s*[:：]/iu;
+const STRUCTURED_RESPONSE_SECTION_PATTERN =
+  /(?:^|\n)\s*(?:思考ログ|根拠ログ|thoughtLog|prediction|needsTool|toolJavaScript)\s*[:：]/iu;
+const DISPLAY_ANSWER_SECTION_PATTERN = /^\s*(?:"?answer"?|回答)\s*[:：]\s*(.*)$/iu;
+const DISPLAY_STOP_SECTION_PATTERN =
+  /^\s*(?:"?(?:prediction|thoughtLog|needsTool|toolJavaScript)"?|思考ログ|根拠ログ)\s*[:：]/iu;
+
+const isStructuredModelText = (text: string): boolean => {
+  const cleaned = cleanModelText(stripJsonFence(text));
+  return (
+    STRUCTURED_RESPONSE_FIELD_PATTERN.test(cleaned) ||
+    STRUCTURED_RESPONSE_SECTION_PATTERN.test(cleaned)
+  );
+};
+
+const extractLabeledDisplayAnswer = (text: string): string | null => {
+  const lines = cleanModelText(stripJsonFence(text)).replace(/\r\n?/gu, "\n").split("\n");
+  const startIndex = lines.findIndex((line) => DISPLAY_ANSWER_SECTION_PATTERN.test(line));
+  if (startIndex < 0) {
+    return null;
+  }
+  const firstLineMatch = DISPLAY_ANSWER_SECTION_PATTERN.exec(lines[startIndex] ?? "");
+  const answerLines = [firstLineMatch?.[1] ?? ""];
+  for (const line of lines.slice(startIndex + 1)) {
+    if (DISPLAY_STOP_SECTION_PATTERN.test(line)) {
+      break;
+    }
+    answerLines.push(line);
+  }
+  const answer = answerLines
+    .join("\n")
+    .replace(/^\s*["']|["'],?\s*$/gu, "")
+    .trim();
+  return answer || null;
+};
+
+const normalizeUserFacingAssistantText = (text: string, fallbackAnswer = ""): string => {
+  const cleaned = cleanModelText(stripJsonFence(text)).replace(/\r\n?/gu, "\n");
+  const lines: string[] = [];
+  for (const line of cleaned.split("\n")) {
+    if (DISPLAY_STOP_SECTION_PATTERN.test(line)) {
+      break;
+    }
+    lines.push(line);
+  }
+  const normalized = cleanModelText(lines.join("\n"))
+    .replace(DISPLAY_ANSWER_SECTION_PATTERN, "$1")
+    .replace(/^\s*["']|["'],?\s*$/gu, "")
+    .trim();
+  if (!normalized || isStructuredModelText(normalized)) {
+    return fallbackAnswer;
+  }
+  return normalized;
+};
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
@@ -428,6 +484,26 @@ const extractJsonStringField = (text: string, fieldName: string): string | null 
     value += character;
   }
   return null;
+};
+
+const extractDisplayAnswerFromModelText = (text: string, fallbackAnswer = ""): string => {
+  const cleaned = cleanModelText(stripJsonFence(text));
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  const jsonText = start >= 0 && end > start ? cleaned.slice(start, end + 1) : cleaned;
+  const parsed = parseModelJsonObject(jsonText);
+  if (parsed && typeof parsed.answer === "string") {
+    return normalizeUserFacingAssistantText(parsed.answer, fallbackAnswer);
+  }
+  const extractedAnswer =
+    extractJsonStringField(jsonText, "answer") ?? extractLabeledDisplayAnswer(cleaned);
+  if (extractedAnswer) {
+    return normalizeUserFacingAssistantText(extractedAnswer, fallbackAnswer);
+  }
+  if (isStructuredModelText(cleaned)) {
+    return fallbackAnswer;
+  }
+  return normalizeUserFacingAssistantText(cleaned, fallbackAnswer);
 };
 
 const isLocalhostBrowser = (): boolean =>
@@ -551,7 +627,9 @@ const formatMessagesForPrompt = (messages: RaceAiMessage[]): unknown =>
     .slice(-3)
     .map((message) => ({
       content: truncatePromptText(
-        message.role === "assistant" ? cleanModelText(message.content) : message.content,
+        message.role === "assistant"
+          ? extractDisplayAnswerFromModelText(message.content)
+          : message.content,
         360,
       ),
       createdAt: message.createdAt,
@@ -777,13 +855,17 @@ const parseModelResponse = (
               horseNumber: typeof row.horseNumber === "string" ? row.horseNumber : "-",
               jockeyName: typeof row.jockeyName === "string" ? row.jockeyName : "-",
               rank: typeof row.rank === "number" && Number.isFinite(row.rank) ? row.rank : 0,
-              reason: typeof row.reason === "string" ? row.reason : "",
+              reason:
+                typeof row.reason === "string" ? normalizeUserFacingAssistantText(row.reason) : "",
             } satisfies RaceAiPredictionRow;
           })
           .filter((row): row is RaceAiPredictionRow => row !== null && row.rank > 0)
       : [];
     return {
-      answer: typeof parsed.answer === "string" ? parsed.answer : cleaned,
+      answer:
+        typeof parsed.answer === "string"
+          ? normalizeUserFacingAssistantText(parsed.answer, fallbackAnswer)
+          : fallbackAnswer,
       format: "json",
       needsTool: parsed.needsTool === true,
       prediction,
@@ -794,9 +876,8 @@ const parseModelResponse = (
           : null,
     };
   } catch {
-    const extractedAnswer = extractJsonStringField(jsonText, "answer");
     return {
-      answer: extractedAnswer ?? (cleaned || fallbackAnswer),
+      answer: extractDisplayAnswerFromModelText(cleaned, fallbackAnswer),
       format: "text",
       needsTool: false,
       prediction: [],
@@ -872,7 +953,8 @@ const buildTonePromptSection = (tonePrompt: string): string | null => {
     "口調・振る舞い設定:",
     normalizedTonePrompt,
     "口調適用範囲:",
-    "- answerの各文、prediction[].reasonの各根拠、thoughtLogなど、ユーザーに表示される日本語文には必ずこの口調・振る舞い設定を反映する。",
+    "- answerの各文、prediction[].reasonの各根拠、thoughtLogには必ずこの口調・振る舞い設定を反映する。",
+    "- answerやprediction[].reasonには、JSONキー名、thoughtLog、needsTool、toolJavaScript、思考ログ、根拠ログなどの構造名を出さない。",
     "- horseName、jockeyName、horseNumber、rank、confidence、JSONキー、toolJavaScript、URL、数値、固有名詞は口調に合わせて改変しない。",
     "- 回答冒頭の定型説明やデータ不足の注記でも、通常文体へ戻さない。",
     "- 予想の根拠は短くても、口調設定を省略せず自然に反映する。",
@@ -891,6 +973,7 @@ const buildToneRewritePrompt = ({
       "次のJSONの表示用日本語文だけを、指定された口調・振る舞い設定に従って自然に書き換えてください。",
       "JSON以外は出力しないでください。",
       "answer、prediction[].reason、thoughtLogだけを書き換え対象にしてください。",
+      "answerやprediction[].reasonには、JSONキー名、thoughtLog、needsTool、toolJavaScript、思考ログ、根拠ログなどの構造名を含めないでください。",
       "rank、horseNumber、horseName、jockeyName、confidence、needsTool、toolJavaScript、JSONキー、数値、固有名詞は変更しないでください。",
       "口調・振る舞い設定:",
       tonePrompt,
@@ -940,13 +1023,22 @@ const applyToneToResponse = async ({
     );
     if (rewritten.format !== "json") {
       addRuntimeLog("warn", "tone rewrite returned non-json response");
-      return response;
+      return {
+        ...response,
+        answer: normalizeUserFacingAssistantText(response.answer),
+        prediction: response.prediction.map((row) => ({
+          ...row,
+          reason: normalizeUserFacingAssistantText(row.reason),
+        })),
+      };
     }
     const prediction = response.prediction.map((row, index) => {
       const rewrittenRow = rewritten.prediction[index];
       return {
         ...row,
-        reason: rewrittenRow?.reason.trim() || row.reason,
+        reason:
+          normalizeUserFacingAssistantText(rewrittenRow?.reason.trim() ?? "") ||
+          normalizeUserFacingAssistantText(row.reason),
       };
     });
     addRuntimeLog("info", "tone rewrite completed", {
@@ -954,7 +1046,9 @@ const applyToneToResponse = async ({
     });
     return {
       ...response,
-      answer: rewritten.answer.trim() || response.answer,
+      answer:
+        normalizeUserFacingAssistantText(rewritten.answer.trim()) ||
+        normalizeUserFacingAssistantText(response.answer),
       prediction,
       thoughtLog: rewritten.thoughtLog.trim() || response.thoughtLog,
     };
@@ -1003,7 +1097,7 @@ const buildPrompt = ({
       : "初回入力には実データがありません。具体的な予想や事実回答には、まずtoolJavaScriptで必要最小限のfetchJsonを1回要求してください。",
     "直近の対話ログ:",
     JSON.stringify(formatMessagesForPrompt(messages)),
-    "直近の思考ログ:",
+    "直近の内部根拠要約:",
     JSON.stringify(formatThoughtLogsForPrompt(thoughtLogs)),
     "AI向けデータカタログ:",
     JSON.stringify(buildRaceAiDataCatalogForPrompt(data)),
@@ -2165,7 +2259,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   );
 
   const resetRaceAiState = useCallback(() => {
-    if (!window.confirm("このレースのAI予想、対話ログ、思考ログをリセットしますか？")) {
+    if (!window.confirm("このレースのAI予想、対話ログ、内部記録をリセットしますか？")) {
       return;
     }
     clearRaceAiState({ allowAutoStart: true });

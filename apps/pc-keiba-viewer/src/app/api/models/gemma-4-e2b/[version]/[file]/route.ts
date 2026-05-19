@@ -4,6 +4,8 @@ import { NextResponse } from "next/server";
 export const dynamic = "force-dynamic";
 
 const MODEL_FILE_NAME = "gemma-4-E2B-it-web.task";
+const MODEL_SIZE_BYTES = 2_003_697_664;
+const MODEL_SHA256 = "2cbff161177a4d51c9d04360016185976f504517ba5758cd10c1564e5421c5a5";
 const HUGGING_FACE_MODEL_URL =
   "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it-web.task?download=true";
 const MODEL_CONTENT_TYPE = "application/octet-stream";
@@ -82,6 +84,8 @@ const readChunkManifest = async (
     manifest.fileName !== MODEL_FILE_NAME ||
     manifest.version !== version ||
     typeof manifest.size !== "number" ||
+    manifest.size !== MODEL_SIZE_BYTES ||
+    (typeof manifest.sha256 === "string" && manifest.sha256 !== MODEL_SHA256) ||
     !Array.isArray(manifest.chunks) ||
     manifest.chunks.length === 0
   ) {
@@ -90,6 +94,10 @@ const readChunkManifest = async (
 
   const chunks = manifest.chunks.filter(isModelChunk);
   if (chunks.length !== manifest.chunks.length) {
+    return null;
+  }
+  const chunkTotalBytes = chunks.reduce((total, chunk) => total + chunk.size, 0);
+  if (chunkTotalBytes !== manifest.size) {
     return null;
   }
 
@@ -117,6 +125,9 @@ const createChunkStream = (
           if (!object) {
             throw new Error(`missing model chunk: ${chunk.key}`);
           }
+          if (object.size !== chunk.size) {
+            throw new Error(`model chunk size mismatch: ${chunk.key}`);
+          }
           const reader = object.body.getReader();
           for (;;) {
             // eslint-disable-next-line no-await-in-loop -- each chunk stream must be read sequentially.
@@ -142,7 +153,7 @@ export async function HEAD(_request: Request, context: RouteContext) {
   }
 
   const object = bucket ? await bucket.head(key) : null;
-  if (object) {
+  if (object && object.size === MODEL_SIZE_BYTES) {
     return new Response(null, {
       headers: getModelHeaders(object.size, object.httpMetadata?.contentType),
     });
@@ -153,6 +164,17 @@ export async function HEAD(_request: Request, context: RouteContext) {
     return new Response(null, {
       headers: getModelHeaders(manifest.size, manifest.contentType),
     });
+  }
+
+  if (object) {
+    return NextResponse.json(
+      {
+        error: "model_object_incomplete",
+        expectedSize: MODEL_SIZE_BYTES,
+        size: object.size,
+      },
+      { status: 502 },
+    );
   }
 
   if (process.env.NODE_ENV === "development") {
@@ -171,21 +193,32 @@ export async function GET(_request: Request, context: RouteContext) {
 
   const object = bucket ? await bucket.get(key) : null;
 
-  if (!object) {
-    const manifest = bucket ? await readChunkManifest(bucket, key, version) : null;
-    if (bucket && manifest) {
-      return new Response(createChunkStream(bucket, manifest), {
-        headers: getModelHeaders(manifest.size, manifest.contentType),
-      });
-    }
-
-    if (process.env.NODE_ENV === "development") {
-      return NextResponse.redirect(HUGGING_FACE_MODEL_URL, { status: 302 });
-    }
-    return NextResponse.json({ error: "model_not_found" }, { status: 404 });
+  if (object && object.size === MODEL_SIZE_BYTES) {
+    return new Response(object.body, {
+      headers: getModelHeaders(object.size, object.httpMetadata?.contentType),
+    });
   }
 
-  return new Response(object.body, {
-    headers: getModelHeaders(object.size, object.httpMetadata?.contentType),
-  });
+  const manifest = bucket ? await readChunkManifest(bucket, key, version) : null;
+  if (bucket && manifest) {
+    return new Response(createChunkStream(bucket, manifest), {
+      headers: getModelHeaders(manifest.size, manifest.contentType),
+    });
+  }
+
+  if (object) {
+    return NextResponse.json(
+      {
+        error: "model_object_incomplete",
+        expectedSize: MODEL_SIZE_BYTES,
+        size: object.size,
+      },
+      { status: 502 },
+    );
+  }
+
+  if (process.env.NODE_ENV === "development") {
+    return NextResponse.redirect(HUGGING_FACE_MODEL_URL, { status: 302 });
+  }
+  return NextResponse.json({ error: "model_not_found" }, { status: 404 });
 }
