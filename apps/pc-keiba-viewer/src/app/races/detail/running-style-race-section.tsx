@@ -1,10 +1,7 @@
 // Run with: imported by race-detail-page.tsx (Next.js async server component)
 
-import {
-  buildRaceKey,
-  getRaceRunningStylesFromD1,
-  getRunningStyleMetricsForActiveModel,
-} from "../../../db/corner-running-style-queries";
+import { getRunningStyleMetricsForActiveModel } from "../../../db/corner-running-style-queries";
+import { getRaceRunningStylesWithCache } from "../../../lib/running-style-cache.server";
 import { RunningStyleSection, type RunnerDisplayInfo } from "./running-style-section";
 
 interface RunningStyleRaceSectionProps {
@@ -27,15 +24,14 @@ export const RunningStyleRaceSection = async ({
   runnersByUmaban,
 }: RunningStyleRaceSectionProps) => {
   if (category === "ban-ei") return null;
-  const raceKey = buildRaceKey({
-    kaisaiNen,
-    kaisaiTsukihi,
-    keibajoCode,
-    raceBango,
-    source,
-  });
   const [rows, metrics] = await Promise.all([
-    getRaceRunningStylesFromD1(raceKey).catch(() => []),
+    getRaceRunningStylesWithCache({
+      kaisaiNen,
+      kaisaiTsukihi,
+      keibajoCode,
+      raceBango,
+      source,
+    }).catch(() => []),
     getRunningStyleMetricsForActiveModel(category).catch(() => null),
   ]);
   return (

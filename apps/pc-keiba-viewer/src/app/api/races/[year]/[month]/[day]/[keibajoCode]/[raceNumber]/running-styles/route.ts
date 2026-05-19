@@ -3,10 +3,7 @@
 
 import { NextResponse } from "next/server";
 
-import {
-  buildRaceKey,
-  getRaceRunningStylesFromD1,
-} from "../../../../../../../../../db/corner-running-style-queries";
+import { getRaceRunningStylesWithCache } from "../../../../../../../../../lib/running-style-cache.server";
 
 export const dynamic = "force-dynamic";
 
@@ -56,7 +53,10 @@ const collectRowsForSources = async (
   );
   const lookups = await Promise.all(
     orderedSources.map((source) =>
-      getRaceRunningStylesFromD1(buildRaceKey({ ...raceParams, source })),
+      getRaceRunningStylesWithCache({
+        ...raceParams,
+        source,
+      }),
     ),
   );
   return lookups.find((rows) => rows.length > 0) ?? [];

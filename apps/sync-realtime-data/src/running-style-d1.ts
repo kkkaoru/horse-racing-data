@@ -123,6 +123,51 @@ export const listRaceRunningStyleCounts = async (
   return counts;
 };
 
+export const listRaceRunningStylesForRace = async (
+  db: D1Database,
+  raceKey: string,
+): Promise<RaceRunningStyleRow[]> => {
+  const result = await db
+    .prepare(
+      `select race_key, horse_number, ketto_toroku_bango, bamei, category, kaisai_nen,
+              model_version, p_nige, p_senkou, p_sashi, p_oikomi, predicted_label, predicted_at
+         from race_running_styles
+        where race_key = ?
+        order by horse_number`,
+    )
+    .bind(raceKey)
+    .all<{
+      bamei: string | null;
+      category: string;
+      horse_number: number;
+      kaisai_nen: string;
+      ketto_toroku_bango: string;
+      model_version: string;
+      p_nige: number;
+      p_oikomi: number;
+      p_sashi: number;
+      p_senkou: number;
+      predicted_at: string;
+      predicted_label: RaceRunningStyleRow["predictedLabel"];
+      race_key: string;
+    }>();
+  return result.results.map((row) => ({
+    bamei: row.bamei,
+    category: row.category,
+    horseNumber: Number(row.horse_number),
+    kaisaiNen: row.kaisai_nen,
+    kettoTorokuBango: row.ketto_toroku_bango,
+    modelVersion: row.model_version,
+    pNige: Number(row.p_nige),
+    pOikomi: Number(row.p_oikomi),
+    pSashi: Number(row.p_sashi),
+    pSenkou: Number(row.p_senkou),
+    predictedAt: row.predicted_at,
+    predictedLabel: row.predicted_label,
+    raceKey: row.race_key,
+  }));
+};
+
 export const listRunningStyleInferenceStates = async (
   db: D1Database,
   raceKeys: ReadonlyArray<string>,

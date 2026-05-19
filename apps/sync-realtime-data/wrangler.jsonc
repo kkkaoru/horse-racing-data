@@ -16,6 +16,7 @@
     "DATABASE_TARGET": "cloudflare",
     "TRACK_CONDITION_DO_TTL_SECONDS": "172800",
     "RUNNING_STYLE_D1_WRITE_ENABLED": "1",
+    "RUNNING_STYLE_CACHE_ORIGIN": "https://pc-keiba-viewer.kkk4oru.com",
   },
   "triggers": {
     "crons": [
