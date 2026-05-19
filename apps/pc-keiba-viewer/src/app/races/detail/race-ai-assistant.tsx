@@ -267,7 +267,7 @@ const formatRuntimeLogDetails = (details: RaceAiRuntimeLogDetails | null): strin
 
 const raceMessageToUiMessage = (message: RaceAiMessage): UIMessage => ({
   id: message.id,
-  metadata: { createdAt: message.createdAt },
+  metadata: { createdAt: message.createdAt, prediction: message.prediction },
   parts: [{ text: message.content, type: "text" }],
   role: message.role,
 });
@@ -874,6 +874,48 @@ const latestStoredPredictionRows = (messages: RaceAiMessage[]): RaceAiPrediction
   return [];
 };
 
+const uiMessagePredictionRows = (message: UIMessage): RaceAiPredictionRow[] => {
+  const metadata = isRecord(message.metadata) ? message.metadata : null;
+  const rawPrediction = metadata?.prediction;
+  if (!Array.isArray(rawPrediction)) {
+    return [];
+  }
+  return rawPrediction
+    .map((row) => normalizePredictionRow(row))
+    .filter((row): row is RaceAiPredictionRow => row !== null);
+};
+
+function RaceAiPredictionTable({ rows }: { rows: RaceAiPredictionRow[] }) {
+  return (
+    <div className="race-ai-table-wrap">
+      <table className="race-ai-prediction-table">
+        <thead>
+          <tr>
+            <th>予想</th>
+            <th>馬番</th>
+            <th>馬名</th>
+            <th>騎手</th>
+            <th>信頼度</th>
+            <th>根拠</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={`${row.rank}-${row.horseNumber}`}>
+              <td>{row.rank}</td>
+              <td>{row.horseNumber}</td>
+              <td>{row.horseName}</td>
+              <td>{row.jockeyName}</td>
+              <td>{row.confidence === null ? "-" : row.confidence.toFixed(2)}</td>
+              <td>{row.reason}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 const formatFallbackScore = (value: number | null | undefined): string | null =>
   typeof value === "number" && Number.isFinite(value) ? value.toFixed(2) : null;
 
@@ -1262,6 +1304,15 @@ const buildPrompt = ({
         toolResultCharLimit,
       )
     : "なし";
+  const toolResultInterpretationRule = hasToolResults
+    ? [
+        "取得済みAPIデータの説明要件:",
+        "- answerには、取得済みツール結果のbodyが何を示しているかを人間向けに解釈して必ず含める。",
+        "- 単に「データを取得しました」とだけ書かず、主な項目、注目値、欠損や限界、予想への影響を1〜3文で説明する。",
+        "- オッズ、馬体重、出走状況、結果、総合スコア、着順予測、パドック、リアルタイム情報がbodyにある場合は、回答の根拠として具体的に触れる。",
+        "- APIのJSONキー名をそのまま羅列せず、ユーザーが読める自然な表現へ言い換える。",
+      ].join("\n")
+    : null;
   const promptBody = [
     RACE_AI_DEFAULT_PROMPT,
     buildTonePromptSection(tonePrompt),
@@ -1271,6 +1322,7 @@ const buildPrompt = ({
     hasToolResults
       ? "取得済みツール結果を根拠に回答してください。まだ不足する場合だけ追加でfetchJsonを1回要求できます。"
       : "初回入力には実データがありません。具体的な予想や事実回答には、まずtoolJavaScriptで必要最小限のfetchJsonを1回要求してください。",
+    toolResultInterpretationRule,
     "直近の対話ログ:",
     JSON.stringify(formatMessagesForPrompt(messages)),
     "直近の内部根拠要約:",
@@ -3092,36 +3144,42 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         {displayedChatMessages.length === 0 ? (
           <p className="empty-state">AIとのやりとりはまだありません。</p>
         ) : (
-          displayedChatMessages.map((message) => (
-            <article className={`race-ai-chat-message ${message.role}`} key={message.id}>
-              {message.role === "assistant" ? (
-                <span className="race-ai-chat-avatar" aria-hidden="true">
-                  <Image
-                    src={assistantIconUrl}
-                    alt=""
-                    height={64}
-                    loading="eager"
-                    unoptimized
-                    width={64}
-                  />
-                </span>
-              ) : null}
-              <div className="race-ai-chat-message-body">
-                <span className="race-ai-chat-role">
-                  {message.role === "user"
-                    ? "あなた"
-                    : message.role === "system"
-                      ? "システム"
-                      : assistantName}
-                </span>
-                <div className="race-ai-chat-content">
-                  {answerBlockItems(uiMessageDisplayText(message)).map((block) => (
-                    <p key={`${message.id}-${block.key}`}>{block.text}</p>
-                  ))}
+          displayedChatMessages.map((message) => {
+            const messagePrediction = uiMessagePredictionRows(message);
+            return (
+              <article className={`race-ai-chat-message ${message.role}`} key={message.id}>
+                {message.role === "assistant" ? (
+                  <span className="race-ai-chat-avatar" aria-hidden="true">
+                    <Image
+                      src={assistantIconUrl}
+                      alt=""
+                      height={64}
+                      loading="eager"
+                      unoptimized
+                      width={64}
+                    />
+                  </span>
+                ) : null}
+                <div className="race-ai-chat-message-body">
+                  <span className="race-ai-chat-role">
+                    {message.role === "user"
+                      ? "あなた"
+                      : message.role === "system"
+                        ? "システム"
+                        : assistantName}
+                  </span>
+                  <div className="race-ai-chat-content">
+                    {answerBlockItems(uiMessageDisplayText(message)).map((block) => (
+                      <p key={`${message.id}-${block.key}`}>{block.text}</p>
+                    ))}
+                    {messagePrediction.length > 0 ? (
+                      <RaceAiPredictionTable rows={messagePrediction} />
+                    ) : null}
+                  </div>
                 </div>
-              </div>
-            </article>
-          ))
+              </article>
+            );
+          })
         )}
         {chatStatus === "submitted" ? (
           <p className="race-ai-stream-status">{chatRuntimeLabel}</p>
@@ -3135,34 +3193,6 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           {answerBlockItems(formatAssistantTextForDisplay(answer)).map((block) => (
             <p key={`answer-${block.key}`}>{block.text}</p>
           ))}
-        </div>
-      ) : null}
-      {prediction.length > 0 ? (
-        <div className="race-ai-table-wrap">
-          <table className="race-ai-prediction-table">
-            <thead>
-              <tr>
-                <th>予想</th>
-                <th>馬番</th>
-                <th>馬名</th>
-                <th>騎手</th>
-                <th>信頼度</th>
-                <th>根拠</th>
-              </tr>
-            </thead>
-            <tbody>
-              {prediction.map((row) => (
-                <tr key={`${row.rank}-${row.horseNumber}`}>
-                  <td>{row.rank}</td>
-                  <td>{row.horseNumber}</td>
-                  <td>{row.horseName}</td>
-                  <td>{row.jockeyName}</td>
-                  <td>{row.confidence === null ? "-" : row.confidence.toFixed(2)}</td>
-                  <td>{row.reason}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
         </div>
       ) : null}
       <form
