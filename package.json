@@ -13,7 +13,7 @@
   },
   "dependencies": {},
   "devDependencies": {
-    "@cloudflare/workers-types": "4.20260207.0",
+    "@cloudflare/workers-types": "4.20260519.1",
     "@types/bun": "1.3.8",
     "oxfmt": "0.28.0",
     "wrangler": "4.63.0"
