@@ -6,10 +6,11 @@ export const dynamic = "force-dynamic";
 const MODEL_FILE_NAME = "gemma-4-E2B-it-web.task";
 const MODEL_SIZE_BYTES = 2_003_697_664;
 const MODEL_SHA256 = "2cbff161177a4d51c9d04360016185976f504517ba5758cd10c1564e5421c5a5";
+const MODEL_SIZE_TOLERANCE_BYTES = Math.max(Math.round(MODEL_SIZE_BYTES * 0.02), 32 * 1024 * 1024);
 const HUGGING_FACE_MODEL_URL =
   "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it-web.task?download=true";
 const MODEL_CONTENT_TYPE = "application/octet-stream";
-const MODEL_CACHE_CONTROL = "public, max-age=31536000, immutable";
+const MODEL_CACHE_CONTROL = "private, no-store";
 
 interface RouteContext {
   params: Promise<{
@@ -27,6 +28,11 @@ const getCloudflareEnv = (): CloudflareEnv | null => {
 };
 
 const isValidVersion = (version: string): boolean => /^v\d{8}$/u.test(version);
+
+const isAcceptableModelSize = (size: number): boolean =>
+  Number.isFinite(size) &&
+  size > 0 &&
+  Math.abs(size - MODEL_SIZE_BYTES) <= MODEL_SIZE_TOLERANCE_BYTES;
 
 interface ModelChunkManifest {
   chunks: Array<{
@@ -84,7 +90,7 @@ const readChunkManifest = async (
     manifest.fileName !== MODEL_FILE_NAME ||
     manifest.version !== version ||
     typeof manifest.size !== "number" ||
-    manifest.size !== MODEL_SIZE_BYTES ||
+    !isAcceptableModelSize(manifest.size) ||
     (typeof manifest.sha256 === "string" && manifest.sha256 !== MODEL_SHA256) ||
     !Array.isArray(manifest.chunks) ||
     manifest.chunks.length === 0
@@ -153,7 +159,7 @@ export async function HEAD(_request: Request, context: RouteContext) {
   }
 
   const object = bucket ? await bucket.head(key) : null;
-  if (object && object.size === MODEL_SIZE_BYTES) {
+  if (object && isAcceptableModelSize(object.size)) {
     return new Response(null, {
       headers: getModelHeaders(object.size, object.httpMetadata?.contentType),
     });
@@ -193,7 +199,7 @@ export async function GET(_request: Request, context: RouteContext) {
 
   const object = bucket ? await bucket.get(key) : null;
 
-  if (object && object.size === MODEL_SIZE_BYTES) {
+  if (object && isAcceptableModelSize(object.size)) {
     return new Response(object.body, {
       headers: getModelHeaders(object.size, object.httpMetadata?.contentType),
     });

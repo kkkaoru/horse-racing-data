@@ -90,6 +90,7 @@ interface ParsedRaceAiResponse {
 }
 
 interface ToolResult {
+  attempts?: number;
   body: unknown;
   status: number;
   url: string;
@@ -140,18 +141,27 @@ const TOOL_ROW_LIMIT = 16;
 const TOOL_TEXT_LIMIT = 240;
 const RUNTIME_LOG_TEXT_LIMIT = 2_000;
 const MACHINE_RESPONSE_FORMAT_FALLBACK_SOURCE =
-  "回答の形式が整わず、表示できる本文を作成できませんでした。データ取得後に再試行してください。";
+  "回答の形式が整わず、表示できる本文を作成できませんでしたわ。データ取得後に、もう一度お試しくださいませ。";
 const MACHINE_TOOL_LIMIT_SOURCE =
-  "追加データ取得の上限に達したため、取得済みデータの範囲で回答しました。";
+  "追加データ取得の上限に達しましたので、取得済みデータの範囲で回答いたしましたわ。";
 const MACHINE_NATURAL_TEXT_THOUGHT_SOURCE =
-  "モデルが指定形式のJSONではなく自然文を返したため、回答本文を表示用に整形しました。";
+  "モデルが指定形式のJSONではなく自然文を返しましたので、回答本文を表示用に整えましたわ。";
+const RACE_AI_PROGRESS_START_MESSAGE =
+  "承知いたしましたわ。わたくし、すぐに確認を始めますの。まずお答えできる範囲を押さえつつ、必要なデータを整えてまいりますわ。";
+const RACE_AI_PROGRESS_DATA_TARGET_MESSAGE =
+  "これから確認するデータは、レース基本情報、出走馬、コース情報、同日レース一覧、過去結果、タイム指数、調教、能力、馬場傾向、血統、類似レース、ペース予測、AI向け着順予測、AI向け総合スコア、リアルタイムオッズ・馬体重・結果、パドックデータですわ。";
+const RACE_AI_PROGRESS_DEFAULT_TOOL_MESSAGE =
+  "より具体的な予想に必要ですので、AI向け着順予測、総合スコア、リアルタイム情報を追加で確認いたしますわ。";
+const RACE_AI_PROGRESS_FINAL_MESSAGE = "準備が整いましたわ。これから予想を表示いたしますの。";
+const DEFAULT_RACE_AI_TONE_PROMPT =
+  "回答時は、日本のアニメに登場するお嬢様のような丁寧で気品のある言葉遣いにしてください。一人称は「わたくし」を使い、語尾には自然な範囲で「ですわ」「ますわ」「ですの」を使ってください。全ての日本語文でこの口調を維持してください。";
 
 interface RaceAiToneSettings {
   prompt: string;
 }
 
-const EMPTY_RACE_AI_TONE_SETTINGS: RaceAiToneSettings = {
-  prompt: "",
+const DEFAULT_RACE_AI_TONE_SETTINGS: RaceAiToneSettings = {
+  prompt: DEFAULT_RACE_AI_TONE_PROMPT,
 };
 
 const GENERATION_STAGE_LABELS: Record<GenerationStage, string> = {
@@ -821,10 +831,159 @@ const compactToolResultForPrompt = (result: ToolResult): Record<string, unknown>
       ? compactAiDataForPrompt(result.body)
       : compactPromptValue(result.body);
   return {
+    attempts: result.attempts,
     body,
     status: result.status,
     url: result.url,
   };
+};
+
+const normalizePredictionRow = (row: unknown, fallbackRank = 0): RaceAiPredictionRow | null => {
+  if (!isRecord(row)) {
+    return null;
+  }
+  const rank = typeof row.rank === "number" && Number.isFinite(row.rank) ? row.rank : fallbackRank;
+  if (!Number.isFinite(rank) || rank <= 0) {
+    return null;
+  }
+  return {
+    confidence:
+      typeof row.confidence === "number" && Number.isFinite(row.confidence) ? row.confidence : null,
+    horseName: typeof row.horseName === "string" ? row.horseName : "-",
+    horseNumber: typeof row.horseNumber === "string" ? row.horseNumber : "-",
+    jockeyName: typeof row.jockeyName === "string" ? row.jockeyName : "-",
+    rank,
+    reason: typeof row.reason === "string" ? normalizeUserFacingAssistantText(row.reason) : "",
+  };
+};
+
+const latestStoredPredictionRows = (messages: RaceAiMessage[]): RaceAiPredictionRow[] => {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "assistant" || !Array.isArray(message.prediction)) {
+      continue;
+    }
+    const rows = message.prediction
+      .map((row) => normalizePredictionRow(row))
+      .filter((row): row is RaceAiPredictionRow => row !== null);
+    if (rows.length > 0) {
+      return rows;
+    }
+  }
+  return [];
+};
+
+const formatFallbackScore = (value: number | null | undefined): string | null =>
+  typeof value === "number" && Number.isFinite(value) ? value.toFixed(2) : null;
+
+const buildFallbackPredictionReason = ({
+  confidence,
+  finishPredictionScore,
+  odds,
+  overallEvaluationScore,
+  paddockScore,
+  popularity,
+}: {
+  confidence?: number | null;
+  finishPredictionScore?: number | null;
+  odds?: number | null;
+  overallEvaluationScore?: number | null;
+  paddockScore?: number | null;
+  popularity?: number | null;
+}): string => {
+  const parts = ["AI着順予測を基準"];
+  const confidenceLabel = formatFallbackScore(confidence);
+  if (confidenceLabel) {
+    parts.push(`信頼度${confidenceLabel}`);
+  }
+  const finishScoreLabel = formatFallbackScore(finishPredictionScore);
+  if (finishScoreLabel) {
+    parts.push(`着順予測スコア${finishScoreLabel}`);
+  }
+  const overallScoreLabel = formatFallbackScore(overallEvaluationScore);
+  if (overallScoreLabel) {
+    parts.push(`総合スコア${overallScoreLabel}`);
+  }
+  const paddockScoreLabel = formatFallbackScore(paddockScore);
+  if (paddockScoreLabel) {
+    parts.push(`パドック${paddockScoreLabel}`);
+  }
+  if (typeof odds === "number" && Number.isFinite(odds)) {
+    parts.push(`単勝${odds.toFixed(1)}倍`);
+  }
+  if (typeof popularity === "number" && Number.isFinite(popularity)) {
+    parts.push(`${popularity}番人気`);
+  }
+  return `${parts.join("、")}で上位評価ですわ。`;
+};
+
+const buildFallbackPredictionRows = (data: RaceAiExportData): RaceAiPredictionRow[] => {
+  const finishPredictionRows = (data.aiReady.currentOutput.finishPrediction?.rows ?? [])
+    .filter((row) => row.entryStatus === "" && typeof row.predictedRank === "number")
+    .toSorted(
+      (left, right) =>
+        (left.predictedRank ?? Number.POSITIVE_INFINITY) -
+          (right.predictedRank ?? Number.POSITIVE_INFINITY) ||
+        Number(left.horseNumber) - Number(right.horseNumber),
+    )
+    .slice(0, 5)
+    .map((row) => ({
+      confidence: row.confidence,
+      horseName: row.horseName,
+      horseNumber: row.horseNumber,
+      jockeyName: row.jockeyName,
+      rank: row.predictedRank ?? 0,
+      reason: buildFallbackPredictionReason(row),
+    }))
+    .filter((row) => row.rank > 0);
+  if (finishPredictionRows.length > 0) {
+    return finishPredictionRows;
+  }
+  return (data.aiReady.currentOutput.overallScore?.rows ?? [])
+    .filter((row) => row.entryStatus === "" && typeof row.score === "number")
+    .slice(0, 5)
+    .map((row, index) => ({
+      confidence: row.score,
+      horseName: row.horseName,
+      horseNumber: row.horseNumber,
+      jockeyName: row.jockeyName,
+      rank: index + 1,
+      reason: buildFallbackPredictionReason({
+        odds: row.odds,
+        overallEvaluationScore: row.score,
+        popularity: row.popularity,
+      }),
+    }));
+};
+
+const joinJapaneseLabels = (labels: string[], { limit = 8 }: { limit?: number } = {}): string => {
+  const normalized = labels.map((label) => label.trim()).filter(Boolean);
+  if (normalized.length <= limit) {
+    return normalized.join("、");
+  }
+  return `${normalized.slice(0, limit).join("、")}など`;
+};
+
+const buildDataLoadedProgressMessage = (data: RaceAiExportData): string => {
+  const items = data.aiReady.dataReadiness.items;
+  const readyLabels = items.filter((item) => item.status === "ready").map((item) => item.label);
+  const partialLabels = items.filter((item) => item.status === "partial").map((item) => item.label);
+  const missingLabels = items.filter((item) => item.status === "missing").map((item) => item.label);
+  const parts =
+    readyLabels.length > 0
+      ? [
+          `データを確認できましたわ。参照可能な主なデータは${joinJapaneseLabels(readyLabels)}ですの。`,
+        ]
+      : ["データを確認いたしましたわ。参照可能なデータはまだ限られておりますの。"];
+  if (partialLabels.length > 0) {
+    parts.push(`一部だけ確認できたデータは${joinJapaneseLabels(partialLabels)}ですわ。`);
+  }
+  if (missingLabels.length > 0) {
+    parts.push(
+      `未取得または未準備のデータは${joinJapaneseLabels(missingLabels, { limit: 6 })}ですけれど、取得済みデータで慎重に判断いたしますわ。`,
+    );
+  }
+  return parts.join("");
 };
 
 const parseModelResponse = (
@@ -842,24 +1001,8 @@ const parseModelResponse = (
     }
     const prediction = Array.isArray(parsed.prediction)
       ? parsed.prediction
-          .map((row) => {
-            if (!isRecord(row)) {
-              return null;
-            }
-            return {
-              confidence:
-                typeof row.confidence === "number" && Number.isFinite(row.confidence)
-                  ? row.confidence
-                  : null,
-              horseName: typeof row.horseName === "string" ? row.horseName : "-",
-              horseNumber: typeof row.horseNumber === "string" ? row.horseNumber : "-",
-              jockeyName: typeof row.jockeyName === "string" ? row.jockeyName : "-",
-              rank: typeof row.rank === "number" && Number.isFinite(row.rank) ? row.rank : 0,
-              reason:
-                typeof row.reason === "string" ? normalizeUserFacingAssistantText(row.reason) : "",
-            } satisfies RaceAiPredictionRow;
-          })
-          .filter((row): row is RaceAiPredictionRow => row !== null && row.rank > 0)
+          .map((row) => normalizePredictionRow(row))
+          .filter((row): row is RaceAiPredictionRow => row !== null)
       : [];
     return {
       answer:
@@ -906,6 +1049,37 @@ const buildDefaultRaceAiDataUrl = (data: RaceAiExportData): string => {
   return `/api/races/${route.year}/${route.month}/${route.day}/${route.keibajoCode}/${route.raceNumber}/ai/data?${searchParams.toString()}`;
 };
 
+const extractToolFetchUrl = (code: string): string | null => {
+  const normalized = code.replace(/```(?:tool-js|javascript|js)?/gu, "").trim();
+  const match = /fetchJson\s*\(\s*["']([^"']+)["']\s*\)/u.exec(normalized);
+  if (!match?.[1]) {
+    return null;
+  }
+  if (typeof window === "undefined") {
+    return match[1];
+  }
+  try {
+    const url = new URL(match[1], window.location.origin);
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return match[1];
+  }
+};
+
+const buildToolFetchProgressMessage = (toolJavaScript: string): string => {
+  const url = extractToolFetchUrl(toolJavaScript);
+  return url
+    ? `追加で ${url} を確認いたしますわ。必要な不足分を補って、予想の根拠を整えますの。`
+    : "追加でAIが指定したデータを確認いたしますわ。必要な不足分を補って、予想の根拠を整えますの。";
+};
+
+const buildToolResultProgressMessage = (result: ToolResult): string => {
+  if (result.status >= 200 && result.status < 300) {
+    return `追加データを取得できましたわ。${result.url} は正常に確認できましたの。`;
+  }
+  return `追加データの確認を試みましたわ。${result.url} はステータス ${result.status} でしたので、取得済みデータも合わせて判断いたしますの。`;
+};
+
 const answerBlocks = (text: string): string[] =>
   cleanModelText(text)
     .split(/\n{2,}/u)
@@ -926,17 +1100,18 @@ const answerBlockItems = (text: string): Array<{ key: string; text: string }> =>
 
 const parseRaceAiToneSettings = (payload: unknown): RaceAiToneSettings => {
   if (!isRecord(payload)) {
-    return EMPTY_RACE_AI_TONE_SETTINGS;
+    return DEFAULT_RACE_AI_TONE_SETTINGS;
   }
+  const prompt = typeof payload.prompt === "string" ? payload.prompt.trim() : "";
   return {
-    prompt: typeof payload.prompt === "string" ? payload.prompt.trim() : "",
+    prompt: prompt || DEFAULT_RACE_AI_TONE_PROMPT,
   };
 };
 
 const fetchRaceAiToneSettings = async (): Promise<RaceAiToneSettings> => {
   const response = await fetch("/api/race-ai/tone-prompt", { cache: "no-store" });
   if (!response.ok) {
-    return EMPTY_RACE_AI_TONE_SETTINGS;
+    return DEFAULT_RACE_AI_TONE_SETTINGS;
   }
   return parseRaceAiToneSettings(await response.json());
 };
@@ -1212,11 +1387,57 @@ const runToolJavaScript = async (code: string): Promise<ToolResult> => {
   if (url.origin !== window.location.origin || !url.pathname.startsWith("/api/")) {
     throw new Error("fetchJson は同一オリジンの /api/ のみ参照できます。");
   }
-  const response = await fetch(`${url.pathname}${url.search}`, { cache: "no-store" });
+  const requestUrl = `${url.pathname}${url.search}`;
+  const maxAttempts = 3;
+  let lastError: unknown = null;
+  let lastResult: ToolResult | null = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      // eslint-disable-next-line no-await-in-loop -- retry attempts must run sequentially.
+      const response = await fetch(requestUrl, { cache: "no-store" });
+      // eslint-disable-next-line no-await-in-loop -- the body belongs to this response attempt.
+      const text = await response.text();
+      let body: unknown = null;
+      if (text.trim()) {
+        try {
+          body = JSON.parse(text);
+        } catch (error) {
+          throw new Error(
+            error instanceof Error
+              ? `api response json parse failed: ${error.message}`
+              : "api response json parse failed",
+            { cause: error },
+          );
+        }
+      }
+      const result = {
+        attempts: attempt,
+        body,
+        status: response.status,
+        url: requestUrl,
+      };
+      lastResult = result;
+      if (response.status !== 408 && response.status !== 429 && response.status < 500) {
+        return result;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+    if (attempt < maxAttempts) {
+      // eslint-disable-next-line no-await-in-loop -- retry delay must happen before the next request.
+      await new Promise((resolve) => window.setTimeout(resolve, 500 * attempt));
+    }
+  }
+  if (lastResult) {
+    return lastResult;
+  }
   return {
-    body: await response.json(),
-    status: response.status,
-    url: `${url.pathname}${url.search}`,
+    attempts: maxAttempts,
+    body: {
+      error: lastError instanceof Error ? lastError.message : String(lastError),
+    },
+    status: 0,
+    url: requestUrl,
   };
 };
 
@@ -1522,6 +1743,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       }
       setMessages(log.messages);
       setThoughtLogs(log.thoughtLogs);
+      setPrediction(latestStoredPredictionRows(log.messages));
       messagesRef.current = log.messages;
       thoughtLogsRef.current = log.thoughtLogs;
       hydratedRaceKeyRef.current = raceKey;
@@ -1804,6 +2026,21 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         requestRole,
         trigger,
       });
+      const progressMessages: string[] = [];
+      const speakProgress = async (message: string): Promise<void> => {
+        if (abortSignal?.aborted || resetVersionRef.current !== runResetVersion) {
+          return;
+        }
+        const progressMessage = normalizeUserFacingAssistantText(message, message);
+        if (!progressMessage) {
+          return;
+        }
+        progressMessages.push(progressMessage);
+        if (emit) {
+          emit(`${progressMessage}\n\n`);
+          await yieldToBrowser();
+        }
+      };
       try {
         await yieldToBrowser();
         if (trigger === "debug-dry-run") {
@@ -1836,7 +2073,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           }
           const now = new Date().toISOString();
           const dryRunAnswer =
-            "debug dry-run: AI処理の状態表示とチャットSDK経由の応答表示を確認しました。実モデルは実行していません。";
+            "debug dry-runですわ。AI処理の状態表示とチャットSDK経由の応答表示を確認いたしました。実モデルは実行しておりませんの。";
           const userMessage: RaceAiMessage = {
             content: request,
             createdAt: now,
@@ -1882,6 +2119,8 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
             toolJavaScript: null,
           } satisfies ParsedRaceAiResponse;
         }
+        await speakProgress(RACE_AI_PROGRESS_START_MESSAGE);
+        await speakProgress(RACE_AI_PROGRESS_DATA_TARGET_MESSAGE);
         const currentToneSettings = await fetchRaceAiToneSettings();
         setToneSettingsStatus("ready");
         const llm = await ensureModel();
@@ -1896,6 +2135,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           missingPercent: data.aiReady.dataReadiness.missingPercent,
           preparedPercent: data.aiReady.dataReadiness.preparedPercent,
         });
+        await speakProgress(buildDataLoadedProgressMessage(data));
         const dataFingerprint = stableStringify({
           aiReady: data.aiReady.currentOutput,
           dataReadiness: data.aiReady.dataReadiness,
@@ -1968,13 +2208,16 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
             setRuntimeStage("fetching-tool-data");
             await yieldToBrowser();
             addRuntimeLog("warn", "model returned text before tool request; fetching default data");
+            await speakProgress(RACE_AI_PROGRESS_DEFAULT_TOOL_MESSAGE);
             const toolResult = await runToolJavaScript(
               `return await fetchJson("${buildDefaultRaceAiDataUrl(data)}");`,
             );
             addRuntimeLog("info", "default tool data fetched", {
+              attempts: toolResult.attempts,
               status: toolResult.status,
               url: toolResult.url,
             });
+            await speakProgress(buildToolResultProgressMessage(toolResult));
             return runWithToolResults({
               formatRetryCount: 0,
               toolResults: [toolResult],
@@ -2000,11 +2243,14 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           addRuntimeLog("info", "tool JavaScript fetch started", {
             toolJavaScriptLength: response.toolJavaScript.length,
           });
+          await speakProgress(buildToolFetchProgressMessage(response.toolJavaScript));
           const toolResult = await runToolJavaScript(response.toolJavaScript);
           addRuntimeLog("info", "tool JavaScript fetch completed", {
+            attempts: toolResult.attempts,
             status: toolResult.status,
             url: toolResult.url,
           });
+          await speakProgress(buildToolResultProgressMessage(toolResult));
           return runWithToolResults({
             formatRetryCount: 0,
             toolResults: [...toolResults, toolResult],
@@ -2014,6 +2260,18 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           formatRetryCount: 0,
           toolResults: [],
         });
+        if (finalResponse.prediction.length === 0) {
+          const fallbackPrediction = buildFallbackPredictionRows(data);
+          if (fallbackPrediction.length > 0) {
+            addRuntimeLog("warn", "model response had no prediction rows; using data fallback", {
+              predictionCount: fallbackPrediction.length,
+            });
+            finalResponse = {
+              ...finalResponse,
+              prediction: fallbackPrediction,
+            };
+          }
+        }
         if (finalResponse.needsTool) {
           addRuntimeLog("warn", "tool request limit reached; finalizing with fetched data");
           finalResponse = {
@@ -2034,6 +2292,15 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           addRuntimeLog("warn", "AI request ignored because runtime was reset");
           return null;
         }
+        await speakProgress(RACE_AI_PROGRESS_FINAL_MESSAGE);
+        const displayedAnswer = [...progressMessages, finalResponse.answer]
+          .map((part) => part.trim())
+          .filter(Boolean)
+          .join("\n\n");
+        const completedResponse: ParsedRaceAiResponse = {
+          ...finalResponse,
+          answer: displayedAnswer,
+        };
 
         const now = new Date().toISOString();
         const userMessage: RaceAiMessage = {
@@ -2043,9 +2310,10 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           role: requestRole,
         };
         const assistantMessage: RaceAiMessage = {
-          content: finalResponse.answer,
+          content: displayedAnswer,
           createdAt: now,
           id: createId(),
+          prediction: finalResponse.prediction.length > 0 ? finalResponse.prediction : undefined,
           role: "assistant",
         };
         const thoughtLog: RaceAiThoughtLog = {
@@ -2070,16 +2338,16 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
             text: finalResponse.answer,
           });
         }
-        setAnswer(finalResponse.answer);
+        setAnswer(displayedAnswer);
         setPrediction(finalResponse.prediction);
         await persistLogs(nextMessages, nextThoughtLogs);
         addRuntimeLog("info", "AI response persisted", {
-          answerLength: finalResponse.answer.length,
+          answerLength: displayedAnswer.length,
           predictionCount: finalResponse.prediction.length,
           thoughtLogLength: thoughtLog.content.length,
         });
         addRuntimeLog("info", "AI request completed");
-        return finalResponse;
+        return completedResponse;
       } catch (caught) {
         if (resetVersionRef.current === runResetVersion) {
           setError(caught instanceof Error ? caught.message : String(caught));

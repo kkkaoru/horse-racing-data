@@ -7470,6 +7470,7 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   color: var(--race-ai-accent-color, var(--accent-strong));
   font-size: inherit;
   font-weight: inherit;
+  letter-spacing: var(--space-0-14em-218);
   line-height: inherit;
   padding: var(--number-0-2);
 }
@@ -7515,6 +7516,20 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   accent-color: var(--accent);
   min-inline-size: var(--number-0-2);
   width: var(--space-100pct-12);
+}
+
+.race-ai-download-dialog-actions {
+  flex-wrap: wrap;
+}
+
+.race-ai-download-dialog-actions button {
+  background: var(--surface);
+  border: var(--space-1px-7) solid var(--border);
+  border-radius: var(--space-6px-33);
+  color: var(--text);
+  font: inherit;
+  min-height: var(--space-36px-81);
+  padding: var(--number-0-2) var(--space-12px-9);
 }
 
 .race-ai-readiness-panel {
@@ -7735,6 +7750,7 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 }
 
 .race-ai-table-wrap {
+  margin-top: var(--space-32px-24);
   max-width: var(--space-100pct-12);
   overflow-x: auto;
   padding-top: var(--space-2px-25);
@@ -8108,6 +8124,10 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   gap: var(--space-6px-33);
 }
 
+.mypage-ai-model-row > span {
+  min-width: var(--number-0-2);
+}
+
 .mypage-ai-model-row small {
   background: var(--surface-muted);
   border: var(--space-1px-7) solid var(--border);
@@ -8115,6 +8135,20 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   color: var(--text-muted);
   font-size: var(--space-0-78rem-170);
   padding: var(--space-2px-25) var(--space-6px-33);
+}
+
+.mypage-ai-model-progress {
+  display: grid;
+  gap: var(--space-4px-59);
+}
+
+.mypage-ai-model-progress progress {
+  width: var(--space-100pct-12);
+}
+
+.mypage-ai-model-progress small {
+  border-radius: var(--space-6px-33);
+  width: fit-content;
 }
 
 .mypage-ai-model-row button {
@@ -8125,6 +8159,12 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   font: inherit;
   min-height: var(--space-36px-81);
   padding: var(--number-0-2) var(--space-12px-9);
+}
+
+.mypage-ai-model-error {
+  color: var(--danger);
+  grid-column: var(--number-1-7) / var(--number-1-9);
+  margin: var(--number-0-2);
 }
 
 @media (min-width: 1440px) {
@@ -8165,6 +8205,19 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   .mypage-ai-model-row {
     align-items: start;
     grid-template-columns: var(--space-1fr-51);
+  }
+
+  .mypage-ai-model-row > span:not(.mypage-ai-model-name)::before {
+    color: var(--text-muted);
+    content: attr(data-label) " ";
+    display: block;
+    font-size: var(--space-0-78rem-170);
+    margin-bottom: var(--space-2px-25);
+  }
+
+  .mypage-ai-model-row button {
+    justify-self: stretch;
+    width: var(--space-100pct-12);
   }
 
   .race-ai-readiness-summary {

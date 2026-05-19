@@ -3,6 +3,7 @@
 import {
   deleteCachedModel,
   getCachedModelInfo,
+  listCachedModelInfos,
   loadCachedModel,
   RACE_AI_MODEL_DOWNLOAD_CONFIRM_MESSAGE,
   saveCachedModel,
@@ -24,9 +25,11 @@ export interface RaceAiModelDefinition {
 export type RaceAiModelStatus = "downloaded" | "downloading" | "not-downloaded";
 
 export interface RaceAiModelState {
+  attempt: number | null;
   cachedAt: string | null;
   downloadedBytes: number;
   error: string | null;
+  maxAttempts: number | null;
   model: RaceAiModelDefinition;
   progress: number | null;
   status: RaceAiModelStatus;
@@ -34,9 +37,11 @@ export interface RaceAiModelState {
 }
 
 interface ActiveDownload {
+  attempt: number | null;
   controller: AbortController;
   downloadedBytes: number;
   error: string | null;
+  maxAttempts: number;
   progress: number | null;
   promise: Promise<ArrayBuffer>;
   totalBytes: number | null;
@@ -48,6 +53,9 @@ const MODEL_CACHE_KEY = `gemma-4-e2b:${MODEL_VERSION}:${MODEL_FILE_NAME}`;
 const MODEL_SIZE_BYTES = 2_003_697_664;
 const MODEL_URL = `/api/models/gemma-4-e2b/${MODEL_VERSION}/${MODEL_FILE_NAME}?expectedSize=${MODEL_SIZE_BYTES}`;
 const MODEL_SHA256 = "2cbff161177a4d51c9d04360016185976f504517ba5758cd10c1564e5421c5a5";
+const MODEL_SIZE_TOLERANCE_BYTES = Math.max(Math.round(MODEL_SIZE_BYTES * 0.02), 32 * 1024 * 1024);
+const MODEL_DOWNLOAD_MAX_ATTEMPTS = 3;
+const MODEL_DOWNLOAD_RETRY_DELAY_MS = 1_200;
 
 export const RACE_AI_MODELS: readonly RaceAiModelDefinition[] = [
   {
@@ -74,6 +82,7 @@ const getLatestRaceAiModel = (): RaceAiModelDefinition => {
 export const LATEST_RACE_AI_MODEL = getLatestRaceAiModel();
 
 const activeDownloads = new Map<string, ActiveDownload>();
+const lastModelErrors = new Map<string, string>();
 const listeners = new Set<() => void>();
 
 const notify = () => {
@@ -93,9 +102,11 @@ const toDownloadedState = (
   model: RaceAiModelDefinition,
   info: RaceAiCachedModelInfo,
 ): RaceAiModelState => ({
+  attempt: null,
   cachedAt: info.cachedAt,
-  downloadedBytes: model.sizeBytes,
+  downloadedBytes: info.size ?? model.sizeBytes,
   error: null,
+  maxAttempts: null,
   model,
   progress: 1,
   status: "downloaded",
@@ -105,11 +116,27 @@ const toDownloadedState = (
 const isCompleteCachedModelInfo = (
   model: RaceAiModelDefinition,
   info: RaceAiCachedModelInfo,
-): boolean => info.size === model.sizeBytes;
+): boolean => isAcceptableModelSize(model, info.size);
 
-const deleteIncompleteCachedModel = async (model: RaceAiModelDefinition): Promise<void> => {
-  await deleteCachedModel(model.cacheKey);
-  notify();
+const isAcceptableModelSize = (
+  model: RaceAiModelDefinition,
+  actualBytes: number | null | undefined,
+): actualBytes is number =>
+  typeof actualBytes === "number" &&
+  Number.isFinite(actualBytes) &&
+  actualBytes > 0 &&
+  Math.abs(actualBytes - model.sizeBytes) <= MODEL_SIZE_TOLERANCE_BYTES;
+
+const markIncompleteCachedModel = (
+  model: RaceAiModelDefinition,
+  info?: RaceAiCachedModelInfo | null,
+): void => {
+  lastModelErrors.set(
+    model.id,
+    info?.size
+      ? `保存済みモデルのサイズが想定と異なるためAI利用には使いません (${info.size}/${model.sizeBytes})。削除または再ダウンロードしてください。`
+      : "保存済みモデルのサイズを確認できませんでした。削除または再ダウンロードしてください。",
+  );
 };
 
 const getCompleteCachedModelInfo = async (
@@ -120,11 +147,29 @@ const getCompleteCachedModelInfo = async (
     return null;
   }
   if (!isCompleteCachedModelInfo(model, cached)) {
-    await deleteIncompleteCachedModel(model);
+    markIncompleteCachedModel(model, cached);
     return null;
   }
   return cached;
 };
+
+const toIncompleteCachedState = (
+  model: RaceAiModelDefinition,
+  info: RaceAiCachedModelInfo,
+): RaceAiModelState => ({
+  attempt: null,
+  cachedAt: info.cachedAt,
+  downloadedBytes: info.size ?? 0,
+  error:
+    info.size === null
+      ? "保存済みモデルのサイズを確認できませんでした。削除または再ダウンロードしてください。"
+      : `保存済みモデルのサイズが想定と異なるためAI利用には使いません (${info.size}/${model.sizeBytes})。削除または再ダウンロードしてください。`,
+  maxAttempts: null,
+  model,
+  progress: null,
+  status: "not-downloaded",
+  totalBytes: model.sizeBytes,
+});
 
 const loadCompleteCachedModel = async (
   model: RaceAiModelDefinition,
@@ -137,8 +182,8 @@ const loadCompleteCachedModel = async (
   if (!cached) {
     return null;
   }
-  if (cached.byteLength !== model.sizeBytes) {
-    await deleteIncompleteCachedModel(model);
+  if (!isAcceptableModelSize(model, cached.byteLength)) {
+    markIncompleteCachedModel(model, cachedInfo);
     return null;
   }
   return cached;
@@ -150,23 +195,29 @@ export const getRaceAiModelState = async (
   const active = activeDownloads.get(model.id);
   if (active) {
     return {
+      attempt: active.attempt,
       cachedAt: null,
       downloadedBytes: active.downloadedBytes,
       error: active.error,
+      maxAttempts: active.maxAttempts,
       model,
       progress: active.progress,
       status: "downloading",
       totalBytes: active.totalBytes,
     };
   }
-  const cached = await getCompleteCachedModelInfo(model);
+  const cached = await getCachedModelInfo(model.cacheKey);
   if (cached) {
-    return toDownloadedState(model, cached);
+    return isCompleteCachedModelInfo(model, cached)
+      ? toDownloadedState(model, cached)
+      : toIncompleteCachedState(model, cached);
   }
   return {
+    attempt: null,
     cachedAt: null,
     downloadedBytes: 0,
-    error: null,
+    error: lastModelErrors.get(model.id) ?? null,
+    maxAttempts: null,
     model,
     progress: null,
     status: "not-downloaded",
@@ -174,12 +225,77 @@ export const getRaceAiModelState = async (
   };
 };
 
-export const getRaceAiModelStates = async (): Promise<RaceAiModelState[]> =>
-  Promise.all(RACE_AI_MODELS.map((model) => getRaceAiModelState(model)));
+const readExpectedSizeFromSourceUrl = (sourceUrl: string): number | null => {
+  try {
+    const url = new URL(sourceUrl, "https://pc-keiba.local");
+    const expectedSize = Number(url.searchParams.get("expectedSize"));
+    return Number.isFinite(expectedSize) && expectedSize > 0 ? expectedSize : null;
+  } catch {
+    return null;
+  }
+};
+
+const readFileNameFromSourceUrl = (sourceUrl: string, fallback: string): string => {
+  try {
+    const url = new URL(sourceUrl, "https://pc-keiba.local");
+    const segments = url.pathname.split("/").filter(Boolean);
+    return segments.at(-1) || fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+const toStoredOnlyModel = (info: RaceAiCachedModelInfo): RaceAiModelDefinition => {
+  const fileName = readFileNameFromSourceUrl(info.sourceUrl, info.key);
+  return {
+    cacheKey: info.key,
+    fileName,
+    id: `cached-${encodeURIComponent(info.key)}`,
+    isLatest: false,
+    name:
+      info.modelVersion === MODEL_VERSION && fileName === MODEL_FILE_NAME
+        ? "Gemma 4 E2B Web (保存済み)"
+        : `${fileName} (保存済み)`,
+    sha256: "",
+    sizeBytes: readExpectedSizeFromSourceUrl(info.sourceUrl) ?? info.size ?? 0,
+    url: info.sourceUrl,
+    version: info.modelVersion || "cached",
+  };
+};
+
+const toStoredOnlyState = (info: RaceAiCachedModelInfo): RaceAiModelState => {
+  const model = toStoredOnlyModel(info);
+  const usable = model.sizeBytes > 0 && isAcceptableModelSize(model, info.size);
+  return {
+    attempt: null,
+    cachedAt: info.cachedAt,
+    downloadedBytes: info.size ?? 0,
+    error: usable
+      ? null
+      : "この保存済みモデルは現在のAI利用対象ではありません。不要であれば削除してください。",
+    maxAttempts: null,
+    model,
+    progress: usable ? 1 : null,
+    status: usable ? "downloaded" : "not-downloaded",
+    totalBytes: model.sizeBytes || info.size,
+  };
+};
+
+export const getRaceAiModelStates = async (): Promise<RaceAiModelState[]> => {
+  const knownStates = await Promise.all(RACE_AI_MODELS.map((model) => getRaceAiModelState(model)));
+  const knownCacheKeys = new Set(RACE_AI_MODELS.map((model) => model.cacheKey));
+  const storedOnlyStates = (await listCachedModelInfos())
+    .filter((info) => !knownCacheKeys.has(info.key))
+    .toSorted((left, right) => right.cachedAt.localeCompare(left.cachedAt))
+    .map(toStoredOnlyState);
+  return [...knownStates, ...storedOnlyStates];
+};
 
 const updateActiveDownload = (
   model: RaceAiModelDefinition,
-  patch: Partial<Pick<ActiveDownload, "downloadedBytes" | "error" | "progress" | "totalBytes">>,
+  patch: Partial<
+    Pick<ActiveDownload, "attempt" | "downloadedBytes" | "error" | "progress" | "totalBytes">
+  >,
 ) => {
   const active = activeDownloads.get(model.id);
   if (!active) {
@@ -192,27 +308,85 @@ const updateActiveDownload = (
   notify();
 };
 
+const abortError = (): DOMException =>
+  new DOMException("AIモデルのダウンロードが中止されました。", "AbortError");
+
+const isAbortError = (error: unknown): boolean =>
+  error instanceof DOMException
+    ? error.name === "AbortError"
+    : error instanceof Error && error.name === "AbortError";
+
+const waitForRetry = (ms: number, signal: AbortSignal): Promise<void> =>
+  new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(abortError());
+      return;
+    }
+    let timeout = 0;
+    const onAbort = () => {
+      window.clearTimeout(timeout);
+      reject(abortError());
+    };
+    timeout = window.setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+
+const errorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+const createModelSizeMismatchError = (
+  model: RaceAiModelDefinition,
+  actualBytes: number,
+  source: string,
+): Error =>
+  new Error(
+    `model size mismatch (${source}): expected about ${model.sizeBytes}, got ${actualBytes}`,
+  );
+
+const buildModelRequestUrl = (model: RaceAiModelDefinition, attempt: number): string => {
+  const url = new URL(model.url, window.location.origin);
+  url.searchParams.set("expectedSize", String(model.sizeBytes));
+  url.searchParams.set("downloadAttempt", String(attempt));
+  url.searchParams.set("downloadStartedAt", String(Date.now()));
+  return `${url.pathname}${url.search}`;
+};
+
 const fetchModelBuffer = async (
   model: RaceAiModelDefinition,
   controller: AbortController,
+  attempt: number,
 ): Promise<ArrayBuffer> => {
-  const response = await fetch(model.url, { signal: controller.signal });
+  const response = await fetch(buildModelRequestUrl(model, attempt), {
+    cache: "no-store",
+    headers: { accept: "application/octet-stream" },
+    signal: controller.signal,
+  });
   if (!response.ok) {
     throw new Error(`model api ${response.status}`);
   }
   const total = Number(response.headers.get("content-length"));
-  if (Number.isFinite(total) && total > 0 && total !== model.sizeBytes) {
-    throw new Error(`model size mismatch: expected ${model.sizeBytes}, got ${total}`);
-  }
+  const headerSizeMismatch =
+    Number.isFinite(total) &&
+    total > 0 &&
+    Math.abs(total - model.sizeBytes) > MODEL_SIZE_TOLERANCE_BYTES;
   const totalBytes = model.sizeBytes;
-  updateActiveDownload(model, { totalBytes });
+  updateActiveDownload(model, {
+    error: headerSizeMismatch
+      ? `応答ヘッダーのサイズが想定と異なります (${total}/${model.sizeBytes})。実データを確認しています。`
+      : null,
+    totalBytes,
+  });
   if (!response.body) {
     const buffer = await response.arrayBuffer();
-    if (buffer.byteLength !== model.sizeBytes) {
-      throw new Error(`model size mismatch: expected ${model.sizeBytes}, got ${buffer.byteLength}`);
+    if (!isAcceptableModelSize(model, buffer.byteLength)) {
+      throw createModelSizeMismatchError(model, buffer.byteLength, "arrayBuffer");
     }
     updateActiveDownload(model, {
       downloadedBytes: buffer.byteLength,
+      error: null,
       progress: 1,
       totalBytes,
     });
@@ -240,8 +414,8 @@ const fetchModelBuffer = async (
       totalBytes,
     });
   }
-  if (downloadedBytes !== model.sizeBytes) {
-    throw new Error(`model size mismatch: expected ${model.sizeBytes}, got ${downloadedBytes}`);
+  if (!isAcceptableModelSize(model, downloadedBytes)) {
+    throw createModelSizeMismatchError(model, downloadedBytes, "downloaded bytes");
   }
 
   const buffer = new Uint8Array(downloadedBytes);
@@ -251,6 +425,38 @@ const fetchModelBuffer = async (
     offset += chunk.byteLength;
   }
   return buffer.buffer;
+};
+
+const fetchModelBufferWithRetries = async (
+  model: RaceAiModelDefinition,
+  controller: AbortController,
+): Promise<ArrayBuffer> => {
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= MODEL_DOWNLOAD_MAX_ATTEMPTS; attempt += 1) {
+    updateActiveDownload(model, {
+      attempt,
+      downloadedBytes: 0,
+      error: attempt === 1 ? null : `再試行しています (${attempt}/${MODEL_DOWNLOAD_MAX_ATTEMPTS})`,
+      progress: 0,
+      totalBytes: model.sizeBytes,
+    });
+    try {
+      // eslint-disable-next-line no-await-in-loop -- retry attempts must run sequentially.
+      return await fetchModelBuffer(model, controller, attempt);
+    } catch (error) {
+      lastError = error;
+      if (isAbortError(error) || attempt >= MODEL_DOWNLOAD_MAX_ATTEMPTS) {
+        updateActiveDownload(model, { error: errorMessage(error) });
+        break;
+      }
+      updateActiveDownload(model, {
+        error: `${errorMessage(error)}。再試行します (${attempt + 1}/${MODEL_DOWNLOAD_MAX_ATTEMPTS})`,
+      });
+      // eslint-disable-next-line no-await-in-loop -- retry backoff must happen before the next request.
+      await waitForRetry(MODEL_DOWNLOAD_RETRY_DELAY_MS * attempt, controller.signal);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(errorMessage(lastError));
 };
 
 export const downloadRaceAiModel = async (
@@ -267,21 +473,30 @@ export const downloadRaceAiModel = async (
     return active.promise;
   }
 
+  lastModelErrors.delete(model.id);
   const controller = new AbortController();
   const promise = (async () => {
+    await Promise.resolve();
     try {
-      const buffer = await fetchModelBuffer(model, controller);
+      const buffer = await fetchModelBufferWithRetries(model, controller);
       await saveCachedModel({
         buffer,
         key: model.cacheKey,
         modelVersion: model.version,
         sourceUrl: model.url,
       });
+      const saved = await getCompleteCachedModelInfo(model);
+      if (!saved) {
+        throw new Error("保存後のAIモデルサイズを確認できませんでした。");
+      }
+      lastModelErrors.delete(model.id);
       return buffer;
     } catch (error) {
-      updateActiveDownload(model, {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      const message = errorMessage(error);
+      if (!isAbortError(error)) {
+        lastModelErrors.set(model.id, message);
+      }
+      updateActiveDownload(model, { error: message });
       throw error;
     } finally {
       activeDownloads.delete(model.id);
@@ -290,9 +505,11 @@ export const downloadRaceAiModel = async (
   })();
 
   activeDownloads.set(model.id, {
+    attempt: null,
     controller,
     downloadedBytes: 0,
     error: null,
+    maxAttempts: MODEL_DOWNLOAD_MAX_ATTEMPTS,
     progress: 0,
     promise,
     totalBytes: model.sizeBytes,
@@ -330,6 +547,7 @@ export const abortRaceAiModelDownload = (model: RaceAiModelDefinition): void => 
 export const deleteRaceAiModel = async (model: RaceAiModelDefinition): Promise<void> => {
   abortRaceAiModelDownload(model);
   await deleteCachedModel(model.cacheKey);
+  lastModelErrors.delete(model.id);
   notify();
 };
 
