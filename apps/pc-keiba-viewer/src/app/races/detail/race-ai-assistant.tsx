@@ -2779,34 +2779,6 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         </details>
       ) : null}
       {error || chatError ? <p className="race-ai-error">{error ?? chatError?.message}</p> : null}
-      {prediction.length > 0 ? (
-        <div className="race-ai-table-wrap">
-          <table className="race-ai-prediction-table">
-            <thead>
-              <tr>
-                <th>予想</th>
-                <th>馬番</th>
-                <th>馬名</th>
-                <th>騎手</th>
-                <th>信頼度</th>
-                <th>根拠</th>
-              </tr>
-            </thead>
-            <tbody>
-              {prediction.map((row) => (
-                <tr key={`${row.rank}-${row.horseNumber}`}>
-                  <td>{row.rank}</td>
-                  <td>{row.horseNumber}</td>
-                  <td>{row.horseName}</td>
-                  <td>{row.jockeyName}</td>
-                  <td>{row.confidence === null ? "-" : row.confidence.toFixed(2)}</td>
-                  <td>{row.reason}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : null}
       <div className="race-ai-chat-thread" ref={chatThreadRef} aria-live="polite">
         {displayedChatMessages.length === 0 ? (
           <p className="empty-state">AIとのやりとりはまだありません。</p>
@@ -2854,6 +2826,34 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           {answerBlockItems(formatAssistantTextForDisplay(answer)).map((block) => (
             <p key={`answer-${block.key}`}>{block.text}</p>
           ))}
+        </div>
+      ) : null}
+      {prediction.length > 0 ? (
+        <div className="race-ai-table-wrap">
+          <table className="race-ai-prediction-table">
+            <thead>
+              <tr>
+                <th>予想</th>
+                <th>馬番</th>
+                <th>馬名</th>
+                <th>騎手</th>
+                <th>信頼度</th>
+                <th>根拠</th>
+              </tr>
+            </thead>
+            <tbody>
+              {prediction.map((row) => (
+                <tr key={`${row.rank}-${row.horseNumber}`}>
+                  <td>{row.rank}</td>
+                  <td>{row.horseNumber}</td>
+                  <td>{row.horseName}</td>
+                  <td>{row.jockeyName}</td>
+                  <td>{row.confidence === null ? "-" : row.confidence.toFixed(2)}</td>
+                  <td>{row.reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       ) : null}
       <form
