@@ -54,7 +54,9 @@ const MODEL_SIZE_BYTES = 2_003_697_664;
 const MODEL_URL = `/api/models/gemma-4-e2b/${MODEL_VERSION}/${MODEL_FILE_NAME}?expectedSize=${MODEL_SIZE_BYTES}`;
 const MODEL_SHA256 = "2cbff161177a4d51c9d04360016185976f504517ba5758cd10c1564e5421c5a5";
 const MODEL_SIZE_TOLERANCE_BYTES = Math.max(Math.round(MODEL_SIZE_BYTES * 0.02), 32 * 1024 * 1024);
+const MODEL_DOWNLOAD_RANGE_BYTES = 32 * 1024 * 1024;
 const MODEL_DOWNLOAD_MAX_ATTEMPTS = 3;
+const MODEL_DOWNLOAD_RANGE_MAX_ATTEMPTS = 4;
 const MODEL_DOWNLOAD_RETRY_DELAY_MS = 1_200;
 
 export const RACE_AI_MODELS: readonly RaceAiModelDefinition[] = [
@@ -354,75 +356,120 @@ const buildModelRequestUrl = (model: RaceAiModelDefinition, attempt: number): st
   return `${url.pathname}${url.search}`;
 };
 
-const fetchModelBuffer = async (
+const fetchRemoteModelSize = async (
   model: RaceAiModelDefinition,
   controller: AbortController,
   attempt: number,
-): Promise<ArrayBuffer> => {
+): Promise<number> => {
   const response = await fetch(buildModelRequestUrl(model, attempt), {
     cache: "no-store",
     headers: { accept: "application/octet-stream" },
+    method: "HEAD",
     signal: controller.signal,
   });
   if (!response.ok) {
     throw new Error(`model api ${response.status}`);
   }
   const total = Number(response.headers.get("content-length"));
-  const headerSizeMismatch =
-    Number.isFinite(total) &&
-    total > 0 &&
-    Math.abs(total - model.sizeBytes) > MODEL_SIZE_TOLERANCE_BYTES;
-  const totalBytes = model.sizeBytes;
-  updateActiveDownload(model, {
-    error: headerSizeMismatch
-      ? `応答ヘッダーのサイズが想定と異なります (${total}/${model.sizeBytes})。実データを確認しています。`
-      : null,
-    totalBytes,
-  });
-  if (!response.body) {
-    const buffer = await response.arrayBuffer();
-    if (!isAcceptableModelSize(model, buffer.byteLength)) {
-      throw createModelSizeMismatchError(model, buffer.byteLength, "arrayBuffer");
-    }
-    updateActiveDownload(model, {
-      downloadedBytes: buffer.byteLength,
-      error: null,
-      progress: 1,
-      totalBytes,
-    });
-    return buffer;
+  if (!isAcceptableModelSize(model, total)) {
+    throw createModelSizeMismatchError(model, Number.isFinite(total) ? total : 0, "content-length");
   }
+  return total;
+};
 
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
+const readRangeBuffer = async (response: Response, expectedBytes: number): Promise<Uint8Array> => {
+  const buffer = new Uint8Array(await response.arrayBuffer());
+  if (buffer.byteLength !== expectedBytes) {
+    throw new Error(
+      `model range size mismatch: expected ${expectedBytes}, got ${buffer.byteLength}`,
+    );
+  }
+  return buffer;
+};
+
+const fetchModelRangeWithRetries = async ({
+  attempt,
+  controller,
+  end,
+  model,
+  rangeIndex,
+  start,
+}: {
+  attempt: number;
+  controller: AbortController;
+  end: number;
+  model: RaceAiModelDefinition;
+  rangeIndex: number;
+  start: number;
+}): Promise<Uint8Array> => {
+  const expectedBytes = end - start + 1;
+  let lastError: unknown = null;
+  for (let rangeAttempt = 1; rangeAttempt <= MODEL_DOWNLOAD_RANGE_MAX_ATTEMPTS; rangeAttempt += 1) {
+    try {
+      const requestUrl = `${buildModelRequestUrl(model, attempt)}&downloadRange=${rangeIndex}&rangeAttempt=${rangeAttempt}`;
+      // eslint-disable-next-line no-await-in-loop -- range retries must be sequential.
+      const response = await fetch(requestUrl, {
+        cache: "no-store",
+        headers: {
+          accept: "application/octet-stream",
+          range: `bytes=${start}-${end}`,
+        },
+        signal: controller.signal,
+      });
+      if (response.status !== 206) {
+        throw new Error(`model range api ${response.status}`);
+      }
+      // eslint-disable-next-line no-await-in-loop -- the body belongs to this range attempt.
+      return await readRangeBuffer(response, expectedBytes);
+    } catch (error) {
+      lastError = error;
+      if (isAbortError(error) || rangeAttempt >= MODEL_DOWNLOAD_RANGE_MAX_ATTEMPTS) {
+        break;
+      }
+      updateActiveDownload(model, {
+        error: `範囲 ${rangeIndex + 1} の取得に失敗しました。再試行します (${rangeAttempt + 1}/${MODEL_DOWNLOAD_RANGE_MAX_ATTEMPTS})`,
+      });
+      // eslint-disable-next-line no-await-in-loop -- retry backoff must happen before the next range request.
+      await waitForRetry(500 * rangeAttempt, controller.signal);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(errorMessage(lastError));
+};
+
+const fetchModelBuffer = async (
+  model: RaceAiModelDefinition,
+  controller: AbortController,
+  attempt: number,
+): Promise<ArrayBuffer> => {
+  const totalBytes = await fetchRemoteModelSize(model, controller, attempt);
+  updateActiveDownload(model, { error: null, totalBytes });
+  const buffer = new Uint8Array(totalBytes);
   let downloadedBytes = 0;
+  let rangeIndex = 0;
 
-  for (;;) {
-    // eslint-disable-next-line no-await-in-loop -- model bytes must be read sequentially from the response stream.
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-    if (!value) {
-      continue;
-    }
-    chunks.push(value);
-    downloadedBytes += value.byteLength;
+  for (let start = 0; start < totalBytes; start += MODEL_DOWNLOAD_RANGE_BYTES) {
+    const end = Math.min(start + MODEL_DOWNLOAD_RANGE_BYTES - 1, totalBytes - 1);
+    // eslint-disable-next-line no-await-in-loop -- model ranges must be written in sequence.
+    const rangeBuffer = await fetchModelRangeWithRetries({
+      attempt,
+      controller,
+      end,
+      model,
+      rangeIndex,
+      start,
+    });
+    buffer.set(rangeBuffer, start);
+    downloadedBytes += rangeBuffer.byteLength;
     updateActiveDownload(model, {
       downloadedBytes,
       progress: Math.min(downloadedBytes / totalBytes, 1),
       totalBytes,
     });
-  }
-  if (!isAcceptableModelSize(model, downloadedBytes)) {
-    throw createModelSizeMismatchError(model, downloadedBytes, "downloaded bytes");
+    rangeIndex += 1;
   }
 
-  const buffer = new Uint8Array(downloadedBytes);
-  let offset = 0;
-  for (const chunk of chunks) {
-    buffer.set(chunk, offset);
-    offset += chunk.byteLength;
+  if (!isAcceptableModelSize(model, downloadedBytes)) {
+    throw createModelSizeMismatchError(model, downloadedBytes, "downloaded bytes");
   }
   return buffer.buffer;
 };
