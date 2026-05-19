@@ -108,6 +108,8 @@ import {
 } from "./storage";
 import {
   RUNNING_STYLE_INFERENCE_CRON,
+  RUNNING_STYLE_PREWARM_CRON,
+  formatTomorrowYYYYMMDDInJst,
   planRunningStylePredictionsForDate,
   runRunningStyleCronTick,
 } from "./running-style-cron";
@@ -780,6 +782,41 @@ const tryEnsureDiscoveredUrlsAreCurrent = async (env: Env, targetDate: string): 
       error instanceof Error ? error.message : String(error),
     );
   }
+};
+
+const prewarmRunningStylePredictionsForDate = async (env: Env, targetDate: string, now: Date) => {
+  let discoveryResult: Awaited<ReturnType<typeof upsertDiscoveredUrls>> | null = null;
+  try {
+    discoveryResult = await upsertDiscoveredUrls(env, targetDate);
+    await logFetch(
+      env.REALTIME_DB,
+      "discover-urls",
+      "ok",
+      null,
+      JSON.stringify({ ...discoveryResult, mode: "running-style-prewarm" }),
+    );
+  } catch (error) {
+    await logFetch(
+      env.REALTIME_DB,
+      "discover-urls",
+      "error",
+      null,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  const runningStyleResult = await planRunningStylePredictionsForDate(env, targetDate, now);
+  await logFetch(
+    env.REALTIME_DB,
+    "plan-running-style-predictions",
+    "ok",
+    null,
+    JSON.stringify({ ...runningStyleResult, mode: "prewarm" }),
+  );
+  return {
+    date: targetDate,
+    discovery: discoveryResult,
+    runningStyle: runningStyleResult,
+  };
 };
 
 const truncate = (value: string, maxLength: number): string =>
@@ -1980,6 +2017,23 @@ export default {
               JSON.stringify(summary),
             ),
           )
+          .catch((error: unknown) =>
+            logFetch(
+              env.REALTIME_DB,
+              "plan-running-style-predictions",
+              "error",
+              null,
+              error instanceof Error ? error.message : String(error),
+            ),
+          )
+          .then(() => undefined),
+      );
+      return;
+    }
+    if (controller.cron === RUNNING_STYLE_PREWARM_CRON) {
+      const targetDate = formatTomorrowYYYYMMDDInJst(scheduledAt);
+      ctx.waitUntil(
+        prewarmRunningStylePredictionsForDate(env, targetDate, scheduledAt)
           .catch((error: unknown) =>
             logFetch(
               env.REALTIME_DB,
