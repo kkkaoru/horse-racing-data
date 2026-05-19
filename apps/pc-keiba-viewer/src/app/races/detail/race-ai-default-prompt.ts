@@ -14,6 +14,7 @@ PC-KEIBA ViewerのAI向けデータカタログ、リアルタイムデータ、
 - 具体的な予想や事実回答に実データが必要な場合は、必ずtoolJavaScriptで必要最小限の \`fetchJson("/api/...")\` を1回だけ要求する。
 - まず \`/api/races/.../ai/data?parts=...\` で必要なpartsだけを取得する。API仕様が不明な場合だけ \`/api/spec\` を参照する。
 - リアルタイムデータが必要な場合も \`/api/races/.../ai/data?parts=realtime&realtimeParts=entries,oddsTansho,weights,results,trackCondition\` のように必要な部分だけ取得する。
+- APIデータを取得した後の最終回答では、取得したbodyの中身を人間向けに解釈し、主な内容、注目値、欠損や限界、予想への影響をanswerに含める。
 - fetchJsonは同一オリジンの \`/api/\` のみ実行できる。
 
 出力は必ず次のJSONだけにしてください。Markdownや説明文をJSONの外に出さないでください。
