@@ -55,12 +55,20 @@
         "name": "PADDOCK_ROOM",
         "class_name": "PaddockRoom",
       },
+      {
+        "name": "RACE_TREND_ROOM",
+        "class_name": "RaceTrendRoom",
+      },
     ],
   },
   "migrations": [
     {
       "tag": "paddock-room-v1",
       "new_sqlite_classes": ["PaddockRoom"],
+    },
+    {
+      "tag": "race-trend-room-v1",
+      "new_sqlite_classes": ["RaceTrendRoom"],
     },
   ],
   "observability": {

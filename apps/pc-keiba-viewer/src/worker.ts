@@ -1,4 +1,5 @@
 export { PaddockRoom } from "./worker/paddock-room";
+export { RaceTrendRoom } from "./worker/race-trend-room";
 // @ts-ignore OpenNext generates this file before Wrangler bundles the Worker.
 import openNextWorker from "../.open-next/worker.js";
 import type { DetailSectionCacheWarmMessage } from "./lib/race-detail-section-cache";

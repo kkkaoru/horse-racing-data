@@ -650,12 +650,35 @@ const apiSpec = {
             required: false,
             schema: { default: true, type: "boolean" },
           },
+          {
+            description:
+              "内部更新用。1 の場合は既存キャッシュを使わず再集計してキャッシュを更新します。",
+            in: "query",
+            name: "__trendCacheRefresh",
+            required: false,
+            schema: { enum: ["1"], type: "string" },
+          },
         ],
         responses: {
           "200": jsonResponse,
           ...errorResponses,
         },
         summary: "レース傾向の騎手・枠・脚質別集計を返します。",
+        tags: ["races"],
+      },
+    },
+    "/api/races/{year}/{month}/{day}/{keibajoCode}/{raceNumber}/trends/live": {
+      get: {
+        operationId: "connectRaceTrendLive",
+        parameters: [...routeParameters, sourceQueryParameter],
+        responses: {
+          "101": {
+            description:
+              "レース傾向キャッシュが更新された時に trend-updated を配信する WebSocket 接続。",
+          },
+          ...errorResponses,
+        },
+        summary: "レース傾向の更新通知 WebSocket に接続します。",
         tags: ["races"],
       },
     },

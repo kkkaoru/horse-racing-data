@@ -4,6 +4,8 @@ export const RACE_TREND_CACHE_VERSION = "v1";
 
 export const RACE_TREND_CACHE_WARM_PARAM = "__trendCacheWarm";
 
+export const RACE_TREND_CACHE_REFRESH_PARAM = "__trendCacheRefresh";
+
 export const RACE_TREND_CACHE_PRE_START_SECONDS = 20 * 60;
 
 export const RACE_TREND_CACHE_AFTER_START_SECONDS = 6 * 60 * 60;

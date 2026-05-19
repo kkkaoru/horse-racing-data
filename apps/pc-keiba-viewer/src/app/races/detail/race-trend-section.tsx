@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RaceSource } from "../../../lib/codes";
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
 import { formatKeibajo, formatRaceNumber } from "../../../lib/format";
+import { RACE_TREND_CACHE_REFRESH_PARAM } from "../../../lib/race-trend-cache";
 import type {
   RaceTrendDetail,
   RaceTrendPayload,
@@ -18,6 +19,8 @@ const RACE_TREND_RETRY_OPTIONS = {
   maxAttempts: 4,
   maxDelayMs: 4000,
 } as const;
+
+const RACE_TREND_AUTO_REFRESH_INTERVAL_MS = 60_000;
 
 const TREND_TARGET_KEYS = ["runningStyle", "frame", "jockey", "raceNumber"] as const;
 
@@ -152,6 +155,39 @@ const getApiPath = ({
   });
   return `/api/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/trends?${params.toString()}`;
 };
+
+const getLivePath = ({
+  day,
+  keibajoCode,
+  month,
+  raceNumber,
+  source,
+  year,
+}: Pick<
+  RaceTrendSectionProps,
+  "day" | "keibajoCode" | "month" | "raceNumber" | "source" | "year"
+>): string => {
+  const params = new URLSearchParams({ source });
+  return `/api/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/trends/live?${params.toString()}`;
+};
+
+const getWebSocketUrl = (path: string): string => {
+  const url = new URL(path, window.location.href);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.toString();
+};
+
+const getRefreshedApiPath = (path: string): string => {
+  const url = new URL(path, window.location.href);
+  url.searchParams.set(RACE_TREND_CACHE_REFRESH_PARAM, "1");
+  url.searchParams.set("_", String(Date.now()));
+  return `${url.pathname}?${url.searchParams.toString()}`;
+};
+
+const isRaceTrendUpdatedMessage = (value: unknown): boolean =>
+  typeof value === "object" &&
+  value !== null &&
+  (value as { type?: unknown }).type === "trend-updated";
 
 const TrendHeaderLabel = ({ children, secondLine }: { children: string; secondLine?: string }) => (
   <span className={secondLine ? "race-trend-header-label two-line" : "race-trend-header-label"}>
@@ -474,6 +510,7 @@ export function RaceTrendSection({
   const [rows, setRows] = useState<RaceTrendRunningStyleRow[]>([]);
   const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
   const fetchSequenceRef = useRef(0);
+  const liveConnectedRef = useRef(false);
 
   const toggleTrendTarget = useCallback((key: TrendTargetKey) => {
     setTrendTargets((current) => ({
@@ -482,26 +519,62 @@ export function RaceTrendSection({
     }));
   }, []);
 
-  const fetchTrendRows = useCallback(
-    async (requestId: number) => {
-      setStatus("loading");
+  const apiPath = useMemo(
+    () =>
+      getApiPath({
+        day,
+        defaultEndDate,
+        defaultStartDate,
+        jockeySameVenue,
+        keibajoCode,
+        month,
+        raceNumber,
+        source,
+        trendEnd,
+        trendStart,
+        trendTargets,
+        year,
+      }),
+    [
+      day,
+      defaultEndDate,
+      defaultStartDate,
+      jockeySameVenue,
+      keibajoCode,
+      month,
+      raceNumber,
+      source,
+      trendEnd,
+      trendStart,
+      trendTargets,
+      year,
+    ],
+  );
+
+  const livePath = useMemo(
+    () => getLivePath({ day, keibajoCode, month, raceNumber, source, year }),
+    [day, keibajoCode, month, raceNumber, source, year],
+  );
+
+  const refreshTrendRows = useCallback(
+    async ({
+      clearOnError,
+      refreshCache,
+      requestId,
+      showLoading,
+    }: {
+      clearOnError: boolean;
+      refreshCache: boolean;
+      requestId: number;
+      showLoading: boolean;
+    }) => {
+      if (showLoading) {
+        setStatus("loading");
+      }
       try {
         const response = await fetchWithRetry(
-          getApiPath({
-            day,
-            defaultEndDate,
-            defaultStartDate,
-            jockeySameVenue,
-            keibajoCode,
-            month,
-            raceNumber,
-            source,
-            trendEnd,
-            trendStart,
-            trendTargets,
-            year,
-          }),
-          { cache: "no-store" },
+          refreshCache ? getRefreshedApiPath(apiPath) : apiPath,
+          { cache: "no-store", credentials: "include" },
           RACE_TREND_RETRY_OPTIONS,
         );
         if (!response.ok) {
@@ -520,36 +593,91 @@ export function RaceTrendSection({
         if (fetchSequenceRef.current !== requestId) {
           return;
         }
-        setRows([]);
-        setStatus("error");
+        if (clearOnError) {
+          setRows([]);
+          setStatus("error");
+        }
       }
     },
-    [
-      day,
-      defaultEndDate,
-      defaultStartDate,
-      jockeySameVenue,
-      keibajoCode,
-      month,
-      raceNumber,
-      source,
-      trendEnd,
-      trendStart,
-      trendTargets,
-      year,
-    ],
+    [apiPath],
   );
 
   useEffect(() => {
     const requestId = fetchSequenceRef.current + 1;
     fetchSequenceRef.current = requestId;
-    void fetchTrendRows(requestId);
+    void refreshTrendRows({
+      clearOnError: true,
+      refreshCache: false,
+      requestId,
+      showLoading: true,
+    });
     return () => {
       if (fetchSequenceRef.current === requestId) {
         fetchSequenceRef.current += 1;
       }
     };
-  }, [fetchTrendRows]);
+  }, [refreshTrendRows]);
+
+  useEffect(() => {
+    const socket = new WebSocket(getWebSocketUrl(livePath));
+    socket.addEventListener("open", () => {
+      liveConnectedRef.current = true;
+    });
+    socket.addEventListener("message", (event) => {
+      const payload: unknown = (() => {
+        try {
+          return JSON.parse(String(event.data));
+        } catch {
+          return null;
+        }
+      })();
+      if (!isRaceTrendUpdatedMessage(payload)) {
+        return;
+      }
+      const requestId = fetchSequenceRef.current + 1;
+      fetchSequenceRef.current = requestId;
+      void refreshTrendRows({
+        clearOnError: false,
+        refreshCache: false,
+        requestId,
+        showLoading: false,
+      });
+    });
+    socket.addEventListener("close", () => {
+      liveConnectedRef.current = false;
+    });
+    socket.addEventListener("error", () => {
+      liveConnectedRef.current = false;
+      socket.close();
+    });
+    return () => {
+      liveConnectedRef.current = false;
+      socket.close();
+    };
+  }, [livePath, refreshTrendRows]);
+
+  useEffect(() => {
+    const refreshIfFallbackNeeded = () => {
+      if (document.visibilityState === "hidden" || liveConnectedRef.current) {
+        return;
+      }
+      const requestId = fetchSequenceRef.current + 1;
+      fetchSequenceRef.current = requestId;
+      void refreshTrendRows({
+        clearOnError: false,
+        refreshCache: true,
+        requestId,
+        showLoading: false,
+      });
+    };
+
+    const timer = window.setInterval(refreshIfFallbackNeeded, RACE_TREND_AUTO_REFRESH_INTERVAL_MS);
+    document.addEventListener("visibilitychange", refreshIfFallbackNeeded);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshIfFallbackNeeded);
+    };
+  }, [refreshTrendRows]);
 
   return (
     <section className="race-trend-section">
