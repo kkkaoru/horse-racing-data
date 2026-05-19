@@ -45,8 +45,8 @@ interface ActiveDownload {
 const MODEL_VERSION = "v20260518";
 const MODEL_FILE_NAME = "gemma-4-E2B-it-web.task";
 const MODEL_CACHE_KEY = `gemma-4-e2b:${MODEL_VERSION}:${MODEL_FILE_NAME}`;
-const MODEL_URL = `/api/models/gemma-4-e2b/${MODEL_VERSION}/${MODEL_FILE_NAME}`;
 const MODEL_SIZE_BYTES = 2_003_697_664;
+const MODEL_URL = `/api/models/gemma-4-e2b/${MODEL_VERSION}/${MODEL_FILE_NAME}?expectedSize=${MODEL_SIZE_BYTES}`;
 const MODEL_SHA256 = "2cbff161177a4d51c9d04360016185976f504517ba5758cd10c1564e5421c5a5";
 
 export const RACE_AI_MODELS: readonly RaceAiModelDefinition[] = [
@@ -94,13 +94,55 @@ const toDownloadedState = (
   info: RaceAiCachedModelInfo,
 ): RaceAiModelState => ({
   cachedAt: info.cachedAt,
-  downloadedBytes: info.size ?? model.sizeBytes,
+  downloadedBytes: model.sizeBytes,
   error: null,
   model,
   progress: 1,
   status: "downloaded",
-  totalBytes: info.size ?? model.sizeBytes,
+  totalBytes: model.sizeBytes,
 });
+
+const isCompleteCachedModelInfo = (
+  model: RaceAiModelDefinition,
+  info: RaceAiCachedModelInfo,
+): boolean => info.size === model.sizeBytes;
+
+const deleteIncompleteCachedModel = async (model: RaceAiModelDefinition): Promise<void> => {
+  await deleteCachedModel(model.cacheKey);
+  notify();
+};
+
+const getCompleteCachedModelInfo = async (
+  model: RaceAiModelDefinition,
+): Promise<RaceAiCachedModelInfo | null> => {
+  const cached = await getCachedModelInfo(model.cacheKey);
+  if (!cached) {
+    return null;
+  }
+  if (!isCompleteCachedModelInfo(model, cached)) {
+    await deleteIncompleteCachedModel(model);
+    return null;
+  }
+  return cached;
+};
+
+const loadCompleteCachedModel = async (
+  model: RaceAiModelDefinition,
+): Promise<ArrayBuffer | null> => {
+  const cachedInfo = await getCompleteCachedModelInfo(model);
+  if (!cachedInfo) {
+    return null;
+  }
+  const cached = await loadCachedModel(model.cacheKey);
+  if (!cached) {
+    return null;
+  }
+  if (cached.byteLength !== model.sizeBytes) {
+    await deleteIncompleteCachedModel(model);
+    return null;
+  }
+  return cached;
+};
 
 export const getRaceAiModelState = async (
   model: RaceAiModelDefinition,
@@ -117,7 +159,7 @@ export const getRaceAiModelState = async (
       totalBytes: active.totalBytes,
     };
   }
-  const cached = await getCachedModelInfo(model.cacheKey);
+  const cached = await getCompleteCachedModelInfo(model);
   if (cached) {
     return toDownloadedState(model, cached);
   }
@@ -159,14 +201,20 @@ const fetchModelBuffer = async (
     throw new Error(`model api ${response.status}`);
   }
   const total = Number(response.headers.get("content-length"));
-  const totalBytes = Number.isFinite(total) && total > 0 ? total : model.sizeBytes;
+  if (Number.isFinite(total) && total > 0 && total !== model.sizeBytes) {
+    throw new Error(`model size mismatch: expected ${model.sizeBytes}, got ${total}`);
+  }
+  const totalBytes = model.sizeBytes;
   updateActiveDownload(model, { totalBytes });
   if (!response.body) {
     const buffer = await response.arrayBuffer();
+    if (buffer.byteLength !== model.sizeBytes) {
+      throw new Error(`model size mismatch: expected ${model.sizeBytes}, got ${buffer.byteLength}`);
+    }
     updateActiveDownload(model, {
       downloadedBytes: buffer.byteLength,
       progress: 1,
-      totalBytes: buffer.byteLength,
+      totalBytes,
     });
     return buffer;
   }
@@ -188,9 +236,12 @@ const fetchModelBuffer = async (
     downloadedBytes += value.byteLength;
     updateActiveDownload(model, {
       downloadedBytes,
-      progress: totalBytes > 0 ? downloadedBytes / totalBytes : null,
+      progress: Math.min(downloadedBytes / totalBytes, 1),
       totalBytes,
     });
+  }
+  if (downloadedBytes !== model.sizeBytes) {
+    throw new Error(`model size mismatch: expected ${model.sizeBytes}, got ${downloadedBytes}`);
   }
 
   const buffer = new Uint8Array(downloadedBytes);
@@ -205,7 +256,7 @@ const fetchModelBuffer = async (
 export const downloadRaceAiModel = async (
   model: RaceAiModelDefinition = LATEST_RACE_AI_MODEL,
 ): Promise<ArrayBuffer> => {
-  const cached = await loadCachedModel(model.cacheKey);
+  const cached = await loadCompleteCachedModel(model);
   if (cached) {
     notify();
     return cached;
@@ -257,7 +308,7 @@ export const ensureRaceAiModelBuffer = async ({
   confirmDownload: boolean;
   model?: RaceAiModelDefinition;
 }): Promise<ArrayBuffer> => {
-  const cached = await loadCachedModel(model.cacheKey);
+  const cached = await loadCompleteCachedModel(model);
   if (cached) {
     notify();
     return cached;
