@@ -23,7 +23,7 @@
     "apps/horse-racing-duckdb": {
       "name": "horse-racing-duckdb",
       "dependencies": {
-        "@ducklings/workers": "1.4.4",
+        "@ducklings/workers": "1.5.2",
         "hono": "4.7.5",
         "horse-racing-schema": "workspace:*",
       },
@@ -302,7 +302,7 @@
 
     "@dotenvx/dotenvx": ["@dotenvx/dotenvx@1.31.0", "", { "dependencies": { "commander": "^11.1.0", "dotenv": "^16.4.5", "eciesjs": "^0.4.10", "execa": "^5.1.1", "fdir": "^6.2.0", "ignore": "^5.3.0", "object-treeify": "1.1.33", "picomatch": "^4.0.2", "which": "^4.0.0" }, "bin": { "dotenvx": "src/cli/dotenvx.js", "git-dotenvx": "src/cli/dotenvx.js" } }, "sha512-GeDxvtjiRuoyWVU9nQneId879zIyNdL05bS7RKiqMkfBSKpHMWHLoRyRqjYWLaXmX/llKO1hTlqHDmatkQAjPA=="],
 
-    "@ducklings/workers": ["@ducklings/workers@1.4.4", "", { "dependencies": { "@uwdata/flechette": "^2.2.6" }, "peerDependencies": { "vite": "^5.0.0 || ^6.0.0 || ^7.0.0" }, "optionalPeers": ["vite"] }, "sha512-ob4PXEtBT9a826M4nbQ43pTI4nJ6Xo75gfr9abUCWN/pt/vmuvCObqbm///WEcloNreXox+eysfkz1GdhZwcEA=="],
+    "@ducklings/workers": ["@ducklings/workers@1.5.2", "", { "dependencies": { "@uwdata/flechette": "^2.3.0" }, "peerDependencies": { "vite": "^5.0.0 || ^6.0.0 || ^7.0.0" }, "optionalPeers": ["vite"] }, "sha512-KBPYzntnvV8cDXrR5GAebIzDBvV318uwrLMmja8KHbDQ0XQkOJDp1pxACnY4S2JHYv5Y+SfXlkeuFp7EraThtw=="],
 
     "@ecies/ciphers": ["@ecies/ciphers@0.2.6", "", { "peerDependencies": { "@noble/ciphers": "^1.0.0" } }, "sha512-patgsRPKGkhhoBjETV4XxD0En4ui5fbX0hzayqI3M8tvNMGUoUvmyYAIWwlxBc1KX5cturfqByYdj5bYGRpN9g=="],
 
