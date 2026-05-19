@@ -29,6 +29,8 @@ export interface RaceAiMessage {
     horseName: string;
     horseNumber: string;
     jockeyName: string;
+    odds?: number | null;
+    popularity?: number | null;
     rank: number;
     reason: string;
   }[];

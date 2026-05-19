@@ -736,6 +736,18 @@ export const fetchRaceAiExportData = async (props: RaceAiDataBase): Promise<Race
   });
 };
 
+export const buildRaceAiInitialExportData = (props: RaceAiDataBase): RaceAiExportData =>
+  buildRaceAiExportData({
+    ...props,
+    sectionPayloads: null,
+    sections: getRaceAiSections({
+      distance: props.basePostgresqlData.race.kyori,
+      keibajoCode: props.keibajoCode,
+      source: props.source,
+    }),
+    supplementalPayloads: null,
+  });
+
 const buildApiUrl = (path: string, params: Record<string, string> = {}): string => {
   const searchParams =
     typeof window === "undefined"
@@ -788,6 +800,21 @@ const buildRaceContextForPrompt = (data: RaceAiExportData): Record<string, unkno
   };
 };
 
+const buildStandardRunnerRowsForPrompt = (data: RaceAiExportData): Record<string, unknown>[] =>
+  data.postgresql.base.runners.map((runner) => ({
+    age: cleanRaceContextText(runner.barei),
+    bodyWeight: cleanRaceContextText(runner.bataiju),
+    carriedWeight: cleanRaceContextText(runner.futanJuryo),
+    frameNumber: cleanRaceContextText(runner.wakuban),
+    horseName: cleanRaceContextText(runner.bamei),
+    horseNumber: cleanRaceContextText(runner.umaban),
+    jockeyName: cleanRaceContextText(runner.kishumeiRyakusho),
+    sexCode: cleanRaceContextText(runner.seibetsuCode),
+    storedOdds: cleanRaceContextText(runner.tanshoOdds),
+    storedPopularity: cleanRaceContextText(runner.tanshoNinkijun),
+    trainerName: cleanRaceContextText(runner.chokyoshimeiRyakusho),
+  }));
+
 export const buildRaceAiDataCatalogForPrompt = (
   data: RaceAiExportData,
 ): Record<string, unknown> => {
@@ -815,7 +842,10 @@ export const buildRaceAiDataCatalogForPrompt = (
       },
       sourceSections,
     },
-    raceContext: buildRaceContextForPrompt(data),
+    standardRaceData: {
+      race: buildRaceContextForPrompt(data),
+      runners: buildStandardRunnerRowsForPrompt(data),
+    },
     availableData: {
       endpoints: {
         aiData: {
