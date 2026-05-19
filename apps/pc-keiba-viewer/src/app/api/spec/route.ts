@@ -197,6 +197,40 @@ const apiSpec = {
         tags: ["cache"],
       },
     },
+    "/api/cache-warm/race-trends": {
+      post: {
+        operationId: "scheduleRaceTrendCacheWarm",
+        parameters: [
+          {
+            description: "デバッグ用。1 の場合のみ手動実行を許可します。",
+            in: "query",
+            name: "debug",
+            required: false,
+            schema: { enum: ["1"], type: "string" },
+          },
+          {
+            description: "対象日。YYYY-MM-DD。省略時は Asia/Tokyo 基準の今日を対象にします。",
+            in: "query",
+            name: "date",
+            required: false,
+            schema: { pattern: "^\\d{4}-\\d{2}-\\d{2}$", type: "string" },
+          },
+          {
+            description: "デバッグ用の現在時刻。ISO 8601。",
+            in: "query",
+            name: "now",
+            required: false,
+            schema: { type: "string" },
+          },
+        ],
+        responses: {
+          "200": jsonResponse,
+          ...errorResponses,
+        },
+        summary: "発走20分前からレース傾向キャッシュを作成する対象レースをQueueへ投入します。",
+        tags: ["cache"],
+      },
+    },
     "/api/mypage/favorites": {
       get: {
         operationId: "getFavoriteRaces",
@@ -638,6 +672,7 @@ const apiSpec = {
     { name: "races" },
     { name: "paddock" },
     { name: "mypage" },
+    { name: "cache" },
     { name: "debug" },
   ],
 } as const;

@@ -132,6 +132,7 @@ declare global {
     PC_KEIBA_RACE_AI_ACCENT_COLOR?: string;
     PC_KEIBA_RACE_AI_ICON_URL?: string;
     PC_KEIBA_RACE_AI_NAME?: string;
+    PC_KEIBA_RACE_TREND_CACHE_AFTER_START_SECONDS?: string;
     PC_KEIBA_RUNNING_STYLE_CACHE_ORIGIN?: string;
     REALTIME_DB?: PcKeibaD1Database;
   }

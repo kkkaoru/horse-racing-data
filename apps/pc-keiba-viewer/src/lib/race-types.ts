@@ -79,6 +79,7 @@ export interface RaceTrendStarterRow extends Record<string, unknown> {
   keibajoCode: string;
   raceBango: string;
   raceName: string | null;
+  hassoJikoku: string | null;
   runnerCount: string | null;
   wakuban: string | null;
   umaban: string | null;

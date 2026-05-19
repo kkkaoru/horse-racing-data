@@ -2,23 +2,33 @@ import type { RealtimeRacePayload } from "horse-racing-realtime/types";
 import { NextResponse } from "next/server";
 
 import {
+  buildRaceKey,
+  getRaceRunningStylesByRaceKeysFromD1,
+  getRaceRunningStylesFromD1,
+} from "../../../../../../../../../db/corner-running-style-queries";
+import {
   getRaceDetail,
   getRaceRunners,
   getRaceSourceByRoute,
   getRacesByDate,
   getRaceTrendHistoricalStarterRows,
 } from "../../../../../../../../../db/queries";
-import {
-  buildRaceKey,
-  getRaceRunningStylesByRaceKeysFromD1,
-  getRaceRunningStylesFromD1,
-} from "../../../../../../../../../db/corner-running-style-queries";
 import type { RaceSource } from "../../../../../../../../../lib/codes";
 import { fetchWithRetry } from "../../../../../../../../../lib/fetch-with-retry";
 import {
   isSameJockeyName,
   normalizeJockeyNameForComparison,
 } from "../../../../../../../../../lib/jockey-name";
+import {
+  RACE_TREND_CACHE_WARM_PARAM,
+  isRaceBeforeTargetRace,
+  type RaceTrendCacheOptions,
+} from "../../../../../../../../../lib/race-trend-cache";
+import {
+  buildRaceTrendCacheKeyForRequest,
+  getCachedRaceTrendResponse,
+  putRaceTrendCache,
+} from "../../../../../../../../../lib/race-trend-cache.server";
 import type {
   RaceDetail,
   RaceListItem,
@@ -598,6 +608,7 @@ const buildRealtimeStarterRows = async (race: RaceListItem): Promise<RaceTrendSt
         kaisaiTsukihi: race.kaisaiTsukihi,
         keibajoCode: race.keibajoCode,
         raceBango: race.raceBango,
+        hassoJikoku: race.hassoJikoku,
         raceName:
           normalizeText(race.kyosomeiHondai) ?? normalizeText(race.kyosomeiFukudai) ?? "一般競走",
         runnerCount: String(resultHorses.length),
@@ -622,18 +633,7 @@ const buildRealtimeStarterRows = async (race: RaceListItem): Promise<RaceTrendSt
   });
 };
 
-interface RaceTrendBuildOptions {
-  frameEndYmd: string;
-  frameStartYmd: string;
-  includeRealtimeResults: boolean;
-  jockeyEndYmd: string;
-  jockeySameVenue: boolean;
-  jockeyStartYmd: string;
-  runningStyleIgnoreFrame: boolean;
-  runningStyleIgnoreJockey: boolean;
-  runningStyleIgnoreRaceNumber: boolean;
-  runningStyleIgnoreRunningStyle: boolean;
-}
+type RaceTrendBuildOptions = RaceTrendCacheOptions;
 
 const buildRealtimeRowsForTrend = async (
   race: RaceDetail,
@@ -654,6 +654,9 @@ const buildRealtimeRowsForTrend = async (
   const historicalRaceKeys = new Set(historicalRows.map(starterRaceKey));
   const candidateRaces = dateRaces.filter((candidate) => {
     if (candidate.source !== race.source || historicalRaceKeys.has(starterRaceKey(candidate))) {
+      return false;
+    }
+    if (!isRaceBeforeTargetRace(candidate, race)) {
       return false;
     }
     const ymd = toYmd(candidate.kaisaiNen, candidate.kaisaiTsukihi);
@@ -782,7 +785,7 @@ const buildRaceTrendPayload = async (
   for (const row of realtimeRows) {
     mergedRows.set(starterKey(row), row);
   }
-  const rows = Array.from(mergedRows.values());
+  const rows = Array.from(mergedRows.values()).filter((row) => isRaceBeforeTargetRace(row, race));
   const historicalRunningStyles = await getRaceRunningStylesByRaceKeysFromD1(
     Array.from(new Set(rows.map(starterRaceKey))),
   ).catch(() => []);
@@ -855,7 +858,8 @@ export async function GET(request: Request, context: RouteContext) {
 
   const targetYmd = `${year}${month}${day}`;
   const defaultStartYmd = addDays(targetYmd, source === "jra" ? -1 : -3);
-  const options = {
+  const options: RaceTrendBuildOptions = {
+    source,
     jockeyStartYmd: parseDateInput(searchParams.get("jockeyStart"), defaultStartYmd),
     jockeyEndYmd: parseDateInput(searchParams.get("jockeyEnd"), targetYmd),
     frameStartYmd: parseDateInput(searchParams.get("frameStart"), defaultStartYmd),
@@ -867,12 +871,31 @@ export async function GET(request: Request, context: RouteContext) {
     runningStyleIgnoreRaceNumber: searchParams.get("runningStyleIgnoreRaceNumber") !== "false",
     runningStyleIgnoreRunningStyle: searchParams.get("runningStyleIgnoreRunningStyle") === "true",
   };
+  const cacheKey = buildRaceTrendCacheKeyForRequest({
+    day,
+    keibajoCode,
+    month,
+    options,
+    raceNumber,
+    year,
+  });
+  const isCacheWarmRequest = searchParams.get(RACE_TREND_CACHE_WARM_PARAM) === "1";
+  if (!isCacheWarmRequest) {
+    const cachedResponse = await getCachedRaceTrendResponse(cacheKey);
+    if (cachedResponse) {
+      return cachedResponse;
+    }
+  }
   const runners = await getRaceRunners(source, year, month, day, keibajoCode, raceNumber);
   const payload = await buildRaceTrendPayload(race, runners, options);
+  const body = JSON.stringify(payload);
+  await putRaceTrendCache({ body, cacheKey, race });
 
-  return NextResponse.json(payload, {
+  return new Response(body, {
     headers: {
-      "cache-control": "no-store",
+      "Cache-Control": "public, max-age=60",
+      "Content-Type": "application/json; charset=utf-8",
+      "X-Race-Trend-Cache": isCacheWarmRequest ? "MISS-STORED-WARM" : "MISS-STORED",
     },
   });
 }

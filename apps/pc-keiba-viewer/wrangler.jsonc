@@ -46,7 +46,8 @@
   },
   "triggers": {
     // 21:00 JST on the day before each race date.
-    "crons": ["0 12 * * *"],
+    // Every 5 minutes to warm race trends from 20 minutes before post time.
+    "crons": ["0 12 * * *", "*/5 * * * *"],
   },
   "durable_objects": {
     "bindings": [
@@ -73,6 +74,7 @@
     "PC_KEIBA_DATABASE_TARGET": "cloudflare",
     "PC_KEIBA_DB_CACHE_TTL_SECONDS": "3600",
     "PC_KEIBA_DETAIL_SECTION_CACHE_AFTER_START_SECONDS": "21600",
+    "PC_KEIBA_RACE_TREND_CACHE_AFTER_START_SECONDS": "21600",
     "PC_KEIBA_RUNNING_STYLE_CACHE_ORIGIN": "https://pc-keiba-viewer.kkk4oru.com",
     "PC_KEIBA_PADDOCK_DISCORD_BOT_NAME": "ジョーカー八重樫",
   },
