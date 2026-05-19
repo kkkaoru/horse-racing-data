@@ -67,7 +67,7 @@ main {
 
 .app-header {
   align-items: center;
-  background: var(--color-rgba-255-255-255-0-92-3);
+  background: var(--surface);
   border-bottom: var(--space-1px-7) solid var(--line);
   display: flex;
   height: var(--space-72px-6);
