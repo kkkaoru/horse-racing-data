@@ -144,6 +144,16 @@ const arrayValue = (record: Record<string, unknown> | null, key: string): unknow
   return Array.isArray(value) ? value : [];
 };
 
+const buildRaceName = (
+  race: Pick<RaceDetail, "kyosomeiFukudai" | "kyosomeiHondai" | "kyosomeiKakkonai">,
+): string | null => {
+  const name = [race.kyosomeiHondai, race.kyosomeiFukudai, race.kyosomeiKakkonai]
+    .map((value) => cleanText(value, ""))
+    .filter((value) => value.length > 0)
+    .join(" ");
+  return name || null;
+};
+
 const pickRace = (race: RaceDetail) => ({
   babajotaiCodeDirt: race.babajotaiCodeDirt,
   babajotaiCodeShiba: race.babajotaiCodeShiba,
@@ -161,6 +171,7 @@ const pickRace = (race: RaceDetail) => ({
   kyosomeiHondai: race.kyosomeiHondai,
   kyosomeiKakkonai: race.kyosomeiKakkonai,
   raceBango: race.raceBango,
+  raceName: buildRaceName(race),
   shussoTosu: race.shussoTosu,
   source: race.source,
   tenkoCode: race.tenkoCode,
@@ -196,6 +207,11 @@ const pickRaceListItem = (race: RaceListItem) => ({
   kyosoJokenMeisho: race.kyosoJokenMeisho,
   kyosomeiHondai: race.kyosomeiHondai,
   raceBango: race.raceBango,
+  raceName: buildRaceName({
+    kyosomeiFukudai: race.kyosomeiFukudai,
+    kyosomeiHondai: race.kyosomeiHondai,
+    kyosomeiKakkonai: null,
+  }),
   source: race.source,
   trackCode: race.trackCode,
 });

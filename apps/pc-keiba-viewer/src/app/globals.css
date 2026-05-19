@@ -7751,6 +7751,7 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 
 .race-ai-stop-actions {
   justify-content: flex-end;
+  margin-top: var(--space-10px-27);
 }
 
 .race-ai-stop-actions button,
@@ -7773,7 +7774,7 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 
 .race-ai-prediction-table {
   border-collapse: collapse;
-  min-width: var(--space-720px-181);
+  min-width: var(--space-880px-154);
   width: var(--space-100pct-12);
 }
 
@@ -7980,7 +7981,7 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   color: var(--color-hex-333333-115);
   font: inherit;
   font-weight: var(--number-400-46);
-  letter-spacing: var(--space-1-5em-115);
+  letter-spacing: var(--space-0-2em-222);
   line-height: var(--number-2-1);
   min-height: var(--space-96px-66);
   padding: var(--space-10px-27) var(--space-12px-9);
