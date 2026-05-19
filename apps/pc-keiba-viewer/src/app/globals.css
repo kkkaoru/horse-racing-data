@@ -7750,7 +7750,7 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 }
 
 .race-ai-stop-actions {
-  justify-content: flex-start;
+  justify-content: flex-end;
 }
 
 .race-ai-stop-actions button,
