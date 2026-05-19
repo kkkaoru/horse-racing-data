@@ -751,7 +751,7 @@ const compactToolResultForPrompt = (result: ToolResult): Record<string, unknown>
 
 const parseModelResponse = (
   text: string,
-  { fallbackAnswer = MACHINE_RESPONSE_FORMAT_FALLBACK_SOURCE }: { fallbackAnswer?: string } = {},
+  { fallbackAnswer = "" }: { fallbackAnswer?: string } = {},
 ): ParsedRaceAiResponse => {
   const cleaned = cleanModelText(stripJsonFence(text));
   const start = cleaned.indexOf("{");
@@ -806,15 +806,10 @@ const parseModelResponse = (
   }
 };
 
-const formatAssistantTextForDisplay = (
-  text: string,
-  fallbackAnswer = MACHINE_RESPONSE_FORMAT_FALLBACK_SOURCE,
-): string => parseModelResponse(text, { fallbackAnswer }).answer;
+const formatAssistantTextForDisplay = (text: string, fallbackAnswer = ""): string =>
+  parseModelResponse(text, { fallbackAnswer }).answer;
 
-const uiMessageDisplayText = (
-  message: UIMessage,
-  fallbackAnswer = MACHINE_RESPONSE_FORMAT_FALLBACK_SOURCE,
-): string => {
+const uiMessageDisplayText = (message: UIMessage, fallbackAnswer = ""): string => {
   const text = uiMessageText(message);
   return message.role === "assistant" ? formatAssistantTextForDisplay(text, fallbackAnswer) : text;
 };
