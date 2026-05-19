@@ -142,6 +142,11 @@ const TOOL_RESULT_CHAR_LIMIT = 4_000;
 const MIN_TOOL_RESULT_CHAR_LIMIT = 1_500;
 const TOOL_ROW_LIMIT = 16;
 const TOOL_TEXT_LIMIT = 240;
+const RACE_AI_CONTEXT_MAX_TOKENS = 16_384;
+const REPETITION_COLLAPSE_MIN_COUNT = 4;
+const REPETITION_CANCEL_MIN_COUNT = 12;
+const REPETITION_MAX_UNIT_CHARS = 32;
+const REPETITION_SCAN_CHARS = 2_400;
 const RUNTIME_LOG_TEXT_LIMIT = 2_000;
 const CHAT_AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 48;
 const ANSWER_DISPLAY_PARAGRAPH_MAX_CHARS = 96;
@@ -348,6 +353,73 @@ const cleanModelText = (text: string): string =>
     .replace(/\s*```$/u, "")
     .trim();
 
+class RaceAiRunawayRepetitionError extends Error {
+  constructor(readonly repeatedText: string) {
+    super(`AI応答が同じ語句を繰り返したため停止しました: ${repeatedText}`);
+    this.name = "RaceAiRunawayRepetitionError";
+  }
+}
+
+const hasLetter = (text: string): boolean => /\p{L}/u.test(text);
+
+const collapseRunawayTextRepetitions = (text: string): string => {
+  let result = text;
+  for (let unitSize = 2; unitSize <= REPETITION_MAX_UNIT_CHARS; unitSize += 1) {
+    let index = 0;
+    let changed = false;
+    while (index <= result.length - unitSize * REPETITION_COLLAPSE_MIN_COUNT) {
+      const unit = result.slice(index, index + unitSize);
+      if (!hasLetter(unit)) {
+        index += 1;
+        continue;
+      }
+      let scanIndex = index + unitSize;
+      let count = 1;
+      while (result.slice(scanIndex, scanIndex + unitSize) === unit) {
+        count += 1;
+        scanIndex += unitSize;
+      }
+      if (count >= REPETITION_COLLAPSE_MIN_COUNT) {
+        result = `${result.slice(0, index + unitSize)}${result.slice(scanIndex)}`;
+        changed = true;
+        index += unitSize;
+        continue;
+      }
+      index += 1;
+    }
+    if (changed) {
+      unitSize = Math.max(1, unitSize - 2);
+    }
+  }
+  return result;
+};
+
+const findRunawayTextRepetition = (text: string): string | null => {
+  const sample = cleanModelText(text).slice(-REPETITION_SCAN_CHARS);
+  for (let unitSize = 2; unitSize <= REPETITION_MAX_UNIT_CHARS; unitSize += 1) {
+    for (
+      let index = 0;
+      index <= sample.length - unitSize * REPETITION_CANCEL_MIN_COUNT;
+      index += 1
+    ) {
+      const unit = sample.slice(index, index + unitSize);
+      if (!hasLetter(unit)) {
+        continue;
+      }
+      let scanIndex = index + unitSize;
+      let count = 1;
+      while (sample.slice(scanIndex, scanIndex + unitSize) === unit) {
+        count += 1;
+        scanIndex += unitSize;
+      }
+      if (count >= REPETITION_CANCEL_MIN_COUNT) {
+        return unit;
+      }
+    }
+  }
+  return null;
+};
+
 const STRUCTURED_RESPONSE_FIELD_PATTERN =
   /(?:^|[\s{,[])"?(?:answer|prediction|thoughtLog|needsTool|toolJavaScript)"?\s*[:：]/iu;
 const STRUCTURED_RESPONSE_SECTION_PATTERN =
@@ -394,10 +466,12 @@ const normalizeUserFacingAssistantText = (text: string, fallbackAnswer = ""): st
     }
     lines.push(line);
   }
-  const normalized = cleanModelText(lines.join("\n"))
-    .replace(DISPLAY_ANSWER_SECTION_PATTERN, "$1")
-    .replace(/^\s*["']|["'],?\s*$/gu, "")
-    .trim();
+  const normalized = collapseRunawayTextRepetitions(
+    cleanModelText(lines.join("\n"))
+      .replace(DISPLAY_ANSWER_SECTION_PATTERN, "$1")
+      .replace(/^\s*["']|["'],?\s*$/gu, "")
+      .trim(),
+  );
   if (!normalized || isStructuredModelText(normalized)) {
     return fallbackAnswer;
   }
@@ -511,6 +585,25 @@ const extractDisplayAnswerFromModelText = (text: string, fallbackAnswer = ""): s
   }
   return normalizeUserFacingAssistantText(cleaned, fallbackAnswer);
 };
+
+const normalizeStoredRaceAiMessage = (message: RaceAiMessage): RaceAiMessage => {
+  if (message.role !== "assistant") {
+    return message;
+  }
+  return {
+    ...message,
+    content: extractDisplayAnswerFromModelText(message.content, message.content),
+    prediction: message.prediction?.map((row) => ({
+      ...row,
+      reason: normalizeUserFacingAssistantText(row.reason, row.reason),
+    })),
+  };
+};
+
+const normalizeStoredRaceAiThoughtLog = (thoughtLog: RaceAiThoughtLog): RaceAiThoughtLog => ({
+  ...thoughtLog,
+  content: collapseRunawayTextRepetitions(thoughtLog.content.trim()),
+});
 
 const isLocalhostBrowser = (): boolean =>
   typeof window !== "undefined" &&
@@ -1123,7 +1216,10 @@ const parseModelResponse = (
       format: "json",
       needsTool: parsed.needsTool === true,
       prediction,
-      thoughtLog: typeof parsed.thoughtLog === "string" ? parsed.thoughtLog : "",
+      thoughtLog:
+        typeof parsed.thoughtLog === "string"
+          ? collapseRunawayTextRepetitions(parsed.thoughtLog.trim())
+          : "",
       toolJavaScript:
         typeof parsed.toolJavaScript === "string" && parsed.toolJavaScript.trim()
           ? parsed.toolJavaScript
@@ -1269,6 +1365,7 @@ const buildToneRewritePrompt = ({
       "answer、prediction[].reason、thoughtLogだけを書き換え対象にしてください。",
       "answerやprediction[].reasonには、JSONキー名、thoughtLog、needsTool、toolJavaScript、思考ログ、根拠ログなどの構造名を含めないでください。",
       "rank、horseNumber、horseName、jockeyName、popularity、odds、confidence、needsTool、toolJavaScript、JSONキー、数値、固有名詞は変更しないでください。",
+      "同じ語句、一人称、同じ文型を連続して繰り返さないでください。特に「考える」などの語尾を反復しないでください。",
       "口調・振る舞い設定:",
       tonePrompt,
       "書き換え対象JSON:",
@@ -1506,10 +1603,31 @@ const generateModelResponse = async ({
   const cancelProcessing = () => {
     callOptionalLlmMethod(llm, "cancelProcessing");
   };
+  let repetitionError: RaceAiRunawayRepetitionError | null = null;
+  const guardedOnProgress = (partialResult: string, done: boolean) => {
+    if (!done) {
+      const repeatedText = findRunawayTextRepetition(partialResult);
+      if (repeatedText) {
+        repetitionError = new RaceAiRunawayRepetitionError(repeatedText);
+        cancelProcessing();
+        throw repetitionError;
+      }
+    }
+    onProgress?.(partialResult, done);
+  };
   callOptionalLlmMethod(llm, "clearCancelSignals");
   abortSignal?.addEventListener("abort", cancelProcessing, { once: true });
   try {
-    return await llm.generateResponse(prompt, onProgress);
+    const response = await llm.generateResponse(prompt, guardedOnProgress);
+    if (repetitionError) {
+      throw repetitionError;
+    }
+    return collapseRunawayTextRepetitions(response);
+  } catch (caught) {
+    if (repetitionError) {
+      throw repetitionError;
+    }
+    throw caught;
   } finally {
     abortSignal?.removeEventListener("abort", cancelProcessing);
     callOptionalLlmMethod(llm, "clearCancelSignals");
@@ -1603,9 +1721,10 @@ const createLocalChatStream = ({
         controller.enqueue({ id: textId, type: "text-end" });
         controller.enqueue({ type: "finish-step" });
         controller.enqueue({ finishReason: "stop", type: "finish" });
-      } catch (caught) {
-        const message = caught instanceof Error ? caught.message : String(caught);
-        controller.enqueue({ errorText: message, type: "error" });
+      } catch {
+        // runAi already owns the user-facing error state. Finish the stream
+        // cleanly so the AI SDK does not leave an active text part behind.
+        controller.enqueue({ id: textId, type: "text-end" });
         controller.enqueue({ type: "finish-step" });
         controller.enqueue({ finishReason: "error", type: "finish" });
       } finally {
@@ -1650,9 +1769,11 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const [toneSettingsStatus, setToneSettingsStatus] = useState<"loading" | "ready">("loading");
   const [chatSessionVersion, setChatSessionVersion] = useState(0);
   const [runtimeLogs, setRuntimeLogs] = useState<RaceAiRuntimeLog[]>([]);
+  const [chatRequestInFlight, setChatRequestInFlight] = useState(false);
   const llmRef = useRef<LlmInference | null>(null);
   const autoStartedRaceKeyRef = useRef<string | null>(null);
   const runningRef = useRef(false);
+  const chatRequestInFlightRef = useRef(false);
   const resetVersionRef = useRef(0);
   const runtimeLogBaseAtRef = useRef(Date.now());
   const runtimeLogSequenceRef = useRef(0);
@@ -1907,11 +2028,13 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       if (cancelled || resetVersionRef.current !== loadResetVersion) {
         return;
       }
-      setMessages(log.messages);
-      setThoughtLogs(log.thoughtLogs);
-      setPrediction(latestStoredPredictionRows(log.messages));
-      messagesRef.current = log.messages;
-      thoughtLogsRef.current = log.thoughtLogs;
+      const normalizedMessages = log.messages.map(normalizeStoredRaceAiMessage);
+      const normalizedThoughtLogs = log.thoughtLogs.map(normalizeStoredRaceAiThoughtLog);
+      setMessages(normalizedMessages);
+      setThoughtLogs(normalizedThoughtLogs);
+      setPrediction(latestStoredPredictionRows(normalizedMessages));
+      messagesRef.current = normalizedMessages;
+      thoughtLogsRef.current = normalizedThoughtLogs;
       hydratedRaceKeyRef.current = raceKey;
     })();
     return () => {
@@ -1925,14 +2048,16 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
 
   const persistLogs = useCallback(
     async (nextMessages: RaceAiMessage[], nextThoughtLogs: RaceAiThoughtLog[]) => {
-      messagesRef.current = nextMessages;
-      thoughtLogsRef.current = nextThoughtLogs;
-      setMessages(nextMessages);
-      setThoughtLogs(nextThoughtLogs);
+      const normalizedMessages = nextMessages.map(normalizeStoredRaceAiMessage);
+      const normalizedThoughtLogs = nextThoughtLogs.map(normalizeStoredRaceAiThoughtLog);
+      messagesRef.current = normalizedMessages;
+      thoughtLogsRef.current = normalizedThoughtLogs;
+      setMessages(normalizedMessages);
+      setThoughtLogs(normalizedThoughtLogs);
       await saveRaceAiLog({
-        messages: nextMessages,
+        messages: normalizedMessages,
         raceKey,
-        thoughtLogs: nextThoughtLogs,
+        thoughtLogs: normalizedThoughtLogs,
         updatedAt: new Date().toISOString(),
       });
     },
@@ -2040,7 +2165,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         elapsedMs: Date.now() - initializationStartedAt,
       });
       addRuntimeLog("info", "LlmInference createFromOptions started", {
-        maxTokens: 16_384,
+        maxTokens: RACE_AI_CONTEXT_MAX_TOKENS,
         modelBytes: buffer.byteLength,
       });
       const instance = await LlmInferenceClass.createFromOptions(genai, {
@@ -2049,7 +2174,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           gpuOptions: { device },
           modelAssetBuffer: new Uint8Array(buffer),
         },
-        maxTokens: 16_384,
+        maxTokens: RACE_AI_CONTEXT_MAX_TOKENS,
         randomSeed: 20260518,
         temperature: 0.25,
         topK: 40,
@@ -2304,9 +2429,9 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           toolResults: ToolResult[];
         }): Promise<ParsedRaceAiResponse> => {
           const promptRequest = responseNeedsFinalAnswer(toolResults, formatRetryCount)
-            ? `${request}\n\n直前の応答がJSONではありませんでした。取得済みデータだけを使い、必ず指定されたJSONだけを返してください。`
+            ? `${request}\n\n直前の応答がJSONではないか、同じ語句を反復しました。取得済みデータだけを使い、同じ語句を繰り返さず、必ず指定されたJSONだけを返してください。`
             : toolResults.length === 0 && formatRetryCount > 0
-              ? `${request}\n\n直前の応答がJSONではありませんでした。ユーザー質問に必要なデータを自律的に判断し、必要ならneedsTool trueでfetchJsonを1回だけ要求してください。回答できる場合は必ず指定されたJSONだけを返し、着順予想の依頼でなければpredictionは空配列にしてください。`
+              ? `${request}\n\n直前の応答がJSONではないか、同じ語句を反復しました。ユーザー質問に必要なデータを自律的に判断し、必要ならneedsTool trueでfetchJsonを1回だけ要求してください。回答できる場合は同じ語句を繰り返さず、必ず指定されたJSONだけを返し、着順予想の依頼でなければpredictionは空配列にしてください。`
               : toolResults.length >= MAX_TOOL_CALLS
                 ? `${request}\n\n取得済みデータだけで最終回答を作成してください。`
                 : request;
@@ -2341,8 +2466,9 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           addRuntimeLog("info", "model generation started", {
             mode: toolResults.length === 0 ? "tool-request" : "final-answer",
           });
-          const response = parseModelResponse(
-            await generateModelResponse({
+          let rawModelResponse = "";
+          try {
+            rawModelResponse = await generateModelResponse({
               abortSignal,
               llm,
               onProgress: (partialResult) => {
@@ -2351,9 +2477,23 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
                 }
               },
               prompt,
-            }),
-            { fallbackAnswer: MACHINE_RESPONSE_FORMAT_FALLBACK_SOURCE },
-          );
+            });
+          } catch (caught) {
+            if (caught instanceof RaceAiRunawayRepetitionError && formatRetryCount < 2) {
+              addRuntimeLog("warn", "model generation repeated text; retrying", {
+                formatRetryCount,
+                repeatedText: caught.repeatedText,
+              });
+              return runWithToolResults({
+                formatRetryCount: formatRetryCount + 1,
+                toolResults,
+              });
+            }
+            throw caught;
+          }
+          const response = parseModelResponse(rawModelResponse, {
+            fallbackAnswer: MACHINE_RESPONSE_FORMAT_FALLBACK_SOURCE,
+          });
           addRuntimeLog("info", "model generation completed", {
             elapsedMs: Date.now() - generationStartedAt,
             format: response.format,
@@ -2536,9 +2676,64 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     transport: localChatTransport,
   });
 
+  const releaseChatRequestGuard = useCallback(() => {
+    if (!chatRequestInFlightRef.current) {
+      return;
+    }
+    chatRequestInFlightRef.current = false;
+    setChatRequestInFlight(false);
+  }, []);
+
+  const sendRaceAiMessage = useCallback(
+    (
+      message: Parameters<typeof sendMessage>[0],
+      options?: Parameters<typeof sendMessage>[1],
+    ): boolean => {
+      const busy =
+        chatRequestInFlightRef.current ||
+        generationStatus !== "idle" ||
+        chatStatus === "submitted" ||
+        chatStatus === "streaming";
+      if (busy) {
+        addRuntimeLog("warn", "AI chat request suppressed while busy", {
+          chatStatus,
+          generationStatus,
+          requestGuard: chatRequestInFlightRef.current,
+        });
+        return false;
+      }
+      chatRequestInFlightRef.current = true;
+      setChatRequestInFlight(true);
+      void sendMessage(message, options)
+        .catch((caught: unknown) => {
+          const messageText = caught instanceof Error ? caught.message : String(caught);
+          if (Date.now() >= suppressChatErrorUntilRef.current) {
+            setError(messageText);
+          }
+          addRuntimeLog("error", "AI chat request failed", {
+            error: messageText,
+          });
+        })
+        .finally(releaseChatRequestGuard);
+      return true;
+    },
+    [addRuntimeLog, chatStatus, generationStatus, releaseChatRequestGuard, sendMessage],
+  );
+
+  useEffect(() => {
+    if (
+      chatRequestInFlight &&
+      generationStatus === "idle" &&
+      chatStatus !== "submitted" &&
+      chatStatus !== "streaming"
+    ) {
+      releaseChatRequestGuard();
+    }
+  }, [chatRequestInFlight, chatStatus, generationStatus, releaseChatRequestGuard]);
+
   const sendSystemMessage = useCallback(
     (text: string, trigger: string) =>
-      sendMessage(
+      sendRaceAiMessage(
         {
           metadata: { createdAt: new Date().toISOString() },
           parts: [{ text, type: "text" }],
@@ -2551,7 +2746,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           },
         },
       ),
-    [sendMessage],
+    [sendRaceAiMessage],
   );
 
   useEffect(() => {
@@ -2623,6 +2818,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       resetVersionRef.current += 1;
       suppressChatErrorUntilRef.current = Date.now() + 1_500;
       void stopChat();
+      releaseChatRequestGuard();
       if (llmRef.current) {
         callOptionalLlmMethod(llmRef.current, "cancelProcessing");
       }
@@ -2654,7 +2850,15 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         }).catch(() => {}),
       );
     },
-    [raceKey, realtimeFingerprint, resetRuntimeLogs, setChatMessages, setRuntimeStage, stopChat],
+    [
+      raceKey,
+      realtimeFingerprint,
+      releaseChatRequestGuard,
+      resetRuntimeLogs,
+      setChatMessages,
+      setRuntimeStage,
+      stopChat,
+    ],
   );
 
   const resetRaceAiState = useCallback(() => {
@@ -2668,11 +2872,11 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     if (hydratedRaceKeyRef.current !== raceKey) {
       return;
     }
-    if (chatStatus === "submitted" || chatStatus === "streaming") {
+    if (chatRequestInFlight || chatStatus === "submitted" || chatStatus === "streaming") {
       return;
     }
     setChatMessages(messages.map(raceMessageToUiMessage));
-  }, [chatStatus, messages, raceKey, setChatMessages]);
+  }, [chatRequestInFlight, chatStatus, messages, raceKey, setChatMessages]);
 
   useEffect(() => {
     if (!realtimeFingerprint) {
@@ -2685,6 +2889,9 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     if (
       hideOnMobile ||
       lastRealtimeFingerprintRef.current === realtimeFingerprint ||
+      chatRequestInFlight ||
+      chatStatus === "submitted" ||
+      chatStatus === "streaming" ||
       !llmRef.current ||
       generationStatus !== "idle"
     ) {
@@ -2692,7 +2899,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       return undefined;
     }
     const timer = window.setTimeout(() => {
-      void sendSystemMessage(
+      sendSystemMessage(
         `${lastUserRequestRef.current}\n\n${REALTIME_REEVALUATION_REQUEST}`,
         "realtime-update",
       );
@@ -2701,7 +2908,14 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     return () => {
       window.clearTimeout(timer);
     };
-  }, [generationStatus, hideOnMobile, realtimeFingerprint, sendSystemMessage]);
+  }, [
+    chatRequestInFlight,
+    chatStatus,
+    generationStatus,
+    hideOnMobile,
+    realtimeFingerprint,
+    sendSystemMessage,
+  ]);
 
   useEffect(() => {
     if (
@@ -2711,15 +2925,21 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       !settings.autoStart ||
       modelState?.status !== "downloaded" ||
       toneSettingsStatus !== "ready" ||
+      chatRequestInFlight ||
+      chatStatus === "submitted" ||
+      chatStatus === "streaming" ||
       generationStatus !== "idle" ||
       hydratedRaceKeyRef.current !== raceKey ||
       autoStartedRaceKeyRef.current === raceKey
     ) {
       return;
     }
-    autoStartedRaceKeyRef.current = raceKey;
-    void sendSystemMessage(DEFAULT_RACE_AI_REQUEST, "auto-start");
+    if (sendSystemMessage(DEFAULT_RACE_AI_REQUEST, "auto-start")) {
+      autoStartedRaceKeyRef.current = raceKey;
+    }
   }, [
+    chatRequestInFlight,
+    chatStatus,
     generationStatus,
     hideOnMobile,
     modelState?.status,
@@ -2739,17 +2959,22 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const isModelPreparing =
     isModelDownloading || modelStatus === "downloading" || modelStatus === "initializing";
   const isChatBusy =
-    generationStatus !== "idle" || chatStatus === "submitted" || chatStatus === "streaming";
+    chatRequestInFlight ||
+    generationStatus !== "idle" ||
+    chatStatus === "submitted" ||
+    chatStatus === "streaming";
   const canSubmitChat = !isChatBusy;
   const submitUserChatInput = useCallback(() => {
     const value = input.trim();
     if (!value || !canSubmitChat) {
       return;
     }
+    if (!sendRaceAiMessage({ text: value })) {
+      return;
+    }
     shouldAutoScrollChatRef.current = true;
     setInput("");
-    void sendMessage({ text: value });
-  }, [canSubmitChat, input, sendMessage]);
+  }, [canSubmitChat, input, sendRaceAiMessage]);
   const showSystemMessages = settings?.showSystemMessages ?? false;
   const displayedChatMessages = useMemo(
     () =>
@@ -3041,7 +3266,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       }
       handledDebugCommandIdsRef.current.add(command.id);
       if (command.type === "send-message" && command.text?.trim()) {
-        await sendMessage(
+        sendRaceAiMessage(
           { text: command.text.trim() },
           {
             body: {
@@ -3093,7 +3318,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     hideOnMobile,
     persistLogs,
     raceKey,
-    sendMessage,
+    sendRaceAiMessage,
     setRuntimeStage,
   ]);
 
