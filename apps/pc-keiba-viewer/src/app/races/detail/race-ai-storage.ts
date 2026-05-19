@@ -1,8 +1,9 @@
 "use client";
 
 const DB_NAME = "pc-keiba-race-ai";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const LOG_STORE = "raceLogs";
+const MODEL_PART_DATA_STORE = "modelPartDataCache";
 const MODEL_PART_STORE = "modelPartCache";
 const MODEL_STORE = "modelCache";
 const SETTINGS_STORAGE_KEY = "pc-keiba-race-ai-settings-v1";
@@ -60,9 +61,7 @@ interface StoredModel {
 }
 
 interface StoredModelPart {
-  blob?: Blob;
   cachedAt: string;
-  data?: ArrayBuffer;
   end: number;
   key: string;
   modelCacheKey: string;
@@ -72,6 +71,11 @@ interface StoredModelPart {
   sourceUrl: string;
   start: number;
   totalBytes: number;
+}
+
+interface StoredModelPartData {
+  data: ArrayBuffer;
+  key: string;
 }
 
 export interface RaceAiCachedModelInfo {
@@ -114,8 +118,19 @@ const openRaceAiDb = (): Promise<IDBDatabase> =>
     request.addEventListener("error", () => {
       reject(request.error);
     });
-    request.addEventListener("upgradeneeded", () => {
+    request.addEventListener("upgradeneeded", (event) => {
       const db = request.result;
+      if (event.oldVersion < 3) {
+        if (db.objectStoreNames.contains(MODEL_STORE)) {
+          db.deleteObjectStore(MODEL_STORE);
+        }
+        if (db.objectStoreNames.contains(MODEL_PART_STORE)) {
+          db.deleteObjectStore(MODEL_PART_STORE);
+        }
+        if (db.objectStoreNames.contains(MODEL_PART_DATA_STORE)) {
+          db.deleteObjectStore(MODEL_PART_DATA_STORE);
+        }
+      }
       if (!db.objectStoreNames.contains(LOG_STORE)) {
         db.createObjectStore(LOG_STORE, { keyPath: "raceKey" });
       }
@@ -124,6 +139,9 @@ const openRaceAiDb = (): Promise<IDBDatabase> =>
       }
       if (!db.objectStoreNames.contains(MODEL_PART_STORE)) {
         db.createObjectStore(MODEL_PART_STORE, { keyPath: "key" });
+      }
+      if (!db.objectStoreNames.contains(MODEL_PART_DATA_STORE)) {
+        db.createObjectStore(MODEL_PART_DATA_STORE, { keyPath: "key" });
       }
     });
     request.addEventListener("success", () => {
@@ -272,10 +290,7 @@ const storedModelPartSize = (row: StoredModelPart): number | null => {
   if (typeof row.size === "number" && Number.isFinite(row.size) && row.size > 0) {
     return row.size;
   }
-  if (row.data) {
-    return row.data.byteLength;
-  }
-  return row.blob?.size || null;
+  return null;
 };
 
 const toArrayBufferCopy = (buffer: Uint8Array): ArrayBuffer => {
@@ -357,16 +372,13 @@ export const listAllCachedModelPartInfos = async (): Promise<RaceAiCachedModelPa
 };
 
 export const loadCachedModelPart = async (key: string): Promise<ArrayBuffer | null> => {
-  const row = await withStore<StoredModelPart>(MODEL_PART_STORE, "readonly", (store) =>
+  const row = await withStore<StoredModelPartData>(MODEL_PART_DATA_STORE, "readonly", (store) =>
     store.get(key),
   );
   if (!row) {
     return null;
   }
-  if (row.data) {
-    return row.data.slice(0);
-  }
-  return row.blob?.arrayBuffer ? row.blob.arrayBuffer() : null;
+  return row.data.slice(0);
 };
 
 export const saveCachedModelPart = async ({
@@ -390,10 +402,25 @@ export const saveCachedModelPart = async ({
   start: number;
   totalBytes: number;
 }): Promise<void> => {
-  await withStore(MODEL_PART_STORE, "readwrite", (store) => {
-    store.put({
-      cachedAt: new Date().toISOString(),
+  const db = await openRaceAiDb();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction([MODEL_PART_STORE, MODEL_PART_DATA_STORE], "readwrite");
+    const partStore = transaction.objectStore(MODEL_PART_STORE);
+    const dataStore = transaction.objectStore(MODEL_PART_DATA_STORE);
+    transaction.addEventListener("complete", () => {
+      db.close();
+      resolve();
+    });
+    transaction.addEventListener("error", () => {
+      db.close();
+      reject(transaction.error);
+    });
+    dataStore.put({
       data: toArrayBufferCopy(buffer),
+      key,
+    } satisfies StoredModelPartData);
+    partStore.put({
+      cachedAt: new Date().toISOString(),
       end,
       key,
       modelCacheKey,
@@ -412,9 +439,22 @@ export const deleteCachedModelParts = async (modelCacheKey: string): Promise<voi
   if (parts.length === 0) {
     return;
   }
-  await withStore(MODEL_PART_STORE, "readwrite", (store) => {
+  const db = await openRaceAiDb();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction([MODEL_PART_STORE, MODEL_PART_DATA_STORE], "readwrite");
+    const partStore = transaction.objectStore(MODEL_PART_STORE);
+    const dataStore = transaction.objectStore(MODEL_PART_DATA_STORE);
+    transaction.addEventListener("complete", () => {
+      db.close();
+      resolve();
+    });
+    transaction.addEventListener("error", () => {
+      db.close();
+      reject(transaction.error);
+    });
     for (const part of parts) {
-      store.delete(part.key);
+      partStore.delete(part.key);
+      dataStore.delete(part.key);
     }
   });
 };
