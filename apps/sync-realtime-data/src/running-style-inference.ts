@@ -19,10 +19,7 @@ import {
   loadLightGBMModelFromR2,
   type RaceHorseFeatureRow,
 } from "./running-style-r2";
-import {
-  upsertRaceRunningStyles,
-  type RaceRunningStyleRow,
-} from "./running-style-d1";
+import { upsertRaceRunningStyles, type RaceRunningStyleRow } from "./running-style-d1";
 
 export interface InferenceConfig {
   modelKey: string;
@@ -35,6 +32,12 @@ export interface InferenceSummary {
   horseCount: number;
   writtenCount: number;
   modelVersion: string;
+}
+
+export interface RowsInferenceConfig {
+  modelKey: string;
+  rows: ReadonlyArray<RaceHorseFeatureRow>;
+  predictedAt: string;
 }
 
 const groupByRace = (
@@ -78,8 +81,9 @@ const mergeFeatureMap = (
   return { ...perHorse, ...numericField };
 };
 
-const extractPeerInputs = (rows: ReadonlyArray<RaceHorseFeatureRow>): ReadonlyArray<HorsePeerInputs> =>
-  rows.map((row) => row.peerInputs);
+const extractPeerInputs = (
+  rows: ReadonlyArray<RaceHorseFeatureRow>,
+): ReadonlyArray<HorsePeerInputs> => rows.map((row) => row.peerInputs);
 
 const buildPredictionForHorse = (
   row: RaceHorseFeatureRow,
@@ -127,16 +131,44 @@ export const runRunningStyleInference = async (
 ): Promise<InferenceSummary> => {
   const model = await loadLightGBMModelFromR2(bucket, config.modelKey);
   const rows = await loadFeaturesFromR2(bucket, config.featuresKey);
-  const grouped = groupByRace(rows);
+  return runRunningStyleInferenceRows(db, {
+    model,
+    predictedAt: config.predictedAt,
+    rows,
+  });
+};
+
+const runRunningStyleInferenceRows = async (
+  db: D1Database,
+  config: {
+    model: CompactLightGBMModel;
+    predictedAt: string;
+    rows: ReadonlyArray<RaceHorseFeatureRow>;
+  },
+): Promise<InferenceSummary> => {
+  const grouped = groupByRace(config.rows);
   const predictions: RaceRunningStyleRow[] = [];
   grouped.forEach((raceRows) => {
-    predictRace(raceRows, model, config.predictedAt).forEach((row) => predictions.push(row));
+    predictRace(raceRows, config.model, config.predictedAt).forEach((row) => predictions.push(row));
   });
   const writtenCount = await upsertRaceRunningStyles(db, predictions);
   return {
-    horseCount: rows.length,
-    modelVersion: model.model_version,
+    horseCount: config.rows.length,
+    modelVersion: config.model.model_version,
     raceCount: grouped.size,
     writtenCount,
   };
+};
+
+export const runRunningStyleInferenceForRows = async (
+  bucket: R2Bucket,
+  db: D1Database,
+  config: RowsInferenceConfig,
+): Promise<InferenceSummary> => {
+  const model = await loadLightGBMModelFromR2(bucket, config.modelKey);
+  return runRunningStyleInferenceRows(db, {
+    model,
+    predictedAt: config.predictedAt,
+    rows: config.rows,
+  });
 };

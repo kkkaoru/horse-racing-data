@@ -6,7 +6,7 @@ import { Pool } from "pg";
 
 import type { Env } from "./types";
 
-const DEFAULT_POOL_SIZE = 2;
+const DEFAULT_POOL_SIZE = 6;
 let pool: Pool | null = null;
 
 const getConnectionString = (env: Env): string => {

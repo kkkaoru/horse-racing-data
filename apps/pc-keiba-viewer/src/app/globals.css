@@ -5523,59 +5523,74 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 }
 
 .race-trend-detail-table {
-  min-width: var(--space-780px-186);
+  min-width: var(--space-880px-154);
   table-layout: fixed;
-}
-
-.race-trend-detail-col-finish {
-  width: var(--space-56px-165);
-}
-
-.race-trend-detail-col-primary,
-.race-trend-detail-col-secondary {
-  width: var(--space-112px-104);
 }
 
 .race-trend-detail-col-date {
   width: var(--space-96px-66);
 }
 
-.race-trend-detail-col-race-name {
-  width: var(--space-240px-77);
+.race-trend-detail-col-venue {
+  width: var(--space-82px-153);
 }
 
 .race-trend-detail-col-race-number {
-  width: var(--space-118px-41);
+  width: var(--space-48px-43);
 }
 
-.race-trend-detail-col-horse-number {
-  width: var(--space-68px-163);
+.race-trend-detail-col-race-name {
+  width: var(--space-260px-75);
 }
 
-.race-trend-detail-table.frame {
-  min-width: var(--space-822px-187);
+.race-trend-detail-col-finish,
+.race-trend-detail-col-popularity {
+  width: var(--space-56px-165);
 }
 
-.race-trend-detail-table th:first-child,
-.race-trend-detail-table td:first-child,
-.race-trend-detail-table th:nth-child(3):not(:last-child),
-.race-trend-detail-table td:nth-child(3):not(:last-child),
-.race-trend-detail-table th:nth-child(6),
-.race-trend-detail-table td:nth-child(6) {
-  text-align: center;
-}
-
-.race-trend-detail-table th:nth-child(4),
-.race-trend-detail-table td:nth-child(4) {
-  white-space: normal;
-}
-
-.race-trend-detail-table.frame .race-trend-detail-col-primary {
+.race-trend-detail-col-odds {
   width: var(--space-64px-48);
 }
 
-.race-trend-detail-table.frame .race-trend-detail-col-secondary {
-  width: var(--space-128px-68);
+.race-trend-detail-col-horse-number {
+  width: var(--space-56px-165);
+}
+
+.race-trend-detail-col-frame {
+  width: var(--space-48px-43);
+}
+
+.race-trend-detail-col-jockey {
+  width: var(--space-112px-104);
+}
+
+.race-trend-detail-table th,
+.race-trend-detail-table td {
+  white-space: nowrap;
+}
+
+.race-trend-detail-table th:nth-child(1),
+.race-trend-detail-table td:nth-child(1),
+.race-trend-detail-table th:nth-child(2),
+.race-trend-detail-table td:nth-child(2),
+.race-trend-detail-table th:nth-child(3),
+.race-trend-detail-table td:nth-child(3),
+.race-trend-detail-table th:nth-child(5),
+.race-trend-detail-table td:nth-child(5),
+.race-trend-detail-table th:nth-child(6),
+.race-trend-detail-table td:nth-child(6),
+.race-trend-detail-table th:nth-child(7),
+.race-trend-detail-table td:nth-child(7),
+.race-trend-detail-table th:nth-child(8),
+.race-trend-detail-table td:nth-child(8),
+.race-trend-detail-table th:nth-child(9),
+.race-trend-detail-table td:nth-child(9) {
+  text-align: center;
+}
+
+.race-trend-detail-race-name {
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .finish-prediction-col-number,

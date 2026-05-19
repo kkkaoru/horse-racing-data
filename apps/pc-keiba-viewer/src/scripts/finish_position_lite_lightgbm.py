@@ -35,6 +35,10 @@ LITE_AGGREGATE_FEATURES: tuple[str, ...] = (
     "career_win_rate",
     "career_place_rate",
     "past_corner_1_norm_avg_5",
+    "past_corner_1_norm_avg_3",
+    "past_corner_1_norm_std_5",
+    "past_corner_1_norm_best_5",
+    "corner_pass_avg_5",
     "past_nige_rate_self",
     "past_senkou_rate_self",
     "past_sashi_rate_self",
@@ -42,10 +46,17 @@ LITE_AGGREGATE_FEATURES: tuple[str, ...] = (
     "jockey_career_win_rate",
     "jockey_nige_rate",
     "jockey_senkou_rate",
+    "jockey_sashi_rate",
+    "jockey_oikomi_rate",
+    "jockey_recent_nige_rate_90d",
     "rs_p_nige",
     "rs_p_senkou",
     "rs_p_sashi",
     "rs_p_oikomi",
+    "self_style_dominant_rate",
+    "field_avg_style_concentration",
+    "field_style_diversity",
+    "field_nige_candidate_count",
 )
 
 RELEVANCE_BY_RANK = {1: 3, 2: 2, 3: 1}
@@ -63,6 +74,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-end-date", type=str, required=True)
     parser.add_argument("--model-version", type=str, required=True)
     parser.add_argument("--output-model-dir", type=Path, required=True)
+    parser.add_argument("--num-iterations", type=int, default=DEFAULT_NUM_ITERATIONS)
+    parser.add_argument("--num-leaves", type=int, default=DEFAULT_NUM_LEAVES)
+    parser.add_argument("--learning-rate", type=float, default=DEFAULT_LEARNING_RATE)
     return parser.parse_args()
 
 
@@ -144,12 +158,12 @@ def main() -> None:
         "objective": "lambdarank",
         "metric": "ndcg",
         "ndcg_eval_at": [3],
-        "num_leaves": DEFAULT_NUM_LEAVES,
-        "learning_rate": DEFAULT_LEARNING_RATE,
+        "num_leaves": args.num_leaves,
+        "learning_rate": args.learning_rate,
         "min_child_samples": DEFAULT_MIN_CHILD_SAMPLES,
         "verbose": -1,
     }
-    booster = lgb.train(params, dataset, num_boost_round=DEFAULT_NUM_ITERATIONS)
+    booster = lgb.train(params, dataset, num_boost_round=args.num_iterations)
     write_model_artifacts(
         args.output_model_dir,
         booster,

@@ -83,6 +83,8 @@ export interface RaceTrendStarterRow extends Record<string, unknown> {
   umaban: string | null;
   bamei: string | null;
   jockeyName: string | null;
+  tanshoOdds: string | null;
+  tanshoPopularity: string | null;
   finishPosition: number;
   sohaTime: string | null;
 }
@@ -97,6 +99,8 @@ export interface RaceTrendDetail {
   horseNumber: string | null;
   horseName: string | null;
   jockeyName: string | null;
+  popularity: number | null;
+  winOdds: number | null;
   finishPosition: number;
   time: string | null;
 }

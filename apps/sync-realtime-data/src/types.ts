@@ -60,7 +60,26 @@ export type Job =
   | {
       type: "fetch-premium-paddock";
       raceKey: string;
+    }
+  | {
+      type: "plan-running-style-predictions";
+      date: string;
+    }
+  | {
+      type: "generate-running-style-predictions";
+      raceKey: string;
+      source: "jra" | "nar";
+      kaisaiNen: string;
+      kaisaiTsukihi: string;
+      keibajoCode: string;
+      raceBango: string;
+      predictedAt: string;
     };
+
+export type RunningStylePredictionJob = Extract<
+  Job,
+  { type: "generate-running-style-predictions" }
+>;
 
 export type HorseOddsTrend = RealtimeHorseOddsTrend;
 export type OddsTrend = RealtimeOddsTrend;
@@ -77,17 +96,6 @@ export type TrackCondition = RealtimeTrackCondition;
 
 export interface HyperdriveBinding {
   connectionString: string;
-}
-
-export interface FinishPositionLiteJob {
-  type: "finish-position-lite-infer";
-  source: string;
-  kaisaiNen: string;
-  kaisaiTsukihi: string;
-  keibajoCode: string;
-  raceBango: string;
-  modelVersion: string;
-  predictedAt: string;
 }
 
 export interface Env {
@@ -145,8 +153,6 @@ export interface Env {
   REALTIME_DB: D1Database;
   REALTIME_JOBS: Queue<Job>;
   REALTIME_TEST_NOW?: string;
-  FINISH_POSITION_LITE_ENABLED?: string;
-  FINISH_POSITION_LITE_JOBS: Queue<FinishPositionLiteJob>;
   RUNNING_STYLE_D1_WRITE_ENABLED?: string;
   RUNNING_STYLE_MODELS: R2Bucket;
   TRACK_CONDITION_CACHE: DurableObjectNamespace;

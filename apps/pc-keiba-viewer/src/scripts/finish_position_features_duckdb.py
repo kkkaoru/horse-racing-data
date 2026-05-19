@@ -159,10 +159,18 @@ def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
     con.execute("INSTALL postgres")
     con.execute("LOAD postgres")
     con.execute(f"ATTACH '{pg_url}' AS pg (TYPE postgres, READ_ONLY)")
-    try:
-        con.execute("SET pg_experimental_filter_pushdown = true")
-    except duckdb.Error:
-        pass
+    for stmt in (
+        "SET pg_experimental_filter_pushdown = true",
+        "SET pg_use_binary_copy = true",
+        "SET pg_use_ctid_scan = true",
+        "SET pg_pages_per_task = 5000",
+        "SET pg_connection_cache = true",
+        "SET pg_connection_limit = 8",
+    ):
+        try:
+            con.execute(stmt)
+        except duckdb.Error:
+            pass
 
 
 def run_staged_sql(
@@ -1713,14 +1721,16 @@ def configure_duckdb_session(
     if temp_dir is not None:
         temp_dir.mkdir(parents=True, exist_ok=True)
         con.execute(f"set temp_directory = '{temp_dir.as_posix()}'")
-    try:
-        con.execute("PRAGMA enable_object_cache=true")
-    except duckdb.Error:
-        pass
-    try:
-        con.execute("SET enable_progress_bar_print = false")
-    except duckdb.Error:
-        pass
+    for stmt in (
+        "PRAGMA enable_object_cache=true",
+        "SET enable_progress_bar_print = false",
+        "SET preserve_insertion_order = false",
+        "SET max_temp_directory_size = '200GB'",
+    ):
+        try:
+            con.execute(stmt)
+        except duckdb.Error:
+            pass
 
 
 def stage_source(
