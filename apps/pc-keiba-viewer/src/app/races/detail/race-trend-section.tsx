@@ -6,11 +6,12 @@ import type { RaceSource } from "../../../lib/codes";
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
 import { formatKeibajo, formatRaceNumber } from "../../../lib/format";
 import type {
+  RaceTrendDetail,
   RaceTrendPayload,
-  RaceTrendRateRow,
   RaceTrendRunningStyle,
   RaceTrendRunningStyleRow,
 } from "../../../lib/race-types";
+import { useRealtimeRaceSelector } from "./realtime-client";
 
 const RACE_TREND_RETRY_OPTIONS = {
   baseDelayMs: 300,
@@ -18,15 +19,10 @@ const RACE_TREND_RETRY_OPTIONS = {
   maxDelayMs: 4000,
 } as const;
 
-type SortKey = "showRate" | "quinellaRate" | "winRate";
-type TrendTableKind = "frame" | "jockey";
+const TREND_TARGET_KEYS = ["runningStyle", "frame", "jockey"] as const;
 
-const RUNNING_STYLE_LABELS: Record<RaceTrendRunningStyle, string> = {
-  nige: "逃げ",
-  senkou: "先行",
-  sashi: "差し",
-  oikomi: "追い込み",
-};
+type TrendTargetKey = (typeof TREND_TARGET_KEYS)[number];
+type TrendTargets = Record<TrendTargetKey, boolean>;
 
 interface RaceTrendSectionProps {
   day: string;
@@ -39,10 +35,23 @@ interface RaceTrendSectionProps {
   year: string;
 }
 
-const SORT_LABELS: Record<SortKey, string> = {
-  showRate: "複勝率",
-  quinellaRate: "連対率",
-  winRate: "勝率",
+const DEFAULT_TREND_TARGETS: TrendTargets = {
+  runningStyle: true,
+  frame: true,
+  jockey: true,
+};
+
+const TREND_TARGET_LABELS: Record<TrendTargetKey, string> = {
+  runningStyle: "脚質",
+  frame: "枠",
+  jockey: "騎手",
+};
+
+const RUNNING_STYLE_LABELS: Record<RaceTrendRunningStyle, string> = {
+  nige: "逃げ",
+  senkou: "先行",
+  sashi: "差し",
+  oikomi: "追込",
 };
 
 const formatRate = (value: number): string => `${value.toFixed(1)}%`;
@@ -54,13 +63,18 @@ const formatMedian = (value: number | null | undefined): string => {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 };
 
-const formatTrendPopularity = (value: number | null | undefined): string =>
-  typeof value === "number" && Number.isFinite(value) ? String(value) : "-";
-
 const formatTrendWinOdds = (value: number | null | undefined): string =>
   typeof value === "number" && Number.isFinite(value) ? value.toFixed(1) : "-";
 
-const countDistinctTrendRaces = (rows: RaceTrendRateRow[]): number =>
+const formatRunningStyle = (value: RaceTrendRunningStyle | null): string =>
+  value ? RUNNING_STYLE_LABELS[value] : "-";
+
+const normalizeHorseNumber = (value: string | null | undefined): string => {
+  const parsed = Number(value ?? "");
+  return Number.isFinite(parsed) && parsed > 0 ? String(parsed) : "";
+};
+
+const countDistinctTrendRaces = (rows: RaceTrendRunningStyleRow[]): number =>
   new Set(
     rows.flatMap((row) =>
       row.details.map((detail) =>
@@ -72,55 +86,66 @@ const countDistinctTrendRaces = (rows: RaceTrendRateRow[]): number =>
 const isRaceTrendPayload = (value: unknown): value is RaceTrendPayload =>
   typeof value === "object" &&
   value !== null &&
-  "jockeyRows" in value &&
-  "frameRows" in value &&
-  "runningStyleRows" in value;
+  "runningStyleRows" in value &&
+  Array.isArray((value as { runningStyleRows?: unknown }).runningStyleRows);
 
-const sortRows = (rows: RaceTrendRateRow[], sortKey: SortKey): RaceTrendRateRow[] =>
-  rows.toSorted((a, b) => {
-    const selectedOrder = b[sortKey] - a[sortKey];
-    if (selectedOrder !== 0) {
-      return selectedOrder;
+const sortRowsByShowRate = (rows: RaceTrendRunningStyleRow[]): RaceTrendRunningStyleRow[] =>
+  rows.toSorted(
+    (a, b) =>
+      b.showRate - a.showRate ||
+      b.quinellaRate - a.quinellaRate ||
+      b.winRate - a.winRate ||
+      b.starts - a.starts ||
+      (a.targetHorseNumbers[0] ?? "").localeCompare(b.targetHorseNumbers[0] ?? "", "ja", {
+        numeric: true,
+      }) ||
+      (a.frameNumber ?? "").localeCompare(b.frameNumber ?? "", "ja", { numeric: true }) ||
+      (a.jockeyName ?? "").localeCompare(b.jockeyName ?? "", "ja"),
+  );
+
+const sortDetailsByLatestRace = (details: RaceTrendDetail[]): RaceTrendDetail[] =>
+  details.toSorted((a, b) => {
+    const dateOrder = b.date.localeCompare(a.date);
+    if (dateOrder !== 0) {
+      return dateOrder;
     }
-    const showOrder = b.showRate - a.showRate;
-    if (showOrder !== 0) {
-      return showOrder;
+    const raceOrder = b.raceNumber.localeCompare(a.raceNumber, "ja", { numeric: true });
+    if (raceOrder !== 0) {
+      return raceOrder;
     }
-    return b.starts - a.starts || a.label.localeCompare(b.label, "ja", { numeric: true });
+    return (a.horseNumber ?? "").localeCompare(b.horseNumber ?? "", "ja", { numeric: true });
   });
 
 const getApiPath = ({
   day,
-  frameEnd,
-  frameStart,
-  jockeyEnd,
+  defaultEndDate,
+  defaultStartDate,
   jockeySameVenue,
-  jockeyStart,
   keibajoCode,
   month,
   raceNumber,
-  runningStyleIgnoreFrame = false,
-  runningStyleIgnoreJockey = false,
   source,
+  trendEnd,
+  trendStart,
+  trendTargets,
   year,
 }: RaceTrendSectionProps & {
-  frameEnd: string;
-  frameStart: string;
-  jockeyEnd: string;
   jockeySameVenue: boolean;
-  jockeyStart: string;
-  runningStyleIgnoreFrame?: boolean;
-  runningStyleIgnoreJockey?: boolean;
+  trendEnd: string;
+  trendStart: string;
+  trendTargets: TrendTargets;
 }): string => {
   const params = new URLSearchParams({
     source,
-    jockeyStart,
-    jockeyEnd,
-    frameStart,
-    frameEnd,
+    jockeyStart: trendStart || defaultStartDate,
+    jockeyEnd: trendEnd || defaultEndDate,
+    frameStart: trendStart || defaultStartDate,
+    frameEnd: trendEnd || defaultEndDate,
+    includeRealtimeResults: "false",
     jockeySameVenue: String(jockeySameVenue),
-    runningStyleIgnoreFrame: String(runningStyleIgnoreFrame),
-    runningStyleIgnoreJockey: String(runningStyleIgnoreJockey),
+    runningStyleIgnoreRunningStyle: String(!trendTargets.runningStyle),
+    runningStyleIgnoreFrame: String(!trendTargets.frame),
+    runningStyleIgnoreJockey: String(!trendTargets.jockey),
   });
   return `/api/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/trends?${params.toString()}`;
 };
@@ -132,336 +157,88 @@ const TrendHeaderLabel = ({ children, secondLine }: { children: string; secondLi
   </span>
 );
 
-function TrendTable({
-  emptyLabel,
-  isLoading,
-  kind,
-  labelColumn,
-  rows,
-  showStarts,
-  showTargetHorseNumber,
-  sortKey,
-  title,
-  onSortChange,
-}: {
-  emptyLabel: string;
-  isLoading: boolean;
-  kind: TrendTableKind;
-  labelColumn: string;
-  rows: RaceTrendRateRow[];
-  showStarts?: boolean;
-  showTargetHorseNumber?: boolean;
-  sortKey: SortKey;
-  title: string;
-  onSortChange: (sortKey: SortKey) => void;
-}) {
-  const [expandedKey, setExpandedKey] = useState<string | null>(null);
-  const sortedRows = useMemo(() => sortRows(rows, sortKey), [rows, sortKey]);
-  const showTargetBeforeLabel = showTargetHorseNumber && kind === "jockey";
-  const showTargetAfterLabel = showTargetHorseNumber && kind === "frame";
-  const showFinishPositionMedian = kind === "frame" || kind === "jockey";
-  const showTargetMarket = kind === "jockey";
-  const colSpan =
-    (showStarts ? 5 : 4) +
-    (showTargetHorseNumber ? 1 : 0) +
-    (showFinishPositionMedian ? 1 : 0) +
-    (showTargetMarket ? 2 : 0);
-  const raceCount = useMemo(() => countDistinctTrendRaces(rows), [rows]);
-
-  return (
-    <div className="race-trend-table-panel">
-      <div className="race-trend-subheading">
-        <h3>{title}</h3>
-        <span>
-          {SORT_LABELS[sortKey]}順{kind === "frame" ? ` / 集計 ${raceCount}レース` : ""}
-        </span>
-      </div>
-      <div className="stats-table-wrap">
-        <table className={`stats-table race-trend-table ${kind}`}>
-          <thead>
-            <tr>
-              {showTargetBeforeLabel ? (
-                <th>
-                  <TrendHeaderLabel>馬番</TrendHeaderLabel>
-                </th>
-              ) : null}
-              <th>
-                <TrendHeaderLabel>{labelColumn}</TrendHeaderLabel>
-              </th>
-              {showTargetAfterLabel ? (
-                <th>
-                  <TrendHeaderLabel>馬番</TrendHeaderLabel>
-                </th>
-              ) : null}
-              {showTargetMarket ? (
-                <>
-                  <th>
-                    <TrendHeaderLabel>人気</TrendHeaderLabel>
-                  </th>
-                  <th>
-                    <TrendHeaderLabel>単勝</TrendHeaderLabel>
-                  </th>
-                </>
-              ) : null}
-              {(["showRate", "quinellaRate", "winRate"] as const).map((key) => (
-                <th key={key}>
-                  <button
-                    aria-pressed={sortKey === key}
-                    className="race-trend-sort-button"
-                    onClick={() => onSortChange(key)}
-                    type="button"
-                  >
-                    <TrendHeaderLabel>{SORT_LABELS[key]}</TrendHeaderLabel>
-                  </button>
-                </th>
-              ))}
-              {showStarts ? (
-                <th>
-                  <TrendHeaderLabel>出走回数</TrendHeaderLabel>
-                </th>
-              ) : null}
-              {showFinishPositionMedian ? (
-                <th>
-                  <TrendHeaderLabel secondLine="中央値">着順</TrendHeaderLabel>
-                </th>
-              ) : null}
-            </tr>
-          </thead>
-          <tbody>
-            {isLoading ? (
-              Array.from({ length: 5 }, (_, index) => (
-                <tr className="race-trend-skeleton-row" key={`race-trend-skeleton-${index}`}>
-                  {showTargetBeforeLabel ? (
-                    <td>
-                      <span className="race-trend-skeleton race-trend-skeleton-count" />
-                    </td>
-                  ) : null}
-                  <td>
-                    <span className="race-trend-skeleton race-trend-skeleton-name" />
-                  </td>
-                  {showTargetAfterLabel ? (
-                    <td>
-                      <span className="race-trend-skeleton race-trend-skeleton-count" />
-                    </td>
-                  ) : null}
-                  {showTargetMarket ? (
-                    <>
-                      <td>
-                        <span className="race-trend-skeleton race-trend-skeleton-count" />
-                      </td>
-                      <td>
-                        <span className="race-trend-skeleton race-trend-skeleton-rate" />
-                      </td>
-                    </>
-                  ) : null}
-                  <td>
-                    <span className="race-trend-skeleton race-trend-skeleton-rate" />
-                  </td>
-                  <td>
-                    <span className="race-trend-skeleton race-trend-skeleton-rate" />
-                  </td>
-                  <td>
-                    <span className="race-trend-skeleton race-trend-skeleton-rate" />
-                  </td>
-                  {showStarts ? (
-                    <td>
-                      <span className="race-trend-skeleton race-trend-skeleton-count" />
-                    </td>
-                  ) : null}
-                  {showFinishPositionMedian ? (
-                    <td>
-                      <span className="race-trend-skeleton race-trend-skeleton-rate" />
-                    </td>
-                  ) : null}
-                </tr>
-              ))
-            ) : sortedRows.length > 0 ? (
-              sortedRows.map((row) => {
-                const isExpanded = expandedKey === row.key;
-                return (
-                  <FragmentRow
-                    isExpanded={isExpanded}
-                    key={row.key}
-                    kind={kind}
-                    labelColumn={labelColumn}
-                    row={row}
-                    showStarts={showStarts}
-                    showTargetHorseNumber={showTargetHorseNumber}
-                    onToggle={() => setExpandedKey(isExpanded ? null : row.key)}
-                  />
-                );
-              })
-            ) : (
-              <tr>
-                <td className="race-trend-empty-cell" colSpan={colSpan}>
-                  {emptyLabel}
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-function FragmentRow({
-  isExpanded,
-  kind,
-  labelColumn,
-  row,
-  showStarts,
-  showTargetHorseNumber,
-  onToggle,
-}: {
-  isExpanded: boolean;
-  kind: TrendTableKind;
-  labelColumn: string;
-  row: RaceTrendRateRow;
-  showStarts?: boolean;
-  showTargetHorseNumber?: boolean;
-  onToggle: () => void;
-}) {
-  const showTargetBeforeLabel = showTargetHorseNumber && kind === "jockey";
-  const showTargetAfterLabel = showTargetHorseNumber && kind === "frame";
-  const showFinishPositionMedian = kind === "frame" || kind === "jockey";
-  const showTargetMarket = kind === "jockey";
-  const colSpan =
-    (showStarts ? 5 : 4) +
-    (showTargetHorseNumber ? 1 : 0) +
-    (showFinishPositionMedian ? 1 : 0) +
-    (showTargetMarket ? 2 : 0);
-
-  return (
-    <>
-      <tr className={isExpanded ? "stats-row-expanded" : undefined}>
-        {showTargetBeforeLabel ? (
-          <td className="race-trend-horse-number-cell">{row.targetHorseNumber ?? "-"}</td>
-        ) : null}
-        <td className="stats-name-cell">
-          <button
-            aria-expanded={isExpanded}
-            className="stats-detail-toggle"
-            onClick={onToggle}
-            type="button"
-          >
-            <span>{row.label}</span>
-          </button>
-        </td>
-        {showTargetAfterLabel ? (
-          <td className="race-trend-horse-number-cell">{row.targetHorseNumber ?? "-"}</td>
-        ) : null}
-        {showTargetMarket ? (
-          <>
-            <td>{formatTrendPopularity(row.targetPopularity)}</td>
-            <td>{formatTrendWinOdds(row.targetWinOdds)}</td>
-          </>
-        ) : null}
-        <td>{formatRate(row.showRate)}</td>
-        <td>{formatRate(row.quinellaRate)}</td>
-        <td>{formatRate(row.winRate)}</td>
-        {showStarts ? <td>{row.starts}</td> : null}
-        {showFinishPositionMedian ? <td>{formatMedian(row.finishPositionMedian)}</td> : null}
-      </tr>
-      {isExpanded ? (
-        <tr className="stats-detail-row">
-          <td colSpan={colSpan}>
-            <div className="stats-detail-panel">
-              <table className={`stats-detail-table race-trend-detail-table ${kind}`}>
-                <colgroup>
-                  <col className="race-trend-detail-col-date" />
-                  <col className="race-trend-detail-col-venue" />
-                  <col className="race-trend-detail-col-race-number" />
-                  <col className="race-trend-detail-col-race-name" />
-                  <col className="race-trend-detail-col-finish" />
-                  <col className="race-trend-detail-col-popularity" />
-                  <col className="race-trend-detail-col-odds" />
-                  <col className="race-trend-detail-col-horse-number" />
-                  <col className="race-trend-detail-col-frame" />
-                  <col className="race-trend-detail-col-jockey" />
-                </colgroup>
-                <thead>
-                  <tr>
-                    <th>日付</th>
-                    <th>場</th>
-                    <th>R</th>
-                    <th>レース名</th>
-                    <th>着順</th>
-                    <th>人気</th>
-                    <th>単勝</th>
-                    <th>馬番</th>
-                    <th>枠</th>
-                    <th>騎手</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {row.details.map((detail) => (
-                    <tr
-                      key={`${detail.date}:${detail.keibajoCode}:${detail.raceNumber}:${detail.horseNumber}:${labelColumn}`}
-                    >
-                      <td>{detail.date}</td>
-                      <td>{formatKeibajo(detail.keibajoCode)}</td>
-                      <td>{formatRaceNumber(detail.raceNumber)}</td>
-                      <td className="race-trend-detail-race-name">{detail.raceName ?? "-"}</td>
-                      <td>{detail.finishPosition}</td>
-                      <td>{formatTrendPopularity(detail.popularity)}</td>
-                      <td>{formatTrendWinOdds(detail.winOdds)}</td>
-                      <td>{detail.horseNumber ?? "-"}</td>
-                      <td>{detail.frameNumber ? detail.frameNumber : "-"}</td>
-                      <td>{detail.jockeyName ?? "-"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </td>
-        </tr>
-      ) : null}
-    </>
-  );
-}
-
-function RunningStyleTrendTable({
-  ignoreFrame,
-  ignoreJockey,
+function RaceTrendTable({
   isLoading,
   rows,
+  trendTargets,
 }: {
-  ignoreFrame: boolean;
-  ignoreJockey: boolean;
   isLoading: boolean;
   rows: RaceTrendRunningStyleRow[];
+  trendTargets: TrendTargets;
 }) {
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
-  const colSpan = 6 + (ignoreFrame ? 0 : 1) + (ignoreJockey ? 0 : 1);
+  const realtimePayload = useRealtimeRaceSelector((state) => state.payload);
+  const realtimeOddsByHorse = useMemo(
+    () =>
+      new Map(
+        (realtimePayload?.odds?.latest.tansho ?? []).map((row) => [
+          normalizeHorseNumber(row.combination),
+          { popularity: row.rank ?? null, winOdds: row.odds ?? null },
+        ]),
+      ),
+    [realtimePayload],
+  );
+  const sortedRows = useMemo(() => sortRowsByShowRate(rows), [rows]);
+  const raceCount = useMemo(() => countDistinctTrendRaces(rows), [rows]);
+  const colSpan =
+    8 +
+    (trendTargets.frame ? 1 : 0) +
+    (trendTargets.runningStyle ? 1 : 0) +
+    (trendTargets.jockey ? 1 : 0);
+
+  useEffect(() => {
+    setExpandedKey(null);
+  }, [rows]);
+
   return (
     <div className="race-trend-table-panel">
       <div className="race-trend-subheading">
-        <h3>脚質・枠・騎手ごとの着順傾向</h3>
-        <span>着順中央値順</span>
+        <h3>脚質・枠・騎手ごとの勝率</h3>
+        <span>集計 {raceCount}レース / 複勝率順</span>
       </div>
       <div className="stats-table-wrap">
-        <table className="stats-table race-trend-table running-style">
+        <table className="stats-table race-trend-table aggregate">
+          <colgroup>
+            <col className="race-trend-col-horse-number" />
+            {trendTargets.frame ? <col className="race-trend-col-frame" /> : null}
+            {trendTargets.runningStyle ? <col className="race-trend-col-running-style" /> : null}
+            {trendTargets.jockey ? <col className="race-trend-col-jockey" /> : null}
+            <col className="race-trend-col-rate" />
+            <col className="race-trend-col-rate" />
+            <col className="race-trend-col-rate" />
+            <col className="race-trend-col-market" />
+            <col className="race-trend-col-market" />
+            <col className="race-trend-col-count" />
+            <col className="race-trend-col-median" />
+          </colgroup>
           <thead>
             <tr>
               <th>
-                <TrendHeaderLabel>該当馬番</TrendHeaderLabel>
+                <TrendHeaderLabel>馬番</TrendHeaderLabel>
               </th>
-              <th>
-                <TrendHeaderLabel>脚質</TrendHeaderLabel>
-              </th>
-              {ignoreFrame ? null : (
+              {trendTargets.frame ? (
                 <th>
                   <TrendHeaderLabel>枠</TrendHeaderLabel>
                 </th>
-              )}
-              {ignoreJockey ? null : (
+              ) : null}
+              {trendTargets.runningStyle ? (
+                <th>
+                  <TrendHeaderLabel>脚質</TrendHeaderLabel>
+                </th>
+              ) : null}
+              {trendTargets.jockey ? (
                 <th>
                   <TrendHeaderLabel>騎手</TrendHeaderLabel>
                 </th>
-              )}
+              ) : null}
               <th>
-                <TrendHeaderLabel>着順</TrendHeaderLabel>
+                <TrendHeaderLabel>複勝率</TrendHeaderLabel>
+              </th>
+              <th>
+                <TrendHeaderLabel>連対率</TrendHeaderLabel>
+              </th>
+              <th>
+                <TrendHeaderLabel>勝率</TrendHeaderLabel>
               </th>
               <th>
                 <TrendHeaderLabel>人気</TrendHeaderLabel>
@@ -470,27 +247,70 @@ function RunningStyleTrendTable({
                 <TrendHeaderLabel>単勝</TrendHeaderLabel>
               </th>
               <th>
+                <TrendHeaderLabel>出走回数</TrendHeaderLabel>
+              </th>
+              <th>
                 <TrendHeaderLabel secondLine="中央値">着順</TrendHeaderLabel>
               </th>
             </tr>
           </thead>
           <tbody>
             {isLoading ? (
-              <tr className="race-trend-skeleton-row">
-                <td colSpan={colSpan}>
-                  <span className="race-trend-skeleton race-trend-skeleton-name" />
-                </td>
-              </tr>
-            ) : rows.length > 0 ? (
-              rows.map((row) => {
+              Array.from({ length: 5 }, (_, index) => (
+                <tr className="race-trend-skeleton-row" key={`race-trend-skeleton-${index}`}>
+                  <td>
+                    <span className="race-trend-skeleton race-trend-skeleton-count" />
+                  </td>
+                  {trendTargets.frame ? (
+                    <td>
+                      <span className="race-trend-skeleton race-trend-skeleton-count" />
+                    </td>
+                  ) : null}
+                  {trendTargets.runningStyle ? (
+                    <td>
+                      <span className="race-trend-skeleton race-trend-skeleton-count" />
+                    </td>
+                  ) : null}
+                  {trendTargets.jockey ? (
+                    <td>
+                      <span className="race-trend-skeleton race-trend-skeleton-name" />
+                    </td>
+                  ) : null}
+                  <td>
+                    <span className="race-trend-skeleton race-trend-skeleton-rate" />
+                  </td>
+                  <td>
+                    <span className="race-trend-skeleton race-trend-skeleton-rate" />
+                  </td>
+                  <td>
+                    <span className="race-trend-skeleton race-trend-skeleton-rate" />
+                  </td>
+                  <td>
+                    <span className="race-trend-skeleton race-trend-skeleton-count" />
+                  </td>
+                  <td>
+                    <span className="race-trend-skeleton race-trend-skeleton-rate" />
+                  </td>
+                  <td>
+                    <span className="race-trend-skeleton race-trend-skeleton-count" />
+                  </td>
+                  <td>
+                    <span className="race-trend-skeleton race-trend-skeleton-rate" />
+                  </td>
+                </tr>
+              ))
+            ) : sortedRows.length > 0 ? (
+              sortedRows.map((row) => {
                 const isExpanded = expandedKey === row.key;
                 return (
-                  <RunningStyleTrendRow
-                    ignoreFrame={ignoreFrame}
-                    ignoreJockey={ignoreJockey}
+                  <RowFragment
                     isExpanded={isExpanded}
                     key={row.key}
                     row={row}
+                    realtimeOdds={realtimeOddsByHorse.get(
+                      normalizeHorseNumber(row.targetHorseNumbers[0]),
+                    )}
+                    trendTargets={trendTargets}
                     onToggle={() => setExpandedKey(isExpanded ? null : row.key)}
                   />
                 );
@@ -498,7 +318,7 @@ function RunningStyleTrendTable({
             ) : (
               <tr>
                 <td className="race-trend-empty-cell" colSpan={colSpan}>
-                  該当する脚質成績はありません
+                  該当する集計成績はありません
                 </td>
               </tr>
             )}
@@ -509,100 +329,105 @@ function RunningStyleTrendTable({
   );
 }
 
-function RunningStyleTrendRow({
-  ignoreFrame,
-  ignoreJockey,
+function RowFragment({
   isExpanded,
+  realtimeOdds,
   row,
+  trendTargets,
   onToggle,
 }: {
-  ignoreFrame: boolean;
-  ignoreJockey: boolean;
   isExpanded: boolean;
+  realtimeOdds?: { popularity: number | null; winOdds: number | null };
   row: RaceTrendRunningStyleRow;
+  trendTargets: TrendTargets;
   onToggle: () => void;
 }) {
-  const colSpan = 6 + (ignoreFrame ? 0 : 1) + (ignoreJockey ? 0 : 1);
+  const colSpan =
+    8 +
+    (trendTargets.frame ? 1 : 0) +
+    (trendTargets.runningStyle ? 1 : 0) +
+    (trendTargets.jockey ? 1 : 0);
+  const detailRows = useMemo(() => sortDetailsByLatestRace(row.details), [row.details]);
+
   return (
     <>
       <tr className={isExpanded ? "stats-row-expanded" : undefined}>
         <td className="race-trend-horse-number-cell">
           <button
             aria-expanded={isExpanded}
-            className="stats-detail-toggle"
+            className="stats-detail-toggle race-trend-detail-toggle"
             onClick={onToggle}
+            title={
+              trendTargets.runningStyle ? `${formatRunningStyle(row.runningStyle)}の詳細` : "詳細"
+            }
             type="button"
           >
             <span>{row.targetHorseNumbers.join(",") || "-"}</span>
           </button>
         </td>
-        <td>{RUNNING_STYLE_LABELS[row.runningStyle]}</td>
-        {ignoreFrame ? null : <td>{row.frameNumber ?? "-"}</td>}
-        {ignoreJockey ? null : <td>{row.jockeyName ?? "-"}</td>}
-        <td>{formatMedian(row.finishPositionAverage)}</td>
-        <td>{formatTrendPopularity(row.popularityMedian)}</td>
-        <td>{formatTrendWinOdds(row.winOddsMedian)}</td>
+        {trendTargets.frame ? <td>{row.frameNumber ?? "-"}</td> : null}
+        {trendTargets.runningStyle ? <td>{formatRunningStyle(row.runningStyle)}</td> : null}
+        {trendTargets.jockey ? <td className="stats-name-cell">{row.jockeyName ?? "-"}</td> : null}
+        <td>{formatRate(row.showRate)}</td>
+        <td>{formatRate(row.quinellaRate)}</td>
+        <td>{formatRate(row.winRate)}</td>
+        <td>{formatMedian(realtimeOdds?.popularity)}</td>
+        <td>{formatTrendWinOdds(realtimeOdds?.winOdds)}</td>
+        <td>{row.starts}</td>
         <td>{formatMedian(row.finishPositionMedian)}</td>
       </tr>
       {isExpanded ? (
         <tr className="stats-detail-row">
           <td colSpan={colSpan}>
             <div className="stats-detail-panel">
-              <table className="stats-detail-table race-trend-detail-table running-style">
+              <table className="stats-detail-table race-trend-detail-table aggregate">
                 <colgroup>
                   <col className="race-trend-detail-col-date" />
                   <col className="race-trend-detail-col-venue" />
                   <col className="race-trend-detail-col-race-number" />
-                  <col className="race-trend-detail-col-style" />
+                  <col className="race-trend-detail-col-horse-number" />
+                  <col className="race-trend-detail-col-frame" />
+                  <col className="race-trend-detail-col-running-style" />
+                  <col className="race-trend-detail-col-jockey" />
                   <col className="race-trend-detail-col-finish" />
                   <col className="race-trend-detail-col-popularity" />
                   <col className="race-trend-detail-col-odds" />
-                  <col className="race-trend-detail-col-horse-number" />
-                  <col className="race-trend-detail-col-frame" />
-                  <col className="race-trend-detail-col-jockey" />
+                  <col className="race-trend-detail-col-horse-name" />
+                  <col className="race-trend-detail-col-race-name" />
                 </colgroup>
                 <thead>
                   <tr>
                     <th>日付</th>
                     <th>場</th>
                     <th>R</th>
+                    <th>馬番</th>
+                    <th>枠</th>
                     <th>脚質</th>
+                    <th>騎手</th>
                     <th>着順</th>
                     <th>人気</th>
                     <th>単勝</th>
-                    <th>馬番</th>
-                    <th>枠</th>
-                    <th>騎手</th>
+                    <th>馬名</th>
+                    <th>レース名</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {row.details.map((detail) => (
+                  {detailRows.map((detail) => (
                     <tr
-                      key={[
-                        detail.source,
-                        detail.date,
-                        detail.keibajoCode,
-                        detail.raceNumber,
-                        detail.horseNumber,
-                        detail.frameNumber,
-                        detail.jockeyName,
-                        detail.finishPosition,
-                        detail.popularity,
-                        detail.winOdds,
-                      ].join(":")}
+                      key={`${detail.source}:${detail.date}:${detail.keibajoCode}:${detail.raceNumber}:${detail.horseNumber}:${row.key}`}
                     >
                       <td>{detail.date}</td>
                       <td>{formatKeibajo(detail.keibajoCode)}</td>
                       <td>{formatRaceNumber(detail.raceNumber)}</td>
-                      <td>
-                        {detail.runningStyle ? RUNNING_STYLE_LABELS[detail.runningStyle] : "-"}
-                      </td>
-                      <td>{detail.finishPosition}</td>
-                      <td>{formatTrendPopularity(detail.popularity)}</td>
-                      <td>{formatTrendWinOdds(detail.winOdds)}</td>
                       <td>{detail.horseNumber ?? "-"}</td>
-                      <td>{detail.frameNumber ? detail.frameNumber : "-"}</td>
+                      <td>{detail.frameNumber ?? "-"}</td>
+                      <td>{formatRunningStyle(detail.runningStyle)}</td>
                       <td>{detail.jockeyName ?? "-"}</td>
+                      <td>{detail.finishPosition}</td>
+                      <td>{formatMedian(detail.popularity)}</td>
+                      <td>{formatTrendWinOdds(detail.winOdds)}</td>
+                      <td className="race-trend-detail-horse-name">{detail.horseName ?? "-"}</td>
+                      <td className="race-trend-detail-race-name">{detail.raceName ?? "-"}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -626,130 +451,81 @@ export function RaceTrendSection({
   year,
 }: RaceTrendSectionProps) {
   const [jockeySameVenue, setJockeySameVenue] = useState(true);
-  const [runningStyleIgnoreFrame, setRunningStyleIgnoreFrame] = useState(false);
-  const [runningStyleIgnoreJockey, setRunningStyleIgnoreJockey] = useState(false);
-  const [jockeyStart, setJockeyStart] = useState(defaultStartDate);
-  const [jockeyEnd, setJockeyEnd] = useState(defaultEndDate);
-  const [frameStart, setFrameStart] = useState(defaultStartDate);
-  const [frameEnd, setFrameEnd] = useState(defaultEndDate);
-  const [jockeySortKey, setJockeySortKey] = useState<SortKey>("showRate");
-  const [frameSortKey, setFrameSortKey] = useState<SortKey>("showRate");
-  const [jockeyRows, setJockeyRows] = useState<RaceTrendRateRow[]>([]);
-  const [frameRows, setFrameRows] = useState<RaceTrendRateRow[]>([]);
-  const [runningStyleRows, setRunningStyleRows] = useState<RaceTrendRunningStyleRow[]>([]);
-  const [jockeyStatus, setJockeyStatus] = useState<"idle" | "loading" | "error">("idle");
-  const [frameStatus, setFrameStatus] = useState<"idle" | "loading" | "error">("idle");
+  const [trendStart, setTrendStart] = useState(defaultStartDate);
+  const [trendEnd, setTrendEnd] = useState(defaultEndDate);
+  const [trendTargets, setTrendTargets] = useState<TrendTargets>(DEFAULT_TREND_TARGETS);
+  const [rows, setRows] = useState<RaceTrendRunningStyleRow[]>([]);
+  const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
 
-  const fetchJockeyRows = useCallback(async () => {
-    setJockeyStatus("loading");
-    try {
-      const response = await fetchWithRetry(
-        getApiPath({
-          day,
-          defaultEndDate,
-          defaultStartDate,
-          frameEnd: defaultEndDate,
-          frameStart: defaultStartDate,
-          jockeyEnd,
-          jockeySameVenue,
-          jockeyStart,
-          keibajoCode,
-          month,
-          raceNumber,
-          runningStyleIgnoreFrame,
-          runningStyleIgnoreJockey,
-          source,
-          year,
-        }),
-        { cache: "no-store" },
-        RACE_TREND_RETRY_OPTIONS,
-      );
-      if (!response.ok) {
-        throw new Error(`race trend api ${response.status}`);
-      }
-      const body: unknown = await response.json();
-      if (!isRaceTrendPayload(body)) {
-        throw new Error("invalid race trend payload");
-      }
-      setJockeyRows(body.jockeyRows);
-      setRunningStyleRows(body.runningStyleRows);
-      setJockeyStatus("idle");
-    } catch {
-      setJockeyRows([]);
-      setRunningStyleRows([]);
-      setJockeyStatus("error");
-    }
-  }, [
-    day,
-    defaultEndDate,
-    defaultStartDate,
-    jockeyEnd,
-    jockeySameVenue,
-    jockeyStart,
-    keibajoCode,
-    month,
-    raceNumber,
-    runningStyleIgnoreFrame,
-    runningStyleIgnoreJockey,
-    source,
-    year,
-  ]);
+  const toggleTrendTarget = useCallback((key: TrendTargetKey) => {
+    setTrendTargets((current) => ({
+      ...current,
+      [key]: !current[key],
+    }));
+  }, []);
 
-  useEffect(() => {
-    void fetchJockeyRows();
-  }, [fetchJockeyRows]);
-
-  const fetchFrameRows = useCallback(async () => {
-    setFrameStatus("loading");
-    try {
-      const response = await fetchWithRetry(
-        getApiPath({
-          day,
-          defaultEndDate,
-          defaultStartDate,
-          frameEnd,
-          frameStart,
-          jockeyEnd: defaultEndDate,
-          jockeySameVenue: true,
-          jockeyStart: defaultStartDate,
-          keibajoCode,
-          month,
-          raceNumber,
-          source,
-          year,
-        }),
-        { cache: "no-store" },
-        RACE_TREND_RETRY_OPTIONS,
-      );
-      if (!response.ok) {
-        throw new Error(`race trend api ${response.status}`);
+  const fetchTrendRows = useCallback(
+    async (signal?: AbortSignal) => {
+      setStatus("loading");
+      try {
+        const response = await fetchWithRetry(
+          getApiPath({
+            day,
+            defaultEndDate,
+            defaultStartDate,
+            jockeySameVenue,
+            keibajoCode,
+            month,
+            raceNumber,
+            source,
+            trendEnd,
+            trendStart,
+            trendTargets,
+            year,
+          }),
+          { cache: "no-store", signal },
+          RACE_TREND_RETRY_OPTIONS,
+        );
+        if (!response.ok) {
+          throw new Error(`race trend api ${response.status}`);
+        }
+        const body: unknown = await response.json();
+        if (!isRaceTrendPayload(body)) {
+          throw new Error("invalid race trend payload");
+        }
+        setRows(body.runningStyleRows);
+        setStatus("idle");
+      } catch {
+        if (signal?.aborted) {
+          return;
+        }
+        setRows([]);
+        setStatus("error");
       }
-      const body: unknown = await response.json();
-      if (!isRaceTrendPayload(body)) {
-        throw new Error("invalid race trend payload");
-      }
-      setFrameRows(body.frameRows);
-      setFrameStatus("idle");
-    } catch {
-      setFrameRows([]);
-      setFrameStatus("error");
-    }
-  }, [
-    day,
-    defaultEndDate,
-    defaultStartDate,
-    frameEnd,
-    frameStart,
-    keibajoCode,
-    month,
-    raceNumber,
-    source,
-    year,
-  ]);
+    },
+    [
+      day,
+      defaultEndDate,
+      defaultStartDate,
+      jockeySameVenue,
+      keibajoCode,
+      month,
+      raceNumber,
+      source,
+      trendEnd,
+      trendStart,
+      trendTargets,
+      year,
+    ],
+  );
 
   useEffect(() => {
-    void fetchFrameRows();
-  }, [fetchFrameRows]);
+    const controller = new AbortController();
+    void fetchTrendRows(controller.signal);
+    return () => {
+      controller.abort();
+    };
+  }, [fetchTrendRows]);
 
   return (
     <section className="race-trend-section">
@@ -760,104 +536,54 @@ export function RaceTrendSection({
         </span>
       </div>
 
-      <div className="race-trend-grid">
-        <div className="race-trend-card">
-          <div className="race-trend-controls">
-            <label>
-              <span>開始日</span>
-              <input
-                type="date"
-                value={jockeyStart}
-                onChange={(event) => setJockeyStart(event.target.value)}
-              />
-            </label>
-            <label>
-              <span>終了日</span>
-              <input
-                type="date"
-                value={jockeyEnd}
-                onChange={(event) => setJockeyEnd(event.target.value)}
-              />
-            </label>
-            <label className="race-trend-checkbox">
-              <input
-                checked={jockeySameVenue}
-                onChange={(event) => setJockeySameVenue(event.target.checked)}
-                type="checkbox"
-              />
-              <span>同じ競馬場のみ</span>
-            </label>
-            <label className="race-trend-checkbox">
-              <input
-                checked={runningStyleIgnoreFrame}
-                onChange={(event) => setRunningStyleIgnoreFrame(event.target.checked)}
-                type="checkbox"
-              />
-              <span>枠を解除</span>
-            </label>
-            <label className="race-trend-checkbox">
-              <input
-                checked={runningStyleIgnoreJockey}
-                onChange={(event) => setRunningStyleIgnoreJockey(event.target.checked)}
-                type="checkbox"
-              />
-              <span>騎手を解除</span>
-            </label>
-          </div>
-          <TrendTable
-            emptyLabel="該当する騎手成績はありません"
-            isLoading={jockeyStatus === "loading"}
-            kind="jockey"
-            labelColumn="騎手名"
-            rows={jockeyRows}
-            showStarts
-            showTargetHorseNumber
-            sortKey={jockeySortKey}
-            title="騎手ごとの勝率"
-            onSortChange={setJockeySortKey}
-          />
-          <RunningStyleTrendTable
-            ignoreFrame={runningStyleIgnoreFrame}
-            ignoreJockey={runningStyleIgnoreJockey}
-            isLoading={jockeyStatus === "loading"}
-            rows={runningStyleRows}
-          />
+      <div className="race-trend-card">
+        <div className="race-trend-controls">
+          <label>
+            <span>開始日</span>
+            <input
+              type="date"
+              value={trendStart}
+              onChange={(event) => setTrendStart(event.target.value)}
+            />
+          </label>
+          <label>
+            <span>終了日</span>
+            <input
+              type="date"
+              value={trendEnd}
+              onChange={(event) => setTrendEnd(event.target.value)}
+            />
+          </label>
+          <label className="race-trend-checkbox">
+            <input
+              checked={jockeySameVenue}
+              onChange={(event) => setJockeySameVenue(event.target.checked)}
+              type="checkbox"
+            />
+            <span>同じ競馬場のみ</span>
+          </label>
         </div>
 
-        <div className="race-trend-card">
-          <div className="race-trend-controls">
-            <label>
-              <span>開始日</span>
-              <input
-                type="date"
-                value={frameStart}
-                onChange={(event) => setFrameStart(event.target.value)}
-              />
-            </label>
-            <label>
-              <span>終了日</span>
-              <input
-                type="date"
-                value={frameEnd}
-                onChange={(event) => setFrameEnd(event.target.value)}
-              />
-            </label>
-          </div>
-          <TrendTable
-            emptyLabel="該当する枠成績はありません"
-            isLoading={frameStatus === "loading"}
-            kind="frame"
-            labelColumn="枠番"
-            rows={frameRows}
-            showTargetHorseNumber
-            sortKey={frameSortKey}
-            title="枠ごとの勝率"
-            onSortChange={setFrameSortKey}
-          />
+        <div className="combined-score-targets race-trend-targets" aria-label="集計条件">
+          <fieldset>
+            <legend>集計条件</legend>
+            {TREND_TARGET_KEYS.map((key) => (
+              <label key={key}>
+                <input
+                  checked={trendTargets[key]}
+                  type="checkbox"
+                  onChange={() => toggleTrendTarget(key)}
+                />
+                <span>{TREND_TARGET_LABELS[key]}</span>
+              </label>
+            ))}
+          </fieldset>
         </div>
+
+        <RaceTrendTable isLoading={status === "loading"} rows={rows} trendTargets={trendTargets} />
       </div>
 
-      {jockeyStatus === "error" || frameStatus === "error" ? (
+      {status === "error" ? (
         <p className="race-trend-error">レース傾向を取得できませんでした。</p>
       ) : null}
     </section>

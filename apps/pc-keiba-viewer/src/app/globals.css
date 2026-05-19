@@ -5365,6 +5365,10 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   width: var(--space-16px-10);
 }
 
+.race-trend-targets {
+  grid-template-columns: minmax(var(--number-0-2), var(--space-1fr-51));
+}
+
 .race-trend-subheading {
   align-items: baseline;
   display: flex;
@@ -5501,38 +5505,54 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   width: var(--space-82px-153);
 }
 
-.race-trend-table.running-style {
-  min-width: var(--space-720px-181);
+.race-trend-table.aggregate {
+  min-width: var(--space-980px-171);
   table-layout: fixed;
   width: var(--space-100pct-12);
 }
 
-.race-trend-table.running-style th,
-.race-trend-table.running-style td {
-  overflow-wrap: anywhere;
+.race-trend-table.aggregate th,
+.race-trend-table.aggregate td {
   padding-left: var(--space-6px-33);
   padding-right: var(--space-6px-33);
   text-align: center;
-  white-space: normal;
+  white-space: nowrap;
 }
 
-.race-trend-table.running-style th:first-child,
-.race-trend-table.running-style td:first-child {
+.race-trend-col-horse-number,
+.race-trend-col-rate,
+.race-trend-col-count,
+.race-trend-col-median {
   width: var(--space-82px-153);
 }
 
-.race-trend-table.running-style th:nth-child(2),
-.race-trend-table.running-style td:nth-child(2) {
-  width: var(--space-82px-153);
+.race-trend-col-frame {
+  width: var(--space-56px-165);
 }
 
-.race-trend-table.running-style .stats-detail-toggle {
-  justify-content: center;
+.race-trend-col-running-style {
+  width: var(--space-72px-6);
+}
+
+.race-trend-col-jockey {
+  width: var(--space-112px-104);
+}
+
+.race-trend-col-market {
+  width: var(--space-64px-48);
+}
+
+.race-trend-table.aggregate .stats-name-cell {
+  text-align: left;
 }
 
 .race-trend-horse-number-cell {
   color: var(--ink);
   font-weight: var(--number-900-16);
+}
+
+.race-trend-detail-toggle {
+  justify-content: center;
 }
 
 .race-trend-sort-button {
@@ -5613,10 +5633,6 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   width: var(--space-260px-75);
 }
 
-.race-trend-detail-col-style {
-  width: var(--space-82px-153);
-}
-
 .race-trend-detail-col-finish,
 .race-trend-detail-col-popularity {
   width: var(--space-56px-165);
@@ -5634,18 +5650,25 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   width: var(--space-48px-43);
 }
 
+.race-trend-detail-col-running-style {
+  width: var(--space-72px-6);
+}
+
 .race-trend-detail-col-jockey {
   width: var(--space-112px-104);
+}
+
+.race-trend-detail-col-horse-name {
+  width: var(--space-160px-65);
+}
+
+.race-trend-detail-table.aggregate {
+  min-width: var(--space-1120px-179);
 }
 
 .race-trend-detail-table th,
 .race-trend-detail-table td {
   white-space: nowrap;
-}
-
-.race-trend-detail-table.running-style th,
-.race-trend-detail-table.running-style td {
-  text-align: center;
 }
 
 .race-trend-detail-table th:nth-child(1),
@@ -5667,6 +5690,31 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   text-align: center;
 }
 
+.race-trend-detail-table.aggregate th:nth-child(4),
+.race-trend-detail-table.aggregate td:nth-child(4),
+.race-trend-detail-table.aggregate th:nth-child(5),
+.race-trend-detail-table.aggregate td:nth-child(5),
+.race-trend-detail-table.aggregate th:nth-child(6),
+.race-trend-detail-table.aggregate td:nth-child(6),
+.race-trend-detail-table.aggregate th:nth-child(8),
+.race-trend-detail-table.aggregate td:nth-child(8),
+.race-trend-detail-table.aggregate th:nth-child(9),
+.race-trend-detail-table.aggregate td:nth-child(9),
+.race-trend-detail-table.aggregate th:nth-child(10),
+.race-trend-detail-table.aggregate td:nth-child(10) {
+  text-align: center;
+}
+
+.race-trend-detail-table.aggregate th:nth-child(7),
+.race-trend-detail-table.aggregate td:nth-child(7),
+.race-trend-detail-table.aggregate th:nth-child(11),
+.race-trend-detail-table.aggregate td:nth-child(11),
+.race-trend-detail-table.aggregate th:nth-child(12),
+.race-trend-detail-table.aggregate td:nth-child(12) {
+  text-align: left;
+}
+
+.race-trend-detail-horse-name,
 .race-trend-detail-race-name {
   overflow-wrap: anywhere;
   white-space: normal;

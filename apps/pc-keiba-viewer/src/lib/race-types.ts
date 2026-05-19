@@ -130,10 +130,13 @@ export interface RaceTrendRateRow {
 export interface RaceTrendRunningStyleRow {
   key: string;
   targetHorseNumbers: string[];
-  runningStyle: RaceTrendRunningStyle;
+  runningStyle: RaceTrendRunningStyle | null;
   frameNumber?: string | null;
   jockeyName?: string | null;
   starts: number;
+  showRate: number;
+  quinellaRate: number;
+  winRate: number;
   finishPositionAverage: number | null;
   popularityMedian: number | null;
   winOddsMedian: number | null;
