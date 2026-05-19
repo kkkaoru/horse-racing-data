@@ -187,6 +187,7 @@
   --value-number-950-32: 950;
   --value-space-0-14em-218: 0.14em;
   --value-space-0-15s-190: 0.15s;
+  --value-space-0-2em-222: 0.2em;
   --value-space-0-58fr-214: 0.58fr;
   --value-space-0-64s-15: 0.64s;
   --value-space-0-72fr-114: 0.72fr;
@@ -601,6 +602,7 @@
   --number-950-32: var(--value-number-950-32);
   --space-0-14em-218: var(--value-space-0-14em-218);
   --space-0-15s-190: var(--value-space-0-15s-190);
+  --space-0-2em-222: var(--value-space-0-2em-222);
   --space-0-58fr-214: var(--value-space-0-58fr-214);
   --space-0-64s-15: var(--value-space-0-64s-15);
   --space-0-72fr-114: var(--value-space-0-72fr-114);

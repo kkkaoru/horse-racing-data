@@ -77,6 +77,8 @@ interface RaceAiPredictionRow {
   horseName: string;
   horseNumber: string;
   jockeyName: string;
+  odds: number | null;
+  popularity: number | null;
   rank: number;
   reason: string;
 }
@@ -832,20 +834,58 @@ const compactToolResultForPrompt = (result: ToolResult): Record<string, unknown>
   };
 };
 
+const normalizeNullableNumber = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value !== "string") {
+    return null;
+  }
+  const numericText = value.trim().replace(/[,倍番人気\s]/gu, "");
+  if (!numericText) {
+    return null;
+  }
+  const parsed = Number(numericText);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const normalizePredictionLabel = (value: unknown): string => {
+  if (typeof value === "string" && value.trim()) {
+    return value;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  return "-";
+};
+
+const normalizePredictionHorseNumber = (value: unknown): string => {
+  const label = normalizePredictionLabel(value);
+  return label === "-" ? label : label.padStart(1, "0");
+};
+
 const normalizePredictionRow = (row: unknown, fallbackRank = 0): RaceAiPredictionRow | null => {
   if (!isRecord(row)) {
     return null;
   }
-  const rank = typeof row.rank === "number" && Number.isFinite(row.rank) ? row.rank : fallbackRank;
+  const rank = normalizeNullableNumber(row.rank) ?? fallbackRank;
   if (!Number.isFinite(rank) || rank <= 0) {
     return null;
   }
   return {
-    confidence:
-      typeof row.confidence === "number" && Number.isFinite(row.confidence) ? row.confidence : null,
-    horseName: typeof row.horseName === "string" ? row.horseName : "-",
-    horseNumber: typeof row.horseNumber === "string" ? row.horseNumber : "-",
-    jockeyName: typeof row.jockeyName === "string" ? row.jockeyName : "-",
+    confidence: normalizeNullableNumber(row.confidence),
+    horseName: normalizePredictionLabel(row.horseName),
+    horseNumber: normalizePredictionHorseNumber(row.horseNumber),
+    jockeyName: normalizePredictionLabel(row.jockeyName),
+    odds:
+      normalizeNullableNumber(row.odds) ??
+      normalizeNullableNumber(row.winOdds) ??
+      normalizeNullableNumber(row.tanshoOdds),
+    popularity:
+      normalizeNullableNumber(row.popularity) ??
+      normalizeNullableNumber(row.tanshoPopularity) ??
+      normalizeNullableNumber(row.tanshoNinkijun) ??
+      normalizeNullableNumber(row.winPopularity),
     rank,
     reason: typeof row.reason === "string" ? normalizeUserFacingAssistantText(row.reason) : "",
   };
@@ -883,6 +923,12 @@ const uiMessagePredictionRows = (message: UIMessage): RaceAiPredictionRow[] => {
     .filter((row): row is RaceAiPredictionRow => row !== null);
 };
 
+const formatPredictionPopularity = (value: number | null): string =>
+  value === null ? "-" : `${Math.round(value)}番人気`;
+
+const formatPredictionOdds = (value: number | null): string =>
+  value === null ? "-" : `${value.toFixed(1)}倍`;
+
 function RaceAiPredictionTable({ rows }: { rows: RaceAiPredictionRow[] }) {
   return (
     <div className="race-ai-table-wrap">
@@ -893,6 +939,8 @@ function RaceAiPredictionTable({ rows }: { rows: RaceAiPredictionRow[] }) {
             <th>馬番</th>
             <th>馬名</th>
             <th>騎手</th>
+            <th>人気</th>
+            <th>単勝</th>
             <th>信頼度</th>
             <th>根拠</th>
           </tr>
@@ -904,6 +952,8 @@ function RaceAiPredictionTable({ rows }: { rows: RaceAiPredictionRow[] }) {
               <td>{row.horseNumber}</td>
               <td>{row.horseName}</td>
               <td>{row.jockeyName}</td>
+              <td>{formatPredictionPopularity(row.popularity)}</td>
+              <td>{formatPredictionOdds(row.odds)}</td>
               <td>{row.confidence === null ? "-" : row.confidence.toFixed(2)}</td>
               <td>{row.reason}</td>
             </tr>
@@ -973,6 +1023,8 @@ const buildFallbackPredictionRows = (data: RaceAiExportData): RaceAiPredictionRo
       horseName: row.horseName,
       horseNumber: row.horseNumber,
       jockeyName: row.jockeyName,
+      odds: row.odds,
+      popularity: row.popularity,
       rank: row.predictedRank ?? 0,
       reason: buildFallbackPredictionReason(row),
     }))
@@ -988,6 +1040,8 @@ const buildFallbackPredictionRows = (data: RaceAiExportData): RaceAiPredictionRo
       horseName: row.horseName,
       horseNumber: row.horseNumber,
       jockeyName: row.jockeyName,
+      odds: row.odds,
+      popularity: row.popularity,
       rank: index + 1,
       reason: buildFallbackPredictionReason({
         odds: row.odds,
@@ -1168,7 +1222,7 @@ const buildToneRewritePrompt = ({
       "JSON以外は出力しないでください。",
       "answer、prediction[].reason、thoughtLogだけを書き換え対象にしてください。",
       "answerやprediction[].reasonには、JSONキー名、thoughtLog、needsTool、toolJavaScript、思考ログ、根拠ログなどの構造名を含めないでください。",
-      "rank、horseNumber、horseName、jockeyName、confidence、needsTool、toolJavaScript、JSONキー、数値、固有名詞は変更しないでください。",
+      "rank、horseNumber、horseName、jockeyName、popularity、odds、confidence、needsTool、toolJavaScript、JSONキー、数値、固有名詞は変更しないでください。",
       "口調・振る舞い設定:",
       tonePrompt,
       "書き換え対象JSON:",
@@ -1286,6 +1340,7 @@ const buildPrompt = ({
         "- answerには、取得済みツール結果のbodyが何を示しているかを人間向けに解釈して必ず含める。",
         "- 単に「データを取得しました」とだけ書かず、主な項目、注目値、欠損や限界、予想への影響を1〜3文で説明する。",
         "- オッズ、馬体重、出走状況、結果、総合スコア、着順予測、パドック、リアルタイム情報がbodyにある場合は、回答の根拠として具体的に触れる。",
+        "- 着順予想や馬券提案では、人気と単勝オッズをpredictionに補完し、answerには買い目、馬券種別、馬番号、1点あたり金額、合計金額を具体的に含める。",
         "- APIのJSONキー名をそのまま羅列せず、ユーザーが読める自然な表現へ言い換える。",
       ].join("\n")
     : null;
@@ -1297,7 +1352,7 @@ const buildPrompt = ({
     "データ取得方針:",
     hasToolResults
       ? "取得済みツール結果を根拠に、ユーザー依頼へ直接回答してください。まだ不足する場合だけ追加でfetchJsonを1回要求できます。"
-      : "初回入力には実データがありません。ユーザー依頼を読んで必要なAPIを自律的に選び、予想や事実回答に必要な最小限のfetchJsonを1回要求してください。騎手や枠番の成績・傾向はtrends APIを優先し、着順予想でない質問ではpredictionを空配列にしてください。",
+      : "初回入力にはレース基礎情報とデータカタログだけがあります。ユーザー依頼を読んで必要なAPIを自律的に選び、予想や事実回答に必要な最小限のfetchJsonを1回要求してください。騎手や枠番の成績・傾向はtrends APIを優先し、着順予想でない質問ではpredictionを空配列にしてください。",
     toolResultInterpretationRule,
     "直近の対話ログ:",
     JSON.stringify(formatMessagesForPrompt(messages)),

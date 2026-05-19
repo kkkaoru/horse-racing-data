@@ -751,6 +751,43 @@ const buildApiUrl = (path: string, params: Record<string, string> = {}): string 
 const buildRaceApiBase = (route: RaceAiExportData["meta"]["route"]): string =>
   `/api/races/${route.year}/${route.month}/${route.day}/${route.keibajoCode}/${route.raceNumber}`;
 
+const cleanRaceContextText = (value: string | null | undefined): string | null => {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+};
+
+const buildRaceDisplayName = (race: RaceDetail): string | null => {
+  const parts = [
+    cleanRaceContextText(race.kyosomeiHondai),
+    cleanRaceContextText(race.kyosomeiFukudai),
+    cleanRaceContextText(race.kyosomeiKakkonai),
+  ];
+  const name = parts.filter((part): part is string => part !== null).join(" ");
+  return name || null;
+};
+
+const buildRaceContextForPrompt = (data: RaceAiExportData): Record<string, unknown> => {
+  const race = data.postgresql.base.race;
+  return {
+    conditionName: cleanRaceContextText(race.kyosoJokenMeisho),
+    date: `${race.kaisaiNen}-${race.kaisaiTsukihi.slice(0, 2)}-${race.kaisaiTsukihi.slice(2, 4)}`,
+    distance: cleanRaceContextText(race.kyori),
+    gradeCode: cleanRaceContextText(race.gradeCode),
+    keibajoCode: race.keibajoCode,
+    raceName: buildRaceDisplayName(race),
+    raceNameBracket: cleanRaceContextText(race.kyosomeiKakkonai),
+    raceNameMain: cleanRaceContextText(race.kyosomeiHondai),
+    raceNameSubtitle: cleanRaceContextText(race.kyosomeiFukudai),
+    raceNumber: race.raceBango,
+    runnerCount:
+      cleanRaceContextText(race.shussoTosu) ?? String(data.postgresql.base.runners.length),
+    source: race.source,
+    startTime: cleanRaceContextText(race.hassoJikoku),
+    trackCode: cleanRaceContextText(race.trackCode),
+    weatherCode: cleanRaceContextText(race.tenkoCode),
+  };
+};
+
 export const buildRaceAiDataCatalogForPrompt = (
   data: RaceAiExportData,
 ): Record<string, unknown> => {
@@ -778,6 +815,7 @@ export const buildRaceAiDataCatalogForPrompt = (
       },
       sourceSections,
     },
+    raceContext: buildRaceContextForPrompt(data),
     availableData: {
       endpoints: {
         aiData: {
@@ -826,7 +864,10 @@ export const buildRaceAiDataCatalogForPrompt = (
               "kaisaiTsukihi",
               "keibajoCode",
               "raceBango",
+              "raceName",
               "kyosomeiHondai",
+              "kyosomeiFukudai",
+              "kyosomeiKakkonai",
               "kyosoJokenMeisho",
               "kyori",
               "trackCode",
