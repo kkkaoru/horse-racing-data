@@ -143,17 +143,8 @@ const TOOL_TEXT_LIMIT = 240;
 const RUNTIME_LOG_TEXT_LIMIT = 2_000;
 const MACHINE_RESPONSE_FORMAT_FALLBACK_SOURCE =
   "回答の形式が整わず、表示できる本文を作成できませんでしたわ。データ取得後に、もう一度お試しくださいませ。";
-const MACHINE_TOOL_LIMIT_SOURCE =
-  "追加データ取得の上限に達しましたので、取得済みデータの範囲で回答いたしましたわ。";
 const MACHINE_NATURAL_TEXT_THOUGHT_SOURCE =
   "モデルが指定形式のJSONではなく自然文を返しましたので、回答本文を表示用に整えましたわ。";
-const RACE_AI_PROGRESS_START_MESSAGE =
-  "承知いたしましたわ。わたくし、すぐに確認を始めますの。まずお答えできる範囲を押さえつつ、必要なデータを整えてまいりますわ。";
-const RACE_AI_PROGRESS_DATA_TARGET_MESSAGE =
-  "これから確認するデータは、レース基本情報、出走馬、コース情報、同日レース一覧、過去結果、タイム指数、調教、能力、馬場傾向、血統、類似レース、ペース予測、AI向け着順予測、AI向け総合スコア、リアルタイムオッズ・馬体重・結果、パドックデータですわ。";
-const RACE_AI_PROGRESS_DEFAULT_TOOL_MESSAGE =
-  "より具体的な予想に必要ですので、AI向け着順予測、総合スコア、リアルタイム情報を追加で確認いたしますわ。";
-const RACE_AI_PROGRESS_FINAL_MESSAGE = "準備が整いましたわ。これから予想を表示いたしますの。";
 const DEFAULT_RACE_AI_TONE_PROMPT =
   "回答時は、日本のアニメに登場するお嬢様のような丁寧で気品のある言葉遣いにしてください。一人称は「わたくし」を使い、語尾には自然な範囲で「ですわ」「ますわ」「ですの」を使ってください。全ての日本語文でこの口調を維持してください。";
 
@@ -874,6 +865,11 @@ const latestStoredPredictionRows = (messages: RaceAiMessage[]): RaceAiPrediction
   return [];
 };
 
+const isPredictionRequest = (request: string, trigger: string): boolean =>
+  trigger === "auto-start" ||
+  trigger === "realtime-update" ||
+  /予想|着順|順位|本命|対抗|穴|買い目|馬券|勝ち馬|上位|連対|複勝|単勝/iu.test(request);
+
 const uiMessagePredictionRows = (message: UIMessage): RaceAiPredictionRow[] => {
   const metadata = isRecord(message.metadata) ? message.metadata : null;
   const rawPrediction = metadata?.prediction;
@@ -999,36 +995,6 @@ const buildFallbackPredictionRows = (data: RaceAiExportData): RaceAiPredictionRo
     }));
 };
 
-const joinJapaneseLabels = (labels: string[], { limit = 8 }: { limit?: number } = {}): string => {
-  const normalized = labels.map((label) => label.trim()).filter(Boolean);
-  if (normalized.length <= limit) {
-    return normalized.join("、");
-  }
-  return `${normalized.slice(0, limit).join("、")}など`;
-};
-
-const buildDataLoadedProgressMessage = (data: RaceAiExportData): string => {
-  const items = data.aiReady.dataReadiness.items;
-  const readyLabels = items.filter((item) => item.status === "ready").map((item) => item.label);
-  const partialLabels = items.filter((item) => item.status === "partial").map((item) => item.label);
-  const missingLabels = items.filter((item) => item.status === "missing").map((item) => item.label);
-  const parts =
-    readyLabels.length > 0
-      ? [
-          `データを確認できましたわ。参照可能な主なデータは${joinJapaneseLabels(readyLabels)}ですの。`,
-        ]
-      : ["データを確認いたしましたわ。参照可能なデータはまだ限られておりますの。"];
-  if (partialLabels.length > 0) {
-    parts.push(`一部だけ確認できたデータは${joinJapaneseLabels(partialLabels)}ですわ。`);
-  }
-  if (missingLabels.length > 0) {
-    parts.push(
-      `未取得または未準備のデータは${joinJapaneseLabels(missingLabels, { limit: 6 })}ですけれど、取得済みデータで慎重に判断いたしますわ。`,
-    );
-  }
-  return parts.join("");
-};
-
 const parseModelResponse = (
   text: string,
   { fallbackAnswer = "" }: { fallbackAnswer?: string } = {},
@@ -1079,48 +1045,6 @@ const formatAssistantTextForDisplay = (text: string, fallbackAnswer = ""): strin
 const uiMessageDisplayText = (message: UIMessage, fallbackAnswer = ""): string => {
   const text = uiMessageText(message);
   return message.role === "assistant" ? formatAssistantTextForDisplay(text, fallbackAnswer) : text;
-};
-
-const buildDefaultRaceAiDataUrl = (data: RaceAiExportData): string => {
-  const route = data.meta.route;
-  const searchParams = new URLSearchParams(
-    typeof window === "undefined" ? "" : window.location.search,
-  );
-  searchParams.set("source", route.source);
-  searchParams.set("parts", "race,runners,finishPrediction,overallScore,realtime");
-  searchParams.set("realtimeParts", "entries,oddsTansho,weights,results");
-  return `/api/races/${route.year}/${route.month}/${route.day}/${route.keibajoCode}/${route.raceNumber}/ai/data?${searchParams.toString()}`;
-};
-
-const extractToolFetchUrl = (code: string): string | null => {
-  const normalized = code.replace(/```(?:tool-js|javascript|js)?/gu, "").trim();
-  const match = /fetchJson\s*\(\s*["']([^"']+)["']\s*\)/u.exec(normalized);
-  if (!match?.[1]) {
-    return null;
-  }
-  if (typeof window === "undefined") {
-    return match[1];
-  }
-  try {
-    const url = new URL(match[1], window.location.origin);
-    return `${url.pathname}${url.search}`;
-  } catch {
-    return match[1];
-  }
-};
-
-const buildToolFetchProgressMessage = (toolJavaScript: string): string => {
-  const url = extractToolFetchUrl(toolJavaScript);
-  return url
-    ? `追加で ${url} を確認いたしますわ。必要な不足分を補って、予想の根拠を整えますの。`
-    : "追加でAIが指定したデータを確認いたしますわ。必要な不足分を補って、予想の根拠を整えますの。";
-};
-
-const buildToolResultProgressMessage = (result: ToolResult): string => {
-  if (result.status >= 200 && result.status < 300) {
-    return `追加データを取得できましたわ。${result.url} は正常に確認できましたの。`;
-  }
-  return `追加データの確認を試みましたわ。${result.url} はステータス ${result.status} でしたので、取得済みデータも合わせて判断いたしますの。`;
 };
 
 const answerBlocks = (text: string): string[] =>
@@ -1320,8 +1244,8 @@ const buildPrompt = ({
     request,
     "データ取得方針:",
     hasToolResults
-      ? "取得済みツール結果を根拠に回答してください。まだ不足する場合だけ追加でfetchJsonを1回要求できます。"
-      : "初回入力には実データがありません。具体的な予想や事実回答には、まずtoolJavaScriptで必要最小限のfetchJsonを1回要求してください。",
+      ? "取得済みツール結果を根拠に、ユーザー依頼へ直接回答してください。まだ不足する場合だけ追加でfetchJsonを1回要求できます。"
+      : "初回入力には実データがありません。ユーザー依頼を読んで必要なAPIを自律的に選び、予想や事実回答に必要な最小限のfetchJsonを1回要求してください。騎手や枠番の成績・傾向はtrends APIを優先し、着順予想でない質問ではpredictionを空配列にしてください。",
     toolResultInterpretationRule,
     "直近の対話ログ:",
     JSON.stringify(formatMessagesForPrompt(messages)),
@@ -2109,21 +2033,6 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         requestRole,
         trigger,
       });
-      const progressMessages: string[] = [];
-      const speakProgress = async (message: string): Promise<void> => {
-        if (abortSignal?.aborted || resetVersionRef.current !== runResetVersion) {
-          return;
-        }
-        const progressMessage = normalizeUserFacingAssistantText(message, message);
-        if (!progressMessage) {
-          return;
-        }
-        progressMessages.push(progressMessage);
-        if (emit) {
-          emit(`${progressMessage}\n\n`);
-          await yieldToBrowser();
-        }
-      };
       try {
         await yieldToBrowser();
         if (trigger === "debug-dry-run") {
@@ -2202,8 +2111,6 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
             toolJavaScript: null,
           } satisfies ParsedRaceAiResponse;
         }
-        await speakProgress(RACE_AI_PROGRESS_START_MESSAGE);
-        await speakProgress(RACE_AI_PROGRESS_DATA_TARGET_MESSAGE);
         const currentToneSettings = await fetchRaceAiToneSettings();
         setToneSettingsStatus("ready");
         const llm = await ensureModel();
@@ -2218,7 +2125,6 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           missingPercent: data.aiReady.dataReadiness.missingPercent,
           preparedPercent: data.aiReady.dataReadiness.preparedPercent,
         });
-        await speakProgress(buildDataLoadedProgressMessage(data));
         const dataFingerprint = stableStringify({
           aiReady: data.aiReady.currentOutput,
           dataReadiness: data.aiReady.dataReadiness,
@@ -2234,9 +2140,11 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         }): Promise<ParsedRaceAiResponse> => {
           const promptRequest = responseNeedsFinalAnswer(toolResults, formatRetryCount)
             ? `${request}\n\n直前の応答がJSONではありませんでした。取得済みデータだけを使い、必ず指定されたJSONだけを返してください。`
-            : toolResults.length >= MAX_TOOL_CALLS
-              ? `${request}\n\n取得済みデータだけで最終回答を作成してください。`
-              : request;
+            : toolResults.length === 0 && formatRetryCount > 0
+              ? `${request}\n\n直前の応答がJSONではありませんでした。ユーザー質問に必要なデータを自律的に判断し、必要ならneedsTool trueでfetchJsonを1回だけ要求してください。回答できる場合は必ず指定されたJSONだけを返し、着順予想の依頼でなければpredictionは空配列にしてください。`
+              : toolResults.length >= MAX_TOOL_CALLS
+                ? `${request}\n\n取得済みデータだけで最終回答を作成してください。`
+                : request;
           setRuntimeStage("preparing-prompt");
           await yieldToBrowser();
           const promptStartedAt = Date.now();
@@ -2287,26 +2195,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
             predictionCount: response.prediction.length,
             toolJavaScriptLength: response.toolJavaScript?.length ?? 0,
           });
-          if (response.format === "text" && toolResults.length === 0) {
-            setRuntimeStage("fetching-tool-data");
-            await yieldToBrowser();
-            addRuntimeLog("warn", "model returned text before tool request; fetching default data");
-            await speakProgress(RACE_AI_PROGRESS_DEFAULT_TOOL_MESSAGE);
-            const toolResult = await runToolJavaScript(
-              `return await fetchJson("${buildDefaultRaceAiDataUrl(data)}");`,
-            );
-            addRuntimeLog("info", "default tool data fetched", {
-              attempts: toolResult.attempts,
-              status: toolResult.status,
-              url: toolResult.url,
-            });
-            await speakProgress(buildToolResultProgressMessage(toolResult));
-            return runWithToolResults({
-              formatRetryCount: 0,
-              toolResults: [toolResult],
-            });
-          }
-          if (response.format === "text" && formatRetryCount < 1) {
+          if (response.format === "text" && toolResults.length === 0 && formatRetryCount < 1) {
             addRuntimeLog("warn", "model returned text; retrying JSON response", {
               formatRetryCount,
             });
@@ -2326,14 +2215,12 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           addRuntimeLog("info", "tool JavaScript fetch started", {
             toolJavaScriptLength: response.toolJavaScript.length,
           });
-          await speakProgress(buildToolFetchProgressMessage(response.toolJavaScript));
           const toolResult = await runToolJavaScript(response.toolJavaScript);
           addRuntimeLog("info", "tool JavaScript fetch completed", {
             attempts: toolResult.attempts,
             status: toolResult.status,
             url: toolResult.url,
           });
-          await speakProgress(buildToolResultProgressMessage(toolResult));
           return runWithToolResults({
             formatRetryCount: 0,
             toolResults: [...toolResults, toolResult],
@@ -2343,7 +2230,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           formatRetryCount: 0,
           toolResults: [],
         });
-        if (finalResponse.prediction.length === 0) {
+        if (finalResponse.prediction.length === 0 && isPredictionRequest(request, trigger)) {
           const fallbackPrediction = buildFallbackPredictionRows(data);
           if (fallbackPrediction.length > 0) {
             addRuntimeLog("warn", "model response had no prediction rows; using data fallback", {
@@ -2359,7 +2246,6 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           addRuntimeLog("warn", "tool request limit reached; finalizing with fetched data");
           finalResponse = {
             ...finalResponse,
-            answer: `${finalResponse.answer}\n\n${MACHINE_TOOL_LIMIT_SOURCE}`,
             needsTool: false,
             toolJavaScript: null,
           };
@@ -2375,11 +2261,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           addRuntimeLog("warn", "AI request ignored because runtime was reset");
           return null;
         }
-        await speakProgress(RACE_AI_PROGRESS_FINAL_MESSAGE);
-        const displayedAnswer = [...progressMessages, finalResponse.answer]
-          .map((part) => part.trim())
-          .filter(Boolean)
-          .join("\n\n");
+        const displayedAnswer = finalResponse.answer.trim();
         const completedResponse: ParsedRaceAiResponse = {
           ...finalResponse,
           answer: displayedAnswer,
@@ -3203,7 +3085,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         }}
       >
         <label>
-          AIに質問
+          {assistantName}に質問
           <textarea
             value={input}
             rows={3}
@@ -3223,18 +3105,16 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           {isChatBusy ? "送信中" : "送信"}
         </button>
       </form>
-      {isChatBusy ? (
-        <div className="race-ai-stop-actions">
-          <button type="button" onClick={stopChat}>
-            応答を停止
-          </button>
-        </div>
-      ) : null}
       {debugEnabled ? (
         <p className="race-ai-debug-note">
           localhost debug: <code>{debugUrl}</code>
         </p>
       ) : null}
+      <div className="race-ai-stop-actions">
+        <button type="button" disabled={!isChatBusy} onClick={stopChat}>
+          応答を停止
+        </button>
+      </div>
       <div className="race-ai-reset-actions">
         <button type="button" disabled={!hasRaceAiState} onClick={resetRaceAiState}>
           このレースのAIログをリセット

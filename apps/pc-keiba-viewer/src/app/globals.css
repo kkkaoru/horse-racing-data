@@ -7962,8 +7962,11 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   background: var(--surface);
   border: var(--space-1px-7) solid var(--accent);
   border-radius: var(--space-6px-33);
-  color: var(--text);
+  color: var(--color-hex-333333-115);
   font: inherit;
+  font-weight: var(--number-400-46);
+  letter-spacing: var(--space-1-5em-115);
+  line-height: var(--number-2-1);
   min-height: var(--space-96px-66);
   padding: var(--space-10px-27) var(--space-12px-9);
   resize: vertical;
