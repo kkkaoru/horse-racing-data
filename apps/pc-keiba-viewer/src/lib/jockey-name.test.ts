@@ -40,6 +40,9 @@ describe("jockey name helpers", () => {
   it("treats local keiba abbreviated kanji names as the same jockey", () => {
     expect(isSameJockeyName("本田重", "本田正重")).toBe(true);
     expect(isSameJockeyName("本田正重", "本田重")).toBe(true);
+    expect(isSameJockeyName("岡村健司", "岡村健")).toBe(true);
+    expect(isSameJockeyName("谷内貫太", "谷内貫")).toBe(true);
+    expect(isSameJockeyName("達城龍次", "達城龍")).toBe(true);
     expect(isSameJockeyName("森泰斗", "森島斗")).toBe(false);
     expect(isSameJockeyName("シャベ", "シャス")).toBe(false);
   });

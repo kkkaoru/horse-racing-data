@@ -582,11 +582,11 @@ const apiSpec = {
           },
           {
             description:
-              "DBに未反映のリアルタイム結果を候補レースから補完するか。初期表示の高速化のため通常はfalse。",
+              "DBに未反映のリアルタイム結果を候補レースから補完するか。false の場合のみ補完しません。",
             in: "query",
             name: "includeRealtimeResults",
             required: false,
-            schema: { default: false, type: "boolean" },
+            schema: { default: true, type: "boolean" },
           },
           {
             description: "脚質を集計条件から外すか。",
@@ -609,12 +609,19 @@ const apiSpec = {
             required: false,
             schema: { default: false, type: "boolean" },
           },
+          {
+            description: "レース番号を脚質傾向の集計条件から外すか。",
+            in: "query",
+            name: "runningStyleIgnoreRaceNumber",
+            required: false,
+            schema: { default: true, type: "boolean" },
+          },
         ],
         responses: {
           "200": jsonResponse,
           ...errorResponses,
         },
-        summary: "レース傾向の騎手別・枠番別集計を返します。",
+        summary: "レース傾向の騎手・枠・脚質別集計を返します。",
         tags: ["races"],
       },
     },

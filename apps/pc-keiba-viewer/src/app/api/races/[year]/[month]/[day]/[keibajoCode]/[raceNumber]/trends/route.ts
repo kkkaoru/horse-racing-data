@@ -15,7 +15,10 @@ import {
 } from "../../../../../../../../../db/corner-running-style-queries";
 import type { RaceSource } from "../../../../../../../../../lib/codes";
 import { fetchWithRetry } from "../../../../../../../../../lib/fetch-with-retry";
-import { normalizeJockeyNameForComparison } from "../../../../../../../../../lib/jockey-name";
+import {
+  isSameJockeyName,
+  normalizeJockeyNameForComparison,
+} from "../../../../../../../../../lib/jockey-name";
 import type {
   RaceDetail,
   RaceListItem,
@@ -325,7 +328,7 @@ interface RaceTrendRunningStyleTarget {
   runningStyle: RaceTrendRunningStyle | null;
 }
 
-const runningStyleGroupKey = (
+const runningStyleTargetKey = (
   value: {
     frameNumber: string | null;
     jockeyKey: string | null;
@@ -339,9 +342,6 @@ const runningStyleGroupKey = (
     ignoreRunningStyle: boolean;
   },
 ): string | null => {
-  if (!options.ignoreRunningStyle && !value.runningStyle) {
-    return null;
-  }
   if (!options.ignoreFrame && !value.frameNumber) {
     return null;
   }
@@ -352,61 +352,44 @@ const runningStyleGroupKey = (
     return null;
   }
   return [
-    options.ignoreRunningStyle ? "*" : value.runningStyle,
+    options.ignoreRunningStyle || !value.runningStyle ? "*" : value.runningStyle,
     options.ignoreFrame ? "*" : value.frameNumber,
     options.ignoreJockey ? "*" : value.jockeyKey,
     options.ignoreRaceNumber ? "*" : value.raceNumber,
   ].join(":");
 };
 
-const runningStyleTargetGroupKey = (
-  value: {
+const matchesRunningStyleTarget = (
+  row: {
     frameNumber: string | null;
     jockeyKey: string | null;
     raceNumber: string | null;
     runningStyle: RaceTrendRunningStyle | null;
   },
+  target: RaceTrendRunningStyleTarget,
   options: {
     ignoreFrame: boolean;
     ignoreJockey: boolean;
     ignoreRaceNumber: boolean;
     ignoreRunningStyle: boolean;
   },
-): string | null =>
-  runningStyleGroupKey(value, {
-    ...options,
-    ignoreRunningStyle: options.ignoreRunningStyle || !value.runningStyle,
-  });
-
-const runningStyleHistoricalGroupKeys = (
-  value: {
-    frameNumber: string | null;
-    jockeyKey: string | null;
-    raceNumber: string | null;
-    runningStyle: RaceTrendRunningStyle | null;
-  },
-  options: {
-    ignoreFrame: boolean;
-    ignoreJockey: boolean;
-    ignoreRaceNumber: boolean;
-    ignoreRunningStyle: boolean;
-  },
-): string[] => {
-  const keys = new Set<string>();
-  const exactKey = runningStyleGroupKey(value, options);
-  if (exactKey) {
-    keys.add(exactKey);
+): boolean => {
+  if (!options.ignoreFrame && (!target.frameNumber || row.frameNumber !== target.frameNumber)) {
+    return false;
   }
-  if (!options.ignoreRunningStyle) {
-    const fallbackKey = runningStyleGroupKey(value, {
-      ...options,
-      ignoreRunningStyle: true,
-    });
-    if (fallbackKey) {
-      keys.add(fallbackKey);
-    }
+  if (
+    !options.ignoreJockey &&
+    (!target.jockeyKey || !isSameJockeyName(row.jockeyKey, target.jockeyKey))
+  ) {
+    return false;
   }
-  return Array.from(keys);
+  if (!options.ignoreRaceNumber && (!target.raceNumber || row.raceNumber !== target.raceNumber)) {
+    return false;
+  }
+  if (options.ignoreRunningStyle || !target.runningStyle || !row.runningStyle) {
+    return true;
+  }
+  return row.runningStyle === target.runningStyle;
 };
 
 const average = (values: number[]): number | null =>
@@ -440,48 +423,46 @@ const aggregateRunningStyleRows = (
     startYmd: string;
   },
 ): RaceTrendRunningStyleRow[] => {
-  const targetsByKey = new Map<string, RaceTrendRunningStyleTarget[]>();
-  for (const target of targets) {
-    const key = runningStyleTargetGroupKey(target, options);
-    if (!key) {
-      continue;
-    }
-    const bucket = targetsByKey.get(key) ?? [];
-    bucket.push(target);
-    targetsByKey.set(key, bucket);
-  }
-  const groups = new Map<string, RaceTrendStarterRow[]>();
-  for (const row of rows) {
+  const targetEntries = targets
+    .map((target, index) => ({
+      index,
+      key: runningStyleTargetKey(target, options),
+      target,
+    }))
+    .filter((entry): entry is { index: number; key: string; target: RaceTrendRunningStyleTarget } =>
+      Boolean(entry.key),
+    )
+    .toSorted((a, b) =>
+      (a.target.horseNumber ?? "").localeCompare(b.target.horseNumber ?? "", "ja", {
+        numeric: true,
+      }),
+    );
+  const eligibleRows = rows.flatMap((row) => {
     const ymd = toYmd(row.kaisaiNen, row.kaisaiTsukihi);
     if (!isYmdInRange(ymd, options.startYmd, options.endYmd)) {
-      continue;
+      return [];
     }
     if (options.jockeySameVenue && row.keibajoCode !== options.keibajoCode) {
-      continue;
+      return [];
     }
-    const runningStyle = runningStyleByStarterKey.get(starterRunningStyleKey(row)) ?? null;
-    const keys = runningStyleHistoricalGroupKeys(
+    return [
       {
-        frameNumber: normalizeNumberText(row.wakuban),
-        jockeyKey: normalizeRaceTrendJockeyName(row.jockeyName),
-        raceNumber: normalizeNumberText(row.raceBango),
-        runningStyle,
+        row,
+        value: {
+          frameNumber: normalizeNumberText(row.wakuban),
+          jockeyKey: normalizeRaceTrendJockeyName(row.jockeyName),
+          raceNumber: normalizeNumberText(row.raceBango),
+          runningStyle: runningStyleByStarterKey.get(starterRunningStyleKey(row)) ?? null,
+        },
       },
-      options,
-    );
-    for (const key of keys) {
-      if (!targetsByKey.has(key)) {
-        continue;
-      }
-      const bucket = groups.get(key) ?? [];
-      bucket.push(row);
-      groups.set(key, bucket);
-    }
-  }
+    ];
+  });
 
-  return Array.from(targetsByKey.entries())
-    .flatMap(([key, targetRows]) => {
-      const groupRows = groups.get(key) ?? [];
+  return targetEntries
+    .map(({ index, key, target }) => {
+      const groupRows = eligibleRows
+        .filter(({ value }) => matchesRunningStyleTarget(value, target, options))
+        .map(({ row }) => row);
       const finishPositions = groupRows.map((row) => row.finishPosition);
       const winCount = groupRows.filter((row) => row.finishPosition === 1).length;
       const quinellaCount = groupRows.filter((row) => row.finishPosition <= 2).length;
@@ -498,27 +479,23 @@ const aggregateRunningStyleRows = (
           runningStyle: runningStyleByStarterKey.get(starterRunningStyleKey(row)) ?? null,
         })),
       );
-      return targetRows
-        .toSorted((a, b) =>
-          (a.horseNumber ?? "").localeCompare(b.horseNumber ?? "", "ja", { numeric: true }),
-        )
-        .map((target, index) => ({
-          key: `${key}:${target.horseNumber ?? index}`,
-          targetHorseNumbers: target.horseNumber ? [target.horseNumber] : [],
-          runningStyle: target.runningStyle,
-          frameNumber: options.ignoreFrame ? null : target.frameNumber,
-          jockeyName: options.ignoreJockey ? null : target.jockeyName,
-          raceNumber: options.ignoreRaceNumber ? null : target.raceNumber,
-          starts: groupRows.length,
-          showRate: groupRows.length > 0 ? (showCount / groupRows.length) * 100 : 0,
-          quinellaRate: groupRows.length > 0 ? (quinellaCount / groupRows.length) * 100 : 0,
-          winRate: groupRows.length > 0 ? (winCount / groupRows.length) * 100 : 0,
-          finishPositionAverage: average(finishPositions),
-          popularityMedian: calculateMedian(popularities),
-          winOddsMedian: calculateMedian(winOdds),
-          finishPositionMedian: calculateMedian(finishPositions),
-          details,
-        }));
+      return {
+        key: `${key}:${target.horseNumber ?? index}`,
+        targetHorseNumbers: target.horseNumber ? [target.horseNumber] : [],
+        runningStyle: target.runningStyle,
+        frameNumber: options.ignoreFrame ? null : target.frameNumber,
+        jockeyName: options.ignoreJockey ? null : target.jockeyName,
+        raceNumber: options.ignoreRaceNumber ? null : target.raceNumber,
+        starts: groupRows.length,
+        showRate: groupRows.length > 0 ? (showCount / groupRows.length) * 100 : 0,
+        quinellaRate: groupRows.length > 0 ? (quinellaCount / groupRows.length) * 100 : 0,
+        winRate: groupRows.length > 0 ? (winCount / groupRows.length) * 100 : 0,
+        finishPositionAverage: average(finishPositions),
+        popularityMedian: calculateMedian(popularities),
+        winOddsMedian: calculateMedian(winOdds),
+        finishPositionMedian: calculateMedian(finishPositions),
+        details,
+      };
     })
     .toSorted(
       (a, b) =>
@@ -883,7 +860,7 @@ export async function GET(request: Request, context: RouteContext) {
     jockeyEndYmd: parseDateInput(searchParams.get("jockeyEnd"), targetYmd),
     frameStartYmd: parseDateInput(searchParams.get("frameStart"), defaultStartYmd),
     frameEndYmd: parseDateInput(searchParams.get("frameEnd"), targetYmd),
-    includeRealtimeResults: searchParams.get("includeRealtimeResults") === "true",
+    includeRealtimeResults: searchParams.get("includeRealtimeResults") !== "false",
     jockeySameVenue: searchParams.get("jockeySameVenue") !== "false",
     runningStyleIgnoreFrame: searchParams.get("runningStyleIgnoreFrame") === "true",
     runningStyleIgnoreJockey: searchParams.get("runningStyleIgnoreJockey") === "true",
