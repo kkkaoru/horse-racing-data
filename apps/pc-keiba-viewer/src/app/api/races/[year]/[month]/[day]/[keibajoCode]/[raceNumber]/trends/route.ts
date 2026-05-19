@@ -8,6 +8,10 @@ import {
   getRacesByDate,
   getRaceTrendHistoricalStarterRows,
 } from "../../../../../../../../../db/queries";
+import {
+  buildRaceKey,
+  getRaceRunningStylesFromD1,
+} from "../../../../../../../../../db/corner-running-style-queries";
 import type { RaceSource } from "../../../../../../../../../lib/codes";
 import { fetchWithRetry } from "../../../../../../../../../lib/fetch-with-retry";
 import { normalizeJockeyNameForComparison } from "../../../../../../../../../lib/jockey-name";
@@ -17,6 +21,8 @@ import type {
   RaceTrendDetail,
   RaceTrendPayload,
   RaceTrendRateRow,
+  RaceTrendRunningStyle,
+  RaceTrendRunningStyleRow,
   RaceTrendStarterRow,
   Runner,
 } from "../../../../../../../../../lib/race-types";
@@ -69,6 +75,9 @@ const parseStoredWinOdds = (value: string | null | undefined): number | null => 
   const odds = parseStoredInteger(value, "0000");
   return odds === null ? null : odds / 10;
 };
+
+const parseCornerPosition = (value: string | null | undefined): number | null =>
+  parseStoredInteger(value, "00");
 
 const formatRealtimeInteger = (value: number | null | undefined): string | null =>
   typeof value === "number" && Number.isFinite(value) && value > 0
@@ -129,6 +138,50 @@ const enumerateDates = (startYmd: string, endYmd: string): string[] => {
 const isYmdInRange = (ymd: string, startYmd: string, endYmd: string): boolean =>
   ymd >= startYmd && ymd <= endYmd;
 
+const runningStyleFromCorners = ({
+  corner1,
+  corner2,
+  corner3,
+  corner4,
+  runnerCount,
+}: {
+  corner1: string | null | undefined;
+  corner2: string | null | undefined;
+  corner3: string | null | undefined;
+  corner4: string | null | undefined;
+  runnerCount: string | null | undefined;
+}): RaceTrendRunningStyle | null => {
+  const corner =
+    parseCornerPosition(corner1) ??
+    parseCornerPosition(corner2) ??
+    parseCornerPosition(corner3) ??
+    parseCornerPosition(corner4);
+  if (corner === null) {
+    return null;
+  }
+  if (corner <= 1) {
+    return "nige";
+  }
+  const parsedRunnerCount = parseStoredInteger(runnerCount, "00");
+  if (parsedRunnerCount === null || parsedRunnerCount <= 1) {
+    if (corner <= 4) {
+      return "senkou";
+    }
+    if (corner <= 8) {
+      return "sashi";
+    }
+    return "oikomi";
+  }
+  const ratio = (corner - 1) / Math.max(parsedRunnerCount - 1, 1);
+  if (ratio <= 0.35) {
+    return "senkou";
+  }
+  if (ratio <= 0.7) {
+    return "sashi";
+  }
+  return "oikomi";
+};
+
 const starterKey = (
   row: Pick<
     RaceTrendStarterRow,
@@ -150,6 +203,7 @@ const detailFromStarter = (row: RaceTrendStarterRow): RaceTrendDetail => ({
   keibajoCode: row.keibajoCode,
   raceNumber: row.raceBango,
   raceName: row.raceName,
+  runningStyle: runningStyleFromCorners(row),
   frameNumber: row.wakuban,
   horseNumber: row.umaban,
   horseName: row.bamei,
@@ -237,6 +291,151 @@ const aggregateRows = (
         b.winRate - a.winRate ||
         b.starts - a.starts ||
         a.label.localeCompare(b.label, "ja"),
+    );
+};
+
+interface RaceTrendRunningStyleTarget {
+  frameNumber: string | null;
+  horseNumber: string;
+  jockeyKey: string | null;
+  jockeyName: string | null;
+  runningStyle: RaceTrendRunningStyle;
+}
+
+const runningStyleGroupKey = (
+  value: {
+    frameNumber: string | null;
+    jockeyKey: string | null;
+    runningStyle: RaceTrendRunningStyle | null;
+  },
+  options: {
+    ignoreFrame: boolean;
+    ignoreJockey: boolean;
+  },
+): string | null => {
+  if (!value.runningStyle) {
+    return null;
+  }
+  if (!options.ignoreFrame && !value.frameNumber) {
+    return null;
+  }
+  if (!options.ignoreJockey && !value.jockeyKey) {
+    return null;
+  }
+  return [
+    value.runningStyle,
+    options.ignoreFrame ? "*" : value.frameNumber,
+    options.ignoreJockey ? "*" : value.jockeyKey,
+  ].join(":");
+};
+
+const uniqueSortedNumbers = (values: string[]): string[] =>
+  Array.from(new Set(values)).toSorted((a, b) => a.localeCompare(b, "ja", { numeric: true }));
+
+const average = (values: number[]): number | null =>
+  values.length === 0 ? null : values.reduce((sum, value) => sum + value, 0) / values.length;
+
+const sortTrendDetails = (details: RaceTrendDetail[]): RaceTrendDetail[] =>
+  details.toSorted((a, b) => {
+    const dateOrder = b.date.localeCompare(a.date);
+    if (dateOrder !== 0) {
+      return dateOrder;
+    }
+    const raceOrder = a.raceNumber.localeCompare(b.raceNumber, "ja", { numeric: true });
+    if (raceOrder !== 0) {
+      return raceOrder;
+    }
+    return (a.horseNumber ?? "").localeCompare(b.horseNumber ?? "", "ja", { numeric: true });
+  });
+
+const aggregateRunningStyleRows = (
+  rows: RaceTrendStarterRow[],
+  targets: RaceTrendRunningStyleTarget[],
+  options: {
+    endYmd: string;
+    ignoreFrame: boolean;
+    ignoreJockey: boolean;
+    jockeySameVenue: boolean;
+    keibajoCode: string;
+    startYmd: string;
+  },
+): RaceTrendRunningStyleRow[] => {
+  const targetsByKey = new Map<string, RaceTrendRunningStyleTarget[]>();
+  for (const target of targets) {
+    const key = runningStyleGroupKey(target, options);
+    if (!key) {
+      continue;
+    }
+    const bucket = targetsByKey.get(key) ?? [];
+    bucket.push(target);
+    targetsByKey.set(key, bucket);
+  }
+  const groups = new Map<string, RaceTrendStarterRow[]>();
+  for (const row of rows) {
+    const ymd = toYmd(row.kaisaiNen, row.kaisaiTsukihi);
+    if (!isYmdInRange(ymd, options.startYmd, options.endYmd)) {
+      continue;
+    }
+    if (options.jockeySameVenue && row.keibajoCode !== options.keibajoCode) {
+      continue;
+    }
+    const runningStyle = runningStyleFromCorners(row);
+    const key = runningStyleGroupKey(
+      {
+        frameNumber: normalizeNumberText(row.wakuban),
+        jockeyKey: normalizeRaceTrendJockeyName(row.jockeyName),
+        runningStyle,
+      },
+      options,
+    );
+    if (!key || !targetsByKey.has(key)) {
+      continue;
+    }
+    const bucket = groups.get(key) ?? [];
+    bucket.push(row);
+    groups.set(key, bucket);
+  }
+
+  return Array.from(groups.entries())
+    .flatMap(([key, groupRows]) => {
+      const targetRows = targetsByKey.get(key);
+      const firstTarget = targetRows?.[0];
+      if (!targetRows || !firstTarget) {
+        return [];
+      }
+      const finishPositions = groupRows.map((row) => row.finishPosition);
+      const popularities = groupRows
+        .map((row) => parseStoredPopularity(row.tanshoPopularity))
+        .filter((value): value is number => value !== null);
+      const winOdds = groupRows
+        .map((row) => parseStoredWinOdds(row.tanshoOdds))
+        .filter((value): value is number => value !== null);
+      return [
+        {
+          key,
+          targetHorseNumbers: uniqueSortedNumbers(targetRows.map((row) => row.horseNumber)),
+          runningStyle: firstTarget.runningStyle,
+          frameNumber: options.ignoreFrame ? null : firstTarget.frameNumber,
+          jockeyName: options.ignoreJockey ? null : firstTarget.jockeyName,
+          starts: groupRows.length,
+          finishPositionAverage: average(finishPositions),
+          popularityMedian: calculateMedian(popularities),
+          winOddsMedian: calculateMedian(winOdds),
+          finishPositionMedian: calculateMedian(finishPositions),
+          details: sortTrendDetails(groupRows.map(detailFromStarter)),
+        },
+      ];
+    })
+    .toSorted(
+      (a, b) =>
+        (a.finishPositionMedian ?? Number.POSITIVE_INFINITY) -
+          (b.finishPositionMedian ?? Number.POSITIVE_INFINITY) ||
+        (a.finishPositionAverage ?? Number.POSITIVE_INFINITY) -
+          (b.finishPositionAverage ?? Number.POSITIVE_INFINITY) ||
+        b.starts - a.starts ||
+        a.targetHorseNumbers.join(",").localeCompare(b.targetHorseNumbers.join(","), "ja", {
+          numeric: true,
+        }),
     );
 };
 
@@ -328,6 +527,7 @@ const buildRealtimeStarterRows = async (race: RaceListItem): Promise<RaceTrendSt
         raceBango: race.raceBango,
         raceName:
           normalizeText(race.kyosomeiHondai) ?? normalizeText(race.kyosomeiFukudai) ?? "一般競走",
+        runnerCount: String(resultHorses.length),
         wakuban: normalizeNumberText(runner?.wakuban),
         umaban: horseNumber,
         bamei:
@@ -340,6 +540,10 @@ const buildRealtimeStarterRows = async (race: RaceListItem): Promise<RaceTrendSt
           formatRealtimeInteger(latestTansho?.rank) ?? normalizeText(runner?.tanshoNinkijun),
         finishPosition,
         sohaTime: normalizeText(resultHorse.time),
+        corner1: null,
+        corner2: null,
+        corner3: null,
+        corner4: null,
       },
     ];
   });
@@ -354,12 +558,32 @@ const buildRaceTrendPayload = async (
     jockeyEndYmd: string;
     jockeySameVenue: boolean;
     jockeyStartYmd: string;
+    runningStyleIgnoreFrame: boolean;
+    runningStyleIgnoreJockey: boolean;
   },
 ): Promise<RaceTrendPayload> => {
   const currentRealtimePayload = await fetchRealtimePayload(race);
+  const currentRunningStyles = await getRaceRunningStylesFromD1(
+    buildRaceKey({
+      kaisaiNen: race.kaisaiNen,
+      kaisaiTsukihi: race.kaisaiTsukihi,
+      keibajoCode: race.keibajoCode,
+      raceBango: race.raceBango,
+      source: race.source,
+    }),
+  ).catch(() => []);
+  const currentRunningStyleByHorseNumber = new Map(
+    currentRunningStyles.map((row) => [String(row.horseNumber), row.predictedLabel]),
+  );
   const currentRealtimeEntryByHorseNumber = new Map(
     (currentRealtimePayload?.raceEntries?.horses ?? []).map((entry) => [
       normalizeNumberText(entry.horseNumber),
+      entry,
+    ]),
+  );
+  const currentRealtimeTanshoByHorseNumber = new Map(
+    (currentRealtimePayload?.odds?.latest.tansho ?? []).map((entry) => [
+      normalizeNumberText(entry.combination),
       entry,
     ]),
   );
@@ -372,6 +596,35 @@ const buildRaceTrendPayload = async (
         normalizeText(realtimeEntry?.jockeyName) ?? normalizeText(runner.kishumeiRyakusho),
     };
   });
+  const runningStyleTargets = trendRunners.flatMap(
+    ({ effectiveJockeyName, runner }): RaceTrendRunningStyleTarget[] => {
+      const horseNumber = normalizeNumberText(runner.umaban);
+      if (!horseNumber) {
+        return [];
+      }
+      const runningStyle =
+        currentRunningStyleByHorseNumber.get(horseNumber) ??
+        runningStyleFromCorners({
+          corner1: runner.corner1,
+          corner2: runner.corner2,
+          corner3: runner.corner3,
+          corner4: runner.corner4,
+          runnerCount: race.torokuTosu,
+        });
+      if (!runningStyle) {
+        return [];
+      }
+      return [
+        {
+          frameNumber: normalizeNumberText(runner.wakuban),
+          horseNumber,
+          jockeyKey: normalizeRaceTrendJockeyName(effectiveJockeyName),
+          jockeyName: normalizeText(effectiveJockeyName),
+          runningStyle,
+        },
+      ];
+    },
+  );
   const jockeyNames = Array.from(
     new Set(
       trendRunners
@@ -403,6 +656,25 @@ const buildRaceTrendPayload = async (
         (entry): entry is readonly [string, string] => Boolean(entry[0]) && Boolean(entry[1]),
       ),
   );
+  const targetMarketByJockey = new Map<
+    string,
+    { popularity: number | null; winOdds: number | null }
+  >();
+  for (const { effectiveJockeyName, runner } of trendRunners) {
+    const key = normalizeRaceTrendJockeyName(effectiveJockeyName);
+    if (!key) {
+      continue;
+    }
+    const latestTansho = currentRealtimeTanshoByHorseNumber.get(normalizeNumberText(runner.umaban));
+    targetMarketByJockey.set(key, {
+      popularity:
+        parseStoredPopularity(formatRealtimeInteger(latestTansho?.rank)) ??
+        parseStoredPopularity(runner.tanshoNinkijun),
+      winOdds:
+        parseStoredWinOdds(formatRealtimeWinOdds(latestTansho?.odds)) ??
+        parseStoredWinOdds(runner.tanshoOdds),
+    });
+  }
   const targetHorseNumbersByFrame = new Map<string, string>();
   for (const runner of runners) {
     const frameNumber = normalizeNumberText(runner.wakuban);
@@ -457,7 +729,11 @@ const buildRaceTrendPayload = async (
       validKeys: new Set(jockeyKeys),
       getGroupKey: (row) => normalizeRaceTrendJockeyName(row.jockeyName),
     }).map((row) =>
-      Object.assign(row, { targetHorseNumber: targetHorseNumberByJockey.get(row.key) ?? null }),
+      Object.assign(row, {
+        targetHorseNumber: targetHorseNumberByJockey.get(row.key) ?? null,
+        targetPopularity: targetMarketByJockey.get(row.key)?.popularity ?? null,
+        targetWinOdds: targetMarketByJockey.get(row.key)?.winOdds ?? null,
+      }),
     ),
     frameRows: aggregateRows(rows, {
       startYmd: options.frameStartYmd,
@@ -468,6 +744,14 @@ const buildRaceTrendPayload = async (
     }).map((row) =>
       Object.assign(row, { targetHorseNumber: targetHorseNumbersByFrame.get(row.key) ?? null }),
     ),
+    runningStyleRows: aggregateRunningStyleRows(rows, runningStyleTargets, {
+      startYmd: options.jockeyStartYmd,
+      endYmd: options.jockeyEndYmd,
+      ignoreFrame: options.runningStyleIgnoreFrame,
+      ignoreJockey: options.runningStyleIgnoreJockey,
+      jockeySameVenue: options.jockeySameVenue,
+      keibajoCode: race.keibajoCode,
+    }),
   };
 };
 
@@ -498,6 +782,8 @@ export async function GET(request: Request, context: RouteContext) {
     frameStartYmd: parseDateInput(searchParams.get("frameStart"), defaultStartYmd),
     frameEndYmd: parseDateInput(searchParams.get("frameEnd"), targetYmd),
     jockeySameVenue: searchParams.get("jockeySameVenue") !== "false",
+    runningStyleIgnoreFrame: searchParams.get("runningStyleIgnoreFrame") === "true",
+    runningStyleIgnoreJockey: searchParams.get("runningStyleIgnoreJockey") === "true",
   };
   const runners = await getRaceRunners(source, year, month, day, keibajoCode, raceNumber);
   const payload = await buildRaceTrendPayload(race, runners, options);
