@@ -278,6 +278,201 @@ const uiMessageText = (message: UIMessage | undefined): string =>
     .join("")
     .trim();
 
+const inputMessageText = (message: unknown): string => {
+  if (!isRecord(message)) {
+    return "";
+  }
+  if (typeof message.text === "string") {
+    return message.text.trim();
+  }
+  if (!Array.isArray(message.parts)) {
+    return "";
+  }
+  return message.parts
+    .map((part) => (isRecord(part) && part.type === "text" && typeof part.text === "string" ? part.text : ""))
+    .join("")
+    .trim();
+};
+
+const compactInlineText = (text: string, maxLength: number): string => {
+  const normalized = text.replace(/\s+/gu, " ").trim();
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized;
+};
+
+const buildImmediateReactionText = (request: string): string => {
+  const subject = compactInlineText(request, 34);
+  if (/馬体重|体重|増減|kg/iu.test(request)) {
+    return `「${subject}」について、馬体重と増減の最新値から先に確認しますわ。`;
+  }
+  if (/オッズ|人気|単勝|複勝|馬連|馬単|ワイド|三連|3連|買い目|馬券/iu.test(request)) {
+    return `「${subject}」ですね。人気・オッズと候補馬の関係を見て、買い方までつなげますわ。`;
+  }
+  if (/予想|着順|順位|本命|対抗|穴|勝ち馬|上位|連対/iu.test(request)) {
+    return `「${subject}」を、着順予測・総合評価・リアルタイム情報を合わせて見直しますわ。`;
+  }
+  if (/騎手|枠|傾向|成績|勝率|複勝率|連対率/iu.test(request)) {
+    return `「${subject}」について、該当する傾向データを選んで確認しますわ。`;
+  }
+  if (/なぜ|理由|根拠|どうして|比較|違い/iu.test(request)) {
+    return `「${subject}」の根拠が分かるように、直近ログと関連データを照合しますわ。`;
+  }
+  return `「${subject}」ですね。質問内容に合わせて必要なデータを選び、直接答えますわ。`;
+};
+
+const copyTextToClipboard = async (text: string): Promise<void> => {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.append(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) {
+    throw new Error("clipboard copy failed");
+  }
+};
+
+const roleLabelForReport = (role: RaceAiMessageRole, assistantName: string): string => {
+  if (role === "assistant") {
+    return assistantName;
+  }
+  if (role === "system") {
+    return "システム";
+  }
+  return "ユーザー";
+};
+
+const formatReportPredictionRows = (
+  prediction: RaceAiMessage["prediction"] | undefined,
+): string[] => {
+  if (!prediction || prediction.length === 0) {
+    return [];
+  }
+  return [
+    "  予想表:",
+    ...prediction.map((row) => {
+      const popularity =
+        typeof row.popularity === "number" && Number.isFinite(row.popularity)
+          ? `${row.popularity}番人気`
+          : "-";
+      const odds =
+        typeof row.odds === "number" && Number.isFinite(row.odds) ? `${row.odds.toFixed(1)}倍` : "-";
+      const confidence =
+        typeof row.confidence === "number" && Number.isFinite(row.confidence)
+          ? row.confidence.toFixed(2)
+          : "-";
+      return `  - ${row.rank}位 ${row.horseNumber} ${row.horseName} / ${row.jockeyName} / 人気 ${popularity} / 単勝 ${odds} / 信頼度 ${confidence} / ${row.reason}`;
+    }),
+  ];
+};
+
+const mergeReportMessages = (
+  storedMessages: RaceAiMessage[],
+  currentMessages: RaceAiMessage[],
+): RaceAiMessage[] => {
+  const byId = new Map<string, RaceAiMessage>();
+  for (const message of [...storedMessages, ...currentMessages]) {
+    byId.set(message.id, message);
+  }
+  return Array.from(byId.values()).toSorted((left, right) => {
+    const leftTime = Date.parse(left.createdAt);
+    const rightTime = Date.parse(right.createdAt);
+    if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+      return leftTime - rightTime;
+    }
+    return left.id.localeCompare(right.id);
+  });
+};
+
+const buildReportLogText = ({
+  assistantName,
+  chatMessages,
+  copiedAt,
+  generationStage,
+  generationStatus,
+  instantReaction,
+  modelStatus,
+  raceKey,
+  route,
+  runtimeLogs,
+  storedMessages,
+  thoughtLogs,
+}: {
+  assistantName: string;
+  chatMessages: RaceAiMessage[];
+  copiedAt: string;
+  generationStage: GenerationStage;
+  generationStatus: GenerationStatus;
+  instantReaction: string | null;
+  modelStatus: ModelStatus;
+  raceKey: string;
+  route: string;
+  runtimeLogs: RaceAiRuntimeLog[];
+  storedMessages: RaceAiMessage[];
+  thoughtLogs: RaceAiThoughtLog[];
+}): string => {
+  const messages = mergeReportMessages(storedMessages, chatMessages);
+  const lines = [
+    "# PC-KEIBA Viewer レースAI報告用ログ",
+    `copiedAt: ${copiedAt}`,
+    `raceKey: ${raceKey}`,
+    `route: ${route}`,
+    `modelVersion: ${LATEST_RACE_AI_MODEL.version}`,
+    `modelStatus: ${modelStatus}`,
+    `generationStatus: ${generationStatus}`,
+    `generationStage: ${generationStage}`,
+    "",
+    "## 対話ログ",
+  ];
+  if (messages.length === 0) {
+    lines.push("対話ログはありません。");
+  } else {
+    for (const message of messages) {
+      lines.push(
+        `[${message.createdAt}] ${roleLabelForReport(message.role, assistantName)}:`,
+        message.content,
+        ...formatReportPredictionRows(message.prediction),
+        "",
+      );
+    }
+  }
+  if (instantReaction) {
+    lines.push("## 直近の即時リアクション", instantReaction, "");
+  }
+  lines.push("## 内部根拠ログ");
+  if (thoughtLogs.length === 0) {
+    lines.push("内部根拠ログはありません。");
+  } else {
+    for (const log of thoughtLogs) {
+      lines.push(
+        `[${log.createdAt}] ${log.trigger} / ${log.modelVersion}`,
+        log.content,
+        `dataFingerprint: ${log.dataFingerprint}`,
+        "",
+      );
+    }
+  }
+  lines.push("## 実行ログ");
+  if (runtimeLogs.length === 0) {
+    lines.push("実行ログはありません。");
+  } else {
+    for (const log of runtimeLogs) {
+      lines.push(
+        `[${log.at}] ${log.sequence} ${log.level} +${log.elapsedMs}ms ${log.message}${
+          log.details ? ` ${formatRuntimeLogDetails(log.details)}` : ""
+        }`,
+      );
+    }
+  }
+  return lines.join("\n").trim();
+};
+
 const streamDisplayText = async ({
   abortSignal,
   emit,
@@ -1032,12 +1227,12 @@ const buildRequestGuidance = (request: string, trigger: string): string => {
   ];
   if (bettingRequest) {
     guidance.push(
-      "今回の主目的は馬券相談です。answerの中心を買い目提案にし、着順予想表だけで回答を終えない。",
+      "今回の主目的は馬券相談です。predictionは必ず空配列にし、answerの中心を買い目提案にする。着順予想表で回答しない。",
       "必要データは、出走馬、着順予測、総合スコア、単勝人気・オッズ、リアルタイム出走状況を優先して取得する。",
       "answerには、推奨する馬券種別、馬番号、買い方、1点あたり金額、合計金額、抑えや見送り条件を具体的に書く。",
       "answerは、根拠、推奨買い目、金額、抑えまたは見送り条件の順に整理する。",
       "流し、全流し、マルチ、フォーメーション、ボックスが有効な場合は、その組み合わせを人間がそのまま買える表現で示す。",
-      "predictionは買い目の根拠を補助する表として必要な場合だけ使う。predictionを出す場合も、answerには必ず馬券提案を書く。",
+      "馬券提案の候補順位や根拠はpredictionではなくanswer本文に書く。",
     );
   } else if (predictionRequest) {
     guidance.push(
@@ -1485,8 +1680,8 @@ const buildPrompt = ({
         "- answerには、取得済みツール結果のbodyが何を示しているかを人間向けに解釈して必ず含める。",
         "- 単に「データを取得しました」とだけ書かず、主な項目、注目値、欠損や限界、予想への影響を1〜3文で説明する。",
         "- オッズ、馬体重、出走状況、結果、総合スコア、着順予測、パドック、リアルタイム情報がbodyにある場合は、回答の根拠として具体的に触れる。",
-        "- 馬券相談では、answerの中心を買い目提案にし、着順予想や順位表だけで終えない。",
-        "- 着順予想や馬券提案では、人気と単勝オッズをpredictionに補完し、answerには買い目、馬券種別、馬番号、1点あたり金額、合計金額を具体的に含める。",
+        "- 着順予想では、人気と単勝オッズをpredictionに補完し、answerには判断の要点を含める。",
+        "- 馬券相談では、predictionは空配列にし、answerの中心を買い目提案にする。answerには馬券種別、馬番号、買い方、1点あたり金額、合計金額を具体的に含める。",
         "- APIのJSONキー名をそのまま羅列せず、ユーザーが読める自然な表現へ言い換える。",
       ].join("\n")
     : null;
@@ -1770,6 +1965,10 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const [chatSessionVersion, setChatSessionVersion] = useState(0);
   const [runtimeLogs, setRuntimeLogs] = useState<RaceAiRuntimeLog[]>([]);
   const [chatRequestInFlight, setChatRequestInFlight] = useState(false);
+  const [instantReaction, setInstantReaction] = useState<{ id: string; text: string } | null>(
+    null,
+  );
+  const [reportCopyStatus, setReportCopyStatus] = useState<"copied" | "error" | "idle">("idle");
   const llmRef = useRef<LlmInference | null>(null);
   const autoStartedRaceKeyRef = useRef<string | null>(null);
   const runningRef = useRef(false);
@@ -1793,6 +1992,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const lastUserRequestRef = useRef(DEFAULT_RACE_AI_REQUEST);
   const chatThreadRef = useRef<HTMLDivElement | null>(null);
   const shouldAutoScrollChatRef = useRef(true);
+  const reportCopyStatusTimerRef = useRef<number | null>(null);
   const realtimePayload = useRealtimeRaceSelector((state) => state.payload);
   const realtimeFingerprint = useMemo(
     () => buildRealtimeFingerprint(realtimePayload),
@@ -1890,6 +2090,15 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   useEffect(() => {
     resetRuntimeLogs("race-mounted-or-changed");
   }, [resetRuntimeLogs]);
+
+  useEffect(
+    () => () => {
+      if (reportCopyStatusTimerRef.current !== null) {
+        window.clearTimeout(reportCopyStatusTimerRef.current);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (generationStage === "idle") {
@@ -2536,7 +2745,21 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           formatRetryCount: 0,
           toolResults: [],
         });
-        if (finalResponse.prediction.length === 0 && isPredictionRequest(request, trigger)) {
+        const bettingRequest = isBettingRequest(request);
+        if (bettingRequest && finalResponse.prediction.length > 0) {
+          addRuntimeLog("info", "betting response prediction rows suppressed", {
+            predictionCount: finalResponse.prediction.length,
+          });
+          finalResponse = {
+            ...finalResponse,
+            prediction: [],
+          };
+        }
+        if (
+          !bettingRequest &&
+          finalResponse.prediction.length === 0 &&
+          isPredictionRequest(request, trigger)
+        ) {
           const fallbackPrediction = buildFallbackPredictionRows(data);
           if (fallbackPrediction.length > 0) {
             addRuntimeLog("warn", "model response had no prediction rows; using data fallback", {
@@ -2689,6 +2912,9 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       message: Parameters<typeof sendMessage>[0],
       options?: Parameters<typeof sendMessage>[1],
     ): boolean => {
+      const optionsBody = isRecord(options) && isRecord(options.body) ? options.body : null;
+      const requestRole = optionsBody?.requestRole === "system" ? "system" : "user";
+      const requestText = inputMessageText(message);
       const busy =
         chatRequestInFlightRef.current ||
         generationStatus !== "idle" ||
@@ -2701,6 +2927,12 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
           requestGuard: chatRequestInFlightRef.current,
         });
         return false;
+      }
+      if (requestRole === "user" && requestText) {
+        setInstantReaction({
+          id: createId(),
+          text: buildImmediateReactionText(requestText),
+        });
       }
       chatRequestInFlightRef.current = true;
       setChatRequestInFlight(true);
@@ -2834,6 +3066,8 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       setPrediction([]);
       setAnswer("");
       setError(null);
+      setInstantReaction(null);
+      setReportCopyStatus("idle");
       setModelPartialLength(0);
       setGenerationStatus("idle");
       setRuntimeStage("idle");
@@ -2964,6 +3198,11 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     chatStatus === "submitted" ||
     chatStatus === "streaming";
   const canSubmitChat = !isChatBusy;
+  useEffect(() => {
+    if (!isChatBusy) {
+      setInstantReaction(null);
+    }
+  }, [isChatBusy]);
   const submitUserChatInput = useCallback(() => {
     const value = input.trim();
     if (!value || !canSubmitChat) {
@@ -3064,6 +3303,65 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const debugUrl = `/api/debug/ai-chat?raceKey=${encodeURIComponent(raceKey)}`;
   const serverLogUrl = `/api/races/${props.year}/${props.month}/${props.day}/${props.keibajoCode}/${props.raceNumber}/ai/logs?source=${encodeURIComponent(props.source)}`;
   const debugStatus = chatStatus === "ready" ? generationStatus : chatStatus;
+  const setTemporaryReportCopyStatus = useCallback(
+    (status: "copied" | "error") => {
+      setReportCopyStatus(status);
+      if (reportCopyStatusTimerRef.current !== null) {
+        window.clearTimeout(reportCopyStatusTimerRef.current);
+      }
+      reportCopyStatusTimerRef.current = window.setTimeout(() => {
+        setReportCopyStatus("idle");
+        reportCopyStatusTimerRef.current = null;
+      }, 2_500);
+    },
+    [],
+  );
+  const copyReportLog = useCallback(async () => {
+    const currentChatMessages = chatMessages
+      .map(uiMessageToRaceMessage)
+      .filter((message): message is RaceAiMessage => message !== null);
+    const reportLog = buildReportLogText({
+      assistantName,
+      chatMessages: currentChatMessages,
+      copiedAt: new Date().toISOString(),
+      generationStage,
+      generationStatus,
+      instantReaction: instantReaction?.text ?? null,
+      modelStatus,
+      raceKey,
+      route: `${props.year}/${props.month}/${props.day}/${props.keibajoCode}/${props.raceNumber}`,
+      runtimeLogs: runtimeLogsRef.current,
+      storedMessages: messagesRef.current,
+      thoughtLogs: thoughtLogsRef.current,
+    });
+    try {
+      await copyTextToClipboard(reportLog);
+      setTemporaryReportCopyStatus("copied");
+      addRuntimeLog("info", "race AI report log copied", {
+        reportLength: reportLog.length,
+      });
+    } catch (caught) {
+      setTemporaryReportCopyStatus("error");
+      addRuntimeLog("error", "race AI report log copy failed", {
+        error: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  }, [
+    addRuntimeLog,
+    assistantName,
+    chatMessages,
+    generationStage,
+    generationStatus,
+    instantReaction?.text,
+    modelStatus,
+    props.day,
+    props.keibajoCode,
+    props.month,
+    props.raceNumber,
+    props.year,
+    raceKey,
+    setTemporaryReportCopyStatus,
+  ]);
 
   useEffect(() => {
     const chatThread = chatThreadRef.current;
@@ -3465,6 +3763,29 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
             );
           })
         )}
+        {instantReaction && isChatBusy ? (
+          <article
+            className="race-ai-chat-message assistant race-ai-chat-message-immediate"
+            key={instantReaction.id}
+          >
+            <span className="race-ai-chat-avatar" aria-hidden="true">
+              <Image
+                src={assistantIconUrl}
+                alt=""
+                height={64}
+                loading="eager"
+                unoptimized
+                width={64}
+              />
+            </span>
+            <div className="race-ai-chat-message-body">
+              <span className="race-ai-chat-role">{assistantName}</span>
+              <div className="race-ai-chat-content">
+                <p>{instantReaction.text}</p>
+              </div>
+            </div>
+          </article>
+        ) : null}
         {chatStatus === "submitted" ? (
           <p className="race-ai-stream-status">{chatRuntimeLabel}</p>
         ) : null}
@@ -3519,8 +3840,24 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
       </div>
       <div className="race-ai-reset-actions">
         <button type="button" disabled={!hasRaceAiState} onClick={resetRaceAiState}>
-          このレースのAIログをリセット
+          このレースのログをリセット
         </button>
+      </div>
+      <div className="race-ai-report-actions">
+        <button
+          type="button"
+          disabled={!hasRaceAiState && !isChatBusy && !instantReaction}
+          onClick={copyReportLog}
+        >
+          報告用ログコピー
+        </button>
+        <span className="race-ai-report-copy-status" aria-live="polite">
+          {reportCopyStatus === "copied"
+            ? "報告用ログをコピーしました"
+            : reportCopyStatus === "error"
+              ? "報告用ログをコピーできませんでした"
+              : ""}
+        </span>
       </div>
       <div className="race-ai-chat-options">
         <label>

@@ -455,6 +455,7 @@ export const getRaceTrendHistoricalStarterRows = cache(
             ${normalizeTextSql(sql`ra.kyosomei_fukudai`)},
             '一般競走'
           ) as "raceName",
+          ${normalizeTextSql(sql`ra.toroku_tosu`)} as "runnerCount",
           ${normalizeTextSql(sql`${runnerTable}.wakuban`)} as wakuban,
           ${normalizeTextSql(sql`${runnerTable}.umaban`)} as umaban,
           ${normalizeTextSql(sql`${runnerTable}.bamei`)} as bamei,
@@ -465,7 +466,11 @@ export const getRaceTrendHistoricalStarterRows = cache(
             regexp_replace(coalesce(${runnerTable}.kakutei_chakujun, ''), '[^0-9]', '', 'g'),
             ''
           )::int as "finishPosition",
-          ${normalizeTextSql(sql`${runnerTable}.soha_time`)} as "sohaTime"
+          ${normalizeTextSql(sql`${runnerTable}.soha_time`)} as "sohaTime",
+          ${normalizeTextSql(sql`${runnerTable}.corner_1`)} as "corner1",
+          ${normalizeTextSql(sql`${runnerTable}.corner_2`)} as "corner2",
+          ${normalizeTextSql(sql`${runnerTable}.corner_3`)} as "corner3",
+          ${normalizeTextSql(sql`${runnerTable}.corner_4`)} as "corner4"
         from ${runnerTable}
         join ${raceTable} ra
           on ra.kaisai_nen = ${runnerTable}.kaisai_nen
@@ -487,6 +492,10 @@ export const getRaceTrendHistoricalStarterRows = cache(
               ra.kaisai_nen || ra.kaisai_tsukihi between ${params.frameStartYmd} and ${params.frameEndYmd}
               and ra.keibajo_code = ${race.keibajoCode}
               and ${frameNumberCondition}
+            )
+            or (
+              ra.kaisai_nen || ra.kaisai_tsukihi between ${params.jockeyStartYmd} and ${params.jockeyEndYmd}
+              and (${params.jockeySameVenue} = false or ra.keibajo_code = ${race.keibajoCode})
             )
           )
         order by ra.kaisai_nen desc, ra.kaisai_tsukihi desc, ra.keibajo_code asc, ra.race_bango asc, ${runnerTable}.umaban asc

@@ -79,6 +79,7 @@ export interface RaceTrendStarterRow extends Record<string, unknown> {
   keibajoCode: string;
   raceBango: string;
   raceName: string | null;
+  runnerCount: string | null;
   wakuban: string | null;
   umaban: string | null;
   bamei: string | null;
@@ -87,7 +88,13 @@ export interface RaceTrendStarterRow extends Record<string, unknown> {
   tanshoPopularity: string | null;
   finishPosition: number;
   sohaTime: string | null;
+  corner1: string | null;
+  corner2: string | null;
+  corner3: string | null;
+  corner4: string | null;
 }
+
+export type RaceTrendRunningStyle = "nige" | "senkou" | "sashi" | "oikomi";
 
 export interface RaceTrendDetail {
   source: RaceSource;
@@ -95,6 +102,7 @@ export interface RaceTrendDetail {
   keibajoCode: string;
   raceNumber: string;
   raceName: string | null;
+  runningStyle: RaceTrendRunningStyle | null;
   frameNumber: string | null;
   horseNumber: string | null;
   horseName: string | null;
@@ -109,6 +117,8 @@ export interface RaceTrendRateRow {
   key: string;
   label: string;
   targetHorseNumber?: string | null;
+  targetPopularity?: number | null;
+  targetWinOdds?: number | null;
   starts: number;
   showRate: number;
   quinellaRate: number;
@@ -117,9 +127,24 @@ export interface RaceTrendRateRow {
   details: RaceTrendDetail[];
 }
 
+export interface RaceTrendRunningStyleRow {
+  key: string;
+  targetHorseNumbers: string[];
+  runningStyle: RaceTrendRunningStyle;
+  frameNumber?: string | null;
+  jockeyName?: string | null;
+  starts: number;
+  finishPositionAverage: number | null;
+  popularityMedian: number | null;
+  winOddsMedian: number | null;
+  finishPositionMedian: number | null;
+  details: RaceTrendDetail[];
+}
+
 export interface RaceTrendPayload {
   frameRows: RaceTrendRateRow[];
   jockeyRows: RaceTrendRateRow[];
+  runningStyleRows: RaceTrendRunningStyleRow[];
 }
 
 export interface HorseRaceResult extends Record<string, unknown> {
