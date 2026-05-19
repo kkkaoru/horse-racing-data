@@ -143,7 +143,7 @@ const getApiPath = ({
     jockeyEnd: trendEnd || defaultEndDate,
     frameStart: trendStart || defaultStartDate,
     frameEnd: trendEnd || defaultEndDate,
-    includeRealtimeResults: "false",
+    includeRealtimeResults: "true",
     jockeySameVenue: String(jockeySameVenue),
     runningStyleIgnoreRunningStyle: String(!trendTargets.runningStyle),
     runningStyleIgnoreFrame: String(!trendTargets.frame),
