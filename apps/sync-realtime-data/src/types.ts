@@ -153,6 +153,7 @@ export interface Env {
   REALTIME_DB: D1Database;
   REALTIME_JOBS: Queue<Job>;
   REALTIME_TEST_NOW?: string;
+  RUNNING_STYLE_CACHE_ORIGIN?: string;
   RUNNING_STYLE_JOBS?: Queue<Job>;
   RUNNING_STYLE_D1_WRITE_ENABLED?: string;
   RUNNING_STYLE_MODELS: R2Bucket;

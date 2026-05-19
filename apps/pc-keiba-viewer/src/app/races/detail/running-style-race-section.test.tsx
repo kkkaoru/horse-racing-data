@@ -8,27 +8,27 @@ import type {
   RunningStyleLabel,
 } from "../../../db/corner-running-style-parsers";
 
-const getRaceRunningStylesFromD1Mock = vi.fn<(raceKey: string) => Promise<RaceRunningStyleRow[]>>();
+const getRaceRunningStylesWithCacheMock =
+  vi.fn<
+    (race: {
+      source: string;
+      kaisaiNen: string;
+      kaisaiTsukihi: string;
+      keibajoCode: string;
+      raceBango: string;
+    }) => Promise<RaceRunningStyleRow[]>
+  >();
 const getRunningStyleMetricsForActiveModelMock =
   vi.fn<(category: string) => Promise<{ modelVersion: string; macroF1: number | null } | null>>();
 
 vi.mock("../../../db/corner-running-style-queries", () => ({
-  buildRaceKey: ({
-    source,
-    kaisaiNen,
-    kaisaiTsukihi,
-    keibajoCode,
-    raceBango,
-  }: {
-    source: string;
-    kaisaiNen: string;
-    kaisaiTsukihi: string;
-    keibajoCode: string;
-    raceBango: string;
-  }) => `${source}:${kaisaiNen}${kaisaiTsukihi}:${keibajoCode}:${raceBango}`,
-  getRaceRunningStylesFromD1: (raceKey: string) => getRaceRunningStylesFromD1Mock(raceKey),
   getRunningStyleMetricsForActiveModel: (category: string) =>
     getRunningStyleMetricsForActiveModelMock(category),
+}));
+
+vi.mock("../../../lib/running-style-cache.server", () => ({
+  getRaceRunningStylesWithCache: (race: Parameters<typeof getRaceRunningStylesWithCacheMock>[0]) =>
+    getRaceRunningStylesWithCacheMock(race),
 }));
 
 vi.mock("next/navigation", () => ({
@@ -70,9 +70,9 @@ describe("RunningStyleRaceSection", () => {
   });
 
   test("loads D1 rows and metrics in parallel and renders the section", async () => {
-    getRaceRunningStylesFromD1Mock.mockReset();
+    getRaceRunningStylesWithCacheMock.mockReset();
     getRunningStyleMetricsForActiveModelMock.mockReset();
-    getRaceRunningStylesFromD1Mock.mockResolvedValue([buildRow({})]);
+    getRaceRunningStylesWithCacheMock.mockResolvedValue([buildRow({})]);
     getRunningStyleMetricsForActiveModelMock.mockResolvedValue({
       macroF1: 0.42,
       modelVersion: "jra-rs-v1.0",
@@ -90,14 +90,20 @@ describe("RunningStyleRaceSection", () => {
     expect(html).toContain("脚質予測");
     expect(html).toContain("テストホース");
     expect(html).toContain("jra-rs-v1.0");
-    expect(getRaceRunningStylesFromD1Mock).toHaveBeenCalledWith("jra:20250517:05:11");
+    expect(getRaceRunningStylesWithCacheMock).toHaveBeenCalledWith({
+      kaisaiNen: "2025",
+      kaisaiTsukihi: "0517",
+      keibajoCode: "05",
+      raceBango: "11",
+      source: "jra",
+    });
     expect(getRunningStyleMetricsForActiveModelMock).toHaveBeenCalledWith("jra");
   });
 
   test("renders the empty state when no rows are returned", async () => {
-    getRaceRunningStylesFromD1Mock.mockReset();
+    getRaceRunningStylesWithCacheMock.mockReset();
     getRunningStyleMetricsForActiveModelMock.mockReset();
-    getRaceRunningStylesFromD1Mock.mockResolvedValue([]);
+    getRaceRunningStylesWithCacheMock.mockResolvedValue([]);
     getRunningStyleMetricsForActiveModelMock.mockResolvedValue(null);
     const element = await RunningStyleRaceSection({
       category: "nar",
@@ -113,9 +119,9 @@ describe("RunningStyleRaceSection", () => {
   });
 
   test("renders the empty state when D1 running-style data is unavailable", async () => {
-    getRaceRunningStylesFromD1Mock.mockReset();
+    getRaceRunningStylesWithCacheMock.mockReset();
     getRunningStyleMetricsForActiveModelMock.mockReset();
-    getRaceRunningStylesFromD1Mock.mockRejectedValue(
+    getRaceRunningStylesWithCacheMock.mockRejectedValue(
       new Error("D1_ERROR: no such table: race_running_styles: SQLITE_ERROR"),
     );
     getRunningStyleMetricsForActiveModelMock.mockRejectedValue(new Error("missing model table"));
