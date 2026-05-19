@@ -34,6 +34,14 @@ export interface RunningStyleInferenceState {
   attemptedAt: string | null;
 }
 
+export interface RunningStyleInferenceStateDetail extends RunningStyleInferenceState {
+  completedAt: string | null;
+  expectedHorseCount: number | null;
+  featuresR2Key: string | null;
+  modelVersion: string | null;
+  writtenHorseCount: number | null;
+}
+
 export interface RunningStyleInferenceRace {
   raceKey: string;
   source: "jra" | "nar";
@@ -143,6 +151,41 @@ export const listRunningStyleInferenceStates = async (
     );
   }
   return states;
+};
+
+export const getRunningStyleInferenceState = async (
+  db: D1Database,
+  raceKey: string,
+): Promise<RunningStyleInferenceStateDetail | null> => {
+  const row = await db
+    .prepare(
+      `select race_key, status, attempted_at, features_r2_key, model_version,
+              expected_horse_count, written_horse_count, completed_at
+         from running_style_inference_state
+        where race_key = ?`,
+    )
+    .bind(raceKey)
+    .first<{
+      attempted_at: string | null;
+      completed_at: string | null;
+      expected_horse_count: number | null;
+      features_r2_key: string | null;
+      model_version: string | null;
+      race_key: string;
+      status: RunningStyleInferenceStatus;
+      written_horse_count: number | null;
+    }>();
+  if (row === null) return null;
+  return {
+    attemptedAt: row.attempted_at,
+    completedAt: row.completed_at,
+    expectedHorseCount: row.expected_horse_count === null ? null : Number(row.expected_horse_count),
+    featuresR2Key: row.features_r2_key,
+    modelVersion: row.model_version,
+    raceKey: row.race_key,
+    status: row.status,
+    writtenHorseCount: row.written_horse_count === null ? null : Number(row.written_horse_count),
+  };
 };
 
 export const upsertRunningStylePendingStates = async (

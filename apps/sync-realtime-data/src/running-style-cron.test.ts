@@ -3,7 +3,10 @@ import { expect, test, vi } from "vitest";
 
 import {
   RUNNING_STYLE_INFERENCE_CRON,
+  RUNNING_STYLE_PREWARM_CRON,
+  addDaysToYYYYMMDDInJst,
   formatYYYYMMDDInJst,
+  formatTomorrowYYYYMMDDInJst,
   runRunningStyleCronTick,
   selectRacesNeedingRunningStyleInference,
   type RegisteredRaceRow,
@@ -30,8 +33,17 @@ test("RUNNING_STYLE_INFERENCE_CRON is */10 schedule", () => {
   expect(RUNNING_STYLE_INFERENCE_CRON).toBe("*/10 * * * *");
 });
 
+test("RUNNING_STYLE_PREWARM_CRON runs at 21:00 JST", () => {
+  expect(RUNNING_STYLE_PREWARM_CRON).toBe("0 12 * * *");
+});
+
 test("formatYYYYMMDDInJst formats a UTC instant as JST date", () => {
   expect(formatYYYYMMDDInJst(new Date("2026-05-18T16:00:00Z"))).toBe("20260519");
+});
+
+test("formatTomorrowYYYYMMDDInJst returns the next JST date", () => {
+  expect(formatTomorrowYYYYMMDDInJst(new Date("2026-05-20T12:00:00Z"))).toBe("20260521");
+  expect(addDaysToYYYYMMDDInJst("20260228", 1)).toBe("20260301");
 });
 
 test("runRunningStyleCronTick does not touch Postgres or enqueue when disabled", async () => {

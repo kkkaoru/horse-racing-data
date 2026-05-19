@@ -18,7 +18,16 @@
     "RUNNING_STYLE_D1_WRITE_ENABLED": "1",
   },
   "triggers": {
-    "crons": ["5 0 * * *", "0 4 * * 5", "0 5 * * 5", "0 4 * * 6", "0 5 * * 6", "* * * * *", "*/10 * * * *"],
+    "crons": [
+      "5 0 * * *",
+      "0 4 * * 5",
+      "0 5 * * 5",
+      "0 4 * * 6",
+      "0 5 * * 6",
+      "* * * * *",
+      "*/10 * * * *",
+      "0 12 * * *",
+    ],
   },
   "queues": {
     "producers": [
@@ -29,6 +38,10 @@
       {
         "binding": "PREMIUM_RACE_JOBS",
         "queue": "sync-realtime-data-premium-race-jobs",
+      },
+      {
+        "binding": "RUNNING_STYLE_JOBS",
+        "queue": "sync-realtime-data-running-style-jobs",
       },
     ],
     "consumers": [
@@ -43,6 +56,12 @@
         "max_batch_size": 1,
         "max_batch_timeout": 5,
         "max_concurrency": 4,
+      },
+      {
+        "queue": "sync-realtime-data-running-style-jobs",
+        "max_batch_size": 1,
+        "max_batch_timeout": 5,
+        "max_concurrency": 8,
       },
     ],
   },

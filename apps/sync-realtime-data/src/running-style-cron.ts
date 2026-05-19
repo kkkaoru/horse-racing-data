@@ -22,6 +22,7 @@ import {
 import type { Env, RunningStylePredictionJob } from "./types";
 
 export const RUNNING_STYLE_INFERENCE_CRON = "*/10 * * * *";
+export const RUNNING_STYLE_PREWARM_CRON = "0 12 * * *";
 
 const ENABLED_FLAG = "1";
 const DATE_PAD_WIDTH = 2;
@@ -65,6 +66,17 @@ export const formatYYYYMMDDInJst = (now: Date): string => {
   return `${jst.getUTCFullYear()}${padDatePart(jst.getUTCMonth() + 1)}${padDatePart(jst.getUTCDate())}`;
 };
 
+export const addDaysToYYYYMMDDInJst = (yyyymmdd: string, days: number): string => {
+  const date = new Date(
+    `${yyyymmdd.slice(0, 4)}-${yyyymmdd.slice(4, 6)}-${yyyymmdd.slice(6, 8)}T00:00:00+09:00`,
+  );
+  date.setUTCDate(date.getUTCDate() + days);
+  return formatYYYYMMDDInJst(date);
+};
+
+export const formatTomorrowYYYYMMDDInJst = (now: Date): string =>
+  addDaysToYYYYMMDDInJst(formatYYYYMMDDInJst(now), 1);
+
 const isInferenceEnabled = (env: Env): boolean =>
   env.RUNNING_STYLE_D1_WRITE_ENABLED === ENABLED_FLAG;
 
@@ -97,7 +109,7 @@ const listRegisteredRacesByDate = async (
         where source in ('jra', 'nar')
           and kaisai_nen = ?
           and kaisai_tsukihi = ?
-        order by source, keibajo_code, race_bango`,
+        order by race_start_at_jst, source, keibajo_code, race_bango`,
     )
     .bind(date.slice(0, 4), date.slice(4, 8))
     .all<RegisteredRaceRow>();
@@ -273,7 +285,7 @@ export const planRunningStylePredictionsForDate = async (
   const predictedAt = now.toISOString();
   await upsertRunningStylePendingStates(env.REALTIME_DB, selected.needed, predictedAt);
   await sendPredictionJobs(
-    env.REALTIME_JOBS,
+    env.RUNNING_STYLE_JOBS ?? env.REALTIME_JOBS,
     selected.needed.map((row) => toPredictionJob(row, predictedAt)),
   );
   return {

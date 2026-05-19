@@ -4,6 +4,7 @@
 
 import { getFinishPositionPool } from "./finish-position-lite-pool";
 import {
+  getRunningStyleInferenceState,
   markRunningStyleInferenceCompleted,
   markRunningStyleInferenceFailed,
   markRunningStyleInferenceProcessing,
@@ -25,6 +26,7 @@ export interface RunningStylePredictionJobSummary {
   featuresR2Key: string;
   horseCount: number;
   modelVersion: string;
+  skipped?: boolean;
   writtenCount: number;
 }
 
@@ -36,6 +38,22 @@ export const handleRunningStylePredictionJob = async (
     return null;
   }
   const raceKey = buildRunningStyleRaceKey(job);
+  const state = await getRunningStyleInferenceState(env.REALTIME_DB, raceKey);
+  if (
+    state?.status === "completed" &&
+    state.expectedHorseCount !== null &&
+    state.writtenHorseCount !== null &&
+    state.writtenHorseCount >= state.expectedHorseCount
+  ) {
+    return {
+      featuresR2Key: state.featuresR2Key ?? "",
+      horseCount: state.expectedHorseCount,
+      modelVersion: state.modelVersion ?? "completed",
+      raceKey,
+      skipped: true,
+      writtenCount: state.writtenHorseCount,
+    };
+  }
   await markRunningStyleInferenceProcessing(env.REALTIME_DB, job, new Date().toISOString());
   try {
     const pool = getFinishPositionPool(env);
