@@ -321,6 +321,7 @@ interface RaceTrendRunningStyleTarget {
   horseNumber: string | null;
   jockeyKey: string | null;
   jockeyName: string | null;
+  raceNumber: string | null;
   runningStyle: RaceTrendRunningStyle | null;
 }
 
@@ -328,11 +329,13 @@ const runningStyleGroupKey = (
   value: {
     frameNumber: string | null;
     jockeyKey: string | null;
+    raceNumber: string | null;
     runningStyle: RaceTrendRunningStyle | null;
   },
   options: {
     ignoreFrame: boolean;
     ignoreJockey: boolean;
+    ignoreRaceNumber: boolean;
     ignoreRunningStyle: boolean;
   },
 ): string | null => {
@@ -345,10 +348,14 @@ const runningStyleGroupKey = (
   if (!options.ignoreJockey && !value.jockeyKey) {
     return null;
   }
+  if (!options.ignoreRaceNumber && !value.raceNumber) {
+    return null;
+  }
   return [
     options.ignoreRunningStyle ? "*" : value.runningStyle,
     options.ignoreFrame ? "*" : value.frameNumber,
     options.ignoreJockey ? "*" : value.jockeyKey,
+    options.ignoreRaceNumber ? "*" : value.raceNumber,
   ].join(":");
 };
 
@@ -356,11 +363,13 @@ const runningStyleTargetGroupKey = (
   value: {
     frameNumber: string | null;
     jockeyKey: string | null;
+    raceNumber: string | null;
     runningStyle: RaceTrendRunningStyle | null;
   },
   options: {
     ignoreFrame: boolean;
     ignoreJockey: boolean;
+    ignoreRaceNumber: boolean;
     ignoreRunningStyle: boolean;
   },
 ): string | null =>
@@ -373,11 +382,13 @@ const runningStyleHistoricalGroupKeys = (
   value: {
     frameNumber: string | null;
     jockeyKey: string | null;
+    raceNumber: string | null;
     runningStyle: RaceTrendRunningStyle | null;
   },
   options: {
     ignoreFrame: boolean;
     ignoreJockey: boolean;
+    ignoreRaceNumber: boolean;
     ignoreRunningStyle: boolean;
   },
 ): string[] => {
@@ -422,6 +433,7 @@ const aggregateRunningStyleRows = (
     endYmd: string;
     ignoreFrame: boolean;
     ignoreJockey: boolean;
+    ignoreRaceNumber: boolean;
     ignoreRunningStyle: boolean;
     jockeySameVenue: boolean;
     keibajoCode: string;
@@ -452,6 +464,7 @@ const aggregateRunningStyleRows = (
       {
         frameNumber: normalizeNumberText(row.wakuban),
         jockeyKey: normalizeRaceTrendJockeyName(row.jockeyName),
+        raceNumber: normalizeNumberText(row.raceBango),
         runningStyle,
       },
       options,
@@ -495,6 +508,7 @@ const aggregateRunningStyleRows = (
           runningStyle: target.runningStyle,
           frameNumber: options.ignoreFrame ? null : target.frameNumber,
           jockeyName: options.ignoreJockey ? null : target.jockeyName,
+          raceNumber: options.ignoreRaceNumber ? null : target.raceNumber,
           starts: groupRows.length,
           showRate: groupRows.length > 0 ? (showCount / groupRows.length) * 100 : 0,
           quinellaRate: groupRows.length > 0 ? (quinellaCount / groupRows.length) * 100 : 0,
@@ -516,7 +530,8 @@ const aggregateRunningStyleRows = (
           numeric: true,
         }) ||
         (a.frameNumber ?? "").localeCompare(b.frameNumber ?? "", "ja", { numeric: true }) ||
-        (a.jockeyName ?? "").localeCompare(b.jockeyName ?? "", "ja"),
+        (a.jockeyName ?? "").localeCompare(b.jockeyName ?? "", "ja") ||
+        (a.raceNumber ?? "").localeCompare(b.raceNumber ?? "", "ja", { numeric: true }),
     );
 };
 
@@ -639,6 +654,7 @@ interface RaceTrendBuildOptions {
   jockeyStartYmd: string;
   runningStyleIgnoreFrame: boolean;
   runningStyleIgnoreJockey: boolean;
+  runningStyleIgnoreRaceNumber: boolean;
   runningStyleIgnoreRunningStyle: boolean;
 }
 
@@ -775,6 +791,7 @@ const buildRaceTrendPayload = async (
           horseNumber,
           jockeyKey: normalizeRaceTrendJockeyName(effectiveJockeyName),
           jockeyName: normalizeText(effectiveJockeyName),
+          raceNumber: normalizeNumberText(race.raceBango),
           runningStyle: runningStyle ?? null,
         },
       ];
@@ -831,6 +848,7 @@ const buildRaceTrendPayload = async (
         endYmd: options.jockeyEndYmd,
         ignoreFrame: options.runningStyleIgnoreFrame,
         ignoreJockey: options.runningStyleIgnoreJockey,
+        ignoreRaceNumber: options.runningStyleIgnoreRaceNumber,
         ignoreRunningStyle: options.runningStyleIgnoreRunningStyle,
         jockeySameVenue: options.jockeySameVenue,
         keibajoCode: race.keibajoCode,
@@ -869,6 +887,7 @@ export async function GET(request: Request, context: RouteContext) {
     jockeySameVenue: searchParams.get("jockeySameVenue") !== "false",
     runningStyleIgnoreFrame: searchParams.get("runningStyleIgnoreFrame") === "true",
     runningStyleIgnoreJockey: searchParams.get("runningStyleIgnoreJockey") === "true",
+    runningStyleIgnoreRaceNumber: searchParams.get("runningStyleIgnoreRaceNumber") !== "false",
     runningStyleIgnoreRunningStyle: searchParams.get("runningStyleIgnoreRunningStyle") === "true",
   };
   const runners = await getRaceRunners(source, year, month, day, keibajoCode, raceNumber);

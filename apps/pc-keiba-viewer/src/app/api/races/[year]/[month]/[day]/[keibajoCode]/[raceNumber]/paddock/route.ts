@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 
 import {
+  getPaddockLiveUrl,
   getPaddockState,
   isPaddockAction,
   isPaddockRaceParams,
+  isPaddockRealtimeAvailable,
   updatePaddockState,
 } from "../../../../../../../../../lib/paddock-server";
 
@@ -29,9 +31,11 @@ const getCorsHeaders = (request: Request): Record<string, string> => {
     return {};
   }
   return {
+    "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Allow-Credentials": "true",
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
     "Access-Control-Allow-Origin": origin,
+    "Access-Control-Expose-Headers": "X-Paddock-Live-Url,X-Paddock-Realtime",
     Vary: "Origin",
   };
 };
@@ -45,11 +49,13 @@ export async function GET(request: Request, { params }: PaddockRouteProps) {
   if (!isPaddockRaceParams(raceParams)) {
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }
+  const liveUrl = getPaddockLiveUrl(raceParams);
   return NextResponse.json(await getPaddockState(raceParams), {
     headers: {
       ...getCorsHeaders(request),
       "Cache-Control": "private, max-age=0, no-store",
-      "X-Paddock-Realtime": "0",
+      ...(liveUrl ? { "X-Paddock-Live-Url": liveUrl } : {}),
+      "X-Paddock-Realtime": isPaddockRealtimeAvailable() ? "1" : "0",
     },
   });
 }

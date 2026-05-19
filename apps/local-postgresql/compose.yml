@@ -16,7 +16,7 @@ services:
       - -c
       - max_replication_slots=10
     ports:
-      - "${POSTGRES_HOST_BIND:-0.0.0.0}:${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_HOST_BIND:-0.0.0.0}:${POSTGRES_PORT:-5432}:${PGPORT:-5432}"
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
       - ./initdb:/docker-entrypoint-initdb.d:ro
