@@ -20,6 +20,7 @@ import {
   normalizeJockeyNameForComparison,
 } from "../../../../../../../../../lib/jockey-name";
 import {
+  RACE_TREND_CACHE_REFRESH_PARAM,
   RACE_TREND_CACHE_WARM_PARAM,
   isRaceBeforeTargetRace,
   type RaceTrendCacheOptions,
@@ -29,6 +30,7 @@ import {
   getCachedRaceTrendResponse,
   putRaceTrendCache,
 } from "../../../../../../../../../lib/race-trend-cache.server";
+import { notifyRaceTrendRoom } from "../../../../../../../../../lib/race-trend-room.server";
 import type {
   RaceDetail,
   RaceListItem,
@@ -880,7 +882,8 @@ export async function GET(request: Request, context: RouteContext) {
     year,
   });
   const isCacheWarmRequest = searchParams.get(RACE_TREND_CACHE_WARM_PARAM) === "1";
-  if (!isCacheWarmRequest) {
+  const isCacheRefreshRequest = searchParams.get(RACE_TREND_CACHE_REFRESH_PARAM) === "1";
+  if (!isCacheWarmRequest && !isCacheRefreshRequest) {
     const cachedResponse = await getCachedRaceTrendResponse(cacheKey);
     if (cachedResponse) {
       return cachedResponse;
@@ -890,12 +893,20 @@ export async function GET(request: Request, context: RouteContext) {
   const payload = await buildRaceTrendPayload(race, runners, options);
   const body = JSON.stringify(payload);
   await putRaceTrendCache({ body, cacheKey, race });
+  await notifyRaceTrendRoom(
+    { day, keibajoCode, month, raceNumber, source, year },
+    { cacheKey },
+  ).catch(() => false);
 
   return new Response(body, {
     headers: {
       "Cache-Control": "public, max-age=60",
       "Content-Type": "application/json; charset=utf-8",
-      "X-Race-Trend-Cache": isCacheWarmRequest ? "MISS-STORED-WARM" : "MISS-STORED",
+      "X-Race-Trend-Cache": isCacheWarmRequest
+        ? "MISS-STORED-WARM"
+        : isCacheRefreshRequest
+          ? "MISS-STORED-REFRESH"
+          : "MISS-STORED",
     },
   });
 }
