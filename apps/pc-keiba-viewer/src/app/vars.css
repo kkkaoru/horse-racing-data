@@ -15,6 +15,7 @@
   --value-color-hex-1e40af-44: #1e40af;
   --value-color-hex-26332b-97: #26332b;
   --value-color-hex-2f4437-95: #2f4437;
+  --value-color-hex-333333-115: #333333;
   --value-color-hex-334139-38: #334139;
   --value-color-hex-334155-75: #334155;
   --value-color-hex-3f607c-74: #3f607c;
@@ -206,6 +207,7 @@
   --value-space-1-2s-185: 1.2s;
   --value-space-1-35fr-116: 1.35fr;
   --value-space-1-4s-98: 1.4s;
+  --value-space-1-5em-115: 1.5em;
   --value-space-1-5px-82: 1.5px;
   --value-space-100pct-111: -100%;
   --value-space-100pct-12: 100%;
@@ -427,6 +429,7 @@
   --color-hex-1e40af-44: var(--value-color-hex-1e40af-44);
   --color-hex-26332b-97: var(--value-color-hex-26332b-97);
   --color-hex-2f4437-95: var(--value-color-hex-2f4437-95);
+  --color-hex-333333-115: var(--value-color-hex-333333-115);
   --color-hex-334139-38: var(--value-color-hex-334139-38);
   --color-hex-334155-75: var(--value-color-hex-334155-75);
   --color-hex-3f607c-74: var(--value-color-hex-3f607c-74);
@@ -618,6 +621,7 @@
   --space-1-2s-185: var(--value-space-1-2s-185);
   --space-1-35fr-116: var(--value-space-1-35fr-116);
   --space-1-4s-98: var(--value-space-1-4s-98);
+  --space-1-5em-115: var(--value-space-1-5em-115);
   --space-1-5px-82: var(--value-space-1-5px-82);
   --space-100pct-111: var(--value-space-100pct-111);
   --space-100pct-12: var(--value-space-100pct-12);
