@@ -35,6 +35,7 @@ import {
   type PaddockOfficialRank,
   type PaddockState,
 } from "../../../lib/paddock";
+import { getPaddockLiveUrl, getPaddockRequestUrl } from "../../../lib/paddock-client-url";
 import { getRaceTags } from "../../../lib/race-classification";
 import type { HorseRaceResult, PremiumPaddockBulletin, Runner } from "../../../lib/race-types";
 import {
@@ -148,19 +149,6 @@ const PUBLIC_DETAIL_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
 const OFFICIAL_RANK_OPTIONS: PaddockOfficialRank[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 const PAST_RACE_EDIT_UNLOCK_MS = 10 * 60 * 1000;
 const PADDOCK_REMAINING_MARKER_TOP = 112;
-
-const getPaddockRequestUrl = (path: string): string => path;
-
-const getPaddockLiveUrl = (path: string): string => {
-  const requestUrl = getPaddockRequestUrl(path);
-  if (!requestUrl.startsWith("http")) {
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    return `${protocol}//${window.location.host}${requestUrl}`;
-  }
-  const liveUrl = new URL(requestUrl);
-  liveUrl.protocol = liveUrl.protocol === "http:" ? "ws:" : "wss:";
-  return liveUrl.toString();
-};
 
 const getPastRaceEditSessionKey = ({
   day,

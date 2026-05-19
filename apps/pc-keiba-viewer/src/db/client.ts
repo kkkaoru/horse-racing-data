@@ -13,14 +13,38 @@ type Db = NodePgDatabase<typeof schema>;
 
 const DEFAULT_STATEMENT_TIMEOUT_MS = 15_000;
 const DEFAULT_IDLE_IN_TRANSACTION_TIMEOUT_MS = 15_000;
+const DEFAULT_LOCAL_DATABASE_URL =
+  "postgresql://horse_racing:horse_racing@127.0.0.1:15432/horse_racing";
 
 const isDatabaseTarget = (value: string | undefined): value is DatabaseTarget =>
   value === "local" || value === "neon" || value === "cloudflare";
 
+const isNodeDevelopmentRuntime = (): boolean =>
+  process.env.NODE_ENV === "development" && typeof process.versions?.node === "string";
+
+const shouldUseLocalDbInNodeDev = (databaseTarget: DatabaseTarget): boolean =>
+  databaseTarget === "cloudflare" &&
+  isNodeDevelopmentRuntime() &&
+  process.env.PC_KEIBA_ALLOW_CLOUDFLARE_DB_IN_NEXT_DEV !== "1";
+
 export const getDatabaseTarget = (): DatabaseTarget =>
   isDatabaseTarget(process.env.PC_KEIBA_DATABASE_TARGET)
-    ? process.env.PC_KEIBA_DATABASE_TARGET
+    ? shouldUseLocalDbInNodeDev(process.env.PC_KEIBA_DATABASE_TARGET)
+      ? "local"
+      : process.env.PC_KEIBA_DATABASE_TARGET
     : "local";
+
+const normalizeLocalConnectionString = (connectionString: string): string => {
+  try {
+    const url = new URL(connectionString);
+    if (url.hostname === "localhost") {
+      url.hostname = "127.0.0.1";
+    }
+    return url.toString();
+  } catch {
+    return connectionString;
+  }
+};
 
 const getCloudflareConnectionString = (): string => {
   const { env } = getCloudflareContext();
@@ -38,14 +62,16 @@ const getConnectionString = (databaseTarget: DatabaseTarget): string => {
     return getCloudflareConnectionString();
   }
 
-  const connectionString =
-    databaseTarget === "neon"
-      ? process.env.DATABASE_URL_NEON
-      : (process.env.DATABASE_URL_LOCAL ?? process.env.DATABASE_URL);
+  if (databaseTarget === "local") {
+    return normalizeLocalConnectionString(
+      process.env.DATABASE_URL_LOCAL ?? DEFAULT_LOCAL_DATABASE_URL,
+    );
+  }
+
+  const connectionString = process.env.DATABASE_URL_NEON;
 
   if (!connectionString) {
-    const envName = databaseTarget === "neon" ? "DATABASE_URL_NEON" : "DATABASE_URL_LOCAL";
-    throw new Error(`${envName} is required for PC_KEIBA_DATABASE_TARGET=${databaseTarget}.`);
+    throw new Error("DATABASE_URL_NEON is required for PC_KEIBA_DATABASE_TARGET=neon.");
   }
 
   return connectionString;
@@ -54,9 +80,12 @@ const getConnectionString = (databaseTarget: DatabaseTarget): string => {
 const globalForDb = globalThis as typeof globalThis & {
   pcKeibaViewerPools?: Partial<Record<DatabaseTarget, Pool>>;
   pcKeibaViewerDbs?: Partial<Record<DatabaseTarget, Db>>;
+  pcKeibaViewerConnectionStrings?: Partial<Record<DatabaseTarget, string>>;
 };
 
-const getPoolOptions = (databaseTarget: DatabaseTarget): ConstructorParameters<typeof Pool>[0] => {
+type PoolOptions = NonNullable<ConstructorParameters<typeof Pool>[0]>;
+
+const getPoolOptions = (databaseTarget: DatabaseTarget): PoolOptions => {
   const statementTimeoutMs = Number(process.env.PC_KEIBA_DB_STATEMENT_TIMEOUT_MS);
   const idleInTransactionTimeoutMs = Number(process.env.PC_KEIBA_DB_IDLE_IN_TRANSACTION_TIMEOUT_MS);
   return {
@@ -86,14 +115,25 @@ export const getDb = (): Db => {
     return getCloudflareDb();
   }
 
+  const poolOptions = getPoolOptions(databaseTarget);
   const existingDb = globalForDb.pcKeibaViewerDbs?.[databaseTarget];
+  const existingConnectionString = globalForDb.pcKeibaViewerConnectionStrings?.[databaseTarget];
 
-  if (existingDb) {
+  if (existingDb && existingConnectionString === poolOptions.connectionString) {
     return existingDb;
   }
 
   const existingPool = globalForDb.pcKeibaViewerPools?.[databaseTarget];
-  const pool = existingPool ?? new Pool(getPoolOptions(databaseTarget));
+  if (existingPool && existingConnectionString !== poolOptions.connectionString) {
+    void existingPool.end().catch(() => {
+      // Best effort during dev HMR when the selected DB connection changed.
+    });
+  }
+
+  const pool =
+    existingPool && existingConnectionString === poolOptions.connectionString
+      ? existingPool
+      : new Pool(poolOptions);
   const createdDb = drizzle(pool, { schema });
 
   globalForDb.pcKeibaViewerPools = {
@@ -103,6 +143,10 @@ export const getDb = (): Db => {
   globalForDb.pcKeibaViewerDbs = {
     ...globalForDb.pcKeibaViewerDbs,
     [databaseTarget]: createdDb,
+  };
+  globalForDb.pcKeibaViewerConnectionStrings = {
+    ...globalForDb.pcKeibaViewerConnectionStrings,
+    [databaseTarget]: poolOptions.connectionString,
   };
 
   return createdDb;

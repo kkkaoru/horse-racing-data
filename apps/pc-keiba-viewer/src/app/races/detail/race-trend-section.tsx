@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { RaceSource } from "../../../lib/codes";
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
@@ -19,7 +19,7 @@ const RACE_TREND_RETRY_OPTIONS = {
   maxDelayMs: 4000,
 } as const;
 
-const TREND_TARGET_KEYS = ["runningStyle", "frame", "jockey"] as const;
+const TREND_TARGET_KEYS = ["runningStyle", "frame", "jockey", "raceNumber"] as const;
 
 type TrendTargetKey = (typeof TREND_TARGET_KEYS)[number];
 type TrendTargets = Record<TrendTargetKey, boolean>;
@@ -39,12 +39,14 @@ const DEFAULT_TREND_TARGETS: TrendTargets = {
   runningStyle: true,
   frame: true,
   jockey: true,
+  raceNumber: false,
 };
 
 const TREND_TARGET_LABELS: Record<TrendTargetKey, string> = {
   runningStyle: "脚質",
   frame: "枠",
   jockey: "騎手",
+  raceNumber: "レース番号",
 };
 
 const RUNNING_STYLE_LABELS: Record<RaceTrendRunningStyle, string> = {
@@ -146,6 +148,7 @@ const getApiPath = ({
     runningStyleIgnoreRunningStyle: String(!trendTargets.runningStyle),
     runningStyleIgnoreFrame: String(!trendTargets.frame),
     runningStyleIgnoreJockey: String(!trendTargets.jockey),
+    runningStyleIgnoreRaceNumber: String(!trendTargets.raceNumber),
   });
   return `/api/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/trends?${params.toString()}`;
 };
@@ -184,7 +187,8 @@ function RaceTrendTable({
     8 +
     (trendTargets.frame ? 1 : 0) +
     (trendTargets.runningStyle ? 1 : 0) +
-    (trendTargets.jockey ? 1 : 0);
+    (trendTargets.jockey ? 1 : 0) +
+    (trendTargets.raceNumber ? 1 : 0);
 
   useEffect(() => {
     setExpandedKey(null);
@@ -203,6 +207,7 @@ function RaceTrendTable({
             {trendTargets.frame ? <col className="race-trend-col-frame" /> : null}
             {trendTargets.runningStyle ? <col className="race-trend-col-running-style" /> : null}
             {trendTargets.jockey ? <col className="race-trend-col-jockey" /> : null}
+            {trendTargets.raceNumber ? <col className="race-trend-col-race-number" /> : null}
             <col className="race-trend-col-rate" />
             <col className="race-trend-col-rate" />
             <col className="race-trend-col-rate" />
@@ -229,6 +234,11 @@ function RaceTrendTable({
               {trendTargets.jockey ? (
                 <th>
                   <TrendHeaderLabel>騎手</TrendHeaderLabel>
+                </th>
+              ) : null}
+              {trendTargets.raceNumber ? (
+                <th>
+                  <TrendHeaderLabel>R</TrendHeaderLabel>
                 </th>
               ) : null}
               <th>
@@ -274,6 +284,11 @@ function RaceTrendTable({
                   {trendTargets.jockey ? (
                     <td>
                       <span className="race-trend-skeleton race-trend-skeleton-name" />
+                    </td>
+                  ) : null}
+                  {trendTargets.raceNumber ? (
+                    <td>
+                      <span className="race-trend-skeleton race-trend-skeleton-count" />
                     </td>
                   ) : null}
                   <td>
@@ -346,7 +361,8 @@ function RowFragment({
     8 +
     (trendTargets.frame ? 1 : 0) +
     (trendTargets.runningStyle ? 1 : 0) +
-    (trendTargets.jockey ? 1 : 0);
+    (trendTargets.jockey ? 1 : 0) +
+    (trendTargets.raceNumber ? 1 : 0);
   const detailRows = useMemo(() => sortDetailsByLatestRace(row.details), [row.details]);
 
   return (
@@ -368,6 +384,7 @@ function RowFragment({
         {trendTargets.frame ? <td>{row.frameNumber ?? "-"}</td> : null}
         {trendTargets.runningStyle ? <td>{formatRunningStyle(row.runningStyle)}</td> : null}
         {trendTargets.jockey ? <td className="stats-name-cell">{row.jockeyName ?? "-"}</td> : null}
+        {trendTargets.raceNumber ? <td>{formatRaceNumber(row.raceNumber)}</td> : null}
         <td>{formatRate(row.showRate)}</td>
         <td>{formatRate(row.quinellaRate)}</td>
         <td>{formatRate(row.winRate)}</td>
@@ -456,6 +473,7 @@ export function RaceTrendSection({
   const [trendTargets, setTrendTargets] = useState<TrendTargets>(DEFAULT_TREND_TARGETS);
   const [rows, setRows] = useState<RaceTrendRunningStyleRow[]>([]);
   const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
+  const fetchSequenceRef = useRef(0);
 
   const toggleTrendTarget = useCallback((key: TrendTargetKey) => {
     setTrendTargets((current) => ({
@@ -465,7 +483,7 @@ export function RaceTrendSection({
   }, []);
 
   const fetchTrendRows = useCallback(
-    async (signal?: AbortSignal) => {
+    async (requestId: number) => {
       setStatus("loading");
       try {
         const response = await fetchWithRetry(
@@ -483,7 +501,7 @@ export function RaceTrendSection({
             trendTargets,
             year,
           }),
-          { cache: "no-store", signal },
+          { cache: "no-store" },
           RACE_TREND_RETRY_OPTIONS,
         );
         if (!response.ok) {
@@ -493,10 +511,13 @@ export function RaceTrendSection({
         if (!isRaceTrendPayload(body)) {
           throw new Error("invalid race trend payload");
         }
+        if (fetchSequenceRef.current !== requestId) {
+          return;
+        }
         setRows(body.runningStyleRows);
         setStatus("idle");
       } catch {
-        if (signal?.aborted) {
+        if (fetchSequenceRef.current !== requestId) {
           return;
         }
         setRows([]);
@@ -520,10 +541,13 @@ export function RaceTrendSection({
   );
 
   useEffect(() => {
-    const controller = new AbortController();
-    void fetchTrendRows(controller.signal);
+    const requestId = fetchSequenceRef.current + 1;
+    fetchSequenceRef.current = requestId;
+    void fetchTrendRows(requestId);
     return () => {
-      controller.abort();
+      if (fetchSequenceRef.current === requestId) {
+        fetchSequenceRef.current += 1;
+      }
     };
   }, [fetchTrendRows]);
 

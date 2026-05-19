@@ -5506,7 +5506,7 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 }
 
 .race-trend-table.aggregate {
-  min-width: var(--space-980px-171);
+  min-width: var(--space-1040px-193);
   table-layout: fixed;
   width: var(--space-100pct-12);
 }
@@ -5536,6 +5536,10 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 
 .race-trend-col-jockey {
   width: var(--space-112px-104);
+}
+
+.race-trend-col-race-number {
+  width: var(--space-56px-165);
 }
 
 .race-trend-col-market {

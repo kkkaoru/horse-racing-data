@@ -133,6 +133,7 @@ export interface RaceTrendRunningStyleRow {
   runningStyle: RaceTrendRunningStyle | null;
   frameNumber?: string | null;
   jockeyName?: string | null;
+  raceNumber?: string | null;
   starts: number;
   showRate: number;
   quinellaRate: number;

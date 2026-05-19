@@ -2090,26 +2090,25 @@ export const getRaceCourseInfo = cache(
   },
 );
 
-export const getHorseRaceResults = cache(
-  async (
-    source: RaceSource,
-    year: string,
-    month: string,
-    day: string,
-    keibajoCode: string,
-    raceNumber: string,
-    sourceScope: RaceSource | "all" = "all",
-  ): Promise<HorseRaceResult[]> => {
-    return withDbQueryCache(
-      ["getHorseRaceResults", source, year, month, day, keibajoCode, raceNumber, sourceScope],
-      async () => {
-        const currentRunnerTable = source === "jra" ? jvdSe : nvdSe;
-        const includeJraHistory = sourceScope === "all" || sourceScope === "jra";
-        const includeNarHistory = sourceScope === "all" || sourceScope === "nar";
-        const monthDay = `${month}${day}`;
-        const raceDate = `${year}${monthDay}`;
+export const getHorseRaceResults = async (
+  source: RaceSource,
+  year: string,
+  month: string,
+  day: string,
+  keibajoCode: string,
+  raceNumber: string,
+  sourceScope: RaceSource | "all" = "all",
+): Promise<HorseRaceResult[]> => {
+  return withDbQueryCache(
+    ["getHorseRaceResults", source, year, month, day, keibajoCode, raceNumber, sourceScope],
+    async () => {
+      const currentRunnerTable = source === "jra" ? jvdSe : nvdSe;
+      const includeJraHistory = sourceScope === "all" || sourceScope === "jra";
+      const includeNarHistory = sourceScope === "all" || sourceScope === "nar";
+      const monthDay = `${month}${day}`;
+      const raceDate = `${year}${monthDay}`;
 
-        const result = await getDb().execute<HorseRaceResult>(sql`
+      const result = await getDb().execute<HorseRaceResult>(sql`
       with current_horses as (
         select
           umaban as "currentUmaban",
@@ -2345,27 +2344,25 @@ export const getHorseRaceResults = cache(
       from history
       order by "currentUmaban"::int asc, "kaisaiNen" desc, "kaisaiTsukihi" desc, "raceBango" desc
     `);
-
-        const rowsByRaceKey = new Map<string, HorseRaceResult>();
-        for (const row of result.rows) {
-          const raceKey = [
-            row.currentUmaban,
-            row.kaisaiNen,
-            row.kaisaiTsukihi,
-            row.keibajoCode,
-            row.raceBango,
-            row.kettoTorokuBango,
-          ].join("-");
-          if (!rowsByRaceKey.has(raceKey)) {
-            rowsByRaceKey.set(raceKey, row);
-          }
+      const rowsByRaceKey = new Map<string, HorseRaceResult>();
+      for (const row of result.rows) {
+        const raceKey = [
+          row.currentUmaban,
+          row.kaisaiNen,
+          row.kaisaiTsukihi,
+          row.keibajoCode,
+          row.raceBango,
+          row.kettoTorokuBango,
+        ].join("-");
+        if (!rowsByRaceKey.has(raceKey)) {
+          rowsByRaceKey.set(raceKey, row);
         }
+      }
 
-        return [...rowsByRaceKey.values()];
-      },
-    );
-  },
-);
+      return [...rowsByRaceKey.values()];
+    },
+  );
+};
 
 const parseNumericText = (value: string | null | undefined, emptyValue: string): number | null => {
   const cleaned = value?.trim() ?? "";
