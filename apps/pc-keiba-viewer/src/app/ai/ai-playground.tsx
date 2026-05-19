@@ -58,6 +58,7 @@ let sharedAiPlaygroundModelPromise: Promise<LlmInference> | null = null;
 
 const WASM_BASE_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-genai@0.10.27/wasm";
 const LOCAL_MOCK_SEARCH_PARAM = "mock";
+const FORCE_MODEL_LOAD_SEARCH_PARAM = "forceModelLoad";
 const DEBUG_LOG_LIMIT = 300;
 const DEBUG_HEARTBEAT_INTERVAL_MS = 3_000;
 const DEBUG_FLUSH_DEBOUNCE_MS = 250;
@@ -65,6 +66,8 @@ const MODEL_PROGRESS_LOG_STEP = 256;
 const MODEL_HEAD_TIMEOUT_MS = 10_000;
 const DEBUG_TEXT_LIMIT = 2_000;
 const DEBUG_SAMPLE_TEXT_LIMIT = 240;
+const MOBILE_MODEL_RUNTIME_BLOCK_MESSAGE =
+  "iPhoneなどのモバイルブラウザでは、AIモデルを直接読み込むとページが強制終了することがあります。このページではモデルの直接読み込みを停止しています。";
 
 const createId = (): string => `${Date.now().toString(36)}-${crypto.randomUUID()}`;
 
@@ -333,6 +336,28 @@ const isMockMode = (): boolean =>
   isLocalhostBrowser() &&
   new URLSearchParams(window.location.search).get(LOCAL_MOCK_SEARCH_PARAM) === "1";
 
+const isLikelyMobileBrowser = (): boolean => {
+  if (typeof navigator === "undefined") {
+    return false;
+  }
+  const userAgent = navigator.userAgent;
+  return (
+    /Android|iPad|iPhone|iPod/iu.test(userAgent) ||
+    (/Macintosh/iu.test(userAgent) && navigator.maxTouchPoints > 1)
+  );
+};
+
+const isForcedModelLoadEnabled = (): boolean =>
+  typeof window !== "undefined" &&
+  new URLSearchParams(window.location.search).get(FORCE_MODEL_LOAD_SEARCH_PARAM) === "1";
+
+const getModelRuntimeBlockReason = (): string | null => {
+  if (typeof window === "undefined" || isMockMode() || isForcedModelLoadEnabled()) {
+    return null;
+  }
+  return isLikelyMobileBrowser() ? MOBILE_MODEL_RUNTIME_BLOCK_MESSAGE : null;
+};
+
 const statusLabel = (status: RaceAiModelState["status"] | undefined): string => {
   if (status === "downloaded") {
     return "ダウンロード済み";
@@ -519,6 +544,7 @@ export function AiPlayground() {
   const [debugFlushError, setDebugFlushError] = useState<string | null>(null);
   const [settings, setSettings] = useState<RaceAiSettings | null>(null);
   const [copyLogStatus, setCopyLogStatus] = useState<string | null>(null);
+  const [modelRuntimeBlockReason, setModelRuntimeBlockReason] = useState<string | null>(null);
   const llmRef = useRef<LlmInference | null>(null);
   const sessionIdRef = useRef("");
   const debugLogsRef = useRef<AiPlaygroundDebugLog[]>([]);
@@ -680,10 +706,19 @@ export function AiPlayground() {
       return undefined;
     }
     setSupportState("supported");
-    setStatusMessage("AIを読み込めます。");
+    const runtimeBlockReason = getModelRuntimeBlockReason();
+    setModelRuntimeBlockReason(runtimeBlockReason);
+    setStatusMessage(runtimeBlockReason ?? "AIを読み込めます。");
     addDebugLog("info", "support check completed", {
+      modelRuntimeBlocked: Boolean(runtimeBlockReason),
       supportState: "supported",
     });
+    if (runtimeBlockReason) {
+      addDebugLog("warn", "model runtime blocked", {
+        reason: runtimeBlockReason,
+        userAgent: navigator.userAgent,
+      });
+    }
     refreshModelState();
     const unsubscribe = subscribeRaceAiModelDownloads(refreshModelState);
     return () => {
@@ -702,6 +737,16 @@ export function AiPlayground() {
       setModelStatus("ready");
       setStatusMessage("localhost mockでAI SDKの応答表示を確認できます。");
       addDebugLog("info", "ensure model skipped for mock mode");
+      return null;
+    }
+    const runtimeBlockReason = getModelRuntimeBlockReason();
+    if (runtimeBlockReason) {
+      setModelRuntimeBlockReason(runtimeBlockReason);
+      setModelStatus("idle");
+      setStatusMessage(runtimeBlockReason);
+      addDebugLog("warn", "ensure model blocked", {
+        reason: runtimeBlockReason,
+      });
       return null;
     }
     if (llmRef.current) {
@@ -846,8 +891,7 @@ export function AiPlayground() {
   }, [addDebugLog, refreshModelState]);
 
   useEffect(() => {
-    const shouldAutoInitialize =
-      isMockMode() || settings?.consent === "granted" || modelState?.status === "downloaded";
+    const shouldAutoInitialize = isMockMode();
     if (supportState !== "supported" || autoInitializeStartedRef.current || !shouldAutoInitialize) {
       return;
     }
@@ -1432,17 +1476,21 @@ export function AiPlayground() {
             </div>
           </div>
         ) : null}
-        <p className="race-ai-readiness-note">{statusMessage}</p>
+        <p className="race-ai-readiness-note">{modelRuntimeBlockReason ?? statusMessage}</p>
         <div className="race-ai-actions">
           <button
             type="button"
-            disabled={modelStatus === "loading" || isSending}
+            disabled={Boolean(modelRuntimeBlockReason) || modelStatus === "loading" || isSending}
             onClick={() => {
               addDebugLog("info", "manual model load clicked");
               void ensureModel().catch(() => {});
             }}
           >
-            {modelStatus === "loading" ? "読み込み中" : "AIを読み込む"}
+            {modelRuntimeBlockReason
+              ? "この端末では読み込み不可"
+              : modelStatus === "loading"
+                ? "読み込み中"
+                : "AIを読み込む"}
           </button>
           <button
             type="button"
@@ -1465,7 +1513,13 @@ export function AiPlayground() {
       <div className="race-ai-runtime-panel" aria-live="polite">
         <span>AI状態</span>
         <strong>
-          {isSending ? statusMessage : modelStatus === "loading" ? "AIを読み込み中" : "待機中"}
+          {modelRuntimeBlockReason
+            ? "モデル読み込み停止"
+            : isSending
+              ? statusMessage
+              : modelStatus === "loading"
+                ? "AIを読み込み中"
+                : "待機中"}
         </strong>
         {modelPartialLength > 0 || debugEnabled ? (
           <small>
@@ -1520,7 +1574,10 @@ export function AiPlayground() {
             }}
           />
         </label>
-        <button type="submit" disabled={isSending || !input.trim()}>
+        <button
+          type="submit"
+          disabled={Boolean(modelRuntimeBlockReason) || isSending || !input.trim()}
+        >
           {isSending ? "送信中" : "送信"}
         </button>
       </form>
