@@ -1,7 +1,17 @@
 import "fake-indexeddb/auto";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { deleteRaceAiLog, getRaceAiLog, saveRaceAiLog } from "./race-ai-storage";
+import {
+  deleteCachedModelParts,
+  deleteRaceAiLog,
+  getRaceAiLog,
+  listAllCachedModelPartInfos,
+  listCachedModelPartInfos,
+  loadCachedModelPart,
+  modelPartCacheKey,
+  saveCachedModelPart,
+  saveRaceAiLog,
+} from "./race-ai-storage";
 
 const resetIndexedDb = async (): Promise<void> => {
   await new Promise<void>((resolve, reject) => {
@@ -78,5 +88,62 @@ describe("race ai storage", () => {
       raceKey: "nar:20260518:35:02",
       thoughtLogs: [],
     });
+  });
+
+  it("stores, lists, loads, and deletes model download parts", async () => {
+    const key = modelPartCacheKey({
+      end: 3,
+      modelCacheKey: "model-a",
+      partIndex: 0,
+      start: 0,
+    });
+    await saveCachedModelPart({
+      buffer: new Uint8Array([1, 2, 3, 4]),
+      end: 3,
+      key,
+      modelCacheKey: "model-a",
+      modelVersion: "v-test",
+      partIndex: 0,
+      sourceUrl: "/api/models/test",
+      start: 0,
+      totalBytes: 8,
+    });
+    await saveCachedModelPart({
+      buffer: new Uint8Array([5, 6, 7, 8]),
+      end: 7,
+      key: modelPartCacheKey({
+        end: 7,
+        modelCacheKey: "model-b",
+        partIndex: 1,
+        start: 4,
+      }),
+      modelCacheKey: "model-b",
+      modelVersion: "v-test",
+      partIndex: 1,
+      sourceUrl: "/api/models/test",
+      start: 4,
+      totalBytes: 8,
+    });
+
+    expect(await listCachedModelPartInfos("model-a")).toMatchObject([
+      {
+        end: 3,
+        key,
+        modelCacheKey: "model-a",
+        partIndex: 0,
+        size: 4,
+        start: 0,
+        totalBytes: 8,
+      },
+    ]);
+    expect(await listAllCachedModelPartInfos()).toHaveLength(2);
+    expect(
+      Array.from(new Uint8Array((await loadCachedModelPart(key)) ?? new ArrayBuffer(0))),
+    ).toEqual([1, 2, 3, 4]);
+
+    await deleteCachedModelParts("model-a");
+
+    expect(await listCachedModelPartInfos("model-a")).toEqual([]);
+    expect(await listCachedModelPartInfos("model-b")).toHaveLength(1);
   });
 });

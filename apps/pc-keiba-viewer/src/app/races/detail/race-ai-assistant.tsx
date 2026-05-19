@@ -2649,7 +2649,9 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
             ? "ダウンロード済み"
             : isModelDownloading
               ? `ダウンロード ${progressLabel}`
-              : "未ダウンロード";
+              : modelState?.status === "partial"
+                ? `途中まで保存 ${progressLabel}`
+                : "未ダウンロード";
   const dataAvailabilityLabel =
     dataReadinessStatus === "loading"
       ? "データ構造を確認中"

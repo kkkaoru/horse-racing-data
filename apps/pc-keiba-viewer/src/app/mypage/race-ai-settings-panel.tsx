@@ -44,6 +44,9 @@ const statusLabel = (state: RaceAiModelState): string => {
   if (state.status === "downloading") {
     return "ダウンロード中";
   }
+  if (state.status === "partial") {
+    return "途中まで保存";
+  }
   if (state.cachedAt) {
     return "保存済み / 利用不可";
   }
@@ -54,7 +57,7 @@ const progressLabel = (state: RaceAiModelState): string => {
   if (state.status === "downloaded") {
     return "100%";
   }
-  if (state.status !== "downloading") {
+  if (state.status !== "downloading" && state.status !== "partial") {
     return "-";
   }
   return state.progress === null ? "取得中" : `${Math.round(state.progress * 100)}%`;
@@ -77,7 +80,7 @@ const attemptLabel = (state: RaceAiModelState): string | null =>
   state.attempt && state.maxAttempts ? `試行 ${state.attempt}/${state.maxAttempts}` : null;
 
 const isCachedModelDeleteAction = (state: RaceAiModelState): boolean =>
-  state.status === "downloaded" || (state.status !== "downloading" && state.cachedAt !== null);
+  state.status === "downloaded" || (state.status === "not-downloaded" && state.cachedAt !== null);
 
 const isWebGpuSupported = (): boolean => typeof navigator !== "undefined" && "gpu" in navigator;
 
@@ -178,11 +181,15 @@ export function RaceAiSettingsPanel() {
     setSettings(nextSettings);
   };
 
+  const deleteModelState = (state: RaceAiModelState) => {
+    if (window.confirm(DELETE_MODEL_CONFIRM_MESSAGE)) {
+      void deleteRaceAiModel(state.model);
+    }
+  };
+
   const runModelAction = (state: RaceAiModelState) => {
     if (isCachedModelDeleteAction(state)) {
-      if (window.confirm(DELETE_MODEL_CONFIRM_MESSAGE)) {
-        void deleteRaceAiModel(state.model);
-      }
+      deleteModelState(state);
       return;
     }
     if (state.status === "downloading") {
@@ -348,13 +355,22 @@ export function RaceAiSettingsPanel() {
                       {attemptLabel(state) ? ` / ${attemptLabel(state)}` : ""}
                     </small>
                   </span>
-                  <button type="button" onClick={() => runModelAction(state)}>
-                    {isCachedModelDeleteAction(state)
-                      ? "削除"
-                      : state.status === "downloading"
-                        ? "中止"
-                        : "ダウンロード"}
-                  </button>
+                  <div className="mypage-ai-model-actions">
+                    <button type="button" onClick={() => runModelAction(state)}>
+                      {isCachedModelDeleteAction(state)
+                        ? "削除"
+                        : state.status === "downloading"
+                          ? "中止"
+                          : state.status === "partial"
+                            ? "再開"
+                            : "ダウンロード"}
+                    </button>
+                    {state.status === "partial" ? (
+                      <button type="button" onClick={() => deleteModelState(state)}>
+                        削除
+                      </button>
+                    ) : null}
+                  </div>
                   {state.error ? <p className="mypage-ai-model-error">{state.error}</p> : null}
                 </div>
               ))}

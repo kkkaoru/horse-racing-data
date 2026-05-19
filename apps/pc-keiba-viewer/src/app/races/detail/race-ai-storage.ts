@@ -1,8 +1,9 @@
 "use client";
 
 const DB_NAME = "pc-keiba-race-ai";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const LOG_STORE = "raceLogs";
+const MODEL_PART_STORE = "modelPartCache";
 const MODEL_STORE = "modelCache";
 const SETTINGS_STORAGE_KEY = "pc-keiba-race-ai-settings-v1";
 const SETTINGS_EVENT_NAME = "pc-keiba-race-ai-settings";
@@ -54,7 +55,23 @@ interface StoredModel {
   cachedAt: string;
   key: string;
   modelVersion: string;
+  size?: number;
   sourceUrl: string;
+}
+
+interface StoredModelPart {
+  blob?: Blob;
+  cachedAt: string;
+  data?: ArrayBuffer;
+  end: number;
+  key: string;
+  modelCacheKey: string;
+  modelVersion: string;
+  partIndex: number;
+  size?: number;
+  sourceUrl: string;
+  start: number;
+  totalBytes: number;
 }
 
 export interface RaceAiCachedModelInfo {
@@ -63,6 +80,19 @@ export interface RaceAiCachedModelInfo {
   modelVersion: string;
   size: number | null;
   sourceUrl: string;
+}
+
+export interface RaceAiCachedModelPartInfo {
+  cachedAt: string;
+  end: number;
+  key: string;
+  modelCacheKey: string;
+  modelVersion: string;
+  partIndex: number;
+  size: number | null;
+  sourceUrl: string;
+  start: number;
+  totalBytes: number;
 }
 
 export const RACE_AI_USAGE_CONFIRM_MESSAGE =
@@ -91,6 +121,9 @@ const openRaceAiDb = (): Promise<IDBDatabase> =>
       }
       if (!db.objectStoreNames.contains(MODEL_STORE)) {
         db.createObjectStore(MODEL_STORE, { keyPath: "key" });
+      }
+      if (!db.objectStoreNames.contains(MODEL_PART_STORE)) {
+        db.createObjectStore(MODEL_PART_STORE, { keyPath: "key" });
       }
     });
     request.addEventListener("success", () => {
@@ -228,6 +261,29 @@ export const loadCachedModel = async (key: string): Promise<ArrayBuffer | null> 
   return row ? row.blob.arrayBuffer() : null;
 };
 
+const storedBlobSize = (row: { blob: Blob; size?: number }): number | null => {
+  if (typeof row.size === "number" && Number.isFinite(row.size) && row.size > 0) {
+    return row.size;
+  }
+  return row.blob.size || null;
+};
+
+const storedModelPartSize = (row: StoredModelPart): number | null => {
+  if (typeof row.size === "number" && Number.isFinite(row.size) && row.size > 0) {
+    return row.size;
+  }
+  if (row.data) {
+    return row.data.byteLength;
+  }
+  return row.blob?.size || null;
+};
+
+const toArrayBufferCopy = (buffer: Uint8Array): ArrayBuffer => {
+  const copy = new ArrayBuffer(buffer.byteLength);
+  new Uint8Array(copy).set(buffer);
+  return copy;
+};
+
 export const getCachedModelInfo = async (key: string): Promise<RaceAiCachedModelInfo | null> => {
   const row = await withStore<StoredModel>(MODEL_STORE, "readonly", (store) => store.get(key));
   return row
@@ -235,7 +291,7 @@ export const getCachedModelInfo = async (key: string): Promise<RaceAiCachedModel
         cachedAt: row.cachedAt,
         key: row.key,
         modelVersion: row.modelVersion,
-        size: row.blob.size || null,
+        size: storedBlobSize(row),
         sourceUrl: row.sourceUrl,
       }
     : null;
@@ -248,9 +304,119 @@ export const listCachedModelInfos = async (): Promise<RaceAiCachedModelInfo[]> =
     cachedAt: row.cachedAt,
     key: row.key,
     modelVersion: row.modelVersion,
-    size: row.blob.size || null,
+    size: storedBlobSize(row),
     sourceUrl: row.sourceUrl,
   }));
+};
+
+export const modelPartCacheKey = ({
+  end,
+  modelCacheKey,
+  partIndex,
+  start,
+}: {
+  end: number;
+  modelCacheKey: string;
+  partIndex: number;
+  start: number;
+}): string => `${modelCacheKey}:part:${partIndex}:${start}-${end}`;
+
+const modelPartInfo = (row: StoredModelPart): RaceAiCachedModelPartInfo => ({
+  cachedAt: row.cachedAt,
+  end: row.end,
+  key: row.key,
+  modelCacheKey: row.modelCacheKey,
+  modelVersion: row.modelVersion,
+  partIndex: row.partIndex,
+  size: storedModelPartSize(row),
+  sourceUrl: row.sourceUrl,
+  start: row.start,
+  totalBytes: row.totalBytes,
+});
+
+export const listCachedModelPartInfos = async (
+  modelCacheKey: string,
+): Promise<RaceAiCachedModelPartInfo[]> => {
+  const rows =
+    (await withStore<StoredModelPart[]>(MODEL_PART_STORE, "readonly", (store) => store.getAll())) ??
+    [];
+  return rows
+    .filter((row) => row.modelCacheKey === modelCacheKey)
+    .map(modelPartInfo)
+    .toSorted((left, right) => left.partIndex - right.partIndex);
+};
+
+export const listAllCachedModelPartInfos = async (): Promise<RaceAiCachedModelPartInfo[]> => {
+  const rows =
+    (await withStore<StoredModelPart[]>(MODEL_PART_STORE, "readonly", (store) => store.getAll())) ??
+    [];
+  return rows.map(modelPartInfo).toSorted((left, right) => {
+    const cacheKeyOrder = left.modelCacheKey.localeCompare(right.modelCacheKey);
+    return cacheKeyOrder === 0 ? left.partIndex - right.partIndex : cacheKeyOrder;
+  });
+};
+
+export const loadCachedModelPart = async (key: string): Promise<ArrayBuffer | null> => {
+  const row = await withStore<StoredModelPart>(MODEL_PART_STORE, "readonly", (store) =>
+    store.get(key),
+  );
+  if (!row) {
+    return null;
+  }
+  if (row.data) {
+    return row.data.slice(0);
+  }
+  return row.blob?.arrayBuffer ? row.blob.arrayBuffer() : null;
+};
+
+export const saveCachedModelPart = async ({
+  buffer,
+  end,
+  key,
+  modelCacheKey,
+  modelVersion,
+  partIndex,
+  sourceUrl,
+  start,
+  totalBytes,
+}: {
+  buffer: Uint8Array;
+  end: number;
+  key: string;
+  modelCacheKey: string;
+  modelVersion: string;
+  partIndex: number;
+  sourceUrl: string;
+  start: number;
+  totalBytes: number;
+}): Promise<void> => {
+  await withStore(MODEL_PART_STORE, "readwrite", (store) => {
+    store.put({
+      cachedAt: new Date().toISOString(),
+      data: toArrayBufferCopy(buffer),
+      end,
+      key,
+      modelCacheKey,
+      modelVersion,
+      partIndex,
+      size: buffer.byteLength,
+      sourceUrl,
+      start,
+      totalBytes,
+    } satisfies StoredModelPart);
+  });
+};
+
+export const deleteCachedModelParts = async (modelCacheKey: string): Promise<void> => {
+  const parts = await listCachedModelPartInfos(modelCacheKey);
+  if (parts.length === 0) {
+    return;
+  }
+  await withStore(MODEL_PART_STORE, "readwrite", (store) => {
+    for (const part of parts) {
+      store.delete(part.key);
+    }
+  });
 };
 
 export const saveCachedModel = async ({
@@ -270,6 +436,7 @@ export const saveCachedModel = async ({
       cachedAt: new Date().toISOString(),
       key,
       modelVersion,
+      size: buffer.byteLength,
       sourceUrl,
     } satisfies StoredModel);
   });
