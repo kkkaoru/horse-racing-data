@@ -141,6 +141,7 @@ const MIN_TOOL_RESULT_CHAR_LIMIT = 1_500;
 const TOOL_ROW_LIMIT = 16;
 const TOOL_TEXT_LIMIT = 240;
 const RUNTIME_LOG_TEXT_LIMIT = 2_000;
+const CHAT_AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 48;
 const MACHINE_RESPONSE_FORMAT_FALLBACK_SOURCE =
   "回答の形式が整わず、表示できる本文を作成できませんでしたわ。データ取得後に、もう一度お試しくださいませ。";
 const MACHINE_NATURAL_TEXT_THOUGHT_SOURCE =
@@ -1454,6 +1455,10 @@ const createLocalChatStream = ({
 
 const appendLimited = <T,>(rows: T[], row: T): T[] => [...rows, row].slice(-LOG_LIMIT);
 
+const isChatThreadNearBottom = (element: HTMLElement): boolean =>
+  element.scrollHeight - element.scrollTop - element.clientHeight <=
+  CHAT_AUTO_SCROLL_BOTTOM_THRESHOLD_PX;
+
 export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const assistantName = props.assistantName.trim() || "アーモンドAI";
   const assistantIconUrl = props.assistantIconUrl.trim() || "/ai/almondeye_top.png";
@@ -1505,6 +1510,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const lastRealtimeFingerprintRef = useRef("");
   const lastUserRequestRef = useRef(DEFAULT_RACE_AI_REQUEST);
   const chatThreadRef = useRef<HTMLDivElement | null>(null);
+  const shouldAutoScrollChatRef = useRef(true);
   const realtimePayload = useRealtimeRaceSelector((state) => state.payload);
   const realtimeFingerprint = useMemo(
     () => buildRealtimeFingerprint(realtimePayload),
@@ -2580,6 +2586,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     if (!value || !canSubmitChat) {
       return;
     }
+    shouldAutoScrollChatRef.current = true;
     setInput("");
     void sendMessage({ text: value });
   }, [canSubmitChat, input, sendMessage]);
@@ -2676,6 +2683,9 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   useEffect(() => {
     const chatThread = chatThreadRef.current;
     if (!chatThread) {
+      return;
+    }
+    if (!shouldAutoScrollChatRef.current) {
       return;
     }
     chatThread.scrollTop = chatThread.scrollHeight;
@@ -3022,7 +3032,14 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
         </details>
       ) : null}
       {error || chatError ? <p className="race-ai-error">{error ?? chatError?.message}</p> : null}
-      <div className="race-ai-chat-thread" ref={chatThreadRef} aria-live="polite">
+      <div
+        className="race-ai-chat-thread"
+        ref={chatThreadRef}
+        aria-live="polite"
+        onScroll={(event) => {
+          shouldAutoScrollChatRef.current = isChatThreadNearBottom(event.currentTarget);
+        }}
+      >
         {displayedChatMessages.length === 0 ? (
           <p className="empty-state">AIとのやりとりはまだありません。</p>
         ) : (
