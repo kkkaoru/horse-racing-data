@@ -1,10 +1,9 @@
 // Run with bun. Read-only D1 query endpoint for horse-detail running-style
-// history, called by the local dev runtime when the production D1 binding
-// isn't available in-process.
+// history.
 
 import { NextResponse } from "next/server";
 
-import { queryHorseRecentRunningStylesFromD1 } from "../../../../../db/corner-running-style-queries";
+import { getHorseRecentRunningStylesFromD1 } from "../../../../../db/corner-running-style-queries";
 
 export const dynamic = "force-dynamic";
 
@@ -29,7 +28,7 @@ export async function GET(request: Request, context: RouteContext) {
   if (!/^\d{10}$/u.test(kettoTorokuBango)) {
     return NextResponse.json({ error: "invalid_ketto" }, { status: 400 });
   }
-  const rows = await queryHorseRecentRunningStylesFromD1(kettoTorokuBango, resolveLimit(request));
+  const rows = await getHorseRecentRunningStylesFromD1(kettoTorokuBango, resolveLimit(request));
   return NextResponse.json(rows, {
     headers: { "cache-control": "public, max-age=30, s-maxage=30" },
   });

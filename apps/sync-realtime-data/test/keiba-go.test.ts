@@ -257,8 +257,17 @@ describe("keiba.go realtime helpers", () => {
           <tr><td>1-2</td><td>1.0</br> - 3.0</td></tr>
         </table>
       `,
-      "https://www.keiba.go.jp/KeibaWeb/Odds/3renpuku": "3-1-2 12.345",
-      "https://www.keiba.go.jp/KeibaWeb/Odds/3rentan": "3→1→2 123.456",
+      "https://www.keiba.go.jp/KeibaWeb/Odds/3renpuku": `
+        <table class="odd_ranking_table">
+          <tr><td>3-1-2</td><td>12.345</td></tr>
+        </table>
+      `,
+      "https://www.keiba.go.jp/KeibaWeb/Odds/3rentan": `
+        <table class="formation_table"><tr><td>1-2-3</td><td>0</td></tr></table>
+        <table class="odd_ranking_table">
+          <tr><td>3-1-2</td><td>123.456</td></tr>
+        </table>
+      `,
     });
 
     await expect(
@@ -285,6 +294,24 @@ describe("keiba.go realtime helpers", () => {
         { averageOdds: 2, combination: "1-2", maxOdds: 3, minOdds: 1, rank: 1 },
         { averageOdds: 3, combination: "1-3", maxOdds: 4, minOdds: 2, rank: 2 },
       ],
+    });
+  });
+
+  it("falls back to plain triple odds text when ranking tables are absent", async () => {
+    const baseUrl = "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k=1";
+    mockFetchHtml({
+      "https://www.keiba.go.jp/KeibaWeb/Odds/3renpuku": "3-1-2 12.345",
+      "https://www.keiba.go.jp/KeibaWeb/Odds/3rentan": "3→1→2 123.456",
+    });
+
+    await expect(
+      fetchOdds(baseUrl, {
+        "3renpuku": "/KeibaWeb/Odds/3renpuku",
+        "3rentan": "/KeibaWeb/Odds/3rentan",
+      }),
+    ).resolves.toMatchObject({
+      "3renpuku": [{ combination: "1-2-3", odds: 12.35, rank: 1 }],
+      "3rentan": [{ combination: "3-1-2", odds: 123.46, rank: 1 }],
     });
   });
 
@@ -416,6 +443,34 @@ describe("keiba.go realtime helpers", () => {
         horseName: "別馬",
         horseNumber: "12",
         weight: 510,
+      },
+    ]);
+  });
+
+  it("parses horse weights when odds and weight are separate odds_weight cells", () => {
+    const html = `
+      <table>
+        <tr class="tBorder">
+          <td rowspan="5" class="horseNum">10</td>
+          <td colspan="3"><a class="horseName">オメガドライヴ</a></td>
+          <td class="odds_weight" rowspan="2"><span class="odds_Black odds">4.3</span><br>(2人気)</td>
+        </tr>
+        <tr>
+          <td class="noBorder">セン4</td>
+        </tr>
+        <tr>
+          <td colspan="3">マインドユアビスケッツ</td>
+          <td rowspan="2" class="odds_weight">493<br>(+13)</td>
+        </tr>
+      </table>
+    `;
+    expect(parseHorseWeights(html)).toEqual([
+      {
+        changeAmount: 13,
+        changeSign: "+",
+        horseName: "オメガドライヴ",
+        horseNumber: "10",
+        weight: 493,
       },
     ]);
   });

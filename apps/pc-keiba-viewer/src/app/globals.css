@@ -7792,6 +7792,7 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 
 .race-ai-actions,
 .race-ai-stop-actions,
+.race-ai-report-actions,
 .race-ai-reset-actions {
   align-items: center;
   display: flex;
@@ -7802,6 +7803,7 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 
 .race-ai-actions button,
 .race-ai-chat-form button,
+.race-ai-report-actions button,
 .race-ai-stop-actions button,
 .race-ai-reset-actions button {
   background: var(--accent);
@@ -7816,6 +7818,7 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 
 .race-ai-actions button:disabled,
 .race-ai-chat-form button:disabled,
+.race-ai-report-actions button:disabled,
 .race-ai-stop-actions button:disabled,
 .race-ai-reset-actions button:disabled {
   cursor: not-allowed;
@@ -7833,10 +7836,23 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   margin-top: var(--space-10px-27);
 }
 
+.race-ai-report-actions {
+  justify-content: flex-end;
+  margin-top: var(--space-8px-28);
+}
+
 .race-ai-stop-actions button,
+.race-ai-report-actions button,
 .race-ai-reset-actions button {
   background: var(--surface);
   color: var(--text);
+}
+
+.race-ai-report-copy-status {
+  color: var(--text-muted);
+  font-size: var(--space-0-85rem-113);
+  font-weight: var(--number-650-40);
+  min-height: var(--space-20px-52);
 }
 
 .race-ai-error {
@@ -7969,6 +7985,10 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   border: var(--space-1px-7) solid var(--accent-soft);
   border-radius: var(--space-8px-28);
   padding: var(--space-12px-9) var(--space-14px-55);
+}
+
+.race-ai-chat-message-immediate .race-ai-chat-message-body {
+  border-style: dashed;
 }
 
 .race-ai-chat-message.system {
@@ -8286,12 +8306,14 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   }
 
   .race-ai-chat-form button,
+  .race-ai-report-actions button,
   .race-ai-stop-actions button,
   .race-ai-reset-actions button {
     width: var(--space-100pct-12);
   }
 
   .race-ai-stop-actions,
+  .race-ai-report-actions,
   .race-ai-reset-actions {
     justify-content: stretch;
   }

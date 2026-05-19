@@ -424,28 +424,69 @@ const parseWakurenOdds = (html: string): OddsData[] => {
     .map(addRank);
 };
 
-const parseTripleOdds = (html: string, ordered: boolean): OddsData[] => {
+const parseTripleOddsRow = (row: string, ordered: boolean): OddsData | null => {
+  const cells = Array.from(row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)).map((cell) =>
+    stripHtmlTags(cell[1]!),
+  );
+  const combination = cells[0];
+  const oddsText = cells[1];
+  const match = combination?.match(/^(\d+)-(\d+)-(\d+)$/u);
+  if (!match?.[1] || !match[2] || !match[3] || !oddsText) {
+    return null;
+  }
+  const odds = Number(oddsText);
+  if (!Number.isFinite(odds) || odds <= 0) {
+    return null;
+  }
+  const horses = [match[1], match[2], match[3]];
+  if (horses.some((horse) => !isValidHorseNum(horse))) {
+    return null;
+  }
+  const normalized = ordered
+    ? horses.join("-")
+    : horses
+        .map((horse) => Number(horse))
+        .toSorted((left, right) => left - right)
+        .join("-");
+  return { combination: normalized, odds: roundOdds(odds) };
+};
+
+const parseTripleOddsText = (html: string, ordered: boolean): OddsData[] => {
   const patterns = [
     /(\d+)-(\d+)-(\d+)[^0-9]*?([0-9]+\.?[0-9]*)/g,
     /(\d+)\s*→\s*(\d+)\s*→\s*(\d+)[^0-9]*?([0-9]+\.?[0-9]*)/g,
     /(\d+)\s*[-ー]\s*(\d+)\s*[-ー]\s*(\d+)[^0-9]*?([0-9]+\.?[0-9]*)/g,
   ];
-  const odds = patterns.flatMap((pattern) =>
-    Array.from(html.matchAll(pattern)).map((match): OddsData | null => {
-      const horses = [match[1], match[2], match[3]];
-      const oddsText = match[4];
-      if (horses.some((horse) => !horse || !isValidHorseNum(horse)) || !oddsText) {
-        return null;
-      }
-      const normalized = ordered
-        ? horses.join("-")
-        : horses
-            .map((horse) => Number(horse))
-            .toSorted((left, right) => left - right)
-            .join("-");
-      return { combination: normalized, odds: roundOdds(Number(oddsText)) };
-    }),
-  );
+  return patterns
+    .flatMap((pattern) =>
+      Array.from(html.matchAll(pattern)).map((match): OddsData | null => {
+        const horses = [match[1], match[2], match[3]];
+        const oddsText = match[4];
+        if (horses.some((horse) => !horse || !isValidHorseNum(horse)) || !oddsText) {
+          return null;
+        }
+        const odds = Number(oddsText);
+        if (!Number.isFinite(odds) || odds <= 0) {
+          return null;
+        }
+        const normalized = ordered
+          ? horses.join("-")
+          : horses
+              .map((horse) => Number(horse))
+              .toSorted((left, right) => left - right)
+              .join("-");
+        return { combination: normalized, odds: roundOdds(odds) };
+      }),
+    )
+    .filter((item): item is OddsData => item !== null);
+};
+
+const parseTripleOdds = (html: string, ordered: boolean): OddsData[] => {
+  const rankingRows = extractRankingRows(html);
+  const odds =
+    rankingRows.length > 0
+      ? rankingRows.map((row) => parseTripleOddsRow(row, ordered))
+      : parseTripleOddsText(html, ordered);
   return Array.from(
     new Map(
       odds
@@ -512,16 +553,16 @@ export const parseHorseWeights = (html: string) => {
       const horseName = block.match(
         /class=["'][^"']*horseName[^"']*["'][^>]*>([\s\S]*?)<\/a>/iu,
       )?.[1];
-      const oddsWeightHtml =
-        block.match(/<td[^>]*class=["'][^"']*odds_weight[^"']*["'][^>]*>([\s\S]*?)<\/td>/iu)?.[1] ??
-        "";
-      const oddsWeightText = stripHtmlTags(oddsWeightHtml.replace(/<br\s*\/?>/giu, " ")).replace(
-        /\s+/g,
-        " ",
-      );
-      const match = oddsWeightText.match(
-        /(?:^|[^0-9.])([3-9]\d{2}|1[0-3]\d{2})(?:\s*\(([+-]?)(\d+)\))?(?![0-9.])/u,
-      );
+      const match = Array.from(
+        block.matchAll(/<td[^>]*class=["'][^"']*odds_weight[^"']*["'][^>]*>([\s\S]*?)<\/td>/giu),
+      )
+        .map((cell) =>
+          stripHtmlTags((cell[1] ?? "").replace(/<br\s*\/?>/giu, " ")).replace(/\s+/g, " "),
+        )
+        .map((text) =>
+          text.match(/(?:^|[^0-9.])([3-9]\d{2}|1[0-3]\d{2})(?:\s*\(([+-]?)(\d+)\))?(?![0-9.])/u),
+        )
+        .find((item): item is RegExpMatchArray => item !== null);
       if (!horseNumber || !isValidHorseNum(horseNumber) || !match?.[1]) {
         return null;
       }

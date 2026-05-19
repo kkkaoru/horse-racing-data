@@ -289,7 +289,9 @@ const inputMessageText = (message: unknown): string => {
     return "";
   }
   return message.parts
-    .map((part) => (isRecord(part) && part.type === "text" && typeof part.text === "string" ? part.text : ""))
+    .map((part) =>
+      isRecord(part) && part.type === "text" && typeof part.text === "string" ? part.text : "",
+    )
     .join("")
     .trim();
 };
@@ -362,7 +364,9 @@ const formatReportPredictionRows = (
           ? `${row.popularity}番人気`
           : "-";
       const odds =
-        typeof row.odds === "number" && Number.isFinite(row.odds) ? `${row.odds.toFixed(1)}倍` : "-";
+        typeof row.odds === "number" && Number.isFinite(row.odds)
+          ? `${row.odds.toFixed(1)}倍`
+          : "-";
       const confidence =
         typeof row.confidence === "number" && Number.isFinite(row.confidence)
           ? row.confidence.toFixed(2)
@@ -1965,9 +1969,7 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const [chatSessionVersion, setChatSessionVersion] = useState(0);
   const [runtimeLogs, setRuntimeLogs] = useState<RaceAiRuntimeLog[]>([]);
   const [chatRequestInFlight, setChatRequestInFlight] = useState(false);
-  const [instantReaction, setInstantReaction] = useState<{ id: string; text: string } | null>(
-    null,
-  );
+  const [instantReaction, setInstantReaction] = useState<{ id: string; text: string } | null>(null);
   const [reportCopyStatus, setReportCopyStatus] = useState<"copied" | "error" | "idle">("idle");
   const llmRef = useRef<LlmInference | null>(null);
   const autoStartedRaceKeyRef = useRef<string | null>(null);
@@ -3303,19 +3305,16 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
   const debugUrl = `/api/debug/ai-chat?raceKey=${encodeURIComponent(raceKey)}`;
   const serverLogUrl = `/api/races/${props.year}/${props.month}/${props.day}/${props.keibajoCode}/${props.raceNumber}/ai/logs?source=${encodeURIComponent(props.source)}`;
   const debugStatus = chatStatus === "ready" ? generationStatus : chatStatus;
-  const setTemporaryReportCopyStatus = useCallback(
-    (status: "copied" | "error") => {
-      setReportCopyStatus(status);
-      if (reportCopyStatusTimerRef.current !== null) {
-        window.clearTimeout(reportCopyStatusTimerRef.current);
-      }
-      reportCopyStatusTimerRef.current = window.setTimeout(() => {
-        setReportCopyStatus("idle");
-        reportCopyStatusTimerRef.current = null;
-      }, 2_500);
-    },
-    [],
-  );
+  const setTemporaryReportCopyStatus = useCallback((status: "copied" | "error") => {
+    setReportCopyStatus(status);
+    if (reportCopyStatusTimerRef.current !== null) {
+      window.clearTimeout(reportCopyStatusTimerRef.current);
+    }
+    reportCopyStatusTimerRef.current = window.setTimeout(() => {
+      setReportCopyStatus("idle");
+      reportCopyStatusTimerRef.current = null;
+    }, 2_500);
+  }, []);
   const copyReportLog = useCallback(async () => {
     const currentChatMessages = chatMessages
       .map(uiMessageToRaceMessage)

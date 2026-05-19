@@ -37,6 +37,9 @@ describe("odds fetch schedule", () => {
       "2026-05-12T10:50:00+09:00",
     );
     expect(getOddsFetchSlotAt(raceStart, new Date("2026-05-12T11:39:30+09:00"))).toBeNull();
+    expect(getOddsFetchSlotAt(raceStart, new Date("2026-05-12T11:42:00+09:00"))).toBe(
+      "2026-05-12T11:42:00+09:00",
+    );
   });
 
   it("aligns JRA advance odds slots hourly from previous-day 19:00 until one hour before post time", () => {
@@ -86,8 +89,11 @@ describe("odds fetch schedule", () => {
     expect(getNextOddsFetchSlotAt(raceStart, new Date("2026-05-17T12:18:09+09:00"), "nar")).toBe(
       "2026-05-17T12:25:00+09:00",
     );
+    expect(getNextOddsFetchSlotAt(raceStart, new Date("2026-05-17T13:04:30+09:00"), "nar")).toBe(
+      "2026-05-17T13:07:00+09:00",
+    );
     expect(
-      getNextOddsFetchSlotAt(raceStart, new Date("2026-05-17T13:04:30+09:00"), "nar"),
+      getNextOddsFetchSlotAt(raceStart, new Date("2026-05-17T13:07:00+09:00"), "nar"),
     ).toBeNull();
   });
 });
