@@ -11,7 +11,6 @@ import {
   loadCachedModelPart,
   modelPartCacheKey,
   RACE_AI_MODEL_DOWNLOAD_CONFIRM_MESSAGE,
-  saveCachedModel,
   saveCachedModelPart,
   type RaceAiCachedModelInfo,
   type RaceAiCachedModelPartInfo,
@@ -50,7 +49,7 @@ interface ActiveDownload {
   error: string | null;
   maxAttempts: number;
   progress: number | null;
-  promise: Promise<ArrayBuffer>;
+  promise: Promise<void>;
   totalBytes: number | null;
 }
 
@@ -639,17 +638,27 @@ const fetchModelRangeWithRetries = async ({
   throw lastError instanceof Error ? lastError : new Error(errorMessage(lastError));
 };
 
-const fetchModelBuffer = async (
+const isModelCachedWithoutMaterializing = async (
+  model: RaceAiModelDefinition,
+): Promise<boolean> => {
+  const cachedInfo = await getCompleteCachedModelInfo(model);
+  if (cachedInfo) {
+    return true;
+  }
+  const snapshot = toCachedModelPartSnapshot(model, await listCachedModelPartInfos(model.cacheKey));
+  return snapshot?.isComplete ?? false;
+};
+
+const cacheModelParts = async (
   model: RaceAiModelDefinition,
   controller: AbortController,
   attempt: number,
-): Promise<ArrayBuffer> => {
+): Promise<void> => {
   const totalBytes = await fetchRemoteModelSize(model, controller, attempt);
   updateActiveDownload(model, { error: null, totalBytes });
   const storedParts = new Map(
     (await listCachedModelPartInfos(model.cacheKey)).map((part) => [part.key, part]),
   );
-  const buffer = new Uint8Array(totalBytes);
   let downloadedBytes = 0;
   let rangeIndex = 0;
 
@@ -666,7 +675,6 @@ const fetchModelBuffer = async (
       // eslint-disable-next-line no-await-in-loop -- model ranges must be assembled in sequence.
       const cachedPart = await loadCachedModelPart(partKey);
       if (cachedPart && cachedPart.byteLength === end - start + 1) {
-        buffer.set(new Uint8Array(cachedPart), start);
         downloadedBytes += cachedPart.byteLength;
         updateActiveDownload(model, {
           downloadedBytes,
@@ -699,7 +707,6 @@ const fetchModelBuffer = async (
       start,
       totalBytes,
     });
-    buffer.set(rangeBuffer, start);
     downloadedBytes += rangeBuffer.byteLength;
     updateActiveDownload(model, {
       downloadedBytes,
@@ -712,13 +719,12 @@ const fetchModelBuffer = async (
   if (!isAcceptableModelSize(model, downloadedBytes)) {
     throw createModelSizeMismatchError(model, downloadedBytes, "downloaded bytes");
   }
-  return buffer.buffer;
 };
 
-const fetchModelBufferWithRetries = async (
+const cacheModelPartsWithRetries = async (
   model: RaceAiModelDefinition,
   controller: AbortController,
-): Promise<ArrayBuffer> => {
+): Promise<void> => {
   let lastError: unknown = null;
   for (let attempt = 1; attempt <= MODEL_DOWNLOAD_MAX_ATTEMPTS; attempt += 1) {
     updateActiveDownload(model, {
@@ -730,7 +736,8 @@ const fetchModelBufferWithRetries = async (
     });
     try {
       // eslint-disable-next-line no-await-in-loop -- retry attempts must run sequentially.
-      return await fetchModelBuffer(model, controller, attempt);
+      await cacheModelParts(model, controller, attempt);
+      return;
     } catch (error) {
       lastError = error;
       if (isAbortError(error) || attempt >= MODEL_DOWNLOAD_MAX_ATTEMPTS) {
@@ -749,11 +756,10 @@ const fetchModelBufferWithRetries = async (
 
 export const downloadRaceAiModel = async (
   model: RaceAiModelDefinition = LATEST_RACE_AI_MODEL,
-): Promise<ArrayBuffer> => {
-  const cached = await loadCompleteCachedModel(model);
-  if (cached) {
+): Promise<void> => {
+  if (await isModelCachedWithoutMaterializing(model)) {
     notify();
-    return cached;
+    return;
   }
 
   const active = activeDownloads.get(model.id);
@@ -766,30 +772,11 @@ export const downloadRaceAiModel = async (
   const promise = (async () => {
     await Promise.resolve();
     try {
-      const buffer = await fetchModelBufferWithRetries(model, controller);
-      try {
-        await saveCachedModel({
-          buffer,
-          key: model.cacheKey,
-          modelVersion: model.version,
-          sourceUrl: model.url,
-        });
-        const saved = await getCompleteCachedModelInfo(model);
-        if (!saved) {
-          throw new Error("保存後のAIモデルサイズを確認できませんでした。");
-        }
-        await deleteCachedModelParts(model.cacheKey);
-      } catch (saveError) {
-        const snapshot = toCachedModelPartSnapshot(
-          model,
-          await listCachedModelPartInfos(model.cacheKey),
-        );
-        if (!snapshot?.isComplete) {
-          throw saveError;
-        }
+      await cacheModelPartsWithRetries(model, controller);
+      if (!(await isModelCachedWithoutMaterializing(model))) {
+        throw new Error("保存後のAIモデルサイズを確認できませんでした。");
       }
       lastModelErrors.delete(model.id);
-      return buffer;
     } catch (error) {
       const message = errorMessage(error);
       if (!isAbortError(error)) {
@@ -831,12 +818,23 @@ export const ensureRaceAiModelBuffer = async ({
   }
   const active = activeDownloads.get(model.id);
   if (active) {
-    return active.promise;
+    await active.promise;
+    const cachedAfterActiveDownload = await loadCompleteCachedModel(model);
+    if (cachedAfterActiveDownload) {
+      notify();
+      return cachedAfterActiveDownload;
+    }
   }
   if (confirmDownload && !window.confirm(RACE_AI_MODEL_DOWNLOAD_CONFIRM_MESSAGE)) {
     throw new Error("AIモデルのダウンロードがキャンセルされました。");
   }
-  return downloadRaceAiModel(model);
+  await downloadRaceAiModel(model);
+  const downloaded = await loadCompleteCachedModel(model);
+  if (!downloaded) {
+    throw new Error("AIモデルを読み込めませんでした。削除または再ダウンロードしてください。");
+  }
+  notify();
+  return downloaded;
 };
 
 export const abortRaceAiModelDownload = (model: RaceAiModelDefinition): void => {
