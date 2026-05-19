@@ -22,6 +22,7 @@ export function RaceAiConsentManager() {
   const [settings, setSettings] = useState<RaceAiSettings | null>(null);
   const [modelState, setModelState] = useState<RaceAiModelState | null>(null);
   const [supported, setSupported] = useState(false);
+  const [dismissedError, setDismissedError] = useState(false);
   const promptedRef = useRef(false);
 
   useEffect(() => {
@@ -52,11 +53,43 @@ export function RaceAiConsentManager() {
     const nextSettings = requestRaceAiConsent();
     setSettings(nextSettings);
     if (nextSettings.consent === "granted") {
+      setDismissedError(false);
       void downloadRaceAiModel(LATEST_RACE_AI_MODEL).catch(() => {});
     }
   }, [settings, supported]);
 
-  if (!supported || modelState?.status !== "downloading") {
+  const downloadError = modelState?.status === "not-downloaded" ? modelState.error : null;
+
+  if (!supported) {
+    return null;
+  }
+
+  if (downloadError && !dismissedError) {
+    return (
+      <dialog className="race-ai-download-dialog" open>
+        <div>
+          <span>AIモデルのダウンロードに失敗しました</span>
+        </div>
+        <small>{downloadError}</small>
+        <div className="race-ai-download-dialog-actions">
+          <button
+            type="button"
+            onClick={() => {
+              setDismissedError(false);
+              void downloadRaceAiModel(LATEST_RACE_AI_MODEL).catch(() => {});
+            }}
+          >
+            再試行
+          </button>
+          <button type="button" onClick={() => setDismissedError(true)}>
+            閉じる
+          </button>
+        </div>
+      </dialog>
+    );
+  }
+
+  if (modelState?.status !== "downloading") {
     return null;
   }
 

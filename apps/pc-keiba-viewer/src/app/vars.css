@@ -184,6 +184,7 @@
   --value-number-9-15: 9;
   --value-number-900-16: 900;
   --value-number-950-32: 950;
+  --value-space-0-14em-218: 0.14em;
   --value-space-0-15s-190: 0.15s;
   --value-space-0-58fr-214: 0.58fr;
   --value-space-0-64s-15: 0.64s;
@@ -595,6 +596,7 @@
   --number-9-15: var(--value-number-9-15);
   --number-900-16: var(--value-number-900-16);
   --number-950-32: var(--value-number-950-32);
+  --space-0-14em-218: var(--value-space-0-14em-218);
   --space-0-15s-190: var(--value-space-0-15s-190);
   --space-0-58fr-214: var(--value-space-0-58fr-214);
   --space-0-64s-15: var(--value-space-0-64s-15);

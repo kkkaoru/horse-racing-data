@@ -22,6 +22,14 @@ export interface RaceAiMessage {
   content: string;
   createdAt: string;
   id: string;
+  prediction?: {
+    confidence: number | null;
+    horseName: string;
+    horseNumber: string;
+    jockeyName: string;
+    rank: number;
+    reason: string;
+  }[];
   role: RaceAiMessageRole;
 }
 
@@ -231,6 +239,18 @@ export const getCachedModelInfo = async (key: string): Promise<RaceAiCachedModel
         sourceUrl: row.sourceUrl,
       }
     : null;
+};
+
+export const listCachedModelInfos = async (): Promise<RaceAiCachedModelInfo[]> => {
+  const rows =
+    (await withStore<StoredModel[]>(MODEL_STORE, "readonly", (store) => store.getAll())) ?? [];
+  return rows.map((row) => ({
+    cachedAt: row.cachedAt,
+    key: row.key,
+    modelVersion: row.modelVersion,
+    size: row.blob.size || null,
+    sourceUrl: row.sourceUrl,
+  }));
 };
 
 export const saveCachedModel = async ({

@@ -37,12 +37,15 @@ const readTonePromptFromPayload = (payload: unknown): string => {
   return payload.prompt;
 };
 
-const statusLabel = (status: RaceAiModelState["status"]): string => {
-  if (status === "downloaded") {
+const statusLabel = (state: RaceAiModelState): string => {
+  if (state.status === "downloaded") {
     return "ダウンロード済み";
   }
-  if (status === "downloading") {
+  if (state.status === "downloading") {
     return "ダウンロード中";
+  }
+  if (state.cachedAt) {
+    return "保存済み / 利用不可";
   }
   return "未ダウンロード";
 };
@@ -56,6 +59,25 @@ const progressLabel = (state: RaceAiModelState): string => {
   }
   return state.progress === null ? "取得中" : `${Math.round(state.progress * 100)}%`;
 };
+
+const formatModelBytes = (bytes: number | null): string => {
+  if (bytes === null) {
+    return "-";
+  }
+  if (bytes <= 0) {
+    return "0 B";
+  }
+  return formatRaceAiModelSize(bytes);
+};
+
+const modelDownloadedLabel = (state: RaceAiModelState): string =>
+  `${formatModelBytes(state.downloadedBytes)} / ${formatModelBytes(state.totalBytes)}`;
+
+const attemptLabel = (state: RaceAiModelState): string | null =>
+  state.attempt && state.maxAttempts ? `試行 ${state.attempt}/${state.maxAttempts}` : null;
+
+const isCachedModelDeleteAction = (state: RaceAiModelState): boolean =>
+  state.status === "downloaded" || (state.status !== "downloading" && state.cachedAt !== null);
 
 const isWebGpuSupported = (): boolean => typeof navigator !== "undefined" && "gpu" in navigator;
 
@@ -157,7 +179,7 @@ export function RaceAiSettingsPanel() {
   };
 
   const runModelAction = (state: RaceAiModelState) => {
-    if (state.status === "downloaded") {
+    if (isCachedModelDeleteAction(state)) {
       if (window.confirm(DELETE_MODEL_CONFIRM_MESSAGE)) {
         void deleteRaceAiModel(state.model);
       }
@@ -302,27 +324,38 @@ export function RaceAiSettingsPanel() {
             ? RACE_AI_MODELS.map((model) => (
                 <div className="mypage-ai-model-row" key={model.id}>
                   <strong>{model.name}</strong>
-                  <span>{model.version}</span>
-                  <span>確認中</span>
+                  <span data-label="バージョン">{model.version}</span>
+                  <span data-label="状態">確認中</span>
                 </div>
               ))
             : modelStates.map((state) => (
                 <div className="mypage-ai-model-row" key={state.model.id}>
-                  <span>
+                  <span className="mypage-ai-model-name">
                     <strong>{state.model.name}</strong>
                     {state.model.isLatest ? <small>最新</small> : null}
                   </span>
-                  <span>{state.model.version}</span>
-                  <span>{formatRaceAiModelSize(state.totalBytes)}</span>
-                  <span>{statusLabel(state.status)}</span>
-                  <span>{progressLabel(state)}</span>
+                  <span data-label="バージョン">{state.model.version}</span>
+                  <span data-label="サイズ">{formatRaceAiModelSize(state.totalBytes)}</span>
+                  <span data-label="状態">{statusLabel(state)}</span>
+                  <span className="mypage-ai-model-progress" data-label="進捗">
+                    <strong>{progressLabel(state)}</strong>
+                    <progress
+                      value={state.status === "downloaded" ? 1 : (state.progress ?? undefined)}
+                      max={1}
+                    />
+                    <small>
+                      {modelDownloadedLabel(state)}
+                      {attemptLabel(state) ? ` / ${attemptLabel(state)}` : ""}
+                    </small>
+                  </span>
                   <button type="button" onClick={() => runModelAction(state)}>
-                    {state.status === "downloaded"
+                    {isCachedModelDeleteAction(state)
                       ? "削除"
                       : state.status === "downloading"
                         ? "中止"
                         : "ダウンロード"}
                   </button>
+                  {state.error ? <p className="mypage-ai-model-error">{state.error}</p> : null}
                 </div>
               ))}
         </div>
