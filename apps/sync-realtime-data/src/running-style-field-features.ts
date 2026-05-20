@@ -46,13 +46,20 @@ const PURE_NIGE_THRESHOLD = 0.7;
 const NIGE_CANDIDATE_THRESHOLD = 0.4;
 
 const sumExcluding = (values: ReadonlyArray<number | null>, selfIndex: number): number | null => {
-  const filtered = values.filter((value, idx): value is number => value !== null && idx !== selfIndex);
+  const filtered = values.filter(
+    (value, idx): value is number => value !== null && idx !== selfIndex,
+  );
   if (filtered.length === 0) return null;
   return filtered.reduce((acc, value) => acc + value, 0);
 };
 
-const averageExcluding = (values: ReadonlyArray<number | null>, selfIndex: number): number | null => {
-  const filtered = values.filter((value, idx): value is number => value !== null && idx !== selfIndex);
+const averageExcluding = (
+  values: ReadonlyArray<number | null>,
+  selfIndex: number,
+): number | null => {
+  const filtered = values.filter(
+    (value, idx): value is number => value !== null && idx !== selfIndex,
+  );
   if (filtered.length === 0) return null;
   return filtered.reduce((acc, value) => acc + value, 0) / filtered.length;
 };
@@ -92,9 +99,7 @@ const buildFieldFeatures = (
   const sashiRates = pickColumn(horses, "pastSashiRate");
   const oikomiRates = pickColumn(horses, "pastOikomiRate");
   const corner1NormPeers = pickNonNull(
-    horses
-      .filter((_, idx) => idx !== selfIndex)
-      .map((horse) => horse.pastCorner1NormAvg5),
+    horses.filter((_, idx) => idx !== selfIndex).map((horse) => horse.pastCorner1NormAvg5),
   );
   const speedAvg = pickColumn(horses, "speedIndexAvg5");
   const speedBest = pickColumn(horses, "speedIndexBest5");
@@ -143,6 +148,9 @@ export const computeFieldFeaturesPerHorse = (
     return {
       ...fieldFeatures,
       self_nige_rate_minus_field_avg: selfNigeMinusAvg,
-      self_speed_index_vs_field_top: safeDivide(horse.speedIndexBest5, fieldFeatures.field_top_speed_index),
+      self_speed_index_vs_field_top: safeDivide(
+        horse.speedIndexBest5,
+        fieldFeatures.field_top_speed_index,
+      ),
     };
   });

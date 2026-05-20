@@ -1,6 +1,6 @@
 // Run with bun. Queue consumer for per-race running-style generation.
-// The Worker builds the feature JSONL file, stores it in R2, then writes
-// the prediction rows to D1.
+// The Worker builds one-race 117-feature Parquet files, stores them in R2,
+// reads the stored file back, then writes flatbin model predictions to D1.
 
 import { getFinishPositionPool } from "./finish-position-lite-pool";
 import { putRunningStyleCache } from "./running-style-cache";
@@ -12,13 +12,18 @@ import {
   markRunningStyleInferenceProcessing,
 } from "./running-style-d1";
 import {
-  buildRunningStyleFeaturesKey,
-  buildRunningStyleModelKey,
-  buildRunningStyleRaceKey,
-  loadRunningStyleFeaturesForRace,
-  writeRunningStyleFeaturesToR2,
-} from "./running-style-features";
-import { runRunningStyleInferenceForRows } from "./running-style-inference";
+  buildRunningStyleFeatureParquetKey,
+  loadRunningStyleFeatureParquet,
+  putRunningStyleFeatureParquet,
+  validateFeatureCoverage,
+} from "./running-style-feature-parquet";
+import { buildRunningStyleFeaturesForRaceFromPostgres } from "./running-style-feature-sql";
+import { buildRunningStyleRaceKey } from "./running-style-features";
+import { runRunningStyleInferenceRowsWithFlatModel } from "./running-style-inference";
+import {
+  buildRunningStyleFlatModelKey,
+  loadFlatLightGBMModelFromR2,
+} from "./running-style-model-binary";
 import type { Env, RunningStylePredictionJob } from "./types";
 
 const ENABLED_FLAG = "1";
@@ -88,21 +93,36 @@ export const handleRunningStylePredictionJob = async (
   await markRunningStyleInferenceProcessing(env.REALTIME_DB, job, new Date().toISOString());
   try {
     const pool = getFinishPositionPool(env);
-    const rows = await loadRunningStyleFeaturesForRace(pool, job);
-    if (rows.length === 0) {
+    const modelKey = buildRunningStyleFlatModelKey(job.source);
+    const model = await loadFlatLightGBMModelFromR2(env.RUNNING_STYLE_MODELS, modelKey);
+    const featureNames = model.header.feature_names;
+    const built = await buildRunningStyleFeaturesForRaceFromPostgres(pool, job, featureNames);
+    if (built.rows.length === 0) {
       throw new Error(`no running-style feature rows found for race ${raceKey}`);
     }
-    const featuresR2Key = buildRunningStyleFeaturesKey(job);
-    await writeRunningStyleFeaturesToR2(env.RUNNING_STYLE_MODELS, featuresR2Key, rows);
-    const summary = await runRunningStyleInferenceForRows(
+    const coverage = validateFeatureCoverage(built.rows, featureNames);
+    if (coverage.missingFeatureNames.length > 0) {
+      throw new Error(
+        `PostgreSQL feature build missing model features: ${coverage.missingFeatureNames.join(", ")}`,
+      );
+    }
+    const featuresR2Key = buildRunningStyleFeatureParquetKey(job);
+    await putRunningStyleFeatureParquet(
       env.RUNNING_STYLE_MODELS,
-      env.REALTIME_DB,
-      {
-        modelKey: buildRunningStyleModelKey(job.source),
-        predictedAt: job.predictedAt,
-        rows,
-      },
+      featuresR2Key,
+      built.rows,
+      featureNames,
     );
+    const rows = await loadRunningStyleFeatureParquet(
+      env.RUNNING_STYLE_MODELS,
+      featuresR2Key,
+      featureNames,
+    );
+    const summary = await runRunningStyleInferenceRowsWithFlatModel(env.REALTIME_DB, {
+      model,
+      predictedAt: job.predictedAt,
+      rows,
+    });
     await markRunningStyleInferenceCompleted(env.REALTIME_DB, {
       completedAt: new Date().toISOString(),
       expectedHorseCount: rows.length,

@@ -131,32 +131,7 @@ const listFeatureCountsByDate = async (pool: Pool, date: string): Promise<Map<st
     `,
     [date],
   );
-  const rawResult = await pool.query<FeatureCountRow>(
-    `
-      select
-        'nar:' || se.kaisai_nen || se.kaisai_tsukihi || ':' ||
-          lpad(se.keibajo_code::text, 2, '0') || ':' ||
-          lpad(se.race_bango::text, 2, '0') as race_key,
-        count(*)::text as count
-      from nvd_se se
-      where se.kaisai_nen = $1
-        and se.kaisai_tsukihi = $2
-      group by se.kaisai_nen, se.kaisai_tsukihi, se.keibajo_code, se.race_bango
-      union all
-      select
-        'jra:' || se.kaisai_nen || se.kaisai_tsukihi || ':' ||
-          lpad(se.keibajo_code::text, 2, '0') || ':' ||
-          lpad(se.race_bango::text, 2, '0') as race_key,
-        count(*)::text as count
-      from jvd_se se
-      where se.kaisai_nen = $1
-        and se.kaisai_tsukihi = $2
-      group by se.kaisai_nen, se.kaisai_tsukihi, se.keibajo_code, se.race_bango
-    `,
-    [date.slice(0, 4), date.slice(4, 8)],
-  );
   const counts = new Map<string, number>();
-  rawResult.rows.forEach((row) => counts.set(row.race_key, Number(row.count)));
   featureResult.rows.forEach((row) => counts.set(row.race_key, Number(row.count)));
   return counts;
 };

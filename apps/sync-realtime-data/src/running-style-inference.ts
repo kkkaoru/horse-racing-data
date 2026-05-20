@@ -15,6 +15,11 @@ import {
   type CompactLightGBMModel,
 } from "./running-style-lightgbm-tree";
 import {
+  loadFlatLightGBMModelFromR2,
+  predictFlatRunningStyle,
+  type FlatLightGBMModel,
+} from "./running-style-model-binary";
+import {
   loadFeaturesFromR2,
   loadLightGBMModelFromR2,
   type RaceHorseFeatureRow,
@@ -36,6 +41,18 @@ export interface InferenceSummary {
 
 export interface RowsInferenceConfig {
   modelKey: string;
+  rows: ReadonlyArray<RaceHorseFeatureRow>;
+  predictedAt: string;
+}
+
+export interface FlatRowsInferenceConfig {
+  modelKey: string;
+  rows: ReadonlyArray<RaceHorseFeatureRow>;
+  predictedAt: string;
+}
+
+export interface LoadedFlatRowsInferenceConfig {
+  model: FlatLightGBMModel;
   rows: ReadonlyArray<RaceHorseFeatureRow>;
   predictedAt: string;
 }
@@ -111,6 +128,31 @@ const buildPredictionForHorse = (
   };
 };
 
+const buildFlatPredictionForHorse = (
+  row: RaceHorseFeatureRow,
+  fieldRow: HorseFieldRow,
+  model: FlatLightGBMModel,
+  predictedAt: string,
+): RaceRunningStyleRow => {
+  const features = mergeFeatureMap(row.perHorseFeatures, fieldRow);
+  const prediction = predictFlatRunningStyle(model, features);
+  return {
+    bamei: row.bamei,
+    category: row.category,
+    horseNumber: row.umaban,
+    kaisaiNen: row.kaisaiNen,
+    kettoTorokuBango: row.kettoTorokuBango,
+    modelVersion: model.header.model_version,
+    pNige: prediction.probabilities.nige,
+    pOikomi: prediction.probabilities.oikomi,
+    pSashi: prediction.probabilities.sashi,
+    pSenkou: prediction.probabilities.senkou,
+    predictedAt,
+    predictedLabel: prediction.predictedLabel,
+    raceKey: row.raceKey,
+  };
+};
+
 const predictRace = (
   rows: ReadonlyArray<RaceHorseFeatureRow>,
   model: CompactLightGBMModel,
@@ -121,6 +163,19 @@ const predictRace = (
     const fieldRow = fieldRows[index];
     if (fieldRow === undefined) throw new Error(`field row missing for index ${index}`);
     return buildPredictionForHorse(row, fieldRow, model, predictedAt);
+  });
+};
+
+const predictRaceFlat = (
+  rows: ReadonlyArray<RaceHorseFeatureRow>,
+  model: FlatLightGBMModel,
+  predictedAt: string,
+): RaceRunningStyleRow[] => {
+  const fieldRows = computeFieldFeaturesPerHorse(extractPeerInputs(rows));
+  return rows.map((row, index) => {
+    const fieldRow = fieldRows[index];
+    if (fieldRow === undefined) throw new Error(`field row missing for index ${index}`);
+    return buildFlatPredictionForHorse(row, fieldRow, model, predictedAt);
   });
 };
 
@@ -171,4 +226,37 @@ export const runRunningStyleInferenceForRows = async (
     predictedAt: config.predictedAt,
     rows: config.rows,
   });
+};
+
+export const runRunningStyleInferenceForRowsWithFlatModel = async (
+  bucket: R2Bucket,
+  db: D1Database,
+  config: FlatRowsInferenceConfig,
+): Promise<InferenceSummary> => {
+  const model = await loadFlatLightGBMModelFromR2(bucket, config.modelKey);
+  return runRunningStyleInferenceRowsWithFlatModel(db, {
+    model,
+    predictedAt: config.predictedAt,
+    rows: config.rows,
+  });
+};
+
+export const runRunningStyleInferenceRowsWithFlatModel = async (
+  db: D1Database,
+  config: LoadedFlatRowsInferenceConfig,
+): Promise<InferenceSummary> => {
+  const grouped = groupByRace(config.rows);
+  const predictions: RaceRunningStyleRow[] = [];
+  grouped.forEach((raceRows) => {
+    predictRaceFlat(raceRows, config.model, config.predictedAt).forEach((row) =>
+      predictions.push(row),
+    );
+  });
+  const writtenCount = await upsertRaceRunningStyles(db, predictions);
+  return {
+    horseCount: config.rows.length,
+    modelVersion: config.model.header.model_version,
+    raceCount: grouped.size,
+    writtenCount,
+  };
 };

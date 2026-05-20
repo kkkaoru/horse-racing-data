@@ -8,6 +8,9 @@
   "observability": {
     "enabled": true,
   },
+  "limits": {
+    "cpu_ms": 300000,
+  },
   "vars": {
     "ODDS_DO_TTL_SECONDS": "7200",
     "PREMIUM_PADDOCK_DO_TTL_SECONDS": "1800",
@@ -62,7 +65,7 @@
         "queue": "sync-realtime-data-running-style-jobs",
         "max_batch_size": 1,
         "max_batch_timeout": 5,
-        "max_concurrency": 8,
+        "max_concurrency": 3,
       },
     ],
   },

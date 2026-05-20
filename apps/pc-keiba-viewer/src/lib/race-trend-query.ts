@@ -1,0 +1,104 @@
+export const RACE_TREND_TARGET_QUERY_PARAM = "raceTrendTargets";
+
+const RACE_TREND_TARGET_QUERY_PARAM_ALIASES = ["trendTargets", "trend"] as const;
+
+export const RACE_TREND_TARGET_KEYS = ["runningStyle", "frame", "jockey", "raceNumber"] as const;
+
+export type RaceTrendTargetKey = (typeof RACE_TREND_TARGET_KEYS)[number];
+
+export type RaceTrendTargets = Record<RaceTrendTargetKey, boolean>;
+
+export const DEFAULT_RACE_TREND_TARGETS: RaceTrendTargets = {
+  runningStyle: false,
+  frame: true,
+  jockey: true,
+  raceNumber: false,
+};
+
+const EMPTY_RACE_TREND_TARGETS: RaceTrendTargets = {
+  runningStyle: false,
+  frame: false,
+  jockey: false,
+  raceNumber: false,
+};
+
+const TARGET_TOKEN_ALIASES: Record<string, RaceTrendTargetKey> = {
+  frame: "frame",
+  jockey: "jockey",
+  race: "raceNumber",
+  raceNumber: "raceNumber",
+  runningStyle: "runningStyle",
+  style: "runningStyle",
+};
+
+type SearchParamRecord = Record<string, string | string[] | undefined>;
+
+const getSearchParamValue = (
+  searchParams: URLSearchParams | SearchParamRecord,
+  name: string,
+): string | null => {
+  if (searchParams instanceof URLSearchParams) {
+    return searchParams.get(name);
+  }
+  const value = searchParams[name];
+  if (Array.isArray(value)) {
+    return value[0] ?? null;
+  }
+  return value ?? null;
+};
+
+export const getRaceTrendTargetQueryValue = (
+  searchParams: URLSearchParams | SearchParamRecord,
+): string | null =>
+  getSearchParamValue(searchParams, RACE_TREND_TARGET_QUERY_PARAM) ??
+  RACE_TREND_TARGET_QUERY_PARAM_ALIASES.map((name) => getSearchParamValue(searchParams, name)).find(
+    (value): value is string => value !== null,
+  ) ??
+  null;
+
+export const parseRaceTrendTargets = (value: string | null): RaceTrendTargets | null => {
+  if (value === null) {
+    return null;
+  }
+  const normalized = value.trim();
+  if (normalized === "" || normalized === "none") {
+    return { ...EMPTY_RACE_TREND_TARGETS };
+  }
+
+  const targets = { ...EMPTY_RACE_TREND_TARGETS };
+  let hasKnownToken = false;
+  for (const token of normalized.split(",")) {
+    const key = TARGET_TOKEN_ALIASES[token.trim()];
+    if (!key) {
+      continue;
+    }
+    targets[key] = true;
+    hasKnownToken = true;
+  }
+  return hasKnownToken ? targets : null;
+};
+
+export const getRaceTrendTargetsFromSearchParams = (
+  searchParams: URLSearchParams | SearchParamRecord,
+): RaceTrendTargets =>
+  parseRaceTrendTargets(getRaceTrendTargetQueryValue(searchParams)) ?? {
+    ...DEFAULT_RACE_TREND_TARGETS,
+  };
+
+export const serializeRaceTrendTargets = (targets: RaceTrendTargets): string => {
+  const selectedKeys = RACE_TREND_TARGET_KEYS.filter((key) => targets[key]);
+  return selectedKeys.length === 0 ? "none" : selectedKeys.join(",");
+};
+
+export const isSameRaceTrendTargets = (left: RaceTrendTargets, right: RaceTrendTargets): boolean =>
+  RACE_TREND_TARGET_KEYS.every((key) => left[key] === right[key]);
+
+export const isDefaultRaceTrendTargets = (targets: RaceTrendTargets): boolean =>
+  isSameRaceTrendTargets(targets, DEFAULT_RACE_TREND_TARGETS);
+
+export const clearRaceTrendTargetQueryParams = (searchParams: URLSearchParams): void => {
+  searchParams.delete(RACE_TREND_TARGET_QUERY_PARAM);
+  for (const name of RACE_TREND_TARGET_QUERY_PARAM_ALIASES) {
+    searchParams.delete(name);
+  }
+};

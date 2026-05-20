@@ -1,11 +1,12 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { NextResponse } from "next/server";
 
-import { getRacesByDate } from "../../../../db/queries";
+import { getRacesByDateWithoutJockeyNames } from "../../../../db/queries";
 import { getJstDateParts, parseIsoDateParts } from "../../../../lib/race-detail-section-cache";
 import {
   RACE_TREND_CACHE_PRE_START_SECONDS,
-  buildDefaultRaceTrendCacheOptions,
+  RACE_TREND_CACHE_WARM_VARIANT_COUNT,
+  buildRaceTrendCacheWarmOptions,
   getRaceStartTimeMs,
   type RaceTrendCacheWarmMessage,
 } from "../../../../lib/race-trend-cache";
@@ -70,34 +71,31 @@ export async function POST(request: Request) {
 
   const nowMs = parseNowMs(searchParams);
   const target = getTargetDateParts(searchParams, nowMs);
-  const races = await getRacesByDate(target.year, target.month, target.day);
-  const messages = races
-    .map((race): { delaySeconds: number; message: RaceTrendCacheWarmMessage } | null => {
+  const races = await getRacesByDateWithoutJockeyNames(target.year, target.month, target.day);
+  const messages = races.flatMap(
+    (race): { delaySeconds: number; message: RaceTrendCacheWarmMessage }[] => {
       const delaySeconds = getWarmDelaySeconds(race, nowMs);
       if (delaySeconds === null) {
-        return null;
+        return [];
       }
-      return {
+      return buildRaceTrendCacheWarmOptions(
+        race.source,
+        `${race.kaisaiNen}${race.kaisaiTsukihi}`,
+      ).map((options) => ({
         delaySeconds,
         message: {
           day: target.day,
           kind: "race-trend",
           keibajoCode: race.keibajoCode,
           month: target.month,
-          options: buildDefaultRaceTrendCacheOptions(
-            race.source,
-            `${race.kaisaiNen}${race.kaisaiTsukihi}`,
-          ),
+          options,
           raceNumber: race.raceBango,
           source: race.source,
           year: target.year,
         },
-      };
-    })
-    .filter(
-      (entry): entry is { delaySeconds: number; message: RaceTrendCacheWarmMessage } =>
-        entry !== null,
-    );
+      }));
+    },
+  );
 
   const env = await getCloudflareEnv();
   const queue = env?.DETAIL_SECTION_CACHE_QUEUE;
@@ -109,6 +107,7 @@ export async function POST(request: Request) {
         enqueued: 0,
         error: "DETAIL_SECTION_CACHE_QUEUE binding is unavailable",
         raceCount: races.length,
+        variantsPerRace: RACE_TREND_CACHE_WARM_VARIANT_COUNT,
       },
       { status: 503 },
     );
@@ -125,5 +124,6 @@ export async function POST(request: Request) {
     dueRaceCount: messages.length,
     enqueued: messages.length,
     raceCount: races.length,
+    variantsPerRace: RACE_TREND_CACHE_WARM_VARIANT_COUNT,
   });
 }

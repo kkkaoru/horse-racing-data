@@ -114,6 +114,10 @@ import {
   runRunningStyleCronTick,
 } from "./running-style-cron";
 import { handleRunningStylePredictionJob } from "./running-style-queue";
+import {
+  parseRunningStylePostgresVerificationParams,
+  runRunningStyleWorkerPostgresVerification,
+} from "./running-style-verification";
 import { readCachedTrackCondition, writeCachedTrackCondition } from "./track-condition-cache";
 import {
   getJraAdvanceOddsFetchSlotAt,
@@ -1928,6 +1932,19 @@ export default {
       const job = (await request.json()) as Job;
       await enqueueJobs(env, [job]);
       return json({ ok: true });
+    }
+
+    const runningStylePostgresVerificationParams = parseRunningStylePostgresVerificationParams(url);
+    if (runningStylePostgresVerificationParams && request.method === "POST") {
+      const expectedToken = env.REALTIME_ADMIN_TOKEN;
+      if (!expectedToken || request.headers.get("authorization") !== `Bearer ${expectedToken}`) {
+        return json({ error: "forbidden" }, { status: 403 });
+      }
+      const summary = await runRunningStyleWorkerPostgresVerification(
+        env,
+        runningStylePostgresVerificationParams,
+      );
+      return json({ ok: true, ...summary });
     }
 
     const premiumRaceKey = premiumRaceKeyFromRequest(url);

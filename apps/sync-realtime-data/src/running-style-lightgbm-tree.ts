@@ -69,8 +69,7 @@ const ZERO_FALLBACK = 0;
 const numberAt = (array: Float64Array | Uint8Array, index: number): number =>
   array[index] ?? ZERO_FALLBACK;
 
-const isSplitNode = (node: LightGBMTreeNode): node is LightGBMSplitNode =>
-  "split_feature" in node;
+const isSplitNode = (node: LightGBMTreeNode): node is LightGBMSplitNode => "split_feature" in node;
 
 const evaluateNumericSplit = (decisionType: string, threshold: number, value: number): boolean =>
   decisionType === DECISION_TYPE_LEQ ? value <= threshold : value < threshold;
@@ -81,7 +80,8 @@ const evaluateCategoricalSplit = (rawThreshold: number | string, value: number):
 };
 
 const goesLeftAtSplit = (node: LightGBMSplitNode, value: number): boolean => {
-  if (node.decision_type === DECISION_TYPE_EQ) return evaluateCategoricalSplit(node.threshold, value);
+  if (node.decision_type === DECISION_TYPE_EQ)
+    return evaluateCategoricalSplit(node.threshold, value);
   const threshold = typeof node.threshold === "number" ? node.threshold : Number(node.threshold);
   return evaluateNumericSplit(node.decision_type, threshold, value);
 };
@@ -91,7 +91,9 @@ const chooseNextChild = (node: LightGBMSplitNode, vector: FeatureVector): LightG
   if (numberAt(vector.missing, featureIndex) === MISSING_FLAG) {
     return node.default_left ? node.left_child : node.right_child;
   }
-  return goesLeftAtSplit(node, numberAt(vector.values, featureIndex)) ? node.left_child : node.right_child;
+  return goesLeftAtSplit(node, numberAt(vector.values, featureIndex))
+    ? node.left_child
+    : node.right_child;
 };
 
 export const walkTree = (root: LightGBMTreeNode, vector: FeatureVector): number => {
@@ -157,7 +159,8 @@ export const predictRunningStyle = (
 };
 
 const resolveFeatureCell = (raw: number | null | undefined): { value: number; missing: number } => {
-  if (raw === null || raw === undefined || Number.isNaN(raw)) return { missing: MISSING_FLAG, value: 0 };
+  if (raw === null || raw === undefined || Number.isNaN(raw))
+    return { missing: MISSING_FLAG, value: 0 };
   return { missing: 0, value: raw };
 };
 

@@ -386,6 +386,66 @@ const isObjectPayload = (payload: unknown): payload is { type?: unknown } =>
 const isSectionPayload = (payload: unknown, section: DetailSection): payload is SectionPayload =>
   isObjectPayload(payload) && payload.type === section;
 
+const MAX_SECTION_PAYLOAD_PROMISES = 64;
+const sectionPayloadPromises = new Map<string, Promise<SectionPayload>>();
+
+const rememberSectionPayloadPromise = (
+  url: string,
+  promise: Promise<SectionPayload>,
+): Promise<SectionPayload> => {
+  sectionPayloadPromises.set(url, promise);
+  if (sectionPayloadPromises.size > MAX_SECTION_PAYLOAD_PROMISES) {
+    const oldestUrl = sectionPayloadPromises.keys().next().value;
+    if (oldestUrl) {
+      sectionPayloadPromises.delete(oldestUrl);
+    }
+  }
+  void promise.catch(() => {
+    sectionPayloadPromises.delete(url);
+  });
+  return promise;
+};
+
+const fetchSectionPayload = (section: DetailSection, url: string): Promise<SectionPayload> =>
+  sectionPayloadPromises.get(url) ??
+  rememberSectionPayloadPromise(
+    url,
+    fetchWithRetry(url).then(async (response) => {
+      if (!response.ok) {
+        throw new Error(`${response.status} ${response.statusText}`.trim());
+      }
+      const payload: unknown = await response.json();
+      if (!isSectionPayload(payload, section)) {
+        throw new Error("Invalid section payload");
+      }
+      return payload;
+    }),
+  );
+
+const scheduleAfterNextPaint = (callback: () => void): (() => void) => {
+  if (typeof window === "undefined") {
+    callback();
+    return () => {};
+  }
+  let timeoutId: number | null = null;
+  const run = () => {
+    timeoutId = window.setTimeout(callback, 0);
+  };
+  const animationFrameId =
+    typeof window.requestAnimationFrame === "function" ? window.requestAnimationFrame(run) : null;
+  if (animationFrameId === null) {
+    run();
+  }
+  return () => {
+    if (animationFrameId !== null) {
+      window.cancelAnimationFrame(animationFrameId);
+    }
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+    }
+  };
+};
+
 const useSectionPayload = (
   section: DetailSection,
   props: LazyDetailSectionsProps,
@@ -405,40 +465,33 @@ const useSectionPayload = (
     let isActive = true;
     setState((current) => ({ error: null, payload: current.payload, status: "loading" }));
 
-    fetchWithRetry(url)
-      .then(async (response) => {
-        if (!response.ok) {
-          throw new Error(`${response.status} ${response.statusText}`.trim());
-        }
-        const payload: unknown = await response.json();
-        if (!isSectionPayload(payload, section)) {
-          throw new Error("Invalid section payload");
-        }
-        return payload;
-      })
-      .then((payload) => {
-        if (!isActive) {
+    const cancelScheduledLoad = scheduleAfterNextPaint(() => {
+      fetchSectionPayload(section, url)
+        .then((payload) => {
+          if (!isActive) {
+            return undefined;
+          }
+          setState({ error: null, payload, status: "ready" });
           return undefined;
-        }
-        setState({ error: null, payload, status: "ready" });
-        return undefined;
-      })
-      .catch((error: unknown) => {
-        if (!isActive) {
-          return;
-        }
-        if (error instanceof DOMException && error.name === "AbortError") {
-          return;
-        }
-        setState({
-          error: error instanceof Error ? error.message : "unknown error",
-          payload: null,
-          status: "error",
+        })
+        .catch((error: unknown) => {
+          if (!isActive) {
+            return;
+          }
+          if (error instanceof DOMException && error.name === "AbortError") {
+            return;
+          }
+          setState({
+            error: error instanceof Error ? error.message : "unknown error",
+            payload: null,
+            status: "error",
+          });
         });
-      });
+    });
 
     return () => {
       isActive = false;
+      cancelScheduledLoad();
     };
   }, [section, url]);
 

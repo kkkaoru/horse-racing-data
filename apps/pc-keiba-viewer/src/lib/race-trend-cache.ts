@@ -10,6 +10,8 @@ export const RACE_TREND_CACHE_PRE_START_SECONDS = 20 * 60;
 
 export const RACE_TREND_CACHE_AFTER_START_SECONDS = 6 * 60 * 60;
 
+export const RACE_TREND_CACHE_WARM_VARIANT_COUNT = 4;
+
 export interface RaceTrendCacheOptions {
   frameEndYmd: string;
   frameStartYmd: string;
@@ -64,9 +66,37 @@ export const buildDefaultRaceTrendCacheOptions = (
     runningStyleIgnoreFrame: false,
     runningStyleIgnoreJockey: false,
     runningStyleIgnoreRaceNumber: true,
-    runningStyleIgnoreRunningStyle: false,
+    runningStyleIgnoreRunningStyle: true,
     source,
   };
+};
+
+export const buildRaceTrendCacheWarmOptions = (
+  source: RaceSource,
+  targetYmd: string,
+): RaceTrendCacheOptions[] => {
+  const defaultOptions = buildDefaultRaceTrendCacheOptions(source, targetYmd);
+  return [
+    defaultOptions,
+    {
+      ...defaultOptions,
+      runningStyleIgnoreFrame: true,
+      runningStyleIgnoreJockey: true,
+      runningStyleIgnoreRunningStyle: false,
+    },
+    {
+      ...defaultOptions,
+      runningStyleIgnoreFrame: false,
+      runningStyleIgnoreJockey: true,
+      runningStyleIgnoreRunningStyle: true,
+    },
+    {
+      ...defaultOptions,
+      runningStyleIgnoreFrame: true,
+      runningStyleIgnoreJockey: false,
+      runningStyleIgnoreRunningStyle: true,
+    },
+  ];
 };
 
 export const buildRaceTrendCacheKey = ({
