@@ -1,0 +1,838 @@
+{
+  "version": 1,
+  "category": "jra",
+  "note": "JRA G1 25 races and their trial races. kyosomei matching uses normalized form (NFKC + remove half/full-width spaces). grade_code='A'=G1, 'B'=G2, 'C'=G3, 'D'/'E'/'F'/'G'=others.",
+  "match_normalize": "replace(replace(kyosomei_hondai, '　', ''), ' ', '')",
+  "target_races": [
+    {
+      "id": "february_s",
+      "name": "フェブラリーステークス",
+      "match": {
+        "kyosomei_equals": "フェブラリーステークス",
+        "keibajo_code": "05",
+        "kyori": 1600
+      },
+      "trials": [
+        {
+          "name": "東京新聞杯",
+          "match": {
+            "kyosomei_equals": "東京新聞杯"
+          },
+          "lookback_days": 30
+        },
+        {
+          "name": "根岸ステークス",
+          "match": {
+            "kyosomei_equals": "根岸ステークス"
+          },
+          "lookback_days": 30
+        },
+        {
+          "name": "東海ステークス",
+          "match": {
+            "kyosomei_equals": "東海ステークス"
+          },
+          "lookback_days": 45
+        }
+      ]
+    },
+    {
+      "id": "takamatsunomiya_kinen",
+      "name": "高松宮記念",
+      "match": {
+        "kyosomei_equals": "高松宮記念",
+        "keibajo_code": "07",
+        "kyori": 1200
+      },
+      "trials": [
+        {
+          "name": "シルクロードステークス",
+          "match": {
+            "kyosomei_equals": "シルクロードステークス"
+          },
+          "lookback_days": 60
+        },
+        {
+          "name": "オーシャンステークス",
+          "match": {
+            "kyosomei_equals": "オーシャンステークス"
+          },
+          "lookback_days": 30
+        },
+        {
+          "name": "阪急杯",
+          "match": {
+            "kyosomei_equals": "阪急杯"
+          },
+          "lookback_days": 30
+        }
+      ]
+    },
+    {
+      "id": "osaka_hai",
+      "name": "大阪杯",
+      "match": {
+        "kyosomei_equals": "大阪杯",
+        "keibajo_code": "09",
+        "kyori": 2000
+      },
+      "trials": [
+        {
+          "name": "金鯱賞",
+          "match": {
+            "kyosomei_equals": "金鯱賞"
+          },
+          "lookback_days": 30
+        },
+        {
+          "name": "中山記念",
+          "match": {
+            "kyosomei_equals": "中山記念"
+          },
+          "lookback_days": 60
+        },
+        {
+          "name": "産経大阪杯",
+          "match": {
+            "kyosomei_equals": "産経大阪杯"
+          },
+          "lookback_days": 365
+        }
+      ]
+    },
+    {
+      "id": "ouka_sho",
+      "name": "桜花賞",
+      "match": {
+        "kyosomei_equals": "桜花賞",
+        "keibajo_code": "09",
+        "kyori": 1600
+      },
+      "trials": [
+        {
+          "name": "チューリップ賞",
+          "match": {
+            "kyosomei_equals": "チューリップ賞"
+          },
+          "lookback_days": 45
+        },
+        {
+          "name": "フィリーズレビュー",
+          "match": {
+            "kyosomei_equals": "フィリーズレビュー"
+          },
+          "lookback_days": 30
+        },
+        {
+          "name": "アネモネステークス",
+          "match": {
+            "kyosomei_equals": "アネモネステークス"
+          },
+          "lookback_days": 30
+        },
+        {
+          "name": "阪神ジュベナイルフィリーズ",
+          "match": {
+            "kyosomei_equals": "阪神ジュベナイルフィリーズ"
+          },
+          "lookback_days": 180
+        }
+      ]
+    },
+    {
+      "id": "satsuki_sho",
+      "name": "皐月賞",
+      "match": {
+        "kyosomei_equals": "皐月賞",
+        "keibajo_code": "06",
+        "kyori": 2000
+      },
+      "trials": [
+        {
+          "name": "弥生賞",
+          "match": {
+            "kyosomei_contains": "弥生賞"
+          },
+          "lookback_days": 60
+        },
+        {
+          "name": "スプリングステークス",
+          "match": {
+            "kyosomei_equals": "スプリングステークス"
+          },
+          "lookback_days": 30
+        },
+        {
+          "name": "共同通信杯",
+          "match": {
+            "kyosomei_equals": "共同通信杯"
+          },
+          "lookback_days": 90
+        },
+        {
+          "name": "若葉ステークス",
+          "match": {
+            "kyosomei_equals": "若葉ステークス"
+          },
+          "lookback_days": 30
+        },
+        {
+          "name": "ホープフルステークス",
+          "match": {
+            "kyosomei_equals": "ホープフルステークス"
+          },
+          "lookback_days": 180
+        }
+      ]
+    },
+    {
+      "id": "tenno_sho_spring",
+      "name": "天皇賞(春)",
+      "match": {
+        "kyosomei_contains": "天皇賞（春）",
+        "kyori": 3200
+      },
+      "trials": [
+        {
+          "name": "阪神大賞典",
+          "match": {
+            "kyosomei_equals": "阪神大賞典"
+          },
+          "lookback_days": 60
+        },
+        {
+          "name": "日経賞",
+          "match": {
+            "kyosomei_equals": "日経賞"
+          },
+          "lookback_days": 45
+        },
+        {
+          "name": "ダイヤモンドステークス",
+          "match": {
+            "kyosomei_equals": "ダイヤモンドステークス"
+          },
+          "lookback_days": 90
+        }
+      ]
+    },
+    {
+      "id": "nhk_mile_cup",
+      "name": "NHKマイルカップ",
+      "match": {
+        "kyosomei_contains": "ＮＨＫマイルカップ",
+        "keibajo_code": "05",
+        "kyori": 1600
+      },
+      "trials": [
+        {
+          "name": "ニュージーランドトロフィー",
+          "match": {
+            "kyosomei_equals": "ニュージーランドトロフィー"
+          },
+          "lookback_days": 30
+        },
+        {
+          "name": "アーリントンカップ",
+          "match": {
+            "kyosomei_equals": "アーリントンカップ"
+          },
+          "lookback_days": 30
+        },
+        {
+          "name": "ファルコンステークス",
+          "match": {
+            "kyosomei_equals": "ファルコンステークス"
+          },
+          "lookback_days": 60
+        }
+      ]
+    },
+    {
+      "id": "victoria_mile",
+      "name": "ヴィクトリアマイル",
+      "match": {
+        "kyosomei_equals": "ヴィクトリアマイル",
+        "keibajo_code": "05",
+        "kyori": 1600
+      },
+      "trials": [
+        {
+          "name": "京都牝馬ステークス",
+          "match": {
+            "kyosomei_equals": "京都牝馬ステークス"
+          },
+          "lookback_days": 90
+        },
+        {
+          "name": "阪神牝馬ステークス",
+          "match": {
+            "kyosomei_equals": "阪神牝馬ステークス"
+          },
+          "lookback_days": 60
+        },
+        {
+          "name": "東京新聞杯",
+          "match": {
+            "kyosomei_equals": "東京新聞杯"
+          },
+          "lookback_days": 120
+        }
+      ]
+    },
+    {
+      "id": "yushun_himba_oaks",
+      "name": "優駿牝馬(オークス)",
+      "match": {
+        "kyosomei_equals": "優駿牝馬",
+        "keibajo_code": "05",
+        "kyori": 2400
+      },
+      "trials": [
+        {
+          "name": "桜花賞",
+          "match": {
+            "kyosomei_equals": "桜花賞"
+          },
+          "lookback_days": 60
+        },
+        {
+          "name": "フローラステークス",
+          "match": {
+            "kyosomei_equals": "フローラステークス"
+          },
+          "lookback_days": 45
+        },
+        {
+          "name": "スイートピーステークス",
+          "match": {
+            "kyosomei_equals": "スイートピーステークス"
+          },
+          "lookback_days": 30
+        },
+        {
+          "name": "忘れな草賞",
+          "match": {
+            "kyosomei_equals": "忘れな草賞"
+          },
+          "lookback_days": 60
+        }
+      ]
+    },
+    {
+      "id": "tokyo_yushun_derby",
+      "name": "東京優駿(ダービー)",
+      "match": {
+        "kyosomei_equals": "東京優駿",
+        "keibajo_code": "05",
+        "kyori": 2400
+      },
+      "trials": [
+        {
+          "name": "皐月賞",
+          "match": {
+            "kyosomei_equals": "皐月賞"
+          },
+          "lookback_days": 60
+        },
+        {
+          "name": "青葉賞",
+          "match": {
+            "kyosomei_contains": "青葉賞"
+          },
+          "lookback_days": 45
+        },
+        {
+          "name": "京都新聞杯",
+          "match": {
+            "kyosomei_equals": "京都新聞杯"
+          },
+          "lookback_days": 45
+        },
+        {
+          "name": "プリンシパルステークス",
+          "match": {
+            "kyosomei_equals": "プリンシパルステークス"
+          },
+          "lookback_days": 30
+        },
+        {
+          "name": "毎日杯",
+          "match": {
+            "kyosomei_equals": "毎日杯"
+          },
+          "lookback_days": 90
+        }
+      ]
+    },
+    {
+      "id": "yasuda_kinen",
+      "name": "安田記念",
+      "match": {
+        "kyosomei_contains": "安田記念",
+        "keibajo_code": "05",
+        "kyori": 1600
+      },
+      "trials": [
+        {
+          "name": "ヴィクトリアマイル",
+          "match": {
+            "kyosomei_equals": "ヴィクトリアマイル"
+          },
+          "lookback_days": 30
+        },
+        {
+          "name": "京王杯スプリングカップ",
+          "match": {
+            "kyosomei_equals": "京王杯スプリングカップ"
+          },
+          "lookback_days": 45
+        },
+        {
+          "name": "マイラーズカップ",
+          "match": {
+            "kyosomei_equals": "マイラーズカップ"
+          },
+          "lookback_days": 60
+        }
+      ]
+    },
+    {
+      "id": "takarazuka_kinen",
+      "name": "宝塚記念",
+      "match": {
+        "kyosomei_equals": "宝塚記念",
+        "kyori": 2200
+      },
+      "trials": [
+        {
+          "name": "大阪杯",
+          "match": {
+            "kyosomei_equals": "大阪杯"
+          },
+          "lookback_days": 90
+        },
+        {
+          "name": "天皇賞（春）",
+          "match": {
+            "kyosomei_contains": "天皇賞（春）"
+          },
+          "lookback_days": 60
+        },
+        {
+          "name": "金鯱賞",
+          "match": {
+            "kyosomei_equals": "金鯱賞"
+          },
+          "lookback_days": 120
+        },
+        {
+          "name": "目黒記念",
+          "match": {
+            "kyosomei_equals": "目黒記念"
+          },
+          "lookback_days": 45
+        }
+      ]
+    },
+    {
+      "id": "sprinters_s",
+      "name": "スプリンターズステークス",
+      "match": {
+        "kyosomei_equals": "スプリンターズステークス",
+        "keibajo_code": "06",
+        "kyori": 1200
+      },
+      "trials": [
+        {
+          "name": "セントウルステークス",
+          "match": {
+            "kyosomei_equals": "セントウルステークス"
+          },
+          "lookback_days": 30
+        },
+        {
+          "name": "キーンランドカップ",
+          "match": {
+            "kyosomei_equals": "キーンランドカップ"
+          },
+          "lookback_days": 45
+        },
+        {
+          "name": "北九州記念",
+          "match": {
+            "kyosomei_equals": "北九州記念"
+          },
+          "lookback_days": 60
+        }
+      ]
+    },
+    {
+      "id": "shuka_sho",
+      "name": "秋華賞",
+      "match": {
+        "kyosomei_equals": "秋華賞",
+        "kyori": 2000
+      },
+      "trials": [
+        {
+          "name": "紫苑ステークス",
+          "match": {
+            "kyosomei_equals": "紫苑ステークス"
+          },
+          "lookback_days": 45
+        },
+        {
+          "name": "ローズステークス",
+          "match": {
+            "kyosomei_equals": "ローズステークス"
+          },
+          "lookback_days": 30
+        },
+        {
+          "name": "クイーンステークス",
+          "match": {
+            "kyosomei_equals": "クイーンステークス"
+          },
+          "lookback_days": 90
+        },
+        {
+          "name": "優駿牝馬",
+          "match": {
+            "kyosomei_equals": "優駿牝馬"
+          },
+          "lookback_days": 180
+        }
+      ]
+    },
+    {
+      "id": "kikkasho",
+      "name": "菊花賞",
+      "match": {
+        "kyosomei_equals": "菊花賞",
+        "kyori": 3000
+      },
+      "trials": [
+        {
+          "name": "神戸新聞杯",
+          "match": {
+            "kyosomei_equals": "神戸新聞杯"
+          },
+          "lookback_days": 30
+        },
+        {
+          "name": "セントライト記念",
+          "match": {
+            "kyosomei_equals": "セントライト記念"
+          },
+          "lookback_days": 30
+        },
+        {
+          "name": "東京優駿",
+          "match": {
+            "kyosomei_equals": "東京優駿"
+          },
+          "lookback_days": 180
+        }
+      ]
+    },
+    {
+      "id": "tenno_sho_autumn",
+      "name": "天皇賞(秋)",
+      "match": {
+        "kyosomei_contains": "天皇賞（秋）",
+        "keibajo_code": "05",
+        "kyori": 2000
+      },
+      "trials": [
+        {
+          "name": "毎日王冠",
+          "match": {
+            "kyosomei_equals": "毎日王冠"
+          },
+          "lookback_days": 45
+        },
+        {
+          "name": "オールカマー",
+          "match": {
+            "kyosomei_equals": "オールカマー"
+          },
+          "lookback_days": 45
+        },
+        {
+          "name": "京都大賞典",
+          "match": {
+            "kyosomei_equals": "京都大賞典"
+          },
+          "lookback_days": 45
+        },
+        {
+          "name": "札幌記念",
+          "match": {
+            "kyosomei_equals": "札幌記念"
+          },
+          "lookback_days": 90
+        }
+      ]
+    },
+    {
+      "id": "queen_elizabeth_cup",
+      "name": "エリザベス女王杯",
+      "match": {
+        "kyosomei_equals": "エリザベス女王杯",
+        "kyori": 2200
+      },
+      "trials": [
+        {
+          "name": "府中牝馬ステークス",
+          "match": {
+            "kyosomei_equals": "府中牝馬ステークス"
+          },
+          "lookback_days": 45
+        },
+        {
+          "name": "秋華賞",
+          "match": {
+            "kyosomei_equals": "秋華賞"
+          },
+          "lookback_days": 30
+        },
+        {
+          "name": "オールカマー",
+          "match": {
+            "kyosomei_equals": "オールカマー"
+          },
+          "lookback_days": 60
+        }
+      ]
+    },
+    {
+      "id": "mile_cs",
+      "name": "マイルチャンピオンシップ",
+      "match": {
+        "kyosomei_equals": "マイルチャンピオンシップ",
+        "kyori": 1600
+      },
+      "trials": [
+        {
+          "name": "毎日王冠",
+          "match": {
+            "kyosomei_equals": "毎日王冠"
+          },
+          "lookback_days": 60
+        },
+        {
+          "name": "富士ステークス",
+          "match": {
+            "kyosomei_equals": "富士ステークス"
+          },
+          "lookback_days": 30
+        },
+        {
+          "name": "スワンステークス",
+          "match": {
+            "kyosomei_equals": "スワンステークス"
+          },
+          "lookback_days": 30
+        }
+      ]
+    },
+    {
+      "id": "japan_cup",
+      "name": "ジャパンカップ",
+      "match": {
+        "kyosomei_equals": "ジャパンカップ",
+        "keibajo_code": "05",
+        "kyori": 2400
+      },
+      "trials": [
+        {
+          "name": "天皇賞（秋）",
+          "match": {
+            "kyosomei_contains": "天皇賞（秋）"
+          },
+          "lookback_days": 30
+        },
+        {
+          "name": "エリザベス女王杯",
+          "match": {
+            "kyosomei_equals": "エリザベス女王杯"
+          },
+          "lookback_days": 30
+        },
+        {
+          "name": "京都大賞典",
+          "match": {
+            "kyosomei_equals": "京都大賞典"
+          },
+          "lookback_days": 60
+        }
+      ]
+    },
+    {
+      "id": "champions_cup",
+      "name": "チャンピオンズカップ",
+      "match": {
+        "kyosomei_equals": "チャンピオンズカップ",
+        "keibajo_code": "07",
+        "kyori": 1800
+      },
+      "trials": [
+        {
+          "name": "JBCクラシック",
+          "match": {
+            "kyosomei_contains": "ＪＢＣクラシック"
+          },
+          "lookback_days": 60
+        },
+        {
+          "name": "みやこステークス",
+          "match": {
+            "kyosomei_equals": "みやこステークス"
+          },
+          "lookback_days": 30
+        },
+        {
+          "name": "武蔵野ステークス",
+          "match": {
+            "kyosomei_equals": "武蔵野ステークス"
+          },
+          "lookback_days": 30
+        }
+      ]
+    },
+    {
+      "id": "hanshin_jf",
+      "name": "阪神ジュベナイルフィリーズ",
+      "match": {
+        "kyosomei_equals": "阪神ジュベナイルフィリーズ",
+        "kyori": 1600
+      },
+      "trials": [
+        {
+          "name": "アルテミスステークス",
+          "match": {
+            "kyosomei_equals": "アルテミスステークス"
+          },
+          "lookback_days": 45
+        },
+        {
+          "name": "ファンタジーステークス",
+          "match": {
+            "kyosomei_equals": "ファンタジーステークス"
+          },
+          "lookback_days": 45
+        },
+        {
+          "name": "新潟2歳ステークス",
+          "match": {
+            "kyosomei_equals": "新潟2歳ステークス"
+          },
+          "lookback_days": 120
+        }
+      ]
+    },
+    {
+      "id": "asahihai_fs",
+      "name": "朝日杯フューチュリティステークス",
+      "match": {
+        "kyosomei_equals": "朝日杯フューチュリティステークス",
+        "kyori": 1600
+      },
+      "trials": [
+        {
+          "name": "デイリー杯2歳ステークス",
+          "match": {
+            "kyosomei_equals": "デイリー杯2歳ステークス"
+          },
+          "lookback_days": 45
+        },
+        {
+          "name": "京王杯2歳ステークス",
+          "match": {
+            "kyosomei_equals": "京王杯2歳ステークス"
+          },
+          "lookback_days": 30
+        },
+        {
+          "name": "サウジアラビアロイヤルカップ",
+          "match": {
+            "kyosomei_equals": "サウジアラビアロイヤルカップ"
+          },
+          "lookback_days": 60
+        }
+      ]
+    },
+    {
+      "id": "arima_kinen",
+      "name": "有馬記念",
+      "match": {
+        "kyosomei_equals": "有馬記念",
+        "keibajo_code": "06",
+        "kyori": 2500
+      },
+      "trials": [
+        {
+          "name": "ジャパンカップ",
+          "match": {
+            "kyosomei_equals": "ジャパンカップ"
+          },
+          "lookback_days": 30
+        },
+        {
+          "name": "天皇賞（秋）",
+          "match": {
+            "kyosomei_contains": "天皇賞（秋）"
+          },
+          "lookback_days": 60
+        },
+        {
+          "name": "菊花賞",
+          "match": {
+            "kyosomei_equals": "菊花賞"
+          },
+          "lookback_days": 90
+        },
+        {
+          "name": "エリザベス女王杯",
+          "match": {
+            "kyosomei_equals": "エリザベス女王杯"
+          },
+          "lookback_days": 45
+        }
+      ]
+    },
+    {
+      "id": "hopeful_s",
+      "name": "ホープフルステークス",
+      "match": {
+        "kyosomei_equals": "ホープフルステークス",
+        "keibajo_code": "06",
+        "kyori": 2000
+      },
+      "trials": [
+        {
+          "name": "東京スポーツ杯2歳ステークス",
+          "match": {
+            "kyosomei_equals": "東京スポーツ杯2歳ステークス"
+          },
+          "lookback_days": 45
+        },
+        {
+          "name": "京都2歳ステークス",
+          "match": {
+            "kyosomei_equals": "京都2歳ステークス"
+          },
+          "lookback_days": 45
+        },
+        {
+          "name": "札幌2歳ステークス",
+          "match": {
+            "kyosomei_equals": "札幌2歳ステークス"
+          },
+          "lookback_days": 120
+        }
+      ]
+    }
+  ]
+}

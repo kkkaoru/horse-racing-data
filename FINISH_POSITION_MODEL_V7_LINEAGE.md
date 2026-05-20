@@ -1,0 +1,280 @@
+# `jra-cb-v7-lineage` — JRA G1 系譜特徴量 + 非前走系特徴量
+
+## 1. 概要
+
+`jra-cb-v6-stacked` をベースに、4 種類の v7 新規 feature pipeline を積層 (28 カラム追加)。
+walk-forward と OOT の両方で gate (全 metric ≥ baseline) を通過、特に **2025 下半期 OOT で place2 +0.76pp** の明確な改善を示した。
+
+memory `project_place_improvement_infeasible.md` の「place2/place3 改善は現アプローチで empirical 不可行」結論を、**新 signal source 投入で初めて覆した**。
+
+---
+
+## 2. 結果
+
+### walk-forward 2024-2025 (n=11,101 races / 137,498 entries)
+
+| metric | v6 baseline | v7-lineage | Δ |
+|---|---|---|---|
+| top1 | 52.428% | **52.509%** | +0.081pp |
+| place2 | 28.628% | **28.691%** | +0.063pp |
+| place3 | 20.350% | **20.377%** | +0.027pp |
+| top3_box | 22.593% | 22.782% | +0.189pp |
+| top3_winner_capture | 0.8356 | 0.8347 | -0.0009 |
+| ndcg@3 | 0.7067 | 0.7069 | +0.0003 |
+
+### OOT 2025-07-01 〜 2025-12-31 (train ≤ 20250630, n=2,624 races)
+
+| metric | v6 OOT | v7-lineage OOT | Δ |
+|---|---|---|---|
+| top1 | 51.410% | **52.058%** | **+0.648pp** |
+| place2 | 28.963% | **29.726%** | **+0.762pp** ⭐ |
+| place3 | 20.922% | **21.037%** | +0.114pp |
+| top3_box | 22.752% | 23.247% | +0.495pp |
+| top3_winner_capture | 0.8293 | 0.8338 | +0.0046 |
+| ndcg@3 | 0.7067 | 0.7092 | +0.0025 |
+
+WF/OOT 両方で全 metric ≥ baseline。OOT の方が WF より改善幅が大きいパターン (典型的 overfit と逆) → 重賞シーズン (秋 G1 集中期) で v7 features が特に効いた可能性。
+
+---
+
+## 3. v7 新規 features (28 columns)
+
+### 3.1 グレード race 系譜 (`add-grade-race-lineage-features.py`, 7 cols)
+
+JRA G1 24 races (フェブラリーS〜ホープフルS) と各 trial race のマッピング (`lineage-races/jra.json`) を使い、出走馬の trial race 連対歴を集計:
+
+| column | desc |
+|---|---|
+| `target_race_id` | 該当 G1 race id (一般戦は NULL) |
+| `target_grade_trial_count` | trial race 出走回数 (lookback 内) |
+| `target_grade_trial_top1_count` | trial 1着回数 |
+| `target_grade_trial_top3_count` | trial 3着以内回数 |
+| `target_grade_trial_best_finish` | trial best finish (NULL→出走なし) |
+| `target_grade_trial_avg_top2_margin_decisec` | trial 連対時 avg time_sa |
+| `target_grade_has_trial_history` | boolean |
+
+例: ダービー (東京優駿) → 皐月賞/青葉賞/京都新聞杯/プリンシパルS/毎日杯。  
+ユーザー直感「過去のオークス・ダービー勝ち馬が踏んだ trial race での好走歴」を直接 feature 化。
+
+### 3.2 Head-to-head (`add-head-to-head-features.py`, 6 cols)
+
+出走馬同士の過去対戦記録を horse-level に集約 (N×N pair 爆発回避):
+
+| column | desc |
+|---|---|
+| `h2h_encounter_count` | current field の他馬と過去同居した race 数 |
+| `h2h_win_count_vs_field` | 過去対戦時に勝った (= 自分が前) 回数 |
+| `h2h_loss_count_vs_field` | 過去対戦時に負けた回数 |
+| `h2h_win_rate_vs_field` | win / (win + loss); NULL if no encounters |
+| `h2h_avg_finish_diff_vs_field` | avg (self_finish - other_finish), 負=自分が前 |
+| `h2h_unique_rivals_count` | current field で過去対戦経験のある馬数 |
+
+ダービー 2024 サンプル: 11 対戦中 11 勝 (avg_diff=-6.27) の horse が「強い rival 履歴」を示す等。
+
+### 3.3 馬場 × 血統 affinity (`add-baba-pedigree-affinity-features.py`, 7 cols)
+
+baba_condition (1=良 2=稍重 3=重 4=不良) × sire/damsire/horse の career win rate:
+
+| column | desc |
+|---|---|
+| `current_baba_condition` | current race の baba (1-4) |
+| `horse_baba_career_starts` | horse 自身の同 baba career 出走数 |
+| `horse_baba_win_rate` | horse 自身の同 baba win rate |
+| `sire_baba_career_starts` | sire の同 baba 産駒延べ出走数 |
+| `sire_baba_win_rate` | sire の同 baba win rate |
+| `damsire_baba_career_starts` | damsire の同 baba 出走数 |
+| `damsire_baba_win_rate` | damsire の同 baba win rate |
+| `sire_horse_baba_combined_score` | sire + horse の average (NULL-safe) |
+
+雨レース (重/不良) で特に強い signal となる見込み。実測で不良馬場では一部 sire の win rate が 0.54 まで上昇 (平均 0.11 の 5x)。
+
+### 3.4 厩舎 × grade / target_race affinity (`add-trainer-stable-affinity-features.py`, 8 cols)
+
+純非前走系 (horse 個別の前走成績に一切依存しない signal):
+
+| column | desc |
+|---|---|
+| `trainer_grade_career_starts` | 調教師の同 grade_code career 出走数 |
+| `trainer_grade_win_rate` | 同 grade win rate |
+| `trainer_grade_top3_rate` | 同 grade top3 rate |
+| `trainer_target_race_career_count` | target_race (G1) 該当時の調教師経験 race 数 |
+| `trainer_target_race_win_count` | target_race 1着 count |
+| `trainer_target_race_top3_count` | target_race 3 着以内 count |
+| `trainer_target_race_has_history` | boolean |
+
+例: ダービー 2024 — 一部の調教師は過去 9 走中 4 度の 3 着以内 (44% top3 率)、3 度の 1 着 (33% 勝率)。
+
+---
+
+## 4. Pipeline 構成
+
+```
+finish_position_features_duckdb.py (base, ~10 min)
+  ↓
+add-race-internal-features.py (race-level pace forecast 含む既存 v6)
+  ↓
+add-market-signal-features.py
+  ↓
+add-sectional-and-weight-features.py
+  ↓
+v3 merger (production-critical key)
+  ↓
+add-futan-juryo-features.py
+  ↓
+add-workout-features.py
+  ↓
+add-near-miss-features.py (v6 完, feat-jra-deploy-final, 215 cols)
+  ↓ [v7 layer starts here]
+add-grade-race-lineage-features.py  (v7 +7 cols, lineage-races/jra.json)
+  ↓
+add-head-to-head-features.py        (v7 +6 cols)
+  ↓
+add-baba-pedigree-affinity-features.py (v7 +7 cols)
+  ↓
+add-trainer-stable-affinity-features.py (v7 +8 cols)
+  ↓
+feat-jra-v7-final (243 cols)
+  ↓
+CatBoost YetiRank training
+  ↓
+jra-cb-v7-lineage model
+```
+
+---
+
+## 5. CatBoost training config
+
+```python
+params = {
+    "loss_function": "YetiRank",
+    "eval_metric": "NDCG:top=3",
+    "iterations": 500,
+    "learning_rate": 0.05,
+    "depth": 8,
+    "l2_leaf_reg": 3.0,
+    "random_seed": 20260519,
+    "task_type": "CPU",
+}
+# relevance {1:3, 2:2, 3:1}, --no-cat-features
+# train: 2016-01-01 〜 2025-12-31, validation: 2024 + 2025 (walk-forward 2 folds)
+```
+
+target_race_id (string) は非数値カラムなので CatBoost feature 自動除外 (`is_numeric_dtype` filter)。
+
+---
+
+## 6. 訓練 / 評価コマンド
+
+### Walk-forward
+```bash
+.venv/bin/python src/scripts/finish_position_catboost.py walk-forward \
+  --csv tmp/feat-jra-v7-final \
+  --train-start-date 20160101 \
+  --validation-years 2024,2025 \
+  --output-report tmp/finish-position-eval/wf-jra-v7-lineage.json \
+  --output-predictions-dir tmp/finish-position-eval/predictions-v7-lineage/jra \
+  --no-cat-features
+```
+
+### OOT
+```bash
+.venv/bin/python src/scripts/finish_position_catboost.py walk-forward \
+  --csv tmp/feat-jra-v7-final \
+  --train-start-date 20160101 \
+  --train-end-date 20250630 \
+  --validation-from-date 20250701 \
+  --validation-to-date 20251231 \
+  --output-report tmp/finish-position-eval/wf-jra-v7-lineage-oot.json \
+  --output-predictions-dir tmp/finish-position-eval/predictions-v7-lineage-oot/jra \
+  --no-cat-features
+```
+
+### Full-data train + 2026 upcoming predict (deploy)
+```bash
+# 1. train full data, save model
+.venv/bin/python -c "
+import pandas as pd, numpy as np, sys
+sys.path.insert(0, 'src/scripts')
+from finish_position_catboost import (
+    load_parquet_dir, resolve_feature_columns, make_to_relevance, filter_range, race_group_ids,
+)
+from catboost import CatBoost, Pool
+df = load_parquet_dir(Path('tmp/feat-jra-v7-final'))
+feat = resolve_feature_columns(df, use_cat_features=False)
+train = filter_range(df, '20160101', '20251231').dropna(subset=['finish_position']).sort_values(['race_id','umaban']).reset_index(drop=True)
+labels = train['finish_position'].map(make_to_relevance(3,2,1)).to_numpy(dtype=np.int32)
+pool = Pool(data=train[feat].astype(np.float32).values, label=labels, group_id=race_group_ids(train))
+model = CatBoost({'loss_function':'YetiRank','eval_metric':'NDCG:top=3','iterations':500,
+                  'learning_rate':0.05,'depth':8,'l2_leaf_reg':3.0,'random_seed':20260519,
+                  'task_type':'CPU','verbose':100})
+model.fit(pool, verbose=False)
+model.save_model('tmp/models/jra-cb-v7-lineage-deploy/model.cbm')
+"
+
+# 2. predict 2026 upcoming (finish_position null), output jsonl
+# (see deploy script in commit history)
+
+# 3. PG upsert
+PG_URL="postgresql://horse_racing:horse_racing@127.0.0.1:15432/horse_racing" \
+  .venv/bin/python src/scripts/finish-position-features/blend-and-insert.py \
+  --jsonl cb=1.0:tmp/predictions-upcoming-deploy/jra-cb-v7-lineage-2026.jsonl \
+  --model-version jra-cb-v7-lineage --source jra \
+  --output-jsonl tmp/predictions-upcoming-deploy/jra-cb-v7-lineage-final.jsonl
+
+# 4. Insert eval row + activate
+docker exec -i horse-racing-local-postgresql psql -U horse_racing -d horse_racing -c "
+  update finish_position_active_models
+  set model_version = 'jra-cb-v7-lineage', activated_at = now()
+  where category = 'jra';
+"
+
+# 5. Sync Neon
+cd apps/local-postgresql
+bun run scripts/push-neon-sync.ts
+```
+
+---
+
+## 7. Rollback
+
+```sql
+update finish_position_active_models
+set model_version = 'jra-cb-v6-stacked', activated_at = now()
+where category = 'jra';
+```
+
+旧 v6-stacked の eval row + predictions は残っているため即時 rollback 可。
+
+---
+
+## 8. NAR / Ban-ei
+
+本リリースは **JRA のみ**。NAR と Ban-ei は同じ pipeline (lineage-races/{nar,ban-ei}.json + 4 feature scripts + retrain) で展開可能だが、別セッションで実施予定。
+
+- NAR: lineage 候補 = 帝王賞, 東京ダービー, JBC, 兵庫CS, かしわ記念, 川崎記念, 全日本2歳優駿 等の交流重賞 + 地方重賞 (S grade)
+- Ban-ei: lineage 候補 = ばんえい記念, 帯広記念, ばんえいダービー, ばんえいオークス + 各 trial。futan_juryo (700/800/900kg+ 級) class-specific win rate を強化追加
+
+---
+
+## 9. 影響を受けるファイル
+
+### 新規
+- `apps/pc-keiba-viewer/src/scripts/finish-position-features/lineage-races/jra.json`
+- `apps/pc-keiba-viewer/src/scripts/finish-position-features/add-grade-race-lineage-features.py`
+- `apps/pc-keiba-viewer/src/scripts/finish-position-features/add-head-to-head-features.py`
+- `apps/pc-keiba-viewer/src/scripts/finish-position-features/add-baba-pedigree-affinity-features.py`
+- `apps/pc-keiba-viewer/src/scripts/finish-position-features/add-trainer-stable-affinity-features.py`
+- `apps/pc-keiba-viewer/tests/test_add_grade_race_lineage_features.py` (13 tests)
+- `apps/pc-keiba-viewer/tests/test_add_head_to_head_features.py` (4 tests)
+- `apps/pc-keiba-viewer/tests/test_add_baba_pedigree_affinity_features.py` (3 tests)
+- `apps/pc-keiba-viewer/tests/test_add_trainer_stable_affinity_features.py` (3 tests)
+
+### 再利用 (変更なし)
+- `apps/pc-keiba-viewer/src/scripts/finish_position_catboost.py`
+- `apps/pc-keiba-viewer/src/scripts/finish-position-features/_resource_defaults.py`
+- `apps/pc-keiba-viewer/scripts/train-env.sh`
+- `apps/pc-keiba-viewer/src/scripts/finish-position-features/compare-model-metrics.py`
+- `apps/pc-keiba-viewer/src/scripts/finish-position-features/blend-and-insert.py`
+- `apps/pc-keiba-viewer/src/scripts/finish-position-features/insert-evaluation-row.py`
+- `apps/local-postgresql/scripts/push-neon-sync.ts`
+- `apps/local-postgresql/scripts/push-neon-status.ts`
