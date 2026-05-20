@@ -1,13 +1,13 @@
-import type { RealtimeRacePayload } from "horse-racing-realtime/types";
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { Suspense } from "react";
 
 import {
   getRaceCourseInfo,
   getRaceDetail,
   getRaceRunners,
-  getRacesByDate,
+  getRacesByDateWithoutJockeyNames,
 } from "../../../db/queries";
 import { SOURCE_LABELS, type RaceSource } from "../../../lib/codes";
 import { formatCourseParagraphs, getCourseFacts, getCourseImagePath } from "../../../lib/course";
@@ -33,6 +33,7 @@ import {
   getWeightLabel,
 } from "../../../lib/race-classification";
 import { isCornerPacePredictionSupported } from "../../../lib/race-pace-prediction";
+import { getRaceTrendTargetsFromSearchParams } from "../../../lib/race-trend-query";
 import type { RaceDetail } from "../../../lib/race-types";
 import {
   formatCarriedWeight,
@@ -149,71 +150,6 @@ const formatStoredOddsForExport = (value: string | null | undefined): string => 
   return Number.isFinite(parsed) ? (parsed / 10).toFixed(1) : "-";
 };
 
-const isRealtimeRacePayload = (value: unknown): value is RealtimeRacePayload =>
-  typeof value === "object" &&
-  value !== null &&
-  "raceKey" in value &&
-  typeof value.raceKey === "string";
-
-const fetchInitialRealtimePayload = async ({
-  apiBaseUrl,
-  day,
-  keibajoCode,
-  month,
-  raceNumber,
-  source,
-  year,
-}: {
-  apiBaseUrl: string;
-  day: string;
-  keibajoCode: string;
-  month: string;
-  raceNumber: string;
-  source: RaceSource;
-  year: string;
-}): Promise<RealtimeRacePayload | null> => {
-  const realtimeUrl = buildRealtimeRaceUrl({
-    apiBaseUrl,
-    day,
-    keibajoCode,
-    month,
-    raceNumber,
-    source,
-    year,
-  });
-  if (!realtimeUrl) {
-    return null;
-  }
-  try {
-    const response = await fetch(realtimeUrl, { cache: "no-store" });
-    if (!response.ok) {
-      return null;
-    }
-    const data: unknown = await response.json();
-    return isRealtimeRacePayload(data) ? data : null;
-  } catch {
-    return null;
-  }
-};
-
-const buildRealtimeRaceUrl = ({
-  apiBaseUrl,
-  day,
-  keibajoCode,
-  month,
-  raceNumber,
-  source,
-  year,
-}: RealtimeRaceRequest): string | null => {
-  if (source !== "nar" && source !== "jra") {
-    return null;
-  }
-  if (!apiBaseUrl) {
-    return null;
-  }
-  return `${apiBaseUrl.replace(/\/$/u, "")}/api/${source}/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/realtime`;
-};
-
 const DetailCell = ({
   label,
   suffix = "",
@@ -282,6 +218,7 @@ export async function RaceDetailView({
   keibajoCode,
   month,
   raceNumber,
+  searchParams,
   source: raceSource,
   year,
 }: RaceDetailViewProps) {
@@ -297,7 +234,7 @@ export async function RaceDetailView({
   const [courseInfo, runners, raceDayRaces] = await Promise.all([
     getRaceCourseInfo(keibajoCode, race.kyori, race.trackCode),
     getRaceRunners(raceSource, year, month, day, keibajoCode, raceNumber),
-    getRacesByDate(year, month, day),
+    getRacesByDateWithoutJockeyNames(year, month, day),
   ]);
   const sameVenueRaces = raceDayRaces
     .filter((item) => item.source === raceSource && item.keibajoCode === keibajoCode)
@@ -327,7 +264,6 @@ export async function RaceDetailView({
     source: raceSource,
     year,
   } satisfies RealtimeRaceRequest;
-  const initialRealtimePayload = await fetchInitialRealtimePayload(realtimeRequest);
   const raceStartsAt = getRaceStartsAt(year, month, day, race.hassoJikoku);
   const sharePath = getRaceDetailPath({
     kaisaiNen: year,
@@ -349,6 +285,7 @@ export async function RaceDetailView({
     raceSource === "jra" ? -1 : -3,
   );
   const raceTrendDefaultEndDate = `${year}-${month}-${day}`;
+  const initialRaceTrendTargets = getRaceTrendTargetsFromSearchParams(searchParams);
   const showRacePacePrediction = isCornerPacePredictionSupported({
     distance: race.kyori,
     keibajoCode,
@@ -430,7 +367,7 @@ export async function RaceDetailView({
     sharePath,
   };
   return (
-    <RealtimeRaceProvider initialPayload={initialRealtimePayload} request={realtimeRequest}>
+    <RealtimeRaceProvider initialPayload={null} request={realtimeRequest}>
       <section className="page-shell">
         <RaceShareControls path={sharePath} />
         <div className="race-global-summary" aria-label="race summary in global header">
@@ -590,6 +527,7 @@ export async function RaceDetailView({
           day={day}
           defaultEndDate={raceTrendDefaultEndDate}
           defaultStartDate={raceTrendDefaultStartDate}
+          initialTrendTargets={initialRaceTrendTargets}
           keibajoCode={keibajoCode}
           month={month}
           raceNumber={raceNumber}
@@ -660,30 +598,41 @@ export async function RaceDetailView({
           ) : (
             <RunnersTable
               decodeHexHorseWeight={decodeHexHorseWeight}
-              initialRealtimePayload={initialRealtimePayload}
+              initialRealtimePayload={null}
               realtimeRequest={realtimeRequest}
               runners={runners}
             />
           )}
         </section>
 
-        <RunningStyleRaceSection
-          category={raceSource === "nar" && isBanEiKeibajoCode(keibajoCode) ? "ban-ei" : raceSource}
-          kaisaiNen={year}
-          kaisaiTsukihi={`${month.padStart(2, "0")}${day.padStart(2, "0")}`}
-          keibajoCode={keibajoCode}
-          raceBango={raceNumber}
-          runnersByUmaban={Object.fromEntries(
-            runners.map((runner) => [
-              Number(runner.umaban ?? "0"),
-              {
-                bamei: cleanText(runner.bamei, "") || null,
-                jockey: cleanText(runner.kishumeiRyakusho, "") || null,
-              },
-            ]),
-          )}
-          source={raceSource}
-        />
+        <Suspense
+          fallback={
+            <section className="running-style-section" aria-label="脚質予測" aria-busy="true">
+              <h2>脚質予測</h2>
+              <p className="running-style-empty">脚質予測を読み込んでいます。</p>
+            </section>
+          }
+        >
+          <RunningStyleRaceSection
+            category={
+              raceSource === "nar" && isBanEiKeibajoCode(keibajoCode) ? "ban-ei" : raceSource
+            }
+            kaisaiNen={year}
+            kaisaiTsukihi={`${month.padStart(2, "0")}${day.padStart(2, "0")}`}
+            keibajoCode={keibajoCode}
+            raceBango={raceNumber}
+            runnersByUmaban={Object.fromEntries(
+              runners.map((runner) => [
+                Number(runner.umaban ?? "0"),
+                {
+                  bamei: cleanText(runner.bamei, "") || null,
+                  jockey: cleanText(runner.kishumeiRyakusho, "") || null,
+                },
+              ]),
+            )}
+            source={raceSource}
+          />
+        </Suspense>
 
         {showRacePacePrediction ? (
           <LazyRacePacePredictionSection
@@ -710,7 +659,7 @@ export async function RaceDetailView({
         <RealtimeRaceSection
           apiBaseUrl={realtimeApiBaseUrl}
           day={day}
-          initialPayload={initialRealtimePayload}
+          initialPayload={null}
           keibajoCode={keibajoCode}
           month={month}
           raceNumber={raceNumber}

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  RACE_TREND_CACHE_WARM_VARIANT_COUNT,
   buildDefaultRaceTrendCacheOptions,
+  buildRaceTrendCacheWarmOptions,
   getRaceStartTimeMs,
   getRaceTrendCacheTtlSeconds,
   isRaceBeforeTargetRace,
@@ -75,8 +77,33 @@ describe("race trend cache helpers", () => {
       jockeySameVenue: true,
       jockeyStartYmd: "20260517",
       runningStyleIgnoreRaceNumber: true,
+      runningStyleIgnoreRunningStyle: true,
       source: "nar",
     });
+  });
+
+  it("builds cache warm variants for common trend target combinations", () => {
+    const variants = buildRaceTrendCacheWarmOptions("nar", "20260520");
+    expect(variants).toHaveLength(RACE_TREND_CACHE_WARM_VARIANT_COUNT);
+    expect(variants).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          runningStyleIgnoreFrame: true,
+          runningStyleIgnoreJockey: true,
+          runningStyleIgnoreRunningStyle: false,
+        }),
+        expect.objectContaining({
+          runningStyleIgnoreFrame: false,
+          runningStyleIgnoreJockey: true,
+          runningStyleIgnoreRunningStyle: true,
+        }),
+        expect.objectContaining({
+          runningStyleIgnoreFrame: true,
+          runningStyleIgnoreJockey: false,
+          runningStyleIgnoreRunningStyle: true,
+        }),
+      ]),
+    );
   });
 
   it("expires trend cache after the configured post-time window", () => {

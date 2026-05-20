@@ -6,15 +6,26 @@ type Target = "local" | "neon";
 
 type Options = {
   buildVectorIndex: boolean;
+  fromDate: string | null;
   sourceScope: "all" | "ban-ei" | "jra" | "nar";
   target: Target;
+  toDate: string | null;
+};
+
+const requireDateValue = (name: string, value: string | undefined): string => {
+  if (value === undefined || !/^\d{8}$/.test(value)) {
+    throw new Error(`${name} must be YYYYMMDD.`);
+  }
+  return value;
 };
 
 const parseArgs = (args: string[]): Options => {
   const options: Options = {
     buildVectorIndex: false,
+    fromDate: null,
     sourceScope: "all",
     target: "local",
+    toDate: null,
   };
   for (let index = 0; index < args.length; index += 1) {
     const name = args[index];
@@ -31,6 +42,12 @@ const parseArgs = (args: string[]): Options => {
       }
       options.sourceScope = value;
       index += 1;
+    } else if (name === "--from-date") {
+      options.fromDate = requireDateValue(name, value);
+      index += 1;
+    } else if (name === "--to-date") {
+      options.toDate = requireDateValue(name, value);
+      index += 1;
     } else if (name === "--help" || name === "-h") {
       console.log(`Usage:
   bun run src/scripts/build-corner-feature-table.ts [options]
@@ -38,6 +55,8 @@ const parseArgs = (args: string[]): Options => {
 Options:
   --target local|neon
   --source-scope all|jra|nar|ban-ei
+  --from-date YYYYMMDD
+  --to-date YYYYMMDD
   --with-vector-index
 `);
       process.exit(0);
@@ -50,9 +69,22 @@ Options:
   return options;
 };
 
-const buildSql = (sourceScope: Options["sourceScope"], buildVectorIndex: boolean): string => {
+const buildRaceDateFilterSql = (options: Pick<Options, "fromDate" | "toDate">): string => {
+  const filters: string[] = [];
+  if (options.fromDate !== null) {
+    filters.push(`and se.kaisai_nen || se.kaisai_tsukihi >= '${options.fromDate}'`);
+  }
+  if (options.toDate !== null) {
+    filters.push(`and se.kaisai_nen || se.kaisai_tsukihi <= '${options.toDate}'`);
+  }
+  return filters.join("\n        ");
+};
+
+const buildSql = (options: Options): string => {
+  const { buildVectorIndex, sourceScope } = options;
   const includeJra = sourceScope === "all" || sourceScope === "jra";
   const includeNar = sourceScope === "all" || sourceScope === "nar" || sourceScope === "ban-ei";
+  const raceDateFilter = buildRaceDateFilterSql(options);
   const selects: string[] = [];
   if (includeJra) {
     selects.push(`
@@ -99,6 +131,7 @@ const buildSql = (sourceScope: Options["sourceScope"], buildVectorIndex: boolean
       where
         se.ketto_toroku_bango is not null
         and btrim(se.ketto_toroku_bango) <> ''
+        ${raceDateFilter}
     `);
   }
   if (includeNar) {
@@ -146,6 +179,7 @@ const buildSql = (sourceScope: Options["sourceScope"], buildVectorIndex: boolean
       where
         se.ketto_toroku_bango is not null
         and btrim(se.ketto_toroku_bango) <> ''
+        ${raceDateFilter}
         ${
           sourceScope === "ban-ei"
             ? "and ra.keibajo_code = '83'"
@@ -471,7 +505,7 @@ const main = async () => {
   const options = parseArgs(process.argv.slice(2));
   const pool = new Pool({ connectionString: getConnectionString(options.target), max: 2 });
   try {
-    await pool.query(buildSql(options.sourceScope, options.buildVectorIndex));
+    await pool.query(buildSql(options));
     const result = await pool.query<{ count: string }>(
       "select count(*)::text count from race_entry_corner_features",
     );

@@ -5,7 +5,7 @@ import {
   getRaceDetail,
   getRaceRunners,
   getRaceSourceByRoute,
-  getRacesByDate,
+  getRacesByDateWithoutJockeyNames,
 } from "../../../../../../../../../../db/queries";
 import type { RaceSource } from "../../../../../../../../../../lib/codes";
 import {
@@ -386,7 +386,9 @@ export async function GET(request: Request, context: RouteContext) {
   }
 
   if (parts.includes("raceDayRaces")) {
-    response.raceDayRaces = (await getRacesByDate(year, month, day)).map(pickRaceListItem);
+    response.raceDayRaces = (await getRacesByDateWithoutJockeyNames(year, month, day)).map(
+      pickRaceListItem,
+    );
   }
 
   if (parts.includes("realtime")) {

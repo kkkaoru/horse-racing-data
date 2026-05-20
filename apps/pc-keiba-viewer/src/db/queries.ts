@@ -190,6 +190,65 @@ export const getRacesByDate = cache(
   },
 );
 
+export const getRacesByDateWithoutJockeyNames = cache(
+  async (year: string, month: string, day: string): Promise<RaceListItem[]> => {
+    return withDbQueryCache(["getRacesByDateWithoutJockeyNames", year, month, day], async () => {
+      const monthDay = `${month}${day}`;
+      const result = await getDb().execute<RaceListItem>(sql`
+    select *
+    from (
+      select
+        'jra' as source,
+        ra.kaisai_nen as "kaisaiNen",
+        ra.kaisai_tsukihi as "kaisaiTsukihi",
+        ra.keibajo_code as "keibajoCode",
+        ra.race_bango as "raceBango",
+        ra.kyosomei_hondai as "kyosomeiHondai",
+        ra.kyosomei_fukudai as "kyosomeiFukudai",
+        ra.grade_code as "gradeCode",
+        ra.kyoso_shubetsu_code as "kyosoShubetsuCode",
+        ra.kyoso_kigo_code as "kyosoKigoCode",
+        ra.juryo_shubetsu_code as "juryoShubetsuCode",
+        array[]::text[] as "jockeyNames",
+        ra.kyoso_joken_code as "kyosoJokenCode",
+        ra.kyoso_joken_meisho as "kyosoJokenMeisho",
+        ra.kyori,
+        ra.track_code as "trackCode",
+        ra.hasso_jikoku as "hassoJikoku",
+        ra.shusso_tosu as "shussoTosu"
+      from ${jvdRa} ra
+      where ra.kaisai_nen = ${year} and ra.kaisai_tsukihi = ${monthDay}
+      union all
+      select
+        'nar' as source,
+        ra.kaisai_nen as "kaisaiNen",
+        ra.kaisai_tsukihi as "kaisaiTsukihi",
+        ra.keibajo_code as "keibajoCode",
+        ra.race_bango as "raceBango",
+        ra.kyosomei_hondai as "kyosomeiHondai",
+        ra.kyosomei_fukudai as "kyosomeiFukudai",
+        ra.grade_code as "gradeCode",
+        ra.kyoso_shubetsu_code as "kyosoShubetsuCode",
+        ra.kyoso_kigo_code as "kyosoKigoCode",
+        ra.juryo_shubetsu_code as "juryoShubetsuCode",
+        array[]::text[] as "jockeyNames",
+        ra.kyoso_joken_code as "kyosoJokenCode",
+        ra.kyoso_joken_meisho as "kyosoJokenMeisho",
+        ra.kyori,
+        ra.track_code as "trackCode",
+        ra.hasso_jikoku as "hassoJikoku",
+        ra.shusso_tosu as "shussoTosu"
+      from ${nvdRa} ra
+      where ra.kaisai_nen = ${year} and ra.kaisai_tsukihi = ${monthDay}
+    ) races
+    order by "hassoJikoku" asc nulls last, "keibajoCode" asc, "raceBango" asc, source asc
+  `);
+
+      return result.rows;
+    });
+  },
+);
+
 export const getRaceSourceByRoute = cache(
   async (
     year: string,
@@ -300,62 +359,57 @@ export const getRaceRunners = cache(
       async () => {
         const table = source === "jra" ? jvdSe : nvdSe;
         const monthDay = `${month}${day}`;
-        const raceDateKey = `${year}${monthDay}${raceNumber}`;
 
         if (source === "nar") {
           const result = await getDb().execute<Runner & Record<string, unknown>>(sql`
-            with current_runners as (
+            select
+              se.wakuban,
+              se.umaban,
+              se.ketto_toroku_bango as "kettoTorokuBango",
+              se.bamei,
+              se.moshoku_code as "moshokuCode",
+              se.seibetsu_code as "seibetsuCode",
+              se.barei,
+              se.futan_juryo as "futanJuryo",
+              se.kishumei_ryakusho as "kishumeiRyakusho",
+              se.chokyoshimei_ryakusho as "chokyoshimeiRyakusho",
+              se.banushimei,
+              coalesce(nullif(btrim(se.bataiju), ''), latest_weight.bataiju) as bataiju,
+              coalesce(nullif(btrim(se.zogen_fugo), ''), latest_weight.zogen_fugo) as "zogenFugo",
+              coalesce(nullif(btrim(se.zogen_sa), ''), latest_weight.zogen_sa) as "zogenSa",
+              se.kakutei_chakujun as "kakuteiChakujun",
+              se.tansho_odds as "tanshoOdds",
+              se.tansho_ninkijun as "tanshoNinkijun",
+              se.soha_time as "sohaTime",
+              se.time_sa as "timeSa",
+              se.corner_1 as "corner1",
+              se.corner_2 as "corner2",
+              se.corner_3 as "corner3",
+              se.corner_4 as "corner4",
+              se.kohan_3f as "kohan3f"
+            from ${nvdSe} se
+            left join lateral (
               select
-                se.*,
-                row_number() over (
-                  partition by se.ketto_toroku_bango
-                  order by hist.kaisai_nen desc, hist.kaisai_tsukihi desc, hist.race_bango desc
-                ) as latest_weight_rank,
-                hist.bataiju as latest_bataiju,
-                hist.zogen_fugo as latest_zogen_fugo,
-                hist.zogen_sa as latest_zogen_sa
-              from ${nvdSe} se
-              left join ${nvdSe} hist
-                on hist.ketto_toroku_bango = se.ketto_toroku_bango
+                hist.bataiju,
+                hist.zogen_fugo,
+                hist.zogen_sa
+              from ${nvdSe} hist
+              where
+                hist.ketto_toroku_bango = se.ketto_toroku_bango
                 and hist.ketto_toroku_bango is not null
                 and btrim(hist.ketto_toroku_bango) <> ''
-                and hist.kaisai_nen || hist.kaisai_tsukihi || hist.race_bango < ${raceDateKey}
+                and (hist.kaisai_nen, hist.kaisai_tsukihi, hist.race_bango) < (${year}, ${monthDay}, ${raceNumber})
                 and nullif(btrim(hist.bataiju), '') is not null
                 and upper(btrim(hist.bataiju)) <> 'FFF'
-              where
-                se.kaisai_nen = ${year}
-                and se.kaisai_tsukihi = ${monthDay}
-                and se.keibajo_code = ${keibajoCode}
-                and se.race_bango = ${raceNumber}
-            )
-            select
-              wakuban,
-              umaban,
-              ketto_toroku_bango as "kettoTorokuBango",
-              bamei,
-              moshoku_code as "moshokuCode",
-              seibetsu_code as "seibetsuCode",
-              barei,
-              futan_juryo as "futanJuryo",
-              kishumei_ryakusho as "kishumeiRyakusho",
-              chokyoshimei_ryakusho as "chokyoshimeiRyakusho",
-              banushimei,
-              coalesce(nullif(btrim(bataiju), ''), latest_bataiju) as bataiju,
-              coalesce(nullif(btrim(zogen_fugo), ''), latest_zogen_fugo) as "zogenFugo",
-              coalesce(nullif(btrim(zogen_sa), ''), latest_zogen_sa) as "zogenSa",
-              kakutei_chakujun as "kakuteiChakujun",
-              tansho_odds as "tanshoOdds",
-              tansho_ninkijun as "tanshoNinkijun",
-              soha_time as "sohaTime",
-              time_sa as "timeSa",
-              corner_1 as "corner1",
-              corner_2 as "corner2",
-              corner_3 as "corner3",
-              corner_4 as "corner4",
-              kohan_3f as "kohan3f"
-            from current_runners
-            where latest_weight_rank = 1
-            order by cast(umaban as integer) asc
+              order by hist.kaisai_nen desc, hist.kaisai_tsukihi desc, hist.race_bango desc
+              limit 1
+            ) latest_weight on true
+            where
+              se.kaisai_nen = ${year}
+              and se.kaisai_tsukihi = ${monthDay}
+              and se.keibajo_code = ${keibajoCode}
+              and se.race_bango = ${raceNumber}
+            order by cast(se.umaban as integer) asc
           `);
           return result.rows;
         }
@@ -406,6 +460,7 @@ interface RaceTrendHistoricalRowsParams {
   frameEndYmd: string;
   frameNumbers: string[];
   frameStartYmd: string;
+  includeAllRows: boolean;
   jockeyEndYmd: string;
   jockeyNames: string[];
   jockeySameVenue: boolean;
@@ -495,6 +550,8 @@ export const getRaceTrendHistoricalStarterRows = cache(
               and ${frameNumberCondition}
             )
             or (
+              ${params.includeAllRows} = true
+              and
               ra.kaisai_nen || ra.kaisai_tsukihi between ${params.jockeyStartYmd} and ${params.jockeyEndYmd}
               and (${params.jockeySameVenue} = false or ra.keibajo_code = ${race.keibajoCode})
             )

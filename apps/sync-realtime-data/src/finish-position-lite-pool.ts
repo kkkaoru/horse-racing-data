@@ -2,6 +2,7 @@
 // inference path. Separate from the worker's existing pool so the
 // connection limit can be tuned independently.
 
+import "pg-cloudflare";
 import { Pool } from "pg";
 
 import type { Env } from "./types";

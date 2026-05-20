@@ -1,10 +1,7 @@
 // Run with bun test apps/sync-realtime-data/src/running-style-field-features.test.ts
 import { expect, test } from "vitest";
 
-import {
-  computeFieldFeaturesPerHorse,
-  type HorsePeerInputs,
-} from "./running-style-field-features";
+import { computeFieldFeaturesPerHorse, type HorsePeerInputs } from "./running-style-field-features";
 
 const HORSE_A: HorsePeerInputs = {
   careerWinRate: 0.2,

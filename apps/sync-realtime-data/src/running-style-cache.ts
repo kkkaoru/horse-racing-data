@@ -4,7 +4,7 @@ import type { RaceRunningStyleRow, RunningStyleInferenceRace } from "./running-s
 import type { Env } from "./types";
 
 const DEFAULT_CACHE_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
-const CACHE_VERSION = "v1";
+const CACHE_VERSION = "v2";
 const CONTENT_TYPE = "application/json; charset=utf-8";
 
 const getDefaultCache = (): Cache | null =>

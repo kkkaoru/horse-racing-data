@@ -149,6 +149,7 @@ export interface RaceTrendRunningStyleRow {
 export interface RaceTrendPayload {
   frameRows: RaceTrendRateRow[];
   jockeyRows: RaceTrendRateRow[];
+  raceCount: number;
   runningStyleRows: RaceTrendRunningStyleRow[];
 }
 

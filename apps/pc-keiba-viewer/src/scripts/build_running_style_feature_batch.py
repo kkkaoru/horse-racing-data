@@ -7,8 +7,9 @@ extracts rows in a target race-date range (e.g. today + tomorrow for NAR),
 and writes one JSONL line per (race, horse) shaped for the Worker's
 `RaceHorseFeatureRow` consumer in apps/sync-realtime-data.
 
-The Worker computes race-internal `field_*` features on the fly from
-peerInputs so this script intentionally ships per-horse aggregates only.
+The Worker can compute race-internal peer features from peerInputs, but
+model features such as field_strength_avg_speed are already stable
+per-race context and must be shipped with the per-horse feature map.
 
 Run with:
   cd apps/pc-keiba-viewer && .venv/bin/python src/scripts/build_running_style_feature_batch.py \\
@@ -44,7 +45,6 @@ EXCLUDED_FROM_PER_HORSE: tuple[str, ...] = (
     "target_corner_1_norm", "target_corner_3_norm", "target_corner_4_norm",
     "target_running_style_class", "bamei",
 )
-FIELD_PREFIX = "field_"
 SELF_VS_FIELD_PREFIX = "self_"
 
 
@@ -90,8 +90,6 @@ def extract_peer_inputs(row: pd.Series) -> dict[str, float | None]:
 
 def is_per_horse_feature_column(column: str) -> bool:
     if column in EXCLUDED_FROM_PER_HORSE:
-        return False
-    if column.startswith(FIELD_PREFIX):
         return False
     if column.startswith(SELF_VS_FIELD_PREFIX):
         return False

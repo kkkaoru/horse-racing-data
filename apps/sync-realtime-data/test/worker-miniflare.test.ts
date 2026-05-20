@@ -96,6 +96,14 @@ beforeAll(async () => {
             namespace: "stub-postgres",
             path: "postgres",
           }));
+          build.onResolve({ filter: /^\.\/finish-position-lite-pool$/ }, () => ({
+            namespace: "stub-finish-position-lite-pool",
+            path: "finish-position-lite-pool",
+          }));
+          build.onResolve({ filter: /^\.\/running-style-feature-parquet$/ }, () => ({
+            namespace: "stub-running-style-feature-parquet",
+            path: "running-style-feature-parquet",
+          }));
           build.onResolve({ filter: /^@cloudflare\/playwright$/ }, () => ({
             namespace: "stub-playwright",
             path: "playwright",
@@ -103,6 +111,21 @@ beforeAll(async () => {
           build.onLoad({ filter: /.*/, namespace: "stub-postgres" }, () => ({
             contents:
               "export const fetchJraRacesByDate = async () => []; export const fetchNarRacesByDate = async () => [];",
+            loader: "js",
+          }));
+          build.onLoad({ filter: /.*/, namespace: "stub-finish-position-lite-pool" }, () => ({
+            contents:
+              "export const getFinishPositionPool = () => { throw new Error('finish-position pool unavailable in test'); };",
+            loader: "js",
+          }));
+          build.onLoad({ filter: /.*/, namespace: "stub-running-style-feature-parquet" }, () => ({
+            contents: `
+              export const buildRunningStyleFeatureParquetKey = () => "";
+              export const loadRunningStyleFeatureParquet = async () => [];
+              export const putRunningStyleFeatureParquet = async () => 0;
+              export const runningStyleParquetVerificationKey = () => "";
+              export const validateFeatureCoverage = () => ({ missingCells: 0, missingFeatureNames: [] });
+            `,
             loader: "js",
           }));
           build.onLoad({ filter: /.*/, namespace: "stub-playwright" }, () => ({

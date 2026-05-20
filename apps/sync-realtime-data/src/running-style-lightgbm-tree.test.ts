@@ -120,7 +120,11 @@ test("predictRunningStyle probabilities sum to 1.0 (within tolerance)", () => {
     missing: Uint8Array.from([0]),
     values: Float64Array.from([0]),
   });
-  const sum = result.probabilities.nige + result.probabilities.senkou + result.probabilities.sashi + result.probabilities.oikomi;
+  const sum =
+    result.probabilities.nige +
+    result.probabilities.senkou +
+    result.probabilities.sashi +
+    result.probabilities.oikomi;
   expect(Math.abs(sum - 1.0) < 1e-6).toBe(true);
 });
 
