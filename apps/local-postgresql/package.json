@@ -9,6 +9,9 @@
     "psql": "./scripts/psql.sh",
     "replica:create-subscription": "./scripts/create-neon-subscription.sh",
     "replica:push": "bun run ./scripts/push-neon-sync.ts",
+    "replica:status": "bun run ./scripts/push-neon-status.ts",
+    "replica:watch": "bun run ./scripts/push-neon-status.ts --watch 10",
+    "replica:tail-log": "tail -f tmp/push-neon-sync.log",
     "status": "docker compose --env-file .env ps",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage"
