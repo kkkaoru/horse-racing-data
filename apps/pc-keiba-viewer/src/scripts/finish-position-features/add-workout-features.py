@@ -28,6 +28,8 @@ from pathlib import Path
 
 import duckdb
 
+from _resource_defaults import add_resource_args, apply_to_connection
+
 RACE_PARTITION = "source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango"
 DEFAULT_PG_URL = "postgresql://horse_racing:horse_racing@127.0.0.1:5432/horse_racing"
 LOOKBACK_DAYS = 90
@@ -46,6 +48,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--from-date", type=str, default="20100101")
     parser.add_argument("--to-date", type=str, default="20991231")
+    add_resource_args(parser)
     return parser.parse_args(argv)
 
 
@@ -180,8 +183,7 @@ def main() -> None:
     input_glob = f"{args.input_dir.as_posix()}/race_year=*/*.parquet"
     con = duckdb.connect(":memory:")
     con.execute("PRAGMA enable_object_cache=true")
-    con.execute("SET memory_limit='24GB'")
-    con.execute("SET threads TO 6")
+    apply_to_connection(con, args.threads, args.memory_limit)
     con.execute("SET preserve_insertion_order=false")
     install_and_attach_pg(con, args.pg_url)
     con.execute(

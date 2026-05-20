@@ -44,6 +44,8 @@ class ModelOutput(TypedDict):
     place2_logit: mx.array
     place3_logit: mx.array
     rank_score: mx.array
+    conditional_place2_logit: mx.array
+    conditional_place3_logit: mx.array
 
 
 def default_model_config(
@@ -103,6 +105,10 @@ class RaceSetTransformer(nn.Module):
         self.place2_head = nn.Linear(dims, 1)
         self.place3_head = nn.Linear(dims, 1)
         self.rank_head = nn.Linear(dims, 1)
+        self.conditional_place2_proj = nn.Linear(dims * 2, dims)
+        self.conditional_place2_head = nn.Linear(dims, 1)
+        self.conditional_place3_proj = nn.Linear(dims * 3, dims)
+        self.conditional_place3_head = nn.Linear(dims, 1)
 
     def embed(
         self,
@@ -136,12 +142,38 @@ class RaceSetTransformer(nn.Module):
         place2_logit = self.place2_head(encoded).squeeze(-1)
         place3_logit = self.place3_head(encoded).squeeze(-1)
         rank_score = self.rank_head(encoded).squeeze(-1)
+
+        mask_float = mask.astype(mx.float32)
+        top1_masked = mx.where(mask, top1_logit, mx.array(ATTENTION_NEG_INF))
+        winner_weights = mx.softmax(top1_masked, axis=-1)
+        winner_emb = mx.sum(winner_weights[:, :, None] * encoded, axis=1)
+        winner_broadcast = mx.broadcast_to(
+            winner_emb[:, None, :], encoded.shape
+        )
+        cond2_input = mx.concatenate([encoded, winner_broadcast], axis=-1)
+        cond2_hidden = nn.gelu(self.conditional_place2_proj(cond2_input))
+        conditional_place2_logit = self.conditional_place2_head(cond2_hidden).squeeze(-1)
+
+        cond2_masked = mx.where(mask, conditional_place2_logit, mx.array(ATTENTION_NEG_INF))
+        runnerup_weights = mx.softmax(cond2_masked, axis=-1)
+        runnerup_emb = mx.sum(runnerup_weights[:, :, None] * encoded, axis=1)
+        runnerup_broadcast = mx.broadcast_to(
+            runnerup_emb[:, None, :], encoded.shape
+        )
+        cond3_input = mx.concatenate(
+            [encoded, winner_broadcast, runnerup_broadcast], axis=-1
+        )
+        cond3_hidden = nn.gelu(self.conditional_place3_proj(cond3_input))
+        conditional_place3_logit = self.conditional_place3_head(cond3_hidden).squeeze(-1)
+        _ = mask_float
         return {
             "top1_logit": top1_logit,
             "top3_logit": top3_logit,
             "place2_logit": place2_logit,
             "place3_logit": place3_logit,
             "rank_score": rank_score,
+            "conditional_place2_logit": conditional_place2_logit,
+            "conditional_place3_logit": conditional_place3_logit,
         }
 
 
