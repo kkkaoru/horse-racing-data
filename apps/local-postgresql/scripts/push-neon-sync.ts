@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, readFileSync, writeSync, closeSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
@@ -35,17 +35,34 @@ type CommandResult = {
 type CliOptions = {
   allowLogTables: Set<string>;
   indexesOnly: boolean;
+  verbose: boolean;
+  logFile: string | null;
+  noLogFile: boolean;
 };
 
 function parseArgs(args: string[]): CliOptions {
   const options: CliOptions = {
     allowLogTables: new Set(),
     indexesOnly: false,
+    verbose: false,
+    logFile: null,
+    noLogFile: false,
   };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--indexes-only") {
       options.indexesOnly = true;
+    } else if (arg === "--verbose" || arg === "-v") {
+      options.verbose = true;
+    } else if (arg === "--no-log-file") {
+      options.noLogFile = true;
+    } else if (arg === "--log-file") {
+      const value = args[index + 1];
+      if (value === undefined) {
+        throw new Error(`${arg} requires a path argument.`);
+      }
+      options.logFile = value;
+      index += 1;
     } else if (arg === "--allow-log-table" || arg === "--allow-log-tables") {
       const value = args[index + 1];
       if (value === undefined) {
@@ -63,6 +80,51 @@ function parseArgs(args: string[]): CliOptions {
     }
   }
   return options;
+}
+
+let verboseLogging = false;
+let logFileFd: number | null = null;
+let resolvedLogPath: string | null = null;
+
+function setVerboseLogging(value: boolean): void {
+  verboseLogging = value;
+}
+
+function openLogFile(path: string): void {
+  const dir = dirname(path);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+  logFileFd = openSync(path, "a");
+  resolvedLogPath = path;
+}
+
+function closeLogFile(): void {
+  if (logFileFd !== null) {
+    closeSync(logFileFd);
+    logFileFd = null;
+  }
+}
+
+function defaultLogPath(): string {
+  return resolve(appDir, "tmp", "push-neon-sync.log");
+}
+
+function formatBigNumber(value: number): string {
+  if (value >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(2)}M`;
+  }
+  if (value >= 1_000) {
+    return `${(value / 1_000).toFixed(1)}k`;
+  }
+  return String(value);
+}
+
+function formatPercent(synced: number, total: number): string {
+  if (total <= 0) {
+    return "100.0%";
+  }
+  return `${((synced / total) * 100).toFixed(1)}%`;
 }
 
 function parseEnvFile(path: string): Record<string, string> {
@@ -284,11 +346,22 @@ Environment:
   NEON_CONNECT_RETRY_SECONDS      Retry interval while Neon is warming. Default: 5.
 
 Options:
+  --verbose, -v                    Use the legacy multi-line progress format.
+                                  Default: compact one-line-per-event format.
+  --log-file PATH                  Append progress to PATH (default: tmp/push-neon-sync.log).
+  --no-log-file                    Disable file logging (stdout only).
+  --indexes-only                   Skip data sync, only apply analytics indexes.
   --allow-log-table TABLE          Allow syncing a log/experiment table that is excluded by
                                   default. Repeat or pass comma-separated names.
 
 Default exclusions (local-only training tables): finish_position_tuning_random_trials,
 race_finish_position_features. Use --allow-log-table to opt them back in.
+
+Real-time progress:
+  tail -f apps/local-postgresql/tmp/push-neon-sync.log
+
+  Or use the companion status checker for a side-by-side row-count report:
+  bun run apps/local-postgresql/scripts/push-neon-status.ts
 `);
 }
 
@@ -380,7 +453,7 @@ async function syncTableWithPsql(
   const batchRows = copyBatchRows(env);
 
   if (shouldSkipUnchanged(env) && (await tableIsUnchanged(env, table))) {
-    console.log(`[${formatNow()}] Skipping public.${table.tableName}: unchanged`);
+    writeLine(`[${formatNow()}] ⊘ ${table.tableName}: unchanged (skip)`);
     return;
   }
 
@@ -514,6 +587,59 @@ async function syncAnalyticsIndexes(env: Record<string, string | undefined>): Pr
 }
 
 function reportProgress(event: ProgressEvent): void {
+  if (verboseLogging) {
+    reportProgressVerbose(event);
+    return;
+  }
+  reportProgressCompact(event);
+}
+
+function reportProgressCompact(event: ProgressEvent): void {
+  switch (event.type) {
+    case "start":
+      writeLine(
+        `[${formatNow()}] start: ${event.totalTables} tables, ${formatBigNumber(event.totalEstimatedRows)} rows, levels=${event.dependencyLevels}, concurrency=${event.concurrency}`,
+      );
+      break;
+    case "level-start":
+      writeLine(
+        `[${formatNow()}] level ${event.dependencyLevel}: ${event.levelTables} tables, ${formatBigNumber(event.levelEstimatedRows)} rows, concurrency=${event.concurrency}`,
+      );
+      break;
+    case "neon-wait-start":
+      writeLine(`[${formatNow()}] Neon connect: timeout=${event.timeoutSeconds}s`);
+      break;
+    case "neon-wait-retry":
+      writeLine(`[${formatNow()}] Neon warming: ${event.elapsedSeconds}s elapsed, retry in ${event.retrySeconds}s`);
+      break;
+    case "neon-ready":
+      writeLine(`[${formatNow()}] Neon ready (${event.elapsedSeconds}s)`);
+      break;
+    case "table-start": {
+      const total =
+        event.completedTables + event.runningTables + event.remainingTables;
+      const num = event.completedTables + event.runningTables;
+      writeLine(
+        `[${formatNow()}] ▶ (${num}/${total}) ${event.tableName}: ${formatBigNumber(event.estimatedRows)} rows`,
+      );
+      break;
+    }
+    case "table-done": {
+      const pct = formatPercent(event.syncedEstimatedRows, event.totalEstimatedRows);
+      writeLine(
+        `[${formatNow()}] ✓ (${event.completedTables}/${event.totalTables}) ${event.tableName} in ${formatDuration(event.tableElapsedSeconds)} — total ${pct}, ${formatDuration(event.elapsedSeconds)} elapsed, ETA ${formatDuration(event.etaSeconds)}`,
+      );
+      break;
+    }
+    case "complete":
+      writeLine(
+        `[${formatNow()}] ✓ DONE: ${event.totalTables} tables / ${formatBigNumber(event.totalEstimatedRows)} rows in ${formatDuration(event.elapsedSeconds)}`,
+      );
+      break;
+  }
+}
+
+function reportProgressVerbose(event: ProgressEvent): void {
   switch (event.type) {
     case "start":
       console.log(
@@ -558,6 +684,14 @@ function reportProgress(event: ProgressEvent): void {
   }
 }
 
+function writeLine(message: string): void {
+  const line = `${message}\n`;
+  process.stdout.write(line);
+  if (logFileFd !== null) {
+    writeSync(logFileFd, line);
+  }
+}
+
 async function main(): Promise<void> {
   const cliOptions = parseArgs(process.argv.slice(2));
   if (process.argv.includes("--help") || process.argv.includes("-h")) {
@@ -565,6 +699,20 @@ async function main(): Promise<void> {
     return;
   }
 
+  setVerboseLogging(cliOptions.verbose);
+  if (!cliOptions.noLogFile) {
+    const logPath = cliOptions.logFile ?? defaultLogPath();
+    openLogFile(logPath);
+    writeLine(`[${formatNow()}] log file: ${logPath}`);
+  }
+  try {
+    await runSync(cliOptions);
+  } finally {
+    closeLogFile();
+  }
+}
+
+async function runSync(cliOptions: CliOptions): Promise<void> {
   const env = loadEnvironment();
   if (cliOptions.indexesOnly) {
     await syncAnalyticsIndexes(env);
