@@ -15,6 +15,25 @@ export type DependencyEdge = {
 
 export type SyncConcurrency = number | "auto";
 
+export type SyncStrategy =
+  | "timestamp-incremental"
+  | "pk-incremental"
+  | "full-replace";
+
+export interface TableProfile {
+  tableName: string;
+  rowCount: number;
+  hasUpdateChurn: boolean;
+  timestampColumn: string | null;
+  hasPrimaryKey: boolean;
+  strategy: SyncStrategy;
+}
+
+export interface SyncStrategyThresholds {
+  smallTableMaxRows: number;
+  updateChurnMinTuples: number;
+}
+
 export type PushSyncConfig = {
   concurrency: SyncConcurrency;
   deleteMissingRows: boolean;
@@ -22,7 +41,21 @@ export type PushSyncConfig = {
   neonConnectTimeoutSeconds: number;
   neonConnectRetrySeconds: number;
   selectedTables?: string[];
+  strategyMode: "auto" | "full";
+  strategyThresholds: SyncStrategyThresholds;
 };
+
+const DEFAULT_SMALL_TABLE_MAX_ROWS = 10000;
+const DEFAULT_UPDATE_CHURN_MIN_TUPLES = 1000;
+const TIMESTAMP_COLUMN_PRIORITY: readonly string[] = [
+  "updated_at",
+  "update_timestamp",
+  "prediction_generated_at",
+  "evaluated_at",
+  "activated_at",
+  "modified_at",
+  "generated_at",
+];
 
 export type ProgressEvent =
   | {
@@ -164,6 +197,13 @@ export function parseSelectedTables(value: string | undefined): string[] | undef
   return tables && tables.length > 0 ? tables : undefined;
 }
 
+export function parseStrategyMode(value: string | undefined): "auto" | "full" {
+  if (value === undefined) return "auto";
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "full" || normalized === "force-full") return "full";
+  return "auto";
+}
+
 export function buildConfig(env: Record<string, string | undefined>): PushSyncConfig {
   return {
     concurrency: parseConcurrency(env.REPLICA_SYNC_CONCURRENCY),
@@ -172,11 +212,223 @@ export function buildConfig(env: Record<string, string | undefined>): PushSyncCo
     neonConnectTimeoutSeconds: parsePositiveInteger(env.NEON_CONNECT_TIMEOUT_SECONDS, 120),
     neonConnectRetrySeconds: parsePositiveInteger(env.NEON_CONNECT_RETRY_SECONDS, 5),
     selectedTables: parseSelectedTables(env.REPLICA_SYNC_TABLES),
+    strategyMode: parseStrategyMode(env.REPLICA_SYNC_STRATEGY),
+    strategyThresholds: {
+      smallTableMaxRows: parsePositiveInteger(
+        env.REPLICA_SYNC_SMALL_TABLE_MAX_ROWS,
+        DEFAULT_SMALL_TABLE_MAX_ROWS,
+      ),
+      updateChurnMinTuples: parsePositiveInteger(
+        env.REPLICA_SYNC_UPDATE_CHURN_MIN_TUPLES,
+        DEFAULT_UPDATE_CHURN_MIN_TUPLES,
+      ),
+    },
   };
+}
+
+export function buildTableProfileSql(selectedTables: string[] | undefined): string {
+  const tableFilterSql = buildTableFilterSql(selectedTables);
+  const priorityList = TIMESTAMP_COLUMN_PRIORITY.map((name) => quoteLiteral(name)).join(",");
+  return `
+with candidate as (
+  select c.relname as table_name,
+    greatest(0, c.reltuples::bigint) as row_count,
+    c.oid
+  from pg_class c
+  join pg_namespace n on n.oid = c.relnamespace
+  where c.relkind = 'r'
+    and n.nspname = 'public'
+    and ${tableFilterSql}
+),
+churn as (
+  select s.relname as table_name, coalesce(s.n_tup_upd, 0)::bigint as n_tup_upd
+  from pg_stat_user_tables s
+),
+ts_cols as (
+  select c.table_name,
+    col.column_name,
+    array_position(array[${priorityList}], col.column_name) as priority
+  from information_schema.columns col
+  join candidate c on c.table_name = col.table_name
+  where col.table_schema = 'public'
+    and col.column_name = any(array[${priorityList}])
+),
+pk_present as (
+  select c.relname as table_name, true as has_pk
+  from pg_index i
+  join pg_class c on c.oid = i.indrelid
+  join pg_namespace n on n.oid = c.relnamespace
+  where i.indisprimary
+    and n.nspname = 'public'
+)
+select
+  c.table_name,
+  coalesce(c.row_count, 0) as row_count,
+  coalesce(ch.n_tup_upd, 0) as n_tup_upd,
+  coalesce(pk.has_pk, false) as has_pk,
+  (
+    select tc.column_name from ts_cols tc
+    where tc.table_name = c.table_name
+    order by tc.priority asc nulls last
+    limit 1
+  ) as timestamp_column
+from candidate c
+left join churn ch on ch.table_name = c.table_name
+left join pk_present pk on pk.table_name = c.table_name
+order by c.table_name
+`;
+}
+
+export function parseTableProfiles(
+  output: string,
+  thresholds: SyncStrategyThresholds,
+  mode: "auto" | "full" = "auto",
+): TableProfile[] {
+  const lines = output.split("\n").map((line) => line.trim()).filter((line) => line !== "");
+  return lines.map((line) => parseTableProfileLine(line, thresholds, mode));
+}
+
+function parseTableProfileLine(
+  line: string,
+  thresholds: SyncStrategyThresholds,
+  mode: "auto" | "full",
+): TableProfile {
+  const cells = line.split("\t");
+  const tableName = cells[0] ?? "";
+  const rowCount = Number(cells[1] ?? "0");
+  const nTupUpd = Number(cells[2] ?? "0");
+  const hasPrimaryKey = (cells[3] ?? "f") === "t";
+  const tsColumn = cells[4] ?? "";
+  const timestampColumn = tsColumn === "" ? null : tsColumn;
+  const hasUpdateChurn = nTupUpd >= thresholds.updateChurnMinTuples;
+  const strategy = resolveStrategy({
+    rowCount,
+    hasUpdateChurn,
+    timestampColumn,
+    hasPrimaryKey,
+    thresholds,
+    mode,
+  });
+  return {
+    tableName,
+    rowCount,
+    hasUpdateChurn,
+    timestampColumn,
+    hasPrimaryKey,
+    strategy,
+  };
+}
+
+interface ResolveStrategyInput {
+  rowCount: number;
+  hasUpdateChurn: boolean;
+  timestampColumn: string | null;
+  hasPrimaryKey: boolean;
+  thresholds: SyncStrategyThresholds;
+  mode: "auto" | "full";
+}
+
+export function resolveStrategy(input: ResolveStrategyInput): SyncStrategy {
+  if (input.mode === "full") return "full-replace";
+  if (!input.hasPrimaryKey) return "full-replace";
+  if (input.rowCount <= input.thresholds.smallTableMaxRows) return "full-replace";
+  if (input.hasUpdateChurn) {
+    return input.timestampColumn !== null ? "timestamp-incremental" : "full-replace";
+  }
+  if (input.timestampColumn !== null) return "timestamp-incremental";
+  return "pk-incremental";
 }
 
 export function quoteIdentifier(identifier: string): string {
   return `"${identifier.replaceAll('"', '""')}"`;
+}
+
+export function buildFingerprintSql(table: TableMetadata): string {
+  const pkExpression = `(${table.primaryKeyList})::text`;
+  return `select count(*)::text || E'\\t' || coalesce(max(${pkExpression}), '') from public.${quoteIdentifier(table.tableName)}`;
+}
+
+export function buildTimestampFingerprintSql(table: TableMetadata, tsColumn: string): string {
+  return `select count(*)::text || E'\\t' || coalesce(max(${quoteIdentifier(tsColumn)})::text, '') from public.${quoteIdentifier(table.tableName)}`;
+}
+
+export interface FingerprintResult {
+  count: number;
+  marker: string;
+}
+
+export function parseFingerprintLine(line: string): FingerprintResult {
+  const [countText, marker] = line.trim().split("\t");
+  return {
+    count: Number(countText ?? "0"),
+    marker: marker ?? "",
+  };
+}
+
+export function buildIncrementalCopyFromSql(
+  table: TableMetadata,
+  options: { keyExpression: string; neonMarker: string; comparator: ">" },
+): string {
+  const sanitizedMarker = options.neonMarker.replaceAll("'", "''");
+  const where = sanitizedMarker === ""
+    ? ""
+    : `where ${options.keyExpression} ${options.comparator} '${sanitizedMarker}'`;
+  return `COPY (SELECT ${table.columnList} FROM public.${quoteIdentifier(table.tableName)} ${where}) TO STDOUT WITH (FORMAT csv, NULL '\\N');`;
+}
+
+export function pkExpression(table: TableMetadata): string {
+  return `(${table.primaryKeyList})::text`;
+}
+
+export function timestampKeyExpression(tsColumn: string): string {
+  return `(${quoteIdentifier(tsColumn)})::text`;
+}
+
+export function buildIncrementalApplySql(
+  table: TableMetadata,
+  stageTableName = "replica_sync_stage_inc",
+  temporaryStage = true,
+): {
+  preCopySql: string;
+  copySql: string;
+  postCopySql: string;
+  cleanupSql: string;
+} {
+  const quotedTableName = quoteIdentifier(table.tableName);
+  const quotedStageTableName = quoteIdentifier(stageTableName);
+  const stageTableReference = temporaryStage
+    ? quotedStageTableName
+    : `public.${quotedStageTableName}`;
+  const stageCreateSql = temporaryStage
+    ? `CREATE TEMP TABLE ${quotedStageTableName} (LIKE public.${quotedTableName} INCLUDING DEFAULTS) ON COMMIT DROP;`
+    : [
+        `DROP TABLE IF EXISTS ${stageTableReference};`,
+        `CREATE UNLOGGED TABLE ${stageTableReference} (LIKE public.${quotedTableName} INCLUDING DEFAULTS);`,
+      ].join("\n");
+  const conflictAction =
+    table.updateList.length > 0 ? `DO UPDATE SET ${table.updateList}` : "DO NOTHING";
+  const deduplicatedStageSelect = [
+    `SELECT ${table.columnList}`,
+    "FROM (",
+    `  SELECT DISTINCT ON (${table.primaryKeyList}) ${table.columnList}`,
+    `  FROM ${stageTableReference}`,
+    `  ORDER BY ${table.primaryKeyList}`,
+    ") AS stage",
+  ].join("\n");
+  const applySql = [
+    `INSERT INTO public.${quotedTableName} (${table.columnList}) ${deduplicatedStageSelect} ON CONFLICT (${table.primaryKeyList}) ${conflictAction};`,
+  ].join("\n");
+  const dropStageSql = temporaryStage ? "" : `DROP TABLE ${stageTableReference};\n`;
+  return {
+    preCopySql: [temporaryStage ? "BEGIN;" : "", stageCreateSql].join("\n"),
+    copySql: `COPY ${stageTableReference} (${table.columnList}) FROM STDIN WITH (FORMAT csv, NULL '\\N');`,
+    postCopySql: [
+      temporaryStage ? "" : "BEGIN;",
+      applySql,
+      `${dropStageSql}COMMIT;`,
+    ].join("\n"),
+    cleanupSql: temporaryStage ? "ROLLBACK;" : `DROP TABLE IF EXISTS ${stageTableReference};`,
+  };
 }
 
 export function quoteLiteral(value: string): string {
