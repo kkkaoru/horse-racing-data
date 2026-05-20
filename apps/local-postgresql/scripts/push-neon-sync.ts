@@ -6,14 +6,25 @@ import { spawn } from "node:child_process";
 import {
   buildConfig,
   buildDependencySql,
+  buildFingerprintSql,
+  buildIncrementalApplySql,
+  buildIncrementalCopyFromSql,
   buildMetadataSql,
   buildNeonApplySql,
+  buildTableProfileSql,
+  buildTimestampFingerprintSql,
   parseDependencyEdges,
+  parseFingerprintLine,
   parseTableMetadata,
+  parseTableProfiles,
+  pkExpression,
   quoteIdentifier,
   runPushSync,
+  timestampKeyExpression,
   type ProgressEvent,
+  type PushSyncConfig,
   type TableMetadata,
+  type TableProfile,
   type DependencyEdge,
 } from "../src/replica-push/core";
 
@@ -354,6 +365,15 @@ Options:
   --allow-log-table TABLE          Allow syncing a log/experiment table that is excluded by
                                   default. Repeat or pass comma-separated names.
 
+Strategy environment variables:
+  REPLICA_SYNC_STRATEGY            "auto" (default) routes per-table to
+                                  timestamp-incremental / pk-incremental / full-replace based
+                                  on PG metadata. "full" forces the legacy full-replace path.
+  REPLICA_SYNC_SMALL_TABLE_MAX_ROWS Tables with reltuples <= this run full-replace.
+                                  Default: 10000.
+  REPLICA_SYNC_UPDATE_CHURN_MIN_TUPLES Tables with n_tup_upd >= this are treated as mutable.
+                                  Default: 1000.
+
 Default exclusions (local-only training tables): finish_position_tuning_random_trials,
 race_finish_position_features. Use --allow-log-table to opt them back in.
 
@@ -441,7 +461,113 @@ async function loadDependencyEdges(
   return parseDependencyEdges(stdout);
 }
 
+async function loadTableProfileMap(
+  env: Record<string, string | undefined>,
+  config: PushSyncConfig,
+): Promise<Map<string, TableProfile>> {
+  const sql = buildTableProfileSql(config.selectedTables);
+  const { stdout } = await runCommand("docker", dockerComposeArgs(env, sql));
+  const profiles = parseTableProfiles(stdout, config.strategyThresholds, config.strategyMode);
+  return new Map(profiles.map((profile) => [profile.tableName, profile]));
+}
+
+async function loadFingerprint(
+  env: Record<string, string | undefined>,
+  table: TableMetadata,
+  target: "local" | "neon",
+  tsColumn: string | null,
+): Promise<{ count: number; marker: string }> {
+  const sql =
+    tsColumn === null ? buildFingerprintSql(table) : buildTimestampFingerprintSql(table, tsColumn);
+  const result =
+    target === "local"
+      ? await runCommand("docker", dockerComposeArgs(env, sql))
+      : await runCommand(
+          "docker",
+          neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-qAt", "-F", "\t", "-c", sql]),
+        );
+  return parseFingerprintLine(result.stdout);
+}
+
 async function syncTableWithPsql(
+  env: Record<string, string | undefined>,
+  table: TableMetadata,
+  deleteMissingRows: boolean,
+  applyMode: "replace" | "upsert",
+  profile: TableProfile | undefined,
+): Promise<void> {
+  if (profile && profile.strategy !== "full-replace") {
+    await syncTableIncrementally(env, table, profile);
+    return;
+  }
+  await syncTableFullReplace(env, table, deleteMissingRows, applyMode);
+}
+
+async function syncTableIncrementally(
+  env: Record<string, string | undefined>,
+  table: TableMetadata,
+  profile: TableProfile,
+): Promise<void> {
+  const tsColumn = profile.strategy === "timestamp-incremental" ? profile.timestampColumn : null;
+  const [localFp, neonFp] = await Promise.all([
+    loadFingerprint(env, table, "local", tsColumn),
+    loadFingerprint(env, table, "neon", tsColumn),
+  ]);
+  if (localFp.count === neonFp.count && localFp.marker === neonFp.marker) {
+    writeLine(
+      `[${formatNow()}] ⊘ ${table.tableName}: unchanged via ${profile.strategy} (count=${localFp.count}, marker=${truncateMarker(localFp.marker)})`,
+    );
+    return;
+  }
+  const keyExpression =
+    tsColumn === null ? pkExpression(table) : timestampKeyExpression(tsColumn);
+  const stageTableName = `replica_sync_stage_inc_${process.pid}_${table.tableName.replaceAll(/[^A-Za-z0-9_]/g, "_")}`;
+  const incSql = buildIncrementalApplySql(table, stageTableName, false);
+  const localCopySql = buildIncrementalCopyFromSql(table, {
+    keyExpression,
+    neonMarker: neonFp.marker,
+    comparator: ">",
+  });
+
+  await runCommand(
+    "docker",
+    neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]),
+    incSql.preCopySql,
+  );
+  try {
+    await runCopyPipeline(env, localCopySql, incSql.copySql).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to incremental-copy ${table.tableName}\n${message}`);
+    });
+    await runCommand(
+      "docker",
+      neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]),
+      incSql.postCopySql,
+    );
+  } catch (error) {
+    await runCommand("docker", neonPsqlArgs(env, ["-q"]), incSql.cleanupSql).catch(() => undefined);
+    throw error;
+  }
+
+  const verifyFp = await loadFingerprint(env, table, "neon", tsColumn);
+  if (verifyFp.count !== localFp.count) {
+    writeLine(
+      `[${formatNow()}] ⚠ ${table.tableName}: incremental verify mismatch (local=${localFp.count}, neon=${verifyFp.count}) — falling back to full-replace`,
+    );
+    await syncTableFullReplace(env, table, true, "upsert");
+    return;
+  }
+  writeLine(
+    `[${formatNow()}] ✚ ${table.tableName}: ${profile.strategy} synced (count ${neonFp.count} → ${verifyFp.count}, marker=${truncateMarker(localFp.marker)})`,
+  );
+}
+
+function truncateMarker(marker: string): string {
+  if (marker.length <= 40) return marker;
+  return `${marker.slice(0, 37)}...`;
+}
+
+async function syncTableFullReplace(
   env: Record<string, string | undefined>,
   table: TableMetadata,
   deleteMissingRows: boolean,
@@ -725,6 +851,8 @@ async function runSync(cliOptions: CliOptions): Promise<void> {
     cliOptions.allowLogTables,
   );
   const dependencyEdges = filterDependencyEdgesByTables(await loadDependencyEdges(env), tables);
+  const profileMap = await loadTableProfileMap(env, config);
+  logStrategySummary(profileMap, tables);
 
   await runPushSync(
     tables,
@@ -735,12 +863,38 @@ async function runSync(cliOptions: CliOptions): Promise<void> {
         new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds)),
       checkNeonReady: () => checkNeonReady(env),
       syncTable: (table) =>
-        syncTableWithPsql(env, table, config.deleteMissingRows, config.applyMode),
+        syncTableWithPsql(
+          env,
+          table,
+          config.deleteMissingRows,
+          config.applyMode,
+          profileMap.get(table.tableName),
+        ),
       report: reportProgress,
     },
     dependencyEdges,
   );
   await syncAnalyticsIndexes(env);
+}
+
+function logStrategySummary(
+  profileMap: Map<string, TableProfile>,
+  tables: TableMetadata[],
+): void {
+  const counts = { timestampIncremental: 0, pkIncremental: 0, fullReplace: 0, unknown: 0 };
+  for (const table of tables) {
+    const profile = profileMap.get(table.tableName);
+    if (!profile) {
+      counts.unknown += 1;
+      continue;
+    }
+    if (profile.strategy === "timestamp-incremental") counts.timestampIncremental += 1;
+    else if (profile.strategy === "pk-incremental") counts.pkIncremental += 1;
+    else counts.fullReplace += 1;
+  }
+  writeLine(
+    `[${formatNow()}] strategy: timestamp-incremental=${counts.timestampIncremental}, pk-incremental=${counts.pkIncremental}, full-replace=${counts.fullReplace}, unknown=${counts.unknown}`,
+  );
 }
 
 main().catch((error: unknown) => {

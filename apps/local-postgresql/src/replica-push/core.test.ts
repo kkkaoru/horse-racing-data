@@ -3,25 +3,42 @@ import {
   buildConfig,
   buildDependencyPlan,
   buildDependencySql,
+  buildFingerprintSql,
+  buildIncrementalApplySql,
+  buildIncrementalCopyFromSql,
   buildMetadataSql,
   buildNeonApplySql,
   buildTableFilterSql,
+  buildTableProfileSql,
+  buildTimestampFingerprintSql,
   calculateEtaSeconds,
   parseConcurrency,
   parseApplyMode,
   parseDependencyEdges,
   parseBoolean,
+  parseFingerprintLine,
   parsePositiveInteger,
   parseSelectedTables,
+  parseStrategyMode,
   parseTableMetadata,
+  parseTableProfiles,
+  pkExpression,
   quoteIdentifier,
   quoteLiteral,
   resolveConcurrency,
+  resolveStrategy,
   runPushSync,
+  timestampKeyExpression,
   waitForNeonReady,
   type ProgressEvent,
+  type SyncStrategyThresholds,
   type TableMetadata,
 } from "./core";
+
+const defaultThresholds: SyncStrategyThresholds = {
+  smallTableMaxRows: 10_000,
+  updateChurnMinTuples: 1000,
+};
 
 const tableA: TableMetadata = {
   tableName: "table_a",
@@ -94,6 +111,11 @@ describe("config parsing", () => {
       neonConnectTimeoutSeconds: 30,
       neonConnectRetrySeconds: 3,
       selectedTables: ["jvd_ra", "nvd_ra"],
+      strategyMode: "auto",
+      strategyThresholds: {
+        smallTableMaxRows: 10000,
+        updateChurnMinTuples: 1000,
+      },
     });
   });
 
@@ -195,6 +217,313 @@ describe("SQL helpers", () => {
   });
 });
 
+describe("strategy resolver", () => {
+  it("returns full-replace for small tables", () => {
+    expect(
+      resolveStrategy({
+        rowCount: 100,
+        hasUpdateChurn: false,
+        timestampColumn: null,
+        hasPrimaryKey: true,
+        thresholds: defaultThresholds,
+        mode: "auto",
+      }),
+    ).toBe("full-replace");
+  });
+
+  it("returns full-replace when forced", () => {
+    expect(
+      resolveStrategy({
+        rowCount: 1_000_000,
+        hasUpdateChurn: false,
+        timestampColumn: "updated_at",
+        hasPrimaryKey: true,
+        thresholds: defaultThresholds,
+        mode: "full",
+      }),
+    ).toBe("full-replace");
+  });
+
+  it("returns full-replace for tables without a primary key", () => {
+    expect(
+      resolveStrategy({
+        rowCount: 1_000_000,
+        hasUpdateChurn: false,
+        timestampColumn: null,
+        hasPrimaryKey: false,
+        thresholds: defaultThresholds,
+        mode: "auto",
+      }),
+    ).toBe("full-replace");
+  });
+
+  it("returns timestamp-incremental for high-churn tables with timestamp column", () => {
+    expect(
+      resolveStrategy({
+        rowCount: 6_543_348,
+        hasUpdateChurn: true,
+        timestampColumn: "updated_at",
+        hasPrimaryKey: true,
+        thresholds: defaultThresholds,
+        mode: "auto",
+      }),
+    ).toBe("timestamp-incremental");
+  });
+
+  it("returns timestamp-incremental for append-only with timestamp", () => {
+    expect(
+      resolveStrategy({
+        rowCount: 3_215_898,
+        hasUpdateChurn: false,
+        timestampColumn: "update_timestamp",
+        hasPrimaryKey: true,
+        thresholds: defaultThresholds,
+        mode: "auto",
+      }),
+    ).toBe("timestamp-incremental");
+  });
+
+  it("returns pk-incremental for static large tables without timestamp", () => {
+    expect(
+      resolveStrategy({
+        rowCount: 2_854_555,
+        hasUpdateChurn: false,
+        timestampColumn: null,
+        hasPrimaryKey: true,
+        thresholds: defaultThresholds,
+        mode: "auto",
+      }),
+    ).toBe("pk-incremental");
+  });
+
+  it("returns full-replace for high-churn tables without timestamp (safety)", () => {
+    expect(
+      resolveStrategy({
+        rowCount: 5_000_000,
+        hasUpdateChurn: true,
+        timestampColumn: null,
+        hasPrimaryKey: true,
+        thresholds: defaultThresholds,
+        mode: "auto",
+      }),
+    ).toBe("full-replace");
+  });
+});
+
+describe("strategy mode parser", () => {
+  it("returns auto for empty or unrecognized values", () => {
+    expect(parseStrategyMode(undefined)).toBe("auto");
+    expect(parseStrategyMode("")).toBe("auto");
+    expect(parseStrategyMode("smart")).toBe("auto");
+  });
+
+  it("returns full for force-full overrides", () => {
+    expect(parseStrategyMode("full")).toBe("full");
+    expect(parseStrategyMode("force-full")).toBe("full");
+    expect(parseStrategyMode("FULL")).toBe("full");
+  });
+});
+
+describe("table profile SQL + parser", () => {
+  it("builds profile SQL with selected tables filter", () => {
+    const sql = buildTableProfileSql(["jvd_se", "nvd_se"]);
+    expect(sql).toContain("with candidate as");
+    expect(sql).toContain("c.relname in ('jvd_se','nvd_se')");
+    expect(sql).toContain("pg_stat_user_tables");
+    expect(sql).toContain("array_position");
+  });
+
+  it("parses table profiles with auto strategy resolution", () => {
+    const output = [
+      "jvd_se\t2854555\t0\tt\t",
+      "race_entry_corner_features\t6543348\t2099345\tt\tupdated_at",
+      "apd_se_jv\t1851831\t0\tt\tupdate_timestamp",
+      "model_prediction_evaluations\t29\t0\tt\tevaluated_at",
+      "no_pk_table\t100000\t0\tf\t",
+    ].join("\n");
+    const profiles = parseTableProfiles(output, defaultThresholds, "auto");
+    expect(profiles).toEqual([
+      {
+        tableName: "jvd_se",
+        rowCount: 2854555,
+        hasUpdateChurn: false,
+        timestampColumn: null,
+        hasPrimaryKey: true,
+        strategy: "pk-incremental",
+      },
+      {
+        tableName: "race_entry_corner_features",
+        rowCount: 6543348,
+        hasUpdateChurn: true,
+        timestampColumn: "updated_at",
+        hasPrimaryKey: true,
+        strategy: "timestamp-incremental",
+      },
+      {
+        tableName: "apd_se_jv",
+        rowCount: 1851831,
+        hasUpdateChurn: false,
+        timestampColumn: "update_timestamp",
+        hasPrimaryKey: true,
+        strategy: "timestamp-incremental",
+      },
+      {
+        tableName: "model_prediction_evaluations",
+        rowCount: 29,
+        hasUpdateChurn: false,
+        timestampColumn: "evaluated_at",
+        hasPrimaryKey: true,
+        strategy: "full-replace",
+      },
+      {
+        tableName: "no_pk_table",
+        rowCount: 100000,
+        hasUpdateChurn: false,
+        timestampColumn: null,
+        hasPrimaryKey: false,
+        strategy: "full-replace",
+      },
+    ]);
+  });
+
+  it("forces full-replace when mode override is set", () => {
+    const output = "jvd_se\t2854555\t0\tt\t";
+    const profiles = parseTableProfiles(output, defaultThresholds, "full");
+    expect(profiles[0]?.strategy).toBe("full-replace");
+  });
+});
+
+describe("fingerprint SQL", () => {
+  it("builds primary-key fingerprint SQL", () => {
+    const sql = buildFingerprintSql(tableA);
+    expect(sql).toContain("count(*)::text");
+    expect(sql).toContain("max(");
+    expect(sql).toContain('public."table_a"');
+    expect(sql).toContain('"id"');
+  });
+
+  it("builds timestamp fingerprint SQL", () => {
+    const sql = buildTimestampFingerprintSql(tableA, "updated_at");
+    expect(sql).toContain('max("updated_at")::text');
+    expect(sql).toContain('public."table_a"');
+  });
+
+  it("parses fingerprint output", () => {
+    expect(parseFingerprintLine("1234\t2026-05-21 10:00:00")).toEqual({
+      count: 1234,
+      marker: "2026-05-21 10:00:00",
+    });
+    expect(parseFingerprintLine("0\t")).toEqual({ count: 0, marker: "" });
+  });
+
+  it("builds incremental COPY-from SQL with marker comparator", () => {
+    const sql = buildIncrementalCopyFromSql(tableA, {
+      keyExpression: pkExpression(tableA),
+      neonMarker: "2026-05-21",
+      comparator: ">",
+    });
+    expect(sql).toContain('COPY (SELECT "id", "name" FROM public."table_a"');
+    expect(sql).toContain('where ("id")::text > \'2026-05-21\'');
+  });
+
+  it("omits WHERE clause when neon marker is empty (empty target)", () => {
+    const sql = buildIncrementalCopyFromSql(tableA, {
+      keyExpression: timestampKeyExpression("updated_at"),
+      neonMarker: "",
+      comparator: ">",
+    });
+    expect(sql).toContain('COPY (SELECT "id", "name" FROM public."table_a"');
+    expect(sql).not.toContain("where");
+  });
+
+  it("escapes single quotes in neon marker", () => {
+    const sql = buildIncrementalCopyFromSql(tableA, {
+      keyExpression: pkExpression(tableA),
+      neonMarker: "o'brien",
+      comparator: ">",
+    });
+    expect(sql).toContain("where (\"id\")::text > 'o''brien'");
+  });
+});
+
+describe("incremental apply SQL", () => {
+  it("builds upsert-only path with no truncate/delete", () => {
+    const sql = buildIncrementalApplySql(tableA);
+    expect(sql.preCopySql).toContain('CREATE TEMP TABLE "replica_sync_stage_inc"');
+    expect(sql.postCopySql).toContain(
+      'INSERT INTO public."table_a" ("id", "name") SELECT "id", "name"',
+    );
+    expect(sql.postCopySql).toContain('ON CONFLICT ("id") DO UPDATE SET "name" = excluded."name"');
+    expect(sql.postCopySql).not.toContain("TRUNCATE");
+    expect(sql.postCopySql).not.toContain("DELETE FROM");
+  });
+
+  it("uses DO NOTHING when no non-PK columns to update", () => {
+    const sql = buildIncrementalApplySql(tableB);
+    expect(sql.postCopySql).toContain('ON CONFLICT ("id") DO NOTHING');
+  });
+
+  it("uses persistent stage table when temporary=false", () => {
+    const sql = buildIncrementalApplySql(tableA, "custom_stage", false);
+    expect(sql.preCopySql).toContain('DROP TABLE IF EXISTS public."custom_stage"');
+    expect(sql.preCopySql).toContain('CREATE UNLOGGED TABLE public."custom_stage"');
+    expect(sql.postCopySql).toContain("BEGIN;");
+    expect(sql.postCopySql).toContain('DROP TABLE public."custom_stage"');
+    expect(sql.cleanupSql).toBe('DROP TABLE IF EXISTS public."custom_stage";');
+  });
+
+  it("rolls back the implicit transaction for temporary stages", () => {
+    const sql = buildIncrementalApplySql(tableA);
+    expect(sql.cleanupSql).toBe("ROLLBACK;");
+  });
+});
+
+describe("incremental copy edge cases", () => {
+  it("returns COPY without WHERE when neonMarker is empty", () => {
+    const sql = buildIncrementalCopyFromSql(tableA, {
+      keyExpression: timestampKeyExpression("updated_at"),
+      neonMarker: "",
+      comparator: ">",
+    });
+    expect(sql).not.toContain("where");
+  });
+
+  it("falls back to pk-incremental key when no timestamp column", () => {
+    const expr = pkExpression(tableB);
+    expect(expr).toBe('("id")::text');
+  });
+});
+
+describe("strategy mode env edge", () => {
+  it("treats unrecognized strategy mode as auto", () => {
+    expect(parseStrategyMode("incremental")).toBe("auto");
+    expect(parseStrategyMode(" ")).toBe("auto");
+  });
+});
+
+describe("strategy threshold edge", () => {
+  it("crosses small-table boundary correctly", () => {
+    const justBelow = resolveStrategy({
+      rowCount: 10_000,
+      hasUpdateChurn: false,
+      timestampColumn: null,
+      hasPrimaryKey: true,
+      thresholds: defaultThresholds,
+      mode: "auto",
+    });
+    const justAbove = resolveStrategy({
+      rowCount: 10_001,
+      hasUpdateChurn: false,
+      timestampColumn: null,
+      hasPrimaryKey: true,
+      thresholds: defaultThresholds,
+      mode: "auto",
+    });
+    expect(justBelow).toBe("full-replace");
+    expect(justAbove).toBe("pk-incremental");
+  });
+});
+
 describe("progress calculations", () => {
   it("calculates ETA from synced rows", () => {
     expect(calculateEtaSeconds(25, 100, 10)).toBe(30);
@@ -275,6 +604,8 @@ describe("Neon warm wait", () => {
         concurrency: 2,
         deleteMissingRows: true,
         applyMode: "replace",
+        strategyMode: "auto",
+        strategyThresholds: { smallTableMaxRows: 10000, updateChurnMinTuples: 1000 },
         neonConnectTimeoutSeconds: 20,
         neonConnectRetrySeconds: 5,
       },
@@ -309,6 +640,8 @@ describe("Neon warm wait", () => {
           concurrency: 2,
           deleteMissingRows: true,
           applyMode: "replace",
+        strategyMode: "auto",
+        strategyThresholds: { smallTableMaxRows: 10000, updateChurnMinTuples: 1000 },
           neonConnectTimeoutSeconds: 10,
           neonConnectRetrySeconds: 5,
         },
@@ -340,6 +673,8 @@ describe("parallel push runner", () => {
         concurrency: 2,
         deleteMissingRows: true,
         applyMode: "replace",
+        strategyMode: "auto",
+        strategyThresholds: { smallTableMaxRows: 10000, updateChurnMinTuples: 1000 },
         neonConnectTimeoutSeconds: 10,
         neonConnectRetrySeconds: 1,
       },
@@ -396,6 +731,8 @@ describe("parallel push runner", () => {
         concurrency: "auto",
         deleteMissingRows: true,
         applyMode: "replace",
+        strategyMode: "auto",
+        strategyThresholds: { smallTableMaxRows: 10000, updateChurnMinTuples: 1000 },
         neonConnectTimeoutSeconds: 1,
         neonConnectRetrySeconds: 1,
       },
@@ -422,6 +759,8 @@ describe("parallel push runner", () => {
           concurrency: 1,
           deleteMissingRows: true,
           applyMode: "replace",
+        strategyMode: "auto",
+        strategyThresholds: { smallTableMaxRows: 10000, updateChurnMinTuples: 1000 },
           neonConnectTimeoutSeconds: 1,
           neonConnectRetrySeconds: 1,
         },
