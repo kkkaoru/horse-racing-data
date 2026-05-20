@@ -15,6 +15,53 @@ services:
       - max_wal_senders=10
       - -c
       - max_replication_slots=10
+      # === Memory tuning (colima VM = 16 GiB) ===
+      - -c
+      - shared_buffers=4GB
+      - -c
+      - effective_cache_size=12GB
+      - -c
+      - work_mem=32MB
+      - -c
+      - maintenance_work_mem=1GB
+      - -c
+      - wal_buffers=16MB
+      # === Storage / I/O (NVMe SSD) ===
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=256
+      # === Checkpoint / WAL throughput ===
+      - -c
+      - max_wal_size=4GB
+      - -c
+      - min_wal_size=1GB
+      - -c
+      - checkpoint_timeout=15min
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - wal_compression=lz4
+      # === Parallel query (colima 8 CPU) ===
+      - -c
+      - max_worker_processes=12
+      - -c
+      - max_parallel_workers=6
+      - -c
+      - max_parallel_workers_per_gather=4
+      - -c
+      - max_parallel_maintenance_workers=4
+      # === Misc OLAP tuning ===
+      - -c
+      - jit=off
+      - -c
+      - default_statistics_target=200
+    deploy:
+      resources:
+        limits:
+          memory: 14g
+        reservations:
+          memory: 6g
     ports:
       - "${POSTGRES_HOST_BIND:-0.0.0.0}:${POSTGRES_PORT:-5432}:${PGPORT:-5432}"
     volumes:
