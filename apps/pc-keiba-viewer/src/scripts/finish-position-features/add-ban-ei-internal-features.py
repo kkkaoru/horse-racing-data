@@ -24,6 +24,8 @@ from pathlib import Path
 
 import duckdb
 
+from _resource_defaults import add_resource_args, apply_to_connection
+
 RACE_PARTITION_BY = "b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango"
 
 # 30 high-signal features (selected to keep parquet bloat manageable)
@@ -65,6 +67,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="add_ban_ei_internal_features")
     parser.add_argument("--input-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    add_resource_args(parser)
     return parser.parse_args(argv)
 
 
@@ -113,8 +116,7 @@ def main() -> None:
     input_glob = f"{args.input_dir.as_posix()}/race_year=*/*.parquet"
     con = duckdb.connect(":memory:")
     con.execute("PRAGMA enable_object_cache=true")
-    con.execute("SET memory_limit='16GB'")
-    con.execute("SET threads TO 6")
+    apply_to_connection(con, args.threads, args.memory_limit)
     con.execute("SET preserve_insertion_order=false")
     write_partitioned(con, append_features_sql(input_glob, TARGET_FEATURES), args.output_dir)
     con.close()

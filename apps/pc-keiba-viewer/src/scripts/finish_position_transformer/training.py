@@ -30,6 +30,8 @@ DEFAULT_PAIRWISE_WEIGHT = 1.0
 DEFAULT_LISTNET_WEIGHT = 0.0
 DEFAULT_PLACE2_WEIGHT = 1.0
 DEFAULT_PLACE3_WEIGHT = 1.0
+DEFAULT_CONDITIONAL_PLACE2_WEIGHT = 2.0
+DEFAULT_CONDITIONAL_PLACE3_WEIGHT = 1.5
 PLACE2_POSITION = 2
 PLACE3_POSITION = 3
 TOP3_UPPER_BOUND = 3
@@ -53,6 +55,8 @@ class LossWeights(TypedDict):
     listnet: float
     place2: float
     place3: float
+    conditional_place2: float
+    conditional_place3: float
 
 
 class TrainingConfig(TypedDict):
@@ -91,6 +95,8 @@ def default_training_config() -> TrainingConfig:
             "listnet": DEFAULT_LISTNET_WEIGHT,
             "place2": DEFAULT_PLACE2_WEIGHT,
             "place3": DEFAULT_PLACE3_WEIGHT,
+            "conditional_place2": DEFAULT_CONDITIONAL_PLACE2_WEIGHT,
+            "conditional_place3": DEFAULT_CONDITIONAL_PLACE3_WEIGHT,
         },
         "max_epochs": DEFAULT_MAX_EPOCHS,
         "seed": DEFAULT_SEED,
@@ -167,6 +173,8 @@ def multitask_loss(
     top3_term = _masked_bce(output["top3_logit"], top3_label, mask_float)
     place2_term = _masked_bce(output["place2_logit"], place2_label, mask_float)
     place3_term = _masked_bce(output["place3_logit"], place3_label, mask_float)
+    cond2_term = _masked_bce(output["conditional_place2_logit"], place2_label, mask_float)
+    cond3_term = _masked_bce(output["conditional_place3_logit"], place3_label, mask_float)
     pair_term = _pairwise_ranking_loss(output["rank_score"], finish_position, mask)
     listnet_term = _listnet_loss(output["rank_score"], finish_position, mask)
     return (
@@ -174,6 +182,8 @@ def multitask_loss(
         + weights["top3"] * top3_term
         + weights["place2"] * place2_term
         + weights["place3"] * place3_term
+        + weights["conditional_place2"] * cond2_term
+        + weights["conditional_place3"] * cond3_term
         + weights["pairwise"] * pair_term
         + weights["listnet"] * listnet_term
     )
@@ -208,6 +218,40 @@ def predict_rank_scores(
         scores[cursor : cursor + batch_scores.shape[0]] = batch_scores
         cursor += batch_scores.shape[0]
     return scores
+
+
+def predict_all_logits(
+    model: RaceSetTransformer,
+    arrays: RaceBatchArrays,
+    batch_size: int,
+) -> dict[str, np.ndarray]:
+    """rank_score / conditional_place2_logit / conditional_place3_logit を per-horse 返す。"""
+    n_races = len(arrays["race_ids"])
+    result = {
+        "rank_score": np.zeros((n_races, MAX_RUNNERS), dtype=np.float32),
+        "conditional_place2_logit": np.zeros((n_races, MAX_RUNNERS), dtype=np.float32),
+        "conditional_place3_logit": np.zeros((n_races, MAX_RUNNERS), dtype=np.float32),
+    }
+    cursor = 0
+    for batch in iter_race_batches(arrays, batch_size=batch_size, shuffle=False):
+        mx_batch = _to_mx_batch(batch)
+        output = model(
+            mx_batch["numeric_features"],
+            mx_batch["categorical_indices"],
+            mx_batch["race_categorical_indices"],
+            mx_batch["umaban"],
+            mx_batch["mask"],
+        )
+        n = int(np.asarray(output["rank_score"]).shape[0])
+        result["rank_score"][cursor : cursor + n] = np.asarray(output["rank_score"])
+        result["conditional_place2_logit"][cursor : cursor + n] = np.asarray(
+            output["conditional_place2_logit"]
+        )
+        result["conditional_place3_logit"][cursor : cursor + n] = np.asarray(
+            output["conditional_place3_logit"]
+        )
+        cursor += n
+    return result
 
 
 def _ndcg_at_3_for_race(predicted_ranks: np.ndarray, finish: np.ndarray, mask: np.ndarray) -> float:

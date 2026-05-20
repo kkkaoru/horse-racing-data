@@ -60,6 +60,8 @@ from finish_position_transformer.training import (
     DEFAULT_PAIRWISE_WEIGHT,
     DEFAULT_PLACE2_WEIGHT,
     DEFAULT_PLACE3_WEIGHT,
+    DEFAULT_CONDITIONAL_PLACE2_WEIGHT,
+    DEFAULT_CONDITIONAL_PLACE3_WEIGHT,
     DEFAULT_SEED,
     DEFAULT_TOP1_WEIGHT,
     DEFAULT_TOP3_WEIGHT,
@@ -67,6 +69,7 @@ from finish_position_transformer.training import (
     DEFAULT_WEIGHT_DECAY,
     LossWeights,
     TrainingConfig,
+    predict_all_logits,
     predict_rank_scores,
     train_transformer,
 )
@@ -144,6 +147,16 @@ def _add_training_hparam_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--listnet-weight", type=float, default=DEFAULT_LISTNET_WEIGHT)
     parser.add_argument("--place2-weight", type=float, default=DEFAULT_PLACE2_WEIGHT)
     parser.add_argument("--place3-weight", type=float, default=DEFAULT_PLACE3_WEIGHT)
+    parser.add_argument(
+        "--conditional-place2-weight",
+        type=float,
+        default=DEFAULT_CONDITIONAL_PLACE2_WEIGHT,
+    )
+    parser.add_argument(
+        "--conditional-place3-weight",
+        type=float,
+        default=DEFAULT_CONDITIONAL_PLACE3_WEIGHT,
+    )
     parser.add_argument("--embedding-dim", type=int, default=DEFAULT_EMBEDDING_DIM)
     parser.add_argument("--num-layers", type=int, default=DEFAULT_NUM_LAYERS)
     parser.add_argument("--num-heads", type=int, default=DEFAULT_NUM_HEADS)
@@ -159,6 +172,8 @@ def training_config_from_args(args: argparse.Namespace) -> TrainingConfig:
         "listnet": float(args.listnet_weight),
         "place2": float(args.place2_weight),
         "place3": float(args.place3_weight),
+        "conditional_place2": float(args.conditional_place2_weight),
+        "conditional_place3": float(args.conditional_place3_weight),
     }
     return {
         "batch_size": int(args.batch_size),
@@ -272,6 +287,18 @@ def score_dataframe(
     return predictions_from_scores(arrays, scores)
 
 
+def score_dataframe_with_conditional(
+    model: RaceSetTransformer, stats: NormalizationStats, df: pd.DataFrame, batch_size: int
+) -> dict[str, list[PredictionRow]]:
+    arrays = build_race_batches(df, stats)
+    all_logits = predict_all_logits(model, arrays, batch_size=batch_size)
+    return {
+        "rank_score": predictions_from_scores(arrays, all_logits["rank_score"]),
+        "conditional_place2": predictions_from_scores(arrays, all_logits["conditional_place2_logit"]),
+        "conditional_place3": predictions_from_scores(arrays, all_logits["conditional_place3_logit"]),
+    }
+
+
 def write_predictions(predictions: list[PredictionRow], path: Path) -> None:
     write_predictions_jsonl(pd.DataFrame(predictions), path)
 
@@ -335,9 +362,21 @@ def run_walk_forward_command(args: argparse.Namespace) -> None:
             }
         )
         if args.output_predictions_dir is not None:
-            predictions = score_dataframe(model, stats, valid_df, training_config["batch_size"])
-            output_path = args.output_predictions_dir / f"{valid_year}.jsonl"
-            write_predictions(predictions, output_path)
+            all_preds = score_dataframe_with_conditional(
+                model, stats, valid_df, training_config["batch_size"],
+            )
+            write_predictions(
+                all_preds["rank_score"],
+                args.output_predictions_dir / f"{valid_year}.jsonl",
+            )
+            write_predictions(
+                all_preds["conditional_place2"],
+                args.output_predictions_dir / f"{valid_year}-cp2.jsonl",
+            )
+            write_predictions(
+                all_preds["conditional_place3"],
+                args.output_predictions_dir / f"{valid_year}-cp3.jsonl",
+            )
     aggregate = {
         "fold_count": float(len(folds)),
         "valid_ndcg_at_3_mean": float(

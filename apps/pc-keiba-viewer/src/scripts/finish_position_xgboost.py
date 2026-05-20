@@ -32,7 +32,9 @@ META_COLUMNS = (
     "kishumei_ryakusho", "chokyoshimei_ryakusho", "category",
 )
 LABEL_COLUMNS = ("finish_position", "finish_norm")
-RELEVANCE_BY_RANK = {1: 3, 2: 2, 3: 1}
+DEFAULT_RELEVANCE_RANK1 = 3
+DEFAULT_RELEVANCE_RANK2 = 2
+DEFAULT_RELEVANCE_RANK3 = 1
 DEFAULT_RELEVANCE = 0
 DEFAULT_NUM_ROUNDS = 500
 DEFAULT_LEARNING_RATE = 0.05
@@ -57,6 +59,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     walk.add_argument("--reg-lambda", type=float, default=DEFAULT_LAMBDA)
     walk.add_argument("--early-stopping-rounds", type=int, default=30)
     walk.add_argument("--seed", type=int, default=20260519)
+    walk.add_argument("--relevance-rank1", type=int, default=DEFAULT_RELEVANCE_RANK1)
+    walk.add_argument("--relevance-rank2", type=int, default=DEFAULT_RELEVANCE_RANK2,
+                      help="Relevance for finish_position=2 (boost to emphasize)")
+    walk.add_argument("--relevance-rank3", type=int, default=DEFAULT_RELEVANCE_RANK3)
     return parser.parse_args(argv)
 
 
@@ -70,10 +76,15 @@ def resolve_feature_columns(df: pd.DataFrame) -> list[str]:
     return [c for c in df.columns if c not in excluded and pd.api.types.is_numeric_dtype(df[c])]
 
 
-def to_relevance(value: object) -> int:
-    if value is None or pd.isna(value):
-        return DEFAULT_RELEVANCE
-    return RELEVANCE_BY_RANK.get(int(value), DEFAULT_RELEVANCE)
+def make_to_relevance(rank1: int, rank2: int, rank3: int):
+    rel_map = {1: rank1, 2: rank2, 3: rank3}
+
+    def _to(value: object) -> int:
+        if value is None or pd.isna(value):
+            return DEFAULT_RELEVANCE
+        return rel_map.get(int(value), DEFAULT_RELEVANCE)
+
+    return _to
 
 
 def filter_range(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
@@ -99,6 +110,9 @@ def train_xgboost_ranker(
 ) -> tuple[xgb.Booster, dict[str, object]]:
     train_df = train_df.sort_values(["race_id", "umaban"]).reset_index(drop=True)
     valid_df = valid_df.sort_values(["race_id", "umaban"]).reset_index(drop=True)
+    to_relevance = make_to_relevance(
+        int(args.relevance_rank1), int(args.relevance_rank2), int(args.relevance_rank3),
+    )
     train_labels = train_df["finish_position"].map(to_relevance).to_numpy(dtype=np.int32)
     valid_labels = valid_df["finish_position"].map(to_relevance).to_numpy(dtype=np.int32)
     dtrain = xgb.DMatrix(train_df[feature_cols], label=train_labels)

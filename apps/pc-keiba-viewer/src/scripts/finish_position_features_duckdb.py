@@ -30,8 +30,11 @@ import duckdb
 
 DEFAULT_OUTPUT_DIR = Path("tmp/finish-position-features-parquet")
 DEFAULT_PG_URL = "postgresql://horse_racing:horse_racing@localhost:5432/horse_racing"
-DEFAULT_THREADS = 8
-DEFAULT_MEMORY_LIMIT = "8GB"
+sys.path.insert(0, str(Path(__file__).parent / "finish-position-features"))
+from _resource_defaults import default_memory_limit, default_threads
+
+DEFAULT_THREADS: int = default_threads()
+DEFAULT_MEMORY_LIMIT: str = default_memory_limit()
 DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 10.0
 BYTES_PER_MB = 1024 * 1024
 
