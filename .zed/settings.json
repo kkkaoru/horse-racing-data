@@ -25,11 +25,14 @@
         "python.pythonPath": "apps/pc-keiba-viewer/.venv/bin/python",
         "python.venvPath": "apps/pc-keiba-viewer",
         "basedpyright.analysis": {
-          "diagnosticMode": "workspace",
-          "extraPaths": ["apps/pc-keiba-viewer/src/scripts"],
+          "diagnosticMode": "openFilesOnly",
+          "extraPaths": ["apps/pc-keiba-viewer/src/scripts", "scripts", "scripts/stubs"],
           "typeCheckingMode": "strict",
+          "useLibraryCodeForTypes": true,
+          "autoSearchPaths": true,
           "diagnosticSeverityOverrides": {
             "reportAny": "none",
+            "reportMissingModuleSource": "none",
             "reportUnknownArgumentType": "none",
             "reportUnknownLambdaType": "none",
             "reportUnknownMemberType": "none",

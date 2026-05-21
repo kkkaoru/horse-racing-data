@@ -8,7 +8,6 @@ import os
 import sys
 import tempfile
 import types
-from typing import Any
 
 # 本体スクリプトは APPDATA/TEMP/LOCALAPPDATA を module import 時に参照するため、
 # Windows 以外のホストでも import できるよう dummy 値を流し込む。
@@ -28,12 +27,12 @@ def _install_pywinauto_stub() -> None:
 
     class _StubApplication:
         def __init__(self, backend: str | None = None) -> None: ...
-        def connect(self, **_: Any) -> Any: ...
-        def window(self, **_: Any) -> Any: ...
+        def connect(self, **_: object) -> object: ...
+        def window(self, **_: object) -> object: ...
 
     class _StubDesktop:
         def __init__(self, backend: str | None = None) -> None: ...
-        def windows(self) -> list[Any]:
+        def windows(self) -> list[object]:
             return []
 
     class _StubElementNotFoundError(Exception):
