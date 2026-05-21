@@ -1,0 +1,167 @@
+{
+  "version": 1,
+  "category": "ban-ei",
+  "note": "Ban-ei (帯広 keibajo=83) 重賞 + trial races。kyori は全 races 0200m (200m) で identification には使えない。kyosomei normalize + 月 で identify。grade_code は P=最高峰/Q=次/R/S/T と細分。kyosomei 表記揺れに注意 (NFKC + 半全角空白除去 で正規化)。",
+  "target_races": [
+    {
+      "id": "banei_kinen",
+      "name": "ばんえい記念",
+      "match": { "kyosomei_equals": "ばんえい記念" },
+      "trials": [
+        { "name": "帯広記念", "match": { "kyosomei_equals": "帯広記念" }, "lookback_days": 30 },
+        { "name": "ドリームエイジカップ", "match": { "kyosomei_equals": "ドリームエイジカップ" }, "lookback_days": 60 },
+        { "name": "ばんえい十勝金杯", "match": { "kyosomei_equals": "ばんえい十勝金杯" }, "lookback_days": 90 },
+        { "name": "チャンピオンカップ", "match": { "kyosomei_equals": "チャンピオンカップ" }, "lookback_days": 45 }
+      ]
+    },
+    {
+      "id": "obihiro_kinen",
+      "name": "帯広記念",
+      "match": { "kyosomei_equals": "帯広記念" },
+      "trials": [
+        { "name": "ばんえい十勝金杯", "match": { "kyosomei_equals": "ばんえい十勝金杯" }, "lookback_days": 60 },
+        { "name": "ドリームエイジカップ", "match": { "kyosomei_equals": "ドリームエイジカップ" }, "lookback_days": 30 },
+        { "name": "北見記念", "match": { "kyosomei_equals": "北見記念" }, "lookback_days": 75 },
+        { "name": "岩見沢記念", "match": { "kyosomei_equals": "岩見沢記念" }, "lookback_days": 90 }
+      ]
+    },
+    {
+      "id": "banei_derby",
+      "name": "ばんえいダービー",
+      "match": { "kyosomei_equals": "ばんえいダービー" },
+      "trials": [
+        { "name": "ばんえい菊花賞", "match": { "kyosomei_equals": "ばんえい菊花賞" }, "lookback_days": 30 },
+        { "name": "銀河賞", "match": { "kyosomei_equals": "銀河賞" }, "lookback_days": 75 },
+        { "name": "柏林賞", "match": { "kyosomei_equals": "柏林賞" }, "lookback_days": 90 },
+        { "name": "ばんえい大賞典", "match": { "kyosomei_equals": "ばんえい大賞典" }, "lookback_days": 120 }
+      ]
+    },
+    {
+      "id": "banei_oaks",
+      "name": "ばんえいオークス",
+      "match": { "kyosomei_equals": "ばんえいオークス" },
+      "trials": [
+        { "name": "黒ユリ賞", "match": { "kyosomei_equals": "黒ユリ賞" }, "lookback_days": 60 },
+        { "name": "クインカップ", "match": { "kyosomei_equals": "クインカップ" }, "lookback_days": 45 },
+        { "name": "カーネーションカップ", "match": { "kyosomei_equals": "カーネーションカップ" }, "lookback_days": 30 },
+        { "name": "ばんえいプリンセス賞", "match": { "kyosomei_equals": "ばんえいプリンセス賞" }, "lookback_days": 90 }
+      ]
+    },
+    {
+      "id": "banei_kikkasho",
+      "name": "ばんえい菊花賞",
+      "match": { "kyosomei_equals": "ばんえい菊花賞" },
+      "trials": [
+        { "name": "銀河賞", "match": { "kyosomei_equals": "銀河賞" }, "lookback_days": 45 },
+        { "name": "ばんえい大賞典", "match": { "kyosomei_equals": "ばんえい大賞典" }, "lookback_days": 90 },
+        { "name": "柏林賞", "match": { "kyosomei_equals": "柏林賞" }, "lookback_days": 60 }
+      ]
+    },
+    {
+      "id": "irenei_kinen",
+      "name": "イレネー記念",
+      "match": { "kyosomei_equals": "イレネー記念" },
+      "trials": [
+        { "name": "ナナカマド賞", "match": { "kyosomei_equals": "ナナカマド賞" }, "lookback_days": 90 },
+        { "name": "ヤングチャンピオンシップ", "match": { "kyosomei_equals": "ヤングチャンピオンシップ" }, "lookback_days": 45 },
+        { "name": "ばんえいスタートロフィー", "match": { "kyosomei_equals": "ばんえいスタートロフィー" }, "lookback_days": 120 }
+      ]
+    },
+    {
+      "id": "tenma_sho",
+      "name": "天馬賞",
+      "match": { "kyosomei_equals": "天馬賞" },
+      "trials": [
+        { "name": "ばんえいダービー", "match": { "kyosomei_equals": "ばんえいダービー" }, "lookback_days": 240 },
+        { "name": "天皇賞", "match": { "kyosomei_equals": "天皇賞" }, "lookback_days": 90 },
+        { "name": "ばんえい菊花賞", "match": { "kyosomei_equals": "ばんえい菊花賞" }, "lookback_days": 180 }
+      ]
+    },
+    {
+      "id": "heroines_cup",
+      "name": "ヒロインズカップ",
+      "match": { "kyosomei_equals": "ヒロインズカップ" },
+      "trials": [
+        { "name": "レディースカップ", "match": { "kyosomei_equals": "レディースカップ" }, "lookback_days": 75 },
+        { "name": "カーネーションカップ", "match": { "kyosomei_equals": "カーネーションカップ" }, "lookback_days": 120 },
+        { "name": "ばんえいオークス", "match": { "kyosomei_equals": "ばんえいオークス" }, "lookback_days": 180 },
+        { "name": "クインカップ", "match": { "kyosomei_equals": "クインカップ" }, "lookback_days": 150 }
+      ]
+    },
+    {
+      "id": "kitami_kinen",
+      "name": "北見記念",
+      "match": { "kyosomei_equals": "北見記念" },
+      "trials": [
+        { "name": "岩見沢記念", "match": { "kyosomei_equals": "岩見沢記念" }, "lookback_days": 90 },
+        { "name": "旭川記念", "match": { "kyosomei_equals": "旭川記念" }, "lookback_days": 120 },
+        { "name": "ばんえいグランプリ", "match": { "kyosomei_equals": "ばんえいグランプリ" }, "lookback_days": 120 }
+      ]
+    },
+    {
+      "id": "asahikawa_kinen",
+      "name": "旭川記念",
+      "match": { "kyosomei_equals": "旭川記念" },
+      "trials": [
+        { "name": "ポプラ賞", "match": { "kyosomei_equals": "ポプラ賞" }, "lookback_days": 60 },
+        { "name": "北斗賞", "match": { "kyosomei_equals": "北斗賞" }, "lookback_days": 45 }
+      ]
+    },
+    {
+      "id": "iwamizawa_kinen",
+      "name": "岩見沢記念",
+      "match": { "kyosomei_equals": "岩見沢記念" },
+      "trials": [
+        { "name": "はまなす賞", "match": { "kyosomei_equals": "はまなす賞" }, "lookback_days": 30 },
+        { "name": "ばんえいグランプリ", "match": { "kyosomei_equals": "ばんえいグランプリ" }, "lookback_days": 30 }
+      ]
+    },
+    {
+      "id": "banei_grand_prix",
+      "name": "ばんえいグランプリ",
+      "match": { "kyosomei_equals": "ばんえいグランプリ" },
+      "trials": [
+        { "name": "旭川記念", "match": { "kyosomei_equals": "旭川記念" }, "lookback_days": 45 },
+        { "name": "ポプラ賞", "match": { "kyosomei_equals": "ポプラ賞" }, "lookback_days": 75 },
+        { "name": "北斗賞", "match": { "kyosomei_equals": "北斗賞" }, "lookback_days": 60 }
+      ]
+    },
+    {
+      "id": "ginga_sho",
+      "name": "銀河賞",
+      "match": { "kyosomei_equals": "銀河賞" },
+      "trials": [
+        { "name": "柏林賞", "match": { "kyosomei_equals": "柏林賞" }, "lookback_days": 45 },
+        { "name": "ばんえい大賞典", "match": { "kyosomei_equals": "ばんえい大賞典" }, "lookback_days": 60 }
+      ]
+    },
+    {
+      "id": "kuroyuri_sho",
+      "name": "黒ユリ賞",
+      "match": { "kyosomei_equals": "黒ユリ賞" },
+      "trials": [
+        { "name": "カーネーションカップ", "match": { "kyosomei_equals": "カーネーションカップ" }, "lookback_days": 45 },
+        { "name": "ばんえいプリンセス賞", "match": { "kyosomei_equals": "ばんえいプリンセス賞" }, "lookback_days": 75 }
+      ]
+    },
+    {
+      "id": "young_championship",
+      "name": "ヤングチャンピオンシップ",
+      "match": { "kyosomei_equals": "ヤングチャンピオンシップ" },
+      "trials": [
+        { "name": "ばんえいスタートロフィー", "match": { "kyosomei_equals": "ばんえいスタートロフィー" }, "lookback_days": 60 },
+        { "name": "ナナカマド賞", "match": { "kyosomei_equals": "ナナカマド賞" }, "lookback_days": 30 }
+      ]
+    },
+    {
+      "id": "banei_daishoten",
+      "name": "ばんえい大賞典",
+      "match": { "kyosomei_equals": "ばんえい大賞典" },
+      "trials": [
+        { "name": "ばんえい菊花賞", "match": { "kyosomei_equals": "ばんえい菊花賞" }, "lookback_days": 240 },
+        { "name": "柏林賞", "match": { "kyosomei_equals": "柏林賞" }, "lookback_days": 60 },
+        { "name": "銀河賞", "match": { "kyosomei_equals": "銀河賞" }, "lookback_days": 45 }
+      ]
+    }
+  ]
+}
