@@ -10,6 +10,7 @@ import logging
 import sys
 import time
 from pathlib import Path
+from typing import override
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -21,8 +22,8 @@ import pc_keiba_auto_update as mod
 # fixtures
 # ---------------------------------------------------------------------------
 @pytest.fixture(autouse=True)
-def _tmp_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """各テストでロック / ログを tmp_path に隔離する。"""
+def isolate_tmp_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """各テストでロック / ログを tmp_path に隔離する (pytest autouse)。"""
     lock = tmp_path / "lock"
     log_dir = tmp_path / "logs"
     monkeypatch.setattr(mod, "LOCK_FILE", lock)
@@ -32,8 +33,8 @@ def _tmp_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture(autouse=True)
-def _reset_logging() -> None:
-    # 各テスト前に root logger ハンドラをクリアし basicConfig を再適用可能にする
+def reset_logging() -> None:
+    """各テスト前に root logger ハンドラをクリアし basicConfig を再適用可能にする。"""
     root = logging.getLogger()
     for h in list(root.handlers):
         root.removeHandler(h)
@@ -105,6 +106,7 @@ def test_setup_logging_swallow_reconfigure_error(
     import io
 
     class _BrokenWrapper(io.TextIOWrapper):
+        @override
         def reconfigure(self, **_: object) -> None:
             raise OSError("nope")
 
@@ -279,7 +281,7 @@ def test_connect_main(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         mod, "Application", MagicMock(return_value=MagicMock(connect=MagicMock(return_value=fake_app)))
     )
-    app, main = mod.connect_main(123, timeout=1)
+    _app, main = mod.connect_main(123, timeout=1)
     fake_main.wait.assert_called_once()
     assert main is fake_main
 

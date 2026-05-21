@@ -1,6 +1,6 @@
 {
   "include": ["."],
-  "exclude": ["tests", ".venv", "__pycache__"],
+  "exclude": [".venv", "__pycache__"],
   "stubPath": "stubs",
   "extraPaths": ["stubs"],
   "venvPath": ".",
@@ -20,5 +20,13 @@
   "reportUnknownLambdaType": "none",
   "reportUnknownMemberType": "none",
   "reportUnknownVariableType": "none",
-  "reportUnknownParameterType": "error"
+  "reportUnknownParameterType": "error",
+  "executionEnvironments": [
+    {
+      "root": "tests",
+      "extraPaths": [".", "stubs"],
+      "reportPrivateUsage": "none",
+      "reportPrivateLocalImportUsage": "none"
+    }
+  ]
 }
