@@ -9,6 +9,7 @@ import {
   buildFingerprintSql,
   buildIncrementalApplySql,
   buildIncrementalCopyFromSql,
+  incrementalComparatorForTimestampColumn,
   buildMetadataSql,
   buildNeonApplySql,
   buildTableProfileSql,
@@ -20,6 +21,7 @@ import {
   pkExpression,
   quoteIdentifier,
   runPushSync,
+  shouldRefreshInclusiveIncrementalMarker,
   timestampKeyExpression,
   type ProgressEvent,
   type PushSyncConfig,
@@ -513,27 +515,32 @@ async function syncTableIncrementally(
     loadFingerprint(env, table, "local", tsColumn),
     loadFingerprint(env, table, "neon", tsColumn),
   ]);
-  if (localFp.count === neonFp.count && localFp.marker === neonFp.marker) {
+  const refreshInclusiveMarker = shouldRefreshInclusiveIncrementalMarker(tsColumn);
+  if (
+    localFp.count === neonFp.count &&
+    localFp.marker === neonFp.marker &&
+    !refreshInclusiveMarker
+  ) {
     writeLine(
       `[${formatNow()}] ⊘ ${table.tableName}: unchanged via ${profile.strategy} (count=${localFp.count}, marker=${truncateMarker(localFp.marker)})`,
     );
     return;
   }
-  const keyExpression =
-    tsColumn === null ? pkExpression(table) : timestampKeyExpression(tsColumn);
+  if (localFp.count === neonFp.count && localFp.marker === neonFp.marker) {
+    writeLine(
+      `[${formatNow()}] ↻ ${table.tableName}: refreshing latest ${tsColumn} marker via ${profile.strategy} (count=${localFp.count}, marker=${truncateMarker(localFp.marker)})`,
+    );
+  }
+  const keyExpression = tsColumn === null ? pkExpression(table) : timestampKeyExpression(tsColumn);
   const stageTableName = `replica_sync_stage_inc_${process.pid}_${table.tableName.replaceAll(/[^A-Za-z0-9_]/g, "_")}`;
   const incSql = buildIncrementalApplySql(table, stageTableName, false);
   const localCopySql = buildIncrementalCopyFromSql(table, {
     keyExpression,
     neonMarker: neonFp.marker,
-    comparator: ">",
+    comparator: incrementalComparatorForTimestampColumn(tsColumn),
   });
 
-  await runCommand(
-    "docker",
-    neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]),
-    incSql.preCopySql,
-  );
+  await runCommand("docker", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]), incSql.preCopySql);
   try {
     await runCopyPipeline(env, localCopySql, incSql.copySql).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
@@ -736,14 +743,15 @@ function reportProgressCompact(event: ProgressEvent): void {
       writeLine(`[${formatNow()}] Neon connect: timeout=${event.timeoutSeconds}s`);
       break;
     case "neon-wait-retry":
-      writeLine(`[${formatNow()}] Neon warming: ${event.elapsedSeconds}s elapsed, retry in ${event.retrySeconds}s`);
+      writeLine(
+        `[${formatNow()}] Neon warming: ${event.elapsedSeconds}s elapsed, retry in ${event.retrySeconds}s`,
+      );
       break;
     case "neon-ready":
       writeLine(`[${formatNow()}] Neon ready (${event.elapsedSeconds}s)`);
       break;
     case "table-start": {
-      const total =
-        event.completedTables + event.runningTables + event.remainingTables;
+      const total = event.completedTables + event.runningTables + event.remainingTables;
       const num = event.completedTables + event.runningTables;
       writeLine(
         `[${formatNow()}] ▶ (${num}/${total}) ${event.tableName}: ${formatBigNumber(event.estimatedRows)} rows`,
@@ -877,10 +885,7 @@ async function runSync(cliOptions: CliOptions): Promise<void> {
   await syncAnalyticsIndexes(env);
 }
 
-function logStrategySummary(
-  profileMap: Map<string, TableProfile>,
-  tables: TableMetadata[],
-): void {
+function logStrategySummary(profileMap: Map<string, TableProfile>, tables: TableMetadata[]): void {
   const counts = { timestampIncremental: 0, pkIncremental: 0, fullReplace: 0, unknown: 0 };
   for (const table of tables) {
     const profile = profileMap.get(table.tableName);

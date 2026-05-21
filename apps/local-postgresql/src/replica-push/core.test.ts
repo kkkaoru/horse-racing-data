@@ -12,6 +12,7 @@ import {
   buildTableProfileSql,
   buildTimestampFingerprintSql,
   calculateEtaSeconds,
+  incrementalComparatorForTimestampColumn,
   parseConcurrency,
   parseApplyMode,
   parseDependencyEdges,
@@ -28,6 +29,7 @@ import {
   resolveConcurrency,
   resolveStrategy,
   runPushSync,
+  shouldRefreshInclusiveIncrementalMarker,
   timestampKeyExpression,
   waitForNeonReady,
   type ProgressEvent,
@@ -335,7 +337,7 @@ describe("table profile SQL + parser", () => {
 
   it("parses table profiles with auto strategy resolution", () => {
     const output = [
-      "jvd_se\t2854555\t0\tt\t",
+      "jvd_se\t2854555\t0\tt\tdata_sakusei_nengappi",
       "race_entry_corner_features\t6543348\t2099345\tt\tupdated_at",
       "apd_se_jv\t1851831\t0\tt\tupdate_timestamp",
       "model_prediction_evaluations\t29\t0\tt\tevaluated_at",
@@ -347,9 +349,9 @@ describe("table profile SQL + parser", () => {
         tableName: "jvd_se",
         rowCount: 2854555,
         hasUpdateChurn: false,
-        timestampColumn: null,
+        timestampColumn: "data_sakusei_nengappi",
         hasPrimaryKey: true,
-        strategy: "pk-incremental",
+        strategy: "timestamp-incremental",
       },
       {
         tableName: "race_entry_corner_features",
@@ -423,7 +425,16 @@ describe("fingerprint SQL", () => {
       comparator: ">",
     });
     expect(sql).toContain('COPY (SELECT "id", "name" FROM public."table_a"');
-    expect(sql).toContain('where ("id")::text > \'2026-05-21\'');
+    expect(sql).toContain("where (\"id\")::text > '2026-05-21'");
+  });
+
+  it("builds inclusive incremental COPY-from SQL for date-only source markers", () => {
+    const sql = buildIncrementalCopyFromSql(tableA, {
+      keyExpression: timestampKeyExpression("data_sakusei_nengappi"),
+      neonMarker: "20260522",
+      comparator: incrementalComparatorForTimestampColumn("data_sakusei_nengappi"),
+    });
+    expect(sql).toContain("where (\"data_sakusei_nengappi\")::text >= '20260522'");
   });
 
   it("omits WHERE clause when neon marker is empty (empty target)", () => {
@@ -491,6 +502,12 @@ describe("incremental copy edge cases", () => {
   it("falls back to pk-incremental key when no timestamp column", () => {
     const expr = pkExpression(tableB);
     expect(expr).toBe('("id")::text');
+  });
+
+  it("refreshes only inclusive timestamp marker columns", () => {
+    expect(shouldRefreshInclusiveIncrementalMarker("data_sakusei_nengappi")).toBe(true);
+    expect(shouldRefreshInclusiveIncrementalMarker("updated_at")).toBe(false);
+    expect(shouldRefreshInclusiveIncrementalMarker(null)).toBe(false);
   });
 });
 
@@ -640,8 +657,8 @@ describe("Neon warm wait", () => {
           concurrency: 2,
           deleteMissingRows: true,
           applyMode: "replace",
-        strategyMode: "auto",
-        strategyThresholds: { smallTableMaxRows: 10000, updateChurnMinTuples: 1000 },
+          strategyMode: "auto",
+          strategyThresholds: { smallTableMaxRows: 10000, updateChurnMinTuples: 1000 },
           neonConnectTimeoutSeconds: 10,
           neonConnectRetrySeconds: 5,
         },
@@ -759,8 +776,8 @@ describe("parallel push runner", () => {
           concurrency: 1,
           deleteMissingRows: true,
           applyMode: "replace",
-        strategyMode: "auto",
-        strategyThresholds: { smallTableMaxRows: 10000, updateChurnMinTuples: 1000 },
+          strategyMode: "auto",
+          strategyThresholds: { smallTableMaxRows: 10000, updateChurnMinTuples: 1000 },
           neonConnectTimeoutSeconds: 1,
           neonConnectRetrySeconds: 1,
         },

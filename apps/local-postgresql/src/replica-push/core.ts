@@ -15,10 +15,7 @@ export type DependencyEdge = {
 
 export type SyncConcurrency = number | "auto";
 
-export type SyncStrategy =
-  | "timestamp-incremental"
-  | "pk-incremental"
-  | "full-replace";
+export type SyncStrategy = "timestamp-incremental" | "pk-incremental" | "full-replace";
 
 export interface TableProfile {
   tableName: string;
@@ -50,12 +47,14 @@ const DEFAULT_UPDATE_CHURN_MIN_TUPLES = 1000;
 const TIMESTAMP_COLUMN_PRIORITY: readonly string[] = [
   "updated_at",
   "update_timestamp",
+  "data_sakusei_nengappi",
   "prediction_generated_at",
   "evaluated_at",
   "activated_at",
   "modified_at",
   "generated_at",
 ];
+const INCLUSIVE_INCREMENTAL_TIMESTAMP_COLUMNS = new Set(["data_sakusei_nengappi"]);
 
 export type ProgressEvent =
   | {
@@ -284,7 +283,10 @@ export function parseTableProfiles(
   thresholds: SyncStrategyThresholds,
   mode: "auto" | "full" = "auto",
 ): TableProfile[] {
-  const lines = output.split("\n").map((line) => line.trim()).filter((line) => line !== "");
+  const lines = output
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
   return lines.map((line) => parseTableProfileLine(line, thresholds, mode));
 }
 
@@ -367,12 +369,13 @@ export function parseFingerprintLine(line: string): FingerprintResult {
 
 export function buildIncrementalCopyFromSql(
   table: TableMetadata,
-  options: { keyExpression: string; neonMarker: string; comparator: ">" },
+  options: { keyExpression: string; neonMarker: string; comparator: ">" | ">=" },
 ): string {
   const sanitizedMarker = options.neonMarker.replaceAll("'", "''");
-  const where = sanitizedMarker === ""
-    ? ""
-    : `where ${options.keyExpression} ${options.comparator} '${sanitizedMarker}'`;
+  const where =
+    sanitizedMarker === ""
+      ? ""
+      : `where ${options.keyExpression} ${options.comparator} '${sanitizedMarker}'`;
   return `COPY (SELECT ${table.columnList} FROM public.${quoteIdentifier(table.tableName)} ${where}) TO STDOUT WITH (FORMAT csv, NULL '\\N');`;
 }
 
@@ -382,6 +385,14 @@ export function pkExpression(table: TableMetadata): string {
 
 export function timestampKeyExpression(tsColumn: string): string {
   return `(${quoteIdentifier(tsColumn)})::text`;
+}
+
+export function incrementalComparatorForTimestampColumn(tsColumn: string | null): ">" | ">=" {
+  return tsColumn !== null && INCLUSIVE_INCREMENTAL_TIMESTAMP_COLUMNS.has(tsColumn) ? ">=" : ">";
+}
+
+export function shouldRefreshInclusiveIncrementalMarker(tsColumn: string | null): boolean {
+  return tsColumn !== null && INCLUSIVE_INCREMENTAL_TIMESTAMP_COLUMNS.has(tsColumn);
 }
 
 export function buildIncrementalApplySql(
@@ -422,11 +433,7 @@ export function buildIncrementalApplySql(
   return {
     preCopySql: [temporaryStage ? "BEGIN;" : "", stageCreateSql].join("\n"),
     copySql: `COPY ${stageTableReference} (${table.columnList}) FROM STDIN WITH (FORMAT csv, NULL '\\N');`,
-    postCopySql: [
-      temporaryStage ? "" : "BEGIN;",
-      applySql,
-      `${dropStageSql}COMMIT;`,
-    ].join("\n"),
+    postCopySql: [temporaryStage ? "" : "BEGIN;", applySql, `${dropStageSql}COMMIT;`].join("\n"),
     cleanupSql: temporaryStage ? "ROLLBACK;" : `DROP TABLE IF EXISTS ${stageTableReference};`,
   };
 }
@@ -625,16 +632,9 @@ export function buildNeonApplySql(
         ].join("\n");
 
   return {
-    preCopySql: [
-      temporaryStage ? "BEGIN;" : "",
-      stageCreateSql,
-    ].join("\n"),
+    preCopySql: [temporaryStage ? "BEGIN;" : "", stageCreateSql].join("\n"),
     copySql: `COPY ${stageTableReference} (${table.columnList}) FROM STDIN WITH (FORMAT csv, NULL '\\N');`,
-    postCopySql: [
-      temporaryStage ? "" : "BEGIN;",
-      applySql,
-      `${dropStageSql}COMMIT;`,
-    ].join("\n"),
+    postCopySql: [temporaryStage ? "" : "BEGIN;", applySql, `${dropStageSql}COMMIT;`].join("\n"),
     cleanupSql,
   };
 }
@@ -805,8 +805,7 @@ export async function runPushSync(
 
   const remainingTableNames = () =>
     allTableNames.filter(
-      (tableName) =>
-        !completedTableNames.includes(tableName) && !runningTableNames.has(tableName),
+      (tableName) => !completedTableNames.includes(tableName) && !runningTableNames.has(tableName),
     );
 
   dependencies.report({
