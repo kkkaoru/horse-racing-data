@@ -21,15 +21,11 @@
 #
 # 2. PowerShell を起動 (管理者推奨。通常権限でも動作)。
 #
-# 3. 以下のワンライナーをコピペして実行:
+# 3. 以下のワンライナー (1 行) をコピペして実行:
 #
-#    $url = 'https://raw.githubusercontent.com/kkkaoru/horse-racing-data/main/scripts/unblock-pc-keiba-database.ps1'
-#    $dst = Join-Path $env:TEMP 'unblock-pc-keiba-database.ps1'
-#    Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $dst
-#    Unblock-File -LiteralPath $dst
-#    powershell -ExecutionPolicy Bypass -File $dst
+#    $u='https://raw.githubusercontent.com/kkkaoru/horse-racing-data/main/scripts/unblock-pc-keiba-database.ps1'; $d=Join-Path $env:TEMP 'unblock-pc-keiba-database.ps1'; Invoke-WebRequest -UseBasicParsing -Uri $u -OutFile $d; Unblock-File -LiteralPath $d; powershell -ExecutionPolicy Bypass -File $d
 #
-#    PowerShell 7 (pwsh) の場合は最終行の `powershell` を `pwsh` に置換。
+#    PowerShell 7 (pwsh) の場合は末尾の `powershell` を `pwsh` に置換。
 #
 # 4. 出力に "Unblocked: <件数>" が表示されれば完了。
 #    PC-KEIBA Database を再起動して動作確認。
