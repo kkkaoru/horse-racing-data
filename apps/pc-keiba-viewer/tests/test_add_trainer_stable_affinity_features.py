@@ -25,6 +25,26 @@ def test_parse_args_requires_input_output(tmp_path: Path) -> None:
     )
     assert args.input_dir == tmp_path / "in"
     assert args.output_dir == tmp_path / "out"
+    assert args.category == "jra"
+
+
+def test_parse_args_supports_nar_category(tmp_path: Path) -> None:
+    args = subject.parse_args(
+        ["--input-dir", str(tmp_path / "in"), "--output-dir", str(tmp_path / "out"), "--category", "nar"]
+    )
+    assert args.category == "nar"
+
+
+def test_append_features_sql_jra_uses_jvd_se() -> None:
+    sql = subject.append_features_sql("dummy.parquet", "jra")
+    assert "pg.jvd_se" in sql
+    assert "pg.nvd_se" not in sql
+
+
+def test_append_features_sql_nar_uses_nvd_se() -> None:
+    sql = subject.append_features_sql("dummy.parquet", "nar")
+    assert "pg.nvd_se" in sql
+    assert "pg.jvd_se" not in sql
 
 
 def test_append_features_sql_contains_trainer_columns() -> None:

@@ -42,6 +42,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--input-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
+        "--category",
+        choices=("jra", "nar"),
+        default="jra",
+        help="jra → pg.jvd_se / 'jra' source filter; nar → pg.nvd_se / 'nar' source filter",
+    )
+    parser.add_argument(
         "--pg-url",
         type=str,
         default=os.environ.get("LOCAL_PG_URL", DEFAULT_PG_URL),
@@ -57,8 +63,14 @@ def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
     con.execute(f"attach '{pg_url}' as pg (type postgres, read_only)")
 
 
-def stage_race_history_with_trainer(con: duckdb.DuckDBPyConnection, from_date: str) -> None:
-    """horse の過去レース成績 + trainer (chokyoshi_code) + grade_code を取得。"""
+def stage_race_history_with_trainer(con: duckdb.DuckDBPyConnection, from_date: str, category: str) -> None:
+    """horse の過去レース成績 + trainer (chokyoshi_code) + grade_code を取得。
+
+    category=jra → pg.jvd_se / source='jra' filter
+    category=nar → pg.nvd_se / source='nar' filter (ban-ei 含む全 nvd_se rows)
+    """
+    se_table = "pg.jvd_se" if category == "jra" else "pg.nvd_se"
+    source_filter = "jra" if category == "jra" else "nar"
     con.execute(
         f"""
         create or replace temp table race_history as
@@ -74,7 +86,7 @@ def stage_race_history_with_trainer(con: duckdb.DuckDBPyConnection, from_date: s
           rec.grade_code,
           se.chokyoshi_code
         from pg.race_entry_corner_features rec
-        left join pg.jvd_se se
+        left join {se_table} se
           on se.kaisai_nen = rec.kaisai_nen
           and se.kaisai_tsukihi = rec.kaisai_tsukihi
           and se.keibajo_code = rec.keibajo_code
@@ -82,7 +94,7 @@ def stage_race_history_with_trainer(con: duckdb.DuckDBPyConnection, from_date: s
           and se.ketto_toroku_bango = rec.ketto_toroku_bango
         where rec.race_date >= '{from_date}'
           and rec.finish_position is not null
-          and rec.source = 'jra'
+          and rec.source = '{source_filter}'
           and se.chokyoshi_code is not null and trim(se.chokyoshi_code) != ''
         """
     )
@@ -194,7 +206,8 @@ def stage_base_input(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
     )
 
 
-def append_features_sql(input_glob: str) -> str:
+def append_features_sql(input_glob: str, category: str = "jra") -> str:
+    se_table = "pg.jvd_se" if category == "jra" else "pg.nvd_se"
     return f"""
     with base as (
       select * from read_parquet('{input_glob}', hive_partitioning=true)
@@ -202,7 +215,7 @@ def append_features_sql(input_glob: str) -> str:
     base_with_trainer as (
       select b.*, se.chokyoshi_code
       from base b
-      left join pg.jvd_se se
+      left join {se_table} se
         on se.kaisai_nen = b.kaisai_nen
         and se.kaisai_tsukihi = b.kaisai_tsukihi
         and se.keibajo_code = b.keibajo_code
@@ -257,11 +270,11 @@ def main() -> None:
     apply_to_connection(con, args.threads, args.memory_limit)
     con.execute("SET preserve_insertion_order=false")
     install_and_attach_pg(con, args.pg_url)
-    stage_race_history_with_trainer(con, args.from_date)
+    stage_race_history_with_trainer(con, args.from_date, args.category)
     stage_trainer_grade_cumul(con)
     stage_base_input(con, input_glob)
     stage_trainer_target_race_cumul(con)
-    write_partitioned(con, append_features_sql(input_glob), args.output_dir)
+    write_partitioned(con, append_features_sql(input_glob, args.category), args.output_dir)
     con.close()
 
 

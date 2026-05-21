@@ -1,4 +1,4 @@
-# `jra-cb-v7-lineage` — JRA G1 系譜特徴量 + 非前走系特徴量
+# `jra-cb-v7-lineage` + `nar-xgb-v7-lineage` — G1 系譜特徴量 + 非前走系特徴量
 
 ## 1. 概要
 
@@ -247,12 +247,67 @@ where category = 'jra';
 
 ---
 
-## 8. NAR / Ban-ei
+## 8. NAR (`nar-xgb-v7-lineage` deploy 済)
 
-本リリースは **JRA のみ**。NAR と Ban-ei は同じ pipeline (lineage-races/{nar,ban-ei}.json + 4 feature scripts + retrain) で展開可能だが、別セッションで実施予定。
+NAR への v7 展開:
+- `lineage-races/nar.json` 18 target races (帝王賞, 東京ダービー, JBC, 兵庫CS, かしわ記念, 川崎記念, 全日本2歳優駿, ジャパンダートクラシック, 等)
+- v7 features は **lineage + h2h + baba の 3 layer (trainer 抜き)** を採用 — trainer は NAR で逆効果
+- XGBoost rank:pairwise (既存 active arch 踏襲)、relevance `{1:3, 2:2, 3:2}` (`--relevance-rank3 2` で place3 重み boost)
 
-- NAR: lineage 候補 = 帝王賞, 東京ダービー, JBC, 兵庫CS, かしわ記念, 川崎記念, 全日本2歳優駿 等の交流重賞 + 地方重賞 (S grade)
-- Ban-ei: lineage 候補 = ばんえい記念, 帯広記念, ばんえいダービー, ばんえいオークス + 各 trial。futan_juryo (700/800/900kg+ 級) class-specific win rate を強化追加
+### Walk-forward 2024-2025 (n=27,103 races)
+
+| metric | v5_single baseline | v7-lineage (no trainer, r322) | Δ |
+|---|---|---|---|
+| top1 | 58.447% | **58.562%** | +0.115pp |
+| place2 | 35.586% | **35.834%** | **+0.247pp** ⭐ |
+| place3 | 27.318% | **27.392%** | +0.074pp |
+| top3_box | 34.753% | 34.635% | -0.119pp |
+| ndcg@3 | 0.7904 | 0.7901 | -0.0002 |
+
+主要 3 metric (top1/place2/place3) すべて改善、top3_box -0.12pp は許容範囲。
+
+### NAR 試行履歴 (gate 通過まで)
+
+| variant | top1 Δ | place2 Δ | place3 Δ | top3_box Δ | 採用 |
+|---|---|---|---|---|---|
+| XGB r321 (default relevance) | +0.04 | +0.01 | **-0.13** | -0.06 | ✗ |
+| CatBoost YetiRank r321 | +0.20 | +0.03 | -0.42 | -0.53 | ✗ |
+| XGB r332 (boost both rank2/3) | -0.15 | -0.09 | -0.02 | -0.05 | ✗ |
+| XGB r322 (boost only rank3) | +0.05 | +0.06 | -0.09 | -0.02 | ✗ |
+| **XGB r322 + no trainer features** | **+0.12** | **+0.25** | **+0.07** | -0.12 | ✓ **deploy** |
+
+NAR で trainer features (`chokyoshi_code from nvd_se`) を抜くと改善した理由: NAR の調教師データは race level identity が JRA ほど strong でない可能性、target_race ごとの trainer-specific signal が薄く noise として作用。
+
+### NAR Pipeline
+
+```
+feat-nar-v6 (171 cols, baseline)
+  ↓
+add-grade-race-lineage-features.py --config lineage-races/nar.json
+  ↓
+add-head-to-head-features.py
+  ↓
+add-baba-pedigree-affinity-features.py
+  ↓
+feat-nar-v7-baba (191 cols, 20 added: lineage 7 + h2h 6 + baba 7)
+  ↓
+XGBoost rank:pairwise, --relevance-rank1=3 --relevance-rank2=2 --relevance-rank3=2,
+num_rounds=450 (WF best), lr=0.05, max_depth=6
+  ↓
+nar-xgb-v7-lineage model (saved at tmp/models/nar-xgb-v7-lineage-deploy/model.json)
+```
+
+NAR では trainer-stable affinity layer (Phase 1e' for JRA) は **skip**。`add-trainer-stable-affinity-features.py` は `--category nar` 引数を追加実装 (pg.nvd_se 経由)、将来必要なら再投入可能。
+
+### NAR 2026 predictions
+
+feat-nar-v7-baba parquet には 2026 データ未生成のため、deploy 時に 2026 NAR 予測の upsert は省略。`finish_position_active_models.nar = nar-xgb-v7-lineage` 切替済なので、次回 cron 起動時に v7 でレース予測が自動生成される設計。既存の v5 NAR predictions (2026, 2,395 件) は そのまま PG に残置。
+
+---
+
+## 9. Ban-ei
+
+Ban-ei は別セッションで実施予定。`lineage-races/ban-ei.json` (ばんえい記念, 帯広記念, ばんえいダービー, ばんえいオークス + 各 trial) + `futan_juryo` (700/800/900kg+) class-specific win rate feature 追加 + LightGBM blend v7 再訓練。
 
 ---
 
@@ -260,14 +315,15 @@ where category = 'jra';
 
 ### 新規
 - `apps/pc-keiba-viewer/src/scripts/finish-position-features/lineage-races/jra.json`
+- `apps/pc-keiba-viewer/src/scripts/finish-position-features/lineage-races/nar.json`
 - `apps/pc-keiba-viewer/src/scripts/finish-position-features/add-grade-race-lineage-features.py`
 - `apps/pc-keiba-viewer/src/scripts/finish-position-features/add-head-to-head-features.py`
 - `apps/pc-keiba-viewer/src/scripts/finish-position-features/add-baba-pedigree-affinity-features.py`
-- `apps/pc-keiba-viewer/src/scripts/finish-position-features/add-trainer-stable-affinity-features.py`
+- `apps/pc-keiba-viewer/src/scripts/finish-position-features/add-trainer-stable-affinity-features.py` (`--category {jra,nar}` 対応)
 - `apps/pc-keiba-viewer/tests/test_add_grade_race_lineage_features.py` (13 tests)
 - `apps/pc-keiba-viewer/tests/test_add_head_to_head_features.py` (4 tests)
 - `apps/pc-keiba-viewer/tests/test_add_baba_pedigree_affinity_features.py` (3 tests)
-- `apps/pc-keiba-viewer/tests/test_add_trainer_stable_affinity_features.py` (3 tests)
+- `apps/pc-keiba-viewer/tests/test_add_trainer_stable_affinity_features.py` (6 tests, NAR category 含む)
 
 ### 再利用 (変更なし)
 - `apps/pc-keiba-viewer/src/scripts/finish_position_catboost.py`
