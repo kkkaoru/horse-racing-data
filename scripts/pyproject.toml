@@ -1,0 +1,55 @@
+[project]
+name = "horse-racing-data-scripts"
+version = "0.0.0"
+description = "Repo-root Python scripts (PC-KEIBA Database auto-update etc.)"
+requires-python = ">=3.12"
+dependencies = ["psutil>=7.0"]
+
+[dependency-groups]
+dev = ["basedpyright>=1.34.0", "pytest>=8.4.0", "pytest-cov>=7.0.0", "ty>=0.0.35"]
+
+[tool.uv]
+package = false
+
+[tool.basedpyright]
+include = ["."]
+exclude = ["tests", ".venv", "__pycache__"]
+pythonVersion = "3.12"
+pythonPlatform = "Windows"
+typeCheckingMode = "strict"
+stubPath = "stubs"
+reportAny = "none"
+# pywinauto / UIA COM オブジェクトには公式 stub が無く Any 必須。
+reportExplicitAny = "none"
+# pywinauto は Windows ランタイム専用で source は dev 環境に不在 (stubs/ のみ提供)。
+reportMissingModuleSource = "none"
+reportUnknownArgumentType = "none"
+reportUnknownMemberType = "none"
+reportUnknownVariableType = "none"
+reportUnknownParameterType = "error"
+
+[tool.ty.environment]
+python-version = "3.12"
+python-platform = "win32"
+python = ".venv/bin/python"
+extra-paths = ["stubs"]
+
+[tool.pytest.ini_options]
+addopts = "--cov=pc_keiba_auto_update --cov-report=term-missing --cov-fail-under=95"
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["pc_keiba_auto_update"]
+
+[tool.coverage.report]
+exclude_lines = [
+  "if __name__ == .__main__.:",
+  "raise SystemExit",
+  "pragma: no cover",
+  # Protocol メソッド本体は実行されないので除外 (`...` 単独行)
+  '^\s*\.\.\.$',
+]
+show_missing = true
+partial_branches = ["pragma: no branch"]

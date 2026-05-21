@@ -1,13 +1,13 @@
 ﻿# =============================================================================
 # install-pc-keiba-auto-update.ps1
 # =============================================================================
-# pc-keiba-auto-update.py を Windows にセットアップし、Task Scheduler に登録する。
+# pc_keiba_auto_update.py を Windows にセットアップし、Task Scheduler に登録する。
 # 何度実行しても同一状態に収束する (冪等)。
 #
 # 動作:
 #   1. Python 3.12 が無ければ winget で user スコープにインストール
 #   2. pywinauto / psutil を pip でインストール (既存なら upgrade)
-#   3. pc-keiba-auto-update.py を %LOCALAPPDATA%\pc-keiba-auto-update\ に配置
+#   3. pc_keiba_auto_update.py を %LOCALAPPDATA%\pc-keiba-auto-update\ に配置
 #   4. ScheduledTask "PC-KEIBA Auto Update" を作成 / 更新
 #
 # -----------------------------------------------------------------------------
@@ -53,7 +53,7 @@ param(
     [string]$TaskName = 'PC-KEIBA Auto Update',
 
     # スクリプト取得元 (raw URL)
-    [string]$ScriptUrl = 'https://raw.githubusercontent.com/kkkaoru/horse-racing-data/main/scripts/pc-keiba-auto-update.py',
+    [string]$ScriptUrl = 'https://raw.githubusercontent.com/kkkaoru/horse-racing-data/main/scripts/pc_keiba_auto_update.py',
 
     # 設置先
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'pc-keiba-auto-update'),
@@ -137,7 +137,7 @@ Write-Ok "依存インストール完了"
 # -----------------------------------------------------------------------------
 Write-Step "スクリプトを $InstallDir に配置"
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-$scriptPath = Join-Path $InstallDir 'pc-keiba-auto-update.py'
+$scriptPath = Join-Path $InstallDir 'pc_keiba_auto_update.py'
 Invoke-WebRequest -UseBasicParsing -Uri $ScriptUrl -OutFile $scriptPath
 Unblock-File -LiteralPath $scriptPath
 Write-Ok "$scriptPath"
