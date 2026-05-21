@@ -882,6 +882,25 @@ def test_main_wait_timeout_skips_close(monkeypatch: pytest.MonkeyPatch) -> None:
     safe_close.assert_not_called()
 
 
+def test_main_wait_without_close(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--wait あり / --close-when-done なし → safe_close_app は呼ばれない。"""
+    monkeypatch.setattr(sys, "argv", ["prog", "--wait"])
+    monkeypatch.setattr(mod, "acquire_lock", lambda _stale: True)
+    monkeypatch.setattr(mod, "release_lock", lambda: None)
+    monkeypatch.setattr(mod, "ensure_app_running", lambda: 42)
+    monkeypatch.setattr(mod, "is_update_in_progress_by_pid", lambda _pid: False)
+    monkeypatch.setattr(
+        mod, "connect_main", lambda *_a, **_k: (MagicMock(), MagicMock())
+    )
+    monkeypatch.setattr(mod, "open_dialog_if_needed", lambda _w: None)
+    monkeypatch.setattr(mod, "click_start", lambda _w, dry_run=False: True)
+    monkeypatch.setattr(mod, "wait_for_completion", lambda _w, max_minutes: True)
+    safe_close = MagicMock()
+    monkeypatch.setattr(mod, "safe_close_app", safe_close)
+    assert mod.main() == 0
+    safe_close.assert_not_called()
+
+
 def test_main_unexpected_exception(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "argv", ["prog"])
     monkeypatch.setattr(mod, "acquire_lock", lambda _stale: True)

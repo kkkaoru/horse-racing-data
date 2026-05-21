@@ -12,8 +12,18 @@ dev = ["basedpyright>=1.34.0", "pytest>=8.4.0", "pytest-cov>=7.0.0", "ruff>=0.7.
 extend-include = ["*.pyi"]
 
 [tool.ruff.lint]
-# Pyflakes (F): undefined-name, unused-import 等
-select = ["F"]
+# F: Pyflakes (undefined-name, unused-import 等)
+# C90: McCabe cyclomatic complexity (関数あたりの分岐上限)
+# SIM: flake8-simplify (collapsible-if, nested-ifs 検出)
+# RET: flake8-return (unnecessary-else / early-return 推奨)
+select = ["F", "C90", "SIM", "RET"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 8
+
+[tool.ruff.lint.per-file-ignores]
+# テストは MagicMock を多用するため複雑度ルールを緩める。
+"tests/**/*.py" = ["C901", "SIM117"]
 
 [tool.uv]
 package = false
