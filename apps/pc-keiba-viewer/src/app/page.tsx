@@ -21,6 +21,22 @@ const links = [
   { href: "/mypage", label: "マイページ" },
 ];
 
+const getTodayJstDateParts = () => {
+  const parts = new Intl.DateTimeFormat("ja-JP-u-ca-gregory", {
+    day: "2-digit",
+    month: "2-digit",
+    numberingSystem: "latn",
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+  }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return {
+    day: values.day ?? "01",
+    month: values.month ?? "01",
+    year: values.year ?? "1970",
+  };
+};
+
 const minHomeTrackRunnerCount = 4;
 const maxHomeTrackRunnerCount = 18;
 const jockeyRunnerEmojis = ["🏇", "🏇🏻", "🏇🏼", "🏇🏽", "🏇🏾", "🏇🏿"] as const;
@@ -472,7 +488,7 @@ const homeRaceListMinHeight = (count: number): string =>
 function HomeRealtimeSkeleton() {
   return (
     <div className="home-live-grid" aria-label="トップページのレース情報を読み込み中">
-      {["次のレース", "直近の発走済み", "オッズ更新"].map((title, index) => (
+      {["次のレース", "直近の発走済み", "スケジュール一覧"].map((title, index) => (
         <section className={index === 2 ? "home-panel home-panel-wide" : "home-panel"} key={title}>
           <div className="section-heading compact">
             <h2>{title}</h2>
@@ -497,6 +513,8 @@ function HomeRealtimeSkeleton() {
 
 export default function HomePage() {
   const homeTrackRunners = getHomeTrackRunners();
+  const today = getTodayJstDateParts();
+  const todayRaceDateHref = `/races/${today.year}/${today.month}/${today.day}`;
 
   return (
     <section className="page-shell home-shell">
@@ -530,6 +548,14 @@ export default function HomePage() {
             {link.label}
           </Link>
         ))}
+      </nav>
+      <nav className="home-today-race-links" aria-label="本日の開催">
+        <Link href={todayRaceDateHref}>
+          <span>本日の開催</span>
+          <strong>
+            {today.year}/{today.month}/{today.day}
+          </strong>
+        </Link>
       </nav>
       <Suspense fallback={<HomeRealtimeSkeleton />}>
         <HomeRealtimePanel />

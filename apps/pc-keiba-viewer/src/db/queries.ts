@@ -1987,12 +1987,13 @@ export const getTopRaceWindows = cache(
               track_code "trackCode",
               hasso_jikoku "hassoJikoku",
               shusso_tosu "shussoTosu",
-              kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') start_key,
+              kaisai_nen || kaisai_tsukihi || right('0000' || coalesce(nullif(regexp_replace(coalesce(hasso_jikoku, ''), '[^0-9]', '', 'g'), ''), '0000'), 4) start_key,
               0 bucket
             from ${jvdRa}
-            where kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') >= ${nowKey}
-            order by kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') asc
-            limit 5
+            where kaisai_nen || kaisai_tsukihi || right('0000' || coalesce(nullif(regexp_replace(coalesce(hasso_jikoku, ''), '[^0-9]', '', 'g'), ''), '0000'), 4) >= ${nowKey}
+            order by kaisai_nen || kaisai_tsukihi || right('0000' || coalesce(nullif(regexp_replace(coalesce(hasso_jikoku, ''), '[^0-9]', '', 'g'), ''), '0000'), 4) asc,
+              keibajo_code asc, race_bango asc
+            limit 240
           )
           union all
           (
@@ -2014,12 +2015,13 @@ export const getTopRaceWindows = cache(
               track_code "trackCode",
               hasso_jikoku "hassoJikoku",
               shusso_tosu "shussoTosu",
-              kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') start_key,
+              kaisai_nen || kaisai_tsukihi || right('0000' || coalesce(nullif(regexp_replace(coalesce(hasso_jikoku, ''), '[^0-9]', '', 'g'), ''), '0000'), 4) start_key,
               0 bucket
             from ${nvdRa}
-            where kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') >= ${nowKey}
-            order by kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') asc
-            limit 5
+            where kaisai_nen || kaisai_tsukihi || right('0000' || coalesce(nullif(regexp_replace(coalesce(hasso_jikoku, ''), '[^0-9]', '', 'g'), ''), '0000'), 4) >= ${nowKey}
+            order by kaisai_nen || kaisai_tsukihi || right('0000' || coalesce(nullif(regexp_replace(coalesce(hasso_jikoku, ''), '[^0-9]', '', 'g'), ''), '0000'), 4) asc,
+              keibajo_code asc, race_bango asc
+            limit 240
           )
           union all
           (
@@ -2041,12 +2043,13 @@ export const getTopRaceWindows = cache(
               track_code "trackCode",
               hasso_jikoku "hassoJikoku",
               shusso_tosu "shussoTosu",
-              kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') start_key,
+              kaisai_nen || kaisai_tsukihi || right('0000' || coalesce(nullif(regexp_replace(coalesce(hasso_jikoku, ''), '[^0-9]', '', 'g'), ''), '0000'), 4) start_key,
               1 bucket
             from ${jvdRa}
-            where kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') < ${nowKey}
-            order by kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') desc
-            limit 5
+            where kaisai_nen || kaisai_tsukihi || right('0000' || coalesce(nullif(regexp_replace(coalesce(hasso_jikoku, ''), '[^0-9]', '', 'g'), ''), '0000'), 4) < ${nowKey}
+            order by kaisai_nen || kaisai_tsukihi || right('0000' || coalesce(nullif(regexp_replace(coalesce(hasso_jikoku, ''), '[^0-9]', '', 'g'), ''), '0000'), 4) desc,
+              keibajo_code desc, race_bango desc
+            limit 60
           )
           union all
           (
@@ -2068,12 +2071,13 @@ export const getTopRaceWindows = cache(
               track_code "trackCode",
               hasso_jikoku "hassoJikoku",
               shusso_tosu "shussoTosu",
-              kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') start_key,
+              kaisai_nen || kaisai_tsukihi || right('0000' || coalesce(nullif(regexp_replace(coalesce(hasso_jikoku, ''), '[^0-9]', '', 'g'), ''), '0000'), 4) start_key,
               1 bucket
             from ${nvdRa}
-            where kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') < ${nowKey}
-            order by kaisai_nen || kaisai_tsukihi || coalesce(nullif(hasso_jikoku, ''), '0000') desc
-            limit 5
+            where kaisai_nen || kaisai_tsukihi || right('0000' || coalesce(nullif(regexp_replace(coalesce(hasso_jikoku, ''), '[^0-9]', '', 'g'), ''), '0000'), 4) < ${nowKey}
+            order by kaisai_nen || kaisai_tsukihi || right('0000' || coalesce(nullif(regexp_replace(coalesce(hasso_jikoku, ''), '[^0-9]', '', 'g'), ''), '0000'), 4) desc,
+              keibajo_code desc, race_bango desc
+            limit 60
           )
         )
         select
@@ -2103,14 +2107,14 @@ export const getTopRaceWindows = cache(
           ) "raceStartAt",
           bucket
         from candidates
-        order by bucket asc, start_key asc
+        order by bucket asc, start_key asc, "keibajoCode" asc, "raceBango" asc, source asc
       `);
       return {
         finished: result.rows
           .filter((row) => row.bucket === 1)
-          .slice(-5)
+          .slice(-60)
           .toReversed(),
-        upcoming: result.rows.filter((row) => row.bucket === 0).slice(0, 5),
+        upcoming: result.rows.filter((row) => row.bucket === 0).slice(0, 240),
       };
     });
   },

@@ -1,6 +1,5 @@
 "use client";
 
-import type { RealtimeRacePayload } from "horse-racing-realtime/types";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
@@ -13,7 +12,6 @@ import {
 } from "../lib/format";
 import { getNextOddsFetchAt } from "../lib/odds-schedule";
 import type { TopRaceSummary } from "../lib/race-types";
-import { isRealtimeRacePayload } from "./races/detail/realtime-client";
 
 interface HomeRealtimeProps {
   initialFinished: TopRaceSummary[];
@@ -27,13 +25,15 @@ type RaceWindowsPayload = {
   upcoming: TopRaceSummary[];
 };
 
-type OddsSchedule = {
-  lastFetchedAt: string | null;
-  nextFetchAt: string;
+type ScheduledTask = {
+  id: string;
+  label: string;
+  scheduledAt: string;
   race: TopRaceSummary;
 };
 
 type AsyncStatus = "loading" | "ready" | "error";
+const SCHEDULE_PAGE_SIZE = 6;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -48,8 +48,8 @@ const isRaceWindowsPayload = (data: unknown): data is RaceWindowsPayload => {
 const racePath = (race: TopRaceSummary): string =>
   `/races/${race.kaisaiNen}/${race.kaisaiTsukihi.slice(0, 2)}/${race.kaisaiTsukihi.slice(2, 4)}/${race.keibajoCode}/${race.raceBango}`;
 
-const realtimeProxyPath = (race: TopRaceSummary): string =>
-  `/api${racePath(race)}/realtime?source=${encodeURIComponent(race.source)}`;
+const raceKey = (race: TopRaceSummary): string =>
+  `${race.source}-${race.kaisaiNen}${race.kaisaiTsukihi}-${race.keibajoCode}-${race.raceBango}`;
 
 const formatCountdown = (target: string, now: number, includeSeconds: boolean): string => {
   const diff = new Date(target).getTime() - now;
@@ -82,6 +82,8 @@ const countdownIcon = (target: string, now: number): string => {
   return "🕒";
 };
 
+const getRaceStartMs = (race: TopRaceSummary): number => new Date(race.raceStartAt).getTime();
+
 const formatRaceLine = (race: TopRaceSummary): string =>
   [
     formatKeibajo(race.keibajoCode),
@@ -90,6 +92,66 @@ const formatRaceLine = (race: TopRaceSummary): string =>
     getTrackSurfaceLabel(race.trackCode),
     formatDistance(race.kyori),
   ].join(" / ");
+
+const getVenueMeetingKey = (race: TopRaceSummary): string =>
+  `${race.source}:${race.kaisaiNen}${race.kaisaiTsukihi}:${race.keibajoCode}`;
+
+const getVenueLastRaceStartAtByMeeting = (races: TopRaceSummary[]): Map<string, string> => {
+  const result = new Map<string, string>();
+  for (const race of races) {
+    const key = getVenueMeetingKey(race);
+    const current = result.get(key);
+    if (!current || getRaceStartMs(race) > new Date(current).getTime()) {
+      result.set(key, race.raceStartAt);
+    }
+  }
+  return result;
+};
+
+const buildScheduledTasks = (races: TopRaceSummary[], now: number): ScheduledTask[] => {
+  const venueLastRaceStartAt = getVenueLastRaceStartAtByMeeting(races);
+  return races
+    .flatMap((race): ScheduledTask[] => {
+      if (race.source !== "nar" && race.source !== "jra") {
+        return [];
+      }
+      const scheduledAt = getNextOddsFetchAt(race.raceStartAt, now, race.source, {
+        keibajoCode: race.keibajoCode,
+        venueLastRaceStartAt: venueLastRaceStartAt.get(getVenueMeetingKey(race)),
+      });
+      if (!scheduledAt) {
+        return [];
+      }
+      return [
+        {
+          id: `${raceKey(race)}-odds`,
+          label: "オッズ更新",
+          race,
+          scheduledAt,
+        },
+      ];
+    })
+    .toSorted(
+      (left, right) =>
+        new Date(left.scheduledAt).getTime() - new Date(right.scheduledAt).getTime() ||
+        getRaceStartMs(left.race) - getRaceStartMs(right.race),
+    );
+};
+
+const formatTaskCountdown = (target: string, now: number): string => {
+  const diff = new Date(target).getTime() - now;
+  if (diff <= 0) {
+    return "まもなく";
+  }
+  const totalSeconds = Math.ceil(diff / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+};
 
 const homeRaceListMinHeight = (count: number): string =>
   `${count * 42 + Math.max(0, count - 1) * 8}px`;
@@ -134,29 +196,30 @@ export function HomeRealtime({
   const [raceWindowsStatus, setRaceWindowsStatus] = useState<AsyncStatus>(
     initialLoadFailed ? "error" : "ready",
   );
-  const [oddsStatus, setOddsStatus] = useState<AsyncStatus>("loading");
   const [raceWindows, setRaceWindows] = useState<RaceWindowsPayload>({
     finished: initialFinished,
     upcoming: initialUpcoming,
   });
-  const [oddsSchedules, setOddsSchedules] = useState<OddsSchedule[]>([]);
-  const [nextOddsFetchAt, setNextOddsFetchAt] = useState<string | null>(null);
+  const [schedulePage, setSchedulePage] = useState(1);
   const races = useMemo(
     () =>
-      [...raceWindows.finished, ...raceWindows.upcoming].toSorted(
-        (left, right) =>
-          new Date(left.raceStartAt).getTime() - new Date(right.raceStartAt).getTime(),
-      ),
+      [...raceWindows.finished, ...raceWindows.upcoming]
+        .filter((race) => Number.isFinite(getRaceStartMs(race)))
+        .toSorted((left, right) => getRaceStartMs(left) - getRaceStartMs(right)),
     [raceWindows],
   );
-  const upcoming = races.filter((race) => new Date(race.raceStartAt).getTime() >= now).slice(0, 5);
+  const upcoming = races.filter((race) => getRaceStartMs(race) > now).slice(0, 5);
   const finished = races
-    .filter((race) => new Date(race.raceStartAt).getTime() < now)
+    .filter((race) => getRaceStartMs(race) <= now)
     .slice(-5)
     .toReversed();
-  const upcomingOddsRaces = useMemo(
-    () => raceWindows.upcoming.filter((race) => race.source === "nar" || race.source === "jra"),
-    [raceWindows.upcoming],
+  const scheduledTasks = useMemo(() => buildScheduledTasks(races, now), [races, now]);
+  const nextScheduledTaskAt = scheduledTasks[0]?.scheduledAt ?? null;
+  const totalSchedulePages = Math.max(1, Math.ceil(scheduledTasks.length / SCHEDULE_PAGE_SIZE));
+  const currentSchedulePage = Math.min(schedulePage, totalSchedulePages);
+  const visibleScheduledTasks = scheduledTasks.slice(
+    (currentSchedulePage - 1) * SCHEDULE_PAGE_SIZE,
+    currentSchedulePage * SCHEDULE_PAGE_SIZE,
   );
 
   useEffect(() => {
@@ -180,96 +243,10 @@ export function HomeRealtime({
         // Keep the initial server-rendered race windows if refresh fails.
       }
     };
-    const timer = window.setInterval(() => void load(), 60_000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    const load = async () => {
-      if (upcomingOddsRaces.length === 0) {
-        setNextOddsFetchAt(null);
-        setOddsSchedules([]);
-        setOddsStatus("ready");
-        return;
-      }
-
-      setOddsStatus((current) => (current === "ready" ? current : "loading"));
-      try {
-        let failedPayloadCount = 0;
-        const payloads = await Promise.all(
-          upcomingOddsRaces.map(
-            async (race): Promise<[TopRaceSummary, RealtimeRacePayload] | null> => {
-              if (race.source !== "nar" && race.source !== "jra") {
-                return null;
-              }
-              try {
-                const response = await fetch(realtimeProxyPath(race), { cache: "no-store" });
-                if (!response.ok) {
-                  failedPayloadCount += 1;
-                  return null;
-                }
-                const data: unknown = await response.json();
-                if (!isRealtimeRacePayload(data)) {
-                  failedPayloadCount += 1;
-                  return null;
-                }
-                return [race, data];
-              } catch {
-                failedPayloadCount += 1;
-                return null;
-              }
-            },
-          ),
-        );
-        const validPayloads = payloads.filter(
-          (payload): payload is [TopRaceSummary, RealtimeRacePayload] => payload !== null,
-        );
-        const payloadsByRace = new Map(
-          validPayloads.map(([race, payload]) => [
-            `${race.source}-${race.keibajoCode}-${race.raceBango}`,
-            payload,
-          ]),
-        );
-        if (validPayloads.length === 0 && failedPayloadCount === upcomingOddsRaces.length) {
-          setNextOddsFetchAt(null);
-          setOddsSchedules([]);
-          setOddsStatus("error");
-          return;
-        }
-        const schedules = upcomingOddsRaces
-          .flatMap((race): OddsSchedule[] => {
-            const nextFetchAt = getNextOddsFetchAt(race.raceStartAt, Date.now(), race.source);
-            if (!nextFetchAt) {
-              return [];
-            }
-            const payload = payloadsByRace.get(
-              `${race.source}-${race.keibajoCode}-${race.raceBango}`,
-            );
-            return [
-              {
-                lastFetchedAt: payload?.odds?.fetchedAt ?? payload?.source?.lastOddsFetchAt ?? null,
-                nextFetchAt,
-                race,
-              },
-            ];
-          })
-          .toSorted(
-            (left, right) =>
-              new Date(left.nextFetchAt).getTime() - new Date(right.nextFetchAt).getTime(),
-          );
-        setNextOddsFetchAt(schedules[0]?.nextFetchAt ?? null);
-        setOddsSchedules(schedules.slice(0, 5));
-        setOddsStatus("ready");
-      } catch {
-        setNextOddsFetchAt(null);
-        setOddsSchedules([]);
-        setOddsStatus("error");
-      }
-    };
     void load();
     const timer = window.setInterval(() => void load(), 30_000);
     return () => window.clearInterval(timer);
-  }, [upcomingOddsRaces]);
+  }, []);
 
   return (
     <div className="home-live-grid">
@@ -285,10 +262,7 @@ export function HomeRealtime({
         ) : upcoming.length > 0 ? (
           <div className="home-race-list">
             {upcoming.map((race, index) => (
-              <Link
-                href={racePath(race)}
-                key={`${race.source}-${race.keibajoCode}-${race.raceBango}`}
-              >
+              <Link href={racePath(race)} key={raceKey(race)}>
                 <strong className="home-race-countdown">
                   <span className="home-race-countdown-icon" aria-hidden="true">
                     {countdownIcon(race.raceStartAt, now)}
@@ -315,10 +289,7 @@ export function HomeRealtime({
         ) : finished.length > 0 ? (
           <div className="home-race-list">
             {finished.map((race) => (
-              <Link
-                href={racePath(race)}
-                key={`${race.source}-${race.keibajoCode}-${race.raceBango}`}
-              >
+              <Link href={racePath(race)} key={raceKey(race)}>
                 <strong>{formatRaceLine(race)}</strong>
                 <span>{race.raceStartAt.slice(5, 16).replace("T", " ")}</span>
               </Link>
@@ -330,36 +301,59 @@ export function HomeRealtime({
       </section>
       <section className="home-panel home-panel-wide">
         <div className="section-heading compact">
-          <h2>オッズ更新</h2>
+          <h2>スケジュール一覧</h2>
           <span>
-            次回予定 {nextOddsFetchAt ? new Date(nextOddsFetchAt).toLocaleTimeString("ja-JP") : "-"}
+            次回予定{" "}
+            {nextScheduledTaskAt ? new Date(nextScheduledTaskAt).toLocaleTimeString("ja-JP") : "-"}
           </span>
         </div>
-        {oddsStatus === "loading" ? (
+        {raceWindowsStatus === "loading" ? (
           <HomeRaceListSkeleton count={3} />
-        ) : oddsStatus === "error" ? (
-          <HomeRaceListMessage count={3}>
-            オッズ更新予定を読み込めませんでした。
-          </HomeRaceListMessage>
-        ) : oddsSchedules.length > 0 ? (
-          <div className="home-race-list">
-            {oddsSchedules.map((schedule) => (
-              <Link
-                href={racePath(schedule.race)}
-                key={`${schedule.race.keibajoCode}-${schedule.race.raceBango}-${schedule.nextFetchAt}`}
-              >
-                <strong>{formatRaceLine(schedule.race)}</strong>
-                <span>
-                  次回 {new Date(schedule.nextFetchAt).toLocaleTimeString("ja-JP")}
-                  {schedule.lastFetchedAt
-                    ? ` / 更新 ${new Date(schedule.lastFetchedAt).toLocaleTimeString("ja-JP")}`
-                    : ""}
-                </span>
-              </Link>
-            ))}
-          </div>
+        ) : raceWindowsStatus === "error" ? (
+          <HomeRaceListMessage count={3}>スケジュールを読み込めませんでした。</HomeRaceListMessage>
+        ) : scheduledTasks.length > 0 ? (
+          <>
+            <div className="home-race-list">
+              {visibleScheduledTasks.map((task) => (
+                <Link href={racePath(task.race)} key={`${task.id}-${task.scheduledAt}`}>
+                  <strong>
+                    {task.label} / {formatRaceLine(task.race)}
+                  </strong>
+                  <span>
+                    予定 {new Date(task.scheduledAt).toLocaleTimeString("ja-JP")} / 実行まで{" "}
+                    {formatTaskCountdown(task.scheduledAt, now)}
+                  </span>
+                </Link>
+              ))}
+            </div>
+            <div className="home-schedule-pagination" aria-label="スケジュール一覧のページ操作">
+              <span>
+                {currentSchedulePage} / {totalSchedulePages}ページ（{scheduledTasks.length}件）
+              </span>
+              <div>
+                <button
+                  disabled={currentSchedulePage <= 1}
+                  onClick={() => setSchedulePage(Math.max(1, currentSchedulePage - 1))}
+                  type="button"
+                >
+                  前へ
+                </button>
+                <button
+                  disabled={currentSchedulePage >= totalSchedulePages}
+                  onClick={() =>
+                    setSchedulePage(Math.min(totalSchedulePages, currentSchedulePage + 1))
+                  }
+                  type="button"
+                >
+                  次へ
+                </button>
+              </div>
+            </div>
+          </>
         ) : (
-          <HomeRaceListMessage count={3}>対象のオッズ更新予定はありません。</HomeRaceListMessage>
+          <HomeRaceListMessage count={3}>
+            予定されている実行タスクはありません。
+          </HomeRaceListMessage>
         )}
       </section>
     </div>
