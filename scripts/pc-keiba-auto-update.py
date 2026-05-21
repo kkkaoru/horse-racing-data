@@ -29,6 +29,11 @@ PC-KEIBA Database の「データ → 通常データ登録 → 開始」を pyw
   py -3.12 pc-keiba-auto-update.py --dry-run       # 開始ボタンを押さず終了 (検証用)
 """
 
+# pywinauto / psutil は Windows ランタイム専用依存。dev (macOS) 側の pyright では
+# import 解決できないため本ファイル限定で missing-imports を抑止する。
+# 不明な型は Protocol で構造的にカバーするので reportUnknown* は維持しない。
+# pyright: reportMissingImports=false, reportMissingModuleSource=false
+
 from __future__ import annotations
 
 import argparse
@@ -38,11 +43,54 @@ import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any, Protocol
 
 import psutil
 from pywinauto import Application, Desktop
 from pywinauto.findwindows import ElementNotFoundError
 from pywinauto.timings import TimeoutError as PwaTimeoutError
+
+
+# ---------------------------------------------------------------------------
+# pywinauto には公式型 stub が無いため、本ファイルで実際に呼び出す API のみを
+# Protocol として宣言し、Any の代わりに構造的型として使う。
+# ---------------------------------------------------------------------------
+class _ElementInfo(Protocol):
+    @property
+    def automation_id(self) -> str: ...
+    @property
+    def process_id(self) -> int: ...
+    @property
+    def handle(self) -> int: ...
+    @property
+    def control_type(self) -> str: ...
+    @property
+    def element(self) -> Any: ...  # UIA raw IUIAutomationElement (COM)
+
+
+class _UiElement(Protocol):
+    @property
+    def element_info(self) -> _ElementInfo: ...
+    def click_input(self) -> Any: ...
+    def is_enabled(self) -> bool: ...
+    def exists(self) -> bool: ...
+    def window_text(self) -> str: ...
+    def descendants(
+        self, *, control_type: str = ..., title: str = ...
+    ) -> list["_UiElement"]: ...
+    def child_window(
+        self,
+        *,
+        title: str = ...,
+        title_re: str = ...,
+        control_type: str = ...,
+    ) -> "_UiElement": ...
+
+
+class _UiWindow(_UiElement, Protocol):
+    def set_focus(self) -> Any: ...
+    def close(self) -> Any: ...
+    def wait(self, state: str, timeout: float = ...) -> Any: ...
 
 # ---------------------------------------------------------------------------
 # 定数
@@ -59,6 +107,12 @@ NORMAL_REG_MENU_TITLE = "通常データ登録"
 START_BUTTON_AUTO_ID = "StartButton"
 CANCEL_BUTTON_TITLE = "中止"
 
+# 更新中に表示される進捗ダイアログ (top-level window として detach される)
+# - 主タイトル: 「通常データ登録」
+# - 含む要素: ProgressBar, CloseButton (auto_id)
+PROGRESS_WINDOW_TITLE = "通常データ登録"
+PROGRESS_CLOSE_BUTTON_AUTO_ID = "CloseButton"
+
 LOCK_FILE = Path(os.environ["TEMP"]) / "pc-keiba-auto-update.lock"
 LOG_DIR = Path(os.environ["LOCALAPPDATA"]) / "pc-keiba-auto-update" / "logs"
 LOG_RETENTION_DAYS = 30
@@ -70,6 +124,12 @@ LOG_RETENTION_DAYS = 30
 def setup_logging() -> Path:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / f"{datetime.now():%Y%m%d_%H%M%S}.log"
+    # Windows コンソールは既定で CP932。日本語ログを stdout に出すため UTF-8 化。
+    # Python 3.7+ で TextIOWrapper.reconfigure が使える。
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")  # pyright: ignore[reportAttributeAccessIssue]
+    except Exception:
+        pass
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
@@ -150,7 +210,8 @@ def ensure_app_running(launch_timeout: int = 90) -> int:
     if not APPREF_PATH.exists():
         raise FileNotFoundError(f"appref-ms 未検出: {APPREF_PATH}")
     logging.info("起動: %s", APPREF_PATH)
-    os.startfile(str(APPREF_PATH))
+    # os.startfile は Windows 専用 (dev macOS の pyright では未定義に見える)
+    os.startfile(str(APPREF_PATH))  # pyright: ignore[reportAttributeAccessIssue]
     deadline = time.time() + launch_timeout
     while time.time() < deadline:
         time.sleep(1)
@@ -162,10 +223,11 @@ def ensure_app_running(launch_timeout: int = 90) -> int:
     raise RuntimeError(f"プロセスが {launch_timeout} 秒以内に起動しませんでした")
 
 
-def connect_main(pid: int, timeout: int = 120):
-    """メインウィンドウへ接続し visible まで待つ。"""
+def connect_main(pid: int, timeout: int = 120) -> tuple[Any, _UiWindow]:
+    """メインウィンドウへ接続し visible まで待つ。
+    第 1 戻り値は pywinauto Application (本ファイル外では使わない opaque)。"""
     app = Application(backend="uia").connect(process=pid, timeout=timeout)
-    main = app.window(title_re=APP_WINDOW_TITLE_RE)
+    main: _UiWindow = app.window(title_re=APP_WINDOW_TITLE_RE)
     main.wait("visible exists ready", timeout=timeout)
     return app, main
 
@@ -173,7 +235,7 @@ def connect_main(pid: int, timeout: int = 120):
 # ---------------------------------------------------------------------------
 # 通常データ登録 ダイアログ操作
 # ---------------------------------------------------------------------------
-def find_start_button(main_window):
+def find_start_button(main_window: _UiWindow) -> _UiElement | None:
     """StartButton (auto_id) を main ウィンドウ配下から探す。
     MDI 子ウィンドウとして表示されるため descendants で取得。"""
     for btn in main_window.descendants(control_type="Button"):
@@ -185,7 +247,7 @@ def find_start_button(main_window):
     return None
 
 
-def open_dialog_if_needed(main_window) -> None:
+def open_dialog_if_needed(main_window: _UiWindow) -> None:
     """通常データ登録 ダイアログが見えなければメニューから開く。"""
     if find_start_button(main_window) is not None:
         logging.info("通常データ登録 ダイアログは既に開いている")
@@ -212,14 +274,14 @@ def open_dialog_if_needed(main_window) -> None:
         raise RuntimeError("ダイアログ展開後も StartButton が見つかりません")
 
 
-def _is_offscreen(elem) -> bool:
+def _is_offscreen(elem: _UiElement) -> bool:
     try:
         return bool(elem.element_info.element.CurrentIsOffscreen)
     except Exception:
         return False
 
 
-def click_start(main_window, dry_run: bool = False) -> bool:
+def click_start(main_window: _UiWindow, dry_run: bool = False) -> bool:
     """StartButton を押す。disabled なら False を返す (= 既に進行中扱い)。"""
     btn = find_start_button(main_window)
     if btn is None:
@@ -227,7 +289,7 @@ def click_start(main_window, dry_run: bool = False) -> bool:
     enabled = btn.is_enabled()
     logging.info("StartButton enabled=%s", enabled)
     if not enabled:
-        logging.warning("StartButton disabled — 既に更新進行中とみなしスキップ")
+        logging.warning("StartButton disabled - 既に更新進行中とみなしスキップ")
         return False
     if dry_run:
         logging.info("[dry-run] 開始ボタンは押下しません")
@@ -237,16 +299,57 @@ def click_start(main_window, dry_run: bool = False) -> bool:
     return True
 
 
-def is_update_in_progress(main_window) -> bool:
-    """更新処理中か判定。StartButton が見つかり、かつ disabled なら進行中。
-    判定不能の場合は安全側に倒して True を返す (= 進行中扱い → 終了させない)。"""
+def find_progress_window(pid: int) -> _UiWindow | None:
+    """更新中に表示される独立 top-level の '通常データ登録' progress ウィンドウを探す。
+    実機検証: 進捗中は主タイトルが '通常データ登録' で、ProgressBar と
+    automation_id='CloseButton' を持つボタンが必ず存在する。
+    両方の特徴を満たす場合のみ進捗ウィンドウとみなす (誤検出回避)。"""
+    for w in Desktop(backend="uia").windows():
+        try:
+            if w.element_info.process_id != pid:
+                continue
+            if w.window_text() != PROGRESS_WINDOW_TITLE:
+                continue
+            has_progress = bool(w.descendants(control_type="ProgressBar"))
+            has_close = any(
+                b.element_info.automation_id == PROGRESS_CLOSE_BUTTON_AUTO_ID
+                for b in w.descendants(control_type="Button")
+            )
+            if has_progress and has_close:
+                return w
+        except Exception:
+            continue
+    return None
+
+
+def is_update_in_progress_by_pid(pid: int) -> bool:
+    """プロセス PID だけで進行中判定。main window 未接続時にも使える。"""
+    try:
+        return find_progress_window(pid) is not None
+    except Exception as e:
+        logging.warning("進行中判定 (PID) 失敗 (安全側=進行中扱い): %s", e)
+        return True
+
+
+def is_update_in_progress(main_window: _UiWindow) -> bool:
+    """更新処理中か判定。優先順:
+      1. 独立進捗ウィンドウが存在 → 進行中
+      2. StartButton が見つかり enabled → アイドル
+      3. それ以外 (StartButton 不在 / disabled / 例外) → 安全側=進行中扱い
+    """
+    try:
+        pid = main_window.element_info.process_id
+        if find_progress_window(pid) is not None:
+            return True
+    except Exception as e:
+        logging.warning("進捗ウィンドウ検索失敗 (安全側=進行中扱い): %s", e)
+        return True
     try:
         btn = find_start_button(main_window)
     except Exception as e:
         logging.warning("進行中判定失敗 (安全側=進行中扱い): %s", e)
         return True
     if btn is None:
-        # ダイアログ自体が閉じている / 別状態 → 不明なので安全側
         logging.warning("StartButton 不在 → 安全側=進行中扱い")
         return True
     try:
@@ -256,7 +359,7 @@ def is_update_in_progress(main_window) -> bool:
         return True
 
 
-def safe_close_app(main_window) -> bool:
+def safe_close_app(main_window: _UiWindow) -> bool:
     """更新中でないことを確認してからアプリを閉じる。
     進行中なら閉じずに False を返す。"""
     if is_update_in_progress(main_window):
@@ -274,7 +377,7 @@ def safe_close_app(main_window) -> bool:
 # ---------------------------------------------------------------------------
 # 完了待機 (任意)
 # ---------------------------------------------------------------------------
-def wait_for_completion(main_window, max_minutes: int = 180, poll_sec: int = 15) -> bool:
+def wait_for_completion(main_window: _UiWindow, max_minutes: int = 180, poll_sec: int = 15) -> bool:
     """StartButton が再び enabled になる、または完了/エラーポップアップが
     表示されたら終了とみなす。"""
     deadline = time.time() + max_minutes * 60
@@ -303,7 +406,7 @@ def wait_for_completion(main_window, max_minutes: int = 180, poll_sec: int = 15)
     return False
 
 
-def _dismiss_popups(main_window) -> None:
+def _dismiss_popups(main_window: _UiWindow) -> None:
     """OK / はい などのデフォルトボタンを持つ確認/完了ダイアログがあれば閉じる。"""
     try:
         pid = main_window.element_info.process_id
@@ -356,15 +459,30 @@ def main() -> int:
 
     try:
         pid = ensure_app_running()
+
+        # 接続前に「更新進行中」を進捗ウィンドウで判定する。
+        # 更新中は MdiParentForm が "ready" 状態にならず connect_main が timeout
+        # するため、connect 試行の前にこちらで短絡する。
+        if is_update_in_progress_by_pid(pid):
+            logging.info(
+                "進捗ウィンドウを検出 - 更新進行中とみなしスキップ (PID=%d)", pid
+            )
+            return 0
+
         # 初回起動時はメインウィンドウ表示まで時間がかかる
+        main_window: _UiWindow | None = None
         for _ in range(3):
             try:
-                app, main_window = connect_main(pid, timeout=60)
+                _app, main_window = connect_main(pid, timeout=60)
                 break
             except (ElementNotFoundError, PwaTimeoutError) as e:
+                # connect 中に進行中に切り替わった可能性も考慮し再度短絡判定
+                if is_update_in_progress_by_pid(pid):
+                    logging.info("接続中に進行中状態を検出 - スキップ")
+                    return 0
                 logging.warning("メインウィンドウ接続再試行: %s", e)
                 time.sleep(5)
-        else:
+        if main_window is None:
             raise RuntimeError("メインウィンドウに接続できません")
 
         open_dialog_if_needed(main_window)
