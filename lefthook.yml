@@ -16,7 +16,10 @@ pre-commit:
       glob: "*.ts"
       run: bun run --filter horse-racing-records test
     # scripts/ 配下 Python (pywinauto 自動化など) の品質チェック。
-    # ty/basedpyright/pytest はプロジェクト全体に対して動くので {staged_files} は渡さない。
+    # ruff/ty/basedpyright/pytest はプロジェクト全体に対して動くので {staged_files} は渡さない。
+    scripts-ruff:
+      glob: "scripts/**/*.{py,pyi}"
+      run: cd scripts && uv run ruff check
     scripts-ty:
       glob: "scripts/**/*.{py,pyi}"
       run: cd scripts && uv run ty check

@@ -6,7 +6,14 @@ requires-python = ">=3.12"
 dependencies = ["psutil>=7.0"]
 
 [dependency-groups]
-dev = ["basedpyright>=1.34.0", "pytest>=8.4.0", "pytest-cov>=7.0.0", "ty>=0.0.35"]
+dev = ["basedpyright>=1.34.0", "pytest>=8.4.0", "pytest-cov>=7.0.0", "ruff>=0.7.0", "ty>=0.0.35"]
+
+[tool.ruff]
+extend-include = ["*.pyi"]
+
+[tool.ruff.lint]
+# Pyflakes (F): undefined-name, unused-import 等
+select = ["F"]
 
 [tool.uv]
 package = false
