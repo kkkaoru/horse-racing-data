@@ -29,11 +29,6 @@ PC-KEIBA Database の「データ → 通常データ登録 → 開始」を pyw
   py -3.12 pc-keiba-auto-update.py --dry-run       # 開始ボタンを押さず終了 (検証用)
 """
 
-# pywinauto / psutil は Windows ランタイム専用依存。dev (macOS) 側の pyright では
-# import 解決できないため本ファイル限定で missing-imports を抑止する。
-# 不明な型は Protocol で構造的にカバーするので reportUnknown* は維持しない。
-# pyright: reportMissingImports=false, reportMissingModuleSource=false
-
 from __future__ import annotations
 
 import argparse
@@ -55,7 +50,7 @@ from pywinauto.timings import TimeoutError as PwaTimeoutError
 # pywinauto には公式型 stub が無いため、本ファイルで実際に呼び出す API のみを
 # Protocol として宣言し、Any の代わりに構造的型として使う。
 # ---------------------------------------------------------------------------
-class _ElementInfo(Protocol):
+class _ElementInfo(Protocol):  # pragma: no cover
     @property
     def automation_id(self) -> str: ...
     @property
@@ -68,7 +63,7 @@ class _ElementInfo(Protocol):
     def element(self) -> Any: ...  # UIA raw IUIAutomationElement (COM)
 
 
-class _UiElement(Protocol):
+class _UiElement(Protocol):  # pragma: no cover
     @property
     def element_info(self) -> _ElementInfo: ...
     def click_input(self) -> Any: ...
@@ -87,7 +82,7 @@ class _UiElement(Protocol):
     ) -> "_UiElement": ...
 
 
-class _UiWindow(_UiElement, Protocol):
+class _UiWindow(_UiElement, Protocol):  # pragma: no cover
     def set_focus(self) -> Any: ...
     def close(self) -> Any: ...
     def wait(self, state: str, timeout: float = ...) -> Any: ...
@@ -125,11 +120,14 @@ def setup_logging() -> Path:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / f"{datetime.now():%Y%m%d_%H%M%S}.log"
     # Windows コンソールは既定で CP932。日本語ログを stdout に出すため UTF-8 化。
-    # Python 3.7+ で TextIOWrapper.reconfigure が使える。
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")  # pyright: ignore[reportAttributeAccessIssue]
-    except Exception:
-        pass
+    # sys.stdout は TextIOWrapper の場合のみ reconfigure() を持つ (Python 3.7+)。
+    import io as _io
+
+    if isinstance(sys.stdout, _io.TextIOWrapper):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except (OSError, ValueError):
+            pass
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
@@ -210,8 +208,7 @@ def ensure_app_running(launch_timeout: int = 90) -> int:
     if not APPREF_PATH.exists():
         raise FileNotFoundError(f"appref-ms 未検出: {APPREF_PATH}")
     logging.info("起動: %s", APPREF_PATH)
-    # os.startfile は Windows 専用 (dev macOS の pyright では未定義に見える)
-    os.startfile(str(APPREF_PATH))  # pyright: ignore[reportAttributeAccessIssue]
+    os.startfile(str(APPREF_PATH))
     deadline = time.time() + launch_timeout
     while time.time() < deadline:
         time.sleep(1)
