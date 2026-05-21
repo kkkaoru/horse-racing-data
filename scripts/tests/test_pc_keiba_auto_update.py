@@ -10,7 +10,6 @@ import logging
 import sys
 import time
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -50,7 +49,7 @@ def _mk_element(
     process_id: int = 1234,
     handle: int = 1,
     exists: bool = True,
-    descendants: list[Any] | None = None,
+    descendants: list[MagicMock] | None = None,
 ) -> MagicMock:
     elem = MagicMock()
     elem.element_info.automation_id = automation_id
@@ -63,7 +62,7 @@ def _mk_element(
     elem.exists.return_value = exists
     elem.window_text.return_value = name
 
-    def _descendants(**kw: Any) -> list[Any]:
+    def _descendants(**kw: object) -> list[MagicMock]:
         items = descendants or []
         ct = kw.get("control_type")
         title = kw.get("title")
@@ -106,7 +105,7 @@ def test_setup_logging_swallow_reconfigure_error(
     import io
 
     class _BrokenWrapper(io.TextIOWrapper):
-        def reconfigure(self, **_: Any) -> None:
+        def reconfigure(self, **_: object) -> None:
             raise OSError("nope")
 
     broken = _BrokenWrapper(io.BytesIO(), encoding="ascii")
@@ -196,7 +195,7 @@ def test_acquire_lock_psutil_process_raises_treated_as_takeover(
     mod.LOCK_FILE.write_text("999")
     monkeypatch.setattr(mod.psutil, "pid_exists", lambda _pid: True)
 
-    def _raise(_pid: int) -> Any:
+    def _raise(_pid: int) -> object:
         raise mod.psutil.NoSuchProcess(999)
 
     monkeypatch.setattr(mod.psutil, "Process", _raise)
@@ -295,7 +294,7 @@ def _mk_window_with(
     w.element_info.process_id = pid
     w.window_text.return_value = title
 
-    def _desc(**kw: Any) -> list[Any]:
+    def _desc(**kw: object) -> list[MagicMock]:
         ct = kw.get("control_type")
         if ct == "ProgressBar":
             return [MagicMock()] if has_progress else []
@@ -359,7 +358,7 @@ def test_is_update_in_progress_by_pid_false(monkeypatch: pytest.MonkeyPatch) -> 
 def test_is_update_in_progress_by_pid_exception_safe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def _raise(_pid: int) -> Any:
+    def _raise(_pid: int) -> object:
         raise RuntimeError("x")
 
     monkeypatch.setattr(mod, "find_progress_window", _raise)
@@ -560,7 +559,7 @@ def test_is_update_in_progress_find_start_button_raises(
     main.element_info.process_id = 1
     monkeypatch.setattr(mod, "find_progress_window", lambda _pid: None)
 
-    def _raise(_w: Any) -> Any:
+    def _raise(_w: MagicMock) -> object:
         raise RuntimeError("boom")
 
     monkeypatch.setattr(mod, "find_start_button", _raise)
@@ -652,7 +651,7 @@ def test_wait_for_completion_is_enabled_exception(
     main = MagicMock()
     btn_raise = MagicMock()
     btn_raise.is_enabled.side_effect = RuntimeError("boom")
-    seq: list[Any] = [btn_raise, _mk_element(is_enabled=True), None]
+    seq: list[MagicMock | None] = [btn_raise, _mk_element(is_enabled=True), None]
     monkeypatch.setattr(mod, "find_start_button", MagicMock(side_effect=seq))
     monkeypatch.setattr(mod, "_dismiss_popups", lambda _w: None)
     monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
@@ -797,7 +796,7 @@ def test_main_connect_retries_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> 
         (MagicMock(), MagicMock()),
     ]
 
-    def _cm(*_a: Any, **_k: Any) -> Any:
+    def _cm(*_a: object, **_k: object) -> object:
         v = seq.pop(0)
         if isinstance(v, Exception):
             raise v
@@ -822,7 +821,7 @@ def test_main_connect_fails_then_in_progress_detected(
         mod, "is_update_in_progress_by_pid", lambda _pid: next(progress_states)
     )
 
-    def _cm(*_a: Any, **_k: Any) -> Any:
+    def _cm(*_a: object, **_k: object) -> object:
         raise mod.ElementNotFoundError("x")
 
     monkeypatch.setattr(mod, "connect_main", _cm)
@@ -837,7 +836,7 @@ def test_main_connect_exhausts_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mod, "ensure_app_running", lambda: 42)
     monkeypatch.setattr(mod, "is_update_in_progress_by_pid", lambda _pid: False)
 
-    def _cm(*_a: Any, **_k: Any) -> Any:
+    def _cm(*_a: object, **_k: object) -> object:
         raise mod.ElementNotFoundError("x")
 
     monkeypatch.setattr(mod, "connect_main", _cm)
@@ -886,7 +885,7 @@ def test_main_unexpected_exception(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mod, "acquire_lock", lambda _stale: True)
     monkeypatch.setattr(mod, "release_lock", lambda: None)
 
-    def _boom() -> Any:
+    def _boom() -> object:
         raise RuntimeError("boom")
 
     monkeypatch.setattr(mod, "ensure_app_running", _boom)
@@ -909,10 +908,10 @@ def test_purge_old_logs_unlink_oserror(
 
     original_unlink = Path.unlink
 
-    def _raise_unlink(self: Path, *a: Any, **k: Any) -> None:
+    def _raise_unlink(self: Path, missing_ok: bool = False) -> None:
         if self == old:
             raise OSError("denied")
-        original_unlink(self, *a, **k)
+        original_unlink(self, missing_ok=missing_ok)
 
     monkeypatch.setattr(Path, "unlink", _raise_unlink)
     # 例外を漏らさず completion
@@ -922,7 +921,7 @@ def test_purge_old_logs_unlink_oserror(
 def test_release_lock_oserror_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
     mod.LOCK_FILE.write_text("x")
 
-    def _raise(_self: Path, *_a: Any, **_k: Any) -> None:
+    def _raise(_self: Path, *_a: object, **_k: object) -> None:
         raise OSError("denied")
 
     monkeypatch.setattr(Path, "unlink", _raise)

@@ -38,54 +38,22 @@ import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING
 
 import psutil
 from pywinauto import Application, Desktop
 from pywinauto.findwindows import ElementNotFoundError
 from pywinauto.timings import TimeoutError as PwaTimeoutError
 
-
-# ---------------------------------------------------------------------------
-# pywinauto には公式型 stub が無いため、本ファイルで実際に呼び出す API のみを
-# Protocol として宣言し、Any の代わりに構造的型として使う。
-# ---------------------------------------------------------------------------
-class _ElementInfo(Protocol):  # pragma: no cover
-    @property
-    def automation_id(self) -> str: ...
-    @property
-    def process_id(self) -> int: ...
-    @property
-    def handle(self) -> int: ...
-    @property
-    def control_type(self) -> str: ...
-    @property
-    def element(self) -> Any: ...  # UIA raw IUIAutomationElement (COM)
-
-
-class _UiElement(Protocol):  # pragma: no cover
-    @property
-    def element_info(self) -> _ElementInfo: ...
-    def click_input(self) -> Any: ...
-    def is_enabled(self) -> bool: ...
-    def exists(self) -> bool: ...
-    def window_text(self) -> str: ...
-    def descendants(
-        self, *, control_type: str = ..., title: str = ...
-    ) -> list["_UiElement"]: ...
-    def child_window(
-        self,
-        *,
-        title: str = ...,
-        title_re: str = ...,
-        control_type: str = ...,
-    ) -> "_UiElement": ...
-
-
-class _UiWindow(_UiElement, Protocol):  # pragma: no cover
-    def set_focus(self) -> Any: ...
-    def close(self) -> Any: ...
-    def wait(self, state: str, timeout: float = ...) -> Any: ...
+if TYPE_CHECKING:
+    # 型チェック時のみ stubs/pywinauto/__init__.pyi から Protocol を import。
+    from pywinauto import UiElement, UiWindow
+else:
+    # runtime の実 pywinauto には UiElement/UiWindow symbol は存在しないが、
+    # `from __future__ import annotations` で type annotation は str 化される。
+    # ランタイム NameError や一部 linter の "undefined name" 警告を避けるため、
+    # 等価な runtime sentinel として object を割り当てる。isinstance チェックは行わない。
+    UiElement = UiWindow = object
 
 # ---------------------------------------------------------------------------
 # 定数
@@ -220,11 +188,10 @@ def ensure_app_running(launch_timeout: int = 90) -> int:
     raise RuntimeError(f"プロセスが {launch_timeout} 秒以内に起動しませんでした")
 
 
-def connect_main(pid: int, timeout: int = 120) -> tuple[Any, _UiWindow]:
-    """メインウィンドウへ接続し visible まで待つ。
-    第 1 戻り値は pywinauto Application (本ファイル外では使わない opaque)。"""
+def connect_main(pid: int, timeout: int = 120) -> tuple[Application, UiWindow]:
+    """メインウィンドウへ接続し visible まで待つ。"""
     app = Application(backend="uia").connect(process=pid, timeout=timeout)
-    main: _UiWindow = app.window(title_re=APP_WINDOW_TITLE_RE)
+    main: UiWindow = app.window(title_re=APP_WINDOW_TITLE_RE)
     main.wait("visible exists ready", timeout=timeout)
     return app, main
 
@@ -232,7 +199,7 @@ def connect_main(pid: int, timeout: int = 120) -> tuple[Any, _UiWindow]:
 # ---------------------------------------------------------------------------
 # 通常データ登録 ダイアログ操作
 # ---------------------------------------------------------------------------
-def find_start_button(main_window: _UiWindow) -> _UiElement | None:
+def find_start_button(main_window: UiWindow) -> UiElement | None:
     """StartButton (auto_id) を main ウィンドウ配下から探す。
     MDI 子ウィンドウとして表示されるため descendants で取得。"""
     for btn in main_window.descendants(control_type="Button"):
@@ -244,7 +211,7 @@ def find_start_button(main_window: _UiWindow) -> _UiElement | None:
     return None
 
 
-def open_dialog_if_needed(main_window: _UiWindow) -> None:
+def open_dialog_if_needed(main_window: UiWindow) -> None:
     """通常データ登録 ダイアログが見えなければメニューから開く。"""
     if find_start_button(main_window) is not None:
         logging.info("通常データ登録 ダイアログは既に開いている")
@@ -271,14 +238,14 @@ def open_dialog_if_needed(main_window: _UiWindow) -> None:
         raise RuntimeError("ダイアログ展開後も StartButton が見つかりません")
 
 
-def _is_offscreen(elem: _UiElement) -> bool:
+def _is_offscreen(elem: UiElement) -> bool:
     try:
         return bool(elem.element_info.element.CurrentIsOffscreen)
     except Exception:
         return False
 
 
-def click_start(main_window: _UiWindow, dry_run: bool = False) -> bool:
+def click_start(main_window: UiWindow, dry_run: bool = False) -> bool:
     """StartButton を押す。disabled なら False を返す (= 既に進行中扱い)。"""
     btn = find_start_button(main_window)
     if btn is None:
@@ -296,7 +263,7 @@ def click_start(main_window: _UiWindow, dry_run: bool = False) -> bool:
     return True
 
 
-def find_progress_window(pid: int) -> _UiWindow | None:
+def find_progress_window(pid: int) -> UiWindow | None:
     """更新中に表示される独立 top-level の '通常データ登録' progress ウィンドウを探す。
     実機検証: 進捗中は主タイトルが '通常データ登録' で、ProgressBar と
     automation_id='CloseButton' を持つボタンが必ず存在する。
@@ -328,7 +295,7 @@ def is_update_in_progress_by_pid(pid: int) -> bool:
         return True
 
 
-def is_update_in_progress(main_window: _UiWindow) -> bool:
+def is_update_in_progress(main_window: UiWindow) -> bool:
     """更新処理中か判定。優先順:
       1. 独立進捗ウィンドウが存在 → 進行中
       2. StartButton が見つかり enabled → アイドル
@@ -356,7 +323,7 @@ def is_update_in_progress(main_window: _UiWindow) -> bool:
         return True
 
 
-def safe_close_app(main_window: _UiWindow) -> bool:
+def safe_close_app(main_window: UiWindow) -> bool:
     """更新中でないことを確認してからアプリを閉じる。
     進行中なら閉じずに False を返す。"""
     if is_update_in_progress(main_window):
@@ -374,7 +341,7 @@ def safe_close_app(main_window: _UiWindow) -> bool:
 # ---------------------------------------------------------------------------
 # 完了待機 (任意)
 # ---------------------------------------------------------------------------
-def wait_for_completion(main_window: _UiWindow, max_minutes: int = 180, poll_sec: int = 15) -> bool:
+def wait_for_completion(main_window: UiWindow, max_minutes: int = 180, poll_sec: int = 15) -> bool:
     """StartButton が再び enabled になる、または完了/エラーポップアップが
     表示されたら終了とみなす。"""
     deadline = time.time() + max_minutes * 60
@@ -403,7 +370,7 @@ def wait_for_completion(main_window: _UiWindow, max_minutes: int = 180, poll_sec
     return False
 
 
-def _dismiss_popups(main_window: _UiWindow) -> None:
+def _dismiss_popups(main_window: UiWindow) -> None:
     """OK / はい などのデフォルトボタンを持つ確認/完了ダイアログがあれば閉じる。"""
     try:
         pid = main_window.element_info.process_id
@@ -467,7 +434,7 @@ def main() -> int:
             return 0
 
         # 初回起動時はメインウィンドウ表示まで時間がかかる
-        main_window: _UiWindow | None = None
+        main_window: UiWindow | None = None
         for _ in range(3):
             try:
                 _app, main_window = connect_main(pid, timeout=60)
