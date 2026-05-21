@@ -437,6 +437,26 @@ export const listSchedulableRaceSourcesByDate = async (
   return result.results.map(toSchedulableRaceSource);
 };
 
+export const getVenueLastRaceStartAtJst = async (
+  db: D1Database,
+  race: Pick<NarRaceSource, "kaisaiNen" | "kaisaiTsukihi" | "keibajoCode" | "source">,
+): Promise<string | null> => {
+  const row = await db
+    .prepare(
+      `
+        select max(race_start_at_jst) race_start_at_jst
+        from realtime_race_sources
+        where source = ?
+          and kaisai_nen = ?
+          and kaisai_tsukihi = ?
+          and keibajo_code = ?
+      `,
+    )
+    .bind(race.source, race.kaisaiNen, race.kaisaiTsukihi, race.keibajoCode)
+    .first<{ race_start_at_jst: string | null }>();
+  return row?.race_start_at_jst ?? null;
+};
+
 export const countRaceSourcesByDate = async (
   db: D1Database,
   targetDate: string,

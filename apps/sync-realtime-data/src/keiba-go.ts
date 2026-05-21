@@ -10,10 +10,10 @@ const USER_AGENT =
 export const BABA_CODE_TO_LOCAL_KEIBAJO = NAR_BABA_CODE_TO_LOCAL_KEIBAJO;
 
 const RACE_LIST_LINK_PATTERN =
-  /href="(\/KeibaWeb\/TodayRaceInfo\/RaceList\?k_raceDate=[^&"]+&k_babaCode=\d+)"/gu;
+  /href=(?:"([^"]*RaceList\?k_raceDate=[^&"]+(?:&|&amp;)k_babaCode=\d+)"|'([^']*RaceList\?k_raceDate=[^&']+(?:&|&amp;)k_babaCode=\d+)'|([^\s>]*RaceList\?k_raceDate=[^&\s>]+(?:&|&amp;)k_babaCode=\d+))/gu;
 const TODAY_RACE_ARTICLE_PATTERN = /<article class="todayRace">([\s\S]*?)<\/article>/u;
-const RACE_LINK_PATTERN =
-  /href="[^"]*DebaTable\?k_raceDate=([^&]+)&k_raceNo=(\d+)&k_babaCode=(\d+)"/gu;
+const RACE_LINK_URL_PATTERN =
+  /(?:href=|location\.href=)(?:"([^"]*DebaTable\?[^"]+)"|'([^']*DebaTable\?[^']+)'|([^\s>]*DebaTable\?[^\s>]+))/gu;
 const LINK_TEXT_MAP: Record<string, OddsType> = {
   "単・複": "tansho",
   三連単: "3rentan",
@@ -23,7 +23,6 @@ const LINK_TEXT_MAP: Record<string, OddsType> = {
   馬連単: "umatan",
   馬連複: "umaren",
 };
-const TARGET_ODDS_NAV_DIV_INDEX = 3;
 const ODDS_TYPES: OddsType[] = [
   "tansho",
   "fukusho",
@@ -34,6 +33,28 @@ const ODDS_TYPES: OddsType[] = [
   "3renpuku",
   "3rentan",
 ];
+
+interface ParserDefinition<T> {
+  createdAt: string;
+  id: string;
+  parse: (html: string) => T;
+}
+
+interface OddsLinksParserDefinition {
+  createdAt: string;
+  id: string;
+  parse: (html: string, baseUrl: string) => Partial<Record<OddsType, string>>;
+}
+
+interface RaceResultRows {
+  layout: "current" | "legacy";
+  rows: string[];
+}
+
+interface RaceResultRow {
+  layout: RaceResultRows["layout"];
+  row: string;
+}
 
 export interface RaceListUrl {
   babaCode: string;
@@ -87,6 +108,13 @@ const stripHtmlTags = (text: string): string =>
 
 const normalizeText = (text: string): string => stripHtmlTags(text).replace(/\s+/gu, " ").trim();
 
+const decodeHtmlAttribute = (text: string): string =>
+  text
+    .replace(/&amp;/gu, "&")
+    .replace(/&quot;/gu, '"')
+    .replace(/&#039;/gu, "'")
+    .replace(/&apos;/gu, "'");
+
 const dedupe = <T>(values: readonly T[]): T[] => Array.from(new Set(values));
 
 const toFullKeibaGoUrl = (path: string): string =>
@@ -103,7 +131,10 @@ export const fetchTodayRaceListUrls = async (targetDate: string): Promise<RaceLi
   const target = `${targetDate.slice(0, 4)}/${targetDate.slice(4, 6)}/${targetDate.slice(6, 8)}`;
   const paths = dedupe(
     Array.from(article.matchAll(RACE_LIST_LINK_PATTERN))
-      .map((match) => match[1])
+      .map((match) => {
+        const path = match[1] ?? match[2] ?? match[3];
+        return path ? decodeHtmlAttribute(path) : undefined;
+      })
       .filter((path): path is string => typeof path === "string"),
   );
 
@@ -128,10 +159,19 @@ export const fetchRaceLinksFromRaceList = async (
   const seen = new Set<string>();
   const links: KeibaGoRaceLink[] = [];
 
-  for (const match of html.matchAll(RACE_LINK_PATTERN)) {
-    const linkDate = match[1]!;
-    const raceNo = match[2]!;
-    const linkBabaCode = match[3]!.padStart(2, "0");
+  for (const match of html.matchAll(RACE_LINK_URL_PATTERN)) {
+    const path = match[1] ?? match[2] ?? match[3];
+    const rawUrl = path ? toFullKeibaGoUrl(decodeHtmlAttribute(path)) : null;
+    if (!rawUrl) {
+      continue;
+    }
+    const params = new URL(rawUrl).searchParams;
+    const linkDate = params.get("k_raceDate");
+    const raceNo = params.get("k_raceNo");
+    const linkBabaCode = params.get("k_babaCode")?.padStart(2, "0");
+    if (!linkDate || !raceNo || !linkBabaCode) {
+      continue;
+    }
     if (decodeURIComponent(linkDate) !== raceDate || linkBabaCode !== babaCode) {
       continue;
     }
@@ -143,7 +183,9 @@ export const fetchRaceLinksFromRaceList = async (
     links.push({
       babaCode,
       raceNumber,
-      url: `${KEIBA_GO_BASE_URL}/DebaTable?k_raceDate=${linkDate}&k_raceNo=${Number(raceNo)}&k_babaCode=${babaCode}`,
+      url: `${KEIBA_GO_BASE_URL}/DebaTable?k_raceDate=${encodeURIComponent(
+        decodeURIComponent(linkDate),
+      )}&k_raceNo=${Number(raceNo)}&k_babaCode=${babaCode}`,
     });
   }
 
@@ -152,25 +194,12 @@ export const fetchRaceLinksFromRaceList = async (
 
 const collectOddsLinksFromNav = (nav: string): Partial<Record<OddsType, string>> => {
   const oddsLinks: Partial<Record<OddsType, string>> = {};
-  const divMatches = nav.matchAll(/<div[^>]*>([\s\S]*?)<\/div>/gi);
-  let divIndex = 0;
-  let targetDiv = "";
-  for (const divMatch of divMatches) {
-    divIndex += 1;
-    if (divIndex === TARGET_ODDS_NAV_DIV_INDEX) {
-      targetDiv = divMatch[1]!;
-      break;
-    }
-  }
-
-  for (const linkMatch of targetDiv.matchAll(
-    /<a[^>]*href=["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi,
-  )) {
+  for (const linkMatch of nav.matchAll(/<a[^>]*href=["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
     const href = linkMatch[1];
-    const text = linkMatch[2] ? stripHtmlTags(linkMatch[2]) : "";
+    const text = linkMatch[2] ? normalizeText(linkMatch[2]) : "";
     const oddsType = LINK_TEXT_MAP[text];
     if (href && oddsType) {
-      oddsLinks[oddsType] = href;
+      oddsLinks[oddsType] = decodeHtmlAttribute(href);
     }
   }
   if (oddsLinks.tansho) {
@@ -180,24 +209,96 @@ const collectOddsLinksFromNav = (nav: string): Partial<Record<OddsType, string>>
   return oddsLinks;
 };
 
-export const extractOddsLinks = (
+const collectLegacyOddsLinksFromNav = (nav: string): Partial<Record<OddsType, string>> => {
+  const oddsLinks: Partial<Record<OddsType, string>> = {};
+  const divMatches = nav.matchAll(/<div[^>]*>([\s\S]*?)<\/div>/gi);
+  let divIndex = 0;
+  let targetDiv = "";
+  for (const divMatch of divMatches) {
+    divIndex += 1;
+    if (divIndex === 3) {
+      targetDiv = divMatch[1]!;
+      break;
+    }
+  }
+  return targetDiv ? collectOddsLinksFromNav(targetDiv) : oddsLinks;
+};
+
+const normalizeOddsLinks = (
+  links: Partial<Record<OddsType, string>>,
+  baseUrl: string,
+): Partial<Record<OddsType, string>> =>
+  Object.fromEntries(
+    Object.entries(links).map(([type, href]) => [
+      type,
+      href ? convertToAbsoluteKeibaGoUrl(href, baseUrl) : href,
+    ]),
+  ) as Partial<Record<OddsType, string>>;
+
+const firstNonEmptyOddsLinks = (
   html: string,
   baseUrl: string,
+  parsers: readonly OddsLinksParserDefinition[],
 ): Partial<Record<OddsType, string>> => {
-  for (const navMatch of html.matchAll(/<nav[^>]*>[\s\S]*?<\/nav>/gi)) {
-    const rawLinks = collectOddsLinksFromNav(navMatch[0]);
-    const links = Object.fromEntries(
-      Object.entries(rawLinks).map(([type, href]) => [
-        type,
-        href ? convertToAbsoluteKeibaGoUrl(href, baseUrl) : href,
-      ]),
-    ) as Partial<Record<OddsType, string>>;
+  for (const parser of parsers) {
+    const links = parser.parse(html, baseUrl);
     if (Object.keys(links).length > 0) {
       return links;
     }
   }
   return {};
 };
+
+const ODDS_LINK_PARSERS: readonly OddsLinksParserDefinition[] = [
+  {
+    createdAt: "2026-05-22",
+    id: "keiba-go-current-odds-nav-title",
+    parse: (html, baseUrl) => {
+      for (const navMatch of html.matchAll(/<nav[^>]*>[\s\S]*?<\/nav>/gi)) {
+        const nav = navMatch[0];
+        if (!/class=["'][^"']*\bnaviTitle\b[^"']*["'][^>]*>\s*オッズ\s*</iu.test(nav)) {
+          continue;
+        }
+        const links = collectOddsLinksFromNav(nav);
+        if (Object.keys(links).length > 0) {
+          return normalizeOddsLinks(links, baseUrl);
+        }
+      }
+      return {};
+    },
+  },
+  {
+    createdAt: "2026-05-22",
+    id: "keiba-go-current-odds-nav-anchor-scan",
+    parse: (html, baseUrl) => {
+      for (const navMatch of html.matchAll(/<nav[^>]*>[\s\S]*?<\/nav>/gi)) {
+        const links = collectOddsLinksFromNav(navMatch[0]);
+        if (Object.keys(links).length > 0) {
+          return normalizeOddsLinks(links, baseUrl);
+        }
+      }
+      return {};
+    },
+  },
+  {
+    createdAt: "2026-05-22",
+    id: "keiba-go-legacy-third-nav-div",
+    parse: (html, baseUrl) => {
+      for (const navMatch of html.matchAll(/<nav[^>]*>[\s\S]*?<\/nav>/gi)) {
+        const links = collectLegacyOddsLinksFromNav(navMatch[0]);
+        if (Object.keys(links).length > 0) {
+          return normalizeOddsLinks(links, baseUrl);
+        }
+      }
+      return {};
+    },
+  },
+];
+
+export const extractOddsLinks = (
+  html: string,
+  baseUrl: string,
+): Partial<Record<OddsType, string>> => firstNonEmptyOddsLinks(html, baseUrl, ODDS_LINK_PARSERS);
 
 export const parseRaceMetadata = (html: string): KeibaGoRaceMetadata => {
   const heading = html.match(/<h4[^>]*>([\s\S]*?)<\/h4>/iu)?.[1] ?? "";
@@ -255,6 +356,16 @@ const addRank = (item: OddsData, index: number): OddsData => ({ ...item, rank: i
 
 const sortByOdds = (left: OddsData, right: OddsData): number =>
   (left.odds ?? left.averageOdds ?? 0) - (right.odds ?? right.averageOdds ?? 0);
+
+const firstNonEmptyArray = <T>(html: string, parsers: readonly ParserDefinition<T[]>[]): T[] => {
+  for (const parser of parsers) {
+    const rows = parser.parse(html);
+    if (rows.length > 0) {
+      return rows;
+    }
+  }
+  return [];
+};
 
 const parseTanshoOdds = (html: string): OddsData[] => {
   const tbody = html.match(/<tbody>([\s\S]*?)<\/tbody>/i)?.[1];
@@ -357,9 +468,44 @@ const parseRankingPairOdds = (html: string, ordered: boolean): OddsData[] =>
     .sort(sortByOdds)
     .map(addRank);
 
-const parseWideOdds = (html: string): OddsData[] =>
-  Array.from(
-    new Map(
+const normalizeOddsTableCell = (cell: string): string =>
+  stripHtmlTags(cell.replace(/<\/?br\s*\/?>/giu, "")).replace(/\s+/gu, "");
+
+const parseWideOddsRow = (row: string): OddsData | null => {
+  const cells = Array.from(row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)).map((cell) =>
+    normalizeOddsTableCell(cell[1] ?? ""),
+  );
+  const combination = cells[0];
+  const oddsRange = cells[1]?.match(/([0-9]+\.?[0-9]*)-([0-9]+\.?[0-9]*)/u);
+  const match = combination?.match(/^(\d+)-(\d+)$/u);
+  if (!match?.[1] || !match[2] || !oddsRange?.[1] || !oddsRange[2]) {
+    return null;
+  }
+  const left = Number(match[1]);
+  const right = Number(match[2]);
+  const minOdds = roundOdds(Number(oddsRange[1]));
+  const maxOdds = roundOdds(Number(oddsRange[2]));
+  return {
+    averageOdds: roundOdds((minOdds + maxOdds) / 2),
+    combination: left <= right ? `${left}-${right}` : `${right}-${left}`,
+    maxOdds,
+    minOdds,
+  };
+};
+
+const WIDE_ODDS_PARSERS: readonly ParserDefinition<OddsData[]>[] = [
+  {
+    createdAt: "2026-05-22",
+    id: "keiba-go-current-wide-ranking-table",
+    parse: (html) =>
+      extractRankingRows(html)
+        .map(parseWideOddsRow)
+        .filter((item): item is OddsData => item !== null),
+  },
+  {
+    createdAt: "2026-05-22",
+    id: "keiba-go-legacy-wide-ranking-table",
+    parse: (html) =>
       extractRankingRows(html)
         .map((row): OddsData | null => {
           const combination = row.match(/<td>\s*(\d+)-(\d+)\s*<\/td>/s);
@@ -380,10 +526,15 @@ const parseWideOdds = (html: string): OddsData[] =>
             minOdds,
           };
         })
-        .filter((item): item is OddsData => item !== null)
-        .map((item) => [item.combination, item] as const),
-    ).values(),
+        .filter((item): item is OddsData => item !== null),
+  },
+];
+
+const parseWideOdds = (html: string): OddsData[] =>
+  Array.from(
+    new Map(firstNonEmptyArray(html, WIDE_ODDS_PARSERS).map((item) => [item.combination, item])),
   )
+    .map((entry) => entry[1])
     .sort(sortByOdds)
     .map(addRank);
 
@@ -580,6 +731,75 @@ export const parseHorseWeights = (html: string) => {
 const normalizeRaceResultCell = (cell: string): string =>
   stripHtmlTags(cell.replace(/<br\s*\/?>/giu, " ")).replace(/\s+/g, " ");
 
+const extractTableCells = (row: string): string[] =>
+  Array.from(row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/giu)).map((cell) =>
+    normalizeRaceResultCell(cell[1] ?? ""),
+  );
+
+const extractClassedTableCells = (row: string): Record<string, string> => {
+  const cells: Record<string, string> = {};
+  for (const cell of row.matchAll(/<td([^>]*)>([\s\S]*?)<\/td>/giu)) {
+    const classAttr = (cell[1] ?? "").match(/class=["']([^"']*)["']/iu)?.[1];
+    if (!classAttr) {
+      continue;
+    }
+    const normalized = normalizeRaceResultCell(cell[2] ?? "");
+    for (const className of classAttr.split(/\s+/u)) {
+      if (/^[a-p]$/u.test(className) && !(className in cells)) {
+        cells[className] = normalized;
+      }
+    }
+  }
+  return cells;
+};
+
+const extractLegacyRaceResultRows = (html: string): string[] =>
+  Array.from(html.matchAll(/<tr[^>]*bgcolor=["']#FFFFFF["'][^>]*>([\s\S]*?)<\/tr>/giu)).map(
+    (row) => row[1] ?? "",
+  );
+
+const extractCurrentRaceResultRows = (html: string): string[] =>
+  Array.from(html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/giu))
+    .map((row) => row[0] ?? "")
+    .filter((row) => {
+      const cells = extractClassedTableCells(row);
+      return Boolean(cells.a && cells.c && cells.d);
+    });
+
+const RACE_RESULT_ROW_PARSERS: readonly ParserDefinition<RaceResultRows>[] = [
+  {
+    createdAt: "2026-05-22",
+    id: "keiba-go-current-classed-result-table",
+    parse: (html) => ({
+      layout: "current",
+      rows: extractCurrentRaceResultRows(html),
+    }),
+  },
+  {
+    createdAt: "2026-05-22",
+    id: "keiba-go-legacy-bgcolor-result-table",
+    parse: (html) => ({
+      layout: "legacy",
+      rows: extractLegacyRaceResultRows(html),
+    }),
+  },
+];
+
+const extractRaceResultRows = (html: string): RaceResultRows => {
+  for (const parser of RACE_RESULT_ROW_PARSERS) {
+    const result = parser.parse(html);
+    if (result.rows.length > 0) {
+      return result;
+    }
+  }
+  return { layout: "legacy", rows: [] };
+};
+
+const extractRaceResultRowCandidates = (html: string): RaceResultRow[] => {
+  const result = extractRaceResultRows(html);
+  return result.rows.map((row) => ({ layout: result.layout, row }));
+};
+
 const normalizeJockeyName = (cell: string): string =>
   normalizeRaceResultCell(cell)
     .replace(/（.*?）/gu, "")
@@ -635,15 +855,25 @@ export const parseRaceEntryHorseNumbers = (html: string): string[] =>
     .toSorted((left, right) => Number(left) - Number(right));
 
 export const parseRaceResultHorseWeights = (html: string) =>
-  Array.from(html.matchAll(/<tr[^>]*bgcolor=["']#FFFFFF["'][^>]*>([\s\S]*?)<\/tr>/giu))
+  extractRaceResultRowCandidates(html)
     .map((row) => {
-      const cells = Array.from((row[1] ?? "").matchAll(/<td[^>]*>([\s\S]*?)<\/td>/giu)).map(
-        (cell) => normalizeRaceResultCell(cell[1] ?? ""),
+      const currentCells = row.layout === "current" ? extractClassedTableCells(row.row) : null;
+      const legacyCells = row.layout === "legacy" ? extractTableCells(row.row) : null;
+      const horseNumber = currentCells ? currentCells.c : legacyCells?.[2];
+      const horseName = currentCells ? currentCells.d : legacyCells?.[3];
+      const weightCell = currentCells ? currentCells.j : legacyCells?.[9];
+      const legacyChangeAmount = legacyCells?.[10];
+      const currentWeightMatch = weightCell?.match(
+        /(?:^|[^0-9.])([3-9]\d{2}|1[0-3]\d{2})(?:\s*\(([+-]?)(\d+)\))?/u,
       );
-      const horseNumber = cells[2];
-      const horseName = cells[3];
-      const weight = cells[9];
-      const changeAmount = cells[10];
+      const weight = row.layout === "current" ? currentWeightMatch?.[1] : weightCell;
+      const changeAmount = row.layout === "current" ? currentWeightMatch?.[3] : legacyChangeAmount;
+      const changeSign =
+        row.layout === "current" && changeAmount
+          ? currentWeightMatch?.[2] === "-"
+            ? "-"
+            : "+"
+          : null;
       if (
         !horseNumber ||
         !isValidHorseNum(horseNumber) ||
@@ -655,7 +885,7 @@ export const parseRaceResultHorseWeights = (html: string) =>
       return {
         changeAmount:
           changeAmount && /^-?\d+$/u.test(changeAmount) ? Math.abs(Number(changeAmount)) : null,
-        changeSign: changeAmount?.startsWith("-") ? "-" : changeAmount ? "+" : null,
+        changeSign: changeSign ?? (changeAmount?.startsWith("-") ? "-" : changeAmount ? "+" : null),
         horseName: horseName || null,
         horseNumber,
         weight: Number(weight),
@@ -668,15 +898,14 @@ const RESULT_EXCLUDED_STATUSES = new Set<string>(ENTRY_STATUS_LABELS);
 const isResultExcludedStatus = (status: string): boolean => RESULT_EXCLUDED_STATUSES.has(status);
 
 export const parseRaceResults = (html: string): Omit<RaceResult, "fetchedAt">[] =>
-  Array.from(html.matchAll(/<tr[^>]*bgcolor=["']#FFFFFF["'][^>]*>([\s\S]*?)<\/tr>/giu))
+  extractRaceResultRowCandidates(html)
     .map((row) => {
-      const cells = Array.from((row[1] ?? "").matchAll(/<td[^>]*>([\s\S]*?)<\/td>/giu)).map(
-        (cell) => normalizeRaceResultCell(cell[1] ?? ""),
-      );
-      const finishPosition = cells[0];
-      const horseNumber = cells[2];
-      const horseName = cells[3];
-      const time = cells[11];
+      const currentCells = row.layout === "current" ? extractClassedTableCells(row.row) : null;
+      const legacyCells = row.layout === "legacy" ? extractTableCells(row.row) : null;
+      const finishPosition = currentCells ? currentCells.a : legacyCells?.[0];
+      const horseNumber = currentCells ? currentCells.c : legacyCells?.[2];
+      const horseName = currentCells ? currentCells.d : legacyCells?.[3];
+      const time = currentCells ? currentCells.k : legacyCells?.[11];
       if (
         !finishPosition ||
         isResultExcludedStatus(finishPosition) ||
@@ -702,13 +931,12 @@ export const parseRaceResults = (html: string): Omit<RaceResult, "fetchedAt">[] 
     );
 
 export const parseRaceResultExcludedHorseNumbers = (html: string): string[] =>
-  Array.from(html.matchAll(/<tr[^>]*bgcolor=["']#FFFFFF["'][^>]*>([\s\S]*?)<\/tr>/giu))
+  extractRaceResultRowCandidates(html)
     .map((row) => {
-      const cells = Array.from((row[1] ?? "").matchAll(/<td[^>]*>([\s\S]*?)<\/td>/giu)).map(
-        (cell) => normalizeRaceResultCell(cell[1] ?? ""),
-      );
-      const finishPosition = cells[0];
-      const horseNumber = cells[2];
+      const currentCells = row.layout === "current" ? extractClassedTableCells(row.row) : null;
+      const legacyCells = row.layout === "legacy" ? extractTableCells(row.row) : null;
+      const finishPosition = currentCells ? currentCells.a : legacyCells?.[0];
+      const horseNumber = currentCells ? currentCells.c : legacyCells?.[2];
       if (
         !finishPosition ||
         !isResultExcludedStatus(finishPosition) ||

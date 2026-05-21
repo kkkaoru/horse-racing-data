@@ -72,6 +72,7 @@ import {
   getPremiumPaddockFetchState,
   getPremiumPaddockNotificationState,
   getRaceSource,
+  getVenueLastRaceStartAtJst,
   getLatestTrackConditionForRace,
   getLatestOddsFromD1,
   getSameDayVenueJockeyWins,
@@ -121,6 +122,8 @@ import {
 import { readCachedTrackCondition, writeCachedTrackCondition } from "./track-condition-cache";
 import {
   getJraAdvanceOddsFetchSlotAt,
+  getNarOddsFetchSlotAt,
+  getNarOddsSaleStartAt,
   getNextOddsFetchSlotAt,
   getOddsFetchSlotAt,
   getTodayJst,
@@ -399,7 +402,44 @@ const minutesUntilRace = (race: NarRaceSource, now = new Date()): number | null 
   return (raceStart.getTime() - now.getTime()) / 60_000;
 };
 
-const getCurrentOddsSlotAt = (race: NarRaceSource, now: Date): string | null => {
+const getNarVenueMeetingKey = (
+  race: Pick<NarRaceSource, "kaisaiNen" | "kaisaiTsukihi" | "keibajoCode" | "source">,
+): string => `${race.source}:${race.kaisaiNen}${race.kaisaiTsukihi}:${race.keibajoCode}`;
+
+const getNarVenueLastRaceStartAtMap = (races: NarRaceSource[]): Map<string, string> => {
+  const result = new Map<string, string>();
+  for (const race of races) {
+    if (race.source !== "nar") {
+      continue;
+    }
+    const key = getNarVenueMeetingKey(race);
+    const current = result.get(key);
+    if (!current || new Date(race.raceStartAtJst).getTime() > new Date(current).getTime()) {
+      result.set(key, race.raceStartAtJst);
+    }
+  }
+  return result;
+};
+
+const getNarOddsSaleStartForRace = (
+  race: NarRaceSource,
+  venueLastRaceStartAtJst: string | null | undefined,
+): Date | null => {
+  if (race.source !== "nar") {
+    return null;
+  }
+  return getNarOddsSaleStartAt({
+    keibajoCode: race.keibajoCode,
+    raceStartAtJst: race.raceStartAtJst,
+    venueLastRaceStartAtJst,
+  });
+};
+
+const getCurrentOddsSlotAt = (
+  race: NarRaceSource,
+  now: Date,
+  options: { venueLastRaceStartAtJst?: string | null } = {},
+): string | null => {
   const raceStart = getRaceStart(race);
   if (!raceStart) {
     return null;
@@ -407,7 +447,11 @@ const getCurrentOddsSlotAt = (race: NarRaceSource, now: Date): string | null => 
   if (race.source === "jra") {
     return getJraAdvanceOddsFetchSlotAt(raceStart, now) ?? getOddsFetchSlotAt(raceStart, now);
   }
-  return getOddsFetchSlotAt(raceStart, now);
+  return getNarOddsFetchSlotAt(
+    raceStart,
+    now,
+    getNarOddsSaleStartForRace(race, options.venueLastRaceStartAtJst),
+  );
 };
 
 const isDue = (
@@ -1125,13 +1169,16 @@ const planRealtimeFetches = async (env: Env, targetDate: string): Promise<number
   if (shouldRunGeneralPolling) {
     await tryEnsureDiscoveredUrlsAreCurrent(env, targetDate);
     const races = await listSchedulableRaceSourcesByDate(env.REALTIME_DB, targetDate);
+    const narVenueLastRaceStartAt = getNarVenueLastRaceStartAtMap(races);
     for (const race of races) {
       const minutes = minutesUntilRace(race, now);
       if (minutes === null) {
         continue;
       }
 
-      const oddsSlotAt = getCurrentOddsSlotAt(race, now);
+      const oddsSlotAt = getCurrentOddsSlotAt(race, now, {
+        venueLastRaceStartAtJst: narVenueLastRaceStartAt.get(getNarVenueMeetingKey(race)),
+      });
       const oddsLockUntil = race.oddsFetchLockUntil
         ? new Date(race.oddsFetchLockUntil).getTime()
         : Number.NaN;
@@ -1227,7 +1274,10 @@ const fetchAndStoreOdds = async (env: Env, raceKey: string): Promise<void> => {
   }
   try {
     const raceStart = getRaceStart(race);
-    const oddsSlotAt = getCurrentOddsSlotAt(race, now);
+    const venueLastRaceStartAtJst =
+      race.source === "nar" ? await getVenueLastRaceStartAtJst(env.REALTIME_DB, race) : null;
+    const narSaleStartAt = getNarOddsSaleStartForRace(race, venueLastRaceStartAtJst);
+    const oddsSlotAt = getCurrentOddsSlotAt(race, now, { venueLastRaceStartAtJst });
     if (!oddsSlotAt || !isSlotDue(race.lastOddsFetchAt, oddsSlotAt)) {
       await failOddsFetch(env.REALTIME_DB, raceKey);
       return;
@@ -1271,7 +1321,9 @@ const fetchAndStoreOdds = async (env: Env, raceKey: string): Promise<void> => {
       throw new Error(`odds rows are empty: ${raceKey}`);
     }
     await completeOddsFetch(env.REALTIME_DB, raceKey, fetchedAt);
-    const nextSlotAt = raceStart ? getNextOddsFetchSlotAt(raceStart, now, race.source) : null;
+    const nextSlotAt = raceStart
+      ? getNextOddsFetchSlotAt(raceStart, now, race.source, { narSaleStartAt })
+      : null;
     if (nextSlotAt) {
       const delaySeconds = Math.max(
         1,
@@ -1381,6 +1433,9 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
     ).length;
     const results =
       race.source === "jra" ? parseJraRaceResults(resultHtml) : parseRaceResults(resultHtml);
+    if (expectedHorseCount > 0 && results.length === 0) {
+      throw new Error(`race result rows are empty: ${raceKey}`);
+    }
     const inserted = await insertRaceResultSnapshot(env.REALTIME_DB, raceKey, fetchedAt, results);
     await completeResultFetch(env.REALTIME_DB, raceKey, fetchedAt, {
       expectedHorseCount,

@@ -4,6 +4,8 @@ import {
   formatRaceStartJst,
   getJraAdvanceOddsFetchSlotAt,
   getJstDateParts,
+  getNarOddsFetchSlotAt,
+  getNarOddsSaleStartAt,
   getNextOddsFetchSlotAt,
   getOddsFetchIntervalMinutes,
   getOddsFetchSlotAt,
@@ -16,6 +18,7 @@ import {
 describe("odds fetch schedule", () => {
   it.each([
     [120, 60],
+    [60.1, 60],
     [60, 60],
     [59.9, 10],
     [10, 10],
@@ -95,6 +98,61 @@ describe("odds fetch schedule", () => {
     expect(
       getNextOddsFetchSlotAt(raceStart, new Date("2026-05-17T13:07:00+09:00"), "nar"),
     ).toBeNull();
+  });
+
+  it("uses same-day venue sale start for NAR odds", () => {
+    const raceStartAtJst = "2026-05-22T14:30:00+09:00";
+    expect(
+      getNarOddsSaleStartAt({
+        keibajoCode: "44",
+        raceStartAtJst,
+        venueLastRaceStartAtJst: "2026-05-22T20:50:00+09:00",
+      })?.toISOString(),
+    ).toBe("2026-05-22T03:00:00.000Z");
+    expect(
+      getNarOddsSaleStartAt({
+        keibajoCode: "48",
+        raceStartAtJst,
+        venueLastRaceStartAtJst: "2026-05-22T20:50:00+09:00",
+      })?.toISOString(),
+    ).toBe("2026-05-22T01:00:00.000Z");
+  });
+
+  it("does not open NAR odds slots before the venue sale start", () => {
+    const raceStart = new Date("2026-05-22T14:30:00+09:00");
+    const saleStart = new Date("2026-05-22T12:00:00+09:00");
+    expect(
+      getNarOddsFetchSlotAt(raceStart, new Date("2026-05-22T11:59:59+09:00"), saleStart),
+    ).toBeNull();
+    expect(getNarOddsFetchSlotAt(raceStart, new Date("2026-05-22T12:05:00+09:00"), saleStart)).toBe(
+      "2026-05-22T12:00:00+09:00",
+    );
+    expect(getNarOddsFetchSlotAt(raceStart, new Date("2026-05-22T13:29:59+09:00"), saleStart)).toBe(
+      "2026-05-22T13:00:00+09:00",
+    );
+    expect(getNarOddsFetchSlotAt(raceStart, new Date("2026-05-22T13:30:00+09:00"), saleStart)).toBe(
+      "2026-05-22T13:30:00+09:00",
+    );
+  });
+
+  it("returns the next NAR slot from the venue sale start", () => {
+    const raceStart = new Date("2026-05-22T14:30:00+09:00");
+    const saleStart = new Date("2026-05-22T12:00:00+09:00");
+    expect(
+      getNextOddsFetchSlotAt(raceStart, new Date("2026-05-22T11:30:00+09:00"), "nar", {
+        narSaleStartAt: saleStart,
+      }),
+    ).toBe("2026-05-22T12:00:00+09:00");
+    expect(
+      getNextOddsFetchSlotAt(raceStart, new Date("2026-05-22T12:00:00+09:00"), "nar", {
+        narSaleStartAt: saleStart,
+      }),
+    ).toBe("2026-05-22T13:00:00+09:00");
+    expect(
+      getNextOddsFetchSlotAt(raceStart, new Date("2026-05-22T13:00:00+09:00"), "nar", {
+        narSaleStartAt: saleStart,
+      }),
+    ).toBe("2026-05-22T13:30:00+09:00");
   });
 });
 

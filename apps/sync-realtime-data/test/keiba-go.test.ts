@@ -101,6 +101,31 @@ describe("keiba.go realtime helpers", () => {
     });
   });
 
+  it("extracts odds links from current keiba.go navigation", () => {
+    const html = `
+      <nav class="clearfix noWrapNav">
+        <div class="chartNavi clearfix">
+          <h3 class="naviTitle">オッズ</h3>
+          <a href="/KeibaWeb/TodayRaceInfo/OddsTanFuku?k_raceDate=2026%2F05%2F21&amp;k_raceNo=1&amp;k_babaCode=27">単・複</a>
+          <a href="/KeibaWeb/TodayRaceInfo/Odds3LenTan?k_raceDate=2026%2F05%2F21&amp;k_raceNo=1&amp;k_babaCode=27">三連単</a>
+        </div>
+      </nav>
+    `;
+    expect(
+      extractOddsLinks(
+        html,
+        "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2f05%2f21&k_raceNo=1&k_babaCode=27",
+      ),
+    ).toEqual({
+      "3rentan":
+        "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/Odds3LenTan?k_raceDate=2026%2F05%2F21&k_raceNo=1&k_babaCode=27",
+      fukusho:
+        "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/OddsTanFuku?k_raceDate=2026%2F05%2F21&k_raceNo=1&k_babaCode=27",
+      tansho:
+        "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/OddsTanFuku?k_raceDate=2026%2F05%2F21&k_raceNo=1&k_babaCode=27",
+    });
+  });
+
   it("returns empty odds links when the odds nav is missing", () => {
     expect(extractOddsLinks("<nav><div></div></nav>", "https://example.test")).toEqual({});
   });
@@ -126,7 +151,7 @@ describe("keiba.go realtime helpers", () => {
     mockFetchHtml({
       "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/TodayRaceInfoTop": `
         <article class="todayRace">
-          <a href="/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2f05%2f10&k_babaCode=22">target</a>
+          <a href="/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2f05%2f10&amp;k_babaCode=22">target</a>
           <a href="/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2f05%2f10&k_babaCode=22">dupe</a>
           <a href="/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2F05%2F10&k_babaCode=23">target uppercase</a>
           <a href="/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2f05%2f11&k_babaCode=22">other date</a>
@@ -162,7 +187,8 @@ describe("keiba.go realtime helpers", () => {
       "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2F05%2F10&k_babaCode=22";
     mockFetchHtml({
       [raceListUrl]: `
-        <a href="DebaTable?k_raceDate=2026%2F05%2F10&k_raceNo=12&k_babaCode=22">12</a>
+        <a href="DebaTable?k_raceDate=2026%2F05%2F10&amp;k_raceNo=12&amp;k_babaCode=22">12</a>
+        <button onclick="location.href='/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F05%2F10&amp;k_babaCode=22&amp;k_raceNo=4'">4</button>
         <a href="DebaTable?k_raceDate=2026%2F05%2F10&k_raceNo=2&k_babaCode=22">2</a>
         <a href="DebaTable?k_raceDate=2026%2F05%2F10&k_raceNo=2&k_babaCode=22">dupe</a>
         <a href="DebaTable?k_raceDate=2026%2F05%2F11&k_raceNo=1&k_babaCode=22">other date</a>
@@ -175,6 +201,11 @@ describe("keiba.go realtime helpers", () => {
         babaCode: "22",
         raceNumber: "02",
         url: "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F05%2F10&k_raceNo=2&k_babaCode=22",
+      },
+      {
+        babaCode: "22",
+        raceNumber: "04",
+        url: "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F05%2F10&k_raceNo=4&k_babaCode=22",
       },
       {
         babaCode: "22",
@@ -675,6 +706,54 @@ describe("keiba.go realtime helpers", () => {
       },
     ]);
     expect(parseRaceResultExcludedHorseNumbers(html)).toEqual(["7", "8"]);
+  });
+
+  it("parses current keiba.go race result tables", () => {
+    const html = `
+      <tr>
+        <td class="a"><span class="bold">1</span></td>
+        <td class="b">3</td>
+        <td class="c">4</td>
+        <td class="d horseName"><a>ナムラハカ</a></td>
+        <td class="e">兵庫</td><td class="f">牝 9</td><td class="g">52.0</td>
+        <td class="h">塩津璃</td><td class="i">長南和</td>
+        <td class="j horseWeight">488<span>(-6)</span></td>
+        <td class="k">1:35.0</td>
+        <td class="o">4</td><td class="p">7.5</td>
+      </tr>
+      <tr>
+        <td class="a">除外</td>
+        <td class="b">5</td>
+        <td class="c">8</td>
+        <td class="d horseName">対象外</td>
+        <td class="j horseWeight">452<span>(0)</span></td>
+      </tr>
+    `;
+    expect(parseRaceResults(html)).toEqual([
+      {
+        finishPosition: "01",
+        horseName: "ナムラハカ",
+        horseNumber: "4",
+        time: "1:35.0",
+      },
+    ]);
+    expect(parseRaceResultExcludedHorseNumbers(html)).toEqual(["8"]);
+    expect(parseRaceResultHorseWeights(html)).toEqual([
+      {
+        changeAmount: 6,
+        changeSign: "-",
+        horseName: "ナムラハカ",
+        horseNumber: "4",
+        weight: 488,
+      },
+      {
+        changeAmount: 0,
+        changeSign: "+",
+        horseName: "対象外",
+        horseNumber: "8",
+        weight: 452,
+      },
+    ]);
   });
 
   it("ignores invalid race result rows", () => {

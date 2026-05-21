@@ -303,7 +303,7 @@ describe("worker scheduling with Miniflare", () => {
   }, 20_000);
 
   it("marks due races queued through the queue planner", async () => {
-    await seedRace("nar:2026:0512:55:01", "2026-05-12T13:10:00+09:00");
+    await seedRace("nar:2026:0512:55:01", "2026-05-12T13:00:00+09:00");
 
     await worker.queue(TEST_QUEUE, [
       {
