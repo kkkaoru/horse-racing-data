@@ -86,4 +86,32 @@ describe("odds schedule", () => {
       ),
     ).toBe(new Date("2026-05-16T09:15:00+09:00").toISOString());
   });
+
+  it("schedules NAR odds from the same-day venue sale start", () => {
+    expect(
+      getNextOddsFetchAt(
+        "2026-05-22T14:30:00+09:00",
+        new Date("2026-05-22T07:30:00+09:00").getTime(),
+        "nar",
+        {
+          keibajoCode: "44",
+          venueLastRaceStartAt: "2026-05-22T20:50:00+09:00",
+        },
+      ),
+    ).toBe(new Date("2026-05-22T12:00:00+09:00").toISOString());
+  });
+
+  it("keeps Nagoya and Kochi NAR night meetings at the default sale start", () => {
+    expect(
+      getNextOddsFetchAt(
+        "2026-05-22T14:30:00+09:00",
+        new Date("2026-05-22T07:30:00+09:00").getTime(),
+        "nar",
+        {
+          keibajoCode: "48",
+          venueLastRaceStartAt: "2026-05-22T20:50:00+09:00",
+        },
+      ),
+    ).toBe(new Date("2026-05-22T10:00:00+09:00").toISOString());
+  });
 });

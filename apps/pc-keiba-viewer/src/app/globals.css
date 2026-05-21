@@ -614,6 +614,32 @@ main {
   padding: var(--space-14px-55);
 }
 
+.home-today-race-links {
+  display: grid;
+}
+
+.home-today-race-links a {
+  align-items: center;
+  background: var(--accent);
+  border: var(--space-1px-7) solid var(--accent-strong);
+  border-radius: var(--space-8px-28);
+  color: var(--color-rgb-255-255-255-13);
+  display: flex;
+  gap: var(--space-12px-9);
+  justify-content: space-between;
+  min-height: var(--space-48px-43);
+  padding: var(--space-12px-9) var(--space-14px-55);
+}
+
+.home-today-race-links span {
+  font-weight: var(--number-800-12);
+}
+
+.home-today-race-links strong {
+  font-size: var(--space-16px-10);
+  white-space: nowrap;
+}
+
 .home-live-grid {
   display: grid;
   gap: var(--space-14px-55);
@@ -695,6 +721,42 @@ main {
   text-align: right;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.home-schedule-pagination {
+  align-items: center;
+  display: flex;
+  gap: var(--space-10px-27);
+  justify-content: space-between;
+}
+
+.home-schedule-pagination > span {
+  color: var(--muted);
+  font-size: var(--space-15px-1);
+  font-weight: var(--number-800-12);
+}
+
+.home-schedule-pagination div {
+  display: flex;
+  gap: var(--space-8px-28);
+}
+
+.home-schedule-pagination button {
+  background: var(--surface);
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-6px-33);
+  color: var(--accent-strong);
+  cursor: pointer;
+  font: inherit;
+  font-weight: var(--number-800-12);
+  min-height: var(--space-38px-35);
+  padding: var(--space-8px-28) var(--space-12px-9);
+}
+
+.home-schedule-pagination button:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: var(--number-0-55-48);
 }
 
 .home-race-list-skeleton {
@@ -7218,6 +7280,12 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
     display: none;
   }
 
+  .home-today-race-links a {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--space-4px-18);
+  }
+
   .home-race-list-skeleton {
     min-height: var(--space-228px-213);
   }
@@ -7233,6 +7301,19 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 
   .home-panel-wide {
     grid-column: auto;
+  }
+
+  .home-schedule-pagination {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .home-schedule-pagination div {
+    display: grid;
+    grid-template-columns: repeat(
+      var(--number-2-1),
+      minmax(var(--number-0-2), var(--space-1fr-51))
+    );
   }
 
   .page-title-row,
