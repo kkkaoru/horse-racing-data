@@ -1,6 +1,22 @@
 const JST_TIME_ZONE = "Asia/Tokyo";
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const FINAL_ODDS_FETCH_DELAY_MINUTES = 2;
+const ONE_HOUR_MS = 60 * 60_000;
+
+export const NAR_ODDS_SALE_START_RULE = {
+  createdAt: "2026-05-22",
+  defaultSaleStartHhmm: "1000",
+  id: "nar-same-day-venue-sale-start",
+  nightRaceExceptionKeibajoCodes: ["48", "54"],
+  nightRaceLastStartThresholdHhmm: "1900",
+  nightRaceSaleStartHhmm: "1200",
+} as const;
+
+interface NarOddsSaleStartInput {
+  keibajoCode: string;
+  raceStartAtJst: string;
+  venueLastRaceStartAtJst?: string | null;
+}
 
 const jstFormatter = new Intl.DateTimeFormat("ja-JP-u-ca-gregory", {
   day: "2-digit",
@@ -68,6 +84,63 @@ export const getOddsFetchIntervalMinutes = (minutesUntilRace: number): number | 
   return null;
 };
 
+const extractHhmmFromJstIso = (value: string | null | undefined): string | null => {
+  const hhmm = value?.slice(11, 16).replace(":", "") ?? null;
+  return hhmm && /^\d{4}$/u.test(hhmm) ? hhmm : null;
+};
+
+export const isNarNightRaceMeeting = (venueLastRaceStartAtJst: string | null | undefined) => {
+  const hhmm = extractHhmmFromJstIso(venueLastRaceStartAtJst);
+  return Boolean(hhmm && hhmm >= NAR_ODDS_SALE_START_RULE.nightRaceLastStartThresholdHhmm);
+};
+
+export const getNarOddsSaleStartAt = ({
+  keibajoCode,
+  raceStartAtJst,
+  venueLastRaceStartAtJst,
+}: NarOddsSaleStartInput): Date | null => {
+  const raceDate = raceStartAtJst.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(raceDate)) {
+    return null;
+  }
+  const isNightRace =
+    isNarNightRaceMeeting(venueLastRaceStartAtJst) &&
+    !(NAR_ODDS_SALE_START_RULE.nightRaceExceptionKeibajoCodes as readonly string[]).includes(
+      keibajoCode,
+    );
+  const hhmm = isNightRace
+    ? NAR_ODDS_SALE_START_RULE.nightRaceSaleStartHhmm
+    : NAR_ODDS_SALE_START_RULE.defaultSaleStartHhmm;
+  const saleStart = new Date(`${raceDate}T${hhmm.slice(0, 2)}:${hhmm.slice(2, 4)}:00+09:00`);
+  return Number.isNaN(saleStart.getTime()) ? null : saleStart;
+};
+
+const floorToHourlySlotFromStart = (date: Date, start: Date): Date =>
+  new Date(
+    start.getTime() + Math.floor((date.getTime() - start.getTime()) / ONE_HOUR_MS) * ONE_HOUR_MS,
+  );
+
+const ceilToNextHourlySlotFromStart = (date: Date, start: Date): Date =>
+  new Date(
+    start.getTime() +
+      (Math.floor((date.getTime() - start.getTime()) / ONE_HOUR_MS) + 1) * ONE_HOUR_MS,
+  );
+
+export const getNarOddsFetchSlotAt = (
+  raceStart: Date,
+  now: Date,
+  saleStart: Date | null,
+): string | null => {
+  if (!saleStart || now.getTime() < saleStart.getTime()) {
+    return null;
+  }
+  const oneHourBeforeRace = new Date(raceStart.getTime() - ONE_HOUR_MS);
+  if (now.getTime() < oneHourBeforeRace.getTime()) {
+    return toJstIsoString(floorToHourlySlotFromStart(now, saleStart));
+  }
+  return getOddsFetchSlotAt(raceStart, now);
+};
+
 export const getOddsFetchSlotAt = (raceStart: Date, now: Date): string | null => {
   const minutes = (raceStart.getTime() - now.getTime()) / 60_000;
   const interval = getOddsFetchIntervalMinutes(minutes);
@@ -104,6 +177,7 @@ export const getNextOddsFetchSlotAt = (
   raceStart: Date,
   now: Date,
   source: "jra" | "nar",
+  options: { narSaleStartAt?: Date | null } = {},
 ): string | null => {
   const raceStartMs = raceStart.getTime();
   if (source === "jra") {
@@ -116,6 +190,19 @@ export const getNextOddsFetchSlotAt = (
         now.getTime() < saleStart.getTime() ? saleStart : ceilToNextHourJstSlot(now);
       return nextAdvanceSlot.getTime() < oneHourBeforeRace.getTime()
         ? toJstIsoString(nextAdvanceSlot)
+        : toJstIsoString(oneHourBeforeRace);
+    }
+  }
+  if (source === "nar" && options.narSaleStartAt) {
+    const saleStart = options.narSaleStartAt;
+    const oneHourBeforeRace = new Date(raceStartMs - ONE_HOUR_MS);
+    if (now.getTime() < saleStart.getTime()) {
+      return toJstIsoString(saleStart);
+    }
+    if (now.getTime() < oneHourBeforeRace.getTime()) {
+      const nextHourlySlot = ceilToNextHourlySlotFromStart(now, saleStart);
+      return nextHourlySlot.getTime() < oneHourBeforeRace.getTime()
+        ? toJstIsoString(nextHourlySlot)
         : toJstIsoString(oneHourBeforeRace);
     }
   }
