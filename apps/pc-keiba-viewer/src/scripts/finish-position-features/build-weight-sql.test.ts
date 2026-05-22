@@ -68,10 +68,11 @@ test("buildWeightUpdateSql joins both jvd_se and nvd_se on the history side", ()
   expect(sql).toContain("left join nvd_se hn");
 });
 
-test("buildWeightUpdateSql coalesces JRA and NAR bataiju and nulls empty strings", () => {
-  expect(buildWeightUpdateSql("jra")).toContain(
-    "coalesce(nullif(tj.bataiju, '')::integer, nullif(tn.bataiju, '')::integer)",
-  );
+test("buildWeightUpdateSql safely casts JRA and NAR bataiju values", () => {
+  const sql = buildWeightUpdateSql("jra");
+  expect(sql).toContain("trim(coalesce(tj.bataiju::text, '')) ~ '^-?[0-9]+$'");
+  expect(sql).toContain("trim(coalesce(tn.bataiju::text, '')) ~ '^-?[0-9]+$'");
+  expect(sql).toContain("coalesce(");
 });
 
 test("buildWeightUpdateSql enforces strict less-than race_date for leak prevention", () => {
