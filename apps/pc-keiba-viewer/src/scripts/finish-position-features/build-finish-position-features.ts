@@ -1,7 +1,7 @@
 // Run with: bun run src/scripts/finish-position-features/build-finish-position-features.ts \
 //   --target local --category jra --from-date 20160101 --to-date 20261231
 
-import { Pool, type PoolClient } from "pg";
+import { Pool } from "pg";
 
 import { getConnectionString, loadEnv } from "../compare-corner-predictions";
 import {
@@ -133,20 +133,8 @@ const ensureTable = async (pool: Pool): Promise<void> => {
   await pool.query(buildCreateTableSql());
 };
 
-const registerSessionMemoryTuning = (pool: Pool): void => {
-  pool.on("connect", (client: PoolClient) => {
-    client
-      .query(
-        `set work_mem = '${SESSION_WORK_MEM}'; set hash_mem_multiplier = ${SESSION_HASH_MEM_MULTIPLIER}`,
-      )
-      .catch((error: unknown) => {
-        console.error(
-          "Failed to apply session memory tuning:",
-          error instanceof Error ? error.message : error,
-        );
-      });
-  });
-};
+const buildSessionOptions = (): string =>
+  `-c work_mem=${SESSION_WORK_MEM} -c hash_mem_multiplier=${SESSION_HASH_MEM_MULTIPLIER}`;
 
 const ensureIndexes = async (pool: Pool): Promise<void> => {
   const statements = [
@@ -157,64 +145,62 @@ const ensureIndexes = async (pool: Pool): Promise<void> => {
   await Promise.all(statements.map((statement) => pool.query(statement)));
 };
 
+const queryDatedStage = async (pool: Pool, sql: string, options: BuildOptions): Promise<number> => {
+  const hasDatePlaceholders = /\$1\b/u.test(sql) || /\$2\b/u.test(sql);
+  const result = hasDatePlaceholders
+    ? await pool.query(sql, [options.fromDate, options.toDate])
+    : await pool.query(sql);
+  return result.rowCount ?? 0;
+};
+
 const upsertSkeletonBatch = async (pool: Pool, options: BuildOptions): Promise<number> => {
   const sql = buildSkeletonUpsertSql(options.category, options.featureSchemaVersion);
-  const result = await pool.query(sql, [options.fromDate, options.toDate]);
-  return result.rowCount ?? 0;
+  return queryDatedStage(pool, sql, options);
 };
 
 const applyHorseCareerStage = async (pool: Pool, options: BuildOptions): Promise<number> => {
   const sql = buildHorseCareerUpdateSql(options.category);
-  const result = await pool.query(sql, [options.fromDate, options.toDate]);
-  return result.rowCount ?? 0;
+  return queryDatedStage(pool, sql, options);
 };
 
 const applyJockeyStage = async (pool: Pool, options: BuildOptions): Promise<number> => {
   const sql = buildJockeyUpdateSql(options.category);
-  const result = await pool.query(sql, [options.fromDate, options.toDate]);
-  return result.rowCount ?? 0;
+  return queryDatedStage(pool, sql, options);
 };
 
 const applyTrainerStage = async (pool: Pool, options: BuildOptions): Promise<number> => {
   const sql = buildTrainerUpdateSql(options.category);
-  const result = await pool.query(sql, [options.fromDate, options.toDate]);
-  return result.rowCount ?? 0;
+  return queryDatedStage(pool, sql, options);
 };
 
 const applyPedigreeStage = async (pool: Pool, options: BuildOptions): Promise<number> => {
   const sql = buildPedigreeUpdateSql(options.category);
-  const result = await pool.query(sql, [options.fromDate, options.toDate]);
-  return result.rowCount ?? 0;
+  return queryDatedStage(pool, sql, options);
 };
 
 const applyRaceContextStage = async (pool: Pool, options: BuildOptions): Promise<number> => {
   const sql = buildRaceContextUpdateSql(options.category);
-  const result = await pool.query(sql, [options.fromDate, options.toDate]);
-  return result.rowCount ?? 0;
+  return queryDatedStage(pool, sql, options);
 };
 
 const applyRecentFormStage = async (pool: Pool, options: BuildOptions): Promise<number> => {
   const sql = buildRecentFormUpdateSql(options.category);
-  const result = await pool.query(sql, [options.fromDate, options.toDate]);
-  return result.rowCount ?? 0;
+  return queryDatedStage(pool, sql, options);
 };
 
 const applyWeatherStage = async (pool: Pool, options: BuildOptions): Promise<number> => {
   const sql = buildWeatherUpdateSql(options.category);
-  const result = await pool.query(sql, [options.fromDate, options.toDate]);
-  return result.rowCount ?? 0;
+  return queryDatedStage(pool, sql, options);
 };
 
 const applyTrackBiasStage = async (pool: Pool, options: BuildOptions): Promise<number> => {
   const sql = buildTrackBiasUpdateSql(options.category);
-  const result = await pool.query(sql, [options.fromDate, options.toDate]);
-  return result.rowCount ?? 0;
+  return queryDatedStage(pool, sql, options);
 };
 
 const applyWeightStage = async (pool: Pool, options: BuildOptions): Promise<number> => {
   const sql = buildWeightUpdateSql(options.category);
-  const result = await pool.query(sql, [options.fromDate, options.toDate]);
-  return result.rowCount ?? 0;
+  return queryDatedStage(pool, sql, options);
 };
 
 const logSummary = (options: BuildOptions, stageCounts: Record<string, number>): void => {
@@ -229,8 +215,10 @@ const logSummary = (options: BuildOptions, stageCounts: Record<string, number>):
 const main = async (): Promise<void> => {
   const options = parseArgs(process.argv.slice(2));
   await loadEnv();
-  const pool = new Pool({ connectionString: getConnectionString(options.target) });
-  registerSessionMemoryTuning(pool);
+  const pool = new Pool({
+    connectionString: getConnectionString(options.target),
+    options: buildSessionOptions(),
+  });
   try {
     await ensureTable(pool);
     await ensureIndexes(pool);
