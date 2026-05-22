@@ -3,10 +3,12 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import {
+  getActiveRunningStylePredictions,
   getRaceDetail,
   getHorseRaceResults,
   getRaceRunners,
   getRaceSourceByRoute,
+  type ActiveRunningStylePrediction,
 } from "../../../../../../../../db/queries";
 import {
   cleanText,
@@ -19,6 +21,7 @@ import {
   getTrackSurfaceLabel,
 } from "../../../../../../../../lib/format";
 import { getRaceTags } from "../../../../../../../../lib/race-classification";
+import { getRaceRunningStylesWithCache } from "../../../../../../../../lib/running-style-cache.server";
 import { isBanEiKeibajoCode } from "../../../../../../../../lib/runner-format";
 import { PaddockSection } from "../../../../../../../races/detail/paddock-section";
 import { RaceStartCountdown } from "../../../../../../../races/detail/race-start-countdown";
@@ -105,10 +108,44 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
     notFound();
   }
 
-  const [race, runners, recentResults] = await Promise.all([
+  const runningStyleCategory =
+    source === "nar" && isBanEiKeibajoCode(keibajoCode) ? "ban-ei" : source;
+  const kaisaiTsukihi = `${month}${day}`;
+  const runningStylePredictionsPromise: Promise<ActiveRunningStylePrediction[]> =
+    runningStyleCategory === "ban-ei"
+      ? Promise.resolve([])
+      : getActiveRunningStylePredictions({
+          category: runningStyleCategory,
+          day,
+          keibajoCode,
+          month,
+          raceNumber,
+          source,
+          year,
+        })
+          .then(async (rows) => {
+            if (rows.length > 0) {
+              return rows;
+            }
+            const d1Rows = await getRaceRunningStylesWithCache({
+              kaisaiNen: year,
+              kaisaiTsukihi,
+              keibajoCode,
+              raceBango: raceNumber,
+              source,
+            }).catch(() => []);
+            return d1Rows.map((row) => ({
+              horseNumber: row.horseNumber,
+              predictedLabel: row.predictedLabel,
+            }));
+          })
+          .catch(() => []);
+
+  const [race, runners, recentResults, runningStylePredictions] = await Promise.all([
     getRaceDetail(source, year, month, day, keibajoCode, raceNumber),
     getRaceRunners(source, year, month, day, keibajoCode, raceNumber),
     getHorseRaceResults(source, year, month, day, keibajoCode, raceNumber),
+    runningStylePredictionsPromise,
   ]);
   if (!race) {
     notFound();
@@ -128,6 +165,9 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
   const realtimeApiBaseUrl =
     process.env.NEXT_PUBLIC_REALTIME_DATA_API_BASE_URL ?? "https://sync-realtime-data.kkk4oru.com";
   const decodeHexHorseWeight = source === "nar" && isBanEiKeibajoCode(keibajoCode);
+  const runningStyleLabelsByHorse = Object.fromEntries(
+    runningStylePredictions.map((row) => [String(row.horseNumber), row.predictedLabel]),
+  );
 
   return (
     <main className="page-shell">
@@ -194,6 +234,7 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
           year,
         }}
         recentResults={recentResults}
+        runningStyleLabelsByHorse={runningStyleLabelsByHorse}
         runners={runners}
         source={source}
         year={year}

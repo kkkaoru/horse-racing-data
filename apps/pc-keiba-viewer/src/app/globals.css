@@ -2829,6 +2829,33 @@ h3 {
   line-height: var(--number-1-25-20);
 }
 
+.paddock-running-style-badge {
+  align-items: center;
+  background: var(--surface-muted);
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-999px-30);
+  color: var(--text);
+  display: inline-flex;
+  font-size: var(--space-15px-1);
+  font-weight: var(--number-900-16);
+  gap: var(--space-5px-17);
+  line-height: var(--number-1-7);
+  padding: var(--space-3px-22) var(--space-8px-28);
+  white-space: nowrap;
+  width: fit-content;
+}
+
+.paddock-running-style-badge span {
+  color: var(--muted);
+  font-weight: var(--number-650-40);
+}
+
+.paddock-running-style-badge strong {
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+}
+
 .paddock-status-badge,
 .runner-status-badge {
   background: var(--color-hex-fff4e5-65);
