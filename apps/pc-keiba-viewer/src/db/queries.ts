@@ -2938,6 +2938,25 @@ export const getFinishPositionLambdarankPredictions = cache(
               from finish_position_active_models
               where category = ${category}
               limit 1
+            ),
+            selected_model as (
+              select model_version
+              from (
+                select p.model_version, 0 as priority
+                from race_finish_position_model_predictions p
+                join active on p.model_version =
+                  active.model_version || '-rs-overlay-' || ${race.kaisaiNen} || ${race.kaisaiTsukihi}
+                where p.source = ${race.source}
+                  and p.kaisai_nen = ${race.kaisaiNen}
+                  and p.kaisai_tsukihi = ${race.kaisaiTsukihi}
+                  and p.keibajo_code = ${race.keibajoCode}
+                  and p.race_bango = ${race.raceBango}
+                union all
+                select active.model_version, 1 as priority
+                from active
+              ) candidates
+              order by priority
+              limit 1
             )
             select
               p.model_version,
@@ -2955,7 +2974,7 @@ export const getFinishPositionLambdarankPredictions = cache(
                   and p2.race_bango = p.race_bango
               )::integer as shusso_tosu
             from race_finish_position_model_predictions p
-            join active on active.model_version = p.model_version
+            join selected_model on selected_model.model_version = p.model_version
             where p.source = ${race.source}
               and p.kaisai_nen = ${race.kaisaiNen}
               and p.kaisai_tsukihi = ${race.kaisaiTsukihi}
