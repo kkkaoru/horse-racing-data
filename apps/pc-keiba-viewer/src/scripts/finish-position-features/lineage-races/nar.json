@@ -8,7 +8,11 @@
       "name": "川崎記念",
       "match": { "kyosomei_equals": "川崎記念", "keibajo_code": "45", "kyori": 2100 },
       "trials": [
-        { "name": "名古屋大賞典", "match": { "kyosomei_equals": "名古屋大賞典" }, "lookback_days": 90 },
+        {
+          "name": "名古屋大賞典",
+          "match": { "kyosomei_equals": "名古屋大賞典" },
+          "lookback_days": 90
+        },
         { "name": "東京大賞典", "match": { "kyosomei_equals": "東京大賞典" }, "lookback_days": 60 },
         { "name": "浦和記念", "match": { "kyosomei_equals": "浦和記念" }, "lookback_days": 90 }
       ]
@@ -20,7 +24,11 @@
       "trials": [
         { "name": "京浜盃", "match": { "kyosomei_equals": "京浜盃" }, "lookback_days": 30 },
         { "name": "雲取賞", "match": { "kyosomei_equals": "雲取賞" }, "lookback_days": 60 },
-        { "name": "報知オールスターカップ", "match": { "kyosomei_contains": "オールスター" }, "lookback_days": 90 }
+        {
+          "name": "報知オールスターカップ",
+          "match": { "kyosomei_contains": "オールスター" },
+          "lookback_days": 90
+        }
       ]
     },
     {
@@ -28,8 +36,16 @@
       "name": "かしわ記念",
       "match": { "kyosomei_equals": "かしわ記念", "keibajo_code": "43", "kyori": 1600 },
       "trials": [
-        { "name": "名古屋大賞典", "match": { "kyosomei_equals": "名古屋大賞典" }, "lookback_days": 90 },
-        { "name": "東京スプリント", "match": { "kyosomei_equals": "東京スプリント" }, "lookback_days": 60 },
+        {
+          "name": "名古屋大賞典",
+          "match": { "kyosomei_equals": "名古屋大賞典" },
+          "lookback_days": 90
+        },
+        {
+          "name": "東京スプリント",
+          "match": { "kyosomei_equals": "東京スプリント" },
+          "lookback_days": 60
+        },
         { "name": "黒船賞", "match": { "kyosomei_equals": "黒船賞" }, "lookback_days": 60 }
       ]
     },
@@ -38,9 +54,17 @@
       "name": "兵庫チャンピオンシップ",
       "match": { "kyosomei_equals": "兵庫チャンピオンシップ", "keibajo_code": "50" },
       "trials": [
-        { "name": "ユングフラウ賞", "match": { "kyosomei_equals": "ユングフラウ賞" }, "lookback_days": 60 },
+        {
+          "name": "ユングフラウ賞",
+          "match": { "kyosomei_equals": "ユングフラウ賞" },
+          "lookback_days": 60
+        },
         { "name": "佐賀皐月賞", "match": { "kyosomei_equals": "佐賀皐月賞" }, "lookback_days": 60 },
-        { "name": "兵庫ジュニアグランプリ", "match": { "kyosomei_equals": "兵庫ジュニアグランプリ" }, "lookback_days": 180 }
+        {
+          "name": "兵庫ジュニアグランプリ",
+          "match": { "kyosomei_equals": "兵庫ジュニアグランプリ" },
+          "lookback_days": 180
+        }
       ]
     },
     {
@@ -48,9 +72,17 @@
       "name": "関東オークス",
       "match": { "kyosomei_equals": "関東オークス", "keibajo_code": "45", "kyori": 2100 },
       "trials": [
-        { "name": "東京プリンセス賞", "match": { "kyosomei_equals": "東京プリンセス賞" }, "lookback_days": 45 },
+        {
+          "name": "東京プリンセス賞",
+          "match": { "kyosomei_equals": "東京プリンセス賞" },
+          "lookback_days": 45
+        },
         { "name": "桜花賞", "match": { "kyosomei_equals": "桜花賞" }, "lookback_days": 60 },
-        { "name": "ユングフラウ賞", "match": { "kyosomei_equals": "ユングフラウ賞" }, "lookback_days": 90 }
+        {
+          "name": "ユングフラウ賞",
+          "match": { "kyosomei_equals": "ユングフラウ賞" },
+          "lookback_days": 90
+        }
       ]
     },
     {
@@ -69,38 +101,82 @@
       "match": { "kyosomei_equals": "帝王賞", "keibajo_code": "44", "kyori": 2000 },
       "trials": [
         { "name": "川崎記念", "match": { "kyosomei_equals": "川崎記念" }, "lookback_days": 180 },
-        { "name": "名古屋大賞典", "match": { "kyosomei_equals": "名古屋大賞典" }, "lookback_days": 90 },
+        {
+          "name": "名古屋大賞典",
+          "match": { "kyosomei_equals": "名古屋大賞典" },
+          "lookback_days": 90
+        },
         { "name": "大井記念", "match": { "kyosomei_equals": "大井記念" }, "lookback_days": 90 },
-        { "name": "アンタレスステークス", "match": { "kyosomei_equals": "アンタレスステークス" }, "lookback_days": 90 }
+        {
+          "name": "アンタレスステークス",
+          "match": { "kyosomei_equals": "アンタレスステークス" },
+          "lookback_days": 90
+        }
       ]
     },
     {
       "id": "japan_dirt_classic",
       "name": "ジャパンダートクラシック",
-      "match": { "kyosomei_contains": "ジャパンダートクラシック", "keibajo_code": "44", "kyori": 2000 },
+      "match": {
+        "kyosomei_contains": "ジャパンダートクラシック",
+        "keibajo_code": "44",
+        "kyori": 2000
+      },
       "trials": [
-        { "name": "東京ダービー", "match": { "kyosomei_equals": "東京ダービー" }, "lookback_days": 120 },
+        {
+          "name": "東京ダービー",
+          "match": { "kyosomei_equals": "東京ダービー" },
+          "lookback_days": 120
+        },
         { "name": "不来方賞", "match": { "kyosomei_equals": "不来方賞" }, "lookback_days": 45 },
-        { "name": "ダービーグランプリ", "match": { "kyosomei_equals": "ダービーグランプリ" }, "lookback_days": 60 }
+        {
+          "name": "ダービーグランプリ",
+          "match": { "kyosomei_equals": "ダービーグランプリ" },
+          "lookback_days": 60
+        }
       ]
     },
     {
       "id": "japan_dirt_derby",
       "name": "ジャパンダートダービー",
-      "match": { "kyosomei_contains": "ジャパンダートダービー", "keibajo_code": "44", "kyori": 2000 },
+      "match": {
+        "kyosomei_contains": "ジャパンダートダービー",
+        "keibajo_code": "44",
+        "kyori": 2000
+      },
       "trials": [
-        { "name": "東京ダービー", "match": { "kyosomei_equals": "東京ダービー" }, "lookback_days": 30 },
+        {
+          "name": "東京ダービー",
+          "match": { "kyosomei_equals": "東京ダービー" },
+          "lookback_days": 30
+        },
         { "name": "羽田盃", "match": { "kyosomei_equals": "羽田盃" }, "lookback_days": 75 },
-        { "name": "兵庫チャンピオンシップ", "match": { "kyosomei_equals": "兵庫チャンピオンシップ" }, "lookback_days": 90 }
+        {
+          "name": "兵庫チャンピオンシップ",
+          "match": { "kyosomei_equals": "兵庫チャンピオンシップ" },
+          "lookback_days": 90
+        }
       ]
     },
     {
       "id": "nanbu_hai",
       "name": "マイルチャンピオンシップ南部杯",
-      "match": { "kyosomei_contains": "マイルチャンピオンシップ南部杯", "keibajo_code": "35", "kyori": 1600 },
+      "match": {
+        "kyosomei_contains": "マイルチャンピオンシップ南部杯",
+        "keibajo_code": "35",
+        "kyori": 1600
+      },
       "trials": [
-        { "name": "かしわ記念", "match": { "kyosomei_equals": "かしわ記念" }, "lookback_days": 180 },
-        { "name": "サマーチャンピオン", "match": { "kyosomei_equals": "サマーチャンピオン" }, "lookback_days": 90 }
+        {
+          "name": "かしわ記念",
+          "match": { "kyosomei_equals": "かしわ記念" },
+          "lookback_days": 180
+        },
+        {
+          "name": "サマーチャンピオン",
+          "match": { "kyosomei_equals": "サマーチャンピオン" },
+          "lookback_days": 90
+        }
       ]
     },
     {
@@ -110,7 +186,11 @@
       "trials": [
         { "name": "帝王賞", "match": { "kyosomei_equals": "帝王賞" }, "lookback_days": 180 },
         { "name": "白山大賞典", "match": { "kyosomei_equals": "白山大賞典" }, "lookback_days": 45 },
-        { "name": "日本テレビ盃", "match": { "kyosomei_equals": "日本テレビ盃" }, "lookback_days": 45 }
+        {
+          "name": "日本テレビ盃",
+          "match": { "kyosomei_equals": "日本テレビ盃" },
+          "lookback_days": 45
+        }
       ]
     },
     {
@@ -118,9 +198,17 @@
       "name": "JBCスプリント",
       "match": { "kyosomei_contains": "ＪＢＣスプリント" },
       "trials": [
-        { "name": "サマーチャンピオン", "match": { "kyosomei_equals": "サマーチャンピオン" }, "lookback_days": 90 },
+        {
+          "name": "サマーチャンピオン",
+          "match": { "kyosomei_equals": "サマーチャンピオン" },
+          "lookback_days": 90
+        },
         { "name": "東京盃", "match": { "kyosomei_equals": "東京盃" }, "lookback_days": 45 },
-        { "name": "黒潮スプリンターズカップ", "match": { "kyosomei_contains": "黒潮スプリンターズ" }, "lookback_days": 75 }
+        {
+          "name": "黒潮スプリンターズカップ",
+          "match": { "kyosomei_contains": "黒潮スプリンターズ" },
+          "lookback_days": 75
+        }
       ]
     },
     {
@@ -128,8 +216,16 @@
       "name": "JBCレディスクラシック",
       "match": { "kyosomei_contains": "ＪＢＣレディスクラシック" },
       "trials": [
-        { "name": "レディスプレリュード", "match": { "kyosomei_contains": "レディスプレリュード" }, "lookback_days": 45 },
-        { "name": "ブリーダーズゴールドカップ", "match": { "kyosomei_contains": "ブリーダーズゴールド" }, "lookback_days": 90 }
+        {
+          "name": "レディスプレリュード",
+          "match": { "kyosomei_contains": "レディスプレリュード" },
+          "lookback_days": 45
+        },
+        {
+          "name": "ブリーダーズゴールドカップ",
+          "match": { "kyosomei_contains": "ブリーダーズゴールド" },
+          "lookback_days": 90
+        }
       ]
     },
     {
@@ -138,8 +234,16 @@
       "match": { "kyosomei_contains": "全日本２歳優駿", "keibajo_code": "45", "kyori": 1600 },
       "trials": [
         { "name": "平和賞", "match": { "kyosomei_equals": "平和賞" }, "lookback_days": 45 },
-        { "name": "兵庫ジュニアグランプリ", "match": { "kyosomei_equals": "兵庫ジュニアグランプリ" }, "lookback_days": 30 },
-        { "name": "JBC2歳優駿", "match": { "kyosomei_contains": "ＪＢＣ２歳優駿" }, "lookback_days": 30 }
+        {
+          "name": "兵庫ジュニアグランプリ",
+          "match": { "kyosomei_equals": "兵庫ジュニアグランプリ" },
+          "lookback_days": 30
+        },
+        {
+          "name": "JBC2歳優駿",
+          "match": { "kyosomei_contains": "ＪＢＣ２歳優駿" },
+          "lookback_days": 30
+        }
       ]
     },
     {
@@ -147,8 +251,16 @@
       "name": "JBC2歳優駿",
       "match": { "kyosomei_contains": "ＪＢＣ２歳優駿", "keibajo_code": "30" },
       "trials": [
-        { "name": "ゴールドジュニア", "match": { "kyosomei_equals": "ゴールドジュニア" }, "lookback_days": 90 },
-        { "name": "ブリーダーズゴールドジュニアカップ", "match": { "kyosomei_contains": "ブリーダーズゴールドジュニア" }, "lookback_days": 60 }
+        {
+          "name": "ゴールドジュニア",
+          "match": { "kyosomei_equals": "ゴールドジュニア" },
+          "lookback_days": 90
+        },
+        {
+          "name": "ブリーダーズゴールドジュニアカップ",
+          "match": { "kyosomei_contains": "ブリーダーズゴールドジュニア" },
+          "lookback_days": 60
+        }
       ]
     },
     {
@@ -156,7 +268,11 @@
       "name": "東京プリンセス賞",
       "match": { "kyosomei_equals": "東京プリンセス賞", "keibajo_code": "44", "kyori": 1800 },
       "trials": [
-        { "name": "ユングフラウ賞", "match": { "kyosomei_equals": "ユングフラウ賞" }, "lookback_days": 45 },
+        {
+          "name": "ユングフラウ賞",
+          "match": { "kyosomei_equals": "ユングフラウ賞" },
+          "lookback_days": 45
+        },
         { "name": "桃花賞", "match": { "kyosomei_equals": "桃花賞" }, "lookback_days": 30 }
       ]
     },
@@ -165,9 +281,17 @@
       "name": "東京大賞典",
       "match": { "kyosomei_equals": "東京大賞典", "keibajo_code": "44", "kyori": 2000 },
       "trials": [
-        { "name": "JBCクラシック", "match": { "kyosomei_contains": "ＪＢＣクラシック" }, "lookback_days": 60 },
+        {
+          "name": "JBCクラシック",
+          "match": { "kyosomei_contains": "ＪＢＣクラシック" },
+          "lookback_days": 60
+        },
         { "name": "浦和記念", "match": { "kyosomei_equals": "浦和記念" }, "lookback_days": 45 },
-        { "name": "チャンピオンズカップ", "match": { "kyosomei_equals": "チャンピオンズカップ" }, "lookback_days": 30 }
+        {
+          "name": "チャンピオンズカップ",
+          "match": { "kyosomei_equals": "チャンピオンズカップ" },
+          "lookback_days": 30
+        }
       ]
     },
     {
@@ -175,7 +299,11 @@
       "name": "さきたま杯",
       "match": { "kyosomei_equals": "さきたま杯", "keibajo_code": "42" },
       "trials": [
-        { "name": "東京スプリント", "match": { "kyosomei_equals": "東京スプリント" }, "lookback_days": 45 },
+        {
+          "name": "東京スプリント",
+          "match": { "kyosomei_equals": "東京スプリント" },
+          "lookback_days": 45
+        },
         { "name": "黒船賞", "match": { "kyosomei_equals": "黒船賞" }, "lookback_days": 90 }
       ]
     }
