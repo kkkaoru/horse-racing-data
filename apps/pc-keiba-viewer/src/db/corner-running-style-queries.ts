@@ -86,7 +86,14 @@ interface LocalD1CacheEntry {
 
 const localD1CliCache = new Map<string, LocalD1CacheEntry>();
 
+const useRemoteD1CliInDevelopment = (): boolean =>
+  process.env.NODE_ENV === "development";
+
 const getD1Database = (): PcKeibaD1Database | null => {
+  if (useRemoteD1CliInDevelopment()) {
+    return null;
+  }
+
   try {
     const { env } = getCloudflareContext();
     return env.REALTIME_DB ?? null;
@@ -95,8 +102,7 @@ const getD1Database = (): PcKeibaD1Database | null => {
   }
 };
 
-const useLocalD1CliFallback = (): boolean =>
-  process.env.NODE_ENV === "development" && process.env.PC_KEIBA_RUNNING_STYLE_LOCAL_D1_CLI !== "0";
+const useLocalD1CliFallback = (): boolean => useRemoteD1CliInDevelopment();
 
 const getLocalD1DatabaseName = (): string =>
   process.env.PC_KEIBA_RUNNING_STYLE_D1_DATABASE ?? DEFAULT_LOCAL_D1_DATABASE;

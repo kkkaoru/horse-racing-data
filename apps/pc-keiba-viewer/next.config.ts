@@ -11,16 +11,16 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ["pg", "pg-cloudflare"],
 };
 
-// Expose Cloudflare bindings (REALTIME_DB, RUNNING_STYLE_MODELS, ...) to
-// `next dev` via wrangler's platform proxy. Combined with `"remote": true`
-// per binding in wrangler.jsonc, this lets server components read
-// production D1 directly during local development. Dynamic + fire-and-forget
-// keeps the workerd lib types out of the static type graph and avoids the
-// top-level-await restriction in next.config.ts.
+const initCloudflareDevContext = async (): Promise<void> => {
+  const mod = await import("@opennextjs/cloudflare");
+  await mod.initOpenNextCloudflareForDev({ remoteBindings: false });
+};
+
+// Initialize Cloudflare vars for `next dev` without Wrangler's remote proxy:
+// this account cannot create Workers preview sessions, and REALTIME_DB remote
+// access is handled explicitly via `wrangler d1 execute --remote`.
 if (process.env.NODE_ENV === "development") {
-  void import("@opennextjs/cloudflare").then((mod) =>
-    mod.initOpenNextCloudflareForDev({ remoteBindings: true }),
-  );
+  void initCloudflareDevContext();
 }
 
 export default nextConfig;
