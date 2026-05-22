@@ -16,6 +16,7 @@ import type {
   TrackCondition,
 } from "./types";
 import type {
+  PremiumDataTopHorse,
   PremiumPaddockBulletin,
   PremiumRaceLink,
   PremiumStableComment,
@@ -23,6 +24,18 @@ import type {
 } from "./premium-race";
 
 const D1_BATCH_SIZE = 100;
+
+const parsePremiumDataTopReasons = (value: string): string[] => {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.filter((item): item is string => typeof item === "string" && item.length > 0);
+  } catch {
+    return [];
+  }
+};
 
 const ODDS_TREND_LIMITS: Record<OddsType, number> = {
   "3renpuku": 30,
@@ -170,6 +183,14 @@ interface PremiumStableCommentRow {
   horse_number: string;
 }
 
+interface PremiumDataTopHorseRow {
+  fetched_at: string;
+  horse_name: string | null;
+  horse_number: string;
+  rank: number;
+  reasons_json: string;
+}
+
 interface PremiumPaddockBulletinRow {
   comment_text: string | null;
   evaluation_text: string | null;
@@ -205,6 +226,7 @@ interface PremiumRaceDataFetchStateRow {
 }
 
 export interface PremiumRacePayload {
+  dataTopHorses: (PremiumDataTopHorse & { fetchedAt: string })[];
   paddockBulletins: (PremiumPaddockBulletin & { fetchedAt: string })[];
   stableComments: (PremiumStableComment & { fetchedAt: string })[];
   trainingReviews: (PremiumTrainingReview & { fetchedAt: string })[];
@@ -1057,6 +1079,7 @@ export const getPremiumRaceLink = async (
 export const replacePremiumRaceData = async (
   db: D1Database,
   params: {
+    dataTopHorses?: PremiumDataTopHorse[];
     fetchedAt: string;
     link: PremiumRaceLink;
     paddockBulletins?: PremiumPaddockBulletin[];
@@ -1072,6 +1095,9 @@ export const replacePremiumRaceData = async (
       : []),
     ...(params.stableComments
       ? [db.prepare("delete from premium_stable_comments where race_key = ?").bind(params.raceKey)]
+      : []),
+    ...(params.dataTopHorses
+      ? [db.prepare("delete from premium_data_top_horses where race_key = ?").bind(params.raceKey)]
       : []),
     ...(params.paddockBulletins
       ? [
@@ -1147,6 +1173,35 @@ export const replacePremiumRaceData = async (
           now,
         ),
     ),
+    ...(params.dataTopHorses ?? []).map((row) =>
+      db
+        .prepare(
+          `
+            insert into premium_data_top_horses (
+              race_key, source_race_id, fetched_at, rank, horse_number,
+              horse_name, reasons_json, created_at
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(race_key, rank) do update set
+              source_race_id = excluded.source_race_id,
+              fetched_at = excluded.fetched_at,
+              horse_number = excluded.horse_number,
+              horse_name = excluded.horse_name,
+              reasons_json = excluded.reasons_json,
+              created_at = excluded.created_at
+          `,
+        )
+        .bind(
+          params.raceKey,
+          params.link.sourceRaceId,
+          params.fetchedAt,
+          row.rank,
+          row.horseNumber,
+          row.horseName,
+          JSON.stringify(row.reasons),
+          now,
+        ),
+    ),
     ...(params.paddockBulletins ?? []).map((row) =>
       db
         .prepare(
@@ -1187,7 +1242,7 @@ export const getPremiumRacePayload = async (
   db: D1Database,
   raceKey: string,
 ): Promise<PremiumRacePayload> => {
-  const [trainingRows, commentRows, paddockRows] = await Promise.all([
+  const [trainingRows, commentRows, paddockRows, dataTopRows] = await Promise.all([
     db
       .prepare(
         `
@@ -1221,8 +1276,26 @@ export const getPremiumRacePayload = async (
       )
       .bind(raceKey)
       .all<PremiumPaddockBulletinRow>(),
+    db
+      .prepare(
+        `
+          select *
+          from premium_data_top_horses
+          where race_key = ?
+          order by rank
+        `,
+      )
+      .bind(raceKey)
+      .all<PremiumDataTopHorseRow>(),
   ]);
   return {
+    dataTopHorses: dataTopRows.results.map((row) => ({
+      fetchedAt: row.fetched_at,
+      horseName: row.horse_name,
+      horseNumber: row.horse_number,
+      rank: row.rank,
+      reasons: parsePremiumDataTopReasons(row.reasons_json),
+    })),
     paddockBulletins: paddockRows.results.map((row) => ({
       commentText: row.comment_text,
       evaluationText: row.evaluation_text,
@@ -1266,7 +1339,8 @@ export const listPremiumRaceDataFetchCandidatesByDate = async (
         from realtime_race_sources rs
         inner join premium_race_links link on link.race_key = rs.race_key
         left join premium_race_data_fetch_state state on state.race_key = rs.race_key
-        where rs.source = 'jra'
+        where rs.source in ('jra', 'nar')
+          and rs.keibajo_code != '83'
           and rs.kaisai_nen = ?
           and rs.kaisai_tsukihi = ?
           and (

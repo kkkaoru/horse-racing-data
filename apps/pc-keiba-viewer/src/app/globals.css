@@ -5847,6 +5847,41 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   margin-bottom: var(--space-14px-55);
 }
 
+.premium-data-top-section {
+  margin-bottom: var(--space-16px-67);
+}
+
+.premium-data-top-panel {
+  overflow-x: auto;
+}
+
+.premium-data-top-table th:nth-child(1),
+.premium-data-top-table td:nth-child(1),
+.premium-data-top-table th:nth-child(2),
+.premium-data-top-table td:nth-child(2) {
+  white-space: nowrap;
+  width: 4.5rem;
+}
+
+.premium-data-top-table th:nth-child(3),
+.premium-data-top-table td:nth-child(3) {
+  min-width: 8rem;
+  white-space: nowrap;
+}
+
+.premium-data-top-reasons {
+  display: grid;
+  gap: var(--space-4px-14);
+  list-style: disc;
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.premium-data-top-reasons li {
+  color: var(--ink);
+  line-height: 1.45;
+}
+
 .finish-prediction-evaluation-summary {
   align-items: baseline;
   display: flex;

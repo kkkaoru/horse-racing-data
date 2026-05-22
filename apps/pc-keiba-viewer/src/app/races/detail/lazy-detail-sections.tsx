@@ -19,6 +19,7 @@ import type {
   RacePacePredictionRow,
   RaceTimeStats,
   Runner,
+  PremiumDataTopHorse,
   SimilarRaceStatsRow,
   StableComment,
   SimilarRaceStatsSettings,
@@ -31,6 +32,7 @@ import { BloodlineStatsTable } from "./bloodline-stats-table";
 import { FinishPositionPredictionTable } from "./finish-position-prediction-table";
 import { HorseRaceResultsTable } from "./horse-race-results-table";
 import { OverallScoreTable } from "./overall-score-table";
+import { PremiumDataTopHorsesTable } from "./premium-data-top-section";
 import { RaceConditionAnalysisSection } from "./race-condition-analysis-section";
 import { RacePacePredictionTable } from "./race-pace-prediction-table";
 import { SimilarRaceStatsTable } from "./similar-race-stats-table";
@@ -43,6 +45,7 @@ type DetailSection =
   | "finish-prediction"
   | "overall-score"
   | "pace-prediction"
+  | "premium-data-top"
   | "results"
   | "similar"
   | "time-score"
@@ -163,12 +166,18 @@ type RacePacePredictionPayload = {
   type: "pace-prediction";
 };
 
+type PremiumDataTopPayload = {
+  dataTopHorses: PremiumDataTopHorse[];
+  type: "premium-data-top";
+};
+
 type SectionPayload =
   | AbilityPayload
   | BloodlinePayload
   | ConditionPayload
   | FinishPredictionPayload
   | OverallScorePayload
+  | PremiumDataTopPayload
   | RacePacePredictionPayload
   | ResultsPayload
   | SimilarPayload
@@ -187,6 +196,7 @@ const SECTION_TITLES: Record<DetailSection, string> = {
   "finish-prediction": "着順予測",
   "overall-score": "総合スコア",
   "pace-prediction": "レース展開予測",
+  "premium-data-top": "データ上位馬",
   results: "競走成績",
   similar: "同条件成績",
   "time-score": "総合評価スコア",
@@ -568,6 +578,37 @@ export function LazyOverallScoreSection(props: LazyDetailSectionsProps) {
         }}
         rows={payload.rows}
       />
+    </section>
+  );
+}
+
+export function LazyPremiumDataTopSection(props: LazyDetailSectionsProps) {
+  const searchParams = useSearchParams();
+  const state = useSectionPayload("premium-data-top", props, searchParams);
+  if (state.status === "loading" && state.payload === null) {
+    return <SectionSkeleton title={SECTION_TITLES["premium-data-top"]} />;
+  }
+  if (state.status === "error") {
+    return <SectionError error={state.error} title={SECTION_TITLES["premium-data-top"]} />;
+  }
+  const payload = state.payload;
+  if (!payload || payload.type !== "premium-data-top") {
+    return (
+      <SectionError error="Invalid section payload" title={SECTION_TITLES["premium-data-top"]} />
+    );
+  }
+  if (payload.dataTopHorses.length === 0) {
+    return null;
+  }
+  return (
+    <section
+      aria-busy={state.status === "loading"}
+      className="similar-stats-section lazy-detail-section premium-data-top-section"
+    >
+      <div className="section-heading compact">
+        <h2>データ上位馬</h2>
+      </div>
+      <PremiumDataTopHorsesTable rows={payload.dataTopHorses} />
     </section>
   );
 }

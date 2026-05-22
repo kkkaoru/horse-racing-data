@@ -47,6 +47,7 @@ import { AiJsonExportSection } from "./ai-json-export-section";
 import {
   LazyDetailSections,
   LazyFinishPredictionSection,
+  LazyPremiumDataTopSection,
   LazyRacePacePredictionSection,
 } from "./lazy-detail-sections";
 import { PaddockSection } from "./paddock-section";
@@ -645,6 +646,16 @@ export async function RaceDetailView({
             year={year}
           />
         ) : null}
+
+        <LazyPremiumDataTopSection
+          day={day}
+          keibajoCode={keibajoCode}
+          month={month}
+          raceNumber={raceNumber}
+          realtimeApiBaseUrl={realtimeApiBaseUrl}
+          source={raceSource}
+          year={year}
+        />
 
         <LazyFinishPredictionSection
           day={day}

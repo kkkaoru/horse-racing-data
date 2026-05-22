@@ -12,6 +12,7 @@ export const DETAIL_SECTION_CACHEABLE_SECTIONS = [
   "bloodline",
   "condition",
   "finish-prediction",
+  "premium-data-top",
   "overall-score",
   "pace-prediction",
   "results",

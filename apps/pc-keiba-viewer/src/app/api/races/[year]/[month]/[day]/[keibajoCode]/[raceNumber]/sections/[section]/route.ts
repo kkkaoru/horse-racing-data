@@ -33,6 +33,7 @@ const SECTIONS = [
   "bloodline",
   "condition",
   "finish-prediction",
+  "premium-data-top",
   "overall-score",
   "pace-prediction",
   "results",

@@ -3,7 +3,9 @@ import type { NarRaceSource } from "./types";
 export interface PremiumRaceConfig {
   commentPathTemplate: string | null;
   cookie: string | null;
+  dataTopPathTemplate: string | null;
   entryLinkPattern: string | null;
+  narTopPathTemplate: string | null;
   origin: string | null;
   paddockPathTemplate: string | null;
   proxyBearer: string | null;
@@ -53,6 +55,13 @@ export interface PremiumPaddockBulletin {
   horseNumber: string;
 }
 
+export interface PremiumDataTopHorse {
+  horseName: string | null;
+  horseNumber: string;
+  rank: number;
+  reasons: string[];
+}
+
 export interface PremiumPaddockParseResult {
   authRequired: boolean;
   bulletins: PremiumPaddockBulletin[];
@@ -63,7 +72,13 @@ export interface PremiumPaddockParseResult {
 type EnvLike = {
   PREMIUM_RACE_COMMENT_PATH_TEMPLATE?: string;
   PREMIUM_RACE_COOKIE?: string;
+  PREMIUM_RACE_DATA_TOP_AREA_CLASS?: string;
+  PREMIUM_RACE_DATA_TOP_HORSE_LINK_CLASS?: string;
+  PREMIUM_RACE_DATA_TOP_HORSE_NUMBER_CLASS?: string;
+  PREMIUM_RACE_DATA_TOP_PATH_TEMPLATE?: string;
+  PREMIUM_RACE_DATA_TOP_REASON_LIST_CLASS?: string;
   PREMIUM_RACE_ENTRY_LINK_PATTERN?: string;
+  PREMIUM_RACE_NAR_TOP_PATH_TEMPLATE?: string;
   PREMIUM_RACE_ORIGIN?: string;
   PREMIUM_RACE_PADDOCK_PATH_TEMPLATE?: string;
   PREMIUM_RACE_PROXY_BEARER?: string;
@@ -83,10 +98,19 @@ const HTML_ENTITY_MAP: Record<string, string> = {
   quot: '"',
 };
 
+export const BAN_EI_KEIBAJO_CODE = "83";
+
+export const isPremiumRaceDataTarget = (
+  race: Pick<NarRaceSource, "keibajoCode" | "source">,
+): boolean =>
+  race.source === "jra" || (race.source === "nar" && race.keibajoCode !== BAN_EI_KEIBAJO_CODE);
+
 export const getPremiumRaceConfig = (env: EnvLike): PremiumRaceConfig => ({
   commentPathTemplate: env.PREMIUM_RACE_COMMENT_PATH_TEMPLATE ?? null,
   cookie: env.PREMIUM_RACE_COOKIE ?? null,
+  dataTopPathTemplate: env.PREMIUM_RACE_DATA_TOP_PATH_TEMPLATE ?? null,
   entryLinkPattern: env.PREMIUM_RACE_ENTRY_LINK_PATTERN ?? null,
+  narTopPathTemplate: env.PREMIUM_RACE_NAR_TOP_PATH_TEMPLATE ?? null,
   origin: env.PREMIUM_RACE_ORIGIN ?? null,
   paddockPathTemplate: env.PREMIUM_RACE_PADDOCK_PATH_TEMPLATE ?? null,
   proxyBearer: env.PREMIUM_RACE_PROXY_BEARER ?? null,
@@ -558,6 +582,84 @@ export const summarizePremiumStableCommentHtml = (
       .slice(0, 12)
       .map((cells) => cells.slice(0, 8).map((cell) => cell.slice(0, 80))),
   };
+};
+
+const extractAreaHtml = (html: string, className: string | null | undefined): string | null => {
+  if (!className) {
+    return null;
+  }
+  const escaped = escapeRegExp(className);
+  return (
+    html.match(
+      new RegExp(
+        `<div[^>]*class=["'][^"']*\\b${escaped}\\b[^"']*["'][^>]*>([\\s\\S]*?)<\\/div>`,
+        "iu",
+      ),
+    )?.[1] ?? null
+  );
+};
+
+export const parsePremiumDataTopHorses = (
+  html: string,
+  env: {
+    PREMIUM_RACE_DATA_TOP_AREA_CLASS?: string;
+    PREMIUM_RACE_DATA_TOP_HORSE_LINK_CLASS?: string;
+    PREMIUM_RACE_DATA_TOP_HORSE_NUMBER_CLASS?: string;
+    PREMIUM_RACE_DATA_TOP_REASON_LIST_CLASS?: string;
+  },
+): PremiumDataTopHorse[] => {
+  const areaHtml = extractAreaHtml(html, env.PREMIUM_RACE_DATA_TOP_AREA_CLASS ?? "DataPickupHorseArea");
+  if (!areaHtml) {
+    return [];
+  }
+  const horseNumberClass = env.PREMIUM_RACE_DATA_TOP_HORSE_NUMBER_CLASS ?? "Umaban_Num";
+  const horseLinkClass = env.PREMIUM_RACE_DATA_TOP_HORSE_LINK_CLASS ?? "data_top_horse_link";
+  const reasonListClass = env.PREMIUM_RACE_DATA_TOP_REASON_LIST_CLASS ?? "PickupDataBox";
+  const horseNumberPattern = escapeRegExp(horseNumberClass);
+  const horseLinkPattern = escapeRegExp(horseLinkClass);
+  const reasonListPattern = escapeRegExp(reasonListClass);
+
+  return Array.from(areaHtml.matchAll(/<dl\b[^>]*>([\s\S]*?)<\/dl>/giu))
+    .map((match, index): PremiumDataTopHorse | null => {
+      const block = match[1] ?? "";
+      const horseNumber = normalizeHorseNumber(
+        block.match(
+          new RegExp(
+            `<(?:span|td|div)[^>]*class=["'][^"']*\\b${horseNumberPattern}\\b[^"']*["'][^>]*>([\\s\\S]*?)<\\/(?:span|td|div)>`,
+            "iu",
+          ),
+        )?.[1],
+      );
+      const horseName =
+        cleanText(
+          block.match(
+            new RegExp(
+              `<a[^>]*class=["'][^"']*\\b${horseLinkPattern}\\b[^"']*["'][^>]*>([\\s\\S]*?)<\\/a>`,
+              "iu",
+            ),
+          )?.[1],
+        ) || null;
+      const reasonBlock =
+        block.match(
+          new RegExp(
+            `<dd[^>]*class=["'][^"']*\\b${reasonListPattern}\\b[^"']*["'][^>]*>([\\s\\S]*?)<\\/dd>`,
+            "iu",
+          ),
+        )?.[1] ?? "";
+      const reasons = Array.from(reasonBlock.matchAll(/<li\b[^>]*>([\s\S]*?)<\/li>/giu))
+        .map((reasonMatch) => cleanText(reasonMatch[1]))
+        .filter((reason) => reason.length > 0);
+      if (!horseNumber || reasons.length === 0) {
+        return null;
+      }
+      return {
+        horseName,
+        horseNumber,
+        rank: index + 1,
+        reasons,
+      };
+    })
+    .filter((row): row is PremiumDataTopHorse => row !== null);
 };
 
 export const parsePremiumPaddockBulletins = (

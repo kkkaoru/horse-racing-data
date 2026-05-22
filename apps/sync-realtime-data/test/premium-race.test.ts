@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
-import { matchPremiumLinkToRace, parsePremiumPaddockBulletins } from "../src/premium-race";
+import {
+  matchPremiumLinkToRace,
+  parsePremiumDataTopHorses,
+  parsePremiumPaddockBulletins,
+} from "../src/premium-race";
+
+const dataTopEnv = {
+  PREMIUM_RACE_DATA_TOP_AREA_CLASS: "DataPickupHorseArea",
+  PREMIUM_RACE_DATA_TOP_HORSE_LINK_CLASS: "data_top_horse_link",
+  PREMIUM_RACE_DATA_TOP_HORSE_NUMBER_CLASS: "Umaban_Num",
+  PREMIUM_RACE_DATA_TOP_REASON_LIST_CLASS: "PickupDataBox",
+} as const;
 
 const paddockEnv = {
   PREMIUM_RACE_PADDOCK_GROUP_VALUE_LABEL: "穴馬",
@@ -15,6 +28,47 @@ const paddockEnv = {
 } as const;
 
 describe("premium race parsing", () => {
+  it("parses data top horses from the sample page", () => {
+    const html = readFileSync(
+      resolve(process.cwd(), "../../tmp/_netkeiba_data_top.html"),
+      "utf8",
+    );
+    const parsed = parsePremiumDataTopHorses(html, dataTopEnv);
+
+    expect(parsed).toEqual([
+      {
+        horseName: "ヌクレオチド",
+        horseNumber: "1",
+        rank: 1,
+        reasons: [
+          "このコースが得意な馬",
+          "このコースに実績がある種牡馬",
+          "今回の馬場状態が得意な馬",
+        ],
+      },
+      {
+        horseName: "ウインビギニング",
+        horseNumber: "14",
+        rank: 2,
+        reasons: [
+          "このコースが得意な騎手",
+          "今回のレース間隔で実績がある馬",
+          "今回の馬場状態が得意な馬",
+        ],
+      },
+      {
+        horseName: "アイデアユー",
+        horseNumber: "8",
+        rank: 3,
+        reasons: [
+          "このコースが得意な調教師",
+          "今回の馬場状態が得意な馬",
+          "このコースで有利な枠順",
+        ],
+      },
+    ]);
+  });
+
   it("does not let hidden unavailable text suppress active paddock rows", () => {
     const parsed = parsePremiumPaddockBulletins(
       `
