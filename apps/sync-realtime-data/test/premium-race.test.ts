@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import {
+  buildJraPremiumSourceRaceId,
   matchPremiumLinkToRace,
   parsePremiumDataTopHorses,
   parsePremiumPaddockBulletins,
@@ -28,6 +29,19 @@ const paddockEnv = {
 } as const;
 
 describe("premium race parsing", () => {
+  it("builds JRA premium source race ids from meeting metadata", () => {
+    expect(
+      buildJraPremiumSourceRaceId({
+        kaisaiKai: "02",
+        kaisaiNichime: "09",
+        kaisaiNen: "2026",
+        keibajoCode: "05",
+        raceBango: "02",
+        source: "jra",
+      }),
+    ).toBe("202605020902");
+  });
+
   it("parses data top horses from the sample page", () => {
     const html = readFileSync(
       resolve(process.cwd(), "../../tmp/_netkeiba_data_top.html"),
