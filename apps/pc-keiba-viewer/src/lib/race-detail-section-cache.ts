@@ -3,6 +3,7 @@ import type { RaceSource } from "./codes";
 export const DETAIL_SECTION_CACHE_WARM_PARAM = "__cacheWarm";
 
 export const DETAIL_SECTION_CACHE_VERSION = "v1";
+const FINISH_PREDICTION_DETAIL_SECTION_CACHE_VERSION = "v3";
 
 export const DETAIL_SECTION_CACHE_AFTER_START_SECONDS = 6 * 60 * 60;
 
@@ -29,6 +30,11 @@ export const DEFAULT_RACE_DETAIL_CACHE_WARM_SECTIONS = [
 
 export type DetailSectionCacheableSection = (typeof DETAIL_SECTION_CACHEABLE_SECTIONS)[number];
 
+const getDetailSectionCacheVersion = (section: DetailSectionCacheableSection): string =>
+  section === "finish-prediction"
+    ? FINISH_PREDICTION_DETAIL_SECTION_CACHE_VERSION
+    : DETAIL_SECTION_CACHE_VERSION;
+
 export interface DetailSectionCacheWarmMessage {
   day: string;
   keibajoCode: string;
@@ -54,7 +60,7 @@ export const buildDetailSectionCacheKey = ({
 }: Omit<DetailSectionCacheWarmMessage, "source">): string =>
   [
     "race-detail-section",
-    DETAIL_SECTION_CACHE_VERSION,
+    getDetailSectionCacheVersion(section),
     year,
     month,
     day,
