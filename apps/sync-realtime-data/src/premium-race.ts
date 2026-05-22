@@ -182,9 +182,7 @@ export const fetchPremiumHtmlAttempts = async (
       url: targetUrl,
     });
   }
-  if (!hasProxy && !hasCookie) {
-    attempts.push({ headers: {}, mode: "direct", url: targetUrl });
-  }
+  attempts.push({ headers: {}, mode: "direct", url: targetUrl });
 
   const results: PremiumFetchAttempt[] = [];
   const errors: string[] = [];
@@ -410,12 +408,35 @@ export const discoverPremiumRaceLinks = (
   return Array.from(new Map(links.map((link) => [link.sourceRaceId, link])).values());
 };
 
+export const buildJraPremiumSourceRaceId = (
+  race: Pick<
+    NarRaceSource,
+    "kaisaiKai" | "kaisaiNichime" | "kaisaiNen" | "keibajoCode" | "raceBango" | "source"
+  >,
+): string | null => {
+  if (race.source !== "jra" || !race.kaisaiKai || !race.kaisaiNichime) {
+    return null;
+  }
+  return `${race.kaisaiNen}${race.keibajoCode}${race.kaisaiKai}${race.kaisaiNichime}${race.raceBango.padStart(2, "0")}`;
+};
+
+export const buildPremiumRaceLinkFromRace = (
+  race: NarRaceSource,
+  config: PremiumRaceConfig,
+): PremiumRaceLink | null => {
+  const sourceRaceId = buildJraPremiumSourceRaceId(race);
+  if (!sourceRaceId) {
+    return null;
+  }
+  const entryUrl =
+    buildPremiumUrl(config, config.dataTopPathTemplate, { sourceRaceId }) ??
+    buildPremiumUrl(config, config.workPathTemplate, { sourceRaceId }) ??
+    `${config.sourceIdQueryKey}=${sourceRaceId}`;
+  return { entryUrl, sourceRaceId };
+};
+
 export const sourceRaceIdCandidates = (race: NarRaceSource): string[] => [
-  ...(race.source === "jra" && race.kaisaiKai && race.kaisaiNichime
-    ? [
-        `${race.kaisaiNen}${race.keibajoCode}${race.kaisaiKai}${race.kaisaiNichime}${race.raceBango.padStart(2, "0")}`,
-      ]
-    : []),
+  ...(buildJraPremiumSourceRaceId(race) ? [buildJraPremiumSourceRaceId(race) as string] : []),
   `${race.kaisaiNen}${race.keibajoCode}${race.raceBango}`,
   `${race.kaisaiNen}${race.keibajoCode}${race.raceBango.replace(/^0+/u, "")}`,
 ];

@@ -35,6 +35,7 @@ import { readCachedOdds, writeCachedOdds } from "./odds-cache";
 import { putPremiumDataTopCache } from "./premium-data-top-cache";
 import {
   buildPremiumUrl,
+  buildPremiumRaceLinkFromRace,
   discoverPremiumRaceLinks,
   fetchPremiumHtml,
   fetchPremiumHtmlAttempts,
@@ -448,7 +449,16 @@ const ensurePremiumRaceLink = async (
   }
   const targetDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
   await discoverPremiumRacesForDate(env, targetDate);
-  return getPremiumRaceLink(env.REALTIME_DB, race.raceKey);
+  const discovered = await getPremiumRaceLink(env.REALTIME_DB, race.raceKey);
+  if (discovered) {
+    return discovered;
+  }
+  const fallbackLink = buildPremiumRaceLinkFromRace(race, getPremiumRaceConfig(env));
+  if (!fallbackLink) {
+    return null;
+  }
+  await upsertPremiumRaceLink(env.REALTIME_DB, race.raceKey, fallbackLink);
+  return fallbackLink;
 };
 
 const getRaceStart = (race: NarRaceSource): Date | null =>
@@ -871,6 +881,10 @@ const planPremiumRaceDataFetchesForDate = async (
   if (!hasPremiumRaceFetchConfig(getPremiumRaceConfig(env))) {
     return [];
   }
+  const races = await listSchedulableRaceSourcesByDate(env.REALTIME_DB, targetDate);
+  await Promise.all(
+    races.filter(isPremiumRaceDataTarget).map((race) => ensurePremiumRaceLink(env, race)),
+  );
   const candidates = await listPremiumRaceDataFetchCandidatesByDate(
     env.REALTIME_DB,
     targetDate,
@@ -1280,6 +1294,7 @@ const planRealtimeFetches = async (env: Env, targetDate: string): Promise<number
     ...(await planJraAdvanceOddsFetchesForDate(env, addDaysToYyyymmdd(targetDate, 1), now)),
   );
   if (isPremiumRaceDiscoveryTick(now)) {
+    jobs.push({ date: targetDate, type: "discover-premium-races" });
     jobs.push({ date: addDaysToYyyymmdd(targetDate, 1), type: "discover-premium-races" });
   }
   jobs.push(...(await planPremiumRaceDataFetchesForDate(env, targetDate, now)));
