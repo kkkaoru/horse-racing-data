@@ -48,6 +48,8 @@ import { FrameNumberBadge, HorseNameBadge } from "./frame-number-badge";
 import type { RealtimeRaceRequest } from "./realtime-client";
 import { useRealtimeRacePayload } from "./realtime-client";
 
+type PaddockRunningStyleLabel = "nige" | "senkou" | "sashi" | "oikomi";
+
 interface PaddockSectionProps {
   day: string;
   detailUrl?: string;
@@ -65,6 +67,7 @@ interface PaddockSectionProps {
   raceTitle?: string;
   realtimeRequest?: RealtimeRaceRequest;
   recentResults?: HorseRaceResult[];
+  runningStyleLabelsByHorse?: Partial<Record<string, PaddockRunningStyleLabel>>;
   runners: Runner[];
   source: RaceSource;
   year: string;
@@ -83,6 +86,7 @@ interface PaddockHorseRowProps {
   realtimeOdds: number | null;
   realtimeJockeyName: string | null;
   realtimePopularity: number | null;
+  runningStyleLabel: PaddockRunningStyleLabel | null;
   scores: {
     attention: number;
     kaeshi: number;
@@ -104,6 +108,7 @@ interface PaddockRunnerRow {
   index: number;
   jockeyName: string;
   moshokuCode?: string | null;
+  runningStyleLabel: PaddockRunningStyleLabel | null;
   sexAge: string;
   status: string;
   weight: string;
@@ -149,6 +154,12 @@ const PUBLIC_DETAIL_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
 const OFFICIAL_RANK_OPTIONS: PaddockOfficialRank[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 const PAST_RACE_EDIT_UNLOCK_MS = 10 * 60 * 1000;
 const PADDOCK_REMAINING_MARKER_TOP = 112;
+const PADDOCK_RUNNING_STYLE_LABELS: Record<PaddockRunningStyleLabel, string> = {
+  nige: "逃げ",
+  oikomi: "追い込み",
+  sashi: "差し",
+  senkou: "先行",
+};
 
 const getPastRaceEditSessionKey = ({
   day,
@@ -774,6 +785,7 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
   realtimeOdds,
   realtimeJockeyName,
   realtimePopularity,
+  runningStyleLabel,
   scores,
   sexAge,
   status,
@@ -820,6 +832,15 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
               {isChangedJockey(originalJockeyName, realtimeJockeyName, displayJockeyName) ? (
                 <small>元 {originalJockeyName}</small>
               ) : null}
+            </span>
+          ) : null}
+          {runningStyleLabel ? (
+            <span
+              aria-label={`脚質 ${PADDOCK_RUNNING_STYLE_LABELS[runningStyleLabel]}`}
+              className="paddock-running-style-badge"
+            >
+              <span>脚質</span>
+              <strong>{PADDOCK_RUNNING_STYLE_LABELS[runningStyleLabel]}</strong>
             </span>
           ) : null}
           {status ? <span className="paddock-status-badge">{status}</span> : null}
@@ -1265,6 +1286,7 @@ export function PaddockSection({
   raceTitle = "",
   realtimeRequest,
   recentResults,
+  runningStyleLabelsByHorse,
   runners,
   source,
   year,
@@ -1384,6 +1406,7 @@ export function PaddockSection({
             index,
             jockeyName: cleanText(runner.kishumeiRyakusho),
             moshokuCode: runner.moshokuCode,
+            runningStyleLabel: runningStyleLabelsByHorse?.[horseNumber] ?? null,
             sexAge: formatSexAge(runner.seibetsuCode, runner.barei),
             status: realtimeEntryByHorse.get(horseNumber)?.status || "",
             weight:
@@ -1404,7 +1427,13 @@ export function PaddockSection({
           }
           return left.index - right.index;
         }),
-    [decodeHexHorseWeight, realtimeEntryByHorse, realtimeWeightByHorse, runners],
+    [
+      decodeHexHorseWeight,
+      realtimeEntryByHorse,
+      realtimeWeightByHorse,
+      runners,
+      runningStyleLabelsByHorse,
+    ],
   );
 
   useEffect(() => {
@@ -1758,6 +1787,7 @@ export function PaddockSection({
                 realtimeOdds={realtimeOddsByHorse.get(runner.horseNumber)?.odds ?? null}
                 realtimeJockeyName={realtimeEntry?.jockeyName || null}
                 realtimePopularity={realtimeOddsByHorse.get(runner.horseNumber)?.popularity ?? null}
+                runningStyleLabel={runner.runningStyleLabel}
                 scores={scores}
                 sexAge={runner.sexAge}
                 status={status}

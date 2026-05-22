@@ -3,6 +3,7 @@ import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { cache } from "react";
 
 import { TRACK_LABELS, type RaceSource } from "../lib/codes";
+import { isRunningStyleLabel, type RunningStyleLabel } from "./corner-running-style-parsers";
 import type {
   AbilityTest,
   BloodlineStatsRow,
@@ -42,6 +43,100 @@ import type {
 import { getDb } from "./client";
 import { withDbQueryCache } from "./query-cache";
 import { jvdCs, jvdRa, jvdSe, jvdUm, nvdNu, nvdRa, nvdSe, nvdUm } from "./schema";
+
+export interface ActiveRunningStylePrediction {
+  horseNumber: number;
+  predictedLabel: RunningStyleLabel;
+}
+
+export const getActiveRunningStylePredictions = cache(
+  async ({
+    category,
+    day,
+    keibajoCode,
+    month,
+    raceNumber,
+    source,
+    year,
+  }: {
+    category: string;
+    day: string;
+    keibajoCode: string;
+    month: string;
+    raceNumber: string;
+    source: RaceSource;
+    year: string;
+  }): Promise<ActiveRunningStylePrediction[]> =>
+    withDbQueryCache(
+      [
+        "getActiveRunningStylePredictions",
+        category,
+        source,
+        year,
+        month,
+        day,
+        keibajoCode,
+        raceNumber,
+      ],
+      async () => {
+        try {
+          const monthDay = `${month.padStart(2, "0")}${day.padStart(2, "0")}`;
+          const normalizedRaceNumber = raceNumber.padStart(2, "0");
+          const result = await getDb().execute<{
+            predicted_label: string;
+            umaban: number | string;
+          }>(sql`
+            with race_predictions as (
+              select p.umaban, p.predicted_label, p.model_version, p.prediction_generated_at
+                from race_running_style_model_predictions p
+               where p.source = ${source}
+                 and p.kaisai_nen = ${year}
+                 and p.kaisai_tsukihi = ${monthDay}
+                 and p.keibajo_code = ${keibajoCode}
+                 and p.race_bango = ${normalizedRaceNumber}
+            ),
+            active as (
+              select model_version
+                from running_style_active_models
+               where category = ${category}
+               limit 1
+            ),
+            active_rows as (
+              select p.umaban, p.predicted_label
+                from race_predictions p
+                join active on active.model_version = p.model_version
+            ),
+            latest_model as (
+              select model_version
+                from race_predictions
+               order by prediction_generated_at desc, model_version desc
+               limit 1
+            )
+            select umaban, predicted_label
+              from active_rows
+            union all
+            select p.umaban, p.predicted_label
+              from race_predictions p
+              join latest_model on latest_model.model_version = p.model_version
+             where not exists (select 1 from active_rows)
+            order by umaban
+          `);
+
+          return result.rows.flatMap((row) => {
+            if (!isRunningStyleLabel(row.predicted_label)) {
+              return [];
+            }
+            const horseNumber = Number(row.umaban);
+            return Number.isFinite(horseNumber)
+              ? [{ horseNumber, predictedLabel: row.predicted_label }]
+              : [];
+          });
+        } catch {
+          return [];
+        }
+      },
+    ),
+);
 
 export const getRaceYears = cache(
   async (): Promise<RaceYearSummary[]> =>
