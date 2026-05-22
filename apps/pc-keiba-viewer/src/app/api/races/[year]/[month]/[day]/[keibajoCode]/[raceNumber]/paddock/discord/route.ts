@@ -1,6 +1,10 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { NextResponse } from "next/server";
 
+import {
+  formatPaddockDiscordHorseLine,
+  type DiscordPaddockHorsePayload,
+} from "../../../../../../../../../../lib/paddock-discord";
 import { isPaddockRaceParams } from "../../../../../../../../../../lib/paddock-server";
 
 export const dynamic = "force-dynamic";
@@ -13,22 +17,6 @@ interface DiscordPaddockRouteProps {
     raceNumber: string;
     year: string;
   }>;
-}
-
-interface DiscordPaddockHorsePayload {
-  attention: number;
-  horseName: string;
-  horseNumber: string;
-  jockeyName: string;
-  kaeshi: number;
-  odds: string;
-  officialRank: string;
-  paddock: number;
-  popularity: string;
-  preference: number;
-  sexAge: string;
-  total: string;
-  weight: string;
 }
 
 interface DiscordPaddockPayload {
@@ -267,19 +255,10 @@ const sortByPaddockScore = (
   return Number(left.horseNumber) - Number(right.horseNumber);
 };
 
-const formatHorseLine = (horse: DiscordPaddockHorsePayload, index: number): string => {
-  const rankIcon = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : "▫️";
-  return [
-    `${rankIcon} **${horse.horseNumber} ${horse.horseName}**（${horse.sexAge || "-"}）`,
-    `　👤 ${horse.jockeyName || "-"}　⚖️ ${horse.weight || "-"}　📈 ${horse.popularity}人気　💴 ${horse.odds}`,
-    `　⭐ **${horse.total}**　🏅 公式${horse.officialRank}　👀 気配${horse.paddock} 返し${horse.kaeshi} 注目${horse.attention} 好み${horse.preference}`,
-  ].join("\n");
-};
-
 const buildDiscordEmbed = (payload: DiscordPaddockPayload) => {
   const sortedHorses = payload.horses.toSorted(sortByPaddockScore);
   const topHorses = sortedHorses.slice(0, 3);
-  const horseLines = topHorses.map((horse, index) => formatHorseLine(horse, index));
+  const horseLines = topHorses.map((horse, index) => formatPaddockDiscordHorseLine(horse, index));
   const officialRankLines = payload.horses
     .filter((horse) => Number.isFinite(Number(horse.officialRank)))
     .toSorted((left, right) => Number(left.officialRank) - Number(right.officialRank))
