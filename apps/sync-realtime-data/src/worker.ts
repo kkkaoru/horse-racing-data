@@ -195,6 +195,8 @@ const addDaysToYyyymmdd = (yyyymmdd: string, days: number): string => {
 
 const JRA_PREMIUM_LINK_CRONS = new Set(["0 4 * * 5", "0 4 * * 6"]);
 const JRA_PREMIUM_DATA_CRONS = new Set(["0 5 * * 5", "0 5 * * 6"]);
+const REALTIME_PLAN_CRON = "* * * * *";
+const RUNNING_STYLE_FALLBACK_INTERVAL_MINUTES = 10;
 
 const getCronJob = (cron: string, now = new Date()): Job => {
   const today = getTodayJst(now);
@@ -208,6 +210,35 @@ const getCronJob = (cron: string, now = new Date()): Job => {
     return { date: today, type: "discover-urls" };
   }
   return { date: today, type: "plan-realtime-fetches" };
+};
+
+const shouldRunRunningStyleInferenceFromRealtimeCron = (cron: string, now: Date): boolean =>
+  cron === REALTIME_PLAN_CRON &&
+  now.getUTCMinutes() % RUNNING_STYLE_FALLBACK_INTERVAL_MINUTES === 0;
+
+const logRunningStylePlanResult = async (
+  env: Env,
+  scheduledAt: Date,
+): Promise<void> => {
+  await runRunningStyleCronTick(env, scheduledAt)
+    .then((summary) =>
+      logFetch(
+        env.REALTIME_DB,
+        "plan-running-style-predictions",
+        "ok",
+        null,
+        JSON.stringify(summary),
+      ),
+    )
+    .catch((error: unknown) =>
+      logFetch(
+        env.REALTIME_DB,
+        "plan-running-style-predictions",
+        "error",
+        null,
+        error instanceof Error ? error.message : String(error),
+      ),
+    );
 };
 
 const buildFallbackRaceRow = (
@@ -2078,28 +2109,7 @@ export default {
         ? new Date(controller.scheduledTime)
         : new Date();
     if (controller.cron === RUNNING_STYLE_INFERENCE_CRON) {
-      ctx.waitUntil(
-        runRunningStyleCronTick(env, scheduledAt)
-          .then((summary) =>
-            logFetch(
-              env.REALTIME_DB,
-              "plan-running-style-predictions",
-              "ok",
-              null,
-              JSON.stringify(summary),
-            ),
-          )
-          .catch((error: unknown) =>
-            logFetch(
-              env.REALTIME_DB,
-              "plan-running-style-predictions",
-              "error",
-              null,
-              error instanceof Error ? error.message : String(error),
-            ),
-          )
-          .then(() => undefined),
-      );
+      ctx.waitUntil(logRunningStylePlanResult(env, scheduledAt));
       return;
     }
     if (controller.cron === RUNNING_STYLE_PREWARM_CRON) {
@@ -2121,6 +2131,9 @@ export default {
     }
     const job = getCronJob(controller.cron, scheduledAt);
     ctx.waitUntil(handleJob(env, job));
+    if (shouldRunRunningStyleInferenceFromRealtimeCron(controller.cron, scheduledAt)) {
+      ctx.waitUntil(logRunningStylePlanResult(env, scheduledAt));
+    }
     if (job.type === "plan-realtime-fetches") {
       ctx.waitUntil(enqueueSelfRealtimePlanIfStale(env, job.date));
     }
