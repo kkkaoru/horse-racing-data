@@ -69,6 +69,7 @@ import type {
   TimeScoreRow,
   Training,
 } from "../../../lib/race-types";
+import { getPremiumDataTopHorsesWithCache } from "../../../lib/premium-data-top-cache.server";
 import { isBanEiKeibajoCode } from "../../../lib/runner-format";
 
 export type DetailSection =
@@ -78,6 +79,7 @@ export type DetailSection =
   | "finish-prediction"
   | "overall-score"
   | "pace-prediction"
+  | "premium-data-top"
   | "results"
   | "similar"
   | "time-score"
@@ -976,6 +978,24 @@ export const getDetailSectionPayload = async (
   params: DetailSectionParams,
 ) => {
   const { day, keibajoCode, month, query, raceNumber, raceSource, year } = params;
+
+  if (section === "premium-data-top") {
+    const race = await getRaceDetail(raceSource, year, month, day, keibajoCode, raceNumber);
+    if (!race || (race.source === "nar" && isBanEiKeibajoCode(race.keibajoCode))) {
+      return { dataTopHorses: [], type: section };
+    }
+    const dataTopHorses = await getPremiumDataTopHorsesWithCache({
+      kaisaiNen: race.kaisaiNen,
+      kaisaiTsukihi: race.kaisaiTsukihi,
+      keibajoCode: race.keibajoCode,
+      raceBango: race.raceBango,
+      source: race.source,
+    });
+    return {
+      dataTopHorses,
+      type: section,
+    };
+  }
 
   if (section === "training") {
     const [race, trainings] = await Promise.all([

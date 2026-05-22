@@ -264,6 +264,14 @@ export interface PremiumPaddockBulletin extends Record<string, unknown> {
   horseNumber: string;
 }
 
+export interface PremiumDataTopHorse extends Record<string, unknown> {
+  fetchedAt: string;
+  horseName: string | null;
+  horseNumber: string;
+  rank: number;
+  reasons: string[];
+}
+
 export interface AbilityTest extends Record<string, unknown> {
   currentUmaban: string | null;
   currentBamei: string | null;

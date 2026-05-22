@@ -32,6 +32,7 @@ import {
 } from "./jra";
 import { fetchJraTrackConditionWithPlaywright } from "./jra-track-condition";
 import { readCachedOdds, writeCachedOdds } from "./odds-cache";
+import { putPremiumDataTopCache } from "./premium-data-top-cache";
 import {
   buildPremiumUrl,
   discoverPremiumRaceLinks,
@@ -39,7 +40,9 @@ import {
   fetchPremiumHtmlAttempts,
   getPremiumRaceConfig,
   hasPremiumRaceFetchConfig,
+  isPremiumRaceDataTarget,
   matchPremiumLinkToRace,
+  parsePremiumDataTopHorses,
   parsePremiumPaddockBulletins,
   parsePremiumStableComments,
   parsePremiumTrainingReviews,
@@ -375,6 +378,25 @@ const ensureJraRaceSourcesAreCurrent = async (env: Env, targetDate: string): Pro
   }
 };
 
+const linkPremiumRacesFromHtml = async (
+  env: Env,
+  html: string,
+  races: NarRaceSource[],
+  config: ReturnType<typeof getPremiumRaceConfig>,
+): Promise<number> => {
+  const links = discoverPremiumRaceLinks(html, config);
+  let linked = 0;
+  for (const race of races.filter(isPremiumRaceDataTarget)) {
+    const link = matchPremiumLinkToRace(links, race);
+    if (!link) {
+      continue;
+    }
+    await upsertPremiumRaceLink(env.REALTIME_DB, race.raceKey, link);
+    linked += 1;
+  }
+  return linked;
+};
+
 const discoverPremiumRacesForDate = async (
   env: Env,
   targetDate: string,
@@ -384,25 +406,36 @@ const discoverPremiumRacesForDate = async (
     return { configured: false, discovered: 0, linked: 0 };
   }
   await ensureJraRaceSourcesAreCurrent(env, targetDate);
-  const topUrl = buildPremiumUrl(config, config.topPathTemplate, { date: targetDate });
-  if (!topUrl) {
-    return { configured: false, discovered: 0, linked: 0 };
-  }
-  const [html, races] = await Promise.all([
-    fetchPremiumHtml(config, topUrl),
-    listSchedulableRaceSourcesByDate(env.REALTIME_DB, targetDate),
-  ]);
-  const links = discoverPremiumRaceLinks(html, config);
+  const races = await listSchedulableRaceSourcesByDate(env.REALTIME_DB, targetDate);
+  let discovered = 0;
   let linked = 0;
-  for (const race of races.filter((item) => item.source === "jra")) {
-    const link = matchPremiumLinkToRace(links, race);
-    if (!link) {
-      continue;
-    }
-    await upsertPremiumRaceLink(env.REALTIME_DB, race.raceKey, link);
-    linked += 1;
+  const topUrl = buildPremiumUrl(config, config.topPathTemplate, { date: targetDate });
+  if (topUrl) {
+    const html = await fetchPremiumHtml(config, topUrl);
+    const links = discoverPremiumRaceLinks(html, config);
+    discovered += links.length;
+    linked += await linkPremiumRacesFromHtml(
+      env,
+      html,
+      races.filter((race) => race.source === "jra"),
+      config,
+    );
   }
-  return { configured: true, discovered: links.length, linked };
+  if (config.narTopPathTemplate) {
+    const narTopUrl = buildPremiumUrl(config, config.narTopPathTemplate, { date: targetDate });
+    if (narTopUrl) {
+      const html = await fetchPremiumHtml(config, narTopUrl);
+      const links = discoverPremiumRaceLinks(html, config);
+      discovered += links.length;
+      linked += await linkPremiumRacesFromHtml(
+        env,
+        html,
+        races.filter((race) => race.source === "nar"),
+        config,
+      );
+    }
+  }
+  return { configured: true, discovered, linked };
 };
 
 const ensurePremiumRaceLink = async (
@@ -410,7 +443,7 @@ const ensurePremiumRaceLink = async (
   race: NarRaceSource,
 ): Promise<Awaited<ReturnType<typeof getPremiumRaceLink>>> => {
   const existing = await getPremiumRaceLink(env.REALTIME_DB, race.raceKey);
-  if (existing || race.source !== "jra") {
+  if (existing) {
     return existing;
   }
   const targetDate = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
@@ -1529,7 +1562,7 @@ const fetchAndStoreJraTrackCondition = async (
 
 const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<void> => {
   const race = await getRaceSource(env.REALTIME_DB, raceKey);
-  if (!race || race.source !== "jra") {
+  if (!race || !isPremiumRaceDataTarget(race)) {
     return;
   }
   const config = getPremiumRaceConfig(env);
@@ -1540,23 +1573,30 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
   if (!link) {
     throw new Error(`premium race link not found: ${raceKey}`);
   }
-  const [workUrl, commentUrl] = [
-    buildPremiumUrl(config, config.workPathTemplate, { sourceRaceId: link.sourceRaceId }),
-    buildPremiumUrl(config, config.commentPathTemplate, { sourceRaceId: link.sourceRaceId }),
+  const [workUrl, commentUrl, dataTopUrl] = [
+    race.source === "jra"
+      ? buildPremiumUrl(config, config.workPathTemplate, { sourceRaceId: link.sourceRaceId })
+      : null,
+    race.source === "jra"
+      ? buildPremiumUrl(config, config.commentPathTemplate, { sourceRaceId: link.sourceRaceId })
+      : null,
+    buildPremiumUrl(config, config.dataTopPathTemplate, { sourceRaceId: link.sourceRaceId }),
   ];
   const fetchedAt = toJstIsoString();
-  const [workResult, commentResult] = await Promise.allSettled([
+  const [workResult, commentResult, dataTopResult] = await Promise.allSettled([
     workUrl ? fetchPremiumHtml(config, workUrl) : Promise.resolve(""),
     commentUrl ? fetchPremiumHtml(config, commentUrl) : Promise.resolve(""),
+    dataTopUrl ? fetchPremiumHtml(config, dataTopUrl) : Promise.resolve(""),
   ]);
   const workHtml = workResult.status === "fulfilled" ? workResult.value : "";
   const commentHtml = commentResult.status === "fulfilled" ? commentResult.value : "";
-  if (!workHtml && !commentHtml) {
+  const dataTopHtml = dataTopResult.status === "fulfilled" ? dataTopResult.value : "";
+  if (!workHtml && !commentHtml && !dataTopHtml) {
     const retryAfter = toJstIsoString(
       new Date(getNow(env).getTime() + PREMIUM_RACE_DATA_RETRY_DELAY_SECONDS * 1000),
     );
     await updatePremiumRaceDataFetchState(env.REALTIME_DB, {
-      message: [workResult, commentResult]
+      message: [workResult, commentResult, dataTopResult]
         .flatMap((result) =>
           result.status === "rejected"
             ? [result.reason instanceof Error ? result.reason.message : String(result.reason)]
@@ -1571,13 +1611,22 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
   }
   const trainingReviews = workHtml ? parsePremiumTrainingReviews(workHtml, env) : undefined;
   const stableComments = commentHtml ? parsePremiumStableComments(commentHtml, env) : undefined;
+  const dataTopHorses = dataTopHtml ? parsePremiumDataTopHorses(dataTopHtml, env) : undefined;
   await replacePremiumRaceData(env.REALTIME_DB, {
+    dataTopHorses,
     fetchedAt,
     link,
     raceKey,
     stableComments,
     trainingReviews,
   });
+  if (dataTopHorses && dataTopHorses.length > 0) {
+    await putPremiumDataTopCache({
+      env,
+      race,
+      rows: dataTopHorses.map((row) => ({ ...row, fetchedAt })),
+    });
+  }
   await updatePremiumRaceDataFetchState(env.REALTIME_DB, {
     fetchedAt,
     message: JSON.stringify({
@@ -1588,6 +1637,14 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
             : String(commentResult.reason)
           : null,
       commentHtmlLength: commentHtml.length,
+      dataTopCount: dataTopHorses?.length ?? null,
+      dataTopError:
+        dataTopResult.status === "rejected"
+          ? dataTopResult.reason instanceof Error
+            ? dataTopResult.reason.message
+            : String(dataTopResult.reason)
+          : null,
+      dataTopHtmlLength: dataTopHtml.length,
       stableCommentCount: stableComments?.length ?? null,
       stableCommentSample:
         commentHtml && (stableComments?.length ?? 0) === 0
@@ -1604,7 +1661,11 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
     }),
     raceKey,
     status:
-      (trainingReviews?.length ?? 0) > 0 || (stableComments?.length ?? 0) > 0 ? "ok" : "empty",
+      (trainingReviews?.length ?? 0) > 0 ||
+      (stableComments?.length ?? 0) > 0 ||
+      (dataTopHorses?.length ?? 0) > 0
+        ? "ok"
+        : "empty",
   });
 };
 
@@ -1826,7 +1887,7 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
       await enqueueJobs(
         env,
         races
-          .filter((race) => race.source === "jra")
+          .filter(isPremiumRaceDataTarget)
           .map((race) => ({ raceKey: race.raceKey, type: "fetch-premium-race-data" })),
       );
       await logFetch(env.REALTIME_DB, job.type, "ok", null, JSON.stringify(result));
@@ -1860,7 +1921,7 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
       await enqueueJobs(
         env,
         races
-          .filter((race) => race.source === "jra")
+          .filter(isPremiumRaceDataTarget)
           .map((race) => ({ raceKey: race.raceKey, type: "fetch-premium-race-data" })),
       );
       await logFetch(env.REALTIME_DB, job.type, "ok", null, JSON.stringify(result));
