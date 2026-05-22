@@ -54,8 +54,16 @@ const bataijuJoinClause = (
       and ${alias}.ketto_toroku_bango = ${prefix}.ketto_toroku_bango
   `;
 
+const safeBataijuCast = (alias: string): string => `
+  case
+    when trim(coalesce(${alias}.bataiju::text, '')) ~ '^-?[0-9]+$'
+      then trim(${alias}.bataiju::text)::integer
+    else null
+  end
+`;
+
 const bataijuExpression = (jraAlias: string, narAlias: string): string =>
-  `coalesce(nullif(${jraAlias}.bataiju, '')::integer, nullif(${narAlias}.bataiju, '')::integer)`;
+  `coalesce(${safeBataijuCast(jraAlias)}, ${safeBataijuCast(narAlias)})`;
 
 export const buildWeightUpdateSql = (category: FeatureCategory): string => {
   const filters = buildCategoryFilterClauses(category);
