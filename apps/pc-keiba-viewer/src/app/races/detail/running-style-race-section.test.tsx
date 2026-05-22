@@ -56,7 +56,21 @@ const buildRow = (overrides: Partial<RaceRunningStyleRow>): RaceRunningStyleRow 
 });
 
 describe("RunningStyleRaceSection", () => {
-  test("returns null for ban-ei category", async () => {
+  test("renders ban-ei category using nar metrics", async () => {
+    getRaceRunningStylesWithCacheMock.mockReset();
+    getRunningStyleMetricsForActiveModelMock.mockReset();
+    getRaceRunningStylesWithCacheMock.mockResolvedValue([
+      buildRow({
+        category: "ban-ei",
+        modelVersion: "ban-ei-rs-v1.0",
+        predictedLabel: "nige",
+        raceKey: "nar:20250517:83:01",
+      }),
+    ]);
+    getRunningStyleMetricsForActiveModelMock.mockResolvedValue({
+      macroF1: 0.39,
+      modelVersion: "nar-rs-v1.0",
+    });
     const element = await RunningStyleRaceSection({
       category: "ban-ei",
       kaisaiNen: "2025",
@@ -66,7 +80,17 @@ describe("RunningStyleRaceSection", () => {
       runnersByUmaban: {},
       source: "nar",
     });
-    expect(element).toBe(null);
+    const html = renderToString(element);
+    expect(html).toContain("脚質予測");
+    expect(html).toContain("nar-rs-v1.0");
+    expect(getRaceRunningStylesWithCacheMock).toHaveBeenCalledWith({
+      kaisaiNen: "2025",
+      kaisaiTsukihi: "0517",
+      keibajoCode: "83",
+      raceBango: "01",
+      source: "nar",
+    });
+    expect(getRunningStyleMetricsForActiveModelMock).toHaveBeenCalledWith("nar");
   });
 
   test("loads D1 rows and metrics in parallel and renders the section", async () => {

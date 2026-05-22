@@ -23,7 +23,7 @@ export const RunningStyleRaceSection = async ({
   category,
   runnersByUmaban,
 }: RunningStyleRaceSectionProps) => {
-  if (category === "ban-ei") return null;
+  const metricsCategory = category === "ban-ei" ? "nar" : category;
   const [rows, metrics] = await Promise.all([
     getRaceRunningStylesWithCache({
       kaisaiNen,
@@ -32,7 +32,7 @@ export const RunningStyleRaceSection = async ({
       raceBango,
       source,
     }).catch(() => []),
-    getRunningStyleMetricsForActiveModel(category).catch(() => null),
+    getRunningStyleMetricsForActiveModel(metricsCategory).catch(() => null),
   ]);
   return (
     <RunningStyleSection
