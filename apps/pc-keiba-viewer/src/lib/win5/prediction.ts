@@ -1,0 +1,146 @@
+import { KEIBAJO_NAMES } from "../codes";
+import { recommendWin5BudgetYen, optimizeWin5TicketPlan, buildWin5PlansByBudget } from "./budget-optimizer";
+import {
+  WIN5_DEFAULT_BUDGET_YEN,
+  WIN5_MODEL_VERSION,
+  type Win5HorseCandidate,
+  type Win5LegPrediction,
+  type Win5PredictionPayload,
+  type Win5RaceLeg,
+} from "./types";
+
+const SOFTMAX_TEMPERATURE = 0.65;
+const MIN_WIN_PROBABILITY = 0.001;
+
+export interface Win5RunnerInput {
+  horseNumber: string;
+  horseName: string;
+  jockeyName?: string | null;
+  popularity?: number | null;
+  odds?: number | null;
+  historicalScore?: number | null;
+}
+
+export interface Win5LegInput {
+  leg: Win5RaceLeg;
+  runners: Win5RunnerInput[];
+}
+
+const normalizeHorseNumber = (value: string): string => value.replace(/^0+/u, "") || "0";
+
+const clamp = (value: number, min: number, max: number): number =>
+  Math.min(max, Math.max(min, value));
+
+const softmax = (scores: readonly number[]): number[] => {
+  if (scores.length === 0) {
+    return [];
+  }
+  const maxScore = Math.max(...scores);
+  const exponents = scores.map((score) => Math.exp((score - maxScore) / SOFTMAX_TEMPERATURE));
+  const total = exponents.reduce((sum, value) => sum + value, 0);
+  if (total <= 0) {
+    return scores.map(() => 1 / scores.length);
+  }
+  return exponents.map((value) => value / total);
+};
+
+const scoreRunner = (runner: Win5RunnerInput, runnerCount: number): number => {
+  let score = runner.historicalScore ?? 0;
+
+  if (runner.popularity !== null && runner.popularity !== undefined && runner.popularity > 0) {
+    score += (runnerCount - runner.popularity + 1) / runnerCount;
+  }
+
+  if (runner.odds !== null && runner.odds !== undefined && runner.odds > 0) {
+    score += 1 / runner.odds;
+  }
+
+  return score;
+};
+
+export const buildWin5LegPredictions = (legInputs: readonly Win5LegInput[]): Win5LegPrediction[] =>
+  legInputs.map(({ leg, runners }) => {
+    const activeRunners = runners.filter((runner) => runner.horseNumber.trim().length > 0);
+    const scores = activeRunners.map((runner) => scoreRunner(runner, activeRunners.length));
+    const probabilities = softmax(scores).map((probability) =>
+      Math.max(MIN_WIN_PROBABILITY, probability),
+    );
+
+    const horses: Win5HorseCandidate[] = activeRunners
+      .map((runner, index) => ({
+        horseName: runner.horseName,
+        horseNumber: normalizeHorseNumber(runner.horseNumber),
+        jockeyName: runner.jockeyName ?? null,
+        odds: runner.odds ?? null,
+        popularity: runner.popularity ?? null,
+        score: scores[index] ?? null,
+        winProbability: probabilities[index] ?? MIN_WIN_PROBABILITY,
+      }))
+      .toSorted((left, right) => right.winProbability - left.winProbability);
+
+    const keibajoName = leg.keibajoName ?? KEIBAJO_NAMES[leg.keibajoCode] ?? leg.keibajoCode;
+    return {
+      horses,
+      leg: {
+        ...leg,
+        keibajoName,
+        raceLabel: leg.raceLabel ?? `${keibajoName}${leg.raceBango}R`,
+      },
+    };
+  });
+
+export const buildWin5PredictionPayload = (params: {
+  kaisaiNen: string;
+  kaisaiTsukihi: string;
+  legInputs: readonly Win5LegInput[];
+  averagePayoutYen?: number;
+  predictedAt?: string;
+}): Win5PredictionPayload => {
+  const legs = buildWin5LegPredictions(params.legInputs);
+  const averagePayoutYen = params.averagePayoutYen ?? 250_000;
+  const recommendedBudgetYen = recommendWin5BudgetYen(legs, averagePayoutYen);
+  const budgets = Array.from(
+    new Set([WIN5_DEFAULT_BUDGET_YEN, recommendedBudgetYen, 5000, 10000, 20000]),
+  ).toSorted((left, right) => left - right);
+
+  return {
+    defaultBudgetYen: WIN5_DEFAULT_BUDGET_YEN,
+    kaisaiNen: params.kaisaiNen,
+    kaisaiTsukihi: params.kaisaiTsukihi,
+    legs,
+    modelVersion: WIN5_MODEL_VERSION,
+    plans: buildWin5PlansByBudget(legs, budgets),
+    predictedAt: params.predictedAt ?? new Date().toISOString(),
+    recommendedBudgetYen,
+  };
+};
+
+export const getWin5PlanForBudget = (
+  payload: Win5PredictionPayload,
+  budgetYen: number,
+): ReturnType<typeof optimizeWin5TicketPlan> => {
+  const cached = payload.plans[String(budgetYen)];
+  if (cached) {
+    return cached;
+  }
+  return optimizeWin5TicketPlan(payload.legs, budgetYen);
+};
+
+export const computeHistoricalWinScore = (params: {
+  wins: number;
+  runs: number;
+  recencyWeight?: number;
+}): number => {
+  const { wins, runs, recencyWeight = 1 } = params;
+  if (runs <= 0) {
+    return 0;
+  }
+  const base = wins / runs;
+  return clamp(base * recencyWeight, 0, 1);
+};
+
+export {
+  WIN5_DEFAULT_BUDGET_YEN,
+  WIN5_MODEL_VERSION,
+  WIN5_TICKET_UNIT_YEN,
+} from "./types";
