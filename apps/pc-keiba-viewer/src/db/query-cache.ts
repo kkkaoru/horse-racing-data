@@ -3,7 +3,7 @@ import { getDatabaseTarget } from "./client";
 import { withDbRetry } from "./db-retry";
 
 const DEFAULT_TTL_SECONDS = 60 * 60;
-const CACHE_NAMESPACE = "pc-keiba-viewer:db-query:v1";
+const CACHE_NAMESPACE = "pc-keiba-viewer:db-query:v2";
 
 declare global {
   interface CacheStorage {

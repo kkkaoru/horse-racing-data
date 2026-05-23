@@ -134,7 +134,12 @@ target as (
     r.kyori,
     r.track_code,
     r.grade_code,
-    r.shusso_tosu,
+    coalesce(
+      nullif(r.shusso_tosu, 0),
+      count(*) over (
+        partition by r.source, r.kaisai_nen, r.kaisai_tsukihi, r.keibajo_code, r.race_bango
+      )::int
+    ) as shusso_tosu,
     r.finish_position,
     r.finish_norm,
     r.kishumei_ryakusho,
