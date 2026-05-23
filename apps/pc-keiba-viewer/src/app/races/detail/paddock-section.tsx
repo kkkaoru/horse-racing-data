@@ -868,12 +868,19 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
             <dt>出走回数</dt>
             <dd>{startsLabel}</dd>
           </div>
-          {editable && scores.officialRank ? (
-            <div className="paddock-official-rank-fact">
+          {editable ? (
+            <div
+              className={
+                scores.officialRank
+                  ? "paddock-official-rank-fact"
+                  : "paddock-official-rank-fact paddock-official-rank-fact-empty"
+              }
+              aria-hidden={scores.officialRank ? undefined : "true"}
+            >
               <dt>公式評価順</dt>
               <dd>
                 <span className={getOfficialRankClassName(scores.officialRank)}>
-                  {formatOfficialRank(scores.officialRank)}
+                  {scores.officialRank ? formatOfficialRank(scores.officialRank) : "-"}
                 </span>
               </dd>
             </div>
@@ -1807,6 +1814,13 @@ export function PaddockSection({
         <PaddockRemainingIndicator boardRef={paddockBoardRef} total={runnerRows.length} />
       ) : null}
       {editable ? (
+        <PaddockOfficialRankQuickPanel
+          rows={runnerRows}
+          state={state}
+          onOfficialRank={submitScore}
+        />
+      ) : null}
+      {editable ? (
         <details className="paddock-history">
           <summary>履歴</summary>
           {state?.history.length ? (
@@ -1831,13 +1845,6 @@ export function PaddockSection({
             <p className="empty-state">履歴はまだありません。</p>
           )}
         </details>
-      ) : null}
-      {editable ? (
-        <PaddockOfficialRankQuickPanel
-          rows={runnerRows}
-          state={state}
-          onOfficialRank={submitScore}
-        />
       ) : null}
       {editable && editFooterDetailPath ? (
         <footer className="paddock-edit-footer paddock-edit-footer-sticky">
