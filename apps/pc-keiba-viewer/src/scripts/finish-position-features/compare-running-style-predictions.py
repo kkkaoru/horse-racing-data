@@ -63,6 +63,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Compute metrics without writing to Postgres",
     )
+    parser.add_argument(
+        "--by-year",
+        action="store_true",
+        help="Also print per-validation-year metrics when race_year is present",
+    )
     return parser.parse_args(argv)
 
 
@@ -174,6 +179,48 @@ def race_count(records: list[dict[str, object]]) -> int:
     return len(race_ids)
 
 
+def _extract_year(record: dict[str, object]) -> str | None:
+    race_year = record.get("race_year")
+    if isinstance(race_year, int):
+        return str(race_year)
+    if isinstance(race_year, float) and not math.isnan(race_year):
+        return str(int(race_year))
+    race_id = record.get("race_id")
+    if isinstance(race_id, str):
+        parts = race_id.split(":")
+        if len(parts) >= 2 and parts[1].isdigit() and len(parts[1]) == 4:
+            return parts[1]
+    return None
+
+
+def build_per_year_evaluations(
+    records: list[dict[str, object]],
+    model_version: str,
+    category: str,
+    window_from: str,
+    window_to: str,
+) -> list[RunningStyleEvaluation]:
+    grouped: dict[str, list[dict[str, object]]] = {}
+    for record in records:
+        year = _extract_year(record)
+        if year is None:
+            continue
+        grouped.setdefault(year, []).append(record)
+    evaluations: list[RunningStyleEvaluation] = []
+    for year in sorted(grouped):
+        year_records = grouped[year]
+        evaluations.append(
+            build_evaluation(
+                year_records,
+                model_version,
+                category,
+                f"{year}0101",
+                f"{year}1231",
+            )
+        )
+    return evaluations
+
+
 def build_evaluation(
     records: list[dict[str, object]],
     model_version: str,
@@ -262,7 +309,12 @@ def main() -> None:
     )
     if not args.skip_pg_insert:
         run_psql(args.pg_url, build_upsert_sql(evaluation))
-    print(json.dumps(evaluation, ensure_ascii=False, indent=2))
+    payload: dict[str, object] = {"aggregate": evaluation}
+    if args.by_year:
+        payload["by_year"] = build_per_year_evaluations(
+            records, args.model_version, args.category, args.window_from, args.window_to,
+        )
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
