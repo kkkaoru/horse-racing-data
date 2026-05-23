@@ -10,7 +10,7 @@ import {
 } from "../db/corner-running-style-queries";
 
 const DEFAULT_CACHE_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
-const CACHE_VERSION = "v2";
+const CACHE_VERSION = "v3";
 const CONTENT_TYPE = "application/json; charset=utf-8";
 
 export interface RunningStyleCacheRace {

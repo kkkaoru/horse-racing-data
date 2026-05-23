@@ -59,6 +59,7 @@ const RUNNING_STYLE_LABELS: readonly RunningStyleClassLabel[] = [
   "sashi",
   "oikomi",
 ];
+const RUNNING_STYLE_LABEL_SET = new Set<string>(RUNNING_STYLE_LABELS);
 
 const DECISION_TYPE_LEQ = "<=";
 const DECISION_TYPE_EQ = "==";
@@ -132,17 +133,41 @@ const argmaxIndex = (probs: Float64Array): number =>
     0,
   );
 
-const probsToLabelMap = (probs: Float64Array): Record<RunningStyleClassLabel, number> => ({
-  nige: numberAt(probs, 0),
-  senkou: numberAt(probs, 1),
-  sashi: numberAt(probs, 2),
-  oikomi: numberAt(probs, 3),
-});
-
 const FALLBACK_LABEL: RunningStyleClassLabel = "nige";
 
-const labelAtIndex = (index: number): RunningStyleClassLabel =>
-  RUNNING_STYLE_LABELS[index] ?? FALLBACK_LABEL;
+const isRunningStyleLabel = (label: string | undefined): label is RunningStyleClassLabel =>
+  label !== undefined && RUNNING_STYLE_LABEL_SET.has(label);
+
+export const resolveRunningStyleLabels = (
+  labels: readonly string[] | undefined,
+  numClass: number,
+): RunningStyleClassLabel[] =>
+  Array.from({ length: numClass }, (_, index) => {
+    const modelLabel = labels?.[index];
+    if (isRunningStyleLabel(modelLabel)) return modelLabel;
+    return RUNNING_STYLE_LABELS[index] ?? FALLBACK_LABEL;
+  });
+
+export const probsToRunningStyleMap = (
+  probs: Float64Array,
+  labels: readonly RunningStyleClassLabel[],
+): Record<RunningStyleClassLabel, number> => {
+  const mapped: Record<RunningStyleClassLabel, number> = {
+    nige: 0,
+    senkou: 0,
+    sashi: 0,
+    oikomi: 0,
+  };
+  labels.forEach((label, index) => {
+    mapped[label] = numberAt(probs, index);
+  });
+  return mapped;
+};
+
+const labelAtIndex = (
+  index: number,
+  labels: readonly RunningStyleClassLabel[],
+): RunningStyleClassLabel => labels[index] ?? FALLBACK_LABEL;
 
 export const predictRunningStyle = (
   model: CompactLightGBMModel,
@@ -151,10 +176,11 @@ export const predictRunningStyle = (
   const logits = accumulateClassLogits(model, vector);
   const probs = softmaxNormalize(logits);
   const predictedClass = argmaxIndex(probs);
+  const labels = resolveRunningStyleLabels(model.class_labels, model.num_class);
   return {
     predictedClass,
-    predictedLabel: labelAtIndex(predictedClass),
-    probabilities: probsToLabelMap(probs),
+    predictedLabel: labelAtIndex(predictedClass, labels),
+    probabilities: probsToRunningStyleMap(probs, labels),
   };
 };
 
