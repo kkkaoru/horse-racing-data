@@ -2,7 +2,7 @@
 import { existsSync, mkdirSync, openSync, readFileSync, writeSync, closeSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import {
   buildConfig,
   buildDependencySql,
@@ -39,6 +39,8 @@ const defaultExcludedLogTables = new Set([
   "finish_position_tuning_random_trials",
   "race_finish_position_features",
 ]);
+const DEFAULT_OPERATION_TIMEOUT_SECONDS = 600;
+const OPERATION_TIMEOUT_ENV_KEY = "REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS";
 
 type CommandResult = {
   stdout: string;
@@ -97,7 +99,6 @@ function parseArgs(args: string[]): CliOptions {
 
 let verboseLogging = false;
 let logFileFd: number | null = null;
-let resolvedLogPath: string | null = null;
 
 function setVerboseLogging(value: boolean): void {
   verboseLogging = value;
@@ -109,7 +110,6 @@ function openLogFile(path: string): void {
     mkdirSync(dir, { recursive: true });
   }
   logFileFd = openSync(path, "a");
-  resolvedLogPath = path;
 }
 
 function closeLogFile(): void {
@@ -190,29 +190,69 @@ function redactSecrets(value: string): string {
     .replaceAll(/npg_[A-Za-z0-9_-]+/g, "npg_[redacted]");
 }
 
+function applyTimeoutEnv(env: Record<string, string | undefined>): void {
+  const value = env[OPERATION_TIMEOUT_ENV_KEY];
+  if (value !== undefined && process.env[OPERATION_TIMEOUT_ENV_KEY] === undefined) {
+    process.env[OPERATION_TIMEOUT_ENV_KEY] = value;
+  }
+}
+
+function resolveOperationTimeoutMs(): number {
+  const raw = process.env[OPERATION_TIMEOUT_ENV_KEY];
+  const fallback = DEFAULT_OPERATION_TIMEOUT_SECONDS * 1000;
+  if (raw === undefined || raw === "") return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : fallback;
+}
+
+function killProcessGroup(child: ChildProcess): void {
+  if (child.pid === undefined || child.killed) return;
+  try {
+    process.kill(-child.pid, "SIGKILL");
+  } catch {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // Already exited.
+    }
+  }
+}
+
+function armTimeout(child: ChildProcess, label: string, reject: (error: Error) => void): () => void {
+  const timeoutMs = resolveOperationTimeoutMs();
+  const handle = setTimeout(() => {
+    killProcessGroup(child);
+    reject(new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)}s and was killed`));
+  }, timeoutMs);
+  return () => clearTimeout(handle);
+}
+
 function runCommand(command: string, args: string[], input?: string): Promise<CommandResult> {
   return new Promise((resolveCommand, reject) => {
     const child = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
+      detached: true,
     });
 
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
+    const label = redactSecrets(`${command} ${args.join(" ")}`);
+    const cancelTimeout = armTimeout(child, label, reject);
 
     child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
     child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
-    child.on("error", reject);
+    child.on("error", (error) => {
+      cancelTimeout();
+      reject(error);
+    });
     child.on("close", (code) => {
+      cancelTimeout();
       const stdout = Buffer.concat(stdoutChunks).toString("utf8");
       const stderr = Buffer.concat(stderrChunks).toString("utf8");
       if (code === 0) {
         resolveCommand({ stdout, stderr });
       } else {
-        reject(
-          new Error(
-            redactSecrets(`${command} ${args.join(" ")} exited with code ${code}\n${stderr}`),
-          ),
-        );
+        reject(new Error(redactSecrets(`${label} exited with code ${code}\n${stderr}`)));
       }
     });
 
@@ -279,12 +319,18 @@ function runCopyPipeline(
         NEON_COPY_SQL: neonCopySql,
       },
       stdio: ["ignore", "pipe", "pipe"],
+      detached: true,
     });
 
     const stderrChunks: Buffer[] = [];
+    const cancelTimeout = armTimeout(child, "COPY pipeline", reject);
     child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
-    child.on("error", reject);
+    child.on("error", (error) => {
+      cancelTimeout();
+      reject(error);
+    });
     child.on("close", (code) => {
+      cancelTimeout();
       if (code === 0) {
         resolvePipeline();
         return;
@@ -357,6 +403,10 @@ Environment:
                                   Default: true.
   NEON_CONNECT_TIMEOUT_SECONDS    Wait timeout for Neon cold start. Default: 120.
   NEON_CONNECT_RETRY_SECONDS      Retry interval while Neon is warming. Default: 5.
+  REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS
+                                  Per-operation timeout that kills any docker/psql child that
+                                  hangs (e.g. occasional docker run --rm cleanup hangs on Colima).
+                                  Default: 600.
 
 Options:
   --verbose, -v                    Use the legacy multi-line progress format.
@@ -848,6 +898,7 @@ async function main(): Promise<void> {
 
 async function runSync(cliOptions: CliOptions): Promise<void> {
   const env = loadEnvironment();
+  applyTimeoutEnv(env);
   if (cliOptions.indexesOnly) {
     await syncAnalyticsIndexes(env);
     return;
