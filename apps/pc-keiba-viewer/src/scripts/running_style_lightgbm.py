@@ -25,6 +25,8 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
+from running_style_field_features import FIELD_FEATURE_COLUMNS, enrich_dataframe_with_field_features
+
 META_COLUMNS: tuple[str, ...] = (
     "source",
     "race_date",
@@ -228,6 +230,37 @@ def compute_predicted_labels(probabilities: np.ndarray) -> np.ndarray:
     return np.argmax(probabilities, axis=1)
 
 
+def apply_race_level_nige_constraint(
+    df: pd.DataFrame,
+    probabilities: np.ndarray,
+    *,
+    nige_class_index: int = 0,
+    min_nige_probability: float = 0.18,
+) -> np.ndarray:
+    """Ensure at most one horse per race is labeled nige by suppressing weaker nige picks."""
+    adjusted = probabilities.copy()
+    if "race_id" not in df.columns:
+        return adjusted
+
+    for _, race_df in df.groupby("race_id", sort=False):
+        indices = race_df.index.to_numpy()
+        if indices.size <= 1:
+            continue
+        race_probs = adjusted[indices]
+        nige_probs = race_probs[:, nige_class_index]
+        top_index = int(np.argmax(nige_probs))
+        if nige_probs[top_index] < min_nige_probability:
+            race_probs[:, nige_class_index] = 0.0
+        else:
+            for row_index in range(indices.size):
+                if row_index != top_index:
+                    race_probs[row_index, nige_class_index] = 0.0
+        row_sums = race_probs.sum(axis=1, keepdims=True)
+        safe_sums = np.where(row_sums <= 0, 1.0, row_sums)
+        adjusted[indices] = race_probs / safe_sums
+    return adjusted
+
+
 def compute_accuracy(predicted: np.ndarray, actual: np.ndarray) -> float:
     if actual.size == 0:
         return float("nan")
@@ -265,12 +298,30 @@ def macro_f1_from_precision_recall(precision: dict[str, float], recall: dict[str
     return float(np.mean(f1_scores))
 
 
+def maybe_enrich_with_field_features(df: pd.DataFrame, enabled: bool) -> pd.DataFrame:
+    if not enabled:
+        return df
+    return enrich_dataframe_with_field_features(df)
+
+
+def extend_feature_columns(feature_columns: list[str], with_field_features: bool) -> list[str]:
+    if not with_field_features:
+        return feature_columns
+    merged = list(feature_columns)
+    for column in FIELD_FEATURE_COLUMNS:
+        if column not in merged:
+            merged.append(column)
+    return merged
+
+
 def train_running_style_head(
     train_df: pd.DataFrame,
     valid_df: pd.DataFrame,
     feature_columns: list[str],
     categorical_features: list[str],
     params: TrainingParams,
+    *,
+    apply_nige_constraint: bool,
 ) -> tuple[lgb.Booster, np.ndarray]:
     train_subset = filter_labeled_rows(train_df)
     valid_subset = filter_labeled_rows(valid_df)
@@ -295,6 +346,8 @@ def train_running_style_head(
         ],
     )
     probabilities = predict_softmax(booster, valid_df, feature_columns, categorical_features)
+    if apply_nige_constraint:
+        probabilities = apply_race_level_nige_constraint(valid_df, probabilities)
     return booster, probabilities
 
 
@@ -317,10 +370,20 @@ def run_walk_forward_for_year(
     feature_columns: list[str],
     categorical_features: list[str],
     params: TrainingParams,
+    *,
+    with_field_features: bool,
+    apply_nige_constraint: bool,
 ) -> tuple[pd.DataFrame, FoldMetrics]:
     train_df, valid_df = split_by_year(df, train_start, valid_year)
+    train_df = maybe_enrich_with_field_features(train_df, with_field_features)
+    valid_df = maybe_enrich_with_field_features(valid_df, with_field_features)
     _booster, probabilities = train_running_style_head(
-        train_df, valid_df, feature_columns, categorical_features, params
+        train_df,
+        valid_df,
+        feature_columns,
+        categorical_features,
+        params,
+        apply_nige_constraint=apply_nige_constraint,
     )
     predictions_df = build_predictions_df(valid_df, probabilities)
     evaluation_subset = predictions_df.dropna(subset=[TARGET_COLUMN])
@@ -382,6 +445,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     walk.add_argument("--min-child-samples", type=int, default=DEFAULT_MIN_CHILD_SAMPLES)
     walk.add_argument("--num-iterations", type=int, default=DEFAULT_NUM_ITERATIONS)
     walk.add_argument("--early-stopping-rounds", type=int, default=DEFAULT_EARLY_STOPPING_ROUNDS)
+    walk.add_argument(
+        "--with-field-features",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Compute race-internal field_* features before training/prediction",
+    )
+    walk.add_argument(
+        "--race-level-nige-constraint",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Allow at most one nige label per race at inference time",
+    )
     train_prod = subparsers.add_parser("train-production")
     train_prod.add_argument("--csv", type=Path, required=True, help="parquet directory or file")
     train_prod.add_argument("--train-start-date", type=str, default="20160101")
@@ -392,6 +467,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     train_prod.add_argument("--learning-rate", type=float, default=DEFAULT_LEARNING_RATE)
     train_prod.add_argument("--min-child-samples", type=int, default=DEFAULT_MIN_CHILD_SAMPLES)
     train_prod.add_argument("--num-iterations", type=int, default=DEFAULT_NUM_ITERATIONS)
+    train_prod.add_argument("--early-stopping-rounds", type=int, default=DEFAULT_EARLY_STOPPING_ROUNDS)
+    train_prod.add_argument(
+        "--valid-start-date",
+        type=str,
+        default="20250101",
+        help="Hold out races from this date onward for production early stopping",
+    )
+    train_prod.add_argument(
+        "--with-field-features",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    train_prod.add_argument(
+        "--race-level-nige-constraint",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     return parser.parse_args(argv)
 
 
@@ -412,7 +504,8 @@ def parse_validation_years(value: str) -> list[int]:
 def run_walk_forward_command(args: argparse.Namespace) -> None:
     started = perf_counter()
     df = load_dataset_parquet(args.csv)
-    feature_columns = resolve_feature_columns(list(df.columns))
+    base_feature_columns = resolve_feature_columns(list(df.columns))
+    feature_columns = extend_feature_columns(base_feature_columns, args.with_field_features)
     categorical_features = detect_categorical_features(feature_columns)
     params = training_params_from_args(args)
     validation_years = parse_validation_years(args.validation_years)
@@ -420,7 +513,14 @@ def run_walk_forward_command(args: argparse.Namespace) -> None:
     all_predictions: list[pd.DataFrame] = []
     for valid_year in validation_years:
         predictions_df, metrics = run_walk_forward_for_year(
-            df, valid_year, args.train_start_date, feature_columns, categorical_features, params
+            df,
+            valid_year,
+            args.train_start_date,
+            feature_columns,
+            categorical_features,
+            params,
+            with_field_features=args.with_field_features,
+            apply_nige_constraint=args.race_level_nige_constraint,
         )
         metrics_per_fold.append(metrics)
         all_predictions.append(predictions_df)
@@ -439,13 +539,52 @@ def filter_by_date_range(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame
     return df[(df["race_date"] >= start) & (df["race_date"] <= end)].copy()
 
 
+def split_production_train_valid(
+    train_df: pd.DataFrame,
+    valid_start_date: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    valid_start = pd.to_datetime(valid_start_date)
+    race_date = pd.to_datetime(train_df["race_date"], format="%Y%m%d")
+    return (
+        train_df[race_date < valid_start].reset_index(drop=True),
+        train_df[race_date >= valid_start].reset_index(drop=True),
+    )
+
+
 def train_full_dataset(
     train_df: pd.DataFrame,
     feature_columns: list[str],
     categorical_features: list[str],
     params: TrainingParams,
+    *,
+    valid_start_date: str | None = None,
 ) -> lgb.Booster:
     train_subset = filter_labeled_rows(train_df)
+    if valid_start_date is not None:
+        fit_df, valid_df = split_production_train_valid(train_subset, valid_start_date)
+        if len(valid_df) == 0:
+            raise ValueError(f"production validation split is empty from {valid_start_date}")
+        train_weights = compute_inverse_frequency_weights(fit_df[TARGET_COLUMN])
+        valid_weights = np.ones(len(valid_df), dtype=np.float64)
+        train_dataset = build_lgb_dataset(
+            fit_df, fit_df[TARGET_COLUMN], train_weights,
+            feature_columns, categorical_features,
+        )
+        valid_dataset = build_lgb_dataset(
+            valid_df, valid_df[TARGET_COLUMN], valid_weights,
+            feature_columns, categorical_features, reference=train_dataset,
+        )
+        return lgb.train(
+            lgb_params_for_multiclass(params),
+            train_dataset,
+            num_boost_round=params["num_iterations"],
+            valid_sets=[valid_dataset],
+            callbacks=[
+                lgb.early_stopping(stopping_rounds=params["early_stopping_rounds"]),
+                lgb.log_evaluation(period=DEFAULT_VERBOSE_EVAL),
+            ],
+        )
+
     train_weights = compute_inverse_frequency_weights(train_subset[TARGET_COLUMN])
     train_dataset = build_lgb_dataset(
         train_subset, train_subset[TARGET_COLUMN], train_weights,
@@ -467,6 +606,8 @@ def write_model_metadata(
     train_rows: int,
     train_start: str,
     train_end: str,
+    *,
+    with_field_features: bool,
 ) -> None:
     metadata: dict[str, object] = {
         "model_version": model_version,
@@ -477,7 +618,7 @@ def write_model_metadata(
         "train_rows": train_rows,
         "train_start_date": train_start,
         "train_end_date": train_end,
-        "feature_schema_version": "v1",
+        "feature_schema_version": "v2" if with_field_features else "v1",
     }
     (output_dir / "metadata.json").write_text(
         json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8",
@@ -487,11 +628,19 @@ def write_model_metadata(
 def run_train_production_command(args: argparse.Namespace) -> None:
     started = perf_counter()
     df = load_dataset_parquet(args.csv)
-    feature_columns = resolve_feature_columns(list(df.columns))
+    df = maybe_enrich_with_field_features(df, args.with_field_features)
+    base_feature_columns = resolve_feature_columns(list(df.columns))
+    feature_columns = extend_feature_columns(base_feature_columns, args.with_field_features)
     categorical_features = detect_categorical_features(feature_columns)
     params = training_params_from_args(args)
     train_subset_full = filter_by_date_range(df, args.train_start_date, args.train_end_date)
-    booster = train_full_dataset(train_subset_full, feature_columns, categorical_features, params)
+    booster = train_full_dataset(
+        train_subset_full,
+        feature_columns,
+        categorical_features,
+        params,
+        valid_start_date=args.valid_start_date,
+    )
     args.output_model_dir.mkdir(parents=True, exist_ok=True)
     model_path = args.output_model_dir / "model.txt"
     booster.save_model(str(model_path))
@@ -499,6 +648,7 @@ def run_train_production_command(args: argparse.Namespace) -> None:
         args.output_model_dir, args.model_version, feature_columns, categorical_features,
         int(len(filter_labeled_rows(train_subset_full))),
         args.train_start_date, args.train_end_date,
+        with_field_features=args.with_field_features,
     )
     elapsed = perf_counter() - started
     print(json.dumps({
