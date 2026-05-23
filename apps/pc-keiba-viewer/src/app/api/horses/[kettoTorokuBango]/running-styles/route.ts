@@ -3,7 +3,7 @@
 
 import { NextResponse } from "next/server";
 
-import { getHorseRecentRunningStylesFromD1 } from "../../../../../db/corner-running-style-queries";
+import { getHorseRecentRunningStylesWithCache } from "../../../../../lib/running-style-cache.server";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +28,7 @@ export async function GET(request: Request, context: RouteContext) {
   if (!/^\d{10}$/u.test(kettoTorokuBango)) {
     return NextResponse.json({ error: "invalid_ketto" }, { status: 400 });
   }
-  const rows = await getHorseRecentRunningStylesFromD1(kettoTorokuBango, resolveLimit(request));
+  const rows = await getHorseRecentRunningStylesWithCache(kettoTorokuBango, resolveLimit(request));
   return NextResponse.json(rows, {
     headers: { "cache-control": "public, max-age=30, s-maxage=30" },
   });

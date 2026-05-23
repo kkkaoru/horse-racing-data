@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 
-import { getHorseRecentRunningStylesFromD1 } from "../../../db/corner-running-style-queries";
+import { getHorseRecentRunningStylesWithCache } from "../../../lib/running-style-cache.server";
 import { getHorseDetailData } from "../../../db/queries";
 import {
   EntityDetailFilterForm,
@@ -32,7 +32,7 @@ export default async function HorseDetailPage({ params, searchParams }: HorseDet
   const decodedKettoTorokuBango = decodeURIComponent(kettoTorokuBango);
   const [data, runningStyleHistory] = await Promise.all([
     getHorseDetailData(decodedKettoTorokuBango, query),
-    getHorseRecentRunningStylesFromD1(decodedKettoTorokuBango, RUNNING_STYLE_HISTORY_LIMIT),
+    getHorseRecentRunningStylesWithCache(decodedKettoTorokuBango, RUNNING_STYLE_HISTORY_LIMIT),
   ]);
   if (!data) {
     notFound();
