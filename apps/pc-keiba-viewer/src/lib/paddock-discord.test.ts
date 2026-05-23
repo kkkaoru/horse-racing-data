@@ -53,4 +53,22 @@ describe("paddock discord notification", () => {
 
     expect(line.split("\n")[2]).toBe("　⭐ **0**　公式1");
   });
+
+  it("uses rank icons and fallback placeholders", () => {
+    expect(formatPaddockDiscordHorseLine(createHorsePayload({}), 1)).toMatch(/^🥈/u);
+    expect(formatPaddockDiscordHorseLine(createHorsePayload({}), 3)).toMatch(/^▫️/u);
+    const line = formatPaddockDiscordHorseLine(
+      createHorsePayload({
+        jockeyName: "",
+        kaeshi: 2,
+        sexAge: "",
+        weight: "",
+      }),
+      4,
+    );
+    expect(line).toContain("（-）");
+    expect(line).toContain("👤 -");
+    expect(line).toContain("⚖️ -");
+    expect(line).toContain("返し2");
+  });
 });

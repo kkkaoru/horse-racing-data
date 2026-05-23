@@ -114,4 +114,18 @@ describe("odds schedule", () => {
       ),
     ).toBe(new Date("2026-05-22T10:00:00+09:00").toISOString());
   });
+
+  it("advances NAR hourly slots after the sale start and before one hour remains", () => {
+    expect(
+      getNextOddsFetchAt(
+        "2026-05-22T14:30:00+09:00",
+        new Date("2026-05-22T12:00:00+09:00").getTime(),
+        "nar",
+        {
+          keibajoCode: "44",
+          venueLastRaceStartAt: "2026-05-22T20:50:00+09:00",
+        },
+      ),
+    ).toBe(new Date("2026-05-22T13:00:00+09:00").toISOString());
+  });
 });

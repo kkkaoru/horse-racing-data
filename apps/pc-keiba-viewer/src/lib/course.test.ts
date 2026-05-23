@@ -80,4 +80,13 @@ describe("course helpers", () => {
     expect(getCourseImagePath("04", "23", "")).toBeNull();
     expect(getCourseImagePath("04", "23", "9999")).toBeNull();
   });
+
+  it("handles full-width numbers and two-lap tracks", () => {
+    expect(getCourseFacts("ＪＲＡ全１０場で高低差が０.５ｍ", "1800", "21")).toEqual([
+      { label: "距離", value: "1800m" },
+      { label: "コーナー回数", value: "8回" },
+      { label: "高低差", value: "0.5m" },
+      { label: "比較対象", value: "10場" },
+    ]);
+  });
 });
