@@ -122,6 +122,8 @@ import {
   runRunningStyleCronTick,
 } from "./running-style-cron";
 import { handleRunningStylePredictionJob } from "./running-style-queue";
+import { WIN5_DISCOVER_CRON, logWin5CronResult } from "./win5-cron";
+import { handleWin5PredictionJob } from "./win5-queue";
 import {
   parseRunningStylePostgresVerificationParams,
   runRunningStyleWorkerPostgresVerification,
@@ -2019,6 +2021,22 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
       await logFetch(env.REALTIME_DB, job.type, "ok", job.raceKey, JSON.stringify(summary));
       return;
     }
+    if (job.type === "discover-win5-schedules") {
+      await logWin5CronResult(env, getNow(env));
+      await logFetch(env.REALTIME_DB, job.type, "ok", null, job.date);
+      return;
+    }
+    if (job.type === "generate-win5-predictions") {
+      const summary = await handleWin5PredictionJob(env, job);
+      await logFetch(
+        env.REALTIME_DB,
+        job.type,
+        "ok",
+        `${job.kaisaiNen}${job.kaisaiTsukihi}`,
+        JSON.stringify(summary),
+      );
+      return;
+    }
     await fetchAndStoreWeights(env, job.raceKey);
     await logFetch(env.REALTIME_DB, job.type, "ok", job.raceKey, null);
   } catch (error) {
@@ -2214,6 +2232,10 @@ export default {
           )
           .then(() => undefined),
       );
+      return;
+    }
+    if (controller.cron === WIN5_DISCOVER_CRON) {
+      ctx.waitUntil(logWin5CronResult(env, scheduledAt));
       return;
     }
     const job = getCronJob(controller.cron, scheduledAt);

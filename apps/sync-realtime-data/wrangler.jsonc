@@ -20,6 +20,7 @@
     "TRACK_CONDITION_DO_TTL_SECONDS": "172800",
     "RUNNING_STYLE_D1_WRITE_ENABLED": "1",
     "RUNNING_STYLE_CACHE_ORIGIN": "https://pc-keiba-viewer.kkk4oru.com",
+    "WIN5_D1_WRITE_ENABLED": "1",
   },
   "triggers": {
     "crons": [
@@ -31,6 +32,7 @@
       "* * * * *",
       "*/10 * * * *",
       "0 12 * * *",
+      "30 12 * * *",
     ],
   },
   "queues": {
@@ -46,6 +48,10 @@
       {
         "binding": "RUNNING_STYLE_JOBS",
         "queue": "sync-realtime-data-running-style-jobs",
+      },
+      {
+        "binding": "WIN5_JOBS",
+        "queue": "sync-realtime-data-win5-jobs",
       },
     ],
     "consumers": [
@@ -66,6 +72,12 @@
         "max_batch_size": 1,
         "max_batch_timeout": 5,
         "max_concurrency": 3,
+      },
+      {
+        "queue": "sync-realtime-data-win5-jobs",
+        "max_batch_size": 1,
+        "max_batch_timeout": 5,
+        "max_concurrency": 2,
       },
     ],
   },
