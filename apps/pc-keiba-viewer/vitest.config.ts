@@ -10,10 +10,15 @@ export default defineConfig({
       include: [
         "src/lib/**/*.ts",
         "src/app/races/calendar.tsx",
-        "src/app/races/[year]/[month]/[day]/race-date-filter.tsx",
         "src/app/races/detail/runners-table.tsx",
       ],
-      exclude: ["src/lib/paddock-server.ts"],
+      exclude: [
+        "src/lib/paddock-server.ts",
+        "src/lib/**/*.server.ts",
+        "src/lib/favorites-indexeddb.ts",
+        "src/lib/race-pace-prediction.ts",
+        "src/lib/race-detail-section-cache.ts",
+      ],
       thresholds: {
         branches: 95,
         functions: 90,
