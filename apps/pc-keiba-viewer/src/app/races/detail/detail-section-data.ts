@@ -67,10 +67,11 @@ import type {
   StableComment,
   SimilarRaceStatsSettings,
   TimeScoreRow,
+  PremiumDataTopHorse,
   Training,
 } from "../../../lib/race-types";
 import { getPremiumDataTopHorsesWithCache } from "../../../lib/premium-data-top-cache.server";
-import { isBanEiKeibajoCode } from "../../../lib/runner-format";
+import { formatRunnerNumber, isBanEiKeibajoCode } from "../../../lib/runner-format";
 
 export type DetailSection =
   | "ability"
@@ -354,6 +355,24 @@ const parseStoredOdds = (value: string | null | undefined): number | null => {
 
 const parseStoredPopularity = (value: string | null | undefined): number | null =>
   parseStoredNumber(value, STORED_POPULARITY_EMPTY);
+
+const enrichPremiumDataTopHorses = (
+  dataTopHorses: PremiumDataTopHorse[],
+  runners: Runner[],
+): PremiumDataTopHorse[] => {
+  const runnerByHorse = new Map(
+    runners.map((runner) => [formatRunnerNumber(runner.umaban ?? ""), runner]),
+  );
+  return dataTopHorses.map((horse) => {
+    const runner = runnerByHorse.get(formatRunnerNumber(horse.horseNumber));
+    return {
+      ...horse,
+      jockeyName: runner?.kishumeiRyakusho?.trim() || null,
+      storedOdds: parseStoredOdds(runner?.tanshoOdds),
+      storedPopularity: parseStoredPopularity(runner?.tanshoNinkijun),
+    };
+  });
+};
 
 const splitHorseNumbers = (value: string): string[] =>
   value
@@ -980,7 +999,10 @@ export const getDetailSectionPayload = async (
   const { day, keibajoCode, month, query, raceNumber, raceSource, year } = params;
 
   if (section === "premium-data-top") {
-    const race = await getRaceDetail(raceSource, year, month, day, keibajoCode, raceNumber);
+    const [race, runners] = await Promise.all([
+      getRaceDetail(raceSource, year, month, day, keibajoCode, raceNumber),
+      getRaceRunners(raceSource, year, month, day, keibajoCode, raceNumber),
+    ]);
     if (!race || (race.source === "nar" && isBanEiKeibajoCode(race.keibajoCode))) {
       return { dataTopHorses: [], type: section };
     }
@@ -992,7 +1014,7 @@ export const getDetailSectionPayload = async (
       source: race.source,
     });
     return {
-      dataTopHorses,
+      dataTopHorses: enrichPremiumDataTopHorses(dataTopHorses, runners),
       type: section,
     };
   }

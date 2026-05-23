@@ -268,8 +268,11 @@ export interface PremiumDataTopHorse extends Record<string, unknown> {
   fetchedAt: string;
   horseName: string | null;
   horseNumber: string;
+  jockeyName: string | null;
   rank: number;
   reasons: string[];
+  storedOdds: number | null;
+  storedPopularity: number | null;
 }
 
 export interface AbilityTest extends Record<string, unknown> {
