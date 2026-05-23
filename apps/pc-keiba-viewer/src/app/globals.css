@@ -2904,6 +2904,12 @@ h3 {
   text-align: left;
 }
 
+/* Always reserve space for the official rank fact so registering a new rank
+   does not change the horse row height (and the quick-rank panel position). */
+.paddock-official-rank-fact-empty {
+  visibility: hidden;
+}
+
 .paddock-horse-race-facts dt {
   color: var(--muted);
   font-size: var(--space-15px-1);
