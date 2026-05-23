@@ -7276,9 +7276,14 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   }
 
   .premium-data-top-table {
-    min-width: var(--space-640px-170);
+    min-width: var(--space-920px-72);
     table-layout: fixed;
-    width: var(--space-640px-170);
+    width: var(--space-920px-72);
+  }
+
+  /* In table-layout: fixed, `min-width` on <col> is ignored. Set explicit width. */
+  .premium-data-top-col-reason {
+    width: var(--space-260px-75);
   }
 
   .premium-data-top-table th,
