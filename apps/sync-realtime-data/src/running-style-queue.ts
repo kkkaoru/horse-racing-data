@@ -2,8 +2,14 @@
 // The Worker builds one-race 117-feature Parquet files, stores them in R2,
 // reads the stored file back, then writes flatbin model predictions to D1.
 
+import { markFinishPositionFeaturesCached } from "./finish-position-d1";
+import { putFinishPositionInputsCache } from "./finish-position-inputs-cache";
 import { getFinishPositionPool } from "./finish-position-lite-pool";
-import { putRunningStyleCache } from "./running-style-cache";
+import {
+  filterRunningStyleFeatureRowsByActiveEntries,
+  resolveRunningStyleExpectedHorseCount,
+} from "./running-style-expected-horses";
+import { putViewerRunningStyleRaceCache } from "./viewer-running-style-cache";
 import {
   getRunningStyleInferenceState,
   listRaceRunningStylesForRace,
@@ -24,6 +30,7 @@ import {
   buildRunningStyleFlatModelKey,
   loadFlatLightGBMModelFromR2,
 } from "./running-style-model-binary";
+import { getLatestRaceEntries } from "./storage";
 import type { Env, RunningStylePredictionJob } from "./types";
 
 const ENABLED_FLAG = "1";
@@ -42,15 +49,14 @@ export interface RunningStylePredictionJobSummary {
 const cacheCompletedRunningStyles = async (
   env: Env,
   job: RunningStylePredictionJob,
-  expectedHorseCount: number,
 ): Promise<{ cacheError?: string; cacheWritten: boolean }> => {
   try {
     const rows = await listRaceRunningStylesForRace(env.REALTIME_DB, buildRunningStyleRaceKey(job));
-    if (rows.length !== expectedHorseCount) {
+    if (rows.length === 0) {
       return { cacheWritten: false };
     }
     return {
-      cacheWritten: await putRunningStyleCache({
+      cacheWritten: await putViewerRunningStyleRaceCache({
         env,
         race: job,
         rows,
@@ -79,7 +85,7 @@ export const handleRunningStylePredictionJob = async (
     state.writtenHorseCount !== null &&
     state.writtenHorseCount >= state.expectedHorseCount
   ) {
-    const cacheResult = await cacheCompletedRunningStyles(env, job, state.expectedHorseCount);
+    const cacheResult = await cacheCompletedRunningStyles(env, job);
     return {
       ...cacheResult,
       featuresR2Key: state.featuresR2Key ?? "",
@@ -93,6 +99,7 @@ export const handleRunningStylePredictionJob = async (
   await markRunningStyleInferenceProcessing(env.REALTIME_DB, job, new Date().toISOString());
   try {
     const pool = getFinishPositionPool(env);
+    const latestEntries = await getLatestRaceEntries(env.REALTIME_DB, raceKey);
     const modelKey = buildRunningStyleFlatModelKey(job.source);
     const model = await loadFlatLightGBMModelFromR2(env.RUNNING_STYLE_MODELS, modelKey);
     const featureNames = model.header.feature_names;
@@ -100,7 +107,15 @@ export const handleRunningStylePredictionJob = async (
     if (built.rows.length === 0) {
       throw new Error(`no running-style feature rows found for race ${raceKey}`);
     }
-    const coverage = validateFeatureCoverage(built.rows, featureNames);
+    const inferenceRows = filterRunningStyleFeatureRowsByActiveEntries(built.rows, latestEntries);
+    if (inferenceRows.length === 0) {
+      throw new Error(`no active running-style feature rows found for race ${raceKey}`);
+    }
+    const expectedHorseCount = resolveRunningStyleExpectedHorseCount(
+      inferenceRows.length,
+      latestEntries,
+    );
+    const coverage = validateFeatureCoverage(inferenceRows, featureNames);
     if (coverage.missingFeatureNames.length > 0) {
       throw new Error(
         `PostgreSQL feature build missing model features: ${coverage.missingFeatureNames.join(", ")}`,
@@ -110,9 +125,25 @@ export const handleRunningStylePredictionJob = async (
     await putRunningStyleFeatureParquet(
       env.RUNNING_STYLE_MODELS,
       featuresR2Key,
-      built.rows,
+      inferenceRows,
       featureNames,
     );
+    const completedAt = new Date().toISOString();
+    await markFinishPositionFeaturesCached(env.REALTIME_DB, job, {
+      attemptedAt: job.predictedAt,
+      completedAt,
+      featuresR2Key,
+      modelVersion: model.header.model_version,
+    });
+    await putFinishPositionInputsCache({
+      env,
+      payload: {
+        featuresR2Key,
+        modelVersion: model.header.model_version,
+        raceKey,
+      },
+      race: job,
+    });
     const rows = await loadRunningStyleFeatureParquet(
       env.RUNNING_STYLE_MODELS,
       featuresR2Key,
@@ -125,20 +156,20 @@ export const handleRunningStylePredictionJob = async (
     });
     await markRunningStyleInferenceCompleted(env.REALTIME_DB, {
       completedAt: new Date().toISOString(),
-      expectedHorseCount: rows.length,
+      expectedHorseCount,
       featuresR2Key,
       modelVersion: summary.modelVersion,
       raceKey,
       writtenHorseCount: summary.writtenCount,
     });
     const cacheResult =
-      summary.writtenCount === rows.length
-        ? await cacheCompletedRunningStyles(env, job, rows.length)
+      summary.writtenCount >= expectedHorseCount
+        ? await cacheCompletedRunningStyles(env, job)
         : { cacheWritten: false };
     return {
       ...cacheResult,
       featuresR2Key,
-      horseCount: rows.length,
+      horseCount: inferenceRows.length,
       modelVersion: summary.modelVersion,
       raceKey,
       writtenCount: summary.writtenCount,

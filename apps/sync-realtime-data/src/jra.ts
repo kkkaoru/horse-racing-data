@@ -29,7 +29,7 @@ const ODDS_PAGE_LABELS: ReadonlyArray<{ label: string; type: OddsType }> = [
 ];
 
 const BLOCKED_RESOURCE_TYPES = new Set(["font", "image", "media", "stylesheet"]);
-const ENTRY_SCRATCH_STATUS_LABELS = ["出走取消", "取消", "競走除外", "除外"] as const;
+const ENTRY_SCRATCH_STATUS_LABELS = ["出場停止", "出走取消", "取消", "競走除外", "除外"] as const;
 const RESULT_EXCLUDED_STATUS_LABELS = [
   "出走取消",
   "取消",

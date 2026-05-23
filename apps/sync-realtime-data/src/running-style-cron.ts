@@ -8,17 +8,22 @@ import type { Pool } from "pg";
 import { getFinishPositionPool } from "./finish-position-lite-pool";
 import {
   listRaceRunningStyleCounts,
+  listRaceRunningStylesForRace,
   listRunningStyleInferenceStates,
   upsertRunningStylePendingStates,
   type RunningStyleInferenceState,
   type RunningStylePendingRace,
 } from "./running-style-d1";
+import { listRunningStyleExpectedHorseCounts } from "./running-style-expected-horses";
+import { putViewerRunningStyleRaceCache } from "./viewer-running-style-cache";
 import {
   buildRunningStyleRaceKey,
   normalizeKeibajoCode,
   normalizeRaceBango,
+  parseRunningStyleRaceKey,
   type RunningStyleSource,
 } from "./running-style-features";
+import { listRunningStyleRacesByDate } from "./running-style-race-list";
 import type { Env, RunningStylePredictionJob } from "./types";
 
 export const RUNNING_STYLE_INFERENCE_CRON = "*/10 * * * *";
@@ -48,13 +53,14 @@ export interface RunningStylePlanRace extends RunningStylePendingRace {
 }
 
 export interface RunningStylePlanSummary {
-  date: string;
-  scanned: number;
-  featureReady: number;
-  completed: number;
   alreadyQueued: number;
-  missingFeatures: number;
+  cacheRefresh?: ViewerRunningStyleCacheRefreshSummary;
+  completed: number;
+  date: string;
   enqueued: number;
+  featureReady: number;
+  missingFeatures: number;
+  scanned: number;
 }
 
 const padDatePart = (value: number): string => String(value).padStart(DATE_PAD_WIDTH, "0");
@@ -98,24 +104,6 @@ const toRunningStylePendingRace = (
   };
 };
 
-const listRegisteredRacesByDate = async (
-  db: D1Database,
-  date: string,
-): Promise<RegisteredRaceRow[]> => {
-  const result = await db
-    .prepare(
-      `select source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango
-         from realtime_race_sources
-        where source in ('jra', 'nar')
-          and kaisai_nen = ?
-          and kaisai_tsukihi = ?
-        order by race_start_at_jst, source, keibajo_code, race_bango`,
-    )
-    .bind(date.slice(0, 4), date.slice(4, 8))
-    .all<RegisteredRaceRow>();
-  return result.results;
-};
-
 const listFeatureCountsByDate = async (pool: Pool, date: string): Promise<Map<string, number>> => {
   const featureResult = await pool.query<FeatureCountRow>(
     `
@@ -147,6 +135,7 @@ const isActiveState = (state: RunningStyleInferenceState | undefined, now: Date)
 export const selectRacesNeedingRunningStyleInference = (
   registeredRaces: ReadonlyArray<RegisteredRaceRow>,
   featureCounts: ReadonlyMap<string, number>,
+  expectedHorseCounts: ReadonlyMap<string, number>,
   predictionCounts: ReadonlyMap<string, number>,
   states: ReadonlyMap<string, RunningStyleInferenceState>,
   now = new Date(),
@@ -165,12 +154,13 @@ export const selectRacesNeedingRunningStyleInference = (
 
   registeredRaces.forEach((row) => {
     const race = toRunningStylePendingRace(row, 0);
-    const expectedHorseCount = featureCounts.get(race.raceKey) ?? 0;
-    if (expectedHorseCount <= 0) {
+    const featureCount = featureCounts.get(race.raceKey) ?? 0;
+    if (featureCount <= 0) {
       missingFeatures += 1;
       return;
     }
     featureReady += 1;
+    const expectedHorseCount = expectedHorseCounts.get(race.raceKey) ?? featureCount;
     const existingHorseCount = predictionCounts.get(race.raceKey) ?? 0;
     if (existingHorseCount >= expectedHorseCount) {
       completed += 1;
@@ -223,7 +213,7 @@ export const planRunningStylePredictionsForDate = async (
   date: string,
   now: Date,
 ): Promise<RunningStylePlanSummary> => {
-  const registeredRaces = await listRegisteredRacesByDate(env.REALTIME_DB, date);
+  const { races: registeredRaces } = await listRunningStyleRacesByDate(env, date);
   if (!isInferenceEnabled(env)) {
     return {
       alreadyQueued: 0,
@@ -246,13 +236,15 @@ export const planRunningStylePredictionsForDate = async (
       source: row.source,
     }),
   );
-  const [predictionCounts, states] = await Promise.all([
+  const [predictionCounts, states, expectedHorseCounts] = await Promise.all([
     listRaceRunningStyleCounts(env.REALTIME_DB, raceKeys),
     listRunningStyleInferenceStates(env.REALTIME_DB, raceKeys),
+    listRunningStyleExpectedHorseCounts(env.REALTIME_DB, raceKeys, featureCounts),
   ]);
   const selected = selectRacesNeedingRunningStyleInference(
     registeredRaces,
     featureCounts,
+    expectedHorseCounts,
     predictionCounts,
     states,
     now,
@@ -277,6 +269,106 @@ export const planRunningStylePredictionsForDate = async (
 export const runRunningStyleCronTick = async (
   env: Env,
   now: Date,
+  ctx?: ExecutionContext,
 ): Promise<RunningStylePlanSummary> => {
-  return planRunningStylePredictionsForDate(env, formatYYYYMMDDInJst(now), now);
+  const date = formatYYYYMMDDInJst(now);
+  const plan = await planRunningStylePredictionsForDate(env, date, now);
+  const cacheRefresh = await refreshViewerRunningStyleCachesForDate(env, date, ctx);
+  return { ...plan, cacheRefresh };
+};
+
+export const refreshViewerRunningStyleCacheForRace = async (
+  env: Env,
+  raceKey: string,
+  ctx?: ExecutionContext,
+): Promise<boolean> => {
+  const race = parseRunningStyleRaceKey(raceKey);
+  if (race === null) {
+    return false;
+  }
+  const rows = await listRaceRunningStylesForRace(env.REALTIME_DB, raceKey, ctx);
+  if (rows.length === 0) {
+    return false;
+  }
+  return putViewerRunningStyleRaceCache({
+    ctx,
+    env,
+    race,
+    rows,
+  });
+};
+
+export interface ViewerRunningStyleCacheRefreshSummary {
+  date: string;
+  refreshed: number;
+  scanned: number;
+  skipped: number;
+}
+
+export const refreshViewerRunningStyleCachesForDate = async (
+  env: Env,
+  date: string,
+  ctx?: ExecutionContext,
+): Promise<ViewerRunningStyleCacheRefreshSummary> => {
+  const { races: registeredRaces } = await listRunningStyleRacesByDate(env, date);
+  if (!isInferenceEnabled(env) || registeredRaces.length === 0) {
+    return {
+      date,
+      refreshed: 0,
+      scanned: registeredRaces.length,
+      skipped: registeredRaces.length,
+    };
+  }
+
+  const raceKeys = registeredRaces.map((row) =>
+    buildRunningStyleRaceKey({
+      kaisaiNen: row.kaisai_nen,
+      kaisaiTsukihi: row.kaisai_tsukihi,
+      keibajoCode: row.keibajo_code,
+      raceBango: row.race_bango,
+      source: row.source,
+    }),
+  );
+  const predictionCounts = await listRaceRunningStyleCounts(env.REALTIME_DB, raceKeys, ctx);
+  let refreshed = 0;
+  let skipped = 0;
+
+  for (const row of registeredRaces) {
+    const race = {
+      kaisaiNen: row.kaisai_nen,
+      kaisaiTsukihi: row.kaisai_tsukihi,
+      keibajoCode: normalizeKeibajoCode(row.keibajo_code),
+      raceBango: normalizeRaceBango(row.race_bango),
+      source: row.source,
+    };
+    const raceKey = buildRunningStyleRaceKey(race);
+    const existingHorseCount = predictionCounts.get(raceKey) ?? 0;
+    if (existingHorseCount === 0) {
+      skipped += 1;
+      continue;
+    }
+    const rows = await listRaceRunningStylesForRace(env.REALTIME_DB, raceKey, ctx);
+    if (rows.length === 0) {
+      skipped += 1;
+      continue;
+    }
+    const cacheWritten = await putViewerRunningStyleRaceCache({
+      ctx,
+      env,
+      race: { ...race, raceKey },
+      rows,
+    });
+    if (cacheWritten) {
+      refreshed += 1;
+    } else {
+      skipped += 1;
+    }
+  }
+
+  return {
+    date,
+    refreshed,
+    scanned: registeredRaces.length,
+    skipped,
+  };
 };

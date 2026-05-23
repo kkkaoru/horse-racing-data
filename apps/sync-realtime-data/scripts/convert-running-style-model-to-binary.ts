@@ -166,7 +166,26 @@ const concat = (parts: Uint8Array[]): Uint8Array => {
 
 const main = async (): Promise<void> => {
   const args = parseArgs();
-  const model = JSON.parse(await Bun.file(args.input).text()) as CompactLightGBMModel;
+  const result = await convertRunningStyleModelFile(args.input, args.output);
+  console.log(
+    JSON.stringify({
+      ...result,
+      input: args.input,
+      output: args.output,
+    }),
+  );
+};
+
+export const convertRunningStyleModelFile = async (
+  inputPath: string,
+  outputPath: string,
+): Promise<{
+  categoricalValueCount: number;
+  nodes: number;
+  sizeBytes: number;
+  trees: number;
+}> => {
+  const model = JSON.parse(await Bun.file(inputPath).text()) as CompactLightGBMModel;
   const nodes: FlatNode[] = [];
   const categoricalValues: number[] = [];
   const treeRootIndices = model.trees.map((tree) =>
@@ -186,17 +205,15 @@ const main = async (): Promise<void> => {
     tree_root_indices: treeRootIndices,
   });
   const output = concat([header, writeNodes(nodes), writeCategoricalValues(categoricalValues)]);
-  await Bun.write(args.output, output);
-  console.log(
-    JSON.stringify({
-      categoricalValueCount: categoricalValues.length,
-      input: args.input,
-      nodes: nodes.length,
-      output: args.output,
-      sizeBytes: output.byteLength,
-      trees: treeRootIndices.length,
-    }),
-  );
+  await Bun.write(outputPath, output);
+  return {
+    categoricalValueCount: categoricalValues.length,
+    nodes: nodes.length,
+    sizeBytes: output.byteLength,
+    trees: treeRootIndices.length,
+  };
 };
 
-await main();
+if (import.meta.main) {
+  await main();
+}

@@ -1,8 +1,5 @@
 import "server-only";
-import {
-  buildRaceKey as buildRunningStyleRaceKey,
-  getRaceRunningStylesFromD1,
-} from "../../../db/corner-running-style-queries";
+import { getRaceRunningStylesWithCache } from "../../../lib/running-style-cache.server";
 import {
   getBloodlineStats,
   getActiveFinishPositionPredictions,
@@ -23,7 +20,7 @@ import {
   getTimeScoreRows,
 } from "../../../db/queries";
 import { SOURCE_LABELS, type RaceSource } from "../../../lib/codes";
-import { buildFinishPredictionRowsFromResults } from "../../../lib/finish-position-prediction";
+import type { FinishPredictionBuildInputs } from "../../../lib/finish-position-prediction";
 import {
   type FinishPredictionEvaluationMetrics,
   FINISH_POSITION_PREDICTION_EVALUATIONS,
@@ -1249,6 +1246,21 @@ export const getDetailSectionPayload = async (
                 ? staticEvaluation.top5WinnerCapture
                 : dbEvaluation.top5WinnerCapture * 100,
           };
+    const inputs: FinishPredictionBuildInputs = {
+      currentDistance: race.kyori,
+      currentGradeCode: race.gradeCode,
+      currentKeibajoCode: race.keibajoCode,
+      currentKyosoJokenCode: race.kyosoJokenCode,
+      currentKyosoJokenMeisho: race.kyosoJokenMeisho,
+      currentRaceDate: `${race.kaisaiNen}${race.kaisaiTsukihi}`,
+      currentSource: race.source,
+      currentTrackCode: race.trackCode,
+      modelPredictionFeatures,
+      results,
+      runners,
+      sameDayVenueJockeyWins,
+      similarityFeatures,
+    };
     return {
       evaluation:
         evaluationFromDb ??
@@ -1256,21 +1268,7 @@ export const getDetailSectionPayload = async (
           keibajoCode: race.keibajoCode,
           source: race.source,
         }),
-      rows: buildFinishPredictionRowsFromResults({
-        currentDistance: race.kyori,
-        currentGradeCode: race.gradeCode,
-        currentKeibajoCode: race.keibajoCode,
-        currentKyosoJokenCode: race.kyosoJokenCode,
-        currentKyosoJokenMeisho: race.kyosoJokenMeisho,
-        currentRaceDate: `${race.kaisaiNen}${race.kaisaiTsukihi}`,
-        currentSource: race.source,
-        currentTrackCode: race.trackCode,
-        modelPredictionFeatures,
-        results,
-        runners,
-        sameDayVenueJockeyWins,
-        similarityFeatures,
-      }),
+      inputs,
       type: section,
     };
   }
@@ -1318,15 +1316,13 @@ export const getDetailSectionPayload = async (
     const [similarityFeatures, modelPredictionFeatures, runningStyleRows] = await Promise.all([
       getRacePaceSimilarityFeatures(race, runners),
       getRacePaceModelPredictionFeatures(race, runners),
-      getRaceRunningStylesFromD1(
-        buildRunningStyleRaceKey({
-          kaisaiNen: race.kaisaiNen,
-          kaisaiTsukihi: race.kaisaiTsukihi,
-          keibajoCode: race.keibajoCode,
-          raceBango: race.raceBango,
-          source: race.source,
-        }),
-      ).catch(() => []),
+      getRaceRunningStylesWithCache({
+        kaisaiNen: race.kaisaiNen,
+        kaisaiTsukihi: race.kaisaiTsukihi,
+        keibajoCode: race.keibajoCode,
+        raceBango: race.raceBango,
+        source: race.source,
+      }).catch(() => []),
     ]);
     const paceRows = buildRacePacePredictionRowsFromResults({
       currentConditionCode: race.kyosoJokenCode,

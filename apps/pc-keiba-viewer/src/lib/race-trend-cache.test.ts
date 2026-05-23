@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   RACE_TREND_CACHE_WARM_VARIANT_COUNT,
+  addDaysToYmd,
   buildDefaultRaceTrendCacheOptions,
+  buildRaceTrendApiPath,
+  buildRaceTrendCacheKey,
   buildRaceTrendCacheWarmOptions,
   getRaceStartTimeMs,
   getRaceTrendCacheTtlSeconds,
@@ -111,5 +114,56 @@ describe("race trend cache helpers", () => {
     expect(startTime).not.toBeNull();
     expect(getRaceTrendCacheTtlSeconds(targetRace, 600, startTime! - 60_000)).toBe(660);
     expect(getRaceTrendCacheTtlSeconds(targetRace, 600, startTime! + 601_000)).toBe(0);
+    expect(getRaceTrendCacheTtlSeconds({ ...targetRace, hassoJikoku: null })).toBe(0);
+    expect(getRaceStartTimeMs({ ...targetRace, hassoJikoku: "bad" })).toBeNull();
+  });
+
+  it("builds cache keys and warm API paths", () => {
+    const options = buildDefaultRaceTrendCacheOptions("jra", "20260520");
+    expect(options.frameStartYmd).toBe("20260519");
+    expect(addDaysToYmd("20260520", -3)).toBe("20260517");
+    const cacheKey = buildRaceTrendCacheKey({
+      day: "20",
+      keibajoCode: "05",
+      month: "05",
+      options,
+      raceNumber: "11",
+      year: "2026",
+    });
+    expect(cacheKey).toContain("race-trend:v1:2026:05:20:05:11:jra");
+    expect(
+      buildRaceTrendApiPath({
+        day: "20",
+        kind: "race-trend",
+        keibajoCode: "05",
+        month: "05",
+        options,
+        raceNumber: "11",
+        source: "jra",
+        year: "2026",
+      }),
+    ).toContain("/api/races/2026/05/20/05/11/trends?");
+  });
+
+  it("compares races across dates and non-numeric race numbers", () => {
+    expect(isRaceBeforeTargetRace({ ...targetRace, source: "jra" }, targetRace)).toBe(false);
+    expect(
+      isRaceBeforeTargetRace(
+        { ...targetRace, kaisaiTsukihi: "0519" },
+        targetRace,
+      ),
+    ).toBe(true);
+    expect(
+      isRaceBeforeTargetRace(
+        { ...targetRace, raceBango: "A", keibajoCode: "44" },
+        { ...targetRace, raceBango: "B", keibajoCode: "44" },
+      ),
+    ).toBe(true);
+    expect(
+      isRaceBeforeTargetRace(
+        { ...targetRace, keibajoCode: "45", raceBango: "10" },
+        { ...targetRace, keibajoCode: "44", raceBango: "12" },
+      ),
+    ).toBe(false);
   });
 });

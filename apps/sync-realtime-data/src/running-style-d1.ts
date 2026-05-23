@@ -3,6 +3,10 @@
 // SQL so both the Cron consumer and the on-demand admin route see the
 // same column order.
 
+import {
+  type D1QueryCacheRaceDayContext,
+  withD1QueryCache,
+} from "./d1-query-cache";
 import type { RunningStyleClassLabel } from "./running-style-lightgbm-tree";
 
 export interface RaceRunningStyleRow {
@@ -90,6 +94,18 @@ const chunkArray = <T>(items: ReadonlyArray<T>, size: number): ReadonlyArray<Rea
 const buildPlaceholders = (count: number): string =>
   Array.from({ length: count }, () => "?").join(",");
 
+const parseRaceDayFromRaceKey = (raceKey: string): D1QueryCacheRaceDayContext | undefined => {
+  const parts = raceKey.split(":");
+  const datePart = parts[1];
+  if (datePart === undefined || datePart.length < 8) {
+    return undefined;
+  }
+  return {
+    kaisaiNen: datePart.slice(0, 4),
+    kaisaiTsukihi: datePart.slice(4, 8),
+  };
+};
+
 export const upsertRaceRunningStyles = async (
   db: D1Database,
   rows: ReadonlyArray<RaceRunningStyleRow>,
@@ -105,25 +121,37 @@ export const upsertRaceRunningStyles = async (
 export const listRaceRunningStyleCounts = async (
   db: D1Database,
   raceKeys: ReadonlyArray<string>,
+  ctx?: ExecutionContext,
 ): Promise<Map<string, number>> => {
-  const counts = new Map<string, number>();
-  for (const chunk of chunkArray(raceKeys, D1_BATCH_SIZE)) {
-    if (chunk.length === 0) continue;
-    const result = await db
-      .prepare(
-        `select race_key, count(*) as count
-           from race_running_styles
-          where race_key in (${buildPlaceholders(chunk.length)})
-          group by race_key`,
-      )
-      .bind(...chunk)
-      .all<{ race_key: string; count: number }>();
-    result.results.forEach((row) => counts.set(row.race_key, Number(row.count)));
+  const uniqueRaceKeys = Array.from(new Set(raceKeys.filter((raceKey) => raceKey.length > 0)));
+  if (uniqueRaceKeys.length === 0) {
+    return new Map();
   }
-  return counts;
+  return withD1QueryCache(
+    "running-style-races",
+    ["listRaceRunningStyleCounts", uniqueRaceKeys],
+    async () => {
+      const counts = new Map<string, number>();
+      for (const chunk of chunkArray(uniqueRaceKeys, D1_BATCH_SIZE)) {
+        if (chunk.length === 0) continue;
+        const result = await db
+          .prepare(
+            `select race_key, count(*) as count
+               from race_running_styles
+              where race_key in (${buildPlaceholders(chunk.length)})
+              group by race_key`,
+          )
+          .bind(...chunk)
+          .all<{ race_key: string; count: number }>();
+        result.results.forEach((row) => counts.set(row.race_key, Number(row.count)));
+      }
+      return Object.fromEntries(counts);
+    },
+    { ctx, raceDay: parseRaceDayFromRaceKey(uniqueRaceKeys[0] ?? "") },
+  ).then((record) => new Map(Object.entries(record)));
 };
 
-export const listRaceRunningStylesForRace = async (
+const queryRaceRunningStylesForRace = async (
   db: D1Database,
   raceKey: string,
 ): Promise<RaceRunningStyleRow[]> => {
@@ -167,6 +195,18 @@ export const listRaceRunningStylesForRace = async (
     raceKey: row.race_key,
   }));
 };
+
+export const listRaceRunningStylesForRace = async (
+  db: D1Database,
+  raceKey: string,
+  ctx?: ExecutionContext,
+): Promise<RaceRunningStyleRow[]> =>
+  withD1QueryCache(
+    "running-style-race",
+    ["getRaceRunningStylesFromD1", raceKey],
+    () => queryRaceRunningStylesForRace(db, raceKey),
+    { ctx, raceDay: parseRaceDayFromRaceKey(raceKey) },
+  );
 
 export const listRunningStyleInferenceStates = async (
   db: D1Database,

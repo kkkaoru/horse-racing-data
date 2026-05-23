@@ -14,7 +14,12 @@ import { isBanEiKeibajoCode } from "./runner-format";
 
 type FinishPredictionCategory = "ban-ei" | "jra" | "nar";
 
-interface BuildFinishPredictionRowsParams {
+export interface FinishPredictionMarketOverride {
+  odds: number | null;
+  popularity: number | null;
+}
+
+export interface FinishPredictionBuildInputs {
   currentDistance: string | null | undefined;
   currentGradeCode?: string | null;
   currentKeibajoCode: string | null | undefined;
@@ -28,6 +33,10 @@ interface BuildFinishPredictionRowsParams {
   runners: Runner[];
   sameDayVenueJockeyWins?: SameDayVenueJockeyWinFeature[];
   similarityFeatures?: FinishPositionSimilarityFeature[];
+}
+
+interface BuildFinishPredictionRowsParams extends FinishPredictionBuildInputs {
+  marketOverrides?: ReadonlyMap<string, FinishPredictionMarketOverride>;
 }
 
 type FinishPredictionConfig = {
@@ -54,6 +63,23 @@ type ScoreCandidate = {
 };
 
 export const RACE_FINISH_PREDICTION_RESULTS_EVENT = "pc-keiba:finish-prediction-results";
+
+export const buildFinishPredictionMarketOverrides = (
+  tanshoRows: ReadonlyArray<{
+    combination: string;
+    odds?: number | null;
+    rank?: number | null;
+  }>,
+): Map<string, FinishPredictionMarketOverride> =>
+  new Map(
+    tanshoRows.map((row) => [
+      row.combination.replace(/^0+/u, "") || row.combination,
+      {
+        odds: row.odds ?? null,
+        popularity: row.rank ?? null,
+      },
+    ]),
+  );
 
 const CATEGORY_CONFIG: Record<FinishPredictionCategory, FinishPredictionConfig> = {
   "ban-ei": {
@@ -387,24 +413,30 @@ const weightedAverage = (
   };
 };
 
-const normalizePopularity = (
-  value: string | null | undefined,
+const normalizeParsedPopularity = (
+  popularity: number | null,
   runnerCount: number,
 ): number | null => {
-  const popularity = parseStoredNumber(value, "00");
   if (popularity === null || runnerCount <= 1) {
     return null;
   }
   return clampScore((popularity - 1) / (runnerCount - 1));
 };
 
-const normalizeOdds = (value: string | null | undefined): number | null => {
-  const odds = parseOdds(value);
+const normalizeParsedOdds = (odds: number | null): number | null => {
   if (odds === null) {
     return null;
   }
   return clampScore(Math.log(Math.max(odds, 1)) / Math.log(300));
 };
+
+const normalizePopularity = (
+  value: string | null | undefined,
+  runnerCount: number,
+): number | null => normalizeParsedPopularity(parseStoredNumber(value, "00"), runnerCount);
+
+const normalizeOdds = (value: string | null | undefined): number | null =>
+  normalizeParsedOdds(parseOdds(value));
 
 const toDetail = (candidate: ScoreCandidate): FinishPredictionDetail => ({
   label: candidate.label,
@@ -523,6 +555,11 @@ const getSameDayJockeyScore = (
   };
 };
 
+export const buildFinishPredictionRowsFromInputs = (
+  inputs: FinishPredictionBuildInputs,
+  marketOverrides?: ReadonlyMap<string, FinishPredictionMarketOverride>,
+): FinishPredictionRow[] => buildFinishPredictionRowsFromResults({ ...inputs, marketOverrides });
+
 export const buildFinishPredictionRowsFromResults = ({
   currentDistance,
   currentGradeCode,
@@ -532,6 +569,7 @@ export const buildFinishPredictionRowsFromResults = ({
   currentRaceDate,
   currentSource,
   currentTrackCode,
+  marketOverrides,
   modelPredictionFeatures = [],
   results,
   runners,
@@ -603,6 +641,10 @@ export const buildFinishPredictionRowsFromResults = ({
     const similarity = similarityByHorse.get(horseNumber);
     const models = modelsByHorse.get(horseNumber) ?? [];
     const sameDayJockey = getSameDayJockeyScore(runner.kishumeiRyakusho, sameDayVenueJockeyWins);
+    const marketOverride = marketOverrides?.get(horseNumber);
+    const storedPopularity =
+      marketOverride?.popularity ?? parseStoredNumber(runner.tanshoNinkijun, "00");
+    const storedOdds = marketOverride?.odds ?? parseOdds(runner.tanshoOdds);
     const candidates: ScoreCandidate[] = [
       {
         label: "競走成績",
@@ -630,14 +672,18 @@ export const buildFinishPredictionRowsFromResults = ({
       },
       {
         label: "人気",
-        reason: "最新の人気順を出走頭数で正規化",
-        value: normalizePopularity(runner.tanshoNinkijun, runnerCount),
+        reason: marketOverride
+          ? "リアルタイムの人気順を出走頭数で正規化"
+          : "最新の人気順を出走頭数で正規化",
+        value: normalizeParsedPopularity(storedPopularity, runnerCount),
         weight: runnerConfig.popularityWeight,
       },
       {
         label: "単勝",
-        reason: "最新の単勝オッズを対数で正規化",
-        value: normalizeOdds(runner.tanshoOdds),
+        reason: marketOverride
+          ? "リアルタイムの単勝オッズを対数で正規化"
+          : "最新の単勝オッズを対数で正規化",
+        value: normalizeParsedOdds(storedOdds),
         weight: runnerConfig.oddsWeight,
       },
       {
@@ -672,8 +718,8 @@ export const buildFinishPredictionRowsFromResults = ({
       predictedRank: 0,
       score,
       showProbability: 0,
-      storedOdds: parseOdds(runner.tanshoOdds),
-      storedPopularity: parseStoredNumber(runner.tanshoNinkijun, "00"),
+      storedOdds,
+      storedPopularity,
       winProbability: 0,
     };
   });
