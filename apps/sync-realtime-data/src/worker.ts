@@ -116,6 +116,8 @@ import {
   RUNNING_STYLE_PREWARM_CRON,
   formatTomorrowYYYYMMDDInJst,
   planRunningStylePredictionsForDate,
+  refreshViewerRunningStyleCacheForRace,
+  refreshViewerRunningStyleCachesForDate,
   runRunningStyleCronTick,
 } from "./running-style-cron";
 import { handleRunningStylePredictionJob } from "./running-style-queue";
@@ -199,9 +201,6 @@ const addDaysToYyyymmdd = (yyyymmdd: string, days: number): string => {
 
 const JRA_PREMIUM_LINK_CRONS = new Set(["0 4 * * 5", "0 4 * * 6"]);
 const JRA_PREMIUM_DATA_CRONS = new Set(["0 5 * * 5", "0 5 * * 6"]);
-const REALTIME_PLAN_CRON = "* * * * *";
-const RUNNING_STYLE_FALLBACK_INTERVAL_MINUTES = 10;
-
 const getCronJob = (cron: string, now = new Date()): Job => {
   const today = getTodayJst(now);
   if (JRA_PREMIUM_LINK_CRONS.has(cron)) {
@@ -216,15 +215,12 @@ const getCronJob = (cron: string, now = new Date()): Job => {
   return { date: today, type: "plan-realtime-fetches" };
 };
 
-const shouldRunRunningStyleInferenceFromRealtimeCron = (cron: string, now: Date): boolean =>
-  cron === REALTIME_PLAN_CRON &&
-  now.getUTCMinutes() % RUNNING_STYLE_FALLBACK_INTERVAL_MINUTES === 0;
-
 const logRunningStylePlanResult = async (
   env: Env,
   scheduledAt: Date,
+  ctx?: ExecutionContext,
 ): Promise<void> => {
-  await runRunningStyleCronTick(env, scheduledAt)
+  await runRunningStyleCronTick(env, scheduledAt, ctx)
     .then((summary) =>
       logFetch(
         env.REALTIME_DB,
@@ -910,7 +906,12 @@ const tryEnsureDiscoveredUrlsAreCurrent = async (env: Env, targetDate: string): 
   }
 };
 
-const prewarmRunningStylePredictionsForDate = async (env: Env, targetDate: string, now: Date) => {
+const prewarmRunningStylePredictionsForDate = async (
+  env: Env,
+  targetDate: string,
+  now: Date,
+  ctx?: ExecutionContext,
+) => {
   let discoveryResult: Awaited<ReturnType<typeof upsertDiscoveredUrls>> | null = null;
   try {
     discoveryResult = await upsertDiscoveredUrls(env, targetDate);
@@ -931,14 +932,16 @@ const prewarmRunningStylePredictionsForDate = async (env: Env, targetDate: strin
     );
   }
   const runningStyleResult = await planRunningStylePredictionsForDate(env, targetDate, now);
+  const cacheRefreshResult = await refreshViewerRunningStyleCachesForDate(env, targetDate, ctx);
   await logFetch(
     env.REALTIME_DB,
     "plan-running-style-predictions",
     "ok",
     null,
-    JSON.stringify({ ...runningStyleResult, mode: "prewarm" }),
+    JSON.stringify({ ...runningStyleResult, cacheRefresh: cacheRefreshResult, mode: "prewarm" }),
   );
   return {
+    cacheRefresh: cacheRefreshResult,
     date: targetDate,
     discovery: discoveryResult,
     runningStyle: runningStyleResult,
@@ -1416,6 +1419,9 @@ const fetchAndStoreOdds = async (env: Env, raceKey: string): Promise<void> => {
       listOddsHistoryByType(env.REALTIME_DB, raceKey),
     ]);
     await writeCachedOdds(env, raceKey, { fetchedAt, history, historyByType, latest });
+    if (env.RUNNING_STYLE_D1_WRITE_ENABLED === "1") {
+      await refreshViewerRunningStyleCacheForRace(env, raceKey).catch(() => undefined);
+    }
   } catch (error) {
     await failOddsFetch(env.REALTIME_DB, raceKey);
     throw error;
@@ -2185,13 +2191,13 @@ export default {
         ? new Date(controller.scheduledTime)
         : new Date();
     if (controller.cron === RUNNING_STYLE_INFERENCE_CRON) {
-      ctx.waitUntil(logRunningStylePlanResult(env, scheduledAt));
+      ctx.waitUntil(logRunningStylePlanResult(env, scheduledAt, ctx));
       return;
     }
     if (controller.cron === RUNNING_STYLE_PREWARM_CRON) {
       const targetDate = formatTomorrowYYYYMMDDInJst(scheduledAt);
       ctx.waitUntil(
-        prewarmRunningStylePredictionsForDate(env, targetDate, scheduledAt)
+        prewarmRunningStylePredictionsForDate(env, targetDate, scheduledAt, ctx)
           .catch((error: unknown) =>
             logFetch(
               env.REALTIME_DB,
@@ -2207,9 +2213,6 @@ export default {
     }
     const job = getCronJob(controller.cron, scheduledAt);
     ctx.waitUntil(handleJob(env, job));
-    if (shouldRunRunningStyleInferenceFromRealtimeCron(controller.cron, scheduledAt)) {
-      ctx.waitUntil(logRunningStylePlanResult(env, scheduledAt));
-    }
     if (job.type === "plan-realtime-fetches") {
       ctx.waitUntil(enqueueSelfRealtimePlanIfStale(env, job.date));
     }

@@ -5,12 +5,12 @@ import { useEffect, useMemo, useState } from "react";
 
 import type { RaceSource } from "../../../lib/codes";
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
+import type { FinishPredictionBuildInputs } from "../../../lib/finish-position-prediction";
 import type { FinishPredictionEvaluationMetrics } from "../../../lib/finish-position-prediction-evaluation";
 import type {
   AbilityTest,
   BloodlineStatsRow,
   ConditionCorrelationRow,
-  FinishPredictionRow,
   FinishPositionStatsRow,
   FrameStatsRow,
   HorseRaceResult,
@@ -157,7 +157,7 @@ type OverallScorePayload = {
 
 type FinishPredictionPayload = {
   evaluation: FinishPredictionEvaluationMetrics;
-  rows: FinishPredictionRow[];
+  inputs: FinishPredictionBuildInputs;
   type: "finish-prediction";
 };
 
@@ -728,6 +728,7 @@ export function LazyFinishPredictionSection(props: LazyDetailSectionsProps) {
         }
         combinedScoreLoading={scoreState.status === "loading"}
         evaluation={payload.evaluation}
+        inputs={payload.inputs}
         realtimeRequest={{
           apiBaseUrl: props.realtimeApiBaseUrl,
           day: props.day,
@@ -737,7 +738,6 @@ export function LazyFinishPredictionSection(props: LazyDetailSectionsProps) {
           source: props.source,
           year: props.year,
         }}
-        rows={payload.rows}
       />
     </section>
   );

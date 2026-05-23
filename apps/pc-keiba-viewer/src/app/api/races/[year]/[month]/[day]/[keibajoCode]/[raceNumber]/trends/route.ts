@@ -3,9 +3,9 @@ import { NextResponse } from "next/server";
 
 import {
   buildRaceKey,
-  getRaceRunningStylesByRaceKeysFromD1,
-  getRaceRunningStylesFromD1,
-} from "../../../../../../../../../db/corner-running-style-queries";
+  getRaceRunningStylesByRaceKeysWithCache,
+  getRaceRunningStylesWithCache,
+} from "../../../../../../../../../lib/running-style-cache.server";
 import {
   getRaceDetail,
   getRaceRunners,
@@ -663,15 +663,13 @@ const buildRaceTrendPayload = async (
 ): Promise<RaceTrendPayload> => {
   const currentRunningStylesPromise = options.runningStyleIgnoreRunningStyle
     ? Promise.resolve([])
-    : getRaceRunningStylesFromD1(
-        buildRaceKey({
-          kaisaiNen: race.kaisaiNen,
-          kaisaiTsukihi: race.kaisaiTsukihi,
-          keibajoCode: race.keibajoCode,
-          raceBango: race.raceBango,
-          source: race.source,
-        }),
-      ).catch(() => []);
+    : getRaceRunningStylesWithCache({
+        kaisaiNen: race.kaisaiNen,
+        kaisaiTsukihi: race.kaisaiTsukihi,
+        keibajoCode: race.keibajoCode,
+        raceBango: race.raceBango,
+        source: race.source,
+      }).catch(() => []);
   const trendRunners = runners.map((runner) => {
     return {
       runner,
@@ -776,7 +774,7 @@ const buildRaceTrendPayload = async (
   const rows = Array.from(mergedRows.values()).filter((row) => isRaceBeforeTargetRace(row, race));
   const historicalRunningStyles = options.runningStyleIgnoreRunningStyle
     ? []
-    : await getRaceRunningStylesByRaceKeysFromD1(
+    : await getRaceRunningStylesByRaceKeysWithCache(
         Array.from(new Set(rows.map(starterRaceKey))),
       ).catch(() => []);
   const runningStyleByStarterKey = new Map(

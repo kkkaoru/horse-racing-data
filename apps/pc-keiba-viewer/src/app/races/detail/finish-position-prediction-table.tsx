@@ -3,7 +3,12 @@
 import { Fragment, memo, useCallback, useEffect, useMemo, useState } from "react";
 
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
-import { RACE_FINISH_PREDICTION_RESULTS_EVENT } from "../../../lib/finish-position-prediction";
+import type { FinishPredictionBuildInputs } from "../../../lib/finish-position-prediction";
+import {
+  buildFinishPredictionMarketOverrides,
+  buildFinishPredictionRowsFromInputs,
+  RACE_FINISH_PREDICTION_RESULTS_EVENT,
+} from "../../../lib/finish-position-prediction";
 import type { FinishPredictionEvaluationMetrics } from "../../../lib/finish-position-prediction-evaluation";
 import { getPreferredJockeyName } from "../../../lib/jockey-name";
 import {
@@ -29,8 +34,8 @@ interface FinishPositionPredictionTableProps {
   combinedScoreData?: FinishPredictionCombinedScoreData | null;
   combinedScoreLoading?: boolean;
   evaluation: FinishPredictionEvaluationMetrics;
+  inputs: FinishPredictionBuildInputs;
   realtimeRequest: RealtimeRaceRequest;
-  rows: FinishPredictionRow[];
 }
 
 interface FinishPredictionCombinedScoreData {
@@ -378,11 +383,13 @@ export function FinishPositionPredictionTable({
   combinedScoreData = null,
   combinedScoreLoading = false,
   evaluation,
+  inputs,
   realtimeRequest,
-  rows,
 }: FinishPositionPredictionTableProps) {
   const [expandedHorseNumber, setExpandedHorseNumber] = useState<string | null>(null);
-  const [displayRows, setDisplayRows] = useState<FinishPredictionRow[]>(rows);
+  const [displayRows, setDisplayRows] = useState<FinishPredictionRow[]>(() =>
+    buildFinishPredictionRowsFromInputs(inputs),
+  );
   const [paddockState, setPaddockState] = useState<PaddockState | null>(null);
   const { payload } = useRealtimeRacePayload(realtimeRequest, null);
   const realtimeOddsByHorse = useMemo(
@@ -452,7 +459,10 @@ export function FinishPositionPredictionTable({
         if (leftStatus !== "" || rightStatus !== "") {
           return leftStatus === rightStatus ? 0 : leftStatus ? 1 : -1;
         }
-        return 0;
+        return (
+          left.predictedRank - right.predictedRank ||
+          Number(left.horseNumber) - Number(right.horseNumber)
+        );
       }),
     [displayRows, entryStatusByHorse],
   );
@@ -461,8 +471,12 @@ export function FinishPositionPredictionTable({
   }, []);
 
   useEffect(() => {
-    setDisplayRows(rows);
-  }, [rows]);
+    const tanshoRows = payload?.odds?.latest.tansho ?? [];
+    const marketOverrides =
+      tanshoRows.length > 0 ? buildFinishPredictionMarketOverrides(tanshoRows) : undefined;
+    setDisplayRows(buildFinishPredictionRowsFromInputs(inputs, marketOverrides));
+    setExpandedHorseNumber(null);
+  }, [inputs, payload?.odds?.latest.tansho]);
 
   useEffect(() => {
     let isActive = true;

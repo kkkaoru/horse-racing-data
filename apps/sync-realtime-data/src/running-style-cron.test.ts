@@ -64,6 +64,7 @@ test("selectRacesNeedingRunningStyleInference queues races with incomplete predi
   const selected = selectRacesNeedingRunningStyleInference(
     [RACE],
     new Map([["nar:20260519:46:12", 14]]),
+    new Map([["nar:20260519:46:12", 14]]),
     new Map([["nar:20260519:46:12", 10]]),
     new Map(),
   );
@@ -76,9 +77,23 @@ test("selectRacesNeedingRunningStyleInference queues races with incomplete predi
   });
 });
 
+test("selectRacesNeedingRunningStyleInference treats active-only coverage as completed", () => {
+  const selected = selectRacesNeedingRunningStyleInference(
+    [RACE],
+    new Map([["nar:20260519:46:12", 14]]),
+    new Map([["nar:20260519:46:12", 12]]),
+    new Map([["nar:20260519:46:12", 12]]),
+    new Map(),
+  );
+
+  expect(selected.needed).toHaveLength(0);
+  expect(selected.completed).toBe(1);
+});
+
 test("selectRacesNeedingRunningStyleInference skips active queued state", () => {
   const selected = selectRacesNeedingRunningStyleInference(
     [RACE],
+    new Map([["nar:20260519:46:12", 14]]),
     new Map([["nar:20260519:46:12", 14]]),
     new Map([["nar:20260519:46:12", 10]]),
     new Map([

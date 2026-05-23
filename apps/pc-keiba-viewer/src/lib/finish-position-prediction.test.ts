@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildFinishPredictionRowsFromResults } from "./finish-position-prediction";
+import { buildFinishPredictionRowsFromResults, type FinishPredictionBuildInputs } from "./finish-position-prediction";
 import type { HorseRaceResult, Runner } from "./race-types";
 
 const runner = (overrides: Partial<Runner>): Runner => ({
@@ -398,5 +398,31 @@ describe("buildFinishPredictionRowsFromResults", () => {
 
     expect(rows[0]?.horseNumber).toBe("3");
     expect(rows[0]?.score).toBe(0.5);
+  });
+
+  it("re-ranks rows when realtime market overrides change popularity and odds", () => {
+    const inputs: FinishPredictionBuildInputs = {
+      currentDistance: "1600",
+      currentKeibajoCode: "05",
+      currentRaceDate: "20260523",
+      currentSource: "jra",
+      results: [],
+      runners: [
+        runner({ umaban: "01", tanshoNinkijun: "05", tanshoOdds: "0100" }),
+        runner({ umaban: "02", bamei: "二号", tanshoNinkijun: "01", tanshoOdds: "0015" }),
+      ],
+    };
+    const storedRows = buildFinishPredictionRowsFromResults({ ...inputs });
+    const dynamicRows = buildFinishPredictionRowsFromResults({
+      ...inputs,
+      marketOverrides: new Map([
+        ["1", { odds: 12, popularity: 1 }],
+        ["2", { odds: 80, popularity: 10 }],
+      ]),
+    });
+    expect(storedRows[0]?.horseNumber).toBe("2");
+    expect(dynamicRows[0]?.horseNumber).toBe("1");
+    expect(dynamicRows[0]?.storedPopularity).toBe(1);
+    expect(dynamicRows[0]?.storedOdds).toBe(12);
   });
 });

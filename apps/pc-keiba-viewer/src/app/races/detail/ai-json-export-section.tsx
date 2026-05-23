@@ -7,6 +7,11 @@ import type { RaceSource } from "../../../lib/codes";
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
 import { getPreferredJockeyName } from "../../../lib/jockey-name";
 import {
+  buildFinishPredictionMarketOverrides,
+  buildFinishPredictionRowsFromInputs,
+  type FinishPredictionBuildInputs,
+} from "../../../lib/finish-position-prediction";
+import {
   isPaddockState,
   normalizePaddockHorseScore,
   type PaddockOfficialRank,
@@ -55,7 +60,7 @@ type SupplementalPayloads = {
 
 type FinishPredictionPayloadForExport = {
   evaluation?: unknown;
-  rows: FinishPredictionRow[];
+  inputs: FinishPredictionBuildInputs;
   type: "finish-prediction";
 };
 
@@ -149,7 +154,11 @@ const isRowsPayload = (
   isRecord(payload) && payload.type === type && rowKey in payload && Array.isArray(payload[rowKey]);
 
 const isFinishPredictionPayload = (payload: unknown): payload is FinishPredictionPayloadForExport =>
-  isRowsPayload(payload, "finish-prediction", "rows");
+  isRecord(payload) &&
+  payload.type === "finish-prediction" &&
+  "inputs" in payload &&
+  typeof payload.inputs === "object" &&
+  payload.inputs !== null;
 
 const isOverallScorePayload = (payload: unknown): payload is OverallScorePayloadForExport =>
   isRowsPayload(payload, "overall-score", "rows");
@@ -292,12 +301,17 @@ const buildFinishPredictionOutput = (
   }
   const realtime = supplementalPayloads?.realtime ?? null;
   const { entryStatusByHorse, jockeyByHorse, oddsByHorse } = getRealtimeMaps(realtime);
+  const tanshoRows = realtime?.odds?.latest.tansho ?? [];
+  const finishRows = buildFinishPredictionRowsFromInputs(
+    finishPayload.inputs,
+    tanshoRows.length > 0 ? buildFinishPredictionMarketOverrides(tanshoRows) : undefined,
+  );
   const combinedScoreByHorse = getCombinedScoreByHorse(sectionPayloads ?? {}, realtime);
   const paddockScoreByHorse = buildPaddockScoreByHorse(
-    finishPayload.rows,
+    finishRows,
     supplementalPayloads?.paddock ?? null,
   );
-  const rows = finishPayload.rows
+  const rows = finishRows
     .toSorted((left, right) => {
       const leftStatus = entryStatusByHorse.get(formatRunnerNumber(left.horseNumber)) ?? "";
       const rightStatus = entryStatusByHorse.get(formatRunnerNumber(right.horseNumber)) ?? "";

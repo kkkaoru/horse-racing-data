@@ -9,6 +9,8 @@ import type {
   RaceRunningStyleRow,
   RunningStyleLabel,
 } from "../../../db/corner-running-style-parsers";
+import { formatRunnerNumber } from "../../../lib/runner-format";
+import { useRealtimeRaceSelector } from "./realtime-client";
 
 const STYLE_TAB_VALUES = ["nige", "senkou", "sashi", "oikomi"] as const;
 type StyleTab = (typeof STYLE_TAB_VALUES)[number];
@@ -66,8 +68,22 @@ const resolveCurrentTab = (raw: string | null): StyleTab => {
   return isStyleTab(raw) ? raw : DEFAULT_TAB;
 };
 
-const sortRowsByTab = (rows: RaceRunningStyleRow[], tab: StyleTab): RaceRunningStyleRow[] =>
-  rows.toSorted((a, b) => probabilityForTab(b, tab) - probabilityForTab(a, tab));
+const sortRowsByTab = (
+  rows: RaceRunningStyleRow[],
+  tab: StyleTab,
+  entryStatusByHorse: ReadonlyMap<string, string>,
+): RaceRunningStyleRow[] =>
+  rows.toSorted((left, right) => {
+    const leftStatus = entryStatusByHorse.get(formatRunnerNumber(String(left.horseNumber))) ?? "";
+    const rightStatus = entryStatusByHorse.get(formatRunnerNumber(String(right.horseNumber))) ?? "";
+    if (leftStatus !== "" || rightStatus !== "") {
+      return leftStatus === rightStatus ? 0 : leftStatus ? 1 : -1;
+    }
+    return (
+      probabilityForTab(right, tab) - probabilityForTab(left, tab) ||
+      left.horseNumber - right.horseNumber
+    );
+  });
 
 const resolveBamei = (
   row: RaceRunningStyleRow,
@@ -80,11 +96,12 @@ const resolveJockey = (
 ): string => runners[row.horseNumber]?.jockey ?? MISSING_JOCKEY_PLACEHOLDER;
 
 interface AllRowsTableProps {
+  entryStatusByHorse: ReadonlyMap<string, string>;
   rows: RaceRunningStyleRow[];
   runnersByUmaban: Record<number, RunnerDisplayInfo>;
 }
 
-const AllRowsTable = ({ rows, runnersByUmaban }: AllRowsTableProps) => (
+const AllRowsTable = ({ entryStatusByHorse, rows, runnersByUmaban }: AllRowsTableProps) => (
   <div className="runner-table-wrap">
     <table className="runner-table">
       <thead>
@@ -100,18 +117,30 @@ const AllRowsTable = ({ rows, runnersByUmaban }: AllRowsTableProps) => (
         </tr>
       </thead>
       <tbody>
-        {rows.map((row) => (
-          <tr key={`${row.raceKey}-${row.horseNumber}`}>
-            <td>{row.horseNumber}</td>
-            <td>{resolveBamei(row, runnersByUmaban)}</td>
-            <td>{resolveJockey(row, runnersByUmaban)}</td>
-            <td>{RUNNING_STYLE_DISPLAY[row.predictedLabel]}</td>
-            <td>{formatPercent(row.p_nige)}</td>
-            <td>{formatPercent(row.p_senkou)}</td>
-            <td>{formatPercent(row.p_sashi)}</td>
-            <td>{formatPercent(row.p_oikomi)}</td>
-          </tr>
-        ))}
+        {rows.map((row) => {
+          const entryStatus =
+            entryStatusByHorse.get(formatRunnerNumber(String(row.horseNumber))) ?? "";
+          const isScratched = entryStatus !== "";
+          return (
+            <tr
+              className={isScratched ? "stats-row-scratched" : undefined}
+              data-entry-status={entryStatus || undefined}
+              key={`${row.raceKey}-${row.horseNumber}`}
+            >
+              <td>{row.horseNumber}</td>
+              <td className="stats-name-cell">
+                {resolveBamei(row, runnersByUmaban)}
+                {entryStatus ? <span className="runner-status-badge">{entryStatus}</span> : null}
+              </td>
+              <td className="stats-name-cell">{isScratched ? "-" : resolveJockey(row, runnersByUmaban)}</td>
+              <td>{isScratched ? "-" : RUNNING_STYLE_DISPLAY[row.predictedLabel]}</td>
+              <td>{isScratched ? "-" : formatPercent(row.p_nige)}</td>
+              <td>{isScratched ? "-" : formatPercent(row.p_senkou)}</td>
+              <td>{isScratched ? "-" : formatPercent(row.p_sashi)}</td>
+              <td>{isScratched ? "-" : formatPercent(row.p_oikomi)}</td>
+            </tr>
+          );
+        })}
       </tbody>
     </table>
   </div>
@@ -164,9 +193,23 @@ export const RunningStyleSection = ({
 }: RunningStyleSectionProps) => {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const payload = useRealtimeRaceSelector((state) => state.payload);
+  const entryStatusByHorse = useMemo(
+    () =>
+      new Map(
+        (payload?.raceEntries?.horses ?? []).map((horse) => [
+          formatRunnerNumber(horse.horseNumber),
+          horse.status ?? "",
+        ]),
+      ),
+    [payload],
+  );
   const initialTab = resolveCurrentTab(searchParams?.get(SEARCH_PARAM_KEY) ?? null);
   const [currentTab, setCurrentTab] = useState<StyleTab>(initialTab);
-  const visibleRows = useMemo(() => sortRowsByTab(rows, currentTab), [rows, currentTab]);
+  const visibleRows = useMemo(
+    () => sortRowsByTab(rows, currentTab, entryStatusByHorse),
+    [currentTab, entryStatusByHorse, rows],
+  );
 
   const handleSelect = (tab: StyleTab): void => {
     setCurrentTab(tab);
@@ -193,7 +236,11 @@ export const RunningStyleSection = ({
     <section className="running-style-section" aria-label="脚質予測">
       <h2>脚質予測</h2>
       <TabButtons currentTab={currentTab} onSelect={handleSelect} />
-      <AllRowsTable rows={visibleRows} runnersByUmaban={runnersByUmaban} />
+      <AllRowsTable
+        entryStatusByHorse={entryStatusByHorse}
+        rows={visibleRows}
+        runnersByUmaban={runnersByUmaban}
+      />
       <MetricsBadge modelMacroF1={modelMacroF1} modelVersion={modelVersion} />
     </section>
   );

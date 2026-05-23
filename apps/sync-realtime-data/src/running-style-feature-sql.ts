@@ -72,6 +72,15 @@ const SAFE_BATAIJU_EXPR = (alias: string): string => `
   end
 `;
 
+const SAFE_ZENHAN_3F_EXPR = (alias: string): string => `
+  case
+    when trim(coalesce(${alias}.zenhan_3f::text, '')) ~ '^[0-9]+$'
+      and nullif(trim(${alias}.zenhan_3f::text), '000') is not null
+      then nullif(trim(${alias}.zenhan_3f::text), '000')::numeric / 10
+    else null
+  end
+`;
+
 export const buildRunningStylePostgresFeatureSql = (): string => `
 with params as (
   select
@@ -175,7 +184,8 @@ se_lookup as (
          lpad(se.keibajo_code::text, 2, '0') as keibajo_code,
          lpad(se.race_bango::text, 2, '0') as race_bango,
          se.ketto_toroku_bango,
-         ${SAFE_BATAIJU_EXPR("se")} as bataiju
+         ${SAFE_BATAIJU_EXPR("se")} as bataiju,
+         ${SAFE_ZENHAN_3F_EXPR("se")} as zenhan_3f
   from jvd_se se
   join target_horses th on th.ketto_toroku_bango = se.ketto_toroku_bango
   cross join params p
@@ -185,7 +195,8 @@ se_lookup as (
          lpad(se.keibajo_code::text, 2, '0') as keibajo_code,
          lpad(se.race_bango::text, 2, '0') as race_bango,
          se.ketto_toroku_bango,
-         ${SAFE_BATAIJU_EXPR("se")} as bataiju
+         ${SAFE_BATAIJU_EXPR("se")} as bataiju,
+         ${SAFE_ZENHAN_3F_EXPR("se")} as zenhan_3f
   from nvd_se se
   join target_horses th on th.ketto_toroku_bango = se.ketto_toroku_bango
   cross join params p
@@ -221,6 +232,7 @@ horse_history_base as (
     h.corner1_norm::double precision as corner1_norm,
     h.corner3_norm::double precision as corner3_norm,
     h.corner4_norm::double precision as corner4_norm,
+    hs.zenhan_3f::double precision as zenhan_3f,
     h.kyori as history_kyori,
     h.track_code as history_track_code,
     h.grade_code as history_grade_code,
@@ -254,6 +266,7 @@ horse_career as (
     avg(time_sa) filter (where recent_rank <= ${RECENT_WINDOW_SIZE}) as speed_index_avg_5,
     min(time_sa) filter (where recent_rank <= ${RECENT_WINDOW_SIZE}) as speed_index_best_5,
     avg(kohan_3f) filter (where recent_rank <= ${RECENT_WINDOW_SIZE}) as kohan3f_avg_5,
+    avg(zenhan_3f) filter (where recent_rank <= ${RECENT_WINDOW_SIZE}) as past_first_3f_avg_5,
     avg(corner4_norm) filter (where recent_rank <= ${RECENT_WINDOW_SIZE}) as corner_pass_avg_5,
     avg(case when finish_position = 1 then 1 else 0 end) as career_win_rate,
     avg(case when finish_position between 1 and 3 then 1 else 0 end) as career_place_rate,
@@ -634,7 +647,7 @@ base_features as (
     t.ketto_toroku_bango, t.umaban, t.bamei, t.category, t.kyori, t.track_code, t.grade_code, t.shusso_tosu,
     t.finish_position, t.finish_norm,
     t.target_corner_1_norm, t.target_corner_3_norm, t.target_corner_4_norm, t.target_running_style_class,
-    hc.speed_index_avg_5, hc.speed_index_best_5, hc.kohan3f_avg_5, hc.corner_pass_avg_5,
+    hc.speed_index_avg_5, hc.speed_index_best_5, hc.kohan3f_avg_5, hc.past_first_3f_avg_5, hc.corner_pass_avg_5,
     hc.career_win_rate, hc.career_place_rate, hc.career_top1_count,
     hc.same_keibajo_win_rate, hc.same_distance_win_rate, hc.same_track_win_rate, hc.same_grade_win_rate,
     wa.weight_avg_5,

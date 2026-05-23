@@ -7,6 +7,11 @@ import {
   stripDetailSectionCacheWarmParams,
 } from "../../../../../../../../../../lib/race-detail-section-cache";
 import {
+  buildFinishPredictionInputsCacheKey,
+  getCachedFinishPredictionInputs,
+  putFinishPredictionInputsCache,
+} from "../../../../../../../../../../lib/finish-prediction-inputs-cache.server";
+import {
   getCachedDetailSectionResponse,
   putDetailSectionCache,
 } from "../../../../../../../../../../lib/race-detail-section-cache.server";
@@ -88,10 +93,25 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
 
   const requestUrl = new URL(request.url);
   const sectionSearchParams = stripDetailSectionCacheWarmParams(requestUrl.searchParams);
-  const cacheableDefaultRequest = isDefaultDetailSectionCacheRequest(
-    section,
-    requestUrl.searchParams,
-  );
+  const defaultSectionRequest =
+    stripDetailSectionCacheWarmParams(requestUrl.searchParams).toString() === "";
+  const cacheableDefaultRequest =
+    isDefaultDetailSectionCacheRequest(section, requestUrl.searchParams) && defaultSectionRequest;
+  const finishPredictionInputsCacheKey =
+    section === "finish-prediction" && defaultSectionRequest
+      ? buildFinishPredictionInputsCacheKey({ day, keibajoCode, month, raceNumber, year })
+      : null;
+  if (finishPredictionInputsCacheKey) {
+    const cachedStatic = await getCachedFinishPredictionInputs(finishPredictionInputsCacheKey);
+    if (cachedStatic) {
+      return NextResponse.json({
+        evaluation: cachedStatic.evaluation,
+        inputs: cachedStatic.inputs,
+        type: "finish-prediction",
+      });
+    }
+  }
+
   const cacheKey = cacheableDefaultRequest
     ? buildDetailSectionCacheKey({ day, keibajoCode, month, raceNumber, section, year })
     : null;
@@ -112,9 +132,10 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }
 
-  const race = cacheKey
-    ? await getRaceDetail(raceSource, year, month, day, keibajoCode, raceNumber)
-    : null;
+  const race =
+    cacheKey || finishPredictionInputsCacheKey
+      ? await getRaceDetail(raceSource, year, month, day, keibajoCode, raceNumber)
+      : null;
   const payload = await getDetailSectionPayload(section, {
     day,
     keibajoCode,
@@ -129,6 +150,22 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
   }
 
   const body = JSON.stringify(payload);
+  if (
+    finishPredictionInputsCacheKey &&
+    race &&
+    payload.type === "finish-prediction" &&
+    "inputs" in payload &&
+    "evaluation" in payload
+  ) {
+    await putFinishPredictionInputsCache({
+      body: JSON.stringify({
+        evaluation: payload.evaluation,
+        inputs: payload.inputs,
+      }),
+      cacheKey: finishPredictionInputsCacheKey,
+      race,
+    });
+  }
   if (cacheKey && race && !(section === "premium-data-top" && isEmptyPremiumDataTopSectionBody(body))) {
     await putDetailSectionCache({ body, cacheKey, race });
   }
@@ -137,7 +174,11 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
     headers: {
       "Cache-Control": "private, max-age=0, no-store",
       "Content-Type": "application/json; charset=utf-8",
-      "X-Detail-Section-Cache": cacheKey ? "MISS-STORED" : "BYPASS",
+      "X-Detail-Section-Cache": finishPredictionInputsCacheKey
+        ? "FINISH-INPUTS-MISS"
+        : cacheKey
+          ? "MISS-STORED"
+          : "BYPASS",
     },
   });
 }
