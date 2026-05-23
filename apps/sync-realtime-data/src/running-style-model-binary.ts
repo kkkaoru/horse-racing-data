@@ -5,8 +5,9 @@
 
 import {
   buildFeatureVector,
+  probsToRunningStyleMap,
+  resolveRunningStyleLabels,
   type FeatureVector,
-  type RunningStyleClassLabel,
   type RunningStylePrediction,
 } from "./running-style-lightgbm-tree";
 
@@ -20,7 +21,6 @@ const NODE_NUMERIC_LEQ = 1;
 const NODE_CATEGORICAL_EQ = 2;
 const MISSING_FLAG = 1;
 const CATEGORICAL_THRESHOLD_DELIMITER = "||";
-const LABELS: readonly RunningStyleClassLabel[] = ["nige", "senkou", "sashi", "oikomi"];
 
 export interface FlatLightGBMHeader {
   categorical_features: string[];
@@ -165,15 +165,11 @@ export const predictFlatRunningStyle = (
   probabilities.forEach((value, index) => {
     if (value > (probabilities[predictedClass] ?? 0)) predictedClass = index;
   });
+  const labels = resolveRunningStyleLabels(model.header.class_labels, model.header.num_class);
   return {
     predictedClass,
-    predictedLabel: LABELS[predictedClass] ?? "nige",
-    probabilities: {
-      nige: probabilities[0] ?? 0,
-      senkou: probabilities[1] ?? 0,
-      sashi: probabilities[2] ?? 0,
-      oikomi: probabilities[3] ?? 0,
-    },
+    predictedLabel: labels[predictedClass] ?? "nige",
+    probabilities: probsToRunningStyleMap(probabilities, labels),
   };
 };
 
