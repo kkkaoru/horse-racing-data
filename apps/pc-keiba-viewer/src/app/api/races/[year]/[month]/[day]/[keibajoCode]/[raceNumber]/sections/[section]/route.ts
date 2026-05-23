@@ -61,6 +61,25 @@ const isValidParams = (
 const searchParamsToRecord = (searchParams: URLSearchParams): Record<string, string> =>
   Object.fromEntries(searchParams.entries());
 
+const isEmptyPremiumDataTopSectionBody = (body: string): boolean => {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      !("type" in parsed) ||
+      parsed.type !== "premium-data-top" ||
+      !("dataTopHorses" in parsed) ||
+      !Array.isArray(parsed.dataTopHorses)
+    ) {
+      return false;
+    }
+    return parsed.dataTopHorses.length === 0;
+  } catch {
+    return false;
+  }
+};
+
 export async function GET(request: Request, { params }: DetailSectionRouteProps) {
   const { day, keibajoCode, month, raceNumber, section, year } = await params;
   if (!isValidSection(section) || !isValidParams(year, month, day, keibajoCode, raceNumber)) {
@@ -78,7 +97,14 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
     : null;
   const cachedResponse = cacheKey ? await getCachedDetailSectionResponse(cacheKey) : null;
   if (cachedResponse) {
-    return cachedResponse;
+    if (section === "premium-data-top") {
+      const cachedBody = await cachedResponse.clone().text();
+      if (!isEmptyPremiumDataTopSectionBody(cachedBody)) {
+        return cachedResponse;
+      }
+    } else {
+      return cachedResponse;
+    }
   }
 
   const raceSource = await getRaceSourceByRoute(year, month, day, keibajoCode, raceNumber);
@@ -103,7 +129,7 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
   }
 
   const body = JSON.stringify(payload);
-  if (cacheKey && race) {
+  if (cacheKey && race && !(section === "premium-data-top" && isEmptyPremiumDataTopSectionBody(body))) {
     await putDetailSectionCache({ body, cacheKey, race });
   }
 

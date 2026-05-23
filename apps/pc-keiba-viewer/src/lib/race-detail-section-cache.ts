@@ -2,8 +2,9 @@ import type { RaceSource } from "./codes";
 
 export const DETAIL_SECTION_CACHE_WARM_PARAM = "__cacheWarm";
 
-export const DETAIL_SECTION_CACHE_VERSION = "v1";
-const FINISH_PREDICTION_DETAIL_SECTION_CACHE_VERSION = "v3";
+export const DETAIL_SECTION_CACHE_VERSION = "v2";
+const FINISH_PREDICTION_DETAIL_SECTION_CACHE_VERSION = "v4";
+const PREMIUM_DATA_TOP_DETAIL_SECTION_CACHE_VERSION = "v2";
 
 export const DETAIL_SECTION_CACHE_AFTER_START_SECONDS = 6 * 60 * 60;
 
@@ -31,10 +32,15 @@ export const DEFAULT_RACE_DETAIL_CACHE_WARM_SECTIONS = [
 
 export type DetailSectionCacheableSection = (typeof DETAIL_SECTION_CACHEABLE_SECTIONS)[number];
 
-const getDetailSectionCacheVersion = (section: DetailSectionCacheableSection): string =>
-  section === "finish-prediction"
-    ? FINISH_PREDICTION_DETAIL_SECTION_CACHE_VERSION
-    : DETAIL_SECTION_CACHE_VERSION;
+const getDetailSectionCacheVersion = (section: DetailSectionCacheableSection): string => {
+  if (section === "finish-prediction") {
+    return FINISH_PREDICTION_DETAIL_SECTION_CACHE_VERSION;
+  }
+  if (section === "premium-data-top") {
+    return PREMIUM_DATA_TOP_DETAIL_SECTION_CACHE_VERSION;
+  }
+  return DETAIL_SECTION_CACHE_VERSION;
+};
 
 export interface DetailSectionCacheWarmMessage {
   day: string;
