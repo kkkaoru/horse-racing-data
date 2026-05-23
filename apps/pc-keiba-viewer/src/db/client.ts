@@ -100,14 +100,6 @@ const getPoolOptions = (databaseTarget: DatabaseTarget): PoolOptions => {
   };
 };
 
-const createDb = (databaseTarget: DatabaseTarget): Db => {
-  const pool = new Pool(getPoolOptions(databaseTarget));
-
-  return drizzle(pool, { schema });
-};
-
-const getCloudflareDb = cache((): Db => createDb("cloudflare"));
-
 export const getDb = (): Db => {
   const databaseTarget = getDatabaseTarget();
 
@@ -150,4 +142,24 @@ export const getDb = (): Db => {
   };
 
   return createdDb;
+};
+
+const createDb = (databaseTarget: DatabaseTarget): Db => {
+  const pool = new Pool(getPoolOptions(databaseTarget));
+
+  return drizzle(pool, { schema });
+};
+
+const getCloudflareDb = cache((): Db => createDb("cloudflare"));
+
+export const getPgPool = (): Pool => {
+  const databaseTarget = getDatabaseTarget();
+  if (databaseTarget !== "cloudflare") {
+    getDb();
+    const cachedPool = globalForDb.pcKeibaViewerPools?.[databaseTarget];
+    if (cachedPool) {
+      return cachedPool;
+    }
+  }
+  return (getCloudflareDb() as unknown as { $client: Pool }).$client;
 };
