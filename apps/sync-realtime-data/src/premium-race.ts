@@ -587,6 +587,11 @@ export const parsePremiumStableComments = (
     .filter((row): row is PremiumStableComment => row !== null);
 };
 
+const PREMIUM_STABLE_COMMENT_FULL_TABLE_CLASS = "Comment_Table_Show_All";
+
+export const isPremiumStableCommentHtmlAuthorized = (html: string): boolean =>
+  html.includes(PREMIUM_STABLE_COMMENT_FULL_TABLE_CLASS);
+
 export const summarizePremiumStableCommentHtml = (
   html: string,
 ): {

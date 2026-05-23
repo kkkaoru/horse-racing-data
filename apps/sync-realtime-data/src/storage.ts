@@ -1348,11 +1348,21 @@ export const listPremiumRaceDataFetchCandidatesByDate = async (
             or state.status in ('idle', 'failed')
             or (state.status = 'pending' and (state.retry_after is null or state.retry_after <= ?))
             or (
-              state.status in ('ok', 'empty')
-              and not exists (
-                select 1
-                from premium_data_top_horses data_top
-                where data_top.race_key = rs.race_key
+              state.status in ('ok', 'empty', 'auth_required')
+              and (
+                not exists (
+                  select 1
+                  from premium_data_top_horses data_top
+                  where data_top.race_key = rs.race_key
+                )
+                or (
+                  rs.race_start_at_jst is not null
+                  and datetime(rs.race_start_at_jst) > datetime(?, '-15 minutes')
+                  and (
+                    state.last_fetch_at is null
+                    or datetime(state.last_fetch_at) < datetime(rs.race_start_at_jst, '-30 minutes')
+                  )
+                )
               )
               and datetime(coalesce(state.last_fetch_at, '1970-01-01T00:00:00+09:00'))
                 <= datetime(?, '-5 minutes')
@@ -1365,7 +1375,7 @@ export const listPremiumRaceDataFetchCandidatesByDate = async (
         order by rs.keibajo_code, rs.race_bango
       `,
     )
-    .bind(targetDate.slice(0, 4), targetDate.slice(4, 8), now, now, now)
+    .bind(targetDate.slice(0, 4), targetDate.slice(4, 8), now, now, now, now)
     .all<{ race_key: string }>();
   return rows.results.map((row) => ({ raceKey: row.race_key }));
 };
