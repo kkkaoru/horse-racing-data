@@ -74,7 +74,22 @@ export type Job =
       keibajoCode: string;
       raceBango: string;
       predictedAt: string;
+    }
+  | {
+      type: "discover-win5-schedules";
+      date: string;
+    }
+  | {
+      type: "generate-win5-predictions";
+      kaisaiNen: string;
+      kaisaiTsukihi: string;
+      predictedAt: string;
     };
+
+export type Win5ScheduleJob = Extract<
+  Job,
+  { type: "discover-win5-schedules" } | { type: "generate-win5-predictions" }
+>;
 
 export type RunningStylePredictionJob = Extract<
   Job,
@@ -166,4 +181,6 @@ export interface Env {
   RUNNING_STYLE_MODELS: R2Bucket;
   TRACK_CONDITION_CACHE: DurableObjectNamespace;
   TRACK_CONDITION_DO_TTL_SECONDS?: string;
+  WIN5_D1_WRITE_ENABLED?: string;
+  WIN5_JOBS?: Queue<Job>;
 }
