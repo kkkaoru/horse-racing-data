@@ -7,6 +7,8 @@
     "check": "bun run format:check && bun run lint && bun run tsc && bun run test:coverage",
     "dev": "next dev",
     "dev:http-proxy": "bun run src/scripts/dev-http-proxy.ts",
+    "dev:configure-access": "bun run src/scripts/configure-access-dev-service-token.ts",
+    "dev:production-live-relay": "bun run src/scripts/dev-production-live-relay.ts",
     "dev:https": "PC_KEIBA_ALLOWED_DEV_ORIGINS=localhost:3000,127.0.0.1:3000,192.168.1.219 next dev --experimental-https --experimental-https-key ./certificates/local-key.pem --experimental-https-cert ./certificates/local.pem -H 0.0.0.0 -p 443",
     "dev:https-with-proxy": "sh -c 'bun run dev:http-proxy & proxy_pid=$!; trap \"kill $proxy_pid\" EXIT INT TERM; bun run dev:https'",
     "dev:build-corner-features": "bun run src/scripts/build-corner-feature-table.ts",

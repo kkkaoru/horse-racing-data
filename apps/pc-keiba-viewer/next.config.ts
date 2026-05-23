@@ -13,12 +13,14 @@ const nextConfig: NextConfig = {
 
 const initCloudflareDevContext = async (): Promise<void> => {
   const mod = await import("@opennextjs/cloudflare");
-  await mod.initOpenNextCloudflareForDev({ remoteBindings: false });
+  await mod.initOpenNextCloudflareForDev({
+    configPath: "./wrangler.dev.jsonc",
+    remoteBindings: false,
+  });
 };
 
-// Initialize Cloudflare vars for `next dev` without Wrangler's remote proxy:
-// this account cannot create Workers preview sessions, and REALTIME_DB remote
-// access is handled explicitly via `wrangler d1 execute --remote`.
+// Initialize Cloudflare vars for `next dev` via wrangler.dev.jsonc.
+// Production Durable Objects are accessed through the production API proxy in local dev.
 if (process.env.NODE_ENV === "development") {
   void initCloudflareDevContext();
 }

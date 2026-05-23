@@ -1,0 +1,51 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pc-keiba-viewer-dev",
+  "account_id": "78109ec18c7c85b194b19fb32e3bb149",
+  "compatibility_date": "2026-05-09",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  // Used only by `next dev` via initOpenNextCloudflareForDev/getPlatformProxy.
+  // Durable Objects are accessed through the production API proxy in local dev.
+  "kv_namespaces": [
+    {
+      "binding": "DETAIL_SECTION_CACHE_KV",
+      "id": "a013fdf6e7224c3ab0c227be3c899073",
+    },
+    {
+      "binding": "PADDOCK_STATE_KV",
+      "id": "1cb633c48a084a428d3ce3e0f844f7d1",
+    },
+  ],
+  "vars": {
+    "NEXT_PUBLIC_REALTIME_DATA_API_BASE_URL": "https://sync-realtime-data.kkk4oru.com",
+    "PC_KEIBA_RACE_AI_NAME": "アーモンドAI",
+    "PC_KEIBA_RACE_AI_ICON_URL": "/api/ai/assets/almondeye_top.png",
+    "PC_KEIBA_RACE_AI_ACCENT_COLOR": "#69a9e9",
+    "PC_KEIBA_DATABASE_TARGET": "cloudflare",
+    "PC_KEIBA_DB_CACHE_TTL_SECONDS": "3600",
+    "PC_KEIBA_DETAIL_SECTION_CACHE_AFTER_START_SECONDS": "21600",
+    "PC_KEIBA_RACE_TREND_CACHE_AFTER_START_SECONDS": "21600",
+    "PC_KEIBA_RUNNING_STYLE_CACHE_ORIGIN": "https://pc-keiba-viewer.kkk4oru.com",
+    "PC_KEIBA_PADDOCK_DISCORD_BOT_NAME": "ジョーカー八重樫",
+  },
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "9b214701ab3f4a3ab406de8cdd26e0ae",
+    },
+  ],
+  "d1_databases": [
+    {
+      "binding": "REALTIME_DB",
+      "database_name": "sync-realtime-data",
+      "database_id": "d12ebd45-2aff-4d74-8556-295c1da9177e",
+      "remote": true,
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "FINISH_POSITION_MODELS",
+      "bucket_name": "pc-keiba-finish-position-models",
+    },
+  ],
+}
