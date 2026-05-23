@@ -184,8 +184,7 @@ se_lookup as (
          lpad(se.keibajo_code::text, 2, '0') as keibajo_code,
          lpad(se.race_bango::text, 2, '0') as race_bango,
          se.ketto_toroku_bango,
-         ${SAFE_BATAIJU_EXPR("se")} as bataiju,
-         ${SAFE_ZENHAN_3F_EXPR("se")} as zenhan_3f
+         ${SAFE_BATAIJU_EXPR("se")} as bataiju
   from jvd_se se
   join target_horses th on th.ketto_toroku_bango = se.ketto_toroku_bango
   cross join params p
@@ -195,12 +194,28 @@ se_lookup as (
          lpad(se.keibajo_code::text, 2, '0') as keibajo_code,
          lpad(se.race_bango::text, 2, '0') as race_bango,
          se.ketto_toroku_bango,
-         ${SAFE_BATAIJU_EXPR("se")} as bataiju,
-         ${SAFE_ZENHAN_3F_EXPR("se")} as zenhan_3f
+         ${SAFE_BATAIJU_EXPR("se")} as bataiju
   from nvd_se se
   join target_horses th on th.ketto_toroku_bango = se.ketto_toroku_bango
   cross join params p
   where se.kaisai_nen || se.kaisai_tsukihi between p.history_start and p.race_date
+),
+ra_lookup as (
+  select 'jra' as source, ra.kaisai_nen, ra.kaisai_tsukihi,
+         lpad(ra.keibajo_code::text, 2, '0') as keibajo_code,
+         lpad(ra.race_bango::text, 2, '0') as race_bango,
+         ${SAFE_ZENHAN_3F_EXPR("ra")} as zenhan_3f
+  from jvd_ra ra
+  cross join params p
+  where ra.kaisai_nen || ra.kaisai_tsukihi between p.history_start and p.race_date
+  union all
+  select 'nar' as source, ra.kaisai_nen, ra.kaisai_tsukihi,
+         lpad(ra.keibajo_code::text, 2, '0') as keibajo_code,
+         lpad(ra.race_bango::text, 2, '0') as race_bango,
+         ${SAFE_ZENHAN_3F_EXPR("ra")} as zenhan_3f
+  from nvd_ra ra
+  cross join params p
+  where ra.kaisai_nen || ra.kaisai_tsukihi between p.history_start and p.race_date
 ),
 target_current_bataiju as (
   select t.source, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango,
@@ -232,7 +247,7 @@ horse_history_base as (
     h.corner1_norm::double precision as corner1_norm,
     h.corner3_norm::double precision as corner3_norm,
     h.corner4_norm::double precision as corner4_norm,
-    hs.zenhan_3f::double precision as zenhan_3f,
+    hr.zenhan_3f::double precision as zenhan_3f,
     h.kyori as history_kyori,
     h.track_code as history_track_code,
     h.grade_code as history_grade_code,
@@ -258,6 +273,12 @@ horse_history_base as (
    and hs.keibajo_code = h.keibajo_code
    and hs.race_bango = h.race_bango
    and hs.ketto_toroku_bango = h.ketto_toroku_bango
+  left join ra_lookup hr
+    on hr.source = h.source
+   and hr.kaisai_nen = h.kaisai_nen
+   and hr.kaisai_tsukihi = h.kaisai_tsukihi
+   and hr.keibajo_code = h.keibajo_code
+   and hr.race_bango = h.race_bango
   where h.finish_position is not null
 ),
 horse_career as (
