@@ -35,6 +35,7 @@ import { OverallScoreTable } from "./overall-score-table";
 import { PremiumDataTopHorsesTable } from "./premium-data-top-section";
 import { RaceConditionAnalysisSection } from "./race-condition-analysis-section";
 import { RacePacePredictionTable } from "./race-pace-prediction-table";
+import type { RealtimeRaceRequest } from "./realtime-client";
 import { SimilarRaceStatsTable } from "./similar-race-stats-table";
 import { TrainingTable } from "./training-table";
 
@@ -508,6 +509,70 @@ const useSectionPayload = (
   return state;
 };
 
+const PREMIUM_DATA_TOP_POLL_INTERVAL_MS = 60_000;
+
+const usePremiumDataTopSectionPayload = (
+  props: LazyDetailSectionsProps,
+  searchParams: URLSearchParams,
+): SectionState => {
+  const url = useMemo(
+    () => getSectionUrl("premium-data-top", props, searchParams),
+    [props, searchParams],
+  );
+  const [state, setState] = useState<SectionState>({
+    error: null,
+    payload: null,
+    status: "loading",
+  });
+
+  useEffect(() => {
+    let isActive = true;
+
+    const load = async (requestUrl: string, preservePayloadOnError: boolean) => {
+      try {
+        const payload = await fetchSectionPayload("premium-data-top", requestUrl);
+        if (!isActive) {
+          return;
+        }
+        setState({ error: null, payload, status: "ready" });
+      } catch (error: unknown) {
+        if (!isActive) {
+          return;
+        }
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return;
+        }
+        setState((current) => {
+          if (preservePayloadOnError && current.payload !== null) {
+            return { error: null, payload: current.payload, status: "ready" as const };
+          }
+          return {
+            error: error instanceof Error ? error.message : "unknown error",
+            payload: null,
+            status: "error" as const,
+          };
+        });
+      }
+    };
+
+    const cancelScheduledLoad = scheduleAfterNextPaint(() => {
+      void load(url, false);
+    });
+    const timer = window.setInterval(() => {
+      const refreshUrl = `${url}${url.includes("?") ? "&" : "?"}_refresh=${Date.now()}`;
+      void load(refreshUrl, true);
+    }, PREMIUM_DATA_TOP_POLL_INTERVAL_MS);
+
+    return () => {
+      isActive = false;
+      cancelScheduledLoad();
+      window.clearInterval(timer);
+    };
+  }, [url]);
+
+  return state;
+};
+
 function LazyResultsSection(props: LazyDetailSectionsProps) {
   const searchParams = useSearchParams();
   const state = useSectionPayload("results", props, searchParams);
@@ -584,7 +649,19 @@ export function LazyOverallScoreSection(props: LazyDetailSectionsProps) {
 
 export function LazyPremiumDataTopSection(props: LazyDetailSectionsProps) {
   const searchParams = useSearchParams();
-  const state = useSectionPayload("premium-data-top", props, searchParams);
+  const state = usePremiumDataTopSectionPayload(props, searchParams);
+  const realtimeRequest = useMemo(
+    (): RealtimeRaceRequest => ({
+      apiBaseUrl: props.realtimeApiBaseUrl,
+      day: props.day,
+      keibajoCode: props.keibajoCode,
+      month: props.month,
+      raceNumber: props.raceNumber,
+      source: props.source,
+      year: props.year,
+    }),
+    [props],
+  );
   if (state.status === "loading" && state.payload === null) {
     return <SectionSkeleton title={SECTION_TITLES["premium-data-top"]} />;
   }
@@ -608,7 +685,7 @@ export function LazyPremiumDataTopSection(props: LazyDetailSectionsProps) {
       <div className="section-heading compact">
         <h2>データ上位馬</h2>
       </div>
-      <PremiumDataTopHorsesTable rows={payload.dataTopHorses} />
+      <PremiumDataTopHorsesTable realtimeRequest={realtimeRequest} rows={payload.dataTopHorses} />
     </section>
   );
 }
