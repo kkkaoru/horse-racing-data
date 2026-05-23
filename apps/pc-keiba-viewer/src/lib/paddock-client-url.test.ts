@@ -49,5 +49,27 @@ describe("paddock client urls", () => {
     expect(getPaddockLiveUrl("/api/races/2026/05/19/44/12/paddock/live", localhost)).toBe(
       "wss://localhost/api/races/2026/05/19/44/12/paddock/live",
     );
+    expect(getPaddockLiveUrl("api/races/live", { host: "localhost:3000", hostname: "localhost", protocol: "http:" })).toBe(
+      "ws://localhost:3000/api/races/live",
+    );
+    expect(getPaddockLiveUrl("/api/live", null)).toBe("/api/live");
+  });
+
+  it("builds race trend websocket URLs from the current browser location", () => {
+    vi.stubEnv("NEXT_PUBLIC_PC_KEIBA_PRODUCTION_API_PROXY", "0");
+    vi.stubGlobal("window", {
+      location: new URL("http://localhost:3000/races"),
+    });
+
+    expect(getRaceTrendLiveUrl("/api/races/2026/05/19/44/12/trends/live?source=jra")).toBe(
+      "ws://localhost:3000/api/races/2026/05/19/44/12/trends/live?source=jra",
+    );
+    expect(getRaceTrendLiveUrl("api/trends/live")).toBe("ws://localhost:3000/api/trends/live");
+  });
+
+  it("returns the path when race trend live url runs without a browser", () => {
+    vi.stubEnv("NEXT_PUBLIC_PC_KEIBA_PRODUCTION_API_PROXY", "0");
+    vi.stubGlobal("window", undefined);
+    expect(getRaceTrendLiveUrl("/api/trends/live")).toBe("/api/trends/live");
   });
 });
