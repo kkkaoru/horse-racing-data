@@ -5851,35 +5851,75 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   margin-bottom: var(--space-16px-67);
 }
 
-.premium-data-top-panel {
+.premium-data-top-table-wrap {
+  max-width: var(--space-100pct-12);
+  min-width: var(--number-0-2);
   overflow-x: auto;
+  overscroll-behavior-x: contain;
+  width: var(--space-100pct-12);
+  -webkit-overflow-scrolling: touch;
+}
+
+.premium-data-top-table {
+  min-width: var(--space-720px-181);
+}
+
+.premium-data-top-col-rank,
+.premium-data-top-col-number,
+.premium-data-top-col-popularity,
+.premium-data-top-col-odds {
+  width: var(--space-72px-6);
+}
+
+.premium-data-top-col-horse {
+  width: var(--space-220px-3);
+}
+
+.premium-data-top-col-jockey {
+  width: var(--space-128px-68);
+}
+
+.premium-data-top-col-reason {
+  min-width: var(--space-260px-75);
 }
 
 .premium-data-top-table th:nth-child(1),
 .premium-data-top-table td:nth-child(1),
 .premium-data-top-table th:nth-child(2),
-.premium-data-top-table td:nth-child(2) {
+.premium-data-top-table td:nth-child(2),
+.premium-data-top-table th:nth-child(5),
+.premium-data-top-table td:nth-child(5),
+.premium-data-top-table th:nth-child(6),
+.premium-data-top-table td:nth-child(6) {
+  text-align: center;
   white-space: nowrap;
-  width: 4.5rem;
 }
 
 .premium-data-top-table th:nth-child(3),
-.premium-data-top-table td:nth-child(3) {
-  min-width: 8rem;
+.premium-data-top-table td:nth-child(3),
+.premium-data-top-table th:nth-child(4),
+.premium-data-top-table td:nth-child(4) {
+  min-width: var(--space-128px-68);
   white-space: nowrap;
+}
+
+.premium-data-top-reason-cell {
+  line-height: var(--number-1-45-39);
+  white-space: normal;
 }
 
 .premium-data-top-reasons {
   display: grid;
   gap: var(--space-4px-14);
   list-style: disc;
-  margin: 0;
-  padding-left: 1.1rem;
+  margin: var(--number-0-2);
+  padding-left: var(--space-18px-31);
 }
 
 .premium-data-top-reasons li {
   color: var(--ink);
-  line-height: 1.45;
+  line-height: var(--number-1-45-39);
+  overflow-wrap: anywhere;
 }
 
 .finish-prediction-evaluation-summary {
@@ -7228,6 +7268,54 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   .training-table-wrap {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
+  }
+
+  .premium-data-top-table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .premium-data-top-table {
+    min-width: var(--space-640px-170);
+    table-layout: fixed;
+    width: var(--space-640px-170);
+  }
+
+  .premium-data-top-table th,
+  .premium-data-top-table td {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    word-break: keep-all;
+  }
+
+  .premium-data-top-table th:nth-child(3),
+  .premium-data-top-table td:nth-child(3),
+  .premium-data-top-table th:nth-child(4),
+  .premium-data-top-table td:nth-child(4) {
+    white-space: normal;
+  }
+
+  /* Compact reasons inline-block (each reason indivisible) with separator to
+     reduce row height while preserving each reason's word integrity.
+     `.stats-table td` (specificity 0,1,1) sets default font-size; bump specificity to win. */
+  .stats-table td.premium-data-top-reason-cell {
+    font-size: var(--space-13px-92);
+  }
+
+  .premium-data-top-reason-cell .premium-data-top-reasons {
+    display: block;
+    list-style: none;
+    padding-left: var(--number-0-2);
+  }
+
+  .premium-data-top-reason-cell .premium-data-top-reasons li {
+    display: inline-block;
+  }
+
+  .premium-data-top-reason-cell .premium-data-top-reasons li:not(:last-child)::after {
+    content: "・";
+    margin: var(--number-0-2) var(--space-2px-25);
   }
 
   .training-table {
