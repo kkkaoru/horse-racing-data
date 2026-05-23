@@ -5708,6 +5708,7 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 .race-trend-table .stats-detail-panel {
   max-width: var(--space-100pct-12);
   overflow-x: auto;
+  overscroll-behavior-x: contain;
   -webkit-overflow-scrolling: touch;
 }
 
@@ -6506,6 +6507,21 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 
   .time-score-table .stats-detail-panel {
     max-width: calc(var(--space-100vw-38) - var(--space-34px-14));
+  }
+
+  /*
+   * On phones the race-trend detail table (12 columns, min-width 880px) sits
+   * inside a colspan'd <td> whose width tracks the outer race-trend-table.
+   * Without an explicit cap, max-width: 100% inherits that td width (700px+)
+   * so the inner panel's left edge can fall off-screen and the user cannot
+   * reach the right-hand columns. Pin the panel to the viewport width and
+   * stick it to the left edge so swiping inside the panel scrolls the full
+   * detail table regardless of how far the outer wrapper is scrolled.
+   */
+  .race-trend-table .stats-detail-panel {
+    left: var(--number-0-2);
+    max-width: calc(var(--space-100vw-38) - var(--space-34px-14));
+    position: sticky;
   }
 }
 
