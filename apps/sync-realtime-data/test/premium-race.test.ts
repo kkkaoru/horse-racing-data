@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 
 import {
   buildJraPremiumSourceRaceId,
+  isPremiumStableCommentHtmlAuthorized,
   matchPremiumLinkToRace,
   parsePremiumDataTopHorses,
   parsePremiumPaddockBulletins,
@@ -238,5 +239,25 @@ describe("premium race parsing", () => {
     );
 
     expect(link?.sourceRaceId).toBe("202605020811");
+  });
+
+  it("treats html marked with Comment_Table_Show_All as authorized", () => {
+    const html =
+      '<table id="All_Comment_Table" class="Stable_Comment Comment_Table_Show_All"><tbody></tbody></table>';
+    expect(isPremiumStableCommentHtmlAuthorized(html)).toBe(true);
+  });
+
+  it("treats html without the Comment_Table_Show_All marker as unauthorized preview", () => {
+    const html =
+      '<table id="All_Comment_Table" class="Stable_Comment"><tbody></tbody></table><div class="Premium_Regist_Box"></div>';
+    expect(isPremiumStableCommentHtmlAuthorized(html)).toBe(false);
+  });
+
+  it("recognises the authorized comment fixture saved to tmp/netkeiba-comment.html", () => {
+    const html = readFileSync(
+      resolve(process.cwd(), "../../tmp/netkeiba-comment.html"),
+      "utf8",
+    );
+    expect(isPremiumStableCommentHtmlAuthorized(html)).toBe(true);
   });
 });

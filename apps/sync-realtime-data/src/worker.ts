@@ -42,6 +42,7 @@ import {
   getPremiumRaceConfig,
   hasPremiumRaceFetchConfig,
   isPremiumRaceDataTarget,
+  isPremiumStableCommentHtmlAuthorized,
   matchPremiumLinkToRace,
   parsePremiumDataTopHorses,
   parsePremiumPaddockBulletins,
@@ -1633,6 +1634,9 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
   const trainingReviews = workHtml ? parsePremiumTrainingReviews(workHtml, env) : undefined;
   const stableComments = commentHtml ? parsePremiumStableComments(commentHtml, env) : undefined;
   const dataTopHorses = dataTopHtml ? parsePremiumDataTopHorses(dataTopHtml, env) : undefined;
+  const commentAuthorized = commentHtml
+    ? isPremiumStableCommentHtmlAuthorized(commentHtml)
+    : false;
   await replacePremiumRaceData(env.REALTIME_DB, {
     dataTopHorses,
     fetchedAt,
@@ -1648,9 +1652,15 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
       rows: dataTopHorses.map((row) => ({ ...row, fetchedAt })),
     });
   }
+  const hasAnyData =
+    (trainingReviews?.length ?? 0) > 0 ||
+    (stableComments?.length ?? 0) > 0 ||
+    (dataTopHorses?.length ?? 0) > 0;
+  const commentAuthRequired = Boolean(commentHtml) && !commentAuthorized;
   await updatePremiumRaceDataFetchState(env.REALTIME_DB, {
     fetchedAt,
     message: JSON.stringify({
+      commentAuthRequired,
       commentError:
         commentResult.status === "rejected"
           ? commentResult.reason instanceof Error
@@ -1681,12 +1691,7 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
       workHtmlLength: workHtml.length,
     }),
     raceKey,
-    status:
-      (trainingReviews?.length ?? 0) > 0 ||
-      (stableComments?.length ?? 0) > 0 ||
-      (dataTopHorses?.length ?? 0) > 0
-        ? "ok"
-        : "empty",
+    status: commentAuthRequired ? "auth_required" : hasAnyData ? "ok" : "empty",
   });
 };
 

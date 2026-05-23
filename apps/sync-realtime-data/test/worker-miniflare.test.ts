@@ -174,6 +174,7 @@ beforeAll(async () => {
   await applySqlFile(join(root, "migrations/0014_premium_paddock_notification_audit.sql"));
   await applySqlFile(join(root, "migrations/0015_premium_paddock_notification_events.sql"));
   await applySqlFile(join(root, "migrations/0016_jra_realtime_source_race_dates.sql"));
+  await applySqlFile(join(root, "migrations/0020_premium_data_top_horses.sql"));
   worker = (await mf.getWorker()) as unknown as typeof worker;
 });
 
@@ -187,6 +188,7 @@ beforeEach(async () => {
     delete from premium_paddock_bulletins;
     delete from premium_stable_comments;
     delete from premium_training_reviews;
+    delete from premium_data_top_horses;
     delete from premium_race_links;
     delete from odds_snapshots;
     delete from race_entry_snapshots;
@@ -593,6 +595,189 @@ describe("worker scheduling with Miniflare", () => {
         `
           select status, last_queued_at
           from premium_paddock_fetch_state
+          where race_key = ?
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .first<{ last_queued_at: string | null; status: string }>();
+    expect(state).toEqual({
+      last_queued_at: null,
+      status: "ok",
+    });
+  });
+
+  it("requeues stale premium race data when last fetch is more than 30 minutes before race start", async () => {
+    await seedRace("jra:2026:0512:08:01", "2026-05-12T15:40:00+09:00", { source: "jra" });
+    await db
+      .prepare(
+        `
+          insert into premium_race_links (
+            race_key, source_race_id, entry_url, discovered_at, updated_at
+          )
+          values (?, '202605120801', 'https://example.test/race', ?, ?)
+        `,
+      )
+      .bind("jra:2026:0512:08:01", TEST_NOW, TEST_NOW)
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_race_data_fetch_state (
+            race_key, status, last_fetch_at, updated_at
+          )
+          values (?, 'ok', '2026-05-11T08:56:21+09:00', '2026-05-11T08:56:21+09:00')
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_data_top_horses (
+            race_key, source_race_id, fetched_at, rank, horse_number, horse_name, reasons_json, created_at
+          )
+          values (?, '202605120801', '2026-05-11T08:56:21+09:00', 1, '1', 'sample', '[]', '2026-05-11T08:56:21+09:00')
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .run();
+
+    await worker.queue(TEST_QUEUE, [
+      {
+        attempts: 1,
+        body: { date: TEST_DATE, type: "plan-realtime-fetches" },
+        id: "plan-premium-race-data-freshness",
+        timestamp: new Date(TEST_NOW),
+      },
+    ]);
+
+    const state = await db
+      .prepare(
+        `
+          select status, last_queued_at
+          from premium_race_data_fetch_state
+          where race_key = ?
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .first<{ last_queued_at: string | null; status: string }>();
+    expect(state).toEqual({
+      last_queued_at: "2026-05-12T12:00:00+09:00",
+      status: "queued",
+    });
+  });
+
+  it("does not requeue premium race data when last fetch is close to race start", async () => {
+    await seedRace("jra:2026:0512:08:01", "2026-05-12T12:20:00+09:00", { source: "jra" });
+    await db
+      .prepare(
+        `
+          insert into premium_race_links (
+            race_key, source_race_id, entry_url, discovered_at, updated_at
+          )
+          values (?, '202605120801', 'https://example.test/race', ?, ?)
+        `,
+      )
+      .bind("jra:2026:0512:08:01", TEST_NOW, TEST_NOW)
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_race_data_fetch_state (
+            race_key, status, last_fetch_at, updated_at
+          )
+          values (?, 'ok', '2026-05-12T11:55:00+09:00', '2026-05-12T11:55:00+09:00')
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_data_top_horses (
+            race_key, source_race_id, fetched_at, rank, horse_number, horse_name, reasons_json, created_at
+          )
+          values (?, '202605120801', '2026-05-12T11:55:00+09:00', 1, '1', 'sample', '[]', '2026-05-12T11:55:00+09:00')
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .run();
+
+    await worker.queue(TEST_QUEUE, [
+      {
+        attempts: 1,
+        body: { date: TEST_DATE, type: "plan-realtime-fetches" },
+        id: "plan-premium-race-data-fresh",
+        timestamp: new Date(TEST_NOW),
+      },
+    ]);
+
+    const state = await db
+      .prepare(
+        `
+          select status, last_queued_at
+          from premium_race_data_fetch_state
+          where race_key = ?
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .first<{ last_queued_at: string | null; status: string }>();
+    expect(state).toEqual({
+      last_queued_at: null,
+      status: "ok",
+    });
+  });
+
+  it("does not requeue premium race data after the race start has clearly passed", async () => {
+    await seedRace("jra:2026:0512:08:01", "2026-05-12T11:00:00+09:00", { source: "jra" });
+    await db
+      .prepare(
+        `
+          insert into premium_race_links (
+            race_key, source_race_id, entry_url, discovered_at, updated_at
+          )
+          values (?, '202605120801', 'https://example.test/race', ?, ?)
+        `,
+      )
+      .bind("jra:2026:0512:08:01", TEST_NOW, TEST_NOW)
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_race_data_fetch_state (
+            race_key, status, last_fetch_at, updated_at
+          )
+          values (?, 'ok', '2026-05-11T08:56:21+09:00', '2026-05-11T08:56:21+09:00')
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_data_top_horses (
+            race_key, source_race_id, fetched_at, rank, horse_number, horse_name, reasons_json, created_at
+          )
+          values (?, '202605120801', '2026-05-11T08:56:21+09:00', 1, '1', 'sample', '[]', '2026-05-11T08:56:21+09:00')
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .run();
+
+    await worker.queue(TEST_QUEUE, [
+      {
+        attempts: 1,
+        body: { date: TEST_DATE, type: "plan-realtime-fetches" },
+        id: "plan-premium-race-data-after-start",
+        timestamp: new Date(TEST_NOW),
+      },
+    ]);
+
+    const state = await db
+      .prepare(
+        `
+          select status, last_queued_at
+          from premium_race_data_fetch_state
           where race_key = ?
         `,
       )
