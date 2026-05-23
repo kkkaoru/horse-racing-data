@@ -13,12 +13,14 @@ import {
   buildFeatureVector,
   predictRunningStyle,
   type CompactLightGBMModel,
+  type RunningStylePrediction,
 } from "./running-style-lightgbm-tree";
 import {
   loadFlatLightGBMModelFromR2,
   predictFlatRunningStyle,
   type FlatLightGBMModel,
 } from "./running-style-model-binary";
+import { applyRaceLevelNigeConstraintForRace } from "./running-style-race-constraint";
 import {
   loadFeaturesFromR2,
   loadLightGBMModelFromR2,
@@ -102,55 +104,52 @@ const extractPeerInputs = (
   rows: ReadonlyArray<RaceHorseFeatureRow>,
 ): ReadonlyArray<HorsePeerInputs> => rows.map((row) => row.peerInputs);
 
+const predictionRowFromResult = (
+  row: RaceHorseFeatureRow,
+  prediction: RunningStylePrediction,
+  modelVersion: string,
+  predictedAt: string,
+): RaceRunningStyleRow => ({
+  bamei: row.bamei,
+  category: row.category,
+  horseNumber: row.umaban,
+  kaisaiNen: row.kaisaiNen,
+  kettoTorokuBango: row.kettoTorokuBango,
+  modelVersion,
+  pNige: prediction.probabilities.nige,
+  pOikomi: prediction.probabilities.oikomi,
+  pSashi: prediction.probabilities.sashi,
+  pSenkou: prediction.probabilities.senkou,
+  predictedAt,
+  predictedLabel: prediction.predictedLabel,
+  raceKey: row.raceKey,
+});
+
+const probabilitiesToArray = (prediction: RunningStylePrediction): Float64Array =>
+  Float64Array.from([
+    prediction.probabilities.nige,
+    prediction.probabilities.senkou,
+    prediction.probabilities.sashi,
+    prediction.probabilities.oikomi,
+  ]);
+
 const buildPredictionForHorse = (
   row: RaceHorseFeatureRow,
   fieldRow: HorseFieldRow,
   model: CompactLightGBMModel,
-  predictedAt: string,
-): RaceRunningStyleRow => {
+): RunningStylePrediction => {
   const features = mergeFeatureMap(row.perHorseFeatures, fieldRow);
   const vector = buildFeatureVector({ featureNames: model.feature_names, values: features });
-  const prediction = predictRunningStyle(model, vector);
-  return {
-    bamei: row.bamei,
-    category: row.category,
-    horseNumber: row.umaban,
-    kaisaiNen: row.kaisaiNen,
-    kettoTorokuBango: row.kettoTorokuBango,
-    modelVersion: model.model_version,
-    pNige: prediction.probabilities.nige,
-    pOikomi: prediction.probabilities.oikomi,
-    pSashi: prediction.probabilities.sashi,
-    pSenkou: prediction.probabilities.senkou,
-    predictedAt,
-    predictedLabel: prediction.predictedLabel,
-    raceKey: row.raceKey,
-  };
+  return predictRunningStyle(model, vector);
 };
 
 const buildFlatPredictionForHorse = (
   row: RaceHorseFeatureRow,
   fieldRow: HorseFieldRow,
   model: FlatLightGBMModel,
-  predictedAt: string,
-): RaceRunningStyleRow => {
+): RunningStylePrediction => {
   const features = mergeFeatureMap(row.perHorseFeatures, fieldRow);
-  const prediction = predictFlatRunningStyle(model, features);
-  return {
-    bamei: row.bamei,
-    category: row.category,
-    horseNumber: row.umaban,
-    kaisaiNen: row.kaisaiNen,
-    kettoTorokuBango: row.kettoTorokuBango,
-    modelVersion: model.header.model_version,
-    pNige: prediction.probabilities.nige,
-    pOikomi: prediction.probabilities.oikomi,
-    pSashi: prediction.probabilities.sashi,
-    pSenkou: prediction.probabilities.senkou,
-    predictedAt,
-    predictedLabel: prediction.predictedLabel,
-    raceKey: row.raceKey,
-  };
+  return predictFlatRunningStyle(model, features);
 };
 
 const predictRace = (
@@ -159,10 +158,20 @@ const predictRace = (
   predictedAt: string,
 ): RaceRunningStyleRow[] => {
   const fieldRows = computeFieldFeaturesPerHorse(extractPeerInputs(rows));
-  return rows.map((row, index) => {
+  const rawPredictions = rows.map((row, index) => {
     const fieldRow = fieldRows[index];
     if (fieldRow === undefined) throw new Error(`field row missing for index ${index}`);
-    return buildPredictionForHorse(row, fieldRow, model, predictedAt);
+    return buildPredictionForHorse(row, fieldRow, model);
+  });
+  const constrained = applyRaceLevelNigeConstraintForRace(
+    rawPredictions.map(probabilitiesToArray),
+    model.class_labels,
+    model.num_class,
+  );
+  return rows.map((row, index) => {
+    const prediction = constrained[index];
+    if (prediction === undefined) throw new Error(`prediction missing for index ${index}`);
+    return predictionRowFromResult(row, prediction, model.model_version, predictedAt);
   });
 };
 
@@ -172,10 +181,20 @@ const predictRaceFlat = (
   predictedAt: string,
 ): RaceRunningStyleRow[] => {
   const fieldRows = computeFieldFeaturesPerHorse(extractPeerInputs(rows));
-  return rows.map((row, index) => {
+  const rawPredictions = rows.map((row, index) => {
     const fieldRow = fieldRows[index];
     if (fieldRow === undefined) throw new Error(`field row missing for index ${index}`);
-    return buildFlatPredictionForHorse(row, fieldRow, model, predictedAt);
+    return buildFlatPredictionForHorse(row, fieldRow, model);
+  });
+  const constrained = applyRaceLevelNigeConstraintForRace(
+    rawPredictions.map(probabilitiesToArray),
+    model.header.class_labels,
+    model.header.num_class,
+  );
+  return rows.map((row, index) => {
+    const prediction = constrained[index];
+    if (prediction === undefined) throw new Error(`prediction missing for index ${index}`);
+    return predictionRowFromResult(row, prediction, model.header.model_version, predictedAt);
   });
 };
 
