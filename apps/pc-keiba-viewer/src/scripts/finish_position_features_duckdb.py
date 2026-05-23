@@ -212,7 +212,13 @@ def _rec_select_from_corner_features(history_start: str, to_date: str) -> str:
       ketto_toroku_bango, umaban,
       kishumei_ryakusho, chokyoshimei_ryakusho,
       kyori, track_code, grade_code, kyoso_joken_code,
-      shusso_tosu, finish_position, finish_norm,
+      coalesce(
+        nullif(shusso_tosu, 0),
+        count(*) over (
+          partition by source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango
+        )
+      ) as shusso_tosu,
+      finish_position, finish_norm,
       time_sa, kohan_3f, corner1_norm, corner3_norm, corner4_norm,
       babajotai_code_shiba, babajotai_code_dirt,
       tansho_ninkijun, tansho_odds,
@@ -234,7 +240,12 @@ def _rec_select_from_ban_ei(history_start: str, to_date: str) -> str:
       se.kishumei_ryakusho, se.chokyoshimei_ryakusho,
       try_cast(nullif(trim(ra.kyori), '') as int) as kyori,
       ra.track_code, ra.grade_code, ra.kyoso_joken_code,
-      try_cast(nullif(trim(ra.shusso_tosu), '') as int) as shusso_tosu,
+      coalesce(
+        nullif(try_cast(nullif(trim(ra.shusso_tosu), '') as int), 0),
+        count(*) over (
+          partition by se.kaisai_nen, se.kaisai_tsukihi, se.keibajo_code, se.race_bango
+        )
+      ) as shusso_tosu,
       try_cast(nullif(trim(se.kakutei_chakujun), '') as int) as finish_position,
       case
         when try_cast(nullif(trim(se.kakutei_chakujun), '') as double) is not null

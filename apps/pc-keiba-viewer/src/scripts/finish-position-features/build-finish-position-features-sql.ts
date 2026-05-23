@@ -213,7 +213,12 @@ export const buildSkeletonUpsertSql = (
     "kyori",
     "track_code",
     "grade_code",
-    "shusso_tosu",
+    `coalesce(
+      nullif(shusso_tosu, 0),
+      count(*) over (
+        partition by source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango
+      )::int
+    ) as shusso_tosu`,
     "finish_position",
     "finish_norm",
     `'${schemaVersion}'::text as feature_schema_version`,
