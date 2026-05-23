@@ -2,6 +2,11 @@ import "server-only";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 
 import type { RaceSource } from "./codes";
+import { RACE_TREND_CACHE_REFRESH_PARAM } from "./race-trend-cache";
+import {
+  fetchProductionApi,
+  useProductionApiProxy,
+} from "./production-api-proxy.server";
 
 export interface RaceTrendRoomParams {
   day: string;
@@ -35,10 +40,6 @@ const getCloudflareEnv = (): CloudflareEnv | null => {
   }
 };
 
-const useLocalPlatformBindings = (): boolean =>
-  process.env.NODE_ENV !== "development" ||
-  process.env.PC_KEIBA_RACE_TREND_LOCAL_PLATFORM_BINDINGS === "1";
-
 const getRaceTrendRoomKey = ({
   day,
   keibajoCode,
@@ -48,13 +49,31 @@ const getRaceTrendRoomKey = ({
   year,
 }: RaceTrendRoomParams): string => `${source}:${year}${month}${day}:${keibajoCode}:${raceNumber}`;
 
+const getTrendsApiPath = ({
+  day,
+  keibajoCode,
+  month,
+  raceNumber,
+  source,
+  year,
+}: RaceTrendRoomParams): string => {
+  const params = new URLSearchParams({
+    source,
+    [RACE_TREND_CACHE_REFRESH_PARAM]: "1",
+  });
+  return `/api/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/trends?${params.toString()}`;
+};
+
 const getRaceTrendRoom = (params: RaceTrendRoomParams): PcKeibaDurableObjectStub | null => {
-  if (!useLocalPlatformBindings()) {
+  if (useProductionApiProxy()) {
     return null;
   }
   const env = getCloudflareEnv();
+  if (!env?.RACE_TREND_ROOM) {
+    return null;
+  }
   const raceKey = getRaceTrendRoomKey(params);
-  return env?.RACE_TREND_ROOM?.get(env.RACE_TREND_ROOM.idFromName(raceKey)) ?? null;
+  return env.RACE_TREND_ROOM.get(env.RACE_TREND_ROOM.idFromName(raceKey));
 };
 
 const getRoomRequest = (
@@ -68,6 +87,9 @@ export const connectRaceTrendRoom = (
   params: RaceTrendRoomParams,
   request: Request,
 ): Promise<Response> | null => {
+  if (useProductionApiProxy()) {
+    return null;
+  }
   const room = getRaceTrendRoom(params);
   if (!room) {
     return null;
@@ -84,6 +106,11 @@ export const notifyRaceTrendRoom = async (
   params: RaceTrendRoomParams,
   event: { cacheKey: string },
 ): Promise<boolean> => {
+  if (useProductionApiProxy()) {
+    void event;
+    const response = await fetchProductionApi(getTrendsApiPath(params));
+    return response.ok;
+  }
   const room = getRaceTrendRoom(params);
   if (!room) {
     return false;
