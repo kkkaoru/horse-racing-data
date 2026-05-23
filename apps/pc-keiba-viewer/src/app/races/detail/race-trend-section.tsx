@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RaceSource } from "../../../lib/codes";
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
 import { formatKeibajo, formatRaceNumber } from "../../../lib/format";
+import { getRaceTrendLiveUrl } from "../../../lib/paddock-client-url";
 import { RACE_TREND_CACHE_REFRESH_PARAM } from "../../../lib/race-trend-cache";
 import {
   DEFAULT_RACE_TREND_TARGETS,
@@ -158,11 +159,7 @@ const getLivePath = ({
   return `/api/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/trends/live?${params.toString()}`;
 };
 
-const getWebSocketUrl = (path: string): string => {
-  const url = new URL(path, window.location.href);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  return url.toString();
-};
+const getWebSocketUrl = (path: string): string => getRaceTrendLiveUrl(path);
 
 const getRefreshedApiPath = (path: string): string => {
   const url = new URL(path, window.location.href);

@@ -10,6 +10,11 @@ import {
   type PaddockAction,
   type PaddockState,
 } from "./paddock";
+import {
+  fetchProductionApi,
+  useProductionApiProxy,
+} from "./production-api-proxy.server";
+import { getProductionLiveRelayOrigin } from "./production-access.server";
 
 export interface PaddockRaceParams {
   day: string;
@@ -20,7 +25,6 @@ export interface PaddockRaceParams {
 }
 
 const memoryStates = new Map<string, PaddockState>();
-const DEFAULT_REMOTE_PADDOCK_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
 
 export const isPaddockRaceParams = ({
   day,
@@ -43,29 +47,6 @@ const getCloudflareEnv = (): CloudflareEnv | null => {
   }
 };
 
-const useLocalPlatformPaddockBindings = (): boolean =>
-  process.env.NODE_ENV !== "development" ||
-  process.env.PC_KEIBA_PADDOCK_LOCAL_PLATFORM_BINDINGS === "1";
-
-const getPaddockRoom = (raceKey: string): PcKeibaDurableObjectStub | null => {
-  if (!useLocalPlatformPaddockBindings()) {
-    return null;
-  }
-  const env = getCloudflareEnv();
-  if (!env?.PADDOCK_ROOM) {
-    return null;
-  }
-  return env.PADDOCK_ROOM.get(env.PADDOCK_ROOM.idFromName(raceKey));
-};
-
-const useRemotePaddockBindings = (): boolean =>
-  process.env.NODE_ENV === "development" &&
-  process.env.PC_KEIBA_PADDOCK_REMOTE_BINDINGS !== "0" &&
-  process.env.PC_KEIBA_PADDOCK_REMOTE_SERVER_PROXY === "1";
-
-const getRemotePaddockOrigin = (): string =>
-  process.env.PC_KEIBA_PADDOCK_REMOTE_ORIGIN ?? DEFAULT_REMOTE_PADDOCK_ORIGIN;
-
 const getPaddockApiPath = ({
   day,
   keibajoCode,
@@ -75,53 +56,34 @@ const getPaddockApiPath = ({
 }: PaddockRaceParams): string =>
   `/api/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/paddock`;
 
-const getRemotePaddockApiUrl = (params: PaddockRaceParams, suffix = ""): string =>
-  `${getRemotePaddockOrigin()}${getPaddockApiPath(params)}${suffix}`;
-
-const fetchRemotePaddockState = async (params: PaddockRaceParams): Promise<PaddockState> => {
-  const response = await fetch(getRemotePaddockApiUrl(params), { cache: "no-store" });
-  if (!response.ok) {
-    throw new Error(`remote paddock state ${response.status}`);
+const getPaddockRoom = (raceKey: string): PcKeibaDurableObjectStub | null => {
+  if (useProductionApiProxy()) {
+    return null;
   }
-  const payload: unknown = await response.json();
-  if (!isPaddockState(payload)) {
-    throw new Error("invalid remote paddock state");
+  const env = getCloudflareEnv();
+  if (!env?.PADDOCK_ROOM) {
+    return null;
   }
-  return payload;
-};
-
-const updateRemotePaddockState = async (
-  params: PaddockRaceParams,
-  action: PaddockAction,
-): Promise<PaddockState> => {
-  const response = await fetch(getRemotePaddockApiUrl(params), {
-    body: JSON.stringify(action),
-    cache: "no-store",
-    headers: { "content-type": "application/json" },
-    method: "POST",
-  });
-  if (!response.ok) {
-    throw new Error(`remote paddock update ${response.status}`);
-  }
-  const payload: unknown = await response.json();
-  if (!isPaddockState(payload)) {
-    throw new Error("invalid remote paddock state");
-  }
-  return payload;
+  return env.PADDOCK_ROOM.get(env.PADDOCK_ROOM.idFromName(raceKey));
 };
 
 export const getPaddockLiveUrl = (params: PaddockRaceParams): string | null => {
-  if (!useRemotePaddockBindings()) {
+  if (useProductionApiProxy()) {
+    const relayOrigin = getProductionLiveRelayOrigin();
+    if (!relayOrigin) {
+      return null;
+    }
+    return `${relayOrigin}${getPaddockApiPath(params)}/live`;
+  }
+  if (!getCloudflareEnv()?.PADDOCK_ROOM) {
     return null;
   }
-  const liveUrl = new URL(getRemotePaddockApiUrl(params, "/live"));
-  liveUrl.protocol = liveUrl.protocol === "http:" ? "ws:" : "wss:";
-  return liveUrl.toString();
+  return `${getPaddockApiPath(params)}/live`;
 };
 
 export const isPaddockRealtimeAvailable = (): boolean =>
-  useRemotePaddockBindings() ||
-  (useLocalPlatformPaddockBindings() && Boolean(getCloudflareEnv()?.PADDOCK_ROOM));
+  useProductionApiProxy() ||
+  Boolean(getCloudflareEnv()?.PADDOCK_ROOM);
 
 const getMemoryState = (raceKey: string): PaddockState => {
   const existing = memoryStates.get(raceKey);
@@ -141,8 +103,16 @@ const getRoomRequest = (
   new Request(`https://paddock-room/${operation === "ws" ? "ws" : ""}?raceKey=${raceKey}`, init);
 
 export const getPaddockState = async (params: PaddockRaceParams): Promise<PaddockState> => {
-  if (useRemotePaddockBindings()) {
-    return fetchRemotePaddockState(params);
+  if (useProductionApiProxy()) {
+    const response = await fetchProductionApi(getPaddockApiPath(params));
+    if (!response.ok) {
+      throw new Error(`remote paddock state ${response.status}`);
+    }
+    const payload: unknown = await response.json();
+    if (!isPaddockState(payload)) {
+      throw new Error("invalid remote paddock state");
+    }
+    return payload;
   }
 
   const raceKey = getRacePaddockKey(params);
@@ -165,8 +135,20 @@ export const updatePaddockState = async (
   params: PaddockRaceParams,
   action: PaddockAction,
 ): Promise<PaddockState> => {
-  if (useRemotePaddockBindings()) {
-    return updateRemotePaddockState(params, action);
+  if (useProductionApiProxy()) {
+    const response = await fetchProductionApi(getPaddockApiPath(params), {
+      body: JSON.stringify(action),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    if (!response.ok) {
+      throw new Error(`remote paddock update ${response.status}`);
+    }
+    const payload: unknown = await response.json();
+    if (!isPaddockState(payload)) {
+      throw new Error("invalid remote paddock state");
+    }
+    return payload;
   }
 
   const raceKey = getRacePaddockKey(params);
@@ -197,6 +179,9 @@ export const connectPaddockRoom = (
   params: PaddockRaceParams,
   request: Request,
 ): Promise<Response> | null => {
+  if (useProductionApiProxy()) {
+    return null;
+  }
   const raceKey = getRacePaddockKey(params);
   const room = getPaddockRoom(raceKey);
   if (!room) {
