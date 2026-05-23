@@ -7296,8 +7296,8 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
     white-space: normal;
   }
 
-  /* Compact reasons inline-block (each reason indivisible) with separator to
-     reduce row height while preserving each reason's word integrity.
+  /* Mobile: one reason per line (block) to keep each reason readable as a
+     single logical row.
      `.stats-table td` (specificity 0,1,1) sets default font-size; bump specificity to win. */
   .stats-table td.premium-data-top-reason-cell {
     font-size: var(--space-13px-92);
@@ -7310,12 +7310,7 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   }
 
   .premium-data-top-reason-cell .premium-data-top-reasons li {
-    display: inline-block;
-  }
-
-  .premium-data-top-reason-cell .premium-data-top-reasons li:not(:last-child)::after {
-    content: "・";
-    margin: var(--number-0-2) var(--space-2px-25);
+    display: block;
   }
 
   .training-table {
