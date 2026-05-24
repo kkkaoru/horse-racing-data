@@ -33,7 +33,6 @@ export default function Loading() {
           <span />
           <span />
           <span />
-          <span />
         </div>
       </div>
       <div className="breadcrumbs skeleton-line">

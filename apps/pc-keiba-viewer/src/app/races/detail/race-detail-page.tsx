@@ -434,7 +434,6 @@ export async function RaceDetailView({
         <RaceShareControls path={sharePath} />
         <div className="race-global-summary" aria-label="race summary in global header">
           <div>
-            <span>{formatTime(race.hassoJikoku)}発走</span>
             <RaceStartCountdown startsAt={raceStartsAt} />
             <span>{formatKeibajo(keibajoCode)}</span>
             <span>{formatRaceNumber(raceNumber)}</span>
