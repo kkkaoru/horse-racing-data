@@ -33,6 +33,7 @@
       "*/10 * * * *",
       "0 12 * * *",
       "30 12 * * *",
+      "30 18 * * *",
     ],
   },
   "queues": {
@@ -89,6 +90,12 @@
       "binding": "REALTIME_DB",
       "database_name": "sync-realtime-data",
       "database_id": "d12ebd45-2aff-4d74-8556-295c1da9177e",
+    },
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "DETAIL_SECTION_CACHE_KV",
+      "id": "a013fdf6e7224c3ab0c227be3c899073",
     },
   ],
   "r2_buckets": [
