@@ -2,13 +2,22 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
+import { getCloudflareContext } from "@opennextjs/cloudflare";
+
 import {
   getActiveRunningStylePredictions,
+  getRaceCourseInfo,
   getRaceDetail,
   getRaceRunners,
   getRaceSourceByRoute,
+  getSameVenueRacesByDate,
   type ActiveRunningStylePrediction,
 } from "../../../../../../../../db/queries";
+import {
+  buildRaceDetailSsrCacheKey,
+  getCachedRaceDetailSsrSnapshot,
+  putRaceDetailSsrSnapshot,
+} from "../../../../../../../../lib/race-detail-ssr-cache.server";
 import {
   cleanText,
   formatDate,
@@ -140,16 +149,57 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
           })
           .catch(() => []);
 
-  // recentResults are fetched lazily by PaddockSection from the
-  // /recent-results API so the page response stays small and SSR doesn't
-  // block on the 360-row historical-results join.
-  const [race, runners, runningStylePredictions] = await Promise.all([
-    getRaceDetail(source, year, month, day, keibajoCode, raceNumber),
-    getRaceRunners(source, year, month, day, keibajoCode, raceNumber),
+  // Reuse the race-detail SSR snapshot (race + runners + courseInfo +
+  // sameVenueRaces) so the paddock-edit fan-out collapses to a single KV
+  // read on warm requests. The cron at `0 12 * * *` / `*/15 * * * *`
+  // populates this for upcoming and today's races.
+  const ssrCacheKey = buildRaceDetailSsrCacheKey({
+    day,
+    keibajoCode,
+    month,
+    raceNumber,
+    source,
+    year,
+  });
+  const cachedSnapshot = await getCachedRaceDetailSsrSnapshot(ssrCacheKey);
+  const [snapshot, runningStylePredictions] = await Promise.all([
+    cachedSnapshot
+      ? Promise.resolve(cachedSnapshot)
+      : (async () => {
+          const race = await getRaceDetail(source, year, month, day, keibajoCode, raceNumber);
+          if (!race) {
+            return null;
+          }
+          const [courseInfo, runners, sameVenueRaces] = await Promise.all([
+            getRaceCourseInfo(keibajoCode, race.kyori, race.trackCode),
+            getRaceRunners(source, year, month, day, keibajoCode, raceNumber),
+            getSameVenueRacesByDate(source, year, month, day, keibajoCode),
+          ]);
+          return { courseInfo, race, runners, sameVenueRaces };
+        })(),
     runningStylePredictionsPromise,
   ]);
-  if (!race) {
+  if (!snapshot) {
     notFound();
+  }
+  const { race, runners } = snapshot;
+  if (!cachedSnapshot) {
+    try {
+      const cloudflareCtx = (
+        await getCloudflareContext<Record<string, unknown>, PcKeibaExecutionContext>({
+          async: true,
+        })
+      ).ctx;
+      cloudflareCtx?.waitUntil(
+        putRaceDetailSsrSnapshot({
+          cacheKey: ssrCacheKey,
+          params: { day, keibajoCode, month, raceNumber, source, year },
+          snapshot,
+        }),
+      );
+    } catch {
+      // Cloudflare context unavailable during local dev — skip cache write.
+    }
   }
 
   const raceDetailPath = `/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}`;
