@@ -85,6 +85,14 @@ const globalForDb = globalThis as typeof globalThis & {
 
 type PoolOptions = NonNullable<ConstructorParameters<typeof Pool>[0]>;
 
+// Cloudflare Workers can hold up to 6 concurrent outbound TCP connections per
+// invocation, and Hyperdrive multiplexes those over its own pool, so capping
+// pg.Pool at 1 forced every `Promise.all` query group to execute serially.
+// We size the pool to 5 so a single request can fan out its DB reads in true
+// parallel while leaving headroom for an outgoing Hyperdrive control frame.
+const CLOUDFLARE_POOL_MAX = 5;
+const LOCAL_POOL_MAX = 8;
+
 const getPoolOptions = (databaseTarget: DatabaseTarget): PoolOptions => {
   const statementTimeoutMs = Number(process.env.PC_KEIBA_DB_STATEMENT_TIMEOUT_MS);
   const idleInTransactionTimeoutMs = Number(process.env.PC_KEIBA_DB_IDLE_IN_TRANSACTION_TIMEOUT_MS);
@@ -93,7 +101,7 @@ const getPoolOptions = (databaseTarget: DatabaseTarget): PoolOptions => {
     idle_in_transaction_session_timeout: Number.isFinite(idleInTransactionTimeoutMs)
       ? idleInTransactionTimeoutMs
       : DEFAULT_IDLE_IN_TRANSACTION_TIMEOUT_MS,
-    max: databaseTarget === "cloudflare" ? 1 : 8,
+    max: databaseTarget === "cloudflare" ? CLOUDFLARE_POOL_MAX : LOCAL_POOL_MAX,
     statement_timeout: Number.isFinite(statementTimeoutMs)
       ? statementTimeoutMs
       : DEFAULT_STATEMENT_TIMEOUT_MS,

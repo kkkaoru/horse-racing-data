@@ -45,7 +45,7 @@ interface RaceAiAssistantProps {
   basePostgresqlData: {
     courseInfo: CourseInfo | null;
     race: RaceDetail;
-    raceDayRaces: RaceListItem[];
+    sameVenueRaces: RaceListItem[];
     runners: Runner[];
   };
   baseProcessedData: Record<string, unknown>;
