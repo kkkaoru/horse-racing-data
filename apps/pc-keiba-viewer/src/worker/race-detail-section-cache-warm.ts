@@ -8,6 +8,7 @@ import { buildRaceTrendApiPath, type RaceTrendCacheWarmMessage } from "../lib/ra
 const INTERNAL_ORIGIN = "https://pc-keiba-viewer.local";
 const SCHEDULE_PATH = "/api/cache-warm/race-detail-sections";
 const RACE_TREND_SCHEDULE_PATH = "/api/cache-warm/race-trends";
+const RACE_DETAIL_SSR_SCHEDULE_PATH = "/api/cache-warm/race-detail-ssr";
 
 type CacheWarmMessage = DetailSectionCacheWarmMessage | RaceTrendCacheWarmMessage;
 
@@ -62,6 +63,32 @@ export const scheduleDueRaceTrendCache = async (
   );
   if (!response.ok) {
     throw new Error(`race trend cache schedule failed: ${response.status}`);
+  }
+};
+
+export const scheduleRaceDetailSsrCacheWarm = async (
+  openNextWorker: OpenNextWorker,
+  env: CloudflareEnv,
+  ctx: PcKeibaExecutionContext,
+  options: { date?: string } = {},
+): Promise<void> => {
+  const url = new URL(RACE_DETAIL_SSR_SCHEDULE_PATH, INTERNAL_ORIGIN);
+  if (options.date) {
+    url.searchParams.set("date", options.date);
+  }
+  const response = await fetchSelf(
+    openNextWorker,
+    new Request(url, {
+      headers: {
+        "X-PC-Keiba-Cache-Warm": "scheduled",
+      },
+      method: "POST",
+    }),
+    env,
+    ctx,
+  );
+  if (!response.ok) {
+    throw new Error(`race detail SSR cache warm failed: ${response.status}`);
   }
 };
 
