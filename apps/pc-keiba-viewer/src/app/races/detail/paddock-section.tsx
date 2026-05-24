@@ -445,11 +445,16 @@ function PaddockRecentResults({ loading = false, results }: PaddockRecentResults
               // biome-ignore lint/suspicious/noArrayIndexKey: static skeleton row
               key={index}
             >
-              <span className="paddock-recent-finish skeleton-text short" />
+              <span className="paddock-recent-finish paddock-recent-skeleton-finish" />
               <span className="paddock-recent-race">
-                <strong className="skeleton-text medium" />
-                <small className="skeleton-text short" />
-                <small className="skeleton-text short" />
+                <strong className="skeleton-text paddock-recent-skeleton-name" />
+                <small className="skeleton-text paddock-recent-skeleton-conditions" />
+                <small className="skeleton-text paddock-recent-skeleton-meta" />
+              </span>
+              <span className="paddock-recent-stats">
+                <span className="skeleton-text paddock-recent-skeleton-stat" />
+                <span className="skeleton-text paddock-recent-skeleton-stat" />
+                <span className="skeleton-text paddock-recent-skeleton-stat" />
               </span>
             </li>
           ))}
