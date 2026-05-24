@@ -55,8 +55,10 @@ export function FavoritesManager() {
       setResults([]);
       return undefined;
     }
+    let cancelled = false;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
+      if (cancelled) return;
       const search = async () => {
         setLoading(true);
         try {
@@ -64,21 +66,28 @@ export function FavoritesManager() {
             `/api/mypage/favorites/search?kind=${encodeURIComponent(kind)}&q=${encodeURIComponent(query)}`,
             { cache: "no-store", signal: controller.signal },
           );
+          if (cancelled) return;
           const value: unknown = await response.json();
+          if (cancelled) return;
           setResults(isSearchPayload(value) ? (value.results ?? []) : []);
-        } catch (error: unknown) {
-          if (!(error instanceof DOMException && error.name === "AbortError")) {
+        } catch {
+          if (!cancelled) {
             setResults([]);
           }
         } finally {
-          setLoading(false);
+          if (!cancelled) {
+            setLoading(false);
+          }
         }
       };
       void search();
     }, 180);
     return () => {
+      cancelled = true;
       window.clearTimeout(timer);
-      controller.abort();
+      if (!controller.signal.aborted) {
+        controller.abort();
+      }
     };
   }, [kind, query]);
 
