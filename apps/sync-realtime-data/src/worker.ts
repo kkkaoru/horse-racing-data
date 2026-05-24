@@ -100,6 +100,7 @@ import {
   markTrackConditionQueued,
   recordPremiumPaddockNotificationEvent,
   replacePremiumRaceData,
+  runD1Retention,
   toHorseTrends,
   toOddsTrendsByType,
   updateLastFetch,
@@ -204,6 +205,8 @@ const addDaysToYyyymmdd = (yyyymmdd: string, days: number): string => {
 
 const JRA_PREMIUM_LINK_CRONS = new Set(["0 4 * * 5", "0 4 * * 6"]);
 const JRA_PREMIUM_DATA_CRONS = new Set(["0 5 * * 5", "0 5 * * 6"]);
+// 03:30 JST (= 18:30 UTC) — off-peak slot for D1 retention sweeps.
+const D1_RETENTION_CRON = "30 18 * * *";
 const getCronJob = (cron: string, now = new Date()): Job => {
   const today = getTodayJst(now);
   if (JRA_PREMIUM_LINK_CRONS.has(cron)) {
@@ -2022,8 +2025,25 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
       return;
     }
     if (job.type === "plan-running-style-predictions") {
-      const summary = await planRunningStylePredictionsForDate(env, job.date, getNow(env));
-      await logFetch(env.REALTIME_DB, job.type, "ok", null, JSON.stringify(summary));
+      const planSummary = await planRunningStylePredictionsForDate(
+        env,
+        job.date,
+        getNow(env),
+      ).catch((error: unknown) => ({
+        error: error instanceof Error ? error.message : String(error),
+      }));
+      const cacheRefresh = await refreshViewerRunningStyleCachesForDate(env, job.date).catch(
+        (error: unknown) => ({
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      await logFetch(
+        env.REALTIME_DB,
+        job.type,
+        "ok",
+        null,
+        JSON.stringify({ cacheRefresh, plan: planSummary }),
+      );
       return;
     }
     if (job.type === "generate-running-style-predictions") {
@@ -2246,6 +2266,24 @@ export default {
     }
     if (controller.cron === WIN5_DISCOVER_CRON) {
       ctx.waitUntil(logWin5CronResult(env, scheduledAt));
+      return;
+    }
+    if (controller.cron === D1_RETENTION_CRON) {
+      ctx.waitUntil(
+        runD1Retention(env.REALTIME_DB, scheduledAt)
+          .then((result) =>
+            logFetch(env.REALTIME_DB, "d1-retention", "ok", null, JSON.stringify(result)),
+          )
+          .catch((error: unknown) =>
+            logFetch(
+              env.REALTIME_DB,
+              "d1-retention",
+              "error",
+              null,
+              error instanceof Error ? error.message : String(error),
+            ),
+          ),
+      );
       return;
     }
     const job = getCronJob(controller.cron, scheduledAt);

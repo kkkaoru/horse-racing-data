@@ -1040,6 +1040,46 @@ export const logFetch = async (
     .run();
 };
 
+interface D1RetentionResult {
+  fetchLogsDeleted: number;
+  oddsSnapshotsDeleted: number;
+}
+
+const ODDS_SNAPSHOTS_RETENTION_DAYS = 7;
+const FETCH_LOGS_RETENTION_DAYS = 30;
+
+const formatIsoCutoff = (now: Date, daysAgo: number): string => {
+  const cutoff = new Date(now.getTime() - daysAgo * 24 * 60 * 60 * 1000);
+  return toJstIsoString(cutoff);
+};
+
+// Trim row backlog so CREATE INDEX and analytic queries stay within D1's
+// per-query memory budget. The window is intentionally long enough to keep
+// race-day trend lookups working but short enough to bound row growth.
+export const runD1Retention = async (
+  db: D1Database,
+  now = new Date(),
+): Promise<D1RetentionResult> => {
+  const oddsCutoff = formatIsoCutoff(now, ODDS_SNAPSHOTS_RETENTION_DAYS);
+  const logsCutoff = formatIsoCutoff(now, FETCH_LOGS_RETENTION_DAYS);
+  const [oddsResult, logsResult] = await Promise.all([
+    db
+      .prepare("delete from odds_snapshots where fetched_at < ?")
+      .bind(oddsCutoff)
+      .run()
+      .catch((): { meta: { rows_written?: number } } => ({ meta: {} })),
+    db
+      .prepare("delete from fetch_logs where created_at < ?")
+      .bind(logsCutoff)
+      .run()
+      .catch((): { meta: { rows_written?: number } } => ({ meta: {} })),
+  ]);
+  return {
+    fetchLogsDeleted: logsResult.meta.rows_written ?? 0,
+    oddsSnapshotsDeleted: oddsResult.meta.rows_written ?? 0,
+  };
+};
+
 export const upsertPremiumRaceLink = async (
   db: D1Database,
   raceKey: string,
