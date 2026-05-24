@@ -79,7 +79,6 @@ export default function Loading() {
           <span />
           <span />
           <span />
-          <span />
         </div>
       </section>
       <nav className="breadcrumbs skeleton-line" aria-hidden="true">

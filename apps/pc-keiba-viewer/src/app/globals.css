@@ -278,9 +278,13 @@ main {
   gap: var(--space-8px-28);
   line-height: var(--number-1-7);
   max-width: var(--space-100pct-12);
+  -webkit-overflow-scrolling: touch;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
   padding: var(--space-4px-18) var(--number-0-2);
+  pointer-events: auto;
   scrollbar-width: none;
+  touch-action: pan-x;
   white-space: nowrap;
 }
 
