@@ -83,6 +83,7 @@ interface PaddockHorseRowProps {
   onScore: (action: PaddockAction) => void;
   originalJockeyName: string;
   recentResults: HorseRaceResult[] | null;
+  recentResultsLoading: boolean;
   realtimeOdds: number | null;
   realtimeJockeyName: string | null;
   realtimePopularity: number | null;
@@ -421,7 +422,42 @@ const formatPastResultMeta = (result: HorseRaceResult): string =>
     formatDistance(result.kyori),
   ].join(" / ");
 
-function PaddockRecentResults({ results }: { results: HorseRaceResult[] | null }) {
+interface PaddockRecentResultsProps {
+  loading?: boolean;
+  results: HorseRaceResult[] | null;
+}
+
+const PADDOCK_RECENT_RESULTS_SKELETON_COUNT = 3;
+
+function PaddockRecentResults({ loading = false, results }: PaddockRecentResultsProps) {
+  if (loading && results === null) {
+    return (
+      <section
+        aria-busy="true"
+        aria-label="近走成績を読み込み中"
+        className="paddock-recent-results paddock-recent-results-loading"
+      >
+        <h3>近走</h3>
+        <ol>
+          {Array.from({ length: PADDOCK_RECENT_RESULTS_SKELETON_COUNT }, (_, index) => (
+            <li
+              className="paddock-recent-skeleton-item"
+              // biome-ignore lint/suspicious/noArrayIndexKey: static skeleton row
+              key={index}
+            >
+              <span className="paddock-recent-finish skeleton-text short" />
+              <span className="paddock-recent-race">
+                <strong className="skeleton-text medium" />
+                <small className="skeleton-text short" />
+                <small className="skeleton-text short" />
+              </span>
+            </li>
+          ))}
+        </ol>
+      </section>
+    );
+  }
+
   if (results === null) {
     return null;
   }
@@ -592,6 +628,15 @@ const getPaddockApiPath = ({
   year,
 }: Omit<PaddockSectionProps, "runners" | "source">): string =>
   `/api/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/paddock`;
+
+const getRecentResultsApiPath = ({
+  day,
+  keibajoCode,
+  month,
+  raceNumber,
+  year,
+}: Pick<PaddockSectionProps, "day" | "keibajoCode" | "month" | "raceNumber" | "year">): string =>
+  `/api/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/recent-results`;
 
 const getPaddockDiscordApiPath = (props: Omit<PaddockSectionProps, "runners" | "source">): string =>
   `${getPaddockApiPath(props)}/discord`;
@@ -782,6 +827,7 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
   onScore,
   originalJockeyName,
   recentResults,
+  recentResultsLoading,
   realtimeOdds,
   realtimeJockeyName,
   realtimePopularity,
@@ -797,7 +843,8 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
   };
   const displayJockeyName = getPreferredJockeyName(jockeyName, realtimeJockeyName);
   const isScratched = Boolean(status);
-  const startsLabel = recentResults === null ? "-" : `${recentResults.length}回`;
+  const startsLabel =
+    recentResults === null ? (recentResultsLoading ? "…" : "-") : `${recentResults.length}回`;
 
   return (
     <article
@@ -896,7 +943,7 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
         </dl>
         <b>{formatPaddockScore(scores.total)}</b>
       </header>
-      <PaddockRecentResults results={recentResults} />
+      <PaddockRecentResults loading={recentResultsLoading} results={recentResults} />
       {editable && isScratched ? (
         <div className="paddock-score-unavailable" aria-disabled="true">
           <strong>{status}</strong>
@@ -1304,6 +1351,12 @@ export function PaddockSection({
   const [premiumTrainingGradesByHorse, setPremiumTrainingGradesByHorse] = useState<
     Map<string, string>
   >(new Map());
+  const [lazyRecentResults, setLazyRecentResults] = useState<HorseRaceResult[] | null>(
+    recentResults ?? null,
+  );
+  const [recentResultsLoading, setRecentResultsLoading] = useState<boolean>(
+    editable && recentResults === undefined,
+  );
   const [liveUrl, setLiveUrl] = useState<string | null>(null);
   const [realtimeEnabled, setRealtimeEnabled] = useState(false);
   const [discordStatus, setDiscordStatus] = useState<"idle" | "sending" | "sent" | "failed">(
@@ -1377,16 +1430,16 @@ export function PaddockSection({
     [realtimePayload],
   );
   const recentResultsByHorse = useMemo(() => {
-    if (!recentResults) {
+    if (!lazyRecentResults) {
       return null;
     }
     const grouped = new Map<string, HorseRaceResult[]>();
-    for (const result of recentResults) {
+    for (const result of lazyRecentResults) {
       const horseNumber = formatRunnerNumber(result.currentUmaban);
       grouped.set(horseNumber, [...(grouped.get(horseNumber) ?? []), result]);
     }
     return grouped;
-  }, [recentResults]);
+  }, [lazyRecentResults]);
   const realtimeWeightByHorse = useMemo(
     () =>
       new Map(
@@ -1455,6 +1508,57 @@ export function PaddockSection({
       window.clearInterval(timer);
     };
   }, [lastDiscordSentAt]);
+
+  // Lazy-load recent race results in the paddock-edit flow so the SSR
+  // payload stays small (the historical-results join produces ~360 rows for a
+  // typical race). Detail-page consumers pass `recentResults` directly and
+  // skip this fetch.
+  useEffect(() => {
+    if (!editable || recentResults !== undefined) {
+      return undefined;
+    }
+    let cancelled = false;
+    const controller = new AbortController();
+    const requestUrl = `${getRecentResultsApiPath({
+      day,
+      keibajoCode,
+      month,
+      raceNumber,
+      year,
+    })}?source=${source}`;
+    setRecentResultsLoading(true);
+    const isRecentResultsResponse = (
+      value: unknown,
+    ): value is { results?: HorseRaceResult[] } =>
+      typeof value === "object" && value !== null && !Array.isArray(value);
+    const loadRecentResults = async (): Promise<void> => {
+      try {
+        const response = await fetchWithRetry(requestUrl, { signal: controller.signal });
+        if (!response.ok) {
+          throw new Error(`recent-results request failed: ${response.status}`);
+        }
+        const body: unknown = await response.json();
+        if (cancelled) {
+          return;
+        }
+        const parsed = isRecentResultsResponse(body) && Array.isArray(body.results) ? body.results : [];
+        setLazyRecentResults(parsed);
+      } catch {
+        if (!cancelled) {
+          setLazyRecentResults([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setRecentResultsLoading(false);
+        }
+      }
+    };
+    void loadRecentResults();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [day, editable, keibajoCode, month, raceNumber, recentResults, source, year]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1791,6 +1895,7 @@ export function PaddockSection({
                     ? null
                     : (recentResultsByHorse.get(runner.horseNumber) ?? [])
                 }
+                recentResultsLoading={recentResultsLoading}
                 realtimeOdds={realtimeOddsByHorse.get(runner.horseNumber)?.odds ?? null}
                 realtimeJockeyName={realtimeEntry?.jockeyName || null}
                 realtimePopularity={realtimeOddsByHorse.get(runner.horseNumber)?.popularity ?? null}

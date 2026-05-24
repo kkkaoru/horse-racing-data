@@ -3130,6 +3130,34 @@ h3 {
   font-weight: var(--number-900-16);
 }
 
+.paddock-recent-results-loading {
+  align-items: stretch;
+  background: var(--color-hex-f8fbf7-4);
+  border-color: var(--line);
+}
+
+.paddock-recent-skeleton-item {
+  align-items: center;
+  display: flex;
+  gap: var(--space-10px-27);
+}
+
+.paddock-recent-skeleton-item .paddock-recent-finish.skeleton-text {
+  display: inline-block;
+  min-width: var(--space-44px-23);
+}
+
+.paddock-recent-skeleton-item .paddock-recent-race {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: var(--space-6px-33);
+}
+
+.paddock-recent-skeleton-item .paddock-recent-race .skeleton-text {
+  display: block;
+}
+
 .paddock-score-controls {
   display: grid;
   gap: var(--space-10px-27);

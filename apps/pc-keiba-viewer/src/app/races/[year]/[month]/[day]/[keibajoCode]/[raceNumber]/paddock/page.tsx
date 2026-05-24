@@ -5,7 +5,6 @@ import { notFound } from "next/navigation";
 import {
   getActiveRunningStylePredictions,
   getRaceDetail,
-  getHorseRaceResults,
   getRaceRunners,
   getRaceSourceByRoute,
   type ActiveRunningStylePrediction,
@@ -141,10 +140,12 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
           })
           .catch(() => []);
 
-  const [race, runners, recentResults, runningStylePredictions] = await Promise.all([
+  // recentResults are fetched lazily by PaddockSection from the
+  // /recent-results API so the page response stays small and SSR doesn't
+  // block on the 360-row historical-results join.
+  const [race, runners, runningStylePredictions] = await Promise.all([
     getRaceDetail(source, year, month, day, keibajoCode, raceNumber),
     getRaceRunners(source, year, month, day, keibajoCode, raceNumber),
-    getHorseRaceResults(source, year, month, day, keibajoCode, raceNumber),
     runningStylePredictionsPromise,
   ]);
   if (!race) {
@@ -233,7 +234,6 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
           source,
           year,
         }}
-        recentResults={recentResults}
         runningStyleLabelsByHorse={runningStyleLabelsByHorse}
         runners={runners}
         source={source}
