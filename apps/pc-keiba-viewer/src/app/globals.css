@@ -2115,6 +2115,7 @@ h3 {
   font-weight: var(--number-800-12);
   gap: var(--space-4px-18);
   grid-row: var(--number-1-7) / span var(--number-2-1);
+  white-space: nowrap;
 }
 
 .mypage-race-countdown {
