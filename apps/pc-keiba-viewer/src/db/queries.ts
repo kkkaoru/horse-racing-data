@@ -344,6 +344,52 @@ export const getRacesByDateWithoutJockeyNames = cache(
   },
 );
 
+export const getSameVenueRacesByDate = cache(
+  async (
+    source: RaceSource,
+    year: string,
+    month: string,
+    day: string,
+    keibajoCode: string,
+  ): Promise<RaceListItem[]> => {
+    return withDbQueryCache(
+      ["getSameVenueRacesByDate", source, year, month, day, keibajoCode],
+      async () => {
+        const monthDay = `${month}${day}`;
+        const table = source === "jra" ? jvdRa : nvdRa;
+        const result = await getDb().execute<RaceListItem>(sql`
+          select
+            ${sql.raw(`'${source}'`)} as source,
+            ra.kaisai_nen as "kaisaiNen",
+            ra.kaisai_tsukihi as "kaisaiTsukihi",
+            ra.keibajo_code as "keibajoCode",
+            ra.race_bango as "raceBango",
+            ra.kyosomei_hondai as "kyosomeiHondai",
+            ra.kyosomei_fukudai as "kyosomeiFukudai",
+            ra.grade_code as "gradeCode",
+            ra.kyoso_shubetsu_code as "kyosoShubetsuCode",
+            ra.kyoso_kigo_code as "kyosoKigoCode",
+            ra.juryo_shubetsu_code as "juryoShubetsuCode",
+            array[]::text[] as "jockeyNames",
+            ra.kyoso_joken_code as "kyosoJokenCode",
+            ra.kyoso_joken_meisho as "kyosoJokenMeisho",
+            ra.kyori,
+            ra.track_code as "trackCode",
+            ra.hasso_jikoku as "hassoJikoku",
+            ra.shusso_tosu as "shussoTosu"
+          from ${table} ra
+          where ra.kaisai_nen = ${year}
+            and ra.kaisai_tsukihi = ${monthDay}
+            and ra.keibajo_code = ${keibajoCode}
+          order by ra.race_bango asc
+        `);
+
+        return result.rows;
+      },
+    );
+  },
+);
+
 export const getRaceSourceByRoute = cache(
   async (
     year: string,

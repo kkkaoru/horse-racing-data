@@ -7,7 +7,7 @@ import {
   getRaceCourseInfo,
   getRaceDetail,
   getRaceRunners,
-  getRacesByDateWithoutJockeyNames,
+  getSameVenueRacesByDate,
 } from "../../../db/queries";
 import { SOURCE_LABELS, type RaceSource } from "../../../lib/codes";
 import { formatCourseParagraphs, getCourseFacts, getCourseImagePath } from "../../../lib/course";
@@ -232,14 +232,11 @@ export async function RaceDetailView({
 
   const raceName = cleanText(race.kyosomeiHondai, "一般競走");
   const raceTags = getRaceTags(race);
-  const [courseInfo, runners, raceDayRaces] = await Promise.all([
+  const [courseInfo, runners, sameVenueRaces] = await Promise.all([
     getRaceCourseInfo(keibajoCode, race.kyori, race.trackCode),
     getRaceRunners(raceSource, year, month, day, keibajoCode, raceNumber),
-    getRacesByDateWithoutJockeyNames(year, month, day),
+    getSameVenueRacesByDate(raceSource, year, month, day, keibajoCode),
   ]);
-  const sameVenueRaces = raceDayRaces
-    .filter((item) => item.source === raceSource && item.keibajoCode === keibajoCode)
-    .toSorted((left, right) => Number(left.raceBango) - Number(right.raceBango));
   const currentRaceIndex = sameVenueRaces.findIndex((item) => item.raceBango === raceNumber);
   const previousRace = currentRaceIndex > 0 ? sameVenueRaces[currentRaceIndex - 1] : null;
   const nextRace =
@@ -501,7 +498,7 @@ export async function RaceDetailView({
           basePostgresqlData={{
             courseInfo,
             race,
-            raceDayRaces,
+            sameVenueRaces,
             runners,
           }}
           baseProcessedData={baseProcessedData}
@@ -692,7 +689,7 @@ export async function RaceDetailView({
           basePostgresqlData={{
             courseInfo,
             race,
-            raceDayRaces,
+            sameVenueRaces,
             runners,
           }}
           baseProcessedData={baseProcessedData}

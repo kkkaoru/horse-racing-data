@@ -38,7 +38,13 @@ interface AiJsonExportSectionProps {
   basePostgresqlData: {
     courseInfo: CourseInfo | null;
     race: RaceDetail;
-    raceDayRaces: RaceListItem[];
+    /**
+     * Races that share the current race's venue on the same day. SSR fetches
+     * only same-venue rows to keep the response light; if a JSON consumer
+     * needs the full cross-venue list, the `/ai/data?parts=raceDayRaces`
+     * endpoint returns it on demand.
+     */
+    sameVenueRaces: RaceListItem[];
     runners: Runner[];
   };
   baseProcessedData: Record<string, unknown>;

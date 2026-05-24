@@ -37,7 +37,12 @@ export interface RaceAiDataBase {
   basePostgresqlData: {
     courseInfo: CourseInfo | null;
     race: RaceDetail;
-    raceDayRaces: RaceListItem[];
+    /**
+     * Races sharing the current race's venue on the same day. SSR fetches
+     * only same-venue rows (the full cross-venue list is loaded lazily via
+     * `/ai/data?parts=raceDayRaces`).
+     */
+    sameVenueRaces: RaceListItem[];
     runners: Runner[];
   };
   baseProcessedData: Record<string, unknown>;
@@ -301,10 +306,10 @@ const buildRaceAiDataReadiness = ({
       totalUnits: 3,
     }),
     buildReadinessItem({
-      availableUnits: basePostgresqlData.raceDayRaces.length > 0 ? 1 : 0,
-      key: "raceDayRaces",
-      label: "同日レース一覧",
-      notes: [`${basePostgresqlData.raceDayRaces.length} レース`],
+      availableUnits: basePostgresqlData.sameVenueRaces.length > 0 ? 1 : 0,
+      key: "sameVenueRaces",
+      label: "同日同会場レース一覧",
+      notes: [`${basePostgresqlData.sameVenueRaces.length} レース`],
       totalUnits: 1,
     }),
     ...sections.map((section) => {
