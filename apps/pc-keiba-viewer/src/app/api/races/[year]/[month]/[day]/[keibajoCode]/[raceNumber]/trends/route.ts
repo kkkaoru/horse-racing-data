@@ -33,7 +33,6 @@ import type {
   RaceListItem,
   RaceTrendDetail,
   RaceTrendPayload,
-  RaceTrendRateRow,
   RaceTrendRunningStyle,
   RaceTrendRunningStyleRow,
   RaceTrendStarterRow,
@@ -260,72 +259,6 @@ const calculateMedian = (values: number[]): number | null => {
   const left = sorted[middle - 1];
   const right = sorted[middle];
   return left === undefined || right === undefined ? null : (left + right) / 2;
-};
-
-const aggregateRows = (
-  rows: RaceTrendStarterRow[],
-  options: {
-    endYmd: string;
-    getGroupKey: (row: RaceTrendStarterRow) => string | null;
-    keibajoCode?: string;
-    startYmd: string;
-    validKeys: Set<string>;
-  },
-): RaceTrendRateRow[] => {
-  const groups = new Map<string, RaceTrendStarterRow[]>();
-
-  for (const row of rows) {
-    const ymd = toYmd(row.kaisaiNen, row.kaisaiTsukihi);
-    if (!isYmdInRange(ymd, options.startYmd, options.endYmd)) {
-      continue;
-    }
-    if (options.keibajoCode && row.keibajoCode !== options.keibajoCode) {
-      continue;
-    }
-    const key = options.getGroupKey(row);
-    if (!key || !options.validKeys.has(key)) {
-      continue;
-    }
-    const bucket = groups.get(key) ?? [];
-    bucket.push(row);
-    groups.set(key, bucket);
-  }
-
-  return Array.from(groups.entries())
-    .map(([key, groupRows]) => {
-      const starts = groupRows.length;
-      const winCount = groupRows.filter((row) => row.finishPosition === 1).length;
-      const quinellaCount = groupRows.filter((row) => row.finishPosition <= 2).length;
-      const showCount = groupRows.filter((row) => row.finishPosition <= 3).length;
-      return {
-        key,
-        label: key,
-        starts,
-        showRate: starts > 0 ? (showCount / starts) * 100 : 0,
-        quinellaRate: starts > 0 ? (quinellaCount / starts) * 100 : 0,
-        winRate: starts > 0 ? (winCount / starts) * 100 : 0,
-        finishPositionMedian: calculateMedian(groupRows.map((row) => row.finishPosition)),
-        details: groupRows.map(detailFromStarter).toSorted((a, b) => {
-          const dateOrder = b.date.localeCompare(a.date);
-          if (dateOrder !== 0) {
-            return dateOrder;
-          }
-          const raceOrder = b.raceNumber.localeCompare(a.raceNumber, "ja", { numeric: true });
-          if (raceOrder !== 0) {
-            return raceOrder;
-          }
-          return (a.horseNumber ?? "").localeCompare(b.horseNumber ?? "", "ja", { numeric: true });
-        }),
-      };
-    })
-    .toSorted(
-      (a, b) =>
-        b.showRate - a.showRate ||
-        b.quinellaRate - a.quinellaRate ||
-        b.winRate - a.winRate ||
-        b.starts - a.starts ||
-        a.label.localeCompare(b.label, "ja"),
-    );
 };
 
 interface RaceTrendRunningStyleTarget {
@@ -684,53 +617,9 @@ const buildRaceTrendPayload = async (
         .flatMap(getJockeyNameAliases),
     ),
   );
-  const jockeyKeys = Array.from(
-    new Set(
-      trendRunners
-        .map((entry) => normalizeRaceTrendJockeyName(entry.effectiveJockeyName))
-        .filter(isNonEmptyString),
-    ),
-  );
   const frameNumbers = Array.from(
     new Set(runners.map((runner) => normalizeNumberText(runner.wakuban)).filter(isNonEmptyString)),
   );
-  const targetHorseNumberByJockey = new Map(
-    trendRunners
-      .map(
-        ({ effectiveJockeyName, runner }) =>
-          [
-            normalizeRaceTrendJockeyName(effectiveJockeyName),
-            normalizeNumberText(runner.umaban),
-          ] as const,
-      )
-      .filter(
-        (entry): entry is readonly [string, string] => Boolean(entry[0]) && Boolean(entry[1]),
-      ),
-  );
-  const targetMarketByJockey = new Map<
-    string,
-    { popularity: number | null; winOdds: number | null }
-  >();
-  for (const { effectiveJockeyName, runner } of trendRunners) {
-    const key = normalizeRaceTrendJockeyName(effectiveJockeyName);
-    if (!key) {
-      continue;
-    }
-    targetMarketByJockey.set(key, {
-      popularity: parseStoredPopularity(runner.tanshoNinkijun),
-      winOdds: parseStoredWinOdds(runner.tanshoOdds),
-    });
-  }
-  const targetHorseNumbersByFrame = new Map<string, string>();
-  for (const runner of runners) {
-    const frameNumber = normalizeNumberText(runner.wakuban);
-    const horseNumber = normalizeNumberText(runner.umaban);
-    if (!frameNumber || !horseNumber) {
-      continue;
-    }
-    const current = targetHorseNumbersByFrame.get(frameNumber);
-    targetHorseNumbersByFrame.set(frameNumber, current ? `${current},${horseNumber}` : horseNumber);
-  }
   const historicalRowsPromise = getRaceTrendHistoricalStarterRows(race, {
     frameEndYmd: options.frameEndYmd,
     frameNumbers: options.runningStyleIgnoreFrame ? [] : frameNumbers,
@@ -799,29 +688,12 @@ const buildRaceTrendPayload = async (
     },
   );
 
+  // The viewer's `RaceTrendTable` only consumes `runningStyleRows` and
+  // `raceCount`; the legacy `jockeyRows` / `frameRows` aggregates used to add
+  // ~40 KB to the payload without being rendered, so we stopped emitting
+  // them. `frameNumbers` / `jockeyKeys` / `targetMarketByJockey` are still
+  // referenced upstream as inputs to `runningStyleTargets`.
   return {
-    jockeyRows: aggregateRows(rows, {
-      startYmd: options.jockeyStartYmd,
-      endYmd: options.jockeyEndYmd,
-      keibajoCode: options.jockeySameVenue ? race.keibajoCode : undefined,
-      validKeys: new Set(jockeyKeys),
-      getGroupKey: (row) => normalizeRaceTrendJockeyName(row.jockeyName),
-    }).map((row) =>
-      Object.assign(row, {
-        targetHorseNumber: targetHorseNumberByJockey.get(row.key) ?? null,
-        targetPopularity: targetMarketByJockey.get(row.key)?.popularity ?? null,
-        targetWinOdds: targetMarketByJockey.get(row.key)?.winOdds ?? null,
-      }),
-    ),
-    frameRows: aggregateRows(rows, {
-      startYmd: options.frameStartYmd,
-      endYmd: options.frameEndYmd,
-      keibajoCode: race.keibajoCode,
-      validKeys: new Set(frameNumbers),
-      getGroupKey: (row) => normalizeNumberText(row.wakuban),
-    }).map((row) =>
-      Object.assign(row, { targetHorseNumber: targetHorseNumbersByFrame.get(row.key) ?? null }),
-    ),
     raceCount: countDistinctRunningStyleDetailRaces(runningStyleRows),
     runningStyleRows,
   };
