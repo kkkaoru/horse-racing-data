@@ -1518,12 +1518,17 @@ export function PaddockSection({
   // payload stays small (the historical-results join produces ~360 rows for a
   // typical race). Detail-page consumers pass `recentResults` directly and
   // skip this fetch.
+  //
+  // We previously aborted the in-flight fetch on cleanup, but Next.js 16's
+  // dev overlay surfaces the resulting "signal is aborted without reason"
+  // rejection even when our `catch` handles it. Since the request is a
+  // single GET (no retry loop), letting it finish and ignoring the result
+  // via the `cancelled` flag is just as efficient and silent.
   useEffect(() => {
     if (!editable || recentResults !== undefined) {
       return undefined;
     }
     let cancelled = false;
-    const controller = new AbortController();
     const requestUrl = `${getRecentResultsApiPath({
       day,
       keibajoCode,
@@ -1538,7 +1543,10 @@ export function PaddockSection({
       typeof value === "object" && value !== null && !Array.isArray(value);
     const loadRecentResults = async (): Promise<void> => {
       try {
-        const response = await fetchWithRetry(requestUrl, { signal: controller.signal });
+        const response = await fetchWithRetry(requestUrl);
+        if (cancelled) {
+          return;
+        }
         if (!response.ok) {
           throw new Error(`recent-results request failed: ${response.status}`);
         }
@@ -1546,7 +1554,8 @@ export function PaddockSection({
         if (cancelled) {
           return;
         }
-        const parsed = isRecentResultsResponse(body) && Array.isArray(body.results) ? body.results : [];
+        const parsed =
+          isRecentResultsResponse(body) && Array.isArray(body.results) ? body.results : [];
         setLazyRecentResults(parsed);
       } catch {
         if (!cancelled) {
@@ -1561,7 +1570,6 @@ export function PaddockSection({
     void loadRecentResults();
     return () => {
       cancelled = true;
-      controller.abort();
     };
   }, [day, editable, keibajoCode, month, raceNumber, recentResults, source, year]);
 
