@@ -3137,26 +3137,39 @@ h3 {
   border-color: var(--line);
 }
 
-.paddock-recent-skeleton-item {
-  align-items: center;
-  display: flex;
-  gap: var(--space-10px-27);
+.paddock-recent-skeleton-finish {
+  animation: skeleton-shimmer var(--space-1-2s-185) linear infinite;
+  background: linear-gradient(
+    var(--space-90deg-20),
+    var(--color-hex-edf2ef-108) var(--space-0pct-94),
+    var(--color-hex-f5f8f6-109) var(--space-24pct-131),
+    var(--color-hex-edf2ef-108) var(--space-48pct-129),
+    var(--color-hex-f8faf9-101) var(--space-72pct-125),
+    var(--color-hex-edf2ef-108) var(--space-100pct-12)
+  );
+  background-size: var(--space-200pct-195) var(--space-100pct-12);
+  min-height: var(--space-28px-42);
+  width: var(--space-100pct-12);
 }
 
-.paddock-recent-skeleton-item .paddock-recent-finish.skeleton-text {
-  display: inline-block;
-  min-width: var(--space-44px-23);
+.paddock-recent-skeleton-item .skeleton-text {
+  margin: var(--number-0-2);
 }
 
-.paddock-recent-skeleton-item .paddock-recent-race {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  gap: var(--space-6px-33);
+.paddock-recent-skeleton-name {
+  width: var(--space-132px-71);
 }
 
-.paddock-recent-skeleton-item .paddock-recent-race .skeleton-text {
-  display: block;
+.paddock-recent-skeleton-conditions {
+  width: var(--space-96px-66);
+}
+
+.paddock-recent-skeleton-meta {
+  width: var(--space-152px-86);
+}
+
+.paddock-recent-skeleton-stat {
+  width: var(--space-60px-173);
 }
 
 .paddock-score-controls {
