@@ -383,3 +383,41 @@ create index concurrently if not exists nvd_se_keibajo_date_corner_idx
     ketto_toroku_bango,
     race_bango
   );
+
+-- WIN5 walk-forward eval support: covering composites for the three per-leg
+-- queries in apps/pc-keiba-viewer/src/lib/win5/leg-inputs.ts.
+create index concurrently if not exists jvd_ra_win5_leg_idx
+  on public.jvd_ra (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
+  include (kaisai_kai, kaisai_nichime, kyosomei_hondai);
+
+create index concurrently if not exists jvd_se_win5_leg_idx
+  on public.jvd_se (
+    kaisai_nen,
+    kaisai_tsukihi,
+    keibajo_code,
+    kaisai_kai,
+    kaisai_nichime,
+    race_bango
+  )
+  include (
+    umaban,
+    ketto_toroku_bango,
+    bamei,
+    kishumei_ryakusho,
+    tansho_ninkijun,
+    tansho_odds,
+    ijo_kubun_code
+  );
+
+create index concurrently if not exists jvd_se_history_idx
+  on public.jvd_se (ketto_toroku_bango, kaisai_nen, kaisai_tsukihi)
+  include (kakutei_chakujun);
+
+-- WIN5 runtime serving: per-day lookup of ensemble predictions.
+create index concurrently if not exists race_finish_position_model_predictions_day_idx
+  on public.race_finish_position_model_predictions (
+    model_version,
+    source,
+    kaisai_nen,
+    kaisai_tsukihi
+  );

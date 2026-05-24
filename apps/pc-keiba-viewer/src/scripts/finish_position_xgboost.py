@@ -59,6 +59,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     walk.add_argument("--reg-lambda", type=float, default=DEFAULT_LAMBDA)
     walk.add_argument("--early-stopping-rounds", type=int, default=30)
     walk.add_argument("--seed", type=int, default=20260519)
+    walk.add_argument("--train-end-date", type=str, default=None,
+                      help="Override train end date (YYYYMMDD). Use with --validation-from-date for OOT hold-out.")
+    walk.add_argument("--validation-from-date", type=str, default=None,
+                      help="Override validation start date (YYYYMMDD). Overrides validation-years.")
+    walk.add_argument("--validation-to-date", type=str, default=None,
+                      help="Override validation end date (YYYYMMDD). Pairs with --validation-from-date.")
     walk.add_argument("--relevance-rank1", type=int, default=DEFAULT_RELEVANCE_RANK1)
     walk.add_argument("--relevance-rank2", type=int, default=DEFAULT_RELEVANCE_RANK2,
                       help="Relevance for finish_position=2 (boost to emphasize)")
@@ -197,24 +203,41 @@ def write_predictions_jsonl(valid_df: pd.DataFrame, output_path: Path) -> None:
 def run_walk_forward(args: argparse.Namespace) -> None:
     df = load_parquet_dir(args.csv)
     feature_cols = resolve_feature_columns(df)
-    validation_years = [int(y) for y in args.validation_years.split(",")]
     folds: list[dict[str, object]] = []
-    for valid_year in validation_years:
-        train_end = f"{valid_year - 1}1231"
+    if args.validation_from_date and args.validation_to_date:
+        train_end = args.train_end_date or args.validation_from_date
         train_df = filter_range(df, args.train_start_date, train_end)
-        valid_df = filter_year(df, valid_year)
-        if len(train_df) == 0 or len(valid_df) == 0:
-            continue
-        _, result = train_xgboost_ranker(train_df, valid_df, feature_cols, args)
-        write_predictions_jsonl(
-            result["valid_predictions"],
-            args.output_predictions_dir / f"{valid_year}.jsonl",
-        )
-        folds.append({
-            "fold_year": valid_year,
-            "best_iteration": result["best_iteration"],
-            **result["metrics"],
-        })
+        valid_df = filter_range(df, args.validation_from_date, args.validation_to_date)
+        if len(train_df) > 0 and len(valid_df) > 0:
+            _, result = train_xgboost_ranker(train_df, valid_df, feature_cols, args)
+            fold_label = f"{args.validation_from_date}-{args.validation_to_date}"
+            write_predictions_jsonl(
+                result["valid_predictions"],
+                args.output_predictions_dir / f"{fold_label}.jsonl",
+            )
+            folds.append({
+                "fold_label": fold_label,
+                "best_iteration": result["best_iteration"],
+                **result["metrics"],
+            })
+    else:
+        validation_years = [int(y) for y in args.validation_years.split(",")]
+        for valid_year in validation_years:
+            train_end = args.train_end_date or f"{valid_year - 1}1231"
+            train_df = filter_range(df, args.train_start_date, train_end)
+            valid_df = filter_year(df, valid_year)
+            if len(train_df) == 0 or len(valid_df) == 0:
+                continue
+            _, result = train_xgboost_ranker(train_df, valid_df, feature_cols, args)
+            write_predictions_jsonl(
+                result["valid_predictions"],
+                args.output_predictions_dir / f"{valid_year}.jsonl",
+            )
+            folds.append({
+                "fold_year": valid_year,
+                "best_iteration": result["best_iteration"],
+                **result["metrics"],
+            })
     aggregate = {
         "fold_count": len(folds),
         "top1_accuracy_mean": sum(f["top1_accuracy"] for f in folds) / max(len(folds), 1),

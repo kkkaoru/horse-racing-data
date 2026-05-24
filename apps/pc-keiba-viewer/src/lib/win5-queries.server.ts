@@ -300,7 +300,16 @@ export const getWin5Prediction = cache(
     }
 
     const { buildWin5LegInputsForSchedule } = await import("./win5-data.server");
-    const legInputs = await buildWin5LegInputsForSchedule(schedule);
+    const { buildModelScoreLookupFromPool } = await import("./win5/model-score-lookup.server");
+    const { getPgPool } = await import("../db/client");
+    const modelScoreLookup = await buildModelScoreLookupFromPool({
+      pool: getPgPool(),
+      modelVersion: WIN5_MODEL_VERSION,
+      source: "jra",
+      kaisaiNen,
+      kaisaiTsukihi,
+    });
+    const legInputs = await buildWin5LegInputsForSchedule({ schedule, modelScoreLookup });
     if (legInputs.length !== 5) {
       return null;
     }
