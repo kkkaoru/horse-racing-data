@@ -138,17 +138,26 @@ const promoteKvHitToCacheApi = async (
 export const getCachedRaceDetailSsrSnapshot = async (
   cacheKey: string,
 ): Promise<RaceDetailSsrSnapshot | null> => {
-  const defaultCache = getDefaultCache();
-  const cachedResponse = await defaultCache?.match(getCacheRequest(cacheKey));
+  // Defensive try/catch on each tier: a transient Cache API or KV failure
+  // must degrade to "cache miss" so the page handler can fall back to the
+  // Hyperdrive fan-out instead of throwing all the way to the error
+  // boundary (which used to land users on the bare "再読み込み" page).
+  const cachedResponse = await getDefaultCache()
+    ?.match(getCacheRequest(cacheKey))
+    .catch(() => undefined);
   if (cachedResponse?.ok) {
-    return parseSnapshot(await cachedResponse.text());
+    try {
+      return parseSnapshot(await cachedResponse.text());
+    } catch {
+      return null;
+    }
   }
   const { env, ctx } = await getCloudflareRuntime();
-  const kvBody = await env?.DETAIL_SECTION_CACHE_KV?.get(cacheKey);
+  const kvBody = await env?.DETAIL_SECTION_CACHE_KV?.get(cacheKey).catch(() => null);
   if (!kvBody) {
     return null;
   }
-  ctx?.waitUntil(promoteKvHitToCacheApi(kvBody, cacheKey));
+  ctx?.waitUntil(promoteKvHitToCacheApi(kvBody, cacheKey).catch(() => undefined));
   return parseSnapshot(kvBody);
 };
 

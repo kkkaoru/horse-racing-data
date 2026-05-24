@@ -3172,6 +3172,69 @@ h3 {
   width: var(--space-60px-173);
 }
 
+.paddock-edit-loading .paddock-horse-row-skeleton {
+  opacity: var(--number-0-7-44);
+}
+
+.paddock-edit-loading .paddock-horse-row-skeleton .skeleton-text {
+  background: var(--color-hex-e5e7eb-78);
+  border-radius: var(--space-4px-25);
+  display: inline-block;
+}
+
+.paddock-edit-loading .paddock-horse-row-skeleton .skeleton-text.short {
+  height: var(--space-12px-65);
+  width: var(--space-44px-23);
+}
+
+.paddock-edit-loading .paddock-horse-row-skeleton .skeleton-text.medium {
+  height: var(--space-16px-9);
+  width: var(--space-152px-86);
+}
+
+.paddock-edit-loading .paddock-horse-row-skeleton .skeleton-text.title {
+  height: var(--space-26px-59);
+  width: var(--space-200pct-195);
+  max-width: var(--space-260px-75);
+}
+
+.paddock-edit-error {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-20px-52);
+  padding: var(--space-40px-47) var(--space-16px-9);
+}
+
+.paddock-edit-error-card {
+  background: var(--surface);
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-16px-9);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-14px-55);
+  max-width: var(--space-260px-75);
+  padding: var(--space-28px-42);
+  width: var(--space-100pct-12);
+}
+
+.paddock-edit-error-card h1 {
+  font-size: var(--space-20px-52);
+  margin: var(--number-0-2);
+}
+
+.paddock-edit-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-10px-27);
+}
+
+.paddock-edit-error-digest {
+  color: var(--color-hex-64748b-63);
+  font-size: var(--space-12px-65);
+  margin: var(--number-0-2);
+}
+
 .paddock-score-controls {
   display: grid;
   gap: var(--space-10px-27);
