@@ -596,7 +596,11 @@ export function RaceTrendSection({
       try {
         const response = await fetchWithRetry(
           refreshCache ? getRefreshedApiPath(apiPath) : apiPath,
-          { cache: "no-store", credentials: "include" },
+          // Allow Cloudflare's edge cache to satisfy follow-up navigations
+          // when the worker response carries `Cache-Control: public,
+          // max-age=60`. The cache-busting `__trendCacheRefresh` query param
+          // is added by `getRefreshedApiPath` for forced re-fetches.
+          { credentials: "include" },
           RACE_TREND_RETRY_OPTIONS,
         );
         if (!response.ok) {

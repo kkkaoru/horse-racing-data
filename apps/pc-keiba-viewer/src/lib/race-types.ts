@@ -147,8 +147,16 @@ export interface RaceTrendRunningStyleRow {
 }
 
 export interface RaceTrendPayload {
-  frameRows: RaceTrendRateRow[];
-  jockeyRows: RaceTrendRateRow[];
+  /**
+   * @deprecated Kept for cache backward compatibility. The viewer only renders
+   * `runningStyleRows`; new responses omit this array to keep the JSON small.
+   */
+  frameRows?: RaceTrendRateRow[];
+  /**
+   * @deprecated Kept for cache backward compatibility. The viewer only renders
+   * `runningStyleRows`; new responses omit this array to keep the JSON small.
+   */
+  jockeyRows?: RaceTrendRateRow[];
   raceCount: number;
   runningStyleRows: RaceTrendRunningStyleRow[];
 }
