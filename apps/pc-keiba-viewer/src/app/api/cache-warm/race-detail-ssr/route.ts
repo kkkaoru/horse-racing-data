@@ -9,6 +9,7 @@
 import { NextResponse } from "next/server";
 
 import {
+  getHorseRaceResults,
   getRaceCourseInfo,
   getRaceDetail,
   getRaceRunners,
@@ -24,6 +25,10 @@ import {
   buildRaceDetailSsrCacheKey,
   putRaceDetailSsrSnapshot,
 } from "../../../../lib/race-detail-ssr-cache.server";
+import {
+  buildRecentResultsCacheKey,
+  putRecentResultsCache,
+} from "../../../../lib/recent-results-cache.server";
 
 export const dynamic = "force-dynamic";
 
@@ -40,6 +45,32 @@ interface WarmRaceParams {
 
 const isRaceSource = (value: string): value is RaceSource => value === "jra" || value === "nar";
 
+const warmRecentResults = async (params: WarmRaceParams): Promise<void> => {
+  const { day, keibajoCode, month, raceBango, source, year } = params;
+  const cacheKey = buildRecentResultsCacheKey({
+    day,
+    keibajoCode,
+    month,
+    raceNumber: raceBango,
+    source,
+    sourceScope: "all",
+    year,
+  });
+  const results = await getHorseRaceResults(
+    source,
+    year,
+    month,
+    day,
+    keibajoCode,
+    raceBango,
+    "all",
+  ).catch(() => []);
+  if (results.length === 0) {
+    return;
+  }
+  await putRecentResultsCache(cacheKey, JSON.stringify({ results })).catch(() => undefined);
+};
+
 const warmRaceDetailSsr = async (params: WarmRaceParams): Promise<"warmed" | "missing"> => {
   const { day, keibajoCode, month, raceBango, source, year } = params;
   const race = await getRaceDetail(source, year, month, day, keibajoCode, raceBango);
@@ -51,18 +82,21 @@ const warmRaceDetailSsr = async (params: WarmRaceParams): Promise<"warmed" | "mi
     getRaceRunners(source, year, month, day, keibajoCode, raceBango),
     getSameVenueRacesByDate(source, year, month, day, keibajoCode),
   ]);
-  await putRaceDetailSsrSnapshot({
-    cacheKey: buildRaceDetailSsrCacheKey({
-      day,
-      keibajoCode,
-      month,
-      raceNumber: raceBango,
-      source,
-      year,
+  await Promise.all([
+    putRaceDetailSsrSnapshot({
+      cacheKey: buildRaceDetailSsrCacheKey({
+        day,
+        keibajoCode,
+        month,
+        raceNumber: raceBango,
+        source,
+        year,
+      }),
+      params: { day, keibajoCode, month, raceNumber: raceBango, source, year },
+      snapshot: { courseInfo, race, runners, sameVenueRaces },
     }),
-    params: { day, keibajoCode, month, raceNumber: raceBango, source, year },
-    snapshot: { courseInfo, race, runners, sameVenueRaces },
-  });
+    warmRecentResults(params),
+  ]);
   return "warmed";
 };
 
