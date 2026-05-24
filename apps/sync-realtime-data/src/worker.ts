@@ -1634,11 +1634,20 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
     throw new Error(`premium race data fetch failed: ${raceKey}`);
   }
   const trainingReviews = workHtml ? parsePremiumTrainingReviews(workHtml, env) : undefined;
-  const stableComments = commentHtml ? parsePremiumStableComments(commentHtml, env) : undefined;
+  const parsedStableComments = commentHtml
+    ? parsePremiumStableComments(commentHtml, env)
+    : undefined;
   const dataTopHorses = dataTopHtml ? parsePremiumDataTopHorses(dataTopHtml, env) : undefined;
   const commentAuthorized = commentHtml
     ? isPremiumStableCommentHtmlAuthorized(commentHtml)
     : false;
+  // Suppress the stable-comment replace when the proxy returned the preview
+  // (unauthenticated) page: otherwise the unauth response (typically 3 rows)
+  // would overwrite a previously stored authenticated snapshot (full field).
+  // The fetch state below still records `commentAuthRequired: true` so the
+  // planner re-queues the race.
+  const stableComments =
+    commentHtml && !commentAuthorized ? undefined : parsedStableComments;
   await replacePremiumRaceData(env.REALTIME_DB, {
     dataTopHorses,
     fetchedAt,
@@ -1656,7 +1665,7 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
   }
   const hasAnyData =
     (trainingReviews?.length ?? 0) > 0 ||
-    (stableComments?.length ?? 0) > 0 ||
+    (parsedStableComments?.length ?? 0) > 0 ||
     (dataTopHorses?.length ?? 0) > 0;
   const commentAuthRequired = Boolean(commentHtml) && !commentAuthorized;
   await updatePremiumRaceDataFetchState(env.REALTIME_DB, {
@@ -1678,9 +1687,10 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
             : String(dataTopResult.reason)
           : null,
       dataTopHtmlLength: dataTopHtml.length,
-      stableCommentCount: stableComments?.length ?? null,
+      stableCommentCount: parsedStableComments?.length ?? null,
+      stableCommentPersisted: stableComments !== undefined,
       stableCommentSample:
-        commentHtml && (stableComments?.length ?? 0) === 0
+        commentHtml && (parsedStableComments?.length ?? 0) === 0
           ? summarizePremiumStableCommentHtml(commentHtml)
           : null,
       trainingReviewCount: trainingReviews?.length ?? null,

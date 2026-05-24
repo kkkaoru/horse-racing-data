@@ -1,6 +1,6 @@
 export const WIN5_DEFAULT_BUDGET_YEN = 2000;
 export const WIN5_TICKET_UNIT_YEN = 100;
-export const WIN5_MODEL_VERSION = "win5-heuristic-v1";
+export const WIN5_MODEL_VERSION = "win5-xgb-cb-ensemble-v1";
 
 export interface Win5RaceLeg {
   legIndex: number;

@@ -9,7 +9,8 @@ import {
   type Win5RaceLeg,
 } from "./types";
 
-const SOFTMAX_TEMPERATURE = 0.65;
+const HEURISTIC_SOFTMAX_TEMPERATURE = 0.65;
+const MODEL_SCORE_SOFTMAX_TEMPERATURE = 0.4;
 const MIN_WIN_PROBABILITY = 0.001;
 
 export interface Win5RunnerInput {
@@ -19,6 +20,7 @@ export interface Win5RunnerInput {
   popularity?: number | null;
   odds?: number | null;
   historicalScore?: number | null;
+  modelScore?: number | null;
 }
 
 export interface Win5LegInput {
@@ -31,12 +33,13 @@ const normalizeHorseNumber = (value: string): string => value.replace(/^0+/u, ""
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value));
 
-const softmax = (scores: readonly number[]): number[] => {
+const softmax = (params: { scores: readonly number[]; temperature: number }): number[] => {
+  const { scores, temperature } = params;
   if (scores.length === 0) {
     return [];
   }
   const maxScore = Math.max(...scores);
-  const exponents = scores.map((score) => Math.exp((score - maxScore) / SOFTMAX_TEMPERATURE));
+  const exponents = scores.map((score) => Math.exp((score - maxScore) / temperature));
   const total = exponents.reduce((sum, value) => sum + value, 0);
   if (total <= 0) {
     return scores.map(() => 1 / scores.length);
@@ -44,25 +47,46 @@ const softmax = (scores: readonly number[]): number[] => {
   return exponents.map((value) => value / total);
 };
 
-const scoreRunner = (runner: Win5RunnerInput, runnerCount: number): number => {
-  let score = runner.historicalScore ?? 0;
+const hasModelScore = (runner: Win5RunnerInput): boolean =>
+  runner.modelScore !== null && runner.modelScore !== undefined;
 
-  if (runner.popularity !== null && runner.popularity !== undefined && runner.popularity > 0) {
-    score += (runnerCount - runner.popularity + 1) / runnerCount;
-  }
-
-  if (runner.odds !== null && runner.odds !== undefined && runner.odds > 0) {
-    score += 1 / runner.odds;
-  }
-
-  return score;
+const heuristicScore = (params: { runner: Win5RunnerInput; runnerCount: number }): number => {
+  const { runner, runnerCount } = params;
+  const base = runner.historicalScore ?? 0;
+  const popularityTerm =
+    runner.popularity !== null && runner.popularity !== undefined && runner.popularity > 0
+      ? (runnerCount - runner.popularity + 1) / runnerCount
+      : 0;
+  const oddsTerm = runner.odds !== null && runner.odds !== undefined && runner.odds > 0
+    ? 1 / runner.odds
+    : 0;
+  return base + popularityTerm + oddsTerm;
 };
+
+const allHaveModelScore = (runners: readonly Win5RunnerInput[]): boolean =>
+  runners.length > 0 && runners.every(hasModelScore);
+
+interface ScoreLegParams {
+  runners: readonly Win5RunnerInput[];
+  useModelScore: boolean;
+}
+
+const scoreLegRunners = (params: ScoreLegParams): number[] =>
+  params.useModelScore
+    ? params.runners.map((runner) => runner.modelScore ?? 0)
+    : params.runners.map((runner) =>
+        heuristicScore({ runner, runnerCount: params.runners.length }),
+      );
 
 export const buildWin5LegPredictions = (legInputs: readonly Win5LegInput[]): Win5LegPrediction[] =>
   legInputs.map(({ leg, runners }) => {
     const activeRunners = runners.filter((runner) => runner.horseNumber.trim().length > 0);
-    const scores = activeRunners.map((runner) => scoreRunner(runner, activeRunners.length));
-    const probabilities = softmax(scores).map((probability) =>
+    const useModelScore = allHaveModelScore(activeRunners);
+    const scores = scoreLegRunners({ runners: activeRunners, useModelScore });
+    const temperature = useModelScore
+      ? MODEL_SCORE_SOFTMAX_TEMPERATURE
+      : HEURISTIC_SOFTMAX_TEMPERATURE;
+    const probabilities = softmax({ scores, temperature }).map((probability) =>
       Math.max(MIN_WIN_PROBABILITY, probability),
     );
 
