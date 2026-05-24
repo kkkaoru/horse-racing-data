@@ -45,9 +45,11 @@
     ],
   },
   "triggers": {
-    // 21:00 JST on the day before each race date.
-    // Every 5 minutes to warm race trends from 20 minutes before post time.
-    "crons": ["0 12 * * *", "*/5 * * * *"],
+    // 21:00 JST on the day before each race date warms section cache + tomorrow's
+    // SSR snapshot. Every 5 minutes warms race trends from 20 minutes before post
+    // time. Every 15 minutes refreshes today's SSR snapshot in KV so cache misses
+    // never need a full Hyperdrive fan-out.
+    "crons": ["0 12 * * *", "*/5 * * * *", "*/15 * * * *"],
   },
   "durable_objects": {
     "bindings": [

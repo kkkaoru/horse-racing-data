@@ -7,8 +7,21 @@ import type { RaceTrendCacheWarmMessage } from "./lib/race-trend-cache";
 import {
   handleRaceDetailSectionCacheQueue,
   scheduleDueRaceTrendCache,
+  scheduleRaceDetailSsrCacheWarm,
   scheduleTomorrowRaceDetailSectionCache,
 } from "./worker/race-detail-section-cache-warm";
+
+const formatTomorrowJstDate = (now: Date): string => {
+  const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+  }).formatToParts(tomorrow);
+  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${lookup.year ?? "1970"}-${lookup.month ?? "01"}-${lookup.day ?? "01"}`;
+};
 
 export default {
   ...openNextWorker,
@@ -23,9 +36,17 @@ export default {
   scheduled(controller: { cron?: string }, env: CloudflareEnv, ctx: PcKeibaExecutionContext) {
     if (controller.cron === "0 12 * * *") {
       ctx.waitUntil(scheduleTomorrowRaceDetailSectionCache(openNextWorker, env, ctx));
+      ctx.waitUntil(
+        scheduleRaceDetailSsrCacheWarm(openNextWorker, env, ctx, {
+          date: formatTomorrowJstDate(new Date()),
+        }),
+      );
     }
     if (controller.cron === "*/5 * * * *") {
       ctx.waitUntil(scheduleDueRaceTrendCache(openNextWorker, env, ctx));
+    }
+    if (controller.cron === "*/15 * * * *") {
+      ctx.waitUntil(scheduleRaceDetailSsrCacheWarm(openNextWorker, env, ctx));
     }
   },
 };

@@ -1,3 +1,4 @@
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -33,6 +34,12 @@ import {
   getWeightLabel,
 } from "../../../lib/race-classification";
 import { isCornerPacePredictionSupported } from "../../../lib/race-pace-prediction";
+import {
+  buildRaceDetailSsrCacheKey,
+  getCachedRaceDetailSsrSnapshot,
+  putRaceDetailSsrSnapshot,
+  type RaceDetailSsrSnapshot,
+} from "../../../lib/race-detail-ssr-cache.server";
 import { getRaceTrendTargetsFromSearchParams } from "../../../lib/race-trend-query";
 import type { RaceDetail } from "../../../lib/race-types";
 import {
@@ -213,6 +220,41 @@ const DetailLinkCell = ({
   );
 };
 
+const tryGetWaitUntilContext = async (): Promise<PcKeibaExecutionContext | null> => {
+  try {
+    return (await getCloudflareContext<Record<string, unknown>, PcKeibaExecutionContext>({
+      async: true,
+    })).ctx;
+  } catch {
+    return null;
+  }
+};
+
+const loadRaceDetailSnapshotFromDb = async (
+  params: {
+    day: string;
+    initialRace: RaceDetail | null;
+    keibajoCode: string;
+    month: string;
+    raceNumber: string;
+    source: RaceSource;
+    year: string;
+  },
+): Promise<RaceDetailSsrSnapshot | null> => {
+  const { day, initialRace, keibajoCode, month, raceNumber, source, year } = params;
+  const race =
+    initialRace ?? (await getRaceDetail(source, year, month, day, keibajoCode, raceNumber));
+  if (!race) {
+    return null;
+  }
+  const [courseInfo, runners, sameVenueRaces] = await Promise.all([
+    getRaceCourseInfo(keibajoCode, race.kyori, race.trackCode),
+    getRaceRunners(source, year, month, day, keibajoCode, raceNumber),
+    getSameVenueRacesByDate(source, year, month, day, keibajoCode),
+  ]);
+  return { courseInfo, race, runners, sameVenueRaces };
+};
+
 export async function RaceDetailView({
   day,
   initialRace,
@@ -223,20 +265,42 @@ export async function RaceDetailView({
   source: raceSource,
   year,
 }: RaceDetailViewProps) {
-  const race =
-    initialRace ?? (await getRaceDetail(raceSource, year, month, day, keibajoCode, raceNumber));
-
-  if (!race) {
+  const ssrCacheKey = buildRaceDetailSsrCacheKey({
+    day,
+    keibajoCode,
+    month,
+    raceNumber,
+    source: raceSource,
+    year,
+  });
+  const cachedSnapshot = await getCachedRaceDetailSsrSnapshot(ssrCacheKey);
+  const snapshot =
+    cachedSnapshot ??
+    (await loadRaceDetailSnapshotFromDb({
+      day,
+      initialRace: initialRace ?? null,
+      keibajoCode,
+      month,
+      raceNumber,
+      source: raceSource,
+      year,
+    }));
+  if (!snapshot) {
     notFound();
   }
-
+  if (!cachedSnapshot) {
+    const waitUntilCtx = await tryGetWaitUntilContext();
+    waitUntilCtx?.waitUntil(
+      putRaceDetailSsrSnapshot({
+        cacheKey: ssrCacheKey,
+        params: { day, keibajoCode, month, raceNumber, source: raceSource, year },
+        snapshot,
+      }),
+    );
+  }
+  const { courseInfo, race, runners, sameVenueRaces } = snapshot;
   const raceName = cleanText(race.kyosomeiHondai, "一般競走");
   const raceTags = getRaceTags(race);
-  const [courseInfo, runners, sameVenueRaces] = await Promise.all([
-    getRaceCourseInfo(keibajoCode, race.kyori, race.trackCode),
-    getRaceRunners(raceSource, year, month, day, keibajoCode, raceNumber),
-    getSameVenueRacesByDate(raceSource, year, month, day, keibajoCode),
-  ]);
   const currentRaceIndex = sameVenueRaces.findIndex((item) => item.raceBango === raceNumber);
   const previousRace = currentRaceIndex > 0 ? sameVenueRaces[currentRaceIndex - 1] : null;
   const nextRace =
