@@ -127,6 +127,8 @@ vi.mock("./jra", async () => {
     ...actual,
     fetchJraResultHtmlWithPlaywright: vi.fn(async () => "<html></html>"),
     fetchJraOddsWithPlaywright: vi.fn(async () => ({ entryHtml: "", latest: {} })),
+    parseJraHorseWeights: vi.fn(() => []),
+    parseJraRaceEntries: vi.fn(() => []),
   };
 });
 vi.mock("./jra-track-condition", () => ({
@@ -554,6 +556,63 @@ it("handleJob fetch-weights with NAR race source short-circuits when no fetch UR
     "nar:2026:0512:55:01",
     null,
   );
+});
+
+it("handleJob fetch-odds JRA branch with weights inserts horse-weight snapshot", async () => {
+  const { handleJob } = await import("./worker");
+  const {
+    claimOddsFetch,
+    getRaceSource,
+    insertOddsSnapshot,
+    insertHorseWeightSnapshot,
+    updateLastFetch,
+    completeOddsFetch,
+  } = await import("./storage");
+  const { parseJraHorseWeights } = await import("./jra");
+  vi.mocked(claimOddsFetch).mockResolvedValueOnce(true);
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "08",
+    debaUrl: "https://www.jra.go.jp/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: "02",
+    kaisaiNen: "2026",
+    kaisaiNichime: "06",
+    kaisaiTsukihi: "0512",
+    keibajoCode: "08",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "jra:2026:0512:08:01",
+    raceName: "Test",
+    raceStartAtJst: "2026-05-12T13:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "jra",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(insertOddsSnapshot).mockResolvedValueOnce(3);
+  vi.mocked(parseJraHorseWeights).mockReturnValueOnce([
+    { changeAmount: 2, changeSign: "+", horseName: null, horseNumber: "1", weight: 500 },
+  ]);
+  await handleJob(
+    buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:30:00.000Z" } as never),
+    { raceKey: "jra:2026:0512:08:01", type: "fetch-odds" },
+  );
+  expect(insertHorseWeightSnapshot).toHaveBeenCalledTimes(1);
+  expect(updateLastFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "jra:2026:0512:08:01",
+    "last_weight_fetch_at",
+    expect.any(String),
+  );
+  expect(completeOddsFetch).toHaveBeenCalledTimes(1);
 });
 
 it("handleJob fetch-odds with JRA race + valid odds slot writes a successful snapshot", async () => {
