@@ -423,6 +423,93 @@ it("parsePremiumPaddockBulletins splits row-based grouping into favorite/value h
   expect(result.bulletins.filter((b) => b.groupKey === "value")).toHaveLength(2);
 });
 
+it("parsePremiumTrainingReviews inherits actionComment + horseName when subsequent row has only date and rider", () => {
+  const env = {
+    PREMIUM_RACE_WORK_COMMENT_CLASS: "Comment_Cell",
+    PREMIUM_RACE_WORK_DATE_CLASS: "Date",
+    PREMIUM_RACE_WORK_HORSE_NAME_CLASS: "Horse_Name",
+    PREMIUM_RACE_WORK_HORSE_NUMBER_CLASS: "Horse_Number",
+    PREMIUM_RACE_WORK_RIDER_CLASS: "Rider",
+    PREMIUM_RACE_WORK_ROW_CLASS: "Work_Row",
+  };
+  const html = `
+    <tr class="Work_Row">
+      <td class="Horse_Number">2</td>
+      <td class="Horse_Name">タロウ</td>
+      <td class="Comment_Cell">仕掛けに反応</td>
+    </tr>
+    <tr class="Work_Row">
+      <td class="Date">2026/05/12</td>
+      <td class="Rider">乗り役</td>
+    </tr>
+  `;
+  const result = parsePremiumTrainingReviews(html, env);
+  expect(result).toHaveLength(1);
+  expect(result[0]?.horseNumber).toBe("2");
+  expect(result[0]?.commentText).toBe("仕掛けに反応");
+  expect(result[0]?.horseName).toBe("タロウ");
+  expect(result[0]?.riderName).toBe("乗り役");
+});
+
+it("parsePremiumTrainingReviews skips rows that have no horseNumber and no inheritable currentHorse", () => {
+  const env = {
+    PREMIUM_RACE_WORK_DATE_CLASS: "Date",
+    PREMIUM_RACE_WORK_ROW_CLASS: "Work_Row",
+  };
+  const html = `<tr class="Work_Row"><td class="Date">2026/05/12</td></tr>`;
+  expect(parsePremiumTrainingReviews(html, env)).toStrictEqual([]);
+});
+
+it("parsePremiumStableComments uses raw-cell fallback variants for frameNumber and horseName", () => {
+  const html = `
+    <table>
+      <tr>
+        <th>枠</th>
+        <th>馬番</th>
+        <th>馬名</th>
+        <th>コメント</th>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td>5</td>
+        <td>馬太郎</td>
+        <td>動き軽快</td>
+      </tr>
+    </table>
+  `;
+  const result = parsePremiumStableComments(html, {});
+  expect(result).toHaveLength(1);
+  expect(result[0]?.frameNumber).toBe("3");
+  expect(result[0]?.horseNumber).toBe("5");
+  expect(result[0]?.horseName).toBe("馬太郎");
+  expect(result[0]?.commentText).toBe("動き軽快");
+});
+
+it("parsePremiumStableComments detects evaluationGrade from Icon_Mark image classnames", () => {
+  const html = `
+    <tr class="Comment_Row">
+      <td class="Horse_Number">2</td>
+      <td class="Comment_Text">コメント本文</td>
+      <td class="Evaluation"><img class="Icon_Mark_02"/></td>
+    </tr>
+  `;
+  const result = parsePremiumStableComments(html, {
+    PREMIUM_RACE_COMMENT_LABEL_EVALUATION: "Evaluation",
+    PREMIUM_RACE_COMMENT_LABEL_HORSE_NUMBER: "Horse_Number",
+    PREMIUM_RACE_COMMENT_LABEL_TEXT: "Comment_Text",
+    PREMIUM_RACE_COMMENT_ROW_CLASS: "Comment_Row",
+  });
+  expect(result[0]?.evaluationGrade).toBe(2);
+});
+
+it("isPremiumStableCommentHtmlAuthorized returns true only when full-table class present", async () => {
+  const { isPremiumStableCommentHtmlAuthorized } = await import("./premium-race");
+  expect(
+    isPremiumStableCommentHtmlAuthorized('<div class="Comment_Table_Show_All">x</div>'),
+  ).toBe(true);
+  expect(isPremiumStableCommentHtmlAuthorized("<div></div>")).toBe(false);
+});
+
 it("parsePremiumPaddockBulletins assigns favorite/value group based on table heading", () => {
   const html = `
     <h2>本命馬</h2>
