@@ -10,9 +10,11 @@ import {
   getRaceRunners,
   getRacesByDateWithoutJockeyNames,
   getRaceSourceByRoute,
-  getRaceTrendHistoricalStarterRows,
 } from "../../../../../../../../../db/queries";
-import { getRaceTrendD1StarterRows } from "../../../../../../../../../db/d1-trend-queries.server";
+import {
+  getRaceTrendD1StarterRows,
+  getRaceTrendDailyStarterRows,
+} from "../../../../../../../../../db/d1-trend-queries.server";
 import type { RaceSource } from "../../../../../../../../../lib/codes";
 import { fetchWithRetry } from "../../../../../../../../../lib/fetch-with-retry";
 import {
@@ -253,13 +255,13 @@ const buildRealtimeRowsForTrend = async (
 };
 
 const mergeStarterRows = (
-  neonRows: RaceTrendStarterRow[],
-  d1Rows: RaceTrendStarterRow[],
+  dailyRows: RaceTrendStarterRow[],
+  snapshotRows: RaceTrendStarterRow[],
   realtimeRows: RaceTrendStarterRow[],
 ): RaceTrendStarterRow[] => {
   const merged = new Map<string, RaceTrendStarterRow>();
-  for (const row of d1Rows) merged.set(starterKey(row), row);
-  for (const row of neonRows) {
+  for (const row of dailyRows) merged.set(starterKey(row), row);
+  for (const row of snapshotRows) {
     const key = starterKey(row);
     const existing = merged.get(key);
     merged.set(key, existing ? mergeRowPair(existing, row) : row);
@@ -336,22 +338,25 @@ const buildRaceTrendRawPayload = async (
     raceBango: race.raceBango,
     source: race.source,
   }).catch(() => []);
-  const historicalNeonPromise = getRaceTrendHistoricalStarterRows({
+  const historicalDailyPromise = getRaceTrendDailyStarterRows({
     source: options.source,
     startYmd: options.jockeyStartYmd,
     endYmd: options.jockeyEndYmd,
   });
-  const historicalD1Promise = getRaceTrendD1StarterRows({
+  const historicalSnapshotPromise = getRaceTrendD1StarterRows({
     source: options.source,
     startYmd: options.jockeyStartYmd,
     endYmd: options.jockeyEndYmd,
   });
-  const [neonRows, d1Rows] = await Promise.all([historicalNeonPromise, historicalD1Promise]);
-  const historicalRows = mergeStarterRows(neonRows, d1Rows, []);
+  const [dailyRows, snapshotRows] = await Promise.all([
+    historicalDailyPromise,
+    historicalSnapshotPromise,
+  ]);
+  const historicalRows = mergeStarterRows(dailyRows, snapshotRows, []);
   const realtimeRows = options.includeRealtimeResults
     ? await buildRealtimeRowsForTrend(race, options, historicalRows)
     : [];
-  const starterRows = mergeStarterRows(neonRows, d1Rows, realtimeRows);
+  const starterRows = mergeStarterRows(dailyRows, snapshotRows, realtimeRows);
   const currentRunningStyles = await currentRunningStylesPromise;
   const historicalRunningStyleRows = await getRaceRunningStylesByRaceKeysWithCache(
     Array.from(new Set(starterRows.map(starterRaceKey))),

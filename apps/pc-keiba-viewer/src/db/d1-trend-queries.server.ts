@@ -1,7 +1,10 @@
-// Run with bun. Reads aggregated trend rows from D1 snapshot tables
-// (race_result_snapshots / race_entry_snapshots / horse_weight_snapshots /
-// realtime_race_sources). Used as a complementary cache to the Neon trend
-// query in apps/pc-keiba-viewer/src/db/queries.ts.
+// Run with bun. Reads aggregated trend rows from D1.
+// * `getRaceTrendD1StarterRows`  -> snapshot tables (race_result_snapshots /
+//   race_entry_snapshots / horse_weight_snapshots / realtime_race_sources):
+//   the realtime-derived path that catches today's finishes before cron.
+// * `getRaceTrendDailyStarterRows` -> `daily_race_entries`: the canonical
+//   Neon-mirror populated by the build-daily-features cron. Source of truth
+//   for prior-day finishes and replaces the legacy Neon trend query.
 import "server-only";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 
@@ -32,7 +35,34 @@ interface RawD1Row {
   zogenSaInt: number | null;
 }
 
+interface RawDailyD1Row {
+  source: string;
+  kaisaiNen: string;
+  kaisaiTsukihi: string;
+  keibajoCode: string;
+  raceBango: string;
+  raceName: string | null;
+  hassoJikoku: string | null;
+  runnerCount: number | null;
+  wakuban: string | null;
+  umaban: number | null;
+  bamei: string | null;
+  jockeyName: string | null;
+  tanshoOddsTenth: number | null;
+  tanshoPopularity: number | null;
+  finishPosition: number;
+  sohaTime: number | null;
+  corner1: number | null;
+  corner2: number | null;
+  corner3: number | null;
+  corner4: number | null;
+  bataijuInt: number | null;
+  zogenFugo: string | null;
+  zogenSaInt: number | null;
+}
+
 const CACHE_URL_BASE = "https://pc-keiba-viewer.local/d1-trend-cache/";
+const DAILY_CACHE_URL_BASE = "https://pc-keiba-viewer.local/d1-trend-daily-cache/";
 const CACHE_TTL_SECONDS = 60;
 const KV_TTL_SECONDS = 5 * 60;
 
@@ -199,6 +229,152 @@ export const getRaceTrendD1StarterRows = async (
     return rows;
   } catch (error) {
     console.error("D1 trend query failed", error);
+    return [];
+  }
+};
+
+const DAILY_SELECT_SQL = `
+  select
+    source,
+    kaisai_nen as kaisaiNen,
+    kaisai_tsukihi as kaisaiTsukihi,
+    keibajo_code as keibajoCode,
+    race_bango as raceBango,
+    race_name as raceName,
+    hasso_jikoku as hassoJikoku,
+    shusso_tosu as runnerCount,
+    wakuban,
+    umaban,
+    bamei,
+    kishumei_ryakusho as jockeyName,
+    cast(round(tansho_odds * 10) as integer) as tanshoOddsTenth,
+    tansho_ninkijun as tanshoPopularity,
+    finish_position as finishPosition,
+    soha_time as sohaTime,
+    corner_1 as corner1,
+    corner_2 as corner2,
+    corner_3 as corner3,
+    corner_4 as corner4,
+    bataiju as bataijuInt,
+    zogen_fugo as zogenFugo,
+    zogen_sa as zogenSaInt
+  from daily_race_entries
+  where source = ?
+    and race_date between ? and ?
+    and finish_position > 0
+  order by race_date desc, keibajo_code asc, race_bango asc, umaban asc
+`;
+
+const isRawDailyD1Row = (value: unknown): value is RawDailyD1Row => {
+  if (typeof value !== "object" || value === null) return false;
+  const row = value as Record<string, unknown>;
+  return (
+    isRaceSource(row.source) &&
+    typeof row.kaisaiNen === "string" &&
+    typeof row.kaisaiTsukihi === "string" &&
+    typeof row.keibajoCode === "string" &&
+    typeof row.raceBango === "string" &&
+    typeof row.finishPosition === "number"
+  );
+};
+
+const buildDailyCacheKey = ({ source, startYmd, endYmd }: RaceTrendD1RowsParams): string =>
+  `race-trend-d1-daily:v1:${source}:${startYmd}:${endYmd}`;
+
+const queryDailyD1 = async (params: RaceTrendD1RowsParams): Promise<RawDailyD1Row[]> => {
+  const { env } = await getCloudflareContext({ async: true });
+  const db = env?.REALTIME_DB;
+  if (!db) return [];
+  const result = await db
+    .prepare(DAILY_SELECT_SQL)
+    .bind(params.source, params.startYmd, params.endYmd)
+    .all();
+  return result.results.filter(isRawDailyD1Row);
+};
+
+const intStringOrNull = (value: number | null): string | null =>
+  value === null ? null : String(value);
+
+const padString = (value: number | null, width: number): string | null =>
+  value === null ? null : String(value).padStart(width, "0");
+
+const toDailyStarterRow = (raw: RawDailyD1Row): RaceTrendStarterRow => ({
+  source: raw.source as RaceSource,
+  kaisaiNen: raw.kaisaiNen,
+  kaisaiTsukihi: raw.kaisaiTsukihi,
+  keibajoCode: raw.keibajoCode,
+  raceBango: raw.raceBango,
+  raceName: raw.raceName,
+  hassoJikoku: raw.hassoJikoku,
+  runnerCount: intStringOrNull(raw.runnerCount),
+  wakuban: raw.wakuban,
+  umaban: padString(raw.umaban, 2),
+  bamei: raw.bamei,
+  jockeyName: raw.jockeyName,
+  tanshoOdds: padString(raw.tanshoOddsTenth, 4),
+  tanshoPopularity: padString(raw.tanshoPopularity, 2),
+  finishPosition: raw.finishPosition,
+  sohaTime: intStringOrNull(raw.sohaTime),
+  corner1: padString(raw.corner1, 2),
+  corner2: padString(raw.corner2, 2),
+  corner3: padString(raw.corner3, 2),
+  corner4: padString(raw.corner4, 2),
+  bataiju: raw.bataijuInt === null ? null : String(raw.bataijuInt),
+  zogenFugo: raw.zogenFugo,
+  zogenSa: raw.zogenSaInt === null ? null : String(raw.zogenSaInt),
+});
+
+const getCachedDailyResponse = async (
+  cacheKey: string,
+): Promise<RaceTrendStarterRow[] | null> => {
+  const cache = typeof caches === "undefined" ? null : caches.default;
+  const cacheRequest = new Request(`${DAILY_CACHE_URL_BASE}${encodeURIComponent(cacheKey)}`);
+  const cached = await cache?.match(cacheRequest);
+  if (cached?.ok) {
+    return cached.json() as Promise<RaceTrendStarterRow[]>;
+  }
+  const { env } = await getCloudflareContext({ async: true });
+  const body = await env?.DETAIL_SECTION_CACHE_KV?.get(cacheKey);
+  if (!body) return null;
+  return JSON.parse(body) as RaceTrendStarterRow[];
+};
+
+const putDailyCache = async (
+  cacheKey: string,
+  rows: RaceTrendStarterRow[],
+): Promise<void> => {
+  const body = JSON.stringify(rows);
+  const cache = typeof caches === "undefined" ? null : caches.default;
+  const { env } = await getCloudflareContext({ async: true });
+  await Promise.all([
+    cache?.put(
+      new Request(`${DAILY_CACHE_URL_BASE}${encodeURIComponent(cacheKey)}`),
+      new Response(body, {
+        headers: {
+          "Cache-Control": `public, max-age=${CACHE_TTL_SECONDS}`,
+          "Content-Type": "application/json; charset=utf-8",
+        },
+      }),
+    ),
+    env?.DETAIL_SECTION_CACHE_KV?.put(cacheKey, body, {
+      expirationTtl: KV_TTL_SECONDS,
+    }),
+  ]);
+};
+
+export const getRaceTrendDailyStarterRows = async (
+  params: RaceTrendD1RowsParams,
+): Promise<RaceTrendStarterRow[]> => {
+  const cacheKey = buildDailyCacheKey(params);
+  const cached = await getCachedDailyResponse(cacheKey);
+  if (cached !== null) return cached;
+  try {
+    const raw = await queryDailyD1(params);
+    const rows = raw.map(toDailyStarterRow);
+    await putDailyCache(cacheKey, rows);
+    return rows;
+  } catch (error) {
+    console.error("D1 daily trend query failed", error);
     return [];
   }
 };
