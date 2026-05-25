@@ -445,6 +445,29 @@ it("insertOddsSnapshot inserts one row per (type, odds) entry", async () => {
   expect(count).toBe(2);
 });
 
+it("insertOddsSnapshot binds non-null minOdds/maxOdds/averageOdds/rank when supplied", async () => {
+  const bind = vi.fn((..._args: unknown[]) => ({ bind: vi.fn() }));
+  const prepare = vi.fn(() => ({ bind }));
+  const batch = vi.fn(async () => []);
+  const db = { batch, prepare } as unknown as D1Database;
+  await insertOddsSnapshot(db, "key", "now", {
+    wide: [
+      {
+        averageOdds: 4,
+        combination: "1-2",
+        maxOdds: 5,
+        minOdds: 3,
+        rank: 2,
+      },
+    ],
+  });
+  const args = bind.mock.calls[0];
+  expect(args?.[5]).toBe(3);
+  expect(args?.[6]).toBe(5);
+  expect(args?.[7]).toBe(4);
+  expect(args?.[8]).toBe(2);
+});
+
 it("insertHorseWeightSnapshot deletes then no-ops when weights is empty", async () => {
   const run = vi.fn(async () => ({}));
   const bind = vi.fn((..._args: unknown[]) => ({ run }));

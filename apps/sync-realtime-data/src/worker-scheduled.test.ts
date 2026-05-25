@@ -332,6 +332,23 @@ it("scheduled triggers self-schedule planner during polling window", async () =>
   expect(waits.length).toBeGreaterThanOrEqual(2);
 });
 
+it("scheduled defaults scheduledAt to new Date() when controller.scheduledTime is not a number", async () => {
+  const { default: worker } = await import("./worker");
+  const { logWin5CronResult } = await import("./win5-cron");
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "30 12 * * *",
+      scheduledTime: undefined as unknown as number,
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv(),
+    ctx,
+  );
+  await flushWaits(waits);
+  expect(logWin5CronResult).toHaveBeenCalled();
+});
+
 it("scheduled defaults to handleJob via getCronJob for unknown cron", async () => {
   const { default: worker } = await import("./worker");
   const { ctx, waits } = buildCtx();
