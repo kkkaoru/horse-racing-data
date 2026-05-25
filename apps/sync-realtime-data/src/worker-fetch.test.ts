@@ -338,6 +338,67 @@ it("fetch GET realtime payload backfills horseTrends and trendsByType when missi
   expect(body.odds.trendsByType).toBeDefined();
 });
 
+it("fetch GET premium race merges cached paddock when payload has bulletins", async () => {
+  const { default: worker } = await import("./worker");
+  const { getPremiumRacePayload } = await import("./storage");
+  const { readCachedPremiumPaddock } = await import("./premium-paddock-cache");
+  vi.mocked(getPremiumRacePayload).mockResolvedValueOnce({
+    dataTopHorses: [],
+    paddockBulletins: [
+      {
+        commentText: "x",
+        evaluationText: null,
+        fetchedAt: "now",
+        frameNumber: "1",
+        groupKey: "favorite",
+        horseName: "Y",
+        horseNumber: "1",
+      },
+    ],
+    stableComments: [],
+    trainingReviews: [],
+  } as never);
+  vi.mocked(readCachedPremiumPaddock).mockResolvedValueOnce({
+    extraCacheField: "cached",
+  } as never);
+  const response = await worker.fetch(
+    new Request("https://x.test/api/jra/races/2026/05/12/08/01/premium"),
+    buildEnv(),
+    buildCtx(),
+  );
+  const body = (await response.json()) as { extraCacheField?: string };
+  expect(body.extraCacheField).toBe("cached");
+});
+
+it("fetch GET premium race returns plain payload when cached paddock is missing", async () => {
+  const { default: worker } = await import("./worker");
+  const { getPremiumRacePayload } = await import("./storage");
+  const { readCachedPremiumPaddock } = await import("./premium-paddock-cache");
+  vi.mocked(getPremiumRacePayload).mockResolvedValueOnce({
+    dataTopHorses: [],
+    paddockBulletins: [
+      {
+        commentText: "x",
+        evaluationText: null,
+        fetchedAt: "now",
+        frameNumber: "1",
+        groupKey: "favorite",
+        horseName: "Y",
+        horseNumber: "1",
+      },
+    ],
+    stableComments: [],
+    trainingReviews: [],
+  } as never);
+  vi.mocked(readCachedPremiumPaddock).mockResolvedValueOnce(null);
+  const response = await worker.fetch(
+    new Request("https://x.test/api/jra/races/2026/05/12/08/01/premium"),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+});
+
 it("fetch during JST polling window seeds the planner watchdog via ctx.waitUntil", async () => {
   const { default: worker } = await import("./worker");
   const waitPromises: Promise<unknown>[] = [];

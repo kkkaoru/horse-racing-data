@@ -408,6 +408,18 @@ it("formatPremiumPaddockBulletinLine includes 人気馬 label for non-value grou
   expect(line.includes("人気馬")).toBe(true);
 });
 
+it("formatPremiumPaddockBulletinLine substitutes '-' when horseName and evaluationText are null", () => {
+  const line = formatPremiumPaddockBulletinLine({
+    commentText: "短コメント",
+    evaluationText: null,
+    frameNumber: "1",
+    groupKey: "favorite",
+    horseName: null,
+    horseNumber: "3",
+  });
+  expect(line).toBe("**3 番 -**　人気馬 / -\n> 短コメント");
+});
+
 it("formatPremiumPaddockBulletinLine renders コメントなし when commentText is empty", () => {
   const line = formatPremiumPaddockBulletinLine({
     commentText: null,
