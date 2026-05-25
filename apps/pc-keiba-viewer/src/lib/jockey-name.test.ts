@@ -47,6 +47,16 @@ describe("jockey name helpers", () => {
     expect(isSameJockeyName("シャベ", "シャス")).toBe(false);
   });
 
+  it("treats kyujitai watanabe variants as the same jockey", () => {
+    expect(normalizeJockeyNameForComparison("渡邊竜")).toBe("渡辺竜");
+    expect(normalizeJockeyNameForComparison("渡邉竜")).toBe("渡辺竜");
+    expect(isSameJockeyName("渡邊竜", "渡辺竜也")).toBe(true);
+    expect(isSameJockeyName("渡辺竜也", "渡邊竜")).toBe(true);
+    expect(isSameJockeyName("渡邉竜", "渡辺竜也")).toBe(true);
+    expect(getPreferredJockeyName("渡邊竜", "渡辺竜也")).toBe("渡邊竜");
+    expect(getPreferredJockeyName("渡辺竜也", "渡邊竜")).toBe("渡辺竜也");
+  });
+
   it("does not treat short partial prefixes or empty names as the same jockey", () => {
     expect(isSameJockeyName("増田", "増田充")).toBe(false);
     expect(isSameJockeyName("", "増田充")).toBe(false);
