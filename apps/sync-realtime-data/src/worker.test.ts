@@ -306,6 +306,58 @@ it("isTrackConditionDue returns due slot during the racing window", () => {
   expect(result.slotAt).toBe("2026-05-12T12:30:00+09:00");
 });
 
+it("minutesUntilRace returns null when raceStart cannot be parsed", async () => {
+  const { minutesUntilRace } = await import("./worker");
+  expect(
+    minutesUntilRace(
+      {
+        babaCode: "55",
+        debaUrl: "u",
+        kaisaiKai: null,
+        kaisaiNen: "2026",
+        kaisaiNichime: null,
+        kaisaiTsukihi: "0512",
+        keibajoCode: "55",
+        lastOddsFetchAt: null,
+        lastWeightFetchAt: null,
+        oddsLinks: {},
+        raceBango: "01",
+        raceKey: "nar:2026:0512:55:01",
+        raceName: null,
+        raceStartAtJst: "invalid-date",
+        source: "nar",
+      },
+      new Date("2026-05-12T05:00:00.000Z"),
+    ),
+  ).toBeNull();
+});
+
+it("getCurrentOddsSlotAt returns null when raceStartAtJst is malformed", async () => {
+  const { getCurrentOddsSlotAt } = await import("./worker");
+  expect(
+    getCurrentOddsSlotAt(
+      {
+        babaCode: "55",
+        debaUrl: "u",
+        kaisaiKai: null,
+        kaisaiNen: "2026",
+        kaisaiNichime: null,
+        kaisaiTsukihi: "0512",
+        keibajoCode: "55",
+        lastOddsFetchAt: null,
+        lastWeightFetchAt: null,
+        oddsLinks: {},
+        raceBango: "01",
+        raceKey: "nar:2026:0512:55:01",
+        raceName: null,
+        raceStartAtJst: "invalid-date",
+        source: "nar",
+      },
+      new Date("2026-05-12T05:00:00.000Z"),
+    ),
+  ).toBeNull();
+});
+
 it("buildFallbackRaceRow returns null when babaCode is not in BABA_CODE_TO_LOCAL_KEIBAJO", () => {
   const result = buildFallbackRaceRow(
     "20260512",
