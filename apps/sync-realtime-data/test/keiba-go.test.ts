@@ -297,6 +297,29 @@ describe("keiba.go realtime helpers", () => {
     ]);
   });
 
+  it("fetchRaceLinksFromRaceList parses single-quoted DebaTable URLs", async () => {
+    mockFetchHtml({
+      "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2f05%2f10&k_babaCode=22":
+        `<a href='/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2f05%2f10&k_raceNo=4&k_babaCode=22'>r4</a>`,
+    });
+    const result = await fetchRaceLinksFromRaceList(
+      "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2f05%2f10&k_babaCode=22",
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0]?.raceNumber).toBe("04");
+  });
+
+  it("fetchRaceLinksFromRaceList parses location.href bare DebaTable URLs", async () => {
+    mockFetchHtml({
+      "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2f05%2f10&k_babaCode=22":
+        `<button onclick=location.href=/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2f05%2f10&k_raceNo=2&k_babaCode=22>go</button>`,
+    });
+    const result = await fetchRaceLinksFromRaceList(
+      "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2f05%2f10&k_babaCode=22",
+    );
+    expect(result[0]?.raceNumber).toBe("02");
+  });
+
   it("fetchOdds returns empty for tansho when tbody absent", async () => {
     mockFetchHtml({
       "https://www.keiba.go.jp/KeibaWeb/Odds/tansho": "<div>no table</div>",
