@@ -4,6 +4,7 @@ import { describe, expect, test } from "vitest";
 
 import {
   BATCH_SIZE,
+  buildFetchSql,
   buildInsertSqlForRow,
   buildRaceKey,
   DEFAULT_FROM_YEAR,
@@ -155,5 +156,33 @@ describe("parseArgs", () => {
 describe("BATCH_SIZE constant", () => {
   test("is documented at the module level", () => {
     expect(BATCH_SIZE).toBe(500);
+  });
+});
+
+describe("buildFetchSql", () => {
+  test("includes the active_categories CTE and joins to nvd_se", () => {
+    const sql = buildFetchSql();
+    expect(sql).toContain("with active_categories as");
+    expect(sql).toContain("running_style_active_models");
+    expect(sql).toContain("nvd_se");
+    expect(sql).toContain("p.kaisai_nen between $1 and $2");
+  });
+});
+
+describe("parseArgs error branches", () => {
+  test("throws when --pg-url has no value", () => {
+    expect(() => parseArgs(["--pg-url"])).toThrowError(/--pg-url requires a value/);
+  });
+
+  test("throws when --output has no value", () => {
+    expect(() => parseArgs(["--pg-url", "postgres://x", "--output"])).toThrowError(
+      /--output requires a value/,
+    );
+  });
+
+  test("throws when --from-year has no value", () => {
+    expect(() =>
+      parseArgs(["--pg-url", "postgres://x", "--output", "out.sql", "--from-year"]),
+    ).toThrowError(/--from-year requires a value/);
   });
 });

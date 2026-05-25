@@ -181,6 +181,12 @@ vi.mock("./premium-race", async () => {
     discoverPremiumRaceLinks: vi.fn(() => []),
     fetchPremiumHtml: vi.fn(async () => ""),
     fetchPremiumHtmlAttempts: vi.fn(async () => []),
+    parsePremiumPaddockBulletins: vi.fn(() => ({
+      authRequired: false,
+      bulletins: [],
+      pending: false,
+      unavailable: false,
+    })),
   };
 });
 

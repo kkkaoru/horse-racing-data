@@ -163,7 +163,7 @@ const sleep = (ms: number): Promise<void> =>
     setTimeout(resolve, ms);
   });
 
-const toPredictionJob = (
+export const toPredictionJob = (
   row: RunningStyleDateProgressRow,
   predictedAt: string,
 ): RunningStylePredictionJob => {
@@ -199,7 +199,7 @@ export const formatRunningStyleDateProgressLine = (
     `incomplete=${summary.incomplete}`,
   ].join(" ");
 
-const printIncompleteRows = (rows: ReadonlyArray<RunningStyleDateProgressRow>): void => {
+export const printIncompleteRows = (rows: ReadonlyArray<RunningStyleDateProgressRow>): void => {
   const incomplete = rows.filter((row) => !isRunningStyleDateProgressRowComplete(row));
   if (incomplete.length === 0) {
     return;
@@ -214,7 +214,7 @@ const printIncompleteRows = (rows: ReadonlyArray<RunningStyleDateProgressRow>): 
   }
 };
 
-const processIncompleteRaces = async (
+export const processIncompleteRaces = async (
   env: Env,
   rows: ReadonlyArray<RunningStyleDateProgressRow>,
   delayMs: number,
