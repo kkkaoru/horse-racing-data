@@ -1397,6 +1397,55 @@ it("getPremiumRacePayload aggregates non-empty rows from all four tables", async
   expect(payload.dataTopHorses[0]?.reasons).toStrictEqual(["a", "b"]);
 });
 
+it("upsertJraRaceSource binds null when kaisai_kai/kaisai_nichime are undefined", async () => {
+  const run = vi.fn(async () => ({ meta: { changes: 1 } }));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await upsertJraRaceSource(
+    db,
+    {
+      hasso_jikoku: "1500",
+      kaisai_nen: "2026",
+      kaisai_tsukihi: "0512",
+      keibajo_code: "08",
+      kyosomei_hondai: "T",
+      race_bango: "1",
+    },
+    "https://jra.example/race",
+  );
+  const args = bind.mock.calls[0];
+  expect(args?.[6]).toBeNull();
+  expect(args?.[7]).toBeNull();
+});
+
+it("getRaceSource returns a mapped NarRaceSource when the row exists", async () => {
+  const first = vi.fn(async () => ({
+    baba_code: "22",
+    deba_url: "https://nar.example/race",
+    discovered_at: "2026-05-12T00:00:00+09:00",
+    kaisai_kai: null,
+    kaisai_nen: "2026",
+    kaisai_nichime: null,
+    kaisai_tsukihi: "0512",
+    keibajo_code: "55",
+    last_odds_fetch_at: null,
+    last_weight_fetch_at: null,
+    odds_links_json: '{"tansho":"/odds"}',
+    race_bango: "01",
+    race_key: "nar:2026:0512:55:01",
+    race_name: "T",
+    race_start_at_jst: "2026-05-12T18:00:00+09:00",
+    source: "nar",
+  }));
+  const bind = vi.fn((..._args: unknown[]) => ({ first }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const result = await getRaceSource(db, "nar:2026:0512:55:01");
+  expect(result?.raceKey).toBe("nar:2026:0512:55:01");
+  expect(result?.oddsLinks).toStrictEqual({ tansho: "/odds" });
+});
+
 it("getLatestTrackConditionForRace returns mapped TrackCondition when row exists", async () => {
   const first = vi.fn(async () => ({
     dirt_condition: "重",
