@@ -4,10 +4,13 @@ import { resolve } from "node:path";
 
 import {
   buildJraPremiumSourceRaceId,
+  buildNarPremiumSourceRaceId,
+  buildPremiumRaceLinkFromRace,
   isPremiumStableCommentHtmlAuthorized,
   matchPremiumLinkToRace,
   parsePremiumDataTopHorses,
   parsePremiumPaddockBulletins,
+  sourceRaceIdCandidates,
 } from "../src/premium-race";
 
 const dataTopEnv = {
@@ -41,6 +44,119 @@ describe("premium race parsing", () => {
         source: "jra",
       }),
     ).toBe("202605020902");
+  });
+
+  it("builds NAR premium source race ids from kaisai date metadata", () => {
+    expect(
+      buildNarPremiumSourceRaceId({
+        kaisaiNen: "2025",
+        kaisaiTsukihi: "1109",
+        keibajoCode: "54",
+        raceBango: "06",
+        source: "nar",
+      }),
+    ).toBe("202554110906");
+  });
+
+  it("zero-pads NAR raceBango when present without leading zero", () => {
+    expect(
+      buildNarPremiumSourceRaceId({
+        kaisaiNen: "2026",
+        kaisaiTsukihi: "0525",
+        keibajoCode: "42",
+        raceBango: "1",
+        source: "nar",
+      }),
+    ).toBe("202642052501");
+  });
+
+  it("rejects Ban-ei keibajo when building NAR premium source race ids", () => {
+    expect(
+      buildNarPremiumSourceRaceId({
+        kaisaiNen: "2026",
+        kaisaiTsukihi: "0525",
+        keibajoCode: "83",
+        raceBango: "07",
+        source: "nar",
+      }),
+    ).toBeNull();
+  });
+
+  it("rejects JRA races when building NAR premium source race ids", () => {
+    expect(
+      buildNarPremiumSourceRaceId({
+        kaisaiNen: "2026",
+        kaisaiTsukihi: "0525",
+        keibajoCode: "05",
+        raceBango: "11",
+        source: "jra",
+      }),
+    ).toBeNull();
+  });
+
+  it("uses NAR source race id for the fallback premium link", () => {
+    const link = buildPremiumRaceLinkFromRace(
+      {
+        babaCode: "42",
+        debaUrl: "",
+        kaisaiKai: null,
+        kaisaiNen: "2026",
+        kaisaiNichime: null,
+        kaisaiTsukihi: "0525",
+        keibajoCode: "42",
+        lastOddsFetchAt: null,
+        lastWeightFetchAt: null,
+        oddsLinks: {},
+        raceBango: "01",
+        raceKey: "nar:2026:0525:42:01",
+        raceName: null,
+        raceStartAtJst: "2026-05-25T14:50:00+09:00",
+        source: "nar",
+      },
+      {
+        commentPathTemplate: null,
+        cookie: null,
+        dataTopPathTemplate: "/race/data_top.html?race_id={sourceRaceId}",
+        entryLinkPattern: null,
+        narOrigin: "https://nar.netkeiba.com",
+        narTopPathTemplate: null,
+        origin: "https://race.netkeiba.com",
+        paddockPathTemplate: null,
+        proxyBearer: null,
+        proxyUrl: null,
+        proxyUserId: null,
+        responseCharset: null,
+        sourceIdQueryKey: "race_id",
+        topPathTemplate: null,
+        workPathTemplate: null,
+      },
+    );
+    expect(link).toStrictEqual({
+      entryUrl: "https://nar.netkeiba.com/race/data_top.html?race_id=202642052501",
+      sourceRaceId: "202642052501",
+    });
+  });
+
+  it("includes the NAR source race id in candidate matches", () => {
+    expect(
+      sourceRaceIdCandidates({
+        babaCode: "42",
+        debaUrl: "",
+        kaisaiKai: null,
+        kaisaiNen: "2026",
+        kaisaiNichime: null,
+        kaisaiTsukihi: "0525",
+        keibajoCode: "42",
+        lastOddsFetchAt: null,
+        lastWeightFetchAt: null,
+        oddsLinks: {},
+        raceBango: "01",
+        raceKey: "nar:2026:0525:42:01",
+        raceName: null,
+        raceStartAtJst: "2026-05-25T14:50:00+09:00",
+        source: "nar",
+      }),
+    ).toStrictEqual(["202642052501", "20264201", "2026421"]);
   });
 
   it("parses data top horses from the sample page", () => {
