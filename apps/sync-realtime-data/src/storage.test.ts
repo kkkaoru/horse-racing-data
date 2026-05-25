@@ -1305,6 +1305,98 @@ it("markOddsFetchQueued runs a batch when raceKeys is non-empty", async () => {
   expect(batch).toHaveBeenCalledTimes(1);
 });
 
+it("markPremiumRaceDataQueued runs a batch when raceKeys is non-empty", async () => {
+  const batch = vi.fn(async () => undefined);
+  const bind = vi.fn((..._args: unknown[]) => ({}));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { batch, prepare } as unknown as D1Database;
+  await markPremiumRaceDataQueued(db, ["jra:2026:0512:08:01"], "2026-05-12T13:00:00+09:00");
+  expect(prepare).toHaveBeenCalledTimes(1);
+  expect(batch).toHaveBeenCalledTimes(1);
+});
+
+it("markPremiumPaddockQueued runs a batch when raceKeys is non-empty", async () => {
+  const batch = vi.fn(async () => undefined);
+  const bind = vi.fn((..._args: unknown[]) => ({}));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { batch, prepare } as unknown as D1Database;
+  await markPremiumPaddockQueued(db, ["jra:2026:0512:08:01"], "2026-05-12T13:00:00+09:00");
+  expect(prepare).toHaveBeenCalledTimes(1);
+  expect(batch).toHaveBeenCalledTimes(1);
+});
+
+it("getPremiumRacePayload aggregates non-empty rows from all four tables", async () => {
+  const callPlan: Array<{ results: Record<string, unknown>[] }> = [
+    {
+      results: [
+        {
+          comment_text: "good",
+          evaluation_grade: 9,
+          evaluation_text: "A",
+          fetched_at: "2026-05-12T11:00:00+09:00",
+          frame_number: "1",
+          horse_name: "馬",
+          horse_number: "1",
+          rider_name: "Y田",
+          training_date: "2026-05-10",
+        },
+      ],
+    },
+    {
+      results: [
+        {
+          comment_text: "stable",
+          evaluation_grade: 8,
+          evaluation_text: "B",
+          fetched_at: "2026-05-12T10:00:00+09:00",
+          frame_number: "2",
+          horse_name: "馬2",
+          horse_number: "2",
+        },
+      ],
+    },
+    {
+      results: [
+        {
+          comment_text: "paddock",
+          evaluation_text: "A+",
+          fetched_at: "2026-05-12T12:00:00+09:00",
+          frame_number: "3",
+          group_key: "favorite",
+          horse_name: "馬3",
+          horse_number: "3",
+        },
+      ],
+    },
+    {
+      results: [
+        {
+          fetched_at: "2026-05-12T08:00:00+09:00",
+          horse_name: "馬4",
+          horse_number: "4",
+          rank: 1,
+          reasons_json: '["a","b"]',
+        },
+      ],
+    },
+  ];
+  let callIndex = 0;
+  const all = vi.fn(async () => {
+    const row = callPlan[callIndex];
+    callIndex += 1;
+    return row;
+  });
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const payload = await getPremiumRacePayload(db, "jra:2026:0512:08:01");
+  expect(payload.trainingReviews).toHaveLength(1);
+  expect(payload.stableComments).toHaveLength(1);
+  expect(payload.paddockBulletins).toHaveLength(1);
+  expect(payload.dataTopHorses).toHaveLength(1);
+  expect(payload.dataTopHorses[0]?.reasons).toStrictEqual(["a", "b"]);
+});
+
 it("getLatestTrackConditionForRace returns mapped TrackCondition when row exists", async () => {
   const first = vi.fn(async () => ({
     dirt_condition: "重",
