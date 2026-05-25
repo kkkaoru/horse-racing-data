@@ -793,7 +793,7 @@ export const isPremiumRaceJob = (job: Job): boolean =>
   job.type === "fetch-premium-race-data" ||
   job.type === "fetch-premium-paddock";
 
-const planTrackConditionFetchesForDate = async (
+export const planTrackConditionFetchesForDate = async (
   env: Env,
   targetDate: string,
   now: Date,
@@ -808,7 +808,7 @@ const planTrackConditionFetchesForDate = async (
   });
 };
 
-const planJraAdvanceOddsFetchesForDate = async (
+export const planJraAdvanceOddsFetchesForDate = async (
   env: Env,
   targetDate: string,
   now: Date,
@@ -835,7 +835,7 @@ const planJraAdvanceOddsFetchesForDate = async (
   });
 };
 
-const planPremiumPaddockFetchesForDate = async (
+export const planPremiumPaddockFetchesForDate = async (
   env: Env,
   targetDate: string,
   now: Date,
@@ -880,7 +880,7 @@ const planPremiumPaddockFetchesForDate = async (
   return jobs;
 };
 
-const planPremiumRaceDataFetchesForDate = async (
+export const planPremiumRaceDataFetchesForDate = async (
   env: Env,
   targetDate: string,
   now: Date,
@@ -1250,7 +1250,7 @@ export const assertJraHorseWeightsComplete = (
   }
 };
 
-const planRealtimeFetches = async (env: Env, targetDate: string): Promise<number> => {
+export const planRealtimeFetches = async (env: Env, targetDate: string): Promise<number> => {
   const now = getNow(env);
   const jobs: Job[] = [];
   jobs.push(...(await planTrackConditionFetchesForDate(env, targetDate, now)));
