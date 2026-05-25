@@ -688,6 +688,58 @@ it("handleJob fetch-premium-race-data throws when origin set but no race link di
   ).rejects.toThrow("premium race data fetch failed");
 });
 
+it("handleJob fetch-premium-race-data with valid link + fetched HTML exercises full ingest path", async () => {
+  const { handleJob } = await import("./worker");
+  const {
+    getRaceSource,
+    getPremiumRaceLink,
+    updatePremiumRaceDataFetchState,
+  } = await import("./storage");
+  const { fetchPremiumHtml } = await import("./premium-race");
+  vi.mocked(getRaceSource).mockResolvedValue({
+    babaCode: "08",
+    debaUrl: "https://www.jra.go.jp/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: "02",
+    kaisaiNen: "2026",
+    kaisaiNichime: "06",
+    kaisaiTsukihi: "0512",
+    keibajoCode: "08",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "jra:2026:0512:08:01",
+    raceName: "Test",
+    raceStartAtJst: "2026-05-12T13:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "jra",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(getPremiumRaceLink).mockResolvedValue({
+    entryUrl: "https://x.test/race?race_id=202605120801",
+    sourceRaceId: "202605120801",
+  } as never);
+  vi.mocked(fetchPremiumHtml).mockResolvedValue("<table></table>");
+  await handleJob(
+    buildEnv({
+      PREMIUM_RACE_COMMENT_PATH_TEMPLATE: "/comment/{sourceRaceId}",
+      PREMIUM_RACE_DATA_TOP_PATH_TEMPLATE: "/data-top/{sourceRaceId}",
+      PREMIUM_RACE_ORIGIN: "https://x.test",
+      PREMIUM_RACE_WORK_PATH_TEMPLATE: "/work/{sourceRaceId}",
+    } as never),
+    { raceKey: "jra:2026:0512:08:01", type: "fetch-premium-race-data" },
+  );
+  expect(updatePremiumRaceDataFetchState).toHaveBeenCalled();
+});
+
 it("handleJob fetch-premium-paddock with origin + no race link returns ok early", async () => {
   const { handleJob } = await import("./worker");
   const { logFetch } = await import("./storage");
