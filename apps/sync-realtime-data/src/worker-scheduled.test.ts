@@ -76,7 +76,10 @@ vi.mock("./running-style-cron", () => ({
   formatTomorrowYYYYMMDDInJst: vi.fn(() => "20260513"),
   formatYYYYMMDDInJst: vi.fn(() => "20260512"),
   addDaysToYYYYMMDDInJst: vi.fn((d: string, days: number) =>
-    new Date(Date.parse(`${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}T00:00:00Z`) + days * 86_400_000)
+    new Date(
+      Date.parse(`${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}T00:00:00Z`) +
+        days * 86_400_000,
+    )
       .toISOString()
       .slice(0, 10)
       .replace(/-/g, ""),
@@ -192,7 +195,11 @@ it("scheduled triggers logRunningStylePlanResult for the inference cron", async 
   const { runRunningStyleCronTick } = await import("./running-style-cron");
   const { ctx, waits } = buildCtx();
   await worker.scheduled(
-    { cron: "*/10 * * * *", scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"), noRetry: () => {} } as unknown as ScheduledController,
+    {
+      cron: "*/10 * * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
     buildEnv(),
     ctx,
   );
@@ -204,7 +211,11 @@ it("scheduled triggers prewarm path for the prewarm cron", async () => {
   const { default: worker } = await import("./worker");
   const { ctx, waits } = buildCtx();
   await worker.scheduled(
-    { cron: "0 12 * * *", scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"), noRetry: () => {} } as unknown as ScheduledController,
+    {
+      cron: "0 12 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
     buildEnv(),
     ctx,
   );
@@ -216,7 +227,11 @@ it("scheduled triggers logWin5CronResult for the WIN5 cron", async () => {
   const { logWin5CronResult } = await import("./win5-cron");
   const { ctx, waits } = buildCtx();
   await worker.scheduled(
-    { cron: "30 12 * * *", scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"), noRetry: () => {} } as unknown as ScheduledController,
+    {
+      cron: "30 12 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
     buildEnv(),
     ctx,
   );
@@ -228,7 +243,11 @@ it("scheduled defaults to handleJob via getCronJob for unknown cron", async () =
   const { default: worker } = await import("./worker");
   const { ctx, waits } = buildCtx();
   await worker.scheduled(
-    { cron: "* 1-12 * * *", scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"), noRetry: () => {} } as unknown as ScheduledController,
+    {
+      cron: "* 1-12 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
     buildEnv(),
     ctx,
   );
@@ -297,7 +316,11 @@ it("scheduled triggers runDailyFeatureBuildForEnv for the daily-feature-build cr
   const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
   const { ctx, waits } = buildCtx();
   await worker.scheduled(
-    { cron: "0 19 * * *", scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"), noRetry: () => {} } as unknown as ScheduledController,
+    {
+      cron: "0 19 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
     buildEnv(),
     ctx,
   );
@@ -310,7 +333,11 @@ it("scheduled triggers runD1Retention for the D1 retention cron", async () => {
   const { runD1Retention } = await import("./storage");
   const { ctx, waits } = buildCtx();
   await worker.scheduled(
-    { cron: "30 18 * * *", scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"), noRetry: () => {} } as unknown as ScheduledController,
+    {
+      cron: "30 18 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
     buildEnv(),
     ctx,
   );
