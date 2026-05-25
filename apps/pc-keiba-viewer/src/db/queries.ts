@@ -41,9 +41,8 @@ import type {
   TimeScoreRow,
 } from "../lib/race-types";
 import {
-  getCachedTopRaceWindows,
-  getStaleTopRaceWindowsSnapshot,
   putTopRaceWindowsCache,
+  readTopRaceWindowsWithSwr,
   type TopRaceWindowsPayload,
 } from "../lib/top-races-cache.server";
 import { getDb } from "./client";
@@ -2109,11 +2108,7 @@ const getJstMinuteKey = (): string => {
   return `${values.year}${values.month}${values.day}${values.hour}${values.minute}`;
 };
 
-const TOP_RACE_WINDOWS_TIMEOUT_MS = 3500;
-
-const fetchTopRaceWindowsFromDb = async (
-  nowKey: string,
-): Promise<TopRaceWindowsPayload> => {
+const fetchTopRaceWindowsFromDb = async (nowKey: string): Promise<TopRaceWindowsPayload> => {
   const result = await getDb().execute<TopRaceSummary & { bucket: number }>(sql`
         with candidates as (
           (
@@ -2263,36 +2258,23 @@ const fetchTopRaceWindowsFromDb = async (
   };
 };
 
-const withTimeout = <T>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
-  const timeoutPromise = new Promise<T>((_resolve, reject) => {
-    setTimeout(() => {
-      reject(new Error("getTopRaceWindows timed out"));
-    }, timeoutMs);
-  });
-  return Promise.race([promise, timeoutPromise]);
-};
-
-export const refreshTopRaceWindowsCache = async (): Promise<TopRaceWindowsPayload> => {
+const refreshTopRaceWindowsCache = async (): Promise<TopRaceWindowsPayload> => {
   const payload = await fetchTopRaceWindowsFromDb(getJstMinuteKey());
   await putTopRaceWindowsCache(payload);
   return payload;
 };
 
+// SWR read: fresh cache > stale snapshot (refresh in background via
+// waitUntil) > synchronous DB fetch. The synchronous path runs only on
+// the very first request after a cache + stale wipe; every subsequent
+// visit either hits the 5 min fresh tier or serves the 24h stale tier
+// while the next Neon wake happens off-request.
 export const getTopRaceWindows = cache(async (): Promise<TopRaceWindowsPayload> => {
-  const cached = await getCachedTopRaceWindows();
-  if (cached) {
-    return cached;
+  const { payload, source } = await readTopRaceWindowsWithSwr(refreshTopRaceWindowsCache);
+  if (payload && source !== "miss") {
+    return payload;
   }
-  try {
-    return await withTimeout(refreshTopRaceWindowsCache(), TOP_RACE_WINDOWS_TIMEOUT_MS);
-  } catch (error) {
-    console.error("getTopRaceWindows live fetch failed, falling back to stale snapshot", error);
-    const stale = await getStaleTopRaceWindowsSnapshot();
-    if (stale) {
-      return stale;
-    }
-    throw error;
-  }
+  return refreshTopRaceWindowsCache();
 });
 
 export const getRaceCourseInfo = cache(

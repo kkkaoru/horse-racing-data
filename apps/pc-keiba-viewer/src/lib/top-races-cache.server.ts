@@ -1,14 +1,14 @@
-// Two-tier cache + stale fallback for the home-page `getTopRaceWindows`
-// query. The query takes ~5-15s when Neon cold-starts, so we keep:
+// Stale-while-revalidate cache for the home-page `getTopRaceWindows`
+// query. Neon is allowed to auto-suspend (cost optimization), so we
+// never schedule warming requests against it. Instead the page always
+// renders from cache and the next user transparently drives the wake-up.
 //
-//   1. Fresh tier (60s): Cache API per-colo + KV cross-colo. Both written
-//      together so the next request anywhere in the world stays warm.
-//   2. Stale tier (24h): KV-only snapshot at a stable key. When Neon is
-//      cold and the fresh DB query times out, the page renders this
-//      instead of hanging.
-//
-// A cron (`*/5 * * * *`) writes both tiers every five minutes to keep
-// Neon warm and the fresh tier populated.
+//   1. Fresh tier (5 min): Cache API per-colo + KV cross-colo. Any
+//      request inside the 5 min window hits cache and never touches DB.
+//   2. Stale tier (24h, KV only): served immediately when the fresh tier
+//      is empty (post-deploy, post-eviction, post-Neon-suspend), with a
+//      background refresh queued via `waitUntil`. The user sees a fast
+//      response; the cold Neon wake happens off the request path.
 //
 // Execute with bun: opennextjs-cloudflare build && wrangler dev
 
@@ -26,7 +26,7 @@ const FRESH_CACHE_KEY = "pc-keiba-viewer:top-races:fresh:v1";
 const STALE_CACHE_KEY = "pc-keiba-viewer:top-races:stale:v1";
 const CACHE_URL_BASE = "https://pc-keiba-viewer.local/top-races-cache/";
 const DEFAULT_CONTENT_TYPE = "application/json; charset=utf-8";
-const FRESH_TTL_SECONDS = 60;
+const FRESH_TTL_SECONDS = 5 * 60;
 const STALE_TTL_SECONDS = 24 * 60 * 60;
 
 const getDefaultCache = (): Cache | null =>
@@ -124,4 +124,33 @@ export const getStaleTopRaceWindowsSnapshot = async (): Promise<TopRaceWindowsPa
   const { env } = await tryGetCloudflareRuntime();
   const kvBody = await env?.DETAIL_SECTION_CACHE_KV?.get(STALE_CACHE_KEY).catch(() => null);
   return kvBody ? parsePayload(kvBody) : null;
+};
+
+interface SwrResult {
+  payload: TopRaceWindowsPayload | null;
+  source: "fresh" | "stale" | "miss";
+}
+
+// Stale-while-revalidate read. On a stale hit, schedules `refresh` on the
+// Cloudflare execution context so the user doesn't wait for the Neon
+// wake-up. Returns `source: "miss"` when neither tier has data — callers
+// then run `refresh` synchronously.
+export const readTopRaceWindowsWithSwr = async (
+  refresh: () => Promise<TopRaceWindowsPayload>,
+): Promise<SwrResult> => {
+  const fresh = await getCachedTopRaceWindows();
+  if (fresh) {
+    return { payload: fresh, source: "fresh" };
+  }
+  const stale = await getStaleTopRaceWindowsSnapshot();
+  if (!stale) {
+    return { payload: null, source: "miss" };
+  }
+  const { ctx } = await tryGetCloudflareRuntime();
+  ctx?.waitUntil(
+    refresh().catch((error: unknown) => {
+      console.error("background top-race-windows refresh failed", error);
+    }),
+  );
+  return { payload: stale, source: "stale" };
 };
