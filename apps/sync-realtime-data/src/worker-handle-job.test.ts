@@ -744,6 +744,101 @@ it("handleJob fetch-odds JRA branch with weights inserts horse-weight snapshot",
   expect(completeOddsFetch).toHaveBeenCalledTimes(1);
 });
 
+it("handleJob fetch-odds with NAR race + valid slot fetches odds, updates oddsLinks, and enqueues next fetch", async () => {
+  const { handleJob } = await import("./worker");
+  const {
+    claimOddsFetch,
+    getRaceSource,
+    insertOddsSnapshot,
+    completeOddsFetch,
+    markOddsFetchQueued,
+    updateOddsLinks,
+  } = await import("./storage");
+  const { fetchOdds } = await import("./keiba-go");
+  vi.mocked(claimOddsFetch).mockResolvedValueOnce(true);
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "22",
+    debaUrl: "https://nar.example/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: null,
+    kaisaiNen: "2026",
+    kaisaiNichime: null,
+    kaisaiTsukihi: "0512",
+    keibajoCode: "55",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "nar:2026:0512:55:01",
+    raceName: "T",
+    raceStartAtJst: "2026-05-12T18:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "nar",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(fetchOdds).mockResolvedValueOnce({
+    tansho: [{ combination: "1", odds: 2.5, rank: 1 }],
+  } as never);
+  vi.mocked(insertOddsSnapshot).mockResolvedValueOnce(3);
+  await handleJob(
+    buildEnv({ REALTIME_TEST_NOW: "2026-05-12T08:00:00.000Z" } as never),
+    { raceKey: "nar:2026:0512:55:01", type: "fetch-odds" },
+  );
+  expect(completeOddsFetch).toHaveBeenCalledTimes(1);
+  expect(updateOddsLinks).toHaveBeenCalledTimes(1);
+  expect(markOddsFetchQueued).toHaveBeenCalled();
+});
+
+it("handleJob fetch-odds throws when insertOddsSnapshot returns 0 (NAR branch)", async () => {
+  const { handleJob } = await import("./worker");
+  const { claimOddsFetch, getRaceSource, insertOddsSnapshot, failOddsFetch } = await import(
+    "./storage"
+  );
+  vi.mocked(claimOddsFetch).mockResolvedValueOnce(true);
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "22",
+    debaUrl: "https://nar.example/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: null,
+    kaisaiNen: "2026",
+    kaisaiNichime: null,
+    kaisaiTsukihi: "0512",
+    keibajoCode: "55",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: { tansho: "/odds/tansho" },
+    raceBango: "01",
+    raceKey: "nar:2026:0512:55:01",
+    raceName: "T",
+    raceStartAtJst: "2026-05-12T18:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "nar",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(insertOddsSnapshot).mockResolvedValueOnce(0);
+  await expect(
+    handleJob(
+      buildEnv({ REALTIME_TEST_NOW: "2026-05-12T08:00:00.000Z" } as never),
+      { raceKey: "nar:2026:0512:55:01", type: "fetch-odds" },
+    ),
+  ).rejects.toThrow("odds rows are empty");
+  expect(failOddsFetch).toHaveBeenCalledTimes(1);
+});
+
 it("handleJob fetch-odds with JRA race + valid odds slot writes a successful snapshot", async () => {
   const { handleJob } = await import("./worker");
   const {
