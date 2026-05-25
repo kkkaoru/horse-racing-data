@@ -434,6 +434,55 @@ it("handleJob fetch-premium-paddock returns ok when config incomplete", async ()
   );
 });
 
+it("handleJob plan-premium-race-data-fetches with config + races + candidates enqueues jobs", async () => {
+  const { handleJob } = await import("./worker");
+  const {
+    listSchedulableRaceSourcesByDate,
+    listPremiumRaceDataFetchCandidatesByDate,
+    getPremiumRaceLink,
+    markPremiumRaceDataQueued,
+  } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
+    {
+      babaCode: "08",
+      debaUrl: "https://jra.example/race",
+      discoveredAt: "2026-05-12T00:00:00+09:00",
+      kaisaiKai: "02",
+      kaisaiNen: "2026",
+      kaisaiNichime: "06",
+      kaisaiTsukihi: "0512",
+      keibajoCode: "08",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "01",
+      raceKey: "jra:2026:0512:08:01",
+      raceName: "T",
+      raceStartAtJst: "2026-05-12T15:00:00+09:00",
+      resultCompleteAt: null,
+      resultFetchLockUntil: null,
+      source: "jra",
+      updatedAt: "2026-05-12T00:00:00+09:00",
+    } as never,
+  ]);
+  vi.mocked(getPremiumRaceLink).mockResolvedValue({
+    entryUrl: "https://x.test/race?race_id=202605120801",
+    sourceRaceId: "202605120801",
+  } as never);
+  vi.mocked(listPremiumRaceDataFetchCandidatesByDate).mockResolvedValueOnce([
+    { raceKey: "jra:2026:0512:08:01" },
+  ]);
+  await handleJob(
+    buildEnv({ PREMIUM_RACE_ORIGIN: "https://x.test" } as never),
+    { date: "20260512", type: "plan-premium-race-data-fetches" },
+  );
+  expect(markPremiumRaceDataQueued).toHaveBeenCalled();
+});
+
 it("handleJob plan-premium-race-data-fetches delegates to planPremiumRaceDataFetchesForDate", async () => {
   const { handleJob } = await import("./worker");
   const { logFetch } = await import("./storage");
@@ -1036,6 +1085,92 @@ it("handleJob fetch-jra-track-condition with successful claim and empty races fa
     keibajoCode: "08",
     type: "fetch-jra-track-condition",
   });
+});
+
+it("handleJob fetch-results with JRA race source completes when isRaceFinished", async () => {
+  const { handleJob } = await import("./worker");
+  const { claimResultFetch, getRaceSource, completeResultFetch } = await import("./storage");
+  vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "08",
+    debaUrl: "https://www.jra.go.jp/race?race_id=202605120801",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: "02",
+    kaisaiNen: "2026",
+    kaisaiNichime: "06",
+    kaisaiTsukihi: "0512",
+    keibajoCode: "08",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "jra:2026:0512:08:01",
+    raceName: "Test",
+    raceStartAtJst: "2026-05-12T13:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "jra",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  await handleJob(
+    buildEnv({ REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z" } as never),
+    { raceKey: "jra:2026:0512:08:01", type: "fetch-results" },
+  );
+  expect(completeResultFetch).toHaveBeenCalledTimes(1);
+});
+
+it("handleJob fetch-weights with JRA race source runs assert + insertHorseWeightSnapshot", async () => {
+  const { handleJob } = await import("./worker");
+  const { getRaceSource, insertHorseWeightSnapshot, updateLastFetch } = await import("./storage");
+  const { parseJraHorseWeights } = await import("./jra");
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "08",
+    debaUrl: "https://www.jra.go.jp/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: "02",
+    kaisaiNen: "2026",
+    kaisaiNichime: "06",
+    kaisaiTsukihi: "0512",
+    keibajoCode: "08",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "jra:2026:0512:08:01",
+    raceName: "Test",
+    raceStartAtJst: "2026-05-12T13:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "jra",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(parseJraHorseWeights).mockReturnValueOnce([
+    { changeAmount: null, changeSign: null, horseName: null, horseNumber: "1", weight: 480 },
+    { changeAmount: null, changeSign: null, horseName: null, horseNumber: "2", weight: 490 },
+  ]);
+  await handleJob(buildEnv(), {
+    raceKey: "jra:2026:0512:08:01",
+    type: "fetch-weights",
+  });
+  expect(insertHorseWeightSnapshot).toHaveBeenCalled();
+  expect(updateLastFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "jra:2026:0512:08:01",
+    "last_weight_fetch_at",
+    expect.any(String),
+  );
 });
 
 it("handleJob fetch-results with NAR race source completes when finish-position rows empty", async () => {
