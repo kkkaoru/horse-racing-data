@@ -1419,6 +1419,80 @@ it("upsertJraRaceSource binds null when kaisai_kai/kaisai_nichime are undefined"
   expect(args?.[7]).toBeNull();
 });
 
+it("updatePremiumPaddockNotificationState binds non-null values for all optional fields", async () => {
+  const run = vi.fn(async () => ({ meta: { changes: 1 } }));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await updatePremiumPaddockNotificationState(db, {
+    message: "test",
+    notifiedAt: "2026-05-12T13:30:00+09:00",
+    payloadFetchedAt: "2026-05-12T13:00:00+09:00",
+    payloadSignature: "sig",
+    raceKey: "jra:2026:0512:08:01",
+    sendAttemptAt: "2026-05-12T13:25:00+09:00",
+    skipReason: "test",
+    status: "ok",
+  });
+  const args = bind.mock.calls[0];
+  expect(args?.[3]).toBe("2026-05-12T13:00:00+09:00");
+  expect(args?.[4]).toBe("2026-05-12T13:25:00+09:00");
+  expect(args?.[5]).toBe("2026-05-12T13:30:00+09:00");
+  expect(args?.[6]).toBe("test");
+});
+
+it("updatePremiumRaceDataFetchState binds non-null retryAfter and fetchedAt", async () => {
+  const run = vi.fn(async () => ({ meta: { changes: 1 } }));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await updatePremiumRaceDataFetchState(db, {
+    fetchedAt: "2026-05-12T13:00:00+09:00",
+    message: "ok",
+    raceKey: "jra:2026:0512:08:01",
+    retryAfter: "2026-05-12T13:05:00+09:00",
+    status: "ok",
+  });
+  const args = bind.mock.calls[0];
+  expect(args?.[3]).toBe("2026-05-12T13:00:00+09:00");
+  expect(args?.[4]).toBe("2026-05-12T13:05:00+09:00");
+});
+
+it("updatePremiumPaddockFetchState binds non-null retryAfter and fetchedAt", async () => {
+  const run = vi.fn(async () => ({ meta: { changes: 1 } }));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await updatePremiumPaddockFetchState(db, {
+    fetchedAt: "2026-05-12T13:00:00+09:00",
+    message: "msg",
+    raceKey: "jra:2026:0512:08:01",
+    retryAfter: "2026-05-12T13:05:00+09:00",
+    status: "ok",
+  });
+  const args = bind.mock.calls[0];
+  expect(args?.[2]).toBe("msg");
+  expect(args?.[3]).toBe("2026-05-12T13:00:00+09:00");
+  expect(args?.[4]).toBe("2026-05-12T13:05:00+09:00");
+});
+
+it("recordPremiumPaddockNotificationEvent binds optional sentAt and message", async () => {
+  const run = vi.fn(async () => ({ meta: { changes: 1 } }));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await recordPremiumPaddockNotificationEvent(db, {
+    fetchedAt: "2026-05-12T13:00:00+09:00",
+    message: "msg",
+    payloadSignature: "sig",
+    raceKey: "jra:2026:0512:08:01",
+    sentAt: "2026-05-12T13:25:00+09:00",
+    skipReason: "skipped",
+    status: "skipped_duplicate",
+  });
+  expect(prepare).toHaveBeenCalledTimes(1);
+});
+
 it("getRaceSource returns a mapped NarRaceSource when the row exists", async () => {
   const first = vi.fn(async () => ({
     baba_code: "22",
