@@ -158,17 +158,17 @@ export const predictFlatRunningStyle = (
   const logits = new Float64Array(model.header.num_class);
   model.header.tree_root_indices.forEach((rootIndex, treeIndex) => {
     const classIndex = treeIndex % model.header.num_tree_per_iteration;
-    logits[classIndex] = (logits[classIndex] ?? 0) + walkFlatTree(model, rootIndex, vector);
+    logits[classIndex] = logits[classIndex]! + walkFlatTree(model, rootIndex, vector);
   });
   const probabilities = softmax(logits);
   let predictedClass = 0;
   probabilities.forEach((value, index) => {
-    if (value > (probabilities[predictedClass] ?? 0)) predictedClass = index;
+    if (value > probabilities[predictedClass]!) predictedClass = index;
   });
   const labels = resolveRunningStyleLabels(model.header.class_labels, model.header.num_class);
   return {
     predictedClass,
-    predictedLabel: labels[predictedClass] ?? "nige",
+    predictedLabel: labels[predictedClass]!,
     probabilities: probsToRunningStyleMap(probabilities, labels),
   };
 };

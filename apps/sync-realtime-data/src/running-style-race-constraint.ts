@@ -22,11 +22,11 @@ const predictionFromProbabilities = (
 ): RunningStylePrediction => {
   let predictedClass = 0;
   probabilities.forEach((value, index) => {
-    if (value > (probabilities[predictedClass] ?? 0)) predictedClass = index;
+    if (value > probabilities[predictedClass]!) predictedClass = index;
   });
   return {
     predictedClass,
-    predictedLabel: labels[predictedClass] ?? "nige",
+    predictedLabel: labels[predictedClass]!,
     probabilities: probsToRunningStyleMap(probabilities, labels),
   };
 };

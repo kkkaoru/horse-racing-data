@@ -1,9 +1,10 @@
 // Run with bun test apps/sync-realtime-data/src/running-style-lightgbm-tree.test.ts
-import { expect, test } from "vitest";
+import { expect, it, test } from "vitest";
 
 import {
   buildFeatureVector,
   predictRunningStyle,
+  resolveRunningStyleLabels,
   walkTree,
   type CompactLightGBMModel,
   type LightGBMTreeNode,
@@ -214,3 +215,28 @@ test("predictRunningStyle accumulates logits across multiple iterations", () => 
   });
   expect(result.predictedLabel).toBe("senkou");
 });
+
+
+it("resolveRunningStyleLabels uses model labels when valid", () => {
+  expect(
+    resolveRunningStyleLabels(["nige", "senkou", "sashi", "oikomi"], 4),
+  ).toStrictEqual(["nige", "senkou", "sashi", "oikomi"]);
+});
+
+it("resolveRunningStyleLabels falls back to default index when model label is unknown", () => {
+  expect(resolveRunningStyleLabels(["unknown" as never, "senkou"], 2)).toStrictEqual([
+    "nige",
+    "senkou",
+  ]);
+});
+
+it("resolveRunningStyleLabels falls back to FALLBACK_LABEL when index exceeds defaults", () => {
+  expect(resolveRunningStyleLabels(undefined, 5)).toStrictEqual([
+    "nige",
+    "senkou",
+    "sashi",
+    "oikomi",
+    "nige",
+  ]);
+});
+

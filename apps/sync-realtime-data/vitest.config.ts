@@ -2,11 +2,11 @@
 import { defineConfig } from "vitest/config";
 
 // Lines/Statements/Functions: 95% (semantic correctness).
-// Branches: 87% — v8 counts every `?? null`, `?? ""`, and ternary as a branch,
+// Branches: 88% — v8 counts every `?? null`, `?? ""`, and ternary as a branch,
 // inflating the metric for parser-heavy code. Push higher when the dead
 // defensive fallbacks have been refactored away.
 const COVERAGE_THRESHOLD = 95;
-const BRANCHES_THRESHOLD = 87;
+const BRANCHES_THRESHOLD = 88;
 
 export default defineConfig({
   test: {

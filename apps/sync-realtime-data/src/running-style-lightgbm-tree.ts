@@ -65,10 +65,9 @@ const DECISION_TYPE_LEQ = "<=";
 const DECISION_TYPE_EQ = "==";
 const CATEGORICAL_THRESHOLD_DELIMITER = "||";
 const MISSING_FLAG = 1;
-const ZERO_FALLBACK = 0;
 
 const numberAt = (array: Float64Array | Uint8Array, index: number): number =>
-  array[index] ?? ZERO_FALLBACK;
+  array[index]!;
 
 const isSplitNode = (node: LightGBMTreeNode): node is LightGBMSplitNode => "split_feature" in node;
 

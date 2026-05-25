@@ -66,12 +66,12 @@ const averageExcluding = (
 
 const minOfNumbers = (values: ReadonlyArray<number>): number | null => {
   if (values.length === 0) return null;
-  return values.reduce((acc, value) => (value < acc ? value : acc), values[0] ?? 0);
+  return values.reduce((acc, value) => (value < acc ? value : acc), values[0]!);
 };
 
 const maxOfNumbers = (values: ReadonlyArray<number>): number | null => {
   if (values.length === 0) return null;
-  return values.reduce((acc, value) => (value > acc ? value : acc), values[0] ?? 0);
+  return values.reduce((acc, value) => (value > acc ? value : acc), values[0]!);
 };
 
 const countAbove = (values: ReadonlyArray<number | null>, threshold: number): number =>
@@ -128,10 +128,11 @@ const buildFieldFeatures = (
         : fieldNige * PACE_NIGE_WEIGHT + fieldSenkou * PACE_SENKOU_WEIGHT,
     field_sashi_pressure: fieldSashi,
     field_senkou_pressure: fieldSenkou,
-    field_spread_past_corner_1_norm:
-      maxOfNumbers(corner1NormPeers) === null || minOfNumbers(corner1NormPeers) === null
-        ? null
-        : (maxOfNumbers(corner1NormPeers) ?? 0) - (minOfNumbers(corner1NormPeers) ?? 0),
+    field_spread_past_corner_1_norm: (() => {
+      const max = maxOfNumbers(corner1NormPeers);
+      const min = minOfNumbers(corner1NormPeers);
+      return max === null || min === null ? null : max - min;
+    })(),
     field_top_speed_index: maxOfNumbers(pickNonNull(speedBest)),
   };
 };

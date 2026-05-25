@@ -86,6 +86,35 @@ it("withD1QueryCache bypasses cache when ttl is zero and calls load", async () =
   expect(load).toHaveBeenCalledTimes(1);
 });
 
+it("withD1QueryCache stable-sorts nested object key parts when building the cache key", async () => {
+  const putSpy = vi.fn(async () => undefined);
+  const cache: FakeCache = {
+    delete: vi.fn(async () => true),
+    match: vi.fn(async () => null),
+    put: putSpy,
+  };
+  (globalThis as { caches?: CachesGlobal }).caches = { default: cache };
+  const load = vi.fn(async () => ({ ok: 1 }));
+  const result1 = await withD1QueryCache<{ ok: number }>(
+    "realtime-short",
+    [{ b: 2, a: 1 }],
+    load,
+  );
+  expect(result1.ok).toBe(1);
+  const result2 = await withD1QueryCache<{ ok: number }>(
+    "realtime-short",
+    [{ a: 1, b: 2 }],
+    vi.fn(async () => ({ ok: 99 })),
+  );
+  // Hash should be identical, so the second call also misses the cache the same way
+  // (cache mock returns null), but importantly the put url should match.
+  expect(result2.ok).toBe(99);
+  expect(putSpy).toHaveBeenCalledTimes(2);
+  const url1 = String(putSpy.mock.calls[0]?.[0]);
+  const url2 = String(putSpy.mock.calls[1]?.[0]);
+  expect(url1).toBe(url2);
+});
+
 it("withD1QueryCache deletes corrupted body, falls through to load, and caches the result", async () => {
   const deleteSpy = vi.fn(async () => true);
   const putSpy = vi.fn(async () => undefined);
