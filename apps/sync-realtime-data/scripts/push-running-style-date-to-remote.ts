@@ -93,7 +93,7 @@ export const buildInsertSql = (row: D1ExportRow): string =>
   '${escapeSqlString(row.predicted_at)}'
 );`;
 
-const spawnWrangler = async (args: readonly string[]): Promise<void> => {
+export const spawnWrangler = async (args: readonly string[]): Promise<void> => {
   const stderrChunks: Buffer[] = [];
   const child = spawn(WRANGLER_COMMAND, [...args], { stdio: ["ignore", "inherit", "pipe"] });
   child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
@@ -108,7 +108,7 @@ const spawnWrangler = async (args: readonly string[]): Promise<void> => {
   }
 };
 
-const readLocalRows = async (dateYmd: string): Promise<D1ExportRow[]> => {
+export const readLocalRows = async (dateYmd: string): Promise<D1ExportRow[]> => {
   const command = `select race_key, horse_number, ketto_toroku_bango, bamei, category, kaisai_nen, model_version, p_nige, p_senkou, p_sashi, p_oikomi, predicted_label, predicted_at from race_running_styles where race_key like '%${dateYmd}%' order by race_key, horse_number`;
   const stderrChunks: Buffer[] = [];
   const stdoutChunks: Buffer[] = [];
@@ -134,7 +134,7 @@ const readLocalRows = async (dateYmd: string): Promise<D1ExportRow[]> => {
   return payload[0]?.results ?? [];
 };
 
-const run = async (): Promise<void> => {
+export const run = async (): Promise<void> => {
   const args = parsePushRunningStyleDateCliArgs(process.argv.slice(2));
   const rows = await readLocalRows(args.dateYmd);
   if (rows.length === 0) {
