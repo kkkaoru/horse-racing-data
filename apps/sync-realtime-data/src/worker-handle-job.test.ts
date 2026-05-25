@@ -550,6 +550,39 @@ it("handleJob fetch-weights with NAR race source short-circuits when no fetch UR
   );
 });
 
+it("handleJob discover-urls exercises upsertDiscoveredUrls with NAR + JRA race rows", async () => {
+  const { handleJob } = await import("./worker");
+  const { fetchNarRacesByDate, fetchJraRacesByDate } = await import("./postgres");
+  const { fetchTodayRaceListUrls, fetchRacePage } = await import("./keiba-go");
+  vi.mocked(fetchNarRacesByDate).mockResolvedValueOnce([
+    {
+      hasso_jikoku: "1300",
+      kaisai_nen: "2026",
+      kaisai_tsukihi: "0512",
+      keibajo_code: "55",
+      kyosomei_hondai: "Test NAR Race",
+      race_bango: "1",
+    },
+  ] as never);
+  vi.mocked(fetchJraRacesByDate).mockResolvedValueOnce([
+    {
+      hasso_jikoku: "1500",
+      kaisai_kai: "02",
+      kaisai_nen: "2026",
+      kaisai_nichime: "06",
+      kaisai_tsukihi: "0512",
+      keibajo_code: "08",
+      kyosomei_hondai: "Test JRA Race",
+      race_bango: "1",
+    },
+  ] as never);
+  vi.mocked(fetchTodayRaceListUrls).mockResolvedValueOnce([
+    { babaCode: "30", url: "https://nankan.example/race-list" },
+  ] as never);
+  vi.mocked(fetchRacePage).mockResolvedValue("<html></html>");
+  await handleJob(buildEnv(), { date: "20260512", type: "discover-urls" });
+});
+
 it("handleJob fetch-premium-race-data throws when origin set but no race link discovered", async () => {
   const { handleJob } = await import("./worker");
   await expect(
