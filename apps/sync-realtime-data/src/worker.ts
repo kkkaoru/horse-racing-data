@@ -745,7 +745,7 @@ const ensureDiscoveredUrlsAreCurrent = async (env: Env, targetDate: string): Pro
   await upsertDiscoveredUrls(env, targetDate);
 };
 
-const enqueueJobs = async (env: Env, jobs: Job[]): Promise<void> => {
+export const enqueueJobs = async (env: Env, jobs: Job[]): Promise<void> => {
   const premiumDelaySeconds = Math.max(
     1,
     Number(env.PREMIUM_RACE_QUEUE_DELAY_SECONDS ?? DEFAULT_PREMIUM_RACE_QUEUE_DELAY_SECONDS),
@@ -1714,6 +1714,12 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
             : String(dataTopResult.reason)
           : null,
       dataTopHtmlLength: dataTopHtml.length,
+      dataTopHasIconAccount: dataTopHtml ? dataTopHtml.includes("Icon_Account") : null,
+      dataTopHasDummyBox: dataTopHtml ? dataTopHtml.includes("DummyBox") : null,
+      dataTopHasPremiumRegist: dataTopHtml ? dataTopHtml.includes("Premium_Regist_Box") : null,
+      dataTopDlBlockCount: dataTopHtml
+        ? (dataTopHtml.match(/<dl\b/giu)?.length ?? 0)
+        : null,
       stableCommentCount: parsedStableComments?.length ?? null,
       stableCommentPersisted: stableComments !== undefined,
       stableCommentSample:
