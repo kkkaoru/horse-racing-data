@@ -298,6 +298,19 @@ it("notifyPremiumPaddockIfNeeded posts to Discord and records ok event on 200", 
   });
 });
 
+it("notifyPremiumPaddockIfNeeded falls back to placeholder labels when raceName/keibajoCode missing", async () => {
+  const { notifyPremiumPaddockIfNeeded } = await import("./worker");
+  await notifyPremiumPaddockIfNeeded(
+    buildEnv({ PREMIUM_PADDOCK_DISCORD_WEBHOOK_URL: "https://discord.example/webhook" } as never),
+    buildRace({ keibajoCode: "ZZ", raceName: null }),
+    buildBulletins(),
+    "2026-05-12T13:00:00+09:00",
+  );
+  expect(fetch).toHaveBeenCalledTimes(1);
+  const body = JSON.parse(String(vi.mocked(fetch).mock.calls[0]?.[1]?.body));
+  expect(body.embeds[0].description).toContain("レース名未取得");
+});
+
 it("notifyPremiumPaddockIfNeeded records failed event and throws when Discord returns non-OK", async () => {
   vi.stubGlobal(
     "fetch",
