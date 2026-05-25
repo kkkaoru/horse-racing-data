@@ -164,7 +164,7 @@ export const listRaceRunningStyleCounts = async (
     "running-style-races",
     ["listRaceRunningStyleCounts", uniqueRaceKeys],
     async () => Object.fromEntries(await queryRaceRunningStyleCounts(db, uniqueRaceKeys)),
-    { ctx: resolved.ctx, raceDay: parseRaceDayFromRaceKey(uniqueRaceKeys[0] ?? "") },
+    { ctx: resolved.ctx, raceDay: parseRaceDayFromRaceKey(uniqueRaceKeys[0]!) },
   );
   return new Map(Object.entries(record));
 };

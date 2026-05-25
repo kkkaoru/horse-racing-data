@@ -71,25 +71,22 @@ const schemaForFeatureNames = (featureNames: ReadonlyArray<string>): ParquetSche
   return new ParquetSchema(fields);
 };
 
-// Parquet rows always come back as string/number/null. The type narrowing below
-// is intentionally minimal; broader unknown handling lives in
-// `running-style-feature-sql.ts` where DB drivers may emit bigint/Date/etc.
+// Parquet rows come back as number-or-null for feature columns and
+// string-or-null for the bamei column. The narrowing below is exactly what
+// dsnp-parquetjs emits. Broader unknown handling for DB rows lives in
+// `running-style-feature-sql.ts`.
 const toNumberOrNull = (value: unknown): number | null => {
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? value : null;
+  if (typeof value !== "number") {
+    return null;
   }
-  if (typeof value === "string" && value.length > 0) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
+  return Number.isFinite(value) ? value : null;
 };
 
 const toStringOrNull = (value: unknown): string | null => {
-  if (typeof value === "string") {
-    return value.length > 0 ? value : null;
+  if (typeof value !== "string" || value.length === 0) {
+    return null;
   }
-  return null;
+  return value;
 };
 
 const toParquetRow = (
