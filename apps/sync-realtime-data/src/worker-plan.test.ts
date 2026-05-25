@@ -167,6 +167,30 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+it("planTrackConditionFetchesForDate triggers ensureJraRaceSourcesAreCurrent upsert loop when JRA races exceed D1 count", async () => {
+  const { planTrackConditionFetchesForDate } = await import("./worker");
+  const { fetchJraRacesByDate } = await import("./postgres");
+  const { upsertJraRaceSource } = await import("./storage");
+  vi.mocked(fetchJraRacesByDate).mockResolvedValueOnce([
+    {
+      hasso_jikoku: "1500",
+      kaisai_kai: "02",
+      kaisai_nen: "2026",
+      kaisai_nichime: "06",
+      kaisai_tsukihi: "0512",
+      keibajo_code: "08",
+      kyosomei_hondai: "T",
+      race_bango: "1",
+    },
+  ] as never);
+  await planTrackConditionFetchesForDate(
+    buildEnv(),
+    "20260512",
+    new Date("2026-05-12T03:00:00.000Z"),
+  );
+  expect(upsertJraRaceSource).toHaveBeenCalled();
+});
+
 it("planTrackConditionFetchesForDate emits a fetch-jra-track-condition job for due schedules", async () => {
   const { planTrackConditionFetchesForDate } = await import("./worker");
   const { listJraVenueTrackConditionSchedulesByDate } = await import("./storage");

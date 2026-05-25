@@ -313,6 +313,31 @@ it("fetch POST /admin/running-style/verify-postgres returns the verification sum
   expect(response.status).toBe(200);
 });
 
+it("fetch GET realtime payload backfills horseTrends and trendsByType when missing", async () => {
+  const { default: worker } = await import("./worker");
+  const { buildRealtimePayload } = await import("./storage");
+  vi.mocked(buildRealtimePayload).mockResolvedValueOnce({
+    horseWeights: null,
+    odds: {
+      fetchedAt: "now",
+      history: [{ fetchedAt: "now", horseNumber: "1", odds: 2.5, popularity: 1 }],
+      historyByType: { tansho: [{ combination: "1", fetchedAt: "now", odds: 2.5, rank: 1 }] },
+      horseTrends: [],
+      latest: {},
+    },
+    raceEntries: null,
+    raceResults: null,
+    trackCondition: null,
+  } as never);
+  const response = await worker.fetch(
+    new Request("https://x.test/api/jra/races/2026/05/12/08/01/realtime"),
+    buildEnv(),
+    buildCtx(),
+  );
+  const body = (await response.json()) as { odds: { trendsByType: unknown; horseTrends: unknown } };
+  expect(body.odds.trendsByType).toBeDefined();
+});
+
 it("fetch during JST polling window seeds the planner watchdog via ctx.waitUntil", async () => {
   const { default: worker } = await import("./worker");
   const waitPromises: Promise<unknown>[] = [];
