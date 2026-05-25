@@ -1,6 +1,6 @@
 import type { RaceSource } from "./codes";
 
-export const RACE_TREND_CACHE_VERSION = "v3";
+export const RACE_TREND_CACHE_VERSION = "v4";
 
 export const RACE_TREND_CACHE_WARM_PARAM = "__trendCacheWarm";
 
@@ -66,15 +66,23 @@ export const buildRaceTrendCacheWarmOptions = (
   targetYmd: string,
 ): RaceTrendCacheOptions[] => [buildDefaultRaceTrendCacheOptions(source, targetYmd)];
 
-export const buildRaceTrendCacheKey = ({
-  options,
-}: {
+export interface RaceTrendCacheKeyInput {
+  keibajoCode: string;
   options: RaceTrendCacheOptions;
-}): string =>
+  raceBango: string;
+}
+
+export const buildRaceTrendCacheKey = ({
+  keibajoCode,
+  options,
+  raceBango,
+}: RaceTrendCacheKeyInput): string =>
   [
     "race-trend",
     RACE_TREND_CACHE_VERSION,
     options.source,
+    keibajoCode,
+    raceBango,
     options.jockeyStartYmd,
     options.jockeyEndYmd,
     options.frameStartYmd,

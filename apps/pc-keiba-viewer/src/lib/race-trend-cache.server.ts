@@ -11,7 +11,13 @@ import {
 } from "./race-trend-cache";
 import type { RaceDetail } from "./race-types";
 
+export interface RaceTrendBustRaceRef {
+  keibajoCode: string;
+  raceBango: string;
+}
+
 export interface BustRaceTrendCachesParams {
+  races: ReadonlyArray<RaceTrendBustRaceRef>;
   source: RaceSource;
   targetYmd: string;
 }
@@ -61,7 +67,9 @@ const buildCachedResponse = (body: string, source: CacheSource | "memory"): Resp
   });
 
 export const buildRaceTrendCacheKeyForRequest = ({
+  keibajoCode,
   options,
+  raceNumber,
 }: {
   day: string;
   keibajoCode: string;
@@ -69,7 +77,7 @@ export const buildRaceTrendCacheKeyForRequest = ({
   options: RaceTrendCacheOptions;
   raceNumber: string;
   year: string;
-}): string => buildRaceTrendCacheKey({ options });
+}): string => buildRaceTrendCacheKey({ keibajoCode, options, raceBango: raceNumber });
 
 export const getCachedRaceTrendResponse = async (cacheKey: string): Promise<Response | null> => {
   const cachedMemory = memoryCache.get(cacheKey);
@@ -182,10 +190,17 @@ interface AffectedCacheKey {
 }
 
 const collectAffectedCacheKeys = (params: BustRaceTrendCachesParams): AffectedCacheKey[] => {
-  const trendKeys = buildAffectedCacheOptions(params.source, params.targetYmd).map((options) => ({
-    key: buildRaceTrendCacheKey({ options }),
-    urlBase: CACHE_URL_BASE,
-  }));
+  const optionVariants = buildAffectedCacheOptions(params.source, params.targetYmd);
+  const trendKeys = params.races.flatMap((race) =>
+    optionVariants.map((options) => ({
+      key: buildRaceTrendCacheKey({
+        keibajoCode: race.keibajoCode,
+        options,
+        raceBango: race.raceBango,
+      }),
+      urlBase: CACHE_URL_BASE,
+    })),
+  );
   const d1Keys = buildAffectedD1RangeKeys(params.source, params.targetYmd).flatMap((range) => [
     {
       key: `${D1_DAILY_CACHE_PREFIX}:${params.source}:${range.startYmd}:${range.endYmd}`,

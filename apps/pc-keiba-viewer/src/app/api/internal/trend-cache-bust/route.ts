@@ -54,17 +54,32 @@ const splitYmd = (ymd: string): YmdParts => ({
   year: ymd.slice(0, 4),
 });
 
-const notifyAllRoomsForDay = async (
+interface DayRaceRef {
+  keibajoCode: string;
+  raceBango: string;
+}
+
+const listDayRaces = async (
   source: RaceSource,
   ymd: string,
-): Promise<number> => {
+): Promise<DayRaceRef[]> => {
   const parts = splitYmd(ymd);
   const races = await getRacesByDateWithoutJockeyNames(parts.year, parts.month, parts.day).catch(
     () => [],
   );
-  const targetRaces = races.filter((race) => race.source === source);
+  return races
+    .filter((race) => race.source === source)
+    .map((race) => ({ keibajoCode: race.keibajoCode, raceBango: race.raceBango }));
+};
+
+const notifyAllRoomsForDay = async (
+  source: RaceSource,
+  ymd: string,
+  races: ReadonlyArray<DayRaceRef>,
+): Promise<number> => {
+  const parts = splitYmd(ymd);
   const outcomes = await Promise.all(
-    targetRaces.map((race) =>
+    races.map((race) =>
       notifyRaceTrendRoom(
         {
           day: parts.day,
@@ -90,11 +105,13 @@ export async function POST(request: Request): Promise<Response> {
   if (!body) {
     return NextResponse.json({ error: "invalid body" }, { status: 400 });
   }
+  const races = await listDayRaces(body.source, body.targetYmd);
   const params: BustRaceTrendCachesParams = {
+    races,
     source: body.source,
     targetYmd: body.targetYmd,
   };
   const result = await bustRaceTrendCachesForDay(params);
-  const notified = await notifyAllRoomsForDay(body.source, body.targetYmd);
+  const notified = await notifyAllRoomsForDay(body.source, body.targetYmd, races);
   return NextResponse.json({ keys: result.keys, notified, ok: true });
 }
