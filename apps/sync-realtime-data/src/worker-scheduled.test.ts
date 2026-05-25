@@ -249,7 +249,6 @@ it("queue acks a message after successful handleJob", async () => {
   await worker.queue(
     { messages: [message], queue: "q", retryAll: () => {}, ackAll: () => {} } as never,
     buildEnv(),
-    {} as never,
   );
   expect(ack).toHaveBeenCalledTimes(1);
   expect(retry).not.toHaveBeenCalled();
@@ -269,7 +268,6 @@ it("queue retries a failing non-fetch-odds message", async () => {
   await worker.queue(
     { messages: [message], queue: "q", retryAll: () => {}, ackAll: () => {} } as never,
     buildEnv(),
-    {} as never,
   );
   expect(retry).toHaveBeenCalledTimes(1);
   expect(ack).not.toHaveBeenCalled();
@@ -289,7 +287,6 @@ it("queue acks (instead of retrying) a failing fetch-odds message", async () => 
   await worker.queue(
     { messages: [message], queue: "q", retryAll: () => {}, ackAll: () => {} } as never,
     buildEnv(),
-    {} as never,
   );
   expect(ack).toHaveBeenCalledTimes(1);
   expect(retry).not.toHaveBeenCalled();

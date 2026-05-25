@@ -145,5 +145,5 @@ it("runDailyFeatureBuildForEnv skips warmCache when zero rows written", async ()
     fromDate: "20260512",
   });
   expect(result.rowsWritten).toBe(0);
-  expect(result.cacheWarm.status).toBe("skipped");
+  expect(result.cacheWarm?.status).toBe("skipped");
 });
