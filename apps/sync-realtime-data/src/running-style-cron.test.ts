@@ -116,3 +116,66 @@ test("selectRacesNeedingRunningStyleInference skips active queued state", () => 
   expect(selected.needed).toHaveLength(0);
   expect(selected.alreadyQueued).toBe(1);
 });
+
+test("selectRacesNeedingRunningStyleInference counts featureReady=0 as missingFeatures", () => {
+  const selected = selectRacesNeedingRunningStyleInference(
+    [RACE],
+    new Map(),
+    new Map(),
+    new Map(),
+    new Map(),
+  );
+  expect(selected.missingFeatures).toBe(1);
+  expect(selected.featureReady).toBe(0);
+});
+
+test("selectRacesNeedingRunningStyleInference treats stale active state as needing rerun", () => {
+  const selected = selectRacesNeedingRunningStyleInference(
+    [RACE],
+    new Map([["nar:20260519:46:12", 14]]),
+    new Map([["nar:20260519:46:12", 14]]),
+    new Map([["nar:20260519:46:12", 0]]),
+    new Map([
+      [
+        "nar:20260519:46:12",
+        {
+          attemptedAt: "2026-05-19T00:00:00.000Z",
+          completedAt: null,
+          expectedHorseCount: null,
+          featuresR2Key: null,
+          modelVersion: null,
+          raceKey: "nar:20260519:46:12",
+          status: "processing",
+          writtenHorseCount: null,
+        },
+      ],
+    ]),
+    new Date("2026-05-19T01:00:00.000Z"),
+  );
+  expect(selected.needed).toHaveLength(1);
+});
+
+test("selectRacesNeedingRunningStyleInference treats malformed attemptedAt as active", () => {
+  const selected = selectRacesNeedingRunningStyleInference(
+    [RACE],
+    new Map([["nar:20260519:46:12", 14]]),
+    new Map([["nar:20260519:46:12", 14]]),
+    new Map([["nar:20260519:46:12", 0]]),
+    new Map([
+      [
+        "nar:20260519:46:12",
+        {
+          attemptedAt: "not-a-date",
+          completedAt: null,
+          expectedHorseCount: null,
+          featuresR2Key: null,
+          modelVersion: null,
+          raceKey: "nar:20260519:46:12",
+          status: "processing",
+          writtenHorseCount: null,
+        },
+      ],
+    ]),
+  );
+  expect(selected.needed.length).toBe(1);
+});

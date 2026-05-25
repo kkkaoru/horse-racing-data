@@ -1,0 +1,137 @@
+// run with: bun run test
+import { afterEach, expect, it, vi } from "vitest";
+import type { Pool } from "pg";
+import {
+  buildRunningStyleFeaturesForRaceFromD1Target,
+  buildRunningStyleFeaturesForRaceFromPostgres,
+  buildRunningStylePostgresFeatureSql,
+  buildRunningStylePostgresFeatureSqlWithD1Target,
+  type DailyTargetRow,
+} from "./running-style-feature-sql";
+
+const PARAMS = {
+  kaisaiNen: "2026",
+  kaisaiTsukihi: "0512",
+  keibajoCode: "08",
+  raceBango: "01",
+  source: "jra" as const,
+};
+
+const TARGET_ROW: DailyTargetRow = {
+  babajotai_code_dirt: null,
+  babajotai_code_shiba: null,
+  bamei: "サンプル",
+  chokyoshimei_ryakusho: null,
+  grade_code: null,
+  kaisai_nen: "2026",
+  kaisai_tsukihi: "0512",
+  keibajo_code: "08",
+  ketto_toroku_bango: "2024100001",
+  kishumei_ryakusho: null,
+  kyori: 2000,
+  kyoso_joken_code: null,
+  race_bango: "01",
+  race_date: "20260512",
+  shusso_tosu: 16,
+  source: "jra",
+  track_code: null,
+  umaban: 1,
+};
+
+const SQL_ROW = {
+  bamei: "サンプル",
+  career_win_rate: "0.2",
+  kaisai_nen: "2026",
+  kaisai_tsukihi: "0512",
+  keibajo_code: "08",
+  ketto_toroku_bango: "2024100001",
+  race_bango: "01",
+  source: "jra",
+  umaban: "1",
+};
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+it("buildRunningStylePostgresFeatureSql returns SQL string", () => {
+  const sql = buildRunningStylePostgresFeatureSql();
+  expect(typeof sql).toBe("string");
+  expect(sql.length).toBeGreaterThan(0);
+});
+
+it("buildRunningStylePostgresFeatureSqlWithD1Target swaps the rec target CTE for the JSONB target CTE", () => {
+  const sql = buildRunningStylePostgresFeatureSqlWithD1Target();
+  expect(sql.length).toBeGreaterThan(0);
+  expect(sql.match(/jsonb_to_recordset\(\$6/)).not.toBeNull();
+});
+
+it("buildRunningStyleFeaturesForRaceFromPostgres throws on unexpected raceKey in results", async () => {
+  const query = vi.fn(async () => ({
+    rowCount: 1,
+    rows: [{ ...SQL_ROW, keibajo_code: "07" }],
+  }));
+  const pool = { query } as unknown as Pool;
+  await expect(
+    buildRunningStyleFeaturesForRaceFromPostgres(pool, PARAMS, ["career_win_rate"]),
+  ).rejects.toThrow("unexpected race key in PostgreSQL feature result");
+});
+
+it("buildRunningStyleFeaturesForRaceFromPostgres returns rows for matching raceKey", async () => {
+  const query = vi.fn(async () => ({ rowCount: 1, rows: [SQL_ROW] }));
+  const pool = { query } as unknown as Pool;
+  const result = await buildRunningStyleFeaturesForRaceFromPostgres(pool, PARAMS, [
+    "career_win_rate",
+  ]);
+  expect(result.rows.length).toBe(1);
+  expect(result.rows[0]!.raceKey).toBe("jra:20260512:08:01");
+});
+
+it("buildRunningStyleFeaturesForRaceFromD1Target throws when target rows empty", async () => {
+  const query = vi.fn(async () => ({ rowCount: 0, rows: [] }));
+  const pool = { query } as unknown as Pool;
+  await expect(
+    buildRunningStyleFeaturesForRaceFromD1Target(pool, PARAMS, ["career_win_rate"], []),
+  ).rejects.toThrow("no D1 target rows provided");
+});
+
+it("buildRunningStyleFeaturesForRaceFromD1Target throws on unexpected raceKey in results", async () => {
+  const query = vi.fn(async () => ({
+    rowCount: 1,
+    rows: [{ ...SQL_ROW, keibajo_code: "07" }],
+  }));
+  const pool = { query } as unknown as Pool;
+  await expect(
+    buildRunningStyleFeaturesForRaceFromD1Target(
+      pool,
+      PARAMS,
+      ["career_win_rate"],
+      [TARGET_ROW],
+    ),
+  ).rejects.toThrow("unexpected race key in PostgreSQL feature result");
+});
+
+it("buildRunningStyleFeaturesForRaceFromD1Target returns rows for matching raceKey", async () => {
+  const query = vi.fn(async () => ({ rowCount: 1, rows: [SQL_ROW] }));
+  const pool = { query } as unknown as Pool;
+  const result = await buildRunningStyleFeaturesForRaceFromD1Target(
+    pool,
+    PARAMS,
+    ["career_win_rate"],
+    [TARGET_ROW],
+  );
+  expect(result.rows.length).toBe(1);
+  expect(result.sqlRows).toBe(1);
+});
+
+it("buildRunningStyleFeaturesForRaceFromD1Target falls back to rows.length when rowCount missing", async () => {
+  const query = vi.fn(async () => ({ rows: [SQL_ROW] }));
+  const pool = { query } as unknown as Pool;
+  const result = await buildRunningStyleFeaturesForRaceFromD1Target(
+    pool,
+    PARAMS,
+    ["career_win_rate"],
+    [TARGET_ROW],
+  );
+  expect(result.sqlRows).toBe(1);
+});
