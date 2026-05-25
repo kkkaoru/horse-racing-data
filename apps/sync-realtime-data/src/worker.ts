@@ -1021,7 +1021,7 @@ export const formatMinutesUntilRace = (raceStartAtJst: string, now: Date): strin
   return `発走から${Math.abs(diffMinutes)}分経過`;
 };
 
-const notifyPremiumPaddockIfNeeded = async (
+export const notifyPremiumPaddockIfNeeded = async (
   env: Env,
   race: NarRaceSource,
   bulletins: readonly PremiumPaddockBulletin[],

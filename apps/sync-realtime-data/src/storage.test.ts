@@ -28,6 +28,7 @@ import {
   getPremiumRacePayload,
   getSameDayVenueJockeyWins,
   insertJraTrackConditionSnapshot,
+  listJraVenueTrackConditionSchedulesByDate,
   listOddsHistoryByType,
   replacePremiumRaceData,
   listPremiumRaceDataFetchCandidatesByDate,
@@ -53,6 +54,8 @@ import {
   updatePremiumPaddockFetchState,
   updatePremiumPaddockNotificationState,
   updatePremiumRaceDataFetchState,
+  upsertJraRaceSource,
+  upsertNarRaceSource,
   upsertPremiumRaceLink,
 } from "./storage";
 
@@ -1130,4 +1133,208 @@ it("insertJraTrackConditionSnapshot returns empty array when no JRA races found"
     keibajoCode: "08",
   });
   expect(result).toStrictEqual([]);
+});
+
+it("upsertNarRaceSource skips when babaCode is not mapped to a keibajoCode", async () => {
+  const run = vi.fn(async () => ({ meta: { changes: 0 } }));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await upsertNarRaceSource(
+    db,
+    { babaCode: "99", raceNumber: "01", url: "https://x.test" },
+    {
+      hasso_jikoku: "1500",
+      kaisai_nen: "2026",
+      kaisai_tsukihi: "0512",
+      keibajo_code: "06",
+      kyosomei_hondai: "T",
+      race_bango: "1",
+    },
+    {},
+  );
+  expect(prepare).not.toHaveBeenCalled();
+});
+
+it("upsertNarRaceSource skips when hasso_jikoku is missing", async () => {
+  const run = vi.fn(async () => ({ meta: { changes: 0 } }));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await upsertNarRaceSource(
+    db,
+    { babaCode: "36", raceNumber: "01", url: "https://x.test" },
+    {
+      hasso_jikoku: null,
+      kaisai_nen: "2026",
+      kaisai_tsukihi: "0512",
+      keibajo_code: "30",
+      kyosomei_hondai: "T",
+      race_bango: "1",
+    },
+    {},
+  );
+  expect(prepare).not.toHaveBeenCalled();
+});
+
+it("upsertNarRaceSource binds normalized raceBango and json oddsLinks when valid", async () => {
+  const run = vi.fn(async () => ({ meta: { changes: 1 } }));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await upsertNarRaceSource(
+    db,
+    { babaCode: "36", raceNumber: "01", url: "https://x.test" },
+    {
+      hasso_jikoku: "1500",
+      kaisai_nen: "2026",
+      kaisai_tsukihi: "0512",
+      keibajo_code: "30",
+      kyosomei_hondai: "テスト",
+      race_bango: "1",
+    },
+    { tansho: "https://x.test/odds/tansho" },
+  );
+  expect(prepare).toHaveBeenCalledTimes(1);
+  expect(run).toHaveBeenCalledTimes(1);
+  const args = bind.mock.calls[0];
+  expect(args?.[0]).toBe("nar:2026:0512:30:01");
+  expect(args?.[9]).toBe('{"tansho":"https://x.test/odds/tansho"}');
+});
+
+it("upsertJraRaceSource skips when hasso_jikoku is missing", async () => {
+  const run = vi.fn(async () => ({ meta: { changes: 0 } }));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await upsertJraRaceSource(
+    db,
+    {
+      hasso_jikoku: null,
+      kaisai_nen: "2026",
+      kaisai_tsukihi: "0512",
+      keibajo_code: "08",
+      kyosomei_hondai: "T",
+      race_bango: "01",
+    },
+    "https://jra.example/race",
+  );
+  expect(prepare).not.toHaveBeenCalled();
+});
+
+it("upsertJraRaceSource skips when entryUrl is null", async () => {
+  const run = vi.fn(async () => ({ meta: { changes: 0 } }));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await upsertJraRaceSource(
+    db,
+    {
+      hasso_jikoku: "1500",
+      kaisai_nen: "2026",
+      kaisai_tsukihi: "0512",
+      keibajo_code: "08",
+      kyosomei_hondai: "T",
+      race_bango: "01",
+    },
+    null,
+  );
+  expect(prepare).not.toHaveBeenCalled();
+});
+
+it("upsertJraRaceSource binds normalized raceKey and entry URL when valid", async () => {
+  const run = vi.fn(async () => ({ meta: { changes: 1 } }));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await upsertJraRaceSource(
+    db,
+    {
+      hasso_jikoku: "1500",
+      kaisai_kai: "01",
+      kaisai_nichime: "02",
+      kaisai_nen: "2026",
+      kaisai_tsukihi: "0512",
+      keibajo_code: "08",
+      kyosomei_hondai: "京都記念",
+      race_bango: "1",
+    },
+    "https://jra.example/race",
+  );
+  expect(prepare).toHaveBeenCalledTimes(1);
+  expect(run).toHaveBeenCalledTimes(1);
+  const args = bind.mock.calls[0];
+  expect(args?.[0]).toBe("jra:2026:0512:08:01");
+  expect(args?.[10]).toBe("https://jra.example/race");
+});
+
+it("listJraVenueTrackConditionSchedulesByDate maps rows to JraVenueTrackConditionSchedule shape", async () => {
+  const all = vi.fn(async () => ({
+    results: [
+      {
+        first_race_start_at_jst: "2026-05-12T10:00:00+09:00",
+        keibajo_code: "08",
+        last_fetch_at: null,
+        last_queued_at: null,
+        last_race_start_at_jst: "2026-05-12T15:00:00+09:00",
+      },
+    ],
+  }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const result = await listJraVenueTrackConditionSchedulesByDate(db, "20260512");
+  expect(result).toStrictEqual([
+    {
+      firstRaceStartAtJst: "2026-05-12T10:00:00+09:00",
+      keibajoCode: "08",
+      lastFetchAt: null,
+      lastQueuedAt: null,
+      lastRaceStartAtJst: "2026-05-12T15:00:00+09:00",
+    },
+  ]);
+});
+
+it("markOddsFetchQueued runs a batch when raceKeys is non-empty", async () => {
+  const batch = vi.fn(async () => undefined);
+  const bind = vi.fn((..._args: unknown[]) => ({}));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { batch, prepare } as unknown as D1Database;
+  await markOddsFetchQueued(db, ["a", "b"], "2026-05-12T10:00:00+09:00");
+  expect(prepare).toHaveBeenCalledTimes(2);
+  expect(batch).toHaveBeenCalledTimes(1);
+});
+
+it("getLatestTrackConditionForRace returns mapped TrackCondition when row exists", async () => {
+  const first = vi.fn(async () => ({
+    dirt_condition: "重",
+    dirt_measurement_date: "2026-05-12",
+    dirt_moisture_final_bend: "10.0",
+    dirt_moisture_final_furlong: "9.5",
+    dirt_moisture_measured_at: "2026-05-12T10:00:00+09:00",
+    fetched_at: "2026-05-12T11:00:00+09:00",
+    source_updated_at: null,
+    turf_condition: "良",
+    turf_course_layout: "A",
+    turf_cushion_measured_at: "2026-05-12T09:30:00+09:00",
+    turf_cushion_value: "9.0",
+    turf_going: "B",
+    turf_height_japanese_zoysia_grass: "9.0",
+    turf_height_perennial_ryegrass: "8.0",
+    turf_measurement_date: "2026-05-12",
+    turf_moisture_final_bend: "8.0",
+    turf_moisture_final_furlong: "7.5",
+    turf_moisture_measured_at: "2026-05-12T09:00:00+09:00",
+    weather: "晴",
+  }));
+  const bind = vi.fn((..._args: unknown[]) => ({ first }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const result = await getLatestTrackConditionForRace(db, "jra:2026:0512:08:01");
+  expect(result?.weather).toBe("晴");
+  expect(result?.turf.condition).toBe("良");
+  expect(result?.turf.courseLayout).toBe("A");
+  expect(result?.turf.height.japaneseZoysiaGrass).toBe("9.0");
+  expect(result?.dirt.condition).toBe("重");
+  expect(result?.dirt.moisture.finalFurlong).toBe("9.5");
 });
