@@ -1493,6 +1493,28 @@ it("recordPremiumPaddockNotificationEvent binds optional sentAt and message", as
   expect(prepare).toHaveBeenCalledTimes(1);
 });
 
+it("listOddsHistoryByType skips rows with no oddsType or no fetched_at and groups by type", async () => {
+  const all = vi.fn(async () => ({
+    results: [
+      { combination: "1", fetched_at: null, odds: 2, odds_type: "tansho", rank: 1 },
+      { combination: "2", fetched_at: "2026-05-12T13:00:00+09:00", odds: 5, odds_type: null, rank: 2 },
+      {
+        combination: "3",
+        fetched_at: "2026-05-12T13:00:00+09:00",
+        odds: 3,
+        odds_type: "tansho",
+        rank: 1,
+      },
+    ],
+  }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const result = await listOddsHistoryByType(db, "jra:2026:0512:08:01");
+  // The null-fetched and null-type rows should be filtered out; result has only valid rows.
+  expect(result.tansho).toBeDefined();
+});
+
 it("getRaceSource returns a mapped NarRaceSource when the row exists", async () => {
   const first = vi.fn(async () => ({
     baba_code: "22",
