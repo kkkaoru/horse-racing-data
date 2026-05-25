@@ -26,6 +26,7 @@
     "dev:build-finish-features-duckdb": "uv run python src/scripts/finish_position_features_duckdb.py",
     "dev:walk-forward-finish-eval": "bun run src/scripts/walk-forward-finish-position-eval.ts",
     "dev:walk-forward-win5-eval": "bun run src/scripts/walk-forward-win5-eval.ts",
+    "dev:generate-win5-overlay": "bun run src/scripts/generate-win5-overlay.ts",
     "dev:export-corner-lightgbm": "bun run src/scripts/export-corner-lightgbm-dataset.ts",
     "dev:import-corner-lightgbm": "bun run src/scripts/import-corner-lightgbm-predictions.ts",
     "dev:setup-lightgbm-gpu-macos": "bun run src/scripts/setup-lightgbm-gpu-macos.ts",
