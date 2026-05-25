@@ -206,6 +206,27 @@ it("readLocalRows throws on non-zero exit", async () => {
   await expect(promise).rejects.toThrow("local d1 read failed (exit 2)");
 });
 
+it("spawnWrangler treats null close code as exit 0", async () => {
+  const childProcess = await import("node:child_process");
+  const child = fakeChild();
+  vi.mocked(childProcess.spawn).mockReturnValueOnce(child as never);
+  const promise = spawnWrangler(["wrangler", "noop"]);
+  queueMicrotask(() => child.emit("close", null));
+  await expect(promise).resolves.toBeUndefined();
+});
+
+it("readLocalRows returns [] when stdout payload is an empty array", async () => {
+  const childProcess = await import("node:child_process");
+  const child = fakeChild();
+  vi.mocked(childProcess.spawn).mockReturnValueOnce(child as never);
+  const promise = readLocalRows("20260524");
+  queueMicrotask(() => {
+    child.stdout.emit("data", Buffer.from(JSON.stringify([])));
+    child.emit("close", 0);
+  });
+  await expect(promise).resolves.toStrictEqual([]);
+});
+
 it("run throws when no local rows found for the date", async () => {
   const childProcess = await import("node:child_process");
   const child = fakeChild();
