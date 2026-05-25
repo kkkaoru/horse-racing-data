@@ -192,7 +192,7 @@ export const resolveRunningStyleDateYmd = (date: string, year?: number, now = ne
     throw new Error(`Invalid --date value "${date}". Use YYYYMMDD or MM-DD.`);
   }
   const resolvedYear = year ?? Number(formatYYYYMMDDInJst(now).slice(0, 4));
-  const month = match[1]?.padStart(2, "0") ?? "01";
-  const day = match[2]?.padStart(2, "0") ?? "01";
+  const month = match[1]!.padStart(2, "0");
+  const day = match[2]!.padStart(2, "0");
   return `${resolvedYear}${month}${day}`;
 };
