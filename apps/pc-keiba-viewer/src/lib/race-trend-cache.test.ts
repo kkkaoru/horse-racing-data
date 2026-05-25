@@ -84,8 +84,14 @@ describe("race trend cache helpers", () => {
     const options = buildDefaultRaceTrendCacheOptions("jra", "20260520");
     expect(options.frameStartYmd).toBe("20260519");
     expect(addDaysToYmd("20260520", -3)).toBe("20260517");
-    const cacheKey = buildRaceTrendCacheKey({ options });
-    expect(cacheKey).toStrictEqual("race-trend:v3:jra:20260519:20260520:20260519:20260520:1");
+    const cacheKey = buildRaceTrendCacheKey({
+      keibajoCode: "05",
+      options,
+      raceBango: "11",
+    });
+    expect(cacheKey).toStrictEqual(
+      "race-trend:v4:jra:05:11:20260519:20260520:20260519:20260520:1",
+    );
     expect(
       buildRaceTrendApiPath({
         day: "20",
