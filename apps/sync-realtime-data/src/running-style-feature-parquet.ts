@@ -71,11 +71,14 @@ const schemaForFeatureNames = (featureNames: ReadonlyArray<string>): ParquetSche
   return new ParquetSchema(fields);
 };
 
+// Parquet rows always come back as string/number/null. The type narrowing below
+// is intentionally minimal; broader unknown handling lives in
+// `running-style-feature-sql.ts` where DB drivers may emit bigint/Date/etc.
 const toNumberOrNull = (value: unknown): number | null => {
-  if (value === null || value === undefined || value === "") return null;
-  if (typeof value === "number") return Number.isFinite(value) ? value : null;
-  if (typeof value === "bigint") return Number(value);
-  if (typeof value === "string") {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === "string" && value.length > 0) {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : null;
   }
@@ -83,13 +86,9 @@ const toNumberOrNull = (value: unknown): number | null => {
 };
 
 const toStringOrNull = (value: unknown): string | null => {
-  if (value === null || value === undefined) return null;
-  if (typeof value === "string") return value.length > 0 ? value : null;
-  if (typeof value === "number" || typeof value === "bigint" || typeof value === "boolean") {
-    const text = String(value);
-    return text.length > 0 ? text : null;
+  if (typeof value === "string") {
+    return value.length > 0 ? value : null;
   }
-  if (value instanceof Date) return value.toISOString();
   return null;
 };
 
