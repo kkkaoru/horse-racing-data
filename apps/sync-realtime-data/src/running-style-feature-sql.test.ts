@@ -124,6 +124,83 @@ it("buildRunningStyleFeaturesForRaceFromD1Target returns rows for matching raceK
   expect(result.sqlRows).toBe(1);
 });
 
+it("buildRunningStyleFeaturesForRaceFromPostgres parses non-string numeric values (number, bigint)", async () => {
+  const query = vi.fn(async () => ({
+    rowCount: 1,
+    rows: [
+      {
+        bamei: "サンプル",
+        career_win_rate: 0.5,
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0512",
+        keibajo_code: "08",
+        ketto_toroku_bango: 2024100001n,
+        race_bango: "01",
+        source: "jra",
+        umaban: 1n,
+      },
+    ],
+  }));
+  const pool = { query } as unknown as Pool;
+  const result = await buildRunningStyleFeaturesForRaceFromPostgres(pool, PARAMS, [
+    "career_win_rate",
+  ]);
+  expect(result.rows[0]?.umaban).toBe(1);
+  expect(result.rows[0]?.perHorseFeatures.career_win_rate).toBe(0.5);
+});
+
+it("buildRunningStyleFeaturesForRaceFromPostgres maps Date and boolean values via toStringOrNull/toNumberOrNull", async () => {
+  const query = vi.fn(async () => ({
+    rowCount: 1,
+    rows: [
+      {
+        bamei: new Date("2026-05-12T00:00:00Z"),
+        career_win_rate: true,
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0512",
+        keibajo_code: "08",
+        ketto_toroku_bango: "2024100001",
+        race_bango: "01",
+        source: "jra",
+        umaban: new Date("2026-05-12T00:00:00Z"),
+      },
+    ],
+  }));
+  const pool = { query } as unknown as Pool;
+  const result = await buildRunningStyleFeaturesForRaceFromPostgres(pool, PARAMS, [
+    "career_win_rate",
+  ]);
+  expect(result.rows[0]?.bamei).toBe("2026-05-12T00:00:00.000Z");
+  expect(result.rows[0]?.umaban).toBe(0);
+  expect(result.rows[0]?.perHorseFeatures.career_win_rate).toBe(1);
+});
+
+it("buildRunningStyleFeaturesForRaceFromPostgres treats NaN/Infinity/empty as null", async () => {
+  const query = vi.fn(async () => ({
+    rowCount: 1,
+    rows: [
+      {
+        bamei: "",
+        career_win_rate: "not-a-number",
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0512",
+        keibajo_code: "08",
+        ketto_toroku_bango: "2024100001",
+        race_bango: "01",
+        source: "jra",
+        umaban: Number.NaN,
+      },
+    ],
+  }));
+  const pool = { query } as unknown as Pool;
+  const result = await buildRunningStyleFeaturesForRaceFromPostgres(pool, PARAMS, [
+    "career_win_rate",
+  ]);
+  expect(result.rows[0]?.bamei).toBeNull();
+  expect(result.rows[0]?.perHorseFeatures.career_win_rate).toBeNull();
+  expect(result.rows[0]?.umaban).toBe(0);
+});
+
 it("buildRunningStyleFeaturesForRaceFromD1Target falls back to rows.length when rowCount missing", async () => {
   const query = vi.fn(async () => ({ rows: [SQL_ROW] }));
   const pool = { query } as unknown as Pool;
