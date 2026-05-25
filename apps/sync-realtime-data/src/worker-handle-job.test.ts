@@ -1,0 +1,287 @@
+// run with: bun run test
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { Env } from "./types";
+
+vi.mock("./storage", () => ({
+  logFetch: vi.fn(async () => {}),
+  // satisfies the other named exports worker.ts pulls in (unused in these tests).
+  upsertNarRaceSource: vi.fn(async () => {}),
+  upsertJraRaceSource: vi.fn(async () => {}),
+  listRaceSourceKeibajoCodesByDate: vi.fn(async () => []),
+  getRaceSource: vi.fn(async () => null),
+  listSchedulableRaceSourcesByDate: vi.fn(async () => []),
+  getVenueLastRaceStartAtJst: vi.fn(async () => null),
+  countRaceSourcesByDate: vi.fn(async () => 0),
+  countJraRaceSourcesMissingRaceDateFieldsByDate: vi.fn(async () => 0),
+  listJraVenueTrackConditionSchedulesByDate: vi.fn(async () => []),
+  markTrackConditionQueued: vi.fn(async () => {}),
+  claimTrackConditionFetch: vi.fn(async () => false),
+  failTrackConditionFetch: vi.fn(async () => {}),
+  completeTrackConditionFetch: vi.fn(async () => {}),
+  updateOddsLinks: vi.fn(async () => {}),
+  updateLastFetch: vi.fn(async () => {}),
+  markResultFetchQueued: vi.fn(async () => {}),
+  markOddsFetchQueued: vi.fn(async () => {}),
+  claimOddsFetch: vi.fn(async () => false),
+  claimResultFetch: vi.fn(async () => false),
+  completeOddsFetch: vi.fn(async () => {}),
+  failOddsFetch: vi.fn(async () => {}),
+  completeResultFetch: vi.fn(async () => {}),
+  failResultFetch: vi.fn(async () => {}),
+  insertOddsSnapshot: vi.fn(async () => 0),
+  insertHorseWeightSnapshot: vi.fn(async () => {}),
+  insertRaceEntrySnapshot: vi.fn(async () => 0),
+  insertRaceResultSnapshot: vi.fn(async () => 0),
+  runD1Retention: vi.fn(async () => ({ fetchLogsDeleted: 0, oddsSnapshotsDeleted: 0 })),
+  upsertPremiumRaceLink: vi.fn(async () => {}),
+  getPremiumRaceLink: vi.fn(async () => null),
+  replacePremiumRaceData: vi.fn(async () => {}),
+  getPremiumRacePayload: vi.fn(async () => null),
+  listPremiumRaceDataFetchCandidatesByDate: vi.fn(async () => []),
+  markPremiumRaceDataQueued: vi.fn(async () => {}),
+  getPremiumRaceDataFetchState: vi.fn(async () => null),
+  updatePremiumRaceDataFetchState: vi.fn(async () => {}),
+  markPremiumPaddockQueued: vi.fn(async () => {}),
+  getPremiumPaddockFetchState: vi.fn(async () => null),
+  updatePremiumPaddockFetchState: vi.fn(async () => {}),
+  getPremiumPaddockNotificationState: vi.fn(async () => null),
+  updatePremiumPaddockNotificationState: vi.fn(async () => {}),
+  claimPremiumPaddockNotificationSend: vi.fn(async () => true),
+  recordPremiumPaddockNotificationEvent: vi.fn(async () => {}),
+  listTanshoHistory: vi.fn(async () => []),
+  listOddsHistoryByType: vi.fn(async () => ({})),
+  getLatestOddsFromD1: vi.fn(async () => null),
+  toHorseTrends: vi.fn(() => []),
+  toOddsTrendsByType: vi.fn(() => ({})),
+  getLatestHorseWeights: vi.fn(async () => null),
+  getLatestRaceEntries: vi.fn(async () => null),
+  getLatestRaceResults: vi.fn(async () => null),
+  getLatestTrackConditionForRace: vi.fn(async () => null),
+  insertJraTrackConditionSnapshot: vi.fn(async () => []),
+  getSameDayVenueJockeyWins: vi.fn(async () => []),
+  buildRealtimePayload: vi.fn(async () => ({}) as never),
+}));
+vi.mock("./daily-feature-build", () => ({
+  runDailyFeatureBuildForEnv: vi.fn(async () => ({
+    cacheWarm: { status: "ok" },
+    fromDate: "20260512",
+    rowsFetched: 0,
+    rowsWritten: 0,
+    sourceScope: "all",
+    toDate: "20260512",
+  })),
+  listDailyRaceEntriesForRace: vi.fn(async () => []),
+}));
+vi.mock("./win5-queue", () => ({
+  handleWin5PredictionJob: vi.fn(async () => ({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0511",
+    legCount: 0,
+    modelVersion: "v1",
+  })),
+}));
+vi.mock("./win5-cron", () => ({
+  WIN5_DISCOVER_CRON: "0 0 * * *",
+  logWin5CronResult: vi.fn(async () => {}),
+}));
+vi.mock("./running-style-cron", () => ({
+  RUNNING_STYLE_INFERENCE_CRON: "*/10 * * * *",
+  RUNNING_STYLE_PREWARM_CRON: "0 12 * * *",
+  planRunningStylePredictionsForDate: vi.fn(async () => ({
+    alreadyQueued: 0,
+    completed: 0,
+    date: "20260512",
+    enqueued: 0,
+    featureReady: 0,
+    missingFeatures: 0,
+    scanned: 0,
+  })),
+  refreshViewerRunningStyleCachesForDate: vi.fn(async () => ({
+    date: "20260512",
+    refreshed: 0,
+    scanned: 0,
+    skipped: 0,
+  })),
+  refreshViewerRunningStyleCacheForRace: vi.fn(async () => false),
+}));
+vi.mock("./running-style-queue", () => ({
+  handleRunningStylePredictionJob: vi.fn(async () => null),
+}));
+vi.mock("./postgres", () => ({
+  fetchJraRacesByDate: vi.fn(async () => []),
+  fetchNarRacesByDate: vi.fn(async () => []),
+}));
+vi.mock("./keiba-go", async () => {
+  const actual = await vi.importActual<typeof import("./keiba-go")>("./keiba-go");
+  return {
+    ...actual,
+    fetchTodayRaceListUrls: vi.fn(async () => []),
+    fetchOdds: vi.fn(async () => null),
+    fetchRacePage: vi.fn(async () => null),
+    fetchRaceLinksFromRaceList: vi.fn(async () => []),
+  };
+});
+vi.mock("./jra", async () => {
+  const actual = await vi.importActual<typeof import("./jra")>("./jra");
+  return {
+    ...actual,
+    fetchJraResultHtmlWithPlaywright: vi.fn(async () => "<html></html>"),
+    fetchJraOddsWithPlaywright: vi.fn(async () => ({ entryHtml: "", latest: {} })),
+  };
+});
+vi.mock("./jra-track-condition", () => ({
+  fetchJraTrackConditionWithPlaywright: vi.fn(async () => ({
+    dirt: {
+      condition: null,
+      measurementDate: null,
+      moisture: { finalBend: null, finalFurlong: null, measuredAt: null },
+    },
+    fetchedAt: "now",
+    sourceUpdatedAt: null,
+    turf: {
+      condition: null,
+      courseLayout: null,
+      cushionMeasuredAt: null,
+      cushionValue: null,
+      going: null,
+      height: { japaneseZoysiaGrass: null, perennialRyegrass: null },
+      measurementDate: null,
+      moisture: { finalBend: null, finalFurlong: null, measuredAt: null },
+    },
+    weather: null,
+  })),
+}));
+vi.mock("./odds-cache", () => ({
+  OddsCache: class {},
+  getOddsCacheId: vi.fn(),
+  readCachedOdds: vi.fn(async () => null),
+  writeCachedOdds: vi.fn(async () => {}),
+}));
+vi.mock("./premium-data-top-cache", () => ({
+  putPremiumDataTopCache: vi.fn(async () => true),
+  buildPremiumDataTopCacheRequest: vi.fn(),
+  getPremiumDataTopCacheTtlSeconds: vi.fn(() => 100),
+}));
+vi.mock("./premium-paddock-cache", () => ({
+  PremiumPaddockCache: class {},
+  readCachedPremiumPaddock: vi.fn(async () => null),
+  writeCachedPremiumPaddock: vi.fn(async () => {}),
+  clearCachedPremiumPaddock: vi.fn(async () => {}),
+}));
+vi.mock("./track-condition-cache", () => ({
+  TrackConditionCache: class {},
+  readCachedTrackCondition: vi.fn(async () => null),
+  writeCachedTrackCondition: vi.fn(async () => {}),
+  getTrackConditionCacheId: vi.fn(),
+}));
+vi.mock("./premium-race", async () => {
+  const actual = await vi.importActual<typeof import("./premium-race")>("./premium-race");
+  return {
+    ...actual,
+    discoverPremiumRaceLinks: vi.fn(() => []),
+    fetchPremiumHtml: vi.fn(async () => ""),
+    fetchPremiumHtmlAttempts: vi.fn(async () => []),
+  };
+});
+
+const buildEnv = (overrides?: Partial<Env>): Env => {
+  return {
+    PREMIUM_RACE_JOBS: { send: vi.fn(async () => {}), sendBatch: vi.fn(async () => {}) },
+    REALTIME_DB: {},
+    REALTIME_JOBS: { send: vi.fn(async () => {}), sendBatch: vi.fn(async () => {}) },
+    ...overrides,
+  } as unknown as Env;
+};
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+it("handleJob delegates build-daily-features to runDailyFeatureBuildForEnv and logs ok", async () => {
+  const { handleJob } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
+  await handleJob(buildEnv(), {
+    date: "20260512",
+    type: "build-daily-features",
+  });
+  expect(runDailyFeatureBuildForEnv).toHaveBeenCalledTimes(1);
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "build-daily-features",
+    "ok",
+    null,
+    expect.any(String),
+  );
+});
+
+it("handleJob delegates generate-win5-predictions to handleWin5PredictionJob", async () => {
+  const { handleJob } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  const { handleWin5PredictionJob } = await import("./win5-queue");
+  await handleJob(buildEnv(), {
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0511",
+    predictedAt: "2026-05-11T11:00:00.000Z",
+    type: "generate-win5-predictions",
+  });
+  expect(handleWin5PredictionJob).toHaveBeenCalledTimes(1);
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "generate-win5-predictions",
+    "ok",
+    "20260511",
+    expect.any(String),
+  );
+});
+
+it("handleJob delegates discover-win5-schedules to logWin5CronResult", async () => {
+  const { handleJob } = await import("./worker");
+  const { logWin5CronResult } = await import("./win5-cron");
+  await handleJob(buildEnv(), { date: "20260512", type: "discover-win5-schedules" });
+  expect(logWin5CronResult).toHaveBeenCalledTimes(1);
+});
+
+it("handleJob delegates plan-running-style-predictions to planRunningStylePredictionsForDate", async () => {
+  const { handleJob } = await import("./worker");
+  const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
+  await handleJob(buildEnv(), { date: "20260512", type: "plan-running-style-predictions" });
+  expect(planRunningStylePredictionsForDate).toHaveBeenCalledTimes(1);
+});
+
+it("handleJob delegates generate-running-style-predictions to handleRunningStylePredictionJob", async () => {
+  const { handleJob } = await import("./worker");
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  await handleJob(buildEnv(), {
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0512",
+    keibajoCode: "08",
+    predictedAt: "2026-05-12T11:00:00.000Z",
+    raceBango: "01",
+    raceKey: "jra:20260512:08:01",
+    source: "jra",
+    type: "generate-running-style-predictions",
+  });
+  expect(handleRunningStylePredictionJob).toHaveBeenCalledTimes(1);
+});
+
+it("handleJob logs an error and rethrows when the dispatched action throws", async () => {
+  const { handleJob } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
+  vi.mocked(runDailyFeatureBuildForEnv).mockRejectedValueOnce(new Error("boom"));
+  await expect(
+    handleJob(buildEnv(), { date: "20260512", type: "build-daily-features" }),
+  ).rejects.toThrow("boom");
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "build-daily-features",
+    "error",
+    null,
+    "boom",
+  );
+});

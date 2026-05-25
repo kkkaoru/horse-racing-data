@@ -6,6 +6,7 @@ import {
   buildDetailUrl,
   buildFallbackRaceRow,
   buildPremiumPaddockSignature,
+  enqueueJobs,
   floorToHalfHourJstSlot,
   formatMinutesUntilRace,
   formatPremiumPaddockBulletinLine,
@@ -32,6 +33,7 @@ import {
   toJstSlotIso,
   truncate,
 } from "./worker";
+import type { Env, Job } from "./types";
 
 const RACE: NarRaceSource = {
   babaCode: "22",
@@ -480,4 +482,66 @@ it("sameDayVenueJockeyWinsFromRequest returns null for non-matching path", () =>
   expect(
     sameDayVenueJockeyWinsFromRequest(new URL("https://x.test/api/jra/races/jockey-wins")),
   ).toBeNull();
+});
+
+it("enqueueJobs returns immediately when jobs is empty", async () => {
+  const send = vi.fn(async () => {});
+  const sendBatch = vi.fn(async () => {});
+  const env = {
+    REALTIME_JOBS: { send, sendBatch },
+  } as unknown as Env;
+  await enqueueJobs(env, []);
+  expect(send).not.toHaveBeenCalled();
+  expect(sendBatch).not.toHaveBeenCalled();
+});
+
+it("enqueueJobs sends a single non-premium job via send", async () => {
+  const send = vi.fn(async () => {});
+  const sendBatch = vi.fn(async () => {});
+  const env = {
+    REALTIME_JOBS: { send, sendBatch },
+  } as unknown as Env;
+  const job: Job = { raceKey: "k", type: "fetch-odds" };
+  await enqueueJobs(env, [job]);
+  expect(send).toHaveBeenCalledTimes(1);
+  expect(send).toHaveBeenCalledWith(job);
+});
+
+it("enqueueJobs batches multiple non-premium jobs via sendBatch", async () => {
+  const send = vi.fn(async () => {});
+  const sendBatch = vi.fn(async () => {});
+  const env = {
+    REALTIME_JOBS: { send, sendBatch },
+  } as unknown as Env;
+  const jobs: Job[] = [
+    { raceKey: "k1", type: "fetch-odds" },
+    { raceKey: "k2", type: "fetch-odds" },
+  ];
+  await enqueueJobs(env, jobs);
+  expect(sendBatch).toHaveBeenCalledTimes(1);
+});
+
+it("enqueueJobs routes premium jobs to PREMIUM_RACE_JOBS with incremental delays", async () => {
+  const realtimeSend = vi.fn(async () => {});
+  const premiumSend = vi.fn(async () => {});
+  const env = {
+    PREMIUM_RACE_JOBS: { send: premiumSend, sendBatch: vi.fn() },
+    PREMIUM_RACE_QUEUE_DELAY_SECONDS: "10",
+    REALTIME_JOBS: { send: realtimeSend, sendBatch: vi.fn() },
+  } as unknown as Env;
+  const jobs: Job[] = [
+    { date: "20260512", type: "discover-premium-race-links" },
+    { date: "20260512", type: "plan-premium-race-data-fetches" },
+  ];
+  await enqueueJobs(env, jobs);
+  expect(premiumSend).toHaveBeenCalledTimes(2);
+});
+
+it("enqueueJobs falls back to REALTIME_JOBS when PREMIUM_RACE_JOBS unset", async () => {
+  const send = vi.fn(async () => {});
+  const env = {
+    REALTIME_JOBS: { send, sendBatch: vi.fn() },
+  } as unknown as Env;
+  await enqueueJobs(env, [{ date: "20260512", type: "discover-premium-race-links" }]);
+  expect(send).toHaveBeenCalledTimes(1);
 });
