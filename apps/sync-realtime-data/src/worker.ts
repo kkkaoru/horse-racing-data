@@ -1603,12 +1603,27 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
   }
   const [workUrl, commentUrl, dataTopUrl] = [
     race.source === "jra"
-      ? buildPremiumUrl(config, config.workPathTemplate, { sourceRaceId: link.sourceRaceId })
+      ? buildPremiumUrl(
+          config,
+          config.workPathTemplate,
+          { sourceRaceId: link.sourceRaceId },
+          { source: race.source },
+        )
       : null,
     race.source === "jra"
-      ? buildPremiumUrl(config, config.commentPathTemplate, { sourceRaceId: link.sourceRaceId })
+      ? buildPremiumUrl(
+          config,
+          config.commentPathTemplate,
+          { sourceRaceId: link.sourceRaceId },
+          { source: race.source },
+        )
       : null,
-    buildPremiumUrl(config, config.dataTopPathTemplate, { sourceRaceId: link.sourceRaceId }),
+    buildPremiumUrl(
+      config,
+      config.dataTopPathTemplate,
+      { sourceRaceId: link.sourceRaceId },
+      { source: race.source },
+    ),
   ];
   const fetchedAt = toJstIsoString();
   const [workResult, commentResult, dataTopResult] = await Promise.allSettled([
