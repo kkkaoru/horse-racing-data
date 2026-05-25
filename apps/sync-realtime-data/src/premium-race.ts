@@ -153,11 +153,22 @@ export const buildPremiumUrl = (
   return new URL(path, origin).toString();
 };
 
+// netkeiba renders the `Icon_Account` class only when the visitor is
+// signed in. Cookie-mode and proxy-mode both produce a "200 OK + valid
+// HTML" response even when the session was rejected, so we pick the
+// attempt whose body proves authentication instead of blindly trusting
+// the first non-error attempt.
+const PREMIUM_HTML_AUTHENTICATED_MARKER = "Icon_Account";
+
 export const fetchPremiumHtml = async (
   config: PremiumRaceConfig,
   targetUrl: string,
 ): Promise<string> => {
-  return (await fetchPremiumHtmlAttempts(config, targetUrl))[0]?.html ?? "";
+  const attempts = await fetchPremiumHtmlAttempts(config, targetUrl);
+  const authenticated = attempts.find((attempt) =>
+    attempt.html.includes(PREMIUM_HTML_AUTHENTICATED_MARKER),
+  );
+  return (authenticated ?? attempts[0])?.html ?? "";
 };
 
 export const fetchPremiumHtmlAttempts = async (
@@ -455,7 +466,12 @@ export const buildPremiumRaceLinkFromRace = (
     return null;
   }
   const entryUrl =
-    buildPremiumUrl(config, config.dataTopPathTemplate, { sourceRaceId }, { source: race.source }) ??
+    buildPremiumUrl(
+      config,
+      config.dataTopPathTemplate,
+      { sourceRaceId },
+      { source: race.source },
+    ) ??
     buildPremiumUrl(config, config.workPathTemplate, { sourceRaceId }, { source: race.source }) ??
     `${config.sourceIdQueryKey}=${sourceRaceId}`;
   return { entryUrl, sourceRaceId };
@@ -665,7 +681,10 @@ export const parsePremiumDataTopHorses = (
     PREMIUM_RACE_DATA_TOP_REASON_LIST_CLASS?: string;
   },
 ): PremiumDataTopHorse[] => {
-  const areaHtml = extractAreaHtml(html, env.PREMIUM_RACE_DATA_TOP_AREA_CLASS ?? "DataPickupHorseArea");
+  const areaHtml = extractAreaHtml(
+    html,
+    env.PREMIUM_RACE_DATA_TOP_AREA_CLASS ?? "DataPickupHorseArea",
+  );
   if (!areaHtml) {
     return [];
   }
