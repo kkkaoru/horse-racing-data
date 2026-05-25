@@ -346,6 +346,20 @@ describe("keiba.go realtime helpers", () => {
     });
   });
 
+  it("fetchOdds drops fukusho rows missing the odds cell entirely", async () => {
+    mockFetchHtml({
+      "https://www.keiba.go.jp/KeibaWeb/Odds/fukusho": `
+        <tbody>
+          <tr><td></td><td>1</td><td></td><td></td></tr>
+        </tbody>
+      `,
+    });
+    const baseUrl = "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k=1";
+    await expect(fetchOdds(baseUrl, { fukusho: "/KeibaWeb/Odds/fukusho" })).resolves.toStrictEqual({
+      fukusho: [],
+    });
+  });
+
   it("fetchOdds drops fukusho rows whose odds cell has no numbers", async () => {
     mockFetchHtml({
       "https://www.keiba.go.jp/KeibaWeb/Odds/fukusho": `

@@ -216,6 +216,25 @@ it("toPredictionJob splits raceKey into kaisaiNen/kaisaiTsukihi/keibajo/raceBang
   });
 });
 
+it("toPredictionJob falls back to empty strings when raceKey has no date segment", () => {
+  const job = toPredictionJob(
+    {
+      cacheReady: false,
+      d1Count: 0,
+      displayReady: false,
+      expectedHorses: 0,
+      featuresReady: false,
+      inferenceStatus: "pending",
+      parquetReady: false,
+      raceKey: "malformed",
+      source: "jra",
+    },
+    "2026-05-12T11:00:00+09:00",
+  );
+  expect(job.kaisaiNen).toBe("");
+  expect(job.kaisaiTsukihi).toBe("");
+});
+
 it("printIncompleteRows returns early when no incomplete rows", () => {
   const spy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   printIncompleteRows([
