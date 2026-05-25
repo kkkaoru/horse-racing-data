@@ -248,6 +248,27 @@ describe("keiba.go realtime helpers", () => {
     );
   });
 
+  it("parses fukusho odds with min/max range cells", async () => {
+    const baseUrl = "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k=1";
+    mockFetchHtml({
+      "https://www.keiba.go.jp/KeibaWeb/Odds/fukusho": `
+        <tbody>
+          <tr><td></td><td>1</td><td></td><td></td><td>1.5 - 2.3</td></tr>
+          <tr><td></td><td>2</td><td></td><td></td><td>2.0 - 4.0</td></tr>
+          <tr><td></td><td>invalid</td><td></td><td></td><td>3.0 - 5.0</td></tr>
+        </tbody>
+      `,
+    });
+    await expect(
+      fetchOdds(baseUrl, { fukusho: "/KeibaWeb/Odds/fukusho" }),
+    ).resolves.toMatchObject({
+      fukusho: [
+        { averageOdds: 1.9, combination: "1", maxOdds: 2.3, minOdds: 1.5, rank: 1 },
+        { averageOdds: 3, combination: "2", maxOdds: 4, minOdds: 2, rank: 2 },
+      ],
+    });
+  });
+
   it("fetches and parses all supported odds types", async () => {
     const baseUrl = "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k=1";
     mockFetchHtml({
