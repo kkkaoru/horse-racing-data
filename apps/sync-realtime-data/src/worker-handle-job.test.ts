@@ -1196,6 +1196,183 @@ it("handleJob fetch-premium-paddock skips when current state has future retryAft
   );
 });
 
+it("handleJob fetch-premium-race-data records auth_required when comment HTML lacks the authenticated marker", async () => {
+  const { handleJob } = await import("./worker");
+  const { getRaceSource, getPremiumRaceLink, updatePremiumRaceDataFetchState } = await import(
+    "./storage"
+  );
+  const { fetchPremiumHtml } = await import("./premium-race");
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "08",
+    debaUrl: "https://www.jra.go.jp/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: "02",
+    kaisaiNen: "2026",
+    kaisaiNichime: "06",
+    kaisaiTsukihi: "0512",
+    keibajoCode: "08",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "jra:2026:0512:08:01",
+    raceName: "T",
+    raceStartAtJst: "2026-05-12T13:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "jra",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(getPremiumRaceLink).mockResolvedValueOnce({
+    entryUrl: "https://x.test/race?race_id=202605120801",
+    sourceRaceId: "202605120801",
+  } as never);
+  vi.mocked(fetchPremiumHtml).mockImplementation(async (_config: unknown, url: unknown) => {
+    if (typeof url === "string" && url.includes("/c/")) {
+      return "<div>unauthenticated comment</div>";
+    }
+    return "";
+  });
+  await handleJob(
+    buildEnv({
+      PREMIUM_RACE_COMMENT_PATH_TEMPLATE: "/c/{sourceRaceId}",
+      PREMIUM_RACE_DATA_TOP_PATH_TEMPLATE: "/d/{sourceRaceId}",
+      PREMIUM_RACE_ORIGIN: "https://x.test",
+      PREMIUM_RACE_WORK_PATH_TEMPLATE: "/w/{sourceRaceId}",
+    } as never),
+    { raceKey: "jra:2026:0512:08:01", type: "fetch-premium-race-data" },
+  );
+  expect(vi.mocked(updatePremiumRaceDataFetchState).mock.calls.at(-1)?.[1]).toMatchObject({
+    status: "auth_required",
+  });
+});
+
+it("handleJob fetch-premium-race-data records empty when all fetch results are blank", async () => {
+  const { handleJob } = await import("./worker");
+  const { getRaceSource, getPremiumRaceLink, updatePremiumRaceDataFetchState } = await import(
+    "./storage"
+  );
+  const { fetchPremiumHtml } = await import("./premium-race");
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "08",
+    debaUrl: "https://www.jra.go.jp/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: "02",
+    kaisaiNen: "2026",
+    kaisaiNichime: "06",
+    kaisaiTsukihi: "0512",
+    keibajoCode: "08",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "jra:2026:0512:08:01",
+    raceName: "T",
+    raceStartAtJst: "2026-05-12T13:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "jra",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(getPremiumRaceLink).mockResolvedValueOnce({
+    entryUrl: "https://x.test/race?race_id=202605120801",
+    sourceRaceId: "202605120801",
+  } as never);
+  // workHtml="x" (truthy so we don't enter the throw branch) but trainingReviews empty
+  vi.mocked(fetchPremiumHtml).mockImplementation(async (_config: unknown, url: unknown) => {
+    if (typeof url === "string" && url.includes("/w/")) {
+      return "<div>no rows</div>";
+    }
+    return "";
+  });
+  await handleJob(
+    buildEnv({
+      PREMIUM_RACE_COMMENT_PATH_TEMPLATE: "/c/{sourceRaceId}",
+      PREMIUM_RACE_DATA_TOP_PATH_TEMPLATE: "/d/{sourceRaceId}",
+      PREMIUM_RACE_ORIGIN: "https://x.test",
+      PREMIUM_RACE_WORK_PATH_TEMPLATE: "/w/{sourceRaceId}",
+    } as never),
+    { raceKey: "jra:2026:0512:08:01", type: "fetch-premium-race-data" },
+  );
+  expect(vi.mocked(updatePremiumRaceDataFetchState).mock.calls.at(-1)?.[1]).toMatchObject({
+    status: "empty",
+  });
+});
+
+it("handleJob fetch-premium-race-data records workError when fetch rejects with a non-Error reason", async () => {
+  const { handleJob } = await import("./worker");
+  const { getRaceSource, getPremiumRaceLink, updatePremiumRaceDataFetchState } = await import(
+    "./storage"
+  );
+  const { fetchPremiumHtml } = await import("./premium-race");
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "08",
+    debaUrl: "https://www.jra.go.jp/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: "02",
+    kaisaiNen: "2026",
+    kaisaiNichime: "06",
+    kaisaiTsukihi: "0512",
+    keibajoCode: "08",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "jra:2026:0512:08:01",
+    raceName: "T",
+    raceStartAtJst: "2026-05-12T13:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "jra",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(getPremiumRaceLink).mockResolvedValueOnce({
+    entryUrl: "https://x.test/race?race_id=202605120801",
+    sourceRaceId: "202605120801",
+  } as never);
+  // work rejects with a string (non-Error), comment ok, data-top ok
+  vi.mocked(fetchPremiumHtml).mockImplementation(async (_config: unknown, url: unknown) => {
+    if (typeof url === "string" && url.includes("/w/")) {
+      throw "string-error" as never;
+    }
+    if (typeof url === "string" && url.includes("/c/")) {
+      return "<table></table>";
+    }
+    return "<table></table>";
+  });
+  await handleJob(
+    buildEnv({
+      PREMIUM_RACE_COMMENT_PATH_TEMPLATE: "/c/{sourceRaceId}",
+      PREMIUM_RACE_DATA_TOP_PATH_TEMPLATE: "/d/{sourceRaceId}",
+      PREMIUM_RACE_ORIGIN: "https://x.test",
+      PREMIUM_RACE_WORK_PATH_TEMPLATE: "/w/{sourceRaceId}",
+    } as never),
+    { raceKey: "jra:2026:0512:08:01", type: "fetch-premium-race-data" },
+  );
+  const lastMessage = JSON.parse(
+    String(vi.mocked(updatePremiumRaceDataFetchState).mock.calls.at(-1)?.[1].message ?? "{}"),
+  );
+  expect(lastMessage.workError).toBe("string-error");
+});
+
 it("handleJob fetch-premium-race-data with non-empty dataTopHorses writes the data-top cache", async () => {
   const { handleJob } = await import("./worker");
   const { getRaceSource, getPremiumRaceLink } = await import("./storage");
