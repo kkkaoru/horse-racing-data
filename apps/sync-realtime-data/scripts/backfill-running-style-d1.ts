@@ -196,7 +196,7 @@ export const buildFetchSql = (): string => `
   order by p.source, p.kaisai_nen, p.kaisai_tsukihi, p.keibajo_code, p.race_bango, p.umaban
 `;
 
-const writeSqlOutput = async (outputPath: string, statements: string[]): Promise<void> => {
+export const writeSqlOutput = async (outputPath: string, statements: string[]): Promise<void> => {
   await mkdir(dirname(outputPath), { recursive: true });
   const body = statements.join("\n");
   await writeFile(outputPath, `${body}\n`, "utf8");

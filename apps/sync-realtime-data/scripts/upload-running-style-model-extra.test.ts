@@ -1,9 +1,30 @@
 // run with: bun run test
-import { expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import {
   buildUsageText,
   parseUploadRunningStyleModelCliArgs,
+  run,
 } from "./upload-running-style-model";
+
+vi.mock("../src/running-style-model-register", async () => {
+  const actual =
+    await vi.importActual<typeof import("../src/running-style-model-register")>(
+      "../src/running-style-model-register",
+    );
+  return {
+    ...actual,
+    registerRunningStyleModel: vi.fn(async () => ({
+      objectKey: "running-style/models/jra/latest.flatbin",
+      sizeBytes: 1024,
+    })),
+    syncRunningStyleModel: vi.fn(async () => undefined),
+  };
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 it("parseUploadRunningStyleModelCliArgs throws when --source is not jra/nar", () => {
   expect(() =>
@@ -87,4 +108,35 @@ it("parseUploadRunningStyleModelCliArgs throws when --source has no value", () =
   expect(() => parseUploadRunningStyleModelCliArgs(["--source"])).toThrow(
     "--source requires a value",
   );
+});
+
+it("run uploads the model and logs the result", async () => {
+  vi.stubGlobal("process", {
+    ...process,
+    argv: ["bun", "scripts/upload.ts", "--source", "jra", "--input", "tmp/model.json"],
+  });
+  vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await run();
+  const { registerRunningStyleModel } = await import("../src/running-style-model-register");
+  expect(registerRunningStyleModel).toHaveBeenCalledTimes(1);
+});
+
+it("run syncs the local bucket when --remote and --sync-local are set", async () => {
+  vi.stubGlobal("process", {
+    ...process,
+    argv: [
+      "bun",
+      "scripts/upload.ts",
+      "--source",
+      "jra",
+      "--input",
+      "tmp/model.json",
+      "--remote",
+      "--sync-local",
+    ],
+  });
+  vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await run();
+  const { syncRunningStyleModel } = await import("../src/running-style-model-register");
+  expect(syncRunningStyleModel).toHaveBeenCalledTimes(1);
 });

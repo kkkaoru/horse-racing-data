@@ -1,6 +1,6 @@
 // Run with: bun run test scripts/backfill-running-style-d1.test.ts
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import {
   BATCH_SIZE,
@@ -12,7 +12,13 @@ import {
   escapeSqlString,
   formatStringValue,
   parseArgs,
+  writeSqlOutput,
 } from "./backfill-running-style-d1";
+
+vi.mock("node:fs/promises", () => ({
+  mkdir: vi.fn(async () => undefined),
+  writeFile: vi.fn(async () => undefined),
+}));
 
 describe("buildRaceKey", () => {
   test("formats source:YYYYMMDD:keibajo:race_bango", () => {
@@ -166,6 +172,23 @@ describe("buildFetchSql", () => {
     expect(sql).toContain("running_style_active_models");
     expect(sql).toContain("nvd_se");
     expect(sql).toContain("p.kaisai_nen between $1 and $2");
+  });
+});
+
+describe("writeSqlOutput", () => {
+  test("creates the directory and writes the joined statements with a trailing newline", async () => {
+    const fs = await import("node:fs/promises");
+    await writeSqlOutput("/tmp/dir/file.sql", ["a;", "b;"]);
+    expect(fs.mkdir).toHaveBeenCalledWith("/tmp/dir", { recursive: true });
+    expect(fs.writeFile).toHaveBeenCalledWith("/tmp/dir/file.sql", "a;\nb;\n", "utf8");
+  });
+
+  test("handles empty statements array", async () => {
+    const fs = await import("node:fs/promises");
+    vi.mocked(fs.mkdir).mockClear();
+    vi.mocked(fs.writeFile).mockClear();
+    await writeSqlOutput("/tmp/empty.sql", []);
+    expect(fs.writeFile).toHaveBeenCalledWith("/tmp/empty.sql", "\n", "utf8");
   });
 });
 
