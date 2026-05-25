@@ -120,14 +120,16 @@ it("getNarVenueLastRaceStartAtMap returns latest race per nar venue", () => {
 });
 
 it("getNarVenueLastRaceStartAtMap excludes jra races", () => {
-  const map = getNarVenueLastRaceStartAtMap([
-    { ...RACE, source: "jra" },
-  ]);
+  const map = getNarVenueLastRaceStartAtMap([{ ...RACE, source: "jra" }]);
   expect(map.size).toBe(0);
 });
 
 it("getCurrentOddsSlotAt returns null for jra race outside window", () => {
-  const jraRace: NarRaceSource = { ...RACE, source: "jra", raceStartAtJst: "2026-05-12T13:00:00+09:00" };
+  const jraRace: NarRaceSource = {
+    ...RACE,
+    source: "jra",
+    raceStartAtJst: "2026-05-12T13:00:00+09:00",
+  };
   expect(getCurrentOddsSlotAt(jraRace, new Date("2026-05-12T00:00:00Z"))).toBeDefined();
 });
 
@@ -136,15 +138,11 @@ it("isDue returns true when lastFetchedAt is null", () => {
 });
 
 it("isDue returns true when interval has passed", () => {
-  expect(
-    isDue("2026-05-12T11:00:00.000Z", 5, new Date("2026-05-12T11:10:00.000Z")),
-  ).toBe(true);
+  expect(isDue("2026-05-12T11:00:00.000Z", 5, new Date("2026-05-12T11:10:00.000Z"))).toBe(true);
 });
 
 it("isDue returns false when within interval", () => {
-  expect(
-    isDue("2026-05-12T11:00:00.000Z", 30, new Date("2026-05-12T11:10:00.000Z")),
-  ).toBe(false);
+  expect(isDue("2026-05-12T11:00:00.000Z", 30, new Date("2026-05-12T11:10:00.000Z"))).toBe(false);
 });
 
 it("isDue returns true when lastFetchedAt is unparseable", () => {
@@ -300,9 +298,7 @@ it("truncate handles zero maxLength", () => {
 });
 
 it("buildDetailUrl constructs the viewer detail URL with default origin", () => {
-  expect(buildDetailUrl(RACE)).toBe(
-    "https://pc-keiba-viewer.kkk4oru.com/races/2026/05/12/55/01",
-  );
+  expect(buildDetailUrl(RACE)).toBe("https://pc-keiba-viewer.kkk4oru.com/races/2026/05/12/55/01");
 });
 
 it("formatRaceStartForDiscord renders a JST formatted date string", () => {
@@ -430,9 +426,9 @@ it("getPremiumPaddockRetryDelaySeconds returns the default delay outside the win
 });
 
 it("raceKeyFromRequest delegates to raceKeyFromRealtimePath", () => {
-  expect(raceKeyFromRequest(new URL("https://x.test/api/jra/races/2026/05/12/08/01/realtime"))).toBe(
-    "jra:2026:0512:08:01",
-  );
+  expect(
+    raceKeyFromRequest(new URL("https://x.test/api/jra/races/2026/05/12/08/01/realtime")),
+  ).toBe("jra:2026:0512:08:01");
 });
 
 it("raceKeyFromRequest returns null for non-matching paths", () => {
@@ -532,7 +528,11 @@ it("enqueueJobs falls back to REALTIME_JOBS when PREMIUM_RACE_JOBS unset", async
 });
 
 it("assertJraHorseWeightsComplete returns silently when weights array is empty", () => {
-  assertJraHorseWeightsComplete("k", [{ horseName: "h", horseNumber: "1", jockeyName: "j", status: null }], []);
+  assertJraHorseWeightsComplete(
+    "k",
+    [{ horseName: "h", horseNumber: "1", jockeyName: "j", status: null }],
+    [],
+  );
 });
 
 it("assertJraHorseWeightsComplete returns silently when all active entries have weights", () => {

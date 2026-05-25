@@ -721,9 +721,7 @@ it("listPremiumRaceDataFetchCandidatesByDate returns mapped candidate rows", asy
 
 it("listTanshoHistory returns mapped OddsHistoryPoints", async () => {
   const all = vi.fn(async () => ({
-    results: [
-      { combination: "1", fetched_at: "now", odds: "1.5", rank: 1 },
-    ],
+    results: [{ combination: "1", fetched_at: "now", odds: "1.5", rank: 1 }],
   }));
   const bind = vi.fn((..._args: unknown[]) => ({ all }));
   const prepare = vi.fn(() => ({ bind }));
@@ -761,9 +759,7 @@ it("getLatestOddsFromD1 returns latest odds grouped by type", async () => {
     { first: { fetched_at: "now" } },
     {
       all: {
-        results: [
-          { combination: "1", odds: "1.5", odds_type: "tansho", rank: 1 },
-        ],
+        results: [{ combination: "1", odds: "1.5", odds_type: "tansho", rank: 1 }],
       },
     },
   ];
@@ -832,7 +828,13 @@ it("getLatestRaceEntries returns horses sorted by horse_number", async () => {
     {
       all: {
         results: [
-          { fetched_at: "now", horse_name: "h1", horse_number: "1", jockey_name: "j", status: null },
+          {
+            fetched_at: "now",
+            horse_name: "h1",
+            horse_number: "1",
+            jockey_name: "j",
+            status: null,
+          },
         ],
       },
     },
@@ -939,7 +941,11 @@ it("buildRealtimePayload composes the realtime payload from helpers", async () =
 it("buildRealtimePayload includes oddsHistory + latest when odds are provided", async () => {
   const callPlan: Array<{ first?: unknown; all?: unknown }> = [
     { all: { results: [{ combination: "1", fetched_at: "x", odds: "1.5", rank: 1 }] } },
-    { all: { results: [{ combination: "1", fetched_at: "x", odds: "1.5", odds_type: "tansho", rank: 1 }] } },
+    {
+      all: {
+        results: [{ combination: "1", fetched_at: "x", odds: "1.5", odds_type: "tansho", rank: 1 }],
+      },
+    },
     { first: null },
     { first: null },
     { first: null },
@@ -968,9 +974,7 @@ it("replacePremiumRaceData batches deletes and inserts for every section provide
   const batch = vi.fn(async () => []);
   const db = { batch, prepare } as unknown as D1Database;
   await replacePremiumRaceData(db, {
-    dataTopHorses: [
-      { horseName: "h1", horseNumber: "1", rank: 1, reasons: ["a"] },
-    ],
+    dataTopHorses: [{ horseName: "h1", horseNumber: "1", rank: 1, reasons: ["a"] }],
     fetchedAt: "2026-05-12T11:00:00+09:00",
     link: { entryUrl: "https://x.test/race", sourceRaceId: "202605120801" },
     paddockBulletins: [
