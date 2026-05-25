@@ -43,7 +43,7 @@ const MS_PER_DAY = 86_400_000;
 export const findFlag = (argv: ReadonlyArray<string>, name: string): string | null => {
   const index = argv.indexOf(`--${name}`);
   if (index === -1 || index + 1 >= argv.length) return null;
-  return argv[index + 1] ?? null;
+  return argv[index + 1]!;
 };
 
 export const requireYyyymmdd = (value: string | null, label: string): string => {

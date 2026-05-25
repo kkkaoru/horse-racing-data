@@ -67,14 +67,11 @@ export const applyRaceLevelNigeConstraintForRace = (
   const minNigeProbability = options?.minNigeProbability ?? DEFAULT_MIN_NIGE_PROBABILITY;
   let topIndex = 0;
   raceProbabilities.forEach((probabilities, index) => {
-    if (
-      (probabilities[NIGE_CLASS_INDEX] ?? 0) >
-      (raceProbabilities[topIndex]?.[NIGE_CLASS_INDEX] ?? 0)
-    ) {
+    if (probabilities[NIGE_CLASS_INDEX]! > raceProbabilities[topIndex]![NIGE_CLASS_INDEX]!) {
       topIndex = index;
     }
   });
-  const topNigeProbability = raceProbabilities[topIndex]?.[NIGE_CLASS_INDEX] ?? 0;
+  const topNigeProbability = raceProbabilities[topIndex]![NIGE_CLASS_INDEX]!;
 
   return raceProbabilities.map((probabilities, index) => {
     const adjusted = Float64Array.from(probabilities);

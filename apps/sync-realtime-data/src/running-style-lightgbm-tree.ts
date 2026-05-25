@@ -166,7 +166,7 @@ export const probsToRunningStyleMap = (
 const labelAtIndex = (
   index: number,
   labels: readonly RunningStyleClassLabel[],
-): RunningStyleClassLabel => labels[index] ?? FALLBACK_LABEL;
+): RunningStyleClassLabel => labels[index]!;
 
 export const predictRunningStyle = (
   model: CompactLightGBMModel,
