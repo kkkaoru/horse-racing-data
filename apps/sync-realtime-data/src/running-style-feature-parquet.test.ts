@@ -117,6 +117,23 @@ it("loadRunningStyleFeatureParquet throws when R2 object is missing", async () =
   );
 });
 
+it("deserializeRunningStyleFeatureParquet maps NaN/Infinity feature values to null", async () => {
+  const bytes = await serializeRunningStyleFeatureParquet(
+    [
+      {
+        ...ROW,
+        perHorseFeatures: { career_win_rate: Number.NaN, kohan3f_avg_5: Number.POSITIVE_INFINITY },
+      },
+    ],
+    FEATURE_NAMES,
+  );
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  const rows = await deserializeRunningStyleFeatureParquet(buffer, FEATURE_NAMES);
+  expect(rows[0]?.perHorseFeatures.career_win_rate).toBeNull();
+  expect(rows[0]?.perHorseFeatures.kohan3f_avg_5).toBeNull();
+});
+
 it("deserializeRunningStyleFeatureParquet treats null/empty bamei as null and rounds invalid umaban to 0", async () => {
   const bytes = await serializeRunningStyleFeatureParquet(
     [{ ...ROW, bamei: null, perHorseFeatures: {} }],

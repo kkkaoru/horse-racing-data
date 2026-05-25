@@ -578,6 +578,20 @@ it("parsePremiumPaddockBulletins fills commentText/evaluationText/horseName/fram
   });
 });
 
+it("parsePremiumPaddockBulletins drops rows whose horseNumber parses to zero or negative", () => {
+  const html = `
+    <table>
+      <tr class="Row"><td class="Num">0</td></tr>
+      <tr class="Row"><td class="Num">7</td></tr>
+    </table>
+  `;
+  const result = parsePremiumPaddockBulletins(html, {
+    PREMIUM_RACE_PADDOCK_LABEL_HORSE_NUMBER: "Num",
+    PREMIUM_RACE_PADDOCK_ROW_CLASS: "Row",
+  });
+  expect(result.bulletins.map((b) => b.horseNumber)).toStrictEqual(["7"]);
+});
+
 it("parsePremiumPaddockBulletins skips rows without a valid horseNumber", () => {
   const html = `
     <table>

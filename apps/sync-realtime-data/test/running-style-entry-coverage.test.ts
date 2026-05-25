@@ -40,6 +40,19 @@ describe("running-style entry coverage", () => {
     ).toEqual([1]);
   });
 
+  test("skips entries whose horse number cannot be parsed", () => {
+    expect(
+      listActiveRunningStyleHorseNumbers([
+        { horseNumber: "non-numeric" as unknown as string, status: null },
+        { horseNumber: "5", status: null },
+      ]),
+    ).toStrictEqual([5]);
+  });
+
+  test("isRunningStyleScratchStatus returns false for undefined", () => {
+    expect(isRunningStyleScratchStatus(undefined)).toBe(false);
+  });
+
   test("allows cache when every active runner has a prediction", () => {
     const coverage = evaluateRunningStyleCacheCoverage(
       [
