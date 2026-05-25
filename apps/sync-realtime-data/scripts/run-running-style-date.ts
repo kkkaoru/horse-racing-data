@@ -242,7 +242,7 @@ export const processIncompleteRaces = async (
   }
 };
 
-const run = async (): Promise<void> => {
+export const run = async (): Promise<void> => {
   const args = parseRunningStyleDateCliArgs(process.argv.slice(2));
   const { dispose, env } = await getPlatformProxy<Env>({
     configPath: new URL("../wrangler.jsonc", import.meta.url).pathname,

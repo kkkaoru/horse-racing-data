@@ -7,6 +7,7 @@ import {
   parseRunningStyleDateCliArgs,
   printIncompleteRows,
   processIncompleteRaces,
+  run,
   toPredictionJob,
 } from "./run-running-style-date";
 
@@ -18,8 +19,59 @@ vi.mock("../src/running-style-queue", () => ({
   })),
 }));
 
+vi.mock("wrangler", () => ({
+  getPlatformProxy: vi.fn(async () => ({
+    cf: {},
+    ctx: { passThroughOnException: () => {}, waitUntil: () => {} },
+    dispose: vi.fn(async () => undefined),
+    env: {} as Env,
+  })),
+}));
+
+vi.mock("../src/running-style-race-list", () => ({
+  listRunningStyleRacesByDate: vi.fn(async () => ({ races: [], source: "d1" })),
+}));
+
+vi.mock("../src/running-style-cron", () => ({
+  planRunningStylePredictionsForDate: vi.fn(async () => ({
+    completed: 0,
+    enqueued: 0,
+    missingFeatures: 0,
+    scanned: 0,
+  })),
+  refreshViewerRunningStyleCachesForDate: vi.fn(async () => ({
+    refreshed: 0,
+    scanned: 0,
+    skipped: 0,
+  })),
+}));
+
+vi.mock("../src/running-style-date-progress", async () => {
+  const actual =
+    await vi.importActual<typeof import("../src/running-style-date-progress")>(
+      "../src/running-style-date-progress",
+    );
+  return {
+    ...actual,
+    collectRunningStyleDateProgress: vi.fn(async () => []),
+  };
+});
+
+vi.mock("../src/running-style-model-register", async () => {
+  const actual =
+    await vi.importActual<typeof import("../src/running-style-model-register")>(
+      "../src/running-style-model-register",
+    );
+  return {
+    ...actual,
+    ensureRunningStyleModels: vi.fn(async () => ({ registered: [], synced: [] })),
+    listRequiredRunningStyleModelSources: vi.fn(() => []),
+  };
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 it("parseRunningStyleDateCliArgs accepts --register-model flags", () => {
@@ -277,4 +329,41 @@ it("formatRunningStyleDateProgressLine renders a single-line summary string", ()
   expect(line).toBe(
     "[running-style:date] date=20260524 round=3 races=5 features=5 d1=5 parquet=5 cache=5 display=5 incomplete=0",
   );
+});
+
+it("run throws when no races are found for the target date", async () => {
+  vi.stubGlobal("process", {
+    ...process,
+    argv: ["bun", "scripts/run.ts", "--date", "20260524"],
+  });
+  vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await expect(run()).rejects.toThrow(/No races found/);
+});
+
+it("run returns early in schedule-only mode after planning", async () => {
+  const { listRunningStyleRacesByDate } = await import("../src/running-style-race-list");
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValueOnce({
+    races: [
+      {
+        keibajoCode: "08",
+        raceBango: "01",
+        raceKey: "jra:20260524:08:01",
+        source: "jra",
+      },
+    ],
+    source: "d1",
+  } as never);
+  vi.stubGlobal("process", {
+    ...process,
+    argv: [
+      "bun",
+      "scripts/run.ts",
+      "--date",
+      "20260524",
+      "--schedule-only",
+      "--no-ensure-models",
+    ],
+  });
+  vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await run();
 });
