@@ -12,6 +12,13 @@ const CACHE_CONTROL_HEADER = "public, max-age=%d";
 const CACHE_URL_BASE = "https://pc-keiba-viewer.local/detail-section-cache/";
 const DEFAULT_CONTENT_TYPE = "application/json; charset=utf-8";
 
+// Stale snapshots persist much longer than the fresh tier (which expires
+// race start + 6h). Past races are immutable, and for upcoming races we
+// only need stale to last long enough that the next visitor can serve it
+// while the background refresh runs.
+const STALE_CACHE_KEY_PREFIX = "stale";
+const STALE_TTL_SECONDS = 30 * 24 * 60 * 60;
+
 type CacheSource = "cache-api" | "kv";
 
 const getCloudflareRuntime = async (): Promise<{
@@ -115,6 +122,25 @@ export const getCachedDetailSectionResponse = async (
   return buildCachedResponse(kvBody, "kv");
 };
 
+const getStaleCacheKey = (cacheKey: string): string =>
+  `${STALE_CACHE_KEY_PREFIX}:${cacheKey}`;
+
+export const getStaleDetailSectionBody = async (cacheKey: string): Promise<string | null> => {
+  const { env } = await getCloudflareRuntime();
+  return (
+    (await env?.DETAIL_SECTION_CACHE_KV?.get(getStaleCacheKey(cacheKey)).catch(() => null)) ?? null
+  );
+};
+
+export const buildStaleDetailSectionResponse = (body: string): Response =>
+  new Response(body, {
+    headers: {
+      "Cache-Control": "public, max-age=60",
+      "Content-Type": DEFAULT_CONTENT_TYPE,
+      "X-Detail-Section-Cache": "STALE-kv",
+    },
+  });
+
 export const putDetailSectionCache = async ({
   body,
   cacheKey,
@@ -126,22 +152,33 @@ export const putDetailSectionCache = async ({
 }): Promise<void> => {
   const { env } = await getCloudflareRuntime();
   const ttlSeconds = getDetailSectionCacheTtlSeconds(race, env);
+  const cacheControl = CACHE_CONTROL_HEADER.replace("%d", String(ttlSeconds));
+  // The 30-day stale snapshot is written even when fresh TTL is already
+  // 0 (the race finished more than 6h ago) so future visits still get an
+  // instant render via the SWR path.
+  const stalePut = env?.DETAIL_SECTION_CACHE_KV?.put(getStaleCacheKey(cacheKey), body, {
+    expirationTtl: STALE_TTL_SECONDS,
+  }).catch(() => undefined);
   if (ttlSeconds <= 0) {
+    await stalePut;
     return;
   }
-
-  const cacheControl = CACHE_CONTROL_HEADER.replace("%d", String(ttlSeconds));
   await Promise.all([
-    getDefaultCache()?.put(
-      getCacheRequest(cacheKey),
-      new Response(body, {
-        headers: {
-          "Cache-Control": cacheControl,
-          "Content-Type": DEFAULT_CONTENT_TYPE,
-        },
-      }),
+    getDefaultCache()
+      ?.put(
+        getCacheRequest(cacheKey),
+        new Response(body, {
+          headers: {
+            "Cache-Control": cacheControl,
+            "Content-Type": DEFAULT_CONTENT_TYPE,
+          },
+        }),
+      )
+      .catch(() => undefined),
+    env?.DETAIL_SECTION_CACHE_KV?.put(cacheKey, body, { expirationTtl: ttlSeconds }).catch(
+      () => undefined,
     ),
-    env?.DETAIL_SECTION_CACHE_KV?.put(cacheKey, body, { expirationTtl: ttlSeconds }),
+    stalePut,
   ]);
 };
 

@@ -1,3 +1,4 @@
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { NextResponse } from "next/server";
 
 import { getRaceDetail, getRaceSourceByRoute } from "../../../../../../../../../../db/queries";
@@ -12,7 +13,9 @@ import {
   putFinishPredictionInputsCache,
 } from "../../../../../../../../../../lib/finish-prediction-inputs-cache.server";
 import {
+  buildStaleDetailSectionResponse,
   getCachedDetailSectionResponse,
+  getStaleDetailSectionBody,
   putDetailSectionCache,
 } from "../../../../../../../../../../lib/race-detail-section-cache.server";
 import {
@@ -85,6 +88,95 @@ const isEmptyPremiumDataTopSectionBody = (body: string): boolean => {
   }
 };
 
+interface ComputeSectionParams {
+  cacheKey: string | null;
+  day: string;
+  finishPredictionInputsCacheKey: string | null;
+  keibajoCode: string;
+  month: string;
+  raceNumber: string;
+  section: DetailSection;
+  sectionSearchParams: URLSearchParams;
+  year: string;
+}
+
+interface ComputedSectionResult {
+  body: string;
+  payloadType: string;
+}
+
+const computeAndStoreSection = async (
+  params: ComputeSectionParams,
+): Promise<ComputedSectionResult | null> => {
+  const {
+    cacheKey,
+    day,
+    finishPredictionInputsCacheKey,
+    keibajoCode,
+    month,
+    raceNumber,
+    section,
+    sectionSearchParams,
+    year,
+  } = params;
+  const raceSource = await getRaceSourceByRoute(year, month, day, keibajoCode, raceNumber);
+  if (!raceSource) {
+    return null;
+  }
+  const race =
+    cacheKey || finishPredictionInputsCacheKey
+      ? await getRaceDetail(raceSource, year, month, day, keibajoCode, raceNumber)
+      : null;
+  const payload = await getDetailSectionPayload(section, {
+    day,
+    keibajoCode,
+    month,
+    query: searchParamsToRecord(sectionSearchParams),
+    raceNumber,
+    raceSource,
+    year,
+  });
+  if (!payload) {
+    return null;
+  }
+  const body = JSON.stringify(payload);
+  if (
+    finishPredictionInputsCacheKey &&
+    race &&
+    payload.type === "finish-prediction" &&
+    "inputs" in payload &&
+    "evaluation" in payload
+  ) {
+    await putFinishPredictionInputsCache({
+      body: JSON.stringify({
+        evaluation: payload.evaluation,
+        inputs: payload.inputs,
+      }),
+      cacheKey: finishPredictionInputsCacheKey,
+      race,
+    });
+  }
+  if (
+    cacheKey &&
+    race &&
+    !(section === "premium-data-top" && isEmptyPremiumDataTopSectionBody(body))
+  ) {
+    await putDetailSectionCache({ body, cacheKey, race });
+  }
+  return { body, payloadType: payload.type };
+};
+
+const getExecutionContext = async (): Promise<PcKeibaExecutionContext | null> => {
+  try {
+    const context = await getCloudflareContext<Record<string, unknown>, PcKeibaExecutionContext>({
+      async: true,
+    });
+    return context.ctx;
+  } catch {
+    return null;
+  }
+};
+
 export async function GET(request: Request, { params }: DetailSectionRouteProps) {
   const { day, keibajoCode, month, raceNumber, section, year } = await params;
   if (!isValidSection(section) || !isValidParams(year, month, day, keibajoCode, raceNumber)) {
@@ -127,50 +219,52 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
     }
   }
 
-  const raceSource = await getRaceSourceByRoute(year, month, day, keibajoCode, raceNumber);
-  if (!raceSource) {
-    return NextResponse.json({ error: "not_found" }, { status: 404 });
+  // SWR branch: fresh tier missed, but a long-lived stale snapshot exists.
+  // Serve it instantly and let the heavy DB recompute happen off-request
+  // via `ctx.waitUntil`. The next visitor sees the refreshed payload.
+  if (cacheKey) {
+    const staleBody = await getStaleDetailSectionBody(cacheKey);
+    const staleEmpty =
+      staleBody !== null &&
+      section === "premium-data-top" &&
+      isEmptyPremiumDataTopSectionBody(staleBody);
+    if (staleBody && !staleEmpty) {
+      const ctx = await getExecutionContext();
+      ctx?.waitUntil(
+        computeAndStoreSection({
+          cacheKey,
+          day,
+          finishPredictionInputsCacheKey,
+          keibajoCode,
+          month,
+          raceNumber,
+          section,
+          sectionSearchParams,
+          year,
+        }).catch((error: unknown) => {
+          console.error(`background refresh of section ${section} failed`, error);
+        }),
+      );
+      return buildStaleDetailSectionResponse(staleBody);
+    }
   }
 
-  const race =
-    cacheKey || finishPredictionInputsCacheKey
-      ? await getRaceDetail(raceSource, year, month, day, keibajoCode, raceNumber)
-      : null;
-  const payload = await getDetailSectionPayload(section, {
+  const result = await computeAndStoreSection({
+    cacheKey,
     day,
+    finishPredictionInputsCacheKey,
     keibajoCode,
     month,
-    query: searchParamsToRecord(sectionSearchParams),
     raceNumber,
-    raceSource,
+    section,
+    sectionSearchParams,
     year,
   });
-  if (!payload) {
+  if (!result) {
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }
 
-  const body = JSON.stringify(payload);
-  if (
-    finishPredictionInputsCacheKey &&
-    race &&
-    payload.type === "finish-prediction" &&
-    "inputs" in payload &&
-    "evaluation" in payload
-  ) {
-    await putFinishPredictionInputsCache({
-      body: JSON.stringify({
-        evaluation: payload.evaluation,
-        inputs: payload.inputs,
-      }),
-      cacheKey: finishPredictionInputsCacheKey,
-      race,
-    });
-  }
-  if (cacheKey && race && !(section === "premium-data-top" && isEmptyPremiumDataTopSectionBody(body))) {
-    await putDetailSectionCache({ body, cacheKey, race });
-  }
-
-  return new NextResponse(body, {
+  return new NextResponse(result.body, {
     headers: {
       "Cache-Control": "private, max-age=0, no-store",
       "Content-Type": "application/json; charset=utf-8",
