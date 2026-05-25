@@ -4,6 +4,9 @@ import {
   fetchJraOddsWithPlaywright,
   fetchJraResultHtmlWithPlaywright,
   isJraScratchStatus,
+  parseJraHorseWeights,
+  parseJraRaceEntries,
+  parseJraRaceResults,
 } from "./jra";
 
 interface LocatorMockOptions {
@@ -354,3 +357,56 @@ it("fetchJraOddsWithPlaywright throws when no odds link is found anywhere", asyn
     "JRA odds link was not found",
   );
 });
+
+
+it("parseJraRaceEntries skips rows without a horse number cell", () => {
+  expect(parseJraRaceEntries(`<table><tr><td>no num</td></tr></table>`)).toStrictEqual([]);
+});
+
+it("parseJraRaceEntries returns null horseName/jockey when anchor not present and parses horse number", () => {
+  const result = parseJraRaceEntries(
+    `<table><tr><td class="num">5</td><td class="horse">x</td><td class="jockey">j</td></tr></table>`,
+  );
+  expect(result[0]?.horseNumber).toBe("5");
+  expect(result[0]?.status).toBeNull();
+});
+
+it("parseJraHorseWeights returns empty when no weight cell present", () => {
+  expect(
+    parseJraHorseWeights(
+      `<table><tr><td class="num">1</td><td class="horse">x</td></tr></table>`,
+    ),
+  ).toStrictEqual([]);
+});
+
+it("parseJraHorseWeights extracts weight + change when td.weight cell present", () => {
+  const result = parseJraHorseWeights(
+    `<table><tr><td class="num">3</td><td class="horse">x</td><td class="weight">510 (+2)</td></tr></table>`,
+  );
+  expect(result[0]?.weight).toBe(510);
+  expect(result[0]?.changeSign).toBe("+");
+  expect(result[0]?.changeAmount).toBe(2);
+});
+
+it("parseJraRaceResults skips rows without place cell", () => {
+  expect(
+    parseJraRaceResults(`<table><tr><td class="num">1</td></tr></table>`),
+  ).toStrictEqual([]);
+});
+
+it("parseJraRaceResults returns rows with parsed finishPosition + horseNumber", () => {
+  const result = parseJraRaceResults(
+    `<table><tr><td class="place">2</td><td class="num">3</td><td class="time">1:23.4</td></tr></table>`,
+  );
+  expect(result).toStrictEqual([
+    { finishPosition: "02", horseName: null, horseNumber: "3", time: "1:23.4" },
+  ]);
+});
+
+it("parseJraRaceResults skips rows whose place cell matches an excluded status", () => {
+  const result = parseJraRaceResults(
+    `<table><tr><td class="place">取消</td><td class="num">2</td></tr></table>`,
+  );
+  expect(result).toStrictEqual([]);
+});
+
