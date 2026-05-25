@@ -264,6 +264,22 @@ it("scheduled triggers logWin5CronResult for the WIN5 cron", async () => {
   expect(logWin5CronResult).toHaveBeenCalledTimes(1);
 });
 
+it("scheduled triggers self-schedule planner during polling window", async () => {
+  const { default: worker } = await import("./worker");
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "* 1-12 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z" } as never),
+    ctx,
+  );
+  await flushWaits(waits);
+  expect(waits.length).toBeGreaterThanOrEqual(2);
+});
+
 it("scheduled defaults to handleJob via getCronJob for unknown cron", async () => {
   const { default: worker } = await import("./worker");
   const { ctx, waits } = buildCtx();
