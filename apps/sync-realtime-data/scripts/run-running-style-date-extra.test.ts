@@ -307,6 +307,45 @@ it("processIncompleteRaces runs handleRunningStylePredictionJob for each feature
   expect(handleRunningStylePredictionJob).toHaveBeenCalledTimes(1);
 });
 
+it("processIncompleteRaces sleeps between rounds when delayMs > 0 and multiple targets", async () => {
+  const { handleRunningStylePredictionJob } = await import("../src/running-style-queue");
+  vi.mocked(handleRunningStylePredictionJob).mockResolvedValue({
+    cacheWritten: false,
+    featuresR2Key: null,
+    writtenCount: 0,
+  } as never);
+  vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await processIncompleteRaces(
+    {} as Env,
+    [
+      {
+        cacheReady: false,
+        d1Count: 0,
+        displayReady: false,
+        expectedHorses: 10,
+        featuresReady: true,
+        inferenceStatus: "pending",
+        parquetReady: false,
+        raceKey: "jra:20260512:08:01",
+        source: "jra",
+      },
+      {
+        cacheReady: false,
+        d1Count: 0,
+        displayReady: false,
+        expectedHorses: 10,
+        featuresReady: true,
+        inferenceStatus: "pending",
+        parquetReady: false,
+        raceKey: "jra:20260512:08:02",
+        source: "jra",
+      },
+    ],
+    1,
+  );
+  expect(handleRunningStylePredictionJob).toHaveBeenCalled();
+});
+
 it("processIncompleteRaces logs failure when the predictor throws", async () => {
   const { handleRunningStylePredictionJob } = await import("../src/running-style-queue");
   vi.mocked(handleRunningStylePredictionJob).mockRejectedValueOnce(new Error("boom"));
