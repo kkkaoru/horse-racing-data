@@ -9,7 +9,6 @@ import {
   scheduleDueRaceTrendCache,
   scheduleRaceDetailSsrCacheWarm,
   scheduleTomorrowRaceDetailSectionCache,
-  scheduleTopRacesCacheWarm,
 } from "./worker/race-detail-section-cache-warm";
 
 const formatTomorrowJstDate = (now: Date): string => {
@@ -45,7 +44,6 @@ export default {
     }
     if (controller.cron === "*/5 * * * *") {
       ctx.waitUntil(scheduleDueRaceTrendCache(openNextWorker, env, ctx));
-      ctx.waitUntil(scheduleTopRacesCacheWarm(openNextWorker, env, ctx));
     }
     if (controller.cron === "*/15 * * * *") {
       ctx.waitUntil(scheduleRaceDetailSsrCacheWarm(openNextWorker, env, ctx));
