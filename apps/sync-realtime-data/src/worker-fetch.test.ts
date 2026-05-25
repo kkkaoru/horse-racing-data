@@ -313,6 +313,24 @@ it("fetch POST /admin/running-style/verify-postgres returns the verification sum
   expect(response.status).toBe(200);
 });
 
+it("fetch during JST polling window seeds the planner watchdog via ctx.waitUntil", async () => {
+  const { default: worker } = await import("./worker");
+  const waitPromises: Promise<unknown>[] = [];
+  const ctx = {
+    passThroughOnException: () => {},
+    waitUntil: (promise: Promise<unknown>) => {
+      waitPromises.push(promise.catch(() => undefined));
+    },
+  } as unknown as ExecutionContext;
+  await worker.fetch(
+    new Request("https://x.test/health"),
+    buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z" } as never),
+    ctx,
+  );
+  await Promise.all(waitPromises);
+  expect(waitPromises.length).toBeGreaterThanOrEqual(1);
+});
+
 it("fetch GET to an unmatched path returns the catch-all 404", async () => {
   const { default: worker } = await import("./worker");
   const response = await worker.fetch(
