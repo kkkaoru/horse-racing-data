@@ -200,7 +200,7 @@ const json = (body: unknown, init?: ResponseInit): Response =>
     status: init?.status ?? 200,
   });
 
-const addDaysToYyyymmdd = (yyyymmdd: string, days: number): string => {
+export const addDaysToYyyymmdd = (yyyymmdd: string, days: number): string => {
   const date = new Date(
     `${yyyymmdd.slice(0, 4)}-${yyyymmdd.slice(4, 6)}-${yyyymmdd.slice(6, 8)}T00:00:00+09:00`,
   );
@@ -212,7 +212,7 @@ const JRA_PREMIUM_LINK_CRONS = new Set(["0 4 * * 5", "0 4 * * 6"]);
 const JRA_PREMIUM_DATA_CRONS = new Set(["0 5 * * 5", "0 5 * * 6"]);
 // 03:30 JST (= 18:30 UTC) — off-peak slot for D1 retention sweeps.
 const D1_RETENTION_CRON = "30 18 * * *";
-const getCronJob = (cron: string, now = new Date()): Job => {
+export const getCronJob = (cron: string, now = new Date()): Job => {
   const today = getTodayJst(now);
   if (JRA_PREMIUM_LINK_CRONS.has(cron)) {
     return { date: addDaysToYyyymmdd(today, 1), type: "discover-premium-race-links" };
@@ -252,7 +252,7 @@ const logRunningStylePlanResult = async (
     );
 };
 
-const buildFallbackRaceRow = (
+export const buildFallbackRaceRow = (
   targetDate: string,
   link: KeibaGoRaceLink,
   html: string,
@@ -468,14 +468,14 @@ const ensurePremiumRaceLink = async (
   return fallbackLink;
 };
 
-const getRaceStart = (race: NarRaceSource): Date | null =>
+export const getRaceStart = (race: NarRaceSource): Date | null =>
   parseRaceStartJst(
     race.kaisaiNen,
     race.kaisaiTsukihi,
     race.raceStartAtJst.slice(11, 16).replace(":", ""),
   );
 
-const minutesUntilRace = (race: NarRaceSource, now = new Date()): number | null => {
+export const minutesUntilRace = (race: NarRaceSource, now = new Date()): number | null => {
   const raceStart = getRaceStart(race);
   if (!raceStart) {
     return null;
@@ -483,11 +483,11 @@ const minutesUntilRace = (race: NarRaceSource, now = new Date()): number | null 
   return (raceStart.getTime() - now.getTime()) / 60_000;
 };
 
-const getNarVenueMeetingKey = (
+export const getNarVenueMeetingKey = (
   race: Pick<NarRaceSource, "kaisaiNen" | "kaisaiTsukihi" | "keibajoCode" | "source">,
 ): string => `${race.source}:${race.kaisaiNen}${race.kaisaiTsukihi}:${race.keibajoCode}`;
 
-const getNarVenueLastRaceStartAtMap = (races: NarRaceSource[]): Map<string, string> => {
+export const getNarVenueLastRaceStartAtMap = (races: NarRaceSource[]): Map<string, string> => {
   const result = new Map<string, string>();
   for (const race of races) {
     if (race.source !== "nar") {
@@ -516,7 +516,7 @@ const getNarOddsSaleStartForRace = (
   });
 };
 
-const getCurrentOddsSlotAt = (
+export const getCurrentOddsSlotAt = (
   race: NarRaceSource,
   now: Date,
   options: { venueLastRaceStartAtJst?: string | null } = {},
@@ -535,7 +535,7 @@ const getCurrentOddsSlotAt = (
   );
 };
 
-const isDue = (
+export const isDue = (
   lastFetchedAt: string | null,
   intervalMinutes: number,
   now = new Date(),
@@ -547,14 +547,14 @@ const isDue = (
   return Number.isNaN(last) || now.getTime() - last >= intervalMinutes * 60_000;
 };
 
-const isSlotDue = (lastActivityAt: string | null, slotAt: string): boolean => {
+export const isSlotDue = (lastActivityAt: string | null, slotAt: string): boolean => {
   if (!lastActivityAt) {
     return true;
   }
   return new Date(lastActivityAt).getTime() < new Date(slotAt).getTime();
 };
 
-const latestTimestamp = (...timestamps: (string | null)[]): string | null => {
+export const latestTimestamp = (...timestamps: (string | null)[]): string | null => {
   const latest = timestamps
     .map((timestamp) => (timestamp ? new Date(timestamp).getTime() : Number.NaN))
     .filter((timestamp) => !Number.isNaN(timestamp))
@@ -562,9 +562,9 @@ const latestTimestamp = (...timestamps: (string | null)[]): string | null => {
   return latest === undefined ? null : new Date(latest).toISOString();
 };
 
-const isThreeMinuteTick = (date: Date): boolean => date.getUTCMinutes() % 3 === 0;
+export const isThreeMinuteTick = (date: Date): boolean => date.getUTCMinutes() % 3 === 0;
 
-const isPremiumRaceDiscoveryTick = (date: Date): boolean => {
+export const isPremiumRaceDiscoveryTick = (date: Date): boolean => {
   const jst = toJstIsoString(date);
   return jst.slice(11, 16) === "20:00";
 };
@@ -655,22 +655,22 @@ const seedRealtimePlannerWatchdog = (env: Env, ctx: ExecutionContext): void => {
   ctx.waitUntil(runRealtimePlannerWatchdogIfStale(env, getTodayJst(now), now));
 };
 
-const getJstDayStart = (targetDate: string): Date =>
+export const getJstDayStart = (targetDate: string): Date =>
   new Date(
     `${targetDate.slice(0, 4)}-${targetDate.slice(4, 6)}-${targetDate.slice(6, 8)}T00:00:00+09:00`,
   );
 
-const toJstSlotIso = (targetDate: string, hhmm: string): string =>
+export const toJstSlotIso = (targetDate: string, hhmm: string): string =>
   `${targetDate.slice(0, 4)}-${targetDate.slice(4, 6)}-${targetDate.slice(6, 8)}T${hhmm.slice(0, 2)}:${hhmm.slice(2, 4)}:00+09:00`;
 
-const floorToHalfHourJstSlot = (now: Date): string => {
+export const floorToHalfHourJstSlot = (now: Date): string => {
   const current = toJstIsoString(now);
   const minute = Number(current.slice(14, 16));
   const flooredMinute = minute >= 30 ? "30" : "00";
   return `${current.slice(0, 14)}${flooredMinute}:00+09:00`;
 };
 
-const isTrackConditionDue = (
+export const isTrackConditionDue = (
   schedule: {
     firstRaceStartAtJst: string;
     lastFetchAt: string | null;
@@ -718,7 +718,7 @@ const isTrackConditionDue = (
   return { due: false, slotAt: null };
 };
 
-const isRaceFinished = (race: NarRaceSource, now: Date): boolean => {
+export const isRaceFinished = (race: NarRaceSource, now: Date): boolean => {
   const minutes = minutesUntilRace(race, now);
   return minutes !== null && minutes <= 0;
 };
@@ -786,7 +786,7 @@ const enqueueJobs = async (env: Env, jobs: Job[]): Promise<void> => {
   }
 };
 
-const isPremiumRaceJob = (job: Job): boolean =>
+export const isPremiumRaceJob = (job: Job): boolean =>
   job.type === "discover-premium-race-links" ||
   job.type === "discover-premium-races" ||
   job.type === "plan-premium-race-data-fetches" ||
@@ -959,10 +959,10 @@ const prewarmRunningStylePredictionsForDate = async (
   };
 };
 
-const truncate = (value: string, maxLength: number): string =>
+export const truncate = (value: string, maxLength: number): string =>
   value.length <= maxLength ? value : `${value.slice(0, Math.max(0, maxLength - 1))}…`;
 
-const buildPremiumPaddockSignature = async (
+export const buildPremiumPaddockSignature = async (
   bulletins: readonly PremiumPaddockBulletin[],
 ): Promise<string> => {
   const signaturePayload = {
@@ -989,18 +989,18 @@ const buildPremiumPaddockSignature = async (
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 };
 
-const formatPremiumPaddockBulletinLine = (row: PremiumPaddockBulletin): string =>
+export const formatPremiumPaddockBulletinLine = (row: PremiumPaddockBulletin): string =>
   [
     `**${row.horseNumber} 番 ${truncate(row.horseName ?? "-", 32)}**　${row.groupKey === "value" ? "穴馬" : "人気馬"} / ${row.evaluationText ?? "-"}`,
     row.commentText ? `> ${truncate(row.commentText, 140)}` : "> コメントなし",
   ].join("\n");
 
-const buildDetailUrl = (race: NarRaceSource): string => {
+export const buildDetailUrl = (race: NarRaceSource): string => {
   const origin = DEFAULT_DETAIL_ORIGIN;
   return `${origin}/races/${race.kaisaiNen}/${race.kaisaiTsukihi.slice(0, 2)}/${race.kaisaiTsukihi.slice(2, 4)}/${race.keibajoCode}/${race.raceBango}`;
 };
 
-const formatRaceStartForDiscord = (raceStartAtJst: string): string =>
+export const formatRaceStartForDiscord = (raceStartAtJst: string): string =>
   new Intl.DateTimeFormat("ja-JP", {
     day: "numeric",
     hour: "2-digit",
@@ -1010,7 +1010,7 @@ const formatRaceStartForDiscord = (raceStartAtJst: string): string =>
     year: "numeric",
   }).format(new Date(raceStartAtJst));
 
-const formatMinutesUntilRace = (raceStartAtJst: string, now: Date): string => {
+export const formatMinutesUntilRace = (raceStartAtJst: string, now: Date): string => {
   const diffMinutes = Math.ceil((new Date(raceStartAtJst).getTime() - now.getTime()) / 60_000);
   if (diffMinutes > 0) {
     return `発走まで残り${diffMinutes}分`;
@@ -1202,7 +1202,7 @@ const notifyPremiumPaddockIfNeeded = async (
   });
 };
 
-const getPremiumPaddockRetryDelaySeconds = (race: NarRaceSource, now = new Date()): number => {
+export const getPremiumPaddockRetryDelaySeconds = (race: NarRaceSource, now = new Date()): number => {
   const minutes = minutesUntilRace(race, now);
   if (minutes !== null && minutes <= 15 && minutes >= -PREMIUM_PADDOCK_WINDOW_AFTER_MINUTES) {
     return 30;
@@ -2114,11 +2114,11 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
   }
 };
 
-const raceKeyFromRequest = (url: URL): string | null => {
+export const raceKeyFromRequest = (url: URL): string | null => {
   return raceKeyFromRealtimePath(url.pathname);
 };
 
-const premiumRaceKeyFromRequest = (url: URL): string | null => {
+export const premiumRaceKeyFromRequest = (url: URL): string | null => {
   const match = url.pathname.match(
     /^\/api\/(jra|nar)\/races\/(\d{4})\/(\d{2})\/(\d{2})\/([0-9A-Z]{2})\/(\d{2})\/premium$/u,
   );
@@ -2134,7 +2134,7 @@ const premiumRaceKeyFromRequest = (url: URL): string | null => {
   );
 };
 
-const sameDayVenueJockeyWinsFromRequest = (
+export const sameDayVenueJockeyWinsFromRequest = (
   url: URL,
 ): {
   day: string;
