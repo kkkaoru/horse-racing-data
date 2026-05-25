@@ -4,6 +4,7 @@ import { putD1QueryCache } from "./d1-query-cache";
 import { evaluateRunningStyleCacheCoverage } from "./running-style-entry-coverage";
 import { putRunningStyleCache } from "./running-style-cache";
 import type { RaceRunningStyleRow, RunningStyleInferenceRace } from "./running-style-d1";
+import { buildRealtimeRaceKeyFromRunningStyle } from "./running-style-features";
 import { getLatestRaceEntries } from "./storage";
 import type { Env } from "./types";
 
@@ -53,7 +54,10 @@ export const putViewerRunningStyleRaceCache = async ({
   if (rows.length === 0) {
     return false;
   }
-  const latestEntries = await getLatestRaceEntries(env.REALTIME_DB, race.raceKey);
+  const latestEntries = await getLatestRaceEntries(
+    env.REALTIME_DB,
+    buildRealtimeRaceKeyFromRunningStyle(race),
+  );
   const coverage = evaluateRunningStyleCacheCoverage(latestEntries?.horses ?? null, rows);
   if (!coverage.cacheable || coverage.cacheableRows.length === 0) {
     return false;
@@ -66,6 +70,7 @@ export const putViewerRunningStyleRaceCache = async ({
     viewerRows,
     {
       ctx,
+      kv: env.DETAIL_SECTION_CACHE_KV,
       raceDay: {
         kaisaiNen: race.kaisaiNen,
         kaisaiTsukihi: race.kaisaiTsukihi,
