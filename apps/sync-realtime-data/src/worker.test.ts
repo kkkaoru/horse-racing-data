@@ -358,6 +358,22 @@ it("getCurrentOddsSlotAt returns null when raceStartAtJst is malformed", async (
   ).toBeNull();
 });
 
+it("buildPremiumPaddockSignature handles bulletins with all-null optional fields", async () => {
+  const { buildPremiumPaddockSignature } = await import("./worker");
+  const sig = await buildPremiumPaddockSignature([
+    {
+      commentText: null,
+      evaluationText: null,
+      frameNumber: null,
+      groupKey: "favorite",
+      horseName: null,
+      horseNumber: "1",
+    },
+  ]);
+  expect(typeof sig).toBe("string");
+  expect(sig.length).toBe(64);
+});
+
 it("buildFallbackRaceRow returns null when babaCode is not in BABA_CODE_TO_LOCAL_KEIBAJO", () => {
   const result = buildFallbackRaceRow(
     "20260512",
