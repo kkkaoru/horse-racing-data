@@ -379,6 +379,91 @@ it("planPremiumPaddockFetchesForDate enqueues fetch-premium-paddock for in-windo
   expect(result[0]!.type).toBe("fetch-premium-paddock");
 });
 
+const buildJraRace = (overrides?: Record<string, unknown>) =>
+  ({
+    babaCode: "08",
+    debaUrl: "https://www.jra.go.jp/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: "02",
+    kaisaiNen: "2026",
+    kaisaiNichime: "06",
+    kaisaiTsukihi: "0512",
+    keibajoCode: "08",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "jra:2026:0512:08:01",
+    raceName: "T",
+    raceStartAtJst: "2026-05-12T15:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "jra",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+    ...overrides,
+  }) as never;
+
+it("planPremiumPaddockFetchesForDate skips races outside the in-window range (too far in future)", async () => {
+  const { planPremiumPaddockFetchesForDate } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate, getPremiumPaddockFetchState } = await import(
+    "./storage"
+  );
+  vi.mocked(listSchedulableRaceSourcesByDate).mockReset();
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([buildJraRace()]);
+  vi.mocked(getPremiumPaddockFetchState).mockReset();
+  vi.mocked(getPremiumPaddockFetchState).mockResolvedValue(null);
+  const result = await planPremiumPaddockFetchesForDate(
+    buildEnv({ PREMIUM_RACE_ORIGIN: "https://x.test" }),
+    "20260512",
+    new Date("2026-05-11T01:00:00.000Z"),
+  );
+  expect(result).toStrictEqual([]);
+});
+
+it("planPremiumPaddockFetchesForDate skips races whose start time is in the far past", async () => {
+  const { planPremiumPaddockFetchesForDate } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate, getPremiumPaddockFetchState } = await import(
+    "./storage"
+  );
+  vi.mocked(listSchedulableRaceSourcesByDate).mockReset();
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([buildJraRace()]);
+  vi.mocked(getPremiumPaddockFetchState).mockReset();
+  vi.mocked(getPremiumPaddockFetchState).mockResolvedValue(null);
+  const result = await planPremiumPaddockFetchesForDate(
+    buildEnv({ PREMIUM_RACE_ORIGIN: "https://x.test" }),
+    "20260512",
+    new Date("2026-05-13T10:00:00.000Z"),
+  );
+  expect(result).toStrictEqual([]);
+});
+
+it("planPremiumPaddockFetchesForDate skips races whose state has future retryAfter", async () => {
+  const { planPremiumPaddockFetchesForDate } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate, getPremiumPaddockFetchState } = await import(
+    "./storage"
+  );
+  vi.mocked(listSchedulableRaceSourcesByDate).mockReset();
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([buildJraRace()]);
+  vi.mocked(getPremiumPaddockFetchState).mockReset();
+  vi.mocked(getPremiumPaddockFetchState).mockResolvedValue({
+    raceKey: "jra:2026:0512:08:01",
+    retryAfter: "2099-01-01T00:00:00.000Z",
+    status: "failed",
+  } as never);
+  const result = await planPremiumPaddockFetchesForDate(
+    buildEnv({ PREMIUM_RACE_ORIGIN: "https://x.test" }),
+    "20260512",
+    new Date("2026-05-12T05:55:00.000Z"),
+  );
+  expect(result).toStrictEqual([]);
+});
+
 it("planPremiumPaddockFetchesForDate skips NAR races", async () => {
   const { planPremiumPaddockFetchesForDate } = await import("./worker");
   const { listSchedulableRaceSourcesByDate } = await import("./storage");

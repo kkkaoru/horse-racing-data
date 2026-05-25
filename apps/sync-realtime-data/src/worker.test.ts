@@ -562,6 +562,22 @@ it("enqueueJobs batches multiple non-premium jobs via sendBatch", async () => {
   expect(sendBatch).toHaveBeenCalledTimes(1);
 });
 
+it("enqueueJobs routes non-premium jobs via REALTIME_JOBS.send within a mixed chunk", async () => {
+  const realtimeSend = vi.fn(async () => {});
+  const premiumSend = vi.fn(async () => {});
+  const env = {
+    PREMIUM_RACE_JOBS: { send: premiumSend, sendBatch: vi.fn() },
+    REALTIME_JOBS: { send: realtimeSend, sendBatch: vi.fn() },
+  } as unknown as Env;
+  const jobs: Job[] = [
+    { date: "20260512", type: "discover-premium-races" },
+    { raceKey: "k", type: "fetch-odds" },
+  ];
+  await enqueueJobs(env, jobs);
+  expect(premiumSend).toHaveBeenCalledTimes(1);
+  expect(realtimeSend).toHaveBeenCalledTimes(1);
+});
+
 it("enqueueJobs routes premium jobs to PREMIUM_RACE_JOBS with incremental delays", async () => {
   const realtimeSend = vi.fn(async () => {});
   const premiumSend = vi.fn(async () => {});

@@ -817,6 +817,49 @@ it("handleJob fetch-odds with NAR race + valid slot fetches odds, updates oddsLi
   expect(markOddsFetchQueued).toHaveBeenCalled();
 });
 
+it("handleJob fetch-odds refreshes running-style cache when RUNNING_STYLE_D1_WRITE_ENABLED=1", async () => {
+  const { handleJob } = await import("./worker");
+  const { claimOddsFetch, getRaceSource, insertOddsSnapshot } = await import("./storage");
+  const { refreshViewerRunningStyleCacheForRace } = await import("./running-style-cron");
+  vi.mocked(claimOddsFetch).mockResolvedValueOnce(true);
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "22",
+    debaUrl: "https://nar.example/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: null,
+    kaisaiNen: "2026",
+    kaisaiNichime: null,
+    kaisaiTsukihi: "0512",
+    keibajoCode: "55",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: { tansho: "/odds/tansho" },
+    raceBango: "01",
+    raceKey: "nar:2026:0512:55:01",
+    raceName: "T",
+    raceStartAtJst: "2026-05-12T18:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "nar",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(insertOddsSnapshot).mockResolvedValueOnce(3);
+  await handleJob(
+    buildEnv({
+      REALTIME_TEST_NOW: "2026-05-12T08:00:00.000Z",
+      RUNNING_STYLE_D1_WRITE_ENABLED: "1",
+    } as never),
+    { raceKey: "nar:2026:0512:55:01", type: "fetch-odds" },
+  );
+  expect(refreshViewerRunningStyleCacheForRace).toHaveBeenCalled();
+});
+
 it("handleJob fetch-odds throws when insertOddsSnapshot returns 0 (NAR branch)", async () => {
   const { handleJob } = await import("./worker");
   const { claimOddsFetch, getRaceSource, insertOddsSnapshot, failOddsFetch } = await import(
