@@ -328,6 +328,80 @@ it("scheduled triggers runDailyFeatureBuildForEnv for the daily-feature-build cr
   expect(runDailyFeatureBuildForEnv).toHaveBeenCalledTimes(1);
 });
 
+it("scheduled logs error when daily-feature-build cron run rejects", async () => {
+  const { default: worker } = await import("./worker");
+  const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
+  const { logFetch } = await import("./storage");
+  vi.mocked(runDailyFeatureBuildForEnv).mockRejectedValueOnce(new Error("daily boom"));
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "0 19 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv(),
+    ctx,
+  );
+  await flushWaits(waits);
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "build-daily-features",
+    "error",
+    null,
+    "daily boom",
+  );
+});
+
+it("scheduled logs error when prewarm running-style cron rejects", async () => {
+  const { default: worker } = await import("./worker");
+  const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
+  const { logFetch } = await import("./storage");
+  vi.mocked(planRunningStylePredictionsForDate).mockRejectedValueOnce(new Error("prewarm boom"));
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "0 12 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv(),
+    ctx,
+  );
+  await flushWaits(waits);
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-running-style-predictions",
+    "error",
+    null,
+    "prewarm boom",
+  );
+});
+
+it("scheduled logs error when D1 retention cron rejects", async () => {
+  const { default: worker } = await import("./worker");
+  const { runD1Retention, logFetch } = await import("./storage");
+  vi.mocked(runD1Retention).mockRejectedValueOnce(new Error("retention boom"));
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "30 18 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv(),
+    ctx,
+  );
+  await flushWaits(waits);
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "d1-retention",
+    "error",
+    null,
+    "retention boom",
+  );
+});
+
 it("scheduled triggers runD1Retention for the D1 retention cron", async () => {
   const { default: worker } = await import("./worker");
   const { runD1Retention } = await import("./storage");
