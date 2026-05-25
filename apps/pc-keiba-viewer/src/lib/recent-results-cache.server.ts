@@ -9,7 +9,7 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 
 import type { RaceSource } from "./codes";
 
-const CACHE_NAMESPACE = "pc-keiba-viewer:recent-results:v1";
+const CACHE_NAMESPACE = "pc-keiba-viewer:recent-results:v2";
 const CACHE_URL_BASE = "https://pc-keiba-viewer.local/recent-results-cache/";
 const DEFAULT_CONTENT_TYPE = "application/json; charset=utf-8";
 const DEFAULT_CACHE_TTL_SECONDS = 6 * 60 * 60;
