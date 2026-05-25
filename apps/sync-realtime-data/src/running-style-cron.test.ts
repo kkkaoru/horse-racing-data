@@ -101,8 +101,13 @@ test("selectRacesNeedingRunningStyleInference skips active queued state", () => 
         "nar:20260519:46:12",
         {
           attemptedAt: new Date().toISOString(),
+          completedAt: null,
+          expectedHorseCount: null,
+          featuresR2Key: null,
+          modelVersion: null,
           raceKey: "nar:20260519:46:12",
           status: "pending",
+          writtenHorseCount: null,
         },
       ],
     ]),

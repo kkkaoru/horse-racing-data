@@ -11,7 +11,7 @@ import {
   listRaceRunningStylesForRace,
   listRunningStyleInferenceStates,
   upsertRunningStylePendingStates,
-  type RunningStyleInferenceState,
+  type RunningStyleInferenceStateDetail,
   type RunningStylePendingRace,
 } from "./running-style-d1";
 import { listRunningStyleExpectedHorseCounts } from "./running-style-expected-horses";
@@ -60,6 +60,7 @@ export interface RunningStylePlanSummary {
   enqueued: number;
   featureReady: number;
   missingFeatures: number;
+  planError?: string;
   scanned: number;
 }
 
@@ -124,7 +125,10 @@ const listFeatureCountsByDate = async (pool: Pool, date: string): Promise<Map<st
   return counts;
 };
 
-const isActiveState = (state: RunningStyleInferenceState | undefined, now: Date): boolean => {
+const isActiveState = (
+  state: RunningStyleInferenceStateDetail | undefined,
+  now: Date,
+): boolean => {
   if (state === undefined || !ACTIVE_STATUSES.has(state.status)) return false;
   if (state.attemptedAt === null) return true;
   const attemptedAt = new Date(state.attemptedAt).getTime();
@@ -132,12 +136,17 @@ const isActiveState = (state: RunningStyleInferenceState | undefined, now: Date)
   return now.getTime() - attemptedAt <= ACTIVE_STATE_TTL_MS;
 };
 
+// Planner does not gate on race_entry_corner_features anymore: today's races
+// often arrive in realtime_race_sources before their derived feature cache is
+// built. The per-race worker `handleRunningStylePredictionJob` builds features
+// from upstream nvd_se/jvd_se directly, so we enqueue any registered race that
+// lacks predictions and let the worker resolve features at inference time.
 export const selectRacesNeedingRunningStyleInference = (
   registeredRaces: ReadonlyArray<RegisteredRaceRow>,
   featureCounts: ReadonlyMap<string, number>,
   expectedHorseCounts: ReadonlyMap<string, number>,
   predictionCounts: ReadonlyMap<string, number>,
-  states: ReadonlyMap<string, RunningStyleInferenceState>,
+  states: ReadonlyMap<string, RunningStyleInferenceStateDetail>,
   now = new Date(),
 ): {
   alreadyQueued: number;
@@ -155,18 +164,26 @@ export const selectRacesNeedingRunningStyleInference = (
   registeredRaces.forEach((row) => {
     const race = toRunningStylePendingRace(row, 0);
     const featureCount = featureCounts.get(race.raceKey) ?? 0;
-    if (featureCount <= 0) {
+    if (featureCount > 0) {
+      featureReady += 1;
+    } else {
       missingFeatures += 1;
-      return;
     }
-    featureReady += 1;
     const expectedHorseCount = expectedHorseCounts.get(race.raceKey) ?? featureCount;
     const existingHorseCount = predictionCounts.get(race.raceKey) ?? 0;
-    if (existingHorseCount >= expectedHorseCount) {
+    const state = states.get(race.raceKey);
+    const stateCompleted =
+      state?.status === "completed" &&
+      state.writtenHorseCount !== null &&
+      state.expectedHorseCount !== null &&
+      state.writtenHorseCount >= state.expectedHorseCount;
+    const predictionsMeetExpected =
+      expectedHorseCount > 0 && existingHorseCount >= expectedHorseCount;
+    if (stateCompleted || predictionsMeetExpected) {
       completed += 1;
       return;
     }
-    if (isActiveState(states.get(race.raceKey), now)) {
+    if (isActiveState(state, now)) {
       alreadyQueued += 1;
       return;
     }
@@ -237,7 +254,7 @@ export const planRunningStylePredictionsForDate = async (
     }),
   );
   const [predictionCounts, states, expectedHorseCounts] = await Promise.all([
-    listRaceRunningStyleCounts(env.REALTIME_DB, raceKeys),
+    listRaceRunningStyleCounts(env.REALTIME_DB, raceKeys, { bypassCache: true }),
     listRunningStyleInferenceStates(env.REALTIME_DB, raceKeys),
     listRunningStyleExpectedHorseCounts(env.REALTIME_DB, raceKeys, featureCounts),
   ]);
@@ -266,14 +283,35 @@ export const planRunningStylePredictionsForDate = async (
   };
 };
 
+const EMPTY_PLAN_SUMMARY = (date: string, error: string): RunningStylePlanSummary => ({
+  alreadyQueued: 0,
+  completed: 0,
+  date,
+  enqueued: 0,
+  featureReady: 0,
+  missingFeatures: 0,
+  planError: error,
+  scanned: 0,
+});
+
 export const runRunningStyleCronTick = async (
   env: Env,
   now: Date,
   ctx?: ExecutionContext,
 ): Promise<RunningStylePlanSummary> => {
   const date = formatYYYYMMDDInJst(now);
-  const plan = await planRunningStylePredictionsForDate(env, date, now);
-  const cacheRefresh = await refreshViewerRunningStyleCachesForDate(env, date, ctx);
+  const plan = await planRunningStylePredictionsForDate(env, date, now).catch((error: unknown) =>
+    EMPTY_PLAN_SUMMARY(date, error instanceof Error ? error.message : String(error)),
+  );
+  const cacheRefresh = await refreshViewerRunningStyleCachesForDate(env, date, ctx).catch(
+    (error: unknown) => ({
+      date,
+      refreshed: 0,
+      refreshError: error instanceof Error ? error.message : String(error),
+      scanned: 0,
+      skipped: 0,
+    }),
+  );
   return { ...plan, cacheRefresh };
 };
 
@@ -286,7 +324,10 @@ export const refreshViewerRunningStyleCacheForRace = async (
   if (race === null) {
     return false;
   }
-  const rows = await listRaceRunningStylesForRace(env.REALTIME_DB, raceKey, ctx);
+  const rows = await listRaceRunningStylesForRace(env.REALTIME_DB, raceKey, {
+    bypassCache: true,
+    ctx,
+  });
   if (rows.length === 0) {
     return false;
   }
@@ -301,6 +342,7 @@ export const refreshViewerRunningStyleCacheForRace = async (
 export interface ViewerRunningStyleCacheRefreshSummary {
   date: string;
   refreshed: number;
+  refreshError?: string;
   scanned: number;
   skipped: number;
 }
@@ -329,7 +371,10 @@ export const refreshViewerRunningStyleCachesForDate = async (
       source: row.source,
     }),
   );
-  const predictionCounts = await listRaceRunningStyleCounts(env.REALTIME_DB, raceKeys, ctx);
+  const predictionCounts = await listRaceRunningStyleCounts(env.REALTIME_DB, raceKeys, {
+    bypassCache: true,
+    ctx,
+  });
   let refreshed = 0;
   let skipped = 0;
 
@@ -347,7 +392,10 @@ export const refreshViewerRunningStyleCachesForDate = async (
       skipped += 1;
       continue;
     }
-    const rows = await listRaceRunningStylesForRace(env.REALTIME_DB, raceKey, ctx);
+    const rows = await listRaceRunningStylesForRace(env.REALTIME_DB, raceKey, {
+      bypassCache: true,
+      ctx,
+    });
     if (rows.length === 0) {
       skipped += 1;
       continue;

@@ -118,37 +118,55 @@ export const upsertRaceRunningStyles = async (
   return rows.length;
 };
 
+const queryRaceRunningStyleCounts = async (
+  db: D1Database,
+  raceKeys: ReadonlyArray<string>,
+): Promise<Map<string, number>> => {
+  const counts = new Map<string, number>();
+  for (const chunk of chunkArray(raceKeys, D1_BATCH_SIZE)) {
+    if (chunk.length === 0) continue;
+    const result = await db
+      .prepare(
+        `select race_key, count(*) as count
+           from race_running_styles
+          where race_key in (${buildPlaceholders(chunk.length)})
+          group by race_key`,
+      )
+      .bind(...chunk)
+      .all<{ race_key: string; count: number }>();
+    result.results.forEach((row) => counts.set(row.race_key, Number(row.count)));
+  }
+  return counts;
+};
+
+export interface ListRaceRunningStyleCountsOptions {
+  bypassCache?: boolean;
+  ctx?: ExecutionContext;
+}
+
 export const listRaceRunningStyleCounts = async (
   db: D1Database,
   raceKeys: ReadonlyArray<string>,
-  ctx?: ExecutionContext,
+  options?: ExecutionContext | ListRaceRunningStyleCountsOptions,
 ): Promise<Map<string, number>> => {
   const uniqueRaceKeys = Array.from(new Set(raceKeys.filter((raceKey) => raceKey.length > 0)));
   if (uniqueRaceKeys.length === 0) {
     return new Map();
   }
-  return withD1QueryCache(
+  const resolved =
+    options && typeof options === "object" && "waitUntil" in options
+      ? { ctx: options as ExecutionContext }
+      : (options ?? {});
+  if (resolved.bypassCache === true) {
+    return queryRaceRunningStyleCounts(db, uniqueRaceKeys);
+  }
+  const record = await withD1QueryCache(
     "running-style-races",
     ["listRaceRunningStyleCounts", uniqueRaceKeys],
-    async () => {
-      const counts = new Map<string, number>();
-      for (const chunk of chunkArray(uniqueRaceKeys, D1_BATCH_SIZE)) {
-        if (chunk.length === 0) continue;
-        const result = await db
-          .prepare(
-            `select race_key, count(*) as count
-               from race_running_styles
-              where race_key in (${buildPlaceholders(chunk.length)})
-              group by race_key`,
-          )
-          .bind(...chunk)
-          .all<{ race_key: string; count: number }>();
-        result.results.forEach((row) => counts.set(row.race_key, Number(row.count)));
-      }
-      return Object.fromEntries(counts);
-    },
-    { ctx, raceDay: parseRaceDayFromRaceKey(uniqueRaceKeys[0] ?? "") },
-  ).then((record) => new Map(Object.entries(record)));
+    async () => Object.fromEntries(await queryRaceRunningStyleCounts(db, uniqueRaceKeys)),
+    { ctx: resolved.ctx, raceDay: parseRaceDayFromRaceKey(uniqueRaceKeys[0] ?? "") },
+  );
+  return new Map(Object.entries(record));
 };
 
 const queryRaceRunningStylesForRace = async (
@@ -196,28 +214,43 @@ const queryRaceRunningStylesForRace = async (
   }));
 };
 
+export interface ListRaceRunningStylesForRaceOptions {
+  bypassCache?: boolean;
+  ctx?: ExecutionContext;
+}
+
 export const listRaceRunningStylesForRace = async (
   db: D1Database,
   raceKey: string,
-  ctx?: ExecutionContext,
-): Promise<RaceRunningStyleRow[]> =>
-  withD1QueryCache(
+  options?: ExecutionContext | ListRaceRunningStylesForRaceOptions,
+): Promise<RaceRunningStyleRow[]> => {
+  const resolved =
+    options && typeof options === "object" && "waitUntil" in options
+      ? { ctx: options as ExecutionContext }
+      : (options ?? {});
+  if (resolved.bypassCache === true) {
+    return queryRaceRunningStylesForRace(db, raceKey);
+  }
+  return withD1QueryCache(
     "running-style-race",
-    ["getRaceRunningStylesFromD1", raceKey],
+    ["listRaceRunningStylesForRace-internal", raceKey],
     () => queryRaceRunningStylesForRace(db, raceKey),
-    { ctx, raceDay: parseRaceDayFromRaceKey(raceKey) },
+    { ctx: resolved.ctx, raceDay: parseRaceDayFromRaceKey(raceKey) },
   );
+};
 
 export const listRunningStyleInferenceStates = async (
   db: D1Database,
   raceKeys: ReadonlyArray<string>,
-): Promise<Map<string, RunningStyleInferenceState>> => {
-  const states = new Map<string, RunningStyleInferenceState>();
+): Promise<Map<string, RunningStyleInferenceStateDetail>> => {
+  const states = new Map<string, RunningStyleInferenceStateDetail>();
   for (const chunk of chunkArray(raceKeys, D1_BATCH_SIZE)) {
     if (chunk.length === 0) continue;
     const result = await db
       .prepare(
-        `select race_key, status, attempted_at
+        `select race_key, status, attempted_at, completed_at,
+                expected_horse_count, written_horse_count,
+                features_r2_key, model_version
            from running_style_inference_state
           where race_key in (${buildPlaceholders(chunk.length)})`,
       )
@@ -226,12 +259,24 @@ export const listRunningStyleInferenceStates = async (
         race_key: string;
         status: RunningStyleInferenceStatus;
         attempted_at: string | null;
+        completed_at: string | null;
+        expected_horse_count: number | null;
+        written_horse_count: number | null;
+        features_r2_key: string | null;
+        model_version: string | null;
       }>();
     result.results.forEach((row) =>
       states.set(row.race_key, {
         attemptedAt: row.attempted_at,
+        completedAt: row.completed_at,
+        expectedHorseCount:
+          row.expected_horse_count === null ? null : Number(row.expected_horse_count),
+        featuresR2Key: row.features_r2_key,
+        modelVersion: row.model_version,
         raceKey: row.race_key,
         status: row.status,
+        writtenHorseCount:
+          row.written_horse_count === null ? null : Number(row.written_horse_count),
       }),
     );
   }
