@@ -481,3 +481,69 @@ it("planRealtimeFetches enqueues fetch-odds for due races during polling window"
   const count = await planRealtimeFetches(env, "20260512");
   expect(count).toBeGreaterThanOrEqual(1);
 });
+
+it("planRealtimeFetches enqueues fetch-weights and fetch-results for races near start time", async () => {
+  const { planRealtimeFetches } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
+    {
+      babaCode: "22",
+      debaUrl: "https://nar.example/race",
+      discoveredAt: "2026-05-12T00:00:00+09:00",
+      kaisaiKai: null,
+      kaisaiNen: "2026",
+      kaisaiNichime: null,
+      kaisaiTsukihi: "0512",
+      keibajoCode: "55",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "01",
+      raceKey: "nar:2026:0512:55:01",
+      raceName: "NearStart",
+      raceStartAtJst: "2026-05-12T11:00:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "nar",
+      updatedAt: "2026-05-12T00:00:00+09:00",
+    },
+    {
+      babaCode: "22",
+      debaUrl: "https://nar.example/race2",
+      discoveredAt: "2026-05-12T00:00:00+09:00",
+      kaisaiKai: null,
+      kaisaiNen: "2026",
+      kaisaiNichime: null,
+      kaisaiTsukihi: "0512",
+      keibajoCode: "55",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "02",
+      raceKey: "nar:2026:0512:55:02",
+      raceName: "Finished",
+      raceStartAtJst: "2026-05-12T10:00:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "nar",
+      updatedAt: "2026-05-12T00:00:00+09:00",
+    },
+  ] as never);
+  const env = buildEnv({
+    REALTIME_TEST_NOW: "2026-05-12T01:48:00.000Z",
+  });
+  const count = await planRealtimeFetches(env, "20260512");
+  expect(count).toBeGreaterThan(0);
+});
