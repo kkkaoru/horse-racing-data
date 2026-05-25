@@ -102,6 +102,56 @@ const setMockLaunch = async (browser: BrowserMocks) => {
   launch.mockResolvedValue({ close: browser.close, newContext: browser.newContext });
 };
 
+it("buildJraEntryUrlFromRace handles missing kaisai_kai/kaisai_nichime by falling back to null", async () => {
+  const { buildJraEntryUrlFromRace } = await import("./jra");
+  const result = buildJraEntryUrlFromRace({
+    hasso_jikoku: "1500",
+    kaisai_nen: "2026",
+    kaisai_tsukihi: "0512",
+    keibajo_code: "08",
+    kyosomei_hondai: "T",
+    race_bango: "1",
+  });
+  expect(result).toBeNull();
+});
+
+it("buildJraResultUrlFromRaceSource falls back to null when kaisaiKai/Nichime missing", async () => {
+  const { buildJraResultUrlFromRaceSource } = await import("./jra");
+  const result = buildJraResultUrlFromRaceSource({
+    babaCode: "08",
+    debaUrl: "u",
+    kaisaiKai: null,
+    kaisaiNen: "2026",
+    kaisaiNichime: null,
+    kaisaiTsukihi: "0512",
+    keibajoCode: "08",
+    lastOddsFetchAt: null,
+    lastWeightFetchAt: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "jra:2026:0512:08:01",
+    raceName: null,
+    raceStartAtJst: "2026-05-12T13:00:00+09:00",
+    source: "jra",
+  });
+  expect(result).toBeNull();
+});
+
+it("buildJraEntryUrlFromRace returns a URL when kaisai_kai/nichime are present", async () => {
+  const { buildJraEntryUrlFromRace } = await import("./jra");
+  const result = buildJraEntryUrlFromRace({
+    hasso_jikoku: "1500",
+    kaisai_kai: "02",
+    kaisai_nen: "2026",
+    kaisai_nichime: "06",
+    kaisai_tsukihi: "0512",
+    keibajo_code: "08",
+    kyosomei_hondai: "T",
+    race_bango: "1",
+  });
+  expect(result).not.toBeNull();
+});
+
 it("isJraScratchStatus returns true for known scratch statuses", () => {
   expect(isJraScratchStatus("除外")).toBe(true);
   expect(isJraScratchStatus("取消")).toBe(true);
@@ -408,5 +458,61 @@ it("parseJraRaceResults skips rows whose place cell matches an excluded status",
     `<table><tr><td class="place">取消</td><td class="num">2</td></tr></table>`,
   );
   expect(result).toStrictEqual([]);
+});
+
+it("parseJraRaceEntries returns 騎手変更 status when row contains the marker", () => {
+  const result = parseJraRaceEntries(
+    `<table>
+      <tr>
+        <td class="num">3</td>
+        <td class="horse"><a>馬名</a></td>
+        <td class="jockey"><a>騎手</a></td>
+        <td class="info">騎手変更</td>
+      </tr>
+    </table>`,
+  );
+  expect(result[0]?.status).toBe("騎手変更");
+});
+
+it("parseJraRaceEntries returns extracted horseName when wrapped in name div + anchor", () => {
+  const result = parseJraRaceEntries(
+    `<table>
+      <tr>
+        <td class="num">4</td>
+        <td class="horseName"><div class="name"><a>サンプル馬</a></div></td>
+        <td class="jockey"><p class="jockey"><a>乗り役</a></p></td>
+      </tr>
+    </table>`,
+  );
+  expect(result[0]?.horseName).toBe("サンプル馬");
+  expect(result[0]?.jockeyName).toBe("乗り役");
+});
+
+it("parseJraRaceEntries clears scratch status when weight match is present (sanitize)", () => {
+  const result = parseJraRaceEntries(
+    `<table>
+      <tr>
+        <td class="num">5</td>
+        <td class="horse"><a>馬</a></td>
+        <td class="status">除外</td>
+        <td class="weight">500 (+2)</td>
+      </tr>
+    </table>`,
+  );
+  expect(result[0]?.status).toBeNull();
+});
+
+it("parseJraRaceResults extracts horseName from anchor inside class=horse cell", () => {
+  const result = parseJraRaceResults(
+    `<table>
+      <tr>
+        <td class="place">3</td>
+        <td class="num">4</td>
+        <td class="horse"><a>勝負馬</a></td>
+        <td class="time">1:34.2</td>
+      </tr>
+    </table>`,
+  );
+  expect(result[0]?.horseName).toBe("勝負馬");
 });
 
