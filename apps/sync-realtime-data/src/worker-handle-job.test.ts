@@ -257,6 +257,24 @@ it("handleJob delegates discover-win5-schedules to logWin5CronResult", async () 
   expect(logWin5CronResult).toHaveBeenCalledTimes(1);
 });
 
+it("handleJob plan-running-style-predictions logs error when plan + cacheRefresh both reject", async () => {
+  const { handleJob } = await import("./worker");
+  const {
+    planRunningStylePredictionsForDate,
+    refreshViewerRunningStyleCachesForDate,
+  } = await import("./running-style-cron");
+  const { logFetch } = await import("./storage");
+  vi.mocked(planRunningStylePredictionsForDate).mockRejectedValueOnce(new Error("plan boom"));
+  vi.mocked(refreshViewerRunningStyleCachesForDate).mockRejectedValueOnce(
+    new Error("cache boom"),
+  );
+  await handleJob(buildEnv(), { date: "20260512", type: "plan-running-style-predictions" });
+  const args = vi.mocked(logFetch).mock.calls.at(-1);
+  expect(args?.[2]).toBe("ok");
+  expect(args?.[4]).toContain("plan boom");
+  expect(args?.[4]).toContain("cache boom");
+});
+
 it("handleJob delegates plan-running-style-predictions to planRunningStylePredictionsForDate", async () => {
   const { handleJob } = await import("./worker");
   const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
