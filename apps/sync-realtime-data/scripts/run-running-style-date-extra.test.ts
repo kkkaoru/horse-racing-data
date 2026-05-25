@@ -340,6 +340,86 @@ it("run throws when no races are found for the target date", async () => {
   await expect(run()).rejects.toThrow(/No races found/);
 });
 
+it("run completes the polling loop and refreshes cache when displayReady === scanned", async () => {
+  const { listRunningStyleRacesByDate } = await import("../src/running-style-race-list");
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValueOnce({
+    races: [
+      {
+        keibajoCode: "08",
+        raceBango: "01",
+        raceKey: "jra:20260524:08:01",
+        source: "jra",
+      },
+    ],
+    source: "d1",
+  } as never);
+  vi.stubGlobal("process", {
+    ...process,
+    argv: [
+      "bun",
+      "scripts/run.ts",
+      "--date",
+      "20260524",
+      "--no-ensure-models",
+      "--max-rounds",
+      "1",
+      "--poll-ms",
+      "0",
+      "--delay-ms",
+      "0",
+    ],
+  });
+  vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await run();
+});
+
+it("run throws when finalSummary.displayReady is less than scanned", async () => {
+  const { listRunningStyleRacesByDate } = await import("../src/running-style-race-list");
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValueOnce({
+    races: [
+      {
+        keibajoCode: "08",
+        raceBango: "01",
+        raceKey: "jra:20260524:08:01",
+        source: "jra",
+      },
+    ],
+    source: "d1",
+  } as never);
+  const { collectRunningStyleDateProgress } = await import("../src/running-style-date-progress");
+  vi.mocked(collectRunningStyleDateProgress).mockResolvedValue([
+    {
+      cacheReady: false,
+      d1Count: 0,
+      displayReady: false,
+      expectedHorses: 12,
+      featuresReady: false,
+      inferenceStatus: "pending",
+      parquetReady: false,
+      raceKey: "jra:20260524:08:01",
+      source: "jra",
+    },
+  ]);
+  vi.stubGlobal("process", {
+    ...process,
+    argv: [
+      "bun",
+      "scripts/run.ts",
+      "--date",
+      "20260524",
+      "--no-ensure-models",
+      "--max-rounds",
+      "1",
+      "--poll-ms",
+      "0",
+      "--delay-ms",
+      "0",
+    ],
+  });
+  vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await expect(run()).rejects.toThrow(/races are not cached for viewer display/);
+});
+
 it("run returns early in schedule-only mode after planning", async () => {
   const { listRunningStyleRacesByDate } = await import("../src/running-style-race-list");
   vi.mocked(listRunningStyleRacesByDate).mockResolvedValueOnce({
