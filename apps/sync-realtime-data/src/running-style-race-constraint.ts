@@ -49,9 +49,14 @@ export const applyRaceLevelNigeConstraintForRace = (
   raceProbabilities: ReadonlyArray<Float64Array>,
   classLabels: readonly string[],
   numClass: number,
-  options?: { minNigeProbability?: number },
+  options?: { disableNigeCap?: boolean; minNigeProbability?: number },
 ): RunningStylePrediction[] => {
   const labels = resolveRunningStyleLabels(classLabels, numClass);
+  if (options?.disableNigeCap === true) {
+    return raceProbabilities.map((probabilities) =>
+      predictionFromProbabilities(normalizeProbabilities(Float64Array.from(probabilities)), labels),
+    );
+  }
   if (raceProbabilities.length <= 1) {
     return raceProbabilities.map((probabilities) =>
       applyRaceLevelNigeConstraint(probabilities, labels, options),

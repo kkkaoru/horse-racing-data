@@ -167,6 +167,7 @@ const predictRace = (
     rawPredictions.map(probabilitiesToArray),
     model.class_labels,
     model.num_class,
+    { disableNigeCap: true },
   );
   return rows.map((row, index) => {
     const prediction = constrained[index];
@@ -190,6 +191,7 @@ const predictRaceFlat = (
     rawPredictions.map(probabilitiesToArray),
     model.header.class_labels,
     model.header.num_class,
+    { disableNigeCap: true },
   );
   return rows.map((row, index) => {
     const prediction = constrained[index];
