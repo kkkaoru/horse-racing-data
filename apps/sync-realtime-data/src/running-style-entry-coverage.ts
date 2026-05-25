@@ -53,9 +53,9 @@ export const evaluateRunningStyleCacheCoverage = (
 ): RunningStyleCacheCoverage => {
   if (entries === null || entries.length === 0) {
     return {
-      activeHorseCount: 0,
-      cacheable: false,
-      cacheableRows: [],
+      activeHorseCount: rows.length,
+      cacheable: rows.length > 0,
+      cacheableRows: [...rows],
     };
   }
   const activeHorseNumbers = listActiveRunningStyleHorseNumbers(entries);
