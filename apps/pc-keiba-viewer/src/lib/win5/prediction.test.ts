@@ -158,7 +158,7 @@ test("buildWin5PredictionPayload uses provided modelVersion-bound payload struct
     averagePayoutYen: 100_000,
     predictedAt: "2026-05-24T00:00:00.000Z",
   });
-  expect(payload.modelVersion).toBe("win5-xgb-cb-ensemble-v1");
+  expect(payload.modelVersion).toBe("win5-xgb-v7-lineage-v1");
   expect(payload.legs.length).toBe(5);
 });
 
