@@ -4,6 +4,7 @@ import {
   buildPremiumUrl,
   discoverPremiumRaceLinks,
   extractPremiumSourceRaceId,
+  fetchPremiumHtml,
   fetchPremiumHtmlAttempts,
   getPremiumRaceConfig,
   hasPremiumRaceFetchConfig,
@@ -208,4 +209,80 @@ it("summarizePremiumStableCommentHtml returns empty samples when no rows present
   const summary = summarizePremiumStableCommentHtml("<div>plain text</div>");
   expect(summary.cellRowCount).toBe(0);
   expect(summary.samples).toStrictEqual([]);
+});
+
+it("fetchPremiumHtml prefers the authenticated attempt over earlier ones", async () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(
+    async (input: RequestInfo | URL): Promise<Response> => {
+      const url = String(input);
+      if (url.startsWith("https://proxy.example")) {
+        return new Response("<html>need login</html>", {
+          headers: { "content-type": "text/html; charset=utf-8" },
+          status: 200,
+        });
+      }
+      return new Response('<html><div class="Icon_Account">user</div></html>', {
+        headers: { "content-type": "text/html; charset=utf-8" },
+        status: 200,
+      });
+    },
+  );
+  const config = getPremiumRaceConfig({
+    PREMIUM_RACE_COOKIE: "s",
+    PREMIUM_RACE_ORIGIN: "https://x.test",
+    PREMIUM_RACE_PROXY_BEARER: "tk",
+    PREMIUM_RACE_PROXY_URL: "https://proxy.example",
+    PREMIUM_RACE_PROXY_USER_ID: "u1",
+  });
+  const html = await fetchPremiumHtml(config, "https://x.test/race");
+  expect(html).toContain("Icon_Account");
+});
+
+it("fetchPremiumHtml returns the first attempt body when no attempt is authenticated", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response("<html>guest</html>", {
+      headers: { "content-type": "text/html; charset=utf-8" },
+      status: 200,
+    }),
+  );
+  const config = getPremiumRaceConfig({ PREMIUM_RACE_ORIGIN: "https://x.test" });
+  const html = await fetchPremiumHtml(config, "https://x.test/race");
+  expect(html).toBe("<html>guest</html>");
+});
+
+it("fetchPremiumHtmlAttempts records error from a rejected fetch and proceeds to next attempt", async () => {
+  let call = 0;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (): Promise<Response> => {
+    call += 1;
+    if (call === 1) {
+      throw new Error("network down");
+    }
+    return new Response("<html>ok</html>", {
+      headers: { "content-type": "text/html; charset=utf-8" },
+      status: 200,
+    });
+  });
+  const config = getPremiumRaceConfig({
+    PREMIUM_RACE_COOKIE: "s",
+    PREMIUM_RACE_ORIGIN: "https://x.test",
+  });
+  const attempts = await fetchPremiumHtmlAttempts(config, "https://x.test/race");
+  expect(attempts).toHaveLength(1);
+  expect(attempts[0]?.mode).toBe("direct");
+});
+
+it("fetchPremiumHtmlAttempts decodes EUC-JP body when responseCharset is set", async () => {
+  const eucJp = new Uint8Array([0xc5, 0xec, 0xb5, 0xfe]);
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response(eucJp.buffer, {
+      headers: { "content-type": "text/html" },
+      status: 200,
+    }),
+  );
+  const config = getPremiumRaceConfig({
+    PREMIUM_RACE_ORIGIN: "https://x.test",
+    PREMIUM_RACE_RESPONSE_CHARSET: "euc-jp",
+  });
+  const attempts = await fetchPremiumHtmlAttempts(config, "https://x.test/race");
+  expect(attempts[0]?.html).toBe("東京");
 });
