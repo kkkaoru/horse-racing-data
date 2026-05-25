@@ -473,7 +473,7 @@ const normalizeOddsTableCell = (cell: string): string =>
 
 const parseWideOddsRow = (row: string): OddsData | null => {
   const cells = Array.from(row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)).map((cell) =>
-    normalizeOddsTableCell(cell[1] ?? ""),
+    normalizeOddsTableCell(cell[1]!),
   );
   const combination = cells[0];
   const oddsRange = cells[1]?.match(/([0-9]+\.?[0-9]*)-([0-9]+\.?[0-9]*)/u);
@@ -708,7 +708,7 @@ export const parseHorseWeights = (html: string) => {
         block.matchAll(/<td[^>]*class=["'][^"']*odds_weight[^"']*["'][^>]*>([\s\S]*?)<\/td>/giu),
       )
         .map((cell) =>
-          stripHtmlTags((cell[1] ?? "").replace(/<br\s*\/?>/giu, " ")).replace(/\s+/g, " "),
+          stripHtmlTags(cell[1]!.replace(/<br\s*\/?>/giu, " ")).replace(/\s+/g, " "),
         )
         .map((text) =>
           text.match(/(?:^|[^0-9.])([3-9]\d{2}|1[0-3]\d{2})(?:\s*\(([+-]?)(\d+)\))?(?![0-9.])/u),
@@ -733,17 +733,17 @@ const normalizeRaceResultCell = (cell: string): string =>
 
 const extractTableCells = (row: string): string[] =>
   Array.from(row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/giu)).map((cell) =>
-    normalizeRaceResultCell(cell[1] ?? ""),
+    normalizeRaceResultCell(cell[1]!),
   );
 
 const extractClassedTableCells = (row: string): Record<string, string> => {
   const cells: Record<string, string> = {};
   for (const cell of row.matchAll(/<td([^>]*)>([\s\S]*?)<\/td>/giu)) {
-    const classAttr = (cell[1] ?? "").match(/class=["']([^"']*)["']/iu)?.[1];
+    const classAttr = cell[1]!.match(/class=["']([^"']*)["']/iu)?.[1];
     if (!classAttr) {
       continue;
     }
-    const normalized = normalizeRaceResultCell(cell[2] ?? "");
+    const normalized = normalizeRaceResultCell(cell[2]!);
     for (const className of classAttr.split(/\s+/u)) {
       if (/^[a-p]$/u.test(className) && !(className in cells)) {
         cells[className] = normalized;
@@ -755,12 +755,12 @@ const extractClassedTableCells = (row: string): Record<string, string> => {
 
 const extractLegacyRaceResultRows = (html: string): string[] =>
   Array.from(html.matchAll(/<tr[^>]*bgcolor=["']#FFFFFF["'][^>]*>([\s\S]*?)<\/tr>/giu)).map(
-    (row) => row[1] ?? "",
+    (row) => row[1]!,
   );
 
 const extractCurrentRaceResultRows = (html: string): string[] =>
   Array.from(html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/giu))
-    .map((row) => row[0] ?? "")
+    .map((row) => row[0]!)
     .filter((row) => {
       const cells = extractClassedTableCells(row);
       return Boolean(cells.a && cells.c && cells.d);
@@ -813,7 +813,7 @@ const normalizeEntryStatus = (block: string): string | null => {
     /<td[^>]*class=["'][^"']*\binfo\b[^"']*["'][^>]*>([\s\S]*?)<\/td>/giu,
   );
   for (const cell of currentInfoCells) {
-    const normalized = normalizeRaceResultCell(cell[1] ?? "");
+    const normalized = normalizeRaceResultCell(cell[1]!);
     const status = ENTRY_STATUS_LABELS.find((label) => normalized.includes(label));
     if (status) {
       return status;
