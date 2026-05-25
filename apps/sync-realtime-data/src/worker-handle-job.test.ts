@@ -550,6 +550,32 @@ it("handleJob fetch-weights with NAR race source short-circuits when no fetch UR
   );
 });
 
+it("handleJob fetch-premium-race-data throws when origin set but no race link discovered", async () => {
+  const { handleJob } = await import("./worker");
+  await expect(
+    handleJob(
+      buildEnv({ PREMIUM_RACE_ORIGIN: "https://x.test" } as never),
+      { raceKey: "jra:2026:0512:08:01", type: "fetch-premium-race-data" },
+    ),
+  ).rejects.toThrow("premium race data fetch failed");
+});
+
+it("handleJob fetch-premium-paddock with origin + no race link returns ok early", async () => {
+  const { handleJob } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  await handleJob(
+    buildEnv({ PREMIUM_RACE_ORIGIN: "https://x.test" } as never),
+    { raceKey: "jra:2026:0512:08:01", type: "fetch-premium-paddock" },
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-premium-paddock",
+    "ok",
+    "jra:2026:0512:08:01",
+    null,
+  );
+});
+
 it("handleJob fetch-jra-track-condition with successful claim runs the snapshot insert", async () => {
   const { handleJob } = await import("./worker");
   const {
