@@ -23,8 +23,12 @@ import {
   putRunningStyleFeatureParquet,
   validateFeatureCoverage,
 } from "./running-style-feature-parquet";
-import { buildRunningStyleFeaturesForRaceFromPostgres } from "./running-style-feature-sql";
-import { buildRunningStyleRaceKey } from "./running-style-features";
+import { listDailyRaceEntriesForRace } from "./daily-feature-build";
+import { buildRunningStyleFeaturesForRaceFromD1Target } from "./running-style-feature-sql";
+import {
+  buildRealtimeRaceKeyFromRunningStyle,
+  buildRunningStyleRaceKey,
+} from "./running-style-features";
 import { runRunningStyleInferenceRowsWithFlatModel } from "./running-style-inference";
 import {
   buildRunningStyleFlatModelKey,
@@ -99,11 +103,25 @@ export const handleRunningStylePredictionJob = async (
   await markRunningStyleInferenceProcessing(env.REALTIME_DB, job, new Date().toISOString());
   try {
     const pool = getFinishPositionPool(env);
-    const latestEntries = await getLatestRaceEntries(env.REALTIME_DB, raceKey);
+    const latestEntries = await getLatestRaceEntries(
+      env.REALTIME_DB,
+      buildRealtimeRaceKeyFromRunningStyle(job),
+    );
     const modelKey = buildRunningStyleFlatModelKey(job.source);
     const model = await loadFlatLightGBMModelFromR2(env.RUNNING_STYLE_MODELS, modelKey);
     const featureNames = model.header.feature_names;
-    const built = await buildRunningStyleFeaturesForRaceFromPostgres(pool, job, featureNames);
+    const dailyTargetRows = await listDailyRaceEntriesForRace(env.REALTIME_DB, job);
+    if (dailyTargetRows.length === 0) {
+      throw new Error(
+        `no D1 daily_race_entries rows for race ${raceKey}; run build-daily-features`,
+      );
+    }
+    const built = await buildRunningStyleFeaturesForRaceFromD1Target(
+      pool,
+      job,
+      featureNames,
+      dailyTargetRows,
+    );
     if (built.rows.length === 0) {
       throw new Error(`no running-style feature rows found for race ${raceKey}`);
     }
