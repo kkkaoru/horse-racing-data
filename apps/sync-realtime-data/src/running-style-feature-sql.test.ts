@@ -175,6 +175,31 @@ it("buildRunningStyleFeaturesForRaceFromPostgres maps Date and boolean values vi
   expect(result.rows[0]?.perHorseFeatures.career_win_rate).toBe(1);
 });
 
+it("buildRunningStyleFeaturesForRaceFromPostgres treats unknown value types (plain object) as null", async () => {
+  const query = vi.fn(async () => ({
+    rowCount: 1,
+    rows: [
+      {
+        bamei: { unexpected: "object" } as unknown,
+        career_win_rate: { weird: true } as unknown,
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0512",
+        keibajo_code: "08",
+        ketto_toroku_bango: "2024100001",
+        race_bango: "01",
+        source: "jra",
+        umaban: 1,
+      },
+    ],
+  }));
+  const pool = { query } as unknown as Pool;
+  const result = await buildRunningStyleFeaturesForRaceFromPostgres(pool, PARAMS, [
+    "career_win_rate",
+  ]);
+  expect(result.rows[0]?.bamei).toBeNull();
+  expect(result.rows[0]?.perHorseFeatures.career_win_rate).toBeNull();
+});
+
 it("buildRunningStyleFeaturesForRaceFromPostgres treats NaN/Infinity/empty as null", async () => {
   const query = vi.fn(async () => ({
     rowCount: 1,

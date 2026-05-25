@@ -41,16 +41,12 @@ export const parseRunningStyleRaceKey = (raceKey: string): (RunningStyleRacePara
   if (match === null) {
     return null;
   }
-  const source = match[1];
-  if (source !== "jra" && source !== "nar") {
-    return null;
-  }
   const params: RunningStyleRaceParams = {
     kaisaiNen: match[2]!,
     kaisaiTsukihi: match[3]!,
     keibajoCode: match[4]!,
     raceBango: match[5]!,
-    source,
+    source: match[1] as "jra" | "nar",
   };
   return {
     ...params,

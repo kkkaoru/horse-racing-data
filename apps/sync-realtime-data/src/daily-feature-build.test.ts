@@ -80,6 +80,35 @@ it("listDailyRaceEntriesForRace returns mapped rows for the resolved race key", 
   expect(bind).toHaveBeenCalledWith("jra:20260512:08:01");
 });
 
+it("listDailyRaceEntriesForRace converts numeric strings and treats non-finite numbers as null", async () => {
+  const { listDailyRaceEntriesForRace } = await import("./daily-feature-build");
+  const all = vi.fn(async () => ({
+    results: [
+      {
+        ...DAILY_ROW,
+        bataiju: Number.NaN,
+        corner_1: "3",
+        finish_position: "non-numeric",
+        tansho_odds: Number.POSITIVE_INFINITY,
+      },
+    ],
+  }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const result = await listDailyRaceEntriesForRace(db, {
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0512",
+    keibajoCode: "8",
+    raceBango: "1",
+    source: "jra",
+  });
+  expect(result[0]?.bataiju).toBeNull();
+  expect(result[0]?.tansho_odds).toBeNull();
+  expect(result[0]?.corner_1).toBe(3);
+  expect(result[0]?.finish_position).toBeNull();
+});
+
 it("triggerViewerCacheWarmForDate returns ok and parses warmed/raceCount from response", async () => {
   const { triggerViewerCacheWarmForDate } = await import("./daily-feature-build");
   vi.spyOn(globalThis, "fetch").mockResolvedValue(
