@@ -970,6 +970,58 @@ it("handleJob discover-urls exercises upsertDiscoveredUrls with NAR + JRA race r
   await handleJob(buildEnv(), { date: "20260512", type: "discover-urls" });
 });
 
+it("handleJob discover-urls exercises the inner NAR race-list link processing", async () => {
+  const { handleJob } = await import("./worker");
+  const { fetchJraRacesByDate, fetchNarRacesByDate } = await import("./postgres");
+  const {
+    fetchRacePage,
+    fetchRaceLinksFromRaceList,
+    fetchTodayRaceListUrls,
+  } = await import("./keiba-go");
+  const { upsertNarRaceSource, upsertJraRaceSource } = await import("./storage");
+  vi.mocked(fetchJraRacesByDate).mockResolvedValueOnce([
+    {
+      hasso_jikoku: "1500",
+      kaisai_kai: "02",
+      kaisai_nen: "2026",
+      kaisai_nichime: "06",
+      kaisai_tsukihi: "0512",
+      keibajo_code: "08",
+      kyosomei_hondai: "JRA",
+      race_bango: "1",
+    },
+  ] as never);
+  vi.mocked(fetchNarRacesByDate).mockResolvedValueOnce([
+    {
+      hasso_jikoku: "1300",
+      kaisai_nen: "2026",
+      kaisai_tsukihi: "0512",
+      keibajo_code: "30",
+      kyosomei_hondai: "NAR Local",
+      race_bango: "1",
+    },
+  ] as never);
+  vi.mocked(fetchTodayRaceListUrls).mockResolvedValueOnce([
+    { babaCode: "36", url: "https://nankan.example/race-list" },
+  ] as never);
+  vi.mocked(fetchRaceLinksFromRaceList).mockResolvedValueOnce([
+    {
+      babaCode: "36",
+      raceNumber: "1",
+      url: "https://nankan.example/race?race_id=1",
+    },
+    {
+      babaCode: "ZZ",
+      raceNumber: "2",
+      url: "https://nankan.example/race?race_id=2",
+    },
+  ] as never);
+  vi.mocked(fetchRacePage).mockResolvedValue("<html></html>");
+  await handleJob(buildEnv(), { date: "20260512", type: "discover-urls" });
+  expect(upsertJraRaceSource).toHaveBeenCalled();
+  expect(upsertNarRaceSource).toHaveBeenCalledTimes(1);
+});
+
 it("handleJob fetch-premium-race-data throws when origin set but no race link discovered", async () => {
   const { handleJob } = await import("./worker");
   await expect(
