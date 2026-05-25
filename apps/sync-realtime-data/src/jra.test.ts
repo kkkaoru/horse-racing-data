@@ -453,6 +453,43 @@ it("parseJraRaceResults returns rows with parsed finishPosition + horseNumber", 
   ]);
 });
 
+it("parseJraHorseWeights returns null changeAmount/changeSign for weight without parens", () => {
+  const result = parseJraHorseWeights(
+    `<table><tr><td class="num">4</td><td class="horse"><a>馬</a></td><td class="weight">500</td></tr></table>`,
+  );
+  expect(result[0]?.changeAmount).toBeNull();
+  expect(result[0]?.changeSign).toBeNull();
+});
+
+it("parseJraHorseWeights returns null horseName when no anchor present in horse cell", () => {
+  const result = parseJraHorseWeights(
+    `<table><tr><td class="num">5</td><td>raw horse</td><td class="weight">510 (+1)</td></tr></table>`,
+  );
+  expect(result[0]?.horseName).toBeNull();
+});
+
+it("parseJraRaceResults returns null finishPosition when place cell is not numeric", () => {
+  expect(
+    parseJraRaceResults(
+      `<table><tr><td class="place">x</td><td class="num">3</td></tr></table>`,
+    ),
+  ).toStrictEqual([]);
+});
+
+it("parseJraRaceResults returns null time when no time cell present", () => {
+  const result = parseJraRaceResults(
+    `<table><tr><td class="place">2</td><td class="num">3</td></tr></table>`,
+  );
+  expect(result[0]?.time).toBeNull();
+});
+
+it("parseJraRaceResults returns null horseName when no anchor + non-empty horse cell", () => {
+  const result = parseJraRaceResults(
+    `<table><tr><td class="place">2</td><td class="num">3</td><td class="horse"> </td></tr></table>`,
+  );
+  expect(result[0]?.horseName).toBeNull();
+});
+
 it("parseJraRaceResults skips rows whose place cell matches an excluded status", () => {
   const result = parseJraRaceResults(
     `<table><tr><td class="place">取消</td><td class="num">2</td></tr></table>`,
