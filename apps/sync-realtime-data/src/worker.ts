@@ -1210,7 +1210,7 @@ export const getPremiumPaddockRetryDelaySeconds = (race: NarRaceSource, now = ne
   return PREMIUM_PADDOCK_RETRY_DELAY_SECONDS;
 };
 
-const getPremiumPaddockRetryAfter = (env: Env, race: NarRaceSource): string =>
+export const getPremiumPaddockRetryAfter = (env: Env, race: NarRaceSource): string =>
   toJstIsoString(
     new Date(getNow(env).getTime() + getPremiumPaddockRetryDelaySeconds(race, getNow(env)) * 1000),
   );
@@ -1226,7 +1226,7 @@ const retryPremiumPaddockWhileInWindow = async (env: Env, race: NarRaceSource): 
   );
 };
 
-const assertJraHorseWeightsComplete = (
+export const assertJraHorseWeightsComplete = (
   raceKey: string,
   entries: Omit<RaceEntry, "fetchedAt">[],
   weights: HorseWeight[],
@@ -1717,6 +1717,8 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
       dataTopHasIconAccount: dataTopHtml ? dataTopHtml.includes("Icon_Account") : null,
       dataTopHasDummyBox: dataTopHtml ? dataTopHtml.includes("DummyBox") : null,
       dataTopHasPremiumRegist: dataTopHtml ? dataTopHtml.includes("Premium_Regist_Box") : null,
+      dataTopHasIconLogin: dataTopHtml ? dataTopHtml.includes("Icon_Login") : null,
+      dataTopHasLogout: dataTopHtml ? dataTopHtml.includes("ログアウト") : null,
       dataTopDlBlockCount: dataTopHtml
         ? (dataTopHtml.match(/<dl\b/giu)?.length ?? 0)
         : null,
