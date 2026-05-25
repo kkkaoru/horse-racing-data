@@ -550,6 +550,101 @@ it("handleJob fetch-weights with NAR race source short-circuits when no fetch UR
   );
 });
 
+it("handleJob fetch-odds with JRA race + valid odds slot writes a successful snapshot", async () => {
+  const { handleJob } = await import("./worker");
+  const {
+    claimOddsFetch,
+    getRaceSource,
+    insertOddsSnapshot,
+    completeOddsFetch,
+    logFetch,
+  } = await import("./storage");
+  vi.mocked(claimOddsFetch).mockResolvedValueOnce(true);
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "08",
+    debaUrl: "https://www.jra.go.jp/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: "02",
+    kaisaiNen: "2026",
+    kaisaiNichime: "06",
+    kaisaiTsukihi: "0512",
+    keibajoCode: "08",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "jra:2026:0512:08:01",
+    raceName: "Test",
+    raceStartAtJst: "2026-05-12T13:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "jra",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(insertOddsSnapshot).mockResolvedValueOnce(3);
+  await handleJob(
+    buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:30:00.000Z" } as never),
+    { raceKey: "jra:2026:0512:08:01", type: "fetch-odds" },
+  );
+  expect(completeOddsFetch).toHaveBeenCalledTimes(1);
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-odds",
+    "ok",
+    "jra:2026:0512:08:01",
+    null,
+  );
+});
+
+it("handleJob fetch-weights with NAR race source + debaUrl runs fetchOdds + insert weight", async () => {
+  const { handleJob } = await import("./worker");
+  const { getRaceSource, logFetch } = await import("./storage");
+  vi.mocked(getRaceSource).mockResolvedValue({
+    babaCode: "22",
+    debaUrl: "https://x.test/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: null,
+    kaisaiNen: "2026",
+    kaisaiNichime: null,
+    kaisaiTsukihi: "0512",
+    keibajoCode: "55",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "nar:2026:0512:55:01",
+    raceName: "Test",
+    raceStartAtJst: "2026-05-12T18:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "nar",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  await handleJob(buildEnv(), {
+    raceKey: "nar:2026:0512:55:01",
+    type: "fetch-weights",
+  });
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-weights",
+    "ok",
+    "nar:2026:0512:55:01",
+    null,
+  );
+});
+
 it("handleJob discover-urls exercises upsertDiscoveredUrls with NAR + JRA race rows", async () => {
   const { handleJob } = await import("./worker");
   const { fetchNarRacesByDate, fetchJraRacesByDate } = await import("./postgres");

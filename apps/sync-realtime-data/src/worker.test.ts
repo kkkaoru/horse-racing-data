@@ -15,6 +15,7 @@ import {
   getCronJob,
   getCurrentOddsSlotAt,
   getJstDayStart,
+  getNarOddsSaleStartForRace,
   getNarVenueLastRaceStartAtMap,
   getNarVenueMeetingKey,
   getPremiumPaddockRetryAfter,
@@ -593,4 +594,14 @@ it("assertJraHorseWeightsComplete throws when an active entry has no weight row"
 it("getPremiumPaddockRetryAfter returns an ISO string at now + retry delay (default)", () => {
   const env = { REALTIME_TEST_NOW: "2026-05-12T00:00:00.000Z" } as unknown as Env;
   expect(getPremiumPaddockRetryAfter(env, RACE)).toBe("2026-05-12T09:02:00+09:00");
+});
+
+it("getNarOddsSaleStartForRace returns null for JRA races", () => {
+  const jraRace: NarRaceSource = { ...RACE, source: "jra" };
+  expect(getNarOddsSaleStartForRace(jraRace, null)).toBeNull();
+});
+
+it("getNarOddsSaleStartForRace returns a Date for NAR races", () => {
+  const result = getNarOddsSaleStartForRace(RACE, "2026-05-12T16:30:00+09:00");
+  expect(result).toBeInstanceOf(Date);
 });

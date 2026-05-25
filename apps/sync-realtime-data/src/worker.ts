@@ -502,7 +502,7 @@ export const getNarVenueLastRaceStartAtMap = (races: NarRaceSource[]): Map<strin
   return result;
 };
 
-const getNarOddsSaleStartForRace = (
+export const getNarOddsSaleStartForRace = (
   race: NarRaceSource,
   venueLastRaceStartAtJst: string | null | undefined,
 ): Date | null => {
