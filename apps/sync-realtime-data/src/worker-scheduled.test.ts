@@ -190,6 +190,31 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+it("scheduled logs error when runRunningStyleCronTick rejects", async () => {
+  const { default: worker } = await import("./worker");
+  const { runRunningStyleCronTick } = await import("./running-style-cron");
+  const { logFetch } = await import("./storage");
+  vi.mocked(runRunningStyleCronTick).mockRejectedValueOnce(new Error("inference boom"));
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "*/10 * * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv(),
+    ctx,
+  );
+  await flushWaits(waits);
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-running-style-predictions",
+    "error",
+    null,
+    "inference boom",
+  );
+});
+
 it("scheduled triggers logRunningStylePlanResult for the inference cron", async () => {
   const { default: worker } = await import("./worker");
   const { runRunningStyleCronTick } = await import("./running-style-cron");
