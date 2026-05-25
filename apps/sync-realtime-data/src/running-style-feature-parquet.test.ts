@@ -117,6 +117,18 @@ it("loadRunningStyleFeatureParquet throws when R2 object is missing", async () =
   );
 });
 
+it("deserializeRunningStyleFeatureParquet treats null/empty bamei as null and rounds invalid umaban to 0", async () => {
+  const bytes = await serializeRunningStyleFeatureParquet(
+    [{ ...ROW, bamei: null, perHorseFeatures: {} }],
+    FEATURE_NAMES,
+  );
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  const rows = await deserializeRunningStyleFeatureParquet(buffer, FEATURE_NAMES);
+  expect(rows[0]?.bamei).toBeNull();
+  expect(rows[0]?.perHorseFeatures.career_win_rate).toBeNull();
+});
+
 it("loadRunningStyleFeatureParquet deserializes the R2 buffer", async () => {
   const bytes = await serializeRunningStyleFeatureParquet([ROW], FEATURE_NAMES);
   const buffer = new ArrayBuffer(bytes.byteLength);
