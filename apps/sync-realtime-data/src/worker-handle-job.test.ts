@@ -116,8 +116,8 @@ vi.mock("./keiba-go", async () => {
   return {
     ...actual,
     fetchTodayRaceListUrls: vi.fn(async () => []),
-    fetchOdds: vi.fn(async () => null),
-    fetchRacePage: vi.fn(async () => null),
+    fetchOdds: vi.fn(async () => ({})),
+    fetchRacePage: vi.fn(async () => "<html></html>"),
     fetchRaceLinksFromRaceList: vi.fn(async () => []),
   };
 });
@@ -467,4 +467,127 @@ it("handleJob plan-realtime-fetches with selfSchedule logs twice and enqueues ne
     null,
     expect.any(String),
   );
+});
+
+it("handleJob fetch-odds with NAR race source skips when no current odds slot", async () => {
+  const { handleJob } = await import("./worker");
+  const { claimOddsFetch, getRaceSource, failOddsFetch } = await import("./storage");
+  vi.mocked(claimOddsFetch).mockResolvedValueOnce(true);
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "22",
+    debaUrl: "https://x.test/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: null,
+    kaisaiNen: "2026",
+    kaisaiNichime: null,
+    kaisaiTsukihi: "0512",
+    keibajoCode: "55",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "nar:2026:0512:55:01",
+    raceName: "Test",
+    raceStartAtJst: "2026-05-13T18:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "nar",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  await handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T00:00:00.000Z" } as never), {
+    raceKey: "nar:2026:0512:55:01",
+    type: "fetch-odds",
+  });
+  expect(failOddsFetch).toHaveBeenCalledTimes(1);
+});
+
+it("handleJob fetch-weights with NAR race source short-circuits when no fetch URL", async () => {
+  const { handleJob } = await import("./worker");
+  const { logFetch, getRaceSource } = await import("./storage");
+  vi.mocked(getRaceSource).mockResolvedValue({
+    babaCode: "22",
+    debaUrl: "",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: null,
+    kaisaiNen: "2026",
+    kaisaiNichime: null,
+    kaisaiTsukihi: "0512",
+    keibajoCode: "55",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "nar:2026:0512:55:01",
+    raceName: "Test",
+    raceStartAtJst: "2026-05-12T18:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "nar",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  await handleJob(buildEnv(), {
+    raceKey: "nar:2026:0512:55:01",
+    type: "fetch-weights",
+  });
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-weights",
+    "ok",
+    "nar:2026:0512:55:01",
+    null,
+  );
+});
+
+it("handleJob fetch-results with NAR race source completes when finish-position rows empty", async () => {
+  const { handleJob } = await import("./worker");
+  const {
+    claimResultFetch,
+    getRaceSource,
+    completeResultFetch,
+  } = await import("./storage");
+  vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "22",
+    debaUrl: "https://x.test/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: null,
+    kaisaiNen: "2026",
+    kaisaiNichime: null,
+    kaisaiTsukihi: "0512",
+    keibajoCode: "55",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "nar:2026:0512:55:01",
+    raceName: "Test",
+    raceStartAtJst: "2026-05-12T18:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "nar",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  await handleJob(buildEnv(), {
+    raceKey: "nar:2026:0512:55:01",
+    type: "fetch-results",
+  });
+  expect(completeResultFetch).toHaveBeenCalledTimes(1);
 });
