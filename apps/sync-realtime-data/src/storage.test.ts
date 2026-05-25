@@ -975,7 +975,6 @@ it("replacePremiumRaceData batches deletes and inserts for every section provide
     link: { entryUrl: "https://x.test/race", sourceRaceId: "202605120801" },
     paddockBulletins: [
       {
-        bulletinType: "value",
         commentText: "コメント",
         evaluationText: "◎",
         frameNumber: "1",
@@ -988,7 +987,7 @@ it("replacePremiumRaceData batches deletes and inserts for every section provide
     stableComments: [
       {
         commentText: "厩舎コメント",
-        evaluationGrade: "A",
+        evaluationGrade: 1,
         evaluationText: "◎",
         frameNumber: "1",
         horseName: "h1",

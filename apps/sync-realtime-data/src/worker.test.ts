@@ -41,29 +41,19 @@ import type { Env, Job } from "./types";
 const RACE: NarRaceSource = {
   babaCode: "22",
   debaUrl: "https://x.test/race",
-  discoveredAt: "2026-05-12T00:00:00+09:00",
   kaisaiKai: "02",
   kaisaiNen: "2026",
   kaisaiNichime: "06",
   kaisaiTsukihi: "0512",
   keibajoCode: "55",
   lastOddsFetchAt: null,
-  lastOddsQueuedAt: null,
-  lastResultFetchAt: null,
-  lastResultQueuedAt: null,
   lastWeightFetchAt: null,
-  oddsFetchLockUntil: null,
   oddsLinks: {},
   raceBango: "01",
   raceKey: "nar:2026:0512:55:01",
   raceName: "サンプル",
   raceStartAtJst: "2026-05-12T13:00:00+09:00",
-  resultCompleteAt: null,
-  resultExpectedHorseCount: null,
-  resultFetchLockUntil: null,
-  resultSavedHorseCount: null,
   source: "nar",
-  updatedAt: "2026-05-12T00:00:00+09:00",
 };
 
 it("addDaysToYyyymmdd adds positive days across month boundaries", () => {
@@ -340,7 +330,6 @@ it("formatMinutesUntilRace returns elapsed-minutes phrase for past race", () => 
 
 it("formatPremiumPaddockBulletinLine includes 穴馬 label when groupKey is value", () => {
   const line = formatPremiumPaddockBulletinLine({
-    bulletinType: "value",
     commentText: "良いコメント",
     evaluationText: "◎",
     frameNumber: "1",
@@ -353,11 +342,10 @@ it("formatPremiumPaddockBulletinLine includes 穴馬 label when groupKey is valu
 
 it("formatPremiumPaddockBulletinLine includes 人気馬 label for non-value groupKey", () => {
   const line = formatPremiumPaddockBulletinLine({
-    bulletinType: "popular",
     commentText: null,
     evaluationText: "◯",
     frameNumber: "2",
-    groupKey: "popular",
+    groupKey: "favorite",
     horseName: "サンプル",
     horseNumber: "2",
   });
@@ -366,7 +354,6 @@ it("formatPremiumPaddockBulletinLine includes 人気馬 label for non-value grou
 
 it("formatPremiumPaddockBulletinLine renders コメントなし when commentText is empty", () => {
   const line = formatPremiumPaddockBulletinLine({
-    bulletinType: "value",
     commentText: null,
     evaluationText: "◎",
     frameNumber: "1",
@@ -380,7 +367,6 @@ it("formatPremiumPaddockBulletinLine renders コメントなし when commentText
 it("buildPremiumPaddockSignature produces a 64-char hex sha-256 digest", async () => {
   const signature = await buildPremiumPaddockSignature([
     {
-      bulletinType: "value",
       commentText: "コメント",
       evaluationText: "◎",
       frameNumber: "1",
@@ -396,7 +382,6 @@ it("buildPremiumPaddockSignature produces a 64-char hex sha-256 digest", async (
 it("buildPremiumPaddockSignature is stable across reorderings of the same bulletins", async () => {
   const left = await buildPremiumPaddockSignature([
     {
-      bulletinType: "value",
       commentText: "A",
       evaluationText: "◎",
       frameNumber: "1",
@@ -405,27 +390,24 @@ it("buildPremiumPaddockSignature is stable across reorderings of the same bullet
       horseNumber: "1",
     },
     {
-      bulletinType: "popular",
       commentText: "B",
       evaluationText: "◯",
       frameNumber: "2",
-      groupKey: "popular",
+      groupKey: "favorite",
       horseName: "Bホース",
       horseNumber: "2",
     },
   ]);
   const right = await buildPremiumPaddockSignature([
     {
-      bulletinType: "popular",
       commentText: "B",
       evaluationText: "◯",
       frameNumber: "2",
-      groupKey: "popular",
+      groupKey: "favorite",
       horseName: "Bホース",
       horseNumber: "2",
     },
     {
-      bulletinType: "value",
       commentText: "A",
       evaluationText: "◎",
       frameNumber: "1",
