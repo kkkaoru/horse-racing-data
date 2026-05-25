@@ -1336,6 +1336,42 @@ it("handleJob fetch-jra-track-condition with successful claim runs the snapshot 
   expect(completeTrackConditionFetch).toHaveBeenCalledTimes(1);
 });
 
+it("handleJob fetch-jra-track-condition writes per-race cache when insert returns future races", async () => {
+  const { handleJob } = await import("./worker");
+  const {
+    claimTrackConditionFetch,
+    insertJraTrackConditionSnapshot,
+    completeTrackConditionFetch,
+  } = await import("./storage");
+  const { writeCachedTrackCondition } = await import("./track-condition-cache");
+  vi.mocked(claimTrackConditionFetch).mockResolvedValueOnce(true);
+  vi.mocked(insertJraTrackConditionSnapshot).mockResolvedValueOnce([
+    { raceKey: "jra:2026:0512:08:01", raceStartAtJst: "2099-05-12T15:00:00+09:00" },
+  ] as never);
+  await handleJob(
+    buildEnv({ REALTIME_TEST_NOW: "2026-05-12T00:00:00.000Z" } as never),
+    { date: "20260512", keibajoCode: "08", type: "fetch-jra-track-condition" },
+  );
+  expect(completeTrackConditionFetch).toHaveBeenCalled();
+  expect(writeCachedTrackCondition).toHaveBeenCalledTimes(1);
+});
+
+it("handleJob fetch-jra-track-condition fails the fetch and rethrows when Playwright throws", async () => {
+  const { handleJob } = await import("./worker");
+  const { claimTrackConditionFetch, failTrackConditionFetch } = await import("./storage");
+  const { fetchJraTrackConditionWithPlaywright } = await import("./jra-track-condition");
+  vi.mocked(claimTrackConditionFetch).mockResolvedValueOnce(true);
+  vi.mocked(fetchJraTrackConditionWithPlaywright).mockRejectedValueOnce(new Error("playwright boom"));
+  await expect(
+    handleJob(buildEnv(), {
+      date: "20260512",
+      keibajoCode: "08",
+      type: "fetch-jra-track-condition",
+    }),
+  ).rejects.toThrow("playwright boom");
+  expect(failTrackConditionFetch).toHaveBeenCalled();
+});
+
 it("handleJob fetch-jra-track-condition with successful claim and empty races falls through to fail", async () => {
   const { handleJob } = await import("./worker");
   const {
