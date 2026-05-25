@@ -123,7 +123,6 @@ import {
   runRunningStyleCronTick,
 } from "./running-style-cron";
 import { handleRunningStylePredictionJob } from "./running-style-queue";
-import { DAILY_FEATURE_BUILD_CRON, runDailyFeatureBuildForEnv } from "./daily-feature-build";
 import { WIN5_DISCOVER_CRON, logWin5CronResult } from "./win5-cron";
 import { handleWin5PredictionJob } from "./win5-queue";
 import {
@@ -1603,27 +1602,12 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
   }
   const [workUrl, commentUrl, dataTopUrl] = [
     race.source === "jra"
-      ? buildPremiumUrl(
-          config,
-          config.workPathTemplate,
-          { sourceRaceId: link.sourceRaceId },
-          { source: race.source },
-        )
+      ? buildPremiumUrl(config, config.workPathTemplate, { sourceRaceId: link.sourceRaceId })
       : null,
     race.source === "jra"
-      ? buildPremiumUrl(
-          config,
-          config.commentPathTemplate,
-          { sourceRaceId: link.sourceRaceId },
-          { source: race.source },
-        )
+      ? buildPremiumUrl(config, config.commentPathTemplate, { sourceRaceId: link.sourceRaceId })
       : null,
-    buildPremiumUrl(
-      config,
-      config.dataTopPathTemplate,
-      { sourceRaceId: link.sourceRaceId },
-      { source: race.source },
-    ),
+    buildPremiumUrl(config, config.dataTopPathTemplate, { sourceRaceId: link.sourceRaceId }),
   ];
   const fetchedAt = toJstIsoString();
   const [workResult, commentResult, dataTopResult] = await Promise.allSettled([
@@ -2083,15 +2067,6 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
       );
       return;
     }
-    if (job.type === "build-daily-features") {
-      const result = await runDailyFeatureBuildForEnv(env, {
-        fromDate: job.date,
-        sourceScope: job.sourceScope ?? "all",
-        toDate: job.date,
-      });
-      await logFetch(env.REALTIME_DB, job.type, "ok", null, JSON.stringify(result));
-      return;
-    }
     await fetchAndStoreWeights(env, job.raceKey);
     await logFetch(env.REALTIME_DB, job.type, "ok", job.raceKey, null);
   } catch (error) {
@@ -2291,25 +2266,6 @@ export default {
     }
     if (controller.cron === WIN5_DISCOVER_CRON) {
       ctx.waitUntil(logWin5CronResult(env, scheduledAt));
-      return;
-    }
-    if (controller.cron === DAILY_FEATURE_BUILD_CRON) {
-      const targetDate = getTodayJst(scheduledAt);
-      ctx.waitUntil(
-        runDailyFeatureBuildForEnv(env, { fromDate: targetDate, toDate: targetDate })
-          .then((result) =>
-            logFetch(env.REALTIME_DB, "build-daily-features", "ok", null, JSON.stringify(result)),
-          )
-          .catch((error: unknown) =>
-            logFetch(
-              env.REALTIME_DB,
-              "build-daily-features",
-              "error",
-              null,
-              error instanceof Error ? error.message : String(error),
-            ),
-          ),
-      );
       return;
     }
     if (controller.cron === D1_RETENTION_CRON) {
