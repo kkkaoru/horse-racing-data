@@ -285,6 +285,36 @@ it("buildFallbackRaceRow returns null when babaCode is not in BABA_CODE_TO_LOCAL
   expect(result).toBeNull();
 });
 
+it("buildFallbackRaceRow returns null when metadata.startTime is missing", () => {
+  const result = buildFallbackRaceRow(
+    "20260512",
+    { babaCode: "36", raceNumber: "01", url: "https://x.test" },
+    "<html><body>no time</body></html>",
+  );
+  expect(result).toBeNull();
+});
+
+it("buildFallbackRaceRow returns a LocalRaceRow when parsing succeeds", () => {
+  const html = `<html><body>
+    <h4>15:30発走</h4>
+    <section class="raceTitle"><h3>テストレース</h3></section>
+  </body></html>`;
+  const result = buildFallbackRaceRow(
+    "20260512",
+    { babaCode: "36", raceNumber: "5", url: "https://x.test" },
+    html,
+  );
+  if (result === null) {
+    throw new Error("buildFallbackRaceRow returned null unexpectedly");
+  }
+  expect(result.kaisai_nen).toBe("2026");
+  expect(result.kaisai_tsukihi).toBe("0512");
+  expect(result.keibajo_code).toBe("30");
+  expect(result.race_bango).toBe("5");
+  expect(result.hasso_jikoku).toBe("1530");
+  expect(result.kyosomei_hondai).toBe("テストレース");
+});
+
 it("truncate returns input when below maxLength", () => {
   expect(truncate("abc", 10)).toBe("abc");
 });

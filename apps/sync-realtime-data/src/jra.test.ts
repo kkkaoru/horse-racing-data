@@ -60,20 +60,34 @@ const makePage = (options: PageMockOptions = {}): Record<string, unknown> => {
   };
 };
 
+interface RouteRecord {
+  handler: (route: {
+    abort: ReturnType<typeof vi.fn>;
+    continue: ReturnType<typeof vi.fn>;
+    request: () => { resourceType: () => string };
+  }) => Promise<void>;
+  pattern: string;
+}
+
 interface BrowserMocks {
   close: ReturnType<typeof vi.fn>;
   newContext: ReturnType<typeof vi.fn>;
   page: Record<string, unknown>;
+  routes: RouteRecord[];
 }
 
 const makeBrowser = (pageOptions: PageMockOptions): BrowserMocks => {
   const page = makePage(pageOptions);
   const close = vi.fn(async () => undefined);
+  const routes: RouteRecord[] = [];
+  const route = vi.fn(async (pattern: string, handler: RouteRecord["handler"]) => {
+    routes.push({ handler, pattern });
+  });
   const newContext = vi.fn(async () => ({
     newPage: vi.fn(async () => page),
-    route: vi.fn(async () => undefined),
+    route,
   }));
-  return { close, newContext, page };
+  return { close, newContext, page, routes };
 };
 
 vi.mock("@cloudflare/playwright", () => ({ launch: vi.fn() }));
@@ -168,4 +182,175 @@ it("fetchJraOddsWithPlaywright continues iterating when a label click throws", a
   const result = await fetchJraOddsWithPlaywright({} as never, "https://x.test/race");
   expect(result.entryHtml).toBe("<html>entry</html>");
   expect(browser.close).toHaveBeenCalledTimes(1);
+});
+
+it("fetchJraOddsWithPlaywright's resource blocker aborts blocked types and continues others", async () => {
+  urlCounter = 0;
+  innerHtmlCounter = 0;
+  const browser = makeBrowser({
+    content: "<html>entry</html>",
+    locators: {
+      "#odds_list": { innerHtml: () => "<table></table>" },
+      "#race_related_link a": { count: 1 },
+    },
+  });
+  await setMockLaunch(browser);
+  await fetchJraOddsWithPlaywright({} as never, "https://x.test/race");
+  expect(browser.routes).toHaveLength(1);
+  const handler = browser.routes[0]?.handler;
+  const fontAbort = vi.fn(async () => undefined);
+  const fontContinue = vi.fn(async () => undefined);
+  await handler?.({
+    abort: fontAbort,
+    continue: fontContinue,
+    request: () => ({ resourceType: () => "font" }),
+  });
+  expect(fontAbort).toHaveBeenCalledTimes(1);
+  const docAbort = vi.fn(async () => undefined);
+  const docContinue = vi.fn(async () => undefined);
+  await handler?.({
+    abort: docAbort,
+    continue: docContinue,
+    request: () => ({ resourceType: () => "document" }),
+  });
+  expect(docContinue).toHaveBeenCalledTimes(1);
+});
+
+it("fetchJraOddsWithPlaywright falls back to first related link when an exact オッズ link is missing", async () => {
+  urlCounter = 0;
+  innerHtmlCounter = 0;
+  const browser = makeBrowser({
+    content: "<html>entry</html>",
+    locators: {
+      "#odds_list": { innerHtml: () => "<table></table>" },
+      "#race_related_link a": { count: 0 },
+    },
+  });
+  // override locator to make filter().first() count() returns 0 (no exact オッズ)
+  // but raw "#race_related_link a" first() returns count 1.
+  browser.page.locator = vi.fn((selector: string) => {
+    if (selector === "#race_related_link a") {
+      return {
+        click: vi.fn(async () => undefined),
+        count: vi.fn(async () => 1),
+        filter: vi.fn(() => ({
+          click: vi.fn(async () => undefined),
+          count: vi.fn(async () => 0),
+          first: vi.fn(() => ({
+            click: vi.fn(async () => undefined),
+            count: vi.fn(async () => 0),
+          })),
+        })),
+        first: vi.fn(() => ({
+          click: vi.fn(async () => undefined),
+          count: vi.fn(async () => 1),
+        })),
+        innerHTML: vi.fn(async () => ""),
+        locator: vi.fn(),
+        textContent: vi.fn(async () => null),
+      };
+    }
+    if (selector === "#odds_list") {
+      return makeLocator({ innerHtml: () => "<table></table>" });
+    }
+    return makeLocator({});
+  });
+  await setMockLaunch(browser);
+  const result = await fetchJraOddsWithPlaywright({} as never, "https://x.test/race");
+  expect(result.entryHtml).toBe("<html>entry</html>");
+});
+
+it("fetchJraOddsWithPlaywright falls back to getByText link when no related link found", async () => {
+  urlCounter = 0;
+  innerHtmlCounter = 0;
+  const browser = makeBrowser({
+    content: "<html>entry</html>",
+    locators: {
+      "#odds_list": { innerHtml: () => "<table></table>" },
+    },
+  });
+  browser.page.locator = vi.fn((selector: string) => {
+    if (selector === "#race_related_link a") {
+      return {
+        click: vi.fn(async () => undefined),
+        count: vi.fn(async () => 0),
+        filter: vi.fn(() => ({
+          first: vi.fn(() => ({
+            click: vi.fn(async () => undefined),
+            count: vi.fn(async () => 0),
+          })),
+        })),
+        first: vi.fn(() => ({
+          click: vi.fn(async () => undefined),
+          count: vi.fn(async () => 0),
+        })),
+        innerHTML: vi.fn(async () => ""),
+        locator: vi.fn(),
+        textContent: vi.fn(async () => null),
+      };
+    }
+    if (selector === "#odds_list") {
+      return makeLocator({ innerHtml: () => "<table></table>" });
+    }
+    return makeLocator({});
+  });
+  browser.page.getByText = vi.fn(() => ({
+    click: vi.fn(async () => undefined),
+    count: vi.fn(async () => 1),
+    filter: vi.fn(),
+    first: vi.fn(() => ({
+      click: vi.fn(async () => undefined),
+      count: vi.fn(async () => 1),
+    })),
+    innerHTML: vi.fn(async () => ""),
+    locator: vi.fn(),
+    textContent: vi.fn(async () => null),
+  }));
+  await setMockLaunch(browser);
+  const result = await fetchJraOddsWithPlaywright({} as never, "https://x.test/race");
+  expect(result.entryHtml).toBe("<html>entry</html>");
+});
+
+it("fetchJraOddsWithPlaywright throws when no odds link is found anywhere", async () => {
+  urlCounter = 0;
+  innerHtmlCounter = 0;
+  const browser = makeBrowser({
+    content: "<html>entry</html>",
+    locators: {
+      "#odds_list": { innerHtml: () => "<table></table>" },
+    },
+  });
+  browser.page.locator = vi.fn(() => ({
+    click: vi.fn(async () => undefined),
+    count: vi.fn(async () => 0),
+    filter: vi.fn(() => ({
+      first: vi.fn(() => ({
+        click: vi.fn(async () => undefined),
+        count: vi.fn(async () => 0),
+      })),
+    })),
+    first: vi.fn(() => ({
+      click: vi.fn(async () => undefined),
+      count: vi.fn(async () => 0),
+    })),
+    innerHTML: vi.fn(async () => ""),
+    locator: vi.fn(),
+    textContent: vi.fn(async () => null),
+  }));
+  browser.page.getByText = vi.fn(() => ({
+    click: vi.fn(async () => undefined),
+    count: vi.fn(async () => 0),
+    filter: vi.fn(),
+    first: vi.fn(() => ({
+      click: vi.fn(async () => undefined),
+      count: vi.fn(async () => 0),
+    })),
+    innerHTML: vi.fn(async () => ""),
+    locator: vi.fn(),
+    textContent: vi.fn(async () => null),
+  }));
+  await setMockLaunch(browser);
+  await expect(fetchJraOddsWithPlaywright({} as never, "https://x.test/race")).rejects.toThrow(
+    "JRA odds link was not found",
+  );
 });
