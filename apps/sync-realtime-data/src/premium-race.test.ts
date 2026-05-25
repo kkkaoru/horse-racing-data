@@ -29,6 +29,44 @@ it("isPremiumRaceDataTarget returns false for nar Ban-ei keibajo", () => {
   expect(isPremiumRaceDataTarget({ keibajoCode: "83", source: "nar" })).toBe(false);
 });
 
+it("getPremiumRaceConfig reads every env var when all are provided", () => {
+  expect(
+    getPremiumRaceConfig({
+      PREMIUM_RACE_COMMENT_PATH_TEMPLATE: "/c",
+      PREMIUM_RACE_COOKIE: "k",
+      PREMIUM_RACE_DATA_TOP_PATH_TEMPLATE: "/d",
+      PREMIUM_RACE_ENTRY_LINK_PATTERN: "p",
+      PREMIUM_RACE_NAR_ORIGIN: "https://nar.example",
+      PREMIUM_RACE_NAR_TOP_PATH_TEMPLATE: "/n",
+      PREMIUM_RACE_ORIGIN: "https://x.test",
+      PREMIUM_RACE_PADDOCK_PATH_TEMPLATE: "/p",
+      PREMIUM_RACE_PROXY_BEARER: "tk",
+      PREMIUM_RACE_PROXY_URL: "https://proxy.example",
+      PREMIUM_RACE_PROXY_USER_ID: "u",
+      PREMIUM_RACE_RESPONSE_CHARSET: "utf-8",
+      PREMIUM_RACE_SOURCE_ID_QUERY_KEY: "rid",
+      PREMIUM_RACE_TOP_PATH_TEMPLATE: "/t",
+      PREMIUM_RACE_WORK_PATH_TEMPLATE: "/w",
+    }),
+  ).toStrictEqual({
+    commentPathTemplate: "/c",
+    cookie: "k",
+    dataTopPathTemplate: "/d",
+    entryLinkPattern: "p",
+    narOrigin: "https://nar.example",
+    narTopPathTemplate: "/n",
+    origin: "https://x.test",
+    paddockPathTemplate: "/p",
+    proxyBearer: "tk",
+    proxyUrl: "https://proxy.example",
+    proxyUserId: "u",
+    responseCharset: "utf-8",
+    sourceIdQueryKey: "rid",
+    topPathTemplate: "/t",
+    workPathTemplate: "/w",
+  });
+});
+
 it("getPremiumRaceConfig fills missing env values with null and the default NAR origin", () => {
   expect(getPremiumRaceConfig({})).toStrictEqual({
     commentPathTemplate: null,
