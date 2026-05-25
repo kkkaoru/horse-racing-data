@@ -232,6 +232,31 @@ it("scheduled triggers logRunningStylePlanResult for the inference cron", async 
   expect(runRunningStyleCronTick).toHaveBeenCalled();
 });
 
+it("scheduled prewarm path logs discover-urls error when upsertDiscoveredUrls throws", async () => {
+  const { default: worker } = await import("./worker");
+  const { fetchJraRacesByDate } = await import("./postgres");
+  const { logFetch } = await import("./storage");
+  vi.mocked(fetchJraRacesByDate).mockRejectedValueOnce(new Error("postgres boom"));
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "0 12 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv(),
+    ctx,
+  );
+  await flushWaits(waits);
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "discover-urls",
+    "error",
+    null,
+    "postgres boom",
+  );
+});
+
 it("scheduled triggers prewarm path for the prewarm cron", async () => {
   const { default: worker } = await import("./worker");
   const { ctx, waits } = buildCtx();
