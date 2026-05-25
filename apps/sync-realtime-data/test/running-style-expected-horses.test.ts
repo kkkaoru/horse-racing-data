@@ -22,6 +22,17 @@ describe("running-style expected horses", () => {
     expect(resolveRunningStyleExpectedHorseCount(12, null)).toBe(12);
   });
 
+  test("falls back to feature count when entries exist but no horse is active", () => {
+    expect(
+      resolveRunningStyleExpectedHorseCount(12, {
+        horses: [
+          { horseNumber: "1", status: "出走取消" },
+          { horseNumber: "2", status: "取消" },
+        ],
+      }),
+    ).toBe(12);
+  });
+
   test("filters feature rows to active horses only", () => {
     expect(
       filterRunningStyleFeatureRowsByActiveEntries(
