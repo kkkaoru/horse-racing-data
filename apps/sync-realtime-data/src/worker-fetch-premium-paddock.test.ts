@@ -332,6 +332,65 @@ it("fetch-premium-paddock attempts throw + no existing payload throws and writes
   });
 });
 
+it("fetch-premium-paddock success path with non-empty bulletins replaces data and updates ok", async () => {
+  const { handleJob } = await import("./worker");
+  const {
+    getRaceSource,
+    getPremiumRaceLink,
+    getPremiumRacePayload,
+    replacePremiumRaceData,
+    updatePremiumPaddockFetchState,
+  } = await import("./storage");
+  const { fetchPremiumHtmlAttempts, parsePremiumPaddockBulletins } = await import("./premium-race");
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildPremiumPaddockRaceSource());
+  vi.mocked(getPremiumRaceLink).mockResolvedValueOnce({
+    entryUrl: "https://x.test/race?race_id=202605120801",
+    sourceRaceId: "202605120801",
+  } as never);
+  vi.mocked(fetchPremiumHtmlAttempts).mockResolvedValueOnce([
+    { html: "<table><tr>data</tr></table>", mode: "direct" },
+  ] as never);
+  vi.mocked(parsePremiumPaddockBulletins).mockReturnValueOnce({
+    authRequired: false,
+    bulletins: [
+      {
+        commentText: "好調",
+        evaluationText: "A",
+        frameNumber: "1",
+        groupKey: "favorite",
+        horseName: "馬1",
+        horseNumber: "1",
+      },
+    ],
+    pending: false,
+    unavailable: false,
+  });
+  vi.mocked(getPremiumRacePayload).mockResolvedValueOnce({
+    dataTopHorses: [],
+    paddockBulletins: [
+      {
+        commentText: "好調",
+        evaluationText: "A",
+        fetchedAt: "2026-05-12T11:00:00+09:00",
+        frameNumber: "1",
+        groupKey: "favorite",
+        horseName: "馬1",
+        horseNumber: "1",
+      },
+    ],
+    stableComments: [],
+    trainingReviews: [],
+  } as never);
+  await handleJob(buildPaddockEnv(), {
+    raceKey: "jra:2026:0512:08:01",
+    type: "fetch-premium-paddock",
+  });
+  expect(replacePremiumRaceData).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(updatePremiumPaddockFetchState).mock.calls.at(-1)?.[1]).toMatchObject({
+    status: "ok",
+  });
+});
+
 it("fetch-premium-paddock attempts throw + existing payload with bulletins writes ok and returns", async () => {
   const { handleJob } = await import("./worker");
   const {
