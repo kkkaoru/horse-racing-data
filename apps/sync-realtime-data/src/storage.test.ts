@@ -1493,6 +1493,58 @@ it("recordPremiumPaddockNotificationEvent binds optional sentAt and message", as
   expect(prepare).toHaveBeenCalledTimes(1);
 });
 
+it("getRaceSource maps oddsLinks to {} when odds_links_json is JSON null", async () => {
+  const first = vi.fn(async () => ({
+    baba_code: "22",
+    deba_url: "u",
+    discovered_at: null,
+    kaisai_kai: null,
+    kaisai_nen: "2026",
+    kaisai_nichime: null,
+    kaisai_tsukihi: "0512",
+    keibajo_code: "55",
+    last_odds_fetch_at: null,
+    last_weight_fetch_at: null,
+    odds_links_json: "null",
+    race_bango: "01",
+    race_key: "nar:2026:0512:55:01",
+    race_name: null,
+    race_start_at_jst: "2026-05-12T18:00:00+09:00",
+    source: "nar",
+  }));
+  const bind = vi.fn((..._args: unknown[]) => ({ first }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const result = await getRaceSource(db, "nar:2026:0512:55:01");
+  expect(result?.oddsLinks).toStrictEqual({});
+});
+
+it("getRaceSource maps oddsLinks to {} when odds_links_json is malformed JSON", async () => {
+  const first = vi.fn(async () => ({
+    baba_code: "22",
+    deba_url: "u",
+    discovered_at: null,
+    kaisai_kai: null,
+    kaisai_nen: "2026",
+    kaisai_nichime: null,
+    kaisai_tsukihi: "0512",
+    keibajo_code: "55",
+    last_odds_fetch_at: null,
+    last_weight_fetch_at: null,
+    odds_links_json: "not-json",
+    race_bango: "01",
+    race_key: "nar:2026:0512:55:01",
+    race_name: null,
+    race_start_at_jst: "2026-05-12T18:00:00+09:00",
+    source: "nar",
+  }));
+  const bind = vi.fn((..._args: unknown[]) => ({ first }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const result = await getRaceSource(db, "nar:2026:0512:55:01");
+  expect(result?.oddsLinks).toStrictEqual({});
+});
+
 it("listOddsHistoryByType skips rows with no oddsType or no fetched_at and groups by type", async () => {
   const all = vi.fn(async () => ({
     results: [
