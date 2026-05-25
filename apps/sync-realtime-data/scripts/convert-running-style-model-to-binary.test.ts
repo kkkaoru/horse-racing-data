@@ -1,6 +1,10 @@
 // run with: bun run test
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { convertRunningStyleModelFile } from "./convert-running-style-model-to-binary";
+import {
+  convertRunningStyleModelFile,
+  main,
+  parseArgs,
+} from "./convert-running-style-model-to-binary";
 
 interface BunGlobal {
   file: (path: string) => { text: () => Promise<string> };
@@ -156,4 +160,47 @@ it("convertRunningStyleModelFile handles numeric LT split decision_type", async 
   };
   const result = await convertRunningStyleModelFile("model.json", "model.flatbin");
   expect(result.nodes).toBe(6);
+});
+
+it("parseArgs reads --input and --output from Bun.argv", () => {
+  (globalThis as { Bun?: BunGlobal & { argv: string[] } }).Bun = {
+    argv: [
+      "bun",
+      "scripts/convert.ts",
+      "--input",
+      "model.json",
+      "--output",
+      "model.flatbin",
+    ],
+    file: () => ({ text: async (): Promise<string> => "" }),
+    write: async (_path: string, _data: Uint8Array): Promise<number> => 0,
+  };
+  expect(parseArgs()).toStrictEqual({ input: "model.json", output: "model.flatbin" });
+});
+
+it("parseArgs throws Usage message when --input is missing", () => {
+  (globalThis as { Bun?: BunGlobal & { argv: string[] } }).Bun = {
+    argv: ["bun", "scripts/convert.ts", "--output", "x.bin"],
+    file: () => ({ text: async (): Promise<string> => "" }),
+    write: async (_path: string, _data: Uint8Array): Promise<number> => 0,
+  };
+  expect(() => parseArgs()).toThrow(/Usage/);
+});
+
+it("main calls convertRunningStyleModelFile and logs the JSON result", async () => {
+  (globalThis as { Bun?: BunGlobal & { argv: string[] } }).Bun = {
+    argv: [
+      "bun",
+      "scripts/convert.ts",
+      "--input",
+      "in.json",
+      "--output",
+      "out.flatbin",
+    ],
+    file: () => ({ text: async (): Promise<string> => JSON.stringify(MIN_MODEL) }),
+    write: async (_path: string, _data: Uint8Array): Promise<number> => 0,
+  };
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await main();
+  expect(logSpy).toHaveBeenCalledTimes(1);
 });
