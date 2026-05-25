@@ -367,6 +367,23 @@ it("parsePremiumDataTopHorses returns empty when the pickup area is missing", ()
   expect(parsePremiumDataTopHorses("<div>nothing</div>", {})).toStrictEqual([]);
 });
 
+it("parsePremiumDataTopHorses sets horseName=null when anchor is missing", () => {
+  const html = `
+    <div class="DataPickupHorseArea">
+      <dl>
+        <dt><span class="Umaban_Num">4</span></dt>
+        <dd>
+          <dd class="PickupDataBox">
+            <ul><li>反応良し</li></ul>
+          </dd>
+        </dd>
+      </dl>
+    </div>
+  `;
+  const result = parsePremiumDataTopHorses(html, {});
+  expect(result[0]?.horseName).toBeNull();
+});
+
 it("parsePremiumDataTopHorses drops entries with no reasons", () => {
   const html = `
     <div class="DataPickupHorseArea">
