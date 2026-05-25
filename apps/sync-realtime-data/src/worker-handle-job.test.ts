@@ -460,6 +460,86 @@ it("handleJob discover-premium-races logs the discovery summary", async () => {
   );
 });
 
+it("handleJob discover-premium-races with full config fetches top + NAR top and links races", async () => {
+  const { handleJob } = await import("./worker");
+  const {
+    listSchedulableRaceSourcesByDate,
+    upsertPremiumRaceLink,
+  } = await import("./storage");
+  const { fetchPremiumHtml, discoverPremiumRaceLinks } = await import("./premium-race");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
+    {
+      babaCode: "08",
+      debaUrl: "https://jra.example/race",
+      discoveredAt: "2026-05-12T00:00:00+09:00",
+      kaisaiKai: "02",
+      kaisaiNen: "2026",
+      kaisaiNichime: "06",
+      kaisaiTsukihi: "0512",
+      keibajoCode: "08",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "01",
+      raceKey: "jra:2026:0512:08:01",
+      raceName: "JRA",
+      raceStartAtJst: "2026-05-12T15:00:00+09:00",
+      resultCompleteAt: null,
+      resultFetchLockUntil: null,
+      source: "jra",
+      updatedAt: "2026-05-12T00:00:00+09:00",
+    } as never,
+    {
+      babaCode: "22",
+      debaUrl: "https://nar.example/race",
+      discoveredAt: "2026-05-12T00:00:00+09:00",
+      kaisaiKai: null,
+      kaisaiNen: "2026",
+      kaisaiNichime: null,
+      kaisaiTsukihi: "0512",
+      keibajoCode: "55",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "01",
+      raceKey: "nar:2026:0512:55:01",
+      raceName: "NAR",
+      raceStartAtJst: "2026-05-12T18:00:00+09:00",
+      resultCompleteAt: null,
+      resultFetchLockUntil: null,
+      source: "nar",
+      updatedAt: "2026-05-12T00:00:00+09:00",
+    } as never,
+  ]);
+  vi.mocked(fetchPremiumHtml).mockResolvedValue("<html></html>");
+  vi.mocked(discoverPremiumRaceLinks).mockReturnValue([
+    {
+      entryUrl: "https://x.test/race?race_id=202605120801",
+      keibajoCode: "08",
+      raceBango: "01",
+      sourceRaceId: "202605120801",
+    } as never,
+  ]);
+  await handleJob(
+    buildEnv({
+      PREMIUM_RACE_NAR_TOP_PATH_TEMPLATE: "/nar/{date}",
+      PREMIUM_RACE_ORIGIN: "https://x.test",
+      PREMIUM_RACE_TOP_PATH_TEMPLATE: "/top/{date}",
+    } as never),
+    { date: "20260512", type: "discover-premium-races" },
+  );
+  expect(fetchPremiumHtml).toHaveBeenCalledTimes(2);
+  expect(upsertPremiumRaceLink).toHaveBeenCalled();
+});
+
 it("handleJob plan-realtime-fetches with selfSchedule logs twice and enqueues next plan", async () => {
   const { handleJob } = await import("./worker");
   const { logFetch } = await import("./storage");
