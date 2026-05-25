@@ -282,6 +282,29 @@ it("fetch-premium-paddock pending branch updates state with status pending", asy
   });
 });
 
+it("fetch-premium-paddock falls back through ensurePremiumRaceLink when no existing link", async () => {
+  const { handleJob } = await import("./worker");
+  const {
+    getRaceSource,
+    getPremiumRaceLink,
+    upsertPremiumRaceLink,
+    updatePremiumPaddockFetchState,
+  } = await import("./storage");
+  const { fetchPremiumHtmlAttempts } = await import("./premium-race");
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildPremiumPaddockRaceSource());
+  vi.mocked(getPremiumRaceLink).mockReset();
+  vi.mocked(getPremiumRaceLink).mockResolvedValue(null);
+  vi.mocked(fetchPremiumHtmlAttempts).mockResolvedValueOnce([
+    { html: "<table></table>", mode: "direct" },
+  ] as never);
+  await handleJob(buildPaddockEnv(), {
+    raceKey: "jra:2026:0512:08:01",
+    type: "fetch-premium-paddock",
+  });
+  expect(upsertPremiumRaceLink).toHaveBeenCalled();
+  expect(updatePremiumPaddockFetchState).toHaveBeenCalled();
+});
+
 it("fetch-premium-paddock empty branch updates state with status empty", async () => {
   const { handleJob } = await import("./worker");
   const { getRaceSource, getPremiumRaceLink, updatePremiumPaddockFetchState } = await import(
