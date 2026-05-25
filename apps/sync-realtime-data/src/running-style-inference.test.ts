@@ -1,7 +1,12 @@
 // Run with bun test apps/sync-realtime-data/src/running-style-inference.test.ts
 import { expect, test, vi } from "vitest";
 
-import { runRunningStyleInference } from "./running-style-inference";
+import {
+  runRunningStyleInference,
+  runRunningStyleInferenceForRows,
+  runRunningStyleInferenceForRowsWithFlatModel,
+  runRunningStyleInferenceRowsWithFlatModel,
+} from "./running-style-inference";
 import type { CompactLightGBMModel } from "./running-style-lightgbm-tree";
 import type { RaceHorseFeatureRow } from "./running-style-r2";
 
@@ -155,4 +160,109 @@ test("runRunningStyleInference predicts nige for class-0 dominated leaves", asyn
     predictedAt: "2026-05-18T10:00:00Z",
   });
   expect(calls[0]?.[11]).toBe("nige");
+});
+
+test("runRunningStyleInferenceForRows skips the features fetch and consumes provided rows", async () => {
+  const bucket = buildMockBucket("model/key", "features/key", []);
+  const { calls, db } = buildMockD1();
+  const summary = await runRunningStyleInferenceForRows(bucket, db, {
+    modelKey: "model/key",
+    predictedAt: "2026-05-18T10:00:00Z",
+    rows: [HORSE_ROW_1, HORSE_ROW_2],
+  });
+  expect(summary.horseCount).toBe(2);
+  expect(summary.raceCount).toBe(1);
+  expect(calls.length).toBe(2);
+});
+
+const FLAT_MAGIC = "RSLGBM1\0";
+const FLAT_NODE_BYTES = 40;
+
+interface FlatNodeSpec {
+  kind: 0;
+  leafValue: number;
+}
+
+const buildFlatBuffer = (leafValues: FlatNodeSpec[]): ArrayBuffer => {
+  const header = {
+    categorical_features: [],
+    categorical_value_count: 0,
+    class_labels: ["nige", "senkou", "sashi", "oikomi"],
+    feature_names: ["past_nige_rate_self"],
+    format: "rs-lgbm-flat-v1",
+    model_version: "flat-v1",
+    node_count: leafValues.length,
+    num_class: 4,
+    num_tree_per_iteration: 4,
+    objective: "multiclass",
+    tree_root_indices: leafValues.map((_, index) => index),
+  };
+  const headerBytes = new TextEncoder().encode(JSON.stringify(header));
+  const magicBytes = new TextEncoder().encode(FLAT_MAGIC);
+  const totalLength =
+    magicBytes.byteLength + 4 + headerBytes.byteLength + leafValues.length * FLAT_NODE_BYTES;
+  const buffer = new ArrayBuffer(totalLength);
+  const view = new DataView(buffer);
+  new Uint8Array(buffer).set(magicBytes, 0);
+  view.setUint32(magicBytes.byteLength, headerBytes.byteLength, true);
+  new Uint8Array(buffer).set(headerBytes, magicBytes.byteLength + 4);
+  let cursor = magicBytes.byteLength + 4 + headerBytes.byteLength;
+  leafValues.forEach((spec) => {
+    view.setUint8(cursor, spec.kind);
+    view.setFloat64(cursor + 32, spec.leafValue, true);
+    cursor += FLAT_NODE_BYTES;
+  });
+  return buffer;
+};
+
+const buildMockFlatBucket = (key: string): R2Bucket => {
+  const buffer = buildFlatBuffer([
+    { kind: 0, leafValue: 1 },
+    { kind: 0, leafValue: 0 },
+    { kind: 0, leafValue: 0 },
+    { kind: 0, leafValue: 0 },
+  ]);
+  const head = vi.fn(async () => ({ etag: "etag-flat" }));
+  const get = vi.fn(async (requestedKey: string) =>
+    requestedKey === key ? { arrayBuffer: async (): Promise<ArrayBuffer> => buffer } : null,
+  );
+  return { get, head } as unknown as R2Bucket;
+};
+
+test("runRunningStyleInferenceForRowsWithFlatModel loads model from R2 and runs inference", async () => {
+  const bucket = buildMockFlatBucket("flat/key");
+  const { db } = buildMockD1();
+  const summary = await runRunningStyleInferenceForRowsWithFlatModel(bucket, db, {
+    modelKey: "flat/key",
+    predictedAt: "2026-05-18T10:00:00Z",
+    rows: [HORSE_ROW_1, HORSE_ROW_2],
+  });
+  expect(summary.modelVersion).toBe("flat-v1");
+  expect(summary.raceCount).toBe(1);
+  expect(summary.horseCount).toBe(2);
+});
+
+test("runRunningStyleInferenceRowsWithFlatModel writes predictions when given a loaded flat model", async () => {
+  const bucket = buildMockFlatBucket("flat/key");
+  const { calls, db } = buildMockD1();
+  const summary = await runRunningStyleInferenceForRowsWithFlatModel(bucket, db, {
+    modelKey: "flat/key",
+    predictedAt: "2026-05-18T10:00:00Z",
+    rows: [HORSE_ROW_1],
+  });
+  expect(summary.writtenCount).toBe(1);
+  expect(calls[0]?.[11]).toBe("nige");
+});
+
+test("runRunningStyleInferenceRowsWithFlatModel is also callable directly with a loaded model", async () => {
+  const bucket = buildMockFlatBucket("flat/key");
+  const { loadFlatLightGBMModelFromR2 } = await import("./running-style-model-binary");
+  const model = await loadFlatLightGBMModelFromR2(bucket, "flat/key");
+  const { db } = buildMockD1();
+  const summary = await runRunningStyleInferenceRowsWithFlatModel(db, {
+    model,
+    predictedAt: "2026-05-18T10:00:00Z",
+    rows: [HORSE_ROW_1, HORSE_ROW_2],
+  });
+  expect(summary.raceCount).toBe(1);
 });
