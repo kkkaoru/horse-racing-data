@@ -67,4 +67,31 @@ describe("running-style entry coverage", () => {
     expect(coverage.cacheable).toBe(false);
     expect(coverage.cacheableRows).toEqual([buildRow(1)]);
   });
+
+  test("falls back to caching all rows when no entry snapshot is available", () => {
+    const coverage = evaluateRunningStyleCacheCoverage(null, [buildRow(1), buildRow(2)]);
+    expect(coverage).toStrictEqual({
+      activeHorseCount: 2,
+      cacheable: true,
+      cacheableRows: [buildRow(1), buildRow(2)],
+    });
+  });
+
+  test("treats empty entry snapshot list the same as null and caches all rows", () => {
+    const coverage = evaluateRunningStyleCacheCoverage([], [buildRow(1)]);
+    expect(coverage).toStrictEqual({
+      activeHorseCount: 1,
+      cacheable: true,
+      cacheableRows: [buildRow(1)],
+    });
+  });
+
+  test("returns not-cacheable when no rows and no entries", () => {
+    const coverage = evaluateRunningStyleCacheCoverage(null, []);
+    expect(coverage).toStrictEqual({
+      activeHorseCount: 0,
+      cacheable: false,
+      cacheableRows: [],
+    });
+  });
 });
