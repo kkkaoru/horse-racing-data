@@ -285,3 +285,88 @@ it("handleJob logs an error and rethrows when the dispatched action throws", asy
     "boom",
   );
 });
+
+it("handleJob fetch-odds returns ok after claim returns false (idempotent skip)", async () => {
+  const { handleJob } = await import("./worker");
+  const { claimOddsFetch, logFetch } = await import("./storage");
+  vi.mocked(claimOddsFetch).mockResolvedValueOnce(false);
+  await handleJob(buildEnv(), { raceKey: "jra:2026:0512:08:01", type: "fetch-odds" });
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-odds",
+    "ok",
+    "jra:2026:0512:08:01",
+    null,
+  );
+});
+
+it("handleJob fetch-results returns ok after claim returns false (idempotent skip)", async () => {
+  const { handleJob } = await import("./worker");
+  const { claimResultFetch, logFetch } = await import("./storage");
+  vi.mocked(claimResultFetch).mockResolvedValueOnce(false);
+  await handleJob(buildEnv(), { raceKey: "jra:2026:0512:08:01", type: "fetch-results" });
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-results",
+    "ok",
+    "jra:2026:0512:08:01",
+    null,
+  );
+});
+
+it("handleJob discover-urls calls upsertDiscoveredUrls + discoverPremiumRacesForDate", async () => {
+  const { handleJob } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  await handleJob(buildEnv(), { date: "20260512", type: "discover-urls" });
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "discover-urls",
+    "ok",
+    null,
+    expect.any(String),
+  );
+});
+
+it("handleJob plan-realtime-fetches without selfSchedule logs once", async () => {
+  const { handleJob } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  await handleJob(buildEnv(), { date: "20260512", type: "plan-realtime-fetches" });
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-realtime-fetches",
+    "ok",
+    null,
+    expect.any(String),
+  );
+});
+
+it("handleJob discover-premium-race-links delegates to discoverPremiumRacesForDate", async () => {
+  const { handleJob } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  await handleJob(buildEnv(), { date: "20260512", type: "discover-premium-race-links" });
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "discover-premium-race-links",
+    "ok",
+    null,
+    expect.any(String),
+  );
+});
+
+it("handleJob fetch-jra-track-condition delegates to fetchAndStoreJraTrackCondition", async () => {
+  const { handleJob } = await import("./worker");
+  const { logFetch, claimTrackConditionFetch } = await import("./storage");
+  vi.mocked(claimTrackConditionFetch).mockResolvedValueOnce(false);
+  await handleJob(buildEnv(), {
+    date: "20260512",
+    keibajoCode: "08",
+    type: "fetch-jra-track-condition",
+  });
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-jra-track-condition",
+    "ok",
+    null,
+    expect.any(String),
+  );
+});
