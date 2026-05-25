@@ -21,7 +21,7 @@ import {
 
 const DEFAULT_LOCAL_DATABASE_URL =
   "postgresql://horse_racing:horse_racing@127.0.0.1:15432/horse_racing";
-const DEFAULT_PREDICTIONS_DIR = "tmp/finish-position-eval/predictions-jra-ensemble-xgb-cb/jra";
+const DEFAULT_PREDICTIONS_DIR = "tmp/finish-position-eval/predictions-jra-xgb-v7-lineage/jra";
 const DEFAULT_OUTPUT_PATH = "tmp/win5-validation-report.json";
 const DEFAULT_AVERAGE_PAYOUT_YEN = 250_000;
 const DEFAULT_START_YEAR = 2006;
@@ -256,22 +256,21 @@ const buildLookupForRows = async (params: {
 };
 
 const loadAveragePayout = async (pool: Pool): Promise<number> => {
-  const result = await pool.query<{ average_payout: string | null }>(
+  const result = await pool.query<{ median_payout: string | null }>(
     `
-      select avg(
-        nullif(
-          btrim(substring(haraimodoshi_win5_001 from 11 for 9)),
-          ''
-        )::bigint
-      )::text as average_payout
-      from jvd_wf
-      where coalesce(tekichu_nashi_flag, '0') = '0'
-        and coalesce(fuseiritsu_flag, '0') = '0'
-        and haraimodoshi_win5_001 is not null
+      select percentile_cont(0.5) within group (order by payout)::text as median_payout
+      from (
+        select nullif(btrim(substring(haraimodoshi_win5_001 from 11 for 9)), '')::bigint as payout
+        from jvd_wf
+        where coalesce(tekichu_nashi_flag, '0') = '0'
+          and coalesce(fuseiritsu_flag, '0') = '0'
+          and haraimodoshi_win5_001 is not null
+      ) parsed
+      where payout is not null
     `,
   );
-  const value = Number(result.rows[0]?.average_payout ?? DEFAULT_AVERAGE_PAYOUT_YEN);
-  return Number.isFinite(value) ? value : DEFAULT_AVERAGE_PAYOUT_YEN;
+  const value = Number(result.rows[0]?.median_payout ?? DEFAULT_AVERAGE_PAYOUT_YEN);
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_AVERAGE_PAYOUT_YEN;
 };
 
 const loadWfRows = async (params: {
