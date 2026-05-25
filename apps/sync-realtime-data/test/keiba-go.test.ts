@@ -248,6 +248,24 @@ describe("keiba.go realtime helpers", () => {
     );
   });
 
+  it("fetchTodayRaceListUrls accepts absolute http URLs and skips entries with missing babaCode", async () => {
+    mockFetchHtml({
+      "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/TodayRaceInfoTop": `
+        <article class="todayRace">
+          <a href="https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2f05%2f10&k_babaCode=22">absolute</a>
+          <a href="/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2f05%2f10">no-baba</a>
+        </article>
+      `,
+    });
+    const result = await fetchTodayRaceListUrls("20260510");
+    expect(result).toStrictEqual([
+      {
+        babaCode: "22",
+        url: "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2f05%2f10&k_babaCode=22",
+      },
+    ]);
+  });
+
   it("parses fukusho odds with min/max range cells", async () => {
     const baseUrl = "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k=1";
     mockFetchHtml({
