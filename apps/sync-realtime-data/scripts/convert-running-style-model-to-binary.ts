@@ -1,6 +1,8 @@
 // Run with bun. Convert the compact LightGBM JSON model into the flat binary
 // format consumed by the Worker.
 
+import { readFile, writeFile } from "node:fs/promises";
+
 import { encodeCategoricalThreshold } from "../src/running-style-model-binary";
 
 const MAGIC = "RSLGBM1\0";
@@ -52,7 +54,7 @@ interface FlatNode {
 }
 
 export const parseArgs = (): { input: string; output: string } => {
-  const args = Bun.argv.slice(2);
+  const args = process.argv.slice(2);
   const inputIndex = args.indexOf("--input");
   const outputIndex = args.indexOf("--output");
   const input = inputIndex >= 0 ? args[inputIndex + 1] : undefined;
@@ -73,7 +75,7 @@ const flattenTree = (
   categoricalValues: number[],
 ): number => {
   const nodeIndex = nodes.length;
-  nodes.push({
+  const placeholder: FlatNode = {
     categoricalCount: 0,
     categoricalStart: 0,
     categoricalValues: [],
@@ -84,10 +86,11 @@ const flattenTree = (
     rightChild: -1,
     splitFeature: -1,
     threshold: Number.NaN,
-  });
+  };
+  nodes.push(placeholder);
   if (isLeaf(node)) {
     nodes[nodeIndex] = {
-      ...nodes[nodeIndex],
+      ...placeholder,
       kind: NODE_LEAF,
       leafValue: node.leaf_value,
     };
@@ -185,7 +188,7 @@ export const convertRunningStyleModelFile = async (
   sizeBytes: number;
   trees: number;
 }> => {
-  const model = JSON.parse(await Bun.file(inputPath).text()) as CompactLightGBMModel;
+  const model = JSON.parse(await readFile(inputPath, "utf8")) as CompactLightGBMModel;
   const nodes: FlatNode[] = [];
   const categoricalValues: number[] = [];
   const treeRootIndices = model.trees.map((tree) =>
@@ -205,7 +208,7 @@ export const convertRunningStyleModelFile = async (
     tree_root_indices: treeRootIndices,
   });
   const output = concat([header, writeNodes(nodes), writeCategoricalValues(categoricalValues)]);
-  await Bun.write(outputPath, output);
+  await writeFile(outputPath, output);
   return {
     categoricalValueCount: categoricalValues.length,
     nodes: nodes.length,

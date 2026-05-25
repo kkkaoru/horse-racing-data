@@ -81,12 +81,9 @@ export const enrichWin5ScheduleLegs = async (
   return { ...schedule, legs };
 };
 
-export const buildWin5LegInputsFromPostgres = async (
-  pool: Pool,
-  schedule: Win5Schedule,
-) => {
+export const buildWin5LegInputsFromPostgres = async (pool: Pool, schedule: Win5Schedule) => {
   const enrichedSchedule = await enrichWin5ScheduleLegs(pool, schedule);
-  return buildWin5LegInputsWithPool(pool, enrichedSchedule);
+  return buildWin5LegInputsWithPool({ pool, schedule: enrichedSchedule });
 };
 
 export const buildWin5ScheduleFromJvdWfRow = (row: Record<string, string>): Win5Schedule | null => {
