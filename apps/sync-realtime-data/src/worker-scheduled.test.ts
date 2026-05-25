@@ -232,6 +232,33 @@ it("scheduled triggers logRunningStylePlanResult for the inference cron", async 
   expect(runRunningStyleCronTick).toHaveBeenCalled();
 });
 
+it("scheduled prewarm path stringifies non-Error rejections from postgres", async () => {
+  const { default: worker } = await import("./worker");
+  const { fetchJraRacesByDate } = await import("./postgres");
+  const { logFetch } = await import("./storage");
+  vi.mocked(fetchJraRacesByDate).mockImplementationOnce(async () => {
+    throw "raw-string-error" as never;
+  });
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "0 12 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv(),
+    ctx,
+  );
+  await flushWaits(waits);
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "discover-urls",
+    "error",
+    null,
+    "raw-string-error",
+  );
+});
+
 it("scheduled prewarm path logs discover-urls error when upsertDiscoveredUrls throws", async () => {
   const { default: worker } = await import("./worker");
   const { fetchJraRacesByDate } = await import("./postgres");
