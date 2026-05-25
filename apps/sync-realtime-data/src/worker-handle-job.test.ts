@@ -370,3 +370,101 @@ it("handleJob fetch-jra-track-condition delegates to fetchAndStoreJraTrackCondit
     expect.any(String),
   );
 });
+
+it("handleJob fetch-odds throws when claim succeeds but race source is missing", async () => {
+  const { handleJob } = await import("./worker");
+  const { claimOddsFetch, getRaceSource } = await import("./storage");
+  vi.mocked(claimOddsFetch).mockResolvedValueOnce(true);
+  vi.mocked(getRaceSource).mockResolvedValueOnce(null);
+  await expect(
+    handleJob(buildEnv(), { raceKey: "jra:2026:0512:08:01", type: "fetch-odds" }),
+  ).rejects.toThrow("race source not found");
+});
+
+it("handleJob fetch-results throws when claim succeeds but race source is missing", async () => {
+  const { handleJob } = await import("./worker");
+  const { claimResultFetch, getRaceSource } = await import("./storage");
+  vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
+  vi.mocked(getRaceSource).mockResolvedValueOnce(null);
+  await expect(
+    handleJob(buildEnv(), { raceKey: "jra:2026:0512:08:01", type: "fetch-results" }),
+  ).rejects.toThrow("race source not found");
+});
+
+it("handleJob fetch-weights default branch throws when no race source", async () => {
+  const { handleJob } = await import("./worker");
+  const { getRaceSource } = await import("./storage");
+  vi.mocked(getRaceSource).mockResolvedValue(null);
+  await expect(
+    handleJob(buildEnv(), { raceKey: "jra:2026:0512:08:01", type: "fetch-weights" }),
+  ).rejects.toThrow("race source not found");
+});
+
+it("handleJob fetch-premium-race-data returns ok when config incomplete", async () => {
+  const { handleJob } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  await handleJob(buildEnv(), { raceKey: "jra:2026:0512:08:01", type: "fetch-premium-race-data" });
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-premium-race-data",
+    "ok",
+    "jra:2026:0512:08:01",
+    null,
+  );
+});
+
+it("handleJob fetch-premium-paddock returns ok when config incomplete", async () => {
+  const { handleJob } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  await handleJob(buildEnv(), { raceKey: "jra:2026:0512:08:01", type: "fetch-premium-paddock" });
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-premium-paddock",
+    "ok",
+    "jra:2026:0512:08:01",
+    null,
+  );
+});
+
+it("handleJob plan-premium-race-data-fetches delegates to planPremiumRaceDataFetchesForDate", async () => {
+  const { handleJob } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  await handleJob(buildEnv(), { date: "20260512", type: "plan-premium-race-data-fetches" });
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-premium-race-data-fetches",
+    "ok",
+    null,
+    expect.any(String),
+  );
+});
+
+it("handleJob discover-premium-races logs the discovery summary", async () => {
+  const { handleJob } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  await handleJob(buildEnv(), { date: "20260512", type: "discover-premium-races" });
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "discover-premium-races",
+    "ok",
+    null,
+    expect.any(String),
+  );
+});
+
+it("handleJob plan-realtime-fetches with selfSchedule logs twice and enqueues next plan", async () => {
+  const { handleJob } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  await handleJob(buildEnv(), {
+    date: "20260512",
+    selfSchedule: true,
+    type: "plan-realtime-fetches",
+  });
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-realtime-fetches-self",
+    "ok",
+    null,
+    expect.any(String),
+  );
+});
