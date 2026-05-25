@@ -25,8 +25,11 @@ export interface DailyRaceEntryRow {
   keibajo_code: string;
   race_bango: string;
   ketto_toroku_bango: string;
+  wakuban: string | null;
   umaban: number | null;
   bamei: string | null;
+  race_name: string | null;
+  hasso_jikoku: string | null;
   track_code: string | null;
   grade_code: string | null;
   kyoso_shubetsu_code: string | null;
@@ -53,6 +56,13 @@ export interface DailyRaceEntryRow {
   corner2_norm: number | null;
   corner3_norm: number | null;
   corner4_norm: number | null;
+  corner_1: number | null;
+  corner_2: number | null;
+  corner_3: number | null;
+  corner_4: number | null;
+  bataiju: number | null;
+  zogen_fugo: string | null;
+  zogen_sa: number | null;
 }
 
 export interface DailyFeatureBuildResult {
@@ -100,8 +110,12 @@ const buildJraSelectSql = (fromDate: string, toDate: string): string => `
     ra.keibajo_code,
     ra.race_bango,
     se.ketto_toroku_bango,
+    se.wakuban,
     se.umaban,
     se.bamei,
+    ra.kyosomei_hondai,
+    ra.kyosomei_fukudai,
+    ra.hasso_jikoku,
     ra.track_code,
     ra.grade_code,
     ra.kyoso_shubetsu_code,
@@ -126,7 +140,10 @@ const buildJraSelectSql = (fromDate: string, toDate: string): string => `
     se.corner_1,
     se.corner_2,
     se.corner_3,
-    se.corner_4
+    se.corner_4,
+    se.bataiju,
+    se.zogen_fugo,
+    se.zogen_sa
   from jvd_se se
   join jvd_ra ra
     on ra.kaisai_nen = se.kaisai_nen
@@ -158,8 +175,12 @@ const buildNarSelectSql = (
     ra.keibajo_code,
     ra.race_bango,
     se.ketto_toroku_bango,
+    se.wakuban,
     se.umaban,
     se.bamei,
+    ra.kyosomei_hondai,
+    ra.kyosomei_fukudai,
+    ra.hasso_jikoku,
     ra.track_code,
     ra.grade_code,
     ra.kyoso_shubetsu_code,
@@ -184,7 +205,10 @@ const buildNarSelectSql = (
     se.corner_1,
     se.corner_2,
     se.corner_3,
-    se.corner_4
+    se.corner_4,
+    se.bataiju,
+    se.zogen_fugo,
+    se.zogen_sa
   from nvd_se se
   join nvd_ra ra
     on ra.kaisai_nen = se.kaisai_nen
@@ -227,8 +251,15 @@ export const buildDailyFeatureSelectSql = (options: DailyFeatureBuildOptions): s
       lpad(keibajo_code::text, 2, '0') as keibajo_code,
       lpad(race_bango::text, 2, '0') as race_bango,
       ketto_toroku_bango,
+      nullif(btrim(coalesce(wakuban, '')), '') as wakuban,
       case when umaban ~ '^[0-9]+$' then nullif(umaban, '')::integer else null end as umaban,
       bamei,
+      coalesce(
+        nullif(regexp_replace(coalesce(kyosomei_hondai, ''), '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+        nullif(regexp_replace(coalesce(kyosomei_fukudai, ''), '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+        '一般競走'
+      ) as race_name,
+      nullif(btrim(coalesce(hasso_jikoku, '')), '') as hasso_jikoku,
       track_code,
       grade_code,
       kyoso_shubetsu_code,
@@ -289,7 +320,14 @@ export const buildDailyFeatureSelectSql = (options: DailyFeatureBuildOptions): s
             else null
           end
         else null
-      end as corner4_norm
+      end as corner4_norm,
+      case when corner_1 ~ '^[0-9]+$' then nullif(corner_1, '00')::integer else null end as corner_1,
+      case when corner_2 ~ '^[0-9]+$' then nullif(corner_2, '00')::integer else null end as corner_2,
+      case when corner_3 ~ '^[0-9]+$' then nullif(corner_3, '00')::integer else null end as corner_3,
+      case when corner_4 ~ '^[0-9]+$' then nullif(corner_4, '00')::integer else null end as corner_4,
+      case when bataiju ~ '^[0-9]+$' then nullif(bataiju, '000')::integer else null end as bataiju,
+      nullif(btrim(coalesce(zogen_fugo, '')), '') as zogen_fugo,
+      case when zogen_sa ~ '^[0-9]+$' then nullif(zogen_sa, '000')::integer else null end as zogen_sa
     from raw_rows
     where
       nullif(umaban, '') is not null
@@ -324,15 +362,21 @@ const normaliseRow = (raw: Record<string, unknown>): DailyRaceEntryRow => {
     bamei: raw.bamei as string | null,
     banushimei: raw.banushimei as string | null,
     barei: numericOrNull(raw.barei),
+    bataiju: numericOrNull(raw.bataiju),
     chokyoshimei_ryakusho: raw.chokyoshimei_ryakusho as string | null,
     corner1_norm: numericOrNull(raw.corner1_norm),
     corner2_norm: numericOrNull(raw.corner2_norm),
     corner3_norm: numericOrNull(raw.corner3_norm),
     corner4_norm: numericOrNull(raw.corner4_norm),
+    corner_1: numericOrNull(raw.corner_1),
+    corner_2: numericOrNull(raw.corner_2),
+    corner_3: numericOrNull(raw.corner_3),
+    corner_4: numericOrNull(raw.corner_4),
     finish_norm: numericOrNull(raw.finish_norm),
     finish_position: numericOrNull(raw.finish_position),
     futan_juryo: numericOrNull(raw.futan_juryo),
     grade_code: raw.grade_code as string | null,
+    hasso_jikoku: raw.hasso_jikoku as string | null,
     juryo_shubetsu_code: raw.juryo_shubetsu_code as string | null,
     kaisai_nen: String(raw.kaisai_nen),
     kaisai_tsukihi: String(raw.kaisai_tsukihi),
@@ -345,6 +389,7 @@ const normaliseRow = (raw: Record<string, unknown>): DailyRaceEntryRow => {
     kyoso_shubetsu_code: raw.kyoso_shubetsu_code as string | null,
     race_bango: String(raw.race_bango),
     race_date: String(raw.race_date),
+    race_name: raw.race_name as string | null,
     seibetsu_code: raw.seibetsu_code as string | null,
     shusso_tosu: numericOrNull(raw.shusso_tosu),
     soha_time: numericOrNull(raw.soha_time),
@@ -354,6 +399,9 @@ const normaliseRow = (raw: Record<string, unknown>): DailyRaceEntryRow => {
     time_sa: numericOrNull(raw.time_sa),
     track_code: raw.track_code as string | null,
     umaban: numericOrNull(raw.umaban),
+    wakuban: raw.wakuban as string | null,
+    zogen_fugo: raw.zogen_fugo as string | null,
+    zogen_sa: numericOrNull(raw.zogen_sa),
   };
 };
 
@@ -373,8 +421,11 @@ const INSERT_SQL = `INSERT OR REPLACE INTO daily_race_entries (
   kyori, shusso_tosu, seibetsu_code, barei, futan_juryo, kishumei_ryakusho,
   chokyoshimei_ryakusho, banushimei, finish_position, finish_norm, tansho_ninkijun,
   tansho_odds, soha_time, time_sa, kohan_3f, corner1_norm, corner2_norm,
-  corner3_norm, corner4_norm, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+  corner3_norm, corner4_norm,
+  wakuban, race_name, hasso_jikoku, corner_1, corner_2, corner_3, corner_4,
+  bataiju, zogen_fugo, zogen_sa,
+  updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
 const buildBindParams = (row: DailyRaceEntryRow, updatedAt: string): unknown[] => [
   buildRaceKey(row),
@@ -413,6 +464,16 @@ const buildBindParams = (row: DailyRaceEntryRow, updatedAt: string): unknown[] =
   row.corner2_norm,
   row.corner3_norm,
   row.corner4_norm,
+  row.wakuban,
+  row.race_name,
+  row.hasso_jikoku,
+  row.corner_1,
+  row.corner_2,
+  row.corner_3,
+  row.corner_4,
+  row.bataiju,
+  row.zogen_fugo,
+  row.zogen_sa,
   updatedAt,
 ];
 
@@ -449,7 +510,9 @@ const LIST_DAILY_ENTRIES_SQL = `select
   kyori, shusso_tosu, seibetsu_code, barei, futan_juryo, kishumei_ryakusho,
   chokyoshimei_ryakusho, banushimei, finish_position, finish_norm, tansho_ninkijun,
   tansho_odds, soha_time, time_sa, kohan_3f, corner1_norm, corner2_norm,
-  corner3_norm, corner4_norm
+  corner3_norm, corner4_norm,
+  wakuban, race_name, hasso_jikoku, corner_1, corner_2, corner_3, corner_4,
+  bataiju, zogen_fugo, zogen_sa
 from daily_race_entries
 where race_key = ?
 order by umaban`;
@@ -470,15 +533,21 @@ const mapDailyEntryRow = (raw: Record<string, unknown>): DailyRaceEntryRow => ({
   bamei: stringFromRaw(raw.bamei),
   banushimei: stringFromRaw(raw.banushimei),
   barei: numericFromRaw(raw.barei),
+  bataiju: numericFromRaw(raw.bataiju),
   chokyoshimei_ryakusho: stringFromRaw(raw.chokyoshimei_ryakusho),
   corner1_norm: numericFromRaw(raw.corner1_norm),
   corner2_norm: numericFromRaw(raw.corner2_norm),
   corner3_norm: numericFromRaw(raw.corner3_norm),
   corner4_norm: numericFromRaw(raw.corner4_norm),
+  corner_1: numericFromRaw(raw.corner_1),
+  corner_2: numericFromRaw(raw.corner_2),
+  corner_3: numericFromRaw(raw.corner_3),
+  corner_4: numericFromRaw(raw.corner_4),
   finish_norm: numericFromRaw(raw.finish_norm),
   finish_position: numericFromRaw(raw.finish_position),
   futan_juryo: numericFromRaw(raw.futan_juryo),
   grade_code: stringFromRaw(raw.grade_code),
+  hasso_jikoku: stringFromRaw(raw.hasso_jikoku),
   juryo_shubetsu_code: stringFromRaw(raw.juryo_shubetsu_code),
   kaisai_nen: String(raw.kaisai_nen),
   kaisai_tsukihi: String(raw.kaisai_tsukihi),
@@ -491,6 +560,7 @@ const mapDailyEntryRow = (raw: Record<string, unknown>): DailyRaceEntryRow => ({
   kyoso_shubetsu_code: stringFromRaw(raw.kyoso_shubetsu_code),
   race_bango: String(raw.race_bango),
   race_date: String(raw.race_date),
+  race_name: stringFromRaw(raw.race_name),
   seibetsu_code: stringFromRaw(raw.seibetsu_code),
   shusso_tosu: numericFromRaw(raw.shusso_tosu),
   soha_time: numericFromRaw(raw.soha_time),
@@ -500,6 +570,9 @@ const mapDailyEntryRow = (raw: Record<string, unknown>): DailyRaceEntryRow => ({
   time_sa: numericFromRaw(raw.time_sa),
   track_code: stringFromRaw(raw.track_code),
   umaban: numericFromRaw(raw.umaban),
+  wakuban: stringFromRaw(raw.wakuban),
+  zogen_fugo: stringFromRaw(raw.zogen_fugo),
+  zogen_sa: numericFromRaw(raw.zogen_sa),
 });
 
 const buildDailyEntryRaceKey = (params: DailyRaceEntryQueryParams): string =>
@@ -524,22 +597,35 @@ const resolveViewerCacheOrigin = (env: Env): string => {
   return configured && configured.length > 0 ? configured : DEFAULT_VIEWER_CACHE_ORIGIN;
 };
 
+const VIEWER_INTERNAL_ORIGIN = "https://pc-keiba-viewer.local";
+
+const parseWarmResponse = (text: string): { raceCount?: number; warmed?: number } => {
+  try {
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+    return JSON.parse(text) as { raceCount?: number; warmed?: number };
+  } catch {
+    return {};
+  }
+};
+
 export const triggerViewerCacheWarmForDate = async (
   env: Env,
   date: string,
 ): Promise<CacheWarmOutcome> => {
   const isoDate = formatIsoDateFromYyyymmdd(date);
-  const url = `${resolveViewerCacheOrigin(env)}${CACHE_WARM_PATH}?date=${isoDate}`;
-  const fetcher = env.PC_KEIBA_VIEWER?.fetch ?? fetch;
+  const origin = resolveViewerCacheOrigin(env);
+  const url = `${origin}${CACHE_WARM_PATH}?date=${isoDate}`;
+  const request = new Request(url, {
+    headers: { [CACHE_WARM_HEADER]: CACHE_WARM_HEADER_VALUE },
+    method: "POST",
+  });
   try {
-    const response = await fetcher(url, {
-      headers: { [CACHE_WARM_HEADER]: CACHE_WARM_HEADER_VALUE },
-      method: "POST",
-    });
+    const response = await fetch(request);
     if (!response.ok) {
       return { message: `HTTP ${response.status}`, status: "error" };
     }
-    const payload = (await response.json()) as { raceCount?: number; warmed?: number };
+    const text = await response.text();
+    const payload = parseWarmResponse(text);
     return { raceCount: payload.raceCount, status: "ok", warmed: payload.warmed };
   } catch (error) {
     return {

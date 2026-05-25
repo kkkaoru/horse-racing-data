@@ -132,6 +132,10 @@ import {
 } from "./running-style-verification";
 import { readCachedTrackCondition, writeCachedTrackCondition } from "./track-condition-cache";
 import {
+  buildTrendBustFromRaceContext,
+  requestTrendCacheBust,
+} from "./viewer-trend-cache-bust";
+import {
   getJraAdvanceOddsFetchSlotAt,
   getNarOddsFetchSlotAt,
   getNarOddsSaleStartAt,
@@ -1529,11 +1533,15 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
       throw new Error(`race result rows are empty: ${raceKey}`);
     }
     const inserted = await insertRaceResultSnapshot(env.REALTIME_DB, raceKey, fetchedAt, results);
+    const isComplete = expectedHorseCount > 0 && inserted >= expectedHorseCount;
     await completeResultFetch(env.REALTIME_DB, raceKey, fetchedAt, {
       expectedHorseCount,
-      isComplete: expectedHorseCount > 0 && inserted >= expectedHorseCount,
+      isComplete,
       savedHorseCount: inserted,
     });
+    if (isComplete) {
+      await requestTrendCacheBust(env, buildTrendBustFromRaceContext(race));
+    }
   } catch (error) {
     await failResultFetch(env.REALTIME_DB, raceKey);
     throw error;

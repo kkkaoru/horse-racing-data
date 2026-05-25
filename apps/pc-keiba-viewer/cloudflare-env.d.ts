@@ -25,6 +25,7 @@ declare global {
   }
 
   interface PcKeibaKvNamespace {
+    delete(key: string): Promise<void>;
     get(key: string): Promise<string | null>;
     get<T = unknown>(key: string, options: { type: "json" }): Promise<T | null>;
     put(

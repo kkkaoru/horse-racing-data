@@ -1,13 +1,20 @@
 import "server-only";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 
+import type { RaceSource } from "./codes";
 import {
   RACE_TREND_CACHE_AFTER_START_SECONDS,
+  addDaysToYmd,
   buildRaceTrendCacheKey,
   getRaceTrendCacheTtlSeconds,
   type RaceTrendCacheOptions,
 } from "./race-trend-cache";
 import type { RaceDetail } from "./race-types";
+
+export interface BustRaceTrendCachesParams {
+  source: RaceSource;
+  targetYmd: string;
+}
 
 const CACHE_CONTROL_HEADER = "public, max-age=%d";
 const CACHE_URL_BASE = "https://pc-keiba-viewer.local/race-trend-cache/";
@@ -133,4 +140,83 @@ export const putRaceTrendCache = async ({
     ),
     env?.DETAIL_SECTION_CACHE_KV?.put(cacheKey, body, { expirationTtl: ttlSeconds }),
   ]);
+};
+
+const buildAffectedCacheOptions = (
+  source: RaceSource,
+  targetYmd: string,
+): RaceTrendCacheOptions[] => {
+  const ranges = source === "jra" ? [-1] : [-3];
+  return ranges.flatMap((days) => {
+    const startYmd = addDaysToYmd(targetYmd, days);
+    return [true, false].map((includeRealtimeResults) => ({
+      frameEndYmd: targetYmd,
+      frameStartYmd: startYmd,
+      includeRealtimeResults,
+      jockeyEndYmd: targetYmd,
+      jockeyStartYmd: startYmd,
+      source,
+    }));
+  });
+};
+
+const D1_DAILY_CACHE_PREFIX = "race-trend-d1-daily:v1";
+const D1_SNAPSHOT_CACHE_PREFIX = "race-trend-d1:v1";
+const D1_DAILY_CACHE_URL_BASE = "https://pc-keiba-viewer.local/d1-trend-daily-cache/";
+const D1_SNAPSHOT_CACHE_URL_BASE = "https://pc-keiba-viewer.local/d1-trend-cache/";
+
+const buildAffectedD1RangeKeys = (
+  source: RaceSource,
+  targetYmd: string,
+): Array<{ endYmd: string; startYmd: string }> => {
+  const ranges = source === "jra" ? [-1] : [-3];
+  return ranges.map((days) => ({
+    endYmd: targetYmd,
+    startYmd: addDaysToYmd(targetYmd, days),
+  }));
+};
+
+interface AffectedCacheKey {
+  key: string;
+  urlBase: string;
+}
+
+const collectAffectedCacheKeys = (params: BustRaceTrendCachesParams): AffectedCacheKey[] => {
+  const trendKeys = buildAffectedCacheOptions(params.source, params.targetYmd).map((options) => ({
+    key: buildRaceTrendCacheKey({ options }),
+    urlBase: CACHE_URL_BASE,
+  }));
+  const d1Keys = buildAffectedD1RangeKeys(params.source, params.targetYmd).flatMap((range) => [
+    {
+      key: `${D1_DAILY_CACHE_PREFIX}:${params.source}:${range.startYmd}:${range.endYmd}`,
+      urlBase: D1_DAILY_CACHE_URL_BASE,
+    },
+    {
+      key: `${D1_SNAPSHOT_CACHE_PREFIX}:${params.source}:${range.startYmd}:${range.endYmd}`,
+      urlBase: D1_SNAPSHOT_CACHE_URL_BASE,
+    },
+  ]);
+  return [...trendKeys, ...d1Keys];
+};
+
+const deleteSingleCache = async (
+  entry: AffectedCacheKey,
+  defaultCache: Cache | null,
+  env: CloudflareEnv | null,
+): Promise<void> => {
+  memoryCache.delete(entry.key);
+  await Promise.all([
+    defaultCache?.delete(new Request(`${entry.urlBase}${encodeURIComponent(entry.key)}`)),
+    env?.DETAIL_SECTION_CACHE_KV?.delete(entry.key),
+  ]);
+};
+
+export const bustRaceTrendCachesForDay = async (
+  params: BustRaceTrendCachesParams,
+): Promise<{ keys: string[] }> => {
+  const entries = collectAffectedCacheKeys(params);
+  const defaultCache = getDefaultCache();
+  const { env } = await getCloudflareRuntime();
+  await Promise.all(entries.map((entry) => deleteSingleCache(entry, defaultCache, env)));
+  return { keys: entries.map((entry) => entry.key) };
 };
