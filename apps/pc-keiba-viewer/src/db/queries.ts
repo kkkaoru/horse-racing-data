@@ -40,6 +40,12 @@ import type {
   TimeScoreDetail,
   TimeScoreRow,
 } from "../lib/race-types";
+import {
+  getCachedTopRaceWindows,
+  getStaleTopRaceWindowsSnapshot,
+  putTopRaceWindowsCache,
+  type TopRaceWindowsPayload,
+} from "../lib/top-races-cache.server";
 import { getDb } from "./client";
 import { withDbQueryCache } from "./query-cache";
 import { jvdCs, jvdRa, jvdSe, jvdUm, nvdNu, nvdRa, nvdSe, nvdUm } from "./schema";
@@ -2103,11 +2109,12 @@ const getJstMinuteKey = (): string => {
   return `${values.year}${values.month}${values.day}${values.hour}${values.minute}`;
 };
 
-export const getTopRaceWindows = cache(
-  async (): Promise<{ finished: TopRaceSummary[]; upcoming: TopRaceSummary[] }> => {
-    const nowKey = getJstMinuteKey();
-    return withDbQueryCache(["getTopRaceWindows", nowKey], async () => {
-      const result = await getDb().execute<TopRaceSummary & { bucket: number }>(sql`
+const TOP_RACE_WINDOWS_TIMEOUT_MS = 3500;
+
+const fetchTopRaceWindowsFromDb = async (
+  nowKey: string,
+): Promise<TopRaceWindowsPayload> => {
+  const result = await getDb().execute<TopRaceSummary & { bucket: number }>(sql`
         with candidates as (
           (
             select
@@ -2250,16 +2257,43 @@ export const getTopRaceWindows = cache(
         from candidates
         order by bucket asc, start_key asc, "keibajoCode" asc, "raceBango" asc, source asc
       `);
-      return {
-        finished: result.rows
-          .filter((row) => row.bucket === 1)
-          .slice(-60)
-          .toReversed(),
-        upcoming: result.rows.filter((row) => row.bucket === 0).slice(0, 240),
-      };
-    });
-  },
-);
+  return {
+    finished: result.rows.filter((row) => row.bucket === 1).slice(-60).toReversed(),
+    upcoming: result.rows.filter((row) => row.bucket === 0).slice(0, 240),
+  };
+};
+
+const withTimeout = <T>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
+  const timeoutPromise = new Promise<T>((_resolve, reject) => {
+    setTimeout(() => {
+      reject(new Error("getTopRaceWindows timed out"));
+    }, timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]);
+};
+
+export const refreshTopRaceWindowsCache = async (): Promise<TopRaceWindowsPayload> => {
+  const payload = await fetchTopRaceWindowsFromDb(getJstMinuteKey());
+  await putTopRaceWindowsCache(payload);
+  return payload;
+};
+
+export const getTopRaceWindows = cache(async (): Promise<TopRaceWindowsPayload> => {
+  const cached = await getCachedTopRaceWindows();
+  if (cached) {
+    return cached;
+  }
+  try {
+    return await withTimeout(refreshTopRaceWindowsCache(), TOP_RACE_WINDOWS_TIMEOUT_MS);
+  } catch (error) {
+    console.error("getTopRaceWindows live fetch failed, falling back to stale snapshot", error);
+    const stale = await getStaleTopRaceWindowsSnapshot();
+    if (stale) {
+      return stale;
+    }
+    throw error;
+  }
+});
 
 export const getRaceCourseInfo = cache(
   async (
