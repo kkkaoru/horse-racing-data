@@ -1,5 +1,7 @@
 // Run with bun. Shared identity helpers for per-race running-style generation.
 
+import { buildRealtimeRaceKey } from "./race-key";
+
 export type RunningStyleSource = "jra" | "nar";
 
 export interface RunningStyleRaceParams {
@@ -21,6 +23,15 @@ export const normalizeRaceBango = (value: string): string =>
 
 export const buildRunningStyleRaceKey = (params: RunningStyleRaceParams): string =>
   `${params.source}:${params.kaisaiNen}${params.kaisaiTsukihi}:${normalizeKeibajoCode(params.keibajoCode)}:${normalizeRaceBango(params.raceBango)}`;
+
+export const buildRealtimeRaceKeyFromRunningStyle = (params: RunningStyleRaceParams): string =>
+  buildRealtimeRaceKey(
+    params.source,
+    params.kaisaiNen,
+    params.kaisaiTsukihi,
+    normalizeKeibajoCode(params.keibajoCode),
+    normalizeRaceBango(params.raceBango),
+  );
 
 const RUNNING_STYLE_RACE_KEY_PATTERN =
   /^(jra|nar):(\d{4})(\d{4}):(\d{2}):(\d{2})$/u;

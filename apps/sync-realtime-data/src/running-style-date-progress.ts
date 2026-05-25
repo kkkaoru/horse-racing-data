@@ -9,6 +9,7 @@ import {
 import { evaluateRunningStyleCacheCoverage } from "./running-style-entry-coverage";
 import { isViewerRunningStyleRaceCacheReady } from "./viewer-running-style-cache-probe";
 import {
+  buildRealtimeRaceKeyFromRunningStyle,
   buildRunningStyleRaceKey,
   normalizeKeibajoCode,
   normalizeRaceBango,
@@ -148,7 +149,10 @@ export const collectRunningStyleDateProgress = async (
       source: row.source,
     };
     const raceKey = buildRunningStyleRaceKey(race);
-    const latestEntries = await getLatestRaceEntries(env.REALTIME_DB, raceKey);
+    const latestEntries = await getLatestRaceEntries(
+      env.REALTIME_DB,
+      buildRealtimeRaceKeyFromRunningStyle(race),
+    );
     const activeHorseCount =
       latestEntries === null
         ? null

@@ -5,6 +5,10 @@ import {
   listActiveRunningStyleHorseNumbers,
   type RunningStyleEntrySnapshot,
 } from "./running-style-entry-coverage";
+import {
+  buildRealtimeRaceKeyFromRunningStyle,
+  parseRunningStyleRaceKey,
+} from "./running-style-features";
 import { getLatestRaceEntries } from "./storage";
 
 export const resolveRunningStyleExpectedHorseCount = (
@@ -20,6 +24,11 @@ export const resolveRunningStyleExpectedHorseCount = (
   return featureCount;
 };
 
+const toRealtimeKeyForLookup = (runningStyleRaceKey: string): string | null => {
+  const parsed = parseRunningStyleRaceKey(runningStyleRaceKey);
+  return parsed === null ? null : buildRealtimeRaceKeyFromRunningStyle(parsed);
+};
+
 export const listRunningStyleExpectedHorseCounts = async (
   db: D1Database,
   raceKeys: ReadonlyArray<string>,
@@ -29,7 +38,9 @@ export const listRunningStyleExpectedHorseCounts = async (
   await Promise.all(
     raceKeys.map(async (raceKey) => {
       const featureCount = featureCounts.get(raceKey) ?? 0;
-      const entries = await getLatestRaceEntries(db, raceKey);
+      const realtimeKey = toRealtimeKeyForLookup(raceKey);
+      const entries =
+        realtimeKey === null ? null : await getLatestRaceEntries(db, realtimeKey);
       counts.set(raceKey, resolveRunningStyleExpectedHorseCount(featureCount, entries));
     }),
   );
