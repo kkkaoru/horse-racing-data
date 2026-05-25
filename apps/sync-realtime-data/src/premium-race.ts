@@ -296,7 +296,7 @@ const extractClassCell = (row: string, className: string | null | undefined): st
 
 const extractRowsByClass = (html: string, className: string | null | undefined): string[] => {
   if (className === "*") {
-    return Array.from(html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/giu)).map((match) => match[1] ?? "");
+    return Array.from(html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/giu)).map((match) => match[1]!);
   }
   if (!className) {
     return [];
@@ -309,11 +309,11 @@ const extractRowsByClass = (html: string, className: string | null | undefined):
         "giu",
       ),
     ),
-  ).map((match) => match[1] ?? "");
+  ).map((match) => match[1]!);
 };
 
 const extractTableCells = (row: string): string[] =>
-  Array.from(row.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/giu)).map((match) => match[0] ?? "");
+  Array.from(row.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/giu)).map((match) => match[0]!);
 
 const findCellIndexByClass = (cells: string[], className: string | null | undefined): number => {
   if (!className) {
@@ -357,15 +357,15 @@ const extractTablesByClass = (
     ),
   );
   return matches.map((match, index) => {
-    const startIndex = match.index ?? 0;
+    const startIndex = match.index!;
     const previousEnd =
       index === 0
         ? Math.max(0, startIndex - 1200)
-        : (matches[index - 1]?.index ?? 0) + (matches[index - 1]?.[0].length ?? 0);
+        : matches[index - 1]!.index! + matches[index - 1]![0].length;
     return {
       before: html.slice(previousEnd, startIndex),
-      fullHtml: match[0] ?? "",
-      html: match[1] ?? "",
+      fullHtml: match[0]!,
+      html: match[1]!,
     };
   });
 };
@@ -373,8 +373,8 @@ const extractTablesByClass = (
 const extractTableCellRows = (html: string): string[][] =>
   Array.from(html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/giu))
     .map((rowMatch) =>
-      Array.from((rowMatch[1] ?? "").matchAll(/<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/giu))
-        .map((cellMatch) => cleanText(cellMatch[1] ?? ""))
+      Array.from(rowMatch[1]!.matchAll(/<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/giu))
+        .map((cellMatch) => cleanText(cellMatch[1]))
         .filter((cell) => cell !== ""),
     )
     .filter((cells) => cells.length > 0);
@@ -382,10 +382,10 @@ const extractTableCellRows = (html: string): string[][] =>
 const extractRawTableCellRows = (html: string): { html: string; text: string }[][] =>
   Array.from(html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/giu))
     .map((rowMatch) =>
-      Array.from((rowMatch[1] ?? "").matchAll(/<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/giu)).map(
+      Array.from(rowMatch[1]!.matchAll(/<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/giu)).map(
         (cellMatch) => ({
-          html: cellMatch[1] ?? "",
-          text: cleanText(cellMatch[1] ?? ""),
+          html: cellMatch[1]!,
+          text: cleanText(cellMatch[1]),
         }),
       ),
     )
