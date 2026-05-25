@@ -3,6 +3,7 @@ import { expect, it, vi } from "vitest";
 import type { NarRaceSource } from "./types";
 import {
   addDaysToYyyymmdd,
+  assertJraHorseWeightsComplete,
   buildDetailUrl,
   buildFallbackRaceRow,
   buildPremiumPaddockSignature,
@@ -16,6 +17,7 @@ import {
   getJstDayStart,
   getNarVenueLastRaceStartAtMap,
   getNarVenueMeetingKey,
+  getPremiumPaddockRetryAfter,
   getPremiumPaddockRetryDelaySeconds,
   getRaceStart,
   isDue,
@@ -544,4 +546,51 @@ it("enqueueJobs falls back to REALTIME_JOBS when PREMIUM_RACE_JOBS unset", async
   } as unknown as Env;
   await enqueueJobs(env, [{ date: "20260512", type: "discover-premium-race-links" }]);
   expect(send).toHaveBeenCalledTimes(1);
+});
+
+it("assertJraHorseWeightsComplete returns silently when weights array is empty", () => {
+  assertJraHorseWeightsComplete("k", [{ horseName: "h", horseNumber: "1", jockeyName: "j", status: null }], []);
+});
+
+it("assertJraHorseWeightsComplete returns silently when all active entries have weights", () => {
+  assertJraHorseWeightsComplete(
+    "k",
+    [
+      { horseName: "h1", horseNumber: "1", jockeyName: "j", status: null },
+      { horseName: "h2", horseNumber: "2", jockeyName: "j", status: null },
+    ],
+    [
+      { changeAmount: 0, changeSign: null, horseName: "h1", horseNumber: "1", weight: 500 },
+      { changeAmount: 0, changeSign: null, horseName: "h2", horseNumber: "2", weight: 510 },
+    ],
+  );
+});
+
+it("assertJraHorseWeightsComplete skips scratched entries when checking completeness", () => {
+  assertJraHorseWeightsComplete(
+    "k",
+    [
+      { horseName: "h1", horseNumber: "1", jockeyName: "j", status: null },
+      { horseName: "h2", horseNumber: "2", jockeyName: "j", status: "出走取消" },
+    ],
+    [{ changeAmount: 0, changeSign: null, horseName: "h1", horseNumber: "1", weight: 500 }],
+  );
+});
+
+it("assertJraHorseWeightsComplete throws when an active entry has no weight row", () => {
+  expect(() =>
+    assertJraHorseWeightsComplete(
+      "k",
+      [
+        { horseName: "h1", horseNumber: "1", jockeyName: "j", status: null },
+        { horseName: "h2", horseNumber: "2", jockeyName: "j", status: null },
+      ],
+      [{ changeAmount: 0, changeSign: null, horseName: "h1", horseNumber: "1", weight: 500 }],
+    ),
+  ).toThrow("JRA horse weight rows are sparse: k missing=2");
+});
+
+it("getPremiumPaddockRetryAfter returns an ISO string at now + retry delay (default)", () => {
+  const env = { REALTIME_TEST_NOW: "2026-05-12T00:00:00.000Z" } as unknown as Env;
+  expect(getPremiumPaddockRetryAfter(env, RACE)).toBe("2026-05-12T09:02:00+09:00");
 });
