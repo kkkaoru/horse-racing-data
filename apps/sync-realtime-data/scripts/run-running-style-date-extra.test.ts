@@ -1,9 +1,26 @@
 // run with: bun run test
-import { expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
+import type { RunningStyleDateProgressRow } from "../src/running-style-date-progress";
+import type { Env } from "../src/types";
 import {
   formatRunningStyleDateProgressLine,
   parseRunningStyleDateCliArgs,
+  printIncompleteRows,
+  processIncompleteRaces,
+  toPredictionJob,
 } from "./run-running-style-date";
+
+vi.mock("../src/running-style-queue", () => ({
+  handleRunningStylePredictionJob: vi.fn(async () => ({
+    cacheWritten: true,
+    featuresR2Key: "tmp/key",
+    writtenCount: 4,
+  })),
+}));
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 it("parseRunningStyleDateCliArgs accepts --register-model flags", () => {
   const args = parseRunningStyleDateCliArgs(
@@ -118,6 +135,128 @@ it("parseRunningStyleDateCliArgs throws on unknown argument", () => {
   expect(() =>
     parseRunningStyleDateCliArgs(["--date", "20260524", "--other"], new Date()),
   ).toThrow("Unknown argument: --other");
+});
+
+it("toPredictionJob splits raceKey into kaisaiNen/kaisaiTsukihi/keibajo/raceBango", () => {
+  const job = toPredictionJob(
+    {
+      cacheReady: false,
+      d1Count: 0,
+      displayReady: false,
+      expectedHorses: 12,
+      featuresReady: true,
+      inferenceStatus: "pending",
+      parquetReady: false,
+      raceKey: "jra:20260512:08:01",
+      source: "jra",
+    },
+    "2026-05-12T11:00:00+09:00",
+  );
+  expect(job).toStrictEqual({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0512",
+    keibajoCode: "08",
+    predictedAt: "2026-05-12T11:00:00+09:00",
+    raceBango: "01",
+    raceKey: "jra:20260512:08:01",
+    source: "jra",
+    type: "generate-running-style-predictions",
+  });
+});
+
+it("printIncompleteRows returns early when no incomplete rows", () => {
+  const spy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  printIncompleteRows([
+    {
+      cacheReady: true,
+      d1Count: 12,
+      displayReady: true,
+      expectedHorses: 12,
+      featuresReady: true,
+      inferenceStatus: "completed",
+      parquetReady: true,
+      raceKey: "jra:20260512:08:01",
+      source: "jra",
+    },
+  ]);
+  expect(spy).not.toHaveBeenCalled();
+});
+
+it("printIncompleteRows logs first 20 incomplete rows then summarizes the rest", () => {
+  const spy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const rows: RunningStyleDateProgressRow[] = Array.from({ length: 25 }, (_, index) => ({
+    cacheReady: false,
+    d1Count: 0,
+    displayReady: false,
+    expectedHorses: 10,
+    featuresReady: false,
+    inferenceStatus: "pending",
+    parquetReady: false,
+    raceKey: `jra:20260512:08:${String(index + 1).padStart(2, "0")}`,
+    source: "jra",
+  }));
+  printIncompleteRows(rows);
+  expect(spy).toHaveBeenCalledTimes(21);
+  expect(spy.mock.calls[20]?.[0]).toBe("  ... 5 more incomplete races");
+});
+
+it("processIncompleteRaces runs handleRunningStylePredictionJob for each featuresReady row", async () => {
+  const { handleRunningStylePredictionJob } = await import("../src/running-style-queue");
+  vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await processIncompleteRaces(
+    {} as Env,
+    [
+      {
+        cacheReady: false,
+        d1Count: 0,
+        displayReady: false,
+        expectedHorses: 10,
+        featuresReady: true,
+        inferenceStatus: "pending",
+        parquetReady: false,
+        raceKey: "jra:20260512:08:01",
+        source: "jra",
+      },
+      {
+        cacheReady: false,
+        d1Count: 0,
+        displayReady: false,
+        expectedHorses: 10,
+        featuresReady: false,
+        inferenceStatus: "pending",
+        parquetReady: false,
+        raceKey: "jra:20260512:08:02",
+        source: "jra",
+      },
+    ],
+    0,
+  );
+  expect(handleRunningStylePredictionJob).toHaveBeenCalledTimes(1);
+});
+
+it("processIncompleteRaces logs failure when the predictor throws", async () => {
+  const { handleRunningStylePredictionJob } = await import("../src/running-style-queue");
+  vi.mocked(handleRunningStylePredictionJob).mockRejectedValueOnce(new Error("boom"));
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await processIncompleteRaces(
+    {} as Env,
+    [
+      {
+        cacheReady: false,
+        d1Count: 0,
+        displayReady: false,
+        expectedHorses: 10,
+        featuresReady: true,
+        inferenceStatus: "pending",
+        parquetReady: false,
+        raceKey: "jra:20260512:08:01",
+        source: "jra",
+      },
+    ],
+    0,
+  );
+  expect(errorSpy).toHaveBeenCalledTimes(1);
 });
 
 it("formatRunningStyleDateProgressLine renders a single-line summary string", () => {

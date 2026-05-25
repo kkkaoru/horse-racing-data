@@ -76,3 +76,15 @@ it("buildUsageText starts with Usage:", () => {
   const text = buildUsageText();
   expect(text.startsWith("Usage:")).toBe(true);
 });
+
+it("parseUploadRunningStyleModelCliArgs throws when --input is missing", () => {
+  expect(() => parseUploadRunningStyleModelCliArgs(["--source", "jra"])).toThrow(
+    "--input is required",
+  );
+});
+
+it("parseUploadRunningStyleModelCliArgs throws when --source has no value", () => {
+  expect(() => parseUploadRunningStyleModelCliArgs(["--source"])).toThrow(
+    "--source requires a value",
+  );
+});
