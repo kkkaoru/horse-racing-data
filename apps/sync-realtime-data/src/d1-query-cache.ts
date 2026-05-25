@@ -112,38 +112,49 @@ export const readD1QueryCache = async <T>(
   return null;
 };
 
+export interface PutD1QueryCacheOptions {
+  ctx?: ExecutionContext;
+  kv?: KVNamespace;
+  raceDay?: D1QueryCacheRaceDayContext;
+}
+
+const buildResponseForCache = (body: string, ttlSeconds: number): Response =>
+  new Response(body, {
+    headers: {
+      "Cache-Control": `public, max-age=${ttlSeconds}`,
+      "Content-Type": DEFAULT_CONTENT_TYPE,
+      "X-D1-Query-Cache": "MISS-stored",
+    },
+  });
+
 export const putD1QueryCache = async <T>(
   profile: D1QueryCacheProfile,
   keyParts: readonly unknown[],
   value: T,
-  options?: {
-    ctx?: ExecutionContext;
-    raceDay?: D1QueryCacheRaceDayContext;
-  },
+  options?: PutD1QueryCacheOptions,
 ): Promise<void> => {
   const ttlSeconds = resolveD1QueryCacheTtlSeconds(profile, options?.raceDay);
-  const cache = getDefaultCache();
-  if (ttlSeconds <= 0 || cache === null) {
+  if (ttlSeconds <= 0) {
     return;
   }
-
+  const cache = getDefaultCache();
   const cacheKey = buildD1QueryCacheKey(profile, keyParts);
-  const cacheRequest = createCacheRequest(cacheKey);
   const body = JSON.stringify(value);
-  const putCache = cache.put(
-    cacheRequest,
-    new Response(body, {
-      headers: {
-        "Cache-Control": `public, max-age=${ttlSeconds}`,
-        "Content-Type": DEFAULT_CONTENT_TYPE,
-        "X-D1-Query-Cache": "MISS-stored",
-      },
-    }),
-  );
+  const writes: Promise<unknown>[] = [];
+  if (cache !== null) {
+    writes.push(cache.put(createCacheRequest(cacheKey), buildResponseForCache(body, ttlSeconds)));
+  }
+  if (options?.kv !== undefined) {
+    writes.push(options.kv.put(cacheKey, body, { expirationTtl: ttlSeconds }));
+  }
+  if (writes.length === 0) {
+    return;
+  }
+  const putAll = Promise.all(writes);
   if (options?.ctx !== undefined) {
-    options.ctx.waitUntil(putCache);
+    options.ctx.waitUntil(putAll);
   } else {
-    await putCache;
+    await putAll;
   }
 };
 
@@ -151,10 +162,7 @@ export const withD1QueryCache = async <T>(
   profile: D1QueryCacheProfile,
   keyParts: readonly unknown[],
   load: () => Promise<T>,
-  options?: {
-    ctx?: ExecutionContext;
-    raceDay?: D1QueryCacheRaceDayContext;
-  },
+  options?: PutD1QueryCacheOptions,
 ): Promise<T> => {
   const ttlSeconds = resolveD1QueryCacheTtlSeconds(profile, options?.raceDay);
   const cache = getDefaultCache();
