@@ -51,7 +51,7 @@ interface FlatNode {
   threshold: number;
 }
 
-const parseArgs = (): { input: string; output: string } => {
+export const parseArgs = (): { input: string; output: string } => {
   const args = Bun.argv.slice(2);
   const inputIndex = args.indexOf("--input");
   const outputIndex = args.indexOf("--output");
@@ -164,7 +164,7 @@ const concat = (parts: Uint8Array[]): Uint8Array => {
   return output;
 };
 
-const main = async (): Promise<void> => {
+export const main = async (): Promise<void> => {
   const args = parseArgs();
   const result = await convertRunningStyleModelFile(args.input, args.output);
   console.log(

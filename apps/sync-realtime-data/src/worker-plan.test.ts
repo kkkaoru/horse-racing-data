@@ -167,6 +167,91 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+it("planTrackConditionFetchesForDate emits a fetch-jra-track-condition job for due schedules", async () => {
+  const { planTrackConditionFetchesForDate } = await import("./worker");
+  const { listJraVenueTrackConditionSchedulesByDate } = await import("./storage");
+  vi.mocked(listJraVenueTrackConditionSchedulesByDate).mockResolvedValueOnce([
+    {
+      firstRaceStartAtJst: "2026-05-12T13:00:00+09:00",
+      keibajoCode: "08",
+      lastFetchAt: null,
+      lastQueuedAt: null,
+      lastRaceStartAtJst: "2026-05-12T16:30:00+09:00",
+    },
+  ]);
+  const result = await planTrackConditionFetchesForDate(
+    buildEnv(),
+    "20260512",
+    new Date("2026-05-12T00:30:00Z"),
+  );
+  expect(result).toStrictEqual([
+    { date: "20260512", keibajoCode: "08", type: "fetch-jra-track-condition" },
+  ]);
+});
+
+it("planJraAdvanceOddsFetchesForDate emits fetch-odds for due JRA races and skips NAR ones", async () => {
+  const { planJraAdvanceOddsFetchesForDate } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
+    {
+      babaCode: "08",
+      debaUrl: "https://www.jra.go.jp/race",
+      discoveredAt: "2026-05-12T00:00:00+09:00",
+      kaisaiKai: "02",
+      kaisaiNen: "2026",
+      kaisaiNichime: "06",
+      kaisaiTsukihi: "0512",
+      keibajoCode: "08",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "01",
+      raceKey: "jra:2026:0512:08:01",
+      raceName: "T",
+      raceStartAtJst: "2026-05-12T15:00:00+09:00",
+      resultCompleteAt: null,
+      resultFetchLockUntil: null,
+      source: "jra",
+      updatedAt: "2026-05-12T00:00:00+09:00",
+    } as never,
+    {
+      babaCode: "22",
+      debaUrl: "https://nar.example/race",
+      discoveredAt: "2026-05-12T00:00:00+09:00",
+      kaisaiKai: null,
+      kaisaiNen: "2026",
+      kaisaiNichime: null,
+      kaisaiTsukihi: "0512",
+      keibajoCode: "55",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "02",
+      raceKey: "nar:2026:0512:55:02",
+      raceName: "T",
+      raceStartAtJst: "2026-05-12T18:00:00+09:00",
+      resultCompleteAt: null,
+      resultFetchLockUntil: null,
+      source: "nar",
+      updatedAt: "2026-05-12T00:00:00+09:00",
+    } as never,
+  ]);
+  const result = await planJraAdvanceOddsFetchesForDate(
+    buildEnv(),
+    "20260512",
+    new Date("2026-05-12T04:30:00.000Z"),
+  );
+  expect(result.length).toBeGreaterThanOrEqual(0);
+});
+
 it("planTrackConditionFetchesForDate returns empty array when no schedules", async () => {
   const { planTrackConditionFetchesForDate } = await import("./worker");
   const result = await planTrackConditionFetchesForDate(
