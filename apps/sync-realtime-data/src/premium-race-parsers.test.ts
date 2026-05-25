@@ -529,3 +529,110 @@ it("parsePremiumPaddockBulletins assigns favorite/value group based on table hea
   expect(result.bulletins.find((b) => b.horseNumber === "1")?.groupKey).toBe("favorite");
   expect(result.bulletins.find((b) => b.horseNumber === "2")?.groupKey).toBe("value");
 });
+
+it("parsePremiumPaddockBulletins skips PaddockDummy and SampleDummy tables", () => {
+  const html = `
+    <h2>本命</h2>
+    <table class="Paddock_Table PaddockDummy">
+      <tr><td class="Horse_Num">9</td></tr>
+    </table>
+    <h2>本命馬</h2>
+    <table class="Paddock_Table">
+      <tr><td class="Horse_Num">3</td></tr>
+    </table>
+  `;
+  const result = parsePremiumPaddockBulletins(html, {
+    PREMIUM_RACE_PADDOCK_LABEL_HORSE_NUMBER: "Horse_Num",
+    PREMIUM_RACE_PADDOCK_TABLE_CLASS: "Paddock_Table",
+  });
+  expect(result.bulletins.map((b) => b.horseNumber)).toStrictEqual(["3"]);
+});
+
+it("parsePremiumPaddockBulletins fills commentText/evaluationText/horseName/frameNumber when env labels match", () => {
+  const html = `
+    <table>
+      <tr class="Row">
+        <td class="Frame">2</td>
+        <td class="Num">7</td>
+        <td class="Name">ウマA</td>
+        <td class="Eval">A</td>
+        <td class="Comment">良いコメント</td>
+      </tr>
+    </table>
+  `;
+  const result = parsePremiumPaddockBulletins(html, {
+    PREMIUM_RACE_PADDOCK_LABEL_COMMENT: "Comment",
+    PREMIUM_RACE_PADDOCK_LABEL_EVALUATION: "Eval",
+    PREMIUM_RACE_PADDOCK_LABEL_FRAME: "Frame",
+    PREMIUM_RACE_PADDOCK_LABEL_HORSE_NAME: "Name",
+    PREMIUM_RACE_PADDOCK_LABEL_HORSE_NUMBER: "Num",
+    PREMIUM_RACE_PADDOCK_ROW_CLASS: "Row",
+  });
+  expect(result.bulletins[0]).toStrictEqual({
+    commentText: "良いコメント",
+    evaluationText: "A",
+    frameNumber: "2",
+    groupKey: "favorite",
+    horseName: "ウマA",
+    horseNumber: "7",
+  });
+});
+
+it("parsePremiumPaddockBulletins skips rows without a valid horseNumber", () => {
+  const html = `
+    <table>
+      <tr class="Row"><td class="Num">abc</td></tr>
+      <tr class="Row"><td class="Num">5</td></tr>
+    </table>
+  `;
+  const result = parsePremiumPaddockBulletins(html, {
+    PREMIUM_RACE_PADDOCK_LABEL_HORSE_NUMBER: "Num",
+    PREMIUM_RACE_PADDOCK_ROW_CLASS: "Row",
+  });
+  expect(result.bulletins).toHaveLength(1);
+  expect(result.bulletins[0]?.horseNumber).toBe("5");
+});
+
+it("parsePremiumDataTopHorses uses env-provided class names when supplied", () => {
+  const html = `
+    <div class="MyArea">
+      <dl>
+        <dt><span class="MyNum">7</span></dt>
+        <dd>
+          <a class="MyLink">テスト馬</a>
+          <dd class="MyReasons">
+            <ul><li>好調</li></ul>
+          </dd>
+        </dd>
+      </dl>
+    </div>
+  `;
+  const result = parsePremiumDataTopHorses(html, {
+    PREMIUM_RACE_DATA_TOP_AREA_CLASS: "MyArea",
+    PREMIUM_RACE_DATA_TOP_HORSE_LINK_CLASS: "MyLink",
+    PREMIUM_RACE_DATA_TOP_HORSE_NUMBER_CLASS: "MyNum",
+    PREMIUM_RACE_DATA_TOP_REASON_LIST_CLASS: "MyReasons",
+  });
+  expect(result).toHaveLength(1);
+  expect(result[0]?.horseNumber).toBe("7");
+  expect(result[0]?.horseName).toBe("テスト馬");
+});
+
+it("parsePremiumTrainingReviews uses extractRelativeCellText fallback for riderName when class missing", () => {
+  const env = {
+    PREMIUM_RACE_WORK_DATE_CLASS: "Date",
+    PREMIUM_RACE_WORK_HORSE_NUMBER_CLASS: "Horse_Number",
+    PREMIUM_RACE_WORK_ROW_CLASS: "Work_Row",
+  };
+  const html = `
+    <tr class="Work_Row">
+      <td class="Horse_Number">8</td>
+      <td class="Date">2026/05/12</td>
+      <td>cell1</td>
+      <td>cell2</td>
+      <td>調教師Y</td>
+    </tr>
+  `;
+  const result = parsePremiumTrainingReviews(html, env);
+  expect(result[0]?.riderName).toBe("調教師Y");
+});
