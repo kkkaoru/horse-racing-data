@@ -99,7 +99,7 @@ const uniqueByCombination = (rows: OddsData[]): OddsData[] =>
   Array.from(new Map(rows.map((row) => [row.combination, row])).values());
 
 const extractRows = (html: string): string[] =>
-  Array.from(html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/giu)).map((match) => match[1] ?? "");
+  Array.from(html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/giu)).map((match) => match[1]!);
 
 const extractClassCell = (row: string, className: string): string | null =>
   row.match(
@@ -114,8 +114,8 @@ const extractFirstAnchorText = (html: string | null): string | null =>
 
 const extractCells = (row: string): { attrs: string; html: string }[] =>
   Array.from(row.matchAll(/<td\b([^>]*)>([\s\S]*?)<\/td>/giu)).map((match) => ({
-    attrs: match[1] ?? "",
-    html: match[2] ?? "",
+    attrs: match[1]!,
+    html: match[2]!,
   }));
 
 const extractJraHorseNumber = (row: string): string | null =>
@@ -125,7 +125,7 @@ const extractJraHorseNumber = (row: string): string | null =>
 
 const hasClassLike = (html: string, pattern: RegExp): boolean =>
   Array.from(html.matchAll(/class=["']([^"']*)["']/giu)).some((match) =>
-    pattern.test(match[1] ?? ""),
+    pattern.test(match[1]!),
   );
 
 const isPastEntryStatusCell = (attrs: string, html: string): boolean =>

@@ -697,7 +697,7 @@ export const parsePremiumDataTopHorses = (
 
   return Array.from(areaHtml.matchAll(/<dl\b[^>]*>([\s\S]*?)<\/dl>/giu))
     .map((match, index): PremiumDataTopHorse | null => {
-      const block = match[1] ?? "";
+      const block = match[1]!;
       const horseNumber = normalizeHorseNumber(
         block.match(
           new RegExp(
