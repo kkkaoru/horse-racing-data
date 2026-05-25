@@ -326,7 +326,7 @@ const parseTanshoOdds = (html: string): OddsData[] =>
     html.matchAll(/<table[^>]*class=["'][^"']*tanpuku[^"']*["'][^>]*>([\s\S]*?)<\/table>/giu),
   )
     .flatMap((table) =>
-      extractRows(table[1] ?? "").map((row): OddsData | null => {
+      extractRows(table[1]!).map((row): OddsData | null => {
         if (/class=["'][^"']*odds_tan\s+cancel[^"']*["']/iu.test(row)) {
           return null;
         }
@@ -354,7 +354,7 @@ const parseFukushoOdds = (html: string): OddsData[] =>
     html.matchAll(/<table[^>]*class=["'][^"']*tanpuku[^"']*["'][^>]*>([\s\S]*?)<\/table>/giu),
   )
     .flatMap((table) =>
-      extractRows(table[1] ?? "").map((row): OddsData | null => {
+      extractRows(table[1]!).map((row): OddsData | null => {
         const horseNumber = row.match(
           /<td[^>]*class=["']num["'][^>]*>\s*(\d{1,2})\s*<\/td>/iu,
         )?.[1];
@@ -399,7 +399,7 @@ const parsePairTables = (
         ),
       ),
     ).flatMap((table): OddsData[] => {
-      const tableHtml = table[1] ?? "";
+      const tableHtml = table[1]!;
       const base = tableHtml.match(captionPattern)?.[1];
       if (!base) {
         return [];
@@ -432,7 +432,7 @@ const parseWideOdds = (html: string): OddsData[] =>
     Array.from(
       html.matchAll(/<table[^>]*class=["'][^"']*wide[^"']*["'][^>]*>([\s\S]*?)<\/table>/giu),
     ).flatMap((table): OddsData[] => {
-      const tableHtml = table[1] ?? "";
+      const tableHtml = table[1]!;
       const base = tableHtml.match(/<caption[^>]*>\s*(\d{1,2})\s*<\/caption>/iu)?.[1];
       if (!base || !isValidHorseNumber(base)) {
         return [];
@@ -468,7 +468,7 @@ const parseTripleOdds = (html: string, ordered: boolean): OddsData[] =>
       html.matchAll(/<table[^>]*class=["'][^"']*fuku3[^"']*["'][^>]*>([\s\S]*?)<\/table>/giu),
     )
       .flatMap((table): OddsData[] => {
-        const tableHtml = table[1] ?? "";
+        const tableHtml = table[1]!;
         const caption = stripHtmlTags(
           tableHtml.match(/<caption[^>]*>([\s\S]*?)<\/caption>/iu)?.[1] ?? "",
         );
@@ -502,7 +502,7 @@ const parseTripleOdds = (html: string, ordered: boolean): OddsData[] =>
             /<div\s+class=["']tan3_unit[^"']*["'][^>]*>([\s\S]*?)(?=<div\s+class=["']tan3_unit|$)/giu,
           ),
         ).flatMap((unit): OddsData[] => {
-          const unitHtml = unit[1] ?? "";
+          const unitHtml = unit[1]!;
           const first = unitHtml.match(
             /<span class=["']inner["']>\s*<span class=["']num["']>\s*(\d{1,2})\s*<\/span>/iu,
           )?.[1];
@@ -515,7 +515,7 @@ const parseTripleOdds = (html: string, ordered: boolean): OddsData[] =>
             ),
           ).flatMap((section): OddsData[] => {
             const second = section[1];
-            const tableHtml = section[2] ?? "";
+            const tableHtml = section[2]!;
             if (!second) {
               return [];
             }
