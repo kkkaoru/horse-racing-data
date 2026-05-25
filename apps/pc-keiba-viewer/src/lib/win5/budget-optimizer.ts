@@ -10,6 +10,15 @@ const RECOMMENDED_BUDGET_CANDIDATES_YEN = [
   2000, 3000, 5000, 8000, 10000, 15000, 20000, 30000, 50000, 80000, 100000,
 ] as const;
 
+// Discount the raw model-probability sum to compensate for softmax
+// overconfidence. Empirically the XGB ranker's rank:pairwise probabilities
+// overstate the real hit rate by ~3-5x (avg expectedHitProb ≈ 15% vs actual
+// ≈ 5% at ¥2000 plans). The calibration value times the average payout sets
+// the break-even point between budgets: keep `calibration * averagePayout`
+// in the ~¥100k-¥250k range so net-EV actually peaks before the maximum
+// candidate budget, giving per-day variation.
+const HIT_PROBABILITY_CALIBRATION = 0.08;
+
 const TOP_COMBINATION_LIMIT = 12;
 
 const normalizeHorseNumber = (value: string): string => value.replace(/^0+/u, "") || "0";
@@ -132,24 +141,50 @@ export const optimizeWin5TicketPlan = (
   };
 };
 
+interface BudgetEvaluationPoint {
+  budgetYen: number;
+  totalCostYen: number;
+  expectedReturnYen: number;
+  netEvYen: number;
+}
+
+const evaluateBudgetCandidate = (params: {
+  legs: Win5LegPrediction[];
+  budgetYen: number;
+  averagePayoutYen: number;
+}): BudgetEvaluationPoint => {
+  const plan = optimizeWin5TicketPlan(params.legs, params.budgetYen);
+  const expectedReturnYen =
+    plan.expectedHitProbability * HIT_PROBABILITY_CALIBRATION * params.averagePayoutYen;
+  return {
+    budgetYen: params.budgetYen,
+    totalCostYen: plan.totalCostYen,
+    expectedReturnYen,
+    netEvYen: expectedReturnYen - plan.totalCostYen,
+  };
+};
+
+const pickBudgetByNetEv = (
+  evaluations: readonly BudgetEvaluationPoint[],
+): number =>
+  evaluations.reduce(
+    (best, current) => (current.netEvYen > best.netEvYen ? current : best),
+    {
+      budgetYen: WIN5_DEFAULT_BUDGET_YEN,
+      totalCostYen: 0,
+      expectedReturnYen: 0,
+      netEvYen: Number.NEGATIVE_INFINITY,
+    },
+  ).budgetYen;
+
 export const recommendWin5BudgetYen = (
   legs: Win5LegPrediction[],
   averagePayoutYen: number,
 ): number => {
-  let bestBudget = WIN5_DEFAULT_BUDGET_YEN;
-  let bestScore = Number.NEGATIVE_INFINITY;
-
-  for (const budgetYen of RECOMMENDED_BUDGET_CANDIDATES_YEN) {
-    const plan = optimizeWin5TicketPlan(legs, budgetYen);
-    const expectedReturnYen = plan.expectedHitProbability * averagePayoutYen;
-    const score = expectedReturnYen / Math.max(plan.totalCostYen, WIN5_TICKET_UNIT_YEN);
-    if (score > bestScore) {
-      bestScore = score;
-      bestBudget = budgetYen;
-    }
-  }
-
-  return bestBudget;
+  const evaluations = RECOMMENDED_BUDGET_CANDIDATES_YEN.map((budgetYen) =>
+    evaluateBudgetCandidate({ legs, budgetYen, averagePayoutYen }),
+  );
+  return pickBudgetByNetEv(evaluations);
 };
 
 export const buildWin5PlansByBudget = (
