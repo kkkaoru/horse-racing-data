@@ -224,7 +224,6 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
     <main className="page-shell">
       <section className="race-global-summary" aria-label="レース概要">
         <div>
-          <span>{formatTime(race.hassoJikoku)}発走</span>
           <RaceStartCountdown startsAt={raceStartsAt} />
           <span>{formatKeibajo(keibajoCode)}</span>
           <span>{formatRaceNumber(raceNumber)}</span>
