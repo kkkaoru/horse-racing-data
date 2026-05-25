@@ -105,7 +105,7 @@ export const parseUploadRunningStyleModelCliArgs = (
   };
 };
 
-const run = async (): Promise<void> => {
+export const run = async (): Promise<void> => {
   const args = parseUploadRunningStyleModelCliArgs(process.argv.slice(2));
   const objectKey = buildRunningStyleLatestModelKey(args.source);
   const uploaded = await registerRunningStyleModel(

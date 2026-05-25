@@ -261,6 +261,36 @@ it("isTrackConditionDue returns { due: false, slotAt: null } when after last rac
   expect(result).toStrictEqual({ due: false, slotAt: null });
 });
 
+it("isTrackConditionDue uses day-before 10:00 slot when today is the day before target", () => {
+  const result = isTrackConditionDue(
+    {
+      firstRaceStartAtJst: "2026-05-13T10:00:00+09:00",
+      lastFetchAt: null,
+      lastQueuedAt: null,
+      lastRaceStartAtJst: "2026-05-13T16:30:00+09:00",
+    },
+    "20260513",
+    new Date("2026-05-12T03:00:00Z"),
+  );
+  expect(result.slotAt).toBe("2026-05-12T10:00:00+09:00");
+  expect(result.due).toBe(true);
+});
+
+it("isTrackConditionDue uses pre-race morning slot when between 09:00 and first race", () => {
+  const result = isTrackConditionDue(
+    {
+      firstRaceStartAtJst: "2026-05-12T13:00:00+09:00",
+      lastFetchAt: null,
+      lastQueuedAt: null,
+      lastRaceStartAtJst: "2026-05-12T16:30:00+09:00",
+    },
+    "20260512",
+    new Date("2026-05-12T00:30:00Z"),
+  );
+  expect(result.slotAt).toBe("2026-05-12T09:00:00+09:00");
+  expect(result.due).toBe(true);
+});
+
 it("isTrackConditionDue returns due slot during the racing window", () => {
   const result = isTrackConditionDue(
     {
