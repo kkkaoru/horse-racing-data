@@ -294,3 +294,29 @@ it("queue acks (instead of retrying) a failing fetch-odds message", async () => 
   expect(ack).toHaveBeenCalledTimes(1);
   expect(retry).not.toHaveBeenCalled();
 });
+
+it("scheduled triggers runDailyFeatureBuildForEnv for the daily-feature-build cron", async () => {
+  const { default: worker } = await import("./worker");
+  const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    { cron: "0 19 * * *", scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"), noRetry: () => {} } as unknown as ScheduledController,
+    buildEnv(),
+    ctx,
+  );
+  await flushWaits(waits);
+  expect(runDailyFeatureBuildForEnv).toHaveBeenCalledTimes(1);
+});
+
+it("scheduled triggers runD1Retention for the D1 retention cron", async () => {
+  const { default: worker } = await import("./worker");
+  const { runD1Retention } = await import("./storage");
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    { cron: "30 18 * * *", scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"), noRetry: () => {} } as unknown as ScheduledController,
+    buildEnv(),
+    ctx,
+  );
+  await flushWaits(waits);
+  expect(runD1Retention).toHaveBeenCalledTimes(1);
+});
