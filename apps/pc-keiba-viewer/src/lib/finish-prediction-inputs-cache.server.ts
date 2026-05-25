@@ -6,7 +6,7 @@ import type { FinishPredictionEvaluationMetrics } from "./finish-position-predic
 import type { RaceDetail } from "./race-types";
 import { DETAIL_SECTION_CACHE_AFTER_START_SECONDS } from "./race-detail-section-cache";
 
-const CACHE_NAMESPACE = "pc-keiba-viewer:finish-prediction-inputs:v1";
+const CACHE_NAMESPACE = "pc-keiba-viewer:finish-prediction-inputs:v2";
 const CACHE_URL_BASE = "https://pc-keiba-viewer.local/finish-prediction-inputs-cache/";
 const DEFAULT_CONTENT_TYPE = "application/json; charset=utf-8";
 
