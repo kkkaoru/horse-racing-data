@@ -688,6 +688,109 @@ it("handleJob fetch-premium-race-data throws when origin set but no race link di
   ).rejects.toThrow("premium race data fetch failed");
 });
 
+it("handleJob fetch-premium-paddock with valid link + attempts runs the parse + update path", async () => {
+  const { handleJob } = await import("./worker");
+  const {
+    getRaceSource,
+    getPremiumRaceLink,
+    updatePremiumPaddockFetchState,
+  } = await import("./storage");
+  const { fetchPremiumHtmlAttempts } = await import("./premium-race");
+  vi.mocked(getRaceSource).mockResolvedValue({
+    babaCode: "08",
+    debaUrl: "https://www.jra.go.jp/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: "02",
+    kaisaiNen: "2026",
+    kaisaiNichime: "06",
+    kaisaiTsukihi: "0512",
+    keibajoCode: "08",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "jra:2026:0512:08:01",
+    raceName: "Test",
+    raceStartAtJst: "2026-05-12T13:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "jra",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(getPremiumRaceLink).mockResolvedValue({
+    entryUrl: "https://x.test/race?race_id=202605120801",
+    sourceRaceId: "202605120801",
+  } as never);
+  vi.mocked(fetchPremiumHtmlAttempts).mockResolvedValue([
+    { html: "<table></table>", mode: "direct" },
+  ] as never);
+  await handleJob(
+    buildEnv({
+      PREMIUM_RACE_ORIGIN: "https://x.test",
+      PREMIUM_RACE_PADDOCK_PATH_TEMPLATE: "/paddock/{sourceRaceId}",
+    } as never),
+    { raceKey: "jra:2026:0512:08:01", type: "fetch-premium-paddock" },
+  );
+  expect(updatePremiumPaddockFetchState).toHaveBeenCalled();
+});
+
+it("handleJob fetch-premium-paddock skips when current state has future retryAfter", async () => {
+  const { handleJob } = await import("./worker");
+  const { getRaceSource, getPremiumPaddockFetchState, logFetch } = await import("./storage");
+  vi.mocked(getRaceSource).mockResolvedValue({
+    babaCode: "08",
+    debaUrl: "https://www.jra.go.jp/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: "02",
+    kaisaiNen: "2026",
+    kaisaiNichime: "06",
+    kaisaiTsukihi: "0512",
+    keibajoCode: "08",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "jra:2026:0512:08:01",
+    raceName: "Test",
+    raceStartAtJst: "2026-05-12T13:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "jra",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(getPremiumPaddockFetchState).mockResolvedValue({
+    raceKey: "jra:2026:0512:08:01",
+    retryAfter: "2099-01-01T00:00:00.000Z",
+    status: "failed",
+  } as never);
+  await handleJob(
+    buildEnv({
+      PREMIUM_RACE_ORIGIN: "https://x.test",
+      PREMIUM_RACE_PADDOCK_PATH_TEMPLATE: "/paddock/{sourceRaceId}",
+    } as never),
+    { raceKey: "jra:2026:0512:08:01", type: "fetch-premium-paddock" },
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-premium-paddock",
+    "ok",
+    "jra:2026:0512:08:01",
+    null,
+  );
+});
+
 it("handleJob fetch-premium-race-data with valid link + fetched HTML exercises full ingest path", async () => {
   const { handleJob } = await import("./worker");
   const {
