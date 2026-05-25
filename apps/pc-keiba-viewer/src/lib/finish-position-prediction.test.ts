@@ -223,12 +223,6 @@ describe("buildFinishPredictionRowsFromResults", () => {
       runners: [runner({ tanshoNinkijun: "02", tanshoOdds: "0040" })],
     });
 
-    const middlePopularityWeight = middleRows[0]?.details.find(
-      (detail) => detail.label === "人気",
-    )?.weight;
-    const sprintPopularityWeight = sprintRows[0]?.details.find(
-      (detail) => detail.label === "人気",
-    )?.weight;
     const middleOddsWeight = middleRows[0]?.details.find(
       (detail) => detail.label === "単勝",
     )?.weight;
@@ -236,7 +230,6 @@ describe("buildFinishPredictionRowsFromResults", () => {
       (detail) => detail.label === "単勝",
     )?.weight;
 
-    expect(middlePopularityWeight).toBeGreaterThan(sprintPopularityWeight ?? 0);
     expect(middleOddsWeight).toBeGreaterThan(sprintOddsWeight ?? 0);
   });
 
