@@ -12,6 +12,7 @@ interface PaddockRoomEnv {
 }
 
 const STORAGE_KEY = "state";
+const PADDOCK_STATE_KV_TTL_SECONDS = 30 * 24 * 60 * 60;
 
 const json = (body: unknown, init?: ResponseInit): Response =>
   new Response(JSON.stringify(body), {
@@ -120,6 +121,7 @@ export class PaddockRoom {
     await this.env.PADDOCK_STATE_KV?.put(
       getPaddockKvKey(nextState.raceKey),
       JSON.stringify(nextState),
+      { expirationTtl: PADDOCK_STATE_KV_TTL_SECONDS },
     );
     this.broadcast(nextState);
     return json(nextState);
