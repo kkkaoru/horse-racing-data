@@ -75,6 +75,7 @@
   ],
   "observability": {
     "enabled": true,
+    "head_sampling_rate": 0.1,
   },
   "vars": {
     "NEXT_PUBLIC_REALTIME_DATA_API_BASE_URL": "https://sync-realtime-data.kkk4oru.com",
