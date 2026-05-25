@@ -144,7 +144,7 @@ const walkFlatTree = (
 };
 
 const softmax = (logits: Float64Array): Float64Array => {
-  const maxLogit = logits.reduce((best, value) => (value > best ? value : best), logits[0] ?? 0);
+  const maxLogit = logits.reduce((best, value) => (value > best ? value : best), logits[0]!);
   const exps = Float64Array.from(logits, (value) => Math.exp(value - maxLogit));
   const sum = exps.reduce((total, value) => total + value, 0);
   return Float64Array.from(exps, (value) => value / sum);

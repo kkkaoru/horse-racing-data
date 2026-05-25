@@ -131,11 +131,7 @@ export const fetchTodayRaceListUrls = async (targetDate: string): Promise<RaceLi
   const target = `${targetDate.slice(0, 4)}/${targetDate.slice(4, 6)}/${targetDate.slice(6, 8)}`;
   const paths = dedupe(
     Array.from(article.matchAll(RACE_LIST_LINK_PATTERN))
-      .map((match) => {
-        const path = match[1] ?? match[2] ?? match[3];
-        return path ? decodeHtmlAttribute(path) : undefined;
-      })
-      .filter((path): path is string => typeof path === "string"),
+      .map((match) => decodeHtmlAttribute((match[1] ?? match[2] ?? match[3])!)),
   );
 
   return paths
@@ -160,11 +156,8 @@ export const fetchRaceLinksFromRaceList = async (
   const links: KeibaGoRaceLink[] = [];
 
   for (const match of html.matchAll(RACE_LINK_URL_PATTERN)) {
-    const path = match[1] ?? match[2] ?? match[3];
-    const rawUrl = path ? toFullKeibaGoUrl(decodeHtmlAttribute(path)) : null;
-    if (!rawUrl) {
-      continue;
-    }
+    const path = (match[1] ?? match[2] ?? match[3])!;
+    const rawUrl = toFullKeibaGoUrl(decodeHtmlAttribute(path));
     const params = new URL(rawUrl).searchParams;
     const linkDate = params.get("k_raceDate");
     const raceNo = params.get("k_raceNo");
