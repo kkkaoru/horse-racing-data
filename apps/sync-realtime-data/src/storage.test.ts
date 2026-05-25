@@ -25,9 +25,11 @@ import {
   getRaceSource,
   getVenueLastRaceStartAtJst,
   buildRealtimePayload,
+  getPremiumRacePayload,
   getSameDayVenueJockeyWins,
   insertJraTrackConditionSnapshot,
   listOddsHistoryByType,
+  replacePremiumRaceData,
   listPremiumRaceDataFetchCandidatesByDate,
   listSchedulableRaceSourcesByDate,
   listTanshoHistory,
@@ -958,6 +960,91 @@ it("buildRealtimePayload includes oddsHistory + latest when odds are provided", 
     null,
   );
   expect(payload.odds?.fetchedAt).toBe("x");
+});
+
+it("replacePremiumRaceData batches deletes and inserts for every section provided", async () => {
+  const bind = vi.fn(() => ({ run: vi.fn(), bind: vi.fn() }));
+  const prepare = vi.fn(() => ({ bind }));
+  const batch = vi.fn(async () => []);
+  const db = { batch, prepare } as unknown as D1Database;
+  await replacePremiumRaceData(db, {
+    dataTopHorses: [
+      { horseName: "h1", horseNumber: "1", rank: 1, reasons: ["a"] },
+    ],
+    fetchedAt: "2026-05-12T11:00:00+09:00",
+    link: { entryUrl: "https://x.test/race", sourceRaceId: "202605120801" },
+    paddockBulletins: [
+      {
+        bulletinType: "value",
+        commentText: "コメント",
+        evaluationText: "◎",
+        frameNumber: "1",
+        groupKey: "value",
+        horseName: "h1",
+        horseNumber: "1",
+      },
+    ],
+    raceKey: "jra:2026:0512:08:01",
+    stableComments: [
+      {
+        commentText: "厩舎コメント",
+        evaluationGrade: "A",
+        evaluationText: "◎",
+        frameNumber: "1",
+        horseName: "h1",
+        horseNumber: "1",
+      },
+    ],
+    trainingReviews: [
+      {
+        commentText: "良い動き",
+        evaluationGrade: "A",
+        evaluationText: "良好",
+        horseName: "h1",
+        horseNumber: "1",
+        riderName: "rider",
+        trainingDate: "2026-05-10",
+      },
+    ],
+  });
+  expect(prepare.mock.calls.length).toBeGreaterThanOrEqual(8);
+  expect(batch).toHaveBeenCalled();
+});
+
+it("replacePremiumRaceData supports partial sections (only training reviews)", async () => {
+  const bind = vi.fn(() => ({ run: vi.fn(), bind: vi.fn() }));
+  const prepare = vi.fn(() => ({ bind }));
+  const batch = vi.fn(async () => []);
+  const db = { batch, prepare } as unknown as D1Database;
+  await replacePremiumRaceData(db, {
+    fetchedAt: "2026-05-12T11:00:00+09:00",
+    link: { entryUrl: "https://x.test/race", sourceRaceId: "202605120801" },
+    raceKey: "jra:2026:0512:08:01",
+    trainingReviews: [
+      {
+        commentText: "良い動き",
+        evaluationGrade: "A",
+        evaluationText: "良好",
+        horseName: "h1",
+        horseNumber: "1",
+        riderName: "rider",
+        trainingDate: "2026-05-10",
+      },
+    ],
+  });
+  expect(batch).toHaveBeenCalled();
+});
+
+it("getPremiumRacePayload aggregates rows from premium tables in a single Promise.all batch", async () => {
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const payload = await getPremiumRacePayload(db, "jra:2026:0512:08:01");
+  expect(payload.trainingReviews).toStrictEqual([]);
+  expect(payload.stableComments).toStrictEqual([]);
+  expect(payload.paddockBulletins).toStrictEqual([]);
+  expect(payload.dataTopHorses).toStrictEqual([]);
 });
 
 it("insertJraTrackConditionSnapshot inserts snapshots and returns mapped race rows when JRA races found", async () => {
