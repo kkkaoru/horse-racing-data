@@ -603,50 +603,24 @@ export const getRaceRunners = cache(
 );
 
 interface RaceTrendHistoricalRowsParams {
-  frameEndYmd: string;
-  frameNumbers: string[];
-  frameStartYmd: string;
-  includeAllRows: boolean;
-  jockeyEndYmd: string;
-  jockeyNames: string[];
-  jockeySameVenue: boolean;
-  jockeyStartYmd: string;
+  endYmd: string;
+  source: RaceSource;
+  startYmd: string;
 }
 
 const normalizeTextSql = (value: unknown) =>
   sql`nullif(regexp_replace(coalesce(${value}, ''), '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')`;
 
 export const getRaceTrendHistoricalStarterRows = cache(
-  async (
-    race: RaceDetail,
-    params: RaceTrendHistoricalRowsParams,
-  ): Promise<RaceTrendStarterRow[]> => {
-    return withDbQueryCache(["getRaceTrendHistoricalStarterRows", race, params], async () => {
-      const raceTable = race.source === "jra" ? jvdRa : nvdRa;
-      const runnerTable = race.source === "jra" ? jvdSe : nvdSe;
-      const jockeyNames = Array.from(new Set(params.jockeyNames.map((name) => name.trim()))).filter(
-        Boolean,
-      );
-      const frameNumbers = Array.from(
-        new Set(params.frameNumbers.map((frameNumber) => frameNumber.trim())),
-      ).filter(Boolean);
-      const jockeyNameCondition =
-        jockeyNames.length > 0
-          ? sql`${normalizeTextSql(sql`${runnerTable}.kishumei_ryakusho`)} in (${sql.join(
-              jockeyNames,
-              sql`, `,
-            )})`
-          : sql`false`;
-      const frameNumberCondition =
-        frameNumbers.length > 0
-          ? sql`${normalizeTextSql(sql`${runnerTable}.wakuban`)} in (${sql.join(
-              frameNumbers,
-              sql`, `,
-            )})`
-          : sql`false`;
-      const result = await getDb().execute<RaceTrendStarterRow>(sql`
+  async (params: RaceTrendHistoricalRowsParams): Promise<RaceTrendStarterRow[]> => {
+    return withDbQueryCache(
+      ["getRaceTrendHistoricalStarterRows", params.source, params.startYmd, params.endYmd],
+      async () => {
+        const raceTable = params.source === "jra" ? jvdRa : nvdRa;
+        const runnerTable = params.source === "jra" ? jvdSe : nvdSe;
+        const result = await getDb().execute<RaceTrendStarterRow>(sql`
         select
-          ${race.source}::text as source,
+          ${params.source}::text as source,
           ra.kaisai_nen as "kaisaiNen",
           ra.kaisai_tsukihi as "kaisaiTsukihi",
           ra.keibajo_code as "keibajoCode",
@@ -672,7 +646,10 @@ export const getRaceTrendHistoricalStarterRows = cache(
           ${normalizeTextSql(sql`${runnerTable}.corner_1`)} as "corner1",
           ${normalizeTextSql(sql`${runnerTable}.corner_2`)} as "corner2",
           ${normalizeTextSql(sql`${runnerTable}.corner_3`)} as "corner3",
-          ${normalizeTextSql(sql`${runnerTable}.corner_4`)} as "corner4"
+          ${normalizeTextSql(sql`${runnerTable}.corner_4`)} as "corner4",
+          ${normalizeTextSql(sql`${runnerTable}.bataiju`)} as bataiju,
+          ${normalizeTextSql(sql`${runnerTable}.zogen_fugo`)} as "zogenFugo",
+          ${normalizeTextSql(sql`${runnerTable}.zogen_sa`)} as "zogenSa"
         from ${runnerTable}
         join ${raceTable} ra
           on ra.kaisai_nen = ${runnerTable}.kaisai_nen
@@ -684,29 +661,13 @@ export const getRaceTrendHistoricalStarterRows = cache(
             regexp_replace(coalesce(${runnerTable}.kakutei_chakujun, ''), '[^0-9]', '', 'g'),
             ''
           )::int > 0
-          and (
-            (
-              ra.kaisai_nen || ra.kaisai_tsukihi between ${params.jockeyStartYmd} and ${params.jockeyEndYmd}
-              and ${jockeyNameCondition}
-              and (${params.jockeySameVenue} = false or ra.keibajo_code = ${race.keibajoCode})
-            )
-            or (
-              ra.kaisai_nen || ra.kaisai_tsukihi between ${params.frameStartYmd} and ${params.frameEndYmd}
-              and ra.keibajo_code = ${race.keibajoCode}
-              and ${frameNumberCondition}
-            )
-            or (
-              ${params.includeAllRows} = true
-              and
-              ra.kaisai_nen || ra.kaisai_tsukihi between ${params.jockeyStartYmd} and ${params.jockeyEndYmd}
-              and (${params.jockeySameVenue} = false or ra.keibajo_code = ${race.keibajoCode})
-            )
-          )
+          and ra.kaisai_nen || ra.kaisai_tsukihi between ${params.startYmd} and ${params.endYmd}
         order by ra.kaisai_nen desc, ra.kaisai_tsukihi desc, ra.keibajo_code asc, ra.race_bango asc, ${runnerTable}.umaban asc
       `);
 
-      return result.rows;
-    });
+        return result.rows;
+      },
+    );
   },
 );
 

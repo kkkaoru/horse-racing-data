@@ -54,12 +54,7 @@ const buildCachedResponse = (body: string, source: CacheSource | "memory"): Resp
   });
 
 export const buildRaceTrendCacheKeyForRequest = ({
-  day,
-  keibajoCode,
-  month,
   options,
-  raceNumber,
-  year,
 }: {
   day: string;
   keibajoCode: string;
@@ -67,7 +62,7 @@ export const buildRaceTrendCacheKeyForRequest = ({
   options: RaceTrendCacheOptions;
   raceNumber: string;
   year: string;
-}): string => buildRaceTrendCacheKey({ day, keibajoCode, month, options, raceNumber, year });
+}): string => buildRaceTrendCacheKey({ options });
 
 export const getCachedRaceTrendResponse = async (cacheKey: string): Promise<Response | null> => {
   const cachedMemory = memoryCache.get(cacheKey);

@@ -1,6 +1,6 @@
 import type { RaceSource } from "./codes";
 
-export const RACE_TREND_CACHE_VERSION = "v1";
+export const RACE_TREND_CACHE_VERSION = "v2";
 
 export const RACE_TREND_CACHE_WARM_PARAM = "__trendCacheWarm";
 
@@ -10,19 +10,14 @@ export const RACE_TREND_CACHE_PRE_START_SECONDS = 20 * 60;
 
 export const RACE_TREND_CACHE_AFTER_START_SECONDS = 6 * 60 * 60;
 
-export const RACE_TREND_CACHE_WARM_VARIANT_COUNT = 4;
+export const RACE_TREND_CACHE_WARM_VARIANT_COUNT = 1;
 
 export interface RaceTrendCacheOptions {
   frameEndYmd: string;
   frameStartYmd: string;
   includeRealtimeResults: boolean;
   jockeyEndYmd: string;
-  jockeySameVenue: boolean;
   jockeyStartYmd: string;
-  runningStyleIgnoreFrame: boolean;
-  runningStyleIgnoreJockey: boolean;
-  runningStyleIgnoreRaceNumber: boolean;
-  runningStyleIgnoreRunningStyle: boolean;
   source: RaceSource;
 }
 
@@ -61,12 +56,7 @@ export const buildDefaultRaceTrendCacheOptions = (
     frameStartYmd: defaultStartYmd,
     includeRealtimeResults: true,
     jockeyEndYmd: targetYmd,
-    jockeySameVenue: true,
     jockeyStartYmd: defaultStartYmd,
-    runningStyleIgnoreFrame: false,
-    runningStyleIgnoreJockey: false,
-    runningStyleIgnoreRaceNumber: true,
-    runningStyleIgnoreRunningStyle: true,
     source,
   };
 };
@@ -74,65 +64,22 @@ export const buildDefaultRaceTrendCacheOptions = (
 export const buildRaceTrendCacheWarmOptions = (
   source: RaceSource,
   targetYmd: string,
-): RaceTrendCacheOptions[] => {
-  const defaultOptions = buildDefaultRaceTrendCacheOptions(source, targetYmd);
-  return [
-    defaultOptions,
-    {
-      ...defaultOptions,
-      runningStyleIgnoreFrame: true,
-      runningStyleIgnoreJockey: true,
-      runningStyleIgnoreRunningStyle: false,
-    },
-    {
-      ...defaultOptions,
-      runningStyleIgnoreFrame: false,
-      runningStyleIgnoreJockey: true,
-      runningStyleIgnoreRunningStyle: true,
-    },
-    {
-      ...defaultOptions,
-      runningStyleIgnoreFrame: true,
-      runningStyleIgnoreJockey: false,
-      runningStyleIgnoreRunningStyle: true,
-    },
-  ];
-};
+): RaceTrendCacheOptions[] => [buildDefaultRaceTrendCacheOptions(source, targetYmd)];
 
 export const buildRaceTrendCacheKey = ({
-  day,
-  keibajoCode,
-  month,
   options,
-  raceNumber,
-  year,
 }: {
-  day: string;
-  keibajoCode: string;
-  month: string;
   options: RaceTrendCacheOptions;
-  raceNumber: string;
-  year: string;
 }): string =>
   [
     "race-trend",
     RACE_TREND_CACHE_VERSION,
-    year,
-    month,
-    day,
-    keibajoCode,
-    raceNumber,
     options.source,
     options.jockeyStartYmd,
     options.jockeyEndYmd,
     options.frameStartYmd,
     options.frameEndYmd,
     booleanKey(options.includeRealtimeResults),
-    booleanKey(options.jockeySameVenue),
-    booleanKey(options.runningStyleIgnoreRunningStyle),
-    booleanKey(options.runningStyleIgnoreFrame),
-    booleanKey(options.runningStyleIgnoreJockey),
-    booleanKey(options.runningStyleIgnoreRaceNumber),
   ].join(":");
 
 export const buildRaceTrendApiPath = ({
@@ -150,11 +97,6 @@ export const buildRaceTrendApiPath = ({
     frameStart: options.frameStartYmd,
     frameEnd: options.frameEndYmd,
     includeRealtimeResults: String(options.includeRealtimeResults),
-    jockeySameVenue: String(options.jockeySameVenue),
-    runningStyleIgnoreRunningStyle: String(options.runningStyleIgnoreRunningStyle),
-    runningStyleIgnoreFrame: String(options.runningStyleIgnoreFrame),
-    runningStyleIgnoreJockey: String(options.runningStyleIgnoreJockey),
-    runningStyleIgnoreRaceNumber: String(options.runningStyleIgnoreRaceNumber),
     [RACE_TREND_CACHE_WARM_PARAM]: "1",
   });
   return `/api/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/trends?${params.toString()}`;
