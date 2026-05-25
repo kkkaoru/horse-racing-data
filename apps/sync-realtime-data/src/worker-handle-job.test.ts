@@ -119,6 +119,9 @@ vi.mock("./keiba-go", async () => {
     fetchOdds: vi.fn(async () => ({})),
     fetchRacePage: vi.fn(async () => "<html></html>"),
     fetchRaceLinksFromRaceList: vi.fn(async () => []),
+    parseHorseWeights: vi.fn(() => []),
+    parseRaceEntries: vi.fn(() => []),
+    parseRaceResults: vi.fn(() => []),
   };
 });
 vi.mock("./jra", async () => {
@@ -1265,6 +1268,51 @@ it("handleJob fetch-weights with JRA race source runs assert + insertHorseWeight
     "jra:2026:0512:08:01",
     "last_weight_fetch_at",
     expect.any(String),
+  );
+});
+
+it("handleJob fetch-weights NAR + sparse weight rows (length 1) clears snapshot and throws", async () => {
+  const { handleJob } = await import("./worker");
+  const { getRaceSource, insertHorseWeightSnapshot } = await import("./storage");
+  const { parseHorseWeights } = await import("./keiba-go");
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "22",
+    debaUrl: "https://nar.example/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: null,
+    kaisaiNen: "2026",
+    kaisaiNichime: null,
+    kaisaiTsukihi: "0512",
+    keibajoCode: "55",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "nar:2026:0512:55:01",
+    raceName: "T",
+    raceStartAtJst: "2026-05-12T18:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "nar",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(parseHorseWeights).mockReturnValueOnce([
+    { changeAmount: null, changeSign: null, horseName: null, horseNumber: "1", weight: 500 },
+  ] as never);
+  await expect(
+    handleJob(buildEnv(), { raceKey: "nar:2026:0512:55:01", type: "fetch-weights" }),
+  ).rejects.toThrow("horse weight rows are unexpectedly sparse");
+  expect(insertHorseWeightSnapshot).toHaveBeenCalledWith(
+    expect.anything(),
+    "nar:2026:0512:55:01",
+    expect.any(String),
+    [],
   );
 });
 

@@ -147,6 +147,10 @@ vi.mock("./premium-race", async () => {
     fetchPremiumHtmlAttempts: vi.fn(async () => []),
   };
 });
+vi.mock("./running-style-verification", () => ({
+  parseRunningStylePostgresVerificationParams: vi.fn(() => null),
+  runRunningStyleWorkerPostgresVerification: vi.fn(async () => ({ ok: true })),
+}));
 
 const buildDb = (): D1Database => {
   const all = vi.fn(async () => ({ results: [] }));
@@ -255,6 +259,54 @@ it("fetch GET /api/nar/races/.../jockey-wins returns the jockey wins list", asyn
   const { default: worker } = await import("./worker");
   const response = await worker.fetch(
     new Request("https://x.test/api/nar/races/2026/05/12/55/01/jockey-wins"),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+});
+
+it("fetch POST /admin/running-style/verify-postgres returns 403 when authorization mismatches", async () => {
+  const { default: worker } = await import("./worker");
+  const { parseRunningStylePostgresVerificationParams } = await import("./running-style-verification");
+  vi.mocked(parseRunningStylePostgresVerificationParams).mockReturnValueOnce({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0512",
+    keibajoCode: "08",
+    raceBango: "01",
+    source: "jra",
+  });
+  const response = await worker.fetch(
+    new Request("https://x.test/admin/running-style/verify-postgres/jra/2026/05/12/08/01", {
+      headers: { authorization: "Bearer wrong" },
+      method: "POST",
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(403);
+});
+
+it("fetch POST /admin/running-style/verify-postgres returns the verification summary when token matches", async () => {
+  const { default: worker } = await import("./worker");
+  const { parseRunningStylePostgresVerificationParams, runRunningStyleWorkerPostgresVerification } =
+    await import("./running-style-verification");
+  vi.mocked(parseRunningStylePostgresVerificationParams).mockReturnValueOnce({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0512",
+    keibajoCode: "08",
+    raceBango: "01",
+    source: "jra",
+  });
+  vi.mocked(runRunningStyleWorkerPostgresVerification).mockResolvedValueOnce({
+    raceKey: "jra:2026:0512:08:01",
+    readBackRows: 12,
+    writtenCount: 12,
+  } as never);
+  const response = await worker.fetch(
+    new Request("https://x.test/admin/running-style/verify-postgres/jra/2026/05/12/08/01", {
+      headers: { authorization: "Bearer secret" },
+      method: "POST",
+    }),
     buildEnv(),
     buildCtx(),
   );
