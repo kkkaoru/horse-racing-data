@@ -84,11 +84,6 @@ export type Job =
       kaisaiNen: string;
       kaisaiTsukihi: string;
       predictedAt: string;
-    }
-  | {
-      type: "build-daily-features";
-      date: string;
-      sourceScope?: "all" | "ban-ei" | "jra" | "nar";
     };
 
 export type Win5ScheduleJob = Extract<
@@ -121,11 +116,9 @@ export interface HyperdriveBinding {
 export interface Env {
   DATABASE_TARGET?: string;
   DATABASE_URL_NEON?: string;
-  DETAIL_SECTION_CACHE_KV?: KVNamespace;
   HYPERDRIVE?: HyperdriveBinding;
   JRA_BROWSER?: BrowserWorker;
   ODDS_CACHE: DurableObjectNamespace;
-  PC_KEIBA_VIEWER?: { fetch: typeof fetch };
   ODDS_DO_TTL_SECONDS?: string;
   PREMIUM_PADDOCK_CACHE: DurableObjectNamespace;
   PREMIUM_PADDOCK_DO_TTL_SECONDS?: string;

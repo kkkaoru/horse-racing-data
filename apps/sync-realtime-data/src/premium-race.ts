@@ -5,7 +5,6 @@ export interface PremiumRaceConfig {
   cookie: string | null;
   dataTopPathTemplate: string | null;
   entryLinkPattern: string | null;
-  narOrigin: string | null;
   narTopPathTemplate: string | null;
   origin: string | null;
   paddockPathTemplate: string | null;
@@ -79,7 +78,6 @@ type EnvLike = {
   PREMIUM_RACE_DATA_TOP_PATH_TEMPLATE?: string;
   PREMIUM_RACE_DATA_TOP_REASON_LIST_CLASS?: string;
   PREMIUM_RACE_ENTRY_LINK_PATTERN?: string;
-  PREMIUM_RACE_NAR_ORIGIN?: string;
   PREMIUM_RACE_NAR_TOP_PATH_TEMPLATE?: string;
   PREMIUM_RACE_ORIGIN?: string;
   PREMIUM_RACE_PADDOCK_PATH_TEMPLATE?: string;
@@ -107,14 +105,11 @@ export const isPremiumRaceDataTarget = (
 ): boolean =>
   race.source === "jra" || (race.source === "nar" && race.keibajoCode !== BAN_EI_KEIBAJO_CODE);
 
-const DEFAULT_NAR_PREMIUM_ORIGIN = "https://nar.netkeiba.com";
-
 export const getPremiumRaceConfig = (env: EnvLike): PremiumRaceConfig => ({
   commentPathTemplate: env.PREMIUM_RACE_COMMENT_PATH_TEMPLATE ?? null,
   cookie: env.PREMIUM_RACE_COOKIE ?? null,
   dataTopPathTemplate: env.PREMIUM_RACE_DATA_TOP_PATH_TEMPLATE ?? null,
   entryLinkPattern: env.PREMIUM_RACE_ENTRY_LINK_PATTERN ?? null,
-  narOrigin: env.PREMIUM_RACE_NAR_ORIGIN ?? DEFAULT_NAR_PREMIUM_ORIGIN,
   narTopPathTemplate: env.PREMIUM_RACE_NAR_TOP_PATH_TEMPLATE ?? null,
   origin: env.PREMIUM_RACE_ORIGIN ?? null,
   paddockPathTemplate: env.PREMIUM_RACE_PADDOCK_PATH_TEMPLATE ?? null,
@@ -140,17 +135,12 @@ export const buildPremiumUrl = (
   config: PremiumRaceConfig,
   template: string | null,
   params: Record<string, string>,
-  options: { source?: "jra" | "nar" } = {},
 ): string | null => {
-  if (!template) {
-    return null;
-  }
-  const origin = options.source === "nar" ? config.narOrigin : config.origin;
-  if (!origin) {
+  if (!config.origin || !template) {
     return null;
   }
   const path = renderPremiumTemplate(template, params);
-  return new URL(path, origin).toString();
+  return new URL(path, config.origin).toString();
 };
 
 export const fetchPremiumHtml = async (
@@ -430,47 +420,26 @@ export const buildJraPremiumSourceRaceId = (
   return `${race.kaisaiNen}${race.keibajoCode}${race.kaisaiKai}${race.kaisaiNichime}${race.raceBango.padStart(2, "0")}`;
 };
 
-// netkeiba NAR `race_id` is `YYYY` + venue(2) + `MMDD`(4) + race(2) — 12 digits.
-// Sample observed: `202554110906` = 2025 / 高知(54) / 11-09 / R06. Ban-ei
-// (keibajo 83) deliberately stays out: the user excludes it from data-top
-// coverage.
-export const buildNarPremiumSourceRaceId = (
-  race: Pick<NarRaceSource, "kaisaiNen" | "kaisaiTsukihi" | "keibajoCode" | "raceBango" | "source">,
-): string | null => {
-  if (race.source !== "nar" || race.keibajoCode === BAN_EI_KEIBAJO_CODE) {
-    return null;
-  }
-  if (!/^\d{4}$/.test(race.kaisaiTsukihi)) {
-    return null;
-  }
-  return `${race.kaisaiNen}${race.keibajoCode}${race.kaisaiTsukihi}${race.raceBango.padStart(2, "0")}`;
-};
-
 export const buildPremiumRaceLinkFromRace = (
   race: NarRaceSource,
   config: PremiumRaceConfig,
 ): PremiumRaceLink | null => {
-  const sourceRaceId = buildJraPremiumSourceRaceId(race) ?? buildNarPremiumSourceRaceId(race);
+  const sourceRaceId = buildJraPremiumSourceRaceId(race);
   if (!sourceRaceId) {
     return null;
   }
   const entryUrl =
-    buildPremiumUrl(config, config.dataTopPathTemplate, { sourceRaceId }, { source: race.source }) ??
-    buildPremiumUrl(config, config.workPathTemplate, { sourceRaceId }, { source: race.source }) ??
+    buildPremiumUrl(config, config.dataTopPathTemplate, { sourceRaceId }) ??
+    buildPremiumUrl(config, config.workPathTemplate, { sourceRaceId }) ??
     `${config.sourceIdQueryKey}=${sourceRaceId}`;
   return { entryUrl, sourceRaceId };
 };
 
-export const sourceRaceIdCandidates = (race: NarRaceSource): string[] => {
-  const jraId = buildJraPremiumSourceRaceId(race);
-  const narId = buildNarPremiumSourceRaceId(race);
-  return [
-    ...(jraId ? [jraId] : []),
-    ...(narId ? [narId] : []),
-    `${race.kaisaiNen}${race.keibajoCode}${race.raceBango}`,
-    `${race.kaisaiNen}${race.keibajoCode}${race.raceBango.replace(/^0+/u, "")}`,
-  ];
-};
+export const sourceRaceIdCandidates = (race: NarRaceSource): string[] => [
+  ...(buildJraPremiumSourceRaceId(race) ? [buildJraPremiumSourceRaceId(race) as string] : []),
+  `${race.kaisaiNen}${race.keibajoCode}${race.raceBango}`,
+  `${race.kaisaiNen}${race.keibajoCode}${race.raceBango.replace(/^0+/u, "")}`,
+];
 
 export const matchPremiumLinkToRace = (
   links: PremiumRaceLink[],

@@ -35,7 +35,6 @@
       "0 12 * * *",
       "30 12 * * *",
       "30 18 * * *",
-      "0 0-13 * * *",
     ],
   },
   "queues": {
@@ -87,12 +86,6 @@
   "browser": {
     "binding": "JRA_BROWSER",
   },
-  "services": [
-    {
-      "binding": "PC_KEIBA_VIEWER",
-      "service": "pc-keiba-viewer",
-    },
-  ],
   "d1_databases": [
     {
       "binding": "REALTIME_DB",
