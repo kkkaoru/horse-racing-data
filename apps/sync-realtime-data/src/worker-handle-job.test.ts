@@ -550,6 +550,40 @@ it("handleJob fetch-weights with NAR race source short-circuits when no fetch UR
   );
 });
 
+it("handleJob fetch-jra-track-condition with successful claim runs the snapshot insert", async () => {
+  const { handleJob } = await import("./worker");
+  const {
+    claimTrackConditionFetch,
+    insertJraTrackConditionSnapshot,
+    completeTrackConditionFetch,
+  } = await import("./storage");
+  vi.mocked(claimTrackConditionFetch).mockResolvedValueOnce(true);
+  vi.mocked(insertJraTrackConditionSnapshot).mockResolvedValueOnce([
+    { raceKey: "jra:2026:0512:08:01", raceStartAtJst: "2026-05-12T13:00:00+09:00" },
+  ]);
+  await handleJob(buildEnv(), {
+    date: "20260512",
+    keibajoCode: "08",
+    type: "fetch-jra-track-condition",
+  });
+  expect(completeTrackConditionFetch).toHaveBeenCalledTimes(1);
+});
+
+it("handleJob fetch-jra-track-condition with successful claim and empty races falls through to fail", async () => {
+  const { handleJob } = await import("./worker");
+  const {
+    claimTrackConditionFetch,
+    insertJraTrackConditionSnapshot,
+  } = await import("./storage");
+  vi.mocked(claimTrackConditionFetch).mockResolvedValueOnce(true);
+  vi.mocked(insertJraTrackConditionSnapshot).mockResolvedValueOnce([]);
+  await handleJob(buildEnv(), {
+    date: "20260512",
+    keibajoCode: "08",
+    type: "fetch-jra-track-condition",
+  });
+});
+
 it("handleJob fetch-results with NAR race source completes when finish-position rows empty", async () => {
   const { handleJob } = await import("./worker");
   const {
