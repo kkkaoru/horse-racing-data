@@ -234,6 +234,27 @@ it("printIncompleteRows returns early when no incomplete rows", () => {
   expect(spy).not.toHaveBeenCalled();
 });
 
+it("printIncompleteRows logs rows with parquetReady/cacheReady true variants", () => {
+  const spy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const rows: RunningStyleDateProgressRow[] = [
+    {
+      cacheReady: true,
+      d1Count: 0,
+      displayReady: false,
+      expectedHorses: 10,
+      featuresReady: false,
+      inferenceStatus: "pending",
+      parquetReady: true,
+      raceKey: "jra:20260512:08:01",
+      source: "jra",
+    },
+  ];
+  printIncompleteRows(rows);
+  expect(spy).toHaveBeenCalledTimes(1);
+  expect(spy.mock.calls[0]?.[0]).toContain("parquet=ok");
+  expect(spy.mock.calls[0]?.[0]).toContain("cache=ok");
+});
+
 it("printIncompleteRows logs first 20 incomplete rows then summarizes the rest", () => {
   const spy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   const rows: RunningStyleDateProgressRow[] = Array.from({ length: 25 }, (_, index) => ({
