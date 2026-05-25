@@ -417,6 +417,43 @@ it("fetch during JST polling window seeds the planner watchdog via ctx.waitUntil
   expect(waitPromises.length).toBeGreaterThanOrEqual(1);
 });
 
+it("fetch returns 403 for /api/jobs when REALTIME_ADMIN_TOKEN is missing", async () => {
+  const { default: worker } = await import("./worker");
+  const env = buildEnv();
+  const envWithoutToken = { ...env, REALTIME_ADMIN_TOKEN: undefined } as unknown as Env;
+  const response = await worker.fetch(
+    new Request("https://x.test/api/jobs", {
+      body: JSON.stringify({ date: "20260512", type: "plan-realtime-fetches" }),
+      headers: { authorization: "Bearer anything" },
+      method: "POST",
+    }),
+    envWithoutToken,
+    buildCtx(),
+  );
+  expect(response.status).toBe(403);
+});
+
+it("fetch GET unknown path returns 404 with cache-control max-age=0", async () => {
+  const { default: worker } = await import("./worker");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/unknown"),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(404);
+  expect(response.headers.get("cache-control")).toBe("public, max-age=0");
+});
+
+it("fetch ignores REALTIME_TEST_NOW when not parseable as Date", async () => {
+  const { default: worker } = await import("./worker");
+  const response = await worker.fetch(
+    new Request("https://x.test/health"),
+    buildEnv({ REALTIME_TEST_NOW: "not-a-date" } as never),
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+});
+
 it("fetch GET to an unmatched path returns the catch-all 404", async () => {
   const { default: worker } = await import("./worker");
   const response = await worker.fetch(
