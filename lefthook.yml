@@ -9,12 +9,44 @@ pre-commit:
     oxlint:
       glob: "*.ts"
       run: bunx oxlint {staged_files}
-    tsc:
-      glob: "*.ts"
-      run: bun run --filter horse-racing-records tsc
-    vitest:
-      glob: "*.ts"
-      run: bun run --filter horse-racing-records test
+    # Per-package tsc/test: each command's `glob` keeps lefthook from running
+    # it unless a staged file actually belongs to that package. The previous
+    # `--filter horse-racing-records` matched no workspace package, so every
+    # commit that touched a *.ts file outside the (non-existent) target
+    # package exited with "No packages matched the filter".
+    tsc-pc-keiba-viewer:
+      glob: "apps/pc-keiba-viewer/**/*.ts"
+      run: bun run --filter pc-keiba-viewer tsc
+    test-pc-keiba-viewer:
+      glob: "apps/pc-keiba-viewer/**/*.ts"
+      run: bun run --filter pc-keiba-viewer test
+    tsc-sync-realtime-data:
+      glob: "apps/sync-realtime-data/**/*.ts"
+      run: bun run --filter sync-realtime-data tsc
+    test-sync-realtime-data:
+      glob: "apps/sync-realtime-data/**/*.ts"
+      run: bun run --filter sync-realtime-data test
+    tsc-horse-racing-duckdb:
+      glob: "apps/horse-racing-duckdb/**/*.ts"
+      run: bun run --filter horse-racing-duckdb tsc
+    test-horse-racing-duckdb:
+      glob: "apps/horse-racing-duckdb/**/*.ts"
+      run: bun run --filter horse-racing-duckdb test
+    test-local-postgresql:
+      glob: "apps/local-postgresql/**/*.ts"
+      run: bun run --filter local-postgresql test
+    tsc-horse-racing-realtime:
+      glob: "packages/horse-racing-realtime/**/*.ts"
+      run: bun run --filter horse-racing-realtime tsc
+    test-horse-racing-realtime:
+      glob: "packages/horse-racing-realtime/**/*.ts"
+      run: bun run --filter horse-racing-realtime test
+    tsc-horse-racing-schema:
+      glob: "packages/horse-racing-schema/**/*.ts"
+      run: bun run --filter horse-racing-schema tsc
+    test-horse-racing-schema:
+      glob: "packages/horse-racing-schema/**/*.ts"
+      run: bun run --filter horse-racing-schema test
     # scripts/ 配下 Python (pywinauto 自動化など) の品質チェック。
     # ruff/ty/basedpyright/pytest はプロジェクト全体に対して動くので {staged_files} は渡さない。
     scripts-ruff:
