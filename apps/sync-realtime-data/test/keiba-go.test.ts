@@ -248,6 +248,37 @@ describe("keiba.go realtime helpers", () => {
     );
   });
 
+  it("fetchRaceLinksFromRaceList returns [] when raceListUrl lacks k_raceDate", async () => {
+    const result = await fetchRaceLinksFromRaceList(
+      "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_babaCode=22",
+    );
+    expect(result).toStrictEqual([]);
+  });
+
+  it("fetchRaceLinksFromRaceList returns [] when raceListUrl lacks k_babaCode", async () => {
+    const result = await fetchRaceLinksFromRaceList(
+      "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2f05%2f10",
+    );
+    expect(result).toStrictEqual([]);
+  });
+
+  it("fetchRaceLinksFromRaceList skips links with mismatched race date or babaCode", async () => {
+    mockFetchHtml({
+      "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2f05%2f10&k_babaCode=22":
+        `
+        <a href="/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2f05%2f10&k_raceNo=1&k_babaCode=22">match</a>
+        <a href="/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2f05%2f11&k_raceNo=2&k_babaCode=22">other date</a>
+        <a href="/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2f05%2f10&k_raceNo=3&k_babaCode=30">other code</a>
+        <a href="/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2f05%2f10&k_raceNo=1&k_babaCode=22">duplicate</a>
+        `,
+    });
+    const result = await fetchRaceLinksFromRaceList(
+      "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2f05%2f10&k_babaCode=22",
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0]?.raceNumber).toBe("01");
+  });
+
   it("fetchTodayRaceListUrls accepts absolute http URLs and skips entries with missing babaCode", async () => {
     mockFetchHtml({
       "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/TodayRaceInfoTop": `
@@ -264,6 +295,65 @@ describe("keiba.go realtime helpers", () => {
         url: "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2f05%2f10&k_babaCode=22",
       },
     ]);
+  });
+
+  it("fetchOdds returns empty for tansho when tbody absent", async () => {
+    mockFetchHtml({
+      "https://www.keiba.go.jp/KeibaWeb/Odds/tansho": "<div>no table</div>",
+    });
+    const baseUrl = "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k=1";
+    await expect(fetchOdds(baseUrl, { tansho: "/KeibaWeb/Odds/tansho" })).resolves.toStrictEqual({
+      tansho: [],
+    });
+  });
+
+  it("fetchOdds returns empty array for tansho with invalid horseNum/odds", async () => {
+    mockFetchHtml({
+      "https://www.keiba.go.jp/KeibaWeb/Odds/tansho": `
+        <tbody>
+          <tr><td></td><td>99</td><td></td><td>2.0</td></tr>
+          <tr><td></td><td>1</td><td></td><td>not-a-number</td></tr>
+          <tr><td></td><td>2</td><td></td><td></td></tr>
+        </tbody>
+      `,
+    });
+    const baseUrl = "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k=1";
+    await expect(fetchOdds(baseUrl, { tansho: "/KeibaWeb/Odds/tansho" })).resolves.toStrictEqual({
+      tansho: [],
+    });
+  });
+
+  it("fetchOdds drops fukusho rows whose odds cell has no numbers", async () => {
+    mockFetchHtml({
+      "https://www.keiba.go.jp/KeibaWeb/Odds/fukusho": `
+        <tbody>
+          <tr><td></td><td>1</td><td></td><td></td><td>not-numeric</td></tr>
+          <tr><td></td><td>2</td><td></td><td></td><td>1.5 - 2.3</td></tr>
+        </tbody>
+      `,
+    });
+    const baseUrl = "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k=1";
+    const result = await fetchOdds(baseUrl, { fukusho: "/KeibaWeb/Odds/fukusho" });
+    expect(result.fukusho).toHaveLength(1);
+    expect(result.fukusho?.[0]?.combination).toBe("2");
+  });
+
+  it("fetchOdds catches per-type fetch errors and excludes that type from the result", async () => {
+    mockFetchHtml({
+      "https://www.keiba.go.jp/KeibaWeb/Odds/tansho": new Response("err", { status: 503 }),
+      "https://www.keiba.go.jp/KeibaWeb/Odds/fukusho": `
+        <tbody>
+          <tr><td></td><td>1</td><td></td><td></td><td>1.5 - 2.3</td></tr>
+        </tbody>
+      `,
+    });
+    const baseUrl = "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k=1";
+    const result = await fetchOdds(baseUrl, {
+      fukusho: "/KeibaWeb/Odds/fukusho",
+      tansho: "/KeibaWeb/Odds/tansho",
+    });
+    expect(result.tansho).toBeUndefined();
+    expect(result.fukusho).toHaveLength(1);
   });
 
   it("parses fukusho odds with min/max range cells", async () => {
