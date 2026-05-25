@@ -93,6 +93,9 @@ export interface RaceTrendStarterRow extends Record<string, unknown> {
   corner2: string | null;
   corner3: string | null;
   corner4: string | null;
+  bataiju: string | null;
+  zogenFugo: string | null;
+  zogenSa: string | null;
 }
 
 export type RaceTrendRunningStyle = "nige" | "senkou" | "sashi" | "oikomi";
@@ -112,6 +115,37 @@ export interface RaceTrendDetail {
   winOdds: number | null;
   finishPosition: number;
   time: string | null;
+  horseWeight: number | null;
+  horseWeightDelta: number | null;
+}
+
+export interface RaceTrendRunningStyleCache {
+  raceKey: string;
+  horseNumber: string;
+  predictedLabel: RaceTrendRunningStyle;
+}
+
+export interface RaceTrendCurrentRunningStyle {
+  horseNumber: string;
+  predictedLabel: RaceTrendRunningStyle;
+}
+
+export interface RaceTrendRunnerSummary {
+  frameNumber: string | null;
+  horseNumber: string | null;
+  jockeyName: string | null;
+}
+
+export interface RaceTrendRawPayload {
+  raceContext: {
+    keibajoCode: string;
+    raceBango: string;
+    source: RaceSource;
+  };
+  runners: RaceTrendRunnerSummary[];
+  starterRows: RaceTrendStarterRow[];
+  currentRunningStyles: RaceTrendCurrentRunningStyle[];
+  historicalRunningStyles: RaceTrendRunningStyleCache[];
 }
 
 export interface RaceTrendRateRow {

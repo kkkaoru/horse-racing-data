@@ -21,10 +21,11 @@ import {
 } from "../../../lib/race-trend-query";
 import type {
   RaceTrendDetail,
-  RaceTrendPayload,
+  RaceTrendRawPayload,
   RaceTrendRunningStyle,
   RaceTrendRunningStyleRow,
 } from "../../../lib/race-types";
+import { aggregateForTargets } from "../../../lib/race-trend-aggregate";
 import { useRealtimeRaceSelector } from "./realtime-client";
 
 const RACE_TREND_RETRY_OPTIONS = {
@@ -81,20 +82,21 @@ const normalizeHorseNumber = (value: string | null | undefined): string => {
   return Number.isFinite(parsed) && parsed > 0 ? String(parsed) : "";
 };
 
-const countDistinctTrendRaces = (rows: RaceTrendRunningStyleRow[]): number =>
-  new Set(
-    rows.flatMap((row) =>
-      row.details.map((detail) =>
-        [detail.source, detail.date, detail.keibajoCode, detail.raceNumber].join(":"),
-      ),
-    ),
-  ).size;
+const formatHorseWeight = (
+  weight: number | null,
+  delta: number | null,
+): string => {
+  if (weight === null) return "-";
+  if (delta === null) return String(weight);
+  const sign = delta > 0 ? "+" : delta < 0 ? "" : "±";
+  return `${weight}(${sign}${delta})`;
+};
 
-const isRaceTrendPayload = (value: unknown): value is RaceTrendPayload =>
+const isRaceTrendRawPayload = (value: unknown): value is RaceTrendRawPayload =>
   typeof value === "object" &&
   value !== null &&
-  "runningStyleRows" in value &&
-  Array.isArray((value as { runningStyleRows?: unknown }).runningStyleRows);
+  "starterRows" in value &&
+  Array.isArray((value as { starterRows?: unknown }).starterRows);
 
 const sortDetailsByLatestRace = (details: RaceTrendDetail[]): RaceTrendDetail[] =>
   details.toSorted((a, b) => {
@@ -113,20 +115,16 @@ const getApiPath = ({
   day,
   defaultEndDate,
   defaultStartDate,
-  jockeySameVenue,
   keibajoCode,
   month,
   raceNumber,
   source,
   trendEnd,
   trendStart,
-  trendTargets,
   year,
 }: RaceTrendSectionProps & {
-  jockeySameVenue: boolean;
   trendEnd: string;
   trendStart: string;
-  trendTargets: RaceTrendTargets;
 }): string => {
   const params = new URLSearchParams({
     source,
@@ -135,14 +133,11 @@ const getApiPath = ({
     frameStart: trendStart || defaultStartDate,
     frameEnd: trendEnd || defaultEndDate,
     includeRealtimeResults: "true",
-    jockeySameVenue: String(jockeySameVenue),
-    runningStyleIgnoreRunningStyle: String(!trendTargets.runningStyle),
-    runningStyleIgnoreFrame: String(!trendTargets.frame),
-    runningStyleIgnoreJockey: String(!trendTargets.jockey),
-    runningStyleIgnoreRaceNumber: String(!trendTargets.raceNumber),
   });
   return `/api/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/trends?${params.toString()}`;
 };
+
+const normalizeYmd = (value: string): string => value.replaceAll("-", "");
 
 const getLivePath = ({
   day,
@@ -441,6 +436,7 @@ function RowFragment({
                   <col className="race-trend-detail-col-finish" />
                   <col className="race-trend-detail-col-popularity" />
                   <col className="race-trend-detail-col-odds" />
+                  <col className="race-trend-detail-col-horse-weight" />
                   <col className="race-trend-detail-col-horse-name" />
                   <col className="race-trend-detail-col-race-name" />
                 </colgroup>
@@ -456,6 +452,7 @@ function RowFragment({
                     <th>着順</th>
                     <th>人気</th>
                     <th>単勝</th>
+                    <th>馬体重</th>
                     <th>馬名</th>
                     <th>レース名</th>
                   </tr>
@@ -475,6 +472,7 @@ function RowFragment({
                       <td>{detail.finishPosition}</td>
                       <td>{formatMedian(detail.popularity)}</td>
                       <td>{formatTrendWinOdds(detail.winOdds)}</td>
+                      <td>{formatHorseWeight(detail.horseWeight, detail.horseWeightDelta)}</td>
                       <td className="race-trend-detail-horse-name">{detail.horseName ?? "-"}</td>
                       <td className="race-trend-detail-race-name">{detail.raceName ?? "-"}</td>
                     </tr>
@@ -504,8 +502,7 @@ export function RaceTrendSection({
   const [trendStart, setTrendStart] = useState(defaultStartDate);
   const [trendEnd, setTrendEnd] = useState(defaultEndDate);
   const [trendTargets, setTrendTargets] = useState<RaceTrendTargets>(initialTrendTargets);
-  const [rows, setRows] = useState<RaceTrendRunningStyleRow[]>([]);
-  const [raceCount, setRaceCount] = useState(0);
+  const [rawPayload, setRawPayload] = useState<RaceTrendRawPayload | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
   const trendTargetsRef = useRef(initialTrendTargets);
   const fetchSequenceRef = useRef(0);
@@ -547,28 +544,24 @@ export function RaceTrendSection({
         day,
         defaultEndDate,
         defaultStartDate,
-        jockeySameVenue,
         keibajoCode,
         month,
         raceNumber,
         source,
         trendEnd,
         trendStart,
-        trendTargets,
         year,
       }),
     [
       day,
       defaultEndDate,
       defaultStartDate,
-      jockeySameVenue,
       keibajoCode,
       month,
       raceNumber,
       source,
       trendEnd,
       trendStart,
-      trendTargets,
       year,
     ],
   );
@@ -577,6 +570,33 @@ export function RaceTrendSection({
     () => getLivePath({ day, keibajoCode, month, raceNumber, source, year }),
     [day, keibajoCode, month, raceNumber, source, year],
   );
+
+  const { runningStyleRows: rows, raceCount } = useMemo(() => {
+    if (!rawPayload) {
+      return { runningStyleRows: [] as RaceTrendRunningStyleRow[], raceCount: 0 };
+    }
+    return aggregateForTargets(
+      {
+        starterRows: rawPayload.starterRows,
+        currentRunningStyles: rawPayload.currentRunningStyles,
+        historicalRunningStyles: rawPayload.historicalRunningStyles,
+        raceContext: rawPayload.raceContext,
+        runners: rawPayload.runners,
+      },
+      trendTargets,
+      jockeySameVenue,
+      normalizeYmd(trendStart || defaultStartDate),
+      normalizeYmd(trendEnd || defaultEndDate),
+    );
+  }, [
+    rawPayload,
+    trendTargets,
+    jockeySameVenue,
+    trendStart,
+    trendEnd,
+    defaultStartDate,
+    defaultEndDate,
+  ]);
 
   const refreshTrendRows = useCallback(
     async ({
@@ -607,27 +627,20 @@ export function RaceTrendSection({
           throw new Error(`race trend api ${response.status}`);
         }
         const body: unknown = await response.json();
-        if (!isRaceTrendPayload(body)) {
+        if (!isRaceTrendRawPayload(body)) {
           throw new Error("invalid race trend payload");
         }
         if (fetchSequenceRef.current !== requestId) {
           return;
         }
-        const payloadRaceCount = (body as { raceCount?: unknown }).raceCount;
-        setRows(body.runningStyleRows);
-        setRaceCount(
-          typeof payloadRaceCount === "number" && Number.isFinite(payloadRaceCount)
-            ? payloadRaceCount
-            : countDistinctTrendRaces(body.runningStyleRows),
-        );
+        setRawPayload(body);
         setStatus("idle");
       } catch {
         if (fetchSequenceRef.current !== requestId) {
           return;
         }
         if (clearOnError) {
-          setRows([]);
-          setRaceCount(0);
+          setRawPayload(null);
           setStatus("error");
         }
       }
