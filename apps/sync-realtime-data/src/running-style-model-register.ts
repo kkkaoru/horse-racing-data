@@ -1,6 +1,6 @@
 // Run with bun. Register running-style flatbin models in R2 and sync them for local runs.
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -126,7 +126,9 @@ const spawnWrangler: WranglerSpawner = async (args) => {
   return { exitCode, stderr: Buffer.concat(stderrChunks).toString("utf8") };
 };
 
-const resolveFlatbinPath = async (inputPath: string): Promise<{ cleanup: () => Promise<void>; filePath: string }> => {
+const resolveFlatbinPath = async (
+  inputPath: string,
+): Promise<{ cleanup: () => Promise<void>; filePath: string }> => {
   if (inputPath.endsWith(".flatbin")) {
     return { cleanup: async () => {}, filePath: inputPath };
   }
@@ -135,7 +137,8 @@ const resolveFlatbinPath = async (inputPath: string): Promise<{ cleanup: () => P
   }
   const tempDir = await mkdtemp(join(tmpdir(), "running-style-model-"));
   const outputPath = join(tempDir, "model.flatbin");
-  const { convertRunningStyleModelFile } = await import("../scripts/convert-running-style-model-to-binary");
+  const { convertRunningStyleModelFile } =
+    await import("../scripts/convert-running-style-model-to-binary");
   await convertRunningStyleModelFile(inputPath, outputPath);
   return {
     cleanup: async () => {
@@ -226,7 +229,7 @@ export const registerRunningStyleModel = async (
       },
       spawner,
     );
-    const sizeBytes = (await Bun.file(resolved.filePath).arrayBuffer()).byteLength;
+    const sizeBytes = (await stat(resolved.filePath)).size;
     return { objectKey: uploadedKey, sizeBytes };
   } finally {
     await resolved.cleanup();
@@ -250,7 +253,9 @@ export const ensureRunningStyleModels = async (
         await syncRunningStyleModel(spec.source, { bucket, spawner });
         synced.push(result.objectKey);
       } else {
-        throw new Error(`Local model upload did not persist for ${spec.source} (${result.objectKey}).`);
+        throw new Error(
+          `Local model upload did not persist for ${spec.source} (${result.objectKey}).`,
+        );
       }
     }
   }

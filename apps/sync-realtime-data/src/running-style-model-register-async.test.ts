@@ -1,5 +1,5 @@
 // run with: bun run test
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import type { WranglerSpawner } from "./running-style-model-register";
 
 vi.mock("../scripts/convert-running-style-model-to-binary", () => ({
@@ -11,11 +11,13 @@ vi.mock("../scripts/convert-running-style-model-to-binary", () => ({
   })),
 }));
 
-interface BunGlobal {
-  file: (path: string) => { arrayBuffer: () => Promise<ArrayBuffer> };
-}
-
-const originalBun = (globalThis as { Bun?: BunGlobal }).Bun;
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    stat: vi.fn(async (_path: string) => ({ size: 2048 })),
+  };
+});
 
 const buildSuccessSpawner = (): WranglerSpawner =>
   vi.fn(async (_args: readonly string[]) => ({ exitCode: 0, stderr: "" }));
@@ -23,21 +25,8 @@ const buildSuccessSpawner = (): WranglerSpawner =>
 const buildFailingSpawner = (stderr: string): WranglerSpawner =>
   vi.fn(async (_args: readonly string[]) => ({ exitCode: 1, stderr }));
 
-beforeEach(() => {
-  (globalThis as { Bun?: BunGlobal }).Bun = {
-    file: (_path: string) => ({
-      arrayBuffer: async (): Promise<ArrayBuffer> => new ArrayBuffer(2048),
-    }),
-  };
-});
-
 afterEach(() => {
   vi.restoreAllMocks();
-  if (originalBun === undefined) {
-    delete (globalThis as { Bun?: BunGlobal }).Bun;
-  } else {
-    (globalThis as { Bun?: BunGlobal }).Bun = originalBun;
-  }
 });
 
 it("isRunningStyleModelSource recognizes jra and nar", async () => {
@@ -189,9 +178,8 @@ it("registerRunningStyleModel uploads a .flatbin path directly", async () => {
 
 it("registerRunningStyleModel converts a .json path before uploading", async () => {
   const { registerRunningStyleModel } = await import("./running-style-model-register");
-  const { convertRunningStyleModelFile } = await import(
-    "../scripts/convert-running-style-model-to-binary"
-  );
+  const { convertRunningStyleModelFile } =
+    await import("../scripts/convert-running-style-model-to-binary");
   const spawner = buildSuccessSpawner();
   await registerRunningStyleModel(
     { inputPath: "tmp/model.json", remote: true, source: "nar" },
@@ -237,19 +225,13 @@ it("ensureRunningStyleModels throws when local missing and syncLocalFromRemote=f
   const { ensureRunningStyleModels } = await import("./running-style-model-register");
   const spawner: WranglerSpawner = vi.fn(async () => ({ exitCode: 1, stderr: "404" }));
   await expect(
-    ensureRunningStyleModels(
-      { sources: ["jra"], syncLocalFromRemote: false },
-      spawner,
-    ),
+    ensureRunningStyleModels({ sources: ["jra"], syncLocalFromRemote: false }, spawner),
   ).rejects.toThrow("Local R2 model missing for jra");
 });
 
 it("ensureRunningStyleModels skips sync when local already exists", async () => {
   const { ensureRunningStyleModels } = await import("./running-style-model-register");
   const spawner: WranglerSpawner = vi.fn(async () => ({ exitCode: 0, stderr: "" }));
-  const result = await ensureRunningStyleModels(
-    { sources: ["jra", "nar"] },
-    spawner,
-  );
+  const result = await ensureRunningStyleModels({ sources: ["jra", "nar"] }, spawner);
   expect(result.synced).toStrictEqual([]);
 });
