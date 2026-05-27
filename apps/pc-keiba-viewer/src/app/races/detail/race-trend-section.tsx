@@ -42,11 +42,18 @@ interface RaceTrendSectionProps {
   defaultStartDate: string;
   initialTrendTargets?: RaceTrendTargets;
   keibajoCode: string;
+  minStartDate: string;
   month: string;
   raceNumber: string;
   source: RaceSource;
   year: string;
 }
+
+const clampIsoDateToRange = (value: string, min: string, max: string): string => {
+  if (value < min) return min;
+  if (value > max) return max;
+  return value;
+};
 
 const TREND_TARGET_LABELS: Record<RaceTrendTargetKey, string> = {
   runningStyle: "脚質",
@@ -114,24 +121,29 @@ const sortDetailsByLatestRace = (details: RaceTrendDetail[]): RaceTrendDetail[] 
 const getApiPath = ({
   day,
   defaultEndDate,
-  defaultStartDate,
   keibajoCode,
+  minStartDate,
   month,
   raceNumber,
   source,
-  trendEnd,
-  trendStart,
   year,
-}: RaceTrendSectionProps & {
-  trendEnd: string;
-  trendStart: string;
-}): string => {
+}: Pick<
+  RaceTrendSectionProps,
+  | "day"
+  | "defaultEndDate"
+  | "keibajoCode"
+  | "minStartDate"
+  | "month"
+  | "raceNumber"
+  | "source"
+  | "year"
+>): string => {
   const params = new URLSearchParams({
     source,
-    jockeyStart: trendStart || defaultStartDate,
-    jockeyEnd: trendEnd || defaultEndDate,
-    frameStart: trendStart || defaultStartDate,
-    frameEnd: trendEnd || defaultEndDate,
+    jockeyStart: minStartDate,
+    jockeyEnd: defaultEndDate,
+    frameStart: minStartDate,
+    frameEnd: defaultEndDate,
     includeRealtimeResults: "true",
   });
   return `/api/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/trends?${params.toString()}`;
@@ -493,6 +505,7 @@ export function RaceTrendSection({
   defaultStartDate,
   initialTrendTargets = DEFAULT_RACE_TREND_TARGETS,
   keibajoCode,
+  minStartDate,
   month,
   raceNumber,
   source,
@@ -543,27 +556,14 @@ export function RaceTrendSection({
       getApiPath({
         day,
         defaultEndDate,
-        defaultStartDate,
         keibajoCode,
+        minStartDate,
         month,
         raceNumber,
         source,
-        trendEnd,
-        trendStart,
         year,
       }),
-    [
-      day,
-      defaultEndDate,
-      defaultStartDate,
-      keibajoCode,
-      month,
-      raceNumber,
-      source,
-      trendEnd,
-      trendStart,
-      year,
-    ],
+    [day, defaultEndDate, keibajoCode, minStartDate, month, raceNumber, source, year],
   );
 
   const livePath = useMemo(
@@ -739,17 +739,29 @@ export function RaceTrendSection({
           <label>
             <span>開始日</span>
             <input
+              max={defaultEndDate}
+              min={minStartDate}
+              onChange={(event) =>
+                setTrendStart(
+                  clampIsoDateToRange(event.target.value, minStartDate, defaultEndDate),
+                )
+              }
               type="date"
               value={trendStart}
-              onChange={(event) => setTrendStart(event.target.value)}
             />
           </label>
           <label>
             <span>終了日</span>
             <input
+              max={defaultEndDate}
+              min={minStartDate}
+              onChange={(event) =>
+                setTrendEnd(
+                  clampIsoDateToRange(event.target.value, minStartDate, defaultEndDate),
+                )
+              }
               type="date"
               value={trendEnd}
-              onChange={(event) => setTrendEnd(event.target.value)}
             />
           </label>
           <label className="race-trend-checkbox">
