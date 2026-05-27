@@ -28,10 +28,7 @@ import {
   putRaceTrendCache,
 } from "../../../../../../../../../lib/race-trend-cache.server";
 import { notifyRaceTrendRoom } from "../../../../../../../../../lib/race-trend-room.server";
-import {
-  starterKey,
-  starterRaceKey,
-} from "../../../../../../../../../lib/race-trend-aggregate";
+import { starterKey, starterRaceKey } from "../../../../../../../../../lib/race-trend-aggregate";
 import type {
   RaceDetail,
   RaceListItem,
@@ -228,18 +225,34 @@ const buildRealtimeStarterRows = async (race: RaceListItem): Promise<RaceTrendSt
 
 type RaceTrendBuildOptions = RaceTrendCacheOptions;
 
+const REALTIME_TREND_LOOKBACK_DAYS = 1;
+
 const buildRealtimeRowsForTrend = async (
   race: RaceDetail,
   options: RaceTrendBuildOptions,
   historicalRows: RaceTrendStarterRow[],
 ): Promise<RaceTrendStarterRow[]> => {
-  const minYmd =
+  // The realtime fetcher only fills in data that D1 / Neon haven't absorbed
+  // yet — typically today's still-running races. Anything older than a day
+  // is reliably in daily_race_entries, so we clamp the realtime scan to the
+  // target race date ± REALTIME_TREND_LOOKBACK_DAYS regardless of how wide
+  // the trend window itself is. Without this clamp a 30-day trend window
+  // would dispatch a realtime fetch per race per day (1500+ for NAR), which
+  // pegged the dev server for ~40 minutes before D1 caching kicked in.
+  const trendMinYmd =
     [options.jockeyStartYmd, options.frameStartYmd].toSorted()[0] ?? options.jockeyStartYmd;
-  const maxYmd =
+  const trendMaxYmd =
     [options.jockeyEndYmd, options.frameEndYmd].toSorted().at(-1) ?? options.jockeyEndYmd;
+  const targetYmd = toYmd(race.kaisaiNen, race.kaisaiTsukihi);
+  const realtimeStartYmd = (() => {
+    const clamped = addDays(targetYmd, -REALTIME_TREND_LOOKBACK_DAYS);
+    return clamped < trendMinYmd ? trendMinYmd : clamped;
+  })();
+  const realtimeEndYmd = targetYmd < trendMaxYmd ? targetYmd : trendMaxYmd;
+  if (realtimeEndYmd < realtimeStartYmd) return [];
   const dateRaces = (
     await Promise.all(
-      enumerateDates(minYmd, maxYmd).map((ymd) =>
+      enumerateDates(realtimeStartYmd, realtimeEndYmd).map((ymd) =>
         getRacesByDateWithoutJockeyNames(ymd.slice(0, 4), ymd.slice(4, 6), ymd.slice(6, 8)),
       ),
     )
@@ -249,7 +262,7 @@ const buildRealtimeRowsForTrend = async (
     if (candidate.source !== race.source) return false;
     if (historicalRaceKeys.has(starterRaceKey(candidate))) return false;
     const ymd = toYmd(candidate.kaisaiNen, candidate.kaisaiTsukihi);
-    return isYmdInRange(ymd, minYmd, maxYmd);
+    return isYmdInRange(ymd, realtimeStartYmd, realtimeEndYmd);
   });
   return (await mapLimit(candidateRaces, 6, buildRealtimeStarterRows)).flat();
 };
@@ -281,10 +294,7 @@ const pickNonEmpty = <T>(...values: Array<T | null | undefined>): T | null => {
   return null;
 };
 
-const mergeRowPair = (
-  a: RaceTrendStarterRow,
-  b: RaceTrendStarterRow,
-): RaceTrendStarterRow => ({
+const mergeRowPair = (a: RaceTrendStarterRow, b: RaceTrendStarterRow): RaceTrendStarterRow => ({
   ...a,
   raceName: pickNonEmpty(a.raceName, b.raceName),
   hassoJikoku: pickNonEmpty(a.hassoJikoku, b.hassoJikoku),
