@@ -347,6 +347,7 @@ export async function RaceDetailView({
     raceSource === "jra" ? -1 : -3,
   );
   const raceTrendDefaultEndDate = `${year}-${month}-${day}`;
+  const raceTrendMinStartDate = addDaysToIsoDate(year, month, day, -30);
   const initialRaceTrendTargets = getRaceTrendTargetsFromSearchParams(searchParams);
   const showRacePacePrediction = isCornerPacePredictionSupported({
     distance: race.kyori,
@@ -590,6 +591,7 @@ export async function RaceDetailView({
           defaultStartDate={raceTrendDefaultStartDate}
           initialTrendTargets={initialRaceTrendTargets}
           keibajoCode={keibajoCode}
+          minStartDate={raceTrendMinStartDate}
           month={month}
           raceNumber={raceNumber}
           source={raceSource}
