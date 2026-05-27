@@ -1,7 +1,7 @@
 // Run with bun (browser-safe pure helpers). Extracted from trends route.ts so
 // the client can aggregate raw starter rows in a useMemo on checkbox change.
 import type { RaceSource } from "./codes";
-import { normalizeJockeyNameForComparison } from "./jockey-name";
+import { isSameJockeyName, normalizeJockeyNameForComparison } from "./jockey-name";
 import { buildRaceKey } from "./running-style-cache";
 import type {
   RaceTrendCurrentRunningStyle,
@@ -79,9 +79,7 @@ export const parseCornerPosition = (value: string | null | undefined): number | 
 
 const JOCKEY_DEMURO_ALIASES = ["デムーロ", "Ｍ．デム", "M.デム"];
 
-export const normalizeRaceTrendJockeyName = (
-  value: string | null | undefined,
-): string | null => {
+export const normalizeRaceTrendJockeyName = (value: string | null | undefined): string | null => {
   const normalized = normalizeJockeyNameForComparison(value);
   return normalized === "" ? null : normalized;
 };
@@ -167,10 +165,7 @@ const starterRunningStyleKey = (
   >,
 ): string => `${starterRaceKey(row)}:${normalizeNumberText(row.umaban) ?? ""}`;
 
-const parseHorseWeightDelta = (
-  zogenFugo: string | null,
-  zogenSa: string | null,
-): number | null => {
+const parseHorseWeightDelta = (zogenFugo: string | null, zogenSa: string | null): number | null => {
   const magnitude = parseStoredInteger(zogenSa, "000");
   if (magnitude === null) return zogenSa === "0" ? 0 : null;
   const sign = zogenFugo === "-" ? -1 : 1;
@@ -261,6 +256,24 @@ const sortAggregatedRows = (rows: RaceTrendRunningStyleRow[]): RaceTrendRunningS
       (a.raceNumber ?? "").localeCompare(b.raceNumber ?? "", "ja", { numeric: true }),
   );
 
+const buildRowJockeyKeyResolver = (
+  targets: ReadonlyArray<RaceTrendRunningStyleTarget>,
+): ((jockeyName: string | null | undefined) => string | null) => {
+  const matchableTargets = targets.filter(
+    (target): target is RaceTrendRunningStyleTarget & { jockeyKey: string; jockeyName: string } =>
+      target.jockeyKey !== null && target.jockeyName !== null,
+  );
+  return (jockeyName) => {
+    if (!jockeyName) return null;
+    for (const target of matchableTargets) {
+      if (isSameJockeyName(jockeyName, target.jockeyName)) {
+        return target.jockeyKey;
+      }
+    }
+    return normalizeRaceTrendJockeyName(jockeyName);
+  };
+};
+
 const aggregateRunningStyleRows = (
   rows: RaceTrendStarterRow[],
   runningStyleByStarterKey: Map<string, RaceTrendRunningStyle>,
@@ -281,6 +294,7 @@ const aggregateRunningStyleRows = (
         numeric: true,
       }),
     );
+  const resolveRowJockeyKey = buildRowJockeyKeyResolver(targets);
   const groupedRowsByTargetKey = new Map<string, RaceTrendStarterRow[]>();
   for (const row of rows) {
     const ymd = toYmd(row.kaisaiNen, row.kaisaiTsukihi);
@@ -289,7 +303,7 @@ const aggregateRunningStyleRows = (
     const key = runningStyleTargetKey(
       {
         frameNumber: normalizeNumberText(row.wakuban),
-        jockeyKey: normalizeRaceTrendJockeyName(row.jockeyName),
+        jockeyKey: resolveRowJockeyKey(row.jockeyName),
         raceNumber: normalizeNumberText(row.raceBango),
         runningStyle: runningStyleByStarterKey.get(starterRunningStyleKey(row)) ?? null,
       },
@@ -320,8 +334,7 @@ const aggregateRunningStyleRows = (
       groupRows.map((row) => ({
         ...detailFromStarter(row),
         runningStyle:
-          runningStyleByStarterKey.get(starterRunningStyleKey(row)) ??
-          runningStyleFromCorners(row),
+          runningStyleByStarterKey.get(starterRunningStyleKey(row)) ?? runningStyleFromCorners(row),
       })),
     );
     return {
@@ -345,9 +358,7 @@ const aggregateRunningStyleRows = (
   return sortAggregatedRows(aggregated);
 };
 
-export const countDistinctRunningStyleDetailRaces = (
-  rows: RaceTrendRunningStyleRow[],
-): number =>
+export const countDistinctRunningStyleDetailRaces = (rows: RaceTrendRunningStyleRow[]): number =>
   new Set(
     rows.flatMap((row) =>
       row.details.map((detail) =>
