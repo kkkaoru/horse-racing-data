@@ -57,6 +57,13 @@ describe("jockey name helpers", () => {
     expect(getPreferredJockeyName("渡辺竜也", "渡邊竜")).toBe("渡辺竜也");
   });
 
+  it("treats kyujitai sawada variants as the same jockey", () => {
+    expect(normalizeJockeyNameForComparison("澤田龍")).toBe("沢田龍");
+    expect(isSameJockeyName("澤田龍", "沢田龍哉")).toBe(true);
+    expect(isSameJockeyName("沢田龍哉", "澤田龍")).toBe(true);
+    expect(getPreferredJockeyName("澤田龍", "沢田龍哉")).toBe("澤田龍");
+  });
+
   it("does not treat short partial prefixes or empty names as the same jockey", () => {
     expect(isSameJockeyName("増田", "増田充")).toBe(false);
     expect(isSameJockeyName("", "増田充")).toBe(false);

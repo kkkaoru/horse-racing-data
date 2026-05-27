@@ -3,6 +3,7 @@ import { cleanText } from "./format";
 const SAME_JOCKEY_PREFIX_LENGTH = 3;
 const JOCKEY_NAME_CHARACTER_REPLACEMENTS: Record<string, string> = {
   櫻: "桜",
+  澤: "沢",
   邊: "辺",
   邉: "辺",
 };
