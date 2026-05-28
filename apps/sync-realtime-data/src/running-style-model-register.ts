@@ -50,9 +50,7 @@ export const listRequiredRunningStyleModelSources = (
 ): RunningStyleModelSource[] => {
   const sources = new Set<RunningStyleModelSource>();
   races.forEach((race) => {
-    if (isRunningStyleModelSource(race.source)) {
-      sources.add(race.source);
-    }
+    sources.add(race.source);
   });
   return [...sources].toSorted();
 };
