@@ -182,4 +182,39 @@ describe("race classification", () => {
       ),
     ).toEqual(["OP 特別"]);
   });
+
+  it("returns the fallback weight label for an unknown weight code", () => {
+    expect(getWeightLabel("99")).toBe("重量種別 99");
+  });
+
+  it("returns hyphen for weight when the code is empty", () => {
+    expect(getWeightLabel(null)).toBe("-");
+  });
+
+  it("returns the fallback symbol label for an unknown symbol code", () => {
+    expect(getRaceSymbolLabel("999")).toBe("競走記号 999");
+  });
+
+  it("returns hyphen for symbol when the code is empty", () => {
+    expect(getRaceSymbolLabel(null)).toBe("-");
+  });
+
+  it("returns the fallback detail symbol label for an unknown code", () => {
+    expect(getRaceSymbolDetailLabel("ZZZ")).toBe("競走記号 ZZZ");
+  });
+
+  it("returns hyphen for the detail symbol label when the code is empty", () => {
+    expect(getRaceSymbolDetailLabel(null)).toBe("-");
+  });
+
+  it("appends ハンデ戦 tag for handicap races", () => {
+    expect(
+      getRaceTags(
+        race({
+          kyosoJokenMeisho: "3歳以上1勝クラス",
+          juryoShubetsuCode: "6",
+        }),
+      ),
+    ).toStrictEqual(["ハンデ戦"]);
+  });
 });

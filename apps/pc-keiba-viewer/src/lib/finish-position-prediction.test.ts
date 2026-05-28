@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { buildFinishPredictionRowsFromResults, type FinishPredictionBuildInputs } from "./finish-position-prediction";
+import {
+  buildFinishPredictionMarketOverrides,
+  buildFinishPredictionRowsFromResults,
+  type FinishPredictionBuildInputs,
+} from "./finish-position-prediction";
 import type { HorseRaceResult, Runner } from "./race-types";
 
 const runner = (overrides: Partial<Runner>): Runner => ({
@@ -417,5 +421,26 @@ describe("buildFinishPredictionRowsFromResults", () => {
     expect(dynamicRows[0]?.horseNumber).toBe("1");
     expect(dynamicRows[0]?.storedPopularity).toBe(1);
     expect(dynamicRows[0]?.storedOdds).toBe(12);
+  });
+});
+
+describe("buildFinishPredictionMarketOverrides", () => {
+  it("strips leading zeros from the horse number key", () => {
+    const overrides = buildFinishPredictionMarketOverrides([
+      { combination: "07", odds: 4.2, rank: 1 },
+    ]);
+    expect(overrides.get("7")).toStrictEqual({ odds: 4.2, popularity: 1 });
+  });
+
+  it("preserves a combination of all zeros as the literal key", () => {
+    const overrides = buildFinishPredictionMarketOverrides([
+      { combination: "00", odds: 12, rank: 5 },
+    ]);
+    expect(overrides.get("00")).toStrictEqual({ odds: 12, popularity: 5 });
+  });
+
+  it("defaults odds and popularity to null when the row omits them", () => {
+    const overrides = buildFinishPredictionMarketOverrides([{ combination: "3" }]);
+    expect(overrides.get("3")).toStrictEqual({ odds: null, popularity: null });
   });
 });
