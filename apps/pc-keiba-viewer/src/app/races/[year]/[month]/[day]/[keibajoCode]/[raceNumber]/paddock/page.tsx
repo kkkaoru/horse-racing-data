@@ -36,6 +36,35 @@ import { RaceStartCountdown } from "../../../../../../../races/detail/race-start
 
 export const dynamic = "force-dynamic";
 
+// Each Postgres / D1 / production-proxy attempt is capped so a slow upstream
+// recovers via retry rather than stalling SSR navigation. Real values are
+// the priority; the empty/notFound fallback only fires after every retry
+// has been exhausted.
+const RUNNING_STYLE_ATTEMPT_TIMEOUT_MS = 3500;
+const RUNNING_STYLE_MAX_ATTEMPTS = 2;
+const RUNNING_STYLE_RETRY_BACKOFF_MS = 200;
+const RUNNING_STYLE_TOTAL_TIMEOUT_MS = 9000;
+const SNAPSHOT_MAX_ATTEMPTS = 2;
+const SNAPSHOT_RETRY_BACKOFF_MS = 200;
+const SNAPSHOT_ATTEMPT_TIMEOUT_MS = 5000;
+
+const sleepFor = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+const withAttemptTimeout = <TResolved,>(
+  promise: Promise<TResolved>,
+  timeoutMs: number,
+  message: string,
+): Promise<TResolved> =>
+  Promise.race([
+    promise,
+    new Promise<TResolved>((_, reject) => {
+      setTimeout(() => reject(new Error(message)), timeoutMs);
+    }),
+  ]);
+
 interface PaddockEditPageProps {
   params: Promise<{
     day: string;
@@ -119,35 +148,65 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
   const runningStyleCategory =
     source === "nar" && isBanEiKeibajoCode(keibajoCode) ? "ban-ei" : source;
   const kaisaiTsukihi = `${month}${day}`;
-  const runningStylePredictionsPromise: Promise<ActiveRunningStylePrediction[]> =
-    runningStyleCategory === "ban-ei"
-      ? Promise.resolve([])
-      : getActiveRunningStylePredictions({
-          category: runningStyleCategory,
-          day,
-          keibajoCode,
-          month,
-          raceNumber,
-          source,
-          year,
-        })
-          .then(async (rows) => {
-            if (rows.length > 0) {
-              return rows;
-            }
-            const d1Rows = await getRaceRunningStylesWithCache({
-              kaisaiNen: year,
-              kaisaiTsukihi,
-              keibajoCode,
-              raceBango: raceNumber,
-              source,
-            }).catch(() => []);
-            return d1Rows.map((row) => ({
-              horseNumber: row.horseNumber,
-              predictedLabel: row.predictedLabel,
-            }));
-          })
-          .catch(() => []);
+  const loadRunningStyleWithRetries = async (): Promise<ActiveRunningStylePrediction[]> => {
+    if (runningStyleCategory === "ban-ei") {
+      return [];
+    }
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= RUNNING_STYLE_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        // oxlint-disable-next-line eslint/no-await-in-loop
+        const rows = await withAttemptTimeout(
+          getActiveRunningStylePredictions({
+            category: runningStyleCategory,
+            day,
+            keibajoCode,
+            month,
+            raceNumber,
+            source,
+            year,
+          }),
+          RUNNING_STYLE_ATTEMPT_TIMEOUT_MS,
+          "running-style attempt timed out",
+        );
+        if (rows.length > 0) {
+          return rows;
+        }
+        // oxlint-disable-next-line eslint/no-await-in-loop
+        const d1Rows = await withAttemptTimeout(
+          getRaceRunningStylesWithCache({
+            kaisaiNen: year,
+            kaisaiTsukihi,
+            keibajoCode,
+            raceBango: raceNumber,
+            source,
+          }),
+          RUNNING_STYLE_ATTEMPT_TIMEOUT_MS,
+          "running-style d1 attempt timed out",
+        ).catch(() => []);
+        return d1Rows.map((row) => ({
+          horseNumber: row.horseNumber,
+          predictedLabel: row.predictedLabel,
+        }));
+      } catch (error) {
+        lastError = error;
+        if (attempt < RUNNING_STYLE_MAX_ATTEMPTS) {
+          // oxlint-disable-next-line eslint/no-await-in-loop
+          await sleepFor(RUNNING_STYLE_RETRY_BACKOFF_MS);
+        }
+      }
+    }
+    if (lastError) {
+      console.warn("running-style predictions exhausted retries", lastError);
+    }
+    return [];
+  };
+  const runningStylePredictionsPromise: Promise<ActiveRunningStylePrediction[]> = Promise.race([
+    loadRunningStyleWithRetries(),
+    new Promise<ActiveRunningStylePrediction[]>((resolve) => {
+      setTimeout(() => resolve([]), RUNNING_STYLE_TOTAL_TIMEOUT_MS);
+    }),
+  ]);
 
   // Reuse the race-detail SSR snapshot (race + runners + courseInfo +
   // sameVenueRaces) so the paddock-edit fan-out collapses to a single KV
@@ -162,21 +221,43 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
     year,
   });
   const cachedSnapshot = await getCachedRaceDetailSsrSnapshot(ssrCacheKey);
+  const loadSnapshotFromUpstream = async () => {
+    const race = await getRaceDetail(source, year, month, day, keibajoCode, raceNumber);
+    if (!race) {
+      return null;
+    }
+    const [courseInfo, runners, sameVenueRaces] = await Promise.all([
+      getRaceCourseInfo(keibajoCode, race.kyori, race.trackCode),
+      getRaceRunners(source, year, month, day, keibajoCode, raceNumber),
+      getSameVenueRacesByDate(source, year, month, day, keibajoCode),
+    ]);
+    return { courseInfo, race, runners, sameVenueRaces };
+  };
+  const loadSnapshotWithRetries = async () => {
+    if (cachedSnapshot) {
+      return cachedSnapshot;
+    }
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= SNAPSHOT_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        // oxlint-disable-next-line eslint/no-await-in-loop
+        return await withAttemptTimeout(
+          loadSnapshotFromUpstream(),
+          SNAPSHOT_ATTEMPT_TIMEOUT_MS,
+          "race detail snapshot attempt timed out",
+        );
+      } catch (error) {
+        lastError = error;
+        if (attempt < SNAPSHOT_MAX_ATTEMPTS) {
+          // oxlint-disable-next-line eslint/no-await-in-loop
+          await sleepFor(SNAPSHOT_RETRY_BACKOFF_MS);
+        }
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error("race detail snapshot fetch failed");
+  };
   const [snapshot, runningStylePredictions] = await Promise.all([
-    cachedSnapshot
-      ? Promise.resolve(cachedSnapshot)
-      : (async () => {
-          const race = await getRaceDetail(source, year, month, day, keibajoCode, raceNumber);
-          if (!race) {
-            return null;
-          }
-          const [courseInfo, runners, sameVenueRaces] = await Promise.all([
-            getRaceCourseInfo(keibajoCode, race.kyori, race.trackCode),
-            getRaceRunners(source, year, month, day, keibajoCode, raceNumber),
-            getSameVenueRacesByDate(source, year, month, day, keibajoCode),
-          ]);
-          return { courseInfo, race, runners, sameVenueRaces };
-        })(),
+    loadSnapshotWithRetries(),
     runningStylePredictionsPromise,
   ]);
   if (!snapshot) {
