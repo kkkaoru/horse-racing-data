@@ -1537,9 +1537,7 @@ export function PaddockSection({
       year,
     })}?source=${source}`;
     setRecentResultsLoading(true);
-    const isRecentResultsResponse = (
-      value: unknown,
-    ): value is { results?: HorseRaceResult[] } =>
+    const isRecentResultsResponse = (value: unknown): value is { results?: HorseRaceResult[] } =>
       typeof value === "object" && value !== null && !Array.isArray(value);
     const loadRecentResults = async (): Promise<void> => {
       try {
@@ -1743,10 +1741,23 @@ export function PaddockSection({
       return;
     }
 
+    const ratedHorses = runnerRows
+      .map((runner) => ({
+        runner,
+        scores: normalizePaddockHorseScore(state?.horses[runner.horseNumber], runner),
+      }))
+      .filter(({ scores }) => scores.total > 0);
+
+    if (ratedHorses.length === 0) {
+      window.alert(
+        "パドック評価が入力された馬がいません。1頭以上を正の評価で採点してから通知してください。",
+      );
+      return;
+    }
+
     void (async () => {
       setDiscordStatus("sending");
-      const horses = runnerRows.map((runner) => {
-        const scores = normalizePaddockHorseScore(state?.horses[runner.horseNumber], runner);
+      const horses = ratedHorses.map(({ runner, scores }) => {
         const realtimeEntry = realtimeEntryByHorse.get(runner.horseNumber);
         const displayJockeyName = getPreferredJockeyName(
           runner.jockeyName,
