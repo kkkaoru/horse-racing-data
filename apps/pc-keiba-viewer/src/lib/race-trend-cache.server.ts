@@ -10,6 +10,7 @@ import {
   type RaceTrendCacheOptions,
 } from "./race-trend-cache";
 import type { RaceDetail } from "./race-types";
+import { bustRealtimeRowsForDay } from "./realtime-trend-day-cache.server";
 
 export interface RaceTrendBustRaceRef {
   keibajoCode: string;
@@ -226,12 +227,22 @@ const deleteSingleCache = async (
   ]);
 };
 
+const enumerateRealtimeDayYmds = (source: RaceSource, targetYmd: string): string[] => {
+  const days = source === "jra" ? [-1, 0] : [-1, 0];
+  return days.map((offset) => addDaysToYmd(targetYmd, offset));
+};
+
 export const bustRaceTrendCachesForDay = async (
   params: BustRaceTrendCachesParams,
 ): Promise<{ keys: string[] }> => {
   const entries = collectAffectedCacheKeys(params);
   const defaultCache = getDefaultCache();
   const { env } = await getCloudflareRuntime();
-  await Promise.all(entries.map((entry) => deleteSingleCache(entry, defaultCache, env)));
+  await Promise.all([
+    ...entries.map((entry) => deleteSingleCache(entry, defaultCache, env)),
+    ...enumerateRealtimeDayYmds(params.source, params.targetYmd).map((ymd) =>
+      bustRealtimeRowsForDay({ source: params.source, ymd }),
+    ),
+  ]);
   return { keys: entries.map((entry) => entry.key) };
 };

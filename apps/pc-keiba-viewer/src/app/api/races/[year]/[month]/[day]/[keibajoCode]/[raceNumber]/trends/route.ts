@@ -28,6 +28,7 @@ import {
   getCachedRaceTrendResponse,
   putRaceTrendCache,
 } from "../../../../../../../../../lib/race-trend-cache.server";
+import { getRealtimeRowsForDayWithCache } from "../../../../../../../../../lib/realtime-trend-day-cache.server";
 import { notifyRaceTrendRoom } from "../../../../../../../../../lib/race-trend-room.server";
 import { starterKey, starterRaceKey } from "../../../../../../../../../lib/race-trend-aggregate";
 import type {
@@ -107,9 +108,6 @@ const enumerateDates = (startYmd: string, endYmd: string): string[] => {
   collect(startYmd);
   return dates;
 };
-
-const isYmdInRange = (ymd: string, startYmd: string, endYmd: string): boolean =>
-  ymd >= startYmd && ymd <= endYmd;
 
 const mapLimit = async <T, U>(
   values: T[],
@@ -228,18 +226,30 @@ type RaceTrendBuildOptions = RaceTrendCacheOptions;
 
 const REALTIME_TREND_LOOKBACK_DAYS = 1;
 
+const fetchRealtimeRowsForDay = async (
+  source: RaceSource,
+  ymd: string,
+): Promise<RaceTrendStarterRow[]> => {
+  const races = await getRacesByDateWithoutJockeyNames(
+    ymd.slice(0, 4),
+    ymd.slice(4, 6),
+    ymd.slice(6, 8),
+  );
+  const sameSourceRaces = races.filter((candidate) => candidate.source === source);
+  return (await mapLimit(sameSourceRaces, 6, buildRealtimeStarterRows)).flat();
+};
+
 const buildRealtimeRowsForTrend = async (
   race: RaceDetail,
   options: RaceTrendBuildOptions,
   historicalRows: RaceTrendStarterRow[],
 ): Promise<RaceTrendStarterRow[]> => {
-  // The realtime fetcher only fills in data that D1 / Neon haven't absorbed
-  // yet — typically today's still-running races. Anything older than a day
-  // is reliably in daily_race_entries, so we clamp the realtime scan to the
-  // target race date ± REALTIME_TREND_LOOKBACK_DAYS regardless of how wide
-  // the trend window itself is. Without this clamp a 30-day trend window
-  // would dispatch a realtime fetch per race per day (1500+ for NAR), which
-  // pegged the dev server for ~40 minutes before D1 caching kicked in.
+  // Realtime backfill is now keyed per (source × ymd) via
+  // getRealtimeRowsForDayWithCache, so every race that opens its trend on the
+  // same day pays the realtime fetch cost once per TTL window instead of per
+  // request. We still clamp the scan to target-race date ± lookback because
+  // anything older lives in daily_race_entries and doesn't need a realtime
+  // refresh.
   const trendMinYmd =
     [options.jockeyStartYmd, options.frameStartYmd].toSorted()[0] ?? options.jockeyStartYmd;
   const trendMaxYmd =
@@ -251,21 +261,17 @@ const buildRealtimeRowsForTrend = async (
   })();
   const realtimeEndYmd = targetYmd < trendMaxYmd ? targetYmd : trendMaxYmd;
   if (realtimeEndYmd < realtimeStartYmd) return [];
-  const dateRaces = (
-    await Promise.all(
-      enumerateDates(realtimeStartYmd, realtimeEndYmd).map((ymd) =>
-        getRacesByDateWithoutJockeyNames(ymd.slice(0, 4), ymd.slice(4, 6), ymd.slice(6, 8)),
-      ),
-    )
-  ).flat();
+  const dayResults = await Promise.all(
+    enumerateDates(realtimeStartYmd, realtimeEndYmd).map((ymd) =>
+      getRealtimeRowsForDayWithCache({
+        fetcher: () => fetchRealtimeRowsForDay(race.source, ymd),
+        source: race.source,
+        ymd,
+      }),
+    ),
+  );
   const historicalRaceKeys = new Set(historicalRows.map(starterRaceKey));
-  const candidateRaces = dateRaces.filter((candidate) => {
-    if (candidate.source !== race.source) return false;
-    if (historicalRaceKeys.has(starterRaceKey(candidate))) return false;
-    const ymd = toYmd(candidate.kaisaiNen, candidate.kaisaiTsukihi);
-    return isYmdInRange(ymd, realtimeStartYmd, realtimeEndYmd);
-  });
-  return (await mapLimit(candidateRaces, 6, buildRealtimeStarterRows)).flat();
+  return dayResults.flat().filter((row) => !historicalRaceKeys.has(starterRaceKey(row)));
 };
 
 const mergeStarterRows = (
