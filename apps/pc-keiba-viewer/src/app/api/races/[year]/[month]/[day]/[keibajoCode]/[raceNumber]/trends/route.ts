@@ -155,6 +155,15 @@ const mergeHistoricalRunningStyles = (
   return Array.from(merged.values());
 };
 
+// Reject degenerate trend payloads from the cache write path. The
+// payload is only useful for client-side aggregation when both starter
+// rows and the matching running-style history are populated — if
+// either side came back empty it almost always means D1 was
+// momentarily saturated, and pinning that for the cache TTL hides the
+// recovered data the moment D1 catches up.
+export const isCacheableTrendPayload = (payload: RaceTrendRawPayload): boolean =>
+  payload.starterRows.length > 0 && payload.historicalRunningStyles.length > 0;
+
 const buildRaceTrendRawPayload = async (
   race: RaceDetail,
   runners: Runner[],
@@ -294,12 +303,8 @@ export async function GET(request: Request, context: RouteContext) {
   const runners = await getRaceRunners(source, year, month, day, keibajoCode, raceNumber);
   const payload = await buildRaceTrendRawPayload(race, runners, options);
   const body = JSON.stringify(payload);
-  // Guard against caching a degenerate empty response. If the D1 layer
-  // momentarily returned nothing (saturation, transient error) we never
-  // want to pin "no starters" against this race for the rest of the TTL —
-  // the next request will rebuild from the live D1 data instead.
-  const hasStarters = payload.starterRows.length > 0;
-  if (hasStarters) {
+  const hasUsableData = isCacheableTrendPayload(payload);
+  if (hasUsableData) {
     await putRaceTrendCache({ body, cacheKey, race });
     await notifyRaceTrendRoom(
       { day, keibajoCode, month, raceNumber, source, year },
@@ -309,13 +314,13 @@ export async function GET(request: Request, context: RouteContext) {
 
   return new Response(body, {
     headers: {
-      "Cache-Control": hasStarters ? "public, max-age=60" : "no-store",
+      "Cache-Control": hasUsableData ? "public, max-age=60" : "no-store",
       "Content-Type": "application/json; charset=utf-8",
       "X-Race-Trend-Cache": isCacheWarmRequest
         ? "MISS-STORED-WARM"
         : isCacheRefreshRequest
           ? "MISS-STORED-REFRESH"
-          : hasStarters
+          : hasUsableData
             ? "MISS-STORED"
             : "MISS-EMPTY-SKIPPED",
     },
