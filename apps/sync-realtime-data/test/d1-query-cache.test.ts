@@ -28,7 +28,7 @@ interface MutableCachesHost {
 const HOST = globalThis as unknown as MutableCachesHost;
 const ORIGINAL_CACHES = HOST.caches;
 
-const setupFakeCache = (matchResult: Response | undefined = undefined): FakeCache => {
+const setupFakeCache = (matchResult?: Response): FakeCache => {
   const cache: FakeCache = {
     delete: vi.fn(async () => true),
     match: vi.fn(async () => matchResult),
@@ -113,7 +113,7 @@ test("putD1QueryCache skips writes when TTL is zero (race day in the past)", asy
 });
 
 test("putD1QueryCache defers writes to executionContext.waitUntil when ctx is provided", async () => {
-  const cache = setupFakeCache();
+  setupFakeCache();
   const waitUntil = vi.fn();
   const ctx = { waitUntil, passThroughOnException: vi.fn() } as unknown as ExecutionContext;
 

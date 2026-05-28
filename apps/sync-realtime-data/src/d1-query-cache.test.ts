@@ -1,6 +1,11 @@
 // run with: bun run test
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { readD1QueryCache, withD1QueryCache } from "./d1-query-cache";
+import {
+  putD1QueryCache,
+  readD1QueryCache,
+  resolveD1QueryCacheTtlSeconds,
+  withD1QueryCache,
+} from "./d1-query-cache";
 
 interface FakeCache {
   delete: ReturnType<typeof vi.fn>;
@@ -105,9 +110,24 @@ it("withD1QueryCache stable-sorts nested object key parts when building the cach
   // (cache mock returns null), but importantly the put url should match.
   expect(result2.ok).toBe(99);
   expect(putSpy).toHaveBeenCalledTimes(2);
-  const url1 = String(putSpy.mock.calls[0]?.[0]);
-  const url2 = String(putSpy.mock.calls[1]?.[0]);
+  const firstReq = putSpy.mock.calls[0]?.[0];
+  const secondReq = putSpy.mock.calls[1]?.[0];
+  const url1 = firstReq instanceof Request ? firstReq.url : "";
+  const url2 = secondReq instanceof Request ? secondReq.url : "";
   expect(url1).toBe(url2);
+});
+
+it("resolveD1QueryCacheTtlSeconds returns 0 when race day cannot be parsed", () => {
+  const ttl = resolveD1QueryCacheTtlSeconds("running-style-race", {
+    kaisaiNen: "abcd",
+    kaisaiTsukihi: "0101",
+  });
+  expect(ttl).toBe(0);
+});
+
+it("putD1QueryCache returns early when no cache and no KV are available", async () => {
+  const result = await putD1QueryCache("realtime-short", ["k"], { hello: "world" });
+  expect(result).toBeUndefined();
 });
 
 it("withD1QueryCache deletes corrupted body, falls through to load, and caches the result", async () => {
