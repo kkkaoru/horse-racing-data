@@ -249,17 +249,38 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
     }
   }
 
-  const result = await computeAndStoreSection({
-    cacheKey,
-    day,
-    finishPredictionInputsCacheKey,
-    keibajoCode,
-    month,
-    raceNumber,
-    section,
-    sectionSearchParams,
-    year,
-  });
+  let result: ComputedSectionResult | null;
+  try {
+    result = await computeAndStoreSection({
+      cacheKey,
+      day,
+      finishPredictionInputsCacheKey,
+      keibajoCode,
+      month,
+      raceNumber,
+      section,
+      sectionSearchParams,
+      year,
+    });
+  } catch (error) {
+    console.error(`section ${section} compute failed`, error);
+    if (cacheKey) {
+      const staleBody = await getStaleDetailSectionBody(cacheKey).catch(() => null);
+      if (staleBody) {
+        return buildStaleDetailSectionResponse(staleBody);
+      }
+    }
+    return NextResponse.json(
+      { error: "section_unavailable", section },
+      {
+        headers: {
+          "Cache-Control": "private, max-age=0, no-store",
+          "Retry-After": "30",
+        },
+        status: 503,
+      },
+    );
+  }
   if (!result) {
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }
