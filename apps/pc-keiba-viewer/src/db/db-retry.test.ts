@@ -62,3 +62,26 @@ it("isRetryableDbError flags ETIMEDOUT", () => {
 it("isRetryableDbError ignores plain errors", () => {
   expect(isRetryableDbError(new Error("oops"))).toBe(false);
 });
+
+it("retries when Hyperdrive reports pool slot exhaustion", async () => {
+  const load = vi
+    .fn<Loader>()
+    .mockRejectedValueOnce(new Error("Timed out while waiting for an open slot in the pool."))
+    .mockResolvedValueOnce("ok");
+  await expect(withDbRetry(load, { sleep: noSleep })).resolves.toBe("ok");
+  expect(load).toHaveBeenCalledTimes(2);
+});
+
+it("isRetryableDbError flags Hyperdrive pool timeout messages case-insensitively", () => {
+  expect(
+    isRetryableDbError(new Error("TIMED OUT WHILE WAITING FOR AN OPEN SLOT IN THE POOL")),
+  ).toBe(true);
+});
+
+it("isRetryableDbError flags socket hang up messages", () => {
+  expect(isRetryableDbError(new Error("socket hang up"))).toBe(true);
+});
+
+it("isRetryableDbError flags Hyperdrive routing failures", () => {
+  expect(isRetryableDbError(new Error("Hyperdrive failed to dispatch query"))).toBe(true);
+});

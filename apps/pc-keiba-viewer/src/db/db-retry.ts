@@ -22,11 +22,19 @@ interface ErrorWithCode {
 const isErrorWithCode = (error: unknown): error is ErrorWithCode =>
   typeof error === "object" && error !== null && "code" in error && typeof error.code === "string";
 
-const isTransientMessage = (message: string): boolean =>
-  message.includes("Connection terminated") ||
-  message.includes("connection terminated") ||
-  message.includes("connect timeout") ||
-  message.includes("Client has encountered a connection error");
+const isTransientMessage = (message: string): boolean => {
+  const lowered = message.toLowerCase();
+  return (
+    lowered.includes("connection terminated") ||
+    lowered.includes("connect timeout") ||
+    lowered.includes("client has encountered a connection error") ||
+    lowered.includes("timed out while waiting for an open slot in the pool") ||
+    lowered.includes("hyperdrive") ||
+    lowered.includes("could not establish connection") ||
+    lowered.includes("socket hang up") ||
+    lowered.includes("read econnreset")
+  );
+};
 
 const isTransientPostgresError = (error: unknown): boolean => {
   if (isErrorWithCode(error)) {
