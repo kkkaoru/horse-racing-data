@@ -15,7 +15,7 @@ const initCloudflareDevContext = async (): Promise<void> => {
   const mod = await import("@opennextjs/cloudflare");
   await mod.initOpenNextCloudflareForDev({
     configPath: "./wrangler.dev.jsonc",
-    remoteBindings: false,
+    remoteBindings: true,
   });
 };
 
