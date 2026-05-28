@@ -930,6 +930,42 @@ export const listOddsSnapshotsForExport = async (
   return result.results;
 };
 
+export interface ListRaceSourcesForSeedOptions {
+  sinceId: number;
+  batchSize: number;
+}
+
+export interface ExportedRaceSourceRow {
+  race_key: string;
+  source: "jra" | "nar";
+  race_start_at_jst: string;
+  deba_url: string;
+  odds_links_json: string;
+  kaisai_nen: string;
+  kaisai_tsukihi: string;
+  keibajo_code: string;
+  race_bango: string;
+  rowid: number;
+}
+
+// Used by the PR3 cutover seed script. Reads upcoming race sources (today
+// through +3 days) so the new sync-realtime-data-hot Worker can pre-populate
+// its odds_fetch_state before /api/internal/odds-fetch-state forwarding takes
+// over for newly discovered races.
+const LIST_RACE_SOURCES_FOR_SEED_QUERY =
+  "select rowid, race_key, source, race_start_at_jst, deba_url, odds_links_json, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango from realtime_race_sources where rowid > ? and race_start_at_jst between datetime('now', '-1 day') and datetime('now', '+3 days') order by rowid asc limit ?";
+
+export const listRaceSourcesForSeed = async (
+  db: D1Database,
+  options: ListRaceSourcesForSeedOptions,
+): Promise<ExportedRaceSourceRow[]> => {
+  const result = await db
+    .prepare(LIST_RACE_SOURCES_FOR_SEED_QUERY)
+    .bind(options.sinceId, options.batchSize)
+    .all<ExportedRaceSourceRow>();
+  return result.results;
+};
+
 export interface DeleteOddsChunkOptions {
   sinceId: number;
   batchSize: number;

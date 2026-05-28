@@ -53,6 +53,8 @@ vi.mock("./storage", () => ({
   claimPremiumPaddockNotificationSend: vi.fn(async () => true),
   recordPremiumPaddockNotificationEvent: vi.fn(async () => {}),
   listOddsSnapshotsForExport: vi.fn(async () => []),
+  listRaceSourcesForSeed: vi.fn(async () => []),
+  deleteOddsSnapshotsChunk: vi.fn(async () => ({ deleted: 0, done: true, next_since_id: 0 })),
   listTanshoHistory: vi.fn(async () => []),
   listOddsHistoryByType: vi.fn(async () => ({})),
   getLatestOddsFromD1: vi.fn(async () => null),
@@ -466,6 +468,43 @@ it("fetch GET to an unmatched path returns the catch-all 404", async () => {
   expect(response.status).toBe(404);
 });
 
+it("fetch POST /api/internal/delete-odds-chunk returns 403 when token missing", async () => {
+  const { default: worker } = await import("./worker");
+  const env = buildEnv();
+  const envWithoutToken = { ...env, REALTIME_ADMIN_TOKEN: undefined } as unknown as Env;
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/delete-odds-chunk", {
+      body: JSON.stringify({ batch_size: 500, since_id: 0, upper_bound_id: 100 }),
+      method: "POST",
+    }),
+    envWithoutToken,
+    buildCtx(),
+  );
+  expect(response.status).toBe(403);
+});
+
+it("fetch POST /api/internal/delete-odds-chunk returns result when authorized", async () => {
+  const { default: worker } = await import("./worker");
+  const { deleteOddsSnapshotsChunk } = await import("./storage");
+  vi.mocked(deleteOddsSnapshotsChunk).mockResolvedValueOnce({
+    deleted: 3,
+    done: false,
+    next_since_id: 30,
+  });
+  const env = buildEnv();
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/delete-odds-chunk", {
+      body: JSON.stringify({ batch_size: 500, since_id: 0, upper_bound_id: 100 }),
+      headers: { authorization: "Bearer secret" },
+      method: "POST",
+    }),
+    env,
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toStrictEqual({ deleted: 3, done: false, next_since_id: 30 });
+});
+
 it("fetch POST /api/internal/export-odds-chunk returns 403 when token missing", async () => {
   const { default: worker } = await import("./worker");
   const env = buildEnv();
@@ -496,6 +535,70 @@ it("fetch POST /api/internal/export-odds-chunk returns rows when authorized", as
   expect(response.status).toBe(200);
 });
 
+it("fetch POST /api/internal/export-race-sources-chunk returns 403 when token missing", async () => {
+  const { default: worker } = await import("./worker");
+  const env = buildEnv();
+  const envWithoutToken = { ...env, REALTIME_ADMIN_TOKEN: undefined } as unknown as Env;
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/export-race-sources-chunk", {
+      body: JSON.stringify({ batch_size: 50, since_id: 0 }),
+      method: "POST",
+    }),
+    envWithoutToken,
+    buildCtx(),
+  );
+  expect(response.status).toBe(403);
+});
+
+it("fetch POST /api/internal/export-race-sources-chunk returns done when authorized and rows empty", async () => {
+  const { default: worker } = await import("./worker");
+  const env = buildEnv();
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/export-race-sources-chunk", {
+      body: JSON.stringify({ batch_size: 50, since_id: 0 }),
+      headers: { authorization: "Bearer secret" },
+      method: "POST",
+    }),
+    env,
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toStrictEqual({ done: true, next_since_id: 0, rows: [] });
+});
+
+it("fetch POST /api/internal/export-race-sources-chunk returns next_since_id from last row when rows present", async () => {
+  const { default: worker } = await import("./worker");
+  const { listRaceSourcesForSeed } = await import("./storage");
+  vi.mocked(listRaceSourcesForSeed).mockResolvedValueOnce([
+    {
+      deba_url: "https://x.test/race",
+      kaisai_nen: "2026",
+      kaisai_tsukihi: "0529",
+      keibajo_code: "08",
+      odds_links_json: "{}",
+      race_bango: "01",
+      race_key: "jra:2026:0529:08:01",
+      race_start_at_jst: "2026-05-29T13:00:00+09:00",
+      rowid: 42,
+      source: "jra",
+    },
+  ]);
+  const env = buildEnv();
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/export-race-sources-chunk", {
+      body: JSON.stringify({ batch_size: 50, since_id: 0 }),
+      headers: { authorization: "Bearer secret" },
+      method: "POST",
+    }),
+    env,
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+  const body = (await response.json()) as { done: boolean; next_since_id: number };
+  expect(body.next_since_id).toBe(42);
+  expect(body.done).toBe(true);
+});
+
 it("fetch POST /api/internal/export-odds-chunk accepts after_fetched_at option", async () => {
   const { default: worker } = await import("./worker");
   const env = buildEnv();
@@ -513,4 +616,148 @@ it("fetch POST /api/internal/export-odds-chunk accepts after_fetched_at option",
     buildCtx(),
   );
   expect(response.status).toBe(200);
+});
+
+it("forwardRaceSourceToHot is a no-op when REALTIME_HOT binding is missing", async () => {
+  const { forwardRaceSourceToHot } = await import("./worker");
+  await forwardRaceSourceToHot(buildEnv(), {
+    debaUrl: "https://x.test/race",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0512",
+    keibajoCode: "08",
+    oddsLinksJson: "{}",
+    raceBango: "01",
+    raceKey: "jra:2026:0512:08:01",
+    raceStartAtJst: "2026-05-12T13:00:00+09:00",
+    source: "jra",
+  });
+});
+
+it("forwardRaceSourceToHot is a no-op when internal token is missing", async () => {
+  const { forwardRaceSourceToHot } = await import("./worker");
+  const fetchMock = vi.fn();
+  await forwardRaceSourceToHot(buildEnv({ REALTIME_HOT: { fetch: fetchMock } as never } as never), {
+    debaUrl: "https://x.test/race",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0512",
+    keibajoCode: "08",
+    oddsLinksJson: "{}",
+    raceBango: "01",
+    raceKey: "jra:2026:0512:08:01",
+    raceStartAtJst: "2026-05-12T13:00:00+09:00",
+    source: "jra",
+  });
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+
+it("forwardRaceSourceToHot posts to /api/internal/odds-fetch-state when REALTIME_HOT is configured", async () => {
+  const { forwardRaceSourceToHot } = await import("./worker");
+  const hotFetch = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+  await forwardRaceSourceToHot(
+    buildEnv({
+      PC_KEIBA_VIEWER_INTERNAL_TOKEN: "internal-token",
+      REALTIME_HOT: { fetch: hotFetch } as never,
+    } as never),
+    {
+      debaUrl: "https://x.test/race",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      keibajoCode: "08",
+      oddsLinksJson: "{}",
+      raceBango: "01",
+      raceKey: "jra:2026:0512:08:01",
+      raceStartAtJst: "2026-05-12T13:00:00+09:00",
+      source: "jra",
+    },
+  );
+  expect(hotFetch).toHaveBeenCalledTimes(1);
+});
+
+it("forwardRaceSourceToHot logs the error when the hot worker fetch rejects", async () => {
+  const { forwardRaceSourceToHot } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  const hotFetch = vi.fn(async () => {
+    throw new Error("hot boom");
+  });
+  await forwardRaceSourceToHot(
+    buildEnv({
+      PC_KEIBA_VIEWER_INTERNAL_TOKEN: "internal-token",
+      REALTIME_HOT: { fetch: hotFetch } as never,
+    } as never),
+    {
+      debaUrl: "https://x.test/race",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      keibajoCode: "08",
+      oddsLinksJson: "{}",
+      raceBango: "01",
+      raceKey: "nar:2026:0512:55:01",
+      raceStartAtJst: "2026-05-12T18:00:00+09:00",
+      source: "nar",
+    },
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "forward-race-source-to-hot",
+    "error",
+    "nar:2026:0512:55:01",
+    "hot boom",
+  );
+});
+
+it("fetchHotOddsPayload returns null when REALTIME_HOT is not configured", async () => {
+  const { fetchHotOddsPayload } = await import("./worker");
+  expect(await fetchHotOddsPayload(buildEnv(), "jra:2026:0512:08:01")).toBeNull();
+});
+
+it("fetchHotOddsPayload returns null when the hot worker returns a non-ok status", async () => {
+  const { fetchHotOddsPayload } = await import("./worker");
+  const hotFetch = vi.fn(async () => new Response("", { status: 500 }));
+  expect(
+    await fetchHotOddsPayload(
+      buildEnv({ REALTIME_HOT: { fetch: hotFetch } as never } as never),
+      "jra:2026:0512:08:01",
+    ),
+  ).toBeNull();
+});
+
+it("fetchHotOddsPayload returns null when the hot worker fetch rejects", async () => {
+  const { fetchHotOddsPayload } = await import("./worker");
+  const hotFetch = vi.fn(async () => {
+    throw new Error("network boom");
+  });
+  expect(
+    await fetchHotOddsPayload(
+      buildEnv({ REALTIME_HOT: { fetch: hotFetch } as never } as never),
+      "jra:2026:0512:08:01",
+    ),
+  ).toBeNull();
+});
+
+it("fetchHotOddsPayload returns the parsed JSON body when the hot worker responds ok", async () => {
+  const { fetchHotOddsPayload } = await import("./worker");
+  const payload = {
+    fetchedAt: "2026-05-12T12:00:00+09:00",
+    history: [],
+    historyByType: {},
+    latest: {},
+  };
+  const hotFetch = vi.fn(async () => new Response(JSON.stringify(payload)));
+  expect(
+    await fetchHotOddsPayload(
+      buildEnv({ REALTIME_HOT: { fetch: hotFetch } as never } as never),
+      "jra:2026:0512:08:01",
+    ),
+  ).toStrictEqual(payload);
+});
+
+it("fetchHotOddsPayload coerces a null JSON response body to null", async () => {
+  const { fetchHotOddsPayload } = await import("./worker");
+  const hotFetch = vi.fn(async () => new Response("null"));
+  expect(
+    await fetchHotOddsPayload(
+      buildEnv({ REALTIME_HOT: { fetch: hotFetch } as never } as never),
+      "jra:2026:0512:08:01",
+    ),
+  ).toBeNull();
 });

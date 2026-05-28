@@ -230,8 +230,8 @@ it("isPremiumRaceJob returns true for fetch-premium-paddock", () => {
   expect(isPremiumRaceJob({ raceKey: "x", type: "fetch-premium-paddock" })).toBe(true);
 });
 
-it("isPremiumRaceJob returns false for fetch-odds", () => {
-  expect(isPremiumRaceJob({ raceKey: "x", type: "fetch-odds" })).toBe(false);
+it("isPremiumRaceJob returns false for fetch-weights", () => {
+  expect(isPremiumRaceJob({ raceKey: "x", type: "fetch-weights" })).toBe(false);
 });
 
 it("isTrackConditionDue returns { due: false, slotAt: null } when today doesn't match", () => {
@@ -637,7 +637,7 @@ it("enqueueJobs sends a single non-premium job via send", async () => {
   const env = {
     REALTIME_JOBS: { send, sendBatch },
   } as unknown as Env;
-  const job: Job = { raceKey: "k", type: "fetch-odds" };
+  const job: Job = { raceKey: "k", type: "fetch-weights" };
   await enqueueJobs(env, [job]);
   expect(send).toHaveBeenCalledTimes(1);
   expect(send).toHaveBeenCalledWith(job);
@@ -650,8 +650,8 @@ it("enqueueJobs batches multiple non-premium jobs via sendBatch", async () => {
     REALTIME_JOBS: { send, sendBatch },
   } as unknown as Env;
   const jobs: Job[] = [
-    { raceKey: "k1", type: "fetch-odds" },
-    { raceKey: "k2", type: "fetch-odds" },
+    { raceKey: "k1", type: "fetch-weights" },
+    { raceKey: "k2", type: "fetch-weights" },
   ];
   await enqueueJobs(env, jobs);
   expect(sendBatch).toHaveBeenCalledTimes(1);
@@ -666,7 +666,7 @@ it("enqueueJobs routes non-premium jobs via REALTIME_JOBS.send within a mixed ch
   } as unknown as Env;
   const jobs: Job[] = [
     { date: "20260512", type: "discover-premium-races" },
-    { raceKey: "k", type: "fetch-odds" },
+    { raceKey: "k", type: "fetch-weights" },
   ];
   await enqueueJobs(env, jobs);
   expect(premiumSend).toHaveBeenCalledTimes(1);
