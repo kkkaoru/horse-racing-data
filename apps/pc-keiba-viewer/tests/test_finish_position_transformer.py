@@ -100,6 +100,33 @@ def _make_walk_forward_frame(seed: int = 13) -> pd.DataFrame:
     return pd.DataFrame(races)
 
 
+def test_build_race_batches_encodes_missing_and_unknown_categorical_values():
+    df = _make_synthetic_frame()
+    df = df.copy()
+    df.loc[0, "track_code"] = None
+    df.loc[1, "grade_code"] = ""
+    df.loc[2, "track_code"] = "ZZZ_UNKNOWN_TRACK"
+    df.loc[3, "keibajo_code"] = None
+    df.loc[4, "kaisai_tsukihi"] = ""
+    cols = resolve_transformer_feature_columns(list(df.columns))
+    stats = fit_normalization_stats(df, cols)
+    arrays = build_race_batches(df, stats)
+    assert arrays["categorical_indices"].shape[-1] == len(cols.categorical)
+
+
+def test_fit_normalization_stats_replaces_non_finite_mean_with_zero():
+    df = _make_synthetic_frame()
+    df = df.copy()
+    df["speed_index_avg_5"] = float("inf")
+    cols = resolve_transformer_feature_columns(list(df.columns))
+    stats = fit_normalization_stats(df, cols)
+    numeric_columns = stats["numeric_columns"]
+    if "speed_index_avg_5" in numeric_columns:
+        index = numeric_columns.index("speed_index_avg_5")
+        assert stats["numeric_mean"][index] == 0.0
+        assert stats["numeric_std"][index] == 1.0
+
+
 def test_resolve_transformer_feature_columns_splits_numeric_and_categorical():
     df = _make_synthetic_frame()
     cols = resolve_transformer_feature_columns(list(df.columns))
@@ -209,6 +236,8 @@ def test_multitask_loss_returns_scalar_on_synthetic_batch():
             "listnet": 0.5,
             "place2": 1.0,
             "place3": 1.0,
+            "conditional_place2": 1.0,
+            "conditional_place3": 1.0,
         },
     )
     assert loss.shape == ()
