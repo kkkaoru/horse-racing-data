@@ -22,7 +22,7 @@ const createHorsePayload = (
 });
 
 describe("paddock discord notification", () => {
-  it("omits the official rank medal icon and zero-valued metrics", () => {
+  it("omits the official rank token when officialRank is the '-' placeholder", () => {
     const line = formatPaddockDiscordHorseLine(
       createHorsePayload({
         attention: 1,
@@ -33,12 +33,10 @@ describe("paddock discord notification", () => {
       0,
     );
 
-    expect(line).toContain("　⭐ **4.1**　公式-　👀 気配3 注目1 好み2");
-    expect(line).not.toContain("🏅");
-    expect(line).not.toContain("返し0");
+    expect(line.split("\n")[2]).toBe("　⭐ **4.1**　👀 気配3 注目1 好み2");
   });
 
-  it("omits the metric block when all metrics are zero", () => {
+  it("renders the official rank when officialRank is a numeric string", () => {
     const line = formatPaddockDiscordHorseLine(
       createHorsePayload({
         horseName: "フェアゴー",
@@ -52,6 +50,12 @@ describe("paddock discord notification", () => {
     );
 
     expect(line.split("\n")[2]).toBe("　⭐ **0**　公式1");
+  });
+
+  it("renders only the total when both officialRank and metrics are absent", () => {
+    const line = formatPaddockDiscordHorseLine(createHorsePayload({ total: "2" }), 1);
+
+    expect(line.split("\n")[2]).toBe("　⭐ **2**");
   });
 
   it("uses rank icons and fallback placeholders", () => {
