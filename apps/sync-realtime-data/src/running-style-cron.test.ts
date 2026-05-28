@@ -155,6 +155,32 @@ test("selectRacesNeedingRunningStyleInference treats stale active state as needi
   expect(selected.needed).toHaveLength(1);
 });
 
+test("selectRacesNeedingRunningStyleInference treats state with attemptedAt=null as active and skips it", () => {
+  const selected = selectRacesNeedingRunningStyleInference(
+    [RACE],
+    new Map([["nar:20260519:46:12", 14]]),
+    new Map([["nar:20260519:46:12", 14]]),
+    new Map([["nar:20260519:46:12", 0]]),
+    new Map([
+      [
+        "nar:20260519:46:12",
+        {
+          attemptedAt: null,
+          completedAt: null,
+          expectedHorseCount: null,
+          featuresR2Key: null,
+          modelVersion: null,
+          raceKey: "nar:20260519:46:12",
+          status: "pending",
+          writtenHorseCount: null,
+        },
+      ],
+    ]),
+  );
+  expect(selected.alreadyQueued).toBe(1);
+  expect(selected.needed).toHaveLength(0);
+});
+
 test("selectRacesNeedingRunningStyleInference treats malformed attemptedAt as active", () => {
   const selected = selectRacesNeedingRunningStyleInference(
     [RACE],

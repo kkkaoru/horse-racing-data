@@ -88,9 +88,8 @@ it("returns null when RUNNING_STYLE_D1_WRITE_ENABLED is not '1'", async () => {
 
 it("returns a skipped summary when state already completed and counts meet expectations", async () => {
   const { handleRunningStylePredictionJob } = await import("./running-style-queue");
-  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } = await import(
-    "./running-style-d1"
-  );
+  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
+    await import("./running-style-d1");
   vi.mocked(getRunningStyleInferenceState).mockResolvedValue({
     expectedHorseCount: 5,
     featuresR2Key: "features.parquet",
@@ -98,7 +97,9 @@ it("returns a skipped summary when state already completed and counts meet expec
     status: "completed",
     writtenHorseCount: 5,
   } as never);
-  vi.mocked(listRaceRunningStylesForRace).mockResolvedValue([{ raceKey: "jra:20260512:08:01" }] as never);
+  vi.mocked(listRaceRunningStylesForRace).mockResolvedValue([
+    { raceKey: "jra:20260512:08:01" },
+  ] as never);
 
   const summary = await handleRunningStylePredictionJob(buildEnv(), JOB);
   expect(summary?.skipped).toBe(true);
@@ -127,9 +128,8 @@ it("throws when no running-style feature rows are returned", async () => {
   const { getRunningStyleInferenceState } = await import("./running-style-d1");
   const { listDailyRaceEntriesForRace } = await import("./daily-feature-build");
   const { loadFlatLightGBMModelFromR2 } = await import("./running-style-model-binary");
-  const { buildRunningStyleFeaturesForRaceFromD1Target } = await import(
-    "./running-style-feature-sql"
-  );
+  const { buildRunningStyleFeaturesForRaceFromD1Target } =
+    await import("./running-style-feature-sql");
   vi.mocked(getRunningStyleInferenceState).mockResolvedValue(null);
   vi.mocked(loadFlatLightGBMModelFromR2).mockResolvedValue({
     header: { feature_names: ["x"], model_version: "v7-lineage" },
@@ -149,9 +149,8 @@ it("throws when validateFeatureCoverage returns missingFeatureNames", async () =
   const { getRunningStyleInferenceState } = await import("./running-style-d1");
   const { listDailyRaceEntriesForRace } = await import("./daily-feature-build");
   const { loadFlatLightGBMModelFromR2 } = await import("./running-style-model-binary");
-  const { buildRunningStyleFeaturesForRaceFromD1Target } = await import(
-    "./running-style-feature-sql"
-  );
+  const { buildRunningStyleFeaturesForRaceFromD1Target } =
+    await import("./running-style-feature-sql");
   const { validateFeatureCoverage } = await import("./running-style-feature-parquet");
   vi.mocked(getRunningStyleInferenceState).mockResolvedValue(null);
   vi.mocked(loadFlatLightGBMModelFromR2).mockResolvedValue({
@@ -173,17 +172,14 @@ it("throws when validateFeatureCoverage returns missingFeatureNames", async () =
 
 it("completes the job and returns the success summary", async () => {
   const { handleRunningStylePredictionJob } = await import("./running-style-queue");
-  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } = await import(
-    "./running-style-d1"
-  );
+  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
+    await import("./running-style-d1");
   const { listDailyRaceEntriesForRace } = await import("./daily-feature-build");
   const { loadFlatLightGBMModelFromR2 } = await import("./running-style-model-binary");
-  const { buildRunningStyleFeaturesForRaceFromD1Target } = await import(
-    "./running-style-feature-sql"
-  );
-  const { loadRunningStyleFeatureParquet, validateFeatureCoverage } = await import(
-    "./running-style-feature-parquet"
-  );
+  const { buildRunningStyleFeaturesForRaceFromD1Target } =
+    await import("./running-style-feature-sql");
+  const { loadRunningStyleFeatureParquet, validateFeatureCoverage } =
+    await import("./running-style-feature-parquet");
   const { runRunningStyleInferenceRowsWithFlatModel } = await import("./running-style-inference");
   vi.mocked(getRunningStyleInferenceState).mockResolvedValue(null);
   vi.mocked(loadFlatLightGBMModelFromR2).mockResolvedValue({
@@ -211,11 +207,74 @@ it("completes the job and returns the success summary", async () => {
   expect(summary?.cacheWritten).toBe(true);
 });
 
+it("throws when filterRunningStyleFeatureRowsByActiveEntries leaves no rows", async () => {
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const { getRunningStyleInferenceState } = await import("./running-style-d1");
+  const { listDailyRaceEntriesForRace } = await import("./daily-feature-build");
+  const { loadFlatLightGBMModelFromR2 } = await import("./running-style-model-binary");
+  const { buildRunningStyleFeaturesForRaceFromD1Target } =
+    await import("./running-style-feature-sql");
+  const { filterRunningStyleFeatureRowsByActiveEntries } =
+    await import("./running-style-expected-horses");
+  vi.mocked(getRunningStyleInferenceState).mockResolvedValue(null);
+  vi.mocked(loadFlatLightGBMModelFromR2).mockResolvedValue({
+    header: { feature_names: ["x"], model_version: "v7-lineage" },
+  } as never);
+  vi.mocked(listDailyRaceEntriesForRace).mockResolvedValue([{}] as never);
+  vi.mocked(buildRunningStyleFeaturesForRaceFromD1Target).mockResolvedValue({
+    rows: [{ umaban: 1 }, { umaban: 2 }],
+  } as never);
+  vi.mocked(filterRunningStyleFeatureRowsByActiveEntries).mockReturnValue([]);
+
+  await expect(handleRunningStylePredictionJob(buildEnv(), JOB)).rejects.toThrow(
+    "no active running-style feature rows found",
+  );
+});
+
+it("skips cacheCompletedRunningStyles when written count is less than expected horse count", async () => {
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
+    await import("./running-style-d1");
+  const { listDailyRaceEntriesForRace } = await import("./daily-feature-build");
+  const { loadFlatLightGBMModelFromR2 } = await import("./running-style-model-binary");
+  const { buildRunningStyleFeaturesForRaceFromD1Target } =
+    await import("./running-style-feature-sql");
+  const { loadRunningStyleFeatureParquet, validateFeatureCoverage } =
+    await import("./running-style-feature-parquet");
+  const { runRunningStyleInferenceRowsWithFlatModel } = await import("./running-style-inference");
+  const { filterRunningStyleFeatureRowsByActiveEntries, resolveRunningStyleExpectedHorseCount } =
+    await import("./running-style-expected-horses");
+  const passThrough = vi.fn((rows: unknown[]) => rows);
+  vi.mocked(filterRunningStyleFeatureRowsByActiveEntries).mockImplementation(passThrough as never);
+  vi.mocked(getRunningStyleInferenceState).mockResolvedValue(null);
+  vi.mocked(loadFlatLightGBMModelFromR2).mockResolvedValue({
+    header: { feature_names: ["x"], model_version: "v7-lineage" },
+  } as never);
+  vi.mocked(listDailyRaceEntriesForRace).mockResolvedValue([{}] as never);
+  vi.mocked(buildRunningStyleFeaturesForRaceFromD1Target).mockResolvedValue({
+    rows: [{ raceKey: "k" }, { raceKey: "k" }, { raceKey: "k" }],
+  } as never);
+  vi.mocked(validateFeatureCoverage).mockReturnValue({
+    missingCells: 0,
+    missingFeatureNames: [],
+  });
+  vi.mocked(resolveRunningStyleExpectedHorseCount).mockReturnValue(3);
+  vi.mocked(loadRunningStyleFeatureParquet).mockResolvedValue([{}, {}] as never);
+  vi.mocked(runRunningStyleInferenceRowsWithFlatModel).mockResolvedValue({
+    modelVersion: "v7-lineage",
+    writtenCount: 2,
+  } as never);
+
+  const summary = await handleRunningStylePredictionJob(buildEnv(), JOB);
+  expect(summary?.writtenCount).toBe(2);
+  expect(summary?.cacheWritten).toBe(false);
+  expect(listRaceRunningStylesForRace).not.toHaveBeenCalled();
+});
+
 it("captures cacheCompletedRunningStyles errors via cacheError", async () => {
   const { handleRunningStylePredictionJob } = await import("./running-style-queue");
-  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } = await import(
-    "./running-style-d1"
-  );
+  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
+    await import("./running-style-d1");
   vi.mocked(getRunningStyleInferenceState).mockResolvedValue({
     expectedHorseCount: 5,
     featuresR2Key: "features.parquet",

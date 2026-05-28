@@ -1,8 +1,6 @@
 // run with: bun run test
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type {
-  RunningStyleDateProgressRow,
-} from "./running-style-date-progress";
+import type { RunningStyleDateProgressRow } from "./running-style-date-progress";
 import type { Env } from "./types";
 
 vi.mock("./finish-position-lite-pool", () => ({
@@ -61,9 +59,8 @@ it("isRunningStyleDateProgressRowComplete returns false when d1Count is below ex
 });
 
 it("isRunningStyleDateProgressRowDisplayReady mirrors cacheReady", async () => {
-  const { isRunningStyleDateProgressRowDisplayReady } = await import(
-    "./running-style-date-progress"
-  );
+  const { isRunningStyleDateProgressRowDisplayReady } =
+    await import("./running-style-date-progress");
   expect(isRunningStyleDateProgressRowDisplayReady(COMPLETE_ROW)).toBe(true);
   expect(isRunningStyleDateProgressRowDisplayReady({ ...COMPLETE_ROW, cacheReady: false })).toBe(
     false,
@@ -154,17 +151,104 @@ it("collectRunningStyleDateProgress returns empty array when no registered races
   expect(await collectRunningStyleDateProgress(env, "20260512")).toStrictEqual([]);
 });
 
+it("collectRunningStyleDateProgress falls back to featureCounts when latestEntries is null", async () => {
+  const { collectRunningStyleDateProgress } = await import("./running-style-date-progress");
+  const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
+  const { getFinishPositionPool } = await import("./finish-position-lite-pool");
+  const { listRaceRunningStyleCounts, getRunningStyleInferenceState } =
+    await import("./running-style-d1");
+  const { isViewerRunningStyleRaceCacheReady } = await import("./viewer-running-style-cache-probe");
+  const { getLatestRaceEntries } = await import("./storage");
+
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
+    races: [
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0512",
+        keibajo_code: "08",
+        race_bango: "02",
+        source: "jra",
+      },
+    ],
+    source: "d1",
+  });
+  const query = vi.fn(async () => ({
+    rows: [{ count: "7", race_key: "jra:20260512:08:02" }],
+  }));
+  vi.mocked(getFinishPositionPool).mockReturnValue({ query } as never);
+  vi.mocked(listRaceRunningStyleCounts).mockResolvedValue(new Map());
+  vi.mocked(getLatestRaceEntries).mockResolvedValue(null);
+  vi.mocked(getRunningStyleInferenceState).mockResolvedValue(null);
+  vi.mocked(isViewerRunningStyleRaceCacheReady).mockResolvedValue(false);
+
+  const env = {
+    REALTIME_DB: {},
+    RUNNING_STYLE_MODELS: { head: vi.fn(async () => null) },
+  } as unknown as Env;
+
+  const rows = await collectRunningStyleDateProgress(env, "20260512");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.expectedHorses).toBe(7);
+  expect(rows[0]?.d1Count).toBe(0);
+  expect(rows[0]?.parquetReady).toBe(false);
+  expect(rows[0]?.inferenceStatus).toBe("missing");
+});
+
+it("collectRunningStyleDateProgress defaults expectedHorses to 0 when no feature count and no entries", async () => {
+  const { collectRunningStyleDateProgress } = await import("./running-style-date-progress");
+  const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
+  const { getFinishPositionPool } = await import("./finish-position-lite-pool");
+  const { listRaceRunningStyleCounts, getRunningStyleInferenceState } =
+    await import("./running-style-d1");
+  const { isViewerRunningStyleRaceCacheReady } = await import("./viewer-running-style-cache-probe");
+  const { getLatestRaceEntries } = await import("./storage");
+
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
+    races: [
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0512",
+        keibajo_code: "08",
+        race_bango: "03",
+        source: "jra",
+      },
+    ],
+    source: "d1",
+  });
+  const query = vi.fn(async () => ({ rows: [] }));
+  vi.mocked(getFinishPositionPool).mockReturnValue({ query } as never);
+  vi.mocked(listRaceRunningStyleCounts).mockResolvedValue(new Map());
+  vi.mocked(getLatestRaceEntries).mockResolvedValue(null);
+  vi.mocked(getRunningStyleInferenceState).mockResolvedValue({
+    expectedHorseCount: 0,
+    featuresR2Key: null,
+    modelVersion: null,
+    status: "queued",
+    writtenHorseCount: 0,
+  } as never);
+  vi.mocked(isViewerRunningStyleRaceCacheReady).mockResolvedValue(false);
+
+  const env = {
+    REALTIME_DB: {},
+    RUNNING_STYLE_MODELS: { head: vi.fn(async () => null) },
+  } as unknown as Env;
+
+  const rows = await collectRunningStyleDateProgress(env, "20260512");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.expectedHorses).toBe(0);
+  expect(rows[0]?.featuresReady).toBe(false);
+  expect(rows[0]?.parquetReady).toBe(false);
+  expect(rows[0]?.inferenceStatus).toBe("queued");
+});
+
 it("collectRunningStyleDateProgress builds one row per registered race", async () => {
   const { collectRunningStyleDateProgress } = await import("./running-style-date-progress");
   const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
   const { getFinishPositionPool } = await import("./finish-position-lite-pool");
-  const { listRaceRunningStyleCounts, getRunningStyleInferenceState } = await import(
-    "./running-style-d1"
-  );
+  const { listRaceRunningStyleCounts, getRunningStyleInferenceState } =
+    await import("./running-style-d1");
   const { evaluateRunningStyleCacheCoverage } = await import("./running-style-entry-coverage");
-  const { isViewerRunningStyleRaceCacheReady } = await import(
-    "./viewer-running-style-cache-probe"
-  );
+  const { isViewerRunningStyleRaceCacheReady } = await import("./viewer-running-style-cache-probe");
   const { getLatestRaceEntries } = await import("./storage");
 
   vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({

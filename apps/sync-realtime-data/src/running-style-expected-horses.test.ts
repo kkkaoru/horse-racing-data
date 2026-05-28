@@ -68,3 +68,45 @@ it("listRunningStyleExpectedHorseCounts defaults missing featureCount to 0", asy
   const counts = await listRunningStyleExpectedHorseCounts(db, [RACE_KEY], new Map());
   expect(counts.get(RACE_KEY)).toBe(0);
 });
+
+it("filterRunningStyleFeatureRowsByActiveEntries returns a copy of all rows when entries is null", async () => {
+  const { filterRunningStyleFeatureRowsByActiveEntries } =
+    await import("./running-style-expected-horses");
+  const rows = [{ umaban: 1 }, { umaban: 7 }];
+  const result = filterRunningStyleFeatureRowsByActiveEntries(rows, null);
+  expect(result).toStrictEqual([{ umaban: 1 }, { umaban: 7 }]);
+});
+
+it("filterRunningStyleFeatureRowsByActiveEntries returns a copy of all rows when entries.horses is empty", async () => {
+  const { filterRunningStyleFeatureRowsByActiveEntries } =
+    await import("./running-style-expected-horses");
+  const rows = [{ umaban: 3 }];
+  const result = filterRunningStyleFeatureRowsByActiveEntries(rows, { horses: [] });
+  expect(result).toStrictEqual([{ umaban: 3 }]);
+});
+
+it("filterRunningStyleFeatureRowsByActiveEntries returns a copy of all rows when every entry is scratched", async () => {
+  const { filterRunningStyleFeatureRowsByActiveEntries } =
+    await import("./running-style-expected-horses");
+  const rows = [{ umaban: 4 }, { umaban: 9 }];
+  const result = filterRunningStyleFeatureRowsByActiveEntries(rows, {
+    horses: [
+      { horseNumber: "4", status: "取消" },
+      { horseNumber: "9", status: "出走取消" },
+    ],
+  });
+  expect(result).toStrictEqual([{ umaban: 4 }, { umaban: 9 }]);
+});
+
+it("filterRunningStyleFeatureRowsByActiveEntries keeps only rows matching active horse numbers", async () => {
+  const { filterRunningStyleFeatureRowsByActiveEntries } =
+    await import("./running-style-expected-horses");
+  const rows = [{ umaban: 1 }, { umaban: 2 }, { umaban: 5 }];
+  const result = filterRunningStyleFeatureRowsByActiveEntries(rows, {
+    horses: [
+      { horseNumber: "1", status: null },
+      { horseNumber: "5", status: null },
+    ],
+  });
+  expect(result).toStrictEqual([{ umaban: 1 }, { umaban: 5 }]);
+});

@@ -164,9 +164,8 @@ it("refreshViewerRunningStyleCachesForDate skips when inference is disabled", as
 it("refreshViewerRunningStyleCachesForDate refreshes only races with predictions", async () => {
   const { refreshViewerRunningStyleCachesForDate } = await import("./running-style-cron");
   const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
-  const { listRaceRunningStyleCounts, listRaceRunningStylesForRace } = await import(
-    "./running-style-d1"
-  );
+  const { listRaceRunningStyleCounts, listRaceRunningStylesForRace } =
+    await import("./running-style-d1");
   const { putViewerRunningStyleRaceCache } = await import("./viewer-running-style-cache");
   vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
     races: [
@@ -217,13 +216,136 @@ it("refreshViewerRunningStyleCachesForDate refreshes only races with predictions
   expect(result.skipped).toBe(1);
 });
 
+it("planRunningStylePredictionsForDate sends a batch when more than one race is enqueued", async () => {
+  const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
+  const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
+    races: [
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0512",
+        keibajo_code: "08",
+        race_bango: "01",
+        source: "jra",
+      },
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0512",
+        keibajo_code: "08",
+        race_bango: "02",
+        source: "jra",
+      },
+    ],
+    source: "d1",
+  });
+  const send = vi.fn(async () => {});
+  const sendBatch = vi.fn(async () => {});
+  const env = buildEnv({
+    RUNNING_STYLE_JOBS: { send, sendBatch },
+  });
+  const summary = await planRunningStylePredictionsForDate(
+    env,
+    "20260512",
+    new Date("2026-05-12T12:00:00.000Z"),
+  );
+  expect(summary.enqueued).toBe(2);
+  expect(sendBatch).toHaveBeenCalledTimes(1);
+  expect(send).not.toHaveBeenCalled();
+});
+
+it("refreshViewerRunningStyleCachesForDate counts rows length zero in the per-race loop as skipped", async () => {
+  const { refreshViewerRunningStyleCachesForDate } = await import("./running-style-cron");
+  const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
+  const { listRaceRunningStyleCounts, listRaceRunningStylesForRace } =
+    await import("./running-style-d1");
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
+    races: [
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0512",
+        keibajo_code: "08",
+        race_bango: "01",
+        source: "jra",
+      },
+    ],
+    source: "d1",
+  });
+  vi.mocked(listRaceRunningStyleCounts).mockResolvedValue(new Map([["jra:20260512:08:01", 12]]));
+  vi.mocked(listRaceRunningStylesForRace).mockResolvedValue([]);
+  const result = await refreshViewerRunningStyleCachesForDate(buildEnv(), "20260512");
+  expect(result.scanned).toBe(1);
+  expect(result.refreshed).toBe(0);
+  expect(result.skipped).toBe(1);
+});
+
+it("refreshViewerRunningStyleCachesForDate counts a failed cache write as skipped", async () => {
+  const { refreshViewerRunningStyleCachesForDate } = await import("./running-style-cron");
+  const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
+  const { listRaceRunningStyleCounts, listRaceRunningStylesForRace } =
+    await import("./running-style-d1");
+  const { putViewerRunningStyleRaceCache } = await import("./viewer-running-style-cache");
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
+    races: [
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0512",
+        keibajo_code: "08",
+        race_bango: "01",
+        source: "jra",
+      },
+    ],
+    source: "d1",
+  });
+  vi.mocked(listRaceRunningStyleCounts).mockResolvedValue(new Map([["jra:20260512:08:01", 12]]));
+  vi.mocked(listRaceRunningStylesForRace).mockResolvedValue([
+    {
+      bamei: null,
+      category: "jra",
+      horseNumber: 1,
+      kaisaiNen: "2026",
+      kettoTorokuBango: "ktb",
+      modelVersion: "v7",
+      pNige: 0,
+      pOikomi: 0,
+      pSashi: 0,
+      pSenkou: 1,
+      predictedAt: "x",
+      predictedLabel: "nige",
+      raceKey: "jra:20260512:08:01",
+    },
+  ]);
+  vi.mocked(putViewerRunningStyleRaceCache).mockResolvedValue(false);
+  const result = await refreshViewerRunningStyleCachesForDate(buildEnv(), "20260512");
+  expect(result.refreshed).toBe(0);
+  expect(result.skipped).toBe(1);
+});
+
+it("refreshViewerRunningStyleCachesForDate treats a race missing from predictionCounts as skipped via the ?? 0 fallback", async () => {
+  const { refreshViewerRunningStyleCachesForDate } = await import("./running-style-cron");
+  const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
+  const { listRaceRunningStyleCounts } = await import("./running-style-d1");
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
+    races: [
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0512",
+        keibajo_code: "08",
+        race_bango: "07",
+        source: "jra",
+      },
+    ],
+    source: "d1",
+  });
+  vi.mocked(listRaceRunningStyleCounts).mockResolvedValue(new Map());
+  const result = await refreshViewerRunningStyleCachesForDate(buildEnv(), "20260512");
+  expect(result.skipped).toBe(1);
+  expect(result.refreshed).toBe(0);
+});
+
 it("runRunningStyleCronTick captures plan error as planError on summary", async () => {
   const { runRunningStyleCronTick } = await import("./running-style-cron");
   const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
   vi.mocked(listRunningStyleRacesByDate).mockRejectedValue(new Error("boom"));
-  const summary = await runRunningStyleCronTick(
-    buildEnv(),
-    new Date("2026-05-12T12:00:00.000Z"),
-  );
+  const summary = await runRunningStyleCronTick(buildEnv(), new Date("2026-05-12T12:00:00.000Z"));
   expect(summary.planError).toBe("boom");
 });
