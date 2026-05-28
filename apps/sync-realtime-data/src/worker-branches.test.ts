@@ -178,42 +178,6 @@ it("enqueueJobs sorts fetch-premium-paddock before other premium jobs (both sort
 
 // Covers planRealtimeFetches when oddsLockUntil has a non-null timestamp that
 // is in the past (lock released) -- the (Number.isNaN(...) || oddsLockUntil <= now) arm.
-it("planRealtimeFetches enqueues fetch-odds when oddsFetchLockUntil is in the past", async () => {
-  const { planRealtimeFetches } = await import("./worker");
-  const { listSchedulableRaceSourcesByDate } = await import("./storage");
-  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
-    {
-      babaCode: "08",
-      debaUrl: "https://www.jra.go.jp/race",
-      discoveredAt: "2026-05-12T00:00:00+09:00",
-      kaisaiKai: "02",
-      kaisaiNen: "2026",
-      kaisaiNichime: "06",
-      kaisaiTsukihi: "0512",
-      keibajoCode: "08",
-      lastOddsFetchAt: null,
-      lastOddsQueuedAt: null,
-      lastResultFetchAt: null,
-      lastResultQueuedAt: null,
-      lastWeightFetchAt: null,
-      oddsFetchLockUntil: "2026-05-12T11:00:00+09:00",
-      oddsLinks: {},
-      raceBango: "01",
-      raceKey: "jra:2026:0512:08:01",
-      raceName: "TestJRA",
-      raceStartAtJst: "2026-05-12T13:00:00+09:00",
-      resultCompleteAt: null,
-      resultExpectedHorseCount: null,
-      resultFetchLockUntil: null,
-      resultSavedHorseCount: null,
-      source: "jra",
-      updatedAt: "2026-05-12T00:00:00+09:00",
-    },
-  ] as never);
-  const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:30:00.000Z" } as never);
-  const count = await planRealtimeFetches(env, "20260512");
-  expect(count).toBeGreaterThanOrEqual(1);
-});
 
 // Covers planRealtimeFetches when resultFetchLockUntil is in the past (lock released).
 it("planRealtimeFetches enqueues fetch-results when resultFetchLockUntil is in the past", async () => {
@@ -255,45 +219,6 @@ it("planRealtimeFetches enqueues fetch-results when resultFetchLockUntil is in t
 
 // Covers planJraAdvanceOddsFetchesForDate when oddsFetchLockUntil is in the past,
 // exercising the same released-lock arm as above.
-it("planJraAdvanceOddsFetchesForDate enqueues fetch-odds when oddsFetchLockUntil is in the past", async () => {
-  const { planJraAdvanceOddsFetchesForDate } = await import("./worker");
-  const { listSchedulableRaceSourcesByDate } = await import("./storage");
-  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
-    {
-      babaCode: "08",
-      debaUrl: "https://www.jra.go.jp/race",
-      discoveredAt: "2026-05-12T00:00:00+09:00",
-      kaisaiKai: "02",
-      kaisaiNen: "2026",
-      kaisaiNichime: "06",
-      kaisaiTsukihi: "0512",
-      keibajoCode: "08",
-      lastOddsFetchAt: null,
-      lastOddsQueuedAt: null,
-      lastResultFetchAt: null,
-      lastResultQueuedAt: null,
-      lastWeightFetchAt: null,
-      oddsFetchLockUntil: "2026-05-12T01:00:00+09:00",
-      oddsLinks: {},
-      raceBango: "01",
-      raceKey: "jra:2026:0512:08:01",
-      raceName: "TestJRA",
-      raceStartAtJst: "2026-05-12T15:00:00+09:00",
-      resultCompleteAt: null,
-      resultExpectedHorseCount: null,
-      resultFetchLockUntil: null,
-      resultSavedHorseCount: null,
-      source: "jra",
-      updatedAt: "2026-05-12T00:00:00+09:00",
-    },
-  ] as never);
-  const result = await planJraAdvanceOddsFetchesForDate(
-    buildEnv(),
-    "20260512",
-    new Date("2026-05-12T04:30:00.000Z"),
-  );
-  expect(result.length).toBeGreaterThanOrEqual(0);
-});
 
 // Covers fetchAndStorePremiumRaceData where commentResult AND dataTopResult are rejected,
 // hitting the "rejected" arms of the Promise.allSettled fallback (?? "") and
@@ -1157,42 +1082,3 @@ it("fetch-premium-race-data summarizes stable comment sample when parsed comment
 
 // Covers fetch handler queue path: message.body.type === "fetch-odds" triggers ack,
 // other types trigger retry. Exercises both arms of the catch branch.
-it("queue handler acks fetch-odds on failure but retries other job types", async () => {
-  const workerModule = await import("./worker");
-  const handler = workerModule.default;
-  const { logFetch } = await import("./storage");
-  vi.mocked(logFetch).mockRejectedValue(new Error("log boom"));
-  const oddsAck = vi.fn();
-  const oddsRetry = vi.fn();
-  const otherAck = vi.fn();
-  const otherRetry = vi.fn();
-  const env = buildEnv();
-  await handler.queue?.(
-    {
-      ackAll: vi.fn(),
-      messages: [
-        {
-          ack: oddsAck,
-          attempts: 1,
-          body: { raceKey: "jra:k", type: "fetch-odds" },
-          id: "1",
-          retry: oddsRetry,
-          timestamp: new Date(),
-        },
-        {
-          ack: otherAck,
-          attempts: 1,
-          body: { date: "20260512", type: "discover-urls" },
-          id: "2",
-          retry: otherRetry,
-          timestamp: new Date(),
-        },
-      ],
-      queue: "q",
-      retryAll: vi.fn(),
-    } as unknown as MessageBatch<Job>,
-    env,
-  );
-  expect(oddsAck).toHaveBeenCalled();
-  expect(otherRetry).toHaveBeenCalled();
-});

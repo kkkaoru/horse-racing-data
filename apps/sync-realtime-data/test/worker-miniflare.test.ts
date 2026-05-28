@@ -336,32 +336,6 @@ describe("worker scheduling with Miniflare", () => {
     expect(log?.message).toContain('"queued":0');
   }, 20_000);
 
-  it("marks due races queued through the queue planner", async () => {
-    await seedRace("nar:2026:0512:55:01", "2026-05-12T13:00:00+09:00");
-
-    await worker.queue(TEST_QUEUE, [
-      {
-        attempts: 1,
-        body: { date: TEST_DATE, type: "plan-realtime-fetches" },
-        id: "plan-1",
-        timestamp: new Date(TEST_NOW),
-      },
-    ]);
-
-    const race = await db
-      .prepare(
-        `
-          select last_odds_queued_at, odds_fetch_lock_until
-          from realtime_race_sources
-          where race_key = ?
-        `,
-      )
-      .bind("nar:2026:0512:55:01")
-      .first<{ last_odds_queued_at: string | null; odds_fetch_lock_until: string | null }>();
-    expect(race?.last_odds_queued_at).toBe("2026-05-12T12:00:00+09:00");
-    expect(race?.odds_fetch_lock_until).toBeNull();
-  });
-
   it("queues finished races for result fetches and skips completed results", async () => {
     await seedRace("nar:2026:0512:55:03", "2026-05-12T11:55:00+09:00");
     await seedRace("jra:2026:0512:08:03", "2026-05-12T11:55:00+09:00", {
@@ -445,41 +419,6 @@ describe("worker scheduling with Miniflare", () => {
         race_key: "nar:2026:0512:55:06",
       },
     ]);
-  });
-
-  it("clears queued and lock state when a stale odds job is no longer due", async () => {
-    await seedRace("nar:2026:0512:55:02", "2026-05-12T12:05:00+09:00", {
-      lastOddsFetchAt: "2026-05-12T11:59:30+09:00",
-      lastOddsQueuedAt: "2026-05-12T11:59:00+09:00",
-      oddsFetchLockUntil: null,
-    });
-
-    await worker.queue(TEST_QUEUE, [
-      {
-        attempts: 1,
-        body: { raceKey: "nar:2026:0512:55:02", type: "fetch-odds" },
-        id: "odds-1",
-        timestamp: new Date(TEST_NOW),
-      },
-    ]);
-
-    const race = await db
-      .prepare(
-        `
-          select last_odds_fetch_at, last_odds_queued_at, odds_fetch_lock_until
-          from realtime_race_sources
-          where race_key = ?
-        `,
-      )
-      .bind("nar:2026:0512:55:02")
-      .first<{
-        last_odds_fetch_at: string | null;
-        last_odds_queued_at: string | null;
-        odds_fetch_lock_until: string | null;
-      }>();
-    expect(race?.last_odds_fetch_at).toBe("2026-05-12T11:59:30+09:00");
-    expect(race?.last_odds_queued_at).toBeNull();
-    expect(race?.odds_fetch_lock_until).toBeNull();
   });
 
   it("queues one JRA track condition job per venue on a thirty-minute slot", async () => {

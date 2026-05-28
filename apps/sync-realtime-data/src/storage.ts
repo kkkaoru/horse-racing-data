@@ -15,6 +15,13 @@ import type {
   RealtimeRacePayload,
   TrackCondition,
 } from "./types";
+
+export interface HotOddsPayload {
+  fetchedAt: string;
+  history: OddsHistoryPoint[];
+  historyByType: Partial<Record<OddsType, OddsTrendPoint[]>>;
+  latest: Partial<Record<OddsType, OddsData[]>>;
+}
 import type {
   PremiumDataTopHorse,
   PremiumPaddockBulletin,
@@ -35,17 +42,6 @@ const parsePremiumDataTopReasons = (value: string): string[] => {
   } catch {
     return [];
   }
-};
-
-const ODDS_TREND_LIMITS: Record<OddsType, number> = {
-  "3renpuku": 30,
-  "3rentan": 30,
-  fukusho: 32,
-  tansho: 32,
-  umaren: 30,
-  umatan: 30,
-  wakuren: 18,
-  wide: 30,
 };
 
 const normalizeStoredJockeyName = (value: string | null | undefined): string | null => {
@@ -82,17 +78,6 @@ interface RaceSourceRow {
   result_fetch_lock_until: string | null;
   result_saved_horse_count: number | null;
   source: "jra" | "nar";
-}
-
-interface OddsSnapshotRow {
-  average_odds: number | null;
-  combination: string;
-  fetched_at: string;
-  max_odds: number | null;
-  min_odds: number | null;
-  odds: number | null;
-  odds_type?: string;
-  rank: number | null;
 }
 
 interface WeightSnapshotRow {
@@ -673,19 +658,6 @@ export const completeTrackConditionFetch = async (
     .run();
 };
 
-export const updateOddsLinks = async (
-  db: D1Database,
-  raceKey: string,
-  oddsLinks: Partial<Record<OddsType, string>>,
-): Promise<void> => {
-  await db
-    .prepare(
-      "update realtime_race_sources set odds_links_json = ?, updated_at = ? where race_key = ?",
-    )
-    .bind(JSON.stringify(oddsLinks), toJstIsoString(), raceKey)
-    .run();
-};
-
 export const updateLastFetch = async (
   db: D1Database,
   raceKey: string,
@@ -724,51 +696,6 @@ export const markResultFetchQueued = async (
   );
 };
 
-export const markOddsFetchQueued = async (
-  db: D1Database,
-  raceKeys: string[],
-  queuedAt: string,
-): Promise<void> => {
-  if (raceKeys.length === 0) {
-    return;
-  }
-  await runD1Batches(
-    db,
-    raceKeys.map((raceKey) =>
-      db
-        .prepare(
-          `
-            update realtime_race_sources
-            set last_odds_queued_at = ?, updated_at = ?
-            where race_key = ?
-              and (last_odds_fetch_at is null or last_odds_fetch_at <= ?)
-          `,
-        )
-        .bind(queuedAt, queuedAt, raceKey, queuedAt),
-    ),
-  );
-};
-
-export const claimOddsFetch = async (
-  db: D1Database,
-  raceKey: string,
-  lockUntil: string,
-  now = toJstIsoString(),
-): Promise<boolean> => {
-  const result = await db
-    .prepare(
-      `
-        update realtime_race_sources
-        set odds_fetch_lock_until = ?, updated_at = ?
-        where race_key = ?
-          and (odds_fetch_lock_until is null or odds_fetch_lock_until <= ?)
-      `,
-    )
-    .bind(lockUntil, now, raceKey, now)
-    .run();
-  return result.meta.changes > 0;
-};
-
 export const claimResultFetch = async (
   db: D1Database,
   raceKey: string,
@@ -788,43 +715,6 @@ export const claimResultFetch = async (
     .bind(lockUntil, now, raceKey, now)
     .run();
   return result.meta.changes > 0;
-};
-
-export const completeOddsFetch = async (
-  db: D1Database,
-  raceKey: string,
-  fetchedAt: string,
-): Promise<void> => {
-  const now = toJstIsoString();
-  await db
-    .prepare(
-      `
-        update realtime_race_sources
-        set last_odds_fetch_at = ?,
-            last_odds_queued_at = null,
-            odds_fetch_lock_until = null,
-            updated_at = ?
-        where race_key = ?
-      `,
-    )
-    .bind(fetchedAt, now, raceKey)
-    .run();
-};
-
-export const failOddsFetch = async (db: D1Database, raceKey: string): Promise<void> => {
-  const now = toJstIsoString();
-  await db
-    .prepare(
-      `
-        update realtime_race_sources
-        set last_odds_queued_at = null,
-            odds_fetch_lock_until = null,
-            updated_at = ?
-        where race_key = ?
-      `,
-    )
-    .bind(now, raceKey)
-    .run();
 };
 
 export const completeResultFetch = async (
@@ -879,43 +769,6 @@ export const failResultFetch = async (db: D1Database, raceKey: string): Promise<
     )
     .bind(now, raceKey)
     .run();
-};
-
-export const insertOddsSnapshot = async (
-  db: D1Database,
-  raceKey: string,
-  fetchedAt: string,
-  odds: Partial<Record<OddsType, OddsData[]>>,
-): Promise<number> => {
-  const statements = Object.entries(odds).flatMap(([type, rows]) =>
-    (rows ?? []).map((row) =>
-      db
-        .prepare(
-          `
-            insert into odds_snapshots (
-              race_key, fetched_at, odds_type, combination, odds,
-              min_odds, max_odds, average_odds, rank
-            )
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `,
-        )
-        .bind(
-          raceKey,
-          fetchedAt,
-          type,
-          row.combination,
-          row.odds ?? null,
-          row.minOdds ?? null,
-          row.maxOdds ?? null,
-          row.averageOdds ?? null,
-          row.rank ?? null,
-        ),
-    ),
-  );
-  if (statements.length > 0) {
-    await runD1Batches(db, statements);
-  }
-  return statements.length;
 };
 
 export const insertHorseWeightSnapshot = async (
@@ -1077,12 +930,54 @@ export const listOddsSnapshotsForExport = async (
   return result.results;
 };
 
-interface D1RetentionResult {
-  fetchLogsDeleted: number;
-  oddsSnapshotsDeleted: number;
+export interface DeleteOddsChunkOptions {
+  sinceId: number;
+  batchSize: number;
+  upperBoundId: number;
 }
 
-const ODDS_SNAPSHOTS_RETENTION_DAYS = 7;
+export interface DeleteOddsChunkResult {
+  next_since_id: number;
+  deleted: number;
+  done: boolean;
+}
+
+const SELECT_TARGET_IDS_QUERY =
+  "select id from odds_snapshots where id > ? and id <= ? order by id asc limit ?";
+
+// Phase F final-step helper. Reads the next slice of ids and deletes them in a
+// single bounded statement so the delete query stays compatible with D1's
+// per-query memory budget. The caller is expected to throttle invocation
+// (night window + sleep) so the live polling workload is not impacted.
+export const deleteOddsSnapshotsChunk = async (
+  db: D1Database,
+  options: DeleteOddsChunkOptions,
+): Promise<DeleteOddsChunkResult> => {
+  const targets = await db
+    .prepare(SELECT_TARGET_IDS_QUERY)
+    .bind(options.sinceId, options.upperBoundId, options.batchSize)
+    .all<{ id: number }>();
+  const ids = targets.results.map((row) => row.id);
+  if (ids.length === 0) {
+    return { deleted: 0, done: true, next_since_id: options.sinceId };
+  }
+  const placeholders = ids.map(() => "?").join(", ");
+  const result = await db
+    .prepare(`delete from odds_snapshots where id in (${placeholders})`)
+    .bind(...ids)
+    .run();
+  const deleted = result.meta.rows_written ?? ids.length;
+  return {
+    deleted,
+    done: ids.length < options.batchSize,
+    next_since_id: ids.at(-1)!,
+  };
+};
+
+interface D1RetentionResult {
+  fetchLogsDeleted: number;
+}
+
 const FETCH_LOGS_RETENTION_DAYS = 30;
 
 const formatIsoCutoff = (now: Date, daysAgo: number): string => {
@@ -1091,29 +986,20 @@ const formatIsoCutoff = (now: Date, daysAgo: number): string => {
 };
 
 // Trim row backlog so CREATE INDEX and analytic queries stay within D1's
-// per-query memory budget. The window is intentionally long enough to keep
-// race-day trend lookups working but short enough to bound row growth.
+// per-query memory budget. odds_snapshots retention is owned by the new
+// sync-realtime-data-hot worker (Phase F handles its archive/retention).
 export const runD1Retention = async (
   db: D1Database,
   now = new Date(),
 ): Promise<D1RetentionResult> => {
-  const oddsCutoff = formatIsoCutoff(now, ODDS_SNAPSHOTS_RETENTION_DAYS);
   const logsCutoff = formatIsoCutoff(now, FETCH_LOGS_RETENTION_DAYS);
-  const [oddsResult, logsResult] = await Promise.all([
-    db
-      .prepare("delete from odds_snapshots where fetched_at < ?")
-      .bind(oddsCutoff)
-      .run()
-      .catch((): { meta: { rows_written?: number } } => ({ meta: {} })),
-    db
-      .prepare("delete from fetch_logs where created_at < ?")
-      .bind(logsCutoff)
-      .run()
-      .catch((): { meta: { rows_written?: number } } => ({ meta: {} })),
-  ]);
+  const logsResult = await db
+    .prepare("delete from fetch_logs where created_at < ?")
+    .bind(logsCutoff)
+    .run()
+    .catch((): { meta: { rows_written?: number } } => ({ meta: {} }));
   return {
     fetchLogsDeleted: logsResult.meta.rows_written ?? 0,
-    oddsSnapshotsDeleted: oddsResult.meta.rows_written ?? 0,
   };
 };
 
@@ -1888,137 +1774,6 @@ export const recordPremiumPaddockNotificationEvent = async (
     .run();
 };
 
-export const listTanshoHistory = async (
-  db: D1Database,
-  raceKey: string,
-): Promise<OddsHistoryPoint[]> => {
-  const result = await db
-    .prepare(
-      `
-        select fetched_at, combination, odds, rank
-        from odds_snapshots
-        where race_key = ?
-          and odds_type = 'tansho'
-        order by fetched_at asc, cast(combination as integer) asc
-      `,
-    )
-    .bind(raceKey)
-    .all<OddsSnapshotRow>();
-  return result.results.map((row) => ({
-    fetchedAt: row.fetched_at,
-    horseNumber: row.combination,
-    odds: row.odds,
-    popularity: row.rank,
-  }));
-};
-
-export const listOddsHistoryByType = async (
-  db: D1Database,
-  raceKey: string,
-): Promise<Partial<Record<OddsType, OddsTrendPoint[]>>> => {
-  const result = await db
-    .prepare(
-      `
-        select odds_type, fetched_at, combination, odds, rank
-        from odds_snapshots
-        where race_key = ?
-        order by odds_type asc, fetched_at asc, coalesce(rank, 999999) asc, combination asc
-      `,
-    )
-    .bind(raceKey)
-    .all<OddsSnapshotRow>();
-  const rowsByType = new Map<OddsType, OddsSnapshotRow[]>();
-  for (const row of result.results) {
-    const oddsType = row.odds_type as OddsType | undefined;
-    if (!oddsType) {
-      continue;
-    }
-    rowsByType.set(oddsType, [...(rowsByType.get(oddsType) ?? []), row]);
-  }
-
-  const historyByType: Partial<Record<OddsType, OddsTrendPoint[]>> = {};
-  for (const [oddsType, rows] of rowsByType) {
-    const latestFetchedAt = rows.at(-1)?.fetched_at;
-    if (!latestFetchedAt) {
-      continue;
-    }
-    const selectedCombinations = new Set(
-      rows
-        .filter((row) => row.fetched_at === latestFetchedAt)
-        .toSorted(
-          (left, right) =>
-            (left.rank ?? Number.MAX_SAFE_INTEGER) - (right.rank ?? Number.MAX_SAFE_INTEGER) ||
-            (left.odds ?? Number.MAX_SAFE_INTEGER) - (right.odds ?? Number.MAX_SAFE_INTEGER) ||
-            left.combination.localeCompare(right.combination, "ja-JP", { numeric: true }),
-        )
-        .slice(0, ODDS_TREND_LIMITS[oddsType])
-        .map((row) => row.combination),
-    );
-    historyByType[oddsType] = rows
-      .filter((row) => selectedCombinations.has(row.combination))
-      .map((row) => ({
-        combination: row.combination,
-        fetchedAt: row.fetched_at,
-        odds: row.odds,
-        rank: row.rank,
-      }));
-  }
-  return historyByType;
-};
-
-export const getLatestOddsFromD1 = async (
-  db: D1Database,
-  raceKey: string,
-): Promise<{
-  fetchedAt: string;
-  latest: Partial<Record<OddsType, OddsData[]>>;
-} | null> => {
-  // Single round-trip instead of MAX(fetched_at) + filtered SELECT. The
-  // subquery resolves the latest fetched_at on the existing
-  // (race_key, fetched_at) index and the outer SELECT then keeps only that
-  // snapshot's rows. Saves one D1 hop per detail-page poll.
-  const result = await db
-    .prepare(
-      `
-        select odds_type, fetched_at, combination, odds, min_odds, max_odds, average_odds, rank
-        from odds_snapshots
-        where race_key = ?
-          and fetched_at = (
-            select max(fetched_at) from odds_snapshots where race_key = ?
-          )
-        order by odds_type asc, coalesce(rank, 999999) asc
-      `,
-    )
-    .bind(raceKey, raceKey)
-    .all<OddsSnapshotRow>();
-  const firstFetchedAt = result.results[0]?.fetched_at;
-  if (!firstFetchedAt) {
-    return null;
-  }
-  const grouped: Partial<Record<OddsType, OddsData[]>> = {};
-  for (const row of result.results) {
-    const oddsType = row.odds_type as OddsType | undefined;
-    if (!oddsType) {
-      continue;
-    }
-    grouped[oddsType] = [
-      ...(grouped[oddsType] ?? []),
-      {
-        averageOdds: row.average_odds ?? undefined,
-        combination: row.combination,
-        maxOdds: row.max_odds ?? undefined,
-        minOdds: row.min_odds ?? undefined,
-        odds: row.odds ?? undefined,
-        rank: row.rank ?? undefined,
-      },
-    ];
-  }
-  return {
-    fetchedAt: firstFetchedAt,
-    latest: grouped,
-  };
-};
-
 export const toHorseTrends = (history: OddsHistoryPoint[]): HorseOddsTrend[] => {
   const byHorse = new Map<string, OddsHistoryPoint[]>();
   for (const point of history) {
@@ -2050,31 +1805,46 @@ export const toOddsTrendsByType = (
   return result;
 };
 
-export const getLatestHorseWeights = async (
-  db: D1Database,
-  raceKey: string,
-): Promise<{ fetchedAt: string; horses: HorseWeight[] } | null> => {
-  const result = await db
-    .prepare(
-      `
-        select *
-        from horse_weight_snapshots
-        where race_key = ?
-          and fetched_at = (
-            select max(fetched_at) from horse_weight_snapshots where race_key = ?
-          )
-        order by cast(horse_number as integer) asc
-      `,
+const LATEST_HORSE_WEIGHTS_SQL = `
+  select *
+  from horse_weight_snapshots
+  where race_key = ?
+    and fetched_at = (
+      select max(fetched_at) from horse_weight_snapshots where race_key = ?
     )
-    .bind(raceKey, raceKey)
-    .all<WeightSnapshotRow>();
-  const firstFetchedAt = result.results[0]?.fetched_at;
-  if (!firstFetchedAt) {
-    return null;
-  }
+  order by cast(horse_number as integer) asc
+`;
+
+const LATEST_RACE_ENTRIES_SQL = `
+  select *
+  from race_entry_snapshots
+  where race_key = ?
+    and fetched_at = (
+      select max(fetched_at) from race_entry_snapshots where race_key = ?
+    )
+  order by cast(horse_number as integer) asc
+`;
+
+const LATEST_RACE_RESULTS_SQL = `
+  select *
+  from race_result_snapshots
+  where race_key = ?
+    and fetched_at = (
+      select max(fetched_at) from race_result_snapshots where race_key = ?
+    )
+  order by
+    case when finish_position glob '[0-9]*' then cast(finish_position as integer) else 999 end asc,
+    cast(horse_number as integer) asc
+`;
+
+const mapHorseWeights = (
+  rows: ReadonlyArray<WeightSnapshotRow>,
+): { fetchedAt: string; horses: HorseWeight[] } | null => {
+  const firstFetchedAt = rows[0]?.fetched_at;
+  if (!firstFetchedAt) return null;
   return {
     fetchedAt: firstFetchedAt,
-    horses: result.results.map((row) => ({
+    horses: rows.map((row) => ({
       changeAmount: row.change_amount,
       changeSign: row.change_sign,
       horseName: row.horse_name,
@@ -2084,31 +1854,14 @@ export const getLatestHorseWeights = async (
   };
 };
 
-export const getLatestRaceEntries = async (
-  db: D1Database,
-  raceKey: string,
-): Promise<{ fetchedAt: string; horses: RaceEntry[] } | null> => {
-  const result = await db
-    .prepare(
-      `
-        select *
-        from race_entry_snapshots
-        where race_key = ?
-          and fetched_at = (
-            select max(fetched_at) from race_entry_snapshots where race_key = ?
-          )
-        order by cast(horse_number as integer) asc
-      `,
-    )
-    .bind(raceKey, raceKey)
-    .all<RaceEntrySnapshotRow>();
-  const firstFetchedAt = result.results[0]?.fetched_at;
-  if (!firstFetchedAt) {
-    return null;
-  }
+const mapRaceEntries = (
+  rows: ReadonlyArray<RaceEntrySnapshotRow>,
+): { fetchedAt: string; horses: RaceEntry[] } | null => {
+  const firstFetchedAt = rows[0]?.fetched_at;
+  if (!firstFetchedAt) return null;
   return {
     fetchedAt: firstFetchedAt,
-    horses: result.results.map((row) => ({
+    horses: rows.map((row) => ({
       fetchedAt: row.fetched_at,
       horseName: row.horse_name,
       horseNumber: row.horse_number,
@@ -2118,33 +1871,14 @@ export const getLatestRaceEntries = async (
   };
 };
 
-export const getLatestRaceResults = async (
-  db: D1Database,
-  raceKey: string,
-): Promise<{ fetchedAt: string; horses: RaceResult[] } | null> => {
-  const result = await db
-    .prepare(
-      `
-        select *
-        from race_result_snapshots
-        where race_key = ?
-          and fetched_at = (
-            select max(fetched_at) from race_result_snapshots where race_key = ?
-          )
-        order by
-          case when finish_position glob '[0-9]*' then cast(finish_position as integer) else 999 end asc,
-          cast(horse_number as integer) asc
-      `,
-    )
-    .bind(raceKey, raceKey)
-    .all<RaceResultSnapshotRow>();
-  const firstFetchedAt = result.results[0]?.fetched_at;
-  if (!firstFetchedAt) {
-    return null;
-  }
+const mapRaceResults = (
+  rows: ReadonlyArray<RaceResultSnapshotRow>,
+): { fetchedAt: string; horses: RaceResult[] } | null => {
+  const firstFetchedAt = rows[0]?.fetched_at;
+  if (!firstFetchedAt) return null;
   return {
     fetchedAt: firstFetchedAt,
-    horses: result.results.map((row) => ({
+    horses: rows.map((row) => ({
       fetchedAt: row.fetched_at,
       finishPosition: row.finish_position,
       horseName: row.horse_name,
@@ -2152,6 +1886,39 @@ export const getLatestRaceResults = async (
       time: row.time,
     })),
   };
+};
+
+export const getLatestHorseWeights = async (
+  db: D1Database,
+  raceKey: string,
+): Promise<{ fetchedAt: string; horses: HorseWeight[] } | null> => {
+  const result = await db
+    .prepare(LATEST_HORSE_WEIGHTS_SQL)
+    .bind(raceKey, raceKey)
+    .all<WeightSnapshotRow>();
+  return mapHorseWeights(result.results);
+};
+
+export const getLatestRaceEntries = async (
+  db: D1Database,
+  raceKey: string,
+): Promise<{ fetchedAt: string; horses: RaceEntry[] } | null> => {
+  const result = await db
+    .prepare(LATEST_RACE_ENTRIES_SQL)
+    .bind(raceKey, raceKey)
+    .all<RaceEntrySnapshotRow>();
+  return mapRaceEntries(result.results);
+};
+
+export const getLatestRaceResults = async (
+  db: D1Database,
+  raceKey: string,
+): Promise<{ fetchedAt: string; horses: RaceResult[] } | null> => {
+  const result = await db
+    .prepare(LATEST_RACE_RESULTS_SQL)
+    .bind(raceKey, raceKey)
+    .all<RaceResultSnapshotRow>();
+  return mapRaceResults(result.results);
 };
 
 const toTrackCondition = (row: TrackConditionSnapshotRow): TrackCondition => ({
@@ -2367,33 +2134,35 @@ export const buildRealtimePayload = async (
   db: D1Database,
   raceKey: string,
   source: NarRaceSource | null,
-  odds: {
-    fetchedAt: string;
-    latest: Partial<Record<OddsType, OddsData[]>>;
-  } | null,
+  odds: HotOddsPayload | null,
   trackCondition: TrackCondition | null = null,
 ): Promise<RealtimeRacePayload> => {
-  // Five independent D1 reads — the previous serial chain meant a 5x
-  // round-trip penalty per detail-page poll on a saturated worker. Fire them
-  // in parallel so the response time is bounded by the slowest single read.
-  const [history, historyByType, raceEntries, horseWeights, raceResults] = await Promise.all([
-    listTanshoHistory(db, raceKey),
-    listOddsHistoryByType(db, raceKey),
-    getLatestRaceEntries(db, raceKey),
-    getLatestHorseWeights(db, raceKey),
-    getLatestRaceResults(db, raceKey),
+  // Single db.batch RPC for race-entry / horse-weight / result snapshots so the
+  // /realtime polling endpoint pays one D1 round-trip per request instead of
+  // three. The odds payload (history, historyByType, latest) is fetched from
+  // the new sync-realtime-data-hot worker before this call, so this no longer
+  // touches the odds_snapshots table.
+  const [entriesResult, weightsResult, resultsResult] = await db.batch<
+    RaceEntrySnapshotRow | WeightSnapshotRow | RaceResultSnapshotRow
+  >([
+    db.prepare(LATEST_RACE_ENTRIES_SQL).bind(raceKey, raceKey),
+    db.prepare(LATEST_HORSE_WEIGHTS_SQL).bind(raceKey, raceKey),
+    db.prepare(LATEST_RACE_RESULTS_SQL).bind(raceKey, raceKey),
   ]);
+  const raceEntries = mapRaceEntries((entriesResult?.results ?? []) as RaceEntrySnapshotRow[]);
+  const horseWeights = mapHorseWeights((weightsResult?.results ?? []) as WeightSnapshotRow[]);
+  const raceResults = mapRaceResults((resultsResult?.results ?? []) as RaceResultSnapshotRow[]);
   return {
     raceEntries,
     horseWeights,
     odds: odds
       ? {
           fetchedAt: odds.fetchedAt,
-          history,
-          historyByType,
-          horseTrends: toHorseTrends(history),
+          history: odds.history,
+          historyByType: odds.historyByType,
+          horseTrends: toHorseTrends(odds.history),
           latest: odds.latest,
-          trendsByType: toOddsTrendsByType(historyByType),
+          trendsByType: toOddsTrendsByType(odds.historyByType),
         }
       : null,
     raceResults,
