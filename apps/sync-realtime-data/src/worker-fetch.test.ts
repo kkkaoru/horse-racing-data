@@ -52,6 +52,7 @@ vi.mock("./storage", () => ({
   updatePremiumPaddockNotificationState: vi.fn(async () => {}),
   claimPremiumPaddockNotificationSend: vi.fn(async () => true),
   recordPremiumPaddockNotificationEvent: vi.fn(async () => {}),
+  listOddsSnapshotsForExport: vi.fn(async () => []),
   listTanshoHistory: vi.fn(async () => []),
   listOddsHistoryByType: vi.fn(async () => ({})),
   getLatestOddsFromD1: vi.fn(async () => null),
@@ -463,4 +464,53 @@ it("fetch GET to an unmatched path returns the catch-all 404", async () => {
     buildCtx(),
   );
   expect(response.status).toBe(404);
+});
+
+it("fetch POST /api/internal/export-odds-chunk returns 403 when token missing", async () => {
+  const { default: worker } = await import("./worker");
+  const env = buildEnv();
+  const envWithoutToken = { ...env, REALTIME_ADMIN_TOKEN: undefined } as unknown as Env;
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/export-odds-chunk", {
+      body: JSON.stringify({ batch_size: 100, since_id: 0 }),
+      method: "POST",
+    }),
+    envWithoutToken,
+    buildCtx(),
+  );
+  expect(response.status).toBe(403);
+});
+
+it("fetch POST /api/internal/export-odds-chunk returns rows when authorized", async () => {
+  const { default: worker } = await import("./worker");
+  const env = buildEnv();
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/export-odds-chunk", {
+      body: JSON.stringify({ batch_size: 200, since_id: 0 }),
+      headers: { authorization: "Bearer secret" },
+      method: "POST",
+    }),
+    env,
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+});
+
+it("fetch POST /api/internal/export-odds-chunk accepts after_fetched_at option", async () => {
+  const { default: worker } = await import("./worker");
+  const env = buildEnv();
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/export-odds-chunk", {
+      body: JSON.stringify({
+        after_fetched_at: "2026-05-27T00:00:00+09:00",
+        batch_size: 200,
+        since_id: 0,
+      }),
+      headers: { authorization: "Bearer secret" },
+      method: "POST",
+    }),
+    env,
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
 });

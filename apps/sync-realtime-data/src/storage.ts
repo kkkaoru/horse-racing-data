@@ -1040,6 +1040,43 @@ export const logFetch = async (
     .run();
 };
 
+export interface ExportOddsChunkOptions {
+  sinceId: number;
+  batchSize: number;
+  afterFetchedAt?: string;
+}
+
+export interface ExportedOddsRow {
+  id: number;
+  race_key: string;
+  fetched_at: string;
+  odds_type: string;
+  combination: string;
+  odds: number | null;
+  min_odds: number | null;
+  max_odds: number | null;
+  average_odds: number | null;
+  rank: number | null;
+}
+
+const EXPORT_ODDS_BASE_QUERY =
+  "select id, race_key, fetched_at, odds_type, combination, odds, min_odds, max_odds, average_odds, rank from odds_snapshots where id > ?";
+
+export const listOddsSnapshotsForExport = async (
+  db: D1Database,
+  options: ExportOddsChunkOptions,
+): Promise<ExportedOddsRow[]> => {
+  const query = options.afterFetchedAt
+    ? `${EXPORT_ODDS_BASE_QUERY} and fetched_at >= ? order by id asc limit ?`
+    : `${EXPORT_ODDS_BASE_QUERY} order by id asc limit ?`;
+  const stmt = db.prepare(query);
+  const bound = options.afterFetchedAt
+    ? stmt.bind(options.sinceId, options.afterFetchedAt, options.batchSize)
+    : stmt.bind(options.sinceId, options.batchSize);
+  const result = await bound.all<ExportedOddsRow>();
+  return result.results;
+};
+
 interface D1RetentionResult {
   fetchLogsDeleted: number;
   oddsSnapshotsDeleted: number;
