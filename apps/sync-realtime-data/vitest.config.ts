@@ -1,12 +1,10 @@
 // run with: bun run test:coverage
 import { defineConfig } from "vitest/config";
 
-// Lines/Statements/Functions: 95% (semantic correctness).
-// Branches: 90% — v8 counts every `?? null`, `?? ""`, and ternary as a branch,
-// inflating the metric for parser-heavy code. Push higher when the dead
-// defensive fallbacks have been refactored away.
+// All 4 metrics: 95%. v8 counts every `?? null`, `?? ""`, and ternary as a
+// branch, so do not regress by adding dead defensive fallbacks — refactor
+// unreachable arms with `!` / direct access instead.
 const COVERAGE_THRESHOLD = 95;
-const BRANCHES_THRESHOLD = 90;
 
 export default defineConfig({
   test: {
@@ -28,7 +26,7 @@ export default defineConfig({
       ],
       thresholds: {
         lines: COVERAGE_THRESHOLD,
-        branches: BRANCHES_THRESHOLD,
+        branches: COVERAGE_THRESHOLD,
         functions: COVERAGE_THRESHOLD,
         statements: COVERAGE_THRESHOLD,
       },
