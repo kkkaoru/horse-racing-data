@@ -25,17 +25,11 @@ const targetRace = {
 describe("race trend cache helpers", () => {
   it("allows only races before the target race on the same venue", () => {
     expect(
-      isRaceBeforeTargetRace(
-        { ...targetRace, hassoJikoku: "2015", raceBango: "11" },
-        targetRace,
-      ),
+      isRaceBeforeTargetRace({ ...targetRace, hassoJikoku: "2015", raceBango: "11" }, targetRace),
     ).toBe(true);
     expect(isRaceBeforeTargetRace(targetRace, targetRace)).toBe(false);
     expect(
-      isRaceBeforeTargetRace(
-        { ...targetRace, hassoJikoku: "2120", raceBango: "13" },
-        targetRace,
-      ),
+      isRaceBeforeTargetRace({ ...targetRace, hassoJikoku: "2120", raceBango: "13" }, targetRace),
     ).toBe(false);
   });
 
@@ -89,9 +83,7 @@ describe("race trend cache helpers", () => {
       options,
       raceBango: "11",
     });
-    expect(cacheKey).toStrictEqual(
-      "race-trend:v4:jra:05:11:20260519:20260520:20260519:20260520:1",
-    );
+    expect(cacheKey).toStrictEqual("race-trend:v5:jra:05:11:20260519:20260520:20260519:20260520:1");
     expect(
       buildRaceTrendApiPath({
         day: "20",
@@ -108,9 +100,7 @@ describe("race trend cache helpers", () => {
 
   it("compares races across dates and non-numeric race numbers", () => {
     expect(isRaceBeforeTargetRace({ ...targetRace, source: "jra" }, targetRace)).toBe(false);
-    expect(
-      isRaceBeforeTargetRace({ ...targetRace, kaisaiTsukihi: "0519" }, targetRace),
-    ).toBe(true);
+    expect(isRaceBeforeTargetRace({ ...targetRace, kaisaiTsukihi: "0519" }, targetRace)).toBe(true);
     expect(
       isRaceBeforeTargetRace(
         { ...targetRace, raceBango: "A", keibajoCode: "44" },

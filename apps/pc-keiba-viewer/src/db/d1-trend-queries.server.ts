@@ -155,7 +155,7 @@ const isRawD1Row = (value: unknown): value is RawD1Row => {
 };
 
 const buildCacheKey = ({ source, startYmd, endYmd }: RaceTrendD1RowsParams): string =>
-  `race-trend-d1:v1:${source}:${startYmd}:${endYmd}`;
+  `race-trend-d1:v2:${source}:${startYmd}:${endYmd}`;
 
 const formatHassoJikoku = (raceStartAtJst: string | null): string | null => {
   if (typeof raceStartAtJst !== "string" || raceStartAtJst.length < 16) return null;
@@ -379,7 +379,7 @@ const isRawDailyD1Row = (value: unknown): value is RawDailyD1Row => {
 };
 
 const buildDailyCacheKey = ({ source, startYmd, endYmd }: RaceTrendD1RowsParams): string =>
-  `race-trend-d1-daily:v1:${source}:${startYmd}:${endYmd}`;
+  `race-trend-d1-daily:v2:${source}:${startYmd}:${endYmd}`;
 
 const queryDailyD1 = async (params: RaceTrendD1RowsParams): Promise<RawDailyD1Row[]> => {
   const { env } = await getCloudflareContext({ async: true });
