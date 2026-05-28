@@ -29,7 +29,7 @@ export const parsePushRunningStyleDateCliArgs = (
   let dateRaw: string | undefined;
   let year: number | undefined;
   for (let index = 0; index < argv.length; index += 1) {
-    const name = argv[index];
+    const name = argv[index]!;
     const value = argv[index + 1];
     if (name === "--date") {
       dateRaw = requireValue(name, value);
@@ -40,9 +40,6 @@ export const parsePushRunningStyleDateCliArgs = (
       year = Number.parseInt(requireValue(name, value), 10);
       index += 1;
       continue;
-    }
-    if (name === undefined) {
-      break;
     }
     throw new Error(`Unknown argument: ${name}`);
   }

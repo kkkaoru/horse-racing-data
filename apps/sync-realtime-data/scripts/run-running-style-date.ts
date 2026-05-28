@@ -19,7 +19,6 @@ import { getPlatformProxy } from "wrangler";
 import {
   collectRunningStyleDateProgress,
   isRunningStyleDateProgressRowComplete,
-  isRunningStyleDateProgressRowDisplayReady,
   resolveRunningStyleDateYmd,
   summarizeRunningStyleDateProgress,
   type RunningStyleDateProgressRow,
@@ -74,7 +73,8 @@ export const parseRunningStyleDateCliArgs = (
   const registerModels: RunningStyleModelRegisterSpec[] = [];
 
   for (let index = 0; index < argv.length; index += 1) {
-    const name = argv[index];
+    // `argv[index]` is always defined while index < argv.length, so non-null assertion avoids a dead defensive branch.
+    const name = argv[index]!;
     const value = argv[index + 1];
     if (name === "--register-model") {
       registerModels.push(parseRegisterModelArg(requireValue(name, value)));
@@ -124,9 +124,6 @@ export const parseRunningStyleDateCliArgs = (
       maxRounds = Number.parseInt(requireValue(name, value), 10);
       index += 1;
       continue;
-    }
-    if (name === undefined) {
-      break;
     }
     throw new Error(`Unknown argument: ${name}`);
   }

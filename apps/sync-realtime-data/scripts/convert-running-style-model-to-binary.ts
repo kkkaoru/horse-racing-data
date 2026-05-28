@@ -217,6 +217,8 @@ export const convertRunningStyleModelFile = async (
   };
 };
 
+/* v8 ignore start */
 if (import.meta.main) {
   await main();
 }
+/* v8 ignore stop */
