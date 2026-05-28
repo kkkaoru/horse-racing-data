@@ -86,6 +86,7 @@ const buildFakePool = (responses: readonly FakeQueryResult<QueryResultRow>[]): Q
     calls.push({ text, values });
     return responses[calls.length - 1] ?? buildEmptyResult();
   });
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion
   const fakePool = { query } as unknown as Pool;
   return { calls, pool: fakePool };
 };
