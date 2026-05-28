@@ -678,13 +678,26 @@ export const buildRacePacePredictionRowsFromResults = ({
     );
 };
 
+export type RunningStyleLabel = "nige" | "senkou" | "sashi" | "oikomi";
+
 export interface RunningStylePositionProbabilities {
   umaban: number;
+  predictedLabel: RunningStyleLabel;
   pNige: number;
   pSenkou: number;
   pSashi: number;
   pOikomi: number;
 }
+
+// Label tiers: anchor the running-style label as the primary sort key so a
+// horse explicitly classified as nige always ranks ahead of a sashi/oikomi
+// horse even if its weighted probability score is slightly higher.
+const LABEL_TIER: Record<RunningStyleLabel, number> = {
+  nige: 0,
+  senkou: 1,
+  sashi: 2,
+  oikomi: 3,
+};
 
 const POSITION_WEIGHT_NIGE = 0;
 const POSITION_WEIGHT_SENKOU = 0.25;
@@ -697,15 +710,18 @@ const computePositionScore = (probs: RunningStylePositionProbabilities): number 
   probs.pSashi * POSITION_WEIGHT_SASHI +
   probs.pOikomi * POSITION_WEIGHT_OIKOMI;
 
-const compareByPositionScoreThenUmaban = (
+const compareByLabelTierThenScoreThenUmaban = (
   left: RunningStylePositionProbabilities,
   right: RunningStylePositionProbabilities,
-): number => computePositionScore(left) - computePositionScore(right) || left.umaban - right.umaban;
+): number =>
+  LABEL_TIER[left.predictedLabel] - LABEL_TIER[right.predictedLabel] ||
+  computePositionScore(left) - computePositionScore(right) ||
+  left.umaban - right.umaban;
 
 const buildRankByUmaban = (
   probabilities: ReadonlyArray<RunningStylePositionProbabilities>,
 ): Map<number, number> => {
-  const sorted = probabilities.toSorted(compareByPositionScoreThenUmaban);
+  const sorted = probabilities.toSorted(compareByLabelTierThenScoreThenUmaban);
   const rankByUmaban = new Map<number, number>();
   sorted.forEach((entry, index) => {
     rankByUmaban.set(entry.umaban, index + 1);
@@ -713,14 +729,39 @@ const buildRankByUmaban = (
   return rankByUmaban;
 };
 
-const overrideRowWithRank = (row: RacePacePredictionRow, rank: number): RacePacePredictionRow => ({
-  ...row,
-  corner1: rank,
-  corner2: rank,
-  corner3: rank,
-  corner4: rank,
-  predictedCorners: `${rank}-${rank}-${rank}-${rank}`,
-});
+// Running-style anchors the front-end of the race (corner 1) and fades as
+// horses jostle for position; later corners stay closer to the horse's own
+// historical corner averages. The weights below were tuned so a horse with
+// strong nige probability snaps to corner 1 = its rank, while corner 4
+// reflects mostly its past finishing-corner record.
+const STYLE_BLEND_BY_CORNER = [0.75, 0.55, 0.35, 0.2] as const;
+
+const blendCornerValue = (
+  styleRank: number,
+  historyValue: number | null | undefined,
+  styleWeight: number,
+): number => {
+  if (typeof historyValue !== "number" || !Number.isFinite(historyValue)) {
+    return styleRank;
+  }
+  const blended = styleWeight * styleRank + (1 - styleWeight) * historyValue;
+  return Math.round(blended * 100) / 100;
+};
+
+const blendRowWithRank = (row: RacePacePredictionRow, rank: number): RacePacePredictionRow => {
+  const corner1 = blendCornerValue(rank, row.corner1, STYLE_BLEND_BY_CORNER[0]);
+  const corner2 = blendCornerValue(rank, row.corner2, STYLE_BLEND_BY_CORNER[1]);
+  const corner3 = blendCornerValue(rank, row.corner3, STYLE_BLEND_BY_CORNER[2]);
+  const corner4 = blendCornerValue(rank, row.corner4, STYLE_BLEND_BY_CORNER[3]);
+  return {
+    ...row,
+    corner1,
+    corner2,
+    corner3,
+    corner4,
+    predictedCorners: `${corner1}-${corner2}-${corner3}-${corner4}`,
+  };
+};
 
 export const applyRunningStyleSortToRacePaceRows = (
   rows: RacePacePredictionRow[],
@@ -731,7 +772,7 @@ export const applyRunningStyleSortToRacePaceRows = (
   return rows
     .map((row) => {
       const rank = rankByUmaban.get(Number(row.horseNumber));
-      return rank === undefined ? row : overrideRowWithRank(row, rank);
+      return rank === undefined ? row : blendRowWithRank(row, rank);
     })
     .toSorted(
       (left, right) =>

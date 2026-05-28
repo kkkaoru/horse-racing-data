@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  applyRunningStyleSortToRacePaceRows,
   buildRacePacePredictionRowsFromResults,
   DEFAULT_RACE_PACE_PREDICTION_MODEL,
   isCornerPacePredictionSupported,
 } from "./race-pace-prediction";
-import type { HorseRaceResult, Runner } from "./race-types";
+import type { HorseRaceResult, RacePacePredictionRow, Runner } from "./race-types";
 
 const runner = (overrides: Partial<Runner>): Runner => ({
   barei: "4",
@@ -366,5 +367,149 @@ describe("race pace prediction", () => {
 
     expect(rows.some((row) => row.horseNumber === "1" && row.predictedCorners === "-")).toBe(true);
     expect(rows.find((row) => row.horseNumber === "2")?.corner1).not.toBeNull();
+  });
+});
+
+const buildRow = (overrides: Partial<RacePacePredictionRow> = {}): RacePacePredictionRow => ({
+  confidence: 0,
+  corner1: null,
+  corner2: null,
+  corner3: null,
+  corner4: null,
+  details: [],
+  horseName: "",
+  horseNumber: "1",
+  predictedCorners: "-",
+  ...overrides,
+});
+
+describe("applyRunningStyleSortToRacePaceRows", () => {
+  it("returns rows untouched when no running-style probabilities are provided", () => {
+    const rows = [
+      buildRow({ horseNumber: "1", corner1: 3 }),
+      buildRow({ horseNumber: "2", corner1: 5 }),
+    ];
+    const sorted = applyRunningStyleSortToRacePaceRows(rows, []);
+    expect(sorted).toStrictEqual(rows);
+  });
+
+  it("ranks horses by running-style label tier (nige first, oikomi last)", () => {
+    const rows = [
+      buildRow({ horseNumber: "1", corner1: 5, corner2: 5, corner3: 5, corner4: 5 }),
+      buildRow({ horseNumber: "2", corner1: 5, corner2: 5, corner3: 5, corner4: 5 }),
+      buildRow({ horseNumber: "3", corner1: 5, corner2: 5, corner3: 5, corner4: 5 }),
+    ];
+    const sorted = applyRunningStyleSortToRacePaceRows(rows, [
+      {
+        pNige: 0.9,
+        pOikomi: 0.05,
+        pSashi: 0.025,
+        pSenkou: 0.025,
+        predictedLabel: "nige",
+        umaban: 1,
+      },
+      {
+        pNige: 0.05,
+        pOikomi: 0.9,
+        pSashi: 0.025,
+        pSenkou: 0.025,
+        predictedLabel: "oikomi",
+        umaban: 2,
+      },
+      {
+        pNige: 0.05,
+        pOikomi: 0.05,
+        pSashi: 0.45,
+        pSenkou: 0.45,
+        predictedLabel: "sashi",
+        umaban: 3,
+      },
+    ]);
+    expect(sorted.map((row) => row.horseNumber)).toStrictEqual(["1", "3", "2"]);
+  });
+
+  it("keeps a nige-labelled horse ahead of a senkou-labelled horse even if scores are similar", () => {
+    const rows = [
+      buildRow({ horseNumber: "1", corner1: 5, corner2: 5, corner3: 5, corner4: 5 }),
+      buildRow({ horseNumber: "2", corner1: 5, corner2: 5, corner3: 5, corner4: 5 }),
+    ];
+    const sorted = applyRunningStyleSortToRacePaceRows(rows, [
+      { pNige: 0.35, pOikomi: 0.1, pSashi: 0.25, pSenkou: 0.3, predictedLabel: "nige", umaban: 1 },
+      {
+        pNige: 0.3,
+        pOikomi: 0.05,
+        pSashi: 0.25,
+        pSenkou: 0.4,
+        predictedLabel: "senkou",
+        umaban: 2,
+      },
+    ]);
+    expect(sorted.map((row) => row.horseNumber)).toStrictEqual(["1", "2"]);
+  });
+
+  it("blends running-style rank into corner 1 most strongly and corner 4 least", () => {
+    const rows = [
+      buildRow({ horseNumber: "1", corner1: 9, corner2: 9, corner3: 9, corner4: 9 }),
+      buildRow({ horseNumber: "2", corner1: 1, corner2: 1, corner3: 1, corner4: 1 }),
+    ];
+    const sorted = applyRunningStyleSortToRacePaceRows(rows, [
+      {
+        pNige: 0.95,
+        pOikomi: 0.02,
+        pSashi: 0.02,
+        pSenkou: 0.01,
+        predictedLabel: "nige",
+        umaban: 1,
+      },
+      {
+        pNige: 0.0,
+        pOikomi: 0.9,
+        pSashi: 0.05,
+        pSenkou: 0.05,
+        predictedLabel: "oikomi",
+        umaban: 2,
+      },
+    ]);
+    const nigeHorse = sorted.find((row) => row.horseNumber === "1");
+    expect(nigeHorse?.corner1).toBe(3);
+    expect(nigeHorse?.corner4).toBe(7.4);
+  });
+
+  it("falls back to running-style rank when history corner value is null", () => {
+    const rows = [
+      buildRow({ horseNumber: "1", corner1: null, corner2: null, corner3: null, corner4: null }),
+    ];
+    const sorted = applyRunningStyleSortToRacePaceRows(rows, [
+      { pNige: 0.9, pOikomi: 0.02, pSashi: 0.04, pSenkou: 0.04, predictedLabel: "nige", umaban: 1 },
+    ]);
+    expect(sorted[0]?.corner1).toBe(1);
+    expect(sorted[0]?.corner4).toBe(1);
+  });
+
+  it("preserves rows that have no matching probability entry", () => {
+    const rows = [
+      buildRow({ horseNumber: "1", corner1: 4 }),
+      buildRow({ horseNumber: "2", corner1: 7 }),
+    ];
+    const sorted = applyRunningStyleSortToRacePaceRows(rows, [
+      {
+        pNige: 0.95,
+        pOikomi: 0.02,
+        pSashi: 0.02,
+        pSenkou: 0.01,
+        predictedLabel: "nige",
+        umaban: 1,
+      },
+    ]);
+    expect(sorted.find((row) => row.horseNumber === "2")?.corner1).toBe(7);
+  });
+
+  it("does not produce flat predictedCorners when running-style is applied", () => {
+    const rows = [buildRow({ horseNumber: "1", corner1: 1, corner2: 3, corner3: 5, corner4: 7 })];
+    const sorted = applyRunningStyleSortToRacePaceRows(rows, [
+      { pNige: 0.0, pOikomi: 0.8, pSashi: 0.1, pSenkou: 0.1, predictedLabel: "oikomi", umaban: 1 },
+    ]);
+    const corners = sorted[0]?.predictedCorners.split("-").map(Number);
+    expect(corners?.[0] === corners?.[3]).toBe(false);
   });
 });
