@@ -340,14 +340,15 @@ export async function RaceDetailView({
   const visibleJraRaceEntryUrl = showJraResultLink ? null : jraRaceEntryUrl;
   const visibleJraRaceResultUrl = showJraResultLink ? jraRaceResultUrl : null;
   const decodeHexHorseWeight = raceSource === "nar" && isBanEiKeibajoCode(keibajoCode);
-  const raceTrendDefaultStartDate = addDaysToIsoDate(
-    year,
-    month,
-    day,
-    raceSource === "jra" ? -1 : -3,
-  );
+  // Race-trend section now always prefetches a 14-day window so the date
+  // picker can filter client-side. Default the trend start to the same
+  // -14 day boundary as minStartDate so the initial aggregation actually
+  // covers the prefetched range instead of collapsing to the legacy 3-day
+  // (NAR) / 1-day (JRA) sliver, which previously caused trend tables to
+  // render with "集計 0レース" even though the API payload had 1500+ rows.
   const raceTrendDefaultEndDate = `${year}-${month}-${day}`;
   const raceTrendMinStartDate = addDaysToIsoDate(year, month, day, -14);
+  const raceTrendDefaultStartDate = raceTrendMinStartDate;
   const initialRaceTrendTargets = getRaceTrendTargetsFromSearchParams(searchParams);
   const showRacePacePrediction = isCornerPacePredictionSupported({
     distance: race.kyori,
