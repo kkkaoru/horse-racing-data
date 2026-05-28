@@ -318,7 +318,14 @@ export const getRaceTrendD1StarterRows = async (
   try {
     const raw = await queryD1(params);
     const rows = raw.map(toStarterRow);
-    await putCache(cacheKey, rows);
+    // Do not cache empty result sets — the most common reason for an empty
+    // .all() is a D1 CPU / connection saturation event where the binding
+    // silently returns `results: []` instead of throwing, and persisting
+    // that poisons the layer until the natural TTL expires. Let the next
+    // request retry the upstream query.
+    if (rows.length > 0) {
+      await putCache(cacheKey, rows);
+    }
     return rows;
   } catch (error) {
     console.error("D1 trend query failed", error);
@@ -456,7 +463,12 @@ export const getRaceTrendDailyStarterRows = async (
   try {
     const raw = await queryDailyD1(params);
     const rows = raw.map(toDailyStarterRow);
-    await putDailyCache(cacheKey, rows);
+    // Skip caching empty results: a D1 saturation event can surface as
+    // `results: []` from .all() and we don't want to pin a poisoned empty
+    // payload until the TTL expires.
+    if (rows.length > 0) {
+      await putDailyCache(cacheKey, rows);
+    }
     return rows;
   } catch (error) {
     console.error("D1 daily trend query failed", error);
