@@ -768,6 +768,57 @@ describe("parallel push runner", () => {
     expect(synced).toEqual(["table_a", "child"]);
   });
 
+  it("uses persistent Neon apply stage with replace mode", () => {
+    const sql = buildNeonApplySql(tableA, false, "stage_persist", false, "replace");
+    expect(sql.preCopySql).toContain('CREATE UNLOGGED TABLE public."stage_persist"');
+    expect(sql.preCopySql).not.toContain("BEGIN;");
+    expect(sql.postCopySql).toContain("BEGIN;");
+    expect(sql.postCopySql).toContain('TRUNCATE TABLE public."table_a"');
+    expect(sql.postCopySql).toContain('DROP TABLE public."stage_persist"');
+    expect(sql.cleanupSql).toBe('DROP TABLE IF EXISTS public."stage_persist";');
+  });
+
+  it("uses persistent Neon apply stage with upsert mode and skips delete when disabled", () => {
+    const sql = buildNeonApplySql(tableA, false, "stage_persist", false, "upsert");
+    expect(sql.postCopySql).toContain('ON CONFLICT ("id") DO UPDATE SET "name" = excluded."name"');
+    expect(sql.postCopySql).not.toContain("DELETE FROM");
+  });
+
+  it("parses a malformed table profile line by falling back to defaults for missing cells", () => {
+    const profiles = parseTableProfiles("orphan_line", defaultThresholds, "auto");
+    expect(profiles).toEqual([
+      {
+        tableName: "orphan_line",
+        rowCount: 0,
+        hasUpdateChurn: false,
+        timestampColumn: null,
+        hasPrimaryKey: false,
+        strategy: "full-replace",
+      },
+    ]);
+  });
+
+  it("treats an empty fingerprint line as zero count and empty marker", () => {
+    expect(parseFingerprintLine("")).toEqual({ count: 0, marker: "" });
+  });
+
+  it("returns the inclusive comparator for whitelisted timestamp columns", () => {
+    expect(incrementalComparatorForTimestampColumn("data_sakusei_nengappi")).toBe(">=");
+    expect(incrementalComparatorForTimestampColumn("updated_at")).toBe(">");
+    expect(incrementalComparatorForTimestampColumn(null)).toBe(">");
+  });
+
+  it("orders dependency-plan tables by row count when bytes tie", () => {
+    const equalA = { ...tableA, tableName: "a", estimatedRows: 200, estimatedBytes: 100 };
+    const equalB = { ...tableA, tableName: "b", estimatedRows: 100, estimatedBytes: 100 };
+    const equalC = { ...tableA, tableName: "c", estimatedRows: 200, estimatedBytes: 100 };
+    expect(
+      buildDependencyPlan([equalB, equalC, equalA], []).map((level) =>
+        level.map((table) => table.tableName),
+      ),
+    ).toEqual([["a", "c", "b"]]);
+  });
+
   it("rejects empty table lists", async () => {
     await expect(
       runPushSync(
