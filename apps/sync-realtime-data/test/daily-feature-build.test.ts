@@ -122,19 +122,22 @@ test("buildDailyFeatureSelectSql rejects non YYYYMMDD toDate", () => {
 });
 
 test("upsertDailyRaceEntriesToD1 returns zero and skips D1 when input is empty", async () => {
-  const db = { prepare: vi.fn(), batch: vi.fn() } as unknown as D1Database;
+  const prepareSpy = vi.fn();
+  const batchSpy = vi.fn();
+  const db = { prepare: prepareSpy, batch: batchSpy } as unknown as D1Database;
   const written = await upsertDailyRaceEntriesToD1(db, []);
   expect(written).toBe(0);
-  expect(db.prepare).not.toHaveBeenCalled();
-  expect(db.batch).not.toHaveBeenCalled();
+  expect(prepareSpy).not.toHaveBeenCalled();
+  expect(batchSpy).not.toHaveBeenCalled();
 });
 
 test("upsertDailyRaceEntriesToD1 batches statements into D1.batch with a single prepare", async () => {
   const bind = vi.fn().mockReturnValue({});
   const prepared = { bind };
   const batch = vi.fn(async () => []);
+  const prepareSpy = vi.fn(() => prepared);
   const db = {
-    prepare: vi.fn(() => prepared),
+    prepare: prepareSpy,
     batch,
   } as unknown as D1Database;
 
@@ -142,7 +145,7 @@ test("upsertDailyRaceEntriesToD1 batches statements into D1.batch with a single 
   const written = await upsertDailyRaceEntriesToD1(db, rows, new Date("2026-05-25T00:00:00.000Z"));
 
   expect(written).toBe(2);
-  expect(db.prepare).toHaveBeenCalledOnce();
+  expect(prepareSpy).toHaveBeenCalledOnce();
   expect(batch).toHaveBeenCalledOnce();
   const firstBindArgs = bind.mock.calls[0];
   expect(firstBindArgs?.[0]).toBe("nar:20260525:35:01");
