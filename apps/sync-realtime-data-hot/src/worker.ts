@@ -10,7 +10,12 @@ import {
   writeToEdgeCache,
 } from "./gates/edge-cache";
 import { readLatestOddsFromKv, writeLatestOddsToKv } from "./gates/latest-odds-kv-mirror";
-import { computeArchiveCutoffIso, putArchiveRowToR2 } from "./gates/r2-archive";
+import {
+  computeArchiveCutoffIso,
+  putArchiveRowToR2,
+  putFinalBackupRowToR2,
+  type FinalBackupGroupRow,
+} from "./gates/r2-archive";
 import { invalidateRaceListInKv, patchLastFetchInKv } from "./gates/race-list-kv-cache";
 import { shouldRunOddsCron } from "./gates/polling-window-gate";
 import { jsonResponse } from "./http";
@@ -132,6 +137,71 @@ export const handleImportOddsChunk = async (env: Env, request: Request): Promise
   return jsonResponse({ inserted });
 };
 
+interface R2ArchiveOddsRow {
+  id: number;
+  race_key: string;
+  fetched_at: string;
+  odds_type: string;
+  combination: string;
+  odds: number | null;
+  min_odds: number | null;
+  max_odds: number | null;
+  average_odds: number | null;
+  rank: number | null;
+}
+
+interface R2ArchiveRowsRequest {
+  rows: R2ArchiveOddsRow[];
+}
+
+interface R2ArchiveRowsResponse {
+  groups: number;
+  rows: number;
+}
+
+const buildFinalBackupGroupKey = (row: R2ArchiveOddsRow): string =>
+  `${row.race_key}|${row.odds_type}|${row.fetched_at.slice(0, 10)}`;
+
+export const groupRowsForFinalBackup = (
+  rows: R2ArchiveOddsRow[],
+): Map<string, FinalBackupGroupRow> => {
+  const groups = new Map<string, { meta: FinalBackupGroupRow; rows: R2ArchiveOddsRow[] }>();
+  rows.forEach((row) => {
+    const key = buildFinalBackupGroupKey(row);
+    const existing = groups.get(key);
+    if (existing) {
+      existing.rows.push(row);
+      return;
+    }
+    groups.set(key, {
+      meta: {
+        fetchedAt: row.fetched_at,
+        oddsType: row.odds_type,
+        payloadJson: "",
+        raceKey: row.race_key,
+      },
+      rows: [row],
+    });
+  });
+  const finalized = new Map<string, FinalBackupGroupRow>();
+  groups.forEach((value, key) => {
+    finalized.set(key, { ...value.meta, payloadJson: JSON.stringify(value.rows) });
+  });
+  return finalized;
+};
+
+export const handleR2ArchiveRows = async (env: Env, request: Request): Promise<Response> => {
+  if (!isAuthorizedInternalRequest(request, env)) {
+    return jsonResponse({ error: "unauthorized" }, { status: 401 });
+  }
+  const body = (await request.json()) as R2ArchiveRowsRequest;
+  const rows = body.rows ?? [];
+  const groups = groupRowsForFinalBackup(rows);
+  await Promise.all(Array.from(groups.values()).map((group) => putFinalBackupRowToR2(env, group)));
+  const response: R2ArchiveRowsResponse = { groups: groups.size, rows: rows.length };
+  return jsonResponse(response);
+};
+
 interface MigrationStateRequest {
   key: string;
   value: string;
@@ -169,6 +239,9 @@ export const handleFetchRequest = async (env: Env, request: Request): Promise<Re
   }
   if (request.method === "POST" && url.pathname === "/api/internal/import-odds-chunk") {
     return handleImportOddsChunk(env, request);
+  }
+  if (request.method === "POST" && url.pathname === "/api/internal/r2-archive-rows") {
+    return handleR2ArchiveRows(env, request);
   }
   if (request.method === "POST" && url.pathname === "/api/internal/migration-state") {
     return handleMigrationState(env, request);

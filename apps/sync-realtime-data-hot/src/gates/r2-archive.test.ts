@@ -3,9 +3,12 @@ import { expect, it, vi } from "vitest";
 
 import {
   buildArchiveR2Key,
+  buildFinalBackupR2Key,
   computeArchiveCutoffIso,
   putArchiveRowToR2,
+  putFinalBackupRowToR2,
   type ArchiveCandidateRow,
+  type FinalBackupGroupRow,
 } from "./r2-archive";
 import type { Env } from "../types";
 
@@ -83,6 +86,40 @@ it("putArchiveRowToR2 calls R2.put with sanitized key and JSON content-type", as
   expect(env.ODDS_ARCHIVE.put).toHaveBeenCalledWith(
     "odds-archive/2026/05/20/nar:20260520:42:01/tansho.json",
     '{"combination":"01","odds":2.5}',
+    { httpMetadata: { contentType: "application/json" } },
+  );
+});
+
+const sampleFinalBackupRow = (): FinalBackupGroupRow => ({
+  fetchedAt: "2026-05-20T10:00:00+09:00",
+  oddsType: "tansho",
+  payloadJson: '[{"combination":"01","odds":2.5}]',
+  raceKey: "nar:20260520:42:01",
+});
+
+it("buildFinalBackupR2Key produces odds-final-backup-old-d1/YYYY/MM/DD path", () => {
+  expect(buildFinalBackupR2Key(sampleFinalBackupRow())).toBe(
+    "odds-final-backup-old-d1/2026/05/20/nar:20260520:42:01/tansho.json",
+  );
+});
+
+it("buildFinalBackupR2Key sanitizes unsafe characters", () => {
+  expect(
+    buildFinalBackupR2Key({
+      fetchedAt: "2026-05-20T10:00:00+09:00",
+      oddsType: "tan/sho",
+      payloadJson: "[]",
+      raceKey: "nar/20260520/42/01",
+    }),
+  ).toBe("odds-final-backup-old-d1/2026/05/20/nar_20260520_42_01/tan_sho.json");
+});
+
+it("putFinalBackupRowToR2 calls R2.put with sanitized key", async () => {
+  const env = buildEnv();
+  await putFinalBackupRowToR2(env, sampleFinalBackupRow());
+  expect(env.ODDS_ARCHIVE.put).toHaveBeenCalledWith(
+    "odds-final-backup-old-d1/2026/05/20/nar:20260520:42:01/tansho.json",
+    '[{"combination":"01","odds":2.5}]',
     { httpMetadata: { contentType: "application/json" } },
   );
 });

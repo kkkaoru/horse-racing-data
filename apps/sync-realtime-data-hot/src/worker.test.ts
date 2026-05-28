@@ -13,12 +13,14 @@ vi.mock("./odds-cache", () => ({
 import { fetchAndStoreOdds } from "./fetch-odds";
 import worker, {
   buildOddsPayloadFromD1,
+  groupRowsForFinalBackup,
   handleFetchRequest,
   handleGetMigrationState,
   handleGetOdds,
   handleImportOddsChunk,
   handleMigrationState,
   handleQueue,
+  handleR2ArchiveRows,
   handleScheduled,
   handleUpsertOddsFetchState,
   isAuthorizedInternalRequest,
@@ -358,6 +360,111 @@ it("handleImportOddsChunk treats missing rows array as empty", async () => {
     }),
   );
   expect(await response.json()).toStrictEqual({ inserted: 0 });
+});
+
+it("groupRowsForFinalBackup groups rows by race_key, odds_type, and date", () => {
+  const groups = groupRowsForFinalBackup([
+    {
+      average_odds: null,
+      combination: "01",
+      fetched_at: "2026-05-20T10:00:00+09:00",
+      id: 1,
+      max_odds: null,
+      min_odds: null,
+      odds: 2.5,
+      odds_type: "tansho",
+      race_key: "nar:20260520:42:01",
+      rank: 1,
+    },
+    {
+      average_odds: null,
+      combination: "02",
+      fetched_at: "2026-05-20T11:00:00+09:00",
+      id: 2,
+      max_odds: null,
+      min_odds: null,
+      odds: 5.0,
+      odds_type: "tansho",
+      race_key: "nar:20260520:42:01",
+      rank: 2,
+    },
+    {
+      average_odds: null,
+      combination: "03",
+      fetched_at: "2026-05-21T10:00:00+09:00",
+      id: 3,
+      max_odds: null,
+      min_odds: null,
+      odds: 3.0,
+      odds_type: "tansho",
+      race_key: "nar:20260520:42:01",
+      rank: 1,
+    },
+  ]);
+  expect(groups.size).toBe(2);
+});
+
+it("groupRowsForFinalBackup returns empty map for empty input", () => {
+  expect(groupRowsForFinalBackup([]).size).toBe(0);
+});
+
+it("handleR2ArchiveRows returns 401 when unauthorized", async () => {
+  const response = await handleR2ArchiveRows(
+    buildEnv(),
+    new Request("https://x/api/internal/r2-archive-rows", { method: "POST" }),
+  );
+  expect(response.status).toBe(401);
+});
+
+it("handleR2ArchiveRows groups rows and writes to R2", async () => {
+  const env = buildEnv();
+  const response = await handleR2ArchiveRows(
+    env,
+    new Request("https://x/api/internal/r2-archive-rows", {
+      body: JSON.stringify({
+        rows: [
+          {
+            average_odds: null,
+            combination: "01",
+            fetched_at: "2026-05-20T10:00:00+09:00",
+            id: 1,
+            max_odds: null,
+            min_odds: null,
+            odds: 2.5,
+            odds_type: "tansho",
+            race_key: "nar:20260520:42:01",
+            rank: 1,
+          },
+        ],
+      }),
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      method: "POST",
+    }),
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toStrictEqual({ groups: 1, rows: 1 });
+  expect(vi.mocked(env.ODDS_ARCHIVE.put)).toHaveBeenCalled();
+});
+
+it("handleR2ArchiveRows treats missing rows array as empty", async () => {
+  const env = buildEnv();
+  const response = await handleR2ArchiveRows(
+    env,
+    new Request("https://x/api/internal/r2-archive-rows", {
+      body: "{}",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      method: "POST",
+    }),
+  );
+  expect(await response.json()).toStrictEqual({ groups: 0, rows: 0 });
+});
+
+it("handleFetchRequest routes r2-archive-rows endpoint", async () => {
+  const response = await handleFetchRequest(
+    buildEnv(),
+    new Request("https://x/api/internal/r2-archive-rows", { method: "POST" }),
+  );
+  expect(response.status).toBe(401);
 });
 
 it("handleMigrationState returns 401 when unauthorized", async () => {
