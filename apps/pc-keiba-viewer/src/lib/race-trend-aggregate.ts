@@ -2,7 +2,6 @@
 // the client can aggregate raw starter rows in a useMemo on checkbox change.
 import type { RaceSource } from "./codes";
 import { isSameJockeyName, normalizeJockeyNameForComparison } from "./jockey-name";
-import { buildRaceKey } from "./running-style-cache";
 import type {
   RaceTrendCurrentRunningStyle,
   RaceTrendDetail,
@@ -11,6 +10,7 @@ import type {
   RaceTrendRunningStyleRow,
   RaceTrendStarterRow,
 } from "./race-types";
+import { buildRaceKey } from "./running-style-cache";
 
 export interface RaceTrendTargets {
   frame: boolean;
@@ -305,7 +305,8 @@ const aggregateRunningStyleRows = (
         frameNumber: normalizeNumberText(row.wakuban),
         jockeyKey: resolveRowJockeyKey(row.jockeyName),
         raceNumber: normalizeNumberText(row.raceBango),
-        runningStyle: runningStyleByStarterKey.get(starterRunningStyleKey(row)) ?? null,
+        runningStyle:
+          runningStyleByStarterKey.get(starterRunningStyleKey(row)) ?? runningStyleFromCorners(row),
       },
       options,
     );

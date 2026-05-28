@@ -468,6 +468,28 @@ test("aggregateForTargets joins historical running style rows for matching start
   expect(result.runningStyleRows[0]?.details[0]?.runningStyle).toStrictEqual("oikomi");
 });
 
+test("aggregateForTargets falls back to corner-derived running style when no prediction cache row matches", () => {
+  // baseRow has corner1=04, runnerCount=10 → ratio 0.333 → senkou. The
+  // historical prediction cache is empty, so the aggregation key has to
+  // derive senkou from the corner data to match the runner's predicted
+  // running style.
+  const result = aggregateForTargets(
+    {
+      starterRows: [baseRow],
+      currentRunningStyles: [{ horseNumber: "5", predictedLabel: "senkou" }],
+      historicalRunningStyles: [],
+      raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
+      runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
+    },
+    { frame: false, jockey: false, raceNumber: false, runningStyle: true },
+    true,
+    "20260520",
+    "20260520",
+  );
+  expect(result.runningStyleRows[0]?.runningStyle).toStrictEqual("senkou");
+  expect(result.runningStyleRows[0]?.starts).toStrictEqual(1);
+});
+
 test("aggregateForTargets returns nullable rates when the group has no starters", () => {
   const result = aggregateForTargets(
     {
