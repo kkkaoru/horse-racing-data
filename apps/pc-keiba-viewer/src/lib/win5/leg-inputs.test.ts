@@ -173,3 +173,144 @@ test("buildWin5LegInputsWithPool maps historical wins to score 0.3", async () =>
   const result = await buildWin5LegInputsWithPool({ pool, schedule: buildSchedule() });
   expect(result[0]?.runners[0]?.historicalScore).toBe(0.3);
 });
+
+const buildRunnerWithOverrides = (
+  overrides: Partial<QueryResultRow>,
+): FakeQueryResult<QueryResultRow> => ({
+  rows: [
+    {
+      umaban: "01",
+      ketto_toroku_bango: "2020001234",
+      bamei: "Test Horse",
+      kishumei_ryakusho: "Jockey",
+      tansho_ninkijun: "05",
+      tansho_odds: "0250",
+      ...overrides,
+    },
+  ],
+});
+
+test("buildWin5LegInputsWithPool falls back to umaban when bamei is null", async () => {
+  const { pool } = buildFakePool([
+    buildSingleLegMetaResult(),
+    buildRunnerWithOverrides({ bamei: null }),
+    buildSingleHistoryResult(),
+  ]);
+  const result = await buildWin5LegInputsWithPool({ pool, schedule: buildSchedule() });
+  expect(result[0]?.runners[0]?.horseName).toBe("01");
+});
+
+test("buildWin5LegInputsWithPool strips leading zeros in the horse number", async () => {
+  const { pool } = buildFakePool([
+    buildSingleLegMetaResult(),
+    buildRunnerWithOverrides({ umaban: "08" }),
+    buildSingleHistoryResult(),
+  ]);
+  const result = await buildWin5LegInputsWithPool({ pool, schedule: buildSchedule() });
+  expect(result[0]?.runners[0]?.horseNumber).toBe("8");
+});
+
+test("buildWin5LegInputsWithPool sets jockeyName to null when kishumei_ryakusho is null", async () => {
+  const { pool } = buildFakePool([
+    buildSingleLegMetaResult(),
+    buildRunnerWithOverrides({ kishumei_ryakusho: null }),
+    buildSingleHistoryResult(),
+  ]);
+  const result = await buildWin5LegInputsWithPool({ pool, schedule: buildSchedule() });
+  expect(result[0]?.runners[0]?.jockeyName).toBeNull();
+});
+
+test("buildWin5LegInputsWithPool returns null odds when the stored value is all zeros", async () => {
+  const { pool } = buildFakePool([
+    buildSingleLegMetaResult(),
+    buildRunnerWithOverrides({ tansho_odds: "0000" }),
+    buildSingleHistoryResult(),
+  ]);
+  const result = await buildWin5LegInputsWithPool({ pool, schedule: buildSchedule() });
+  expect(result[0]?.runners[0]?.odds).toBeNull();
+});
+
+test("buildWin5LegInputsWithPool returns null odds when the stored value is non-numeric", async () => {
+  const { pool } = buildFakePool([
+    buildSingleLegMetaResult(),
+    buildRunnerWithOverrides({ tansho_odds: "xxxx" }),
+    buildSingleHistoryResult(),
+  ]);
+  const result = await buildWin5LegInputsWithPool({ pool, schedule: buildSchedule() });
+  expect(result[0]?.runners[0]?.odds).toBeNull();
+});
+
+test("buildWin5LegInputsWithPool returns zero historical score when the horse is absent from history", async () => {
+  const { pool } = buildFakePool([
+    buildSingleLegMetaResult(),
+    buildSingleRunnerResult(),
+    buildEmptyResult(),
+  ]);
+  const result = await buildWin5LegInputsWithPool({ pool, schedule: buildSchedule() });
+  expect(result[0]?.runners[0]?.historicalScore).toBe(0);
+});
+
+test("buildWin5LegInputsWithPool falls back to schedule leg fields when jvd_ra has no row", async () => {
+  const { pool } = buildFakePool([
+    buildEmptyResult(),
+    buildSingleRunnerResult(),
+    buildSingleHistoryResult(),
+  ]);
+  const result = await buildWin5LegInputsWithPool({ pool, schedule: buildSchedule() });
+  expect(result[0]?.leg.kaisaiKai).toBe("01");
+  expect(result[0]?.leg.kaisaiNichime).toBe("01");
+  expect(result[0]?.leg.raceLabel).toBeUndefined();
+});
+
+test("buildWin5LegInputsWithPool uses jvd_ra race name when leg has no raceLabel", async () => {
+  const { pool } = buildDefaultPool();
+  const result = await buildWin5LegInputsWithPool({ pool, schedule: buildSchedule() });
+  expect(result[0]?.leg.raceLabel).toBe("Race Name");
+});
+
+test("buildWin5LegInputsWithPool returns null modelScore when no lookup is provided", async () => {
+  const { pool } = buildDefaultPool();
+  const result = await buildWin5LegInputsWithPool({ pool, schedule: buildSchedule() });
+  expect(result[0]?.runners[0]?.modelScore).toBeNull();
+});
+
+test("buildWin5LegInputsWithPool returns null modelScore when the lookup returns null", async () => {
+  const { pool } = buildDefaultPool();
+  const lookup: Win5ModelScoreLookup = { get: () => null };
+  const result = await buildWin5LegInputsWithPool({
+    pool,
+    schedule: buildSchedule(),
+    modelScoreLookup: lookup,
+  });
+  expect(result[0]?.runners[0]?.modelScore).toBeNull();
+});
+
+test("buildWin5LegInputsWithPool returns null popularity when tansho_ninkijun is the empty sentinel", async () => {
+  const { pool } = buildFakePool([
+    buildSingleLegMetaResult(),
+    buildRunnerWithOverrides({ tansho_ninkijun: "00" }),
+    buildSingleHistoryResult(),
+  ]);
+  const result = await buildWin5LegInputsWithPool({ pool, schedule: buildSchedule() });
+  expect(result[0]?.runners[0]?.popularity).toBeNull();
+});
+
+test("buildWin5LegInputsWithPool returns null popularity when tansho_ninkijun is non-numeric", async () => {
+  const { pool } = buildFakePool([
+    buildSingleLegMetaResult(),
+    buildRunnerWithOverrides({ tansho_ninkijun: "abc" }),
+    buildSingleHistoryResult(),
+  ]);
+  const result = await buildWin5LegInputsWithPool({ pool, schedule: buildSchedule() });
+  expect(result[0]?.runners[0]?.popularity).toBeNull();
+});
+
+test("buildWin5LegInputsWithPool returns an empty string horseName for a bamei of only whitespace", async () => {
+  const { pool } = buildFakePool([
+    buildSingleLegMetaResult(),
+    buildRunnerWithOverrides({ bamei: "   " }),
+    buildSingleHistoryResult(),
+  ]);
+  const result = await buildWin5LegInputsWithPool({ pool, schedule: buildSchedule() });
+  expect(result[0]?.runners[0]?.horseName).toBe("");
+});
