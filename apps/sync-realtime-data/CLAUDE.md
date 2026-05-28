@@ -4,17 +4,17 @@
 
 このパッケージは Cloudflare Workers (D1 / R2 / Queue / Durable Objects) を多用するため、Branches は v8 v8-counter が `??` / `||` / `&&` / 三項演算子を 1 分岐ずつ計測する特性上、他指標より到達しにくい。それを踏まえて以下のしきい値を **`vitest.config.ts`** で固定しています。
 
-| Metric | しきい値 | 補足 |
-|---|---|---|
-| **Lines** | **>= 95%** | 意味的網羅 |
-| **Statements** | **>= 95%** | 意味的網羅 |
-| **Functions** | **>= 95%** | 公開 API の網羅 |
-| **Branches** | **>= 89%** | parser/規制値の `??` / ternary が多数を占めるため別管理 |
+| Metric         | しきい値   | 補足                                                    |
+| -------------- | ---------- | ------------------------------------------------------- |
+| **Lines**      | **>= 95%** | 意味的網羅                                              |
+| **Statements** | **>= 95%** | 意味的網羅                                              |
+| **Functions**  | **>= 95%** | 公開 API の網羅                                         |
+| **Branches**   | **>= 90%** | parser/規制値の `??` / ternary が多数を占めるため別管理 |
 
 ```ts
 // vitest.config.ts
 const COVERAGE_THRESHOLD = 95;
-const BRANCHES_THRESHOLD = 89;
+const BRANCHES_THRESHOLD = 90;
 thresholds: {
   lines: COVERAGE_THRESHOLD,
   branches: BRANCHES_THRESHOLD,
@@ -42,17 +42,18 @@ thresholds: {
 ### include / exclude 範囲
 
 `vitest.config.ts` の `coverage.include` / `coverage.exclude` を変更してしきい値をすり抜けるのは禁止。
+
 - 新規ファイルを `exclude` に追加する場合は、そのファイルがテスト不可能 (one-shot CLI、pg pool 起動、wrangler 直接呼び出しなど) であることを確認し、コミットメッセージで理由を明記する。
 - `include` を狭めて分母を減らすのは禁止。
 
 ### Branches を上げる時の正攻法
 
-`Branches` しきい値を 89% から上げたい場合の優先順位:
+`Branches` しきい値を 90% から上げたい場合の優先順位:
 
 1. **dead defensive arms を削除する** — `match[1] ?? ""` のように regex matchAll 後の capture group は常に存在するので `match[1]!` に。1 つ削るだけで Branches 分母 -1 / カバー率 +0.03〜0.06pp。`refactor(realtime): drop dead defensive ?? ...` のような単一目的コミットにする。
 2. **`?? null` / `?? defaultValue` の else arm をテストで通す** — 入力に null を含めるバリエーションを追加。
 3. **多腕 ternary (`a ? x : b ? y : z`)** はそれぞれの腕を 1 ケース以上テストする。
-4. 上記で十分なテストを書いた上でしきい値を **89 → 90 → 91…** と段階的に上げる。下げる方向は禁止。
+4. 上記で十分なテストを書いた上でしきい値を **90 → 91 → 92…** と段階的に上げる。下げる方向は禁止。
 
 ### 推奨コマンド
 
