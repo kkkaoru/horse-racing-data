@@ -156,8 +156,16 @@ interface RawDailyD1Row {
 
 const CACHE_URL_BASE = "https://pc-keiba-viewer.local/d1-trend-cache/";
 const DAILY_CACHE_URL_BASE = "https://pc-keiba-viewer.local/d1-trend-daily-cache/";
+// Edge Cache API is colo-local so a 60s TTL is enough for the common
+// "user reloads the same race" path.
 const CACHE_TTL_SECONDS = 60;
-const KV_TTL_SECONDS = 5 * 60;
+// KV is global and propagates across colos, so a populated D1 daily /
+// snapshot result should outlive the 5min legacy value to keep every
+// race on the day sharing one upstream D1 round trip. 30min still
+// expires well before the next day's NAR Neon sync, and stale data
+// only delays a freshly-finished race result by minutes — which the
+// race-finish cache-bust hook already invalidates explicitly.
+const KV_TTL_SECONDS = 30 * 60;
 
 const isRaceSource = (value: unknown): value is RaceSource => value === "jra" || value === "nar";
 
