@@ -114,9 +114,7 @@ test("buildWin5LegPredictions returns at minimum probability for excluded runner
   const legInputs: Win5LegInput[] = [
     {
       leg: TEST_LEG,
-      runners: [
-        { horseName: "Solo", horseNumber: "1" },
-      ],
+      runners: [{ horseName: "Solo", horseNumber: "1" }],
     },
   ];
   const result = buildWin5LegPredictions(legInputs);
@@ -203,4 +201,109 @@ test("computeHistoricalWinScore returns the win rate clamped to [0,1]", () => {
 
 test("computeHistoricalWinScore applies recency weight", () => {
   expect(computeHistoricalWinScore({ runs: 10, wins: 4, recencyWeight: 0.5 })).toBe(0.2);
+});
+
+test("buildWin5LegPredictions filters out runners whose horseNumber is whitespace only", () => {
+  const result = buildWin5LegPredictions([
+    {
+      leg: TEST_LEG,
+      runners: [
+        { horseName: "Empty", horseNumber: "  " },
+        { horseName: "Valid", horseNumber: "3" },
+      ],
+    },
+  ]);
+  expect(result[0]?.horses).toHaveLength(1);
+  expect(result[0]?.horses[0]?.horseNumber).toBe("3");
+});
+
+test("buildWin5LegPredictions normalizes a string of all zeros to a single zero", () => {
+  const result = buildWin5LegPredictions([
+    {
+      leg: TEST_LEG,
+      runners: [{ horseName: "Pad", horseNumber: "000" }],
+    },
+  ]);
+  expect(result[0]?.horses[0]?.horseNumber).toBe("0");
+});
+
+test("buildWin5LegPredictions falls back to the keibajoCode when the venue is unknown", () => {
+  const result = buildWin5LegPredictions([
+    {
+      leg: { ...TEST_LEG, keibajoCode: "ZZ" },
+      runners: [{ horseName: "Solo", horseNumber: "1" }],
+    },
+  ]);
+  expect(result[0]?.leg.keibajoName).toBe("ZZ");
+  expect(result[0]?.leg.raceLabel).toBe("ZZ10R");
+});
+
+test("buildWin5LegPredictions returns an empty horses array when there are no active runners", () => {
+  const result = buildWin5LegPredictions([{ leg: TEST_LEG, runners: [] }]);
+  expect(result[0]?.horses).toStrictEqual([]);
+});
+
+test("buildWin5LegPredictions uses uniform probabilities when every model score is zero", () => {
+  const result = buildWin5LegPredictions([
+    {
+      leg: TEST_LEG,
+      runners: [
+        { horseName: "A", horseNumber: "1", modelScore: 0 },
+        { horseName: "B", horseNumber: "2", modelScore: 0 },
+      ],
+    },
+  ]);
+  const probabilities = result[0]?.horses.map((horse) => horse.winProbability) ?? [];
+  expect(probabilities[0]).toStrictEqual(probabilities[1]);
+});
+
+test("optimizeWin5TicketPlan returns a single combination for an empty legs array", () => {
+  const payload = buildWin5PredictionPayload({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0524",
+    legInputs: [],
+  });
+  expect(payload.legs).toStrictEqual([]);
+});
+
+test("buildWin5PredictionPayload supports a leg with no runners", () => {
+  const legInputs: Win5LegInput[] = [
+    { leg: { ...TEST_LEG, legIndex: 1, raceBango: "10" }, runners: [] },
+    {
+      leg: { ...TEST_LEG, legIndex: 2, raceBango: "11" },
+      runners: [{ horseName: "A", horseNumber: "1" }],
+    },
+    {
+      leg: { ...TEST_LEG, legIndex: 3, raceBango: "12" },
+      runners: [{ horseName: "B", horseNumber: "1" }],
+    },
+    {
+      leg: { ...TEST_LEG, legIndex: 4, raceBango: "13" },
+      runners: [{ horseName: "C", horseNumber: "1" }],
+    },
+    {
+      leg: { ...TEST_LEG, legIndex: 5, raceBango: "14" },
+      runners: [{ horseName: "D", horseNumber: "1" }],
+    },
+  ];
+  const payload = buildWin5PredictionPayload({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0524",
+    legInputs,
+  });
+  expect(payload.legs[0]?.horses).toStrictEqual([]);
+});
+
+test("buildWin5LegPredictions treats null modelScore as zero when other runners have explicit modelScore", () => {
+  const result = buildWin5LegPredictions([
+    {
+      leg: TEST_LEG,
+      runners: [
+        { horseName: "Has", horseNumber: "1", modelScore: 0.7 },
+        { horseName: "Null", horseNumber: "2", modelScore: null },
+      ],
+    },
+  ]);
+  // When any runner lacks modelScore, the leg falls back to heuristic scoring.
+  expect(result[0]?.horses).toHaveLength(2);
 });
