@@ -100,6 +100,23 @@ describe("odds fetch schedule", () => {
     ).toBeNull();
   });
 
+  it("returns null when raceStartAtJst lacks a yyyy-mm-dd prefix", () => {
+    expect(
+      getNarOddsSaleStartAt({
+        keibajoCode: "44",
+        raceStartAtJst: "invalid",
+        venueLastRaceStartAtJst: "2026-05-22T20:50:00+09:00",
+      }),
+    ).toBeNull();
+  });
+
+  it("clamps JRA next advance slot to one hour before race when next hourly slot would overshoot", () => {
+    const raceStart = new Date("2026-05-17T09:45:00+09:00");
+    expect(getNextOddsFetchSlotAt(raceStart, new Date("2026-05-17T08:30:00+09:00"), "jra")).toBe(
+      "2026-05-17T08:45:00+09:00",
+    );
+  });
+
   it("uses same-day venue sale start for NAR odds", () => {
     const raceStartAtJst = "2026-05-22T14:30:00+09:00";
     expect(

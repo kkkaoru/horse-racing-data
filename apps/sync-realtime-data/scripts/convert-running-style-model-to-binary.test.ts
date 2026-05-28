@@ -192,16 +192,19 @@ it("parseArgs throws Usage message when --input is missing", () => {
   }
 });
 
+it("parseArgs throws Usage message when --output is missing", () => {
+  const originalArgv = process.argv;
+  process.argv = ["bun", "scripts/convert.ts", "--input", "model.json"];
+  try {
+    expect(() => parseArgs()).toThrow(/Usage/);
+  } finally {
+    process.argv = originalArgv;
+  }
+});
+
 it("main calls convertRunningStyleModelFile and logs the JSON result", async () => {
   const originalArgv = process.argv;
-  process.argv = [
-    "bun",
-    "scripts/convert.ts",
-    "--input",
-    "in.json",
-    "--output",
-    "out.flatbin",
-  ];
+  process.argv = ["bun", "scripts/convert.ts", "--input", "in.json", "--output", "out.flatbin"];
   const fs = (await import("node:fs/promises")) as unknown as FsMockHelpers;
   fs.__setReadContent(JSON.stringify(MIN_MODEL));
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
