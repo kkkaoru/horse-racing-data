@@ -10,7 +10,13 @@ import {
   formatTime,
   getTrackSurfaceLabel,
 } from "../lib/format";
-import { getNextOddsFetchAt } from "../lib/odds-schedule";
+import {
+  SCHEDULE_TASK_KINDS,
+  SCHEDULE_TASK_LABELS,
+  buildSortedRaceScheduleSlots,
+  type RaceScheduleSlot,
+  type ScheduleTaskKind,
+} from "../lib/race-schedule";
 import type { TopRaceSummary } from "../lib/race-types";
 
 interface HomeRealtimeProps {
@@ -25,15 +31,9 @@ type RaceWindowsPayload = {
   upcoming: TopRaceSummary[];
 };
 
-type ScheduledTask = {
-  id: string;
-  label: string;
-  scheduledAt: string;
-  race: TopRaceSummary;
-};
-
 type AsyncStatus = "loading" | "ready" | "error";
 const SCHEDULE_PAGE_SIZE = 6;
+const SCHEDULE_FILTER_STORAGE_KEY = "pc-keiba.home-schedule-filters.v1";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -108,37 +108,71 @@ const getVenueLastRaceStartAtByMeeting = (races: TopRaceSummary[]): Map<string, 
   return result;
 };
 
-const buildScheduledTasks = (races: TopRaceSummary[], now: number): ScheduledTask[] => {
-  const venueLastRaceStartAt = getVenueLastRaceStartAtByMeeting(races);
-  return races
-    .flatMap((race): ScheduledTask[] => {
-      if (race.source !== "nar" && race.source !== "jra") {
-        return [];
-      }
-      const scheduledAt = getNextOddsFetchAt(race.raceStartAt, now, race.source, {
-        keibajoCode: race.keibajoCode,
-        venueLastRaceStartAt: venueLastRaceStartAt.get(getVenueMeetingKey(race)),
-      });
-      if (!scheduledAt) {
-        return [];
-      }
-      return [
-        {
-          id: `${raceKey(race)}-odds`,
-          label: "オッズ更新",
-          race,
-          scheduledAt,
-        },
-      ];
-    })
-    .toSorted(
-      (left, right) =>
-        new Date(left.scheduledAt).getTime() - new Date(right.scheduledAt).getTime() ||
-        getRaceStartMs(left.race) - getRaceStartMs(right.race),
-    );
+const buildAllScheduleSlots = (
+  races: readonly TopRaceSummary[],
+): RaceScheduleSlot<TopRaceSummary>[] => {
+  const venueLastRaceStartAt = getVenueLastRaceStartAtByMeeting([...races]);
+  return buildSortedRaceScheduleSlots(races, (race) => ({
+    venueLastRaceStartAt: venueLastRaceStartAt.get(getVenueMeetingKey(race)),
+  }));
 };
 
-const formatTaskCountdown = (target: string, now: number): string => {
+const isScheduleTaskKind = (value: unknown): value is ScheduleTaskKind =>
+  typeof value === "string" && (SCHEDULE_TASK_KINDS as readonly string[]).includes(value);
+
+const getScheduleFilterStorage = (): Storage | null => {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    return window.localStorage ?? null;
+  } catch {
+    return null;
+  }
+};
+
+const readEnabledScheduleKindsFromStorage = (): Set<ScheduleTaskKind> => {
+  const storage = getScheduleFilterStorage();
+  if (!storage) {
+    return new Set(SCHEDULE_TASK_KINDS);
+  }
+  const raw = storage.getItem(SCHEDULE_FILTER_STORAGE_KEY);
+  if (!raw) {
+    return new Set(SCHEDULE_TASK_KINDS);
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return new Set(SCHEDULE_TASK_KINDS);
+    }
+    return new Set(parsed.filter(isScheduleTaskKind));
+  } catch {
+    return new Set(SCHEDULE_TASK_KINDS);
+  }
+};
+
+const writeEnabledScheduleKindsToStorage = (enabled: ReadonlySet<ScheduleTaskKind>): void => {
+  const storage = getScheduleFilterStorage();
+  if (!storage) {
+    return;
+  }
+  storage.setItem(SCHEDULE_FILTER_STORAGE_KEY, JSON.stringify(Array.from(enabled)));
+};
+
+const toggleScheduleKind = (
+  current: ReadonlySet<ScheduleTaskKind>,
+  kind: ScheduleTaskKind,
+): Set<ScheduleTaskKind> => {
+  const next = new Set(current);
+  if (next.has(kind)) {
+    next.delete(kind);
+    return next;
+  }
+  next.add(kind);
+  return next;
+};
+
+const formatTaskCountdown = (target: string, now: number, includeSeconds: boolean): string => {
   const diff = new Date(target).getTime() - now;
   if (diff <= 0) {
     return "まもなく";
@@ -147,10 +181,14 @@ const formatTaskCountdown = (target: string, now: number): string => {
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
-  if (hours > 0) {
-    return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  if (includeSeconds) {
+    return hours > 0
+      ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+      : `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
   }
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}`
+    : `${minutes}分`;
 };
 
 const homeRaceListMinHeight = (count: number): string =>
@@ -201,6 +239,9 @@ export function HomeRealtime({
     upcoming: initialUpcoming,
   });
   const [schedulePage, setSchedulePage] = useState(1);
+  const [enabledScheduleKinds, setEnabledScheduleKinds] = useState<ReadonlySet<ScheduleTaskKind>>(
+    () => new Set(SCHEDULE_TASK_KINDS),
+  );
   const races = useMemo(
     () =>
       [...raceWindows.finished, ...raceWindows.upcoming]
@@ -213,7 +254,15 @@ export function HomeRealtime({
     .filter((race) => getRaceStartMs(race) <= now)
     .slice(-5)
     .toReversed();
-  const scheduledTasks = useMemo(() => buildScheduledTasks(races, now), [races, now]);
+  const allScheduleSlots = useMemo(() => buildAllScheduleSlots(races), [races]);
+  const scheduledTasks = useMemo(
+    () =>
+      allScheduleSlots.filter(
+        (slot) =>
+          enabledScheduleKinds.has(slot.kind) && new Date(slot.scheduledAt).getTime() > now,
+      ),
+    [allScheduleSlots, enabledScheduleKinds, now],
+  );
   const nextScheduledTaskAt = scheduledTasks[0]?.scheduledAt ?? null;
   const totalSchedulePages = Math.max(1, Math.ceil(scheduledTasks.length / SCHEDULE_PAGE_SIZE));
   const currentSchedulePage = Math.min(schedulePage, totalSchedulePages);
@@ -221,6 +270,17 @@ export function HomeRealtime({
     (currentSchedulePage - 1) * SCHEDULE_PAGE_SIZE,
     currentSchedulePage * SCHEDULE_PAGE_SIZE,
   );
+
+  useEffect(() => {
+    setEnabledScheduleKinds(readEnabledScheduleKindsFromStorage());
+  }, []);
+
+  const handleToggleScheduleKind = (kind: ScheduleTaskKind) => {
+    const next = toggleScheduleKind(enabledScheduleKinds, kind);
+    setEnabledScheduleKinds(next);
+    writeEnabledScheduleKindsToStorage(next);
+    setSchedulePage(1);
+  };
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -307,6 +367,22 @@ export function HomeRealtime({
             {nextScheduledTaskAt ? new Date(nextScheduledTaskAt).toLocaleTimeString("ja-JP") : "-"}
           </span>
         </div>
+        <div
+          className="home-schedule-filters"
+          aria-label="スケジュール一覧の種類フィルター"
+          role="group"
+        >
+          {SCHEDULE_TASK_KINDS.map((kind) => (
+            <label className="home-schedule-filter-chip" key={kind}>
+              <input
+                checked={enabledScheduleKinds.has(kind)}
+                onChange={() => handleToggleScheduleKind(kind)}
+                type="checkbox"
+              />
+              <span>{SCHEDULE_TASK_LABELS[kind]}</span>
+            </label>
+          ))}
+        </div>
         {raceWindowsStatus === "loading" ? (
           <HomeRaceListSkeleton count={3} />
         ) : raceWindowsStatus === "error" ? (
@@ -314,14 +390,17 @@ export function HomeRealtime({
         ) : scheduledTasks.length > 0 ? (
           <>
             <div className="home-race-list">
-              {visibleScheduledTasks.map((task) => (
-                <Link href={racePath(task.race)} key={`${task.id}-${task.scheduledAt}`}>
+              {visibleScheduledTasks.map((task, index) => (
+                <Link
+                  href={racePath(task.race)}
+                  key={`${task.kind}-${raceKey(task.race)}-${task.scheduledAt}`}
+                >
                   <strong>
                     {task.label} / {formatRaceLine(task.race)}
                   </strong>
                   <span>
                     予定 {new Date(task.scheduledAt).toLocaleTimeString("ja-JP")} / 実行まで{" "}
-                    {formatTaskCountdown(task.scheduledAt, now)}
+                    {formatTaskCountdown(task.scheduledAt, now, index === 0)}
                   </span>
                 </Link>
               ))}

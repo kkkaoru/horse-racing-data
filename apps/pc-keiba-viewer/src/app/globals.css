@@ -727,6 +727,32 @@ main {
   white-space: nowrap;
 }
 
+.home-schedule-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8px-28);
+  margin-bottom: var(--space-10px-27);
+}
+
+.home-schedule-filter-chip {
+  align-items: center;
+  background: var(--surface);
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-6px-33);
+  color: var(--accent-strong);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: var(--space-15px-1);
+  font-weight: var(--number-700-14);
+  gap: var(--space-6px-33);
+  padding: var(--space-6px-33) var(--space-10px-27);
+}
+
+.home-schedule-filter-chip input {
+  accent-color: var(--accent-strong);
+  cursor: pointer;
+}
+
 .home-schedule-pagination {
   align-items: center;
   display: flex;
@@ -4269,6 +4295,16 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   white-space: nowrap;
 }
 
+.odds-trend-legend-odds {
+  color: var(--text-muted);
+  font-feature-settings: "tnum";
+  font-size: var(--space-13px-29);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--number-700-7);
+  margin-inline-start: var(--space-4px-5);
+  white-space: nowrap;
+}
+
 .odds-trend-combination-badge {
   align-items: center;
   background: var(--color-hex-f1f5f2-98);
@@ -7595,6 +7631,32 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
       var(--number-2-1),
       minmax(var(--number-0-2), var(--space-1fr-51))
     );
+  }
+
+  .home-panel {
+    max-width: var(--space-100pct-12);
+    overflow: hidden;
+  }
+
+  .home-race-list a {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--space-4px-18);
+  }
+
+  .home-race-list strong,
+  .home-race-list span {
+    max-width: var(--space-100pct-12);
+    overflow-wrap: anywhere;
+    text-align: left;
+    text-overflow: clip;
+    white-space: normal;
+    word-break: auto-phrase;
+  }
+
+  .home-race-list .home-race-countdown {
+    flex: var(--number-0-2) var(--number-0-2) auto;
+    white-space: nowrap;
   }
 
   .page-title-row,
