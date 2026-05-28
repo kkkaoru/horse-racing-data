@@ -24,14 +24,18 @@
     "WIN5_D1_WRITE_ENABLED": "1",
   },
   "triggers": {
+    // High-frequency crons ("* * * * *" plan-realtime-fetches and
+    // "*/10 * * * *" running-style inference) temporarily removed while
+    // D1 is in CPU-reset cycle (code 7429). Re-add both lines before the
+    // next JST 06:00 polling window resumes; the seedRealtimePlannerWatchdog
+    // / queue dispatch path stays no-op for them as long as the entries
+    // aren't in this array, so nothing here else needs touching.
     "crons": [
       "5 0 * * *",
       "0 4 * * 5",
       "0 5 * * 5",
       "0 4 * * 6",
       "0 5 * * 6",
-      "* * * * *",
-      "*/10 * * * *",
       "0 12 * * *",
       "30 12 * * *",
       "30 18 * * *",
