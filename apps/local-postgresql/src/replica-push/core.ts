@@ -910,3 +910,93 @@ export async function runPushSync(
     elapsedSeconds: dependencies.nowSeconds() - startedAt,
   });
 }
+
+export const DEFAULT_NEON_PSQL_CONTAINER = "horse-racing-local-postgresql";
+
+export type NeonPsqlArgsInput = {
+  neonUrl: string | undefined;
+  containerName: string | undefined;
+  extraArgs?: readonly string[];
+};
+
+export function buildNeonPsqlArgs(input: NeonPsqlArgsInput): string[] {
+  if (!input.neonUrl) {
+    throw new Error("NEON_DIRECT_DATABASE_URL is required");
+  }
+  const container =
+    input.containerName !== undefined && input.containerName !== ""
+      ? input.containerName
+      : DEFAULT_NEON_PSQL_CONTAINER;
+  return ["exec", "-i", container, "psql", input.neonUrl, ...(input.extraArgs ?? [])];
+}
+
+export function resolvePositiveIntegerEnv(
+  override: number | null,
+  raw: string | undefined,
+  defaultValue: number,
+): number {
+  if (override !== null) return override;
+  if (raw === undefined || raw === "") return defaultValue;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed >= 1 ? parsed : defaultValue;
+}
+
+export function resolveNonNegativeSecondsEnv(
+  raw: string | undefined,
+  defaultSeconds: number,
+): number {
+  const fallback = defaultSeconds * 1000;
+  if (raw === undefined || raw === "") return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed * 1000 : fallback;
+}
+
+export type RetryAttemptInfo = {
+  attempt: number;
+  maxAttempts: number;
+};
+
+export type RetryFailureInfo = RetryAttemptInfo & {
+  error: unknown;
+  retryDelayMs: number;
+};
+
+export type RetryGaveUpInfo = RetryAttemptInfo & {
+  error: unknown;
+};
+
+export type RetryOptions = {
+  maxAttempts: number;
+  retryDelayMs: number;
+  sleep: (milliseconds: number) => Promise<void>;
+  onAttemptFailed?: (info: RetryFailureInfo) => void;
+  onGaveUp?: (info: RetryGaveUpInfo) => void;
+  onRetrySucceeded?: (info: RetryAttemptInfo) => void;
+};
+
+export async function runWithRetry<T>(
+  operation: () => Promise<T>,
+  options: RetryOptions,
+): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      const result = await operation();
+      if (attempt > 1) {
+        options.onRetrySucceeded?.({ attempt, maxAttempts: options.maxAttempts });
+      }
+      return result;
+    } catch (error) {
+      if (attempt >= options.maxAttempts) {
+        options.onGaveUp?.({ attempt, maxAttempts: options.maxAttempts, error });
+        throw error;
+      }
+      options.onAttemptFailed?.({
+        attempt,
+        maxAttempts: options.maxAttempts,
+        error,
+        retryDelayMs: options.retryDelayMs,
+      });
+      await options.sleep(options.retryDelayMs);
+    }
+  }
+}
