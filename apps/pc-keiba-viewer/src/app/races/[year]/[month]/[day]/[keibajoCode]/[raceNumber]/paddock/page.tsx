@@ -148,59 +148,52 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
   const runningStyleCategory =
     source === "nar" && isBanEiKeibajoCode(keibajoCode) ? "ban-ei" : source;
   const kaisaiTsukihi = `${month}${day}`;
-  const loadRunningStyleWithRetries = async (): Promise<ActiveRunningStylePrediction[]> => {
-    if (runningStyleCategory === "ban-ei") {
-      return [];
+  const loadRunningStyleOnce = async (): Promise<ActiveRunningStylePrediction[]> => {
+    const rows = await withAttemptTimeout(
+      getActiveRunningStylePredictions({
+        category: runningStyleCategory,
+        day,
+        keibajoCode,
+        month,
+        raceNumber,
+        source,
+        year,
+      }),
+      RUNNING_STYLE_ATTEMPT_TIMEOUT_MS,
+      "running-style attempt timed out",
+    );
+    if (rows.length > 0) {
+      return rows;
     }
-    let lastError: unknown = null;
-    for (let attempt = 1; attempt <= RUNNING_STYLE_MAX_ATTEMPTS; attempt += 1) {
-      try {
-        // oxlint-disable-next-line eslint/no-await-in-loop
-        const rows = await withAttemptTimeout(
-          getActiveRunningStylePredictions({
-            category: runningStyleCategory,
-            day,
-            keibajoCode,
-            month,
-            raceNumber,
-            source,
-            year,
-          }),
-          RUNNING_STYLE_ATTEMPT_TIMEOUT_MS,
-          "running-style attempt timed out",
-        );
-        if (rows.length > 0) {
-          return rows;
-        }
-        // oxlint-disable-next-line eslint/no-await-in-loop
-        const d1Rows = await withAttemptTimeout(
-          getRaceRunningStylesWithCache({
-            kaisaiNen: year,
-            kaisaiTsukihi,
-            keibajoCode,
-            raceBango: raceNumber,
-            source,
-          }),
-          RUNNING_STYLE_ATTEMPT_TIMEOUT_MS,
-          "running-style d1 attempt timed out",
-        ).catch(() => []);
-        return d1Rows.map((row) => ({
-          horseNumber: row.horseNumber,
-          predictedLabel: row.predictedLabel,
-        }));
-      } catch (error) {
-        lastError = error;
-        if (attempt < RUNNING_STYLE_MAX_ATTEMPTS) {
-          // oxlint-disable-next-line eslint/no-await-in-loop
-          await sleepFor(RUNNING_STYLE_RETRY_BACKOFF_MS);
-        }
-      }
-    }
-    if (lastError) {
-      console.warn("running-style predictions exhausted retries", lastError);
-    }
-    return [];
+    const d1Rows = await withAttemptTimeout(
+      getRaceRunningStylesWithCache({
+        kaisaiNen: year,
+        kaisaiTsukihi,
+        keibajoCode,
+        raceBango: raceNumber,
+        source,
+      }),
+      RUNNING_STYLE_ATTEMPT_TIMEOUT_MS,
+      "running-style d1 attempt timed out",
+    ).catch(() => []);
+    return d1Rows.map((row) => ({
+      horseNumber: row.horseNumber,
+      predictedLabel: row.predictedLabel,
+    }));
   };
+  const attemptLoadRunningStyle = async (
+    attempt: number,
+  ): Promise<ActiveRunningStylePrediction[]> =>
+    loadRunningStyleOnce().catch(async (error: unknown) => {
+      if (attempt >= RUNNING_STYLE_MAX_ATTEMPTS) {
+        console.warn("running-style predictions exhausted retries", error);
+        return [];
+      }
+      await sleepFor(RUNNING_STYLE_RETRY_BACKOFF_MS);
+      return attemptLoadRunningStyle(attempt + 1);
+    });
+  const loadRunningStyleWithRetries = async (): Promise<ActiveRunningStylePrediction[]> =>
+    runningStyleCategory === "ban-ei" ? [] : attemptLoadRunningStyle(1);
   const runningStylePredictionsPromise: Promise<ActiveRunningStylePrediction[]> = Promise.race([
     loadRunningStyleWithRetries(),
     new Promise<ActiveRunningStylePrediction[]>((resolve) => {
@@ -233,29 +226,21 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
     ]);
     return { courseInfo, race, runners, sameVenueRaces };
   };
-  const loadSnapshotWithRetries = async () => {
-    if (cachedSnapshot) {
-      return cachedSnapshot;
-    }
-    let lastError: unknown = null;
-    for (let attempt = 1; attempt <= SNAPSHOT_MAX_ATTEMPTS; attempt += 1) {
-      try {
-        // oxlint-disable-next-line eslint/no-await-in-loop
-        return await withAttemptTimeout(
-          loadSnapshotFromUpstream(),
-          SNAPSHOT_ATTEMPT_TIMEOUT_MS,
-          "race detail snapshot attempt timed out",
-        );
-      } catch (error) {
-        lastError = error;
-        if (attempt < SNAPSHOT_MAX_ATTEMPTS) {
-          // oxlint-disable-next-line eslint/no-await-in-loop
-          await sleepFor(SNAPSHOT_RETRY_BACKOFF_MS);
-        }
+  const attemptLoadSnapshot = async (
+    attempt: number,
+  ): ReturnType<typeof loadSnapshotFromUpstream> =>
+    withAttemptTimeout(
+      loadSnapshotFromUpstream(),
+      SNAPSHOT_ATTEMPT_TIMEOUT_MS,
+      "race detail snapshot attempt timed out",
+    ).catch(async (error: unknown) => {
+      if (attempt >= SNAPSHOT_MAX_ATTEMPTS) {
+        throw error instanceof Error ? error : new Error("race detail snapshot fetch failed");
       }
-    }
-    throw lastError instanceof Error ? lastError : new Error("race detail snapshot fetch failed");
-  };
+      await sleepFor(SNAPSHOT_RETRY_BACKOFF_MS);
+      return attemptLoadSnapshot(attempt + 1);
+    });
+  const loadSnapshotWithRetries = async () => cachedSnapshot ?? attemptLoadSnapshot(1);
   const [snapshot, runningStylePredictions] = await Promise.all([
     loadSnapshotWithRetries(),
     runningStylePredictionsPromise,
