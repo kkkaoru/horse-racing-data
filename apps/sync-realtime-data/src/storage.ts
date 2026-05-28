@@ -1388,6 +1388,11 @@ export const listPremiumRaceDataFetchCandidatesByDate = async (
             or state.status in ('idle', 'failed')
             or (state.status = 'pending' and (state.retry_after is null or state.retry_after <= ?))
             or (
+              state.status = 'queued'
+              and state.last_queued_at is not null
+              and datetime(state.last_queued_at) <= datetime(?, '-15 minutes')
+            )
+            or (
               state.status in ('ok', 'empty', 'auth_required')
               and (
                 not exists (
@@ -1412,10 +1417,14 @@ export const listPremiumRaceDataFetchCandidatesByDate = async (
             state.last_queued_at is null
             or datetime(state.last_queued_at) <= datetime(?, '-5 minutes')
           )
-        order by rs.keibajo_code, rs.race_bango
+        order by
+          case when rs.race_start_at_jst is null then 1 else 0 end,
+          abs(julianday(rs.race_start_at_jst) - julianday(?)) asc,
+          rs.keibajo_code,
+          rs.race_bango
       `,
     )
-    .bind(targetDate.slice(0, 4), targetDate.slice(4, 8), now, now, now, now)
+    .bind(targetDate.slice(0, 4), targetDate.slice(4, 8), now, now, now, now, now, now)
     .all<{ race_key: string }>();
   return rows.results.map((row) => ({ raceKey: row.race_key }));
 };
