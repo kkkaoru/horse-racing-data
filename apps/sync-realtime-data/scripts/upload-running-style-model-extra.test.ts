@@ -7,10 +7,9 @@ import {
 } from "./upload-running-style-model";
 
 vi.mock("../src/running-style-model-register", async () => {
-  const actual =
-    await vi.importActual<typeof import("../src/running-style-model-register")>(
-      "../src/running-style-model-register",
-    );
+  const actual = await vi.importActual<typeof import("../src/running-style-model-register")>(
+    "../src/running-style-model-register",
+  );
   return {
     ...actual,
     registerRunningStyleModel: vi.fn(async () => ({
@@ -76,9 +75,9 @@ it("parseUploadRunningStyleModelCliArgs throws on unknown argument", () => {
 });
 
 it("parseUploadRunningStyleModelCliArgs throws when --input value missing", () => {
-  expect(() =>
-    parseUploadRunningStyleModelCliArgs(["--source", "jra", "--input"]),
-  ).toThrow("--input requires a value");
+  expect(() => parseUploadRunningStyleModelCliArgs(["--source", "jra", "--input"])).toThrow(
+    "--input requires a value",
+  );
 });
 
 it("parseUploadRunningStyleModelCliArgs throws when --bucket value missing", () => {
@@ -139,4 +138,45 @@ it("run syncs the local bucket when --remote and --sync-local are set", async ()
   await run();
   const { syncRunningStyleModel } = await import("../src/running-style-model-register");
   expect(syncRunningStyleModel).toHaveBeenCalledTimes(1);
+});
+
+it("run skips sync when --remote is set but --no-sync-local disables sync", async () => {
+  vi.stubGlobal("process", {
+    ...process,
+    argv: [
+      "bun",
+      "scripts/upload.ts",
+      "--source",
+      "jra",
+      "--input",
+      "tmp/model.json",
+      "--remote",
+      "--no-sync-local",
+    ],
+  });
+  vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const { syncRunningStyleModel } = await import("../src/running-style-model-register");
+  vi.mocked(syncRunningStyleModel).mockClear();
+  await run();
+  expect(syncRunningStyleModel).not.toHaveBeenCalled();
+});
+
+it("parseUploadRunningStyleModelCliArgs prints usage and exits on --help", () => {
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const exitSpy = vi.spyOn(process, "exit").mockImplementation(((_code?: number): never => {
+    throw new Error("process.exit called");
+  }) as never);
+  expect(() => parseUploadRunningStyleModelCliArgs(["--help"])).toThrow("process.exit called");
+  expect(logSpy).toHaveBeenCalledTimes(1);
+  expect(exitSpy).toHaveBeenCalledWith(0);
+});
+
+it("parseUploadRunningStyleModelCliArgs prints usage and exits on -h", () => {
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const exitSpy = vi.spyOn(process, "exit").mockImplementation(((_code?: number): never => {
+    throw new Error("process.exit called");
+  }) as never);
+  expect(() => parseUploadRunningStyleModelCliArgs(["-h"])).toThrow("process.exit called");
+  expect(logSpy).toHaveBeenCalledTimes(1);
+  expect(exitSpy).toHaveBeenCalledWith(0);
 });

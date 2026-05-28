@@ -4,6 +4,7 @@ import type { NarRaceSource } from "./types";
 import {
   addDaysToYyyymmdd,
   assertJraHorseWeightsComplete,
+  assertNarHorseWeightsComplete,
   buildDetailUrl,
   buildFallbackRaceRow,
   buildPremiumPaddockSignature,
@@ -741,6 +742,52 @@ it("assertJraHorseWeightsComplete throws when an active entry has no weight row"
       [{ changeAmount: 0, changeSign: null, horseName: "h1", horseNumber: "1", weight: 500 }],
     ),
   ).toThrow("JRA horse weight rows are sparse: k missing=2");
+});
+
+it("assertNarHorseWeightsComplete returns silently when weights array is empty", () => {
+  assertNarHorseWeightsComplete(
+    "k",
+    [{ horseName: "h", horseNumber: "1", jockeyName: "j", status: null }],
+    [],
+  );
+});
+
+it("assertNarHorseWeightsComplete returns silently when all active entries have weights", () => {
+  assertNarHorseWeightsComplete(
+    "k",
+    [
+      { horseName: "h1", horseNumber: "1", jockeyName: "j", status: null },
+      { horseName: "h2", horseNumber: "2", jockeyName: "j", status: null },
+    ],
+    [
+      { changeAmount: 0, changeSign: null, horseName: "h1", horseNumber: "1", weight: 500 },
+      { changeAmount: 0, changeSign: null, horseName: "h2", horseNumber: "2", weight: 510 },
+    ],
+  );
+});
+
+it("assertNarHorseWeightsComplete skips scratched entries when checking completeness", () => {
+  assertNarHorseWeightsComplete(
+    "k",
+    [
+      { horseName: "h1", horseNumber: "1", jockeyName: "j", status: null },
+      { horseName: "h2", horseNumber: "2", jockeyName: "j", status: "出走取消" },
+    ],
+    [{ changeAmount: 0, changeSign: null, horseName: "h1", horseNumber: "1", weight: 500 }],
+  );
+});
+
+it("assertNarHorseWeightsComplete throws when an active entry has no weight row", () => {
+  expect(() =>
+    assertNarHorseWeightsComplete(
+      "nar:2026:0528:30:10",
+      [
+        { horseName: "h6", horseNumber: "6", jockeyName: "j", status: null },
+        { horseName: "h7", horseNumber: "7", jockeyName: "j", status: null },
+      ],
+      [{ changeAmount: 0, changeSign: null, horseName: "h6", horseNumber: "6", weight: 500 }],
+    ),
+  ).toThrow("NAR horse weight rows are sparse: nar:2026:0528:30:10 missing=7");
 });
 
 it("getPremiumPaddockRetryAfter returns an ISO string at now + retry delay (default)", () => {

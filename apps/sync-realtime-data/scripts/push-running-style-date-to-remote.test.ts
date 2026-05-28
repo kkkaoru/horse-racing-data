@@ -54,9 +54,9 @@ it("parsePushRunningStyleDateCliArgs reads --date", () => {
 });
 
 it("parsePushRunningStyleDateCliArgs reads --date with --year", () => {
-  expect(
-    parsePushRunningStyleDateCliArgs(["--date", "05-24", "--year", "2026"]).dateYmd,
-  ).toBe("0524");
+  expect(parsePushRunningStyleDateCliArgs(["--date", "05-24", "--year", "2026"]).dateYmd).toBe(
+    "0524",
+  );
 });
 
 it("parsePushRunningStyleDateCliArgs throws when --date missing", () => {
@@ -241,5 +241,63 @@ it("run throws when no local rows found for the date", async () => {
     child.emit("close", 0);
   });
   await expect(promise).rejects.toThrow("No local race_running_styles rows found for 20260524");
+  vi.unstubAllGlobals();
+});
+
+it("readLocalRows treats null close code as exit 0", async () => {
+  const childProcess = await import("node:child_process");
+  const child = fakeChild();
+  vi.mocked(childProcess.spawn).mockReturnValueOnce(child as never);
+  const promise = readLocalRows("20260524");
+  queueMicrotask(() => {
+    child.stdout.emit("data", Buffer.from(JSON.stringify([{ results: [] }])));
+    child.emit("close", null);
+  });
+  await expect(promise).resolves.toStrictEqual([]);
+});
+
+it("run writes SQL and invokes wrangler when local rows are present", async () => {
+  const childProcess = await import("node:child_process");
+  const readChild = fakeChild();
+  vi.mocked(childProcess.spawn).mockImplementationOnce(() => {
+    queueMicrotask(() => {
+      readChild.stdout.emit(
+        "data",
+        Buffer.from(
+          JSON.stringify([
+            {
+              results: [
+                {
+                  bamei: "テスト",
+                  category: "jra",
+                  horse_number: 1,
+                  kaisai_nen: "2026",
+                  ketto_toroku_bango: "abc",
+                  model_version: "v7",
+                  p_nige: 0.1,
+                  p_oikomi: 0.2,
+                  p_sashi: 0.3,
+                  p_senkou: 0.4,
+                  predicted_at: "2026-05-24T11:00:00+09:00",
+                  predicted_label: "senkou",
+                  race_key: "jra:2026:0524:08:01",
+                },
+              ],
+            },
+          ]),
+        ),
+      );
+      readChild.emit("close", 0);
+    });
+    return readChild as never;
+  });
+  vi.stubGlobal("process", {
+    ...process,
+    argv: ["bun", "scripts/push.ts", "--date", "20260524"],
+  });
+  vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await expect(run()).resolves.toBeUndefined();
+  const fs = await import("node:fs/promises");
+  expect(fs.writeFile).toHaveBeenCalledTimes(1);
   vi.unstubAllGlobals();
 });

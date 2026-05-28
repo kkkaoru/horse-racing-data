@@ -56,9 +56,8 @@ afterEach(() => {
 
 it("syncWin5SchedulesFromJra enriches and upserts every schedule, returning enriched list", async () => {
   const { syncWin5SchedulesFromJra } = await importCron();
-  const { fetchWin5SchedulesFromJra } = await import(
-    "../../pc-keiba-viewer/src/lib/win5/jra-parse"
-  );
+  const { fetchWin5SchedulesFromJra } =
+    await import("../../pc-keiba-viewer/src/lib/win5/jra-parse");
   const { upsertWin5Schedule } = await import("./win5-d1");
   const { enrichWin5ScheduleLegs } = await import("./win5-postgres");
   vi.mocked(fetchWin5SchedulesFromJra).mockResolvedValue([SCHEDULE]);
@@ -67,6 +66,17 @@ it("syncWin5SchedulesFromJra enriches and upserts every schedule, returning enri
   expect(result).toStrictEqual([SCHEDULE]);
   expect(enrichWin5ScheduleLegs).toHaveBeenCalledTimes(1);
   expect(upsertWin5Schedule).toHaveBeenCalledTimes(1);
+});
+
+it("syncWin5SchedulesFromJra defaults fetchedAt to now when options omits it", async () => {
+  const { syncWin5SchedulesFromJra } = await importCron();
+  const { fetchWin5SchedulesFromJra } =
+    await import("../../pc-keiba-viewer/src/lib/win5/jra-parse");
+  vi.mocked(fetchWin5SchedulesFromJra).mockResolvedValue([SCHEDULE]);
+  const env = buildEnv();
+  await syncWin5SchedulesFromJra(env);
+  const call = vi.mocked(fetchWin5SchedulesFromJra).mock.calls[0]?.[0];
+  expect(typeof call?.fetchedAt).toBe("string");
 });
 
 it("planWin5PredictionsForDate skips when WIN5_D1_WRITE_ENABLED is not '1'", async () => {
@@ -101,9 +111,14 @@ it("planWin5PredictionsForDate enqueues a job when no prediction exists", async 
   const { getWin5Prediction } = await import("./win5-d1");
   vi.mocked(getWin5Prediction).mockResolvedValue(null);
   const env = buildEnv();
-  const result = await planWin5PredictionsForDate(env, "20260511", new Date("2026-05-10T12:00:00.000Z"));
+  const sendBatchSpy = vi.spyOn(env.WIN5_JOBS!, "sendBatch");
+  const result = await planWin5PredictionsForDate(
+    env,
+    "20260511",
+    new Date("2026-05-10T12:00:00.000Z"),
+  );
   expect(result).toStrictEqual({ date: "20260511", enqueued: 1, scanned: 1 });
-  expect(env.WIN5_JOBS!.sendBatch).toHaveBeenCalledTimes(1);
+  expect(sendBatchSpy).toHaveBeenCalledTimes(1);
 });
 
 it("discoverWin5Schedules returns zeros when WIN5_D1_WRITE_ENABLED is not '1'", async () => {
@@ -115,12 +130,14 @@ it("discoverWin5Schedules returns zeros when WIN5_D1_WRITE_ENABLED is not '1'", 
 
 it("discoverWin5Schedules dispatches one job per schedule", async () => {
   const { discoverWin5Schedules } = await importCron();
-  const { fetchWin5SchedulesFromJra } = await import(
-    "../../pc-keiba-viewer/src/lib/win5/jra-parse"
-  );
+  const { fetchWin5SchedulesFromJra } =
+    await import("../../pc-keiba-viewer/src/lib/win5/jra-parse");
   const { formatYYYYMMDDInJst } = await import("./running-style-cron");
   vi.mocked(formatYYYYMMDDInJst).mockReturnValue("20260510");
-  vi.mocked(fetchWin5SchedulesFromJra).mockResolvedValue([SCHEDULE, { ...SCHEDULE, kaisaiTsukihi: "0518" }]);
+  vi.mocked(fetchWin5SchedulesFromJra).mockResolvedValue([
+    SCHEDULE,
+    { ...SCHEDULE, kaisaiTsukihi: "0518" },
+  ]);
   const env = buildEnv();
   const result = await discoverWin5Schedules(env, new Date("2026-05-10T12:00:00.000Z"));
   expect(result).toStrictEqual({ discovered: 2, enqueued: 2 });
@@ -128,9 +145,8 @@ it("discoverWin5Schedules dispatches one job per schedule", async () => {
 
 it("runWin5CronTick aggregates discovery + tomorrow plan into a single summary", async () => {
   const { runWin5CronTick } = await importCron();
-  const { fetchWin5SchedulesFromJra } = await import(
-    "../../pc-keiba-viewer/src/lib/win5/jra-parse"
-  );
+  const { fetchWin5SchedulesFromJra } =
+    await import("../../pc-keiba-viewer/src/lib/win5/jra-parse");
   const { formatTomorrowYYYYMMDDInJst, formatYYYYMMDDInJst } = await import("./running-style-cron");
   const { getWin5Prediction } = await import("./win5-d1");
   vi.mocked(fetchWin5SchedulesFromJra).mockResolvedValue([SCHEDULE]);
@@ -145,9 +161,8 @@ it("runWin5CronTick aggregates discovery + tomorrow plan into a single summary",
 
 it("logWin5CronResult logs success when the tick completes", async () => {
   const { logWin5CronResult } = await importCron();
-  const { fetchWin5SchedulesFromJra } = await import(
-    "../../pc-keiba-viewer/src/lib/win5/jra-parse"
-  );
+  const { fetchWin5SchedulesFromJra } =
+    await import("../../pc-keiba-viewer/src/lib/win5/jra-parse");
   const { formatTomorrowYYYYMMDDInJst, formatYYYYMMDDInJst } = await import("./running-style-cron");
   const { getWin5Prediction } = await import("./win5-d1");
   const { logFetch } = await import("./storage");
@@ -168,9 +183,8 @@ it("logWin5CronResult logs success when the tick completes", async () => {
 
 it("logWin5CronResult logs error message when the tick throws", async () => {
   const { logWin5CronResult } = await importCron();
-  const { fetchWin5SchedulesFromJra } = await import(
-    "../../pc-keiba-viewer/src/lib/win5/jra-parse"
-  );
+  const { fetchWin5SchedulesFromJra } =
+    await import("../../pc-keiba-viewer/src/lib/win5/jra-parse");
   const { formatYYYYMMDDInJst } = await import("./running-style-cron");
   const { logFetch } = await import("./storage");
   vi.mocked(formatYYYYMMDDInJst).mockReturnValue("20260510");

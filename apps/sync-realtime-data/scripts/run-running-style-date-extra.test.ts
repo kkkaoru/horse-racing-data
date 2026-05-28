@@ -47,10 +47,9 @@ vi.mock("../src/running-style-cron", () => ({
 }));
 
 vi.mock("../src/running-style-date-progress", async () => {
-  const actual =
-    await vi.importActual<typeof import("../src/running-style-date-progress")>(
-      "../src/running-style-date-progress",
-    );
+  const actual = await vi.importActual<typeof import("../src/running-style-date-progress")>(
+    "../src/running-style-date-progress",
+  );
   return {
     ...actual,
     collectRunningStyleDateProgress: vi.fn(async () => []),
@@ -58,10 +57,9 @@ vi.mock("../src/running-style-date-progress", async () => {
 });
 
 vi.mock("../src/running-style-model-register", async () => {
-  const actual =
-    await vi.importActual<typeof import("../src/running-style-model-register")>(
-      "../src/running-style-model-register",
-    );
+  const actual = await vi.importActual<typeof import("../src/running-style-model-register")>(
+    "../src/running-style-model-register",
+  );
   return {
     ...actual,
     ensureRunningStyleModels: vi.fn(async () => ({ registered: [], synced: [] })),
@@ -93,13 +91,7 @@ it("parseRunningStyleDateCliArgs accepts --register-model flags", () => {
 
 it("parseRunningStyleDateCliArgs handles --remote-models flag", () => {
   const args = parseRunningStyleDateCliArgs(
-    [
-      "--date",
-      "20260524",
-      "--register-model",
-      "jra:tmp/model.flatbin",
-      "--remote-models",
-    ],
+    ["--date", "20260524", "--register-model", "jra:tmp/model.flatbin", "--remote-models"],
     new Date(),
   );
   expect(args.remoteModels).toBe(true);
@@ -116,18 +108,12 @@ it("parseRunningStyleDateCliArgs handles --no-ensure-models and --no-sync-models
 });
 
 it("parseRunningStyleDateCliArgs handles --schedule-only flag", () => {
-  const args = parseRunningStyleDateCliArgs(
-    ["--date", "20260524", "--schedule-only"],
-    new Date(),
-  );
+  const args = parseRunningStyleDateCliArgs(["--date", "20260524", "--schedule-only"], new Date());
   expect(args.scheduleOnly).toBe(true);
 });
 
 it("parseRunningStyleDateCliArgs reads --year as integer", () => {
-  const args = parseRunningStyleDateCliArgs(
-    ["--date", "05-24", "--year", "2026"],
-    new Date(),
-  );
+  const args = parseRunningStyleDateCliArgs(["--date", "05-24", "--year", "2026"], new Date());
   expect(args.dateYmd).toBe("20260524");
 });
 
@@ -139,16 +125,7 @@ it("parseRunningStyleDateCliArgs throws on non-numeric --year", () => {
 
 it("parseRunningStyleDateCliArgs reads timing flags --poll-ms / --delay-ms / --max-rounds", () => {
   const args = parseRunningStyleDateCliArgs(
-    [
-      "--date",
-      "20260524",
-      "--poll-ms",
-      "3000",
-      "--delay-ms",
-      "500",
-      "--max-rounds",
-      "60",
-    ],
+    ["--date", "20260524", "--poll-ms", "3000", "--delay-ms", "500", "--max-rounds", "60"],
     new Date(),
   );
   expect(args.pollMs).toBe(3000);
@@ -158,35 +135,26 @@ it("parseRunningStyleDateCliArgs reads timing flags --poll-ms / --delay-ms / --m
 
 it("parseRunningStyleDateCliArgs throws on negative --poll-ms", () => {
   expect(() =>
-    parseRunningStyleDateCliArgs(
-      ["--date", "20260524", "--poll-ms", "-1"],
-      new Date(),
-    ),
+    parseRunningStyleDateCliArgs(["--date", "20260524", "--poll-ms", "-1"], new Date()),
   ).toThrow("--poll-ms must be a non-negative number");
 });
 
 it("parseRunningStyleDateCliArgs throws on negative --delay-ms", () => {
   expect(() =>
-    parseRunningStyleDateCliArgs(
-      ["--date", "20260524", "--delay-ms", "-5"],
-      new Date(),
-    ),
+    parseRunningStyleDateCliArgs(["--date", "20260524", "--delay-ms", "-5"], new Date()),
   ).toThrow("--delay-ms must be a non-negative number");
 });
 
 it("parseRunningStyleDateCliArgs throws on non-positive --max-rounds", () => {
   expect(() =>
-    parseRunningStyleDateCliArgs(
-      ["--date", "20260524", "--max-rounds", "0"],
-      new Date(),
-    ),
+    parseRunningStyleDateCliArgs(["--date", "20260524", "--max-rounds", "0"], new Date()),
   ).toThrow("--max-rounds must be a positive number");
 });
 
 it("parseRunningStyleDateCliArgs throws on unknown argument", () => {
-  expect(() =>
-    parseRunningStyleDateCliArgs(["--date", "20260524", "--other"], new Date()),
-  ).toThrow("Unknown argument: --other");
+  expect(() => parseRunningStyleDateCliArgs(["--date", "20260524", "--other"], new Date())).toThrow(
+    "Unknown argument: --other",
+  );
 });
 
 it("toPredictionJob splits raceKey into kaisaiNen/kaisaiTsukihi/keibajo/raceBango", () => {
@@ -499,6 +467,104 @@ it("run throws when finalSummary.displayReady is less than scanned", async () =>
   await expect(run()).rejects.toThrow(/races are not cached for viewer display/);
 });
 
+it("parseRunningStyleDateCliArgs throws when --date has no value", () => {
+  expect(() => parseRunningStyleDateCliArgs(["--date"], new Date())).toThrow(
+    "--date requires a value",
+  );
+});
+
+it("parseRunningStyleDateCliArgs throws when --date is provided as empty string", () => {
+  expect(() => parseRunningStyleDateCliArgs(["--date", ""], new Date())).toThrow(
+    "--date requires a value",
+  );
+});
+
+it("processIncompleteRaces logs written=0 when summary.writtenCount is missing", async () => {
+  const { handleRunningStylePredictionJob } = await import("../src/running-style-queue");
+  vi.mocked(handleRunningStylePredictionJob).mockResolvedValueOnce(undefined as never);
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await processIncompleteRaces(
+    {} as Env,
+    [
+      {
+        cacheReady: false,
+        d1Count: 0,
+        displayReady: false,
+        expectedHorses: 10,
+        featuresReady: true,
+        inferenceStatus: "pending",
+        parquetReady: false,
+        raceKey: "jra:20260512:08:01",
+        source: "jra",
+      },
+    ],
+    0,
+  );
+  expect(logSpy.mock.calls[0]?.[0]).toBe(
+    "  processed jra:20260512:08:01 written=0 cache=ng parquet=-",
+  );
+});
+
+it("run executes ensureModels arm and sleeps when round < maxRounds && pollMs > 0", async () => {
+  const { listRunningStyleRacesByDate } = await import("../src/running-style-race-list");
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValueOnce({
+    races: [
+      {
+        keibajoCode: "08",
+        raceBango: "01",
+        raceKey: "jra:20260524:08:01",
+        source: "jra",
+      },
+    ],
+    source: "d1",
+  } as never);
+  const { collectRunningStyleDateProgress } = await import("../src/running-style-date-progress");
+  vi.mocked(collectRunningStyleDateProgress)
+    .mockResolvedValueOnce([
+      {
+        cacheReady: false,
+        d1Count: 0,
+        displayReady: false,
+        expectedHorses: 12,
+        featuresReady: false,
+        inferenceStatus: "pending",
+        parquetReady: false,
+        raceKey: "jra:20260524:08:01",
+        source: "jra",
+      },
+    ])
+    .mockResolvedValue([
+      {
+        cacheReady: true,
+        d1Count: 12,
+        displayReady: true,
+        expectedHorses: 12,
+        featuresReady: true,
+        inferenceStatus: "completed",
+        parquetReady: true,
+        raceKey: "jra:20260524:08:01",
+        source: "jra",
+      },
+    ]);
+  vi.stubGlobal("process", {
+    ...process,
+    argv: [
+      "bun",
+      "scripts/run.ts",
+      "--date",
+      "20260524",
+      "--max-rounds",
+      "3",
+      "--poll-ms",
+      "1",
+      "--delay-ms",
+      "0",
+    ],
+  });
+  vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await run();
+});
+
 it("run returns early in schedule-only mode after planning", async () => {
   const { listRunningStyleRacesByDate } = await import("../src/running-style-race-list");
   vi.mocked(listRunningStyleRacesByDate).mockResolvedValueOnce({
@@ -514,14 +580,7 @@ it("run returns early in schedule-only mode after planning", async () => {
   } as never);
   vi.stubGlobal("process", {
     ...process,
-    argv: [
-      "bun",
-      "scripts/run.ts",
-      "--date",
-      "20260524",
-      "--schedule-only",
-      "--no-ensure-models",
-    ],
+    argv: ["bun", "scripts/run.ts", "--date", "20260524", "--schedule-only", "--no-ensure-models"],
   });
   vi.spyOn(console, "log").mockImplementation(() => undefined);
   await run();

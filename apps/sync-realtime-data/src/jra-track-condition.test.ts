@@ -8,6 +8,7 @@ interface LocatorMockOptions {
   locators?: Record<string, LocatorMockOptions>;
   nth?: Record<number, LocatorMockOptions>;
   text?: string | null;
+  textRejects?: boolean;
 }
 
 interface PageMockOptions {
@@ -37,7 +38,10 @@ const makeLocator = (options: LocatorMockOptions): Record<string, unknown> => {
   locator.count = vi.fn(async () => options.count ?? 0);
   locator.first = vi.fn(() => locator);
   locator.nth = vi.fn((index: number) => makeLocator(options.nth?.[index] ?? {}));
-  locator.textContent = vi.fn(async () => options.text ?? null);
+  locator.textContent = vi.fn(async () => {
+    if (options.textRejects) throw new Error("textContent rejected");
+    return options.text ?? null;
+  });
   locator.getAttribute = vi.fn(async (_name: string) => options.attribute ?? null);
   locator.locator = vi.fn((selector: string) => makeLocator(options.locators?.[selector] ?? {}));
   return locator;
@@ -65,7 +69,10 @@ const makeBrowserMocks = (pageOptions: PageMockOptions): BrowserMocks => {
 
 vi.mock("@cloudflare/playwright", () => ({ launch: vi.fn() }));
 
-const setMockLaunch = async (browser: { close: ReturnType<typeof vi.fn>; newContext: () => unknown }) => {
+const setMockLaunch = async (browser: {
+  close: ReturnType<typeof vi.fn>;
+  newContext: () => unknown;
+}) => {
   const mod = await import("@cloudflare/playwright");
   const launch = mod.launch as unknown as ReturnType<typeof vi.fn>;
   launch.mockReset();
@@ -234,6 +241,124 @@ it("fetchJraTrackConditionWithPlaywright defaults conditions to 良 and falls ba
   expect(result.turf.measurementDate).toBeNull();
   expect(result.dirt.measurementDate).toBeNull();
   expect(result.dirt.moisture.measuredAt).toBeNull();
+  expect(mocks.close).toHaveBeenCalledTimes(1);
+});
+
+it("fetchJraTrackConditionWithPlaywright skips anchors with null text or null href", async () => {
+  const mocks = makeBrowserMocks({
+    locators: {
+      "#contentsBody .kaisai_tab a, .kaisai_tab a": {
+        count: 3,
+        nth: {
+          0: { attribute: null, text: null },
+          1: { attribute: null, text: "札幌競馬場" },
+          2: { attribute: "https://www.jra.go.jp/keiba/baba/sapporo.html", text: "札幌競馬場" },
+        },
+      },
+      ".data_list_unit": { count: 0 },
+    },
+  });
+  await setMockLaunch({
+    close: mocks.close,
+    newContext: async () => ({
+      newPage: mocks.context.newPage,
+      route: mocks.context.route,
+    }),
+  } as never);
+  const result = await fetchJraTrackConditionWithPlaywright({} as never, {
+    kaisaiNen: "2026",
+    keibajoCode: "01",
+  });
+  expect(result.turf.condition).toBe("良");
+  expect(mocks.close).toHaveBeenCalledTimes(1);
+});
+
+it("fetchJraTrackConditionWithPlaywright tolerates rejected textContent in data_list and turf cells", async () => {
+  const dataListUnits: LocatorMockOptions = {
+    count: 1,
+    nth: {
+      0: {
+        locators: {
+          ".content p": { textRejects: true },
+          ".head": { textRejects: true },
+        },
+      },
+    },
+  };
+  const mocks = makeBrowserMocks({
+    locators: {
+      "#contentsBody .kaisai_tab a, .kaisai_tab a": {
+        count: 1,
+        nth: {
+          0: { attribute: "https://www.jra.go.jp/keiba/baba/sapporo.html", text: "札幌競馬場" },
+        },
+      },
+      ".condition .block_header .content .main h3 .time": { textRejects: true },
+      ".data_list_unit": dataListUnits,
+      ".turf_condition .content p": { textRejects: true },
+      ".turf_length table tbody tr td": {
+        nth: {
+          1: { textRejects: true },
+          2: { textRejects: true },
+        },
+      },
+      ".weather strong": { textRejects: true },
+    },
+  });
+  await setMockLaunch({
+    close: mocks.close,
+    newContext: async () => ({
+      newPage: mocks.context.newPage,
+      route: mocks.context.route,
+    }),
+  } as never);
+  const result = await fetchJraTrackConditionWithPlaywright({} as never, {
+    kaisaiNen: "2026",
+    keibajoCode: "01",
+  });
+  expect(result.turf.condition).toBe("良");
+  expect(result.dirt.condition).toBe("良");
+  expect(result.turf.height.japaneseZoysiaGrass).toBeNull();
+  expect(result.turf.height.perennialRyegrass).toBeNull();
+  expect(result.weather).toBeNull();
+  expect(mocks.close).toHaveBeenCalledTimes(1);
+});
+
+it("fetchJraTrackConditionWithPlaywright tolerates rejected textContent on matched header content cells", async () => {
+  const dataListUnits: LocatorMockOptions = {
+    count: 1,
+    nth: {
+      0: {
+        locators: {
+          ".content p": { textRejects: true },
+          ".head": { text: "ダート" },
+        },
+      },
+    },
+  };
+  const mocks = makeBrowserMocks({
+    locators: {
+      "#contentsBody .kaisai_tab a, .kaisai_tab a": {
+        count: 1,
+        nth: {
+          0: { attribute: "https://www.jra.go.jp/keiba/baba/sapporo.html", text: "札幌競馬場" },
+        },
+      },
+      ".data_list_unit": dataListUnits,
+    },
+  });
+  await setMockLaunch({
+    close: mocks.close,
+    newContext: async () => ({
+      newPage: mocks.context.newPage,
+      route: mocks.context.route,
+    }),
+  } as never);
+  const result = await fetchJraTrackConditionWithPlaywright({} as never, {
+    kaisaiNen: "2026",
+    keibajoCode: "01",
+  });
+  expect(result.dirt.condition).toBe("良");
   expect(mocks.close).toHaveBeenCalledTimes(1);
 });
 
