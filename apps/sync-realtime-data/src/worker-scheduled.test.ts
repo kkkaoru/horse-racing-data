@@ -492,25 +492,6 @@ it("queue retries a failing non-fetch-odds message", async () => {
   expect(ack).not.toHaveBeenCalled();
 });
 
-it("queue acks (instead of retrying) a failing fetch-odds message", async () => {
-  const { default: worker } = await import("./worker");
-  const { claimOddsFetch } = await import("./storage");
-  vi.mocked(claimOddsFetch).mockRejectedValueOnce(new Error("boom"));
-  const ack = vi.fn();
-  const retry = vi.fn();
-  const message = {
-    ack,
-    body: { raceKey: "k", type: "fetch-odds" } satisfies Job,
-    retry,
-  };
-  await worker.queue(
-    { messages: [message], queue: "q", retryAll: () => {}, ackAll: () => {} } as never,
-    buildEnv(),
-  );
-  expect(ack).toHaveBeenCalledTimes(1);
-  expect(retry).not.toHaveBeenCalled();
-});
-
 it("scheduled enqueues a build-daily-features job for the daily-feature-build cron", async () => {
   const { default: worker } = await import("./worker");
   const env = buildEnv();

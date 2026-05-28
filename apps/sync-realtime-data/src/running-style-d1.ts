@@ -110,9 +110,9 @@ export const upsertRaceRunningStyles = async (
 ): Promise<number> => {
   if (rows.length === 0) return 0;
   const statements = rows.map((row) => db.prepare(INSERT_SQL).bind(...bindValues(row)));
-  const batches = chunkArray(statements, D1_BATCH_SIZE);
-  const tasks = batches.map((batch) => db.batch([...batch]));
-  await Promise.all(tasks);
+  for (const batch of chunkArray(statements, D1_BATCH_SIZE)) {
+    await db.batch([...batch]);
+  }
   return rows.length;
 };
 

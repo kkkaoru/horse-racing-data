@@ -1,20 +1,16 @@
 // run with: bun run test
 import { afterEach, expect, it, vi } from "vitest";
 import {
-  claimOddsFetch,
   claimPremiumPaddockNotificationSend,
   claimResultFetch,
   claimTrackConditionFetch,
-  completeOddsFetch,
   completeResultFetch,
   completeTrackConditionFetch,
   countJraRaceSourcesMissingRaceDateFieldsByDate,
   countRaceSourcesByDate,
-  failOddsFetch,
   failResultFetch,
   failTrackConditionFetch,
   getLatestHorseWeights,
-  getLatestOddsFromD1,
   getLatestRaceEntries,
   getLatestRaceResults,
   getLatestTrackConditionForRace,
@@ -29,18 +25,14 @@ import {
   getSameDayVenueJockeyWins,
   insertJraTrackConditionSnapshot,
   listJraVenueTrackConditionSchedulesByDate,
-  listOddsHistoryByType,
   replacePremiumRaceData,
   listPremiumRaceDataFetchCandidatesByDate,
   listSchedulableRaceSourcesByDate,
-  listTanshoHistory,
   insertHorseWeightSnapshot,
-  insertOddsSnapshot,
   insertRaceEntrySnapshot,
   insertRaceResultSnapshot,
   listRaceSourceKeibajoCodesByDate,
   logFetch,
-  markOddsFetchQueued,
   markPremiumPaddockQueued,
   markPremiumRaceDataQueued,
   markResultFetchQueued,
@@ -50,7 +42,6 @@ import {
   toHorseTrends,
   toOddsTrendsByType,
   updateLastFetch,
-  updateOddsLinks,
   updatePremiumPaddockFetchState,
   updatePremiumPaddockNotificationState,
   updatePremiumRaceDataFetchState,
@@ -61,22 +52,6 @@ import {
 
 afterEach(() => {
   vi.restoreAllMocks();
-});
-
-it("claimOddsFetch returns true when changes > 0", async () => {
-  const run = vi.fn(async () => ({ meta: { changes: 1 } }));
-  const bind = vi.fn((..._args: unknown[]) => ({ run }));
-  const prepare = vi.fn(() => ({ bind }));
-  const db = { prepare } as unknown as D1Database;
-  expect(await claimOddsFetch(db, "key", "2026-05-12T13:00:00+09:00")).toBe(true);
-});
-
-it("claimOddsFetch returns false when no rows changed", async () => {
-  const run = vi.fn(async () => ({ meta: { changes: 0 } }));
-  const bind = vi.fn((..._args: unknown[]) => ({ run }));
-  const prepare = vi.fn(() => ({ bind }));
-  const db = { prepare } as unknown as D1Database;
-  expect(await claimOddsFetch(db, "key", "2026-05-12T13:00:00+09:00")).toBe(false);
 });
 
 it("claimResultFetch returns true when changes > 0", async () => {
@@ -122,27 +97,6 @@ it("claimTrackConditionFetch returns false when changes = 0", async () => {
       now: "2026-05-12T12:00:00+09:00",
     }),
   ).toBe(false);
-});
-
-it("completeOddsFetch binds fetchedAt and raceKey", async () => {
-  const run = vi.fn(async () => ({}));
-  const bind = vi.fn((..._args: unknown[]) => ({ run }));
-  const prepare = vi.fn(() => ({ bind }));
-  const db = { prepare } as unknown as D1Database;
-  await completeOddsFetch(db, "key", "2026-05-12T11:30:00+09:00");
-  expect(bind).toHaveBeenCalledTimes(1);
-  const args = bind.mock.calls[0]!;
-  expect(args[0]).toBe("2026-05-12T11:30:00+09:00");
-  expect(args[2]).toBe("key");
-});
-
-it("failOddsFetch binds raceKey", async () => {
-  const run = vi.fn(async () => ({}));
-  const bind = vi.fn((..._args: unknown[]) => ({ run }));
-  const prepare = vi.fn(() => ({ bind }));
-  const db = { prepare } as unknown as D1Database;
-  await failOddsFetch(db, "key");
-  expect(bind.mock.calls[0]![1]).toBe("key");
 });
 
 it("completeResultFetch passes completion flag and counts", async () => {
@@ -206,17 +160,6 @@ it("failTrackConditionFetch binds keibajoCode", async () => {
   expect(bind).toHaveBeenCalledTimes(1);
 });
 
-it("updateOddsLinks serializes oddsLinks JSON and binds raceKey last", async () => {
-  const run = vi.fn(async () => ({}));
-  const bind = vi.fn((..._args: unknown[]) => ({ run }));
-  const prepare = vi.fn(() => ({ bind }));
-  const db = { prepare } as unknown as D1Database;
-  await updateOddsLinks(db, "key", { tansho: "https://x.test/tansho" });
-  const args = bind.mock.calls[0]!;
-  expect(args[0]).toBe('{"tansho":"https://x.test/tansho"}');
-  expect(args[2]).toBe("key");
-});
-
 it("updateLastFetch builds the SQL with the requested column name", async () => {
   const run = vi.fn(async () => ({}));
   const bind = vi.fn((..._args: unknown[]) => ({ run }));
@@ -242,13 +185,6 @@ it("markResultFetchQueued batches per-race statements", async () => {
   const db = { batch, prepare } as unknown as D1Database;
   await markResultFetchQueued(db, ["k1", "k2"], "2026-05-12T12:00:00+09:00");
   expect(prepare).toHaveBeenCalledTimes(2);
-});
-
-it("markOddsFetchQueued returns immediately when raceKeys is empty", async () => {
-  const batch = vi.fn(async () => []);
-  const db = { batch, prepare: vi.fn() } as unknown as D1Database;
-  await markOddsFetchQueued(db, [], "2026-05-12T12:00:00+09:00");
-  expect(batch).not.toHaveBeenCalled();
 });
 
 it("markTrackConditionQueued short-circuits when jobs array is empty", async () => {
@@ -366,16 +302,16 @@ it("logFetch tolerates null raceKey and null message", async () => {
   expect(bind).toHaveBeenCalledTimes(1);
 });
 
-it("runD1Retention returns counts from D1 prepare/bind/run results", async () => {
+it("runD1Retention returns fetch-logs count from D1 prepare/bind/run result", async () => {
   const run = vi.fn(async () => ({ meta: { rows_written: 3 } }));
   const bind = vi.fn((..._args: unknown[]) => ({ run }));
   const prepare = vi.fn(() => ({ bind }));
   const db = { prepare } as unknown as D1Database;
   const result = await runD1Retention(db);
-  expect(result).toStrictEqual({ fetchLogsDeleted: 3, oddsSnapshotsDeleted: 3 });
+  expect(result).toStrictEqual({ fetchLogsDeleted: 3 });
 });
 
-it("runD1Retention defaults counts to 0 when a delete rejects", async () => {
+it("runD1Retention defaults fetch-logs count to 0 when the delete rejects", async () => {
   const run = vi.fn(async () => {
     throw new Error("boom");
   });
@@ -383,7 +319,16 @@ it("runD1Retention defaults counts to 0 when a delete rejects", async () => {
   const prepare = vi.fn(() => ({ bind }));
   const db = { prepare } as unknown as D1Database;
   const result = await runD1Retention(db);
-  expect(result).toStrictEqual({ fetchLogsDeleted: 0, oddsSnapshotsDeleted: 0 });
+  expect(result).toStrictEqual({ fetchLogsDeleted: 0 });
+});
+
+it("runD1Retention defaults fetch-logs count to 0 when meta has no rows_written", async () => {
+  const run = vi.fn(async () => ({ meta: {} }));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const result = await runD1Retention(db);
+  expect(result).toStrictEqual({ fetchLogsDeleted: 0 });
 });
 
 it("upsertPremiumRaceLink binds raceKey then link fields", async () => {
@@ -423,49 +368,6 @@ it("getPremiumRaceLink maps row columns to camelCase fields", async () => {
     entryUrl: "https://x.test/race",
     sourceRaceId: "202605120801",
   });
-});
-
-it("insertOddsSnapshot returns 0 when odds map is empty", async () => {
-  const batch = vi.fn(async () => []);
-  const db = { batch, prepare: vi.fn() } as unknown as D1Database;
-  expect(await insertOddsSnapshot(db, "key", "now", {})).toBe(0);
-});
-
-it("insertOddsSnapshot inserts one row per (type, odds) entry", async () => {
-  const bind = vi.fn(() => ({ bind: vi.fn() }));
-  const prepare = vi.fn(() => ({ bind }));
-  const batch = vi.fn(async () => []);
-  const db = { batch, prepare } as unknown as D1Database;
-  const count = await insertOddsSnapshot(db, "key", "now", {
-    tansho: [
-      { combination: "1", odds: 1.5 },
-      { combination: "2", odds: 3.5 },
-    ],
-  });
-  expect(count).toBe(2);
-});
-
-it("insertOddsSnapshot binds non-null minOdds/maxOdds/averageOdds/rank when supplied", async () => {
-  const bind = vi.fn((..._args: unknown[]) => ({ bind: vi.fn() }));
-  const prepare = vi.fn(() => ({ bind }));
-  const batch = vi.fn(async () => []);
-  const db = { batch, prepare } as unknown as D1Database;
-  await insertOddsSnapshot(db, "key", "now", {
-    wide: [
-      {
-        averageOdds: 4,
-        combination: "1-2",
-        maxOdds: 5,
-        minOdds: 3,
-        rank: 2,
-      },
-    ],
-  });
-  const args = bind.mock.calls[0];
-  expect(args?.[5]).toBe(3);
-  expect(args?.[6]).toBe(5);
-  expect(args?.[7]).toBe(4);
-  expect(args?.[8]).toBe(2);
 });
 
 it("insertHorseWeightSnapshot deletes then no-ops when weights is empty", async () => {
@@ -745,53 +647,6 @@ it("listPremiumRaceDataFetchCandidatesByDate returns mapped candidate rows", asy
   expect(result[0]!.raceKey).toBe("jra:2026:0512:08:01");
 });
 
-it("listTanshoHistory returns mapped OddsHistoryPoints", async () => {
-  const all = vi.fn(async () => ({
-    results: [{ combination: "1", fetched_at: "now", odds: "1.5", rank: 1 }],
-  }));
-  const bind = vi.fn((..._args: unknown[]) => ({ all }));
-  const prepare = vi.fn(() => ({ bind }));
-  const db = { prepare } as unknown as D1Database;
-  const result = await listTanshoHistory(db, "key");
-  expect(result.length).toBe(1);
-  expect(result[0]!.horseNumber).toBe("1");
-});
-
-it("listOddsHistoryByType groups history by oddsType", async () => {
-  const all = vi.fn(async () => ({
-    results: [
-      { combination: "1", fetched_at: "now", odds: "1.5", odds_type: "tansho", rank: 1 },
-      { combination: "1-2", fetched_at: "now", odds: "5.0", odds_type: "umaren", rank: 1 },
-    ],
-  }));
-  const bind = vi.fn((..._args: unknown[]) => ({ all }));
-  const prepare = vi.fn(() => ({ bind }));
-  const db = { prepare } as unknown as D1Database;
-  const result = await listOddsHistoryByType(db, "key");
-  expect(result.tansho).toBeDefined();
-  expect(result.umaren).toBeDefined();
-});
-
-it("getLatestOddsFromD1 returns null when results are empty", async () => {
-  const all = vi.fn(async () => ({ results: [] }));
-  const bind = vi.fn((..._args: unknown[]) => ({ all }));
-  const prepare = vi.fn(() => ({ bind }));
-  const db = { prepare } as unknown as D1Database;
-  expect(await getLatestOddsFromD1(db, "key")).toBeNull();
-});
-
-it("getLatestOddsFromD1 returns latest odds grouped by type", async () => {
-  const all = vi.fn(async () => ({
-    results: [{ combination: "1", fetched_at: "now", odds: "1.5", odds_type: "tansho", rank: 1 }],
-  }));
-  const bind = vi.fn((..._args: unknown[]) => ({ all }));
-  const prepare = vi.fn(() => ({ bind }));
-  const db = { prepare } as unknown as D1Database;
-  const result = await getLatestOddsFromD1(db, "key");
-  expect(result?.fetchedAt).toBe("now");
-  expect(result?.latest.tansho?.length).toBe(1);
-});
-
 it("getLatestHorseWeights returns null when results are empty", async () => {
   const all = vi.fn(async () => ({ results: [] }));
   const bind = vi.fn((..._args: unknown[]) => ({ all }));
@@ -903,55 +758,66 @@ it("getSameDayVenueJockeyWins returns mapped jockey win rows", async () => {
   expect(result[0]!.winCount).toBe(2);
 });
 
-it("buildRealtimePayload composes the realtime payload from helpers", async () => {
-  const callPlan: Array<{ first?: unknown; all?: unknown }> = [
-    { all: { results: [] } },
-    { all: { results: [] } },
-    { first: null },
-    { first: null },
-    { first: null },
-  ];
-  const prepare = vi.fn(() => {
-    const plan = callPlan.shift();
-    const first = vi.fn(async () => plan?.first ?? null);
-    const all = vi.fn(async () => plan?.all ?? { results: [] });
-    const bind = vi.fn(() => ({ all, first }));
-    return { bind };
-  });
-  const db = { prepare } as unknown as D1Database;
+it("buildRealtimePayload sends a single batch RPC and composes the realtime payload", async () => {
+  const bind = vi.fn(() => ({}));
+  const prepare = vi.fn(() => ({ bind }));
+  const batch = vi.fn(async () => [{ results: [] }, { results: [] }, { results: [] }]);
+  const db = { batch, prepare } as unknown as D1Database;
   const payload = await buildRealtimePayload(db, "key", null, null, null);
   expect(payload.raceKey).toBe("key");
   expect(payload.odds).toBeNull();
+  expect(payload.raceEntries).toBeNull();
+  expect(payload.horseWeights).toBeNull();
+  expect(payload.raceResults).toBeNull();
+  expect(prepare).toHaveBeenCalledTimes(3);
+  expect(batch).toHaveBeenCalledTimes(1);
 });
 
-it("buildRealtimePayload includes oddsHistory + latest when odds are provided", async () => {
-  const callPlan: Array<{ first?: unknown; all?: unknown }> = [
-    { all: { results: [{ combination: "1", fetched_at: "x", odds: "1.5", rank: 1 }] } },
+it("buildRealtimePayload maps populated batch results into raceEntries / horseWeights / raceResults", async () => {
+  const bind = vi.fn(() => ({}));
+  const prepare = vi.fn(() => ({ bind }));
+  const batch = vi.fn(async () => [
     {
-      all: {
-        results: [{ combination: "1", fetched_at: "x", odds: "1.5", odds_type: "tansho", rank: 1 }],
-      },
+      results: [
+        {
+          fetched_at: "2026-05-29T01:00:00+09:00",
+          horse_name: "EntryHorse",
+          horse_number: "1",
+          jockey_name: "Yamada",
+          status: "running",
+        },
+      ],
     },
-    { first: null },
-    { first: null },
-    { first: null },
-  ];
-  const prepare = vi.fn(() => {
-    const plan = callPlan.shift();
-    const first = vi.fn(async () => plan?.first ?? null);
-    const all = vi.fn(async () => plan?.all ?? { results: [] });
-    const bind = vi.fn(() => ({ all, first }));
-    return { bind };
-  });
-  const db = { prepare } as unknown as D1Database;
-  const payload = await buildRealtimePayload(
-    db,
-    "key",
-    null,
-    { fetchedAt: "x", latest: { tansho: [] } },
-    null,
-  );
-  expect(payload.odds?.fetchedAt).toBe("x");
+    {
+      results: [
+        {
+          change_amount: -2,
+          change_sign: "-",
+          fetched_at: "2026-05-29T01:01:00+09:00",
+          horse_name: "WeightHorse",
+          horse_number: "1",
+          weight: 480,
+        },
+      ],
+    },
+    {
+      results: [
+        {
+          fetched_at: "2026-05-29T01:30:00+09:00",
+          finish_position: "1",
+          horse_name: "ResultHorse",
+          horse_number: "1",
+          time: "1:23.4",
+        },
+      ],
+    },
+  ]);
+  const db = { batch, prepare } as unknown as D1Database;
+  const payload = await buildRealtimePayload(db, "key", null, null, null);
+  expect(payload.raceEntries?.fetchedAt).toBe("2026-05-29T01:00:00+09:00");
+  expect(payload.raceEntries?.horses[0]?.horseName).toBe("EntryHorse");
+  expect(payload.horseWeights?.horses[0]?.weight).toBe(480);
+  expect(payload.raceResults?.horses[0]?.finishPosition).toBe("1");
 });
 
 it("replacePremiumRaceData batches deletes and inserts for every section provided", async () => {
@@ -1278,16 +1144,6 @@ it("listJraVenueTrackConditionSchedulesByDate maps rows to JraVenueTrackConditio
   ]);
 });
 
-it("markOddsFetchQueued runs a batch when raceKeys is non-empty", async () => {
-  const batch = vi.fn(async () => undefined);
-  const bind = vi.fn((..._args: unknown[]) => ({}));
-  const prepare = vi.fn(() => ({ bind }));
-  const db = { batch, prepare } as unknown as D1Database;
-  await markOddsFetchQueued(db, ["a", "b"], "2026-05-12T10:00:00+09:00");
-  expect(prepare).toHaveBeenCalledTimes(2);
-  expect(batch).toHaveBeenCalledTimes(1);
-});
-
 it("markPremiumRaceDataQueued runs a batch when raceKeys is non-empty", async () => {
   const batch = vi.fn(async () => undefined);
   const bind = vi.fn((..._args: unknown[]) => ({}));
@@ -1528,34 +1384,6 @@ it("getRaceSource maps oddsLinks to {} when odds_links_json is malformed JSON", 
   expect(result?.oddsLinks).toStrictEqual({});
 });
 
-it("listOddsHistoryByType skips rows with no oddsType or no fetched_at and groups by type", async () => {
-  const all = vi.fn(async () => ({
-    results: [
-      { combination: "1", fetched_at: null, odds: 2, odds_type: "tansho", rank: 1 },
-      {
-        combination: "2",
-        fetched_at: "2026-05-12T13:00:00+09:00",
-        odds: 5,
-        odds_type: null,
-        rank: 2,
-      },
-      {
-        combination: "3",
-        fetched_at: "2026-05-12T13:00:00+09:00",
-        odds: 3,
-        odds_type: "tansho",
-        rank: 1,
-      },
-    ],
-  }));
-  const bind = vi.fn((..._args: unknown[]) => ({ all }));
-  const prepare = vi.fn(() => ({ bind }));
-  const db = { prepare } as unknown as D1Database;
-  const result = await listOddsHistoryByType(db, "jra:2026:0512:08:01");
-  // The null-fetched and null-type rows should be filtered out; result has only valid rows.
-  expect(result.tansho).toBeDefined();
-});
-
 it("getRaceSource returns a mapped NarRaceSource when the row exists", async () => {
   const first = vi.fn(async () => ({
     baba_code: "22",
@@ -1623,19 +1451,6 @@ it("countJraRaceSourcesMissingRaceDateFieldsByDate falls back to 0 when row is n
   const prepare = vi.fn(() => ({ bind }));
   const db = { prepare } as unknown as D1Database;
   expect(await countJraRaceSourcesMissingRaceDateFieldsByDate(db, "20260512")).toBe(0);
-});
-
-it("insertOddsSnapshot tolerates a typed entry whose rows value is undefined", async () => {
-  const run = vi.fn(async () => ({}));
-  const bind = vi.fn((..._args: unknown[]) => ({ run }));
-  const prepare = vi.fn(() => ({ bind }));
-  const batch = vi.fn(async () => []);
-  const db = { batch, prepare } as unknown as D1Database;
-  const result = await insertOddsSnapshot(db, "key", "now", {
-    tansho: undefined,
-    umaren: [{ combination: "1-2", odds: 5.5 }],
-  });
-  expect(result).toBe(1);
 });
 
 it("replacePremiumRaceData defaults trainingReviews to [] when omitted", async () => {
@@ -1758,47 +1573,6 @@ it("updatePremiumPaddockNotificationState defaults optional params to null when 
   expect(args[7]).toBeNull();
 });
 
-it("getLatestOddsFromD1 skips rows with falsy odds_type and uses undefined fallbacks", async () => {
-  const all = vi.fn(async () => ({
-    results: [
-      { combination: "1", fetched_at: "now", odds: null, odds_type: null, rank: null },
-      {
-        combination: "2",
-        fetched_at: "now",
-        odds: null,
-        odds_type: "tansho",
-        rank: null,
-      },
-    ],
-  }));
-  const bind = vi.fn((..._args: unknown[]) => ({ all }));
-  const prepare = vi.fn(() => ({ bind }));
-  const db = { prepare } as unknown as D1Database;
-  const result = await getLatestOddsFromD1(db, "key");
-  expect(result?.fetchedAt).toBe("now");
-  expect(result?.latest.tansho?.[0]?.combination).toBe("2");
-  expect(result?.latest.tansho?.[0]?.odds).toBeUndefined();
-});
-
-it("listOddsHistoryByType skips groups whose latest row has no fetched_at", async () => {
-  const all = vi.fn(async () => ({
-    results: [
-      {
-        combination: "1",
-        fetched_at: null,
-        odds: 1.5,
-        odds_type: "tansho",
-        rank: 1,
-      },
-    ],
-  }));
-  const bind = vi.fn((..._args: unknown[]) => ({ all }));
-  const prepare = vi.fn(() => ({ bind }));
-  const db = { prepare } as unknown as D1Database;
-  const result = await listOddsHistoryByType(db, "key");
-  expect(result).toStrictEqual({});
-});
-
 it("getPremiumRacePayload returns [] reasons when reasons_json is not parseable", async () => {
   const trainingAll = vi.fn(async () => ({ results: [] }));
   const commentAll = vi.fn(async () => ({ results: [] }));
@@ -1901,4 +1675,81 @@ it("listOddsSnapshotsForExport binds fetched_at when option present", async () =
     sinceId: 5,
   });
   expect(bind).toHaveBeenCalledWith(5, "2026-05-27T00:00:00+09:00", 100);
+});
+
+it("deleteOddsSnapshotsChunk returns done=true when no rows match", async () => {
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const { deleteOddsSnapshotsChunk } = await import("./storage");
+  const result = await deleteOddsSnapshotsChunk(db, {
+    batchSize: 500,
+    sinceId: 0,
+    upperBoundId: 100,
+  });
+  expect(result).toStrictEqual({ deleted: 0, done: true, next_since_id: 0 });
+});
+
+it("deleteOddsSnapshotsChunk deletes the selected ids and returns metadata", async () => {
+  const selectAll = vi.fn(async () => ({ results: [{ id: 1 }, { id: 2 }, { id: 3 }] }));
+  const selectBind = vi.fn(() => ({ all: selectAll }));
+  const deleteRun = vi.fn(async () => ({ meta: { rows_written: 3 } }));
+  const deleteBind = vi.fn(() => ({ run: deleteRun }));
+  const prepare = vi.fn((sql: string) => {
+    if (sql.includes("select id")) {
+      return { bind: selectBind };
+    }
+    return { bind: deleteBind };
+  });
+  const db = { prepare } as unknown as D1Database;
+  const { deleteOddsSnapshotsChunk } = await import("./storage");
+  const result = await deleteOddsSnapshotsChunk(db, {
+    batchSize: 500,
+    sinceId: 0,
+    upperBoundId: 100,
+  });
+  expect(result).toStrictEqual({ deleted: 3, done: true, next_since_id: 3 });
+});
+
+it("deleteOddsSnapshotsChunk reports done=false when batch saturates limit", async () => {
+  const selectAll = vi.fn(async () => ({ results: [{ id: 10 }, { id: 11 }] }));
+  const selectBind = vi.fn(() => ({ all: selectAll }));
+  const deleteRun = vi.fn(async () => ({ meta: { rows_written: 2 } }));
+  const deleteBind = vi.fn(() => ({ run: deleteRun }));
+  const prepare = vi.fn((sql: string) => {
+    if (sql.includes("select id")) {
+      return { bind: selectBind };
+    }
+    return { bind: deleteBind };
+  });
+  const db = { prepare } as unknown as D1Database;
+  const { deleteOddsSnapshotsChunk } = await import("./storage");
+  const result = await deleteOddsSnapshotsChunk(db, {
+    batchSize: 2,
+    sinceId: 5,
+    upperBoundId: 100,
+  });
+  expect(result).toStrictEqual({ deleted: 2, done: false, next_since_id: 11 });
+});
+
+it("deleteOddsSnapshotsChunk falls back to ids.length when rows_written is missing", async () => {
+  const selectAll = vi.fn(async () => ({ results: [{ id: 7 }] }));
+  const selectBind = vi.fn(() => ({ all: selectAll }));
+  const deleteRun = vi.fn(async () => ({ meta: {} }));
+  const deleteBind = vi.fn(() => ({ run: deleteRun }));
+  const prepare = vi.fn((sql: string) => {
+    if (sql.includes("select id")) {
+      return { bind: selectBind };
+    }
+    return { bind: deleteBind };
+  });
+  const db = { prepare } as unknown as D1Database;
+  const { deleteOddsSnapshotsChunk } = await import("./storage");
+  const result = await deleteOddsSnapshotsChunk(db, {
+    batchSize: 500,
+    sinceId: 0,
+    upperBoundId: 100,
+  });
+  expect(result.deleted).toBe(1);
 });
