@@ -194,10 +194,64 @@ it("runDailyFeatureBuildForEnv skips warmCache when zero rows written", async ()
   vi.mocked(getFinishPositionPool).mockReturnValue({
     query: vi.fn(async () => ({ rows: [] })),
   } as never);
-  const env = { REALTIME_DB: {} } as unknown as Env;
+  const emptyProbeFirst = vi.fn(async () => ({ latest_updated_at: null, row_count: 0 }));
+  const realtimeDb = {
+    batch: vi.fn(async () => []),
+    prepare: vi.fn(() => ({
+      bind: vi.fn(() => ({ first: emptyProbeFirst })),
+    })),
+  };
+  const env = { REALTIME_DB: realtimeDb } as unknown as Env;
   const result = await runDailyFeatureBuildForEnv(env, {
     fromDate: "20260512",
   });
   expect(result.rowsWritten).toBe(0);
   expect(result.cacheWarm?.status).toBe("skipped");
+});
+
+it("runDailyFeatureBuildForEnv short-circuits via freshness probe for past-only ranges", async () => {
+  const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
+  const { getFinishPositionPool } = await import("./finish-position-lite-pool");
+  const querySpy = vi.fn(async () => ({ rows: [] }));
+  vi.mocked(getFinishPositionPool).mockReturnValue({ query: querySpy } as never);
+  const probeFirst = vi.fn(async () => ({
+    latest_updated_at: "2026-05-12T05:00:00Z",
+    row_count: 5500,
+  }));
+  const realtimeDb = {
+    batch: vi.fn(),
+    prepare: vi.fn(() => ({
+      bind: vi.fn(() => ({ first: probeFirst })),
+    })),
+  };
+  const env = { REALTIME_DB: realtimeDb } as unknown as Env;
+  // toDate is in the deep past (2026-05-12) so the guard treats the row count
+  // as proof we don't need to re-query Neon.
+  const result = await runDailyFeatureBuildForEnv(env, { fromDate: "20260512" });
+  expect(querySpy).not.toHaveBeenCalled();
+  expect(result.rowsWritten).toBe(0);
+  expect(result.cacheWarm?.status).toBe("skipped");
+  expect(result.cacheWarm?.message).toBe(
+    "daily_race_entries already populated (past-date-already-populated)",
+  );
+});
+
+it("runDailyFeatureBuildForEnv forces a fresh run when forceRefresh is true", async () => {
+  const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
+  const { getFinishPositionPool } = await import("./finish-position-lite-pool");
+  const querySpy = vi.fn(async () => ({ rows: [] }));
+  vi.mocked(getFinishPositionPool).mockReturnValue({ query: querySpy } as never);
+  const probeFirst = vi.fn(async () => ({
+    latest_updated_at: "2026-05-12T05:00:00Z",
+    row_count: 5500,
+  }));
+  const realtimeDb = {
+    batch: vi.fn(async () => []),
+    prepare: vi.fn(() => ({
+      bind: vi.fn(() => ({ first: probeFirst })),
+    })),
+  };
+  const env = { REALTIME_DB: realtimeDb } as unknown as Env;
+  await runDailyFeatureBuildForEnv(env, { forceRefresh: true, fromDate: "20260512" });
+  expect(querySpy).toHaveBeenCalledOnce();
 });

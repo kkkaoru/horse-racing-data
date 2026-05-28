@@ -5,6 +5,7 @@ import {
   buildDailyFeatureSelectSql,
   fetchDailyRaceEntriesFromPostgres,
   listDailyRaceEntriesForRace,
+  shouldSkipDailyFeatureBuild,
   triggerViewerCacheWarmForDate,
   upsertDailyRaceEntriesToD1,
   type DailyRaceEntryRow,
@@ -428,4 +429,74 @@ test("triggerViewerCacheWarmForDate captures thrown errors as messages", async (
 
   expect(result.status).toBe("error");
   expect(result.message).toBe("boom");
+});
+
+const NOW_2026_05_28_2100_JST = new Date("2026-05-28T21:00:00+09:00");
+
+test("shouldSkipDailyFeatureBuild returns null when no rows exist yet", () => {
+  expect(
+    shouldSkipDailyFeatureBuild({
+      fromDate: "20260528",
+      now: NOW_2026_05_28_2100_JST,
+      probe: { latestUpdatedAt: null, rowCount: 0 },
+      toDate: "20260528",
+    }),
+  ).toBeNull();
+});
+
+test("shouldSkipDailyFeatureBuild skips past-only ranges that are already populated", () => {
+  const reason = shouldSkipDailyFeatureBuild({
+    fromDate: "20260525",
+    now: NOW_2026_05_28_2100_JST,
+    probe: { latestUpdatedAt: "2026-05-26T01:00:00Z", rowCount: 5500 },
+    toDate: "20260527",
+  });
+  expect(reason).toStrictEqual({ kind: "past-date-already-populated", rowCount: 5500 });
+});
+
+test("shouldSkipDailyFeatureBuild skips today when latestUpdatedAt is within the freshness window", () => {
+  const reason = shouldSkipDailyFeatureBuild({
+    fromDate: "20260528",
+    now: NOW_2026_05_28_2100_JST,
+    probe: { latestUpdatedAt: "2026-05-28T11:30:00Z", rowCount: 480 },
+    toDate: "20260528",
+  });
+  expect(reason).toStrictEqual({
+    kind: "today-recently-refreshed",
+    latestUpdatedAt: "2026-05-28T11:30:00Z",
+    rowCount: 480,
+  });
+});
+
+test("shouldSkipDailyFeatureBuild re-runs today when latestUpdatedAt is outside the freshness window", () => {
+  expect(
+    shouldSkipDailyFeatureBuild({
+      fromDate: "20260528",
+      now: NOW_2026_05_28_2100_JST,
+      probe: { latestUpdatedAt: "2026-05-28T09:00:00Z", rowCount: 480 },
+      toDate: "20260528",
+    }),
+  ).toBeNull();
+});
+
+test("shouldSkipDailyFeatureBuild re-runs today when latestUpdatedAt is unparseable", () => {
+  expect(
+    shouldSkipDailyFeatureBuild({
+      fromDate: "20260528",
+      now: NOW_2026_05_28_2100_JST,
+      probe: { latestUpdatedAt: "not-a-date", rowCount: 480 },
+      toDate: "20260528",
+    }),
+  ).toBeNull();
+});
+
+test("shouldSkipDailyFeatureBuild re-runs windows that start in the future", () => {
+  expect(
+    shouldSkipDailyFeatureBuild({
+      fromDate: "20260529",
+      now: NOW_2026_05_28_2100_JST,
+      probe: { latestUpdatedAt: "2026-05-28T11:55:00Z", rowCount: 100 },
+      toDate: "20260529",
+    }),
+  ).toBeNull();
 });

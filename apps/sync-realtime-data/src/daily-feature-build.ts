@@ -8,14 +8,31 @@ import type { Pool } from "pg";
 
 import { getFinishPositionPool } from "./finish-position-lite-pool";
 import { formatError } from "./format-error";
+import { getTodayJst } from "./time";
 import type { Env } from "./types";
+
+// Skip daily-feature-build when the youngest D1 row for the requested
+// window was upserted within this many milliseconds. Today's data races
+// finish throughout the day so we still want a re-check after the gap,
+// but back-to-back hourly cron ticks against unchanged data become
+// no-op SELECT max(updated_at) instead of full Neon re-queries.
+const SKIP_IF_FRESH_MILLIS = 60 * 60 * 1000;
 
 export type DailyFeatureBuildSourceScope = "all" | "ban-ei" | "jra" | "nar";
 
 export interface DailyFeatureBuildOptions {
+  // Force the upsert pipeline to run even if the freshness guard would
+  // otherwise short-circuit (used by the backfill CLI and manual ops).
+  forceRefresh?: boolean;
   fromDate: string;
   sourceScope?: DailyFeatureBuildSourceScope;
   toDate?: string;
+}
+
+export interface DailyFeatureBuildSkipReason {
+  kind: "past-date-already-populated" | "today-recently-refreshed";
+  latestUpdatedAt?: string;
+  rowCount?: number;
 }
 
 export interface DailyRaceEntryRow {
@@ -634,6 +651,69 @@ export const triggerViewerCacheWarmForDate = async (
   }
 };
 
+export interface DailyFeatureBuildFreshnessProbe {
+  latestUpdatedAt: string | null;
+  rowCount: number;
+}
+
+const probeDailyRaceEntriesFreshness = async (
+  db: D1Database,
+  fromDate: string,
+  toDate: string,
+): Promise<DailyFeatureBuildFreshnessProbe> => {
+  const row = await db
+    .prepare(
+      `select count(*) as row_count, max(updated_at) as latest_updated_at
+       from daily_race_entries
+       where race_date between ? and ?`,
+    )
+    .bind(fromDate, toDate)
+    .first<{ latest_updated_at: string | null; row_count: number }>();
+  return {
+    latestUpdatedAt: row?.latest_updated_at ?? null,
+    rowCount: row?.row_count ?? 0,
+  };
+};
+
+export interface ShouldSkipDailyFeatureBuildInput {
+  fromDate: string;
+  now: Date;
+  probe: DailyFeatureBuildFreshnessProbe;
+  toDate: string;
+}
+
+export const shouldSkipDailyFeatureBuild = ({
+  fromDate,
+  now,
+  probe,
+  toDate,
+}: ShouldSkipDailyFeatureBuildInput): DailyFeatureBuildSkipReason | null => {
+  if (probe.rowCount <= 0) return null;
+  const todayYmd = getTodayJst(now);
+  // Date ranges that end before today are immutable once populated — racing
+  // results don't retroactively change, so any existing row count means we
+  // can skip the Neon → D1 re-upsert entirely.
+  const targetsPastOnly = toDate < todayYmd;
+  if (targetsPastOnly) {
+    return { kind: "past-date-already-populated", rowCount: probe.rowCount };
+  }
+  // Ranges that overlap today: only skip when a recent upsert proves the
+  // mirror is fresh. Older snapshots fall through and re-run.
+  if (!probe.latestUpdatedAt) return null;
+  const latestMs = Date.parse(probe.latestUpdatedAt);
+  if (!Number.isFinite(latestMs)) return null;
+  if (now.getTime() - latestMs >= SKIP_IF_FRESH_MILLIS) return null;
+  // Guard against runs where toDate has been pulled in from a future day —
+  // those windows can legitimately have no Neon source yet, so we still
+  // re-run unless the existing rows cover the whole requested span.
+  if (fromDate > todayYmd) return null;
+  return {
+    kind: "today-recently-refreshed",
+    latestUpdatedAt: probe.latestUpdatedAt,
+    rowCount: probe.rowCount,
+  };
+};
+
 export const runDailyFeatureBuildForEnv = async (
   env: Env,
   options: DailyFeatureBuildOptions,
@@ -641,6 +721,23 @@ export const runDailyFeatureBuildForEnv = async (
   const sourceScope = options.sourceScope ?? DEFAULT_SCOPE;
   const fromDate = requireYYYYMMDD(options.fromDate, "fromDate");
   const toDate = requireYYYYMMDD(options.toDate ?? options.fromDate, "toDate");
+  if (options.forceRefresh !== true) {
+    const probe = await probeDailyRaceEntriesFreshness(env.REALTIME_DB, fromDate, toDate);
+    const skipReason = shouldSkipDailyFeatureBuild({ fromDate, now: new Date(), probe, toDate });
+    if (skipReason !== null) {
+      return {
+        cacheWarm: {
+          message: `daily_race_entries already populated (${skipReason.kind})`,
+          status: "skipped" as const,
+        },
+        fromDate,
+        rowsFetched: 0,
+        rowsWritten: 0,
+        sourceScope,
+        toDate,
+      };
+    }
+  }
   const pool = getFinishPositionPool(env);
   const rows = await fetchDailyRaceEntriesFromPostgres(pool, { fromDate, sourceScope, toDate });
   const rowsWritten = await upsertDailyRaceEntriesToD1(env.REALTIME_DB, rows);

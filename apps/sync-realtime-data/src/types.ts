@@ -88,6 +88,7 @@ export type Job =
   | {
       type: "build-daily-features";
       date: string;
+      forceRefresh?: boolean;
       sourceScope?: "all" | "ban-ei" | "jra" | "nar";
     };
 
