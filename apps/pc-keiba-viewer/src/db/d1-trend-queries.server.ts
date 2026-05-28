@@ -258,8 +258,13 @@ const isRawTanshoOddsRow = (value: unknown): value is RawTanshoOddsRow =>
   "rank" in value &&
   isNumberOrNull(value.rank);
 
+// v4 bumped 2026-05-29: invalidate pre-PR4 cached starter rows so the
+// REALTIME_HOT_DB tansho odds overlay is actually returned to the trend
+// section. Pre-PR4 entries embedded `coalesce(o.odds, de.tansho_odds)` from
+// the now-frozen OLD D1 odds_snapshots table, so without a version bump
+// stale rows can still satisfy the 30min KV TTL after deploy.
 const buildCacheKey = ({ source, startYmd, endYmd }: RaceTrendD1RowsParams): string =>
-  `race-trend-d1:v3:${source}:${startYmd}:${endYmd}`;
+  `race-trend-d1:v4:${source}:${startYmd}:${endYmd}`;
 
 const formatHassoJikoku = (raceStartAtJst: string | null): string | null => {
   if (typeof raceStartAtJst !== "string" || raceStartAtJst.length < 16) return null;
@@ -555,8 +560,10 @@ const isRawDailyD1Row = (value: unknown): value is RawDailyD1Row => {
   );
 };
 
+// v4 bumped in lock-step with `buildCacheKey` so a single deploy invalidates
+// every layer that participates in the trend payload.
 const buildDailyCacheKey = ({ source, startYmd, endYmd }: RaceTrendD1RowsParams): string =>
-  `race-trend-d1-daily:v3:${source}:${startYmd}:${endYmd}`;
+  `race-trend-d1-daily:v4:${source}:${startYmd}:${endYmd}`;
 
 const queryDailyD1 = async (params: RaceTrendD1RowsParams): Promise<RawDailyD1Row[]> => {
   const { env } = await getCloudflareContext({ async: true });

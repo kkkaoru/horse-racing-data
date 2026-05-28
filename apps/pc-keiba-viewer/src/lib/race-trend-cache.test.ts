@@ -83,7 +83,7 @@ describe("race trend cache helpers", () => {
       options,
       raceBango: "11",
     });
-    expect(cacheKey).toStrictEqual("race-trend:v5:jra:05:11:20260519:20260520:20260519:20260520:1");
+    expect(cacheKey).toStrictEqual("race-trend:v6:jra:05:11:20260519:20260520:20260519:20260520:1");
     expect(
       buildRaceTrendApiPath({
         day: "20",
