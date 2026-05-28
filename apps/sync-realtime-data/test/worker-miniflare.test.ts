@@ -4,7 +4,10 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Miniflare } from "miniflare";
-import { claimPremiumPaddockNotificationSend } from "../src/storage";
+import {
+  claimPremiumPaddockNotificationSend,
+  listPremiumRaceDataFetchCandidatesByDate,
+} from "../src/storage";
 
 const TEST_NOW = "2026-05-12T03:00:00.000Z";
 const TEST_DATE = "20260512";
@@ -816,6 +819,106 @@ describe("worker scheduling with Miniflare", () => {
       last_queued_at: null,
       status: "ok",
     });
+  });
+
+  it("requeues premium race data stuck in 'queued' status for more than 15 minutes", async () => {
+    await seedRace("jra:2026:0512:08:01", "2026-05-12T13:00:00+09:00", { source: "jra" });
+    await db
+      .prepare(
+        `
+          insert into premium_race_links (
+            race_key, source_race_id, entry_url, discovered_at, updated_at
+          )
+          values (?, '202605120801', 'https://example.test/race', ?, ?)
+        `,
+      )
+      .bind("jra:2026:0512:08:01", TEST_NOW, TEST_NOW)
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_race_data_fetch_state (
+            race_key, status, last_queued_at, updated_at
+          )
+          values (?, 'queued', '2026-05-12T11:40:00+09:00', '2026-05-12T11:40:00+09:00')
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .run();
+    const candidates = await listPremiumRaceDataFetchCandidatesByDate(
+      db,
+      TEST_DATE,
+      "2026-05-12T12:00:00+09:00",
+    );
+    expect(candidates.map((row) => row.raceKey)).toStrictEqual(["jra:2026:0512:08:01"]);
+  });
+
+  it("does not requeue premium race data still 'queued' within the 15-minute grace window", async () => {
+    await seedRace("jra:2026:0512:08:01", "2026-05-12T13:00:00+09:00", { source: "jra" });
+    await db
+      .prepare(
+        `
+          insert into premium_race_links (
+            race_key, source_race_id, entry_url, discovered_at, updated_at
+          )
+          values (?, '202605120801', 'https://example.test/race', ?, ?)
+        `,
+      )
+      .bind("jra:2026:0512:08:01", TEST_NOW, TEST_NOW)
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_race_data_fetch_state (
+            race_key, status, last_queued_at, updated_at
+          )
+          values (?, 'queued', '2026-05-12T11:55:00+09:00', '2026-05-12T11:55:00+09:00')
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .run();
+    const candidates = await listPremiumRaceDataFetchCandidatesByDate(
+      db,
+      TEST_DATE,
+      "2026-05-12T12:00:00+09:00",
+    );
+    expect(candidates).toStrictEqual([]);
+  });
+
+  it("orders premium race data candidates by proximity of race start to the supplied 'now'", async () => {
+    await seedRace("jra:2026:0512:08:11", "2026-05-12T13:30:00+09:00", { source: "jra" });
+    await seedRace("jra:2026:0512:08:12", "2026-05-12T12:30:00+09:00", { source: "jra" });
+    await seedRace("jra:2026:0512:08:13", "2026-05-12T16:00:00+09:00", { source: "jra" });
+    await seedRace("jra:2026:0512:08:14", "2026-05-12T11:00:00+09:00", { source: "jra" });
+    for (const raceKey of [
+      "jra:2026:0512:08:11",
+      "jra:2026:0512:08:12",
+      "jra:2026:0512:08:13",
+      "jra:2026:0512:08:14",
+    ]) {
+      await db
+        .prepare(
+          `
+            insert into premium_race_links (
+              race_key, source_race_id, entry_url, discovered_at, updated_at
+            )
+            values (?, ?, 'https://example.test/race', ?, ?)
+          `,
+        )
+        .bind(raceKey, raceKey.replace(/:/g, ""), TEST_NOW, TEST_NOW)
+        .run();
+    }
+    const candidates = await listPremiumRaceDataFetchCandidatesByDate(
+      db,
+      TEST_DATE,
+      "2026-05-12T12:00:00+09:00",
+    );
+    expect(candidates.map((row) => row.raceKey)).toStrictEqual([
+      "jra:2026:0512:08:12",
+      "jra:2026:0512:08:14",
+      "jra:2026:0512:08:11",
+      "jra:2026:0512:08:13",
+    ]);
   });
 
   it("does not requeue missed premium paddock notifications after the race window", async () => {
