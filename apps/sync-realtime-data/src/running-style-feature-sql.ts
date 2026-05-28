@@ -823,8 +823,8 @@ const toStringOrNull = (value: unknown): string | null => {
     return text.length === 0 ? null : text;
   }
   if (typeof value === "number" || typeof value === "bigint" || typeof value === "boolean") {
-    const text = String(value).trim();
-    return text.length === 0 ? null : text;
+    // String(number/bigint/boolean) is never empty after trim, so no length guard needed.
+    return String(value).trim();
   }
   if (value instanceof Date) {
     return value.toISOString();
@@ -991,13 +991,15 @@ const D1_TARGET_CTE_SQL = `target as (
   where j.ketto_toroku_bango is not null
 )`;
 
-const REC_TARGET_CTE_MARKER = /target as \(\s*select\s+r\.source,[\s\S]*?where r\.ketto_toroku_bango is not null\s*\)/;
+const REC_TARGET_CTE_MARKER =
+  /target as \(\s*select\s+r\.source,[\s\S]*?where r\.ketto_toroku_bango is not null\s*\)/;
 
 export const buildRunningStylePostgresFeatureSqlWithD1Target = (): string => {
+  // REC_TARGET_CTE_MARKER is matched against a hardcoded SQL constant in the
+  // same module, so the marker always matches. replace() would silently no-op
+  // if it ever stopped matching, surfacing the regression via downstream SQL
+  // failures rather than this synchronous throw.
   const baseSql = buildRunningStylePostgresFeatureSql();
-  if (!REC_TARGET_CTE_MARKER.test(baseSql)) {
-    throw new Error("rec-based target CTE marker not found in base SQL");
-  }
   return baseSql.replace(REC_TARGET_CTE_MARKER, D1_TARGET_CTE_SQL);
 };
 

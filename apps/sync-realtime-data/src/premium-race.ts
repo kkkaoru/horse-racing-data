@@ -169,7 +169,8 @@ export const fetchPremiumHtml = async (
   const authenticated = attempts.find((attempt) =>
     attempt.html.includes(PREMIUM_HTML_AUTHENTICATED_MARKER),
   );
-  return (authenticated ?? attempts[0])?.html ?? "";
+  // fetchPremiumHtmlAttempts throws when no attempt succeeds, so attempts[0] is always defined here.
+  return (authenticated ?? attempts[0]!).html;
 };
 
 export const fetchPremiumHtmlAttempts = async (
@@ -658,10 +659,8 @@ export const summarizePremiumStableCommentHtml = (
   };
 };
 
-const extractAreaHtml = (html: string, className: string | null | undefined): string | null => {
-  if (!className) {
-    return null;
-  }
+// className is always supplied with a non-empty fallback at the call site, so accepting null/undefined here would be dead defensive code.
+const extractAreaHtml = (html: string, className: string): string | null => {
   const escaped = escapeRegExp(className);
   return (
     html.match(

@@ -124,9 +124,7 @@ const extractJraHorseNumber = (row: string): string | null =>
   null;
 
 const hasClassLike = (html: string, pattern: RegExp): boolean =>
-  Array.from(html.matchAll(/class=["']([^"']*)["']/giu)).some((match) =>
-    pattern.test(match[1]!),
-  );
+  Array.from(html.matchAll(/class=["']([^"']*)["']/giu)).some((match) => pattern.test(match[1]!));
 
 const isPastEntryStatusCell = (attrs: string, html: string): boolean =>
   hasClassLike(`${attrs} ${html}`, /past|history|recent|previous/iu);
@@ -644,11 +642,7 @@ const navigateFromRacePageToOdds = async (page: Page): Promise<void> => {
 
 const getOddsListHtml = async (page: Page): Promise<string> => {
   const innerHtml = await page.locator(ODDS_LIST_SELECTOR).innerHTML();
-  const html = `<div id="odds_list">${innerHtml}</div>`;
-  if (!html) {
-    throw new Error("JRA odds list DOM was not found.");
-  }
-  return html;
+  return `<div id="odds_list">${innerHtml}</div>`;
 };
 
 export const fetchJraOddsWithPlaywright = async (
