@@ -38,7 +38,7 @@ export const applyRaceLevelNigeConstraint = (
 ): RunningStylePrediction => {
   const minNigeProbability = options?.minNigeProbability ?? DEFAULT_MIN_NIGE_PROBABILITY;
   const adjusted = Float64Array.from(probabilities);
-  const nigeProbability = adjusted[NIGE_CLASS_INDEX] ?? 0;
+  const nigeProbability = adjusted[NIGE_CLASS_INDEX]!;
   if (nigeProbability < minNigeProbability) {
     adjusted[NIGE_CLASS_INDEX] = 0;
     return predictionFromProbabilities(normalizeProbabilities(adjusted), labels);

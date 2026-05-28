@@ -135,7 +135,7 @@ const fromParquetRow = (
     raceBango: String(row.raceBango),
     raceKey: String(row.raceKey),
     source: String(row.source),
-    umaban: toNumberOrNull(row.umaban) ?? 0,
+    umaban: Number(row.umaban),
   };
 };
 

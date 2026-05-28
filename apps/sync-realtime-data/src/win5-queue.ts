@@ -28,7 +28,7 @@ export const handleWin5PredictionJob = async (
   env: Env,
   job: Extract<Win5ScheduleJob, { type: "generate-win5-predictions" }>,
 ): Promise<Win5PredictionJobSummary> => {
-  const updatedAt = job.predictedAt ?? new Date().toISOString();
+  const updatedAt = job.predictedAt;
   await markWin5InferenceState(env.REALTIME_DB, {
     kaisaiNen: job.kaisaiNen,
     kaisaiTsukihi: job.kaisaiTsukihi,
