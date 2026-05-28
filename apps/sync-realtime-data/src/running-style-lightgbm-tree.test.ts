@@ -84,6 +84,38 @@ test("walkTree handles categorical == split with non-matching token", () => {
   expect(result).toBe(-5.0);
 });
 
+test("walkTree coerces numeric threshold provided as a string", () => {
+  const tree: LightGBMTreeNode = {
+    decision_type: "<=",
+    default_left: false,
+    left_child: { leaf_value: 7.0 },
+    right_child: { leaf_value: -7.0 },
+    split_feature: 0,
+    threshold: "0.5",
+  };
+  const result = walkTree(tree, {
+    missing: Uint8Array.from([0]),
+    values: Float64Array.from([0.3]),
+  });
+  expect(result).toBe(7.0);
+});
+
+test("walkTree handles categorical == split with numeric threshold", () => {
+  const tree: LightGBMTreeNode = {
+    decision_type: "==",
+    default_left: false,
+    left_child: { leaf_value: 4.0 },
+    right_child: { leaf_value: -4.0 },
+    split_feature: 0,
+    threshold: 3,
+  };
+  const result = walkTree(tree, {
+    missing: Uint8Array.from([0]),
+    values: Float64Array.from([3]),
+  });
+  expect(result).toBe(4.0);
+});
+
 const buildFourClassModel = (): CompactLightGBMModel => ({
   categorical_features: [],
   class_labels: ["nige", "senkou", "sashi", "oikomi"],
@@ -216,11 +248,13 @@ test("predictRunningStyle accumulates logits across multiple iterations", () => 
   expect(result.predictedLabel).toBe("senkou");
 });
 
-
 it("resolveRunningStyleLabels uses model labels when valid", () => {
-  expect(
-    resolveRunningStyleLabels(["nige", "senkou", "sashi", "oikomi"], 4),
-  ).toStrictEqual(["nige", "senkou", "sashi", "oikomi"]);
+  expect(resolveRunningStyleLabels(["nige", "senkou", "sashi", "oikomi"], 4)).toStrictEqual([
+    "nige",
+    "senkou",
+    "sashi",
+    "oikomi",
+  ]);
 });
 
 it("resolveRunningStyleLabels falls back to default index when model label is unknown", () => {
@@ -239,4 +273,3 @@ it("resolveRunningStyleLabels falls back to FALLBACK_LABEL when index exceeds de
     "nige",
   ]);
 });
-

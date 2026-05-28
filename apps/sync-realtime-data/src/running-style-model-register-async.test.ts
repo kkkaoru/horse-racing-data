@@ -1,4 +1,5 @@
 // run with: bun run test
+import { EventEmitter } from "node:events";
 import { afterEach, expect, it, vi } from "vitest";
 import type { WranglerSpawner } from "./running-style-model-register";
 
@@ -18,6 +19,21 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     stat: vi.fn(async (_path: string) => ({ size: 2048 })),
   };
 });
+
+interface FakeChildProcess extends EventEmitter {
+  stderr: EventEmitter;
+}
+
+const fakeChildSpawnSuccess = (): FakeChildProcess => {
+  const child = new EventEmitter() as FakeChildProcess;
+  child.stderr = new EventEmitter();
+  queueMicrotask(() => child.emit("close", 0));
+  return child;
+};
+
+vi.mock("node:child_process", () => ({
+  spawn: vi.fn(() => fakeChildSpawnSuccess()),
+}));
 
 const buildSuccessSpawner = (): WranglerSpawner =>
   vi.fn(async (_args: readonly string[]) => ({ exitCode: 0, stderr: "" }));
@@ -234,4 +250,57 @@ it("ensureRunningStyleModels skips sync when local already exists", async () => 
   const spawner: WranglerSpawner = vi.fn(async () => ({ exitCode: 0, stderr: "" }));
   const result = await ensureRunningStyleModels({ sources: ["jra", "nar"] }, spawner);
   expect(result.synced).toStrictEqual([]);
+});
+
+it("ensureRunningStyleModels skips register-sync when local exists after upload", async () => {
+  const { ensureRunningStyleModels } = await import("./running-style-model-register");
+  const spawner: WranglerSpawner = vi.fn(async () => ({ exitCode: 0, stderr: "" }));
+  const result = await ensureRunningStyleModels(
+    {
+      register: [{ inputPath: "tmp/model.flatbin", remote: true, source: "jra" }],
+      sources: [],
+    },
+    spawner,
+  );
+  expect(result.registered).toStrictEqual(["running-style/models/jra/latest.flatbin"]);
+  expect(result.synced).toStrictEqual([]);
+});
+
+it("ensureRunningStyleModels throws when non-remote spec leaves local missing", async () => {
+  const { ensureRunningStyleModels } = await import("./running-style-model-register");
+  const spawner: WranglerSpawner = vi.fn(async (args: readonly string[]) => {
+    if (args[3] === "get") return { exitCode: 1, stderr: "missing" };
+    return { exitCode: 0, stderr: "" };
+  });
+  await expect(
+    ensureRunningStyleModels(
+      {
+        register: [{ inputPath: "tmp/model.flatbin", remote: false, source: "jra" }],
+        sources: [],
+      },
+      spawner,
+    ),
+  ).rejects.toThrow("Local model upload did not persist");
+});
+
+it("syncRunningStyleModel uses default spawnWrangler when spawner is not provided", async () => {
+  const { syncRunningStyleModel } = await import("./running-style-model-register");
+  const result = await syncRunningStyleModel("jra");
+  expect(result).toBe("running-style/models/jra/latest.flatbin");
+});
+
+it("registerRunningStyleModel uses default spawnWrangler when spawner is not provided", async () => {
+  const { registerRunningStyleModel } = await import("./running-style-model-register");
+  const result = await registerRunningStyleModel({
+    inputPath: "tmp/model.flatbin",
+    remote: false,
+    source: "nar",
+  });
+  expect(result.objectKey).toBe("running-style/models/nar/latest.flatbin");
+});
+
+it("ensureRunningStyleModels uses default spawnWrangler when spawner is not provided", async () => {
+  const { ensureRunningStyleModels } = await import("./running-style-model-register");
+  const result = await ensureRunningStyleModels({ sources: [] });
+  expect(result.registered).toStrictEqual([]);
 });

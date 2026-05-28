@@ -136,13 +136,14 @@ it("deserializeRunningStyleFeatureParquet maps NaN/Infinity feature values to nu
 
 it("deserializeRunningStyleFeatureParquet treats null/empty bamei as null and rounds invalid umaban to 0", async () => {
   const bytes = await serializeRunningStyleFeatureParquet(
-    [{ ...ROW, bamei: null, perHorseFeatures: {} }],
+    [{ ...ROW, bamei: null, perHorseFeatures: {}, umaban: Number.NaN }],
     FEATURE_NAMES,
   );
   const buffer = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(buffer).set(bytes);
   const rows = await deserializeRunningStyleFeatureParquet(buffer, FEATURE_NAMES);
   expect(rows[0]?.bamei).toBeNull();
+  expect(rows[0]?.umaban).toBe(0);
   expect(rows[0]?.perHorseFeatures.career_win_rate).toBeNull();
 });
 

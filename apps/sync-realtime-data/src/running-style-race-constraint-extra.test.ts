@@ -8,29 +8,22 @@ import {
 const LABELS = ["nige", "senkou", "sashi", "oikomi"] as const;
 
 it("applyRaceLevelNigeConstraint zeros nige when below threshold", () => {
-  const prediction = applyRaceLevelNigeConstraint(
-    Float64Array.from([0.1, 0.5, 0.3, 0.1]),
-    LABELS,
-    { minNigeProbability: 0.2 },
-  );
+  const prediction = applyRaceLevelNigeConstraint(Float64Array.from([0.1, 0.5, 0.3, 0.1]), LABELS, {
+    minNigeProbability: 0.2,
+  });
   expect(prediction.probabilities.nige).toBe(0);
   expect(prediction.predictedLabel).toBe("senkou");
 });
 
 it("applyRaceLevelNigeConstraint preserves nige when above threshold", () => {
-  const prediction = applyRaceLevelNigeConstraint(
-    Float64Array.from([0.4, 0.3, 0.2, 0.1]),
-    LABELS,
-    { minNigeProbability: 0.2 },
-  );
+  const prediction = applyRaceLevelNigeConstraint(Float64Array.from([0.4, 0.3, 0.2, 0.1]), LABELS, {
+    minNigeProbability: 0.2,
+  });
   expect(prediction.predictedLabel).toBe("nige");
 });
 
 it("applyRaceLevelNigeConstraint uses the default 0.18 threshold when not specified", () => {
-  const prediction = applyRaceLevelNigeConstraint(
-    Float64Array.from([0.1, 0.5, 0.3, 0.1]),
-    LABELS,
-  );
+  const prediction = applyRaceLevelNigeConstraint(Float64Array.from([0.1, 0.5, 0.3, 0.1]), LABELS);
   expect(prediction.probabilities.nige).toBe(0);
 });
 
@@ -57,4 +50,21 @@ it("applyRaceLevelNigeConstraintForRace ignores nige cap when disableNigeCap=tru
     { disableNigeCap: true },
   );
   expect(predictions[0]!.probabilities.nige).toBeCloseTo(0.05);
+});
+
+it("applyRaceLevelNigeConstraint returns probabilities unchanged when all values sum to zero", () => {
+  const prediction = applyRaceLevelNigeConstraint(Float64Array.from([0, 0, 0, 0]), LABELS);
+  expect(prediction.probabilities.nige).toBe(0);
+  expect(prediction.probabilities.senkou).toBe(0);
+  expect(prediction.predictedLabel).toBe("nige");
+});
+
+it("applyRaceLevelNigeConstraintForRace promotes a later horse with higher nige to topIndex", () => {
+  const predictions = applyRaceLevelNigeConstraintForRace(
+    [Float64Array.from([0.2, 0.3, 0.3, 0.2]), Float64Array.from([0.5, 0.2, 0.2, 0.1])],
+    LABELS,
+    4,
+  );
+  expect(predictions[0]!.probabilities.nige).toBe(0);
+  expect(predictions[1]!.predictedLabel).toBe("nige");
 });

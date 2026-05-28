@@ -102,12 +102,7 @@ it("buildRunningStyleFeaturesForRaceFromD1Target throws on unexpected raceKey in
   }));
   const pool = { query } as unknown as Pool;
   await expect(
-    buildRunningStyleFeaturesForRaceFromD1Target(
-      pool,
-      PARAMS,
-      ["career_win_rate"],
-      [TARGET_ROW],
-    ),
+    buildRunningStyleFeaturesForRaceFromD1Target(pool, PARAMS, ["career_win_rate"], [TARGET_ROW]),
   ).rejects.toThrow("unexpected race key in PostgreSQL feature result");
 });
 
@@ -236,4 +231,39 @@ it("buildRunningStyleFeaturesForRaceFromD1Target falls back to rows.length when 
     [TARGET_ROW],
   );
   expect(result.sqlRows).toBe(1);
+});
+
+it("buildRunningStyleFeaturesForRaceFromPostgres falls back to rows.length when rowCount missing", async () => {
+  const query = vi.fn(async () => ({ rows: [SQL_ROW] }));
+  const pool = { query } as unknown as Pool;
+  const result = await buildRunningStyleFeaturesForRaceFromPostgres(pool, PARAMS, [
+    "career_win_rate",
+  ]);
+  expect(result.sqlRows).toBe(1);
+});
+
+it("buildRunningStyleFeaturesForRaceFromPostgres treats undefined feature column and boolean false as null/0", async () => {
+  const query = vi.fn(async () => ({
+    rowCount: 1,
+    rows: [
+      {
+        bamei: "サンプル",
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0512",
+        keibajo_code: "08",
+        ketto_toroku_bango: "2024100001",
+        race_bango: "01",
+        source: "jra",
+        speed_index_avg_5: false,
+        umaban: 1,
+      },
+    ],
+  }));
+  const pool = { query } as unknown as Pool;
+  const result = await buildRunningStyleFeaturesForRaceFromPostgres(pool, PARAMS, [
+    "career_win_rate",
+    "speed_index_avg_5",
+  ]);
+  expect(result.rows[0]?.perHorseFeatures.career_win_rate).toBeNull();
+  expect(result.rows[0]?.perHorseFeatures.speed_index_avg_5).toBe(0);
 });

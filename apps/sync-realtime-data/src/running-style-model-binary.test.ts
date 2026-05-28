@@ -237,3 +237,90 @@ it("predictFlatRunningStyle follows defaultLeft when feature is missing", () => 
   const prediction = predictFlatRunningStyle(model, { x: null });
   expect(prediction.predictedLabel).toBe("nige");
 });
+
+it("predictFlatRunningStyle takes rightChild when defaultLeft is 0 and feature is missing", () => {
+  const buffer = buildBuffer({
+    nodes: [
+      {
+        defaultLeft: 0,
+        kind: 1,
+        leftChild: 4,
+        rightChild: 5,
+        splitFeature: 0,
+        threshold: 0,
+      },
+      { kind: 0, leafValue: 0 },
+      { kind: 0, leafValue: 0 },
+      { kind: 0, leafValue: 0 },
+      { kind: 0, leafValue: -9 },
+      { kind: 0, leafValue: 9 },
+    ],
+    treeRootIndices: [0, 1, 2, 3],
+  });
+  const model = decodeFlatLightGBMModel(buffer);
+  const prediction = predictFlatRunningStyle(model, { x: null });
+  expect(prediction.predictedLabel).toBe("nige");
+});
+
+it("predictFlatRunningStyle takes rightChild on a categorical miss", () => {
+  const buffer = buildBuffer({
+    categoricalValues: [3, 4, 5],
+    nodes: [
+      {
+        categoricalCount: 3,
+        categoricalStart: 0,
+        kind: 2,
+        leftChild: 4,
+        rightChild: 5,
+        splitFeature: 0,
+      },
+      { kind: 0, leafValue: 0 },
+      { kind: 0, leafValue: 0 },
+      { kind: 0, leafValue: 0 },
+      { kind: 0, leafValue: -5 },
+      { kind: 0, leafValue: 5 },
+    ],
+    treeRootIndices: [0, 1, 2, 3],
+  });
+  const model = decodeFlatLightGBMModel(buffer);
+  const prediction = predictFlatRunningStyle(model, { x: 99 });
+  expect(prediction.predictedLabel).toBe("nige");
+});
+
+it("predictFlatRunningStyle takes rightChild when value exceeds the numeric threshold", () => {
+  const buffer = buildBuffer({
+    nodes: [
+      {
+        kind: 1,
+        leftChild: 4,
+        rightChild: 5,
+        splitFeature: 0,
+        threshold: 0,
+      },
+      { kind: 0, leafValue: 0 },
+      { kind: 0, leafValue: 0 },
+      { kind: 0, leafValue: 0 },
+      { kind: 0, leafValue: -10 },
+      { kind: 0, leafValue: 10 },
+    ],
+    treeRootIndices: [0, 1, 2, 3],
+  });
+  const model = decodeFlatLightGBMModel(buffer);
+  const prediction = predictFlatRunningStyle(model, { x: 1 });
+  expect(prediction.predictedLabel).toBe("nige");
+});
+
+it("predictFlatRunningStyle reassigns predictedClass when a later class scores higher", () => {
+  const buffer = buildBuffer({
+    nodes: [
+      { kind: 0, leafValue: 0 },
+      { kind: 0, leafValue: 0 },
+      { kind: 0, leafValue: 5 },
+      { kind: 0, leafValue: 0 },
+    ],
+  });
+  const model = decodeFlatLightGBMModel(buffer);
+  const prediction = predictFlatRunningStyle(model, { x: 0 });
+  expect(prediction.predictedClass).toBe(2);
+  expect(prediction.predictedLabel).toBe("sashi");
+});

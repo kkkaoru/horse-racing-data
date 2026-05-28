@@ -135,3 +135,37 @@ test("field_spread_past_corner_1_norm equals max minus min", () => {
   const row = rows[0];
   expect(row?.field_spread_past_corner_1_norm).toBe(0.8 - 0.4);
 });
+
+test("field_min_past_corner_1_norm tracks descending peer values when later value is smaller than initial", () => {
+  const horseSelf: HorsePeerInputs = { ...HORSE_A };
+  const horsePeerHigh: HorsePeerInputs = { ...HORSE_B, pastCorner1NormAvg5: 0.9 };
+  const horsePeerLow: HorsePeerInputs = { ...HORSE_C, pastCorner1NormAvg5: 0.2 };
+  const rows = computeFieldFeaturesPerHorse([horseSelf, horsePeerHigh, horsePeerLow]);
+  const row = rows[0];
+  expect(row?.field_min_past_corner_1_norm).toBe(0.2);
+});
+
+test("self_speed_index_vs_field_top is null when self speedIndexBest5 is null", () => {
+  const horseSelf: HorsePeerInputs = { ...HORSE_A, speedIndexBest5: null };
+  const rows = computeFieldFeaturesPerHorse([horseSelf, HORSE_B, HORSE_C]);
+  const row = rows[0];
+  expect(row?.self_speed_index_vs_field_top).toBeNull();
+});
+
+test("self_speed_index_vs_field_top is null when all speedIndexBest5 values are null (field top is null)", () => {
+  const horseSelf: HorsePeerInputs = { ...HORSE_A, speedIndexBest5: null };
+  const horsePeer1: HorsePeerInputs = { ...HORSE_B, speedIndexBest5: null };
+  const horsePeer2: HorsePeerInputs = { ...HORSE_C, speedIndexBest5: null };
+  const rows = computeFieldFeaturesPerHorse([horseSelf, horsePeer1, horsePeer2]);
+  const row = rows[0];
+  expect(row?.self_speed_index_vs_field_top).toBeNull();
+});
+
+test("self_speed_index_vs_field_top is null when field top speed index is zero", () => {
+  const horseSelf: HorsePeerInputs = { ...HORSE_A, speedIndexBest5: 0 };
+  const horsePeer1: HorsePeerInputs = { ...HORSE_B, speedIndexBest5: 0 };
+  const horsePeer2: HorsePeerInputs = { ...HORSE_C, speedIndexBest5: 0 };
+  const rows = computeFieldFeaturesPerHorse([horseSelf, horsePeer1, horsePeer2]);
+  const row = rows[0];
+  expect(row?.self_speed_index_vs_field_top).toBeNull();
+});
