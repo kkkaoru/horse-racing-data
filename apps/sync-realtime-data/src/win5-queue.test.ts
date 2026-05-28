@@ -25,9 +25,7 @@ const SCHEDULE = {
   fetchedAt: "2026-05-10T09:00:00+09:00",
   kaisaiNen: "2026",
   kaisaiTsukihi: "0511",
-  legs: [
-    { kaisaiKai: "02", kaisaiNichime: "06", keibajoCode: "05", legIndex: 1, raceBango: "9" },
-  ],
+  legs: [{ kaisaiKai: "02", kaisaiNichime: "06", keibajoCode: "05", legIndex: 1, raceBango: "9" }],
   saleDeadline: null,
   source: "jra_web" as const,
 };
@@ -55,12 +53,12 @@ afterEach(() => {
 
 it("handleWin5PredictionJob marks processing then completed on success", async () => {
   const { handleWin5PredictionJob } = await import("./win5-queue");
-  const { getWin5Schedule, markWin5InferenceState, upsertWin5Prediction } = await import("./win5-d1");
+  const { getWin5Schedule, markWin5InferenceState, upsertWin5Prediction } =
+    await import("./win5-d1");
   const { buildWin5LegInputsFromPostgres, enrichWin5ScheduleLegs, getAverageWin5PayoutYen } =
     await import("./win5-postgres");
-  const { buildWin5PredictionPayload } = await import(
-    "../../pc-keiba-viewer/src/lib/win5/prediction"
-  );
+  const { buildWin5PredictionPayload } =
+    await import("../../pc-keiba-viewer/src/lib/win5/prediction");
   const { getFinishPositionPool } = await import("./finish-position-lite-pool");
   vi.mocked(getWin5Schedule).mockResolvedValue(SCHEDULE);
   vi.mocked(buildWin5LegInputsFromPostgres).mockResolvedValue(FIVE_LEG_INPUTS as never);
@@ -98,9 +96,8 @@ it("handleWin5PredictionJob falls back to jvd_wf row when D1 schedule is missing
     enrichWin5ScheduleLegs,
     getAverageWin5PayoutYen,
   } = await import("./win5-postgres");
-  const { buildWin5PredictionPayload } = await import(
-    "../../pc-keiba-viewer/src/lib/win5/prediction"
-  );
+  const { buildWin5PredictionPayload } =
+    await import("../../pc-keiba-viewer/src/lib/win5/prediction");
   const { getFinishPositionPool } = await import("./finish-position-lite-pool");
   vi.mocked(getWin5Schedule).mockResolvedValue(null);
   vi.mocked(buildWin5ScheduleFromJvdWfRow).mockReturnValue(SCHEDULE);
@@ -146,7 +143,8 @@ it("handleWin5PredictionJob throws when jvd_wf returns no schedule", async () =>
 it("handleWin5PredictionJob throws when fewer than 5 legs have inputs", async () => {
   const { handleWin5PredictionJob } = await import("./win5-queue");
   const { getWin5Schedule, markWin5InferenceState } = await import("./win5-d1");
-  const { buildWin5LegInputsFromPostgres, enrichWin5ScheduleLegs } = await import("./win5-postgres");
+  const { buildWin5LegInputsFromPostgres, enrichWin5ScheduleLegs } =
+    await import("./win5-postgres");
   const { getFinishPositionPool } = await import("./finish-position-lite-pool");
   vi.mocked(getWin5Schedule).mockResolvedValue(SCHEDULE);
   vi.mocked(enrichWin5ScheduleLegs).mockResolvedValue(SCHEDULE);
@@ -164,9 +162,8 @@ it("handleWin5PredictionJob falls back to D1 schedule path when getWin5Schedule 
   const { getWin5Schedule, upsertWin5Schedule } = await import("./win5-d1");
   const { buildWin5LegInputsFromPostgres, enrichWin5ScheduleLegs, getAverageWin5PayoutYen } =
     await import("./win5-postgres");
-  const { buildWin5PredictionPayload } = await import(
-    "../../pc-keiba-viewer/src/lib/win5/prediction"
-  );
+  const { buildWin5PredictionPayload } =
+    await import("../../pc-keiba-viewer/src/lib/win5/prediction");
   const { getFinishPositionPool } = await import("./finish-position-lite-pool");
   vi.mocked(getWin5Schedule).mockResolvedValue(SCHEDULE);
   vi.mocked(enrichWin5ScheduleLegs).mockResolvedValue(SCHEDULE);

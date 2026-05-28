@@ -157,9 +157,8 @@ it("enrichWin5ScheduleLegs merges resolved row, preserving caller-provided keiba
 });
 
 it("buildWin5LegInputsFromPostgres enriches the schedule then calls leg-inputs builder", async () => {
-  const { buildWin5LegInputsWithPool } = await import(
-    "../../pc-keiba-viewer/src/lib/win5/leg-inputs"
-  );
+  const { buildWin5LegInputsWithPool } =
+    await import("../../pc-keiba-viewer/src/lib/win5/leg-inputs");
   vi.mocked(buildWin5LegInputsWithPool).mockResolvedValue([]);
 
   const query = vi.fn(async () => ({ rows: [] }));

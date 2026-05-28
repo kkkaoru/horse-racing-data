@@ -35,20 +35,13 @@ describe("running-style expected horses", () => {
 
   test("filters feature rows to active horses only", () => {
     expect(
-      filterRunningStyleFeatureRowsByActiveEntries(
-        [
-          { umaban: 1 },
-          { umaban: 2 },
-          { umaban: 3 },
+      filterRunningStyleFeatureRowsByActiveEntries([{ umaban: 1 }, { umaban: 2 }, { umaban: 3 }], {
+        horses: [
+          { horseNumber: "1", status: null },
+          { horseNumber: "2", status: "出走取消" },
+          { horseNumber: "3", status: null },
         ],
-        {
-          horses: [
-            { horseNumber: "1", status: null },
-            { horseNumber: "2", status: "出走取消" },
-            { horseNumber: "3", status: null },
-          ],
-        },
-      ),
+      }),
     ).toEqual([{ umaban: 1 }, { umaban: 3 }]);
   });
 });

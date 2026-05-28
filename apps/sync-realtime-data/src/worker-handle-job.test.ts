@@ -259,15 +259,11 @@ it("handleJob delegates discover-win5-schedules to logWin5CronResult", async () 
 
 it("handleJob plan-running-style-predictions logs error when plan + cacheRefresh both reject", async () => {
   const { handleJob } = await import("./worker");
-  const {
-    planRunningStylePredictionsForDate,
-    refreshViewerRunningStyleCachesForDate,
-  } = await import("./running-style-cron");
+  const { planRunningStylePredictionsForDate, refreshViewerRunningStyleCachesForDate } =
+    await import("./running-style-cron");
   const { logFetch } = await import("./storage");
   vi.mocked(planRunningStylePredictionsForDate).mockRejectedValueOnce(new Error("plan boom"));
-  vi.mocked(refreshViewerRunningStyleCachesForDate).mockRejectedValueOnce(
-    new Error("cache boom"),
-  );
+  vi.mocked(refreshViewerRunningStyleCachesForDate).mockRejectedValueOnce(new Error("cache boom"));
   await handleJob(buildEnv(), { date: "20260512", type: "plan-running-style-predictions" });
   const args = vi.mocked(logFetch).mock.calls.at(-1);
   expect(args?.[2]).toBe("ok");
@@ -497,10 +493,10 @@ it("handleJob plan-premium-race-data-fetches with config + races + candidates en
   vi.mocked(listPremiumRaceDataFetchCandidatesByDate).mockResolvedValueOnce([
     { raceKey: "jra:2026:0512:08:01" },
   ]);
-  await handleJob(
-    buildEnv({ PREMIUM_RACE_ORIGIN: "https://x.test" } as never),
-    { date: "20260512", type: "plan-premium-race-data-fetches" },
-  );
+  await handleJob(buildEnv({ PREMIUM_RACE_ORIGIN: "https://x.test" } as never), {
+    date: "20260512",
+    type: "plan-premium-race-data-fetches",
+  });
   expect(markPremiumRaceDataQueued).toHaveBeenCalled();
 });
 
@@ -532,10 +528,7 @@ it("handleJob discover-premium-races logs the discovery summary", async () => {
 
 it("handleJob discover-premium-races with full config fetches top + NAR top and links races", async () => {
   const { handleJob } = await import("./worker");
-  const {
-    listSchedulableRaceSourcesByDate,
-    upsertPremiumRaceLink,
-  } = await import("./storage");
+  const { listSchedulableRaceSourcesByDate, upsertPremiumRaceLink } = await import("./storage");
   const { fetchPremiumHtml, discoverPremiumRaceLinks } = await import("./premium-race");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
     {
@@ -751,10 +744,10 @@ it("handleJob fetch-odds JRA branch with weights inserts horse-weight snapshot",
   vi.mocked(parseJraHorseWeights).mockReturnValueOnce([
     { changeAmount: 2, changeSign: "+", horseName: null, horseNumber: "1", weight: 500 },
   ]);
-  await handleJob(
-    buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:30:00.000Z" } as never),
-    { raceKey: "jra:2026:0512:08:01", type: "fetch-odds" },
-  );
+  await handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:30:00.000Z" } as never), {
+    raceKey: "jra:2026:0512:08:01",
+    type: "fetch-odds",
+  });
   expect(insertHorseWeightSnapshot).toHaveBeenCalledTimes(1);
   expect(updateLastFetch).toHaveBeenCalledWith(
     expect.anything(),
@@ -808,10 +801,10 @@ it("handleJob fetch-odds with NAR race + valid slot fetches odds, updates oddsLi
     tansho: [{ combination: "1", odds: 2.5, rank: 1 }],
   } as never);
   vi.mocked(insertOddsSnapshot).mockResolvedValueOnce(3);
-  await handleJob(
-    buildEnv({ REALTIME_TEST_NOW: "2026-05-12T08:00:00.000Z" } as never),
-    { raceKey: "nar:2026:0512:55:01", type: "fetch-odds" },
-  );
+  await handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T08:00:00.000Z" } as never), {
+    raceKey: "nar:2026:0512:55:01",
+    type: "fetch-odds",
+  });
   expect(completeOddsFetch).toHaveBeenCalledTimes(1);
   expect(updateOddsLinks).toHaveBeenCalledTimes(1);
   expect(markOddsFetchQueued).toHaveBeenCalled();
@@ -862,9 +855,8 @@ it("handleJob fetch-odds refreshes running-style cache when RUNNING_STYLE_D1_WRI
 
 it("handleJob fetch-odds throws when insertOddsSnapshot returns 0 (NAR branch)", async () => {
   const { handleJob } = await import("./worker");
-  const { claimOddsFetch, getRaceSource, insertOddsSnapshot, failOddsFetch } = await import(
-    "./storage"
-  );
+  const { claimOddsFetch, getRaceSource, insertOddsSnapshot, failOddsFetch } =
+    await import("./storage");
   vi.mocked(claimOddsFetch).mockResolvedValueOnce(true);
   vi.mocked(getRaceSource).mockResolvedValueOnce({
     babaCode: "22",
@@ -895,23 +887,18 @@ it("handleJob fetch-odds throws when insertOddsSnapshot returns 0 (NAR branch)",
   } as never);
   vi.mocked(insertOddsSnapshot).mockResolvedValueOnce(0);
   await expect(
-    handleJob(
-      buildEnv({ REALTIME_TEST_NOW: "2026-05-12T08:00:00.000Z" } as never),
-      { raceKey: "nar:2026:0512:55:01", type: "fetch-odds" },
-    ),
+    handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T08:00:00.000Z" } as never), {
+      raceKey: "nar:2026:0512:55:01",
+      type: "fetch-odds",
+    }),
   ).rejects.toThrow("odds rows are empty");
   expect(failOddsFetch).toHaveBeenCalledTimes(1);
 });
 
 it("handleJob fetch-odds with JRA race + valid odds slot writes a successful snapshot", async () => {
   const { handleJob } = await import("./worker");
-  const {
-    claimOddsFetch,
-    getRaceSource,
-    insertOddsSnapshot,
-    completeOddsFetch,
-    logFetch,
-  } = await import("./storage");
+  const { claimOddsFetch, getRaceSource, insertOddsSnapshot, completeOddsFetch, logFetch } =
+    await import("./storage");
   vi.mocked(claimOddsFetch).mockResolvedValueOnce(true);
   vi.mocked(getRaceSource).mockResolvedValueOnce({
     babaCode: "08",
@@ -941,10 +928,10 @@ it("handleJob fetch-odds with JRA race + valid odds slot writes a successful sna
     updatedAt: "2026-05-12T00:00:00+09:00",
   } as never);
   vi.mocked(insertOddsSnapshot).mockResolvedValueOnce(3);
-  await handleJob(
-    buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:30:00.000Z" } as never),
-    { raceKey: "jra:2026:0512:08:01", type: "fetch-odds" },
-  );
+  await handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:30:00.000Z" } as never), {
+    raceKey: "jra:2026:0512:08:01",
+    type: "fetch-odds",
+  });
   expect(completeOddsFetch).toHaveBeenCalledTimes(1);
   expect(logFetch).toHaveBeenCalledWith(
     expect.anything(),
@@ -1034,11 +1021,8 @@ it("handleJob discover-urls exercises upsertDiscoveredUrls with NAR + JRA race r
 it("handleJob discover-urls exercises the inner NAR race-list link processing", async () => {
   const { handleJob } = await import("./worker");
   const { fetchJraRacesByDate, fetchNarRacesByDate } = await import("./postgres");
-  const {
-    fetchRacePage,
-    fetchRaceLinksFromRaceList,
-    fetchTodayRaceListUrls,
-  } = await import("./keiba-go");
+  const { fetchRacePage, fetchRaceLinksFromRaceList, fetchTodayRaceListUrls } =
+    await import("./keiba-go");
   const { upsertNarRaceSource, upsertJraRaceSource } = await import("./storage");
   vi.mocked(fetchJraRacesByDate).mockResolvedValueOnce([
     {
@@ -1086,20 +1070,17 @@ it("handleJob discover-urls exercises the inner NAR race-list link processing", 
 it("handleJob fetch-premium-race-data throws when origin set but no race link discovered", async () => {
   const { handleJob } = await import("./worker");
   await expect(
-    handleJob(
-      buildEnv({ PREMIUM_RACE_ORIGIN: "https://x.test" } as never),
-      { raceKey: "jra:2026:0512:08:01", type: "fetch-premium-race-data" },
-    ),
+    handleJob(buildEnv({ PREMIUM_RACE_ORIGIN: "https://x.test" } as never), {
+      raceKey: "jra:2026:0512:08:01",
+      type: "fetch-premium-race-data",
+    }),
   ).rejects.toThrow("premium race data fetch failed");
 });
 
 it("handleJob fetch-premium-paddock with valid link + attempts runs the parse + update path", async () => {
   const { handleJob } = await import("./worker");
-  const {
-    getRaceSource,
-    getPremiumRaceLink,
-    updatePremiumPaddockFetchState,
-  } = await import("./storage");
+  const { getRaceSource, getPremiumRaceLink, updatePremiumPaddockFetchState } =
+    await import("./storage");
   const { fetchPremiumHtmlAttempts } = await import("./premium-race");
   vi.mocked(getRaceSource).mockResolvedValue({
     babaCode: "08",
@@ -1198,9 +1179,8 @@ it("handleJob fetch-premium-paddock skips when current state has future retryAft
 
 it("handleJob fetch-premium-race-data records auth_required when comment HTML lacks the authenticated marker", async () => {
   const { handleJob } = await import("./worker");
-  const { getRaceSource, getPremiumRaceLink, updatePremiumRaceDataFetchState } = await import(
-    "./storage"
-  );
+  const { getRaceSource, getPremiumRaceLink, updatePremiumRaceDataFetchState } =
+    await import("./storage");
   const { fetchPremiumHtml } = await import("./premium-race");
   vi.mocked(getRaceSource).mockResolvedValueOnce({
     babaCode: "08",
@@ -1255,9 +1235,8 @@ it("handleJob fetch-premium-race-data records auth_required when comment HTML la
 
 it("handleJob fetch-premium-race-data records empty when all fetch results are blank", async () => {
   const { handleJob } = await import("./worker");
-  const { getRaceSource, getPremiumRaceLink, updatePremiumRaceDataFetchState } = await import(
-    "./storage"
-  );
+  const { getRaceSource, getPremiumRaceLink, updatePremiumRaceDataFetchState } =
+    await import("./storage");
   const { fetchPremiumHtml } = await import("./premium-race");
   vi.mocked(getRaceSource).mockResolvedValueOnce({
     babaCode: "08",
@@ -1313,9 +1292,8 @@ it("handleJob fetch-premium-race-data records empty when all fetch results are b
 
 it("handleJob fetch-premium-race-data records workError when fetch rejects with a non-Error reason", async () => {
   const { handleJob } = await import("./worker");
-  const { getRaceSource, getPremiumRaceLink, updatePremiumRaceDataFetchState } = await import(
-    "./storage"
-  );
+  const { getRaceSource, getPremiumRaceLink, updatePremiumRaceDataFetchState } =
+    await import("./storage");
   const { fetchPremiumHtml } = await import("./premium-race");
   vi.mocked(getRaceSource).mockResolvedValueOnce({
     babaCode: "08",
@@ -1428,11 +1406,8 @@ it("handleJob fetch-premium-race-data with non-empty dataTopHorses writes the da
 
 it("handleJob fetch-premium-race-data with valid link + fetched HTML exercises full ingest path", async () => {
   const { handleJob } = await import("./worker");
-  const {
-    getRaceSource,
-    getPremiumRaceLink,
-    updatePremiumRaceDataFetchState,
-  } = await import("./storage");
+  const { getRaceSource, getPremiumRaceLink, updatePremiumRaceDataFetchState } =
+    await import("./storage");
   const { fetchPremiumHtml } = await import("./premium-race");
   vi.mocked(getRaceSource).mockResolvedValue({
     babaCode: "08",
@@ -1481,10 +1456,10 @@ it("handleJob fetch-premium-race-data with valid link + fetched HTML exercises f
 it("handleJob fetch-premium-paddock with origin + no race link returns ok early", async () => {
   const { handleJob } = await import("./worker");
   const { logFetch } = await import("./storage");
-  await handleJob(
-    buildEnv({ PREMIUM_RACE_ORIGIN: "https://x.test" } as never),
-    { raceKey: "jra:2026:0512:08:01", type: "fetch-premium-paddock" },
-  );
+  await handleJob(buildEnv({ PREMIUM_RACE_ORIGIN: "https://x.test" } as never), {
+    raceKey: "jra:2026:0512:08:01",
+    type: "fetch-premium-paddock",
+  });
   expect(logFetch).toHaveBeenCalledWith(
     expect.anything(),
     "fetch-premium-paddock",
@@ -1496,11 +1471,8 @@ it("handleJob fetch-premium-paddock with origin + no race link returns ok early"
 
 it("handleJob fetch-jra-track-condition with successful claim runs the snapshot insert", async () => {
   const { handleJob } = await import("./worker");
-  const {
-    claimTrackConditionFetch,
-    insertJraTrackConditionSnapshot,
-    completeTrackConditionFetch,
-  } = await import("./storage");
+  const { claimTrackConditionFetch, insertJraTrackConditionSnapshot, completeTrackConditionFetch } =
+    await import("./storage");
   vi.mocked(claimTrackConditionFetch).mockResolvedValueOnce(true);
   vi.mocked(insertJraTrackConditionSnapshot).mockResolvedValueOnce([
     { raceKey: "jra:2026:0512:08:01", raceStartAtJst: "2026-05-12T13:00:00+09:00" },
@@ -1515,20 +1487,18 @@ it("handleJob fetch-jra-track-condition with successful claim runs the snapshot 
 
 it("handleJob fetch-jra-track-condition writes per-race cache when insert returns future races", async () => {
   const { handleJob } = await import("./worker");
-  const {
-    claimTrackConditionFetch,
-    insertJraTrackConditionSnapshot,
-    completeTrackConditionFetch,
-  } = await import("./storage");
+  const { claimTrackConditionFetch, insertJraTrackConditionSnapshot, completeTrackConditionFetch } =
+    await import("./storage");
   const { writeCachedTrackCondition } = await import("./track-condition-cache");
   vi.mocked(claimTrackConditionFetch).mockResolvedValueOnce(true);
   vi.mocked(insertJraTrackConditionSnapshot).mockResolvedValueOnce([
     { raceKey: "jra:2026:0512:08:01", raceStartAtJst: "2099-05-12T15:00:00+09:00" },
   ] as never);
-  await handleJob(
-    buildEnv({ REALTIME_TEST_NOW: "2026-05-12T00:00:00.000Z" } as never),
-    { date: "20260512", keibajoCode: "08", type: "fetch-jra-track-condition" },
-  );
+  await handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T00:00:00.000Z" } as never), {
+    date: "20260512",
+    keibajoCode: "08",
+    type: "fetch-jra-track-condition",
+  });
   expect(completeTrackConditionFetch).toHaveBeenCalled();
   expect(writeCachedTrackCondition).toHaveBeenCalledTimes(1);
 });
@@ -1538,7 +1508,9 @@ it("handleJob fetch-jra-track-condition fails the fetch and rethrows when Playwr
   const { claimTrackConditionFetch, failTrackConditionFetch } = await import("./storage");
   const { fetchJraTrackConditionWithPlaywright } = await import("./jra-track-condition");
   vi.mocked(claimTrackConditionFetch).mockResolvedValueOnce(true);
-  vi.mocked(fetchJraTrackConditionWithPlaywright).mockRejectedValueOnce(new Error("playwright boom"));
+  vi.mocked(fetchJraTrackConditionWithPlaywright).mockRejectedValueOnce(
+    new Error("playwright boom"),
+  );
   await expect(
     handleJob(buildEnv(), {
       date: "20260512",
@@ -1551,10 +1523,7 @@ it("handleJob fetch-jra-track-condition fails the fetch and rethrows when Playwr
 
 it("handleJob fetch-jra-track-condition with successful claim and empty races falls through to fail", async () => {
   const { handleJob } = await import("./worker");
-  const {
-    claimTrackConditionFetch,
-    insertJraTrackConditionSnapshot,
-  } = await import("./storage");
+  const { claimTrackConditionFetch, insertJraTrackConditionSnapshot } = await import("./storage");
   vi.mocked(claimTrackConditionFetch).mockResolvedValueOnce(true);
   vi.mocked(insertJraTrackConditionSnapshot).mockResolvedValueOnce([]);
   await handleJob(buildEnv(), {
@@ -1595,10 +1564,10 @@ it("handleJob fetch-results with JRA race source completes when isRaceFinished",
     source: "jra",
     updatedAt: "2026-05-12T00:00:00+09:00",
   } as never);
-  await handleJob(
-    buildEnv({ REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z" } as never),
-    { raceKey: "jra:2026:0512:08:01", type: "fetch-results" },
-  );
+  await handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z" } as never), {
+    raceKey: "jra:2026:0512:08:01",
+    type: "fetch-results",
+  });
   expect(completeResultFetch).toHaveBeenCalledTimes(1);
 });
 
@@ -1731,14 +1700,8 @@ it("handleJob fetch-results NAR throws when results empty but expectedHorseCount
     }
     return '<html><tr><td class="num">1</td></tr></html>';
   });
-  vi.spyOn(
-    await import("./keiba-go"),
-    "parseRaceEntryHorseNumbers",
-  ).mockReturnValue(["1", "2"]);
-  vi.spyOn(
-    await import("./keiba-go"),
-    "parseRaceResultExcludedHorseNumbers",
-  ).mockReturnValue([]);
+  vi.spyOn(await import("./keiba-go"), "parseRaceEntryHorseNumbers").mockReturnValue(["1", "2"]);
+  vi.spyOn(await import("./keiba-go"), "parseRaceResultExcludedHorseNumbers").mockReturnValue([]);
   await expect(
     handleJob(buildEnv(), {
       raceKey: "nar:2026:0512:55:01",
@@ -1795,11 +1758,7 @@ it("handleJob fetch-weights NAR + sparse weight rows (length 1) clears snapshot 
 
 it("handleJob fetch-results with NAR race source completes when finish-position rows empty", async () => {
   const { handleJob } = await import("./worker");
-  const {
-    claimResultFetch,
-    getRaceSource,
-    completeResultFetch,
-  } = await import("./storage");
+  const { claimResultFetch, getRaceSource, completeResultFetch } = await import("./storage");
   vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
   vi.mocked(getRaceSource).mockResolvedValueOnce({
     babaCode: "22",

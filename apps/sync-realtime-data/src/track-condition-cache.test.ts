@@ -158,9 +158,7 @@ it("alarm deletes expired entries and reschedules to next non-expired", async ()
 
 it("alarm does not schedule when no entries remain", async () => {
   vi.spyOn(Date, "now").mockReturnValue(10_000);
-  const storage = new Map<string, unknown>([
-    ["k-expired", { ...TRACK_CONDITION, expiresAt: 500 }],
-  ]);
+  const storage = new Map<string, unknown>([["k-expired", { ...TRACK_CONDITION, expiresAt: 500 }]]);
   const { state, storage: storageMock } = buildState(storage);
   const cache = new TrackConditionCache(state as unknown as DurableObjectState, buildEnv());
   await cache.alarm();

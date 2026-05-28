@@ -17,9 +17,9 @@ describe("resolveRunningStyleDateYmd", () => {
   });
 
   test("builds YYYYMMDD from MM-DD using the current JST year", () => {
-    expect(resolveRunningStyleDateYmd("05-24", undefined, new Date("2026-05-20T00:00:00+09:00"))).toBe(
-      "20260524",
-    );
+    expect(
+      resolveRunningStyleDateYmd("05-24", undefined, new Date("2026-05-20T00:00:00+09:00")),
+    ).toBe("20260524");
   });
 
   test("builds YYYYMMDD from MM-DD with an explicit year", () => {

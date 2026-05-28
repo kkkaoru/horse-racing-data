@@ -96,9 +96,7 @@ it("writes payload and cachedAt on PUT", async () => {
 it("clears storage on POST /clear", async () => {
   const { state, storage } = buildState(undefined, undefined);
   const cache = new PremiumPaddockCache(state as unknown as DurableObjectState, buildEnv());
-  const response = await cache.fetch(
-    new Request("https://cache.local/clear", { method: "POST" }),
-  );
+  const response = await cache.fetch(new Request("https://cache.local/clear", { method: "POST" }));
   expect(response.status).toBe(200);
   expect(await response.json()).toStrictEqual({ ok: true });
   expect(storage.deleteAll).toHaveBeenCalledTimes(1);
@@ -107,9 +105,7 @@ it("clears storage on POST /clear", async () => {
 it("returns 405 for unsupported method", async () => {
   const { state } = buildState(undefined, undefined);
   const cache = new PremiumPaddockCache(state as unknown as DurableObjectState, buildEnv());
-  const response = await cache.fetch(
-    new Request("https://cache.local/", { method: "DELETE" }),
-  );
+  const response = await cache.fetch(new Request("https://cache.local/", { method: "DELETE" }));
   expect(response.status).toBe(405);
 });
 

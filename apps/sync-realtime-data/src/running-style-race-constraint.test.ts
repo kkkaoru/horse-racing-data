@@ -21,10 +21,7 @@ test("applyRaceLevelNigeConstraintForRace keeps only the strongest nige candidat
 
 test("applyRaceLevelNigeConstraintForRace suppresses nige when confidence is low", () => {
   const predictions = applyRaceLevelNigeConstraintForRace(
-    [
-      Float64Array.from([0.12, 0.4, 0.3, 0.18]),
-      Float64Array.from([0.11, 0.35, 0.34, 0.2]),
-    ],
+    [Float64Array.from([0.12, 0.4, 0.3, 0.18]), Float64Array.from([0.11, 0.35, 0.34, 0.2])],
     LABELS,
     4,
   );

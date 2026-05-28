@@ -2,10 +2,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 
 import type { Env } from "./types";
-import {
-  buildTrendBustFromRaceContext,
-  requestTrendCacheBust,
-} from "./viewer-trend-cache-bust";
+import { buildTrendBustFromRaceContext, requestTrendCacheBust } from "./viewer-trend-cache-bust";
 
 afterEach(() => {
   vi.restoreAllMocks();

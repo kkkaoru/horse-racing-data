@@ -160,10 +160,7 @@ describe("premium race parsing", () => {
   });
 
   it("parses data top horses from the sample page", () => {
-    const html = readFileSync(
-      resolve(process.cwd(), "../../tmp/_netkeiba_data_top.html"),
-      "utf8",
-    );
+    const html = readFileSync(resolve(process.cwd(), "../../tmp/_netkeiba_data_top.html"), "utf8");
     const parsed = parsePremiumDataTopHorses(html, dataTopEnv);
 
     expect(parsed).toEqual([
@@ -191,11 +188,7 @@ describe("premium race parsing", () => {
         horseName: "アイデアユー",
         horseNumber: "8",
         rank: 3,
-        reasons: [
-          "このコースが得意な調教師",
-          "今回の馬場状態が得意な馬",
-          "このコースで有利な枠順",
-        ],
+        reasons: ["このコースが得意な調教師", "今回の馬場状態が得意な馬", "このコースで有利な枠順"],
       },
     ]);
   });
@@ -370,10 +363,7 @@ describe("premium race parsing", () => {
   });
 
   it("recognises the authorized comment fixture saved to tmp/netkeiba-comment.html", () => {
-    const html = readFileSync(
-      resolve(process.cwd(), "../../tmp/netkeiba-comment.html"),
-      "utf8",
-    );
+    const html = readFileSync(resolve(process.cwd(), "../../tmp/netkeiba-comment.html"), "utf8");
     expect(isPremiumStableCommentHtmlAuthorized(html)).toBe(true);
   });
 });

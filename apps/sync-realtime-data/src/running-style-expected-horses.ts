@@ -39,8 +39,7 @@ export const listRunningStyleExpectedHorseCounts = async (
     raceKeys.map(async (raceKey) => {
       const featureCount = featureCounts.get(raceKey) ?? 0;
       const realtimeKey = toRealtimeKeyForLookup(raceKey);
-      const entries =
-        realtimeKey === null ? null : await getLatestRaceEntries(db, realtimeKey);
+      const entries = realtimeKey === null ? null : await getLatestRaceEntries(db, realtimeKey);
       counts.set(raceKey, resolveRunningStyleExpectedHorseCount(featureCount, entries));
     }),
   );
