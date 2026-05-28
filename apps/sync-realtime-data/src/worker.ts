@@ -2415,11 +2415,21 @@ export default {
       return;
     }
     if (controller.cron === DAILY_FEATURE_BUILD_CRON) {
+      // Enqueue rather than run inline. The queue consumer caps concurrency
+      // and the new freshness guard short-circuits when daily_race_entries
+      // is already populated within the last hour, so back-to-back hourly
+      // ticks no longer pile direct D1 writes from the cron handler.
       const targetDate = getTodayJst(scheduledAt);
       ctx.waitUntil(
-        runDailyFeatureBuildForEnv(env, { fromDate: targetDate, toDate: targetDate })
-          .then((result) =>
-            logFetch(env.REALTIME_DB, "build-daily-features", "ok", null, JSON.stringify(result)),
+        enqueueJobs(env, [{ date: targetDate, sourceScope: "all", type: "build-daily-features" }])
+          .then(() =>
+            logFetch(
+              env.REALTIME_DB,
+              "build-daily-features",
+              "queued",
+              null,
+              JSON.stringify({ date: targetDate, sourceScope: "all" }),
+            ),
           )
           .catch((error: unknown) =>
             logFetch(env.REALTIME_DB, "build-daily-features", "error", null, formatError(error)),
