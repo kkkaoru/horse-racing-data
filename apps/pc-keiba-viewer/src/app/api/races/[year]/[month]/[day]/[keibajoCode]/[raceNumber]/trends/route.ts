@@ -225,6 +225,11 @@ const buildRealtimeStarterRows = async (race: RaceListItem): Promise<RaceTrendSt
 type RaceTrendBuildOptions = RaceTrendCacheOptions;
 
 const REALTIME_TREND_LOOKBACK_DAYS = 1;
+// Cap concurrent sync-realtime-data fetches per (source, ymd) build so a
+// single cold trend miss can't saturate the upstream worker — the upstream
+// scrapes keiba.go.jp synchronously per race and shares its CPU/socket budget
+// with the detail-page realtime endpoint that drives live odds.
+const REALTIME_FETCH_CONCURRENCY = 3;
 
 const fetchRealtimeRowsForDay = async (
   source: RaceSource,
@@ -236,7 +241,9 @@ const fetchRealtimeRowsForDay = async (
     ymd.slice(6, 8),
   );
   const sameSourceRaces = races.filter((candidate) => candidate.source === source);
-  return (await mapLimit(sameSourceRaces, 6, buildRealtimeStarterRows)).flat();
+  return (
+    await mapLimit(sameSourceRaces, REALTIME_FETCH_CONCURRENCY, buildRealtimeStarterRows)
+  ).flat();
 };
 
 const buildRealtimeRowsForTrend = async (
