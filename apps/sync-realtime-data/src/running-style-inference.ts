@@ -83,7 +83,7 @@ const mergeFeatureMap = (
     field_avg_past_first_3f: fieldRow.field_avg_past_first_3f,
     field_avg_past_kohan_3f: fieldRow.field_avg_past_kohan_3f,
     field_avg_speed_index: fieldRow.field_avg_speed_index,
-    field_has_pure_nige_horse: fieldRow.field_has_pure_nige_horse ? 1 : 0,
+    field_has_pure_nige_horse: Number(Boolean(fieldRow.field_has_pure_nige_horse)),
     field_max_past_corner_1_norm: fieldRow.field_max_past_corner_1_norm,
     field_min_past_corner_1_norm: fieldRow.field_min_past_corner_1_norm,
     field_nige_candidate_count: fieldRow.field_nige_candidate_count,
@@ -158,22 +158,18 @@ const predictRace = (
   predictedAt: string,
 ): RaceRunningStyleRow[] => {
   const fieldRows = computeFieldFeaturesPerHorse(extractPeerInputs(rows));
-  const rawPredictions = rows.map((row, index) => {
-    const fieldRow = fieldRows[index];
-    if (fieldRow === undefined) throw new Error(`field row missing for index ${index}`);
-    return buildPredictionForHorse(row, fieldRow, model);
-  });
+  const rawPredictions = rows.map((row, index) =>
+    buildPredictionForHorse(row, fieldRows[index]!, model),
+  );
   const constrained = applyRaceLevelNigeConstraintForRace(
     rawPredictions.map(probabilitiesToArray),
     model.class_labels,
     model.num_class,
     { disableNigeCap: true },
   );
-  return rows.map((row, index) => {
-    const prediction = constrained[index];
-    if (prediction === undefined) throw new Error(`prediction missing for index ${index}`);
-    return predictionRowFromResult(row, prediction, model.model_version, predictedAt);
-  });
+  return rows.map((row, index) =>
+    predictionRowFromResult(row, constrained[index]!, model.model_version, predictedAt),
+  );
 };
 
 const predictRaceFlat = (
@@ -182,22 +178,18 @@ const predictRaceFlat = (
   predictedAt: string,
 ): RaceRunningStyleRow[] => {
   const fieldRows = computeFieldFeaturesPerHorse(extractPeerInputs(rows));
-  const rawPredictions = rows.map((row, index) => {
-    const fieldRow = fieldRows[index];
-    if (fieldRow === undefined) throw new Error(`field row missing for index ${index}`);
-    return buildFlatPredictionForHorse(row, fieldRow, model);
-  });
+  const rawPredictions = rows.map((row, index) =>
+    buildFlatPredictionForHorse(row, fieldRows[index]!, model),
+  );
   const constrained = applyRaceLevelNigeConstraintForRace(
     rawPredictions.map(probabilitiesToArray),
     model.header.class_labels,
     model.header.num_class,
     { disableNigeCap: true },
   );
-  return rows.map((row, index) => {
-    const prediction = constrained[index];
-    if (prediction === undefined) throw new Error(`prediction missing for index ${index}`);
-    return predictionRowFromResult(row, prediction, model.header.model_version, predictedAt);
-  });
+  return rows.map((row, index) =>
+    predictionRowFromResult(row, constrained[index]!, model.header.model_version, predictedAt),
+  );
 };
 
 export const runRunningStyleInference = async (

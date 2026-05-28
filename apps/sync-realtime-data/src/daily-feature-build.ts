@@ -7,6 +7,7 @@
 import type { Pool } from "pg";
 
 import { getFinishPositionPool } from "./finish-position-lite-pool";
+import { formatError } from "./format-error";
 import type { Env } from "./types";
 
 export type DailyFeatureBuildSourceScope = "all" | "ban-ei" | "jra" | "nar";
@@ -627,7 +628,7 @@ export const triggerViewerCacheWarmForDate = async (
     return { raceCount: payload.raceCount, status: "ok", warmed: payload.warmed };
   } catch (error) {
     return {
-      message: error instanceof Error ? error.message : String(error),
+      message: formatError(error),
       status: "error",
     };
   }

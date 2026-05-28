@@ -3,6 +3,7 @@
 // d1-daily / d1-snapshot caches for the source × YMD, so the next request from
 // any open trend page rebuilds the payload immediately.
 
+import { formatError } from "./format-error";
 import type { Env } from "./types";
 
 const VIEWER_INTERNAL_BUST_PATH = "/api/internal/trend-cache-bust";
@@ -61,7 +62,7 @@ export const requestTrendCacheBust = async (
     return { status: "ok" };
   } catch (error) {
     return {
-      message: error instanceof Error ? error.message : String(error),
+      message: formatError(error),
       status: "error",
     };
   }
@@ -73,9 +74,7 @@ export interface RaceFinishContext {
   source: TrendBustSource;
 }
 
-export const buildTrendBustFromRaceContext = (
-  context: RaceFinishContext,
-): TrendBustRequest => ({
+export const buildTrendBustFromRaceContext = (context: RaceFinishContext): TrendBustRequest => ({
   source: context.source,
   targetYmd: `${context.kaisaiNen}${context.kaisaiTsukihi}`,
 });
