@@ -61,18 +61,15 @@ const RUNNING_STYLE_LABELS: readonly RunningStyleClassLabel[] = [
 ];
 const RUNNING_STYLE_LABEL_SET = new Set<string>(RUNNING_STYLE_LABELS);
 
-const DECISION_TYPE_LEQ = "<=";
 const DECISION_TYPE_EQ = "==";
 const CATEGORICAL_THRESHOLD_DELIMITER = "||";
 const MISSING_FLAG = 1;
 
-const numberAt = (array: Float64Array | Uint8Array, index: number): number =>
-  array[index]!;
+const numberAt = (array: Float64Array | Uint8Array, index: number): number => array[index]!;
 
 const isSplitNode = (node: LightGBMTreeNode): node is LightGBMSplitNode => "split_feature" in node;
 
-const evaluateNumericSplit = (decisionType: string, threshold: number, value: number): boolean =>
-  decisionType === DECISION_TYPE_LEQ ? value <= threshold : value < threshold;
+const evaluateNumericSplit = (threshold: number, value: number): boolean => value <= threshold;
 
 const evaluateCategoricalSplit = (rawThreshold: number | string, value: number): boolean => {
   const text = typeof rawThreshold === "string" ? rawThreshold : String(rawThreshold);
@@ -83,7 +80,7 @@ const goesLeftAtSplit = (node: LightGBMSplitNode, value: number): boolean => {
   if (node.decision_type === DECISION_TYPE_EQ)
     return evaluateCategoricalSplit(node.threshold, value);
   const threshold = typeof node.threshold === "number" ? node.threshold : Number(node.threshold);
-  return evaluateNumericSplit(node.decision_type, threshold, value);
+  return evaluateNumericSplit(threshold, value);
 };
 
 const chooseNextChild = (node: LightGBMSplitNode, vector: FeatureVector): LightGBMTreeNode => {

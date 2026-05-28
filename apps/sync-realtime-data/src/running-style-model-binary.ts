@@ -17,7 +17,6 @@ const HEADER_OFFSET = HEADER_LENGTH_OFFSET + 4;
 const NODE_RECORD_BYTES = 40;
 
 const NODE_LEAF = 0;
-const NODE_NUMERIC_LEQ = 1;
 const NODE_CATEGORICAL_EQ = 2;
 const MISSING_FLAG = 1;
 const CATEGORICAL_THRESHOLD_DELIMITER = "||";
@@ -118,15 +117,14 @@ const chooseChild = (
   if (vector.missing[splitFeature] === MISSING_FLAG) {
     return defaultLeft ? leftChild : rightChild;
   }
-  const value = vector.values[splitFeature] ?? 0;
+  const value = vector.values[splitFeature]!;
   if (kind === NODE_CATEGORICAL_EQ) {
     const start = model.dataView.getInt32(base + 16, true);
     const count = model.dataView.getInt32(base + 20, true);
     return hasCategoricalValue(model, start, count, value) ? leftChild : rightChild;
   }
   const threshold = model.dataView.getFloat64(base + 24, true);
-  const goesLeft = kind === NODE_NUMERIC_LEQ ? value <= threshold : value < threshold;
-  return goesLeft ? leftChild : rightChild;
+  return value <= threshold ? leftChild : rightChild;
 };
 
 const walkFlatTree = (
