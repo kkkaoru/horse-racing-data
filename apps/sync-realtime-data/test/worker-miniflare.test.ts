@@ -48,6 +48,9 @@ const seedRace = async (
   } = {},
 ): Promise<void> => {
   const source = options.source ?? "nar";
+  const raceKeySegments = raceKey.split(":");
+  const keibajoCode = raceKeySegments[3] ?? (source === "jra" ? "08" : "55");
+  const raceBango = raceKeySegments[4] ?? "01";
   await db
     .prepare(
       `
@@ -57,14 +60,15 @@ const seedRace = async (
           discovered_at, updated_at, last_odds_fetch_at, last_odds_queued_at,
           odds_fetch_lock_until, last_weight_fetch_at, last_result_fetch_at, result_complete_at
         )
-        values (?, ?, '2026', '0512', ?, '01', ?, '01', '05', ?, 'test race',
+        values (?, ?, '2026', '0512', ?, ?, ?, '01', '05', ?, 'test race',
           'https://example.test/deba', '{}', ?, ?, ?, ?, ?, null, ?, ?)
       `,
     )
     .bind(
       raceKey,
       source,
-      source === "jra" ? "08" : "55",
+      keibajoCode,
+      raceBango,
       source === "jra" ? "08" : "22",
       raceStartAtJst,
       TEST_NOW,
@@ -108,6 +112,10 @@ beforeAll(async () => {
             namespace: "stub-playwright",
             path: "playwright",
           }));
+          build.onResolve({ filter: /^\.\/keiba-go$/ }, () => ({
+            namespace: "stub-keiba-go",
+            path: "keiba-go",
+          }));
           build.onLoad({ filter: /.*/, namespace: "stub-postgres" }, () => ({
             contents:
               "export const fetchJraRacesByDate = async () => []; export const fetchNarRacesByDate = async () => [];",
@@ -131,6 +139,27 @@ beforeAll(async () => {
           build.onLoad({ filter: /.*/, namespace: "stub-playwright" }, () => ({
             contents:
               "export const launch = async () => { throw new Error('playwright unavailable in test'); };",
+            loader: "js",
+          }));
+          build.onLoad({ filter: /.*/, namespace: "stub-keiba-go" }, () => ({
+            contents: `
+              export const BABA_CODE_TO_LOCAL_KEIBAJO = {};
+              export const buildRaceListUrl = () => "";
+              export const buildRaceResultUrl = () => "";
+              export const buildRaceKey = () => "";
+              export const extractOddsLinks = () => [];
+              export const fetchOdds = async () => null;
+              export const fetchRaceLinksFromRaceList = async () => [];
+              export const fetchRacePage = async () => null;
+              export const fetchTodayRaceListUrls = async () => [];
+              export const parseRaceMetadata = () => null;
+              export const parseRaceEntries = () => [];
+              export const parseHorseWeights = () => [];
+              export const parseRaceEntryHorseNumbers = () => [];
+              export const parseRaceResultExcludedHorseNumbers = () => [];
+              export const parseRaceResults = () => [];
+              export const parseRaceResultHorseWeights = () => [];
+            `,
             loader: "js",
           }));
         },

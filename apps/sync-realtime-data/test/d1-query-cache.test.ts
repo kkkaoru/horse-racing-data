@@ -1,11 +1,19 @@
 // Run with bun test apps/sync-realtime-data/test/d1-query-cache.test.ts
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
-import { putD1QueryCache, type PutD1QueryCacheOptions } from "../src/d1-query-cache";
+import {
+  buildD1QueryCacheKey,
+  putD1QueryCache,
+  resolveD1QueryCacheTtlSeconds,
+  withD1QueryCache,
+  type PutD1QueryCacheOptions,
+} from "../src/d1-query-cache";
 
 type KvForTest = NonNullable<PutD1QueryCacheOptions["kv"]>;
 
 interface FakeCache {
+  delete: ReturnType<typeof vi.fn>;
+  match: ReturnType<typeof vi.fn>;
   put: ReturnType<typeof vi.fn>;
 }
 
@@ -20,11 +28,17 @@ interface MutableCachesHost {
 const HOST = globalThis as unknown as MutableCachesHost;
 const ORIGINAL_CACHES = HOST.caches;
 
-const setupFakeCache = (): FakeCache => {
-  const cache: FakeCache = { put: vi.fn(async () => undefined) };
+const setupFakeCache = (matchResult: Response | undefined = undefined): FakeCache => {
+  const cache: FakeCache = {
+    delete: vi.fn(async () => true),
+    match: vi.fn(async () => matchResult),
+    put: vi.fn(async () => undefined),
+  };
   HOST.caches = { default: cache };
   return cache;
 };
+
+const FUTURE_RACE_DAY = { kaisaiNen: "2099", kaisaiTsukihi: "1231" };
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -40,11 +54,11 @@ test("putD1QueryCache writes to URL cache and KV when both are provided", async 
 
   await putD1QueryCache(
     "running-style-race",
-    ["getRaceRunningStylesFromD1", "jra:20260524:04:01"],
+    ["getRaceRunningStylesFromD1", "jra:20990101:04:01"],
     [{ predictedLabel: "nige" }],
     {
       kv: kv as unknown as KvForTest,
-      raceDay: { kaisaiNen: "2026", kaisaiTsukihi: "0524" },
+      raceDay: FUTURE_RACE_DAY,
     },
   );
 
@@ -68,14 +82,19 @@ test("putD1QueryCache writes only to KV when URL cache is unavailable", async ()
   HOST.caches = undefined;
   const kv: FakeKv = { put: vi.fn(async () => undefined) };
 
-  await putD1QueryCache("realtime-short", ["sampleKey"], { hello: "world" }, {
-    kv: kv as unknown as KvForTest,
-  });
+  await putD1QueryCache(
+    "realtime-short",
+    ["sampleKey"],
+    { hello: "world" },
+    {
+      kv: kv as unknown as KvForTest,
+    },
+  );
 
   expect(kv.put).toHaveBeenCalledOnce();
 });
 
-test("putD1QueryCache skips writes when TTL is zero", async () => {
+test("putD1QueryCache skips writes when TTL is zero (race day in the past)", async () => {
   const cache = setupFakeCache();
   const kv: FakeKv = { put: vi.fn(async () => undefined) };
 
@@ -91,4 +110,68 @@ test("putD1QueryCache skips writes when TTL is zero", async () => {
 
   expect(cache.put).not.toHaveBeenCalled();
   expect(kv.put).not.toHaveBeenCalled();
+});
+
+test("putD1QueryCache defers writes to executionContext.waitUntil when ctx is provided", async () => {
+  const cache = setupFakeCache();
+  const waitUntil = vi.fn();
+  const ctx = { waitUntil, passThroughOnException: vi.fn() } as unknown as ExecutionContext;
+
+  await putD1QueryCache("realtime-short", ["sampleKey"], { hello: "world" }, { ctx });
+
+  expect(waitUntil).toHaveBeenCalledOnce();
+});
+
+test("buildD1QueryCacheKey is deterministic for identical inputs", () => {
+  const left = buildD1QueryCacheKey("running-style-race", ["key", 1, "abc"]);
+  const right = buildD1QueryCacheKey("running-style-race", ["key", 1, "abc"]);
+  expect(left).toBe(right);
+  expect(left).toMatch(/^[0-9a-f]{8}$/);
+});
+
+test("buildD1QueryCacheKey differs when keyParts change", () => {
+  const left = buildD1QueryCacheKey("running-style-race", ["key", 1]);
+  const right = buildD1QueryCacheKey("running-style-race", ["key", 2]);
+  expect(left === right).toBe(false);
+});
+
+test("resolveD1QueryCacheTtlSeconds uses default profile TTL when raceDay is absent", () => {
+  const ttl = resolveD1QueryCacheTtlSeconds("realtime-short");
+  expect(ttl).toBe(60);
+});
+
+test("resolveD1QueryCacheTtlSeconds returns 0 when race day already passed", () => {
+  const ttl = resolveD1QueryCacheTtlSeconds("running-style-race", {
+    kaisaiNen: "1999",
+    kaisaiTsukihi: "0101",
+  });
+  expect(ttl).toBe(0);
+});
+
+test("resolveD1QueryCacheTtlSeconds returns positive seconds for a future race day", () => {
+  const ttl = resolveD1QueryCacheTtlSeconds("running-style-race", FUTURE_RACE_DAY);
+  expect(ttl > 0).toBe(true);
+});
+
+test("withD1QueryCache returns cached value without calling load when URL cache hits", async () => {
+  const cachedBody = JSON.stringify({ cached: true });
+  const matchResult = new Response(cachedBody);
+  setupFakeCache(matchResult);
+  const load = vi.fn();
+
+  const result = await withD1QueryCache<{ cached: boolean }>("realtime-short", ["sampleKey"], load);
+
+  expect(load).not.toHaveBeenCalled();
+  expect(result).toStrictEqual({ cached: true });
+});
+
+test("withD1QueryCache calls load and caches the result on miss", async () => {
+  const cache = setupFakeCache(undefined);
+  const load = vi.fn(async () => ({ fresh: 1 }));
+
+  const result = await withD1QueryCache("realtime-short", ["sampleKey"], load);
+
+  expect(load).toHaveBeenCalledOnce();
+  expect(result).toStrictEqual({ fresh: 1 });
+  expect(cache.put).toHaveBeenCalledOnce();
 });
