@@ -31,16 +31,14 @@ afterEach(() => {
 });
 
 it("parseRunningStylePostgresVerificationParams returns null when path does not match", async () => {
-  const { parseRunningStylePostgresVerificationParams } = await import(
-    "./running-style-verification"
-  );
+  const { parseRunningStylePostgresVerificationParams } =
+    await import("./running-style-verification");
   expect(parseRunningStylePostgresVerificationParams(new URL("https://x.test/other"))).toBeNull();
 });
 
 it("parseRunningStylePostgresVerificationParams parses jra path", async () => {
-  const { parseRunningStylePostgresVerificationParams } = await import(
-    "./running-style-verification"
-  );
+  const { parseRunningStylePostgresVerificationParams } =
+    await import("./running-style-verification");
   const url = new URL("https://x.test/admin/running-style/verify-postgres/jra/2026/05/12/08/01");
   expect(parseRunningStylePostgresVerificationParams(url)).toStrictEqual({
     kaisaiNen: "2026",
@@ -52,9 +50,8 @@ it("parseRunningStylePostgresVerificationParams parses jra path", async () => {
 });
 
 it("parseRunningStylePostgresVerificationParams parses nar path with alphanumeric keibajo", async () => {
-  const { parseRunningStylePostgresVerificationParams } = await import(
-    "./running-style-verification"
-  );
+  const { parseRunningStylePostgresVerificationParams } =
+    await import("./running-style-verification");
   const url = new URL("https://x.test/admin/running-style/verify-postgres/nar/2026/05/12/B0/12");
   expect(parseRunningStylePostgresVerificationParams(url)).toStrictEqual({
     kaisaiNen: "2026",
@@ -66,18 +63,13 @@ it("parseRunningStylePostgresVerificationParams parses nar path with alphanumeri
 });
 
 it("runRunningStyleWorkerPostgresVerification returns a summary on success", async () => {
-  const { runRunningStyleWorkerPostgresVerification } = await import(
-    "./running-style-verification"
-  );
+  const { runRunningStyleWorkerPostgresVerification } =
+    await import("./running-style-verification");
   const { loadFlatLightGBMModelFromR2 } = await import("./running-style-model-binary");
-  const { buildRunningStyleFeaturesForRaceFromPostgres } = await import(
-    "./running-style-feature-sql"
-  );
-  const {
-    loadRunningStyleFeatureParquet,
-    putRunningStyleFeatureParquet,
-    validateFeatureCoverage,
-  } = await import("./running-style-feature-parquet");
+  const { buildRunningStyleFeaturesForRaceFromPostgres } =
+    await import("./running-style-feature-sql");
+  const { loadRunningStyleFeatureParquet, putRunningStyleFeatureParquet, validateFeatureCoverage } =
+    await import("./running-style-feature-parquet");
   const { runRunningStyleInferenceRowsWithFlatModel } = await import("./running-style-inference");
   vi.mocked(loadFlatLightGBMModelFromR2).mockResolvedValue({
     header: { feature_names: ["a", "b"] },
@@ -121,13 +113,11 @@ it("runRunningStyleWorkerPostgresVerification returns a summary on success", asy
 });
 
 it("runRunningStyleWorkerPostgresVerification throws when missing model features detected", async () => {
-  const { runRunningStyleWorkerPostgresVerification } = await import(
-    "./running-style-verification"
-  );
+  const { runRunningStyleWorkerPostgresVerification } =
+    await import("./running-style-verification");
   const { loadFlatLightGBMModelFromR2 } = await import("./running-style-model-binary");
-  const { buildRunningStyleFeaturesForRaceFromPostgres } = await import(
-    "./running-style-feature-sql"
-  );
+  const { buildRunningStyleFeaturesForRaceFromPostgres } =
+    await import("./running-style-feature-sql");
   const { validateFeatureCoverage } = await import("./running-style-feature-parquet");
   vi.mocked(loadFlatLightGBMModelFromR2).mockResolvedValue({
     header: { feature_names: ["a"] },

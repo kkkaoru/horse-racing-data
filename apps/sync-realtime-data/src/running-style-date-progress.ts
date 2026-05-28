@@ -64,9 +64,7 @@ const listFeatureCountsByDate = async (env: Env, date: string): Promise<Map<stri
   return counts;
 };
 
-export const isRunningStyleDateProgressRowComplete = (
-  row: RunningStyleDateProgressRow,
-): boolean =>
+export const isRunningStyleDateProgressRowComplete = (row: RunningStyleDateProgressRow): boolean =>
   row.featuresReady &&
   row.inferenceStatus === "completed" &&
   row.d1Count >= row.expectedHorses &&
@@ -183,7 +181,11 @@ export const collectRunningStyleDateProgress = async (
   return rows;
 };
 
-export const resolveRunningStyleDateYmd = (date: string, year?: number, now = new Date()): string => {
+export const resolveRunningStyleDateYmd = (
+  date: string,
+  year?: number,
+  now = new Date(),
+): string => {
   if (/^\d{8}$/u.test(date)) {
     return date;
   }

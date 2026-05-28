@@ -127,12 +127,7 @@ describe("parseArgs", () => {
   });
 
   test("applies defaults for --from-year and --to-year", () => {
-    const args = parseArgs([
-      "--pg-url",
-      "postgres://x",
-      "--output",
-      "tmp/out.sql",
-    ]);
+    const args = parseArgs(["--pg-url", "postgres://x", "--output", "tmp/out.sql"]);
     expect(args.fromYear).toBe(DEFAULT_FROM_YEAR);
     expect(args.toYear).toBe(DEFAULT_TO_YEAR);
   });

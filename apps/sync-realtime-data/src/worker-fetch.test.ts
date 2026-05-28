@@ -267,7 +267,8 @@ it("fetch GET /api/nar/races/.../jockey-wins returns the jockey wins list", asyn
 
 it("fetch POST /admin/running-style/verify-postgres returns 403 when authorization mismatches", async () => {
   const { default: worker } = await import("./worker");
-  const { parseRunningStylePostgresVerificationParams } = await import("./running-style-verification");
+  const { parseRunningStylePostgresVerificationParams } =
+    await import("./running-style-verification");
   vi.mocked(parseRunningStylePostgresVerificationParams).mockReturnValueOnce({
     kaisaiNen: "2026",
     kaisaiTsukihi: "0512",

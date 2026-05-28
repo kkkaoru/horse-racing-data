@@ -1,7 +1,10 @@
 // Run with bun. Probe whether viewer-compatible running-style caches exist.
 
 import { readD1QueryCache } from "./d1-query-cache";
-import { buildRunningStyleCacheRequest, getRunningStyleCacheTtlSeconds } from "./running-style-cache";
+import {
+  buildRunningStyleCacheRequest,
+  getRunningStyleCacheTtlSeconds,
+} from "./running-style-cache";
 import type { RunningStyleInferenceRace } from "./running-style-d1";
 import type { Env } from "./types";
 

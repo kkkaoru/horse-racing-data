@@ -1,11 +1,6 @@
 // run with: bun run test
 import { afterEach, expect, it, vi } from "vitest";
-import {
-  OddsCache,
-  getOddsCacheId,
-  readCachedOdds,
-  writeCachedOdds,
-} from "./odds-cache";
+import { OddsCache, getOddsCacheId, readCachedOdds, writeCachedOdds } from "./odds-cache";
 import type { Env, OddsHistoryPoint } from "./types";
 
 interface FakeStorage {

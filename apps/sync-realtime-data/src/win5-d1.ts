@@ -36,10 +36,7 @@ export const parseWin5ScheduleRow = (row: Win5ScheduleRow): Win5Schedule => {
 export const parseWin5PredictionRow = (row: Win5PredictionRow): Win5PredictionPayload =>
   JSON.parse(row.prediction_json) as Win5PredictionPayload;
 
-export const upsertWin5Schedule = async (
-  db: D1Database,
-  schedule: Win5Schedule,
-): Promise<void> => {
+export const upsertWin5Schedule = async (db: D1Database, schedule: Win5Schedule): Promise<void> => {
   await db
     .prepare(
       `

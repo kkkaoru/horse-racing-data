@@ -37,10 +37,7 @@ export const getPremiumDataTopCacheTtlSeconds = (
 
 export const buildPremiumDataTopCacheRequest = (
   env: EnvLike,
-  race: Pick<
-    NarRaceSource,
-    "kaisaiNen" | "kaisaiTsukihi" | "keibajoCode" | "raceBango" | "source"
-  >,
+  race: Pick<NarRaceSource, "kaisaiNen" | "kaisaiTsukihi" | "keibajoCode" | "raceBango" | "source">,
 ): Request => {
   const url = new URL(
     `/api/races/${race.kaisaiNen}/${race.kaisaiTsukihi.slice(
@@ -60,10 +57,7 @@ export const putPremiumDataTopCache = async ({
   rows,
 }: {
   env: EnvLike;
-  race: Pick<
-    NarRaceSource,
-    "kaisaiNen" | "kaisaiTsukihi" | "keibajoCode" | "raceBango" | "source"
-  >;
+  race: Pick<NarRaceSource, "kaisaiNen" | "kaisaiTsukihi" | "keibajoCode" | "raceBango" | "source">;
   rows: ReadonlyArray<PremiumDataTopHorse & { fetchedAt: string }>;
 }): Promise<boolean> => {
   if (rows.length === 0) {

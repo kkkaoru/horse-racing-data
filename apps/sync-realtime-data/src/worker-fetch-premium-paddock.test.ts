@@ -226,9 +226,8 @@ it("fetch-premium-paddock auth_required branch updates state and records event",
 
 it("fetch-premium-paddock unavailable branch updates state with status unavailable", async () => {
   const { handleJob } = await import("./worker");
-  const { getRaceSource, getPremiumRaceLink, updatePremiumPaddockFetchState } = await import(
-    "./storage"
-  );
+  const { getRaceSource, getPremiumRaceLink, updatePremiumPaddockFetchState } =
+    await import("./storage");
   const { fetchPremiumHtmlAttempts, parsePremiumPaddockBulletins } = await import("./premium-race");
   vi.mocked(getRaceSource).mockResolvedValueOnce(buildPremiumPaddockRaceSource());
   vi.mocked(getPremiumRaceLink).mockResolvedValueOnce({
@@ -255,9 +254,8 @@ it("fetch-premium-paddock unavailable branch updates state with status unavailab
 
 it("fetch-premium-paddock pending branch updates state with status pending", async () => {
   const { handleJob } = await import("./worker");
-  const { getRaceSource, getPremiumRaceLink, updatePremiumPaddockFetchState } = await import(
-    "./storage"
-  );
+  const { getRaceSource, getPremiumRaceLink, updatePremiumPaddockFetchState } =
+    await import("./storage");
   const { fetchPremiumHtmlAttempts, parsePremiumPaddockBulletins } = await import("./premium-race");
   vi.mocked(getRaceSource).mockResolvedValueOnce(buildPremiumPaddockRaceSource());
   vi.mocked(getPremiumRaceLink).mockResolvedValueOnce({
@@ -307,9 +305,8 @@ it("fetch-premium-paddock falls back through ensurePremiumRaceLink when no exist
 
 it("fetch-premium-paddock empty branch updates state with status empty", async () => {
   const { handleJob } = await import("./worker");
-  const { getRaceSource, getPremiumRaceLink, updatePremiumPaddockFetchState } = await import(
-    "./storage"
-  );
+  const { getRaceSource, getPremiumRaceLink, updatePremiumPaddockFetchState } =
+    await import("./storage");
   const { fetchPremiumHtmlAttempts } = await import("./premium-race");
   vi.mocked(getRaceSource).mockResolvedValueOnce(buildPremiumPaddockRaceSource());
   vi.mocked(getPremiumRaceLink).mockResolvedValueOnce({

@@ -58,22 +58,16 @@ afterEach(() => {
 
 it("getRunningStyleCacheTtlSeconds returns positive seconds before race-day end", () => {
   vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-05-12T10:00:00+09:00"));
-  expect(
-    getRunningStyleCacheTtlSeconds({ kaisaiNen: "2026", kaisaiTsukihi: "0512" }),
-  ).toBe(50399);
+  expect(getRunningStyleCacheTtlSeconds({ kaisaiNen: "2026", kaisaiTsukihi: "0512" })).toBe(50399);
 });
 
 it("getRunningStyleCacheTtlSeconds returns 0 after the race day", () => {
   vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-05-13T00:00:01+09:00"));
-  expect(
-    getRunningStyleCacheTtlSeconds({ kaisaiNen: "2026", kaisaiTsukihi: "0512" }),
-  ).toBe(0);
+  expect(getRunningStyleCacheTtlSeconds({ kaisaiNen: "2026", kaisaiTsukihi: "0512" })).toBe(0);
 });
 
 it("getRunningStyleCacheTtlSeconds returns 0 for malformed kaisaiTsukihi", () => {
-  expect(
-    getRunningStyleCacheTtlSeconds({ kaisaiNen: "2026", kaisaiTsukihi: "zzzz" }),
-  ).toBe(0);
+  expect(getRunningStyleCacheTtlSeconds({ kaisaiNen: "2026", kaisaiTsukihi: "zzzz" })).toBe(0);
 });
 
 it("buildRunningStyleCacheRequest uses the configured origin and appends search params", () => {

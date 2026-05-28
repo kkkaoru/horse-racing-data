@@ -33,10 +33,11 @@ export const buildRealtimeRaceKeyFromRunningStyle = (params: RunningStyleRacePar
     normalizeRaceBango(params.raceBango),
   );
 
-const RUNNING_STYLE_RACE_KEY_PATTERN =
-  /^(jra|nar):(\d{4})(\d{4}):(\d{2}):(\d{2})$/u;
+const RUNNING_STYLE_RACE_KEY_PATTERN = /^(jra|nar):(\d{4})(\d{4}):(\d{2}):(\d{2})$/u;
 
-export const parseRunningStyleRaceKey = (raceKey: string): (RunningStyleRaceParams & { raceKey: string }) | null => {
+export const parseRunningStyleRaceKey = (
+  raceKey: string,
+): (RunningStyleRaceParams & { raceKey: string }) | null => {
   const match = raceKey.match(RUNNING_STYLE_RACE_KEY_PATTERN);
   if (match === null) {
     return null;

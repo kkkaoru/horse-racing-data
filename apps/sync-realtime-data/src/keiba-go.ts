@@ -130,8 +130,9 @@ export const fetchTodayRaceListUrls = async (targetDate: string): Promise<RaceLi
   const article = html.match(TODAY_RACE_ARTICLE_PATTERN)?.[1] ?? html;
   const target = `${targetDate.slice(0, 4)}/${targetDate.slice(4, 6)}/${targetDate.slice(6, 8)}`;
   const paths = dedupe(
-    Array.from(article.matchAll(RACE_LIST_LINK_PATTERN))
-      .map((match) => decodeHtmlAttribute((match[1] ?? match[2] ?? match[3])!)),
+    Array.from(article.matchAll(RACE_LIST_LINK_PATTERN)).map((match) =>
+      decodeHtmlAttribute((match[1] ?? match[2] ?? match[3])!),
+    ),
   );
 
   return paths
@@ -700,9 +701,7 @@ export const parseHorseWeights = (html: string) => {
       const match = Array.from(
         block.matchAll(/<td[^>]*class=["'][^"']*odds_weight[^"']*["'][^>]*>([\s\S]*?)<\/td>/giu),
       )
-        .map((cell) =>
-          stripHtmlTags(cell[1]!.replace(/<br\s*\/?>/giu, " ")).replace(/\s+/g, " "),
-        )
+        .map((cell) => stripHtmlTags(cell[1]!.replace(/<br\s*\/?>/giu, " ")).replace(/\s+/g, " "))
         .map((text) =>
           text.match(/(?:^|[^0-9.])([3-9]\d{2}|1[0-3]\d{2})(?:\s*\(([+-]?)(\d+)\))?(?![0-9.])/u),
         )
