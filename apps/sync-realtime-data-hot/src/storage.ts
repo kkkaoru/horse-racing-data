@@ -392,6 +392,46 @@ interface ListOddsSnapshotsCutoffOptions {
   limit: number;
 }
 
+export interface ImportOddsSnapshotRow {
+  race_key: string;
+  fetched_at: string;
+  odds_type: string;
+  combination: string;
+  odds: number | null;
+  min_odds: number | null;
+  max_odds: number | null;
+  average_odds: number | null;
+  rank: number | null;
+}
+
+export const bulkInsertOddsSnapshotRows = async (
+  db: D1Database,
+  rows: ImportOddsSnapshotRow[],
+): Promise<number> => {
+  if (rows.length === 0) {
+    return 0;
+  }
+  const statements = rows.map((row) =>
+    db
+      .prepare(
+        `insert into odds_snapshots (race_key, fetched_at, odds_type, combination, odds, min_odds, max_odds, average_odds, rank) values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        row.race_key,
+        row.fetched_at,
+        row.odds_type,
+        row.combination,
+        row.odds,
+        row.min_odds,
+        row.max_odds,
+        row.average_odds,
+        row.rank,
+      ),
+  );
+  await runD1Batches(db, statements);
+  return rows.length;
+};
+
 export const getNarVenueLastRaceStartAtJst = async (
   db: D1Database,
   kaisaiNen: string,

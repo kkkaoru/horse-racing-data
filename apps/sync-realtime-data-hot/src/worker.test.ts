@@ -16,6 +16,7 @@ import worker, {
   handleFetchRequest,
   handleGetOdds,
   handleImportOddsChunk,
+  handleMigrationState,
   handleQueue,
   handleScheduled,
   handleUpsertOddsFetchState,
@@ -115,7 +116,8 @@ const buildDb = (options: BuildDbOptions = {}): D1Database => {
     const run = vi.fn(async () => ({ meta: { changes: 1 } }));
     return { bind: vi.fn(() => ({ run })) };
   });
-  return { prepare: prepareMock } as unknown as D1Database;
+  const batch = vi.fn(async () => []);
+  return { batch, prepare: prepareMock } as unknown as D1Database;
 };
 
 const buildEnv = (overrides: Partial<Env> = {}): Env =>
@@ -316,15 +318,67 @@ it("handleImportOddsChunk returns 401 when unauthorized", async () => {
   expect(response.status).toBe(401);
 });
 
-it("handleImportOddsChunk returns 202 placeholder when authorized", async () => {
+it("handleImportOddsChunk inserts rows and returns count", async () => {
+  const env = buildEnv();
   const response = await handleImportOddsChunk(
-    buildEnv(),
+    env,
     new Request("https://x/api/internal/import-odds-chunk", {
+      body: JSON.stringify({
+        rows: [
+          {
+            average_odds: null,
+            combination: "01",
+            fetched_at: "2026-05-28T10:00:00+09:00",
+            max_odds: null,
+            min_odds: null,
+            odds: 2.5,
+            odds_type: "tansho",
+            race_key: "nar:20260528:42:01",
+            rank: 1,
+          },
+        ],
+      }),
       headers: { "x-pc-keiba-internal-token": "secret" },
       method: "POST",
     }),
   );
-  expect(response.status).toBe(202);
+  expect(response.status).toBe(200);
+  expect(await response.json()).toStrictEqual({ inserted: 1 });
+});
+
+it("handleImportOddsChunk treats missing rows array as empty", async () => {
+  const env = buildEnv();
+  const response = await handleImportOddsChunk(
+    env,
+    new Request("https://x/api/internal/import-odds-chunk", {
+      body: "{}",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      method: "POST",
+    }),
+  );
+  expect(await response.json()).toStrictEqual({ inserted: 0 });
+});
+
+it("handleMigrationState returns 401 when unauthorized", async () => {
+  const response = await handleMigrationState(
+    buildEnv(),
+    new Request("https://x/api/internal/migration-state", { method: "POST" }),
+  );
+  expect(response.status).toBe(401);
+});
+
+it("handleMigrationState writes value to KV under odds:migration prefix", async () => {
+  const env = buildEnv();
+  const response = await handleMigrationState(
+    env,
+    new Request("https://x/api/internal/migration-state", {
+      body: JSON.stringify({ key: "b1-max-id", value: "42" }),
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      method: "POST",
+    }),
+  );
+  expect(response.status).toBe(200);
+  expect(vi.mocked(env.ODDS_HOT_KV.put)).toHaveBeenCalledWith("odds:migration:b1-max-id", "42");
 });
 
 it("handleFetchRequest returns health payload at root", async () => {
@@ -345,6 +399,14 @@ it("handleFetchRequest routes import endpoint", async () => {
   const response = await handleFetchRequest(
     buildEnv(),
     new Request("https://x/api/internal/import-odds-chunk", { method: "POST" }),
+  );
+  expect(response.status).toBe(401);
+});
+
+it("handleFetchRequest routes migration-state endpoint", async () => {
+  const response = await handleFetchRequest(
+    buildEnv(),
+    new Request("https://x/api/internal/migration-state", { method: "POST" }),
   );
   expect(response.status).toBe(401);
 });

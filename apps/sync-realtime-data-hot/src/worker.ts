@@ -17,6 +17,7 @@ import { jsonResponse } from "./http";
 import { writeCachedOdds } from "./odds-cache";
 import { planOddsFetches } from "./plan";
 import {
+  bulkInsertOddsSnapshotRows,
   getLatestOddsFromD1,
   listArchiveCandidatesBeforeCutoff,
   listOddsHistoryByType,
@@ -25,6 +26,7 @@ import {
   toHorseTrends,
   toOddsTrendsByType,
   upsertOddsFetchState,
+  type ImportOddsSnapshotRow,
 } from "./storage";
 import { getTodayJst } from "./time";
 import type { Env, Job, OddsData, OddsType, OddsFetchStateUpsertInput } from "./types";
@@ -117,13 +119,31 @@ export const handleUpsertOddsFetchState = async (env: Env, request: Request): Pr
   return jsonResponse({ ok: true });
 };
 
+interface ImportOddsChunkRequest {
+  rows: ImportOddsSnapshotRow[];
+}
+
 export const handleImportOddsChunk = async (env: Env, request: Request): Promise<Response> => {
   if (!isAuthorizedInternalRequest(request, env)) {
     return jsonResponse({ error: "unauthorized" }, { status: 401 });
   }
-  // PR1 skeleton: actual import handled by Phase B-1 / B-3 scripts.
-  // Returning 202 lets the orchestrator know the endpoint exists but isn't wired yet.
-  return jsonResponse({ accepted: true }, { status: 202 });
+  const body = (await request.json()) as ImportOddsChunkRequest;
+  const inserted = await bulkInsertOddsSnapshotRows(env.REALTIME_HOT_DB, body.rows ?? []);
+  return jsonResponse({ inserted });
+};
+
+interface MigrationStateRequest {
+  key: string;
+  value: string;
+}
+
+export const handleMigrationState = async (env: Env, request: Request): Promise<Response> => {
+  if (!isAuthorizedInternalRequest(request, env)) {
+    return jsonResponse({ error: "unauthorized" }, { status: 401 });
+  }
+  const body = (await request.json()) as MigrationStateRequest;
+  await env.ODDS_HOT_KV.put(`odds:migration:${body.key}`, body.value);
+  return jsonResponse({ ok: true });
 };
 
 export const handleFetchRequest = async (env: Env, request: Request): Promise<Response> => {
@@ -136,6 +156,9 @@ export const handleFetchRequest = async (env: Env, request: Request): Promise<Re
   }
   if (request.method === "POST" && url.pathname === "/api/internal/import-odds-chunk") {
     return handleImportOddsChunk(env, request);
+  }
+  if (request.method === "POST" && url.pathname === "/api/internal/migration-state") {
+    return handleMigrationState(env, request);
   }
   const raceKey = parseRaceKeyFromPath(url.pathname);
   if (request.method === "GET" && raceKey) {
