@@ -2332,11 +2332,19 @@ export const buildRealtimePayload = async (
   } | null,
   trackCondition: TrackCondition | null = null,
 ): Promise<RealtimeRacePayload> => {
-  const history = await listTanshoHistory(db, raceKey);
-  const historyByType = await listOddsHistoryByType(db, raceKey);
+  // Five independent D1 reads — the previous serial chain meant a 5x
+  // round-trip penalty per detail-page poll on a saturated worker. Fire them
+  // in parallel so the response time is bounded by the slowest single read.
+  const [history, historyByType, raceEntries, horseWeights, raceResults] = await Promise.all([
+    listTanshoHistory(db, raceKey),
+    listOddsHistoryByType(db, raceKey),
+    getLatestRaceEntries(db, raceKey),
+    getLatestHorseWeights(db, raceKey),
+    getLatestRaceResults(db, raceKey),
+  ]);
   return {
-    raceEntries: await getLatestRaceEntries(db, raceKey),
-    horseWeights: await getLatestHorseWeights(db, raceKey),
+    raceEntries,
+    horseWeights,
     odds: odds
       ? {
           fetchedAt: odds.fetchedAt,
@@ -2347,7 +2355,7 @@ export const buildRealtimePayload = async (
           trendsByType: toOddsTrendsByType(historyByType),
         }
       : null,
-    raceResults: await getLatestRaceResults(db, raceKey),
+    raceResults,
     raceKey,
     source,
     trackCondition,
