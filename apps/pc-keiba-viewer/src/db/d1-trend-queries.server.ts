@@ -61,14 +61,50 @@ const toRunningStyleCache = (raw: RawRunningStyleD1Row): RaceTrendRunningStyleCa
 const buildRunningStyleSelectSql = (placeholders: string): string =>
   `select race_key, horse_number, predicted_label from race_running_styles where race_key in (${placeholders})`;
 
+const RUNNING_STYLES_KV_PREFIX = "race-trend-running-styles:v1";
+
+const buildRunningStylesCacheKey = (sortedKeys: ReadonlyArray<string>): string => {
+  // Embed the count so two race lookups that happen to share a prefix in
+  // the future can't collide on the key.
+  return `${RUNNING_STYLES_KV_PREFIX}:${sortedKeys.length}:${sortedKeys.join(",")}`;
+};
+
+const readRunningStylesFromKv = async (
+  env: CloudflareEnv | null,
+  cacheKey: string,
+): Promise<RaceTrendRunningStyleCache[] | null> => {
+  const kv = env?.DETAIL_SECTION_CACHE_KV;
+  if (!kv) return null;
+  const body = await kv.get(cacheKey);
+  if (!body) return null;
+  try {
+    return JSON.parse(body) as RaceTrendRunningStyleCache[];
+  } catch {
+    return null;
+  }
+};
+
+const writeRunningStylesToKv = async (
+  env: CloudflareEnv | null,
+  cacheKey: string,
+  rows: RaceTrendRunningStyleCache[],
+): Promise<void> => {
+  const kv = env?.DETAIL_SECTION_CACHE_KV;
+  if (!kv) return;
+  await kv.put(cacheKey, JSON.stringify(rows), { expirationTtl: KV_TTL_SECONDS });
+};
+
 export const getRaceTrendRunningStylesFromD1 = async (
   raceKeys: ReadonlyArray<string>,
 ): Promise<RaceTrendRunningStyleCache[]> => {
-  const uniqueKeys = Array.from(new Set(raceKeys.filter((key) => key.length > 0)));
+  const uniqueKeys = Array.from(new Set(raceKeys.filter((key) => key.length > 0))).toSorted();
   if (uniqueKeys.length === 0) return [];
   const { env } = await getCloudflareContext({ async: true });
   const db = env?.REALTIME_DB;
   if (!db) return [];
+  const cacheKey = buildRunningStylesCacheKey(uniqueKeys);
+  const cached = await readRunningStylesFromKv(env, cacheKey);
+  if (cached !== null) return cached;
   const queryChunk = async (
     chunk: ReadonlyArray<string>,
   ): Promise<RaceTrendRunningStyleCache[]> => {
@@ -94,6 +130,15 @@ export const getRaceTrendRunningStylesFromD1 = async (
     };
     const workerCount = Math.min(RUNNING_STYLE_CHUNK_CONCURRENCY, chunks.length);
     await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+    // Persist non-empty results so a saturation event on the next viewer
+    // request doesn't surface as historicalRunningStyles: 0 — the cache
+    // write path elsewhere only stores the merged trend payload when
+    // both starters and running-style history are populated, but we still
+    // want the per-call running-style fetch to short-circuit while data
+    // is fresh.
+    if (results.length > 0) {
+      await writeRunningStylesToKv(env, cacheKey, results);
+    }
     return results;
   } catch (error) {
     console.error("D1 race_running_styles query failed", error);

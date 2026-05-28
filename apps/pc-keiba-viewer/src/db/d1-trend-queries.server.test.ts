@@ -733,3 +733,73 @@ it("getRaceTrendRunningStylesFromD1 limits in-flight queries to 3 across many ch
   expect(db.prepare).toHaveBeenCalledTimes(10);
   expect(inFlightState.peak).toBeLessThanOrEqual(3);
 });
+
+it("getRaceTrendRunningStylesFromD1 writes non-empty results to KV with the prefixed cache key", async () => {
+  const { db } = buildD1Stub([
+    { race_key: "nar:20260524:47:01", horse_number: 1, predicted_label: "nige" },
+    { race_key: "nar:20260524:47:01", horse_number: 2, predicted_label: "sashi" },
+  ]);
+  const kv = buildKvStub();
+  installContext({ cache: null, db, kv });
+  await getRaceTrendRunningStylesFromD1(["nar:20260524:47:01"]);
+  expect(kv.put).toHaveBeenCalledTimes(1);
+  const putArgs = kv.put.mock.calls[0];
+  expect(putArgs?.[0]).toBe("race-trend-running-styles:v1:1:nar:20260524:47:01");
+  expect(JSON.parse(String(putArgs?.[1]))).toStrictEqual([
+    { raceKey: "nar:20260524:47:01", horseNumber: "1", predictedLabel: "nige" },
+    { raceKey: "nar:20260524:47:01", horseNumber: "2", predictedLabel: "sashi" },
+  ]);
+  expect(putArgs?.[2]).toStrictEqual({ expirationTtl: 1800 });
+});
+
+it("getRaceTrendRunningStylesFromD1 does not write to KV when the D1 result is empty", async () => {
+  const { db } = buildD1Stub([]);
+  const kv = buildKvStub();
+  installContext({ cache: null, db, kv });
+  const rows = await getRaceTrendRunningStylesFromD1(["nar:20260524:47:01"]);
+  expect(rows).toStrictEqual([]);
+  expect(kv.put).not.toHaveBeenCalled();
+});
+
+it("getRaceTrendRunningStylesFromD1 short-circuits to KV without hitting D1 when cache hit", async () => {
+  const cached = [
+    { raceKey: "nar:20260524:47:01", horseNumber: "5", predictedLabel: "oikomi" as const },
+  ];
+  const { db } = buildD1Stub([]);
+  const kv = buildKvStub(JSON.stringify(cached));
+  installContext({ cache: null, db, kv });
+  const rows = await getRaceTrendRunningStylesFromD1(["nar:20260524:47:01"]);
+  expect(rows).toStrictEqual(cached);
+  expect(db.prepare).not.toHaveBeenCalled();
+  expect(kv.put).not.toHaveBeenCalled();
+});
+
+it("getRaceTrendRunningStylesFromD1 falls through to D1 when KV body is corrupt", async () => {
+  const { db, prepared } = buildD1Stub([
+    { race_key: "nar:20260524:47:01", horse_number: 8, predicted_label: "senkou" },
+  ]);
+  const kv = buildKvStub("{not-valid-json");
+  installContext({ cache: null, db, kv });
+  const rows = await getRaceTrendRunningStylesFromD1(["nar:20260524:47:01"]);
+  expect(rows).toStrictEqual([
+    { raceKey: "nar:20260524:47:01", horseNumber: "8", predictedLabel: "senkou" },
+  ]);
+  expect(prepared.bind).toHaveBeenCalledTimes(1);
+});
+
+it("getRaceTrendRunningStylesFromD1 sorts race keys before building the cache key", async () => {
+  const { db } = buildD1Stub([
+    { race_key: "nar:20260524:42:03", horse_number: 1, predicted_label: "nige" },
+  ]);
+  const kv = buildKvStub();
+  installContext({ cache: null, db, kv });
+  await getRaceTrendRunningStylesFromD1([
+    "nar:20260524:47:01",
+    "nar:20260524:42:03",
+    "nar:20260524:30:05",
+  ]);
+  const cacheKey = kv.put.mock.calls[0]?.[0];
+  expect(cacheKey).toBe(
+    "race-trend-running-styles:v1:3:nar:20260524:30:05,nar:20260524:42:03,nar:20260524:47:01",
+  );
+});
