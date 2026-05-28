@@ -27,12 +27,20 @@ import {
   quoteIdentifier,
   quoteLiteral,
   resolveConcurrency,
+  resolveNonNegativeSecondsEnv,
+  resolvePositiveIntegerEnv,
   resolveStrategy,
   runPushSync,
+  runWithRetry,
+  buildNeonPsqlArgs,
+  DEFAULT_NEON_PSQL_CONTAINER,
   shouldRefreshInclusiveIncrementalMarker,
   timestampKeyExpression,
   waitForNeonReady,
   type ProgressEvent,
+  type RetryFailureInfo,
+  type RetryGaveUpInfo,
+  type RetryAttemptInfo,
   type SyncStrategyThresholds,
   type TableMetadata,
 } from "./core";
@@ -568,6 +576,11 @@ describe("dependency planning", () => {
     expect(plan).toEqual([[tableA]]);
   });
 
+  it("ignores self-edges instead of treating them as cycles", () => {
+    const plan = buildDependencyPlan([tableA], [{ childTable: "table_a", parentTable: "table_a" }]);
+    expect(plan).toEqual([[tableA]]);
+  });
+
   it("rejects cyclic dependencies", () => {
     expect(() =>
       buildDependencyPlan(
@@ -841,5 +854,307 @@ describe("parallel push runner", () => {
         },
       ),
     ).rejects.toThrow("No primary-key tables matched");
+  });
+});
+
+describe("buildNeonPsqlArgs", () => {
+  it("defaults to docker exec against the long-lived local container", () => {
+    expect(
+      buildNeonPsqlArgs({
+        neonUrl: "postgresql://user:pass@neon.example/db",
+        containerName: undefined,
+      }),
+    ).toStrictEqual([
+      "exec",
+      "-i",
+      "horse-racing-local-postgresql",
+      "psql",
+      "postgresql://user:pass@neon.example/db",
+    ]);
+  });
+
+  it("uses the default container name from the exported constant", () => {
+    expect(DEFAULT_NEON_PSQL_CONTAINER).toBe("horse-racing-local-postgresql");
+  });
+
+  it("respects a custom container name", () => {
+    expect(
+      buildNeonPsqlArgs({
+        neonUrl: "postgresql://user:pass@neon.example/db",
+        containerName: "my-psql-sidecar",
+      }),
+    ).toStrictEqual([
+      "exec",
+      "-i",
+      "my-psql-sidecar",
+      "psql",
+      "postgresql://user:pass@neon.example/db",
+    ]);
+  });
+
+  it("falls back to default when container name is an empty string", () => {
+    expect(
+      buildNeonPsqlArgs({
+        neonUrl: "postgresql://user:pass@neon.example/db",
+        containerName: "",
+      }),
+    ).toStrictEqual([
+      "exec",
+      "-i",
+      "horse-racing-local-postgresql",
+      "psql",
+      "postgresql://user:pass@neon.example/db",
+    ]);
+  });
+
+  it("appends extra args after the connection URL", () => {
+    expect(
+      buildNeonPsqlArgs({
+        neonUrl: "postgresql://user:pass@neon.example/db",
+        containerName: undefined,
+        extraArgs: ["-v", "ON_ERROR_STOP=1", "-qAtc", "select 1"],
+      }),
+    ).toStrictEqual([
+      "exec",
+      "-i",
+      "horse-racing-local-postgresql",
+      "psql",
+      "postgresql://user:pass@neon.example/db",
+      "-v",
+      "ON_ERROR_STOP=1",
+      "-qAtc",
+      "select 1",
+    ]);
+  });
+
+  it("throws when neonUrl is undefined", () => {
+    expect(() => buildNeonPsqlArgs({ neonUrl: undefined, containerName: undefined })).toThrow(
+      "NEON_DIRECT_DATABASE_URL is required",
+    );
+  });
+
+  it("throws when neonUrl is an empty string", () => {
+    expect(() => buildNeonPsqlArgs({ neonUrl: "", containerName: undefined })).toThrow(
+      "NEON_DIRECT_DATABASE_URL is required",
+    );
+  });
+});
+
+describe("resolvePositiveIntegerEnv", () => {
+  it("returns the override when provided", () => {
+    expect(resolvePositiveIntegerEnv(7, "3", 5)).toBe(7);
+  });
+
+  it("falls back to default when env is undefined", () => {
+    expect(resolvePositiveIntegerEnv(null, undefined, 5)).toBe(5);
+  });
+
+  it("falls back to default when env is an empty string", () => {
+    expect(resolvePositiveIntegerEnv(null, "", 5)).toBe(5);
+  });
+
+  it("parses a positive integer from env", () => {
+    expect(resolvePositiveIntegerEnv(null, "8", 5)).toBe(8);
+  });
+
+  it("falls back when env value is zero", () => {
+    expect(resolvePositiveIntegerEnv(null, "0", 5)).toBe(5);
+  });
+
+  it("falls back when env value is negative", () => {
+    expect(resolvePositiveIntegerEnv(null, "-2", 5)).toBe(5);
+  });
+
+  it("falls back when env value is not an integer", () => {
+    expect(resolvePositiveIntegerEnv(null, "1.5", 5)).toBe(5);
+  });
+
+  it("falls back when env value is not numeric", () => {
+    expect(resolvePositiveIntegerEnv(null, "abc", 5)).toBe(5);
+  });
+});
+
+describe("resolveNonNegativeSecondsEnv", () => {
+  it("returns the default in milliseconds when env is undefined", () => {
+    expect(resolveNonNegativeSecondsEnv(undefined, 5)).toBe(5000);
+  });
+
+  it("returns the default in milliseconds when env is empty", () => {
+    expect(resolveNonNegativeSecondsEnv("", 5)).toBe(5000);
+  });
+
+  it("parses seconds to milliseconds for a positive value", () => {
+    expect(resolveNonNegativeSecondsEnv("3", 5)).toBe(3000);
+  });
+
+  it("allows zero seconds", () => {
+    expect(resolveNonNegativeSecondsEnv("0", 5)).toBe(0);
+  });
+
+  it("supports fractional seconds", () => {
+    expect(resolveNonNegativeSecondsEnv("0.5", 5)).toBe(500);
+  });
+
+  it("falls back when env value is negative", () => {
+    expect(resolveNonNegativeSecondsEnv("-1", 5)).toBe(5000);
+  });
+
+  it("falls back when env value is not numeric", () => {
+    expect(resolveNonNegativeSecondsEnv("abc", 5)).toBe(5000);
+  });
+});
+
+describe("runWithRetry", () => {
+  it("returns the result without invoking callbacks when the operation succeeds first", async () => {
+    const succeededCalls: RetryAttemptInfo[] = [];
+    const failedCalls: RetryFailureInfo[] = [];
+    const gaveUpCalls: RetryGaveUpInfo[] = [];
+    const sleepCalls: number[] = [];
+    const result = await runWithRetry(async () => "ok", {
+      maxAttempts: 3,
+      retryDelayMs: 10,
+      sleep: async (milliseconds) => {
+        sleepCalls.push(milliseconds);
+      },
+      onAttemptFailed: (info) => failedCalls.push(info),
+      onGaveUp: (info) => gaveUpCalls.push(info),
+      onRetrySucceeded: (info) => succeededCalls.push(info),
+    });
+    expect(result).toBe("ok");
+    expect(failedCalls).toStrictEqual([]);
+    expect(gaveUpCalls).toStrictEqual([]);
+    expect(succeededCalls).toStrictEqual([]);
+    expect(sleepCalls).toStrictEqual([]);
+  });
+
+  it("retries once and reports success on attempt 2", async () => {
+    const succeededCalls: RetryAttemptInfo[] = [];
+    const failedCalls: RetryFailureInfo[] = [];
+    const sleepCalls: number[] = [];
+    const error = new Error("boom");
+    let attempts = 0;
+    const result = await runWithRetry(
+      async () => {
+        attempts += 1;
+        if (attempts === 1) throw error;
+        return "second";
+      },
+      {
+        maxAttempts: 3,
+        retryDelayMs: 250,
+        sleep: async (milliseconds) => {
+          sleepCalls.push(milliseconds);
+        },
+        onAttemptFailed: (info) => failedCalls.push(info),
+        onRetrySucceeded: (info) => succeededCalls.push(info),
+      },
+    );
+    expect(result).toBe("second");
+    expect(attempts).toBe(2);
+    expect(failedCalls).toStrictEqual([{ attempt: 1, maxAttempts: 3, error, retryDelayMs: 250 }]);
+    expect(succeededCalls).toStrictEqual([{ attempt: 2, maxAttempts: 3 }]);
+    expect(sleepCalls).toStrictEqual([250]);
+  });
+
+  it("gives up after exhausting maxAttempts and rethrows the original error", async () => {
+    const failedCalls: RetryFailureInfo[] = [];
+    const gaveUpCalls: RetryGaveUpInfo[] = [];
+    const sleepCalls: number[] = [];
+    const error = new Error("always fails");
+    let attempts = 0;
+    await expect(
+      runWithRetry(
+        async () => {
+          attempts += 1;
+          throw error;
+        },
+        {
+          maxAttempts: 3,
+          retryDelayMs: 50,
+          sleep: async (milliseconds) => {
+            sleepCalls.push(milliseconds);
+          },
+          onAttemptFailed: (info) => failedCalls.push(info),
+          onGaveUp: (info) => gaveUpCalls.push(info),
+        },
+      ),
+    ).rejects.toBe(error);
+    expect(attempts).toBe(3);
+    expect(failedCalls).toStrictEqual([
+      { attempt: 1, maxAttempts: 3, error, retryDelayMs: 50 },
+      { attempt: 2, maxAttempts: 3, error, retryDelayMs: 50 },
+    ]);
+    expect(gaveUpCalls).toStrictEqual([{ attempt: 3, maxAttempts: 3, error }]);
+    expect(sleepCalls).toStrictEqual([50, 50]);
+  });
+
+  it("throws immediately without sleeping when maxAttempts is 1", async () => {
+    const failedCalls: RetryFailureInfo[] = [];
+    const gaveUpCalls: RetryGaveUpInfo[] = [];
+    const sleepCalls: number[] = [];
+    const error = new Error("once");
+    await expect(
+      runWithRetry(
+        async () => {
+          throw error;
+        },
+        {
+          maxAttempts: 1,
+          retryDelayMs: 1000,
+          sleep: async (milliseconds) => {
+            sleepCalls.push(milliseconds);
+          },
+          onAttemptFailed: (info) => failedCalls.push(info),
+          onGaveUp: (info) => gaveUpCalls.push(info),
+        },
+      ),
+    ).rejects.toBe(error);
+    expect(failedCalls).toStrictEqual([]);
+    expect(gaveUpCalls).toStrictEqual([{ attempt: 1, maxAttempts: 1, error }]);
+    expect(sleepCalls).toStrictEqual([]);
+  });
+
+  it("works without any callbacks supplied", async () => {
+    let attempts = 0;
+    const sleepCalls: number[] = [];
+    const result = await runWithRetry(
+      async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("retry me");
+        return 42;
+      },
+      {
+        maxAttempts: 2,
+        retryDelayMs: 5,
+        sleep: async (milliseconds) => {
+          sleepCalls.push(milliseconds);
+        },
+      },
+    );
+    expect(result).toBe(42);
+    expect(attempts).toBe(2);
+    expect(sleepCalls).toStrictEqual([5]);
+  });
+
+  it("wraps a non-Error throw and passes it through unchanged", async () => {
+    const gaveUpCalls: RetryGaveUpInfo[] = [];
+    const sleepCalls: number[] = [];
+    await expect(
+      runWithRetry(
+        async () => {
+          throw "string failure";
+        },
+        {
+          maxAttempts: 1,
+          retryDelayMs: 1,
+          sleep: async (milliseconds) => {
+            sleepCalls.push(milliseconds);
+          },
+          onGaveUp: (info) => gaveUpCalls.push(info),
+        },
+      ),
+    ).rejects.toBe("string failure");
+    expect(gaveUpCalls).toStrictEqual([{ attempt: 1, maxAttempts: 1, error: "string failure" }]);
+    expect(sleepCalls).toStrictEqual([]);
   });
 });

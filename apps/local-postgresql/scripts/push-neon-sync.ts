@@ -20,7 +20,11 @@ import {
   parseTableProfiles,
   pkExpression,
   quoteIdentifier,
+  resolveNonNegativeSecondsEnv,
+  resolvePositiveIntegerEnv,
   runPushSync,
+  runWithRetry,
+  buildNeonPsqlArgs,
   shouldRefreshInclusiveIncrementalMarker,
   timestampKeyExpression,
   type ProgressEvent,
@@ -41,6 +45,10 @@ const defaultExcludedLogTables = new Set([
 ]);
 const DEFAULT_OPERATION_TIMEOUT_SECONDS = 600;
 const OPERATION_TIMEOUT_ENV_KEY = "REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS";
+const DEFAULT_MAX_ATTEMPTS = 5;
+const MAX_ATTEMPTS_ENV_KEY = "REPLICA_SYNC_MAX_ATTEMPTS";
+const DEFAULT_RETRY_DELAY_SECONDS = 5;
+const RETRY_DELAY_ENV_KEY = "REPLICA_SYNC_RETRY_DELAY_SECONDS";
 
 type CommandResult = {
   stdout: string;
@@ -53,6 +61,7 @@ type CliOptions = {
   verbose: boolean;
   logFile: string | null;
   noLogFile: boolean;
+  maxAttempts: number | null;
 };
 
 function parseArgs(args: string[]): CliOptions {
@@ -62,6 +71,7 @@ function parseArgs(args: string[]): CliOptions {
     verbose: false,
     logFile: null,
     noLogFile: false,
+    maxAttempts: null,
   };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -77,6 +87,17 @@ function parseArgs(args: string[]): CliOptions {
         throw new Error(`${arg} requires a path argument.`);
       }
       options.logFile = value;
+      index += 1;
+    } else if (arg === "--max-attempts") {
+      const value = args[index + 1];
+      if (value === undefined) {
+        throw new Error(`${arg} requires a positive integer.`);
+      }
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed < 1) {
+        throw new Error(`${arg} requires a positive integer, got: ${value}`);
+      }
+      options.maxAttempts = parsed;
       index += 1;
     } else if (arg === "--allow-log-table" || arg === "--allow-log-tables") {
       const value = args[index + 1];
@@ -205,6 +226,17 @@ function resolveOperationTimeoutMs(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : fallback;
 }
 
+function resolveMaxAttempts(
+  override: number | null,
+  env: Record<string, string | undefined>,
+): number {
+  return resolvePositiveIntegerEnv(override, env[MAX_ATTEMPTS_ENV_KEY], DEFAULT_MAX_ATTEMPTS);
+}
+
+function resolveRetryDelayMs(env: Record<string, string | undefined>): number {
+  return resolveNonNegativeSecondsEnv(env[RETRY_DELAY_ENV_KEY], DEFAULT_RETRY_DELAY_SECONDS);
+}
+
 function killProcessGroup(child: ChildProcess): void {
   if (child.pid === undefined || child.killed) return;
   try {
@@ -218,7 +250,11 @@ function killProcessGroup(child: ChildProcess): void {
   }
 }
 
-function armTimeout(child: ChildProcess, label: string, reject: (error: Error) => void): () => void {
+function armTimeout(
+  child: ChildProcess,
+  label: string,
+  reject: (error: Error) => void,
+): () => void {
   const timeoutMs = resolveOperationTimeoutMs();
   const handle = setTimeout(() => {
     killProcessGroup(child);
@@ -368,12 +404,11 @@ function dockerComposeArgs(env: Record<string, string | undefined>, sql: string)
 }
 
 function neonPsqlArgs(env: Record<string, string | undefined>, extraArgs: string[] = []): string[] {
-  const neonUrl = env.NEON_DIRECT_DATABASE_URL;
-  if (!neonUrl) {
-    throw new Error("NEON_DIRECT_DATABASE_URL is required");
-  }
-
-  return ["run", "--rm", "-i", "postgres:18-alpine", "psql", neonUrl, ...extraArgs];
+  return buildNeonPsqlArgs({
+    neonUrl: env.NEON_DIRECT_DATABASE_URL,
+    containerName: env.REPLICA_SYNC_NEON_PSQL_CONTAINER,
+    extraArgs,
+  });
 }
 
 async function loadTableMetadata(
@@ -405,8 +440,18 @@ Environment:
   NEON_CONNECT_RETRY_SECONDS      Retry interval while Neon is warming. Default: 5.
   REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS
                                   Per-operation timeout that kills any docker/psql child that
-                                  hangs (e.g. occasional docker run --rm cleanup hangs on Colima).
-                                  Default: 600.
+                                  hangs. Default: 600.
+  REPLICA_SYNC_NEON_PSQL_CONTAINER
+                                  Name of the long-lived local container to exec psql in for
+                                  Neon connections. The script reuses this container instead of
+                                  spawning a disposable one per query, which avoids the docker
+                                  run --rm cleanup hangs that accumulate zombie containers on
+                                  Colima. Default: horse-racing-local-postgresql.
+  REPLICA_SYNC_MAX_ATTEMPTS       Max whole-sync attempts. After a per-operation timeout kills
+                                  the run, the script restarts from scratch — incremental sync
+                                  picks up unsynced tables, so retries make progress. Default: 5.
+  REPLICA_SYNC_RETRY_DELAY_SECONDS
+                                  Delay between attempts. Default: 5.
 
 Options:
   --verbose, -v                    Use the legacy multi-line progress format.
@@ -416,6 +461,7 @@ Options:
   --indexes-only                   Skip data sync, only apply analytics indexes.
   --allow-log-table TABLE          Allow syncing a log/experiment table that is excluded by
                                   default. Repeat or pass comma-separated names.
+  --max-attempts N                 Override REPLICA_SYNC_MAX_ATTEMPTS. Pass 1 to disable retry.
 
 Strategy environment variables:
   REPLICA_SYNC_STRATEGY            "auto" (default) routes per-table to
@@ -890,10 +936,39 @@ async function main(): Promise<void> {
     writeLine(`[${formatNow()}] log file: ${logPath}`);
   }
   try {
-    await runSync(cliOptions);
+    await runSyncWithRetry(cliOptions);
   } finally {
     closeLogFile();
   }
+}
+
+function describeError(error: unknown): string {
+  return redactSecrets(error instanceof Error ? error.message : String(error));
+}
+
+async function runSyncWithRetry(cliOptions: CliOptions): Promise<void> {
+  const env = loadEnvironment();
+  const maxAttempts = resolveMaxAttempts(cliOptions.maxAttempts, env);
+  const retryDelayMs = resolveRetryDelayMs(env);
+  await runWithRetry(() => runSync(cliOptions), {
+    maxAttempts,
+    retryDelayMs,
+    sleep: (milliseconds) =>
+      new Promise<void>((resolveSleep) => setTimeout(resolveSleep, milliseconds)),
+    onAttemptFailed: (info) => {
+      writeLine(
+        `[${formatNow()}] attempt ${info.attempt}/${info.maxAttempts} failed: ${describeError(info.error)} — retrying in ${Math.round(info.retryDelayMs / 1000)}s`,
+      );
+    },
+    onGaveUp: (info) => {
+      writeLine(
+        `[${formatNow()}] attempt ${info.attempt}/${info.maxAttempts} failed: ${describeError(info.error)} — giving up`,
+      );
+    },
+    onRetrySucceeded: (info) => {
+      writeLine(`[${formatNow()}] retry succeeded on attempt ${info.attempt}/${info.maxAttempts}`);
+    },
+  });
 }
 
 async function runSync(cliOptions: CliOptions): Promise<void> {
