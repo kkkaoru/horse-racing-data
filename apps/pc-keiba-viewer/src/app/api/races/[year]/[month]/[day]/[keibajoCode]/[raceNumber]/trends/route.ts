@@ -294,21 +294,30 @@ export async function GET(request: Request, context: RouteContext) {
   const runners = await getRaceRunners(source, year, month, day, keibajoCode, raceNumber);
   const payload = await buildRaceTrendRawPayload(race, runners, options);
   const body = JSON.stringify(payload);
-  await putRaceTrendCache({ body, cacheKey, race });
-  await notifyRaceTrendRoom(
-    { day, keibajoCode, month, raceNumber, source, year },
-    { cacheKey },
-  ).catch(() => false);
+  // Guard against caching a degenerate empty response. If the D1 layer
+  // momentarily returned nothing (saturation, transient error) we never
+  // want to pin "no starters" against this race for the rest of the TTL —
+  // the next request will rebuild from the live D1 data instead.
+  const hasStarters = payload.starterRows.length > 0;
+  if (hasStarters) {
+    await putRaceTrendCache({ body, cacheKey, race });
+    await notifyRaceTrendRoom(
+      { day, keibajoCode, month, raceNumber, source, year },
+      { cacheKey },
+    ).catch(() => false);
+  }
 
   return new Response(body, {
     headers: {
-      "Cache-Control": "public, max-age=60",
+      "Cache-Control": hasStarters ? "public, max-age=60" : "no-store",
       "Content-Type": "application/json; charset=utf-8",
       "X-Race-Trend-Cache": isCacheWarmRequest
         ? "MISS-STORED-WARM"
         : isCacheRefreshRequest
           ? "MISS-STORED-REFRESH"
-          : "MISS-STORED",
+          : hasStarters
+            ? "MISS-STORED"
+            : "MISS-EMPTY-SKIPPED",
     },
   });
 }
