@@ -80,7 +80,9 @@ vi.mock("./running-style-cron", () => ({
   runRunningStyleCronTick: vi.fn(async () => ({})),
   formatTomorrowYYYYMMDDInJst: vi.fn(() => "20260513"),
 }));
-vi.mock("./running-style-queue", () => ({ handleRunningStylePredictionJob: vi.fn(async () => null) }));
+vi.mock("./running-style-queue", () => ({
+  handleRunningStylePredictionJob: vi.fn(async () => null),
+}));
 vi.mock("./postgres", () => ({
   fetchJraRacesByDate: vi.fn(async () => []),
   fetchNarRacesByDate: vi.fn(async () => []),
@@ -191,23 +193,32 @@ it("notifyPremiumPaddockIfNeeded marks skipped_started when race already started
   const { notifyPremiumPaddockIfNeeded } = await import("./worker");
   const storage = await import("./storage");
   const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-12T16:00:00+09:00" } as never);
-  await notifyPremiumPaddockIfNeeded(env, buildRace(), buildBulletins(), "2026-05-12T15:30:00+09:00");
+  await notifyPremiumPaddockIfNeeded(
+    env,
+    buildRace(),
+    buildBulletins(),
+    "2026-05-12T15:30:00+09:00",
+  );
   expect(storage.recordPremiumPaddockNotificationEvent).toHaveBeenCalledTimes(1);
   expect(storage.updatePremiumPaddockNotificationState).toHaveBeenCalledTimes(1);
-  expect(vi.mocked(storage.recordPremiumPaddockNotificationEvent).mock.calls[0]?.[1]).toMatchObject({
-    skipReason: "race_started",
-    status: "skipped_started",
-  });
+  expect(vi.mocked(storage.recordPremiumPaddockNotificationEvent).mock.calls[0]?.[1]).toMatchObject(
+    {
+      skipReason: "race_started",
+      status: "skipped_started",
+    },
+  );
 });
 
 it("notifyPremiumPaddockIfNeeded marks skipped_empty when bulletins are empty", async () => {
   const { notifyPremiumPaddockIfNeeded } = await import("./worker");
   const storage = await import("./storage");
   await notifyPremiumPaddockIfNeeded(buildEnv(), buildRace(), [], "2026-05-12T13:00:00+09:00");
-  expect(vi.mocked(storage.recordPremiumPaddockNotificationEvent).mock.calls[0]?.[1]).toMatchObject({
-    skipReason: "empty",
-    status: "skipped_empty",
-  });
+  expect(vi.mocked(storage.recordPremiumPaddockNotificationEvent).mock.calls[0]?.[1]).toMatchObject(
+    {
+      skipReason: "empty",
+      status: "skipped_empty",
+    },
+  );
 });
 
 it("notifyPremiumPaddockIfNeeded marks skipped_unconfigured when webhook URL is missing", async () => {
@@ -219,10 +230,12 @@ it("notifyPremiumPaddockIfNeeded marks skipped_unconfigured when webhook URL is 
     buildBulletins(),
     "2026-05-12T13:00:00+09:00",
   );
-  expect(vi.mocked(storage.recordPremiumPaddockNotificationEvent).mock.calls[0]?.[1]).toMatchObject({
-    skipReason: "webhook_not_configured",
-    status: "skipped_unconfigured",
-  });
+  expect(vi.mocked(storage.recordPremiumPaddockNotificationEvent).mock.calls[0]?.[1]).toMatchObject(
+    {
+      skipReason: "webhook_not_configured",
+      status: "skipped_unconfigured",
+    },
+  );
 });
 
 it("notifyPremiumPaddockIfNeeded skips re-notification when already notified at the same fetchedAt", async () => {
@@ -238,10 +251,12 @@ it("notifyPremiumPaddockIfNeeded skips re-notification when already notified at 
     "2026-05-12T13:00:00+09:00",
   );
   expect(storage.recordPremiumPaddockNotificationEvent).not.toHaveBeenCalled();
-  expect(vi.mocked(storage.updatePremiumPaddockNotificationState).mock.calls[0]?.[1]).toMatchObject({
-    skipReason: "already_notified",
-    status: "skipped_duplicate",
-  });
+  expect(vi.mocked(storage.updatePremiumPaddockNotificationState).mock.calls[0]?.[1]).toMatchObject(
+    {
+      skipReason: "already_notified",
+      status: "skipped_duplicate",
+    },
+  );
 });
 
 it("notifyPremiumPaddockIfNeeded records duplicate event when already notified at different fetchedAt", async () => {
@@ -257,10 +272,12 @@ it("notifyPremiumPaddockIfNeeded records duplicate event when already notified a
     "2026-05-12T13:00:00+09:00",
   );
   expect(storage.recordPremiumPaddockNotificationEvent).toHaveBeenCalledTimes(1);
-  expect(vi.mocked(storage.recordPremiumPaddockNotificationEvent).mock.calls[0]?.[1]).toMatchObject({
-    skipReason: "already_notified",
-    status: "skipped_duplicate",
-  });
+  expect(vi.mocked(storage.recordPremiumPaddockNotificationEvent).mock.calls[0]?.[1]).toMatchObject(
+    {
+      skipReason: "already_notified",
+      status: "skipped_duplicate",
+    },
+  );
 });
 
 it("notifyPremiumPaddockIfNeeded returns early when claim fails", async () => {
@@ -290,12 +307,16 @@ it("notifyPremiumPaddockIfNeeded posts to Discord and records ok event on 200", 
     "2026-05-12T13:00:00+09:00",
   );
   expect(fetch).toHaveBeenCalledTimes(1);
-  expect(vi.mocked(storage.recordPremiumPaddockNotificationEvent).mock.calls[0]?.[1]).toMatchObject({
-    status: "ok",
-  });
-  expect(vi.mocked(storage.updatePremiumPaddockNotificationState).mock.calls[0]?.[1]).toMatchObject({
-    status: "ok",
-  });
+  expect(vi.mocked(storage.recordPremiumPaddockNotificationEvent).mock.calls[0]?.[1]).toMatchObject(
+    {
+      status: "ok",
+    },
+  );
+  expect(vi.mocked(storage.updatePremiumPaddockNotificationState).mock.calls[0]?.[1]).toMatchObject(
+    {
+      status: "ok",
+    },
+  );
 });
 
 it("notifyPremiumPaddockIfNeeded falls back to placeholder labels when raceName/keibajoCode missing", async () => {
@@ -307,7 +328,8 @@ it("notifyPremiumPaddockIfNeeded falls back to placeholder labels when raceName/
     "2026-05-12T13:00:00+09:00",
   );
   expect(fetch).toHaveBeenCalledTimes(1);
-  const body = JSON.parse(String(vi.mocked(fetch).mock.calls[0]?.[1]?.body));
+  const rawBody = vi.mocked(fetch).mock.calls[0]?.[1]?.body;
+  const body = JSON.parse(typeof rawBody === "string" ? rawBody : "");
   expect(body.embeds[0].description).toContain("レース名未取得");
 });
 
@@ -326,7 +348,9 @@ it("notifyPremiumPaddockIfNeeded records failed event and throws when Discord re
       "2026-05-12T13:00:00+09:00",
     ),
   ).rejects.toThrow("premium paddock notification failed: 500");
-  expect(vi.mocked(storage.recordPremiumPaddockNotificationEvent).mock.calls[0]?.[1]).toMatchObject({
-    status: "failed",
-  });
+  expect(vi.mocked(storage.recordPremiumPaddockNotificationEvent).mock.calls[0]?.[1]).toMatchObject(
+    {
+      status: "failed",
+    },
+  );
 });
