@@ -50,12 +50,13 @@ extra-paths = ["src/scripts"]
 python = ".venv/bin/python"
 
 [tool.pytest.ini_options]
-addopts = "--cov=corner_lightgbm --cov=finish_position_lightgbm --cov=finish_position_features_duckdb --cov=finish_position_transformer --cov-report=term-missing --cov-fail-under=90"
+addopts = "--cov=corner_lightgbm --cov=finish_position_lightgbm --cov=finish_position_features_duckdb --cov=finish_position_transformer --cov-report=term-missing --cov-fail-under=95"
 pythonpath = ["src/scripts"]
 testpaths = ["tests"]
 
 [tool.coverage.run]
 branch = true
+omit = ["src/scripts/finish_position_transformer/__main__.py"]
 
 [tool.coverage.report]
 exclude_lines = ["if __name__ == .__main__.:", "raise SystemExit"]

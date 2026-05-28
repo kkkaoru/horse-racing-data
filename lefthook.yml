@@ -15,11 +15,13 @@ pre-commit:
     # commit that touched a *.ts file outside the (non-existent) target
     # package exited with "No packages matched the filter".
     tsc-pc-keiba-viewer:
-      glob: "apps/pc-keiba-viewer/**/*.ts"
+      glob: "apps/pc-keiba-viewer/**/*.{ts,tsx}"
       run: bun run --filter pc-keiba-viewer tsc
+    # test:coverage enforces the vitest thresholds (all >= 95) so coverage
+    # cannot regress without an explicit threshold change.
     test-pc-keiba-viewer:
-      glob: "apps/pc-keiba-viewer/**/*.ts"
-      run: bun run --filter pc-keiba-viewer test
+      glob: "apps/pc-keiba-viewer/**/*.{ts,tsx}"
+      run: bun run --filter pc-keiba-viewer test:coverage
     tsc-sync-realtime-data:
       glob: "apps/sync-realtime-data/**/*.ts"
       run: bun run --filter sync-realtime-data tsc
@@ -32,9 +34,11 @@ pre-commit:
     test-horse-racing-duckdb:
       glob: "apps/horse-racing-duckdb/**/*.ts"
       run: bun run --filter horse-racing-duckdb test
+    # test:coverage enforces the vitest thresholds (all >= 95) so coverage
+    # cannot regress without an explicit threshold change.
     test-local-postgresql:
       glob: "apps/local-postgresql/**/*.ts"
-      run: bun run --filter local-postgresql test
+      run: bun run --filter local-postgresql test:coverage
     tsc-horse-racing-realtime:
       glob: "packages/horse-racing-realtime/**/*.ts"
       run: bun run --filter horse-racing-realtime tsc
