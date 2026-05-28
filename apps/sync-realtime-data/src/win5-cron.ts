@@ -1,5 +1,6 @@
 import { fetchWin5SchedulesFromJra } from "../../pc-keiba-viewer/src/lib/win5/jra-parse";
 import type { Win5Schedule } from "../../pc-keiba-viewer/src/lib/win5/types";
+import { formatError } from "./format-error";
 import { getFinishPositionPool } from "./finish-position-lite-pool";
 import { logFetch } from "./storage";
 import type { Env, Win5ScheduleJob } from "./types";
@@ -118,14 +119,10 @@ export const runWin5CronTick = async (
 
 export const logWin5CronResult = async (env: Env, scheduledAt: Date): Promise<void> => {
   await runWin5CronTick(env, scheduledAt)
-    .then((summary) => logFetch(env.REALTIME_DB, "discover-win5-schedules", "ok", null, JSON.stringify(summary)))
+    .then((summary) =>
+      logFetch(env.REALTIME_DB, "discover-win5-schedules", "ok", null, JSON.stringify(summary)),
+    )
     .catch((error: unknown) =>
-      logFetch(
-        env.REALTIME_DB,
-        "discover-win5-schedules",
-        "error",
-        null,
-        error instanceof Error ? error.message : String(error),
-      ),
+      logFetch(env.REALTIME_DB, "discover-win5-schedules", "error", null, formatError(error)),
     );
 };

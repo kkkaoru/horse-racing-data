@@ -3,6 +3,7 @@
 // reads the stored file back, then writes flatbin model predictions to D1.
 
 import { markFinishPositionFeaturesCached } from "./finish-position-d1";
+import { formatError } from "./format-error";
 import { putFinishPositionInputsCache } from "./finish-position-inputs-cache";
 import { getFinishPositionPool } from "./finish-position-lite-pool";
 import {
@@ -68,7 +69,7 @@ const cacheCompletedRunningStyles = async (
     };
   } catch (error) {
     return {
-      cacheError: error instanceof Error ? error.message : String(error),
+      cacheError: formatError(error),
       cacheWritten: false,
     };
   }

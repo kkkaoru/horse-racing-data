@@ -384,6 +384,56 @@ it("scheduled multi-day-prep cron fans out feature build to next 1-3 JST dates",
   expect(fromDates).toStrictEqual(["20260513", "20260514", "20260515"]);
 });
 
+it("scheduled multi-day-prep cron logs build-daily-features error when runDailyFeatureBuildForEnv throws", async () => {
+  const { default: worker } = await import("./worker");
+  const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
+  const { logFetch } = await import("./storage");
+  vi.mocked(runDailyFeatureBuildForEnv).mockRejectedValueOnce(new Error("build boom"));
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "5 11 * * *",
+      scheduledTime: Date.parse("2026-05-12T11:05:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv(),
+    ctx,
+  );
+  await flushWaits(waits);
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "build-daily-features",
+    "error",
+    null,
+    "build boom",
+  );
+});
+
+it("scheduled multi-day-prep cron stringifies non-Error rejection from runDailyFeatureBuildForEnv", async () => {
+  const { default: worker } = await import("./worker");
+  const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
+  const { logFetch } = await import("./storage");
+  vi.mocked(runDailyFeatureBuildForEnv).mockRejectedValueOnce("raw-string-build-error");
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "5 11 * * *",
+      scheduledTime: Date.parse("2026-05-12T11:05:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv(),
+    ctx,
+  );
+  await flushWaits(waits);
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "build-daily-features",
+    "error",
+    null,
+    "raw-string-build-error",
+  );
+});
+
 it("scheduled today-backfill cron builds features for today only", async () => {
   const { default: worker } = await import("./worker");
   const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");

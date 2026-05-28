@@ -1,7 +1,6 @@
-import {
-  buildWin5PredictionPayload,
-} from "../../pc-keiba-viewer/src/lib/win5/prediction";
+import { buildWin5PredictionPayload } from "../../pc-keiba-viewer/src/lib/win5/prediction";
 import { WIN5_MODEL_VERSION } from "../../pc-keiba-viewer/src/lib/win5/types";
+import { formatError } from "./format-error";
 import { getFinishPositionPool } from "./finish-position-lite-pool";
 import type { Env, Win5ScheduleJob } from "./types";
 import {
@@ -53,9 +52,7 @@ export const handleWin5PredictionJob = async (
         `,
         [job.kaisaiNen, job.kaisaiTsukihi],
       );
-      const wfSchedule = wfResult.rows[0]
-        ? buildWin5ScheduleFromJvdWfRow(wfResult.rows[0])
-        : null;
+      const wfSchedule = wfResult.rows[0] ? buildWin5ScheduleFromJvdWfRow(wfResult.rows[0]) : null;
       if (!wfSchedule) {
         throw new Error("WIN5 schedule not found");
       }
@@ -97,7 +94,7 @@ export const handleWin5PredictionJob = async (
     await markWin5InferenceState(env.REALTIME_DB, {
       kaisaiNen: job.kaisaiNen,
       kaisaiTsukihi: job.kaisaiTsukihi,
-      lastError: error instanceof Error ? error.message : String(error),
+      lastError: formatError(error),
       status: "failed",
       updatedAt,
     });
