@@ -537,8 +537,14 @@ order by umaban`;
 
 const numericFromRaw = (value: unknown): number | null => numericOrNull(value);
 
-const stringFromRaw = (value: unknown): string | null =>
-  value === null || value === undefined ? null : String(value);
+const stringFromRaw = (value: unknown): string | null => {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "bigint" || typeof value === "boolean") {
+    return String(value);
+  }
+  return JSON.stringify(value);
+};
 
 const requireSource = (value: unknown): "jra" | "nar" => {
   if (value === "jra" || value === "nar") return value;
