@@ -46,7 +46,7 @@ export const parseUploadRunningStyleModelCliArgs = (
   let bucket = RUNNING_STYLE_MODEL_BUCKET;
 
   for (let index = 0; index < argv.length; index += 1) {
-    const name = argv[index];
+    const name = argv[index]!;
     const value = argv[index + 1];
     if (name === "--source") {
       const raw = requireValue(name, value);
@@ -82,9 +82,6 @@ export const parseUploadRunningStyleModelCliArgs = (
     if (name === "--help" || name === "-h") {
       console.log(buildUsageText());
       process.exit(0);
-    }
-    if (name === undefined) {
-      break;
     }
     throw new Error(`Unknown argument: ${name}`);
   }

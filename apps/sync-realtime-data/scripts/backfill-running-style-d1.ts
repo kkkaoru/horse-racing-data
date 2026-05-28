@@ -52,7 +52,8 @@ const parseArgs = (argv: readonly string[]): BackfillArgs => {
   const args: Partial<BackfillArgs> = {};
   let cursor = 0;
   while (cursor < argv.length) {
-    const name = argv[cursor];
+    // cursor < argv.length guarantees argv[cursor] is defined.
+    const name = argv[cursor]!;
     const value = argv[cursor + 1];
     if (name === "--pg-url") {
       args.pgUrl = requireValue(name, value);
@@ -74,7 +75,6 @@ const parseArgs = (argv: readonly string[]): BackfillArgs => {
       cursor += 2;
       continue;
     }
-    if (name === undefined) break;
     throw new Error(`Unknown argument: ${name}`);
   }
   if (args.pgUrl === undefined) throw new Error("--pg-url is required.");
@@ -220,12 +220,21 @@ const run = async (): Promise<void> => {
   }
 };
 
+/* v8 ignore start */
 if (import.meta.main) {
   run().catch((error: unknown) => {
     console.error(error instanceof Error ? error.message : error);
     process.exit(1);
   });
 }
+/* v8 ignore stop */
 
-export { BATCH_SIZE, DEFAULT_FROM_YEAR, DEFAULT_TO_YEAR, escapeSqlString, formatStringValue, parseArgs };
+export {
+  BATCH_SIZE,
+  DEFAULT_FROM_YEAR,
+  DEFAULT_TO_YEAR,
+  escapeSqlString,
+  formatStringValue,
+  parseArgs,
+};
 export type { BackfillArgs, PredictionJoinedRow };

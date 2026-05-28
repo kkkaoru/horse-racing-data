@@ -147,9 +147,7 @@ export const runWithLimit = async <T>({
     const index = indexState.value;
     indexState.value = index + 1;
     if (index >= items.length) return;
-    const item = items[index];
-    if (item === undefined) return;
-    await handler(item);
+    await handler(items[index]!);
     await worker();
   };
   const workers = Array.from({ length: Math.min(limit, items.length) }, () => worker());
