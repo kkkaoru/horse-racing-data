@@ -14,6 +14,7 @@ import {
 import {
   getRaceTrendD1StarterRows,
   getRaceTrendDailyStarterRows,
+  getRaceTrendRunningStylesFromD1,
 } from "../../../../../../../../../db/d1-trend-queries.server";
 import type { RaceSource } from "../../../../../../../../../lib/codes";
 import { fetchWithRetry } from "../../../../../../../../../lib/fetch-with-retry";
@@ -336,6 +337,25 @@ const toHistoricalRunningStyles = (
     predictedLabel: row.predictedLabel,
   }));
 
+const mergeHistoricalRunningStyles = (
+  cached: ReadonlyArray<{
+    raceKey: string;
+    horseNumber: number;
+    predictedLabel: RaceTrendRunningStyle;
+  }>,
+  direct: RaceTrendRawPayload["historicalRunningStyles"],
+): RaceTrendRawPayload["historicalRunningStyles"] => {
+  const merged = new Map<string, RaceTrendRawPayload["historicalRunningStyles"][number]>();
+  for (const row of toHistoricalRunningStyles(cached)) {
+    merged.set(`${row.raceKey}:${row.horseNumber}`, row);
+  }
+  for (const row of direct) {
+    const key = `${row.raceKey}:${row.horseNumber}`;
+    if (!merged.has(key)) merged.set(key, row);
+  }
+  return Array.from(merged.values());
+};
+
 const buildRaceTrendRawPayload = async (
   race: RaceDetail,
   runners: Runner[],
@@ -368,9 +388,15 @@ const buildRaceTrendRawPayload = async (
     : [];
   const starterRows = mergeStarterRows(dailyRows, snapshotRows, realtimeRows);
   const currentRunningStyles = await currentRunningStylesPromise;
-  const historicalRunningStyleRows = await getRaceRunningStylesByRaceKeysWithCache(
-    Array.from(new Set(starterRows.map(starterRaceKey))),
-  ).catch(() => []);
+  const historicalRaceKeys = Array.from(new Set(starterRows.map(starterRaceKey)));
+  const [cachedHistoricalRunningStyles, directHistoricalRunningStyles] = await Promise.all([
+    getRaceRunningStylesByRaceKeysWithCache(historicalRaceKeys).catch(() => []),
+    getRaceTrendRunningStylesFromD1(historicalRaceKeys),
+  ]);
+  const mergedHistoricalRunningStyles = mergeHistoricalRunningStyles(
+    cachedHistoricalRunningStyles,
+    directHistoricalRunningStyles,
+  );
   return {
     raceContext: {
       keibajoCode: race.keibajoCode,
@@ -384,7 +410,7 @@ const buildRaceTrendRawPayload = async (
     })),
     starterRows,
     currentRunningStyles: toCurrentRunningStyles(currentRunningStyles),
-    historicalRunningStyles: toHistoricalRunningStyles(historicalRunningStyleRows),
+    historicalRunningStyles: mergedHistoricalRunningStyles,
   };
 };
 
