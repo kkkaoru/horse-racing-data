@@ -169,8 +169,13 @@ const buildAffectedCacheOptions = (
   });
 };
 
-const D1_DAILY_CACHE_PREFIX = "race-trend-d1-daily:v3";
-const D1_SNAPSHOT_CACHE_PREFIX = "race-trend-d1:v3";
+// v4 prefixes match the bumped cache key versions in
+// `d1-trend-queries.server.ts`. The bust path needs to target the same key
+// version that the read path is currently writing — otherwise a race-finish
+// notification clears a v3 namespace that no longer exists and leaves the
+// active v4 entries untouched.
+const D1_DAILY_CACHE_PREFIX = "race-trend-d1-daily:v4";
+const D1_SNAPSHOT_CACHE_PREFIX = "race-trend-d1:v4";
 const D1_DAILY_CACHE_URL_BASE = "https://pc-keiba-viewer.local/d1-trend-daily-cache/";
 const D1_SNAPSHOT_CACHE_URL_BASE = "https://pc-keiba-viewer.local/d1-trend-cache/";
 
