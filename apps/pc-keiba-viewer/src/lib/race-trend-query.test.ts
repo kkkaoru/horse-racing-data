@@ -27,6 +27,7 @@ describe("race trend query helpers", () => {
     expect(getRaceTrendTargetQueryValue(new URLSearchParams("trend=race"))).toBe("race");
     expect(getRaceTrendTargetQueryValue({ trend: ["style", "ignored"] })).toBe("style");
     expect(getRaceTrendTargetQueryValue({ raceTrendTargets: undefined })).toBeNull();
+    expect(getRaceTrendTargetQueryValue({ trend: [] })).toBeNull();
   });
 
   it("parses single target trend shortcuts", () => {
