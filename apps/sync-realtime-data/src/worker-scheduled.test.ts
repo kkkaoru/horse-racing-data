@@ -514,6 +514,7 @@ it("queue acks (instead of retrying) a failing fetch-odds message", async () => 
 it("scheduled enqueues a build-daily-features job for the daily-feature-build cron", async () => {
   const { default: worker } = await import("./worker");
   const env = buildEnv();
+  const sendSpy = vi.spyOn(env.REALTIME_JOBS, "send");
   const { ctx, waits } = buildCtx();
   await worker.scheduled(
     {
@@ -525,7 +526,7 @@ it("scheduled enqueues a build-daily-features job for the daily-feature-build cr
     ctx,
   );
   await flushWaits(waits);
-  expect(env.REALTIME_JOBS.send).toHaveBeenCalledWith({
+  expect(sendSpy).toHaveBeenCalledWith({
     date: "20260512",
     sourceScope: "all",
     type: "build-daily-features",
@@ -560,7 +561,8 @@ it("scheduled logs error when daily-feature-build cron enqueue rejects", async (
   const { default: worker } = await import("./worker");
   const { logFetch } = await import("./storage");
   const env = buildEnv();
-  vi.mocked(env.REALTIME_JOBS.send).mockRejectedValueOnce(new Error("queue boom"));
+  const sendSpy = vi.spyOn(env.REALTIME_JOBS, "send");
+  sendSpy.mockRejectedValueOnce(new Error("queue boom"));
   const { ctx, waits } = buildCtx();
   await worker.scheduled(
     {
