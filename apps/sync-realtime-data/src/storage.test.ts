@@ -1616,3 +1616,249 @@ it("getLatestTrackConditionForRace returns mapped TrackCondition when row exists
   expect(result?.dirt.condition).toBe("重");
   expect(result?.dirt.moisture.finalFurlong).toBe("9.5");
 });
+
+it("countJraRaceSourcesMissingRaceDateFieldsByDate falls back to 0 when row is null", async () => {
+  const first = vi.fn(async () => null);
+  const bind = vi.fn((..._args: unknown[]) => ({ first }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  expect(await countJraRaceSourcesMissingRaceDateFieldsByDate(db, "20260512")).toBe(0);
+});
+
+it("insertOddsSnapshot tolerates a typed entry whose rows value is undefined", async () => {
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const batch = vi.fn(async () => []);
+  const db = { batch, prepare } as unknown as D1Database;
+  const result = await insertOddsSnapshot(db, "key", "now", {
+    tansho: undefined,
+    umaren: [{ combination: "1-2", odds: 5.5 }],
+  });
+  expect(result).toBe(1);
+});
+
+it("replacePremiumRaceData defaults trainingReviews to [] when omitted", async () => {
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ run, bind: vi.fn(() => ({ run })) }));
+  const prepare = vi.fn(() => ({ bind }));
+  const batch = vi.fn(async () => []);
+  const db = { batch, prepare } as unknown as D1Database;
+  await replacePremiumRaceData(db, {
+    dataTopHorses: [],
+    fetchedAt: "2026-05-12T11:00:00+09:00",
+    link: { entryUrl: "https://x.test/race", sourceRaceId: "202605120801" },
+    paddockBulletins: [],
+    raceKey: "key",
+    stableComments: [],
+  });
+  expect(batch).toHaveBeenCalledTimes(1);
+});
+
+it("getPremiumRaceDataFetchState returns mapped row when present", async () => {
+  const first = vi.fn(async () => ({
+    last_fetch_at: "2026-05-12T11:00:00+09:00",
+    last_queued_at: "2026-05-12T10:00:00+09:00",
+    retry_after: null,
+    status: "ready",
+  }));
+  const bind = vi.fn((..._args: unknown[]) => ({ first }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  expect(await getPremiumRaceDataFetchState(db, "key")).toStrictEqual({
+    lastFetchAt: "2026-05-12T11:00:00+09:00",
+    lastQueuedAt: "2026-05-12T10:00:00+09:00",
+    retryAfter: null,
+    status: "ready",
+  });
+});
+
+it("updatePremiumRaceDataFetchState defaults optional params to null when omitted", async () => {
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await updatePremiumRaceDataFetchState(db, { raceKey: "key", status: "queued" });
+  const args = bind.mock.calls[0]!;
+  expect(args[1]).toBe("queued");
+  expect(args[2]).toBeNull();
+  expect(args[3]).toBeNull();
+  expect(args[4]).toBeNull();
+});
+
+it("getPremiumPaddockFetchState returns mapped row when present", async () => {
+  const first = vi.fn(async () => ({
+    last_fetch_at: "2026-05-12T11:00:00+09:00",
+    last_queued_at: null,
+    retry_after: null,
+    status: "ready",
+  }));
+  const bind = vi.fn((..._args: unknown[]) => ({ first }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  expect(await getPremiumPaddockFetchState(db, "key")).toStrictEqual({
+    lastFetchAt: "2026-05-12T11:00:00+09:00",
+    lastQueuedAt: null,
+    retryAfter: null,
+    status: "ready",
+  });
+});
+
+it("updatePremiumPaddockFetchState defaults optional params to null when omitted", async () => {
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await updatePremiumPaddockFetchState(db, { raceKey: "key", status: "queued" });
+  const args = bind.mock.calls[0]!;
+  expect(args[2]).toBeNull();
+  expect(args[3]).toBeNull();
+  expect(args[4]).toBeNull();
+});
+
+it("getPremiumPaddockNotificationState returns mapped row when present", async () => {
+  const first = vi.fn(async () => ({
+    last_notified_at: "2026-05-12T11:00:00+09:00",
+    last_payload_fetched_at: "2026-05-12T11:00:00+09:00",
+    last_send_attempt_at: null,
+    message: null,
+    payload_signature: "sig",
+    skip_reason: null,
+    status: "ok",
+  }));
+  const bind = vi.fn((..._args: unknown[]) => ({ first }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  expect(await getPremiumPaddockNotificationState(db, "key")).toStrictEqual({
+    lastNotifiedAt: "2026-05-12T11:00:00+09:00",
+    lastPayloadFetchedAt: "2026-05-12T11:00:00+09:00",
+    lastSendAttemptAt: null,
+    message: null,
+    payloadSignature: "sig",
+    skipReason: null,
+    status: "ok",
+  });
+});
+
+it("updatePremiumPaddockNotificationState defaults optional params to null when omitted", async () => {
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await updatePremiumPaddockNotificationState(db, {
+    payloadSignature: "sig",
+    raceKey: "key",
+    status: "queued",
+  });
+  const args = bind.mock.calls[0]!;
+  expect(args[3]).toBeNull();
+  expect(args[4]).toBeNull();
+  expect(args[5]).toBeNull();
+  expect(args[6]).toBeNull();
+  expect(args[7]).toBeNull();
+});
+
+it("getLatestOddsFromD1 skips rows with falsy odds_type and uses undefined fallbacks", async () => {
+  const all = vi.fn(async () => ({
+    results: [
+      { combination: "1", fetched_at: "now", odds: null, odds_type: null, rank: null },
+      {
+        combination: "2",
+        fetched_at: "now",
+        odds: null,
+        odds_type: "tansho",
+        rank: null,
+      },
+    ],
+  }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const result = await getLatestOddsFromD1(db, "key");
+  expect(result?.fetchedAt).toBe("now");
+  expect(result?.latest.tansho?.[0]?.combination).toBe("2");
+  expect(result?.latest.tansho?.[0]?.odds).toBeUndefined();
+});
+
+it("listOddsHistoryByType skips groups whose latest row has no fetched_at", async () => {
+  const all = vi.fn(async () => ({
+    results: [
+      {
+        combination: "1",
+        fetched_at: null,
+        odds: 1.5,
+        odds_type: "tansho",
+        rank: 1,
+      },
+    ],
+  }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const result = await listOddsHistoryByType(db, "key");
+  expect(result).toStrictEqual({});
+});
+
+it("getPremiumRacePayload returns [] reasons when reasons_json is not parseable", async () => {
+  const trainingAll = vi.fn(async () => ({ results: [] }));
+  const commentAll = vi.fn(async () => ({ results: [] }));
+  const paddockAll = vi.fn(async () => ({ results: [] }));
+  const dataTopAll = vi.fn(async () => ({
+    results: [
+      {
+        fetched_at: "now",
+        horse_name: "h",
+        horse_number: "1",
+        rank: 1,
+        reasons_json: "not-json",
+      },
+    ],
+  }));
+  const allsByOrder = [trainingAll, commentAll, paddockAll, dataTopAll];
+  const prepare = vi.fn(() => {
+    const next = allsByOrder.shift();
+    return { bind: vi.fn(() => ({ all: next })) };
+  });
+  const db = { prepare } as unknown as D1Database;
+  const result = await getPremiumRacePayload(db, "key");
+  expect(result.dataTopHorses[0]?.reasons).toStrictEqual([]);
+});
+
+it("getPremiumRacePayload returns [] reasons when reasons_json parses to a non-array", async () => {
+  const trainingAll = vi.fn(async () => ({ results: [] }));
+  const commentAll = vi.fn(async () => ({ results: [] }));
+  const paddockAll = vi.fn(async () => ({ results: [] }));
+  const dataTopAll = vi.fn(async () => ({
+    results: [
+      {
+        fetched_at: "now",
+        horse_name: "h",
+        horse_number: "1",
+        rank: 1,
+        reasons_json: '{"a":1}',
+      },
+    ],
+  }));
+  const allsByOrder = [trainingAll, commentAll, paddockAll, dataTopAll];
+  const prepare = vi.fn(() => {
+    const next = allsByOrder.shift();
+    return { bind: vi.fn(() => ({ all: next })) };
+  });
+  const db = { prepare } as unknown as D1Database;
+  const result = await getPremiumRacePayload(db, "key");
+  expect(result.dataTopHorses[0]?.reasons).toStrictEqual([]);
+});
+
+it("insertRaceEntrySnapshot normalizes jockey marks/whitespace through normalizeStoredJockeyName", async () => {
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn(() => ({ run, bind: vi.fn() }));
+  const prepare = vi.fn(() => ({ bind }));
+  const batch = vi.fn(async () => []);
+  const db = { batch, prepare } as unknown as D1Database;
+  const count = await insertRaceEntrySnapshot(db, "key", "now", [
+    { horseName: null, horseNumber: "1", jockeyName: "△武  豊", status: null },
+    { horseName: null, horseNumber: "2", jockeyName: "▲ ", status: null },
+    { horseName: null, horseNumber: "3", jockeyName: null, status: null },
+  ]);
+  expect(count).toBe(3);
+});

@@ -100,9 +100,9 @@ it("getPremiumRaceConfig propagates configured env variables", () => {
 
 it("hasPremiumRaceFetchConfig is true only when origin is set", () => {
   expect(hasPremiumRaceFetchConfig(getPremiumRaceConfig({}))).toBe(false);
-  expect(hasPremiumRaceFetchConfig(getPremiumRaceConfig({ PREMIUM_RACE_ORIGIN: "https://x.test" }))).toBe(
-    true,
-  );
+  expect(
+    hasPremiumRaceFetchConfig(getPremiumRaceConfig({ PREMIUM_RACE_ORIGIN: "https://x.test" })),
+  ).toBe(true);
 });
 
 it("renderPremiumTemplate substitutes braces with values", () => {
@@ -114,7 +114,9 @@ it("renderPremiumTemplate replaces repeated placeholders", () => {
 });
 
 it("buildPremiumUrl returns null when template is null", () => {
-  expect(buildPremiumUrl(getPremiumRaceConfig({ PREMIUM_RACE_ORIGIN: "https://x.test" }), null, {})).toBeNull();
+  expect(
+    buildPremiumUrl(getPremiumRaceConfig({ PREMIUM_RACE_ORIGIN: "https://x.test" }), null, {}),
+  ).toBeNull();
 });
 
 it("buildPremiumUrl returns null when origin is missing", () => {
@@ -236,7 +238,7 @@ it("discoverPremiumRaceLinks extracts unique sourceRaceIds from anchor hrefs in 
 
 it("summarizePremiumStableCommentHtml returns cellRowCount and a text sample", () => {
   const html =
-    '<table><tr><td>名前</td><td>所属</td></tr><tr><td>サンプル</td><td>東京</td></tr></table>';
+    "<table><tr><td>名前</td><td>所属</td></tr><tr><td>サンプル</td><td>東京</td></tr></table>";
   const summary = summarizePremiumStableCommentHtml(html);
   expect(summary.cellRowCount).toBe(2);
   expect(summary.textSample.length).toBeGreaterThan(0);
@@ -252,7 +254,7 @@ it("summarizePremiumStableCommentHtml returns empty samples when no rows present
 it("fetchPremiumHtml prefers the authenticated attempt over earlier ones", async () => {
   vi.spyOn(globalThis, "fetch").mockImplementation(
     async (input: RequestInfo | URL): Promise<Response> => {
-      const url = String(input);
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url.startsWith("https://proxy.example")) {
         return new Response("<html>need login</html>", {
           headers: { "content-type": "text/html; charset=utf-8" },
@@ -323,4 +325,35 @@ it("fetchPremiumHtmlAttempts decodes EUC-JP body when responseCharset is set", a
   });
   const attempts = await fetchPremiumHtmlAttempts(config, "https://x.test/race");
   expect(attempts[0]?.html).toBe("東京");
+});
+
+it("fetchPremiumHtmlAttempts detects charset from HTML meta when responseCharset is unset", async () => {
+  const head = '<html><head><meta charset="UTF-8"></head><body>example</body></html>';
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response(head, {
+      headers: { "content-type": "text/html" },
+      status: 200,
+    }),
+  );
+  const config = getPremiumRaceConfig({ PREMIUM_RACE_ORIGIN: "https://x.test" });
+  const attempts = await fetchPremiumHtmlAttempts(config, "https://x.test/race");
+  expect(attempts[0]?.html.includes("example")).toBe(true);
+});
+
+it("discoverPremiumRaceLinks keeps relative href when config.origin is null", () => {
+  const config = getPremiumRaceConfig({});
+  const html = '<a href="/race?race_id=12345">A</a>';
+  const result = discoverPremiumRaceLinks(html, config);
+  expect(result).toStrictEqual([{ entryUrl: "/race?race_id=12345", sourceRaceId: "12345" }]);
+});
+
+it("discoverPremiumRaceLinks drops links whose sourceRaceId cannot be extracted", () => {
+  const config = getPremiumRaceConfig({
+    PREMIUM_RACE_ENTRY_LINK_PATTERN: `href=["']([^"']+)["']`,
+    PREMIUM_RACE_ORIGIN: "https://x.test",
+  });
+  const html = '<a href="/race?race_id=999">A</a><a href="/race?other=1">no-id</a>';
+  const result = discoverPremiumRaceLinks(html, config);
+  expect(result.length).toBe(1);
+  expect(result[0]?.sourceRaceId).toBe("999");
 });

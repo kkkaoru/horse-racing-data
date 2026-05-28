@@ -5,7 +5,9 @@ import {
   fetchJraResultHtmlWithPlaywright,
   isJraScratchStatus,
   parseJraHorseWeights,
+  parseJraOddsByType,
   parseJraRaceEntries,
+  parseJraRaceResultExcludedHorseNumbers,
   parseJraRaceResults,
 } from "./jra";
 
@@ -408,7 +410,6 @@ it("fetchJraOddsWithPlaywright throws when no odds link is found anywhere", asyn
   );
 });
 
-
 it("parseJraRaceEntries skips rows without a horse number cell", () => {
   expect(parseJraRaceEntries(`<table><tr><td>no num</td></tr></table>`)).toStrictEqual([]);
 });
@@ -423,9 +424,7 @@ it("parseJraRaceEntries returns null horseName/jockey when anchor not present an
 
 it("parseJraHorseWeights returns empty when no weight cell present", () => {
   expect(
-    parseJraHorseWeights(
-      `<table><tr><td class="num">1</td><td class="horse">x</td></tr></table>`,
-    ),
+    parseJraHorseWeights(`<table><tr><td class="num">1</td><td class="horse">x</td></tr></table>`),
   ).toStrictEqual([]);
 });
 
@@ -439,9 +438,7 @@ it("parseJraHorseWeights extracts weight + change when td.weight cell present", 
 });
 
 it("parseJraRaceResults skips rows without place cell", () => {
-  expect(
-    parseJraRaceResults(`<table><tr><td class="num">1</td></tr></table>`),
-  ).toStrictEqual([]);
+  expect(parseJraRaceResults(`<table><tr><td class="num">1</td></tr></table>`)).toStrictEqual([]);
 });
 
 it("parseJraRaceResults returns rows with parsed finishPosition + horseNumber", () => {
@@ -470,9 +467,7 @@ it("parseJraHorseWeights returns null horseName when no anchor present in horse 
 
 it("parseJraRaceResults returns null finishPosition when place cell is not numeric", () => {
   expect(
-    parseJraRaceResults(
-      `<table><tr><td class="place">x</td><td class="num">3</td></tr></table>`,
-    ),
+    parseJraRaceResults(`<table><tr><td class="place">x</td><td class="num">3</td></tr></table>`),
   ).toStrictEqual([]);
 });
 
@@ -553,3 +548,232 @@ it("parseJraRaceResults extracts horseName from anchor inside class=horse cell",
   expect(result[0]?.horseName).toBe("勝負馬");
 });
 
+it("parseJraRaceResultExcludedHorseNumbers skips excluded rows with an invalid horse number", () => {
+  expect(
+    parseJraRaceResultExcludedHorseNumbers(
+      `<table><tr><td class="place">除外</td><td class="num">99</td></tr></table>`,
+    ),
+  ).toStrictEqual([]);
+});
+
+it("parseJraRaceEntries skips entry cells with empty stripped text in status detection", () => {
+  const result = parseJraRaceEntries(
+    `<table>
+      <tr>
+        <td class="num">7</td>
+        <td class="horseName"><a>馬</a></td>
+        <td class="jockey"><a>騎</a></td>
+        <td>   </td>
+      </tr>
+    </table>`,
+  );
+  expect(result[0]?.status).toBeNull();
+});
+
+it("parseJraHorseWeights skips rows whose num cell is invalid", () => {
+  expect(
+    parseJraHorseWeights(
+      `<table><tr><td class="num">99</td><td class="horse"><a>x</a></td><td class="weight">500 (+1)</td></tr></table>`,
+    ),
+  ).toStrictEqual([]);
+});
+
+it("parseJraOddsByType tansho skips cancelled rows and rows lacking odds/num", () => {
+  const result = parseJraOddsByType(
+    "tansho",
+    `
+      <table class="tanpuku">
+        <tr><td class="odds_tan cancel"><strong>9.9</strong></td><td class="num">3</td></tr>
+        <tr><td class="num"></td><td></td><td></td><td class="odds_tan"><strong>4.6</strong></td></tr>
+        <tr><td class="num">2</td><td></td><td></td><td class="odds_tan"><strong>4.6</strong></td></tr>
+      </table>
+    `,
+  );
+  expect(result).toStrictEqual([{ combination: "2", odds: 4.6, rank: 1 }]);
+});
+
+it("parseJraOddsByType fukusho skips rows missing horseNumber, fukusho cell, or numeric values", () => {
+  const result = parseJraOddsByType(
+    "fukusho",
+    `
+      <table class="tanpuku">
+        <tr><td class="num">99</td><td class="odds_fuku">1.5 - 2.5</td></tr>
+        <tr><td class="num">1</td></tr>
+        <tr><td class="num">2</td><td class="odds_fuku">no numbers</td></tr>
+        <tr><td class="num">3</td><td class="odds_fuku">3.0 - 5.0</td></tr>
+      </table>
+    `,
+  );
+  expect(result).toStrictEqual([
+    { averageOdds: 4, combination: "3", maxOdds: 5, minOdds: 3, rank: 1 },
+  ]);
+});
+
+it("parseJraOddsByType umaren returns [] when caption is missing", () => {
+  expect(
+    parseJraOddsByType(
+      "umaren",
+      `
+        <table class="umaren">
+          <tr><th>2</th><td>5.5</td></tr>
+        </table>
+      `,
+    ),
+  ).toStrictEqual([]);
+});
+
+it("parseJraOddsByType umaren swaps left/right when caption number is greater than target", () => {
+  const result = parseJraOddsByType(
+    "umaren",
+    `
+      <table class="umaren">
+        <caption>9</caption>
+        <tr><th>1</th><td>12.5</td></tr>
+      </table>
+    `,
+  );
+  expect(result[0]?.combination).toBe("1-9");
+});
+
+it("parseJraOddsByType umaren skips rows missing target or odds text", () => {
+  const result = parseJraOddsByType(
+    "umaren",
+    `
+      <table class="umaren">
+        <caption>1</caption>
+        <tr><td>3.5</td></tr>
+        <tr><th>2</th></tr>
+        <tr><th>3</th><td>3.5</td></tr>
+      </table>
+    `,
+  );
+  expect(result).toStrictEqual([{ combination: "1-3", odds: 3.5, rank: 1 }]);
+});
+
+it("parseJraOddsByType wide returns [] when caption number is invalid", () => {
+  expect(
+    parseJraOddsByType(
+      "wide",
+      `
+        <table class="wide">
+          <caption>99</caption>
+          <tr><th>1</th><td><span class="min">1.0</span>-<span class="max">2.0</span></td></tr>
+        </table>
+      `,
+    ),
+  ).toStrictEqual([]);
+});
+
+it("parseJraOddsByType wide skips rows lacking target or min/max or with invalid target", () => {
+  const result = parseJraOddsByType(
+    "wide",
+    `
+      <table class="wide">
+        <caption>3</caption>
+        <tr><th>99</th><td><span class="min">1.0</span>-<span class="max">2.0</span></td></tr>
+        <tr><th>1</th></tr>
+        <tr><th>5</th><td><span class="min">2.5</span>-<span class="max">3.5</span></td></tr>
+      </table>
+    `,
+  );
+  expect(result[0]?.combination).toBe("3-5");
+});
+
+it("parseJraOddsByType wide swaps left/right when caption is greater than target", () => {
+  const result = parseJraOddsByType(
+    "wide",
+    `
+      <table class="wide">
+        <caption>9</caption>
+        <tr><th>1</th><td><span class="min">5.0</span>-<span class="max">7.0</span></td></tr>
+      </table>
+    `,
+  );
+  expect(result[0]?.combination).toBe("1-9");
+});
+
+it("parseJraOddsByType 3renpuku returns [] when fuku3 table caption is missing", () => {
+  expect(
+    parseJraOddsByType(
+      "3renpuku",
+      `
+        <table class="fuku3">
+          <tr><th>3</th><td>15.5</td></tr>
+        </table>
+      `,
+    ),
+  ).toStrictEqual([]);
+});
+
+it("parseJraOddsByType 3renpuku skips rows lacking target/odds or with invalid horse number", () => {
+  const result = parseJraOddsByType(
+    "3renpuku",
+    `
+      <table class="fuku3">
+        <caption>1-2</caption>
+        <tr><th>99</th><td>15.5</td></tr>
+        <tr><th>3</th></tr>
+        <tr><td>15.5</td></tr>
+        <tr><th>4</th><td>20.5</td></tr>
+      </table>
+    `,
+  );
+  expect(result[0]?.combination).toBe("1-2-4");
+});
+
+it("parseJraOddsByType 3rentan skips tan3_unit sections without first/second/third", () => {
+  const result = parseJraOddsByType(
+    "3rentan",
+    `
+      <div class="tan3_unit">
+        <table><tr><th>9</th><td>10.0</td></tr></table>
+      </div>
+      <div class="tan3_unit">
+        <span class="inner"><span class="num">1</span></span>
+        <div class="cap"><span>2着</span></div>
+        <div class="num"></div>
+        <table><tr><th>9</th><td>10.0</td></tr></table>
+      </div>
+      <div class="tan3_unit">
+        <span class="inner"><span class="num">1</span></span>
+        <div class="cap"><span>2着</span></div>
+        <div class="num">2</div>
+        <table>
+          <tr><td>10.0</td></tr>
+          <tr><th>3</th></tr>
+          <tr><th>99</th><td>15.0</td></tr>
+          <tr><th>4</th><td>22.0</td></tr>
+        </table>
+      </div>
+    `,
+  );
+  expect(result[0]?.combination).toBe("1-2-4");
+});
+
+it("parseJraOddsByType 3renpuku sorts horse numbers ascending when combination is unordered", () => {
+  const result = parseJraOddsByType(
+    "3renpuku",
+    `
+      <table class="fuku3">
+        <caption>5-3</caption>
+        <tr><th>1</th><td>10.5</td></tr>
+      </table>
+    `,
+  );
+  expect(result[0]?.combination).toBe("1-3-5");
+});
+
+it("fetchJraOddsWithPlaywright breaks out of the wait loop when probe.url changes", async () => {
+  urlCounter = 100;
+  innerHtmlCounter = 0;
+  const browser = makeBrowser({
+    content: "<html>entry</html>",
+    locators: {
+      "#odds_list": { innerHtml: () => "<table></table>" },
+      "#race_related_link a": { count: 1 },
+    },
+  });
+  await setMockLaunch(browser);
+  const result = await fetchJraOddsWithPlaywright({} as never, "https://x.test/race");
+  expect(result.entryHtml).toBe("<html>entry</html>");
+});
