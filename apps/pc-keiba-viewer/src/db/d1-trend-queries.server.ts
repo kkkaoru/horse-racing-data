@@ -358,10 +358,10 @@ const DAILY_SELECT_SQL = `
     bataiju as bataijuInt,
     zogen_fugo as zogenFugo,
     zogen_sa as zogenSaInt
-  from daily_race_entries
+  from daily_race_entries indexed by idx_daily_race_entries_source_date
   where source = ?
     and race_date between ? and ?
-    and finish_position > 0
+    and finish_position is not null
   order by race_date desc, keibajo_code asc, race_bango asc, umaban asc
 `;
 
