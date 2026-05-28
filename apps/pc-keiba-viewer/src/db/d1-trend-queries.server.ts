@@ -154,6 +154,7 @@ interface RaceTrendD1RowsParams {
 
 interface RawD1Row {
   source: string;
+  raceKey: string;
   kaisaiNen: string;
   kaisaiTsukihi: string;
   keibajoCode: string;
@@ -172,6 +173,20 @@ interface RawD1Row {
   zogenFugo: string | null;
   zogenSaInt: number | null;
 }
+
+interface RawTanshoOddsRow {
+  race_key: string;
+  combination: string;
+  odds: number | null;
+  rank: number | null;
+}
+
+interface TanshoOddsEntry {
+  odds: number | null;
+  rank: number | null;
+}
+
+type TanshoOddsMap = Map<string, Map<string, TanshoOddsEntry>>;
 
 interface RawDailyD1Row {
   source: string;
@@ -219,6 +234,7 @@ const isRawD1Row = (value: unknown): value is RawD1Row => {
   const row = value as Record<string, unknown>;
   return (
     isRaceSource(row.source) &&
+    typeof row.raceKey === "string" &&
     typeof row.kaisaiNen === "string" &&
     typeof row.kaisaiTsukihi === "string" &&
     typeof row.keibajoCode === "string" &&
@@ -226,6 +242,21 @@ const isRawD1Row = (value: unknown): value is RawD1Row => {
     typeof row.finishPosition === "number"
   );
 };
+
+const isNumberOrNull = (value: unknown): value is number | null =>
+  value === null || typeof value === "number";
+
+const isRawTanshoOddsRow = (value: unknown): value is RawTanshoOddsRow =>
+  typeof value === "object" &&
+  value !== null &&
+  "race_key" in value &&
+  typeof value.race_key === "string" &&
+  "combination" in value &&
+  typeof value.combination === "string" &&
+  "odds" in value &&
+  isNumberOrNull(value.odds) &&
+  "rank" in value &&
+  isNumberOrNull(value.rank);
 
 const buildCacheKey = ({ source, startYmd, endYmd }: RaceTrendD1RowsParams): string =>
   `race-trend-d1:v3:${source}:${startYmd}:${endYmd}`;
@@ -259,19 +290,10 @@ const SELECT_SQL = `
       select max(fetched_at) from horse_weight_snapshots w2
       where w2.race_key = w1.race_key and w2.horse_number = w1.horse_number
     )
-  ),
-  latest_tansho_odds as (
-    select race_key, combination, odds, rank
-    from odds_snapshots o1
-    where odds_type = 'tansho' and fetched_at = (
-      select max(fetched_at) from odds_snapshots o2
-      where o2.race_key = o1.race_key
-        and o2.odds_type = 'tansho'
-        and o2.combination = o1.combination
-    )
   )
   select
     s.source as source,
+    r.race_key as raceKey,
     s.kaisai_nen as kaisaiNen,
     s.kaisai_tsukihi as kaisaiTsukihi,
     s.keibajo_code as keibajoCode,
@@ -282,8 +304,8 @@ const SELECT_SQL = `
     r.horse_number as umaban,
     coalesce(e.horse_name, de.bamei) as bamei,
     coalesce(e.jockey_name, de.kishumei_ryakusho) as jockeyName,
-    cast(round(coalesce(o.odds, de.tansho_odds) * 10) as integer) as tanshoOddsTenth,
-    coalesce(o.rank, de.tansho_ninkijun) as tanshoPopularity,
+    cast(round(de.tansho_odds * 10) as integer) as tanshoOddsTenth,
+    de.tansho_ninkijun as tanshoPopularity,
     cast(nullif(replace(r.finish_position, ' ', ''), '') as integer) as finishPosition,
     r.time as sohaTime,
     w.weight as bataijuInt,
@@ -293,9 +315,6 @@ const SELECT_SQL = `
   join realtime_race_sources s on s.race_key = r.race_key
   left join latest_entry e on e.race_key = r.race_key and e.horse_number = r.horse_number
   left join latest_weight w on w.race_key = r.race_key and w.horse_number = r.horse_number
-  left join latest_tansho_odds o
-    on o.race_key = r.race_key
-    and cast(nullif(o.combination, '') as integer) = cast(nullif(r.horse_number, '') as integer)
   left join daily_race_entries de
     on de.source = s.source
     and de.kaisai_nen = s.kaisai_nen
@@ -320,34 +339,109 @@ const queryD1 = async (params: RaceTrendD1RowsParams): Promise<RawD1Row[]> => {
   return result.results.filter(isRawD1Row);
 };
 
+// Latest tansho odds live in the hot D1 (`sync-realtime-data-hot`). The
+// query selects all combinations at the most recent fetched_at per race,
+// matching the legacy `latest_tansho_odds` CTE behavior from REALTIME_DB.
+const buildHotTanshoSelectSql = (placeholders: string): string =>
+  `select race_key, combination, odds, rank from odds_snapshots where race_key in (${placeholders}) and odds_type = 'tansho' and fetched_at = (select max(fetched_at) from odds_snapshots o2 where o2.race_key = odds_snapshots.race_key and o2.odds_type = 'tansho')`;
+
+interface GetLatestTanshoOddsFromHotD1Params {
+  env: CloudflareEnv | null;
+  raceKeys: ReadonlyArray<string>;
+}
+
+// Normalize combination / umaban so a stored "05" matches a lookup "5".
+// Returns null when the value is empty or non-numeric, in which case the
+// odds entry is dropped.
+const normalizeHorseCombination = (combination: string): string | null => {
+  const trimmed = combination.trim();
+  if (trimmed.length === 0) return null;
+  const parsed = Number.parseInt(trimmed, 10);
+  return Number.isNaN(parsed) ? null : String(parsed);
+};
+
+const accumulateTanshoOddsRow = (acc: TanshoOddsMap, row: RawTanshoOddsRow): TanshoOddsMap => {
+  const normalizedCombination = normalizeHorseCombination(row.combination);
+  if (normalizedCombination === null) return acc;
+  const existing = acc.get(row.race_key) ?? new Map<string, TanshoOddsEntry>();
+  existing.set(normalizedCombination, { odds: row.odds, rank: row.rank });
+  acc.set(row.race_key, existing);
+  return acc;
+};
+
+export const getLatestTanshoOddsFromHotD1 = async ({
+  env,
+  raceKeys,
+}: GetLatestTanshoOddsFromHotD1Params): Promise<TanshoOddsMap> => {
+  const uniqueKeys = Array.from(new Set(raceKeys.filter((key) => key.length > 0)));
+  if (uniqueKeys.length === 0) return new Map();
+  const db = env?.REALTIME_HOT_DB;
+  if (!db) return new Map();
+  try {
+    const placeholders = uniqueKeys.map(() => "?").join(",");
+    const result = await db
+      .prepare(buildHotTanshoSelectSql(placeholders))
+      .bind(...uniqueKeys)
+      .all();
+    const validRows = result.results.filter(isRawTanshoOddsRow);
+    return validRows.reduce(
+      accumulateTanshoOddsRow,
+      new Map<string, Map<string, TanshoOddsEntry>>(),
+    );
+  } catch (error) {
+    console.error("D1 hot tansho odds query failed", error);
+    return new Map();
+  }
+};
+
 const padString = (value: number | null, width: number): string | null =>
   value === null ? null : String(value).padStart(width, "0");
 
-const toStarterRow = (raw: RawD1Row): RaceTrendStarterRow => ({
-  source: raw.source as RaceSource,
-  kaisaiNen: raw.kaisaiNen,
-  kaisaiTsukihi: raw.kaisaiTsukihi,
-  keibajoCode: raw.keibajoCode,
-  raceBango: raw.raceBango,
-  raceName: raw.raceName,
-  hassoJikoku: formatHassoJikoku(raw.hassoJikoku),
-  runnerCount: null,
-  wakuban: raw.wakuban,
-  umaban: raw.umaban,
-  bamei: raw.bamei,
-  jockeyName: raw.jockeyName,
-  tanshoOdds: padString(raw.tanshoOddsTenth, 4),
-  tanshoPopularity: padString(raw.tanshoPopularity, 2),
-  finishPosition: raw.finishPosition,
-  sohaTime: raw.sohaTime,
-  corner1: null,
-  corner2: null,
-  corner3: null,
-  corner4: null,
-  bataiju: raw.bataijuInt === null ? null : String(raw.bataijuInt),
-  zogenFugo: raw.zogenFugo,
-  zogenSa: raw.zogenSaInt === null ? null : String(raw.zogenSaInt),
-});
+const pickTanshoOdds = (
+  raw: RawD1Row,
+  oddsMap: TanshoOddsMap,
+): { tanshoOddsTenth: number | null; tanshoPopularity: number | null } => {
+  const combinationKey = raw.umaban === null ? null : normalizeHorseCombination(raw.umaban);
+  if (combinationKey === null) {
+    return { tanshoOddsTenth: raw.tanshoOddsTenth, tanshoPopularity: raw.tanshoPopularity };
+  }
+  const entry = oddsMap.get(raw.raceKey)?.get(combinationKey);
+  if (entry === undefined) {
+    return { tanshoOddsTenth: raw.tanshoOddsTenth, tanshoPopularity: raw.tanshoPopularity };
+  }
+  const oddsTenth = entry.odds === null ? raw.tanshoOddsTenth : Math.round(entry.odds * 10);
+  const rank = entry.rank ?? raw.tanshoPopularity;
+  return { tanshoOddsTenth: oddsTenth, tanshoPopularity: rank };
+};
+
+const toStarterRow = (raw: RawD1Row, oddsMap: TanshoOddsMap): RaceTrendStarterRow => {
+  const { tanshoOddsTenth, tanshoPopularity } = pickTanshoOdds(raw, oddsMap);
+  return {
+    source: raw.source as RaceSource,
+    kaisaiNen: raw.kaisaiNen,
+    kaisaiTsukihi: raw.kaisaiTsukihi,
+    keibajoCode: raw.keibajoCode,
+    raceBango: raw.raceBango,
+    raceName: raw.raceName,
+    hassoJikoku: formatHassoJikoku(raw.hassoJikoku),
+    runnerCount: null,
+    wakuban: raw.wakuban,
+    umaban: raw.umaban,
+    bamei: raw.bamei,
+    jockeyName: raw.jockeyName,
+    tanshoOdds: padString(tanshoOddsTenth, 4),
+    tanshoPopularity: padString(tanshoPopularity, 2),
+    finishPosition: raw.finishPosition,
+    sohaTime: raw.sohaTime,
+    corner1: null,
+    corner2: null,
+    corner3: null,
+    corner4: null,
+    bataiju: raw.bataijuInt === null ? null : String(raw.bataijuInt),
+    zogenFugo: raw.zogenFugo,
+    zogenSa: raw.zogenSaInt === null ? null : String(raw.zogenSaInt),
+  };
+};
 
 const getCachedResponse = async (cacheKey: string): Promise<RaceTrendStarterRow[] | null> => {
   const cache = typeof caches === "undefined" ? null : caches.default;
@@ -390,7 +484,17 @@ export const getRaceTrendD1StarterRows = async (
   if (cached !== null) return cached;
   try {
     const raw = await queryD1(params);
-    const rows = raw.map(toStarterRow);
+    if (raw.length === 0) return [];
+    const uniqueRaceKeys = Array.from(new Set(raw.map((row) => row.raceKey)));
+    const { env } = await getCloudflareContext({ async: true });
+    // Preview / pre-binding deploys degrade gracefully: when REALTIME_HOT_DB
+    // is missing the helper short-circuits to an empty map and we fall back
+    // to the daily_race_entries values already selected from REALTIME_DB.
+    const oddsMap = await getLatestTanshoOddsFromHotD1({
+      env: env ?? null,
+      raceKeys: uniqueRaceKeys,
+    });
+    const rows = raw.map((row) => toStarterRow(row, oddsMap));
     // Do not cache empty result sets — the most common reason for an empty
     // .all() is a D1 CPU / connection saturation event where the binding
     // silently returns `results: []` instead of throwing, and persisting

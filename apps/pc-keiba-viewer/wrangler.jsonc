@@ -105,6 +105,12 @@
       // when the Worker actually runs on Cloudflare.
       "remote": true,
     },
+    {
+      "binding": "REALTIME_HOT_DB",
+      "database_name": "sync-realtime-data-hot",
+      "database_id": "946a0bb1-84c4-471b-9cb5-f984c4d83328",
+      "remote": true,
+    },
   ],
   "r2_buckets": [
     {
