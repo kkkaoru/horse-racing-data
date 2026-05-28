@@ -169,8 +169,8 @@ const buildAffectedCacheOptions = (
   });
 };
 
-const D1_DAILY_CACHE_PREFIX = "race-trend-d1-daily:v2";
-const D1_SNAPSHOT_CACHE_PREFIX = "race-trend-d1:v2";
+const D1_DAILY_CACHE_PREFIX = "race-trend-d1-daily:v3";
+const D1_SNAPSHOT_CACHE_PREFIX = "race-trend-d1:v3";
 const D1_DAILY_CACHE_URL_BASE = "https://pc-keiba-viewer.local/d1-trend-daily-cache/";
 const D1_SNAPSHOT_CACHE_URL_BASE = "https://pc-keiba-viewer.local/d1-trend-cache/";
 
