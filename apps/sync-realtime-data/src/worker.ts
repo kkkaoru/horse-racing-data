@@ -191,7 +191,7 @@ const json = (body: unknown, init?: ResponseInit): Response =>
       const headers = mergeJsonHeaders(init);
       headers.set("access-control-allow-origin", "*");
       if (!headers.has("cache-control")) {
-        headers.set("cache-control", `public, max-age=${init?.status === 200 ? 10 : 0}`);
+        headers.set("cache-control", "public, max-age=0");
       }
       return headers;
     })(),
@@ -1327,6 +1327,34 @@ export const assertJraHorseWeightsComplete = (
   }
 };
 
+// NAR entry status is null for active runners; any non-null value comes from
+// the keiba.go ENTRY_STATUS_LABELS list (出場停止 / 出走取消 / 取消 / 競走除外 /
+// 除外) and means scratched. Without this, a partial weight scrape (e.g. when
+// the official site has only posted 7 of 8 horses) would mark
+// last_weight_fetch_at and the 24h cooldown blocks the retry that would pick
+// up the late-posted horse.
+export const assertNarHorseWeightsComplete = (
+  raceKey: string,
+  entries: Omit<RaceEntry, "fetchedAt">[],
+  weights: HorseWeight[],
+): void => {
+  if (weights.length === 0) {
+    return;
+  }
+  const expectedHorseNumbers = new Set(
+    entries.filter((entry) => !entry.status).map((entry) => entry.horseNumber),
+  );
+  const actualHorseNumbers = new Set(weights.map((weight) => weight.horseNumber));
+  const missingHorseNumbers = Array.from(expectedHorseNumbers).filter(
+    (horseNumber) => !actualHorseNumbers.has(horseNumber),
+  );
+  if (missingHorseNumbers.length > 0) {
+    throw new Error(
+      `NAR horse weight rows are sparse: ${raceKey} missing=${missingHorseNumbers.join(",")}`,
+    );
+  }
+};
+
 export const planRealtimeFetches = async (env: Env, targetDate: string): Promise<number> => {
   const now = getNow(env);
   const jobs: Job[] = [];
@@ -1537,6 +1565,9 @@ const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<void> =>
   }
   if (race.source === "jra") {
     assertJraHorseWeightsComplete(raceKey, entries, weights);
+  }
+  if (race.source === "nar") {
+    assertNarHorseWeightsComplete(raceKey, entries, weights);
   }
   if (weights.length > 0 && weights.length < 2) {
     await insertHorseWeightSnapshot(env.REALTIME_DB, raceKey, fetchedAt, []);
@@ -2012,11 +2043,12 @@ const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<v
     fetchedAt,
     paddockBulletins: payload.paddockBulletins,
   });
+  // parsed.bulletins.length > 0 is guaranteed here (the empty path returned above).
   await updatePremiumPaddockFetchState(env.REALTIME_DB, {
     fetchedAt,
     message: null,
     raceKey,
-    status: parsed.bulletins.length > 0 ? "ok" : "empty",
+    status: "ok",
   });
   await notifyPremiumPaddockIfNeeded(env, race, parsed.bulletins, fetchedAt);
 };
@@ -2173,6 +2205,7 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
     }
     if (job.type === "build-daily-features") {
       const result = await runDailyFeatureBuildForEnv(env, {
+        forceRefresh: job.forceRefresh ?? false,
         fromDate: job.date,
         sourceScope: job.sourceScope ?? "all",
         toDate: job.date,

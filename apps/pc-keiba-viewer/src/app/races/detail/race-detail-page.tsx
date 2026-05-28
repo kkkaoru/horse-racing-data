@@ -222,25 +222,25 @@ const DetailLinkCell = ({
 
 const tryGetWaitUntilContext = async (): Promise<PcKeibaExecutionContext | null> => {
   try {
-    return (await getCloudflareContext<Record<string, unknown>, PcKeibaExecutionContext>({
-      async: true,
-    })).ctx;
+    return (
+      await getCloudflareContext<Record<string, unknown>, PcKeibaExecutionContext>({
+        async: true,
+      })
+    ).ctx;
   } catch {
     return null;
   }
 };
 
-const loadRaceDetailSnapshotFromDb = async (
-  params: {
-    day: string;
-    initialRace: RaceDetail | null;
-    keibajoCode: string;
-    month: string;
-    raceNumber: string;
-    source: RaceSource;
-    year: string;
-  },
-): Promise<RaceDetailSsrSnapshot | null> => {
+const loadRaceDetailSnapshotFromDb = async (params: {
+  day: string;
+  initialRace: RaceDetail | null;
+  keibajoCode: string;
+  month: string;
+  raceNumber: string;
+  source: RaceSource;
+  year: string;
+}): Promise<RaceDetailSsrSnapshot | null> => {
   const { day, initialRace, keibajoCode, month, raceNumber, source, year } = params;
   const race =
     initialRace ?? (await getRaceDetail(source, year, month, day, keibajoCode, raceNumber));
@@ -347,7 +347,7 @@ export async function RaceDetailView({
     raceSource === "jra" ? -1 : -3,
   );
   const raceTrendDefaultEndDate = `${year}-${month}-${day}`;
-  const raceTrendMinStartDate = addDaysToIsoDate(year, month, day, -30);
+  const raceTrendMinStartDate = addDaysToIsoDate(year, month, day, -14);
   const initialRaceTrendTargets = getRaceTrendTargetsFromSearchParams(searchParams);
   const showRacePacePrediction = isCornerPacePredictionSupported({
     distance: race.kyori,

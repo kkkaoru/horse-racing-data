@@ -178,13 +178,14 @@ const buildAffectedD1RangeKeys = (
   source: RaceSource,
   targetYmd: string,
 ): Array<{ endYmd: string; startYmd: string }> => {
-  // The viewer's race-trend section pre-fetches a 30-day window so the date
+  // The viewer's race-trend section pre-fetches a 14-day window so the date
   // picker can filter without re-fetching, and Phase A also cached a narrower
   // source-specific window (JRA −1d, NAR −3d). Bust every window the API
   // could have stored against (`source × startYmd × endYmd`) so a race-finish
-  // event refreshes both the legacy short window and the current long one.
+  // event refreshes the short window, the legacy 30-day window (briefly
+  // active before this commit), and the current 14-day window in one shot.
   const sourceShortRange = source === "jra" ? -1 : -3;
-  const offsets = [sourceShortRange, -30];
+  const offsets = [sourceShortRange, -14, -30];
   return offsets.map((days) => ({
     endYmd: targetYmd,
     startYmd: addDaysToYmd(targetYmd, days),
