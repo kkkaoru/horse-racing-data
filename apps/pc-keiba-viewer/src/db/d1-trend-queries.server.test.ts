@@ -13,6 +13,7 @@ vi.mock("@opennextjs/cloudflare", () => ({
 import {
   getRaceTrendD1StarterRows,
   getRaceTrendDailyStarterRows,
+  getRaceTrendRunningStylesFromD1,
 } from "./d1-trend-queries.server";
 
 type AnyMockFn = (...args: never[]) => unknown;
@@ -619,4 +620,116 @@ it("falls back to KV for daily trends when Cache API global is unavailable", asy
     endYmd: "20260528",
   });
   expect(rows).toStrictEqual(cached);
+});
+
+it("getRaceTrendRunningStylesFromD1 returns empty array when no race keys are supplied", async () => {
+  const { db } = buildD1Stub([]);
+  installContext({ cache: null, db, kv: buildKvStub() });
+  const rows = await getRaceTrendRunningStylesFromD1([]);
+  expect(rows).toStrictEqual([]);
+  expect(db.prepare).not.toHaveBeenCalled();
+});
+
+it("getRaceTrendRunningStylesFromD1 deduplicates and filters blank race keys before binding", async () => {
+  const { db, prepared } = buildD1Stub([
+    { race_key: "nar:20260528:50:01", horse_number: 1, predicted_label: "nige" },
+  ]);
+  installContext({ cache: null, db, kv: buildKvStub() });
+  await getRaceTrendRunningStylesFromD1([
+    "nar:20260528:50:01",
+    "nar:20260528:50:01",
+    "",
+    "nar:20260528:50:02",
+  ]);
+  expect(db.prepare).toHaveBeenCalledTimes(1);
+  expect(prepared.bind).toHaveBeenCalledWith("nar:20260528:50:01", "nar:20260528:50:02");
+});
+
+it("getRaceTrendRunningStylesFromD1 batches IN clause at 200 race keys per chunk", async () => {
+  const { db, prepared } = buildD1Stub([]);
+  installContext({ cache: null, db, kv: buildKvStub() });
+  const keys = Array.from(
+    { length: 450 },
+    (_, index) => `nar:20260528:50:${String(index).padStart(2, "0")}`,
+  );
+  await getRaceTrendRunningStylesFromD1(keys);
+  // 450 keys / 200 per chunk = 3 chunks
+  expect(db.prepare).toHaveBeenCalledTimes(3);
+  expect(prepared.bind).toHaveBeenCalledTimes(3);
+});
+
+it("getRaceTrendRunningStylesFromD1 maps result rows into the public cache shape", async () => {
+  const { db } = buildD1Stub([
+    { race_key: "nar:20260528:50:01", horse_number: 7, predicted_label: "senkou" },
+    { race_key: "nar:20260528:50:01", horse_number: 9, predicted_label: "sashi" },
+    { race_key: "nar:20260528:50:01", horse_number: 13, predicted_label: "oikomi" },
+  ]);
+  installContext({ cache: null, db, kv: buildKvStub() });
+  const rows = await getRaceTrendRunningStylesFromD1(["nar:20260528:50:01"]);
+  expect(rows).toStrictEqual([
+    { raceKey: "nar:20260528:50:01", horseNumber: "7", predictedLabel: "senkou" },
+    { raceKey: "nar:20260528:50:01", horseNumber: "9", predictedLabel: "sashi" },
+    { raceKey: "nar:20260528:50:01", horseNumber: "13", predictedLabel: "oikomi" },
+  ]);
+});
+
+it("getRaceTrendRunningStylesFromD1 ignores rows that fail validation", async () => {
+  const { db } = buildD1Stub([
+    { race_key: "nar:20260528:50:01", horse_number: 1, predicted_label: "nige" },
+    { race_key: "nar:20260528:50:01", horse_number: 2, predicted_label: "invalid" },
+    { race_key: "nar:20260528:50:01", horse_number: "not-a-number", predicted_label: "sashi" },
+  ]);
+  installContext({ cache: null, db, kv: buildKvStub() });
+  const rows = await getRaceTrendRunningStylesFromD1(["nar:20260528:50:01"]);
+  expect(rows).toStrictEqual([
+    { raceKey: "nar:20260528:50:01", horseNumber: "1", predictedLabel: "nige" },
+  ]);
+});
+
+it("getRaceTrendRunningStylesFromD1 returns empty array when REALTIME_DB binding is missing", async () => {
+  getCloudflareContextMock.mockResolvedValue({ env: {} });
+  const rows = await getRaceTrendRunningStylesFromD1(["nar:20260528:50:01"]);
+  expect(rows).toStrictEqual([]);
+});
+
+it("getRaceTrendRunningStylesFromD1 swallows D1 errors and returns empty array", async () => {
+  const all = vi.fn<AnyMockFn>().mockRejectedValue(new Error("D1 overloaded"));
+  const bind = vi.fn<AnyMockFn>().mockReturnValue({ all });
+  const prepared = { all, bind };
+  const db: D1Stub = { prepare: vi.fn<AnyMockFn>().mockReturnValue(prepared) };
+  installContext({ cache: null, db, kv: buildKvStub() });
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const rows = await getRaceTrendRunningStylesFromD1(["nar:20260528:50:01"]);
+  expect(rows).toStrictEqual([]);
+  expect(consoleError).toHaveBeenCalledWith(
+    "D1 race_running_styles query failed",
+    expect.any(Error),
+  );
+  consoleError.mockRestore();
+});
+
+it("getRaceTrendRunningStylesFromD1 limits in-flight queries to 3 across many chunks", async () => {
+  const inFlightState = { current: 0, peak: 0 };
+  const all = vi.fn<AnyMockFn>().mockImplementation(async () => {
+    inFlightState.current += 1;
+    if (inFlightState.current > inFlightState.peak) {
+      inFlightState.peak = inFlightState.current;
+    }
+    await Promise.resolve();
+    await Promise.resolve();
+    inFlightState.current -= 1;
+    return { results: [] };
+  });
+  const bind = vi.fn<AnyMockFn>().mockReturnValue({ all });
+  const prepared = { all, bind };
+  const db: D1Stub = { prepare: vi.fn<AnyMockFn>().mockReturnValue(prepared) };
+  installContext({ cache: null, db, kv: buildKvStub() });
+  const keys = Array.from(
+    { length: 2000 },
+    (_, index) => `nar:20260528:50:${String(index).padStart(4, "0")}`,
+  );
+  await getRaceTrendRunningStylesFromD1(keys);
+  // 2000 / 200 = 10 chunks, but the worker pool keeps at most 3 in flight.
+  expect(db.prepare).toHaveBeenCalledTimes(10);
+  expect(inFlightState.peak).toBeLessThanOrEqual(3);
 });
