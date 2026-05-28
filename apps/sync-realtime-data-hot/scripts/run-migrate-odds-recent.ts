@@ -24,7 +24,9 @@ const resolveHost = async (host: string): Promise<string> => {
 };
 
 const resolvingFetch: typeof fetch = async (input, init) => {
-  const url = new URL(typeof input === "string" ? input : input.toString());
+  const url = new URL(
+    typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+  );
   const originalHost = url.hostname;
   const ip = await resolveHost(originalHost);
   url.hostname = ip;
