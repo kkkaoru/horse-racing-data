@@ -1936,24 +1936,28 @@ export const getLatestOddsFromD1 = async (
   fetchedAt: string;
   latest: Partial<Record<OddsType, OddsData[]>>;
 } | null> => {
-  const latest = await db
-    .prepare("select max(fetched_at) as fetched_at from odds_snapshots where race_key = ?")
-    .bind(raceKey)
-    .first<{ fetched_at: string | null }>();
-  if (!latest?.fetched_at) {
-    return null;
-  }
+  // Single round-trip instead of MAX(fetched_at) + filtered SELECT. The
+  // subquery resolves the latest fetched_at on the existing
+  // (race_key, fetched_at) index and the outer SELECT then keeps only that
+  // snapshot's rows. Saves one D1 hop per detail-page poll.
   const result = await db
     .prepare(
       `
         select odds_type, fetched_at, combination, odds, min_odds, max_odds, average_odds, rank
         from odds_snapshots
-        where race_key = ? and fetched_at = ?
+        where race_key = ?
+          and fetched_at = (
+            select max(fetched_at) from odds_snapshots where race_key = ?
+          )
         order by odds_type asc, coalesce(rank, 999999) asc
       `,
     )
-    .bind(raceKey, latest.fetched_at)
+    .bind(raceKey, raceKey)
     .all<OddsSnapshotRow>();
+  const firstFetchedAt = result.results[0]?.fetched_at;
+  if (!firstFetchedAt) {
+    return null;
+  }
   const grouped: Partial<Record<OddsType, OddsData[]>> = {};
   for (const row of result.results) {
     const oddsType = row.odds_type as OddsType | undefined;
@@ -1973,7 +1977,7 @@ export const getLatestOddsFromD1 = async (
     ];
   }
   return {
-    fetchedAt: latest.fetched_at,
+    fetchedAt: firstFetchedAt,
     latest: grouped,
   };
 };
@@ -2013,26 +2017,26 @@ export const getLatestHorseWeights = async (
   db: D1Database,
   raceKey: string,
 ): Promise<{ fetchedAt: string; horses: HorseWeight[] } | null> => {
-  const latest = await db
-    .prepare("select max(fetched_at) as fetched_at from horse_weight_snapshots where race_key = ?")
-    .bind(raceKey)
-    .first<{ fetched_at: string | null }>();
-  if (!latest?.fetched_at) {
-    return null;
-  }
   const result = await db
     .prepare(
       `
         select *
         from horse_weight_snapshots
-        where race_key = ? and fetched_at = ?
+        where race_key = ?
+          and fetched_at = (
+            select max(fetched_at) from horse_weight_snapshots where race_key = ?
+          )
         order by cast(horse_number as integer) asc
       `,
     )
-    .bind(raceKey, latest.fetched_at)
+    .bind(raceKey, raceKey)
     .all<WeightSnapshotRow>();
+  const firstFetchedAt = result.results[0]?.fetched_at;
+  if (!firstFetchedAt) {
+    return null;
+  }
   return {
-    fetchedAt: latest.fetched_at,
+    fetchedAt: firstFetchedAt,
     horses: result.results.map((row) => ({
       changeAmount: row.change_amount,
       changeSign: row.change_sign,
@@ -2047,26 +2051,26 @@ export const getLatestRaceEntries = async (
   db: D1Database,
   raceKey: string,
 ): Promise<{ fetchedAt: string; horses: RaceEntry[] } | null> => {
-  const latest = await db
-    .prepare("select max(fetched_at) as fetched_at from race_entry_snapshots where race_key = ?")
-    .bind(raceKey)
-    .first<{ fetched_at: string | null }>();
-  if (!latest?.fetched_at) {
-    return null;
-  }
   const result = await db
     .prepare(
       `
         select *
         from race_entry_snapshots
-        where race_key = ? and fetched_at = ?
+        where race_key = ?
+          and fetched_at = (
+            select max(fetched_at) from race_entry_snapshots where race_key = ?
+          )
         order by cast(horse_number as integer) asc
       `,
     )
-    .bind(raceKey, latest.fetched_at)
+    .bind(raceKey, raceKey)
     .all<RaceEntrySnapshotRow>();
+  const firstFetchedAt = result.results[0]?.fetched_at;
+  if (!firstFetchedAt) {
+    return null;
+  }
   return {
-    fetchedAt: latest.fetched_at,
+    fetchedAt: firstFetchedAt,
     horses: result.results.map((row) => ({
       fetchedAt: row.fetched_at,
       horseName: row.horse_name,
@@ -2081,28 +2085,28 @@ export const getLatestRaceResults = async (
   db: D1Database,
   raceKey: string,
 ): Promise<{ fetchedAt: string; horses: RaceResult[] } | null> => {
-  const latest = await db
-    .prepare("select max(fetched_at) as fetched_at from race_result_snapshots where race_key = ?")
-    .bind(raceKey)
-    .first<{ fetched_at: string | null }>();
-  if (!latest?.fetched_at) {
-    return null;
-  }
   const result = await db
     .prepare(
       `
         select *
         from race_result_snapshots
-        where race_key = ? and fetched_at = ?
+        where race_key = ?
+          and fetched_at = (
+            select max(fetched_at) from race_result_snapshots where race_key = ?
+          )
         order by
           case when finish_position glob '[0-9]*' then cast(finish_position as integer) else 999 end asc,
           cast(horse_number as integer) asc
       `,
     )
-    .bind(raceKey, latest.fetched_at)
+    .bind(raceKey, raceKey)
     .all<RaceResultSnapshotRow>();
+  const firstFetchedAt = result.results[0]?.fetched_at;
+  if (!firstFetchedAt) {
+    return null;
+  }
   return {
-    fetchedAt: latest.fetched_at,
+    fetchedAt: firstFetchedAt,
     horses: result.results.map((row) => ({
       fetchedAt: row.fetched_at,
       finishPosition: row.finish_position,
