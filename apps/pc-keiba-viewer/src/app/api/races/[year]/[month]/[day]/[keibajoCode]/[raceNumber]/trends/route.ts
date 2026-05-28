@@ -1,9 +1,6 @@
 import { NextResponse } from "next/server";
 
-import {
-  getRaceRunningStylesByRaceKeysWithCache,
-  getRaceRunningStylesWithCache,
-} from "../../../../../../../../../lib/running-style-cache.server";
+import { getRaceRunningStylesWithCache } from "../../../../../../../../../lib/running-style-cache.server";
 import {
   getRaceDetail,
   getRaceRunners,
@@ -194,12 +191,15 @@ const buildRaceTrendRawPayload = async (
   const starterRows = mergeStarterRows(dailyRows, snapshotRows, []);
   const currentRunningStyles = await currentRunningStylesPromise;
   const historicalRaceKeys = Array.from(new Set(starterRows.map(starterRaceKey)));
-  const [cachedHistoricalRunningStyles, directHistoricalRunningStyles] = await Promise.all([
-    getRaceRunningStylesByRaceKeysWithCache(historicalRaceKeys).catch(() => []),
-    getRaceTrendRunningStylesFromD1(historicalRaceKeys),
-  ]);
+  // Only fan out the direct D1 query (chunked at concurrency 3) — the
+  // cached `getRaceRunningStylesByRaceKeysWithCache` path used to issue
+  // one subrequest per race key (1500+ on a populated 14-day window),
+  // which overran the viewer worker's subrequest concurrency budget and
+  // surfaced as 30-second HTTP 000 timeouts. The direct D1 query covers
+  // the same data via a single `IN (?,...)` lookup per chunk.
+  const directHistoricalRunningStyles = await getRaceTrendRunningStylesFromD1(historicalRaceKeys);
   const mergedHistoricalRunningStyles = mergeHistoricalRunningStyles(
-    cachedHistoricalRunningStyles,
+    [],
     directHistoricalRunningStyles,
   );
   return {

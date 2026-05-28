@@ -15,7 +15,15 @@ import type {
   RaceTrendStarterRow,
 } from "../lib/race-types";
 
-const RUNNING_STYLE_BATCH_SIZE = 50;
+// 200 race keys per IN clause keeps the prepared statement well under
+// SQLite's parameter limit while shrinking the number of parallel D1
+// round trips by 4x compared with the previous 50-batch tuning.
+const RUNNING_STYLE_BATCH_SIZE = 200;
+// Run at most 3 chunk queries in flight at once. Higher values used to
+// blow through the viewer worker's subrequest concurrency budget when
+// trend payloads referenced 1500+ historicalRaceKeys, surfacing as
+// 30-second HTTP timeouts.
+const RUNNING_STYLE_CHUNK_CONCURRENCY = 3;
 
 interface RawRunningStyleD1Row {
   predicted_label: string;
@@ -73,8 +81,20 @@ export const getRaceTrendRunningStylesFromD1 = async (
   };
   try {
     const chunks = chunkArray(uniqueKeys, RUNNING_STYLE_BATCH_SIZE);
-    const chunkResults = await Promise.all(chunks.map(queryChunk));
-    return chunkResults.flat();
+    const results: RaceTrendRunningStyleCache[] = [];
+    const indexState = { value: 0 };
+    const runWorker = async (): Promise<void> => {
+      const next = indexState.value;
+      indexState.value = next + 1;
+      const chunk = chunks[next];
+      if (!chunk) return;
+      const chunkResult = await queryChunk(chunk);
+      results.push(...chunkResult);
+      await runWorker();
+    };
+    const workerCount = Math.min(RUNNING_STYLE_CHUNK_CONCURRENCY, chunks.length);
+    await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+    return results;
   } catch (error) {
     console.error("D1 race_running_styles query failed", error);
     return [];
