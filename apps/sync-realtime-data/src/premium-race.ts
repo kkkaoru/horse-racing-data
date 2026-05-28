@@ -1,3 +1,4 @@
+import { formatError } from "./format-error";
 import type { NarRaceSource } from "./types";
 
 export interface PremiumRaceConfig {
@@ -215,7 +216,7 @@ export const fetchPremiumHtmlAttempts = async (
           "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36",
       },
     }).catch((error: unknown) => {
-      errors.push(`${attempt.mode}: ${error instanceof Error ? error.message : String(error)}`);
+      errors.push(`${attempt.mode}: ${formatError(error)}`);
       return null;
     });
     if (!response?.ok) {

@@ -3,10 +3,8 @@
 // SQL so both the Cron consumer and the on-demand admin route see the
 // same column order.
 
-import {
-  type D1QueryCacheRaceDayContext,
-  withD1QueryCache,
-} from "./d1-query-cache";
+import { type D1QueryCacheRaceDayContext, withD1QueryCache } from "./d1-query-cache";
+import { formatError } from "./format-error";
 import type { RunningStyleClassLabel } from "./running-style-lightgbm-tree";
 
 export interface RaceRunningStyleRow {
@@ -124,7 +122,6 @@ const queryRaceRunningStyleCounts = async (
 ): Promise<Map<string, number>> => {
   const counts = new Map<string, number>();
   for (const chunk of chunkArray(raceKeys, D1_BATCH_SIZE)) {
-    if (chunk.length === 0) continue;
     const result = await db
       .prepare(
         `select race_key, count(*) as count
@@ -245,7 +242,6 @@ export const listRunningStyleInferenceStates = async (
 ): Promise<Map<string, RunningStyleInferenceStateDetail>> => {
   const states = new Map<string, RunningStyleInferenceStateDetail>();
   for (const chunk of chunkArray(raceKeys, D1_BATCH_SIZE)) {
-    if (chunk.length === 0) continue;
     const result = await db
       .prepare(
         `select race_key, status, attempted_at, completed_at,
@@ -429,7 +425,7 @@ export const markRunningStyleInferenceFailed = async (
   raceKey: string,
   error: unknown,
 ): Promise<void> => {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = formatError(error);
   await db
     .prepare(
       `update running_style_inference_state

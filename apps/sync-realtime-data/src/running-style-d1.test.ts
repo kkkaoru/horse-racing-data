@@ -206,6 +206,50 @@ it("getRunningStyleInferenceState maps row columns to camelCase fields", async (
   });
 });
 
+it("getRunningStyleInferenceState maps null expected/written horse counts to null", async () => {
+  const { getRunningStyleInferenceState } = await import("./running-style-d1");
+  const first = vi.fn(async () => ({
+    attempted_at: null,
+    completed_at: null,
+    expected_horse_count: null,
+    features_r2_key: null,
+    model_version: null,
+    race_key: "jra:20260512:08:02",
+    status: "pending",
+    written_horse_count: null,
+  }));
+  const bind = vi.fn(() => ({ first }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const state = await getRunningStyleInferenceState(db, "jra:20260512:08:02");
+  expect(state?.expectedHorseCount).toBe(null);
+  expect(state?.writtenHorseCount).toBe(null);
+});
+
+it("listRunningStyleInferenceStates maps non-null written_horse_count to a number", async () => {
+  const { listRunningStyleInferenceStates } = await import("./running-style-d1");
+  const all = vi.fn(async () => ({
+    results: [
+      {
+        attempted_at: "2026-05-12T11:00:00+09:00",
+        completed_at: "2026-05-12T11:31:00+09:00",
+        expected_horse_count: null,
+        features_r2_key: "k.parquet",
+        model_version: "v7-lineage",
+        race_key: "jra:20260512:08:03",
+        status: "completed",
+        written_horse_count: 7,
+      },
+    ],
+  }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const states = await listRunningStyleInferenceStates(db, ["jra:20260512:08:03"]);
+  expect(states.get("jra:20260512:08:03")?.expectedHorseCount).toBe(null);
+  expect(states.get("jra:20260512:08:03")?.writtenHorseCount).toBe(7);
+});
+
 it("upsertRunningStylePendingStates short-circuits when rows empty", async () => {
   const { upsertRunningStylePendingStates } = await import("./running-style-d1");
   const batch = vi.fn(async () => []);

@@ -24,6 +24,7 @@ import {
   summarizeRunningStyleDateProgress,
   type RunningStyleDateProgressRow,
 } from "../src/running-style-date-progress";
+import { formatError } from "../src/format-error";
 import { handleRunningStylePredictionJob } from "../src/running-style-queue";
 import {
   planRunningStylePredictionsForDate,
@@ -151,7 +152,10 @@ export const parseRunningStyleDateCliArgs = (
     ensureModels,
     maxRounds,
     pollMs,
-    registerModels: registerModels.map((spec) => ({ ...spec, remote: remoteModels || spec.remote })),
+    registerModels: registerModels.map((spec) => ({
+      ...spec,
+      remote: remoteModels || spec.remote,
+    })),
     remoteModels,
     scheduleOnly,
     syncModels,
@@ -234,10 +238,7 @@ export const processIncompleteRaces = async (
         `  processed ${row.raceKey} written=${summary?.writtenCount ?? 0} cache=${summary?.cacheWritten ? "ok" : "ng"} parquet=${summary?.featuresR2Key ?? "-"}`,
       );
     } catch (error) {
-      console.error(
-        `  failed ${row.raceKey}:`,
-        error instanceof Error ? error.message : String(error),
-      );
+      console.error(`  failed ${row.raceKey}:`, formatError(error));
     }
   }
 };
@@ -263,16 +264,14 @@ export const run = async (): Promise<void> => {
 
     if (args.ensureModels) {
       const requiredSources = listRequiredRunningStyleModelSources(raceList.races);
-      const modelSetup = await ensureRunningStyleModels(
-        {
-          register: args.registerModels.map((spec) => ({
-            ...spec,
-            remote: args.remoteModels || spec.remote,
-          })),
-          sources: requiredSources,
-          syncLocalFromRemote: args.syncModels,
-        },
-      );
+      const modelSetup = await ensureRunningStyleModels({
+        register: args.registerModels.map((spec) => ({
+          ...spec,
+          remote: args.remoteModels || spec.remote,
+        })),
+        sources: requiredSources,
+        syncLocalFromRemote: args.syncModels,
+      });
       console.log(
         `[running-style:date] models registered=${modelSetup.registered.length} synced=${modelSetup.synced.length} sources=${requiredSources.join(",")}`,
       );
@@ -284,7 +283,9 @@ export const run = async (): Promise<void> => {
     );
 
     if (args.scheduleOnly) {
-      console.log(`[running-style:date] schedule-only date=${args.dateYmd} races=${initialPlan.scanned}`);
+      console.log(
+        `[running-style:date] schedule-only date=${args.dateYmd} races=${initialPlan.scanned}`,
+      );
       return;
     }
 
