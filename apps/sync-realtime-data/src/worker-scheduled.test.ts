@@ -511,9 +511,9 @@ it("queue acks (instead of retrying) a failing fetch-odds message", async () => 
   expect(retry).not.toHaveBeenCalled();
 });
 
-it("scheduled triggers runDailyFeatureBuildForEnv for the daily-feature-build cron", async () => {
+it("scheduled enqueues a build-daily-features job for the daily-feature-build cron", async () => {
   const { default: worker } = await import("./worker");
-  const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
+  const env = buildEnv();
   const { ctx, waits } = buildCtx();
   await worker.scheduled(
     {
@@ -521,18 +521,21 @@ it("scheduled triggers runDailyFeatureBuildForEnv for the daily-feature-build cr
       scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
       noRetry: () => {},
     } as unknown as ScheduledController,
-    buildEnv(),
+    env,
     ctx,
   );
   await flushWaits(waits);
-  expect(runDailyFeatureBuildForEnv).toHaveBeenCalledTimes(1);
+  expect(env.REALTIME_JOBS.send).toHaveBeenCalledWith({
+    date: "20260512",
+    sourceScope: "all",
+    type: "build-daily-features",
+  });
 });
 
-it("scheduled logs error when daily-feature-build cron run rejects", async () => {
+it("scheduled logs queued status when daily-feature-build cron enqueue succeeds", async () => {
   const { default: worker } = await import("./worker");
-  const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
   const { logFetch } = await import("./storage");
-  vi.mocked(runDailyFeatureBuildForEnv).mockRejectedValueOnce(new Error("daily boom"));
+  const env = buildEnv();
   const { ctx, waits } = buildCtx();
   await worker.scheduled(
     {
@@ -540,7 +543,32 @@ it("scheduled logs error when daily-feature-build cron run rejects", async () =>
       scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
       noRetry: () => {},
     } as unknown as ScheduledController,
-    buildEnv(),
+    env,
+    ctx,
+  );
+  await flushWaits(waits);
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "build-daily-features",
+    "queued",
+    null,
+    JSON.stringify({ date: "20260512", sourceScope: "all" }),
+  );
+});
+
+it("scheduled logs error when daily-feature-build cron enqueue rejects", async () => {
+  const { default: worker } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  const env = buildEnv();
+  vi.mocked(env.REALTIME_JOBS.send).mockRejectedValueOnce(new Error("queue boom"));
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "0 19 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    env,
     ctx,
   );
   await flushWaits(waits);
@@ -549,7 +577,7 @@ it("scheduled logs error when daily-feature-build cron run rejects", async () =>
     "build-daily-features",
     "error",
     null,
-    "daily boom",
+    "queue boom",
   );
 });
 

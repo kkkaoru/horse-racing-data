@@ -61,10 +61,15 @@
     ],
     "consumers": [
       {
+        // Capped at 3 (was 6) so the D1 binding doesn't fan out 6 parallel
+        // INSERT / UPSERT / SELECT batches while a build-daily-features tick
+        // (5500+ rows) or an odds-snapshot insert is running. Lower numbers
+        // trade per-second throughput for fewer "D1 DB is overloaded" events
+        // — the queue keeps backlog so nothing gets dropped.
         "queue": "sync-realtime-data-jobs",
         "max_batch_size": 1,
         "max_batch_timeout": 5,
-        "max_concurrency": 6,
+        "max_concurrency": 3,
       },
       {
         "queue": "sync-realtime-data-premium-race-jobs",
