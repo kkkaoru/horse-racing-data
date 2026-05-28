@@ -26,7 +26,7 @@ const createLocalStorageMock = (): Storage => {
       store.delete(key);
     },
     setItem: (key, value) => {
-      store.set(key, String(value));
+      store.set(key, value);
     },
   };
   return mock;
@@ -106,8 +106,12 @@ describe("HomeRealtime", () => {
     expect(screen.getByText("30:00")).toBeTruthy();
     expect(screen.getByText("浦和 / 1R / 12:30 / ダート / 1200m")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "スケジュール一覧" })).toBeTruthy();
-    expect(screen.getAllByText("オッズ更新 / 浦和 / 1R / 12:30 / ダート / 1200m").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("トレンドキャッシュ温め / 浦和 / 1R / 12:30 / ダート / 1200m").length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText("オッズ更新 / 浦和 / 1R / 12:30 / ダート / 1200m").length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText("トレンドキャッシュ温め / 浦和 / 1R / 12:30 / ダート / 1200m").length,
+    ).toBeGreaterThan(0);
   });
 
   it("shows filter chips for every schedule kind and persists toggles to localStorage", () => {
@@ -121,8 +125,8 @@ describe("HomeRealtime", () => {
       />,
     );
 
-    const oddsCheckbox = screen.getByLabelText("オッズ更新");
-    expect((oddsCheckbox as HTMLInputElement).checked).toBe(true);
+    const oddsCheckbox = screen.getByLabelText<HTMLInputElement>("オッズ更新");
+    expect(oddsCheckbox.checked).toBe(true);
     expect(screen.getByLabelText("馬体重取得")).toBeTruthy();
     expect(screen.getByLabelText("パドック取得")).toBeTruthy();
     expect(screen.getByLabelText("結果取得")).toBeTruthy();
@@ -130,7 +134,7 @@ describe("HomeRealtime", () => {
 
     fireEvent.click(oddsCheckbox);
 
-    expect((screen.getByLabelText("オッズ更新") as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByLabelText<HTMLInputElement>("オッズ更新").checked).toBe(false);
     expect(screen.queryAllByText("オッズ更新 / 浦和 / 1R / 12:30 / ダート / 1200m").length).toBe(0);
     const stored = window.localStorage.getItem("pc-keiba.home-schedule-filters.v1");
     expect(stored).toBe(
@@ -146,10 +150,7 @@ describe("HomeRealtime", () => {
   });
 
   it("hydrates schedule filters from localStorage when only odds is stored", () => {
-    window.localStorage.setItem(
-      "pc-keiba.home-schedule-filters.v1",
-      JSON.stringify(["odds"]),
-    );
+    window.localStorage.setItem("pc-keiba.home-schedule-filters.v1", JSON.stringify(["odds"]));
     render(
       <HomeRealtime
         initialFinished={[]}
@@ -159,10 +160,12 @@ describe("HomeRealtime", () => {
       />,
     );
 
-    expect((screen.getByLabelText("オッズ更新") as HTMLInputElement).checked).toBe(true);
-    expect((screen.getByLabelText("馬体重取得") as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByLabelText<HTMLInputElement>("オッズ更新").checked).toBe(true);
+    expect(screen.getByLabelText<HTMLInputElement>("馬体重取得").checked).toBe(false);
     expect(screen.queryAllByText("馬体重取得 / 浦和 / 1R / 12:30 / ダート / 1200m").length).toBe(0);
-    expect(screen.getAllByText("オッズ更新 / 浦和 / 1R / 12:30 / ダート / 1200m").length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText("オッズ更新 / 浦和 / 1R / 12:30 / ダート / 1200m").length,
+    ).toBeGreaterThan(0);
   });
 
   it("keeps started races out of the next-race list", () => {
@@ -187,10 +190,7 @@ describe("HomeRealtime", () => {
   });
 
   it("paginates the scheduled task list and shows page change after clicking next", () => {
-    window.localStorage.setItem(
-      "pc-keiba.home-schedule-filters.v1",
-      JSON.stringify(["odds"]),
-    );
+    window.localStorage.setItem("pc-keiba.home-schedule-filters.v1", JSON.stringify(["odds"]));
     render(
       <HomeRealtime
         initialFinished={[]}
