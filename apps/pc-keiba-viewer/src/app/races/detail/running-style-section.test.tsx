@@ -13,6 +13,11 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(),
 }));
 
+vi.mock("./realtime-client", () => ({
+  useRealtimeRaceSelector: <T,>(selector: (state: { payload: null }) => T): T =>
+    selector({ payload: null }),
+}));
+
 import { RunningStyleSection } from "./running-style-section";
 
 const buildRow = (overrides: Partial<RaceRunningStyleRow>): RaceRunningStyleRow => ({

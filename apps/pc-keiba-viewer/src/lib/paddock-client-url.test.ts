@@ -49,9 +49,13 @@ describe("paddock client urls", () => {
     expect(getPaddockLiveUrl("/api/races/2026/05/19/44/12/paddock/live", localhost)).toBe(
       "wss://localhost/api/races/2026/05/19/44/12/paddock/live",
     );
-    expect(getPaddockLiveUrl("api/races/live", { host: "localhost:3000", hostname: "localhost", protocol: "http:" })).toBe(
-      "ws://localhost:3000/api/races/live",
-    );
+    expect(
+      getPaddockLiveUrl("api/races/live", {
+        host: "localhost:3000",
+        hostname: "localhost",
+        protocol: "http:",
+      }),
+    ).toBe("ws://localhost:3000/api/races/live");
     expect(getPaddockLiveUrl("/api/live", null)).toBe("/api/live");
   });
 
@@ -71,5 +75,32 @@ describe("paddock client urls", () => {
     vi.stubEnv("NEXT_PUBLIC_PC_KEIBA_PRODUCTION_API_PROXY", "0");
     vi.stubGlobal("window", undefined);
     expect(getRaceTrendLiveUrl("/api/trends/live")).toBe("/api/trends/live");
+  });
+
+  it("upgrades https-served race trend URLs to wss", () => {
+    vi.stubEnv("NEXT_PUBLIC_PC_KEIBA_PRODUCTION_API_PROXY", "0");
+    vi.stubGlobal("window", {
+      location: new URL("https://pc-keiba-viewer.kkk4oru.com/races"),
+    });
+    expect(getRaceTrendLiveUrl("/api/trends/live")).toBe(
+      "wss://pc-keiba-viewer.kkk4oru.com/api/trends/live",
+    );
+  });
+
+  it("defaults paddock live url location to the current window when omitted", () => {
+    vi.stubEnv("NEXT_PUBLIC_PC_KEIBA_PRODUCTION_API_PROXY", "0");
+    vi.stubGlobal("window", {
+      location: {
+        host: "example.com",
+        hostname: "example.com",
+        protocol: "https:",
+      },
+    });
+    expect(getPaddockLiveUrl("/api/live")).toBe("wss://example.com/api/live");
+  });
+
+  it("defaults paddock request url location to null when window is undefined", () => {
+    vi.stubGlobal("window", undefined);
+    expect(getPaddockRequestUrl("/api/relative")).toBe("/api/relative");
   });
 });

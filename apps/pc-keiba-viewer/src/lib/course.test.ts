@@ -89,4 +89,14 @@ describe("course helpers", () => {
       { label: "比較対象", value: "10場" },
     ]);
   });
+
+  it("converts full-width period in the input to a half-width dot", () => {
+    expect(
+      getCourseFacts("最後の直線距離は３５４ｍ｡高低差が０．５ｍと少ない｡", "1800", "23"),
+    ).toStrictEqual([
+      { label: "距離", value: "1800m" },
+      { label: "高低差", value: "0.5m" },
+      { label: "最後の直線", value: "354m" },
+    ]);
+  });
 });

@@ -128,4 +128,36 @@ describe("odds schedule", () => {
       ),
     ).toBe(new Date("2026-05-22T13:00:00+09:00").toISOString());
   });
+
+  it("falls back to default NAR sale start when no venue context is provided", () => {
+    expect(
+      getNextOddsFetchAt(
+        "2026-05-22T14:30:00+09:00",
+        new Date("2026-05-22T07:30:00+09:00").getTime(),
+        "nar",
+      ),
+    ).toBe(new Date("2026-05-22T10:00:00+09:00").toISOString());
+  });
+
+  it("treats a NAR night-race venue without a keibajoCode as a regular night race", () => {
+    expect(
+      getNextOddsFetchAt(
+        "2026-05-22T14:30:00+09:00",
+        new Date("2026-05-22T07:30:00+09:00").getTime(),
+        "nar",
+        { venueLastRaceStartAt: "2026-05-22T20:50:00+09:00" },
+      ),
+    ).toBe(new Date("2026-05-22T12:00:00+09:00").toISOString());
+  });
+
+  it("falls back to general-slot logic for NAR once the sale-start window has closed", () => {
+    expect(
+      getNextOddsFetchAt(
+        "2026-05-22T14:30:00+09:00",
+        new Date("2026-05-22T14:00:00+09:00").getTime(),
+        "nar",
+        { keibajoCode: "44", venueLastRaceStartAt: "2026-05-22T20:50:00+09:00" },
+      ),
+    ).toBe(new Date("2026-05-22T14:00:00+09:00").toISOString());
+  });
 });
