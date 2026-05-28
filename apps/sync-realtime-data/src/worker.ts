@@ -1358,12 +1358,20 @@ export const assertNarHorseWeightsComplete = (
 export const planRealtimeFetches = async (env: Env, targetDate: string): Promise<number> => {
   const now = getNow(env);
   const jobs: Job[] = [];
+  // Outside the JST polling window (22:00-05:59) there are no races to
+  // observe — odds, results, track condition, premium scraping and JRA
+  // advance odds all rely on race timing that has either already finished
+  // for the day or hasn't been published yet. Skip everything to keep the
+  // every-minute cron from hammering D1 with planning queries while there's
+  // nothing to do.
+  if (!isJstPollingWindow(now)) {
+    return 0;
+  }
   jobs.push(...(await planTrackConditionFetchesForDate(env, targetDate, now)));
   jobs.push(
     ...(await planTrackConditionFetchesForDate(env, addDaysToYyyymmdd(targetDate, 1), now)),
   );
-  const shouldRunGeneralPolling = isJstPollingWindow(now);
-  if (shouldRunGeneralPolling) {
+  {
     await tryEnsureDiscoveredUrlsAreCurrent(env, targetDate);
     const races = await listSchedulableRaceSourcesByDate(env.REALTIME_DB, targetDate);
     const narVenueLastRaceStartAt = getNarVenueLastRaceStartAtMap(races);
@@ -1406,8 +1414,6 @@ export const planRealtimeFetches = async (env: Env, targetDate: string): Promise
         jobs.push({ raceKey: race.raceKey, type: "fetch-results" });
       }
     }
-  } else {
-    jobs.push(...(await planJraAdvanceOddsFetchesForDate(env, targetDate, now)));
   }
   jobs.push(
     ...(await planJraAdvanceOddsFetchesForDate(env, addDaysToYyyymmdd(targetDate, 1), now)),

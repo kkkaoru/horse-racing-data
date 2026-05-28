@@ -325,6 +325,30 @@ it("planRealtimeFetches returns total job count for empty inputs", async () => {
   expect(typeof count).toBe("number");
 });
 
+it("planRealtimeFetches returns 0 and skips D1 reads outside the JST polling window", async () => {
+  const { planRealtimeFetches } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  // 2026-05-12T13:30:00Z = JST 22:30, outside the 06-21 polling window.
+  const env = buildEnv({
+    REALTIME_TEST_NOW: "2026-05-12T13:30:00.000Z",
+  });
+  const count = await planRealtimeFetches(env, "20260512");
+  expect(count).toBe(0);
+  expect(listSchedulableRaceSourcesByDate).not.toHaveBeenCalled();
+});
+
+it("planRealtimeFetches returns 0 before the JST polling window starts", async () => {
+  const { planRealtimeFetches } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  // 2026-05-11T20:30:00Z = JST 05:30, before 06:00 polling window.
+  const env = buildEnv({
+    REALTIME_TEST_NOW: "2026-05-11T20:30:00.000Z",
+  });
+  const count = await planRealtimeFetches(env, "20260512");
+  expect(count).toBe(0);
+  expect(listSchedulableRaceSourcesByDate).not.toHaveBeenCalled();
+});
+
 it("planRealtimeFetches enqueues a discover-premium-races job at JST 20:00", async () => {
   const { planRealtimeFetches } = await import("./worker");
   const env = buildEnv({
@@ -411,9 +435,8 @@ const buildJraRace = (overrides?: Record<string, unknown>) =>
 
 it("planPremiumPaddockFetchesForDate skips races outside the in-window range (too far in future)", async () => {
   const { planPremiumPaddockFetchesForDate } = await import("./worker");
-  const { listSchedulableRaceSourcesByDate, getPremiumPaddockFetchState } = await import(
-    "./storage"
-  );
+  const { listSchedulableRaceSourcesByDate, getPremiumPaddockFetchState } =
+    await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockReset();
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([buildJraRace()]);
   vi.mocked(getPremiumPaddockFetchState).mockReset();
@@ -428,9 +451,8 @@ it("planPremiumPaddockFetchesForDate skips races outside the in-window range (to
 
 it("planPremiumPaddockFetchesForDate skips races whose start time is in the far past", async () => {
   const { planPremiumPaddockFetchesForDate } = await import("./worker");
-  const { listSchedulableRaceSourcesByDate, getPremiumPaddockFetchState } = await import(
-    "./storage"
-  );
+  const { listSchedulableRaceSourcesByDate, getPremiumPaddockFetchState } =
+    await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockReset();
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([buildJraRace()]);
   vi.mocked(getPremiumPaddockFetchState).mockReset();
@@ -445,9 +467,8 @@ it("planPremiumPaddockFetchesForDate skips races whose start time is in the far 
 
 it("planPremiumPaddockFetchesForDate skips races whose state has future retryAfter", async () => {
   const { planPremiumPaddockFetchesForDate } = await import("./worker");
-  const { listSchedulableRaceSourcesByDate, getPremiumPaddockFetchState } = await import(
-    "./storage"
-  );
+  const { listSchedulableRaceSourcesByDate, getPremiumPaddockFetchState } =
+    await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockReset();
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([buildJraRace()]);
   vi.mocked(getPremiumPaddockFetchState).mockReset();
