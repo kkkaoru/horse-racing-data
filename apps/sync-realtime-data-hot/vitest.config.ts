@@ -14,6 +14,7 @@ export default defineConfig({
         "src/**/*.d.ts",
         "src/**/*.test.ts",
         "scripts/**/*.test.ts",
+        "scripts/run-*.ts",
         "src/types.ts",
         "src/index.ts",
       ],
