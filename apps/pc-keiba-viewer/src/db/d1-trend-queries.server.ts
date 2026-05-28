@@ -9,7 +9,77 @@ import "server-only";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 
 import type { RaceSource } from "../lib/codes";
-import type { RaceTrendStarterRow } from "../lib/race-types";
+import type {
+  RaceTrendRunningStyle,
+  RaceTrendRunningStyleCache,
+  RaceTrendStarterRow,
+} from "../lib/race-types";
+
+const RUNNING_STYLE_BATCH_SIZE = 50;
+
+interface RawRunningStyleD1Row {
+  predicted_label: string;
+  horse_number: number;
+  race_key: string;
+}
+
+const isRunningStyle = (value: unknown): value is RaceTrendRunningStyle =>
+  value === "nige" || value === "senkou" || value === "sashi" || value === "oikomi";
+
+const isRawRunningStyleD1Row = (value: unknown): value is RawRunningStyleD1Row => {
+  if (typeof value !== "object" || value === null) return false;
+  const row = value as Record<string, unknown>;
+  return (
+    typeof row.race_key === "string" &&
+    typeof row.horse_number === "number" &&
+    isRunningStyle(row.predicted_label)
+  );
+};
+
+const chunkArray = <T>(items: ReadonlyArray<T>, size: number): T[][] => {
+  if (items.length === 0 || size <= 0) return [];
+  const chunkCount = Math.ceil(items.length / size);
+  return Array.from({ length: chunkCount }, (_, index) =>
+    items.slice(index * size, (index + 1) * size),
+  );
+};
+
+const toRunningStyleCache = (raw: RawRunningStyleD1Row): RaceTrendRunningStyleCache => ({
+  horseNumber: String(raw.horse_number),
+  predictedLabel: raw.predicted_label as RaceTrendRunningStyle,
+  raceKey: raw.race_key,
+});
+
+const buildRunningStyleSelectSql = (placeholders: string): string =>
+  `select race_key, horse_number, predicted_label from race_running_styles where race_key in (${placeholders})`;
+
+export const getRaceTrendRunningStylesFromD1 = async (
+  raceKeys: ReadonlyArray<string>,
+): Promise<RaceTrendRunningStyleCache[]> => {
+  const uniqueKeys = Array.from(new Set(raceKeys.filter((key) => key.length > 0)));
+  if (uniqueKeys.length === 0) return [];
+  const { env } = await getCloudflareContext({ async: true });
+  const db = env?.REALTIME_DB;
+  if (!db) return [];
+  const queryChunk = async (
+    chunk: ReadonlyArray<string>,
+  ): Promise<RaceTrendRunningStyleCache[]> => {
+    const placeholders = chunk.map(() => "?").join(",");
+    const result = await db
+      .prepare(buildRunningStyleSelectSql(placeholders))
+      .bind(...chunk)
+      .all();
+    return result.results.filter(isRawRunningStyleD1Row).map(toRunningStyleCache);
+  };
+  try {
+    const chunks = chunkArray(uniqueKeys, RUNNING_STYLE_BATCH_SIZE);
+    const chunkResults = await Promise.all(chunks.map(queryChunk));
+    return chunkResults.flat();
+  } catch (error) {
+    console.error("D1 race_running_styles query failed", error);
+    return [];
+  }
+};
 
 interface RaceTrendD1RowsParams {
   endYmd: string;
@@ -25,9 +95,12 @@ interface RawD1Row {
   raceBango: string;
   raceName: string | null;
   hassoJikoku: string | null;
+  wakuban: string | null;
   umaban: string | null;
   bamei: string | null;
   jockeyName: string | null;
+  tanshoOddsTenth: number | null;
+  tanshoPopularity: number | null;
   finishPosition: number;
   sohaTime: string | null;
   bataijuInt: number | null;
@@ -66,8 +139,7 @@ const DAILY_CACHE_URL_BASE = "https://pc-keiba-viewer.local/d1-trend-daily-cache
 const CACHE_TTL_SECONDS = 60;
 const KV_TTL_SECONDS = 5 * 60;
 
-const isRaceSource = (value: unknown): value is RaceSource =>
-  value === "jra" || value === "nar";
+const isRaceSource = (value: unknown): value is RaceSource => value === "jra" || value === "nar";
 
 const isRawD1Row = (value: unknown): value is RawD1Row => {
   if (typeof value !== "object" || value === null) return false;
@@ -100,7 +172,7 @@ const SELECT_SQL = `
     )
   ),
   latest_entry as (
-    select race_key, horse_number, jockey_name
+    select race_key, horse_number, horse_name, jockey_name
     from race_entry_snapshots e1
     where fetched_at = (
       select max(fetched_at) from race_entry_snapshots e2
@@ -114,6 +186,16 @@ const SELECT_SQL = `
       select max(fetched_at) from horse_weight_snapshots w2
       where w2.race_key = w1.race_key and w2.horse_number = w1.horse_number
     )
+  ),
+  latest_tansho_odds as (
+    select race_key, combination, odds, rank
+    from odds_snapshots o1
+    where odds_type = 'tansho' and fetched_at = (
+      select max(fetched_at) from odds_snapshots o2
+      where o2.race_key = o1.race_key
+        and o2.odds_type = 'tansho'
+        and o2.combination = o1.combination
+    )
   )
   select
     s.source as source,
@@ -123,18 +205,31 @@ const SELECT_SQL = `
     s.race_bango as raceBango,
     s.race_name as raceName,
     s.race_start_at_jst as hassoJikoku,
+    de.wakuban as wakuban,
     r.horse_number as umaban,
-    e.jockey_name as jockeyName,
+    coalesce(e.horse_name, de.bamei) as bamei,
+    coalesce(e.jockey_name, de.kishumei_ryakusho) as jockeyName,
+    cast(round(coalesce(o.odds, de.tansho_odds) * 10) as integer) as tanshoOddsTenth,
+    coalesce(o.rank, de.tansho_ninkijun) as tanshoPopularity,
     cast(nullif(replace(r.finish_position, ' ', ''), '') as integer) as finishPosition,
     r.time as sohaTime,
     w.weight as bataijuInt,
     w.change_sign as zogenFugo,
-    w.change_amount as zogenSaInt,
-    null as bamei
+    w.change_amount as zogenSaInt
   from latest_result r
   join realtime_race_sources s on s.race_key = r.race_key
   left join latest_entry e on e.race_key = r.race_key and e.horse_number = r.horse_number
   left join latest_weight w on w.race_key = r.race_key and w.horse_number = r.horse_number
+  left join latest_tansho_odds o
+    on o.race_key = r.race_key
+    and cast(nullif(o.combination, '') as integer) = cast(nullif(r.horse_number, '') as integer)
+  left join daily_race_entries de
+    on de.source = s.source
+    and de.kaisai_nen = s.kaisai_nen
+    and de.kaisai_tsukihi = s.kaisai_tsukihi
+    and de.keibajo_code = s.keibajo_code
+    and de.race_bango = s.race_bango
+    and de.umaban = cast(nullif(r.horse_number, '') as integer)
   where s.source = ?
     and s.kaisai_nen || s.kaisai_tsukihi between ? and ?
     and cast(nullif(replace(r.finish_position, ' ', ''), '') as integer) > 0
@@ -152,6 +247,9 @@ const queryD1 = async (params: RaceTrendD1RowsParams): Promise<RawD1Row[]> => {
   return result.results.filter(isRawD1Row);
 };
 
+const padString = (value: number | null, width: number): string | null =>
+  value === null ? null : String(value).padStart(width, "0");
+
 const toStarterRow = (raw: RawD1Row): RaceTrendStarterRow => ({
   source: raw.source as RaceSource,
   kaisaiNen: raw.kaisaiNen,
@@ -161,12 +259,12 @@ const toStarterRow = (raw: RawD1Row): RaceTrendStarterRow => ({
   raceName: raw.raceName,
   hassoJikoku: formatHassoJikoku(raw.hassoJikoku),
   runnerCount: null,
-  wakuban: null,
+  wakuban: raw.wakuban,
   umaban: raw.umaban,
   bamei: raw.bamei,
   jockeyName: raw.jockeyName,
-  tanshoOdds: null,
-  tanshoPopularity: null,
+  tanshoOdds: padString(raw.tanshoOddsTenth, 4),
+  tanshoPopularity: padString(raw.tanshoPopularity, 2),
   finishPosition: raw.finishPosition,
   sohaTime: raw.sohaTime,
   corner1: null,
@@ -178,9 +276,7 @@ const toStarterRow = (raw: RawD1Row): RaceTrendStarterRow => ({
   zogenSa: raw.zogenSaInt === null ? null : String(raw.zogenSaInt),
 });
 
-const getCachedResponse = async (
-  cacheKey: string,
-): Promise<RaceTrendStarterRow[] | null> => {
+const getCachedResponse = async (cacheKey: string): Promise<RaceTrendStarterRow[] | null> => {
   const cache = typeof caches === "undefined" ? null : caches.default;
   const cacheRequest = new Request(`${CACHE_URL_BASE}${encodeURIComponent(cacheKey)}`);
   const cached = await cache?.match(cacheRequest);
@@ -193,10 +289,7 @@ const getCachedResponse = async (
   return JSON.parse(body) as RaceTrendStarterRow[];
 };
 
-const putCache = async (
-  cacheKey: string,
-  rows: RaceTrendStarterRow[],
-): Promise<void> => {
+const putCache = async (cacheKey: string, rows: RaceTrendStarterRow[]): Promise<void> => {
   const body = JSON.stringify(rows);
   const cache = typeof caches === "undefined" ? null : caches.default;
   const { env } = await getCloudflareContext({ async: true });
@@ -295,9 +388,6 @@ const queryDailyD1 = async (params: RaceTrendD1RowsParams): Promise<RawDailyD1Ro
 const intStringOrNull = (value: number | null): string | null =>
   value === null ? null : String(value);
 
-const padString = (value: number | null, width: number): string | null =>
-  value === null ? null : String(value).padStart(width, "0");
-
 const toDailyStarterRow = (raw: RawDailyD1Row): RaceTrendStarterRow => ({
   source: raw.source as RaceSource,
   kaisaiNen: raw.kaisaiNen,
@@ -324,9 +414,7 @@ const toDailyStarterRow = (raw: RawDailyD1Row): RaceTrendStarterRow => ({
   zogenSa: raw.zogenSaInt === null ? null : String(raw.zogenSaInt),
 });
 
-const getCachedDailyResponse = async (
-  cacheKey: string,
-): Promise<RaceTrendStarterRow[] | null> => {
+const getCachedDailyResponse = async (cacheKey: string): Promise<RaceTrendStarterRow[] | null> => {
   const cache = typeof caches === "undefined" ? null : caches.default;
   const cacheRequest = new Request(`${DAILY_CACHE_URL_BASE}${encodeURIComponent(cacheKey)}`);
   const cached = await cache?.match(cacheRequest);
@@ -339,10 +427,7 @@ const getCachedDailyResponse = async (
   return JSON.parse(body) as RaceTrendStarterRow[];
 };
 
-const putDailyCache = async (
-  cacheKey: string,
-  rows: RaceTrendStarterRow[],
-): Promise<void> => {
+const putDailyCache = async (cacheKey: string, rows: RaceTrendStarterRow[]): Promise<void> => {
   const body = JSON.stringify(rows);
   const cache = typeof caches === "undefined" ? null : caches.default;
   const { env } = await getCloudflareContext({ async: true });
