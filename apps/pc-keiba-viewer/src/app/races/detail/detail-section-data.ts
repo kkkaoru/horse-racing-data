@@ -1343,6 +1343,7 @@ export const getDetailSectionPayload = async (
       pOikomi: row.p_oikomi,
       pSashi: row.p_sashi,
       pSenkou: row.p_senkou,
+      predictedLabel: row.predictedLabel,
       umaban: row.horseNumber,
     }));
     return {
