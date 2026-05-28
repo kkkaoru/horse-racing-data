@@ -1,4 +1,3 @@
-import type { RealtimeRacePayload } from "horse-racing-realtime/types";
 import { NextResponse } from "next/server";
 
 import {
@@ -8,7 +7,6 @@ import {
 import {
   getRaceDetail,
   getRaceRunners,
-  getRacesByDateWithoutJockeyNames,
   getRaceSourceByRoute,
 } from "../../../../../../../../../db/queries";
 import {
@@ -17,7 +15,6 @@ import {
   getRaceTrendRunningStylesFromD1,
 } from "../../../../../../../../../db/d1-trend-queries.server";
 import type { RaceSource } from "../../../../../../../../../lib/codes";
-import { fetchWithRetry } from "../../../../../../../../../lib/fetch-with-retry";
 import {
   RACE_TREND_CACHE_REFRESH_PARAM,
   RACE_TREND_CACHE_WARM_PARAM,
@@ -28,12 +25,10 @@ import {
   getCachedRaceTrendResponse,
   putRaceTrendCache,
 } from "../../../../../../../../../lib/race-trend-cache.server";
-import { getRealtimeRowsForDayWithCache } from "../../../../../../../../../lib/realtime-trend-day-cache.server";
 import { notifyRaceTrendRoom } from "../../../../../../../../../lib/race-trend-room.server";
 import { starterKey, starterRaceKey } from "../../../../../../../../../lib/race-trend-aggregate";
 import type {
   RaceDetail,
-  RaceListItem,
   RaceTrendRawPayload,
   RaceTrendRunningStyle,
   RaceTrendStarterRow,
@@ -50,37 +45,8 @@ interface RouteContext {
   }>;
 }
 
-const REALTIME_API_BASE_URL =
-  process.env.NEXT_PUBLIC_REALTIME_DATA_API_BASE_URL ?? "https://sync-realtime-data.kkk4oru.com";
-
 const isRaceSource = (value: string | null): value is RaceSource =>
   value === "jra" || value === "nar";
-
-const normalizeText = (value: string | null | undefined): string | null => {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : null;
-};
-
-const normalizeNumberText = (value: string | null | undefined): string | null => {
-  const normalized = normalizeText(value);
-  if (!normalized) return null;
-  return normalized.replace(/^0+(?=\d)/, "");
-};
-
-const formatRealtimeInteger = (value: number | null | undefined): string | null =>
-  typeof value === "number" && Number.isFinite(value) && value > 0
-    ? String(Math.trunc(value))
-    : null;
-
-const formatRealtimeWinOdds = (value: number | null | undefined): string | null =>
-  typeof value === "number" && Number.isFinite(value) && value > 0
-    ? String(Math.round(value * 10))
-    : null;
-
-const isRealtimeRacePayload = (value: unknown): value is RealtimeRacePayload =>
-  typeof value === "object" && value !== null && "raceResults" in value;
-
-const toYmd = (year: string, monthDay: string): string => `${year}${monthDay}`;
 
 const parseDateInput = (value: string | null, fallbackYmd: string): string => {
   const compact = value?.replaceAll("-", "").trim();
@@ -98,188 +64,7 @@ const addDays = (ymd: string, days: number): string => {
   return `${year}${month}${day}`;
 };
 
-const enumerateDates = (startYmd: string, endYmd: string): string[] => {
-  const dates: string[] = [];
-  const collect = (ymd: string): void => {
-    if (ymd > endYmd) return;
-    dates.push(ymd);
-    collect(addDays(ymd, 1));
-  };
-  collect(startYmd);
-  return dates;
-};
-
-const mapLimit = async <T, U>(
-  values: T[],
-  limit: number,
-  mapper: (value: T) => Promise<U>,
-): Promise<U[]> => {
-  const entries = values.map((value, index) => ({ index, value }));
-  const results: U[] = [];
-  const indexState = { value: 0 };
-  const runNext = (): Promise<void> => {
-    const currentIndex = indexState.value;
-    indexState.value = currentIndex + 1;
-    const entry = entries[currentIndex];
-    if (!entry) return Promise.resolve();
-    return mapper(entry.value).then((result) => {
-      results[entry.index] = result;
-      return runNext();
-    });
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, entries.length) }, runNext));
-  return results;
-};
-
-const fetchRealtimePayload = async (race: RaceListItem): Promise<RealtimeRacePayload | null> => {
-  const month = race.kaisaiTsukihi.slice(0, 2);
-  const day = race.kaisaiTsukihi.slice(2, 4);
-  const url = `${REALTIME_API_BASE_URL}/api/${race.source}/races/${race.kaisaiNen}/${month}/${day}/${race.keibajoCode}/${race.raceBango}/realtime`;
-  try {
-    const response = await fetchWithRetry(url, { cache: "no-store" }, { attempts: 1 });
-    if (!response.ok) return null;
-    const body: unknown = await response.json();
-    return isRealtimeRacePayload(body) ? body : null;
-  } catch {
-    return null;
-  }
-};
-
-const buildRealtimeStarterRows = async (race: RaceListItem): Promise<RaceTrendStarterRow[]> => {
-  const payload = await fetchRealtimePayload(race);
-  const resultHorses = payload?.raceResults?.horses ?? [];
-  if (resultHorses.length === 0) return [];
-  const runners = await getRaceRunners(
-    race.source,
-    race.kaisaiNen,
-    race.kaisaiTsukihi.slice(0, 2),
-    race.kaisaiTsukihi.slice(2, 4),
-    race.keibajoCode,
-    race.raceBango,
-  );
-  const runnerByHorseNumber = new Map(
-    runners.map((runner) => [normalizeNumberText(runner.umaban), runner]),
-  );
-  const entryByHorseNumber = new Map(
-    (payload?.raceEntries?.horses ?? []).map((entry) => [
-      normalizeNumberText(entry.horseNumber),
-      entry,
-    ]),
-  );
-  const latestTanshoByHorseNumber = new Map(
-    (payload?.odds?.latest.tansho ?? []).map((entry) => [
-      normalizeNumberText(entry.combination),
-      entry,
-    ]),
-  );
-  const weightByHorseNumber = new Map(
-    (payload?.horseWeights?.horses ?? []).map((entry) => [
-      normalizeNumberText(entry.horseNumber),
-      entry,
-    ]),
-  );
-
-  return resultHorses.flatMap((resultHorse) => {
-    const finishPosition = Number(resultHorse.finishPosition.replace(/[^\d]/g, ""));
-    if (!Number.isFinite(finishPosition) || finishPosition <= 0) return [];
-    const horseNumber = normalizeNumberText(resultHorse.horseNumber);
-    const runner = runnerByHorseNumber.get(horseNumber);
-    const entry = entryByHorseNumber.get(horseNumber);
-    const latestTansho = latestTanshoByHorseNumber.get(horseNumber);
-    const weight = weightByHorseNumber.get(horseNumber);
-    return [
-      {
-        source: race.source,
-        kaisaiNen: race.kaisaiNen,
-        kaisaiTsukihi: race.kaisaiTsukihi,
-        keibajoCode: race.keibajoCode,
-        raceBango: race.raceBango,
-        hassoJikoku: race.hassoJikoku,
-        raceName:
-          normalizeText(race.kyosomeiHondai) ?? normalizeText(race.kyosomeiFukudai) ?? "一般競走",
-        runnerCount: String(resultHorses.length),
-        wakuban: normalizeNumberText(runner?.wakuban),
-        umaban: horseNumber,
-        bamei:
-          normalizeText(resultHorse.horseName) ??
-          normalizeText(runner?.bamei) ??
-          normalizeText(entry?.horseName),
-        jockeyName: normalizeText(entry?.jockeyName) ?? normalizeText(runner?.kishumeiRyakusho),
-        tanshoOdds: formatRealtimeWinOdds(latestTansho?.odds) ?? normalizeText(runner?.tanshoOdds),
-        tanshoPopularity:
-          formatRealtimeInteger(latestTansho?.rank) ?? normalizeText(runner?.tanshoNinkijun),
-        finishPosition,
-        sohaTime: normalizeText(resultHorse.time),
-        corner1: null,
-        corner2: null,
-        corner3: null,
-        corner4: null,
-        bataiju: typeof weight?.weight === "number" ? String(weight.weight) : null,
-        zogenFugo: weight?.changeSign ?? null,
-        zogenSa: typeof weight?.changeAmount === "number" ? String(weight.changeAmount) : null,
-      } satisfies RaceTrendStarterRow,
-    ];
-  });
-};
-
 type RaceTrendBuildOptions = RaceTrendCacheOptions;
-
-const REALTIME_TREND_LOOKBACK_DAYS = 1;
-// Cap concurrent sync-realtime-data fetches per (source, ymd) build so a
-// single cold trend miss can't saturate the upstream worker — the upstream
-// scrapes keiba.go.jp synchronously per race and shares its CPU/socket budget
-// with the detail-page realtime endpoint that drives live odds.
-const REALTIME_FETCH_CONCURRENCY = 3;
-
-const fetchRealtimeRowsForDay = async (
-  source: RaceSource,
-  ymd: string,
-): Promise<RaceTrendStarterRow[]> => {
-  const races = await getRacesByDateWithoutJockeyNames(
-    ymd.slice(0, 4),
-    ymd.slice(4, 6),
-    ymd.slice(6, 8),
-  );
-  const sameSourceRaces = races.filter((candidate) => candidate.source === source);
-  return (
-    await mapLimit(sameSourceRaces, REALTIME_FETCH_CONCURRENCY, buildRealtimeStarterRows)
-  ).flat();
-};
-
-const buildRealtimeRowsForTrend = async (
-  race: RaceDetail,
-  options: RaceTrendBuildOptions,
-  historicalRows: RaceTrendStarterRow[],
-): Promise<RaceTrendStarterRow[]> => {
-  // Realtime backfill is now keyed per (source × ymd) via
-  // getRealtimeRowsForDayWithCache, so every race that opens its trend on the
-  // same day pays the realtime fetch cost once per TTL window instead of per
-  // request. We still clamp the scan to target-race date ± lookback because
-  // anything older lives in daily_race_entries and doesn't need a realtime
-  // refresh.
-  const trendMinYmd =
-    [options.jockeyStartYmd, options.frameStartYmd].toSorted()[0] ?? options.jockeyStartYmd;
-  const trendMaxYmd =
-    [options.jockeyEndYmd, options.frameEndYmd].toSorted().at(-1) ?? options.jockeyEndYmd;
-  const targetYmd = toYmd(race.kaisaiNen, race.kaisaiTsukihi);
-  const realtimeStartYmd = (() => {
-    const clamped = addDays(targetYmd, -REALTIME_TREND_LOOKBACK_DAYS);
-    return clamped < trendMinYmd ? trendMinYmd : clamped;
-  })();
-  const realtimeEndYmd = targetYmd < trendMaxYmd ? targetYmd : trendMaxYmd;
-  if (realtimeEndYmd < realtimeStartYmd) return [];
-  const dayResults = await Promise.all(
-    enumerateDates(realtimeStartYmd, realtimeEndYmd).map((ymd) =>
-      getRealtimeRowsForDayWithCache({
-        fetcher: () => fetchRealtimeRowsForDay(race.source, ymd),
-        source: race.source,
-        ymd,
-      }),
-    ),
-  );
-  const historicalRaceKeys = new Set(historicalRows.map(starterRaceKey));
-  return dayResults.flat().filter((row) => !historicalRaceKeys.has(starterRaceKey(row)));
-};
 
 const mergeStarterRows = (
   dailyRows: RaceTrendStarterRow[],
@@ -395,11 +180,14 @@ const buildRaceTrendRawPayload = async (
     historicalDailyPromise,
     historicalSnapshotPromise,
   ]);
-  const historicalRows = mergeStarterRows(dailyRows, snapshotRows, []);
-  const realtimeRows = options.includeRealtimeResults
-    ? await buildRealtimeRowsForTrend(race, options, historicalRows)
-    : [];
-  const starterRows = mergeStarterRows(dailyRows, snapshotRows, realtimeRows);
+  // Realtime scraping is no longer triggered from this route: the trend
+  // payload is built solely from D1's daily_race_entries + race_*_snapshots,
+  // which already get refreshed by the sync-realtime-data worker on race
+  // finish (see viewer-trend-cache-bust). Calling sync-realtime-data's
+  // per-race /realtime here used to fan out ~100 concurrent scrapes per
+  // (source, ymd) and saturate the upstream worker so the detail-page
+  // /realtime endpoint started timing out, dropping live odds binding.
+  const starterRows = mergeStarterRows(dailyRows, snapshotRows, []);
   const currentRunningStyles = await currentRunningStylesPromise;
   const historicalRaceKeys = Array.from(new Set(starterRows.map(starterRaceKey)));
   const [cachedHistoricalRunningStyles, directHistoricalRunningStyles] = await Promise.all([
