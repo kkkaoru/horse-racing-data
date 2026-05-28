@@ -25,6 +25,10 @@ import {
   getCachedRaceTrendResponse,
   putRaceTrendCache,
 } from "../../../../../../../../../lib/race-trend-cache.server";
+import {
+  fetchProductionApi,
+  useProductionApiProxy,
+} from "../../../../../../../../../lib/production-api-proxy.server";
 import { notifyRaceTrendRoom } from "../../../../../../../../../lib/race-trend-room.server";
 import { starterKey, starterRaceKey } from "../../../../../../../../../lib/race-trend-aggregate";
 import type {
@@ -215,11 +219,38 @@ const buildRaceTrendRawPayload = async (
   };
 };
 
+const proxyToProduction = async (
+  path: string,
+  searchParams: URLSearchParams,
+): Promise<Response> => {
+  const upstreamUrl = `${path}?${searchParams.toString()}`;
+  const upstream = await fetchProductionApi(upstreamUrl);
+  const body = await upstream.text();
+  return new Response(body, {
+    headers: {
+      "Cache-Control": upstream.headers.get("Cache-Control") ?? "public, max-age=60",
+      "Content-Type": upstream.headers.get("Content-Type") ?? "application/json; charset=utf-8",
+      "X-Race-Trend-Cache": upstream.headers.get("X-Race-Trend-Cache") ?? "PROXIED-PRODUCTION",
+    },
+    status: upstream.status,
+  });
+};
+
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request, context: RouteContext) {
   const { day, keibajoCode, month, raceNumber, year } = await context.params;
   const searchParams = new URL(request.url).searchParams;
+  // In dev (PC_KEIBA_ACCESS_CLIENT_ID / SECRET set, NODE_ENV=development) the
+  // worker has no D1 binding so D1-backed reads silently return empty rows.
+  // Proxy straight to the production trend endpoint so the dev UI shows the
+  // same data the live site does, without needing a local D1 mirror.
+  if (useProductionApiProxy()) {
+    return proxyToProduction(
+      `/api/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/trends`,
+      searchParams,
+    );
+  }
   const sourceParam = searchParams.get("source");
   const source = isRaceSource(sourceParam)
     ? sourceParam
