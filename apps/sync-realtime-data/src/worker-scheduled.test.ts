@@ -364,6 +364,46 @@ it("scheduled defaults to handleJob via getCronJob for unknown cron", async () =
   await flushWaits(waits);
 });
 
+it("scheduled multi-day-prep cron fans out feature build to next 1-3 JST dates", async () => {
+  const { default: worker } = await import("./worker");
+  const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
+  vi.mocked(runDailyFeatureBuildForEnv).mockResolvedValue({} as never);
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "5 11 * * *",
+      scheduledTime: Date.parse("2026-05-12T11:05:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv(),
+    ctx,
+  );
+  await flushWaits(waits);
+  const calls = vi.mocked(runDailyFeatureBuildForEnv).mock.calls;
+  const fromDates = calls.map(([, options]) => options?.fromDate);
+  expect(fromDates).toStrictEqual(["20260513", "20260514", "20260515"]);
+});
+
+it("scheduled today-backfill cron builds features for today only", async () => {
+  const { default: worker } = await import("./worker");
+  const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
+  vi.mocked(runDailyFeatureBuildForEnv).mockResolvedValue({} as never);
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "10 0 * * *",
+      scheduledTime: Date.parse("2026-05-12T00:10:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv(),
+    ctx,
+  );
+  await flushWaits(waits);
+  const calls = vi.mocked(runDailyFeatureBuildForEnv).mock.calls;
+  const fromDates = calls.map(([, options]) => options?.fromDate);
+  expect(fromDates).toStrictEqual(["20260512"]);
+});
+
 it("queue acks a message after successful handleJob", async () => {
   const { default: worker } = await import("./worker");
   const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");

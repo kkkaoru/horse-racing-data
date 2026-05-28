@@ -131,10 +131,7 @@ import {
   runRunningStyleWorkerPostgresVerification,
 } from "./running-style-verification";
 import { readCachedTrackCondition, writeCachedTrackCondition } from "./track-condition-cache";
-import {
-  buildTrendBustFromRaceContext,
-  requestTrendCacheBust,
-} from "./viewer-trend-cache-bust";
+import { buildTrendBustFromRaceContext, requestTrendCacheBust } from "./viewer-trend-cache-bust";
 import {
   getJraAdvanceOddsFetchSlotAt,
   getNarOddsFetchSlotAt,
@@ -212,6 +209,11 @@ const JRA_PREMIUM_LINK_CRONS = new Set(["0 4 * * 5", "0 4 * * 6"]);
 const JRA_PREMIUM_DATA_CRONS = new Set(["0 5 * * 5", "0 5 * * 6"]);
 // 03:30 JST (= 18:30 UTC) — off-peak slot for D1 retention sweeps.
 const D1_RETENTION_CRON = "30 18 * * *";
+// 20:05 JST (= 11:05 UTC) — nightly prep for next 1-3 days (features + running-style).
+export const MULTI_DAY_PREP_CRON = "5 11 * * *";
+// 09:10 JST (= 00:10 UTC) — morning fallback for today (features + running-style).
+export const TODAY_BACKFILL_CRON = "10 0 * * *";
+const MULTI_DAY_PREP_OFFSET_DAYS: readonly number[] = [1, 2, 3];
 export const getCronJob = (cron: string, now = new Date()): Job => {
   const today = getTodayJst(now);
   if (JRA_PREMIUM_LINK_CRONS.has(cron)) {
@@ -917,22 +919,43 @@ const tryEnsureDiscoveredUrlsAreCurrent = async (env: Env, targetDate: string): 
   }
 };
 
-const prewarmRunningStylePredictionsForDate = async (
-  env: Env,
-  targetDate: string,
-  now: Date,
-  ctx?: ExecutionContext,
-) => {
-  let discoveryResult: Awaited<ReturnType<typeof upsertDiscoveredUrls>> | null = null;
+const tryBuildDailyFeaturesForDate = async (env: Env, targetDate: string, mode: string) => {
   try {
-    discoveryResult = await upsertDiscoveredUrls(env, targetDate);
+    const result = await runDailyFeatureBuildForEnv(env, {
+      fromDate: targetDate,
+      toDate: targetDate,
+    });
+    await logFetch(
+      env.REALTIME_DB,
+      "build-daily-features",
+      "ok",
+      null,
+      JSON.stringify({ ...result, mode }),
+    );
+    return result;
+  } catch (error) {
+    await logFetch(
+      env.REALTIME_DB,
+      "build-daily-features",
+      "error",
+      null,
+      error instanceof Error ? error.message : String(error),
+    );
+    return null;
+  }
+};
+
+const tryDiscoverUrlsForDate = async (env: Env, targetDate: string, mode: string) => {
+  try {
+    const result = await upsertDiscoveredUrls(env, targetDate);
     await logFetch(
       env.REALTIME_DB,
       "discover-urls",
       "ok",
       null,
-      JSON.stringify({ ...discoveryResult, mode: "running-style-prewarm" }),
+      JSON.stringify({ ...result, mode }),
     );
+    return result;
   } catch (error) {
     await logFetch(
       env.REALTIME_DB,
@@ -941,7 +964,22 @@ const prewarmRunningStylePredictionsForDate = async (
       null,
       error instanceof Error ? error.message : String(error),
     );
+    return null;
   }
+};
+
+const prewarmRunningStylePredictionsForDate = async (
+  env: Env,
+  targetDate: string,
+  now: Date,
+  ctx?: ExecutionContext,
+) => {
+  const discoveryResult = await tryDiscoverUrlsForDate(env, targetDate, "running-style-prewarm");
+  const featureResult = await tryBuildDailyFeaturesForDate(
+    env,
+    targetDate,
+    "running-style-prewarm",
+  );
   const runningStyleResult = await planRunningStylePredictionsForDate(env, targetDate, now);
   const cacheRefreshResult = await refreshViewerRunningStyleCachesForDate(env, targetDate, ctx);
   await logFetch(
@@ -955,8 +993,61 @@ const prewarmRunningStylePredictionsForDate = async (
     cacheRefresh: cacheRefreshResult,
     date: targetDate,
     discovery: discoveryResult,
+    features: featureResult,
     runningStyle: runningStyleResult,
   };
+};
+
+const prewarmRaceDataForDate = async (
+  env: Env,
+  targetDate: string,
+  now: Date,
+  ctx?: ExecutionContext,
+  mode = "scheduled-prep",
+) => {
+  const discoveryResult = await tryDiscoverUrlsForDate(env, targetDate, mode);
+  const featureResult = await tryBuildDailyFeaturesForDate(env, targetDate, mode);
+  const runningStyleResult = await planRunningStylePredictionsForDate(env, targetDate, now);
+  const cacheRefreshResult = await refreshViewerRunningStyleCachesForDate(env, targetDate, ctx);
+  await logFetch(
+    env.REALTIME_DB,
+    "plan-running-style-predictions",
+    "ok",
+    null,
+    JSON.stringify({
+      ...runningStyleResult,
+      cacheRefresh: cacheRefreshResult,
+      mode,
+      target: targetDate,
+    }),
+  );
+  return {
+    cacheRefresh: cacheRefreshResult,
+    date: targetDate,
+    discovery: discoveryResult,
+    features: featureResult,
+    runningStyle: runningStyleResult,
+  };
+};
+
+const prewarmRaceDataForDates = async (
+  env: Env,
+  dates: ReadonlyArray<string>,
+  now: Date,
+  ctx?: ExecutionContext,
+  mode = "scheduled-prep",
+): Promise<void> => {
+  for (const date of dates) {
+    await prewarmRaceDataForDate(env, date, now, ctx, mode).catch((error: unknown) =>
+      logFetch(
+        env.REALTIME_DB,
+        "plan-running-style-predictions",
+        "error",
+        null,
+        error instanceof Error ? error.message : String(error),
+      ),
+    );
+  }
 };
 
 export const truncate = (value: string, maxLength: number): string =>
@@ -1202,7 +1293,10 @@ export const notifyPremiumPaddockIfNeeded = async (
   });
 };
 
-export const getPremiumPaddockRetryDelaySeconds = (race: NarRaceSource, now = new Date()): number => {
+export const getPremiumPaddockRetryDelaySeconds = (
+  race: NarRaceSource,
+  now = new Date(),
+): number => {
   const minutes = minutesUntilRace(race, now);
   if (minutes !== null && minutes <= 15 && minutes >= -PREMIUM_PADDOCK_WINDOW_AFTER_MINUTES) {
     return 30;
@@ -1665,16 +1759,13 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
     ? parsePremiumStableComments(commentHtml, env)
     : undefined;
   const dataTopHorses = dataTopHtml ? parsePremiumDataTopHorses(dataTopHtml, env) : undefined;
-  const commentAuthorized = commentHtml
-    ? isPremiumStableCommentHtmlAuthorized(commentHtml)
-    : false;
+  const commentAuthorized = commentHtml ? isPremiumStableCommentHtmlAuthorized(commentHtml) : false;
   // Suppress the stable-comment replace when the proxy returned the preview
   // (unauthenticated) page: otherwise the unauth response (typically 3 rows)
   // would overwrite a previously stored authenticated snapshot (full field).
   // The fetch state below still records `commentAuthRequired: true` so the
   // planner re-queues the race.
-  const stableComments =
-    commentHtml && !commentAuthorized ? undefined : parsedStableComments;
+  const stableComments = commentHtml && !commentAuthorized ? undefined : parsedStableComments;
   await replacePremiumRaceData(env.REALTIME_DB, {
     dataTopHorses,
     fetchedAt,
@@ -1719,9 +1810,7 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
       dataTopHasPremiumRegist: dataTopHtml ? dataTopHtml.includes("Premium_Regist_Box") : null,
       dataTopHasIconLogin: dataTopHtml ? dataTopHtml.includes("Icon_Login") : null,
       dataTopHasLogout: dataTopHtml ? dataTopHtml.includes("ログアウト") : null,
-      dataTopDlBlockCount: dataTopHtml
-        ? (dataTopHtml.match(/<dl\b/giu)?.length ?? 0)
-        : null,
+      dataTopDlBlockCount: dataTopHtml ? (dataTopHtml.match(/<dl\b/giu)?.length ?? 0) : null,
       stableCommentCount: parsedStableComments?.length ?? null,
       stableCommentPersisted: stableComments !== undefined,
       stableCommentSample:
@@ -2344,6 +2433,17 @@ export default {
             ),
           ),
       );
+      return;
+    }
+    if (controller.cron === MULTI_DAY_PREP_CRON) {
+      const today = getTodayJst(scheduledAt);
+      const dates = MULTI_DAY_PREP_OFFSET_DAYS.map((offset) => addDaysToYyyymmdd(today, offset));
+      ctx.waitUntil(prewarmRaceDataForDates(env, dates, scheduledAt, ctx, "multi-day-prep"));
+      return;
+    }
+    if (controller.cron === TODAY_BACKFILL_CRON) {
+      const today = getTodayJst(scheduledAt);
+      ctx.waitUntil(prewarmRaceDataForDate(env, today, scheduledAt, ctx, "today-backfill"));
       return;
     }
     const job = getCronJob(controller.cron, scheduledAt);

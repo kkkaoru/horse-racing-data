@@ -597,8 +597,6 @@ const resolveViewerCacheOrigin = (env: Env): string => {
   return configured && configured.length > 0 ? configured : DEFAULT_VIEWER_CACHE_ORIGIN;
 };
 
-const VIEWER_INTERNAL_ORIGIN = "https://pc-keiba-viewer.local";
-
 const parseWarmResponse = (text: string): { raceCount?: number; warmed?: number } => {
   try {
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion
@@ -645,9 +643,12 @@ export const runDailyFeatureBuildForEnv = async (
   const pool = getFinishPositionPool(env);
   const rows = await fetchDailyRaceEntriesFromPostgres(pool, { fromDate, sourceScope, toDate });
   const rowsWritten = await upsertDailyRaceEntriesToD1(env.REALTIME_DB, rows);
-  const cacheWarm = rowsWritten > 0 ? await triggerViewerCacheWarmForDate(env, fromDate) : {
-    message: "no rows written",
-    status: "skipped" as const,
-  };
+  const cacheWarm =
+    rowsWritten > 0
+      ? await triggerViewerCacheWarmForDate(env, fromDate)
+      : {
+          message: "no rows written",
+          status: "skipped" as const,
+        };
   return { cacheWarm, fromDate, rowsFetched: rows.length, rowsWritten, sourceScope, toDate };
 };

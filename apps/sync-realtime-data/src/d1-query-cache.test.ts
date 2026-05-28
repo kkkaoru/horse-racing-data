@@ -76,18 +76,17 @@ it("readD1QueryCache deletes the entry and returns null when cached body is unpa
 
 it("withD1QueryCache bypasses cache when ttl is zero and calls load", async () => {
   const load = vi.fn(async () => ({ fresh: true }));
-  const result = await withD1QueryCache(
-    "running-style-race",
-    ["k"],
-    load,
-    { raceDay: { kaisaiNen: "1999", kaisaiTsukihi: "0101" } },
-  );
+  const result = await withD1QueryCache("running-style-race", ["k"], load, {
+    raceDay: { kaisaiNen: "1999", kaisaiTsukihi: "0101" },
+  });
   expect(result).toStrictEqual({ fresh: true });
   expect(load).toHaveBeenCalledTimes(1);
 });
 
 it("withD1QueryCache stable-sorts nested object key parts when building the cache key", async () => {
-  const putSpy = vi.fn(async () => undefined);
+  const putSpy = vi.fn<(req: Request | URL | string, res: Response) => Promise<undefined>>(
+    async () => undefined,
+  );
   const cache: FakeCache = {
     delete: vi.fn(async () => true),
     match: vi.fn(async () => null),
@@ -95,11 +94,7 @@ it("withD1QueryCache stable-sorts nested object key parts when building the cach
   };
   (globalThis as { caches?: CachesGlobal }).caches = { default: cache };
   const load = vi.fn(async () => ({ ok: 1 }));
-  const result1 = await withD1QueryCache<{ ok: number }>(
-    "realtime-short",
-    [{ b: 2, a: 1 }],
-    load,
-  );
+  const result1 = await withD1QueryCache<{ ok: number }>("realtime-short", [{ b: 2, a: 1 }], load);
   expect(result1.ok).toBe(1);
   const result2 = await withD1QueryCache<{ ok: number }>(
     "realtime-short",
