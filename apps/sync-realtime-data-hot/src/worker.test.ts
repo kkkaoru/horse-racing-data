@@ -14,6 +14,7 @@ import { fetchAndStoreOdds } from "./fetch-odds";
 import worker, {
   buildOddsPayloadFromD1,
   handleFetchRequest,
+  handleGetMigrationState,
   handleGetOdds,
   handleImportOddsChunk,
   handleMigrationState,
@@ -367,6 +368,38 @@ it("handleMigrationState returns 401 when unauthorized", async () => {
   expect(response.status).toBe(401);
 });
 
+it("handleGetMigrationState returns 401 when unauthorized", async () => {
+  const response = await handleGetMigrationState(
+    buildEnv(),
+    new Request("https://x/api/internal/migration-state?key=b1-max-id"),
+  );
+  expect(response.status).toBe(401);
+});
+
+it("handleGetMigrationState returns 400 when key missing", async () => {
+  const response = await handleGetMigrationState(
+    buildEnv(),
+    new Request("https://x/api/internal/migration-state", {
+      headers: { "x-pc-keiba-internal-token": "secret" },
+    }),
+  );
+  expect(response.status).toBe(400);
+});
+
+it("handleGetMigrationState reads value from KV under odds:migration prefix", async () => {
+  const env = buildEnv();
+  const getMock = env.ODDS_HOT_KV.get as unknown as ReturnType<typeof vi.fn>;
+  getMock.mockResolvedValueOnce("42");
+  const response = await handleGetMigrationState(
+    env,
+    new Request("https://x/api/internal/migration-state?key=b1-max-id", {
+      headers: { "x-pc-keiba-internal-token": "secret" },
+    }),
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toStrictEqual({ key: "b1-max-id", value: "42" });
+});
+
 it("handleMigrationState writes value to KV under odds:migration prefix", async () => {
   const env = buildEnv();
   const response = await handleMigrationState(
@@ -407,6 +440,14 @@ it("handleFetchRequest routes migration-state endpoint", async () => {
   const response = await handleFetchRequest(
     buildEnv(),
     new Request("https://x/api/internal/migration-state", { method: "POST" }),
+  );
+  expect(response.status).toBe(401);
+});
+
+it("handleFetchRequest routes GET migration-state endpoint", async () => {
+  const response = await handleFetchRequest(
+    buildEnv(),
+    new Request("https://x/api/internal/migration-state?key=b1-max-id"),
   );
   expect(response.status).toBe(401);
 });

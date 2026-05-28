@@ -146,6 +146,19 @@ export const handleMigrationState = async (env: Env, request: Request): Promise<
   return jsonResponse({ ok: true });
 };
 
+export const handleGetMigrationState = async (env: Env, request: Request): Promise<Response> => {
+  if (!isAuthorizedInternalRequest(request, env)) {
+    return jsonResponse({ error: "unauthorized" }, { status: 401 });
+  }
+  const url = new URL(request.url);
+  const key = url.searchParams.get("key");
+  if (!key) {
+    return jsonResponse({ error: "key is required" }, { status: 400 });
+  }
+  const value = await env.ODDS_HOT_KV.get(`odds:migration:${key}`);
+  return jsonResponse({ key, value });
+};
+
 export const handleFetchRequest = async (env: Env, request: Request): Promise<Response> => {
   const url = new URL(request.url);
   if (url.pathname === "/") {
@@ -159,6 +172,9 @@ export const handleFetchRequest = async (env: Env, request: Request): Promise<Re
   }
   if (request.method === "POST" && url.pathname === "/api/internal/migration-state") {
     return handleMigrationState(env, request);
+  }
+  if (request.method === "GET" && url.pathname === "/api/internal/migration-state") {
+    return handleGetMigrationState(env, request);
   }
   const raceKey = parseRaceKeyFromPath(url.pathname);
   if (request.method === "GET" && raceKey) {
