@@ -22,9 +22,9 @@
     "ODDS_STALE_MIRROR_SECONDS": "90",
   },
   // High-frequency cron for odds polling (* * * * *) and daily R2 archive (0 4 * * *).
-  // Initial deploy uses empty array — re-enable after Phase C smoke test.
+  // Re-enabled at cutover (PR3).
   "triggers": {
-    "crons": [],
+    "crons": ["* * * * *", "0 4 * * *"],
   },
   "queues": {
     "producers": [

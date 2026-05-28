@@ -27,6 +27,7 @@ import {
   listJraVenueTrackConditionSchedulesByDate,
   replacePremiumRaceData,
   listPremiumRaceDataFetchCandidatesByDate,
+  listRaceSourcesForSeed,
   listSchedulableRaceSourcesByDate,
   insertHorseWeightSnapshot,
   insertRaceEntrySnapshot,
@@ -633,6 +634,50 @@ it("listSchedulableRaceSourcesByDate maps rows to SchedulableRaceSource shape", 
   const result = await listSchedulableRaceSourcesByDate(db, "20260512");
   expect(result.length).toBe(1);
   expect(result[0]!.raceKey).toBe("nar:2026:0512:55:01");
+});
+
+it("listRaceSourcesForSeed returns mapped rows when results present", async () => {
+  const all = vi.fn(async () => ({
+    results: [
+      {
+        deba_url: "https://x.test/race",
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0529",
+        keibajo_code: "08",
+        odds_links_json: "{}",
+        race_bango: "01",
+        race_key: "jra:2026:0529:08:01",
+        race_start_at_jst: "2026-05-29T13:00:00+09:00",
+        rowid: 7,
+        source: "jra",
+      },
+    ],
+  }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const result = await listRaceSourcesForSeed(db, { batchSize: 50, sinceId: 0 });
+  expect(result.length).toBe(1);
+  expect(result[0]!.race_key).toBe("jra:2026:0529:08:01");
+  expect(result[0]!.rowid).toBe(7);
+});
+
+it("listRaceSourcesForSeed returns empty array when no rows match", async () => {
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const result = await listRaceSourcesForSeed(db, { batchSize: 50, sinceId: 100 });
+  expect(result.length).toBe(0);
+});
+
+it("listRaceSourcesForSeed binds sinceId and batchSize to the prepared statement", async () => {
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await listRaceSourcesForSeed(db, { batchSize: 25, sinceId: 5 });
+  expect(bind).toHaveBeenCalledWith(5, 25);
 });
 
 it("listPremiumRaceDataFetchCandidatesByDate returns mapped candidate rows", async () => {

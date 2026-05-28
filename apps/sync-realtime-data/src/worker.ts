@@ -4,7 +4,6 @@ import {
   buildRaceResultUrl,
   buildRaceKey,
   extractOddsLinks,
-  fetchOdds,
   fetchRaceLinksFromRaceList,
   fetchRacePage,
   fetchTodayRaceListUrls,
@@ -23,7 +22,6 @@ import {
   buildJraEntryUrlFromRace,
   buildJraResultUrlFromRaceSource,
   fetchJraResultHtmlWithPlaywright,
-  fetchJraOddsWithPlaywright,
   isJraScratchStatus,
   parseJraRaceResultExcludedHorseNumbers,
   parseJraRaceResults,
@@ -32,7 +30,6 @@ import {
   sanitizeJraRaceEntriesWithOdds,
 } from "./jra";
 import { fetchJraTrackConditionWithPlaywright } from "./jra-track-condition";
-import { readCachedOdds, writeCachedOdds } from "./odds-cache";
 import { putPremiumDataTopCache } from "./premium-data-top-cache";
 import {
   buildPremiumUrl,
@@ -62,40 +59,33 @@ import { buildRealtimeRaceKey, raceKeyFromRealtimePath, type RealtimeSource } fr
 import {
   buildRealtimePayload,
   claimPremiumPaddockNotificationSend,
-  claimOddsFetch,
   claimResultFetch,
   claimTrackConditionFetch,
-  completeOddsFetch,
   completeResultFetch,
   completeTrackConditionFetch,
   countJraRaceSourcesMissingRaceDateFieldsByDate,
   countRaceSourcesByDate,
   failTrackConditionFetch,
-  failOddsFetch,
   failResultFetch,
   getPremiumRaceLink,
   getPremiumRacePayload,
   getPremiumPaddockFetchState,
   getPremiumPaddockNotificationState,
   getRaceSource,
-  getVenueLastRaceStartAtJst,
+  deleteOddsSnapshotsChunk,
   getLatestTrackConditionForRace,
-  getLatestOddsFromD1,
   getSameDayVenueJockeyWins,
   insertRaceEntrySnapshot,
   insertRaceResultSnapshot,
   insertHorseWeightSnapshot,
   insertJraTrackConditionSnapshot,
-  insertOddsSnapshot,
   listJraVenueTrackConditionSchedulesByDate,
   listOddsSnapshotsForExport,
   listPremiumRaceDataFetchCandidatesByDate,
   listRaceSourceKeibajoCodesByDate,
+  listRaceSourcesForSeed,
   listSchedulableRaceSourcesByDate,
-  listOddsHistoryByType,
-  listTanshoHistory,
   logFetch,
-  markOddsFetchQueued,
   markPremiumPaddockQueued,
   markPremiumRaceDataQueued,
   markResultFetchQueued,
@@ -106,13 +96,13 @@ import {
   toHorseTrends,
   toOddsTrendsByType,
   updateLastFetch,
-  updateOddsLinks,
   updatePremiumRaceDataFetchState,
   updatePremiumPaddockFetchState,
   updatePremiumPaddockNotificationState,
   upsertJraRaceSource,
   upsertNarRaceSource,
   upsertPremiumRaceLink,
+  type HotOddsPayload,
   type LocalRaceRow,
 } from "./storage";
 import {
@@ -120,7 +110,6 @@ import {
   RUNNING_STYLE_PREWARM_CRON,
   formatTomorrowYYYYMMDDInJst,
   planRunningStylePredictionsForDate,
-  refreshViewerRunningStyleCacheForRace,
   refreshViewerRunningStyleCachesForDate,
   runRunningStyleCronTick,
 } from "./running-style-cron";
@@ -138,7 +127,6 @@ import {
   getJraAdvanceOddsFetchSlotAt,
   getNarOddsFetchSlotAt,
   getNarOddsSaleStartAt,
-  getNextOddsFetchSlotAt,
   getOddsFetchSlotAt,
   getTodayJst,
   isJstPollingWindow,
@@ -148,7 +136,6 @@ import {
 import type { Env, HorseWeight, Job, NarRaceSource, RaceEntry } from "./types";
 
 const QUEUE_SEND_BATCH_SIZE = 100;
-const ODDS_FETCH_LOCK_MINUTES = 10;
 const RESULT_FETCH_LOCK_MINUTES = 10;
 const RESULT_FETCH_INTERVAL_MINUTES = 5;
 const TRACK_CONDITION_FETCH_LOCK_MINUTES = 15;
@@ -198,6 +185,76 @@ const json = (body: unknown, init?: ResponseInit): Response =>
     })(),
     status: init?.status ?? 200,
   });
+
+const HOT_WORKER_ORIGIN = "https://sync-realtime-data-hot.kkk4oru.com";
+
+interface ForwardRaceSourceArgs {
+  source: "jra" | "nar";
+  raceKey: string;
+  raceStartAtJst: string;
+  debaUrl: string;
+  oddsLinksJson: string;
+  kaisaiNen: string;
+  kaisaiTsukihi: string;
+  keibajoCode: string;
+  raceBango: string;
+}
+
+const buildRaceStartAtJst = (
+  kaisaiNen: string,
+  kaisaiTsukihi: string,
+  hassoJikoku: string | null,
+): string =>
+  hassoJikoku
+    ? `${kaisaiNen}-${kaisaiTsukihi.slice(0, 2)}-${kaisaiTsukihi.slice(2, 4)}T${hassoJikoku.slice(0, 2)}:${hassoJikoku.slice(2, 4)}:00+09:00`
+    : "";
+
+export const forwardRaceSourceToHot = async (
+  env: Env,
+  args: ForwardRaceSourceArgs,
+): Promise<void> => {
+  if (!env.REALTIME_HOT || !env.PC_KEIBA_VIEWER_INTERNAL_TOKEN) {
+    return;
+  }
+  try {
+    await env.REALTIME_HOT.fetch(`${HOT_WORKER_ORIGIN}/api/internal/odds-fetch-state`, {
+      body: JSON.stringify(args),
+      headers: {
+        "content-type": "application/json",
+        "x-pc-keiba-internal-token": env.PC_KEIBA_VIEWER_INTERNAL_TOKEN,
+      },
+      method: "POST",
+    });
+  } catch (error) {
+    // Forwarding to the hot worker is best-effort: never block discovery on it.
+    await logFetch(
+      env.REALTIME_DB,
+      "forward-race-source-to-hot",
+      "error",
+      args.raceKey,
+      formatError(error),
+    ).catch(() => undefined);
+  }
+};
+
+export const fetchHotOddsPayload = async (
+  env: Env,
+  raceKey: string,
+): Promise<HotOddsPayload | null> => {
+  if (!env.REALTIME_HOT) {
+    return null;
+  }
+  try {
+    const response = await env.REALTIME_HOT.fetch(`${HOT_WORKER_ORIGIN}/api/odds/${raceKey}`);
+    if (!response.ok) {
+      return null;
+    }
+    const body = (await response.json()) as HotOddsPayload | null;
+    return body ?? null;
+  } catch {
+    return null;
+  }
+};
 
 export const addDaysToYyyymmdd = (yyyymmdd: string, days: number): string => {
   const date = new Date(
@@ -325,6 +382,25 @@ const upsertDiscoveredUrls = async (
       continue;
     }
     await upsertJraRaceSource(env.REALTIME_DB, race, entryUrl);
+    const raceBango = race.race_bango.padStart(2, "0");
+    const jraRaceKey = buildRealtimeRaceKey(
+      "jra",
+      race.kaisai_nen,
+      race.kaisai_tsukihi,
+      race.keibajo_code,
+      raceBango,
+    );
+    await forwardRaceSourceToHot(env, {
+      debaUrl: entryUrl,
+      kaisaiNen: race.kaisai_nen,
+      kaisaiTsukihi: race.kaisai_tsukihi,
+      keibajoCode: race.keibajo_code,
+      oddsLinksJson: "{}",
+      raceBango,
+      raceKey: jraRaceKey,
+      raceStartAtJst: buildRaceStartAtJst(race.kaisai_nen, race.kaisai_tsukihi, race.hasso_jikoku),
+      source: "jra",
+    });
     upserted += 1;
   }
   for (const raceList of targetRaceListUrls) {
@@ -346,12 +422,31 @@ const upsertDiscoveredUrls = async (
       if (!race) {
         continue;
       }
-      await upsertNarRaceSource(
-        env.REALTIME_DB,
-        link,
-        race,
-        extractOddsLinks(racePageHtml, link.url),
+      const oddsLinks = extractOddsLinks(racePageHtml, link.url);
+      await upsertNarRaceSource(env.REALTIME_DB, link, race, oddsLinks);
+      const raceBango = race.race_bango.padStart(2, "0");
+      const narRaceKey = buildRealtimeRaceKey(
+        "nar",
+        race.kaisai_nen,
+        race.kaisai_tsukihi,
+        keibajoCode,
+        raceBango,
       );
+      await forwardRaceSourceToHot(env, {
+        debaUrl: link.url,
+        kaisaiNen: race.kaisai_nen,
+        kaisaiTsukihi: race.kaisai_tsukihi,
+        keibajoCode,
+        oddsLinksJson: JSON.stringify(oddsLinks),
+        raceBango,
+        raceKey: narRaceKey,
+        raceStartAtJst: buildRaceStartAtJst(
+          race.kaisai_nen,
+          race.kaisai_tsukihi,
+          race.hasso_jikoku,
+        ),
+        source: "nar",
+      });
       upserted += 1;
     }
   }
@@ -384,9 +479,29 @@ const ensureJraRaceSourcesAreCurrent = async (env: Env, targetDate: string): Pro
   }
   for (const race of jraRaces) {
     const entryUrl = buildJraEntryUrlFromRace(race);
-    if (entryUrl) {
-      await upsertJraRaceSource(env.REALTIME_DB, race, entryUrl);
+    if (!entryUrl) {
+      continue;
     }
+    await upsertJraRaceSource(env.REALTIME_DB, race, entryUrl);
+    const raceBango = race.race_bango.padStart(2, "0");
+    const jraRaceKey = buildRealtimeRaceKey(
+      "jra",
+      race.kaisai_nen,
+      race.kaisai_tsukihi,
+      race.keibajo_code,
+      raceBango,
+    );
+    await forwardRaceSourceToHot(env, {
+      debaUrl: entryUrl,
+      kaisaiNen: race.kaisai_nen,
+      kaisaiTsukihi: race.kaisai_tsukihi,
+      keibajoCode: race.keibajo_code,
+      oddsLinksJson: "{}",
+      raceBango,
+      raceKey: jraRaceKey,
+      raceStartAtJst: buildRaceStartAtJst(race.kaisai_nen, race.kaisai_tsukihi, race.hasso_jikoku),
+      source: "jra",
+    });
   }
 };
 
@@ -809,33 +924,6 @@ export const planTrackConditionFetchesForDate = async (
     return due.due
       ? [{ date: targetDate, keibajoCode: schedule.keibajoCode, type: "fetch-jra-track-condition" }]
       : [];
-  });
-};
-
-export const planJraAdvanceOddsFetchesForDate = async (
-  env: Env,
-  targetDate: string,
-  now: Date,
-): Promise<Job[]> => {
-  await ensureJraRaceSourcesAreCurrent(env, targetDate);
-  const races = await listSchedulableRaceSourcesByDate(env.REALTIME_DB, targetDate);
-  return races.flatMap((race) => {
-    if (race.source !== "jra") {
-      return [];
-    }
-    const oddsSlotAt = getCurrentOddsSlotAt(race, now);
-    const oddsLockUntil = race.oddsFetchLockUntil
-      ? new Date(race.oddsFetchLockUntil).getTime()
-      : Number.NaN;
-    const lastOddsActivity = latestTimestamp(race.lastOddsFetchAt, race.lastOddsQueuedAt);
-    if (
-      oddsSlotAt &&
-      (Number.isNaN(oddsLockUntil) || oddsLockUntil <= now.getTime()) &&
-      isSlotDue(lastOddsActivity, oddsSlotAt)
-    ) {
-      return [{ raceKey: race.raceKey, type: "fetch-odds" as const }];
-    }
-    return [];
   });
 };
 
@@ -1360,11 +1448,11 @@ export const planRealtimeFetches = async (env: Env, targetDate: string): Promise
   const now = getNow(env);
   const jobs: Job[] = [];
   // Outside the JST polling window (22:00-05:59) there are no races to
-  // observe — odds, results, track condition, premium scraping and JRA
-  // advance odds all rely on race timing that has either already finished
-  // for the day or hasn't been published yet. Skip everything to keep the
-  // every-minute cron from hammering D1 with planning queries while there's
-  // nothing to do.
+  // observe — results, track condition, and premium scraping all rely on
+  // race timing that has either already finished for the day or hasn't been
+  // published yet. Skip everything to keep the every-minute cron from
+  // hammering D1 with planning queries while there's nothing to do. Odds
+  // polling is owned by the sync-realtime-data-hot worker.
   if (!isJstPollingWindow(now)) {
     return 0;
   }
@@ -1375,26 +1463,10 @@ export const planRealtimeFetches = async (env: Env, targetDate: string): Promise
   {
     await tryEnsureDiscoveredUrlsAreCurrent(env, targetDate);
     const races = await listSchedulableRaceSourcesByDate(env.REALTIME_DB, targetDate);
-    const narVenueLastRaceStartAt = getNarVenueLastRaceStartAtMap(races);
     for (const race of races) {
       const minutes = minutesUntilRace(race, now);
       if (minutes === null) {
         continue;
-      }
-
-      const oddsSlotAt = getCurrentOddsSlotAt(race, now, {
-        venueLastRaceStartAtJst: narVenueLastRaceStartAt.get(getNarVenueMeetingKey(race)),
-      });
-      const oddsLockUntil = race.oddsFetchLockUntil
-        ? new Date(race.oddsFetchLockUntil).getTime()
-        : Number.NaN;
-      const lastOddsActivity = latestTimestamp(race.lastOddsFetchAt, race.lastOddsQueuedAt);
-      if (
-        oddsSlotAt &&
-        (Number.isNaN(oddsLockUntil) || oddsLockUntil <= now.getTime()) &&
-        isSlotDue(lastOddsActivity, oddsSlotAt)
-      ) {
-        jobs.push({ raceKey: race.raceKey, type: "fetch-odds" });
       }
 
       if (isThreeMinuteTick(now) && minutes <= 20 && isDue(race.lastWeightFetchAt, 24 * 60, now)) {
@@ -1416,9 +1488,6 @@ export const planRealtimeFetches = async (env: Env, targetDate: string): Promise
       }
     }
   }
-  jobs.push(
-    ...(await planJraAdvanceOddsFetchesForDate(env, addDaysToYyyymmdd(targetDate, 1), now)),
-  );
   if (isPremiumRaceDiscoveryTick(now)) {
     jobs.push({ date: targetDate, type: "discover-premium-races" });
     jobs.push({ date: addDaysToYyyymmdd(targetDate, 1), type: "discover-premium-races" });
@@ -1433,11 +1502,6 @@ export const planRealtimeFetches = async (env: Env, targetDate: string): Promise
   );
   await enqueueJobs(env, jobs);
   const queuedAt = toJstIsoString(now);
-  await markOddsFetchQueued(
-    env.REALTIME_DB,
-    jobs.flatMap((job) => (job.type === "fetch-odds" ? [job.raceKey] : [])),
-    queuedAt,
-  );
   await markResultFetchQueued(
     env.REALTIME_DB,
     jobs.flatMap((job) => (job.type === "fetch-results" ? [job.raceKey] : [])),
@@ -1465,92 +1529,6 @@ export const planRealtimeFetches = async (env: Env, targetDate: string): Promise
   return jobs.length;
 };
 
-const fetchAndStoreOdds = async (env: Env, raceKey: string): Promise<void> => {
-  const now = getNow(env);
-  const lockUntil = toJstIsoString(new Date(now.getTime() + ODDS_FETCH_LOCK_MINUTES * 60_000));
-  const claimed = await claimOddsFetch(env.REALTIME_DB, raceKey, lockUntil, toJstIsoString(now));
-  if (!claimed) {
-    return;
-  }
-  const race = await getRaceSource(env.REALTIME_DB, raceKey);
-  if (!race) {
-    await failOddsFetch(env.REALTIME_DB, raceKey);
-    throw new Error(`race source not found: ${raceKey}`);
-  }
-  try {
-    const raceStart = getRaceStart(race);
-    const venueLastRaceStartAtJst =
-      race.source === "nar" ? await getVenueLastRaceStartAtJst(env.REALTIME_DB, race) : null;
-    const narSaleStartAt = getNarOddsSaleStartForRace(race, venueLastRaceStartAtJst);
-    const oddsSlotAt = getCurrentOddsSlotAt(race, now, { venueLastRaceStartAtJst });
-    if (!oddsSlotAt || !isSlotDue(race.lastOddsFetchAt, oddsSlotAt)) {
-      await failOddsFetch(env.REALTIME_DB, raceKey);
-      return;
-    }
-    const fetchedAt = toJstIsoString();
-    let latest;
-    if (race.source === "jra") {
-      const result = await fetchJraOddsWithPlaywright(env.JRA_BROWSER, race.debaUrl);
-      latest = result.latest;
-      await insertRaceEntrySnapshot(
-        env.REALTIME_DB,
-        raceKey,
-        fetchedAt,
-        sanitizeJraRaceEntriesWithOdds(parseJraRaceEntries(result.entryHtml), latest),
-      );
-      const weights = parseJraHorseWeights(result.entryHtml);
-      if (weights.length > 0) {
-        assertJraHorseWeightsComplete(raceKey, parseJraRaceEntries(result.entryHtml), weights);
-        await insertHorseWeightSnapshot(env.REALTIME_DB, raceKey, fetchedAt, weights);
-        await updateLastFetch(env.REALTIME_DB, raceKey, "last_weight_fetch_at", fetchedAt);
-      }
-    } else {
-      const entryHtml = await fetchRacePage(race.debaUrl);
-      await insertRaceEntrySnapshot(
-        env.REALTIME_DB,
-        raceKey,
-        fetchedAt,
-        parseRaceEntries(entryHtml),
-      );
-      const oddsLinks =
-        Object.keys(race.oddsLinks).length > 0
-          ? race.oddsLinks
-          : extractOddsLinks(entryHtml, race.debaUrl);
-      if (Object.keys(race.oddsLinks).length === 0) {
-        await updateOddsLinks(env.REALTIME_DB, race.raceKey, oddsLinks);
-      }
-      latest = await fetchOdds(race.debaUrl, oddsLinks);
-    }
-    const inserted = await insertOddsSnapshot(env.REALTIME_DB, raceKey, fetchedAt, latest);
-    if (inserted === 0) {
-      throw new Error(`odds rows are empty: ${raceKey}`);
-    }
-    await completeOddsFetch(env.REALTIME_DB, raceKey, fetchedAt);
-    const nextSlotAt = raceStart
-      ? getNextOddsFetchSlotAt(raceStart, now, race.source, { narSaleStartAt })
-      : null;
-    if (nextSlotAt) {
-      const delaySeconds = Math.max(
-        1,
-        Math.ceil((new Date(nextSlotAt).getTime() - now.getTime()) / 1000),
-      );
-      await env.REALTIME_JOBS.send({ raceKey, type: "fetch-odds" }, { delaySeconds });
-      await markOddsFetchQueued(env.REALTIME_DB, [raceKey], nextSlotAt);
-    }
-    const [history, historyByType] = await Promise.all([
-      listTanshoHistory(env.REALTIME_DB, raceKey),
-      listOddsHistoryByType(env.REALTIME_DB, raceKey),
-    ]);
-    await writeCachedOdds(env, raceKey, { fetchedAt, history, historyByType, latest });
-    if (env.RUNNING_STYLE_D1_WRITE_ENABLED === "1") {
-      await refreshViewerRunningStyleCacheForRace(env, raceKey).catch(() => undefined);
-    }
-  } catch (error) {
-    await failOddsFetch(env.REALTIME_DB, raceKey);
-    throw error;
-  }
-};
-
 const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<void> => {
   const race = await getRaceSource(env.REALTIME_DB, raceKey);
   if (!race) {
@@ -1558,8 +1536,7 @@ const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<void> =>
   }
   const fetchedAt = toJstIsoString();
   const html = await fetchRacePage(race.debaUrl);
-  const latestOdds =
-    race.source === "jra" ? await getLatestOddsFromD1(env.REALTIME_DB, raceKey) : null;
+  const latestOdds = race.source === "jra" ? await fetchHotOddsPayload(env, raceKey) : null;
   const entries =
     race.source === "jra"
       ? sanitizeJraRaceEntriesWithOdds(parseJraRaceEntries(html), latestOdds?.latest)
@@ -2146,11 +2123,6 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
       await logFetch(env.REALTIME_DB, job.type, "ok", job.raceKey, null);
       return;
     }
-    if (job.type === "fetch-odds") {
-      await fetchAndStoreOdds(env, job.raceKey);
-      await logFetch(env.REALTIME_DB, job.type, "ok", job.raceKey, null);
-      return;
-    }
     if (job.type === "fetch-results") {
       await fetchAndStoreResults(env, job.raceKey);
       await logFetch(env.REALTIME_DB, job.type, "ok", job.raceKey, null);
@@ -2321,6 +2293,42 @@ export default {
       });
     }
 
+    if (url.pathname === "/api/internal/export-race-sources-chunk" && request.method === "POST") {
+      const expectedToken = env.REALTIME_ADMIN_TOKEN;
+      if (!expectedToken || request.headers.get("authorization") !== `Bearer ${expectedToken}`) {
+        return json({ error: "forbidden" }, { status: 403 });
+      }
+      const body = (await request.json()) as { since_id: number; batch_size: number };
+      const rows = await listRaceSourcesForSeed(env.REALTIME_DB, {
+        batchSize: body.batch_size,
+        sinceId: body.since_id,
+      });
+      const nextSinceId = rows.length > 0 ? rows.at(-1)!.rowid : body.since_id;
+      return json({
+        done: rows.length < body.batch_size,
+        next_since_id: nextSinceId,
+        rows,
+      });
+    }
+
+    if (url.pathname === "/api/internal/delete-odds-chunk" && request.method === "POST") {
+      const expectedToken = env.REALTIME_ADMIN_TOKEN;
+      if (!expectedToken || request.headers.get("authorization") !== `Bearer ${expectedToken}`) {
+        return json({ error: "forbidden" }, { status: 403 });
+      }
+      const body = (await request.json()) as {
+        since_id: number;
+        batch_size: number;
+        upper_bound_id: number;
+      };
+      const result = await deleteOddsSnapshotsChunk(env.REALTIME_DB, {
+        batchSize: body.batch_size,
+        sinceId: body.since_id,
+        upperBoundId: body.upper_bound_id,
+      });
+      return json(result);
+    }
+
     if (url.pathname === "/api/jobs" && request.method === "POST") {
       const expectedToken = env.REALTIME_ADMIN_TOKEN;
       if (!expectedToken || request.headers.get("authorization") !== `Bearer ${expectedToken}`) {
@@ -2364,19 +2372,18 @@ export default {
 
     const raceKey = raceKeyFromRequest(url);
     if (raceKey && request.method === "GET") {
-      const [source, cachedOdds, cachedTrackCondition] = await Promise.all([
+      const [source, hotOdds, cachedTrackCondition] = await Promise.all([
         getRaceSource(env.REALTIME_DB, raceKey),
-        readCachedOdds(env, raceKey),
+        fetchHotOddsPayload(env, raceKey),
         readCachedTrackCondition(env, raceKey),
       ]);
-      const odds = cachedOdds ?? (await getLatestOddsFromD1(env.REALTIME_DB, raceKey));
       const trackCondition =
         cachedTrackCondition ?? (await getLatestTrackConditionForRace(env.REALTIME_DB, raceKey));
       const payload = await buildRealtimePayload(
         env.REALTIME_DB,
         raceKey,
         source,
-        odds,
+        hotOdds,
         trackCondition,
       );
       if (payload.odds && payload.odds.horseTrends.length === 0) {
@@ -2503,11 +2510,7 @@ export default {
         await handleJob(env, message.body);
         message.ack();
       } catch {
-        if (message.body.type === "fetch-odds") {
-          message.ack();
-        } else {
-          message.retry({ delaySeconds: QUEUE_RETRY_DELAY_SECONDS });
-        }
+        message.retry({ delaySeconds: QUEUE_RETRY_DELAY_SECONDS });
       }
     }
   },

@@ -25,10 +25,6 @@ export type Job =
       selfSchedule?: boolean;
     }
   | {
-      type: "fetch-odds";
-      raceKey: string;
-    }
-  | {
       type: "fetch-weights";
       raceKey: string;
     }
@@ -182,6 +178,7 @@ export interface Env {
   REALTIME_ADMIN_TOKEN?: string;
   REALTIME_API_CACHE_SECONDS?: string;
   REALTIME_DB: D1Database;
+  REALTIME_HOT?: { fetch: typeof fetch };
   REALTIME_JOBS: Queue<Job>;
   REALTIME_TEST_NOW?: string;
   RUNNING_STYLE_CACHE_ORIGIN?: string;
