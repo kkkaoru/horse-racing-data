@@ -135,7 +135,7 @@ type OddsTrendRow = {
   timeLabel: string;
 } & Record<string, number | string | null>;
 
-type OddsTrendHoverEntry = {
+export type OddsTrendHoverEntry = {
   color?: string;
   dataKey?: string | number;
   name?: string | number;
@@ -241,7 +241,10 @@ const getLatestTrendOdds = (trend: RealtimeOddsTrend): number | null => {
   return latestOdds;
 };
 
-const compareTrendsByLatestOdds = (left: RealtimeOddsTrend, right: RealtimeOddsTrend): number => {
+const compareTrendsByLatestOddsAsc = (
+  left: RealtimeOddsTrend,
+  right: RealtimeOddsTrend,
+): number => {
   const leftOdds = getLatestTrendOdds(left) ?? Number.POSITIVE_INFINITY;
   const rightOdds = getLatestTrendOdds(right) ?? Number.POSITIVE_INFINITY;
   if (leftOdds !== rightOdds) {
@@ -253,25 +256,47 @@ const compareTrendsByLatestOdds = (left: RealtimeOddsTrend, right: RealtimeOddsT
   });
 };
 
-const getDisplayTrends = (
+const compareTrendsByLatestOddsDesc = (
+  left: RealtimeOddsTrend,
+  right: RealtimeOddsTrend,
+): number => {
+  const leftOdds = getLatestTrendOdds(left) ?? Number.NEGATIVE_INFINITY;
+  const rightOdds = getLatestTrendOdds(right) ?? Number.NEGATIVE_INFINITY;
+  if (leftOdds !== rightOdds) {
+    return rightOdds - leftOdds;
+  }
+  return left.combination.localeCompare(right.combination, "ja-JP", {
+    numeric: true,
+    sensitivity: "base",
+  });
+};
+
+// Non-tansho trends keep "top N most-bet" (lowest odds) trimming, then we
+// reorder the rendered list so the highest odds appear first to match the
+// tooltip ordering the user expects.
+export const getDisplayTrends = (
   oddsType: RealtimeOddsType,
   history: RealtimeOddsTrend[],
 ): RealtimeOddsTrend[] =>
   oddsType === "tansho" || oddsType === "fukusho"
-    ? history.filter(hasTrendPoints).toSorted(compareTrendsByLatestOdds)
+    ? history.filter(hasTrendPoints).toSorted(compareTrendsByLatestOddsDesc)
     : history
         .filter(hasTrendPoints)
-        .toSorted(compareTrendsByLatestOdds)
-        .slice(0, NON_TANSHO_TREND_LIMIT);
+        .toSorted(compareTrendsByLatestOddsAsc)
+        .slice(0, NON_TANSHO_TREND_LIMIT)
+        .toSorted(compareTrendsByLatestOddsDesc);
 
-const sortOddsTrendEntries = (entries: OddsTrendHoverEntry[]): OddsTrendHoverEntry[] =>
+const formatLegendOdds = (value: number | null): string =>
+  value === null ? "--" : value >= 100 ? value.toFixed(0) : value.toFixed(1);
+
+export const sortOddsTrendEntries = (entries: OddsTrendHoverEntry[]): OddsTrendHoverEntry[] =>
   entries
     .filter((entry) => typeof entry.value === "number")
     .toSorted((left, right) => {
       const leftOdds = Number(left.value);
       const rightOdds = Number(right.value);
       if (leftOdds !== rightOdds) {
-        return leftOdds - rightOdds;
+        return rightOdds - leftOdds;
       }
       return getTooltipSortValue(left) - getTooltipSortValue(right);
     });
@@ -439,7 +464,11 @@ export function RealtimeRaceSection(props: RealtimeRaceSectionProps) {
               )}
             </div>
             <div className="odds-trend-plot">
-              <ResponsiveContainer height="100%" width="100%">
+              <ResponsiveContainer
+                height="100%"
+                initialDimension={{ height: 1, width: 1 }}
+                width="100%"
+              >
                 <LineChart
                   data={trendRows}
                   margin={{ bottom: 42, left: 4, right: 18, top: chartTopMargin }}
@@ -515,6 +544,9 @@ export function RealtimeRaceSection(props: RealtimeRaceSectionProps) {
                     {isHorseNumberOddsType
                       ? (names.get(trend.combination) ?? trend.combination)
                       : ODDS_TYPE_LABELS[displayOddsType]}
+                  </span>
+                  <span className="odds-trend-legend-odds" aria-label="現在オッズ">
+                    {formatLegendOdds(getLatestTrendOdds(trend))}
                   </span>
                 </span>
               ))}
