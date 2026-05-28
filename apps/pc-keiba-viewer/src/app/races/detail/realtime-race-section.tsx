@@ -301,6 +301,31 @@ export const sortOddsTrendEntries = (entries: OddsTrendHoverEntry[]): OddsTrendH
       return getTooltipSortValue(left) - getTooltipSortValue(right);
     });
 
+const OddsTrendSkeleton = () => (
+  <div
+    aria-busy="true"
+    aria-label="オッズ推移を読み込み中"
+    className="odds-trend-chart odds-trend-chart-skeleton"
+    role="status"
+  >
+    <span className="odds-trend-skeleton-srtext">オッズ推移を読み込み中…</span>
+    <div className="odds-trend-skeleton-plot" aria-hidden="true">
+      <div className="odds-trend-skeleton-plot-grid">
+        <div className="odds-trend-skeleton-line odds-trend-skeleton-line-a" />
+        <div className="odds-trend-skeleton-line odds-trend-skeleton-line-b" />
+        <div className="odds-trend-skeleton-line odds-trend-skeleton-line-c" />
+        <div className="odds-trend-skeleton-line odds-trend-skeleton-line-d" />
+      </div>
+    </div>
+    <div className="odds-trend-skeleton-legend" aria-hidden="true">
+      <span className="odds-trend-skeleton-legend-row" />
+      <span className="odds-trend-skeleton-legend-row" />
+      <span className="odds-trend-skeleton-legend-row" />
+      <span className="odds-trend-skeleton-legend-row" />
+    </div>
+  </div>
+);
+
 function OddsTrendTooltip({ active, label, payload }: OddsTrendTooltipProps) {
   const entries = sortOddsTrendEntries(payload ?? []);
 
@@ -438,7 +463,9 @@ export function RealtimeRaceSection(props: RealtimeRaceSectionProps) {
             ))}
           </div>
         ) : null}
-        {history.length === 0 || trendRows.length === 0 ? (
+        {payload === null && error === null ? (
+          <OddsTrendSkeleton />
+        ) : history.length === 0 || trendRows.length === 0 ? (
           <p className="empty-state">オッズ推移はまだありません。</p>
         ) : (
           <div

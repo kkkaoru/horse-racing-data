@@ -772,143 +772,103 @@ it("listOddsHistoryByType groups history by oddsType", async () => {
   expect(result.umaren).toBeDefined();
 });
 
-it("getLatestOddsFromD1 returns null when no fetched_at exists", async () => {
-  const first = vi.fn(async () => ({ fetched_at: null }));
-  const bind = vi.fn((..._args: unknown[]) => ({ first }));
+it("getLatestOddsFromD1 returns null when results are empty", async () => {
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
   const prepare = vi.fn(() => ({ bind }));
   const db = { prepare } as unknown as D1Database;
   expect(await getLatestOddsFromD1(db, "key")).toBeNull();
 });
 
 it("getLatestOddsFromD1 returns latest odds grouped by type", async () => {
-  const callPlan: Array<{ first?: unknown; all?: unknown }> = [
-    { first: { fetched_at: "now" } },
-    {
-      all: {
-        results: [{ combination: "1", odds: "1.5", odds_type: "tansho", rank: 1 }],
-      },
-    },
-  ];
-  const prepare = vi.fn(() => {
-    const plan = callPlan.shift();
-    const first = vi.fn(async () => plan?.first);
-    const all = vi.fn(async () => plan?.all);
-    const bind = vi.fn(() => ({ all, first }));
-    return { bind };
-  });
+  const all = vi.fn(async () => ({
+    results: [{ combination: "1", fetched_at: "now", odds: "1.5", odds_type: "tansho", rank: 1 }],
+  }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
   const db = { prepare } as unknown as D1Database;
   const result = await getLatestOddsFromD1(db, "key");
   expect(result?.fetchedAt).toBe("now");
   expect(result?.latest.tansho?.length).toBe(1);
 });
 
-it("getLatestHorseWeights returns null when no fetched_at exists", async () => {
-  const first = vi.fn(async () => null);
-  const bind = vi.fn((..._args: unknown[]) => ({ first }));
+it("getLatestHorseWeights returns null when results are empty", async () => {
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
   const prepare = vi.fn(() => ({ bind }));
   const db = { prepare } as unknown as D1Database;
   expect(await getLatestHorseWeights(db, "key")).toBeNull();
 });
 
 it("getLatestHorseWeights returns latest snapshot rows", async () => {
-  const callPlan: Array<{ first?: unknown; all?: unknown }> = [
-    { first: { fetched_at: "now" } },
-    {
-      all: {
-        results: [
-          {
-            change_amount: "+2",
-            change_sign: "+",
-            fetched_at: "now",
-            horse_name: "h",
-            horse_number: "1",
-            weight: "500",
-          },
-        ],
+  const all = vi.fn(async () => ({
+    results: [
+      {
+        change_amount: "+2",
+        change_sign: "+",
+        fetched_at: "now",
+        horse_name: "h",
+        horse_number: "1",
+        weight: "500",
       },
-    },
-  ];
-  const prepare = vi.fn(() => {
-    const plan = callPlan.shift();
-    const first = vi.fn(async () => plan?.first);
-    const all = vi.fn(async () => plan?.all);
-    const bind = vi.fn(() => ({ all, first }));
-    return { bind };
-  });
+    ],
+  }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
   const db = { prepare } as unknown as D1Database;
   const result = await getLatestHorseWeights(db, "key");
   expect(result?.horses.length).toBe(1);
 });
 
-it("getLatestRaceEntries returns null when no fetched_at exists", async () => {
-  const first = vi.fn(async () => null);
-  const bind = vi.fn((..._args: unknown[]) => ({ first }));
+it("getLatestRaceEntries returns null when results are empty", async () => {
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
   const prepare = vi.fn(() => ({ bind }));
   const db = { prepare } as unknown as D1Database;
   expect(await getLatestRaceEntries(db, "key")).toBeNull();
 });
 
 it("getLatestRaceEntries returns horses sorted by horse_number", async () => {
-  const callPlan: Array<{ first?: unknown; all?: unknown }> = [
-    { first: { fetched_at: "now" } },
-    {
-      all: {
-        results: [
-          {
-            fetched_at: "now",
-            horse_name: "h1",
-            horse_number: "1",
-            jockey_name: "j",
-            status: null,
-          },
-        ],
+  const all = vi.fn(async () => ({
+    results: [
+      {
+        fetched_at: "now",
+        horse_name: "h1",
+        horse_number: "1",
+        jockey_name: "j",
+        status: null,
       },
-    },
-  ];
-  const prepare = vi.fn(() => {
-    const plan = callPlan.shift();
-    const first = vi.fn(async () => plan?.first);
-    const all = vi.fn(async () => plan?.all);
-    const bind = vi.fn(() => ({ all, first }));
-    return { bind };
-  });
+    ],
+  }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
   const db = { prepare } as unknown as D1Database;
   const result = await getLatestRaceEntries(db, "key");
   expect(result?.horses.length).toBe(1);
 });
 
-it("getLatestRaceResults returns null when no fetched_at exists", async () => {
-  const first = vi.fn(async () => null);
-  const bind = vi.fn((..._args: unknown[]) => ({ first }));
+it("getLatestRaceResults returns null when results are empty", async () => {
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
   const prepare = vi.fn(() => ({ bind }));
   const db = { prepare } as unknown as D1Database;
   expect(await getLatestRaceResults(db, "key")).toBeNull();
 });
 
 it("getLatestRaceResults returns mapped result rows when present", async () => {
-  const callPlan: Array<{ first?: unknown; all?: unknown }> = [
-    { first: { fetched_at: "now" } },
-    {
-      all: {
-        results: [
-          {
-            fetched_at: "now",
-            finish_position: "1",
-            horse_name: "h",
-            horse_number: "1",
-            time: "1:23.4",
-          },
-        ],
+  const all = vi.fn(async () => ({
+    results: [
+      {
+        fetched_at: "now",
+        finish_position: "1",
+        horse_name: "h",
+        horse_number: "1",
+        time: "1:23.4",
       },
-    },
-  ];
-  const prepare = vi.fn(() => {
-    const plan = callPlan.shift();
-    const first = vi.fn(async () => plan?.first);
-    const all = vi.fn(async () => plan?.all);
-    const bind = vi.fn(() => ({ all, first }));
-    return { bind };
-  });
+    ],
+  }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
   const db = { prepare } as unknown as D1Database;
   const result = await getLatestRaceResults(db, "key");
   expect(result?.horses.length).toBe(1);
@@ -1572,7 +1532,13 @@ it("listOddsHistoryByType skips rows with no oddsType or no fetched_at and group
   const all = vi.fn(async () => ({
     results: [
       { combination: "1", fetched_at: null, odds: 2, odds_type: "tansho", rank: 1 },
-      { combination: "2", fetched_at: "2026-05-12T13:00:00+09:00", odds: 5, odds_type: null, rank: 2 },
+      {
+        combination: "2",
+        fetched_at: "2026-05-12T13:00:00+09:00",
+        odds: 5,
+        odds_type: null,
+        rank: 2,
+      },
       {
         combination: "3",
         fetched_at: "2026-05-12T13:00:00+09:00",
