@@ -308,26 +308,23 @@ it("matchPremiumLinkToRace falls back to suffix match on padded raceBango", () =
 
 it("matchPremiumLinkToRace returns null when no link suffix matches the race", () => {
   expect(
-    matchPremiumLinkToRace(
-      [{ entryUrl: "u", sourceRaceId: "1234567890" }],
-      {
-        babaCode: "55",
-        debaUrl: "u",
-        kaisaiKai: null,
-        kaisaiNen: "2026",
-        kaisaiNichime: null,
-        kaisaiTsukihi: "0512",
-        keibajoCode: "55",
-        lastOddsFetchAt: null,
-        lastWeightFetchAt: null,
-        oddsLinks: {},
-        raceBango: "07",
-        raceKey: "nar:2026:0512:55:07",
-        raceName: null,
-        raceStartAtJst: "2026-05-12T13:00:00+09:00",
-        source: "nar",
-      },
-    ),
+    matchPremiumLinkToRace([{ entryUrl: "u", sourceRaceId: "1234567890" }], {
+      babaCode: "55",
+      debaUrl: "u",
+      kaisaiKai: null,
+      kaisaiNen: "2026",
+      kaisaiNichime: null,
+      kaisaiTsukihi: "0512",
+      keibajoCode: "55",
+      lastOddsFetchAt: null,
+      lastWeightFetchAt: null,
+      oddsLinks: {},
+      raceBango: "07",
+      raceKey: "nar:2026:0512:55:07",
+      raceName: null,
+      raceStartAtJst: "2026-05-12T13:00:00+09:00",
+      source: "nar",
+    }),
   ).toBeNull();
 });
 
@@ -406,18 +403,16 @@ it("parsePremiumPaddockBulletins detects authRequired marker", () => {
 });
 
 it("parsePremiumPaddockBulletins detects unavailable marker text", () => {
-  const result = parsePremiumPaddockBulletins(
-    "<div>サービス停止中</div>",
-    { PREMIUM_RACE_PADDOCK_UNAVAILABLE_TEXT: "サービス停止中" },
-  );
+  const result = parsePremiumPaddockBulletins("<div>サービス停止中</div>", {
+    PREMIUM_RACE_PADDOCK_UNAVAILABLE_TEXT: "サービス停止中",
+  });
   expect(result.unavailable).toBe(true);
 });
 
 it("parsePremiumPaddockBulletins detects pendingText marker", () => {
-  const result = parsePremiumPaddockBulletins(
-    "<div>準備中です</div>",
-    { PREMIUM_RACE_PADDOCK_PENDING_TEXT: "準備中" },
-  );
+  const result = parsePremiumPaddockBulletins("<div>準備中です</div>", {
+    PREMIUM_RACE_PADDOCK_PENDING_TEXT: "準備中",
+  });
   expect(result.pending).toBe(true);
 });
 
@@ -521,9 +516,9 @@ it("parsePremiumStableComments detects evaluationGrade from Icon_Mark image clas
 
 it("isPremiumStableCommentHtmlAuthorized returns true only when full-table class present", async () => {
   const { isPremiumStableCommentHtmlAuthorized } = await import("./premium-race");
-  expect(
-    isPremiumStableCommentHtmlAuthorized('<div class="Comment_Table_Show_All">x</div>'),
-  ).toBe(true);
+  expect(isPremiumStableCommentHtmlAuthorized('<div class="Comment_Table_Show_All">x</div>')).toBe(
+    true,
+  );
   expect(isPremiumStableCommentHtmlAuthorized("<div></div>")).toBe(false);
 });
 
@@ -666,4 +661,244 @@ it("parsePremiumTrainingReviews uses extractRelativeCellText fallback for riderN
   `;
   const result = parsePremiumTrainingReviews(html, env);
   expect(result[0]?.riderName).toBe("調教師Y");
+});
+
+it("parsePremiumStableComments resolves rows when class label ends with wildcard prefix marker", () => {
+  const html = `
+    <tr class="Comment_Row">
+      <td class="Horse_Number_main">3</td>
+      <td class="Comment_Text">テキスト</td>
+    </tr>
+  `;
+  const result = parsePremiumStableComments(html, {
+    PREMIUM_RACE_COMMENT_LABEL_HORSE_NUMBER: "Horse_Number_*",
+    PREMIUM_RACE_COMMENT_LABEL_TEXT: "Comment_Text",
+    PREMIUM_RACE_COMMENT_ROW_CLASS: "Comment_Row",
+  });
+  expect(result).toHaveLength(1);
+  expect(result[0]?.horseNumber).toBe("3");
+});
+
+it("parsePremiumTrainingReviews findCellIndexByClass returns -1 when class ends with wildcard prefix", () => {
+  const env = {
+    PREMIUM_RACE_WORK_DATE_CLASS: "Work_Date_*",
+    PREMIUM_RACE_WORK_HORSE_NUMBER_CLASS: "Horse_Number",
+    PREMIUM_RACE_WORK_ROW_CLASS: "Work_Row",
+  };
+  const html = `
+    <tr class="Work_Row">
+      <td class="Horse_Number">11</td>
+      <td class="Work_Date_jra">2026/05/12</td>
+      <td>a</td>
+      <td>b</td>
+      <td>調教師R</td>
+    </tr>
+  `;
+  const result = parsePremiumTrainingReviews(html, env);
+  expect(result[0]?.riderName).toBe("調教師R");
+});
+
+it("parsePremiumTrainingReviews extractRelativeCellText returns empty when anchor class is undefined", () => {
+  const env = {
+    PREMIUM_RACE_WORK_HORSE_NUMBER_CLASS: "Horse_Number",
+    PREMIUM_RACE_WORK_ROW_CLASS: "Work_Row",
+    PREMIUM_RACE_WORK_TEXT_CLASS: "Text",
+  };
+  const html = `
+    <tr class="Work_Row">
+      <td class="Horse_Number">9</td>
+      <td class="Text">評価本文</td>
+      <td>x</td>
+    </tr>
+  `;
+  const result = parsePremiumTrainingReviews(html, env);
+  expect(result).toHaveLength(1);
+  expect(result[0]?.riderName).toBeNull();
+});
+
+it("parsePremiumStableComments class-based path skips rows missing horseNumber or commentText", () => {
+  const html = `
+    <tr class="Comment_Row">
+      <td class="Horse_Number"></td>
+      <td class="Comment_Text">本文無視されない</td>
+    </tr>
+    <tr class="Comment_Row">
+      <td class="Horse_Number">7</td>
+      <td class="Comment_Text"></td>
+    </tr>
+    <tr class="Comment_Row">
+      <td class="Horse_Number">8</td>
+      <td class="Comment_Text">良い動き</td>
+    </tr>
+  `;
+  const result = parsePremiumStableComments(html, {
+    PREMIUM_RACE_COMMENT_LABEL_HORSE_NUMBER: "Horse_Number",
+    PREMIUM_RACE_COMMENT_LABEL_TEXT: "Comment_Text",
+    PREMIUM_RACE_COMMENT_ROW_CLASS: "Comment_Row",
+  });
+  expect(result).toHaveLength(1);
+  expect(result[0]?.horseNumber).toBe("8");
+});
+
+it("parsePremiumStableComments raw-cell uses nonEmptyTextCells[3] when textCells[3] and [4] are both empty", () => {
+  const html = `
+    <table>
+      <tr><td>1</td><td>2</td><td>馬名X</td><td></td><td></td><td>素晴らしい仕上がり</td></tr>
+    </table>
+  `;
+  const result = parsePremiumStableComments(html, {});
+  expect(result).toHaveLength(1);
+  expect(result[0]?.horseNumber).toBe("2");
+  expect(result[0]?.commentText).toBe("素晴らしい仕上がり");
+});
+
+it("parsePremiumStableComments raw-cell horseName falls through to null when name slots are empty", () => {
+  const html = `
+    <table>
+      <tr><td></td><td></td><td></td><td>面白いコメント</td><td>4</td></tr>
+    </table>
+  `;
+  const result = parsePremiumStableComments(html, {});
+  expect(result).toHaveLength(1);
+  expect(result[0]?.horseName).toBeNull();
+});
+
+it("parsePremiumStableComments raw-cell fallback uses textCells[4] when textCells[3] is empty", () => {
+  const html = `
+    <table>
+      <tr>
+        <th>枠</th><th>馬番</th><th>馬名</th><th>備考</th><th>コメント</th>
+      </tr>
+      <tr>
+        <td>2</td><td>4</td><td>馬丙</td><td></td><td>差し脚鋭く</td>
+      </tr>
+    </table>
+  `;
+  const result = parsePremiumStableComments(html, {});
+  expect(result).toHaveLength(1);
+  expect(result[0]?.commentText).toBe("差し脚鋭く");
+});
+
+it("parsePremiumStableComments raw-cell evaluationGrade picks Icon_Mark in raw cells", () => {
+  const html = `
+    <table>
+      <tr><th>枠</th><th>馬番</th><th>馬名</th><th>コメント</th></tr>
+      <tr><td>1</td><td>3</td><td>馬乙</td><td><img class="Icon_Mark_03"/>動き上々</td></tr>
+    </table>
+  `;
+  const result = parsePremiumStableComments(html, {});
+  expect(result[0]?.evaluationGrade).toBe(3);
+});
+
+it("parsePremiumStableComments raw-cell frameNumber and horseName fall back to nonEmptyTextCells", () => {
+  const html = `
+    <table>
+      <tr><th>枠</th><th>馬番</th><th>馬名</th><th>コメント</th></tr>
+      <tr><td></td><td></td><td></td><td>抜群の仕上がり</td><td>2</td><td>9</td><td>馬己</td></tr>
+    </table>
+  `;
+  const result = parsePremiumStableComments(html, {});
+  expect(result).toHaveLength(1);
+  expect(result[0]?.horseNumber).toBe("2");
+  expect(result[0]?.horseName).toBe("9");
+});
+
+it("parsePremiumDataTopHorses survives entries where PickupDataBox dd is absent", () => {
+  const html = `
+    <div class="DataPickupHorseArea">
+      <dl>
+        <dt><span class="Umaban_Num">6</span></dt>
+        <dd><a class="data_top_horse_link">馬庚</a></dd>
+      </dl>
+    </div>
+  `;
+  expect(parsePremiumDataTopHorses(html, {})).toStrictEqual([]);
+});
+
+it("parsePremiumPaddockBulletins detects pendingText pure pending without authRequired", () => {
+  const result = parsePremiumPaddockBulletins("<div>準備中の本日</div>", {
+    PREMIUM_RACE_PADDOCK_PENDING_TEXT: "準備中",
+  });
+  expect(result.pending).toBe(true);
+  expect(result.authRequired).toBe(false);
+});
+
+it("buildPremiumRaceLinkFromRace uses dataTopPathTemplate when supplied", () => {
+  const config = getPremiumRaceConfig({
+    PREMIUM_RACE_DATA_TOP_PATH_TEMPLATE: "/data_top.html?race_id={sourceRaceId}",
+    PREMIUM_RACE_ORIGIN: "https://race.example",
+  });
+  const link = buildPremiumRaceLinkFromRace(
+    {
+      babaCode: "tokyo",
+      debaUrl: "https://race.example/",
+      kaisaiKai: "03",
+      kaisaiNen: "2025",
+      kaisaiNichime: "07",
+      kaisaiTsukihi: "0510",
+      keibajoCode: "05",
+      lastOddsFetchAt: null,
+      lastWeightFetchAt: null,
+      oddsLinks: {},
+      raceBango: "11",
+      raceKey: "rk1",
+      raceName: null,
+      raceStartAtJst: "2025-05-10T10:00:00+09:00",
+      source: "jra",
+    },
+    config,
+  );
+  expect(link?.entryUrl).toBe("https://race.example/data_top.html?race_id=202505030711");
+});
+
+it("buildPremiumRaceLinkFromRace falls back to workPathTemplate when only that one is set", () => {
+  const config = getPremiumRaceConfig({
+    PREMIUM_RACE_ORIGIN: "https://race.example",
+    PREMIUM_RACE_WORK_PATH_TEMPLATE: "/work.html?race_id={sourceRaceId}",
+  });
+  const link = buildPremiumRaceLinkFromRace(
+    {
+      babaCode: "tokyo",
+      debaUrl: "https://race.example/",
+      kaisaiKai: "01",
+      kaisaiNen: "2025",
+      kaisaiNichime: "02",
+      kaisaiTsukihi: "0102",
+      keibajoCode: "06",
+      lastOddsFetchAt: null,
+      lastWeightFetchAt: null,
+      oddsLinks: {},
+      raceBango: "03",
+      raceKey: "rk2",
+      raceName: null,
+      raceStartAtJst: "2025-01-02T10:00:00+09:00",
+      source: "jra",
+    },
+    config,
+  );
+  expect(link?.entryUrl).toBe("https://race.example/work.html?race_id=202506010203");
+});
+
+it("matchPremiumLinkToRace matches via candidate suffix when first list lookup hits", () => {
+  const result = matchPremiumLinkToRace(
+    [{ entryUrl: "https://x/?race_id=202506010203", sourceRaceId: "202506010203" }],
+    {
+      babaCode: "ban",
+      debaUrl: "https://x/",
+      kaisaiKai: "01",
+      kaisaiNen: "2025",
+      kaisaiNichime: "02",
+      kaisaiTsukihi: "0102",
+      keibajoCode: "06",
+      lastOddsFetchAt: null,
+      lastWeightFetchAt: null,
+      oddsLinks: {},
+      raceBango: "03",
+      raceKey: "rk",
+      raceName: null,
+      raceStartAtJst: "2025-01-02T10:00:00+09:00",
+      source: "jra",
+    },
+  );
+  expect(result?.sourceRaceId).toBe("202506010203");
 });
