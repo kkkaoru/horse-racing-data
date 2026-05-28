@@ -22,9 +22,12 @@ const isRaceSource = (value: string | null): value is RaceSource =>
 // drives freshness, but Cloudflare's edge collapses concurrent hits, which
 // kept the sync-realtime-data worker from melting under trend + detail load.
 const UPSTREAM_EDGE_CACHE_TTL_SECONDS = 15;
-// Drop default 3-attempt retry so a slow upstream returns 502 fast instead of
-// piling 60s+ of retries on top of an already-saturated sync-realtime-data.
-const UPSTREAM_FETCH_ATTEMPTS = 1;
+// Two attempts: enough to ride out a single transient 5xx while
+// sync-realtime-data is warming up, but not so many that a sustained
+// upstream stall piles 60s+ of retries on a saturated worker.
+const UPSTREAM_FETCH_ATTEMPTS = 2;
+const UPSTREAM_RETRY_BASE_DELAY_MS = 250;
+const UPSTREAM_RETRY_MAX_DELAY_MS = 750;
 
 export const dynamic = "force-dynamic";
 
@@ -43,7 +46,11 @@ export async function GET(request: Request, context: RouteContext) {
     const response = await fetchWithRetry(
       upstreamUrl,
       { cf: { cacheTtl: UPSTREAM_EDGE_CACHE_TTL_SECONDS, cacheEverything: true } } as RequestInit,
-      { attempts: UPSTREAM_FETCH_ATTEMPTS },
+      {
+        attempts: UPSTREAM_FETCH_ATTEMPTS,
+        baseDelayMs: UPSTREAM_RETRY_BASE_DELAY_MS,
+        maxDelayMs: UPSTREAM_RETRY_MAX_DELAY_MS,
+      },
     );
     const body = await response.text();
     return new Response(body, {
