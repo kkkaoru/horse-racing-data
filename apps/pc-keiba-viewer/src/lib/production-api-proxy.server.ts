@@ -45,6 +45,29 @@ const fetchOnce = async (
   return fetch(url, init);
 };
 
+interface AttemptContext {
+  url: string;
+  init: RequestInit | undefined;
+  headers: Headers;
+}
+
+const attemptFetch = async (context: AttemptContext, attempt: number): Promise<Response> => {
+  const response = await fetchOnce(context.url, context.init, context.headers).catch(
+    async (error: unknown) => {
+      if (attempt >= MAX_ATTEMPTS) {
+        throw error instanceof Error ? error : new Error(String(error));
+      }
+      await sleep(RETRY_BACKOFF_MS);
+      return attemptFetch(context, attempt + 1);
+    },
+  );
+  if (!isTransientStatus(response.status) || attempt >= MAX_ATTEMPTS) {
+    return response;
+  }
+  await sleep(RETRY_BACKOFF_MS);
+  return attemptFetch(context, attempt + 1);
+};
+
 export const fetchProductionApi = async (path: string, init?: RequestInit): Promise<Response> => {
   const accessHeaders = getProductionAccessHeaders();
   if (!accessHeaders) {
@@ -59,23 +82,5 @@ export const fetchProductionApi = async (path: string, init?: RequestInit): Prom
   if (init?.signal) {
     return fetchOnce(url, init, headers);
   }
-  let lastError: unknown = null;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
-    try {
-      // oxlint-disable-next-line eslint/no-await-in-loop
-      const response = await fetchOnce(url, init, headers);
-      if (!isTransientStatus(response.status) || attempt === MAX_ATTEMPTS) {
-        return response;
-      }
-      lastError = new Error(`production api status ${response.status}`);
-    } catch (error) {
-      lastError = error;
-      if (attempt === MAX_ATTEMPTS) {
-        throw error;
-      }
-    }
-    // oxlint-disable-next-line eslint/no-await-in-loop
-    await sleep(RETRY_BACKOFF_MS);
-  }
-  throw lastError instanceof Error ? lastError : new Error("production api fetch failed");
+  return attemptFetch({ headers, init, url }, 1);
 };
