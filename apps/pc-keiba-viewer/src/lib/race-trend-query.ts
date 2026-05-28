@@ -11,7 +11,7 @@ export type RaceTrendTargets = Record<RaceTrendTargetKey, boolean>;
 export const DEFAULT_RACE_TREND_TARGETS: RaceTrendTargets = {
   runningStyle: false,
   frame: true,
-  jockey: true,
+  jockey: false,
   raceNumber: false,
 };
 
