@@ -1,6 +1,16 @@
 // Run with bun.
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
+vi.mock("./fetch-odds", () => ({
+  fetchAndStoreOdds: vi.fn(async () => null),
+}));
+
+vi.mock("./odds-cache", () => ({
+  OddsCacheHot: class {},
+  writeCachedOdds: vi.fn(async () => undefined),
+}));
+
+import { fetchAndStoreOdds } from "./fetch-odds";
 import worker, {
   buildOddsPayloadFromD1,
   handleFetchRequest,
@@ -422,15 +432,32 @@ it("handleScheduled does nothing for unknown cron", async () => {
   expect(vi.mocked(env.REALTIME_HOT_DB.prepare)).not.toHaveBeenCalled();
 });
 
-it("processFetchOddsJob purges caches and logs skipped entry", async () => {
+it("processFetchOddsJob returns early when fetchAndStoreOdds yields null", async () => {
+  vi.mocked(fetchAndStoreOdds).mockResolvedValueOnce(null);
+  const env = buildEnv();
+  await processFetchOddsJob(env, "nar:20260528:42:01");
+  expect(cacheMock.delete).not.toHaveBeenCalled();
+  expect(vi.mocked(env.ODDS_HOT_KV.put)).not.toHaveBeenCalled();
+});
+
+it("processFetchOddsJob fans out cache writes on success (NAR)", async () => {
+  vi.mocked(fetchAndStoreOdds).mockResolvedValueOnce({
+    fetchedAt: "2026-05-28T10:00:00+09:00",
+    inserted: 11,
+    latest: { tansho: [{ combination: "01", odds: 2.5 }] },
+  });
   const env = buildEnv();
   await processFetchOddsJob(env, "nar:20260528:42:01");
   expect(cacheMock.delete).toHaveBeenCalled();
   expect(vi.mocked(env.ODDS_HOT_KV.put)).toHaveBeenCalled();
-  expect(vi.mocked(env.REALTIME_HOT_DB.prepare)).toHaveBeenCalled();
 });
 
-it("processFetchOddsJob detects JRA source prefix", async () => {
+it("processFetchOddsJob detects JRA source prefix on success", async () => {
+  vi.mocked(fetchAndStoreOdds).mockResolvedValueOnce({
+    fetchedAt: "2026-05-28T10:00:00+09:00",
+    inserted: 11,
+    latest: { tansho: [{ combination: "01", odds: 2.5 }] },
+  });
   const env = buildEnv();
   await processFetchOddsJob(env, "jra:20260528:08:01");
   expect(cacheMock.delete).toHaveBeenCalled();
@@ -477,12 +504,8 @@ it("handleQueue acks unknown jobs without retry", async () => {
 });
 
 it("handleQueue retries on error", async () => {
-  const logRun = vi.fn(async () => {
-    throw new Error("d1 fail");
-  });
-  const env = buildEnv({
-    REALTIME_HOT_DB: buildDb({ logRun }),
-  });
+  vi.mocked(fetchAndStoreOdds).mockRejectedValueOnce(new Error("scrape failed"));
+  const env = buildEnv();
   const ack = vi.fn();
   const retry = vi.fn();
   const batch = {

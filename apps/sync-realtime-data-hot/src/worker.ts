@@ -1,3 +1,4 @@
+import { fetchAndStoreOdds } from "./fetch-odds";
 import { formatError } from "./format-error";
 import {
   isForceFreshRequest,
@@ -13,6 +14,7 @@ import { computeArchiveCutoffIso, putArchiveRowToR2 } from "./gates/r2-archive";
 import { invalidateRaceListInKv, patchLastFetchInKv } from "./gates/race-list-kv-cache";
 import { shouldRunOddsCron } from "./gates/polling-window-gate";
 import { jsonResponse } from "./http";
+import { writeCachedOdds } from "./odds-cache";
 import { planOddsFetches } from "./plan";
 import {
   getLatestOddsFromD1,
@@ -179,17 +181,25 @@ export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<
 };
 
 export const processFetchOddsJob = async (env: Env, raceKey: string): Promise<void> => {
-  // PR1 skeleton: actual scraping is delegated to Phase A follow-up (PR1.5).
-  // We still wire the side-effects so cache layers stay coherent once scraping lands.
+  const result = await fetchAndStoreOdds(env, raceKey, new Date());
+  if (!result) {
+    return;
+  }
+  const source = raceKey.startsWith("jra:") ? "jra" : "nar";
+  const yyyymmdd = raceKey.slice(4, 12);
   await purgeEdgeCache(raceKey);
   await purgeD1ResultCacheForRace(raceKey, D1_RESULT_CACHE_QUERIES);
   await writeLatestOddsToKv(env, raceKey, {
-    fetchedAt: new Date().toISOString(),
-    latest: {},
+    fetchedAt: result.fetchedAt,
+    latest: result.latest,
   });
-  const source = raceKey.startsWith("jra:") ? "jra" : "nar";
-  await patchLastFetchInKv(env, source, raceKey.slice(4, 12), raceKey, new Date().toISOString());
-  await logFetch(env.REALTIME_HOT_DB, "fetch-odds", "skipped-skeleton", raceKey, null);
+  await patchLastFetchInKv(env, source, yyyymmdd, raceKey, result.fetchedAt);
+  await writeCachedOdds(env, raceKey, {
+    fetchedAt: result.fetchedAt,
+    history: [],
+    historyByType: {},
+    latest: result.latest,
+  });
 };
 
 export const processArchiveJob = async (env: Env, now: Date): Promise<void> => {

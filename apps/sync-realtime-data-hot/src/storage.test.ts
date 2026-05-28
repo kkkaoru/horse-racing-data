@@ -523,6 +523,34 @@ it("logFetch writes a row", async () => {
   expect(prepare).toHaveBeenCalledTimes(1);
 });
 
+it("getNarVenueLastRaceStartAtJst returns the last race start when present", async () => {
+  const { getNarVenueLastRaceStartAtJst } = await import("./storage");
+  const first = vi.fn(async () => ({ last_race_start_at_jst: "2026-05-28T20:00:00+09:00" }));
+  const bind = vi.fn(() => ({ first }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const result = await getNarVenueLastRaceStartAtJst(db, "2026", "0528", "42");
+  expect(result).toBe("2026-05-28T20:00:00+09:00");
+});
+
+it("getNarVenueLastRaceStartAtJst returns null when no rows", async () => {
+  const { getNarVenueLastRaceStartAtJst } = await import("./storage");
+  const first = vi.fn(async () => null);
+  const bind = vi.fn(() => ({ first }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  expect(await getNarVenueLastRaceStartAtJst(db, "2026", "0528", "42")).toBeNull();
+});
+
+it("getNarVenueLastRaceStartAtJst returns null when row column is null", async () => {
+  const { getNarVenueLastRaceStartAtJst } = await import("./storage");
+  const first = vi.fn(async () => ({ last_race_start_at_jst: null }));
+  const bind = vi.fn(() => ({ first }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  expect(await getNarVenueLastRaceStartAtJst(db, "2026", "0528", "42")).toBeNull();
+});
+
 it("listOddsSnapshotsBeforeCutoff returns the result rows", async () => {
   const all = vi.fn(async () => ({
     results: [
