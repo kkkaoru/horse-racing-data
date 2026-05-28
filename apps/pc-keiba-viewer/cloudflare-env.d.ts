@@ -137,5 +137,6 @@ declare global {
     PC_KEIBA_RUNNING_STYLE_CACHE_ORIGIN?: string;
     RACE_TREND_ROOM?: PcKeibaDurableObjectNamespace;
     REALTIME_DB?: PcKeibaD1Database;
+    REALTIME_HOT_DB?: PcKeibaD1Database;
   }
 }
