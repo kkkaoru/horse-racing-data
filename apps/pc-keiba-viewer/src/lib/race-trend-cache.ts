@@ -1,6 +1,6 @@
 import type { RaceSource } from "./codes";
 
-export const RACE_TREND_CACHE_VERSION = "v4";
+export const RACE_TREND_CACHE_VERSION = "v5";
 
 export const RACE_TREND_CACHE_WARM_PARAM = "__trendCacheWarm";
 
