@@ -392,6 +392,21 @@ interface ListOddsSnapshotsCutoffOptions {
   limit: number;
 }
 
+export const getNarVenueLastRaceStartAtJst = async (
+  db: D1Database,
+  kaisaiNen: string,
+  kaisaiTsukihi: string,
+  keibajoCode: string,
+): Promise<string | null> => {
+  const row = await db
+    .prepare(
+      `select max(race_start_at_jst) as last_race_start_at_jst from odds_fetch_state where source = 'nar' and kaisai_nen = ? and kaisai_tsukihi = ? and keibajo_code = ?`,
+    )
+    .bind(kaisaiNen, kaisaiTsukihi, keibajoCode)
+    .first<{ last_race_start_at_jst: string | null }>();
+  return row?.last_race_start_at_jst ?? null;
+};
+
 export const listOddsSnapshotsBeforeCutoff = async (
   db: D1Database,
   options: ListOddsSnapshotsCutoffOptions,

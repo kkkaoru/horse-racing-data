@@ -1,10 +1,14 @@
 import type {
   RealtimeHorseOddsTrend,
+  RealtimeHorseWeight,
   RealtimeOddsData,
   RealtimeOddsHistoryPoint,
   RealtimeOddsTrend,
   RealtimeOddsTrendPoint,
   RealtimeOddsType,
+  RealtimeRaceEntry,
+  RealtimeRaceResult,
+  RealtimeRaceSource,
 } from "horse-racing-realtime/types";
 import type { BrowserWorker } from "@cloudflare/playwright";
 
@@ -24,13 +28,28 @@ export type Job =
     };
 
 export type HorseOddsTrend = RealtimeHorseOddsTrend;
+export type HorseWeight = RealtimeHorseWeight;
+export type NarRaceSource = RealtimeRaceSource;
 export type OddsData = RealtimeOddsData;
 export type OddsHistoryPoint = RealtimeOddsHistoryPoint;
 export type OddsTrend = RealtimeOddsTrend;
 export type OddsTrendPoint = RealtimeOddsTrendPoint;
 export type OddsType = RealtimeOddsType;
+export type RaceEntry = RealtimeRaceEntry;
+export type RaceResult = RealtimeRaceResult;
 
 export type OddsSource = "jra" | "nar";
+
+export interface LocalRaceRow {
+  hasso_jikoku: string | null;
+  kaisai_kai?: string | null;
+  kaisai_nichime?: string | null;
+  kaisai_nen: string;
+  kaisai_tsukihi: string;
+  keibajo_code: string;
+  kyosomei_hondai: string | null;
+  race_bango: string;
+}
 
 export interface OddsFetchStateRow {
   raceKey: string;
