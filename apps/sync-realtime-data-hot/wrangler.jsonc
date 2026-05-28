@@ -1,0 +1,93 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sync-realtime-data-hot",
+  "main": "src/index.ts",
+  "account_id": "78109ec18c7c85b194b19fb32e3bb149",
+  "compatibility_date": "2026-05-10",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1,
+  },
+  "limits": {
+    "cpu_ms": 300000,
+  },
+  "vars": {
+    "ODDS_DO_TTL_SECONDS": "7200",
+    "ODDS_LATEST_KV_TTL_SECONDS": "600",
+    "ODDS_RACE_LIST_KV_TTL_SECONDS": "21600",
+    "ODDS_EDGE_CACHE_TTL_SECONDS": "15",
+    "ODDS_D1_RESULT_CACHE_TTL_SECONDS": "30",
+    "ODDS_R2_ARCHIVE_RETENTION_DAYS": "7",
+    "ODDS_STALE_MIRROR_SECONDS": "90",
+  },
+  // High-frequency cron for odds polling (* * * * *) and daily R2 archive (0 4 * * *).
+  // Initial deploy uses empty array — re-enable after Phase C smoke test.
+  "triggers": {
+    "crons": [],
+  },
+  "queues": {
+    "producers": [
+      {
+        "binding": "REALTIME_HOT_JOBS",
+        "queue": "sync-realtime-data-hot-jobs",
+      },
+    ],
+    "consumers": [
+      {
+        "queue": "sync-realtime-data-hot-jobs",
+        "max_batch_size": 1,
+        "max_batch_timeout": 5,
+        "max_concurrency": 4,
+      },
+    ],
+  },
+  "browser": {
+    "binding": "JRA_BROWSER",
+  },
+  "services": [
+    {
+      "binding": "PC_KEIBA_VIEWER",
+      "service": "pc-keiba-viewer",
+    },
+  ],
+  "d1_databases": [
+    {
+      "binding": "REALTIME_HOT_DB",
+      "database_name": "sync-realtime-data-hot",
+      "database_id": "946a0bb1-84c4-471b-9cb5-f984c4d83328",
+    },
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "ODDS_HOT_KV",
+      "id": "844a7bf58c514402b7d5ae3149734052",
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "ODDS_ARCHIVE",
+      "bucket_name": "pc-keiba-odds-archive",
+    },
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ODDS_CACHE",
+        "class_name": "OddsCacheHot",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["OddsCacheHot"],
+    },
+  ],
+  "routes": [
+    {
+      "pattern": "sync-realtime-data-hot.kkk4oru.com",
+      "custom_domain": true,
+    },
+  ],
+}

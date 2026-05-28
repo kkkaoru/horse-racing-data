@@ -1862,3 +1862,43 @@ it("insertRaceEntrySnapshot normalizes jockey marks/whitespace through normalize
   ]);
   expect(count).toBe(3);
 });
+
+it("listOddsSnapshotsForExport returns rows without fetched_at filter", async () => {
+  const all = vi.fn(async () => ({
+    results: [
+      {
+        average_odds: null,
+        combination: "01",
+        fetched_at: "2026-05-28T10:00:00+09:00",
+        id: 1,
+        max_odds: null,
+        min_odds: null,
+        odds: 2.5,
+        odds_type: "tansho",
+        race_key: "nar:20260528:42:01",
+        rank: 1,
+      },
+    ],
+  }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const { listOddsSnapshotsForExport } = await import("./storage");
+  const rows = await listOddsSnapshotsForExport(db, { batchSize: 200, sinceId: 0 });
+  expect(rows.length).toBe(1);
+  expect(bind).toHaveBeenCalledWith(0, 200);
+});
+
+it("listOddsSnapshotsForExport binds fetched_at when option present", async () => {
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const { listOddsSnapshotsForExport } = await import("./storage");
+  await listOddsSnapshotsForExport(db, {
+    afterFetchedAt: "2026-05-27T00:00:00+09:00",
+    batchSize: 100,
+    sinceId: 5,
+  });
+  expect(bind).toHaveBeenCalledWith(5, "2026-05-27T00:00:00+09:00", 100);
+});

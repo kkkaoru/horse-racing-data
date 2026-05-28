@@ -88,6 +88,7 @@ import {
   insertJraTrackConditionSnapshot,
   insertOddsSnapshot,
   listJraVenueTrackConditionSchedulesByDate,
+  listOddsSnapshotsForExport,
   listPremiumRaceDataFetchCandidatesByDate,
   listRaceSourceKeibajoCodesByDate,
   listSchedulableRaceSourcesByDate,
@@ -2295,6 +2296,29 @@ export default {
 
     if (url.pathname === "/health") {
       return json({ ok: true });
+    }
+
+    if (url.pathname === "/api/internal/export-odds-chunk" && request.method === "POST") {
+      const expectedToken = env.REALTIME_ADMIN_TOKEN;
+      if (!expectedToken || request.headers.get("authorization") !== `Bearer ${expectedToken}`) {
+        return json({ error: "forbidden" }, { status: 403 });
+      }
+      const body = (await request.json()) as {
+        since_id: number;
+        batch_size: number;
+        after_fetched_at?: string;
+      };
+      const rows = await listOddsSnapshotsForExport(env.REALTIME_DB, {
+        afterFetchedAt: body.after_fetched_at,
+        batchSize: body.batch_size,
+        sinceId: body.since_id,
+      });
+      const nextSinceId = rows.length > 0 ? rows.at(-1)!.id : body.since_id;
+      return json({
+        done: rows.length < body.batch_size,
+        next_since_id: nextSinceId,
+        rows,
+      });
     }
 
     if (url.pathname === "/api/jobs" && request.method === "POST") {
