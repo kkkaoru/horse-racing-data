@@ -5,6 +5,7 @@
 
 import type { Pool } from "pg";
 
+import { formatError } from "./format-error";
 import { getFinishPositionPool } from "./finish-position-lite-pool";
 import {
   listRaceRunningStyleCounts,
@@ -125,10 +126,7 @@ const listFeatureCountsByDate = async (pool: Pool, date: string): Promise<Map<st
   return counts;
 };
 
-const isActiveState = (
-  state: RunningStyleInferenceStateDetail | undefined,
-  now: Date,
-): boolean => {
+const isActiveState = (state: RunningStyleInferenceStateDetail | undefined, now: Date): boolean => {
   if (state === undefined || !ACTIVE_STATUSES.has(state.status)) return false;
   if (state.attemptedAt === null) return true;
   const attemptedAt = new Date(state.attemptedAt).getTime();
@@ -301,13 +299,13 @@ export const runRunningStyleCronTick = async (
 ): Promise<RunningStylePlanSummary> => {
   const date = formatYYYYMMDDInJst(now);
   const plan = await planRunningStylePredictionsForDate(env, date, now).catch((error: unknown) =>
-    EMPTY_PLAN_SUMMARY(date, error instanceof Error ? error.message : String(error)),
+    EMPTY_PLAN_SUMMARY(date, formatError(error)),
   );
   const cacheRefresh = await refreshViewerRunningStyleCachesForDate(env, date, ctx).catch(
     (error: unknown) => ({
       date,
       refreshed: 0,
-      refreshError: error instanceof Error ? error.message : String(error),
+      refreshError: formatError(error),
       scanned: 0,
       skipped: 0,
     }),

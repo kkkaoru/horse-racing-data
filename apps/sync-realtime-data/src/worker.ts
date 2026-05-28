@@ -17,6 +17,7 @@ import {
   parseRaceResultHorseWeights,
   type KeibaGoRaceLink,
 } from "./keiba-go";
+import { formatError } from "./format-error";
 import { mergeJsonHeaders } from "./http";
 import {
   buildJraEntryUrlFromRace,
@@ -249,7 +250,7 @@ const logRunningStylePlanResult = async (
         "plan-running-style-predictions",
         "error",
         null,
-        error instanceof Error ? error.message : String(error),
+        formatError(error),
       ),
     );
 };
@@ -909,13 +910,7 @@ const tryEnsureDiscoveredUrlsAreCurrent = async (env: Env, targetDate: string): 
   try {
     await ensureDiscoveredUrlsAreCurrent(env, targetDate);
   } catch (error) {
-    await logFetch(
-      env.REALTIME_DB,
-      "discover-urls",
-      "error",
-      null,
-      error instanceof Error ? error.message : String(error),
-    );
+    await logFetch(env.REALTIME_DB, "discover-urls", "error", null, formatError(error));
   }
 };
 
@@ -934,13 +929,7 @@ const tryBuildDailyFeaturesForDate = async (env: Env, targetDate: string, mode: 
     );
     return result;
   } catch (error) {
-    await logFetch(
-      env.REALTIME_DB,
-      "build-daily-features",
-      "error",
-      null,
-      error instanceof Error ? error.message : String(error),
-    );
+    await logFetch(env.REALTIME_DB, "build-daily-features", "error", null, formatError(error));
     return null;
   }
 };
@@ -957,13 +946,7 @@ const tryDiscoverUrlsForDate = async (env: Env, targetDate: string, mode: string
     );
     return result;
   } catch (error) {
-    await logFetch(
-      env.REALTIME_DB,
-      "discover-urls",
-      "error",
-      null,
-      error instanceof Error ? error.message : String(error),
-    );
+    await logFetch(env.REALTIME_DB, "discover-urls", "error", null, formatError(error));
     return null;
   }
 };
@@ -1044,7 +1027,7 @@ const prewarmRaceDataForDates = async (
         "plan-running-style-predictions",
         "error",
         null,
-        error instanceof Error ? error.message : String(error),
+        formatError(error),
       ),
     );
   }
@@ -1877,7 +1860,7 @@ const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<v
     }
     const retryAfter = getPremiumPaddockRetryAfter(env, race);
     await updatePremiumPaddockFetchState(env.REALTIME_DB, {
-      message: error instanceof Error ? error.message : String(error),
+      message: formatError(error),
       raceKey,
       retryAfter,
       status: "failed",
@@ -2151,11 +2134,11 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
         job.date,
         getNow(env),
       ).catch((error: unknown) => ({
-        error: error instanceof Error ? error.message : String(error),
+        error: formatError(error),
       }));
       const cacheRefresh = await refreshViewerRunningStyleCachesForDate(env, job.date).catch(
         (error: unknown) => ({
-          error: error instanceof Error ? error.message : String(error),
+          error: formatError(error),
         }),
       );
       await logFetch(
@@ -2205,7 +2188,7 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
       job.type,
       "error",
       "raceKey" in job ? job.raceKey : null,
-      error instanceof Error ? error.message : String(error),
+      formatError(error),
     );
     throw error;
   }
@@ -2387,7 +2370,7 @@ export default {
               "plan-running-style-predictions",
               "error",
               null,
-              error instanceof Error ? error.message : String(error),
+              formatError(error),
             ),
           )
           .then(() => undefined),
@@ -2406,13 +2389,7 @@ export default {
             logFetch(env.REALTIME_DB, "build-daily-features", "ok", null, JSON.stringify(result)),
           )
           .catch((error: unknown) =>
-            logFetch(
-              env.REALTIME_DB,
-              "build-daily-features",
-              "error",
-              null,
-              error instanceof Error ? error.message : String(error),
-            ),
+            logFetch(env.REALTIME_DB, "build-daily-features", "error", null, formatError(error)),
           ),
       );
       return;
@@ -2424,13 +2401,7 @@ export default {
             logFetch(env.REALTIME_DB, "d1-retention", "ok", null, JSON.stringify(result)),
           )
           .catch((error: unknown) =>
-            logFetch(
-              env.REALTIME_DB,
-              "d1-retention",
-              "error",
-              null,
-              error instanceof Error ? error.message : String(error),
-            ),
+            logFetch(env.REALTIME_DB, "d1-retention", "error", null, formatError(error)),
           ),
       );
       return;
