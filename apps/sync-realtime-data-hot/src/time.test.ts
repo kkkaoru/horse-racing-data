@@ -171,6 +171,26 @@ describe("odds fetch schedule", () => {
       }),
     ).toBe("2026-05-22T13:30:00+09:00");
   });
+
+  it("falls through to regular offsets when NAR now is within one hour of race start", () => {
+    const raceStart = new Date("2026-05-22T14:30:00+09:00");
+    const saleStart = new Date("2026-05-22T12:00:00+09:00");
+    expect(
+      getNextOddsFetchSlotAt(raceStart, new Date("2026-05-22T13:30:00+09:00"), "nar", {
+        narSaleStartAt: saleStart,
+      }),
+    ).toBe("2026-05-22T13:40:00+09:00");
+  });
+
+  it("returns null when raceStartAtJst date prefix yields an invalid Date", () => {
+    expect(
+      getNarOddsSaleStartAt({
+        keibajoCode: "44",
+        raceStartAtJst: "9999-99-99T14:30:00+09:00",
+        venueLastRaceStartAtJst: null,
+      }),
+    ).toBeNull();
+  });
 });
 
 describe("JST time helpers", () => {

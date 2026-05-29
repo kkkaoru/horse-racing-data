@@ -218,6 +218,42 @@ it("listTanshoHistory maps rows to history points", async () => {
   ]);
 });
 
+it("getLatestOddsFromD1 falls back to undefined when odds and rank are null", async () => {
+  const all = vi.fn(async () => ({
+    results: [
+      {
+        average_odds: null,
+        combination: "01",
+        fetched_at: "2026-05-28T10:00:00+09:00",
+        max_odds: null,
+        min_odds: null,
+        odds: null,
+        odds_type: "tansho",
+        rank: null,
+      },
+    ],
+  }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const result = await getLatestOddsFromD1(db, "nar:20260528:42:01");
+  expect(result).toStrictEqual({
+    fetchedAt: "2026-05-28T10:00:00+09:00",
+    latest: {
+      tansho: [
+        {
+          averageOdds: undefined,
+          combination: "01",
+          maxOdds: undefined,
+          minOdds: undefined,
+          odds: undefined,
+          rank: undefined,
+        },
+      ],
+    },
+  });
+});
+
 it("listOddsHistoryByType returns empty when no rows", async () => {
   const all = vi.fn(async () => ({ results: [] }));
   const bind = vi.fn(() => ({ all }));
@@ -300,6 +336,50 @@ it("listOddsHistoryByType uses odds tiebreaker when ranks are equal-nulls", asyn
   const db = { prepare } as unknown as D1Database;
   const result = await listOddsHistoryByType(db, "nar:20260528:42:01");
   expect(result.tansho?.map((point) => point.combination)).toStrictEqual(["01", "02"]);
+});
+
+it("listOddsHistoryByType falls back to MAX_SAFE_RANK when odds are null in tiebreaker", async () => {
+  const all = vi.fn(async () => ({
+    results: [
+      {
+        combination: "02",
+        fetched_at: "2026-05-28T10:00:00+09:00",
+        odds: null,
+        odds_type: "tansho",
+        rank: null,
+      },
+      {
+        combination: "01",
+        fetched_at: "2026-05-28T10:00:00+09:00",
+        odds: null,
+        odds_type: "tansho",
+        rank: null,
+      },
+    ],
+  }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const result = await listOddsHistoryByType(db, "nar:20260528:42:01");
+  expect(result.tansho?.length).toBe(2);
+});
+
+it("listOddsHistoryByType skips odds_type when latest row has empty fetched_at", async () => {
+  const all = vi.fn(async () => ({
+    results: [
+      {
+        combination: "01",
+        fetched_at: "",
+        odds: 2.5,
+        odds_type: "tansho",
+        rank: 1,
+      },
+    ],
+  }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  expect(await listOddsHistoryByType(db, "nar:20260528:42:01")).toStrictEqual({});
 });
 
 it("listOddsHistoryByType uses combination tiebreaker when ranks and odds are equal", async () => {

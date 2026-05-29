@@ -170,7 +170,8 @@ export const getJraAdvanceOddsFetchSlotAt = (raceStart: Date, now: Date): string
 const ceilToNextHourJstSlot = (date: Date): Date => {
   const current = toJstIsoString(date);
   const floored = new Date(`${current.slice(0, 14)}00:00+09:00`);
-  return floored.getTime() > date.getTime() ? floored : new Date(floored.getTime() + 60 * 60_000);
+  // floor of JST hour is always <= date, so ceil = floor + 1 hour
+  return new Date(floored.getTime() + 60 * 60_000);
 };
 
 export const getNextOddsFetchSlotAt = (
