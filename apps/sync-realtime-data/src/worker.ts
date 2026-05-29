@@ -133,7 +133,7 @@ import {
   parseRaceStartJst,
   toJstIsoString,
 } from "./time";
-import type { Env, HorseWeight, Job, NarRaceSource, RaceEntry } from "./types";
+import type { Env, HorseWeight, Job, NarRaceSource, RaceEntry, RealtimeRacePayload } from "./types";
 
 const QUEUE_SEND_BATCH_SIZE = 100;
 const RESULT_FETCH_LOCK_MINUTES = 10;
@@ -253,6 +253,56 @@ export const fetchHotOddsPayload = async (
     return body ?? null;
   } catch {
     return null;
+  }
+};
+
+// REALTIME_DB is still recovering from the historical odds polling load and can
+// throw `D1_ERROR: D1 DB exceeded its CPU time limit and was reset.` for even a
+// single SELECT. Without this guard the /realtime endpoint propagates the
+// exception as Cloudflare worker error 1101 and the viewer's odds chart goes
+// blank, even though the hot worker has the odds payload ready. When D1 fails
+// we still serve the hot odds plus a stub for the D1-derived fields so the
+// chart keeps rendering.
+export const buildDegradedRealtimePayload = (
+  raceKey: string,
+  hotOdds: HotOddsPayload | null,
+): RealtimeRacePayload => ({
+  horseWeights: null,
+  odds: hotOdds
+    ? {
+        fetchedAt: hotOdds.fetchedAt,
+        history: hotOdds.history,
+        historyByType: hotOdds.historyByType,
+        horseTrends: toHorseTrends(hotOdds.history),
+        latest: hotOdds.latest,
+        trendsByType: toOddsTrendsByType(hotOdds.historyByType),
+      }
+    : null,
+  raceEntries: null,
+  raceKey,
+  raceResults: null,
+  source: null,
+  trackCondition: null,
+});
+
+export const buildRealtimeRouteResponse = async (
+  env: Env,
+  raceKey: string,
+): Promise<RealtimeRacePayload> => {
+  const hotOdds = await fetchHotOddsPayload(env, raceKey);
+  try {
+    const [source, cachedTrackCondition] = await Promise.all([
+      getRaceSource(env.REALTIME_DB, raceKey),
+      readCachedTrackCondition(env, raceKey),
+    ]);
+    const trackCondition =
+      cachedTrackCondition ?? (await getLatestTrackConditionForRace(env.REALTIME_DB, raceKey));
+    return await buildRealtimePayload(env.REALTIME_DB, raceKey, source, hotOdds, trackCondition);
+  } catch (error) {
+    await logFetch(env.REALTIME_DB, "realtime-route", "error", raceKey, formatError(error)).catch(
+      () => undefined,
+    );
+    return buildDegradedRealtimePayload(raceKey, hotOdds);
   }
 };
 
@@ -2372,20 +2422,7 @@ export default {
 
     const raceKey = raceKeyFromRequest(url);
     if (raceKey && request.method === "GET") {
-      const [source, hotOdds, cachedTrackCondition] = await Promise.all([
-        getRaceSource(env.REALTIME_DB, raceKey),
-        fetchHotOddsPayload(env, raceKey),
-        readCachedTrackCondition(env, raceKey),
-      ]);
-      const trackCondition =
-        cachedTrackCondition ?? (await getLatestTrackConditionForRace(env.REALTIME_DB, raceKey));
-      const payload = await buildRealtimePayload(
-        env.REALTIME_DB,
-        raceKey,
-        source,
-        hotOdds,
-        trackCondition,
-      );
+      const payload = await buildRealtimeRouteResponse(env, raceKey);
       if (payload.odds && payload.odds.horseTrends.length === 0) {
         payload.odds.horseTrends = toHorseTrends(payload.odds.history);
       }
