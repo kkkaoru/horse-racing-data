@@ -53,6 +53,7 @@ vi.mock("./storage", () => ({
   claimPremiumPaddockNotificationSend: vi.fn(async () => true),
   recordPremiumPaddockNotificationEvent: vi.fn(async () => {}),
   listOddsSnapshotsForExport: vi.fn(async () => []),
+  listRaceKeysByDateFromHyperdrive: vi.fn(async () => []),
   listRaceSourcesForSeed: vi.fn(async () => []),
   deleteOddsSnapshotsChunk: vi.fn(async () => ({ deleted: 0, done: true, next_since_id: 0 })),
   listTanshoHistory: vi.fn(async () => []),
@@ -597,6 +598,41 @@ it("fetch POST /api/internal/export-race-sources-chunk returns next_since_id fro
   const body = (await response.json()) as { done: boolean; next_since_id: number };
   expect(body.next_since_id).toBe(42);
   expect(body.done).toBe(true);
+});
+
+it("fetch POST /api/internal/list-race-keys-by-date-from-hyperdrive returns 403 when token missing", async () => {
+  const { default: worker } = await import("./worker");
+  const env = buildEnv();
+  const envWithoutToken = { ...env, REALTIME_ADMIN_TOKEN: undefined } as unknown as Env;
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/list-race-keys-by-date-from-hyperdrive", {
+      body: JSON.stringify({ kaisaiNen: "2026", kaisaiTsukihi: "0529" }),
+      method: "POST",
+    }),
+    envWithoutToken,
+    buildCtx(),
+  );
+  expect(response.status).toBe(403);
+});
+
+it("fetch POST /api/internal/list-race-keys-by-date-from-hyperdrive returns rows when authorized", async () => {
+  const { default: worker } = await import("./worker");
+  const { listRaceKeysByDateFromHyperdrive } = await import("./storage");
+  vi.mocked(listRaceKeysByDateFromHyperdrive).mockResolvedValueOnce([
+    { race_key: "nar:2026:0529:30:08" },
+  ]);
+  const env = buildEnv();
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/list-race-keys-by-date-from-hyperdrive", {
+      body: JSON.stringify({ kaisaiNen: "2026", kaisaiTsukihi: "0529" }),
+      headers: { authorization: "Bearer secret" },
+      method: "POST",
+    }),
+    env,
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toStrictEqual({ rows: [{ race_key: "nar:2026:0529:30:08" }] });
 });
 
 it("fetch POST /api/internal/export-odds-chunk accepts after_fetched_at option", async () => {

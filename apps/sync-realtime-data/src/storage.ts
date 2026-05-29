@@ -966,6 +966,33 @@ export const listRaceSourcesForSeed = async (
   return result.results;
 };
 
+export interface ListRaceKeysByDateOptions {
+  kaisaiNen: string;
+  kaisaiTsukihi: string;
+}
+
+export interface RaceKeyRow {
+  race_key: string;
+}
+
+const LIST_RACE_KEYS_BY_DATE_QUERY =
+  "select distinct race_key from realtime_race_sources where kaisai_nen = ? and kaisai_tsukihi = ? order by race_key asc";
+
+// Phase B-1 helper. Returns the per-day distinct race_key list so the
+// new sync-realtime-data-features worker's seed script can re-compute
+// per-race Parquet features without selecting daily_race_entries.
+// daily_race_entries SELECT is forbidden by Phase 0 rule 3.
+export const listRaceKeysByDateFromHyperdrive = async (
+  db: D1Database,
+  options: ListRaceKeysByDateOptions,
+): Promise<RaceKeyRow[]> => {
+  const result = await db
+    .prepare(LIST_RACE_KEYS_BY_DATE_QUERY)
+    .bind(options.kaisaiNen, options.kaisaiTsukihi)
+    .all<RaceKeyRow>();
+  return result.results;
+};
+
 export interface DeleteOddsChunkOptions {
   sinceId: number;
   batchSize: number;

@@ -82,6 +82,7 @@ import {
   listJraVenueTrackConditionSchedulesByDate,
   listOddsSnapshotsForExport,
   listPremiumRaceDataFetchCandidatesByDate,
+  listRaceKeysByDateFromHyperdrive,
   listRaceSourceKeibajoCodesByDate,
   listRaceSourcesForSeed,
   listSchedulableRaceSourcesByDate,
@@ -2341,6 +2342,22 @@ export default {
         next_since_id: nextSinceId,
         rows,
       });
+    }
+
+    if (
+      url.pathname === "/api/internal/list-race-keys-by-date-from-hyperdrive" &&
+      request.method === "POST"
+    ) {
+      const expectedToken = env.REALTIME_ADMIN_TOKEN;
+      if (!expectedToken || request.headers.get("authorization") !== `Bearer ${expectedToken}`) {
+        return json({ error: "forbidden" }, { status: 403 });
+      }
+      const body = (await request.json()) as { kaisaiNen: string; kaisaiTsukihi: string };
+      const rows = await listRaceKeysByDateFromHyperdrive(env.REALTIME_DB, {
+        kaisaiNen: body.kaisaiNen,
+        kaisaiTsukihi: body.kaisaiTsukihi,
+      });
+      return json({ rows });
     }
 
     if (url.pathname === "/api/internal/export-race-sources-chunk" && request.method === "POST") {
