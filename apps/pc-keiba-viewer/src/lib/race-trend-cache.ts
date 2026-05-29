@@ -1,10 +1,29 @@
 import type { RaceSource } from "./codes";
 
-// v7 bumped 2026-05-29 for the Phase E features-worker cutover: the
-// underlying d1-trend cache prefixes moved to v5 once
-// getRaceTrendD1StarterRows stopped reading legacy daily_race_entries,
-// so the outer trend payload also has to invalidate pre-cutover entries.
-export const RACE_TREND_CACHE_VERSION = "v7";
+// v8 bumped 2026-05-29 for the Phase B past-14 / today cache split. The
+// outer trend payload now embeds both the features-worker past-14 aggregate
+// (KV 30 min + Cache API 5 min) and the snapshot-derived today sibling rows
+// (Cache API 30s only). v7 entries reference the legacy single-window
+// snapshot helper and must be invalidated in lockstep with the inner
+// `race-trend-past14:v8` / `race-trend-today:v8` keys.
+export const RACE_TREND_CACHE_VERSION = "v8";
+
+// Past-14 cache narrows the historical aggregation window to a fixed 14
+// days (target − 14d). The key embeds keibajoCode / raceBango so the
+// features-worker per-race aggregate can be cached cross-colo without
+// leaking other races' bytes into the entry.
+export const RACE_TREND_PAST14_CACHE_VERSION = "v8";
+
+// Today cache stores only the snapshot-derived completed sibling rows for
+// the day. The key intentionally omits keibajoCode / raceBango so every
+// race on the day shares one upstream D1 round trip.
+export const RACE_TREND_TODAY_CACHE_VERSION = "v8";
+
+// Historical window covered by the past-14 cache. Used by both the route
+// handler and the cache helpers so a single constant drives the SQL
+// `between startYmd and endYmd` range, the features-worker `from/to`
+// query, and the cache key suffix.
+export const RACE_TREND_PAST14_LOOKBACK_DAYS = 14;
 
 export const RACE_TREND_CACHE_WARM_PARAM = "__trendCacheWarm";
 
@@ -54,7 +73,7 @@ export const buildDefaultRaceTrendCacheOptions = (
   source: RaceSource,
   targetYmd: string,
 ): RaceTrendCacheOptions => {
-  const defaultStartYmd = addDaysToYmd(targetYmd, source === "jra" ? -1 : -3);
+  const defaultStartYmd = addDaysToYmd(targetYmd, -RACE_TREND_PAST14_LOOKBACK_DAYS);
   return {
     frameEndYmd: targetYmd,
     frameStartYmd: defaultStartYmd,
@@ -93,6 +112,42 @@ export const buildRaceTrendCacheKey = ({
     options.frameEndYmd,
     booleanKey(options.includeRealtimeResults),
   ].join(":");
+
+export interface RaceTrendPast14CacheKeyInput {
+  endYmd: string;
+  keibajoCode: string;
+  raceBango: string;
+  source: RaceSource;
+  startYmd: string;
+}
+
+export const buildRaceTrendPast14CacheKey = ({
+  endYmd,
+  keibajoCode,
+  raceBango,
+  source,
+  startYmd,
+}: RaceTrendPast14CacheKeyInput): string =>
+  [
+    "race-trend-past14",
+    RACE_TREND_PAST14_CACHE_VERSION,
+    source,
+    keibajoCode,
+    raceBango,
+    startYmd,
+    endYmd,
+  ].join(":");
+
+export interface RaceTrendTodayCacheKeyInput {
+  source: RaceSource;
+  targetYmd: string;
+}
+
+export const buildRaceTrendTodayCacheKey = ({
+  source,
+  targetYmd,
+}: RaceTrendTodayCacheKeyInput): string =>
+  ["race-trend-today", RACE_TREND_TODAY_CACHE_VERSION, source, targetYmd].join(":");
 
 export const buildRaceTrendApiPath = ({
   day,

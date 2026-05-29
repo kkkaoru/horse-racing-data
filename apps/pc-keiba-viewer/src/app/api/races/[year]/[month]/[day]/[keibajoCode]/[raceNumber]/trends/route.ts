@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 
 import {
-  getRaceTrendD1StarterRows,
-  getRaceTrendDailyStarterRows,
+  buildPast14WindowForTarget,
+  getRaceTrendPast14StarterRows,
   getRaceTrendRunningStylesFromD1,
+  getRaceTrendTodayRunningStylesFromD1,
+  getRaceTrendTodayStarterRows,
 } from "../../../../../../../../../db/d1-trend-queries.server";
 import {
   getRaceDetail,
@@ -19,6 +21,7 @@ import { starterKey, starterRaceKey } from "../../../../../../../../../lib/race-
 import {
   RACE_TREND_CACHE_REFRESH_PARAM,
   RACE_TREND_CACHE_WARM_PARAM,
+  RACE_TREND_PAST14_LOOKBACK_DAYS,
   type RaceTrendCacheOptions,
 } from "../../../../../../../../../lib/race-trend-cache";
 import {
@@ -164,11 +167,44 @@ const mergeHistoricalRunningStyles = (
 export const isCacheableTrendPayload = (payload: RaceTrendRawPayload): boolean =>
   payload.starterRows.length > 0 && payload.historicalRunningStyles.length > 0;
 
+const compareRaceBango = (left: string, right: string): number => {
+  const leftNumber = Number(left);
+  const rightNumber = Number(right);
+  if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
+    return leftNumber - rightNumber;
+  }
+  return left.localeCompare(right, "ja", { numeric: true });
+};
+
+// Today cache returns every completed starter row for the day across all
+// venues so multiple races can share one upstream D1 round trip. The
+// route narrows it back down to the current race's siblings — same
+// source, same date, same venue, and a strictly smaller raceBango than
+// the target — so the trend section reflects only races already over by
+// the time the user lands on the page.
+export const filterTodaySiblingRows = (
+  rows: ReadonlyArray<RaceTrendStarterRow>,
+  target: {
+    keibajoCode: string;
+    raceBango: string;
+    source: RaceSource;
+    targetYmd: string;
+  },
+): RaceTrendStarterRow[] =>
+  rows.filter((row) => {
+    if (row.source !== target.source) return false;
+    if (`${row.kaisaiNen}${row.kaisaiTsukihi}` !== target.targetYmd) return false;
+    if (row.keibajoCode !== target.keibajoCode) return false;
+    return compareRaceBango(row.raceBango, target.raceBango) < 0;
+  });
+
 const buildRaceTrendRawPayload = async (
   race: RaceDetail,
   runners: Runner[],
   options: RaceTrendBuildOptions,
 ): Promise<RaceTrendRawPayload> => {
+  const targetYmd = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
+  const past14Window = buildPast14WindowForTarget(targetYmd);
   const currentRunningStylesPromise = getRaceRunningStylesWithCache({
     kaisaiNen: race.kaisaiNen,
     kaisaiTsukihi: race.kaisaiTsukihi,
@@ -176,40 +212,46 @@ const buildRaceTrendRawPayload = async (
     raceBango: race.raceBango,
     source: race.source,
   }).catch(() => []);
-  const historicalDailyPromise = getRaceTrendDailyStarterRows({
+  const past14Promise = getRaceTrendPast14StarterRows({
+    endYmd: past14Window.endYmd,
+    keibajoCode: race.keibajoCode,
+    raceBango: race.raceBango,
     source: options.source,
-    startYmd: options.jockeyStartYmd,
-    endYmd: options.jockeyEndYmd,
+    startYmd: past14Window.startYmd,
   });
-  const historicalSnapshotPromise = getRaceTrendD1StarterRows({
+  const todayPromise = getRaceTrendTodayStarterRows({
     source: options.source,
-    startYmd: options.jockeyStartYmd,
-    endYmd: options.jockeyEndYmd,
+    targetYmd,
   });
-  const [dailyRows, snapshotRows] = await Promise.all([
-    historicalDailyPromise,
-    historicalSnapshotPromise,
-  ]);
   // Realtime scraping is no longer triggered from this route: the trend
-  // payload is built solely from D1's daily_race_entries + race_*_snapshots,
-  // which already get refreshed by the sync-realtime-data worker on race
-  // finish (see viewer-trend-cache-bust). Calling sync-realtime-data's
-  // per-race /realtime here used to fan out ~100 concurrent scrapes per
-  // (source, ymd) and saturate the upstream worker so the detail-page
-  // /realtime endpoint started timing out, dropping live odds binding.
-  const starterRows = mergeStarterRows(dailyRows, snapshotRows, []);
+  // payload is built solely from D1's race_*_snapshots (today) and the
+  // features-worker past-14 aggregate (R2 Parquet), which already get
+  // refreshed by the sync-realtime-data worker on race finish (see
+  // viewer-trend-cache-bust). Calling sync-realtime-data's per-race
+  // /realtime here used to fan out ~100 concurrent scrapes per
+  // (source, ymd) and saturate the upstream worker.
+  const [past14Rows, todayRows] = await Promise.all([past14Promise, todayPromise]);
+  const todaySiblingRows = filterTodaySiblingRows(todayRows, {
+    keibajoCode: race.keibajoCode,
+    raceBango: race.raceBango,
+    source: race.source,
+    targetYmd,
+  });
+  const starterRows = mergeStarterRows(past14Rows, todaySiblingRows, []);
   const currentRunningStyles = await currentRunningStylesPromise;
-  const historicalRaceKeys = Array.from(new Set(starterRows.map(starterRaceKey)));
-  // Only fan out the direct D1 query (chunked at concurrency 3) — the
-  // cached `getRaceRunningStylesByRaceKeysWithCache` path used to issue
-  // one subrequest per race key (1500+ on a populated 14-day window),
-  // which overran the viewer worker's subrequest concurrency budget and
-  // surfaced as 30-second HTTP 000 timeouts. The direct D1 query covers
-  // the same data via a single `IN (?,...)` lookup per chunk.
-  const directHistoricalRunningStyles = await getRaceTrendRunningStylesFromD1(historicalRaceKeys);
+  const past14RaceKeys = Array.from(new Set(past14Rows.map(starterRaceKey)));
+  const todayRaceKeys = Array.from(new Set(todaySiblingRows.map(starterRaceKey)));
+  // Split running-style fetches: past-14 keys go through the KV-backed
+  // helper (stable history, safe to cache cross-colo), while today's
+  // sibling keys bypass KV because new inferences land throughout the
+  // race day and a KV mirror would pin them out of date.
+  const [past14RunningStyles, todayRunningStyles] = await Promise.all([
+    getRaceTrendRunningStylesFromD1(past14RaceKeys),
+    getRaceTrendTodayRunningStylesFromD1(todayRaceKeys),
+  ]);
   const mergedHistoricalRunningStyles = mergeHistoricalRunningStyles(
     [],
-    directHistoricalRunningStyles,
+    [...past14RunningStyles, ...todayRunningStyles],
   );
   return {
     raceContext: {
@@ -275,7 +317,7 @@ export async function GET(request: Request, context: RouteContext) {
   }
 
   const targetYmd = `${year}${month}${day}`;
-  const defaultStartYmd = addDays(targetYmd, source === "jra" ? -1 : -3);
+  const defaultStartYmd = addDays(targetYmd, -RACE_TREND_PAST14_LOOKBACK_DAYS);
   const options: RaceTrendBuildOptions = {
     source,
     jockeyStartYmd: parseDateInput(searchParams.get("jockeyStart"), defaultStartYmd),

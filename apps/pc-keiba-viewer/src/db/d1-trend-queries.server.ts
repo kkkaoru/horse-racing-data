@@ -1,19 +1,31 @@
 // Run with bun. Reads aggregated trend rows from D1.
-// * `getRaceTrendD1StarterRows`  -> snapshot tables (race_result_snapshots /
-//   race_entry_snapshots / horse_weight_snapshots / realtime_race_sources):
-//   the realtime-derived path that catches today's finishes before cron.
-// * `getRaceTrendDailyStarterRows` -> new features worker `/api/features/race-trend`
-//   (backed by R2 Parquet). Phase E cutover replaced the legacy direct read
-//   of REALTIME_DB.daily_race_entries (Phase 0 rule 3) with a service binding
-//   to `sync-realtime-data-features`. While the worker endpoint still returns
-//   the stub aggregate, the helper degrades to an empty starter-row list.
-// * `getRaceTrendRunningStylesFromD1` -> REALTIME_FEATURES_DB.race_running_styles
-//   (new D1, Phase E). Falls back to REALTIME_DB.race_running_styles only when
-//   the new binding is missing (preview / pre-cutover deploys).
+// Phase B (2026-05-29) split the single `race-trend-d1:v5` cache key into
+// two namespaces with very different freshness / scope characteristics:
+//
+// * `getRaceTrendTodayStarterRows`  -> snapshot tables (race_result_snapshots
+//   / race_entry_snapshots / horse_weight_snapshots / realtime_race_sources)
+//   on REALTIME_DB. Returns every completed starter row for the target day
+//   regardless of venue / race, so the route handler can render sibling
+//   races' results. Backed only by edge Cache API (30s TTL) — the 5min
+//   poller refreshes upstream rows on a tight cadence and KV mirror would
+//   pin stale data across colos.
+// * `getRaceTrendPast14StarterRows` -> features worker `/api/features/race-trend`
+//   (R2 Parquet aggregate). The endpoint now requires source / keibajoCode /
+//   raceBango / from / to and returns the per-race past-14 aggregate.
+//   Backed by cross-colo KV (30 min) + edge Cache API (5 min).
+// * `getRaceTrendRunningStylesFromD1` / `getRaceTrendTodayRunningStylesFromD1`
+//   -> REALTIME_FEATURES_DB.race_running_styles (new D1, Phase E). The
+//   past-14 helper caches the result in KV; the today helper skips KV so
+//   freshly-inferred sibling rows are visible within the Cache API TTL.
 import "server-only";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 
 import type { RaceSource } from "../lib/codes";
+import {
+  RACE_TREND_PAST14_LOOKBACK_DAYS,
+  buildRaceTrendPast14CacheKey,
+  buildRaceTrendTodayCacheKey,
+} from "../lib/race-trend-cache";
 import type {
   RaceTrendRunningStyle,
   RaceTrendRunningStyleCache,
@@ -109,7 +121,7 @@ const writeRunningStylesToKv = async (
 ): Promise<void> => {
   const kv = env?.DETAIL_SECTION_CACHE_KV;
   if (!kv) return;
-  await kv.put(cacheKey, JSON.stringify(rows), { expirationTtl: KV_TTL_SECONDS });
+  await kv.put(cacheKey, JSON.stringify(rows), { expirationTtl: KV_TTL_PAST14_SECONDS });
 };
 
 // Prefer REALTIME_FEATURES_DB (new D1, post Phase E). Fall back to REALTIME_DB
@@ -119,6 +131,54 @@ const writeRunningStylesToKv = async (
 // migration was a clean schema copy.
 const pickRunningStylesDb = (env: CloudflareEnv | null): PcKeibaD1Database | null =>
   env?.REALTIME_FEATURES_DB ?? env?.REALTIME_DB ?? null;
+
+interface RunWorkerArgs {
+  chunks: ReadonlyArray<ReadonlyArray<string>>;
+  indexState: { value: number };
+  queryChunk: (chunk: ReadonlyArray<string>) => Promise<RaceTrendRunningStyleCache[]>;
+  results: RaceTrendRunningStyleCache[];
+}
+
+const runWorkerLoop = async ({
+  chunks,
+  indexState,
+  queryChunk,
+  results,
+}: RunWorkerArgs): Promise<void> => {
+  const next = indexState.value;
+  indexState.value = next + 1;
+  const chunk = chunks[next];
+  if (!chunk) return;
+  const chunkResult = await queryChunk(chunk);
+  results.push(...chunkResult);
+  await runWorkerLoop({ chunks, indexState, queryChunk, results });
+};
+
+const queryRunningStylesFromDb = async (
+  db: PcKeibaD1Database,
+  uniqueKeys: ReadonlyArray<string>,
+): Promise<RaceTrendRunningStyleCache[]> => {
+  const queryChunk = async (
+    chunk: ReadonlyArray<string>,
+  ): Promise<RaceTrendRunningStyleCache[]> => {
+    const placeholders = chunk.map(() => "?").join(",");
+    const result = await db
+      .prepare(buildRunningStyleSelectSql(placeholders))
+      .bind(...chunk)
+      .all();
+    return result.results.filter(isRawRunningStyleD1Row).map(toRunningStyleCache);
+  };
+  const chunks = chunkArray(uniqueKeys, RUNNING_STYLE_BATCH_SIZE);
+  const results: RaceTrendRunningStyleCache[] = [];
+  const indexState = { value: 0 };
+  const workerCount = Math.min(RUNNING_STYLE_CHUNK_CONCURRENCY, chunks.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, () =>
+      runWorkerLoop({ chunks, indexState, queryChunk, results }),
+    ),
+  );
+  return results;
+};
 
 export const getRaceTrendRunningStylesFromD1 = async (
   raceKeys: ReadonlyArray<string>,
@@ -131,31 +191,8 @@ export const getRaceTrendRunningStylesFromD1 = async (
   const cacheKey = buildRunningStylesCacheKey(uniqueKeys);
   const cached = await readRunningStylesFromKv(env, cacheKey);
   if (cached !== null) return cached;
-  const queryChunk = async (
-    chunk: ReadonlyArray<string>,
-  ): Promise<RaceTrendRunningStyleCache[]> => {
-    const placeholders = chunk.map(() => "?").join(",");
-    const result = await db
-      .prepare(buildRunningStyleSelectSql(placeholders))
-      .bind(...chunk)
-      .all();
-    return result.results.filter(isRawRunningStyleD1Row).map(toRunningStyleCache);
-  };
   try {
-    const chunks = chunkArray(uniqueKeys, RUNNING_STYLE_BATCH_SIZE);
-    const results: RaceTrendRunningStyleCache[] = [];
-    const indexState = { value: 0 };
-    const runWorker = async (): Promise<void> => {
-      const next = indexState.value;
-      indexState.value = next + 1;
-      const chunk = chunks[next];
-      if (!chunk) return;
-      const chunkResult = await queryChunk(chunk);
-      results.push(...chunkResult);
-      await runWorker();
-    };
-    const workerCount = Math.min(RUNNING_STYLE_CHUNK_CONCURRENCY, chunks.length);
-    await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+    const results = await queryRunningStylesFromDb(db, uniqueKeys);
     // Persist non-empty results so a saturation event on the next viewer
     // request doesn't surface as historicalRunningStyles: 0 — the cache
     // write path elsewhere only stores the merged trend payload when
@@ -172,11 +209,24 @@ export const getRaceTrendRunningStylesFromD1 = async (
   }
 };
 
-interface RaceTrendD1RowsParams {
-  endYmd: string;
-  source: RaceSource;
-  startYmd: string;
-}
+// Today running-styles helper: skips KV (the 5 min poller refreshes
+// freshly-inferred rows for the day and pinning them in KV would defeat
+// the short TTL) and goes straight to D1.
+export const getRaceTrendTodayRunningStylesFromD1 = async (
+  raceKeys: ReadonlyArray<string>,
+): Promise<RaceTrendRunningStyleCache[]> => {
+  const uniqueKeys = Array.from(new Set(raceKeys.filter((key) => key.length > 0))).toSorted();
+  if (uniqueKeys.length === 0) return [];
+  const { env } = await getCloudflareContext({ async: true });
+  const db = pickRunningStylesDb(env ?? null);
+  if (!db) return [];
+  try {
+    return await queryRunningStylesFromDb(db, uniqueKeys);
+  } catch (error) {
+    console.error("D1 race_running_styles today query failed", error);
+    return [];
+  }
+};
 
 interface RawD1Row {
   source: RaceSource;
@@ -211,23 +261,23 @@ interface TanshoOddsEntry {
 
 type TanshoOddsMap = Map<string, Map<string, TanshoOddsEntry>>;
 
-const CACHE_URL_BASE = "https://pc-keiba-viewer.local/d1-trend-cache/";
-const DAILY_CACHE_URL_BASE = "https://pc-keiba-viewer.local/d1-trend-daily-cache/";
-// Edge Cache API is colo-local so a 60s TTL is enough for the common
-// "user reloads the same race" path.
-const CACHE_TTL_SECONDS = 60;
-// KV is global and propagates across colos, so a populated D1 daily /
-// snapshot result should outlive the 5min legacy value to keep every
-// race on the day sharing one upstream D1 round trip. 30min still
-// expires well before the next day's NAR Neon sync, and stale data
-// only delays a freshly-finished race result by minutes — which the
-// race-finish cache-bust hook already invalidates explicitly.
-const KV_TTL_SECONDS = 30 * 60;
+const TODAY_CACHE_URL_BASE = "https://pc-keiba-viewer.local/d1-trend-today-cache/";
+const PAST14_CACHE_URL_BASE = "https://pc-keiba-viewer.local/d1-trend-past14-cache/";
+// Today cache: edge Cache API only with a 30s TTL. The 5 min snapshot
+// poller pushes finishes through on a tight cadence and a longer TTL
+// would hide newly-completed sibling races for too long.
+const CACHE_TTL_TODAY_SECONDS = 30;
+// Past-14 cache: edge Cache API for the colo-local hot path. KV mirror
+// expires after 30 min, matching the cross-colo `pickRunningStylesDb`
+// rollup window.
+const CACHE_TTL_PAST14_SECONDS = 5 * 60;
+const KV_TTL_PAST14_SECONDS = 30 * 60;
 
-// Phase E: the daily starter rows now come from the features worker, which
-// proxies the R2 Parquet aggregate. Hard-code the production hostname so
-// `env.REALTIME_FEATURES.fetch` resolves to the bound service worker
-// regardless of which Cloudflare colo handles the request.
+// Phase B: the past-14 endpoint expects per-race query params so the
+// features worker can read only the relevant R2 prefix. Hard-code the
+// production hostname so `env.REALTIME_FEATURES.fetch` resolves to the
+// bound service worker regardless of which Cloudflare colo handles the
+// request.
 const FEATURES_WORKER_BASE = "https://sync-realtime-data-features.kkk4oru.com";
 const FEATURES_RACE_TREND_PATH = "/api/features/race-trend";
 
@@ -261,12 +311,6 @@ const isRawTanshoOddsRow = (value: unknown): value is RawTanshoOddsRow =>
   "rank" in value &&
   isNumberOrNull(value.rank);
 
-// v5 bumped 2026-05-29 for the Phase E features-worker cutover. The snapshot
-// query no longer reads legacy daily_race_entries (Phase 0 rule 3) so any
-// pre-cutover cache entry would surface stale rows with the v4 schema.
-const buildCacheKey = ({ source, startYmd, endYmd }: RaceTrendD1RowsParams): string =>
-  `race-trend-d1:v5:${source}:${startYmd}:${endYmd}`;
-
 const formatHassoJikoku = (raceStartAtJst: string | null): string | null => {
   if (typeof raceStartAtJst !== "string" || raceStartAtJst.length < 16) return null;
   return `${raceStartAtJst.slice(11, 13)}${raceStartAtJst.slice(14, 16)}`;
@@ -274,7 +318,7 @@ const formatHassoJikoku = (raceStartAtJst: string | null): string | null => {
 
 // Phase E removed the LEFT JOIN to daily_race_entries — the snapshot-derived
 // result keeps `wakuban` / `tansho*` as null and lets the HOT D1 odds overlay
-// and the features-worker daily payload supply the missing fields. Legacy
+// and the features-worker past-14 payload supply the missing fields. Legacy
 // daily_race_entries is NEVER read from this worker (Phase 0 rule 3).
 const SELECT_SQL = `
   with latest_result as (
@@ -328,7 +372,13 @@ const SELECT_SQL = `
   order by s.kaisai_nen desc, s.kaisai_tsukihi desc, s.keibajo_code asc, s.race_bango asc, cast(nullif(r.horse_number, '') as integer) asc
 `;
 
-const queryD1 = async (params: RaceTrendD1RowsParams): Promise<RawD1Row[]> => {
+interface SnapshotQueryParams {
+  endYmd: string;
+  source: RaceSource;
+  startYmd: string;
+}
+
+const queryD1 = async (params: SnapshotQueryParams): Promise<RawD1Row[]> => {
   const { env } = await getCloudflareContext({ async: true });
   const db = env?.REALTIME_DB;
   if (!db) return [];
@@ -442,73 +492,6 @@ const toStarterRow = (raw: RawD1Row, oddsMap: TanshoOddsMap): RaceTrendStarterRo
   };
 };
 
-const getCachedResponse = async (cacheKey: string): Promise<RaceTrendStarterRow[] | null> => {
-  const cache = typeof caches === "undefined" ? null : caches.default;
-  const cacheRequest = new Request(`${CACHE_URL_BASE}${encodeURIComponent(cacheKey)}`);
-  const cached = await cache?.match(cacheRequest);
-  if (cached?.ok) {
-    return readCachedStarterRowsResponse(cached);
-  }
-  const { env } = await getCloudflareContext({ async: true });
-  const body = await env?.DETAIL_SECTION_CACHE_KV?.get(cacheKey);
-  if (!body) return null;
-  return parseCachedStarterRowsBody(body);
-};
-
-const putCache = async (cacheKey: string, rows: RaceTrendStarterRow[]): Promise<void> => {
-  const body = JSON.stringify(rows);
-  const cache = typeof caches === "undefined" ? null : caches.default;
-  const { env } = await getCloudflareContext({ async: true });
-  await Promise.all([
-    cache?.put(
-      new Request(`${CACHE_URL_BASE}${encodeURIComponent(cacheKey)}`),
-      new Response(body, {
-        headers: {
-          "Cache-Control": `public, max-age=${CACHE_TTL_SECONDS}`,
-          "Content-Type": "application/json; charset=utf-8",
-        },
-      }),
-    ),
-    env?.DETAIL_SECTION_CACHE_KV?.put(cacheKey, body, {
-      expirationTtl: KV_TTL_SECONDS,
-    }),
-  ]);
-};
-
-export const getRaceTrendD1StarterRows = async (
-  params: RaceTrendD1RowsParams,
-): Promise<RaceTrendStarterRow[]> => {
-  const cacheKey = buildCacheKey(params);
-  const cached = await getCachedResponse(cacheKey);
-  if (cached !== null) return cached;
-  try {
-    const raw = await queryD1(params);
-    if (raw.length === 0) return [];
-    const uniqueRaceKeys = Array.from(new Set(raw.map((row) => row.raceKey)));
-    const { env } = await getCloudflareContext({ async: true });
-    // Preview / pre-binding deploys degrade gracefully: when REALTIME_HOT_DB
-    // is missing the helper short-circuits to an empty map and we fall back
-    // to nulls for tansho fields.
-    const oddsMap = await getLatestTanshoOddsFromHotD1({
-      env: env ?? null,
-      raceKeys: uniqueRaceKeys,
-    });
-    const rows = raw.map((row) => toStarterRow(row, oddsMap));
-    // Do not cache empty result sets — the most common reason for an empty
-    // .all() is a D1 CPU / connection saturation event where the binding
-    // silently returns `results: []` instead of throwing, and persisting
-    // that poisons the layer until the natural TTL expires. Let the next
-    // request retry the upstream query.
-    if (rows.length > 0) {
-      await putCache(cacheKey, rows);
-    }
-    return rows;
-  } catch (error) {
-    console.error("D1 trend query failed", error);
-    return [];
-  }
-};
-
 const isRaceTrendStarterRow = (value: unknown): value is RaceTrendStarterRow => {
   if (!isRecord(value)) return false;
   return (
@@ -553,17 +536,92 @@ const parseCachedStarterRowsBody = (body: string): RaceTrendStarterRow[] | null 
   }
 };
 
-const buildFeaturesWorkerUrl = (params: RaceTrendD1RowsParams): string => {
+// ---- Today starter rows (snapshot-derived, sibling auto-included) ----
+
+const getCachedTodayResponse = async (cacheKey: string): Promise<RaceTrendStarterRow[] | null> => {
+  const cache = typeof caches === "undefined" ? null : caches.default;
+  if (!cache) return null;
+  const cacheRequest = new Request(`${TODAY_CACHE_URL_BASE}${encodeURIComponent(cacheKey)}`);
+  const cached = await cache.match(cacheRequest);
+  if (!cached?.ok) return null;
+  return readCachedStarterRowsResponse(cached);
+};
+
+const putTodayCache = async (cacheKey: string, rows: RaceTrendStarterRow[]): Promise<void> => {
+  const cache = typeof caches === "undefined" ? null : caches.default;
+  if (!cache) return;
+  const body = JSON.stringify(rows);
+  await cache.put(
+    new Request(`${TODAY_CACHE_URL_BASE}${encodeURIComponent(cacheKey)}`),
+    new Response(body, {
+      headers: {
+        "Cache-Control": `public, max-age=${CACHE_TTL_TODAY_SECONDS}`,
+        "Content-Type": "application/json; charset=utf-8",
+      },
+    }),
+  );
+};
+
+interface RaceTrendTodayParams {
+  source: RaceSource;
+  targetYmd: string;
+}
+
+export const getRaceTrendTodayStarterRows = async (
+  params: RaceTrendTodayParams,
+): Promise<RaceTrendStarterRow[]> => {
+  const cacheKey = buildRaceTrendTodayCacheKey({
+    source: params.source,
+    targetYmd: params.targetYmd,
+  });
+  const cached = await getCachedTodayResponse(cacheKey);
+  if (cached !== null) return cached;
+  try {
+    const raw = await queryD1({
+      endYmd: params.targetYmd,
+      source: params.source,
+      startYmd: params.targetYmd,
+    });
+    if (raw.length === 0) return [];
+    const uniqueRaceKeys = Array.from(new Set(raw.map((row) => row.raceKey)));
+    const { env } = await getCloudflareContext({ async: true });
+    // Preview / pre-binding deploys degrade gracefully: when REALTIME_HOT_DB
+    // is missing the helper short-circuits to an empty map and we fall back
+    // to nulls for tansho fields.
+    const oddsMap = await getLatestTanshoOddsFromHotD1({
+      env: env ?? null,
+      raceKeys: uniqueRaceKeys,
+    });
+    const rows = raw.map((row) => toStarterRow(row, oddsMap));
+    // Do not cache empty result sets — the most common reason for an empty
+    // `.all()` is a D1 CPU / connection saturation event where the binding
+    // silently returns `results: []` instead of throwing, and persisting
+    // that poisons the layer until the natural TTL expires.
+    if (rows.length > 0) {
+      await putTodayCache(cacheKey, rows);
+    }
+    return rows;
+  } catch (error) {
+    console.error("D1 today trend query failed", error);
+    return [];
+  }
+};
+
+// ---- Past-14 starter rows (features worker, per-race) ----
+
+const buildFeaturesWorkerUrl = (params: RaceTrendPast14Params): string => {
   const query = new URLSearchParams({
     source: params.source,
+    keibajoCode: params.keibajoCode,
+    raceBango: params.raceBango,
     from: params.startYmd,
     to: params.endYmd,
   });
   return `${FEATURES_WORKER_BASE}${FEATURES_RACE_TREND_PATH}?${query.toString()}`;
 };
 
-const fetchDailyStarterRowsFromFeaturesWorker = async (
-  params: RaceTrendD1RowsParams,
+const fetchPast14StarterRowsFromFeaturesWorker = async (
+  params: RaceTrendPast14Params,
 ): Promise<RaceTrendStarterRow[]> => {
   const { env } = await getCloudflareContext({ async: true });
   const features = env?.REALTIME_FEATURES;
@@ -574,19 +632,14 @@ const fetchDailyStarterRowsFromFeaturesWorker = async (
     const payload: unknown = await response.json();
     return parseFeaturesWorkerPayload(payload);
   } catch (error) {
-    console.error("features worker race-trend fetch failed", error);
+    console.error("features worker past-14 race-trend fetch failed", error);
     return [];
   }
 };
 
-// v5 bumped in lock-step with `buildCacheKey` so a single deploy invalidates
-// every layer that participates in the trend payload.
-const buildDailyCacheKey = ({ source, startYmd, endYmd }: RaceTrendD1RowsParams): string =>
-  `race-trend-d1-daily:v5:${source}:${startYmd}:${endYmd}`;
-
-const getCachedDailyResponse = async (cacheKey: string): Promise<RaceTrendStarterRow[] | null> => {
+const getCachedPast14Response = async (cacheKey: string): Promise<RaceTrendStarterRow[] | null> => {
   const cache = typeof caches === "undefined" ? null : caches.default;
-  const cacheRequest = new Request(`${DAILY_CACHE_URL_BASE}${encodeURIComponent(cacheKey)}`);
+  const cacheRequest = new Request(`${PAST14_CACHE_URL_BASE}${encodeURIComponent(cacheKey)}`);
   const cached = await cache?.match(cacheRequest);
   if (cached?.ok) {
     return readCachedStarterRowsResponse(cached);
@@ -597,45 +650,74 @@ const getCachedDailyResponse = async (cacheKey: string): Promise<RaceTrendStarte
   return parseCachedStarterRowsBody(body);
 };
 
-const putDailyCache = async (cacheKey: string, rows: RaceTrendStarterRow[]): Promise<void> => {
+const putPast14Cache = async (cacheKey: string, rows: RaceTrendStarterRow[]): Promise<void> => {
   const body = JSON.stringify(rows);
   const cache = typeof caches === "undefined" ? null : caches.default;
   const { env } = await getCloudflareContext({ async: true });
   await Promise.all([
     cache?.put(
-      new Request(`${DAILY_CACHE_URL_BASE}${encodeURIComponent(cacheKey)}`),
+      new Request(`${PAST14_CACHE_URL_BASE}${encodeURIComponent(cacheKey)}`),
       new Response(body, {
         headers: {
-          "Cache-Control": `public, max-age=${CACHE_TTL_SECONDS}`,
+          "Cache-Control": `public, max-age=${CACHE_TTL_PAST14_SECONDS}`,
           "Content-Type": "application/json; charset=utf-8",
         },
       }),
     ),
     env?.DETAIL_SECTION_CACHE_KV?.put(cacheKey, body, {
-      expirationTtl: KV_TTL_SECONDS,
+      expirationTtl: KV_TTL_PAST14_SECONDS,
     }),
   ]);
 };
 
-// Phase E cutover: the canonical historical daily-rows source is the
-// features worker (R2 Parquet aggregate). Legacy direct D1 reads of
-// daily_race_entries are forbidden by Phase 0 rule 3. While the worker
-// endpoint still returns the stub aggregate (`{ raceCount: 0, ... }`) the
-// parsed `starterRows` field comes back empty and this helper returns an
-// empty array — the viewer falls back to the snapshot-derived path in
-// `getRaceTrendD1StarterRows` and renders a "preparing" empty state.
-export const getRaceTrendDailyStarterRows = async (
-  params: RaceTrendD1RowsParams,
+export interface RaceTrendPast14Params {
+  endYmd: string;
+  keibajoCode: string;
+  raceBango: string;
+  source: RaceSource;
+  startYmd: string;
+}
+
+export const getRaceTrendPast14StarterRows = async (
+  params: RaceTrendPast14Params,
 ): Promise<RaceTrendStarterRow[]> => {
-  const cacheKey = buildDailyCacheKey(params);
-  const cached = await getCachedDailyResponse(cacheKey);
+  const cacheKey = buildRaceTrendPast14CacheKey({
+    endYmd: params.endYmd,
+    keibajoCode: params.keibajoCode,
+    raceBango: params.raceBango,
+    source: params.source,
+    startYmd: params.startYmd,
+  });
+  const cached = await getCachedPast14Response(cacheKey);
   if (cached !== null) return cached;
-  const rows = await fetchDailyStarterRowsFromFeaturesWorker(params);
-  // Skip caching empty results so the next call retries the worker once it
-  // moves off the stub aggregate. Caching `[]` would pin the empty payload
-  // for the 30 min KV TTL and hide the cutover transition entirely.
+  const rows = await fetchPast14StarterRowsFromFeaturesWorker(params);
+  // Skip caching empty results so the next call retries the worker once
+  // upstream R2 data lands. Caching `[]` would pin the empty payload for
+  // the 30 min KV TTL.
   if (rows.length > 0) {
-    await putDailyCache(cacheKey, rows);
+    await putPast14Cache(cacheKey, rows);
   }
   return rows;
 };
+
+// Helper for callers that already have the target Ymd and need the
+// past-14 window endpoints. Centralizes the lookback constant so the
+// route handler does not encode it twice.
+const addDaysToYmd = (ymd: string, days: number): string => {
+  const date = new Date(
+    Date.UTC(Number(ymd.slice(0, 4)), Number(ymd.slice(4, 6)) - 1, Number(ymd.slice(6, 8))),
+  );
+  date.setUTCDate(date.getUTCDate() + days);
+  return [
+    String(date.getUTCFullYear()).padStart(4, "0"),
+    String(date.getUTCMonth() + 1).padStart(2, "0"),
+    String(date.getUTCDate()).padStart(2, "0"),
+  ].join("");
+};
+
+export const buildPast14WindowForTarget = (
+  targetYmd: string,
+): { endYmd: string; startYmd: string } => ({
+  endYmd: addDaysToYmd(targetYmd, -1),
+  startYmd: addDaysToYmd(targetYmd, -RACE_TREND_PAST14_LOOKBACK_DAYS),
+});
