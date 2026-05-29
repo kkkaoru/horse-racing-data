@@ -9,6 +9,10 @@ const RACE_LIST_URL =
 const DEBA_URL =
   "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F05%2F29&k_raceNo=1&k_babaCode=23";
 const TANSHO_FUKUSHO_URL = "https://www.keiba.go.jp/KeibaWeb/Odds/OddsTanFuku?k=1";
+const HOT_NAR_URL =
+  "https://sync-realtime-data-hot.kkk4oru.com/api/odds/nar:2026:0529:47:01?fresh=1";
+const HOT_JRA_URL =
+  "https://sync-realtime-data-hot.kkk4oru.com/api/odds/jra:2026:0529:05:07?fresh=1";
 
 const RACE_LIST_HTML = `
   <a href="DebaTable?k_raceDate=2026%2F05%2F29&k_raceNo=1&k_babaCode=23">1</a>
@@ -47,10 +51,12 @@ const TANSHO_FUKUSHO_BODY = `
 
 const FIXED_NOW_ISO = "2026-05-29T07:30:00.000Z";
 
+type FetchFn = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
 const mockFetchHtml = (htmlByUrl: Record<string, string>): void => {
   vi.stubGlobal(
     "fetch",
-    vi.fn((input: string | URL | Request) => {
+    vi.fn<FetchFn>((input) => {
       const url =
         typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       const value = htmlByUrl[url];
@@ -63,10 +69,42 @@ const mockFetchHtml = (htmlByUrl: Record<string, string>): void => {
   );
 };
 
+const mockHotAndHtml = (params: {
+  hotBody: string;
+  hotStatus: number;
+  hotUrl: string;
+  htmlByUrl: Record<string, string>;
+}): ReturnType<typeof vi.fn<FetchFn>> => {
+  const fetchMock = vi.fn<FetchFn>((input) => {
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (url === params.hotUrl) {
+      return Promise.resolve(
+        new Response(params.hotBody, {
+          headers: { "content-type": "application/json" },
+          status: params.hotStatus,
+        }),
+      );
+    }
+    const value = params.htmlByUrl[url];
+    const body = value ?? "";
+    const status = value === undefined ? 404 : 200;
+    return Promise.resolve(
+      new Response(body, { headers: { "content-type": "text/html" }, status }),
+    );
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+};
+
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date(FIXED_NOW_ISO));
   resetHistoryStore();
+  // Default: CF Access creds absent so hot worker path is skipped and the
+  // fallback keiba.go.jp scrape exercises the unchanged code paths.
+  vi.stubEnv("PC_KEIBA_ACCESS_CLIENT_ID", "");
+  vi.stubEnv("PC_KEIBA_ACCESS_CLIENT_SECRET", "");
 });
 
 afterEach(() => {
@@ -101,7 +139,7 @@ it("isDevScraperEnabled is false when NODE_ENV=test with flag=1", () => {
   expect(isDevScraperEnabled()).toBe(false);
 });
 
-it("buildDevRealtimePayload returns NAR scraped payload with fixed odds and entries", async () => {
+it("buildDevRealtimePayload falls back to NAR scrape when CF Access creds are absent", async () => {
   mockFetchHtml({
     [RACE_LIST_URL]: RACE_LIST_HTML,
     [DEBA_URL]: RACE_DETAIL_HTML,
@@ -344,7 +382,7 @@ it("buildDevRealtimePayload returns empty payload when race list lacks the targe
 it("buildDevRealtimePayload returns empty payload when upstream fetch rejects", async () => {
   vi.stubGlobal(
     "fetch",
-    vi.fn(() => Promise.reject(new Error("network down"))),
+    vi.fn<() => Promise<Response>>(() => Promise.reject(new Error("network down"))),
   );
   const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {
     // suppress noisy log in CI
@@ -423,4 +461,384 @@ it("buildDevRealtimePayload accumulates history across two successive polls", as
   expect(second.odds?.historyByType?.tansho?.length).toBe(4);
   expect(second.odds?.trendsByType?.tansho?.length).toBe(2);
   expect(second.odds?.trendsByType?.tansho?.[0]?.points.length).toBe(2);
+});
+
+it("buildDevRealtimePayload uses production hot worker when CF Access creds are set and hot worker returns history", async () => {
+  vi.stubEnv("PC_KEIBA_ACCESS_CLIENT_ID", "client-id-stub");
+  vi.stubEnv("PC_KEIBA_ACCESS_CLIENT_SECRET", "client-secret-stub");
+  mockHotAndHtml({
+    hotBody: JSON.stringify({
+      fetchedAt: "2026-05-29T07:30:00.000Z",
+      history: [
+        {
+          horseNumber: "1",
+          points: [
+            {
+              fetchedAt: "2026-05-29T07:25:00.000Z",
+              horseNumber: "1",
+              odds: 2.1,
+              popularity: 2,
+            },
+            {
+              fetchedAt: "2026-05-29T07:30:00.000Z",
+              horseNumber: "1",
+              odds: 1.8,
+              popularity: 1,
+            },
+          ],
+        },
+      ],
+      historyByType: {
+        tansho: [
+          {
+            combination: "1",
+            points: [
+              {
+                combination: "1",
+                fetchedAt: "2026-05-29T07:25:00.000Z",
+                odds: 2.1,
+                rank: 2,
+              },
+              {
+                combination: "1",
+                fetchedAt: "2026-05-29T07:30:00.000Z",
+                odds: 1.8,
+                rank: 1,
+              },
+            ],
+          },
+        ],
+      },
+      latest: { tansho: [{ combination: "1", odds: 1.8 }] },
+    }),
+    hotStatus: 200,
+    hotUrl: HOT_NAR_URL,
+    htmlByUrl: {},
+  });
+  const payload = await buildDevRealtimePayload({
+    day: "29",
+    keibajoCode: "47",
+    month: "05",
+    raceNumber: "01",
+    source: "nar",
+    year: "2026",
+  });
+  expect(payload).toStrictEqual({
+    horseWeights: null,
+    odds: {
+      fetchedAt: "2026-05-29T07:30:00.000Z",
+      history: [
+        {
+          fetchedAt: "2026-05-29T07:25:00.000Z",
+          horseNumber: "1",
+          odds: 2.1,
+          popularity: 2,
+        },
+        {
+          fetchedAt: "2026-05-29T07:30:00.000Z",
+          horseNumber: "1",
+          odds: 1.8,
+          popularity: 1,
+        },
+      ],
+      historyByType: {
+        tansho: [
+          {
+            combination: "1",
+            fetchedAt: "2026-05-29T07:25:00.000Z",
+            odds: 2.1,
+            rank: 2,
+          },
+          {
+            combination: "1",
+            fetchedAt: "2026-05-29T07:30:00.000Z",
+            odds: 1.8,
+            rank: 1,
+          },
+        ],
+      },
+      horseTrends: [
+        {
+          horseNumber: "1",
+          points: [
+            {
+              fetchedAt: "2026-05-29T07:25:00.000Z",
+              horseNumber: "1",
+              odds: 2.1,
+              popularity: 2,
+            },
+            {
+              fetchedAt: "2026-05-29T07:30:00.000Z",
+              horseNumber: "1",
+              odds: 1.8,
+              popularity: 1,
+            },
+          ],
+        },
+      ],
+      latest: { tansho: [{ combination: "1", odds: 1.8 }] },
+      trendsByType: {
+        tansho: [
+          {
+            combination: "1",
+            points: [
+              {
+                combination: "1",
+                fetchedAt: "2026-05-29T07:25:00.000Z",
+                odds: 2.1,
+                rank: 2,
+              },
+              {
+                combination: "1",
+                fetchedAt: "2026-05-29T07:30:00.000Z",
+                odds: 1.8,
+                rank: 1,
+              },
+            ],
+          },
+        ],
+      },
+    },
+    raceEntries: null,
+    raceKey: "nar:2026:0529:47:01",
+    raceResults: null,
+    source: null,
+    trackCondition: null,
+  });
+});
+
+it("buildDevRealtimePayload sends CF Access headers and queries the hot worker URL when creds are set", async () => {
+  vi.stubEnv("PC_KEIBA_ACCESS_CLIENT_ID", "client-id-stub");
+  vi.stubEnv("PC_KEIBA_ACCESS_CLIENT_SECRET", "client-secret-stub");
+  const fetchMock = mockHotAndHtml({
+    hotBody: JSON.stringify({
+      fetchedAt: "2026-05-29T07:30:00.000Z",
+      history: [],
+      historyByType: {},
+      latest: {},
+    }),
+    hotStatus: 200,
+    hotUrl: HOT_NAR_URL,
+    htmlByUrl: {},
+  });
+  await buildDevRealtimePayload({
+    day: "29",
+    keibajoCode: "47",
+    month: "05",
+    raceNumber: "01",
+    source: "nar",
+    year: "2026",
+  });
+  expect(fetchMock).toHaveBeenCalledWith(
+    "https://sync-realtime-data-hot.kkk4oru.com/api/odds/nar:2026:0529:47:01?fresh=1",
+    {
+      headers: {
+        "CF-Access-Client-Id": "client-id-stub",
+        "CF-Access-Client-Secret": "client-secret-stub",
+      },
+    },
+  );
+});
+
+it("buildDevRealtimePayload uses production hot worker for JRA when creds are set and bypasses Playwright fallback", async () => {
+  vi.stubEnv("PC_KEIBA_ACCESS_CLIENT_ID", "client-id-stub");
+  vi.stubEnv("PC_KEIBA_ACCESS_CLIENT_SECRET", "client-secret-stub");
+  mockHotAndHtml({
+    hotBody: JSON.stringify({
+      fetchedAt: "2026-05-29T07:30:00.000Z",
+      history: [],
+      historyByType: {},
+      latest: { tansho: [{ combination: "3", odds: 4.2 }] },
+    }),
+    hotStatus: 200,
+    hotUrl: HOT_JRA_URL,
+    htmlByUrl: {},
+  });
+  const payload = await buildDevRealtimePayload({
+    day: "29",
+    keibajoCode: "05",
+    month: "05",
+    raceNumber: "07",
+    source: "jra",
+    year: "2026",
+  });
+  expect(payload).toStrictEqual({
+    horseWeights: null,
+    odds: {
+      fetchedAt: "2026-05-29T07:30:00.000Z",
+      history: [],
+      historyByType: {},
+      horseTrends: [],
+      latest: { tansho: [{ combination: "3", odds: 4.2 }] },
+      trendsByType: {},
+    },
+    raceEntries: null,
+    raceKey: "jra:2026:0529:05:07",
+    raceResults: null,
+    source: null,
+    trackCondition: null,
+  });
+});
+
+it("buildDevRealtimePayload falls back to keiba.go.jp scrape when hot worker returns 404", async () => {
+  vi.stubEnv("PC_KEIBA_ACCESS_CLIENT_ID", "client-id-stub");
+  vi.stubEnv("PC_KEIBA_ACCESS_CLIENT_SECRET", "client-secret-stub");
+  mockHotAndHtml({
+    hotBody: "not found",
+    hotStatus: 404,
+    hotUrl: HOT_NAR_URL,
+    htmlByUrl: {
+      [RACE_LIST_URL]: RACE_LIST_HTML,
+      [DEBA_URL]: RACE_DETAIL_HTML,
+      [TANSHO_FUKUSHO_URL]: TANSHO_FUKUSHO_BODY,
+    },
+  });
+  const payload = await buildDevRealtimePayload({
+    day: "29",
+    keibajoCode: "47",
+    month: "05",
+    raceNumber: "01",
+    source: "nar",
+    year: "2026",
+  });
+  expect(payload.source?.raceName).toBe("テストレース");
+  expect(payload.odds?.history.length).toBe(2);
+  expect(payload.raceEntries?.horses.length).toBe(2);
+});
+
+it("buildDevRealtimePayload falls back to keiba.go.jp scrape when hot worker payload has null fetchedAt", async () => {
+  vi.stubEnv("PC_KEIBA_ACCESS_CLIENT_ID", "client-id-stub");
+  vi.stubEnv("PC_KEIBA_ACCESS_CLIENT_SECRET", "client-secret-stub");
+  mockHotAndHtml({
+    hotBody: JSON.stringify({
+      fetchedAt: null,
+      history: [],
+      historyByType: {},
+      latest: {},
+    }),
+    hotStatus: 200,
+    hotUrl: HOT_NAR_URL,
+    htmlByUrl: {
+      [RACE_LIST_URL]: RACE_LIST_HTML,
+      [DEBA_URL]: RACE_DETAIL_HTML,
+      [TANSHO_FUKUSHO_URL]: TANSHO_FUKUSHO_BODY,
+    },
+  });
+  const payload = await buildDevRealtimePayload({
+    day: "29",
+    keibajoCode: "47",
+    month: "05",
+    raceNumber: "01",
+    source: "nar",
+    year: "2026",
+  });
+  expect(payload.source?.raceName).toBe("テストレース");
+  expect(payload.odds?.history.length).toBe(2);
+});
+
+it("buildDevRealtimePayload falls back to keiba.go.jp scrape when hot worker payload fails shape validation", async () => {
+  vi.stubEnv("PC_KEIBA_ACCESS_CLIENT_ID", "client-id-stub");
+  vi.stubEnv("PC_KEIBA_ACCESS_CLIENT_SECRET", "client-secret-stub");
+  mockHotAndHtml({
+    hotBody: JSON.stringify({ unexpected: true }),
+    hotStatus: 200,
+    hotUrl: HOT_NAR_URL,
+    htmlByUrl: {
+      [RACE_LIST_URL]: RACE_LIST_HTML,
+      [DEBA_URL]: RACE_DETAIL_HTML,
+      [TANSHO_FUKUSHO_URL]: TANSHO_FUKUSHO_BODY,
+    },
+  });
+  const payload = await buildDevRealtimePayload({
+    day: "29",
+    keibajoCode: "47",
+    month: "05",
+    raceNumber: "01",
+    source: "nar",
+    year: "2026",
+  });
+  expect(payload.source?.raceName).toBe("テストレース");
+  expect(payload.odds?.history.length).toBe(2);
+});
+
+it("buildDevRealtimePayload falls back to keiba.go.jp scrape when hot worker fetch throws", async () => {
+  vi.stubEnv("PC_KEIBA_ACCESS_CLIENT_ID", "client-id-stub");
+  vi.stubEnv("PC_KEIBA_ACCESS_CLIENT_SECRET", "client-secret-stub");
+  const fetchMock = vi.fn<FetchFn>((input) => {
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (url === HOT_NAR_URL) {
+      return Promise.reject(new Error("boom"));
+    }
+    const htmlByUrl: Record<string, string> = {
+      [RACE_LIST_URL]: RACE_LIST_HTML,
+      [DEBA_URL]: RACE_DETAIL_HTML,
+      [TANSHO_FUKUSHO_URL]: TANSHO_FUKUSHO_BODY,
+    };
+    const value = htmlByUrl[url];
+    const body = value ?? "";
+    const status = value === undefined ? 404 : 200;
+    return Promise.resolve(
+      new Response(body, { headers: { "content-type": "text/html" }, status }),
+    );
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  const payload = await buildDevRealtimePayload({
+    day: "29",
+    keibajoCode: "47",
+    month: "05",
+    raceNumber: "01",
+    source: "nar",
+    year: "2026",
+  });
+  expect(payload.source?.raceName).toBe("テストレース");
+  expect(payload.odds?.history.length).toBe(2);
+});
+
+it("buildDevRealtimePayload falls back to JRA empty payload when CF Access creds are absent for JRA source", async () => {
+  const fetchSpy = vi.fn<() => Promise<Response>>();
+  vi.stubGlobal("fetch", fetchSpy);
+  const payload = await buildDevRealtimePayload({
+    day: "29",
+    keibajoCode: "05",
+    month: "05",
+    raceNumber: "07",
+    source: "jra",
+    year: "2026",
+  });
+  expect(payload).toStrictEqual({
+    horseWeights: null,
+    odds: null,
+    raceEntries: null,
+    raceKey: "jra:2026:0529:05:07",
+    raceResults: null,
+    source: null,
+    trackCondition: null,
+  });
+  expect(fetchSpy).not.toHaveBeenCalled();
+});
+
+it("buildDevRealtimePayload returns empty payload when only PC_KEIBA_ACCESS_CLIENT_ID is set (secret missing)", async () => {
+  vi.stubEnv("PC_KEIBA_ACCESS_CLIENT_ID", "client-id-stub");
+  vi.stubEnv("PC_KEIBA_ACCESS_CLIENT_SECRET", "");
+  const fetchSpy = vi.fn<() => Promise<Response>>();
+  vi.stubGlobal("fetch", fetchSpy);
+  const payload = await buildDevRealtimePayload({
+    day: "29",
+    keibajoCode: "05",
+    month: "05",
+    raceNumber: "07",
+    source: "jra",
+    year: "2026",
+  });
+  expect(payload).toStrictEqual({
+    horseWeights: null,
+    odds: null,
+    raceEntries: null,
+    raceKey: "jra:2026:0529:05:07",
+    raceResults: null,
+    source: null,
+    trackCondition: null,
+  });
+  expect(fetchSpy).not.toHaveBeenCalled();
 });
