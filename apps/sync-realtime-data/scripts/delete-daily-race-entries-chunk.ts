@@ -188,6 +188,18 @@ const requireEnvVar = (name: string): string => {
   return value;
 };
 
+export const readPositiveIntEnv = (name: string, fallback: number, minimum: 0 | 1): number => {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") {
+    return fallback;
+  }
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < minimum) {
+    throw new Error(`${name} must be a positive integer (>= ${minimum})`);
+  }
+  return parsed;
+};
+
 export const assertDeleteConfirmed = (): void => {
   if (process.env.CONFIRM_DELETE !== "1") {
     throw new Error("Refusing to delete: set CONFIRM_DELETE=1 to acknowledge irreversibility");
@@ -201,16 +213,16 @@ export const buildDefaultConfig = (
   assertDeleteConfirmed();
   return {
     adminToken: requireEnvVar("REALTIME_ADMIN_TOKEN"),
-    batchSize: DEFAULT_BATCH_SIZE,
-    circuitPauseMs: DEFAULT_CIRCUIT_PAUSE_MS,
+    batchSize: readPositiveIntEnv("CHUNK_SIZE", DEFAULT_BATCH_SIZE, 1),
+    circuitPauseMs: readPositiveIntEnv("CIRCUIT_PAUSE_MS", DEFAULT_CIRCUIT_PAUSE_MS, 0),
     featuresWorkerUrl: requireEnvVar("FEATURES_WORKER_URL"),
     fetchImpl,
     internalToken: requireEnvVar("PC_KEIBA_VIEWER_INTERNAL_TOKEN"),
     nowImpl: () => now,
     oldWorkerUrl: requireEnvVar("OLD_WORKER_URL"),
-    retryBackoffMs: DEFAULT_RETRY_BACKOFF_MS,
-    retryLimit: DEFAULT_RETRY_LIMIT,
+    retryBackoffMs: readPositiveIntEnv("RETRY_BACKOFF_MS", DEFAULT_RETRY_BACKOFF_MS, 0),
+    retryLimit: readPositiveIntEnv("RETRY_LIMIT", DEFAULT_RETRY_LIMIT, 1),
     sleepImpl: sleep,
-    sleepMs: DEFAULT_SLEEP_MS,
+    sleepMs: readPositiveIntEnv("CHUNK_DELAY_MS", DEFAULT_SLEEP_MS, 0),
   };
 };

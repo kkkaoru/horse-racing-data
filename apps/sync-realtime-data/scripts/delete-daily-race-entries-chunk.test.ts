@@ -6,9 +6,34 @@ import {
   buildDefaultConfig,
   deleteDailyRaceEntriesChunked,
   isWithinNightWindow,
+  readPositiveIntEnv,
   type DeleteDailyRaceEntriesChunkConfig,
   type DeleteDailyRaceEntriesChunkResponse,
 } from "./delete-daily-race-entries-chunk";
+
+const KNOB_NAMES = [
+  "CHUNK_SIZE",
+  "CHUNK_DELAY_MS",
+  "RETRY_LIMIT",
+  "RETRY_BACKOFF_MS",
+  "CIRCUIT_PAUSE_MS",
+];
+
+const clearKnobs = (): void => {
+  delete process.env.CHUNK_SIZE;
+  delete process.env.CHUNK_DELAY_MS;
+  delete process.env.RETRY_LIMIT;
+  delete process.env.RETRY_BACKOFF_MS;
+  delete process.env.CIRCUIT_PAUSE_MS;
+};
+
+const setRequiredEnv = (): void => {
+  process.env.CONFIRM_DELETE = "1";
+  process.env.REALTIME_ADMIN_TOKEN = "admin";
+  process.env.PC_KEIBA_VIEWER_INTERNAL_TOKEN = "internal";
+  process.env.FEATURES_WORKER_URL = "https://features.example.com";
+  process.env.OLD_WORKER_URL = "https://old.example.com";
+};
 
 const buildConfig = (
   overrides: Partial<DeleteDailyRaceEntriesChunkConfig> = {},
@@ -276,11 +301,8 @@ it("buildDefaultConfig throws when CONFIRM_DELETE is not 1", () => {
 });
 
 it("buildDefaultConfig reads env vars when CONFIRM_DELETE=1", () => {
-  process.env.CONFIRM_DELETE = "1";
-  process.env.REALTIME_ADMIN_TOKEN = "admin";
-  process.env.PC_KEIBA_VIEWER_INTERNAL_TOKEN = "internal";
-  process.env.FEATURES_WORKER_URL = "https://features.example.com";
-  process.env.OLD_WORKER_URL = "https://old.example.com";
+  clearKnobs();
+  setRequiredEnv();
   const config = buildDefaultConfig(new Date("2026-05-28T15:00:00Z"), globalThis.fetch);
   expect(config.oldWorkerUrl).toBe("https://old.example.com");
   expect(config.batchSize).toBe(500);
@@ -308,11 +330,137 @@ it("buildDefaultConfig nowImpl returns the now passed in", () => {
 });
 
 it("buildDefaultConfig sleepImpl is the real setTimeout-based sleep", async () => {
-  process.env.CONFIRM_DELETE = "1";
-  process.env.REALTIME_ADMIN_TOKEN = "admin";
-  process.env.PC_KEIBA_VIEWER_INTERNAL_TOKEN = "internal";
-  process.env.FEATURES_WORKER_URL = "https://features.example.com";
-  process.env.OLD_WORKER_URL = "https://old.example.com";
+  clearKnobs();
+  setRequiredEnv();
   const config = buildDefaultConfig(new Date(), globalThis.fetch);
   await config.sleepImpl(0);
+});
+
+it("buildDefaultConfig uses default knobs when env vars unset", () => {
+  clearKnobs();
+  setRequiredEnv();
+  const config = buildDefaultConfig(new Date("2026-05-28T15:00:00Z"), globalThis.fetch);
+  expect(config.batchSize).toBe(500);
+  expect(config.sleepMs).toBe(3000);
+  expect(config.retryLimit).toBe(3);
+  expect(config.retryBackoffMs).toBe(60_000);
+  expect(config.circuitPauseMs).toBe(1_800_000);
+});
+
+it("buildDefaultConfig overrides CHUNK_SIZE when env var is set", () => {
+  clearKnobs();
+  setRequiredEnv();
+  process.env.CHUNK_SIZE = "100";
+  const config = buildDefaultConfig(new Date("2026-05-28T15:00:00Z"), globalThis.fetch);
+  expect(config.batchSize).toBe(100);
+});
+
+it("buildDefaultConfig overrides CHUNK_DELAY_MS when env var is set", () => {
+  clearKnobs();
+  setRequiredEnv();
+  process.env.CHUNK_DELAY_MS = "10000";
+  const config = buildDefaultConfig(new Date("2026-05-28T15:00:00Z"), globalThis.fetch);
+  expect(config.sleepMs).toBe(10_000);
+});
+
+it("buildDefaultConfig overrides RETRY_LIMIT when env var is set", () => {
+  clearKnobs();
+  setRequiredEnv();
+  process.env.RETRY_LIMIT = "5";
+  const config = buildDefaultConfig(new Date("2026-05-28T15:00:00Z"), globalThis.fetch);
+  expect(config.retryLimit).toBe(5);
+});
+
+it("buildDefaultConfig overrides RETRY_BACKOFF_MS when env var is set", () => {
+  clearKnobs();
+  setRequiredEnv();
+  process.env.RETRY_BACKOFF_MS = "0";
+  const config = buildDefaultConfig(new Date("2026-05-28T15:00:00Z"), globalThis.fetch);
+  expect(config.retryBackoffMs).toBe(0);
+});
+
+it("buildDefaultConfig overrides CIRCUIT_PAUSE_MS when env var is set", () => {
+  clearKnobs();
+  setRequiredEnv();
+  process.env.CIRCUIT_PAUSE_MS = "0";
+  const config = buildDefaultConfig(new Date("2026-05-28T15:00:00Z"), globalThis.fetch);
+  expect(config.circuitPauseMs).toBe(0);
+});
+
+it("buildDefaultConfig throws when CHUNK_SIZE is non-numeric", () => {
+  clearKnobs();
+  setRequiredEnv();
+  process.env.CHUNK_SIZE = "abc";
+  expect(() => buildDefaultConfig(new Date("2026-05-28T15:00:00Z"), globalThis.fetch)).toThrow(
+    "CHUNK_SIZE must be a positive integer (>= 1)",
+  );
+});
+
+it("buildDefaultConfig throws when CHUNK_SIZE is zero", () => {
+  clearKnobs();
+  setRequiredEnv();
+  process.env.CHUNK_SIZE = "0";
+  expect(() => buildDefaultConfig(new Date("2026-05-28T15:00:00Z"), globalThis.fetch)).toThrow(
+    "CHUNK_SIZE must be a positive integer (>= 1)",
+  );
+});
+
+it("buildDefaultConfig throws when CHUNK_SIZE is negative", () => {
+  clearKnobs();
+  setRequiredEnv();
+  process.env.CHUNK_SIZE = "-5";
+  expect(() => buildDefaultConfig(new Date("2026-05-28T15:00:00Z"), globalThis.fetch)).toThrow(
+    "CHUNK_SIZE must be a positive integer (>= 1)",
+  );
+});
+
+it("buildDefaultConfig throws when CHUNK_DELAY_MS is negative", () => {
+  clearKnobs();
+  setRequiredEnv();
+  process.env.CHUNK_DELAY_MS = "-1";
+  expect(() => buildDefaultConfig(new Date("2026-05-28T15:00:00Z"), globalThis.fetch)).toThrow(
+    "CHUNK_DELAY_MS must be a positive integer (>= 0)",
+  );
+});
+
+it("buildDefaultConfig throws when CHUNK_DELAY_MS is non-numeric", () => {
+  clearKnobs();
+  setRequiredEnv();
+  process.env.CHUNK_DELAY_MS = "abc";
+  expect(() => buildDefaultConfig(new Date("2026-05-28T15:00:00Z"), globalThis.fetch)).toThrow(
+    "CHUNK_DELAY_MS must be a positive integer (>= 0)",
+  );
+});
+
+it("buildDefaultConfig throws when RETRY_LIMIT is zero", () => {
+  clearKnobs();
+  setRequiredEnv();
+  process.env.RETRY_LIMIT = "0";
+  expect(() => buildDefaultConfig(new Date("2026-05-28T15:00:00Z"), globalThis.fetch)).toThrow(
+    "RETRY_LIMIT must be a positive integer (>= 1)",
+  );
+});
+
+it("readPositiveIntEnv falls back when env var is empty string", () => {
+  clearKnobs();
+  process.env.CHUNK_SIZE = "";
+  expect(readPositiveIntEnv("CHUNK_SIZE", 42, 1)).toBe(42);
+});
+
+it("readPositiveIntEnv throws when value is a float", () => {
+  clearKnobs();
+  process.env.RETRY_BACKOFF_MS = "1.5";
+  expect(() => readPositiveIntEnv("RETRY_BACKOFF_MS", 1, 0)).toThrow(
+    "RETRY_BACKOFF_MS must be a positive integer (>= 0)",
+  );
+});
+
+it("KNOB_NAMES enumerates the 5 documented env knobs", () => {
+  expect(KNOB_NAMES).toStrictEqual([
+    "CHUNK_SIZE",
+    "CHUNK_DELAY_MS",
+    "RETRY_LIMIT",
+    "RETRY_BACKOFF_MS",
+    "CIRCUIT_PAUSE_MS",
+  ]);
 });
