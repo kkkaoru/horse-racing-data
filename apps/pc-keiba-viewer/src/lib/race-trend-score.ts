@@ -28,18 +28,21 @@ export interface RaceTrendScoreConditions {
   frameRunningStyle: boolean;
 }
 
-// Arguments for rawScoreForUmabanCondition.
-export interface RawScoreParams {
+// Record-filter callback params (passed to user-supplied predicate).
+export interface RecordFilterParams {
   context: UmabanContext;
-  details: ScoreDetailInput[];
-  condition: RaceTrendScoreCondition;
+  detail: ScoreDetailInput;
 }
+
+// Optional per-record predicate type.
+export type RecordFilter = (params: RecordFilterParams) => boolean;
 
 // Arguments for computeRawUmabanScores.
 export interface ComputeRawScoresParams {
   contexts: UmabanContext[];
   details: ScoreDetailInput[];
   conditions: RaceTrendScoreConditions;
+  recordFilter?: RecordFilter;
 }
 
 // Internal helper params: keeps argument count <= 1 object.
@@ -51,6 +54,33 @@ interface TierBonusParams {
 
 type DetailPredicate = (detail: ScoreDetailInput, context: UmabanContext) => boolean;
 
+// Per-condition aggregate output: value carries the log-scaled contribution,
+// matched carries the eligible record count so the caller can detect "no signal".
+interface ConditionContributionResult {
+  value: number;
+  matched: number;
+}
+
+interface ConditionAggregateInput {
+  context: UmabanContext;
+  details: ScoreDetailInput[];
+  condition: RaceTrendScoreCondition;
+  recordFilter: RecordFilter | undefined;
+}
+
+interface UmabanRawScoreParams {
+  context: UmabanContext;
+  details: ScoreDetailInput[];
+  selectedConditions: RaceTrendScoreCondition[];
+  recordFilter: RecordFilter | undefined;
+}
+
+interface EligibilityParams {
+  context: UmabanContext;
+  detail: ScoreDetailInput;
+  recordFilter: RecordFilter | undefined;
+}
+
 // Score formula constants.
 const ODDS_WEIGHT_FLOOR = 1.1;
 const ODDS_WEIGHT_BIAS = 1;
@@ -59,6 +89,10 @@ const FINISH_BOARD_TIER = 5;
 const BOARD_TIER_SCALE = 0.5;
 const NEUTRAL_ODDS_WEIGHT = 1;
 const TIE_SCORE = 0.5;
+const EMPTY_SELECTED_CONDITION_COUNT = 0;
+const NO_MATCH_COUNT = 0;
+// Offset inside log(1 + n) so 1 start still produces a positive factor (log(2) > 0).
+const STARTS_FACTOR_OFFSET = 1;
 
 // Ordered, runtime-iterable list of condition keys (no enum, no `as const`).
 export const RACE_TREND_SCORE_CONDITION_KEYS = [
@@ -67,11 +101,11 @@ export const RACE_TREND_SCORE_CONDITION_KEYS = [
   "frameRunningStyle",
 ] satisfies readonly RaceTrendScoreCondition[];
 
-// Default conditions: enable all signals.
+// Default conditions: jockey-only signal.
 export const DEFAULT_RACE_TREND_SCORE_CONDITIONS: RaceTrendScoreConditions = {
-  frame: true,
+  frame: false,
   jockey: true,
-  frameRunningStyle: true,
+  frameRunningStyle: false,
 };
 
 // Odds weight: log10(max(winOdds, floor)) + 1, neutral 1 when null.
@@ -129,59 +163,82 @@ const CONDITION_PREDICATES = new Map<RaceTrendScoreCondition, DetailPredicate>([
   ["frameRunningStyle", matchByFrameRunningStyle],
 ]);
 
-const averageScore = (details: ScoreDetailInput[]): number =>
-  details.reduce((acc, detail) => acc + scoreSinglePastRace(detail), 0) / details.length;
-
-// Raw score for one umaban under one condition (null when unknown condition or no matching details).
-export const rawScoreForUmabanCondition = (params: RawScoreParams): number | null => {
-  const predicate = CONDITION_PREDICATES.get(params.condition);
-  if (predicate === undefined) return null;
-  const filtered = params.details.filter((detail) => predicate(detail, params.context));
-  if (filtered.length === 0) return null;
-  return averageScore(filtered);
-};
-
-const selectedConditions = (conditions: RaceTrendScoreConditions): RaceTrendScoreCondition[] =>
+const selectedConditionKeys = (conditions: RaceTrendScoreConditions): RaceTrendScoreCondition[] =>
   RACE_TREND_SCORE_CONDITION_KEYS.filter((key) => conditions[key]);
 
-const isNumericValue = (value: number | null): value is number => value !== null;
-
-const averageNullable = (values: (number | null)[]): number | null => {
-  const valid = values.filter(isNumericValue);
-  if (valid.length === 0) return null;
-  return valid.reduce((acc, value) => acc + value, 0) / valid.length;
+const isEligibleDetail = (params: EligibilityParams): boolean => {
+  const { recordFilter, context, detail } = params;
+  if (recordFilter === undefined) return true;
+  return recordFilter({ context, detail });
 };
+
+const sumDetailScores = (details: ScoreDetailInput[]): number =>
+  details.reduce((acc, detail) => acc + scoreSinglePastRace(detail), 0);
+
+// Aggregate one condition: filter eligible records, sum their raw scores,
+// then scale by log(1 + matched) to reward higher start counts with diminishing returns.
+const computeConditionContribution = (
+  params: ConditionAggregateInput,
+): ConditionContributionResult => {
+  const predicate = CONDITION_PREDICATES.get(params.condition);
+  if (predicate === undefined) return { value: 0, matched: NO_MATCH_COUNT };
+  const eligible = params.details.filter(
+    (detail) =>
+      isEligibleDetail({
+        context: params.context,
+        detail,
+        recordFilter: params.recordFilter,
+      }) && predicate(detail, params.context),
+  );
+  if (eligible.length === NO_MATCH_COUNT) return { value: 0, matched: NO_MATCH_COUNT };
+  const sumOfScores = sumDetailScores(eligible);
+  const startsFactor = Math.log(STARTS_FACTOR_OFFSET + eligible.length);
+  return { value: sumOfScores * startsFactor, matched: eligible.length };
+};
+
+const hasMatchedRecord = (result: ConditionContributionResult): boolean =>
+  result.matched > NO_MATCH_COUNT;
+
+const sumContributionValues = (results: ConditionContributionResult[]): number =>
+  results.reduce((acc, result) => acc + result.value, 0);
+
+// Aggregate all selected conditions for one umaban. Returns null when no
+// condition produced a matched record (so the umaban carries no signal).
+const computeUmabanRawScore = (params: UmabanRawScoreParams): number | null => {
+  const perCondition = params.selectedConditions.map((condition) =>
+    computeConditionContribution({
+      context: params.context,
+      details: params.details,
+      condition,
+      recordFilter: params.recordFilter,
+    }),
+  );
+  if (!perCondition.some(hasMatchedRecord)) return null;
+  return sumContributionValues(perCondition);
+};
+
+const isNumericValue = (value: number | null): value is number => value !== null;
 
 const allNullMap = (contexts: UmabanContext[]): Map<string, number | null> =>
   new Map(contexts.map((context) => [context.umaban, null]));
 
-interface ScoreContextAcrossParams {
-  context: UmabanContext;
-  details: ScoreDetailInput[];
-  conditions: RaceTrendScoreCondition[];
-}
-
-const scoreContextAcross = (params: ScoreContextAcrossParams): number | null =>
-  averageNullable(
-    params.conditions.map((condition) =>
-      rawScoreForUmabanCondition({
-        context: params.context,
-        details: params.details,
-        condition,
-      }),
-    ),
-  );
-
-// Compute raw (un-normalized) per-umaban score across selected conditions.
+// Compute raw (un-normalized) per-umaban score. For each selected condition,
+// matching records are summed and then scaled by log(1 + matchedCount) so that
+// umaban with consistent multi-start histories outrank rare single-spike umaban.
 export const computeRawUmabanScores = (
   params: ComputeRawScoresParams,
 ): Map<string, number | null> => {
-  const conditions = selectedConditions(params.conditions);
-  if (conditions.length === 0) return allNullMap(params.contexts);
+  const conditions = selectedConditionKeys(params.conditions);
+  if (conditions.length === EMPTY_SELECTED_CONDITION_COUNT) return allNullMap(params.contexts);
   return new Map(
     params.contexts.map((context) => [
       context.umaban,
-      scoreContextAcross({ context, details: params.details, conditions }),
+      computeUmabanRawScore({
+        context,
+        details: params.details,
+        selectedConditions: conditions,
+        recordFilter: params.recordFilter,
+      }),
     ]),
   );
 };
