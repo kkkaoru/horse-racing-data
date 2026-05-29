@@ -2,9 +2,14 @@
 // * `getRaceTrendD1StarterRows`  -> snapshot tables (race_result_snapshots /
 //   race_entry_snapshots / horse_weight_snapshots / realtime_race_sources):
 //   the realtime-derived path that catches today's finishes before cron.
-// * `getRaceTrendDailyStarterRows` -> `daily_race_entries`: the canonical
-//   Neon-mirror populated by the build-daily-features cron. Source of truth
-//   for prior-day finishes and replaces the legacy Neon trend query.
+// * `getRaceTrendDailyStarterRows` -> new features worker `/api/features/race-trend`
+//   (backed by R2 Parquet). Phase E cutover replaced the legacy direct read
+//   of REALTIME_DB.daily_race_entries (Phase 0 rule 3) with a service binding
+//   to `sync-realtime-data-features`. While the worker endpoint still returns
+//   the stub aggregate, the helper degrades to an empty starter-row list.
+// * `getRaceTrendRunningStylesFromD1` -> REALTIME_FEATURES_DB.race_running_styles
+//   (new D1, Phase E). Falls back to REALTIME_DB.race_running_styles only when
+//   the new binding is missing (preview / pre-cutover deploys).
 import "server-only";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 
@@ -94,13 +99,21 @@ const writeRunningStylesToKv = async (
   await kv.put(cacheKey, JSON.stringify(rows), { expirationTtl: KV_TTL_SECONDS });
 };
 
+// Prefer REALTIME_FEATURES_DB (new D1, post Phase E). Fall back to REALTIME_DB
+// only when the new binding is missing — eg preview deploys that have not yet
+// picked up the features worker binding. The new D1 has the same
+// `race_running_styles` schema as the legacy D1 because the features worker
+// migration was a clean schema copy.
+const pickRunningStylesDb = (env: CloudflareEnv | null): PcKeibaD1Database | null =>
+  env?.REALTIME_FEATURES_DB ?? env?.REALTIME_DB ?? null;
+
 export const getRaceTrendRunningStylesFromD1 = async (
   raceKeys: ReadonlyArray<string>,
 ): Promise<RaceTrendRunningStyleCache[]> => {
   const uniqueKeys = Array.from(new Set(raceKeys.filter((key) => key.length > 0))).toSorted();
   if (uniqueKeys.length === 0) return [];
   const { env } = await getCloudflareContext({ async: true });
-  const db = env?.REALTIME_DB;
+  const db = pickRunningStylesDb(env ?? null);
   if (!db) return [];
   const cacheKey = buildRunningStylesCacheKey(uniqueKeys);
   const cached = await readRunningStylesFromKv(env, cacheKey);
@@ -161,12 +174,9 @@ interface RawD1Row {
   raceBango: string;
   raceName: string | null;
   hassoJikoku: string | null;
-  wakuban: string | null;
   umaban: string | null;
   bamei: string | null;
   jockeyName: string | null;
-  tanshoOddsTenth: number | null;
-  tanshoPopularity: number | null;
   finishPosition: number;
   sohaTime: string | null;
   bataijuInt: number | null;
@@ -188,32 +198,6 @@ interface TanshoOddsEntry {
 
 type TanshoOddsMap = Map<string, Map<string, TanshoOddsEntry>>;
 
-interface RawDailyD1Row {
-  source: string;
-  kaisaiNen: string;
-  kaisaiTsukihi: string;
-  keibajoCode: string;
-  raceBango: string;
-  raceName: string | null;
-  hassoJikoku: string | null;
-  runnerCount: number | null;
-  wakuban: string | null;
-  umaban: number | null;
-  bamei: string | null;
-  jockeyName: string | null;
-  tanshoOddsTenth: number | null;
-  tanshoPopularity: number | null;
-  finishPosition: number;
-  sohaTime: number | null;
-  corner1: number | null;
-  corner2: number | null;
-  corner3: number | null;
-  corner4: number | null;
-  bataijuInt: number | null;
-  zogenFugo: string | null;
-  zogenSaInt: number | null;
-}
-
 const CACHE_URL_BASE = "https://pc-keiba-viewer.local/d1-trend-cache/";
 const DAILY_CACHE_URL_BASE = "https://pc-keiba-viewer.local/d1-trend-daily-cache/";
 // Edge Cache API is colo-local so a 60s TTL is enough for the common
@@ -226,6 +210,13 @@ const CACHE_TTL_SECONDS = 60;
 // only delays a freshly-finished race result by minutes — which the
 // race-finish cache-bust hook already invalidates explicitly.
 const KV_TTL_SECONDS = 30 * 60;
+
+// Phase E: the daily starter rows now come from the features worker, which
+// proxies the R2 Parquet aggregate. Hard-code the production hostname so
+// `env.REALTIME_FEATURES.fetch` resolves to the bound service worker
+// regardless of which Cloudflare colo handles the request.
+const FEATURES_WORKER_BASE = "https://sync-realtime-data-features.kkk4oru.com";
+const FEATURES_RACE_TREND_PATH = "/api/features/race-trend";
 
 const isRaceSource = (value: unknown): value is RaceSource => value === "jra" || value === "nar";
 
@@ -258,19 +249,21 @@ const isRawTanshoOddsRow = (value: unknown): value is RawTanshoOddsRow =>
   "rank" in value &&
   isNumberOrNull(value.rank);
 
-// v4 bumped 2026-05-29: invalidate pre-PR4 cached starter rows so the
-// REALTIME_HOT_DB tansho odds overlay is actually returned to the trend
-// section. Pre-PR4 entries embedded `coalesce(o.odds, de.tansho_odds)` from
-// the now-frozen OLD D1 odds_snapshots table, so without a version bump
-// stale rows can still satisfy the 30min KV TTL after deploy.
+// v5 bumped 2026-05-29 for the Phase E features-worker cutover. The snapshot
+// query no longer reads legacy daily_race_entries (Phase 0 rule 3) so any
+// pre-cutover cache entry would surface stale rows with the v4 schema.
 const buildCacheKey = ({ source, startYmd, endYmd }: RaceTrendD1RowsParams): string =>
-  `race-trend-d1:v4:${source}:${startYmd}:${endYmd}`;
+  `race-trend-d1:v5:${source}:${startYmd}:${endYmd}`;
 
 const formatHassoJikoku = (raceStartAtJst: string | null): string | null => {
   if (typeof raceStartAtJst !== "string" || raceStartAtJst.length < 16) return null;
   return `${raceStartAtJst.slice(11, 13)}${raceStartAtJst.slice(14, 16)}`;
 };
 
+// Phase E removed the LEFT JOIN to daily_race_entries — the snapshot-derived
+// result keeps `wakuban` / `tansho*` as null and lets the HOT D1 odds overlay
+// and the features-worker daily payload supply the missing fields. Legacy
+// daily_race_entries is NEVER read from this worker (Phase 0 rule 3).
 const SELECT_SQL = `
   with latest_result as (
     select race_key, horse_number, finish_position, time
@@ -305,12 +298,9 @@ const SELECT_SQL = `
     s.race_bango as raceBango,
     s.race_name as raceName,
     s.race_start_at_jst as hassoJikoku,
-    de.wakuban as wakuban,
     r.horse_number as umaban,
-    coalesce(e.horse_name, de.bamei) as bamei,
-    coalesce(e.jockey_name, de.kishumei_ryakusho) as jockeyName,
-    cast(round(de.tansho_odds * 10) as integer) as tanshoOddsTenth,
-    de.tansho_ninkijun as tanshoPopularity,
+    e.horse_name as bamei,
+    e.jockey_name as jockeyName,
     cast(nullif(replace(r.finish_position, ' ', ''), '') as integer) as finishPosition,
     r.time as sohaTime,
     w.weight as bataijuInt,
@@ -320,13 +310,6 @@ const SELECT_SQL = `
   join realtime_race_sources s on s.race_key = r.race_key
   left join latest_entry e on e.race_key = r.race_key and e.horse_number = r.horse_number
   left join latest_weight w on w.race_key = r.race_key and w.horse_number = r.horse_number
-  left join daily_race_entries de
-    on de.source = s.source
-    and de.kaisai_nen = s.kaisai_nen
-    and de.kaisai_tsukihi = s.kaisai_tsukihi
-    and de.keibajo_code = s.keibajo_code
-    and de.race_bango = s.race_bango
-    and de.umaban = cast(nullif(r.horse_number, '') as integer)
   where s.source = ?
     and s.kaisai_nen || s.kaisai_tsukihi between ? and ?
     and cast(nullif(replace(r.finish_position, ' ', ''), '') as integer) > 0
@@ -408,15 +391,14 @@ const pickTanshoOdds = (
 ): { tanshoOddsTenth: number | null; tanshoPopularity: number | null } => {
   const combinationKey = raw.umaban === null ? null : normalizeHorseCombination(raw.umaban);
   if (combinationKey === null) {
-    return { tanshoOddsTenth: raw.tanshoOddsTenth, tanshoPopularity: raw.tanshoPopularity };
+    return { tanshoOddsTenth: null, tanshoPopularity: null };
   }
   const entry = oddsMap.get(raw.raceKey)?.get(combinationKey);
   if (entry === undefined) {
-    return { tanshoOddsTenth: raw.tanshoOddsTenth, tanshoPopularity: raw.tanshoPopularity };
+    return { tanshoOddsTenth: null, tanshoPopularity: null };
   }
-  const oddsTenth = entry.odds === null ? raw.tanshoOddsTenth : Math.round(entry.odds * 10);
-  const rank = entry.rank ?? raw.tanshoPopularity;
-  return { tanshoOddsTenth: oddsTenth, tanshoPopularity: rank };
+  const oddsTenth = entry.odds === null ? null : Math.round(entry.odds * 10);
+  return { tanshoOddsTenth: oddsTenth, tanshoPopularity: entry.rank };
 };
 
 const toStarterRow = (raw: RawD1Row, oddsMap: TanshoOddsMap): RaceTrendStarterRow => {
@@ -430,7 +412,7 @@ const toStarterRow = (raw: RawD1Row, oddsMap: TanshoOddsMap): RaceTrendStarterRo
     raceName: raw.raceName,
     hassoJikoku: formatHassoJikoku(raw.hassoJikoku),
     runnerCount: null,
-    wakuban: raw.wakuban,
+    wakuban: null,
     umaban: raw.umaban,
     bamei: raw.bamei,
     jockeyName: raw.jockeyName,
@@ -494,7 +476,7 @@ export const getRaceTrendD1StarterRows = async (
     const { env } = await getCloudflareContext({ async: true });
     // Preview / pre-binding deploys degrade gracefully: when REALTIME_HOT_DB
     // is missing the helper short-circuits to an empty map and we fall back
-    // to the daily_race_entries values already selected from REALTIME_DB.
+    // to nulls for tansho fields.
     const oddsMap = await getLatestTanshoOddsFromHotD1({
       env: env ?? null,
       raceKeys: uniqueRaceKeys,
@@ -515,39 +497,11 @@ export const getRaceTrendD1StarterRows = async (
   }
 };
 
-const DAILY_SELECT_SQL = `
-  select
-    source,
-    kaisai_nen as kaisaiNen,
-    kaisai_tsukihi as kaisaiTsukihi,
-    keibajo_code as keibajoCode,
-    race_bango as raceBango,
-    race_name as raceName,
-    hasso_jikoku as hassoJikoku,
-    shusso_tosu as runnerCount,
-    wakuban,
-    umaban,
-    bamei,
-    kishumei_ryakusho as jockeyName,
-    cast(round(tansho_odds * 10) as integer) as tanshoOddsTenth,
-    tansho_ninkijun as tanshoPopularity,
-    finish_position as finishPosition,
-    soha_time as sohaTime,
-    corner_1 as corner1,
-    corner_2 as corner2,
-    corner_3 as corner3,
-    corner_4 as corner4,
-    bataiju as bataijuInt,
-    zogen_fugo as zogenFugo,
-    zogen_sa as zogenSaInt
-  from daily_race_entries
-  where source = ?
-    and race_date between ? and ?
-    and finish_position is not null
-  order by race_date desc, keibajo_code asc, race_bango asc, umaban asc
-`;
+interface FeaturesWorkerStarterPayload {
+  starterRows?: unknown;
+}
 
-const isRawDailyD1Row = (value: unknown): value is RawDailyD1Row => {
+const isRaceTrendStarterRow = (value: unknown): value is RaceTrendStarterRow => {
   if (typeof value !== "object" || value === null) return false;
   const row = value as Record<string, unknown>;
   return (
@@ -560,50 +514,43 @@ const isRawDailyD1Row = (value: unknown): value is RawDailyD1Row => {
   );
 };
 
-// v4 bumped in lock-step with `buildCacheKey` so a single deploy invalidates
-// every layer that participates in the trend payload.
-const buildDailyCacheKey = ({ source, startYmd, endYmd }: RaceTrendD1RowsParams): string =>
-  `race-trend-d1-daily:v4:${source}:${startYmd}:${endYmd}`;
-
-const queryDailyD1 = async (params: RaceTrendD1RowsParams): Promise<RawDailyD1Row[]> => {
-  const { env } = await getCloudflareContext({ async: true });
-  const db = env?.REALTIME_DB;
-  if (!db) return [];
-  const result = await db
-    .prepare(DAILY_SELECT_SQL)
-    .bind(params.source, params.startYmd, params.endYmd)
-    .all();
-  return result.results.filter(isRawDailyD1Row);
+const parseFeaturesWorkerPayload = (payload: unknown): RaceTrendStarterRow[] => {
+  if (typeof payload !== "object" || payload === null) return [];
+  const { starterRows } = payload as FeaturesWorkerStarterPayload;
+  if (!Array.isArray(starterRows)) return [];
+  return starterRows.filter(isRaceTrendStarterRow);
 };
 
-const intStringOrNull = (value: number | null): string | null =>
-  value === null ? null : String(value);
+const buildFeaturesWorkerUrl = (params: RaceTrendD1RowsParams): string => {
+  const query = new URLSearchParams({
+    source: params.source,
+    from: params.startYmd,
+    to: params.endYmd,
+  });
+  return `${FEATURES_WORKER_BASE}${FEATURES_RACE_TREND_PATH}?${query.toString()}`;
+};
 
-const toDailyStarterRow = (raw: RawDailyD1Row): RaceTrendStarterRow => ({
-  source: raw.source as RaceSource,
-  kaisaiNen: raw.kaisaiNen,
-  kaisaiTsukihi: raw.kaisaiTsukihi,
-  keibajoCode: raw.keibajoCode,
-  raceBango: raw.raceBango,
-  raceName: raw.raceName,
-  hassoJikoku: raw.hassoJikoku,
-  runnerCount: intStringOrNull(raw.runnerCount),
-  wakuban: raw.wakuban,
-  umaban: padString(raw.umaban, 2),
-  bamei: raw.bamei,
-  jockeyName: raw.jockeyName,
-  tanshoOdds: padString(raw.tanshoOddsTenth, 4),
-  tanshoPopularity: padString(raw.tanshoPopularity, 2),
-  finishPosition: raw.finishPosition,
-  sohaTime: intStringOrNull(raw.sohaTime),
-  corner1: padString(raw.corner1, 2),
-  corner2: padString(raw.corner2, 2),
-  corner3: padString(raw.corner3, 2),
-  corner4: padString(raw.corner4, 2),
-  bataiju: raw.bataijuInt === null ? null : String(raw.bataijuInt),
-  zogenFugo: raw.zogenFugo,
-  zogenSa: raw.zogenSaInt === null ? null : String(raw.zogenSaInt),
-});
+const fetchDailyStarterRowsFromFeaturesWorker = async (
+  params: RaceTrendD1RowsParams,
+): Promise<RaceTrendStarterRow[]> => {
+  const { env } = await getCloudflareContext({ async: true });
+  const features = env?.REALTIME_FEATURES;
+  if (!features) return [];
+  try {
+    const response = await features.fetch(buildFeaturesWorkerUrl(params));
+    if (!response.ok) return [];
+    const payload: unknown = await response.json();
+    return parseFeaturesWorkerPayload(payload);
+  } catch (error) {
+    console.error("features worker race-trend fetch failed", error);
+    return [];
+  }
+};
+
+// v5 bumped in lock-step with `buildCacheKey` so a single deploy invalidates
+// every layer that participates in the trend payload.
+const buildDailyCacheKey = ({ source, startYmd, endYmd }: RaceTrendD1RowsParams): string =>
+  `race-trend-d1-daily:v5:${source}:${startYmd}:${endYmd}`;
 
 const getCachedDailyResponse = async (cacheKey: string): Promise<RaceTrendStarterRow[] | null> => {
   const cache = typeof caches === "undefined" ? null : caches.default;
@@ -638,24 +585,25 @@ const putDailyCache = async (cacheKey: string, rows: RaceTrendStarterRow[]): Pro
   ]);
 };
 
+// Phase E cutover: the canonical historical daily-rows source is the
+// features worker (R2 Parquet aggregate). Legacy direct D1 reads of
+// daily_race_entries are forbidden by Phase 0 rule 3. While the worker
+// endpoint still returns the stub aggregate (`{ raceCount: 0, ... }`) the
+// parsed `starterRows` field comes back empty and this helper returns an
+// empty array — the viewer falls back to the snapshot-derived path in
+// `getRaceTrendD1StarterRows` and renders a "preparing" empty state.
 export const getRaceTrendDailyStarterRows = async (
   params: RaceTrendD1RowsParams,
 ): Promise<RaceTrendStarterRow[]> => {
   const cacheKey = buildDailyCacheKey(params);
   const cached = await getCachedDailyResponse(cacheKey);
   if (cached !== null) return cached;
-  try {
-    const raw = await queryDailyD1(params);
-    const rows = raw.map(toDailyStarterRow);
-    // Skip caching empty results: a D1 saturation event can surface as
-    // `results: []` from .all() and we don't want to pin a poisoned empty
-    // payload until the TTL expires.
-    if (rows.length > 0) {
-      await putDailyCache(cacheKey, rows);
-    }
-    return rows;
-  } catch (error) {
-    console.error("D1 daily trend query failed", error);
-    return [];
+  const rows = await fetchDailyStarterRowsFromFeaturesWorker(params);
+  // Skip caching empty results so the next call retries the worker once it
+  // moves off the stub aggregate. Caching `[]` would pin the empty payload
+  // for the 30 min KV TTL and hide the cutover transition entirely.
+  if (rows.length > 0) {
+    await putDailyCache(cacheKey, rows);
   }
+  return rows;
 };
