@@ -55,7 +55,7 @@ export const DEFAULT_RACE_TREND_TARGETS: RaceTrendTargets = {
 };
 
 export const DEFAULT_RACE_TREND_SCORE_CONDITIONS_QUERY: RaceTrendScoreConditionsQuery = {
-  frame: false,
+  frame: true,
   jockey: true,
   frameRunningStyle: false,
 };

@@ -101,9 +101,9 @@ export const RACE_TREND_SCORE_CONDITION_KEYS = [
   "frameRunningStyle",
 ] satisfies readonly RaceTrendScoreCondition[];
 
-// Default conditions: jockey-only signal.
+// Default conditions: frame + jockey signal.
 export const DEFAULT_RACE_TREND_SCORE_CONDITIONS: RaceTrendScoreConditions = {
-  frame: false,
+  frame: true,
   jockey: true,
   frameRunningStyle: false,
 };
