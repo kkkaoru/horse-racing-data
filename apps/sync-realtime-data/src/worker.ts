@@ -72,7 +72,9 @@ import {
   getPremiumPaddockFetchState,
   getPremiumPaddockNotificationState,
   getRaceSource,
+  deleteDailyRaceEntriesChunk,
   deleteOddsSnapshotsChunk,
+  deleteRaceRunningStylesChunk,
   getLatestTrackConditionForRace,
   getSameDayVenueJockeyWins,
   insertRaceEntrySnapshot,
@@ -189,6 +191,16 @@ const json = (body: unknown, init?: ResponseInit): Response =>
 
 const HOT_WORKER_ORIGIN = "https://sync-realtime-data-hot.kkk4oru.com";
 const FEATURES_WORKER_ORIGIN = "https://sync-realtime-data-features.kkk4oru.com";
+const FORWARD_RESPONSE_BODY_MAX_LENGTH = 200;
+
+const readForwardResponseBody = async (response: Response): Promise<string> => {
+  try {
+    const text = await response.text();
+    return text.slice(0, FORWARD_RESPONSE_BODY_MAX_LENGTH);
+  } catch {
+    return "";
+  }
+};
 
 interface ForwardRaceSourceArgs {
   source: "jra" | "nar";
@@ -228,14 +240,27 @@ export const forwardRaceSourceToHot = async (
     return;
   }
   try {
-    await env.REALTIME_HOT.fetch(`${HOT_WORKER_ORIGIN}/api/internal/odds-fetch-state`, {
-      body: JSON.stringify(args),
-      headers: {
-        "content-type": "application/json",
-        "x-pc-keiba-internal-token": env.PC_KEIBA_VIEWER_INTERNAL_TOKEN,
+    const response = await env.REALTIME_HOT.fetch(
+      `${HOT_WORKER_ORIGIN}/api/internal/odds-fetch-state`,
+      {
+        body: JSON.stringify(args),
+        headers: {
+          "content-type": "application/json",
+          "x-pc-keiba-internal-token": env.PC_KEIBA_VIEWER_INTERNAL_TOKEN,
+        },
+        method: "POST",
       },
-      method: "POST",
-    });
+    );
+    if (!response.ok) {
+      const body = await readForwardResponseBody(response);
+      await logFetch(
+        env.REALTIME_DB,
+        "forward-race-source-to-hot",
+        "error",
+        args.raceKey,
+        `status=${response.status} body=${body.slice(0, FORWARD_RESPONSE_BODY_MAX_LENGTH)}`,
+      ).catch(() => undefined);
+    }
   } catch (error) {
     // Forwarding to the hot worker is best-effort: never block discovery on it.
     await logFetch(
@@ -259,7 +284,7 @@ export const forwardRaceForFeatures = async (
     return;
   }
   try {
-    await env.REALTIME_FEATURES.fetch(
+    const response = await env.REALTIME_FEATURES.fetch(
       `${FEATURES_WORKER_ORIGIN}/api/internal/recompute-and-build-parquet`,
       {
         body: JSON.stringify(args),
@@ -270,6 +295,16 @@ export const forwardRaceForFeatures = async (
         method: "POST",
       },
     );
+    if (!response.ok) {
+      const body = await readForwardResponseBody(response);
+      await logFetch(
+        env.REALTIME_DB,
+        "forward-race-for-features",
+        "error",
+        args.raceKey,
+        `status=${response.status} body=${body.slice(0, FORWARD_RESPONSE_BODY_MAX_LENGTH)}`,
+      ).catch(() => undefined);
+    }
   } catch (error) {
     // Forwarding to the features worker is best-effort: never block discovery on it.
     await logFetch(
@@ -2460,6 +2495,38 @@ export default {
         batchSize: body.batch_size,
         sinceId: body.since_id,
         upperBoundId: body.upper_bound_id,
+      });
+      return json(result);
+    }
+
+    if (
+      url.pathname === "/api/internal/delete-daily-race-entries-chunk" &&
+      request.method === "POST"
+    ) {
+      const expectedToken = env.PC_KEIBA_VIEWER_INTERNAL_TOKEN;
+      if (!expectedToken || request.headers.get("x-pc-keiba-internal-token") !== expectedToken) {
+        return json({ error: "forbidden" }, { status: 403 });
+      }
+      const body = (await request.json()) as { chunk_size: number; since_rowid: number };
+      const result = await deleteDailyRaceEntriesChunk(env.REALTIME_DB, {
+        chunkSize: body.chunk_size,
+        sinceRowid: body.since_rowid,
+      });
+      return json(result);
+    }
+
+    if (
+      url.pathname === "/api/internal/delete-race-running-styles-chunk" &&
+      request.method === "POST"
+    ) {
+      const expectedToken = env.PC_KEIBA_VIEWER_INTERNAL_TOKEN;
+      if (!expectedToken || request.headers.get("x-pc-keiba-internal-token") !== expectedToken) {
+        return json({ error: "forbidden" }, { status: 403 });
+      }
+      const body = (await request.json()) as { chunk_size: number; since_rowid: number };
+      const result = await deleteRaceRunningStylesChunk(env.REALTIME_DB, {
+        chunkSize: body.chunk_size,
+        sinceRowid: body.since_rowid,
       });
       return json(result);
     }

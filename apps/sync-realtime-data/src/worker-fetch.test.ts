@@ -55,7 +55,9 @@ vi.mock("./storage", () => ({
   listOddsSnapshotsForExport: vi.fn(async () => []),
   listRaceKeysByDateFromHyperdrive: vi.fn(async () => []),
   listRaceSourcesForSeed: vi.fn(async () => []),
+  deleteDailyRaceEntriesChunk: vi.fn(async () => ({ deletedRowCount: 0, nextSinceRowid: 0 })),
   deleteOddsSnapshotsChunk: vi.fn(async () => ({ deleted: 0, done: true, next_since_id: 0 })),
+  deleteRaceRunningStylesChunk: vi.fn(async () => ({ deletedRowCount: 0, nextSinceRowid: 0 })),
   listTanshoHistory: vi.fn(async () => []),
   listOddsHistoryByType: vi.fn(async () => ({})),
   getLatestOddsFromD1: vi.fn(async () => null),
@@ -506,6 +508,108 @@ it("fetch POST /api/internal/delete-odds-chunk returns result when authorized", 
   expect(await response.json()).toStrictEqual({ deleted: 3, done: false, next_since_id: 30 });
 });
 
+it("fetch POST /api/internal/delete-daily-race-entries-chunk returns 403 when internal token missing", async () => {
+  const { default: worker } = await import("./worker");
+  const env = buildEnv();
+  const envWithoutToken = { ...env, PC_KEIBA_VIEWER_INTERNAL_TOKEN: undefined } as unknown as Env;
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/delete-daily-race-entries-chunk", {
+      body: JSON.stringify({ chunk_size: 500, since_rowid: 0 }),
+      method: "POST",
+    }),
+    envWithoutToken,
+    buildCtx(),
+  );
+  expect(response.status).toBe(403);
+});
+
+it("fetch POST /api/internal/delete-daily-race-entries-chunk returns 403 when internal token mismatches", async () => {
+  const { default: worker } = await import("./worker");
+  const env = buildEnv({ PC_KEIBA_VIEWER_INTERNAL_TOKEN: "expected" } as never);
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/delete-daily-race-entries-chunk", {
+      body: JSON.stringify({ chunk_size: 500, since_rowid: 0 }),
+      headers: { "x-pc-keiba-internal-token": "wrong" },
+      method: "POST",
+    }),
+    env,
+    buildCtx(),
+  );
+  expect(response.status).toBe(403);
+});
+
+it("fetch POST /api/internal/delete-daily-race-entries-chunk returns result when authorized", async () => {
+  const { default: worker } = await import("./worker");
+  const { deleteDailyRaceEntriesChunk } = await import("./storage");
+  vi.mocked(deleteDailyRaceEntriesChunk).mockResolvedValueOnce({
+    deletedRowCount: 17,
+    nextSinceRowid: 9999,
+  });
+  const env = buildEnv({ PC_KEIBA_VIEWER_INTERNAL_TOKEN: "internal" } as never);
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/delete-daily-race-entries-chunk", {
+      body: JSON.stringify({ chunk_size: 500, since_rowid: 0 }),
+      headers: { "x-pc-keiba-internal-token": "internal" },
+      method: "POST",
+    }),
+    env,
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toStrictEqual({ deletedRowCount: 17, nextSinceRowid: 9999 });
+});
+
+it("fetch POST /api/internal/delete-race-running-styles-chunk returns 403 when internal token missing", async () => {
+  const { default: worker } = await import("./worker");
+  const env = buildEnv();
+  const envWithoutToken = { ...env, PC_KEIBA_VIEWER_INTERNAL_TOKEN: undefined } as unknown as Env;
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/delete-race-running-styles-chunk", {
+      body: JSON.stringify({ chunk_size: 500, since_rowid: 0 }),
+      method: "POST",
+    }),
+    envWithoutToken,
+    buildCtx(),
+  );
+  expect(response.status).toBe(403);
+});
+
+it("fetch POST /api/internal/delete-race-running-styles-chunk returns 403 when internal token mismatches", async () => {
+  const { default: worker } = await import("./worker");
+  const env = buildEnv({ PC_KEIBA_VIEWER_INTERNAL_TOKEN: "expected" } as never);
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/delete-race-running-styles-chunk", {
+      body: JSON.stringify({ chunk_size: 500, since_rowid: 0 }),
+      headers: { "x-pc-keiba-internal-token": "wrong" },
+      method: "POST",
+    }),
+    env,
+    buildCtx(),
+  );
+  expect(response.status).toBe(403);
+});
+
+it("fetch POST /api/internal/delete-race-running-styles-chunk returns result when authorized", async () => {
+  const { default: worker } = await import("./worker");
+  const { deleteRaceRunningStylesChunk } = await import("./storage");
+  vi.mocked(deleteRaceRunningStylesChunk).mockResolvedValueOnce({
+    deletedRowCount: 5,
+    nextSinceRowid: 1234,
+  });
+  const env = buildEnv({ PC_KEIBA_VIEWER_INTERNAL_TOKEN: "internal" } as never);
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/delete-race-running-styles-chunk", {
+      body: JSON.stringify({ chunk_size: 500, since_rowid: 0 }),
+      headers: { "x-pc-keiba-internal-token": "internal" },
+      method: "POST",
+    }),
+    env,
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toStrictEqual({ deletedRowCount: 5, nextSinceRowid: 1234 });
+});
+
 it("fetch POST /api/internal/export-odds-chunk returns 403 when token missing", async () => {
   const { default: worker } = await import("./worker");
   const env = buildEnv();
@@ -741,6 +845,90 @@ it("forwardRaceSourceToHot logs the error when the hot worker fetch rejects", as
   );
 });
 
+it("forwardRaceSourceToHot logs an error when the hot worker returns 401", async () => {
+  const { forwardRaceSourceToHot } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  const hotFetch = vi.fn(async () => new Response("Unauthorized", { status: 401 }));
+  await forwardRaceSourceToHot(
+    buildEnv({
+      PC_KEIBA_VIEWER_INTERNAL_TOKEN: "internal-token",
+      REALTIME_HOT: { fetch: hotFetch } as never,
+    } as never),
+    {
+      debaUrl: "https://x.test/race",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      keibajoCode: "08",
+      oddsLinksJson: "{}",
+      raceBango: "01",
+      raceKey: "jra:2026:0512:08:01",
+      raceStartAtJst: "2026-05-12T13:00:00+09:00",
+      source: "jra",
+    },
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "forward-race-source-to-hot",
+    "error",
+    "jra:2026:0512:08:01",
+    "status=401 body=Unauthorized",
+  );
+});
+
+it("forwardRaceSourceToHot logs an error when the hot worker returns 500", async () => {
+  const { forwardRaceSourceToHot } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  const hotFetch = vi.fn(async () => new Response("server boom", { status: 500 }));
+  await forwardRaceSourceToHot(
+    buildEnv({
+      PC_KEIBA_VIEWER_INTERNAL_TOKEN: "internal-token",
+      REALTIME_HOT: { fetch: hotFetch } as never,
+    } as never),
+    {
+      debaUrl: "https://x.test/race",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      keibajoCode: "08",
+      oddsLinksJson: "{}",
+      raceBango: "01",
+      raceKey: "jra:2026:0512:08:02",
+      raceStartAtJst: "2026-05-12T13:30:00+09:00",
+      source: "jra",
+    },
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "forward-race-source-to-hot",
+    "error",
+    "jra:2026:0512:08:02",
+    "status=500 body=server boom",
+  );
+});
+
+it("forwardRaceSourceToHot does not call logFetch when the hot worker returns 200", async () => {
+  const { forwardRaceSourceToHot } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  const hotFetch = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+  await forwardRaceSourceToHot(
+    buildEnv({
+      PC_KEIBA_VIEWER_INTERNAL_TOKEN: "internal-token",
+      REALTIME_HOT: { fetch: hotFetch } as never,
+    } as never),
+    {
+      debaUrl: "https://x.test/race",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      keibajoCode: "08",
+      oddsLinksJson: "{}",
+      raceBango: "01",
+      raceKey: "jra:2026:0512:08:03",
+      raceStartAtJst: "2026-05-12T14:00:00+09:00",
+      source: "jra",
+    },
+  );
+  expect(vi.mocked(logFetch)).not.toHaveBeenCalled();
+});
+
 it("forwardRaceForFeatures is a no-op when REALTIME_FEATURES binding is missing", async () => {
   const { forwardRaceForFeatures } = await import("./worker");
   await forwardRaceForFeatures(buildEnv(), {
@@ -817,6 +1005,81 @@ it("forwardRaceForFeatures logs the error when the features worker fetch rejects
     "nar:2026:0512:55:01",
     "features boom",
   );
+});
+
+it("forwardRaceForFeatures logs an error when the features worker returns 401", async () => {
+  const { forwardRaceForFeatures } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  const featuresFetch = vi.fn(async () => new Response("Unauthorized", { status: 401 }));
+  await forwardRaceForFeatures(
+    buildEnv({
+      PC_KEIBA_VIEWER_INTERNAL_TOKEN: "internal-token",
+      REALTIME_FEATURES: { fetch: featuresFetch } as never,
+    } as never),
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      keibajoCode: "08",
+      raceBango: "01",
+      raceKey: "jra:2026:0512:08:01",
+      source: "jra",
+    },
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "forward-race-for-features",
+    "error",
+    "jra:2026:0512:08:01",
+    "status=401 body=Unauthorized",
+  );
+});
+
+it("forwardRaceForFeatures logs an error when the features worker returns 500", async () => {
+  const { forwardRaceForFeatures } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  const featuresFetch = vi.fn(async () => new Response("server boom", { status: 500 }));
+  await forwardRaceForFeatures(
+    buildEnv({
+      PC_KEIBA_VIEWER_INTERNAL_TOKEN: "internal-token",
+      REALTIME_FEATURES: { fetch: featuresFetch } as never,
+    } as never),
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      keibajoCode: "08",
+      raceBango: "01",
+      raceKey: "jra:2026:0512:08:02",
+      source: "jra",
+    },
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "forward-race-for-features",
+    "error",
+    "jra:2026:0512:08:02",
+    "status=500 body=server boom",
+  );
+});
+
+it("forwardRaceForFeatures does not call logFetch when the features worker returns 200", async () => {
+  const { forwardRaceForFeatures } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  const featuresFetch = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+  await forwardRaceForFeatures(
+    buildEnv({
+      PC_KEIBA_VIEWER_INTERNAL_TOKEN: "internal-token",
+      REALTIME_FEATURES: { fetch: featuresFetch } as never,
+    } as never),
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      keibajoCode: "08",
+      raceBango: "01",
+      raceKey: "jra:2026:0512:08:03",
+      source: "jra",
+    },
+  );
+  expect(vi.mocked(logFetch)).not.toHaveBeenCalled();
 });
 
 it("fetchHotOddsPayload returns null when REALTIME_HOT is not configured", async () => {

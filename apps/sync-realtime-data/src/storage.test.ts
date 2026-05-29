@@ -1838,3 +1838,93 @@ it("deleteOddsSnapshotsChunk falls back to ids.length when rows_written is missi
   });
   expect(result.deleted).toBe(1);
 });
+
+it("deleteDailyRaceEntriesChunk returns deletedRowCount=0 when no rows match", async () => {
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const { deleteDailyRaceEntriesChunk } = await import("./storage");
+  const result = await deleteDailyRaceEntriesChunk(db, { chunkSize: 500, sinceRowid: 17 });
+  expect(result).toStrictEqual({ deletedRowCount: 0, nextSinceRowid: 17 });
+});
+
+it("deleteDailyRaceEntriesChunk deletes the selected rowids and returns the max rowid", async () => {
+  const selectAll = vi.fn(async () => ({ results: [{ rowid: 1 }, { rowid: 2 }, { rowid: 3 }] }));
+  const selectBind = vi.fn(() => ({ all: selectAll }));
+  const deleteRun = vi.fn(async () => ({ meta: { rows_written: 3 } }));
+  const deleteBind = vi.fn(() => ({ run: deleteRun }));
+  const prepare = vi.fn((sql: string) => {
+    if (sql.includes("select rowid")) {
+      return { bind: selectBind };
+    }
+    return { bind: deleteBind };
+  });
+  const db = { prepare } as unknown as D1Database;
+  const { deleteDailyRaceEntriesChunk } = await import("./storage");
+  const result = await deleteDailyRaceEntriesChunk(db, { chunkSize: 500, sinceRowid: 0 });
+  expect(result).toStrictEqual({ deletedRowCount: 3, nextSinceRowid: 3 });
+});
+
+it("deleteDailyRaceEntriesChunk falls back to rowids.length when rows_written is missing", async () => {
+  const selectAll = vi.fn(async () => ({ results: [{ rowid: 9 }] }));
+  const selectBind = vi.fn(() => ({ all: selectAll }));
+  const deleteRun = vi.fn(async () => ({ meta: {} }));
+  const deleteBind = vi.fn(() => ({ run: deleteRun }));
+  const prepare = vi.fn((sql: string) => {
+    if (sql.includes("select rowid")) {
+      return { bind: selectBind };
+    }
+    return { bind: deleteBind };
+  });
+  const db = { prepare } as unknown as D1Database;
+  const { deleteDailyRaceEntriesChunk } = await import("./storage");
+  const result = await deleteDailyRaceEntriesChunk(db, { chunkSize: 500, sinceRowid: 0 });
+  expect(result.deletedRowCount).toBe(1);
+});
+
+it("deleteRaceRunningStylesChunk returns deletedRowCount=0 when no rows match", async () => {
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const { deleteRaceRunningStylesChunk } = await import("./storage");
+  const result = await deleteRaceRunningStylesChunk(db, { chunkSize: 500, sinceRowid: 42 });
+  expect(result).toStrictEqual({ deletedRowCount: 0, nextSinceRowid: 42 });
+});
+
+it("deleteRaceRunningStylesChunk deletes the selected rowids and returns the max rowid", async () => {
+  const selectAll = vi.fn(async () => ({
+    results: [{ rowid: 10 }, { rowid: 11 }, { rowid: 12 }],
+  }));
+  const selectBind = vi.fn(() => ({ all: selectAll }));
+  const deleteRun = vi.fn(async () => ({ meta: { rows_written: 3 } }));
+  const deleteBind = vi.fn(() => ({ run: deleteRun }));
+  const prepare = vi.fn((sql: string) => {
+    if (sql.includes("select rowid")) {
+      return { bind: selectBind };
+    }
+    return { bind: deleteBind };
+  });
+  const db = { prepare } as unknown as D1Database;
+  const { deleteRaceRunningStylesChunk } = await import("./storage");
+  const result = await deleteRaceRunningStylesChunk(db, { chunkSize: 500, sinceRowid: 0 });
+  expect(result).toStrictEqual({ deletedRowCount: 3, nextSinceRowid: 12 });
+});
+
+it("deleteRaceRunningStylesChunk falls back to rowids.length when rows_written is missing", async () => {
+  const selectAll = vi.fn(async () => ({ results: [{ rowid: 21 }] }));
+  const selectBind = vi.fn(() => ({ all: selectAll }));
+  const deleteRun = vi.fn(async () => ({ meta: {} }));
+  const deleteBind = vi.fn(() => ({ run: deleteRun }));
+  const prepare = vi.fn((sql: string) => {
+    if (sql.includes("select rowid")) {
+      return { bind: selectBind };
+    }
+    return { bind: deleteBind };
+  });
+  const db = { prepare } as unknown as D1Database;
+  const { deleteRaceRunningStylesChunk } = await import("./storage");
+  const result = await deleteRaceRunningStylesChunk(db, { chunkSize: 500, sinceRowid: 0 });
+  expect(result.deletedRowCount).toBe(1);
+});
