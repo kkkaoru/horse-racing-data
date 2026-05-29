@@ -32,14 +32,12 @@ export const buildNarRaceKey = (
 
 export const parseNarRaceKey = (
   raceKey: string,
-):
-  | {
-      keibajoCode: string;
-      monthDay: string;
-      raceNumber: string;
-      year: string;
-    }
-  | null => {
+): {
+  keibajoCode: string;
+  monthDay: string;
+  raceNumber: string;
+  year: string;
+} | null => {
   const match = raceKey.match(/^nar:(\d{4}):(\d{4}):([0-9A-Z]{2}):(\d{2})$/u);
   if (!match?.[1] || !match[2] || !match[3] || !match[4]) {
     return null;

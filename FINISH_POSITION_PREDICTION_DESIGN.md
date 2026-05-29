@@ -93,7 +93,7 @@
 
 - 全 raw データの PG 取り込み
 - DuckDB pipeline で特徴量 parquet を生成 (20 年分)
-- 保存済 running-style booster で rs_p_* を parquet に付与
+- 保存済 running-style booster で rs*p*\* を parquet に付与
 - フル特徴量モデル (LGBM / Transformer / Ensemble) の訓練
 - walk-forward 評価で 1着/2着/3着 精度を計算
 - 出走予定レースに対する予測の生成
@@ -102,7 +102,7 @@
 
 ### Cloudflare Worker (sync-realtime-data)
 
-- **唯一の責務**: 未来のレースで脚質 (rs_p_*) ラベルが必要だがまだ計算されていない出走馬に対し、R2 から running-style booster をロードして per-horse rs_p_* を計算し、PG (Hyperdrive) に書き込むこと。
+- **唯一の責務**: 未来のレースで脚質 (rs*p*_) ラベルが必要だがまだ計算されていない出走馬に対し、R2 から running-style booster をロードして per-horse rs*p*_ を計算し、PG (Hyperdrive) に書き込むこと。
 - finish-position 予測そのものは Worker 上では行わない (= `finish-position-lite-*` パイプラインは廃止)。
 
 ### Cloudflare R2
