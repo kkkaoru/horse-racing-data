@@ -1,6 +1,11 @@
 // Run with bun. dev-only NAR realtime odds scraper used by `next dev` to
 // bypass the upstream Cloudflare Worker. Behind the
 // `PC_KEIBA_DEV_REALTIME_SCRAPER=1` env flag and NODE_ENV=development guard.
+// When CF Access credentials are present, the dev branch ALSO calls the
+// production `sync-realtime-data-hot` Worker first so localhost sees the same
+// full-cadence history (1h/10m/1m) the production DO has been accumulating.
+// The keiba.go.jp scrape remains as a fallback when the hot worker is
+// unreachable or returns an empty payload.
 import "server-only";
 import { buildNarRaceKey, LOCAL_KEIBAJO_TO_NAR_BABA_CODE } from "horse-racing-realtime/nar";
 import type {
@@ -28,6 +33,12 @@ import {
   buildTrendsByType,
   readHistory,
 } from "./dev-realtime-history-store.server";
+import {
+  buildRealtimePayloadFromHot,
+  HOT_WORKER_ORIGIN,
+  type HotOddsPayload,
+  isHotOddsPayload,
+} from "./hot-odds-payload.server";
 
 export interface DevRealtimeRequest {
   day: string; // "29"
@@ -50,6 +61,10 @@ const DEV_NODE_ENV = "development";
 const PHASE1_ODDS_TYPES: OddsType[] = ["tansho", "fukusho"];
 const NAR_SOURCE = "nar";
 const JRA_SOURCE = "jra";
+// localhost dev は single user 想定なので、 hot worker の cache chain
+// (Edge → DO → KV mirror → D1 result cache) を毎リクエスト bypass して
+// D1 直行で full history を取る。 production の trends route は cache 経由のまま。
+const HOT_WORKER_FRESH_QUERY = "?fresh=1";
 
 const NAR_BABA_CODE_LOOKUP: Record<string, string> = LOCAL_KEIBAJO_TO_NAR_BABA_CODE;
 
@@ -79,6 +94,38 @@ const buildEmptyPayload = (request: DevRealtimeRequest): RealtimeRacePayload => 
   source: null,
   trackCondition: null,
 });
+
+const buildCfAccessHeaders = (): Record<string, string> | null => {
+  const id = process.env.PC_KEIBA_ACCESS_CLIENT_ID;
+  const secret = process.env.PC_KEIBA_ACCESS_CLIENT_SECRET;
+  if (!id || !secret) {
+    return null;
+  }
+  return {
+    "CF-Access-Client-Id": id,
+    "CF-Access-Client-Secret": secret,
+  };
+};
+
+const fetchOddsFromHotProd = async (raceKey: string): Promise<HotOddsPayload | null> => {
+  const headers = buildCfAccessHeaders();
+  if (!headers) {
+    return null;
+  }
+  try {
+    const response = await fetch(
+      `${HOT_WORKER_ORIGIN}/api/odds/${raceKey}${HOT_WORKER_FRESH_QUERY}`,
+      { headers },
+    );
+    if (!response.ok) {
+      return null;
+    }
+    const json: unknown = await response.json();
+    return isHotOddsPayload(json) ? json : null;
+  } catch {
+    return null;
+  }
+};
 
 const pickPhase1OddsLinks = (
   oddsLinks: Partial<Record<OddsType, string>>,
@@ -191,18 +238,9 @@ const findNarRaceLink = async (
   return links.find((link) => link.raceNumber === padded) ?? null;
 };
 
-export const isDevScraperEnabled = (): boolean =>
-  process.env.NODE_ENV === DEV_NODE_ENV &&
-  process.env.PC_KEIBA_DEV_REALTIME_SCRAPER === DEV_FLAG_ENABLED;
-
-export const buildDevRealtimePayload = async (
+const buildNarFallbackPayload = async (
   request: DevRealtimeRequest,
 ): Promise<RealtimeRacePayload> => {
-  // JRA scraping needs Playwright; Phase 1 leaves it empty so dev can still
-  // exercise the route without spinning up a headless browser.
-  if (request.source === JRA_SOURCE) {
-    return buildEmptyPayload(request);
-  }
   const babaCode = resolveNarBabaCode(request.keibajoCode);
   if (!babaCode) {
     return buildEmptyPayload(request);
@@ -223,4 +261,27 @@ export const buildDevRealtimePayload = async (
     console.warn("dev-realtime-scraper: NAR scrape failed", error);
     return buildEmptyPayload(request);
   }
+};
+
+export const isDevScraperEnabled = (): boolean =>
+  process.env.NODE_ENV === DEV_NODE_ENV &&
+  process.env.PC_KEIBA_DEV_REALTIME_SCRAPER === DEV_FLAG_ENABLED;
+
+export const buildDevRealtimePayload = async (
+  request: DevRealtimeRequest,
+): Promise<RealtimeRacePayload> => {
+  const raceKey = buildRaceKey(request);
+  // Prefer the production hot worker so localhost sees the full cadence
+  // history accumulated by the upstream DO instead of just snapshots taken
+  // since `next dev` started.
+  const hotOdds = await fetchOddsFromHotProd(raceKey);
+  if (hotOdds && hotOdds.fetchedAt) {
+    return buildRealtimePayloadFromHot(raceKey, hotOdds);
+  }
+  // JRA scraping needs Playwright; Phase 1 leaves it empty so dev can still
+  // exercise the route without spinning up a headless browser.
+  if (request.source === JRA_SOURCE) {
+    return buildEmptyPayload(request);
+  }
+  return buildNarFallbackPayload(request);
 };
