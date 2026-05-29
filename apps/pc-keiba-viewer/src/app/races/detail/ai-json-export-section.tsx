@@ -5,12 +5,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { RaceSource } from "../../../lib/codes";
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
-import { getPreferredJockeyName } from "../../../lib/jockey-name";
 import {
   buildFinishPredictionMarketOverrides,
   buildFinishPredictionRowsFromInputs,
   type FinishPredictionBuildInputs,
 } from "../../../lib/finish-position-prediction";
+import { getPreferredJockeyName } from "../../../lib/jockey-name";
 import {
   isPaddockState,
   normalizePaddockHorseScore,

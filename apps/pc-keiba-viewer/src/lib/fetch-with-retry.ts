@@ -1,5 +1,12 @@
 import { retry, type RetryOptions } from "./retry";
 
+// Allow Cloudflare Workers fetch extensions (cf.cacheTtl, cf.cacheEverything, etc.)
+// without forcing every caller to depend on @cloudflare/workers-types directly.
+interface CloudflareFetchExtension {
+  cf?: { cacheTtl?: number; cacheEverything?: boolean } & Record<string, unknown>;
+}
+export type FetchInit = RequestInit & CloudflareFetchExtension;
+
 export interface FetchWithRetryOptions extends RetryOptions {
   retryStatuses?: ReadonlySet<number>;
 }
@@ -14,7 +21,7 @@ const buildRetryStatusError = (response: Response): Error =>
 
 const performFetch = async (
   input: RequestInfo | URL,
-  init: RequestInit | undefined,
+  init: FetchInit | undefined,
   retryStatuses: ReadonlySet<number>,
 ): Promise<Response> => {
   const response = await fetch(input, init);
@@ -26,7 +33,7 @@ const performFetch = async (
 
 export const fetchWithRetry = (
   input: RequestInfo | URL,
-  init?: RequestInit,
+  init?: FetchInit,
   options?: FetchWithRetryOptions,
 ): Promise<Response> => {
   const retryStatuses = options?.retryStatuses ?? DEFAULT_RETRY_STATUSES;

@@ -1,13 +1,13 @@
 import "server-only";
-
 import { cache } from "react";
 
 import { getPgPool } from "../db/client";
 import { fetchWin5SchedulesFromJra } from "./win5/jra-parse";
 import type { Win5Schedule } from "./win5/types";
 
-const getJraWin5Schedules = cache(async (fallbackYear: string): Promise<Win5Schedule[]> =>
-  fetchWin5SchedulesFromJra({ fallbackYear, fetchedAt: new Date().toISOString() }),
+const getJraWin5Schedules = cache(
+  async (fallbackYear: string): Promise<Win5Schedule[]> =>
+    fetchWin5SchedulesFromJra({ fallbackYear, fetchedAt: new Date().toISOString() }),
 );
 
 export const findJraWin5Schedule = async (
@@ -65,8 +65,9 @@ export const resolveWin5Schedule = async (
   kaisaiNen: string,
   kaisaiTsukihi: string,
   schedule: Win5Schedule,
-): Promise<Win5Schedule> => enrichWin5ScheduleLegs({
-  ...schedule,
-  kaisaiNen,
-  kaisaiTsukihi,
-});
+): Promise<Win5Schedule> =>
+  enrichWin5ScheduleLegs({
+    ...schedule,
+    kaisaiNen,
+    kaisaiTsukihi,
+  });

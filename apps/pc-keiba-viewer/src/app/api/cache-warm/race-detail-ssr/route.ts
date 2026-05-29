@@ -17,10 +17,7 @@ import {
   getSameVenueRacesByDate,
 } from "../../../../db/queries";
 import type { RaceSource } from "../../../../lib/codes";
-import {
-  getJstDateParts,
-  parseIsoDateParts,
-} from "../../../../lib/race-detail-section-cache";
+import { getJstDateParts, parseIsoDateParts } from "../../../../lib/race-detail-section-cache";
 import {
   buildRaceDetailSsrCacheKey,
   putRaceDetailSsrSnapshot,

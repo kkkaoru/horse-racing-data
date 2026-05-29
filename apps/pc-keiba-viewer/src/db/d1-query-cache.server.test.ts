@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  buildD1QueryCacheKey,
-  createD1QueryCacheRequest,
-  resolveD1QueryCacheTtlSeconds,
-} from "../lib/d1-query-cache";
+import { buildD1QueryCacheKey, resolveD1QueryCacheTtlSeconds } from "../lib/d1-query-cache";
 
 describe("d1 query cache helpers", () => {
   it("builds stable cache keys regardless of object key order", () => {
@@ -30,9 +26,9 @@ describe("d1 query cache helpers", () => {
     expect(resolveD1QueryCacheTtlSeconds("running-style-race", raceDay, beforeEnd)).toBeGreaterThan(
       0,
     );
-    expect(resolveD1QueryCacheTtlSeconds("running-style-races", raceDay, beforeEnd)).toBeGreaterThan(
-      0,
-    );
+    expect(
+      resolveD1QueryCacheTtlSeconds("running-style-races", raceDay, beforeEnd),
+    ).toBeGreaterThan(0);
     expect(resolveD1QueryCacheTtlSeconds("running-style-race", raceDay, afterEnd)).toBe(0);
   });
 
@@ -44,10 +40,10 @@ describe("d1 query cache helpers", () => {
 
   it("returns zero TTL for invalid race-day timestamps", () => {
     expect(
-      resolveD1QueryCacheTtlSeconds(
-        "running-style-race",
-        { kaisaiNen: "bad", kaisaiTsukihi: "0000" },
-      ),
+      resolveD1QueryCacheTtlSeconds("running-style-race", {
+        kaisaiNen: "bad",
+        kaisaiTsukihi: "0000",
+      }),
     ).toBe(0);
   });
 });

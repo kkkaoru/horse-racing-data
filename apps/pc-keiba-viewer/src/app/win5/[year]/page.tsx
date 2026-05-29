@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { getWin5DaySummaries, getWin5Years } from "../../../lib/win5-queries.server";

@@ -18,22 +18,23 @@ export const dynamic = "force-dynamic";
 const YYYYMMDD_PATTERN = /^\d{8}$/u;
 const AUTH_HEADER = "x-pc-keiba-internal-token";
 
-const isRaceSource = (value: unknown): value is RaceSource =>
-  value === "jra" || value === "nar";
+const isRaceSource = (value: unknown): value is RaceSource => value === "jra" || value === "nar";
 
 interface BustRequestBody {
   source: RaceSource;
   targetYmd: string;
 }
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
 const parseBody = (raw: unknown): BustRequestBody | null => {
-  if (typeof raw !== "object" || raw === null) return null;
-  const candidate = raw as Record<string, unknown>;
-  if (!isRaceSource(candidate.source)) return null;
-  if (typeof candidate.targetYmd !== "string" || !YYYYMMDD_PATTERN.test(candidate.targetYmd)) {
+  if (!isRecord(raw)) return null;
+  if (!isRaceSource(raw.source)) return null;
+  if (typeof raw.targetYmd !== "string" || !YYYYMMDD_PATTERN.test(raw.targetYmd)) {
     return null;
   }
-  return { source: candidate.source, targetYmd: candidate.targetYmd };
+  return { source: raw.source, targetYmd: raw.targetYmd };
 };
 
 const isAuthorized = (request: Request): boolean => {
@@ -59,10 +60,7 @@ interface DayRaceRef {
   raceBango: string;
 }
 
-const listDayRaces = async (
-  source: RaceSource,
-  ymd: string,
-): Promise<DayRaceRef[]> => {
+const listDayRaces = async (source: RaceSource, ymd: string): Promise<DayRaceRef[]> => {
   const parts = splitYmd(ymd);
   const races = await getRacesByDateWithoutJockeyNames(parts.year, parts.month, parts.day).catch(
     () => [],

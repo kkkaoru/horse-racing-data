@@ -62,7 +62,7 @@ export async function GET(request: Request, context: RouteContext) {
   try {
     const response = await fetchWithRetry(
       upstreamUrl,
-      { cf: { cacheTtl: UPSTREAM_EDGE_CACHE_TTL_SECONDS, cacheEverything: true } } as RequestInit,
+      { cf: { cacheTtl: UPSTREAM_EDGE_CACHE_TTL_SECONDS, cacheEverything: true } },
       {
         attempts: UPSTREAM_FETCH_ATTEMPTS,
         baseDelayMs: UPSTREAM_RETRY_BASE_DELAY_MS,

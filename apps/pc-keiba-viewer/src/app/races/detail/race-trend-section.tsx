@@ -6,6 +6,7 @@ import type { RaceSource } from "../../../lib/codes";
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
 import { formatKeibajo, formatRaceNumber } from "../../../lib/format";
 import { getRaceTrendLiveUrl } from "../../../lib/paddock-client-url";
+import { aggregateForTargets } from "../../../lib/race-trend-aggregate";
 import { RACE_TREND_CACHE_REFRESH_PARAM } from "../../../lib/race-trend-cache";
 import {
   DEFAULT_RACE_TREND_TARGETS,
@@ -25,7 +26,6 @@ import type {
   RaceTrendRunningStyle,
   RaceTrendRunningStyleRow,
 } from "../../../lib/race-types";
-import { aggregateForTargets } from "../../../lib/race-trend-aggregate";
 import { useRealtimeRaceSelector } from "./realtime-client";
 
 const RACE_TREND_RETRY_OPTIONS = {
@@ -89,10 +89,7 @@ const normalizeHorseNumber = (value: string | null | undefined): string => {
   return Number.isFinite(parsed) && parsed > 0 ? String(parsed) : "";
 };
 
-const formatHorseWeight = (
-  weight: number | null,
-  delta: number | null,
-): string => {
+const formatHorseWeight = (weight: number | null, delta: number | null): string => {
   if (weight === null) return "-";
   if (delta === null) return String(weight);
   const sign = delta > 0 ? "+" : delta < 0 ? "" : "±";
@@ -742,9 +739,7 @@ export function RaceTrendSection({
               max={defaultEndDate}
               min={minStartDate}
               onChange={(event) =>
-                setTrendStart(
-                  clampIsoDateToRange(event.target.value, minStartDate, defaultEndDate),
-                )
+                setTrendStart(clampIsoDateToRange(event.target.value, minStartDate, defaultEndDate))
               }
               type="date"
               value={trendStart}
@@ -756,9 +751,7 @@ export function RaceTrendSection({
               max={defaultEndDate}
               min={minStartDate}
               onChange={(event) =>
-                setTrendEnd(
-                  clampIsoDateToRange(event.target.value, minStartDate, defaultEndDate),
-                )
+                setTrendEnd(clampIsoDateToRange(event.target.value, minStartDate, defaultEndDate))
               }
               type="date"
               value={trendEnd}

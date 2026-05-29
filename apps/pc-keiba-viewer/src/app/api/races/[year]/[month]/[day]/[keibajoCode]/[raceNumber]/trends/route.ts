@@ -1,17 +1,21 @@
 import { NextResponse } from "next/server";
 
-import { getRaceRunningStylesWithCache } from "../../../../../../../../../lib/running-style-cache.server";
-import {
-  getRaceDetail,
-  getRaceRunners,
-  getRaceSourceByRoute,
-} from "../../../../../../../../../db/queries";
 import {
   getRaceTrendD1StarterRows,
   getRaceTrendDailyStarterRows,
   getRaceTrendRunningStylesFromD1,
 } from "../../../../../../../../../db/d1-trend-queries.server";
+import {
+  getRaceDetail,
+  getRaceRunners,
+  getRaceSourceByRoute,
+} from "../../../../../../../../../db/queries";
 import type { RaceSource } from "../../../../../../../../../lib/codes";
+import {
+  fetchProductionApi,
+  useProductionApiProxy,
+} from "../../../../../../../../../lib/production-api-proxy.server";
+import { starterKey, starterRaceKey } from "../../../../../../../../../lib/race-trend-aggregate";
 import {
   RACE_TREND_CACHE_REFRESH_PARAM,
   RACE_TREND_CACHE_WARM_PARAM,
@@ -22,12 +26,7 @@ import {
   getCachedRaceTrendResponse,
   putRaceTrendCache,
 } from "../../../../../../../../../lib/race-trend-cache.server";
-import {
-  fetchProductionApi,
-  useProductionApiProxy,
-} from "../../../../../../../../../lib/production-api-proxy.server";
 import { notifyRaceTrendRoom } from "../../../../../../../../../lib/race-trend-room.server";
-import { starterKey, starterRaceKey } from "../../../../../../../../../lib/race-trend-aggregate";
 import type {
   RaceDetail,
   RaceTrendRawPayload,
@@ -35,6 +34,7 @@ import type {
   RaceTrendStarterRow,
   Runner,
 } from "../../../../../../../../../lib/race-types";
+import { getRaceRunningStylesWithCache } from "../../../../../../../../../lib/running-style-cache.server";
 
 interface RouteContext {
   params: Promise<{

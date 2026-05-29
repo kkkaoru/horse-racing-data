@@ -27,7 +27,9 @@ const product = (values: readonly number[]): number =>
   values.reduce((total, value) => total * Math.max(1, value), 1);
 
 const buildProbabilityMap = (leg: Win5LegPrediction): Map<string, number> => {
-  const entries = leg.horses.map((horse) => [normalizeHorseNumber(horse.horseNumber), horse.winProbability] as const);
+  const entries = leg.horses.map(
+    (horse) => [normalizeHorseNumber(horse.horseNumber), horse.winProbability] as const,
+  );
   const total = entries.reduce((sum, [, probability]) => sum + Math.max(0, probability), 0);
   const map = new Map<string, number>();
   for (const [horseNumber, probability] of entries) {
@@ -60,7 +62,9 @@ const enumerateCombinations = (
   };
 
   walk(0, [], 1);
-  return combinations.toSorted((left, right) => right.probability - left.probability).slice(0, limit);
+  return combinations
+    .toSorted((left, right) => right.probability - left.probability)
+    .slice(0, limit);
 };
 
 const computeExpectedHitProbability = (
@@ -164,18 +168,13 @@ const evaluateBudgetCandidate = (params: {
   };
 };
 
-const pickBudgetByNetEv = (
-  evaluations: readonly BudgetEvaluationPoint[],
-): number =>
-  evaluations.reduce(
-    (best, current) => (current.netEvYen > best.netEvYen ? current : best),
-    {
-      budgetYen: WIN5_DEFAULT_BUDGET_YEN,
-      totalCostYen: 0,
-      expectedReturnYen: 0,
-      netEvYen: Number.NEGATIVE_INFINITY,
-    },
-  ).budgetYen;
+const pickBudgetByNetEv = (evaluations: readonly BudgetEvaluationPoint[]): number =>
+  evaluations.reduce((best, current) => (current.netEvYen > best.netEvYen ? current : best), {
+    budgetYen: WIN5_DEFAULT_BUDGET_YEN,
+    totalCostYen: 0,
+    expectedReturnYen: 0,
+    netEvYen: Number.NEGATIVE_INFINITY,
+  }).budgetYen;
 
 export const recommendWin5BudgetYen = (
   legs: Win5LegPrediction[],

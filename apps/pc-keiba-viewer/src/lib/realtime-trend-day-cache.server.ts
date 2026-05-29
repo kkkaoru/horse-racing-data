@@ -77,13 +77,36 @@ const getCloudflareRuntime = async (): Promise<CloudflareRuntime> => {
   }
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const isRaceSource = (value: unknown): value is RaceSource => value === "jra" || value === "nar";
+
+const isRaceTrendStarterRow = (value: unknown): value is RaceTrendStarterRow => {
+  if (!isRecord(value)) return false;
+  return (
+    isRaceSource(value.source) &&
+    typeof value.kaisaiNen === "string" &&
+    typeof value.kaisaiTsukihi === "string" &&
+    typeof value.keibajoCode === "string" &&
+    typeof value.raceBango === "string" &&
+    typeof value.finishPosition === "number"
+  );
+};
+
+const parseStarterRowArray = (value: unknown): RaceTrendStarterRow[] | null => {
+  if (!Array.isArray(value)) return null;
+  return value.filter(isRaceTrendStarterRow);
+};
+
 const readFromEdge = async (cacheKey: string): Promise<RaceTrendStarterRow[] | null> => {
   const cache = getDefaultCache();
   if (!cache) return null;
   const cached = await cache.match(buildCacheRequest(cacheKey));
   if (!cached?.ok) return null;
   try {
-    return (await cached.json()) as RaceTrendStarterRow[];
+    const parsed: unknown = await cached.json();
+    return parseStarterRowArray(parsed);
   } catch {
     return null;
   }
@@ -106,6 +129,15 @@ const backfillEdgeFromKv = async (
   await cache.put(buildCacheRequest(cacheKey), buildCachedResponseBody(body, edgeTtl));
 };
 
+const safeParseStarterRowsBody = (body: string): RaceTrendStarterRow[] | null => {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    return parseStarterRowArray(parsed);
+  } catch {
+    return null;
+  }
+};
+
 const readFromKv = async ({
   cacheKey,
   ctx,
@@ -114,15 +146,12 @@ const readFromKv = async ({
 }: ReadFromKvInput): Promise<RaceTrendStarterRow[] | null> => {
   const body = await env?.DETAIL_SECTION_CACHE_KV?.get(cacheKey);
   if (!body) return null;
-  try {
-    const rows = JSON.parse(body) as RaceTrendStarterRow[];
-    const backfill = backfillEdgeFromKv(cacheKey, body, ttl.edge);
-    if (ctx) ctx.waitUntil(backfill);
-    else await backfill;
-    return rows;
-  } catch {
-    return null;
-  }
+  const rows = safeParseStarterRowsBody(body);
+  if (rows === null) return null;
+  const backfill = backfillEdgeFromKv(cacheKey, body, ttl.edge);
+  if (ctx) ctx.waitUntil(backfill);
+  else await backfill;
+  return rows;
 };
 
 interface PutCachesInput {

@@ -430,14 +430,6 @@ const normalizeParsedOdds = (odds: number | null): number | null => {
   return clampScore(Math.log(Math.max(odds, 1)) / Math.log(300));
 };
 
-const normalizePopularity = (
-  value: string | null | undefined,
-  runnerCount: number,
-): number | null => normalizeParsedPopularity(parseStoredNumber(value, "00"), runnerCount);
-
-const normalizeOdds = (value: string | null | undefined): number | null =>
-  normalizeParsedOdds(parseOdds(value));
-
 const toDetail = (candidate: ScoreCandidate): FinishPredictionDetail => ({
   label: candidate.label,
   reason: candidate.reason,

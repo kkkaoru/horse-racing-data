@@ -20,7 +20,9 @@ export const parseRaceJoho = (value: string | null | undefined): ParsedRaceJoho 
   };
 };
 
-export const buildRaceJoho = (leg: Pick<Win5RaceLeg, "keibajoCode" | "kaisaiKai" | "kaisaiNichime" | "raceBango">): string =>
+export const buildRaceJoho = (
+  leg: Pick<Win5RaceLeg, "keibajoCode" | "kaisaiKai" | "kaisaiNichime" | "raceBango">,
+): string =>
   `${leg.keibajoCode}${leg.kaisaiKai}${leg.kaisaiNichime}${leg.raceBango.padStart(2, "0")}`;
 
 export const buildWin5LegsFromRaceJoho = (

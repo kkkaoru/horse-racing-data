@@ -9,9 +9,26 @@ const RELOAD_GUARD_KEY = "pc-keiba-stylesheet-reload-attempted";
 
 const installReloadSpy = (): ReturnType<typeof vi.fn> => {
   const reload = vi.fn<() => void>();
+  const originalLocation = window.location;
+  const stub: Location = {
+    ancestorOrigins: originalLocation.ancestorOrigins,
+    assign: originalLocation.assign.bind(originalLocation),
+    hash: originalLocation.hash,
+    host: originalLocation.host,
+    hostname: originalLocation.hostname,
+    href: originalLocation.href,
+    origin: originalLocation.origin,
+    pathname: originalLocation.pathname,
+    port: originalLocation.port,
+    protocol: originalLocation.protocol,
+    reload,
+    replace: originalLocation.replace.bind(originalLocation),
+    search: originalLocation.search,
+    toString: () => originalLocation.toString(),
+  };
   Object.defineProperty(window, "location", {
     configurable: true,
-    value: { ...window.location, reload },
+    value: stub,
   });
   return reload;
 };
@@ -19,17 +36,17 @@ const installReloadSpy = (): ReturnType<typeof vi.fn> => {
 const appendStylesheetLink = (loaded: boolean): HTMLLinkElement => {
   const link = document.createElement("link");
   link.rel = "stylesheet";
+  const sheet: CSSStyleSheet | null = loaded ? new CSSStyleSheet() : null;
   Object.defineProperty(link, "sheet", {
     configurable: true,
-    value: loaded ? ({} as CSSStyleSheet) : null,
+    value: sheet,
   });
   document.head.appendChild(link);
   return link;
 };
 
 const dispatchPageShow = (persisted: boolean): void => {
-  const event = new Event("pageshow") as PageTransitionEvent;
-  Object.defineProperty(event, "persisted", { value: persisted });
+  const event = new PageTransitionEvent("pageshow", { persisted });
   window.dispatchEvent(event);
 };
 

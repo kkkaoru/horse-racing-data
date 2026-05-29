@@ -1,8 +1,7 @@
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-
-import { getCloudflareContext } from "@opennextjs/cloudflare";
 
 import {
   getActiveRunningStylePredictions,
@@ -14,11 +13,6 @@ import {
   type ActiveRunningStylePrediction,
 } from "../../../../../../../../db/queries";
 import {
-  buildRaceDetailSsrCacheKey,
-  getCachedRaceDetailSsrSnapshot,
-  putRaceDetailSsrSnapshot,
-} from "../../../../../../../../lib/race-detail-ssr-cache.server";
-import {
   cleanText,
   formatDate,
   formatDistance,
@@ -29,8 +23,13 @@ import {
   getTrackSurfaceLabel,
 } from "../../../../../../../../lib/format";
 import { getRaceTags } from "../../../../../../../../lib/race-classification";
-import { getRaceRunningStylesWithCache } from "../../../../../../../../lib/running-style-cache.server";
+import {
+  buildRaceDetailSsrCacheKey,
+  getCachedRaceDetailSsrSnapshot,
+  putRaceDetailSsrSnapshot,
+} from "../../../../../../../../lib/race-detail-ssr-cache.server";
 import { isBanEiKeibajoCode } from "../../../../../../../../lib/runner-format";
+import { getRaceRunningStylesWithCache } from "../../../../../../../../lib/running-style-cache.server";
 import { PaddockSection } from "../../../../../../../races/detail/paddock-section";
 import { RaceStartCountdown } from "../../../../../../../races/detail/race-start-countdown";
 

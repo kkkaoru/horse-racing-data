@@ -132,7 +132,9 @@ const AllRowsTable = ({ entryStatusByHorse, rows, runnersByUmaban }: AllRowsTabl
                 {resolveBamei(row, runnersByUmaban)}
                 {entryStatus ? <span className="runner-status-badge">{entryStatus}</span> : null}
               </td>
-              <td className="stats-name-cell">{isScratched ? "-" : resolveJockey(row, runnersByUmaban)}</td>
+              <td className="stats-name-cell">
+                {isScratched ? "-" : resolveJockey(row, runnersByUmaban)}
+              </td>
               <td>{isScratched ? "-" : RUNNING_STYLE_DISPLAY[row.predictedLabel]}</td>
               <td>{isScratched ? "-" : formatPercent(row.p_nige)}</td>
               <td>{isScratched ? "-" : formatPercent(row.p_senkou)}</td>

@@ -3,7 +3,6 @@ import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { cache } from "react";
 
 import { TRACK_LABELS, type RaceSource } from "../lib/codes";
-import { isRunningStyleLabel, type RunningStyleLabel } from "./corner-running-style-parsers";
 import type {
   AbilityTest,
   BloodlineStatsRow,
@@ -45,6 +44,7 @@ import {
   type TopRaceWindowsPayload,
 } from "../lib/top-races-cache.server";
 import { getDb } from "./client";
+import { isRunningStyleLabel, type RunningStyleLabel } from "./corner-running-style-parsers";
 import { withDbQueryCache } from "./query-cache";
 import { jvdCs, jvdRa, jvdSe, jvdUm, nvdNu, nvdRa, nvdSe, nvdUm } from "./schema";
 

@@ -1,5 +1,4 @@
 import "server-only";
-import { getRaceRunningStylesWithCache } from "../../../lib/running-style-cache.server";
 import {
   getBloodlineStats,
   getActiveFinishPositionPredictions,
@@ -36,6 +35,7 @@ import {
   getTrackTurnLabel,
 } from "../../../lib/format";
 import { buildNetkeibaRaceId, parseNetkeibaTrainingReviews } from "../../../lib/netkeiba-training";
+import { getPremiumDataTopHorsesWithCache } from "../../../lib/premium-data-top-cache.server";
 import {
   getAgeLabel,
   getConditionLabel,
@@ -67,8 +67,8 @@ import type {
   PremiumDataTopHorse,
   Training,
 } from "../../../lib/race-types";
-import { getPremiumDataTopHorsesWithCache } from "../../../lib/premium-data-top-cache.server";
 import { formatRunnerNumber, isBanEiKeibajoCode } from "../../../lib/runner-format";
+import { getRaceRunningStylesWithCache } from "../../../lib/running-style-cache.server";
 
 export type DetailSection =
   | "ability"

@@ -10,6 +10,7 @@ import * as schema from "./schema";
 const DATABASE_TARGETS = ["local", "neon", "cloudflare"] as const;
 type DatabaseTarget = (typeof DATABASE_TARGETS)[number];
 type Db = NodePgDatabase<typeof schema>;
+type DbWithPool = Db & { $client: Pool };
 
 const DEFAULT_STATEMENT_TIMEOUT_MS = 15_000;
 const DEFAULT_IDLE_IN_TRANSACTION_TIMEOUT_MS = 15_000;
@@ -152,13 +153,13 @@ export const getDb = (): Db => {
   return createdDb;
 };
 
-const createDb = (databaseTarget: DatabaseTarget): Db => {
+const createDb = (databaseTarget: DatabaseTarget): DbWithPool => {
   const pool = new Pool(getPoolOptions(databaseTarget));
 
   return drizzle(pool, { schema });
 };
 
-const getCloudflareDb = cache((): Db => createDb("cloudflare"));
+const getCloudflareDb = cache((): DbWithPool => createDb("cloudflare"));
 
 export const getPgPool = (): Pool => {
   const databaseTarget = getDatabaseTarget();
@@ -169,5 +170,5 @@ export const getPgPool = (): Pool => {
       return cachedPool;
     }
   }
-  return (getCloudflareDb() as unknown as { $client: Pool }).$client;
+  return getCloudflareDb().$client;
 };

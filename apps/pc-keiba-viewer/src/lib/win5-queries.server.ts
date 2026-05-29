@@ -1,19 +1,16 @@
 import "server-only";
-
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { sql } from "drizzle-orm";
 import { cache } from "react";
 
 import { getDb } from "../db/client";
 import {
-  buildWin5PredictionPayload,
-} from "./win5/prediction";
-import { buildWin5LegsFromRaceJoho } from "./win5/race-joho";
-import {
   findJraWin5Schedule,
   listJraWin5SchedulesForYear,
   resolveWin5Schedule,
 } from "./win5-schedule.server";
+import { buildWin5PredictionPayload } from "./win5/prediction";
+import { buildWin5LegsFromRaceJoho } from "./win5/race-joho";
 import {
   WIN5_MODEL_VERSION,
   type Win5DaySummary,
@@ -36,6 +33,12 @@ const isMissingWin5D1TableError = (error: unknown): boolean => {
   return /no such table: win5_/u.test(message);
 };
 
+const stringifyDbValue = (value: unknown): string => {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "";
+};
+
 const queryWin5D1 = async <T>(query: () => Promise<T>): Promise<T | null> => {
   try {
     return await query();
@@ -47,12 +50,51 @@ const queryWin5D1 = async <T>(query: () => Promise<T>): Promise<T | null> => {
   }
 };
 
-const parseScheduleLegsJson = (legsJson: string): Win5Schedule["legs"] => {
-  const parsed = JSON.parse(legsJson) as { legs?: Win5Schedule["legs"] } | Win5Schedule["legs"];
-  if (Array.isArray(parsed)) {
-    return parsed;
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const isWin5RaceLeg = (value: unknown): value is Win5Schedule["legs"][number] => {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.legIndex === "number" &&
+    typeof value.keibajoCode === "string" &&
+    typeof value.kaisaiKai === "string" &&
+    typeof value.kaisaiNichime === "string" &&
+    typeof value.raceBango === "string"
+  );
+};
+
+const filterLegs = (values: ReadonlyArray<unknown>): Win5Schedule["legs"] =>
+  values.filter((value): value is Win5Schedule["legs"][number] => isWin5RaceLeg(value));
+
+const isWin5PredictionPayload = (value: unknown): value is Win5PredictionPayload => {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.modelVersion === "string" &&
+    typeof value.kaisaiNen === "string" &&
+    typeof value.kaisaiTsukihi === "string" &&
+    Array.isArray(value.legs)
+  );
+};
+
+const parseWin5PredictionPayload = (text: string): Win5PredictionPayload | null => {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return isWin5PredictionPayload(parsed) ? parsed : null;
+  } catch {
+    return null;
   }
-  return parsed.legs ?? [];
+};
+
+const parseScheduleLegsJson = (legsJson: string): Win5Schedule["legs"] => {
+  const parsed: unknown = JSON.parse(legsJson);
+  if (Array.isArray(parsed)) {
+    return filterLegs(parsed);
+  }
+  if (isRecord(parsed) && Array.isArray(parsed.legs)) {
+    return filterLegs(parsed.legs);
+  }
+  return [];
 };
 
 const mapScheduleRow = (row: {
@@ -148,16 +190,16 @@ export const getWin5DaySummaries = cache(async (year: string): Promise<Win5DaySu
   for (const row of result.rows) {
     const kaisaiTsukihi = String(row.kaisai_tsukihi);
     const legs = buildWin5LegsFromRaceJoho([
-      String(row.race_joho_1 ?? ""),
-      String(row.race_joho_2 ?? ""),
-      String(row.race_joho_3 ?? ""),
-      String(row.race_joho_4 ?? ""),
-      String(row.race_joho_5 ?? ""),
+      stringifyDbValue(row.race_joho_1),
+      stringifyDbValue(row.race_joho_2),
+      stringifyDbValue(row.race_joho_3),
+      stringifyDbValue(row.race_joho_4),
+      stringifyDbValue(row.race_joho_5),
     ]);
     dayMap.set(kaisaiTsukihi, {
       day: kaisaiTsukihi.slice(2, 4),
       hasPrediction: predictionDates.has(kaisaiTsukihi),
-      kaisaiNen: String(row.kaisai_nen),
+      kaisaiNen: stringifyDbValue(row.kaisai_nen),
       kaisaiTsukihi,
       legCount: legs.length,
       month: kaisaiTsukihi.slice(0, 2),
@@ -207,11 +249,11 @@ const buildScheduleFromJvdWf = async (
     return null;
   }
   const legs = buildWin5LegsFromRaceJoho([
-    String(row.race_joho_1 ?? ""),
-    String(row.race_joho_2 ?? ""),
-    String(row.race_joho_3 ?? ""),
-    String(row.race_joho_4 ?? ""),
-    String(row.race_joho_5 ?? ""),
+    stringifyDbValue(row.race_joho_1),
+    stringifyDbValue(row.race_joho_2),
+    stringifyDbValue(row.race_joho_3),
+    stringifyDbValue(row.race_joho_4),
+    stringifyDbValue(row.race_joho_5),
   ]);
   if (legs.length !== 5) {
     return null;
@@ -290,7 +332,8 @@ export const getWin5Prediction = cache(
           .first<{ prediction_json: string }>(),
       );
       if (row?.prediction_json) {
-        return JSON.parse(row.prediction_json) as Win5PredictionPayload;
+        const parsed = parseWin5PredictionPayload(row.prediction_json);
+        if (parsed !== null) return parsed;
       }
     }
 

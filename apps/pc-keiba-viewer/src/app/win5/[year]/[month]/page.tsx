@@ -16,7 +16,8 @@ interface Win5MonthPageProps {
 export async function generateMetadata({ params }: Win5MonthPageProps): Promise<Metadata> {
   const { month, year } = await params;
   return {
-    title: /^\d{4}$/.test(year) && /^\d{2}$/.test(month) ? `${year}年${Number(month)}月 WIN5` : "WIN5",
+    title:
+      /^\d{4}$/.test(year) && /^\d{2}$/.test(month) ? `${year}年${Number(month)}月 WIN5` : "WIN5",
   };
 }
 

@@ -1,3 +1,4 @@
+import type { RealtimeOddsTrend } from "horse-racing-realtime/types";
 import { expect, test } from "vitest";
 
 import {
@@ -5,12 +6,8 @@ import {
   sortOddsTrendEntries,
   type OddsTrendHoverEntry,
 } from "./realtime-race-section";
-import type { RealtimeOddsTrend } from "horse-racing-realtime/types";
 
-const buildTrend = (
-  combination: string,
-  latestOdds: number | null,
-): RealtimeOddsTrend => ({
+const buildTrend = (combination: string, latestOdds: number | null): RealtimeOddsTrend => ({
   combination,
   points:
     latestOdds === null
@@ -75,10 +72,7 @@ test("getDisplayTrends sorts tansho trends DESC by latest odds", () => {
 });
 
 test("getDisplayTrends drops trends that have no numeric odds points", () => {
-  const sorted = getDisplayTrends("tansho", [
-    buildTrend("1", null),
-    buildTrend("2", 3.1),
-  ]);
+  const sorted = getDisplayTrends("tansho", [buildTrend("1", null), buildTrend("2", 3.1)]);
   expect(sorted.map((trend) => trend.combination)).toStrictEqual(["2"]);
 });
 

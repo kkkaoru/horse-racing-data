@@ -3,8 +3,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { getWin5DaySummaries, getWin5Years } from "../../lib/win5-queries.server";
-import { Win5TodaySection } from "./win5-today-section";
 import { Win5Calendar } from "./win5-calendar";
+import { Win5TodaySection } from "./win5-today-section";
 
 export const dynamic = "force-dynamic";
 

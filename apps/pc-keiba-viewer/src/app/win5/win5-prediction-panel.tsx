@@ -27,16 +27,12 @@ const buildRaceHref = (
   day: string,
   keibajoCode: string,
   raceBango: string,
-): string =>
-  `/races/${year}/${month}/${day}/${keibajoCode}/${raceBango.padStart(2, "0")}`;
+): string => `/races/${year}/${month}/${day}/${keibajoCode}/${raceBango.padStart(2, "0")}`;
 
 export function Win5PredictionPanel({ day, month, prediction, year }: Win5PredictionPanelProps) {
   const [budgetYen, setBudgetYen] = useState(prediction.defaultBudgetYen);
   const [showAllHorses, setShowAllHorses] = useState(false);
-  const plan = useMemo(
-    () => getWin5PlanForBudget(prediction, budgetYen),
-    [budgetYen, prediction],
-  );
+  const plan = useMemo(() => getWin5PlanForBudget(prediction, budgetYen), [budgetYen, prediction]);
 
   return (
     <section aria-label="WIN5買い目提案" className="win5-section">
@@ -232,9 +228,7 @@ export function Win5PredictionPanel({ day, month, prediction, year }: Win5Predic
               {plan.topCombinations.map((combination, index) => (
                 <tr key={combination.legs.join("-")}>
                   <td>{index + 1}</td>
-                  <td className="win5-combination-numbers">
-                    {combination.legs.join(" - ")}
-                  </td>
+                  <td className="win5-combination-numbers">{combination.legs.join(" - ")}</td>
                   <td>{formatPercent(combination.probability)}</td>
                 </tr>
               ))}
