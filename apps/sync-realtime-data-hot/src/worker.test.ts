@@ -7,6 +7,7 @@ vi.mock("./fetch-odds", () => ({
 
 vi.mock("./odds-cache", () => ({
   OddsCacheHot: class {},
+  readCachedOdds: vi.fn(async () => null),
   writeCachedOdds: vi.fn(async () => undefined),
 }));
 
@@ -15,6 +16,7 @@ vi.mock("./scheduled-race-list", () => ({
 }));
 
 import { fetchAndStoreOdds } from "./fetch-odds";
+import { readCachedOdds } from "./odds-cache";
 import { populateTodayOddsFetchState } from "./scheduled-race-list";
 import worker, {
   buildOddsPayloadFromD1,
@@ -26,6 +28,7 @@ import worker, {
   handleMigrationState,
   handleQueue,
   handleR2ArchiveRows,
+  handleRunPopulateToday,
   handleScheduled,
   handleUpsertOddsFetchState,
   isAuthorizedInternalRequest,
@@ -59,6 +62,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   vi.mocked(populateTodayOddsFetchState).mockClear();
+  vi.mocked(readCachedOdds).mockReset();
+  vi.mocked(readCachedOdds).mockResolvedValue(null);
 });
 
 const buildKv = (): KVNamespace =>
@@ -242,7 +247,7 @@ it("handleGetOdds returns the edge-cached response when present", async () => {
   expect(response).toBe(cached);
 });
 
-it("handleGetOdds returns the KV mirror payload when fresh", async () => {
+it("handleGetOdds returns the KV mirror payload but does not write it to the edge cache", async () => {
   const env = buildEnv();
   const kvGet = env.ODDS_HOT_KV.get as unknown as ReturnType<typeof vi.fn>;
   kvGet.mockResolvedValueOnce(
@@ -257,7 +262,78 @@ it("handleGetOdds returns the KV mirror payload when fresh", async () => {
     "nar:20260528:42:01",
   );
   expect(response.status).toBe(200);
-  expect(cacheMock.put).toHaveBeenCalled();
+  expect(cacheMock.put).not.toHaveBeenCalled();
+});
+
+it("handleGetOdds returns the DO payload and writes it to the edge cache when history is non-empty", async () => {
+  vi.mocked(readCachedOdds).mockResolvedValueOnce({
+    fetchedAt: "2026-05-28T10:00:00+09:00",
+    history: [
+      {
+        horseNumber: "01",
+        points: [
+          {
+            fetchedAt: "2026-05-28T10:00:00+09:00",
+            horseNumber: "01",
+            odds: 2.5,
+            popularity: 1,
+          },
+        ],
+      },
+    ],
+    historyByType: {},
+    latest: { tansho: [{ combination: "01", odds: 2.5, rank: 1 }] },
+  });
+  const response = await handleGetOdds(
+    buildEnv(),
+    new Request("https://x/api/odds/nar:20260528:42:01"),
+    "nar:20260528:42:01",
+  );
+  expect(response.status).toBe(200);
+  expect(cacheMock.put).toHaveBeenCalledTimes(1);
+});
+
+it("handleGetOdds falls through to KV mirror when DO history is empty", async () => {
+  vi.mocked(readCachedOdds).mockResolvedValueOnce({
+    fetchedAt: "2026-05-28T10:00:00+09:00",
+    history: [],
+    historyByType: {},
+    latest: {},
+  });
+  const env = buildEnv();
+  const kvGet = env.ODDS_HOT_KV.get as unknown as ReturnType<typeof vi.fn>;
+  kvGet.mockResolvedValueOnce(
+    JSON.stringify({
+      fetchedAt: new Date().toISOString(),
+      latest: { tansho: [{ combination: "01" }] },
+    }),
+  );
+  const response = await handleGetOdds(
+    env,
+    new Request("https://x/api/odds/nar:20260528:42:01"),
+    "nar:20260528:42:01",
+  );
+  expect(response.status).toBe(200);
+  expect(cacheMock.put).not.toHaveBeenCalled();
+});
+
+it("handleGetOdds is fail-soft when DO read throws", async () => {
+  vi.mocked(readCachedOdds).mockRejectedValueOnce(new Error("do down"));
+  const env = buildEnv();
+  const kvGet = env.ODDS_HOT_KV.get as unknown as ReturnType<typeof vi.fn>;
+  kvGet.mockResolvedValueOnce(
+    JSON.stringify({
+      fetchedAt: new Date().toISOString(),
+      latest: { tansho: [{ combination: "01" }] },
+    }),
+  );
+  const response = await handleGetOdds(
+    env,
+    new Request("https://x/api/odds/nar:20260528:42:01"),
+    "nar:20260528:42:01",
+  );
+  expect(response.status).toBe(200);
+  expect(cacheMock.put).not.toHaveBeenCalled();
 });
 
 it("handleGetOdds returns the D1 result cache payload when present", async () => {
@@ -469,6 +545,37 @@ it("handleR2ArchiveRows treats missing rows array as empty", async () => {
     }),
   );
   expect(await response.json()).toStrictEqual({ groups: 0, rows: 0 });
+});
+
+it("handleRunPopulateToday returns 401 when unauthorized", async () => {
+  const response = await handleRunPopulateToday(
+    buildEnv(),
+    new Request("https://x/api/internal/run-populate-today", { method: "POST" }),
+  );
+  expect(response.status).toBe(401);
+  expect(vi.mocked(populateTodayOddsFetchState)).not.toHaveBeenCalled();
+});
+
+it("handleRunPopulateToday runs populateTodayOddsFetchState and returns the counts", async () => {
+  vi.mocked(populateTodayOddsFetchState).mockResolvedValueOnce({ inserted: 12, total: 12 });
+  const response = await handleRunPopulateToday(
+    buildEnv(),
+    new Request("https://x/api/internal/run-populate-today", {
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      method: "POST",
+    }),
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toStrictEqual({ inserted: 12, total: 12 });
+  expect(vi.mocked(populateTodayOddsFetchState)).toHaveBeenCalledTimes(1);
+});
+
+it("handleFetchRequest routes run-populate-today endpoint", async () => {
+  const response = await handleFetchRequest(
+    buildEnv(),
+    new Request("https://x/api/internal/run-populate-today", { method: "POST" }),
+  );
+  expect(response.status).toBe(401);
 });
 
 it("handleFetchRequest routes r2-archive-rows endpoint", async () => {

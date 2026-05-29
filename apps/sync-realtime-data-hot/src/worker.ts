@@ -20,7 +20,7 @@ import { invalidateRaceListInKv, patchLastFetchInKv } from "./gates/race-list-kv
 import { shouldRunOddsCron } from "./gates/polling-window-gate";
 import { jsonResponse } from "./http";
 import { extractYyyymmddFromRaceKey } from "./race-key";
-import { writeCachedOdds } from "./odds-cache";
+import { readCachedOdds, writeCachedOdds } from "./odds-cache";
 import { planOddsFetches } from "./plan";
 import { populateTodayOddsFetchState } from "./scheduled-race-list";
 import {
@@ -71,6 +71,23 @@ export const buildOddsPayloadFromD1 = async (env: Env, raceKey: string): Promise
   };
 };
 
+const readDoCacheSafe = async (env: Env, raceKey: string): Promise<OddsPayload | null> => {
+  try {
+    const cached = await readCachedOdds(env, raceKey);
+    if (!cached) {
+      return null;
+    }
+    return {
+      fetchedAt: cached.fetchedAt,
+      history: cached.history,
+      historyByType: cached.historyByType,
+      latest: cached.latest,
+    };
+  } catch {
+    return null;
+  }
+};
+
 export const handleGetOdds = async (
   env: Env,
   request: Request,
@@ -85,6 +102,11 @@ export const handleGetOdds = async (
   if (cached) {
     return cached;
   }
+  const doCached = await readDoCacheSafe(env, raceKey);
+  if (doCached && doCached.history.length > 0) {
+    await writeToEdgeCache(raceKey, doCached, env);
+    return jsonResponse(doCached);
+  }
   const mirrored = await readLatestOddsFromKv(env, raceKey, {
     allowStale: false,
     now: new Date(),
@@ -96,7 +118,6 @@ export const handleGetOdds = async (
       historyByType: {},
       latest: mirrored.latest,
     };
-    await writeToEdgeCache(raceKey, payload, env);
     return jsonResponse(payload);
   }
   const d1Cached = await readD1ResultCache<OddsPayload>(raceKey, "payload");
@@ -220,6 +241,14 @@ export const handleMigrationState = async (env: Env, request: Request): Promise<
   return jsonResponse({ ok: true });
 };
 
+export const handleRunPopulateToday = async (env: Env, request: Request): Promise<Response> => {
+  if (!isAuthorizedInternalRequest(request, env)) {
+    return jsonResponse({ error: "unauthorized" }, { status: 401 });
+  }
+  const result = await populateTodayOddsFetchState(env, new Date());
+  return jsonResponse(result);
+};
+
 export const handleGetMigrationState = async (env: Env, request: Request): Promise<Response> => {
   if (!isAuthorizedInternalRequest(request, env)) {
     return jsonResponse({ error: "unauthorized" }, { status: 401 });
@@ -252,6 +281,9 @@ export const handleFetchRequest = async (env: Env, request: Request): Promise<Re
   }
   if (request.method === "GET" && url.pathname === "/api/internal/migration-state") {
     return handleGetMigrationState(env, request);
+  }
+  if (request.method === "POST" && url.pathname === "/api/internal/run-populate-today") {
+    return handleRunPopulateToday(env, request);
   }
   const raceKey = parseRaceKeyFromPath(url.pathname);
   if (request.method === "GET" && raceKey) {
@@ -343,8 +375,6 @@ export const processFetchOddsJob = async (env: Env, raceKey: string): Promise<vo
   await patchLastFetchInKv(env, source, yyyymmdd, raceKey, result.fetchedAt);
   await writeCachedOdds(env, raceKey, {
     fetchedAt: result.fetchedAt,
-    history: [],
-    historyByType: {},
     latest: result.latest,
   });
 };
