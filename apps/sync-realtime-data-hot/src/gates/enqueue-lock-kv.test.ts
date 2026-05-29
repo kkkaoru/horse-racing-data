@@ -76,22 +76,31 @@ it("returns 60 at final after window edge (3 minutes after race)", () => {
   ).toBe(60);
 });
 
-it("returns 600 in high-frequency window (11 minutes before race)", () => {
+it("caps high-frequency TTL to 60 seconds near final boundary (11 minutes before race)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
       new Date("2026-05-28T09:49:00+09:00"),
     ),
-  ).toBe(600);
+  ).toBe(60);
 });
 
-it("returns 600 in high-frequency window (15 minutes before race)", () => {
+it("caps high-frequency TTL to 300 seconds (15 minutes before race)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
       new Date("2026-05-28T09:45:00+09:00"),
     ),
-  ).toBe(600);
+  ).toBe(300);
+});
+
+it("caps high-frequency TTL to 540 seconds (19 minutes before race)", () => {
+  expect(
+    calculateEnqueueLockTtlSeconds(
+      new Date("2026-05-28T10:00:00+09:00"),
+      new Date("2026-05-28T09:41:00+09:00"),
+    ),
+  ).toBe(540);
 });
 
 it("returns 600 in high-frequency window (45 minutes before race)", () => {
@@ -112,20 +121,38 @@ it("returns 600 at high-frequency window edge (60 minutes before race)", () => {
   ).toBe(600);
 });
 
-it("returns 3600 just outside high-frequency window (61 minutes before race)", () => {
+it("caps default TTL to 60 seconds near high-frequency boundary (61 minutes before race)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
       new Date("2026-05-28T08:59:00+09:00"),
     ),
-  ).toBe(3600);
+  ).toBe(60);
 });
 
-it("returns 3600 well before race (70 minutes before)", () => {
+it("caps default TTL to 300 seconds (65 minutes before race)", () => {
+  expect(
+    calculateEnqueueLockTtlSeconds(
+      new Date("2026-05-28T10:00:00+09:00"),
+      new Date("2026-05-28T08:55:00+09:00"),
+    ),
+  ).toBe(300);
+});
+
+it("caps default TTL to 600 seconds (70 minutes before race)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
       new Date("2026-05-28T08:50:00+09:00"),
+    ),
+  ).toBe(600);
+});
+
+it("returns 3600 well before race (120 minutes before)", () => {
+  expect(
+    calculateEnqueueLockTtlSeconds(
+      new Date("2026-05-28T10:00:00+09:00"),
+      new Date("2026-05-28T08:00:00+09:00"),
     ),
   ).toBe(3600);
 });

@@ -7,6 +7,7 @@ const HIGH_FREQ_WINDOW_MINUTES_BEFORE = 60;
 const LOCK_TTL_FINAL_SECONDS = 60;
 const LOCK_TTL_HIGH_FREQ_SECONDS = 600;
 const LOCK_TTL_DEFAULT_SECONDS = 3600;
+const SECONDS_PER_MINUTE = 60;
 
 const buildEnqueueLockKey = (raceKey: string): string => `${ENQUEUE_LOCK_KEY_PREFIX}:${raceKey}`;
 
@@ -22,7 +23,16 @@ export const calculateEnqueueLockTtlSeconds = (raceStart: Date, now: Date): numb
     minutesUntilRace > FINAL_WINDOW_MINUTES_BEFORE &&
     minutesUntilRace <= HIGH_FREQ_WINDOW_MINUTES_BEFORE
   ) {
-    return LOCK_TTL_HIGH_FREQ_SECONDS;
+    const secondsUntilFinal = Math.ceil(
+      (minutesUntilRace - FINAL_WINDOW_MINUTES_BEFORE) * SECONDS_PER_MINUTE,
+    );
+    return Math.min(LOCK_TTL_HIGH_FREQ_SECONDS, secondsUntilFinal);
+  }
+  if (minutesUntilRace > HIGH_FREQ_WINDOW_MINUTES_BEFORE) {
+    const secondsUntilHighFreq = Math.ceil(
+      (minutesUntilRace - HIGH_FREQ_WINDOW_MINUTES_BEFORE) * SECONDS_PER_MINUTE,
+    );
+    return Math.min(LOCK_TTL_DEFAULT_SECONDS, secondsUntilHighFreq);
   }
   return LOCK_TTL_DEFAULT_SECONDS;
 };
