@@ -3,16 +3,19 @@
 import { buildRaceFeatures } from "./features/build";
 import { encodeRaceFeaturesParquet } from "./features/parquet";
 import { buildRaceParquetR2Key } from "./features/r2-key";
+import { handleFinishPositionPredictionJob } from "./finish-position/inference";
 import { putBuildStateToKv } from "./gates/build-state-kv";
+import { acquireEnqueueLock, isEnqueueLocked } from "./gates/enqueue-lock-kv";
 import { writeLatestFeaturesToKv } from "./gates/latest-features-kv-mirror";
 import { shouldRunFeaturesCron } from "./gates/polling-window-gate";
 import { jsonResponse } from "./http";
+import { handleRunningStylePredictionJob } from "./running-style/inference";
 import {
   getFinishPositionPredictions,
   getRunningStyleInferenceState,
   listRaceRunningStyles,
-  upsertFinishPositionPredictions,
 } from "./storage";
+import { getTodayJst } from "./time";
 import type { DailyRaceEntryRow, Env, Job, RaceJobKey } from "./types";
 
 const MIGRATION_STATE_KV_PREFIX = "features:migration";
@@ -175,17 +178,128 @@ export const handleFetchRequest = async (env: Env, request: Request): Promise<Re
   return jsonResponse({ error: "not found" }, { status: 404 });
 };
 
-export const runScheduledFeaturesPlan = async (now: Date): Promise<boolean> => {
-  if (!shouldRunFeaturesCron(now)) {
-    return false;
+const RACE_KEY_LIST_ENDPOINT_PATH = "/api/internal/list-race-keys-by-date-from-hyperdrive";
+
+interface RaceKeyListResponse {
+  rows: { race_key: string }[];
+}
+
+const parseRaceJobKeyFromRaceKey = (raceKey: string): RaceJobKey | null => {
+  const parts = raceKey.split(":");
+  if (parts.length !== 5) {
+    return null;
   }
-  // TODO(next phase): enqueue per-race predict-running-style and
-  // predict-finish-position jobs for today's NAR/JRA races.
-  return true;
+  const source = parts[0] === "jra" || parts[0] === "nar" ? parts[0] : null;
+  if (!source) {
+    return null;
+  }
+  return {
+    kaisaiNen: parts[1]!,
+    kaisaiTsukihi: parts[2]!,
+    keibajoCode: parts[3]!,
+    raceBango: parts[4]!,
+    raceKey,
+    source,
+  };
 };
 
-export const handleScheduled = async (event: ScheduledEvent): Promise<void> => {
-  await runScheduledFeaturesPlan(new Date(event.scheduledTime));
+export const fetchRaceKeysForDateFromOldWorker = async (
+  env: Env,
+  yyyymmdd: string,
+): Promise<string[]> => {
+  if (!env.REALTIME_OLD || !env.REALTIME_OLD_ADMIN_TOKEN) {
+    return [];
+  }
+  const response = await env.REALTIME_OLD.fetch(
+    `https://sync-realtime-data.kkk4oru.com${RACE_KEY_LIST_ENDPOINT_PATH}`,
+    {
+      body: JSON.stringify({
+        kaisaiNen: yyyymmdd.slice(0, 4),
+        kaisaiTsukihi: yyyymmdd.slice(4, 8),
+      }),
+      headers: {
+        authorization: `Bearer ${env.REALTIME_OLD_ADMIN_TOKEN}`,
+        "content-type": "application/json",
+      },
+      method: "POST",
+    },
+  );
+  if (!response.ok) {
+    return [];
+  }
+  const body = (await response.json()) as RaceKeyListResponse;
+  return body.rows.map((row) => row.race_key);
+};
+
+const enqueueRaceInferenceJobs = async (
+  env: Env,
+  raceJobKey: RaceJobKey,
+  predictedAt: string,
+): Promise<void> => {
+  const runningStyleLocked = await isEnqueueLocked(
+    env,
+    raceJobKey.raceKey,
+    "predict-running-style",
+  );
+  if (!runningStyleLocked) {
+    await env.REALTIME_FEATURES_JOBS.send({
+      kaisaiNen: raceJobKey.kaisaiNen,
+      kaisaiTsukihi: raceJobKey.kaisaiTsukihi,
+      keibajoCode: raceJobKey.keibajoCode,
+      predictedAt,
+      raceBango: raceJobKey.raceBango,
+      raceKey: raceJobKey.raceKey,
+      source: raceJobKey.source,
+      type: "predict-running-style",
+    });
+    await acquireEnqueueLock(env, raceJobKey.raceKey, "predict-running-style");
+  }
+  const finishPositionLocked = await isEnqueueLocked(
+    env,
+    raceJobKey.raceKey,
+    "predict-finish-position",
+  );
+  if (!finishPositionLocked) {
+    await env.REALTIME_FEATURES_JOBS.send({
+      kaisaiNen: raceJobKey.kaisaiNen,
+      kaisaiTsukihi: raceJobKey.kaisaiTsukihi,
+      keibajoCode: raceJobKey.keibajoCode,
+      predictedAt,
+      raceBango: raceJobKey.raceBango,
+      raceKey: raceJobKey.raceKey,
+      source: raceJobKey.source,
+      type: "predict-finish-position",
+    });
+    await acquireEnqueueLock(env, raceJobKey.raceKey, "predict-finish-position");
+  }
+};
+
+export interface ScheduledFeaturesPlanResult {
+  ran: boolean;
+  enqueuedRaceCount: number;
+}
+
+export const runScheduledFeaturesPlan = async (
+  env: Env,
+  now: Date,
+): Promise<ScheduledFeaturesPlanResult> => {
+  if (!shouldRunFeaturesCron(now)) {
+    return { enqueuedRaceCount: 0, ran: false };
+  }
+  const yyyymmdd = getTodayJst(now);
+  const raceKeys = await fetchRaceKeysForDateFromOldWorker(env, yyyymmdd);
+  const predictedAt = now.toISOString();
+  const raceJobKeys = raceKeys
+    .map(parseRaceJobKeyFromRaceKey)
+    .filter((value): value is RaceJobKey => value !== null);
+  for (const raceJobKey of raceJobKeys) {
+    await enqueueRaceInferenceJobs(env, raceJobKey, predictedAt);
+  }
+  return { enqueuedRaceCount: raceJobKeys.length, ran: true };
+};
+
+export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<void> => {
+  await runScheduledFeaturesPlan(env, new Date(event.scheduledTime));
 };
 
 const toRaceJobKey = (job: Extract<Job, { type: "build-race-features" }>): RaceJobKey => ({
@@ -208,10 +322,17 @@ const handlePredictRunningStyleJob = async (
   env: Env,
   job: Extract<Job, { type: "predict-running-style" }>,
 ): Promise<void> => {
-  await env.FEATURES_KV.put(
-    `features:running-style-requested:${job.raceKey}`,
-    JSON.stringify({ predictedAt: job.predictedAt }),
-    { expirationTtl: 3600 },
+  await handleRunningStylePredictionJob(
+    {
+      kaisaiNen: job.kaisaiNen,
+      kaisaiTsukihi: job.kaisaiTsukihi,
+      keibajoCode: job.keibajoCode,
+      predictedAt: job.predictedAt,
+      raceBango: job.raceBango,
+      raceKey: job.raceKey,
+      source: job.source,
+    },
+    env,
   );
 };
 
@@ -219,13 +340,18 @@ const handlePredictFinishPositionJob = async (
   env: Env,
   job: Extract<Job, { type: "predict-finish-position" }>,
 ): Promise<void> => {
-  await upsertFinishPositionPredictions(env.REALTIME_FEATURES_DB, {
-    raceKey: job.raceKey,
-    source: job.source,
-    predictionsJson: "[]",
-    predictedAt: job.predictedAt,
-    predictorVersion: "skeleton-v0",
-  });
+  await handleFinishPositionPredictionJob(
+    {
+      kaisaiNen: job.kaisaiNen,
+      kaisaiTsukihi: job.kaisaiTsukihi,
+      keibajoCode: job.keibajoCode,
+      predictedAt: job.predictedAt,
+      raceBango: job.raceBango,
+      raceKey: job.raceKey,
+      source: job.source,
+    },
+    env,
+  );
 };
 
 export const handleQueue = async (batch: MessageBatch<Job>, env: Env): Promise<void> => {
@@ -254,8 +380,8 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     return handleFetchRequest(env, request);
   },
-  async scheduled(event: ScheduledEvent): Promise<void> {
-    await handleScheduled(event);
+  async scheduled(event: ScheduledEvent, env: Env): Promise<void> {
+    await handleScheduled(event, env);
   },
   async queue(batch: MessageBatch<Job>, env: Env): Promise<void> {
     await handleQueue(batch, env);

@@ -179,6 +179,7 @@ export interface Env {
   REALTIME_API_CACHE_SECONDS?: string;
   REALTIME_DB: D1Database;
   REALTIME_HOT?: { fetch: typeof fetch };
+  REALTIME_FEATURES?: { fetch: typeof fetch };
   REALTIME_JOBS: Queue<Job>;
   REALTIME_TEST_NOW?: string;
   RUNNING_STYLE_CACHE_ORIGIN?: string;

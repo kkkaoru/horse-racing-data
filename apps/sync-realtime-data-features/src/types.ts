@@ -165,6 +165,7 @@ export interface Env {
   FEATURES_ARCHIVE: R2Bucket;
   MODELS: R2Bucket;
   REALTIME_OLD?: { fetch: typeof fetch };
+  REALTIME_OLD_ADMIN_TOKEN?: string;
   HYPERDRIVE?: HyperdriveBinding;
   FEATURES_BUILD_LOCK_TTL_SECONDS?: string;
   FEATURES_RACE_LIST_KV_TTL_SECONDS?: string;

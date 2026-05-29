@@ -21,9 +21,11 @@
     "FEATURES_PARQUET_BYTES_CACHE_TTL_SECONDS": "300",
     "FEATURES_LATEST_KV_TTL_SECONDS": "600",
   },
-  // Crons left empty for initial deploy; cutover step (Phase C) will populate these.
+  // */10 * * * * — enqueue today's per-race predict-running-style and
+  // predict-finish-position jobs. Gate 3 (enqueue lock KV) suppresses
+  // dedupe within 60s. Outside JST polling window (06-21) the tick is a no-op.
   "triggers": {
-    "crons": [],
+    "crons": ["*/10 * * * *"],
   },
   "queues": {
     "producers": [

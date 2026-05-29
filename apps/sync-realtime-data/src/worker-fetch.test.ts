@@ -741,6 +741,84 @@ it("forwardRaceSourceToHot logs the error when the hot worker fetch rejects", as
   );
 });
 
+it("forwardRaceForFeatures is a no-op when REALTIME_FEATURES binding is missing", async () => {
+  const { forwardRaceForFeatures } = await import("./worker");
+  await forwardRaceForFeatures(buildEnv(), {
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0512",
+    keibajoCode: "08",
+    raceBango: "01",
+    raceKey: "jra:2026:0512:08:01",
+    source: "jra",
+  });
+});
+
+it("forwardRaceForFeatures is a no-op when internal token is missing", async () => {
+  const { forwardRaceForFeatures } = await import("./worker");
+  const featuresFetch = vi.fn();
+  await forwardRaceForFeatures(
+    buildEnv({ REALTIME_FEATURES: { fetch: featuresFetch } as never } as never),
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      keibajoCode: "08",
+      raceBango: "01",
+      raceKey: "jra:2026:0512:08:01",
+      source: "jra",
+    },
+  );
+  expect(featuresFetch).not.toHaveBeenCalled();
+});
+
+it("forwardRaceForFeatures posts to /api/internal/recompute-and-build-parquet when configured", async () => {
+  const { forwardRaceForFeatures } = await import("./worker");
+  const featuresFetch = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+  await forwardRaceForFeatures(
+    buildEnv({
+      PC_KEIBA_VIEWER_INTERNAL_TOKEN: "internal-token",
+      REALTIME_FEATURES: { fetch: featuresFetch } as never,
+    } as never),
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      keibajoCode: "55",
+      raceBango: "01",
+      raceKey: "nar:2026:0512:55:01",
+      source: "nar",
+    },
+  );
+  expect(featuresFetch).toHaveBeenCalledTimes(1);
+});
+
+it("forwardRaceForFeatures logs the error when the features worker fetch rejects", async () => {
+  const { forwardRaceForFeatures } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  const featuresFetch = vi.fn(async () => {
+    throw new Error("features boom");
+  });
+  await forwardRaceForFeatures(
+    buildEnv({
+      PC_KEIBA_VIEWER_INTERNAL_TOKEN: "internal-token",
+      REALTIME_FEATURES: { fetch: featuresFetch } as never,
+    } as never),
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      keibajoCode: "55",
+      raceBango: "01",
+      raceKey: "nar:2026:0512:55:01",
+      source: "nar",
+    },
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "forward-race-for-features",
+    "error",
+    "nar:2026:0512:55:01",
+    "features boom",
+  );
+});
+
 it("fetchHotOddsPayload returns null when REALTIME_HOT is not configured", async () => {
   const { fetchHotOddsPayload } = await import("./worker");
   expect(await fetchHotOddsPayload(buildEnv(), "jra:2026:0512:08:01")).toBeNull();

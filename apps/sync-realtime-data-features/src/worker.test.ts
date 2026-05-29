@@ -9,6 +9,12 @@ vi.mock("./features/parquet", () => ({
   encodeRaceFeaturesParquet: vi.fn(async () => new Uint8Array([1, 2, 3])),
   decodeRaceFeaturesParquet: vi.fn(async () => []),
 }));
+vi.mock("./running-style/inference", () => ({
+  handleRunningStylePredictionJob: vi.fn(async () => ({ raceKey: "r", writtenCount: 0 })),
+}));
+vi.mock("./finish-position/inference", () => ({
+  handleFinishPositionPredictionJob: vi.fn(async () => ({ predictionsCount: 0, raceKey: "r" })),
+}));
 
 import { buildRaceFeatures } from "./features/build";
 import { encodeRaceFeaturesParquet } from "./features/parquet";
@@ -341,16 +347,92 @@ it("routes GET /api/internal/migration-state", async () => {
 });
 
 it("runScheduledFeaturesPlan skips outside polling window", async () => {
-  await expect(runScheduledFeaturesPlan(new Date("2026-05-29T20:00:00Z"))).resolves.toBe(false);
+  const env = buildEnv();
+  await expect(
+    runScheduledFeaturesPlan(env, new Date("2026-05-29T20:00:00Z")),
+  ).resolves.toStrictEqual({ enqueuedRaceCount: 0, ran: false });
 });
 
-it("runScheduledFeaturesPlan runs inside polling window", async () => {
-  await expect(runScheduledFeaturesPlan(new Date("2026-05-29T03:00:00Z"))).resolves.toBe(true);
+it("runScheduledFeaturesPlan runs inside polling window without REALTIME_OLD", async () => {
+  const env = buildEnv();
+  await expect(
+    runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z")),
+  ).resolves.toStrictEqual({ enqueuedRaceCount: 0, ran: true });
+});
+
+it("runScheduledFeaturesPlan enqueues per-race jobs from REALTIME_OLD response", async () => {
+  const queueSend = vi.fn(async () => {});
+  const oldFetch = vi.fn(
+    async () =>
+      new Response(
+        JSON.stringify({
+          rows: [{ race_key: "nar:2026:0529:30:08" }, { race_key: "jra:2026:0529:08:01" }],
+        }),
+      ),
+  );
+  const env = buildEnv({
+    REALTIME_FEATURES_JOBS: { send: queueSend } as unknown as Queue<Job>,
+    REALTIME_OLD: { fetch: oldFetch } as never,
+    REALTIME_OLD_ADMIN_TOKEN: "old-secret",
+  });
+  const result = await runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z"));
+  expect(result.ran).toBe(true);
+  expect(result.enqueuedRaceCount).toBe(2);
+  expect(queueSend).toHaveBeenCalledTimes(4);
+});
+
+it("runScheduledFeaturesPlan skips enqueue when lock is held", async () => {
+  const queueSend = vi.fn(async () => {});
+  const oldFetch = vi.fn(
+    async () => new Response(JSON.stringify({ rows: [{ race_key: "nar:2026:0529:30:08" }] })),
+  );
+  const kvGet = vi.fn().mockResolvedValue("1");
+  const env = buildEnv({
+    FEATURES_KV: {
+      delete: vi.fn(),
+      get: kvGet,
+      put: vi.fn(),
+    } as unknown as KVNamespace,
+    REALTIME_FEATURES_JOBS: { send: queueSend } as unknown as Queue<Job>,
+    REALTIME_OLD: { fetch: oldFetch } as never,
+    REALTIME_OLD_ADMIN_TOKEN: "old-secret",
+  });
+  await runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z"));
+  expect(queueSend).not.toHaveBeenCalled();
+});
+
+it("runScheduledFeaturesPlan ignores invalid race_keys", async () => {
+  const queueSend = vi.fn(async () => {});
+  const oldFetch = vi.fn(
+    async () =>
+      new Response(JSON.stringify({ rows: [{ race_key: "garbage" }, { race_key: "x:y:z:w:v" }] })),
+  );
+  const env = buildEnv({
+    REALTIME_FEATURES_JOBS: { send: queueSend } as unknown as Queue<Job>,
+    REALTIME_OLD: { fetch: oldFetch } as never,
+    REALTIME_OLD_ADMIN_TOKEN: "old-secret",
+  });
+  const result = await runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z"));
+  expect(result.enqueuedRaceCount).toBe(0);
+  expect(queueSend).not.toHaveBeenCalled();
+});
+
+it("runScheduledFeaturesPlan returns empty when REALTIME_OLD response is not ok", async () => {
+  const queueSend = vi.fn(async () => {});
+  const oldFetch = vi.fn(async () => new Response("", { status: 500 }));
+  const env = buildEnv({
+    REALTIME_FEATURES_JOBS: { send: queueSend } as unknown as Queue<Job>,
+    REALTIME_OLD: { fetch: oldFetch } as never,
+    REALTIME_OLD_ADMIN_TOKEN: "old-secret",
+  });
+  const result = await runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z"));
+  expect(result.enqueuedRaceCount).toBe(0);
 });
 
 it("handleScheduled dispatches scheduled tick", async () => {
+  const env = buildEnv();
   await expect(
-    handleScheduled({ scheduledTime: Date.parse("2026-05-29T20:00:00Z") } as ScheduledEvent),
+    handleScheduled({ scheduledTime: Date.parse("2026-05-29T20:00:00Z") } as ScheduledEvent, env),
   ).resolves.toBeUndefined();
 });
 
@@ -434,8 +516,9 @@ it("default worker.fetch dispatches handleFetchRequest", async () => {
 
 it("default worker.scheduled dispatches handleScheduled", async () => {
   const { default: worker } = await import("./worker");
+  const env = buildEnv();
   await expect(
-    worker.scheduled({ scheduledTime: Date.parse("2026-05-29T20:00:00Z") } as ScheduledEvent),
+    worker.scheduled({ scheduledTime: Date.parse("2026-05-29T20:00:00Z") } as ScheduledEvent, env),
   ).resolves.toBeUndefined();
 });
 

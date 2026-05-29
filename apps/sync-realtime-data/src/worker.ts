@@ -188,6 +188,7 @@ const json = (body: unknown, init?: ResponseInit): Response =>
   });
 
 const HOT_WORKER_ORIGIN = "https://sync-realtime-data-hot.kkk4oru.com";
+const FEATURES_WORKER_ORIGIN = "https://sync-realtime-data-features.kkk4oru.com";
 
 interface ForwardRaceSourceArgs {
   source: "jra" | "nar";
@@ -195,6 +196,15 @@ interface ForwardRaceSourceArgs {
   raceStartAtJst: string;
   debaUrl: string;
   oddsLinksJson: string;
+  kaisaiNen: string;
+  kaisaiTsukihi: string;
+  keibajoCode: string;
+  raceBango: string;
+}
+
+interface ForwardRaceForFeaturesArgs {
+  source: "jra" | "nar";
+  raceKey: string;
   kaisaiNen: string;
   kaisaiTsukihi: string;
   keibajoCode: string;
@@ -231,6 +241,40 @@ export const forwardRaceSourceToHot = async (
     await logFetch(
       env.REALTIME_DB,
       "forward-race-source-to-hot",
+      "error",
+      args.raceKey,
+      formatError(error),
+    ).catch(() => undefined);
+  }
+};
+
+// Fire-and-forget POST to the new features worker so the new R2 Parquet build
+// + new D1 inference pipeline can pick up the race the moment we discover it.
+// fail-soft: any error is logged but the upstream race upsert is never blocked.
+export const forwardRaceForFeatures = async (
+  env: Env,
+  args: ForwardRaceForFeaturesArgs,
+): Promise<void> => {
+  if (!env.REALTIME_FEATURES || !env.PC_KEIBA_VIEWER_INTERNAL_TOKEN) {
+    return;
+  }
+  try {
+    await env.REALTIME_FEATURES.fetch(
+      `${FEATURES_WORKER_ORIGIN}/api/internal/recompute-and-build-parquet`,
+      {
+        body: JSON.stringify(args),
+        headers: {
+          "content-type": "application/json",
+          "x-pc-keiba-internal-token": env.PC_KEIBA_VIEWER_INTERNAL_TOKEN,
+        },
+        method: "POST",
+      },
+    );
+  } catch (error) {
+    // Forwarding to the features worker is best-effort: never block discovery on it.
+    await logFetch(
+      env.REALTIME_DB,
+      "forward-race-for-features",
       "error",
       args.raceKey,
       formatError(error),
@@ -452,6 +496,14 @@ const upsertDiscoveredUrls = async (
       raceStartAtJst: buildRaceStartAtJst(race.kaisai_nen, race.kaisai_tsukihi, race.hasso_jikoku),
       source: "jra",
     });
+    await forwardRaceForFeatures(env, {
+      kaisaiNen: race.kaisai_nen,
+      kaisaiTsukihi: race.kaisai_tsukihi,
+      keibajoCode: race.keibajo_code,
+      raceBango,
+      raceKey: jraRaceKey,
+      source: "jra",
+    });
     upserted += 1;
   }
   for (const raceList of targetRaceListUrls) {
@@ -496,6 +548,14 @@ const upsertDiscoveredUrls = async (
           race.kaisai_tsukihi,
           race.hasso_jikoku,
         ),
+        source: "nar",
+      });
+      await forwardRaceForFeatures(env, {
+        kaisaiNen: race.kaisai_nen,
+        kaisaiTsukihi: race.kaisai_tsukihi,
+        keibajoCode,
+        raceBango,
+        raceKey: narRaceKey,
         source: "nar",
       });
       upserted += 1;
@@ -551,6 +611,14 @@ const ensureJraRaceSourcesAreCurrent = async (env: Env, targetDate: string): Pro
       raceBango,
       raceKey: jraRaceKey,
       raceStartAtJst: buildRaceStartAtJst(race.kaisai_nen, race.kaisai_tsukihi, race.hasso_jikoku),
+      source: "jra",
+    });
+    await forwardRaceForFeatures(env, {
+      kaisaiNen: race.kaisai_nen,
+      kaisaiTsukihi: race.kaisai_tsukihi,
+      keibajoCode: race.keibajo_code,
+      raceBango,
+      raceKey: jraRaceKey,
       source: "jra",
     });
   }
