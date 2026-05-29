@@ -12,6 +12,10 @@ import { shouldRunFeaturesCron } from "./gates/polling-window-gate";
 import { jsonResponse } from "./http";
 import { handleRunningStylePredictionJob } from "./running-style/inference";
 import {
+  listTodayRaceKeysFromHyperdrive,
+  toRaceJobKeyFromTodayRaceKey,
+} from "./scheduled-race-list";
+import {
   getFinishPositionPredictions,
   getRunningStyleInferenceState,
   listRaceRunningStyles,
@@ -206,40 +210,6 @@ export const handleFetchRequest = async (env: Env, request: Request): Promise<Re
   return jsonResponse({ error: "not found" }, { status: 404 });
 };
 
-const RACE_KEY_LIST_ENDPOINT_PATH = "/api/internal/list-race-keys-by-date-from-hyperdrive";
-
-interface RaceKeyListResponse {
-  rows: { race_key: string }[];
-}
-
-export const fetchRaceKeysForDateFromOldWorker = async (
-  env: Env,
-  yyyymmdd: string,
-): Promise<string[]> => {
-  if (!env.REALTIME_OLD || !env.REALTIME_OLD_ADMIN_TOKEN) {
-    return [];
-  }
-  const response = await env.REALTIME_OLD.fetch(
-    `https://sync-realtime-data.kkk4oru.com${RACE_KEY_LIST_ENDPOINT_PATH}`,
-    {
-      body: JSON.stringify({
-        kaisaiNen: yyyymmdd.slice(0, 4),
-        kaisaiTsukihi: yyyymmdd.slice(4, 8),
-      }),
-      headers: {
-        authorization: `Bearer ${env.REALTIME_OLD_ADMIN_TOKEN}`,
-        "content-type": "application/json",
-      },
-      method: "POST",
-    },
-  );
-  if (!response.ok) {
-    return [];
-  }
-  const body = (await response.json()) as RaceKeyListResponse;
-  return body.rows.map((row) => row.race_key);
-};
-
 const enqueueRaceInferenceJobs = async (
   env: Env,
   raceJobKey: RaceJobKey,
@@ -296,11 +266,9 @@ export const runScheduledFeaturesPlan = async (
     return { enqueuedRaceCount: 0, ran: false };
   }
   const yyyymmdd = getTodayJst(now);
-  const raceKeys = await fetchRaceKeysForDateFromOldWorker(env, yyyymmdd);
+  const todayRaceKeys = await listTodayRaceKeysFromHyperdrive(env, yyyymmdd);
   const predictedAt = now.toISOString();
-  const raceJobKeys = raceKeys
-    .map(tryParseRaceKey)
-    .filter((value): value is RaceJobKey => value !== null);
+  const raceJobKeys = todayRaceKeys.map(toRaceJobKeyFromTodayRaceKey);
   for (const raceJobKey of raceJobKeys) {
     await enqueueRaceInferenceJobs(env, raceJobKey, predictedAt);
   }
