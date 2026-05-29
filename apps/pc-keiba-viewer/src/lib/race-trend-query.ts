@@ -2,6 +2,8 @@ export const RACE_TREND_TARGET_QUERY_PARAM = "raceTrendTargets";
 
 export const RACE_TREND_SCORE_CONDITIONS_QUERY_PARAM = "raceTrendScoreConditions";
 
+export const RACE_TREND_SORT_QUERY_PARAM = "raceTrendSortBy";
+
 const RACE_TREND_TARGET_QUERY_PARAM_ALIASES = ["trendTargets", "trend"] as const;
 
 export const RACE_TREND_TARGET_KEYS = ["runningStyle", "frame", "jockey", "raceNumber"] as const;
@@ -15,6 +17,19 @@ export const RACE_TREND_SCORE_CONDITION_QUERY_KEYS = [
 export type RaceTrendTargetKey = (typeof RACE_TREND_TARGET_KEYS)[number];
 
 export type RaceTrendScoreConditionKey = (typeof RACE_TREND_SCORE_CONDITION_QUERY_KEYS)[number];
+
+export type RaceTrendSortKey = "score" | "showRate" | "quinellaRate" | "winRate";
+
+export const RACE_TREND_SORT_KEYS = [
+  "score",
+  "showRate",
+  "quinellaRate",
+  "winRate",
+] satisfies readonly RaceTrendSortKey[];
+
+export const DEFAULT_RACE_TREND_SORT_KEY: RaceTrendSortKey = "showRate";
+
+const RACE_TREND_SORT_KEY_SET: Set<string> = new Set(RACE_TREND_SORT_KEYS);
 
 export type RaceTrendTargets = Record<RaceTrendTargetKey, boolean>;
 
@@ -187,4 +202,30 @@ export const isDefaultRaceTrendScoreConditionsQuery = (
 
 export const clearRaceTrendScoreConditionsQueryParam = (searchParams: URLSearchParams): void => {
   searchParams.delete(RACE_TREND_SCORE_CONDITIONS_QUERY_PARAM);
+};
+
+const isRaceTrendSortKey = (value: string): value is RaceTrendSortKey =>
+  RACE_TREND_SORT_KEY_SET.has(value);
+
+export const parseRaceTrendSortKeyQuery = (value: string | null): RaceTrendSortKey => {
+  if (value === null) return DEFAULT_RACE_TREND_SORT_KEY;
+  const normalized = value.trim();
+  return isRaceTrendSortKey(normalized) ? normalized : DEFAULT_RACE_TREND_SORT_KEY;
+};
+
+export const serializeRaceTrendSortKeyQuery = (key: RaceTrendSortKey): string => key;
+
+export const getRaceTrendSortKeyQueryValue = (
+  searchParams: URLSearchParams | SearchParamRecord,
+): string | null => getSearchParamValue(searchParams, RACE_TREND_SORT_QUERY_PARAM);
+
+export const getRaceTrendSortKeyFromSearchParams = (
+  searchParams: URLSearchParams | SearchParamRecord,
+): RaceTrendSortKey => parseRaceTrendSortKeyQuery(getRaceTrendSortKeyQueryValue(searchParams));
+
+export const isDefaultRaceTrendSortKey = (key: RaceTrendSortKey): boolean =>
+  key === DEFAULT_RACE_TREND_SORT_KEY;
+
+export const clearRaceTrendSortKeyQueryParam = (searchParams: URLSearchParams): void => {
+  searchParams.delete(RACE_TREND_SORT_QUERY_PARAM);
 };

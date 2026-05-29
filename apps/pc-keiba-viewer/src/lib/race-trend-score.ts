@@ -67,11 +67,11 @@ export const RACE_TREND_SCORE_CONDITION_KEYS = [
   "frameRunningStyle",
 ] satisfies readonly RaceTrendScoreCondition[];
 
-// Default conditions: enable frame only.
+// Default conditions: enable all signals.
 export const DEFAULT_RACE_TREND_SCORE_CONDITIONS: RaceTrendScoreConditions = {
   frame: true,
-  jockey: false,
-  frameRunningStyle: false,
+  jockey: true,
+  frameRunningStyle: true,
 };
 
 // Odds weight: log10(max(winOdds, floor)) + 1, neutral 1 when null.

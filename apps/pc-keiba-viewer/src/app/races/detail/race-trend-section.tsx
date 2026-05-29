@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import type { RaceSource } from "../../../lib/codes";
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
@@ -18,23 +19,31 @@ import {
 import { RACE_TREND_CACHE_REFRESH_PARAM } from "../../../lib/race-trend-cache";
 import {
   clearRaceTrendScoreConditionsQueryParam,
+  clearRaceTrendSortKeyQueryParam,
   clearRaceTrendTargetQueryParams,
   DEFAULT_RACE_TREND_SCORE_CONDITIONS_QUERY,
+  DEFAULT_RACE_TREND_SORT_KEY,
   DEFAULT_RACE_TREND_TARGETS,
   getRaceTrendScoreConditionsFromSearchParams,
+  getRaceTrendSortKeyFromSearchParams,
   getRaceTrendTargetsFromSearchParams,
   isDefaultRaceTrendScoreConditionsQuery,
+  isDefaultRaceTrendSortKey,
   isDefaultRaceTrendTargets,
   isSameRaceTrendScoreConditionsQuery,
   isSameRaceTrendTargets,
   RACE_TREND_SCORE_CONDITION_QUERY_KEYS,
   RACE_TREND_SCORE_CONDITIONS_QUERY_PARAM,
+  RACE_TREND_SORT_KEYS,
+  RACE_TREND_SORT_QUERY_PARAM,
   RACE_TREND_TARGET_KEYS,
   RACE_TREND_TARGET_QUERY_PARAM,
   serializeRaceTrendScoreConditionsQuery,
+  serializeRaceTrendSortKeyQuery,
   serializeRaceTrendTargets,
   type RaceTrendScoreConditionKey,
   type RaceTrendScoreConditionsQuery,
+  type RaceTrendSortKey,
   type RaceTrendTargetKey,
   type RaceTrendTargets,
 } from "../../../lib/race-trend-query";
@@ -101,7 +110,18 @@ const SCORE_PLACEHOLDER = "-";
 const SCORE_DECIMAL_PLACES = 2;
 const RACE_TREND_SCORE_TOOLTIP_ID = "race-trend-score-tooltip";
 const RACE_TREND_SCORE_TOOLTIP_TEXT =
-  "過去レースの「人気 − 着順」を元に算出した相対スコア。 3 着以内は大きくプラス (オッズで重み付け)、 4-5 着は人気とオッズに応じた中程度のプラス、 6 着以下は無評価。 選択されたスコア条件 (枠 / 騎手 / 脚質) で過去レースを filter し、 全馬番で 0.00 ～ 1.00 の相対値で正規化。";
+  "過去レースの「人気 − 着順」を元に算出する相対スコア。 3 着以内はオッズ重み付きで大きくプラス、 4-5 着は人気とオッズの動的計算で中程度プラス、 6 着以下は無評価。 「スコア条件」 (枠 / 騎手 / 枠+脚質) で過去レースを絞り込み、 選択条件ごとのスコアを平均して、 全馬番で 0.00 〜 1.00 の相対値に正規化します。";
+const RACE_TREND_TOOLTIP_OFFSET_PX = 8;
+
+const SORT_KEY_LABELS: Record<RaceTrendSortKey, string> = {
+  score: "スコア",
+  showRate: "複勝率",
+  quinellaRate: "連対率",
+  winRate: "勝率",
+};
+
+const SCORE_DETAIL_HEADING = "スコア対象レコード";
+const SCORE_DETAIL_EMPTY_MESSAGE = "スコア条件が選択されていません";
 
 const RUNNING_STYLE_LABELS: Record<RaceTrendRunningStyle, string> = {
   nige: "逃げ",
@@ -224,6 +244,86 @@ const sortDetailsByLatestRace = (details: RaceTrendDetail[]): RaceTrendDetail[] 
     return (a.horseNumber ?? "").localeCompare(b.horseNumber ?? "", "ja", { numeric: true });
   });
 
+interface RowSortContext {
+  scores: Map<string, number | null>;
+}
+
+const averageRowScore = (
+  row: RaceTrendRunningStyleRow,
+  scores: Map<string, number | null>,
+): number => {
+  const values = row.targetHorseNumbers
+    .map((umaban) => scores.get(umaban) ?? null)
+    .filter(isFiniteScoreValue);
+  // Rows without any finite score are pushed to the bottom of a descending sort.
+  if (values.length === 0) return Number.NEGATIVE_INFINITY;
+  return averageScoreValues(values);
+};
+
+const SORT_VALUE_GETTERS: Record<
+  RaceTrendSortKey,
+  (row: RaceTrendRunningStyleRow, context: RowSortContext) => number
+> = {
+  score: (row, context) => averageRowScore(row, context.scores),
+  showRate: (row) => row.showRate,
+  quinellaRate: (row) => row.quinellaRate,
+  winRate: (row) => row.winRate,
+};
+
+interface RowComparatorParams {
+  sortBy: RaceTrendSortKey;
+  scores: Map<string, number | null>;
+}
+
+const compareRowsBySortKey =
+  (params: RowComparatorParams) =>
+  (a: RaceTrendRunningStyleRow, b: RaceTrendRunningStyleRow): number => {
+    const getter = SORT_VALUE_GETTERS[params.sortBy];
+    const context: RowSortContext = { scores: params.scores };
+    const valueOrder = getter(b, context) - getter(a, context);
+    if (valueOrder !== 0) return valueOrder;
+    return a.key.localeCompare(b.key);
+  };
+
+const RACE_TREND_SORT_KEY_SET: Set<string> = new Set(RACE_TREND_SORT_KEYS);
+
+const isRaceTrendSortKeyValue = (value: string): value is RaceTrendSortKey =>
+  RACE_TREND_SORT_KEY_SET.has(value);
+
+const parseSortChangeEvent = (value: string): RaceTrendSortKey =>
+  isRaceTrendSortKeyValue(value) ? value : DEFAULT_RACE_TREND_SORT_KEY;
+
+const deriveScoreConditionTrendTargets = (
+  scoreConditions: RaceTrendScoreConditionsQuery,
+): RaceTrendTargets => ({
+  frame: scoreConditions.frame || scoreConditions.frameRunningStyle,
+  jockey: scoreConditions.jockey,
+  runningStyle: scoreConditions.frameRunningStyle,
+  raceNumber: false,
+});
+
+const hasAnyScoreCondition = (scoreConditions: RaceTrendScoreConditionsQuery): boolean =>
+  RACE_TREND_SCORE_CONDITION_QUERY_KEYS.some((key) => scoreConditions[key]);
+
+const collectScoreDetailsForRow = (
+  row: RaceTrendRunningStyleRow,
+  scoreRows: RaceTrendRunningStyleRow[],
+): RaceTrendDetail[] => {
+  const targetSet: Set<string> = new Set(row.targetHorseNumbers);
+  const seen: Set<string> = new Set();
+  const overlapping = scoreRows.filter((scoreRow) =>
+    scoreRow.targetHorseNumbers.some((umaban) => targetSet.has(umaban)),
+  );
+  return overlapping.flatMap((scoreRow) =>
+    scoreRow.details.filter((detail) => {
+      const key = `${detail.source}:${detail.date}:${detail.keibajoCode}:${detail.raceNumber}:${detail.horseNumber ?? ""}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }),
+  );
+};
+
 const getApiPath = ({
   day,
   defaultEndDate,
@@ -313,6 +413,18 @@ const replaceRaceTrendScoreConditionsQuery = (
   }
 };
 
+const replaceRaceTrendSortKeyQuery = (sortKey: RaceTrendSortKey): void => {
+  const url = new URL(window.location.href);
+  clearRaceTrendSortKeyQueryParam(url.searchParams);
+  if (!isDefaultRaceTrendSortKey(sortKey)) {
+    url.searchParams.set(RACE_TREND_SORT_QUERY_PARAM, serializeRaceTrendSortKeyQuery(sortKey));
+  }
+  const nextPath = `${url.pathname}${url.search}${url.hash}`;
+  if (nextPath !== getCurrentLocationPath()) {
+    window.history.replaceState(window.history.state, "", nextPath);
+  }
+};
+
 const isRaceTrendUpdatedMessage = (value: unknown): boolean =>
   typeof value === "object" &&
   value !== null &&
@@ -325,21 +437,92 @@ const TrendHeaderLabel = ({ children, secondLine }: { children: string; secondLi
   </span>
 );
 
+interface TooltipPosition {
+  top: number;
+  left: number;
+}
+
+const computeTooltipPosition = (rect: DOMRect): TooltipPosition => ({
+  top: rect.bottom + RACE_TREND_TOOLTIP_OFFSET_PX,
+  left: rect.left,
+});
+
+interface ScoreTooltipProps {
+  anchorRef: React.RefObject<HTMLButtonElement | null>;
+  isVisible: boolean;
+}
+
+function ScoreTooltipPortal({ anchorRef, isVisible }: ScoreTooltipProps) {
+  const [mounted, setMounted] = useState(false);
+  const [position, setPosition] = useState<TooltipPosition | null>(null);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!mounted) return undefined;
+    const refresh = () => {
+      const anchor = anchorRef.current;
+      if (!anchor) {
+        setPosition(null);
+        return;
+      }
+      setPosition(computeTooltipPosition(anchor.getBoundingClientRect()));
+    };
+    refresh();
+    window.addEventListener("scroll", refresh, true);
+    window.addEventListener("resize", refresh);
+    return () => {
+      window.removeEventListener("scroll", refresh, true);
+      window.removeEventListener("resize", refresh);
+    };
+  }, [mounted, anchorRef, isVisible]);
+
+  const tooltipClassName = isVisible
+    ? "race-trend-score-tooltip tooltip-visible"
+    : "race-trend-score-tooltip";
+  const style: React.CSSProperties =
+    position === null ? { top: 0, left: 0 } : { top: position.top, left: position.left };
+  const content = (
+    <small
+      className={tooltipClassName}
+      id={RACE_TREND_SCORE_TOOLTIP_ID}
+      role="tooltip"
+      style={style}
+    >
+      {RACE_TREND_SCORE_TOOLTIP_TEXT}
+    </small>
+  );
+
+  if (!mounted) return content;
+  return createPortal(content, document.body);
+}
+
+interface RaceTrendTableProps {
+  isLoading: boolean;
+  raceCount: number;
+  rows: RaceTrendRunningStyleRow[];
+  scoreRows: RaceTrendRunningStyleRow[];
+  scoreConditions: RaceTrendScoreConditionsQuery;
+  trendTargets: RaceTrendTargets;
+  umabanScores: Map<string, number | null>;
+}
+
 function RaceTrendTable({
   isLoading,
   raceCount,
   rows,
+  scoreRows,
+  scoreConditions,
   trendTargets,
   umabanScores,
-}: {
-  isLoading: boolean;
-  raceCount: number;
-  rows: RaceTrendRunningStyleRow[];
-  trendTargets: RaceTrendTargets;
-  umabanScores: Map<string, number | null>;
-}) {
+}: RaceTrendTableProps) {
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const [expandedScoreKey, setExpandedScoreKey] = useState<string | null>(null);
   const [scoreTooltipOpen, setScoreTooltipOpen] = useState(false);
+  const [scoreTooltipHover, setScoreTooltipHover] = useState(false);
+  const scoreHeaderRef = useRef<HTMLButtonElement | null>(null);
   const realtimePayload = useRealtimeRaceSelector((state) => state.payload);
   const realtimeOddsByHorse = useMemo(
     () =>
@@ -358,22 +541,37 @@ function RaceTrendTable({
     (trendTargets.jockey ? 1 : 0) +
     (trendTargets.raceNumber ? 1 : 0);
   const effectiveExpandedKey = rows.some((row) => row.key === expandedKey) ? expandedKey : null;
+  const effectiveExpandedScoreKey = rows.some((row) => row.key === expandedScoreKey)
+    ? expandedScoreKey
+    : null;
+  const scoreClickable = hasAnyScoreCondition(scoreConditions);
+  const tooltipVisible = scoreTooltipOpen || scoreTooltipHover;
+
+  const openHorseDetail = (key: string, currentlyOpen: boolean) => {
+    setExpandedScoreKey(null);
+    setExpandedKey(currentlyOpen ? null : key);
+  };
+
+  const openScoreDetail = (key: string, currentlyOpen: boolean) => {
+    setExpandedKey(null);
+    setExpandedScoreKey(currentlyOpen ? null : key);
+  };
 
   return (
     <div className="race-trend-table-panel">
       <div className="race-trend-subheading">
         <h3>脚質・枠・騎手ごとの勝率</h3>
-        <span>集計 {raceCount}レース / 複勝率順</span>
+        <span>集計 {raceCount}レース</span>
       </div>
       <div className="stats-table-wrap">
         <table className="stats-table race-trend-table aggregate">
           <colgroup>
             <col className="race-trend-col-horse-number" />
-            <col className="race-trend-col-score" />
             {trendTargets.frame ? <col className="race-trend-col-frame" /> : null}
             {trendTargets.runningStyle ? <col className="race-trend-col-running-style" /> : null}
             {trendTargets.jockey ? <col className="race-trend-col-jockey" /> : null}
             {trendTargets.raceNumber ? <col className="race-trend-col-race-number" /> : null}
+            <col className="race-trend-col-score" />
             <col className="race-trend-col-rate" />
             <col className="race-trend-col-rate" />
             <col className="race-trend-col-rate" />
@@ -386,24 +584,6 @@ function RaceTrendTable({
             <tr>
               <th>
                 <TrendHeaderLabel>馬番</TrendHeaderLabel>
-              </th>
-              <th>
-                <button
-                  aria-describedby={RACE_TREND_SCORE_TOOLTIP_ID}
-                  aria-expanded={scoreTooltipOpen}
-                  className={`race-trend-score-header${scoreTooltipOpen ? " tooltip-open" : ""}`}
-                  onClick={() => setScoreTooltipOpen((value) => !value)}
-                  type="button"
-                >
-                  <span>スコア</span>
-                  <small
-                    className="race-trend-score-tooltip"
-                    id={RACE_TREND_SCORE_TOOLTIP_ID}
-                    role="tooltip"
-                  >
-                    {RACE_TREND_SCORE_TOOLTIP_TEXT}
-                  </small>
-                </button>
               </th>
               {trendTargets.frame ? (
                 <th>
@@ -425,6 +605,23 @@ function RaceTrendTable({
                   <TrendHeaderLabel>R</TrendHeaderLabel>
                 </th>
               ) : null}
+              <th>
+                <button
+                  aria-describedby={RACE_TREND_SCORE_TOOLTIP_ID}
+                  aria-expanded={scoreTooltipOpen}
+                  className={`race-trend-score-header${scoreTooltipOpen ? " tooltip-open" : ""}`}
+                  onBlur={() => setScoreTooltipHover(false)}
+                  onClick={() => setScoreTooltipOpen((value) => !value)}
+                  onFocus={() => setScoreTooltipHover(true)}
+                  onMouseEnter={() => setScoreTooltipHover(true)}
+                  onMouseLeave={() => setScoreTooltipHover(false)}
+                  ref={scoreHeaderRef}
+                  type="button"
+                >
+                  <span>スコア</span>
+                </button>
+                <ScoreTooltipPortal anchorRef={scoreHeaderRef} isVisible={tooltipVisible} />
+              </th>
               <th>
                 <TrendHeaderLabel>複勝率</TrendHeaderLabel>
               </th>
@@ -455,9 +652,6 @@ function RaceTrendTable({
                   <td>
                     <span className="race-trend-skeleton race-trend-skeleton-count" />
                   </td>
-                  <td className="race-trend-score-cell">
-                    <span className="race-trend-skeleton race-trend-skeleton-count" />
-                  </td>
                   {trendTargets.frame ? (
                     <td>
                       <span className="race-trend-skeleton race-trend-skeleton-count" />
@@ -478,6 +672,9 @@ function RaceTrendTable({
                       <span className="race-trend-skeleton race-trend-skeleton-count" />
                     </td>
                   ) : null}
+                  <td className="race-trend-score-cell">
+                    <span className="race-trend-skeleton race-trend-skeleton-count" />
+                  </td>
                   <td>
                     <span className="race-trend-skeleton race-trend-skeleton-rate" />
                   </td>
@@ -504,17 +701,22 @@ function RaceTrendTable({
             ) : rows.length > 0 ? (
               rows.map((row) => {
                 const isExpanded = effectiveExpandedKey === row.key;
+                const isScoreExpanded = effectiveExpandedScoreKey === row.key;
                 return (
                   <RowFragment
                     isExpanded={isExpanded}
+                    isScoreExpanded={isScoreExpanded}
                     key={row.key}
                     row={row}
                     realtimeOdds={realtimeOddsByHorse.get(
                       normalizeHorseNumber(row.targetHorseNumbers[0]),
                     )}
+                    scoreClickable={scoreClickable}
+                    scoreDetails={isScoreExpanded ? collectScoreDetailsForRow(row, scoreRows) : []}
                     trendTargets={trendTargets}
                     umabanScores={umabanScores}
-                    onToggle={() => setExpandedKey(isExpanded ? null : row.key)}
+                    onToggle={() => openHorseDetail(row.key, isExpanded)}
+                    onToggleScore={() => openScoreDetail(row.key, isScoreExpanded)}
                   />
                 );
               })
@@ -532,21 +734,31 @@ function RaceTrendTable({
   );
 }
 
-function RowFragment({
-  isExpanded,
-  realtimeOdds,
-  row,
-  trendTargets,
-  umabanScores,
-  onToggle,
-}: {
+interface RowFragmentProps {
   isExpanded: boolean;
+  isScoreExpanded: boolean;
   realtimeOdds?: { popularity: number | null; winOdds: number | null };
   row: RaceTrendRunningStyleRow;
+  scoreClickable: boolean;
+  scoreDetails: RaceTrendDetail[];
   trendTargets: RaceTrendTargets;
   umabanScores: Map<string, number | null>;
   onToggle: () => void;
-}) {
+  onToggleScore: () => void;
+}
+
+function RowFragment({
+  isExpanded,
+  isScoreExpanded,
+  realtimeOdds,
+  row,
+  scoreClickable,
+  scoreDetails,
+  trendTargets,
+  umabanScores,
+  onToggle,
+  onToggleScore,
+}: RowFragmentProps) {
   const colSpan =
     9 +
     (trendTargets.frame ? 1 : 0) +
@@ -554,10 +766,13 @@ function RowFragment({
     (trendTargets.jockey ? 1 : 0) +
     (trendTargets.raceNumber ? 1 : 0);
   const detailRows = useMemo(() => sortDetailsByLatestRace(row.details), [row.details]);
+  const scoreDetailRows = useMemo(() => sortDetailsByLatestRace(scoreDetails), [scoreDetails]);
+  const scoreValue = formatScore({ row, scores: umabanScores });
+  const scoreIsClickable = scoreClickable && scoreValue !== SCORE_PLACEHOLDER;
 
   return (
     <>
-      <tr className={isExpanded ? "stats-row-expanded" : undefined}>
+      <tr className={isExpanded || isScoreExpanded ? "stats-row-expanded" : undefined}>
         <td className="race-trend-horse-number-cell">
           <button
             aria-expanded={isExpanded}
@@ -571,13 +786,27 @@ function RowFragment({
             <span>{row.targetHorseNumbers.join(",") || "-"}</span>
           </button>
         </td>
-        <td className="race-trend-score-cell">
-          <span>{formatScore({ row, scores: umabanScores })}</span>
-        </td>
         {trendTargets.frame ? <td>{row.frameNumber ?? "-"}</td> : null}
         {trendTargets.runningStyle ? <td>{formatRunningStyle(row.runningStyle)}</td> : null}
         {trendTargets.jockey ? <td className="stats-name-cell">{row.jockeyName ?? "-"}</td> : null}
         {trendTargets.raceNumber ? <td>{formatRaceNumber(row.raceNumber)}</td> : null}
+        <td className="race-trend-score-cell">
+          {scoreIsClickable ? (
+            <button
+              aria-expanded={isScoreExpanded}
+              className="race-trend-score-detail-toggle"
+              onClick={(event) => {
+                event.stopPropagation();
+                onToggleScore();
+              }}
+              type="button"
+            >
+              {scoreValue}
+            </button>
+          ) : (
+            <span>{scoreValue}</span>
+          )}
+        </td>
         <td>{formatRate(row.showRate)}</td>
         <td>{formatRate(row.quinellaRate)}</td>
         <td>{formatRate(row.winRate)}</td>
@@ -649,6 +878,74 @@ function RowFragment({
           </td>
         </tr>
       ) : null}
+      {isScoreExpanded ? (
+        <tr className="stats-detail-row race-trend-score-detail-row">
+          <td colSpan={colSpan}>
+            <div className="stats-detail-panel">
+              <p className="race-trend-score-detail-heading">{SCORE_DETAIL_HEADING}</p>
+              {scoreDetailRows.length === 0 ? (
+                <p className="race-trend-empty-cell">{SCORE_DETAIL_EMPTY_MESSAGE}</p>
+              ) : (
+                <table className="stats-detail-table race-trend-detail-table aggregate">
+                  <colgroup>
+                    <col className="race-trend-detail-col-date" />
+                    <col className="race-trend-detail-col-venue" />
+                    <col className="race-trend-detail-col-race-number" />
+                    <col className="race-trend-detail-col-horse-number" />
+                    <col className="race-trend-detail-col-frame" />
+                    <col className="race-trend-detail-col-running-style" />
+                    <col className="race-trend-detail-col-jockey" />
+                    <col className="race-trend-detail-col-finish" />
+                    <col className="race-trend-detail-col-popularity" />
+                    <col className="race-trend-detail-col-odds" />
+                    <col className="race-trend-detail-col-horse-weight" />
+                    <col className="race-trend-detail-col-horse-name" />
+                    <col className="race-trend-detail-col-race-name" />
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th>日付</th>
+                      <th>場</th>
+                      <th>R</th>
+                      <th>馬番</th>
+                      <th>枠</th>
+                      <th>脚質</th>
+                      <th>騎手</th>
+                      <th>着順</th>
+                      <th>人気</th>
+                      <th>単勝</th>
+                      <th>馬体重</th>
+                      <th>馬名</th>
+                      <th>レース名</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {scoreDetailRows.map((detail) => (
+                      <tr
+                        key={`score:${detail.source}:${detail.date}:${detail.keibajoCode}:${detail.raceNumber}:${detail.horseNumber}:${row.key}`}
+                      >
+                        <td>{detail.date}</td>
+                        <td>{formatKeibajo(detail.keibajoCode)}</td>
+                        <td>{formatRaceNumber(detail.raceNumber)}</td>
+                        <td>{detail.horseNumber ?? "-"}</td>
+                        <td>{detail.frameNumber ?? "-"}</td>
+                        <td>{formatRunningStyle(detail.runningStyle)}</td>
+                        <td>{detail.jockeyName ?? "-"}</td>
+                        <td>{detail.finishPosition}</td>
+                        <td>{formatMedian(detail.popularity)}</td>
+                        <td>{formatTrendWinOdds(detail.winOdds)}</td>
+                        <td>{formatHorseWeight(detail.horseWeight, detail.horseWeightDelta)}</td>
+                        <td className="race-trend-detail-horse-name">{detail.horseName ?? "-"}</td>
+                        <td className="race-trend-detail-race-name">{detail.raceName ?? "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </td>
+        </tr>
+      ) : null}
     </>
   );
 }
@@ -672,10 +969,12 @@ export function RaceTrendSection({
   const [trendTargets, setTrendTargets] = useState<RaceTrendTargets>(initialTrendTargets);
   const [scoreConditions, setScoreConditions] =
     useState<RaceTrendScoreConditionsQuery>(initialScoreConditions);
+  const [sortBy, setSortBy] = useState<RaceTrendSortKey>(DEFAULT_RACE_TREND_SORT_KEY);
   const [rawPayload, setRawPayload] = useState<RaceTrendRawPayload | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
   const trendTargetsRef = useRef(initialTrendTargets);
   const scoreConditionsRef = useRef(initialScoreConditions);
+  const sortByRef = useRef<RaceTrendSortKey>(DEFAULT_RACE_TREND_SORT_KEY);
   const fetchSequenceRef = useRef(0);
   const liveConnectedRef = useRef(false);
 
@@ -701,14 +1000,29 @@ export function RaceTrendSection({
     setScoreConditions(nextConditions);
   }, []);
 
+  const updateSortBy = useCallback((nextSortBy: RaceTrendSortKey) => {
+    sortByRef.current = nextSortBy;
+    replaceRaceTrendSortKeyQuery(nextSortBy);
+    setSortBy(nextSortBy);
+  }, []);
+
+  useEffect(() => {
+    // Hydrate sort key from the URL once on mount so deep links work.
+    const initialSortKey = getRaceTrendSortKeyFromSearchParams(
+      new URLSearchParams(window.location.search),
+    );
+    if (initialSortKey !== sortByRef.current) {
+      sortByRef.current = initialSortKey;
+      setSortBy(initialSortKey);
+    }
+  }, []);
+
   useEffect(() => {
     const handlePopState = () => {
-      const nextTargets = getRaceTrendTargetsFromSearchParams(
-        new URLSearchParams(window.location.search),
-      );
-      const nextScoreConditions = getRaceTrendScoreConditionsFromSearchParams(
-        new URLSearchParams(window.location.search),
-      );
+      const search = new URLSearchParams(window.location.search);
+      const nextTargets = getRaceTrendTargetsFromSearchParams(search);
+      const nextScoreConditions = getRaceTrendScoreConditionsFromSearchParams(search);
+      const nextSortKey = getRaceTrendSortKeyFromSearchParams(search);
       setTrendTargets((current) => {
         if (isSameRaceTrendTargets(current, nextTargets)) {
           return current;
@@ -722,6 +1036,11 @@ export function RaceTrendSection({
         }
         scoreConditionsRef.current = nextScoreConditions;
         return nextScoreConditions;
+      });
+      setSortBy((current) => {
+        if (current === nextSortKey) return current;
+        sortByRef.current = nextSortKey;
+        return nextSortKey;
       });
     };
     window.addEventListener("popstate", handlePopState);
@@ -777,6 +1096,34 @@ export function RaceTrendSection({
     defaultEndDate,
   ]);
 
+  // Second aggregation: rows keyed by the user-selected score conditions so
+  // that clicking the score cell can show the records driving that score.
+  const scoreAggregationRows = useMemo<RaceTrendRunningStyleRow[]>(() => {
+    if (!rawPayload) return [];
+    if (!hasAnyScoreCondition(scoreConditions)) return [];
+    return aggregateForTargets(
+      {
+        starterRows: rawPayload.starterRows,
+        currentRunningStyles: rawPayload.currentRunningStyles,
+        historicalRunningStyles: rawPayload.historicalRunningStyles,
+        raceContext: rawPayload.raceContext,
+        runners: rawPayload.runners,
+      },
+      deriveScoreConditionTrendTargets(scoreConditions),
+      jockeySameVenue,
+      normalizeYmd(trendStart || defaultStartDate),
+      normalizeYmd(trendEnd || defaultEndDate),
+    ).runningStyleRows;
+  }, [
+    rawPayload,
+    scoreConditions,
+    jockeySameVenue,
+    trendStart,
+    trendEnd,
+    defaultStartDate,
+    defaultEndDate,
+  ]);
+
   const scoreSourceMaps = useMemo(() => {
     const currentRunningStyleMap = buildCurrentRunningStyleMap(
       rawPayload?.currentRunningStyles ?? [],
@@ -808,6 +1155,11 @@ export function RaceTrendSection({
     });
     return normalizeUmabanScores(raw);
   }, [rawPayload, scoreSourceMaps, scoreConditions]);
+
+  const sortedRows = useMemo<RaceTrendRunningStyleRow[]>(
+    () => rows.toSorted(compareRowsBySortKey({ sortBy, scores: umabanScores })),
+    [rows, sortBy, umabanScores],
+  );
 
   const refreshTrendRows = useCallback(
     async ({
@@ -981,9 +1333,9 @@ export function RaceTrendSection({
           </label>
         </div>
 
-        <div className="combined-score-targets race-trend-targets" aria-label="集計条件">
+        <div className="combined-score-targets race-trend-targets" aria-label="勝率条件">
           <fieldset>
-            <legend>集計条件</legend>
+            <legend>勝率条件</legend>
             {RACE_TREND_TARGET_KEYS.map((key) => (
               <label key={key}>
                 <input
@@ -1013,10 +1365,31 @@ export function RaceTrendSection({
           </fieldset>
         </div>
 
+        <div className="combined-score-targets race-trend-sort" aria-label="並び順">
+          <fieldset>
+            <legend>並び順</legend>
+            <label>
+              <span>並び順</span>
+              <select
+                onChange={(event) => updateSortBy(parseSortChangeEvent(event.target.value))}
+                value={sortBy}
+              >
+                {RACE_TREND_SORT_KEYS.map((key) => (
+                  <option key={key} value={key}>
+                    {SORT_KEY_LABELS[key]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </fieldset>
+        </div>
+
         <RaceTrendTable
           isLoading={status === "loading"}
           raceCount={raceCount}
-          rows={rows}
+          rows={sortedRows}
+          scoreConditions={scoreConditions}
+          scoreRows={scoreAggregationRows}
           trendTargets={trendTargets}
           umabanScores={umabanScores}
         />
