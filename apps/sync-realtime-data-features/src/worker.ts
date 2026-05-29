@@ -166,8 +166,19 @@ export const handleRecomputeRequest = async (env: Env, request: Request): Promis
       { status: 400 },
     );
   }
-  const result = await buildAndPersistRaceFeatures(env, raceJobKey);
-  return jsonResponse(result);
+  try {
+    const result = await buildAndPersistRaceFeatures(env, raceJobKey);
+    return jsonResponse(result);
+  } catch (error) {
+    console.error("[features] recompute failed", error);
+    return jsonResponse(
+      {
+        error: error instanceof Error ? error.message : String(error),
+        raceKey: raceJobKey.raceKey,
+      },
+      { status: 500 },
+    );
+  }
 };
 
 const parseRaceKeyFromUrl = (url: URL): string | null => {

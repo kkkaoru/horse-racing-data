@@ -311,6 +311,58 @@ it("accepts recompute request with raceKey-only body by parsing the 5-part strin
   );
 });
 
+it("handleRecomputeRequest returns 500 JSON when buildAndPersistRaceFeatures throws", async () => {
+  const env = buildEnv();
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.mocked(buildRaceFeatures).mockRejectedValueOnce(new Error("hyperdrive socket dead"));
+  const response = await handleRecomputeRequest(
+    env,
+    new Request("https://x/api/internal/recompute-and-build-parquet", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({
+        raceKey: "nar:20260529:30:08",
+        source: "nar",
+        kaisaiNen: "2026",
+        kaisaiTsukihi: "0529",
+        keibajoCode: "30",
+        raceBango: "08",
+      }),
+    }),
+  );
+  expect(response.status).toBe(500);
+  await expect(response.json()).resolves.toStrictEqual({
+    error: "hyperdrive socket dead",
+    raceKey: "nar:20260529:30:08",
+  });
+});
+
+it("handleRecomputeRequest returns 500 JSON stringifying non-Error throwables", async () => {
+  const env = buildEnv();
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.mocked(buildRaceFeatures).mockRejectedValueOnce("plain string failure");
+  const response = await handleRecomputeRequest(
+    env,
+    new Request("https://x/api/internal/recompute-and-build-parquet", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({
+        raceKey: "nar:20260529:30:08",
+        source: "nar",
+        kaisaiNen: "2026",
+        kaisaiTsukihi: "0529",
+        keibajoCode: "30",
+        raceBango: "08",
+      }),
+    }),
+  );
+  expect(response.status).toBe(500);
+  await expect(response.json()).resolves.toStrictEqual({
+    error: "plain string failure",
+    raceKey: "nar:20260529:30:08",
+  });
+});
+
 it("rejects recompute request with malformed raceKey-only body", async () => {
   const env = buildEnv();
   const response = await handleRecomputeRequest(
