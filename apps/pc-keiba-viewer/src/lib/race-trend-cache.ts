@@ -1,9 +1,10 @@
 import type { RaceSource } from "./codes";
 
-// v6 bumped 2026-05-29 alongside the d1-trend cache v4 bump so the outer
-// trend payload (which folds in REALTIME_HOT_DB tansho odds via
-// getRaceTrendD1StarterRows) does not get served from a pre-PR4 KV entry.
-export const RACE_TREND_CACHE_VERSION = "v6";
+// v7 bumped 2026-05-29 for the Phase E features-worker cutover: the
+// underlying d1-trend cache prefixes moved to v5 once
+// getRaceTrendD1StarterRows stopped reading legacy daily_race_entries,
+// so the outer trend payload also has to invalidate pre-cutover entries.
+export const RACE_TREND_CACHE_VERSION = "v7";
 
 export const RACE_TREND_CACHE_WARM_PARAM = "__trendCacheWarm";
 

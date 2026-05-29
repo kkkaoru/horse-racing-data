@@ -14,6 +14,10 @@
       "binding": "WORKER_SELF_REFERENCE",
       "service": "pc-keiba-viewer",
     },
+    {
+      "binding": "REALTIME_FEATURES",
+      "service": "sync-realtime-data-features",
+    },
   ],
   "images": {
     "binding": "IMAGES",
@@ -109,6 +113,12 @@
       "binding": "REALTIME_HOT_DB",
       "database_name": "sync-realtime-data-hot",
       "database_id": "946a0bb1-84c4-471b-9cb5-f984c4d83328",
+      "remote": true,
+    },
+    {
+      "binding": "REALTIME_FEATURES_DB",
+      "database_name": "sync-realtime-data-features-db",
+      "database_id": "cddc0d62-18fd-4eab-84bf-9082e5d38ad1",
       "remote": true,
     },
   ],

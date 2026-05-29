@@ -40,9 +40,14 @@ interface CacheStub {
   put: ReturnType<typeof vi.fn<AnyMockFn>>;
 }
 
+interface FeaturesStub {
+  fetch: ReturnType<typeof vi.fn<AnyMockFn>>;
+}
+
 interface BuildContextArgs {
   cache?: CacheStub | null;
   db?: D1Stub;
+  features?: FeaturesStub;
   hotDb?: D1Stub;
   kv?: KvStub;
 }
@@ -121,6 +126,15 @@ const buildCacheStub = (match?: Response): CacheStub => ({
   put: vi.fn<AnyMockFn>().mockResolvedValue(undefined),
 });
 
+const buildFeaturesStub = (response: Response): FeaturesStub => ({
+  fetch: vi.fn<AnyMockFn>().mockResolvedValue(response),
+});
+
+const buildFeaturesJsonResponse = (payload: unknown): Response =>
+  new Response(JSON.stringify(payload), {
+    headers: { "Content-Type": "application/json" },
+  });
+
 interface BuildHotEnvArgs {
   hotDb: D1Stub | undefined;
 }
@@ -154,7 +168,7 @@ const buildHotEnv = ({ hotDb }: BuildHotEnvArgs): CloudflareEnv => {
   return { REALTIME_HOT_DB: typed };
 };
 
-const installContext = ({ cache, db, hotDb, kv }: BuildContextArgs): void => {
+const installContext = ({ cache, db, features, hotDb, kv }: BuildContextArgs): void => {
   if (cache === null) {
     Reflect.deleteProperty(globalThis, "caches");
   } else if (cache !== undefined) {
@@ -166,6 +180,7 @@ const installContext = ({ cache, db, hotDb, kv }: BuildContextArgs): void => {
   getCloudflareContextMock.mockResolvedValue({
     env: {
       REALTIME_DB: db,
+      REALTIME_FEATURES: features,
       REALTIME_HOT_DB: hotDb,
       DETAIL_SECTION_CACHE_KV: kv,
     },
@@ -204,12 +219,12 @@ it("maps D1 trend rows when no cache exists", async () => {
       raceName: "Test Race",
       hassoJikoku: "1630",
       runnerCount: null,
-      wakuban: "3",
+      wakuban: null,
       umaban: "05",
       bamei: "TestHorse",
       jockeyName: "TestJockey",
-      tanshoOdds: "0123",
-      tanshoPopularity: "04",
+      tanshoOdds: null,
+      tanshoPopularity: null,
       finishPosition: 1,
       sohaTime: "1234",
       corner1: null,
@@ -429,44 +444,41 @@ it("falls back to KV when Cache API global is unavailable", async () => {
   expect(rows).toStrictEqual(cached);
 });
 
-it("maps daily trend rows when no cache exists", async () => {
-  const { db, prepared } = buildD1Stub([SAMPLE_RAW_DAILY_ROW]);
-  const cache = buildCacheStub();
-  const kv = buildKvStub();
-  installContext({ cache, db, kv });
+it("maps daily trend rows from the features worker when no cache exists", async () => {
+  const payloadRow = {
+    source: "jra",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0528",
+    keibajoCode: "06",
+    raceBango: "11",
+    raceName: "Daily Race",
+    hassoJikoku: "1530",
+    runnerCount: "16",
+    wakuban: "8",
+    umaban: "12",
+    bamei: "DailyHorse",
+    jockeyName: "DailyJockey",
+    tanshoOdds: "0056",
+    tanshoPopularity: "03",
+    finishPosition: 2,
+    sohaTime: "950",
+    corner1: "04",
+    corner2: "05",
+    corner3: "03",
+    corner4: "02",
+    bataiju: "466",
+    zogenFugo: "-",
+    zogenSa: "4",
+  };
+  const features = buildFeaturesStub(buildFeaturesJsonResponse({ starterRows: [payloadRow] }));
+  installContext({ cache: buildCacheStub(), features, kv: buildKvStub() });
   const rows = await getRaceTrendDailyStarterRows({
     source: "jra",
     startYmd: "20260501",
     endYmd: "20260528",
   });
-  expect(rows).toStrictEqual([
-    {
-      source: "jra",
-      kaisaiNen: "2026",
-      kaisaiTsukihi: "0528",
-      keibajoCode: "06",
-      raceBango: "11",
-      raceName: "Daily Race",
-      hassoJikoku: "1530",
-      runnerCount: "16",
-      wakuban: "8",
-      umaban: "12",
-      bamei: "DailyHorse",
-      jockeyName: "DailyJockey",
-      tanshoOdds: "0056",
-      tanshoPopularity: "03",
-      finishPosition: 2,
-      sohaTime: "950",
-      corner1: "04",
-      corner2: "05",
-      corner3: "03",
-      corner4: "02",
-      bataiju: "466",
-      zogenFugo: "-",
-      zogenSa: "4",
-    },
-  ]);
-  expect(prepared.bind).toHaveBeenCalledWith("jra", "20260501", "20260528");
+  expect(rows).toStrictEqual([payloadRow]);
+  expect(features.fetch).toHaveBeenCalledTimes(1);
 });
 
 it("returns Cache API hit for daily trends without hitting D1", async () => {
@@ -585,10 +597,37 @@ it("returns [] when daily D1 query throws", async () => {
   consoleSpy.mockRestore();
 });
 
-it("filters out invalid daily D1 rows", async () => {
+it("filters out invalid daily rows from the features worker payload", async () => {
   const invalid = { source: "jra", finishPosition: null };
-  const { db } = buildD1Stub([invalid, SAMPLE_RAW_DAILY_ROW]);
-  installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
+  const validRow = {
+    source: "jra",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0528",
+    keibajoCode: "06",
+    raceBango: "11",
+    raceName: null,
+    hassoJikoku: null,
+    runnerCount: null,
+    wakuban: null,
+    umaban: null,
+    bamei: "DailyHorse",
+    jockeyName: null,
+    tanshoOdds: null,
+    tanshoPopularity: null,
+    finishPosition: 2,
+    sohaTime: null,
+    corner1: null,
+    corner2: null,
+    corner3: null,
+    corner4: null,
+    bataiju: null,
+    zogenFugo: null,
+    zogenSa: null,
+  };
+  const features = buildFeaturesStub(
+    buildFeaturesJsonResponse({ starterRows: [invalid, validRow] }),
+  );
+  installContext({ cache: buildCacheStub(), features, kv: buildKvStub() });
   const rows = await getRaceTrendDailyStarterRows({
     source: "jra",
     startYmd: "20260501",
@@ -598,23 +637,34 @@ it("filters out invalid daily D1 rows", async () => {
   expect(rows[0]?.bamei).toBe("DailyHorse");
 });
 
-it("handles null fields in daily trend rows", async () => {
-  const sparse = {
-    ...SAMPLE_RAW_DAILY_ROW,
+it("handles null fields in daily trend rows from the features worker payload", async () => {
+  const sparseRow = {
+    source: "jra",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0528",
+    keibajoCode: "06",
+    raceBango: "11",
+    raceName: "Daily Race",
+    hassoJikoku: "1530",
     runnerCount: null,
+    wakuban: "8",
     umaban: null,
-    tanshoOddsTenth: null,
+    bamei: "DailyHorse",
+    jockeyName: "DailyJockey",
+    tanshoOdds: null,
     tanshoPopularity: null,
+    finishPosition: 2,
     sohaTime: null,
     corner1: null,
     corner2: null,
     corner3: null,
     corner4: null,
-    bataijuInt: null,
-    zogenSaInt: null,
+    bataiju: null,
+    zogenFugo: "-",
+    zogenSa: null,
   };
-  const { db } = buildD1Stub([sparse]);
-  installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
+  const features = buildFeaturesStub(buildFeaturesJsonResponse({ starterRows: [sparseRow] }));
+  installContext({ cache: buildCacheStub(), features, kv: buildKvStub() });
   const rows = await getRaceTrendDailyStarterRows({
     source: "jra",
     startYmd: "20260501",
@@ -976,7 +1026,7 @@ it("getRaceTrendD1StarterRows overrides tansho odds when REALTIME_HOT_DB returns
   expect(rows[0]?.tanshoPopularity).toBe("03");
 });
 
-it("getRaceTrendD1StarterRows falls back to daily fields when REALTIME_HOT_DB has no entry", async () => {
+it("getRaceTrendD1StarterRows leaves tansho fields null when REALTIME_HOT_DB has no entry", async () => {
   const { db } = buildD1Stub([SAMPLE_RAW_ROW]);
   const { db: hotDb } = buildD1Stub([]);
   installContext({ cache: buildCacheStub(), db, hotDb, kv: buildKvStub() });
@@ -985,11 +1035,11 @@ it("getRaceTrendD1StarterRows falls back to daily fields when REALTIME_HOT_DB ha
     startYmd: "20260501",
     endYmd: "20260528",
   });
-  expect(rows[0]?.tanshoOdds).toBe("0123");
-  expect(rows[0]?.tanshoPopularity).toBe("04");
+  expect(rows[0]?.tanshoOdds).toBe(null);
+  expect(rows[0]?.tanshoPopularity).toBe(null);
 });
 
-it("getRaceTrendD1StarterRows degrades to fallback when REALTIME_HOT_DB binding is missing", async () => {
+it("getRaceTrendD1StarterRows leaves tansho fields null when REALTIME_HOT_DB binding is missing", async () => {
   const { db } = buildD1Stub([SAMPLE_RAW_ROW]);
   installContext({ cache: buildCacheStub(), db, hotDb: undefined, kv: buildKvStub() });
   const rows = await getRaceTrendD1StarterRows({
@@ -997,8 +1047,8 @@ it("getRaceTrendD1StarterRows degrades to fallback when REALTIME_HOT_DB binding 
     startYmd: "20260501",
     endYmd: "20260528",
   });
-  expect(rows[0]?.tanshoOdds).toBe("0123");
-  expect(rows[0]?.tanshoPopularity).toBe("04");
+  expect(rows[0]?.tanshoOdds).toBe(null);
+  expect(rows[0]?.tanshoPopularity).toBe(null);
 });
 
 it("getRaceTrendD1StarterRows skips REALTIME_HOT_DB lookup when starter rows are empty", async () => {
@@ -1014,7 +1064,7 @@ it("getRaceTrendD1StarterRows skips REALTIME_HOT_DB lookup when starter rows are
   expect(hotDb.prepare).not.toHaveBeenCalled();
 });
 
-it("getRaceTrendD1StarterRows preserves daily odds rank when HOT odds entry has null rank", async () => {
+it("getRaceTrendD1StarterRows uses HOT odds and null rank when HOT entry has null rank", async () => {
   const { db } = buildD1Stub([SAMPLE_RAW_ROW]);
   const { db: hotDb } = buildD1Stub([
     { race_key: "nar:20260528:50:04", combination: "5", odds: 9.9, rank: null },
@@ -1026,10 +1076,10 @@ it("getRaceTrendD1StarterRows preserves daily odds rank when HOT odds entry has 
     endYmd: "20260528",
   });
   expect(rows[0]?.tanshoOdds).toBe("0099");
-  expect(rows[0]?.tanshoPopularity).toBe("04");
+  expect(rows[0]?.tanshoPopularity).toBe(null);
 });
 
-it("getRaceTrendD1StarterRows preserves daily odds when HOT odds entry has null odds", async () => {
+it("getRaceTrendD1StarterRows uses HOT rank and null odds when HOT entry has null odds", async () => {
   const { db } = buildD1Stub([SAMPLE_RAW_ROW]);
   const { db: hotDb } = buildD1Stub([
     { race_key: "nar:20260528:50:04", combination: "5", odds: null, rank: 2 },
@@ -1040,7 +1090,7 @@ it("getRaceTrendD1StarterRows preserves daily odds when HOT odds entry has null 
     startYmd: "20260501",
     endYmd: "20260528",
   });
-  expect(rows[0]?.tanshoOdds).toBe("0123");
+  expect(rows[0]?.tanshoOdds).toBe(null);
   expect(rows[0]?.tanshoPopularity).toBe("02");
 });
 
