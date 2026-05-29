@@ -8,6 +8,7 @@ vi.mock("./features/postgres-pool", () => ({
 import { getFeaturesPool } from "./features/postgres-pool";
 import {
   listTodayRaceKeysFromHyperdrive,
+  listTomorrowRaceKeysFromHyperdrive,
   toRaceJobKeyFromTodayRaceKey,
 } from "./scheduled-race-list";
 import type { Env } from "./types";
@@ -176,6 +177,52 @@ it("listTodayRaceKeysFromHyperdrive falls back to getFeaturesPool when context.p
   await listTodayRaceKeysFromHyperdrive(env, "20260529");
   expect(getFeaturesPool).toHaveBeenCalledWith(env);
   expect(query).toHaveBeenCalledWith(expect.any(String), ["2026", "0529"]);
+});
+
+it("listTomorrowRaceKeysFromHyperdrive binds tomorrow date params", async () => {
+  const query = vi.fn().mockResolvedValue({ rows: [] });
+  const env = buildEnv();
+  await listTomorrowRaceKeysFromHyperdrive(env, new Date("2026-05-29T03:00:00Z"), {
+    pool: { query } as never,
+  });
+  expect(query).toHaveBeenCalledWith(expect.any(String), ["2026", "0530"]);
+});
+
+it("listTomorrowRaceKeysFromHyperdrive returns mapped rows for tomorrow", async () => {
+  const query = vi.fn().mockResolvedValue({
+    rows: [
+      {
+        source: "jra",
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0530",
+        keibajo_code: "5",
+        race_bango: "11",
+      },
+    ],
+  });
+  const env = buildEnv();
+  const rows = await listTomorrowRaceKeysFromHyperdrive(env, new Date("2026-05-29T03:00:00Z"), {
+    pool: { query } as never,
+  });
+  expect(rows).toStrictEqual([
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0530",
+      keibajoCode: "05",
+      raceBango: "11",
+      raceKey: "jra:2026:0530:05:11",
+      source: "jra",
+    },
+  ]);
+});
+
+it("listTomorrowRaceKeysFromHyperdrive falls back to getFeaturesPool when context.pool absent", async () => {
+  const query = vi.fn().mockResolvedValue({ rows: [] });
+  vi.mocked(getFeaturesPool).mockReturnValueOnce({ query } as never);
+  const env = buildEnv();
+  await listTomorrowRaceKeysFromHyperdrive(env, new Date("2026-05-29T03:00:00Z"));
+  expect(getFeaturesPool).toHaveBeenCalledWith(env);
+  expect(query).toHaveBeenCalledWith(expect.any(String), ["2026", "0530"]);
 });
 
 it("toRaceJobKeyFromTodayRaceKey maps fields 1:1", async () => {

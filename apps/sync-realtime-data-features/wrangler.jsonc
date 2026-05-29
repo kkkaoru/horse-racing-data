@@ -21,9 +21,12 @@
     "FEATURES_PARQUET_BYTES_CACHE_TTL_SECONDS": "300",
     "FEATURES_LATEST_KV_TTL_SECONDS": "600",
   },
-  // */10 * * * * — enqueue today's per-race predict-running-style and
-  // predict-finish-position jobs. Gate 3 (enqueue lock KV) suppresses
-  // dedupe within 60s. Outside JST polling window (06-21) the tick is a no-op.
+  // */10 * * * * — Phase F adaptive auto-seed. Each tick lists today + tomorrow
+  // races from Hyperdrive, computes past-14 venue-day targets, then enqueues up
+  // to batchSize build-race-features jobs (adaptive on recompute success rate)
+  // plus the today inference jobs. Gate 3 (enqueue lock KV) dedupes within 60s
+  // and build-state KV freshness suppresses recently built races. Outside JST
+  // polling window (06-21) the tick is a no-op.
   "triggers": {
     "crons": ["*/10 * * * *"],
   },

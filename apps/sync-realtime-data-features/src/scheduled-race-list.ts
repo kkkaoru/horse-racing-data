@@ -7,6 +7,7 @@
 import type { Pool } from "pg";
 
 import { getFeaturesPool } from "./features/postgres-pool";
+import { computeTomorrowJst } from "./time";
 import type { Env, RaceJobKey } from "./types";
 
 export type TodayRaceKeySource = "jra" | "nar";
@@ -98,3 +99,15 @@ export const toRaceJobKeyFromTodayRaceKey = (entry: TodayRaceKey): RaceJobKey =>
   raceKey: entry.raceKey,
   source: entry.source,
 });
+
+// Tomorrow's race lister — same SQL as today, but with kaisaiNen / kaisaiTsukihi
+// computed from `now` shifted by +1 JST day. Used for Phase F auto-seed so the
+// scheduled worker can preheat next-day Parquet without any Mac CLI.
+export const listTomorrowRaceKeysFromHyperdrive = async (
+  env: Env,
+  now: Date,
+  context: ListTodayRaceKeysContext = {},
+): Promise<TodayRaceKey[]> => {
+  const tomorrowJst = computeTomorrowJst(now);
+  return listTodayRaceKeysFromHyperdrive(env, tomorrowJst, context);
+};

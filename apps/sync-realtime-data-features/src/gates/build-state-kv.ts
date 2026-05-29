@@ -51,3 +51,24 @@ export const shouldSkipBuild = ({
   }
   return now.getTime() - lastMs < freshnessThresholdMs;
 };
+
+// Generic freshness check used by adaptive multi-scope scheduler: returns true
+// only when the recorded build is non-empty AND younger than freshnessMs.
+// rowCount === 0 is intentionally treated as stale so the next tick re-builds.
+export const isBuildStateFresh = (
+  state: BuildStateRecord | null,
+  freshnessMs: number,
+  now: Date,
+): boolean => {
+  if (!state) {
+    return false;
+  }
+  if (state.rowCount <= 0) {
+    return false;
+  }
+  const lastMs = Date.parse(state.lastBuiltAt);
+  if (!Number.isFinite(lastMs)) {
+    return false;
+  }
+  return now.getTime() - lastMs < freshnessMs;
+};

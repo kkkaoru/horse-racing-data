@@ -6,9 +6,11 @@ import { tryParseRaceKey } from "./features/race-key";
 import { handleRaceTrend } from "./features/race-trend";
 import { buildRaceParquetR2Key } from "./features/r2-key";
 import { handleFinishPositionPredictionJob } from "./finish-position/inference";
+import { readNextBatchSize, recordRecomputeOutcome } from "./gates/adaptive-batch-kv";
 import {
   type BuildStateRecord,
   getBuildStateFromKv,
+  isBuildStateFresh,
   putBuildStateToKv,
 } from "./gates/build-state-kv";
 import { acquireEnqueueLock, isEnqueueLocked } from "./gates/enqueue-lock-kv";
@@ -16,8 +18,10 @@ import { writeLatestFeaturesToKv } from "./gates/latest-features-kv-mirror";
 import { shouldRunFeaturesCron } from "./gates/polling-window-gate";
 import { jsonResponse } from "./http";
 import { handleRunningStylePredictionJob } from "./running-style/inference";
+import { buildPast14Targets } from "./scheduled-past14-targets";
 import {
   listTodayRaceKeysFromHyperdrive,
+  listTomorrowRaceKeysFromHyperdrive,
   toRaceJobKeyFromTodayRaceKey,
 } from "./scheduled-race-list";
 import {
@@ -30,6 +34,8 @@ import type { DailyRaceEntryRow, Env, Job, RaceJobKey } from "./types";
 
 const MIGRATION_STATE_KV_PREFIX = "features:migration";
 const BUILD_STATE_FRESHNESS_MS = 10 * 60 * 1000;
+const BUILD_STATE_FRESHNESS_FUTURE_MS = 6 * 60 * 60 * 1000;
+const BUILD_STATE_FRESHNESS_PAST14_MS = 7 * 24 * 60 * 60 * 1000;
 const BUILD_RACE_FEATURES_JOB_TYPE = "build-race-features";
 
 interface MigrationStateRequest {
@@ -240,29 +246,39 @@ export const shouldRebuildRaceFeatures = (state: BuildStateRecord | null, now: D
   return now.getTime() - lastMs >= BUILD_STATE_FRESHNESS_MS;
 };
 
-const enqueueRaceBuildJobIfNeeded = async (
-  env: Env,
+interface BuildCandidate {
+  key: RaceJobKey;
+  freshnessMs: number;
+}
+
+const toBuildJobMessage = (
   raceJobKey: RaceJobKey,
+): Extract<Job, { type: "build-race-features" }> => ({
+  kaisaiNen: raceJobKey.kaisaiNen,
+  kaisaiTsukihi: raceJobKey.kaisaiTsukihi,
+  keibajoCode: raceJobKey.keibajoCode,
+  raceBango: raceJobKey.raceBango,
+  raceKey: raceJobKey.raceKey,
+  source: raceJobKey.source,
+  type: "build-race-features",
+});
+
+const tryEnqueueBuildCandidate = async (
+  env: Env,
+  candidate: BuildCandidate,
   now: Date,
-): Promise<void> => {
-  const locked = await isEnqueueLocked(env, raceJobKey.raceKey, BUILD_RACE_FEATURES_JOB_TYPE);
+): Promise<boolean> => {
+  const locked = await isEnqueueLocked(env, candidate.key.raceKey, BUILD_RACE_FEATURES_JOB_TYPE);
   if (locked) {
-    return;
+    return false;
   }
-  const state = await getBuildStateFromKv(env, raceJobKey.raceKey);
-  if (!shouldRebuildRaceFeatures(state, now)) {
-    return;
+  const state = await getBuildStateFromKv(env, candidate.key.raceKey);
+  if (isBuildStateFresh(state, candidate.freshnessMs, now)) {
+    return false;
   }
-  await env.REALTIME_FEATURES_JOBS.send({
-    kaisaiNen: raceJobKey.kaisaiNen,
-    kaisaiTsukihi: raceJobKey.kaisaiTsukihi,
-    keibajoCode: raceJobKey.keibajoCode,
-    raceBango: raceJobKey.raceBango,
-    raceKey: raceJobKey.raceKey,
-    source: raceJobKey.source,
-    type: "build-race-features",
-  });
-  await acquireEnqueueLock(env, raceJobKey.raceKey, BUILD_RACE_FEATURES_JOB_TYPE);
+  await env.REALTIME_FEATURES_JOBS.send(toBuildJobMessage(candidate.key));
+  await acquireEnqueueLock(env, candidate.key.raceKey, BUILD_RACE_FEATURES_JOB_TYPE);
+  return true;
 };
 
 const enqueueRaceInferenceJobs = async (
@@ -311,24 +327,149 @@ const enqueueRaceInferenceJobs = async (
 export interface ScheduledFeaturesPlanResult {
   ran: boolean;
   enqueuedRaceCount: number;
+  todayCount: number;
+  tomorrowCount: number;
+  past14Count: number;
+  batchSize: number;
 }
+
+const emptyPlanResult = (ran: boolean): ScheduledFeaturesPlanResult => ({
+  batchSize: 0,
+  enqueuedRaceCount: 0,
+  past14Count: 0,
+  ran,
+  todayCount: 0,
+  tomorrowCount: 0,
+});
+
+const buildCandidateList = (
+  todayKeys: RaceJobKey[],
+  tomorrowKeys: RaceJobKey[],
+  past14Keys: RaceJobKey[],
+): BuildCandidate[] => [
+  ...todayKeys.map((key) => ({ freshnessMs: BUILD_STATE_FRESHNESS_MS, key })),
+  ...tomorrowKeys.map((key) => ({ freshnessMs: BUILD_STATE_FRESHNESS_FUTURE_MS, key })),
+  ...past14Keys.map((key) => ({ freshnessMs: BUILD_STATE_FRESHNESS_PAST14_MS, key })),
+];
+
+interface BuildEnqueueCounts {
+  total: number;
+  today: number;
+  tomorrow: number;
+  past14: number;
+}
+
+const classifyEnqueue = (
+  candidateIndex: number,
+  todayCount: number,
+  tomorrowCount: number,
+): "today" | "tomorrow" | "past14" => {
+  if (candidateIndex < todayCount) {
+    return "today";
+  }
+  if (candidateIndex < todayCount + tomorrowCount) {
+    return "tomorrow";
+  }
+  return "past14";
+};
+
+const stepBuildEnqueueLoop = async (
+  env: Env,
+  candidates: BuildCandidate[],
+  todayCount: number,
+  tomorrowCount: number,
+  batchSize: number,
+  now: Date,
+  index: number,
+  counts: BuildEnqueueCounts,
+): Promise<BuildEnqueueCounts> => {
+  if (index >= candidates.length || counts.total >= batchSize) {
+    return counts;
+  }
+  const enqueued = await tryEnqueueBuildCandidate(env, candidates[index]!, now);
+  const bucket = classifyEnqueue(index, todayCount, tomorrowCount);
+  const nextCounts: BuildEnqueueCounts = enqueued
+    ? {
+        past14: bucket === "past14" ? counts.past14 + 1 : counts.past14,
+        today: bucket === "today" ? counts.today + 1 : counts.today,
+        tomorrow: bucket === "tomorrow" ? counts.tomorrow + 1 : counts.tomorrow,
+        total: counts.total + 1,
+      }
+    : counts;
+  return stepBuildEnqueueLoop(
+    env,
+    candidates,
+    todayCount,
+    tomorrowCount,
+    batchSize,
+    now,
+    index + 1,
+    nextCounts,
+  );
+};
+
+const runBuildEnqueueLoop = (
+  env: Env,
+  candidates: BuildCandidate[],
+  todayCount: number,
+  tomorrowCount: number,
+  batchSize: number,
+  now: Date,
+): Promise<BuildEnqueueCounts> =>
+  stepBuildEnqueueLoop(env, candidates, todayCount, tomorrowCount, batchSize, now, 0, {
+    past14: 0,
+    today: 0,
+    tomorrow: 0,
+    total: 0,
+  });
+
+const runTodayInferenceEnqueueLoop = async (
+  env: Env,
+  todayJobs: RaceJobKey[],
+  predictedAt: string,
+): Promise<void> => {
+  await todayJobs.reduce<Promise<void>>(
+    (prev, job) => prev.then(() => enqueueRaceInferenceJobs(env, job, predictedAt)),
+    Promise.resolve(),
+  );
+};
 
 export const runScheduledFeaturesPlan = async (
   env: Env,
   now: Date,
 ): Promise<ScheduledFeaturesPlanResult> => {
   if (!shouldRunFeaturesCron(now)) {
-    return { enqueuedRaceCount: 0, ran: false };
+    return emptyPlanResult(false);
   }
-  const yyyymmdd = getTodayJst(now);
-  const todayRaceKeys = await listTodayRaceKeysFromHyperdrive(env, yyyymmdd);
-  const predictedAt = now.toISOString();
-  const raceJobKeys = todayRaceKeys.map(toRaceJobKeyFromTodayRaceKey);
-  for (const raceJobKey of raceJobKeys) {
-    await enqueueRaceBuildJobIfNeeded(env, raceJobKey, now);
-    await enqueueRaceInferenceJobs(env, raceJobKey, predictedAt);
-  }
-  return { enqueuedRaceCount: raceJobKeys.length, ran: true };
+  const todayJst = getTodayJst(now);
+  const batchSize = await readNextBatchSize(env);
+  const todayRaceKeys = await listTodayRaceKeysFromHyperdrive(env, todayJst);
+  const tomorrowRaceKeys = await listTomorrowRaceKeysFromHyperdrive(env, now);
+  const todayJobs = todayRaceKeys.map(toRaceJobKeyFromTodayRaceKey);
+  const tomorrowJobs = tomorrowRaceKeys.map(toRaceJobKeyFromTodayRaceKey);
+  const past14Jobs = buildPast14Targets({
+    todayJst,
+    todayKeys: todayRaceKeys,
+    tomorrowKeys: tomorrowRaceKeys,
+  });
+  const candidates = buildCandidateList(todayJobs, tomorrowJobs, past14Jobs);
+  const counts = await runBuildEnqueueLoop(
+    env,
+    candidates,
+    todayJobs.length,
+    tomorrowJobs.length,
+    batchSize,
+    now,
+  );
+  await runTodayInferenceEnqueueLoop(env, todayJobs, now.toISOString());
+  return {
+    batchSize,
+    enqueuedRaceCount: counts.total,
+    past14Count: counts.past14,
+    ran: true,
+    todayCount: counts.today,
+    tomorrowCount: counts.tomorrow,
+  };
 };
 
 export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<void> => {
@@ -348,7 +489,13 @@ const handleBuildRaceFeaturesJob = async (
   env: Env,
   job: Extract<Job, { type: "build-race-features" }>,
 ): Promise<void> => {
-  await buildAndPersistRaceFeatures(env, toRaceJobKey(job));
+  try {
+    await buildAndPersistRaceFeatures(env, toRaceJobKey(job));
+    await recordRecomputeOutcome(env, true);
+  } catch (error) {
+    await recordRecomputeOutcome(env, false);
+    throw error;
+  }
 };
 
 const handlePredictRunningStyleJob = async (
