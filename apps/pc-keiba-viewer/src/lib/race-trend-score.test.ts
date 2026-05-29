@@ -14,9 +14,9 @@ test("RACE_TREND_SCORE_CONDITION_KEYS lists three condition keys", () => {
   expect(RACE_TREND_SCORE_CONDITION_KEYS).toStrictEqual(["frame", "jockey", "frameRunningStyle"]);
 });
 
-test("DEFAULT_RACE_TREND_SCORE_CONDITIONS enables only jockey", () => {
+test("DEFAULT_RACE_TREND_SCORE_CONDITIONS enables frame and jockey", () => {
   expect(DEFAULT_RACE_TREND_SCORE_CONDITIONS).toStrictEqual({
-    frame: false,
+    frame: true,
     jockey: true,
     frameRunningStyle: false,
   });

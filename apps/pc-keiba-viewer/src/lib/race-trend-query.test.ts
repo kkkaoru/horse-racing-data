@@ -161,13 +161,13 @@ describe("race trend query helpers", () => {
 describe("race trend score condition query helpers", () => {
   it("uses default score conditions when the query string omits the param", () => {
     expect(getRaceTrendScoreConditionsFromSearchParams(new URLSearchParams())).toStrictEqual({
-      frame: false,
+      frame: true,
       jockey: true,
       frameRunningStyle: false,
     });
     expect(
       isDefaultRaceTrendScoreConditionsQuery({
-        frame: false,
+        frame: true,
         jockey: true,
         frameRunningStyle: false,
       }),
@@ -274,9 +274,9 @@ describe("race trend score condition query helpers", () => {
     ).toBe("jockey");
   });
 
-  it("default has jockey only", () => {
+  it("default has frame and jockey", () => {
     expect(DEFAULT_RACE_TREND_SCORE_CONDITIONS_QUERY).toStrictEqual({
-      frame: false,
+      frame: true,
       jockey: true,
       frameRunningStyle: false,
     });
