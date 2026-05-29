@@ -2,36 +2,59 @@ import { describe, expect, it } from "vitest";
 
 import {
   clearRaceTrendScoreConditionsQueryParam,
+  clearRaceTrendScoreLinkQuery,
   clearRaceTrendSortKeyQueryParam,
   clearRaceTrendTargetQueryParams,
   DEFAULT_RACE_TREND_SCORE_CONDITIONS_QUERY,
+  DEFAULT_RACE_TREND_SCORE_LINK_TO_WIN_RATE,
   DEFAULT_RACE_TREND_SORT_KEY,
   DEFAULT_RACE_TREND_TARGETS,
   getRaceTrendScoreConditionsFromSearchParams,
   getRaceTrendScoreConditionsQueryValue,
+  getRaceTrendScoreLinkFromSearchParams,
+  getRaceTrendScoreLinkQueryValue,
   getRaceTrendSortKeyFromSearchParams,
   getRaceTrendSortKeyQueryValue,
   getRaceTrendTargetQueryValue,
   getRaceTrendTargetsFromSearchParams,
   isDefaultRaceTrendScoreConditionsQuery,
+  isDefaultRaceTrendScoreLinkToWinRate,
   isDefaultRaceTrendSortKey,
   isDefaultRaceTrendTargets,
   isSameRaceTrendScoreConditionsQuery,
   isSameRaceTrendTargets,
   parseRaceTrendScoreConditionsQuery,
+  parseRaceTrendScoreLinkQuery,
   parseRaceTrendSortKeyQuery,
   parseRaceTrendTargets,
   serializeRaceTrendScoreConditionsQuery,
+  serializeRaceTrendScoreLinkQuery,
   serializeRaceTrendSortKeyQuery,
   serializeRaceTrendTargets,
 } from "./race-trend-query";
 
 describe("race trend query helpers", () => {
-  it("uses default targets when the query string does not specify trend targets", () => {
-    expect(getRaceTrendTargetsFromSearchParams(new URLSearchParams())).toEqual(
-      DEFAULT_RACE_TREND_TARGETS,
-    );
-    expect(isDefaultRaceTrendTargets(DEFAULT_RACE_TREND_TARGETS)).toBe(true);
+  it("uses default targets (jockey only) when the query string does not specify trend targets", () => {
+    expect(getRaceTrendTargetsFromSearchParams(new URLSearchParams())).toStrictEqual({
+      runningStyle: false,
+      frame: false,
+      jockey: true,
+      raceNumber: false,
+    });
+    expect(DEFAULT_RACE_TREND_TARGETS).toStrictEqual({
+      runningStyle: false,
+      frame: false,
+      jockey: true,
+      raceNumber: false,
+    });
+    expect(
+      isDefaultRaceTrendTargets({
+        runningStyle: false,
+        frame: false,
+        jockey: true,
+        raceNumber: false,
+      }),
+    ).toBe(true);
   });
 
   it("reads primary and alias query param names", () => {
@@ -115,13 +138,16 @@ describe("race trend query helpers", () => {
       }),
     ).toBe("frame,jockey");
     expect(
-      isSameRaceTrendTargets(DEFAULT_RACE_TREND_TARGETS, { ...DEFAULT_RACE_TREND_TARGETS }),
+      isSameRaceTrendTargets(
+        { runningStyle: false, frame: false, jockey: true, raceNumber: false },
+        { runningStyle: false, frame: false, jockey: true, raceNumber: false },
+      ),
     ).toBe(true);
     expect(
-      isSameRaceTrendTargets(DEFAULT_RACE_TREND_TARGETS, {
-        ...DEFAULT_RACE_TREND_TARGETS,
-        frame: false,
-      }),
+      isSameRaceTrendTargets(
+        { runningStyle: false, frame: false, jockey: true, raceNumber: false },
+        { runningStyle: false, frame: false, jockey: false, raceNumber: false },
+      ),
     ).toBe(false);
   });
 
@@ -134,12 +160,18 @@ describe("race trend query helpers", () => {
 
 describe("race trend score condition query helpers", () => {
   it("uses default score conditions when the query string omits the param", () => {
-    expect(getRaceTrendScoreConditionsFromSearchParams(new URLSearchParams())).toEqual(
-      DEFAULT_RACE_TREND_SCORE_CONDITIONS_QUERY,
-    );
-    expect(isDefaultRaceTrendScoreConditionsQuery(DEFAULT_RACE_TREND_SCORE_CONDITIONS_QUERY)).toBe(
-      true,
-    );
+    expect(getRaceTrendScoreConditionsFromSearchParams(new URLSearchParams())).toStrictEqual({
+      frame: false,
+      jockey: true,
+      frameRunningStyle: false,
+    });
+    expect(
+      isDefaultRaceTrendScoreConditionsQuery({
+        frame: false,
+        jockey: true,
+        frameRunningStyle: false,
+      }),
+    ).toBe(true);
   });
 
   it("reads the score conditions query param from URLSearchParams", () => {
@@ -233,34 +265,46 @@ describe("race trend score condition query helpers", () => {
   it("round-trips parse and serialize for the default conditions", () => {
     expect(
       serializeRaceTrendScoreConditionsQuery(
-        parseRaceTrendScoreConditionsQuery("frame") ?? {
+        parseRaceTrendScoreConditionsQuery("jockey") ?? {
           frame: false,
           jockey: false,
           frameRunningStyle: false,
         },
       ),
-    ).toBe("frame");
+    ).toBe("jockey");
   });
 
-  it("compares score conditions by exact equality", () => {
+  it("default has jockey only", () => {
+    expect(DEFAULT_RACE_TREND_SCORE_CONDITIONS_QUERY).toStrictEqual({
+      frame: false,
+      jockey: true,
+      frameRunningStyle: false,
+    });
+  });
+
+  it("compares score conditions by exact equality (same)", () => {
     expect(
-      isSameRaceTrendScoreConditionsQuery(DEFAULT_RACE_TREND_SCORE_CONDITIONS_QUERY, {
-        ...DEFAULT_RACE_TREND_SCORE_CONDITIONS_QUERY,
-      }),
+      isSameRaceTrendScoreConditionsQuery(
+        { frame: false, jockey: true, frameRunningStyle: false },
+        { frame: false, jockey: true, frameRunningStyle: false },
+      ),
     ).toBe(true);
+  });
+
+  it("compares score conditions by exact equality (different)", () => {
     expect(
-      isSameRaceTrendScoreConditionsQuery(DEFAULT_RACE_TREND_SCORE_CONDITIONS_QUERY, {
-        ...DEFAULT_RACE_TREND_SCORE_CONDITIONS_QUERY,
-        frame: false,
-      }),
+      isSameRaceTrendScoreConditionsQuery(
+        { frame: false, jockey: true, frameRunningStyle: false },
+        { frame: true, jockey: true, frameRunningStyle: false },
+      ),
     ).toBe(false);
   });
 
   it("reports non-default conditions as non-default", () => {
     expect(
       isDefaultRaceTrendScoreConditionsQuery({
-        frame: false,
-        jockey: true,
+        frame: true,
+        jockey: false,
         frameRunningStyle: false,
       }),
     ).toBe(false);
@@ -334,4 +378,114 @@ describe("race trend sort key query helpers", () => {
     clearRaceTrendSortKeyQueryParam(params);
     expect(params.toString()).toBe("other=keep");
   });
+});
+
+it("score-link default is false", () => {
+  expect(getRaceTrendScoreLinkFromSearchParams(new URLSearchParams())).toBe(false);
+});
+
+it("score-link exposes DEFAULT_RACE_TREND_SCORE_LINK_TO_WIN_RATE as false", () => {
+  expect(DEFAULT_RACE_TREND_SCORE_LINK_TO_WIN_RATE).toBe(false);
+});
+
+it("score-link parses '1' as true", () => {
+  expect(parseRaceTrendScoreLinkQuery("1")).toBe(true);
+});
+
+it("score-link parses 'true' as true", () => {
+  expect(parseRaceTrendScoreLinkQuery("true")).toBe(true);
+});
+
+it("score-link parses 'TRUE' (case insensitive) as true", () => {
+  expect(parseRaceTrendScoreLinkQuery("TRUE")).toBe(true);
+});
+
+it("score-link parses '0' as false", () => {
+  expect(parseRaceTrendScoreLinkQuery("0")).toBe(false);
+});
+
+it("score-link parses 'false' as false", () => {
+  expect(parseRaceTrendScoreLinkQuery("false")).toBe(false);
+});
+
+it("score-link parses null as false (default)", () => {
+  expect(parseRaceTrendScoreLinkQuery(null)).toBe(false);
+});
+
+it("score-link parses invalid as default (false)", () => {
+  expect(parseRaceTrendScoreLinkQuery("garbage")).toBe(false);
+});
+
+it("score-link parses empty string as default (false)", () => {
+  expect(parseRaceTrendScoreLinkQuery("")).toBe(false);
+});
+
+it("score-link trims whitespace around the value", () => {
+  expect(parseRaceTrendScoreLinkQuery("  1  ")).toBe(true);
+});
+
+it("score-link serialize true is '1'", () => {
+  expect(serializeRaceTrendScoreLinkQuery(true)).toBe("1");
+});
+
+it("score-link serialize false is '0'", () => {
+  expect(serializeRaceTrendScoreLinkQuery(false)).toBe("0");
+});
+
+it("score-link round-trip true", () => {
+  expect(parseRaceTrendScoreLinkQuery(serializeRaceTrendScoreLinkQuery(true))).toBe(true);
+});
+
+it("score-link round-trip false", () => {
+  expect(parseRaceTrendScoreLinkQuery(serializeRaceTrendScoreLinkQuery(false))).toBe(false);
+});
+
+it("score-link reads the query param from URLSearchParams", () => {
+  expect(
+    getRaceTrendScoreLinkQueryValue(new URLSearchParams("raceTrendScoreLinkToWinRate=1")),
+  ).toBe("1");
+});
+
+it("score-link reads the query param from a search param record (string)", () => {
+  expect(getRaceTrendScoreLinkQueryValue({ raceTrendScoreLinkToWinRate: "true" })).toBe("true");
+});
+
+it("score-link reads the query param from a search param record (array picks first)", () => {
+  expect(getRaceTrendScoreLinkQueryValue({ raceTrendScoreLinkToWinRate: ["1", "ignored"] })).toBe(
+    "1",
+  );
+});
+
+it("score-link query param record returns null for undefined", () => {
+  expect(getRaceTrendScoreLinkQueryValue({ raceTrendScoreLinkToWinRate: undefined })).toBeNull();
+});
+
+it("score-link query param record returns null for empty array", () => {
+  expect(getRaceTrendScoreLinkQueryValue({ raceTrendScoreLinkToWinRate: [] })).toBeNull();
+});
+
+it("score-link reads true from search params via getRaceTrendScoreLinkFromSearchParams", () => {
+  expect(
+    getRaceTrendScoreLinkFromSearchParams(new URLSearchParams("raceTrendScoreLinkToWinRate=1")),
+  ).toBe(true);
+});
+
+it("score-link reads false from search params via getRaceTrendScoreLinkFromSearchParams", () => {
+  expect(
+    getRaceTrendScoreLinkFromSearchParams(new URLSearchParams("raceTrendScoreLinkToWinRate=0")),
+  ).toBe(false);
+});
+
+it("score-link reports default value (false) as default", () => {
+  expect(isDefaultRaceTrendScoreLinkToWinRate(false)).toBe(true);
+});
+
+it("score-link reports non-default value (true) as non-default", () => {
+  expect(isDefaultRaceTrendScoreLinkToWinRate(true)).toBe(false);
+});
+
+it("score-link clears the query param", () => {
+  const params = new URLSearchParams("raceTrendScoreLinkToWinRate=1&other=keep");
+  clearRaceTrendScoreLinkQuery(params);
+  expect(params.toString()).toBe("other=keep");
 });

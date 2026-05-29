@@ -4,6 +4,18 @@ export const RACE_TREND_SCORE_CONDITIONS_QUERY_PARAM = "raceTrendScoreConditions
 
 export const RACE_TREND_SORT_QUERY_PARAM = "raceTrendSortBy";
 
+export const RACE_TREND_SCORE_LINK_QUERY_PARAM = "raceTrendScoreLinkToWinRate";
+
+export const DEFAULT_RACE_TREND_SCORE_LINK_TO_WIN_RATE: boolean = false;
+
+const RACE_TREND_SCORE_LINK_TRUE_TOKENS: Set<string> = new Set(["1", "true"]);
+
+const RACE_TREND_SCORE_LINK_FALSE_TOKENS: Set<string> = new Set(["0", "false"]);
+
+const RACE_TREND_SCORE_LINK_TRUE_STRING: string = "1";
+
+const RACE_TREND_SCORE_LINK_FALSE_STRING: string = "0";
+
 const RACE_TREND_TARGET_QUERY_PARAM_ALIASES = ["trendTargets", "trend"] as const;
 
 export const RACE_TREND_TARGET_KEYS = ["runningStyle", "frame", "jockey", "raceNumber"] as const;
@@ -37,14 +49,14 @@ export type RaceTrendScoreConditionsQuery = Record<RaceTrendScoreConditionKey, b
 
 export const DEFAULT_RACE_TREND_TARGETS: RaceTrendTargets = {
   runningStyle: false,
-  frame: true,
-  jockey: false,
+  frame: false,
+  jockey: true,
   raceNumber: false,
 };
 
 export const DEFAULT_RACE_TREND_SCORE_CONDITIONS_QUERY: RaceTrendScoreConditionsQuery = {
-  frame: true,
-  jockey: false,
+  frame: false,
+  jockey: true,
   frameRunningStyle: false,
 };
 
@@ -228,4 +240,30 @@ export const isDefaultRaceTrendSortKey = (key: RaceTrendSortKey): boolean =>
 
 export const clearRaceTrendSortKeyQueryParam = (searchParams: URLSearchParams): void => {
   searchParams.delete(RACE_TREND_SORT_QUERY_PARAM);
+};
+
+export const parseRaceTrendScoreLinkQuery = (value: string | null): boolean => {
+  if (value === null) return DEFAULT_RACE_TREND_SCORE_LINK_TO_WIN_RATE;
+  const normalized = value.trim().toLowerCase();
+  if (RACE_TREND_SCORE_LINK_TRUE_TOKENS.has(normalized)) return true;
+  if (RACE_TREND_SCORE_LINK_FALSE_TOKENS.has(normalized)) return false;
+  return DEFAULT_RACE_TREND_SCORE_LINK_TO_WIN_RATE;
+};
+
+export const serializeRaceTrendScoreLinkQuery = (linked: boolean): string =>
+  linked ? RACE_TREND_SCORE_LINK_TRUE_STRING : RACE_TREND_SCORE_LINK_FALSE_STRING;
+
+export const getRaceTrendScoreLinkQueryValue = (
+  searchParams: URLSearchParams | SearchParamRecord,
+): string | null => getSearchParamValue(searchParams, RACE_TREND_SCORE_LINK_QUERY_PARAM);
+
+export const getRaceTrendScoreLinkFromSearchParams = (
+  searchParams: URLSearchParams | SearchParamRecord,
+): boolean => parseRaceTrendScoreLinkQuery(getRaceTrendScoreLinkQueryValue(searchParams));
+
+export const isDefaultRaceTrendScoreLinkToWinRate = (linked: boolean): boolean =>
+  linked === DEFAULT_RACE_TREND_SCORE_LINK_TO_WIN_RATE;
+
+export const clearRaceTrendScoreLinkQuery = (searchParams: URLSearchParams): void => {
+  searchParams.delete(RACE_TREND_SCORE_LINK_QUERY_PARAM);
 };

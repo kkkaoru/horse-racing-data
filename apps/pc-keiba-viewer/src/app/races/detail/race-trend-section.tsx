@@ -19,26 +19,31 @@ import {
 import { RACE_TREND_CACHE_REFRESH_PARAM } from "../../../lib/race-trend-cache";
 import {
   clearRaceTrendScoreConditionsQueryParam,
+  clearRaceTrendScoreLinkQuery,
   clearRaceTrendSortKeyQueryParam,
   clearRaceTrendTargetQueryParams,
-  DEFAULT_RACE_TREND_SCORE_CONDITIONS_QUERY,
+  DEFAULT_RACE_TREND_SCORE_LINK_TO_WIN_RATE,
   DEFAULT_RACE_TREND_SORT_KEY,
   DEFAULT_RACE_TREND_TARGETS,
   getRaceTrendScoreConditionsFromSearchParams,
+  getRaceTrendScoreLinkFromSearchParams,
   getRaceTrendSortKeyFromSearchParams,
   getRaceTrendTargetsFromSearchParams,
   isDefaultRaceTrendScoreConditionsQuery,
+  isDefaultRaceTrendScoreLinkToWinRate,
   isDefaultRaceTrendSortKey,
   isDefaultRaceTrendTargets,
   isSameRaceTrendScoreConditionsQuery,
   isSameRaceTrendTargets,
   RACE_TREND_SCORE_CONDITION_QUERY_KEYS,
   RACE_TREND_SCORE_CONDITIONS_QUERY_PARAM,
+  RACE_TREND_SCORE_LINK_QUERY_PARAM,
   RACE_TREND_SORT_KEYS,
   RACE_TREND_SORT_QUERY_PARAM,
   RACE_TREND_TARGET_KEYS,
   RACE_TREND_TARGET_QUERY_PARAM,
   serializeRaceTrendScoreConditionsQuery,
+  serializeRaceTrendScoreLinkQuery,
   serializeRaceTrendSortKeyQuery,
   serializeRaceTrendTargets,
   type RaceTrendScoreConditionKey,
@@ -49,7 +54,9 @@ import {
 } from "../../../lib/race-trend-query";
 import {
   computeRawUmabanScores,
+  DEFAULT_RACE_TREND_SCORE_CONDITIONS,
   normalizeUmabanScores,
+  type RecordFilter,
   type ScoreDetailInput,
   type UmabanContext,
 } from "../../../lib/race-trend-score";
@@ -77,6 +84,7 @@ interface RaceTrendSectionProps {
   day: string;
   defaultEndDate: string;
   defaultStartDate: string;
+  initialLinkScoreToWinRate?: boolean;
   initialScoreConditions?: RaceTrendScoreConditionsQuery;
   initialTrendTargets?: RaceTrendTargets;
   keibajoCode: string;
@@ -122,6 +130,9 @@ const SORT_KEY_LABELS: Record<RaceTrendSortKey, string> = {
 
 const SCORE_DETAIL_HEADING = "スコア対象レコード";
 const SCORE_DETAIL_EMPTY_MESSAGE = "スコア条件が選択されていません";
+const SCORE_CONDITIONS_LABEL = "スコア計算条件";
+const SCORE_LINK_TO_WIN_RATE_LABEL = "集計範囲を勝率条件に連動";
+const RACE_TREND_CONDITIONS_SUMMARY_LABEL = "条件を変更";
 
 const RUNNING_STYLE_LABELS: Record<RaceTrendRunningStyle, string> = {
   nige: "逃げ",
@@ -423,6 +434,40 @@ const replaceRaceTrendSortKeyQuery = (sortKey: RaceTrendSortKey): void => {
   if (nextPath !== getCurrentLocationPath()) {
     window.history.replaceState(window.history.state, "", nextPath);
   }
+};
+
+const updateRaceTrendScoreLinkQuery = (linked: boolean): void => {
+  const url = new URL(window.location.href);
+  clearRaceTrendScoreLinkQuery(url.searchParams);
+  if (!isDefaultRaceTrendScoreLinkToWinRate(linked)) {
+    url.searchParams.set(
+      RACE_TREND_SCORE_LINK_QUERY_PARAM,
+      serializeRaceTrendScoreLinkQuery(linked),
+    );
+  }
+  const nextPath = `${url.pathname}${url.search}${url.hash}`;
+  if (nextPath !== getCurrentLocationPath()) {
+    window.history.replaceState(window.history.state, "", nextPath);
+  }
+};
+
+// Predicate used to restrict score-record aggregation to past records that
+// match the user-selected 勝率条件. If all flags are off, this collapses to a
+// no-op (returns true everywhere) and the score becomes equivalent to an
+// unfiltered aggregation. Note: trendTargets.raceNumber is intentionally ignored
+// because UmabanContext does not carry a race number for the current race.
+interface PredicateMatchesWinRateParams {
+  context: UmabanContext;
+  detail: ScoreDetailInput;
+  trendTargets: RaceTrendTargets;
+}
+
+const predicateMatchesWinRate = (params: PredicateMatchesWinRateParams): boolean => {
+  const { context, detail, trendTargets } = params;
+  if (trendTargets.frame && detail.frameNumber !== context.frameNumber) return false;
+  if (trendTargets.jockey && detail.jockeyKey !== context.jockeyKey) return false;
+  if (trendTargets.runningStyle && detail.runningStyle !== context.runningStyle) return false;
+  return true;
 };
 
 const isRaceTrendUpdatedMessage = (value: unknown): boolean =>
@@ -954,7 +999,8 @@ export function RaceTrendSection({
   day,
   defaultEndDate,
   defaultStartDate,
-  initialScoreConditions = DEFAULT_RACE_TREND_SCORE_CONDITIONS_QUERY,
+  initialLinkScoreToWinRate = DEFAULT_RACE_TREND_SCORE_LINK_TO_WIN_RATE,
+  initialScoreConditions = DEFAULT_RACE_TREND_SCORE_CONDITIONS,
   initialTrendTargets = DEFAULT_RACE_TREND_TARGETS,
   keibajoCode,
   minStartDate,
@@ -969,11 +1015,13 @@ export function RaceTrendSection({
   const [trendTargets, setTrendTargets] = useState<RaceTrendTargets>(initialTrendTargets);
   const [scoreConditions, setScoreConditions] =
     useState<RaceTrendScoreConditionsQuery>(initialScoreConditions);
+  const [linkScoreToWinRate, setLinkScoreToWinRate] = useState<boolean>(initialLinkScoreToWinRate);
   const [sortBy, setSortBy] = useState<RaceTrendSortKey>(DEFAULT_RACE_TREND_SORT_KEY);
   const [rawPayload, setRawPayload] = useState<RaceTrendRawPayload | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
   const trendTargetsRef = useRef(initialTrendTargets);
   const scoreConditionsRef = useRef(initialScoreConditions);
+  const linkScoreToWinRateRef = useRef<boolean>(initialLinkScoreToWinRate);
   const sortByRef = useRef<RaceTrendSortKey>(DEFAULT_RACE_TREND_SORT_KEY);
   const fetchSequenceRef = useRef(0);
   const liveConnectedRef = useRef(false);
@@ -1000,6 +1048,13 @@ export function RaceTrendSection({
     setScoreConditions(nextConditions);
   }, []);
 
+  const toggleScoreLinkToWinRate = useCallback(() => {
+    const nextLinked = !linkScoreToWinRateRef.current;
+    linkScoreToWinRateRef.current = nextLinked;
+    updateRaceTrendScoreLinkQuery(nextLinked);
+    setLinkScoreToWinRate(nextLinked);
+  }, []);
+
   const updateSortBy = useCallback((nextSortBy: RaceTrendSortKey) => {
     sortByRef.current = nextSortBy;
     replaceRaceTrendSortKeyQuery(nextSortBy);
@@ -1007,13 +1062,17 @@ export function RaceTrendSection({
   }, []);
 
   useEffect(() => {
-    // Hydrate sort key from the URL once on mount so deep links work.
-    const initialSortKey = getRaceTrendSortKeyFromSearchParams(
-      new URLSearchParams(window.location.search),
-    );
+    // Hydrate sort key and score-link flag from the URL once on mount so deep links work.
+    const search = new URLSearchParams(window.location.search);
+    const initialSortKey = getRaceTrendSortKeyFromSearchParams(search);
     if (initialSortKey !== sortByRef.current) {
       sortByRef.current = initialSortKey;
       setSortBy(initialSortKey);
+    }
+    const initialLinked = getRaceTrendScoreLinkFromSearchParams(search);
+    if (initialLinked !== linkScoreToWinRateRef.current) {
+      linkScoreToWinRateRef.current = initialLinked;
+      setLinkScoreToWinRate(initialLinked);
     }
   }, []);
 
@@ -1023,6 +1082,7 @@ export function RaceTrendSection({
       const nextTargets = getRaceTrendTargetsFromSearchParams(search);
       const nextScoreConditions = getRaceTrendScoreConditionsFromSearchParams(search);
       const nextSortKey = getRaceTrendSortKeyFromSearchParams(search);
+      const nextLinked = getRaceTrendScoreLinkFromSearchParams(search);
       setTrendTargets((current) => {
         if (isSameRaceTrendTargets(current, nextTargets)) {
           return current;
@@ -1041,6 +1101,11 @@ export function RaceTrendSection({
         if (current === nextSortKey) return current;
         sortByRef.current = nextSortKey;
         return nextSortKey;
+      });
+      setLinkScoreToWinRate((current) => {
+        if (current === nextLinked) return current;
+        linkScoreToWinRateRef.current = nextLinked;
+        return nextLinked;
       });
     };
     window.addEventListener("popstate", handlePopState);
@@ -1134,6 +1199,20 @@ export function RaceTrendSection({
     return { currentRunningStyleMap, runningStyleByStarterKey };
   }, [rawPayload]);
 
+  // When the user opts in via the "集計範囲を勝率条件に連動" checkbox, restrict
+  // each score record to those whose detail matches the active 勝率条件 (frame /
+  // jockey / runningStyle). If all 勝率条件 flags are off, the predicate is a no-op
+  // and the score is computed over all records (equivalent to undefined filter).
+  const recordFilter = useMemo<RecordFilter | undefined>(() => {
+    if (!linkScoreToWinRate) return undefined;
+    return (params) =>
+      predicateMatchesWinRate({
+        context: params.context,
+        detail: params.detail,
+        trendTargets,
+      });
+  }, [linkScoreToWinRate, trendTargets]);
+
   const umabanScores = useMemo<Map<string, number | null>>(() => {
     const runners = rawPayload?.runners ?? [];
     const starterRows = rawPayload?.starterRows ?? [];
@@ -1152,9 +1231,10 @@ export function RaceTrendSection({
       contexts,
       details,
       conditions: scoreConditions,
+      recordFilter,
     });
     return normalizeUmabanScores(raw);
-  }, [rawPayload, scoreSourceMaps, scoreConditions]);
+  }, [rawPayload, scoreSourceMaps, scoreConditions, recordFilter]);
 
   const sortedRows = useMemo<RaceTrendRunningStyleRow[]>(
     () => rows.toSorted(compareRowsBySortKey({ sortBy, scores: umabanScores })),
@@ -1333,56 +1413,74 @@ export function RaceTrendSection({
           </label>
         </div>
 
-        <div className="combined-score-targets race-trend-targets" aria-label="勝率条件">
-          <fieldset>
-            <legend>勝率条件</legend>
-            {RACE_TREND_TARGET_KEYS.map((key) => (
-              <label key={key}>
-                <input
-                  checked={trendTargets[key]}
-                  type="checkbox"
-                  onChange={() => toggleTrendTarget(key)}
-                />
-                <span>{TREND_TARGET_LABELS[key]}</span>
-              </label>
-            ))}
-          </fieldset>
-        </div>
+        <details className="race-trend-conditions-disclosure" open>
+          <summary>{RACE_TREND_CONDITIONS_SUMMARY_LABEL}</summary>
+          <div className="race-trend-conditions-disclosure-body">
+            <div className="race-trend-conditions-grid">
+              <div className="combined-score-targets race-trend-targets" aria-label="勝率条件">
+                <fieldset>
+                  <legend>勝率条件</legend>
+                  {RACE_TREND_TARGET_KEYS.map((key) => (
+                    <label key={key}>
+                      <input
+                        checked={trendTargets[key]}
+                        type="checkbox"
+                        onChange={() => toggleTrendTarget(key)}
+                      />
+                      <span>{TREND_TARGET_LABELS[key]}</span>
+                    </label>
+                  ))}
+                </fieldset>
+              </div>
 
-        <div className="combined-score-targets race-trend-targets" aria-label="スコア条件">
-          <fieldset>
-            <legend>スコア条件</legend>
-            {RACE_TREND_SCORE_CONDITION_QUERY_KEYS.map((key) => (
-              <label key={key}>
-                <input
-                  checked={scoreConditions[key]}
-                  type="checkbox"
-                  onChange={() => toggleScoreCondition(key)}
-                />
-                <span>{SCORE_CONDITION_LABELS[key]}</span>
-              </label>
-            ))}
-          </fieldset>
-        </div>
-
-        <div className="combined-score-targets race-trend-sort" aria-label="並び順">
-          <fieldset>
-            <legend>並び順</legend>
-            <label>
-              <span>並び順</span>
-              <select
-                onChange={(event) => updateSortBy(parseSortChangeEvent(event.target.value))}
-                value={sortBy}
+              <div
+                className="combined-score-targets race-trend-targets"
+                aria-label={SCORE_CONDITIONS_LABEL}
               >
-                {RACE_TREND_SORT_KEYS.map((key) => (
-                  <option key={key} value={key}>
-                    {SORT_KEY_LABELS[key]}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </fieldset>
-        </div>
+                <fieldset>
+                  <legend>{SCORE_CONDITIONS_LABEL}</legend>
+                  {RACE_TREND_SCORE_CONDITION_QUERY_KEYS.map((key) => (
+                    <label key={key}>
+                      <input
+                        checked={scoreConditions[key]}
+                        type="checkbox"
+                        onChange={() => toggleScoreCondition(key)}
+                      />
+                      <span>{SCORE_CONDITION_LABELS[key]}</span>
+                    </label>
+                  ))}
+                  <label className="race-trend-score-link-toggle">
+                    <input
+                      checked={linkScoreToWinRate}
+                      type="checkbox"
+                      onChange={() => toggleScoreLinkToWinRate()}
+                    />
+                    <span>{SCORE_LINK_TO_WIN_RATE_LABEL}</span>
+                  </label>
+                </fieldset>
+              </div>
+            </div>
+
+            <div className="combined-score-targets race-trend-sort" aria-label="並び順">
+              <fieldset>
+                <legend>並び順</legend>
+                <label>
+                  <span>並び順</span>
+                  <select
+                    onChange={(event) => updateSortBy(parseSortChangeEvent(event.target.value))}
+                    value={sortBy}
+                  >
+                    {RACE_TREND_SORT_KEYS.map((key) => (
+                      <option key={key} value={key}>
+                        {SORT_KEY_LABELS[key]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </fieldset>
+            </div>
+          </div>
+        </details>
 
         <RaceTrendTable
           isLoading={status === "loading"}

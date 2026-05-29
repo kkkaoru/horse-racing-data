@@ -6,20 +6,19 @@ import {
   DEFAULT_RACE_TREND_SCORE_CONDITIONS,
   normalizeUmabanScores,
   RACE_TREND_SCORE_CONDITION_KEYS,
-  rawScoreForUmabanCondition,
   scoreSinglePastRace,
 } from "./race-trend-score";
-import type { RaceTrendScoreCondition, ScoreDetailInput, UmabanContext } from "./race-trend-score";
+import type { ScoreDetailInput, UmabanContext } from "./race-trend-score";
 
 test("RACE_TREND_SCORE_CONDITION_KEYS lists three condition keys", () => {
   expect(RACE_TREND_SCORE_CONDITION_KEYS).toStrictEqual(["frame", "jockey", "frameRunningStyle"]);
 });
 
-test("DEFAULT_RACE_TREND_SCORE_CONDITIONS enables all signals", () => {
+test("DEFAULT_RACE_TREND_SCORE_CONDITIONS enables only jockey", () => {
   expect(DEFAULT_RACE_TREND_SCORE_CONDITIONS).toStrictEqual({
-    frame: true,
+    frame: false,
     jockey: true,
-    frameRunningStyle: true,
+    frameRunningStyle: false,
   });
 });
 
@@ -167,149 +166,6 @@ test("scoreSinglePastRace popularity-null-board-tier: null pop 4 fin odds 10 ret
   expect(scoreSinglePastRace(detail)).toBe(0);
 });
 
-test("rawScoreForUmabanCondition frame-match averages only frame-matching details", () => {
-  const context: UmabanContext = {
-    umaban: "5",
-    frameNumber: "3",
-    jockeyKey: null,
-    runningStyle: null,
-  };
-  const details: ScoreDetailInput[] = [
-    {
-      popularity: 1,
-      finishPosition: 1,
-      winOdds: 2.0,
-      frameNumber: "3",
-      jockeyKey: null,
-      runningStyle: null,
-    },
-    {
-      popularity: 3,
-      finishPosition: 1,
-      winOdds: 50.0,
-      frameNumber: "3",
-      jockeyKey: null,
-      runningStyle: null,
-    },
-    {
-      popularity: 5,
-      finishPosition: 1,
-      winOdds: 2.0,
-      frameNumber: "5",
-      jockeyKey: null,
-      runningStyle: null,
-    },
-  ];
-  expect(rawScoreForUmabanCondition({ context, details, condition: "frame" })).toBe(7);
-});
-
-test("rawScoreForUmabanCondition jockey-match averages only jockey-matching details", () => {
-  const context: UmabanContext = {
-    umaban: "1",
-    frameNumber: null,
-    jockeyKey: "yamada",
-    runningStyle: null,
-  };
-  const details: ScoreDetailInput[] = [
-    {
-      popularity: null,
-      finishPosition: 1,
-      winOdds: null,
-      frameNumber: null,
-      jockeyKey: "yamada",
-      runningStyle: null,
-    },
-    {
-      popularity: 1,
-      finishPosition: 4,
-      winOdds: 1.5,
-      frameNumber: null,
-      jockeyKey: "ito",
-      runningStyle: null,
-    },
-  ];
-  expect(rawScoreForUmabanCondition({ context, details, condition: "jockey" })).toBe(3);
-});
-
-test("rawScoreForUmabanCondition frame-running-style requires both frame and running style to match", () => {
-  const context: UmabanContext = {
-    umaban: "2",
-    frameNumber: "3",
-    jockeyKey: null,
-    runningStyle: "senko",
-  };
-  const details: ScoreDetailInput[] = [
-    {
-      popularity: 1,
-      finishPosition: 1,
-      winOdds: 2.0,
-      frameNumber: "3",
-      jockeyKey: null,
-      runningStyle: "senko",
-    },
-    {
-      popularity: 1,
-      finishPosition: 1,
-      winOdds: 2.0,
-      frameNumber: "3",
-      jockeyKey: null,
-      runningStyle: "oikomi",
-    },
-    {
-      popularity: 1,
-      finishPosition: 1,
-      winOdds: 2.0,
-      frameNumber: "5",
-      jockeyKey: null,
-      runningStyle: "senko",
-    },
-  ];
-  expect(rawScoreForUmabanCondition({ context, details, condition: "frameRunningStyle" })).toBe(
-    3.9030899869919438,
-  );
-});
-
-test("rawScoreForUmabanCondition returns null when no detail matches", () => {
-  const context: UmabanContext = {
-    umaban: "1",
-    frameNumber: "3",
-    jockeyKey: null,
-    runningStyle: null,
-  };
-  const details: ScoreDetailInput[] = [
-    {
-      popularity: 1,
-      finishPosition: 1,
-      winOdds: 2.0,
-      frameNumber: "5",
-      jockeyKey: null,
-      runningStyle: null,
-    },
-  ];
-  expect(rawScoreForUmabanCondition({ context, details, condition: "frame" })).toBeNull();
-});
-
-test("rawScoreForUmabanCondition returns null for unknown condition key", () => {
-  const context: UmabanContext = {
-    umaban: "1",
-    frameNumber: "3",
-    jockeyKey: null,
-    runningStyle: null,
-  };
-  const details: ScoreDetailInput[] = [
-    {
-      popularity: 1,
-      finishPosition: 1,
-      winOdds: 2.0,
-      frameNumber: "3",
-      jockeyKey: null,
-      runningStyle: null,
-    },
-  ];
-  const decoyCondition: RaceTrendScoreCondition = JSON.parse('"unknown"');
-  expect(rawScoreForUmabanCondition({ context, details, condition: decoyCondition })).toBeNull();
-});
-
 test("computeRawUmabanScores returns all-null map when no condition is enabled", () => {
   const contexts: UmabanContext[] = [
     { umaban: "1", frameNumber: "1", jockeyKey: null, runningStyle: null },
@@ -339,15 +195,31 @@ test("computeRawUmabanScores returns all-null map when no condition is enabled",
   );
 });
 
-test("computeRawUmabanScores single-condition matches single rawScoreForUmabanCondition output", () => {
+test("computeRawUmabanScores single-condition-sum: frame-only sums all matching details", () => {
   const contexts: UmabanContext[] = [
     { umaban: "1", frameNumber: "3", jockeyKey: null, runningStyle: null },
   ];
   const details: ScoreDetailInput[] = [
     {
-      popularity: 1,
+      popularity: null,
       finishPosition: 1,
-      winOdds: 2.0,
+      winOdds: null,
+      frameNumber: "3",
+      jockeyKey: null,
+      runningStyle: null,
+    },
+    {
+      popularity: null,
+      finishPosition: 1,
+      winOdds: null,
+      frameNumber: "3",
+      jockeyKey: null,
+      runningStyle: null,
+    },
+    {
+      popularity: null,
+      finishPosition: 1,
+      winOdds: null,
       frameNumber: "3",
       jockeyKey: null,
       runningStyle: null,
@@ -359,26 +231,49 @@ test("computeRawUmabanScores single-condition matches single rawScoreForUmabanCo
       details,
       conditions: { frame: true, jockey: false, frameRunningStyle: false },
     }),
-  ).toStrictEqual(new Map([["1", 3.9030899869919438]]));
+  ).toStrictEqual(new Map([["1", 12.476649250079015]]));
 });
 
-test("computeRawUmabanScores two-conditions-average produces mean of frame and jockey scores", () => {
+test("computeRawUmabanScores single-condition-mismatch: no matching detail returns null", () => {
   const contexts: UmabanContext[] = [
-    { umaban: "1", frameNumber: "3", jockeyKey: "yamada", runningStyle: null },
+    { umaban: "1", frameNumber: "3", jockeyKey: null, runningStyle: null },
   ];
   const details: ScoreDetailInput[] = [
     {
       popularity: 1,
       finishPosition: 1,
-      winOdds: 10.0,
+      winOdds: 2.0,
+      frameNumber: "5",
+      jockeyKey: null,
+      runningStyle: null,
+    },
+  ];
+  expect(
+    computeRawUmabanScores({
+      contexts,
+      details,
+      conditions: { frame: true, jockey: false, frameRunningStyle: false },
+    }),
+  ).toStrictEqual(new Map([["1", null]]));
+});
+
+test("computeRawUmabanScores two-conditions-additive-sum: each match contributes separately", () => {
+  const contexts: UmabanContext[] = [
+    { umaban: "1", frameNumber: "3", jockeyKey: "yamada", runningStyle: null },
+  ];
+  const details: ScoreDetailInput[] = [
+    {
+      popularity: null,
+      finishPosition: 1,
+      winOdds: null,
       frameNumber: "3",
-      jockeyKey: "ito",
+      jockeyKey: "yamada",
       runningStyle: null,
     },
     {
-      popularity: 2,
-      finishPosition: 2,
-      winOdds: 10.0,
+      popularity: null,
+      finishPosition: 1,
+      winOdds: null,
       frameNumber: "3",
       jockeyKey: "ito",
       runningStyle: null,
@@ -391,6 +286,14 @@ test("computeRawUmabanScores two-conditions-average produces mean of frame and j
       jockeyKey: "yamada",
       runningStyle: null,
     },
+    {
+      popularity: null,
+      finishPosition: 1,
+      winOdds: null,
+      frameNumber: "5",
+      jockeyKey: "ito",
+      runningStyle: null,
+    },
   ];
   expect(
     computeRawUmabanScores({
@@ -398,7 +301,30 @@ test("computeRawUmabanScores two-conditions-average produces mean of frame and j
       details,
       conditions: { frame: true, jockey: true, frameRunningStyle: false },
     }),
-  ).toStrictEqual(new Map([["1", 4]]));
+  ).toStrictEqual(new Map([["1", 13.183347464017315]]));
+});
+
+test("computeRawUmabanScores three-conditions: record matching all three counts three times", () => {
+  const contexts: UmabanContext[] = [
+    { umaban: "1", frameNumber: "3", jockeyKey: "yamada", runningStyle: "senko" },
+  ];
+  const details: ScoreDetailInput[] = [
+    {
+      popularity: null,
+      finishPosition: 1,
+      winOdds: null,
+      frameNumber: "3",
+      jockeyKey: "yamada",
+      runningStyle: "senko",
+    },
+  ];
+  expect(
+    computeRawUmabanScores({
+      contexts,
+      details,
+      conditions: { frame: true, jockey: true, frameRunningStyle: true },
+    }),
+  ).toStrictEqual(new Map([["1", 6.238324625039507]]));
 });
 
 test("computeRawUmabanScores umaban-with-no-history yields null entry", () => {
@@ -408,9 +334,9 @@ test("computeRawUmabanScores umaban-with-no-history yields null entry", () => {
   ];
   const details: ScoreDetailInput[] = [
     {
-      popularity: 1,
+      popularity: null,
       finishPosition: 1,
-      winOdds: 2.0,
+      winOdds: null,
       frameNumber: "3",
       jockeyKey: null,
       runningStyle: null,
@@ -424,10 +350,113 @@ test("computeRawUmabanScores umaban-with-no-history yields null entry", () => {
     }),
   ).toStrictEqual(
     new Map([
-      ["1", 3.9030899869919438],
+      ["1", 2.0794415416798357],
       ["2", null],
     ]),
   );
+});
+
+test("computeRawUmabanScores record-filter-omitted: all details eligible", () => {
+  const contexts: UmabanContext[] = [
+    { umaban: "1", frameNumber: "3", jockeyKey: null, runningStyle: null },
+  ];
+  const details: ScoreDetailInput[] = [
+    {
+      popularity: null,
+      finishPosition: 1,
+      winOdds: null,
+      frameNumber: "3",
+      jockeyKey: null,
+      runningStyle: null,
+    },
+    {
+      popularity: null,
+      finishPosition: 1,
+      winOdds: null,
+      frameNumber: "3",
+      jockeyKey: null,
+      runningStyle: null,
+    },
+  ];
+  expect(
+    computeRawUmabanScores({
+      contexts,
+      details,
+      conditions: { frame: true, jockey: false, frameRunningStyle: false },
+    }),
+  ).toStrictEqual(new Map([["1", 6.591673732008657]]));
+});
+
+test("computeRawUmabanScores record-filter-excludes: filter rejects every detail returns null", () => {
+  const contexts: UmabanContext[] = [
+    { umaban: "1", frameNumber: "3", jockeyKey: null, runningStyle: null },
+  ];
+  const details: ScoreDetailInput[] = [
+    {
+      popularity: null,
+      finishPosition: 1,
+      winOdds: null,
+      frameNumber: "3",
+      jockeyKey: null,
+      runningStyle: null,
+    },
+    {
+      popularity: null,
+      finishPosition: 1,
+      winOdds: null,
+      frameNumber: "3",
+      jockeyKey: null,
+      runningStyle: null,
+    },
+  ];
+  expect(
+    computeRawUmabanScores({
+      contexts,
+      details,
+      conditions: { frame: true, jockey: false, frameRunningStyle: false },
+      recordFilter: () => false,
+    }),
+  ).toStrictEqual(new Map([["1", null]]));
+});
+
+test("computeRawUmabanScores record-filter-includes-subset: only filter-pass details contribute", () => {
+  const contexts: UmabanContext[] = [
+    { umaban: "1", frameNumber: "3", jockeyKey: null, runningStyle: null },
+  ];
+  const details: ScoreDetailInput[] = [
+    {
+      popularity: null,
+      finishPosition: 1,
+      winOdds: null,
+      frameNumber: "3",
+      jockeyKey: null,
+      runningStyle: "senko",
+    },
+    {
+      popularity: null,
+      finishPosition: 1,
+      winOdds: null,
+      frameNumber: "3",
+      jockeyKey: null,
+      runningStyle: "senko",
+    },
+    {
+      popularity: null,
+      finishPosition: 1,
+      winOdds: null,
+      frameNumber: "3",
+      jockeyKey: null,
+      runningStyle: "oikomi",
+    },
+  ];
+  expect(
+    computeRawUmabanScores({
+      contexts,
+      details,
+      conditions: { frame: true, jockey: false, frameRunningStyle: false },
+      recordFilter: ({ detail }) => detail.runningStyle === "senko",
+    }),
+  ).toStrictEqual(new Map([["1", 6.591673732008657]]));
 });
 
 test("normalizeUmabanScores all-null returns all-null map", () => {
@@ -463,6 +492,21 @@ test("normalizeUmabanScores three-umaban-relative min-max scales to [0, 1]", () 
     ["1", 2],
     ["2", 6],
     ["3", 4],
+  ]);
+  expect(normalizeUmabanScores(raw)).toStrictEqual(
+    new Map([
+      ["1", 0],
+      ["2", 1],
+      ["3", 0.5],
+    ]),
+  );
+});
+
+test("normalizeUmabanScores normalization-after-sum: raw 10/30/20 scales to 0/1/0.5", () => {
+  const raw = new Map<string, number | null>([
+    ["1", 10],
+    ["2", 30],
+    ["3", 20],
   ]);
   expect(normalizeUmabanScores(raw)).toStrictEqual(
     new Map([
