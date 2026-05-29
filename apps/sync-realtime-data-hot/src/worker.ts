@@ -22,8 +22,10 @@ import { jsonResponse } from "./http";
 import { extractYyyymmddFromRaceKey } from "./race-key";
 import { writeCachedOdds } from "./odds-cache";
 import { planOddsFetches } from "./plan";
+import { populateTodayOddsFetchState } from "./scheduled-race-list";
 import {
   bulkInsertOddsSnapshotRows,
+  countOddsFetchStateForDate,
   getLatestOddsFromD1,
   listArchiveCandidatesBeforeCutoff,
   listOddsHistoryByType,
@@ -39,6 +41,7 @@ import type { Env, Job, OddsData, OddsType, OddsFetchStateUpsertInput } from "./
 
 const PLAN_ODDS_FETCHES_CRON = "* * * * *";
 const ARCHIVE_ODDS_CRON = "0 4 * * *";
+const POPULATE_TODAY_CRON = "55 20 * * *";
 const ARCHIVE_QUERY_LIMIT = 200;
 const D1_RESULT_CACHE_QUERIES = ["latest", "tanshoHistory", "oddsHistoryByType"];
 
@@ -261,7 +264,24 @@ export const runScheduledPlan = async (env: Env, now: Date): Promise<void> => {
   if (!shouldRunOddsCron(now)) {
     return;
   }
-  await planOddsFetches(env, now, getTodayJst(now));
+  const todayYyyymmdd = getTodayJst(now);
+  // Fallback self-discovery: when odds_fetch_state has no row for today, the
+  // legacy worker either has not forwarded yet or is down. Run a one-shot
+  // populate so the planner has something to enqueue this tick instead of
+  // skipping for hours.
+  const stateCount = await countOddsFetchStateForDate(
+    env.REALTIME_HOT_DB,
+    todayYyyymmdd.slice(0, 4),
+    todayYyyymmdd.slice(4, 8),
+  );
+  if (stateCount === 0) {
+    await populateTodayOddsFetchState(env, now);
+  }
+  await planOddsFetches(env, now, todayYyyymmdd);
+};
+
+export const runScheduledPopulateToday = async (env: Env, now: Date): Promise<void> => {
+  await populateTodayOddsFetchState(env, now);
 };
 
 export const runScheduledArchive = async (env: Env, now: Date): Promise<void> => {
@@ -290,6 +310,10 @@ export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<
   }
   if (event.cron === ARCHIVE_ODDS_CRON) {
     await runScheduledArchive(env, now);
+    return;
+  }
+  if (event.cron === POPULATE_TODAY_CRON) {
+    await runScheduledPopulateToday(env, now);
   }
 };
 

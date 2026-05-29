@@ -282,6 +282,20 @@ export const getOddsFetchState = async (
   return row ? toOddsFetchStateRow(row) : null;
 };
 
+export const countOddsFetchStateForDate = async (
+  db: D1Database,
+  kaisaiNen: string,
+  kaisaiTsukihi: string,
+): Promise<number> => {
+  const row = await db
+    .prepare(
+      `select count(*) as count from odds_fetch_state where kaisai_nen = ? and kaisai_tsukihi = ?`,
+    )
+    .bind(kaisaiNen, kaisaiTsukihi)
+    .first<{ count: number }>();
+  return row?.count ?? 0;
+};
+
 export const listOddsFetchStateForDate = async (
   db: D1Database,
   source: OddsSource,

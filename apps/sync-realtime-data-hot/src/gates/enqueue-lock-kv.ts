@@ -1,12 +1,12 @@
 import type { Env } from "../types";
 
 const ENQUEUE_LOCK_KEY_PREFIX = "odds:enqueue-lock";
-const FINAL_WINDOW_MINUTES_BEFORE = 5;
+const FINAL_WINDOW_MINUTES_BEFORE = 10;
 const FINAL_WINDOW_MINUTES_AFTER = 3;
-const HIGH_FREQ_WINDOW_MINUTES_BEFORE = 30;
-const LOCK_TTL_FINAL_SECONDS = 0;
-const LOCK_TTL_HIGH_FREQ_SECONDS = 20;
-const LOCK_TTL_DEFAULT_SECONDS = 60;
+const HIGH_FREQ_WINDOW_MINUTES_BEFORE = 60;
+const LOCK_TTL_FINAL_SECONDS = 60;
+const LOCK_TTL_HIGH_FREQ_SECONDS = 600;
+const LOCK_TTL_DEFAULT_SECONDS = 3600;
 
 const buildEnqueueLockKey = (raceKey: string): string => `${ENQUEUE_LOCK_KEY_PREFIX}:${raceKey}`;
 
