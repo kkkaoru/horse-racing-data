@@ -9,6 +9,9 @@ vi.mock("./features/parquet", () => ({
   encodeRaceFeaturesParquet: vi.fn(async () => new Uint8Array([1, 2, 3])),
   decodeRaceFeaturesParquet: vi.fn(async () => []),
 }));
+vi.mock("./features/race-trend", () => ({
+  handleRaceTrend: vi.fn(async () => new Response('{"ok":true}', { status: 200 })),
+}));
 vi.mock("./running-style/inference", () => ({
   handleRunningStylePredictionJob: vi.fn(async () => ({ raceKey: "r", writtenCount: 0 })),
 }));
@@ -26,6 +29,7 @@ vi.mock("./scheduled-race-list", async () => {
 
 import { buildRaceFeatures } from "./features/build";
 import { encodeRaceFeaturesParquet } from "./features/parquet";
+import { handleRaceTrend } from "./features/race-trend";
 import { listTodayRaceKeysFromHyperdrive } from "./scheduled-race-list";
 import {
   buildAndPersistRaceFeatures,
@@ -35,7 +39,6 @@ import {
   handleMigrationStateGet,
   handleMigrationStatePost,
   handleQueue,
-  handleRaceTrendStub,
   handleRecomputeRequest,
   handleRoot,
   handleScheduled,
@@ -83,6 +86,8 @@ beforeEach(() => {
   vi.mocked(encodeRaceFeaturesParquet).mockResolvedValue(new Uint8Array([1, 2, 3]));
   vi.mocked(listTodayRaceKeysFromHyperdrive).mockReset();
   vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValue([]);
+  vi.mocked(handleRaceTrend).mockReset();
+  vi.mocked(handleRaceTrend).mockResolvedValue(new Response('{"ok":true}', { status: 200 }));
 });
 
 it("handleRoot returns ok payload", async () => {
@@ -108,23 +113,16 @@ it("returns 404 for unknown path", async () => {
   expect(response.status).toBe(404);
 });
 
-it("handleRaceTrendStub returns empty aggregate", async () => {
-  const response = handleRaceTrendStub();
-  await expect(response.json()).resolves.toStrictEqual({
-    byJockey: {},
-    byWaku: {},
-    raceCount: 0,
-    starterCount: 0,
-  });
-});
-
-it("routes /api/features/race-trend to stub", async () => {
+it("routes /api/features/race-trend to handleRaceTrend", async () => {
   const env = buildEnv();
   const response = await handleFetchRequest(
     env,
-    new Request("https://x/api/features/race-trend", { method: "GET" }),
+    new Request("https://x/api/features/race-trend?source=nar&keibajoCode=30&raceBango=08", {
+      method: "GET",
+    }),
   );
   expect(response.status).toBe(200);
+  expect(handleRaceTrend).toHaveBeenCalledTimes(1);
 });
 
 it("returns 400 when race_key missing on running-styles", async () => {
