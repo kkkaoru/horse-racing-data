@@ -1082,3 +1082,270 @@ it("fetch-premium-race-data summarizes stable comment sample when parsed comment
 
 // Covers fetch handler queue path: message.body.type === "fetch-odds" triggers ack,
 // other types trigger retry. Exercises both arms of the catch branch.
+
+it("planResultFetchesOnly returns 0 outside the JST polling window", async () => {
+  const { planResultFetchesOnly } = await import("./worker");
+  const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-11T20:00:00.000Z" } as never);
+  const count = await planResultFetchesOnly(env, "20260512");
+  expect(count).toBe(0);
+});
+
+it("planResultFetchesOnly returns 0 when there are no schedulable races", async () => {
+  const { planResultFetchesOnly } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([] as never);
+  const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z" } as never);
+  const count = await planResultFetchesOnly(env, "20260512");
+  expect(count).toBe(0);
+});
+
+it("planResultFetchesOnly enqueues fetch-results for a finished NAR race with no completion", async () => {
+  const { planResultFetchesOnly } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate, markResultFetchQueued } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
+    {
+      babaCode: "22",
+      debaUrl: "https://nar.example/race",
+      discoveredAt: "2026-05-12T00:00:00+09:00",
+      kaisaiKai: null,
+      kaisaiNen: "2026",
+      kaisaiNichime: null,
+      kaisaiTsukihi: "0512",
+      keibajoCode: "55",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "01",
+      raceKey: "nar:2026:0512:55:01",
+      raceName: "Finished",
+      raceStartAtJst: "2026-05-12T10:00:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "nar",
+      updatedAt: "2026-05-12T00:00:00+09:00",
+    },
+  ] as never);
+  const send = vi.fn(async () => {});
+  const env = buildEnv({
+    REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
+    REALTIME_TEST_NOW: "2026-05-12T02:00:00.000Z",
+  } as never);
+  const count = await planResultFetchesOnly(env, "20260512");
+  expect(count).toBe(1);
+  expect(send).toHaveBeenCalledWith({ raceKey: "nar:2026:0512:55:01", type: "fetch-results" });
+  expect(markResultFetchQueued).toHaveBeenCalled();
+});
+
+it("planResultFetchesOnly skips race that already has resultCompleteAt", async () => {
+  const { planResultFetchesOnly } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
+    {
+      babaCode: "22",
+      debaUrl: "https://nar.example/race",
+      discoveredAt: "2026-05-12T00:00:00+09:00",
+      kaisaiKai: null,
+      kaisaiNen: "2026",
+      kaisaiNichime: null,
+      kaisaiTsukihi: "0512",
+      keibajoCode: "55",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "01",
+      raceKey: "nar:2026:0512:55:01",
+      raceName: "DoneRace",
+      raceStartAtJst: "2026-05-12T10:00:00+09:00",
+      resultCompleteAt: "2026-05-12T10:10:00+09:00",
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "nar",
+      updatedAt: "2026-05-12T00:00:00+09:00",
+    },
+  ] as never);
+  const send = vi.fn(async () => {});
+  const env = buildEnv({
+    REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
+    REALTIME_TEST_NOW: "2026-05-12T02:00:00.000Z",
+  } as never);
+  const count = await planResultFetchesOnly(env, "20260512");
+  expect(count).toBe(0);
+});
+
+it("planResultFetchesOnly skips race that has not started yet", async () => {
+  const { planResultFetchesOnly } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
+    {
+      babaCode: "22",
+      debaUrl: "https://nar.example/race",
+      discoveredAt: "2026-05-12T00:00:00+09:00",
+      kaisaiKai: null,
+      kaisaiNen: "2026",
+      kaisaiNichime: null,
+      kaisaiTsukihi: "0512",
+      keibajoCode: "55",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "01",
+      raceKey: "nar:2026:0512:55:01",
+      raceName: "Future",
+      raceStartAtJst: "2026-05-12T15:00:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "nar",
+      updatedAt: "2026-05-12T00:00:00+09:00",
+    },
+  ] as never);
+  const send = vi.fn(async () => {});
+  const env = buildEnv({
+    REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
+    REALTIME_TEST_NOW: "2026-05-12T02:00:00.000Z",
+  } as never);
+  const count = await planResultFetchesOnly(env, "20260512");
+  expect(count).toBe(0);
+});
+
+it("planResultFetchesOnly skips race when lastResultQueuedAt is set", async () => {
+  const { planResultFetchesOnly } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
+    {
+      babaCode: "22",
+      debaUrl: "https://nar.example/race",
+      discoveredAt: "2026-05-12T00:00:00+09:00",
+      kaisaiKai: null,
+      kaisaiNen: "2026",
+      kaisaiNichime: null,
+      kaisaiTsukihi: "0512",
+      keibajoCode: "55",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: "2026-05-12T10:55:00+09:00",
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "01",
+      raceKey: "nar:2026:0512:55:01",
+      raceName: "QueuedAlready",
+      raceStartAtJst: "2026-05-12T10:00:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "nar",
+      updatedAt: "2026-05-12T00:00:00+09:00",
+    },
+  ] as never);
+  const send = vi.fn(async () => {});
+  const env = buildEnv({
+    REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
+    REALTIME_TEST_NOW: "2026-05-12T02:00:00.000Z",
+  } as never);
+  const count = await planResultFetchesOnly(env, "20260512");
+  expect(count).toBe(0);
+});
+
+it("planResultFetchesOnly skips race when resultFetchLockUntil is still in the future", async () => {
+  const { planResultFetchesOnly } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
+    {
+      babaCode: "22",
+      debaUrl: "https://nar.example/race",
+      discoveredAt: "2026-05-12T00:00:00+09:00",
+      kaisaiKai: null,
+      kaisaiNen: "2026",
+      kaisaiNichime: null,
+      kaisaiTsukihi: "0512",
+      keibajoCode: "55",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "01",
+      raceKey: "nar:2026:0512:55:01",
+      raceName: "Locked",
+      raceStartAtJst: "2026-05-12T10:00:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: "2026-05-12T20:00:00+09:00",
+      resultSavedHorseCount: null,
+      source: "nar",
+      updatedAt: "2026-05-12T00:00:00+09:00",
+    },
+  ] as never);
+  const send = vi.fn(async () => {});
+  const env = buildEnv({
+    REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
+    REALTIME_TEST_NOW: "2026-05-12T02:00:00.000Z",
+  } as never);
+  const count = await planResultFetchesOnly(env, "20260512");
+  expect(count).toBe(0);
+});
+
+it("planResultFetchesOnly skips race when lastResultFetchAt is within RESULT_FETCH_INTERVAL_MINUTES", async () => {
+  const { planResultFetchesOnly } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
+    {
+      babaCode: "22",
+      debaUrl: "https://nar.example/race",
+      discoveredAt: "2026-05-12T00:00:00+09:00",
+      kaisaiKai: null,
+      kaisaiNen: "2026",
+      kaisaiNichime: null,
+      kaisaiTsukihi: "0512",
+      keibajoCode: "55",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      // Now = 02:00 UTC = 11:00 JST. lastResultFetchAt = 10:58 JST is only 2
+      // minutes ago, which is less than RESULT_FETCH_INTERVAL_MINUTES (3) so
+      // the race must be skipped this tick.
+      lastResultFetchAt: "2026-05-12T10:58:00+09:00",
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "01",
+      raceKey: "nar:2026:0512:55:01",
+      raceName: "Throttle",
+      raceStartAtJst: "2026-05-12T10:00:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "nar",
+      updatedAt: "2026-05-12T00:00:00+09:00",
+    },
+  ] as never);
+  const send = vi.fn(async () => {});
+  const env = buildEnv({
+    REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
+    REALTIME_TEST_NOW: "2026-05-12T02:00:00.000Z",
+  } as never);
+  const count = await planResultFetchesOnly(env, "20260512");
+  expect(count).toBe(0);
+});

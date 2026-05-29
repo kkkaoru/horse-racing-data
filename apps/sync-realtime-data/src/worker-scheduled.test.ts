@@ -629,3 +629,70 @@ it("scheduled triggers runD1Retention for the D1 retention cron", async () => {
   await flushWaits(waits);
   expect(runD1Retention).toHaveBeenCalledTimes(1);
 });
+
+it("scheduled result-poll cron logs plan-result-fetches ok", async () => {
+  const { default: worker } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate, logFetch } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([] as never);
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "*/5 0-13 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z" } as never),
+    ctx,
+  );
+  await flushWaits(waits);
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-result-fetches",
+    "ok",
+    null,
+    "0 jobs queued",
+  );
+});
+
+it("scheduled result-poll cron skips running-style inference path", async () => {
+  const { default: worker } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  const { runRunningStyleCronTick } = await import("./running-style-cron");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([] as never);
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "*/5 0-13 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z" } as never),
+    ctx,
+  );
+  await flushWaits(waits);
+  expect(runRunningStyleCronTick).not.toHaveBeenCalled();
+});
+
+it("scheduled result-poll cron logs plan-result-fetches error when planner rejects", async () => {
+  const { default: worker } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate, logFetch } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockRejectedValueOnce(new Error("planner boom"));
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "*/5 0-13 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z" } as never),
+    ctx,
+  );
+  await flushWaits(waits);
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-result-fetches",
+    "error",
+    null,
+    "planner boom",
+  );
+});

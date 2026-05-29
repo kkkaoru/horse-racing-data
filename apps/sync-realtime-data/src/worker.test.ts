@@ -33,6 +33,7 @@ import {
   minutesUntilRace,
   premiumRaceKeyFromRequest,
   raceKeyFromRequest,
+  RESULT_POLL_CRON,
   sameDayVenueJockeyWinsFromRequest,
   toJstSlotIso,
   truncate,
@@ -91,6 +92,10 @@ it("getCronJob defaults to plan-realtime-fetches for unknown cron", () => {
     date: "20260512",
     type: "plan-realtime-fetches",
   });
+});
+
+it("RESULT_POLL_CRON is */5 0-13 * * *", () => {
+  expect(RESULT_POLL_CRON).toBe("*/5 0-13 * * *");
 });
 
 it("getRaceStart returns a Date for valid race", () => {
