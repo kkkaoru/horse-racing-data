@@ -17,7 +17,6 @@ import {
   type FinalBackupGroupRow,
 } from "./gates/r2-archive";
 import { invalidateRaceListInKv, patchLastFetchInKv } from "./gates/race-list-kv-cache";
-import { shouldRunOddsCron } from "./gates/polling-window-gate";
 import { jsonResponse } from "./http";
 import { extractYyyymmddFromRaceKey } from "./race-key";
 import { readCachedOdds, writeCachedOdds } from "./odds-cache";
@@ -36,7 +35,7 @@ import {
   upsertOddsFetchState,
   type ImportOddsSnapshotRow,
 } from "./storage";
-import { getTodayJst } from "./time";
+import { addDaysToYyyymmdd, getTodayJst } from "./time";
 import type { Env, Job, OddsData, OddsType, OddsFetchStateUpsertInput } from "./types";
 
 const PLAN_ODDS_FETCHES_CRON = "* * * * *";
@@ -44,6 +43,7 @@ const ARCHIVE_ODDS_CRON = "0 4 * * *";
 const POPULATE_MULTI_DAY_CRON = "55 20 * * *";
 const ARCHIVE_QUERY_LIMIT = 200;
 const D1_RESULT_CACHE_QUERIES = ["latest", "tanshoHistory", "oddsHistoryByType"];
+const PLAN_DAYS_AHEAD = 2;
 
 interface OddsPayload {
   fetchedAt: string | null;
@@ -303,15 +303,23 @@ export const handleFetchRequest = async (env: Env, request: Request): Promise<Re
   return jsonResponse({ error: "not found" }, { status: 404 });
 };
 
+export const collectPlanDates = (now: Date): string[] => {
+  const today = getTodayJst(now);
+  const futureDates = Array.from({ length: PLAN_DAYS_AHEAD }, (_, offset) =>
+    addDaysToYyyymmdd(today, offset + 1),
+  );
+  return [today, ...futureDates];
+};
+
 export const runScheduledPlan = async (env: Env, now: Date): Promise<void> => {
-  if (!shouldRunOddsCron(now)) {
-    return;
-  }
   const todayYyyymmdd = getTodayJst(now);
   // Fallback self-discovery: when odds_fetch_state has no row for today, the
   // legacy worker either has not forwarded yet or is down. Run a one-shot
   // populate so the planner has something to enqueue this tick instead of
-  // skipping for hours.
+  // skipping for hours. Multi-day populate (cron 55 20 * * *) seeds tomorrow's
+  // and the day-after's races; the polling planner then iterates today + next
+  // 2 days every minute so races scheduled hours in advance still get the
+  // hourly fetch cadence even at 23:41 JST the night before.
   const stateCount = await countOddsFetchStateForDate(
     env.REALTIME_HOT_DB,
     todayYyyymmdd.slice(0, 4),
@@ -320,7 +328,7 @@ export const runScheduledPlan = async (env: Env, now: Date): Promise<void> => {
   if (stateCount === 0) {
     await populateTodayOddsFetchState(env, now);
   }
-  await planOddsFetches(env, now, todayYyyymmdd);
+  await Promise.all(collectPlanDates(now).map((yyyymmdd) => planOddsFetches(env, now, yyyymmdd)));
 };
 
 export const runScheduledPopulateMultiDay = async (env: Env, now: Date): Promise<void> => {

@@ -3,7 +3,6 @@ import {
   calculateEnqueueLockTtlSeconds,
   isEnqueueLocked,
 } from "./gates/enqueue-lock-kv";
-import { shouldRunOddsCron } from "./gates/polling-window-gate";
 import { getRaceListFromKv, putRaceListToKv } from "./gates/race-list-kv-cache";
 import { listOddsFetchStateForDate } from "./storage";
 import type { Env, OddsSource, RaceListEntry } from "./types";
@@ -61,9 +60,6 @@ export const planOddsFetches = async (
   now: Date,
   yyyymmdd: string,
 ): Promise<PlanOddsFetchesResult> => {
-  if (!shouldRunOddsCron(now)) {
-    return { queued: 0, skipped: 0 };
-  }
   const results = await Promise.all(
     ODDS_SOURCES.map((source) => planRacesForSource(env, source, yyyymmdd, now)),
   );

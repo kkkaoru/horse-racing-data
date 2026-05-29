@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  addDaysToYyyymmdd,
   formatRaceStartJst,
   getJraAdvanceOddsFetchSlotAt,
   getJstDateParts,
@@ -10,7 +11,6 @@ import {
   getOddsFetchIntervalMinutes,
   getOddsFetchSlotAt,
   getTodayJst,
-  isJstPollingWindow,
   parseRaceStartJst,
   toJstIsoString,
 } from "./time";
@@ -220,10 +220,27 @@ describe("JST time helpers", () => {
     expect(formatRaceStartJst("2026", "0512", "1305")).toBe("2026-05-12T13:05:00+09:00");
   });
 
-  it("detects JST polling windows", () => {
-    expect(isJstPollingWindow(new Date("2026-05-11T20:59:00.000Z"))).toBe(false);
-    expect(isJstPollingWindow(new Date("2026-05-11T21:00:00.000Z"))).toBe(true);
-    expect(isJstPollingWindow(new Date("2026-05-12T12:59:00.000Z"))).toBe(true);
-    expect(isJstPollingWindow(new Date("2026-05-12T13:00:00.000Z"))).toBe(false);
+  it("adds zero days and returns the same yyyymmdd", () => {
+    expect(addDaysToYyyymmdd("20260528", 0)).toBe("20260528");
+  });
+
+  it("adds one day across a regular boundary", () => {
+    expect(addDaysToYyyymmdd("20260528", 1)).toBe("20260529");
+  });
+
+  it("adds two days for the multi-day planner window", () => {
+    expect(addDaysToYyyymmdd("20260528", 2)).toBe("20260530");
+  });
+
+  it("crosses month boundaries when adding days", () => {
+    expect(addDaysToYyyymmdd("20260530", 5)).toBe("20260604");
+  });
+
+  it("crosses year boundaries when adding days", () => {
+    expect(addDaysToYyyymmdd("20261231", 1)).toBe("20270101");
+  });
+
+  it("throws for malformed yyyymmdd input", () => {
+    expect(() => addDaysToYyyymmdd("2026-05-28", 1)).toThrowError("invalid yyyymmdd: 2026-05-28");
   });
 });

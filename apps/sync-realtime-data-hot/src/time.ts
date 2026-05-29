@@ -215,8 +215,16 @@ export const getNextOddsFetchSlotAt = (
   return nextSlot ? toJstIsoString(nextSlot) : null;
 };
 
-export const isJstPollingWindow = (date = new Date()): boolean => {
-  const { hour } = getJstDateParts(date);
-  const parsedHour = Number(hour);
-  return parsedHour >= 6 && parsedHour <= 21;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const YYYYMMDD_PATTERN = /^\d{8}$/u;
+
+export const addDaysToYyyymmdd = (yyyymmdd: string, days: number): string => {
+  if (!YYYYMMDD_PATTERN.test(yyyymmdd)) {
+    throw new Error(`invalid yyyymmdd: ${yyyymmdd}`);
+  }
+  const year = Number(yyyymmdd.slice(0, 4));
+  const month = Number(yyyymmdd.slice(4, 6));
+  const day = Number(yyyymmdd.slice(6, 8));
+  const base = new Date(Date.UTC(year, month - 1, day));
+  return getTodayJst(new Date(base.getTime() + days * MS_PER_DAY));
 };

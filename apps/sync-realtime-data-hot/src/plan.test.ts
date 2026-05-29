@@ -51,11 +51,20 @@ const buildEnv = (options: BuildEnvOptions = {}): Env => {
   } as unknown as Env;
 };
 
-it("returns zero counts when outside polling window", async () => {
-  const env = buildEnv();
-  const result = await planOddsFetches(env, new Date("2026-05-28T13:00:00Z"), "20260528");
-  expect(result).toStrictEqual({ queued: 0, skipped: 0 });
-  expect(env.REALTIME_HOT_JOBS.send).not.toHaveBeenCalled();
+it("enqueues races even outside the legacy JST 06-21 polling window", async () => {
+  const env = buildEnv({
+    d1Results: [
+      {
+        lastOddsFetchAt: null,
+        raceKey: "jra:20260530:08:01",
+        raceStartAtJst: "2026-05-30T09:50:00+09:00",
+        source: "jra",
+      },
+    ],
+  });
+  const result = await planOddsFetches(env, new Date("2026-05-29T14:41:00Z"), "20260530");
+  expect(result.queued).toBeGreaterThan(0);
+  expect(env.REALTIME_HOT_JOBS.send).toHaveBeenCalled();
 });
 
 it("returns zero counts when no races for the day", async () => {
