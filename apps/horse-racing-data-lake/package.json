@@ -4,7 +4,10 @@
   "scripts": {
     "setup": "bash scripts/setup.sh",
     "verify": "bash scripts/verify.sh",
-    "maintenance": "bash scripts/maintenance.sh"
+    "maintenance": "bash scripts/maintenance.sh",
+    "lint": "bunx oxlint",
+    "format": "bunx oxfmt",
+    "format:check": "bunx oxfmt --check"
   },
   "dependencies": {
     "horse-racing-schema": "workspace:*"

@@ -7,7 +7,10 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "tsc": "tsc --noEmit",
-    "oxlint": "bunx oxlint ."
+    "oxlint": "bunx oxlint .",
+    "lint": "bunx oxlint",
+    "format": "bunx oxfmt",
+    "format:check": "bunx oxfmt --check"
   },
   "dependencies": {
     "@ducklings/workers": "1.4.4",

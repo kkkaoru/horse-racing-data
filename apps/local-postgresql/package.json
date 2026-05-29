@@ -14,7 +14,10 @@
     "replica:tail-log": "tail -f tmp/push-neon-sync.log",
     "status": "docker compose --env-file .env ps",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "lint": "bunx oxlint",
+    "format": "bunx oxfmt",
+    "format:check": "bunx oxfmt --check"
   },
   "devDependencies": {
     "@types/node": "22.19.10",
