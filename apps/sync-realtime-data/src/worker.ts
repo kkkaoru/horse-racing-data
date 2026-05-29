@@ -140,7 +140,15 @@ import type { Env, HorseWeight, Job, NarRaceSource, RaceEntry, RealtimeRacePaylo
 
 const QUEUE_SEND_BATCH_SIZE = 100;
 const RESULT_FETCH_LOCK_MINUTES = 10;
-const RESULT_FETCH_INTERVAL_MINUTES = 5;
+// Lowered from 5 to 3 so the "*/5 0-13 * * *" result-poller cron actually
+// dispatches every tick instead of being skipped by the isDue guard. Each tick
+// is one cheap SELECT against realtime_race_sources so the D1 CPU budget still
+// has plenty of headroom (see Phase A2-4 in the plan).
+const RESULT_FETCH_INTERVAL_MINUTES = 3;
+// JST 09-22 (= UTC 00-13) is the race-day result-poller cron. Distinct from the
+// hourly "0 0-13 * * *" plan-realtime-fetches cron so we only run the result
+// poller every 5 minutes without re-triggering the heavier hourly work.
+export const RESULT_POLL_CRON = "*/5 0-13 * * *";
 const TRACK_CONDITION_FETCH_LOCK_MINUTES = 15;
 const QUEUE_RETRY_DELAY_SECONDS = 60;
 const PREMIUM_RACE_DATA_RETRY_DELAY_SECONDS = 20 * 60;
@@ -1598,6 +1606,45 @@ export const assertNarHorseWeightsComplete = (
   }
 };
 
+// Result-poller-only planner. Used by the "*/5 0-13 * * *" cron so the
+// race-result `fetch-results` jobs fire every 5 minutes without re-running the
+// heavier work that the hourly "0 0-13 * * *" cron already performs
+// (track-condition, premium paddock, weights, discovery refresh).
+export const planResultFetchesOnly = async (env: Env, targetDate: string): Promise<number> => {
+  const now = getNow(env);
+  if (!isJstPollingWindow(now)) {
+    return 0;
+  }
+  const races = await listSchedulableRaceSourcesByDate(env.REALTIME_DB, targetDate);
+  const jobs: Job[] = [];
+  for (const race of races) {
+    const minutes = minutesUntilRace(race, now);
+    if (minutes === null) {
+      continue;
+    }
+    const resultLockUntil = race.resultFetchLockUntil
+      ? new Date(race.resultFetchLockUntil).getTime()
+      : Number.NaN;
+    if (
+      minutes <= 0 &&
+      (race.source === "nar" || race.source === "jra") &&
+      !race.resultCompleteAt &&
+      isDue(race.lastResultFetchAt, RESULT_FETCH_INTERVAL_MINUTES, now) &&
+      (Number.isNaN(resultLockUntil) || resultLockUntil <= now.getTime()) &&
+      !race.lastResultQueuedAt
+    ) {
+      jobs.push({ raceKey: race.raceKey, type: "fetch-results" });
+    }
+  }
+  await enqueueJobs(env, jobs);
+  await markResultFetchQueued(
+    env.REALTIME_DB,
+    jobs.flatMap((job) => (job.type === "fetch-results" ? [job.raceKey] : [])),
+    toJstIsoString(now),
+  );
+  return jobs.length;
+};
+
 export const planRealtimeFetches = async (env: Env, targetDate: string): Promise<number> => {
   const now = getNow(env);
   const jobs: Job[] = [];
@@ -2615,6 +2662,19 @@ export default {
       typeof controller.scheduledTime === "number"
         ? new Date(controller.scheduledTime)
         : new Date();
+    if (controller.cron === RESULT_POLL_CRON) {
+      const targetDate = getTodayJst(scheduledAt);
+      ctx.waitUntil(
+        planResultFetchesOnly(env, targetDate)
+          .then((count) =>
+            logFetch(env.REALTIME_DB, "plan-result-fetches", "ok", null, `${count} jobs queued`),
+          )
+          .catch((error: unknown) =>
+            logFetch(env.REALTIME_DB, "plan-result-fetches", "error", null, formatError(error)),
+          ),
+      );
+      return;
+    }
     if (controller.cron === RUNNING_STYLE_INFERENCE_CRON) {
       ctx.waitUntil(logRunningStylePlanResult(env, scheduledAt, ctx));
       return;
