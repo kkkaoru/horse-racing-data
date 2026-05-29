@@ -6,7 +6,11 @@ import { tryParseRaceKey } from "./features/race-key";
 import { handleRaceTrend } from "./features/race-trend";
 import { buildRaceParquetR2Key } from "./features/r2-key";
 import { handleFinishPositionPredictionJob } from "./finish-position/inference";
-import { putBuildStateToKv } from "./gates/build-state-kv";
+import {
+  type BuildStateRecord,
+  getBuildStateFromKv,
+  putBuildStateToKv,
+} from "./gates/build-state-kv";
 import { acquireEnqueueLock, isEnqueueLocked } from "./gates/enqueue-lock-kv";
 import { writeLatestFeaturesToKv } from "./gates/latest-features-kv-mirror";
 import { shouldRunFeaturesCron } from "./gates/polling-window-gate";
@@ -25,6 +29,8 @@ import { getTodayJst } from "./time";
 import type { DailyRaceEntryRow, Env, Job, RaceJobKey } from "./types";
 
 const MIGRATION_STATE_KV_PREFIX = "features:migration";
+const BUILD_STATE_FRESHNESS_MS = 10 * 60 * 1000;
+const BUILD_RACE_FEATURES_JOB_TYPE = "build-race-features";
 
 interface MigrationStateRequest {
   key: string;
@@ -203,6 +209,51 @@ export const handleFetchRequest = async (env: Env, request: Request): Promise<Re
   return jsonResponse({ error: "not found" }, { status: 404 });
 };
 
+// Conditional re-build gate for the scheduled */10 * * * * tick.
+// Returns true when we should enqueue a build-race-features job.
+// - state null (no Parquet yet for this race today) -> build
+// - state.rowCount > 0 AND lastBuiltAt within freshness window -> SKIP
+// - otherwise (stale OR rowCount === 0) -> re-build to refresh finish_position
+//   after results land in old D1 via Phase A2 5-minute poller.
+export const shouldRebuildRaceFeatures = (state: BuildStateRecord | null, now: Date): boolean => {
+  if (!state) {
+    return true;
+  }
+  if (state.rowCount <= 0) {
+    return true;
+  }
+  const lastMs = Date.parse(state.lastBuiltAt);
+  if (!Number.isFinite(lastMs)) {
+    return true;
+  }
+  return now.getTime() - lastMs >= BUILD_STATE_FRESHNESS_MS;
+};
+
+const enqueueRaceBuildJobIfNeeded = async (
+  env: Env,
+  raceJobKey: RaceJobKey,
+  now: Date,
+): Promise<void> => {
+  const locked = await isEnqueueLocked(env, raceJobKey.raceKey, BUILD_RACE_FEATURES_JOB_TYPE);
+  if (locked) {
+    return;
+  }
+  const state = await getBuildStateFromKv(env, raceJobKey.raceKey);
+  if (!shouldRebuildRaceFeatures(state, now)) {
+    return;
+  }
+  await env.REALTIME_FEATURES_JOBS.send({
+    kaisaiNen: raceJobKey.kaisaiNen,
+    kaisaiTsukihi: raceJobKey.kaisaiTsukihi,
+    keibajoCode: raceJobKey.keibajoCode,
+    raceBango: raceJobKey.raceBango,
+    raceKey: raceJobKey.raceKey,
+    source: raceJobKey.source,
+    type: "build-race-features",
+  });
+  await acquireEnqueueLock(env, raceJobKey.raceKey, BUILD_RACE_FEATURES_JOB_TYPE);
+};
+
 const enqueueRaceInferenceJobs = async (
   env: Env,
   raceJobKey: RaceJobKey,
@@ -263,6 +314,7 @@ export const runScheduledFeaturesPlan = async (
   const predictedAt = now.toISOString();
   const raceJobKeys = todayRaceKeys.map(toRaceJobKeyFromTodayRaceKey);
   for (const raceJobKey of raceJobKeys) {
+    await enqueueRaceBuildJobIfNeeded(env, raceJobKey, now);
     await enqueueRaceInferenceJobs(env, raceJobKey, predictedAt);
   }
   return { enqueuedRaceCount: raceJobKeys.length, ran: true };

@@ -432,7 +432,7 @@ it("runScheduledFeaturesPlan enqueues per-race jobs from hyperdrive direct read"
   const result = await runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z"));
   expect(result.ran).toBe(true);
   expect(result.enqueuedRaceCount).toBe(2);
-  expect(queueSend).toHaveBeenCalledTimes(4);
+  expect(queueSend).toHaveBeenCalledTimes(6);
 });
 
 it("runScheduledFeaturesPlan skips enqueue when lock is held", async () => {
@@ -458,6 +458,234 @@ it("runScheduledFeaturesPlan skips enqueue when lock is held", async () => {
   });
   await runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z"));
   expect(queueSend).not.toHaveBeenCalled();
+});
+
+it("runScheduledFeaturesPlan enqueues build-race-features when no build-state KV", async () => {
+  const queueSend = vi.fn(async () => {});
+  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0529",
+      keibajoCode: "30",
+      raceBango: "08",
+      raceKey: "nar:2026:0529:30:08",
+      source: "nar",
+    },
+  ]);
+  const kvGet = vi.fn().mockResolvedValue(null);
+  const env = buildEnv({
+    FEATURES_KV: {
+      delete: vi.fn(),
+      get: kvGet,
+      put: vi.fn(),
+    } as unknown as KVNamespace,
+    REALTIME_FEATURES_JOBS: { send: queueSend } as unknown as Queue<Job>,
+  });
+  await runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z"));
+  expect(queueSend).toHaveBeenCalledWith({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0529",
+    keibajoCode: "30",
+    raceBango: "08",
+    raceKey: "nar:2026:0529:30:08",
+    source: "nar",
+    type: "build-race-features",
+  });
+});
+
+it("runScheduledFeaturesPlan skips build-race-features when build-state fresh within 10 min", async () => {
+  const queueSend = vi.fn(async () => {});
+  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0529",
+      keibajoCode: "30",
+      raceBango: "08",
+      raceKey: "nar:2026:0529:30:08",
+      source: "nar",
+    },
+  ]);
+  const kvGet = vi
+    .fn()
+    .mockResolvedValueOnce(null)
+    .mockResolvedValueOnce(
+      JSON.stringify({ lastBuiltAt: "2026-05-29T02:55:00.000Z", rowCount: 12 }),
+    )
+    .mockResolvedValue(null);
+  const env = buildEnv({
+    FEATURES_KV: {
+      delete: vi.fn(),
+      get: kvGet,
+      put: vi.fn(),
+    } as unknown as KVNamespace,
+    REALTIME_FEATURES_JOBS: { send: queueSend } as unknown as Queue<Job>,
+  });
+  await runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z"));
+  expect(queueSend).toHaveBeenCalledTimes(2);
+  expect(queueSend).not.toHaveBeenCalledWith({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0529",
+    keibajoCode: "30",
+    raceBango: "08",
+    raceKey: "nar:2026:0529:30:08",
+    source: "nar",
+    type: "build-race-features",
+  });
+});
+
+it("runScheduledFeaturesPlan re-enqueues build-race-features when build-state older than 10 min", async () => {
+  const queueSend = vi.fn(async () => {});
+  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0529",
+      keibajoCode: "30",
+      raceBango: "08",
+      raceKey: "nar:2026:0529:30:08",
+      source: "nar",
+    },
+  ]);
+  const kvGet = vi
+    .fn()
+    .mockResolvedValueOnce(null)
+    .mockResolvedValueOnce(
+      JSON.stringify({ lastBuiltAt: "2026-05-29T02:40:00.000Z", rowCount: 12 }),
+    )
+    .mockResolvedValue(null);
+  const env = buildEnv({
+    FEATURES_KV: {
+      delete: vi.fn(),
+      get: kvGet,
+      put: vi.fn(),
+    } as unknown as KVNamespace,
+    REALTIME_FEATURES_JOBS: { send: queueSend } as unknown as Queue<Job>,
+  });
+  await runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z"));
+  expect(queueSend).toHaveBeenCalledWith({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0529",
+    keibajoCode: "30",
+    raceBango: "08",
+    raceKey: "nar:2026:0529:30:08",
+    source: "nar",
+    type: "build-race-features",
+  });
+});
+
+it("runScheduledFeaturesPlan re-enqueues build-race-features when prior rowCount was 0", async () => {
+  const queueSend = vi.fn(async () => {});
+  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0529",
+      keibajoCode: "30",
+      raceBango: "08",
+      raceKey: "nar:2026:0529:30:08",
+      source: "nar",
+    },
+  ]);
+  const kvGet = vi
+    .fn()
+    .mockResolvedValueOnce(null)
+    .mockResolvedValueOnce(JSON.stringify({ lastBuiltAt: "2026-05-29T02:59:00.000Z", rowCount: 0 }))
+    .mockResolvedValue(null);
+  const env = buildEnv({
+    FEATURES_KV: {
+      delete: vi.fn(),
+      get: kvGet,
+      put: vi.fn(),
+    } as unknown as KVNamespace,
+    REALTIME_FEATURES_JOBS: { send: queueSend } as unknown as Queue<Job>,
+  });
+  await runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z"));
+  expect(queueSend).toHaveBeenCalledWith({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0529",
+    keibajoCode: "30",
+    raceBango: "08",
+    raceKey: "nar:2026:0529:30:08",
+    source: "nar",
+    type: "build-race-features",
+  });
+});
+
+it("runScheduledFeaturesPlan skips build-race-features when build enqueue-lock active", async () => {
+  const queueSend = vi.fn(async () => {});
+  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0529",
+      keibajoCode: "30",
+      raceBango: "08",
+      raceKey: "nar:2026:0529:30:08",
+      source: "nar",
+    },
+  ]);
+  const kvGet = vi.fn().mockResolvedValueOnce("1").mockResolvedValue(null);
+  const env = buildEnv({
+    FEATURES_KV: {
+      delete: vi.fn(),
+      get: kvGet,
+      put: vi.fn(),
+    } as unknown as KVNamespace,
+    REALTIME_FEATURES_JOBS: { send: queueSend } as unknown as Queue<Job>,
+  });
+  await runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z"));
+  expect(queueSend).toHaveBeenCalledTimes(2);
+  expect(queueSend).not.toHaveBeenCalledWith({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0529",
+    keibajoCode: "30",
+    raceBango: "08",
+    raceKey: "nar:2026:0529:30:08",
+    source: "nar",
+    type: "build-race-features",
+  });
+});
+
+it("shouldRebuildRaceFeatures returns true when state is null", async () => {
+  const { shouldRebuildRaceFeatures } = await import("./worker");
+  expect(shouldRebuildRaceFeatures(null, new Date("2026-05-29T03:00:00Z"))).toBe(true);
+});
+
+it("shouldRebuildRaceFeatures returns true when rowCount is 0", async () => {
+  const { shouldRebuildRaceFeatures } = await import("./worker");
+  expect(
+    shouldRebuildRaceFeatures(
+      { lastBuiltAt: "2026-05-29T02:59:00.000Z", rowCount: 0 },
+      new Date("2026-05-29T03:00:00Z"),
+    ),
+  ).toBe(true);
+});
+
+it("shouldRebuildRaceFeatures returns true when lastBuiltAt is not parseable", async () => {
+  const { shouldRebuildRaceFeatures } = await import("./worker");
+  expect(
+    shouldRebuildRaceFeatures(
+      { lastBuiltAt: "not-a-date", rowCount: 5 },
+      new Date("2026-05-29T03:00:00Z"),
+    ),
+  ).toBe(true);
+});
+
+it("shouldRebuildRaceFeatures returns false when fresh within 10 min", async () => {
+  const { shouldRebuildRaceFeatures } = await import("./worker");
+  expect(
+    shouldRebuildRaceFeatures(
+      { lastBuiltAt: "2026-05-29T02:55:00.000Z", rowCount: 5 },
+      new Date("2026-05-29T03:00:00Z"),
+    ),
+  ).toBe(false);
+});
+
+it("shouldRebuildRaceFeatures returns true when last build older than 10 min", async () => {
+  const { shouldRebuildRaceFeatures } = await import("./worker");
+  expect(
+    shouldRebuildRaceFeatures(
+      { lastBuiltAt: "2026-05-29T02:40:00.000Z", rowCount: 5 },
+      new Date("2026-05-29T03:00:00Z"),
+    ),
+  ).toBe(true);
 });
 
 it("handleScheduled dispatches scheduled tick", async () => {
