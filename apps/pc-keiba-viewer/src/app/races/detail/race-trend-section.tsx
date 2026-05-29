@@ -304,35 +304,99 @@ const isRaceTrendSortKeyValue = (value: string): value is RaceTrendSortKey =>
 const parseSortChangeEvent = (value: string): RaceTrendSortKey =>
   isRaceTrendSortKeyValue(value) ? value : DEFAULT_RACE_TREND_SORT_KEY;
 
-const deriveScoreConditionTrendTargets = (
-  scoreConditions: RaceTrendScoreConditionsQuery,
-): RaceTrendTargets => ({
-  frame: scoreConditions.frame || scoreConditions.frameRunningStyle,
-  jockey: scoreConditions.jockey,
-  runningStyle: scoreConditions.frameRunningStyle,
-  raceNumber: false,
-});
+// Per-condition trend-target shape. Each score condition is computed in its own
+// independent aggregation pass; results are OR-unioned at detail-display time
+// so that e.g. (frame + jockey) shows records matching frame OR records
+// matching jockey, never the AND intersection.
+const SCORE_CONDITION_TREND_TARGETS: Record<RaceTrendScoreConditionKey, RaceTrendTargets> = {
+  frame: { frame: true, runningStyle: false, jockey: false, raceNumber: false },
+  jockey: { frame: false, runningStyle: false, jockey: true, raceNumber: false },
+  frameRunningStyle: { frame: true, runningStyle: true, jockey: false, raceNumber: false },
+};
 
 const hasAnyScoreCondition = (scoreConditions: RaceTrendScoreConditionsQuery): boolean =>
   RACE_TREND_SCORE_CONDITION_QUERY_KEYS.some((key) => scoreConditions[key]);
 
-const collectScoreDetailsForRow = (
-  row: RaceTrendRunningStyleRow,
-  scoreRows: RaceTrendRunningStyleRow[],
-): RaceTrendDetail[] => {
+const buildScoreDetailDedupKey = (detail: RaceTrendDetail): string =>
+  `${detail.source}:${detail.date}:${detail.keibajoCode}:${detail.raceNumber}:${detail.horseNumber ?? ""}`;
+
+// Build per-row UmabanContext list used to filter detail records under the
+// "集計範囲を勝率条件に連動" mode. Each umaban in the row gets its own context;
+// a detail passes if any context matches under `predicateMatchesWinRateForDetail`.
+interface BuildRowContextsParams {
+  currentRunningStyleMap: Map<string, RaceTrendRunningStyle>;
+  row: RaceTrendRunningStyleRow;
+  runnerByHorseNumber: Map<string, RaceTrendRunnerSummary>;
+}
+
+const buildRowContexts = (params: BuildRowContextsParams): UmabanContext[] =>
+  params.row.targetHorseNumbers
+    .map((umaban) => params.runnerByHorseNumber.get(umaban))
+    .filter((runner): runner is RaceTrendRunnerSummary => runner !== undefined)
+    .map((runner) => buildScoreContext(runner, params.currentRunningStyleMap));
+
+// Predicate that mirrors `predicateMatchesWinRate` but operates on
+// RaceTrendDetail (the public detail shape rendered in the score panel). The
+// detail carries `jockeyName`, so we derive its jockeyKey lazily here.
+interface PredicateMatchesWinRateForDetailParams {
+  context: UmabanContext;
+  detail: RaceTrendDetail;
+  trendTargets: RaceTrendTargets;
+}
+
+const predicateMatchesWinRateForDetail = (
+  params: PredicateMatchesWinRateForDetailParams,
+): boolean => {
+  const { context, detail, trendTargets } = params;
+  if (trendTargets.frame && detail.frameNumber !== context.frameNumber) return false;
+  if (trendTargets.jockey && resolveRowJockeyKey(detail.jockeyName) !== context.jockeyKey) {
+    return false;
+  }
+  if (trendTargets.runningStyle && detail.runningStyle !== context.runningStyle) return false;
+  return true;
+};
+
+interface CollectScoreDetailsForRowParams {
+  linkScoreToWinRate: boolean;
+  row: RaceTrendRunningStyleRow;
+  rowContexts: UmabanContext[];
+  scoreRowsByCondition: Map<RaceTrendScoreConditionKey, RaceTrendRunningStyleRow[]>;
+  scoreConditions: RaceTrendScoreConditionsQuery;
+  trendTargets: RaceTrendTargets;
+}
+
+// Union (OR) of detail records across all selected score conditions. Records
+// are deduped by a stable identifier so the same past race only appears once
+// even if it matches multiple conditions.
+const collectScoreDetailsForRow = (params: CollectScoreDetailsForRowParams): RaceTrendDetail[] => {
+  const {
+    linkScoreToWinRate,
+    row,
+    rowContexts,
+    scoreRowsByCondition,
+    scoreConditions,
+    trendTargets,
+  } = params;
   const targetSet: Set<string> = new Set(row.targetHorseNumbers);
-  const seen: Set<string> = new Set();
-  const overlapping = scoreRows.filter((scoreRow) =>
-    scoreRow.targetHorseNumbers.some((umaban) => targetSet.has(umaban)),
+  const selectedConditions = RACE_TREND_SCORE_CONDITION_QUERY_KEYS.filter(
+    (key) => scoreConditions[key],
   );
-  return overlapping.flatMap((scoreRow) =>
-    scoreRow.details.filter((detail) => {
-      const key = `${detail.source}:${detail.date}:${detail.keibajoCode}:${detail.raceNumber}:${detail.horseNumber ?? ""}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    }),
-  );
+  const seen: Map<string, RaceTrendDetail> = new Map();
+  const matchesAnyContext = (detail: RaceTrendDetail): boolean =>
+    !linkScoreToWinRate ||
+    rowContexts.some((context) =>
+      predicateMatchesWinRateForDetail({ context, detail, trendTargets }),
+    );
+  selectedConditions
+    .flatMap((key) => scoreRowsByCondition.get(key) ?? [])
+    .filter((scoreRow) => scoreRow.targetHorseNumbers.some((umaban) => targetSet.has(umaban)))
+    .flatMap((scoreRow) => scoreRow.details)
+    .filter(matchesAnyContext)
+    .forEach((detail) => {
+      const key = buildScoreDetailDedupKey(detail);
+      if (!seen.has(key)) seen.set(key, detail);
+    });
+  return Array.from(seen.values());
 };
 
 const getApiPath = ({
@@ -545,20 +609,26 @@ function ScoreTooltipPortal({ anchorRef, isVisible }: ScoreTooltipProps) {
 }
 
 interface RaceTrendTableProps {
+  currentRunningStyleMap: Map<string, RaceTrendRunningStyle>;
   isLoading: boolean;
+  linkScoreToWinRate: boolean;
   raceCount: number;
   rows: RaceTrendRunningStyleRow[];
-  scoreRows: RaceTrendRunningStyleRow[];
+  runnerByHorseNumber: Map<string, RaceTrendRunnerSummary>;
+  scoreRowsByCondition: Map<RaceTrendScoreConditionKey, RaceTrendRunningStyleRow[]>;
   scoreConditions: RaceTrendScoreConditionsQuery;
   trendTargets: RaceTrendTargets;
   umabanScores: Map<string, number | null>;
 }
 
 function RaceTrendTable({
+  currentRunningStyleMap,
   isLoading,
+  linkScoreToWinRate,
   raceCount,
   rows,
-  scoreRows,
+  runnerByHorseNumber,
+  scoreRowsByCondition,
   scoreConditions,
   trendTargets,
   umabanScores,
@@ -747,6 +817,19 @@ function RaceTrendTable({
               rows.map((row) => {
                 const isExpanded = effectiveExpandedKey === row.key;
                 const isScoreExpanded = effectiveExpandedScoreKey === row.key;
+                const rowContexts = isScoreExpanded
+                  ? buildRowContexts({ currentRunningStyleMap, row, runnerByHorseNumber })
+                  : [];
+                const scoreDetails = isScoreExpanded
+                  ? collectScoreDetailsForRow({
+                      linkScoreToWinRate,
+                      row,
+                      rowContexts,
+                      scoreConditions,
+                      scoreRowsByCondition,
+                      trendTargets,
+                    })
+                  : [];
                 return (
                   <RowFragment
                     isExpanded={isExpanded}
@@ -757,7 +840,7 @@ function RaceTrendTable({
                       normalizeHorseNumber(row.targetHorseNumbers[0]),
                     )}
                     scoreClickable={scoreClickable}
-                    scoreDetails={isScoreExpanded ? collectScoreDetailsForRow(row, scoreRows) : []}
+                    scoreDetails={scoreDetails}
                     trendTargets={trendTargets}
                     umabanScores={umabanScores}
                     onToggle={() => openHorseDetail(row.key, isExpanded)}
@@ -1161,24 +1244,35 @@ export function RaceTrendSection({
     defaultEndDate,
   ]);
 
-  // Second aggregation: rows keyed by the user-selected score conditions so
-  // that clicking the score cell can show the records driving that score.
-  const scoreAggregationRows = useMemo<RaceTrendRunningStyleRow[]>(() => {
-    if (!rawPayload) return [];
-    if (!hasAnyScoreCondition(scoreConditions)) return [];
-    return aggregateForTargets(
-      {
-        starterRows: rawPayload.starterRows,
-        currentRunningStyles: rawPayload.currentRunningStyles,
-        historicalRunningStyles: rawPayload.historicalRunningStyles,
-        raceContext: rawPayload.raceContext,
-        runners: rawPayload.runners,
-      },
-      deriveScoreConditionTrendTargets(scoreConditions),
-      jockeySameVenue,
-      normalizeYmd(trendStart || defaultStartDate),
-      normalizeYmd(trendEnd || defaultEndDate),
-    ).runningStyleRows;
+  // Per-condition aggregations: each selected score condition is aggregated in
+  // isolation so the score-detail panel can union the results (OR) instead of
+  // intersecting them (AND). Without this, ticking both 枠 and 騎手 would only
+  // show records matching BOTH — the user wants records matching EITHER.
+  const scoreAggregationByCondition = useMemo<
+    Map<RaceTrendScoreConditionKey, RaceTrendRunningStyleRow[]>
+  >(() => {
+    const result: Map<RaceTrendScoreConditionKey, RaceTrendRunningStyleRow[]> = new Map();
+    if (!rawPayload) return result;
+    const startYmd = normalizeYmd(trendStart || defaultStartDate);
+    const endYmd = normalizeYmd(trendEnd || defaultEndDate);
+    const input = {
+      starterRows: rawPayload.starterRows,
+      currentRunningStyles: rawPayload.currentRunningStyles,
+      historicalRunningStyles: rawPayload.historicalRunningStyles,
+      raceContext: rawPayload.raceContext,
+      runners: rawPayload.runners,
+    };
+    RACE_TREND_SCORE_CONDITION_QUERY_KEYS.filter((key) => scoreConditions[key]).forEach((key) => {
+      const { runningStyleRows } = aggregateForTargets(
+        input,
+        SCORE_CONDITION_TREND_TARGETS[key],
+        jockeySameVenue,
+        startYmd,
+        endYmd,
+      );
+      result.set(key, runningStyleRows);
+    });
+    return result;
   }, [
     rawPayload,
     scoreConditions,
@@ -1198,6 +1292,21 @@ export function RaceTrendSection({
     );
     return { currentRunningStyleMap, runningStyleByStarterKey };
   }, [rawPayload]);
+
+  // Map current-race umaban → runner so the score-detail filter can build per-row
+  // UmabanContext on demand when "集計範囲を勝率条件に連動" is enabled.
+  const runnerByHorseNumber = useMemo<Map<string, RaceTrendRunnerSummary>>(
+    () =>
+      new Map(
+        (rawPayload?.runners ?? [])
+          .map((runner) => {
+            const umaban = normalizeNumberText(runner.horseNumber);
+            return umaban ? ([umaban, runner] satisfies [string, RaceTrendRunnerSummary]) : null;
+          })
+          .filter((entry): entry is [string, RaceTrendRunnerSummary] => entry !== null),
+      ),
+    [rawPayload],
+  );
 
   // When the user opts in via the "集計範囲を勝率条件に連動" checkbox, restrict
   // each score record to those whose detail matches the active 勝率条件 (frame /
@@ -1483,11 +1592,14 @@ export function RaceTrendSection({
         </details>
 
         <RaceTrendTable
+          currentRunningStyleMap={scoreSourceMaps.currentRunningStyleMap}
           isLoading={status === "loading"}
+          linkScoreToWinRate={linkScoreToWinRate}
           raceCount={raceCount}
           rows={sortedRows}
+          runnerByHorseNumber={runnerByHorseNumber}
           scoreConditions={scoreConditions}
-          scoreRows={scoreAggregationRows}
+          scoreRowsByCondition={scoreAggregationByCondition}
           trendTargets={trendTargets}
           umabanScores={umabanScores}
         />
