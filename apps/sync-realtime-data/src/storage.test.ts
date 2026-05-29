@@ -25,6 +25,7 @@ import {
   getSameDayVenueJockeyWins,
   insertJraTrackConditionSnapshot,
   listJraVenueTrackConditionSchedulesByDate,
+  listRaceKeysByDateFromHyperdrive,
   replacePremiumRaceData,
   listPremiumRaceDataFetchCandidatesByDate,
   listRaceSourcesForSeed,
@@ -678,6 +679,45 @@ it("listRaceSourcesForSeed binds sinceId and batchSize to the prepared statement
   const db = { prepare } as unknown as D1Database;
   await listRaceSourcesForSeed(db, { batchSize: 25, sinceId: 5 });
   expect(bind).toHaveBeenCalledWith(5, 25);
+});
+
+it("listRaceKeysByDateFromHyperdrive returns mapped distinct race_keys", async () => {
+  const all = vi.fn(async () => ({
+    results: [{ race_key: "nar:2026:0529:30:08" }, { race_key: "jra:2026:0529:08:01" }],
+  }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const rows = await listRaceKeysByDateFromHyperdrive(db, {
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0529",
+  });
+  expect(rows.length).toBe(2);
+  expect(rows[0]!.race_key).toBe("nar:2026:0529:30:08");
+});
+
+it("listRaceKeysByDateFromHyperdrive returns empty array when no rows match", async () => {
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const rows = await listRaceKeysByDateFromHyperdrive(db, {
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0101",
+  });
+  expect(rows.length).toBe(0);
+});
+
+it("listRaceKeysByDateFromHyperdrive binds kaisaiNen and kaisaiTsukihi", async () => {
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await listRaceKeysByDateFromHyperdrive(db, {
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0529",
+  });
+  expect(bind).toHaveBeenCalledWith("2026", "0529");
 });
 
 it("listPremiumRaceDataFetchCandidatesByDate returns mapped candidate rows", async () => {

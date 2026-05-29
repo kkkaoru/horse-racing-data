@@ -1,5 +1,10 @@
 // Run with bun. Fetch / scheduled / queue handlers for sync-realtime-data-features.
 
+import { buildRaceFeatures } from "./features/build";
+import { encodeRaceFeaturesParquet } from "./features/parquet";
+import { buildRaceParquetR2Key } from "./features/r2-key";
+import { putBuildStateToKv } from "./gates/build-state-kv";
+import { writeLatestFeaturesToKv } from "./gates/latest-features-kv-mirror";
 import { shouldRunFeaturesCron } from "./gates/polling-window-gate";
 import { jsonResponse } from "./http";
 import {
@@ -8,7 +13,7 @@ import {
   listRaceRunningStyles,
   upsertFinishPositionPredictions,
 } from "./storage";
-import type { Env, Job, RaceJobKey } from "./types";
+import type { DailyRaceEntryRow, Env, Job, RaceJobKey } from "./types";
 
 const MIGRATION_STATE_KV_PREFIX = "features:migration";
 
@@ -80,14 +85,55 @@ interface RecomputeRequestBody {
   raceBango: string;
 }
 
-// Skeleton: real recompute path will pull source rows from Hyperdrive,
-// build per-race Parquet, and PUT to R2. For Phase A we just acknowledge.
+interface BuildRaceFeaturesResult {
+  raceKey: string;
+  rowCount: number;
+  r2Key: string;
+  builtAt: string;
+}
+
+const toRaceJobKeyFromBody = (body: RecomputeRequestBody): RaceJobKey => ({
+  raceKey: body.raceKey,
+  source: body.source,
+  kaisaiNen: body.kaisaiNen,
+  kaisaiTsukihi: body.kaisaiTsukihi,
+  keibajoCode: body.keibajoCode,
+  raceBango: body.raceBango,
+});
+
+// Reads Hyperdrive (Postgres) via buildRaceFeatures, encodes Parquet bytes,
+// PUTs to R2, then mirrors the build into KV (state + latest features).
+// Legacy D1 daily_race_entries is NEVER touched (Phase 0 rule 3).
+export const buildAndPersistRaceFeatures = async (
+  env: Env,
+  raceJobKey: RaceJobKey,
+): Promise<BuildRaceFeaturesResult> => {
+  const rows: DailyRaceEntryRow[] = await buildRaceFeatures(raceJobKey, env);
+  const parquetBytes = await encodeRaceFeaturesParquet(rows);
+  const r2Key = buildRaceParquetR2Key({
+    source: raceJobKey.source,
+    kaisaiNen: raceJobKey.kaisaiNen,
+    kaisaiTsukihi: raceJobKey.kaisaiTsukihi,
+    keibajoCode: raceJobKey.keibajoCode,
+    raceBango: raceJobKey.raceBango,
+  });
+  await env.FEATURES_ARCHIVE.put(r2Key, parquetBytes);
+  const builtAt = new Date().toISOString();
+  await putBuildStateToKv(env, raceJobKey.raceKey, {
+    lastBuiltAt: builtAt,
+    rowCount: rows.length,
+  });
+  await writeLatestFeaturesToKv(env, raceJobKey.raceKey, rows);
+  return { builtAt, r2Key, raceKey: raceJobKey.raceKey, rowCount: rows.length };
+};
+
 export const handleRecomputeRequest = async (env: Env, request: Request): Promise<Response> => {
   if (!isAuthorizedInternalRequest(request, env)) {
     return jsonResponse({ error: "unauthorized" }, { status: 401 });
   }
   const body = (await request.json()) as RecomputeRequestBody;
-  return jsonResponse({ accepted: true, raceKey: body.raceKey });
+  const result = await buildAndPersistRaceFeatures(env, toRaceJobKeyFromBody(body));
+  return jsonResponse(result);
 };
 
 const parseRaceKeyFromUrl = (url: URL): string | null => {
@@ -155,14 +201,7 @@ const handleBuildRaceFeaturesJob = async (
   env: Env,
   job: Extract<Job, { type: "build-race-features" }>,
 ): Promise<void> => {
-  const raceJobKey = toRaceJobKey(job);
-  // TODO(next phase): call buildRaceFeatures + encodeRaceFeaturesParquet + R2 PUT.
-  // The skeleton just records the request via migration KV for traceability.
-  await env.FEATURES_KV.put(
-    `features:build-requested:${raceJobKey.raceKey}`,
-    JSON.stringify({ requestedAt: new Date().toISOString() }),
-    { expirationTtl: 3600 },
-  );
+  await buildAndPersistRaceFeatures(env, toRaceJobKey(job));
 };
 
 const handlePredictRunningStyleJob = async (

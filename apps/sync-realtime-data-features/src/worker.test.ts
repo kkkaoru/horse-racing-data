@@ -1,7 +1,19 @@
 // Run with: bun run --filter sync-realtime-data-features test
 import { beforeEach, expect, it, vi } from "vitest";
 
+vi.mock("./features/build", () => ({
+  buildRaceFeatures: vi.fn(async () => []),
+  fetchAllRaceFeatures: vi.fn(async () => []),
+}));
+vi.mock("./features/parquet", () => ({
+  encodeRaceFeaturesParquet: vi.fn(async () => new Uint8Array([1, 2, 3])),
+  decodeRaceFeaturesParquet: vi.fn(async () => []),
+}));
+
+import { buildRaceFeatures } from "./features/build";
+import { encodeRaceFeaturesParquet } from "./features/parquet";
 import {
+  buildAndPersistRaceFeatures,
   handleFetchRequest,
   handleGetFinishPositions,
   handleGetRunningStyles,
@@ -14,7 +26,7 @@ import {
   handleScheduled,
   runScheduledFeaturesPlan,
 } from "./worker";
-import type { Env, Job } from "./types";
+import type { DailyRaceEntryRow, Env, Job } from "./types";
 
 const buildDb = (firstResult: unknown = null, allResults: unknown[] = []) => {
   const run = vi.fn().mockResolvedValue({});
@@ -34,16 +46,26 @@ const buildKv = () => {
   return kv as unknown as KVNamespace;
 };
 
+const buildR2 = () =>
+  ({
+    put: vi.fn().mockResolvedValue(undefined),
+  }) as unknown as R2Bucket;
+
 const buildEnv = (overrides: Partial<Env> = {}): Env =>
   ({
     REALTIME_FEATURES_DB: buildDb(),
     FEATURES_KV: buildKv(),
+    FEATURES_ARCHIVE: buildR2(),
     PC_KEIBA_VIEWER_INTERNAL_TOKEN: "secret",
     ...overrides,
   }) as unknown as Env;
 
 beforeEach(() => {
   vi.unstubAllGlobals();
+  vi.mocked(buildRaceFeatures).mockReset();
+  vi.mocked(buildRaceFeatures).mockResolvedValue([]);
+  vi.mocked(encodeRaceFeaturesParquet).mockReset();
+  vi.mocked(encodeRaceFeaturesParquet).mockResolvedValue(new Uint8Array([1, 2, 3]));
 });
 
 it("handleRoot returns ok payload", async () => {
@@ -214,8 +236,10 @@ it("rejects unauthorized recompute request", async () => {
   expect(response.status).toBe(401);
 });
 
-it("accepts recompute request and returns raceKey echo", async () => {
+it("accepts recompute request, builds Parquet, PUTs to R2, and writes KV", async () => {
   const env = buildEnv();
+  const rows: DailyRaceEntryRow[] = [];
+  vi.mocked(buildRaceFeatures).mockResolvedValueOnce(rows);
   const response = await handleRecomputeRequest(
     env,
     new Request("https://x/api/internal/recompute-and-build-parquet", {
@@ -232,9 +256,42 @@ it("accepts recompute request and returns raceKey echo", async () => {
     }),
   );
   expect(response.status).toBe(200);
-  await expect(response.json()).resolves.toStrictEqual({
-    accepted: true,
+  expect(env.FEATURES_ARCHIVE.put).toHaveBeenCalledWith(
+    "features/by-race/2026/05/29/nar/30/08.parquet",
+    new Uint8Array([1, 2, 3]),
+  );
+  const body = (await response.json()) as {
+    raceKey: string;
+    rowCount: number;
+    r2Key: string;
+    builtAt: string;
+  };
+  expect(body.raceKey).toBe("nar:20260529:30:08");
+  expect(body.rowCount).toBe(0);
+  expect(body.r2Key).toBe("features/by-race/2026/05/29/nar/30/08.parquet");
+  expect(typeof body.builtAt).toBe("string");
+});
+
+it("buildAndPersistRaceFeatures writes build-state KV and latest features KV", async () => {
+  const env = buildEnv();
+  vi.mocked(buildRaceFeatures).mockResolvedValueOnce([]);
+  const result = await buildAndPersistRaceFeatures(env, {
     raceKey: "nar:20260529:30:08",
+    source: "nar",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0529",
+    keibajoCode: "30",
+    raceBango: "08",
+  });
+  expect(result.rowCount).toBe(0);
+  expect(result.r2Key).toBe("features/by-race/2026/05/29/nar/30/08.parquet");
+  expect(env.FEATURES_KV.put).toHaveBeenCalledWith(
+    "features:build-state:nar:20260529:30:08",
+    expect.any(String),
+    { expirationTtl: 86_400 },
+  );
+  expect(env.FEATURES_KV.put).toHaveBeenCalledWith("features:latest:nar:20260529:30:08", "[]", {
+    expirationTtl: 600,
   });
 });
 
@@ -306,8 +363,9 @@ const buildMessage = (job: Job) => ({
   attempts: 1,
 });
 
-it("handleQueue dispatches build-race-features job", async () => {
+it("handleQueue dispatches build-race-features job by building Parquet and PUT to R2", async () => {
   const env = buildEnv();
+  vi.mocked(buildRaceFeatures).mockResolvedValueOnce([]);
   const message = buildMessage({
     type: "build-race-features",
     raceKey: "r",
@@ -319,11 +377,13 @@ it("handleQueue dispatches build-race-features job", async () => {
   });
   await handleQueue({ messages: [message] } as unknown as MessageBatch<Job>, env);
   expect(message.ack).toHaveBeenCalled();
-  expect(env.FEATURES_KV.put).toHaveBeenCalledWith(
-    "features:build-requested:r",
-    expect.any(String),
-    { expirationTtl: 3600 },
+  expect(env.FEATURES_ARCHIVE.put).toHaveBeenCalledWith(
+    "features/by-race/2026/05/29/nar/30/08.parquet",
+    new Uint8Array([1, 2, 3]),
   );
+  expect(env.FEATURES_KV.put).toHaveBeenCalledWith("features:build-state:r", expect.any(String), {
+    expirationTtl: 86_400,
+  });
 });
 
 it("handleQueue dispatches predict-running-style job", async () => {
@@ -362,5 +422,27 @@ it("handleQueue acknowledges unknown job types", async () => {
   const env = buildEnv();
   const message = buildMessage({ type: "archive-features-to-r2", date: "20260529" });
   await handleQueue({ messages: [message] } as unknown as MessageBatch<Job>, env);
+  expect(message.ack).toHaveBeenCalled();
+});
+
+it("default worker.fetch dispatches handleFetchRequest", async () => {
+  const { default: worker } = await import("./worker");
+  const env = buildEnv();
+  const response = await worker.fetch(new Request("https://x/", { method: "GET" }), env);
+  expect(response.status).toBe(200);
+});
+
+it("default worker.scheduled dispatches handleScheduled", async () => {
+  const { default: worker } = await import("./worker");
+  await expect(
+    worker.scheduled({ scheduledTime: Date.parse("2026-05-29T20:00:00Z") } as ScheduledEvent),
+  ).resolves.toBeUndefined();
+});
+
+it("default worker.queue dispatches handleQueue", async () => {
+  const { default: worker } = await import("./worker");
+  const env = buildEnv();
+  const message = buildMessage({ type: "archive-features-to-r2", date: "20260529" });
+  await worker.queue({ messages: [message] } as unknown as MessageBatch<Job>, env);
   expect(message.ack).toHaveBeenCalled();
 });
