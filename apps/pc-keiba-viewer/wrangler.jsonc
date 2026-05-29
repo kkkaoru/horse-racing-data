@@ -18,6 +18,10 @@
       "binding": "REALTIME_FEATURES",
       "service": "sync-realtime-data-features",
     },
+    {
+      "binding": "REALTIME_HOT",
+      "service": "sync-realtime-data-hot",
+    },
   ],
   "images": {
     "binding": "IMAGES",

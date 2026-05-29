@@ -139,6 +139,7 @@ declare global {
     REALTIME_DB?: PcKeibaD1Database;
     REALTIME_FEATURES?: { fetch: typeof fetch };
     REALTIME_FEATURES_DB?: PcKeibaD1Database;
+    REALTIME_HOT?: { fetch: typeof fetch };
     REALTIME_HOT_DB?: PcKeibaD1Database;
   }
 }
