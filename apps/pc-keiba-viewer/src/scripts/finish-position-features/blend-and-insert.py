@@ -9,6 +9,7 @@ import os
 import subprocess
 from collections import defaultdict
 from pathlib import Path
+from typing import cast
 
 DEFAULT_PG = "postgresql://horse_racing:horse_racing@127.0.0.1:5432/horse_racing"
 
@@ -23,8 +24,8 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def load_jsonl(path: Path) -> list[dict]:
-    rows = []
+def load_jsonl(path: Path) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
     with path.open() as f:
         for line in f:
             line = line.strip()
@@ -33,10 +34,12 @@ def load_jsonl(path: Path) -> list[dict]:
     return rows
 
 
-def normalize_within_race(rows: list[dict]) -> dict[tuple[str, str], float]:
+def normalize_within_race(rows: list[dict[str, object]]) -> dict[tuple[str, str], float]:
     by_race: dict[str, list[tuple[str, float]]] = defaultdict(list)
     for r in rows:
-        by_race[r["race_id"]].append((str(r["ketto_toroku_bango"]), float(r["predicted_score"])))
+        by_race[cast(str, r["race_id"])].append(
+            (str(r["ketto_toroku_bango"]), float(cast(float, r["predicted_score"])))
+        )
     out: dict[tuple[str, str], float] = {}
     for rid, hs in by_race.items():
         n = len(hs)
@@ -51,7 +54,7 @@ def normalize_within_race(rows: list[dict]) -> dict[tuple[str, str], float]:
 
 def main() -> None:
     args = parse_args()
-    components: list[tuple[str, float, list[dict]]] = []
+    components: list[tuple[str, float, list[dict[str, object]]]] = []
     for spec in args.jsonl:
         label, rest = spec.split("=", 1)
         weight_str, path_str = rest.split(":", 1)
@@ -60,9 +63,9 @@ def main() -> None:
     umaban_lookup: dict[tuple[str, str], int] = {}
     for _, _, rows in components:
         for r in rows:
-            k = (r["race_id"], str(r["ketto_toroku_bango"]))
+            k = (cast(str, r["race_id"]), str(r["ketto_toroku_bango"]))
             if "umaban" in r and r["umaban"] is not None:
-                umaban_lookup[k] = int(r["umaban"])
+                umaban_lookup[k] = int(cast(int, r["umaban"]))
     blended: dict[tuple[str, str], float] = defaultdict(float)
     for w, norm in normalized:
         if w == 0: continue
@@ -71,11 +74,11 @@ def main() -> None:
     by_race: dict[str, list[tuple[str, float]]] = defaultdict(list)
     for (rid, hid), s in blended.items():
         by_race[rid].append((hid, s))
-    rows_out: list[dict] = []
+    rows_out: list[dict[str, object]] = []
     for rid in sorted(by_race):
         ranked = sorted(by_race[rid], key=lambda x: -x[1])
         for rank, (hid, sc) in enumerate(ranked, start=1):
-            r = {
+            r: dict[str, object] = {
                 "race_id": rid,
                 "ketto_toroku_bango": hid,
                 "predicted_score": sc,
@@ -90,9 +93,9 @@ def main() -> None:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
     # parse race_id into pg fields and emit insert rows
     # race_id like "jra:2024:0101:45:08" => source / kaisai_nen / kaisai_tsukihi / keibajo_code / race_bango
-    insert_rows = []
+    insert_rows: list[dict[str, object]] = []
     for r in rows_out:
-        parts = r["race_id"].split(":")
+        parts = cast(str, r["race_id"]).split(":")
         if len(parts) != 5:
             continue
         src, kaisai_nen, mmdd, keibajo, bango = parts
@@ -115,7 +118,7 @@ def main() -> None:
         return
     cols = ["model_version", "source", "kaisai_nen", "kaisai_tsukihi", "keibajo_code",
             "race_bango", "ketto_toroku_bango", "umaban", "predicted_score", "predicted_rank"]
-    def esc(s):
+    def esc(s: object) -> str:
         if s is None: return "null"
         if isinstance(s, (int, float)): return str(s)
         return "'" + str(s).replace("'", "''") + "'"

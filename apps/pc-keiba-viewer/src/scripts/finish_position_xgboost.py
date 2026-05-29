@@ -19,8 +19,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -86,9 +86,9 @@ def make_to_relevance(rank1: int, rank2: int, rank3: int):
     rel_map = {1: rank1, 2: rank2, 3: rank3}
 
     def _to(value: object) -> int:
-        if value is None or pd.isna(value):
+        if value is None or pd.isna(cast(float, value)):
             return DEFAULT_RELEVANCE
-        return rel_map.get(int(value), DEFAULT_RELEVANCE)
+        return rel_map.get(int(cast(float, value)), DEFAULT_RELEVANCE)
 
     return _to
 
@@ -159,30 +159,34 @@ def train_xgboost_ranker(
     }
 
 
+def _top1_hit(g: pd.DataFrame) -> int:
+    return int(((g["predicted_rank"] == 1) & (g["finish_position"] == 1)).any())
+
+
+def _top3_box_hit(g: pd.DataFrame) -> int:
+    return int(g[g["predicted_rank"] <= 3]["finish_position"].le(3).sum() == 3)
+
+
+def _top3_exact_hit(g: pd.DataFrame) -> int:
+    return int(
+        ((g["predicted_rank"] == 1) & (g["finish_position"] == 1)).any()
+        and ((g["predicted_rank"] == 2) & (g["finish_position"] == 2)).any()
+        and ((g["predicted_rank"] == 3) & (g["finish_position"] == 3)).any()
+    )
+
+
 def compute_fold_metrics(valid_df: pd.DataFrame) -> dict[str, float]:
-    grouped = valid_df.groupby("race_id")
-    top1_hits = grouped.apply(
-        lambda g: int(((g["predicted_rank"] == 1) & (g["finish_position"] == 1)).any()),
-        include_groups=False,
-    )
-    top3_box = grouped.apply(
-        lambda g: int(g[g["predicted_rank"] <= 3]["finish_position"].le(3).sum() == 3),
-        include_groups=False,
-    )
-    top3_exact = grouped.apply(
-        lambda g: int(
-            ((g["predicted_rank"] == 1) & (g["finish_position"] == 1)).any()
-            and ((g["predicted_rank"] == 2) & (g["finish_position"] == 2)).any()
-            and ((g["predicted_rank"] == 3) & (g["finish_position"] == 3)).any()
-        ),
-        include_groups=False,
-    )
+    groups = [g for _, g in valid_df.groupby("race_id")]
+    race_count = len(groups)
+    top1_hits = [_top1_hit(g) for g in groups]
+    top3_box = [_top3_box_hit(g) for g in groups]
+    top3_exact = [_top3_exact_hit(g) for g in groups]
     return {
-        "race_count": int(len(grouped)),
+        "race_count": race_count,
         "valid_rows": int(len(valid_df)),
-        "top1_accuracy": float(top1_hits.mean()),
-        "top3_box_accuracy": float(top3_box.mean()),
-        "top3_exact_accuracy": float(top3_exact.mean()),
+        "top1_accuracy": float(np.mean(top1_hits)) if top1_hits else 0.0,
+        "top3_box_accuracy": float(np.mean(top3_box)) if top3_box else 0.0,
+        "top3_exact_accuracy": float(np.mean(top3_exact)) if top3_exact else 0.0,
     }
 
 
@@ -191,12 +195,13 @@ def write_predictions_jsonl(valid_df: pd.DataFrame, output_path: Path) -> None:
     rows = valid_df[["race_id", "ketto_toroku_bango", "umaban", "predicted_score", "predicted_rank"]]
     with output_path.open("w", encoding="utf-8") as fp:
         for row in rows.itertuples(index=False):
+            umaban_value = cast(float, row.umaban)
             fp.write(json.dumps({
                 "race_id": row.race_id,
                 "ketto_toroku_bango": row.ketto_toroku_bango,
-                "umaban": int(row.umaban) if pd.notna(row.umaban) else None,
-                "predicted_score": float(row.predicted_score),
-                "predicted_rank": int(row.predicted_rank),
+                "umaban": int(umaban_value) if pd.notna(umaban_value) else None,
+                "predicted_score": float(cast(float, row.predicted_score)),
+                "predicted_rank": int(cast(float, row.predicted_rank)),
             }) + "\n")
 
 
@@ -212,13 +217,13 @@ def run_walk_forward(args: argparse.Namespace) -> None:
             _, result = train_xgboost_ranker(train_df, valid_df, feature_cols, args)
             fold_label = f"{args.validation_from_date}-{args.validation_to_date}"
             write_predictions_jsonl(
-                result["valid_predictions"],
+                cast(pd.DataFrame, result["valid_predictions"]),
                 args.output_predictions_dir / f"{fold_label}.jsonl",
             )
             folds.append({
                 "fold_label": fold_label,
                 "best_iteration": result["best_iteration"],
-                **result["metrics"],
+                **cast(dict[str, object], result["metrics"]),
             })
     else:
         validation_years = [int(y) for y in args.validation_years.split(",")]
@@ -230,19 +235,19 @@ def run_walk_forward(args: argparse.Namespace) -> None:
                 continue
             _, result = train_xgboost_ranker(train_df, valid_df, feature_cols, args)
             write_predictions_jsonl(
-                result["valid_predictions"],
+                cast(pd.DataFrame, result["valid_predictions"]),
                 args.output_predictions_dir / f"{valid_year}.jsonl",
             )
             folds.append({
                 "fold_year": valid_year,
                 "best_iteration": result["best_iteration"],
-                **result["metrics"],
+                **cast(dict[str, object], result["metrics"]),
             })
     aggregate = {
         "fold_count": len(folds),
-        "top1_accuracy_mean": sum(f["top1_accuracy"] for f in folds) / max(len(folds), 1),
-        "top3_box_accuracy_mean": sum(f["top3_box_accuracy"] for f in folds) / max(len(folds), 1),
-        "top3_exact_accuracy_mean": sum(f["top3_exact_accuracy"] for f in folds) / max(len(folds), 1),
+        "top1_accuracy_mean": sum(cast(float, f["top1_accuracy"]) for f in folds) / max(len(folds), 1),
+        "top3_box_accuracy_mean": sum(cast(float, f["top3_box_accuracy"]) for f in folds) / max(len(folds), 1),
+        "top3_exact_accuracy_mean": sum(cast(float, f["top3_exact_accuracy"]) for f in folds) / max(len(folds), 1),
     }
     report = {"aggregate": aggregate, "folds": folds}
     args.output_report.parent.mkdir(parents=True, exist_ok=True)

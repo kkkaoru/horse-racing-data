@@ -13,6 +13,10 @@ import argparse
 import os
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import duckdb
 
 DEFAULT_MEM_FRACTION = 0.66
 FALLBACK_THREADS = 4
@@ -72,7 +76,11 @@ def add_resource_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def apply_to_connection(con, threads: int | None = None, memory_limit: str | None = None) -> None:
+def apply_to_connection(
+    con: duckdb.DuckDBPyConnection,
+    threads: int | None = None,
+    memory_limit: str | None = None,
+) -> None:
     resolved_threads = threads if threads is not None else default_threads()
     resolved_memory = memory_limit if memory_limit is not None else default_memory_limit()
     con.execute(f"SET threads TO {resolved_threads}")

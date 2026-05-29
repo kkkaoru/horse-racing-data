@@ -31,10 +31,18 @@ import duckdb
 DEFAULT_OUTPUT_DIR = Path("tmp/finish-position-features-parquet")
 DEFAULT_PG_URL = "postgresql://horse_racing:horse_racing@localhost:5432/horse_racing"
 sys.path.insert(0, str(Path(__file__).parent / "finish-position-features"))
-from _resource_defaults import default_memory_limit, default_threads
 
-DEFAULT_THREADS: int = default_threads()
-DEFAULT_MEMORY_LIMIT: str = default_memory_limit()
+
+def _load_resource_defaults() -> tuple[Callable[[], int], Callable[[], str]]:
+    import importlib
+
+    module = importlib.import_module("_resource_defaults")
+    return module.default_threads, module.default_memory_limit
+
+
+_default_threads, _default_memory_limit = _load_resource_defaults()
+DEFAULT_THREADS: int = _default_threads()
+DEFAULT_MEMORY_LIMIT: str = _default_memory_limit()
 DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 10.0
 BYTES_PER_MB = 1024 * 1024
 
@@ -188,7 +196,9 @@ def run_staged_sql(
     elapsed = perf_counter() - started
     rows: int | None = None
     if row_count_table is not None:
-        rows = int(con.execute(f"select count(*) from {row_count_table}").fetchone()[0])
+        result = con.execute(f"select count(*) from {row_count_table}").fetchone()
+        if result is not None:
+            rows = int(result[0])
     log_event(stage, "done", elapsed, rows=rows)
 
 

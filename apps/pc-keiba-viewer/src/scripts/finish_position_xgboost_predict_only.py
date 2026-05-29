@@ -21,6 +21,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -110,9 +111,9 @@ def write_predictions_jsonl(valid_df: pd.DataFrame, output_path: Path) -> None:
             fp.write(json.dumps({
                 "race_id": row.race_id,
                 "ketto_toroku_bango": row.ketto_toroku_bango,
-                "umaban": int(row.umaban) if pd.notna(row.umaban) else None,
-                "predicted_score": float(row.predicted_score),
-                "predicted_rank": int(row.predicted_rank),
+                "umaban": int(cast(float, row.umaban)) if pd.notna(cast(float, row.umaban)) else None,
+                "predicted_score": float(cast(float, row.predicted_score)),
+                "predicted_rank": int(cast(float, row.predicted_rank)),
             }) + "\n")
 
 

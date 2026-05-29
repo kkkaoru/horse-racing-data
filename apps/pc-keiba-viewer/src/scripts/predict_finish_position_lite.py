@@ -16,8 +16,10 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import cast
 
 import lightgbm as lgb
+import numpy as np
 import pandas as pd
 
 
@@ -45,7 +47,7 @@ def main() -> None:
         if col in df.columns:
             df[col] = df[col].astype("category")
     feature_frame = df.loc[:, feature_columns]
-    scores = booster.predict(feature_frame)
+    scores = cast(np.ndarray, booster.predict(feature_frame))
     df["lgbm_score"] = scores
     df["predicted_rank"] = (
         df.groupby("race_id")["lgbm_score"].rank(method="first", ascending=False).astype(int)
@@ -58,7 +60,7 @@ def main() -> None:
                 json.dumps({
                     "race_id": row.race_id,
                     "ketto_toroku_bango": row.ketto_toroku_bango,
-                    "predicted_rank": int(row.predicted_rank),
+                    "predicted_rank": int(cast(float, row.predicted_rank)),
                 }) + "\n"
             )
     actuals = df.loc[df["finish_position"].notna(), ["race_id", "ketto_toroku_bango", "finish_position"]].copy()

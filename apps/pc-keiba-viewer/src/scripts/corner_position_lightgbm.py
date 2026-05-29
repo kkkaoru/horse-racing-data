@@ -317,7 +317,7 @@ def write_predictions_jsonl(predictions: pd.DataFrame, output_path: Path) -> Non
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as handle:
         for raw_record in predictions.to_dict(orient="records"):
-            record = _sanitize_record_for_json(raw_record)
+            record = _sanitize_record_for_json({str(k): v for k, v in raw_record.items()})
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 

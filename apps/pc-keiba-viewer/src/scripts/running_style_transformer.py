@@ -21,17 +21,18 @@ import argparse
 import json
 from pathlib import Path
 from time import perf_counter
-from typing import TypedDict
+from typing import TypedDict, cast
 
 import mlx.core as mx
-import mlx.nn as nn
-import mlx.optimizers as opt
+import mlx.nn as nn  # pyright: ignore[reportMissingTypeStubs]
+import mlx.optimizers as opt  # pyright: ignore[reportMissingTypeStubs]
 import numpy as np
 import pandas as pd
 
 from finish_position_transformer.dataset import (
     MAX_RUNNERS,
     NormalizationStats,
+    RaceBatchArrays,
     build_race_batches,
     categorical_vocab_size,
     fit_normalization_stats,
@@ -140,11 +141,9 @@ def split_by_year(df: pd.DataFrame, train_start: str, valid_year: int) -> tuple[
 
 
 def extract_running_style_targets(df: pd.DataFrame, race_ids: list[str]) -> np.ndarray:
-    by_race = df.groupby("race_id")[[TARGET_COLUMN, "umaban"]].apply(
-        lambda group: group.sort_values("umaban").reset_index(drop=True)
-    )
     by_race_dict: dict[str, pd.DataFrame] = {
-        race_id: df_part for race_id, df_part in df.sort_values(["race_id", "umaban"]).groupby("race_id")
+        str(race_id): df_part
+        for race_id, df_part in df.sort_values(["race_id", "umaban"]).groupby("race_id")
     }
     num_races = len(race_ids)
     targets = np.full((num_races, MAX_RUNNERS), PAD_TARGET_CLASS, dtype=np.int32)
@@ -240,7 +239,7 @@ def slice_arrays(arrays: dict[str, np.ndarray], indices: np.ndarray) -> dict[str
 def cross_entropy_with_mask(
     logits: mx.array, targets: mx.array, mask: mx.array
 ) -> mx.array:
-    valid = mx.logical_and(mask, targets != PAD_TARGET_CLASS)
+    valid = mx.logical_and(mask, mx.not_equal(targets, PAD_TARGET_CLASS))
     safe_targets = mx.where(valid, targets, mx.zeros_like(targets))
     losses = nn.losses.cross_entropy(logits, safe_targets, reduction="none")
     masked_losses = mx.where(valid, losses, mx.zeros_like(losses))
@@ -248,7 +247,7 @@ def cross_entropy_with_mask(
     return mx.sum(masked_losses) / denom
 
 
-def _build_batched_inputs(arrays: dict[str, object], targets: np.ndarray) -> dict[str, np.ndarray]:
+def _build_batched_inputs(arrays: RaceBatchArrays, targets: np.ndarray) -> dict[str, np.ndarray]:
     return {
         "numeric_features": arrays["numeric_features"],
         "categorical_indices": arrays["categorical_indices"],
@@ -322,7 +321,7 @@ def train_one_fold(
     train_df: pd.DataFrame,
     valid_df: pd.DataFrame,
     params: TrainingParams,
-) -> tuple[RunningStyleTransformer, NormalizationStats, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[RunningStyleTransformer, NormalizationStats, np.ndarray, np.ndarray, RaceBatchArrays, int]:
     feature_columns = resolve_running_style_feature_columns(list(train_df.columns))
     stats = fit_normalization_stats(train_df, feature_columns)
     train_arrays = build_race_batches(train_df, stats)
@@ -380,7 +379,7 @@ def train_one_fold(
                 break
     valid_batches = iterate_batches(valid_batched, params["batch_size"], shuffle=False, rng=rng)
     probabilities = compute_softmax_predictions(model, valid_batches)
-    return model, stats, probabilities, valid_targets, valid_arrays
+    return model, stats, probabilities, valid_targets, valid_arrays, best_epoch
 
 
 def cross_entropy_with_mask_for_model(
@@ -396,7 +395,7 @@ def cross_entropy_with_mask_for_model(
     return cross_entropy_with_mask(logits, targets, mask)
 
 
-def _sanitize_float(value: float) -> float | None:
+def _sanitize_float(value: float | None) -> float | None:
     if value is None:
         return None
     if isinstance(value, float) and not np.isfinite(value):
@@ -406,7 +405,7 @@ def _sanitize_float(value: float) -> float | None:
 
 def build_predictions_df(
     valid_df: pd.DataFrame,
-    valid_arrays: dict[str, object],
+    valid_arrays: RaceBatchArrays,
     probabilities: np.ndarray,
 ) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
@@ -426,16 +425,18 @@ def build_predictions_df(
             probs = probabilities[race_idx, slot]
             predicted_class = int(np.argmax(probs))
             try:
-                row = valid_lookup.loc[(race_id, horse_id)]
+                row_raw = valid_lookup.loc[(race_id, horse_id)]
             except KeyError:
                 continue
-            if isinstance(row, pd.DataFrame):
-                row = row.iloc[0]
-            target_raw = row[TARGET_COLUMN]
+            if isinstance(row_raw, pd.DataFrame):
+                row = row_raw.iloc[0]
+            else:
+                row = cast("pd.Series", row_raw)
+            target_raw = cast(float, row[TARGET_COLUMN])
             target_value: int | None = None if pd.isna(target_raw) else int(target_raw)
-            umaban_raw = row["umaban"]
+            umaban_raw = cast(float, row["umaban"])
             umaban_value = None if pd.isna(umaban_raw) else int(umaban_raw)
-            race_year_raw = row["race_year"]
+            race_year_raw = cast(float, row["race_year"])
             race_year_value = None if pd.isna(race_year_raw) else int(race_year_raw)
             rows.append(
                 {
@@ -488,10 +489,11 @@ def write_predictions_jsonl(predictions: pd.DataFrame, output_path: Path) -> Non
         for record in predictions.to_dict(orient="records"):
             sanitized: dict[str, object] = {}
             for key, value in record.items():
+                key_str = str(key)
                 if isinstance(value, float) and not np.isfinite(value):
-                    sanitized[key] = None
+                    sanitized[key_str] = None
                 else:
-                    sanitized[key] = value
+                    sanitized[key_str] = value
             handle.write(json.dumps(sanitized, ensure_ascii=False) + "\n")
 
 
@@ -537,7 +539,7 @@ def run_walk_forward(args: argparse.Namespace) -> None:
     for valid_year in validation_years:
         train_df, valid_df = split_by_year(df, args.train_start_date, valid_year)
         fold_started = perf_counter()
-        _model, _stats, probabilities, _valid_targets, valid_arrays = train_one_fold(
+        _model, _stats, probabilities, _valid_targets, valid_arrays, best_epoch = train_one_fold(
             train_df, valid_df, params
         )
         predictions_df = build_predictions_df(valid_df, valid_arrays, probabilities)
@@ -549,7 +551,7 @@ def run_walk_forward(args: argparse.Namespace) -> None:
             "valid_rows": int(len(valid_df)),
             "accuracy": accuracy,
             "macro_f1": macro_f1,
-            "best_epoch": 0,
+            "best_epoch": best_epoch,
         }
         folds.append(fold_metrics)
         all_predictions.append(predictions_df)

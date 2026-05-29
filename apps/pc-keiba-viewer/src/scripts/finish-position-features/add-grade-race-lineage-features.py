@@ -37,6 +37,7 @@ import json
 import os
 import shutil
 from pathlib import Path
+from typing import cast
 
 import duckdb
 
@@ -68,7 +69,7 @@ def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
     con.execute(f"attach '{pg_url}' as pg (type postgres, read_only)")
 
 
-def load_config(config_path: Path) -> dict:
+def load_config(config_path: Path) -> dict[str, object]:
     with config_path.open() as f:
         data = json.load(f)
     if "target_races" not in data or not isinstance(data["target_races"], list):
@@ -116,52 +117,57 @@ def stage_race_meta(con: duckdb.DuckDBPyConnection, from_date: str) -> None:
     )
 
 
-def build_target_classify_sql(config: dict) -> str:
+def build_target_classify_sql(config: dict[str, object]) -> str:
     """Build a CASE WHEN expression that maps each race to target_race_id (or NULL)."""
     branches: list[str] = []
-    for tr in config["target_races"]:
+    for tr_raw in cast(list[object], config["target_races"]):
+        tr = cast(dict[str, object], tr_raw)
         conds: list[str] = []
-        m = tr.get("match", {})
+        m = cast(dict[str, object], tr.get("match", {}))
         if "kyosomei_equals" in m:
-            v = m["kyosomei_equals"].replace("'", "''")
+            v = cast(str, m["kyosomei_equals"]).replace("'", "''")
             conds.append(f"kyosomei_norm = '{v}'")
         if "kyosomei_contains" in m:
-            v = m["kyosomei_contains"].replace("'", "''")
+            v = cast(str, m["kyosomei_contains"]).replace("'", "''")
             conds.append(f"kyosomei_norm like '%{v}%'")
         if "keibajo_code" in m:
-            conds.append(f"keibajo_code = '{m['keibajo_code']}'")
+            conds.append(f"keibajo_code = '{cast(str, m['keibajo_code'])}'")
         if "kyori" in m:
-            conds.append(f"kyori_int = {int(m['kyori'])}")
+            conds.append(f"kyori_int = {int(cast(int, m['kyori']))}")
         if "month" in m:
-            conds.append(f"month = {int(m['month'])}")
+            conds.append(f"month = {int(cast(int, m['month']))}")
         if "grade_code" in m:
-            v = m["grade_code"].replace("'", "''")
+            v = cast(str, m["grade_code"]).replace("'", "''")
             conds.append(f"grade_code = '{v}'")
         if not conds:
             continue
-        rid = tr["id"].replace("'", "''")
+        rid = cast(str, tr["id"]).replace("'", "''")
         branches.append(f"when {' and '.join(conds)} then '{rid}'")
     if not branches:
         raise ValueError("No target race classifications built")
     return "case " + " ".join(branches) + " else null end"
 
 
-def build_trial_defs_values(config: dict) -> str:
+def build_trial_defs_values(config: dict[str, object]) -> str:
     """Build a VALUES list of (target_race_id, trial_label, match_type, match_value, lookback_days)."""
     rows: list[str] = []
-    for tr in config["target_races"]:
-        rid = tr["id"].replace("'", "''")
-        for tdef in tr.get("trials", []):
-            label = tdef.get("name", "").replace("'", "''")
-            tm = tdef.get("match", {})
-            lookback = int(tdef.get("lookback_days", 90))
+    for tr_raw in cast(list[object], config["target_races"]):
+        tr = cast(dict[str, object], tr_raw)
+        rid = cast(str, tr["id"]).replace("'", "''")
+        for tdef_raw in cast(list[object], tr.get("trials", [])):
+            tdef = cast(dict[str, object], tdef_raw)
+            label = cast(str, tdef.get("name", "")).replace("'", "''")
+            tm = cast(dict[str, object], tdef.get("match", {}))
+            lookback = int(cast(int, tdef.get("lookback_days", 90)))
             if "kyosomei_equals" in tm:
+                value = cast(str, tm["kyosomei_equals"]).replace(chr(39), chr(39) * 2)
                 rows.append(
-                    f"('{rid}', '{label}', 'equals', '{tm['kyosomei_equals'].replace(chr(39), chr(39) * 2)}', {lookback})"
+                    f"('{rid}', '{label}', 'equals', '{value}', {lookback})"
                 )
             elif "kyosomei_contains" in tm:
+                value = cast(str, tm["kyosomei_contains"]).replace(chr(39), chr(39) * 2)
                 rows.append(
-                    f"('{rid}', '{label}', 'contains', '{tm['kyosomei_contains'].replace(chr(39), chr(39) * 2)}', {lookback})"
+                    f"('{rid}', '{label}', 'contains', '{value}', {lookback})"
                 )
             else:
                 continue
