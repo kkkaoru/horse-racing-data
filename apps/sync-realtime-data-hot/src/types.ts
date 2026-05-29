@@ -11,6 +11,13 @@ import type {
   RealtimeRaceSource,
 } from "horse-racing-realtime/types";
 import type { BrowserWorker } from "@cloudflare/playwright";
+import type {
+  D1Database,
+  DurableObjectNamespace,
+  KVNamespace,
+  Queue,
+  R2Bucket,
+} from "@cloudflare/workers-types";
 
 export type Job =
   | {
@@ -39,6 +46,10 @@ export type RaceEntry = RealtimeRaceEntry;
 export type RaceResult = RealtimeRaceResult;
 
 export type OddsSource = "jra" | "nar";
+
+export interface HyperdriveBinding {
+  connectionString: string;
+}
 
 export interface LocalRaceRow {
   hasso_jikoku: string | null;
@@ -103,4 +114,5 @@ export interface Env {
   ODDS_STALE_MIRROR_SECONDS?: string;
   PC_KEIBA_VIEWER_INTERNAL_TOKEN?: string;
   REALTIME_HOT_TEST_NOW?: string;
+  HYPERDRIVE?: HyperdriveBinding;
 }

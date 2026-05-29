@@ -21,10 +21,12 @@
     "ODDS_R2_ARCHIVE_RETENTION_DAYS": "7",
     "ODDS_STALE_MIRROR_SECONDS": "90",
   },
-  // High-frequency cron for odds polling (* * * * *) and daily R2 archive (0 4 * * *).
-  // Re-enabled at cutover (PR3).
+  // High-frequency cron for odds polling (* * * * *), daily R2 archive (0 4 * * *),
+  // and self-discovery populate of today's odds_fetch_state from Hyperdrive at
+  // 20:55 UTC = 05:55 JST so the 06:00 polling window has the day's race list
+  // ready even if the legacy worker is down. Re-enabled at cutover (PR3).
   "triggers": {
-    "crons": ["* * * * *", "0 4 * * *"],
+    "crons": ["* * * * *", "0 4 * * *", "55 20 * * *"],
   },
   "queues": {
     "producers": [
@@ -78,6 +80,12 @@
       },
     ],
   },
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "9b214701ab3f4a3ab406de8cdd26e0ae",
+    },
+  ],
   "migrations": [
     {
       "tag": "v1",

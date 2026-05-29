@@ -10,7 +10,12 @@ vi.mock("./odds-cache", () => ({
   writeCachedOdds: vi.fn(async () => undefined),
 }));
 
+vi.mock("./scheduled-race-list", () => ({
+  populateTodayOddsFetchState: vi.fn(async () => ({ inserted: 0, total: 0 })),
+}));
+
 import { fetchAndStoreOdds } from "./fetch-odds";
+import { populateTodayOddsFetchState } from "./scheduled-race-list";
 import worker, {
   buildOddsPayloadFromD1,
   groupRowsForFinalBackup,
@@ -29,6 +34,7 @@ import worker, {
   processFetchOddsJob,
   runScheduledArchive,
   runScheduledPlan,
+  runScheduledPopulateToday,
 } from "./worker";
 import type { Env, Job } from "./types";
 
@@ -52,6 +58,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  vi.mocked(populateTodayOddsFetchState).mockClear();
 });
 
 const buildKv = (): KVNamespace =>
@@ -83,6 +90,7 @@ interface BuildDbOptions {
   upsertRun?: ReturnType<typeof vi.fn>;
   logRun?: ReturnType<typeof vi.fn>;
   archiveCandidates?: { results: unknown[] };
+  stateCount?: number;
 }
 
 const buildDb = (options: BuildDbOptions = {}): D1Database => {
@@ -103,6 +111,10 @@ const buildDb = (options: BuildDbOptions = {}): D1Database => {
     if (lowered.includes("from odds_snapshots")) {
       const all = vi.fn(async () => options.byType ?? { results: [] });
       return { bind: vi.fn(() => ({ all })) };
+    }
+    if (lowered.includes("count(*)") && lowered.includes("from odds_fetch_state")) {
+      const first = vi.fn(async () => ({ count: options.stateCount ?? 0 }));
+      return { bind: vi.fn(() => ({ first })) };
     }
     if (lowered.includes("from odds_fetch_state")) {
       const all = vi.fn(async () => ({ results: [] }));
@@ -576,12 +588,26 @@ it("runScheduledPlan returns early outside polling window", async () => {
   const env = buildEnv();
   await runScheduledPlan(env, new Date("2026-05-28T13:00:00Z"));
   expect(vi.mocked(env.REALTIME_HOT_JOBS.send)).not.toHaveBeenCalled();
+  expect(vi.mocked(populateTodayOddsFetchState)).not.toHaveBeenCalled();
 });
 
-it("runScheduledPlan calls planOddsFetches when inside polling window", async () => {
-  const env = buildEnv();
+it("runScheduledPlan calls planOddsFetches when inside polling window and odds_fetch_state has rows", async () => {
+  const env = buildEnv({ REALTIME_HOT_DB: buildDb({ stateCount: 5 }) });
   await runScheduledPlan(env, new Date("2026-05-28T01:00:00Z"));
   expect(vi.mocked(env.REALTIME_HOT_DB.prepare)).toHaveBeenCalled();
+  expect(vi.mocked(populateTodayOddsFetchState)).not.toHaveBeenCalled();
+});
+
+it("runScheduledPlan triggers self-discovery populate when odds_fetch_state is empty", async () => {
+  const env = buildEnv({ REALTIME_HOT_DB: buildDb({ stateCount: 0 }) });
+  await runScheduledPlan(env, new Date("2026-05-28T01:00:00Z"));
+  expect(vi.mocked(populateTodayOddsFetchState)).toHaveBeenCalledTimes(1);
+});
+
+it("runScheduledPopulateToday delegates to populateTodayOddsFetchState", async () => {
+  const env = buildEnv();
+  await runScheduledPopulateToday(env, new Date("2026-05-28T20:55:00Z"));
+  expect(vi.mocked(populateTodayOddsFetchState)).toHaveBeenCalledTimes(1);
 });
 
 it("runScheduledArchive lists candidates and pushes to R2", async () => {
@@ -629,6 +655,19 @@ it("handleScheduled dispatches archive cron to runScheduledArchive", async () =>
   expect(vi.mocked(env.REALTIME_HOT_DB.prepare)).toHaveBeenCalled();
 });
 
+it("handleScheduled dispatches populate-today cron to runScheduledPopulateToday", async () => {
+  const env = buildEnv();
+  await handleScheduled(
+    {
+      cron: "55 20 * * *",
+      scheduledTime: new Date("2026-05-28T20:55:00Z").getTime(),
+      type: "scheduled",
+    } as unknown as ScheduledEvent,
+    env,
+  );
+  expect(vi.mocked(populateTodayOddsFetchState)).toHaveBeenCalledTimes(1);
+});
+
 it("handleScheduled does nothing for unknown cron", async () => {
   const env = buildEnv();
   await handleScheduled(
@@ -640,6 +679,7 @@ it("handleScheduled does nothing for unknown cron", async () => {
     env,
   );
   expect(vi.mocked(env.REALTIME_HOT_DB.prepare)).not.toHaveBeenCalled();
+  expect(vi.mocked(populateTodayOddsFetchState)).not.toHaveBeenCalled();
 });
 
 it("processFetchOddsJob returns early when fetchAndStoreOdds yields null", async () => {

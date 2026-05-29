@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import {
   claimOddsFetch,
   completeOddsFetch,
+  countOddsFetchStateForDate,
   failOddsFetch,
   getLatestOddsFromD1,
   getOddsFetchState,
@@ -574,6 +575,22 @@ it("listOddsSnapshotsBeforeCutoff returns the result rows", async () => {
     limit: 100,
   });
   expect(result.length).toBe(1);
+});
+
+it("countOddsFetchStateForDate returns the count from D1", async () => {
+  const first = vi.fn(async () => ({ count: 7 }));
+  const bind = vi.fn(() => ({ first }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  expect(await countOddsFetchStateForDate(db, "2026", "0529")).toBe(7);
+});
+
+it("countOddsFetchStateForDate returns 0 when first() yields null", async () => {
+  const first = vi.fn(async () => null);
+  const bind = vi.fn(() => ({ first }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  expect(await countOddsFetchStateForDate(db, "2026", "0529")).toBe(0);
 });
 
 it("listArchiveCandidatesBeforeCutoff returns grouped rows", async () => {

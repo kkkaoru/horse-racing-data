@@ -98,7 +98,7 @@ it("skips enqueue when lock already held outside final window", async () => {
   expect(env.REALTIME_HOT_JOBS.send).not.toHaveBeenCalled();
 });
 
-it("ignores lock and enqueues inside final window (ttl=0)", async () => {
+it("skips enqueue when lock already held inside final window", async () => {
   const env = buildEnv({
     d1Results: [
       {
@@ -111,8 +111,8 @@ it("ignores lock and enqueues inside final window (ttl=0)", async () => {
     kvGet: async (key) => (key.startsWith("odds:enqueue-lock:") ? "1" : null),
   });
   const result = await planOddsFetches(env, new Date("2026-05-28T03:00:00Z"), "20260528");
-  expect(result.queued).toBeGreaterThan(0);
-  expect(env.REALTIME_HOT_JOBS.send).toHaveBeenCalled();
+  expect(result.skipped).toBeGreaterThan(0);
+  expect(env.REALTIME_HOT_JOBS.send).not.toHaveBeenCalled();
 });
 
 it("uses KV race-list cache when available and skips D1", async () => {
