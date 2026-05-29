@@ -18,8 +18,7 @@
 //   past-14 helper caches the result in KV; the today helper skips KV so
 //   freshly-inferred sibling rows are visible within the Cache API TTL.
 import "server-only";
-import { getCloudflareContext } from "@opennextjs/cloudflare";
-
+import { safeGetCloudflareEnv } from "../lib/cloudflare-context.server";
 import type { RaceSource } from "../lib/codes";
 import {
   RACE_TREND_PAST14_LOOKBACK_DAYS,
@@ -220,7 +219,7 @@ export const getRaceTrendRunningStylesFromD1 = async (
 ): Promise<RaceTrendRunningStyleCache[]> => {
   const uniqueKeys = Array.from(new Set(raceKeys.filter((key) => key.length > 0))).toSorted();
   if (uniqueKeys.length === 0) return [];
-  const { env } = await getCloudflareContext({ async: true });
+  const env = await safeGetCloudflareEnv();
   const db = pickRunningStylesDb(env ?? null);
   if (!db) return [];
   const cacheKey = await buildRunningStylesCacheKey(uniqueKeys);
@@ -252,7 +251,7 @@ export const getRaceTrendTodayRunningStylesFromD1 = async (
 ): Promise<RaceTrendRunningStyleCache[]> => {
   const uniqueKeys = Array.from(new Set(raceKeys.filter((key) => key.length > 0))).toSorted();
   if (uniqueKeys.length === 0) return [];
-  const { env } = await getCloudflareContext({ async: true });
+  const env = await safeGetCloudflareEnv();
   const db = pickRunningStylesDb(env ?? null);
   if (!db) return [];
   try {
@@ -414,7 +413,7 @@ interface SnapshotQueryParams {
 }
 
 const queryD1 = async (params: SnapshotQueryParams): Promise<RawD1Row[]> => {
-  const { env } = await getCloudflareContext({ async: true });
+  const env = await safeGetCloudflareEnv();
   const db = env?.REALTIME_DB;
   if (!db) return [];
   const result = await db
@@ -619,7 +618,7 @@ export const getRaceTrendTodayStarterRows = async (
     });
     if (raw.length === 0) return [];
     const uniqueRaceKeys = Array.from(new Set(raw.map((row) => row.raceKey)));
-    const { env } = await getCloudflareContext({ async: true });
+    const env = await safeGetCloudflareEnv();
     // Preview / pre-binding deploys degrade gracefully: when REALTIME_HOT_DB
     // is missing the helper short-circuits to an empty map and we fall back
     // to nulls for tansho fields.
@@ -658,7 +657,7 @@ const buildFeaturesWorkerUrl = (params: RaceTrendPast14Params): string => {
 const fetchPast14StarterRowsFromFeaturesWorker = async (
   params: RaceTrendPast14Params,
 ): Promise<RaceTrendStarterRow[]> => {
-  const { env } = await getCloudflareContext({ async: true });
+  const env = await safeGetCloudflareEnv();
   const features = env?.REALTIME_FEATURES;
   if (!features) return [];
   try {
@@ -679,7 +678,7 @@ const getCachedPast14Response = async (cacheKey: string): Promise<RaceTrendStart
   if (cached?.ok) {
     return readCachedStarterRowsResponse(cached);
   }
-  const { env } = await getCloudflareContext({ async: true });
+  const env = await safeGetCloudflareEnv();
   const body = await env?.DETAIL_SECTION_CACHE_KV?.get(cacheKey);
   if (!body) return null;
   return parseCachedStarterRowsBody(body);
@@ -688,7 +687,7 @@ const getCachedPast14Response = async (cacheKey: string): Promise<RaceTrendStart
 const putPast14Cache = async (cacheKey: string, rows: RaceTrendStarterRow[]): Promise<void> => {
   const body = JSON.stringify(rows);
   const cache = typeof caches === "undefined" ? null : caches.default;
-  const { env } = await getCloudflareContext({ async: true });
+  const env = await safeGetCloudflareEnv();
   await Promise.all([
     cache?.put(
       new Request(`${PAST14_CACHE_URL_BASE}${encodeURIComponent(cacheKey)}`),

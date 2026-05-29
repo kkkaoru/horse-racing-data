@@ -1,5 +1,6 @@
-import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { NextResponse } from "next/server";
+
+import { safeGetCloudflareEnv } from "../../../../lib/cloudflare-context.server";
 
 export const dynamic = "force-dynamic";
 
@@ -13,14 +14,6 @@ interface TonePromptRecord {
 }
 
 type TonePromptStorage = "cloudflare-kv" | "unavailable";
-
-const getCloudflareEnv = (): CloudflareEnv | null => {
-  try {
-    return getCloudflareContext().env;
-  } catch {
-    return null;
-  }
-};
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -42,7 +35,8 @@ const readTonePromptRecord = async (): Promise<{
   record: TonePromptRecord | null;
   storage: TonePromptStorage;
 }> => {
-  const kv = getCloudflareEnv()?.PADDOCK_STATE_KV;
+  const env = await safeGetCloudflareEnv();
+  const kv = env?.PADDOCK_STATE_KV;
   if (kv) {
     const record = parseTonePromptRecord(
       await kv.get<Partial<TonePromptRecord>>(TONE_PROMPT_KEY, { type: "json" }),
@@ -53,7 +47,8 @@ const readTonePromptRecord = async (): Promise<{
 };
 
 const writeTonePromptRecord = async (record: TonePromptRecord): Promise<TonePromptStorage> => {
-  const kv = getCloudflareEnv()?.PADDOCK_STATE_KV;
+  const env = await safeGetCloudflareEnv();
+  const kv = env?.PADDOCK_STATE_KV;
   if (kv) {
     await kv.put(TONE_PROMPT_KEY, JSON.stringify(record));
     return "cloudflare-kv";

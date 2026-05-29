@@ -33,7 +33,7 @@ export async function GET(request: Request, { params }: RaceTrendLiveRouteProps)
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }
 
-  const response = connectRaceTrendRoom(roomParams, request);
+  const response = await connectRaceTrendRoom(roomParams, request);
   if (!response) {
     return NextResponse.json({ error: "race_trend_room_unavailable" }, { status: 501 });
   }

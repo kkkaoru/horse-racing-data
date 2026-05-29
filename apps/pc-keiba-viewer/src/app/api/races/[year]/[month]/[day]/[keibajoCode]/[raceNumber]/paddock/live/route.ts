@@ -23,7 +23,7 @@ export async function GET(request: Request, { params }: PaddockLiveRouteProps) {
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }
 
-  const response = connectPaddockRoom(raceParams, request);
+  const response = await connectPaddockRoom(raceParams, request);
   if (!response) {
     return NextResponse.json({ error: "paddock_room_unavailable" }, { status: 501 });
   }

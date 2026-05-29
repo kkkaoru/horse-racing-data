@@ -5,8 +5,7 @@
 // Execute with bun: opennextjs-cloudflare build && wrangler dev
 
 import "server-only";
-import { getCloudflareContext } from "@opennextjs/cloudflare";
-
+import { safeGetCloudflareRuntime } from "./cloudflare-context.server";
 import type { RaceSource } from "./codes";
 
 const CACHE_NAMESPACE = "pc-keiba-viewer:recent-results:v2";
@@ -47,20 +46,6 @@ const getCacheRequest = (cacheKey: string): Request =>
 const getDefaultCache = (): Cache | null =>
   typeof caches === "undefined" || !caches.default ? null : caches.default;
 
-const tryGetCloudflareRuntime = async (): Promise<{
-  ctx: PcKeibaExecutionContext | null;
-  env: CloudflareEnv | null;
-}> => {
-  try {
-    const context = await getCloudflareContext<Record<string, unknown>, PcKeibaExecutionContext>({
-      async: true,
-    });
-    return { ctx: context.ctx, env: context.env };
-  } catch {
-    return { ctx: null, env: null };
-  }
-};
-
 const promoteKvBodyToCacheApi = async (body: string, cacheKey: string): Promise<void> => {
   const cache = getDefaultCache();
   if (!cache) {
@@ -83,7 +68,7 @@ export const getCachedRecentResultsBody = async (cacheKey: string): Promise<stri
   if (cachedResponse?.ok) {
     return cachedResponse.text();
   }
-  const { env, ctx } = await tryGetCloudflareRuntime();
+  const { env, ctx } = await safeGetCloudflareRuntime();
   const kvBody = await env?.DETAIL_SECTION_CACHE_KV?.get(cacheKey);
   if (!kvBody) {
     return null;
@@ -96,7 +81,7 @@ export const getCachedRecentResultsBody = async (cacheKey: string): Promise<stri
 
 export const putRecentResultsCache = async (cacheKey: string, body: string): Promise<void> => {
   const cache = getDefaultCache();
-  const { env } = await tryGetCloudflareRuntime();
+  const { env } = await safeGetCloudflareRuntime();
   await Promise.all([
     cache?.put(
       getCacheRequest(cacheKey),

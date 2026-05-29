@@ -1,5 +1,6 @@
-import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { NextResponse } from "next/server";
+
+import { safeGetCloudflareEnv } from "../../../../../lib/cloudflare-context.server";
 
 export const dynamic = "force-dynamic";
 
@@ -18,14 +19,6 @@ interface RouteContext {
   }>;
 }
 
-const getCloudflareEnv = (): CloudflareEnv | null => {
-  try {
-    return getCloudflareContext().env;
-  } catch {
-    return null;
-  }
-};
-
 const isValidAssetFile = (file: string): boolean => /^[a-z0-9][a-z0-9._-]*$/iu.test(file);
 
 const getContentType = (file: string): string => {
@@ -35,7 +28,8 @@ const getContentType = (file: string): string => {
 
 const getAssetRoute = async ({ params }: RouteContext) => {
   const { file } = await params;
-  const bucket = getCloudflareEnv()?.FINISH_POSITION_MODELS;
+  const env = await safeGetCloudflareEnv();
+  const bucket = env?.FINISH_POSITION_MODELS;
   return {
     bucket,
     file,

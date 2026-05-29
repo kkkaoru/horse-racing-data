@@ -1,6 +1,5 @@
 import "server-only";
-import { getCloudflareContext } from "@opennextjs/cloudflare";
-
+import { safeGetCloudflareRuntime } from "./cloudflare-context.server";
 import type { RaceSource } from "./codes";
 import type { PremiumDataTopHorse } from "./race-types";
 
@@ -15,20 +14,6 @@ export interface PremiumDataTopCacheRace {
   keibajoCode: string;
   raceBango: string;
 }
-
-const getCloudflareRuntime = async (): Promise<{
-  ctx: PcKeibaExecutionContext | null;
-  env: CloudflareEnv | null;
-}> => {
-  try {
-    const context = await getCloudflareContext<Record<string, unknown>, PcKeibaExecutionContext>({
-      async: true,
-    });
-    return { ctx: context.ctx, env: context.env };
-  } catch {
-    return { ctx: null, env: null };
-  }
-};
 
 const getDefaultCache = (): Cache | null =>
   typeof caches === "undefined" || !caches.default ? null : caches.default;
@@ -120,7 +105,7 @@ const fetchPremiumDataTopFromRealtimeApi = async (
 export const getPremiumDataTopHorsesWithCache = async (
   race: PremiumDataTopCacheRace,
 ): Promise<PremiumDataTopHorse[]> => {
-  const { env } = await getCloudflareRuntime();
+  const { env } = await safeGetCloudflareRuntime();
   const cache = getDefaultCache();
   const cacheRequest = buildPremiumDataTopCacheRequest(race, env);
   const cachedResponse = await cache?.match(cacheRequest);

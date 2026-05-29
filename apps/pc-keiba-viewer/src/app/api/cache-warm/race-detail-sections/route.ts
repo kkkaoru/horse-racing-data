@@ -1,7 +1,7 @@
-import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { NextResponse } from "next/server";
 
 import { getRacesByDateWithoutJockeyNames } from "../../../../db/queries";
+import { safeGetCloudflareEnv } from "../../../../lib/cloudflare-context.server";
 import {
   DEFAULT_RACE_DETAIL_CACHE_WARM_SECTIONS,
   getTomorrowJstDateParts,
@@ -14,14 +14,6 @@ import { isCornerPacePredictionSupported } from "../../../../lib/race-pace-predi
 export const dynamic = "force-dynamic";
 
 const QUEUE_BATCH_SIZE = 50;
-
-const getCloudflareEnv = async (): Promise<CloudflareEnv | null> => {
-  try {
-    return (await getCloudflareContext({ async: true })).env;
-  } catch {
-    return null;
-  }
-};
 
 const chunkArray = <T>(items: readonly T[], size: number): T[][] => {
   const chunks: T[][] = [];
@@ -95,7 +87,7 @@ export async function POST(request: Request) {
       year: target.year,
     })),
   );
-  const env = await getCloudflareEnv();
+  const env = await safeGetCloudflareEnv();
   const queue = env?.DETAIL_SECTION_CACHE_QUEUE;
   if (!queue) {
     return NextResponse.json(

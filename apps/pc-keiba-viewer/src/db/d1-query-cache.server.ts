@@ -1,6 +1,5 @@
 import "server-only";
-import { getCloudflareContext } from "@opennextjs/cloudflare";
-
+import { safeGetCloudflareRuntime } from "../lib/cloudflare-context.server";
 import {
   buildD1QueryCacheKey,
   createD1QueryCacheRequest,
@@ -25,20 +24,6 @@ declare global {
     readonly default?: Cache;
   }
 }
-
-const getCloudflareRuntime = async (): Promise<{
-  ctx: PcKeibaExecutionContext | null;
-  env: CloudflareEnv | null;
-}> => {
-  try {
-    const context = await getCloudflareContext<Record<string, unknown>, PcKeibaExecutionContext>({
-      async: true,
-    });
-    return { ctx: context.ctx, env: context.env };
-  } catch {
-    return { ctx: null, env: null };
-  }
-};
 
 const canUseD1QueryCache = (): boolean => typeof caches !== "undefined" && Boolean(caches.default);
 
@@ -131,7 +116,7 @@ export const readD1QueryCache = async <T>(
   const cacheKey = buildD1QueryCacheKey(profile, keyParts);
   const cacheRequest = createD1QueryCacheRequest(cacheKey);
   const defaultCache = caches.default;
-  const { ctx, env } = await getCloudflareRuntime();
+  const { ctx, env } = await safeGetCloudflareRuntime();
   const context: ReadD1CacheContext = {
     cacheKey,
     cacheRequest,
@@ -169,7 +154,7 @@ export const writeD1QueryCache = async (
   const cacheKey = buildD1QueryCacheKey(profile, keyParts);
   const cacheRequest = createD1QueryCacheRequest(cacheKey);
   const defaultCache = caches.default;
-  const { ctx, env } = await getCloudflareRuntime();
+  const { ctx, env } = await safeGetCloudflareRuntime();
   const body = JSON.stringify(value);
   const putCaches = async () => {
     await Promise.all([

@@ -49,13 +49,17 @@ export async function GET(request: Request, { params }: PaddockRouteProps) {
   if (!isPaddockRaceParams(raceParams)) {
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }
-  const liveUrl = getPaddockLiveUrl(raceParams);
-  return NextResponse.json(await getPaddockState(raceParams), {
+  const [liveUrl, paddockState, realtimeAvailable] = await Promise.all([
+    getPaddockLiveUrl(raceParams),
+    getPaddockState(raceParams),
+    isPaddockRealtimeAvailable(),
+  ]);
+  return NextResponse.json(paddockState, {
     headers: {
       ...getCorsHeaders(request),
       "Cache-Control": "private, max-age=0, no-store",
       ...(liveUrl ? { "X-Paddock-Live-Url": liveUrl } : {}),
-      "X-Paddock-Realtime": isPaddockRealtimeAvailable() ? "1" : "0",
+      "X-Paddock-Realtime": realtimeAvailable ? "1" : "0",
     },
   });
 }

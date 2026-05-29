@@ -1,7 +1,7 @@
-import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { NextResponse } from "next/server";
 
 import { getRacesByDateWithoutJockeyNames } from "../../../../db/queries";
+import { safeGetCloudflareEnv } from "../../../../lib/cloudflare-context.server";
 import { getJstDateParts, parseIsoDateParts } from "../../../../lib/race-detail-section-cache";
 import {
   RACE_TREND_CACHE_PRE_START_SECONDS,
@@ -15,14 +15,6 @@ export const dynamic = "force-dynamic";
 
 const WARM_LOOKAHEAD_SECONDS = 5 * 60;
 const WARM_AFTER_START_SECONDS = 60;
-
-const getCloudflareEnv = async (): Promise<CloudflareEnv | null> => {
-  try {
-    return (await getCloudflareContext({ async: true })).env;
-  } catch {
-    return null;
-  }
-};
 
 const parseNowMs = (searchParams: URLSearchParams): number => {
   const value = searchParams.get("now");
@@ -97,7 +89,7 @@ export async function POST(request: Request) {
     },
   );
 
-  const env = await getCloudflareEnv();
+  const env = await safeGetCloudflareEnv();
   const queue = env?.DETAIL_SECTION_CACHE_QUEUE;
   if (!queue) {
     return NextResponse.json(
