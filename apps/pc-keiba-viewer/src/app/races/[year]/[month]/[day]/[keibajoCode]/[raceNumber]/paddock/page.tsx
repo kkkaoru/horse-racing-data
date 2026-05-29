@@ -1,4 +1,3 @@
-import { getCloudflareContext } from "@opennextjs/cloudflare";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -12,6 +11,7 @@ import {
   getSameVenueRacesByDate,
   type ActiveRunningStylePrediction,
 } from "../../../../../../../../db/queries";
+import { safeGetCloudflareExecutionContext } from "../../../../../../../../lib/cloudflare-context.server";
 import {
   cleanText,
   formatDate,
@@ -249,22 +249,14 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
   }
   const { race, runners } = snapshot;
   if (!cachedSnapshot) {
-    try {
-      const cloudflareCtx = (
-        await getCloudflareContext<Record<string, unknown>, PcKeibaExecutionContext>({
-          async: true,
-        })
-      ).ctx;
-      cloudflareCtx?.waitUntil(
-        putRaceDetailSsrSnapshot({
-          cacheKey: ssrCacheKey,
-          params: { day, keibajoCode, month, raceNumber, source, year },
-          snapshot,
-        }),
-      );
-    } catch {
-      // Cloudflare context unavailable during local dev — skip cache write.
-    }
+    const cloudflareCtx = await safeGetCloudflareExecutionContext();
+    cloudflareCtx?.waitUntil(
+      putRaceDetailSsrSnapshot({
+        cacheKey: ssrCacheKey,
+        params: { day, keibajoCode, month, raceNumber, source, year },
+        snapshot,
+      }),
+    );
   }
 
   const raceDetailPath = `/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}`;

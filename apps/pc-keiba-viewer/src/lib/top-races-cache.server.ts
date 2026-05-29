@@ -13,8 +13,7 @@
 // Execute with bun: opennextjs-cloudflare build && wrangler dev
 
 import "server-only";
-import { getCloudflareContext } from "@opennextjs/cloudflare";
-
+import { safeGetCloudflareRuntime } from "./cloudflare-context.server";
 import type { TopRaceSummary } from "./race-types";
 
 export interface TopRaceWindowsPayload {
@@ -31,20 +30,6 @@ const STALE_TTL_SECONDS = 24 * 60 * 60;
 
 const getDefaultCache = (): Cache | null =>
   typeof caches === "undefined" || !caches.default ? null : caches.default;
-
-const tryGetCloudflareRuntime = async (): Promise<{
-  ctx: PcKeibaExecutionContext | null;
-  env: CloudflareEnv | null;
-}> => {
-  try {
-    const context = await getCloudflareContext<Record<string, unknown>, PcKeibaExecutionContext>({
-      async: true,
-    });
-    return { ctx: context.ctx, env: context.env };
-  } catch {
-    return { ctx: null, env: null };
-  }
-};
 
 const getCacheRequest = (cacheKey: string): Request =>
   new Request(`${CACHE_URL_BASE}${encodeURIComponent(cacheKey)}`);
@@ -87,7 +72,7 @@ export const getCachedTopRaceWindows = async (): Promise<TopRaceWindowsPayload |
   if (cachedResponse?.ok) {
     return parsePayload(await cachedResponse.text());
   }
-  const { env, ctx } = await tryGetCloudflareRuntime();
+  const { env, ctx } = await safeGetCloudflareRuntime();
   const kvBody = await env?.DETAIL_SECTION_CACHE_KV?.get(FRESH_CACHE_KEY).catch(() => null);
   if (!kvBody) {
     return null;
@@ -98,7 +83,7 @@ export const getCachedTopRaceWindows = async (): Promise<TopRaceWindowsPayload |
 
 export const putTopRaceWindowsCache = async (payload: TopRaceWindowsPayload): Promise<void> => {
   const body = JSON.stringify(payload);
-  const { env } = await tryGetCloudflareRuntime();
+  const { env } = await safeGetCloudflareRuntime();
   await Promise.all([
     getDefaultCache()
       ?.put(
@@ -121,7 +106,7 @@ export const putTopRaceWindowsCache = async (payload: TopRaceWindowsPayload): Pr
 };
 
 export const getStaleTopRaceWindowsSnapshot = async (): Promise<TopRaceWindowsPayload | null> => {
-  const { env } = await tryGetCloudflareRuntime();
+  const { env } = await safeGetCloudflareRuntime();
   const kvBody = await env?.DETAIL_SECTION_CACHE_KV?.get(STALE_CACHE_KEY).catch(() => null);
   return kvBody ? parsePayload(kvBody) : null;
 };
@@ -146,7 +131,7 @@ export const readTopRaceWindowsWithSwr = async (
   if (!stale) {
     return { payload: null, source: "miss" };
   }
-  const { ctx } = await tryGetCloudflareRuntime();
+  const { ctx } = await safeGetCloudflareRuntime();
   ctx?.waitUntil(
     refresh().catch((error: unknown) => {
       console.error("background top-race-windows refresh failed", error);

@@ -1,6 +1,5 @@
 import "server-only";
-import { getCloudflareContext } from "@opennextjs/cloudflare";
-
+import { safeGetCloudflareRuntime } from "./cloudflare-context.server";
 import type { RaceSource } from "./codes";
 import {
   RACE_TREND_CACHE_AFTER_START_SECONDS,
@@ -33,20 +32,6 @@ const DEFAULT_CONTENT_TYPE = "application/json; charset=utf-8";
 type CacheSource = "cache-api" | "kv";
 
 const memoryCache = new Map<string, { body: string; expiresAt: number }>();
-
-const getCloudflareRuntime = async (): Promise<{
-  ctx: PcKeibaExecutionContext | null;
-  env: CloudflareEnv | null;
-}> => {
-  try {
-    const context = await getCloudflareContext<Record<string, unknown>, PcKeibaExecutionContext>({
-      async: true,
-    });
-    return { ctx: context.ctx, env: context.env };
-  } catch {
-    return { ctx: null, env: null };
-  }
-};
 
 const getDefaultCache = (): Cache | null =>
   typeof caches === "undefined" || !caches.default ? null : caches.default;
@@ -99,7 +84,7 @@ export const getCachedRaceTrendResponse = async (cacheKey: string): Promise<Resp
     return buildCachedResponse(await cachedResponse.text(), "cache-api");
   }
 
-  const { env, ctx } = await getCloudflareRuntime();
+  const { env, ctx } = await safeGetCloudflareRuntime();
   const kvBody = await env?.DETAIL_SECTION_CACHE_KV?.get(cacheKey);
   if (!kvBody) {
     return null;
@@ -129,7 +114,7 @@ export const putRaceTrendCache = async ({
   cacheKey: string;
   race: RaceDetail;
 }): Promise<void> => {
-  const { env } = await getCloudflareRuntime();
+  const { env } = await safeGetCloudflareRuntime();
   const ttlSeconds = getRaceTrendCacheTtlSeconds(race, getConfiguredAfterStartSeconds(env));
   if (ttlSeconds <= 0) {
     return;
@@ -242,7 +227,7 @@ export const bustRaceTrendCachesForDay = async (
 ): Promise<{ keys: string[] }> => {
   const entries = collectAffectedCacheKeys(params);
   const defaultCache = getDefaultCache();
-  const { env } = await getCloudflareRuntime();
+  const { env } = await safeGetCloudflareRuntime();
   await Promise.all([
     ...entries.map((entry) => deleteSingleCache(entry, defaultCache, env)),
     ...enumerateRealtimeDayYmds(params.source, params.targetYmd).map((ymd) =>

@@ -1,6 +1,5 @@
 import "server-only";
-import { getCloudflareContext } from "@opennextjs/cloudflare";
-
+import { safeGetCloudflareEnv } from "./cloudflare-context.server";
 import {
   applyPaddockAction,
   createPaddockState,
@@ -36,14 +35,6 @@ export const isPaddockRaceParams = ({
   /^[0-9A-Z]{2}$/u.test(keibajoCode) &&
   /^\d{2}$/u.test(raceNumber);
 
-const getCloudflareEnv = (): CloudflareEnv | null => {
-  try {
-    return getCloudflareContext().env;
-  } catch {
-    return null;
-  }
-};
-
 const getPaddockApiPath = ({
   day,
   keibajoCode,
@@ -53,18 +44,18 @@ const getPaddockApiPath = ({
 }: PaddockRaceParams): string =>
   `/api/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/paddock`;
 
-const getPaddockRoom = (raceKey: string): PcKeibaDurableObjectStub | null => {
+const getPaddockRoom = async (raceKey: string): Promise<PcKeibaDurableObjectStub | null> => {
   if (useProductionApiProxy()) {
     return null;
   }
-  const env = getCloudflareEnv();
+  const env = await safeGetCloudflareEnv();
   if (!env?.PADDOCK_ROOM) {
     return null;
   }
   return env.PADDOCK_ROOM.get(env.PADDOCK_ROOM.idFromName(raceKey));
 };
 
-export const getPaddockLiveUrl = (params: PaddockRaceParams): string | null => {
+export const getPaddockLiveUrl = async (params: PaddockRaceParams): Promise<string | null> => {
   if (useProductionApiProxy()) {
     const relayOrigin = getProductionLiveRelayOrigin();
     if (!relayOrigin) {
@@ -72,14 +63,15 @@ export const getPaddockLiveUrl = (params: PaddockRaceParams): string | null => {
     }
     return `${relayOrigin}${getPaddockApiPath(params)}/live`;
   }
-  if (!getCloudflareEnv()?.PADDOCK_ROOM) {
+  const env = await safeGetCloudflareEnv();
+  if (!env?.PADDOCK_ROOM) {
     return null;
   }
   return `${getPaddockApiPath(params)}/live`;
 };
 
-export const isPaddockRealtimeAvailable = (): boolean =>
-  useProductionApiProxy() || Boolean(getCloudflareEnv()?.PADDOCK_ROOM);
+export const isPaddockRealtimeAvailable = async (): Promise<boolean> =>
+  useProductionApiProxy() || Boolean((await safeGetCloudflareEnv())?.PADDOCK_ROOM);
 
 const getMemoryState = (raceKey: string): PaddockState => {
   const existing = memoryStates.get(raceKey);
@@ -112,7 +104,7 @@ export const getPaddockState = async (params: PaddockRaceParams): Promise<Paddoc
   }
 
   const raceKey = getRacePaddockKey(params);
-  const room = getPaddockRoom(raceKey);
+  const room = await getPaddockRoom(raceKey);
   if (!room) {
     return getMemoryState(raceKey);
   }
@@ -148,7 +140,7 @@ export const updatePaddockState = async (
   }
 
   const raceKey = getRacePaddockKey(params);
-  const room = getPaddockRoom(raceKey);
+  const room = await getPaddockRoom(raceKey);
   if (!room) {
     const nextState = applyPaddockAction(getMemoryState(raceKey), action);
     memoryStates.set(raceKey, nextState);
@@ -171,15 +163,15 @@ export const updatePaddockState = async (
   return payload;
 };
 
-export const connectPaddockRoom = (
+export const connectPaddockRoom = async (
   params: PaddockRaceParams,
   request: Request,
-): Promise<Response> | null => {
+): Promise<Response | null> => {
   if (useProductionApiProxy()) {
     return null;
   }
   const raceKey = getRacePaddockKey(params);
-  const room = getPaddockRoom(raceKey);
+  const room = await getPaddockRoom(raceKey);
   if (!room) {
     return null;
   }

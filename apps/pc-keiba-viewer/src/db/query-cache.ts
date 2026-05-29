@@ -1,6 +1,5 @@
 import "server-only";
-import { getCloudflareContext } from "@opennextjs/cloudflare";
-
+import { safeGetCloudflareEnv } from "../lib/cloudflare-context.server";
 import { getDatabaseTarget } from "./client";
 import { withDbRetry } from "./db-retry";
 
@@ -35,14 +34,8 @@ const getDefaultCacheOrNull = (): Cache | null =>
 type DetailSectionCacheKv = NonNullable<CloudflareEnv["DETAIL_SECTION_CACHE_KV"]>;
 
 const getDetailSectionCacheKv = async (): Promise<DetailSectionCacheKv | null> => {
-  try {
-    const context = await getCloudflareContext<Record<string, unknown>, PcKeibaExecutionContext>({
-      async: true,
-    });
-    return context.env?.DETAIL_SECTION_CACHE_KV ?? null;
-  } catch {
-    return null;
-  }
+  const env = await safeGetCloudflareEnv();
+  return env?.DETAIL_SECTION_CACHE_KV ?? null;
 };
 
 const isPlainRecord = (value: unknown): value is Record<string, unknown> =>

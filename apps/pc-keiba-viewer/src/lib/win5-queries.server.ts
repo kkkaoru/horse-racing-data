@@ -1,9 +1,9 @@
 import "server-only";
-import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { sql } from "drizzle-orm";
 import { cache } from "react";
 
 import { getDb } from "../db/client";
+import { safeGetCloudflareEnv } from "./cloudflare-context.server";
 import {
   findJraWin5Schedule,
   listJraWin5SchedulesForYear,
@@ -19,14 +19,8 @@ import {
   type Win5YearSummary,
 } from "./win5/types";
 
-const getRealtimeDb = async (): Promise<PcKeibaD1Database | null> => {
-  try {
-    const context = await getCloudflareContext({ async: true });
-    return context.env.REALTIME_DB ?? null;
-  } catch {
-    return null;
-  }
-};
+const getRealtimeDb = async (): Promise<PcKeibaD1Database | null> =>
+  (await safeGetCloudflareEnv())?.REALTIME_DB ?? null;
 
 const isMissingWin5D1TableError = (error: unknown): boolean => {
   const message = error instanceof Error ? error.message : String(error);

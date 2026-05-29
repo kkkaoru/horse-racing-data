@@ -1,7 +1,7 @@
-import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { NextResponse } from "next/server";
 
 import { getRaceDetail, getRaceSourceByRoute } from "../../../../../../../../../../db/queries";
+import { safeGetCloudflareExecutionContext } from "../../../../../../../../../../lib/cloudflare-context.server";
 import {
   buildFinishPredictionInputsCacheKey,
   getCachedFinishPredictionInputs,
@@ -166,16 +166,8 @@ const computeAndStoreSection = async (
   return { body, payloadType: payload.type };
 };
 
-const getExecutionContext = async (): Promise<PcKeibaExecutionContext | null> => {
-  try {
-    const context = await getCloudflareContext<Record<string, unknown>, PcKeibaExecutionContext>({
-      async: true,
-    });
-    return context.ctx;
-  } catch {
-    return null;
-  }
-};
+const getExecutionContext = async (): Promise<PcKeibaExecutionContext | null> =>
+  safeGetCloudflareExecutionContext();
 
 export async function GET(request: Request, { params }: DetailSectionRouteProps) {
   const { day, keibajoCode, month, raceNumber, section, year } = await params;

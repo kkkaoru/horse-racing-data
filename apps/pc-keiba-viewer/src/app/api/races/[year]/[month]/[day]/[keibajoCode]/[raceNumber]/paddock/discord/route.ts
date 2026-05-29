@@ -1,6 +1,6 @@
-import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { NextResponse } from "next/server";
 
+import { safeGetCloudflareEnv } from "../../../../../../../../../../lib/cloudflare-context.server";
 import {
   formatPaddockDiscordHorseLine,
   type DiscordPaddockHorsePayload,
@@ -69,48 +69,44 @@ const getCorsHeaders = (request: Request): Record<string, string> => {
   };
 };
 
-const getEnvValue = (key: string): string | null => {
+const getEnvValue = async (key: string): Promise<string | null> => {
   const value = process.env[key];
   if (value) {
     return value;
   }
 
-  try {
-    const { env } = getCloudflareContext();
-    if (key === "PC_KEIBA_EXTERNAL_PADDOCK_DISCORD_BOT_NAME") {
-      return env.PC_KEIBA_EXTERNAL_PADDOCK_DISCORD_BOT_NAME ?? null;
-    }
-    if (key === "PC_KEIBA_EXTERNAL_PADDOCK_DISCORD_WEBHOOK_URL") {
-      return env.PC_KEIBA_EXTERNAL_PADDOCK_DISCORD_WEBHOOK_URL ?? null;
-    }
-    if (key === "PC_KEIBA_PADDOCK_DISCORD_WEBHOOK_URL") {
-      return env.PC_KEIBA_PADDOCK_DISCORD_WEBHOOK_URL ?? null;
-    }
-    return null;
-  } catch {
+  const env = await safeGetCloudflareEnv();
+  if (!env) {
     return null;
   }
+  if (key === "PC_KEIBA_EXTERNAL_PADDOCK_DISCORD_BOT_NAME") {
+    return env.PC_KEIBA_EXTERNAL_PADDOCK_DISCORD_BOT_NAME ?? null;
+  }
+  if (key === "PC_KEIBA_EXTERNAL_PADDOCK_DISCORD_WEBHOOK_URL") {
+    return env.PC_KEIBA_EXTERNAL_PADDOCK_DISCORD_WEBHOOK_URL ?? null;
+  }
+  if (key === "PC_KEIBA_PADDOCK_DISCORD_WEBHOOK_URL") {
+    return env.PC_KEIBA_PADDOCK_DISCORD_WEBHOOK_URL ?? null;
+  }
+  return null;
 };
 
-const getDiscordWebhookUrl = (payload: DiscordPayload): string | null =>
+const getDiscordWebhookUrl = async (payload: DiscordPayload): Promise<string | null> =>
   "type" in payload && payload.type === "external-paddock"
     ? getEnvValue("PC_KEIBA_EXTERNAL_PADDOCK_DISCORD_WEBHOOK_URL")
     : getEnvValue("PC_KEIBA_PADDOCK_DISCORD_WEBHOOK_URL");
 
-const getDiscordBotName = (payload: DiscordPayload): string => {
+const getDiscordBotName = async (payload: DiscordPayload): Promise<string> => {
   if ("type" in payload && payload.type === "external-paddock") {
-    return getEnvValue("PC_KEIBA_EXTERNAL_PADDOCK_DISCORD_BOT_NAME") ?? "外部パドック速報";
+    return (await getEnvValue("PC_KEIBA_EXTERNAL_PADDOCK_DISCORD_BOT_NAME")) ?? "外部パドック速報";
   }
 
   if (process.env.PC_KEIBA_PADDOCK_DISCORD_BOT_NAME) {
     return process.env.PC_KEIBA_PADDOCK_DISCORD_BOT_NAME;
   }
 
-  try {
-    return getCloudflareContext().env.PC_KEIBA_PADDOCK_DISCORD_BOT_NAME ?? "PC-KEIBA Paddock";
-  } catch {
-    return "PC-KEIBA Paddock";
-  }
+  const env = await safeGetCloudflareEnv();
+  return env?.PC_KEIBA_PADDOCK_DISCORD_BOT_NAME ?? "PC-KEIBA Paddock";
 };
 
 const isFiniteNumber = (value: unknown): value is number =>
@@ -356,7 +352,10 @@ export async function POST(request: Request, { params }: DiscordPaddockRouteProp
     return NextResponse.json({ error: "invalid_payload" }, { status: 400 });
   }
 
-  const webhookUrl = getDiscordWebhookUrl(payload);
+  const [webhookUrl, botName] = await Promise.all([
+    getDiscordWebhookUrl(payload),
+    getDiscordBotName(payload),
+  ]);
   if (!webhookUrl) {
     return NextResponse.json({ error: "discord_webhook_not_configured" }, { status: 503 });
   }
@@ -364,7 +363,7 @@ export async function POST(request: Request, { params }: DiscordPaddockRouteProp
   const response = await fetch(webhookUrl, {
     body: JSON.stringify({
       embeds: [buildEmbed(payload)],
-      username: getDiscordBotName(payload),
+      username: botName,
     }),
     headers: { "Content-Type": "application/json" },
     method: "POST",

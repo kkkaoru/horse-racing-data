@@ -1,5 +1,6 @@
-import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { NextResponse } from "next/server";
+
+import { safeGetCloudflareEnv } from "../../../../../../lib/cloudflare-context.server";
 
 export const dynamic = "force-dynamic";
 
@@ -23,14 +24,6 @@ interface ByteRange {
   end: number;
   start: number;
 }
-
-const getCloudflareEnv = (): CloudflareEnv | null => {
-  try {
-    return getCloudflareContext().env;
-  } catch {
-    return null;
-  }
-};
 
 const isValidVersion = (version: string): boolean => /^v\d{8}$/u.test(version);
 
@@ -66,7 +59,7 @@ const isModelChunk = (value: unknown): value is ModelChunkManifest["chunks"][num
 
 const getModelRoute = async ({ params }: RouteContext) => {
   const { file, version } = await params;
-  const env = getCloudflareEnv();
+  const env = await safeGetCloudflareEnv();
   const bucket = env?.FINISH_POSITION_MODELS;
   const key = `models/gemma-4-e2b/${version}/${MODEL_FILE_NAME}`;
 

@@ -3,9 +3,9 @@
 // legacy `sync-realtime-data` Worker (and its saturated D1) is no longer in
 // the request path. In local dev the keiba.go.jp scrape path is preserved
 // behind `PC_KEIBA_DEV_REALTIME_SCRAPER=1`.
-import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { NextResponse } from "next/server";
 
+import { safeGetCloudflareEnv } from "../../../../../../../../../lib/cloudflare-context.server";
 import type { RaceSource } from "../../../../../../../../../lib/codes";
 import {
   buildDevRealtimePayload,
@@ -98,8 +98,8 @@ export async function GET(request: Request, context: RouteContext) {
     source: sourceParam,
     year,
   });
-  const { env } = await getCloudflareContext({ async: true });
-  const odds = await fetchOddsFromHot(env.REALTIME_HOT, raceKey);
+  const env = await safeGetCloudflareEnv();
+  const odds = await fetchOddsFromHot(env?.REALTIME_HOT, raceKey);
   const payload = buildRealtimePayloadFromHot(raceKey, odds);
   return NextResponse.json(payload, { headers: NO_STORE_HEADERS });
 }

@@ -8,8 +8,7 @@
 // minute; older days use a 6h TTL because the row set is stable once D1 daily
 // has been backfilled.
 import "server-only";
-import { getCloudflareContext } from "@opennextjs/cloudflare";
-
+import { safeGetCloudflareRuntime } from "./cloudflare-context.server";
 import type { RaceSource } from "./codes";
 import type { RaceTrendStarterRow } from "./race-types";
 
@@ -24,11 +23,6 @@ const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
 interface RealtimeDayCacheTtl {
   edge: number;
   kv: number;
-}
-
-interface CloudflareRuntime {
-  ctx: PcKeibaExecutionContext | null;
-  env: CloudflareEnv | null;
 }
 
 export interface GetRealtimeRowsForDayInput {
@@ -65,17 +59,6 @@ const buildCachedResponseBody = (body: string, ttlSeconds: number): Response =>
       "Content-Type": JSON_CONTENT_TYPE,
     },
   });
-
-const getCloudflareRuntime = async (): Promise<CloudflareRuntime> => {
-  try {
-    const context = await getCloudflareContext<Record<string, unknown>, PcKeibaExecutionContext>({
-      async: true,
-    });
-    return { ctx: context.ctx, env: context.env };
-  } catch {
-    return { ctx: null, env: null };
-  }
-};
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -180,7 +163,7 @@ export const getRealtimeRowsForDayWithCache = async ({
   const cacheKey = buildRealtimeTrendDayCacheKey(source, ymd);
   const edgeRows = await readFromEdge(cacheKey);
   if (edgeRows !== null) return edgeRows;
-  const { ctx, env } = await getCloudflareRuntime();
+  const { ctx, env } = await safeGetCloudflareRuntime();
   const ttl = resolveTtl(ymd, new Date());
   const kvRows = await readFromKv({ cacheKey, ctx, env, ttl });
   if (kvRows !== null) return kvRows;
@@ -195,7 +178,7 @@ export const bustRealtimeRowsForDay = async (params: {
 }): Promise<void> => {
   const cacheKey = buildRealtimeTrendDayCacheKey(params.source, params.ymd);
   const cache = getDefaultCache();
-  const { env } = await getCloudflareRuntime();
+  const { env } = await safeGetCloudflareRuntime();
   await Promise.all([
     cache?.delete(buildCacheRequest(cacheKey)),
     env?.DETAIL_SECTION_CACHE_KV?.delete(cacheKey),

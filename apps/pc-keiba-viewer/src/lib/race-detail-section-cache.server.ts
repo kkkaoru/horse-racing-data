@@ -1,6 +1,5 @@
 import "server-only";
-import { getCloudflareContext } from "@opennextjs/cloudflare";
-
+import { safeGetCloudflareRuntime } from "./cloudflare-context.server";
 import {
   DETAIL_SECTION_CACHE_AFTER_START_SECONDS,
   buildDetailSectionCacheKey,
@@ -20,20 +19,6 @@ const STALE_CACHE_KEY_PREFIX = "stale";
 const STALE_TTL_SECONDS = 30 * 24 * 60 * 60;
 
 type CacheSource = "cache-api" | "kv";
-
-const getCloudflareRuntime = async (): Promise<{
-  ctx: PcKeibaExecutionContext | null;
-  env: CloudflareEnv | null;
-}> => {
-  try {
-    const context = await getCloudflareContext<Record<string, unknown>, PcKeibaExecutionContext>({
-      async: true,
-    });
-    return { ctx: context.ctx, env: context.env };
-  } catch {
-    return { ctx: null, env: null };
-  }
-};
 
 const getCacheRequest = (cacheKey: string): Request =>
   new Request(`${CACHE_URL_BASE}${encodeURIComponent(cacheKey)}`);
@@ -101,7 +86,7 @@ export const getCachedDetailSectionResponse = async (
     return buildCachedResponse(await cachedResponse.text(), "cache-api");
   }
 
-  const { env, ctx } = await getCloudflareRuntime();
+  const { env, ctx } = await safeGetCloudflareRuntime();
   const kvBody = await env?.DETAIL_SECTION_CACHE_KV?.get(cacheKey);
   if (!kvBody) {
     return null;
@@ -125,7 +110,7 @@ export const getCachedDetailSectionResponse = async (
 const getStaleCacheKey = (cacheKey: string): string => `${STALE_CACHE_KEY_PREFIX}:${cacheKey}`;
 
 export const getStaleDetailSectionBody = async (cacheKey: string): Promise<string | null> => {
-  const { env } = await getCloudflareRuntime();
+  const { env } = await safeGetCloudflareRuntime();
   return (
     (await env?.DETAIL_SECTION_CACHE_KV?.get(getStaleCacheKey(cacheKey)).catch(() => null)) ?? null
   );
@@ -149,7 +134,7 @@ export const putDetailSectionCache = async ({
   cacheKey: string;
   race: RaceDetail;
 }): Promise<void> => {
-  const { env } = await getCloudflareRuntime();
+  const { env } = await safeGetCloudflareRuntime();
   const ttlSeconds = getDetailSectionCacheTtlSeconds(race, env);
   const cacheControl = CACHE_CONTROL_HEADER.replace("%d", String(ttlSeconds));
   // The 30-day stale snapshot is written even when fresh TTL is already

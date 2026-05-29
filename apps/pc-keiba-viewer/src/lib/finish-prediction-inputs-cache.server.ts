@@ -1,6 +1,5 @@
 import "server-only";
-import { getCloudflareContext } from "@opennextjs/cloudflare";
-
+import { safeGetCloudflareRuntime } from "./cloudflare-context.server";
 import type { FinishPredictionBuildInputs } from "./finish-position-prediction";
 import type { FinishPredictionEvaluationMetrics } from "./finish-position-prediction-evaluation";
 import { DETAIL_SECTION_CACHE_AFTER_START_SECONDS } from "./race-detail-section-cache";
@@ -14,20 +13,6 @@ export interface FinishPredictionStaticPayload {
   evaluation: FinishPredictionEvaluationMetrics;
   inputs: FinishPredictionBuildInputs;
 }
-
-const getCloudflareRuntime = async (): Promise<{
-  ctx: PcKeibaExecutionContext | null;
-  env: CloudflareEnv | null;
-}> => {
-  try {
-    const context = await getCloudflareContext<Record<string, unknown>, PcKeibaExecutionContext>({
-      async: true,
-    });
-    return { ctx: context.ctx, env: context.env };
-  } catch {
-    return { ctx: null, env: null };
-  }
-};
 
 const getDefaultCache = (): Cache | null =>
   typeof caches === "undefined" || !caches.default ? null : caches.default;
@@ -129,7 +114,7 @@ export const getCachedFinishPredictionInputs = async (
     await defaultCache?.delete(cacheRequest);
   }
 
-  const { env, ctx } = await getCloudflareRuntime();
+  const { env, ctx } = await safeGetCloudflareRuntime();
   const kvBody = await env?.DETAIL_SECTION_CACHE_KV?.get(cacheKey);
   if (!kvBody) {
     return null;
@@ -163,7 +148,7 @@ export const putFinishPredictionInputsCache = async ({
   cacheKey: string;
   race: RaceDetail;
 }): Promise<void> => {
-  const { env, ctx } = await getCloudflareRuntime();
+  const { env, ctx } = await safeGetCloudflareRuntime();
   const ttlSeconds = getFinishPredictionInputsCacheTtlSeconds(race, env);
   if (ttlSeconds <= 0) {
     return;
