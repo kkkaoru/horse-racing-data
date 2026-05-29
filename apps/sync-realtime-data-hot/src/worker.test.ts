@@ -21,6 +21,7 @@ import { readCachedOdds } from "./odds-cache";
 import { populateMultiDayOddsFetchState, populateTodayOddsFetchState } from "./scheduled-race-list";
 import worker, {
   buildOddsPayloadFromD1,
+  collectPlanDates,
   groupRowsForFinalBackup,
   handleFetchRequest,
   handleGetMigrationState,
@@ -741,14 +742,34 @@ it("handleFetchRequest returns 404 for unknown path", async () => {
   expect(response.status).toBe(404);
 });
 
-it("runScheduledPlan returns early outside polling window", async () => {
-  const env = buildEnv();
-  await runScheduledPlan(env, new Date("2026-05-28T13:00:00Z"));
-  expect(vi.mocked(env.REALTIME_HOT_JOBS.send)).not.toHaveBeenCalled();
+it("collectPlanDates returns today plus the next two JST days", () => {
+  expect(collectPlanDates(new Date("2026-05-29T14:41:00Z"))).toStrictEqual([
+    "20260529",
+    "20260530",
+    "20260531",
+  ]);
+});
+
+it("collectPlanDates produces three dates across month boundaries", () => {
+  expect(collectPlanDates(new Date("2026-05-30T15:00:00Z"))).toStrictEqual([
+    "20260531",
+    "20260601",
+    "20260602",
+  ]);
+});
+
+it("runScheduledPlan plans today and the next two days even late at night JST", async () => {
+  const env = buildEnv({ REALTIME_HOT_DB: buildDb({ stateCount: 5 }) });
+  await runScheduledPlan(env, new Date("2026-05-29T14:41:00Z"));
+  const prepareCalls = vi.mocked(env.REALTIME_HOT_DB.prepare).mock.calls.map(([sql]) => sql);
+  expect(prepareCalls.some((sql) => sql.toLowerCase().includes("count(*)"))).toBe(true);
+  expect(
+    prepareCalls.filter((sql) => sql.toLowerCase().includes("from odds_fetch_state")).length,
+  ).toBe(7);
   expect(vi.mocked(populateTodayOddsFetchState)).not.toHaveBeenCalled();
 });
 
-it("runScheduledPlan calls planOddsFetches when inside polling window and odds_fetch_state has rows", async () => {
+it("runScheduledPlan plans 3 days inside the legacy daytime window with rows present", async () => {
   const env = buildEnv({ REALTIME_HOT_DB: buildDb({ stateCount: 5 }) });
   await runScheduledPlan(env, new Date("2026-05-28T01:00:00Z"));
   expect(vi.mocked(env.REALTIME_HOT_DB.prepare)).toHaveBeenCalled();
