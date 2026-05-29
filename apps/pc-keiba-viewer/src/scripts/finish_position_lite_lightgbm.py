@@ -18,6 +18,7 @@ import argparse
 import json
 from pathlib import Path
 from time import perf_counter
+from typing import cast
 
 import lightgbm as lgb
 import numpy as np
@@ -85,9 +86,9 @@ def select_feature_columns() -> list[str]:
 
 
 def to_relevance(value: object) -> int:
-    if value is None or pd.isna(value):
+    if value is None or pd.isna(cast(float, value)):
         return DEFAULT_RELEVANCE
-    return RELEVANCE_BY_RANK.get(int(value), DEFAULT_RELEVANCE)
+    return RELEVANCE_BY_RANK.get(int(cast(float, value)), DEFAULT_RELEVANCE)
 
 
 def encode_categoricals(frame: pd.DataFrame) -> pd.DataFrame:

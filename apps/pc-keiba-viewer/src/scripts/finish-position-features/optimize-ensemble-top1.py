@@ -22,7 +22,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def parse_spec(spec: str) -> tuple[str, Path]:
-    nm, rest = spec.split("=", 1)
+    _nm, rest = spec.split("=", 1)
     label, path = rest.split(":", 1)
     return label, Path(path)
 
@@ -120,11 +120,14 @@ def main() -> None:
     val_normalized = [normalize_within_race({k: v for k, v in r.items() if year(k[0]) == args.validation_year}) for r in raw]
     test_normalized = [normalize_within_race({k: v for k, v in r.items() if year(k[0]) == args.test_year}) for r in raw]
     candidates = simplex_weights(len(labels), args.grid_step)
-    best_w = None; best_top1 = -1.0
+    best_w: list[float] | None = None
+    best_top1 = -1.0
     for w in candidates:
         s = compute_top1(w, val_normalized, val_act)
         if s > best_top1:
             best_top1 = s; best_w = w
+    if best_w is None:
+        raise SystemExit("no candidates evaluated")
     test_top1 = compute_top1(best_w, test_normalized, test_act)
     all_normalized = [normalize_within_race(r) for r in raw]
     blended: dict[tuple[str, str], float] = defaultdict(float)

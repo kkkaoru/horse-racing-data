@@ -18,7 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import TypedDict
+from typing import TypedDict, cast
 
 import lightgbm as lgb
 
@@ -62,7 +62,7 @@ def trim_node(node: dict[str, object]) -> dict[str, object]:
             continue
         value = node[key]
         if key in ("left_child", "right_child") and isinstance(value, dict):
-            trimmed[key] = trim_node(value)
+            trimmed[key] = trim_node(cast(dict[str, object], value))
         else:
             trimmed[key] = value
     return trimmed
@@ -72,7 +72,7 @@ def trim_tree(tree: dict[str, object]) -> dict[str, object]:
     structure = tree.get("tree_structure")
     if not isinstance(structure, dict):
         raise ValueError("tree_structure missing in tree dump")
-    return {"tree_structure": trim_node(structure)}
+    return {"tree_structure": trim_node(cast(dict[str, object], structure))}
 
 
 def load_metadata(model_dir: Path) -> dict[str, object]:
@@ -96,9 +96,11 @@ def build_compact_model(booster: lgb.Booster, metadata: dict[str, object]) -> Co
         "objective": str(dump.get("objective", "multiclass")),
         "num_class": int(dump.get("num_class", 1)),
         "num_tree_per_iteration": int(dump.get("num_tree_per_iteration", 1)),
-        "class_labels": list(metadata.get("class_labels", [])),
+        "class_labels": [str(v) for v in cast(list[object], metadata.get("class_labels", []))],
         "feature_names": [str(name) for name in feature_names],
-        "categorical_features": list(metadata.get("categorical_features", [])),
+        "categorical_features": [
+            str(v) for v in cast(list[object], metadata.get("categorical_features", []))
+        ],
         "trees": trees,
     }
 

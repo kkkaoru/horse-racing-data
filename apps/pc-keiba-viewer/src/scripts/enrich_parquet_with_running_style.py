@@ -19,6 +19,7 @@ import argparse
 import json
 from pathlib import Path
 from time import perf_counter
+from typing import cast
 
 import lightgbm as lgb
 import numpy as np
@@ -88,7 +89,7 @@ def predict_probabilities(
     categorical_features: list[str],
 ) -> np.ndarray:
     encoded = encode_categoricals(frame.loc[:, feature_columns].copy(), categorical_features)
-    return booster.predict(encoded, num_iteration=booster.best_iteration)
+    return cast(np.ndarray, booster.predict(encoded, num_iteration=booster.best_iteration))
 
 
 def build_probability_columns(probabilities: np.ndarray, prefix: str) -> dict[str, np.ndarray]:
@@ -108,8 +109,10 @@ def run_enrichment(args: argparse.Namespace) -> dict[str, object]:
     started = perf_counter()
     booster, metadata = load_model_artifacts(args.model_dir)
     df = load_partitioned_parquet(args.parquet)
-    feature_columns = [str(value) for value in metadata.get("feature_columns", [])]
-    categorical_features = [str(value) for value in metadata.get("categorical_features", [])]
+    feature_columns = [str(value) for value in cast(list[object], metadata.get("feature_columns", []))]
+    categorical_features = [
+        str(value) for value in cast(list[object], metadata.get("categorical_features", []))
+    ]
     aligned = align_feature_frame(df, feature_columns)
     probabilities = predict_probabilities(booster, aligned, feature_columns, categorical_features)
     enriched = df.copy()

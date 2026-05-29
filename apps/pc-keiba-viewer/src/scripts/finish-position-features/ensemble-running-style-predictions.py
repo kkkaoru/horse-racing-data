@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import TypedDict
+from typing import TypedDict, cast
 
 CLASS_LABELS: tuple[str, str, str, str] = ("nige", "senkou", "sashi", "oikomi")
 PROBABILITY_COLUMNS: tuple[str, str, str, str] = ("p_nige", "p_senkou", "p_sashi", "p_oikomi")
@@ -50,7 +50,7 @@ def make_key(record: dict[str, object]) -> tuple[str, str, int]:
     return (
         str(record.get("race_id", "")),
         str(record.get("ketto_toroku_bango", "")),
-        int(record.get("umaban") or 0),
+        int(cast(int, record.get("umaban") or 0)),
     )
 
 
@@ -61,7 +61,7 @@ def index_by_key(records: list[dict[str, object]]) -> dict[tuple[str, str, int],
 def average_probabilities(records: list[dict[str, object]]) -> dict[str, float]:
     averaged: dict[str, float] = {}
     for column in PROBABILITY_COLUMNS:
-        values = [float(rec.get(column, 0.0)) for rec in records]
+        values = [float(cast(float, rec.get(column, 0.0))) for rec in records]
         averaged[column] = sum(values) / len(values) if values else 0.0
     return averaged
 

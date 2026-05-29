@@ -112,7 +112,7 @@ def test_build_evaluation_aggregates_metrics(tmp_path: Path):
 
 
 def test_build_upsert_sql_contains_required_columns():
-    payload: subject.CornerEvaluation = {
+    payload: dict[str, object] = {
         "model_version": "v1",
         "category": "jra",
         "window_from": "20240101",
@@ -134,7 +134,7 @@ def test_build_upsert_sql_contains_required_columns():
 
 
 def test_build_upsert_sql_emits_null_for_missing_metrics():
-    payload: subject.CornerEvaluation = {
+    payload: dict[str, object] = {
         "model_version": "v1",
         "category": "jra",
         "window_from": "20240101",

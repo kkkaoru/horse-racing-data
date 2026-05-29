@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import cast
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,7 +41,7 @@ def index_by_key(rows: list[dict[str, object]]) -> dict[tuple[str, str], dict[st
 
 
 def average_rank(records: list[dict[str, object]]) -> float:
-    return sum(float(row["predicted_rank"]) for row in records) / len(records)
+    return sum(float(cast(float, row["predicted_rank"])) for row in records) / len(records)
 
 
 def merge_records(loaded: list[list[dict[str, object]]]) -> list[dict[str, object]]:
@@ -69,7 +70,10 @@ def assign_ranks_within_race(rows: list[dict[str, object]]) -> list[dict[str, ob
         grouped.setdefault(str(row["race_id"]), []).append(row)
     output: list[dict[str, object]] = []
     for race_id in sorted(grouped):
-        ordered = sorted(grouped[race_id], key=lambda r: (float(r["predicted_rank"]), int(r["umaban"])))
+        ordered = sorted(
+            grouped[race_id],
+            key=lambda r: (float(cast(float, r["predicted_rank"])), int(cast(int, r["umaban"]))),
+        )
         for rank, row in enumerate(ordered, start=1):
             output.append({**row, "predicted_rank": rank})
     return output

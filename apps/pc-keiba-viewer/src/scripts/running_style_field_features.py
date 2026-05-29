@@ -7,6 +7,7 @@ Python training/evaluation path matches Worker inference.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -100,10 +101,12 @@ def compute_field_features_per_horse(horses: list[HorsePeerInputs]) -> list[dict
         peer_nige_rates = [
             value for index, value in enumerate(nige_rates) if index != self_index and value is not None
         ]
-        corner1_norm_peers = [
-            horses[index].past_corner_1_norm_avg_5
+        corner1_norm_peers: list[float] = [
+            value
             for index in range(len(horses))
-            if index != self_index and horses[index].past_corner_1_norm_avg_5 is not None
+            if index != self_index
+            for value in [horses[index].past_corner_1_norm_avg_5]
+            if value is not None
         ]
         field_nige = _sum_excluding(nige_rates, self_index)
         field_senkou = _sum_excluding(senkou_rates, self_index)
@@ -173,9 +176,9 @@ def _row_to_peer_inputs(row: pd.Series) -> HorsePeerInputs:
 def _nullable_float(value: object) -> float | None:
     if value is None or (isinstance(value, float) and np.isnan(value)):
         return None
-    if pd.isna(value):
+    if pd.isna(cast(float, value)):
         return None
-    return float(value)
+    return float(cast(float, value))
 
 
 def enrich_dataframe_with_field_features(df: pd.DataFrame) -> pd.DataFrame:

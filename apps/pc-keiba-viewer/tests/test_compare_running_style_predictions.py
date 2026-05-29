@@ -137,7 +137,7 @@ def test_build_evaluation_returns_full_payload():
 
 
 def test_build_upsert_sql_contains_required_columns():
-    payload: subject.RunningStyleEvaluation = {
+    payload: dict[str, object] = {
         "model_version": "v1",
         "category": "jra",
         "window_from": "20240101",

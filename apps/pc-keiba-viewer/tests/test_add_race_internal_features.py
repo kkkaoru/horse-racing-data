@@ -121,13 +121,6 @@ def test_appended_features_via_duckdb_match_expected_values(tmp_path: Path):
     )
     seed_con.close()
 
-    input_glob = f"{input_dir.as_posix()}/race_year=*/*.parquet"
-
-    # add stub columns that the post-processor expects but seed doesn't have
-    extended_sql = subject.append_features_sql(input_glob).replace(
-        "select\n      b.*,",
-        "select\n      b.*,\n      cast(null as double) as pedigree_score_for_race_stub,",
-    )
     # we cannot inject the expected columns easily; instead, build a richer parquet
     # via a second seed file that includes all columns referenced by append_features_sql.
     richer_dir = tmp_path / "input_full"

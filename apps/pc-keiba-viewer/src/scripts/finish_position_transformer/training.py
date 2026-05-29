@@ -9,7 +9,7 @@ Early stopping is driven by validation NDCG@3.
 from __future__ import annotations
 
 from time import perf_counter
-from typing import TypedDict
+from typing import TypedDict, cast
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -373,7 +373,8 @@ def _clip_grad_norm(grads: dict[str, object], max_norm: float) -> dict[str, obje
     flat = list(mlx.utils.tree_flatten(grads))
     squared_sum = mx.array(0.0)
     for _name, value in flat:
-        squared_sum = squared_sum + (value * value).sum()
+        value_arr = cast(mx.array, value)
+        squared_sum = squared_sum + (value_arr * value_arr).sum()
     total_norm = mx.sqrt(squared_sum)
     scale = mx.minimum(mx.array(1.0), mx.array(max_norm) / (total_norm + mx.array(1e-8)))
     scaled = mlx.utils.tree_map(lambda value: value * scale, grads)

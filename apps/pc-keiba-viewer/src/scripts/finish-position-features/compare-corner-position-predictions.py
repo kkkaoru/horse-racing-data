@@ -22,7 +22,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from typing import TypedDict
+from typing import TypedDict, cast
 
 DEFAULT_PG_URL = "postgresql://horse_racing:horse_racing@127.0.0.1:5432/horse_racing"
 CORNER_HEADS: tuple[str, str, str] = ("corner_1", "corner_3", "corner_4")
@@ -139,8 +139,8 @@ def corner_1_top3_agreement(records: list[dict[str, object]]) -> float | None:
         ]
         if len(valid_runners) < TOP_K_AGREEMENT:
             continue
-        actuals = [float(row["target_corner_1_norm"]) for row in valid_runners]
-        predicts = [float(row["corner_1_pred"]) for row in valid_runners]
+        actuals = [float(cast(float, row["target_corner_1_norm"])) for row in valid_runners]
+        predicts = [float(cast(float, row["corner_1_pred"])) for row in valid_runners]
         actual_ranks = _rank_ascending(actuals)
         predicted_ranks = _rank_ascending(predicts)
         actual_top3 = {idx for idx, rank in enumerate(actual_ranks) if rank <= TOP_K_AGREEMENT}
