@@ -11,7 +11,10 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "tsc": "tsc --noEmit",
-    "oxlint": "bunx oxlint ."
+    "oxlint": "bunx oxlint .",
+    "lint": "bunx oxlint",
+    "format": "bunx oxfmt",
+    "format:check": "bunx oxfmt --check"
   },
   "devDependencies": {
     "@types/node": "22.19.10",

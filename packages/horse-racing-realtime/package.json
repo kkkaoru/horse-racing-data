@@ -8,7 +8,10 @@
   },
   "scripts": {
     "test": "vitest run",
-    "tsc": "tsc --noEmit"
+    "tsc": "tsc --noEmit",
+    "lint": "bunx oxlint",
+    "format": "bunx oxfmt",
+    "format:check": "bunx oxfmt --check"
   },
   "devDependencies": {
     "typescript": "5.9.3",
