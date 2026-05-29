@@ -38,6 +38,8 @@ const NIGHT_WINDOW_HOURS_SET: Set<number> = new Set(NIGHT_WINDOW_HOURS_JST);
 const STOPPED_REASON_OUTSIDE_NIGHT_WINDOW = "outside-night-window";
 const STOPPED_REASON_MAX_DAYS_REACHED = "max-days-reached";
 const STOPPED_REASON_COMPLETED = "completed";
+const IGNORE_NIGHT_WINDOW_TRUTHY: Set<string> = new Set(["1", "true"]);
+const IGNORE_NIGHT_WINDOW_FALSY: Set<string> = new Set(["0", "false"]);
 
 export type BackfillStoppedReason =
   | typeof STOPPED_REASON_OUTSIDE_NIGHT_WINDOW
@@ -84,6 +86,7 @@ export interface BackfillFeaturesPastConfig {
   fetchImpl: typeof fetch;
   sleepImpl: (ms: number) => Promise<void>;
   nowProvider: () => Date;
+  bypassNightWindow: boolean;
 }
 
 export interface BackfillFeaturesPastResult {
@@ -122,6 +125,9 @@ export const getJstHour = (now: Date): number => {
 
 export const isWithinNightWindow = (now: Date): boolean =>
   NIGHT_WINDOW_HOURS_SET.has(getJstHour(now));
+
+const shouldEnforceNightWindow = (config: BackfillFeaturesPastConfig): boolean =>
+  !config.bypassNightWindow && !isWithinNightWindow(config.nowProvider());
 
 // b1OldestDate = (now - (b1FloorDays - 1) days). The B-3 cold-start point is
 // the day BEFORE that, i.e. (now - b1FloorDays days).
@@ -318,7 +324,7 @@ const processSingleRace = async (
   raceKey: string,
   acc: DayAccumulator,
 ): Promise<DayAccumulator> => {
-  if (!isWithinNightWindow(config.nowProvider())) {
+  if (shouldEnforceNightWindow(config)) {
     acc.nightWindowExited = true;
     return acc;
   }
@@ -409,13 +415,13 @@ const finishWith = (
 export const backfillFeaturesPast = async (
   config: BackfillFeaturesPastConfig,
 ): Promise<BackfillFeaturesPastResult> => {
-  if (!isWithinNightWindow(config.nowProvider())) {
+  if (shouldEnforceNightWindow(config)) {
     return finishWith(initialRunAccumulator(""), STOPPED_REASON_OUTSIDE_NIGHT_WINDOW);
   }
   const startDate = await resolveStartDate(config);
   let run = initialRunAccumulator(startDate);
   while (run.totalDays < config.maxDaysPerRun) {
-    if (!isWithinNightWindow(config.nowProvider())) {
+    if (shouldEnforceNightWindow(config)) {
       return finishWith(run, STOPPED_REASON_OUTSIDE_NIGHT_WINDOW);
     }
     const dayResult = await processOneDay(config, run.currentDate);
@@ -456,9 +462,23 @@ const resolveInternalToken = (): string => {
   return requireEnvVar("PC_KEIBA_VIEWER_INTERNAL_TOKEN");
 };
 
+export const parseIgnoreNightWindowEnv = (raw: string | undefined): boolean => {
+  if (!raw) {
+    return false;
+  }
+  if (IGNORE_NIGHT_WINDOW_TRUTHY.has(raw)) {
+    return true;
+  }
+  if (IGNORE_NIGHT_WINDOW_FALSY.has(raw)) {
+    return false;
+  }
+  throw new Error(`IGNORE_NIGHT_WINDOW must be one of "1" / "true" / "0" / "false" (got: ${raw})`);
+};
+
 export const buildDefaultConfig = (nowProvider: () => Date): BackfillFeaturesPastConfig => ({
   adminToken: requireEnvVar("REALTIME_ADMIN_TOKEN"),
   b1FloorDays: parsePositiveIntEnv(process.env.B1_FLOOR_DAYS, DEFAULT_B1_FLOOR_DAYS),
+  bypassNightWindow: parseIgnoreNightWindowEnv(process.env.IGNORE_NIGHT_WINDOW),
   circuitPauseMs: DEFAULT_CIRCUIT_PAUSE_MS,
   fetchImpl: globalThis.fetch,
   internalToken: resolveInternalToken(),

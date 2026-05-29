@@ -8,6 +8,7 @@ import {
   computeColdStartDate,
   getJstHour,
   isWithinNightWindow,
+  parseIgnoreNightWindowEnv,
   parseRaceKey,
   previousDate,
 } from "./backfill-features-past";
@@ -28,6 +29,7 @@ const buildConfig = (
 ): BackfillFeaturesPastConfig => ({
   adminToken: "admin-token",
   b1FloorDays: 30,
+  bypassNightWindow: false,
   circuitPauseMs: 100,
   fetchImpl,
   internalToken: "internal-token",
@@ -595,4 +597,107 @@ it("buildDefaultConfig falls back to default b1FloorDays when env missing", () =
   vi.stubEnv("FEATURES_INTERNAL_TOKEN", "tok");
   expect(buildDefaultConfig(() => new Date()).b1FloorDays).toBe(30);
   vi.unstubAllEnvs();
+});
+
+it("backfillFeaturesPast stops with outside-night-window when bypass disabled and outside window", async () => {
+  const fetchImpl = vi.fn(async () => buildResponse(200, { ok: true }));
+  const config = buildConfig(fetchImpl as unknown as typeof fetch, {
+    bypassNightWindow: false,
+    nowProvider: () => new Date("2026-05-29T03:00:00Z"), // 12:00 JST
+  });
+  const result = await backfillFeaturesPast(config);
+  expect(result.stoppedReason).toBe("outside-night-window");
+  expect(result.totalDays).toBe(0);
+  expect(result.finalDate).toBeNull();
+  expect(fetchImpl).not.toHaveBeenCalled();
+});
+
+it("backfillFeaturesPast proceeds when bypass enabled even outside the window", async () => {
+  const fetchImpl = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.includes("/api/internal/migration-state?key=")) {
+      return buildResponse(200, { key: "b3-last-seeded-date", value: "20260420" });
+    }
+    if (url.endsWith("/api/internal/list-race-keys-by-date-from-hyperdrive")) {
+      return buildResponse(200, { rows: [{ race_key: "nar:2026:0419:30:08" }] });
+    }
+    if (url.endsWith("/api/internal/recompute-and-build-parquet")) {
+      return buildResponse(200, {
+        builtAt: "now",
+        r2Key: "k",
+        raceKey: "nar:2026:0419:30:08",
+        rowCount: 5,
+      });
+    }
+    return buildResponse(200, { ok: true });
+  });
+  const config = buildConfig(fetchImpl as unknown as typeof fetch, {
+    bypassNightWindow: true,
+    maxDaysPerRun: 1,
+    nowProvider: () => new Date("2026-05-29T03:00:00Z"), // 12:00 JST (daytime)
+  });
+  const result = await backfillFeaturesPast(config);
+  expect(result.stoppedReason).toBe("max-days-reached");
+  expect(result.totalDays).toBe(1);
+  expect(result.totalRaces).toBe(1);
+  expect(result.totalRows).toBe(5);
+  expect(result.finalDate).toBe("20260419");
+});
+
+it("buildDefaultConfig sets bypassNightWindow=true when IGNORE_NIGHT_WINDOW=1", () => {
+  vi.stubEnv("REALTIME_ADMIN_TOKEN", "admin");
+  vi.stubEnv("NEW_FEATURES_WORKER_URL", "https://new");
+  vi.stubEnv("OLD_WORKER_URL", "https://old");
+  vi.stubEnv("FEATURES_INTERNAL_TOKEN", "tok");
+  vi.stubEnv("IGNORE_NIGHT_WINDOW", "1");
+  expect(buildDefaultConfig(() => new Date()).bypassNightWindow).toBe(true);
+  vi.unstubAllEnvs();
+});
+
+it("buildDefaultConfig sets bypassNightWindow=true when IGNORE_NIGHT_WINDOW=true", () => {
+  vi.stubEnv("REALTIME_ADMIN_TOKEN", "admin");
+  vi.stubEnv("NEW_FEATURES_WORKER_URL", "https://new");
+  vi.stubEnv("OLD_WORKER_URL", "https://old");
+  vi.stubEnv("FEATURES_INTERNAL_TOKEN", "tok");
+  vi.stubEnv("IGNORE_NIGHT_WINDOW", "true");
+  expect(buildDefaultConfig(() => new Date()).bypassNightWindow).toBe(true);
+  vi.unstubAllEnvs();
+});
+
+it("buildDefaultConfig sets bypassNightWindow=false when IGNORE_NIGHT_WINDOW=0", () => {
+  vi.stubEnv("REALTIME_ADMIN_TOKEN", "admin");
+  vi.stubEnv("NEW_FEATURES_WORKER_URL", "https://new");
+  vi.stubEnv("OLD_WORKER_URL", "https://old");
+  vi.stubEnv("FEATURES_INTERNAL_TOKEN", "tok");
+  vi.stubEnv("IGNORE_NIGHT_WINDOW", "0");
+  expect(buildDefaultConfig(() => new Date()).bypassNightWindow).toBe(false);
+  vi.unstubAllEnvs();
+});
+
+it("buildDefaultConfig sets bypassNightWindow=false when IGNORE_NIGHT_WINDOW unset", () => {
+  vi.stubEnv("REALTIME_ADMIN_TOKEN", "admin");
+  vi.stubEnv("NEW_FEATURES_WORKER_URL", "https://new");
+  vi.stubEnv("OLD_WORKER_URL", "https://old");
+  vi.stubEnv("FEATURES_INTERNAL_TOKEN", "tok");
+  vi.stubEnv("IGNORE_NIGHT_WINDOW", "");
+  expect(buildDefaultConfig(() => new Date()).bypassNightWindow).toBe(false);
+  vi.unstubAllEnvs();
+});
+
+it("buildDefaultConfig throws clear error when IGNORE_NIGHT_WINDOW=garbage", () => {
+  vi.stubEnv("REALTIME_ADMIN_TOKEN", "admin");
+  vi.stubEnv("NEW_FEATURES_WORKER_URL", "https://new");
+  vi.stubEnv("OLD_WORKER_URL", "https://old");
+  vi.stubEnv("FEATURES_INTERNAL_TOKEN", "tok");
+  vi.stubEnv("IGNORE_NIGHT_WINDOW", "yes-please");
+  expect(() => buildDefaultConfig(() => new Date())).toThrowError(/IGNORE_NIGHT_WINDOW/u);
+  vi.unstubAllEnvs();
+});
+
+it("parseIgnoreNightWindowEnv returns false for undefined", () => {
+  expect(parseIgnoreNightWindowEnv(undefined)).toBe(false);
+});
+
+it("parseIgnoreNightWindowEnv returns true for false-then-thrown-on-garbage error message includes input", () => {
+  expect(() => parseIgnoreNightWindowEnv("nope")).toThrowError(/nope/u);
 });
