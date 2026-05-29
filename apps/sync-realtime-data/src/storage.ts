@@ -1037,6 +1037,76 @@ export const deleteOddsSnapshotsChunk = async (
   };
 };
 
+export interface DeleteRowidChunkOptions {
+  sinceRowid: number;
+  chunkSize: number;
+}
+
+export interface DeleteRowidChunkResult {
+  deletedRowCount: number;
+  nextSinceRowid: number;
+}
+
+const SELECT_DAILY_RACE_ENTRIES_TARGET_ROWIDS_QUERY =
+  "select rowid from daily_race_entries where rowid > ? order by rowid asc limit ?";
+
+// Phase F final-step helper for daily_race_entries. Same SELECT + DELETE IN
+// pattern as deleteOddsSnapshotsChunk so the delete statement stays bounded
+// and D1 can plan it within the per-query memory budget. The caller (night-
+// window CLI) throttles invocation so live polling is unaffected.
+export const deleteDailyRaceEntriesChunk = async (
+  db: D1Database,
+  options: DeleteRowidChunkOptions,
+): Promise<DeleteRowidChunkResult> => {
+  const targets = await db
+    .prepare(SELECT_DAILY_RACE_ENTRIES_TARGET_ROWIDS_QUERY)
+    .bind(options.sinceRowid, options.chunkSize)
+    .all<{ rowid: number }>();
+  const rowids = targets.results.map((row) => row.rowid);
+  if (rowids.length === 0) {
+    return { deletedRowCount: 0, nextSinceRowid: options.sinceRowid };
+  }
+  const placeholders = rowids.map(() => "?").join(", ");
+  const result = await db
+    .prepare(`delete from daily_race_entries where rowid in (${placeholders})`)
+    .bind(...rowids)
+    .run();
+  const deletedRowCount = result.meta.rows_written ?? rowids.length;
+  return {
+    deletedRowCount,
+    nextSinceRowid: rowids.at(-1)!,
+  };
+};
+
+const SELECT_RACE_RUNNING_STYLES_TARGET_ROWIDS_QUERY =
+  "select rowid from race_running_styles where rowid > ? order by rowid asc limit ?";
+
+// Same shape as deleteDailyRaceEntriesChunk but targets the race_running_styles
+// table. Phase F cleanup pairs with the matching CLI under scripts/.
+export const deleteRaceRunningStylesChunk = async (
+  db: D1Database,
+  options: DeleteRowidChunkOptions,
+): Promise<DeleteRowidChunkResult> => {
+  const targets = await db
+    .prepare(SELECT_RACE_RUNNING_STYLES_TARGET_ROWIDS_QUERY)
+    .bind(options.sinceRowid, options.chunkSize)
+    .all<{ rowid: number }>();
+  const rowids = targets.results.map((row) => row.rowid);
+  if (rowids.length === 0) {
+    return { deletedRowCount: 0, nextSinceRowid: options.sinceRowid };
+  }
+  const placeholders = rowids.map(() => "?").join(", ");
+  const result = await db
+    .prepare(`delete from race_running_styles where rowid in (${placeholders})`)
+    .bind(...rowids)
+    .run();
+  const deletedRowCount = result.meta.rows_written ?? rowids.length;
+  return {
+    deletedRowCount,
+    nextSinceRowid: rowids.at(-1)!,
+  };
+};
+
 interface D1RetentionResult {
   fetchLogsDeleted: number;
 }
