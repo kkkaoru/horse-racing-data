@@ -8,6 +8,8 @@ import {
   buildRaceTrendApiPath,
   buildRaceTrendCacheKey,
   buildRaceTrendCacheWarmOptions,
+  buildRaceTrendPast14CacheKey,
+  buildRaceTrendTodayCacheKey,
   getRaceStartTimeMs,
   getRaceTrendCacheTtlSeconds,
   isRaceBeforeTargetRace,
@@ -48,14 +50,25 @@ describe("race trend cache helpers", () => {
     ).toBe(false);
   });
 
-  it("builds default realtime trend options for the target race date", () => {
+  it("builds default trend options for an NAR target with a past-14-day window", () => {
     expect(buildDefaultRaceTrendCacheOptions("nar", "20260520")).toStrictEqual({
       frameEndYmd: "20260520",
-      frameStartYmd: "20260517",
+      frameStartYmd: "20260506",
       includeRealtimeResults: true,
       jockeyEndYmd: "20260520",
-      jockeyStartYmd: "20260517",
+      jockeyStartYmd: "20260506",
       source: "nar",
+    });
+  });
+
+  it("builds default trend options for a JRA target with the same past-14-day window", () => {
+    expect(buildDefaultRaceTrendCacheOptions("jra", "20260520")).toStrictEqual({
+      frameEndYmd: "20260520",
+      frameStartYmd: "20260506",
+      includeRealtimeResults: true,
+      jockeyEndYmd: "20260520",
+      jockeyStartYmd: "20260506",
+      source: "jra",
     });
   });
 
@@ -74,28 +87,68 @@ describe("race trend cache helpers", () => {
     expect(getRaceStartTimeMs({ ...targetRace, hassoJikoku: "bad" })).toBeNull();
   });
 
-  it("builds cache keys and warm API paths", () => {
+  it("builds the outer race-trend cache key under the v8 namespace", () => {
     const options = buildDefaultRaceTrendCacheOptions("jra", "20260520");
-    expect(options.frameStartYmd).toBe("20260519");
-    expect(addDaysToYmd("20260520", -3)).toBe("20260517");
+    expect(options.frameStartYmd).toBe("20260506");
+    expect(addDaysToYmd("20260520", -14)).toBe("20260506");
     const cacheKey = buildRaceTrendCacheKey({
       keibajoCode: "05",
       options,
       raceBango: "11",
     });
-    expect(cacheKey).toStrictEqual("race-trend:v7:jra:05:11:20260519:20260520:20260519:20260520:1");
+    expect(cacheKey).toStrictEqual("race-trend:v8:jra:05:11:20260506:20260520:20260506:20260520:1");
+  });
+
+  it("builds the warm API path under the trends endpoint", () => {
+    const options = buildDefaultRaceTrendCacheOptions("jra", "20260520");
+    const path = buildRaceTrendApiPath({
+      day: "20",
+      kind: "race-trend",
+      keibajoCode: "05",
+      month: "05",
+      options,
+      raceNumber: "11",
+      source: "jra",
+      year: "2026",
+    });
+    const [pathPart] = path.split("?");
+    expect(pathPart).toStrictEqual("/api/races/2026/05/20/05/11/trends");
+  });
+
+  it("builds the past-14 cache key under the race-trend-past14:v8 namespace for JRA", () => {
     expect(
-      buildRaceTrendApiPath({
-        day: "20",
-        kind: "race-trend",
+      buildRaceTrendPast14CacheKey({
+        endYmd: "20260519",
         keibajoCode: "05",
-        month: "05",
-        options,
-        raceNumber: "11",
+        raceBango: "11",
         source: "jra",
-        year: "2026",
+        startYmd: "20260506",
       }),
-    ).toContain("/api/races/2026/05/20/05/11/trends?");
+    ).toStrictEqual("race-trend-past14:v8:jra:05:11:20260506:20260519");
+  });
+
+  it("builds the past-14 cache key under the race-trend-past14:v8 namespace for NAR", () => {
+    expect(
+      buildRaceTrendPast14CacheKey({
+        endYmd: "20260527",
+        keibajoCode: "50",
+        raceBango: "07",
+        source: "nar",
+        startYmd: "20260514",
+      }),
+    ).toStrictEqual("race-trend-past14:v8:nar:50:07:20260514:20260527");
+  });
+
+  it("builds the today cache key under the race-trend-today:v8 namespace for JRA", () => {
+    expect(buildRaceTrendTodayCacheKey({ source: "jra", targetYmd: "20260520" })).toStrictEqual(
+      "race-trend-today:v8:jra:20260520",
+    );
+  });
+
+  it("builds the today cache key under the race-trend-today:v8 namespace for NAR", () => {
+    expect(buildRaceTrendTodayCacheKey({ source: "nar", targetYmd: "20260528" })).toStrictEqual(
+      "race-trend-today:v8:nar:20260528",
+    );
   });
 
   it("compares races across dates and non-numeric race numbers", () => {

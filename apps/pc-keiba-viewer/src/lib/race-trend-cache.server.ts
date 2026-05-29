@@ -4,8 +4,11 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import type { RaceSource } from "./codes";
 import {
   RACE_TREND_CACHE_AFTER_START_SECONDS,
+  RACE_TREND_PAST14_LOOKBACK_DAYS,
   addDaysToYmd,
   buildRaceTrendCacheKey,
+  buildRaceTrendPast14CacheKey,
+  buildRaceTrendTodayCacheKey,
   getRaceTrendCacheTtlSeconds,
   type RaceTrendCacheOptions,
 } from "./race-trend-cache";
@@ -155,52 +158,34 @@ const buildAffectedCacheOptions = (
   source: RaceSource,
   targetYmd: string,
 ): RaceTrendCacheOptions[] => {
-  const ranges = source === "jra" ? [-1] : [-3];
-  return ranges.flatMap((days) => {
-    const startYmd = addDaysToYmd(targetYmd, days);
-    return [true, false].map((includeRealtimeResults) => ({
-      frameEndYmd: targetYmd,
-      frameStartYmd: startYmd,
-      includeRealtimeResults,
-      jockeyEndYmd: targetYmd,
-      jockeyStartYmd: startYmd,
-      source,
-    }));
-  });
-};
-
-// v5 prefixes match the bumped cache key versions in
-// `d1-trend-queries.server.ts`. The bust path needs to target the same key
-// version that the read path is currently writing — otherwise a race-finish
-// notification clears a v4 namespace that no longer exists and leaves the
-// active v5 entries untouched.
-const D1_DAILY_CACHE_PREFIX = "race-trend-d1-daily:v5";
-const D1_SNAPSHOT_CACHE_PREFIX = "race-trend-d1:v5";
-const D1_DAILY_CACHE_URL_BASE = "https://pc-keiba-viewer.local/d1-trend-daily-cache/";
-const D1_SNAPSHOT_CACHE_URL_BASE = "https://pc-keiba-viewer.local/d1-trend-cache/";
-
-const buildAffectedD1RangeKeys = (
-  source: RaceSource,
-  targetYmd: string,
-): Array<{ endYmd: string; startYmd: string }> => {
-  // The viewer's race-trend section pre-fetches a 14-day window so the date
-  // picker can filter without re-fetching, and Phase A also cached a narrower
-  // source-specific window (JRA −1d, NAR −3d). Bust every window the API
-  // could have stored against (`source × startYmd × endYmd`) so a race-finish
-  // event refreshes the short window, the legacy 30-day window (briefly
-  // active before this commit), and the current 14-day window in one shot.
-  const sourceShortRange = source === "jra" ? -1 : -3;
-  const offsets = [sourceShortRange, -14, -30];
-  return offsets.map((days) => ({
-    endYmd: targetYmd,
-    startYmd: addDaysToYmd(targetYmd, days),
+  const startYmd = addDaysToYmd(targetYmd, -RACE_TREND_PAST14_LOOKBACK_DAYS);
+  return [true, false].map((includeRealtimeResults) => ({
+    frameEndYmd: targetYmd,
+    frameStartYmd: startYmd,
+    includeRealtimeResults,
+    jockeyEndYmd: targetYmd,
+    jockeyStartYmd: startYmd,
+    source,
   }));
 };
+
+// Past-14 / today prefixes match the v8 cache keys built in
+// `d1-trend-queries.server.ts` and `race-trend-cache.ts`. The bust path
+// must target the same key version that the read path is currently
+// writing — otherwise a race-finish notification clears a stale namespace
+// and leaves the active v8 entries untouched.
+const D1_PAST14_CACHE_URL_BASE = "https://pc-keiba-viewer.local/d1-trend-past14-cache/";
+const D1_TODAY_CACHE_URL_BASE = "https://pc-keiba-viewer.local/d1-trend-today-cache/";
 
 interface AffectedCacheKey {
   key: string;
   urlBase: string;
 }
+
+const buildPast14RangeForBust = (targetYmd: string): { endYmd: string; startYmd: string } => ({
+  endYmd: addDaysToYmd(targetYmd, -1),
+  startYmd: addDaysToYmd(targetYmd, -RACE_TREND_PAST14_LOOKBACK_DAYS),
+});
 
 const collectAffectedCacheKeys = (params: BustRaceTrendCachesParams): AffectedCacheKey[] => {
   const optionVariants = buildAffectedCacheOptions(params.source, params.targetYmd);
@@ -214,17 +199,25 @@ const collectAffectedCacheKeys = (params: BustRaceTrendCachesParams): AffectedCa
       urlBase: CACHE_URL_BASE,
     })),
   );
-  const d1Keys = buildAffectedD1RangeKeys(params.source, params.targetYmd).flatMap((range) => [
-    {
-      key: `${D1_DAILY_CACHE_PREFIX}:${params.source}:${range.startYmd}:${range.endYmd}`,
-      urlBase: D1_DAILY_CACHE_URL_BASE,
-    },
-    {
-      key: `${D1_SNAPSHOT_CACHE_PREFIX}:${params.source}:${range.startYmd}:${range.endYmd}`,
-      urlBase: D1_SNAPSHOT_CACHE_URL_BASE,
-    },
-  ]);
-  return [...trendKeys, ...d1Keys];
+  const past14Range = buildPast14RangeForBust(params.targetYmd);
+  const past14Keys = params.races.map((race) => ({
+    key: buildRaceTrendPast14CacheKey({
+      endYmd: past14Range.endYmd,
+      keibajoCode: race.keibajoCode,
+      raceBango: race.raceBango,
+      source: params.source,
+      startYmd: past14Range.startYmd,
+    }),
+    urlBase: D1_PAST14_CACHE_URL_BASE,
+  }));
+  const todayKey: AffectedCacheKey = {
+    key: buildRaceTrendTodayCacheKey({
+      source: params.source,
+      targetYmd: params.targetYmd,
+    }),
+    urlBase: D1_TODAY_CACHE_URL_BASE,
+  };
+  return [...trendKeys, ...past14Keys, todayKey];
 };
 
 const deleteSingleCache = async (

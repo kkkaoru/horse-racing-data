@@ -14,7 +14,7 @@ import type {
   RaceTrendRawPayload,
   RaceTrendStarterRow,
 } from "../../../../../../../../../lib/race-types";
-import { isCacheableTrendPayload } from "./route";
+import { filterTodaySiblingRows, isCacheableTrendPayload } from "./route";
 
 const buildStarterRow = (overrides: Partial<RaceTrendStarterRow> = {}): RaceTrendStarterRow => ({
   bamei: "テスト",
@@ -105,4 +105,125 @@ it("isCacheableTrendPayload accepts a populated 14-day-window payload", () => {
   expect(isCacheableTrendPayload(buildPayload({ starterRows, historicalRunningStyles }))).toBe(
     true,
   );
+});
+
+it("filterTodaySiblingRows keeps rows with the same source, date, venue and a smaller raceBango", () => {
+  const sibling = buildStarterRow({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0529",
+    keibajoCode: "50",
+    raceBango: "03",
+    source: "nar",
+  });
+  const target = buildStarterRow({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0529",
+    keibajoCode: "50",
+    raceBango: "07",
+    source: "nar",
+  });
+  const after = buildStarterRow({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0529",
+    keibajoCode: "50",
+    raceBango: "08",
+    source: "nar",
+  });
+  const result = filterTodaySiblingRows([sibling, target, after], {
+    keibajoCode: "50",
+    raceBango: "07",
+    source: "nar",
+    targetYmd: "20260529",
+  });
+  expect(result).toStrictEqual([sibling]);
+});
+
+it("filterTodaySiblingRows drops rows from a different venue", () => {
+  const otherVenue = buildStarterRow({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0529",
+    keibajoCode: "47",
+    raceBango: "01",
+    source: "nar",
+  });
+  expect(
+    filterTodaySiblingRows([otherVenue], {
+      keibajoCode: "50",
+      raceBango: "07",
+      source: "nar",
+      targetYmd: "20260529",
+    }),
+  ).toStrictEqual([]);
+});
+
+it("filterTodaySiblingRows drops rows from a different source", () => {
+  const otherSource = buildStarterRow({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0529",
+    keibajoCode: "50",
+    raceBango: "01",
+    source: "jra",
+  });
+  expect(
+    filterTodaySiblingRows([otherSource], {
+      keibajoCode: "50",
+      raceBango: "07",
+      source: "nar",
+      targetYmd: "20260529",
+    }),
+  ).toStrictEqual([]);
+});
+
+it("filterTodaySiblingRows drops rows whose date does not match the target ymd", () => {
+  const otherDay = buildStarterRow({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0528",
+    keibajoCode: "50",
+    raceBango: "01",
+    source: "nar",
+  });
+  expect(
+    filterTodaySiblingRows([otherDay], {
+      keibajoCode: "50",
+      raceBango: "07",
+      source: "nar",
+      targetYmd: "20260529",
+    }),
+  ).toStrictEqual([]);
+});
+
+it("filterTodaySiblingRows excludes the target race itself", () => {
+  const target = buildStarterRow({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0529",
+    keibajoCode: "50",
+    raceBango: "07",
+    source: "nar",
+  });
+  expect(
+    filterTodaySiblingRows([target], {
+      keibajoCode: "50",
+      raceBango: "07",
+      source: "nar",
+      targetYmd: "20260529",
+    }),
+  ).toStrictEqual([]);
+});
+
+it("filterTodaySiblingRows falls back to locale compare when raceBango is non-numeric", () => {
+  const siblingA = buildStarterRow({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0529",
+    keibajoCode: "50",
+    raceBango: "A",
+    source: "nar",
+  });
+  expect(
+    filterTodaySiblingRows([siblingA], {
+      keibajoCode: "50",
+      raceBango: "B",
+      source: "nar",
+      targetYmd: "20260529",
+    }),
+  ).toStrictEqual([siblingA]);
 });
