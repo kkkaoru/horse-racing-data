@@ -595,6 +595,91 @@ describe("keiba.go realtime helpers", () => {
     });
   });
 
+  it("falls back to legacy wide parser when current parser cannot read the odds range cell", async () => {
+    const baseUrl = "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k=1";
+    mockFetchHtml({
+      "https://www.keiba.go.jp/KeibaWeb/Odds/wide": `
+        <table class="odd_ranking_table">
+          <tr><td>3-1</td><td>label</td><td>1.0</br> - 3.0</td></tr>
+          <tr><td>1-2</td><td>label</td><td>2.0</br> - 4.0</td></tr>
+        </table>
+      `,
+    });
+
+    await expect(fetchOdds(baseUrl, { wide: "/KeibaWeb/Odds/wide" })).resolves.toStrictEqual({
+      wide: [
+        { averageOdds: 2, combination: "1-3", maxOdds: 3, minOdds: 1, rank: 1 },
+        { averageOdds: 3, combination: "1-2", maxOdds: 4, minOdds: 2, rank: 2 },
+      ],
+    });
+  });
+
+  it("drops triple ranking rows whose first cell is not a triple combination", async () => {
+    const baseUrl = "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k=1";
+    mockFetchHtml({
+      "https://www.keiba.go.jp/KeibaWeb/Odds/3renpuku": `
+        <table class="odd_ranking_table">
+          <tr><td>bad</td><td>1.0</td></tr>
+          <tr><td>3-1-2</td><td>12.345</td></tr>
+        </table>
+      `,
+    });
+
+    await expect(
+      fetchOdds(baseUrl, { "3renpuku": "/KeibaWeb/Odds/3renpuku" }),
+    ).resolves.toStrictEqual({
+      "3renpuku": [{ combination: "1-2-3", odds: 12.35, rank: 1 }],
+    });
+  });
+
+  it("parseRaceResults returns empty array when html has no rows at all", () => {
+    expect(parseRaceResults("")).toStrictEqual([]);
+  });
+
+  it("returns empty fukusho odds when the odds page has no tbody element", async () => {
+    const baseUrl = "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k=1";
+    mockFetchHtml({
+      "https://www.keiba.go.jp/KeibaWeb/Odds/fukusho": "<div>no tbody here</div>",
+    });
+
+    await expect(fetchOdds(baseUrl, { fukusho: "/KeibaWeb/Odds/fukusho" })).resolves.toStrictEqual({
+      fukusho: [],
+    });
+  });
+
+  it("skips DebaTable race links missing required query params", async () => {
+    mockFetchHtml({
+      "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2f05%2f10&k_babaCode=22": `
+        <a href="/KeibaWeb/TodayRaceInfo/DebaTable?k_raceNo=1&k_babaCode=22">missing date</a>
+        <a href="/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2f05%2f10&k_raceNo=2&k_babaCode=22">valid</a>
+      `,
+    });
+    const result = await fetchRaceLinksFromRaceList(
+      "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2f05%2f10&k_babaCode=22",
+    );
+    expect(result).toStrictEqual([
+      {
+        babaCode: "22",
+        raceNumber: "02",
+        url: "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F05%2F10&k_raceNo=2&k_babaCode=22",
+      },
+    ]);
+  });
+
+  it("returns empty odds links when an オッズ naviTitle nav has no known odds anchors", () => {
+    expect(
+      extractOddsLinks(
+        `
+          <nav>
+            <div class="naviTitle">オッズ</div>
+            <a href="/KeibaWeb/Odds/Unknown">不明</a>
+          </nav>
+        `,
+        "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k=1",
+      ),
+    ).toStrictEqual({});
+  });
+
   it("builds result table URLs from entry table URLs", () => {
     expect(
       buildRaceResultUrl(
