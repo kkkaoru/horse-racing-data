@@ -3,10 +3,12 @@
 
 import type { Pool } from "pg";
 
-import { buildDailyFeatureSelectSql } from "./build-sql";
+import { buildDailyFeatureSelectSql, type DailyFeatureBuildSourceScope } from "./build-sql";
 import { normaliseDailyRaceEntryRow } from "./normalise";
 import { getFeaturesPool } from "./postgres-pool";
 import type { DailyRaceEntryRow, Env, RaceJobKey } from "../types";
+
+const BAN_EI_KEIBAJO_CODE = "83";
 
 interface BuildRaceFeaturesContext {
   pool?: Pool;
@@ -31,7 +33,11 @@ const filterRowsByRace = (rows: DailyRaceEntryRow[], job: RaceJobKey): DailyRace
       row.race_bango === job.raceBango.padStart(2, "0"),
   );
 
-const resolveScope = (source: "jra" | "nar"): "jra" | "nar" => source;
+// Ban'ei (Obihiro, keibajo_code=83) is stored under source="nar" in jvd/nvd tables
+// but must be selected via the dedicated "ban-ei" scope so build-sql includes it
+// instead of filtering it out via the `<> '83'` clause used for plain "nar".
+const resolveScope = (job: RaceJobKey): DailyFeatureBuildSourceScope =>
+  job.source === "nar" && job.keibajoCode === BAN_EI_KEIBAJO_CODE ? "ban-ei" : job.source;
 
 export const buildRaceFeatures = async (
   job: RaceJobKey,
@@ -43,7 +49,7 @@ export const buildRaceFeatures = async (
   const rows = await fetchAllRaceFeatures(pool, {
     fromDate: date,
     toDate: date,
-    sourceScope: resolveScope(job.source),
+    sourceScope: resolveScope(job),
   });
   return filterRowsByRace(rows, job);
 };

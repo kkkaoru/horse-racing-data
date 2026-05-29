@@ -302,6 +302,34 @@ it("accepts recompute request, builds Parquet, PUTs to R2, and writes KV", async
   expect(typeof body.builtAt).toBe("string");
 });
 
+it("accepts recompute request for Ban'ei (keibajoCode=83) and forwards the raw job key", async () => {
+  // Ban'ei routing: build.ts resolveScope maps source="nar" + keibajoCode="83"
+  // to the "ban-ei" SQL scope so the `<> '83'` filter does not strip the rows.
+  // worker.test mocks build.ts, so this test only asserts the keibajoCode is
+  // preserved end-to-end through handleRecomputeRequest into buildRaceFeatures.
+  const env = buildEnv();
+  vi.mocked(buildRaceFeatures).mockResolvedValueOnce([]);
+  const response = await handleRecomputeRequest(
+    env,
+    new Request("https://x/api/internal/recompute-and-build-parquet", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ raceKey: "nar:2026:0530:83:01" }),
+    }),
+  );
+  expect(response.status).toBe(200);
+  const callArg = vi.mocked(buildRaceFeatures).mock.calls[0]![0];
+  expect(callArg.source).toBe("nar");
+  expect(callArg.keibajoCode).toBe("83");
+  expect(callArg.kaisaiNen).toBe("2026");
+  expect(callArg.kaisaiTsukihi).toBe("0530");
+  expect(callArg.raceBango).toBe("01");
+  expect(env.FEATURES_ARCHIVE.put).toHaveBeenCalledWith(
+    "features/by-race/2026/05/30/nar/83/01.parquet",
+    new Uint8Array([1, 2, 3]),
+  );
+});
+
 it("accepts recompute request with raceKey-only body by parsing the 5-part string", async () => {
   const env = buildEnv();
   vi.mocked(buildRaceFeatures).mockResolvedValueOnce([]);
