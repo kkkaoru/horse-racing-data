@@ -22,7 +22,7 @@ import { jsonResponse } from "./http";
 import { extractYyyymmddFromRaceKey } from "./race-key";
 import { readCachedOdds, writeCachedOdds } from "./odds-cache";
 import { planOddsFetches } from "./plan";
-import { populateTodayOddsFetchState } from "./scheduled-race-list";
+import { populateMultiDayOddsFetchState, populateTodayOddsFetchState } from "./scheduled-race-list";
 import {
   bulkInsertOddsSnapshotRows,
   countOddsFetchStateForDate,
@@ -41,7 +41,7 @@ import type { Env, Job, OddsData, OddsType, OddsFetchStateUpsertInput } from "./
 
 const PLAN_ODDS_FETCHES_CRON = "* * * * *";
 const ARCHIVE_ODDS_CRON = "0 4 * * *";
-const POPULATE_TODAY_CRON = "55 20 * * *";
+const POPULATE_MULTI_DAY_CRON = "55 20 * * *";
 const ARCHIVE_QUERY_LIMIT = 200;
 const D1_RESULT_CACHE_QUERIES = ["latest", "tanshoHistory", "oddsHistoryByType"];
 
@@ -249,6 +249,14 @@ export const handleRunPopulateToday = async (env: Env, request: Request): Promis
   return jsonResponse(result);
 };
 
+export const handleRunPopulateMultiDay = async (env: Env, request: Request): Promise<Response> => {
+  if (!isAuthorizedInternalRequest(request, env)) {
+    return jsonResponse({ error: "unauthorized" }, { status: 401 });
+  }
+  const result = await populateMultiDayOddsFetchState(env, new Date());
+  return jsonResponse(result);
+};
+
 export const handleGetMigrationState = async (env: Env, request: Request): Promise<Response> => {
   if (!isAuthorizedInternalRequest(request, env)) {
     return jsonResponse({ error: "unauthorized" }, { status: 401 });
@@ -285,6 +293,9 @@ export const handleFetchRequest = async (env: Env, request: Request): Promise<Re
   if (request.method === "POST" && url.pathname === "/api/internal/run-populate-today") {
     return handleRunPopulateToday(env, request);
   }
+  if (request.method === "POST" && url.pathname === "/api/internal/run-populate-multi-day") {
+    return handleRunPopulateMultiDay(env, request);
+  }
   const raceKey = parseRaceKeyFromPath(url.pathname);
   if (request.method === "GET" && raceKey) {
     return handleGetOdds(env, request, raceKey);
@@ -312,8 +323,8 @@ export const runScheduledPlan = async (env: Env, now: Date): Promise<void> => {
   await planOddsFetches(env, now, todayYyyymmdd);
 };
 
-export const runScheduledPopulateToday = async (env: Env, now: Date): Promise<void> => {
-  await populateTodayOddsFetchState(env, now);
+export const runScheduledPopulateMultiDay = async (env: Env, now: Date): Promise<void> => {
+  await populateMultiDayOddsFetchState(env, now);
 };
 
 export const runScheduledArchive = async (env: Env, now: Date): Promise<void> => {
@@ -344,8 +355,8 @@ export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<
     await runScheduledArchive(env, now);
     return;
   }
-  if (event.cron === POPULATE_TODAY_CRON) {
-    await runScheduledPopulateToday(env, now);
+  if (event.cron === POPULATE_MULTI_DAY_CRON) {
+    await runScheduledPopulateMultiDay(env, now);
   }
 };
 

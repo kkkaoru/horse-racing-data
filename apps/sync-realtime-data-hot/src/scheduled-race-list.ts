@@ -1,8 +1,8 @@
-// Run with bun. Hyperdrive-direct read of today's races for the hot worker's
-// self-discovery path. Lists `jvd_ra` (JRA) and `nvd_ra` (NAR) for the JST
-// today date and upserts each row into `odds_fetch_state` so the per-minute
-// polling cron has something to plan against, even when the legacy worker is
-// down and `forwardRaceSourceToHot` never fires.
+// Run with bun. Hyperdrive-direct read of today's (and upcoming days') races
+// for the hot worker's self-discovery path. Lists `jvd_ra` (JRA) and `nvd_ra`
+// (NAR) for the JST date(s) and upserts each row into `odds_fetch_state` so
+// the per-minute polling cron has something to plan against, even when the
+// legacy worker is down and `forwardRaceSourceToHot` never fires.
 //
 // This is purely SELECT against Hyperdrive; no INSERT/UPDATE/DELETE flows
 // into Postgres. The hot D1 upsert uses `on conflict(race_key) do update`
@@ -12,14 +12,15 @@
 // once (one request per venue) and joining the per-race DebaTable links onto
 // the Hyperdrive rows. Without this, the scraper would fall back to the venue
 // race-list page, which exposes no odds links, and every fetch-odds job would
-// throw "odds rows are empty". JRA URLs require a netkeiba-style checksum that
-// is not available inside this worker yet — keep the placeholder so the legacy
-// `forwardRaceSourceToHot` payload still wins via `on conflict do update`.
+// throw "odds rows are empty". JRA URLs are now built via the netkeiba-style
+// checksum builder shared with the viewer (`buildJraEntryUrlFromRace`), so
+// JRA races also get a proper per-race entry URL instead of a placeholder.
 
 import { LOCAL_KEIBAJO_TO_NAR_BABA_CODE } from "horse-racing-realtime/nar";
 import type { Pool } from "pg";
 
 import { invalidateRaceListInKv } from "./gates/race-list-kv-cache";
+import { buildJraEntryUrlFromRace } from "./jra";
 import { buildRaceListUrl, fetchRaceLinksFromRaceList } from "./keiba-go";
 import { getHotPool } from "./postgres-pool";
 import { upsertOddsFetchState } from "./storage";
@@ -78,13 +79,18 @@ interface IntermediateRow {
   raceBango: string;
   raceKey: string;
   raceStartAtJst: string;
+  kaisaiKai: string | null;
+  kaisaiNichime: string | null;
 }
 
 const KEIBAJO_CODE_PAD_WIDTH = 2;
 const RACE_BANGO_PAD_WIDTH = 2;
+const KAISAI_KAI_PAD_WIDTH = 2;
+const KAISAI_NICHIME_PAD_WIDTH = 2;
 const HHMM_PATTERN = /^\d{4}$/u;
-const JRA_PLACEHOLDER_URL = "https://www.jra.go.jp/";
 const EMPTY_ODDS_LINKS_JSON = "{}";
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const DEFAULT_DAYS_AHEAD = 2;
 
 const SELECT_TODAY_RACES_SQL = `
   select 'jra' as source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, hasso_jikoku, kaisai_kai, kaisai_nichime
@@ -137,7 +143,9 @@ const toIntermediateRow = (row: SourcedRaceRow): IntermediateRow | null => {
     return null;
   }
   return {
+    kaisaiKai: row.kaisai_kai,
     kaisaiNen: row.kaisai_nen,
+    kaisaiNichime: row.kaisai_nichime,
     kaisaiTsukihi: row.kaisai_tsukihi,
     keibajoCode: normaliseCode(row.keibajo_code, KEIBAJO_CODE_PAD_WIDTH),
     raceBango: normaliseCode(row.race_bango, RACE_BANGO_PAD_WIDTH),
@@ -222,12 +230,35 @@ const prepareNarResolver = async (
   return buildDefaultNarResolver(new Map(entries));
 };
 
+const padJraSegment = (value: string | null, width: number): string | null =>
+  value ? value.padStart(width, "0") : null;
+
+const resolveJraDebaUrl = (row: IntermediateRow): string | null => {
+  const url = buildJraEntryUrlFromRace({
+    hasso_jikoku: null,
+    kaisai_kai: padJraSegment(row.kaisaiKai, KAISAI_KAI_PAD_WIDTH),
+    kaisai_nen: row.kaisaiNen,
+    kaisai_nichime: padJraSegment(row.kaisaiNichime, KAISAI_NICHIME_PAD_WIDTH),
+    kaisai_tsukihi: row.kaisaiTsukihi,
+    keibajo_code: row.keibajoCode,
+    kyosomei_hondai: null,
+    race_bango: row.raceBango,
+  });
+  if (!url) {
+    console.warn(
+      `[scheduled-race-list] JRA per-race entry URL build failed, skipping raceKey=${row.raceKey}`,
+    );
+    return null;
+  }
+  return url;
+};
+
 const resolveDebaUrl = async (
   row: IntermediateRow,
   resolveNarDebaUrl: NarDebaUrlResolver,
 ): Promise<string | null> => {
   if (row.source === "jra") {
-    return JRA_PLACEHOLDER_URL;
+    return resolveJraDebaUrl(row);
   }
   const yyyymmdd = `${row.kaisaiNen}${row.kaisaiTsukihi}`;
   const debaUrl = await resolveNarDebaUrl({
@@ -306,12 +337,11 @@ const collectInvalidationTargets = (rows: TodayRaceRow[]): InvalidationTarget[] 
   return Array.from(seen.values());
 };
 
-export const populateTodayOddsFetchState = async (
+const populateOddsFetchStateForDate = async (
   env: Env,
-  now: Date,
-  context: PopulateTodayContext = {},
+  yyyymmdd: string,
+  context: PopulateTodayContext,
 ): Promise<PopulateTodayOddsFetchStateResult> => {
-  const yyyymmdd = getTodayJst(now);
   const rows = await listTodayRacesFromHyperdrive(env, yyyymmdd, {
     pool: context.pool,
     resolveNarDebaUrl: context.resolveNarDebaUrl,
@@ -337,4 +367,48 @@ export const populateTodayOddsFetchState = async (
     ),
   );
   return { inserted: rows.length, total: rows.length };
+};
+
+export const populateTodayOddsFetchState = async (
+  env: Env,
+  now: Date,
+  context: PopulateTodayContext = {},
+): Promise<PopulateTodayOddsFetchStateResult> =>
+  populateOddsFetchStateForDate(env, getTodayJst(now), context);
+
+export interface PerDayPopulateResult {
+  yyyymmdd: string;
+  inserted: number;
+  total: number;
+}
+
+export interface PopulateMultiDayResult {
+  inserted: number;
+  total: number;
+  perDay: PerDayPopulateResult[];
+}
+
+const collectTargetDates = (baseDate: Date, daysAhead: number): string[] => {
+  const baseMs = baseDate.getTime();
+  return Array.from({ length: daysAhead + 1 }, (_, offset) =>
+    getTodayJst(new Date(baseMs + offset * MS_PER_DAY)),
+  );
+};
+
+export const populateMultiDayOddsFetchState = async (
+  env: Env,
+  baseDate: Date,
+  daysAhead: number = DEFAULT_DAYS_AHEAD,
+  context: PopulateTodayContext = {},
+): Promise<PopulateMultiDayResult> => {
+  const targetDates = collectTargetDates(baseDate, daysAhead);
+  const perDay = await Promise.all(
+    targetDates.map(async (yyyymmdd): Promise<PerDayPopulateResult> => {
+      const result = await populateOddsFetchStateForDate(env, yyyymmdd, context);
+      return { inserted: result.inserted, total: result.total, yyyymmdd };
+    }),
+  );
+  const inserted = perDay.reduce((acc, entry) => acc + entry.inserted, 0);
+  const total = perDay.reduce((acc, entry) => acc + entry.total, 0);
+  return { inserted, perDay, total };
 };
