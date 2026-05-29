@@ -645,7 +645,7 @@ it("handleScheduled does nothing for unknown cron", async () => {
 it("processFetchOddsJob returns early when fetchAndStoreOdds yields null", async () => {
   vi.mocked(fetchAndStoreOdds).mockResolvedValueOnce(null);
   const env = buildEnv();
-  await processFetchOddsJob(env, "nar:20260528:42:01");
+  await processFetchOddsJob(env, "nar:2026:0528:42:01");
   expect(cacheMock.delete).not.toHaveBeenCalled();
   expect(vi.mocked(env.ODDS_HOT_KV.put)).not.toHaveBeenCalled();
 });
@@ -657,7 +657,7 @@ it("processFetchOddsJob fans out cache writes on success (NAR)", async () => {
     latest: { tansho: [{ combination: "01", odds: 2.5 }] },
   });
   const env = buildEnv();
-  await processFetchOddsJob(env, "nar:20260528:42:01");
+  await processFetchOddsJob(env, "nar:2026:0528:42:01");
   expect(cacheMock.delete).toHaveBeenCalled();
   expect(vi.mocked(env.ODDS_HOT_KV.put)).toHaveBeenCalled();
 });
@@ -669,8 +669,63 @@ it("processFetchOddsJob detects JRA source prefix on success", async () => {
     latest: { tansho: [{ combination: "01", odds: 2.5 }] },
   });
   const env = buildEnv();
-  await processFetchOddsJob(env, "jra:20260528:08:01");
+  await processFetchOddsJob(env, "jra:2026:0528:08:01");
   expect(cacheMock.delete).toHaveBeenCalled();
+});
+
+it("processFetchOddsJob passes the correct yyyymmdd to patchLastFetchInKv for a 5-segment raceKey", async () => {
+  vi.mocked(fetchAndStoreOdds).mockResolvedValueOnce({
+    fetchedAt: "2026-05-29T10:00:00+09:00",
+    inserted: 11,
+    latest: { tansho: [{ combination: "01", odds: 2.5 }] },
+  });
+  const env = buildEnv();
+  const getMock = env.ODDS_HOT_KV.get as unknown as ReturnType<typeof vi.fn>;
+  getMock.mockImplementation(async (key: string) =>
+    key === "odds:race-list:v1:nar:20260529"
+      ? JSON.stringify([
+          {
+            lastOddsFetchAt: null,
+            raceKey: "nar:2026:0529:47:01",
+            raceStartAtJst: "2026-05-29T10:30:00+09:00",
+            source: "nar",
+          },
+        ])
+      : null,
+  );
+  await processFetchOddsJob(env, "nar:2026:0529:47:01");
+  expect(getMock).toHaveBeenCalledWith("odds:race-list:v1:nar:20260529");
+});
+
+it("processFetchOddsJob calls logFetch and returns early when raceKey format is invalid", async () => {
+  vi.mocked(fetchAndStoreOdds).mockResolvedValueOnce({
+    fetchedAt: "2026-05-28T10:00:00+09:00",
+    inserted: 11,
+    latest: { tansho: [{ combination: "01", odds: 2.5 }] },
+  });
+  const env = buildEnv();
+  await processFetchOddsJob(env, "nar:20260528:42:01");
+  expect(cacheMock.delete).not.toHaveBeenCalled();
+  expect(vi.mocked(env.ODDS_HOT_KV.put)).not.toHaveBeenCalled();
+  expect(vi.mocked(env.REALTIME_HOT_DB.prepare)).toHaveBeenCalled();
+});
+
+it("processFetchOddsJob swallows logFetch failure when raceKey format is invalid", async () => {
+  vi.mocked(fetchAndStoreOdds).mockResolvedValueOnce({
+    fetchedAt: "2026-05-28T10:00:00+09:00",
+    inserted: 11,
+    latest: { tansho: [{ combination: "01", odds: 2.5 }] },
+  });
+  const env = buildEnv({
+    REALTIME_HOT_DB: buildDb({
+      logRun: vi.fn(async () => {
+        throw new Error("log fetch failed");
+      }),
+    }),
+  });
+  await processFetchOddsJob(env, "nar:20260528:42:01");
+  expect(cacheMock.delete).not.toHaveBeenCalled();
+  expect(vi.mocked(env.ODDS_HOT_KV.put)).not.toHaveBeenCalled();
 });
 
 it("processArchiveJob delegates to runScheduledArchive", async () => {

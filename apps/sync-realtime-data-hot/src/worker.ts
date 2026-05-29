@@ -19,6 +19,7 @@ import {
 import { invalidateRaceListInKv, patchLastFetchInKv } from "./gates/race-list-kv-cache";
 import { shouldRunOddsCron } from "./gates/polling-window-gate";
 import { jsonResponse } from "./http";
+import { extractYyyymmddFromRaceKey } from "./race-key";
 import { writeCachedOdds } from "./odds-cache";
 import { planOddsFetches } from "./plan";
 import {
@@ -297,8 +298,18 @@ export const processFetchOddsJob = async (env: Env, raceKey: string): Promise<vo
   if (!result) {
     return;
   }
+  const yyyymmdd = extractYyyymmddFromRaceKey(raceKey);
+  if (!yyyymmdd) {
+    await logFetch(
+      env.REALTIME_HOT_DB,
+      "fetch-odds",
+      "error",
+      raceKey,
+      "invalid raceKey format",
+    ).catch(() => undefined);
+    return;
+  }
   const source = raceKey.startsWith("jra:") ? "jra" : "nar";
-  const yyyymmdd = raceKey.slice(4, 12);
   await purgeEdgeCache(raceKey);
   await purgeD1ResultCacheForRace(raceKey, D1_RESULT_CACHE_QUERIES);
   await writeLatestOddsToKv(env, raceKey, {

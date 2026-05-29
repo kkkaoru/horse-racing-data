@@ -8,11 +8,11 @@ import {
 
 export { useProductionApiProxy };
 
-// Per-attempt timeout. Tight enough that a hung upstream gives up quickly
-// so the next retry can race a fresh connection (typical Hyperdrive cold
-// start finishes well under 3s; a 3s cap means we fail fast, retry, and
-// still keep the total budget low enough for SSR navigations).
-const ATTEMPT_TIMEOUT_MS = 3000;
+// Per-attempt timeout. Observed real-world response times for the upstream
+// trends / realtime endpoints range from ~0.3s (cache hit) to ~8s (Hyperdrive
+// cold start + populated 14-day window). A 10s cap absorbs that variance
+// without making the total retry budget pathologically long.
+const ATTEMPT_TIMEOUT_MS = 10000;
 // Max attempts including the first try. Tries each request twice on
 // transient network/timeout errors so the user-facing page is far more
 // likely to render with real values rather than the empty fallback.
@@ -51,11 +51,25 @@ interface AttemptContext {
   headers: Headers;
 }
 
+// DOMException (thrown by AbortSignal.timeout) has a getter-only `.message`.
+// Next.js dev error reporting writes through `.message` when surfacing
+// rejections, which crashes the request with
+// `TypeError: Cannot set property message of [DOMException] which has only a
+// getter`. Rewrap so the slot is writable while keeping the original as cause.
+const toWritableError = (error: unknown): Error => {
+  if (error instanceof Error) {
+    const wrapped = new Error(error.message, { cause: error });
+    wrapped.name = error.name;
+    return wrapped;
+  }
+  return new Error(String(error));
+};
+
 const attemptFetch = async (context: AttemptContext, attempt: number): Promise<Response> => {
   const response = await fetchOnce(context.url, context.init, context.headers).catch(
     async (error: unknown) => {
       if (attempt >= MAX_ATTEMPTS) {
-        throw error instanceof Error ? error : new Error(String(error));
+        throw toWritableError(error);
       }
       await sleep(RETRY_BACKOFF_MS);
       return attemptFetch(context, attempt + 1);

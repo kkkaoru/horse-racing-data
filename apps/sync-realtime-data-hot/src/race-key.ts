@@ -1,5 +1,12 @@
 export type RealtimeSource = "jra" | "nar";
 
+const RACE_KEY_PATTERN = /^(jra|nar):(\d{4}):(\d{4}):[0-9A-Z]{2}:\d{2}$/u;
+
+export const extractYyyymmddFromRaceKey = (raceKey: string): string | null => {
+  const match = RACE_KEY_PATTERN.exec(raceKey);
+  return match ? `${match[2]}${match[3]}` : null;
+};
+
 export const buildRealtimeRaceKey = (
   source: RealtimeSource,
   year: string,
