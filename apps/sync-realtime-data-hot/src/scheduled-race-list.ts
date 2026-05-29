@@ -7,11 +7,19 @@
 // This is purely SELECT against Hyperdrive; no INSERT/UPDATE/DELETE flows
 // into Postgres. The hot D1 upsert uses `on conflict(race_key) do update`
 // so the legacy worker's later forwarded payload still wins when it lands.
+//
+// NAR per-race deba URLs are resolved by fetching each venue's RaceList HTML
+// once (one request per venue) and joining the per-race DebaTable links onto
+// the Hyperdrive rows. Without this, the scraper would fall back to the venue
+// race-list page, which exposes no odds links, and every fetch-odds job would
+// throw "odds rows are empty". JRA URLs require a netkeiba-style checksum that
+// is not available inside this worker yet — keep the placeholder so the legacy
+// `forwardRaceSourceToHot` payload still wins via `on conflict do update`.
 
 import type { Pool } from "pg";
 
 import { invalidateRaceListInKv } from "./gates/race-list-kv-cache";
-import { buildRaceListUrl } from "./keiba-go";
+import { buildRaceListUrl, fetchRaceLinksFromRaceList } from "./keiba-go";
 import { getHotPool } from "./postgres-pool";
 import { upsertOddsFetchState } from "./storage";
 import { formatRaceStartJst, getTodayJst } from "./time";
@@ -31,10 +39,20 @@ export interface TodayRaceRow {
 
 export interface ListTodayRacesContext {
   pool?: Pool;
+  resolveNarDebaUrl?: NarDebaUrlResolver;
 }
 
 export interface PopulateTodayContext {
   pool?: Pool;
+  resolveNarDebaUrl?: NarDebaUrlResolver;
+}
+
+export type NarDebaUrlResolver = (input: NarDebaUrlResolverInput) => Promise<string | null>;
+
+export interface NarDebaUrlResolverInput {
+  yyyymmdd: string;
+  keibajoCode: string;
+  raceBango: string;
 }
 
 interface SourcedRaceRow {
@@ -47,6 +65,16 @@ interface SourcedRaceRow {
   hasso_jikoku: string | null;
   kaisai_kai: string | null;
   kaisai_nichime: string | null;
+}
+
+interface IntermediateRow {
+  source: OddsSource;
+  kaisaiNen: string;
+  kaisaiTsukihi: string;
+  keibajoCode: string;
+  raceBango: string;
+  raceKey: string;
+  raceStartAtJst: string;
 }
 
 const KEIBAJO_CODE_PAD_WIDTH = 2;
@@ -100,25 +128,15 @@ const buildRaceStartAtJst = (row: SourcedRaceRow): string | null => {
   return formatRaceStartJst(row.kaisai_nen, row.kaisai_tsukihi, hhmm);
 };
 
-const buildDebaUrl = (row: SourcedRaceRow): string => {
-  if (row.source === "nar") {
-    const yyyymmdd = `${row.kaisai_nen}${row.kaisai_tsukihi}`;
-    return buildRaceListUrl(yyyymmdd, normaliseCode(row.keibajo_code, KEIBAJO_CODE_PAD_WIDTH)).url;
-  }
-  return JRA_PLACEHOLDER_URL;
-};
-
-const toTodayRaceRow = (row: SourcedRaceRow): TodayRaceRow | null => {
+const toIntermediateRow = (row: SourcedRaceRow): IntermediateRow | null => {
   const raceStartAtJst = buildRaceStartAtJst(row);
   if (!raceStartAtJst) {
     return null;
   }
   return {
-    debaUrl: buildDebaUrl(row),
     kaisaiNen: row.kaisai_nen,
     kaisaiTsukihi: row.kaisai_tsukihi,
     keibajoCode: normaliseCode(row.keibajo_code, KEIBAJO_CODE_PAD_WIDTH),
-    oddsLinksJson: EMPTY_ODDS_LINKS_JSON,
     raceBango: normaliseCode(row.race_bango, RACE_BANGO_PAD_WIDTH),
     raceKey: buildRaceKey(row),
     raceStartAtJst,
@@ -131,6 +149,110 @@ const splitYyyymmdd = (yyyymmdd: string): { kaisaiNen: string; kaisaiTsukihi: st
   kaisaiTsukihi: yyyymmdd.slice(4, 8),
 });
 
+interface NarVenue {
+  yyyymmdd: string;
+  keibajoCode: string;
+}
+
+const buildVenueKey = (yyyymmdd: string, keibajoCode: string): string =>
+  `${yyyymmdd}:${keibajoCode}`;
+
+const collectNarVenues = (rows: IntermediateRow[]): NarVenue[] => {
+  const seen = new Map<string, NarVenue>();
+  rows.forEach((row) => {
+    if (row.source !== "nar") {
+      return;
+    }
+    const yyyymmdd = `${row.kaisaiNen}${row.kaisaiTsukihi}`;
+    seen.set(buildVenueKey(yyyymmdd, row.keibajoCode), {
+      keibajoCode: row.keibajoCode,
+      yyyymmdd,
+    });
+  });
+  return Array.from(seen.values());
+};
+
+const fetchNarVenueLinks = async (venue: NarVenue): Promise<Map<string, string>> => {
+  const venueUrl = buildRaceListUrl(venue.yyyymmdd, venue.keibajoCode).url;
+  try {
+    const links = await fetchRaceLinksFromRaceList(venueUrl);
+    return new Map(
+      links.map((link) => [link.raceNumber.padStart(RACE_BANGO_PAD_WIDTH, "0"), link.url]),
+    );
+  } catch (error) {
+    console.warn(
+      `[scheduled-race-list] failed to fetch NAR venue race list: yyyymmdd=${venue.yyyymmdd} keibajo=${venue.keibajoCode}`,
+      error,
+    );
+    return new Map();
+  }
+};
+
+const buildDefaultNarResolver =
+  (venueLinkMap: Map<string, Map<string, string>>): NarDebaUrlResolver =>
+  async ({ yyyymmdd, keibajoCode, raceBango }) =>
+    venueLinkMap.get(buildVenueKey(yyyymmdd, keibajoCode))?.get(raceBango) ?? null;
+
+const prepareNarResolver = async (
+  rows: IntermediateRow[],
+  override: NarDebaUrlResolver | undefined,
+): Promise<NarDebaUrlResolver> => {
+  if (override) {
+    return override;
+  }
+  const venues = collectNarVenues(rows);
+  const entries = await Promise.all(
+    venues.map(async (venue): Promise<[string, Map<string, string>]> => {
+      const links = await fetchNarVenueLinks(venue);
+      return [buildVenueKey(venue.yyyymmdd, venue.keibajoCode), links];
+    }),
+  );
+  return buildDefaultNarResolver(new Map(entries));
+};
+
+const resolveDebaUrl = async (
+  row: IntermediateRow,
+  resolveNarDebaUrl: NarDebaUrlResolver,
+): Promise<string | null> => {
+  if (row.source === "jra") {
+    return JRA_PLACEHOLDER_URL;
+  }
+  const yyyymmdd = `${row.kaisaiNen}${row.kaisaiTsukihi}`;
+  const debaUrl = await resolveNarDebaUrl({
+    keibajoCode: row.keibajoCode,
+    raceBango: row.raceBango,
+    yyyymmdd,
+  });
+  if (!debaUrl) {
+    console.warn(
+      `[scheduled-race-list] NAR per-race deba URL not found, skipping raceKey=${row.raceKey}`,
+    );
+    return null;
+  }
+  return debaUrl;
+};
+
+const attachDebaUrl = async (
+  row: IntermediateRow,
+  resolveNarDebaUrl: NarDebaUrlResolver,
+): Promise<TodayRaceRow | null> => {
+  const debaUrl = await resolveDebaUrl(row, resolveNarDebaUrl);
+  if (!debaUrl) {
+    return null;
+  }
+  return {
+    debaUrl,
+    kaisaiNen: row.kaisaiNen,
+    kaisaiTsukihi: row.kaisaiTsukihi,
+    keibajoCode: row.keibajoCode,
+    oddsLinksJson: EMPTY_ODDS_LINKS_JSON,
+    raceBango: row.raceBango,
+    raceKey: row.raceKey,
+    raceStartAtJst: row.raceStartAtJst,
+    source: row.source,
+  };
+};
+
 export const listTodayRacesFromHyperdrive = async (
   env: Env,
   yyyymmdd: string,
@@ -142,10 +264,15 @@ export const listTodayRacesFromHyperdrive = async (
     kaisaiNen,
     kaisaiTsukihi,
   ]);
-  return result.rows
+  const intermediates = result.rows
     .filter(isCompleteRow)
-    .map(toTodayRaceRow)
-    .filter((entry): entry is TodayRaceRow => entry !== null);
+    .map(toIntermediateRow)
+    .filter((entry): entry is IntermediateRow => entry !== null);
+  const resolveNarDebaUrl = await prepareNarResolver(intermediates, context.resolveNarDebaUrl);
+  const resolved = await Promise.all(
+    intermediates.map((row) => attachDebaUrl(row, resolveNarDebaUrl)),
+  );
+  return resolved.filter((entry): entry is TodayRaceRow => entry !== null);
 };
 
 export interface PopulateTodayOddsFetchStateResult {
@@ -173,7 +300,10 @@ export const populateTodayOddsFetchState = async (
   context: PopulateTodayContext = {},
 ): Promise<PopulateTodayOddsFetchStateResult> => {
   const yyyymmdd = getTodayJst(now);
-  const rows = await listTodayRacesFromHyperdrive(env, yyyymmdd, { pool: context.pool });
+  const rows = await listTodayRacesFromHyperdrive(env, yyyymmdd, {
+    pool: context.pool,
+    resolveNarDebaUrl: context.resolveNarDebaUrl,
+  });
   await Promise.all(
     rows.map((row) =>
       upsertOddsFetchState(env.REALTIME_HOT_DB, {
