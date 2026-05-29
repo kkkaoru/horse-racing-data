@@ -2,20 +2,27 @@ import { describe, expect, it } from "vitest";
 
 import {
   clearRaceTrendScoreConditionsQueryParam,
+  clearRaceTrendSortKeyQueryParam,
   clearRaceTrendTargetQueryParams,
   DEFAULT_RACE_TREND_SCORE_CONDITIONS_QUERY,
+  DEFAULT_RACE_TREND_SORT_KEY,
   DEFAULT_RACE_TREND_TARGETS,
   getRaceTrendScoreConditionsFromSearchParams,
   getRaceTrendScoreConditionsQueryValue,
+  getRaceTrendSortKeyFromSearchParams,
+  getRaceTrendSortKeyQueryValue,
   getRaceTrendTargetQueryValue,
   getRaceTrendTargetsFromSearchParams,
   isDefaultRaceTrendScoreConditionsQuery,
+  isDefaultRaceTrendSortKey,
   isDefaultRaceTrendTargets,
   isSameRaceTrendScoreConditionsQuery,
   isSameRaceTrendTargets,
   parseRaceTrendScoreConditionsQuery,
+  parseRaceTrendSortKeyQuery,
   parseRaceTrendTargets,
   serializeRaceTrendScoreConditionsQuery,
+  serializeRaceTrendSortKeyQuery,
   serializeRaceTrendTargets,
 } from "./race-trend-query";
 
@@ -262,6 +269,69 @@ describe("race trend score condition query helpers", () => {
   it("clears the score conditions query param", () => {
     const params = new URLSearchParams("raceTrendScoreConditions=frame,jockey&other=keep");
     clearRaceTrendScoreConditionsQueryParam(params);
+    expect(params.toString()).toBe("other=keep");
+  });
+});
+
+describe("race trend sort key query helpers", () => {
+  it("uses the default sort key when the query string omits the param", () => {
+    expect(getRaceTrendSortKeyFromSearchParams(new URLSearchParams())).toBe("showRate");
+    expect(DEFAULT_RACE_TREND_SORT_KEY).toBe("showRate");
+    expect(isDefaultRaceTrendSortKey("showRate")).toBe(true);
+  });
+
+  it("reads the sort key query param from URLSearchParams", () => {
+    expect(getRaceTrendSortKeyQueryValue(new URLSearchParams("raceTrendSortBy=score"))).toBe(
+      "score",
+    );
+  });
+
+  it("reads the sort key query param from a search param record", () => {
+    expect(getRaceTrendSortKeyQueryValue({ raceTrendSortBy: "winRate" })).toBe("winRate");
+    expect(getRaceTrendSortKeyQueryValue({ raceTrendSortBy: undefined })).toBeNull();
+    expect(getRaceTrendSortKeyQueryValue({ raceTrendSortBy: ["quinellaRate", "ignored"] })).toBe(
+      "quinellaRate",
+    );
+    expect(getRaceTrendSortKeyQueryValue({ raceTrendSortBy: [] })).toBeNull();
+  });
+
+  it("parses each valid sort key", () => {
+    expect(parseRaceTrendSortKeyQuery("score")).toBe("score");
+    expect(parseRaceTrendSortKeyQuery("showRate")).toBe("showRate");
+    expect(parseRaceTrendSortKeyQuery("quinellaRate")).toBe("quinellaRate");
+    expect(parseRaceTrendSortKeyQuery("winRate")).toBe("winRate");
+  });
+
+  it("trims whitespace around the sort key value", () => {
+    expect(parseRaceTrendSortKeyQuery("  winRate  ")).toBe("winRate");
+  });
+
+  it("falls back to the default sort key for null or invalid input", () => {
+    expect(parseRaceTrendSortKeyQuery(null)).toBe("showRate");
+    expect(parseRaceTrendSortKeyQuery("")).toBe("showRate");
+    expect(parseRaceTrendSortKeyQuery("unknown")).toBe("showRate");
+  });
+
+  it("serializes the sort key as its own string", () => {
+    expect(serializeRaceTrendSortKeyQuery("score")).toBe("score");
+    expect(serializeRaceTrendSortKeyQuery("showRate")).toBe("showRate");
+    expect(serializeRaceTrendSortKeyQuery("quinellaRate")).toBe("quinellaRate");
+    expect(serializeRaceTrendSortKeyQuery("winRate")).toBe("winRate");
+  });
+
+  it("round-trips parse and serialize for a non-default sort key", () => {
+    expect(serializeRaceTrendSortKeyQuery(parseRaceTrendSortKeyQuery("score"))).toBe("score");
+  });
+
+  it("reports non-default sort keys as non-default", () => {
+    expect(isDefaultRaceTrendSortKey("score")).toBe(false);
+    expect(isDefaultRaceTrendSortKey("winRate")).toBe(false);
+    expect(isDefaultRaceTrendSortKey("quinellaRate")).toBe(false);
+  });
+
+  it("clears the sort key query param", () => {
+    const params = new URLSearchParams("raceTrendSortBy=score&other=keep");
+    clearRaceTrendSortKeyQueryParam(params);
     expect(params.toString()).toBe("other=keep");
   });
 });
