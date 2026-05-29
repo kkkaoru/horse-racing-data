@@ -40,8 +40,81 @@ const getCloudflareRuntime = async (): Promise<{
   }
 };
 
-const canUseD1QueryCache = (): boolean =>
-  typeof caches !== "undefined" && Boolean(caches.default);
+const canUseD1QueryCache = (): boolean => typeof caches !== "undefined" && Boolean(caches.default);
+
+const tryParseJsonUnknown = (text: string): { ok: true; value: unknown } | { ok: false } => {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return { ok: true, value: parsed };
+  } catch {
+    return { ok: false };
+  }
+};
+
+const tryReadCachedJsonUnknown = async (
+  response: Response,
+): Promise<{ ok: true; value: unknown } | { ok: false }> => {
+  try {
+    const parsed: unknown = await response.json();
+    return { ok: true, value: parsed };
+  } catch {
+    return { ok: false };
+  }
+};
+
+interface ReadD1CacheContext {
+  cacheKey: string;
+  cacheRequest: Request;
+  ctx: PcKeibaExecutionContext | null;
+  defaultCache: Cache | undefined;
+  env: CloudflareEnv | null;
+  ttlSeconds: number;
+}
+
+const readFromCfCacheUnknown = async (
+  context: ReadD1CacheContext,
+): Promise<{ found: true; value: unknown } | { found: false }> => {
+  const { cacheRequest, defaultCache } = context;
+  const cachedResponse = await defaultCache?.match(cacheRequest);
+  if (!cachedResponse) return { found: false };
+  const parsed = await tryReadCachedJsonUnknown(cachedResponse);
+  if (!parsed.ok) {
+    await defaultCache?.delete(cacheRequest);
+    return { found: false };
+  }
+  return { found: true, value: parsed.value };
+};
+
+const readFromKvUnknown = async (
+  context: ReadD1CacheContext,
+): Promise<{ found: true; value: unknown } | { found: false }> => {
+  const { cacheKey, cacheRequest, ctx, defaultCache, env, ttlSeconds } = context;
+  const kvBody = await env?.DETAIL_SECTION_CACHE_KV?.get(cacheKey);
+  if (!kvBody) return { found: false };
+  const parsed = tryParseJsonUnknown(kvBody);
+  if (!parsed.ok) {
+    await env?.DETAIL_SECTION_CACHE_KV?.put(cacheKey, "", { expirationTtl: 1 });
+    return { found: false };
+  }
+  const putCache = async (): Promise<void> => {
+    await defaultCache?.put(
+      cacheRequest,
+      new Response(kvBody, {
+        headers: {
+          "Cache-Control": `public, max-age=${Math.min(ttlSeconds, 60)}`,
+          "Content-Type": DEFAULT_CONTENT_TYPE,
+          "X-D1-Query-Cache": "HIT-kv",
+        },
+      }),
+    );
+  };
+  if (ctx !== null) {
+    ctx.waitUntil(putCache());
+  } else {
+    await putCache();
+  }
+  return { found: true, value: parsed.value };
+};
 
 export const readD1QueryCache = async <T>(
   profile: D1QueryCacheProfile,
@@ -59,53 +132,31 @@ export const readD1QueryCache = async <T>(
   const cacheRequest = createD1QueryCacheRequest(cacheKey);
   const defaultCache = caches.default;
   const { ctx, env } = await getCloudflareRuntime();
-
-  const cachedResponse = await defaultCache?.match(cacheRequest);
-  if (cachedResponse) {
-    try {
-      // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-      return (await cachedResponse.json()) as T;
-    } catch {
-      await defaultCache?.delete(cacheRequest);
-    }
-  }
-
-  const kvBody = await env?.DETAIL_SECTION_CACHE_KV?.get(cacheKey);
-  if (!kvBody) {
-    return null;
-  }
-
-  try {
+  const context: ReadD1CacheContext = {
+    cacheKey,
+    cacheRequest,
+    ctx,
+    defaultCache,
+    env,
+    ttlSeconds,
+  };
+  const fromCache = await readFromCfCacheUnknown(context);
+  if (fromCache.found) {
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-    const parsed = JSON.parse(kvBody) as T;
-    const putCache = async () => {
-      await defaultCache?.put(
-        cacheRequest,
-        new Response(kvBody, {
-          headers: {
-            "Cache-Control": `public, max-age=${Math.min(ttlSeconds, 60)}`,
-            "Content-Type": DEFAULT_CONTENT_TYPE,
-            "X-D1-Query-Cache": "HIT-kv",
-          },
-        }),
-      );
-    };
-    if (ctx !== null) {
-      ctx.waitUntil(putCache());
-    } else {
-      await putCache();
-    }
-    return parsed;
-  } catch {
-    await env?.DETAIL_SECTION_CACHE_KV?.put(cacheKey, "", { expirationTtl: 1 });
-    return null;
+    return fromCache.value as T;
   }
+  const fromKv = await readFromKvUnknown(context);
+  if (fromKv.found) {
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+    return fromKv.value as T;
+  }
+  return null;
 };
 
-export const writeD1QueryCache = async <T>(
+export const writeD1QueryCache = async (
   profile: D1QueryCacheProfile,
   keyParts: readonly unknown[],
-  value: T,
+  value: unknown,
   options?: {
     raceDay?: D1QueryCacheRaceDayContext;
   },

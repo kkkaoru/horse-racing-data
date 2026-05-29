@@ -89,7 +89,9 @@ const parseWin5TableRow = (
     return null;
   }
 
-  const raceLabels = [...rowHtml.matchAll(RACE_SPAN_PATTERN)].map((match) => match[1]?.trim() ?? "");
+  const raceLabels = [...rowHtml.matchAll(RACE_SPAN_PATTERN)].map(
+    (match) => match[1]?.trim() ?? "",
+  );
   const startTimes = [...rowHtml.matchAll(TIME_SPAN_PATTERN)].map((match) => match[1] ?? "");
   if (raceLabels.length !== 5) {
     return null;
@@ -101,13 +103,15 @@ const parseWin5TableRow = (
       if (parsed === null) {
         return null;
       }
-      const leg: Win5RaceLeg = {
-        legIndex: index + 1,
-        kaisaiKai: "00",
-        kaisaiNichime: "00",
-        startTime: parseStartTime(startTimes[index] ?? ""),
-        ...parsed,
-      };
+      const leg: Win5RaceLeg = Object.assign(
+        {
+          legIndex: index + 1,
+          kaisaiKai: "00",
+          kaisaiNichime: "00",
+          startTime: parseStartTime(startTimes[index] ?? ""),
+        },
+        parsed,
+      );
       return leg;
     })
     .filter((leg): leg is Win5RaceLeg => leg !== null);
@@ -155,12 +159,10 @@ export const parseWin5SchedulesFromJraHtml = (
   return schedules;
 };
 
-export const fetchWin5SchedulesFromJra = async (
-  options?: {
-    fallbackYear?: string;
-    fetchedAt?: string;
-  },
-): Promise<Win5Schedule[]> => {
+export const fetchWin5SchedulesFromJra = async (options?: {
+  fallbackYear?: string;
+  fetchedAt?: string;
+}): Promise<Win5Schedule[]> => {
   const response = await fetch(JRA_WIN5_RACELIST_URL, {
     headers: {
       Accept: "text/html",

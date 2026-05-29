@@ -8,7 +8,8 @@ const getLiveRelayOrigin = (): string | null => {
   if (configured) {
     return configured.replace(/\/+$/u, "");
   }
-  const port = process.env.NEXT_PUBLIC_PC_KEIBA_PRODUCTION_LIVE_RELAY_PORT ?? DEFAULT_LIVE_RELAY_PORT;
+  const port =
+    process.env.NEXT_PUBLIC_PC_KEIBA_PRODUCTION_LIVE_RELAY_PORT ?? DEFAULT_LIVE_RELAY_PORT;
   return `ws://127.0.0.1:${port}`;
 };
 

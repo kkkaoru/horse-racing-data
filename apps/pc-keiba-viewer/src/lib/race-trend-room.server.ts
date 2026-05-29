@@ -2,11 +2,8 @@ import "server-only";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 
 import type { RaceSource } from "./codes";
+import { fetchProductionApi, useProductionApiProxy } from "./production-api-proxy.server";
 import { RACE_TREND_CACHE_REFRESH_PARAM } from "./race-trend-cache";
-import {
-  fetchProductionApi,
-  useProductionApiProxy,
-} from "./production-api-proxy.server";
 
 export interface RaceTrendRoomParams {
   day: string;

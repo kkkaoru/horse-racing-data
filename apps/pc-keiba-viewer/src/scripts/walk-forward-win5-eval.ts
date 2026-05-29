@@ -3,21 +3,22 @@
 
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+
 import { Pool } from "pg";
 
+import {
+  buildWin5LegInputsWithPool,
+  type Win5ModelScoreLookup,
+  type Win5ModelScoreLookupParams,
+} from "../lib/win5/leg-inputs";
+import { parseWin5PayoutField, planCoversWinningCombination } from "../lib/win5/payout-parse";
 import {
   buildWin5PredictionPayload,
   getWin5PlanForBudget,
   WIN5_DEFAULT_BUDGET_YEN,
 } from "../lib/win5/prediction";
 import { buildWin5LegsFromRaceJoho } from "../lib/win5/race-joho";
-import { parseWin5PayoutField, planCoversWinningCombination } from "../lib/win5/payout-parse";
 import type { Win5ValidationResult, Win5ValidationSummary } from "../lib/win5/types";
-import {
-  buildWin5LegInputsWithPool,
-  type Win5ModelScoreLookup,
-  type Win5ModelScoreLookupParams,
-} from "../lib/win5/leg-inputs";
 
 const DEFAULT_LOCAL_DATABASE_URL =
   "postgresql://horse_racing:horse_racing@127.0.0.1:15432/horse_racing";
@@ -101,11 +102,36 @@ const parseArgs = (): CliArgs => {
     baselinePath: null,
   };
   const handlers = new Map<string, (value: string) => void>([
-    ["--start-year", (value) => { parsed.startYear = Number.parseInt(value, 10); }],
-    ["--end-year", (value) => { parsed.endYear = Number.parseInt(value, 10); }],
-    ["--output", (value) => { parsed.outputPath = value; }],
-    ["--predictions-dir", (value) => { parsed.predictionsDir = value; }],
-    ["--baseline", (value) => { parsed.baselinePath = value; }],
+    [
+      "--start-year",
+      (value) => {
+        parsed.startYear = Number.parseInt(value, 10);
+      },
+    ],
+    [
+      "--end-year",
+      (value) => {
+        parsed.endYear = Number.parseInt(value, 10);
+      },
+    ],
+    [
+      "--output",
+      (value) => {
+        parsed.outputPath = value;
+      },
+    ],
+    [
+      "--predictions-dir",
+      (value) => {
+        parsed.predictionsDir = value;
+      },
+    ],
+    [
+      "--baseline",
+      (value) => {
+        parsed.baselinePath = value;
+      },
+    ],
   ]);
   args.forEach((arg, index) => {
     if (arg === "--no-model-scores") {
@@ -121,9 +147,7 @@ const parseArgs = (): CliArgs => {
 };
 
 const getConnectionString = (): string =>
-  process.env.DATABASE_URL_LOCAL ??
-  process.env.DATABASE_URL ??
-  DEFAULT_LOCAL_DATABASE_URL;
+  process.env.DATABASE_URL_LOCAL ?? process.env.DATABASE_URL ?? DEFAULT_LOCAL_DATABASE_URL;
 
 const roundRate = (value: number): number =>
   Math.round(value * PERCENTAGE_BASIS) / PERCENTAGE_DIVISOR;
@@ -186,12 +210,11 @@ interface CreateLookupParams {
   yearLoader?: (year: number) => Promise<Map<string, number>>;
 }
 
-export const createWin5ModelScoreLookup = (
-  params: CreateLookupParams,
-): Win5ModelScoreLookup => {
+export const createWin5ModelScoreLookup = (params: CreateLookupParams): Win5ModelScoreLookup => {
   const cache = new Map<number, Map<string, number>>();
-  const loader = params.yearLoader ?? ((year: number) =>
-    loadJsonlYearMap({ predictionsDir: params.predictionsDir, year }));
+  const loader =
+    params.yearLoader ??
+    ((year: number) => loadJsonlYearMap({ predictionsDir: params.predictionsDir, year }));
   const ensureYear = async (year: number): Promise<Map<string, number>> => {
     const cached = cache.get(year);
     if (cached) {
@@ -303,9 +326,7 @@ const loadWfRows = async (params: {
 const isSkippableRow = (row: WfRow): boolean =>
   row.tekichu_nashi_flag === "1" || row.fuseiritsu_flag === "1";
 
-const evaluateRow = async (
-  params: EvaluateRowParams,
-): Promise<Win5ValidationResult | null> => {
+const evaluateRow = async (params: EvaluateRowParams): Promise<Win5ValidationResult | null> => {
   const { row, averagePayoutYen, pool, modelScoreLookup } = params;
   if (isSkippableRow(row)) {
     return null;
@@ -405,9 +426,10 @@ const summarize = (params: SummarizeParams): Win5ValidationSummary => {
   const defaultTotalReturnYen = sumNumber(results.map((row) => row.defaultReturnYen));
   const recommendedTotalCostYen = sumNumber(results.map((row) => row.recommendedCostYen));
   const recommendedTotalReturnYen = sumNumber(results.map((row) => row.recommendedReturnYen));
-  const recommendedBudgetAverageYen = results.length > 0
-    ? Math.round(sumNumber(results.map((row) => row.recommendedBudgetYen)) / results.length)
-    : 0;
+  const recommendedBudgetAverageYen =
+    results.length > 0
+      ? Math.round(sumNumber(results.map((row) => row.recommendedBudgetYen)) / results.length)
+      : 0;
   return {
     defaultBudgetYen: WIN5_DEFAULT_BUDGET_YEN,
     defaultHitCount: defaultHits.length,
@@ -421,8 +443,7 @@ const summarize = (params: SummarizeParams): Win5ValidationSummary => {
     periodStart: String(startYear),
     recommendedBudgetAverageYen,
     recommendedHitCount: recommendedHits.length,
-    recommendedHitRate:
-      results.length > 0 ? roundRate(recommendedHits.length / results.length) : 0,
+    recommendedHitRate: results.length > 0 ? roundRate(recommendedHits.length / results.length) : 0,
     recommendedRecoveryRate:
       recommendedTotalCostYen > 0
         ? roundRate(recommendedTotalReturnYen / recommendedTotalCostYen)
@@ -433,20 +454,35 @@ const summarize = (params: SummarizeParams): Win5ValidationSummary => {
   };
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const isPartialBaselineSummary = (value: unknown): value is Partial<BaselineSummary> => {
+  if (!isRecord(value)) return false;
+  const candidates = [
+    value.defaultHitRate,
+    value.defaultRecoveryRate,
+    value.recommendedHitRate,
+    value.recommendedRecoveryRate,
+  ];
+  return candidates.every((candidate) => candidate === undefined || typeof candidate === "number");
+};
+
 const loadBaseline = async (path: string): Promise<BaselineSummary | null> => {
   const contents = await readFile(resolve(path), "utf8").catch(() => null);
   if (contents === null) {
     return null;
   }
-  const parsed = JSON.parse(contents) as { summary?: BaselineSummary };
-  if (!parsed.summary) {
+  const parsed: unknown = JSON.parse(contents);
+  if (!isRecord(parsed) || !isPartialBaselineSummary(parsed.summary)) {
     return null;
   }
+  const { summary } = parsed;
   return {
-    defaultHitRate: parsed.summary.defaultHitRate ?? 0,
-    defaultRecoveryRate: parsed.summary.defaultRecoveryRate ?? 0,
-    recommendedHitRate: parsed.summary.recommendedHitRate ?? 0,
-    recommendedRecoveryRate: parsed.summary.recommendedRecoveryRate ?? 0,
+    defaultHitRate: summary.defaultHitRate ?? 0,
+    defaultRecoveryRate: summary.defaultRecoveryRate ?? 0,
+    recommendedHitRate: summary.recommendedHitRate ?? 0,
+    recommendedRecoveryRate: summary.recommendedRecoveryRate ?? 0,
   };
 };
 
@@ -499,7 +535,9 @@ const ensurePredictionsDirAvailable = async (predictionsDir: string): Promise<bo
     return true;
   } catch (error) {
     if (isFileMissingError(error)) {
-      console.warn(`Predictions directory not found: ${predictionsDir}. Falling back to heuristic.`);
+      console.warn(
+        `Predictions directory not found: ${predictionsDir}. Falling back to heuristic.`,
+      );
       return false;
     }
     throw error;
@@ -512,10 +550,10 @@ const main = async (): Promise<void> => {
   try {
     const averagePayoutYen = await loadAveragePayout(pool);
     const rows = await loadWfRows({ pool, startYear: args.startYear, endYear: args.endYear });
-    const modelScoreLookup = args.predictionsDir
-      && (await ensurePredictionsDirAvailable(args.predictionsDir))
-      ? await buildLookupForRows({ predictionsDir: args.predictionsDir, rows })
-      : null;
+    const modelScoreLookup =
+      args.predictionsDir && (await ensurePredictionsDirAvailable(args.predictionsDir))
+        ? await buildLookupForRows({ predictionsDir: args.predictionsDir, rows })
+        : null;
     const { results, skippedDays } = await evaluateAll({
       pool,
       rows,
@@ -532,7 +570,10 @@ const main = async (): Promise<void> => {
     const extendedSummary = withBaseline(summary, baseline);
     console.log(JSON.stringify(extendedSummary, null, 2));
     if (args.outputPath) {
-      await writeReport({ outputPath: args.outputPath, payload: { results, summary: extendedSummary } });
+      await writeReport({
+        outputPath: args.outputPath,
+        payload: { results, summary: extendedSummary },
+      });
     }
   } finally {
     await pool.end();

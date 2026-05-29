@@ -6,13 +6,9 @@
 // back to the base model_version.
 
 import "server-only";
-
 import type { Pool } from "pg";
 
-import type {
-  Win5ModelScoreLookup,
-  Win5ModelScoreLookupParams,
-} from "./leg-inputs";
+import type { Win5ModelScoreLookup, Win5ModelScoreLookupParams } from "./leg-inputs";
 
 interface BuildLookupParams {
   pool: Pool;
@@ -47,10 +43,12 @@ const buildOverlayModelVersion = (params: {
   baseModelVersion: string;
   kaisaiNen: string;
   kaisaiTsukihi: string;
-}): string =>
-  `${params.baseModelVersion}-rs-overlay-${params.kaisaiNen}${params.kaisaiTsukihi}`;
+}): string => `${params.baseModelVersion}-rs-overlay-${params.kaisaiNen}${params.kaisaiTsukihi}`;
 
-const buildScoreMap = (params: BuildLookupParams, rows: readonly ModelScoreRow[]): Map<string, number> => {
+const buildScoreMap = (
+  params: BuildLookupParams,
+  rows: readonly ModelScoreRow[],
+): Map<string, number> => {
   const map = new Map<string, number>();
   rows.forEach((row) => {
     const raceId = buildRaceId({

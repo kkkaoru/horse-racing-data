@@ -10,11 +10,11 @@ vi.mock("@opennextjs/cloudflare", () => ({
   })),
 }));
 
-import { isCacheableTrendPayload } from "./route";
 import type {
   RaceTrendRawPayload,
   RaceTrendStarterRow,
 } from "../../../../../../../../../lib/race-types";
+import { isCacheableTrendPayload } from "./route";
 
 const buildStarterRow = (overrides: Partial<RaceTrendStarterRow> = {}): RaceTrendStarterRow => ({
   bamei: "テスト",

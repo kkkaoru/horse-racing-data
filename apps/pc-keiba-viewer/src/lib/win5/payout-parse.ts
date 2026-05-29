@@ -16,7 +16,10 @@ export const parseWin5PayoutField = (value: string | null | undefined): Win5Payo
     return cleaned.slice(start, start + HORSE_NUMBER_WIDTH).replace(/^0+/u, "") || "0";
   });
 
-  const payoutRaw = cleaned.slice(WINNING_HORSES_LENGTH, WINNING_HORSES_LENGTH + PAYOUT_FIELD_LENGTH);
+  const payoutRaw = cleaned.slice(
+    WINNING_HORSES_LENGTH,
+    WINNING_HORSES_LENGTH + PAYOUT_FIELD_LENGTH,
+  );
   const payoutYen = Number.parseInt(payoutRaw, 10);
   const ticketRaw = cleaned.slice(WINNING_HORSES_LENGTH + PAYOUT_FIELD_LENGTH);
   const winningTicketCount = ticketRaw.length > 0 ? Number.parseInt(ticketRaw, 10) : 0;

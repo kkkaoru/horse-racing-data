@@ -1,5 +1,9 @@
 import { KEIBAJO_NAMES } from "../codes";
-import { recommendWin5BudgetYen, optimizeWin5TicketPlan, buildWin5PlansByBudget } from "./budget-optimizer";
+import {
+  recommendWin5BudgetYen,
+  optimizeWin5TicketPlan,
+  buildWin5PlansByBudget,
+} from "./budget-optimizer";
 import {
   WIN5_DEFAULT_BUDGET_YEN,
   WIN5_MODEL_VERSION,
@@ -57,9 +61,8 @@ const heuristicScore = (params: { runner: Win5RunnerInput; runnerCount: number }
     runner.popularity !== null && runner.popularity !== undefined && runner.popularity > 0
       ? (runnerCount - runner.popularity + 1) / runnerCount
       : 0;
-  const oddsTerm = runner.odds !== null && runner.odds !== undefined && runner.odds > 0
-    ? 1 / runner.odds
-    : 0;
+  const oddsTerm =
+    runner.odds !== null && runner.odds !== undefined && runner.odds > 0 ? 1 / runner.odds : 0;
   return base + popularityTerm + oddsTerm;
 };
 
@@ -163,8 +166,4 @@ export const computeHistoricalWinScore = (params: {
   return clamp(base * recencyWeight, 0, 1);
 };
 
-export {
-  WIN5_DEFAULT_BUDGET_YEN,
-  WIN5_MODEL_VERSION,
-  WIN5_TICKET_UNIT_YEN,
-} from "./types";
+export { WIN5_DEFAULT_BUDGET_YEN, WIN5_MODEL_VERSION, WIN5_TICKET_UNIT_YEN } from "./types";

@@ -80,12 +80,7 @@ export default async function Win5DatePage({ params }: Win5DatePageProps) {
         ))}
       </div>
 
-      <Win5PredictionPanel
-        day={day}
-        month={month}
-        prediction={prediction}
-        year={year}
-      />
+      <Win5PredictionPanel day={day} month={month} prediction={prediction} year={year} />
     </section>
   );
 }

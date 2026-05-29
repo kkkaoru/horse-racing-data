@@ -31,7 +31,7 @@ const RUNNING_STYLE_BATCH_SIZE = 200;
 const RUNNING_STYLE_CHUNK_CONCURRENCY = 3;
 
 interface RawRunningStyleD1Row {
-  predicted_label: string;
+  predicted_label: RaceTrendRunningStyle;
   horse_number: number;
   race_key: string;
 }
@@ -39,13 +39,15 @@ interface RawRunningStyleD1Row {
 const isRunningStyle = (value: unknown): value is RaceTrendRunningStyle =>
   value === "nige" || value === "senkou" || value === "sashi" || value === "oikomi";
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
 const isRawRunningStyleD1Row = (value: unknown): value is RawRunningStyleD1Row => {
-  if (typeof value !== "object" || value === null) return false;
-  const row = value as Record<string, unknown>;
+  if (!isRecord(value)) return false;
   return (
-    typeof row.race_key === "string" &&
-    typeof row.horse_number === "number" &&
-    isRunningStyle(row.predicted_label)
+    typeof value.race_key === "string" &&
+    typeof value.horse_number === "number" &&
+    isRunningStyle(value.predicted_label)
   );
 };
 
@@ -59,7 +61,7 @@ const chunkArray = <T>(items: ReadonlyArray<T>, size: number): T[][] => {
 
 const toRunningStyleCache = (raw: RawRunningStyleD1Row): RaceTrendRunningStyleCache => ({
   horseNumber: String(raw.horse_number),
-  predictedLabel: raw.predicted_label as RaceTrendRunningStyle,
+  predictedLabel: raw.predicted_label,
   raceKey: raw.race_key,
 });
 
@@ -74,6 +76,15 @@ const buildRunningStylesCacheKey = (sortedKeys: ReadonlyArray<string>): string =
   return `${RUNNING_STYLES_KV_PREFIX}:${sortedKeys.length}:${sortedKeys.join(",")}`;
 };
 
+const isRaceTrendRunningStyleCache = (value: unknown): value is RaceTrendRunningStyleCache => {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.horseNumber === "string" &&
+    typeof value.raceKey === "string" &&
+    isRunningStyle(value.predictedLabel)
+  );
+};
+
 const readRunningStylesFromKv = async (
   env: CloudflareEnv | null,
   cacheKey: string,
@@ -83,7 +94,9 @@ const readRunningStylesFromKv = async (
   const body = await kv.get(cacheKey);
   if (!body) return null;
   try {
-    return JSON.parse(body) as RaceTrendRunningStyleCache[];
+    const parsed: unknown = JSON.parse(body);
+    if (!Array.isArray(parsed)) return null;
+    return parsed.filter(isRaceTrendRunningStyleCache);
   } catch {
     return null;
   }
@@ -166,7 +179,7 @@ interface RaceTrendD1RowsParams {
 }
 
 interface RawD1Row {
-  source: string;
+  source: RaceSource;
   raceKey: string;
   kaisaiNen: string;
   kaisaiTsukihi: string;
@@ -221,16 +234,15 @@ const FEATURES_RACE_TREND_PATH = "/api/features/race-trend";
 const isRaceSource = (value: unknown): value is RaceSource => value === "jra" || value === "nar";
 
 const isRawD1Row = (value: unknown): value is RawD1Row => {
-  if (typeof value !== "object" || value === null) return false;
-  const row = value as Record<string, unknown>;
+  if (!isRecord(value)) return false;
   return (
-    isRaceSource(row.source) &&
-    typeof row.raceKey === "string" &&
-    typeof row.kaisaiNen === "string" &&
-    typeof row.kaisaiTsukihi === "string" &&
-    typeof row.keibajoCode === "string" &&
-    typeof row.raceBango === "string" &&
-    typeof row.finishPosition === "number"
+    isRaceSource(value.source) &&
+    typeof value.raceKey === "string" &&
+    typeof value.kaisaiNen === "string" &&
+    typeof value.kaisaiTsukihi === "string" &&
+    typeof value.keibajoCode === "string" &&
+    typeof value.raceBango === "string" &&
+    typeof value.finishPosition === "number"
   );
 };
 
@@ -404,7 +416,7 @@ const pickTanshoOdds = (
 const toStarterRow = (raw: RawD1Row, oddsMap: TanshoOddsMap): RaceTrendStarterRow => {
   const { tanshoOddsTenth, tanshoPopularity } = pickTanshoOdds(raw, oddsMap);
   return {
-    source: raw.source as RaceSource,
+    source: raw.source,
     kaisaiNen: raw.kaisaiNen,
     kaisaiTsukihi: raw.kaisaiTsukihi,
     keibajoCode: raw.keibajoCode,
@@ -435,12 +447,12 @@ const getCachedResponse = async (cacheKey: string): Promise<RaceTrendStarterRow[
   const cacheRequest = new Request(`${CACHE_URL_BASE}${encodeURIComponent(cacheKey)}`);
   const cached = await cache?.match(cacheRequest);
   if (cached?.ok) {
-    return cached.json() as Promise<RaceTrendStarterRow[]>;
+    return readCachedStarterRowsResponse(cached);
   }
   const { env } = await getCloudflareContext({ async: true });
   const body = await env?.DETAIL_SECTION_CACHE_KV?.get(cacheKey);
   if (!body) return null;
-  return JSON.parse(body) as RaceTrendStarterRow[];
+  return parseCachedStarterRowsBody(body);
 };
 
 const putCache = async (cacheKey: string, rows: RaceTrendStarterRow[]): Promise<void> => {
@@ -497,28 +509,48 @@ export const getRaceTrendD1StarterRows = async (
   }
 };
 
-interface FeaturesWorkerStarterPayload {
-  starterRows?: unknown;
-}
-
 const isRaceTrendStarterRow = (value: unknown): value is RaceTrendStarterRow => {
-  if (typeof value !== "object" || value === null) return false;
-  const row = value as Record<string, unknown>;
+  if (!isRecord(value)) return false;
   return (
-    isRaceSource(row.source) &&
-    typeof row.kaisaiNen === "string" &&
-    typeof row.kaisaiTsukihi === "string" &&
-    typeof row.keibajoCode === "string" &&
-    typeof row.raceBango === "string" &&
-    typeof row.finishPosition === "number"
+    isRaceSource(value.source) &&
+    typeof value.kaisaiNen === "string" &&
+    typeof value.kaisaiTsukihi === "string" &&
+    typeof value.keibajoCode === "string" &&
+    typeof value.raceBango === "string" &&
+    typeof value.finishPosition === "number"
   );
 };
 
+const parseStarterRowArray = (value: unknown): RaceTrendStarterRow[] | null => {
+  if (!Array.isArray(value)) return null;
+  return value.filter(isRaceTrendStarterRow);
+};
+
 const parseFeaturesWorkerPayload = (payload: unknown): RaceTrendStarterRow[] => {
-  if (typeof payload !== "object" || payload === null) return [];
-  const { starterRows } = payload as FeaturesWorkerStarterPayload;
+  if (!isRecord(payload)) return [];
+  const { starterRows } = payload;
   if (!Array.isArray(starterRows)) return [];
   return starterRows.filter(isRaceTrendStarterRow);
+};
+
+const readCachedStarterRowsResponse = async (
+  cached: Response,
+): Promise<RaceTrendStarterRow[] | null> => {
+  try {
+    const parsed: unknown = await cached.json();
+    return parseStarterRowArray(parsed);
+  } catch {
+    return null;
+  }
+};
+
+const parseCachedStarterRowsBody = (body: string): RaceTrendStarterRow[] | null => {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    return parseStarterRowArray(parsed);
+  } catch {
+    return null;
+  }
 };
 
 const buildFeaturesWorkerUrl = (params: RaceTrendD1RowsParams): string => {
@@ -557,12 +589,12 @@ const getCachedDailyResponse = async (cacheKey: string): Promise<RaceTrendStarte
   const cacheRequest = new Request(`${DAILY_CACHE_URL_BASE}${encodeURIComponent(cacheKey)}`);
   const cached = await cache?.match(cacheRequest);
   if (cached?.ok) {
-    return cached.json() as Promise<RaceTrendStarterRow[]>;
+    return readCachedStarterRowsResponse(cached);
   }
   const { env } = await getCloudflareContext({ async: true });
   const body = await env?.DETAIL_SECTION_CACHE_KV?.get(cacheKey);
   if (!body) return null;
-  return JSON.parse(body) as RaceTrendStarterRow[];
+  return parseCachedStarterRowsBody(body);
 };
 
 const putDailyCache = async (cacheKey: string, rows: RaceTrendStarterRow[]): Promise<void> => {

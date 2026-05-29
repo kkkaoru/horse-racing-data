@@ -3,11 +3,7 @@
 
 import type { Pool } from "pg";
 
-import {
-  computeHistoricalWinScore,
-  type Win5LegInput,
-  type Win5RunnerInput,
-} from "./prediction";
+import { computeHistoricalWinScore, type Win5LegInput, type Win5RunnerInput } from "./prediction";
 import type { Win5RaceLeg, Win5Schedule } from "./types";
 
 const RACE_BANGO_PAD_LENGTH = 2;
@@ -105,8 +101,7 @@ const parseOdds = (value: string | null | undefined): number | null => {
   return parsed === null || parsed <= 0 ? null : parsed / 10;
 };
 
-const padRaceBango = (raceBango: string): string =>
-  raceBango.padStart(RACE_BANGO_PAD_LENGTH, "0");
+const padRaceBango = (raceBango: string): string => raceBango.padStart(RACE_BANGO_PAD_LENGTH, "0");
 
 const buildJraRaceId = (params: {
   kaisaiNen: string;
@@ -116,7 +111,9 @@ const buildJraRaceId = (params: {
 }): string =>
   `${JRA_SOURCE_PREFIX}:${params.kaisaiNen}:${params.kaisaiTsukihi}:${params.keibajoCode}:${params.raceBango}`;
 
-const fetchLegMeta = async (params: FetchLegMetaParams): Promise<ResolvedLegMetaRow | undefined> => {
+const fetchLegMeta = async (
+  params: FetchLegMetaParams,
+): Promise<ResolvedLegMetaRow | undefined> => {
   const result = await params.pool.query<ResolvedLegMetaRow>(
     `
       select kaisai_kai, kaisai_nichime, kyosomei_hondai
@@ -165,9 +162,7 @@ const fetchRunners = async (params: FetchRunnersParams): Promise<RunnerRow[]> =>
   return result.rows;
 };
 
-const fetchHistoryAggregates = async (
-  params: FetchHistoryParams,
-): Promise<HistoryRow[]> => {
+const fetchHistoryAggregates = async (params: FetchHistoryParams): Promise<HistoryRow[]> => {
   const result = await params.pool.query<HistoryRow>(
     `
       select

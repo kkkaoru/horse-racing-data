@@ -3,7 +3,10 @@ import "server-only";
 const DEFAULT_PRODUCTION_API_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
 
 export const getProductionApiOrigin = (): string =>
-  (process.env.PC_KEIBA_PRODUCTION_API_ORIGIN ?? DEFAULT_PRODUCTION_API_ORIGIN).replace(/\/+$/u, "");
+  (process.env.PC_KEIBA_PRODUCTION_API_ORIGIN ?? DEFAULT_PRODUCTION_API_ORIGIN).replace(
+    /\/+$/u,
+    "",
+  );
 
 export const getProductionAccessHeaders = (): Record<string, string> | null => {
   const clientId = process.env.PC_KEIBA_ACCESS_CLIENT_ID?.trim();

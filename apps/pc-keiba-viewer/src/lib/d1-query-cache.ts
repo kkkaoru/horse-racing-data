@@ -74,8 +74,7 @@ export const resolveD1QueryCacheTtlSeconds = (
 export const buildD1QueryCacheKey = (
   profile: D1QueryCacheProfile,
   keyParts: readonly unknown[],
-): string =>
-  hashString(stableStringify([SHARED_D1_QUERY_CACHE_NAMESPACE, profile, keyParts]));
+): string => hashString(stableStringify([SHARED_D1_QUERY_CACHE_NAMESPACE, profile, keyParts]));
 
 export const createD1QueryCacheRequest = (cacheKey: string): Request =>
   new Request(`${SHARED_D1_QUERY_CACHE_URL_BASE}${encodeURIComponent(cacheKey)}`);

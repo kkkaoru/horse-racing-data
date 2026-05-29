@@ -76,27 +76,28 @@ const buildCacheKey = (keyParts: readonly unknown[]): string =>
 const buildCacheRequestForKey = (cacheKey: string): Request =>
   new Request(`https://pc-keiba-viewer.local/db-query-cache/${cacheKey}`);
 
-const tryParseJson = <T>(text: string): T | null => {
+const tryParseJsonUnknown = (text: string): { ok: true; value: unknown } | { ok: false } => {
   try {
-    // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-    return JSON.parse(text) as T;
+    const parsed: unknown = JSON.parse(text);
+    return { ok: true, value: parsed };
   } catch {
-    return null;
+    return { ok: false };
   }
 };
 
-const readFromUrlCache = async <T>(
+const readFromUrlCacheUnknown = async (
   defaultCache: Cache,
   request: Request,
-): Promise<T | null> => {
+): Promise<{ found: true; value: unknown } | { found: false }> => {
   const cached = await defaultCache.match(request);
-  if (!cached) return null;
+  if (!cached) return { found: false };
   const text = await cached.text();
-  const parsed = tryParseJson<T>(text);
-  if (parsed === null) {
+  const parsed = tryParseJsonUnknown(text);
+  if (!parsed.ok) {
     await defaultCache.delete(request);
+    return { found: false };
   }
-  return parsed;
+  return { found: true, value: parsed.value };
 };
 
 const writeToUrlCache = async (
@@ -126,6 +127,35 @@ const populateUrlCacheFromKv = async (
   await writeToUrlCache(defaultCache, request, body, Math.min(ttlSeconds, 60));
 };
 
+interface CacheLookupContext {
+  cacheKey: string;
+  defaultCache: Cache | null;
+  kv: DetailSectionCacheKv | null;
+  request: Request;
+  ttlSeconds: number;
+}
+
+const loadCachedValue = async (
+  context: CacheLookupContext,
+): Promise<{ found: true; value: unknown } | { found: false }> => {
+  const { cacheKey, defaultCache, kv, request, ttlSeconds } = context;
+  if (defaultCache !== null) {
+    const fromUrl = await readFromUrlCacheUnknown(defaultCache, request);
+    if (fromUrl.found) return fromUrl;
+  }
+  if (kv === null) return { found: false };
+  const kvBody = await kv.get(cacheKey);
+  if (kvBody === null || kvBody === "") return { found: false };
+  const parsed = tryParseJsonUnknown(kvBody);
+  if (!parsed.ok) {
+    // Stale or corrupt value — overwrite with short-TTL empty to bypass on next read.
+    await kv.put(cacheKey, "", { expirationTtl: 60 });
+    return { found: false };
+  }
+  await populateUrlCacheFromKv(defaultCache, request, kvBody, ttlSeconds);
+  return { found: true, value: parsed.value };
+};
+
 export const withDbQueryCache = async <T>(
   keyParts: readonly unknown[],
   load: () => Promise<T>,
@@ -140,24 +170,18 @@ export const withDbQueryCache = async <T>(
   const cacheKey = buildCacheKey(keyParts);
   const request = buildCacheRequestForKey(cacheKey);
   const defaultCache = getDefaultCacheOrNull();
-
-  if (defaultCache !== null) {
-    const fromUrl = await readFromUrlCache<T>(defaultCache, request);
-    if (fromUrl !== null) return fromUrl;
-  }
-
   const kv = await getDetailSectionCacheKv();
-  if (kv !== null) {
-    const kvBody = await kv.get(cacheKey);
-    if (kvBody !== null && kvBody !== "") {
-      const parsed = tryParseJson<T>(kvBody);
-      if (parsed !== null) {
-        await populateUrlCacheFromKv(defaultCache, request, kvBody, ttlSeconds);
-        return parsed;
-      }
-      // Stale or corrupt value — overwrite with short-TTL empty to bypass on next read.
-      await kv.put(cacheKey, "", { expirationTtl: 60 });
-    }
+
+  const cached = await loadCachedValue({
+    cacheKey,
+    defaultCache,
+    kv,
+    request,
+    ttlSeconds,
+  });
+  if (cached.found) {
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+    return cached.value as T;
   }
 
   const value = await loadWithRetry();
@@ -167,7 +191,9 @@ export const withDbQueryCache = async <T>(
     writes.push(writeToUrlCache(defaultCache, request, body, ttlSeconds));
   }
   if (kv !== null) {
-    writes.push(kv.put(cacheKey, body, { expirationTtl: Math.min(ttlSeconds, KV_MAX_TTL_SECONDS) }));
+    writes.push(
+      kv.put(cacheKey, body, { expirationTtl: Math.min(ttlSeconds, KV_MAX_TTL_SECONDS) }),
+    );
   }
   if (writes.length > 0) {
     await Promise.all(writes);

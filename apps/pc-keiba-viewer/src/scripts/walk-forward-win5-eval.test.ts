@@ -8,7 +8,8 @@ import {
   withBaseline,
 } from "./walk-forward-win5-eval";
 
-const SAMPLE_LINE = '{"race_id":"jra:2024:0107:06:01","ketto_toroku_bango":"2020001234","predicted_score":0.875,"predicted_rank":1,"umaban":1}';
+const SAMPLE_LINE =
+  '{"race_id":"jra:2024:0107:06:01","ketto_toroku_bango":"2020001234","predicted_score":0.875,"predicted_rank":1,"umaban":1}';
 
 test("extractYearFromRaceId returns the year part", () => {
   expect(extractYearFromRaceId("jra:2024:0107:06:01")).toBe(2024);

@@ -32,30 +32,65 @@ const getApiToken = (): string => {
   return token;
 };
 
-const cloudflareRequest = async <T>(
+interface CloudflareResponseEnvelope {
+  errors?: unknown[];
+  result: unknown;
+  success: boolean;
+}
+
+const buildHeaders = (init?: RequestInit): Headers => {
+  const headers = new Headers(init?.headers);
+  headers.set("Authorization", `Bearer ${getApiToken()}`);
+  headers.set("content-type", "application/json");
+  return headers;
+};
+
+const cloudflareRequest = async (
   path: string,
   init?: RequestInit,
-): Promise<{ errors?: unknown[]; result: T; success: boolean }> => {
+): Promise<CloudflareResponseEnvelope> => {
   const response = await fetch(`https://api.cloudflare.com/client/v4${path}`, {
     ...init,
-    headers: {
-      Authorization: `Bearer ${getApiToken()}`,
-      "content-type": "application/json",
-      ...(init?.headers ?? {}),
-    },
+    headers: buildHeaders(init),
   });
-  const payload: { errors?: unknown[]; result: T; success: boolean } = await response.json();
+  const payload: CloudflareResponseEnvelope = await response.json();
   if (!payload.success) {
     throw new Error(`Cloudflare API ${path} failed: ${JSON.stringify(payload.errors)}`);
   }
   return payload;
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const isAccessApp = (value: unknown): value is AccessApp =>
+  isRecord(value) && typeof value.id === "string" && typeof value.name === "string";
+
+const isAccessPolicy = (value: unknown): value is AccessPolicy => {
+  if (!isRecord(value)) return false;
+  if (typeof value.id !== "string" || typeof value.name !== "string") return false;
+  return value.precedence === undefined || typeof value.precedence === "number";
+};
+
+const isServiceToken = (value: unknown): value is ServiceToken => {
+  if (!isRecord(value)) return false;
+  if (typeof value.client_id !== "string" || typeof value.id !== "string") return false;
+  if (typeof value.name !== "string") return false;
+  return value.client_secret === undefined || typeof value.client_secret === "string";
+};
+
+const filterAccessApps = (value: unknown): AccessApp[] =>
+  Array.isArray(value) ? value.filter(isAccessApp) : [];
+
+const filterServiceTokens = (value: unknown): ServiceToken[] =>
+  Array.isArray(value) ? value.filter(isServiceToken) : [];
+
+const filterAccessPolicies = (value: unknown): AccessPolicy[] =>
+  Array.isArray(value) ? value.filter(isAccessPolicy) : [];
+
 const findAccessApp = async (): Promise<AccessApp> => {
-  const { result } = await cloudflareRequest<AccessApp[]>(
-    `/accounts/${ACCOUNT_ID}/access/apps`,
-  );
-  const app = result.find((entry) => entry.name === APP_NAME);
+  const { result } = await cloudflareRequest(`/accounts/${ACCOUNT_ID}/access/apps`);
+  const app = filterAccessApps(result).find((entry) => entry.name === APP_NAME);
   if (!app) {
     throw new Error(`Access application "${APP_NAME}" was not found.`);
   }
@@ -63,28 +98,26 @@ const findAccessApp = async (): Promise<AccessApp> => {
 };
 
 const findServiceToken = async (): Promise<ServiceToken | null> => {
-  const { result } = await cloudflareRequest<ServiceToken[]>(
-    `/accounts/${ACCOUNT_ID}/access/service_tokens`,
-  );
-  return result.find((entry) => entry.name === TOKEN_NAME) ?? null;
+  const { result } = await cloudflareRequest(`/accounts/${ACCOUNT_ID}/access/service_tokens`);
+  return filterServiceTokens(result).find((entry) => entry.name === TOKEN_NAME) ?? null;
 };
 
 const createServiceToken = async (): Promise<ServiceToken> => {
-  const { result } = await cloudflareRequest<ServiceToken>(
-    `/accounts/${ACCOUNT_ID}/access/service_tokens`,
-    {
-      body: JSON.stringify({ duration: "8760h", name: TOKEN_NAME }),
-      method: "POST",
-    },
-  );
+  const { result } = await cloudflareRequest(`/accounts/${ACCOUNT_ID}/access/service_tokens`, {
+    body: JSON.stringify({ duration: "8760h", name: TOKEN_NAME }),
+    method: "POST",
+  });
+  if (!isServiceToken(result)) {
+    throw new Error("Cloudflare API returned an invalid service token payload.");
+  }
   return result;
 };
 
 const listPolicies = async (appId: string): Promise<AccessPolicy[]> => {
-  const { result } = await cloudflareRequest<AccessPolicy[]>(
+  const { result } = await cloudflareRequest(
     `/accounts/${ACCOUNT_ID}/access/apps/${appId}/policies`,
   );
-  return result;
+  return filterAccessPolicies(result);
 };
 
 const createServiceTokenPolicy = async (

@@ -10,11 +10,8 @@ import {
   type PaddockAction,
   type PaddockState,
 } from "./paddock";
-import {
-  fetchProductionApi,
-  useProductionApiProxy,
-} from "./production-api-proxy.server";
 import { getProductionLiveRelayOrigin } from "./production-access.server";
+import { fetchProductionApi, useProductionApiProxy } from "./production-api-proxy.server";
 
 export interface PaddockRaceParams {
   day: string;
@@ -82,8 +79,7 @@ export const getPaddockLiveUrl = (params: PaddockRaceParams): string | null => {
 };
 
 export const isPaddockRealtimeAvailable = (): boolean =>
-  useProductionApiProxy() ||
-  Boolean(getCloudflareEnv()?.PADDOCK_ROOM);
+  useProductionApiProxy() || Boolean(getCloudflareEnv()?.PADDOCK_ROOM);
 
 const getMemoryState = (raceKey: string): PaddockState => {
   const existing = memoryStates.get(raceKey);

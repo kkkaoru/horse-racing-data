@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 
-import { getHorseRecentRunningStylesWithCache } from "../../../lib/running-style-cache.server";
 import { getHorseDetailData } from "../../../db/queries";
+import { getHorseRecentRunningStylesWithCache } from "../../../lib/running-style-cache.server";
 import {
   EntityDetailFilterForm,
   EntityRaceResultsTable,

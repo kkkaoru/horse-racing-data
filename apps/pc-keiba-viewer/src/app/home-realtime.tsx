@@ -186,9 +186,7 @@ const formatTaskCountdown = (target: string, now: number, includeSeconds: boolea
       ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
       : `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
   }
-  return hours > 0
-    ? `${hours}:${String(minutes).padStart(2, "0")}`
-    : `${minutes}分`;
+  return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}` : `${minutes}分`;
 };
 
 const homeRaceListMinHeight = (count: number): string =>
@@ -258,8 +256,7 @@ export function HomeRealtime({
   const scheduledTasks = useMemo(
     () =>
       allScheduleSlots.filter(
-        (slot) =>
-          enabledScheduleKinds.has(slot.kind) && new Date(slot.scheduledAt).getTime() > now,
+        (slot) => enabledScheduleKinds.has(slot.kind) && new Date(slot.scheduledAt).getTime() > now,
       ),
     [allScheduleSlots, enabledScheduleKinds, now],
   );

@@ -3,8 +3,8 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 
 import type { FinishPredictionBuildInputs } from "./finish-position-prediction";
 import type { FinishPredictionEvaluationMetrics } from "./finish-position-prediction-evaluation";
-import type { RaceDetail } from "./race-types";
 import { DETAIL_SECTION_CACHE_AFTER_START_SECONDS } from "./race-detail-section-cache";
+import type { RaceDetail } from "./race-types";
 
 const CACHE_NAMESPACE = "pc-keiba-viewer:finish-prediction-inputs:v2";
 const CACHE_URL_BASE = "https://pc-keiba-viewer.local/finish-prediction-inputs-cache/";
@@ -82,11 +82,40 @@ export const buildFinishPredictionInputsCacheKey = ({
   month: string;
   raceNumber: string;
   year: string;
-}): string =>
-  [CACHE_NAMESPACE, year, month, day, keibajoCode, raceNumber, "inputs"].join(":");
+}): string => [CACHE_NAMESPACE, year, month, day, keibajoCode, raceNumber, "inputs"].join(":");
 
 const getCacheRequest = (cacheKey: string): Request =>
   new Request(`${CACHE_URL_BASE}${encodeURIComponent(cacheKey)}`);
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const isFinishPredictionStaticPayload = (
+  value: unknown,
+): value is FinishPredictionStaticPayload => {
+  if (!isRecord(value)) return false;
+  return isRecord(value.evaluation) && isRecord(value.inputs);
+};
+
+const readPayloadFromResponse = async (
+  response: Response,
+): Promise<FinishPredictionStaticPayload | null> => {
+  try {
+    const parsed: unknown = await response.json();
+    return isFinishPredictionStaticPayload(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
+const parsePayloadFromText = (text: string): FinishPredictionStaticPayload | null => {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return isFinishPredictionStaticPayload(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+};
 
 export const getCachedFinishPredictionInputs = async (
   cacheKey: string,
@@ -95,11 +124,9 @@ export const getCachedFinishPredictionInputs = async (
   const cacheRequest = getCacheRequest(cacheKey);
   const cachedResponse = await defaultCache?.match(cacheRequest);
   if (cachedResponse?.ok) {
-    try {
-      return (await cachedResponse.json()) as FinishPredictionStaticPayload;
-    } catch {
-      await defaultCache?.delete(cacheRequest);
-    }
+    const fromResponse = await readPayloadFromResponse(cachedResponse);
+    if (fromResponse !== null) return fromResponse;
+    await defaultCache?.delete(cacheRequest);
   }
 
   const { env, ctx } = await getCloudflareRuntime();
@@ -108,24 +135,23 @@ export const getCachedFinishPredictionInputs = async (
     return null;
   }
 
-  try {
-    const parsed = JSON.parse(kvBody) as FinishPredictionStaticPayload;
-    const putCache = async () => {
-      await defaultCache?.put(
-        cacheRequest,
-        new Response(kvBody, {
-          headers: {
-            "Cache-Control": "public, max-age=60",
-            "Content-Type": DEFAULT_CONTENT_TYPE,
-          },
-        }),
-      );
-    };
-    ctx?.waitUntil(putCache());
-    return parsed;
-  } catch {
+  const parsed = parsePayloadFromText(kvBody);
+  if (parsed === null) {
     return null;
   }
+  const putCache = async (): Promise<void> => {
+    await defaultCache?.put(
+      cacheRequest,
+      new Response(kvBody, {
+        headers: {
+          "Cache-Control": "public, max-age=60",
+          "Content-Type": DEFAULT_CONTENT_TYPE,
+        },
+      }),
+    );
+  };
+  ctx?.waitUntil(putCache());
+  return parsed;
 };
 
 export const putFinishPredictionInputsCache = async ({

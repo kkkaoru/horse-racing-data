@@ -122,8 +122,7 @@ export const getCachedDetailSectionResponse = async (
   return buildCachedResponse(kvBody, "kv");
 };
 
-const getStaleCacheKey = (cacheKey: string): string =>
-  `${STALE_CACHE_KEY_PREFIX}:${cacheKey}`;
+const getStaleCacheKey = (cacheKey: string): string => `${STALE_CACHE_KEY_PREFIX}:${cacheKey}`;
 
 export const getStaleDetailSectionBody = async (cacheKey: string): Promise<string | null> => {
   const { env } = await getCloudflareRuntime();

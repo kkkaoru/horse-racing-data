@@ -73,7 +73,12 @@ const parseArgs = (): CliArgs => {
   const args = process.argv.slice(2);
   const parsed: CliArgs = { date: formatTodayYyyymmddJst(), force: false };
   const handlers = new Map<string, (value: string) => void>([
-    ["--date", (value) => { parsed.date = value; }],
+    [
+      "--date",
+      (value) => {
+        parsed.date = value;
+      },
+    ],
   ]);
   args.forEach((arg, index) => {
     if (arg === "--force") {
@@ -94,10 +99,7 @@ const parseArgs = (): CliArgs => {
 const getConnectionString = (): string =>
   process.env.DATABASE_URL_LOCAL ?? process.env.DATABASE_URL ?? DEFAULT_LOCAL_DATABASE_URL;
 
-const hasWin5Schedule = async (params: {
-  pool: Pool;
-  parts: DateParts;
-}): Promise<boolean> => {
+const hasWin5Schedule = async (params: { pool: Pool; parts: DateParts }): Promise<boolean> => {
   const fromJvdWf = await params.pool.query<{ count: string }>(
     `select count(*)::text as count from jvd_wf where kaisai_nen = $1 and kaisai_tsukihi = $2`,
     [params.parts.year, params.parts.monthDay],
@@ -158,7 +160,15 @@ const refreshCornerFeatures = async (parts: DateParts): Promise<void> => {
   const from = offsetYyyymmdd(parts.yyyymmdd, -CORNER_LOOKBACK_DAYS);
   await runStep({
     label: "build-corner-feature-table",
-    cmd: ["bun", "run", "src/scripts/build-corner-feature-table.ts", "--from-date", from, "--to-date", parts.yyyymmdd],
+    cmd: [
+      "bun",
+      "run",
+      "src/scripts/build-corner-feature-table.ts",
+      "--from-date",
+      from,
+      "--to-date",
+      parts.yyyymmdd,
+    ],
     env: { DATABASE_URL_LOCAL: getConnectionString() },
   });
 };

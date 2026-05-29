@@ -64,7 +64,10 @@ const PremiumDataTopTableRow = memo(function PremiumDataTopTableRow({
   );
 });
 
-export function PremiumDataTopHorsesTable({ realtimeRequest, rows }: PremiumDataTopHorsesTableProps) {
+export function PremiumDataTopHorsesTable({
+  realtimeRequest,
+  rows,
+}: PremiumDataTopHorsesTableProps) {
   const { payload } = useRealtimeRacePayload(realtimeRequest, null);
   const realtimeOddsByHorse = useMemo(
     () =>

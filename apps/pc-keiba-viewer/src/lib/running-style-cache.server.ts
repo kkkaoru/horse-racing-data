@@ -1,12 +1,13 @@
 import "server-only";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 
-import { readD1QueryCache } from "../db/d1-query-cache.server";
 import {
   isRunningStyleLabel,
   numericOrNull,
   type RaceRunningStyleRow,
 } from "../db/corner-running-style-parsers";
+import { readD1QueryCache } from "../db/d1-query-cache.server";
+import { fetchProductionApi, useProductionApiProxy } from "./production-api-proxy.server";
 import {
   buildProductionRunningStylesPath,
   buildRaceKey,
@@ -16,7 +17,6 @@ import {
   parseRunningStyleRaceKey,
   type RunningStyleCacheRace,
 } from "./running-style-cache";
-import { fetchProductionApi, useProductionApiProxy } from "./production-api-proxy.server";
 
 export {
   buildRaceKey,
@@ -145,7 +145,9 @@ const readUrlCachedRunningStyles = async (
   return readCachedRows(cachedResponse);
 };
 
-const readHashCachedRunningStyles = async (raceKey: string): Promise<RaceRunningStyleRow[] | null> =>
+const readHashCachedRunningStyles = async (
+  raceKey: string,
+): Promise<RaceRunningStyleRow[] | null> =>
   readD1QueryCache<RaceRunningStyleRow[]>(
     "running-style-race",
     ["getRaceRunningStylesFromD1", raceKey],
@@ -241,10 +243,11 @@ export const getHorseRecentRunningStylesWithCache = async (
   limit: number,
 ): Promise<RaceRunningStyleRow[]> => {
   const safeLimit = Math.max(1, Math.min(Math.trunc(limit), 100));
-  const cached = await readD1QueryCache<RaceRunningStyleRow[]>(
-    "horse-running-style-history",
-    ["getHorseRecentRunningStylesFromD1", kettoTorokuBango, safeLimit],
-  );
+  const cached = await readD1QueryCache<RaceRunningStyleRow[]>("horse-running-style-history", [
+    "getHorseRecentRunningStylesFromD1",
+    kettoTorokuBango,
+    safeLimit,
+  ]);
   if (cached !== null) {
     return cached;
   }

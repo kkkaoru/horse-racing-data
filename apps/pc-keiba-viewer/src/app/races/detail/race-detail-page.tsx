@@ -33,13 +33,13 @@ import {
   getRaceTags,
   getWeightLabel,
 } from "../../../lib/race-classification";
-import { isCornerPacePredictionSupported } from "../../../lib/race-pace-prediction";
 import {
   buildRaceDetailSsrCacheKey,
   getCachedRaceDetailSsrSnapshot,
   putRaceDetailSsrSnapshot,
   type RaceDetailSsrSnapshot,
 } from "../../../lib/race-detail-ssr-cache.server";
+import { isCornerPacePredictionSupported } from "../../../lib/race-pace-prediction";
 import { getRaceTrendTargetsFromSearchParams } from "../../../lib/race-trend-query";
 import type { RaceDetail } from "../../../lib/race-types";
 import {
