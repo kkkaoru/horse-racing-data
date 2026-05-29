@@ -3,6 +3,7 @@
 import { buildRaceFeatures } from "./features/build";
 import { encodeRaceFeaturesParquet } from "./features/parquet";
 import { tryParseRaceKey } from "./features/race-key";
+import { handleRaceTrend } from "./features/race-trend";
 import { buildRaceParquetR2Key } from "./features/r2-key";
 import { handleFinishPositionPredictionJob } from "./finish-position/inference";
 import { putBuildStateToKv } from "./gates/build-state-kv";
@@ -53,14 +54,6 @@ export const handleGetFinishPositions = async (env: Env, raceKey: string): Promi
   const row = await getFinishPositionPredictions(env.REALTIME_FEATURES_DB, raceKey);
   return jsonResponse({ row });
 };
-
-export const handleRaceTrendStub = (): Response =>
-  jsonResponse({
-    byJockey: {},
-    byWaku: {},
-    raceCount: 0,
-    starterCount: 0,
-  });
 
 export const handleMigrationStatePost = async (env: Env, request: Request): Promise<Response> => {
   if (!isAuthorizedInternalRequest(request, env)) {
@@ -182,7 +175,7 @@ export const handleFetchRequest = async (env: Env, request: Request): Promise<Re
     return handleRoot();
   }
   if (request.method === "GET" && url.pathname === "/api/features/race-trend") {
-    return handleRaceTrendStub();
+    return handleRaceTrend(env, request);
   }
   if (request.method === "GET" && url.pathname === "/api/running-styles") {
     const raceKey = parseRaceKeyFromUrl(url);
