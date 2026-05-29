@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 
 import type { RaceSource } from "../../../../../../../../../lib/codes";
+import {
+  buildDevRealtimePayload,
+  isDevScraperEnabled,
+} from "../../../../../../../../../lib/dev-realtime-scraper.server";
 import { fetchWithRetry } from "../../../../../../../../../lib/fetch-with-retry";
 
 interface RouteContext {
@@ -38,6 +42,19 @@ export async function GET(request: Request, context: RouteContext) {
   }
 
   const { day, keibajoCode, month, raceNumber, year } = await context.params;
+
+  if (isDevScraperEnabled()) {
+    const payload = await buildDevRealtimePayload({
+      day,
+      keibajoCode,
+      month,
+      raceNumber,
+      source: sourceParam,
+      year,
+    });
+    return NextResponse.json(payload, { headers: { "cache-control": "no-store" } });
+  }
+
   const realtimeApiBaseUrl =
     process.env.NEXT_PUBLIC_REALTIME_DATA_API_BASE_URL ?? "https://sync-realtime-data.kkk4oru.com";
   const upstreamUrl = `${realtimeApiBaseUrl}/api/${sourceParam}/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/realtime`;

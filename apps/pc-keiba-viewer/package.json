@@ -69,6 +69,7 @@
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "recharts": "3.8.1",
+    "sync-realtime-data-hot": "workspace:*",
     "zustand": "5.0.13"
   },
   "devDependencies": {
