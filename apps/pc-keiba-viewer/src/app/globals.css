@@ -4266,23 +4266,27 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 .odds-trend-chart-skeleton {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-12px-9);
   position: relative;
 }
 
 .odds-trend-skeleton-srtext {
-  border: 0;
-  clip: rect(0 0 0 0);
-  height: 1px;
-  margin: -1px;
+  border: var(--number-0-2);
+  clip: rect(var(--number-0-2) var(--number-0-2) var(--number-0-2) var(--number-0-2));
+  height: var(--space-1px-7);
+  margin: var(--space-1px-223);
   overflow: hidden;
-  padding: 0;
+  padding: var(--number-0-2);
   position: absolute;
-  width: 1px;
+  width: var(--space-1px-7);
 }
 
 .odds-trend-skeleton-plot {
-  background: linear-gradient(180deg, rgba(202, 222, 209, 0.45) 0%, rgba(202, 222, 209, 0.15) 100%);
+  background: linear-gradient(
+    var(--space-180deg-2),
+    var(--color-rgba-202-222-209-0-45-224) var(--space-0pct-94),
+    var(--color-rgba-202-222-209-0-15-225) var(--space-100pct-12)
+  );
   border-radius: var(--space-6px-33);
   height: min(var(--space-880px-154), calc(var(--space-100vh-5) - var(--space-220px-3)));
   min-height: var(--space-420px-155);
@@ -4291,92 +4295,92 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 }
 
 .odds-trend-skeleton-plot::after {
-  animation: odds-trend-skeleton-shimmer 1.4s ease-in-out infinite;
+  animation: odds-trend-skeleton-shimmer var(--space-1-4s-98) ease-in-out infinite;
   background: linear-gradient(
-    90deg,
-    rgba(255, 255, 255, 0) 0%,
-    rgba(255, 255, 255, 0.55) 50%,
-    rgba(255, 255, 255, 0) 100%
+    var(--space-90deg-20),
+    var(--color-rgba-255-255-255-0-226) var(--space-0pct-94),
+    var(--color-rgba-255-255-255-0-55-227) var(--space-50pct-13),
+    var(--color-rgba-255-255-255-0-226) var(--space-100pct-12)
   );
   content: "";
-  inset: 0;
+  inset: var(--number-0-2);
   position: absolute;
-  transform: translateX(-100%);
+  transform: translateX(var(--space-100pct-111));
 }
 
 .odds-trend-skeleton-plot-grid {
-  inset: 0;
-  padding: 18px 28px;
+  inset: var(--number-0-2);
+  padding: var(--space-18px-31) var(--space-28px-42);
   position: absolute;
 }
 
 .odds-trend-skeleton-line {
-  background: rgba(111, 131, 120, 0.32);
-  border-radius: 999px;
-  height: 3px;
+  background: var(--color-rgba-111-131-120-0-32-228);
+  border-radius: var(--space-999px-30);
+  height: var(--space-3px-22);
   position: absolute;
-  right: 28px;
+  right: var(--space-28px-42);
 }
 
 .odds-trend-skeleton-line-a {
-  left: 28px;
-  top: 22%;
-  transform: rotate(-2deg);
+  left: var(--space-28px-42);
+  top: var(--space-22pct-143);
+  transform: rotate(var(--space-2deg-24));
 }
 
 .odds-trend-skeleton-line-b {
-  background: rgba(86, 130, 124, 0.3);
-  left: 28px;
-  top: 42%;
-  transform: rotate(1.5deg);
+  background: var(--color-rgba-86-130-124-0-3-229);
+  left: var(--space-28px-42);
+  top: var(--space-42pct-124);
+  transform: rotate(var(--space-1-5deg-234));
 }
 
 .odds-trend-skeleton-line-c {
-  background: rgba(155, 116, 90, 0.32);
-  left: 28px;
-  top: 62%;
-  transform: rotate(-1deg);
+  background: var(--color-rgba-155-116-90-0-32-230);
+  left: var(--space-28px-42);
+  top: var(--space-62pct-236);
+  transform: rotate(var(--space-1deg-235));
 }
 
 .odds-trend-skeleton-line-d {
-  background: rgba(130, 100, 150, 0.3);
-  left: 28px;
-  top: 82%;
-  transform: rotate(2deg);
+  background: var(--color-rgba-130-100-150-0-3-231);
+  left: var(--space-28px-42);
+  top: var(--space-82pct-44);
+  transform: rotate(var(--space-2deg-26));
 }
 
 .odds-trend-skeleton-legend {
   display: grid;
-  gap: 8px;
+  gap: var(--space-8px-28);
   grid-template-columns: repeat(auto-fit, minmax(var(--space-240px-77), var(--space-1fr-51)));
-  margin-top: 4px;
+  margin-top: var(--space-4px-18);
 }
 
 .odds-trend-skeleton-legend-row {
   background: linear-gradient(
-    90deg,
-    rgba(216, 224, 218, 0.6) 0%,
-    rgba(234, 240, 236, 0.8) 50%,
-    rgba(216, 224, 218, 0.6) 100%
+    var(--space-90deg-20),
+    var(--color-rgba-216-224-218-0-6-232) var(--space-0pct-94),
+    var(--color-rgba-234-240-236-0-8-233) var(--space-50pct-13),
+    var(--color-rgba-216-224-218-0-6-232) var(--space-100pct-12)
   );
-  background-size: 200% 100%;
-  border-radius: 6px;
-  height: 18px;
-  animation: odds-trend-skeleton-shimmer-bg 1.6s ease-in-out infinite;
+  background-size: var(--space-200pct-195) var(--space-100pct-12);
+  border-radius: var(--space-6px-33);
+  height: var(--space-18px-31);
+  animation: odds-trend-skeleton-shimmer-bg var(--space-1-6s-237) ease-in-out infinite;
 }
 
 @keyframes odds-trend-skeleton-shimmer {
   100% {
-    transform: translateX(100%);
+    transform: translateX(var(--space-100pct-12));
   }
 }
 
 @keyframes odds-trend-skeleton-shimmer-bg {
   0% {
-    background-position: 200% 0;
+    background-position: var(--space-200pct-195) var(--number-0-2);
   }
   100% {
-    background-position: -200% 0;
+    background-position: var(--space-200pct-203) var(--number-0-2);
   }
 }
 
@@ -9133,7 +9137,7 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 }
 
 .win5-leg-list-heading {
-  margin-bottom: calc(var(--space-14px-55) * -1);
+  margin-bottom: calc(var(--space-14px-55) * var(--number-1-9));
 }
 
 .win5-show-all-toggle {
