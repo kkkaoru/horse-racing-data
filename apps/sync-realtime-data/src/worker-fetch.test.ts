@@ -761,3 +761,82 @@ it("fetchHotOddsPayload coerces a null JSON response body to null", async () => 
     ),
   ).toBeNull();
 });
+
+it("buildDegradedRealtimePayload returns null odds when hot odds is null", async () => {
+  const { buildDegradedRealtimePayload } = await import("./worker");
+  expect(buildDegradedRealtimePayload("jra:2026:0512:08:01", null)).toStrictEqual({
+    horseWeights: null,
+    odds: null,
+    raceEntries: null,
+    raceKey: "jra:2026:0512:08:01",
+    raceResults: null,
+    source: null,
+    trackCondition: null,
+  });
+});
+
+it("buildDegradedRealtimePayload preserves hot odds payload while nulling D1 fields", async () => {
+  const { buildDegradedRealtimePayload } = await import("./worker");
+  const result = buildDegradedRealtimePayload("jra:2026:0512:08:01", {
+    fetchedAt: "2026-05-12T12:00:00+09:00",
+    history: [{ fetchedAt: "now", horseNumber: "1", odds: 2.5, popularity: 1 }],
+    historyByType: { tansho: [{ combination: "1", fetchedAt: "now", odds: 2.5, rank: 1 }] },
+    latest: { tansho: [{ combination: "1", odds: 2.5, popularity: 1 }] },
+  } as never);
+  expect(result.odds?.fetchedAt).toBe("2026-05-12T12:00:00+09:00");
+  expect(result.source).toBeNull();
+  expect(result.raceEntries).toBeNull();
+  expect(result.trackCondition).toBeNull();
+});
+
+it("fetch GET /api/nar/.../realtime returns degraded payload with hot odds when D1 throws on getRaceSource", async () => {
+  const { default: worker } = await import("./worker");
+  const { getRaceSource } = await import("./storage");
+  vi.mocked(getRaceSource).mockRejectedValueOnce(
+    new Error("D1_ERROR: D1 DB exceeded its CPU time limit and was reset."),
+  );
+  const hotPayload = {
+    fetchedAt: "2026-05-28T12:00:00+09:00",
+    history: [{ fetchedAt: "now", horseNumber: "1", odds: 3.1, popularity: 1 }],
+    historyByType: { tansho: [{ combination: "1", fetchedAt: "now", odds: 3.1, rank: 1 }] },
+    latest: { tansho: [{ combination: "1", odds: 3.1, popularity: 1 }] },
+  };
+  const hotFetch = vi.fn(async () => new Response(JSON.stringify(hotPayload)));
+  const env = buildEnv({ REALTIME_HOT: { fetch: hotFetch } as never } as never);
+  const response = await worker.fetch(
+    new Request("https://x.test/api/nar/races/2026/05/28/30/08/realtime"),
+    env,
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+  const body = (await response.json()) as { source: unknown; odds: { fetchedAt: string } | null };
+  expect(body.source).toBeNull();
+  expect(body.odds?.fetchedAt).toBe("2026-05-28T12:00:00+09:00");
+});
+
+it("fetch GET /api/jra/.../realtime returns degraded payload when D1 batch throws inside buildRealtimePayload", async () => {
+  const { default: worker } = await import("./worker");
+  const { buildRealtimePayload } = await import("./storage");
+  vi.mocked(buildRealtimePayload).mockRejectedValueOnce(
+    new Error("D1_ERROR: D1 DB exceeded its CPU time limit and was reset."),
+  );
+  const response = await worker.fetch(
+    new Request("https://x.test/api/jra/races/2026/05/12/08/01/realtime"),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+  const body = (await response.json()) as { raceEntries: unknown; source: unknown };
+  expect(body.raceEntries).toBeNull();
+  expect(body.source).toBeNull();
+});
+
+it("buildRealtimeRouteResponse swallows logFetch failures while returning degraded payload", async () => {
+  const { buildRealtimeRouteResponse } = await import("./worker");
+  const { getRaceSource, logFetch } = await import("./storage");
+  vi.mocked(getRaceSource).mockRejectedValueOnce(new Error("D1_ERROR: boom"));
+  vi.mocked(logFetch).mockRejectedValueOnce(new Error("D1_ERROR: log boom"));
+  const result = await buildRealtimeRouteResponse(buildEnv(), "jra:2026:0512:08:01");
+  expect(result.source).toBeNull();
+  expect(result.odds).toBeNull();
+});
