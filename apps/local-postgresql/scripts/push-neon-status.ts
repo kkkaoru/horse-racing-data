@@ -103,7 +103,10 @@ function parseArgs(args: string[]): CliOptions {
       if (value === undefined) {
         throw new Error("--tables requires a comma-separated value.");
       }
-      options.tables = value.split(",").map((name) => name.trim()).filter((name) => name !== "");
+      options.tables = value
+        .split(",")
+        .map((name) => name.trim())
+        .filter((name) => name !== "");
       index += 1;
     } else if (arg === "--log-file") {
       const value = args[index + 1];
@@ -322,10 +325,6 @@ function buildExistsAndCountSql(tables: readonly string[]): string {
   return exists;
 }
 
-function buildCountSql(table: string): string {
-  return `select count(*) from public.${quoteIdentifier(table)}`;
-}
-
 async function loadRowCounts(
   env: Record<string, string | undefined>,
   tables: readonly string[],
@@ -337,10 +336,9 @@ async function loadRowCounts(
   const dockerCounts = await loadCounts(env, [...dockerExisting], "docker");
   const neonCounts = await loadCounts(env, [...neonExisting], "neon");
   return tables.map((table) => {
-    const dockerCount = dockerExisting.has(table) ? dockerCounts.get(table) ?? null : null;
-    const neonCount = neonExisting.has(table) ? neonCounts.get(table) ?? null : null;
-    const diff =
-      dockerCount === null || neonCount === null ? null : neonCount - dockerCount;
+    const dockerCount = dockerExisting.has(table) ? (dockerCounts.get(table) ?? null) : null;
+    const neonCount = neonExisting.has(table) ? (neonCounts.get(table) ?? null) : null;
+    const diff = dockerCount === null || neonCount === null ? null : neonCount - dockerCount;
     return {
       tableName: table,
       dockerRows: dockerCount,
@@ -402,16 +400,6 @@ async function loadCounts(
   return result;
 }
 
-function parseTableCountLines(lines: string[]): Map<string, number> {
-  const result = new Map<string, number>();
-  for (const line of lines) {
-    const [name, count] = line.split("\t");
-    if (name === undefined || count === undefined) continue;
-    result.set(name, Number(count));
-  }
-  return result;
-}
-
 async function loadActiveModels(
   env: Record<string, string | undefined>,
 ): Promise<ActiveModelComparison[]> {
@@ -424,10 +412,7 @@ async function loadActiveModels(
   const dockerModels = parseActiveModelLines(dockerLines);
   const neonModels = parseActiveModelLines(neonLines);
   const categories = Array.from(
-    new Set([
-      ...dockerModels.map((row) => row.category),
-      ...neonModels.map((row) => row.category),
-    ]),
+    new Set([...dockerModels.map((row) => row.category), ...neonModels.map((row) => row.category)]),
   ).sort();
   return categories.map((category) => {
     const dockerRow = dockerModels.find((row) => row.category === category);
@@ -505,7 +490,9 @@ function renderRowCountTable(rows: RowCountSummary[]): string {
 }
 
 function renderActiveModels(rows: ActiveModelComparison[]): string {
-  const headerLines = ["category  docker_active                    neon_active                      status"];
+  const headerLines = [
+    "category  docker_active                    neon_active                      status",
+  ];
   for (const row of rows) {
     const status = row.same ? "✓ same" : "⚠ drift";
     headerLines.push(
@@ -546,7 +533,9 @@ async function printReport(options: CliOptions): Promise<void> {
     loadActiveModels(env),
   ]);
   const elapsedMs = Date.now() - startedAt;
-  console.log(`=== push-neon status @ ${new Date().toLocaleString()} (queried in ${elapsedMs} ms) ===`);
+  console.log(
+    `=== push-neon status @ ${new Date().toLocaleString()} (queried in ${elapsedMs} ms) ===`,
+  );
   console.log("");
   console.log("--- active models (jra / nar / ban-ei) ---");
   console.log(renderActiveModels(activeModels));
