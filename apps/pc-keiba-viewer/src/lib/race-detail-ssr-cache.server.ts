@@ -4,8 +4,7 @@
 // Execute with bun: opennextjs-cloudflare build && wrangler dev
 
 import "server-only";
-import { getCloudflareContext } from "@opennextjs/cloudflare";
-
+import { safeGetCloudflareRuntime } from "./cloudflare-context.server";
 import type { RaceSource } from "./codes";
 import { DETAIL_SECTION_CACHE_AFTER_START_SECONDS } from "./race-detail-section-cache";
 import type { CourseInfo, RaceDetail, RaceListItem, Runner } from "./race-types";
@@ -31,20 +30,6 @@ const CACHE_URL_BASE = "https://pc-keiba-viewer.local/race-detail-ssr-cache/";
 const DEFAULT_CONTENT_TYPE = "application/json; charset=utf-8";
 const CACHE_CONTROL_HEADER = "public, max-age=%d";
 const MIN_KV_TTL_SECONDS = 60;
-
-const getCloudflareRuntime = async (): Promise<{
-  ctx: PcKeibaExecutionContext | null;
-  env: CloudflareEnv | null;
-}> => {
-  try {
-    const context = await getCloudflareContext<Record<string, unknown>, PcKeibaExecutionContext>({
-      async: true,
-    });
-    return { ctx: context.ctx, env: context.env };
-  } catch {
-    return { ctx: null, env: null };
-  }
-};
 
 const getDefaultCache = (): Cache | null =>
   typeof caches === "undefined" || !caches.default ? null : caches.default;
@@ -153,7 +138,7 @@ export const getCachedRaceDetailSsrSnapshot = async (
       return null;
     }
   }
-  const { env, ctx } = await getCloudflareRuntime();
+  const { env, ctx } = await safeGetCloudflareRuntime();
   const kvBody = await env?.DETAIL_SECTION_CACHE_KV?.get(cacheKey).catch(() => null);
   if (!kvBody) {
     return null;
@@ -173,7 +158,7 @@ export const putRaceDetailSsrSnapshot = async ({
   params,
   snapshot,
 }: PutRaceDetailSsrSnapshotParams): Promise<void> => {
-  const { env } = await getCloudflareRuntime();
+  const { env } = await safeGetCloudflareRuntime();
   const ttlSeconds = getRaceDetailSsrCacheTtlSeconds(params, snapshot, env);
   if (ttlSeconds < MIN_KV_TTL_SECONDS) {
     return;

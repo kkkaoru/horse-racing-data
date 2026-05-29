@@ -1,4 +1,3 @@
-import { getCloudflareContext } from "@opennextjs/cloudflare";
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -10,6 +9,7 @@ import {
   getRaceRunners,
   getSameVenueRacesByDate,
 } from "../../../db/queries";
+import { safeGetCloudflareExecutionContext } from "../../../lib/cloudflare-context.server";
 import { SOURCE_LABELS, type RaceSource } from "../../../lib/codes";
 import { formatCourseParagraphs, getCourseFacts, getCourseImagePath } from "../../../lib/course";
 import {
@@ -220,17 +220,8 @@ const DetailLinkCell = ({
   );
 };
 
-const tryGetWaitUntilContext = async (): Promise<PcKeibaExecutionContext | null> => {
-  try {
-    return (
-      await getCloudflareContext<Record<string, unknown>, PcKeibaExecutionContext>({
-        async: true,
-      })
-    ).ctx;
-  } catch {
-    return null;
-  }
-};
+const tryGetWaitUntilContext = (): Promise<PcKeibaExecutionContext | null> =>
+  safeGetCloudflareExecutionContext();
 
 const loadRaceDetailSnapshotFromDb = async (params: {
   day: string;
