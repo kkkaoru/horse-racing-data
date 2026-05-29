@@ -278,6 +278,43 @@ it("accepts recompute request, builds Parquet, PUTs to R2, and writes KV", async
   expect(typeof body.builtAt).toBe("string");
 });
 
+it("accepts recompute request with raceKey-only body by parsing the 5-part string", async () => {
+  const env = buildEnv();
+  vi.mocked(buildRaceFeatures).mockResolvedValueOnce([]);
+  const response = await handleRecomputeRequest(
+    env,
+    new Request("https://x/api/internal/recompute-and-build-parquet", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ raceKey: "nar:2026:0529:42:01" }),
+    }),
+  );
+  expect(response.status).toBe(200);
+  const callArg = vi.mocked(buildRaceFeatures).mock.calls[0]![0];
+  expect(callArg.kaisaiNen).toBe("2026");
+  expect(callArg.kaisaiTsukihi).toBe("0529");
+  expect(callArg.keibajoCode).toBe("42");
+  expect(callArg.raceBango).toBe("01");
+  expect(callArg.source).toBe("nar");
+  expect(env.FEATURES_ARCHIVE.put).toHaveBeenCalledWith(
+    "features/by-race/2026/05/29/nar/42/01.parquet",
+    new Uint8Array([1, 2, 3]),
+  );
+});
+
+it("rejects recompute request with malformed raceKey-only body", async () => {
+  const env = buildEnv();
+  const response = await handleRecomputeRequest(
+    env,
+    new Request("https://x/api/internal/recompute-and-build-parquet", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ raceKey: "garbage" }),
+    }),
+  );
+  expect(response.status).toBe(400);
+});
+
 it("buildAndPersistRaceFeatures writes build-state KV and latest features KV", async () => {
   const env = buildEnv();
   vi.mocked(buildRaceFeatures).mockResolvedValueOnce([]);

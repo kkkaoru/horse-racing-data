@@ -2,6 +2,7 @@
 
 import { buildRaceFeatures } from "./features/build";
 import { encodeRaceFeaturesParquet } from "./features/parquet";
+import { tryParseRaceKey } from "./features/race-key";
 import { buildRaceParquetR2Key } from "./features/r2-key";
 import { handleFinishPositionPredictionJob } from "./finish-position/inference";
 import { putBuildStateToKv } from "./gates/build-state-kv";
@@ -81,11 +82,11 @@ export const handleMigrationStateGet = async (env: Env, request: Request): Promi
 
 interface RecomputeRequestBody {
   raceKey: string;
-  source: "jra" | "nar";
-  kaisaiNen: string;
-  kaisaiTsukihi: string;
-  keibajoCode: string;
-  raceBango: string;
+  source?: "jra" | "nar";
+  kaisaiNen?: string;
+  kaisaiTsukihi?: string;
+  keibajoCode?: string;
+  raceBango?: string;
 }
 
 interface BuildRaceFeaturesResult {
@@ -95,14 +96,32 @@ interface BuildRaceFeaturesResult {
   builtAt: string;
 }
 
-const toRaceJobKeyFromBody = (body: RecomputeRequestBody): RaceJobKey => ({
-  raceKey: body.raceKey,
-  source: body.source,
-  kaisaiNen: body.kaisaiNen,
-  kaisaiTsukihi: body.kaisaiTsukihi,
-  keibajoCode: body.keibajoCode,
-  raceBango: body.raceBango,
-});
+const hasExplicitRaceFields = (
+  body: RecomputeRequestBody,
+): body is Required<RecomputeRequestBody> =>
+  body.source !== undefined &&
+  body.kaisaiNen !== undefined &&
+  body.kaisaiTsukihi !== undefined &&
+  body.keibajoCode !== undefined &&
+  body.raceBango !== undefined;
+
+// Accept both shapes from upstream callers:
+//   1. { raceKey } only — parse the 5-part race_key string.
+//   2. { raceKey, source, kaisaiNen, kaisaiTsukihi, keibajoCode, raceBango }
+//      — trust the explicit fields (legacy forwardRaceForFeatures payload).
+const toRaceJobKeyFromBody = (body: RecomputeRequestBody): RaceJobKey | null => {
+  if (hasExplicitRaceFields(body)) {
+    return {
+      raceKey: body.raceKey,
+      source: body.source,
+      kaisaiNen: body.kaisaiNen,
+      kaisaiTsukihi: body.kaisaiTsukihi,
+      keibajoCode: body.keibajoCode,
+      raceBango: body.raceBango,
+    };
+  }
+  return tryParseRaceKey(body.raceKey);
+};
 
 // Reads Hyperdrive (Postgres) via buildRaceFeatures, encodes Parquet bytes,
 // PUTs to R2, then mirrors the build into KV (state + latest features).
@@ -135,7 +154,16 @@ export const handleRecomputeRequest = async (env: Env, request: Request): Promis
     return jsonResponse({ error: "unauthorized" }, { status: 401 });
   }
   const body = (await request.json()) as RecomputeRequestBody;
-  const result = await buildAndPersistRaceFeatures(env, toRaceJobKeyFromBody(body));
+  const raceJobKey = toRaceJobKeyFromBody(body);
+  if (!raceJobKey) {
+    return jsonResponse(
+      {
+        error: "raceKey must match {source}:{kaisaiNen}:{kaisaiTsukihi}:{keibajoCode}:{raceBango}",
+      },
+      { status: 400 },
+    );
+  }
+  const result = await buildAndPersistRaceFeatures(env, raceJobKey);
   return jsonResponse(result);
 };
 
@@ -183,25 +211,6 @@ const RACE_KEY_LIST_ENDPOINT_PATH = "/api/internal/list-race-keys-by-date-from-h
 interface RaceKeyListResponse {
   rows: { race_key: string }[];
 }
-
-const parseRaceJobKeyFromRaceKey = (raceKey: string): RaceJobKey | null => {
-  const parts = raceKey.split(":");
-  if (parts.length !== 5) {
-    return null;
-  }
-  const source = parts[0] === "jra" || parts[0] === "nar" ? parts[0] : null;
-  if (!source) {
-    return null;
-  }
-  return {
-    kaisaiNen: parts[1]!,
-    kaisaiTsukihi: parts[2]!,
-    keibajoCode: parts[3]!,
-    raceBango: parts[4]!,
-    raceKey,
-    source,
-  };
-};
 
 export const fetchRaceKeysForDateFromOldWorker = async (
   env: Env,
@@ -290,7 +299,7 @@ export const runScheduledFeaturesPlan = async (
   const raceKeys = await fetchRaceKeysForDateFromOldWorker(env, yyyymmdd);
   const predictedAt = now.toISOString();
   const raceJobKeys = raceKeys
-    .map(parseRaceJobKeyFromRaceKey)
+    .map(tryParseRaceKey)
     .filter((value): value is RaceJobKey => value !== null);
   for (const raceJobKey of raceJobKeys) {
     await enqueueRaceInferenceJobs(env, raceJobKey, predictedAt);
