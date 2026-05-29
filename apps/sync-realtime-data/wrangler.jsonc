@@ -105,6 +105,10 @@
       "binding": "REALTIME_HOT",
       "service": "sync-realtime-data-hot",
     },
+    {
+      "binding": "REALTIME_FEATURES",
+      "service": "sync-realtime-data-features",
+    },
   ],
   "d1_databases": [
     {
