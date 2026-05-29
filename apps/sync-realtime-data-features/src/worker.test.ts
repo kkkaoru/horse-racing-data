@@ -15,9 +15,18 @@ vi.mock("./running-style/inference", () => ({
 vi.mock("./finish-position/inference", () => ({
   handleFinishPositionPredictionJob: vi.fn(async () => ({ predictionsCount: 0, raceKey: "r" })),
 }));
+vi.mock("./scheduled-race-list", async () => {
+  const actual =
+    await vi.importActual<typeof import("./scheduled-race-list")>("./scheduled-race-list");
+  return {
+    ...actual,
+    listTodayRaceKeysFromHyperdrive: vi.fn(async () => []),
+  };
+});
 
 import { buildRaceFeatures } from "./features/build";
 import { encodeRaceFeaturesParquet } from "./features/parquet";
+import { listTodayRaceKeysFromHyperdrive } from "./scheduled-race-list";
 import {
   buildAndPersistRaceFeatures,
   handleFetchRequest,
@@ -72,6 +81,8 @@ beforeEach(() => {
   vi.mocked(buildRaceFeatures).mockResolvedValue([]);
   vi.mocked(encodeRaceFeaturesParquet).mockReset();
   vi.mocked(encodeRaceFeaturesParquet).mockResolvedValue(new Uint8Array([1, 2, 3]));
+  vi.mocked(listTodayRaceKeysFromHyperdrive).mockReset();
+  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValue([]);
 });
 
 it("handleRoot returns ok payload", async () => {
@@ -390,27 +401,35 @@ it("runScheduledFeaturesPlan skips outside polling window", async () => {
   ).resolves.toStrictEqual({ enqueuedRaceCount: 0, ran: false });
 });
 
-it("runScheduledFeaturesPlan runs inside polling window without REALTIME_OLD", async () => {
+it("runScheduledFeaturesPlan runs inside polling window with empty hyperdrive result", async () => {
   const env = buildEnv();
   await expect(
     runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z")),
   ).resolves.toStrictEqual({ enqueuedRaceCount: 0, ran: true });
 });
 
-it("runScheduledFeaturesPlan enqueues per-race jobs from REALTIME_OLD response", async () => {
+it("runScheduledFeaturesPlan enqueues per-race jobs from hyperdrive direct read", async () => {
   const queueSend = vi.fn(async () => {});
-  const oldFetch = vi.fn(
-    async () =>
-      new Response(
-        JSON.stringify({
-          rows: [{ race_key: "nar:2026:0529:30:08" }, { race_key: "jra:2026:0529:08:01" }],
-        }),
-      ),
-  );
+  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0529",
+      keibajoCode: "30",
+      raceBango: "08",
+      raceKey: "nar:2026:0529:30:08",
+      source: "nar",
+    },
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0529",
+      keibajoCode: "08",
+      raceBango: "01",
+      raceKey: "jra:2026:0529:08:01",
+      source: "jra",
+    },
+  ]);
   const env = buildEnv({
     REALTIME_FEATURES_JOBS: { send: queueSend } as unknown as Queue<Job>,
-    REALTIME_OLD: { fetch: oldFetch } as never,
-    REALTIME_OLD_ADMIN_TOKEN: "old-secret",
   });
   const result = await runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z"));
   expect(result.ran).toBe(true);
@@ -420,9 +439,16 @@ it("runScheduledFeaturesPlan enqueues per-race jobs from REALTIME_OLD response",
 
 it("runScheduledFeaturesPlan skips enqueue when lock is held", async () => {
   const queueSend = vi.fn(async () => {});
-  const oldFetch = vi.fn(
-    async () => new Response(JSON.stringify({ rows: [{ race_key: "nar:2026:0529:30:08" }] })),
-  );
+  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0529",
+      keibajoCode: "30",
+      raceBango: "08",
+      raceKey: "nar:2026:0529:30:08",
+      source: "nar",
+    },
+  ]);
   const kvGet = vi.fn().mockResolvedValue("1");
   const env = buildEnv({
     FEATURES_KV: {
@@ -431,39 +457,9 @@ it("runScheduledFeaturesPlan skips enqueue when lock is held", async () => {
       put: vi.fn(),
     } as unknown as KVNamespace,
     REALTIME_FEATURES_JOBS: { send: queueSend } as unknown as Queue<Job>,
-    REALTIME_OLD: { fetch: oldFetch } as never,
-    REALTIME_OLD_ADMIN_TOKEN: "old-secret",
   });
   await runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z"));
   expect(queueSend).not.toHaveBeenCalled();
-});
-
-it("runScheduledFeaturesPlan ignores invalid race_keys", async () => {
-  const queueSend = vi.fn(async () => {});
-  const oldFetch = vi.fn(
-    async () =>
-      new Response(JSON.stringify({ rows: [{ race_key: "garbage" }, { race_key: "x:y:z:w:v" }] })),
-  );
-  const env = buildEnv({
-    REALTIME_FEATURES_JOBS: { send: queueSend } as unknown as Queue<Job>,
-    REALTIME_OLD: { fetch: oldFetch } as never,
-    REALTIME_OLD_ADMIN_TOKEN: "old-secret",
-  });
-  const result = await runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z"));
-  expect(result.enqueuedRaceCount).toBe(0);
-  expect(queueSend).not.toHaveBeenCalled();
-});
-
-it("runScheduledFeaturesPlan returns empty when REALTIME_OLD response is not ok", async () => {
-  const queueSend = vi.fn(async () => {});
-  const oldFetch = vi.fn(async () => new Response("", { status: 500 }));
-  const env = buildEnv({
-    REALTIME_FEATURES_JOBS: { send: queueSend } as unknown as Queue<Job>,
-    REALTIME_OLD: { fetch: oldFetch } as never,
-    REALTIME_OLD_ADMIN_TOKEN: "old-secret",
-  });
-  const result = await runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z"));
-  expect(result.enqueuedRaceCount).toBe(0);
 });
 
 it("handleScheduled dispatches scheduled tick", async () => {
