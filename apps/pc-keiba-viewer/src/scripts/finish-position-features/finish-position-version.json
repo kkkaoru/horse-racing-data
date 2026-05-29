@@ -1,0 +1,4 @@
+{
+  "version": "v1",
+  "description": "Agent G local finish-position prediction pipeline version. Bumped when feature SQL or score script semantics change."
+}
