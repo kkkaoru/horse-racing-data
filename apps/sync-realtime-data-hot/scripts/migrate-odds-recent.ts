@@ -206,9 +206,10 @@ export const buildDefaultConfig = (now: Date): MigrateOddsRecentConfig => ({
   sleepMs: DEFAULT_SLEEP_MS,
 });
 
-/* v8 ignore next 5 */
+/* v8 ignore start */
 if (import.meta.main) {
   const config = buildDefaultConfig(new Date());
   const result = await migrateOddsRecent(config);
   console.log(`migrate-odds-recent done: ${result.totalInserted} rows, maxId=${result.maxId}`);
 }
+/* v8 ignore stop */

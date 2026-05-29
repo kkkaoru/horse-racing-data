@@ -260,7 +260,7 @@ export const buildDefaultConfig = async (
   };
 };
 
-/* v8 ignore next 6 */
+/* v8 ignore start */
 if (import.meta.main) {
   const config = await buildDefaultConfig(globalThis.fetch);
   const result = await exportOldOddsToR2Final(config);
@@ -268,3 +268,4 @@ if (import.meta.main) {
     `export-old-odds-to-r2-final: stopped=${result.stoppedReason}, rows=${result.totalRows}, groups=${result.totalGroups}, lastId=${result.finalSinceId}`,
   );
 }
+/* v8 ignore stop */

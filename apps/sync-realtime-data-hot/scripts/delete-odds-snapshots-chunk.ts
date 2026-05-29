@@ -52,7 +52,7 @@ const getJstHour = (date: Date): number => {
     timeZone: "Asia/Tokyo",
   });
   const hourPart = formatter.formatToParts(date).find((part) => part.type === "hour");
-  return Number(hourPart?.value ?? "0");
+  return Number(hourPart!.value);
 };
 
 export const isWithinNightWindow = (date: Date): boolean => {
@@ -232,7 +232,7 @@ export const buildDefaultConfig = async (
   };
 };
 
-/* v8 ignore next 6 */
+/* v8 ignore start */
 if (import.meta.main) {
   const config = await buildDefaultConfig(new Date(), globalThis.fetch);
   const result = await deleteOddsSnapshotsChunked(config);
@@ -240,3 +240,4 @@ if (import.meta.main) {
     `delete-odds-snapshots-chunk: stopped=${result.stoppedReason}, deleted=${result.totalDeleted}, lastId=${result.finalSinceId}`,
   );
 }
+/* v8 ignore stop */
