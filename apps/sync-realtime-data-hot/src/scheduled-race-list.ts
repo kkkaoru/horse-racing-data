@@ -16,6 +16,7 @@
 // is not available inside this worker yet — keep the placeholder so the legacy
 // `forwardRaceSourceToHot` payload still wins via `on conflict do update`.
 
+import { LOCAL_KEIBAJO_TO_NAR_BABA_CODE } from "horse-racing-realtime/nar";
 import type { Pool } from "pg";
 
 import { invalidateRaceListInKv } from "./gates/race-list-kv-cache";
@@ -24,6 +25,8 @@ import { getHotPool } from "./postgres-pool";
 import { upsertOddsFetchState } from "./storage";
 import { formatRaceStartJst, getTodayJst } from "./time";
 import type { Env, OddsSource } from "./types";
+
+const NAR_BABA_CODE_LOOKUP: Record<string, string> = LOCAL_KEIBAJO_TO_NAR_BABA_CODE;
 
 export interface TodayRaceRow {
   source: OddsSource;
@@ -152,6 +155,7 @@ const splitYyyymmdd = (yyyymmdd: string): { kaisaiNen: string; kaisaiTsukihi: st
 interface NarVenue {
   yyyymmdd: string;
   keibajoCode: string;
+  babaCode: string;
 }
 
 const buildVenueKey = (yyyymmdd: string, keibajoCode: string): string =>
@@ -163,8 +167,16 @@ const collectNarVenues = (rows: IntermediateRow[]): NarVenue[] => {
     if (row.source !== "nar") {
       return;
     }
+    const babaCode = NAR_BABA_CODE_LOOKUP[row.keibajoCode];
+    if (!babaCode) {
+      console.warn(
+        `[scheduled-race-list] skipping NAR venue with unknown keibajoCode=${row.keibajoCode}`,
+      );
+      return;
+    }
     const yyyymmdd = `${row.kaisaiNen}${row.kaisaiTsukihi}`;
     seen.set(buildVenueKey(yyyymmdd, row.keibajoCode), {
+      babaCode,
       keibajoCode: row.keibajoCode,
       yyyymmdd,
     });
@@ -173,7 +185,7 @@ const collectNarVenues = (rows: IntermediateRow[]): NarVenue[] => {
 };
 
 const fetchNarVenueLinks = async (venue: NarVenue): Promise<Map<string, string>> => {
-  const venueUrl = buildRaceListUrl(venue.yyyymmdd, venue.keibajoCode).url;
+  const venueUrl = buildRaceListUrl(venue.yyyymmdd, venue.babaCode).url;
   try {
     const links = await fetchRaceLinksFromRaceList(venueUrl);
     return new Map(
@@ -181,7 +193,7 @@ const fetchNarVenueLinks = async (venue: NarVenue): Promise<Map<string, string>>
     );
   } catch (error) {
     console.warn(
-      `[scheduled-race-list] failed to fetch NAR venue race list: yyyymmdd=${venue.yyyymmdd} keibajo=${venue.keibajoCode}`,
+      `[scheduled-race-list] failed to fetch NAR venue race list: yyyymmdd=${venue.yyyymmdd} keibajo=${venue.keibajoCode} baba=${venue.babaCode}`,
       error,
     );
     return new Map();
