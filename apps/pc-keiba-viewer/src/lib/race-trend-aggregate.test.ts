@@ -13,9 +13,11 @@ import {
   parseStoredInteger,
   parseStoredPopularity,
   parseStoredWinOdds,
+  resolveRowJockeyKey,
   runningStyleFromCorners,
   starterKey,
   starterRaceKey,
+  starterRunningStyleKey,
 } from "./race-trend-aggregate";
 import type {
   RaceTrendCurrentRunningStyle,
@@ -1108,4 +1110,46 @@ test("countDistinctRunningStyleDetailRaces deduplicates across multiple row grou
       },
     ]),
   ).toStrictEqual(1);
+});
+
+test("starterRunningStyleKey concatenates race key and normalized umaban", () => {
+  expect(
+    starterRunningStyleKey({
+      source: "jra",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0530",
+      keibajoCode: "05",
+      raceBango: "01",
+      umaban: "07",
+    }),
+  ).toStrictEqual("jra:20260530:05:01:7");
+});
+
+test("starterRunningStyleKey leaves an empty umaban segment when umaban is null", () => {
+  expect(
+    starterRunningStyleKey({
+      source: "nar",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0530",
+      keibajoCode: "44",
+      raceBango: "11",
+      umaban: null,
+    }),
+  ).toStrictEqual("nar:20260530:44:11:");
+});
+
+test("resolveRowJockeyKey returns the normalized comparison key", () => {
+  expect(resolveRowJockeyKey("山田 太郎")).toStrictEqual("山田太郎");
+});
+
+test("resolveRowJockeyKey returns null for empty string", () => {
+  expect(resolveRowJockeyKey("")).toBeNull();
+});
+
+test("resolveRowJockeyKey returns null for null input", () => {
+  expect(resolveRowJockeyKey(null)).toBeNull();
+});
+
+test("resolveRowJockeyKey returns null for undefined input", () => {
+  expect(resolveRowJockeyKey(undefined)).toBeNull();
 });

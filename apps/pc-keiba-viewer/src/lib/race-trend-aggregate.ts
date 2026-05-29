@@ -158,12 +158,20 @@ export const starterRaceKey = (
     source: row.source,
   });
 
-const starterRunningStyleKey = (
+export const starterRunningStyleKey = (
   row: Pick<
     RaceTrendStarterRow,
     "source" | "kaisaiNen" | "kaisaiTsukihi" | "keibajoCode" | "raceBango" | "umaban"
   >,
 ): string => `${starterRaceKey(row)}:${normalizeNumberText(row.umaban) ?? ""}`;
+
+// Resolve a jockey display name to its normalized comparison key. Extracted so
+// that callers (e.g. race-trend-score.ts) can build identical lookup keys
+// without rebuilding a target-table resolver.
+export const resolveRowJockeyKey = (jockeyName: string | null | undefined): string | null => {
+  if (!jockeyName) return null;
+  return normalizeRaceTrendJockeyName(jockeyName);
+};
 
 const parseHorseWeightDelta = (zogenFugo: string | null, zogenSa: string | null): number | null => {
   const magnitude = parseStoredInteger(zogenSa, "000");
@@ -270,7 +278,7 @@ const buildRowJockeyKeyResolver = (
         return target.jockeyKey;
       }
     }
-    return normalizeRaceTrendJockeyName(jockeyName);
+    return resolveRowJockeyKey(jockeyName);
   };
 };
 
@@ -294,7 +302,7 @@ const aggregateRunningStyleRows = (
         numeric: true,
       }),
     );
-  const resolveRowJockeyKey = buildRowJockeyKeyResolver(targets);
+  const resolveTargetJockeyKey = buildRowJockeyKeyResolver(targets);
   const groupedRowsByTargetKey = new Map<string, RaceTrendStarterRow[]>();
   for (const row of rows) {
     const ymd = toYmd(row.kaisaiNen, row.kaisaiTsukihi);
@@ -303,7 +311,7 @@ const aggregateRunningStyleRows = (
     const key = runningStyleTargetKey(
       {
         frameNumber: normalizeNumberText(row.wakuban),
-        jockeyKey: resolveRowJockeyKey(row.jockeyName),
+        jockeyKey: resolveTargetJockeyKey(row.jockeyName),
         raceNumber: normalizeNumberText(row.raceBango),
         runningStyle:
           runningStyleByStarterKey.get(starterRunningStyleKey(row)) ?? runningStyleFromCorners(row),
