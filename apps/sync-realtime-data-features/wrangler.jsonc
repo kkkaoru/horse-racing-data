@@ -1,0 +1,85 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sync-realtime-data-features",
+  "main": "src/index.ts",
+  "account_id": "78109ec18c7c85b194b19fb32e3bb149",
+  "compatibility_date": "2026-05-10",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1,
+  },
+  "limits": {
+    "cpu_ms": 300000,
+  },
+  "vars": {
+    "FEATURES_BUILD_LOCK_TTL_SECONDS": "300",
+    "FEATURES_RACE_LIST_KV_TTL_SECONDS": "21600",
+    "FEATURES_ENQUEUE_LOCK_TTL_SECONDS": "60",
+    "FEATURES_EDGE_CACHE_TTL_SECONDS": "60",
+    "FEATURES_R2_LIST_CACHE_TTL_SECONDS": "600",
+    "FEATURES_PARQUET_BYTES_CACHE_TTL_SECONDS": "300",
+    "FEATURES_LATEST_KV_TTL_SECONDS": "600",
+  },
+  // Crons left empty for initial deploy; cutover step (Phase C) will populate these.
+  "triggers": {
+    "crons": [],
+  },
+  "queues": {
+    "producers": [
+      {
+        "binding": "REALTIME_FEATURES_JOBS",
+        "queue": "sync-realtime-data-features-jobs",
+      },
+    ],
+    "consumers": [
+      {
+        "queue": "sync-realtime-data-features-jobs",
+        "max_batch_size": 1,
+        "max_batch_timeout": 5,
+        "max_concurrency": 4,
+      },
+    ],
+  },
+  "services": [
+    {
+      "binding": "REALTIME_OLD",
+      "service": "sync-realtime-data",
+    },
+  ],
+  "d1_databases": [
+    {
+      "binding": "REALTIME_FEATURES_DB",
+      "database_name": "sync-realtime-data-features-db",
+      "database_id": "cddc0d62-18fd-4eab-84bf-9082e5d38ad1",
+    },
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "FEATURES_KV",
+      "id": "b1a983e4514a4c918ed9e30bea484583",
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "FEATURES_ARCHIVE",
+      "bucket_name": "pc-keiba-features-archive",
+    },
+    {
+      "binding": "MODELS",
+      "bucket_name": "pc-keiba-finish-position-models",
+    },
+  ],
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "9b214701ab3f4a3ab406de8cdd26e0ae",
+    },
+  ],
+  "routes": [
+    {
+      "pattern": "sync-realtime-data-features.kkk4oru.com",
+      "custom_domain": true,
+    },
+  ],
+}

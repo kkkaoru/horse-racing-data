@@ -1,0 +1,38 @@
+{
+  "name": "sync-realtime-data-features",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "bun run deploy:worker && bun run queues:configure",
+    "deploy:worker": "wrangler deploy",
+    "dev": "wrangler dev",
+    "d1:migrate": "wrangler d1 migrations apply sync-realtime-data-features-db --remote",
+    "d1:migrate:local": "wrangler d1 migrations apply sync-realtime-data-features-db --local",
+    "format": "oxfmt --write src test package.json tsconfig.json vitest.config.ts wrangler.jsonc",
+    "format:check": "oxfmt --check src test package.json tsconfig.json vitest.config.ts wrangler.jsonc",
+    "lint": "oxlint . --tsconfig ./tsconfig.json --type-aware --import-plugin --node-plugin --promise-plugin --deny-warnings --max-warnings=0",
+    "queues:configure": "wrangler queues consumer worker remove sync-realtime-data-features-jobs sync-realtime-data-features || true && wrangler queues consumer worker add sync-realtime-data-features-jobs sync-realtime-data-features --batch-size 1 --batch-timeout 5 --message-retries 3 --max-concurrency 4",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "tsc": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@dsnp/parquetjs": "1.8.7",
+    "horse-racing-realtime": "workspace:*",
+    "hyparquet": "1.26.0",
+    "pg": "8.16.3",
+    "pg-cloudflare": "1.3.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.9.10",
+    "@types/pg": "8.15.6",
+    "@vitest/coverage-v8": "4.1.5",
+    "esbuild": "0.28.0",
+    "miniflare": "4.20260507.1",
+    "oxfmt": "0.48.0",
+    "oxlint": "1.63.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.5",
+    "wrangler": "4.90.0"
+  }
+}
