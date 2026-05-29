@@ -6,25 +6,53 @@ import type { RaceSource } from "../../../lib/codes";
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
 import { formatKeibajo, formatRaceNumber } from "../../../lib/format";
 import { getRaceTrendLiveUrl } from "../../../lib/paddock-client-url";
-import { aggregateForTargets } from "../../../lib/race-trend-aggregate";
+import {
+  aggregateForTargets,
+  normalizeNumberText,
+  parseStoredPopularity,
+  parseStoredWinOdds,
+  resolveRowJockeyKey,
+  runningStyleFromCorners,
+  starterRunningStyleKey,
+} from "../../../lib/race-trend-aggregate";
 import { RACE_TREND_CACHE_REFRESH_PARAM } from "../../../lib/race-trend-cache";
 import {
+  clearRaceTrendScoreConditionsQueryParam,
+  clearRaceTrendTargetQueryParams,
+  DEFAULT_RACE_TREND_SCORE_CONDITIONS_QUERY,
   DEFAULT_RACE_TREND_TARGETS,
+  getRaceTrendScoreConditionsFromSearchParams,
+  getRaceTrendTargetsFromSearchParams,
+  isDefaultRaceTrendScoreConditionsQuery,
+  isDefaultRaceTrendTargets,
+  isSameRaceTrendScoreConditionsQuery,
+  isSameRaceTrendTargets,
+  RACE_TREND_SCORE_CONDITION_QUERY_KEYS,
+  RACE_TREND_SCORE_CONDITIONS_QUERY_PARAM,
   RACE_TREND_TARGET_KEYS,
   RACE_TREND_TARGET_QUERY_PARAM,
-  clearRaceTrendTargetQueryParams,
-  getRaceTrendTargetsFromSearchParams,
-  isDefaultRaceTrendTargets,
-  isSameRaceTrendTargets,
+  serializeRaceTrendScoreConditionsQuery,
   serializeRaceTrendTargets,
+  type RaceTrendScoreConditionKey,
+  type RaceTrendScoreConditionsQuery,
   type RaceTrendTargetKey,
   type RaceTrendTargets,
 } from "../../../lib/race-trend-query";
+import {
+  computeRawUmabanScores,
+  normalizeUmabanScores,
+  type ScoreDetailInput,
+  type UmabanContext,
+} from "../../../lib/race-trend-score";
 import type {
+  RaceTrendCurrentRunningStyle,
   RaceTrendDetail,
   RaceTrendRawPayload,
+  RaceTrendRunnerSummary,
   RaceTrendRunningStyle,
+  RaceTrendRunningStyleCache,
   RaceTrendRunningStyleRow,
+  RaceTrendStarterRow,
 } from "../../../lib/race-types";
 import { useRealtimeRaceSelector } from "./realtime-client";
 
@@ -40,6 +68,7 @@ interface RaceTrendSectionProps {
   day: string;
   defaultEndDate: string;
   defaultStartDate: string;
+  initialScoreConditions?: RaceTrendScoreConditionsQuery;
   initialTrendTargets?: RaceTrendTargets;
   keibajoCode: string;
   minStartDate: string;
@@ -61,6 +90,18 @@ const TREND_TARGET_LABELS: Record<RaceTrendTargetKey, string> = {
   jockey: "騎手",
   raceNumber: "レース番号",
 };
+
+const SCORE_CONDITION_LABELS: Record<RaceTrendScoreConditionKey, string> = {
+  frame: "枠",
+  jockey: "騎手",
+  frameRunningStyle: "枠+脚質",
+};
+
+const SCORE_PLACEHOLDER = "-";
+const SCORE_DECIMAL_PLACES = 2;
+const RACE_TREND_SCORE_TOOLTIP_ID = "race-trend-score-tooltip";
+const RACE_TREND_SCORE_TOOLTIP_TEXT =
+  "過去レースの「人気 − 着順」を元に算出した相対スコア。 3 着以内は大きくプラス (オッズで重み付け)、 4-5 着は人気とオッズに応じた中程度のプラス、 6 着以下は無評価。 選択されたスコア条件 (枠 / 騎手 / 脚質) で過去レースを filter し、 全馬番で 0.00 ～ 1.00 の相対値で正規化。";
 
 const RUNNING_STYLE_LABELS: Record<RaceTrendRunningStyle, string> = {
   nige: "逃げ",
@@ -101,6 +142,74 @@ const isRaceTrendRawPayload = (value: unknown): value is RaceTrendRawPayload =>
   value !== null &&
   "starterRows" in value &&
   Array.isArray((value as { starterRows?: unknown }).starterRows);
+
+const buildCurrentRunningStyleMap = (
+  rows: RaceTrendCurrentRunningStyle[],
+): Map<string, RaceTrendRunningStyle> =>
+  new Map(rows.map((row) => [row.horseNumber, row.predictedLabel]));
+
+const buildHistoricalRunningStyleMap = (
+  rows: RaceTrendRunningStyleCache[],
+): Map<string, RaceTrendRunningStyle> =>
+  new Map(
+    rows.map((row) => [
+      `${row.raceKey}:${normalizeNumberText(row.horseNumber) ?? ""}`,
+      row.predictedLabel,
+    ]),
+  );
+
+const buildScoreContext = (
+  runner: RaceTrendRunnerSummary,
+  currentRunningStyleMap: Map<string, RaceTrendRunningStyle>,
+): UmabanContext => {
+  const umaban = normalizeNumberText(runner.horseNumber) ?? "";
+  return {
+    umaban,
+    frameNumber: normalizeNumberText(runner.frameNumber),
+    jockeyKey: resolveRowJockeyKey(runner.jockeyName),
+    runningStyle: currentRunningStyleMap.get(umaban) ?? null,
+  };
+};
+
+interface BuildScoreDetailParams {
+  row: RaceTrendStarterRow;
+  runningStyleByStarterKey: Map<string, RaceTrendRunningStyle>;
+}
+
+const buildScoreDetail = (params: BuildScoreDetailParams): ScoreDetailInput => {
+  const { row, runningStyleByStarterKey } = params;
+  const runningStyleFromMap = runningStyleByStarterKey.get(starterRunningStyleKey(row));
+  return {
+    popularity: parseStoredPopularity(row.tanshoPopularity),
+    finishPosition: row.finishPosition,
+    winOdds: parseStoredWinOdds(row.tanshoOdds),
+    frameNumber: normalizeNumberText(row.wakuban),
+    jockeyKey: resolveRowJockeyKey(row.jockeyName),
+    runningStyle: runningStyleFromMap ?? runningStyleFromCorners(row),
+  };
+};
+
+const hasValidUmaban = (context: UmabanContext): boolean => context.umaban !== "";
+const hasFinishPosition = (detail: ScoreDetailInput): boolean => detail.finishPosition > 0;
+
+interface FormatScoreParams {
+  row: RaceTrendRunningStyleRow;
+  scores: Map<string, number | null>;
+}
+
+const isFiniteScoreValue = (value: number | null | undefined): value is number =>
+  typeof value === "number" && Number.isFinite(value);
+
+const averageScoreValues = (values: number[]): number =>
+  values.reduce((acc, value) => acc + value, 0) / values.length;
+
+const formatScore = (params: FormatScoreParams): string => {
+  const values = params.row.targetHorseNumbers
+    .map((umaban) => params.scores.get(umaban) ?? null)
+    .filter(isFiniteScoreValue);
+  if (values.length === 0) return SCORE_PLACEHOLDER;
+  return averageScoreValues(values).toFixed(SCORE_DECIMAL_PLACES);
+};
 
 const sortDetailsByLatestRace = (details: RaceTrendDetail[]): RaceTrendDetail[] =>
   details.toSorted((a, b) => {
@@ -187,6 +296,23 @@ const replaceRaceTrendTargetQuery = (trendTargets: RaceTrendTargets): void => {
   }
 };
 
+const replaceRaceTrendScoreConditionsQuery = (
+  scoreConditions: RaceTrendScoreConditionsQuery,
+): void => {
+  const url = new URL(window.location.href);
+  clearRaceTrendScoreConditionsQueryParam(url.searchParams);
+  if (!isDefaultRaceTrendScoreConditionsQuery(scoreConditions)) {
+    url.searchParams.set(
+      RACE_TREND_SCORE_CONDITIONS_QUERY_PARAM,
+      serializeRaceTrendScoreConditionsQuery(scoreConditions),
+    );
+  }
+  const nextPath = `${url.pathname}${url.search}${url.hash}`;
+  if (nextPath !== getCurrentLocationPath()) {
+    window.history.replaceState(window.history.state, "", nextPath);
+  }
+};
+
 const isRaceTrendUpdatedMessage = (value: unknown): boolean =>
   typeof value === "object" &&
   value !== null &&
@@ -204,13 +330,16 @@ function RaceTrendTable({
   raceCount,
   rows,
   trendTargets,
+  umabanScores,
 }: {
   isLoading: boolean;
   raceCount: number;
   rows: RaceTrendRunningStyleRow[];
   trendTargets: RaceTrendTargets;
+  umabanScores: Map<string, number | null>;
 }) {
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const [scoreTooltipOpen, setScoreTooltipOpen] = useState(false);
   const realtimePayload = useRealtimeRaceSelector((state) => state.payload);
   const realtimeOddsByHorse = useMemo(
     () =>
@@ -223,7 +352,7 @@ function RaceTrendTable({
     [realtimePayload],
   );
   const colSpan =
-    8 +
+    9 +
     (trendTargets.frame ? 1 : 0) +
     (trendTargets.runningStyle ? 1 : 0) +
     (trendTargets.jockey ? 1 : 0) +
@@ -240,6 +369,7 @@ function RaceTrendTable({
         <table className="stats-table race-trend-table aggregate">
           <colgroup>
             <col className="race-trend-col-horse-number" />
+            <col className="race-trend-col-score" />
             {trendTargets.frame ? <col className="race-trend-col-frame" /> : null}
             {trendTargets.runningStyle ? <col className="race-trend-col-running-style" /> : null}
             {trendTargets.jockey ? <col className="race-trend-col-jockey" /> : null}
@@ -256,6 +386,24 @@ function RaceTrendTable({
             <tr>
               <th>
                 <TrendHeaderLabel>馬番</TrendHeaderLabel>
+              </th>
+              <th>
+                <button
+                  aria-describedby={RACE_TREND_SCORE_TOOLTIP_ID}
+                  aria-expanded={scoreTooltipOpen}
+                  className={`race-trend-score-header${scoreTooltipOpen ? " tooltip-open" : ""}`}
+                  onClick={() => setScoreTooltipOpen((value) => !value)}
+                  type="button"
+                >
+                  <span>スコア</span>
+                  <small
+                    className="race-trend-score-tooltip"
+                    id={RACE_TREND_SCORE_TOOLTIP_ID}
+                    role="tooltip"
+                  >
+                    {RACE_TREND_SCORE_TOOLTIP_TEXT}
+                  </small>
+                </button>
               </th>
               {trendTargets.frame ? (
                 <th>
@@ -305,6 +453,9 @@ function RaceTrendTable({
               Array.from({ length: 5 }, (_, index) => (
                 <tr className="race-trend-skeleton-row" key={`race-trend-skeleton-${index}`}>
                   <td>
+                    <span className="race-trend-skeleton race-trend-skeleton-count" />
+                  </td>
+                  <td className="race-trend-score-cell">
                     <span className="race-trend-skeleton race-trend-skeleton-count" />
                   </td>
                   {trendTargets.frame ? (
@@ -362,6 +513,7 @@ function RaceTrendTable({
                       normalizeHorseNumber(row.targetHorseNumbers[0]),
                     )}
                     trendTargets={trendTargets}
+                    umabanScores={umabanScores}
                     onToggle={() => setExpandedKey(isExpanded ? null : row.key)}
                   />
                 );
@@ -385,16 +537,18 @@ function RowFragment({
   realtimeOdds,
   row,
   trendTargets,
+  umabanScores,
   onToggle,
 }: {
   isExpanded: boolean;
   realtimeOdds?: { popularity: number | null; winOdds: number | null };
   row: RaceTrendRunningStyleRow;
   trendTargets: RaceTrendTargets;
+  umabanScores: Map<string, number | null>;
   onToggle: () => void;
 }) {
   const colSpan =
-    8 +
+    9 +
     (trendTargets.frame ? 1 : 0) +
     (trendTargets.runningStyle ? 1 : 0) +
     (trendTargets.jockey ? 1 : 0) +
@@ -416,6 +570,9 @@ function RowFragment({
           >
             <span>{row.targetHorseNumbers.join(",") || "-"}</span>
           </button>
+        </td>
+        <td className="race-trend-score-cell">
+          <span>{formatScore({ row, scores: umabanScores })}</span>
         </td>
         {trendTargets.frame ? <td>{row.frameNumber ?? "-"}</td> : null}
         {trendTargets.runningStyle ? <td>{formatRunningStyle(row.runningStyle)}</td> : null}
@@ -500,6 +657,7 @@ export function RaceTrendSection({
   day,
   defaultEndDate,
   defaultStartDate,
+  initialScoreConditions = DEFAULT_RACE_TREND_SCORE_CONDITIONS_QUERY,
   initialTrendTargets = DEFAULT_RACE_TREND_TARGETS,
   keibajoCode,
   minStartDate,
@@ -512,9 +670,12 @@ export function RaceTrendSection({
   const [trendStart, setTrendStart] = useState(defaultStartDate);
   const [trendEnd, setTrendEnd] = useState(defaultEndDate);
   const [trendTargets, setTrendTargets] = useState<RaceTrendTargets>(initialTrendTargets);
+  const [scoreConditions, setScoreConditions] =
+    useState<RaceTrendScoreConditionsQuery>(initialScoreConditions);
   const [rawPayload, setRawPayload] = useState<RaceTrendRawPayload | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
   const trendTargetsRef = useRef(initialTrendTargets);
+  const scoreConditionsRef = useRef(initialScoreConditions);
   const fetchSequenceRef = useRef(0);
   const liveConnectedRef = useRef(false);
 
@@ -529,9 +690,23 @@ export function RaceTrendSection({
     setTrendTargets(nextTargets);
   }, []);
 
+  const toggleScoreCondition = useCallback((key: RaceTrendScoreConditionKey) => {
+    const currentConditions = scoreConditionsRef.current;
+    const nextConditions = {
+      ...currentConditions,
+      [key]: !currentConditions[key],
+    };
+    scoreConditionsRef.current = nextConditions;
+    replaceRaceTrendScoreConditionsQuery(nextConditions);
+    setScoreConditions(nextConditions);
+  }, []);
+
   useEffect(() => {
     const handlePopState = () => {
       const nextTargets = getRaceTrendTargetsFromSearchParams(
+        new URLSearchParams(window.location.search),
+      );
+      const nextScoreConditions = getRaceTrendScoreConditionsFromSearchParams(
         new URLSearchParams(window.location.search),
       );
       setTrendTargets((current) => {
@@ -540,6 +715,13 @@ export function RaceTrendSection({
         }
         trendTargetsRef.current = nextTargets;
         return nextTargets;
+      });
+      setScoreConditions((current) => {
+        if (isSameRaceTrendScoreConditionsQuery(current, nextScoreConditions)) {
+          return current;
+        }
+        scoreConditionsRef.current = nextScoreConditions;
+        return nextScoreConditions;
       });
     };
     window.addEventListener("popstate", handlePopState);
@@ -594,6 +776,38 @@ export function RaceTrendSection({
     defaultStartDate,
     defaultEndDate,
   ]);
+
+  const scoreSourceMaps = useMemo(() => {
+    const currentRunningStyleMap = buildCurrentRunningStyleMap(
+      rawPayload?.currentRunningStyles ?? [],
+    );
+    const runningStyleByStarterKey = buildHistoricalRunningStyleMap(
+      rawPayload?.historicalRunningStyles ?? [],
+    );
+    return { currentRunningStyleMap, runningStyleByStarterKey };
+  }, [rawPayload]);
+
+  const umabanScores = useMemo<Map<string, number | null>>(() => {
+    const runners = rawPayload?.runners ?? [];
+    const starterRows = rawPayload?.starterRows ?? [];
+    const contexts = runners
+      .map((runner) => buildScoreContext(runner, scoreSourceMaps.currentRunningStyleMap))
+      .filter(hasValidUmaban);
+    const details = starterRows
+      .map((row) =>
+        buildScoreDetail({
+          row,
+          runningStyleByStarterKey: scoreSourceMaps.runningStyleByStarterKey,
+        }),
+      )
+      .filter(hasFinishPosition);
+    const raw = computeRawUmabanScores({
+      contexts,
+      details,
+      conditions: scoreConditions,
+    });
+    return normalizeUmabanScores(raw);
+  }, [rawPayload, scoreSourceMaps, scoreConditions]);
 
   const refreshTrendRows = useCallback(
     async ({
@@ -783,11 +997,28 @@ export function RaceTrendSection({
           </fieldset>
         </div>
 
+        <div className="combined-score-targets race-trend-targets" aria-label="スコア条件">
+          <fieldset>
+            <legend>スコア条件</legend>
+            {RACE_TREND_SCORE_CONDITION_QUERY_KEYS.map((key) => (
+              <label key={key}>
+                <input
+                  checked={scoreConditions[key]}
+                  type="checkbox"
+                  onChange={() => toggleScoreCondition(key)}
+                />
+                <span>{SCORE_CONDITION_LABELS[key]}</span>
+              </label>
+            ))}
+          </fieldset>
+        </div>
+
         <RaceTrendTable
           isLoading={status === "loading"}
           raceCount={raceCount}
           rows={rows}
           trendTargets={trendTargets}
+          umabanScores={umabanScores}
         />
       </div>
 
