@@ -174,6 +174,17 @@ it("buildDefaultConfig reads env vars and fetches upper bound", async () => {
   expect(config.upperBoundId).toBe(1500);
 });
 
+it("buildDefaultConfig nowImpl returns the supplied now value", async () => {
+  process.env.CONFIRM_DELETE = "1";
+  process.env.REALTIME_ADMIN_TOKEN = "admin";
+  process.env.PC_KEIBA_VIEWER_INTERNAL_TOKEN = "internal";
+  process.env.NEW_WORKER_URL = "https://new.example.com";
+  process.env.OLD_WORKER_URL = "https://old.example.com";
+  const fetchImpl = vi.fn(async () => buildResponse({ value: "1500" }));
+  const config = await buildDefaultConfig(new Date("2026-05-28T15:00:00Z"), fetchImpl);
+  expect(config.nowImpl()).toStrictEqual(new Date("2026-05-28T15:00:00Z"));
+});
+
 it("buildDefaultConfig throws when upper bound endpoint returns non-ok", async () => {
   process.env.CONFIRM_DELETE = "1";
   process.env.REALTIME_ADMIN_TOKEN = "admin";

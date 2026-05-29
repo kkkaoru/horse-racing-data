@@ -279,6 +279,14 @@ it("throws when export-odds-chunk returns non-429 non-ok", async () => {
   await expect(backfillOldOdds(config)).rejects.toThrow();
 });
 
+it("stops immediately when resume id already meets upper bound", async () => {
+  const fetchImpl = vi.fn(async () => buildResponse({ value: "200" }));
+  const config = buildConfig({ fetchImpl, upperBoundId: 100 });
+  const result = await backfillOldOdds(config);
+  expect(result.stoppedReason).toBe("upper-bound-reached");
+  expect(result.totalInserted).toBe(0);
+});
+
 it("buildDefaultConfig fetches b1-max-id and assembles config", async () => {
   process.env.REALTIME_ADMIN_TOKEN = "admin";
   process.env.PC_KEIBA_VIEWER_INTERNAL_TOKEN = "internal";
@@ -287,6 +295,16 @@ it("buildDefaultConfig fetches b1-max-id and assembles config", async () => {
   const fetchImpl = vi.fn(async () => buildResponse({ value: "1500" }));
   const config = await buildDefaultConfig(new Date("2026-05-28T15:00:00Z"), fetchImpl);
   expect(config.upperBoundId).toBe(1500);
+});
+
+it("buildDefaultConfig nowImpl returns the supplied now value", async () => {
+  process.env.REALTIME_ADMIN_TOKEN = "admin";
+  process.env.PC_KEIBA_VIEWER_INTERNAL_TOKEN = "internal";
+  process.env.NEW_WORKER_URL = "https://new.example.com";
+  process.env.OLD_WORKER_URL = "https://old.example.com";
+  const fetchImpl = vi.fn(async () => buildResponse({ value: "1500" }));
+  const config = await buildDefaultConfig(new Date("2026-05-28T15:00:00Z"), fetchImpl);
+  expect(config.nowImpl()).toStrictEqual(new Date("2026-05-28T15:00:00Z"));
 });
 
 it("buildDefaultConfig throws when b1-max-id endpoint returns non-ok", async () => {

@@ -211,7 +211,7 @@ export const buildDefaultConfig = (_now: Date): SeedOddsFetchStateConfig => ({
   sleepMs: DEFAULT_SLEEP_MS,
 });
 
-/* v8 ignore next 5 */
+/* v8 ignore start */
 if (import.meta.main) {
   const config = buildDefaultConfig(new Date());
   const result = await seedOddsFetchState(config);
@@ -219,3 +219,4 @@ if (import.meta.main) {
     `seed-odds-fetch-state done: ${result.totalSeeded} rows, maxRowid=${result.maxRowid}`,
   );
 }
+/* v8 ignore stop */
