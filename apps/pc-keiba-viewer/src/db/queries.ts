@@ -534,19 +534,46 @@ export const getRaceRunners = cache(
               se.kohan_3f as "kohan3f"
             from ${nvdSe} se
             left join lateral (
-              select
-                hist.bataiju,
-                hist.zogen_fugo,
-                hist.zogen_sa
-              from ${nvdSe} hist
-              where
-                hist.ketto_toroku_bango = se.ketto_toroku_bango
-                and hist.ketto_toroku_bango is not null
-                and btrim(hist.ketto_toroku_bango) <> ''
-                and (hist.kaisai_nen, hist.kaisai_tsukihi, hist.race_bango) < (${year}, ${monthDay}, ${raceNumber})
-                and nullif(btrim(hist.bataiju), '') is not null
-                and upper(btrim(hist.bataiju)) <> 'FFF'
-              order by hist.kaisai_nen desc, hist.kaisai_tsukihi desc, hist.race_bango desc
+              -- JRA-transfer NAR runners (e.g. アローグレイシャー at 門別) have
+              -- no nvd_se past races, so without the jvd_se arm the SSR
+              -- bataiju is null and the row reads "-" whenever realtime
+              -- /api/.../realtime is unavailable (D1 CPU throttle on the
+              -- sync-realtime-data worker observed during race-day peaks).
+              select bataiju, zogen_fugo, zogen_sa
+              from (
+                select
+                  hist.bataiju,
+                  hist.zogen_fugo,
+                  hist.zogen_sa,
+                  hist.kaisai_nen,
+                  hist.kaisai_tsukihi,
+                  hist.race_bango
+                from ${nvdSe} hist
+                where
+                  hist.ketto_toroku_bango = se.ketto_toroku_bango
+                  and hist.ketto_toroku_bango is not null
+                  and btrim(hist.ketto_toroku_bango) <> ''
+                  and (hist.kaisai_nen, hist.kaisai_tsukihi, hist.race_bango) < (${year}, ${monthDay}, ${raceNumber})
+                  and nullif(btrim(hist.bataiju), '') is not null
+                  and upper(btrim(hist.bataiju)) <> 'FFF'
+                union all
+                select
+                  jra.bataiju,
+                  jra.zogen_fugo,
+                  jra.zogen_sa,
+                  jra.kaisai_nen,
+                  jra.kaisai_tsukihi,
+                  jra.race_bango
+                from ${jvdSe} jra
+                where
+                  jra.ketto_toroku_bango = se.ketto_toroku_bango
+                  and jra.ketto_toroku_bango is not null
+                  and btrim(jra.ketto_toroku_bango) <> ''
+                  and (jra.kaisai_nen, jra.kaisai_tsukihi, jra.race_bango) < (${year}, ${monthDay}, ${raceNumber})
+                  and nullif(btrim(jra.bataiju), '') is not null
+                  and upper(btrim(jra.bataiju)) <> 'FFF'
+              ) combined
+              order by combined.kaisai_nen desc, combined.kaisai_tsukihi desc, combined.race_bango desc
               limit 1
             ) latest_weight on true
             where
@@ -2144,7 +2171,10 @@ const fetchTopRaceWindowsFromDb = async (nowKey: string): Promise<TopRaceWindows
         order by bucket asc, start_key asc, "keibajoCode" asc, "raceBango" asc, source asc
       `);
   return {
-    finished: result.rows.filter((row) => row.bucket === 1).slice(-60).toReversed(),
+    finished: result.rows
+      .filter((row) => row.bucket === 1)
+      .slice(-60)
+      .toReversed(),
     upcoming: result.rows.filter((row) => row.bucket === 0).slice(0, 240),
   };
 };

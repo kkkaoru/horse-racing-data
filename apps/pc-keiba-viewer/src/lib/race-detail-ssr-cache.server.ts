@@ -26,7 +26,7 @@ export interface RaceDetailSsrCacheKeyParams {
   year: string;
 }
 
-const RACE_DETAIL_SSR_CACHE_VERSION = "v1";
+const RACE_DETAIL_SSR_CACHE_VERSION = "v2";
 const CACHE_URL_BASE = "https://pc-keiba-viewer.local/race-detail-ssr-cache/";
 const DEFAULT_CONTENT_TYPE = "application/json; charset=utf-8";
 const CACHE_CONTROL_HEADER = "public, max-age=%d";
@@ -49,7 +49,10 @@ const getCloudflareRuntime = async (): Promise<{
 const getDefaultCache = (): Cache | null =>
   typeof caches === "undefined" || !caches.default ? null : caches.default;
 
-const getRaceStartTimeMs = (params: RaceDetailSsrCacheKeyParams, race: RaceDetail): number | null => {
+const getRaceStartTimeMs = (
+  params: RaceDetailSsrCacheKeyParams,
+  race: RaceDetail,
+): number | null => {
   const normalizedTime = race.hassoJikoku?.trim().padStart(4, "0");
   if (!normalizedTime || !/^\d{4}$/u.test(normalizedTime)) {
     return null;
@@ -78,7 +81,8 @@ export const getRaceDetailSsrCacheTtlSeconds = (
 ): number => {
   const afterStartSeconds = getConfiguredAfterStartSeconds(env);
   const raceStartTime = getRaceStartTimeMs(params, snapshot.race);
-  const expiresAt = (raceStartTime ?? getRaceDayFallbackBaseTimeMs(params)) + afterStartSeconds * 1000;
+  const expiresAt =
+    (raceStartTime ?? getRaceDayFallbackBaseTimeMs(params)) + afterStartSeconds * 1000;
   return Math.max(0, Math.floor((expiresAt - nowMs) / 1000));
 };
 
@@ -116,10 +120,7 @@ const parseSnapshot = (body: string): RaceDetailSsrSnapshot | null => {
   }
 };
 
-const promoteKvHitToCacheApi = async (
-  body: string,
-  cacheKey: string,
-): Promise<void> => {
+const promoteKvHitToCacheApi = async (body: string, cacheKey: string): Promise<void> => {
   const cache = getDefaultCache();
   if (!cache) {
     return;
