@@ -38,6 +38,14 @@ pre-commit:
     test-sync-realtime-data-hot:
       glob: "apps/sync-realtime-data-hot/**/*.ts"
       run: bun run --filter sync-realtime-data-hot test:coverage
+    tsc-sync-realtime-data-features:
+      glob: "apps/sync-realtime-data-features/**/*.ts"
+      run: bun run --filter sync-realtime-data-features tsc
+    # test:coverage enforces the vitest thresholds (all >= 95) so coverage
+    # cannot regress without an explicit threshold change.
+    test-sync-realtime-data-features:
+      glob: "apps/sync-realtime-data-features/**/*.ts"
+      run: bun run --filter sync-realtime-data-features test:coverage
     tsc-horse-racing-duckdb:
       glob: "apps/horse-racing-duckdb/**/*.ts"
       run: bun run --filter horse-racing-duckdb tsc
