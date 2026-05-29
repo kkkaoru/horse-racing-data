@@ -81,11 +81,29 @@ const buildRunningStyleSelectSql = (placeholders: string): string =>
   `select race_key, horse_number, predicted_label from race_running_styles where race_key in (${placeholders})`;
 
 const RUNNING_STYLES_KV_PREFIX = "race-trend-running-styles:v1";
+const HEX_BYTE_WIDTH = 2;
+const HEX_RADIX = 16;
 
-const buildRunningStylesCacheKey = (sortedKeys: ReadonlyArray<string>): string => {
+// Hash the joined race-key list with Web Crypto SHA-1 so the cache key stays
+// well under Cloudflare KV's 512 byte key length limit, even when callers
+// supply 200+ historicalRaceKeys (joining them raw blew past 3KB and caused
+// `kv.get` to throw 414). SHA-1 is fine here — collision resistance does
+// not matter, we only need a deterministic short fingerprint per input.
+const toHex = (bytes: Uint8Array): string =>
+  Array.from(bytes, (byte) => byte.toString(HEX_RADIX).padStart(HEX_BYTE_WIDTH, "0")).join("");
+
+const hashJoinedKeys = async (joined: string): Promise<string> => {
+  const encoded = new TextEncoder().encode(joined);
+  const digest = await crypto.subtle.digest("SHA-1", encoded);
+  return toHex(new Uint8Array(digest));
+};
+
+const buildRunningStylesCacheKey = async (sortedKeys: ReadonlyArray<string>): Promise<string> => {
   // Embed the count so two race lookups that happen to share a prefix in
-  // the future can't collide on the key.
-  return `${RUNNING_STYLES_KV_PREFIX}:${sortedKeys.length}:${sortedKeys.join(",")}`;
+  // the future can't collide on the key. The hash keeps the key length
+  // bounded regardless of how many historicalRaceKeys were supplied.
+  const hash = await hashJoinedKeys(sortedKeys.join(","));
+  return `${RUNNING_STYLES_KV_PREFIX}:${sortedKeys.length}:${hash}`;
 };
 
 const isRaceTrendRunningStyleCache = (value: unknown): value is RaceTrendRunningStyleCache => {
@@ -97,19 +115,30 @@ const isRaceTrendRunningStyleCache = (value: unknown): value is RaceTrendRunning
   );
 };
 
+const parseRunningStylesBody = (body: string): RaceTrendRunningStyleCache[] | null => {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (!Array.isArray(parsed)) return null;
+    return parsed.filter(isRaceTrendRunningStyleCache);
+  } catch {
+    return null;
+  }
+};
+
 const readRunningStylesFromKv = async (
   env: CloudflareEnv | null,
   cacheKey: string,
 ): Promise<RaceTrendRunningStyleCache[] | null> => {
   const kv = env?.DETAIL_SECTION_CACHE_KV;
   if (!kv) return null;
-  const body = await kv.get(cacheKey);
-  if (!body) return null;
+  // Defensive try/catch: if KV throws (eg. key length limit, transient
+  // network), degrade to D1 fallback instead of bubbling 500 to the route.
   try {
-    const parsed: unknown = JSON.parse(body);
-    if (!Array.isArray(parsed)) return null;
-    return parsed.filter(isRaceTrendRunningStyleCache);
-  } catch {
+    const body = await kv.get(cacheKey);
+    if (!body) return null;
+    return parseRunningStylesBody(body);
+  } catch (error) {
+    console.error("KV get for running-styles failed", error);
     return null;
   }
 };
@@ -121,7 +150,13 @@ const writeRunningStylesToKv = async (
 ): Promise<void> => {
   const kv = env?.DETAIL_SECTION_CACHE_KV;
   if (!kv) return;
-  await kv.put(cacheKey, JSON.stringify(rows), { expirationTtl: KV_TTL_PAST14_SECONDS });
+  // KV write failure must not propagate — the in-memory result is still
+  // valid, we just lose the cache-write side-effect for this call.
+  try {
+    await kv.put(cacheKey, JSON.stringify(rows), { expirationTtl: KV_TTL_PAST14_SECONDS });
+  } catch (error) {
+    console.error("KV put for running-styles failed", error);
+  }
 };
 
 // Prefer REALTIME_FEATURES_DB (new D1, post Phase E). Fall back to REALTIME_DB
@@ -188,7 +223,7 @@ export const getRaceTrendRunningStylesFromD1 = async (
   const { env } = await getCloudflareContext({ async: true });
   const db = pickRunningStylesDb(env ?? null);
   if (!db) return [];
-  const cacheKey = buildRunningStylesCacheKey(uniqueKeys);
+  const cacheKey = await buildRunningStylesCacheKey(uniqueKeys);
   const cached = await readRunningStylesFromKv(env, cacheKey);
   if (cached !== null) return cached;
   try {

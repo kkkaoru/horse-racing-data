@@ -874,7 +874,9 @@ it("getRaceTrendRunningStylesFromD1 writes non-empty results to KV with the pref
   await getRaceTrendRunningStylesFromD1(["nar:20260524:47:01"]);
   expect(kv.put).toHaveBeenCalledTimes(1);
   const putArgs = kv.put.mock.calls[0];
-  expect(putArgs?.[0]).toBe("race-trend-running-styles:v1:1:nar:20260524:47:01");
+  expect(putArgs?.[0]).toBe(
+    "race-trend-running-styles:v1:1:4d3816e7cc1b4d37d604e96941b368ef063ba677",
+  );
   expect(JSON.parse(String(putArgs?.[1]))).toStrictEqual([
     { raceKey: "nar:20260524:47:01", horseNumber: "1", predictedLabel: "nige" },
     { raceKey: "nar:20260524:47:01", horseNumber: "2", predictedLabel: "sashi" },
@@ -929,9 +931,7 @@ it("getRaceTrendRunningStylesFromD1 sorts race keys before building the cache ke
     "nar:20260524:30:05",
   ]);
   const cacheKey = kv.put.mock.calls[0]?.[0];
-  expect(cacheKey).toBe(
-    "race-trend-running-styles:v1:3:nar:20260524:30:05,nar:20260524:42:03,nar:20260524:47:01",
-  );
+  expect(cacheKey).toBe("race-trend-running-styles:v1:3:3438aed254b1038f225e6c8738bb7272bcc0f086");
 });
 
 it("getRaceTrendTodayRunningStylesFromD1 returns empty array when no race keys are supplied", async () => {
@@ -1076,4 +1076,70 @@ it("getLatestTanshoOddsFromHotD1 accepts null odds and rank", async () => {
     raceKeys: ["nar:20260528:50:04"],
   });
   expect(result.get("nar:20260528:50:04")?.get("1")).toStrictEqual({ odds: null, rank: null });
+});
+
+it("getRaceTrendRunningStylesFromD1 does not throw with 300 race keys (regression: KV key length limit)", async () => {
+  const keys = Array.from(
+    { length: 300 },
+    (_, index) =>
+      `nar:2026:0515:${String(50 + (index % 5))}:${String((index % 12) + 1).padStart(2, "0")}`,
+  );
+  const { db } = buildD1Stub([]);
+  const kv = buildKvStub();
+  installContext({ cache: null, db, kv });
+  const rows = await getRaceTrendRunningStylesFromD1(keys);
+  expect(Array.isArray(rows)).toBe(true);
+  const cacheKeyArg: unknown = kv.get.mock.calls[0]?.[0];
+  if (typeof cacheKeyArg !== "string") {
+    throw new Error("kv.get first arg was not a string");
+  }
+  const utf8Length = new TextEncoder().encode(cacheKeyArg).length;
+  expect(utf8Length <= 512).toBe(true);
+});
+
+it("getRaceTrendRunningStylesFromD1 cache key is a fixed prefix + 40 hex char hash", async () => {
+  const { db } = buildD1Stub([]);
+  const kv = buildKvStub();
+  installContext({ cache: null, db, kv });
+  await getRaceTrendRunningStylesFromD1(["nar:20260524:47:01"]);
+  const cacheKeyArg: unknown = kv.get.mock.calls[0]?.[0];
+  expect(cacheKeyArg).toBe(
+    "race-trend-running-styles:v1:1:4d3816e7cc1b4d37d604e96941b368ef063ba677",
+  );
+});
+
+it("getRaceTrendRunningStylesFromD1 falls back to D1 when KV get throws (regression: KV 414 error)", async () => {
+  const { db } = buildD1Stub([
+    { race_key: "nar:20260524:47:01", horse_number: 3, predicted_label: "nige" },
+  ]);
+  const kv: KvStub = {
+    get: vi.fn<AnyMockFn>().mockRejectedValue(new Error("KV GET failed: 414")),
+    put: vi.fn<AnyMockFn>().mockResolvedValue(undefined),
+  };
+  installContext({ cache: null, db, kv });
+  const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const rows = await getRaceTrendRunningStylesFromD1(["nar:20260524:47:01"]);
+  expect(rows).toStrictEqual([
+    { raceKey: "nar:20260524:47:01", horseNumber: "3", predictedLabel: "nige" },
+  ]);
+  expect(consoleSpy).toHaveBeenCalledWith("KV get for running-styles failed", expect.any(Error));
+  consoleSpy.mockRestore();
+});
+
+it("getRaceTrendRunningStylesFromD1 swallows KV put errors and still returns D1 rows", async () => {
+  const { db } = buildD1Stub([
+    { race_key: "nar:20260524:47:01", horse_number: 9, predicted_label: "oikomi" },
+  ]);
+  const kv: KvStub = {
+    get: vi.fn<AnyMockFn>().mockResolvedValue(null),
+    put: vi.fn<AnyMockFn>().mockRejectedValue(new Error("KV PUT failed")),
+  };
+  installContext({ cache: null, db, kv });
+  const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const rows = await getRaceTrendRunningStylesFromD1(["nar:20260524:47:01"]);
+  expect(rows).toStrictEqual([
+    { raceKey: "nar:20260524:47:01", horseNumber: "9", predictedLabel: "oikomi" },
+  ]);
+  expect(consoleSpy).toHaveBeenCalledWith("KV put for running-styles failed", expect.any(Error));
+  consoleSpy.mockRestore();
 });
