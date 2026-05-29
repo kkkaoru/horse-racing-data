@@ -1,12 +1,11 @@
 import "server-only";
-import { getCloudflareContext } from "@opennextjs/cloudflare";
-
 import {
   isRunningStyleLabel,
   numericOrNull,
   type RaceRunningStyleRow,
 } from "../db/corner-running-style-parsers";
 import { readD1QueryCache } from "../db/d1-query-cache.server";
+import { safeGetCloudflareRuntime } from "./cloudflare-context.server";
 import { fetchProductionApi, useProductionApiProxy } from "./production-api-proxy.server";
 import {
   buildProductionRunningStylesPath,
@@ -26,20 +25,6 @@ export {
   type RunningStyleCacheRace,
 } from "./running-style-cache";
 export type { RaceRunningStyleRow } from "../db/corner-running-style-parsers";
-
-const getCloudflareRuntime = async (): Promise<{
-  ctx: PcKeibaExecutionContext | null;
-  env: CloudflareEnv | null;
-}> => {
-  try {
-    const context = await getCloudflareContext<Record<string, unknown>, PcKeibaExecutionContext>({
-      async: true,
-    });
-    return { ctx: context.ctx, env: context.env };
-  } catch {
-    return { ctx: null, env: null };
-  }
-};
 
 const getDefaultCache = (): Cache | null =>
   typeof caches === "undefined" || !caches.default ? null : caches.default;
@@ -194,7 +179,7 @@ const fetchHorseRunningStylesFromProduction = async (
 export const getRaceRunningStylesWithCache = async (
   race: RunningStyleCacheRace,
 ): Promise<RaceRunningStyleRow[]> => {
-  const { env } = await getCloudflareRuntime();
+  const { env } = await safeGetCloudflareRuntime();
   const raceKey = buildRaceKey(race);
 
   const [urlCached, hashCached] = await Promise.all([
