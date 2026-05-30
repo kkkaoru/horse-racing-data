@@ -1096,6 +1096,353 @@ it("GET production branch keeps horseWeights null when REALTIME_DATA fetch throw
   });
 });
 
+interface HorseWeightSnapshotRow {
+  horse_number: string;
+  horse_name: string | null;
+  weight: number | null;
+  change_sign: string | null;
+  change_amount: number | null;
+  fetched_at: string;
+}
+
+interface PreparedStub {
+  all: ReturnType<typeof vi.fn<AnyMockFn>>;
+  bind: ReturnType<typeof vi.fn<AnyMockFn>>;
+  first: ReturnType<typeof vi.fn<AnyMockFn>>;
+  run: ReturnType<typeof vi.fn<AnyMockFn>>;
+}
+
+interface D1Stub {
+  prepare: ReturnType<typeof vi.fn<AnyMockFn>>;
+}
+
+const isPreparedStatement = (value: unknown): value is PcKeibaD1PreparedStatement =>
+  typeof value === "object" &&
+  value !== null &&
+  "bind" in value &&
+  typeof value.bind === "function";
+
+const emptyBatch = <T = unknown>(): Promise<PcKeibaD1Result<T>[]> => Promise.resolve([]);
+const noopExec = (): Promise<PcKeibaD1RunResult> => Promise.resolve({ success: true });
+
+const buildD1WithRows = (rows: HorseWeightSnapshotRow[]): PcKeibaD1Database => {
+  const all = vi.fn<AnyMockFn>().mockResolvedValue({ results: rows, success: true });
+  const bind = vi.fn<AnyMockFn>();
+  const first = vi.fn<AnyMockFn>().mockResolvedValue(null);
+  const run = vi.fn<AnyMockFn>().mockResolvedValue({ success: true });
+  const prepared: PreparedStub = { all, bind, first, run };
+  bind.mockReturnValue(prepared);
+  const raw: D1Stub = { prepare: vi.fn<AnyMockFn>().mockReturnValue(prepared) };
+  const typedPrepare = (query: string): PcKeibaD1PreparedStatement => {
+    const result = Reflect.apply(raw.prepare, raw, [query]);
+    if (!isPreparedStatement(result)) {
+      throw new Error("Stub returned an invalid prepared statement");
+    }
+    return result;
+  };
+  return { batch: emptyBatch, exec: noopExec, prepare: typedPrepare };
+};
+
+it("GET production branch falls back to REALTIME_DB when REALTIME_DATA returns non-200", async () => {
+  isDevScraperEnabledMock.mockReturnValue(false);
+  const hotFetch = vi.fn<HotFetch>(async () =>
+    Promise.resolve(
+      buildOkResponseFor({
+        fetchedAt: "2026-05-29T07:30:00.000Z",
+        history: [],
+        historyByType: {},
+        latest: { tansho: [{ combination: "1", odds: 1.5 }] },
+      }),
+    ),
+  );
+  const realtimeFetch = vi.fn<HotFetch>(async () =>
+    Promise.resolve(new Response("not found", { status: 204 })),
+  );
+  const realtimeDb = buildD1WithRows([
+    {
+      change_amount: -2,
+      change_sign: "-",
+      fetched_at: "2026-05-29T08:00:00.000Z",
+      horse_name: "Alpha",
+      horse_number: "2",
+      weight: 460,
+    },
+  ]);
+  getCloudflareContextMock.mockResolvedValue({
+    ctx: null,
+    env: {
+      REALTIME_DATA: { fetch: realtimeFetch },
+      REALTIME_DB: realtimeDb,
+      REALTIME_HOT: { fetch: hotFetch },
+    },
+  });
+  const request = new Request("https://example.com/api/races/2026/05/29/05/01/realtime?source=jra");
+  const response = await GET(request, {
+    params: Promise.resolve({
+      day: "29",
+      keibajoCode: "05",
+      month: "05",
+      raceNumber: "01",
+      year: "2026",
+    }),
+  });
+  expect(response.status).toBe(200);
+  const body: unknown = await response.json();
+  expect(body).toStrictEqual({
+    horseWeights: {
+      fetchedAt: "2026-05-29T08:00:00.000Z",
+      horses: [
+        {
+          changeAmount: -2,
+          changeSign: "-",
+          horseName: "Alpha",
+          horseNumber: "2",
+          weight: 460,
+        },
+      ],
+    },
+    odds: {
+      fetchedAt: "2026-05-29T07:30:00.000Z",
+      history: [],
+      historyByType: {},
+      horseTrends: [],
+      latest: { tansho: [{ combination: "1", odds: 1.5 }] },
+      trendsByType: {},
+    },
+    raceEntries: null,
+    raceKey: "jra:2026:0529:05:01",
+    raceResults: null,
+    source: null,
+    trackCondition: null,
+  });
+});
+
+it("GET production branch falls back to REALTIME_DB when REALTIME_DATA service binding is missing", async () => {
+  isDevScraperEnabledMock.mockReturnValue(false);
+  const hotFetch = vi.fn<HotFetch>(async () =>
+    Promise.resolve(
+      buildOkResponseFor({
+        fetchedAt: "2026-05-29T07:30:00.000Z",
+        history: [],
+        historyByType: {},
+        latest: { tansho: [{ combination: "1", odds: 1.5 }] },
+      }),
+    ),
+  );
+  const realtimeDb = buildD1WithRows([
+    {
+      change_amount: 4,
+      change_sign: "+",
+      fetched_at: "2026-05-29T08:00:00.000Z",
+      horse_name: "Beta",
+      horse_number: "10",
+      weight: 482,
+    },
+    {
+      change_amount: -2,
+      change_sign: "-",
+      fetched_at: "2026-05-29T08:00:00.000Z",
+      horse_name: "Alpha",
+      horse_number: "2",
+      weight: 460,
+    },
+  ]);
+  getCloudflareContextMock.mockResolvedValue({
+    ctx: null,
+    env: { REALTIME_DB: realtimeDb, REALTIME_HOT: { fetch: hotFetch } },
+  });
+  const request = new Request("https://example.com/api/races/2026/05/29/05/01/realtime?source=jra");
+  const response = await GET(request, {
+    params: Promise.resolve({
+      day: "29",
+      keibajoCode: "05",
+      month: "05",
+      raceNumber: "01",
+      year: "2026",
+    }),
+  });
+  expect(response.status).toBe(200);
+  const body: unknown = await response.json();
+  expect(body).toStrictEqual({
+    horseWeights: {
+      fetchedAt: "2026-05-29T08:00:00.000Z",
+      horses: [
+        {
+          changeAmount: -2,
+          changeSign: "-",
+          horseName: "Alpha",
+          horseNumber: "2",
+          weight: 460,
+        },
+        {
+          changeAmount: 4,
+          changeSign: "+",
+          horseName: "Beta",
+          horseNumber: "10",
+          weight: 482,
+        },
+      ],
+    },
+    odds: {
+      fetchedAt: "2026-05-29T07:30:00.000Z",
+      history: [],
+      historyByType: {},
+      horseTrends: [],
+      latest: { tansho: [{ combination: "1", odds: 1.5 }] },
+      trendsByType: {},
+    },
+    raceEntries: null,
+    raceKey: "jra:2026:0529:05:01",
+    raceResults: null,
+    source: null,
+    trackCondition: null,
+  });
+});
+
+it("GET production branch returns null horseWeights when both DO returns non-200 and D1 has no rows", async () => {
+  isDevScraperEnabledMock.mockReturnValue(false);
+  const hotFetch = vi.fn<HotFetch>(async () =>
+    Promise.resolve(
+      buildOkResponseFor({
+        fetchedAt: "2026-05-29T07:30:00.000Z",
+        history: [],
+        historyByType: {},
+        latest: { tansho: [{ combination: "1", odds: 1.5 }] },
+      }),
+    ),
+  );
+  const realtimeFetch = vi.fn<HotFetch>(async () =>
+    Promise.resolve(new Response("", { status: 204 })),
+  );
+  const realtimeDb = buildD1WithRows([]);
+  getCloudflareContextMock.mockResolvedValue({
+    ctx: null,
+    env: {
+      REALTIME_DATA: { fetch: realtimeFetch },
+      REALTIME_DB: realtimeDb,
+      REALTIME_HOT: { fetch: hotFetch },
+    },
+  });
+  const request = new Request("https://example.com/api/races/2026/05/29/05/01/realtime?source=jra");
+  const response = await GET(request, {
+    params: Promise.resolve({
+      day: "29",
+      keibajoCode: "05",
+      month: "05",
+      raceNumber: "01",
+      year: "2026",
+    }),
+  });
+  expect(response.status).toBe(200);
+  const body: unknown = await response.json();
+  expect(body).toStrictEqual({
+    horseWeights: null,
+    odds: {
+      fetchedAt: "2026-05-29T07:30:00.000Z",
+      history: [],
+      historyByType: {},
+      horseTrends: [],
+      latest: { tansho: [{ combination: "1", odds: 1.5 }] },
+      trendsByType: {},
+    },
+    raceEntries: null,
+    raceKey: "jra:2026:0529:05:01",
+    raceResults: null,
+    source: null,
+    trackCondition: null,
+  });
+});
+
+it("GET production branch uses DO snapshot directly without consulting REALTIME_DB when DO returns 200", async () => {
+  isDevScraperEnabledMock.mockReturnValue(false);
+  const hotFetch = vi.fn<HotFetch>(async () =>
+    Promise.resolve(
+      buildOkResponseFor({
+        fetchedAt: "2026-05-29T07:30:00.000Z",
+        history: [],
+        historyByType: {},
+        latest: { tansho: [{ combination: "1", odds: 1.5 }] },
+      }),
+    ),
+  );
+  const realtimeFetch = vi.fn<HotFetch>(async () =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({
+          fetchedAt: "2026-05-29T09:00:00.000Z",
+          horses: [
+            {
+              changeAmount: 0,
+              changeSign: " ",
+              horseName: "FromDO",
+              horseNumber: "1",
+              weight: 500,
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    ),
+  );
+  const d1PrepareSpy = vi.fn<(query: string) => void>();
+  const realtimeDb: PcKeibaD1Database = {
+    batch: emptyBatch,
+    exec: noopExec,
+    prepare: (query: string): PcKeibaD1PreparedStatement => {
+      d1PrepareSpy(query);
+      throw new Error("D1 should not be consulted when DO returns a snapshot");
+    },
+  };
+  getCloudflareContextMock.mockResolvedValue({
+    ctx: null,
+    env: {
+      REALTIME_DATA: { fetch: realtimeFetch },
+      REALTIME_DB: realtimeDb,
+      REALTIME_HOT: { fetch: hotFetch },
+    },
+  });
+  const request = new Request("https://example.com/api/races/2026/05/29/05/01/realtime?source=jra");
+  const response = await GET(request, {
+    params: Promise.resolve({
+      day: "29",
+      keibajoCode: "05",
+      month: "05",
+      raceNumber: "01",
+      year: "2026",
+    }),
+  });
+  expect(response.status).toBe(200);
+  const body: unknown = await response.json();
+  expect(body).toStrictEqual({
+    horseWeights: {
+      fetchedAt: "2026-05-29T09:00:00.000Z",
+      horses: [
+        {
+          changeAmount: 0,
+          changeSign: " ",
+          horseName: "FromDO",
+          horseNumber: "1",
+          weight: 500,
+        },
+      ],
+    },
+    odds: {
+      fetchedAt: "2026-05-29T07:30:00.000Z",
+      history: [],
+      historyByType: {},
+      horseTrends: [],
+      latest: { tansho: [{ combination: "1", odds: 1.5 }] },
+      trendsByType: {},
+    },
+    raceEntries: null,
+    raceKey: "jra:2026:0529:05:01",
+    raceResults: null,
+    source: null,
+    trackCondition: null,
+  });
+  expect(d1PrepareSpy).not.toHaveBeenCalled();
+});
+
 it("GET production branch does not invoke global fetch (legacy upstream is gone)", async () => {
   isDevScraperEnabledMock.mockReturnValue(false);
   const hotFetch = vi.fn<HotFetch>(async () =>
