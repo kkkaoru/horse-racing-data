@@ -86,11 +86,32 @@ const ALARM_OUT_OF_WINDOW_MS = 30 * 60_000;
 
 const RUNNING_STYLE_LABELS = new Set(["nige", "senkou", "sashi", "oikomi"]);
 
+// Query-param names used by /races and /sync for URL-based context bootstrap.
+// When viewer requests /races for the first time, worker.ts (caller) forwards
+// source/ymd/keibajo so the DO can self-pull from D1 even if no push has
+// learned the context yet. The names match the worker.ts `/internal/race-trend-daily-track`
+// query schema (`source`, `ymd`, `keibajo`) so the helper here can simply
+// re-encode the same fields onto the DO-internal URL.
+const QUERY_SOURCE = "source";
+const QUERY_YMD = "ymd";
+const QUERY_KEIBAJO = "keibajo";
+const QUERY_BEFORE_RACE_BANGO = "beforeRaceBango";
+
+const YMD_LENGTH = 8;
+const KEIBAJO_LENGTH = 2;
+const YMD_PATTERN = /^\d{8}$/u;
+const KEIBAJO_PATTERN = /^[0-9A-Z]{2}$/u;
+
 // Mirrors the viewer's `getRaceTrendTodayStarterRows` SQL, but scoped to a
 // single (source, kaisai_nen, kaisai_tsukihi, keibajo_code) tuple so the DO
 // owns one venue-day of results. Also pulls the per-race completion meta
 // (expected / saved horse count, result_complete_at) so the DO can flag
 // each raceBango row as fully complete vs. partial.
+// LIMIT is intentionally omitted: the where-clause covers a single venue-day
+// (max ~12 races x 18 horses = ~216 rows). The four filter columns
+// (source, kaisai_nen, kaisai_tsukihi, keibajo_code) should be backed by an
+// index on `realtime_race_sources` — verify migrations include one, and add
+// one if not (cold-start /races fan-out is a hot read path).
 const SNAPSHOT_SELECT_SQL = `
   with latest_result as (
     select race_key, horse_number, finish_position, time
@@ -190,6 +211,23 @@ export const parseDoContextFromRaceKey = (raceKey: string): ParsedDoId | null =>
   if (source !== "jra" && source !== "nar") return null;
   if (!year || !monthDay || !keibajoCode) return null;
   return { keibajoCode, source, targetYmd: `${year}${monthDay}` };
+};
+
+// URL-driven context bootstrap. When /races (or /sync) carries
+// source/ymd/keibajo, the DO can learn its (source, targetYmd, keibajoCode)
+// tuple without waiting for the first POST /push. This is what lets a cold
+// `viewer -> worker -> DO` request fall through to D1 self-pull on the very
+// first hit instead of returning an empty miss.
+export const parseDoContextFromUrl = (url: URL): ParsedDoId | null => {
+  const source = url.searchParams.get(QUERY_SOURCE);
+  const targetYmd = url.searchParams.get(QUERY_YMD);
+  const keibajoCode = url.searchParams.get(QUERY_KEIBAJO);
+  if (source !== "jra" && source !== "nar") return null;
+  if (!targetYmd || targetYmd.length !== YMD_LENGTH || !YMD_PATTERN.test(targetYmd)) return null;
+  if (!keibajoCode || keibajoCode.length !== KEIBAJO_LENGTH || !KEIBAJO_PATTERN.test(keibajoCode)) {
+    return null;
+  }
+  return { keibajoCode, source, targetYmd };
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -395,6 +433,29 @@ interface MergeArgs {
   updatedAt: string;
 }
 
+interface ShouldOverwriteArgs {
+  current: RaceTrendDailyTrackRow | undefined;
+  incoming: RaceTrendDailyTrackRow;
+}
+
+// Monotonic merge precedence (most → least significant):
+// 1. Empty slot: always accept.
+// 2. Strictly newer `fetchedAt`: accept the newer snapshot.
+// 3. Equal `fetchedAt`: accept only if the incoming row carries equal or
+//    greater "completeness" — never demote an isComplete=true row back to
+//    isComplete=false because the same poll cycle re-emitted a partial copy.
+// 4. Strictly older `fetchedAt`: ignore (avoids the late-push race where a
+//    delayed isComplete=false row arrives after the canonical complete row).
+const shouldOverwriteExistingRow = ({ current, incoming }: ShouldOverwriteArgs): boolean => {
+  if (!current) return true;
+  const currentTs = new Date(current.fetchedAt).getTime();
+  const incomingTs = new Date(incoming.fetchedAt).getTime();
+  if (incomingTs > currentTs) return true;
+  if (incomingTs < currentTs) return false;
+  if (current.isComplete && !incoming.isComplete) return false;
+  return true;
+};
+
 const mergeIncomingRow = ({
   existing,
   incoming,
@@ -403,9 +464,7 @@ const mergeIncomingRow = ({
 }: MergeArgs): RaceTrendDailyTrackState => {
   const baseRaces = existing ? { ...existing.races } : {};
   const currentRow = baseRaces[incoming.raceBango];
-  const shouldOverwrite =
-    !currentRow ||
-    new Date(incoming.fetchedAt).getTime() >= new Date(currentRow.fetchedAt).getTime();
+  const shouldOverwrite = shouldOverwriteExistingRow({ current: currentRow, incoming });
   const nextRaces = shouldOverwrite ? { ...baseRaces, [incoming.raceBango]: incoming } : baseRaces;
   return {
     keibajoCode: parsed.keibajoCode,
@@ -517,7 +576,7 @@ export class RaceTrendDailyTrackDO {
     const url = new URL(request.url);
     if (request.method === "POST" && url.pathname === "/push") return this.handlePush(request);
     if (request.method === "GET" && url.pathname === "/races") return this.handleGet(url);
-    if (request.method === "POST" && url.pathname === "/sync") return this.handleSync();
+    if (request.method === "POST" && url.pathname === "/sync") return this.handleSync(url);
     return notFoundResponse();
   }
 
@@ -554,8 +613,24 @@ export class RaceTrendDailyTrackDO {
     return json({ ok: true });
   }
 
-  private handleGet(url: URL): Response {
-    const beforeRaceBango = url.searchParams.get("beforeRaceBango");
+  // GET /races cold-start contract:
+  //   1. Resolve a parsed context (state.parsed OR ?source/ymd/keibajo).
+  //   2. If state is empty and we have a context, self-pull from D1 once
+  //      (synchronously, before returning). This is the load-bearing fix:
+  //      the first viewer hit must never return `miss` if D1 already has
+  //      rows for the venue-day. setAlarm() also primes here so the next
+  //      reconciliation tick happens without waiting for the first push.
+  //   3. Filter by beforeRaceBango and respond.
+  //   4. hit/miss header: `hit` iff at least one row is returned; `miss`
+  //      otherwise (D1 empty OR D1 fetch failed — both leave state empty so
+  //      the worker-side fallback layer can take over without a long wait).
+  private async handleGet(url: URL): Promise<Response> {
+    const beforeRaceBango = url.searchParams.get(QUERY_BEFORE_RACE_BANGO);
+    const urlContext = parseDoContextFromUrl(url);
+    const effectiveContext = this.parsed ?? urlContext;
+    if (effectiveContext && this.shouldSelfPull()) {
+      await this.bootstrapFromUrlContext(effectiveContext);
+    }
     const rows = selectRaces({ beforeRaceBango, state: this.state });
     const payload: RaceTrendDailyTrackResponse = { races: rows };
     return json(payload, {
@@ -565,10 +640,44 @@ export class RaceTrendDailyTrackDO {
     });
   }
 
-  private async handleSync(): Promise<Response> {
-    if (!this.parsed) return badRequestResponse("DO id not yet learned");
-    await this.refreshFromD1({ env: this.env, parsed: this.parsed });
+  // POST /sync accepts either an already-learned context (alarm-driven
+  // internal callers) or a query-string context (external priming caller).
+  // Only when both are absent do we reject — that is the legitimately
+  // un-recoverable case where the DO has no way to know which D1 slice to
+  // refresh.
+  private async handleSync(url: URL): Promise<Response> {
+    const context = this.parsed ?? parseDoContextFromUrl(url);
+    if (!context) return badRequestResponse("DO id not yet learned");
+    await this.refreshFromD1({ env: this.env, parsed: context });
     return json({ ok: true });
+  }
+
+  // Self-pull only when state is empty or has zero races yet. After the
+  // first successful pull the in-memory state holds the venue-day, and
+  // subsequent /races hits read straight from state without re-hitting D1.
+  // Push events keep state fresh for the rest of the venue's race card.
+  private shouldSelfPull(): boolean {
+    if (!this.state) return true;
+    return Object.keys(this.state.races).length === 0;
+  }
+
+  // First-hit bootstrap: learn the parsed context from the URL, schedule
+  // the next reconciliation alarm so we do not depend on a push to start
+  // the tick, and then issue one D1 self-pull. D1 errors are swallowed
+  // here and translated into the `miss` header by the empty `state.races`
+  // that results — worker.ts has its own fallback path on miss.
+  private async bootstrapFromUrlContext(context: ParsedDoId): Promise<void> {
+    this.parsed = context;
+    try {
+      await this.doState.storage.setAlarm(Date.now() + computeNextAlarmDelayMs(new Date()));
+    } catch (alarmError) {
+      console.error("RaceTrendDailyTrackDO failed to prime alarm", alarmError);
+    }
+    try {
+      await this.refreshFromD1({ env: this.env, parsed: context });
+    } catch (refreshError) {
+      console.error("RaceTrendDailyTrackDO self-pull failed", refreshError);
+    }
   }
 
   private async refreshFromD1(args: QuerySnapshotsArgs): Promise<void> {
@@ -595,17 +704,38 @@ export const pushRaceTrendDailyTrackRowToStub = async (args: PushArgs): Promise<
     method: "POST",
   });
 
+interface FetchRacesContext {
+  keibajoCode: string;
+  source: RaceTrendDailyTrackSource;
+  targetYmd: string;
+}
+
 interface FetchRacesArgs {
   beforeRaceBango: string;
+  context?: FetchRacesContext;
   stub: { fetch: (input: string, init?: RequestInit) => Promise<Response> };
 }
 
+// Builds the DO-internal /races URL. The `context` block is optional only
+// for backwards compatibility with the original signature — call sites
+// SHOULD pass it so the DO can bootstrap context + self-pull from D1 on
+// the cold-start path. Without it, a DO that has never seen a push will
+// return `miss` even when D1 already holds the venue-day's rows.
+const buildRacesUrl = (args: FetchRacesArgs): string => {
+  const params = new URLSearchParams({
+    [QUERY_BEFORE_RACE_BANGO]: args.beforeRaceBango,
+  });
+  if (args.context) {
+    params.set(QUERY_SOURCE, args.context.source);
+    params.set(QUERY_YMD, args.context.targetYmd);
+    params.set(QUERY_KEIBAJO, args.context.keibajoCode);
+  }
+  return `${RACES_URL}?${params.toString()}`;
+};
+
 export const fetchRaceTrendDailyTrackRacesFromStub = async (
   args: FetchRacesArgs,
-): Promise<Response> => {
-  const url = `${RACES_URL}?beforeRaceBango=${encodeURIComponent(args.beforeRaceBango)}`;
-  return args.stub.fetch(url, { method: "GET" });
-};
+): Promise<Response> => args.stub.fetch(buildRacesUrl(args), { method: "GET" });
 
 interface BuildDoNameArgs {
   keibajoCode: string;
@@ -624,6 +754,7 @@ export const __testables = {
   isRawSnapshotRow,
   mergeIncomingRow,
   selectRaces,
+  shouldOverwriteExistingRow,
 };
 
 export const RACE_TREND_DAILY_TRACK_STORAGE_KEY = STORAGE_KEY;
