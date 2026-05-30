@@ -8,9 +8,10 @@
 // minute; older days use a 6h TTL because the row set is stable once D1 daily
 // has been backfilled.
 import "server-only";
+import type { RaceTrendStarterRow } from "horse-racing-realtime/race-trend-daily-track-types";
+
 import { safeGetCloudflareRuntime } from "./cloudflare-context.server";
 import type { RaceSource } from "./codes";
-import type { RaceTrendStarterRow } from "./race-types";
 
 const CACHE_URL_BASE = "https://pc-keiba-viewer.local/realtime-trend-day-cache/";
 const TODAY_EDGE_TTL_SECONDS = 60;

@@ -18,6 +18,11 @@
 //   past-14 helper caches the result in KV; the today helper skips KV so
 //   freshly-inferred sibling rows are visible within the Cache API TTL.
 import "server-only";
+import type {
+  RaceTrendRunningStyleCache,
+  RaceTrendStarterRow,
+} from "horse-racing-realtime/race-trend-daily-track-types";
+
 import { safeGetCloudflareEnv } from "../lib/cloudflare-context.server";
 import type { RaceSource } from "../lib/codes";
 import { deriveJraWakuban } from "../lib/jra-wakuban";
@@ -26,11 +31,7 @@ import {
   buildRaceTrendPast14CacheKey,
   buildRaceTrendTodayCacheKey,
 } from "../lib/race-trend-cache";
-import type {
-  RaceTrendRunningStyle,
-  RaceTrendRunningStyleCache,
-  RaceTrendStarterRow,
-} from "../lib/race-types";
+import type { RaceTrendRunningStyle } from "../lib/race-types";
 
 // 200 race keys per IN clause keeps the prepared statement well under
 // SQLite's parameter limit while shrinking the number of parallel D1

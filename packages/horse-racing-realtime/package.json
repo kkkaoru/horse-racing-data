@@ -4,6 +4,7 @@
   "type": "module",
   "exports": {
     "./nar": "./src/nar.ts",
+    "./race-trend-daily-track-types": "./src/race-trend-daily-track-types.ts",
     "./types": "./src/types.ts"
   },
   "scripts": {

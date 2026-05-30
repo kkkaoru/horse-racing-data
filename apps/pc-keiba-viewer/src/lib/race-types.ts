@@ -1,3 +1,8 @@
+import type {
+  RaceTrendRunningStyleCache,
+  RaceTrendStarterRow,
+} from "horse-racing-realtime/race-trend-daily-track-types";
+
 import type { RaceSource } from "./codes";
 
 export interface RaceDaySummary {
@@ -72,32 +77,6 @@ export interface Runner {
   kohan3f: string | null;
 }
 
-export interface RaceTrendStarterRow extends Record<string, unknown> {
-  source: RaceSource;
-  kaisaiNen: string;
-  kaisaiTsukihi: string;
-  keibajoCode: string;
-  raceBango: string;
-  raceName: string | null;
-  hassoJikoku: string | null;
-  runnerCount: string | null;
-  wakuban: string | null;
-  umaban: string | null;
-  bamei: string | null;
-  jockeyName: string | null;
-  tanshoOdds: string | null;
-  tanshoPopularity: string | null;
-  finishPosition: number;
-  sohaTime: string | null;
-  corner1: string | null;
-  corner2: string | null;
-  corner3: string | null;
-  corner4: string | null;
-  bataiju: string | null;
-  zogenFugo: string | null;
-  zogenSa: string | null;
-}
-
 export type RaceTrendRunningStyle = "nige" | "senkou" | "sashi" | "oikomi";
 
 export interface RaceTrendDetail {
@@ -117,12 +96,6 @@ export interface RaceTrendDetail {
   time: string | null;
   horseWeight: number | null;
   horseWeightDelta: number | null;
-}
-
-export interface RaceTrendRunningStyleCache {
-  raceKey: string;
-  horseNumber: string;
-  predictedLabel: RaceTrendRunningStyle;
 }
 
 export interface RaceTrendCurrentRunningStyle {

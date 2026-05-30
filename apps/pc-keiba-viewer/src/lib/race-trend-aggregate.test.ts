@@ -1,3 +1,7 @@
+import type {
+  RaceTrendRunningStyleCache,
+  RaceTrendStarterRow,
+} from "horse-racing-realtime/race-trend-daily-track-types";
 // Run with: bunx vitest run src/lib/race-trend-aggregate.test.ts
 import { expect, test } from "vitest";
 
@@ -19,11 +23,7 @@ import {
   starterRaceKey,
   starterRunningStyleKey,
 } from "./race-trend-aggregate";
-import type {
-  RaceTrendCurrentRunningStyle,
-  RaceTrendRunningStyleCache,
-  RaceTrendStarterRow,
-} from "./race-types";
+import type { RaceTrendCurrentRunningStyle } from "./race-types";
 
 const baseRow: RaceTrendStarterRow = {
   source: "nar",
