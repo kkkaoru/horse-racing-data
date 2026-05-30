@@ -6,6 +6,11 @@ const TOP_PAGE_URL = `${KEIBA_GO_ORIGIN}/KeibaWeb/TodayRaceInfo/TodayRaceInfoTop
 const KEIBA_GO_BASE_URL = `${KEIBA_GO_ORIGIN}/KeibaWeb/TodayRaceInfo`;
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 sync-realtime-data/1.0";
+const SJIS_ALIASES = ["shift_jis", "shift-jis", "sjis", "x-sjis"] satisfies readonly string[];
+const HEAD_SNIFF_BYTES = 1024;
+const HTML_CHARSET_PATTERN = /charset=["']?([a-z0-9_-]+)/iu;
+const HTTP_CHARSET_PATTERN = /charset=([^;]+)/iu;
+const DEFAULT_CHARSET = "utf-8";
 
 export const BABA_CODE_TO_LOCAL_KEIBAJO = NAR_BABA_CODE_TO_LOCAL_KEIBAJO;
 
@@ -87,6 +92,32 @@ export const buildRaceListUrl = (targetDate: string, babaCode: string): RaceList
   };
 };
 
+const normalizeCharset = (raw: string): string => {
+  const lower = raw.trim().toLowerCase();
+  return SJIS_ALIASES.includes(lower) ? "shift-jis" : lower;
+};
+
+const detectCharsetFromBuffer = (buffer: ArrayBuffer): string | null => {
+  const head = String.fromCharCode(...new Uint8Array(buffer.slice(0, HEAD_SNIFF_BYTES)));
+  const match = head.match(HTML_CHARSET_PATTERN);
+  if (!match?.[1]) {
+    return null;
+  }
+  return normalizeCharset(match[1]);
+};
+
+const detectCharsetFromHeaders = (response: Response): string | null => {
+  const header = response.headers.get("Content-Type");
+  if (header === null) {
+    return null;
+  }
+  const match = header.match(HTTP_CHARSET_PATTERN);
+  if (!match?.[1]) {
+    return null;
+  }
+  return normalizeCharset(match[1]);
+};
+
 const fetchHtml = async (url: string): Promise<string> => {
   const response = await fetch(url, {
     headers: {
@@ -97,7 +128,10 @@ const fetchHtml = async (url: string): Promise<string> => {
   if (!response.ok) {
     throw new Error(`Failed to fetch ${url}: ${response.status}`);
   }
-  return response.text();
+  const buffer = await response.arrayBuffer();
+  const charset =
+    detectCharsetFromHeaders(response) ?? detectCharsetFromBuffer(buffer) ?? DEFAULT_CHARSET;
+  return new TextDecoder(charset).decode(buffer);
 };
 
 const stripHtmlTags = (text: string): string =>
