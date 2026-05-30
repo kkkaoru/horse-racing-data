@@ -80,14 +80,19 @@ on conflict(race_key, horse_number) do update set
   predicted_label = excluded.predicted_label,
   predicted_at = excluded.predicted_at`;
 
+// Defensive `?? null` on parquet-derived fields (kettoTorokuBango / bamei):
+// D1 prepared statements reject `undefined` with D1_TYPE_ERROR, and the
+// TypeScript types do not capture the runtime `undefined` that hyparquet
+// can leak for optional parquet columns. The remaining fields are sourced
+// from the job context or constants and cannot be undefined.
 export const upsertRunningStyle = async (db: D1Database, row: RunningStyleRow): Promise<void> => {
   await db
     .prepare(UPSERT_RUNNING_STYLE_SQL)
     .bind(
       row.raceKey,
       row.horseNumber,
-      row.kettoTorokuBango,
-      row.bamei,
+      row.kettoTorokuBango ?? null,
+      row.bamei ?? null,
       row.category,
       row.kaisaiNen,
       row.modelVersion,
