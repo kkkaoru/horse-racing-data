@@ -168,6 +168,12 @@ const QUEUE_SEND_BATCH_SIZE = 100;
 // cron would re-discover every 2 minutes, which is wasteful.
 const HOURLY_RECOVERY_MINUTE_THRESHOLD = 2;
 const RESULT_FETCH_LOCK_MINUTES = 10;
+// NAR result HTML on rare occasions misses "取消" rows so the entry-derived
+// expectedHorseCount over-counts and isComplete stays false forever even after
+// every available result row has been persisted. We backstop that case by
+// trusting the saved rows once enough time has passed since race start, since
+// any remaining "missing" horse can no longer reasonably be a delayed insert.
+const NAR_RESULT_COMPLETION_BACKSTOP_MINUTES = 10;
 // 2026-05-31: lowered from 3 to 2 in tandem with the result-poll cron drop
 // from "*/5" to "*/2". With the previous 5-minute cron + 3-minute throttle
 // 11R results landed in D1 up to ~5 minutes after JRA published them, and
@@ -2048,6 +2054,39 @@ const pushResultsToRaceTrendDO = async (
   }
 };
 
+interface NarResultCompletionBackstopInput {
+  expectedHorseCount: number;
+  inserted: number;
+  minutesAfterRaceStart: number | null;
+  resultCount: number;
+  source: NarRaceSource["source"];
+}
+
+// NAR-only backstop that forces isComplete=true once every available result row
+// has been persisted and enough time has passed since race start, so a parser
+// miss on excluded ("取消" etc.) horses no longer keeps the race stuck at
+// isComplete=false forever.
+export const shouldApplyNarResultCompletionBackstop = (
+  input: NarResultCompletionBackstopInput,
+): boolean => {
+  if (input.source !== "nar") {
+    return false;
+  }
+  if (input.resultCount === 0) {
+    return false;
+  }
+  if (input.inserted < input.resultCount) {
+    return false;
+  }
+  if (input.inserted >= input.expectedHorseCount) {
+    return false;
+  }
+  if (input.minutesAfterRaceStart === null) {
+    return false;
+  }
+  return input.minutesAfterRaceStart >= NAR_RESULT_COMPLETION_BACKSTOP_MINUTES;
+};
+
 const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> => {
   const now = getNow(env);
   const lockUntil = toJstIsoString(new Date(now.getTime() + RESULT_FETCH_LOCK_MINUTES * 60_000));
@@ -2110,7 +2149,19 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
       throw new Error(`race result rows are empty: ${raceKey}`);
     }
     const inserted = await insertRaceResultSnapshot(env.REALTIME_DB, raceKey, fetchedAt, results);
-    const isComplete = expectedHorseCount > 0 && inserted >= expectedHorseCount;
+    const baseComplete = expectedHorseCount > 0 && inserted >= expectedHorseCount;
+    // isRaceFinished above guarantees minutesUntilRace(race, now) is non-null and
+    // <= 0, so the non-null assertion here is provably safe (same pattern as the
+    // `match[1]!` regex captures elsewhere in this file). Keeping it as `!`
+    // avoids a defensive `?? null` arm that v8 would mark as a dead branch.
+    const narBackstop = shouldApplyNarResultCompletionBackstop({
+      expectedHorseCount,
+      inserted,
+      minutesAfterRaceStart: -minutesUntilRace(race, now)!,
+      resultCount: results.length,
+      source: race.source,
+    });
+    const isComplete = baseComplete || narBackstop;
     await completeResultFetch(env.REALTIME_DB, raceKey, fetchedAt, {
       expectedHorseCount,
       isComplete,

@@ -858,7 +858,11 @@ it("fetch-results still busts trend cache when partial-final (inserted > 0 but <
     buildRaceResult({ finishPosition: "2", horseNumber: "2" }),
   ]);
   vi.mocked(insertRaceResultSnapshot).mockResolvedValue(2);
-  await handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z" }), {
+  // 01:05 UTC = 10:05 JST = 5 min after the 10:00 JST race start, so the
+  // NAR_RESULT_COMPLETION_BACKSTOP_MINUTES (10) window has not yet elapsed
+  // and the partial-final isComplete=false semantics this test pins down
+  // are preserved end-to-end.
+  await handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T01:05:00.000Z" }), {
     raceKey: "nar:2026:0512:55:01",
     type: "fetch-results",
   });
@@ -1281,4 +1285,258 @@ it("planResultFetchesOnly skips race when lastResultFetchAt is within RESULT_FET
   });
   const count = await planResultFetchesOnly(env, "20260512");
   expect(count).toBe(0);
+});
+
+// shouldApplyNarResultCompletionBackstop: every NAR backstop condition is met
+// (all available result rows persisted, expectedHorseCount over-counted by 1
+// due to a parser miss on a 取消 row, and 10 minutes have elapsed after race
+// start), so the backstop fires to force isComplete=true.
+it("shouldApplyNarResultCompletionBackstop returns true for NAR when every condition holds", async () => {
+  const { shouldApplyNarResultCompletionBackstop } = await import("./worker");
+  const result = shouldApplyNarResultCompletionBackstop({
+    expectedHorseCount: 5,
+    inserted: 4,
+    minutesAfterRaceStart: 11,
+    resultCount: 4,
+    source: "nar",
+  });
+  expect(result).toBe(true);
+});
+
+// JRA results trust the entry-derived expectedHorseCount because JRA HTML
+// exposes 取消 reliably, so the backstop must never fire for JRA even when the
+// same numeric pattern holds.
+it("shouldApplyNarResultCompletionBackstop returns false for JRA source", async () => {
+  const { shouldApplyNarResultCompletionBackstop } = await import("./worker");
+  const result = shouldApplyNarResultCompletionBackstop({
+    expectedHorseCount: 5,
+    inserted: 4,
+    minutesAfterRaceStart: 11,
+    resultCount: 4,
+    source: "jra",
+  });
+  expect(result).toBe(false);
+});
+
+// No result rows at all means the result HTML is still empty, so the existing
+// "empty rows" error path should handle it; backstop must not fire here.
+it("shouldApplyNarResultCompletionBackstop returns false when resultCount is 0", async () => {
+  const { shouldApplyNarResultCompletionBackstop } = await import("./worker");
+  const result = shouldApplyNarResultCompletionBackstop({
+    expectedHorseCount: 5,
+    inserted: 0,
+    minutesAfterRaceStart: 11,
+    resultCount: 0,
+    source: "nar",
+  });
+  expect(result).toBe(false);
+});
+
+// inserted < resultCount means D1 write itself dropped rows (deadlock, conflict,
+// etc.), which is a real data loss case that should not be papered over by the
+// backstop.
+it("shouldApplyNarResultCompletionBackstop returns false when inserted is below resultCount", async () => {
+  const { shouldApplyNarResultCompletionBackstop } = await import("./worker");
+  const result = shouldApplyNarResultCompletionBackstop({
+    expectedHorseCount: 5,
+    inserted: 3,
+    minutesAfterRaceStart: 11,
+    resultCount: 4,
+    source: "nar",
+  });
+  expect(result).toBe(false);
+});
+
+// inserted >= expectedHorseCount means the base completion already fires, so
+// the backstop is redundant. Returning false keeps the boolean clean (the
+// caller OR-combines it with baseComplete anyway).
+it("shouldApplyNarResultCompletionBackstop returns false when inserted reaches expectedHorseCount", async () => {
+  const { shouldApplyNarResultCompletionBackstop } = await import("./worker");
+  const result = shouldApplyNarResultCompletionBackstop({
+    expectedHorseCount: 4,
+    inserted: 4,
+    minutesAfterRaceStart: 11,
+    resultCount: 4,
+    source: "nar",
+  });
+  expect(result).toBe(false);
+});
+
+// minutesAfterRaceStart === null means raceStartAtJst could not be parsed, so
+// we cannot make any time-based judgement; backstop must abstain.
+it("shouldApplyNarResultCompletionBackstop returns false when minutesAfterRaceStart is null", async () => {
+  const { shouldApplyNarResultCompletionBackstop } = await import("./worker");
+  const result = shouldApplyNarResultCompletionBackstop({
+    expectedHorseCount: 5,
+    inserted: 4,
+    minutesAfterRaceStart: null,
+    resultCount: 4,
+    source: "nar",
+  });
+  expect(result).toBe(false);
+});
+
+// 5 minutes after race start is below the 10-minute threshold, so a late row
+// might still arrive and we must not prematurely declare the race complete.
+it("shouldApplyNarResultCompletionBackstop returns false when minutesAfterRaceStart is below threshold", async () => {
+  const { shouldApplyNarResultCompletionBackstop } = await import("./worker");
+  const result = shouldApplyNarResultCompletionBackstop({
+    expectedHorseCount: 5,
+    inserted: 4,
+    minutesAfterRaceStart: 5,
+    resultCount: 4,
+    source: "nar",
+  });
+  expect(result).toBe(false);
+});
+
+// Integration: NAR race where parser missed a 取消 row so expectedHorseCount=5
+// over-counts the real 4 runners, every available result row is in D1, and
+// 11 minutes have passed since race start. The backstop must force the
+// completeResultFetch call with isComplete=true.
+it("fetch-results forces NAR isComplete=true via backstop after 11min when inserted equals resultCount below expectedHorseCount", async () => {
+  const { handleJob } = await import("./worker");
+  const { claimResultFetch, getRaceSource, insertRaceResultSnapshot, completeResultFetch } =
+    await import("./storage");
+  const {
+    fetchRacePage,
+    parseRaceEntries,
+    parseRaceResults,
+    parseRaceEntryHorseNumbers,
+    parseRaceResultExcludedHorseNumbers,
+  } = await import("./keiba-go");
+  vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "22",
+    debaUrl: "https://nar.example/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: null,
+    kaisaiNen: "2026",
+    kaisaiNichime: null,
+    kaisaiTsukihi: "0512",
+    keibajoCode: "55",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "nar:2026:0512:55:01",
+    raceName: "Backstop",
+    raceStartAtJst: "2026-05-12T10:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "nar",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(fetchRacePage).mockResolvedValue("<html></html>");
+  vi.mocked(parseRaceEntries).mockReturnValue([
+    { horseName: "h", horseNumber: "1", jockeyName: "j", status: null },
+    { horseName: "h", horseNumber: "2", jockeyName: "j", status: null },
+    { horseName: "h", horseNumber: "3", jockeyName: "j", status: null },
+    { horseName: "h", horseNumber: "4", jockeyName: "j", status: null },
+    { horseName: "h", horseNumber: "5", jockeyName: "j", status: null },
+  ] as never);
+  vi.mocked(parseRaceEntryHorseNumbers).mockReturnValue(["1", "2", "3", "4", "5"]);
+  vi.mocked(parseRaceResultExcludedHorseNumbers).mockReturnValue([]);
+  vi.mocked(parseRaceResults).mockReturnValue([
+    { finishPosition: "1", horseName: null, horseNumber: "1", time: null },
+    { finishPosition: "2", horseName: null, horseNumber: "2", time: null },
+    { finishPosition: "3", horseName: null, horseNumber: "3", time: null },
+    { finishPosition: "4", horseName: null, horseNumber: "4", time: null },
+  ] as never);
+  vi.mocked(insertRaceResultSnapshot).mockResolvedValue(4);
+  await handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T01:11:00.000Z" } as never), {
+    raceKey: "nar:2026:0512:55:01",
+    type: "fetch-results",
+  });
+  expect(completeResultFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "nar:2026:0512:55:01",
+    expect.any(String),
+    {
+      expectedHorseCount: 5,
+      isComplete: true,
+      savedHorseCount: 4,
+    },
+  );
+});
+
+// Integration: same NAR race shape as above but only 5 minutes elapsed since
+// race start, so the backstop must NOT fire and completeResultFetch must be
+// called with isComplete=false (existing behaviour).
+it("fetch-results keeps NAR isComplete=false when backstop window not yet elapsed", async () => {
+  const { handleJob } = await import("./worker");
+  const { claimResultFetch, getRaceSource, insertRaceResultSnapshot, completeResultFetch } =
+    await import("./storage");
+  const {
+    fetchRacePage,
+    parseRaceEntries,
+    parseRaceResults,
+    parseRaceEntryHorseNumbers,
+    parseRaceResultExcludedHorseNumbers,
+  } = await import("./keiba-go");
+  vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "22",
+    debaUrl: "https://nar.example/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: null,
+    kaisaiNen: "2026",
+    kaisaiNichime: null,
+    kaisaiTsukihi: "0512",
+    keibajoCode: "55",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "nar:2026:0512:55:01",
+    raceName: "BackstopEarly",
+    raceStartAtJst: "2026-05-12T10:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "nar",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(fetchRacePage).mockResolvedValue("<html></html>");
+  vi.mocked(parseRaceEntries).mockReturnValue([
+    { horseName: "h", horseNumber: "1", jockeyName: "j", status: null },
+    { horseName: "h", horseNumber: "2", jockeyName: "j", status: null },
+    { horseName: "h", horseNumber: "3", jockeyName: "j", status: null },
+    { horseName: "h", horseNumber: "4", jockeyName: "j", status: null },
+    { horseName: "h", horseNumber: "5", jockeyName: "j", status: null },
+  ] as never);
+  vi.mocked(parseRaceEntryHorseNumbers).mockReturnValue(["1", "2", "3", "4", "5"]);
+  vi.mocked(parseRaceResultExcludedHorseNumbers).mockReturnValue([]);
+  vi.mocked(parseRaceResults).mockReturnValue([
+    { finishPosition: "1", horseName: null, horseNumber: "1", time: null },
+    { finishPosition: "2", horseName: null, horseNumber: "2", time: null },
+    { finishPosition: "3", horseName: null, horseNumber: "3", time: null },
+    { finishPosition: "4", horseName: null, horseNumber: "4", time: null },
+  ] as never);
+  vi.mocked(insertRaceResultSnapshot).mockResolvedValue(4);
+  await handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T01:05:00.000Z" } as never), {
+    raceKey: "nar:2026:0512:55:01",
+    type: "fetch-results",
+  });
+  expect(completeResultFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "nar:2026:0512:55:01",
+    expect.any(String),
+    {
+      expectedHorseCount: 5,
+      isComplete: false,
+      savedHorseCount: 4,
+    },
+  );
 });
