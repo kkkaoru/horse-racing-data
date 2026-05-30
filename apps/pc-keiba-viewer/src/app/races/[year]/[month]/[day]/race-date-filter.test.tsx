@@ -122,7 +122,7 @@ describe("race date filter", () => {
   });
 
   it("filters by start time, end time, and selected jockeys", () => {
-    render(<RaceDateFilter day="10" month="05" races={races} year="2026" />);
+    const { container } = render(<RaceDateFilter day="10" month="05" races={races} year="2026" />);
 
     fireEvent.change(screen.getByLabelText("開始時間"), { target: { value: "10:00" } });
     expect(screen.getByText("2 / 3 レース")).toBeTruthy();
@@ -133,11 +133,16 @@ describe("race date filter", () => {
     expect(screen.getByText("ＮＨＫマイルカップ")).toBeTruthy();
 
     fireEvent.change(screen.getByLabelText("騎手"), { target: { value: "東京太郎" } });
-    fireEvent.mouseDown(screen.getByRole("button", { name: "東京太郎" }));
+    const jockeySuggestionList = container.querySelector(".filter-jockey-listbox");
+    if (!(jockeySuggestionList instanceof HTMLElement)) {
+      throw new Error("jockey suggestion list not rendered");
+    }
+    fireEvent.mouseDown(within(jockeySuggestionList).getByText("東京太郎"));
     expect(screen.getByLabelText("selected jockey filters").textContent).toContain("東京太郎");
     expect(screen.getByText("1 / 3 レース")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: /東京太郎/ }));
+    const selectedJockeysList = screen.getByLabelText("selected jockey filters");
+    fireEvent.click(within(selectedJockeysList).getByText(/東京太郎/));
     expect(screen.queryByLabelText("selected jockey filters")).toBeNull();
   });
 
@@ -200,14 +205,18 @@ describe("race date filter", () => {
   });
 
   it("supports keyboard selection for jockey suggestions", () => {
-    render(<RaceDateFilter day="10" month="05" races={races} year="2026" />);
+    const { container } = render(<RaceDateFilter day="10" month="05" races={races} year="2026" />);
 
     const jockeyInput = screen.getByLabelText("騎手");
     fireEvent.focus(jockeyInput);
-    expect(screen.getByRole("button", { name: "地方花子" })).toBeTruthy();
+    const openedListbox = container.querySelector(".filter-jockey-listbox");
+    if (!(openedListbox instanceof HTMLElement)) {
+      throw new Error("jockey suggestion list did not open on focus");
+    }
+    expect(within(openedListbox).getByText("地方花子")).toBeTruthy();
 
     fireEvent.keyDown(jockeyInput, { key: "Escape" });
-    expect(screen.queryByRole("button", { name: "地方花子" })).toBeNull();
+    expect(container.querySelector(".filter-jockey-listbox")).toBeNull();
 
     fireEvent.change(jockeyInput, { target: { value: "東京" } });
     fireEvent.keyDown(jockeyInput, { key: "ArrowDown" });

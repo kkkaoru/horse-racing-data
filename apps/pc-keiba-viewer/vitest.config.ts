@@ -14,8 +14,6 @@ export default defineConfig({
       provider: "v8",
       include: [
         "src/lib/**/*.ts",
-        "src/app/api/internal/trend-cache-bust/route.ts",
-        "src/app/api/races/**/trends/route.ts",
         "src/app/races/calendar.tsx",
         "src/app/races/detail/runners-table.tsx",
       ],
@@ -34,7 +32,7 @@ export default defineConfig({
         statements: 95,
       },
     },
-    environment: "jsdom",
+    environment: "happy-dom",
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
   },
 });
