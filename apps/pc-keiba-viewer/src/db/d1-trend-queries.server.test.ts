@@ -204,7 +204,11 @@ it("getRaceTrendTodayStarterRows binds source and targetYmd as a single-day wind
   const { db, prepared } = buildD1Stub([SAMPLE_RAW_ROW]);
   const cache = buildCacheStub();
   installContext({ cache, db, kv: buildKvStub() });
-  const rows = await getRaceTrendTodayStarterRows({ source: "nar", targetYmd: "20260528" });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "50",
+    source: "nar",
+    targetYmd: "20260528",
+  });
   expect(rows).toStrictEqual([
     {
       source: "nar",
@@ -232,21 +236,35 @@ it("getRaceTrendTodayStarterRows binds source and targetYmd as a single-day wind
       zogenSa: "2",
     },
   ]);
-  expect(prepared.bind).toHaveBeenCalledWith("nar", "20260528", "20260528");
+  expect(prepared.bind).toHaveBeenCalledWith("nar", "20260528", "20260528", "50");
   expect(cache.put).toHaveBeenCalledTimes(1);
 });
 
-it("getRaceTrendTodayStarterRows writes Cache API entry under the race-trend-today:v8 key", async () => {
+it("getRaceTrendTodayStarterRows writes Cache API entry under the race-trend-today:v9 per-venue key", async () => {
   const { db } = buildD1Stub([SAMPLE_RAW_ROW]);
   const cache = buildCacheStub();
   installContext({ cache, db, kv: buildKvStub() });
-  await getRaceTrendTodayStarterRows({ source: "nar", targetYmd: "20260528" });
+  await getRaceTrendTodayStarterRows({ keibajoCode: "50", source: "nar", targetYmd: "20260528" });
   const firstArg: unknown = cache.put.mock.calls[0]?.[0];
   if (!(firstArg instanceof Request)) {
     throw new Error("Cache.put first arg was not a Request");
   }
   expect(firstArg.url).toBe(
-    "https://pc-keiba-viewer.local/d1-trend-today-cache/race-trend-today%3Av8%3Anar%3A20260528",
+    "https://pc-keiba-viewer.local/d1-trend-today-cache/race-trend-today%3Av9%3Anar%3A20260528%3A50",
+  );
+});
+
+it("getRaceTrendTodayStarterRows isolates the cache entry per keibajoCode under v9", async () => {
+  const { db } = buildD1Stub([SAMPLE_RAW_ROW]);
+  const cache = buildCacheStub();
+  installContext({ cache, db, kv: buildKvStub() });
+  await getRaceTrendTodayStarterRows({ keibajoCode: "44", source: "nar", targetYmd: "20260528" });
+  const firstArg: unknown = cache.put.mock.calls[0]?.[0];
+  if (!(firstArg instanceof Request)) {
+    throw new Error("Cache.put first arg was not a Request");
+  }
+  expect(firstArg.url).toBe(
+    "https://pc-keiba-viewer.local/d1-trend-today-cache/race-trend-today%3Av9%3Anar%3A20260528%3A44",
   );
 });
 
@@ -283,7 +301,11 @@ it("getRaceTrendTodayStarterRows returns Cache API hit without hitting D1", asyn
   );
   const { db } = buildD1Stub([SAMPLE_RAW_ROW]);
   installContext({ cache, db, kv: buildKvStub() });
-  const rows = await getRaceTrendTodayStarterRows({ source: "nar", targetYmd: "20260528" });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "50",
+    source: "nar",
+    targetYmd: "20260528",
+  });
   expect(rows).toStrictEqual(cached);
   expect(db.prepare).not.toHaveBeenCalled();
 });
@@ -320,7 +342,11 @@ it("getRaceTrendTodayStarterRows does not read KV (Cache API only)", async () =>
   const kv = buildKvStub(JSON.stringify(cached));
   const { db } = buildD1Stub([]);
   installContext({ cache, db, kv });
-  const rows = await getRaceTrendTodayStarterRows({ source: "jra", targetYmd: "20260528" });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "06",
+    source: "jra",
+    targetYmd: "20260528",
+  });
   expect(rows).toStrictEqual([]);
   expect(kv.get).not.toHaveBeenCalled();
   expect(kv.put).not.toHaveBeenCalled();
@@ -328,7 +354,11 @@ it("getRaceTrendTodayStarterRows does not read KV (Cache API only)", async () =>
 
 it("getRaceTrendTodayStarterRows returns [] when REALTIME_DB binding is missing", async () => {
   installContext({ cache: buildCacheStub(), db: undefined, kv: buildKvStub() });
-  const rows = await getRaceTrendTodayStarterRows({ source: "nar", targetYmd: "20260528" });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "50",
+    source: "nar",
+    targetYmd: "20260528",
+  });
   expect(rows).toStrictEqual([]);
 });
 
@@ -344,7 +374,11 @@ it("getRaceTrendTodayStarterRows returns [] when D1 query throws", async () => {
   };
   installContext({ cache: buildCacheStub(), db: failing, kv: buildKvStub() });
   const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-  const rows = await getRaceTrendTodayStarterRows({ source: "nar", targetYmd: "20260528" });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "50",
+    source: "nar",
+    targetYmd: "20260528",
+  });
   expect(rows).toStrictEqual([]);
   consoleSpy.mockRestore();
 });
@@ -353,7 +387,11 @@ it("getRaceTrendTodayStarterRows filters out invalid D1 rows", async () => {
   const invalid = { source: "nar", finishPosition: "1" };
   const { db } = buildD1Stub([invalid, SAMPLE_RAW_ROW]);
   installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
-  const rows = await getRaceTrendTodayStarterRows({ source: "nar", targetYmd: "20260528" });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "50",
+    source: "nar",
+    targetYmd: "20260528",
+  });
   expect(rows.length).toBe(1);
   expect(rows[0]?.bamei).toBe("TestHorse");
 });
@@ -369,7 +407,11 @@ it("getRaceTrendTodayStarterRows handles null hasso / bataiju / zogen fields", a
   };
   const { db } = buildD1Stub([sparse]);
   installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
-  const rows = await getRaceTrendTodayStarterRows({ source: "nar", targetYmd: "20260528" });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "50",
+    source: "nar",
+    targetYmd: "20260528",
+  });
   expect(rows[0]?.hassoJikoku).toBe(null);
   expect(rows[0]?.bataiju).toBe(null);
   expect(rows[0]?.zogenSa).toBe(null);
@@ -381,14 +423,22 @@ it("getRaceTrendTodayStarterRows treats short hassoJikoku as null", async () => 
   const tooShort = { ...SAMPLE_RAW_ROW, hassoJikoku: "2026-05-28" };
   const { db } = buildD1Stub([tooShort]);
   installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
-  const rows = await getRaceTrendTodayStarterRows({ source: "nar", targetYmd: "20260528" });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "50",
+    source: "nar",
+    targetYmd: "20260528",
+  });
   expect(rows[0]?.hassoJikoku).toBe(null);
 });
 
 it("getRaceTrendTodayStarterRows returns [] without caching when global caches is unavailable", async () => {
   const { db } = buildD1Stub([SAMPLE_RAW_ROW]);
   installContext({ cache: null, db, kv: buildKvStub() });
-  const rows = await getRaceTrendTodayStarterRows({ source: "nar", targetYmd: "20260528" });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "50",
+    source: "nar",
+    targetYmd: "20260528",
+  });
   expect(rows.length).toBe(1);
 });
 
@@ -396,7 +446,11 @@ it("getRaceTrendTodayStarterRows skips REALTIME_HOT_DB lookup when starter rows 
   const { db } = buildD1Stub([]);
   const { db: hotDb } = buildD1Stub([]);
   installContext({ cache: buildCacheStub(), db, hotDb, kv: buildKvStub() });
-  const rows = await getRaceTrendTodayStarterRows({ source: "nar", targetYmd: "20260528" });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "50",
+    source: "nar",
+    targetYmd: "20260528",
+  });
   expect(rows).toStrictEqual([]);
   expect(hotDb.prepare).not.toHaveBeenCalled();
 });
@@ -408,7 +462,11 @@ it("getRaceTrendTodayStarterRows overrides tansho odds when REALTIME_HOT_DB retu
     { race_key: "nar:20260528:50:04", combination: "5", odds: 8.4, rank: 3 },
   ]);
   installContext({ cache: buildCacheStub(), db, hotDb, kv: buildKvStub() });
-  const rows = await getRaceTrendTodayStarterRows({ source: "nar", targetYmd: "20260528" });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "50",
+    source: "nar",
+    targetYmd: "20260528",
+  });
   expect(rows[0]?.tanshoOdds).toBe("0084");
   expect(rows[0]?.tanshoPopularity).toBe("03");
 });
@@ -417,7 +475,11 @@ it("getRaceTrendTodayStarterRows leaves tansho fields null when REALTIME_HOT_DB 
   const { db } = buildD1Stub([SAMPLE_RAW_ROW]);
   const { db: hotDb } = buildD1Stub([]);
   installContext({ cache: buildCacheStub(), db, hotDb, kv: buildKvStub() });
-  const rows = await getRaceTrendTodayStarterRows({ source: "nar", targetYmd: "20260528" });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "50",
+    source: "nar",
+    targetYmd: "20260528",
+  });
   expect(rows[0]?.tanshoOdds).toBe(null);
   expect(rows[0]?.tanshoPopularity).toBe(null);
 });
@@ -425,7 +487,11 @@ it("getRaceTrendTodayStarterRows leaves tansho fields null when REALTIME_HOT_DB 
 it("getRaceTrendTodayStarterRows leaves tansho fields null when REALTIME_HOT_DB binding is missing", async () => {
   const { db } = buildD1Stub([SAMPLE_RAW_ROW]);
   installContext({ cache: buildCacheStub(), db, hotDb: undefined, kv: buildKvStub() });
-  const rows = await getRaceTrendTodayStarterRows({ source: "nar", targetYmd: "20260528" });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "50",
+    source: "nar",
+    targetYmd: "20260528",
+  });
   expect(rows[0]?.tanshoOdds).toBe(null);
   expect(rows[0]?.tanshoPopularity).toBe(null);
 });
@@ -436,7 +502,11 @@ it("getRaceTrendTodayStarterRows uses HOT odds and null rank when HOT rank is nu
     { race_key: "nar:20260528:50:04", combination: "5", odds: 9.9, rank: null },
   ]);
   installContext({ cache: buildCacheStub(), db, hotDb, kv: buildKvStub() });
-  const rows = await getRaceTrendTodayStarterRows({ source: "nar", targetYmd: "20260528" });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "50",
+    source: "nar",
+    targetYmd: "20260528",
+  });
   expect(rows[0]?.tanshoOdds).toBe("0099");
   expect(rows[0]?.tanshoPopularity).toBe(null);
 });
@@ -447,7 +517,11 @@ it("getRaceTrendTodayStarterRows uses HOT rank and null odds when HOT odds is nu
     { race_key: "nar:20260528:50:04", combination: "5", odds: null, rank: 2 },
   ]);
   installContext({ cache: buildCacheStub(), db, hotDb, kv: buildKvStub() });
-  const rows = await getRaceTrendTodayStarterRows({ source: "nar", targetYmd: "20260528" });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "50",
+    source: "nar",
+    targetYmd: "20260528",
+  });
   expect(rows[0]?.tanshoOdds).toBe(null);
   expect(rows[0]?.tanshoPopularity).toBe("02");
 });
@@ -464,7 +538,11 @@ it("getRaceTrendTodayStarterRows leaves tansho fields null when umaban is null a
     { race_key: "nar:20260528:50:04", combination: "5", odds: 8.4, rank: 3 },
   ]);
   installContext({ cache: buildCacheStub(), db, hotDb, kv: buildKvStub() });
-  const rows = await getRaceTrendTodayStarterRows({ source: "nar", targetYmd: "20260528" });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "50",
+    source: "nar",
+    targetYmd: "20260528",
+  });
   expect(rows[0]?.tanshoOdds).toBe(null);
   expect(rows[0]?.tanshoPopularity).toBe(null);
 });
@@ -1168,7 +1246,11 @@ it("getRaceTrendRunningStylesFromD1 swallows KV put errors and still returns D1 
 it("getRaceTrendTodayStarterRows derives wakuban for a jra row with umaban=5 in a 16-horse field", async () => {
   const { db } = buildD1Stub([SAMPLE_JRA_RAW_ROW]);
   installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
-  const rows = await getRaceTrendTodayStarterRows({ source: "jra", targetYmd: "20260528" });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "06",
+    source: "jra",
+    targetYmd: "20260528",
+  });
   expect(rows[0]?.wakuban).toBe("3");
 });
 
@@ -1176,14 +1258,22 @@ it("getRaceTrendTodayStarterRows derives wakuban=8 for a jra row with umaban=18 
   const jraRow = { ...SAMPLE_JRA_RAW_ROW, umaban: "18", horseCount: 18 };
   const { db } = buildD1Stub([jraRow]);
   installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
-  const rows = await getRaceTrendTodayStarterRows({ source: "jra", targetYmd: "20260528" });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "06",
+    source: "jra",
+    targetYmd: "20260528",
+  });
   expect(rows[0]?.wakuban).toBe("8");
 });
 
 it("getRaceTrendTodayStarterRows leaves wakuban null for a nar row even with horseCount populated", async () => {
   const { db } = buildD1Stub([SAMPLE_RAW_ROW]);
   installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
-  const rows = await getRaceTrendTodayStarterRows({ source: "nar", targetYmd: "20260528" });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "50",
+    source: "nar",
+    targetYmd: "20260528",
+  });
   expect(rows[0]?.wakuban).toBe(null);
 });
 
@@ -1191,7 +1281,11 @@ it("getRaceTrendTodayStarterRows leaves wakuban null when jra umaban is null", a
   const jraRow = { ...SAMPLE_JRA_RAW_ROW, umaban: null };
   const { db } = buildD1Stub([jraRow]);
   installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
-  const rows = await getRaceTrendTodayStarterRows({ source: "jra", targetYmd: "20260528" });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "06",
+    source: "jra",
+    targetYmd: "20260528",
+  });
   expect(rows[0]?.wakuban).toBe(null);
 });
 
@@ -1199,7 +1293,11 @@ it("getRaceTrendTodayStarterRows leaves wakuban null when jra umaban is not a nu
   const jraRow = { ...SAMPLE_JRA_RAW_ROW, umaban: "abc" };
   const { db } = buildD1Stub([jraRow]);
   installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
-  const rows = await getRaceTrendTodayStarterRows({ source: "jra", targetYmd: "20260528" });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "06",
+    source: "jra",
+    targetYmd: "20260528",
+  });
   expect(rows[0]?.wakuban).toBe(null);
 });
 
@@ -1207,7 +1305,11 @@ it("getRaceTrendTodayStarterRows leaves wakuban null when horseCount is 0", asyn
   const jraRow = { ...SAMPLE_JRA_RAW_ROW, horseCount: 0 };
   const { db } = buildD1Stub([jraRow]);
   installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
-  const rows = await getRaceTrendTodayStarterRows({ source: "jra", targetYmd: "20260528" });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "06",
+    source: "jra",
+    targetYmd: "20260528",
+  });
   expect(rows[0]?.wakuban).toBe(null);
 });
 
@@ -1224,6 +1326,10 @@ it("getRaceTrendTodayStarterRows filters out rows missing horseCount", async () 
   };
   const { db } = buildD1Stub([noHorseCount]);
   installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
-  const rows = await getRaceTrendTodayStarterRows({ source: "jra", targetYmd: "20260528" });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "06",
+    source: "jra",
+    targetYmd: "20260528",
+  });
   expect(rows).toStrictEqual([]);
 });
