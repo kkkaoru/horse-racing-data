@@ -705,6 +705,7 @@ it("predict-for-day source=jra returns 200 with helper result", async () => {
     skippedReasons: [],
   });
   expect(runPredictionsForDay).toHaveBeenCalledWith(env, {
+    skipCompleted: false,
     source: "jra",
     targetYmd: "20260531",
   });
@@ -722,6 +723,7 @@ it("predict-for-day source=nar normalises and forwards to helper", async () => {
   );
   expect(response.status).toBe(200);
   expect(runPredictionsForDay).toHaveBeenCalledWith(env, {
+    skipCompleted: false,
     source: "nar",
     targetYmd: "20260601",
   });
@@ -739,8 +741,104 @@ it("predict-for-day source=all normalises and forwards to helper", async () => {
   );
   expect(response.status).toBe(200);
   expect(runPredictionsForDay).toHaveBeenCalledWith(env, {
+    skipCompleted: false,
     source: "all",
     targetYmd: "20260531",
+  });
+});
+
+it("predict-for-day forwards skipCompleted=true when present in body", async () => {
+  const env = buildEnv();
+  const response = await handlePredictForDayRequest(
+    env,
+    new Request("https://x/api/internal/predict-for-day", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ skipCompleted: true, source: "all", targetYmd: "20260531" }),
+    }),
+  );
+  expect(response.status).toBe(200);
+  expect(runPredictionsForDay).toHaveBeenCalledWith(env, {
+    skipCompleted: true,
+    source: "all",
+    targetYmd: "20260531",
+  });
+});
+
+it("predict-for-day forwards skipCompleted=false when present in body", async () => {
+  const env = buildEnv();
+  const response = await handlePredictForDayRequest(
+    env,
+    new Request("https://x/api/internal/predict-for-day", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ skipCompleted: false, source: "jra", targetYmd: "20260531" }),
+    }),
+  );
+  expect(response.status).toBe(200);
+  expect(runPredictionsForDay).toHaveBeenCalledWith(env, {
+    skipCompleted: false,
+    source: "jra",
+    targetYmd: "20260531",
+  });
+});
+
+it("predict-for-day defaults skipCompleted=false when absent", async () => {
+  const env = buildEnv();
+  const response = await handlePredictForDayRequest(
+    env,
+    new Request("https://x/api/internal/predict-for-day", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ source: "nar", targetYmd: "20260601" }),
+    }),
+  );
+  expect(response.status).toBe(200);
+  expect(runPredictionsForDay).toHaveBeenCalledWith(env, {
+    skipCompleted: false,
+    source: "nar",
+    targetYmd: "20260601",
+  });
+});
+
+it("predict-for-day defaults skipCompleted=false when value is non-boolean", async () => {
+  const env = buildEnv();
+  const response = await handlePredictForDayRequest(
+    env,
+    new Request("https://x/api/internal/predict-for-day", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ skipCompleted: "yes", source: "all", targetYmd: "20260531" }),
+    }),
+  );
+  expect(response.status).toBe(200);
+  expect(runPredictionsForDay).toHaveBeenCalledWith(env, {
+    skipCompleted: false,
+    source: "all",
+    targetYmd: "20260531",
+  });
+});
+
+it("predict-for-day returns 200 with skip-aware result envelope", async () => {
+  const env = buildEnv();
+  vi.mocked(runPredictionsForDay).mockResolvedValueOnce({
+    enqueuedFinishPosition: ["jra:2026:0531:05:01"],
+    enqueuedRunningStyle: ["jra:2026:0531:05:01"],
+    skippedReasons: [{ raceKey: "jra:2026:0531:05:02", reason: "already-completed" }],
+  });
+  const response = await handlePredictForDayRequest(
+    env,
+    new Request("https://x/api/internal/predict-for-day", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ skipCompleted: true, source: "jra", targetYmd: "20260531" }),
+    }),
+  );
+  expect(response.status).toBe(200);
+  await expect(response.json()).resolves.toStrictEqual({
+    enqueuedFinishPosition: ["jra:2026:0531:05:01"],
+    enqueuedRunningStyle: ["jra:2026:0531:05:01"],
+    skippedReasons: [{ raceKey: "jra:2026:0531:05:02", reason: "already-completed" }],
   });
 });
 
