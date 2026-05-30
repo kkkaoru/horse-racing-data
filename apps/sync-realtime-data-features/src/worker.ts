@@ -1,5 +1,10 @@
 // Run with bun. Fetch / scheduled / queue handlers for sync-realtime-data-features.
 
+import {
+  type PredictForDaySource,
+  type RunPredictionsForDayResult,
+  runPredictionsForDay,
+} from "./admin-predict-for-day";
 import { buildRaceFeatures } from "./features/build";
 import { encodeRaceFeaturesParquet } from "./features/parquet";
 import { tryParseRaceKey } from "./features/race-key";
@@ -37,11 +42,46 @@ const BUILD_STATE_FRESHNESS_MS = 10 * 60 * 1000;
 const BUILD_STATE_FRESHNESS_FUTURE_MS = 6 * 60 * 60 * 1000;
 const BUILD_STATE_FRESHNESS_PAST14_MS = 7 * 24 * 60 * 60 * 1000;
 const BUILD_RACE_FEATURES_JOB_TYPE = "build-race-features";
+const YMD_PATTERN = /^\d{8}$/u;
+const VALID_PREDICT_FOR_DAY_SOURCES = new Set<string>(["jra", "nar", "all"]);
+const PREDICT_FOR_DAY_CRON = "5 2,6,10,14 * * *";
 
 interface MigrationStateRequest {
   key: string;
   value: string;
 }
+
+interface PredictForDayParsedBody {
+  source: PredictForDaySource;
+  targetYmd: string;
+}
+
+// Guard-style normaliser so the source narrowing stays a single linear chain
+// instead of a nested ternary (rule 27 / 58).
+const normalizePredictForDaySource = (value: string): PredictForDaySource => {
+  if (value === "jra") {
+    return "jra";
+  }
+  if (value === "nar") {
+    return "nar";
+  }
+  return "all";
+};
+
+const parsePredictForDayBody = (raw: unknown): PredictForDayParsedBody | null => {
+  if (typeof raw !== "object" || raw === null) {
+    return null;
+  }
+  const source = Reflect.get(raw, "source");
+  const targetYmd = Reflect.get(raw, "targetYmd");
+  if (typeof source !== "string" || !VALID_PREDICT_FOR_DAY_SOURCES.has(source)) {
+    return null;
+  }
+  if (typeof targetYmd !== "string" || !YMD_PATTERN.test(targetYmd)) {
+    return null;
+  }
+  return { source: normalizePredictForDaySource(source), targetYmd };
+};
 
 const isAuthorizedInternalRequest = (request: Request, env: Env): boolean => {
   const token = env.PC_KEIBA_VIEWER_INTERNAL_TOKEN;
@@ -187,6 +227,115 @@ export const handleRecomputeRequest = async (env: Env, request: Request): Promis
   }
 };
 
+// Direct (queue-bypassing) running-style inference endpoint for force-recovery.
+// Mirrors the `as RecomputeRequestBody` cast pattern already used above —
+// this is a pre-existing accepted style in this file.
+export const handlePredictRunningStyleRequest = async (
+  env: Env,
+  request: Request,
+): Promise<Response> => {
+  if (!isAuthorizedInternalRequest(request, env)) {
+    return jsonResponse({ error: "unauthorized" }, { status: 401 });
+  }
+  const body = (await request.json()) as RecomputeRequestBody;
+  const raceJobKey = toRaceJobKeyFromBody(body);
+  if (!raceJobKey) {
+    return jsonResponse(
+      {
+        error: "raceKey must match {source}:{kaisaiNen}:{kaisaiTsukihi}:{keibajoCode}:{raceBango}",
+      },
+      { status: 400 },
+    );
+  }
+  try {
+    const result = await handleRunningStylePredictionJob(
+      { ...raceJobKey, predictedAt: new Date().toISOString() },
+      env,
+    );
+    return jsonResponse(result);
+  } catch (error) {
+    console.error("[features] predict-running-style failed", error);
+    return jsonResponse(
+      {
+        error: error instanceof Error ? error.message : String(error),
+        raceKey: raceJobKey.raceKey,
+      },
+      { status: 500 },
+    );
+  }
+};
+
+// Direct (queue-bypassing) finish-position inference endpoint for force-recovery.
+// Mirrors the `as RecomputeRequestBody` cast pattern already used above —
+// this is a pre-existing accepted style in this file.
+export const handlePredictFinishPositionRequest = async (
+  env: Env,
+  request: Request,
+): Promise<Response> => {
+  if (!isAuthorizedInternalRequest(request, env)) {
+    return jsonResponse({ error: "unauthorized" }, { status: 401 });
+  }
+  const body = (await request.json()) as RecomputeRequestBody;
+  const raceJobKey = toRaceJobKeyFromBody(body);
+  if (!raceJobKey) {
+    return jsonResponse(
+      {
+        error: "raceKey must match {source}:{kaisaiNen}:{kaisaiTsukihi}:{keibajoCode}:{raceBango}",
+      },
+      { status: 400 },
+    );
+  }
+  try {
+    const result = await handleFinishPositionPredictionJob(
+      { ...raceJobKey, predictedAt: new Date().toISOString() },
+      env,
+    );
+    return jsonResponse(result);
+  } catch (error) {
+    console.error("[features] predict-finish-position failed", error);
+    return jsonResponse(
+      {
+        error: error instanceof Error ? error.message : String(error),
+        raceKey: raceJobKey.raceKey,
+      },
+      { status: 500 },
+    );
+  }
+};
+
+// Enumerates all of today's race_keys from Hyperdrive and enqueues
+// predict-running-style + predict-finish-position jobs for each via the
+// existing REALTIME_FEATURES_JOBS queue producer. Force-recovery / backfill
+// endpoint for the admin "predict for day" workflow.
+export const handlePredictForDayRequest = async (env: Env, request: Request): Promise<Response> => {
+  if (!isAuthorizedInternalRequest(request, env)) {
+    return jsonResponse({ error: "unauthorized" }, { status: 401 });
+  }
+  const rawBody = (await request.json()) as unknown;
+  const parsed = parsePredictForDayBody(rawBody);
+  if (!parsed) {
+    return jsonResponse(
+      {
+        error: "body must be { source: 'jra' | 'nar' | 'all', targetYmd: 'YYYYMMDD' (8 digits) }",
+      },
+      { status: 400 },
+    );
+  }
+  try {
+    const result: RunPredictionsForDayResult = await runPredictionsForDay(env, parsed);
+    return jsonResponse(result);
+  } catch (error) {
+    console.error("[features] predict-for-day failed", error);
+    return jsonResponse(
+      {
+        error: error instanceof Error ? error.message : String(error),
+        targetYmd: parsed.targetYmd,
+      },
+      { status: 500 },
+    );
+  }
+};
+
 const parseRaceKeyFromUrl = (url: URL): string | null => {
   const value = url.searchParams.get("race_key");
   return value ? decodeURIComponent(value) : null;
@@ -216,6 +365,15 @@ export const handleFetchRequest = async (env: Env, request: Request): Promise<Re
   }
   if (request.method === "POST" && url.pathname === "/api/internal/recompute-and-build-parquet") {
     return handleRecomputeRequest(env, request);
+  }
+  if (request.method === "POST" && url.pathname === "/api/internal/predict-running-style") {
+    return handlePredictRunningStyleRequest(env, request);
+  }
+  if (request.method === "POST" && url.pathname === "/api/internal/predict-finish-position") {
+    return handlePredictFinishPositionRequest(env, request);
+  }
+  if (request.method === "POST" && url.pathname === "/api/internal/predict-for-day") {
+    return handlePredictForDayRequest(env, request);
   }
   if (request.method === "POST" && url.pathname === "/api/internal/migration-state") {
     return handleMigrationStatePost(env, request);
@@ -472,8 +630,22 @@ export const runScheduledFeaturesPlan = async (
   };
 };
 
+const runScheduledPredictForDay = async (env: Env, scheduledAt: Date): Promise<void> => {
+  const targetYmd = getTodayJst(scheduledAt);
+  await runPredictionsForDay(env, {
+    skipCompleted: true,
+    source: "all",
+    targetYmd,
+  });
+};
+
 export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<void> => {
-  await runScheduledFeaturesPlan(env, new Date(event.scheduledTime));
+  const scheduledAt = new Date(event.scheduledTime);
+  if (event.cron === PREDICT_FOR_DAY_CRON) {
+    await runScheduledPredictForDay(env, scheduledAt);
+    return;
+  }
+  await runScheduledFeaturesPlan(env, scheduledAt);
 };
 
 const toRaceJobKey = (job: Extract<Job, { type: "build-race-features" }>): RaceJobKey => ({
