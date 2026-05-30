@@ -111,6 +111,12 @@ const flushAllAsync = async (): Promise<void> => {
   });
 };
 
+const extractRequestUrl = (input: RequestInfo | URL): string => {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.toString();
+  return input.url;
+};
+
 beforeEach(() => {
   installMockWebSocket();
   vi.useFakeTimers();
@@ -425,4 +431,51 @@ test("WebSocket message with invalid JSON does not trigger a refresh fetch", asy
     firstSocket.dispatch("message", { data: "not-json" });
   });
   expect(fetchSpy).not.toHaveBeenCalled();
+});
+
+test("WebSocket trend-updated triggers a force-refresh fetch carrying __trendCacheRefresh=1", async () => {
+  const observedUrls: string[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+    observedUrls.push(extractRequestUrl(input));
+    return Promise.resolve(buildOkResponse(buildRawPayload()));
+  });
+  renderSection();
+  await flushAllAsync();
+  const initialCallCount = observedUrls.length;
+  const firstSocket = installedSockets[0];
+  if (!firstSocket) throw new Error("first socket missing");
+  act(() => {
+    firstSocket.dispatch("message", { data: JSON.stringify({ type: "trend-updated" }) });
+  });
+  await flushAllAsync();
+  const newUrls = observedUrls.slice(initialCallCount);
+  expect(newUrls.length).toBeGreaterThanOrEqual(1);
+  const firstNewUrl = newUrls[0];
+  if (!firstNewUrl) throw new Error("first new url missing");
+  // Resolve the path against an absolute base so URL searchParams parsing works
+  // even when the fetch input is a path-only string.
+  const firstNewUrlObject = new URL(firstNewUrl, "http://localhost");
+  expect(firstNewUrlObject.searchParams.get("__trendCacheRefresh")).toBe("1");
+});
+
+test("visibilitychange to visible force-reconnects when socket is null and reconnect timer is pending", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(buildOkResponse(buildRawPayload()));
+  renderSection();
+  await flushAllAsync();
+  const firstSocket = installedSockets[0];
+  if (!firstSocket) throw new Error("first socket missing");
+  // Trigger scheduleReconnect by firing close — this nulls liveSocketRef and
+  // sets a pending reconnect timer (computeRaceTrendLiveBackoffMs(0) = 1000ms).
+  act(() => {
+    firstSocket.dispatch("close", {});
+  });
+  expect(installedSockets).toHaveLength(1);
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+  act(() => {
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  // Without advancing fake timers, the force-reconnect path must have already
+  // cleared the pending timer and invoked `connect()` synchronously, so a
+  // second socket is installed without waiting for the 1s backoff to elapse.
+  expect(installedSockets).toHaveLength(2);
 });

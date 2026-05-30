@@ -1117,6 +1117,12 @@ export function RaceTrendSection({
   const liveReconnectAttemptRef = useRef(0);
   const liveReconnectTimerRef = useRef<number | null>(null);
   const liveSocketRef = useRef<WebSocket | null>(null);
+  // F4 BUG-3 fix: visibility=visible can fire while liveSocketRef is already
+  // null (after scheduleReconnect ran but the backoff timer hasn't fired yet).
+  // The WS useEffect sets this ref to a closure that synchronously clears the
+  // pending reconnect timer and reconnects, so a backgrounded tab waking up
+  // doesn't sit on the residual delay.
+  const forceLiveReconnectRef = useRef<(() => void) | null>(null);
   const currentAbortControllerRef = useRef<AbortController | null>(null);
 
   const toggleTrendTarget = useCallback((key: RaceTrendTargetKey) => {
@@ -1499,9 +1505,16 @@ export function RaceTrendSection({
       }
       const requestId = fetchSequenceRef.current + 1;
       fetchSequenceRef.current = requestId;
+      // F4 BUG-1 fix: the trend-updated signal means a sibling race just
+      // resulted and the upstream KV / Cache API entries have been busted.
+      // Force `refreshCache: true` so the next fetch sets
+      // `__trendCacheRefresh=1` and skips any edge-cached body that hasn't
+      // picked up the DO + legacy merge yet. (X4 commit `bcb4c5f` intent;
+      // F2 commit `d58ff1a` regressed this back to `false` while adding
+      // reconnect/AbortController plumbing — re-applying the X4 contract.)
       void refreshTrendRows({
         clearOnError: false,
-        refreshCache: false,
+        refreshCache: true,
         requestId,
         showLoading: false,
       });
@@ -1540,11 +1553,21 @@ export function RaceTrendSection({
       });
     };
     liveReconnectAttemptRef.current = 0;
+    forceLiveReconnectRef.current = () => {
+      if (cancelledRef.current) return;
+      // F4 BUG-3: when the visibility handler discovers a null socket with a
+      // pending reconnect timer, jump straight to `connect()` (which itself
+      // calls `clearReconnectTimer()`) so we don't wait out the residual
+      // backoff delay.
+      liveReconnectAttemptRef.current = 0;
+      connect();
+    };
     connect();
     return () => {
       cancelledRef.current = true;
       clearReconnectTimer();
       liveConnectedRef.current = false;
+      forceLiveReconnectRef.current = null;
       const socket = liveSocketRef.current;
       liveSocketRef.current = null;
       socket?.close();
@@ -1567,18 +1590,25 @@ export function RaceTrendSection({
     };
 
     // When the page becomes visible again, also try to recover the WebSocket
-    // immediately instead of waiting for the next backoff tick. Triggers the
-    // existing setTimeout-driven reconnect path via `liveSocketRef.close()`.
+    // immediately instead of waiting for the next backoff tick. For a live
+    // socket in CLOSED/CLOSING state, dispatching `close()` re-enters the
+    // existing `scheduleReconnect` path with `attempt=0`. For a null socket
+    // (e.g. scheduleReconnect already ran but the backoff timer hasn't fired),
+    // call the force-reconnect callback exposed by the WS useEffect so the
+    // pending timer is cleared and `connect()` runs synchronously (F4 BUG-3).
     const forceReconnectOnVisible = () => {
       if (document.visibilityState !== "visible") return;
       const socket = liveSocketRef.current;
+      if (socket === null) {
+        liveReconnectAttemptRef.current = 0;
+        forceLiveReconnectRef.current?.();
+        return;
+      }
       const isClosed =
-        socket === null ||
-        socket.readyState === WebSocket.CLOSED ||
-        socket.readyState === WebSocket.CLOSING;
+        socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING;
       if (isClosed) {
         liveReconnectAttemptRef.current = 0;
-        socket?.close();
+        socket.close();
       }
     };
 
