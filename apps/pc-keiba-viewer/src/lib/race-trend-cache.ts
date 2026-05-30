@@ -33,7 +33,17 @@ export const RACE_TREND_CACHE_PRE_START_SECONDS = 20 * 60;
 
 export const RACE_TREND_CACHE_AFTER_START_SECONDS = 6 * 60 * 60;
 
+// Same-day cap so Cache API entries cannot outlive the global KV bust by more
+// than a minute. Cloudflare's Cache API is per-edge, so a long TTL means
+// other edges keep serving stale today-trend payloads after a race finishes
+// even though `viewer-trend-cache-bust` has already evicted KV globally.
+export const RACE_TREND_CACHE_MAX_TTL_FOR_TODAY_SECONDS = 60;
+
 export const RACE_TREND_CACHE_WARM_VARIANT_COUNT = 1;
+
+const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
+
+const PAD_WIDTH = 2;
 
 export interface RaceTrendCacheOptions {
   frameEndYmd: string;
@@ -53,6 +63,11 @@ export interface RaceTrendCacheWarmMessage {
   raceNumber: string;
   source: RaceSource;
   year: string;
+}
+
+interface IsTodayJstParams {
+  kaisaiNen: string;
+  kaisaiTsukihi: string;
 }
 
 const booleanKey = (value: boolean): string => (value ? "1" : "0");
@@ -192,6 +207,14 @@ export const getRaceStartTimeMs = (race: {
   return Number.isFinite(startTime) ? startTime : null;
 };
 
+const isTodayJst = (race: IsTodayJstParams, nowMs: number): boolean => {
+  const jstNow = new Date(nowMs + JST_OFFSET_MS);
+  const year = String(jstNow.getUTCFullYear());
+  const month = String(jstNow.getUTCMonth() + 1).padStart(PAD_WIDTH, "0");
+  const day = String(jstNow.getUTCDate()).padStart(PAD_WIDTH, "0");
+  return race.kaisaiNen === year && race.kaisaiTsukihi === `${month}${day}`;
+};
+
 export const getRaceTrendCacheTtlSeconds = (
   race: {
     hassoJikoku?: string | null;
@@ -206,7 +229,11 @@ export const getRaceTrendCacheTtlSeconds = (
     return 0;
   }
   const expiresAt = raceStartTime + afterStartSeconds * 1000;
-  return Math.max(0, Math.floor((expiresAt - nowMs) / 1000));
+  const naturalTtl = Math.max(0, Math.floor((expiresAt - nowMs) / 1000));
+  if (isTodayJst(race, nowMs)) {
+    return Math.min(naturalTtl, RACE_TREND_CACHE_MAX_TTL_FOR_TODAY_SECONDS);
+  }
+  return naturalTtl;
 };
 
 const compareRaceNumber = (left: string, right: string): number => {
