@@ -1,14 +1,85 @@
-// Run with bun.
-import { expect, it, vi } from "vitest";
+// Run with bun. `bun run --filter pc-keiba-viewer test`
+import { beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-vi.mock("@opennextjs/cloudflare", () => ({
-  getCloudflareContext: vi.fn<() => Promise<{ ctx: null; env: null }>>(async () => ({
-    ctx: null,
-    env: null,
-  })),
+const mocks = vi.hoisted(() => ({
+  buildPast14WindowForTargetMock: vi.fn<(...args: never[]) => unknown>(),
+  fetchProductionApiMock: vi.fn<(...args: never[]) => unknown>(),
+  fetchRaceTrendDailyTrackMock: vi.fn<(...args: never[]) => unknown>(),
+  getCachedRaceTrendResponseMock: vi.fn<(...args: never[]) => unknown>(),
+  getCloudflareContextMock: vi.fn<() => Promise<unknown>>(),
+  getRaceDetailMock: vi.fn<(...args: never[]) => unknown>(),
+  getRaceRunnersMock: vi.fn<(...args: never[]) => unknown>(),
+  getRaceRunningStylesWithCacheMock: vi.fn<(...args: never[]) => unknown>(),
+  getRaceSourceByRouteMock: vi.fn<(...args: never[]) => unknown>(),
+  getRaceTrendPast14StarterRowsMock: vi.fn<(...args: never[]) => unknown>(),
+  getRaceTrendRunningStylesFromD1Mock: vi.fn<(...args: never[]) => unknown>(),
+  getRaceTrendTodayRunningStylesFromD1Mock: vi.fn<(...args: never[]) => unknown>(),
+  getRaceTrendTodayStarterRowsMock: vi.fn<(...args: never[]) => unknown>(),
+  notifyRaceTrendRoomMock: vi.fn<(...args: never[]) => unknown>(),
+  putRaceTrendCacheMock: vi.fn<(...args: never[]) => unknown>(),
+  useProductionApiProxyMock: vi.fn<() => boolean>(),
 }));
+
+vi.mock("@opennextjs/cloudflare", () => ({
+  getCloudflareContext: mocks.getCloudflareContextMock,
+}));
+
+vi.mock("../../../../../../../../../db/d1-trend-queries.server", () => ({
+  buildPast14WindowForTarget: mocks.buildPast14WindowForTargetMock,
+  getRaceTrendPast14StarterRows: mocks.getRaceTrendPast14StarterRowsMock,
+  getRaceTrendRunningStylesFromD1: mocks.getRaceTrendRunningStylesFromD1Mock,
+  getRaceTrendTodayRunningStylesFromD1: mocks.getRaceTrendTodayRunningStylesFromD1Mock,
+  getRaceTrendTodayStarterRows: mocks.getRaceTrendTodayStarterRowsMock,
+}));
+
+vi.mock("../../../../../../../../../db/queries", () => ({
+  getRaceDetail: mocks.getRaceDetailMock,
+  getRaceRunners: mocks.getRaceRunnersMock,
+  getRaceSourceByRoute: mocks.getRaceSourceByRouteMock,
+}));
+
+vi.mock("../../../../../../../../../lib/production-api-proxy.server", () => ({
+  fetchProductionApi: mocks.fetchProductionApiMock,
+  useProductionApiProxy: mocks.useProductionApiProxyMock,
+}));
+
+vi.mock("../../../../../../../../../lib/race-trend-cache.server", () => ({
+  buildRaceTrendCacheKeyForRequest: vi.fn<() => string>(() => "test-cache-key"),
+  getCachedRaceTrendResponse: mocks.getCachedRaceTrendResponseMock,
+  putRaceTrendCache: mocks.putRaceTrendCacheMock,
+}));
+
+vi.mock("../../../../../../../../../lib/race-trend-daily-track-client.server", () => ({
+  fetchRaceTrendDailyTrack: mocks.fetchRaceTrendDailyTrackMock,
+}));
+
+vi.mock("../../../../../../../../../lib/race-trend-room.server", () => ({
+  notifyRaceTrendRoom: mocks.notifyRaceTrendRoomMock,
+}));
+
+vi.mock("../../../../../../../../../lib/running-style-cache.server", () => ({
+  getRaceRunningStylesWithCache: mocks.getRaceRunningStylesWithCacheMock,
+}));
+
+const {
+  buildPast14WindowForTargetMock,
+  fetchProductionApiMock,
+  fetchRaceTrendDailyTrackMock,
+  getCachedRaceTrendResponseMock,
+  getRaceDetailMock,
+  getRaceRunnersMock,
+  getRaceRunningStylesWithCacheMock,
+  getRaceSourceByRouteMock,
+  getRaceTrendPast14StarterRowsMock,
+  getRaceTrendRunningStylesFromD1Mock,
+  getRaceTrendTodayRunningStylesFromD1Mock,
+  getRaceTrendTodayStarterRowsMock,
+  notifyRaceTrendRoomMock,
+  putRaceTrendCacheMock,
+  useProductionApiProxyMock,
+} = mocks;
 
 import type {
   RaceTrendDailyTrackRow,
@@ -16,12 +87,12 @@ import type {
 } from "horse-racing-realtime/race-trend-daily-track-types";
 
 import type { RaceTrendDailyTrackFetchResult } from "../../../../../../../../../lib/race-trend-daily-track-client.server";
-import type { RaceTrendRawPayload } from "../../../../../../../../../lib/race-types";
-import {
-  filterTodaySiblingRows,
-  isCacheableTrendPayload,
-  pickTodaySiblingRowsAndSource,
-} from "./route";
+import type {
+  RaceDetail,
+  RaceTrendRawPayload,
+  Runner,
+} from "../../../../../../../../../lib/race-types";
+import { GET, isCacheableTrendPayload, pickTodaySiblingRowsAndSource } from "./route";
 
 const buildStarterRow = (overrides: Partial<RaceTrendStarterRow> = {}): RaceTrendStarterRow => ({
   bamei: "テスト",
@@ -34,13 +105,13 @@ const buildStarterRow = (overrides: Partial<RaceTrendStarterRow> = {}): RaceTren
   hassoJikoku: null,
   jockeyName: "騎手",
   kaisaiNen: "2026",
-  kaisaiTsukihi: "0524",
-  keibajoCode: "47",
+  kaisaiTsukihi: "0529",
+  keibajoCode: "05",
   raceBango: "01",
   raceName: null,
   runnerCount: null,
   sohaTime: null,
-  source: "nar",
+  source: "jra",
   tanshoOdds: null,
   tanshoPopularity: null,
   umaban: "01",
@@ -57,6 +128,138 @@ const buildPayload = (overrides: Partial<RaceTrendRawPayload> = {}): RaceTrendRa
   runners: [],
   starterRows: [],
   ...overrides,
+});
+
+const buildDailyTrackRow = (
+  raceBango: string,
+  starterRows: RaceTrendStarterRow[],
+): RaceTrendDailyTrackRow => ({
+  fetchedAt: "2026-05-29T07:30:00.000Z",
+  finishedAt: "2026-05-29T07:20:00.000Z",
+  isComplete: true,
+  raceBango,
+  raceKey: `jra:2026:0529:05:${raceBango}`,
+  runningStyles: [],
+  starterRows,
+});
+
+const buildRaceDetail = (overrides: Partial<RaceDetail> = {}): RaceDetail => ({
+  babajotaiCodeDirt: null,
+  babajotaiCodeShiba: null,
+  gradeCode: null,
+  hassoJikoku: "1500",
+  juryoShubetsuCode: null,
+  kaisaiKai: null,
+  kaisaiNen: "2026",
+  kaisaiNichime: null,
+  kaisaiTsukihi: "0529",
+  keibajoCode: "05",
+  kyori: null,
+  kyosoJokenCode: null,
+  kyosoJokenMeisho: null,
+  kyosoKigoCode: null,
+  kyosoShubetsuCode: null,
+  kyosomeiFukudai: null,
+  kyosomeiHondai: null,
+  kyosomeiKakkonai: null,
+  raceBango: "07",
+  shussoTosu: null,
+  source: "jra",
+  tenkoCode: null,
+  torokuTosu: null,
+  trackCode: null,
+  ...overrides,
+});
+
+const buildRunner = (overrides: Partial<Runner> = {}): Runner => ({
+  banushimei: null,
+  barei: null,
+  bataiju: null,
+  bamei: null,
+  chokyoshimeiRyakusho: null,
+  corner1: null,
+  corner2: null,
+  corner3: null,
+  corner4: null,
+  futanJuryo: null,
+  kakuteiChakujun: null,
+  kettoTorokuBango: null,
+  kishumeiRyakusho: null,
+  kohan3f: null,
+  seibetsuCode: null,
+  sohaTime: null,
+  tanshoNinkijun: null,
+  tanshoOdds: null,
+  timeSa: null,
+  umaban: "01",
+  wakuban: "1",
+  zogenFugo: null,
+  zogenSa: null,
+  ...overrides,
+});
+
+const buildTrendRequest = (): Request =>
+  new Request("https://example.com/api/races/2026/05/29/05/07/trends?source=jra");
+
+const buildTrendContext = () => ({
+  params: Promise.resolve({
+    day: "29",
+    keibajoCode: "05",
+    month: "05",
+    raceNumber: "07",
+    year: "2026",
+  }),
+});
+
+// Narrow a JSON response body into a RaceTrendRawPayload using a runtime
+// property check so the test reader code stays type-safe without `as`.
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const isRaceTrendRawPayload = (value: unknown): value is RaceTrendRawPayload => {
+  if (!isRecord(value)) return false;
+  return (
+    Array.isArray(value.starterRows) &&
+    Array.isArray(value.runners) &&
+    Array.isArray(value.currentRunningStyles) &&
+    Array.isArray(value.historicalRunningStyles) &&
+    isRecord(value.raceContext)
+  );
+};
+
+const readJsonAsPayload = async (response: Response): Promise<RaceTrendRawPayload> => {
+  const body: unknown = await response.json();
+  if (!isRaceTrendRawPayload(body)) {
+    throw new Error("response body is not a RaceTrendRawPayload");
+  }
+  return body;
+};
+
+beforeEach(() => {
+  buildPast14WindowForTargetMock.mockReset();
+  fetchProductionApiMock.mockReset();
+  fetchRaceTrendDailyTrackMock.mockReset();
+  getCachedRaceTrendResponseMock.mockReset();
+  getRaceDetailMock.mockReset();
+  getRaceRunnersMock.mockReset();
+  getRaceRunningStylesWithCacheMock.mockReset();
+  getRaceSourceByRouteMock.mockReset();
+  getRaceTrendPast14StarterRowsMock.mockReset();
+  getRaceTrendRunningStylesFromD1Mock.mockReset();
+  getRaceTrendTodayRunningStylesFromD1Mock.mockReset();
+  getRaceTrendTodayStarterRowsMock.mockReset();
+  notifyRaceTrendRoomMock.mockReset();
+  putRaceTrendCacheMock.mockReset();
+  useProductionApiProxyMock.mockReset();
+  useProductionApiProxyMock.mockReturnValue(false);
+  buildPast14WindowForTargetMock.mockReturnValue({ endYmd: "20260528", startYmd: "20260515" });
+  getRaceRunningStylesWithCacheMock.mockResolvedValue([]);
+  getRaceTrendRunningStylesFromD1Mock.mockResolvedValue([]);
+  getRaceTrendTodayRunningStylesFromD1Mock.mockResolvedValue([]);
+  getCachedRaceTrendResponseMock.mockResolvedValue(null);
+  putRaceTrendCacheMock.mockResolvedValue(undefined);
+  notifyRaceTrendRoomMock.mockResolvedValue(true);
+  getRaceRunnersMock.mockResolvedValue([buildRunner()]);
 });
 
 it("isCacheableTrendPayload rejects a payload with neither starter rows nor running-style history", () => {
@@ -98,154 +301,6 @@ it("isCacheableTrendPayload accepts a payload with both starter rows and running
       }),
     ),
   ).toBe(true);
-});
-
-it("isCacheableTrendPayload accepts a populated 14-day-window payload", () => {
-  const starterRows = Array.from({ length: 3849 }, (_, index) =>
-    buildStarterRow({ umaban: String(index + 1) }),
-  );
-  const historicalRunningStyles = Array.from({ length: 2416 }, (_, index) => ({
-    horseNumber: String((index % 12) + 1),
-    predictedLabel: "sashi" as const,
-    raceKey: `nar:20260524:47:${String((index % 12) + 1).padStart(2, "0")}`,
-  }));
-  expect(isCacheableTrendPayload(buildPayload({ starterRows, historicalRunningStyles }))).toBe(
-    true,
-  );
-});
-
-it("filterTodaySiblingRows keeps rows with the same source, date, venue and a smaller raceBango", () => {
-  const sibling = buildStarterRow({
-    kaisaiNen: "2026",
-    kaisaiTsukihi: "0529",
-    keibajoCode: "50",
-    raceBango: "03",
-    source: "nar",
-  });
-  const target = buildStarterRow({
-    kaisaiNen: "2026",
-    kaisaiTsukihi: "0529",
-    keibajoCode: "50",
-    raceBango: "07",
-    source: "nar",
-  });
-  const after = buildStarterRow({
-    kaisaiNen: "2026",
-    kaisaiTsukihi: "0529",
-    keibajoCode: "50",
-    raceBango: "08",
-    source: "nar",
-  });
-  const result = filterTodaySiblingRows([sibling, target, after], {
-    keibajoCode: "50",
-    raceBango: "07",
-    source: "nar",
-    targetYmd: "20260529",
-  });
-  expect(result).toStrictEqual([sibling]);
-});
-
-it("filterTodaySiblingRows drops rows from a different venue", () => {
-  const otherVenue = buildStarterRow({
-    kaisaiNen: "2026",
-    kaisaiTsukihi: "0529",
-    keibajoCode: "47",
-    raceBango: "01",
-    source: "nar",
-  });
-  expect(
-    filterTodaySiblingRows([otherVenue], {
-      keibajoCode: "50",
-      raceBango: "07",
-      source: "nar",
-      targetYmd: "20260529",
-    }),
-  ).toStrictEqual([]);
-});
-
-it("filterTodaySiblingRows drops rows from a different source", () => {
-  const otherSource = buildStarterRow({
-    kaisaiNen: "2026",
-    kaisaiTsukihi: "0529",
-    keibajoCode: "50",
-    raceBango: "01",
-    source: "jra",
-  });
-  expect(
-    filterTodaySiblingRows([otherSource], {
-      keibajoCode: "50",
-      raceBango: "07",
-      source: "nar",
-      targetYmd: "20260529",
-    }),
-  ).toStrictEqual([]);
-});
-
-it("filterTodaySiblingRows drops rows whose date does not match the target ymd", () => {
-  const otherDay = buildStarterRow({
-    kaisaiNen: "2026",
-    kaisaiTsukihi: "0528",
-    keibajoCode: "50",
-    raceBango: "01",
-    source: "nar",
-  });
-  expect(
-    filterTodaySiblingRows([otherDay], {
-      keibajoCode: "50",
-      raceBango: "07",
-      source: "nar",
-      targetYmd: "20260529",
-    }),
-  ).toStrictEqual([]);
-});
-
-it("filterTodaySiblingRows excludes the target race itself", () => {
-  const target = buildStarterRow({
-    kaisaiNen: "2026",
-    kaisaiTsukihi: "0529",
-    keibajoCode: "50",
-    raceBango: "07",
-    source: "nar",
-  });
-  expect(
-    filterTodaySiblingRows([target], {
-      keibajoCode: "50",
-      raceBango: "07",
-      source: "nar",
-      targetYmd: "20260529",
-    }),
-  ).toStrictEqual([]);
-});
-
-it("filterTodaySiblingRows falls back to locale compare when raceBango is non-numeric", () => {
-  const siblingA = buildStarterRow({
-    kaisaiNen: "2026",
-    kaisaiTsukihi: "0529",
-    keibajoCode: "50",
-    raceBango: "A",
-    source: "nar",
-  });
-  expect(
-    filterTodaySiblingRows([siblingA], {
-      keibajoCode: "50",
-      raceBango: "B",
-      source: "nar",
-      targetYmd: "20260529",
-    }),
-  ).toStrictEqual([siblingA]);
-});
-
-const buildDailyTrackRow = (
-  raceBango: string,
-  starterRows: RaceTrendStarterRow[],
-): RaceTrendDailyTrackRow => ({
-  fetchedAt: "2026-05-29T07:30:00.000Z",
-  finishedAt: "2026-05-29T07:20:00.000Z",
-  isComplete: true,
-  raceBango,
-  raceKey: `jra:2026:0529:05:${raceBango}`,
-  runningStyles: [],
-  starterRows,
 });
 
 it("pickTodaySiblingRowsAndSource returns DO rows and do-hit header when DO result status is hit", () => {
@@ -340,4 +395,423 @@ it("pickTodaySiblingRowsAndSource returns an empty rows array when both DO is mi
     rows: [],
     sourceHeader: "do-miss-fallback",
   });
+});
+
+it("GET proxies to production when useProductionApiProxy returns true", async () => {
+  useProductionApiProxyMock.mockReturnValue(true);
+  fetchProductionApiMock.mockResolvedValue(
+    new Response("upstream-body", {
+      headers: {
+        "Cache-Control": "public, max-age=120",
+        "Content-Type": "text/plain",
+        "X-Race-Trend-Cache": "PROXIED",
+      },
+      status: 200,
+    }),
+  );
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.status).toBe(200);
+  expect(await response.text()).toBe("upstream-body");
+  expect(response.headers.get("Cache-Control")).toBe("public, max-age=120");
+  expect(response.headers.get("X-Race-Trend-Cache")).toBe("PROXIED");
+});
+
+it("GET proxies to production with default Cache-Control when upstream lacks it", async () => {
+  useProductionApiProxyMock.mockReturnValue(true);
+  fetchProductionApiMock.mockResolvedValue(
+    new Response("upstream-body", {
+      headers: { "Content-Type": "application/json" },
+      status: 200,
+    }),
+  );
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.headers.get("Cache-Control")).toBe("public, max-age=60");
+  expect(response.headers.get("X-Race-Trend-Cache")).toBe("PROXIED-PRODUCTION");
+});
+
+it("GET proxies to production with default Content-Type when upstream lacks it", async () => {
+  useProductionApiProxyMock.mockReturnValue(true);
+  // Build an upstream response with an empty body + explicitly removed
+  // Content-Type so the route falls through to its default value.
+  const upstream = new Response("upstream-body", { status: 200 });
+  upstream.headers.delete("Content-Type");
+  fetchProductionApiMock.mockResolvedValue(upstream);
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.headers.get("Content-Type")).toBe("application/json; charset=utf-8");
+});
+
+it("GET returns 404 when getRaceSourceByRoute resolves to null and no source param", async () => {
+  const request = new Request("https://example.com/api/races/2026/05/29/05/07/trends");
+  getRaceSourceByRouteMock.mockResolvedValue(null);
+  const response = await GET(request, buildTrendContext());
+  expect(response.status).toBe(404);
+  const body: unknown = await response.json();
+  expect(body).toStrictEqual({ error: "race source not found" });
+});
+
+it("GET resolves source via getRaceSourceByRoute when source param is missing", async () => {
+  const request = new Request("https://example.com/api/races/2026/05/29/05/07/trends");
+  getRaceSourceByRouteMock.mockResolvedValue("jra");
+  getRaceDetailMock.mockResolvedValue(null);
+  const response = await GET(request, buildTrendContext());
+  expect(response.status).toBe(404);
+  expect(getRaceSourceByRouteMock).toHaveBeenCalledTimes(1);
+});
+
+it("GET returns 404 when getRaceDetail returns null", async () => {
+  getRaceDetailMock.mockResolvedValue(null);
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.status).toBe(404);
+  const body: unknown = await response.json();
+  expect(body).toStrictEqual({ error: "race not found" });
+});
+
+it("GET returns the cached response when getCachedRaceTrendResponse returns a hit", async () => {
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  const cached = new Response("cached-body", {
+    headers: { "X-Race-Trend-Cache": "HIT-memory" },
+    status: 200,
+  });
+  getCachedRaceTrendResponseMock.mockResolvedValue(cached);
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.status).toBe(200);
+  expect(await response.text()).toBe("cached-body");
+});
+
+it("GET skips cache lookup when __trendCacheWarm=1", async () => {
+  const request = new Request(
+    "https://example.com/api/races/2026/05/29/05/07/trends?source=jra&__trendCacheWarm=1",
+  );
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  const response = await GET(request, buildTrendContext());
+  expect(getCachedRaceTrendResponseMock).not.toHaveBeenCalled();
+  expect(response.headers.get("X-Race-Trend-Cache")).toBe("MISS-STORED-WARM");
+});
+
+it("GET skips cache lookup when __trendCacheRefresh=1", async () => {
+  const request = new Request(
+    "https://example.com/api/races/2026/05/29/05/07/trends?source=jra&__trendCacheRefresh=1",
+  );
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  const response = await GET(request, buildTrendContext());
+  expect(getCachedRaceTrendResponseMock).not.toHaveBeenCalled();
+  expect(response.headers.get("X-Race-Trend-Cache")).toBe("MISS-STORED-REFRESH");
+});
+
+it("GET merges today rows over past14 with newer-wins so today fields beat past14 stale fields", async () => {
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  const past14Row = buildStarterRow({
+    bamei: "OldName",
+    finishPosition: 0,
+    jockeyName: "OldJockey",
+    raceBango: "03",
+    sohaTime: "1234",
+    umaban: "05",
+  });
+  const todayRow = buildStarterRow({
+    bamei: "NewName",
+    finishPosition: 2,
+    jockeyName: "NewJockey",
+    raceBango: "03",
+    sohaTime: "1100",
+    umaban: "05",
+  });
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([past14Row]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({
+    rows: [buildDailyTrackRow("03", [todayRow])],
+    status: "hit",
+  });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  getRaceTrendRunningStylesFromD1Mock.mockResolvedValue([
+    { horseNumber: "5", predictedLabel: "sashi", raceKey: "jra:20260529:05:03" },
+  ]);
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.status).toBe(200);
+  const body = await readJsonAsPayload(response);
+  expect(body.starterRows.length).toBe(1);
+  const mergedRow = body.starterRows[0];
+  expect(mergedRow?.bamei).toBe("NewName");
+  expect(mergedRow?.jockeyName).toBe("NewJockey");
+  expect(mergedRow?.sohaTime).toBe("1100");
+  expect(mergedRow?.finishPosition).toBe(2);
+});
+
+it("GET drops DO sibling rows that fail defense-in-depth filter when raceBango is empty", async () => {
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  const okSibling = buildStarterRow({
+    raceBango: "03",
+    source: "jra",
+    umaban: "05",
+  });
+  const emptyRaceBangoRow = buildStarterRow({
+    raceBango: "",
+    source: "jra",
+    umaban: "06",
+  });
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({
+    rows: [buildDailyTrackRow("03", [okSibling, emptyRaceBangoRow])],
+    status: "hit",
+  });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  getRaceTrendRunningStylesFromD1Mock.mockResolvedValue([]);
+  getRaceTrendTodayRunningStylesFromD1Mock.mockResolvedValue([
+    { horseNumber: "5", predictedLabel: "sashi", raceKey: "jra:20260529:05:03" },
+  ]);
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.status).toBe(200);
+  const body = await readJsonAsPayload(response);
+  expect(body.starterRows.length).toBe(1);
+  expect(body.starterRows[0]?.raceBango).toBe("03");
+});
+
+it("GET drops DO rows from a stale day via the defense-in-depth filter", async () => {
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  const staleDayRow = buildStarterRow({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0528",
+    raceBango: "03",
+    source: "jra",
+    umaban: "05",
+  });
+  const todayRow = buildStarterRow({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0529",
+    raceBango: "03",
+    source: "jra",
+    umaban: "06",
+  });
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({
+    rows: [buildDailyTrackRow("03", [staleDayRow, todayRow])],
+    status: "hit",
+  });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  getRaceTrendRunningStylesFromD1Mock.mockResolvedValue([]);
+  getRaceTrendTodayRunningStylesFromD1Mock.mockResolvedValue([
+    { horseNumber: "6", predictedLabel: "sashi", raceKey: "jra:20260529:05:03" },
+  ]);
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.status).toBe(200);
+  const body = await readJsonAsPayload(response);
+  expect(body.starterRows.length).toBe(1);
+  expect(body.starterRows[0]?.umaban).toBe("06");
+});
+
+it("GET drops DO rows from a different venue via the defense-in-depth filter", async () => {
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  const otherVenueRow = buildStarterRow({
+    keibajoCode: "06",
+    raceBango: "03",
+    source: "jra",
+    umaban: "05",
+  });
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({
+    rows: [buildDailyTrackRow("03", [otherVenueRow])],
+    status: "hit",
+  });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.status).toBe(200);
+  const body = await readJsonAsPayload(response);
+  expect(body.starterRows).toStrictEqual([]);
+});
+
+it("GET payload still returns when past14 promise rejects", async () => {
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  getRaceTrendPast14StarterRowsMock.mockRejectedValue(new Error("past14 boom"));
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.status).toBe(200);
+  const body = await readJsonAsPayload(response);
+  expect(body.starterRows).toStrictEqual([]);
+});
+
+it("GET payload still returns when DO promise rejects", async () => {
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([buildStarterRow({ raceBango: "01" })]);
+  fetchRaceTrendDailyTrackMock.mockRejectedValue(new Error("do boom"));
+  const todayRow = buildStarterRow({ raceBango: "02", umaban: "08" });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([todayRow]);
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.status).toBe(200);
+  const body = await readJsonAsPayload(response);
+  expect(response.headers.get("X-Race-Trend-Source")).toBe("do-error-fallback");
+  expect(body.starterRows.length).toBe(2);
+});
+
+it("GET payload populates currentRunningStyles from getRaceRunningStylesWithCache rows", async () => {
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  getRaceRunningStylesWithCacheMock.mockResolvedValue([
+    { horseNumber: 3, predictedLabel: "sashi" },
+    { horseNumber: 7, predictedLabel: "nige" },
+  ]);
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  const body = await readJsonAsPayload(response);
+  expect(body.currentRunningStyles).toStrictEqual([
+    { horseNumber: "3", predictedLabel: "sashi" },
+    { horseNumber: "7", predictedLabel: "nige" },
+  ]);
+});
+
+it("GET dedupes historicalRunningStyles when past14 and today return overlapping race/horse keys", async () => {
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([buildStarterRow({ raceBango: "01" })]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  getRaceTrendRunningStylesFromD1Mock.mockResolvedValue([
+    { horseNumber: "1", predictedLabel: "nige", raceKey: "jra:20260529:05:01" },
+    { horseNumber: "2", predictedLabel: "sashi", raceKey: "jra:20260529:05:01" },
+  ]);
+  getRaceTrendTodayRunningStylesFromD1Mock.mockResolvedValue([
+    { horseNumber: "1", predictedLabel: "oikomi", raceKey: "jra:20260529:05:01" },
+  ]);
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  const body = await readJsonAsPayload(response);
+  expect(body.historicalRunningStyles).toStrictEqual([
+    { horseNumber: "1", predictedLabel: "nige", raceKey: "jra:20260529:05:01" },
+    { horseNumber: "2", predictedLabel: "sashi", raceKey: "jra:20260529:05:01" },
+  ]);
+});
+
+it("GET runners array maps wakuban/umaban/kishumeiRyakusho into the payload", async () => {
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  getRaceRunnersMock.mockResolvedValue([
+    buildRunner({ kishumeiRyakusho: "山田太郎", umaban: "01", wakuban: "1" }),
+    buildRunner({ kishumeiRyakusho: "鈴木花子", umaban: "08", wakuban: "5" }),
+  ]);
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  const body = await readJsonAsPayload(response);
+  expect(body.runners).toStrictEqual([
+    { frameNumber: "1", horseNumber: "01", jockeyName: "山田太郎" },
+    { frameNumber: "5", horseNumber: "08", jockeyName: "鈴木花子" },
+  ]);
+});
+
+it("GET payload still returns when currentRunningStyles promise rejects", async () => {
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  getRaceRunningStylesWithCacheMock.mockRejectedValue(new Error("running-style boom"));
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.status).toBe(200);
+  const body = await readJsonAsPayload(response);
+  expect(body.currentRunningStyles).toStrictEqual([]);
+});
+
+it("GET payload still returns when legacyToday promise rejects", async () => {
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([buildStarterRow({ raceBango: "01" })]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
+  getRaceTrendTodayStarterRowsMock.mockRejectedValue(new Error("today boom"));
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.status).toBe(200);
+  expect(response.headers.get("X-Race-Trend-Source")).toBe("do-miss-fallback");
+});
+
+it("GET writes cache when payload has both starterRows and historicalRunningStyles", async () => {
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([buildStarterRow({ raceBango: "01" })]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  getRaceTrendRunningStylesFromD1Mock.mockResolvedValue([
+    { horseNumber: "1", predictedLabel: "nige", raceKey: "jra:20260529:05:01" },
+  ]);
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.status).toBe(200);
+  expect(putRaceTrendCacheMock).toHaveBeenCalledTimes(1);
+  expect(notifyRaceTrendRoomMock).toHaveBeenCalledTimes(1);
+  expect(response.headers.get("X-Race-Trend-Cache")).toBe("MISS-STORED");
+});
+
+it("GET skips cache write when notifyRaceTrendRoom rejects but still returns 200", async () => {
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([buildStarterRow({ raceBango: "01" })]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  getRaceTrendRunningStylesFromD1Mock.mockResolvedValue([
+    { horseNumber: "1", predictedLabel: "nige", raceKey: "jra:20260529:05:01" },
+  ]);
+  notifyRaceTrendRoomMock.mockRejectedValue(new Error("notify boom"));
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.status).toBe(200);
+});
+
+it("GET uses MISS-STORED-WARM when warm flag is set and payload is cacheable", async () => {
+  const request = new Request(
+    "https://example.com/api/races/2026/05/29/05/07/trends?source=jra&__trendCacheWarm=1",
+  );
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([buildStarterRow({ raceBango: "01" })]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  getRaceTrendRunningStylesFromD1Mock.mockResolvedValue([
+    { horseNumber: "1", predictedLabel: "nige", raceKey: "jra:20260529:05:01" },
+  ]);
+  const response = await GET(request, buildTrendContext());
+  expect(response.headers.get("X-Race-Trend-Cache")).toBe("MISS-STORED-WARM");
+});
+
+it("GET applies non-default date / frame / jockey query params", async () => {
+  const request = new Request(
+    "https://example.com/api/races/2026/05/29/05/07/trends?source=jra&jockeyStart=20260101&jockeyEnd=20260201&frameStart=20260102&frameEnd=20260202&includeRealtimeResults=false",
+  );
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  const response = await GET(request, buildTrendContext());
+  expect(response.status).toBe(200);
+  expect(response.headers.get("X-Race-Trend-Cache")).toBe("MISS-EMPTY-SKIPPED");
+});
+
+it("GET parses dashed jockeyStart query param via parseDateInput", async () => {
+  const request = new Request(
+    "https://example.com/api/races/2026/05/29/05/07/trends?source=jra&jockeyStart=2026-01-01",
+  );
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  const response = await GET(request, buildTrendContext());
+  expect(response.status).toBe(200);
+});
+
+it("GET sets X-Race-Trend-Source header to do-hit when DO returns rows", async () => {
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  const todayRow = buildStarterRow({ raceBango: "03", umaban: "07" });
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({
+    rows: [buildDailyTrackRow("03", [todayRow])],
+    status: "hit",
+  });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.headers.get("X-Race-Trend-Source")).toBe("do-hit");
+});
+
+it("GET surfaces source query param unchanged when valid", async () => {
+  const request = new Request("https://example.com/api/races/2026/05/29/05/07/trends?source=nar");
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail({ source: "nar" }));
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  const response = await GET(request, buildTrendContext());
+  expect(response.status).toBe(200);
+  expect(getRaceSourceByRouteMock).not.toHaveBeenCalled();
 });

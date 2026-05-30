@@ -19,7 +19,11 @@ import {
   fetchProductionApi,
   useProductionApiProxy,
 } from "../../../../../../../../../lib/production-api-proxy.server";
-import { starterKey, starterRaceKey } from "../../../../../../../../../lib/race-trend-aggregate";
+import {
+  filterTodaySiblingRows,
+  mergeStarterRows,
+  starterRaceKey,
+} from "../../../../../../../../../lib/race-trend-aggregate";
 import {
   RACE_TREND_CACHE_REFRESH_PARAM,
   RACE_TREND_CACHE_WARM_PARAM,
@@ -86,6 +90,9 @@ const pickSiblingRowsFromDoResult = (
   result: RaceTrendDailyTrackFetchResult,
 ): RaceTrendStarterRow[] => result.rows.flatMap((row) => row.starterRows);
 
+const DO_ERROR_HEADER: RaceTrendSourceHeaderValue = "do-error-fallback";
+const DO_MISS_HEADER: RaceTrendSourceHeaderValue = "do-miss-fallback";
+
 export const pickTodaySiblingRowsAndSource = ({
   fallbackRows,
   result,
@@ -98,57 +105,23 @@ export const pickTodaySiblingRowsAndSource = ({
   }
   return {
     rows: fallbackRows,
-    sourceHeader: result.status === "miss" ? "do-miss-fallback" : "do-error-fallback",
+    sourceHeader: result.status === "miss" ? DO_MISS_HEADER : DO_ERROR_HEADER,
   };
 };
 
-const mergeStarterRows = (
-  dailyRows: RaceTrendStarterRow[],
-  snapshotRows: RaceTrendStarterRow[],
-  realtimeRows: RaceTrendStarterRow[],
-): RaceTrendStarterRow[] => {
-  const merged = new Map<string, RaceTrendStarterRow>();
-  for (const row of dailyRows) merged.set(starterKey(row), row);
-  for (const row of snapshotRows) {
-    const key = starterKey(row);
-    const existing = merged.get(key);
-    merged.set(key, existing ? mergeRowPair(existing, row) : row);
-  }
-  for (const row of realtimeRows) {
-    const key = starterKey(row);
-    const existing = merged.get(key);
-    merged.set(key, existing ? mergeRowPair(existing, row) : row);
-  }
-  return Array.from(merged.values());
-};
+const DO_ERROR_RESULT: RaceTrendDailyTrackFetchResult = { rows: [], status: "error" };
 
-const pickNonEmpty = <T>(...values: Array<T | null | undefined>): T | null => {
-  for (const value of values) {
-    if (value !== null && value !== undefined && value !== "") return value;
-  }
-  return null;
-};
+const safePast14Promise = (
+  promise: Promise<RaceTrendStarterRow[]>,
+): Promise<RaceTrendStarterRow[]> => promise.catch(() => []);
 
-const mergeRowPair = (a: RaceTrendStarterRow, b: RaceTrendStarterRow): RaceTrendStarterRow => ({
-  ...a,
-  raceName: pickNonEmpty(a.raceName, b.raceName),
-  hassoJikoku: pickNonEmpty(a.hassoJikoku, b.hassoJikoku),
-  runnerCount: pickNonEmpty(a.runnerCount, b.runnerCount),
-  wakuban: pickNonEmpty(a.wakuban, b.wakuban),
-  bamei: pickNonEmpty(a.bamei, b.bamei),
-  jockeyName: pickNonEmpty(a.jockeyName, b.jockeyName),
-  tanshoOdds: pickNonEmpty(a.tanshoOdds, b.tanshoOdds),
-  tanshoPopularity: pickNonEmpty(a.tanshoPopularity, b.tanshoPopularity),
-  finishPosition: a.finishPosition > 0 ? a.finishPosition : b.finishPosition,
-  sohaTime: pickNonEmpty(a.sohaTime, b.sohaTime),
-  corner1: pickNonEmpty(a.corner1, b.corner1),
-  corner2: pickNonEmpty(a.corner2, b.corner2),
-  corner3: pickNonEmpty(a.corner3, b.corner3),
-  corner4: pickNonEmpty(a.corner4, b.corner4),
-  bataiju: pickNonEmpty(a.bataiju, b.bataiju),
-  zogenFugo: pickNonEmpty(a.zogenFugo, b.zogenFugo),
-  zogenSa: pickNonEmpty(a.zogenSa, b.zogenSa),
-});
+const safeDoResultPromise = (
+  promise: Promise<RaceTrendDailyTrackFetchResult>,
+): Promise<RaceTrendDailyTrackFetchResult> => promise.catch(() => DO_ERROR_RESULT);
+
+const safeLegacyTodayPromise = (
+  promise: Promise<RaceTrendStarterRow[]>,
+): Promise<RaceTrendStarterRow[]> => promise.catch(() => []);
 
 const toCurrentRunningStyles = (
   rows: ReadonlyArray<{ horseNumber: number; predictedLabel: RaceTrendRunningStyle }>,
@@ -158,31 +131,10 @@ const toCurrentRunningStyles = (
     predictedLabel: row.predictedLabel,
   }));
 
-const toHistoricalRunningStyles = (
-  rows: ReadonlyArray<{
-    raceKey: string;
-    horseNumber: number;
-    predictedLabel: RaceTrendRunningStyle;
-  }>,
-): RaceTrendRawPayload["historicalRunningStyles"] =>
-  rows.map((row) => ({
-    raceKey: row.raceKey,
-    horseNumber: String(row.horseNumber),
-    predictedLabel: row.predictedLabel,
-  }));
-
-const mergeHistoricalRunningStyles = (
-  cached: ReadonlyArray<{
-    raceKey: string;
-    horseNumber: number;
-    predictedLabel: RaceTrendRunningStyle;
-  }>,
+const dedupeHistoricalRunningStyles = (
   direct: RaceTrendRawPayload["historicalRunningStyles"],
 ): RaceTrendRawPayload["historicalRunningStyles"] => {
   const merged = new Map<string, RaceTrendRawPayload["historicalRunningStyles"][number]>();
-  for (const row of toHistoricalRunningStyles(cached)) {
-    merged.set(`${row.raceKey}:${row.horseNumber}`, row);
-  }
   for (const row of direct) {
     const key = `${row.raceKey}:${row.horseNumber}`;
     if (!merged.has(key)) merged.set(key, row);
@@ -198,37 +150,6 @@ const mergeHistoricalRunningStyles = (
 // recovered data the moment D1 catches up.
 export const isCacheableTrendPayload = (payload: RaceTrendRawPayload): boolean =>
   payload.starterRows.length > 0 && payload.historicalRunningStyles.length > 0;
-
-const compareRaceBango = (left: string, right: string): number => {
-  const leftNumber = Number(left);
-  const rightNumber = Number(right);
-  if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
-    return leftNumber - rightNumber;
-  }
-  return left.localeCompare(right, "ja", { numeric: true });
-};
-
-// Today cache returns every completed starter row for the day across all
-// venues so multiple races can share one upstream D1 round trip. The
-// route narrows it back down to the current race's siblings — same
-// source, same date, same venue, and a strictly smaller raceBango than
-// the target — so the trend section reflects only races already over by
-// the time the user lands on the page.
-export const filterTodaySiblingRows = (
-  rows: ReadonlyArray<RaceTrendStarterRow>,
-  target: {
-    keibajoCode: string;
-    raceBango: string;
-    source: RaceSource;
-    targetYmd: string;
-  },
-): RaceTrendStarterRow[] =>
-  rows.filter((row) => {
-    if (row.source !== target.source) return false;
-    if (`${row.kaisaiNen}${row.kaisaiTsukihi}` !== target.targetYmd) return false;
-    if (row.keibajoCode !== target.keibajoCode) return false;
-    return compareRaceBango(row.raceBango, target.raceBango) < 0;
-  });
 
 interface BuildRaceTrendRawPayloadResult {
   payload: RaceTrendRawPayload;
@@ -249,13 +170,19 @@ const buildRaceTrendRawPayload = async (
     raceBango: race.raceBango,
     source: race.source,
   }).catch(() => []);
-  const past14Promise = getRaceTrendPast14StarterRows({
-    endYmd: past14Window.endYmd,
-    keibajoCode: race.keibajoCode,
-    raceBango: race.raceBango,
-    source: options.source,
-    startYmd: past14Window.startYmd,
-  });
+  // Each upstream is wrapped in `.catch(() => fallback)` so a single
+  // rejected branch cannot black out the whole trend payload. This
+  // matches the existing `currentRunningStylesPromise.catch(() => [])`
+  // pattern above.
+  const past14Promise = safePast14Promise(
+    getRaceTrendPast14StarterRows({
+      endYmd: past14Window.endYmd,
+      keibajoCode: race.keibajoCode,
+      raceBango: race.raceBango,
+      source: options.source,
+      startYmd: past14Window.startYmd,
+    }),
+  );
   // DO-primary path: sync-realtime-data's RaceTrendDailyTrackDO maintains
   // a per-(source, ymd, keibajoCode) daily aggregate refreshed by the
   // 5 min poller. When the DO has the answer ready we skip the legacy
@@ -263,17 +190,21 @@ const buildRaceTrendRawPayload = async (
   // fallback for DO miss / error so a single missing DO entry can't
   // black out the trend section.
   const env = await safeGetCloudflareEnv();
-  const doResultPromise = fetchRaceTrendDailyTrack(env, {
-    beforeRaceBango: race.raceBango,
-    keibajoCode: race.keibajoCode,
-    source: race.source,
-    targetYmd,
-  });
-  const legacyTodayPromise = getRaceTrendTodayStarterRows({
-    keibajoCode: race.keibajoCode,
-    source: options.source,
-    targetYmd,
-  });
+  const doResultPromise = safeDoResultPromise(
+    fetchRaceTrendDailyTrack(env, {
+      beforeRaceBango: race.raceBango,
+      keibajoCode: race.keibajoCode,
+      source: race.source,
+      targetYmd,
+    }),
+  );
+  const legacyTodayPromise = safeLegacyTodayPromise(
+    getRaceTrendTodayStarterRows({
+      keibajoCode: race.keibajoCode,
+      source: options.source,
+      targetYmd,
+    }),
+  );
   const [past14Rows, doResult, legacyTodayRows] = await Promise.all([
     past14Promise,
     doResultPromise,
@@ -285,11 +216,21 @@ const buildRaceTrendRawPayload = async (
     source: race.source,
     targetYmd,
   });
-  const { rows: todaySiblingRows, sourceHeader } = pickTodaySiblingRowsAndSource({
+  const { rows: rawTodaySiblingRows, sourceHeader } = pickTodaySiblingRowsAndSource({
     fallbackRows: legacyTodaySiblingRows,
     result: doResult,
   });
-  const starterRows = mergeStarterRows(past14Rows, todaySiblingRows, []);
+  // Defense-in-depth: re-apply the sibling filter so DO state with
+  // stale-day or other-venue rows (the DO is partitioned per
+  // (source, ymd, keibajoCode) but the flattened payload still carries
+  // raw `RaceTrendStarterRow` records we should re-narrow before merge).
+  const todaySiblingRows = filterTodaySiblingRows(rawTodaySiblingRows, {
+    keibajoCode: race.keibajoCode,
+    raceBango: race.raceBango,
+    source: race.source,
+    targetYmd,
+  });
+  const starterRows = mergeStarterRows(past14Rows, todaySiblingRows);
   const currentRunningStyles = await currentRunningStylesPromise;
   const past14RaceKeys = Array.from(new Set(past14Rows.map(starterRaceKey)));
   const todayRaceKeys = Array.from(new Set(todaySiblingRows.map(starterRaceKey)));
@@ -301,10 +242,10 @@ const buildRaceTrendRawPayload = async (
     getRaceTrendRunningStylesFromD1(past14RaceKeys),
     getRaceTrendTodayRunningStylesFromD1(todayRaceKeys),
   ]);
-  const mergedHistoricalRunningStyles = mergeHistoricalRunningStyles(
-    [],
-    [...past14RunningStyles, ...todayRunningStyles],
-  );
+  const mergedHistoricalRunningStyles = dedupeHistoricalRunningStyles([
+    ...past14RunningStyles,
+    ...todayRunningStyles,
+  ]);
   return {
     payload: {
       raceContext: {
