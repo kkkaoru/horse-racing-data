@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 
 import { cleanText } from "../../../lib/format";
+import { useHorseWeightStream } from "../../../lib/horse-weight-stream-client";
 import {
   getPreferredJockeyName,
   isSameJockeyName,
@@ -157,6 +158,15 @@ export function RunnersTable({
     },
     initialRealtimePayload,
   );
+  const horseWeightSnapshot = useHorseWeightStream({
+    day: realtimeRequest?.day ?? "",
+    initial: initialRealtimePayload?.horseWeights ?? null,
+    keibajoCode: realtimeRequest?.keibajoCode ?? "",
+    month: realtimeRequest?.month ?? "",
+    raceNumber: realtimeRequest?.raceNumber ?? "",
+    source: realtimeRequest?.source ?? "",
+    year: realtimeRequest?.year ?? "",
+  });
   const realtimeOddsByHorse = useMemo(
     () =>
       new Map(
@@ -169,7 +179,7 @@ export function RunnersTable({
   const realtimeWeightByHorse = useMemo(
     () =>
       new Map(
-        (payload?.horseWeights?.horses ?? []).map((horse) => [
+        (horseWeightSnapshot?.horses ?? []).map((horse) => [
           horse.horseNumber,
           formatHorseWeight(
             horse.weight === null ? null : String(horse.weight),
@@ -178,7 +188,7 @@ export function RunnersTable({
           ),
         ]),
       ),
-    [payload],
+    [horseWeightSnapshot],
   );
   const realtimeResultByHorse = useMemo(
     () =>

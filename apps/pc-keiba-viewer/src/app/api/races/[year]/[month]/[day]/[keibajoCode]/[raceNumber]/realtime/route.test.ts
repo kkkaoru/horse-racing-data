@@ -858,6 +858,244 @@ it("GET production branch returns degraded payload when hot worker throws", asyn
   });
 });
 
+it("GET production branch overlays horseWeights from REALTIME_DATA when latest endpoint returns 200", async () => {
+  isDevScraperEnabledMock.mockReturnValue(false);
+  const hotFetch = vi.fn<HotFetch>(async () =>
+    Promise.resolve(
+      buildOkResponseFor({
+        fetchedAt: "2026-05-29T07:30:00.000Z",
+        history: [],
+        historyByType: {},
+        latest: { tansho: [{ combination: "1", odds: 1.5 }] },
+      }),
+    ),
+  );
+  const realtimeFetch = vi.fn<HotFetch>(async () =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({
+          fetchedAt: "2026-05-29T08:00:00.000Z",
+          horses: [
+            {
+              changeAmount: -2,
+              changeSign: "-",
+              horseName: "Alpha",
+              horseNumber: "2",
+              weight: 460,
+            },
+            {
+              changeAmount: 4,
+              changeSign: "+",
+              horseName: "Beta",
+              horseNumber: "10",
+              weight: 482,
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    ),
+  );
+  getCloudflareContextMock.mockResolvedValue({
+    ctx: null,
+    env: { REALTIME_DATA: { fetch: realtimeFetch }, REALTIME_HOT: { fetch: hotFetch } },
+  });
+  const request = new Request("https://example.com/api/races/2026/05/29/05/01/realtime?source=jra");
+  const response = await GET(request, {
+    params: Promise.resolve({
+      day: "29",
+      keibajoCode: "05",
+      month: "05",
+      raceNumber: "01",
+      year: "2026",
+    }),
+  });
+  expect(response.status).toBe(200);
+  const body: unknown = await response.json();
+  expect(body).toStrictEqual({
+    horseWeights: {
+      fetchedAt: "2026-05-29T08:00:00.000Z",
+      horses: [
+        {
+          changeAmount: -2,
+          changeSign: "-",
+          horseName: "Alpha",
+          horseNumber: "2",
+          weight: 460,
+        },
+        {
+          changeAmount: 4,
+          changeSign: "+",
+          horseName: "Beta",
+          horseNumber: "10",
+          weight: 482,
+        },
+      ],
+    },
+    odds: {
+      fetchedAt: "2026-05-29T07:30:00.000Z",
+      history: [],
+      historyByType: {},
+      horseTrends: [],
+      latest: { tansho: [{ combination: "1", odds: 1.5 }] },
+      trendsByType: {},
+    },
+    raceEntries: null,
+    raceKey: "jra:2026:0529:05:01",
+    raceResults: null,
+    source: null,
+    trackCondition: null,
+  });
+  expect(realtimeFetch).toHaveBeenCalledTimes(1);
+});
+
+it("GET production branch keeps horseWeights null when REALTIME_DATA returns non-200", async () => {
+  isDevScraperEnabledMock.mockReturnValue(false);
+  const hotFetch = vi.fn<HotFetch>(async () =>
+    Promise.resolve(
+      buildOkResponseFor({
+        fetchedAt: "2026-05-29T07:30:00.000Z",
+        history: [],
+        historyByType: {},
+        latest: { tansho: [{ combination: "1", odds: 1.5 }] },
+      }),
+    ),
+  );
+  const realtimeFetch = vi.fn<HotFetch>(async () =>
+    Promise.resolve(new Response("not found", { status: 404 })),
+  );
+  getCloudflareContextMock.mockResolvedValue({
+    ctx: null,
+    env: { REALTIME_DATA: { fetch: realtimeFetch }, REALTIME_HOT: { fetch: hotFetch } },
+  });
+  const request = new Request("https://example.com/api/races/2026/05/29/05/01/realtime?source=jra");
+  const response = await GET(request, {
+    params: Promise.resolve({
+      day: "29",
+      keibajoCode: "05",
+      month: "05",
+      raceNumber: "01",
+      year: "2026",
+    }),
+  });
+  expect(response.status).toBe(200);
+  const body: unknown = await response.json();
+  expect(body).toStrictEqual({
+    horseWeights: null,
+    odds: {
+      fetchedAt: "2026-05-29T07:30:00.000Z",
+      history: [],
+      historyByType: {},
+      horseTrends: [],
+      latest: { tansho: [{ combination: "1", odds: 1.5 }] },
+      trendsByType: {},
+    },
+    raceEntries: null,
+    raceKey: "jra:2026:0529:05:01",
+    raceResults: null,
+    source: null,
+    trackCondition: null,
+  });
+});
+
+it("GET production branch keeps horseWeights null when REALTIME_DATA returns 200 but malformed JSON", async () => {
+  isDevScraperEnabledMock.mockReturnValue(false);
+  const hotFetch = vi.fn<HotFetch>(async () =>
+    Promise.resolve(
+      buildOkResponseFor({
+        fetchedAt: "2026-05-29T07:30:00.000Z",
+        history: [],
+        historyByType: {},
+        latest: { tansho: [{ combination: "1", odds: 1.5 }] },
+      }),
+    ),
+  );
+  const realtimeFetch = vi.fn<HotFetch>(async () =>
+    Promise.resolve(new Response(JSON.stringify({ foo: "bar" }), { status: 200 })),
+  );
+  getCloudflareContextMock.mockResolvedValue({
+    ctx: null,
+    env: { REALTIME_DATA: { fetch: realtimeFetch }, REALTIME_HOT: { fetch: hotFetch } },
+  });
+  const request = new Request("https://example.com/api/races/2026/05/29/05/01/realtime?source=jra");
+  const response = await GET(request, {
+    params: Promise.resolve({
+      day: "29",
+      keibajoCode: "05",
+      month: "05",
+      raceNumber: "01",
+      year: "2026",
+    }),
+  });
+  expect(response.status).toBe(200);
+  const body: unknown = await response.json();
+  expect(body).toStrictEqual({
+    horseWeights: null,
+    odds: {
+      fetchedAt: "2026-05-29T07:30:00.000Z",
+      history: [],
+      historyByType: {},
+      horseTrends: [],
+      latest: { tansho: [{ combination: "1", odds: 1.5 }] },
+      trendsByType: {},
+    },
+    raceEntries: null,
+    raceKey: "jra:2026:0529:05:01",
+    raceResults: null,
+    source: null,
+    trackCondition: null,
+  });
+});
+
+it("GET production branch keeps horseWeights null when REALTIME_DATA fetch throws", async () => {
+  isDevScraperEnabledMock.mockReturnValue(false);
+  const hotFetch = vi.fn<HotFetch>(async () =>
+    Promise.resolve(
+      buildOkResponseFor({
+        fetchedAt: "2026-05-29T07:30:00.000Z",
+        history: [],
+        historyByType: {},
+        latest: { tansho: [{ combination: "1", odds: 1.5 }] },
+      }),
+    ),
+  );
+  const realtimeFetch = vi.fn<HotFetch>(async () => {
+    throw new Error("upstream offline");
+  });
+  getCloudflareContextMock.mockResolvedValue({
+    ctx: null,
+    env: { REALTIME_DATA: { fetch: realtimeFetch }, REALTIME_HOT: { fetch: hotFetch } },
+  });
+  const request = new Request("https://example.com/api/races/2026/05/29/05/01/realtime?source=jra");
+  const response = await GET(request, {
+    params: Promise.resolve({
+      day: "29",
+      keibajoCode: "05",
+      month: "05",
+      raceNumber: "01",
+      year: "2026",
+    }),
+  });
+  expect(response.status).toBe(200);
+  const body: unknown = await response.json();
+  expect(body).toStrictEqual({
+    horseWeights: null,
+    odds: {
+      fetchedAt: "2026-05-29T07:30:00.000Z",
+      history: [],
+      historyByType: {},
+      horseTrends: [],
+      latest: { tansho: [{ combination: "1", odds: 1.5 }] },
+      trendsByType: {},
+    },
+    raceEntries: null,
+    raceKey: "jra:2026:0529:05:01",
+    raceResults: null,
+    source: null,
+    trackCondition: null,
+  });
+});
+
 it("GET production branch does not invoke global fetch (legacy upstream is gone)", async () => {
   isDevScraperEnabledMock.mockReturnValue(false);
   const hotFetch = vi.fn<HotFetch>(async () =>
