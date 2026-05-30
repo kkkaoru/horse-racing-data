@@ -1,4 +1,5 @@
 import { buildNarRaceKey, NAR_BABA_CODE_TO_LOCAL_KEIBAJO } from "horse-racing-realtime/nar";
+import { fetchWithRetry } from "./lib/retry-fetch";
 import type { OddsData, OddsType, RaceEntry, RaceResult } from "./types";
 
 const KEIBA_GO_ORIGIN = "https://www.keiba.go.jp";
@@ -119,10 +120,12 @@ const detectCharsetFromHeaders = (response: Response): string | null => {
 };
 
 const fetchHtml = async (url: string): Promise<string> => {
-  const response = await fetch(url, {
-    headers: {
-      Accept: "text/html,application/xhtml+xml",
-      "User-Agent": USER_AGENT,
+  const response = await fetchWithRetry(url, {
+    init: {
+      headers: {
+        Accept: "text/html,application/xhtml+xml",
+        "User-Agent": USER_AGENT,
+      },
     },
   });
   if (!response.ok) {

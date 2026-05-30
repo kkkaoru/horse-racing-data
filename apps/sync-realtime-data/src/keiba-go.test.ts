@@ -150,10 +150,10 @@ it("fetchRacePage normalizes shift-jis alias to shift-jis", async () => {
 it("fetchRacePage throws when response is not ok", async () => {
   vi.stubGlobal(
     "fetch",
-    vi.fn(async () => new Response("nope", { status: 503 })),
+    vi.fn(async () => new Response("nope", { status: 500 })),
   );
   await expect(fetchRacePage(TEST_URL)).rejects.toThrowError(
-    "Failed to fetch https://www.keiba.go.jp/test: 503",
+    "Failed to fetch https://www.keiba.go.jp/test: 500",
   );
 });
 

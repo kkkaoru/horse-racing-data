@@ -240,11 +240,11 @@ describe("keiba.go realtime helpers", () => {
 
   it("throws on failed page fetches", async () => {
     mockFetchHtml({
-      "https://example.test/fail": new Response("ng", { status: 503 }),
+      "https://example.test/fail": new Response("ng", { status: 500 }),
     });
 
     await expect(fetchRacePage("https://example.test/fail")).rejects.toThrow(
-      "Failed to fetch https://example.test/fail: 503",
+      "Failed to fetch https://example.test/fail: 500",
     );
   });
 
