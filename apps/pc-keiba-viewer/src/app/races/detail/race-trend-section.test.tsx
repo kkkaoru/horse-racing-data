@@ -21,12 +21,24 @@ interface MockWebSocketLike {
   dispatch: (type: string, event: unknown) => void;
 }
 
+interface WebSocketStash {
+  original: typeof WebSocket;
+}
+
+interface ResolveFetchStash {
+  current: ((value: Response) => void) | null;
+}
+
+interface FetchCallCounter {
+  count: number;
+}
+
 const installedSockets: MockWebSocketLike[] = [];
-let originalWebSocket: typeof WebSocket;
+const webSocketStash: WebSocketStash = { original: globalThis.WebSocket };
 
 const installMockWebSocket = (): void => {
   installedSockets.length = 0;
-  originalWebSocket = globalThis.WebSocket;
+  webSocketStash.original = globalThis.WebSocket;
   const buildMockSocket = (url: string): MockWebSocketLike => {
     const listeners = new Map<string, Array<(event: unknown) => void>>();
     const socket: MockWebSocketLike = {
@@ -69,7 +81,7 @@ const installMockWebSocket = (): void => {
 };
 
 const restoreWebSocket = (): void => {
-  Object.assign(globalThis, { WebSocket: originalWebSocket });
+  Object.assign(globalThis, { WebSocket: webSocketStash.original });
   installedSockets.length = 0;
 };
 
@@ -206,7 +218,10 @@ test("retry button is rendered when the initial fetch fails", async () => {
   await act(async () => {
     await vi.advanceTimersByTimeAsync(6000);
   });
-  expect(screen.getByRole("button", { name: "再試行" })).toBeTruthy();
+  // Both the inline empty-state and the alert region render a retry button
+  // when the initial fetch fails (rawPayload=null → rows empty + status=error),
+  // so we assert at least one is present.
+  expect(screen.getAllByRole("button", { name: "再取得" }).length).toBeGreaterThan(0);
 });
 
 test("retry button click passes an AbortSignal to fetchWithRetry so the request is abortable", async () => {
@@ -227,9 +242,17 @@ test("retry button click passes an AbortSignal to fetchWithRetry so the request 
   );
   vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
   renderSection();
-  const retryButton = await screen.findByRole("button", { name: "再試行" }, { timeout: 5000 });
+  await waitFor(
+    () => {
+      expect(screen.getAllByRole("button", { name: "再取得" }).length).toBeGreaterThan(0);
+    },
+    { timeout: 5000 },
+  );
+  const retryButtons = screen.getAllByRole("button", { name: "再取得" });
+  const firstRetryButton = retryButtons[0];
+  if (!firstRetryButton) throw new Error("retry button missing");
   await act(async () => {
-    fireEvent.click(retryButton);
+    fireEvent.click(firstRetryButton);
   });
   await waitFor(() => {
     expect(manualSignals.length).toBeGreaterThanOrEqual(1);
@@ -258,9 +281,17 @@ test("unmount aborts the in-flight manual refresh AbortController", async () => 
     });
   });
   const { unmount } = renderSection();
-  const retryButton = await screen.findByRole("button", { name: "再試行" }, { timeout: 5000 });
+  await waitFor(
+    () => {
+      expect(screen.getAllByRole("button", { name: "再取得" }).length).toBeGreaterThan(0);
+    },
+    { timeout: 5000 },
+  );
+  const retryButtons = screen.getAllByRole("button", { name: "再取得" });
+  const firstRetryButton = retryButtons[0];
+  if (!firstRetryButton) throw new Error("retry button missing");
   await act(async () => {
-    fireEvent.click(retryButton);
+    fireEvent.click(firstRetryButton);
   });
   await waitFor(() => {
     expect(manualSignals.length).toBeGreaterThanOrEqual(1);
@@ -285,13 +316,24 @@ test("retry button is disabled while a manual refresh is in flight to block doub
     });
   });
   renderSection();
-  const retryButton = await screen.findByRole("button", { name: "再試行" }, { timeout: 5000 });
-  expect(retryButton.hasAttribute("disabled")).toBe(false);
+  // Inspect the error-region retry button specifically (it carries the
+  // aria-busy / disabled attributes wired to isRefreshing — the empty-state
+  // retry button is presentational and does not toggle disabled state).
+  await waitFor(
+    () => {
+      expect(screen.getByRole("alert")).toBeTruthy();
+    },
+    { timeout: 5000 },
+  );
+  const alert = screen.getByRole("alert");
+  const errorRetryButton = alert.querySelector("button.race-trend-retry-button");
+  if (!errorRetryButton) throw new Error("error retry button missing");
+  expect(errorRetryButton.hasAttribute("disabled")).toBe(false);
   await act(async () => {
-    fireEvent.click(retryButton);
+    fireEvent.click(errorRetryButton);
   });
   await waitFor(() => {
-    expect(retryButton.hasAttribute("disabled")).toBe(true);
+    expect(errorRetryButton.hasAttribute("disabled")).toBe(true);
   });
   await act(async () => {
     pendingResolvers.forEach((resolve) => resolve(buildOkResponse(buildRawPayload())));
@@ -300,30 +342,38 @@ test("retry button is disabled while a manual refresh is in flight to block doub
 
 test("retry button reports aria-busy while a manual refresh is in flight", async () => {
   vi.useRealTimers();
-  let resolveFetch: ((value: Response) => void) | null = null;
+  const resolveFetchStash: ResolveFetchStash = { current: null };
   const pendingFetch = new Promise<Response>((resolve) => {
-    resolveFetch = resolve;
+    resolveFetchStash.current = resolve;
   });
-  let fetchCallCount = 0;
+  const fetchCounter: FetchCallCounter = { count: 0 };
   const initialErrorThreshold = 3;
   vi.spyOn(globalThis, "fetch").mockImplementation(() => {
-    fetchCallCount += 1;
-    if (fetchCallCount <= initialErrorThreshold) {
+    fetchCounter.count += 1;
+    if (fetchCounter.count <= initialErrorThreshold) {
       return Promise.resolve(buildErrorResponse());
     }
     return pendingFetch;
   });
   renderSection();
-  const retryButton = await screen.findByRole("button", { name: "再試行" }, { timeout: 5000 });
+  await waitFor(
+    () => {
+      expect(screen.getByRole("alert")).toBeTruthy();
+    },
+    { timeout: 5000 },
+  );
+  const alert = screen.getByRole("alert");
+  const errorRetryButton = alert.querySelector("button.race-trend-retry-button");
+  if (!errorRetryButton) throw new Error("error retry button missing");
   await act(async () => {
-    fireEvent.click(retryButton);
+    fireEvent.click(errorRetryButton);
   });
   await waitFor(() => {
-    expect(retryButton.getAttribute("aria-busy")).toBe("true");
+    expect(errorRetryButton.getAttribute("aria-busy")).toBe("true");
   });
-  expect(retryButton.hasAttribute("disabled")).toBe(true);
+  expect(errorRetryButton.hasAttribute("disabled")).toBe(true);
   await act(async () => {
-    resolveFetch?.(buildOkResponse(buildRawPayload()));
+    resolveFetchStash.current?.(buildOkResponse(buildRawPayload()));
   });
 });
 
@@ -335,14 +385,14 @@ test("stale banner is NOT shown when rawPayload is null and a background refresh
   await act(async () => {
     await vi.advanceTimersByTimeAsync(6000);
   });
-  expect(screen.queryByText("直近のデータを表示中")).toBeNull();
+  expect(screen.queryByText("最新化に失敗したため、 直近のデータを表示しています。")).toBeNull();
 });
 
 test("stale banner IS shown when rawPayload exists and a background refresh fails", async () => {
-  let fetchCallCount = 0;
+  const fetchCounter: FetchCallCounter = { count: 0 };
   vi.spyOn(globalThis, "fetch").mockImplementation(() => {
-    fetchCallCount += 1;
-    if (fetchCallCount === 1) {
+    fetchCounter.count += 1;
+    if (fetchCounter.count === 1) {
       return Promise.resolve(buildOkResponse(buildRawPayload()));
     }
     return Promise.reject(new Error("network down"));
@@ -360,7 +410,7 @@ test("stale banner IS shown when rawPayload exists and a background refresh fail
   await act(async () => {
     await vi.advanceTimersByTimeAsync(6000);
   });
-  expect(screen.getByText("直近のデータを表示中")).toBeTruthy();
+  expect(screen.getByText("最新化に失敗したため、 直近のデータを表示しています。")).toBeTruthy();
 });
 
 test("WebSocket reconnect timer is cleared when the component unmounts", async () => {
@@ -478,4 +528,83 @@ test("visibilitychange to visible force-reconnects when socket is null and recon
   // cleared the pending timer and invoked `connect()` synchronously, so a
   // second socket is installed without waiting for the 1s backoff to elapse.
   expect(installedSockets).toHaveLength(2);
+});
+
+// ---------------- X4 restoration cases (BUG-4) ----------------
+
+test("empty-state copy + retry button rendered when initial payload has 0 rows", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(buildOkResponse(buildRawPayload()));
+  renderSection();
+  await flushAllAsync();
+  expect(screen.getByText("成績データが揃うのを待っています")).toBeTruthy();
+  expect(
+    screen.getByText(
+      "確定後のレースから順に表示します。 数十秒で自動更新しますが、手動で再取得することもできます。",
+    ),
+  ).toBeTruthy();
+  expect(screen.getAllByRole("button", { name: "再取得" }).length).toBeGreaterThan(0);
+});
+
+test("empty-state retry click forces a __trendCacheRefresh=1 fetch", async () => {
+  vi.useRealTimers();
+  const observedUrls: string[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+    observedUrls.push(extractRequestUrl(input));
+    return Promise.resolve(buildOkResponse(buildRawPayload()));
+  });
+  renderSection();
+  await waitFor(() => {
+    expect(screen.getByText("成績データが揃うのを待っています")).toBeTruthy();
+  });
+  const initialCallCount = observedUrls.length;
+  const retryButtons = screen.getAllByRole("button", { name: "再取得" });
+  const firstRetry = retryButtons[0];
+  if (!firstRetry) throw new Error("no retry button rendered");
+  await act(async () => {
+    fireEvent.click(firstRetry);
+  });
+  await waitFor(() => {
+    expect(observedUrls.length).toBeGreaterThan(initialCallCount);
+  });
+  const nextUrl = observedUrls[initialCallCount];
+  if (!nextUrl) throw new Error("no follow-up fetch observed");
+  const nextUrlObject = new URL(nextUrl, "http://localhost");
+  expect(nextUrlObject.searchParams.get("__trendCacheRefresh")).toBe("1");
+});
+
+test("error UI renders detail copy and a retry button when the initial fetch rejects", async () => {
+  vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network down"));
+  renderSection();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(6000);
+  });
+  expect(screen.getByText("レース傾向を取得できませんでした。")).toBeTruthy();
+  expect(
+    screen.getByText("通信エラーで再取得します。 手動で再試行することもできます。"),
+  ).toBeTruthy();
+  expect(screen.getAllByRole("button", { name: "再取得" }).length).toBeGreaterThan(0);
+});
+
+test("stale-data banner with retry button appears when background refresh fails after a prior success", async () => {
+  const fetchCounter: FetchCallCounter = { count: 0 };
+  vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+    fetchCounter.count += 1;
+    if (fetchCounter.count === 1) {
+      return Promise.resolve(buildOkResponse(buildRawPayload()));
+    }
+    return Promise.reject(new Error("flaky upstream"));
+  });
+  renderSection();
+  await flushAllAsync();
+  const firstSocket = installedSockets[0];
+  if (!firstSocket) throw new Error("first socket missing");
+  act(() => {
+    firstSocket.dispatch("message", { data: JSON.stringify({ type: "trend-updated" }) });
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(6000);
+  });
+  expect(screen.getByText("最新化に失敗したため、 直近のデータを表示しています。")).toBeTruthy();
+  // Banner exposes a retry affordance alongside the message.
+  expect(screen.getAllByRole("button", { name: "再取得" }).length).toBeGreaterThan(0);
 });
