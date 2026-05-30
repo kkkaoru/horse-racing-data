@@ -1218,7 +1218,7 @@ it("buildRealtimeRouteResponse swallows logFetch failures while returning degrad
   expect(result.odds).toBeNull();
 });
 
-it("fetch GET /internal/race-trend-daily-track proxies to the RACE_TREND_DAILY_TRACK_DO stub", async () => {
+it("fetch GET /internal/race-trend-daily-track proxies to the RACE_TREND_DAILY_TRACK_DO stub with context query params", async () => {
   const { default: worker } = await import("./worker");
   const upstream = new Response(JSON.stringify({ races: [] }), { status: 200 });
   const stubFetch = vi.fn(async (_url: string, _init?: RequestInit): Promise<Response> => upstream);
@@ -1238,7 +1238,30 @@ it("fetch GET /internal/race-trend-daily-track proxies to the RACE_TREND_DAILY_T
   expect(idFromName.mock.calls[0]![0]).toBe("jra:20260531:06");
   expect(stubFetch).toHaveBeenCalledTimes(1);
   expect(stubFetch.mock.calls[0]![0]).toBe(
-    "https://race-trend-daily-track-do/races?beforeRaceBango=05",
+    "https://race-trend-daily-track-do/races?beforeRaceBango=05&source=jra&ymd=20260531&keibajo=06",
+  );
+  expect(response.status).toBe(200);
+});
+
+it("fetch GET /internal/race-trend-daily-track forwards NAR context query params to the stub", async () => {
+  const { default: worker } = await import("./worker");
+  const upstream = new Response(JSON.stringify({ races: [] }), { status: 200 });
+  const stubFetch = vi.fn(async (_url: string, _init?: RequestInit): Promise<Response> => upstream);
+  const idFromName = vi.fn((name: string): string => name);
+  const get = vi.fn((_id: string) => ({ fetch: stubFetch }));
+  const env = buildEnv({
+    RACE_TREND_DAILY_TRACK_DO: { get, idFromName },
+  } as never);
+  const response = await worker.fetch(
+    new Request(
+      "https://x.test/internal/race-trend-daily-track?source=nar&ymd=20260601&keibajo=42&beforeRaceBango=07",
+    ),
+    env,
+    buildCtx(),
+  );
+  expect(idFromName.mock.calls[0]![0]).toBe("nar:20260601:42");
+  expect(stubFetch.mock.calls[0]![0]).toBe(
+    "https://race-trend-daily-track-do/races?beforeRaceBango=07&source=nar&ymd=20260601&keibajo=42",
   );
   expect(response.status).toBe(200);
 });
