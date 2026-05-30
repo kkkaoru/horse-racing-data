@@ -31,6 +31,12 @@ const RACE_KEY_FIELDS = {
   ketto_toroku_bango: "ABC123",
 };
 
+const PASSTHROUGH_FIELDS = {
+  model_version: "jra-running-style-lgbm-prod-v1.5",
+  running_style_feature_version: "v1",
+  target_running_style_class: 0,
+};
+
 interface FakeConnectionState {
   rows: readonly Record<string, unknown>[];
   runStatements: string[];
@@ -84,12 +90,18 @@ describe("apply-running-style-postproc", () => {
     expect(initialOptions()).toStrictEqual({
       logitsParquet: "",
       outputParquet: "",
-      featureVersion: "",
+      runningStyleFeatureVersion: "",
     });
   });
 
   test("buildUsageText mentions the script command path", () => {
     expect(buildUsageText().includes("apply-running-style-postproc.ts") satisfies boolean).toBe(
+      true,
+    );
+  });
+
+  test("buildUsageText mentions the running style feature version flag", () => {
+    expect(buildUsageText().includes("--running-style-feature-version") satisfies boolean).toBe(
       true,
     );
   });
@@ -108,11 +120,11 @@ describe("apply-running-style-postproc", () => {
     expect(options.outputParquet).toBe("output.parquet");
   });
 
-  test("applyArg sets --feature-version and advances by two", () => {
+  test("applyArg sets --running-style-feature-version and advances by two", () => {
     const options = initialOptions();
-    const result = applyArg(options, "--feature-version", "v1");
+    const result = applyArg(options, "--running-style-feature-version", "v1");
     expect(result).toStrictEqual({ advanceBy: 2 });
-    expect(options.featureVersion).toBe("v1");
+    expect(options.runningStyleFeatureVersion).toBe("v1");
   });
 
   test("applyArg throws when a value is missing", () => {
@@ -148,32 +160,32 @@ describe("apply-running-style-postproc", () => {
       "input.parquet",
       "--output-parquet",
       "output.parquet",
-      "--feature-version",
+      "--running-style-feature-version",
       "v1",
     ]);
     expect(result).toStrictEqual({
       logitsParquet: "input.parquet",
       outputParquet: "output.parquet",
-      featureVersion: "v1",
+      runningStyleFeatureVersion: "v1",
     });
   });
 
   test("parseArgs throws when --logits-parquet is missing", () => {
     expect(() =>
-      parseArgs(["--output-parquet", "out.parquet", "--feature-version", "v1"]),
+      parseArgs(["--output-parquet", "out.parquet", "--running-style-feature-version", "v1"]),
     ).toThrowError("--logits-parquet is required.");
   });
 
   test("parseArgs throws when --output-parquet is missing", () => {
     expect(() =>
-      parseArgs(["--logits-parquet", "in.parquet", "--feature-version", "v1"]),
+      parseArgs(["--logits-parquet", "in.parquet", "--running-style-feature-version", "v1"]),
     ).toThrowError("--output-parquet is required.");
   });
 
-  test("parseArgs throws when --feature-version is missing", () => {
+  test("parseArgs throws when --running-style-feature-version is missing", () => {
     expect(() =>
       parseArgs(["--logits-parquet", "in.parquet", "--output-parquet", "out.parquet"]),
-    ).toThrowError("--feature-version is required.");
+    ).toThrowError("--running-style-feature-version is required.");
   });
 
   test("softmaxNormalize returns equal probabilities for equal logits", () => {
@@ -259,59 +271,188 @@ describe("apply-running-style-postproc", () => {
   });
 
   test("applyPostprocToRow handles row with logit columns and assigns argmax class", () => {
-    const row = applyPostprocToRow(
-      {
+    const row = applyPostprocToRow({
+      raw: {
         ...RACE_KEY_FIELDS,
+        ...PASSTHROUGH_FIELDS,
         logit_nige: -5,
         logit_senkou: -5,
         logit_sashi: 5,
         logit_oikomi: -5,
       },
-      "v1",
-    );
+      runningStyleFeatureVersion: "v1",
+    });
     expect(row.predicted_class).toBe(2);
     expect(row.predicted_label).toBe("sashi");
   });
 
   test("applyPostprocToRow assigns second_predicted_class from second highest logit", () => {
-    const row = applyPostprocToRow(
-      {
+    const row = applyPostprocToRow({
+      raw: {
         ...RACE_KEY_FIELDS,
+        ...PASSTHROUGH_FIELDS,
         logit_nige: 0,
         logit_senkou: 5,
         logit_sashi: 2,
         logit_oikomi: 0,
       },
-      "v1",
-    );
+      runningStyleFeatureVersion: "v1",
+    });
     expect(row.second_predicted_class).toBe(2);
   });
 
-  test("applyPostprocToRow propagates feature_version onto each row", () => {
-    const row = applyPostprocToRow(
-      {
+  test("applyPostprocToRow passes through running_style_feature_version onto each row", () => {
+    const row = applyPostprocToRow({
+      raw: {
         ...RACE_KEY_FIELDS,
+        model_version: "jra-rs-prod-v2",
+        running_style_feature_version: "v2",
+        target_running_style_class: 1,
         logit_nige: 1,
         logit_senkou: 0,
         logit_sashi: 0,
         logit_oikomi: 0,
       },
-      "v2",
+      runningStyleFeatureVersion: "v2",
+    });
+    expect(row.running_style_feature_version).toBe("v2");
+  });
+
+  test("applyPostprocToRow passes through model_version from input onto each row", () => {
+    const row = applyPostprocToRow({
+      raw: {
+        ...RACE_KEY_FIELDS,
+        model_version: "nar-rs-prod-v3",
+        running_style_feature_version: "v1",
+        target_running_style_class: 2,
+        logit_nige: 0,
+        logit_senkou: 0,
+        logit_sashi: 1,
+        logit_oikomi: 0,
+      },
+      runningStyleFeatureVersion: "v1",
+    });
+    expect(row.model_version).toBe("nar-rs-prod-v3");
+  });
+
+  test("applyPostprocToRow passes through target_running_style_class from input", () => {
+    const row = applyPostprocToRow({
+      raw: {
+        ...RACE_KEY_FIELDS,
+        model_version: "jra-rs-prod",
+        running_style_feature_version: "v1",
+        target_running_style_class: 3,
+        logit_nige: 0,
+        logit_senkou: 0,
+        logit_sashi: 0,
+        logit_oikomi: 1,
+      },
+      runningStyleFeatureVersion: "v1",
+    });
+    expect(row.target_running_style_class).toBe(3);
+  });
+
+  test("applyPostprocToRow truncates float target_running_style_class to integer", () => {
+    const row = applyPostprocToRow({
+      raw: {
+        ...RACE_KEY_FIELDS,
+        model_version: "jra-rs-prod",
+        running_style_feature_version: "v1",
+        target_running_style_class: 2.7,
+        p_nige: 0.1,
+        p_senkou: 0.1,
+        p_sashi: 0.7,
+        p_oikomi: 0.1,
+      },
+      runningStyleFeatureVersion: "v1",
+    });
+    expect(row.target_running_style_class).toBe(2);
+  });
+
+  test("applyPostprocToRow accepts numeric-string target_running_style_class", () => {
+    const row = applyPostprocToRow({
+      raw: {
+        ...RACE_KEY_FIELDS,
+        model_version: "jra-rs-prod",
+        running_style_feature_version: "v1",
+        target_running_style_class: "1",
+        p_nige: 0.1,
+        p_senkou: 0.7,
+        p_sashi: 0.1,
+        p_oikomi: 0.1,
+      },
+      runningStyleFeatureVersion: "v1",
+    });
+    expect(row.target_running_style_class).toBe(1);
+  });
+
+  test("applyPostprocToRow throws when running_style_feature_version mismatches the CLI flag", () => {
+    expect(() =>
+      applyPostprocToRow({
+        raw: {
+          ...RACE_KEY_FIELDS,
+          model_version: "jra-rs-prod",
+          running_style_feature_version: "v1",
+          target_running_style_class: 0,
+          p_nige: 0.7,
+          p_senkou: 0.1,
+          p_sashi: 0.1,
+          p_oikomi: 0.1,
+        },
+        runningStyleFeatureVersion: "v2",
+      }),
+    ).toThrowError(
+      "Input row running_style_feature_version (v1) does not match --running-style-feature-version (v2).",
     );
-    expect(row.feature_version).toBe("v2");
+  });
+
+  test("applyPostprocToRow throws when model_version is missing", () => {
+    expect(() =>
+      applyPostprocToRow({
+        raw: {
+          ...RACE_KEY_FIELDS,
+          running_style_feature_version: "v1",
+          target_running_style_class: 0,
+          p_nige: 0.7,
+          p_senkou: 0.1,
+          p_sashi: 0.1,
+          p_oikomi: 0.1,
+        },
+        runningStyleFeatureVersion: "v1",
+      }),
+    ).toThrowError("Column model_version is not a string.");
+  });
+
+  test("applyPostprocToRow throws when target_running_style_class is not numeric", () => {
+    expect(() =>
+      applyPostprocToRow({
+        raw: {
+          ...RACE_KEY_FIELDS,
+          model_version: "jra-rs-prod",
+          running_style_feature_version: "v1",
+          target_running_style_class: "not-a-number",
+          p_nige: 0.7,
+          p_senkou: 0.1,
+          p_sashi: 0.1,
+          p_oikomi: 0.1,
+        },
+        runningStyleFeatureVersion: "v1",
+      }),
+    ).toThrowError("Column target_running_style_class is not numeric.");
   });
 
   test("applyPostprocToRow with probability columns sum-normalizes the input", () => {
-    const row = applyPostprocToRow(
-      {
+    const row = applyPostprocToRow({
+      raw: {
         ...RACE_KEY_FIELDS,
+        ...PASSTHROUGH_FIELDS,
         p_nige: 0.25,
         p_senkou: 0.25,
         p_sashi: 0.25,
         p_oikomi: 0.25,
       },
-      "v1",
-    );
+      runningStyleFeatureVersion: "v1",
+    });
     expect(row.p_nige).toBe(0.25);
     expect(row.p_senkou).toBe(0.25);
     expect(row.p_sashi).toBe(0.25);
@@ -319,16 +460,17 @@ describe("apply-running-style-postproc", () => {
   });
 
   test("applyPostprocToRow preserves the race key 6-tuple", () => {
-    const row = applyPostprocToRow(
-      {
+    const row = applyPostprocToRow({
+      raw: {
         ...RACE_KEY_FIELDS,
+        ...PASSTHROUGH_FIELDS,
         p_nige: 1,
         p_senkou: 0,
         p_sashi: 0,
         p_oikomi: 0,
       },
-      "v1",
-    );
+      runningStyleFeatureVersion: "v1",
+    });
     expect(row.source).toBe("jra");
     expect(row.kaisai_nen).toBe("2026");
     expect(row.kaisai_tsukihi).toBe("0530");
@@ -339,59 +481,70 @@ describe("apply-running-style-postproc", () => {
 
   test("applyPostprocToRow throws when source column is not a string", () => {
     expect(() =>
-      applyPostprocToRow(
-        {
+      applyPostprocToRow({
+        raw: {
           source: 42,
           kaisai_nen: "2026",
           kaisai_tsukihi: "0530",
           keibajo_code: "05",
           race_bango: "02",
           ketto_toroku_bango: "ABC123",
+          ...PASSTHROUGH_FIELDS,
           p_nige: 0.4,
           p_senkou: 0.3,
           p_sashi: 0.2,
           p_oikomi: 0.1,
         },
-        "v1",
-      ),
+        runningStyleFeatureVersion: "v1",
+      }),
     ).toThrowError("Column source is not a string.");
   });
 
   test("applyPostprocToRow accepts numeric strings from DuckDB", () => {
-    const row = applyPostprocToRow(
-      {
+    const row = applyPostprocToRow({
+      raw: {
         ...RACE_KEY_FIELDS,
+        ...PASSTHROUGH_FIELDS,
         p_nige: "0.4",
         p_senkou: "0.3",
         p_sashi: "0.2",
         p_oikomi: "0.1",
       },
-      "v1",
-    );
+      runningStyleFeatureVersion: "v1",
+    });
     expect(row.predicted_class).toBe(0);
   });
 
   test("applyPostprocToRow throws when probability column is not numeric", () => {
     expect(() =>
-      applyPostprocToRow(
-        {
+      applyPostprocToRow({
+        raw: {
           ...RACE_KEY_FIELDS,
+          ...PASSTHROUGH_FIELDS,
           p_nige: "not-a-number",
           p_senkou: 0.3,
           p_sashi: 0.2,
           p_oikomi: 0.1,
         },
-        "v1",
-      ),
+        runningStyleFeatureVersion: "v1",
+      }),
     ).toThrowError("Column p_nige is not numeric.");
   });
 
   test("applyPostprocToRows returns same number of output rows as input rows", () => {
-    const rows = applyPostprocToRows(
-      [
-        { ...RACE_KEY_FIELDS, p_nige: 1, p_senkou: 0, p_sashi: 0, p_oikomi: 0 },
+    const rows = applyPostprocToRows({
+      rows: [
         {
           ...RACE_KEY_FIELDS,
+          ...PASSTHROUGH_FIELDS,
+          p_nige: 1,
+          p_senkou: 0,
+          p_sashi: 0,
+          p_oikomi: 0,
+        },
+        {
+          ...RACE_KEY_FIELDS,
+          ...PASSTHROUGH_FIELDS,
           ketto_toroku_bango: "ZZZ999",
           p_nige: 0,
           p_senkou: 0,
@@ -399,21 +552,29 @@ describe("apply-running-style-postproc", () => {
           p_oikomi: 1,
         },
       ],
-      "v1",
-    );
+      runningStyleFeatureVersion: "v1",
+    });
     expect(rows.length).toBe(2);
   });
 
   test("applyPostprocToRows returns empty array for zero input rows", () => {
-    expect(applyPostprocToRows([], "v1")).toStrictEqual([]);
+    expect(applyPostprocToRows({ rows: [], runningStyleFeatureVersion: "v1" })).toStrictEqual([]);
   });
 
   test("applyPostprocToRows allows multiple nige predictions in same race (no nige cap)", () => {
-    const rows = applyPostprocToRows(
-      [
-        { ...RACE_KEY_FIELDS, p_nige: 0.6, p_senkou: 0.2, p_sashi: 0.1, p_oikomi: 0.1 },
+    const rows = applyPostprocToRows({
+      rows: [
         {
           ...RACE_KEY_FIELDS,
+          ...PASSTHROUGH_FIELDS,
+          p_nige: 0.6,
+          p_senkou: 0.2,
+          p_sashi: 0.1,
+          p_oikomi: 0.1,
+        },
+        {
+          ...RACE_KEY_FIELDS,
+          ...PASSTHROUGH_FIELDS,
           ketto_toroku_bango: "HORSE2",
           p_nige: 0.55,
           p_senkou: 0.25,
@@ -422,6 +583,7 @@ describe("apply-running-style-postproc", () => {
         },
         {
           ...RACE_KEY_FIELDS,
+          ...PASSTHROUGH_FIELDS,
           ketto_toroku_bango: "HORSE3",
           p_nige: 0.7,
           p_senkou: 0.1,
@@ -429,18 +591,27 @@ describe("apply-running-style-postproc", () => {
           p_oikomi: 0.1,
         },
       ],
-      "v1",
-    );
+      runningStyleFeatureVersion: "v1",
+    });
     expect(rows[0]?.predicted_class).toBe(0);
     expect(rows[1]?.predicted_class).toBe(0);
     expect(rows[2]?.predicted_class).toBe(0);
   });
 
   test("applyPostprocToRows respects nige=senkou tie by preferring lowest class index", () => {
-    const rows = applyPostprocToRows(
-      [{ ...RACE_KEY_FIELDS, p_nige: 0.5, p_senkou: 0.5, p_sashi: 0, p_oikomi: 0 }],
-      "v1",
-    );
+    const rows = applyPostprocToRows({
+      rows: [
+        {
+          ...RACE_KEY_FIELDS,
+          ...PASSTHROUGH_FIELDS,
+          p_nige: 0.5,
+          p_senkou: 0.5,
+          p_sashi: 0,
+          p_oikomi: 0,
+        },
+      ],
+      runningStyleFeatureVersion: "v1",
+    });
     expect(rows[0]?.predicted_class).toBe(0);
     expect(rows[0]?.second_predicted_class).toBe(1);
   });
@@ -462,6 +633,21 @@ describe("apply-running-style-postproc", () => {
     expect(sql.includes("FORMAT PARQUET, COMPRESSION ZSTD") satisfies boolean).toBe(true);
   });
 
+  test("buildEmptyOutputCopySql declares the running_style_feature_version column", () => {
+    const sql = buildEmptyOutputCopySql("/tmp/out.parquet");
+    expect(sql.includes("AS running_style_feature_version") satisfies boolean).toBe(true);
+  });
+
+  test("buildEmptyOutputCopySql declares the target_running_style_class column", () => {
+    const sql = buildEmptyOutputCopySql("/tmp/out.parquet");
+    expect(sql.includes("AS target_running_style_class") satisfies boolean).toBe(true);
+  });
+
+  test("buildEmptyOutputCopySql declares the model_version column", () => {
+    const sql = buildEmptyOutputCopySql("/tmp/out.parquet");
+    expect(sql.includes("AS model_version") satisfies boolean).toBe(true);
+  });
+
   test("buildWriteOutputCopySql includes a tuple for each row", () => {
     const sql = buildWriteOutputCopySql("/tmp/out.parquet", [
       {
@@ -478,7 +664,9 @@ describe("apply-running-style-postproc", () => {
         predicted_class: 0,
         second_predicted_class: 1,
         predicted_label: "nige",
-        feature_version: "v1",
+        model_version: "jra-rs-prod",
+        running_style_feature_version: "v1",
+        target_running_style_class: 0,
       },
     ]);
     expect(sql.includes("'jra'") satisfies boolean).toBe(true);
@@ -501,15 +689,52 @@ describe("apply-running-style-postproc", () => {
         predicted_class: 0,
         second_predicted_class: 1,
         predicted_label: "nige",
-        feature_version: "v1",
+        model_version: "jra-rs-prod",
+        running_style_feature_version: "v1",
+        target_running_style_class: 0,
       },
     ]);
     expect(sql.includes("'j''ra'") satisfies boolean).toBe(true);
   });
 
+  test("buildWriteOutputCopySql lists model_version, running_style_feature_version, and target_running_style_class in column header", () => {
+    const sql = buildWriteOutputCopySql("/tmp/out.parquet", [
+      {
+        source: "jra",
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0530",
+        keibajo_code: "05",
+        race_bango: "02",
+        ketto_toroku_bango: "ABC123",
+        p_nige: 0.4,
+        p_senkou: 0.3,
+        p_sashi: 0.2,
+        p_oikomi: 0.1,
+        predicted_class: 0,
+        second_predicted_class: 1,
+        predicted_label: "nige",
+        model_version: "jra-rs-prod",
+        running_style_feature_version: "v1",
+        target_running_style_class: 2,
+      },
+    ]);
+    expect(
+      sql.includes(
+        "model_version, running_style_feature_version, target_running_style_class",
+      ) satisfies boolean,
+    ).toBe(true);
+  });
+
   test("readInputRows runs SELECT query and returns plain objects", () => {
     const fakeModule = buildFakeModule([
-      { ...RACE_KEY_FIELDS, p_nige: 0.4, p_senkou: 0.3, p_sashi: 0.2, p_oikomi: 0.1 },
+      {
+        ...RACE_KEY_FIELDS,
+        ...PASSTHROUGH_FIELDS,
+        p_nige: 0.4,
+        p_senkou: 0.3,
+        p_sashi: 0.2,
+        p_oikomi: 0.1,
+      },
     ]);
     const rows = readInputRows({
       duckdbModule: fakeModule,
@@ -552,7 +777,9 @@ describe("apply-running-style-postproc", () => {
           predicted_class: 0,
           second_predicted_class: 1,
           predicted_label: "nige",
-          feature_version: "v1",
+          model_version: "jra-rs-prod",
+          running_style_feature_version: "v1",
+          target_running_style_class: 0,
         },
       ],
     });
@@ -566,6 +793,7 @@ describe("apply-running-style-postproc", () => {
     const fakeModule = buildFakeModule([
       {
         ...RACE_KEY_FIELDS,
+        ...PASSTHROUGH_FIELDS,
         logit_nige: 5,
         logit_senkou: 0,
         logit_sashi: 0,
@@ -583,7 +811,7 @@ describe("apply-running-style-postproc", () => {
       options: {
         logitsParquet: "/tmp/in.parquet",
         outputParquet: "/tmp/out.parquet",
-        featureVersion: "v1",
+        runningStyleFeatureVersion: "v1",
       },
     });
     expect(result).toStrictEqual({ rowCount: 1 });
@@ -603,7 +831,7 @@ describe("apply-running-style-postproc", () => {
       options: {
         logitsParquet: "/tmp/empty-in.parquet",
         outputParquet: "/tmp/empty-out.parquet",
-        featureVersion: "v1",
+        runningStyleFeatureVersion: "v1",
       },
     });
     expect(result).toStrictEqual({ rowCount: 0 });
@@ -616,6 +844,7 @@ describe("apply-running-style-postproc", () => {
     const fakeModule = buildFakeModule([
       {
         ...RACE_KEY_FIELDS,
+        ...PASSTHROUGH_FIELDS,
         p_nige: 0,
         p_senkou: 0,
         p_sashi: 1,
@@ -628,7 +857,7 @@ describe("apply-running-style-postproc", () => {
         "/tmp/in.parquet",
         "--output-parquet",
         "/tmp/out.parquet",
-        "--feature-version",
+        "--running-style-feature-version",
         "v1",
       ],
       duckdbModule: fakeModule,

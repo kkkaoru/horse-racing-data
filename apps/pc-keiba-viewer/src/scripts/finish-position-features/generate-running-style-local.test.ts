@@ -16,9 +16,11 @@ import {
   buildPredictionsRoot,
   chunkYears,
   isInsideNightWindow,
+  isJraV2ModelVersion,
   parseArgs,
   runGenerateRunningStyleLocal,
   COLIMA_MIN_CPU,
+  JRA_V2_MODEL_TAG,
   PER_CATEGORY_SLEEP_MS,
   PER_YEAR_SLEEP_MS,
   PHASE_A_SCRIPT,
@@ -38,6 +40,11 @@ describe("generate-running-style-local", () => {
     expect(options.maxYearsPerRun).toBe(5);
   });
 
+  test("buildDefaultOptions returns empty rsPFromFlatbinJra", () => {
+    const options = buildDefaultOptions();
+    expect(options.rsPFromFlatbinJra).toBe("");
+  });
+
   test("parseArgs throws when pg-url missing", () => {
     expect(() => parseArgs([])).toThrowError("--pg-url is required.");
   });
@@ -50,6 +57,80 @@ describe("generate-running-style-local", () => {
     expect(() => parseArgs(["--pg-url", "u", "--model-version-jra", "mj"])).toThrowError(
       "--model-version-nar is required.",
     );
+  });
+
+  test("parseArgs throws when model-flatbin-jra missing", () => {
+    expect(() =>
+      parseArgs(["--pg-url", "u", "--model-version-jra", "mj", "--model-version-nar", "mn"]),
+    ).toThrowError("--model-flatbin-jra is required.");
+  });
+
+  test("parseArgs throws when model-flatbin-nar missing", () => {
+    expect(() =>
+      parseArgs([
+        "--pg-url",
+        "u",
+        "--model-version-jra",
+        "mj",
+        "--model-version-nar",
+        "mn",
+        "--model-flatbin-jra",
+        "/p/jra.flatbin",
+      ]),
+    ).toThrowError("--model-flatbin-nar is required.");
+  });
+
+  test("parseArgs throws when jra v2 model lacks --rs-p-from-flatbin-jra", () => {
+    expect(() =>
+      parseArgs([
+        "--pg-url",
+        "u",
+        "--model-version-jra",
+        "jra-running-style-lgbm-prod-v2",
+        "--model-version-nar",
+        "nar-running-style-lgbm-prod-v1.5",
+        "--model-flatbin-jra",
+        "/p/jra.flatbin",
+        "--model-flatbin-nar",
+        "/p/nar.flatbin",
+      ]),
+    ).toThrowError(
+      "--rs-p-from-flatbin-jra is required when --model-version-jra targets prod-v2 (chained predict from v1.5).",
+    );
+  });
+
+  test("parseArgs succeeds when jra v2 model has --rs-p-from-flatbin-jra", () => {
+    const options = parseArgs([
+      "--pg-url",
+      "u",
+      "--model-version-jra",
+      "jra-running-style-lgbm-prod-v2",
+      "--model-version-nar",
+      "nar-running-style-lgbm-prod-v1.5",
+      "--model-flatbin-jra",
+      "/p/jra-v2.flatbin",
+      "--model-flatbin-nar",
+      "/p/nar.flatbin",
+      "--rs-p-from-flatbin-jra",
+      "/p/jra-v1.5.flatbin",
+    ]);
+    expect(options.rsPFromFlatbinJra).toBe("/p/jra-v1.5.flatbin");
+  });
+
+  test("parseArgs succeeds when jra v1.5 model omits --rs-p-from-flatbin-jra", () => {
+    const options = parseArgs([
+      "--pg-url",
+      "u",
+      "--model-version-jra",
+      "jra-running-style-lgbm-prod-v1.5",
+      "--model-version-nar",
+      "nar-running-style-lgbm-prod-v1.5",
+      "--model-flatbin-jra",
+      "/p/jra-v1.5.flatbin",
+      "--model-flatbin-nar",
+      "/p/nar.flatbin",
+    ]);
+    expect(options.rsPFromFlatbinJra).toBe("");
   });
 
   test("parseArgs throws on unknown argument", () => {
@@ -76,10 +157,16 @@ describe("generate-running-style-local", () => {
       "mj",
       "--model-version-nar",
       "mn",
+      "--model-flatbin-jra",
+      "/p/jra.flatbin",
+      "--model-flatbin-nar",
+      "/p/nar.flatbin",
     ]);
     expect(options.threads).toBe(4);
     expect(options.ignoreNightWindow).toBe(true);
     expect(options.modelVersionJra).toBe("mj");
+    expect(options.modelFlatbinJra).toBe("/p/jra.flatbin");
+    expect(options.modelFlatbinNar).toBe("/p/nar.flatbin");
   });
 
   test("parseArgs ignore-night-window false when value is 0", () => {
@@ -90,13 +177,17 @@ describe("generate-running-style-local", () => {
       "mj",
       "--model-version-nar",
       "mn",
+      "--model-flatbin-jra",
+      "/p/jra.flatbin",
+      "--model-flatbin-nar",
+      "/p/nar.flatbin",
       "--ignore-night-window",
       "0",
     ]);
     expect(options.ignoreNightWindow).toBe(false);
   });
 
-  test("parseArgs succeeds with only jra and nar model versions (ban-ei no longer required)", () => {
+  test("parseArgs succeeds with jra and nar model versions plus flatbin paths", () => {
     const options = parseArgs([
       "--pg-url",
       "postgres://u",
@@ -104,6 +195,10 @@ describe("generate-running-style-local", () => {
       "X",
       "--model-version-nar",
       "Y",
+      "--model-flatbin-jra",
+      "/p/jra.flatbin",
+      "--model-flatbin-nar",
+      "/p/nar.flatbin",
     ]);
     expect(options.modelVersionJra).toBe("X");
     expect(options.modelVersionNar).toBe("Y");
@@ -118,6 +213,10 @@ describe("generate-running-style-local", () => {
         "X",
         "--model-version-nar",
         "Y",
+        "--model-flatbin-jra",
+        "/p/jra.flatbin",
+        "--model-flatbin-nar",
+        "/p/nar.flatbin",
         "--model-version-ban-ei",
         "Z",
       ]),
@@ -128,8 +227,26 @@ describe("generate-running-style-local", () => {
     expect(() => parseArgs(["--pg-url"])).toThrowError("--pg-url requires a value.");
   });
 
+  test("parseArgs throws when --rs-p-from-flatbin-jra is supplied without a value", () => {
+    expect(() => parseArgs(["--rs-p-from-flatbin-jra"])).toThrowError(
+      "--rs-p-from-flatbin-jra requires a value.",
+    );
+  });
+
   test("RUNNING_STYLE_CATEGORIES equals jra and nar only", () => {
     expect(RUNNING_STYLE_CATEGORIES).toStrictEqual(["jra", "nar"]);
+  });
+
+  test("JRA_V2_MODEL_TAG equals -v2", () => {
+    expect(JRA_V2_MODEL_TAG).toBe("-v2");
+  });
+
+  test("isJraV2ModelVersion returns true for prod-v2 suffix", () => {
+    expect(isJraV2ModelVersion("jra-running-style-lgbm-prod-v2")).toBe(true);
+  });
+
+  test("isJraV2ModelVersion returns false for prod-v1.5 suffix", () => {
+    expect(isJraV2ModelVersion("jra-running-style-lgbm-prod-v1.5")).toBe(false);
   });
 
   test("isInsideNightWindow returns true for 01:00 JST", () => {
@@ -206,38 +323,153 @@ describe("generate-running-style-local", () => {
     expect(cmd[13]).toBe("2024");
   });
 
-  test("buildPhaseBCommand uses PHASE_B_SCRIPT path", () => {
+  test("buildPhaseBCommand uses bun run with PHASE_B_SCRIPT path", () => {
     const cmd = buildPhaseBCommand({
+      modelFlatbin: "/m/jra.flatbin",
       featuresParquet: "/f",
       outputParquet: "/o",
-      featureVersion: "v1",
-      modelVersion: "m1",
       category: "nar",
+      predictedAt: "2026-05-31T01:00:00.000Z",
+      modelVersion: "m1",
+      featureVersion: "v1",
+      rsPFromFlatbin: null,
     });
-    expect(cmd[3]).toBe(PHASE_B_SCRIPT);
+    expect(cmd[0]).toBe("bun");
+    expect(cmd[1]).toBe("run");
+    expect(cmd[2]).toBe(PHASE_B_SCRIPT);
   });
 
   test("buildPhaseBCommand encodes model version after --model-version", () => {
     const cmd = buildPhaseBCommand({
+      modelFlatbin: "/m/jra.flatbin",
       featuresParquet: "/f",
       outputParquet: "/o",
-      featureVersion: "v1",
-      modelVersion: "m1",
       category: "nar",
+      predictedAt: "2026-05-31T01:00:00.000Z",
+      modelVersion: "m1",
+      featureVersion: "v1",
+      rsPFromFlatbin: null,
     });
     const modelVersionIndex = cmd.indexOf("--model-version");
     expect(cmd[modelVersionIndex + 1]).toBe("m1");
   });
 
-  test("buildPhaseBCommand does NOT contain --pg-url flag", () => {
+  test("buildPhaseBCommand encodes --model-flatbin flag and value", () => {
     const cmd = buildPhaseBCommand({
+      modelFlatbin: "/m/jra.flatbin",
       featuresParquet: "/f",
       outputParquet: "/o",
-      featureVersion: "v1",
-      modelVersion: "m1",
       category: "jra",
+      predictedAt: "2026-05-31T01:00:00.000Z",
+      modelVersion: "m1",
+      featureVersion: "v1",
+      rsPFromFlatbin: null,
+    });
+    const flatbinIndex = cmd.indexOf("--model-flatbin");
+    expect(cmd[flatbinIndex + 1]).toBe("/m/jra.flatbin");
+  });
+
+  test("buildPhaseBCommand encodes --predicted-at flag and value", () => {
+    const cmd = buildPhaseBCommand({
+      modelFlatbin: "/m/jra.flatbin",
+      featuresParquet: "/f",
+      outputParquet: "/o",
+      category: "jra",
+      predictedAt: "2026-05-31T01:00:00.000Z",
+      modelVersion: "m1",
+      featureVersion: "v1",
+      rsPFromFlatbin: null,
+    });
+    const predictedAtIndex = cmd.indexOf("--predicted-at");
+    expect(cmd[predictedAtIndex + 1]).toBe("2026-05-31T01:00:00.000Z");
+  });
+
+  test("buildPhaseBCommand encodes --feature-version flag and value", () => {
+    const cmd = buildPhaseBCommand({
+      modelFlatbin: "/m/jra.flatbin",
+      featuresParquet: "/f",
+      outputParquet: "/o",
+      category: "jra",
+      predictedAt: "2026-05-31T01:00:00.000Z",
+      modelVersion: "m1",
+      featureVersion: "v1",
+      rsPFromFlatbin: null,
+    });
+    const featureVersionIndex = cmd.indexOf("--feature-version");
+    expect(cmd[featureVersionIndex + 1]).toBe("v1");
+  });
+
+  test("buildPhaseBCommand encodes --category flag and value", () => {
+    const cmd = buildPhaseBCommand({
+      modelFlatbin: "/m/jra.flatbin",
+      featuresParquet: "/f",
+      outputParquet: "/o",
+      category: "jra",
+      predictedAt: "2026-05-31T01:00:00.000Z",
+      modelVersion: "m1",
+      featureVersion: "v1",
+      rsPFromFlatbin: null,
+    });
+    const categoryIndex = cmd.indexOf("--category");
+    expect(cmd[categoryIndex + 1]).toBe("jra");
+  });
+
+  test("buildPhaseBCommand does NOT contain --pg-url flag", () => {
+    const cmd = buildPhaseBCommand({
+      modelFlatbin: "/m/jra.flatbin",
+      featuresParquet: "/f",
+      outputParquet: "/o",
+      category: "jra",
+      predictedAt: "2026-05-31T01:00:00.000Z",
+      modelVersion: "m1",
+      featureVersion: "v1",
+      rsPFromFlatbin: null,
     });
     expect(cmd.includes("--pg-url")).toBe(false);
+  });
+
+  test("buildPhaseBCommand does NOT spawn python (no uv / python tokens)", () => {
+    const cmd = buildPhaseBCommand({
+      modelFlatbin: "/m/jra.flatbin",
+      featuresParquet: "/f",
+      outputParquet: "/o",
+      category: "jra",
+      predictedAt: "2026-05-31T01:00:00.000Z",
+      modelVersion: "m1",
+      featureVersion: "v1",
+      rsPFromFlatbin: null,
+    });
+    expect(cmd.includes("uv")).toBe(false);
+    expect(cmd.includes("python")).toBe(false);
+  });
+
+  test("buildPhaseBCommand encodes --rs-p-from-flatbin when chained path is provided", () => {
+    const cmd = buildPhaseBCommand({
+      modelFlatbin: "/m/jra-v2.flatbin",
+      featuresParquet: "/f",
+      outputParquet: "/o",
+      category: "jra",
+      predictedAt: "2026-05-31T01:00:00.000Z",
+      modelVersion: "jra-running-style-lgbm-prod-v2",
+      featureVersion: "v1",
+      rsPFromFlatbin: "/m/jra-v1.5.flatbin",
+    });
+    const chainIndex = cmd.indexOf("--rs-p-from-flatbin");
+    expect(cmd[chainIndex + 1]).toBe("/m/jra-v1.5.flatbin");
+  });
+
+  test("buildPhaseBCommand omits --rs-p-from-flatbin when chained path is null", () => {
+    const cmd = buildPhaseBCommand({
+      modelFlatbin: "/m/nar.flatbin",
+      featuresParquet: "/f",
+      outputParquet: "/o",
+      category: "nar",
+      predictedAt: "2026-05-31T01:00:00.000Z",
+      modelVersion: "nar-running-style-lgbm-prod-v1.5",
+      featureVersion: "v1",
+      rsPFromFlatbin: null,
+    });
+    expect(cmd.includes("--rs-p-from-flatbin")).toBe(false);
   });
 
   test("buildPhaseCCommand emits PHASE_C_SCRIPT after bun run", () => {
@@ -392,12 +624,47 @@ describe("generate-running-style-local", () => {
     expect(manifest.modelVersions).toStrictEqual({ jra: "mj", nar: "mn" });
   });
 
+  test("buildManifest exposes rsPFromFlatbin with jra path and null nar when configured", () => {
+    const manifest = buildManifest(
+      {
+        ...buildDefaultOptions(),
+        runningStyleFeatureVersion: "v1",
+        outputRoot: "/tmp",
+        modelVersionJra: "jra-running-style-lgbm-prod-v2",
+        modelVersionNar: "nar-running-style-lgbm-prod-v1.5",
+        modelFlatbinJra: "/p/jra-v2.flatbin",
+        modelFlatbinNar: "/p/nar.flatbin",
+        rsPFromFlatbinJra: "/p/jra-v1.5.flatbin",
+      },
+      new Date("2026-05-30T15:00:00Z"),
+    );
+    expect(manifest.rsPFromFlatbin).toStrictEqual({ jra: "/p/jra-v1.5.flatbin", nar: null });
+  });
+
+  test("buildManifest exposes rsPFromFlatbin null for both when omitted", () => {
+    const manifest = buildManifest(
+      {
+        ...buildDefaultOptions(),
+        runningStyleFeatureVersion: "v1",
+        outputRoot: "/tmp",
+        modelVersionJra: "jra-running-style-lgbm-prod-v1.5",
+        modelVersionNar: "nar-running-style-lgbm-prod-v1.5",
+        modelFlatbinJra: "/p/jra-v1.5.flatbin",
+        modelFlatbinNar: "/p/nar.flatbin",
+      },
+      new Date("2026-05-30T15:00:00Z"),
+    );
+    expect(manifest.rsPFromFlatbin).toStrictEqual({ jra: null, nar: null });
+  });
+
   test("PHASE_A_SCRIPT points at the Agent X3 feature-builder script", () => {
     expect(PHASE_A_SCRIPT).toBe("src/scripts/generate_running_style_features_local.py");
   });
 
-  test("PHASE_B_SCRIPT points at the Agent X4 raw-probs scoring script", () => {
-    expect(PHASE_B_SCRIPT).toBe("src/scripts/score_running_style_local.py");
+  test("PHASE_B_SCRIPT points at the Agent W3 precision-0 LightGBM Bun TS inference script", () => {
+    expect(PHASE_B_SCRIPT).toBe(
+      "apps/sync-realtime-data/src/scripts/run-running-style-inference-local.ts",
+    );
   });
 
   test("PHASE_C_SCRIPT points at the Agent X2 post-processing TS script", () => {
@@ -415,6 +682,8 @@ describe("generate-running-style-local", () => {
       pgUrl: "u",
       modelVersionJra: "mj",
       modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
       ignoreNightWindow: false,
     };
     await expect(
@@ -441,6 +710,8 @@ describe("generate-running-style-local", () => {
       pgUrl: "u",
       modelVersionJra: "mj",
       modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
       ignoreNightWindow: true,
     };
     await expect(
@@ -458,7 +729,10 @@ describe("generate-running-style-local", () => {
     const spawnCalls: string[] = [];
     const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(
       (command) => {
-        spawnCalls.push(command[2] === PHASE_C_SCRIPT ? PHASE_C_SCRIPT : (command[3] ?? ""));
+        const phaseAHit = command[3] === PHASE_A_SCRIPT ? PHASE_A_SCRIPT : "";
+        const phaseBHit = command[2] === PHASE_B_SCRIPT ? PHASE_B_SCRIPT : "";
+        const phaseCHit = command[2] === PHASE_C_SCRIPT ? PHASE_C_SCRIPT : "";
+        spawnCalls.push(phaseBHit || phaseCHit || phaseAHit);
         return Promise.resolve({ exitCode: 0 });
       },
     );
@@ -471,6 +745,8 @@ describe("generate-running-style-local", () => {
       pgUrl: "u",
       modelVersionJra: "mj",
       modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
       ignoreNightWindow: true,
       outputRoot: "/tmp/test-out",
     };
@@ -493,7 +769,7 @@ describe("generate-running-style-local", () => {
     const phaseCInvocations: number[] = [];
     const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(
       (command) => {
-        if (command[3] === PHASE_B_SCRIPT) {
+        if (command[2] === PHASE_B_SCRIPT) {
           const categoryIndex = command.indexOf("--category");
           phaseBCategories.push(command[categoryIndex + 1] ?? "");
         }
@@ -512,6 +788,8 @@ describe("generate-running-style-local", () => {
       pgUrl: "u",
       modelVersionJra: "mj",
       modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
       ignoreNightWindow: true,
       outputRoot: "/tmp/test-out-no-banei",
     };
@@ -530,7 +808,7 @@ describe("generate-running-style-local", () => {
     const phaseBOutputs: string[] = [];
     const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(
       (command) => {
-        if (command[3] === PHASE_B_SCRIPT) {
+        if (command[2] === PHASE_B_SCRIPT) {
           const outputIndex = command.indexOf("--output-parquet");
           phaseBOutputs.push(command[outputIndex + 1] ?? "");
         }
@@ -550,6 +828,8 @@ describe("generate-running-style-local", () => {
       pgUrl: "u",
       modelVersionJra: "mj",
       modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
       ignoreNightWindow: true,
       outputRoot: "/tmp/chain-out",
     };
@@ -571,7 +851,7 @@ describe("generate-running-style-local", () => {
           const outputIndex = command.indexOf("--output-dir");
           phaseAOutputs.push(command[outputIndex + 1] ?? "");
         }
-        if (command[3] === PHASE_B_SCRIPT) {
+        if (command[2] === PHASE_B_SCRIPT) {
           const featuresIndex = command.indexOf("--features-parquet");
           phaseBInputs.push(command[featuresIndex + 1] ?? "");
         }
@@ -587,6 +867,8 @@ describe("generate-running-style-local", () => {
       pgUrl: "u",
       modelVersionJra: "mj",
       modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
       ignoreNightWindow: true,
       outputRoot: "/tmp/featchain",
     };
@@ -597,6 +879,191 @@ describe("generate-running-style-local", () => {
       now: () => FIXED_NIGHT_DATE,
     });
     expect(phaseBInputs[0]).toBe(phaseAOutputs[0]);
+  });
+
+  test("runGenerateRunningStyleLocal Phase B receives --model-flatbin per category", async () => {
+    const phaseBFlatbins: string[] = [];
+    const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(
+      (command) => {
+        if (command[2] === PHASE_B_SCRIPT) {
+          const flatbinIndex = command.indexOf("--model-flatbin");
+          phaseBFlatbins.push(command[flatbinIndex + 1] ?? "");
+        }
+        return Promise.resolve({ exitCode: 0 });
+      },
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "mj",
+      modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      ignoreNightWindow: true,
+      outputRoot: "/tmp/flatbin-chain",
+    };
+    await runGenerateRunningStyleLocal(options, {
+      spawn,
+      sleep,
+      probeColima,
+      now: () => FIXED_NIGHT_DATE,
+    });
+    expect(phaseBFlatbins).toStrictEqual(["/p/jra.flatbin", "/p/nar.flatbin"]);
+  });
+
+  test("runGenerateRunningStyleLocal Phase B for jra includes --rs-p-from-flatbin when configured", async () => {
+    const jraCommands: ReadonlyArray<string>[] = [];
+    const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(
+      (command) => {
+        if (command[2] === PHASE_B_SCRIPT) {
+          const categoryIndex = command.indexOf("--category");
+          if (command[categoryIndex + 1] === "jra") {
+            jraCommands.push(command);
+          }
+        }
+        return Promise.resolve({ exitCode: 0 });
+      },
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "jra-running-style-lgbm-prod-v2",
+      modelVersionNar: "nar-running-style-lgbm-prod-v1.5",
+      modelFlatbinJra: "/p/jra-v2.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      rsPFromFlatbinJra: "/p/jra-v1.5.flatbin",
+      ignoreNightWindow: true,
+      outputRoot: "/tmp/jra-chain",
+    };
+    await runGenerateRunningStyleLocal(options, {
+      spawn,
+      sleep,
+      probeColima,
+      now: () => FIXED_NIGHT_DATE,
+    });
+    const jraCmd = jraCommands[0] ?? [];
+    const chainIndex = jraCmd.indexOf("--rs-p-from-flatbin");
+    expect(jraCmd[chainIndex + 1]).toBe("/p/jra-v1.5.flatbin");
+  });
+
+  test("runGenerateRunningStyleLocal Phase B for nar omits --rs-p-from-flatbin", async () => {
+    const narCommands: ReadonlyArray<string>[] = [];
+    const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(
+      (command) => {
+        if (command[2] === PHASE_B_SCRIPT) {
+          const categoryIndex = command.indexOf("--category");
+          if (command[categoryIndex + 1] === "nar") {
+            narCommands.push(command);
+          }
+        }
+        return Promise.resolve({ exitCode: 0 });
+      },
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "jra-running-style-lgbm-prod-v2",
+      modelVersionNar: "nar-running-style-lgbm-prod-v1.5",
+      modelFlatbinJra: "/p/jra-v2.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      rsPFromFlatbinJra: "/p/jra-v1.5.flatbin",
+      ignoreNightWindow: true,
+      outputRoot: "/tmp/nar-no-chain",
+    };
+    await runGenerateRunningStyleLocal(options, {
+      spawn,
+      sleep,
+      probeColima,
+      now: () => FIXED_NIGHT_DATE,
+    });
+    const narCmd = narCommands[0] ?? [];
+    expect(narCmd.includes("--rs-p-from-flatbin")).toBe(false);
+  });
+
+  test("runGenerateRunningStyleLocal Phase B for jra omits --rs-p-from-flatbin when not configured", async () => {
+    const jraCommands: ReadonlyArray<string>[] = [];
+    const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(
+      (command) => {
+        if (command[2] === PHASE_B_SCRIPT) {
+          const categoryIndex = command.indexOf("--category");
+          if (command[categoryIndex + 1] === "jra") {
+            jraCommands.push(command);
+          }
+        }
+        return Promise.resolve({ exitCode: 0 });
+      },
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "jra-running-style-lgbm-prod-v1.5",
+      modelVersionNar: "nar-running-style-lgbm-prod-v1.5",
+      modelFlatbinJra: "/p/jra-v1.5.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      ignoreNightWindow: true,
+      outputRoot: "/tmp/jra-no-chain",
+    };
+    await runGenerateRunningStyleLocal(options, {
+      spawn,
+      sleep,
+      probeColima,
+      now: () => FIXED_NIGHT_DATE,
+    });
+    const jraCmd = jraCommands[0] ?? [];
+    expect(jraCmd.includes("--rs-p-from-flatbin")).toBe(false);
+  });
+
+  test("runGenerateRunningStyleLocal Phase B receives ISO timestamp from deps.now via --predicted-at", async () => {
+    const phaseBPredictedAts: string[] = [];
+    const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(
+      (command) => {
+        if (command[2] === PHASE_B_SCRIPT) {
+          const predictedAtIndex = command.indexOf("--predicted-at");
+          phaseBPredictedAts.push(command[predictedAtIndex + 1] ?? "");
+        }
+        return Promise.resolve({ exitCode: 0 });
+      },
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "mj",
+      modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      ignoreNightWindow: true,
+      outputRoot: "/tmp/predicted-at-chain",
+    };
+    await runGenerateRunningStyleLocal(options, {
+      spawn,
+      sleep,
+      probeColima,
+      now: () => FIXED_NIGHT_DATE,
+    });
+    expect(phaseBPredictedAts).toStrictEqual([
+      "2026-05-30T16:00:00.000Z",
+      "2026-05-30T16:00:00.000Z",
+    ]);
   });
 
   test("runGenerateRunningStyleLocal throws when Phase A spawn returns non-zero exit", async () => {
@@ -612,6 +1079,8 @@ describe("generate-running-style-local", () => {
       pgUrl: "u",
       modelVersionJra: "mj",
       modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
       ignoreNightWindow: true,
     };
     await expect(
@@ -627,7 +1096,7 @@ describe("generate-running-style-local", () => {
   test("runGenerateRunningStyleLocal throws when Phase B spawn returns non-zero exit", async () => {
     const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(
       (command) => {
-        const failed = command[3] === PHASE_B_SCRIPT ? 1 : 0;
+        const failed = command[2] === PHASE_B_SCRIPT ? 1 : 0;
         return Promise.resolve({ exitCode: failed });
       },
     );
@@ -640,6 +1109,8 @@ describe("generate-running-style-local", () => {
       pgUrl: "u",
       modelVersionJra: "mj",
       modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
       ignoreNightWindow: true,
     };
     await expect(
@@ -668,6 +1139,8 @@ describe("generate-running-style-local", () => {
       pgUrl: "u",
       modelVersionJra: "mj",
       modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
       ignoreNightWindow: true,
     };
     await expect(
