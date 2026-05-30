@@ -1,6 +1,8 @@
 // run with: bun run test
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { Env, Job } from "./types";
+import type { Env, Job, NarRaceSource, RaceEntry, RaceResult } from "./types";
+import type { PremiumRacePayload, SchedulableRaceSource } from "./storage";
+import type { PremiumRaceLink, PremiumTrainingReview } from "./premium-race";
 
 vi.mock("./storage", () => ({
   logFetch: vi.fn(async () => {}),
@@ -58,7 +60,13 @@ vi.mock("./storage", () => ({
   getLatestTrackConditionForRace: vi.fn(async () => null),
   insertJraTrackConditionSnapshot: vi.fn(async () => []),
   getSameDayVenueJockeyWins: vi.fn(async () => []),
-  buildRealtimePayload: vi.fn(async () => ({}) as never),
+  buildRealtimePayload: vi.fn(async () => ({
+    horseWeights: null,
+    odds: null,
+    raceKey: "",
+    raceResults: null,
+    source: null,
+  })),
 }));
 vi.mock("./daily-feature-build", () => ({
   DAILY_FEATURE_BUILD_CRON: "0 19 * * *",
@@ -143,13 +151,247 @@ vi.mock("./premium-race", async () => {
   };
 });
 
-const buildEnv = (overrides?: Partial<Env>): Env =>
-  ({
-    PREMIUM_RACE_JOBS: { send: vi.fn(async () => {}), sendBatch: vi.fn(async () => {}) },
+// Mock D1Database / DurableObjectNamespace / R2Bucket / Queue stubs are scoped
+// to this test file. The Env type pulls in abstract framework classes that we
+// cannot satisfy structurally without a one-time bridge cast inside the
+// `buildEnv` factory — every test body uses `buildEnv()` and never touches
+// `as unknown as Env` directly (typescript rule 28).
+interface BuildEnvOverrides extends Partial<
+  Omit<Env, "REALTIME_DB" | "RACE_TREND_DAILY_TRACK_DO">
+> {
+  REALTIME_DB?: object;
+  RACE_TREND_DAILY_TRACK_DO?: object;
+}
+
+const buildEnv = (overrides?: BuildEnvOverrides): Env => {
+  const baseQueue: Queue<Job> = {
+    send: vi.fn(async (_message: Job) => {}),
+    sendBatch: vi.fn(async () => {}),
+  };
+  const base = {
+    PREMIUM_RACE_JOBS: baseQueue,
     REALTIME_DB: {},
-    REALTIME_JOBS: { send: vi.fn(async () => {}), sendBatch: vi.fn(async () => {}) },
+    REALTIME_JOBS: baseQueue,
     ...overrides,
-  }) as unknown as Env;
+  };
+  return base satisfies BuildEnvOverrides as unknown as Env;
+};
+
+// Build a SchedulableRaceSource fixture without leaking dead-test-only fields
+// (`discoveredAt`, `resultExpectedHorseCount`, `resultSavedHorseCount`,
+// `updatedAt`) that used to require `as never` to satisfy the production
+// interface (= dropped excess properties).
+const JRA_RACE_BASE = {
+  babaCode: "08",
+  debaUrl: "https://www.jra.go.jp/race",
+  kaisaiKai: "02",
+  kaisaiNen: "2026",
+  kaisaiNichime: "06",
+  kaisaiTsukihi: "0512",
+  keibajoCode: "08",
+  lastOddsFetchAt: null,
+  lastOddsQueuedAt: null,
+  lastResultFetchAt: null,
+  lastResultQueuedAt: null,
+  lastWeightFetchAt: null,
+  oddsFetchLockUntil: null,
+  oddsLinks: {},
+  raceBango: "01",
+  raceKey: "jra:2026:0512:08:01",
+  raceName: "T",
+  raceStartAtJst: "2026-05-12T13:00:00+09:00",
+  resultCompleteAt: null,
+  resultFetchLockUntil: null,
+  source: "jra",
+} satisfies SchedulableRaceSource;
+
+const NAR_RACE_BASE = {
+  babaCode: "22",
+  debaUrl: "https://nar.example/race",
+  kaisaiKai: null,
+  kaisaiNen: "2026",
+  kaisaiNichime: null,
+  kaisaiTsukihi: "0512",
+  keibajoCode: "55",
+  lastOddsFetchAt: null,
+  lastOddsQueuedAt: null,
+  lastResultFetchAt: null,
+  lastResultQueuedAt: null,
+  lastWeightFetchAt: null,
+  oddsFetchLockUntil: null,
+  oddsLinks: {},
+  raceBango: "01",
+  raceKey: "nar:2026:0512:55:01",
+  raceName: "T",
+  raceStartAtJst: "2026-05-12T10:00:00+09:00",
+  resultCompleteAt: null,
+  resultFetchLockUntil: null,
+  source: "nar",
+} satisfies SchedulableRaceSource;
+
+const buildJraSchedulableRaceSource = (
+  overrides?: Partial<SchedulableRaceSource>,
+): SchedulableRaceSource => ({ ...JRA_RACE_BASE, ...overrides });
+
+const buildNarSchedulableRaceSource = (
+  overrides?: Partial<SchedulableRaceSource>,
+): SchedulableRaceSource => ({ ...NAR_RACE_BASE, ...overrides });
+
+const buildJraNarRaceSource = (overrides?: Partial<NarRaceSource>): NarRaceSource => ({
+  babaCode: JRA_RACE_BASE.babaCode,
+  debaUrl: JRA_RACE_BASE.debaUrl,
+  kaisaiKai: JRA_RACE_BASE.kaisaiKai,
+  kaisaiNen: JRA_RACE_BASE.kaisaiNen,
+  kaisaiNichime: JRA_RACE_BASE.kaisaiNichime,
+  kaisaiTsukihi: JRA_RACE_BASE.kaisaiTsukihi,
+  keibajoCode: JRA_RACE_BASE.keibajoCode,
+  lastOddsFetchAt: JRA_RACE_BASE.lastOddsFetchAt,
+  lastWeightFetchAt: JRA_RACE_BASE.lastWeightFetchAt,
+  oddsLinks: JRA_RACE_BASE.oddsLinks,
+  raceBango: JRA_RACE_BASE.raceBango,
+  raceKey: JRA_RACE_BASE.raceKey,
+  raceName: JRA_RACE_BASE.raceName,
+  raceStartAtJst: JRA_RACE_BASE.raceStartAtJst,
+  source: JRA_RACE_BASE.source,
+  ...overrides,
+});
+
+const buildNarNarRaceSource = (overrides?: Partial<NarRaceSource>): NarRaceSource => ({
+  babaCode: NAR_RACE_BASE.babaCode,
+  debaUrl: NAR_RACE_BASE.debaUrl,
+  kaisaiKai: NAR_RACE_BASE.kaisaiKai,
+  kaisaiNen: NAR_RACE_BASE.kaisaiNen,
+  kaisaiNichime: NAR_RACE_BASE.kaisaiNichime,
+  kaisaiTsukihi: NAR_RACE_BASE.kaisaiTsukihi,
+  keibajoCode: NAR_RACE_BASE.keibajoCode,
+  lastOddsFetchAt: NAR_RACE_BASE.lastOddsFetchAt,
+  lastWeightFetchAt: NAR_RACE_BASE.lastWeightFetchAt,
+  oddsLinks: NAR_RACE_BASE.oddsLinks,
+  raceBango: NAR_RACE_BASE.raceBango,
+  raceKey: NAR_RACE_BASE.raceKey,
+  raceName: NAR_RACE_BASE.raceName,
+  raceStartAtJst: NAR_RACE_BASE.raceStartAtJst,
+  source: NAR_RACE_BASE.source,
+  ...overrides,
+});
+
+const PREMIUM_RACE_LINK: PremiumRaceLink = {
+  entryUrl: "https://x.test/race?race_id=202605120801",
+  sourceRaceId: "202605120801",
+};
+
+const buildPremiumRaceLink = (overrides?: Partial<PremiumRaceLink>): PremiumRaceLink => ({
+  ...PREMIUM_RACE_LINK,
+  ...overrides,
+});
+
+type RaceEntryFixture = Omit<RaceEntry, "fetchedAt">;
+type RaceResultFixture = Omit<RaceResult, "fetchedAt">;
+
+const buildRaceEntry = (overrides?: Partial<RaceEntryFixture>): RaceEntryFixture => ({
+  horseName: "h",
+  horseNumber: "1",
+  jockeyName: "j",
+  status: null,
+  ...overrides,
+});
+
+const buildRaceResult = (overrides?: Partial<RaceResultFixture>): RaceResultFixture => ({
+  finishPosition: "1",
+  horseName: null,
+  horseNumber: "1",
+  time: null,
+  ...overrides,
+});
+
+const buildPremiumTrainingReview = (
+  overrides?: Partial<PremiumTrainingReview>,
+): PremiumTrainingReview => ({
+  commentText: "r",
+  evaluationGrade: null,
+  evaluationText: null,
+  horseName: "h",
+  horseNumber: "1",
+  riderName: null,
+  trainingDate: "2026-05-12",
+  ...overrides,
+});
+
+type PaddockBulletinFixture = PremiumRacePayload["paddockBulletins"][number];
+
+const buildPaddockBulletinFixture = (
+  overrides: Partial<PaddockBulletinFixture> &
+    Pick<PaddockBulletinFixture, "fetchedAt" | "horseNumber">,
+): PaddockBulletinFixture => ({
+  commentText: null,
+  evaluationText: null,
+  frameNumber: null,
+  groupKey: "favorite",
+  horseName: null,
+  ...overrides,
+});
+
+const buildEmptyPremiumRacePayload = (
+  overrides?: Partial<PremiumRacePayload>,
+): PremiumRacePayload => ({
+  dataTopHorses: [],
+  paddockBulletins: [],
+  stableComments: [],
+  trainingReviews: [],
+  ...overrides,
+});
+
+interface ExecutionContextOverrides {
+  waitUntil?: ExecutionContext["waitUntil"];
+}
+
+// ExecutionContext is a 3-member interface but `props` is `unknown` and
+// `passThroughOnException` is a void no-op; we only assert on `waitUntil`
+// across the tests, so this builder fills the rest with no-op fakes.
+const buildExecutionContext = (overrides?: ExecutionContextOverrides): ExecutionContext => ({
+  passThroughOnException: vi.fn(),
+  props: undefined,
+  waitUntil: overrides?.waitUntil ?? vi.fn(),
+});
+
+interface ScheduledControllerOverrides {
+  cron?: string;
+  scheduledTime?: number;
+}
+
+const buildScheduledController = (
+  overrides?: ScheduledControllerOverrides,
+): ScheduledController => ({
+  cron: overrides?.cron ?? "*/1 * * * *",
+  noRetry: vi.fn(),
+  scheduledTime: overrides?.scheduledTime ?? 0,
+});
+
+// D1Database is an abstract framework class; the cast lives once inside this
+// helper so test bodies do not repeat `as unknown as D1Database`. The shape
+// matches what the scheduled-cron test exercises (prepare/bind/all/first/run).
+const buildFakeD1WithRecentMarker = (recentIso: string): D1Database => {
+  const db = {
+    batch: vi.fn(async () => []),
+    exec: vi.fn(async () => ({})),
+    prepare: vi.fn(() => ({
+      all: vi.fn(async () => ({ results: [] })),
+      bind: vi.fn(() => ({
+        all: vi.fn(async () => ({ results: [] })),
+        first: vi.fn(async () => ({ created_at: recentIso })),
+        run: vi.fn(async () => ({ meta: { changes: 0 } })),
+      })),
+      first: vi.fn(async () => ({ created_at: recentIso })),
+      run: vi.fn(async () => ({ meta: { changes: 0 } })),
+    })),
+  };
+  return db satisfies object as unknown as D1Database;
+};
+
+// Env override that swaps REALTIME_DB without re-introducing `as Env` at the
+// call site (the buildEnv helper already widens to Env). The spread preserves
+// every other binding from the original Env unchanged.
+const replaceRealtimeDb = (env: Env, db: D1Database): Env => ({ ...env, REALTIME_DB: db });
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -166,7 +408,7 @@ it("enqueueJobs sorts fetch-premium-paddock before other premium jobs (both sort
   const premiumSend = vi.fn(async () => {});
   const env = buildEnv({
     PREMIUM_RACE_JOBS: { send: premiumSend, sendBatch: vi.fn(async () => {}) },
-  } as never);
+  });
   const jobs: Job[] = [
     { date: "20260512", type: "discover-premium-race-links" },
     { raceKey: "jra:2026:0512:08:01", type: "fetch-premium-paddock" },
@@ -184,35 +426,12 @@ it("planRealtimeFetches enqueues fetch-results when resultFetchLockUntil is in t
   const { planRealtimeFetches } = await import("./worker");
   const { listSchedulableRaceSourcesByDate } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
-    {
-      babaCode: "22",
-      debaUrl: "https://nar.example/race",
-      discoveredAt: "2026-05-12T00:00:00+09:00",
-      kaisaiKai: null,
-      kaisaiNen: "2026",
-      kaisaiNichime: null,
-      kaisaiTsukihi: "0512",
-      keibajoCode: "55",
-      lastOddsFetchAt: null,
-      lastOddsQueuedAt: null,
-      lastResultFetchAt: null,
-      lastResultQueuedAt: null,
-      lastWeightFetchAt: null,
-      oddsFetchLockUntil: null,
-      oddsLinks: {},
-      raceBango: "01",
-      raceKey: "nar:2026:0512:55:01",
+    buildNarSchedulableRaceSource({
       raceName: "Finished",
-      raceStartAtJst: "2026-05-12T10:00:00+09:00",
-      resultCompleteAt: null,
-      resultExpectedHorseCount: null,
       resultFetchLockUntil: "2026-05-12T10:00:00+09:00",
-      resultSavedHorseCount: null,
-      source: "nar",
-      updatedAt: "2026-05-12T00:00:00+09:00",
-    },
-  ] as never);
-  const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-12T01:48:00.000Z" } as never);
+    }),
+  ]);
+  const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-12T01:48:00.000Z" });
   const count = await planRealtimeFetches(env, "20260512");
   expect(count).toBeGreaterThanOrEqual(1);
 });
@@ -228,37 +447,8 @@ it("fetch-premium-race-data records commentError + dataTopError when those fetch
   const { getRaceSource, getPremiumRaceLink, updatePremiumRaceDataFetchState } =
     await import("./storage");
   const { fetchPremiumHtml } = await import("./premium-race");
-  vi.mocked(getRaceSource).mockResolvedValue({
-    babaCode: "08",
-    debaUrl: "https://www.jra.go.jp/race",
-    discoveredAt: "2026-05-12T00:00:00+09:00",
-    kaisaiKai: "02",
-    kaisaiNen: "2026",
-    kaisaiNichime: "06",
-    kaisaiTsukihi: "0512",
-    keibajoCode: "08",
-    lastOddsFetchAt: null,
-    lastOddsQueuedAt: null,
-    lastResultFetchAt: null,
-    lastResultQueuedAt: null,
-    lastWeightFetchAt: null,
-    oddsFetchLockUntil: null,
-    oddsLinks: {},
-    raceBango: "01",
-    raceKey: "jra:2026:0512:08:01",
-    raceName: "T",
-    raceStartAtJst: "2026-05-12T13:00:00+09:00",
-    resultCompleteAt: null,
-    resultExpectedHorseCount: null,
-    resultFetchLockUntil: null,
-    resultSavedHorseCount: null,
-    source: "jra",
-    updatedAt: "2026-05-12T00:00:00+09:00",
-  } as never);
-  vi.mocked(getPremiumRaceLink).mockResolvedValue({
-    entryUrl: "https://x.test/race?race_id=202605120801",
-    sourceRaceId: "202605120801",
-  } as never);
+  vi.mocked(getRaceSource).mockResolvedValue(buildJraNarRaceSource());
+  vi.mocked(getPremiumRaceLink).mockResolvedValue(buildPremiumRaceLink());
   vi.mocked(fetchPremiumHtml).mockImplementation(async (_config: unknown, url: unknown) => {
     if (typeof url === "string" && url.includes("/w/")) {
       return "<table>work</table>";
@@ -274,7 +464,7 @@ it("fetch-premium-race-data records commentError + dataTopError when those fetch
       PREMIUM_RACE_DATA_TOP_PATH_TEMPLATE: "/d/{sourceRaceId}",
       PREMIUM_RACE_ORIGIN: "https://x.test",
       PREMIUM_RACE_WORK_PATH_TEMPLATE: "/w/{sourceRaceId}",
-    } as never),
+    }),
     { raceKey: "jra:2026:0512:08:01", type: "fetch-premium-race-data" },
   );
   const lastMessage = JSON.parse(
@@ -296,50 +486,23 @@ it("fetch-premium-paddock recovers existing payload selecting the latest fetched
     updatePremiumPaddockFetchState,
   } = await import("./storage");
   const { fetchPremiumHtmlAttempts } = await import("./premium-race");
-  vi.mocked(getRaceSource).mockResolvedValue({
-    babaCode: "08",
-    debaUrl: "https://www.jra.go.jp/race",
-    discoveredAt: "2026-05-12T00:00:00+09:00",
-    kaisaiKai: "02",
-    kaisaiNen: "2026",
-    kaisaiNichime: "06",
-    kaisaiTsukihi: "0512",
-    keibajoCode: "08",
-    lastOddsFetchAt: null,
-    lastOddsQueuedAt: null,
-    lastResultFetchAt: null,
-    lastResultQueuedAt: null,
-    lastWeightFetchAt: null,
-    oddsFetchLockUntil: null,
-    oddsLinks: {},
-    raceBango: "01",
-    raceKey: "jra:2026:0512:08:01",
-    raceName: "T",
-    raceStartAtJst: "2026-05-12T13:00:00+09:00",
-    resultCompleteAt: null,
-    resultExpectedHorseCount: null,
-    resultFetchLockUntil: null,
-    resultSavedHorseCount: null,
-    source: "jra",
-    updatedAt: "2026-05-12T00:00:00+09:00",
-  } as never);
-  vi.mocked(getPremiumRaceLink).mockResolvedValue({
-    entryUrl: "https://x.test/race?race_id=202605120801",
-    sourceRaceId: "202605120801",
-  } as never);
+  vi.mocked(getRaceSource).mockResolvedValue(buildJraNarRaceSource());
+  vi.mocked(getPremiumRaceLink).mockResolvedValue(buildPremiumRaceLink());
   vi.mocked(fetchPremiumHtmlAttempts).mockRejectedValue(new Error("network boom"));
-  vi.mocked(getPremiumRacePayload).mockResolvedValue({
-    paddockBulletins: [
-      { fetchedAt: "2026-05-12T01:00:00+09:00", horseNumber: "1" },
-      { fetchedAt: "2026-05-12T03:00:00+09:00", horseNumber: "2" },
-      { fetchedAt: "2026-05-12T02:00:00+09:00", horseNumber: "3" },
-    ],
-  } as never);
+  vi.mocked(getPremiumRacePayload).mockResolvedValue(
+    buildEmptyPremiumRacePayload({
+      paddockBulletins: [
+        buildPaddockBulletinFixture({ fetchedAt: "2026-05-12T01:00:00+09:00", horseNumber: "1" }),
+        buildPaddockBulletinFixture({ fetchedAt: "2026-05-12T03:00:00+09:00", horseNumber: "2" }),
+        buildPaddockBulletinFixture({ fetchedAt: "2026-05-12T02:00:00+09:00", horseNumber: "3" }),
+      ],
+    }),
+  );
   await handleJob(
     buildEnv({
       PREMIUM_RACE_ORIGIN: "https://x.test",
       PREMIUM_RACE_PADDOCK_PATH_TEMPLATE: "/paddock/{sourceRaceId}",
-    } as never),
+    }),
     { raceKey: "jra:2026:0512:08:01", type: "fetch-premium-paddock" },
   );
   expect(updatePremiumPaddockFetchState).toHaveBeenCalledWith(
@@ -362,31 +525,16 @@ it("scheduled plan-realtime-fetches skips self-enqueue when latest plan is fresh
   const env = buildEnv({
     REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
     REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z",
-  } as never);
+  });
   const recentIso = "2026-05-12T02:59:30+09:00";
-  const dbWithRecent = {
-    batch: vi.fn(async () => []),
-    exec: vi.fn(async () => ({})),
-    prepare: vi.fn(() => ({
-      all: vi.fn(async () => ({ results: [] })),
-      bind: vi.fn(() => ({
-        all: vi.fn(async () => ({ results: [] })),
-        first: vi.fn(async () => ({ created_at: recentIso })),
-        run: vi.fn(async () => ({ meta: { changes: 0 } })),
-      })),
-      first: vi.fn(async () => ({ created_at: recentIso })),
-      run: vi.fn(async () => ({ meta: { changes: 0 } })),
-    })),
-  } as unknown as D1Database;
-  const envWithRecent = { ...env, REALTIME_DB: dbWithRecent } as Env;
+  const dbWithRecent = buildFakeD1WithRecentMarker(recentIso);
+  const envWithRecent = replaceRealtimeDb(env, dbWithRecent);
   const waitUntil = vi.fn();
-  const ctx = { waitUntil } as unknown as ExecutionContext;
+  const ctx = buildExecutionContext({ waitUntil });
   await handler.scheduled?.(
-    {
-      cron: "*/1 * * * *",
-      noRetry: vi.fn(),
+    buildScheduledController({
       scheduledTime: new Date("2026-05-12T03:00:00.000Z").getTime(),
-    } as unknown as ScheduledController,
+    }),
     envWithRecent,
     ctx,
   );
@@ -401,40 +549,11 @@ it("fetch-premium-race-data records ok with commentError(String) when comment re
     await import("./storage");
   const { fetchPremiumHtml } = await import("./premium-race");
   const premiumRace = await import("./premium-race");
-  vi.mocked(getRaceSource).mockResolvedValue({
-    babaCode: "08",
-    debaUrl: "https://www.jra.go.jp/race",
-    discoveredAt: "2026-05-12T00:00:00+09:00",
-    kaisaiKai: "02",
-    kaisaiNen: "2026",
-    kaisaiNichime: "06",
-    kaisaiTsukihi: "0512",
-    keibajoCode: "08",
-    lastOddsFetchAt: null,
-    lastOddsQueuedAt: null,
-    lastResultFetchAt: null,
-    lastResultQueuedAt: null,
-    lastWeightFetchAt: null,
-    oddsFetchLockUntil: null,
-    oddsLinks: {},
-    raceBango: "01",
-    raceKey: "jra:2026:0512:08:01",
-    raceName: "T",
-    raceStartAtJst: "2026-05-12T13:00:00+09:00",
-    resultCompleteAt: null,
-    resultExpectedHorseCount: null,
-    resultFetchLockUntil: null,
-    resultSavedHorseCount: null,
-    source: "jra",
-    updatedAt: "2026-05-12T00:00:00+09:00",
-  } as never);
-  vi.mocked(getPremiumRaceLink).mockResolvedValue({
-    entryUrl: "https://x.test/race?race_id=202605120801",
-    sourceRaceId: "202605120801",
-  } as never);
+  vi.mocked(getRaceSource).mockResolvedValue(buildJraNarRaceSource());
+  vi.mocked(getPremiumRaceLink).mockResolvedValue(buildPremiumRaceLink());
   vi.spyOn(premiumRace, "parsePremiumTrainingReviews").mockReturnValue([
-    { horseName: "h", horseNumber: "1", reviewText: "r" },
-  ] as never);
+    buildPremiumTrainingReview(),
+  ]);
   vi.mocked(fetchPremiumHtml).mockImplementation(async (_config: unknown, url: unknown) => {
     if (typeof url === "string" && url.includes("/w/")) {
       return "<table>work</table>";
@@ -450,7 +569,7 @@ it("fetch-premium-race-data records ok with commentError(String) when comment re
       PREMIUM_RACE_DATA_TOP_PATH_TEMPLATE: "/d/{sourceRaceId}",
       PREMIUM_RACE_ORIGIN: "https://x.test",
       PREMIUM_RACE_WORK_PATH_TEMPLATE: "/w/{sourceRaceId}",
-    } as never),
+    }),
     { raceKey: "jra:2026:0512:08:01", type: "fetch-premium-race-data" },
   );
   const lastCall = vi.mocked(updatePremiumRaceDataFetchState).mock.calls.at(-1)?.[1];
@@ -465,35 +584,11 @@ it("fetch-results throws when JRA result URL is unavailable (missing kaisaiKai)"
   const { handleJob } = await import("./worker");
   const { claimResultFetch, getRaceSource, failResultFetch } = await import("./storage");
   vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
-  vi.mocked(getRaceSource).mockResolvedValueOnce({
-    babaCode: "08",
-    debaUrl: "https://www.jra.go.jp/race",
-    discoveredAt: "2026-05-12T00:00:00+09:00",
-    kaisaiKai: null,
-    kaisaiNen: "2026",
-    kaisaiNichime: null,
-    kaisaiTsukihi: "0512",
-    keibajoCode: "08",
-    lastOddsFetchAt: null,
-    lastOddsQueuedAt: null,
-    lastResultFetchAt: null,
-    lastResultQueuedAt: null,
-    lastWeightFetchAt: null,
-    oddsFetchLockUntil: null,
-    oddsLinks: {},
-    raceBango: "01",
-    raceKey: "jra:2026:0512:08:01",
-    raceName: "T",
-    raceStartAtJst: "2026-05-12T13:00:00+09:00",
-    resultCompleteAt: null,
-    resultExpectedHorseCount: null,
-    resultFetchLockUntil: null,
-    resultSavedHorseCount: null,
-    source: "jra",
-    updatedAt: "2026-05-12T00:00:00+09:00",
-  } as never);
+  vi.mocked(getRaceSource).mockResolvedValueOnce(
+    buildJraNarRaceSource({ kaisaiKai: null, kaisaiNichime: null }),
+  );
   await expect(
-    handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z" } as never), {
+    handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z" }), {
       raceKey: "jra:2026:0512:08:01",
       type: "fetch-results",
     }),
@@ -509,45 +604,19 @@ it("fetch-results triggers trend cache bust when expectedHorseCount > 0 and rows
   const { fetchRacePage, parseRaceEntries, parseRaceResults, parseRaceEntryHorseNumbers } =
     await import("./keiba-go");
   vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
-  vi.mocked(getRaceSource).mockResolvedValueOnce({
-    babaCode: "22",
-    debaUrl: "https://nar.example/race",
-    discoveredAt: "2026-05-12T00:00:00+09:00",
-    kaisaiKai: null,
-    kaisaiNen: "2026",
-    kaisaiNichime: null,
-    kaisaiTsukihi: "0512",
-    keibajoCode: "55",
-    lastOddsFetchAt: null,
-    lastOddsQueuedAt: null,
-    lastResultFetchAt: null,
-    lastResultQueuedAt: null,
-    lastWeightFetchAt: null,
-    oddsFetchLockUntil: null,
-    oddsLinks: {},
-    raceBango: "01",
-    raceKey: "nar:2026:0512:55:01",
-    raceName: "T",
-    raceStartAtJst: "2026-05-12T10:00:00+09:00",
-    resultCompleteAt: null,
-    resultExpectedHorseCount: null,
-    resultFetchLockUntil: null,
-    resultSavedHorseCount: null,
-    source: "nar",
-    updatedAt: "2026-05-12T00:00:00+09:00",
-  } as never);
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildNarNarRaceSource());
   vi.mocked(fetchRacePage).mockResolvedValue("<html></html>");
   vi.mocked(parseRaceEntries).mockReturnValue([
-    { horseName: "h", horseNumber: "1", jockeyName: "j", status: null },
-    { horseName: "h", horseNumber: "2", jockeyName: "j", status: null },
-  ] as never);
+    buildRaceEntry({ horseNumber: "1" }),
+    buildRaceEntry({ horseNumber: "2" }),
+  ]);
   vi.mocked(parseRaceEntryHorseNumbers).mockReturnValue(["1", "2"]);
   vi.mocked(parseRaceResults).mockReturnValue([
-    { finishPosition: "1", horseName: null, horseNumber: "1", time: null },
-    { finishPosition: "2", horseName: null, horseNumber: "2", time: null },
-  ] as never);
+    buildRaceResult({ finishPosition: "1", horseNumber: "1" }),
+    buildRaceResult({ finishPosition: "2", horseNumber: "2" }),
+  ]);
   vi.mocked(insertRaceResultSnapshot).mockResolvedValue(2);
-  await handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z" } as never), {
+  await handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z" }), {
     raceKey: "nar:2026:0512:55:01",
     type: "fetch-results",
   });
@@ -565,43 +634,17 @@ it("fetch-results pushes the freshly built row to the RACE_TREND_DAILY_TRACK_DO 
   const { fetchRacePage, parseRaceEntries, parseRaceResults, parseRaceEntryHorseNumbers } =
     await import("./keiba-go");
   vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
-  vi.mocked(getRaceSource).mockResolvedValueOnce({
-    babaCode: "22",
-    debaUrl: "https://nar.example/race",
-    discoveredAt: "2026-05-12T00:00:00+09:00",
-    kaisaiKai: null,
-    kaisaiNen: "2026",
-    kaisaiNichime: null,
-    kaisaiTsukihi: "0512",
-    keibajoCode: "55",
-    lastOddsFetchAt: null,
-    lastOddsQueuedAt: null,
-    lastResultFetchAt: null,
-    lastResultQueuedAt: null,
-    lastWeightFetchAt: null,
-    oddsFetchLockUntil: null,
-    oddsLinks: {},
-    raceBango: "01",
-    raceKey: "nar:2026:0512:55:01",
-    raceName: "T",
-    raceStartAtJst: "2026-05-12T10:00:00+09:00",
-    resultCompleteAt: null,
-    resultExpectedHorseCount: null,
-    resultFetchLockUntil: null,
-    resultSavedHorseCount: null,
-    source: "nar",
-    updatedAt: "2026-05-12T00:00:00+09:00",
-  } as never);
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildNarNarRaceSource());
   vi.mocked(fetchRacePage).mockResolvedValue("<html></html>");
   vi.mocked(parseRaceEntries).mockReturnValue([
-    { horseName: "h", horseNumber: "1", jockeyName: "j", status: null },
-    { horseName: "h", horseNumber: "2", jockeyName: "j", status: null },
-  ] as never);
+    buildRaceEntry({ horseNumber: "1" }),
+    buildRaceEntry({ horseNumber: "2" }),
+  ]);
   vi.mocked(parseRaceEntryHorseNumbers).mockReturnValue(["1", "2"]);
   vi.mocked(parseRaceResults).mockReturnValue([
-    { finishPosition: "1", horseName: null, horseNumber: "1", time: null },
-    { finishPosition: "2", horseName: null, horseNumber: "2", time: null },
-  ] as never);
+    buildRaceResult({ finishPosition: "1", horseNumber: "1" }),
+    buildRaceResult({ finishPosition: "2", horseNumber: "2" }),
+  ]);
   vi.mocked(insertRaceResultSnapshot).mockResolvedValue(2);
   const stubFetch = vi.fn(
     async (_url: string, _init?: RequestInit): Promise<Response> =>
@@ -613,7 +656,7 @@ it("fetch-results pushes the freshly built row to the RACE_TREND_DAILY_TRACK_DO 
     buildEnv({
       RACE_TREND_DAILY_TRACK_DO: { get, idFromName },
       REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z",
-    } as never),
+    }),
     { raceKey: "nar:2026:0512:55:01", type: "fetch-results" },
   );
   expect(idFromName).toHaveBeenCalledTimes(1);
@@ -634,43 +677,17 @@ it("fetch-results logs a non-2xx job entry when RACE_TREND_DAILY_TRACK_DO push r
   const { fetchRacePage, parseRaceEntries, parseRaceResults, parseRaceEntryHorseNumbers } =
     await import("./keiba-go");
   vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
-  vi.mocked(getRaceSource).mockResolvedValueOnce({
-    babaCode: "22",
-    debaUrl: "https://nar.example/race",
-    discoveredAt: "2026-05-12T00:00:00+09:00",
-    kaisaiKai: null,
-    kaisaiNen: "2026",
-    kaisaiNichime: null,
-    kaisaiTsukihi: "0512",
-    keibajoCode: "55",
-    lastOddsFetchAt: null,
-    lastOddsQueuedAt: null,
-    lastResultFetchAt: null,
-    lastResultQueuedAt: null,
-    lastWeightFetchAt: null,
-    oddsFetchLockUntil: null,
-    oddsLinks: {},
-    raceBango: "01",
-    raceKey: "nar:2026:0512:55:01",
-    raceName: "T",
-    raceStartAtJst: "2026-05-12T10:00:00+09:00",
-    resultCompleteAt: null,
-    resultExpectedHorseCount: null,
-    resultFetchLockUntil: null,
-    resultSavedHorseCount: null,
-    source: "nar",
-    updatedAt: "2026-05-12T00:00:00+09:00",
-  } as never);
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildNarNarRaceSource());
   vi.mocked(fetchRacePage).mockResolvedValue("<html></html>");
   vi.mocked(parseRaceEntries).mockReturnValue([
-    { horseName: "h", horseNumber: "1", jockeyName: "j", status: null },
-    { horseName: "h", horseNumber: "2", jockeyName: "j", status: null },
-  ] as never);
+    buildRaceEntry({ horseNumber: "1" }),
+    buildRaceEntry({ horseNumber: "2" }),
+  ]);
   vi.mocked(parseRaceEntryHorseNumbers).mockReturnValue(["1", "2"]);
   vi.mocked(parseRaceResults).mockReturnValue([
-    { finishPosition: "1", horseName: null, horseNumber: "1", time: null },
-    { finishPosition: "2", horseName: null, horseNumber: "2", time: null },
-  ] as never);
+    buildRaceResult({ finishPosition: "1", horseNumber: "1" }),
+    buildRaceResult({ finishPosition: "2", horseNumber: "2" }),
+  ]);
   vi.mocked(insertRaceResultSnapshot).mockResolvedValue(2);
   const stubFetch = vi.fn(
     async (_url: string, _init?: RequestInit): Promise<Response> =>
@@ -682,7 +699,7 @@ it("fetch-results logs a non-2xx job entry when RACE_TREND_DAILY_TRACK_DO push r
     buildEnv({
       RACE_TREND_DAILY_TRACK_DO: { get, idFromName },
       REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z",
-    } as never),
+    }),
     { raceKey: "nar:2026:0512:55:01", type: "fetch-results" },
   );
   expect(logFetch).toHaveBeenCalledWith(
@@ -703,43 +720,17 @@ it("fetch-results logs an error entry when RACE_TREND_DAILY_TRACK_DO push throws
   const { fetchRacePage, parseRaceEntries, parseRaceResults, parseRaceEntryHorseNumbers } =
     await import("./keiba-go");
   vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
-  vi.mocked(getRaceSource).mockResolvedValueOnce({
-    babaCode: "22",
-    debaUrl: "https://nar.example/race",
-    discoveredAt: "2026-05-12T00:00:00+09:00",
-    kaisaiKai: null,
-    kaisaiNen: "2026",
-    kaisaiNichime: null,
-    kaisaiTsukihi: "0512",
-    keibajoCode: "55",
-    lastOddsFetchAt: null,
-    lastOddsQueuedAt: null,
-    lastResultFetchAt: null,
-    lastResultQueuedAt: null,
-    lastWeightFetchAt: null,
-    oddsFetchLockUntil: null,
-    oddsLinks: {},
-    raceBango: "01",
-    raceKey: "nar:2026:0512:55:01",
-    raceName: "T",
-    raceStartAtJst: "2026-05-12T10:00:00+09:00",
-    resultCompleteAt: null,
-    resultExpectedHorseCount: null,
-    resultFetchLockUntil: null,
-    resultSavedHorseCount: null,
-    source: "nar",
-    updatedAt: "2026-05-12T00:00:00+09:00",
-  } as never);
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildNarNarRaceSource());
   vi.mocked(fetchRacePage).mockResolvedValue("<html></html>");
   vi.mocked(parseRaceEntries).mockReturnValue([
-    { horseName: "h", horseNumber: "1", jockeyName: "j", status: null },
-    { horseName: "h", horseNumber: "2", jockeyName: "j", status: null },
-  ] as never);
+    buildRaceEntry({ horseNumber: "1" }),
+    buildRaceEntry({ horseNumber: "2" }),
+  ]);
   vi.mocked(parseRaceEntryHorseNumbers).mockReturnValue(["1", "2"]);
   vi.mocked(parseRaceResults).mockReturnValue([
-    { finishPosition: "1", horseName: null, horseNumber: "1", time: null },
-    { finishPosition: "2", horseName: null, horseNumber: "2", time: null },
-  ] as never);
+    buildRaceResult({ finishPosition: "1", horseNumber: "1" }),
+    buildRaceResult({ finishPosition: "2", horseNumber: "2" }),
+  ]);
   vi.mocked(insertRaceResultSnapshot).mockResolvedValue(2);
   const stubFetch = vi.fn(async (_url: string, _init?: RequestInit): Promise<Response> => {
     throw new Error("do unreachable");
@@ -750,7 +741,7 @@ it("fetch-results logs an error entry when RACE_TREND_DAILY_TRACK_DO push throws
     buildEnv({
       RACE_TREND_DAILY_TRACK_DO: { get, idFromName },
       REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z",
-    } as never),
+    }),
     { raceKey: "nar:2026:0512:55:01", type: "fetch-results" },
   );
   expect(logFetch).toHaveBeenCalledWith(
@@ -772,43 +763,17 @@ it("fetch-results logs a trend-cache-bust error entry when the viewer bust retur
   const { fetchRacePage, parseRaceEntries, parseRaceResults, parseRaceEntryHorseNumbers } =
     await import("./keiba-go");
   vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
-  vi.mocked(getRaceSource).mockResolvedValueOnce({
-    babaCode: "22",
-    debaUrl: "https://nar.example/race",
-    discoveredAt: "2026-05-12T00:00:00+09:00",
-    kaisaiKai: null,
-    kaisaiNen: "2026",
-    kaisaiNichime: null,
-    kaisaiTsukihi: "0512",
-    keibajoCode: "55",
-    lastOddsFetchAt: null,
-    lastOddsQueuedAt: null,
-    lastResultFetchAt: null,
-    lastResultQueuedAt: null,
-    lastWeightFetchAt: null,
-    oddsFetchLockUntil: null,
-    oddsLinks: {},
-    raceBango: "01",
-    raceKey: "nar:2026:0512:55:01",
-    raceName: "T",
-    raceStartAtJst: "2026-05-12T10:00:00+09:00",
-    resultCompleteAt: null,
-    resultExpectedHorseCount: null,
-    resultFetchLockUntil: null,
-    resultSavedHorseCount: null,
-    source: "nar",
-    updatedAt: "2026-05-12T00:00:00+09:00",
-  } as never);
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildNarNarRaceSource());
   vi.mocked(fetchRacePage).mockResolvedValue("<html></html>");
   vi.mocked(parseRaceEntries).mockReturnValue([
-    { horseName: "h", horseNumber: "1", jockeyName: "j", status: null },
-    { horseName: "h", horseNumber: "2", jockeyName: "j", status: null },
-  ] as never);
+    buildRaceEntry({ horseNumber: "1" }),
+    buildRaceEntry({ horseNumber: "2" }),
+  ]);
   vi.mocked(parseRaceEntryHorseNumbers).mockReturnValue(["1", "2"]);
   vi.mocked(parseRaceResults).mockReturnValue([
-    { finishPosition: "1", horseName: null, horseNumber: "1", time: null },
-    { finishPosition: "2", horseName: null, horseNumber: "2", time: null },
-  ] as never);
+    buildRaceResult({ finishPosition: "1", horseNumber: "1" }),
+    buildRaceResult({ finishPosition: "2", horseNumber: "2" }),
+  ]);
   vi.mocked(insertRaceResultSnapshot).mockResolvedValue(2);
   const fetchSpy = vi
     .spyOn(globalThis, "fetch")
@@ -818,7 +783,7 @@ it("fetch-results logs a trend-cache-bust error entry when the viewer bust retur
       PC_KEIBA_VIEWER_INTERNAL_TOKEN: "secret-token",
       REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z",
       RUNNING_STYLE_CACHE_ORIGIN: "https://viewer.test",
-    } as never),
+    }),
     { raceKey: "nar:2026:0512:55:01", type: "fetch-results" },
   );
   expect(fetchSpy).toHaveBeenCalled();
@@ -840,49 +805,23 @@ it("fetch-results logs a trend-cache-bust skipped entry when no internal token i
   const { fetchRacePage, parseRaceEntries, parseRaceResults, parseRaceEntryHorseNumbers } =
     await import("./keiba-go");
   vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
-  vi.mocked(getRaceSource).mockResolvedValueOnce({
-    babaCode: "22",
-    debaUrl: "https://nar.example/race",
-    discoveredAt: "2026-05-12T00:00:00+09:00",
-    kaisaiKai: null,
-    kaisaiNen: "2026",
-    kaisaiNichime: null,
-    kaisaiTsukihi: "0512",
-    keibajoCode: "55",
-    lastOddsFetchAt: null,
-    lastOddsQueuedAt: null,
-    lastResultFetchAt: null,
-    lastResultQueuedAt: null,
-    lastWeightFetchAt: null,
-    oddsFetchLockUntil: null,
-    oddsLinks: {},
-    raceBango: "01",
-    raceKey: "nar:2026:0512:55:01",
-    raceName: "T",
-    raceStartAtJst: "2026-05-12T10:00:00+09:00",
-    resultCompleteAt: null,
-    resultExpectedHorseCount: null,
-    resultFetchLockUntil: null,
-    resultSavedHorseCount: null,
-    source: "nar",
-    updatedAt: "2026-05-12T00:00:00+09:00",
-  } as never);
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildNarNarRaceSource());
   vi.mocked(fetchRacePage).mockResolvedValue("<html></html>");
   vi.mocked(parseRaceEntries).mockReturnValue([
-    { horseName: "h", horseNumber: "1", jockeyName: "j", status: null },
-    { horseName: "h", horseNumber: "2", jockeyName: "j", status: null },
-  ] as never);
+    buildRaceEntry({ horseNumber: "1" }),
+    buildRaceEntry({ horseNumber: "2" }),
+  ]);
   vi.mocked(parseRaceEntryHorseNumbers).mockReturnValue(["1", "2"]);
   vi.mocked(parseRaceResults).mockReturnValue([
-    { finishPosition: "1", horseName: null, horseNumber: "1", time: null },
-    { finishPosition: "2", horseName: null, horseNumber: "2", time: null },
-  ] as never);
+    buildRaceResult({ finishPosition: "1", horseNumber: "1" }),
+    buildRaceResult({ finishPosition: "2", horseNumber: "2" }),
+  ]);
   vi.mocked(insertRaceResultSnapshot).mockResolvedValue(2);
   await handleJob(
     buildEnv({
       PC_KEIBA_VIEWER_INTERNAL_TOKEN: undefined,
       REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z",
-    } as never),
+    }),
     { raceKey: "nar:2026:0512:55:01", type: "fetch-results" },
   );
   expect(logFetch).toHaveBeenCalledWith(
@@ -906,46 +845,20 @@ it("fetch-results still busts trend cache when partial-final (inserted > 0 but <
   const { fetchRacePage, parseRaceEntries, parseRaceResults, parseRaceEntryHorseNumbers } =
     await import("./keiba-go");
   vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
-  vi.mocked(getRaceSource).mockResolvedValueOnce({
-    babaCode: "22",
-    debaUrl: "https://nar.example/race",
-    discoveredAt: "2026-05-12T00:00:00+09:00",
-    kaisaiKai: null,
-    kaisaiNen: "2026",
-    kaisaiNichime: null,
-    kaisaiTsukihi: "0512",
-    keibajoCode: "55",
-    lastOddsFetchAt: null,
-    lastOddsQueuedAt: null,
-    lastResultFetchAt: null,
-    lastResultQueuedAt: null,
-    lastWeightFetchAt: null,
-    oddsFetchLockUntil: null,
-    oddsLinks: {},
-    raceBango: "01",
-    raceKey: "nar:2026:0512:55:01",
-    raceName: "T",
-    raceStartAtJst: "2026-05-12T10:00:00+09:00",
-    resultCompleteAt: null,
-    resultExpectedHorseCount: null,
-    resultFetchLockUntil: null,
-    resultSavedHorseCount: null,
-    source: "nar",
-    updatedAt: "2026-05-12T00:00:00+09:00",
-  } as never);
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildNarNarRaceSource());
   vi.mocked(fetchRacePage).mockResolvedValue("<html></html>");
   vi.mocked(parseRaceEntries).mockReturnValue([
-    { horseName: "h", horseNumber: "1", jockeyName: "j", status: null },
-    { horseName: "h", horseNumber: "2", jockeyName: "j", status: null },
-    { horseName: "h", horseNumber: "3", jockeyName: "j", status: null },
-  ] as never);
+    buildRaceEntry({ horseNumber: "1" }),
+    buildRaceEntry({ horseNumber: "2" }),
+    buildRaceEntry({ horseNumber: "3" }),
+  ]);
   vi.mocked(parseRaceEntryHorseNumbers).mockReturnValue(["1", "2", "3"]);
   vi.mocked(parseRaceResults).mockReturnValue([
-    { finishPosition: "1", horseName: null, horseNumber: "1", time: null },
-    { finishPosition: "2", horseName: null, horseNumber: "2", time: null },
-  ] as never);
+    buildRaceResult({ finishPosition: "1", horseNumber: "1" }),
+    buildRaceResult({ finishPosition: "2", horseNumber: "2" }),
+  ]);
   vi.mocked(insertRaceResultSnapshot).mockResolvedValue(2);
-  await handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z" } as never), {
+  await handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z" }), {
     raceKey: "nar:2026:0512:55:01",
     type: "fetch-results",
   });
@@ -964,41 +877,15 @@ it("planResultFetchesOnly runs hourly discovery recovery and enqueues due result
   const { planResultFetchesOnly } = await import("./worker");
   const { listSchedulableRaceSourcesByDate } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
-    {
-      babaCode: "22",
-      debaUrl: "https://nar.example/race",
-      discoveredAt: "2026-05-12T00:00:00+09:00",
-      kaisaiKai: null,
-      kaisaiNen: "2026",
-      kaisaiNichime: null,
-      kaisaiTsukihi: "0512",
-      keibajoCode: "55",
-      lastOddsFetchAt: null,
-      lastOddsQueuedAt: null,
-      lastResultFetchAt: null,
-      lastResultQueuedAt: null,
-      lastWeightFetchAt: null,
-      oddsFetchLockUntil: null,
-      oddsLinks: {},
-      raceBango: "01",
-      raceKey: "nar:2026:0512:55:01",
-      raceName: "Recovery",
-      raceStartAtJst: "2026-05-12T10:00:00+09:00",
-      resultCompleteAt: null,
-      resultExpectedHorseCount: null,
-      resultFetchLockUntil: null,
-      resultSavedHorseCount: null,
-      source: "nar",
-      updatedAt: "2026-05-12T00:00:00+09:00",
-    },
-  ] as never);
+    buildNarSchedulableRaceSource({ raceName: "Recovery" }),
+  ]);
   // Now = 12:00 JST (= 03:00 UTC) so the JST minute is 00 and the recovery
   // discovery side-effect path fires this tick.
   const send = vi.fn(async () => {});
   const env = buildEnv({
     REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
     REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z",
-  } as never);
+  });
   const count = await planResultFetchesOnly(env, "20260512");
   expect(count).toBe(1);
 });
@@ -1015,7 +902,7 @@ it("planResultFetchesOnly skips discovery recovery outside the first minute of t
   const env = buildEnv({
     REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
     REALTIME_TEST_NOW: "2026-05-12T03:04:00.000Z",
-  } as never);
+  });
   const count = await planResultFetchesOnly(env, "20260512");
   expect(count).toBe(0);
 });
@@ -1032,38 +919,10 @@ it("planRealtimeFetches feeds mark*Queued with mixed job types so flatMap exerci
     markPremiumPaddockQueued,
     markPremiumRaceDataQueued,
   } = await import("./storage");
-  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
-    {
-      babaCode: "08",
-      debaUrl: "https://www.jra.go.jp/race",
-      discoveredAt: "2026-05-12T00:00:00+09:00",
-      kaisaiKai: "02",
-      kaisaiNen: "2026",
-      kaisaiNichime: "06",
-      kaisaiTsukihi: "0512",
-      keibajoCode: "08",
-      lastOddsFetchAt: null,
-      lastOddsQueuedAt: null,
-      lastResultFetchAt: null,
-      lastResultQueuedAt: null,
-      lastWeightFetchAt: null,
-      oddsFetchLockUntil: null,
-      oddsLinks: {},
-      raceBango: "01",
-      raceKey: "jra:2026:0512:08:01",
-      raceName: "T",
-      raceStartAtJst: "2026-05-12T13:00:00+09:00",
-      resultCompleteAt: null,
-      resultExpectedHorseCount: null,
-      resultFetchLockUntil: null,
-      resultSavedHorseCount: null,
-      source: "jra",
-      updatedAt: "2026-05-12T00:00:00+09:00",
-    },
-  ] as never);
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([buildJraSchedulableRaceSource()]);
   vi.mocked(listPremiumRaceDataFetchCandidatesByDate).mockResolvedValue([
     { raceKey: "jra:2026:0512:08:01" },
-  ] as never);
+  ]);
   vi.mocked(listJraVenueTrackConditionSchedulesByDate).mockResolvedValue([
     {
       firstRaceStartAtJst: "2026-05-12T13:00:00+09:00",
@@ -1076,7 +935,7 @@ it("planRealtimeFetches feeds mark*Queued with mixed job types so flatMap exerci
   const env = buildEnv({
     PREMIUM_RACE_ORIGIN: "https://x.test",
     REALTIME_TEST_NOW: "2026-05-12T03:40:00.000Z",
-  } as never);
+  });
   const count = await planRealtimeFetches(env, "20260512");
   expect(count).toBeGreaterThan(0);
   expect(markPremiumPaddockQueued).toHaveBeenCalled();
@@ -1095,7 +954,7 @@ it("planRealtimeFetches outside polling window runs JRA advance odds fallback on
   const { planRealtimeFetches } = await import("./worker");
   const { listSchedulableRaceSourcesByDate } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([]);
-  const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-11T20:00:00.000Z" } as never);
+  const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-11T20:00:00.000Z" });
   const count = await planRealtimeFetches(env, "20260512");
   expect(typeof count).toBe("number");
 });
@@ -1108,37 +967,8 @@ it("fetch-premium-race-data all-rejects path stamps failed status with concatena
   const { getRaceSource, getPremiumRaceLink, updatePremiumRaceDataFetchState } =
     await import("./storage");
   const { fetchPremiumHtml } = await import("./premium-race");
-  vi.mocked(getRaceSource).mockResolvedValue({
-    babaCode: "08",
-    debaUrl: "https://www.jra.go.jp/race",
-    discoveredAt: "2026-05-12T00:00:00+09:00",
-    kaisaiKai: "02",
-    kaisaiNen: "2026",
-    kaisaiNichime: "06",
-    kaisaiTsukihi: "0512",
-    keibajoCode: "08",
-    lastOddsFetchAt: null,
-    lastOddsQueuedAt: null,
-    lastResultFetchAt: null,
-    lastResultQueuedAt: null,
-    lastWeightFetchAt: null,
-    oddsFetchLockUntil: null,
-    oddsLinks: {},
-    raceBango: "01",
-    raceKey: "jra:2026:0512:08:01",
-    raceName: "T",
-    raceStartAtJst: "2026-05-12T13:00:00+09:00",
-    resultCompleteAt: null,
-    resultExpectedHorseCount: null,
-    resultFetchLockUntil: null,
-    resultSavedHorseCount: null,
-    source: "jra",
-    updatedAt: "2026-05-12T00:00:00+09:00",
-  } as never);
-  vi.mocked(getPremiumRaceLink).mockResolvedValue({
-    entryUrl: "https://x.test/race?race_id=202605120801",
-    sourceRaceId: "202605120801",
-  } as never);
+  vi.mocked(getRaceSource).mockResolvedValue(buildJraNarRaceSource());
+  vi.mocked(getPremiumRaceLink).mockResolvedValue(buildPremiumRaceLink());
   vi.mocked(fetchPremiumHtml).mockImplementation(async (_config: unknown, url: unknown) => {
     if (typeof url === "string" && url.includes("/w/")) {
       throw new Error("work boom");
@@ -1155,7 +985,7 @@ it("fetch-premium-race-data all-rejects path stamps failed status with concatena
         PREMIUM_RACE_DATA_TOP_PATH_TEMPLATE: "/d/{sourceRaceId}",
         PREMIUM_RACE_ORIGIN: "https://x.test",
         PREMIUM_RACE_WORK_PATH_TEMPLATE: "/w/{sourceRaceId}",
-      } as never),
+      }),
       { raceKey: "jra:2026:0512:08:01", type: "fetch-premium-race-data" },
     ),
   ).rejects.toThrow("premium race data fetch failed");
@@ -1169,35 +999,9 @@ it("planRealtimeFetches skips races whose raceStartAtJst is unparseable", async 
   const { planRealtimeFetches } = await import("./worker");
   const { listSchedulableRaceSourcesByDate } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
-    {
-      babaCode: "08",
-      debaUrl: "https://www.jra.go.jp/race",
-      discoveredAt: "2026-05-12T00:00:00+09:00",
-      kaisaiKai: "02",
-      kaisaiNen: "2026",
-      kaisaiNichime: "06",
-      kaisaiTsukihi: "0512",
-      keibajoCode: "08",
-      lastOddsFetchAt: null,
-      lastOddsQueuedAt: null,
-      lastResultFetchAt: null,
-      lastResultQueuedAt: null,
-      lastWeightFetchAt: null,
-      oddsFetchLockUntil: null,
-      oddsLinks: {},
-      raceBango: "01",
-      raceKey: "jra:2026:0512:08:01",
-      raceName: "T",
-      raceStartAtJst: "INVALID",
-      resultCompleteAt: null,
-      resultExpectedHorseCount: null,
-      resultFetchLockUntil: null,
-      resultSavedHorseCount: null,
-      source: "jra",
-      updatedAt: "2026-05-12T00:00:00+09:00",
-    },
-  ] as never);
-  const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:30:00.000Z" } as never);
+    buildJraSchedulableRaceSource({ raceStartAtJst: "INVALID" }),
+  ]);
+  const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:30:00.000Z" });
   const count = await planRealtimeFetches(env, "20260512");
   expect(typeof count).toBe("number");
 });
@@ -1207,33 +1011,7 @@ it("planRealtimeFetches skips races whose raceStartAtJst is unparseable", async 
 it("fetch-premium-race-data returns early when JRA race present but config has no origin", async () => {
   const { handleJob } = await import("./worker");
   const { getRaceSource } = await import("./storage");
-  vi.mocked(getRaceSource).mockResolvedValueOnce({
-    babaCode: "08",
-    debaUrl: "https://www.jra.go.jp/race",
-    discoveredAt: "2026-05-12T00:00:00+09:00",
-    kaisaiKai: "02",
-    kaisaiNen: "2026",
-    kaisaiNichime: "06",
-    kaisaiTsukihi: "0512",
-    keibajoCode: "08",
-    lastOddsFetchAt: null,
-    lastOddsQueuedAt: null,
-    lastResultFetchAt: null,
-    lastResultQueuedAt: null,
-    lastWeightFetchAt: null,
-    oddsFetchLockUntil: null,
-    oddsLinks: {},
-    raceBango: "01",
-    raceKey: "jra:2026:0512:08:01",
-    raceName: "T",
-    raceStartAtJst: "2026-05-12T13:00:00+09:00",
-    resultCompleteAt: null,
-    resultExpectedHorseCount: null,
-    resultFetchLockUntil: null,
-    resultSavedHorseCount: null,
-    source: "jra",
-    updatedAt: "2026-05-12T00:00:00+09:00",
-  } as never);
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildJraNarRaceSource());
   await handleJob(buildEnv(), {
     raceKey: "jra:2026:0512:08:01",
     type: "fetch-premium-race-data",
@@ -1246,44 +1024,15 @@ it("fetch-premium-paddock throws when fetchPremiumHtmlAttempts returns empty lis
   const { handleJob } = await import("./worker");
   const { getRaceSource, getPremiumRaceLink } = await import("./storage");
   const { fetchPremiumHtmlAttempts } = await import("./premium-race");
-  vi.mocked(getRaceSource).mockResolvedValueOnce({
-    babaCode: "08",
-    debaUrl: "https://www.jra.go.jp/race",
-    discoveredAt: "2026-05-12T00:00:00+09:00",
-    kaisaiKai: "02",
-    kaisaiNen: "2026",
-    kaisaiNichime: "06",
-    kaisaiTsukihi: "0512",
-    keibajoCode: "08",
-    lastOddsFetchAt: null,
-    lastOddsQueuedAt: null,
-    lastResultFetchAt: null,
-    lastResultQueuedAt: null,
-    lastWeightFetchAt: null,
-    oddsFetchLockUntil: null,
-    oddsLinks: {},
-    raceBango: "01",
-    raceKey: "jra:2026:0512:08:01",
-    raceName: "T",
-    raceStartAtJst: "2026-05-12T13:00:00+09:00",
-    resultCompleteAt: null,
-    resultExpectedHorseCount: null,
-    resultFetchLockUntil: null,
-    resultSavedHorseCount: null,
-    source: "jra",
-    updatedAt: "2026-05-12T00:00:00+09:00",
-  } as never);
-  vi.mocked(getPremiumRaceLink).mockResolvedValueOnce({
-    entryUrl: "https://x.test/race?race_id=202605120801",
-    sourceRaceId: "202605120801",
-  } as never);
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildJraNarRaceSource());
+  vi.mocked(getPremiumRaceLink).mockResolvedValueOnce(buildPremiumRaceLink());
   vi.mocked(fetchPremiumHtmlAttempts).mockResolvedValueOnce([]);
   await expect(
     handleJob(
       buildEnv({
         PREMIUM_RACE_ORIGIN: "https://x.test",
         PREMIUM_RACE_PADDOCK_PATH_TEMPLATE: "/p/{sourceRaceId}",
-      } as never),
+      }),
       { raceKey: "jra:2026:0512:08:01", type: "fetch-premium-paddock" },
     ),
   ).rejects.toThrow("premium paddock fetch returned no attempts");
@@ -1294,33 +1043,7 @@ it("fetch-premium-paddock throws when fetchPremiumHtmlAttempts returns empty lis
 it("fetch-premium-paddock returns early when config has no origin (incomplete)", async () => {
   const { handleJob } = await import("./worker");
   const { getRaceSource } = await import("./storage");
-  vi.mocked(getRaceSource).mockResolvedValueOnce({
-    babaCode: "08",
-    debaUrl: "https://www.jra.go.jp/race",
-    discoveredAt: "2026-05-12T00:00:00+09:00",
-    kaisaiKai: "02",
-    kaisaiNen: "2026",
-    kaisaiNichime: "06",
-    kaisaiTsukihi: "0512",
-    keibajoCode: "08",
-    lastOddsFetchAt: null,
-    lastOddsQueuedAt: null,
-    lastResultFetchAt: null,
-    lastResultQueuedAt: null,
-    lastWeightFetchAt: null,
-    oddsFetchLockUntil: null,
-    oddsLinks: {},
-    raceBango: "01",
-    raceKey: "jra:2026:0512:08:01",
-    raceName: "T",
-    raceStartAtJst: "2026-05-12T13:00:00+09:00",
-    resultCompleteAt: null,
-    resultExpectedHorseCount: null,
-    resultFetchLockUntil: null,
-    resultSavedHorseCount: null,
-    source: "jra",
-    updatedAt: "2026-05-12T00:00:00+09:00",
-  } as never);
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildJraNarRaceSource());
   // no PREMIUM_RACE_ORIGIN -> hasPremiumRaceFetchConfig=false
   await handleJob(buildEnv(), {
     raceKey: "jra:2026:0512:08:01",
@@ -1333,39 +1056,10 @@ it("fetch-premium-paddock returns early when config has no origin (incomplete)",
 it("fetch-premium-paddock returns early when paddockUrl cannot be built (no template)", async () => {
   const { handleJob } = await import("./worker");
   const { getRaceSource, getPremiumRaceLink } = await import("./storage");
-  vi.mocked(getRaceSource).mockResolvedValueOnce({
-    babaCode: "08",
-    debaUrl: "https://www.jra.go.jp/race",
-    discoveredAt: "2026-05-12T00:00:00+09:00",
-    kaisaiKai: "02",
-    kaisaiNen: "2026",
-    kaisaiNichime: "06",
-    kaisaiTsukihi: "0512",
-    keibajoCode: "08",
-    lastOddsFetchAt: null,
-    lastOddsQueuedAt: null,
-    lastResultFetchAt: null,
-    lastResultQueuedAt: null,
-    lastWeightFetchAt: null,
-    oddsFetchLockUntil: null,
-    oddsLinks: {},
-    raceBango: "01",
-    raceKey: "jra:2026:0512:08:01",
-    raceName: "T",
-    raceStartAtJst: "2026-05-12T13:00:00+09:00",
-    resultCompleteAt: null,
-    resultExpectedHorseCount: null,
-    resultFetchLockUntil: null,
-    resultSavedHorseCount: null,
-    source: "jra",
-    updatedAt: "2026-05-12T00:00:00+09:00",
-  } as never);
-  vi.mocked(getPremiumRaceLink).mockResolvedValueOnce({
-    entryUrl: "https://x.test/race?race_id=202605120801",
-    sourceRaceId: "202605120801",
-  } as never);
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildJraNarRaceSource());
+  vi.mocked(getPremiumRaceLink).mockResolvedValueOnce(buildPremiumRaceLink());
   // origin present (hasPremiumRaceFetchConfig=true), but no PADDOCK_PATH_TEMPLATE
-  await handleJob(buildEnv({ PREMIUM_RACE_ORIGIN: "https://x.test" } as never), {
+  await handleJob(buildEnv({ PREMIUM_RACE_ORIGIN: "https://x.test" }), {
     raceKey: "jra:2026:0512:08:01",
     type: "fetch-premium-paddock",
   });
@@ -1377,41 +1071,14 @@ it("planPremiumPaddockFetchesForDate skips when recent lastFetchAt exists", asyn
   const { planPremiumPaddockFetchesForDate } = await import("./worker");
   const { listSchedulableRaceSourcesByDate, getPremiumPaddockFetchState } =
     await import("./storage");
-  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
-    {
-      babaCode: "08",
-      debaUrl: "https://www.jra.go.jp/race",
-      discoveredAt: "2026-05-12T00:00:00+09:00",
-      kaisaiKai: "02",
-      kaisaiNen: "2026",
-      kaisaiNichime: "06",
-      kaisaiTsukihi: "0512",
-      keibajoCode: "08",
-      lastOddsFetchAt: null,
-      lastOddsQueuedAt: null,
-      lastResultFetchAt: null,
-      lastResultQueuedAt: null,
-      lastWeightFetchAt: null,
-      oddsFetchLockUntil: null,
-      oddsLinks: {},
-      raceBango: "01",
-      raceKey: "jra:2026:0512:08:01",
-      raceName: "T",
-      raceStartAtJst: "2026-05-12T13:00:00+09:00",
-      resultCompleteAt: null,
-      resultExpectedHorseCount: null,
-      resultFetchLockUntil: null,
-      resultSavedHorseCount: null,
-      source: "jra",
-      updatedAt: "2026-05-12T00:00:00+09:00",
-    },
-  ] as never);
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([buildJraSchedulableRaceSource()]);
   vi.mocked(getPremiumPaddockFetchState).mockResolvedValue({
     lastFetchAt: "2026-05-12T03:39:30.000Z",
-    raceKey: "jra:2026:0512:08:01",
+    lastQueuedAt: null,
+    retryAfter: null,
     status: "ok",
-  } as never);
-  const env = buildEnv({ PREMIUM_RACE_ORIGIN: "https://x.test" } as never);
+  });
+  const env = buildEnv({ PREMIUM_RACE_ORIGIN: "https://x.test" });
   const result = await planPremiumPaddockFetchesForDate(
     env,
     "20260512",
@@ -1428,37 +1095,8 @@ it("fetch-premium-race-data records dataTopError(Error.message) + workError(Erro
   const { getRaceSource, getPremiumRaceLink, updatePremiumRaceDataFetchState } =
     await import("./storage");
   const { fetchPremiumHtml } = await import("./premium-race");
-  vi.mocked(getRaceSource).mockResolvedValue({
-    babaCode: "08",
-    debaUrl: "https://www.jra.go.jp/race",
-    discoveredAt: "2026-05-12T00:00:00+09:00",
-    kaisaiKai: "02",
-    kaisaiNen: "2026",
-    kaisaiNichime: "06",
-    kaisaiTsukihi: "0512",
-    keibajoCode: "08",
-    lastOddsFetchAt: null,
-    lastOddsQueuedAt: null,
-    lastResultFetchAt: null,
-    lastResultQueuedAt: null,
-    lastWeightFetchAt: null,
-    oddsFetchLockUntil: null,
-    oddsLinks: {},
-    raceBango: "01",
-    raceKey: "jra:2026:0512:08:01",
-    raceName: "T",
-    raceStartAtJst: "2026-05-12T13:00:00+09:00",
-    resultCompleteAt: null,
-    resultExpectedHorseCount: null,
-    resultFetchLockUntil: null,
-    resultSavedHorseCount: null,
-    source: "jra",
-    updatedAt: "2026-05-12T00:00:00+09:00",
-  } as never);
-  vi.mocked(getPremiumRaceLink).mockResolvedValue({
-    entryUrl: "https://x.test/race?race_id=202605120801",
-    sourceRaceId: "202605120801",
-  } as never);
+  vi.mocked(getRaceSource).mockResolvedValue(buildJraNarRaceSource());
+  vi.mocked(getPremiumRaceLink).mockResolvedValue(buildPremiumRaceLink());
   vi.mocked(fetchPremiumHtml).mockImplementation(async (_config: unknown, url: unknown) => {
     if (typeof url === "string" && url.includes("/w/")) {
       throw new Error("work err");
@@ -1474,7 +1112,7 @@ it("fetch-premium-race-data records dataTopError(Error.message) + workError(Erro
       PREMIUM_RACE_DATA_TOP_PATH_TEMPLATE: "/d/{sourceRaceId}",
       PREMIUM_RACE_ORIGIN: "https://x.test",
       PREMIUM_RACE_WORK_PATH_TEMPLATE: "/w/{sourceRaceId}",
-    } as never),
+    }),
     { raceKey: "jra:2026:0512:08:01", type: "fetch-premium-race-data" },
   );
   const lastMessage = JSON.parse(
@@ -1491,37 +1129,8 @@ it("fetch-premium-race-data summarizes stable comment sample when parsed comment
   const { getRaceSource, getPremiumRaceLink, updatePremiumRaceDataFetchState } =
     await import("./storage");
   const { fetchPremiumHtml } = await import("./premium-race");
-  vi.mocked(getRaceSource).mockResolvedValue({
-    babaCode: "08",
-    debaUrl: "https://www.jra.go.jp/race",
-    discoveredAt: "2026-05-12T00:00:00+09:00",
-    kaisaiKai: "02",
-    kaisaiNen: "2026",
-    kaisaiNichime: "06",
-    kaisaiTsukihi: "0512",
-    keibajoCode: "08",
-    lastOddsFetchAt: null,
-    lastOddsQueuedAt: null,
-    lastResultFetchAt: null,
-    lastResultQueuedAt: null,
-    lastWeightFetchAt: null,
-    oddsFetchLockUntil: null,
-    oddsLinks: {},
-    raceBango: "01",
-    raceKey: "jra:2026:0512:08:01",
-    raceName: "T",
-    raceStartAtJst: "2026-05-12T13:00:00+09:00",
-    resultCompleteAt: null,
-    resultExpectedHorseCount: null,
-    resultFetchLockUntil: null,
-    resultSavedHorseCount: null,
-    source: "jra",
-    updatedAt: "2026-05-12T00:00:00+09:00",
-  } as never);
-  vi.mocked(getPremiumRaceLink).mockResolvedValue({
-    entryUrl: "https://x.test/race?race_id=202605120801",
-    sourceRaceId: "202605120801",
-  } as never);
+  vi.mocked(getRaceSource).mockResolvedValue(buildJraNarRaceSource());
+  vi.mocked(getPremiumRaceLink).mockResolvedValue(buildPremiumRaceLink());
   vi.mocked(fetchPremiumHtml).mockImplementation(async (_config: unknown, url: unknown) => {
     if (typeof url === "string" && url.includes("/c/")) {
       return "<html><body>comment but unparseable</body></html>";
@@ -1534,7 +1143,7 @@ it("fetch-premium-race-data summarizes stable comment sample when parsed comment
       PREMIUM_RACE_DATA_TOP_PATH_TEMPLATE: "/d/{sourceRaceId}",
       PREMIUM_RACE_ORIGIN: "https://x.test",
       PREMIUM_RACE_WORK_PATH_TEMPLATE: "/w/{sourceRaceId}",
-    } as never),
+    }),
     { raceKey: "jra:2026:0512:08:01", type: "fetch-premium-race-data" },
   );
   const lastMessage = JSON.parse(
@@ -1550,7 +1159,7 @@ it("fetch-premium-race-data summarizes stable comment sample when parsed comment
 
 it("planResultFetchesOnly returns 0 outside the JST polling window", async () => {
   const { planResultFetchesOnly } = await import("./worker");
-  const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-11T20:00:00.000Z" } as never);
+  const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-11T20:00:00.000Z" });
   const count = await planResultFetchesOnly(env, "20260512");
   expect(count).toBe(0);
 });
@@ -1558,8 +1167,8 @@ it("planResultFetchesOnly returns 0 outside the JST polling window", async () =>
 it("planResultFetchesOnly returns 0 when there are no schedulable races", async () => {
   const { planResultFetchesOnly } = await import("./worker");
   const { listSchedulableRaceSourcesByDate } = await import("./storage");
-  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([] as never);
-  const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z" } as never);
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([]);
+  const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z" });
   const count = await planResultFetchesOnly(env, "20260512");
   expect(count).toBe(0);
 });
@@ -1568,39 +1177,13 @@ it("planResultFetchesOnly enqueues fetch-results for a finished NAR race with no
   const { planResultFetchesOnly } = await import("./worker");
   const { listSchedulableRaceSourcesByDate, markResultFetchQueued } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
-    {
-      babaCode: "22",
-      debaUrl: "https://nar.example/race",
-      discoveredAt: "2026-05-12T00:00:00+09:00",
-      kaisaiKai: null,
-      kaisaiNen: "2026",
-      kaisaiNichime: null,
-      kaisaiTsukihi: "0512",
-      keibajoCode: "55",
-      lastOddsFetchAt: null,
-      lastOddsQueuedAt: null,
-      lastResultFetchAt: null,
-      lastResultQueuedAt: null,
-      lastWeightFetchAt: null,
-      oddsFetchLockUntil: null,
-      oddsLinks: {},
-      raceBango: "01",
-      raceKey: "nar:2026:0512:55:01",
-      raceName: "Finished",
-      raceStartAtJst: "2026-05-12T10:00:00+09:00",
-      resultCompleteAt: null,
-      resultExpectedHorseCount: null,
-      resultFetchLockUntil: null,
-      resultSavedHorseCount: null,
-      source: "nar",
-      updatedAt: "2026-05-12T00:00:00+09:00",
-    },
-  ] as never);
+    buildNarSchedulableRaceSource({ raceName: "Finished" }),
+  ]);
   const send = vi.fn(async () => {});
   const env = buildEnv({
     REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
     REALTIME_TEST_NOW: "2026-05-12T02:00:00.000Z",
-  } as never);
+  });
   const count = await planResultFetchesOnly(env, "20260512");
   expect(count).toBe(1);
   expect(send).toHaveBeenCalledWith({ raceKey: "nar:2026:0512:55:01", type: "fetch-results" });
@@ -1611,39 +1194,16 @@ it("planResultFetchesOnly skips race that already has resultCompleteAt", async (
   const { planResultFetchesOnly } = await import("./worker");
   const { listSchedulableRaceSourcesByDate } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
-    {
-      babaCode: "22",
-      debaUrl: "https://nar.example/race",
-      discoveredAt: "2026-05-12T00:00:00+09:00",
-      kaisaiKai: null,
-      kaisaiNen: "2026",
-      kaisaiNichime: null,
-      kaisaiTsukihi: "0512",
-      keibajoCode: "55",
-      lastOddsFetchAt: null,
-      lastOddsQueuedAt: null,
-      lastResultFetchAt: null,
-      lastResultQueuedAt: null,
-      lastWeightFetchAt: null,
-      oddsFetchLockUntil: null,
-      oddsLinks: {},
-      raceBango: "01",
-      raceKey: "nar:2026:0512:55:01",
+    buildNarSchedulableRaceSource({
       raceName: "DoneRace",
-      raceStartAtJst: "2026-05-12T10:00:00+09:00",
       resultCompleteAt: "2026-05-12T10:10:00+09:00",
-      resultExpectedHorseCount: null,
-      resultFetchLockUntil: null,
-      resultSavedHorseCount: null,
-      source: "nar",
-      updatedAt: "2026-05-12T00:00:00+09:00",
-    },
-  ] as never);
+    }),
+  ]);
   const send = vi.fn(async () => {});
   const env = buildEnv({
     REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
     REALTIME_TEST_NOW: "2026-05-12T02:00:00.000Z",
-  } as never);
+  });
   const count = await planResultFetchesOnly(env, "20260512");
   expect(count).toBe(0);
 });
@@ -1652,39 +1212,16 @@ it("planResultFetchesOnly skips race that has not started yet", async () => {
   const { planResultFetchesOnly } = await import("./worker");
   const { listSchedulableRaceSourcesByDate } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
-    {
-      babaCode: "22",
-      debaUrl: "https://nar.example/race",
-      discoveredAt: "2026-05-12T00:00:00+09:00",
-      kaisaiKai: null,
-      kaisaiNen: "2026",
-      kaisaiNichime: null,
-      kaisaiTsukihi: "0512",
-      keibajoCode: "55",
-      lastOddsFetchAt: null,
-      lastOddsQueuedAt: null,
-      lastResultFetchAt: null,
-      lastResultQueuedAt: null,
-      lastWeightFetchAt: null,
-      oddsFetchLockUntil: null,
-      oddsLinks: {},
-      raceBango: "01",
-      raceKey: "nar:2026:0512:55:01",
+    buildNarSchedulableRaceSource({
       raceName: "Future",
       raceStartAtJst: "2026-05-12T15:00:00+09:00",
-      resultCompleteAt: null,
-      resultExpectedHorseCount: null,
-      resultFetchLockUntil: null,
-      resultSavedHorseCount: null,
-      source: "nar",
-      updatedAt: "2026-05-12T00:00:00+09:00",
-    },
-  ] as never);
+    }),
+  ]);
   const send = vi.fn(async () => {});
   const env = buildEnv({
     REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
     REALTIME_TEST_NOW: "2026-05-12T02:00:00.000Z",
-  } as never);
+  });
   const count = await planResultFetchesOnly(env, "20260512");
   expect(count).toBe(0);
 });
@@ -1693,39 +1230,16 @@ it("planResultFetchesOnly skips race when lastResultQueuedAt is set", async () =
   const { planResultFetchesOnly } = await import("./worker");
   const { listSchedulableRaceSourcesByDate } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
-    {
-      babaCode: "22",
-      debaUrl: "https://nar.example/race",
-      discoveredAt: "2026-05-12T00:00:00+09:00",
-      kaisaiKai: null,
-      kaisaiNen: "2026",
-      kaisaiNichime: null,
-      kaisaiTsukihi: "0512",
-      keibajoCode: "55",
-      lastOddsFetchAt: null,
-      lastOddsQueuedAt: null,
-      lastResultFetchAt: null,
+    buildNarSchedulableRaceSource({
       lastResultQueuedAt: "2026-05-12T10:55:00+09:00",
-      lastWeightFetchAt: null,
-      oddsFetchLockUntil: null,
-      oddsLinks: {},
-      raceBango: "01",
-      raceKey: "nar:2026:0512:55:01",
       raceName: "QueuedAlready",
-      raceStartAtJst: "2026-05-12T10:00:00+09:00",
-      resultCompleteAt: null,
-      resultExpectedHorseCount: null,
-      resultFetchLockUntil: null,
-      resultSavedHorseCount: null,
-      source: "nar",
-      updatedAt: "2026-05-12T00:00:00+09:00",
-    },
-  ] as never);
+    }),
+  ]);
   const send = vi.fn(async () => {});
   const env = buildEnv({
     REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
     REALTIME_TEST_NOW: "2026-05-12T02:00:00.000Z",
-  } as never);
+  });
   const count = await planResultFetchesOnly(env, "20260512");
   expect(count).toBe(0);
 });
@@ -1734,39 +1248,16 @@ it("planResultFetchesOnly skips race when resultFetchLockUntil is still in the f
   const { planResultFetchesOnly } = await import("./worker");
   const { listSchedulableRaceSourcesByDate } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
-    {
-      babaCode: "22",
-      debaUrl: "https://nar.example/race",
-      discoveredAt: "2026-05-12T00:00:00+09:00",
-      kaisaiKai: null,
-      kaisaiNen: "2026",
-      kaisaiNichime: null,
-      kaisaiTsukihi: "0512",
-      keibajoCode: "55",
-      lastOddsFetchAt: null,
-      lastOddsQueuedAt: null,
-      lastResultFetchAt: null,
-      lastResultQueuedAt: null,
-      lastWeightFetchAt: null,
-      oddsFetchLockUntil: null,
-      oddsLinks: {},
-      raceBango: "01",
-      raceKey: "nar:2026:0512:55:01",
+    buildNarSchedulableRaceSource({
       raceName: "Locked",
-      raceStartAtJst: "2026-05-12T10:00:00+09:00",
-      resultCompleteAt: null,
-      resultExpectedHorseCount: null,
       resultFetchLockUntil: "2026-05-12T20:00:00+09:00",
-      resultSavedHorseCount: null,
-      source: "nar",
-      updatedAt: "2026-05-12T00:00:00+09:00",
-    },
-  ] as never);
+    }),
+  ]);
   const send = vi.fn(async () => {});
   const env = buildEnv({
     REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
     REALTIME_TEST_NOW: "2026-05-12T02:00:00.000Z",
-  } as never);
+  });
   const count = await planResultFetchesOnly(env, "20260512");
   expect(count).toBe(0);
 });
@@ -1775,42 +1266,19 @@ it("planResultFetchesOnly skips race when lastResultFetchAt is within RESULT_FET
   const { planResultFetchesOnly } = await import("./worker");
   const { listSchedulableRaceSourcesByDate } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
-    {
-      babaCode: "22",
-      debaUrl: "https://nar.example/race",
-      discoveredAt: "2026-05-12T00:00:00+09:00",
-      kaisaiKai: null,
-      kaisaiNen: "2026",
-      kaisaiNichime: null,
-      kaisaiTsukihi: "0512",
-      keibajoCode: "55",
-      lastOddsFetchAt: null,
-      lastOddsQueuedAt: null,
+    buildNarSchedulableRaceSource({
       // Now = 02:00 UTC = 11:00 JST. lastResultFetchAt = 10:59 JST is only 1
       // minute ago, which is less than RESULT_FETCH_INTERVAL_MINUTES (2) so
       // the race must be skipped this tick.
       lastResultFetchAt: "2026-05-12T10:59:00+09:00",
-      lastResultQueuedAt: null,
-      lastWeightFetchAt: null,
-      oddsFetchLockUntil: null,
-      oddsLinks: {},
-      raceBango: "01",
-      raceKey: "nar:2026:0512:55:01",
       raceName: "Throttle",
-      raceStartAtJst: "2026-05-12T10:00:00+09:00",
-      resultCompleteAt: null,
-      resultExpectedHorseCount: null,
-      resultFetchLockUntil: null,
-      resultSavedHorseCount: null,
-      source: "nar",
-      updatedAt: "2026-05-12T00:00:00+09:00",
-    },
-  ] as never);
+    }),
+  ]);
   const send = vi.fn(async () => {});
   const env = buildEnv({
     REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
     REALTIME_TEST_NOW: "2026-05-12T02:00:00.000Z",
-  } as never);
+  });
   const count = await planResultFetchesOnly(env, "20260512");
   expect(count).toBe(0);
 });
