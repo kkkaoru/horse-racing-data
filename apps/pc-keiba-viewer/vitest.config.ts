@@ -14,6 +14,7 @@ export default defineConfig({
       provider: "v8",
       include: [
         "src/lib/**/*.ts",
+        "src/app/api/races/**/trends/route.ts",
         "src/app/races/calendar.tsx",
         "src/app/races/detail/runners-table.tsx",
       ],
