@@ -54,6 +54,7 @@ interface MigrationStateRequest {
 interface PredictForDayParsedBody {
   source: PredictForDaySource;
   targetYmd: string;
+  skipCompleted: boolean;
 }
 
 // Guard-style normaliser so the source narrowing stays a single linear chain
@@ -74,13 +75,15 @@ const parsePredictForDayBody = (raw: unknown): PredictForDayParsedBody | null =>
   }
   const source = Reflect.get(raw, "source");
   const targetYmd = Reflect.get(raw, "targetYmd");
+  const skipCompletedRaw = Reflect.get(raw, "skipCompleted");
   if (typeof source !== "string" || !VALID_PREDICT_FOR_DAY_SOURCES.has(source)) {
     return null;
   }
   if (typeof targetYmd !== "string" || !YMD_PATTERN.test(targetYmd)) {
     return null;
   }
-  return { source: normalizePredictForDaySource(source), targetYmd };
+  const skipCompleted = typeof skipCompletedRaw === "boolean" ? skipCompletedRaw : false;
+  return { skipCompleted, source: normalizePredictForDaySource(source), targetYmd };
 };
 
 const isAuthorizedInternalRequest = (request: Request, env: Env): boolean => {
