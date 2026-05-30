@@ -144,6 +144,10 @@
         "name": "PREMIUM_PADDOCK_CACHE",
         "class_name": "PremiumPaddockCache",
       },
+      {
+        "name": "HORSE_WEIGHT_DO",
+        "class_name": "HorseWeightDO",
+      },
     ],
   },
   "migrations": [
@@ -158,6 +162,10 @@
     {
       "tag": "v3",
       "new_sqlite_classes": ["PremiumPaddockCache"],
+    },
+    {
+      "tag": "v_horse_weight_do_001",
+      "new_classes": ["HorseWeightDO"],
     },
   ],
   "hyperdrive": [

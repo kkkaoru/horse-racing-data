@@ -122,6 +122,7 @@ export interface Env {
   HYPERDRIVE?: HyperdriveBinding;
   JRA_BROWSER?: BrowserWorker;
   ODDS_CACHE: DurableObjectNamespace;
+  HORSE_WEIGHT_DO: DurableObjectNamespace;
   PC_KEIBA_VIEWER?: { fetch: typeof fetch };
   ODDS_DO_TTL_SECONDS?: string;
   PREMIUM_PADDOCK_CACHE: DurableObjectNamespace;
