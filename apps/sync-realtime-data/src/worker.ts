@@ -1986,6 +1986,33 @@ const buildRaceTrendDailyTrackRow = ({
   };
 };
 
+// Observe `requestTrendCacheBust` outcome by status:
+//   - "ok"       : silent (the happy path needs no log entry).
+//   - "error"    : 5xx / network failure / retry exhausted — record at error
+//                  level so the standard fetch_logs telemetry catches it.
+//   - "skipped"  : viewer internal token not configured (or other
+//                  environmental skip). Lower severity than error but still
+//                  worth surfacing because a long "skipped" streak silently
+//                  disables the bust signal across the entire card.
+const runTrendCacheBust = async (env: Env, raceKey: string, race: NarRaceSource): Promise<void> => {
+  const outcome = await requestTrendCacheBust(env, buildTrendBustFromRaceContext(race));
+  if (outcome.status === "error") {
+    await logFetch(env.REALTIME_DB, "trend-cache-bust", "error", raceKey, outcome.message);
+    return;
+  }
+  if (outcome.status === "skipped") {
+    await logFetch(env.REALTIME_DB, "trend-cache-bust", "skipped", raceKey, outcome.message);
+  }
+};
+
+// The DO push is intentionally fire-and-forget for the surrounding
+// `fetchAndStoreResults` flow — a 5xx from the DO must not abort result
+// persistence or trigger a `failResultFetch` rollback. But silently
+// discarding the Response (the pre-fix behavior) meant 5xx pushes never
+// surfaced anywhere observable, so a DO that stayed unhealthy across a
+// whole card looked exactly like a healthy one. Surface non-2xx via
+// logFetch so the standard fetch_logs telemetry catches it without
+// changing the fire-and-forget semantics.
 const pushResultsToRaceTrendDO = async (
   env: Env,
   row: RaceTrendDailyTrackRow,
@@ -2000,7 +2027,16 @@ const pushResultsToRaceTrendDO = async (
     const stub = env.RACE_TREND_DAILY_TRACK_DO.get(
       env.RACE_TREND_DAILY_TRACK_DO.idFromName(idName),
     );
-    await pushRaceTrendDailyTrackRowToStub({ row, stub });
+    const response = await pushRaceTrendDailyTrackRowToStub({ row, stub });
+    if (!response.ok) {
+      await logFetch(
+        env.REALTIME_DB,
+        "race-trend-daily-track-do-push",
+        "non-2xx",
+        race.raceKey,
+        `HTTP ${response.status}`,
+      );
+    }
   } catch (error) {
     await logFetch(
       env.REALTIME_DB,
@@ -2094,7 +2130,7 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
     // which is exactly the "1R-11R confirmed but 12R detail still shows them
     // as unfinished" failure mode this commit targets.
     if (inserted > 0) {
-      await requestTrendCacheBust(env, buildTrendBustFromRaceContext(race));
+      await runTrendCacheBust(env, raceKey, race);
     }
   } catch (error) {
     await failResultFetch(env.REALTIME_DB, raceKey);

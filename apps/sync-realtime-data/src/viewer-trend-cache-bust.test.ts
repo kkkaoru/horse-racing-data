@@ -132,6 +132,7 @@ test("requestTrendCacheBust rejects malformed targetYmd", async () => {
     targetYmd: "2026-05-25",
   });
   expect(outcome).toStrictEqual({
+    attempts: 0,
     message: "invalid targetYmd: 2026-05-25",
     status: "error",
   });

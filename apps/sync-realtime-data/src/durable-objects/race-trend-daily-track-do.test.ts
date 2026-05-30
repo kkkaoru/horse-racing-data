@@ -150,6 +150,46 @@ it("parseDoContextFromRaceKey returns parsed tuple for a well-formed raceKey", (
   });
 });
 
+it("parseDoContextFromRaceKey returns null for a single-digit keibajoCode", () => {
+  expect(parseDoContextFromRaceKey("jra:2026:0531:6:03")).toBeNull();
+});
+
+it("parseDoContextFromRaceKey returns null when monthDay is shorter than 4 digits", () => {
+  expect(parseDoContextFromRaceKey("jra:2026:053:06:03")).toBeNull();
+});
+
+it("parseDoContextFromRaceKey returns null when monthDay contains a non-digit", () => {
+  expect(parseDoContextFromRaceKey("jra:2026:053a:06:03")).toBeNull();
+});
+
+it("parseDoContextFromRaceKey returns null when year is not all digits", () => {
+  expect(parseDoContextFromRaceKey("jra:abcd:0531:06:03")).toBeNull();
+});
+
+it("parseDoContextFromRaceKey returns null when year is shorter than 4 digits", () => {
+  expect(parseDoContextFromRaceKey("jra:202:0531:06:03")).toBeNull();
+});
+
+it("parseDoContextFromRaceKey returns null when raceBango is empty", () => {
+  expect(parseDoContextFromRaceKey("jra:2026:0531:06:")).toBeNull();
+});
+
+it("parseDoContextFromRaceKey returns null when raceBango is not a 2-digit number", () => {
+  expect(parseDoContextFromRaceKey("jra:2026:0531:06:abc")).toBeNull();
+});
+
+it("parseDoContextFromRaceKey returns null when keibajoCode contains lowercase letters", () => {
+  expect(parseDoContextFromRaceKey("jra:2026:0531:ab:03")).toBeNull();
+});
+
+it("parseDoContextFromRaceKey returns parsed tuple for a NAR raceKey with alphanumeric keibajoCode", () => {
+  expect(parseDoContextFromRaceKey("nar:2026:0531:4A:05")).toStrictEqual({
+    keibajoCode: "4A",
+    source: "nar",
+    targetYmd: "20260531",
+  });
+});
+
 it("buildRaceTrendDailyTrackDoIdName joins source / targetYmd / keibajoCode", () => {
   expect(
     buildRaceTrendDailyTrackDoIdName({ keibajoCode: "06", source: "jra", targetYmd: "20260531" }),
@@ -1092,4 +1132,33 @@ it("POST /push does not demote a complete row to partial when the partial arrive
   );
   const payload = (await response.json()) as { races: RaceTrendDailyTrackRow[] };
   expect(payload.races[0]!.isComplete).toBe(true);
+});
+
+// Asserts the snapshot SELECT placeholder order matches the SQL WHERE clause
+// (source, kaisai_nen, kaisai_tsukihi, keibajo_code). A future column rename
+// or refactor that silently swaps these would otherwise produce subtly wrong
+// venue/day slices that the existing happy-path tests miss because they only
+// hit the helper with a single (source, ymd, keibajo) combination.
+it("self-pull binds D1 SELECT placeholders in (source, kaisaiNen, kaisaiTsukihi, keibajoCode) order", async () => {
+  const snapshotBind = vi.fn(() => ({
+    all: vi.fn(async (): Promise<{ results: FakeD1ResultRecord[] }> => ({ results: [] })),
+  }));
+  const runningStyleBind = vi.fn(() => ({
+    all: vi.fn(async (): Promise<{ results: FakeD1ResultRecord[] }> => ({ results: [] })),
+  }));
+  const prepare = vi.fn((sql: string) => ({
+    bind: sql.includes("from race_running_styles") ? runningStyleBind : snapshotBind,
+  }));
+  const env = {
+    REALTIME_DB: { prepare } as unknown as D1Database,
+  } as unknown as Env;
+  const handle = buildFakeState(new Map());
+  const cache = await RaceTrendDailyTrackDO.createForTest({ env, state: handle.state });
+  await cache.fetch(
+    new Request(
+      "https://race-trend-daily-track-do/races?source=jra&ymd=20260531&keibajo=06&beforeRaceBango=99",
+    ),
+  );
+  expect(snapshotBind).toHaveBeenCalledWith("jra", "2026", "0531", "06");
+  expect(runningStyleBind).toHaveBeenCalledWith("jra", "2026", "0531", "06");
 });
