@@ -100,6 +100,9 @@ const getRaceAiAssistantIconUrl = (): string =>
 const getRaceAiAssistantAccentColor = (): string =>
   process.env.PC_KEIBA_RACE_AI_ACCENT_COLOR?.trim() || DEFAULT_RACE_AI_ASSISTANT_ACCENT_COLOR;
 
+const isRaceAiAssistantEnabled = (): boolean =>
+  process.env.PC_KEIBA_RACE_AI_ENABLED?.trim().toLowerCase() === "true";
+
 interface RaceDetailViewProps {
   day: string;
   initialRace?: RaceDetail;
@@ -576,24 +579,26 @@ export async function RaceDetailView({
 
         <TrackConditionSection trackCode={race.trackCode} />
 
-        <RaceAiAssistant
-          assistantAccentColor={getRaceAiAssistantAccentColor()}
-          assistantIconUrl={getRaceAiAssistantIconUrl()}
-          assistantName={getRaceAiAssistantName()}
-          basePostgresqlData={{
-            courseInfo,
-            race,
-            sameVenueRaces,
-            runners,
-          }}
-          baseProcessedData={baseProcessedData}
-          day={day}
-          keibajoCode={keibajoCode}
-          month={month}
-          raceNumber={raceNumber}
-          source={raceSource}
-          year={year}
-        />
+        {isRaceAiAssistantEnabled() && (
+          <RaceAiAssistant
+            assistantAccentColor={getRaceAiAssistantAccentColor()}
+            assistantIconUrl={getRaceAiAssistantIconUrl()}
+            assistantName={getRaceAiAssistantName()}
+            basePostgresqlData={{
+              courseInfo,
+              race,
+              sameVenueRaces,
+              runners,
+            }}
+            baseProcessedData={baseProcessedData}
+            day={day}
+            keibajoCode={keibajoCode}
+            month={month}
+            raceNumber={raceNumber}
+            source={raceSource}
+            year={year}
+          />
+        )}
 
         <PaddockSection
           day={day}
