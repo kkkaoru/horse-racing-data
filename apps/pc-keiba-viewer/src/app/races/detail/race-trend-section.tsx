@@ -1,5 +1,9 @@
 "use client";
 
+import type {
+  RaceTrendRunningStyleCache,
+  RaceTrendStarterRow,
+} from "horse-racing-realtime/race-trend-daily-track-types";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -17,7 +21,10 @@ import {
   starterRunningStyleKey,
 } from "../../../lib/race-trend-aggregate";
 import { RACE_TREND_CACHE_REFRESH_PARAM } from "../../../lib/race-trend-cache";
-import { computeRaceTrendLiveBackoffMs } from "../../../lib/race-trend-live-backoff";
+import {
+  computeRaceTrendLiveBackoffMs,
+  isRaceTrendLiveReconnectExhausted,
+} from "../../../lib/race-trend-live-backoff";
 import {
   clearRaceTrendScoreConditionsQueryParam,
   clearRaceTrendScoreLinkQuery,
@@ -61,10 +68,6 @@ import {
   type ScoreDetailInput,
   type UmabanContext,
 } from "../../../lib/race-trend-score";
-import type {
-  RaceTrendRunningStyleCache,
-  RaceTrendStarterRow,
-} from "horse-racing-realtime/race-trend-daily-track-types";
 import type {
   RaceTrendCurrentRunningStyle,
   RaceTrendDetail,
@@ -607,12 +610,24 @@ function ScoreTooltipPortal({ anchorRef, isVisible }: ScoreTooltipProps) {
     };
   }, [mounted, anchorRef, isVisible]);
 
+  // F7 BUG-1 hydration fix: render nothing on the server and during the
+  // initial client hydration pass. Previously this component returned an
+  // inline `<small>` as a sibling of the score-header `<button>` until the
+  // mount effect flipped `mounted` to true, at which point the same `<small>`
+  // was moved into a portal under `document.body`. That post-hydration tree
+  // mutation tripped React #418 in production when the table re-rendered
+  // around the same `<th>` in a non-strictly-sequenced order. Returning
+  // `null` keeps the SSR markup minimal (the tooltip is a hover/focus
+  // affordance that only matters once JS is alive anyway), and the portal
+  // appended to `document.body` after mount lives outside the table tree
+  // so the score `<th>` no longer toggles its child set on hydration.
+  if (!mounted) return null;
   const tooltipClassName = isVisible
     ? "race-trend-score-tooltip tooltip-visible"
     : "race-trend-score-tooltip";
   const style: React.CSSProperties =
     position === null ? { top: 0, left: 0 } : { top: position.top, left: position.left };
-  const content = (
+  return createPortal(
     <small
       className={tooltipClassName}
       id={RACE_TREND_SCORE_TOOLTIP_ID}
@@ -620,11 +635,9 @@ function ScoreTooltipPortal({ anchorRef, isVisible }: ScoreTooltipProps) {
       style={style}
     >
       {RACE_TREND_SCORE_TOOLTIP_TEXT}
-    </small>
+    </small>,
+    document.body,
   );
-
-  if (!mounted) return content;
-  return createPortal(content, document.body);
 }
 
 interface RaceTrendTableProps {
@@ -1473,6 +1486,15 @@ export function RaceTrendSection({
     const requestId = fetchSequenceRef.current + 1;
     fetchSequenceRef.current = requestId;
     setIsRefreshing(true);
+    // F7 BUG-2: reset the WS reconnect attempt counter and try to bring the
+    // socket back online on explicit retry. When the circuit breaker has
+    // tripped (`liveSocketRef.current === null` and no pending reconnect),
+    // this is the user-driven recovery path that re-arms the loop. For an
+    // active socket we leave it alone so we don't churn a healthy connection.
+    liveReconnectAttemptRef.current = 0;
+    if (liveSocketRef.current === null) {
+      forceLiveReconnectRef.current?.();
+    }
     // Keep the retry button visible by NOT toggling status to "loading" while
     // refreshing — the button uses `isRefreshing` for its disabled / aria-busy
     // state instead. Background refresh (clearOnError=false) lets the existing
@@ -1574,8 +1596,21 @@ export function RaceTrendSection({
         if (liveSocketRef.current === socket) {
           liveSocketRef.current = null;
         }
-        const delay = computeRaceTrendLiveBackoffMs(liveReconnectAttemptRef.current);
+        // F7 BUG-2 circuit breaker: count this close as a failed attempt
+        // first, then bail out once the running total reaches the cap. The
+        // 60s polling useEffect keeps the panel fresh, and the attempt
+        // counter is reset when the page becomes visible again or the user
+        // clicks the manual retry button so transient outages still recover
+        // automatically. This protects the browser from a permanently
+        // unreachable WS URL (e.g. a localhost relay env leak in production
+        // or a hard DNS failure) silently driving an infinite reconnect
+        // loop. With the cap at 5, the section installs at most 5 sockets
+        // (1 initial + 4 retries) before falling back to polling.
         liveReconnectAttemptRef.current += 1;
+        if (isRaceTrendLiveReconnectExhausted(liveReconnectAttemptRef.current)) {
+          return;
+        }
+        const delay = computeRaceTrendLiveBackoffMs(liveReconnectAttemptRef.current - 1);
         liveReconnectTimerRef.current = window.setTimeout(() => {
           liveReconnectTimerRef.current = null;
           connect();

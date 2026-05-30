@@ -608,3 +608,220 @@ test("stale-data banner with retry button appears when background refresh fails 
   // Banner exposes a retry affordance alongside the message.
   expect(screen.getAllByRole("button", { name: "再取得" }).length).toBeGreaterThan(0);
 });
+
+// ---------------- F7 BUG-2: WebSocket reconnect circuit breaker ----------------
+
+test("WebSocket reconnect stops after 5 consecutive close events and no further sockets are installed", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(buildOkResponse(buildRawPayload()));
+  renderSection();
+  await flushAllAsync();
+  expect(installedSockets).toHaveLength(1);
+  const firstSocket = installedSockets[0];
+  if (!firstSocket) throw new Error("first socket missing");
+  // 1st close → attempt 1, schedule with backoff(0)=1000ms → 2nd socket.
+  act(() => {
+    firstSocket.dispatch("close", {});
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  expect(installedSockets).toHaveLength(2);
+  const secondSocket = installedSockets[1];
+  if (!secondSocket) throw new Error("second socket missing");
+  // 2nd close → attempt 2, schedule with backoff(1)=2000ms → 3rd socket.
+  act(() => {
+    secondSocket.dispatch("close", {});
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2000);
+  });
+  expect(installedSockets).toHaveLength(3);
+  const thirdSocket = installedSockets[2];
+  if (!thirdSocket) throw new Error("third socket missing");
+  // 3rd close → attempt 3, schedule with backoff(2)=4000ms → 4th socket.
+  act(() => {
+    thirdSocket.dispatch("close", {});
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(4000);
+  });
+  expect(installedSockets).toHaveLength(4);
+  const fourthSocket = installedSockets[3];
+  if (!fourthSocket) throw new Error("fourth socket missing");
+  // 4th close → attempt 4, schedule with backoff(3)=8000ms → 5th socket.
+  act(() => {
+    fourthSocket.dispatch("close", {});
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(8000);
+  });
+  expect(installedSockets).toHaveLength(5);
+  const fifthSocket = installedSockets[4];
+  if (!fifthSocket) throw new Error("fifth socket missing");
+  // 5th close → attempt 5, circuit breaker trips, NO reconnect scheduled.
+  act(() => {
+    fifthSocket.dispatch("close", {});
+  });
+  // Advance well past the maximum 30s backoff to prove no 6th socket is
+  // ever installed once the breaker has tripped.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(60_000);
+  });
+  expect(installedSockets).toHaveLength(5);
+});
+
+test("visibilitychange to visible resets the reconnect attempt counter after the circuit breaker trips", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(buildOkResponse(buildRawPayload()));
+  renderSection();
+  await flushAllAsync();
+  const firstSocket = installedSockets[0];
+  if (!firstSocket) throw new Error("first socket missing");
+  act(() => {
+    firstSocket.dispatch("close", {});
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  const secondSocket = installedSockets[1];
+  if (!secondSocket) throw new Error("second socket missing");
+  act(() => {
+    secondSocket.dispatch("close", {});
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2000);
+  });
+  const thirdSocket = installedSockets[2];
+  if (!thirdSocket) throw new Error("third socket missing");
+  act(() => {
+    thirdSocket.dispatch("close", {});
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(4000);
+  });
+  const fourthSocket = installedSockets[3];
+  if (!fourthSocket) throw new Error("fourth socket missing");
+  act(() => {
+    fourthSocket.dispatch("close", {});
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(8000);
+  });
+  const fifthSocket = installedSockets[4];
+  if (!fifthSocket) throw new Error("fifth socket missing");
+  act(() => {
+    fifthSocket.dispatch("close", {});
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(60_000);
+  });
+  // Circuit breaker tripped — exactly 5 sockets so far, no 6th.
+  expect(installedSockets).toHaveLength(5);
+  // visibility=visible with a null socket triggers the force-reconnect path
+  // which also resets the attempt counter to 0, so a new socket is created.
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+  act(() => {
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  expect(installedSockets).toHaveLength(6);
+});
+
+// ---------------- F7 BUG-1: SSR-safe score tooltip portal ----------------
+
+test("initial render does NOT include the score tooltip <small> inside the table head", () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(buildOkResponse(buildRawPayload()));
+  const { container } = renderSection();
+  const scoreHeader = container.querySelector("button.race-trend-score-header");
+  expect(scoreHeader).not.toBeNull();
+  // The fix is to return null from the portal component until mount completes,
+  // so the score <th> contains only the <button> when React reconciles the
+  // initial markup. The browser-only paint and the `mounted` effect run after
+  // hydration completes, so the snapshot we capture here mirrors what the SSR
+  // pass produces.
+  const tooltipInTh = scoreHeader?.parentElement?.querySelector("#race-trend-score-tooltip");
+  expect(tooltipInTh).toBeNull();
+});
+
+test("score tooltip portal renders into document.body after the mount effect fires", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(buildOkResponse(buildRawPayload()));
+  renderSection();
+  await flushAllAsync();
+  // After mount, the portal is appended to document.body so the tooltip
+  // survives in the DOM but is no longer a child of the score <th>.
+  const tooltip = document.querySelector("#race-trend-score-tooltip");
+  expect(tooltip).not.toBeNull();
+  expect(tooltip?.parentElement?.tagName).toBe("BODY");
+});
+
+test("manual retry button click reconnects after the circuit breaker trips", async () => {
+  const fetchCounter: FetchCallCounter = { count: 0 };
+  vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+    fetchCounter.count += 1;
+    if (fetchCounter.count === 1) {
+      return Promise.resolve(buildOkResponse(buildRawPayload()));
+    }
+    return Promise.reject(new Error("flaky upstream"));
+  });
+  renderSection();
+  await flushAllAsync();
+  expect(installedSockets).toHaveLength(1);
+  const firstSocket = installedSockets[0];
+  if (!firstSocket) throw new Error("first socket missing");
+  // Trigger the trend-updated message before tripping the breaker so the
+  // stale banner becomes visible once the background refresh fails.
+  act(() => {
+    firstSocket.dispatch("message", { data: JSON.stringify({ type: "trend-updated" }) });
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(6000);
+  });
+  // Trip the breaker with 5 consecutive close events.
+  act(() => {
+    firstSocket.dispatch("close", {});
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  const secondSocket = installedSockets[1];
+  if (!secondSocket) throw new Error("second socket missing");
+  act(() => {
+    secondSocket.dispatch("close", {});
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2000);
+  });
+  const thirdSocket = installedSockets[2];
+  if (!thirdSocket) throw new Error("third socket missing");
+  act(() => {
+    thirdSocket.dispatch("close", {});
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(4000);
+  });
+  const fourthSocket = installedSockets[3];
+  if (!fourthSocket) throw new Error("fourth socket missing");
+  act(() => {
+    fourthSocket.dispatch("close", {});
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(8000);
+  });
+  const fifthSocket = installedSockets[4];
+  if (!fifthSocket) throw new Error("fifth socket missing");
+  act(() => {
+    fifthSocket.dispatch("close", {});
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(60_000);
+  });
+  expect(installedSockets).toHaveLength(5);
+  // Click the stale-banner retry button to reset the attempt counter and
+  // re-trigger the WebSocket loop. The retry path also re-fires the trend
+  // fetch which is intentional — circuit-breaker reset is a side effect.
+  const banner = screen.getByText("最新化に失敗したため、 直近のデータを表示しています。");
+  const retryButton = banner.parentElement?.querySelector("button.race-trend-retry-button");
+  if (!retryButton) throw new Error("stale banner retry button missing");
+  await act(async () => {
+    fireEvent.click(retryButton);
+  });
+  expect(installedSockets).toHaveLength(6);
+});
