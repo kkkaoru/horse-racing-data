@@ -91,6 +91,7 @@
   },
   "vars": {
     "NEXT_PUBLIC_REALTIME_DATA_API_BASE_URL": "https://sync-realtime-data.kkk4oru.com",
+    "PC_KEIBA_RACE_AI_ENABLED": "false",
     "PC_KEIBA_RACE_AI_NAME": "アーモンドAI",
     "PC_KEIBA_RACE_AI_ICON_URL": "/api/ai/assets/almondeye_top.png",
     "PC_KEIBA_RACE_AI_ACCENT_COLOR": "#69a9e9",
