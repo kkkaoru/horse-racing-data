@@ -4,7 +4,10 @@
 // the request path. In local dev the keiba.go.jp scrape path is preserved
 // behind `PC_KEIBA_DEV_REALTIME_SCRAPER=1`. Horse weights are seeded from the
 // new HorseWeightDO inside sync-realtime-data via the `REALTIME_DATA` service
-// binding (horse-weights-latest endpoint).
+// binding (horse-weights-latest endpoint). When the DO has not received a
+// snapshot yet (just after deploy, hibernation, etc.) the route falls back to
+// reading the latest snapshot directly from the legacy `REALTIME_DB` D1 so the
+// first paint still renders weights.
 import { NextResponse } from "next/server";
 
 import { safeGetCloudflareEnv } from "../../../../../../../../../lib/cloudflare-context.server";
@@ -13,6 +16,7 @@ import {
   buildDevRealtimePayload,
   isDevScraperEnabled,
 } from "../../../../../../../../../lib/dev-realtime-scraper.server";
+import { fetchHorseWeightsFromD1 } from "../../../../../../../../../lib/horse-weight-d1-fallback.server";
 import {
   buildRealtimePayloadFromHot,
   HOT_WORKER_ORIGIN,
@@ -60,6 +64,12 @@ interface FetchHorseWeightsParams {
   realtimeData: { fetch: typeof fetch };
   source: RaceSource;
   year: string;
+}
+
+interface ResolveHorseWeightsParams {
+  db: PcKeibaD1Database | undefined;
+  fromDO: HorseWeightSnapshot | null;
+  raceKey: string;
 }
 
 const NO_STORE_HEADERS = { "cache-control": "no-store" };
@@ -120,6 +130,14 @@ export const fetchOddsFromHot = async (
   }
 };
 
+export const resolveHorseWeights = async (
+  params: ResolveHorseWeightsParams,
+): Promise<HorseWeightSnapshot | null> => {
+  if (params.fromDO !== null) return params.fromDO;
+  if (params.db === undefined) return null;
+  return fetchHorseWeightsFromD1({ db: params.db, raceKey: params.raceKey });
+};
+
 export { buildRealtimePayloadFromHot, type HotOddsPayload };
 
 export const dynamic = "force-dynamic";
@@ -154,7 +172,7 @@ export async function GET(request: Request, context: RouteContext) {
   });
   const env = await safeGetCloudflareEnv();
   const realtimeData = env?.REALTIME_DATA;
-  const [odds, horseWeights] = await Promise.all([
+  const [odds, fromDO] = await Promise.all([
     fetchOddsFromHot(env?.REALTIME_HOT, raceKey),
     realtimeData
       ? fetchHorseWeightsLatest({
@@ -168,6 +186,7 @@ export async function GET(request: Request, context: RouteContext) {
         })
       : Promise.resolve(null),
   ]);
+  const horseWeights = await resolveHorseWeights({ db: env?.REALTIME_DB, fromDO, raceKey });
   const payload = buildRealtimePayloadFromHot(raceKey, odds);
   const merged = horseWeights === null ? payload : { ...payload, horseWeights };
   return NextResponse.json(merged, { headers: NO_STORE_HEADERS });
