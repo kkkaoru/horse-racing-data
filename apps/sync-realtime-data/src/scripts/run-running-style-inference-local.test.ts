@@ -36,7 +36,10 @@ import {
   writeOutput,
   type CliLogger,
   type DuckDBConnectionLike,
+  type DuckDBInstanceFactory,
+  type DuckDBInstanceLike,
   type DuckDBModuleLike,
+  type DuckDBResultReaderLike,
   type ModelFileReader,
   type PredictionRow,
   type RawFeatureRow,
@@ -98,48 +101,62 @@ const ZERO_FIELD_ROW = {
   self_speed_index_vs_field_top: 0,
 } satisfies HorseFieldRow;
 
-interface FakeConnectionState {
+interface FakeSharedState {
   rows: readonly Record<string, unknown>[];
   runStatements: string[];
   queryStatements: string[];
+  instanceClosed: number;
+  connectionClosed: number;
 }
 
-class FakeConnection implements DuckDBConnectionLike {
-  constructor(private readonly state: FakeConnectionState) {}
-  query(sql: string) {
-    this.state.queryStatements.push(sql);
-    return { toArray: () => this.state.rows };
-  }
-  run(sql: string) {
-    this.state.runStatements.push(sql);
-  }
-  close() {
-    return undefined;
-  }
-}
+const buildSharedState = (rows: readonly Record<string, unknown>[]): FakeSharedState => ({
+  rows,
+  runStatements: [],
+  queryStatements: [],
+  instanceClosed: 0,
+  connectionClosed: 0,
+});
 
-class FakeDatabase {
-  constructor(public readonly path: string) {}
-  connect(): FakeConnection {
-    return new FakeConnection(FakeDatabase.sharedState);
-  }
-  close() {
-    return undefined;
-  }
-  static sharedState: FakeConnectionState = {
-    rows: [],
-    runStatements: [],
-    queryStatements: [],
+const buildFakeReader = (state: FakeSharedState): DuckDBResultReaderLike => ({
+  getRowObjects: () => state.rows,
+});
+
+const buildFakeConnection = (state: FakeSharedState): DuckDBConnectionLike => ({
+  runAndReadAll: (sql) => {
+    state.queryStatements.push(sql);
+    return Promise.resolve(buildFakeReader(state));
+  },
+  run: (sql) => {
+    state.runStatements.push(sql);
+    return Promise.resolve();
+  },
+  disconnectSync: () => {
+    state.connectionClosed += 1;
+  },
+});
+
+const buildFakeInstance = (state: FakeSharedState): DuckDBInstanceLike => ({
+  connect: () => Promise.resolve(buildFakeConnection(state)),
+  closeSync: () => {
+    state.instanceClosed += 1;
+  },
+});
+
+const buildFakeModuleFromState = (state: FakeSharedState): DuckDBModuleLike => {
+  const factory: DuckDBInstanceFactory = {
+    create: (_path: string) => Promise.resolve(buildFakeInstance(state)),
   };
+  return { DuckDBInstance: factory };
+};
+
+interface FakeModuleSetup {
+  module: DuckDBModuleLike;
+  state: FakeSharedState;
 }
 
-const buildFakeModule = (rows: readonly Record<string, unknown>[]): DuckDBModuleLike => {
-  FakeDatabase.sharedState = {
-    rows,
-    runStatements: [],
-    queryStatements: [],
-  };
-  return { Database: FakeDatabase as unknown as DuckDBModuleLike["Database"] };
+const buildFakeModuleSetup = (rows: readonly Record<string, unknown>[]): FakeModuleSetup => {
+  const state = buildSharedState(rows);
+  return { module: buildFakeModuleFromState(state), state };
 };
 
 const FAKE_MODEL = {
@@ -1121,30 +1138,34 @@ it("buildWriteOutputCopySql renders NULL for a null target_running_style_class v
   expect(sql.includes(", NULL)") satisfies boolean).toBe(true);
 });
 
-it("readFeatures runs SELECT and returns rows from DuckDB", () => {
-  const fakeModule = buildFakeModule([{ source: "jra" }]);
-  const rows = readFeatures({ duckdbModule: fakeModule, featuresParquet: "/tmp/x.parquet" });
+it("readFeatures runs SELECT and returns rows via the neo async API", async () => {
+  const setup = buildFakeModuleSetup([{ source: "jra" }]);
+  const rows = await readFeatures({
+    duckdbModule: setup.module,
+    featuresParquet: "/tmp/x.parquet",
+  });
   expect(rows.length).toBe(1);
-  expect(FakeDatabase.sharedState.queryStatements[0]).toBe(
-    "SELECT * FROM read_parquet('/tmp/x.parquet')",
-  );
+  expect(setup.state.queryStatements[0]).toBe("SELECT * FROM read_parquet('/tmp/x.parquet')");
+  expect(setup.state.connectionClosed).toBe(1);
+  expect(setup.state.instanceClosed).toBe(1);
 });
 
-it("writeOutput runs empty COPY when rows array is empty", () => {
-  const fakeModule = buildFakeModule([]);
-  writeOutput({
-    duckdbModule: fakeModule,
+it("writeOutput runs empty COPY when rows array is empty", async () => {
+  const setup = buildFakeModuleSetup([]);
+  await writeOutput({
+    duckdbModule: setup.module,
     outputParquet: "/tmp/empty.parquet",
     rows: [],
     includeTargetClass: false,
   });
-  expect(FakeDatabase.sharedState.runStatements.length).toBe(1);
-  const statement = FakeDatabase.sharedState.runStatements[0]!;
+  expect(setup.state.runStatements.length).toBe(1);
+  const statement = setup.state.runStatements[0]!;
   expect(statement.includes("WHERE 1 = 0") satisfies boolean).toBe(true);
+  expect(setup.state.connectionClosed).toBe(1);
 });
 
-it("writeOutput runs VALUES COPY when rows are present", () => {
-  const fakeModule = buildFakeModule([]);
+it("writeOutput runs VALUES COPY when rows are present", async () => {
+  const setup = buildFakeModuleSetup([]);
   const predictions: ReadonlyArray<PredictionRow> = [
     {
       source: "jra",
@@ -1162,14 +1183,14 @@ it("writeOutput runs VALUES COPY when rows are present", () => {
       target_running_style_class: null,
     },
   ];
-  writeOutput({
-    duckdbModule: fakeModule,
+  await writeOutput({
+    duckdbModule: setup.module,
     outputParquet: "/tmp/out.parquet",
     rows: predictions,
     includeTargetClass: false,
   });
-  expect(FakeDatabase.sharedState.runStatements.length).toBe(1);
-  const valuesStatement = FakeDatabase.sharedState.runStatements[0]!;
+  expect(setup.state.runStatements.length).toBe(1);
+  const valuesStatement = setup.state.runStatements[0]!;
   expect(valuesStatement.includes("VALUES") satisfies boolean).toBe(true);
 });
 
@@ -1182,26 +1203,32 @@ it("decodeModelFromBuffer delegates to decodeFlatLightGBMModel", () => {
   spy.mockRestore();
 });
 
-it("resolveDuckdbModule accepts a direct Database export", () => {
-  const fake = { Database: FakeDatabase as unknown as DuckDBModuleLike["Database"] };
-  expect(resolveDuckdbModule(fake)).toBe(fake);
+it("resolveDuckdbModule accepts a direct DuckDBInstance export", () => {
+  const setup = buildFakeModuleSetup([]);
+  expect(resolveDuckdbModule(setup.module)).toBe(setup.module);
 });
 
 it("resolveDuckdbModule accepts a default-namespaced export", () => {
-  const inner = { Database: FakeDatabase as unknown as DuckDBModuleLike["Database"] };
-  const wrapped = { default: inner };
-  expect(resolveDuckdbModule(wrapped)).toBe(inner);
+  const setup = buildFakeModuleSetup([]);
+  const wrapped = { default: setup.module };
+  expect(resolveDuckdbModule(wrapped)).toBe(setup.module);
 });
 
-it("resolveDuckdbModule throws when Database is not exported", () => {
+it("resolveDuckdbModule throws when DuckDBInstance is not exported", () => {
   expect(() => resolveDuckdbModule({ something: "else" })).toThrowError(
-    "@duckdb/node-api does not export Database.",
+    "@duckdb/node-api does not export DuckDBInstance.",
   );
 });
 
 it("resolveDuckdbModule throws when namespace is not an object", () => {
   expect(() => resolveDuckdbModule(null)).toThrowError(
-    "@duckdb/node-api does not export Database.",
+    "@duckdb/node-api does not export DuckDBInstance.",
+  );
+});
+
+it("resolveDuckdbModule throws when DuckDBInstance lacks a create factory", () => {
+  expect(() => resolveDuckdbModule({ DuckDBInstance: { create: 42 } })).toThrowError(
+    "@duckdb/node-api does not export DuckDBInstance.",
   );
 });
 
@@ -1210,7 +1237,7 @@ it("runInferenceLocal reads features, runs predictions, writes parquet, and repo
   const predictSpy = vi
     .spyOn(modelBinary, "predictFlatRunningStyle")
     .mockReturnValue(PREDICTION_FIXED);
-  const fakeModule = buildFakeModule([
+  const setup = buildFakeModuleSetup([
     {
       ...RACE_KEY_FIELDS,
       ketto_toroku_bango: "A",
@@ -1244,7 +1271,7 @@ it("runInferenceLocal reads features, runs predictions, writes parquet, and repo
       modelVersion: "m1",
       featureVersion: "v1",
     },
-    duckdbModule: fakeModule,
+    duckdbModule: setup.module,
     readModelFile,
     logger,
   });
@@ -1258,7 +1285,7 @@ it("runInferenceLocal reads features, runs predictions, writes parquet, and repo
 
 it("runInferenceLocal writes empty parquet when there are no input rows", async () => {
   const decodeSpy = vi.spyOn(modelBinary, "decodeFlatLightGBMModel").mockReturnValue(FAKE_MODEL);
-  const fakeModule = buildFakeModule([]);
+  const setup = buildFakeModuleSetup([]);
   const readModelFile: ModelFileReader = () => Promise.resolve(new ArrayBuffer(8));
   const result = await runInferenceLocal({
     options: {
@@ -1271,12 +1298,12 @@ it("runInferenceLocal writes empty parquet when there are no input rows", async 
       modelVersion: "m",
       featureVersion: "v",
     },
-    duckdbModule: fakeModule,
+    duckdbModule: setup.module,
     readModelFile,
     logger: { info: () => undefined },
   });
   expect(result).toStrictEqual({ rowCount: 0, raceCount: 0 });
-  const emptyStatement = FakeDatabase.sharedState.runStatements[0]!;
+  const emptyStatement = setup.state.runStatements[0]!;
   expect(emptyStatement.includes("WHERE 1 = 0") satisfies boolean).toBe(true);
   decodeSpy.mockRestore();
 });
@@ -1286,7 +1313,7 @@ it("runInferenceLocal predicts per race independently across multiple race group
   const predictSpy = vi
     .spyOn(modelBinary, "predictFlatRunningStyle")
     .mockReturnValue(PREDICTION_FIXED);
-  const fakeModule = buildFakeModule([
+  const setup = buildFakeModuleSetup([
     { ...RACE_KEY_FIELDS, ketto_toroku_bango: "A", career_win_rate: 0.2 },
     { ...RACE_KEY_FIELDS, race_bango: "03", ketto_toroku_bango: "C", career_win_rate: 0.3 },
     { ...RACE_KEY_FIELDS, race_bango: "03", ketto_toroku_bango: "D", career_win_rate: 0.4 },
@@ -1303,7 +1330,7 @@ it("runInferenceLocal predicts per race independently across multiple race group
       modelVersion: "m",
       featureVersion: "v",
     },
-    duckdbModule: fakeModule,
+    duckdbModule: setup.module,
     readModelFile,
     logger: { info: () => undefined },
   });
@@ -1321,7 +1348,7 @@ it("runInferenceLocal runs chained-predict 2-stage inference for a v2 model with
   const predictSpy = vi
     .spyOn(modelBinary, "predictFlatRunningStyle")
     .mockReturnValue(PREDICTION_V2);
-  const fakeModule = buildFakeModule([
+  const setup = buildFakeModuleSetup([
     {
       ...RACE_KEY_FIELDS,
       ketto_toroku_bango: "A",
@@ -1345,7 +1372,7 @@ it("runInferenceLocal runs chained-predict 2-stage inference for a v2 model with
       modelVersion: "v2",
       featureVersion: "v1",
     },
-    duckdbModule: fakeModule,
+    duckdbModule: setup.module,
     readModelFile,
     logger: { info: () => undefined },
   });
@@ -1358,7 +1385,7 @@ it("runInferenceLocal runs chained-predict 2-stage inference for a v2 model with
 
 it("runInferenceLocal throws when a v2 model is given but --rs-p-from-flatbin is missing", async () => {
   const decodeSpy = vi.spyOn(modelBinary, "decodeFlatLightGBMModel").mockReturnValue(FAKE_V2_MODEL);
-  const fakeModule = buildFakeModule([]);
+  const setup = buildFakeModuleSetup([]);
   const readModelFile: ModelFileReader = () => Promise.resolve(new ArrayBuffer(8));
   await expect(
     runInferenceLocal({
@@ -1372,7 +1399,7 @@ it("runInferenceLocal throws when a v2 model is given but --rs-p-from-flatbin is
         modelVersion: "v2",
         featureVersion: "v1",
       },
-      duckdbModule: fakeModule,
+      duckdbModule: setup.module,
       readModelFile,
       logger: { info: () => undefined },
     }),
@@ -1385,7 +1412,7 @@ it("runInferenceLocal carries target_running_style_class from input parquet to o
   const predictSpy = vi
     .spyOn(modelBinary, "predictFlatRunningStyle")
     .mockReturnValue(PREDICTION_FIXED);
-  const fakeModule = buildFakeModule([
+  const setup = buildFakeModuleSetup([
     {
       ...RACE_KEY_FIELDS,
       ketto_toroku_bango: "A",
@@ -1405,12 +1432,12 @@ it("runInferenceLocal carries target_running_style_class from input parquet to o
       modelVersion: "m",
       featureVersion: "v",
     },
-    duckdbModule: fakeModule,
+    duckdbModule: setup.module,
     readModelFile,
     logger: { info: () => undefined },
   });
   expect(result).toStrictEqual({ rowCount: 1, raceCount: 1 });
-  const statement = FakeDatabase.sharedState.runStatements[0]!;
+  const statement = setup.state.runStatements[0]!;
   expect(statement.includes("target_running_style_class") satisfies boolean).toBe(true);
   decodeSpy.mockRestore();
   predictSpy.mockRestore();
@@ -1419,7 +1446,7 @@ it("runInferenceLocal carries target_running_style_class from input parquet to o
 it("runCli parses argv and produces predictions through the same pipeline", async () => {
   const decodeSpy = vi.spyOn(modelBinary, "decodeFlatLightGBMModel").mockReturnValue(FAKE_MODEL);
   vi.spyOn(modelBinary, "predictFlatRunningStyle").mockReturnValue(PREDICTION_FIXED);
-  const fakeModule = buildFakeModule([
+  const setup = buildFakeModuleSetup([
     { ...RACE_KEY_FIELDS, ketto_toroku_bango: "A", career_win_rate: 0.2 },
   ]);
   const readModelFile: ModelFileReader = () => Promise.resolve(new ArrayBuffer(8));
@@ -1440,7 +1467,7 @@ it("runCli parses argv and produces predictions through the same pipeline", asyn
       "--feature-version",
       "v",
     ],
-    duckdbModule: fakeModule,
+    duckdbModule: setup.module,
     readModelFile,
     logger: { info: () => undefined },
   });
@@ -1450,12 +1477,12 @@ it("runCli parses argv and produces predictions through the same pipeline", asyn
 });
 
 it("runCli propagates parseArgs errors for missing arguments", async () => {
-  const fakeModule = buildFakeModule([]);
+  const setup = buildFakeModuleSetup([]);
   const readModelFile: ModelFileReader = () => Promise.resolve(new ArrayBuffer(8));
   await expect(
     runCli({
       argv: [],
-      duckdbModule: fakeModule,
+      duckdbModule: setup.module,
       readModelFile,
       logger: { info: () => undefined },
     }),

@@ -353,9 +353,19 @@ def test_attach_postgres_emits_exactly_four_execute_calls() -> None:
     assert con.execute.call_count == 4
 
 
-def test_build_hive_copy_sql_wraps_select_in_copy() -> None:
+def test_build_hive_copy_sql_starts_with_copy_open_paren() -> None:
     sql = subject.build_hive_copy_sql(select_sql="SELECT 1", output_dir="/tmp/out")
-    assert sql.startswith("COPY (SELECT 1) TO '/tmp/out'")
+    assert sql.startswith("COPY (")
+
+
+def test_build_hive_copy_sql_wraps_inner_in_postgres_query() -> None:
+    sql = subject.build_hive_copy_sql(select_sql="SELECT 1", output_dir="/tmp/out")
+    assert "SELECT * FROM postgres_query('pg', 'SELECT 1')" in sql
+
+
+def test_build_hive_copy_sql_targets_output_dir() -> None:
+    sql = subject.build_hive_copy_sql(select_sql="SELECT 1", output_dir="/tmp/out")
+    assert "TO '/tmp/out'" in sql
 
 
 def test_build_hive_copy_sql_partition_by_race_year() -> None:
@@ -366,6 +376,37 @@ def test_build_hive_copy_sql_partition_by_race_year() -> None:
 def test_build_hive_copy_sql_uses_overwrite_or_ignore() -> None:
     sql = subject.build_hive_copy_sql(select_sql="SELECT 1", output_dir="/tmp/out")
     assert "OVERWRITE_OR_IGNORE TRUE" in sql
+
+
+def test_build_hive_copy_sql_escapes_single_quotes_in_inner_sql() -> None:
+    sql = subject.build_hive_copy_sql(
+        select_sql="SELECT to_char(now(), 'YYYY')", output_dir="/tmp/out",
+    )
+    assert "postgres_query('pg', 'SELECT to_char(now(), ''YYYY'')')" in sql
+
+
+def test_escape_sql_for_postgres_query_doubles_single_quotes() -> None:
+    assert subject.escape_sql_for_postgres_query("a'b") == "a''b"
+
+
+def test_escape_sql_for_postgres_query_strips_surrounding_whitespace() -> None:
+    assert subject.escape_sql_for_postgres_query("  SELECT 1  \n") == "SELECT 1"
+
+
+def test_escape_sql_for_postgres_query_leaves_plain_sql_untouched() -> None:
+    assert subject.escape_sql_for_postgres_query("SELECT race_year FROM t") == (
+        "SELECT race_year FROM t"
+    )
+
+
+def test_build_postgres_query_subselect_starts_with_select_star() -> None:
+    assert subject.build_postgres_query_subselect("SELECT 1").startswith(
+        "SELECT * FROM postgres_query(",
+    )
+
+
+def test_build_postgres_query_subselect_uses_pg_attachment_alias() -> None:
+    assert "postgres_query('pg'," in subject.build_postgres_query_subselect("SELECT 1")
 
 
 def test_ensure_output_dir_creates_nested_directory(tmp_path: Path) -> None:
@@ -603,6 +644,30 @@ def test_run_passes_ts_sql_into_copy_wrapper() -> None:
         call for call in con.execute.call_args_list if call.args[0].startswith("COPY (")
     )
     assert "SELECT race_year FROM pg.race_entry_corner_features" in copy_call.args[0]
+
+
+def test_run_wraps_ts_sql_in_postgres_query_call() -> None:
+    con = MagicMock()
+    connect = MagicMock(return_value=con)
+    completed = MagicMock()
+    completed.returncode = 0
+    completed.stdout = "SELECT to_char(now(), 'YYYY')"
+    completed.stderr = ""
+    runner = MagicMock(return_value=completed)
+    args = subject.parse_args([
+        "--pg-url", "postgres://u",
+        "--output-dir", "/tmp/x",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2020",
+        "--year-to", "2021",
+        "--category", "jra",
+    ])
+    with patch.object(subject, "ensure_output_dir"):
+        subject.run(args, connect, runner)
+    copy_call = next(
+        call for call in con.execute.call_args_list if call.args[0].startswith("COPY (")
+    )
+    assert "postgres_query('pg', 'SELECT to_char(now(), ''YYYY'')')" in copy_call.args[0]
 
 
 def test_run_closes_connection_even_on_execute_failure() -> None:

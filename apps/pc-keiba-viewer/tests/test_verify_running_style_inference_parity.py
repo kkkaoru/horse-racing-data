@@ -19,18 +19,30 @@ import verify_running_style_inference_parity as subject
 def test_parse_args_full_set() -> None:
     args = subject.parse_args([
         "--features-parquet", "/tmp/feat.parquet",
-        "--predictions-parquet", "/tmp/preds.parquet",
+        "--output-parquet", "/tmp/out.parquet",
+        "--model-flatbin", "/tmp/model.flatbin",
+        "--rs-p-from-flatbin", "/tmp/v1_5.flatbin",
+        "--predicted-at", "2026-05-31T00:00:00Z",
         "--pg-dsn", "postgresql://u:p@h/db",
-        "--model-version", "jra-running-style-lgbm-prod-v1.5",
+        "--model-version", "jra-running-style-lgbm-prod-v2",
+        "--feature-version", "v1",
+        "--category", "jra",
+        "--year", "2026",
         "--phase", "phase2",
         "--sample-limit", "500",
         "--tolerance", "1e-10",
         "--report-dir", "tmp/parity",
     ])
     assert args.features_parquet == "/tmp/feat.parquet"
-    assert args.predictions_parquet == "/tmp/preds.parquet"
+    assert args.output_parquet == "/tmp/out.parquet"
+    assert args.model_flatbin == "/tmp/model.flatbin"
+    assert args.rs_p_from_flatbin == "/tmp/v1_5.flatbin"
+    assert args.predicted_at == "2026-05-31T00:00:00Z"
     assert args.pg_dsn == "postgresql://u:p@h/db"
-    assert args.model_version == "jra-running-style-lgbm-prod-v1.5"
+    assert args.model_version == "jra-running-style-lgbm-prod-v2"
+    assert args.feature_version == "v1"
+    assert args.category == "jra"
+    assert args.year == "2026"
     assert args.phase == "phase2"
     assert args.sample_limit == 500
     assert args.tolerance == 1e-10
@@ -40,22 +52,33 @@ def test_parse_args_full_set() -> None:
 def test_parse_args_defaults_to_phase2_and_sample_1000() -> None:
     args = subject.parse_args([
         "--features-parquet", "/tmp/feat.parquet",
-        "--predictions-parquet", "/tmp/preds.parquet",
+        "--output-parquet", "/tmp/out.parquet",
+        "--model-flatbin", "/tmp/model.flatbin",
+        "--predicted-at", "2026-05-31T00:00:00Z",
         "--pg-dsn", "postgresql://u:p@h/db",
         "--model-version", "jra-running-style-lgbm-prod-v1.5",
+        "--feature-version", "v1",
+        "--category", "jra",
+        "--year", "2026",
     ])
     assert args.phase == "phase2"
     assert args.sample_limit == 1000
     assert args.tolerance == 1e-12
     assert args.report_dir == "tmp/parity"
+    assert args.rs_p_from_flatbin is None
 
 
 def test_parse_args_accepts_phase1() -> None:
     args = subject.parse_args([
         "--features-parquet", "/tmp/feat.parquet",
-        "--predictions-parquet", "/tmp/preds.parquet",
+        "--output-parquet", "/tmp/out.parquet",
+        "--model-flatbin", "/tmp/model.flatbin",
+        "--predicted-at", "2026-05-31T00:00:00Z",
         "--pg-dsn", "postgresql://u:p@h/db",
-        "--model-version", "jra-running-style-lgbm-prod-v1.5",
+        "--model-version", "v",
+        "--feature-version", "v1",
+        "--category", "jra",
+        "--year", "2026",
         "--phase", "phase1",
     ])
     assert args.phase == "phase1"
@@ -64,9 +87,14 @@ def test_parse_args_accepts_phase1() -> None:
 def test_parse_args_accepts_phase3() -> None:
     args = subject.parse_args([
         "--features-parquet", "/tmp/feat.parquet",
-        "--predictions-parquet", "/tmp/preds.parquet",
+        "--output-parquet", "/tmp/out.parquet",
+        "--model-flatbin", "/tmp/model.flatbin",
+        "--predicted-at", "2026-05-31T00:00:00Z",
         "--pg-dsn", "postgresql://u:p@h/db",
-        "--model-version", "jra-running-style-lgbm-prod-v1.5",
+        "--model-version", "v",
+        "--feature-version", "v1",
+        "--category", "jra",
+        "--year", "2026",
         "--phase", "phase3",
     ])
     assert args.phase == "phase3"
@@ -76,46 +104,156 @@ def test_parse_args_rejects_unknown_phase() -> None:
     with pytest.raises(SystemExit):
         subject.parse_args([
             "--features-parquet", "/tmp/feat.parquet",
-            "--predictions-parquet", "/tmp/preds.parquet",
+            "--output-parquet", "/tmp/out.parquet",
+            "--model-flatbin", "/tmp/model.flatbin",
+            "--predicted-at", "2026-05-31T00:00:00Z",
             "--pg-dsn", "postgresql://u:p@h/db",
             "--model-version", "v",
+            "--feature-version", "v1",
+            "--category", "jra",
+            "--year", "2026",
             "--phase", "phase42",
+        ])
+
+
+def test_parse_args_rejects_unknown_category() -> None:
+    with pytest.raises(SystemExit):
+        subject.parse_args([
+            "--features-parquet", "/tmp/feat.parquet",
+            "--output-parquet", "/tmp/out.parquet",
+            "--model-flatbin", "/tmp/model.flatbin",
+            "--predicted-at", "2026-05-31T00:00:00Z",
+            "--pg-dsn", "postgresql://u:p@h/db",
+            "--model-version", "v",
+            "--feature-version", "v1",
+            "--category", "banei",
+            "--year", "2026",
         ])
 
 
 def test_parse_args_requires_features_parquet() -> None:
     with pytest.raises(SystemExit):
         subject.parse_args([
-            "--predictions-parquet", "/tmp/preds.parquet",
+            "--output-parquet", "/tmp/out.parquet",
+            "--model-flatbin", "/tmp/model.flatbin",
+            "--predicted-at", "2026-05-31T00:00:00Z",
             "--pg-dsn", "postgresql://u:p@h/db",
             "--model-version", "v",
+            "--feature-version", "v1",
+            "--category", "jra",
+            "--year", "2026",
         ])
 
 
-def test_parse_args_requires_predictions_parquet() -> None:
+def test_parse_args_requires_output_parquet() -> None:
     with pytest.raises(SystemExit):
         subject.parse_args([
             "--features-parquet", "/tmp/feat.parquet",
+            "--model-flatbin", "/tmp/model.flatbin",
+            "--predicted-at", "2026-05-31T00:00:00Z",
             "--pg-dsn", "postgresql://u:p@h/db",
             "--model-version", "v",
+            "--feature-version", "v1",
+            "--category", "jra",
+            "--year", "2026",
         ])
 
 
-def test_parse_args_requires_pg_dsn() -> None:
+def test_parse_args_requires_model_flatbin() -> None:
     with pytest.raises(SystemExit):
         subject.parse_args([
             "--features-parquet", "/tmp/feat.parquet",
-            "--predictions-parquet", "/tmp/preds.parquet",
+            "--output-parquet", "/tmp/out.parquet",
+            "--predicted-at", "2026-05-31T00:00:00Z",
+            "--pg-dsn", "postgresql://u:p@h/db",
             "--model-version", "v",
+            "--feature-version", "v1",
+            "--category", "jra",
+            "--year", "2026",
         ])
+
+
+def test_parse_args_requires_predicted_at() -> None:
+    with pytest.raises(SystemExit):
+        subject.parse_args([
+            "--features-parquet", "/tmp/feat.parquet",
+            "--output-parquet", "/tmp/out.parquet",
+            "--model-flatbin", "/tmp/model.flatbin",
+            "--pg-dsn", "postgresql://u:p@h/db",
+            "--model-version", "v",
+            "--feature-version", "v1",
+            "--category", "jra",
+            "--year", "2026",
+        ])
+
+
+def test_parse_args_pg_dsn_is_optional() -> None:
+    args = subject.parse_args([
+        "--features-parquet", "/tmp/feat.parquet",
+        "--output-parquet", "/tmp/out.parquet",
+        "--model-flatbin", "/tmp/model.flatbin",
+        "--predicted-at", "2026-05-31T00:00:00Z",
+        "--model-version", "v",
+        "--feature-version", "v1",
+        "--category", "jra",
+        "--year", "2026",
+    ])
+    assert args.pg_dsn is None
 
 
 def test_parse_args_requires_model_version() -> None:
     with pytest.raises(SystemExit):
         subject.parse_args([
             "--features-parquet", "/tmp/feat.parquet",
-            "--predictions-parquet", "/tmp/preds.parquet",
+            "--output-parquet", "/tmp/out.parquet",
+            "--model-flatbin", "/tmp/model.flatbin",
+            "--predicted-at", "2026-05-31T00:00:00Z",
             "--pg-dsn", "postgresql://u:p@h/db",
+            "--feature-version", "v1",
+            "--category", "jra",
+            "--year", "2026",
+        ])
+
+
+def test_parse_args_requires_feature_version() -> None:
+    with pytest.raises(SystemExit):
+        subject.parse_args([
+            "--features-parquet", "/tmp/feat.parquet",
+            "--output-parquet", "/tmp/out.parquet",
+            "--model-flatbin", "/tmp/model.flatbin",
+            "--predicted-at", "2026-05-31T00:00:00Z",
+            "--pg-dsn", "postgresql://u:p@h/db",
+            "--model-version", "v",
+            "--category", "jra",
+            "--year", "2026",
+        ])
+
+
+def test_parse_args_requires_category() -> None:
+    with pytest.raises(SystemExit):
+        subject.parse_args([
+            "--features-parquet", "/tmp/feat.parquet",
+            "--output-parquet", "/tmp/out.parquet",
+            "--model-flatbin", "/tmp/model.flatbin",
+            "--predicted-at", "2026-05-31T00:00:00Z",
+            "--pg-dsn", "postgresql://u:p@h/db",
+            "--model-version", "v",
+            "--feature-version", "v1",
+            "--year", "2026",
+        ])
+
+
+def test_parse_args_requires_year() -> None:
+    with pytest.raises(SystemExit):
+        subject.parse_args([
+            "--features-parquet", "/tmp/feat.parquet",
+            "--output-parquet", "/tmp/out.parquet",
+            "--model-flatbin", "/tmp/model.flatbin",
+            "--predicted-at", "2026-05-31T00:00:00Z",
+            "--pg-dsn", "postgresql://u:p@h/db",
+            "--model-version", "v",
+            "--feature-version", "v1",
+            "--category", "jra",
         ])
 
 
@@ -127,6 +265,7 @@ def test_build_sample_keys_sql_is_md5_deterministic_order() -> None:
     assert "model_version = %s" in sql
     assert "race_running_style_model_predictions" in sql
     assert "GROUP BY" in sql
+    assert "kaisai_nen = %s" in sql
 
 
 def test_build_prod_predictions_sql_selects_probabilities_and_predicted_class() -> None:
@@ -138,6 +277,7 @@ def test_build_prod_predictions_sql_selects_probabilities_and_predicted_class() 
     assert "predicted_class" in sql
     assert "ketto_toroku_bango" in sql
     assert "model_version = %s" in sql
+    assert "kaisai_nen = %s" in sql
 
 
 def test_md5_sample_sql_is_deterministic_with_same_seed() -> None:
@@ -160,21 +300,21 @@ def test_fetch_sample_race_keys_executes_md5_query_with_params() -> None:
     cursor = MagicMock()
     cursor.fetchall.return_value = [
         ("jra", "2026", "0103", "05", "01"),
-        ("nar", "2026", "0203", "30", "10"),
+        ("jra", "2026", "0203", "30", "10"),
     ]
     connection = MagicMock()
     connection.cursor.return_value = cursor
     connector = MagicMock(return_value=connection)
     result = subject.fetch_sample_race_keys(
-        {"pg_dsn": "dsn", "model_version": "v1.5", "limit": 1000},
+        {"pg_dsn": "dsn", "model_version": "v1.5", "year": "2026", "limit": 1000},
         pg_connector=connector,
     )
     assert result == [
         ("jra", "2026", "0103", "05", "01"),
-        ("nar", "2026", "0203", "30", "10"),
+        ("jra", "2026", "0203", "30", "10"),
     ]
     cursor.execute.assert_called_once_with(
-        subject.build_sample_keys_sql(), ("v1.5", 1000),
+        subject.build_sample_keys_sql(), ("v1.5", "2026", 1000),
     )
     connection.close.assert_called_once()
 
@@ -187,7 +327,7 @@ def test_fetch_sample_race_keys_closes_connection_on_error() -> None:
     connector = MagicMock(return_value=connection)
     with pytest.raises(RuntimeError):
         subject.fetch_sample_race_keys(
-            {"pg_dsn": "dsn", "model_version": "v1.5", "limit": 1000},
+            {"pg_dsn": "dsn", "model_version": "v1.5", "year": "2026", "limit": 1000},
             pg_connector=connector,
         )
     connection.close.assert_called_once()
@@ -202,7 +342,7 @@ def test_fetch_prod_predictions_returns_dataframe_with_expected_columns() -> Non
     connection.cursor.return_value = cursor
     connector = MagicMock(return_value=connection)
     frame = subject.fetch_prod_predictions(
-        {"pg_dsn": "dsn", "model_version": "v1.5", "limit": 1000},
+        {"pg_dsn": "dsn", "model_version": "v1.5", "year": "2026", "limit": 1000},
         pg_connector=connector,
     )
     assert list(frame.columns) == [
@@ -230,7 +370,7 @@ def test_fetch_prod_predictions_closes_connection_on_error() -> None:
     connector = MagicMock(return_value=connection)
     with pytest.raises(RuntimeError):
         subject.fetch_prod_predictions(
-            {"pg_dsn": "dsn", "model_version": "v1.5", "limit": 1000},
+            {"pg_dsn": "dsn", "model_version": "v1.5", "year": "2026", "limit": 1000},
             pg_connector=connector,
         )
     connection.close.assert_called_once()
@@ -592,11 +732,47 @@ def test_phase_2_runs_when_env_set_mocked_pg_psycopg(
     connection.cursor.return_value = cursor
     connector = MagicMock(return_value=connection)
     frame = subject.fetch_prod_predictions(
-        {"pg_dsn": subject.resolve_phase_two_dsn(), "model_version": "v1.5", "limit": 1000},
+        {
+            "pg_dsn": subject.resolve_phase_two_dsn(),
+            "model_version": "v1.5",
+            "year": "2026",
+            "limit": 1000,
+        },
         pg_connector=connector,
     )
     assert len(frame) == 1
     connection.close.assert_called_once()
+
+
+def test_resolve_pg_dsn_prefers_explicit_over_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PARITY_PG_DSN", "postgresql://env:env@h/db")
+    assert subject.resolve_pg_dsn("postgresql://explicit:explicit@h/db") == (
+        "postgresql://explicit:explicit@h/db"
+    )
+
+
+def test_resolve_pg_dsn_falls_back_to_env_when_explicit_is_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PARITY_PG_DSN", "postgresql://env:env@h/db")
+    assert subject.resolve_pg_dsn(None) == "postgresql://env:env@h/db"
+
+
+def test_resolve_pg_dsn_falls_back_to_env_when_explicit_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PARITY_PG_DSN", "postgresql://env:env@h/db")
+    assert subject.resolve_pg_dsn("") == "postgresql://env:env@h/db"
+
+
+def test_resolve_pg_dsn_raises_when_neither_provided(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PARITY_PG_DSN", raising=False)
+    with pytest.raises(ValueError):
+        subject.resolve_pg_dsn(None)
 
 
 def test_collect_mismatches_returns_only_rows_above_threshold() -> None:
@@ -834,19 +1010,92 @@ def test_default_pg_connector_invokes_psycopg_connect() -> None:
     fake_psycopg.connect.assert_called_once_with("postgresql://u:p@h/db")
 
 
-def test_default_local_inference_runner_invokes_subprocess_run() -> None:
-    with patch("subprocess.run") as run_mock:
-        subject.default_local_inference_runner(
-            features_parquet="/tmp/feat.parquet",
-            output_parquet="/tmp/preds.parquet",
-            model_version="jra-running-style-lgbm-prod-v1.5",
-        )
-    run_mock.assert_called_once()
-    invoked_args = run_mock.call_args.args[0]
+def test_build_w3_command_without_rs_p_from_flatbin() -> None:
+    cmd = subject.build_w3_command(
+        features_parquet="/tmp/feat.parquet",
+        output_parquet="/tmp/out.parquet",
+        model_flatbin="/tmp/model.flatbin",
+        category="jra",
+        model_version="jra-running-style-lgbm-prod-v1.5",
+        feature_version="v1",
+        predicted_at="2026-05-31T00:00:00Z",
+        rs_p_from_flatbin=None,
+    )
+    assert cmd[0] == "bun"
+    assert cmd[1] == "run"
+    assert cmd[2] == subject.W3_INFERENCE_SCRIPT_PATH
+    assert "--rs-p-from-flatbin" not in cmd
+    assert "--model-flatbin" in cmd
+    assert "--features-parquet" in cmd
+    assert "--output-parquet" in cmd
+    assert "--category" in cmd
+    assert "--model-version" in cmd
+    assert "--feature-version" in cmd
+    assert "--predicted-at" in cmd
+
+
+def test_build_w3_command_includes_rs_p_from_flatbin_when_provided() -> None:
+    cmd = subject.build_w3_command(
+        features_parquet="/tmp/feat.parquet",
+        output_parquet="/tmp/out.parquet",
+        model_flatbin="/tmp/model_v2.flatbin",
+        category="jra",
+        model_version="jra-running-style-lgbm-prod-v2",
+        feature_version="v1",
+        predicted_at="2026-05-31T00:00:00Z",
+        rs_p_from_flatbin="/tmp/v1_5.flatbin",
+    )
+    assert "--rs-p-from-flatbin" in cmd
+    rs_p_index = cmd.index("--rs-p-from-flatbin")
+    assert cmd[rs_p_index + 1] == "/tmp/v1_5.flatbin"
+
+
+def test_default_local_inference_runner_invokes_runner_with_w3_args() -> None:
+    runner = MagicMock()
+    runner.return_value = MagicMock(returncode=0, stdout="", stderr="")
+    subject.default_local_inference_runner(
+        features_parquet="/tmp/feat.parquet",
+        output_parquet="/tmp/out.parquet",
+        model_flatbin="/tmp/model.flatbin",
+        category="jra",
+        model_version="jra-running-style-lgbm-prod-v1.5",
+        feature_version="v1",
+        predicted_at="2026-05-31T00:00:00Z",
+        rs_p_from_flatbin=None,
+        runner=runner,
+    )
+    runner.assert_called_once()
+    invoked_args = runner.call_args.args[0]
     assert invoked_args[0] == "bun"
+    assert invoked_args[2] == subject.W3_INFERENCE_SCRIPT_PATH
+    assert "--model-flatbin" in invoked_args
     assert "--features-parquet" in invoked_args
     assert "--output-parquet" in invoked_args
+    assert "--category" in invoked_args
     assert "--model-version" in invoked_args
+    assert "--feature-version" in invoked_args
+    assert "--predicted-at" in invoked_args
+    assert runner.call_args.kwargs["check"] is True
+    assert runner.call_args.kwargs["capture_output"] is True
+    assert runner.call_args.kwargs["text"] is True
+
+
+def test_default_local_inference_runner_passes_rs_p_from_flatbin_when_v2() -> None:
+    runner = MagicMock()
+    runner.return_value = MagicMock(returncode=0, stdout="", stderr="")
+    subject.default_local_inference_runner(
+        features_parquet="/tmp/feat.parquet",
+        output_parquet="/tmp/out.parquet",
+        model_flatbin="/tmp/model_v2.flatbin",
+        category="jra",
+        model_version="jra-running-style-lgbm-prod-v2",
+        feature_version="v1",
+        predicted_at="2026-05-31T00:00:00Z",
+        rs_p_from_flatbin="/tmp/v1_5.flatbin",
+        runner=runner,
+    )
+    invoked_args = runner.call_args.args[0]
+    assert "--rs-p-from-flatbin" in invoked_args
 
 
 def test_utc_now_iso_format_is_z_suffixed() -> None:
@@ -856,34 +1105,178 @@ def test_utc_now_iso_format_is_z_suffixed() -> None:
     assert len(value) == 16
 
 
+def test_filter_features_by_race_keys_inner_joins_on_race_key() -> None:
+    features = pd.DataFrame({
+        "source": ["jra", "jra", "jra"],
+        "kaisai_nen": ["2026", "2026", "2026"],
+        "kaisai_tsukihi": ["0103", "0103", "0203"],
+        "keibajo_code": ["05", "05", "05"],
+        "race_bango": ["01", "02", "01"],
+        "ketto_toroku_bango": ["A", "B", "C"],
+        "career_win_rate": [0.1, 0.2, 0.3],
+    })
+    sample = [
+        ("jra", "2026", "0103", "05", "01"),
+        ("jra", "2026", "0203", "05", "01"),
+    ]
+    filtered = subject.filter_features_by_race_keys(features, sample)
+    assert len(filtered) == 2
+    assert set(filtered["ketto_toroku_bango"]) == {"A", "C"}
+
+
+def test_filter_features_by_race_keys_returns_empty_when_no_sample() -> None:
+    features = pd.DataFrame({
+        "source": ["jra"],
+        "kaisai_nen": ["2026"],
+        "kaisai_tsukihi": ["0103"],
+        "keibajo_code": ["05"],
+        "race_bango": ["01"],
+        "ketto_toroku_bango": ["A"],
+    })
+    filtered = subject.filter_features_by_race_keys(features, [])
+    assert len(filtered) == 0
+
+
+def test_default_pandas_parquet_writer_calls_to_parquet(tmp_path: Path) -> None:
+    frame = pd.DataFrame({
+        "source": ["jra"],
+        "kaisai_nen": ["2026"],
+        "kaisai_tsukihi": ["0103"],
+        "keibajo_code": ["05"],
+        "race_bango": ["01"],
+    })
+    target = (tmp_path / "out.parquet").as_posix()
+    subject.default_pandas_parquet_writer(frame, target)
+    loaded = pd.read_parquet(target)
+    assert len(loaded) == 1
+
+
+def test_derive_predicted_class_adds_argmax_when_missing() -> None:
+    local_frame = pd.DataFrame({
+        "source": ["jra"],
+        "kaisai_nen": ["2026"],
+        "kaisai_tsukihi": ["0103"],
+        "keibajo_code": ["05"],
+        "race_bango": ["01"],
+        "ketto_toroku_bango": ["A"],
+        "p_nige": [0.7],
+        "p_senkou": [0.1],
+        "p_sashi": [0.1],
+        "p_oikomi": [0.1],
+    })
+    augmented = subject.derive_predicted_class(local_frame)
+    assert "predicted_class" in augmented.columns
+    assert augmented["predicted_class"].iloc[0] == 0
+
+
+def test_derive_predicted_class_preserves_existing_column() -> None:
+    local_frame = pd.DataFrame({
+        "source": ["jra"],
+        "kaisai_nen": ["2026"],
+        "kaisai_tsukihi": ["0103"],
+        "keibajo_code": ["05"],
+        "race_bango": ["01"],
+        "ketto_toroku_bango": ["A"],
+        "p_nige": [0.1],
+        "p_senkou": [0.7],
+        "p_sashi": [0.1],
+        "p_oikomi": [0.1],
+        "predicted_class": [99],
+    })
+    augmented = subject.derive_predicted_class(local_frame)
+    assert augmented["predicted_class"].iloc[0] == 99
+
+
+def test_coerce_phase_two_args_uses_explicit_pg_dsn() -> None:
+    parsed = subject.parse_args([
+        "--features-parquet", "/tmp/feat.parquet",
+        "--output-parquet", "/tmp/out.parquet",
+        "--model-flatbin", "/tmp/model.flatbin",
+        "--predicted-at", "2026-05-31T00:00:00Z",
+        "--pg-dsn", "postgresql://u:p@h/db",
+        "--model-version", "v1.5",
+        "--feature-version", "v1",
+        "--category", "jra",
+        "--year", "2026",
+    ])
+    coerced = subject.coerce_phase_two_args(parsed)
+    assert coerced["pg_dsn"] == "postgresql://u:p@h/db"
+    assert coerced["features_parquet"] == "/tmp/feat.parquet"
+    assert coerced["output_parquet"] == "/tmp/out.parquet"
+    assert coerced["model_flatbin"] == "/tmp/model.flatbin"
+    assert coerced["rs_p_from_flatbin"] is None
+    assert coerced["category"] == "jra"
+    assert coerced["year"] == "2026"
+
+
+def test_coerce_phase_two_args_passes_rs_p_from_flatbin() -> None:
+    parsed = subject.parse_args([
+        "--features-parquet", "/tmp/feat.parquet",
+        "--output-parquet", "/tmp/out.parquet",
+        "--model-flatbin", "/tmp/model_v2.flatbin",
+        "--rs-p-from-flatbin", "/tmp/v1_5.flatbin",
+        "--predicted-at", "2026-05-31T00:00:00Z",
+        "--pg-dsn", "postgresql://u:p@h/db",
+        "--model-version", "jra-running-style-lgbm-prod-v2",
+        "--feature-version", "v1",
+        "--category", "jra",
+        "--year", "2026",
+    ])
+    coerced = subject.coerce_phase_two_args(parsed)
+    assert coerced["rs_p_from_flatbin"] == "/tmp/v1_5.flatbin"
+
+
 def test_run_phase_one_returns_smoke_message() -> None:
     args = subject.parse_args([
         "--features-parquet", "/tmp/feat.parquet",
-        "--predictions-parquet", "/tmp/preds.parquet",
+        "--output-parquet", "/tmp/out.parquet",
+        "--model-flatbin", "/tmp/model.flatbin",
+        "--predicted-at", "2026-05-31T00:00:00Z",
         "--pg-dsn", "postgresql://u:p@h/db",
         "--model-version", "v1.5",
+        "--feature-version", "v1",
+        "--category", "jra",
+        "--year", "2026",
         "--phase", "phase1",
     ])
     outcome = subject.run(
         args,
-        pg_connector=MagicMock(),
-        local_inference_runner=MagicMock(),
-        pandas_reader=MagicMock(),
-        clock_iso=lambda: "20260531T000000Z",
+        deps={
+            "pg_connector": MagicMock(),
+            "local_inference_runner": MagicMock(),
+            "pandas_reader": MagicMock(),
+            "pandas_writer": MagicMock(),
+            "subprocess_runner": MagicMock(),
+            "clock_iso": lambda: "20260531T000000Z",
+        },
     )
     assert outcome["phase"] == "phase1"
     assert "smoke" in cast(str, outcome["message"])
 
 
-def test_run_phase_two_invokes_local_inference_then_pg_fetch_then_evaluate() -> None:
+def test_run_phase_two_e2e_passes_when_local_matches_prod(tmp_path: Path) -> None:
     args = subject.parse_args([
         "--features-parquet", "/tmp/feat.parquet",
-        "--predictions-parquet", "/tmp/preds.parquet",
+        "--output-parquet", (tmp_path / "out.parquet").as_posix(),
+        "--model-flatbin", "/tmp/model.flatbin",
+        "--predicted-at", "2026-05-31T00:00:00Z",
         "--pg-dsn", "postgresql://u:p@h/db",
         "--model-version", "v1.5",
+        "--feature-version", "v1",
+        "--category", "jra",
+        "--year", "2026",
         "--phase", "phase2",
     ])
-    local_frame = pd.DataFrame({
+    features = pd.DataFrame({
+        "source": ["jra", "jra"],
+        "kaisai_nen": ["2026", "2025"],
+        "kaisai_tsukihi": ["0103", "0103"],
+        "keibajo_code": ["05", "05"],
+        "race_bango": ["01", "01"],
+        "ketto_toroku_bango": ["A", "Z"],
+        "career_win_rate": [0.1, 0.5],
+    })
+    output_frame = pd.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -894,87 +1287,66 @@ def test_run_phase_two_invokes_local_inference_then_pg_fetch_then_evaluate() -> 
         "p_senkou": [0.1],
         "p_sashi": [0.1],
         "p_oikomi": [0.1],
-        "predicted_class": [0],
+        "model_version": ["v1.5"],
+        "running_style_feature_version": ["v1"],
     })
-    cursor = MagicMock()
-    cursor.fetchall.return_value = [
+    sample_cursor = MagicMock()
+    sample_cursor.fetchall.return_value = [("jra", "2026", "0103", "05", "01")]
+    prod_cursor = MagicMock()
+    prod_cursor.fetchall.return_value = [
         ("jra", "2026", "0103", "05", "01", "A", 0.7, 0.1, 0.1, 0.1, 0),
     ]
-    connection = MagicMock()
-    connection.cursor.return_value = cursor
-    connector = MagicMock(return_value=connection)
+    connections = [MagicMock(), MagicMock()]
+    connections[0].cursor.return_value = sample_cursor
+    connections[1].cursor.return_value = prod_cursor
+    connector = MagicMock(side_effect=connections)
+    pandas_reader = MagicMock(side_effect=[features, output_frame])
+    pandas_writer = MagicMock()
     local_runner = MagicMock()
-    pandas_reader = MagicMock(return_value=local_frame)
     outcome = subject.run(
         args,
-        pg_connector=connector,
-        local_inference_runner=local_runner,
-        pandas_reader=pandas_reader,
-        clock_iso=lambda: "20260531T000000Z",
+        deps={
+            "pg_connector": connector,
+            "local_inference_runner": local_runner,
+            "pandas_reader": pandas_reader,
+            "pandas_writer": pandas_writer,
+            "subprocess_runner": MagicMock(),
+            "clock_iso": lambda: "20260531T000000Z",
+        },
     )
-    local_runner.assert_called_once_with(
-        features_parquet="/tmp/feat.parquet",
-        output_parquet="/tmp/preds.parquet",
-        model_version="v1.5",
-    )
-    pandas_reader.assert_called_once_with("/tmp/preds.parquet")
     parity_result = cast(subject.ParityResult, outcome["result"])
     assert outcome["phase"] == "phase2"
     assert parity_result["passed"] is True
+    assert parity_result["rows_compared"] == 1
+    local_runner.assert_called_once()
+    assert local_runner.call_args.kwargs["model_flatbin"] == "/tmp/model.flatbin"
+    assert local_runner.call_args.kwargs["category"] == "jra"
+    pandas_writer.assert_called_once()
 
 
-def test_run_phase_three_writes_json_report_and_no_mismatches(tmp_path: Path) -> None:
+def test_run_phase_two_fails_when_diff_exceeds_tolerance(tmp_path: Path) -> None:
     args = subject.parse_args([
         "--features-parquet", "/tmp/feat.parquet",
-        "--predictions-parquet", "/tmp/preds.parquet",
+        "--output-parquet", (tmp_path / "out.parquet").as_posix(),
+        "--model-flatbin", "/tmp/model.flatbin",
+        "--predicted-at", "2026-05-31T00:00:00Z",
         "--pg-dsn", "postgresql://u:p@h/db",
         "--model-version", "v1.5",
-        "--phase", "phase3",
-        "--report-dir", tmp_path.as_posix(),
+        "--feature-version", "v1",
+        "--category", "jra",
+        "--year", "2026",
+        "--phase", "phase2",
     ])
-    local_frame = pd.DataFrame({
+    features = pd.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
         "keibajo_code": ["05"],
         "race_bango": ["01"],
         "ketto_toroku_bango": ["A"],
-        "p_nige": [0.7],
-        "p_senkou": [0.1],
-        "p_sashi": [0.1],
-        "p_oikomi": [0.1],
-        "predicted_class": [0],
+        "career_win_rate": [0.1],
     })
-    cursor = MagicMock()
-    cursor.fetchall.return_value = [
-        ("jra", "2026", "0103", "05", "01", "A", 0.7, 0.1, 0.1, 0.1, 0),
-    ]
-    connection = MagicMock()
-    connection.cursor.return_value = cursor
-    connector = MagicMock(return_value=connection)
-    outcome = subject.run(
-        args,
-        pg_connector=connector,
-        local_inference_runner=MagicMock(),
-        pandas_reader=MagicMock(return_value=local_frame),
-        clock_iso=lambda: "20260531T000000Z",
-    )
-    assert outcome["phase"] == "phase3"
-    assert outcome["mismatches_path"] is None
-    report_path = Path(cast(str, outcome["report_path"]))
-    assert report_path.is_file()
-
-
-def test_run_phase_three_dumps_mismatches_when_diff_exceeds_threshold(tmp_path: Path) -> None:
-    args = subject.parse_args([
-        "--features-parquet", "/tmp/feat.parquet",
-        "--predictions-parquet", "/tmp/preds.parquet",
-        "--pg-dsn", "postgresql://u:p@h/db",
-        "--model-version", "v1.5",
-        "--phase", "phase3",
-        "--report-dir", tmp_path.as_posix(),
-    ])
-    local_frame = pd.DataFrame({
+    output_frame = pd.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -985,21 +1357,160 @@ def test_run_phase_three_dumps_mismatches_when_diff_exceeds_threshold(tmp_path: 
         "p_senkou": [0.1],
         "p_sashi": [0.1],
         "p_oikomi": [0.099999],
-        "predicted_class": [0],
     })
-    cursor = MagicMock()
-    cursor.fetchall.return_value = [
+    sample_cursor = MagicMock()
+    sample_cursor.fetchall.return_value = [("jra", "2026", "0103", "05", "01")]
+    prod_cursor = MagicMock()
+    prod_cursor.fetchall.return_value = [
         ("jra", "2026", "0103", "05", "01", "A", 0.7, 0.1, 0.1, 0.1, 0),
     ]
-    connection = MagicMock()
-    connection.cursor.return_value = cursor
-    connector = MagicMock(return_value=connection)
+    connections = [MagicMock(), MagicMock()]
+    connections[0].cursor.return_value = sample_cursor
+    connections[1].cursor.return_value = prod_cursor
+    connector = MagicMock(side_effect=connections)
     outcome = subject.run(
         args,
-        pg_connector=connector,
-        local_inference_runner=MagicMock(),
-        pandas_reader=MagicMock(return_value=local_frame),
-        clock_iso=lambda: "20260531T000000Z",
+        deps={
+            "pg_connector": connector,
+            "local_inference_runner": MagicMock(),
+            "pandas_reader": MagicMock(side_effect=[features, output_frame]),
+            "pandas_writer": MagicMock(),
+            "subprocess_runner": MagicMock(),
+            "clock_iso": lambda: "20260531T000000Z",
+        },
+    )
+    parity_result = cast(subject.ParityResult, outcome["result"])
+    assert outcome["phase"] == "phase2"
+    assert parity_result["passed"] is False
+
+
+def test_run_phase_three_writes_json_report_and_no_mismatches(tmp_path: Path) -> None:
+    args = subject.parse_args([
+        "--features-parquet", "/tmp/feat.parquet",
+        "--output-parquet", (tmp_path / "out.parquet").as_posix(),
+        "--model-flatbin", "/tmp/model.flatbin",
+        "--predicted-at", "2026-05-31T00:00:00Z",
+        "--pg-dsn", "postgresql://u:p@h/db",
+        "--model-version", "v1.5",
+        "--feature-version", "v1",
+        "--category", "jra",
+        "--year", "2026",
+        "--phase", "phase3",
+        "--report-dir", tmp_path.as_posix(),
+    ])
+    features = pd.DataFrame({
+        "source": ["jra"],
+        "kaisai_nen": ["2026"],
+        "kaisai_tsukihi": ["0103"],
+        "keibajo_code": ["05"],
+        "race_bango": ["01"],
+        "ketto_toroku_bango": ["A"],
+        "career_win_rate": [0.1],
+    })
+    output_frame = pd.DataFrame({
+        "source": ["jra"],
+        "kaisai_nen": ["2026"],
+        "kaisai_tsukihi": ["0103"],
+        "keibajo_code": ["05"],
+        "race_bango": ["01"],
+        "ketto_toroku_bango": ["A"],
+        "p_nige": [0.7],
+        "p_senkou": [0.1],
+        "p_sashi": [0.1],
+        "p_oikomi": [0.1],
+    })
+    sample_cursor = MagicMock()
+    sample_cursor.fetchall.return_value = [("jra", "2026", "0103", "05", "01")]
+    prod_cursor_phase2 = MagicMock()
+    prod_cursor_phase2.fetchall.return_value = [
+        ("jra", "2026", "0103", "05", "01", "A", 0.7, 0.1, 0.1, 0.1, 0),
+    ]
+    prod_cursor_phase3 = MagicMock()
+    prod_cursor_phase3.fetchall.return_value = [
+        ("jra", "2026", "0103", "05", "01", "A", 0.7, 0.1, 0.1, 0.1, 0),
+    ]
+    connections = [MagicMock(), MagicMock(), MagicMock()]
+    connections[0].cursor.return_value = sample_cursor
+    connections[1].cursor.return_value = prod_cursor_phase2
+    connections[2].cursor.return_value = prod_cursor_phase3
+    connector = MagicMock(side_effect=connections)
+    outcome = subject.run(
+        args,
+        deps={
+            "pg_connector": connector,
+            "local_inference_runner": MagicMock(),
+            "pandas_reader": MagicMock(side_effect=[features, output_frame, output_frame]),
+            "pandas_writer": MagicMock(),
+            "subprocess_runner": MagicMock(),
+            "clock_iso": lambda: "20260531T000000Z",
+        },
+    )
+    assert outcome["phase"] == "phase3"
+    assert outcome["mismatches_path"] is None
+    report_path = Path(cast(str, outcome["report_path"]))
+    assert report_path.is_file()
+
+
+def test_run_phase_three_dumps_mismatches_when_diff_exceeds_threshold(tmp_path: Path) -> None:
+    args = subject.parse_args([
+        "--features-parquet", "/tmp/feat.parquet",
+        "--output-parquet", (tmp_path / "out.parquet").as_posix(),
+        "--model-flatbin", "/tmp/model.flatbin",
+        "--predicted-at", "2026-05-31T00:00:00Z",
+        "--pg-dsn", "postgresql://u:p@h/db",
+        "--model-version", "v1.5",
+        "--feature-version", "v1",
+        "--category", "jra",
+        "--year", "2026",
+        "--phase", "phase3",
+        "--report-dir", tmp_path.as_posix(),
+    ])
+    features = pd.DataFrame({
+        "source": ["jra"],
+        "kaisai_nen": ["2026"],
+        "kaisai_tsukihi": ["0103"],
+        "keibajo_code": ["05"],
+        "race_bango": ["01"],
+        "ketto_toroku_bango": ["A"],
+        "career_win_rate": [0.1],
+    })
+    output_frame = pd.DataFrame({
+        "source": ["jra"],
+        "kaisai_nen": ["2026"],
+        "kaisai_tsukihi": ["0103"],
+        "keibajo_code": ["05"],
+        "race_bango": ["01"],
+        "ketto_toroku_bango": ["A"],
+        "p_nige": [0.700001],
+        "p_senkou": [0.1],
+        "p_sashi": [0.1],
+        "p_oikomi": [0.099999],
+    })
+    sample_cursor = MagicMock()
+    sample_cursor.fetchall.return_value = [("jra", "2026", "0103", "05", "01")]
+    prod_cursor_phase2 = MagicMock()
+    prod_cursor_phase2.fetchall.return_value = [
+        ("jra", "2026", "0103", "05", "01", "A", 0.7, 0.1, 0.1, 0.1, 0),
+    ]
+    prod_cursor_phase3 = MagicMock()
+    prod_cursor_phase3.fetchall.return_value = [
+        ("jra", "2026", "0103", "05", "01", "A", 0.7, 0.1, 0.1, 0.1, 0),
+    ]
+    connections = [MagicMock(), MagicMock(), MagicMock()]
+    connections[0].cursor.return_value = sample_cursor
+    connections[1].cursor.return_value = prod_cursor_phase2
+    connections[2].cursor.return_value = prod_cursor_phase3
+    connector = MagicMock(side_effect=connections)
+    outcome = subject.run(
+        args,
+        deps={
+            "pg_connector": connector,
+            "local_inference_runner": MagicMock(),
+            "pandas_reader": MagicMock(side_effect=[features, output_frame, output_frame]),
+            "pandas_writer": MagicMock(),
+            "subprocess_runner": MagicMock(),
+            "clock_iso": lambda: "20260531T000000Z",
+        },
     )
     assert outcome["phase"] == "phase3"
     assert outcome["mismatches_path"] is not None
@@ -1012,9 +1523,14 @@ def test_main_invokes_default_runner_and_prints_json_outcome(
 ) -> None:
     argv = [
         "--features-parquet", "/tmp/feat.parquet",
-        "--predictions-parquet", "/tmp/preds.parquet",
+        "--output-parquet", "/tmp/out.parquet",
+        "--model-flatbin", "/tmp/model.flatbin",
+        "--predicted-at", "2026-05-31T00:00:00Z",
         "--pg-dsn", "postgresql://u:p@h/db",
         "--model-version", "v1.5",
+        "--feature-version", "v1",
+        "--category", "jra",
+        "--year", "2026",
         "--phase", "phase1",
     ]
     subject.main(argv)
@@ -1048,6 +1564,10 @@ def test_module_constants_are_stable() -> None:
     assert subject.DEFAULT_TOLERANCE_PHASE3_MAX_DIFF == 1e-9
     assert subject.DEFAULT_TOLERANCE_PHASE3_AGREEMENT == 0.999
     assert subject.ENV_PARITY_PG_DSN == "PARITY_PG_DSN"
+    assert subject.SUPPORTED_CATEGORIES == ("jra", "nar")
+    assert subject.W3_INFERENCE_SCRIPT_PATH == (
+        "apps/sync-realtime-data/src/scripts/run-running-style-inference-local.ts"
+    )
 
 
 def test_environment_variable_default_is_empty_string(monkeypatch: pytest.MonkeyPatch) -> None:
