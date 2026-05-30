@@ -420,12 +420,14 @@ const SELECT_SQL = `
   left join race_horse_count hc on hc.race_key = r.race_key
   where s.source = ?
     and s.kaisai_nen || s.kaisai_tsukihi between ? and ?
+    and s.keibajo_code = ?
     and cast(nullif(replace(r.finish_position, ' ', ''), '') as integer) > 0
   order by s.kaisai_nen desc, s.kaisai_tsukihi desc, s.keibajo_code asc, s.race_bango asc, cast(nullif(r.horse_number, '') as integer) asc
 `;
 
 interface SnapshotQueryParams {
   endYmd: string;
+  keibajoCode: string;
   source: RaceSource;
   startYmd: string;
 }
@@ -436,7 +438,7 @@ const queryD1 = async (params: SnapshotQueryParams): Promise<RawD1Row[]> => {
   if (!db) return [];
   const result = await db
     .prepare(SELECT_SQL)
-    .bind(params.source, params.startYmd, params.endYmd)
+    .bind(params.source, params.startYmd, params.endYmd, params.keibajoCode)
     .all();
   return result.results.filter(isRawD1Row);
 };
@@ -623,6 +625,7 @@ const putTodayCache = async (cacheKey: string, rows: RaceTrendStarterRow[]): Pro
 };
 
 interface RaceTrendTodayParams {
+  keibajoCode: string;
   source: RaceSource;
   targetYmd: string;
 }
@@ -631,6 +634,7 @@ export const getRaceTrendTodayStarterRows = async (
   params: RaceTrendTodayParams,
 ): Promise<RaceTrendStarterRow[]> => {
   const cacheKey = buildRaceTrendTodayCacheKey({
+    keibajoCode: params.keibajoCode,
     source: params.source,
     targetYmd: params.targetYmd,
   });
@@ -639,6 +643,7 @@ export const getRaceTrendTodayStarterRows = async (
   try {
     const raw = await queryD1({
       endYmd: params.targetYmd,
+      keibajoCode: params.keibajoCode,
       source: params.source,
       startYmd: params.targetYmd,
     });
