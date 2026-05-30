@@ -638,10 +638,12 @@ def test_default_copy_into_pg_runs_begin_set_create_copy_and_waits_for_exit(
     stdin = io.StringIO('{"type":"exit"}\n')
     subject.default_copy_into_pg(args, rows, cast(IO[str], stdout), cast(IO[str], stdin))
     issued_sqls = [call.args[0] for call in cursor.execute.call_args_list]
-    assert issued_sqls[0] == "BEGIN"
-    assert issued_sqls[1] == "SET LOCAL statement_timeout = '15min'"
-    assert issued_sqls[2].startswith("CREATE TEMP TABLE tmp_bucket_eval_finish_position_predictions")
+    assert issued_sqls[0] == b"BEGIN"
+    assert issued_sqls[1] == b"SET LOCAL statement_timeout = '15min'"
+    assert issued_sqls[2].startswith(b"CREATE TEMP TABLE tmp_bucket_eval_finish_position_predictions")
     cursor.copy.assert_called_once()
+    copy_query_arg = cursor.copy.call_args.args[0]
+    assert copy_query_arg.startswith(b"COPY tmp_bucket_eval_finish_position_predictions")
     copy_stream.write.assert_called_once()
     written_payload = copy_stream.write.call_args.args[0]
     assert "a1" in written_payload

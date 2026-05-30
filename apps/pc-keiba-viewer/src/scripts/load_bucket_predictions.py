@@ -395,11 +395,12 @@ def default_copy_into_pg(
     pg_con = psycopg_module.connect(args["pg_url"])
     try:
         with pg_con.cursor() as cursor:
-            cursor.execute("BEGIN")
-            cursor.execute("SET LOCAL statement_timeout = '15min'")
-            cursor.execute(build_create_temp_table_sql(args["temp_table_name"]))
+            cursor.execute(b"BEGIN")
+            cursor.execute(b"SET LOCAL statement_timeout = '15min'")
+            cursor.execute(build_create_temp_table_sql(args["temp_table_name"]).encode("utf-8"))
             if len(rows) > 0:
-                with cursor.copy(build_copy_sql(args["temp_table_name"])) as copy_stream:
+                copy_query = build_copy_sql(args["temp_table_name"]).encode("utf-8")
+                with cursor.copy(copy_query) as copy_stream:
                     copy_stream.write(stream_csv_rows(rows))
             serve_sql_rpc(cursor, stdin, stdout, len(rows))
             pg_con.commit()
