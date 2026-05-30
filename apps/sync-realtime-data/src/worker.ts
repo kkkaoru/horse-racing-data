@@ -143,6 +143,7 @@ import type { RaceTrendDailyTrackRow } from "horse-racing-realtime/race-trend-da
 import { buildTrendBustFromRaceContext, requestTrendCacheBust } from "./viewer-trend-cache-bust";
 import {
   getJraAdvanceOddsFetchSlotAt,
+  getJstDateParts,
   getNarOddsFetchSlotAt,
   getNarOddsSaleStartAt,
   getOddsFetchSlotAt,
@@ -162,16 +163,24 @@ import type {
 } from "./types";
 
 const QUEUE_SEND_BATCH_SIZE = 100;
+// True at most once per hour so the discover-urls fallback only fires off
+// the first result-poller tick of each JST hour. Without this guard the
+// cron would re-discover every 2 minutes, which is wasteful.
+const HOURLY_RECOVERY_MINUTE_THRESHOLD = 2;
 const RESULT_FETCH_LOCK_MINUTES = 10;
-// Lowered from 5 to 3 so the "*/5 0-13 * * *" result-poller cron actually
-// dispatches every tick instead of being skipped by the isDue guard. Each tick
-// is one cheap SELECT against realtime_race_sources so the D1 CPU budget still
-// has plenty of headroom (see Phase A2-4 in the plan).
-const RESULT_FETCH_INTERVAL_MINUTES = 3;
-// JST 09-22 (= UTC 00-13) is the race-day result-poller cron. Distinct from the
-// hourly "0 0-13 * * *" plan-realtime-fetches cron so we only run the result
-// poller every 5 minutes without re-triggering the heavier hourly work.
-export const RESULT_POLL_CRON = "*/5 0-13 * * *";
+// 2026-05-31: lowered from 3 to 2 in tandem with the result-poll cron drop
+// from "*/5" to "*/2". With the previous 5-minute cron + 3-minute throttle
+// 11R results landed in D1 up to ~5 minutes after JRA published them, and
+// the 12R detail view's race-trend panel showed only 1R-10R for that whole
+// window. Each result-poll tick is one cheap SELECT against
+// realtime_race_sources so D1 still has plenty of CPU headroom.
+const RESULT_FETCH_INTERVAL_MINUTES = 2;
+// JST 09-22 (= UTC 00-13) is the race-day result-poller cron. Distinct from
+// the hourly "0 0-13 * * *" plan-realtime-fetches cron so we only run the
+// result poller without re-triggering the heavier hourly work. Tightened to
+// every 2 minutes (was every 5) so a freshly-finished race appears in the
+// merged race-trend payload within one or two ticks instead of up to five.
+export const RESULT_POLL_CRON = "*/2 0-13 * * *";
 const TRACK_CONDITION_FETCH_LOCK_MINUTES = 15;
 const QUEUE_RETRY_DELAY_SECONDS = 60;
 const PREMIUM_RACE_DATA_RETRY_DELAY_SECONDS = 20 * 60;
@@ -1703,40 +1712,56 @@ export const assertNarHorseWeightsComplete = (
   }
 };
 
-// Result-poller-only planner. Used by the "*/5 0-13 * * *" cron so the
-// race-result `fetch-results` jobs fire every 5 minutes without re-running the
-// heavier work that the hourly "0 0-13 * * *" cron already performs
-// (track-condition, premium paddock, weights, discovery refresh).
+const shouldRunHourlyDiscoveryRecovery = (now: Date): boolean => {
+  const { minute } = getJstDateParts(now);
+  return Number(minute) < HOURLY_RECOVERY_MINUTE_THRESHOLD;
+};
+
+const buildResultFetchJobIfDue = (
+  race: SchedulableRaceSource,
+  now: Date,
+): Extract<Job, { type: "fetch-results" }> | null => {
+  const minutes = minutesUntilRace(race, now);
+  if (minutes === null) {
+    return null;
+  }
+  const resultLockUntil = race.resultFetchLockUntil
+    ? new Date(race.resultFetchLockUntil).getTime()
+    : Number.NaN;
+  const isResultFetchEligible =
+    minutes <= 0 &&
+    (race.source === "nar" || race.source === "jra") &&
+    !race.resultCompleteAt &&
+    isDue(race.lastResultFetchAt, RESULT_FETCH_INTERVAL_MINUTES, now) &&
+    (Number.isNaN(resultLockUntil) || resultLockUntil <= now.getTime()) &&
+    !race.lastResultQueuedAt;
+  return isResultFetchEligible ? { raceKey: race.raceKey, type: "fetch-results" } : null;
+};
+
+// Result-poller-only planner. Used by the "*/2 0-13 * * *" cron so the
+// race-result `fetch-results` jobs fire every 2 minutes without re-running
+// the heavier work that the hourly "0 0-13 * * *" cron already performs
+// (track-condition, premium paddock, weights, discovery refresh). 2026-05-31:
+// also re-runs discovery once per hour off this lightweight cron so a missed
+// hourly discover-urls tick does not leave today's races invisible to the
+// result poller (= the "11R confirmed but viewer never sees 1R-11R" failure
+// mode the new DO + cache-bust path is meant to fix upstream).
 export const planResultFetchesOnly = async (env: Env, targetDate: string): Promise<number> => {
   const now = getNow(env);
   if (!isJstPollingWindow(now)) {
     return 0;
   }
-  const races = await listSchedulableRaceSourcesByDate(env.REALTIME_DB, targetDate);
-  const jobs: Job[] = [];
-  for (const race of races) {
-    const minutes = minutesUntilRace(race, now);
-    if (minutes === null) {
-      continue;
-    }
-    const resultLockUntil = race.resultFetchLockUntil
-      ? new Date(race.resultFetchLockUntil).getTime()
-      : Number.NaN;
-    if (
-      minutes <= 0 &&
-      (race.source === "nar" || race.source === "jra") &&
-      !race.resultCompleteAt &&
-      isDue(race.lastResultFetchAt, RESULT_FETCH_INTERVAL_MINUTES, now) &&
-      (Number.isNaN(resultLockUntil) || resultLockUntil <= now.getTime()) &&
-      !race.lastResultQueuedAt
-    ) {
-      jobs.push({ raceKey: race.raceKey, type: "fetch-results" });
-    }
+  if (shouldRunHourlyDiscoveryRecovery(now)) {
+    await tryEnsureDiscoveredUrlsAreCurrent(env, targetDate);
   }
+  const races = await listSchedulableRaceSourcesByDate(env.REALTIME_DB, targetDate);
+  const jobs: Extract<Job, { type: "fetch-results" }>[] = races
+    .map((race) => buildResultFetchJobIfDue(race, now))
+    .filter((job): job is Extract<Job, { type: "fetch-results" }> => job !== null);
   await enqueueJobs(env, jobs);
   await markResultFetchQueued(
     env.REALTIME_DB,
-    jobs.flatMap((job) => (job.type === "fetch-results" ? [job.raceKey] : [])),
+    jobs.map((job) => job.raceKey),
     toJstIsoString(now),
   );
   return jobs.length;
@@ -2060,7 +2085,15 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
       buildRaceTrendDailyTrackRow({ entries, fetchedAt, isComplete, race, results }),
       race,
     );
-    if (isComplete) {
+    // Always bust the viewer trend cache when ANY result row landed (not just
+    // when the full field is parsed). JRA / NAR sometimes publish results in
+    // multiple stages — for example a long objection delay can hold the last
+    // 1-2 horses while the leading horses are already on the result page. If
+    // we only bust on `isComplete` the merged race-trend payload keeps the
+    // pre-race "no result yet" cache for that race until natural TTL expiry,
+    // which is exactly the "1R-11R confirmed but 12R detail still shows them
+    // as unfinished" failure mode this commit targets.
+    if (inserted > 0) {
       await requestTrendCacheBust(env, buildTrendBustFromRaceContext(race));
     }
   } catch (error) {

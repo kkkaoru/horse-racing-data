@@ -95,8 +95,8 @@ it("getCronJob defaults to plan-realtime-fetches for unknown cron", () => {
   });
 });
 
-it("RESULT_POLL_CRON is */5 0-13 * * *", () => {
-  expect(RESULT_POLL_CRON).toBe("*/5 0-13 * * *");
+it("RESULT_POLL_CRON is */2 0-13 * * *", () => {
+  expect(RESULT_POLL_CRON).toBe("*/2 0-13 * * *");
 });
 
 it("getRaceStart returns a Date for valid race", () => {

@@ -6,6 +6,7 @@ import { buildTrendBustFromRaceContext, requestTrendCacheBust } from "./viewer-t
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 const buildEnv = (overrides: Partial<Env> = {}): Env =>
@@ -33,33 +34,79 @@ test("requestTrendCacheBust posts JSON and bearer auth, returns ok on 200", asyn
     source: "jra",
     targetYmd: "20260525",
   });
-  expect(outcome).toStrictEqual({ status: "ok" });
+  expect(outcome).toStrictEqual({ attempts: 1, status: "ok" });
   const call = fetchSpy.mock.calls[0];
   expect(call?.[0]).toBe("https://example.test/api/internal/trend-cache-bust");
   expect(call?.[1]?.method).toBe("POST");
-  expect(call?.[1]?.headers).toStrictEqual({
-    "content-type": "application/json",
-    "x-pc-keiba-internal-token": "secret-token",
-  });
+  const headers = call?.[1]?.headers as Record<string, string>;
+  expect(headers["content-type"]).toBe("application/json");
+  expect(headers["x-pc-keiba-internal-token"]).toBe("secret-token");
   expect(call?.[1]?.body).toBe('{"source":"jra","targetYmd":"20260525"}');
+  expect(call?.[1]?.signal instanceof AbortSignal).toBe(true);
 });
 
-test("requestTrendCacheBust reports HTTP error status", async () => {
-  vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("nope", { status: 500 }));
+test("requestTrendCacheBust does not retry on 4xx", async () => {
+  const fetchSpy = vi
+    .spyOn(globalThis, "fetch")
+    .mockResolvedValue(new Response("bad", { status: 400 }));
   const outcome = await requestTrendCacheBust(buildEnv(), {
     source: "nar",
     targetYmd: "20260525",
   });
-  expect(outcome).toStrictEqual({ message: "HTTP 500", status: "error" });
+  expect(outcome).toStrictEqual({ attempts: 1, message: "HTTP 400", status: "error" });
+  expect(fetchSpy).toHaveBeenCalledTimes(1);
 });
 
-test("requestTrendCacheBust captures thrown errors as messages", async () => {
-  vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("boom"));
+test("requestTrendCacheBust retries once on 5xx and reports final error", async () => {
+  const fetchSpy = vi
+    .spyOn(globalThis, "fetch")
+    .mockResolvedValueOnce(new Response("nope", { status: 502 }))
+    .mockResolvedValueOnce(new Response("nope", { status: 503 }));
   const outcome = await requestTrendCacheBust(buildEnv(), {
     source: "nar",
     targetYmd: "20260525",
   });
-  expect(outcome).toStrictEqual({ message: "boom", status: "error" });
+  expect(outcome).toStrictEqual({ attempts: 2, message: "HTTP 503", status: "error" });
+  expect(fetchSpy).toHaveBeenCalledTimes(2);
+});
+
+test("requestTrendCacheBust recovers on retry when first attempt is 5xx and second is 200", async () => {
+  const fetchSpy = vi
+    .spyOn(globalThis, "fetch")
+    .mockResolvedValueOnce(new Response("nope", { status: 502 }))
+    .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+  const outcome = await requestTrendCacheBust(buildEnv(), {
+    source: "nar",
+    targetYmd: "20260525",
+  });
+  expect(outcome).toStrictEqual({ attempts: 2, status: "ok" });
+  expect(fetchSpy).toHaveBeenCalledTimes(2);
+});
+
+test("requestTrendCacheBust retries when first attempt throws and succeeds on retry", async () => {
+  const fetchSpy = vi
+    .spyOn(globalThis, "fetch")
+    .mockRejectedValueOnce(new Error("boom"))
+    .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+  const outcome = await requestTrendCacheBust(buildEnv(), {
+    source: "nar",
+    targetYmd: "20260525",
+  });
+  expect(outcome).toStrictEqual({ attempts: 2, status: "ok" });
+  expect(fetchSpy).toHaveBeenCalledTimes(2);
+});
+
+test("requestTrendCacheBust reports thrown errors after exhausting retries", async () => {
+  const fetchSpy = vi
+    .spyOn(globalThis, "fetch")
+    .mockRejectedValueOnce(new Error("boom"))
+    .mockRejectedValueOnce(new Error("still down"));
+  const outcome = await requestTrendCacheBust(buildEnv(), {
+    source: "nar",
+    targetYmd: "20260525",
+  });
+  expect(outcome).toStrictEqual({ attempts: 2, message: "still down", status: "error" });
+  expect(fetchSpy).toHaveBeenCalledTimes(2);
 });
 
 test("requestTrendCacheBust skips when no internal token is configured", async () => {
@@ -96,6 +143,19 @@ test("requestTrendCacheBust falls back to the default viewer origin when not con
     .spyOn(globalThis, "fetch")
     .mockResolvedValue(new Response("{}", { status: 200 }));
   await requestTrendCacheBust(buildEnv({ RUNNING_STYLE_CACHE_ORIGIN: undefined }), {
+    source: "jra",
+    targetYmd: "20260525",
+  });
+  expect(fetchSpy.mock.calls[0]?.[0]).toBe(
+    "https://pc-keiba-viewer.kkk4oru.com/api/internal/trend-cache-bust",
+  );
+});
+
+test("requestTrendCacheBust falls back to the default viewer origin when RUNNING_STYLE_CACHE_ORIGIN is blank", async () => {
+  const fetchSpy = vi
+    .spyOn(globalThis, "fetch")
+    .mockResolvedValue(new Response("{}", { status: 200 }));
+  await requestTrendCacheBust(buildEnv({ RUNNING_STYLE_CACHE_ORIGIN: "   " }), {
     source: "jra",
     targetYmd: "20260525",
   });

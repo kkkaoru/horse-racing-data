@@ -382,10 +382,10 @@ describe("worker scheduling with Miniflare", () => {
   });
 
   it("queues incomplete result fetches that are past the throttle interval", async () => {
-    // RESULT_FETCH_INTERVAL_MINUTES is 3 — a race polled 2 minutes ago is still
+    // RESULT_FETCH_INTERVAL_MINUTES is 2 — a race polled 1 minute ago is still
     // throttled, but one polled 5 minutes ago is due again. Now = 12:00 JST.
     await seedRace("nar:2026:0512:55:05", "2026-05-12T11:50:00+09:00", {
-      lastResultFetchAt: "2026-05-12T11:58:00+09:00",
+      lastResultFetchAt: "2026-05-12T11:59:00+09:00",
     });
     await seedRace("nar:2026:0512:55:06", "2026-05-12T11:50:00+09:00", {
       lastResultFetchAt: "2026-05-12T11:55:00+09:00",
