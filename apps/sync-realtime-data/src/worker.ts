@@ -133,6 +133,13 @@ import {
   type HorseWeightSnapshot,
 } from "./durable-objects/horse-weight-do";
 export { HorseWeightDO } from "./durable-objects/horse-weight-do";
+import {
+  buildRaceTrendDailyTrackDoIdName,
+  fetchRaceTrendDailyTrackRacesFromStub,
+  pushRaceTrendDailyTrackRowToStub,
+} from "./durable-objects/race-trend-daily-track-do";
+export { RaceTrendDailyTrackDO } from "./durable-objects/race-trend-daily-track-do";
+import type { RaceTrendDailyTrackRow } from "horse-racing-realtime/race-trend-daily-track-types";
 import { buildTrendBustFromRaceContext, requestTrendCacheBust } from "./viewer-trend-cache-bust";
 import {
   getJraAdvanceOddsFetchSlotAt,
@@ -144,7 +151,15 @@ import {
   parseRaceStartJst,
   toJstIsoString,
 } from "./time";
-import type { Env, HorseWeight, Job, NarRaceSource, RaceEntry, RealtimeRacePayload } from "./types";
+import type {
+  Env,
+  HorseWeight,
+  Job,
+  NarRaceSource,
+  RaceEntry,
+  RaceResult,
+  RealtimeRacePayload,
+} from "./types";
 
 const QUEUE_SEND_BATCH_SIZE = 100;
 const RESULT_FETCH_LOCK_MINUTES = 10;
@@ -1886,6 +1901,92 @@ const broadcastHorseWeightsToDO = async (
   }
 };
 
+interface BuildRaceTrendRowArgs {
+  entries: Omit<RaceEntry, "fetchedAt">[];
+  fetchedAt: string;
+  isComplete: boolean;
+  race: NarRaceSource;
+  results: Omit<RaceResult, "fetchedAt">[];
+}
+
+const formatHassoJikokuFromRaceStart = (raceStartAtJst: string): string | null => {
+  if (raceStartAtJst.length < 16) return null;
+  return `${raceStartAtJst.slice(11, 13)}${raceStartAtJst.slice(14, 16)}`;
+};
+
+const buildRaceTrendDailyTrackRow = ({
+  entries,
+  fetchedAt,
+  isComplete,
+  race,
+  results,
+}: BuildRaceTrendRowArgs): RaceTrendDailyTrackRow => {
+  const entryByHorseNumber = new Map(entries.map((entry) => [entry.horseNumber, entry]));
+  const starterRows = results.map((result) => {
+    const entry = entryByHorseNumber.get(result.horseNumber);
+    return {
+      bamei: entry?.horseName ?? result.horseName,
+      bataiju: null,
+      corner1: null,
+      corner2: null,
+      corner3: null,
+      corner4: null,
+      finishPosition: Number.parseInt(result.finishPosition.replace(/\s+/gu, ""), 10) || 0,
+      hassoJikoku: formatHassoJikokuFromRaceStart(race.raceStartAtJst),
+      jockeyName: entry?.jockeyName ?? null,
+      kaisaiNen: race.kaisaiNen,
+      kaisaiTsukihi: race.kaisaiTsukihi,
+      keibajoCode: race.keibajoCode,
+      raceBango: race.raceBango,
+      raceName: race.raceName,
+      runnerCount: null,
+      sohaTime: result.time,
+      source: race.source,
+      tanshoOdds: null,
+      tanshoPopularity: null,
+      umaban: result.horseNumber,
+      wakuban: null,
+      zogenFugo: null,
+      zogenSa: null,
+    };
+  });
+  return {
+    fetchedAt,
+    finishedAt: isComplete ? fetchedAt : null,
+    isComplete,
+    raceBango: race.raceBango,
+    raceKey: race.raceKey,
+    runningStyles: [],
+    starterRows,
+  };
+};
+
+const pushResultsToRaceTrendDO = async (
+  env: Env,
+  row: RaceTrendDailyTrackRow,
+  race: NarRaceSource,
+): Promise<void> => {
+  try {
+    const idName = buildRaceTrendDailyTrackDoIdName({
+      keibajoCode: race.keibajoCode,
+      source: race.source,
+      targetYmd: `${race.kaisaiNen}${race.kaisaiTsukihi}`,
+    });
+    const stub = env.RACE_TREND_DAILY_TRACK_DO.get(
+      env.RACE_TREND_DAILY_TRACK_DO.idFromName(idName),
+    );
+    await pushRaceTrendDailyTrackRowToStub({ row, stub });
+  } catch (error) {
+    await logFetch(
+      env.REALTIME_DB,
+      "race-trend-daily-track-do-push",
+      "error",
+      race.raceKey,
+      formatError(error),
+    );
+  }
+};
+
 const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> => {
   const now = getNow(env);
   const lockUntil = toJstIsoString(new Date(now.getTime() + RESULT_FETCH_LOCK_MINUTES * 60_000));
@@ -1954,6 +2055,11 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
       isComplete,
       savedHorseCount: inserted,
     });
+    await pushResultsToRaceTrendDO(
+      env,
+      buildRaceTrendDailyTrackRow({ entries, fetchedAt, isComplete, race, results }),
+      race,
+    );
     if (isComplete) {
       await requestTrendCacheBust(env, buildTrendBustFromRaceContext(race));
     }
@@ -2575,6 +2681,34 @@ export const premiumRaceKeyFromRequest = (url: URL): string | null => {
   );
 };
 
+interface RaceTrendDailyTrackQueryParams {
+  beforeRaceBango: string;
+  keibajoCode: string;
+  source: "jra" | "nar";
+  targetYmd: string;
+}
+
+const isYyyymmdd = (value: string): boolean => /^\d{8}$/u.test(value);
+const isRaceBango = (value: string): boolean => /^\d{1,2}$/u.test(value);
+const isKeibajoCode = (value: string): boolean => /^[0-9A-Z]{2}$/u.test(value);
+const isTrendSource = (value: string | null): value is "jra" | "nar" =>
+  value === "jra" || value === "nar";
+
+export const raceTrendDailyTrackQueryFromRequest = (
+  url: URL,
+): RaceTrendDailyTrackQueryParams | null => {
+  if (url.pathname !== "/internal/race-trend-daily-track") return null;
+  const source = url.searchParams.get("source");
+  const targetYmd = url.searchParams.get("ymd");
+  const keibajoCode = url.searchParams.get("keibajo");
+  const beforeRaceBango = url.searchParams.get("beforeRaceBango");
+  if (!isTrendSource(source)) return null;
+  if (!targetYmd || !isYyyymmdd(targetYmd)) return null;
+  if (!keibajoCode || !isKeibajoCode(keibajoCode)) return null;
+  if (!beforeRaceBango || !isRaceBango(beforeRaceBango)) return null;
+  return { beforeRaceBango, keibajoCode, source, targetYmd };
+};
+
 export const sameDayVenueJockeyWinsFromRequest = (
   url: URL,
 ): {
@@ -2816,6 +2950,22 @@ export default {
         env.HORSE_WEIGHT_DO.idFromName(horseWeightsLatestRaceKey),
       );
       return proxyHorseWeightLatestFromStub(latestStub);
+    }
+
+    const raceTrendQuery = raceTrendDailyTrackQueryFromRequest(url);
+    if (raceTrendQuery && request.method === "GET") {
+      const idName = buildRaceTrendDailyTrackDoIdName({
+        keibajoCode: raceTrendQuery.keibajoCode,
+        source: raceTrendQuery.source,
+        targetYmd: raceTrendQuery.targetYmd,
+      });
+      const stub = env.RACE_TREND_DAILY_TRACK_DO.get(
+        env.RACE_TREND_DAILY_TRACK_DO.idFromName(idName),
+      );
+      return fetchRaceTrendDailyTrackRacesFromStub({
+        beforeRaceBango: raceTrendQuery.beforeRaceBango,
+        stub,
+      });
     }
 
     return json({ error: "not found" }, { status: 404 });

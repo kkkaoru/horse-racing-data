@@ -1217,3 +1217,41 @@ it("buildRealtimeRouteResponse swallows logFetch failures while returning degrad
   expect(result.source).toBeNull();
   expect(result.odds).toBeNull();
 });
+
+it("fetch GET /internal/race-trend-daily-track proxies to the RACE_TREND_DAILY_TRACK_DO stub", async () => {
+  const { default: worker } = await import("./worker");
+  const upstream = new Response(JSON.stringify({ races: [] }), { status: 200 });
+  const stubFetch = vi.fn(async (_url: string, _init?: RequestInit): Promise<Response> => upstream);
+  const idFromName = vi.fn((name: string): string => name);
+  const get = vi.fn((_id: string) => ({ fetch: stubFetch }));
+  const env = buildEnv({
+    RACE_TREND_DAILY_TRACK_DO: { get, idFromName },
+  } as never);
+  const response = await worker.fetch(
+    new Request(
+      "https://x.test/internal/race-trend-daily-track?source=jra&ymd=20260531&keibajo=06&beforeRaceBango=05",
+    ),
+    env,
+    buildCtx(),
+  );
+  expect(idFromName).toHaveBeenCalledTimes(1);
+  expect(idFromName.mock.calls[0]![0]).toBe("jra:20260531:06");
+  expect(stubFetch).toHaveBeenCalledTimes(1);
+  expect(stubFetch.mock.calls[0]![0]).toBe(
+    "https://race-trend-daily-track-do/races?beforeRaceBango=05",
+  );
+  expect(response.status).toBe(200);
+});
+
+it("fetch GET /internal/race-trend-daily-track returns 404 when query parameters are malformed", async () => {
+  const { default: worker } = await import("./worker");
+  const env = buildEnv();
+  const response = await worker.fetch(
+    new Request(
+      "https://x.test/internal/race-trend-daily-track?source=ban&ymd=20260531&keibajo=06&beforeRaceBango=05",
+    ),
+    env,
+    buildCtx(),
+  );
+  expect(response.status).toBe(404);
+});

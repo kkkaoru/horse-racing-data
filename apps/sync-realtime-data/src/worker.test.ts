@@ -33,6 +33,7 @@ import {
   minutesUntilRace,
   premiumRaceKeyFromRequest,
   raceKeyFromRequest,
+  raceTrendDailyTrackQueryFromRequest,
   RESULT_POLL_CRON,
   sameDayVenueJockeyWinsFromRequest,
   toJstSlotIso,
@@ -622,6 +623,69 @@ it("sameDayVenueJockeyWinsFromRequest parses jockey-wins API path", () => {
 it("sameDayVenueJockeyWinsFromRequest returns null for non-matching path", () => {
   expect(
     sameDayVenueJockeyWinsFromRequest(new URL("https://x.test/api/jra/races/jockey-wins")),
+  ).toBeNull();
+});
+
+it("raceTrendDailyTrackQueryFromRequest parses well-formed query parameters", () => {
+  expect(
+    raceTrendDailyTrackQueryFromRequest(
+      new URL(
+        "https://x.test/internal/race-trend-daily-track?source=jra&ymd=20260531&keibajo=06&beforeRaceBango=05",
+      ),
+    ),
+  ).toStrictEqual({
+    beforeRaceBango: "05",
+    keibajoCode: "06",
+    source: "jra",
+    targetYmd: "20260531",
+  });
+});
+
+it("raceTrendDailyTrackQueryFromRequest returns null when the pathname does not match", () => {
+  expect(
+    raceTrendDailyTrackQueryFromRequest(
+      new URL("https://x.test/api/other?source=jra&ymd=20260531&keibajo=06&beforeRaceBango=05"),
+    ),
+  ).toBeNull();
+});
+
+it("raceTrendDailyTrackQueryFromRequest returns null when source is missing or invalid", () => {
+  expect(
+    raceTrendDailyTrackQueryFromRequest(
+      new URL(
+        "https://x.test/internal/race-trend-daily-track?ymd=20260531&keibajo=06&beforeRaceBango=05",
+      ),
+    ),
+  ).toBeNull();
+});
+
+it("raceTrendDailyTrackQueryFromRequest returns null when ymd is not 8 digits", () => {
+  expect(
+    raceTrendDailyTrackQueryFromRequest(
+      new URL(
+        "https://x.test/internal/race-trend-daily-track?source=nar&ymd=2026531&keibajo=06&beforeRaceBango=05",
+      ),
+    ),
+  ).toBeNull();
+});
+
+it("raceTrendDailyTrackQueryFromRequest returns null when keibajo is malformed", () => {
+  expect(
+    raceTrendDailyTrackQueryFromRequest(
+      new URL(
+        "https://x.test/internal/race-trend-daily-track?source=jra&ymd=20260531&keibajo=ABC&beforeRaceBango=05",
+      ),
+    ),
+  ).toBeNull();
+});
+
+it("raceTrendDailyTrackQueryFromRequest returns null when beforeRaceBango is non-numeric", () => {
+  expect(
+    raceTrendDailyTrackQueryFromRequest(
+      new URL(
+        "https://x.test/internal/race-trend-daily-track?source=jra&ymd=20260531&keibajo=06&beforeRaceBango=xx",
+      ),
+    ),
   ).toBeNull();
 });
 

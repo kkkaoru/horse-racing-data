@@ -543,8 +543,8 @@ it("fetch-results triggers trend cache bust when expectedHorseCount > 0 and rows
   ] as never);
   vi.mocked(parseRaceEntryHorseNumbers).mockReturnValue(["1", "2"]);
   vi.mocked(parseRaceResults).mockReturnValue([
-    { horseNumber: "1", placement: "1" },
-    { horseNumber: "2", placement: "2" },
+    { finishPosition: "1", horseName: null, horseNumber: "1", time: null },
+    { finishPosition: "2", horseName: null, horseNumber: "2", time: null },
   ] as never);
   vi.mocked(insertRaceResultSnapshot).mockResolvedValue(2);
   await handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z" } as never), {
@@ -553,6 +553,74 @@ it("fetch-results triggers trend cache bust when expectedHorseCount > 0 and rows
   });
   // No assertion needed; reaching here without throw exercises the isComplete branch.
   expect(insertRaceResultSnapshot).toHaveBeenCalled();
+});
+
+// Covers the RACE_TREND_DAILY_TRACK_DO push helper hitting the bound stub fetch
+// with a fully-built row in the fetch-results happy path. Without this case
+// the binding access in pushResultsToRaceTrendDO never resolves to a real
+// stub.fetch and the line stays branch-uncovered.
+it("fetch-results pushes the freshly built row to the RACE_TREND_DAILY_TRACK_DO stub", async () => {
+  const { handleJob } = await import("./worker");
+  const { claimResultFetch, getRaceSource, insertRaceResultSnapshot } = await import("./storage");
+  const { fetchRacePage, parseRaceEntries, parseRaceResults, parseRaceEntryHorseNumbers } =
+    await import("./keiba-go");
+  vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "22",
+    debaUrl: "https://nar.example/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: null,
+    kaisaiNen: "2026",
+    kaisaiNichime: null,
+    kaisaiTsukihi: "0512",
+    keibajoCode: "55",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "nar:2026:0512:55:01",
+    raceName: "T",
+    raceStartAtJst: "2026-05-12T10:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "nar",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(fetchRacePage).mockResolvedValue("<html></html>");
+  vi.mocked(parseRaceEntries).mockReturnValue([
+    { horseName: "h", horseNumber: "1", jockeyName: "j", status: null },
+    { horseName: "h", horseNumber: "2", jockeyName: "j", status: null },
+  ] as never);
+  vi.mocked(parseRaceEntryHorseNumbers).mockReturnValue(["1", "2"]);
+  vi.mocked(parseRaceResults).mockReturnValue([
+    { finishPosition: "1", horseName: null, horseNumber: "1", time: null },
+    { finishPosition: "2", horseName: null, horseNumber: "2", time: null },
+  ] as never);
+  vi.mocked(insertRaceResultSnapshot).mockResolvedValue(2);
+  const stubFetch = vi.fn(
+    async (_url: string, _init?: RequestInit): Promise<Response> =>
+      new Response(JSON.stringify({ ok: true }), { status: 200 }),
+  );
+  const idFromName = vi.fn((name: string): string => name);
+  const get = vi.fn((_id: string) => ({ fetch: stubFetch }));
+  await handleJob(
+    buildEnv({
+      RACE_TREND_DAILY_TRACK_DO: { get, idFromName },
+      REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z",
+    } as never),
+    { raceKey: "nar:2026:0512:55:01", type: "fetch-results" },
+  );
+  expect(idFromName).toHaveBeenCalledTimes(1);
+  expect(idFromName.mock.calls[0]![0]).toBe("nar:20260512:55");
+  expect(stubFetch).toHaveBeenCalledTimes(1);
+  expect(stubFetch.mock.calls[0]![0]).toBe("https://race-trend-daily-track-do/push");
+  expect(stubFetch.mock.calls[0]![1]!.method).toBe("POST");
 });
 
 // Covers planRealtimeFetches markPremiumPaddockQueued + markPremiumRaceDataQueued flatMap
