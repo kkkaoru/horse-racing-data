@@ -1,5 +1,5 @@
 // Run with bun (vitest).
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   RACE_TREND_CACHE_WARM_VARIANT_COUNT,
@@ -78,11 +78,7 @@ describe("race trend cache helpers", () => {
     expect(variants[0]).toStrictEqual(buildDefaultRaceTrendCacheOptions("nar", "20260520"));
   });
 
-  it("expires trend cache after the configured post-time window", () => {
-    const startTime = getRaceStartTimeMs(targetRace);
-    expect(startTime).not.toBeNull();
-    expect(getRaceTrendCacheTtlSeconds(targetRace, 600, (startTime ?? 0) - 60_000)).toBe(660);
-    expect(getRaceTrendCacheTtlSeconds(targetRace, 600, (startTime ?? 0) + 601_000)).toBe(0);
+  it("returns 0 when hassoJikoku cannot be parsed", () => {
     expect(getRaceTrendCacheTtlSeconds({ ...targetRace, hassoJikoku: null })).toBe(0);
     expect(getRaceStartTimeMs({ ...targetRace, hassoJikoku: "bad" })).toBeNull();
   });
@@ -166,5 +162,61 @@ describe("race trend cache helpers", () => {
         { ...targetRace, keibajoCode: "44", raceBango: "12" },
       ),
     ).toBe(false);
+  });
+});
+
+describe("getRaceTrendCacheTtlSeconds same-day cap", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-30T12:00:00+09:00"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("returns natural TTL for a tomorrow race without capping", () => {
+    expect(
+      getRaceTrendCacheTtlSeconds(
+        { hassoJikoku: "1000", kaisaiNen: "2026", kaisaiTsukihi: "0531" },
+        600,
+      ),
+    ).toBe(79800);
+  });
+
+  it("returns natural TTL for a yesterday race without capping", () => {
+    expect(
+      getRaceTrendCacheTtlSeconds(
+        { hassoJikoku: "1000", kaisaiNen: "2026", kaisaiTsukihi: "0529" },
+        100_000,
+      ),
+    ).toBe(6400);
+  });
+
+  it("caps TTL to 60 seconds for a today race that has not yet started", () => {
+    expect(
+      getRaceTrendCacheTtlSeconds(
+        { hassoJikoku: "2050", kaisaiNen: "2026", kaisaiTsukihi: "0530" },
+        600,
+      ),
+    ).toBe(60);
+  });
+
+  it("caps TTL to 60 seconds for a today race that just started", () => {
+    expect(
+      getRaceTrendCacheTtlSeconds(
+        { hassoJikoku: "1159", kaisaiNen: "2026", kaisaiTsukihi: "0530" },
+        600,
+      ),
+    ).toBe(60);
+  });
+
+  it("returns the natural TTL when a today race finished long ago and natural TTL is already below the cap", () => {
+    expect(
+      getRaceTrendCacheTtlSeconds(
+        { hassoJikoku: "1100", kaisaiNen: "2026", kaisaiTsukihi: "0530" },
+        3630,
+      ),
+    ).toBe(30);
   });
 });
