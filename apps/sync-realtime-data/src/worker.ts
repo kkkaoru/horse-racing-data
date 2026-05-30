@@ -126,6 +126,13 @@ import {
   runRunningStyleWorkerPostgresVerification,
 } from "./running-style-verification";
 import { readCachedTrackCondition, writeCachedTrackCondition } from "./track-condition-cache";
+import {
+  proxyHorseWeightLatestFromStub,
+  proxyHorseWeightStreamFromStub,
+  writeHorseWeightSnapshotToStub,
+  type HorseWeightSnapshot,
+} from "./durable-objects/horse-weight-do";
+export { HorseWeightDO } from "./durable-objects/horse-weight-do";
 import { buildTrendBustFromRaceContext, requestTrendCacheBust } from "./viewer-trend-cache-bust";
 import {
   getJraAdvanceOddsFetchSlotAt,
@@ -1843,6 +1850,39 @@ const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<void> =>
   await insertHorseWeightSnapshot(env.REALTIME_DB, raceKey, fetchedAt, weights);
   if (weights.length > 0) {
     await updateLastFetch(env.REALTIME_DB, raceKey, "last_weight_fetch_at", fetchedAt);
+    await broadcastHorseWeightsToDO(env, raceKey, fetchedAt, weights);
+  }
+};
+
+const toHorseWeightSnapshot = (fetchedAt: string, weights: HorseWeight[]): HorseWeightSnapshot => ({
+  fetchedAt,
+  horses: weights.map((entry) => ({
+    changeAmount: entry.changeAmount,
+    changeSign: entry.changeSign,
+    horseName: entry.horseName,
+    horseNumber: entry.horseNumber,
+    weight: entry.weight,
+  })),
+});
+
+// Pushes the freshly persisted weights to the Durable Object that fan-outs to
+// any active SSE subscribers. Failures are swallowed and logged so the queue
+// consumer does not retry the (already successful) D1 write on transient DO
+// errors. The next weight fetch will resync the DO state.
+const broadcastHorseWeightsToDO = async (
+  env: Env,
+  raceKey: string,
+  fetchedAt: string,
+  weights: HorseWeight[],
+): Promise<void> => {
+  try {
+    const stub = env.HORSE_WEIGHT_DO.get(env.HORSE_WEIGHT_DO.idFromName(raceKey));
+    await writeHorseWeightSnapshotToStub({
+      snapshot: toHorseWeightSnapshot(fetchedAt, weights),
+      stub,
+    });
+  } catch (error) {
+    await logFetch(env.REALTIME_DB, "horse-weight-do-write", "error", raceKey, formatError(error));
   }
 };
 
@@ -2493,6 +2533,32 @@ export const raceKeyFromRequest = (url: URL): string | null => {
   return raceKeyFromRealtimePath(url.pathname);
 };
 
+const horseWeightsStreamPathRegex =
+  /^\/api\/(jra|nar)\/races\/(\d{4})\/(\d{2})\/(\d{2})\/([0-9A-Z]{2})\/(\d{2})\/horse-weights-stream$/u;
+const horseWeightsLatestPathRegex =
+  /^\/api\/(jra|nar)\/races\/(\d{4})\/(\d{2})\/(\d{2})\/([0-9A-Z]{2})\/(\d{2})\/horse-weights-latest$/u;
+
+const horseWeightsRaceKeyFromMatch = (match: RegExpMatchArray): string =>
+  buildRealtimeRaceKey(
+    match[1] as RealtimeSource,
+    match[2]!,
+    `${match[3]!}${match[4]!}`,
+    match[5]!,
+    match[6]!,
+  );
+
+export const horseWeightsStreamRaceKeyFromRequest = (url: URL): string | null => {
+  const match = url.pathname.match(horseWeightsStreamPathRegex);
+  if (!match?.[1] || !match[2] || !match[3] || !match[4] || !match[5] || !match[6]) return null;
+  return horseWeightsRaceKeyFromMatch(match);
+};
+
+export const horseWeightsLatestRaceKeyFromRequest = (url: URL): string | null => {
+  const match = url.pathname.match(horseWeightsLatestPathRegex);
+  if (!match?.[1] || !match[2] || !match[3] || !match[4] || !match[5] || !match[6]) return null;
+  return horseWeightsRaceKeyFromMatch(match);
+};
+
 export const premiumRaceKeyFromRequest = (url: URL): string | null => {
   const match = url.pathname.match(
     /^\/api\/(jra|nar)\/races\/(\d{4})\/(\d{2})\/(\d{2})\/([0-9A-Z]{2})\/(\d{2})\/premium$/u,
@@ -2734,6 +2800,22 @@ export default {
           },
         },
       );
+    }
+
+    const horseWeightsStreamRaceKey = horseWeightsStreamRaceKeyFromRequest(url);
+    if (horseWeightsStreamRaceKey && request.method === "GET") {
+      const streamStub = env.HORSE_WEIGHT_DO.get(
+        env.HORSE_WEIGHT_DO.idFromName(horseWeightsStreamRaceKey),
+      );
+      return proxyHorseWeightStreamFromStub(streamStub);
+    }
+
+    const horseWeightsLatestRaceKey = horseWeightsLatestRaceKeyFromRequest(url);
+    if (horseWeightsLatestRaceKey && request.method === "GET") {
+      const latestStub = env.HORSE_WEIGHT_DO.get(
+        env.HORSE_WEIGHT_DO.idFromName(horseWeightsLatestRaceKey),
+      );
+      return proxyHorseWeightLatestFromStub(latestStub);
     }
 
     return json({ error: "not found" }, { status: 404 });
