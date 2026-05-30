@@ -171,10 +171,12 @@ const PREMIUM_PADDOCK_NOTIFICATION_LOCK_SECONDS = 90;
 // so we compare against "05" not "5".
 const JRA_PRIORITY_VENUE_CODES = ["05", "08"] satisfies readonly string[];
 const JRA_PRIORITY_RACE_BANGO = "05";
-// Raised from 20 to 40 to match the JRA horse-weight publish window (~40-60
-// minutes before post). At 20 min we were arriving after publish but still
-// waiting for our next 3-minute tick.
-const WEIGHT_FETCH_LEAD_MINUTES = 40;
+// Raised from 40 to 90 because the JRA horse-weight HTML often publishes
+// ~30-45 min before post but our previous 40-min window plus the 3-minute
+// tick gate combined into only ~3 attempts per race, so a single failure
+// pushed the first successful fetch past post time. 90 min gives ~18
+// attempts on a 5-minute cron and the in-page parse is cheap.
+const WEIGHT_FETCH_LEAD_MINUTES = 90;
 const WEIGHT_FETCH_PRIORITY_TIER_HIGH = 0;
 const WEIGHT_FETCH_PRIORITY_TIER_MID = 1;
 const WEIGHT_FETCH_PRIORITY_TIER_LOW = 2;
@@ -1742,7 +1744,6 @@ export const planRealtimeFetches = async (env: Env, targetDate: string): Promise
       .filter(isWeightCandidate)
       .filter(
         (c) =>
-          isThreeMinuteTick(now) &&
           c.minutes <= WEIGHT_FETCH_LEAD_MINUTES &&
           isDue(c.race.lastWeightFetchAt, WEIGHT_FETCH_INTERVAL_MINUTES, now),
       );
