@@ -227,6 +227,26 @@ export const applyPaddockAction = (
   };
 };
 
+export interface PaddockNotifyGateInput {
+  officialRank: PaddockOfficialRank | null;
+  total: number;
+}
+
+const hasPaddockTotalInput = (input: PaddockNotifyGateInput): boolean => input.total > 0;
+const hasOfficialRankInput = (input: PaddockNotifyGateInput): boolean =>
+  input.officialRank !== null;
+
+// Notification gate: skip the Discord notification only when every horse has
+// both no positive paddock evaluation total and no official rank assigned.
+// Allowing the paddock-only-empty or official-rank-only-empty cases lets the
+// editor publish the official-rank verdict even before paddock scoring starts.
+export const shouldSkipPaddockDiscordNotification = (
+  inputs: readonly PaddockNotifyGateInput[],
+): boolean => !inputs.some((input) => hasPaddockTotalInput(input) || hasOfficialRankInput(input));
+
+export const isPaddockHorseNotifiable = (input: PaddockNotifyGateInput): boolean =>
+  hasPaddockTotalInput(input) || hasOfficialRankInput(input);
+
 export const isPaddockState = (value: unknown): value is PaddockState => {
   if (typeof value !== "object" || value === null) {
     return false;
