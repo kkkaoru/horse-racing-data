@@ -814,13 +814,13 @@ it("planRealtimeFetches includes weight job at 35 minutes before post", async ()
   expect(allWeightKeys).toStrictEqual(["jra:2026:0530:05:07"]);
 });
 
-it("planRealtimeFetches excludes weight job when race is 50 minutes before post", async () => {
+it("planRealtimeFetches includes weight job at 85 minutes before post (within 90-min lead)", async () => {
   const { planRealtimeFetches } = await import("./worker");
   const { listSchedulableRaceSourcesByDate } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
     {
       babaCode: "05",
-      debaUrl: "https://www.jra.go.jp/race/lead50",
+      debaUrl: "https://www.jra.go.jp/race/lead85",
       discoveredAt: "2026-05-30T00:00:00+09:00",
       kaisaiKai: "02",
       kaisaiNen: "2026",
@@ -836,8 +836,61 @@ it("planRealtimeFetches excludes weight job when race is 50 minutes before post"
       oddsLinks: {},
       raceBango: "07",
       raceKey: "jra:2026:0530:05:07",
-      raceName: "Lead50",
-      raceStartAtJst: "2026-05-30T12:50:00+09:00",
+      raceName: "Lead85",
+      raceStartAtJst: "2026-05-30T13:25:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "jra",
+      updatedAt: "2026-05-30T00:00:00+09:00",
+    },
+  ] as never);
+  const sendBatch = vi.fn(async () => {});
+  const send = vi.fn(async () => {});
+  const env = buildEnv({
+    REALTIME_TEST_NOW: "2026-05-30T03:00:00.000Z",
+  });
+  env.REALTIME_JOBS = { send, sendBatch } as never;
+  await planRealtimeFetches(env, "20260530");
+  const sentSingle = (send.mock.calls as unknown as [{ raceKey: string; type: string }][]).map(
+    (c) => c[0],
+  );
+  const sentBatched =
+    (
+      sendBatch.mock.calls as unknown as [{ body: { raceKey: string; type: string } }[]][]
+    )[0]?.[0] ?? [];
+  const allWeightKeys = [
+    ...sentSingle.filter((j) => j.type === "fetch-weights").map((j) => j.raceKey),
+    ...sentBatched.filter((m) => m.body.type === "fetch-weights").map((m) => m.body.raceKey),
+  ];
+  expect(allWeightKeys).toStrictEqual(["jra:2026:0530:05:07"]);
+});
+
+it("planRealtimeFetches excludes weight job when race is 95 minutes before post (beyond 90-min lead)", async () => {
+  const { planRealtimeFetches } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
+    {
+      babaCode: "05",
+      debaUrl: "https://www.jra.go.jp/race/lead95",
+      discoveredAt: "2026-05-30T00:00:00+09:00",
+      kaisaiKai: "02",
+      kaisaiNen: "2026",
+      kaisaiNichime: "06",
+      kaisaiTsukihi: "0530",
+      keibajoCode: "05",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "07",
+      raceKey: "jra:2026:0530:05:07",
+      raceName: "Lead95",
+      raceStartAtJst: "2026-05-30T13:35:00+09:00",
       resultCompleteAt: null,
       resultExpectedHorseCount: null,
       resultFetchLockUntil: null,
@@ -986,13 +1039,13 @@ it("planRealtimeFetches places NAR weight jobs after JRA weight jobs", async () 
   expect(weightRaceKeys).toStrictEqual(["jra:2026:0530:05:05", "nar:2026:0530:55:05"]);
 });
 
-it("planRealtimeFetches emits zero weight jobs when minute is not a three-minute tick", async () => {
+it("planRealtimeFetches still enqueues weight jobs on a non-three-minute tick (gate removed)", async () => {
   const { planRealtimeFetches } = await import("./worker");
   const { listSchedulableRaceSourcesByDate } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
     {
       babaCode: "05",
-      debaUrl: "https://www.jra.go.jp/race/notick",
+      debaUrl: "https://www.jra.go.jp/race/anytick",
       discoveredAt: "2026-05-30T00:00:00+09:00",
       kaisaiKai: "02",
       kaisaiNen: "2026",
@@ -1025,13 +1078,18 @@ it("planRealtimeFetches emits zero weight jobs when minute is not a three-minute
   });
   env.REALTIME_JOBS = { send, sendBatch } as never;
   await planRealtimeFetches(env, "20260530");
-  const sentSingle = (send.mock.calls as unknown as [{ type: string }][]).map((c) => c[0]);
+  const sentSingle = (send.mock.calls as unknown as [{ raceKey: string; type: string }][]).map(
+    (c) => c[0],
+  );
   const sentBatched =
-    (sendBatch.mock.calls as unknown as [{ body: { type: string } }[]][])[0]?.[0] ?? [];
-  const weightCount =
-    sentSingle.filter((j) => j.type === "fetch-weights").length +
-    sentBatched.filter((m) => m.body.type === "fetch-weights").length;
-  expect(weightCount).toBe(0);
+    (
+      sendBatch.mock.calls as unknown as [{ body: { raceKey: string; type: string } }[]][]
+    )[0]?.[0] ?? [];
+  const allWeightKeys = [
+    ...sentSingle.filter((j) => j.type === "fetch-weights").map((j) => j.raceKey),
+    ...sentBatched.filter((m) => m.body.type === "fetch-weights").map((m) => m.body.raceKey),
+  ];
+  expect(allWeightKeys).toStrictEqual(["jra:2026:0530:05:05"]);
 });
 
 it("planRealtimeFetches enqueues fetch-weights and fetch-results for races near start time", async () => {
