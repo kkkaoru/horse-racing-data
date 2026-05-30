@@ -72,6 +72,12 @@ interface RawRunningStyleRow extends Record<string, unknown> {
   predictedLabel: string;
 }
 
+type RunningStyleLabel = "nige" | "senkou" | "sashi" | "oikomi";
+
+interface RawRunningStyleRowWithLabel extends RawRunningStyleRow {
+  predictedLabel: RunningStyleLabel;
+}
+
 const STORAGE_KEY = "snapshot";
 const PUSH_URL = "https://race-trend-daily-track-do/push";
 const RACES_URL = "https://race-trend-daily-track-do/races";
@@ -101,6 +107,15 @@ const YMD_LENGTH = 8;
 const KEIBAJO_LENGTH = 2;
 const YMD_PATTERN = /^\d{8}$/u;
 const KEIBAJO_PATTERN = /^[0-9A-Z]{2}$/u;
+// raceKey segments year ("YYYY") and monthDay ("MMDD") are each 4 ASCII
+// digits. Used by parseDoContextFromRaceKey to reject malformed inputs
+// (single-digit keibajoCode, 3-char monthDay, non-digit year, etc.) before
+// they ever reach DO id minting, which would otherwise drift a DO into a
+// permanent miss because buildRaceTrendDailyTrackDoIdName always emits a
+// well-formed name.
+const YEAR_MONTH_DAY_SEGMENT_LENGTH = 4;
+const YEAR_MONTH_DAY_SEGMENT_PATTERN = /^\d{4}$/u;
+const RACE_BANGO_PATTERN = /^\d{2}$/u;
 
 // Mirrors the viewer's `getRaceTrendTodayStarterRows` SQL, but scoped to a
 // single (source, kaisai_nen, kaisai_tsukihi, keibajo_code) tuple so the DO
@@ -204,12 +219,23 @@ const buildDoIdName = (parsed: ParsedDoId): string =>
 // The DO derives its own (source, targetYmd, keibajoCode) tuple from the
 // pushed row's raceKey so push bodies stay flat (no context wrapper) and
 // alarm reconciliation has the tuple available even on a cold hydration.
+// Validation must match `parseDoContextFromUrl` strictness: a malformed
+// raceKey (single-digit keibajoCode, 3-char monthDay, non-digit year, empty
+// raceBango) would otherwise mint a DO id that never aligns with
+// `buildRaceTrendDailyTrackDoIdName`, trapping the venue-day in a permanent
+// miss.
 export const parseDoContextFromRaceKey = (raceKey: string): ParsedDoId | null => {
   const segments = raceKey.split(":");
   if (segments.length !== 5) return null;
-  const [source, year, monthDay, keibajoCode] = segments;
+  const [source, year, monthDay, keibajoCode, raceBango] = segments;
   if (source !== "jra" && source !== "nar") return null;
-  if (!year || !monthDay || !keibajoCode) return null;
+  if (!year || year.length !== YEAR_MONTH_DAY_SEGMENT_LENGTH) return null;
+  if (!YEAR_MONTH_DAY_SEGMENT_PATTERN.test(year)) return null;
+  if (!monthDay || monthDay.length !== YEAR_MONTH_DAY_SEGMENT_LENGTH) return null;
+  if (!YEAR_MONTH_DAY_SEGMENT_PATTERN.test(monthDay)) return null;
+  if (!keibajoCode || keibajoCode.length !== KEIBAJO_LENGTH) return null;
+  if (!KEIBAJO_PATTERN.test(keibajoCode)) return null;
+  if (!raceBango || !RACE_BANGO_PATTERN.test(raceBango)) return null;
   return { keibajoCode, source, targetYmd: `${year}${monthDay}` };
 };
 
@@ -267,7 +293,7 @@ const toBataiju = (weight: number | null): string | null =>
 const toZogenSa = (change: number | null): string | null =>
   change === null ? null : String(change);
 
-const isRunningStyleLabel = (value: string): value is "nige" | "senkou" | "sashi" | "oikomi" =>
+const isRunningStyleLabel = (value: string): value is RunningStyleLabel =>
   RUNNING_STYLE_LABELS.has(value);
 
 const isRawRunningStyleRow = (value: unknown): value is RawRunningStyleRow => {
@@ -337,6 +363,11 @@ const isRowComplete = (rows: RawSnapshotRow[]): boolean => {
   return expected > 0 && saved >= expected && rankedCount >= expected;
 };
 
+const isMatchingRunningStyle =
+  (raceKey: string) =>
+  (style: RawRunningStyleRow): style is RawRunningStyleRowWithLabel =>
+    style.raceKey === raceKey && isRunningStyleLabel(style.predictedLabel);
+
 const buildRowFromGroup = (input: BuildRowGroupInput): RaceTrendDailyTrackRow => {
   const first = input.rows[0]!;
   return {
@@ -346,12 +377,10 @@ const buildRowFromGroup = (input: BuildRowGroupInput): RaceTrendDailyTrackRow =>
     raceBango: input.raceBango,
     raceKey: input.raceKey,
     runningStyles: input.runningStyles
-      .filter(
-        (style) => style.raceKey === input.raceKey && isRunningStyleLabel(style.predictedLabel),
-      )
+      .filter(isMatchingRunningStyle(input.raceKey))
       .map((style) => ({
         horseNumber: String(style.horseNumber),
-        predictedLabel: isRunningStyleLabel(style.predictedLabel) ? style.predictedLabel : "sashi",
+        predictedLabel: style.predictedLabel,
         raceKey: style.raceKey,
       })),
     starterRows: input.rows.map(toStarterRow),

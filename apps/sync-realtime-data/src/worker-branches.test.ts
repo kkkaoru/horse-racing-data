@@ -623,6 +623,277 @@ it("fetch-results pushes the freshly built row to the RACE_TREND_DAILY_TRACK_DO 
   expect(stubFetch.mock.calls[0]![1]!.method).toBe("POST");
 });
 
+// BUG-2 regression: a 5xx Response from the RACE_TREND_DAILY_TRACK_DO push
+// must surface via logFetch so the standard fetch_logs telemetry catches a
+// silently unhealthy DO. Pre-fix, the Response was discarded and a 5xx looked
+// identical to a 200.
+it("fetch-results logs a non-2xx job entry when RACE_TREND_DAILY_TRACK_DO push returns 5xx", async () => {
+  const { handleJob } = await import("./worker");
+  const { claimResultFetch, getRaceSource, insertRaceResultSnapshot, logFetch } =
+    await import("./storage");
+  const { fetchRacePage, parseRaceEntries, parseRaceResults, parseRaceEntryHorseNumbers } =
+    await import("./keiba-go");
+  vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "22",
+    debaUrl: "https://nar.example/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: null,
+    kaisaiNen: "2026",
+    kaisaiNichime: null,
+    kaisaiTsukihi: "0512",
+    keibajoCode: "55",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "nar:2026:0512:55:01",
+    raceName: "T",
+    raceStartAtJst: "2026-05-12T10:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "nar",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(fetchRacePage).mockResolvedValue("<html></html>");
+  vi.mocked(parseRaceEntries).mockReturnValue([
+    { horseName: "h", horseNumber: "1", jockeyName: "j", status: null },
+    { horseName: "h", horseNumber: "2", jockeyName: "j", status: null },
+  ] as never);
+  vi.mocked(parseRaceEntryHorseNumbers).mockReturnValue(["1", "2"]);
+  vi.mocked(parseRaceResults).mockReturnValue([
+    { finishPosition: "1", horseName: null, horseNumber: "1", time: null },
+    { finishPosition: "2", horseName: null, horseNumber: "2", time: null },
+  ] as never);
+  vi.mocked(insertRaceResultSnapshot).mockResolvedValue(2);
+  const stubFetch = vi.fn(
+    async (_url: string, _init?: RequestInit): Promise<Response> =>
+      new Response("internal error", { status: 503 }),
+  );
+  const idFromName = vi.fn((name: string): string => name);
+  const get = vi.fn((_id: string) => ({ fetch: stubFetch }));
+  await handleJob(
+    buildEnv({
+      RACE_TREND_DAILY_TRACK_DO: { get, idFromName },
+      REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z",
+    } as never),
+    { raceKey: "nar:2026:0512:55:01", type: "fetch-results" },
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "race-trend-daily-track-do-push",
+    "non-2xx",
+    "nar:2026:0512:55:01",
+    "HTTP 503",
+  );
+});
+
+// BUG-2 regression: when the DO push throws (network failure / binding miss)
+// the existing catch arm must still log via logFetch with the error message.
+it("fetch-results logs an error entry when RACE_TREND_DAILY_TRACK_DO push throws", async () => {
+  const { handleJob } = await import("./worker");
+  const { claimResultFetch, getRaceSource, insertRaceResultSnapshot, logFetch } =
+    await import("./storage");
+  const { fetchRacePage, parseRaceEntries, parseRaceResults, parseRaceEntryHorseNumbers } =
+    await import("./keiba-go");
+  vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "22",
+    debaUrl: "https://nar.example/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: null,
+    kaisaiNen: "2026",
+    kaisaiNichime: null,
+    kaisaiTsukihi: "0512",
+    keibajoCode: "55",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "nar:2026:0512:55:01",
+    raceName: "T",
+    raceStartAtJst: "2026-05-12T10:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "nar",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(fetchRacePage).mockResolvedValue("<html></html>");
+  vi.mocked(parseRaceEntries).mockReturnValue([
+    { horseName: "h", horseNumber: "1", jockeyName: "j", status: null },
+    { horseName: "h", horseNumber: "2", jockeyName: "j", status: null },
+  ] as never);
+  vi.mocked(parseRaceEntryHorseNumbers).mockReturnValue(["1", "2"]);
+  vi.mocked(parseRaceResults).mockReturnValue([
+    { finishPosition: "1", horseName: null, horseNumber: "1", time: null },
+    { finishPosition: "2", horseName: null, horseNumber: "2", time: null },
+  ] as never);
+  vi.mocked(insertRaceResultSnapshot).mockResolvedValue(2);
+  const stubFetch = vi.fn(async (_url: string, _init?: RequestInit): Promise<Response> => {
+    throw new Error("do unreachable");
+  });
+  const idFromName = vi.fn((name: string): string => name);
+  const get = vi.fn((_id: string) => ({ fetch: stubFetch }));
+  await handleJob(
+    buildEnv({
+      RACE_TREND_DAILY_TRACK_DO: { get, idFromName },
+      REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z",
+    } as never),
+    { raceKey: "nar:2026:0512:55:01", type: "fetch-results" },
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "race-trend-daily-track-do-push",
+    "error",
+    "nar:2026:0512:55:01",
+    "do unreachable",
+  );
+});
+
+// BUG-3 regression: a 5xx from the viewer trend cache bust must surface via
+// logFetch so a long stretch of "1R-11R confirmed but 12R detail stale" can
+// be diagnosed without trawling viewer logs.
+it("fetch-results logs a trend-cache-bust error entry when the viewer bust returns 5xx", async () => {
+  const { handleJob } = await import("./worker");
+  const { claimResultFetch, getRaceSource, insertRaceResultSnapshot, logFetch } =
+    await import("./storage");
+  const { fetchRacePage, parseRaceEntries, parseRaceResults, parseRaceEntryHorseNumbers } =
+    await import("./keiba-go");
+  vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "22",
+    debaUrl: "https://nar.example/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: null,
+    kaisaiNen: "2026",
+    kaisaiNichime: null,
+    kaisaiTsukihi: "0512",
+    keibajoCode: "55",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "nar:2026:0512:55:01",
+    raceName: "T",
+    raceStartAtJst: "2026-05-12T10:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "nar",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(fetchRacePage).mockResolvedValue("<html></html>");
+  vi.mocked(parseRaceEntries).mockReturnValue([
+    { horseName: "h", horseNumber: "1", jockeyName: "j", status: null },
+    { horseName: "h", horseNumber: "2", jockeyName: "j", status: null },
+  ] as never);
+  vi.mocked(parseRaceEntryHorseNumbers).mockReturnValue(["1", "2"]);
+  vi.mocked(parseRaceResults).mockReturnValue([
+    { finishPosition: "1", horseName: null, horseNumber: "1", time: null },
+    { finishPosition: "2", horseName: null, horseNumber: "2", time: null },
+  ] as never);
+  vi.mocked(insertRaceResultSnapshot).mockResolvedValue(2);
+  const fetchSpy = vi
+    .spyOn(globalThis, "fetch")
+    .mockResolvedValue(new Response("nope", { status: 502 }));
+  await handleJob(
+    buildEnv({
+      PC_KEIBA_VIEWER_INTERNAL_TOKEN: "secret-token",
+      REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z",
+      RUNNING_STYLE_CACHE_ORIGIN: "https://viewer.test",
+    } as never),
+    { raceKey: "nar:2026:0512:55:01", type: "fetch-results" },
+  );
+  expect(fetchSpy).toHaveBeenCalled();
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "trend-cache-bust",
+    "error",
+    "nar:2026:0512:55:01",
+    "HTTP 502",
+  );
+});
+
+// BUG-3 regression: a "skipped" outcome (viewer internal token missing) must
+// still surface so a long no-token stretch is not silent.
+it("fetch-results logs a trend-cache-bust skipped entry when no internal token is configured", async () => {
+  const { handleJob } = await import("./worker");
+  const { claimResultFetch, getRaceSource, insertRaceResultSnapshot, logFetch } =
+    await import("./storage");
+  const { fetchRacePage, parseRaceEntries, parseRaceResults, parseRaceEntryHorseNumbers } =
+    await import("./keiba-go");
+  vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "22",
+    debaUrl: "https://nar.example/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: null,
+    kaisaiNen: "2026",
+    kaisaiNichime: null,
+    kaisaiTsukihi: "0512",
+    keibajoCode: "55",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "nar:2026:0512:55:01",
+    raceName: "T",
+    raceStartAtJst: "2026-05-12T10:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "nar",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(fetchRacePage).mockResolvedValue("<html></html>");
+  vi.mocked(parseRaceEntries).mockReturnValue([
+    { horseName: "h", horseNumber: "1", jockeyName: "j", status: null },
+    { horseName: "h", horseNumber: "2", jockeyName: "j", status: null },
+  ] as never);
+  vi.mocked(parseRaceEntryHorseNumbers).mockReturnValue(["1", "2"]);
+  vi.mocked(parseRaceResults).mockReturnValue([
+    { finishPosition: "1", horseName: null, horseNumber: "1", time: null },
+    { finishPosition: "2", horseName: null, horseNumber: "2", time: null },
+  ] as never);
+  vi.mocked(insertRaceResultSnapshot).mockResolvedValue(2);
+  await handleJob(
+    buildEnv({
+      PC_KEIBA_VIEWER_INTERNAL_TOKEN: undefined,
+      REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z",
+    } as never),
+    { raceKey: "nar:2026:0512:55:01", type: "fetch-results" },
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "trend-cache-bust",
+    "skipped",
+    "nar:2026:0512:55:01",
+    "PC_KEIBA_VIEWER_INTERNAL_TOKEN not configured",
+  );
+});
+
 // Covers fetch-results with inserted > 0 but inserted < expectedHorseCount,
 // so isComplete is false yet the trend cache bust must still fire. This is
 // the partial-final path that prevents "11R is confirmed but 12R detail

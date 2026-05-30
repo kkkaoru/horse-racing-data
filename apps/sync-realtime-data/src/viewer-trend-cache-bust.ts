@@ -27,17 +27,40 @@ export interface TrendBustRequest {
   targetYmd: string;
 }
 
-export interface TrendBustOutcome {
-  attempts?: number;
-  message?: string;
-  status: "error" | "ok" | "skipped";
+interface TrendBustOkOutcome {
+  attempts: number;
+  status: "ok";
 }
 
-interface TrendBustAttemptOutcome {
-  message?: string;
-  retryable: boolean;
-  status: "error" | "ok";
+interface TrendBustErrorOutcome {
+  attempts: number;
+  message: string;
+  status: "error";
 }
+
+interface TrendBustSkippedOutcome {
+  message: string;
+  status: "skipped";
+}
+
+// Discriminated union over outcome status. Callers that branch on
+// `status === "error"` / `"skipped"` get `message` typed as `string`
+// (never `undefined`), which removes the dead `?? null` fallback that
+// would otherwise be needed when forwarding the message to logFetch.
+export type TrendBustOutcome = TrendBustErrorOutcome | TrendBustOkOutcome | TrendBustSkippedOutcome;
+
+interface TrendBustAttemptOkOutcome {
+  retryable: false;
+  status: "ok";
+}
+
+interface TrendBustAttemptErrorOutcome {
+  message: string;
+  retryable: boolean;
+  status: "error";
+}
+
+type TrendBustAttemptOutcome = TrendBustAttemptErrorOutcome | TrendBustAttemptOkOutcome;
 
 interface BustLoopArgs {
   body: TrendBustRequest;
@@ -114,7 +137,7 @@ export const requestTrendCacheBust = async (
   body: TrendBustRequest,
 ): Promise<TrendBustOutcome> => {
   if (!isYyyymmdd(body.targetYmd)) {
-    return { message: `invalid targetYmd: ${body.targetYmd}`, status: "error" };
+    return { attempts: 0, message: `invalid targetYmd: ${body.targetYmd}`, status: "error" };
   }
   const token = env.PC_KEIBA_VIEWER_INTERNAL_TOKEN?.trim();
   if (!token) {
@@ -123,9 +146,10 @@ export const requestTrendCacheBust = async (
   const url = `${resolveViewerOrigin(env)}${VIEWER_INTERNAL_BUST_PATH}`;
   const attempts = await runBustWithRetry({ body, token, url });
   const last = attempts[attempts.length - 1]!;
-  return last.status === "ok"
-    ? { attempts: attempts.length, status: "ok" }
-    : { attempts: attempts.length, message: last.message, status: "error" };
+  if (last.status === "ok") {
+    return { attempts: attempts.length, status: "ok" };
+  }
+  return { attempts: attempts.length, message: last.message, status: "error" };
 };
 
 export interface RaceFinishContext {
