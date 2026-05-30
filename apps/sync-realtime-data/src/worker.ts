@@ -2997,6 +2997,11 @@ export default {
       );
       return fetchRaceTrendDailyTrackRacesFromStub({
         beforeRaceBango: raceTrendQuery.beforeRaceBango,
+        context: {
+          keibajoCode: raceTrendQuery.keibajoCode,
+          source: raceTrendQuery.source,
+          targetYmd: raceTrendQuery.targetYmd,
+        },
         stub,
       });
     }
