@@ -148,6 +148,10 @@
         "name": "HORSE_WEIGHT_DO",
         "class_name": "HorseWeightDO",
       },
+      {
+        "name": "RACE_TREND_DAILY_TRACK_DO",
+        "class_name": "RaceTrendDailyTrackDO",
+      },
     ],
   },
   "migrations": [
@@ -166,6 +170,10 @@
     {
       "tag": "v_horse_weight_do_001",
       "new_classes": ["HorseWeightDO"],
+    },
+    {
+      "tag": "v_race_trend_daily_track_do_001",
+      "new_classes": ["RaceTrendDailyTrackDO"],
     },
   ],
   "hyperdrive": [
