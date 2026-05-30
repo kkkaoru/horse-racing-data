@@ -1,12 +1,15 @@
 // Run with: bun run src/scripts/finish-position-features/apply-running-style-postproc.ts \
 //   --logits-parquet <input.parquet> \
 //   --output-parquet <output.parquet> \
-//   --feature-version v1
+//   --running-style-feature-version v1
 //
 // Phase C (bucket-eval running-style X5): reads a parquet of per-runner raw
 // probabilities (or LightGBM logits) emitted by Phase B and produces the
 // post-processed predictions parquet consumed by the bucket evaluator. Adds
 // argmax (predicted_class), top-2 (second_predicted_class), and predicted_label.
+// All other input columns (running_style_feature_version, model_version,
+// target_running_style_class) are passed through unchanged so the W7 loader can
+// rely on a single canonical schema.
 //
 // Race-level nige cap / RaceLevelNigeConstraint is intentionally NOT applied
 // here. memory rule `feedback_no_race_level_nige_constraint.md` forbids forcing
@@ -15,7 +18,7 @@
 interface ApplyRunningStylePostprocOptions {
   logitsParquet: string;
   outputParquet: string;
-  featureVersion: string;
+  runningStyleFeatureVersion: string;
 }
 
 interface ApplyRunningStylePostprocCliRunDeps {
@@ -42,17 +45,19 @@ interface DuckDBDatabaseLike {
   close(): void;
 }
 
-interface RawInputRow {
+interface RawInputRaceKey {
   source: string;
   kaisai_nen: string;
   kaisai_tsukihi: string;
   keibajo_code: string;
   race_bango: string;
   ketto_toroku_bango: string;
-  p_nige: number;
-  p_senkou: number;
-  p_sashi: number;
-  p_oikomi: number;
+}
+
+interface RawInputPassthrough {
+  model_version: string;
+  running_style_feature_version: string;
+  target_running_style_class: number;
 }
 
 interface PostprocPredictionRow {
@@ -69,7 +74,9 @@ interface PostprocPredictionRow {
   predicted_class: number;
   second_predicted_class: number;
   predicted_label: string;
-  feature_version: string;
+  model_version: string;
+  running_style_feature_version: string;
+  target_running_style_class: number;
 }
 
 interface ApplyArgResult {
@@ -97,7 +104,7 @@ const requireValue = (name: string, value: string | undefined): string => {
 export const initialOptions = (): ApplyRunningStylePostprocOptions => ({
   logitsParquet: "",
   outputParquet: "",
-  featureVersion: "",
+  runningStyleFeatureVersion: "",
 });
 
 export const buildUsageText = (): string =>
@@ -106,7 +113,7 @@ export const buildUsageText = (): string =>
     "  bun run src/scripts/finish-position-features/apply-running-style-postproc.ts \\",
     "    --logits-parquet <input.parquet> \\",
     "    --output-parquet <output.parquet> \\",
-    "    --feature-version <version>",
+    "    --running-style-feature-version <version>",
   ].join("\n");
 
 export const applyArg = (
@@ -122,8 +129,8 @@ export const applyArg = (
     options.outputParquet = requireValue(name, value);
     return { advanceBy: 2 };
   }
-  if (name === "--feature-version") {
-    options.featureVersion = requireValue(name, value);
+  if (name === "--running-style-feature-version") {
+    options.runningStyleFeatureVersion = requireValue(name, value);
     return { advanceBy: 2 };
   }
   if (name === "--help" || name === "-h") {
@@ -148,7 +155,8 @@ export const parseArgs = (argv: readonly string[]): ApplyRunningStylePostprocOpt
   const options = consumeArgs(initialOptions(), argv, 0);
   if (options.logitsParquet === "") throw new Error("--logits-parquet is required.");
   if (options.outputParquet === "") throw new Error("--output-parquet is required.");
-  if (options.featureVersion === "") throw new Error("--feature-version is required.");
+  if (options.runningStyleFeatureVersion === "")
+    throw new Error("--running-style-feature-version is required.");
   return options;
 };
 
@@ -162,6 +170,11 @@ const coerceNumber = (value: unknown, name: string): number => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) throw new Error(`Column ${name} is not numeric.`);
   return parsed;
+};
+
+const coerceInteger = (value: unknown, name: string): number => {
+  const numeric = coerceNumber(value, name);
+  return Math.trunc(numeric);
 };
 
 const sumNormalize = (values: readonly number[]): number[] => {
@@ -227,27 +240,46 @@ export const detectProbabilityResolver = (
   );
 };
 
-const extractRaceKey = (raw: Record<string, unknown>): Pick<RawInputRow, keyof RawInputRow> => ({
+const extractRaceKey = (raw: Record<string, unknown>): RawInputRaceKey => ({
   source: requireString(raw.source, "source"),
   kaisai_nen: requireString(raw.kaisai_nen, "kaisai_nen"),
   kaisai_tsukihi: requireString(raw.kaisai_tsukihi, "kaisai_tsukihi"),
   keibajo_code: requireString(raw.keibajo_code, "keibajo_code"),
   race_bango: requireString(raw.race_bango, "race_bango"),
   ketto_toroku_bango: requireString(raw.ketto_toroku_bango, "ketto_toroku_bango"),
-  p_nige: 0,
-  p_senkou: 0,
-  p_sashi: 0,
-  p_oikomi: 0,
+});
+
+const assertVersionMatches = (rowVersion: string, expectedVersion: string): string => {
+  if (rowVersion !== expectedVersion)
+    throw new Error(
+      `Input row running_style_feature_version (${rowVersion}) does not match --running-style-feature-version (${expectedVersion}).`,
+    );
+  return rowVersion;
+};
+
+const extractPassthrough = (
+  raw: Record<string, unknown>,
+  runningStyleFeatureVersion: string,
+): RawInputPassthrough => ({
+  model_version: requireString(raw.model_version, "model_version"),
+  running_style_feature_version: assertVersionMatches(
+    requireString(raw.running_style_feature_version, "running_style_feature_version"),
+    runningStyleFeatureVersion,
+  ),
+  target_running_style_class: coerceInteger(
+    raw.target_running_style_class,
+    "target_running_style_class",
+  ),
 });
 
 interface BuildPredictionRowParams {
-  raceKey: Pick<RawInputRow, keyof RawInputRow>;
+  raceKey: RawInputRaceKey;
+  passthrough: RawInputPassthrough;
   probabilities: readonly number[];
-  featureVersion: string;
 }
 
 const buildPredictionRow = (params: BuildPredictionRowParams): PostprocPredictionRow => {
-  const { raceKey, probabilities, featureVersion } = params;
+  const { raceKey, passthrough, probabilities } = params;
   const predictedClass = pickArgmax(probabilities);
   const secondPredictedClass = pickSecondArgmax(probabilities);
   return {
@@ -264,24 +296,34 @@ const buildPredictionRow = (params: BuildPredictionRowParams): PostprocPredictio
     predicted_class: predictedClass,
     second_predicted_class: secondPredictedClass,
     predicted_label: buildLabelFromClass(predictedClass),
-    feature_version: featureVersion,
+    model_version: passthrough.model_version,
+    running_style_feature_version: passthrough.running_style_feature_version,
+    target_running_style_class: passthrough.target_running_style_class,
   };
 };
 
-export const applyPostprocToRow = (
-  raw: Record<string, unknown>,
-  featureVersion: string,
-): PostprocPredictionRow => {
-  const resolver = detectProbabilityResolver(raw);
-  const probabilities = resolver.resolve(raw);
-  const raceKey = extractRaceKey(raw);
-  return buildPredictionRow({ raceKey, probabilities, featureVersion });
+interface ApplyPostprocToRowParams {
+  raw: Record<string, unknown>;
+  runningStyleFeatureVersion: string;
+}
+
+export const applyPostprocToRow = (params: ApplyPostprocToRowParams): PostprocPredictionRow => {
+  const resolver = detectProbabilityResolver(params.raw);
+  const probabilities = resolver.resolve(params.raw);
+  const raceKey = extractRaceKey(params.raw);
+  const passthrough = extractPassthrough(params.raw, params.runningStyleFeatureVersion);
+  return buildPredictionRow({ raceKey, passthrough, probabilities });
 };
 
-export const applyPostprocToRows = (
-  rows: readonly Record<string, unknown>[],
-  featureVersion: string,
-): PostprocPredictionRow[] => rows.map((row) => applyPostprocToRow(row, featureVersion));
+interface ApplyPostprocToRowsParams {
+  rows: readonly Record<string, unknown>[];
+  runningStyleFeatureVersion: string;
+}
+
+export const applyPostprocToRows = (params: ApplyPostprocToRowsParams): PostprocPredictionRow[] =>
+  params.rows.map((row) =>
+    applyPostprocToRow({ raw: row, runningStyleFeatureVersion: params.runningStyleFeatureVersion }),
+  );
 
 export const buildReadInputSql = (logitsParquet: string): string =>
   `SELECT * FROM read_parquet('${logitsParquet}')`;
@@ -308,7 +350,9 @@ const formatRowAsValuesTuple = (row: PostprocPredictionRow): string =>
     formatValueForSql(row.predicted_class),
     formatValueForSql(row.second_predicted_class),
     formatValueForSql(row.predicted_label),
-    formatValueForSql(row.feature_version),
+    formatValueForSql(row.model_version),
+    formatValueForSql(row.running_style_feature_version),
+    formatValueForSql(row.target_running_style_class),
   ].join(", ");
 
 const OUTPUT_COLUMN_NAMES = [
@@ -325,7 +369,9 @@ const OUTPUT_COLUMN_NAMES = [
   "predicted_class",
   "second_predicted_class",
   "predicted_label",
-  "feature_version",
+  "model_version",
+  "running_style_feature_version",
+  "target_running_style_class",
 ] satisfies readonly string[];
 
 export const buildEmptyOutputCopySql = (outputParquet: string): string => {
@@ -343,7 +389,9 @@ export const buildEmptyOutputCopySql = (outputParquet: string): string => {
     "CAST(NULL AS INTEGER) AS predicted_class",
     "CAST(NULL AS INTEGER) AS second_predicted_class",
     "CAST(NULL AS VARCHAR) AS predicted_label",
-    "CAST(NULL AS VARCHAR) AS feature_version",
+    "CAST(NULL AS VARCHAR) AS model_version",
+    "CAST(NULL AS VARCHAR) AS running_style_feature_version",
+    "CAST(NULL AS INTEGER) AS target_running_style_class",
   ].join(", ");
   return `COPY (SELECT ${typedColumns} WHERE 1 = 0) TO '${outputParquet}' (FORMAT PARQUET, COMPRESSION ZSTD)`;
 };
@@ -405,14 +453,17 @@ export const runPostproc = (params: RunPostprocParams): { rowCount: number } => 
     duckdbModule: params.duckdbModule,
     logitsParquet: params.options.logitsParquet,
   });
-  const predictionRows = applyPostprocToRows(rawRows, params.options.featureVersion);
+  const predictionRows = applyPostprocToRows({
+    rows: rawRows,
+    runningStyleFeatureVersion: params.options.runningStyleFeatureVersion,
+  });
   writeOutputRows({
     duckdbModule: params.duckdbModule,
     outputParquet: params.options.outputParquet,
     rows: predictionRows,
   });
   params.logger.info(
-    `[apply-running-style-postproc] feature_version=${params.options.featureVersion} input=${params.options.logitsParquet} output=${params.options.outputParquet} rows=${predictionRows.length}`,
+    `[apply-running-style-postproc] running_style_feature_version=${params.options.runningStyleFeatureVersion} input=${params.options.logitsParquet} output=${params.options.outputParquet} rows=${predictionRows.length}`,
   );
   return { rowCount: predictionRows.length };
 };
@@ -487,5 +538,4 @@ export type {
   DuckDBModuleLike,
   PostprocLogger,
   PostprocPredictionRow,
-  RawInputRow,
 };

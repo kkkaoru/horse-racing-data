@@ -132,6 +132,7 @@ def attach_postgres(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
     con.execute("INSTALL postgres")
     con.execute("LOAD postgres")
     con.execute(f"ATTACH '{pg_url}' AS pg (TYPE postgres, READ_ONLY)")
+    con.execute("USE pg")
 
 
 def build_hive_copy_sql(*, select_sql: str, output_dir: str) -> str:

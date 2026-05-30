@@ -341,6 +341,18 @@ def test_attach_postgres_attaches_read_only() -> None:
     )
 
 
+def test_attach_postgres_switches_to_pg_catalog_after_attach() -> None:
+    con = MagicMock()
+    subject.attach_postgres(con, "postgres://abc")
+    assert con.execute.call_args_list[3].args[0] == "USE pg"
+
+
+def test_attach_postgres_emits_exactly_four_execute_calls() -> None:
+    con = MagicMock()
+    subject.attach_postgres(con, "postgres://abc")
+    assert con.execute.call_count == 4
+
+
 def test_build_hive_copy_sql_wraps_select_in_copy() -> None:
     sql = subject.build_hive_copy_sql(select_sql="SELECT 1", output_dir="/tmp/out")
     assert sql.startswith("COPY (SELECT 1) TO '/tmp/out'")
@@ -542,6 +554,31 @@ def test_run_executes_attach_postgres_with_pg_url() -> None:
         subject.run(args, connect, runner)
     issued = [call.args[0] for call in con.execute.call_args_list]
     assert "ATTACH 'postgres://u' AS pg (TYPE postgres, READ_ONLY)" in issued
+
+
+def test_run_issues_use_pg_after_attach_for_catalog_lookup() -> None:
+    con = MagicMock()
+    connect = MagicMock(return_value=con)
+    completed = MagicMock()
+    completed.returncode = 0
+    completed.stdout = "SELECT race_year FROM race_entry_corner_features"
+    completed.stderr = ""
+    runner = MagicMock(return_value=completed)
+    args = subject.parse_args([
+        "--pg-url", "postgres://u",
+        "--output-dir", "/tmp/x",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2020",
+        "--year-to", "2021",
+        "--category", "jra",
+    ])
+    with patch.object(subject, "ensure_output_dir"):
+        subject.run(args, connect, runner)
+    issued = [call.args[0] for call in con.execute.call_args_list]
+    attach_index = issued.index("ATTACH 'postgres://u' AS pg (TYPE postgres, READ_ONLY)")
+    use_index = issued.index("USE pg")
+    copy_index = next(idx for idx, sql in enumerate(issued) if sql.startswith("COPY ("))
+    assert attach_index < use_index < copy_index
 
 
 def test_run_passes_ts_sql_into_copy_wrapper() -> None:

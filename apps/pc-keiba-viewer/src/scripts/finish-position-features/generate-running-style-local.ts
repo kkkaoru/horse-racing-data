@@ -1,13 +1,20 @@
 // Run with: bun run src/scripts/finish-position-features/generate-running-style-local.ts \
 //   --pg-url $DATABASE_URL_LOCAL --running-style-feature-version v1 \
-//   --model-version-jra <m> --model-version-nar <m>
-// Sequential 3-phase orchestrator (Agent Y4, bucket-eval X5 design):
+//   --model-version-jra <m> --model-version-nar <m> \
+//   --model-flatbin-jra <path> --model-flatbin-nar <path> \
+//   [--rs-p-from-flatbin-jra <path>]
+// Sequential 3-phase orchestrator (Agent Y4 + W4/W6 switch, bucket-eval X5 design):
 //   Phase A: spawn `uv run python src/scripts/generate_running_style_features_local.py`
-//   Phase B: spawn `uv run python src/scripts/score_running_style_local.py` (raw probs)
+//   Phase B: spawn `bun run apps/sync-realtime-data/src/scripts/run-running-style-inference-local.ts`
+//           (precision-0 LightGBM v1.5/v2 via W3 deliverable, bit-exact with production)
 //   Phase C: spawn `bun run src/scripts/finish-position-features/apply-running-style-postproc.ts`
 // Writes manifest.json after all phases complete. No PG/R2/D1/KV writeback.
+// JRA: prod-v2 (138 feature) chained from v1.5 (117 feature) via --rs-p-from-flatbin.
+// NAR: prod-v1.5 (117 feature) single-stage (no chained predict).
 // Race-level nige cap / RaceLevelNigeConstraint intentionally NOT applied;
 // memory rule `feedback_no_race_level_nige_constraint.md` forbids it.
+// Legacy Python score_running_style_local.py is preserved for backward compat;
+// it is simply no longer referenced from the orchestrator.
 
 import { mkdir, writeFile } from "node:fs/promises";
 
@@ -23,6 +30,9 @@ interface GenerateRunningStyleLocalOptions {
   outputRoot: string;
   modelVersionJra: string;
   modelVersionNar: string;
+  modelFlatbinJra: string;
+  modelFlatbinNar: string;
+  rsPFromFlatbinJra: string;
 }
 
 interface SpawnResult {
@@ -55,6 +65,8 @@ interface CategoryWindow {
   category: "jra" | "nar";
   years: readonly number[];
   modelVersion: string;
+  modelFlatbin: string;
+  rsPFromFlatbin: string | null;
 }
 
 interface PhaseAArgs {
@@ -69,11 +81,14 @@ interface PhaseAArgs {
 }
 
 interface PhaseBArgs {
+  modelFlatbin: string;
   featuresParquet: string;
   outputParquet: string;
-  featureVersion: string;
-  modelVersion: string;
   category: "jra" | "nar";
+  predictedAt: string;
+  modelVersion: string;
+  featureVersion: string;
+  rsPFromFlatbin: string | null;
 }
 
 interface PhaseCArgs {
@@ -89,6 +104,11 @@ interface ManifestCategorySummary {
   modelVersion: string;
 }
 
+interface ManifestRsPFromFlatbin {
+  jra: string | null;
+  nar: string | null;
+}
+
 interface Manifest {
   featureVersion: string;
   generatedAt: string;
@@ -97,6 +117,7 @@ interface Manifest {
   logitsPath: string;
   predictionsPath: string;
   modelVersions: { jra: string; nar: string };
+  rsPFromFlatbin: ManifestRsPFromFlatbin;
   categories: Record<string, ManifestCategorySummary>;
 }
 
@@ -123,10 +144,12 @@ export const DEFAULT_THREADS = 8;
 export const DEFAULT_MEMORY_LIMIT = "16GB";
 export const DEFAULT_MAX_YEARS_PER_RUN = 5;
 export const PHASE_A_SCRIPT = "src/scripts/generate_running_style_features_local.py";
-export const PHASE_B_SCRIPT = "src/scripts/score_running_style_local.py";
+export const PHASE_B_SCRIPT =
+  "apps/sync-realtime-data/src/scripts/run-running-style-inference-local.ts";
 export const PHASE_C_SCRIPT =
   "src/scripts/finish-position-features/apply-running-style-postproc.ts";
 export const NIGHT_WINDOW_SET: ReadonlySet<number> = new Set(NIGHT_WINDOW_HOURS_JST);
+export const JRA_V2_MODEL_TAG = "-v2";
 
 export const RUNNING_STYLE_CATEGORIES = ["jra", "nar"] satisfies readonly string[];
 
@@ -145,6 +168,9 @@ const requireValue = (name: string, value: string | undefined): string => {
 
 const parseBooleanFlag = (raw: string | undefined): boolean => raw === "1" || raw === "true";
 
+export const isJraV2ModelVersion = (modelVersion: string): boolean =>
+  modelVersion.includes(JRA_V2_MODEL_TAG);
+
 export const buildDefaultOptions = (): GenerateRunningStyleLocalOptions => ({
   pgUrl: "",
   runningStyleFeatureVersion: RUNNING_STYLE_FEATURE_VERSION,
@@ -155,6 +181,9 @@ export const buildDefaultOptions = (): GenerateRunningStyleLocalOptions => ({
   outputRoot: DEFAULT_OUTPUT_ROOT,
   modelVersionJra: "",
   modelVersionNar: "",
+  modelFlatbinJra: "",
+  modelFlatbinNar: "",
+  rsPFromFlatbinJra: "",
 });
 
 const applyArg = (
@@ -198,6 +227,18 @@ const applyArg = (
     options.modelVersionNar = requireValue(name, value);
     return { advanceBy: 2 };
   }
+  if (name === "--model-flatbin-jra") {
+    options.modelFlatbinJra = requireValue(name, value);
+    return { advanceBy: 2 };
+  }
+  if (name === "--model-flatbin-nar") {
+    options.modelFlatbinNar = requireValue(name, value);
+    return { advanceBy: 2 };
+  }
+  if (name === "--rs-p-from-flatbin-jra") {
+    options.rsPFromFlatbinJra = requireValue(name, value);
+    return { advanceBy: 2 };
+  }
   throw new Error(`Unknown argument: ${name}`);
 };
 
@@ -213,11 +254,22 @@ const consumeArgsRecursive = (
   return consumeArgsRecursive(options, argv, cursor + advanceBy);
 };
 
+const assertJraV2HasChainPath = (options: GenerateRunningStyleLocalOptions): void => {
+  if (!isJraV2ModelVersion(options.modelVersionJra)) return;
+  if (options.rsPFromFlatbinJra !== "") return;
+  throw new Error(
+    "--rs-p-from-flatbin-jra is required when --model-version-jra targets prod-v2 (chained predict from v1.5).",
+  );
+};
+
 export const parseArgs = (argv: readonly string[]): GenerateRunningStyleLocalOptions => {
   const options = consumeArgsRecursive(buildDefaultOptions(), argv, 0);
   if (options.pgUrl === "") throw new Error("--pg-url is required.");
   if (options.modelVersionJra === "") throw new Error("--model-version-jra is required.");
   if (options.modelVersionNar === "") throw new Error("--model-version-nar is required.");
+  if (options.modelFlatbinJra === "") throw new Error("--model-flatbin-jra is required.");
+  if (options.modelFlatbinNar === "") throw new Error("--model-flatbin-nar is required.");
+  assertJraV2HasChainPath(options);
   return options;
 };
 
@@ -242,11 +294,26 @@ export const assertColimaCapacity = (resource: ColimaResource): void => {
   }
 };
 
+const resolveRsPFromFlatbinForJra = (options: GenerateRunningStyleLocalOptions): string | null =>
+  options.rsPFromFlatbinJra === "" ? null : options.rsPFromFlatbinJra;
+
 export const buildCategoryWindows = (
   options: GenerateRunningStyleLocalOptions,
 ): readonly CategoryWindow[] => [
-  { category: "jra", years: JRA_YEARS, modelVersion: options.modelVersionJra },
-  { category: "nar", years: NAR_YEARS, modelVersion: options.modelVersionNar },
+  {
+    category: "jra",
+    years: JRA_YEARS,
+    modelVersion: options.modelVersionJra,
+    modelFlatbin: options.modelFlatbinJra,
+    rsPFromFlatbin: resolveRsPFromFlatbinForJra(options),
+  },
+  {
+    category: "nar",
+    years: NAR_YEARS,
+    modelVersion: options.modelVersionNar,
+    modelFlatbin: options.modelFlatbinNar,
+    rsPFromFlatbin: null,
+  },
 ];
 
 export const buildFeaturesRoot = (options: GenerateRunningStyleLocalOptions): string =>
@@ -299,21 +366,32 @@ export const buildPhaseACommand = (args: PhaseAArgs): readonly string[] => [
   args.memoryLimit,
 ];
 
-export const buildPhaseBCommand = (args: PhaseBArgs): readonly string[] => [
-  "uv",
+const buildPhaseBBaseTokens = (args: PhaseBArgs): readonly string[] => [
+  "bun",
   "run",
-  "python",
   PHASE_B_SCRIPT,
+  "--model-flatbin",
+  args.modelFlatbin,
   "--features-parquet",
   args.featuresParquet,
   "--output-parquet",
   args.outputParquet,
-  "--running-style-feature-version",
-  args.featureVersion,
-  "--model-version",
-  args.modelVersion,
   "--category",
   args.category,
+  "--predicted-at",
+  args.predictedAt,
+  "--model-version",
+  args.modelVersion,
+  "--feature-version",
+  args.featureVersion,
+];
+
+const buildPhaseBChainTokens = (rsPFromFlatbin: string | null): readonly string[] =>
+  rsPFromFlatbin === null ? [] : ["--rs-p-from-flatbin", rsPFromFlatbin];
+
+export const buildPhaseBCommand = (args: PhaseBArgs): readonly string[] => [
+  ...buildPhaseBBaseTokens(args),
+  ...buildPhaseBChainTokens(args.rsPFromFlatbin),
 ];
 
 export const buildPhaseCCommand = (args: PhaseCArgs): readonly string[] => [
@@ -370,6 +448,18 @@ const summariesByCategory = (
 ): Record<string, ManifestCategorySummary> =>
   Object.fromEntries(windows.map((window) => [window.category, summarizeCategory(window)]));
 
+const findCategoryWindow = (
+  windows: readonly CategoryWindow[],
+  category: CategoryWindow["category"],
+): CategoryWindow | undefined => windows.find((window) => window.category === category);
+
+const buildManifestRsPFromFlatbin = (
+  windows: readonly CategoryWindow[],
+): ManifestRsPFromFlatbin => ({
+  jra: findCategoryWindow(windows, "jra")?.rsPFromFlatbin ?? null,
+  nar: findCategoryWindow(windows, "nar")?.rsPFromFlatbin ?? null,
+});
+
 export const buildManifest = (
   options: GenerateRunningStyleLocalOptions,
   generatedAt: Date,
@@ -383,6 +473,7 @@ export const buildManifest = (
     logitsPath: buildLogitsRoot(options),
     predictionsPath: buildPredictionsRoot(options),
     modelVersions: { jra: options.modelVersionJra, nar: options.modelVersionNar },
+    rsPFromFlatbin: buildManifestRsPFromFlatbin(windows),
     categories: summariesByCategory(windows),
   };
 };
@@ -418,11 +509,14 @@ const runPhaseBForCategory = async (
   window: CategoryWindow,
 ): Promise<void> => {
   const command = buildPhaseBCommand({
+    modelFlatbin: window.modelFlatbin,
     featuresParquet: buildCategoryFeaturesDir(options, window.category),
     outputParquet: buildCategoryLogitsDir(options, window.category),
-    featureVersion: options.runningStyleFeatureVersion,
-    modelVersion: window.modelVersion,
     category: window.category,
+    predictedAt: deps.now().toISOString(),
+    modelVersion: window.modelVersion,
+    featureVersion: options.runningStyleFeatureVersion,
+    rsPFromFlatbin: window.rsPFromFlatbin,
   });
   const result = await deps.spawn(command);
   if (result.exitCode !== 0) {
