@@ -44,29 +44,36 @@ interface FakeConnectionState {
 }
 
 interface FakeDuckdbModule {
-  Database: new (path: string) => FakeDatabase;
+  DuckDBInstance: { create: (path: string) => Promise<FakeInstance> };
+}
+
+class FakeReader {
+  constructor(private readonly rows: readonly Record<string, unknown>[]) {}
+  getRowObjectsJson() {
+    return this.rows;
+  }
 }
 
 class FakeConnection {
   constructor(private readonly state: FakeConnectionState) {}
-  query(sql: string) {
+  async runAndReadAll(sql: string) {
     this.state.queryStatements.push(sql);
-    return { toArray: () => this.state.rows };
+    return new FakeReader(this.state.rows);
   }
-  run(sql: string) {
+  async run(sql: string) {
     this.state.runStatements.push(sql);
+    return undefined;
   }
-  close() {
+  disconnectSync() {
     return undefined;
   }
 }
 
-class FakeDatabase {
-  constructor(public readonly path: string) {}
-  connect(): FakeConnection {
-    return new FakeConnection(FakeDatabase.sharedState);
+class FakeInstance {
+  async connect(): Promise<FakeConnection> {
+    return new FakeConnection(FakeInstance.sharedState);
   }
-  close() {
+  closeSync() {
     return undefined;
   }
   static sharedState: FakeConnectionState = {
@@ -77,12 +84,16 @@ class FakeDatabase {
 }
 
 const buildFakeModule = (initialRows: readonly Record<string, unknown>[]): FakeDuckdbModule => {
-  FakeDatabase.sharedState = {
+  FakeInstance.sharedState = {
     rows: initialRows,
     runStatements: [],
     queryStatements: [],
   };
-  return { Database: FakeDatabase };
+  return {
+    DuckDBInstance: {
+      create: async (_path: string) => new FakeInstance(),
+    },
+  };
 };
 
 describe("apply-running-style-postproc", () => {
@@ -725,7 +736,7 @@ describe("apply-running-style-postproc", () => {
     ).toBe(true);
   });
 
-  test("readInputRows runs SELECT query and returns plain objects", () => {
+  test("readInputRows runs SELECT query and returns plain objects", async () => {
     const fakeModule = buildFakeModule([
       {
         ...RACE_KEY_FIELDS,
@@ -736,7 +747,7 @@ describe("apply-running-style-postproc", () => {
         p_oikomi: 0.1,
       },
     ]);
-    const rows = readInputRows({
+    const rows = await readInputRows({
       duckdbModule: fakeModule,
       logitsParquet: "/tmp/x.parquet",
     });
@@ -744,22 +755,43 @@ describe("apply-running-style-postproc", () => {
     expect(rows[0]?.source).toBe("jra");
   });
 
-  test("writeOutputRows uses empty parquet COPY when rows array is empty", () => {
+  test("readInputRows records the SELECT statement on the connection", async () => {
+    const fakeModule = buildFakeModule([
+      {
+        ...RACE_KEY_FIELDS,
+        ...PASSTHROUGH_FIELDS,
+        p_nige: 0.4,
+        p_senkou: 0.3,
+        p_sashi: 0.2,
+        p_oikomi: 0.1,
+      },
+    ]);
+    await readInputRows({
+      duckdbModule: fakeModule,
+      logitsParquet: "/tmp/x.parquet",
+    });
+    expect(FakeInstance.sharedState.queryStatements.length).toBe(1);
+    expect(
+      FakeInstance.sharedState.queryStatements[0]?.includes("/tmp/x.parquet") satisfies boolean,
+    ).toBe(true);
+  });
+
+  test("writeOutputRows uses empty parquet COPY when rows array is empty", async () => {
     const fakeModule = buildFakeModule([]);
-    writeOutputRows({
+    await writeOutputRows({
       duckdbModule: fakeModule,
       outputParquet: "/tmp/empty.parquet",
       rows: [],
     });
-    expect(FakeDatabase.sharedState.runStatements.length).toBe(1);
+    expect(FakeInstance.sharedState.runStatements.length).toBe(1);
     expect(
-      FakeDatabase.sharedState.runStatements[0]?.includes("WHERE 1 = 0") satisfies boolean,
+      FakeInstance.sharedState.runStatements[0]?.includes("WHERE 1 = 0") satisfies boolean,
     ).toBe(true);
   });
 
-  test("writeOutputRows uses VALUES COPY when rows are present", () => {
+  test("writeOutputRows uses VALUES COPY when rows are present", async () => {
     const fakeModule = buildFakeModule([]);
-    writeOutputRows({
+    await writeOutputRows({
       duckdbModule: fakeModule,
       outputParquet: "/tmp/nonempty.parquet",
       rows: [
@@ -783,13 +815,13 @@ describe("apply-running-style-postproc", () => {
         },
       ],
     });
-    expect(FakeDatabase.sharedState.runStatements.length).toBe(1);
-    expect(FakeDatabase.sharedState.runStatements[0]?.includes("VALUES") satisfies boolean).toBe(
+    expect(FakeInstance.sharedState.runStatements.length).toBe(1);
+    expect(FakeInstance.sharedState.runStatements[0]?.includes("VALUES") satisfies boolean).toBe(
       true,
     );
   });
 
-  test("runPostproc reads rows, post-processes them, and writes to output parquet", () => {
+  test("runPostproc reads rows, post-processes them, and writes to output parquet", async () => {
     const fakeModule = buildFakeModule([
       {
         ...RACE_KEY_FIELDS,
@@ -801,7 +833,7 @@ describe("apply-running-style-postproc", () => {
       },
     ]);
     const messages: string[] = [];
-    const result = runPostproc({
+    const result = await runPostproc({
       duckdbModule: fakeModule,
       logger: {
         info: (m) => {
@@ -818,10 +850,10 @@ describe("apply-running-style-postproc", () => {
     expect(messages.length).toBe(1);
   });
 
-  test("runPostproc with empty input writes an empty parquet and reports zero rows", () => {
+  test("runPostproc with empty input writes an empty parquet and reports zero rows", async () => {
     const fakeModule = buildFakeModule([]);
     const messages: string[] = [];
-    const result = runPostproc({
+    const result = await runPostproc({
       duckdbModule: fakeModule,
       logger: {
         info: (m) => {
@@ -836,11 +868,11 @@ describe("apply-running-style-postproc", () => {
     });
     expect(result).toStrictEqual({ rowCount: 0 });
     expect(
-      FakeDatabase.sharedState.runStatements[0]?.includes("WHERE 1 = 0") satisfies boolean,
+      FakeInstance.sharedState.runStatements[0]?.includes("WHERE 1 = 0") satisfies boolean,
     ).toBe(true);
   });
 
-  test("runCli parses argv and produces predictions through the same pipeline", () => {
+  test("runCli parses argv and produces predictions through the same pipeline", async () => {
     const fakeModule = buildFakeModule([
       {
         ...RACE_KEY_FIELDS,
@@ -851,7 +883,7 @@ describe("apply-running-style-postproc", () => {
         p_oikomi: 0,
       },
     ]);
-    const result = runCli({
+    const result = await runCli({
       argv: [
         "--logits-parquet",
         "/tmp/in.parquet",
@@ -866,14 +898,14 @@ describe("apply-running-style-postproc", () => {
     expect(result).toStrictEqual({ rowCount: 1 });
   });
 
-  test("runCli propagates parseArgs errors for missing arguments", () => {
+  test("runCli propagates parseArgs errors for missing arguments", async () => {
     const fakeModule = buildFakeModule([]);
-    expect(() =>
+    await expect(
       runCli({
         argv: [],
         duckdbModule: fakeModule,
         logger: { info: () => undefined },
       }),
-    ).toThrowError("--logits-parquet is required.");
+    ).rejects.toThrowError("--logits-parquet is required.");
   });
 });

@@ -22,6 +22,9 @@
 // the v1.5 model; v1.5 logits are softmaxed into 4 `rs_p_*` columns that
 // augment the v2 input vector. The 117 vs 138 distinction is detected from
 // `model.header.feature_names`; no command-line mode switch is needed.
+//
+// Uses the @duckdb/node-api neo async API: `DuckDBInstance.create`,
+// `connection.runAndReadAll`, and `connection.run` all return Promises.
 
 import {
   computeFieldFeaturesPerHorse,
@@ -75,19 +78,27 @@ interface PredictionRow extends RaceKey {
   target_running_style_class: number | null;
 }
 
-interface DuckDBConnectionLike {
-  query(sql: string): { toArray(): readonly Record<string, unknown>[] };
-  run(sql: string): void;
-  close(): void;
+interface DuckDBResultReaderLike {
+  getRowObjects(): readonly Record<string, unknown>[];
 }
 
-interface DuckDBDatabaseLike {
-  connect(): DuckDBConnectionLike;
-  close(): void;
+interface DuckDBConnectionLike {
+  runAndReadAll(sql: string): Promise<DuckDBResultReaderLike>;
+  run(sql: string): Promise<unknown>;
+  disconnectSync(): void;
+}
+
+interface DuckDBInstanceLike {
+  connect(): Promise<DuckDBConnectionLike>;
+  closeSync(): void;
+}
+
+interface DuckDBInstanceFactory {
+  create(path: string): Promise<DuckDBInstanceLike>;
 }
 
 interface DuckDBModuleLike {
-  Database: new (path: string) => DuckDBDatabaseLike;
+  DuckDBInstance: DuckDBInstanceFactory;
 }
 
 interface ModelFileReader {
@@ -189,6 +200,7 @@ const RS_P_COLUMN_NAMES = [
 
 const SUPPORTED_CATEGORIES = ["jra", "nar"] satisfies ReadonlyArray<CliOptions["category"]>;
 const DUCKDB_MODULE_SPECIFIER = "@duckdb/node-api";
+const DUCKDB_IN_MEMORY_PATH = ":memory:";
 
 export const initialOptions = (): CliOptions => ({
   modelFlatbin: "",
@@ -522,14 +534,28 @@ export const predictAll = (params: PredictAllParams): ReadonlyArray<PredictionRo
 export const buildReadFeaturesSql = (featuresParquet: string): string =>
   `SELECT * FROM read_parquet('${featuresParquet}')`;
 
-export const readFeatures = (params: ReadFeaturesParams): readonly Record<string, unknown>[] => {
-  const database = new params.duckdbModule.Database(":memory:");
-  const connection = database.connect();
+const openConnection = async (
+  duckdbModule: DuckDBModuleLike,
+): Promise<{ instance: DuckDBInstanceLike; connection: DuckDBConnectionLike }> => {
+  const instance = await duckdbModule.DuckDBInstance.create(DUCKDB_IN_MEMORY_PATH);
+  const connection = await instance.connect();
+  return { instance, connection };
+};
+
+const closeConnection = (instance: DuckDBInstanceLike, connection: DuckDBConnectionLike): void => {
+  connection.disconnectSync();
+  instance.closeSync();
+};
+
+export const readFeatures = async (
+  params: ReadFeaturesParams,
+): Promise<readonly Record<string, unknown>[]> => {
+  const { instance, connection } = await openConnection(params.duckdbModule);
   try {
-    return connection.query(buildReadFeaturesSql(params.featuresParquet)).toArray();
+    const reader = await connection.runAndReadAll(buildReadFeaturesSql(params.featuresParquet));
+    return reader.getRowObjects();
   } finally {
-    connection.close();
-    database.close();
+    closeConnection(instance, connection);
   }
 };
 
@@ -603,20 +629,20 @@ export const buildWriteOutputCopySql = (
   return `COPY (SELECT * FROM (VALUES ${tuples}) AS t(${columns})) TO '${outputParquet}' (FORMAT PARQUET, COMPRESSION ZSTD)`;
 };
 
-export const writeOutput = (params: WriteOutputParams): void => {
-  const database = new params.duckdbModule.Database(":memory:");
-  const connection = database.connect();
+export const writeOutput = async (params: WriteOutputParams): Promise<void> => {
+  const { instance, connection } = await openConnection(params.duckdbModule);
   try {
     if (params.rows.length === 0) {
-      connection.run(buildEmptyOutputCopySql(params.outputParquet, params.includeTargetClass));
+      await connection.run(
+        buildEmptyOutputCopySql(params.outputParquet, params.includeTargetClass),
+      );
       return;
     }
-    connection.run(
+    await connection.run(
       buildWriteOutputCopySql(params.outputParquet, params.rows, params.includeTargetClass),
     );
   } finally {
-    connection.close();
-    database.close();
+    closeConnection(instance, connection);
   }
 };
 
@@ -654,7 +680,7 @@ export const runInferenceLocal = async (
     readModelFile: params.readModelFile,
   });
   const featureNames = model.header.feature_names;
-  const rawRows = readFeatures({
+  const rawRows = await readFeatures({
     duckdbModule: params.duckdbModule,
     featuresParquet: params.options.featuresParquet,
   });
@@ -667,7 +693,7 @@ export const runInferenceLocal = async (
     modelVersion: params.options.modelVersion,
     featureVersion: params.options.featureVersion,
   });
-  writeOutput({
+  await writeOutput({
     duckdbModule: params.duckdbModule,
     outputParquet: params.options.outputParquet,
     rows: predictions,
@@ -702,9 +728,15 @@ export const runCli = async (
 const isObjectRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
+const isDuckdbInstanceFactory = (value: unknown): value is DuckDBInstanceFactory => {
+  if (!isObjectRecord(value) && typeof value !== "function") return false;
+  const candidate = value as { create?: unknown };
+  return typeof candidate.create === "function";
+};
+
 const isDuckdbModuleLike = (value: unknown): value is DuckDBModuleLike => {
   if (!isObjectRecord(value)) return false;
-  return typeof value["Database"] === "function";
+  return isDuckdbInstanceFactory(value["DuckDBInstance"]);
 };
 
 const extractNestedDefault = (value: Record<string, unknown>): unknown => value["default"];
@@ -715,7 +747,7 @@ export const resolveDuckdbModule = (moduleNamespace: unknown): DuckDBModuleLike 
     const nested = extractNestedDefault(moduleNamespace);
     if (isDuckdbModuleLike(nested)) return nested;
   }
-  throw new Error("@duckdb/node-api does not export Database.");
+  throw new Error("@duckdb/node-api does not export DuckDBInstance.");
 };
 
 export const loadDuckdbModule = async (): Promise<DuckDBModuleLike> => {
@@ -780,8 +812,10 @@ export type {
   PredictionRow,
   RaceKey,
   DuckDBModuleLike,
-  DuckDBDatabaseLike,
+  DuckDBInstanceLike,
+  DuckDBInstanceFactory,
   DuckDBConnectionLike,
+  DuckDBResultReaderLike,
   ModelFileReader,
   CliLogger,
 };

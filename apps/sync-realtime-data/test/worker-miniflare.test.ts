@@ -26,7 +26,7 @@ let worker: {
   scheduled: (options: { cron: string; scheduledTime?: Date }) => Promise<unknown>;
 };
 
-const root = fileURLToPath(new URL("..", import.meta.url));
+const root = fileURLToPath(new URL("..", import.meta.url).href);
 
 const applySqlFile = async (path: string): Promise<void> => {
   const statements = (await readFile(path, "utf8"))

@@ -11,11 +11,13 @@ that emits a JSON report and dumps mismatched race-keys to parquet (Phase 3).
 Phase 1 (always-on, mocked Booster / parquet / PG): probability column wiring,
 sums-to-one and per-class tolerance arithmetic helpers.
 
-Phase 2 (opt-in via ``PARITY_PG_DSN``): MD5-deterministic sampling of 1000
-race-keys from PG ``race_running_style_model_predictions`` for the configured
-``model_version`` filter, followed by LEFT JOIN comparison with the local
-predictions parquet (``--features-parquet --output-parquet`` produced by the
-W3 CLI). Pass criteria: ``max_diff_per_class`` < 1e-12 and ``argmax_agreement``
+Phase 2 (opt-in via ``PARITY_PG_DSN`` env var or explicit ``--pg-dsn``):
+MD5-deterministic sampling of 1000 race-keys from PG
+``race_running_style_model_predictions`` for the configured ``model_version`` +
+``year`` filter, filtering the W3 features parquet to those sampled race-keys,
+spawning the W3 CLI (`run-running-style-inference-local.ts`) as a subprocess, and
+LEFT JOIN comparison between the W3 output parquet and the production
+predictions. Pass criteria: ``max_diff_per_class`` < 1e-12 and ``argmax_agreement``
 == 1.0.
 
 Phase 3 (advisory regression guard): full-coverage parity run over a single
@@ -24,12 +26,12 @@ with summary metrics and dumps any race-keys whose ``max_diff > 1e-9`` to
 ``mismatches.parquet`` alongside the JSON report.
 
 This module purposely treats W3 as an opaque subprocess: callers inject the
-``run_local_inference`` callable so the test framework itself stays decoupled
+``local_inference_runner`` callable so the test framework itself stays decoupled
 from whichever scoring entrypoint W3 ships. The default callable shells out via
 ``subprocess.run`` to the configured Bun script.
 
 Run with: ``uv run python src/scripts/verify_running_style_inference_parity.py
-    --features-parquet ... --predictions-parquet ... --pg-dsn ... ...``.
+    --features-parquet ... --output-parquet ... --model-flatbin ... ...``.
 """
 
 from __future__ import annotations
@@ -38,8 +40,10 @@ import argparse
 import json
 import os
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from subprocess import CompletedProcess
 from typing import Callable, Protocol, TypedDict
 
 import numpy as np
@@ -61,11 +65,15 @@ DEFAULT_TOLERANCE_PHASE3_MAX_DIFF: float = 1e-9
 DEFAULT_TOLERANCE_PHASE3_AGREEMENT: float = 0.999
 ENV_PARITY_PG_DSN: str = "PARITY_PG_DSN"
 PHASES_ALL: tuple[str, str, str] = ("phase1", "phase2", "phase3")
+SUPPORTED_CATEGORIES: tuple[str, str] = ("jra", "nar")
+W3_INFERENCE_SCRIPT_PATH: str = (
+    "apps/sync-realtime-data/src/scripts/run-running-style-inference-local.ts"
+)
 
 SAMPLE_KEYS_SQL_TEMPLATE: str = (
     "SELECT source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango "
     "FROM race_running_style_model_predictions "
-    "WHERE model_version = %s "
+    "WHERE model_version = %s AND kaisai_nen = %s "
     "GROUP BY source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango "
     "ORDER BY md5(source || kaisai_nen || kaisai_tsukihi || keibajo_code || race_bango) "
     "LIMIT %s"
@@ -75,7 +83,7 @@ PROD_PREDICTIONS_SQL_TEMPLATE: str = (
     "SELECT source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, "
     "ketto_toroku_bango, p_nige, p_senkou, p_sashi, p_oikomi, predicted_class "
     "FROM race_running_style_model_predictions "
-    "WHERE model_version = %s"
+    "WHERE model_version = %s AND kaisai_nen = %s"
 )
 
 
@@ -112,15 +120,33 @@ class PgConnectorLike(Protocol):
     def __call__(self, dsn: str) -> PgConnectionLike: ...
 
 
+SubprocessRunner = Callable[..., CompletedProcess[str]]
+
+
 class LocalInferenceRunnerLike(Protocol):
     def __call__(
-        self, *, features_parquet: str, output_parquet: str, model_version: str,
+        self,
+        *,
+        features_parquet: str,
+        output_parquet: str,
+        model_flatbin: str,
+        category: str,
+        model_version: str,
+        feature_version: str,
+        predicted_at: str,
+        rs_p_from_flatbin: str | None,
+        runner: SubprocessRunner,
     ) -> None: ...
+
+
+class PandasParquetWriter(Protocol):
+    def __call__(self, frame: pd.DataFrame, path: str) -> None: ...
 
 
 class SampleSpec(TypedDict):
     pg_dsn: str
     model_version: str
+    year: str
     limit: int
 
 
@@ -128,6 +154,14 @@ class CompareSpec(TypedDict):
     local_frame: pd.DataFrame
     prod_frame: pd.DataFrame
     tolerance: float
+
+
+class PhaseTwoDeps(TypedDict):
+    pg_connector: PgConnectorLike
+    local_inference_runner: LocalInferenceRunnerLike
+    pandas_reader: Callable[[str], pd.DataFrame]
+    pandas_writer: PandasParquetWriter
+    subprocess_runner: SubprocessRunner
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -139,9 +173,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--features-parquet", required=True)
-    parser.add_argument("--predictions-parquet", required=True)
-    parser.add_argument("--pg-dsn", required=True)
+    parser.add_argument("--output-parquet", required=True)
+    parser.add_argument("--model-flatbin", required=True)
+    parser.add_argument("--rs-p-from-flatbin", default=None)
+    parser.add_argument("--predicted-at", required=True)
+    parser.add_argument("--pg-dsn", default=None)
     parser.add_argument("--model-version", required=True)
+    parser.add_argument("--feature-version", required=True)
+    parser.add_argument("--category", required=True, choices=list(SUPPORTED_CATEGORIES))
+    parser.add_argument("--year", required=True)
     parser.add_argument("--phase", choices=list(PHASES_ALL), default="phase2")
     parser.add_argument("--sample-limit", type=int, default=DEFAULT_SAMPLE_LIMIT)
     parser.add_argument("--tolerance", type=float, default=DEFAULT_TOLERANCE_PHASE2)
@@ -174,7 +214,10 @@ def fetch_sample_race_keys(
     connection = pg_connector(spec["pg_dsn"])
     try:
         cursor = connection.cursor()
-        cursor.execute(build_sample_keys_sql(), (spec["model_version"], spec["limit"]))
+        cursor.execute(
+            build_sample_keys_sql(),
+            (spec["model_version"], spec["year"], spec["limit"]),
+        )
         rows = cursor.fetchall()
     finally:
         connection.close()
@@ -189,7 +232,10 @@ def fetch_prod_predictions(
     connection = pg_connector(spec["pg_dsn"])
     try:
         cursor = connection.cursor()
-        cursor.execute(build_prod_predictions_sql(), (spec["model_version"],))
+        cursor.execute(
+            build_prod_predictions_sql(),
+            (spec["model_version"], spec["year"]),
+        )
         rows = cursor.fetchall()
     finally:
         connection.close()
@@ -280,6 +326,17 @@ def resolve_phase_two_dsn() -> str:
     return os.environ.get(ENV_PARITY_PG_DSN, "")
 
 
+def resolve_pg_dsn(explicit_dsn: str | None) -> str:
+    if explicit_dsn is not None and explicit_dsn != "":
+        return explicit_dsn
+    env_dsn = resolve_phase_two_dsn()
+    if env_dsn != "":
+        return env_dsn
+    raise ValueError(
+        "Postgres DSN is required; pass --pg-dsn or set PARITY_PG_DSN environment variable.",
+    )
+
+
 def collect_mismatches(spec: CompareSpec, *, max_diff_threshold: float) -> pd.DataFrame:
     merged = spec["local_frame"].merge(
         spec["prod_frame"],
@@ -368,127 +425,282 @@ def default_pg_connector(dsn: str) -> PgConnectionLike:
     return connect_callable(dsn)
 
 
+def build_w3_command(
+    *,
+    features_parquet: str,
+    output_parquet: str,
+    model_flatbin: str,
+    category: str,
+    model_version: str,
+    feature_version: str,
+    predicted_at: str,
+    rs_p_from_flatbin: str | None,
+) -> list[str]:
+    base = [
+        "bun",
+        "run",
+        W3_INFERENCE_SCRIPT_PATH,
+        "--model-flatbin",
+        model_flatbin,
+        "--features-parquet",
+        features_parquet,
+        "--output-parquet",
+        output_parquet,
+        "--category",
+        category,
+        "--model-version",
+        model_version,
+        "--feature-version",
+        feature_version,
+        "--predicted-at",
+        predicted_at,
+    ]
+    if rs_p_from_flatbin is None:
+        return base
+    return [*base, "--rs-p-from-flatbin", rs_p_from_flatbin]
+
+
 def default_local_inference_runner(
     *,
     features_parquet: str,
     output_parquet: str,
+    model_flatbin: str,
+    category: str,
     model_version: str,
+    feature_version: str,
+    predicted_at: str,
+    rs_p_from_flatbin: str | None,
+    runner: SubprocessRunner,
 ) -> None:
-    subprocess.run(
-        [
-            "bun",
-            "run",
-            "src/scripts/score_running_style_local.ts",
-            "--features-parquet",
-            features_parquet,
-            "--output-parquet",
-            output_parquet,
-            "--model-version",
-            model_version,
-        ],
-        check=True,
+    cmd = build_w3_command(
+        features_parquet=features_parquet,
+        output_parquet=output_parquet,
+        model_flatbin=model_flatbin,
+        category=category,
+        model_version=model_version,
+        feature_version=feature_version,
+        predicted_at=predicted_at,
+        rs_p_from_flatbin=rs_p_from_flatbin,
     )
+    runner(cmd, check=True, capture_output=True, text=True)
 
 
 def utc_now_iso() -> str:
     return datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+def filter_features_by_race_keys(
+    features: pd.DataFrame, race_keys: list[tuple[str, str, str, str, str]],
+) -> pd.DataFrame:
+    if len(race_keys) == 0:
+        return features.iloc[0:0].copy()
+    keys_frame = pd.DataFrame(race_keys, columns=list(RACE_KEY_COLUMNS))
+    return features.merge(keys_frame, on=list(RACE_KEY_COLUMNS), how="inner")
+
+
+def default_pandas_parquet_writer(frame: pd.DataFrame, path: str) -> None:
+    frame.to_parquet(path, index=False)
+
+
+class PhaseTwoArgs(TypedDict):
+    features_parquet: str
+    output_parquet: str
+    model_flatbin: str
+    rs_p_from_flatbin: str | None
+    predicted_at: str
+    pg_dsn: str
+    model_version: str
+    feature_version: str
+    category: str
+    year: str
+    sample_limit: int
+    tolerance: float
+
+
+def coerce_phase_two_args(args: argparse.Namespace) -> PhaseTwoArgs:
+    return PhaseTwoArgs(
+        features_parquet=str(args.features_parquet),
+        output_parquet=str(args.output_parquet),
+        model_flatbin=str(args.model_flatbin),
+        rs_p_from_flatbin=(
+            None if args.rs_p_from_flatbin is None else str(args.rs_p_from_flatbin)
+        ),
+        predicted_at=str(args.predicted_at),
+        pg_dsn=resolve_pg_dsn(args.pg_dsn),
+        model_version=str(args.model_version),
+        feature_version=str(args.feature_version),
+        category=str(args.category),
+        year=str(args.year),
+        sample_limit=int(args.sample_limit),
+        tolerance=float(args.tolerance),
+    )
+
+
+def spawn_w3_for_filtered_features(
+    *,
+    args: PhaseTwoArgs,
+    filtered_features_path: str,
+    output_parquet: str,
+    local_inference_runner: LocalInferenceRunnerLike,
+    subprocess_runner: SubprocessRunner,
+) -> None:
+    local_inference_runner(
+        features_parquet=filtered_features_path,
+        output_parquet=output_parquet,
+        model_flatbin=args["model_flatbin"],
+        category=args["category"],
+        model_version=args["model_version"],
+        feature_version=args["feature_version"],
+        predicted_at=args["predicted_at"],
+        rs_p_from_flatbin=args["rs_p_from_flatbin"],
+        runner=subprocess_runner,
+    )
+
+
+def derive_predicted_class(local_frame: pd.DataFrame) -> pd.DataFrame:
+    if PREDICTED_CLASS_COLUMN in local_frame.columns:
+        return local_frame
+    probabilities = local_frame[list(PROBABILITY_COLUMNS)].to_numpy(dtype=np.float64)
+    annotated = local_frame.copy()
+    annotated[PREDICTED_CLASS_COLUMN] = probabilities.argmax(axis=1).astype(np.int64)
+    return annotated
+
+
 def run_phase_two(
     args: argparse.Namespace,
     *,
-    pg_connector: PgConnectorLike,
-    local_inference_runner: LocalInferenceRunnerLike,
-    pandas_reader: Callable[[str], pd.DataFrame],
+    deps: PhaseTwoDeps,
 ) -> ParityResult:
-    local_inference_runner(
-        features_parquet=args.features_parquet,
-        output_parquet=args.predictions_parquet,
-        model_version=args.model_version,
-    )
-    local_frame = pandas_reader(args.predictions_parquet)
-    spec_for_fetch: SampleSpec = {
-        "pg_dsn": args.pg_dsn,
-        "model_version": args.model_version,
-        "limit": int(args.sample_limit),
+    coerced = coerce_phase_two_args(args)
+    sample_spec: SampleSpec = {
+        "pg_dsn": coerced["pg_dsn"],
+        "model_version": coerced["model_version"],
+        "year": coerced["year"],
+        "limit": coerced["sample_limit"],
     }
-    prod_frame = fetch_prod_predictions(spec_for_fetch, pg_connector=pg_connector)
+    race_keys = fetch_sample_race_keys(sample_spec, pg_connector=deps["pg_connector"])
+    features = deps["pandas_reader"](coerced["features_parquet"])
+    filtered = filter_features_by_race_keys(features, race_keys)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        filtered_path = str(Path(tmpdir) / "filtered_features.parquet")
+        deps["pandas_writer"](filtered, filtered_path)
+        spawn_w3_for_filtered_features(
+            args=coerced,
+            filtered_features_path=filtered_path,
+            output_parquet=coerced["output_parquet"],
+            local_inference_runner=deps["local_inference_runner"],
+            subprocess_runner=deps["subprocess_runner"],
+        )
+        local_frame = derive_predicted_class(deps["pandas_reader"](coerced["output_parquet"]))
+    prod_frame = fetch_prod_predictions(sample_spec, pg_connector=deps["pg_connector"])
     return evaluate_parity(
         {
             "local_frame": local_frame,
             "prod_frame": prod_frame,
-            "tolerance": float(args.tolerance),
+            "tolerance": coerced["tolerance"],
         },
     )
+
+
+class PhaseThreeDeps(TypedDict):
+    pg_connector: PgConnectorLike
+    local_inference_runner: LocalInferenceRunnerLike
+    pandas_reader: Callable[[str], pd.DataFrame]
+    pandas_writer: PandasParquetWriter
+    subprocess_runner: SubprocessRunner
+    generated_at_utc: str
 
 
 def run_phase_three(
     args: argparse.Namespace,
     *,
-    pg_connector: PgConnectorLike,
-    local_inference_runner: LocalInferenceRunnerLike,
-    pandas_reader: Callable[[str], pd.DataFrame],
-    generated_at_utc: str,
+    deps: PhaseThreeDeps,
 ) -> tuple[PhaseThreeReport, Path, Path | None]:
-    local_inference_runner(
-        features_parquet=args.features_parquet,
-        output_parquet=args.predictions_parquet,
-        model_version=args.model_version,
+    parity = run_phase_two(
+        args,
+        deps={
+            "pg_connector": deps["pg_connector"],
+            "local_inference_runner": deps["local_inference_runner"],
+            "pandas_reader": deps["pandas_reader"],
+            "pandas_writer": deps["pandas_writer"],
+            "subprocess_runner": deps["subprocess_runner"],
+        },
     )
-    local_frame = pandas_reader(args.predictions_parquet)
-    spec_for_fetch: SampleSpec = {
-        "pg_dsn": args.pg_dsn,
-        "model_version": args.model_version,
-        "limit": int(args.sample_limit),
-    }
-    prod_frame = fetch_prod_predictions(spec_for_fetch, pg_connector=pg_connector)
+    coerced = coerce_phase_two_args(args)
+    prod_frame = fetch_prod_predictions(
+        {
+            "pg_dsn": coerced["pg_dsn"],
+            "model_version": coerced["model_version"],
+            "year": coerced["year"],
+            "limit": coerced["sample_limit"],
+        },
+        pg_connector=deps["pg_connector"],
+    )
+    local_frame = derive_predicted_class(deps["pandas_reader"](coerced["output_parquet"]))
     compare_spec: CompareSpec = {
         "local_frame": local_frame,
         "prod_frame": prod_frame,
-        "tolerance": float(args.tolerance),
+        "tolerance": coerced["tolerance"],
     }
-    parity = evaluate_parity(compare_spec)
     mismatches = collect_mismatches(
         compare_spec, max_diff_threshold=DEFAULT_TOLERANCE_PHASE3_MAX_DIFF,
     )
     report = build_phase_three_report(
         parity=parity,
-        model_version=args.model_version,
+        model_version=coerced["model_version"],
         mismatches_count=int(len(mismatches)),
-        generated_at_utc=generated_at_utc,
+        generated_at_utc=deps["generated_at_utc"],
         max_diff_threshold=DEFAULT_TOLERANCE_PHASE3_MAX_DIFF,
         agreement_threshold=DEFAULT_TOLERANCE_PHASE3_AGREEMENT,
     )
     json_path, parquet_path = write_phase_three_artifacts(
-        report=report, mismatches=mismatches, report_dir=args.report_dir,
+        report=report, mismatches=mismatches, report_dir=str(args.report_dir),
     )
     return report, json_path, parquet_path
 
 
-def run(
-    args: argparse.Namespace,
-    *,
-    pg_connector: PgConnectorLike,
-    local_inference_runner: LocalInferenceRunnerLike,
-    pandas_reader: Callable[[str], pd.DataFrame],
-    clock_iso: Callable[[], str],
+class RunDeps(TypedDict):
+    pg_connector: PgConnectorLike
+    local_inference_runner: LocalInferenceRunnerLike
+    pandas_reader: Callable[[str], pd.DataFrame]
+    pandas_writer: PandasParquetWriter
+    subprocess_runner: SubprocessRunner
+    clock_iso: Callable[[], str]
+
+
+def run_phase_one_outcome() -> dict[str, object]:
+    return {"phase": "phase1", "message": "smoke tests live in pytest, not CLI"}
+
+
+def run_phase_two_outcome(
+    args: argparse.Namespace, *, deps: RunDeps,
 ) -> dict[str, object]:
-    if args.phase == "phase1":
-        return {"phase": "phase1", "message": "smoke tests live in pytest, not CLI"}
-    if args.phase == "phase2":
-        result = run_phase_two(
-            args,
-            pg_connector=pg_connector,
-            local_inference_runner=local_inference_runner,
-            pandas_reader=pandas_reader,
-        )
-        return {"phase": "phase2", "result": result}
+    result = run_phase_two(
+        args,
+        deps={
+            "pg_connector": deps["pg_connector"],
+            "local_inference_runner": deps["local_inference_runner"],
+            "pandas_reader": deps["pandas_reader"],
+            "pandas_writer": deps["pandas_writer"],
+            "subprocess_runner": deps["subprocess_runner"],
+        },
+    )
+    return {"phase": "phase2", "result": result}
+
+
+def run_phase_three_outcome(
+    args: argparse.Namespace, *, deps: RunDeps,
+) -> dict[str, object]:
     report, json_path, parquet_path = run_phase_three(
         args,
-        pg_connector=pg_connector,
-        local_inference_runner=local_inference_runner,
-        pandas_reader=pandas_reader,
-        generated_at_utc=clock_iso(),
+        deps={
+            "pg_connector": deps["pg_connector"],
+            "local_inference_runner": deps["local_inference_runner"],
+            "pandas_reader": deps["pandas_reader"],
+            "pandas_writer": deps["pandas_writer"],
+            "subprocess_runner": deps["subprocess_runner"],
+            "generated_at_utc": deps["clock_iso"](),
+        },
     )
     return {
         "phase": "phase3",
@@ -498,14 +710,26 @@ def run(
     }
 
 
+def run(args: argparse.Namespace, *, deps: RunDeps) -> dict[str, object]:
+    if args.phase == "phase1":
+        return run_phase_one_outcome()
+    if args.phase == "phase2":
+        return run_phase_two_outcome(args, deps=deps)
+    return run_phase_three_outcome(args, deps=deps)
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     outcome = run(
         args,
-        pg_connector=default_pg_connector,
-        local_inference_runner=default_local_inference_runner,
-        pandas_reader=pd.read_parquet,
-        clock_iso=utc_now_iso,
+        deps={
+            "pg_connector": default_pg_connector,
+            "local_inference_runner": default_local_inference_runner,
+            "pandas_reader": pd.read_parquet,
+            "pandas_writer": default_pandas_parquet_writer,
+            "subprocess_runner": subprocess.run,
+            "clock_iso": utc_now_iso,
+        },
     )
     print(json.dumps(outcome, ensure_ascii=False, default=str))
 

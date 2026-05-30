@@ -6,7 +6,10 @@ This module only:
 
 1. Invokes the TS builder via ``subprocess`` to obtain the SQL string,
 2. Connects to DuckDB, attaches PostgreSQL read-only,
-3. Wraps the SQL in ``COPY (...) TO <output-dir> (PARTITION_BY (race_year))``.
+3. Wraps the SQL in ``COPY (FROM postgres_query('pg', '<inner-sql>')) TO
+   <output-dir> (PARTITION_BY (race_year))`` so the inner SELECT is executed
+   PG-side. This avoids DuckDB local-parse failures on PG-only scalar
+   functions (``to_char`` / ``to_date`` / ``interval`` etc.).
 
 Run with:
     uv run python src/scripts/generate_running_style_features_local.py \\
@@ -135,9 +138,19 @@ def attach_postgres(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
     con.execute("USE pg")
 
 
+def escape_sql_for_postgres_query(select_sql: str) -> str:
+    return select_sql.strip().replace("'", "''")
+
+
+def build_postgres_query_subselect(select_sql: str) -> str:
+    escaped = escape_sql_for_postgres_query(select_sql)
+    return f"SELECT * FROM postgres_query('pg', '{escaped}')"
+
+
 def build_hive_copy_sql(*, select_sql: str, output_dir: str) -> str:
+    inner = build_postgres_query_subselect(select_sql)
     return (
-        f"COPY ({select_sql.strip()}) TO '{output_dir}' "
+        f"COPY ({inner}) TO '{output_dir}' "
         "(FORMAT PARQUET, PARTITION_BY (race_year), OVERWRITE_OR_IGNORE TRUE)"
     )
 

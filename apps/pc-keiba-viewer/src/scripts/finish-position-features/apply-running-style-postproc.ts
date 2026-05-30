@@ -14,6 +14,9 @@
 // Race-level nige cap / RaceLevelNigeConstraint is intentionally NOT applied
 // here. memory rule `feedback_no_race_level_nige_constraint.md` forbids forcing
 // at most one nige per race; raw softmax + argmax is the final decision.
+//
+// W11-X2-Async: refactored onto the @duckdb/node-api neo async API
+// (DuckDBInstance.create + connection.runAndReadAll + connection.run).
 
 interface ApplyRunningStylePostprocOptions {
   logitsParquet: string;
@@ -30,19 +33,27 @@ interface PostprocLogger {
   info: (message: string) => void;
 }
 
+interface DuckDBResultReaderLike {
+  getRowObjectsJson(): readonly Record<string, unknown>[];
+}
+
 interface DuckDBConnectionLike {
-  query(sql: string): { toArray(): readonly Record<string, unknown>[] };
-  run(sql: string): void;
-  close(): void;
+  runAndReadAll(sql: string): Promise<DuckDBResultReaderLike>;
+  run(sql: string): Promise<unknown>;
+  disconnectSync(): void;
+}
+
+interface DuckDBInstanceLike {
+  connect(): Promise<DuckDBConnectionLike>;
+  closeSync(): void;
+}
+
+interface DuckDBInstanceFactoryLike {
+  create(path: string): Promise<DuckDBInstanceLike>;
 }
 
 interface DuckDBModuleLike {
-  Database: new (path: string) => DuckDBDatabaseLike;
-}
-
-interface DuckDBDatabaseLike {
-  connect(): DuckDBConnectionLike;
-  close(): void;
+  DuckDBInstance: DuckDBInstanceFactoryLike;
 }
 
 interface RawInputRaceKey {
@@ -95,6 +106,7 @@ const ARGMAX_PRIMARY_INDEX = 0;
 const ARGMAX_SECONDARY_INDEX = 1;
 const CLASS_COUNT = 4;
 const ZERO_SUM_FALLBACK_PROB = 1 / CLASS_COUNT;
+const IN_MEMORY_DB_PATH = ":memory:";
 
 const requireValue = (name: string, value: string | undefined): string => {
   if (value === undefined) throw new Error(`${name} requires a value.`);
@@ -410,14 +422,17 @@ interface ReadInputRowsParams {
   logitsParquet: string;
 }
 
-export const readInputRows = (params: ReadInputRowsParams): readonly Record<string, unknown>[] => {
-  const database = new params.duckdbModule.Database(":memory:");
-  const connection = database.connect();
+export const readInputRows = async (
+  params: ReadInputRowsParams,
+): Promise<readonly Record<string, unknown>[]> => {
+  const instance = await params.duckdbModule.DuckDBInstance.create(IN_MEMORY_DB_PATH);
+  const connection = await instance.connect();
   try {
-    return connection.query(buildReadInputSql(params.logitsParquet)).toArray();
+    const reader = await connection.runAndReadAll(buildReadInputSql(params.logitsParquet));
+    return reader.getRowObjectsJson();
   } finally {
-    connection.close();
-    database.close();
+    connection.disconnectSync();
+    instance.closeSync();
   }
 };
 
@@ -427,18 +442,18 @@ interface WriteOutputRowsParams {
   rows: readonly PostprocPredictionRow[];
 }
 
-export const writeOutputRows = (params: WriteOutputRowsParams): void => {
-  const database = new params.duckdbModule.Database(":memory:");
-  const connection = database.connect();
+export const writeOutputRows = async (params: WriteOutputRowsParams): Promise<void> => {
+  const instance = await params.duckdbModule.DuckDBInstance.create(IN_MEMORY_DB_PATH);
+  const connection = await instance.connect();
   try {
     if (params.rows.length === 0) {
-      connection.run(buildEmptyOutputCopySql(params.outputParquet));
+      await connection.run(buildEmptyOutputCopySql(params.outputParquet));
       return;
     }
-    connection.run(buildWriteOutputCopySql(params.outputParquet, params.rows));
+    await connection.run(buildWriteOutputCopySql(params.outputParquet, params.rows));
   } finally {
-    connection.close();
-    database.close();
+    connection.disconnectSync();
+    instance.closeSync();
   }
 };
 
@@ -448,8 +463,8 @@ interface RunPostprocParams {
   logger: PostprocLogger;
 }
 
-export const runPostproc = (params: RunPostprocParams): { rowCount: number } => {
-  const rawRows = readInputRows({
+export const runPostproc = async (params: RunPostprocParams): Promise<{ rowCount: number }> => {
+  const rawRows = await readInputRows({
     duckdbModule: params.duckdbModule,
     logitsParquet: params.options.logitsParquet,
   });
@@ -457,7 +472,7 @@ export const runPostproc = (params: RunPostprocParams): { rowCount: number } => 
     rows: rawRows,
     runningStyleFeatureVersion: params.options.runningStyleFeatureVersion,
   });
-  writeOutputRows({
+  await writeOutputRows({
     duckdbModule: params.duckdbModule,
     outputParquet: params.options.outputParquet,
     rows: predictionRows,
@@ -474,7 +489,7 @@ interface RunCliParams {
   logger: PostprocLogger;
 }
 
-export const runCli = (params: RunCliParams): { rowCount: number } => {
+export const runCli = async (params: RunCliParams): Promise<{ rowCount: number }> => {
   const options = parseArgs(params.argv);
   return runPostproc({
     duckdbModule: params.duckdbModule,
@@ -492,9 +507,15 @@ const defaultLogger = (): PostprocLogger => ({
 const isObjectRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
+const hasDuckDBInstanceFactory = (value: Record<string, unknown>): boolean => {
+  const candidate = value["DuckDBInstance"];
+  if (!isObjectRecord(candidate)) return false;
+  return typeof candidate["create"] === "function";
+};
+
 const isDuckdbModuleLike = (value: unknown): value is DuckDBModuleLike => {
   if (!isObjectRecord(value)) return false;
-  return typeof value["Database"] === "function";
+  return hasDuckDBInstanceFactory(value);
 };
 
 const extractNestedDefault = (value: Record<string, unknown>): unknown => value["default"];
@@ -511,12 +532,12 @@ const loadDuckdbModule = async (): Promise<DuckDBModuleLike> => {
     const nested = extractNestedDefault(moduleNamespace);
     if (isDuckdbModuleLike(nested)) return nested;
   }
-  throw new Error("@duckdb/node-api does not export Database.");
+  throw new Error("@duckdb/node-api does not export DuckDBInstance.");
 };
 
 const main = async (): Promise<void> => {
   const duckdbModule = await loadDuckdbModule();
-  runCli({
+  await runCli({
     argv: process.argv.slice(2),
     duckdbModule,
     logger: defaultLogger(),
@@ -534,8 +555,10 @@ export type {
   ApplyRunningStylePostprocCliRunDeps,
   ApplyRunningStylePostprocOptions,
   DuckDBConnectionLike,
-  DuckDBDatabaseLike,
+  DuckDBInstanceFactoryLike,
+  DuckDBInstanceLike,
   DuckDBModuleLike,
+  DuckDBResultReaderLike,
   PostprocLogger,
   PostprocPredictionRow,
 };
