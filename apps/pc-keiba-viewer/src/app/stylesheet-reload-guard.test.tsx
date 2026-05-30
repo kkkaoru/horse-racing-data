@@ -46,7 +46,11 @@ const appendStylesheetLink = (loaded: boolean): HTMLLinkElement => {
 };
 
 const dispatchPageShow = (persisted: boolean): void => {
-  const event = new PageTransitionEvent("pageshow", { persisted });
+  const event = new Event("pageshow");
+  Object.defineProperty(event, "persisted", {
+    configurable: true,
+    value: persisted,
+  });
   window.dispatchEvent(event);
 };
 
