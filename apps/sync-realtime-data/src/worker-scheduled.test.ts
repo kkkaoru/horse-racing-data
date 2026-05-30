@@ -637,7 +637,7 @@ it("scheduled result-poll cron logs plan-result-fetches ok", async () => {
   const { ctx, waits } = buildCtx();
   await worker.scheduled(
     {
-      cron: "*/5 0-13 * * *",
+      cron: "*/2 0-13 * * *",
       scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
       noRetry: () => {},
     } as unknown as ScheduledController,
@@ -662,7 +662,7 @@ it("scheduled result-poll cron skips running-style inference path", async () => 
   const { ctx, waits } = buildCtx();
   await worker.scheduled(
     {
-      cron: "*/5 0-13 * * *",
+      cron: "*/2 0-13 * * *",
       scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
       noRetry: () => {},
     } as unknown as ScheduledController,
@@ -680,7 +680,7 @@ it("scheduled result-poll cron logs plan-result-fetches error when planner rejec
   const { ctx, waits } = buildCtx();
   await worker.scheduled(
     {
-      cron: "*/5 0-13 * * *",
+      cron: "*/2 0-13 * * *",
       scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
       noRetry: () => {},
     } as unknown as ScheduledController,
