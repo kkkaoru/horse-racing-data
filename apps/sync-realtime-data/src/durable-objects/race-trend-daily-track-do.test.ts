@@ -1,5 +1,5 @@
 // run with: bun run test
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi, type Mock } from "vitest";
 import type {
   RaceTrendDailyTrackRow,
   RaceTrendDailyTrackState,
@@ -19,24 +19,29 @@ import {
   pushRaceTrendDailyTrackRowToStub,
 } from "./race-trend-daily-track-do";
 
+type FakeStorageGetFn = (key: string) => Promise<RaceTrendDailyTrackState | undefined>;
+type FakeStoragePutFn = (key: string, value: RaceTrendDailyTrackState) => Promise<void>;
+type FakeStorageSetAlarmFn = (at: number) => Promise<void>;
+type FakeBlockConcurrencyWhileFn = (callback: () => Promise<void>) => Promise<void>;
+
 interface FakeStorage {
-  get: (key: string) => Promise<RaceTrendDailyTrackState | undefined>;
-  put: (key: string, value: RaceTrendDailyTrackState) => Promise<void>;
-  setAlarm: (at: number) => Promise<void>;
+  get: FakeStorageGetFn;
+  put: FakeStoragePutFn;
+  setAlarm: FakeStorageSetAlarmFn;
 }
 
 interface FakeState {
-  blockConcurrencyWhile: (callback: () => Promise<void>) => Promise<void>;
+  blockConcurrencyWhile: FakeBlockConcurrencyWhileFn;
   storage: FakeStorage;
 }
 
 interface FakeStateHandle {
-  blockConcurrencyWhile: ReturnType<typeof vi.fn>;
+  blockConcurrencyWhile: Mock<FakeBlockConcurrencyWhileFn>;
   state: FakeState;
   storage: {
-    get: ReturnType<typeof vi.fn>;
-    put: ReturnType<typeof vi.fn>;
-    setAlarm: ReturnType<typeof vi.fn>;
+    get: Mock<FakeStorageGetFn>;
+    put: Mock<FakeStoragePutFn>;
+    setAlarm: Mock<FakeStorageSetAlarmFn>;
   };
 }
 
@@ -59,8 +64,48 @@ const buildFakeState = (initial: Map<string, RaceTrendDailyTrackState>): FakeSta
 
 interface FakeD1ResultRecord extends Record<string, unknown> {}
 
-const buildD1All = (results: ReadonlyArray<FakeD1ResultRecord>): ReturnType<typeof vi.fn> =>
-  vi.fn(async () => ({ results }));
+interface FakeD1AllResult {
+  results: ReadonlyArray<FakeD1ResultRecord>;
+}
+
+type FakeD1PrepareFn = (sql: string) => {
+  bind: (...args: ReadonlyArray<unknown>) => { all: () => Promise<FakeD1AllResult> };
+};
+
+// FakeD1Database covers only the prepare-bind-all path the DO exercises. The
+// constructor signature on the production DO accepts the full D1Database
+// abstract class, so the cast lives inside this factory once and never on
+// individual test bodies (typescript rule 28).
+const buildFakeD1Database = (prepare: FakeD1PrepareFn): D1Database =>
+  ({ prepare }) satisfies { prepare: FakeD1PrepareFn } as unknown as D1Database;
+
+// FakeEnv mirrors the subset of Env (just REALTIME_DB) that the DO branches
+// on. The cast is centralised here so test-body code can simply build and
+// pass `Env` without touching the broader binding surface (KV / DO / Queue).
+const buildFakeEnv = (db: D1Database): Env =>
+  ({ REALTIME_DB: db }) satisfies Pick<Env, "REALTIME_DB"> as unknown as Env;
+
+interface FakeDurableObjectStateInput {
+  blockConcurrencyWhile: FakeBlockConcurrencyWhileFn;
+  storage: {
+    delete: Mock;
+    get: FakeStorageGetFn;
+    list: Mock;
+    put: FakeStoragePutFn;
+    setAlarm: FakeStorageSetAlarmFn;
+  };
+}
+
+// DurableObjectState is an abstract framework class with ~17 methods, only 4
+// of which the DO production code touches (blockConcurrencyWhile +
+// storage.get/put/setAlarm). The cast lives in this single factory so the
+// constructor-path tests below can pass `DurableObjectState` directly.
+const buildFakeDurableObjectState = (input: FakeDurableObjectStateInput): DurableObjectState =>
+  input satisfies FakeDurableObjectStateInput as unknown as DurableObjectState;
+
+const buildD1All = (
+  results: ReadonlyArray<FakeD1ResultRecord>,
+): Mock<() => Promise<FakeD1AllResult>> => vi.fn(async () => ({ results }));
 
 interface BuildEnvParams {
   runningStyleResults?: ReadonlyArray<FakeD1ResultRecord>;
@@ -70,14 +115,12 @@ interface BuildEnvParams {
 const buildEnv = (params: BuildEnvParams = {}): Env => {
   const allSnapshots = buildD1All(params.snapshotResults ?? []);
   const allRunningStyles = buildD1All(params.runningStyleResults ?? []);
-  const prepare = vi.fn((sql: string) => ({
+  const prepare: FakeD1PrepareFn = (sql: string) => ({
     bind: vi.fn(() => ({
       all: sql.includes("from race_running_styles") ? allRunningStyles : allSnapshots,
     })),
-  }));
-  return {
-    REALTIME_DB: { prepare } as unknown as D1Database,
-  } as unknown as Env;
+  });
+  return buildFakeEnv(buildFakeD1Database(prepare));
 };
 
 const JRA_ROW: RaceTrendDailyTrackRow = {
@@ -217,7 +260,7 @@ it("POST /push stores a row, merges into state, and persists snapshot", async ()
   expect(await response.json()).toStrictEqual({ ok: true });
   expect(handle.storage.put).toHaveBeenCalledTimes(1);
   expect(handle.storage.put.mock.calls[0]![0]).toBe("snapshot");
-  const stored = handle.storage.put.mock.calls[0]![1] as RaceTrendDailyTrackState;
+  const stored = handle.storage.put.mock.calls[0]![1];
   expect(stored.source).toBe("jra");
   expect(stored.targetYmd).toBe("20260531");
   expect(stored.keibajoCode).toBe("06");
@@ -308,7 +351,7 @@ it("POST /push accepts a NAR partial (isComplete=false) row and stores it", asyn
     }),
   );
   expect(response.status).toBe(200);
-  const stored = handle.storage.put.mock.calls[0]![1] as RaceTrendDailyTrackState;
+  const stored = handle.storage.put.mock.calls[0]![1];
   expect(stored.source).toBe("nar");
   expect(stored.keibajoCode).toBe("48");
   expect(stored.races["05"]!.isComplete).toBe(false);
@@ -438,7 +481,7 @@ it("POST /sync triggers a D1 refresh once the context has been learned via push"
   );
   expect(response.status).toBe(200);
   expect(await response.json()).toStrictEqual({ ok: true });
-  const lastPut = handle.storage.put.mock.calls.at(-1)![1] as RaceTrendDailyTrackState;
+  const lastPut = handle.storage.put.mock.calls.at(-1)![1];
   expect(lastPut.races["03"]!.isComplete).toBe(true);
   expect(lastPut.races["03"]!.starterRows[0]!.bamei).toBe("TestHorse");
 });
@@ -687,10 +730,10 @@ it("constructor hydrates state via blockConcurrencyWhile when storage has a pers
   const put = vi.fn(async (_key: string, _value: RaceTrendDailyTrackState): Promise<void> => {});
   const setAlarm = vi.fn(async (_at: number): Promise<void> => {});
   const blockConcurrencyWhile = vi.fn((callback: () => Promise<void>): Promise<void> => callback());
-  const doState = {
+  const doState = buildFakeDurableObjectState({
     blockConcurrencyWhile,
     storage: { delete: vi.fn(), get, list: vi.fn(), put, setAlarm },
-  } as unknown as DurableObjectState;
+  });
   const cache = new RaceTrendDailyTrackDO(doState, buildEnv());
   await blockConcurrencyWhile.mock.results[0]!.value;
   const response = await cache.fetch(
@@ -706,10 +749,10 @@ it("constructor leaves state null when storage has nothing persisted", async () 
   const put = vi.fn(async (_key: string, _value: RaceTrendDailyTrackState): Promise<void> => {});
   const setAlarm = vi.fn(async (_at: number): Promise<void> => {});
   const blockConcurrencyWhile = vi.fn((callback: () => Promise<void>): Promise<void> => callback());
-  const doState = {
+  const doState = buildFakeDurableObjectState({
     blockConcurrencyWhile,
     storage: { delete: vi.fn(), get, list: vi.fn(), put, setAlarm },
-  } as unknown as DurableObjectState;
+  });
   const cache = new RaceTrendDailyTrackDO(doState, buildEnv());
   await blockConcurrencyWhile.mock.results[0]!.value;
   const response = await cache.fetch(
@@ -854,16 +897,14 @@ it("GET /races on a cold DO with URL context but empty D1 returns miss", async (
 
 it("GET /races swallows a D1 error during cold-start self-pull and returns miss", async () => {
   const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-  const failingPrepare = vi.fn(() => ({
+  const failingPrepare: FakeD1PrepareFn = (_sql: string) => ({
     bind: vi.fn(() => ({
-      all: vi.fn(async (): Promise<{ results: FakeD1ResultRecord[] }> => {
+      all: vi.fn(async (): Promise<FakeD1AllResult> => {
         throw new Error("D1 down");
       }),
     })),
-  }));
-  const env = {
-    REALTIME_DB: { prepare: failingPrepare } as unknown as D1Database,
-  } as unknown as Env;
+  });
+  const env = buildFakeEnv(buildFakeD1Database(failingPrepare));
   const handle = buildFakeState(new Map());
   const cache = await RaceTrendDailyTrackDO.createForTest({ env, state: handle.state });
   const response = await cache.fetch(
@@ -916,8 +957,8 @@ it("GET /races still returns hit even if setAlarm throws during cold-start prime
 });
 
 it("GET /races without URL context and with empty state returns miss without touching D1", async () => {
-  const prepare = vi.fn();
-  const env = { REALTIME_DB: { prepare } as unknown as D1Database } as unknown as Env;
+  const prepare: Mock<FakeD1PrepareFn> = vi.fn();
+  const env = buildFakeEnv(buildFakeD1Database(prepare));
   const handle = buildFakeState(new Map());
   const cache = await RaceTrendDailyTrackDO.createForTest({ env, state: handle.state });
   const response = await cache.fetch(
@@ -931,11 +972,12 @@ it("GET /races skips self-pull when state already has at least one race", async 
   const handle = buildFakeState(new Map());
   const prepareSpy = vi.fn();
   const env = buildEnv();
+  const emptyResults: ReadonlyArray<FakeD1ResultRecord> = [];
   Reflect.set(env.REALTIME_DB, "prepare", (sql: string) => {
     prepareSpy(sql);
     return {
       bind: vi.fn(() => ({
-        all: vi.fn(async () => ({ results: [] as FakeD1ResultRecord[] })),
+        all: vi.fn(async () => ({ results: emptyResults })),
       })),
     };
   });
@@ -1022,7 +1064,7 @@ it("POST /sync without learned parsed but with URL context triggers a refresh", 
     }),
   );
   expect(response.status).toBe(200);
-  const lastPut = handle.storage.put.mock.calls.at(-1)![1] as RaceTrendDailyTrackState;
+  const lastPut = handle.storage.put.mock.calls.at(-1)![1];
   expect(lastPut.races["03"]!.starterRows[0]!.bamei).toBe("SyncBootstrapHorse");
 });
 
@@ -1141,17 +1183,15 @@ it("POST /push does not demote a complete row to partial when the partial arrive
 // hit the helper with a single (source, ymd, keibajo) combination.
 it("self-pull binds D1 SELECT placeholders in (source, kaisaiNen, kaisaiTsukihi, keibajoCode) order", async () => {
   const snapshotBind = vi.fn(() => ({
-    all: vi.fn(async (): Promise<{ results: FakeD1ResultRecord[] }> => ({ results: [] })),
+    all: vi.fn(async (): Promise<FakeD1AllResult> => ({ results: [] })),
   }));
   const runningStyleBind = vi.fn(() => ({
-    all: vi.fn(async (): Promise<{ results: FakeD1ResultRecord[] }> => ({ results: [] })),
+    all: vi.fn(async (): Promise<FakeD1AllResult> => ({ results: [] })),
   }));
-  const prepare = vi.fn((sql: string) => ({
+  const prepare: FakeD1PrepareFn = (sql: string) => ({
     bind: sql.includes("from race_running_styles") ? runningStyleBind : snapshotBind,
-  }));
-  const env = {
-    REALTIME_DB: { prepare } as unknown as D1Database,
-  } as unknown as Env;
+  });
+  const env = buildFakeEnv(buildFakeD1Database(prepare));
   const handle = buildFakeState(new Map());
   const cache = await RaceTrendDailyTrackDO.createForTest({ env, state: handle.state });
   await cache.fetch(
