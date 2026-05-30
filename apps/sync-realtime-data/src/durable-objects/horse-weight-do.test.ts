@@ -1,6 +1,7 @@
 // run with: bun run test
 import { afterEach, expect, it, vi } from "vitest";
 import {
+  HORSE_WEIGHT_STORAGE_KEY,
   HorseWeightDO,
   proxyHorseWeightLatestFromStub,
   proxyHorseWeightStreamFromStub,
@@ -189,4 +190,124 @@ it("proxyHorseWeightLatestFromStub issues a GET to /weights on the stub", async 
   expect(stubFetch.mock.calls[0]![0]).toBe("https://horse-weight-do/weights");
   expect(stubFetch.mock.calls[0]![1]!.method).toBe("GET");
   expect(response).toBe(upstream);
+});
+
+it("exposes snapshot as the storage key constant", () => {
+  expect(HORSE_WEIGHT_STORAGE_KEY).toBe("snapshot");
+});
+
+it("hydrates snapshot from storage on construction", async () => {
+  const storageGet = vi.fn(
+    async (_key: string): Promise<HorseWeightSnapshot | undefined> => ({
+      fetchedAt: "2026-05-30T14:14:00+09:00",
+      horses: [
+        {
+          changeAmount: 10,
+          changeSign: "+",
+          horseName: "TestHorse",
+          horseNumber: "1",
+          weight: 538,
+        },
+      ],
+    }),
+  );
+  const storagePut = vi.fn(async (_key: string, _value: HorseWeightSnapshot): Promise<void> => {});
+  const blockConcurrencyWhile = vi.fn((callback: () => Promise<void>): Promise<void> => callback());
+  const cache = await HorseWeightDO.createForTestWithStorage({
+    state: {
+      blockConcurrencyWhile,
+      storage: { get: storageGet, put: storagePut },
+    },
+  });
+  expect(blockConcurrencyWhile).toHaveBeenCalledTimes(1);
+  expect(storageGet).toHaveBeenCalledTimes(1);
+  expect(storageGet.mock.calls[0]![0]).toBe("snapshot");
+  const response = await cache.fetch(new Request("https://horse-weight-do/weights"));
+  expect(response.status).toBe(200);
+  expect(await response.json()).toStrictEqual({
+    fetchedAt: "2026-05-30T14:14:00+09:00",
+    horses: [
+      {
+        changeAmount: 10,
+        changeSign: "+",
+        horseName: "TestHorse",
+        horseNumber: "1",
+        weight: 538,
+      },
+    ],
+  });
+});
+
+it("returns 204 when storage is empty on construction", async () => {
+  const storageGet = vi.fn(
+    async (_key: string): Promise<HorseWeightSnapshot | undefined> => undefined,
+  );
+  const storagePut = vi.fn(async (_key: string, _value: HorseWeightSnapshot): Promise<void> => {});
+  const blockConcurrencyWhile = vi.fn((callback: () => Promise<void>): Promise<void> => callback());
+  const cache = await HorseWeightDO.createForTestWithStorage({
+    state: {
+      blockConcurrencyWhile,
+      storage: { get: storageGet, put: storagePut },
+    },
+  });
+  expect(storageGet).toHaveBeenCalledTimes(1);
+  const response = await cache.fetch(new Request("https://horse-weight-do/weights"));
+  expect(response.status).toBe(204);
+});
+
+it("persists snapshot via storage.put on PUT", async () => {
+  const storageGet = vi.fn(
+    async (_key: string): Promise<HorseWeightSnapshot | undefined> => undefined,
+  );
+  const storagePut = vi.fn(async (_key: string, _value: HorseWeightSnapshot): Promise<void> => {});
+  const blockConcurrencyWhile = vi.fn((callback: () => Promise<void>): Promise<void> => callback());
+  const cache = await HorseWeightDO.createForTestWithStorage({
+    state: {
+      blockConcurrencyWhile,
+      storage: { get: storageGet, put: storagePut },
+    },
+  });
+  const response = await cache.fetch(
+    new Request("https://horse-weight-do/weights", {
+      body: JSON.stringify(SNAPSHOT),
+      method: "PUT",
+    }),
+  );
+  expect(response.status).toBe(200);
+  expect(storagePut).toHaveBeenCalledTimes(1);
+  expect(storagePut.mock.calls[0]![0]).toBe("snapshot");
+  expect(storagePut.mock.calls[0]![1]).toStrictEqual({
+    fetchedAt: "2026-05-30T14:14:00+09:00",
+    horses: [
+      {
+        changeAmount: 10,
+        changeSign: "+",
+        horseName: "TestHorse",
+        horseNumber: "1",
+        weight: 538,
+      },
+    ],
+  });
+});
+
+it("PUT with invalid body does not write to storage", async () => {
+  const storageGet = vi.fn(
+    async (_key: string): Promise<HorseWeightSnapshot | undefined> => undefined,
+  );
+  const storagePut = vi.fn(async (_key: string, _value: HorseWeightSnapshot): Promise<void> => {});
+  const blockConcurrencyWhile = vi.fn((callback: () => Promise<void>): Promise<void> => callback());
+  const cache = await HorseWeightDO.createForTestWithStorage({
+    state: {
+      blockConcurrencyWhile,
+      storage: { get: storageGet, put: storagePut },
+    },
+  });
+  const response = await cache.fetch(
+    new Request("https://horse-weight-do/weights", {
+      body: JSON.stringify({ horses: [] }),
+      method: "PUT",
+    }),
+  );
+  expect(response.status).toBe(400);
+  expect(storagePut).not.toHaveBeenCalled();
 });

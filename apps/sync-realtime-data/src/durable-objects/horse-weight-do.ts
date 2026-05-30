@@ -1,7 +1,8 @@
 // run with: bun run test
 // Durable Object that holds the latest horse-weight snapshot per race_key and
-// broadcasts updates via Server-Sent Events. State is in-memory because D1
-// already provides persistence for the underlying weight rows.
+// broadcasts updates via Server-Sent Events. The snapshot is persisted via
+// `state.storage` so it survives DO hibernation; D1 remains the authoritative
+// store for the underlying weight rows.
 import type { DurableObjectState } from "@cloudflare/workers-types";
 
 export interface HorseWeightEntry {
@@ -26,6 +27,20 @@ interface HorseWeightDOStub {
   fetch: (input: string, init?: RequestInit) => Promise<Response>;
 }
 
+interface HorseWeightStorageLike {
+  get: (key: string) => Promise<HorseWeightSnapshot | undefined>;
+  put: (key: string, value: HorseWeightSnapshot) => Promise<void>;
+}
+
+interface HorseWeightStateLike {
+  storage: HorseWeightStorageLike;
+  blockConcurrencyWhile: (callback: () => Promise<void>) => Promise<void>;
+}
+
+interface CreateForTestWithStorageParams {
+  state: HorseWeightStateLike;
+}
+
 const SSE_RETRY_MS = 5000;
 const SSE_HEADERS: Record<string, string> = {
   "Cache-Control": "no-cache, no-transform",
@@ -34,6 +49,7 @@ const SSE_HEADERS: Record<string, string> = {
 };
 const STREAM_URL = "https://horse-weight-do/stream";
 const WEIGHTS_URL = "https://horse-weight-do/weights";
+const STORAGE_KEY = "snapshot";
 
 const encodeEvent = (event: string, data: string): string => `event: ${event}\ndata: ${data}\n\n`;
 
@@ -66,22 +82,66 @@ const snapshotJsonResponse = (snapshot: HorseWeightSnapshot): Response =>
 export class HorseWeightDO {
   private snapshot: HorseWeightSnapshot | null = null;
   private readonly subscribers: Set<Subscriber> = new Set();
-  // The DurableObjectState handle is accepted to satisfy the Cloudflare DO
-  // contract; this implementation does not currently use storage because the
-  // in-memory snapshot is small and D1 is the authoritative store.
-  private readonly state: DurableObjectState;
+  // The DurableObjectState handle is retained so we can persist the snapshot
+  // through hibernation by mirroring it into state.storage on every PUT and
+  // hydrating from storage on construction via blockConcurrencyWhile.
+  private readonly state: HorseWeightStateLike;
 
   constructor(state: DurableObjectState, _env: unknown) {
-    this.state = state;
+    const stateLike: HorseWeightStateLike = {
+      blockConcurrencyWhile: (callback) => state.blockConcurrencyWhile(callback),
+      storage: {
+        get: (key) => state.storage.get<HorseWeightSnapshot>(key),
+        put: (key, value) => state.storage.put<HorseWeightSnapshot>(key, value),
+      },
+    };
+    this.state = stateLike;
+    // Block routing until the persisted snapshot (if any) is reloaded so that
+    // SSR fetches arriving immediately after construction never race the
+    // hydration and observe an empty cache. The promise is intentionally not
+    // awaited here (constructors cannot be async); the Cloudflare DO runtime
+    // gates incoming fetches until blockConcurrencyWhile resolves.
+    void stateLike.blockConcurrencyWhile(async () => {
+      const stored = await stateLike.storage.get(STORAGE_KEY);
+      if (stored !== undefined) this.snapshot = stored;
+    });
   }
 
   // Test factory that bypasses the Cloudflare DO constructor signature so unit
-  // tests do not need to forge a full DurableObjectState. Only call from tests.
+  // tests do not need to forge a full DurableObjectState. A no-op storage is
+  // installed so handlePut can still call state.storage.put without hitting
+  // the real Cloudflare runtime. Only call from tests.
   static createForTest(): HorseWeightDO {
+    const instance: HorseWeightDO = Object.create(HorseWeightDO.prototype);
+    const noopStorage: HorseWeightStorageLike = {
+      get: async () => undefined,
+      put: async () => undefined,
+    };
+    const noopState: HorseWeightStateLike = {
+      blockConcurrencyWhile: (callback) => callback(),
+      storage: noopStorage,
+    };
+    Reflect.set(instance, "snapshot", null);
+    Reflect.set(instance, "subscribers", new Set());
+    Reflect.set(instance, "state", noopState);
+    return instance;
+  }
+
+  // Test factory that mirrors the real constructor's hydration path against a
+  // typed fake state so hydration via blockConcurrencyWhile and storage.get
+  // can be exercised without forging a full DurableObjectState. Returns the
+  // hydration promise so tests can await full readiness before asserting.
+  static async createForTestWithStorage(
+    params: CreateForTestWithStorageParams,
+  ): Promise<HorseWeightDO> {
     const instance: HorseWeightDO = Object.create(HorseWeightDO.prototype);
     Reflect.set(instance, "snapshot", null);
     Reflect.set(instance, "subscribers", new Set());
-    Reflect.set(instance, "state", null);
+    Reflect.set(instance, "state", params.state);
+    await params.state.blockConcurrencyWhile(async () => {
+      const stored = await params.state.storage.get(STORAGE_KEY);
+      if (stored !== undefined) Reflect.set(instance, "snapshot", stored);
+    });
     return instance;
   }
 
@@ -96,6 +156,7 @@ export class HorseWeightDO {
   private async handlePut(request: Request): Promise<Response> {
     const body: unknown = await request.json();
     if (!isHorseWeightSnapshot(body)) return badRequestResponse();
+    await this.state.storage.put(STORAGE_KEY, body);
     this.snapshot = body;
     this.broadcast(body);
     return okJsonResponse();
@@ -161,3 +222,5 @@ export const proxyHorseWeightStreamFromStub = async (stub: HorseWeightDOStub): P
 
 export const proxyHorseWeightLatestFromStub = async (stub: HorseWeightDOStub): Promise<Response> =>
   stub.fetch(WEIGHTS_URL, { method: "GET" });
+
+export const HORSE_WEIGHT_STORAGE_KEY = STORAGE_KEY;

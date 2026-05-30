@@ -510,9 +510,24 @@ it("weightFetchPriorityTier returns 0 for Kyoto 5R", async () => {
   expect(weightFetchPriorityTier({ source: "jra", keibajoCode: "08", raceBango: "05" })).toBe(0);
 });
 
+it("weightFetchPriorityTier returns 0 for Tokyo 11R", async () => {
+  const { weightFetchPriorityTier } = await import("./worker");
+  expect(weightFetchPriorityTier({ source: "jra", keibajoCode: "05", raceBango: "11" })).toBe(0);
+});
+
+it("weightFetchPriorityTier returns 0 for Kyoto 11R", async () => {
+  const { weightFetchPriorityTier } = await import("./worker");
+  expect(weightFetchPriorityTier({ source: "jra", keibajoCode: "08", raceBango: "11" })).toBe(0);
+});
+
 it("weightFetchPriorityTier returns 1 for Nakayama 5R (other-venue 5R is Mid)", async () => {
   const { weightFetchPriorityTier } = await import("./worker");
   expect(weightFetchPriorityTier({ source: "jra", keibajoCode: "06", raceBango: "05" })).toBe(1);
+});
+
+it("weightFetchPriorityTier returns 1 for Nakayama 11R (other-venue 11R is Mid)", async () => {
+  const { weightFetchPriorityTier } = await import("./worker");
+  expect(weightFetchPriorityTier({ source: "jra", keibajoCode: "06", raceBango: "11" })).toBe(1);
 });
 
 it("weightFetchPriorityTier returns 1 for Tokyo 6R", async () => {
@@ -656,6 +671,33 @@ it("planRealtimeFetches enqueues JRA weight jobs in tier+minutes priority order"
       updatedAt: "2026-05-30T00:00:00+09:00",
     },
     {
+      babaCode: "05",
+      debaUrl: "https://www.jra.go.jp/race/tokyo11",
+      discoveredAt: "2026-05-30T00:00:00+09:00",
+      kaisaiKai: "02",
+      kaisaiNen: "2026",
+      kaisaiNichime: "06",
+      kaisaiTsukihi: "0530",
+      keibajoCode: "05",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "11",
+      raceKey: "jra:2026:0530:05:11",
+      raceName: "Tokyo11R",
+      raceStartAtJst: "2026-05-30T12:45:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "jra",
+      updatedAt: "2026-05-30T00:00:00+09:00",
+    },
+    {
       babaCode: "06",
       debaUrl: "https://www.jra.go.jp/race/nakayama6",
       discoveredAt: "2026-05-30T00:00:00+09:00",
@@ -754,6 +796,7 @@ it("planRealtimeFetches enqueues JRA weight jobs in tier+minutes priority order"
   expect(weightRaceKeys).toStrictEqual([
     "jra:2026:0530:05:05",
     "jra:2026:0530:08:05",
+    "jra:2026:0530:05:11",
     "jra:2026:0530:06:06",
     "jra:2026:0530:09:12",
     "jra:2026:0530:08:04",
