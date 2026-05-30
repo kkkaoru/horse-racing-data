@@ -54,7 +54,7 @@ afterEach(() => {
   Reflect.deleteProperty(globalThis, "caches");
 });
 
-it("bustRaceTrendCachesForDay emits the v8 outer race-trend key for each race", async () => {
+it("bustRaceTrendCachesForDay emits the v8 outer race-trend key and v9 per-venue today key for NAR", async () => {
   const kv = buildKvStub();
   getCloudflareContextMock.mockResolvedValue({ env: { DETAIL_SECTION_CACHE_KV: kv }, ctx: null });
   const result = await bustRaceTrendCachesForDay({
@@ -66,11 +66,11 @@ it("bustRaceTrendCachesForDay emits the v8 outer race-trend key for each race", 
     "race-trend:v8:nar:50:07:20260515:20260529:20260515:20260529:1",
     "race-trend:v8:nar:50:07:20260515:20260529:20260515:20260529:0",
     "race-trend-past14:v8:nar:50:07:20260515:20260528",
-    "race-trend-today:v8:nar:20260529",
+    "race-trend-today:v9:nar:20260529:50",
   ]);
 });
 
-it("bustRaceTrendCachesForDay emits the v8 keys for JRA with the same 14-day lookback", async () => {
+it("bustRaceTrendCachesForDay emits the v8 outer key and v9 per-venue today key for JRA", async () => {
   const kv = buildKvStub();
   getCloudflareContextMock.mockResolvedValue({ env: { DETAIL_SECTION_CACHE_KV: kv }, ctx: null });
   const result = await bustRaceTrendCachesForDay({
@@ -82,7 +82,7 @@ it("bustRaceTrendCachesForDay emits the v8 keys for JRA with the same 14-day loo
     "race-trend:v8:jra:05:11:20260506:20260520:20260506:20260520:1",
     "race-trend:v8:jra:05:11:20260506:20260520:20260506:20260520:0",
     "race-trend-past14:v8:jra:05:11:20260506:20260519",
-    "race-trend-today:v8:jra:20260520",
+    "race-trend-today:v9:jra:20260520:05",
   ]);
 });
 
@@ -98,13 +98,13 @@ it("bustRaceTrendCachesForDay deletes each key from KV", async () => {
   const calledKeys = kv.delete.mock.calls.map((call) => String(call[0])).toSorted();
   expect(calledKeys).toStrictEqual([
     "race-trend-past14:v8:nar:50:07:20260515:20260528",
-    "race-trend-today:v8:nar:20260529",
+    "race-trend-today:v9:nar:20260529:50",
     "race-trend:v8:nar:50:07:20260515:20260529:20260515:20260529:0",
     "race-trend:v8:nar:50:07:20260515:20260529:20260515:20260529:1",
   ]);
 });
 
-it("bustRaceTrendCachesForDay deduplicates today key across multiple races", async () => {
+it("bustRaceTrendCachesForDay deduplicates today key across multiple races on the same venue", async () => {
   const kv = buildKvStub();
   getCloudflareContextMock.mockResolvedValue({ env: { DETAIL_SECTION_CACHE_KV: kv }, ctx: null });
   const result = await bustRaceTrendCachesForDay({
@@ -115,8 +115,25 @@ it("bustRaceTrendCachesForDay deduplicates today key across multiple races", asy
     source: "nar",
     targetYmd: "20260529",
   });
-  // Two races -> 2 outer trend × 2 includeRealtimeResults variants + 2 past14
-  // + 1 single today (shared). collectAffectedCacheKeys appends today once,
-  // so the total is 2 + 2 + 2 + 1 = 7 keys when expanding the variants.
+  // Two races, same venue -> 2 outer trend × 2 includeRealtimeResults
+  // variants + 2 past14 + 1 today (deduped per venue) = 7 keys.
   expect(result.keys.length).toBe(7);
+});
+
+it("bustRaceTrendCachesForDay emits one today key per distinct venue", async () => {
+  const kv = buildKvStub();
+  getCloudflareContextMock.mockResolvedValue({ env: { DETAIL_SECTION_CACHE_KV: kv }, ctx: null });
+  const result = await bustRaceTrendCachesForDay({
+    races: [
+      { keibajoCode: "50", raceBango: "07" },
+      { keibajoCode: "44", raceBango: "03" },
+    ],
+    source: "nar",
+    targetYmd: "20260529",
+  });
+  const todayKeys = result.keys.filter((key) => key.startsWith("race-trend-today:")).toSorted();
+  expect(todayKeys).toStrictEqual([
+    "race-trend-today:v9:nar:20260529:44",
+    "race-trend-today:v9:nar:20260529:50",
+  ]);
 });

@@ -195,14 +195,19 @@ const collectAffectedCacheKeys = (params: BustRaceTrendCachesParams): AffectedCa
     }),
     urlBase: D1_PAST14_CACHE_URL_BASE,
   }));
-  const todayKey: AffectedCacheKey = {
+  // v9 today key embeds keibajoCode so one entry per venue is busted.
+  // Dedupe via Set because the caller passes one race per raceBango — the
+  // per-venue today entry is shared across every raceBango on that venue.
+  const todayKeibajoCodes = Array.from(new Set(params.races.map((race) => race.keibajoCode)));
+  const todayKeys = todayKeibajoCodes.map((keibajoCode) => ({
     key: buildRaceTrendTodayCacheKey({
+      keibajoCode,
       source: params.source,
       targetYmd: params.targetYmd,
     }),
     urlBase: D1_TODAY_CACHE_URL_BASE,
-  };
-  return [...trendKeys, ...past14Keys, todayKey];
+  }));
+  return [...trendKeys, ...past14Keys, ...todayKeys];
 };
 
 const deleteSingleCache = async (
