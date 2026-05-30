@@ -40,6 +40,7 @@ import {
   type RaceDetailSsrSnapshot,
 } from "../../../lib/race-detail-ssr-cache.server";
 import { isCornerPacePredictionSupported } from "../../../lib/race-pace-prediction";
+import { RACE_TREND_PAST14_LOOKBACK_DAYS } from "../../../lib/race-trend-cache";
 import { getRaceTrendTargetsFromSearchParams } from "../../../lib/race-trend-query";
 import type { RaceDetail } from "../../../lib/race-types";
 import {
@@ -73,6 +74,22 @@ export const dynamic = "force-dynamic";
 const DEFAULT_RACE_AI_ASSISTANT_NAME = "アーモンドAI";
 const DEFAULT_RACE_AI_ASSISTANT_ICON_URL = "/ai/almondeye_top.png";
 const DEFAULT_RACE_AI_ASSISTANT_ACCENT_COLOR = "#69a9e9";
+
+// JRA race-bango at and above this threshold default the race-trend display
+// range to "today only" so the panel shows today's sibling races first. Earlier
+// races (1-4) keep the past-14-days default. The cache layer always fetches
+// the full 14-day window regardless; this only affects the display range
+// passed to <RaceTrendSection />.
+const JRA_TODAY_ONLY_TREND_RACE_BANGO_THRESHOLD = 5;
+
+interface TrendDisplayRestrictionParams {
+  raceBango: string;
+  source: RaceSource;
+}
+
+const shouldRestrictTrendDisplayToToday = (params: TrendDisplayRestrictionParams): boolean =>
+  params.source === "jra" &&
+  Number.parseInt(params.raceBango, 10) >= JRA_TODAY_ONLY_TREND_RACE_BANGO_THRESHOLD;
 
 const getRaceAiAssistantName = (): string =>
   process.env.PC_KEIBA_RACE_AI_NAME?.trim() || DEFAULT_RACE_AI_ASSISTANT_NAME;
@@ -331,15 +348,27 @@ export async function RaceDetailView({
   const visibleJraRaceEntryUrl = showJraResultLink ? null : jraRaceEntryUrl;
   const visibleJraRaceResultUrl = showJraResultLink ? jraRaceResultUrl : null;
   const decodeHexHorseWeight = raceSource === "nar" && isBanEiKeibajoCode(keibajoCode);
-  // Race-trend section now always prefetches a 14-day window so the date
-  // picker can filter client-side. Default the trend start to the same
-  // -14 day boundary as minStartDate so the initial aggregation actually
-  // covers the prefetched range instead of collapsing to the legacy 3-day
-  // (NAR) / 1-day (JRA) sliver, which previously caused trend tables to
-  // render with "集計 0レース" even though the API payload had 1500+ rows.
+  // Race-trend section always prefetches a 14-day window so the date picker
+  // can filter client-side. The minStartDate stays at target − 14d so manual
+  // widening still works. For JRA races at or after the configured raceBango
+  // threshold, the default DISPLAY range collapses to today only — the user
+  // wanted today's sibling races to be the first thing visible on the panel.
+  // For NAR races and early JRA races (1-4), the historical past-14 default
+  // is preserved so older trend windows stay populated. The cache layer's
+  // 14-day fetch is intentionally unchanged.
   const raceTrendDefaultEndDate = `${year}-${month}-${day}`;
-  const raceTrendMinStartDate = addDaysToIsoDate(year, month, day, -14);
-  const raceTrendDefaultStartDate = raceTrendMinStartDate;
+  const raceTrendMinStartDate = addDaysToIsoDate(
+    year,
+    month,
+    day,
+    -RACE_TREND_PAST14_LOOKBACK_DAYS,
+  );
+  const raceTrendDefaultStartDate = shouldRestrictTrendDisplayToToday({
+    raceBango: raceNumber,
+    source: raceSource,
+  })
+    ? raceTrendDefaultEndDate
+    : raceTrendMinStartDate;
   const initialRaceTrendTargets = getRaceTrendTargetsFromSearchParams(searchParams);
   const showRacePacePrediction = isCornerPacePredictionSupported({
     distance: race.kyori,
