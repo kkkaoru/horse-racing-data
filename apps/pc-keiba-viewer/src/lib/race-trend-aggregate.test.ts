@@ -7,9 +7,15 @@ import { expect, test } from "vitest";
 
 import {
   aggregateForTargets,
+  compareAggregatedRows,
+  compareRaceBango,
+  compareTrendDetails,
   countDistinctRunningStyleDetailRaces,
   detailFromStarter,
+  filterTodaySiblingRows,
   getJockeyNameAliases,
+  mergeStarterRowPair,
+  mergeStarterRows,
   normalizeNumberText,
   normalizeRaceTrendJockeyName,
   normalizeText,
@@ -17,13 +23,18 @@ import {
   parseStoredInteger,
   parseStoredPopularity,
   parseStoredWinOdds,
+  type RaceTrendTodaySiblingTarget,
   resolveRowJockeyKey,
   runningStyleFromCorners,
   starterKey,
   starterRaceKey,
   starterRunningStyleKey,
 } from "./race-trend-aggregate";
-import type { RaceTrendCurrentRunningStyle } from "./race-types";
+import type {
+  RaceTrendCurrentRunningStyle,
+  RaceTrendDetail,
+  RaceTrendRunningStyleRow,
+} from "./race-types";
 
 const baseRow: RaceTrendStarterRow = {
   source: "nar",
@@ -1152,4 +1163,496 @@ test("resolveRowJockeyKey returns null for null input", () => {
 
 test("resolveRowJockeyKey returns null for undefined input", () => {
   expect(resolveRowJockeyKey(undefined)).toBeNull();
+});
+
+test("compareRaceBango orders numeric two-digit values numerically not lexically", () => {
+  expect(compareRaceBango("10", "9")).toBeGreaterThan(0);
+});
+
+test("compareRaceBango orders zero-padded two-digit values numerically not lexically", () => {
+  expect(compareRaceBango("02", "10")).toBeLessThan(0);
+});
+
+test("compareRaceBango returns zero for equal numeric race numbers", () => {
+  expect(compareRaceBango("01", "1")).toStrictEqual(0);
+});
+
+test("compareRaceBango sorts a smaller race number before a larger one", () => {
+  expect(compareRaceBango("01", "12")).toBeLessThan(0);
+});
+
+test("compareRaceBango falls back to locale compare when only one side is non-numeric", () => {
+  expect(compareRaceBango("A", "2")).toBeGreaterThan(0);
+});
+
+test("compareRaceBango falls back to locale compare for alphabetic race numbers", () => {
+  expect(compareRaceBango("A", "B")).toBeLessThan(0);
+});
+
+const jraSiblingRow: RaceTrendStarterRow = {
+  source: "jra",
+  kaisaiNen: "2026",
+  kaisaiTsukihi: "0530",
+  keibajoCode: "05",
+  raceBango: "01",
+  raceName: null,
+  hassoJikoku: null,
+  runnerCount: null,
+  wakuban: "1",
+  umaban: "1",
+  bamei: null,
+  jockeyName: "騎手",
+  tanshoOdds: null,
+  tanshoPopularity: null,
+  finishPosition: 1,
+  sohaTime: null,
+  corner1: null,
+  corner2: null,
+  corner3: null,
+  corner4: null,
+  bataiju: null,
+  zogenFugo: null,
+  zogenSa: null,
+};
+
+test("filterTodaySiblingRows keeps a JRA sibling with a smaller raceBango", () => {
+  const target: RaceTrendTodaySiblingTarget = {
+    keibajoCode: "05",
+    raceBango: "02",
+    source: "jra",
+    targetYmd: "20260530",
+  };
+  expect(filterTodaySiblingRows([jraSiblingRow], target)).toStrictEqual([jraSiblingRow]);
+});
+
+test("filterTodaySiblingRows keeps an NAR sibling with a smaller raceBango", () => {
+  const narRow: RaceTrendStarterRow = { ...jraSiblingRow, source: "nar", keibajoCode: "47" };
+  const target: RaceTrendTodaySiblingTarget = {
+    keibajoCode: "47",
+    raceBango: "07",
+    source: "nar",
+    targetYmd: "20260530",
+  };
+  expect(filterTodaySiblingRows([narRow], target)).toStrictEqual([narRow]);
+});
+
+test("filterTodaySiblingRows uses numeric comparison so 9 is kept against target 10", () => {
+  const ninthRaceRow: RaceTrendStarterRow = { ...jraSiblingRow, raceBango: "09" };
+  const target: RaceTrendTodaySiblingTarget = {
+    keibajoCode: "05",
+    raceBango: "10",
+    source: "jra",
+    targetYmd: "20260530",
+  };
+  expect(filterTodaySiblingRows([ninthRaceRow], target)).toStrictEqual([ninthRaceRow]);
+});
+
+test("filterTodaySiblingRows uses numeric comparison so 10 is dropped against target 9", () => {
+  const tenthRaceRow: RaceTrendStarterRow = { ...jraSiblingRow, raceBango: "10" };
+  const target: RaceTrendTodaySiblingTarget = {
+    keibajoCode: "05",
+    raceBango: "9",
+    source: "jra",
+    targetYmd: "20260530",
+  };
+  expect(filterTodaySiblingRows([tenthRaceRow], target)).toStrictEqual([]);
+});
+
+test("filterTodaySiblingRows drops a row whose raceBango is empty", () => {
+  const blankRow: RaceTrendStarterRow = { ...jraSiblingRow, raceBango: "" };
+  const target: RaceTrendTodaySiblingTarget = {
+    keibajoCode: "05",
+    raceBango: "02",
+    source: "jra",
+    targetYmd: "20260530",
+  };
+  expect(filterTodaySiblingRows([blankRow], target)).toStrictEqual([]);
+});
+
+test("filterTodaySiblingRows drops rows from a different venue", () => {
+  const otherVenueRow: RaceTrendStarterRow = { ...jraSiblingRow, keibajoCode: "06" };
+  const target: RaceTrendTodaySiblingTarget = {
+    keibajoCode: "05",
+    raceBango: "02",
+    source: "jra",
+    targetYmd: "20260530",
+  };
+  expect(filterTodaySiblingRows([otherVenueRow], target)).toStrictEqual([]);
+});
+
+test("filterTodaySiblingRows drops rows from a different source", () => {
+  const narRow: RaceTrendStarterRow = { ...jraSiblingRow, source: "nar" };
+  const target: RaceTrendTodaySiblingTarget = {
+    keibajoCode: "05",
+    raceBango: "02",
+    source: "jra",
+    targetYmd: "20260530",
+  };
+  expect(filterTodaySiblingRows([narRow], target)).toStrictEqual([]);
+});
+
+test("filterTodaySiblingRows drops rows whose date does not match", () => {
+  const otherDateRow: RaceTrendStarterRow = { ...jraSiblingRow, kaisaiTsukihi: "0531" };
+  const target: RaceTrendTodaySiblingTarget = {
+    keibajoCode: "05",
+    raceBango: "02",
+    source: "jra",
+    targetYmd: "20260530",
+  };
+  expect(filterTodaySiblingRows([otherDateRow], target)).toStrictEqual([]);
+});
+
+test("filterTodaySiblingRows drops the target race itself", () => {
+  const targetRow: RaceTrendStarterRow = { ...jraSiblingRow, raceBango: "02" };
+  const target: RaceTrendTodaySiblingTarget = {
+    keibajoCode: "05",
+    raceBango: "02",
+    source: "jra",
+    targetYmd: "20260530",
+  };
+  expect(filterTodaySiblingRows([targetRow], target)).toStrictEqual([]);
+});
+
+test("filterTodaySiblingRows accepts an alphabetic raceBango against an alphabetic target via locale fallback", () => {
+  const alphaRow: RaceTrendStarterRow = { ...jraSiblingRow, raceBango: "A" };
+  const target: RaceTrendTodaySiblingTarget = {
+    keibajoCode: "05",
+    raceBango: "B",
+    source: "jra",
+    targetYmd: "20260530",
+  };
+  expect(filterTodaySiblingRows([alphaRow], target)).toStrictEqual([alphaRow]);
+});
+
+const mergeBaseRow: RaceTrendStarterRow = {
+  source: "nar",
+  kaisaiNen: "2026",
+  kaisaiTsukihi: "0530",
+  keibajoCode: "47",
+  raceBango: "07",
+  raceName: null,
+  hassoJikoku: null,
+  runnerCount: null,
+  wakuban: null,
+  umaban: "5",
+  bamei: null,
+  jockeyName: null,
+  tanshoOdds: null,
+  tanshoPopularity: null,
+  finishPosition: 0,
+  sohaTime: null,
+  corner1: null,
+  corner2: null,
+  corner3: null,
+  corner4: null,
+  bataiju: null,
+  zogenFugo: null,
+  zogenSa: null,
+};
+
+test("mergeStarterRows dedups rows that share every key field", () => {
+  const result = mergeStarterRows([mergeBaseRow], [mergeBaseRow]);
+  expect(result).toHaveLength(1);
+});
+
+test("mergeStarterRows keeps rows from the same date and venue but different raceBango as separate entries", () => {
+  const race1Row: RaceTrendStarterRow = { ...mergeBaseRow, raceBango: "01", umaban: "1" };
+  const race12Row: RaceTrendStarterRow = { ...mergeBaseRow, raceBango: "12", umaban: "1" };
+  expect(mergeStarterRows([race1Row], [race12Row])).toHaveLength(2);
+});
+
+test("mergeStarterRows keeps siblings with same umaban from different races as separate rows", () => {
+  const race1Uma1: RaceTrendStarterRow = { ...mergeBaseRow, raceBango: "01", umaban: "1" };
+  const race12Uma1: RaceTrendStarterRow = { ...mergeBaseRow, raceBango: "12", umaban: "1" };
+  expect(mergeStarterRows([race1Uma1, race12Uma1])).toHaveLength(2);
+});
+
+test("mergeStarterRows lets the newer source fill in fields the older one left blank", () => {
+  const partialPast: RaceTrendStarterRow = { ...mergeBaseRow, jockeyName: null, wakuban: null };
+  const newerSnapshot: RaceTrendStarterRow = {
+    ...mergeBaseRow,
+    jockeyName: "山田太郎",
+    wakuban: "4",
+  };
+  const result = mergeStarterRows([partialPast], [newerSnapshot]);
+  expect(result[0]?.jockeyName).toStrictEqual("山田太郎");
+});
+
+test("mergeStarterRows preserves an older field when the newer source has a blank string", () => {
+  const populatedPast: RaceTrendStarterRow = { ...mergeBaseRow, jockeyName: "山田太郎" };
+  const blankNewer: RaceTrendStarterRow = { ...mergeBaseRow, jockeyName: "" };
+  expect(mergeStarterRows([populatedPast], [blankNewer])[0]?.jockeyName).toStrictEqual("山田太郎");
+});
+
+test("mergeStarterRows preserves a confirmed finishPosition over a partial zero", () => {
+  const confirmedPast: RaceTrendStarterRow = { ...mergeBaseRow, finishPosition: 3 };
+  const partialNewer: RaceTrendStarterRow = { ...mergeBaseRow, finishPosition: 0 };
+  expect(mergeStarterRows([confirmedPast], [partialNewer])[0]?.finishPosition).toStrictEqual(3);
+});
+
+test("mergeStarterRows lets the newer source fill in a finishPosition when the older one was zero", () => {
+  const partialPast: RaceTrendStarterRow = { ...mergeBaseRow, finishPosition: 0 };
+  const confirmedNewer: RaceTrendStarterRow = { ...mergeBaseRow, finishPosition: 4 };
+  expect(mergeStarterRows([partialPast], [confirmedNewer])[0]?.finishPosition).toStrictEqual(4);
+});
+
+test("mergeStarterRows keeps a partial today snapshot row even when no past row matches", () => {
+  const partialOnly: RaceTrendStarterRow = {
+    ...mergeBaseRow,
+    finishPosition: 0,
+    jockeyName: "鈴木",
+  };
+  expect(mergeStarterRows([], [partialOnly])).toStrictEqual([partialOnly]);
+});
+
+test("mergeStarterRows accepts no inputs and returns an empty array", () => {
+  expect(mergeStarterRows()).toStrictEqual([]);
+});
+
+test("mergeStarterRows merges three sources in priority order", () => {
+  const oldRow: RaceTrendStarterRow = { ...mergeBaseRow, raceName: null, bamei: null };
+  const midRow: RaceTrendStarterRow = { ...mergeBaseRow, raceName: "中間レース", bamei: null };
+  const newRow: RaceTrendStarterRow = { ...mergeBaseRow, raceName: null, bamei: "ホースA" };
+  const result = mergeStarterRows([oldRow], [midRow], [newRow]);
+  expect(result[0]?.raceName).toStrictEqual("中間レース");
+  expect(result[0]?.bamei).toStrictEqual("ホースA");
+});
+
+test("mergeStarterRowPair takes the newer raceName when both rows have one", () => {
+  const past: RaceTrendStarterRow = { ...mergeBaseRow, raceName: "過去レース" };
+  const newer: RaceTrendStarterRow = { ...mergeBaseRow, raceName: "新規レース" };
+  expect(mergeStarterRowPair(past, newer).raceName).toStrictEqual("新規レース");
+});
+
+test("mergeStarterRowPair preserves all merged corner fields", () => {
+  const past: RaceTrendStarterRow = {
+    ...mergeBaseRow,
+    corner1: "01",
+    corner2: null,
+    corner3: null,
+    corner4: null,
+  };
+  const newer: RaceTrendStarterRow = {
+    ...mergeBaseRow,
+    corner1: null,
+    corner2: "02",
+    corner3: "03",
+    corner4: "04",
+  };
+  const merged = mergeStarterRowPair(past, newer);
+  expect(merged.corner1).toStrictEqual("01");
+  expect(merged.corner2).toStrictEqual("02");
+  expect(merged.corner3).toStrictEqual("03");
+  expect(merged.corner4).toStrictEqual("04");
+});
+
+test("mergeStarterRowPair preserves a signed weight delta from the newer source", () => {
+  const past: RaceTrendStarterRow = { ...mergeBaseRow, zogenFugo: null, zogenSa: null };
+  const newer: RaceTrendStarterRow = { ...mergeBaseRow, zogenFugo: "-", zogenSa: "002" };
+  const merged = mergeStarterRowPair(past, newer);
+  expect(merged.zogenFugo).toStrictEqual("-");
+  expect(merged.zogenSa).toStrictEqual("002");
+});
+
+const buildAggregatedRow = (
+  overrides: Partial<RaceTrendRunningStyleRow>,
+): RaceTrendRunningStyleRow => ({
+  key: "row",
+  targetHorseNumbers: [],
+  runningStyle: null,
+  frameNumber: null,
+  jockeyName: null,
+  raceNumber: null,
+  starts: 0,
+  showRate: 0,
+  quinellaRate: 0,
+  winRate: 0,
+  finishPositionAverage: null,
+  popularityMedian: null,
+  winOddsMedian: null,
+  finishPositionMedian: null,
+  details: [],
+  ...overrides,
+});
+
+test("compareAggregatedRows orders higher showRate first", () => {
+  const high = buildAggregatedRow({ showRate: 80 });
+  const low = buildAggregatedRow({ showRate: 20 });
+  expect(compareAggregatedRows(high, low)).toBeLessThan(0);
+});
+
+test("compareAggregatedRows tiebreaks by quinellaRate when showRate matches", () => {
+  const high = buildAggregatedRow({ showRate: 50, quinellaRate: 40 });
+  const low = buildAggregatedRow({ showRate: 50, quinellaRate: 10 });
+  expect(compareAggregatedRows(high, low)).toBeLessThan(0);
+});
+
+test("compareAggregatedRows tiebreaks by winRate when quinellaRate also matches", () => {
+  const high = buildAggregatedRow({ showRate: 50, quinellaRate: 30, winRate: 25 });
+  const low = buildAggregatedRow({ showRate: 50, quinellaRate: 30, winRate: 10 });
+  expect(compareAggregatedRows(high, low)).toBeLessThan(0);
+});
+
+test("compareAggregatedRows tiebreaks by starts when rates tie", () => {
+  const more = buildAggregatedRow({ showRate: 50, quinellaRate: 30, winRate: 20, starts: 10 });
+  const fewer = buildAggregatedRow({ showRate: 50, quinellaRate: 30, winRate: 20, starts: 3 });
+  expect(compareAggregatedRows(more, fewer)).toBeLessThan(0);
+});
+
+test("compareAggregatedRows tiebreaks by targetHorseNumbers when starts also tie", () => {
+  const earlyHorse = buildAggregatedRow({
+    showRate: 50,
+    quinellaRate: 30,
+    winRate: 20,
+    starts: 5,
+    targetHorseNumbers: ["3"],
+  });
+  const lateHorse = buildAggregatedRow({
+    showRate: 50,
+    quinellaRate: 30,
+    winRate: 20,
+    starts: 5,
+    targetHorseNumbers: ["9"],
+  });
+  expect(compareAggregatedRows(earlyHorse, lateHorse)).toBeLessThan(0);
+});
+
+test("compareAggregatedRows tiebreaks by frameNumber when targetHorseNumbers are missing", () => {
+  const earlyFrame = buildAggregatedRow({
+    showRate: 50,
+    quinellaRate: 30,
+    winRate: 20,
+    starts: 5,
+    targetHorseNumbers: [],
+    frameNumber: "1",
+  });
+  const lateFrame = buildAggregatedRow({
+    showRate: 50,
+    quinellaRate: 30,
+    winRate: 20,
+    starts: 5,
+    targetHorseNumbers: [],
+    frameNumber: "8",
+  });
+  expect(compareAggregatedRows(earlyFrame, lateFrame)).toBeLessThan(0);
+});
+
+test("compareAggregatedRows tiebreaks by jockeyName when frameNumber matches", () => {
+  const aJockey = buildAggregatedRow({
+    showRate: 50,
+    quinellaRate: 30,
+    winRate: 20,
+    starts: 5,
+    targetHorseNumbers: [],
+    frameNumber: "1",
+    jockeyName: "あ",
+  });
+  const bJockey = buildAggregatedRow({
+    showRate: 50,
+    quinellaRate: 30,
+    winRate: 20,
+    starts: 5,
+    targetHorseNumbers: [],
+    frameNumber: "1",
+    jockeyName: "い",
+  });
+  expect(compareAggregatedRows(aJockey, bJockey)).toBeLessThan(0);
+});
+
+test("compareAggregatedRows tiebreaks by raceNumber when everything else ties", () => {
+  const earlyRace = buildAggregatedRow({
+    showRate: 50,
+    quinellaRate: 30,
+    winRate: 20,
+    starts: 5,
+    targetHorseNumbers: [],
+    frameNumber: "1",
+    jockeyName: "あ",
+    raceNumber: "01",
+  });
+  const lateRace = buildAggregatedRow({
+    showRate: 50,
+    quinellaRate: 30,
+    winRate: 20,
+    starts: 5,
+    targetHorseNumbers: [],
+    frameNumber: "1",
+    jockeyName: "あ",
+    raceNumber: "10",
+  });
+  expect(compareAggregatedRows(earlyRace, lateRace)).toBeLessThan(0);
+});
+
+test("compareAggregatedRows returns zero when every field matches", () => {
+  const left = buildAggregatedRow({
+    showRate: 50,
+    quinellaRate: 30,
+    winRate: 20,
+    starts: 5,
+    targetHorseNumbers: [],
+    frameNumber: "1",
+    jockeyName: "あ",
+    raceNumber: "01",
+  });
+  const right = buildAggregatedRow({
+    showRate: 50,
+    quinellaRate: 30,
+    winRate: 20,
+    starts: 5,
+    targetHorseNumbers: [],
+    frameNumber: "1",
+    jockeyName: "あ",
+    raceNumber: "01",
+  });
+  expect(compareAggregatedRows(left, right)).toStrictEqual(0);
+});
+
+const buildDetail = (overrides: Partial<RaceTrendDetail>): RaceTrendDetail => ({
+  source: "nar",
+  date: "2026-05-30",
+  keibajoCode: "47",
+  raceNumber: "01",
+  raceName: null,
+  runningStyle: null,
+  frameNumber: null,
+  horseNumber: null,
+  horseName: null,
+  jockeyName: null,
+  popularity: null,
+  winOdds: null,
+  finishPosition: 1,
+  time: null,
+  horseWeight: null,
+  horseWeightDelta: null,
+  ...overrides,
+});
+
+test("compareTrendDetails orders newer date first", () => {
+  const newer = buildDetail({ date: "2026-05-31" });
+  const older = buildDetail({ date: "2026-05-29" });
+  expect(compareTrendDetails(newer, older)).toBeLessThan(0);
+});
+
+test("compareTrendDetails tiebreaks by descending raceNumber when dates match", () => {
+  const lateRace = buildDetail({ raceNumber: "12" });
+  const earlyRace = buildDetail({ raceNumber: "01" });
+  expect(compareTrendDetails(lateRace, earlyRace)).toBeLessThan(0);
+});
+
+test("compareTrendDetails uses numeric race ordering so 9 sorts before 10", () => {
+  const ninth = buildDetail({ raceNumber: "09" });
+  const tenth = buildDetail({ raceNumber: "10" });
+  expect(compareTrendDetails(tenth, ninth)).toBeLessThan(0);
+});
+
+test("compareTrendDetails tiebreaks by ascending horseNumber when date and race match", () => {
+  const earlyHorse = buildDetail({ horseNumber: "3" });
+  const lateHorse = buildDetail({ horseNumber: "9" });
+  expect(compareTrendDetails(earlyHorse, lateHorse)).toBeLessThan(0);
+});
+
+test("compareTrendDetails returns zero when date, race and horse numbers all match", () => {
+  const left = buildDetail({ horseNumber: "3" });
+  const right = buildDetail({ horseNumber: "3" });
+  expect(compareTrendDetails(left, right)).toStrictEqual(0);
 });

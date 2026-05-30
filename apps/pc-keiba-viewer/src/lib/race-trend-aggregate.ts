@@ -39,6 +39,13 @@ export interface RaceTrendAggregateOptions {
   startYmd: string;
 }
 
+export interface RaceTrendTodaySiblingTarget {
+  keibajoCode: string;
+  raceBango: string;
+  source: RaceSource;
+  targetYmd: string;
+}
+
 interface RaceTrendRunningStyleTarget {
   frameNumber: string | null;
   horseNumber: string | null;
@@ -47,6 +54,11 @@ interface RaceTrendRunningStyleTarget {
   raceNumber: string | null;
   runningStyle: RaceTrendRunningStyle | null;
 }
+
+const RACE_BANGO_FALLBACK_LOCALE = "ja";
+const RACE_BANGO_LOCALE_OPTIONS = {
+  numeric: true,
+} satisfies Intl.CollatorOptions;
 
 export const normalizeText = (value: string | null | undefined): string | null => {
   const normalized = value?.trim();
@@ -168,6 +180,97 @@ export const starterRunningStyleKey = (
   >,
 ): string => `${starterRaceKey(row)}:${normalizeNumberText(row.umaban) ?? ""}`;
 
+// Canonical race-number comparator shared by trend aggregation paths. Numeric
+// values get an integer comparison so "10" sorts AFTER "9" instead of the
+// lexical "10" < "9" trap a plain `<` on the stored text would hit. When
+// either side is non-numeric (rare alphabetic codes) the function falls back
+// to locale-aware comparison so callers always get a stable ordering.
+export const compareRaceBango = (left: string, right: string): number => {
+  const leftNumber = Number(left);
+  const rightNumber = Number(right);
+  if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
+    return leftNumber - rightNumber;
+  }
+  return left.localeCompare(right, RACE_BANGO_FALLBACK_LOCALE, RACE_BANGO_LOCALE_OPTIONS);
+};
+
+// Narrow a today-cache batch to the sibling rows of one target race. Today
+// cache returns every completed starter row for the day across all venues so
+// multiple races can share one upstream D1 round trip — this helper trims it
+// down to the current race's siblings (same source, same date, same venue,
+// strictly smaller race number). Race rows missing required dimensions are
+// dropped instead of silently passing because they would otherwise corrupt
+// the merge step downstream.
+export const filterTodaySiblingRows = (
+  rows: ReadonlyArray<RaceTrendStarterRow>,
+  target: RaceTrendTodaySiblingTarget,
+): RaceTrendStarterRow[] =>
+  rows.filter((row) => {
+    if (row.source !== target.source) return false;
+    if (`${row.kaisaiNen}${row.kaisaiTsukihi}` !== target.targetYmd) return false;
+    if (row.keibajoCode !== target.keibajoCode) return false;
+    if (!row.raceBango) return false;
+    return compareRaceBango(row.raceBango, target.raceBango) < 0;
+  });
+
+// Merge raw starter rows from multiple sources into a single deduplicated
+// list keyed by (source, ymd, keibajoCode, raceBango, umaban). Later sources
+// override earlier sources on non-empty fields via `mergeStarterRowPair` so
+// today's snapshot can fill in fields the past-14 aggregate left blank
+// without clobbering data the historical row already had. Partial rows are
+// pass-through preserved so DO snapshots that have not yet captured a
+// finishPosition still surface in the trend section.
+export const mergeStarterRows = (
+  ...rowGroups: ReadonlyArray<ReadonlyArray<RaceTrendStarterRow>>
+): RaceTrendStarterRow[] => {
+  const merged = new Map<string, RaceTrendStarterRow>();
+  const flatRows = rowGroups.flat();
+  for (const row of flatRows) {
+    const key = starterKey(row);
+    const existing = merged.get(key);
+    merged.set(key, existing ? mergeStarterRowPair(existing, row) : row);
+  }
+  return Array.from(merged.values());
+};
+
+const pickNonEmptyValue = <T>(...values: ReadonlyArray<T | null | undefined>): T | null => {
+  for (const value of values) {
+    if (value !== null && value !== undefined && value !== "") return value;
+  }
+  return null;
+};
+
+const pickFinishPosition = (a: number, b: number): number => (a > 0 ? a : b);
+
+// Per-pair merge primitive. `b` is the newer source (today snapshot,
+// realtime), so non-empty fields from `b` win, falling back to `a`. The
+// finishPosition rule treats `> 0` as confirmed and otherwise lets the newer
+// row's value through, so a snapshot's completed finishPosition still gets
+// merged into an earlier partial row from the same key.
+export const mergeStarterRowPair = (
+  a: RaceTrendStarterRow,
+  b: RaceTrendStarterRow,
+): RaceTrendStarterRow => ({
+  ...a,
+  raceName: pickNonEmptyValue(b.raceName, a.raceName),
+  hassoJikoku: pickNonEmptyValue(b.hassoJikoku, a.hassoJikoku),
+  runnerCount: pickNonEmptyValue(b.runnerCount, a.runnerCount),
+  wakuban: pickNonEmptyValue(b.wakuban, a.wakuban),
+  bamei: pickNonEmptyValue(b.bamei, a.bamei),
+  jockeyName: pickNonEmptyValue(b.jockeyName, a.jockeyName),
+  tanshoOdds: pickNonEmptyValue(b.tanshoOdds, a.tanshoOdds),
+  tanshoPopularity: pickNonEmptyValue(b.tanshoPopularity, a.tanshoPopularity),
+  finishPosition: pickFinishPosition(b.finishPosition, a.finishPosition),
+  sohaTime: pickNonEmptyValue(b.sohaTime, a.sohaTime),
+  corner1: pickNonEmptyValue(b.corner1, a.corner1),
+  corner2: pickNonEmptyValue(b.corner2, a.corner2),
+  corner3: pickNonEmptyValue(b.corner3, a.corner3),
+  corner4: pickNonEmptyValue(b.corner4, a.corner4),
+  bataiju: pickNonEmptyValue(b.bataiju, a.bataiju),
+  zogenFugo: pickNonEmptyValue(b.zogenFugo, a.zogenFugo),
+  zogenSa: pickNonEmptyValue(b.zogenSa, a.zogenSa),
+});
+
 // Resolve a jockey display name to its normalized comparison key. Extracted so
 // that callers (e.g. race-trend-score.ts) can build identical lookup keys
 // without rebuilding a target-table resolver.
@@ -243,28 +346,72 @@ const runningStyleTargetKey = (
 const average = (values: number[]): number | null =>
   values.length === 0 ? null : values.reduce((sum, value) => sum + value, 0) / values.length;
 
+export const compareTrendDetails = (a: RaceTrendDetail, b: RaceTrendDetail): number => {
+  const dateOrder = b.date.localeCompare(a.date);
+  if (dateOrder !== 0) return dateOrder;
+  const raceOrder = b.raceNumber.localeCompare(
+    a.raceNumber,
+    RACE_BANGO_FALLBACK_LOCALE,
+    RACE_BANGO_LOCALE_OPTIONS,
+  );
+  if (raceOrder !== 0) return raceOrder;
+  return (a.horseNumber ?? "").localeCompare(
+    b.horseNumber ?? "",
+    RACE_BANGO_FALLBACK_LOCALE,
+    RACE_BANGO_LOCALE_OPTIONS,
+  );
+};
+
 const sortTrendDetails = (details: RaceTrendDetail[]): RaceTrendDetail[] =>
-  details.toSorted((a, b) => {
-    const dateOrder = b.date.localeCompare(a.date);
-    if (dateOrder !== 0) return dateOrder;
-    const raceOrder = b.raceNumber.localeCompare(a.raceNumber, "ja", { numeric: true });
-    if (raceOrder !== 0) return raceOrder;
-    return (a.horseNumber ?? "").localeCompare(b.horseNumber ?? "", "ja", { numeric: true });
-  });
+  details.toSorted(compareTrendDetails);
+
+export const compareAggregatedRows = (
+  a: RaceTrendRunningStyleRow,
+  b: RaceTrendRunningStyleRow,
+): number => {
+  const showOrder = b.showRate - a.showRate;
+  if (showOrder !== 0) return showOrder;
+  const quinellaOrder = b.quinellaRate - a.quinellaRate;
+  if (quinellaOrder !== 0) return quinellaOrder;
+  const winOrder = b.winRate - a.winRate;
+  if (winOrder !== 0) return winOrder;
+  const startsOrder = b.starts - a.starts;
+  if (startsOrder !== 0) return startsOrder;
+  const horseOrder = (a.targetHorseNumbers[0] ?? "").localeCompare(
+    b.targetHorseNumbers[0] ?? "",
+    RACE_BANGO_FALLBACK_LOCALE,
+    RACE_BANGO_LOCALE_OPTIONS,
+  );
+  if (horseOrder !== 0) return horseOrder;
+  const frameOrder = (a.frameNumber ?? "").localeCompare(
+    b.frameNumber ?? "",
+    RACE_BANGO_FALLBACK_LOCALE,
+    RACE_BANGO_LOCALE_OPTIONS,
+  );
+  if (frameOrder !== 0) return frameOrder;
+  const jockeyOrder = (a.jockeyName ?? "").localeCompare(
+    b.jockeyName ?? "",
+    RACE_BANGO_FALLBACK_LOCALE,
+  );
+  if (jockeyOrder !== 0) return jockeyOrder;
+  return (a.raceNumber ?? "").localeCompare(
+    b.raceNumber ?? "",
+    RACE_BANGO_FALLBACK_LOCALE,
+    RACE_BANGO_LOCALE_OPTIONS,
+  );
+};
 
 const sortAggregatedRows = (rows: RaceTrendRunningStyleRow[]): RaceTrendRunningStyleRow[] =>
-  rows.toSorted(
-    (a, b) =>
-      b.showRate - a.showRate ||
-      b.quinellaRate - a.quinellaRate ||
-      b.winRate - a.winRate ||
-      b.starts - a.starts ||
-      (a.targetHorseNumbers[0] ?? "").localeCompare(b.targetHorseNumbers[0] ?? "", "ja", {
-        numeric: true,
-      }) ||
-      (a.frameNumber ?? "").localeCompare(b.frameNumber ?? "", "ja", { numeric: true }) ||
-      (a.jockeyName ?? "").localeCompare(b.jockeyName ?? "", "ja") ||
-      (a.raceNumber ?? "").localeCompare(b.raceNumber ?? "", "ja", { numeric: true }),
+  rows.toSorted(compareAggregatedRows);
+
+const compareTargetEntries = (
+  a: { target: RaceTrendRunningStyleTarget },
+  b: { target: RaceTrendRunningStyleTarget },
+): number =>
+  (a.target.horseNumber ?? "").localeCompare(
+    b.target.horseNumber ?? "",
+    RACE_BANGO_FALLBACK_LOCALE,
+    RACE_BANGO_LOCALE_OPTIONS,
   );
 
 const buildRowJockeyKeyResolver = (
@@ -300,11 +447,7 @@ const aggregateRunningStyleRows = (
     .filter((entry): entry is { index: number; key: string; target: RaceTrendRunningStyleTarget } =>
       Boolean(entry.key),
     )
-    .toSorted((a, b) =>
-      (a.target.horseNumber ?? "").localeCompare(b.target.horseNumber ?? "", "ja", {
-        numeric: true,
-      }),
-    );
+    .toSorted(compareTargetEntries);
   const resolveTargetJockeyKey = buildRowJockeyKeyResolver(targets);
   const groupedRowsByTargetKey = new Map<string, RaceTrendStarterRow[]>();
   for (const row of rows) {
