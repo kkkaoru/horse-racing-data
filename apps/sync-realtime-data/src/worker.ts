@@ -107,6 +107,7 @@ import {
   upsertPremiumRaceLink,
   type HotOddsPayload,
   type LocalRaceRow,
+  type SchedulableRaceSource,
 } from "./storage";
 import {
   RUNNING_STYLE_INFERENCE_CRON,
@@ -163,6 +164,25 @@ const DEFAULT_PREMIUM_PADDOCK_DISCORD_BOT_NAME = "外部パドック速報";
 const DEFAULT_DETAIL_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
 const PREMIUM_PADDOCK_NOTIFICATION_FORMAT_VERSION = "2026-05-16-v2";
 const PREMIUM_PADDOCK_NOTIFICATION_LOCK_SECONDS = 90;
+// JRA horse-weight fetch scheduling priority (Tokyo/Kyoto 5R first, then
+// 5R-onward JRA, then 1R-4R). `race_bango` is stored zero-padded in
+// realtime_race_sources.race_bango (see storage.ts toRaceSource: row.race_bango
+// is written via padStart(2,"0") in upsertNarRaceSource / upsertJraRaceSource),
+// so we compare against "05" not "5".
+const JRA_PRIORITY_VENUE_CODES = ["05", "08"] satisfies readonly string[];
+const JRA_PRIORITY_RACE_BANGO = "05";
+// Raised from 20 to 40 to match the JRA horse-weight publish window (~40-60
+// minutes before post). At 20 min we were arriving after publish but still
+// waiting for our next 3-minute tick.
+const WEIGHT_FETCH_LEAD_MINUTES = 40;
+const WEIGHT_FETCH_PRIORITY_TIER_HIGH = 0;
+const WEIGHT_FETCH_PRIORITY_TIER_MID = 1;
+const WEIGHT_FETCH_PRIORITY_TIER_LOW = 2;
+const WEIGHT_FETCH_PRIORITY_TIER_NAR = 3;
+const WEIGHT_FETCH_BANGO_PRIORITY_THRESHOLD = 5;
+// Once a weight fetch succeeds we wait 24h before re-fetching (extracted from
+// inline literal at the old planRealtimeFetches weight-push site).
+const WEIGHT_FETCH_INTERVAL_MINUTES = 24 * 60;
 const JRA_KEIBAJO_NAMES: Record<string, string> = {
   "01": "札幌",
   "02": "函館",
@@ -209,6 +229,22 @@ const readForwardResponseBody = async (response: Response): Promise<string> => {
     return "";
   }
 };
+
+interface WeightFetchPriorityInput {
+  source: string;
+  keibajoCode: string;
+  raceBango: string;
+}
+
+interface WeightCandidate {
+  race: SchedulableRaceSource;
+  minutes: number;
+}
+
+interface WeightCandidatePair {
+  race: SchedulableRaceSource;
+  minutes: number | null;
+}
 
 interface ForwardRaceSourceArgs {
   source: "jra" | "nar";
@@ -844,6 +880,43 @@ export const latestTimestamp = (...timestamps: (string | null)[]): string | null
 };
 
 export const isThreeMinuteTick = (date: Date): boolean => date.getUTCMinutes() % 3 === 0;
+
+const isPriorityJraVenue = (keibajoCode: string): boolean =>
+  JRA_PRIORITY_VENUE_CODES.includes(keibajoCode);
+
+const isPriorityFiveR = (input: WeightFetchPriorityInput): boolean =>
+  input.source === "jra" &&
+  isPriorityJraVenue(input.keibajoCode) &&
+  input.raceBango === JRA_PRIORITY_RACE_BANGO;
+
+const isLateJraRace = (input: WeightFetchPriorityInput): boolean =>
+  input.source === "jra" &&
+  Number.parseInt(input.raceBango, 10) >= WEIGHT_FETCH_BANGO_PRIORITY_THRESHOLD;
+
+export const weightFetchPriorityTier = (input: WeightFetchPriorityInput): number => {
+  if (input.source !== "jra") return WEIGHT_FETCH_PRIORITY_TIER_NAR;
+  if (isPriorityFiveR(input)) return WEIGHT_FETCH_PRIORITY_TIER_HIGH;
+  if (isLateJraRace(input)) return WEIGHT_FETCH_PRIORITY_TIER_MID;
+  return WEIGHT_FETCH_PRIORITY_TIER_LOW;
+};
+
+const isWeightCandidate = (pair: WeightCandidatePair): pair is WeightCandidate =>
+  pair.minutes !== null;
+
+export const compareWeightCandidates = (a: WeightCandidate, b: WeightCandidate): number => {
+  const ta = weightFetchPriorityTier({
+    source: a.race.source,
+    keibajoCode: a.race.keibajoCode,
+    raceBango: a.race.raceBango,
+  });
+  const tb = weightFetchPriorityTier({
+    source: b.race.source,
+    keibajoCode: b.race.keibajoCode,
+    raceBango: b.race.raceBango,
+  });
+  if (ta !== tb) return ta - tb;
+  return a.minutes - b.minutes;
+};
 
 export const isPremiumRaceDiscoveryTick = (date: Date): boolean => {
   const jst = toJstIsoString(date);
@@ -1664,14 +1737,22 @@ export const planRealtimeFetches = async (env: Env, targetDate: string): Promise
   {
     await tryEnsureDiscoveredUrlsAreCurrent(env, targetDate);
     const races = await listSchedulableRaceSourcesByDate(env.REALTIME_DB, targetDate);
+    const weightCandidates: WeightCandidate[] = races
+      .map((race): WeightCandidatePair => ({ race, minutes: minutesUntilRace(race, now) }))
+      .filter(isWeightCandidate)
+      .filter(
+        (c) =>
+          isThreeMinuteTick(now) &&
+          c.minutes <= WEIGHT_FETCH_LEAD_MINUTES &&
+          isDue(c.race.lastWeightFetchAt, WEIGHT_FETCH_INTERVAL_MINUTES, now),
+      );
+    [...weightCandidates].sort(compareWeightCandidates).forEach((c) => {
+      jobs.push({ raceKey: c.race.raceKey, type: "fetch-weights" });
+    });
     for (const race of races) {
       const minutes = minutesUntilRace(race, now);
       if (minutes === null) {
         continue;
-      }
-
-      if (isThreeMinuteTick(now) && minutes <= 20 && isDue(race.lastWeightFetchAt, 24 * 60, now)) {
-        jobs.push({ raceKey: race.raceKey, type: "fetch-weights" });
       }
 
       const resultLockUntil = race.resultFetchLockUntil
