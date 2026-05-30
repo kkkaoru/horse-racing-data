@@ -20,6 +20,7 @@
 import "server-only";
 import { safeGetCloudflareEnv } from "../lib/cloudflare-context.server";
 import type { RaceSource } from "../lib/codes";
+import { deriveJraWakuban } from "../lib/jra-wakuban";
 import {
   RACE_TREND_PAST14_LOOKBACK_DAYS,
   buildRaceTrendPast14CacheKey,
@@ -272,6 +273,7 @@ interface RawD1Row {
   raceName: string | null;
   hassoJikoku: string | null;
   umaban: string | null;
+  horseCount: number;
   bamei: string | null;
   jockeyName: string | null;
   finishPosition: number;
@@ -326,7 +328,8 @@ const isRawD1Row = (value: unknown): value is RawD1Row => {
     typeof value.kaisaiTsukihi === "string" &&
     typeof value.keibajoCode === "string" &&
     typeof value.raceBango === "string" &&
-    typeof value.finishPosition === "number"
+    typeof value.finishPosition === "number" &&
+    typeof value.horseCount === "number"
   );
 };
 
@@ -351,9 +354,17 @@ const formatHassoJikoku = (raceStartAtJst: string | null): string | null => {
 };
 
 // Phase E removed the LEFT JOIN to daily_race_entries — the snapshot-derived
-// result keeps `wakuban` / `tansho*` as null and lets the HOT D1 odds overlay
-// and the features-worker past-14 payload supply the missing fields. Legacy
+// result keeps `tansho*` as null and lets the HOT D1 odds overlay and the
+// features-worker past-14 payload supply the missing fields. Legacy
 // daily_race_entries is NEVER read from this worker (Phase 0 rule 3).
+//
+// 2026-05-30: wakuban is now derived for jra rows from `umaban` + the
+// race's distinct horse_count (the new `race_horse_count` CTE) via
+// `deriveJraWakuban`. The snapshot tables don't carry wakuban directly,
+// and the trend page's today-only default filter would otherwise drop
+// every row when grouping by frame. NAR rows still surface as
+// `wakuban: null` because NAR uses a different frame rule handled
+// elsewhere in the pipeline.
 const SELECT_SQL = `
   with latest_result as (
     select race_key, horse_number, finish_position, time
@@ -378,6 +389,11 @@ const SELECT_SQL = `
       select max(fetched_at) from horse_weight_snapshots w2
       where w2.race_key = w1.race_key and w2.horse_number = w1.horse_number
     )
+  ),
+  race_horse_count as (
+    select race_key, count(distinct horse_number) as horse_count
+    from latest_result
+    group by race_key
   )
   select
     s.source as source,
@@ -389,6 +405,7 @@ const SELECT_SQL = `
     s.race_name as raceName,
     s.race_start_at_jst as hassoJikoku,
     r.horse_number as umaban,
+    coalesce(hc.horse_count, 0) as horseCount,
     e.horse_name as bamei,
     e.jockey_name as jockeyName,
     cast(nullif(replace(r.finish_position, ' ', ''), '') as integer) as finishPosition,
@@ -400,6 +417,7 @@ const SELECT_SQL = `
   join realtime_race_sources s on s.race_key = r.race_key
   left join latest_entry e on e.race_key = r.race_key and e.horse_number = r.horse_number
   left join latest_weight w on w.race_key = r.race_key and w.horse_number = r.horse_number
+  left join race_horse_count hc on hc.race_key = r.race_key
   where s.source = ?
     and s.kaisai_nen || s.kaisai_tsukihi between ? and ?
     and cast(nullif(replace(r.finish_position, ' ', ''), '') as integer) > 0
@@ -497,6 +515,14 @@ const pickTanshoOdds = (
   return { tanshoOddsTenth: oddsTenth, tanshoPopularity: entry.rank };
 };
 
+const deriveJraWakubanString = (raw: RawD1Row): string | null => {
+  if (raw.source !== "jra" || raw.umaban === null) return null;
+  const horseNumber = Number.parseInt(raw.umaban, 10);
+  if (!Number.isFinite(horseNumber)) return null;
+  const wakubanValue = deriveJraWakuban({ horseCount: raw.horseCount, horseNumber });
+  return wakubanValue === null ? null : String(wakubanValue);
+};
+
 const toStarterRow = (raw: RawD1Row, oddsMap: TanshoOddsMap): RaceTrendStarterRow => {
   const { tanshoOddsTenth, tanshoPopularity } = pickTanshoOdds(raw, oddsMap);
   return {
@@ -508,7 +534,7 @@ const toStarterRow = (raw: RawD1Row, oddsMap: TanshoOddsMap): RaceTrendStarterRo
     raceName: raw.raceName,
     hassoJikoku: formatHassoJikoku(raw.hassoJikoku),
     runnerCount: null,
-    wakuban: null,
+    wakuban: deriveJraWakubanString(raw),
     umaban: raw.umaban,
     bamei: raw.bamei,
     jockeyName: raw.jockeyName,
