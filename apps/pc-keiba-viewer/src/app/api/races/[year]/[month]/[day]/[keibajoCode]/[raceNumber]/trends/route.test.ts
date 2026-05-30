@@ -10,10 +10,18 @@ vi.mock("@opennextjs/cloudflare", () => ({
   })),
 }));
 
-import type { RaceTrendStarterRow } from "horse-racing-realtime/race-trend-daily-track-types";
+import type {
+  RaceTrendDailyTrackRow,
+  RaceTrendStarterRow,
+} from "horse-racing-realtime/race-trend-daily-track-types";
 
+import type { RaceTrendDailyTrackFetchResult } from "../../../../../../../../../lib/race-trend-daily-track-client.server";
 import type { RaceTrendRawPayload } from "../../../../../../../../../lib/race-types";
-import { filterTodaySiblingRows, isCacheableTrendPayload } from "./route";
+import {
+  filterTodaySiblingRows,
+  isCacheableTrendPayload,
+  pickTodaySiblingRowsAndSource,
+} from "./route";
 
 const buildStarterRow = (overrides: Partial<RaceTrendStarterRow> = {}): RaceTrendStarterRow => ({
   bamei: "テスト",
@@ -225,4 +233,111 @@ it("filterTodaySiblingRows falls back to locale compare when raceBango is non-nu
       targetYmd: "20260529",
     }),
   ).toStrictEqual([siblingA]);
+});
+
+const buildDailyTrackRow = (
+  raceBango: string,
+  starterRows: RaceTrendStarterRow[],
+): RaceTrendDailyTrackRow => ({
+  fetchedAt: "2026-05-29T07:30:00.000Z",
+  finishedAt: "2026-05-29T07:20:00.000Z",
+  isComplete: true,
+  raceBango,
+  raceKey: `jra:2026:0529:05:${raceBango}`,
+  runningStyles: [],
+  starterRows,
+});
+
+it("pickTodaySiblingRowsAndSource returns DO rows and do-hit header when DO result status is hit", () => {
+  const doRow = buildStarterRow({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0529",
+    keibajoCode: "05",
+    raceBango: "01",
+    source: "jra",
+    umaban: "03",
+  });
+  const fallbackRow = buildStarterRow({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0529",
+    keibajoCode: "05",
+    raceBango: "02",
+    source: "jra",
+    umaban: "07",
+  });
+  const result: RaceTrendDailyTrackFetchResult = {
+    rows: [buildDailyTrackRow("01", [doRow])],
+    status: "hit",
+  };
+  expect(pickTodaySiblingRowsAndSource({ fallbackRows: [fallbackRow], result })).toStrictEqual({
+    rows: [doRow],
+    sourceHeader: "do-hit",
+  });
+});
+
+it("pickTodaySiblingRowsAndSource flattens starterRows across multiple DO race rows when status is hit", () => {
+  const doRowA = buildStarterRow({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0529",
+    keibajoCode: "05",
+    raceBango: "01",
+    source: "jra",
+    umaban: "01",
+  });
+  const doRowB = buildStarterRow({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0529",
+    keibajoCode: "05",
+    raceBango: "02",
+    source: "jra",
+    umaban: "02",
+  });
+  const result: RaceTrendDailyTrackFetchResult = {
+    rows: [buildDailyTrackRow("01", [doRowA]), buildDailyTrackRow("02", [doRowB])],
+    status: "hit",
+  };
+  expect(pickTodaySiblingRowsAndSource({ fallbackRows: [], result })).toStrictEqual({
+    rows: [doRowA, doRowB],
+    sourceHeader: "do-hit",
+  });
+});
+
+it("pickTodaySiblingRowsAndSource falls back to legacy rows with do-miss-fallback header when DO result status is miss", () => {
+  const fallbackRow = buildStarterRow({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0529",
+    keibajoCode: "47",
+    raceBango: "04",
+    source: "nar",
+    umaban: "05",
+  });
+  const result: RaceTrendDailyTrackFetchResult = { rows: [], status: "miss" };
+  expect(pickTodaySiblingRowsAndSource({ fallbackRows: [fallbackRow], result })).toStrictEqual({
+    rows: [fallbackRow],
+    sourceHeader: "do-miss-fallback",
+  });
+});
+
+it("pickTodaySiblingRowsAndSource falls back to legacy rows with do-error-fallback header when DO result status is error", () => {
+  const fallbackRow = buildStarterRow({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0529",
+    keibajoCode: "47",
+    raceBango: "06",
+    source: "nar",
+    umaban: "08",
+  });
+  const result: RaceTrendDailyTrackFetchResult = { rows: [], status: "error" };
+  expect(pickTodaySiblingRowsAndSource({ fallbackRows: [fallbackRow], result })).toStrictEqual({
+    rows: [fallbackRow],
+    sourceHeader: "do-error-fallback",
+  });
+});
+
+it("pickTodaySiblingRowsAndSource returns an empty rows array when both DO is miss and fallback is empty", () => {
+  const result: RaceTrendDailyTrackFetchResult = { rows: [], status: "miss" };
+  expect(pickTodaySiblingRowsAndSource({ fallbackRows: [], result })).toStrictEqual({
+    rows: [],
+    sourceHeader: "do-miss-fallback",
+  });
 });

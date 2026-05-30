@@ -13,6 +13,7 @@ import {
   getRaceRunners,
   getRaceSourceByRoute,
 } from "../../../../../../../../../db/queries";
+import { safeGetCloudflareEnv } from "../../../../../../../../../lib/cloudflare-context.server";
 import type { RaceSource } from "../../../../../../../../../lib/codes";
 import {
   fetchProductionApi,
@@ -30,6 +31,10 @@ import {
   getCachedRaceTrendResponse,
   putRaceTrendCache,
 } from "../../../../../../../../../lib/race-trend-cache.server";
+import {
+  fetchRaceTrendDailyTrack,
+  type RaceTrendDailyTrackFetchResult,
+} from "../../../../../../../../../lib/race-trend-daily-track-client.server";
 import { notifyRaceTrendRoom } from "../../../../../../../../../lib/race-trend-room.server";
 import type {
   RaceDetail,
@@ -69,6 +74,33 @@ const addDays = (ymd: string, days: number): string => {
 };
 
 type RaceTrendBuildOptions = RaceTrendCacheOptions;
+
+export type RaceTrendSourceHeaderValue = "do-hit" | "do-miss-fallback" | "do-error-fallback";
+
+interface DoFallbackArgs {
+  fallbackRows: RaceTrendStarterRow[];
+  result: RaceTrendDailyTrackFetchResult;
+}
+
+const pickSiblingRowsFromDoResult = (
+  result: RaceTrendDailyTrackFetchResult,
+): RaceTrendStarterRow[] => result.rows.flatMap((row) => row.starterRows);
+
+export const pickTodaySiblingRowsAndSource = ({
+  fallbackRows,
+  result,
+}: DoFallbackArgs): {
+  rows: RaceTrendStarterRow[];
+  sourceHeader: RaceTrendSourceHeaderValue;
+} => {
+  if (result.status === "hit") {
+    return { rows: pickSiblingRowsFromDoResult(result), sourceHeader: "do-hit" };
+  }
+  return {
+    rows: fallbackRows,
+    sourceHeader: result.status === "miss" ? "do-miss-fallback" : "do-error-fallback",
+  };
+};
 
 const mergeStarterRows = (
   dailyRows: RaceTrendStarterRow[],
@@ -198,11 +230,16 @@ export const filterTodaySiblingRows = (
     return compareRaceBango(row.raceBango, target.raceBango) < 0;
   });
 
+interface BuildRaceTrendRawPayloadResult {
+  payload: RaceTrendRawPayload;
+  sourceHeader: RaceTrendSourceHeaderValue;
+}
+
 const buildRaceTrendRawPayload = async (
   race: RaceDetail,
   runners: Runner[],
   options: RaceTrendBuildOptions,
-): Promise<RaceTrendRawPayload> => {
+): Promise<BuildRaceTrendRawPayloadResult> => {
   const targetYmd = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
   const past14Window = buildPast14WindowForTarget(targetYmd);
   const currentRunningStylesPromise = getRaceRunningStylesWithCache({
@@ -219,23 +256,37 @@ const buildRaceTrendRawPayload = async (
     source: options.source,
     startYmd: past14Window.startYmd,
   });
-  const todayPromise = getRaceTrendTodayStarterRows({
+  // DO-primary path: sync-realtime-data's RaceTrendDailyTrackDO maintains
+  // a per-(source, ymd, keibajoCode) daily aggregate refreshed by the
+  // 5 min poller. When the DO has the answer ready we skip the legacy
+  // D1-backed today-cache entirely. The legacy helper stays around as a
+  // fallback for DO miss / error so a single missing DO entry can't
+  // black out the trend section.
+  const env = await safeGetCloudflareEnv();
+  const doResultPromise = fetchRaceTrendDailyTrack(env, {
+    beforeRaceBango: race.raceBango,
+    keibajoCode: race.keibajoCode,
+    source: race.source,
+    targetYmd,
+  });
+  const legacyTodayPromise = getRaceTrendTodayStarterRows({
     source: options.source,
     targetYmd,
   });
-  // Realtime scraping is no longer triggered from this route: the trend
-  // payload is built solely from D1's race_*_snapshots (today) and the
-  // features-worker past-14 aggregate (R2 Parquet), which already get
-  // refreshed by the sync-realtime-data worker on race finish (see
-  // viewer-trend-cache-bust). Calling sync-realtime-data's per-race
-  // /realtime here used to fan out ~100 concurrent scrapes per
-  // (source, ymd) and saturate the upstream worker.
-  const [past14Rows, todayRows] = await Promise.all([past14Promise, todayPromise]);
-  const todaySiblingRows = filterTodaySiblingRows(todayRows, {
+  const [past14Rows, doResult, legacyTodayRows] = await Promise.all([
+    past14Promise,
+    doResultPromise,
+    legacyTodayPromise,
+  ]);
+  const legacyTodaySiblingRows = filterTodaySiblingRows(legacyTodayRows, {
     keibajoCode: race.keibajoCode,
     raceBango: race.raceBango,
     source: race.source,
     targetYmd,
+  });
+  const { rows: todaySiblingRows, sourceHeader } = pickTodaySiblingRowsAndSource({
+    fallbackRows: legacyTodaySiblingRows,
+    result: doResult,
   });
   const starterRows = mergeStarterRows(past14Rows, todaySiblingRows, []);
   const currentRunningStyles = await currentRunningStylesPromise;
@@ -254,19 +305,22 @@ const buildRaceTrendRawPayload = async (
     [...past14RunningStyles, ...todayRunningStyles],
   );
   return {
-    raceContext: {
-      keibajoCode: race.keibajoCode,
-      raceBango: race.raceBango,
-      source: race.source,
+    payload: {
+      raceContext: {
+        keibajoCode: race.keibajoCode,
+        raceBango: race.raceBango,
+        source: race.source,
+      },
+      runners: runners.map((runner) => ({
+        frameNumber: runner.wakuban,
+        horseNumber: runner.umaban,
+        jockeyName: runner.kishumeiRyakusho,
+      })),
+      starterRows,
+      currentRunningStyles: toCurrentRunningStyles(currentRunningStyles),
+      historicalRunningStyles: mergedHistoricalRunningStyles,
     },
-    runners: runners.map((runner) => ({
-      frameNumber: runner.wakuban,
-      horseNumber: runner.umaban,
-      jockeyName: runner.kishumeiRyakusho,
-    })),
-    starterRows,
-    currentRunningStyles: toCurrentRunningStyles(currentRunningStyles),
-    historicalRunningStyles: mergedHistoricalRunningStyles,
+    sourceHeader,
   };
 };
 
@@ -343,7 +397,7 @@ export async function GET(request: Request, context: RouteContext) {
     }
   }
   const runners = await getRaceRunners(source, year, month, day, keibajoCode, raceNumber);
-  const payload = await buildRaceTrendRawPayload(race, runners, options);
+  const { payload, sourceHeader } = await buildRaceTrendRawPayload(race, runners, options);
   const body = JSON.stringify(payload);
   const hasUsableData = isCacheableTrendPayload(payload);
   if (hasUsableData) {
@@ -365,6 +419,7 @@ export async function GET(request: Request, context: RouteContext) {
           : hasUsableData
             ? "MISS-STORED"
             : "MISS-EMPTY-SKIPPED",
+      "X-Race-Trend-Source": sourceHeader,
     },
   });
 }
