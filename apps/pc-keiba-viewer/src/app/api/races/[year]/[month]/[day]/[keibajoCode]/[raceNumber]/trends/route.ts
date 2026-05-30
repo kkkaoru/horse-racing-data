@@ -1,3 +1,4 @@
+import type { RaceTrendStarterRow } from "horse-racing-realtime/race-trend-daily-track-types";
 import { NextResponse } from "next/server";
 
 import {
@@ -34,7 +35,6 @@ import type {
   RaceDetail,
   RaceTrendRawPayload,
   RaceTrendRunningStyle,
-  RaceTrendStarterRow,
   Runner,
 } from "../../../../../../../../../lib/race-types";
 import { getRaceRunningStylesWithCache } from "../../../../../../../../../lib/running-style-cache.server";

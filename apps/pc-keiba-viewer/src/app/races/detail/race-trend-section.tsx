@@ -1,5 +1,9 @@
 "use client";
 
+import type {
+  RaceTrendRunningStyleCache,
+  RaceTrendStarterRow,
+} from "horse-racing-realtime/race-trend-daily-track-types";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -66,9 +70,7 @@ import type {
   RaceTrendRawPayload,
   RaceTrendRunnerSummary,
   RaceTrendRunningStyle,
-  RaceTrendRunningStyleCache,
   RaceTrendRunningStyleRow,
-  RaceTrendStarterRow,
 } from "../../../lib/race-types";
 import { useRealtimeRaceSelector } from "./realtime-client";
 

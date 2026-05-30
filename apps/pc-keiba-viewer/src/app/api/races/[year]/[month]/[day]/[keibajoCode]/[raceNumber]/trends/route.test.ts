@@ -10,10 +10,9 @@ vi.mock("@opennextjs/cloudflare", () => ({
   })),
 }));
 
-import type {
-  RaceTrendRawPayload,
-  RaceTrendStarterRow,
-} from "../../../../../../../../../lib/race-types";
+import type { RaceTrendStarterRow } from "horse-racing-realtime/race-trend-daily-track-types";
+
+import type { RaceTrendRawPayload } from "../../../../../../../../../lib/race-types";
 import { filterTodaySiblingRows, isCacheableTrendPayload } from "./route";
 
 const buildStarterRow = (overrides: Partial<RaceTrendStarterRow> = {}): RaceTrendStarterRow => ({
