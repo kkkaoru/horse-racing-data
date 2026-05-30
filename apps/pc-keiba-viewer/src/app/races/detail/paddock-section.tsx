@@ -27,9 +27,11 @@ import {
   normalizeJockeyNameForComparison,
 } from "../../../lib/jockey-name";
 import {
+  isPaddockHorseNotifiable,
   isPaddockState,
   applyPaddockAction,
   normalizePaddockHorseScore,
+  shouldSkipPaddockDiscordNotification,
   type PaddockAction,
   type PaddockMetric,
   type PaddockOfficialRank,
@@ -1741,17 +1743,23 @@ export function PaddockSection({
       return;
     }
 
-    const ratedHorses = runnerRows
-      .map((runner) => ({
-        runner,
-        scores: normalizePaddockHorseScore(state?.horses[runner.horseNumber], runner),
-      }))
-      .filter(({ scores }) => scores.total > 0);
+    const scoredRunners = runnerRows.map((runner) => ({
+      runner,
+      scores: normalizePaddockHorseScore(state?.horses[runner.horseNumber], runner),
+    }));
+    const ratedHorses = scoredRunners.filter(({ scores }) =>
+      isPaddockHorseNotifiable({ officialRank: scores.officialRank, total: scores.total }),
+    );
 
-    if (ratedHorses.length === 0) {
-      window.alert(
-        "パドック評価が入力された馬がいません。1頭以上を正の評価で採点してから通知してください。",
-      );
+    if (
+      shouldSkipPaddockDiscordNotification(
+        scoredRunners.map(({ scores }) => ({
+          officialRank: scores.officialRank,
+          total: scores.total,
+        })),
+      )
+    ) {
+      window.alert("パドック評価と公式評価順がどちらも未入力です");
       return;
     }
 

@@ -7,8 +7,10 @@ import {
   getPaddockKvKey,
   getRacePaddockKey,
   isPaddockAction,
+  isPaddockHorseNotifiable,
   isPaddockState,
   normalizePaddockHorseScore,
+  shouldSkipPaddockDiscordNotification,
   type PaddockState,
 } from "./paddock";
 
@@ -258,5 +260,61 @@ describe("paddock helpers", () => {
     expect(isPaddockState({ ...filled, history: {} })).toBe(false);
     expect(isPaddockState({ ...filled, raceKey: 123 })).toBe(false);
     expect(isPaddockState(undefined)).toBe(false);
+  });
+
+  it("skips notification when both paddock total and official rank are empty for every horse", () => {
+    expect(
+      shouldSkipPaddockDiscordNotification([
+        { officialRank: null, total: 0 },
+        { officialRank: null, total: 0 },
+      ]),
+    ).toBe(true);
+  });
+
+  it("allows notification when at least one horse has a positive paddock total even without official ranks", () => {
+    expect(
+      shouldSkipPaddockDiscordNotification([
+        { officialRank: null, total: 0 },
+        { officialRank: null, total: 2.5 },
+      ]),
+    ).toBe(false);
+  });
+
+  it("allows notification when at least one horse has an official rank even without paddock totals", () => {
+    expect(
+      shouldSkipPaddockDiscordNotification([
+        { officialRank: null, total: 0 },
+        { officialRank: 3, total: 0 },
+      ]),
+    ).toBe(false);
+  });
+
+  it("allows notification when paddock totals and official ranks are both present", () => {
+    expect(
+      shouldSkipPaddockDiscordNotification([
+        { officialRank: 1, total: 4.1 },
+        { officialRank: 2, total: 1.2 },
+      ]),
+    ).toBe(false);
+  });
+
+  it("treats an empty input list as a skip case for the notification gate", () => {
+    expect(shouldSkipPaddockDiscordNotification([])).toBe(true);
+  });
+
+  it("marks a horse as notifiable when only the paddock total is positive", () => {
+    expect(isPaddockHorseNotifiable({ officialRank: null, total: 1.5 })).toBe(true);
+  });
+
+  it("marks a horse as notifiable when only the official rank is set", () => {
+    expect(isPaddockHorseNotifiable({ officialRank: 5, total: 0 })).toBe(true);
+  });
+
+  it("marks a horse as non-notifiable when both paddock total and official rank are empty", () => {
+    expect(isPaddockHorseNotifiable({ officialRank: null, total: 0 })).toBe(false);
+  });
+
+  it("treats a negative paddock total without an official rank as non-notifiable", () => {
+    expect(isPaddockHorseNotifiable({ officialRank: null, total: -2 })).toBe(false);
   });
 });
