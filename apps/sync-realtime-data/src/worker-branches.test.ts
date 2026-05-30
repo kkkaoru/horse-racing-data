@@ -555,6 +555,132 @@ it("fetch-results triggers trend cache bust when expectedHorseCount > 0 and rows
   expect(insertRaceResultSnapshot).toHaveBeenCalled();
 });
 
+// Covers fetch-results with inserted > 0 but inserted < expectedHorseCount,
+// so isComplete is false yet the trend cache bust must still fire. This is
+// the partial-final path that prevents "11R is confirmed but 12R detail
+// shows it as unfinished" when JRA / NAR publishes the result page with
+// some horses still pending (e.g. objection, late horse, or partial bunch).
+it("fetch-results still busts trend cache when partial-final (inserted > 0 but < expected)", async () => {
+  const { handleJob } = await import("./worker");
+  const { claimResultFetch, getRaceSource, insertRaceResultSnapshot, completeResultFetch } =
+    await import("./storage");
+  const { fetchRacePage, parseRaceEntries, parseRaceResults, parseRaceEntryHorseNumbers } =
+    await import("./keiba-go");
+  vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "22",
+    debaUrl: "https://nar.example/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: null,
+    kaisaiNen: "2026",
+    kaisaiNichime: null,
+    kaisaiTsukihi: "0512",
+    keibajoCode: "55",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "nar:2026:0512:55:01",
+    raceName: "T",
+    raceStartAtJst: "2026-05-12T10:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "nar",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(fetchRacePage).mockResolvedValue("<html></html>");
+  vi.mocked(parseRaceEntries).mockReturnValue([
+    { horseName: "h", horseNumber: "1", jockeyName: "j", status: null },
+    { horseName: "h", horseNumber: "2", jockeyName: "j", status: null },
+    { horseName: "h", horseNumber: "3", jockeyName: "j", status: null },
+  ] as never);
+  vi.mocked(parseRaceEntryHorseNumbers).mockReturnValue(["1", "2", "3"]);
+  vi.mocked(parseRaceResults).mockReturnValue([
+    { horseNumber: "1", placement: "1" },
+    { horseNumber: "2", placement: "2" },
+  ] as never);
+  vi.mocked(insertRaceResultSnapshot).mockResolvedValue(2);
+  await handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z" } as never), {
+    raceKey: "nar:2026:0512:55:01",
+    type: "fetch-results",
+  });
+  expect(completeResultFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "nar:2026:0512:55:01",
+    expect.any(String),
+    { expectedHorseCount: 3, isComplete: false, savedHorseCount: 2 },
+  );
+});
+
+// Covers planResultFetchesOnly running the hourly discover-urls recovery
+// when the tick lands inside the first minute of an hour, plus the queued
+// race path so both the discovery side effect and job enqueue land.
+it("planResultFetchesOnly runs hourly discovery recovery and enqueues due result jobs", async () => {
+  const { planResultFetchesOnly } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
+    {
+      babaCode: "22",
+      debaUrl: "https://nar.example/race",
+      discoveredAt: "2026-05-12T00:00:00+09:00",
+      kaisaiKai: null,
+      kaisaiNen: "2026",
+      kaisaiNichime: null,
+      kaisaiTsukihi: "0512",
+      keibajoCode: "55",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "01",
+      raceKey: "nar:2026:0512:55:01",
+      raceName: "Recovery",
+      raceStartAtJst: "2026-05-12T10:00:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "nar",
+      updatedAt: "2026-05-12T00:00:00+09:00",
+    },
+  ] as never);
+  // Now = 12:00 JST (= 03:00 UTC) so the JST minute is 00 and the recovery
+  // discovery side-effect path fires this tick.
+  const send = vi.fn(async () => {});
+  const env = buildEnv({
+    REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
+    REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z",
+  } as never);
+  const count = await planResultFetchesOnly(env, "20260512");
+  expect(count).toBe(1);
+});
+
+// Covers planResultFetchesOnly NOT running discovery recovery when the JST
+// minute is past the hourly window (= second branch of the
+// shouldRunHourlyDiscoveryRecovery guard).
+it("planResultFetchesOnly skips discovery recovery outside the first minute of the hour", async () => {
+  const { planResultFetchesOnly } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([]);
+  // Now = 12:04 JST (= 03:04 UTC) — minute 04 is past the threshold.
+  const send = vi.fn(async () => {});
+  const env = buildEnv({
+    REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
+    REALTIME_TEST_NOW: "2026-05-12T03:04:00.000Z",
+  } as never);
+  const count = await planResultFetchesOnly(env, "20260512");
+  expect(count).toBe(0);
+});
+
 // Covers planRealtimeFetches markPremiumPaddockQueued + markPremiumRaceDataQueued flatMap
 // arms by ensuring fetch-premium-paddock + fetch-premium-race-data jobs exist in the array
 // (so both the `[raceKey]` and `[]` arms of the ternaries hit).
@@ -1321,10 +1447,10 @@ it("planResultFetchesOnly skips race when lastResultFetchAt is within RESULT_FET
       keibajoCode: "55",
       lastOddsFetchAt: null,
       lastOddsQueuedAt: null,
-      // Now = 02:00 UTC = 11:00 JST. lastResultFetchAt = 10:58 JST is only 2
-      // minutes ago, which is less than RESULT_FETCH_INTERVAL_MINUTES (3) so
+      // Now = 02:00 UTC = 11:00 JST. lastResultFetchAt = 10:59 JST is only 1
+      // minute ago, which is less than RESULT_FETCH_INTERVAL_MINUTES (2) so
       // the race must be skipped this tick.
-      lastResultFetchAt: "2026-05-12T10:58:00+09:00",
+      lastResultFetchAt: "2026-05-12T10:59:00+09:00",
       lastResultQueuedAt: null,
       lastWeightFetchAt: null,
       oddsFetchLockUntil: null,

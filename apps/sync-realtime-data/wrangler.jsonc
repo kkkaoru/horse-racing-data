@@ -37,7 +37,12 @@
       "30 12 * * *",
       "30 18 * * *",
       "0 0-13 * * *",
-      "*/5 0-13 * * *",
+      // 2026-05-31: shortened from "*/5" to "*/2" so freshly-confirmed JRA
+      // and NAR race results land in D1 (and bust the merged race-trend
+      // cache) within one or two cron ticks instead of up to five minutes.
+      // Paired with RESULT_FETCH_INTERVAL_MINUTES = 2 in worker.ts so the
+      // tighter cron is not nullified by the isDue throttle.
+      "*/2 0-13 * * *",
       "10 0 * * *",
       "5 11 * * *",
       "*/10 * * * *",
