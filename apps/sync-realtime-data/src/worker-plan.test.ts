@@ -500,6 +500,540 @@ it("planPremiumPaddockFetchesForDate skips when recent lastQueuedAt exists", asy
   expect(result).toStrictEqual([]);
 });
 
+it("weightFetchPriorityTier returns 0 for Tokyo 5R", async () => {
+  const { weightFetchPriorityTier } = await import("./worker");
+  expect(weightFetchPriorityTier({ source: "jra", keibajoCode: "05", raceBango: "05" })).toBe(0);
+});
+
+it("weightFetchPriorityTier returns 0 for Kyoto 5R", async () => {
+  const { weightFetchPriorityTier } = await import("./worker");
+  expect(weightFetchPriorityTier({ source: "jra", keibajoCode: "08", raceBango: "05" })).toBe(0);
+});
+
+it("weightFetchPriorityTier returns 1 for Nakayama 5R (other-venue 5R is Mid)", async () => {
+  const { weightFetchPriorityTier } = await import("./worker");
+  expect(weightFetchPriorityTier({ source: "jra", keibajoCode: "06", raceBango: "05" })).toBe(1);
+});
+
+it("weightFetchPriorityTier returns 1 for Tokyo 6R", async () => {
+  const { weightFetchPriorityTier } = await import("./worker");
+  expect(weightFetchPriorityTier({ source: "jra", keibajoCode: "05", raceBango: "06" })).toBe(1);
+});
+
+it("weightFetchPriorityTier returns 1 for Tokyo 12R", async () => {
+  const { weightFetchPriorityTier } = await import("./worker");
+  expect(weightFetchPriorityTier({ source: "jra", keibajoCode: "05", raceBango: "12" })).toBe(1);
+});
+
+it("weightFetchPriorityTier returns 2 for Tokyo 1R", async () => {
+  const { weightFetchPriorityTier } = await import("./worker");
+  expect(weightFetchPriorityTier({ source: "jra", keibajoCode: "05", raceBango: "01" })).toBe(2);
+});
+
+it("weightFetchPriorityTier returns 2 for Tokyo 4R", async () => {
+  const { weightFetchPriorityTier } = await import("./worker");
+  expect(weightFetchPriorityTier({ source: "jra", keibajoCode: "05", raceBango: "04" })).toBe(2);
+});
+
+it("weightFetchPriorityTier returns 3 for NAR races", async () => {
+  const { weightFetchPriorityTier } = await import("./worker");
+  expect(weightFetchPriorityTier({ source: "nar", keibajoCode: "47", raceBango: "05" })).toBe(3);
+});
+
+it("compareWeightCandidates places high tier before mid tier regardless of input order", async () => {
+  const { compareWeightCandidates } = await import("./worker");
+  const tokyoFiveR = {
+    race: { source: "jra", keibajoCode: "05", raceBango: "05" },
+    minutes: 35,
+  } as never;
+  const kyotoTwelveR = {
+    race: { source: "jra", keibajoCode: "08", raceBango: "12" },
+    minutes: 10,
+  } as never;
+  const sorted = [kyotoTwelveR, tokyoFiveR].sort(compareWeightCandidates);
+  expect(sorted[0]).toBe(tokyoFiveR);
+  expect(sorted[1]).toBe(kyotoTwelveR);
+});
+
+it("compareWeightCandidates sorts same tier by minutes ascending", async () => {
+  const { compareWeightCandidates } = await import("./worker");
+  const nearer = {
+    race: { source: "jra", keibajoCode: "06", raceBango: "07" },
+    minutes: 15,
+  } as never;
+  const farther = {
+    race: { source: "jra", keibajoCode: "06", raceBango: "08" },
+    minutes: 35,
+  } as never;
+  const sorted = [farther, nearer].sort(compareWeightCandidates);
+  expect(sorted[0]).toBe(nearer);
+  expect(sorted[1]).toBe(farther);
+});
+
+it("planRealtimeFetches enqueues JRA weight jobs in tier+minutes priority order", async () => {
+  const { planRealtimeFetches } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
+    {
+      babaCode: "05",
+      debaUrl: "https://www.jra.go.jp/race/tokyo1",
+      discoveredAt: "2026-05-30T00:00:00+09:00",
+      kaisaiKai: "02",
+      kaisaiNen: "2026",
+      kaisaiNichime: "06",
+      kaisaiTsukihi: "0530",
+      keibajoCode: "05",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "01",
+      raceKey: "jra:2026:0530:05:01",
+      raceName: "Tokyo1R",
+      raceStartAtJst: "2026-05-30T12:30:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "jra",
+      updatedAt: "2026-05-30T00:00:00+09:00",
+    },
+    {
+      babaCode: "08",
+      debaUrl: "https://www.jra.go.jp/race/kyoto5",
+      discoveredAt: "2026-05-30T00:00:00+09:00",
+      kaisaiKai: "02",
+      kaisaiNen: "2026",
+      kaisaiNichime: "06",
+      kaisaiTsukihi: "0530",
+      keibajoCode: "08",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "05",
+      raceKey: "jra:2026:0530:08:05",
+      raceName: "Kyoto5R",
+      raceStartAtJst: "2026-05-30T12:35:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "jra",
+      updatedAt: "2026-05-30T00:00:00+09:00",
+    },
+    {
+      babaCode: "05",
+      debaUrl: "https://www.jra.go.jp/race/tokyo5",
+      discoveredAt: "2026-05-30T00:00:00+09:00",
+      kaisaiKai: "02",
+      kaisaiNen: "2026",
+      kaisaiNichime: "06",
+      kaisaiTsukihi: "0530",
+      keibajoCode: "05",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "05",
+      raceKey: "jra:2026:0530:05:05",
+      raceName: "Tokyo5R",
+      raceStartAtJst: "2026-05-30T12:25:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "jra",
+      updatedAt: "2026-05-30T00:00:00+09:00",
+    },
+    {
+      babaCode: "06",
+      debaUrl: "https://www.jra.go.jp/race/nakayama6",
+      discoveredAt: "2026-05-30T00:00:00+09:00",
+      kaisaiKai: "02",
+      kaisaiNen: "2026",
+      kaisaiNichime: "06",
+      kaisaiTsukihi: "0530",
+      keibajoCode: "06",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "06",
+      raceKey: "jra:2026:0530:06:06",
+      raceName: "Nakayama6R",
+      raceStartAtJst: "2026-05-30T12:38:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "jra",
+      updatedAt: "2026-05-30T00:00:00+09:00",
+    },
+    {
+      babaCode: "09",
+      debaUrl: "https://www.jra.go.jp/race/hanshin12",
+      discoveredAt: "2026-05-30T00:00:00+09:00",
+      kaisaiKai: "02",
+      kaisaiNen: "2026",
+      kaisaiNichime: "06",
+      kaisaiTsukihi: "0530",
+      keibajoCode: "09",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "12",
+      raceKey: "jra:2026:0530:09:12",
+      raceName: "Hanshin12R",
+      raceStartAtJst: "2026-05-30T12:40:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "jra",
+      updatedAt: "2026-05-30T00:00:00+09:00",
+    },
+    {
+      babaCode: "08",
+      debaUrl: "https://www.jra.go.jp/race/kyoto4",
+      discoveredAt: "2026-05-30T00:00:00+09:00",
+      kaisaiKai: "02",
+      kaisaiNen: "2026",
+      kaisaiNichime: "06",
+      kaisaiTsukihi: "0530",
+      keibajoCode: "08",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "04",
+      raceKey: "jra:2026:0530:08:04",
+      raceName: "Kyoto4R",
+      raceStartAtJst: "2026-05-30T12:28:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "jra",
+      updatedAt: "2026-05-30T00:00:00+09:00",
+    },
+  ] as never);
+  const sendBatch = vi.fn(async () => {});
+  const send = vi.fn(async () => {});
+  const env = buildEnv({
+    REALTIME_TEST_NOW: "2026-05-30T03:00:00.000Z",
+  });
+  env.REALTIME_JOBS = { send, sendBatch } as never;
+  await planRealtimeFetches(env, "20260530");
+  const batched =
+    (
+      sendBatch.mock.calls as unknown as [{ body: { raceKey: string; type: string } }[]][]
+    )[0]?.[0] ?? [];
+  const weightRaceKeys = batched
+    .filter((m) => m.body.type === "fetch-weights")
+    .map((m) => m.body.raceKey);
+  expect(weightRaceKeys).toStrictEqual([
+    "jra:2026:0530:05:05",
+    "jra:2026:0530:08:05",
+    "jra:2026:0530:06:06",
+    "jra:2026:0530:09:12",
+    "jra:2026:0530:08:04",
+    "jra:2026:0530:05:01",
+  ]);
+});
+
+it("planRealtimeFetches includes weight job at 35 minutes before post", async () => {
+  const { planRealtimeFetches } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
+    {
+      babaCode: "05",
+      debaUrl: "https://www.jra.go.jp/race/lead35",
+      discoveredAt: "2026-05-30T00:00:00+09:00",
+      kaisaiKai: "02",
+      kaisaiNen: "2026",
+      kaisaiNichime: "06",
+      kaisaiTsukihi: "0530",
+      keibajoCode: "05",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "07",
+      raceKey: "jra:2026:0530:05:07",
+      raceName: "Lead35",
+      raceStartAtJst: "2026-05-30T12:35:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "jra",
+      updatedAt: "2026-05-30T00:00:00+09:00",
+    },
+  ] as never);
+  const sendBatch = vi.fn(async () => {});
+  const send = vi.fn(async () => {});
+  const env = buildEnv({
+    REALTIME_TEST_NOW: "2026-05-30T03:00:00.000Z",
+  });
+  env.REALTIME_JOBS = { send, sendBatch } as never;
+  await planRealtimeFetches(env, "20260530");
+  const sentSingle = (send.mock.calls as unknown as [{ raceKey: string; type: string }][]).map(
+    (c) => c[0],
+  );
+  const sentBatched =
+    (
+      sendBatch.mock.calls as unknown as [{ body: { raceKey: string; type: string } }[]][]
+    )[0]?.[0] ?? [];
+  const allWeightKeys = [
+    ...sentSingle.filter((j) => j.type === "fetch-weights").map((j) => j.raceKey),
+    ...sentBatched.filter((m) => m.body.type === "fetch-weights").map((m) => m.body.raceKey),
+  ];
+  expect(allWeightKeys).toStrictEqual(["jra:2026:0530:05:07"]);
+});
+
+it("planRealtimeFetches excludes weight job when race is 50 minutes before post", async () => {
+  const { planRealtimeFetches } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
+    {
+      babaCode: "05",
+      debaUrl: "https://www.jra.go.jp/race/lead50",
+      discoveredAt: "2026-05-30T00:00:00+09:00",
+      kaisaiKai: "02",
+      kaisaiNen: "2026",
+      kaisaiNichime: "06",
+      kaisaiTsukihi: "0530",
+      keibajoCode: "05",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "07",
+      raceKey: "jra:2026:0530:05:07",
+      raceName: "Lead50",
+      raceStartAtJst: "2026-05-30T12:50:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "jra",
+      updatedAt: "2026-05-30T00:00:00+09:00",
+    },
+  ] as never);
+  const sendBatch = vi.fn(async () => {});
+  const send = vi.fn(async () => {});
+  const env = buildEnv({
+    REALTIME_TEST_NOW: "2026-05-30T03:00:00.000Z",
+  });
+  env.REALTIME_JOBS = { send, sendBatch } as never;
+  await planRealtimeFetches(env, "20260530");
+  const sentSingle = (send.mock.calls as unknown as [{ type: string }][]).map((c) => c[0]);
+  const sentBatched =
+    (sendBatch.mock.calls as unknown as [{ body: { type: string } }[]][])[0]?.[0] ?? [];
+  const weightCount =
+    sentSingle.filter((j) => j.type === "fetch-weights").length +
+    sentBatched.filter((m) => m.body.type === "fetch-weights").length;
+  expect(weightCount).toBe(0);
+});
+
+it("planRealtimeFetches excludes weight job when lastWeightFetchAt is within 24h", async () => {
+  const { planRealtimeFetches } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
+    {
+      babaCode: "05",
+      debaUrl: "https://www.jra.go.jp/race/fetched12h",
+      discoveredAt: "2026-05-30T00:00:00+09:00",
+      kaisaiKai: "02",
+      kaisaiNen: "2026",
+      kaisaiNichime: "06",
+      kaisaiTsukihi: "0530",
+      keibajoCode: "05",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: "2026-05-30T00:00:00+09:00",
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "07",
+      raceKey: "jra:2026:0530:05:07",
+      raceName: "Fetched12h",
+      raceStartAtJst: "2026-05-30T12:30:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "jra",
+      updatedAt: "2026-05-30T00:00:00+09:00",
+    },
+  ] as never);
+  const sendBatch = vi.fn(async () => {});
+  const send = vi.fn(async () => {});
+  const env = buildEnv({
+    REALTIME_TEST_NOW: "2026-05-30T03:00:00.000Z",
+  });
+  env.REALTIME_JOBS = { send, sendBatch } as never;
+  await planRealtimeFetches(env, "20260530");
+  const sentSingle = (send.mock.calls as unknown as [{ type: string }][]).map((c) => c[0]);
+  const sentBatched =
+    (sendBatch.mock.calls as unknown as [{ body: { type: string } }[]][])[0]?.[0] ?? [];
+  const weightCount =
+    sentSingle.filter((j) => j.type === "fetch-weights").length +
+    sentBatched.filter((m) => m.body.type === "fetch-weights").length;
+  expect(weightCount).toBe(0);
+});
+
+it("planRealtimeFetches places NAR weight jobs after JRA weight jobs", async () => {
+  const { planRealtimeFetches } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
+    {
+      babaCode: "22",
+      debaUrl: "https://nar.example/race",
+      discoveredAt: "2026-05-30T00:00:00+09:00",
+      kaisaiKai: null,
+      kaisaiNen: "2026",
+      kaisaiNichime: null,
+      kaisaiTsukihi: "0530",
+      keibajoCode: "55",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "05",
+      raceKey: "nar:2026:0530:55:05",
+      raceName: "NarRace",
+      raceStartAtJst: "2026-05-30T12:25:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "nar",
+      updatedAt: "2026-05-30T00:00:00+09:00",
+    },
+    {
+      babaCode: "05",
+      debaUrl: "https://www.jra.go.jp/race/tokyo5",
+      discoveredAt: "2026-05-30T00:00:00+09:00",
+      kaisaiKai: "02",
+      kaisaiNen: "2026",
+      kaisaiNichime: "06",
+      kaisaiTsukihi: "0530",
+      keibajoCode: "05",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "05",
+      raceKey: "jra:2026:0530:05:05",
+      raceName: "Tokyo5R",
+      raceStartAtJst: "2026-05-30T12:35:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "jra",
+      updatedAt: "2026-05-30T00:00:00+09:00",
+    },
+  ] as never);
+  const sendBatch = vi.fn(async () => {});
+  const send = vi.fn(async () => {});
+  const env = buildEnv({
+    REALTIME_TEST_NOW: "2026-05-30T03:00:00.000Z",
+  });
+  env.REALTIME_JOBS = { send, sendBatch } as never;
+  await planRealtimeFetches(env, "20260530");
+  const batched =
+    (
+      sendBatch.mock.calls as unknown as [{ body: { raceKey: string; type: string } }[]][]
+    )[0]?.[0] ?? [];
+  const weightRaceKeys = batched
+    .filter((m) => m.body.type === "fetch-weights")
+    .map((m) => m.body.raceKey);
+  expect(weightRaceKeys).toStrictEqual(["jra:2026:0530:05:05", "nar:2026:0530:55:05"]);
+});
+
+it("planRealtimeFetches emits zero weight jobs when minute is not a three-minute tick", async () => {
+  const { planRealtimeFetches } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
+    {
+      babaCode: "05",
+      debaUrl: "https://www.jra.go.jp/race/notick",
+      discoveredAt: "2026-05-30T00:00:00+09:00",
+      kaisaiKai: "02",
+      kaisaiNen: "2026",
+      kaisaiNichime: "06",
+      kaisaiTsukihi: "0530",
+      keibajoCode: "05",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "05",
+      raceKey: "jra:2026:0530:05:05",
+      raceName: "Tokyo5R",
+      raceStartAtJst: "2026-05-30T12:25:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "jra",
+      updatedAt: "2026-05-30T00:00:00+09:00",
+    },
+  ] as never);
+  const sendBatch = vi.fn(async () => {});
+  const send = vi.fn(async () => {});
+  const env = buildEnv({
+    REALTIME_TEST_NOW: "2026-05-30T03:01:00.000Z",
+  });
+  env.REALTIME_JOBS = { send, sendBatch } as never;
+  await planRealtimeFetches(env, "20260530");
+  const sentSingle = (send.mock.calls as unknown as [{ type: string }][]).map((c) => c[0]);
+  const sentBatched =
+    (sendBatch.mock.calls as unknown as [{ body: { type: string } }[]][])[0]?.[0] ?? [];
+  const weightCount =
+    sentSingle.filter((j) => j.type === "fetch-weights").length +
+    sentBatched.filter((m) => m.body.type === "fetch-weights").length;
+  expect(weightCount).toBe(0);
+});
+
 it("planRealtimeFetches enqueues fetch-weights and fetch-results for races near start time", async () => {
   const { planRealtimeFetches } = await import("./worker");
   const { listSchedulableRaceSourcesByDate } = await import("./storage");
