@@ -83,6 +83,22 @@ const RACE_TREND_RETRY_OPTIONS = {
 
 const RACE_TREND_AUTO_REFRESH_INTERVAL_MS = 60_000;
 
+// Empty-state copy (restored from X4 commit `bcb4c5f`). The "preparing" label
+// is used when the panel renders 0 rows but the trends API succeeded — this is
+// the "data fetched but no sibling races yet (e.g. 1R before start, or later
+// race whose siblings haven't been resulted yet)" branch. Showing a
+// manual-retry affordance keeps the UI alive even when the route segment +
+// edge cache + DO would otherwise return zero rows: the user can force a
+// `__trendCacheRefresh` fetch that skips the upstream Cache API and reads the
+// latest DO + legacy data.
+const RACE_TREND_EMPTY_LABEL = "成績データが揃うのを待っています";
+const RACE_TREND_EMPTY_DETAIL =
+  "確定後のレースから順に表示します。 数十秒で自動更新しますが、手動で再取得することもできます。";
+const RACE_TREND_RETRY_LABEL = "再取得";
+const RACE_TREND_ERROR_LABEL = "レース傾向を取得できませんでした。";
+const RACE_TREND_ERROR_DETAIL = "通信エラーで再取得します。 手動で再試行することもできます。";
+const RACE_TREND_STALE_LABEL = "最新化に失敗したため、 直近のデータを表示しています。";
+
 interface RaceTrendSectionProps {
   day: string;
   defaultEndDate: string;
@@ -615,6 +631,7 @@ interface RaceTrendTableProps {
   currentRunningStyleMap: Map<string, RaceTrendRunningStyle>;
   isLoading: boolean;
   linkScoreToWinRate: boolean;
+  onManualRefresh: () => void;
   raceCount: number;
   rows: RaceTrendRunningStyleRow[];
   runnerByHorseNumber: Map<string, RaceTrendRunnerSummary>;
@@ -628,6 +645,7 @@ function RaceTrendTable({
   currentRunningStyleMap,
   isLoading,
   linkScoreToWinRate,
+  onManualRefresh,
   raceCount,
   rows,
   runnerByHorseNumber,
@@ -854,7 +872,17 @@ function RaceTrendTable({
             ) : (
               <tr>
                 <td className="race-trend-empty-cell" colSpan={colSpan}>
-                  該当する集計成績はありません
+                  <div className="race-trend-empty-state">
+                    <p className="race-trend-empty-label">{RACE_TREND_EMPTY_LABEL}</p>
+                    <p className="race-trend-empty-detail">{RACE_TREND_EMPTY_DETAIL}</p>
+                    <button
+                      className="race-trend-retry-button"
+                      onClick={onManualRefresh}
+                      type="button"
+                    >
+                      {RACE_TREND_RETRY_LABEL}
+                    </button>
+                  </div>
                 </td>
               </tr>
             )}
@@ -1106,6 +1134,11 @@ export function RaceTrendSection({
   const [rawPayload, setRawPayload] = useState<RaceTrendRawPayload | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
   const [isRefreshing, setIsRefreshing] = useState(false);
+  // Tracks whether the most-recent background refresh failed while the panel
+  // still holds the previously-fetched payload. When true, we keep showing the
+  // last-known rows but surface a non-blocking "再取得" banner so the user
+  // knows the auto-refresh / WebSocket-driven update silently failed and can
+  // manually retry without losing context.
   const [hasStaleRefresh, setHasStaleRefresh] = useState(false);
   const rawPayloadRef = useRef<RaceTrendRawPayload | null>(null);
   const trendTargetsRef = useRef(initialTrendTargets);
@@ -1420,10 +1453,11 @@ export function RaceTrendSection({
           rawPayloadRef.current = null;
           setRawPayload(null);
           setStatus("error");
+          setHasStaleRefresh(false);
           return;
         }
-        // BUG-3 guard: only surface the "showing cached data" banner when we
-        // actually have a previously-fetched payload to fall back to.
+        // F2 BUG-3 guard: only surface the stale-data banner when we actually
+        // have a previously-fetched payload to fall back to.
         if (rawPayloadRef.current !== null) {
           setHasStaleRefresh(true);
         }
@@ -1519,7 +1553,7 @@ export function RaceTrendSection({
         showLoading: false,
       });
     };
-    // BUG-1 fix: exponential-backoff reconnect. Pseudocode:
+    // F2 BUG-1 fix: exponential-backoff reconnect. Pseudocode:
     //   connect()
     //   onClose / onError -> attempt++; setTimeout(connect, backoff(attempt))
     //   onOpen -> attempt = 0
@@ -1739,10 +1773,26 @@ export function RaceTrendSection({
           </div>
         </details>
 
+        {hasStaleRefresh && rawPayload !== null && status !== "error" ? (
+          <div className="race-trend-stale-banner" role="status">
+            <span>{RACE_TREND_STALE_LABEL}</span>
+            <button
+              aria-busy={isRefreshing}
+              className="race-trend-retry-button"
+              disabled={isRefreshing}
+              onClick={requestManualRefresh}
+              type="button"
+            >
+              {RACE_TREND_RETRY_LABEL}
+            </button>
+          </div>
+        ) : null}
+
         <RaceTrendTable
           currentRunningStyleMap={scoreSourceMaps.currentRunningStyleMap}
           isLoading={status === "loading"}
           linkScoreToWinRate={linkScoreToWinRate}
+          onManualRefresh={requestManualRefresh}
           raceCount={raceCount}
           rows={sortedRows}
           runnerByHorseNumber={runnerByHorseNumber}
@@ -1755,7 +1805,8 @@ export function RaceTrendSection({
 
       {status === "error" ? (
         <div className="race-trend-error" role="alert">
-          <p>レース傾向を取得できませんでした。</p>
+          <p className="race-trend-error-label">{RACE_TREND_ERROR_LABEL}</p>
+          <p className="race-trend-error-detail">{RACE_TREND_ERROR_DETAIL}</p>
           <button
             aria-busy={isRefreshing}
             className="race-trend-retry-button"
@@ -1763,15 +1814,9 @@ export function RaceTrendSection({
             onClick={requestManualRefresh}
             type="button"
           >
-            再試行
+            {RACE_TREND_RETRY_LABEL}
           </button>
         </div>
-      ) : null}
-
-      {hasStaleRefresh && rawPayload !== null ? (
-        <p className="race-trend-stale-banner" role="status">
-          直近のデータを表示中
-        </p>
       ) : null}
     </section>
   );
