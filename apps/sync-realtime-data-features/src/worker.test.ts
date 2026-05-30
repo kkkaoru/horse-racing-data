@@ -1,6 +1,13 @@
 // Run with: bun run --filter sync-realtime-data-features test
 import { beforeEach, expect, it, vi } from "vitest";
 
+vi.mock("./admin-predict-for-day", () => ({
+  runPredictionsForDay: vi.fn(async () => ({
+    enqueuedFinishPosition: [],
+    enqueuedRunningStyle: [],
+    skippedReasons: [],
+  })),
+}));
 vi.mock("./features/build", () => ({
   buildRaceFeatures: vi.fn(async () => []),
   fetchAllRaceFeatures: vi.fn(async () => []),
@@ -32,10 +39,13 @@ vi.mock("./gates/adaptive-batch-kv", () => ({
   recordRecomputeOutcome: vi.fn(async () => {}),
 }));
 
+import { runPredictionsForDay } from "./admin-predict-for-day";
 import { buildRaceFeatures } from "./features/build";
 import { encodeRaceFeaturesParquet } from "./features/parquet";
 import { handleRaceTrend } from "./features/race-trend";
+import { handleFinishPositionPredictionJob } from "./finish-position/inference";
 import { readNextBatchSize, recordRecomputeOutcome } from "./gates/adaptive-batch-kv";
+import { handleRunningStylePredictionJob } from "./running-style/inference";
 import {
   listTodayRaceKeysFromHyperdrive,
   listTomorrowRaceKeysFromHyperdrive,
@@ -47,6 +57,9 @@ import {
   handleGetRunningStyles,
   handleMigrationStateGet,
   handleMigrationStatePost,
+  handlePredictFinishPositionRequest,
+  handlePredictForDayRequest,
+  handlePredictRunningStyleRequest,
   handleQueue,
   handleRecomputeRequest,
   handleRoot,
@@ -103,6 +116,19 @@ beforeEach(() => {
   vi.mocked(recordRecomputeOutcome).mockResolvedValue();
   vi.mocked(handleRaceTrend).mockReset();
   vi.mocked(handleRaceTrend).mockResolvedValue(new Response('{"ok":true}', { status: 200 }));
+  vi.mocked(handleRunningStylePredictionJob).mockReset();
+  vi.mocked(handleRunningStylePredictionJob).mockResolvedValue({ raceKey: "r", writtenCount: 0 });
+  vi.mocked(handleFinishPositionPredictionJob).mockReset();
+  vi.mocked(handleFinishPositionPredictionJob).mockResolvedValue({
+    predictionsCount: 0,
+    raceKey: "r",
+  });
+  vi.mocked(runPredictionsForDay).mockReset();
+  vi.mocked(runPredictionsForDay).mockResolvedValue({
+    enqueuedFinishPosition: [],
+    enqueuedRunningStyle: [],
+    skippedReasons: [],
+  });
 });
 
 it("handleRoot returns ok payload", async () => {
@@ -417,6 +443,382 @@ it("rejects recompute request with malformed raceKey-only body", async () => {
     }),
   );
   expect(response.status).toBe(400);
+});
+
+it("predict-running-style returns 401 without token", async () => {
+  const env = buildEnv({ PC_KEIBA_VIEWER_INTERNAL_TOKEN: undefined });
+  const response = await handlePredictRunningStyleRequest(
+    env,
+    new Request("https://x/api/internal/predict-running-style", { method: "POST" }),
+  );
+  expect(response.status).toBe(401);
+});
+
+it("predict-running-style returns 400 for invalid body", async () => {
+  const env = buildEnv();
+  const response = await handlePredictRunningStyleRequest(
+    env,
+    new Request("https://x/api/internal/predict-running-style", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ raceKey: "garbage" }),
+    }),
+  );
+  expect(response.status).toBe(400);
+});
+
+it("predict-running-style invokes handler and returns 200 with writtenCount", async () => {
+  const env = buildEnv();
+  vi.mocked(handleRunningStylePredictionJob).mockResolvedValueOnce({
+    raceKey: "nar:2026:0529:30:08",
+    writtenCount: 12,
+  });
+  const response = await handlePredictRunningStyleRequest(
+    env,
+    new Request("https://x/api/internal/predict-running-style", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ raceKey: "nar:2026:0529:30:08" }),
+    }),
+  );
+  expect(response.status).toBe(200);
+  await expect(response.json()).resolves.toStrictEqual({
+    raceKey: "nar:2026:0529:30:08",
+    writtenCount: 12,
+  });
+  expect(handleRunningStylePredictionJob).toHaveBeenCalledTimes(1);
+});
+
+it("predict-running-style returns 500 when handler throws", async () => {
+  const env = buildEnv();
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.mocked(handleRunningStylePredictionJob).mockRejectedValueOnce(new Error("r2 fetch failed"));
+  const response = await handlePredictRunningStyleRequest(
+    env,
+    new Request("https://x/api/internal/predict-running-style", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ raceKey: "nar:2026:0529:30:08" }),
+    }),
+  );
+  expect(response.status).toBe(500);
+  await expect(response.json()).resolves.toStrictEqual({
+    error: "r2 fetch failed",
+    raceKey: "nar:2026:0529:30:08",
+  });
+});
+
+it("predict-running-style returns 500 stringifying non-Error throwables", async () => {
+  const env = buildEnv();
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.mocked(handleRunningStylePredictionJob).mockRejectedValueOnce("plain fail");
+  const response = await handlePredictRunningStyleRequest(
+    env,
+    new Request("https://x/api/internal/predict-running-style", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ raceKey: "nar:2026:0529:30:08" }),
+    }),
+  );
+  expect(response.status).toBe(500);
+  await expect(response.json()).resolves.toStrictEqual({
+    error: "plain fail",
+    raceKey: "nar:2026:0529:30:08",
+  });
+});
+
+it("predict-finish-position returns 401 without token", async () => {
+  const env = buildEnv({ PC_KEIBA_VIEWER_INTERNAL_TOKEN: undefined });
+  const response = await handlePredictFinishPositionRequest(
+    env,
+    new Request("https://x/api/internal/predict-finish-position", { method: "POST" }),
+  );
+  expect(response.status).toBe(401);
+});
+
+it("predict-finish-position returns 400 for invalid body", async () => {
+  const env = buildEnv();
+  const response = await handlePredictFinishPositionRequest(
+    env,
+    new Request("https://x/api/internal/predict-finish-position", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ raceKey: "garbage" }),
+    }),
+  );
+  expect(response.status).toBe(400);
+});
+
+it("predict-finish-position invokes handler and returns 200 with predictionsCount", async () => {
+  const env = buildEnv();
+  vi.mocked(handleFinishPositionPredictionJob).mockResolvedValueOnce({
+    predictionsCount: 14,
+    raceKey: "nar:2026:0529:30:08",
+  });
+  const response = await handlePredictFinishPositionRequest(
+    env,
+    new Request("https://x/api/internal/predict-finish-position", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ raceKey: "nar:2026:0529:30:08" }),
+    }),
+  );
+  expect(response.status).toBe(200);
+  await expect(response.json()).resolves.toStrictEqual({
+    predictionsCount: 14,
+    raceKey: "nar:2026:0529:30:08",
+  });
+  expect(handleFinishPositionPredictionJob).toHaveBeenCalledTimes(1);
+});
+
+it("predict-finish-position returns 500 when handler throws", async () => {
+  const env = buildEnv();
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.mocked(handleFinishPositionPredictionJob).mockRejectedValueOnce(new Error("d1 down"));
+  const response = await handlePredictFinishPositionRequest(
+    env,
+    new Request("https://x/api/internal/predict-finish-position", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ raceKey: "nar:2026:0529:30:08" }),
+    }),
+  );
+  expect(response.status).toBe(500);
+  await expect(response.json()).resolves.toStrictEqual({
+    error: "d1 down",
+    raceKey: "nar:2026:0529:30:08",
+  });
+});
+
+it("predict-finish-position returns 500 stringifying non-Error throwables", async () => {
+  const env = buildEnv();
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.mocked(handleFinishPositionPredictionJob).mockRejectedValueOnce("plain fail");
+  const response = await handlePredictFinishPositionRequest(
+    env,
+    new Request("https://x/api/internal/predict-finish-position", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ raceKey: "nar:2026:0529:30:08" }),
+    }),
+  );
+  expect(response.status).toBe(500);
+  await expect(response.json()).resolves.toStrictEqual({
+    error: "plain fail",
+    raceKey: "nar:2026:0529:30:08",
+  });
+});
+
+it("predict-for-day returns 401 without token", async () => {
+  const env = buildEnv({ PC_KEIBA_VIEWER_INTERNAL_TOKEN: undefined });
+  const response = await handlePredictForDayRequest(
+    env,
+    new Request("https://x/api/internal/predict-for-day", { method: "POST" }),
+  );
+  expect(response.status).toBe(401);
+});
+
+it("predict-for-day returns 401 when token does not match", async () => {
+  const env = buildEnv();
+  const response = await handlePredictForDayRequest(
+    env,
+    new Request("https://x/api/internal/predict-for-day", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "wrong" },
+      body: JSON.stringify({ source: "all", targetYmd: "20260531" }),
+    }),
+  );
+  expect(response.status).toBe(401);
+});
+
+it("predict-for-day returns 400 when source is missing", async () => {
+  const env = buildEnv();
+  const response = await handlePredictForDayRequest(
+    env,
+    new Request("https://x/api/internal/predict-for-day", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ targetYmd: "20260531" }),
+    }),
+  );
+  expect(response.status).toBe(400);
+});
+
+it("predict-for-day returns 400 when source is not in the enum", async () => {
+  const env = buildEnv();
+  const response = await handlePredictForDayRequest(
+    env,
+    new Request("https://x/api/internal/predict-for-day", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ source: "banei", targetYmd: "20260531" }),
+    }),
+  );
+  expect(response.status).toBe(400);
+});
+
+it("predict-for-day returns 400 when targetYmd is not 8 digits", async () => {
+  const env = buildEnv();
+  const response = await handlePredictForDayRequest(
+    env,
+    new Request("https://x/api/internal/predict-for-day", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ source: "all", targetYmd: "2026-05-31" }),
+    }),
+  );
+  expect(response.status).toBe(400);
+});
+
+it("predict-for-day returns 400 when body is not an object", async () => {
+  const env = buildEnv();
+  const response = await handlePredictForDayRequest(
+    env,
+    new Request("https://x/api/internal/predict-for-day", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify("garbage"),
+    }),
+  );
+  expect(response.status).toBe(400);
+});
+
+it("predict-for-day source=jra returns 200 with helper result", async () => {
+  const env = buildEnv();
+  vi.mocked(runPredictionsForDay).mockResolvedValueOnce({
+    enqueuedFinishPosition: ["jra:2026:0531:05:01"],
+    enqueuedRunningStyle: ["jra:2026:0531:05:01"],
+    skippedReasons: [],
+  });
+  const response = await handlePredictForDayRequest(
+    env,
+    new Request("https://x/api/internal/predict-for-day", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ source: "jra", targetYmd: "20260531" }),
+    }),
+  );
+  expect(response.status).toBe(200);
+  await expect(response.json()).resolves.toStrictEqual({
+    enqueuedFinishPosition: ["jra:2026:0531:05:01"],
+    enqueuedRunningStyle: ["jra:2026:0531:05:01"],
+    skippedReasons: [],
+  });
+  expect(runPredictionsForDay).toHaveBeenCalledWith(env, {
+    source: "jra",
+    targetYmd: "20260531",
+  });
+});
+
+it("predict-for-day source=nar normalises and forwards to helper", async () => {
+  const env = buildEnv();
+  const response = await handlePredictForDayRequest(
+    env,
+    new Request("https://x/api/internal/predict-for-day", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ source: "nar", targetYmd: "20260601" }),
+    }),
+  );
+  expect(response.status).toBe(200);
+  expect(runPredictionsForDay).toHaveBeenCalledWith(env, {
+    source: "nar",
+    targetYmd: "20260601",
+  });
+});
+
+it("predict-for-day source=all normalises and forwards to helper", async () => {
+  const env = buildEnv();
+  const response = await handlePredictForDayRequest(
+    env,
+    new Request("https://x/api/internal/predict-for-day", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ source: "all", targetYmd: "20260531" }),
+    }),
+  );
+  expect(response.status).toBe(200);
+  expect(runPredictionsForDay).toHaveBeenCalledWith(env, {
+    source: "all",
+    targetYmd: "20260531",
+  });
+});
+
+it("predict-for-day returns 500 when runPredictionsForDay throws", async () => {
+  const env = buildEnv();
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.mocked(runPredictionsForDay).mockRejectedValueOnce(new Error("hyperdrive dead"));
+  const response = await handlePredictForDayRequest(
+    env,
+    new Request("https://x/api/internal/predict-for-day", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ source: "all", targetYmd: "20260531" }),
+    }),
+  );
+  expect(response.status).toBe(500);
+  await expect(response.json()).resolves.toStrictEqual({
+    error: "hyperdrive dead",
+    targetYmd: "20260531",
+  });
+});
+
+it("predict-for-day returns 500 stringifying non-Error throwables", async () => {
+  const env = buildEnv();
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.mocked(runPredictionsForDay).mockRejectedValueOnce("plain fail");
+  const response = await handlePredictForDayRequest(
+    env,
+    new Request("https://x/api/internal/predict-for-day", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ source: "all", targetYmd: "20260531" }),
+    }),
+  );
+  expect(response.status).toBe(500);
+  await expect(response.json()).resolves.toStrictEqual({
+    error: "plain fail",
+    targetYmd: "20260531",
+  });
+});
+
+it("routes POST /api/internal/predict-for-day", async () => {
+  const env = buildEnv();
+  const response = await handleFetchRequest(
+    env,
+    new Request("https://x/api/internal/predict-for-day", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ source: "all", targetYmd: "20260531" }),
+    }),
+  );
+  expect(response.status).toBe(200);
+});
+
+it("routes POST /api/internal/predict-running-style", async () => {
+  const env = buildEnv();
+  const response = await handleFetchRequest(
+    env,
+    new Request("https://x/api/internal/predict-running-style", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ raceKey: "nar:2026:0529:30:08" }),
+    }),
+  );
+  expect(response.status).toBe(200);
+});
+
+it("routes POST /api/internal/predict-finish-position", async () => {
+  const env = buildEnv();
+  const response = await handleFetchRequest(
+    env,
+    new Request("https://x/api/internal/predict-finish-position", {
+      method: "POST",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      body: JSON.stringify({ raceKey: "nar:2026:0529:30:08" }),
+    }),
+  );
+  expect(response.status).toBe(200);
 });
 
 it("buildAndPersistRaceFeatures writes build-state KV and latest features KV", async () => {
@@ -978,6 +1380,65 @@ it("handleScheduled dispatches scheduled tick", async () => {
   await expect(
     handleScheduled({ scheduledTime: Date.parse("2026-05-29T20:00:00Z") } as ScheduledEvent, env),
   ).resolves.toBeUndefined();
+});
+
+it("handleScheduled dispatches to runPredictionsForDay when event.cron matches PREDICT_FOR_DAY_CRON", async () => {
+  const env = buildEnv();
+  await handleScheduled(
+    {
+      cron: "5 2,6,10,14 * * *",
+      scheduledTime: Date.parse("2026-05-31T02:05:00Z"),
+    } as ScheduledEvent,
+    env,
+  );
+  expect(runPredictionsForDay).toHaveBeenCalledTimes(1);
+});
+
+it("handleScheduled calls runPredictionsForDay with source=all and skipCompleted=true", async () => {
+  const env = buildEnv();
+  await handleScheduled(
+    {
+      cron: "5 2,6,10,14 * * *",
+      scheduledTime: Date.parse("2026-05-31T02:05:00Z"),
+    } as ScheduledEvent,
+    env,
+  );
+  expect(runPredictionsForDay).toHaveBeenCalledWith(env, {
+    skipCompleted: true,
+    source: "all",
+    targetYmd: "20260531",
+  });
+});
+
+it("handleScheduled passes today YMD in JST when scheduledTime is in UTC", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-05-30T17:05:00Z"));
+  const env = buildEnv();
+  await handleScheduled(
+    {
+      cron: "5 2,6,10,14 * * *",
+      scheduledTime: Date.parse("2026-05-30T17:05:00Z"),
+    } as ScheduledEvent,
+    env,
+  );
+  expect(runPredictionsForDay).toHaveBeenCalledWith(env, {
+    skipCompleted: true,
+    source: "all",
+    targetYmd: "20260531",
+  });
+  vi.useRealTimers();
+});
+
+it("handleScheduled dispatches to runScheduledFeaturesPlan for unrecognized cron", async () => {
+  const env = buildEnv();
+  await handleScheduled(
+    {
+      cron: "*/10 * * * *",
+      scheduledTime: Date.parse("2026-05-29T20:00:00Z"),
+    } as ScheduledEvent,
+    env,
+  );
+  expect(runPredictionsForDay).not.toHaveBeenCalled();
 });
 
 const buildMessage = (job: Job) => ({

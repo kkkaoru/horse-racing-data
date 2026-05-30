@@ -28,7 +28,14 @@
   // and build-state KV freshness suppresses recently built races. Outside JST
   // polling window (06-21) the tick is a no-op.
   "triggers": {
-    "crons": ["*/10 * * * *"],
+    "crons": [
+      "*/10 * * * *",
+      // 4x daily skip-aware predict-for-day sweep — JST 11:05/15:05/19:05/23:05.
+      // Calls runPredictionsForDay with skipCompleted:true to backfill any races
+      // whose features parquet finally appeared after the */10 cron's initial
+      // attempt. Idempotent: completed races are filtered out by inference_state.
+      "5 2,6,10,14 * * *",
+    ],
   },
   "queues": {
     "producers": [
