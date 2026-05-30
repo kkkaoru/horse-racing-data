@@ -65,6 +65,7 @@ const SAMPLE_RAW_ROW = {
   hassoJikoku: "2026-05-28T16:30:00+09:00",
   wakuban: "3",
   umaban: "05",
+  horseCount: 12,
   bamei: "TestHorse",
   jockeyName: "TestJockey",
   tanshoOddsTenth: 123,
@@ -74,6 +75,26 @@ const SAMPLE_RAW_ROW = {
   bataijuInt: 480,
   zogenFugo: "+",
   zogenSaInt: 2,
+};
+
+const SAMPLE_JRA_RAW_ROW = {
+  source: "jra",
+  raceKey: "jra:20260528:06:11",
+  kaisaiNen: "2026",
+  kaisaiTsukihi: "0528",
+  keibajoCode: "06",
+  raceBango: "11",
+  raceName: "Test JRA Race",
+  hassoJikoku: "2026-05-28T15:25:00+09:00",
+  umaban: "05",
+  horseCount: 16,
+  bamei: "JraHorse",
+  jockeyName: "JraJockey",
+  finishPosition: 2,
+  sohaTime: "950",
+  bataijuInt: 466,
+  zogenFugo: "-",
+  zogenSaInt: 4,
 };
 
 const buildPreparedStub = (rows: unknown[]): PreparedStub => {
@@ -1142,4 +1163,67 @@ it("getRaceTrendRunningStylesFromD1 swallows KV put errors and still returns D1 
   ]);
   expect(consoleSpy).toHaveBeenCalledWith("KV put for running-styles failed", expect.any(Error));
   consoleSpy.mockRestore();
+});
+
+it("getRaceTrendTodayStarterRows derives wakuban for a jra row with umaban=5 in a 16-horse field", async () => {
+  const { db } = buildD1Stub([SAMPLE_JRA_RAW_ROW]);
+  installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
+  const rows = await getRaceTrendTodayStarterRows({ source: "jra", targetYmd: "20260528" });
+  expect(rows[0]?.wakuban).toBe("3");
+});
+
+it("getRaceTrendTodayStarterRows derives wakuban=8 for a jra row with umaban=18 in an 18-horse field", async () => {
+  const jraRow = { ...SAMPLE_JRA_RAW_ROW, umaban: "18", horseCount: 18 };
+  const { db } = buildD1Stub([jraRow]);
+  installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
+  const rows = await getRaceTrendTodayStarterRows({ source: "jra", targetYmd: "20260528" });
+  expect(rows[0]?.wakuban).toBe("8");
+});
+
+it("getRaceTrendTodayStarterRows leaves wakuban null for a nar row even with horseCount populated", async () => {
+  const { db } = buildD1Stub([SAMPLE_RAW_ROW]);
+  installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
+  const rows = await getRaceTrendTodayStarterRows({ source: "nar", targetYmd: "20260528" });
+  expect(rows[0]?.wakuban).toBe(null);
+});
+
+it("getRaceTrendTodayStarterRows leaves wakuban null when jra umaban is null", async () => {
+  const jraRow = { ...SAMPLE_JRA_RAW_ROW, umaban: null };
+  const { db } = buildD1Stub([jraRow]);
+  installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
+  const rows = await getRaceTrendTodayStarterRows({ source: "jra", targetYmd: "20260528" });
+  expect(rows[0]?.wakuban).toBe(null);
+});
+
+it("getRaceTrendTodayStarterRows leaves wakuban null when jra umaban is not a number", async () => {
+  const jraRow = { ...SAMPLE_JRA_RAW_ROW, umaban: "abc" };
+  const { db } = buildD1Stub([jraRow]);
+  installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
+  const rows = await getRaceTrendTodayStarterRows({ source: "jra", targetYmd: "20260528" });
+  expect(rows[0]?.wakuban).toBe(null);
+});
+
+it("getRaceTrendTodayStarterRows leaves wakuban null when horseCount is 0", async () => {
+  const jraRow = { ...SAMPLE_JRA_RAW_ROW, horseCount: 0 };
+  const { db } = buildD1Stub([jraRow]);
+  installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
+  const rows = await getRaceTrendTodayStarterRows({ source: "jra", targetYmd: "20260528" });
+  expect(rows[0]?.wakuban).toBe(null);
+});
+
+it("getRaceTrendTodayStarterRows filters out rows missing horseCount", async () => {
+  const noHorseCount = {
+    source: "jra",
+    raceKey: "jra:20260528:06:11",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0528",
+    keibajoCode: "06",
+    raceBango: "11",
+    umaban: "05",
+    finishPosition: 2,
+  };
+  const { db } = buildD1Stub([noHorseCount]);
+  installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
+  const rows = await getRaceTrendTodayStarterRows({ source: "jra", targetYmd: "20260528" });
+  expect(rows).toStrictEqual([]);
 });
