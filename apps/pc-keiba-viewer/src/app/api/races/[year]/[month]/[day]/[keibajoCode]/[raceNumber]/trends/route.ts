@@ -189,6 +189,12 @@ const buildRaceTrendRawPayload = async (
   // D1-backed today-cache entirely. The legacy helper stays around as a
   // fallback for DO miss / error so a single missing DO entry can't
   // black out the trend section.
+  //
+  // We await DO before deciding whether to fire the legacy fetch: hitting
+  // both in parallel wasted a D1 round-trip every time DO won (= the hot
+  // path now that the DO is populated by the 5 min poller). On DO miss /
+  // error we still fall back to legacy, paying one extra D1 read of
+  // sequential latency only in that minority case.
   const env = await safeGetCloudflareEnv();
   const doResultPromise = safeDoResultPromise(
     fetchRaceTrendDailyTrack(env, {
@@ -198,18 +204,18 @@ const buildRaceTrendRawPayload = async (
       targetYmd,
     }),
   );
-  const legacyTodayPromise = safeLegacyTodayPromise(
-    getRaceTrendTodayStarterRows({
-      keibajoCode: race.keibajoCode,
-      source: options.source,
-      targetYmd,
-    }),
-  );
-  const [past14Rows, doResult, legacyTodayRows] = await Promise.all([
-    past14Promise,
-    doResultPromise,
-    legacyTodayPromise,
-  ]);
+  const doResult = await doResultPromise;
+  const legacyTodayRows =
+    doResult.status === "hit"
+      ? []
+      : await safeLegacyTodayPromise(
+          getRaceTrendTodayStarterRows({
+            keibajoCode: race.keibajoCode,
+            source: options.source,
+            targetYmd,
+          }),
+        );
+  const past14Rows = await past14Promise;
   const legacyTodaySiblingRows = filterTodaySiblingRows(legacyTodayRows, {
     keibajoCode: race.keibajoCode,
     raceBango: race.raceBango,

@@ -815,3 +815,47 @@ it("GET surfaces source query param unchanged when valid", async () => {
   expect(response.status).toBe(200);
   expect(getRaceSourceByRouteMock).not.toHaveBeenCalled();
 });
+
+it("GET skips getRaceTrendTodayStarterRows when DO result status is hit", async () => {
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  const doRow = buildStarterRow({ raceBango: "03", umaban: "07" });
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({
+    rows: [buildDailyTrackRow("03", [doRow])],
+    status: "hit",
+  });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.status).toBe(200);
+  expect(getRaceTrendTodayStarterRowsMock).not.toHaveBeenCalled();
+});
+
+it("GET calls getRaceTrendTodayStarterRows when DO result status is miss", async () => {
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.status).toBe(200);
+  expect(getRaceTrendTodayStarterRowsMock).toHaveBeenCalledTimes(1);
+});
+
+it("GET calls getRaceTrendTodayStarterRows when DO result status is error", async () => {
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "error" });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.status).toBe(200);
+  expect(getRaceTrendTodayStarterRowsMock).toHaveBeenCalledTimes(1);
+});
+
+it("GET calls getRaceTrendTodayStarterRows when DO promise rejects (do-error-fallback)", async () => {
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([]);
+  fetchRaceTrendDailyTrackMock.mockRejectedValue(new Error("do boom"));
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.status).toBe(200);
+  expect(getRaceTrendTodayStarterRowsMock).toHaveBeenCalledTimes(1);
+});
