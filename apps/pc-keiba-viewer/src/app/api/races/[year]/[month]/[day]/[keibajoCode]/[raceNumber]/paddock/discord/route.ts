@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 
 import { safeGetCloudflareEnv } from "../../../../../../../../../../lib/cloudflare-context.server";
 import {
+  buildPaddockDiscordOfficialRankLines,
+  chunkPaddockDiscordOfficialRankFields,
   formatPaddockDiscordHorseLine,
   type DiscordPaddockHorsePayload,
 } from "../../../../../../../../../../lib/paddock-discord";
@@ -251,17 +253,21 @@ const sortByPaddockScore = (
   return Number(left.horseNumber) - Number(right.horseNumber);
 };
 
+const buildOfficialRankFields = (horses: DiscordPaddockHorsePayload[]) => {
+  const chunks = chunkPaddockDiscordOfficialRankFields(
+    buildPaddockDiscordOfficialRankLines(horses),
+  );
+  return chunks.map((value, index) => ({
+    inline: false,
+    name: index === 0 ? "公式評価順" : `公式評価順 (続き ${index + 1})`,
+    value,
+  }));
+};
+
 const buildDiscordEmbed = (payload: DiscordPaddockPayload) => {
   const sortedHorses = payload.horses.toSorted(sortByPaddockScore);
   const topHorses = sortedHorses.slice(0, 3);
   const horseLines = topHorses.map((horse, index) => formatPaddockDiscordHorseLine(horse, index));
-  const officialRankLines = payload.horses
-    .filter((horse) => Number.isFinite(Number(horse.officialRank)))
-    .toSorted((left, right) => Number(left.officialRank) - Number(right.officialRank))
-    .map(
-      (horse) =>
-        `${horse.officialRank}. **${horse.horseNumber} ${horse.horseName}** / ⭐ ${horse.total} / ⚖️ ${horse.weight || "-"}`,
-    );
   const topHorse = sortedHorses[0];
 
   return {
@@ -285,15 +291,7 @@ const buildDiscordEmbed = (payload: DiscordPaddockPayload) => {
         name: "上位3頭",
         value: truncate(horseLines.join("\n\n"), 1024),
       },
-      ...(officialRankLines.length > 0
-        ? [
-            {
-              inline: false,
-              name: "公式評価順",
-              value: truncate(officialRankLines.join("\n"), 1024),
-            },
-          ]
-        : []),
+      ...buildOfficialRankFields(payload.horses),
     ],
     footer: {
       text: `全${payload.horses.length}頭から総合順で上位3頭を表示`,
