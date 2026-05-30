@@ -15,6 +15,7 @@ import {
   computeNextAlarmDelayMs,
   fetchRaceTrendDailyTrackRacesFromStub,
   parseDoContextFromRaceKey,
+  parseDoContextFromUrl,
   pushRaceTrendDailyTrackRowToStub,
 } from "./race-trend-daily-track-do";
 
@@ -675,4 +676,420 @@ it("constructor leaves state null when storage has nothing persisted", async () 
     new Request("https://race-trend-daily-track-do/races?beforeRaceBango=99"),
   );
   expect(response.headers.get("X-Race-Trend-DO")).toBe("miss");
+});
+
+it("parseDoContextFromUrl parses a valid jra/ymd/keibajo query", () => {
+  const url = new URL(
+    "https://race-trend-daily-track-do/races?source=jra&ymd=20260531&keibajo=06&beforeRaceBango=05",
+  );
+  expect(parseDoContextFromUrl(url)).toStrictEqual({
+    keibajoCode: "06",
+    source: "jra",
+    targetYmd: "20260531",
+  });
+});
+
+it("parseDoContextFromUrl parses a valid nar query with alphanumeric keibajo", () => {
+  const url = new URL(
+    "https://race-trend-daily-track-do/races?source=nar&ymd=20260531&keibajo=4A&beforeRaceBango=05",
+  );
+  expect(parseDoContextFromUrl(url)).toStrictEqual({
+    keibajoCode: "4A",
+    source: "nar",
+    targetYmd: "20260531",
+  });
+});
+
+it("parseDoContextFromUrl returns null when source is missing", () => {
+  const url = new URL(
+    "https://race-trend-daily-track-do/races?ymd=20260531&keibajo=06&beforeRaceBango=05",
+  );
+  expect(parseDoContextFromUrl(url)).toBeNull();
+});
+
+it("parseDoContextFromUrl returns null when source is neither jra nor nar", () => {
+  const url = new URL(
+    "https://race-trend-daily-track-do/races?source=ban&ymd=20260531&keibajo=83&beforeRaceBango=05",
+  );
+  expect(parseDoContextFromUrl(url)).toBeNull();
+});
+
+it("parseDoContextFromUrl returns null when ymd has the wrong length", () => {
+  const url = new URL(
+    "https://race-trend-daily-track-do/races?source=jra&ymd=2026053&keibajo=06&beforeRaceBango=05",
+  );
+  expect(parseDoContextFromUrl(url)).toBeNull();
+});
+
+it("parseDoContextFromUrl returns null when ymd contains non-digits", () => {
+  const url = new URL(
+    "https://race-trend-daily-track-do/races?source=jra&ymd=2026053a&keibajo=06&beforeRaceBango=05",
+  );
+  expect(parseDoContextFromUrl(url)).toBeNull();
+});
+
+it("parseDoContextFromUrl returns null when keibajo is missing", () => {
+  const url = new URL(
+    "https://race-trend-daily-track-do/races?source=jra&ymd=20260531&beforeRaceBango=05",
+  );
+  expect(parseDoContextFromUrl(url)).toBeNull();
+});
+
+it("parseDoContextFromUrl returns null when keibajo has the wrong length", () => {
+  const url = new URL(
+    "https://race-trend-daily-track-do/races?source=jra&ymd=20260531&keibajo=6&beforeRaceBango=05",
+  );
+  expect(parseDoContextFromUrl(url)).toBeNull();
+});
+
+it("parseDoContextFromUrl returns null when keibajo contains lowercase letters", () => {
+  const url = new URL(
+    "https://race-trend-daily-track-do/races?source=jra&ymd=20260531&keibajo=ab&beforeRaceBango=05",
+  );
+  expect(parseDoContextFromUrl(url)).toBeNull();
+});
+
+it("GET /races on a cold DO self-pulls from D1 via URL context and returns hit", async () => {
+  const snapshotRow: FakeD1ResultRecord = {
+    changeAmount: null,
+    changeSign: null,
+    expectedHorseCount: 1,
+    fetchedAt: "2026-05-31T11:05:00+09:00",
+    finishPosition: "1",
+    hassoJikoku: "2026-05-31T11:00:00+09:00",
+    horseName: "ColdStartHorse",
+    jockeyName: "Jockey",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0531",
+    keibajoCode: "06",
+    raceBango: "03",
+    raceKey: "jra:2026:0531:06:03",
+    raceName: "TestRace",
+    resultCompleteAt: "2026-05-31T11:05:00+09:00",
+    savedHorseCount: 1,
+    sohaTime: "1:34.2",
+    source: "jra",
+    umaban: "1",
+    weight: null,
+  };
+  const handle = buildFakeState(new Map());
+  const env = buildEnv({ snapshotResults: [snapshotRow] });
+  const cache = await RaceTrendDailyTrackDO.createForTest({ env, state: handle.state });
+  const response = await cache.fetch(
+    new Request(
+      "https://race-trend-daily-track-do/races?source=jra&ymd=20260531&keibajo=06&beforeRaceBango=05",
+    ),
+  );
+  expect(response.status).toBe(200);
+  expect(response.headers.get("X-Race-Trend-DO")).toBe("hit");
+  const payload = (await response.json()) as { races: RaceTrendDailyTrackRow[] };
+  expect(payload.races[0]!.starterRows[0]!.bamei).toBe("ColdStartHorse");
+});
+
+it("GET /races on a cold DO with URL context primes the next alarm", async () => {
+  const handle = buildFakeState(new Map());
+  const env = buildEnv();
+  const cache = await RaceTrendDailyTrackDO.createForTest({ env, state: handle.state });
+  await cache.fetch(
+    new Request(
+      "https://race-trend-daily-track-do/races?source=jra&ymd=20260531&keibajo=06&beforeRaceBango=05",
+    ),
+  );
+  expect(handle.storage.setAlarm).toHaveBeenCalledTimes(1);
+});
+
+it("GET /races on a cold DO with URL context but empty D1 returns miss", async () => {
+  const handle = buildFakeState(new Map());
+  const env = buildEnv();
+  const cache = await RaceTrendDailyTrackDO.createForTest({ env, state: handle.state });
+  const response = await cache.fetch(
+    new Request(
+      "https://race-trend-daily-track-do/races?source=jra&ymd=20260531&keibajo=06&beforeRaceBango=05",
+    ),
+  );
+  expect(response.status).toBe(200);
+  expect(response.headers.get("X-Race-Trend-DO")).toBe("miss");
+  expect(await response.json()).toStrictEqual({ races: [] });
+});
+
+it("GET /races swallows a D1 error during cold-start self-pull and returns miss", async () => {
+  const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  const failingPrepare = vi.fn(() => ({
+    bind: vi.fn(() => ({
+      all: vi.fn(async (): Promise<{ results: FakeD1ResultRecord[] }> => {
+        throw new Error("D1 down");
+      }),
+    })),
+  }));
+  const env = {
+    REALTIME_DB: { prepare: failingPrepare } as unknown as D1Database,
+  } as unknown as Env;
+  const handle = buildFakeState(new Map());
+  const cache = await RaceTrendDailyTrackDO.createForTest({ env, state: handle.state });
+  const response = await cache.fetch(
+    new Request(
+      "https://race-trend-daily-track-do/races?source=jra&ymd=20260531&keibajo=06&beforeRaceBango=05",
+    ),
+  );
+  expect(response.status).toBe(200);
+  expect(response.headers.get("X-Race-Trend-DO")).toBe("miss");
+  expect(consoleSpy).toHaveBeenCalled();
+});
+
+it("GET /races still returns hit even if setAlarm throws during cold-start prime", async () => {
+  const snapshotRow: FakeD1ResultRecord = {
+    changeAmount: null,
+    changeSign: null,
+    expectedHorseCount: 1,
+    fetchedAt: "2026-05-31T11:05:00+09:00",
+    finishPosition: "1",
+    hassoJikoku: null,
+    horseName: "AlarmFailHorse",
+    jockeyName: null,
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0531",
+    keibajoCode: "06",
+    raceBango: "03",
+    raceKey: "jra:2026:0531:06:03",
+    raceName: null,
+    resultCompleteAt: "2026-05-31T11:05:00+09:00",
+    savedHorseCount: 1,
+    sohaTime: null,
+    source: "jra",
+    umaban: "1",
+    weight: null,
+  };
+  const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  const handle = buildFakeState(new Map());
+  handle.storage.setAlarm.mockImplementation(async (_at: number): Promise<void> => {
+    throw new Error("alarm down");
+  });
+  const env = buildEnv({ snapshotResults: [snapshotRow] });
+  const cache = await RaceTrendDailyTrackDO.createForTest({ env, state: handle.state });
+  const response = await cache.fetch(
+    new Request(
+      "https://race-trend-daily-track-do/races?source=jra&ymd=20260531&keibajo=06&beforeRaceBango=05",
+    ),
+  );
+  expect(response.headers.get("X-Race-Trend-DO")).toBe("hit");
+  expect(consoleSpy).toHaveBeenCalled();
+});
+
+it("GET /races without URL context and with empty state returns miss without touching D1", async () => {
+  const prepare = vi.fn();
+  const env = { REALTIME_DB: { prepare } as unknown as D1Database } as unknown as Env;
+  const handle = buildFakeState(new Map());
+  const cache = await RaceTrendDailyTrackDO.createForTest({ env, state: handle.state });
+  const response = await cache.fetch(
+    new Request("https://race-trend-daily-track-do/races?beforeRaceBango=05"),
+  );
+  expect(response.headers.get("X-Race-Trend-DO")).toBe("miss");
+  expect(prepare).not.toHaveBeenCalled();
+});
+
+it("GET /races skips self-pull when state already has at least one race", async () => {
+  const handle = buildFakeState(new Map());
+  const prepareSpy = vi.fn();
+  const env = buildEnv();
+  Reflect.set(env.REALTIME_DB, "prepare", (sql: string) => {
+    prepareSpy(sql);
+    return {
+      bind: vi.fn(() => ({
+        all: vi.fn(async () => ({ results: [] as FakeD1ResultRecord[] })),
+      })),
+    };
+  });
+  const cache = await RaceTrendDailyTrackDO.createForTest({ env, state: handle.state });
+  await cache.fetch(
+    new Request("https://race-trend-daily-track-do/push", {
+      body: JSON.stringify(JRA_ROW),
+      method: "POST",
+    }),
+  );
+  await cache.fetch(
+    new Request(
+      "https://race-trend-daily-track-do/races?source=jra&ymd=20260531&keibajo=06&beforeRaceBango=99",
+    ),
+  );
+  expect(prepareSpy).not.toHaveBeenCalled();
+});
+
+it("GET /races on a NAR cold DO self-pulls from D1 via URL context and returns hit", async () => {
+  const narSnapshotRow: FakeD1ResultRecord = {
+    changeAmount: null,
+    changeSign: null,
+    expectedHorseCount: 1,
+    fetchedAt: "2026-05-31T19:35:00+09:00",
+    finishPosition: "1",
+    hassoJikoku: "2026-05-31T19:30:00+09:00",
+    horseName: "NarColdHorse",
+    jockeyName: "NarJockey",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0531",
+    keibajoCode: "48",
+    raceBango: "05",
+    raceKey: "nar:2026:0531:48:05",
+    raceName: "NarRace",
+    resultCompleteAt: "2026-05-31T19:35:00+09:00",
+    savedHorseCount: 1,
+    sohaTime: "1:20.0",
+    source: "nar",
+    umaban: "1",
+    weight: null,
+  };
+  const handle = buildFakeState(new Map());
+  const env = buildEnv({ snapshotResults: [narSnapshotRow] });
+  const cache = await RaceTrendDailyTrackDO.createForTest({ env, state: handle.state });
+  const response = await cache.fetch(
+    new Request(
+      "https://race-trend-daily-track-do/races?source=nar&ymd=20260531&keibajo=48&beforeRaceBango=06",
+    ),
+  );
+  expect(response.headers.get("X-Race-Trend-DO")).toBe("hit");
+  const payload = (await response.json()) as { races: RaceTrendDailyTrackRow[] };
+  expect(payload.races[0]!.starterRows[0]!.bamei).toBe("NarColdHorse");
+});
+
+it("POST /sync without learned parsed but with URL context triggers a refresh", async () => {
+  const snapshotRow: FakeD1ResultRecord = {
+    changeAmount: null,
+    changeSign: null,
+    expectedHorseCount: 1,
+    fetchedAt: "2026-05-31T11:05:00+09:00",
+    finishPosition: "1",
+    hassoJikoku: null,
+    horseName: "SyncBootstrapHorse",
+    jockeyName: null,
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0531",
+    keibajoCode: "06",
+    raceBango: "03",
+    raceKey: "jra:2026:0531:06:03",
+    raceName: null,
+    resultCompleteAt: "2026-05-31T11:05:00+09:00",
+    savedHorseCount: 1,
+    sohaTime: null,
+    source: "jra",
+    umaban: "1",
+    weight: null,
+  };
+  const handle = buildFakeState(new Map());
+  const env = buildEnv({ snapshotResults: [snapshotRow] });
+  const cache = await RaceTrendDailyTrackDO.createForTest({ env, state: handle.state });
+  const response = await cache.fetch(
+    new Request("https://race-trend-daily-track-do/sync?source=jra&ymd=20260531&keibajo=06", {
+      method: "POST",
+    }),
+  );
+  expect(response.status).toBe(200);
+  const lastPut = handle.storage.put.mock.calls.at(-1)![1] as RaceTrendDailyTrackState;
+  expect(lastPut.races["03"]!.starterRows[0]!.bamei).toBe("SyncBootstrapHorse");
+});
+
+it("POST /sync with neither learned parsed nor URL context still rejects with 400", async () => {
+  const handle = buildFakeState(new Map());
+  const cache = await RaceTrendDailyTrackDO.createForTest({ env: buildEnv(), state: handle.state });
+  const response = await cache.fetch(
+    new Request("https://race-trend-daily-track-do/sync", { method: "POST" }),
+  );
+  expect(response.status).toBe(400);
+});
+
+it("fetchRaceTrendDailyTrackRacesFromStub embeds context query params when provided", async () => {
+  const upstream = new Response(JSON.stringify({ races: [] }), { status: 200 });
+  const stubFetch = vi.fn(async (_url: string, _init?: RequestInit): Promise<Response> => upstream);
+  await fetchRaceTrendDailyTrackRacesFromStub({
+    beforeRaceBango: "05",
+    context: { keibajoCode: "06", source: "jra", targetYmd: "20260531" },
+    stub: { fetch: stubFetch },
+  });
+  expect(stubFetch.mock.calls[0]![0]).toBe(
+    "https://race-trend-daily-track-do/races?beforeRaceBango=05&source=jra&ymd=20260531&keibajo=06",
+  );
+});
+
+it("shouldOverwriteExistingRow returns true when there is no current row", () => {
+  expect(
+    __testables.shouldOverwriteExistingRow({
+      current: undefined,
+      incoming: { ...JRA_ROW, fetchedAt: "2026-05-31T10:00:00+09:00" },
+    }),
+  ).toBe(true);
+});
+
+it("shouldOverwriteExistingRow returns true when incoming fetchedAt is strictly newer", () => {
+  expect(
+    __testables.shouldOverwriteExistingRow({
+      current: { ...JRA_ROW, fetchedAt: "2026-05-31T10:00:00+09:00" },
+      incoming: { ...JRA_ROW, fetchedAt: "2026-05-31T11:00:00+09:00" },
+    }),
+  ).toBe(true);
+});
+
+it("shouldOverwriteExistingRow returns false when incoming fetchedAt is strictly older", () => {
+  expect(
+    __testables.shouldOverwriteExistingRow({
+      current: { ...JRA_ROW, fetchedAt: "2026-05-31T11:00:00+09:00" },
+      incoming: { ...JRA_ROW, fetchedAt: "2026-05-31T10:00:00+09:00" },
+    }),
+  ).toBe(false);
+});
+
+it("shouldOverwriteExistingRow returns true on equal fetchedAt when both rows are complete", () => {
+  expect(
+    __testables.shouldOverwriteExistingRow({
+      current: { ...JRA_ROW, fetchedAt: "2026-05-31T11:00:00+09:00", isComplete: true },
+      incoming: { ...JRA_ROW, fetchedAt: "2026-05-31T11:00:00+09:00", isComplete: true },
+    }),
+  ).toBe(true);
+});
+
+it("shouldOverwriteExistingRow returns false on equal fetchedAt when current is complete and incoming is partial", () => {
+  expect(
+    __testables.shouldOverwriteExistingRow({
+      current: { ...JRA_ROW, fetchedAt: "2026-05-31T11:00:00+09:00", isComplete: true },
+      incoming: { ...JRA_ROW, fetchedAt: "2026-05-31T11:00:00+09:00", isComplete: false },
+    }),
+  ).toBe(false);
+});
+
+it("shouldOverwriteExistingRow returns true on equal fetchedAt when current is partial and incoming is complete", () => {
+  expect(
+    __testables.shouldOverwriteExistingRow({
+      current: { ...JRA_ROW, fetchedAt: "2026-05-31T11:00:00+09:00", isComplete: false },
+      incoming: { ...JRA_ROW, fetchedAt: "2026-05-31T11:00:00+09:00", isComplete: true },
+    }),
+  ).toBe(true);
+});
+
+it("POST /push does not demote a complete row to partial when the partial arrives with the same fetchedAt", async () => {
+  const completeRow: RaceTrendDailyTrackRow = {
+    ...JRA_ROW,
+    fetchedAt: "2026-05-31T11:00:00+09:00",
+    isComplete: true,
+  };
+  const partialRow: RaceTrendDailyTrackRow = {
+    ...JRA_ROW,
+    fetchedAt: "2026-05-31T11:00:00+09:00",
+    isComplete: false,
+  };
+  const handle = buildFakeState(new Map());
+  const cache = await RaceTrendDailyTrackDO.createForTest({ env: buildEnv(), state: handle.state });
+  await cache.fetch(
+    new Request("https://race-trend-daily-track-do/push", {
+      body: JSON.stringify(completeRow),
+      method: "POST",
+    }),
+  );
+  await cache.fetch(
+    new Request("https://race-trend-daily-track-do/push", {
+      body: JSON.stringify(partialRow),
+      method: "POST",
+    }),
+  );
+  const response = await cache.fetch(
+    new Request("https://race-trend-daily-track-do/races?beforeRaceBango=99"),
+  );
+  const payload = (await response.json()) as { races: RaceTrendDailyTrackRow[] };
+  expect(payload.races[0]!.isComplete).toBe(true);
 });
