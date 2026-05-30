@@ -17,6 +17,7 @@ import {
   starterRunningStyleKey,
 } from "../../../lib/race-trend-aggregate";
 import { RACE_TREND_CACHE_REFRESH_PARAM } from "../../../lib/race-trend-cache";
+import { computeRaceTrendLiveBackoffMs } from "../../../lib/race-trend-live-backoff";
 import {
   clearRaceTrendScoreConditionsQueryParam,
   clearRaceTrendScoreLinkQuery,
@@ -81,21 +82,6 @@ const RACE_TREND_RETRY_OPTIONS = {
 } as const;
 
 const RACE_TREND_AUTO_REFRESH_INTERVAL_MS = 60_000;
-
-// Empty-state copy. The "preparing" label is used when the panel renders 0 rows
-// but the trends API succeeded — this is the "data fetched but no sibling
-// races yet (e.g. 1R before start, or later race whose siblings haven't been
-// resulted yet)" branch. Showing a manual-retry affordance keeps the UI alive
-// even when the route segment + edge cache + DO would otherwise return zero
-// rows: the user can force a `__trendCacheRefresh` fetch that skips the
-// upstream Cache API and reads the latest DO + legacy data.
-const RACE_TREND_EMPTY_LABEL = "成績データが揃うのを待っています";
-const RACE_TREND_EMPTY_DETAIL =
-  "確定後のレースから順に表示します。 数十秒で自動更新しますが、手動で再取得することもできます。";
-const RACE_TREND_RETRY_LABEL = "再取得";
-const RACE_TREND_ERROR_LABEL = "レース傾向を取得できませんでした。";
-const RACE_TREND_ERROR_DETAIL = "通信エラーで再取得します。 手動で再試行することもできます。";
-const RACE_TREND_STALE_LABEL = "最新化に失敗したため、 直近のデータを表示しています。";
 
 interface RaceTrendSectionProps {
   day: string;
@@ -629,7 +615,6 @@ interface RaceTrendTableProps {
   currentRunningStyleMap: Map<string, RaceTrendRunningStyle>;
   isLoading: boolean;
   linkScoreToWinRate: boolean;
-  onManualRefresh: () => void;
   raceCount: number;
   rows: RaceTrendRunningStyleRow[];
   runnerByHorseNumber: Map<string, RaceTrendRunnerSummary>;
@@ -643,7 +628,6 @@ function RaceTrendTable({
   currentRunningStyleMap,
   isLoading,
   linkScoreToWinRate,
-  onManualRefresh,
   raceCount,
   rows,
   runnerByHorseNumber,
@@ -870,17 +854,7 @@ function RaceTrendTable({
             ) : (
               <tr>
                 <td className="race-trend-empty-cell" colSpan={colSpan}>
-                  <div className="race-trend-empty-state">
-                    <p className="race-trend-empty-label">{RACE_TREND_EMPTY_LABEL}</p>
-                    <p className="race-trend-empty-detail">{RACE_TREND_EMPTY_DETAIL}</p>
-                    <button
-                      className="race-trend-retry-button"
-                      onClick={onManualRefresh}
-                      type="button"
-                    >
-                      {RACE_TREND_RETRY_LABEL}
-                    </button>
-                  </div>
+                  該当する集計成績はありません
                 </td>
               </tr>
             )}
@@ -1131,18 +1105,19 @@ export function RaceTrendSection({
   const [sortBy, setSortBy] = useState<RaceTrendSortKey>(DEFAULT_RACE_TREND_SORT_KEY);
   const [rawPayload, setRawPayload] = useState<RaceTrendRawPayload | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
-  // Tracks whether the most-recent background refresh failed while the panel
-  // still holds the previously-fetched payload. When true, we keep showing the
-  // last-known rows but surface a non-blocking "再試行" banner so the user
-  // knows the auto-refresh / WebSocket-driven update silently failed and can
-  // manually retry without losing context.
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [hasStaleRefresh, setHasStaleRefresh] = useState(false);
+  const rawPayloadRef = useRef<RaceTrendRawPayload | null>(null);
   const trendTargetsRef = useRef(initialTrendTargets);
   const scoreConditionsRef = useRef(initialScoreConditions);
   const linkScoreToWinRateRef = useRef<boolean>(initialLinkScoreToWinRate);
   const sortByRef = useRef<RaceTrendSortKey>(DEFAULT_RACE_TREND_SORT_KEY);
   const fetchSequenceRef = useRef(0);
   const liveConnectedRef = useRef(false);
+  const liveReconnectAttemptRef = useRef(0);
+  const liveReconnectTimerRef = useRef<number | null>(null);
+  const liveSocketRef = useRef<WebSocket | null>(null);
+  const currentAbortControllerRef = useRef<AbortController | null>(null);
 
   const toggleTrendTarget = useCallback((key: RaceTrendTargetKey) => {
     const currentTargets = trendTargetsRef.current;
@@ -1391,11 +1366,13 @@ export function RaceTrendSection({
       refreshCache,
       requestId,
       showLoading,
+      signal,
     }: {
       clearOnError: boolean;
       refreshCache: boolean;
       requestId: number;
       showLoading: boolean;
+      signal?: AbortSignal;
     }) => {
       if (showLoading) {
         setStatus("loading");
@@ -1406,8 +1383,10 @@ export function RaceTrendSection({
           // Allow Cloudflare's edge cache to satisfy follow-up navigations
           // when the worker response carries `Cache-Control: public,
           // max-age=60`. The cache-busting `__trendCacheRefresh` query param
-          // is added by `getRefreshedApiPath` for forced re-fetches.
-          { credentials: "include" },
+          // is added by `getRefreshedApiPath` for forced re-fetches. The
+          // optional signal lets callers abort an in-flight retry chain when
+          // the user re-clicks the manual refresh button.
+          { credentials: "include", signal },
           RACE_TREND_RETRY_OPTIONS,
         );
         if (!response.ok) {
@@ -1420,37 +1399,57 @@ export function RaceTrendSection({
         if (fetchSequenceRef.current !== requestId) {
           return;
         }
+        rawPayloadRef.current = body;
         setRawPayload(body);
         setStatus("idle");
         setHasStaleRefresh(false);
-      } catch {
+      } catch (caught) {
+        if (caught instanceof DOMException && caught.name === "AbortError") {
+          return;
+        }
         if (fetchSequenceRef.current !== requestId) {
           return;
         }
         if (clearOnError) {
+          rawPayloadRef.current = null;
           setRawPayload(null);
           setStatus("error");
-          setHasStaleRefresh(false);
           return;
         }
-        // Preserve the previously-fetched payload but surface a "再試行" banner
-        // so the user knows the background update silently failed.
-        setHasStaleRefresh(true);
+        // BUG-3 guard: only surface the "showing cached data" banner when we
+        // actually have a previously-fetched payload to fall back to.
+        if (rawPayloadRef.current !== null) {
+          setHasStaleRefresh(true);
+        }
       }
     },
     [apiPath],
   );
 
   const requestManualRefresh = useCallback(() => {
+    currentAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    currentAbortControllerRef.current = controller;
     const requestId = fetchSequenceRef.current + 1;
     fetchSequenceRef.current = requestId;
+    setIsRefreshing(true);
+    // Keep the retry button visible by NOT toggling status to "loading" while
+    // refreshing — the button uses `isRefreshing` for its disabled / aria-busy
+    // state instead. Background refresh (clearOnError=false) lets the existing
+    // error banner stay until either the fetch succeeds or fails irrecoverably.
     void refreshTrendRows({
-      clearOnError: rawPayload === null,
+      clearOnError: rawPayloadRef.current === null,
       refreshCache: true,
       requestId,
-      showLoading: true,
+      showLoading: false,
+      signal: controller.signal,
+    }).finally(() => {
+      if (currentAbortControllerRef.current === controller) {
+        currentAbortControllerRef.current = null;
+        setIsRefreshing(false);
+      }
     });
-  }, [rawPayload, refreshTrendRows]);
+  }, [refreshTrendRows]);
 
   useEffect(() => {
     const requestId = fetchSequenceRef.current + 1;
@@ -1468,12 +1467,26 @@ export function RaceTrendSection({
     };
   }, [refreshTrendRows]);
 
+  // Abort any in-flight manual refresh fetch when the component unmounts so
+  // its retry chain is not still running after the React tree is gone.
+  useEffect(
+    () => () => {
+      currentAbortControllerRef.current?.abort();
+      currentAbortControllerRef.current = null;
+    },
+    [],
+  );
+
   useEffect(() => {
-    const socket = new WebSocket(getWebSocketUrl(livePath));
-    socket.addEventListener("open", () => {
-      liveConnectedRef.current = true;
-    });
-    socket.addEventListener("message", (event) => {
+    const cancelledRef = { current: false };
+    const clearReconnectTimer = () => {
+      const timer = liveReconnectTimerRef.current;
+      if (timer !== null) {
+        window.clearTimeout(timer);
+        liveReconnectTimerRef.current = null;
+      }
+    };
+    const handleMessage = (event: MessageEvent<unknown>) => {
       const payload: unknown = (() => {
         try {
           return JSON.parse(String(event.data));
@@ -1486,27 +1499,55 @@ export function RaceTrendSection({
       }
       const requestId = fetchSequenceRef.current + 1;
       fetchSequenceRef.current = requestId;
-      // The trend-updated signal means a sibling race just resulted and the
-      // upstream KV / Cache API entries have been busted. Force `refreshCache`
-      // so the next fetch sets `__trendCacheRefresh=1` and skips any
-      // edge-cached body that hasn't picked up the DO + legacy merge yet.
       void refreshTrendRows({
         clearOnError: false,
-        refreshCache: true,
+        refreshCache: false,
         requestId,
         showLoading: false,
       });
-    });
-    socket.addEventListener("close", () => {
-      liveConnectedRef.current = false;
-    });
-    socket.addEventListener("error", () => {
-      liveConnectedRef.current = false;
-      socket.close();
-    });
+    };
+    // BUG-1 fix: exponential-backoff reconnect. Pseudocode:
+    //   connect()
+    //   onClose / onError -> attempt++; setTimeout(connect, backoff(attempt))
+    //   onOpen -> attempt = 0
+    //   on unmount / livePath change -> clearTimeout, socket.close()
+    const connect = () => {
+      if (cancelledRef.current) return;
+      clearReconnectTimer();
+      const socket = new WebSocket(getWebSocketUrl(livePath));
+      liveSocketRef.current = socket;
+      socket.addEventListener("open", () => {
+        liveConnectedRef.current = true;
+        liveReconnectAttemptRef.current = 0;
+      });
+      socket.addEventListener("message", handleMessage);
+      const scheduleReconnect = () => {
+        if (cancelledRef.current) return;
+        liveConnectedRef.current = false;
+        if (liveSocketRef.current === socket) {
+          liveSocketRef.current = null;
+        }
+        const delay = computeRaceTrendLiveBackoffMs(liveReconnectAttemptRef.current);
+        liveReconnectAttemptRef.current += 1;
+        liveReconnectTimerRef.current = window.setTimeout(() => {
+          liveReconnectTimerRef.current = null;
+          connect();
+        }, delay);
+      };
+      socket.addEventListener("close", scheduleReconnect);
+      socket.addEventListener("error", () => {
+        socket.close();
+      });
+    };
+    liveReconnectAttemptRef.current = 0;
+    connect();
     return () => {
+      cancelledRef.current = true;
+      clearReconnectTimer();
       liveConnectedRef.current = false;
-      socket.close();
+      const socket = liveSocketRef.current;
+      liveSocketRef.current = null;
+      socket?.close();
     };
   }, [livePath, refreshTrendRows]);
 
@@ -1525,11 +1566,32 @@ export function RaceTrendSection({
       });
     };
 
+    // When the page becomes visible again, also try to recover the WebSocket
+    // immediately instead of waiting for the next backoff tick. Triggers the
+    // existing setTimeout-driven reconnect path via `liveSocketRef.close()`.
+    const forceReconnectOnVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      const socket = liveSocketRef.current;
+      const isClosed =
+        socket === null ||
+        socket.readyState === WebSocket.CLOSED ||
+        socket.readyState === WebSocket.CLOSING;
+      if (isClosed) {
+        liveReconnectAttemptRef.current = 0;
+        socket?.close();
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      forceReconnectOnVisible();
+      refreshIfFallbackNeeded();
+    };
+
     const timer = window.setInterval(refreshIfFallbackNeeded, RACE_TREND_AUTO_REFRESH_INTERVAL_MS);
-    document.addEventListener("visibilitychange", refreshIfFallbackNeeded);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", refreshIfFallbackNeeded);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [refreshTrendRows]);
 
@@ -1647,24 +1709,10 @@ export function RaceTrendSection({
           </div>
         </details>
 
-        {hasStaleRefresh && status !== "error" ? (
-          <div className="race-trend-stale-banner" role="status">
-            <span>{RACE_TREND_STALE_LABEL}</span>
-            <button
-              className="race-trend-retry-button"
-              onClick={requestManualRefresh}
-              type="button"
-            >
-              {RACE_TREND_RETRY_LABEL}
-            </button>
-          </div>
-        ) : null}
-
         <RaceTrendTable
           currentRunningStyleMap={scoreSourceMaps.currentRunningStyleMap}
           isLoading={status === "loading"}
           linkScoreToWinRate={linkScoreToWinRate}
-          onManualRefresh={requestManualRefresh}
           raceCount={raceCount}
           rows={sortedRows}
           runnerByHorseNumber={runnerByHorseNumber}
@@ -1677,12 +1725,23 @@ export function RaceTrendSection({
 
       {status === "error" ? (
         <div className="race-trend-error" role="alert">
-          <p className="race-trend-error-label">{RACE_TREND_ERROR_LABEL}</p>
-          <p className="race-trend-error-detail">{RACE_TREND_ERROR_DETAIL}</p>
-          <button className="race-trend-retry-button" onClick={requestManualRefresh} type="button">
-            {RACE_TREND_RETRY_LABEL}
+          <p>レース傾向を取得できませんでした。</p>
+          <button
+            aria-busy={isRefreshing}
+            className="race-trend-retry-button"
+            disabled={isRefreshing}
+            onClick={requestManualRefresh}
+            type="button"
+          >
+            再試行
           </button>
         </div>
+      ) : null}
+
+      {hasStaleRefresh && rawPayload !== null ? (
+        <p className="race-trend-stale-banner" role="status">
+          直近のデータを表示中
+        </p>
       ) : null}
     </section>
   );

@@ -1,201 +1,428 @@
-// Run with: bunx vitest run src/app/races/detail/race-trend-section.test.tsx
+// Run with: bun run --filter pc-keiba-viewer test src/app/races/detail/race-trend-section.test.tsx
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import type { RaceTrendRawPayload } from "../../../lib/race-types";
-
-const fetchWithRetryMock = vi.fn<(input: string, init?: RequestInit) => Promise<Response>>();
-
-vi.mock("../../../lib/fetch-with-retry", () => ({
-  fetchWithRetry: (input: string, init?: RequestInit) => fetchWithRetryMock(input, init),
-}));
-
-const getRaceTrendLiveUrlMock = vi.fn<(path: string) => string>(
-  (path) => `wss://example.test${path}`,
-);
-
-vi.mock("../../../lib/paddock-client-url", () => ({
-  getRaceTrendLiveUrl: (path: string) => getRaceTrendLiveUrlMock(path),
-}));
 
 vi.mock("./realtime-client", () => ({
   useRealtimeRaceSelector: <T,>(selector: (state: { payload: null }) => T): T =>
     selector({ payload: null }),
 }));
 
-type WebSocketEventHandler = (event: MessageEvent | Event) => void;
+import { RaceTrendSection } from "./race-trend-section";
 
-class WebSocketStub {
-  public listeners: Map<string, WebSocketEventHandler[]> = new Map();
-  public closed = false;
-  constructor(public url: string) {}
-  addEventListener(name: string, handler: WebSocketEventHandler): void {
-    const existing = this.listeners.get(name) ?? [];
-    existing.push(handler);
-    this.listeners.set(name, existing);
-  }
-  removeEventListener(): void {}
-  close(): void {
-    this.closed = true;
-  }
+interface MockWebSocketLike {
+  url: string;
+  close: ReturnType<typeof vi.fn<() => void>>;
+  readyState: number;
+  listeners: Map<string, Array<(event: unknown) => void>>;
+  dispatch: (type: string, event: unknown) => void;
 }
 
-interface WebSocketStubRegistry {
-  sockets: WebSocketStub[];
-}
+const installedSockets: MockWebSocketLike[] = [];
+let originalWebSocket: typeof WebSocket;
 
-const installWebSocketStub = (): WebSocketStubRegistry => {
-  const registry: WebSocketStubRegistry = { sockets: [] };
-  const StubFactory = function StubFactory(this: WebSocketStub, url: string) {
-    const instance = new WebSocketStub(url);
-    registry.sockets.push(instance);
-    return instance;
+const installMockWebSocket = (): void => {
+  installedSockets.length = 0;
+  originalWebSocket = globalThis.WebSocket;
+  const buildMockSocket = (url: string): MockWebSocketLike => {
+    const listeners = new Map<string, Array<(event: unknown) => void>>();
+    const socket: MockWebSocketLike = {
+      url,
+      close: vi.fn<() => void>(() => {
+        socket.readyState = 3;
+      }),
+      readyState: 0,
+      listeners,
+      dispatch: (type, event) => (listeners.get(type) ?? []).forEach((handler) => handler(event)),
+    };
+    return socket;
   };
-  (globalThis as { WebSocket: unknown }).WebSocket = StubFactory;
-  return registry;
+  class MockWebSocket {
+    static readonly CONNECTING = 0;
+    static readonly OPEN = 1;
+    static readonly CLOSING = 2;
+    static readonly CLOSED = 3;
+    inner: MockWebSocketLike;
+    constructor(url: string) {
+      this.inner = buildMockSocket(url);
+      installedSockets.push(this.inner);
+    }
+    addEventListener(type: string, handler: (event: unknown) => void): void {
+      const existing = this.inner.listeners.get(type) ?? [];
+      existing.push(handler);
+      this.inner.listeners.set(type, existing);
+    }
+    close(): void {
+      this.inner.close();
+    }
+    get readyState(): number {
+      return this.inner.readyState;
+    }
+    set readyState(value: number) {
+      this.inner.readyState = value;
+    }
+  }
+  Object.assign(globalThis, { WebSocket: MockWebSocket });
 };
 
-const buildEmptyPayload = (): RaceTrendRawPayload => ({
-  raceContext: { keibajoCode: "05", raceBango: "03", source: "jra" },
-  runners: [],
+const restoreWebSocket = (): void => {
+  Object.assign(globalThis, { WebSocket: originalWebSocket });
+  installedSockets.length = 0;
+};
+
+const buildRawPayload = (): RaceTrendRawPayload => ({
   starterRows: [],
   currentRunningStyles: [],
   historicalRunningStyles: [],
+  raceContext: { keibajoCode: "06", raceBango: "11", source: "jra" },
+  runners: [],
 });
 
-interface JsonResponseInit {
-  body: unknown;
-  ok: boolean;
-  status?: number;
-}
-
-const buildJsonResponse = (init: JsonResponseInit): Response => {
-  const status = init.status ?? (init.ok ? 200 : 500);
-  return new Response(JSON.stringify(init.body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-};
-
-const baseProps = {
-  day: "17",
-  defaultEndDate: "2025-05-17",
-  defaultStartDate: "2025-05-03",
-  keibajoCode: "05",
-  minStartDate: "2025-05-03",
+const PROPS = {
+  day: "30",
+  defaultEndDate: "2026-05-29",
+  defaultStartDate: "2025-05-30",
+  keibajoCode: "06",
+  minStartDate: "2023-01-01",
   month: "05",
-  raceNumber: "03",
-  source: "jra" as const,
-  year: "2025",
+  raceNumber: "11",
+  source: "jra",
+  year: "2026",
+} satisfies Parameters<typeof RaceTrendSection>[0];
+
+const buildOkResponse = (payload: RaceTrendRawPayload): Response =>
+  new Response(JSON.stringify(payload), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+
+const buildErrorResponse = (): Response => new Response("err", { status: 500 });
+
+const renderSection = (): ReturnType<typeof render> => render(<RaceTrendSection {...PROPS} />);
+
+const flushAllAsync = async (): Promise<void> => {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
 };
 
-const triggerTrendUpdated = async (registry: WebSocketStubRegistry): Promise<void> => {
-  await waitFor(() => {
-    expect(registry.sockets.length).toBeGreaterThan(0);
-  });
-  const socket = registry.sockets[0];
-  if (!socket) throw new Error("websocket stub missing");
-  const handlers = socket.listeners.get("message") ?? [];
-  const handler = handlers[0];
-  if (!handler) throw new Error("no websocket message handler");
-  await act(async () => {
-    handler(new MessageEvent("message", { data: JSON.stringify({ type: "trend-updated" }) }));
-  });
-};
+beforeEach(() => {
+  installMockWebSocket();
+  vi.useFakeTimers();
+});
 
 afterEach(() => {
   cleanup();
-  fetchWithRetryMock.mockReset();
-  getRaceTrendLiveUrlMock.mockClear();
+  vi.useRealTimers();
+  restoreWebSocket();
+  vi.restoreAllMocks();
 });
 
-test("renders empty-state copy and retry button when initial payload has zero rows", async () => {
-  installWebSocketStub();
-  fetchWithRetryMock.mockResolvedValueOnce(
-    buildJsonResponse({ body: buildEmptyPayload(), ok: true }),
-  );
-  const { RaceTrendSection } = await import("./race-trend-section");
-  render(<RaceTrendSection {...baseProps} />);
-  await waitFor(() => {
-    expect(screen.getByText("成績データが揃うのを待っています")).toBeTruthy();
+test("WebSocket close triggers a reconnect after the exponential backoff delay", async () => {
+  const fetchSpy = vi
+    .spyOn(globalThis, "fetch")
+    .mockResolvedValue(buildOkResponse(buildRawPayload()));
+  renderSection();
+  await flushAllAsync();
+  expect(installedSockets).toHaveLength(1);
+  const firstSocket = installedSockets[0];
+  if (!firstSocket) throw new Error("first socket missing");
+  act(() => {
+    firstSocket.dispatch("close", {});
   });
-  expect(
-    screen.getByText(
-      "確定後のレースから順に表示します。 数十秒で自動更新しますが、手動で再取得することもできます。",
-    ),
-  ).toBeTruthy();
-  expect(screen.getAllByRole("button", { name: "再取得" }).length).toBeGreaterThan(0);
-});
-
-test("clicking the empty-state retry button forces a __trendCacheRefresh fetch", async () => {
-  installWebSocketStub();
-  fetchWithRetryMock
-    .mockResolvedValueOnce(buildJsonResponse({ body: buildEmptyPayload(), ok: true }))
-    .mockResolvedValueOnce(buildJsonResponse({ body: buildEmptyPayload(), ok: true }));
-  const { RaceTrendSection } = await import("./race-trend-section");
-  render(<RaceTrendSection {...baseProps} />);
-  await waitFor(() => {
-    expect(screen.getByText("成績データが揃うのを待っています")).toBeTruthy();
-  });
-  const retryButtons = screen.getAllByRole("button", { name: "再取得" });
-  const firstRetry = retryButtons[0];
-  if (!firstRetry) throw new Error("no retry button rendered");
+  expect(installedSockets).toHaveLength(1);
   await act(async () => {
-    fireEvent.click(firstRetry);
+    await vi.advanceTimersByTimeAsync(1000);
   });
-  await waitFor(() => {
-    expect(fetchWithRetryMock).toHaveBeenCalledTimes(2);
-  });
-  const lastCallUrl = fetchWithRetryMock.mock.calls[1]?.[0] ?? "";
-  expect(lastCallUrl.includes("__trendCacheRefresh=1")).toBe(true);
+  expect(installedSockets).toHaveLength(2);
+  expect(fetchSpy).toHaveBeenCalled();
 });
 
-test("renders error UI with retry button when the initial fetch rejects", async () => {
-  installWebSocketStub();
-  fetchWithRetryMock.mockRejectedValueOnce(new Error("network down"));
-  const { RaceTrendSection } = await import("./race-trend-section");
-  render(<RaceTrendSection {...baseProps} />);
-  await waitFor(() => {
-    expect(screen.getByText("レース傾向を取得できませんでした。")).toBeTruthy();
+test("WebSocket error triggers a close and a reconnect attempt", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(buildOkResponse(buildRawPayload()));
+  renderSection();
+  await flushAllAsync();
+  const firstSocket = installedSockets[0];
+  if (!firstSocket) throw new Error("first socket missing");
+  act(() => {
+    firstSocket.dispatch("error", {});
   });
-  expect(
-    screen.getByText("通信エラーで再取得します。 手動で再試行することもできます。"),
-  ).toBeTruthy();
-  expect(screen.getAllByRole("button", { name: "再取得" }).length).toBeGreaterThan(0);
+  expect(firstSocket.close).toHaveBeenCalled();
+  act(() => {
+    firstSocket.dispatch("close", {});
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  expect(installedSockets).toHaveLength(2);
 });
 
-test("renders the stale-data banner when a background refresh fails after a prior success", async () => {
-  const registry = installWebSocketStub();
-  fetchWithRetryMock
-    .mockResolvedValueOnce(buildJsonResponse({ body: buildEmptyPayload(), ok: true }))
-    .mockRejectedValueOnce(new Error("flaky upstream"));
-  const { RaceTrendSection } = await import("./race-trend-section");
-  render(<RaceTrendSection {...baseProps} />);
-  await waitFor(() => {
-    expect(screen.getByText("成績データが揃うのを待っています")).toBeTruthy();
+test("WebSocket open resets the reconnect attempt counter so the next backoff starts at 1s", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(buildOkResponse(buildRawPayload()));
+  renderSection();
+  await flushAllAsync();
+  const firstSocket = installedSockets[0];
+  if (!firstSocket) throw new Error("first socket missing");
+  act(() => {
+    firstSocket.dispatch("close", {});
   });
-  await triggerTrendUpdated(registry);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  expect(installedSockets).toHaveLength(2);
+  const secondSocket = installedSockets[1];
+  if (!secondSocket) throw new Error("second socket missing");
+  act(() => {
+    secondSocket.dispatch("open", {});
+  });
+  act(() => {
+    secondSocket.dispatch("close", {});
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(999);
+  });
+  expect(installedSockets).toHaveLength(2);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1);
+  });
+  expect(installedSockets).toHaveLength(3);
+});
+
+test("retry button is rendered when the initial fetch fails", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(buildErrorResponse());
+  renderSection();
+  // Drain the bounded retry chain (300/600/1200/2400 = 4500ms total of sleeps).
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(6000);
+  });
+  expect(screen.getByRole("button", { name: "再試行" })).toBeTruthy();
+});
+
+test("retry button click passes an AbortSignal to fetchWithRetry so the request is abortable", async () => {
+  vi.useRealTimers();
+  const manualSignals: AbortSignal[] = [];
+  const pendingResolvers: Array<(value: Response) => void> = [];
+  const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+    async (_input, init) => {
+      const signal = init?.signal;
+      if (signal === undefined || signal === null) {
+        return buildErrorResponse();
+      }
+      manualSignals.push(signal);
+      return new Promise<Response>((resolve) => {
+        pendingResolvers.push(resolve);
+      });
+    },
+  );
+  vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
+  renderSection();
+  const retryButton = await screen.findByRole("button", { name: "再試行" }, { timeout: 5000 });
+  await act(async () => {
+    fireEvent.click(retryButton);
+  });
   await waitFor(() => {
-    expect(screen.getByText("最新化に失敗したため、 直近のデータを表示しています。")).toBeTruthy();
+    expect(manualSignals.length).toBeGreaterThanOrEqual(1);
+  });
+  const firstManualSignal = manualSignals[0];
+  if (!firstManualSignal) throw new Error("first manual signal missing");
+  expect(firstManualSignal).toBeInstanceOf(AbortSignal);
+  expect(firstManualSignal.aborted).toBe(false);
+  await act(async () => {
+    pendingResolvers.forEach((resolve) => resolve(buildOkResponse(buildRawPayload())));
   });
 });
 
-test("trend-updated WebSocket message triggers a __trendCacheRefresh fetch", async () => {
-  const registry = installWebSocketStub();
-  fetchWithRetryMock
-    .mockResolvedValueOnce(buildJsonResponse({ body: buildEmptyPayload(), ok: true }))
-    .mockResolvedValueOnce(buildJsonResponse({ body: buildEmptyPayload(), ok: true }));
-  const { RaceTrendSection } = await import("./race-trend-section");
-  render(<RaceTrendSection {...baseProps} />);
-  await waitFor(() => {
-    expect(fetchWithRetryMock).toHaveBeenCalledTimes(1);
+test("unmount aborts the in-flight manual refresh AbortController", async () => {
+  vi.useRealTimers();
+  const manualSignals: AbortSignal[] = [];
+  const pendingResolvers: Array<(value: Response) => void> = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => {
+    const signal = init?.signal ?? null;
+    if (signal === null) {
+      return Promise.resolve(buildErrorResponse());
+    }
+    manualSignals.push(signal);
+    return new Promise<Response>((resolve) => {
+      pendingResolvers.push(resolve);
+    });
   });
-  await triggerTrendUpdated(registry);
-  await waitFor(() => {
-    expect(fetchWithRetryMock).toHaveBeenCalledTimes(2);
+  const { unmount } = renderSection();
+  const retryButton = await screen.findByRole("button", { name: "再試行" }, { timeout: 5000 });
+  await act(async () => {
+    fireEvent.click(retryButton);
   });
-  const lastCallUrl = fetchWithRetryMock.mock.calls[1]?.[0] ?? "";
-  expect(lastCallUrl.includes("__trendCacheRefresh=1")).toBe(true);
+  await waitFor(() => {
+    expect(manualSignals.length).toBeGreaterThanOrEqual(1);
+  });
+  const firstManualSignal = manualSignals[0];
+  if (!firstManualSignal) throw new Error("first manual signal missing");
+  expect(firstManualSignal.aborted).toBe(false);
+  unmount();
+  expect(firstManualSignal.aborted).toBe(true);
+});
+
+test("retry button is disabled while a manual refresh is in flight to block double-click", async () => {
+  vi.useRealTimers();
+  const pendingResolvers: Array<(value: Response) => void> = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => {
+    const signal = init?.signal ?? null;
+    if (signal === null) {
+      return Promise.resolve(buildErrorResponse());
+    }
+    return new Promise<Response>((resolve) => {
+      pendingResolvers.push(resolve);
+    });
+  });
+  renderSection();
+  const retryButton = await screen.findByRole("button", { name: "再試行" }, { timeout: 5000 });
+  expect(retryButton.hasAttribute("disabled")).toBe(false);
+  await act(async () => {
+    fireEvent.click(retryButton);
+  });
+  await waitFor(() => {
+    expect(retryButton.hasAttribute("disabled")).toBe(true);
+  });
+  await act(async () => {
+    pendingResolvers.forEach((resolve) => resolve(buildOkResponse(buildRawPayload())));
+  });
+});
+
+test("retry button reports aria-busy while a manual refresh is in flight", async () => {
+  vi.useRealTimers();
+  let resolveFetch: ((value: Response) => void) | null = null;
+  const pendingFetch = new Promise<Response>((resolve) => {
+    resolveFetch = resolve;
+  });
+  let fetchCallCount = 0;
+  const initialErrorThreshold = 3;
+  vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+    fetchCallCount += 1;
+    if (fetchCallCount <= initialErrorThreshold) {
+      return Promise.resolve(buildErrorResponse());
+    }
+    return pendingFetch;
+  });
+  renderSection();
+  const retryButton = await screen.findByRole("button", { name: "再試行" }, { timeout: 5000 });
+  await act(async () => {
+    fireEvent.click(retryButton);
+  });
+  await waitFor(() => {
+    expect(retryButton.getAttribute("aria-busy")).toBe("true");
+  });
+  expect(retryButton.hasAttribute("disabled")).toBe(true);
+  await act(async () => {
+    resolveFetch?.(buildOkResponse(buildRawPayload()));
+  });
+});
+
+test("stale banner is NOT shown when rawPayload is null and a background refresh fails", async () => {
+  vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network down"));
+  renderSection();
+  // Drain the bounded retry chain on the initial fetch (clearOnError path
+  // will set status to error but should NOT set the stale banner).
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(6000);
+  });
+  expect(screen.queryByText("直近のデータを表示中")).toBeNull();
+});
+
+test("stale banner IS shown when rawPayload exists and a background refresh fails", async () => {
+  let fetchCallCount = 0;
+  vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+    fetchCallCount += 1;
+    if (fetchCallCount === 1) {
+      return Promise.resolve(buildOkResponse(buildRawPayload()));
+    }
+    return Promise.reject(new Error("network down"));
+  });
+  renderSection();
+  await flushAllAsync();
+  // Trigger the WebSocket-driven refresh (non-clearOnError path) by dispatching
+  // a trend-updated message. The retry chain will exhaust and the stale banner
+  // should appear because rawPayloadRef.current is now populated.
+  const firstSocket = installedSockets[0];
+  if (!firstSocket) throw new Error("first socket missing");
+  act(() => {
+    firstSocket.dispatch("message", { data: JSON.stringify({ type: "trend-updated" }) });
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(6000);
+  });
+  expect(screen.getByText("直近のデータを表示中")).toBeTruthy();
+});
+
+test("WebSocket reconnect timer is cleared when the component unmounts", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(buildOkResponse(buildRawPayload()));
+  const { unmount } = renderSection();
+  await flushAllAsync();
+  const firstSocket = installedSockets[0];
+  if (!firstSocket) throw new Error("first socket missing");
+  act(() => {
+    firstSocket.dispatch("close", {});
+  });
+  unmount();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5000);
+  });
+  expect(installedSockets).toHaveLength(1);
+});
+
+test("livePath change recreates the WebSocket connection", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(buildOkResponse(buildRawPayload()));
+  const { rerender } = renderSection();
+  await flushAllAsync();
+  expect(installedSockets).toHaveLength(1);
+  rerender(<RaceTrendSection {...PROPS} raceNumber="12" />);
+  await flushAllAsync();
+  expect(installedSockets.length).toBeGreaterThanOrEqual(2);
+});
+
+test("visibilitychange to visible forces a WebSocket reconnect when the socket is closed", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(buildOkResponse(buildRawPayload()));
+  renderSection();
+  await flushAllAsync();
+  const firstSocket = installedSockets[0];
+  if (!firstSocket) throw new Error("first socket missing");
+  firstSocket.readyState = 3;
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+  act(() => {
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  expect(firstSocket.close).toHaveBeenCalled();
+});
+
+test("WebSocket message of an unknown type does not trigger a refresh fetch", async () => {
+  const fetchSpy = vi
+    .spyOn(globalThis, "fetch")
+    .mockResolvedValue(buildOkResponse(buildRawPayload()));
+  renderSection();
+  await flushAllAsync();
+  fetchSpy.mockClear();
+  const firstSocket = installedSockets[0];
+  if (!firstSocket) throw new Error("first socket missing");
+  act(() => {
+    firstSocket.dispatch("message", { data: JSON.stringify({ type: "other" }) });
+  });
+  expect(fetchSpy).not.toHaveBeenCalled();
+});
+
+test("WebSocket message with invalid JSON does not trigger a refresh fetch", async () => {
+  const fetchSpy = vi
+    .spyOn(globalThis, "fetch")
+    .mockResolvedValue(buildOkResponse(buildRawPayload()));
+  renderSection();
+  await flushAllAsync();
+  fetchSpy.mockClear();
+  const firstSocket = installedSockets[0];
+  if (!firstSocket) throw new Error("first socket missing");
+  act(() => {
+    firstSocket.dispatch("message", { data: "not-json" });
+  });
+  expect(fetchSpy).not.toHaveBeenCalled();
 });
