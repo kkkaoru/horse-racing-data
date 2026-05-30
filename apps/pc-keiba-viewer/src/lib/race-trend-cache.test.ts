@@ -135,16 +135,28 @@ describe("race trend cache helpers", () => {
     ).toStrictEqual("race-trend-past14:v8:nar:50:07:20260514:20260527");
   });
 
-  it("builds the today cache key under the race-trend-today:v8 namespace for JRA", () => {
-    expect(buildRaceTrendTodayCacheKey({ source: "jra", targetYmd: "20260520" })).toStrictEqual(
-      "race-trend-today:v8:jra:20260520",
-    );
+  it("builds the today cache key under the race-trend-today:v9 namespace for JRA Tokyo", () => {
+    expect(
+      buildRaceTrendTodayCacheKey({ keibajoCode: "05", source: "jra", targetYmd: "20260520" }),
+    ).toStrictEqual("race-trend-today:v9:jra:20260520:05");
   });
 
-  it("builds the today cache key under the race-trend-today:v8 namespace for NAR", () => {
-    expect(buildRaceTrendTodayCacheKey({ source: "nar", targetYmd: "20260528" })).toStrictEqual(
-      "race-trend-today:v8:nar:20260528",
-    );
+  it("builds the today cache key under the race-trend-today:v9 namespace for JRA Hanshin", () => {
+    expect(
+      buildRaceTrendTodayCacheKey({ keibajoCode: "09", source: "jra", targetYmd: "20260520" }),
+    ).toStrictEqual("race-trend-today:v9:jra:20260520:09");
+  });
+
+  it("builds the today cache key under the race-trend-today:v9 namespace for NAR Kawasaki", () => {
+    expect(
+      buildRaceTrendTodayCacheKey({ keibajoCode: "44", source: "nar", targetYmd: "20260528" }),
+    ).toStrictEqual("race-trend-today:v9:nar:20260528:44");
+  });
+
+  it("builds the today cache key under the race-trend-today:v9 namespace for NAR Funabashi", () => {
+    expect(
+      buildRaceTrendTodayCacheKey({ keibajoCode: "43", source: "nar", targetYmd: "20260528" }),
+    ).toStrictEqual("race-trend-today:v9:nar:20260528:43");
   });
 
   it("compares races across dates and non-numeric race numbers", () => {

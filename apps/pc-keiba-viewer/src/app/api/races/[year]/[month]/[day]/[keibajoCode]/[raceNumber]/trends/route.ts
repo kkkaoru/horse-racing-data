@@ -220,6 +220,7 @@ const buildRaceTrendRawPayload = async (
     startYmd: past14Window.startYmd,
   });
   const todayPromise = getRaceTrendTodayStarterRows({
+    keibajoCode: race.keibajoCode,
     source: options.source,
     targetYmd,
   });

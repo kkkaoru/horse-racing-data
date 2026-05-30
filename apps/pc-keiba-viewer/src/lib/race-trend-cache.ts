@@ -5,7 +5,7 @@ import type { RaceSource } from "./codes";
 // (KV 30 min + Cache API 5 min) and the snapshot-derived today sibling rows
 // (Cache API 30s only). v7 entries reference the legacy single-window
 // snapshot helper and must be invalidated in lockstep with the inner
-// `race-trend-past14:v8` / `race-trend-today:v8` keys.
+// `race-trend-past14:v8` / `race-trend-today:v9` keys.
 export const RACE_TREND_CACHE_VERSION = "v8";
 
 // Past-14 cache narrows the historical aggregation window to a fixed 14
@@ -14,10 +14,14 @@ export const RACE_TREND_CACHE_VERSION = "v8";
 // leaking other races' bytes into the entry.
 export const RACE_TREND_PAST14_CACHE_VERSION = "v8";
 
-// Today cache stores only the snapshot-derived completed sibling rows for
-// the day. The key intentionally omits keibajoCode / raceBango so every
-// race on the day shares one upstream D1 round trip.
-export const RACE_TREND_TODAY_CACHE_VERSION = "v8";
+// Today cache stores the snapshot-derived completed sibling rows for the
+// day, partitioned per venue (keibajoCode). v9 bumped 2026-05-31 to add
+// keibajoCode to the key shape — the previous v8 key shared a single
+// entry across all venues, which leaked Tokyo R3 rows into Hanshin R2's
+// "sibling" trend section when the legacy fallback path narrowed by
+// keibajoCode in JavaScript after the SQL fan-out. Old v8 entries are
+// abandoned so the new shape cannot accidentally hit them.
+export const RACE_TREND_TODAY_CACHE_VERSION = "v9";
 
 // Historical window covered by the past-14 cache. Used by both the route
 // handler and the cache helpers so a single constant drives the SQL
@@ -154,15 +158,17 @@ export const buildRaceTrendPast14CacheKey = ({
   ].join(":");
 
 export interface RaceTrendTodayCacheKeyInput {
+  keibajoCode: string;
   source: RaceSource;
   targetYmd: string;
 }
 
 export const buildRaceTrendTodayCacheKey = ({
+  keibajoCode,
   source,
   targetYmd,
 }: RaceTrendTodayCacheKeyInput): string =>
-  ["race-trend-today", RACE_TREND_TODAY_CACHE_VERSION, source, targetYmd].join(":");
+  ["race-trend-today", RACE_TREND_TODAY_CACHE_VERSION, source, targetYmd, keibajoCode].join(":");
 
 export const buildRaceTrendApiPath = ({
   day,
