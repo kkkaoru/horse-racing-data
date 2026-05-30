@@ -8,6 +8,8 @@ pre-commit:
       run: bunx oxfmt --check {staged_files}
     oxlint:
       glob: "*.ts"
+      exclude:
+        - "**/next-env.d.ts"
       run: bunx oxlint {staged_files}
     # Per-package tsc/test: each command's `glob` keeps lefthook from running
     # it unless a staged file actually belongs to that package. The previous
