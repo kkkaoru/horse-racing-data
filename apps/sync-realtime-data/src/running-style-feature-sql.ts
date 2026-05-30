@@ -9,6 +9,7 @@ import {
   normalizeKeibajoCode,
   normalizeRaceBango,
   type RunningStyleRaceParams,
+  type RunningStyleSource,
 } from "./running-style-features";
 import type { RaceHorseFeatureRow } from "./running-style-r2";
 
@@ -48,6 +49,10 @@ const SEASON_WINTER = 3;
 const NEWCOMER_RACE_JOKEN_CODE = "000";
 const UMABAN_NORM_MIN_FIELD = 2;
 
+const BATCH_SOURCE_WHITELIST = new Set<RunningStyleSource>(["jra", "nar"]);
+const BATCH_DATE_PATTERN = /^\d{8}$/;
+const BATCH_FEATURE_SCHEMA_VERSION_PATTERN = /^[A-Za-z0-9_.-]+$/;
+
 const PEER_INPUT_COLUMNS = {
   career_win_rate: "careerWinRate",
   kohan3f_avg_5: "kohan3fAvg5",
@@ -81,7 +86,7 @@ const SAFE_ZENHAN_3F_EXPR = (alias: string): string => `
   end
 `;
 
-export const buildRunningStylePostgresFeatureSql = (): string => `
+const buildPerRaceCoreCtesSql = (): string => `
 with params as (
   select
     $1::text as source,
@@ -176,7 +181,9 @@ target as (
    and r.race_bango = p.race_bango
   where r.ketto_toroku_bango is not null
 ),
-target_horses as (
+`;
+
+const buildSharedFeatureCtesSql = (): string => `target_horses as (
   select distinct ketto_toroku_bango from target
 ),
 se_lookup as (
@@ -815,6 +822,140 @@ final_features as (
 )
 select * from final_features order by umaban
 `;
+
+export const buildRunningStylePostgresFeatureSql = (): string =>
+  buildPerRaceCoreCtesSql() + buildSharedFeatureCtesSql();
+
+export interface BuildRunningStyleBatchFeatureSqlArgs {
+  featureSchemaVersion: string;
+  fromDate: string;
+  source: RunningStyleSource;
+  toDate: string;
+}
+
+const assertBatchSource = (source: RunningStyleSource): RunningStyleSource => {
+  if (!BATCH_SOURCE_WHITELIST.has(source)) {
+    throw new Error(`invalid batch source: ${source}`);
+  }
+  return source;
+};
+
+const assertBatchDate = (label: string, value: string): string => {
+  if (!BATCH_DATE_PATTERN.test(value)) {
+    throw new Error(`invalid batch ${label}: expected YYYYMMDD (8 digits), got ${value}`);
+  }
+  return value;
+};
+
+const assertBatchFeatureSchemaVersion = (value: string): string => {
+  if (!BATCH_FEATURE_SCHEMA_VERSION_PATTERN.test(value)) {
+    throw new Error(`invalid batch featureSchemaVersion: expected [A-Za-z0-9_.-]+, got ${value}`);
+  }
+  return value;
+};
+
+const buildBatchCoreCtesSql = (args: BuildRunningStyleBatchFeatureSqlArgs): string => {
+  const source = assertBatchSource(args.source);
+  const fromDate = assertBatchDate("fromDate", args.fromDate);
+  const toDate = assertBatchDate("toDate", args.toDate);
+  const featureSchemaVersion = assertBatchFeatureSchemaVersion(args.featureSchemaVersion);
+  if (fromDate > toDate) {
+    throw new Error(`invalid batch date range: fromDate (${fromDate}) > toDate (${toDate})`);
+  }
+  return `
+with params as (
+  select
+    '${source}'::text as source,
+    '${fromDate}'::text as race_date_min,
+    '${toDate}'::text as race_date,
+    to_char(to_date('${fromDate}', 'YYYYMMDD') - interval '${HISTORY_LOOKBACK_YEARS} years', 'YYYYMMDD') as history_start
+),
+rec as (
+  select
+    f.source,
+    f.race_date,
+    to_date(f.race_date, 'YYYYMMDD') as race_dt,
+    f.kaisai_nen,
+    f.kaisai_tsukihi,
+    lpad(f.keibajo_code::text, 2, '0') as keibajo_code,
+    lpad(f.race_bango::text, 2, '0') as race_bango,
+    f.ketto_toroku_bango,
+    f.umaban,
+    f.bamei,
+    f.kishumei_ryakusho,
+    f.chokyoshimei_ryakusho,
+    f.kyori,
+    f.track_code,
+    f.grade_code,
+    f.kyoso_joken_code,
+    f.shusso_tosu,
+    f.finish_position,
+    f.finish_norm,
+    f.time_sa,
+    f.kohan_3f,
+    f.corner1_norm,
+    f.corner3_norm,
+    f.corner4_norm,
+    f.babajotai_code_shiba,
+    f.babajotai_code_dirt,
+    f.tansho_ninkijun,
+    f.tansho_odds
+  from race_entry_corner_features f
+  join params p on p.source = f.source
+  where f.race_date between p.history_start and p.race_date
+),
+target as (
+  select
+    r.source,
+    r.race_date,
+    r.race_dt,
+    r.kaisai_nen,
+    r.kaisai_tsukihi,
+    r.keibajo_code,
+    r.race_bango,
+    r.ketto_toroku_bango,
+    r.umaban,
+    r.bamei,
+    case when r.source = 'jra' then 'jra' when r.keibajo_code = '83' then 'ban-ei' else 'nar' end as category,
+    r.kyori,
+    r.track_code,
+    r.grade_code,
+    coalesce(
+      nullif(r.shusso_tosu, 0),
+      count(*) over (
+        partition by r.source, r.kaisai_nen, r.kaisai_tsukihi, r.keibajo_code, r.race_bango
+      )::int
+    ) as shusso_tosu,
+    r.finish_position,
+    r.finish_norm,
+    r.kishumei_ryakusho,
+    r.chokyoshimei_ryakusho,
+    r.kyoso_joken_code,
+    r.babajotai_code_shiba,
+    r.babajotai_code_dirt,
+    r.corner1_norm as target_corner_1_norm,
+    r.corner3_norm as target_corner_3_norm,
+    r.corner4_norm as target_corner_4_norm,
+    case
+      when r.corner1_norm is null then null
+      when r.corner1_norm = 0 then ${RUNNING_STYLE_CLASS_NIGE}
+      when r.corner1_norm <= ${RUNNING_STYLE_SENKOU_THRESHOLD} then ${RUNNING_STYLE_CLASS_SENKOU}
+      when r.corner1_norm <= ${RUNNING_STYLE_SASHI_THRESHOLD} then ${RUNNING_STYLE_CLASS_SASHI}
+      else ${RUNNING_STYLE_CLASS_OIKOMI}
+    end as target_running_style_class,
+    '${featureSchemaVersion}' as feature_schema_version,
+    cast(substr(r.race_date, 1, 4) as int) as race_year
+  from rec r
+  cross join params p
+  where r.ketto_toroku_bango is not null
+    and r.race_date between p.race_date_min and p.race_date
+),
+`;
+};
+
+export const buildRunningStyleBatchFeatureSql = (
+  args: BuildRunningStyleBatchFeatureSqlArgs,
+): string => buildBatchCoreCtesSql(args) + buildSharedFeatureCtesSql();
 
 const toStringOrNull = (value: unknown): string | null => {
   if (value === null || value === undefined) return null;

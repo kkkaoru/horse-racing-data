@@ -1,20 +1,27 @@
-"""Phase B: score running-style local parquet via existing LightGBM booster (no PG writeback).
+"""Phase B (X5): score running-style local parquet via existing LightGBM booster and
+write raw probabilities only. All post-processing (argmax, second_predicted_class,
+predicted_label, race-level constraints) is intentionally NOT performed here; a
+downstream TS script consumes the emitted probabilities and decides the label
+schema. memory rule ``feedback_no_race_level_nige_constraint.md`` forbids any
+nige cap in this pipeline.
+
+The model artifact is resolved by convention from ``--model-version`` (each
+artifact lives at ``tmp/models/<model_version>/model.txt`` relative to the
+``pc-keiba-viewer`` package directory). The output parquet contains the
+race-key 6-tuple, four softmax probabilities, and metadata columns only.
 
 Run with:
-    uv run python src/scripts/score_running_style_local.py \
-        --features-parquet apps/pc-keiba-viewer/tmp/bucket-eval/running-style/v1/features \
-        --model-version running-style-lightgbm-jra-v7 \
-        --output-parquet apps/pc-keiba-viewer/tmp/bucket-eval/running-style/v1/predictions \
-        --running-style-feature-version v1 \
-        --pg-url $DATABASE_URL_LOCAL \
+    uv run python src/scripts/score_running_style_local.py \\
+        --features-parquet tmp/bucket-eval/running-style/v1/features/category=jra/race_year=2006/data_0.parquet \\
+        --output-parquet tmp/bucket-eval/running-style/v1/logits/category=jra/race_year=2006/data_0.parquet \\
+        --running-style-feature-version v1 \\
+        --model-version jra-running-style-lgbm-prod-v1.5 \\
         --category jra
 """
 
 from __future__ import annotations
 
 import argparse
-import json
-import subprocess
 from pathlib import Path
 from typing import Protocol
 
@@ -23,39 +30,49 @@ import numpy as np
 import pandas as pd
 
 from running_style_lightgbm import (
-    CLASS_LABELS,
     PROBABILITY_COLUMNS,
-    compute_predicted_labels,
     predict_softmax,
     resolve_feature_columns,
 )
 
-ACTIVE_MODELS_TABLE: str = "running_style_active_models"
-LABEL_COLUMN: str = "predicted_label"
-SUPPORTED_CATEGORIES: tuple[str, str, str] = ("jra", "nar", "ban-ei")
+SUPPORTED_CATEGORIES: tuple[str, str] = ("jra", "nar")
+MODELS_DIR_NAME: str = "tmp/models"
+MODEL_FILENAME: str = "model.txt"
+RACE_KEY_COLUMNS: tuple[str, str, str, str, str, str] = (
+    "source",
+    "kaisai_nen",
+    "kaisai_tsukihi",
+    "keibajo_code",
+    "race_bango",
+    "ketto_toroku_bango",
+)
+FEATURE_VERSION_COLUMN: str = "running_style_feature_version"
+MODEL_VERSION_COLUMN: str = "model_version"
 
 
 class BoosterLoaderLike(Protocol):
     def __call__(self, *, model_file: str) -> lgb.Booster: ...
 
 
-class PsqlRunnerLike(Protocol):
-    def __call__(self, pg_url: str, sql: str) -> str: ...
-
-
 class PandasReaderLike(Protocol):
     def __call__(self, path: str) -> pd.DataFrame: ...
 
 
+class PathExistsLike(Protocol):
+    def __call__(self, path: str) -> bool: ...
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Score running-style local features parquet using active LightGBM booster.",
+        description=(
+            "Score running-style local features parquet using a versioned LightGBM "
+            "booster and write raw probabilities only."
+        ),
     )
     parser.add_argument("--features-parquet", required=True)
     parser.add_argument("--model-version", required=True)
     parser.add_argument("--output-parquet", required=True)
     parser.add_argument("--running-style-feature-version", required=True)
-    parser.add_argument("--pg-url", required=True)
     parser.add_argument("--category", required=True, choices=list(SUPPORTED_CATEGORIES))
     return parser
 
@@ -64,60 +81,39 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return build_arg_parser().parse_args(argv)
 
 
-def build_active_model_query(category: str) -> str:
-    return (
-        "select json_build_object('model_version', model_version, 'artifact_path', artifact_path) "
-        f"from {ACTIVE_MODELS_TABLE} where category = '{category}' limit 1"
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[4]
+
+
+def resolve_artifact_path(model_version: str) -> str:
+    return (repo_root() / MODELS_DIR_NAME / model_version / MODEL_FILENAME).as_posix()
+
+
+def assert_artifact_exists(artifact_path: str, *, path_exists: PathExistsLike) -> str:
+    if not path_exists(artifact_path):
+        raise FileNotFoundError(
+            f"Running-style model artifact not found at {artifact_path}; "
+            "place model.txt under tmp/models/<model_version>/.",
+        )
+    return artifact_path
+
+
+def select_race_key_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    present_columns = [column for column in RACE_KEY_COLUMNS if column in frame.columns]
+    return frame[present_columns].reset_index(drop=True)
+
+
+def build_probability_frame(probabilities: np.ndarray) -> pd.DataFrame:
+    return pd.DataFrame(
+        {column: probabilities[:, index] for index, column in enumerate(PROBABILITY_COLUMNS)},
     )
 
 
-def run_psql(pg_url: str, sql: str) -> str:
-    result = subprocess.run(
-        ["psql", pg_url, "-v", "ON_ERROR_STOP=1", "-At", "-c", sql],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"psql failed: {result.stderr.strip()}")
-    return result.stdout.strip()
-
-
-def resolve_active_model(
-    *, psql_runner: PsqlRunnerLike, pg_url: str, category: str,
-) -> tuple[str, str]:
-    raw = psql_runner(pg_url, build_active_model_query(category))
-    if raw == "":
-        raise RuntimeError(f"No active running-style model for category={category}.")
-    parsed: dict[str, str] = json.loads(raw)
-    model_version = parsed.get("model_version")
-    artifact_path = parsed.get("artifact_path")
-    if not isinstance(model_version, str) or not isinstance(artifact_path, str):
-        raise RuntimeError("Active model row must contain string model_version and artifact_path.")
-    return model_version, artifact_path
-
-
-def build_label_series(probabilities: np.ndarray) -> list[str]:
-    predicted = compute_predicted_labels(probabilities)
-    return [CLASS_LABELS[int(idx)] for idx in predicted]
-
-
-def attach_probability_columns(frame: pd.DataFrame, probabilities: np.ndarray) -> pd.DataFrame:
-    for column_index, column_name in enumerate(PROBABILITY_COLUMNS):
-        frame[column_name] = probabilities[:, column_index]
-    return frame
-
-
-def attach_label_and_versions(
-    frame: pd.DataFrame,
-    probabilities: np.ndarray,
-    *,
-    feature_version: str,
-    model_version: str,
+def attach_version_columns(
+    frame: pd.DataFrame, *, feature_version: str, model_version: str,
 ) -> pd.DataFrame:
-    frame[LABEL_COLUMN] = build_label_series(probabilities)
-    frame["running_style_feature_version"] = feature_version
-    frame["model_version"] = model_version
+    frame[FEATURE_VERSION_COLUMN] = feature_version
+    frame[MODEL_VERSION_COLUMN] = model_version
     return frame
 
 
@@ -130,57 +126,51 @@ def score_frame(
 ) -> pd.DataFrame:
     feature_columns = resolve_feature_columns(list(frame.columns))
     probabilities = predict_softmax(booster, frame, feature_columns, [])
-    frame = attach_probability_columns(frame, probabilities)
-    frame = attach_label_and_versions(
-        frame,
-        probabilities,
-        feature_version=feature_version,
-        model_version=model_version,
+    race_keys = select_race_key_frame(frame)
+    probability_frame = build_probability_frame(probabilities)
+    combined = pd.concat([race_keys, probability_frame], axis=1)
+    return attach_version_columns(
+        combined, feature_version=feature_version, model_version=model_version,
     )
-    return frame
 
 
-def write_predictions_parquet(frame: pd.DataFrame, output_dir: str) -> None:
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    frame.to_parquet(
-        output_dir,
-        partition_cols=["category", "race_year"],
-        index=False,
-    )
+def write_logits_parquet(frame: pd.DataFrame, output_path: str) -> None:
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    frame.to_parquet(output_path, index=False)
+
+
+def default_path_exists(path: str) -> bool:
+    return Path(path).exists()
 
 
 def run(
     args: argparse.Namespace,
     *,
-    psql_runner: PsqlRunnerLike,
     booster_loader: BoosterLoaderLike,
     pandas_reader: PandasReaderLike,
+    path_exists: PathExistsLike,
 ) -> None:
-    active_model_version, artifact_path = resolve_active_model(
-        psql_runner=psql_runner, pg_url=args.pg_url, category=args.category,
+    artifact_path = assert_artifact_exists(
+        resolve_artifact_path(args.model_version), path_exists=path_exists,
     )
-    if active_model_version != args.model_version:
-        raise RuntimeError(
-            "Requested --model-version does not match active model in PG; refusing to score.",
-        )
     booster = booster_loader(model_file=artifact_path)
     frame = pandas_reader(args.features_parquet)
     scored = score_frame(
         booster=booster,
         frame=frame,
         feature_version=args.running_style_feature_version,
-        model_version=active_model_version,
+        model_version=args.model_version,
     )
-    write_predictions_parquet(scored, args.output_parquet)
+    write_logits_parquet(scored, args.output_parquet)
 
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     run(
         args,
-        psql_runner=run_psql,
         booster_loader=lgb.Booster,
         pandas_reader=pd.read_parquet,
+        path_exists=default_path_exists,
     )
 
 

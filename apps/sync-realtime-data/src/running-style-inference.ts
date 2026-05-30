@@ -20,7 +20,6 @@ import {
   predictFlatRunningStyle,
   type FlatLightGBMModel,
 } from "./running-style-model-binary";
-import { applyRaceLevelNigeConstraintForRace } from "./running-style-race-constraint";
 import {
   loadFeaturesFromR2,
   loadLightGBMModelFromR2,
@@ -125,14 +124,6 @@ const predictionRowFromResult = (
   raceKey: row.raceKey,
 });
 
-const probabilitiesToArray = (prediction: RunningStylePrediction): Float64Array =>
-  Float64Array.from([
-    prediction.probabilities.nige,
-    prediction.probabilities.senkou,
-    prediction.probabilities.sashi,
-    prediction.probabilities.oikomi,
-  ]);
-
 const buildPredictionForHorse = (
   row: RaceHorseFeatureRow,
   fieldRow: HorseFieldRow,
@@ -158,17 +149,13 @@ const predictRace = (
   predictedAt: string,
 ): RaceRunningStyleRow[] => {
   const fieldRows = computeFieldFeaturesPerHorse(extractPeerInputs(rows));
-  const rawPredictions = rows.map((row, index) =>
-    buildPredictionForHorse(row, fieldRows[index]!, model),
-  );
-  const constrained = applyRaceLevelNigeConstraintForRace(
-    rawPredictions.map(probabilitiesToArray),
-    model.class_labels,
-    model.num_class,
-    { disableNigeCap: true },
-  );
   return rows.map((row, index) =>
-    predictionRowFromResult(row, constrained[index]!, model.model_version, predictedAt),
+    predictionRowFromResult(
+      row,
+      buildPredictionForHorse(row, fieldRows[index]!, model),
+      model.model_version,
+      predictedAt,
+    ),
   );
 };
 
@@ -178,17 +165,13 @@ const predictRaceFlat = (
   predictedAt: string,
 ): RaceRunningStyleRow[] => {
   const fieldRows = computeFieldFeaturesPerHorse(extractPeerInputs(rows));
-  const rawPredictions = rows.map((row, index) =>
-    buildFlatPredictionForHorse(row, fieldRows[index]!, model),
-  );
-  const constrained = applyRaceLevelNigeConstraintForRace(
-    rawPredictions.map(probabilitiesToArray),
-    model.header.class_labels,
-    model.header.num_class,
-    { disableNigeCap: true },
-  );
   return rows.map((row, index) =>
-    predictionRowFromResult(row, constrained[index]!, model.header.model_version, predictedAt),
+    predictionRowFromResult(
+      row,
+      buildFlatPredictionForHorse(row, fieldRows[index]!, model),
+      model.header.model_version,
+      predictedAt,
+    ),
   );
 };
 
