@@ -11,12 +11,16 @@ import {
   upsertRunningStyle,
   upsertRunningStyleInferenceState,
 } from "./storage";
+import type { RunningStyleRow } from "./types";
 
 const buildPrepared = (response: unknown) => {
   const run = vi.fn().mockResolvedValue({});
   const all = vi.fn().mockResolvedValue(response);
   const first = vi.fn().mockResolvedValue(response);
-  const bind = vi.fn(() => ({ run, all, first }));
+  // `bind` accepts variadic args at runtime; typing the param list as
+  // `unknown[]` lets the tests inspect `mock.calls[i][j]` by index without
+  // hitting the `Tuple of length 0` error from a zero-arg `vi.fn`.
+  const bind = vi.fn((..._args: unknown[]) => ({ run, all, first }));
   const prepare = vi.fn(() => ({ bind }));
   return { all, bind, first, prepare, run };
 };
@@ -40,6 +44,53 @@ it("upserts running-style row with bound params", async () => {
     predictedAt: "2026-05-29T00:00:00Z",
   });
   expect(stub.run).toHaveBeenCalled();
+});
+
+it("upsertRunningStyle coerces undefined bamei to null at bind site", async () => {
+  const stub = buildPrepared({ results: [] });
+  const db = { prepare: stub.prepare } as unknown as D1Database;
+  const row: RunningStyleRow = {
+    raceKey: "nar:20260529:30:08",
+    horseNumber: 1,
+    kettoTorokuBango: "kt-1",
+    bamei: "horse",
+    category: "nar",
+    kaisaiNen: "2026",
+    modelVersion: "v1",
+    pNige: 0.1,
+    pSenkou: 0.2,
+    pSashi: 0.3,
+    pOikomi: 0.4,
+    predictedLabel: "senkou",
+    predictedAt: "2026-05-29T00:00:00Z",
+  };
+  Reflect.set(row, "bamei", undefined);
+  await upsertRunningStyle(db, row);
+  expect(stub.bind).toHaveBeenCalledTimes(1);
+  expect(stub.bind.mock.calls[0]![3]).toBeNull();
+});
+
+it("upsertRunningStyle binds null when ketto_toroku_bango is undefined", async () => {
+  const stub = buildPrepared({ results: [] });
+  const db = { prepare: stub.prepare } as unknown as D1Database;
+  const row: RunningStyleRow = {
+    raceKey: "nar:20260529:30:08",
+    horseNumber: 1,
+    kettoTorokuBango: "kt-1",
+    bamei: "horse",
+    category: "nar",
+    kaisaiNen: "2026",
+    modelVersion: "v1",
+    pNige: 0.1,
+    pSenkou: 0.2,
+    pSashi: 0.3,
+    pOikomi: 0.4,
+    predictedLabel: "senkou",
+    predictedAt: "2026-05-29T00:00:00Z",
+  };
+  Reflect.set(row, "kettoTorokuBango", undefined);
+  await upsertRunningStyle(db, row);
+  expect(stub.bind.mock.calls[0]![2]).toBeNull();
 });
 
 it("lists running-style rows mapping snake_case to camelCase", async () => {
