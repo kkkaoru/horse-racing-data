@@ -3,17 +3,31 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
+import type { ReactElement, ReactNode } from "react";
 import { useMemo, useState } from "react";
 
 import type {
   RaceRunningStyleRow,
   RunningStyleLabel,
 } from "../../../db/corner-running-style-parsers";
+import { formatKeibajo, getTrackSurfaceLabel, getTrackTurnLabel } from "../../../lib/format";
+import { getAgeLabel, getConditionLabel, getGradeLabel } from "../../../lib/race-classification";
 import { formatRunnerNumber } from "../../../lib/runner-format";
+import type {
+  RaceRowForRunningStyleBucketFilter,
+  RunningStyleBucketMetrics,
+  RunningStyleClass,
+  RunningStyleDimensionFlags,
+} from "../../../lib/running-style-prediction-dimensions";
+import { RUNNING_STYLE_PREDICTION_PARAM_NAMES } from "../../../lib/running-style-prediction-dimensions";
 import { useRealtimeRaceSelector } from "./realtime-client";
 
 const STYLE_TAB_VALUES = ["nige", "senkou", "sashi", "oikomi"] as const;
 type StyleTab = (typeof STYLE_TAB_VALUES)[number];
+
+type DimensionKey = keyof RunningStyleDimensionFlags;
+
+type ClassIndex = 0 | 1 | 2 | 3;
 
 const STYLE_TAB_LABELS: Record<StyleTab, string> = {
   nige: "逃げ",
@@ -29,11 +43,28 @@ const RUNNING_STYLE_DISPLAY: Record<RunningStyleLabel, string> = {
   oikomi: "追い込み",
 };
 
+const RUNNING_STYLE_CLASS_LABELS: Record<RunningStyleClass, string> = {
+  nige: "逃げ",
+  senkou: "先行",
+  sashi: "差し",
+  oikomi: "追い込み",
+};
+
 const DEFAULT_TAB: StyleTab = "nige";
 const PERCENT_DECIMALS = 2;
 const SEARCH_PARAM_KEY = "style";
 const MISSING_NAME_PLACEHOLDER = "馬名不明";
 const MISSING_JOCKEY_PLACEHOLDER = "騎手不明";
+const MIN_SUPPORT_FOR_F1 = 5;
+const PANEL_PERCENT_DECIMALS = 1;
+const KAPPA_DECIMALS = 3;
+const LOG_LOSS_DECIMALS = 3;
+const F1_DECIMALS = 3;
+const HEATMAP_HUE = 210;
+const HEATMAP_MAX_LIGHTNESS = 95;
+const HEATMAP_MIN_LIGHTNESS = 35;
+const HEATMAP_LIGHTNESS_RANGE = HEATMAP_MAX_LIGHTNESS - HEATMAP_MIN_LIGHTNESS;
+const RACE_NAME_GRADE_CODES = new Set<string>(["A", "F"]);
 
 interface RunnerDisplayInfo {
   bamei: string | null;
@@ -45,6 +76,33 @@ interface RunningStyleSectionProps {
   modelMacroF1: number | null;
   modelVersion: string | null;
   runnersByUmaban: Record<number, RunnerDisplayInfo>;
+  bucketEvaluation?: RunningStyleBucketMetrics | null;
+  dimensionFlags?: RunningStyleDimensionFlags | null;
+  bucketRace?: RaceRowForRunningStyleBucketFilter | null;
+  bucketSource?: "jra" | "nar" | null;
+  bucketGradeCode?: string | null;
+}
+
+interface RunningStyleBucketEvaluationPanelProps {
+  evaluation: RunningStyleBucketMetrics;
+}
+
+interface RunningStyleDimensionTogglesProps {
+  flags: RunningStyleDimensionFlags;
+  race: RaceRowForRunningStyleBucketFilter;
+  source: "jra" | "nar";
+  gradeCode: string | null;
+}
+
+interface RowPercentInput {
+  count: number;
+  rowTotal: number;
+}
+
+interface HeatmapCellInput {
+  count: number;
+  rowTotal: number;
+  total: number;
 }
 
 const formatPercent = (value: number): string => `${(value * 100).toFixed(PERCENT_DECIMALS)}%`;
@@ -187,11 +245,368 @@ const MetricsBadge = ({ modelMacroF1, modelVersion }: MetricsBadgeProps) => {
   );
 };
 
+const formatPanelPercent = (value: number): string =>
+  `${(value * 100).toFixed(PANEL_PERCENT_DECIMALS)}%`;
+
+const formatF1Value = (value: number | null): string =>
+  value === null ? "-" : value.toFixed(F1_DECIMALS);
+
+const formatLogLossValue = (value: number | null): string =>
+  value === null ? "-" : value.toFixed(LOG_LOSS_DECIMALS);
+
+const formatRowPercent = ({ count, rowTotal }: RowPercentInput): string =>
+  rowTotal === 0 ? "0.0%" : `${((count / rowTotal) * 100).toFixed(PANEL_PERCENT_DECIMALS)}%`;
+
+const formatAccuracyCI = (evaluation: RunningStyleBucketMetrics): string => {
+  const halfRange = (evaluation.accuracyCI.upper - evaluation.accuracyCI.lower) / 2;
+  return `±${(halfRange * 100).toFixed(PANEL_PERCENT_DECIMALS)}%`;
+};
+
+const heatmapBackground = ({ count, rowTotal, total }: HeatmapCellInput): string => {
+  if (total === 0 || rowTotal === 0) {
+    return `hsl(${HEATMAP_HUE}, 30%, ${HEATMAP_MAX_LIGHTNESS}%)`;
+  }
+  const ratio = count / rowTotal;
+  const lightness = HEATMAP_MAX_LIGHTNESS - HEATMAP_LIGHTNESS_RANGE * ratio;
+  return `hsl(${HEATMAP_HUE}, 70%, ${lightness}%)`;
+};
+
+const sumConfusionMatrixRow = (row: readonly [number, number, number, number]): number =>
+  row[0] + row[1] + row[2] + row[3];
+
+const sumConfusionMatrixTotal = (cm: RunningStyleBucketMetrics["confusionMatrix"]): number =>
+  sumConfusionMatrixRow(cm[0]) +
+  sumConfusionMatrixRow(cm[1]) +
+  sumConfusionMatrixRow(cm[2]) +
+  sumConfusionMatrixRow(cm[3]);
+
+const renderPerClassRow = (
+  className: RunningStyleClass,
+  evaluation: RunningStyleBucketMetrics,
+): ReactElement => {
+  const metric = evaluation.perClass[className];
+  const supportTooSmall = metric.support < MIN_SUPPORT_FOR_F1;
+  return (
+    <tr key={`per-class-${className}`}>
+      <th scope="row">{RUNNING_STYLE_CLASS_LABELS[className]}</th>
+      <td>{supportTooSmall ? "n too small" : formatF1Value(metric.precision)}</td>
+      <td>{supportTooSmall ? "n too small" : formatF1Value(metric.recall)}</td>
+      <td>{supportTooSmall ? "n too small" : formatF1Value(metric.f1)}</td>
+      <td>{metric.support}</td>
+    </tr>
+  );
+};
+
+const renderPerClassLogLossRow = (
+  className: RunningStyleClass,
+  evaluation: RunningStyleBucketMetrics,
+): ReactElement => (
+  <tr key={`per-class-logloss-${className}`}>
+    <th scope="row">{RUNNING_STYLE_CLASS_LABELS[className]}</th>
+    <td>{formatLogLossValue(evaluation.perClassLogLoss[className])}</td>
+  </tr>
+);
+
+const renderHeatmapCell = (
+  actualIndex: ClassIndex,
+  predictedIndex: ClassIndex,
+  evaluation: RunningStyleBucketMetrics,
+  total: number,
+): ReactElement => {
+  const row = evaluation.confusionMatrix[actualIndex];
+  const count = row[predictedIndex];
+  const rowTotal = sumConfusionMatrixRow(row);
+  const background = heatmapBackground({ count, rowTotal, total });
+  return (
+    <td
+      key={`cm-${actualIndex}-${predictedIndex}`}
+      className="running-style-bucket-heatmap-cell"
+      style={{ backgroundColor: background }}
+    >
+      <span className="running-style-bucket-heatmap-count">{count}</span>
+      <span className="running-style-bucket-heatmap-percent">
+        ({formatRowPercent({ count, rowTotal })})
+      </span>
+    </td>
+  );
+};
+
+const HEATMAP_ROW_LABELS: Record<ClassIndex, string> = {
+  0: RUNNING_STYLE_CLASS_LABELS.nige,
+  1: RUNNING_STYLE_CLASS_LABELS.senkou,
+  2: RUNNING_STYLE_CLASS_LABELS.sashi,
+  3: RUNNING_STYLE_CLASS_LABELS.oikomi,
+};
+
+const renderHeatmapRow = (
+  actualIndex: ClassIndex,
+  evaluation: RunningStyleBucketMetrics,
+  total: number,
+): ReactElement => (
+  <tr key={`cm-row-${actualIndex}`}>
+    <th scope="row">{HEATMAP_ROW_LABELS[actualIndex]}</th>
+    {renderHeatmapCell(actualIndex, 0, evaluation, total)}
+    {renderHeatmapCell(actualIndex, 1, evaluation, total)}
+    {renderHeatmapCell(actualIndex, 2, evaluation, total)}
+    {renderHeatmapCell(actualIndex, 3, evaluation, total)}
+  </tr>
+);
+
+function RunningStyleBucketEvaluationPanel({
+  evaluation,
+}: RunningStyleBucketEvaluationPanelProps): ReactElement {
+  const total = sumConfusionMatrixTotal(evaluation.confusionMatrix);
+  return (
+    <div className="running-style-bucket-evaluation-panel" aria-label="脚質予測 bucket 検証結果">
+      <div className="running-style-bucket-summary">
+        <span>同条件 bucket での検証精度</span>
+        <strong>
+          {formatPanelPercent(evaluation.accuracy)} {formatAccuracyCI(evaluation)}
+        </strong>
+        <small>
+          {evaluation.raceCount.toLocaleString("ja-JP")}レース /{" "}
+          {evaluation.predictionCount.toLocaleString("ja-JP")}予測
+        </small>
+        {evaluation.smallSampleWarning ? (
+          <span className="running-style-bucket-small-sample-badge">
+            (n={evaluation.predictionCount}, small sample)
+          </span>
+        ) : null}
+      </div>
+      <dl className="running-style-bucket-main-metrics">
+        <div>
+          <dt>macro-F1</dt>
+          <dd>{formatF1Value(evaluation.macroF1)}</dd>
+        </div>
+        <div>
+          <dt>weighted-F1</dt>
+          <dd>{formatF1Value(evaluation.weightedF1)}</dd>
+        </div>
+        <div>
+          <dt title="Quadratic Weighted Kappa: > 0.6 で good agreement">QWK</dt>
+          <dd>{evaluation.qwk.toFixed(KAPPA_DECIMALS)}</dd>
+        </div>
+        <div>
+          <dt>top-2 accuracy</dt>
+          <dd>{formatPanelPercent(evaluation.top2Accuracy)}</dd>
+        </div>
+        <div>
+          <dt>overall log loss</dt>
+          <dd>{formatLogLossValue(evaluation.overallLogLoss)}</dd>
+        </div>
+      </dl>
+      <div className="running-style-bucket-per-class">
+        <h3>クラス別 metric</h3>
+        <table className="running-style-bucket-per-class-table">
+          <thead>
+            <tr>
+              <th scope="col">クラス</th>
+              <th scope="col">precision</th>
+              <th scope="col">recall</th>
+              <th scope="col">F1</th>
+              <th scope="col">support</th>
+            </tr>
+          </thead>
+          <tbody>
+            {renderPerClassRow("nige", evaluation)}
+            {renderPerClassRow("senkou", evaluation)}
+            {renderPerClassRow("sashi", evaluation)}
+            {renderPerClassRow("oikomi", evaluation)}
+          </tbody>
+        </table>
+      </div>
+      <div className="running-style-bucket-per-class-logloss">
+        <h3>クラス別 log loss</h3>
+        <table className="running-style-bucket-per-class-logloss-table">
+          <thead>
+            <tr>
+              <th scope="col">クラス</th>
+              <th scope="col">log loss</th>
+            </tr>
+          </thead>
+          <tbody>
+            {renderPerClassLogLossRow("nige", evaluation)}
+            {renderPerClassLogLossRow("senkou", evaluation)}
+            {renderPerClassLogLossRow("sashi", evaluation)}
+            {renderPerClassLogLossRow("oikomi", evaluation)}
+          </tbody>
+        </table>
+      </div>
+      <div className="running-style-bucket-confusion-matrix">
+        <h3>confusion matrix (actual × predicted)</h3>
+        <table className="running-style-bucket-heatmap-table">
+          <thead>
+            <tr>
+              <th scope="col" aria-label="actual class">
+                actual ＼ predicted
+              </th>
+              <th scope="col">{RUNNING_STYLE_CLASS_LABELS.nige}</th>
+              <th scope="col">{RUNNING_STYLE_CLASS_LABELS.senkou}</th>
+              <th scope="col">{RUNNING_STYLE_CLASS_LABELS.sashi}</th>
+              <th scope="col">{RUNNING_STYLE_CLASS_LABELS.oikomi}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {renderHeatmapRow(0, evaluation, total)}
+            {renderHeatmapRow(1, evaluation, total)}
+            {renderHeatmapRow(2, evaluation, total)}
+            {renderHeatmapRow(3, evaluation, total)}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+const resolveKeibajoLabel = (race: RaceRowForRunningStyleBucketFilter): string =>
+  formatKeibajo(race.keibajoCode);
+
+const resolveDistanceLabel = (race: RaceRowForRunningStyleBucketFilter): string => `${race.kyori}m`;
+
+const resolveAgeLabel = (race: RaceRowForRunningStyleBucketFilter): string =>
+  getAgeLabel(race.kyosoShubetsuCode);
+
+const resolveJraConditionLabel = (race: RaceRowForRunningStyleBucketFilter): string =>
+  getConditionLabel(race.kyosoJokenCode);
+
+const resolveNarConditionLabel = (race: RaceRowForRunningStyleBucketFilter): string => {
+  const trimmed = race.kyosoJokenMeisho?.trim() ?? "";
+  return trimmed === "" ? "条件" : trimmed;
+};
+
+const resolveTrackLabel = (race: RaceRowForRunningStyleBucketFilter): string =>
+  `${getTrackSurfaceLabel(race.trackCode)}${getTrackTurnLabel(race.trackCode)}`;
+
+const resolveGradeLabel = (
+  race: RaceRowForRunningStyleBucketFilter,
+  source: "jra" | "nar",
+): string => getGradeLabel(race.gradeCode, source);
+
+const resolveRaceNameLabel = (race: RaceRowForRunningStyleBucketFilter): string => {
+  const trimmed = race.kyosomeiHondai?.trim() ?? "";
+  return trimmed;
+};
+
+const isGradeShown = (gradeCode: string | null): boolean => gradeCode !== null && gradeCode !== "";
+
+const isRaceNameShown = (gradeCode: string | null): boolean =>
+  gradeCode !== null && RACE_NAME_GRADE_CODES.has(gradeCode);
+
+interface DimensionToggleEntry {
+  key: DimensionKey;
+  label: string;
+}
+
+const buildToggleEntries = (
+  race: RaceRowForRunningStyleBucketFilter,
+  source: "jra" | "nar",
+  gradeCode: string | null,
+): readonly DimensionToggleEntry[] => {
+  const conditionLabel =
+    source === "nar" ? resolveNarConditionLabel(race) : resolveJraConditionLabel(race);
+  const raceNameLabel = resolveRaceNameLabel(race);
+  const entries: DimensionToggleEntry[] = [
+    { key: "keibajo", label: resolveKeibajoLabel(race) },
+    { key: "distance", label: resolveDistanceLabel(race) },
+    { key: "kyosoShubetsu", label: resolveAgeLabel(race) },
+  ];
+  if (source === "jra") {
+    entries.push({ key: "kyosoJoken", label: resolveJraConditionLabel(race) });
+    entries.push({ key: "track", label: resolveTrackLabel(race) });
+  }
+  if (source === "nar") {
+    entries.push({ key: "condition", label: conditionLabel });
+  }
+  if (isGradeShown(gradeCode)) {
+    entries.push({ key: "grade", label: resolveGradeLabel(race, source) });
+  }
+  if (isRaceNameShown(gradeCode) && raceNameLabel !== "") {
+    entries.push({ key: "raceName", label: raceNameLabel });
+  }
+  return entries;
+};
+
+function RunningStyleDimensionToggles({
+  flags,
+  race,
+  source,
+  gradeCode,
+}: RunningStyleDimensionTogglesProps): ReactElement {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const entries = buildToggleEntries(race, source, gradeCode);
+
+  const toggle = (key: DimensionKey): void => {
+    const next = new URLSearchParams(searchParams?.toString() ?? "");
+    const paramName = RUNNING_STYLE_PREDICTION_PARAM_NAMES[key];
+    const enabled = !flags[key];
+    next.set(paramName, enabled ? "1" : "0");
+    router.replace(`?${next.toString()}`, { scroll: false });
+  };
+
+  const renderToggle = (entry: DimensionToggleEntry): ReactNode => (
+    <label key={entry.key} className="running-style-bucket-toggle-label">
+      <input
+        type="checkbox"
+        checked={flags[entry.key]}
+        onChange={() => {
+          toggle(entry.key);
+        }}
+      />
+      {entry.label}
+    </label>
+  );
+
+  return (
+    <div className="running-style-bucket-toggles" aria-label="脚質予測 bucket 条件">
+      {entries.map((entry) => renderToggle(entry))}
+    </div>
+  );
+}
+
+interface RenderBucketSubSectionProps {
+  bucketEvaluation: RunningStyleBucketMetrics | null | undefined;
+  dimensionFlags: RunningStyleDimensionFlags | null | undefined;
+  bucketRace: RaceRowForRunningStyleBucketFilter | null | undefined;
+  bucketSource: "jra" | "nar" | null | undefined;
+  bucketGradeCode: string | null | undefined;
+}
+
+const renderBucketSubSection = (props: RenderBucketSubSectionProps): ReactNode => {
+  const flags = props.dimensionFlags ?? null;
+  const race = props.bucketRace ?? null;
+  const source = props.bucketSource ?? null;
+  const evaluation = props.bucketEvaluation ?? null;
+  const showToggles = flags !== null && race !== null && source !== null;
+  const showPanel = evaluation !== null;
+  if (!showToggles && !showPanel) {
+    return null;
+  }
+  return (
+    <>
+      {showToggles ? (
+        <RunningStyleDimensionToggles
+          flags={flags}
+          race={race}
+          source={source}
+          gradeCode={props.bucketGradeCode ?? null}
+        />
+      ) : null}
+      {showPanel ? <RunningStyleBucketEvaluationPanel evaluation={evaluation} /> : null}
+    </>
+  );
+};
+
 export const RunningStyleSection = ({
   rows,
   modelMacroF1,
   modelVersion,
   runnersByUmaban,
+  bucketEvaluation,
+  dimensionFlags,
+  bucketRace,
+  bucketSource,
+  bucketGradeCode,
 }: RunningStyleSectionProps) => {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -225,10 +640,19 @@ export const RunningStyleSection = ({
     router.replace(query === "" ? "?" : `?${query}`, { scroll: false });
   };
 
+  const bucketSubSection = renderBucketSubSection({
+    bucketEvaluation,
+    dimensionFlags,
+    bucketRace,
+    bucketSource,
+    bucketGradeCode,
+  });
+
   if (rows.length === 0) {
     return (
       <section className="running-style-section" aria-label="脚質予測">
         <h2>脚質予測</h2>
+        {bucketSubSection}
         <p className="running-style-empty">このレースの脚質予測データはまだありません。</p>
       </section>
     );
@@ -237,6 +661,7 @@ export const RunningStyleSection = ({
   return (
     <section className="running-style-section" aria-label="脚質予測">
       <h2>脚質予測</h2>
+      {bucketSubSection}
       <TabButtons currentTab={currentTab} onSelect={handleSelect} />
       <AllRowsTable
         entryStatusByHorse={entryStatusByHorse}

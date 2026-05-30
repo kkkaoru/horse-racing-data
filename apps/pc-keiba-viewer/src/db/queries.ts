@@ -39,6 +39,11 @@ import type {
   TimeScoreRow,
 } from "../lib/race-types";
 import {
+  type RunningStyleBucketFilter,
+  type RunningStyleBucketMetrics,
+} from "../lib/running-style-prediction-dimensions";
+import { scaleRunningStyleEvaluationFromCM } from "../lib/running-style-prediction-evaluation";
+import {
   putTopRaceWindowsCache,
   readTopRaceWindowsWithSwr,
   type TopRaceWindowsPayload,
@@ -6137,4 +6142,187 @@ export const getFrameStats = cache(
       }));
     });
   },
+);
+
+export interface RunningStyleBucketEvaluationQueryFilter {
+  filter: RunningStyleBucketFilter;
+}
+
+interface RunningStyleBucketAggregateRow extends Record<string, unknown> {
+  race_count: string | number;
+  prediction_count: string | number;
+  cm_nn: string | number;
+  cm_ns: string | number;
+  cm_nsh: string | number;
+  cm_no: string | number;
+  cm_sn: string | number;
+  cm_ss: string | number;
+  cm_ssh: string | number;
+  cm_so: string | number;
+  cm_shn: string | number;
+  cm_shs: string | number;
+  cm_shsh: string | number;
+  cm_sho: string | number;
+  cm_on: string | number;
+  cm_os: string | number;
+  cm_osh: string | number;
+  cm_oo: string | number;
+  log_loss_nige_sum: string | number;
+  log_loss_nige_count: string | number;
+  log_loss_senkou_sum: string | number;
+  log_loss_senkou_count: string | number;
+  log_loss_sashi_sum: string | number;
+  log_loss_sashi_count: string | number;
+  log_loss_oikomi_sum: string | number;
+  log_loss_oikomi_count: string | number;
+  top2_hit_count: string | number;
+}
+
+const toFiniteNumber = (value: string | number): number => {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const isJraOrNarCategory = (category: string): category is "jra" | "nar" =>
+  category === "jra" || category === "nar";
+
+export const getRunningStyleBucketEvaluation = cache(
+  async (
+    args: RunningStyleBucketEvaluationQueryFilter,
+  ): Promise<RunningStyleBucketMetrics | null> =>
+    withDbQueryCache(
+      [
+        "getRunningStyleBucketEvaluation",
+        args.filter.category,
+        args.filter.source,
+        args.filter.keibajoCode,
+        args.filter.kyori,
+        args.filter.kyosoShubetsuCode,
+        args.filter.kyosoJokenCode,
+        args.filter.conditionKey,
+        args.filter.trackCode,
+        args.filter.gradeCode,
+        args.filter.raceName,
+        args.filter.enabled.keibajo,
+        args.filter.enabled.distance,
+        args.filter.enabled.kyosoShubetsu,
+        args.filter.enabled.kyosoJoken,
+        args.filter.enabled.condition,
+        args.filter.enabled.track,
+        args.filter.enabled.grade,
+        args.filter.enabled.raceName,
+      ],
+      async () => {
+        const { filter } = args;
+        if (!isJraOrNarCategory(filter.category)) {
+          return null;
+        }
+        const enabled = filter.enabled;
+        const result = await getDb().execute<RunningStyleBucketAggregateRow>(sql`
+          with latest_versions as (
+            select
+              model_version,
+              max(running_style_feature_version) as latest_fv
+            from running_style_model_bucket_evaluations
+            where category = ${filter.category}
+              and source = ${filter.source}
+            group by model_version
+          ),
+          scoped as (
+            select b.*
+            from running_style_model_bucket_evaluations b
+            join latest_versions lv
+              on lv.model_version = b.model_version
+             and lv.latest_fv = b.running_style_feature_version
+            where b.category = ${filter.category}
+              and b.source = ${filter.source}
+              and (${enabled.keibajo ? sql`b.keibajo_code = ${filter.keibajoCode}` : sql`true`})
+              and (${enabled.distance ? sql`b.kyori = ${filter.kyori}` : sql`true`})
+              and (${enabled.kyosoShubetsu ? sql`b.kyoso_shubetsu_code = ${filter.kyosoShubetsuCode}` : sql`true`})
+              and (${enabled.kyosoJoken ? sql`b.kyoso_joken_code = ${filter.kyosoJokenCode}` : sql`true`})
+              and (${enabled.condition ? sql`b.condition_key = ${filter.conditionKey}` : sql`true`})
+              and (${enabled.track ? sql`b.track_code = ${filter.trackCode}` : sql`true`})
+              and (${enabled.grade ? sql`b.grade_code = ${filter.gradeCode}` : sql`true`})
+              and (${enabled.raceName ? sql`b.race_name = ${filter.raceName}` : sql`true`})
+          )
+          select
+            coalesce(sum(race_count), 0)::text as race_count,
+            coalesce(sum(prediction_count), 0)::text as prediction_count,
+            coalesce(sum(cm_actual_nige_pred_nige_count), 0)::text as cm_nn,
+            coalesce(sum(cm_actual_nige_pred_senkou_count), 0)::text as cm_ns,
+            coalesce(sum(cm_actual_nige_pred_sashi_count), 0)::text as cm_nsh,
+            coalesce(sum(cm_actual_nige_pred_oikomi_count), 0)::text as cm_no,
+            coalesce(sum(cm_actual_senkou_pred_nige_count), 0)::text as cm_sn,
+            coalesce(sum(cm_actual_senkou_pred_senkou_count), 0)::text as cm_ss,
+            coalesce(sum(cm_actual_senkou_pred_sashi_count), 0)::text as cm_ssh,
+            coalesce(sum(cm_actual_senkou_pred_oikomi_count), 0)::text as cm_so,
+            coalesce(sum(cm_actual_sashi_pred_nige_count), 0)::text as cm_shn,
+            coalesce(sum(cm_actual_sashi_pred_senkou_count), 0)::text as cm_shs,
+            coalesce(sum(cm_actual_sashi_pred_sashi_count), 0)::text as cm_shsh,
+            coalesce(sum(cm_actual_sashi_pred_oikomi_count), 0)::text as cm_sho,
+            coalesce(sum(cm_actual_oikomi_pred_nige_count), 0)::text as cm_on,
+            coalesce(sum(cm_actual_oikomi_pred_senkou_count), 0)::text as cm_os,
+            coalesce(sum(cm_actual_oikomi_pred_sashi_count), 0)::text as cm_osh,
+            coalesce(sum(cm_actual_oikomi_pred_oikomi_count), 0)::text as cm_oo,
+            coalesce(sum(log_loss_nige_sum), 0)::text as log_loss_nige_sum,
+            coalesce(sum(log_loss_nige_count), 0)::text as log_loss_nige_count,
+            coalesce(sum(log_loss_senkou_sum), 0)::text as log_loss_senkou_sum,
+            coalesce(sum(log_loss_senkou_count), 0)::text as log_loss_senkou_count,
+            coalesce(sum(log_loss_sashi_sum), 0)::text as log_loss_sashi_sum,
+            coalesce(sum(log_loss_sashi_count), 0)::text as log_loss_sashi_count,
+            coalesce(sum(log_loss_oikomi_sum), 0)::text as log_loss_oikomi_sum,
+            coalesce(sum(log_loss_oikomi_count), 0)::text as log_loss_oikomi_count,
+            coalesce(sum(top2_hit_count), 0)::text as top2_hit_count
+          from scoped
+          having coalesce(sum(prediction_count), 0) > 0
+        `);
+        const row = result.rows[0];
+        if (row === undefined) {
+          return null;
+        }
+        return scaleRunningStyleEvaluationFromCM({
+          cm: [
+            [
+              toFiniteNumber(row.cm_nn),
+              toFiniteNumber(row.cm_ns),
+              toFiniteNumber(row.cm_nsh),
+              toFiniteNumber(row.cm_no),
+            ],
+            [
+              toFiniteNumber(row.cm_sn),
+              toFiniteNumber(row.cm_ss),
+              toFiniteNumber(row.cm_ssh),
+              toFiniteNumber(row.cm_so),
+            ],
+            [
+              toFiniteNumber(row.cm_shn),
+              toFiniteNumber(row.cm_shs),
+              toFiniteNumber(row.cm_shsh),
+              toFiniteNumber(row.cm_sho),
+            ],
+            [
+              toFiniteNumber(row.cm_on),
+              toFiniteNumber(row.cm_os),
+              toFiniteNumber(row.cm_osh),
+              toFiniteNumber(row.cm_oo),
+            ],
+          ],
+          logLossCountByClass: {
+            nige: toFiniteNumber(row.log_loss_nige_count),
+            oikomi: toFiniteNumber(row.log_loss_oikomi_count),
+            sashi: toFiniteNumber(row.log_loss_sashi_count),
+            senkou: toFiniteNumber(row.log_loss_senkou_count),
+          },
+          logLossSumByClass: {
+            nige: toFiniteNumber(row.log_loss_nige_sum),
+            oikomi: toFiniteNumber(row.log_loss_oikomi_sum),
+            sashi: toFiniteNumber(row.log_loss_sashi_sum),
+            senkou: toFiniteNumber(row.log_loss_senkou_sum),
+          },
+          predictionCount: toFiniteNumber(row.prediction_count),
+          raceCount: toFiniteNumber(row.race_count),
+          top2HitCount: toFiniteNumber(row.top2_hit_count),
+        });
+      },
+    ),
 );

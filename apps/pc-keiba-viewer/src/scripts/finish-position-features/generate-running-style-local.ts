@@ -1,9 +1,13 @@
 // Run with: bun run src/scripts/finish-position-features/generate-running-style-local.ts \
-//   --pg-url $DATABASE_URL_LOCAL --running-style-feature-version v1
-// Sequential 2-phase orchestrator:
+//   --pg-url $DATABASE_URL_LOCAL --running-style-feature-version v1 \
+//   --model-version-jra <m> --model-version-nar <m>
+// Sequential 3-phase orchestrator (Agent Y4, bucket-eval X5 design):
 //   Phase A: spawn `uv run python src/scripts/generate_running_style_features_local.py`
-//   Phase B: spawn `uv run python src/scripts/score_running_style_local.py`
-// Writes manifest.json after both phases complete. No PG/R2/D1/KV writeback.
+//   Phase B: spawn `uv run python src/scripts/score_running_style_local.py` (raw probs)
+//   Phase C: spawn `bun run src/scripts/finish-position-features/apply-running-style-postproc.ts`
+// Writes manifest.json after all phases complete. No PG/R2/D1/KV writeback.
+// Race-level nige cap / RaceLevelNigeConstraint intentionally NOT applied;
+// memory rule `feedback_no_race_level_nige_constraint.md` forbids it.
 
 import { mkdir, writeFile } from "node:fs/promises";
 
@@ -19,7 +23,6 @@ interface GenerateRunningStyleLocalOptions {
   outputRoot: string;
   modelVersionJra: string;
   modelVersionNar: string;
-  modelVersionBanEi: string;
 }
 
 interface SpawnResult {
@@ -49,7 +52,7 @@ interface NowProvider {
 }
 
 interface CategoryWindow {
-  category: "jra" | "nar" | "ban-ei";
+  category: "jra" | "nar";
   years: readonly number[];
   modelVersion: string;
 }
@@ -60,7 +63,7 @@ interface PhaseAArgs {
   featureVersion: string;
   yearFrom: number;
   yearTo: number;
-  category: "jra" | "nar" | "ban-ei";
+  category: "jra" | "nar";
   threads: number;
   memoryLimit: string;
 }
@@ -70,8 +73,13 @@ interface PhaseBArgs {
   outputParquet: string;
   featureVersion: string;
   modelVersion: string;
-  pgUrl: string;
-  category: "jra" | "nar" | "ban-ei";
+  category: "jra" | "nar";
+}
+
+interface PhaseCArgs {
+  logitsParquet: string;
+  outputParquet: string;
+  featureVersion: string;
 }
 
 interface ManifestCategorySummary {
@@ -85,6 +93,10 @@ interface Manifest {
   featureVersion: string;
   generatedAt: string;
   outputRoot: string;
+  featuresPath: string;
+  logitsPath: string;
+  predictionsPath: string;
+  modelVersions: { jra: string; nar: string };
   categories: Record<string, ManifestCategorySummary>;
 }
 
@@ -93,6 +105,11 @@ interface RunDeps {
   sleep: SleepRunner;
   probeColima: ColimaProbe;
   now: NowProvider;
+}
+
+interface YearChunk {
+  yearFrom: number;
+  yearTo: number;
 }
 
 export const COLIMA_MIN_CPU = 8;
@@ -107,7 +124,11 @@ export const DEFAULT_MEMORY_LIMIT = "16GB";
 export const DEFAULT_MAX_YEARS_PER_RUN = 5;
 export const PHASE_A_SCRIPT = "src/scripts/generate_running_style_features_local.py";
 export const PHASE_B_SCRIPT = "src/scripts/score_running_style_local.py";
+export const PHASE_C_SCRIPT =
+  "src/scripts/finish-position-features/apply-running-style-postproc.ts";
 export const NIGHT_WINDOW_SET: ReadonlySet<number> = new Set(NIGHT_WINDOW_HOURS_JST);
+
+export const RUNNING_STYLE_CATEGORIES = ["jra", "nar"] satisfies readonly string[];
 
 const JRA_YEARS: readonly number[] = [
   2006, 2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021,
@@ -115,9 +136,6 @@ const JRA_YEARS: readonly number[] = [
 ];
 const NAR_YEARS: readonly number[] = [
   2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2026,
-];
-const BAN_EI_YEARS: readonly number[] = [
-  2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026,
 ];
 
 const requireValue = (name: string, value: string | undefined): string => {
@@ -137,7 +155,6 @@ export const buildDefaultOptions = (): GenerateRunningStyleLocalOptions => ({
   outputRoot: DEFAULT_OUTPUT_ROOT,
   modelVersionJra: "",
   modelVersionNar: "",
-  modelVersionBanEi: "",
 });
 
 const applyArg = (
@@ -181,10 +198,6 @@ const applyArg = (
     options.modelVersionNar = requireValue(name, value);
     return { advanceBy: 2 };
   }
-  if (name === "--model-version-ban-ei") {
-    options.modelVersionBanEi = requireValue(name, value);
-    return { advanceBy: 2 };
-  }
   throw new Error(`Unknown argument: ${name}`);
 };
 
@@ -205,7 +218,6 @@ export const parseArgs = (argv: readonly string[]): GenerateRunningStyleLocalOpt
   if (options.pgUrl === "") throw new Error("--pg-url is required.");
   if (options.modelVersionJra === "") throw new Error("--model-version-jra is required.");
   if (options.modelVersionNar === "") throw new Error("--model-version-nar is required.");
-  if (options.modelVersionBanEi === "") throw new Error("--model-version-ban-ei is required.");
   return options;
 };
 
@@ -235,8 +247,34 @@ export const buildCategoryWindows = (
 ): readonly CategoryWindow[] => [
   { category: "jra", years: JRA_YEARS, modelVersion: options.modelVersionJra },
   { category: "nar", years: NAR_YEARS, modelVersion: options.modelVersionNar },
-  { category: "ban-ei", years: BAN_EI_YEARS, modelVersion: options.modelVersionBanEi },
 ];
+
+export const buildFeaturesRoot = (options: GenerateRunningStyleLocalOptions): string =>
+  `${options.outputRoot}/${options.runningStyleFeatureVersion}/features`;
+
+export const buildLogitsRoot = (options: GenerateRunningStyleLocalOptions): string =>
+  `${options.outputRoot}/${options.runningStyleFeatureVersion}/logits`;
+
+export const buildPredictionsRoot = (options: GenerateRunningStyleLocalOptions): string =>
+  `${options.outputRoot}/${options.runningStyleFeatureVersion}/predictions`;
+
+export const buildManifestPath = (options: GenerateRunningStyleLocalOptions): string =>
+  `${options.outputRoot}/${options.runningStyleFeatureVersion}/manifest.json`;
+
+export const buildCategoryFeaturesDir = (
+  options: GenerateRunningStyleLocalOptions,
+  category: "jra" | "nar",
+): string => `${buildFeaturesRoot(options)}/category=${category}`;
+
+export const buildCategoryLogitsDir = (
+  options: GenerateRunningStyleLocalOptions,
+  category: "jra" | "nar",
+): string => `${buildLogitsRoot(options)}/category=${category}`;
+
+export const buildCategoryPredictionsDir = (
+  options: GenerateRunningStyleLocalOptions,
+  category: "jra" | "nar",
+): string => `${buildPredictionsRoot(options)}/category=${category}`;
 
 export const buildPhaseACommand = (args: PhaseAArgs): readonly string[] => [
   "uv",
@@ -274,16 +312,21 @@ export const buildPhaseBCommand = (args: PhaseBArgs): readonly string[] => [
   args.featureVersion,
   "--model-version",
   args.modelVersion,
-  "--pg-url",
-  args.pgUrl,
   "--category",
   args.category,
 ];
 
-interface YearChunk {
-  yearFrom: number;
-  yearTo: number;
-}
+export const buildPhaseCCommand = (args: PhaseCArgs): readonly string[] => [
+  "bun",
+  "run",
+  PHASE_C_SCRIPT,
+  "--logits-parquet",
+  args.logitsParquet,
+  "--output-parquet",
+  args.outputParquet,
+  "--feature-version",
+  args.featureVersion,
+];
 
 const buildYearChunkAt = (
   years: readonly number[],
@@ -308,15 +351,6 @@ export const chunkYears = (years: readonly number[], chunkSize: number): readonl
     .filter((entry): entry is YearChunk => entry !== null);
 };
 
-const buildFeaturesDir = (options: GenerateRunningStyleLocalOptions): string =>
-  `${options.outputRoot}/${options.runningStyleFeatureVersion}/features`;
-
-const buildPredictionsDir = (options: GenerateRunningStyleLocalOptions): string =>
-  `${options.outputRoot}/${options.runningStyleFeatureVersion}/predictions`;
-
-const buildManifestPath = (options: GenerateRunningStyleLocalOptions): string =>
-  `${options.outputRoot}/${options.runningStyleFeatureVersion}/manifest.json`;
-
 const summarizeCategory = (window: CategoryWindow): ManifestCategorySummary => {
   const head = window.years[0];
   const tail = window.years[window.years.length - 1];
@@ -331,20 +365,25 @@ const summarizeCategory = (window: CategoryWindow): ManifestCategorySummary => {
   };
 };
 
+const summariesByCategory = (
+  windows: readonly CategoryWindow[],
+): Record<string, ManifestCategorySummary> =>
+  Object.fromEntries(windows.map((window) => [window.category, summarizeCategory(window)]));
+
 export const buildManifest = (
   options: GenerateRunningStyleLocalOptions,
   generatedAt: Date,
 ): Manifest => {
   const windows = buildCategoryWindows(options);
-  const categories: Record<string, ManifestCategorySummary> = {};
-  for (const window of windows) {
-    categories[window.category] = summarizeCategory(window);
-  }
   return {
     featureVersion: options.runningStyleFeatureVersion,
     generatedAt: generatedAt.toISOString(),
     outputRoot: options.outputRoot,
-    categories,
+    featuresPath: buildFeaturesRoot(options),
+    logitsPath: buildLogitsRoot(options),
+    predictionsPath: buildPredictionsRoot(options),
+    modelVersions: { jra: options.modelVersionJra, nar: options.modelVersionNar },
+    categories: summariesByCategory(windows),
   };
 };
 
@@ -352,11 +391,11 @@ const runPhaseAForChunk = async (
   deps: RunDeps,
   options: GenerateRunningStyleLocalOptions,
   window: CategoryWindow,
-  chunk: { yearFrom: number; yearTo: number },
+  chunk: YearChunk,
 ): Promise<void> => {
   const command = buildPhaseACommand({
     pgUrl: options.pgUrl,
-    outputDir: buildFeaturesDir(options),
+    outputDir: buildCategoryFeaturesDir(options, window.category),
     featureVersion: options.runningStyleFeatureVersion,
     yearFrom: chunk.yearFrom,
     yearTo: chunk.yearTo,
@@ -379,16 +418,31 @@ const runPhaseBForCategory = async (
   window: CategoryWindow,
 ): Promise<void> => {
   const command = buildPhaseBCommand({
-    featuresParquet: buildFeaturesDir(options),
-    outputParquet: buildPredictionsDir(options),
+    featuresParquet: buildCategoryFeaturesDir(options, window.category),
+    outputParquet: buildCategoryLogitsDir(options, window.category),
     featureVersion: options.runningStyleFeatureVersion,
     modelVersion: window.modelVersion,
-    pgUrl: options.pgUrl,
     category: window.category,
   });
   const result = await deps.spawn(command);
   if (result.exitCode !== 0) {
     throw new Error(`Phase B failed for category=${window.category}.`);
+  }
+};
+
+const runPhaseCForCategory = async (
+  deps: RunDeps,
+  options: GenerateRunningStyleLocalOptions,
+  window: CategoryWindow,
+): Promise<void> => {
+  const command = buildPhaseCCommand({
+    logitsParquet: buildCategoryLogitsDir(options, window.category),
+    outputParquet: buildCategoryPredictionsDir(options, window.category),
+    featureVersion: options.runningStyleFeatureVersion,
+  });
+  const result = await deps.spawn(command);
+  if (result.exitCode !== 0) {
+    throw new Error(`Phase C failed for category=${window.category}.`);
   }
 };
 
@@ -411,6 +465,7 @@ const runCategory = async (
 ): Promise<void> => {
   await runPhaseAForCategory(deps, options, window);
   await runPhaseBForCategory(deps, options, window);
+  await runPhaseCForCategory(deps, options, window);
   await deps.sleep(PER_CATEGORY_SLEEP_MS);
 };
 

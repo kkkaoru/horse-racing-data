@@ -1,13 +1,31 @@
 // run with: bun run test
+import { createHash } from "node:crypto";
 import { afterEach, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import {
+  buildRunningStyleBatchFeatureSql,
   buildRunningStyleFeaturesForRaceFromD1Target,
   buildRunningStyleFeaturesForRaceFromPostgres,
   buildRunningStylePostgresFeatureSql,
   buildRunningStylePostgresFeatureSqlWithD1Target,
   type DailyTargetRow,
 } from "./running-style-feature-sql";
+
+const PER_RACE_SQL_SHA256_REFERENCE =
+  "339af73a3c06e12160d640401f2dcc0867f79610e09476a22a55d71bcd4f44de";
+const PER_RACE_SQL_LENGTH_REFERENCE = 41762;
+const D1_TARGET_SQL_SHA256_REFERENCE =
+  "b5a4d8228ba07214a65160738a14380edbd08128b6e502cdd89ce97d0da9b88e";
+const D1_TARGET_SQL_LENGTH_REFERENCE = 41977;
+
+const BATCH_ARGS_JRA = {
+  featureSchemaVersion: "v1",
+  fromDate: "20050101",
+  source: "jra" as const,
+  toDate: "20260531",
+};
+
+const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
 
 const PARAMS = {
   kaisaiNen: "2026",
@@ -58,6 +76,116 @@ it("buildRunningStylePostgresFeatureSql returns SQL string", () => {
   const sql = buildRunningStylePostgresFeatureSql();
   expect(typeof sql).toBe("string");
   expect(sql.length).toBeGreaterThan(0);
+});
+
+it("buildRunningStylePostgresFeatureSql output is byte-identical to pre-refactor reference", () => {
+  const sql = buildRunningStylePostgresFeatureSql();
+  expect(sql.length).toBe(PER_RACE_SQL_LENGTH_REFERENCE);
+  expect(sha256(sql)).toBe(PER_RACE_SQL_SHA256_REFERENCE);
+});
+
+it("buildRunningStylePostgresFeatureSqlWithD1Target output is byte-identical to pre-refactor reference", () => {
+  const sql = buildRunningStylePostgresFeatureSqlWithD1Target();
+  expect(sql.length).toBe(D1_TARGET_SQL_LENGTH_REFERENCE);
+  expect(sha256(sql)).toBe(D1_TARGET_SQL_SHA256_REFERENCE);
+});
+
+it("buildRunningStyleBatchFeatureSql returns SQL string with no $N placeholders for jra", () => {
+  const sql = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  expect(sql.length).toBeGreaterThan(0);
+  expect(sql.match(/\$\d/)).toBeNull();
+});
+
+it("buildRunningStyleBatchFeatureSql injects source/date/featureSchemaVersion literals for jra", () => {
+  const sql = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  expect(sql.includes("'jra'::text as source")).toBe(true);
+  expect(sql.includes("'20050101'::text as race_date_min")).toBe(true);
+  expect(sql.includes("'20260531'::text as race_date")).toBe(true);
+  expect(sql.includes("'v1' as feature_schema_version")).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql injects nar source literal", () => {
+  const sql = buildRunningStyleBatchFeatureSql({
+    featureSchemaVersion: "v2",
+    fromDate: "20100101",
+    source: "nar",
+    toDate: "20260531",
+  });
+  expect(sql.includes("'nar'::text as source")).toBe(true);
+  expect(sql.includes("'v2' as feature_schema_version")).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql includes target.race_date date-range filter", () => {
+  const sql = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  expect(sql.includes("r.race_date between p.race_date_min and p.race_date")).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql derives history_start from fromDate", () => {
+  const sql = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  expect(sql.includes("to_date('20050101', 'YYYYMMDD') - interval '10 years'")).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql shares the same suffix CTE list as the per-race builder", () => {
+  const perRace = buildRunningStylePostgresFeatureSql();
+  const batch = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  const perRaceCteNames = [...perRace.matchAll(/^(\w+) as \(/gm)].map((m) => m[1]);
+  const batchCteNames = [...batch.matchAll(/^(\w+) as \(/gm)].map((m) => m[1]);
+  expect(batchCteNames).toStrictEqual(perRaceCteNames);
+});
+
+it("buildRunningStyleBatchFeatureSql rejects an invalid source", () => {
+  expect(() =>
+    buildRunningStyleBatchFeatureSql({
+      featureSchemaVersion: "v1",
+      fromDate: "20050101",
+      source: "bad" as unknown as "jra",
+      toDate: "20260531",
+    }),
+  ).toThrow("invalid batch source");
+});
+
+it("buildRunningStyleBatchFeatureSql rejects non-YYYYMMDD fromDate", () => {
+  expect(() =>
+    buildRunningStyleBatchFeatureSql({
+      featureSchemaVersion: "v1",
+      fromDate: "2005",
+      source: "jra",
+      toDate: "20260531",
+    }),
+  ).toThrow("invalid batch fromDate");
+});
+
+it("buildRunningStyleBatchFeatureSql rejects non-numeric toDate", () => {
+  expect(() =>
+    buildRunningStyleBatchFeatureSql({
+      featureSchemaVersion: "v1",
+      fromDate: "20050101",
+      source: "jra",
+      toDate: "abcd1234",
+    }),
+  ).toThrow("invalid batch toDate");
+});
+
+it("buildRunningStyleBatchFeatureSql rejects unsafe featureSchemaVersion", () => {
+  expect(() =>
+    buildRunningStyleBatchFeatureSql({
+      featureSchemaVersion: "v1;DROP TABLE",
+      fromDate: "20050101",
+      source: "jra",
+      toDate: "20260531",
+    }),
+  ).toThrow("invalid batch featureSchemaVersion");
+});
+
+it("buildRunningStyleBatchFeatureSql rejects fromDate > toDate", () => {
+  expect(() =>
+    buildRunningStyleBatchFeatureSql({
+      featureSchemaVersion: "v1",
+      fromDate: "20260601",
+      source: "jra",
+      toDate: "20260531",
+    }),
+  ).toThrow("invalid batch date range");
 });
 
 it("buildRunningStylePostgresFeatureSqlWithD1Target swaps the rec target CTE for the JSONB target CTE", () => {

@@ -1,4 +1,4 @@
-"""Tests for score_running_style_local (Phase B)."""
+"""Tests for score_running_style_local (Phase B, X5: raw probabilities only)."""
 
 from __future__ import annotations
 
@@ -14,113 +14,173 @@ import score_running_style_local as subject
 
 def test_parse_args_minimum_required() -> None:
     args = subject.parse_args([
-        "--features-parquet", "/tmp/feat",
-        "--model-version", "running-style-jra-v7",
-        "--output-parquet", "/tmp/out",
+        "--features-parquet", "/tmp/feat.parquet",
+        "--model-version", "jra-running-style-lgbm-prod-v1.5",
+        "--output-parquet", "/tmp/out.parquet",
         "--running-style-feature-version", "v1",
-        "--pg-url", "postgres://x",
         "--category", "jra",
     ])
-    assert args.model_version == "running-style-jra-v7"
+    assert args.model_version == "jra-running-style-lgbm-prod-v1.5"
 
 
-def test_parse_args_invalid_category_rejected() -> None:
+def test_parse_args_accepts_nar_category() -> None:
+    args = subject.parse_args([
+        "--features-parquet", "/tmp/feat.parquet",
+        "--model-version", "nar-running-style-lgbm-prod-v1",
+        "--output-parquet", "/tmp/out.parquet",
+        "--running-style-feature-version", "v1",
+        "--category", "nar",
+    ])
+    assert args.category == "nar"
+
+
+def test_parse_args_rejects_ban_ei_category() -> None:
     with pytest.raises(SystemExit):
         subject.parse_args([
-            "--features-parquet", "/tmp/feat",
+            "--features-parquet", "/tmp/feat.parquet",
             "--model-version", "m",
-            "--output-parquet", "/tmp/out",
+            "--output-parquet", "/tmp/out.parquet",
             "--running-style-feature-version", "v1",
-            "--pg-url", "postgres://x",
+            "--category", "ban-ei",
+        ])
+
+
+def test_parse_args_rejects_bogus_category() -> None:
+    with pytest.raises(SystemExit):
+        subject.parse_args([
+            "--features-parquet", "/tmp/feat.parquet",
+            "--model-version", "m",
+            "--output-parquet", "/tmp/out.parquet",
+            "--running-style-feature-version", "v1",
             "--category", "bogus",
         ])
 
 
-def test_build_active_model_query_uses_active_table() -> None:
-    sql = subject.build_active_model_query("jra")
-    assert "running_style_active_models" in sql
+def test_parse_args_requires_model_version() -> None:
+    with pytest.raises(SystemExit):
+        subject.parse_args([
+            "--features-parquet", "/tmp/feat.parquet",
+            "--output-parquet", "/tmp/out.parquet",
+            "--running-style-feature-version", "v1",
+            "--category", "jra",
+        ])
 
 
-def test_build_active_model_query_embeds_category_literal() -> None:
-    sql = subject.build_active_model_query("ban-ei")
-    assert "where category = 'ban-ei'" in sql
+def test_parse_args_requires_output_parquet() -> None:
+    with pytest.raises(SystemExit):
+        subject.parse_args([
+            "--features-parquet", "/tmp/feat.parquet",
+            "--model-version", "m",
+            "--running-style-feature-version", "v1",
+            "--category", "jra",
+        ])
 
 
-def test_resolve_active_model_returns_version_and_path() -> None:
-    psql_runner = MagicMock(
-        return_value='{"model_version": "running-style-jra-v7", "artifact_path": "/p/model.txt"}',
+def test_parse_args_requires_feature_version() -> None:
+    with pytest.raises(SystemExit):
+        subject.parse_args([
+            "--features-parquet", "/tmp/feat.parquet",
+            "--model-version", "m",
+            "--output-parquet", "/tmp/out.parquet",
+            "--category", "jra",
+        ])
+
+
+def test_repo_root_returns_horse_racing_data_directory() -> None:
+    root = subject.repo_root()
+    assert root.name == "horse-racing-data"
+
+
+def test_resolve_artifact_path_uses_tmp_models_convention() -> None:
+    artifact = subject.resolve_artifact_path("jra-running-style-lgbm-prod-v1.5")
+    assert artifact.endswith("tmp/models/jra-running-style-lgbm-prod-v1.5/model.txt")
+
+
+def test_resolve_artifact_path_handles_nar_version() -> None:
+    artifact = subject.resolve_artifact_path("nar-running-style-lgbm-prod-v1")
+    assert artifact.endswith("tmp/models/nar-running-style-lgbm-prod-v1/model.txt")
+
+
+def test_assert_artifact_exists_returns_path_when_present() -> None:
+    path_exists = MagicMock(return_value=True)
+    assert (
+        subject.assert_artifact_exists("/tmp/models/x/model.txt", path_exists=path_exists)
+        == "/tmp/models/x/model.txt"
     )
-    version, path = subject.resolve_active_model(
-        psql_runner=psql_runner, pg_url="postgres://x", category="jra",
-    )
-    assert version == "running-style-jra-v7"
-    assert path == "/p/model.txt"
+    path_exists.assert_called_once_with("/tmp/models/x/model.txt")
 
 
-def test_resolve_active_model_raises_when_empty() -> None:
-    psql_runner = MagicMock(return_value="")
-    with pytest.raises(RuntimeError):
-        subject.resolve_active_model(
-            psql_runner=psql_runner, pg_url="postgres://x", category="jra",
-        )
+def test_assert_artifact_exists_raises_when_missing() -> None:
+    path_exists = MagicMock(return_value=False)
+    with pytest.raises(FileNotFoundError):
+        subject.assert_artifact_exists("/tmp/models/missing/model.txt", path_exists=path_exists)
 
 
-def test_resolve_active_model_rejects_non_string_payload() -> None:
-    psql_runner = MagicMock(return_value='{"model_version": 123, "artifact_path": null}')
-    with pytest.raises(RuntimeError):
-        subject.resolve_active_model(
-            psql_runner=psql_runner, pg_url="postgres://x", category="jra",
-        )
+def test_default_path_exists_true_for_existing_file(tmp_path: Path) -> None:
+    target = tmp_path / "exists.txt"
+    target.write_text("ok", encoding="utf-8")
+    assert subject.default_path_exists(target.as_posix()) is True
 
 
-def test_run_psql_raises_when_subprocess_fails() -> None:
-    fake_result = MagicMock()
-    fake_result.returncode = 1
-    fake_result.stderr = "boom"
-    fake_result.stdout = ""
-    with patch("subprocess.run", return_value=fake_result):
-        with pytest.raises(RuntimeError):
-            subject.run_psql("postgres://x", "select 1")
+def test_default_path_exists_false_for_missing_file(tmp_path: Path) -> None:
+    target = tmp_path / "missing.txt"
+    assert subject.default_path_exists(target.as_posix()) is False
 
 
-def test_run_psql_returns_trimmed_stdout_on_success() -> None:
-    fake_result = MagicMock()
-    fake_result.returncode = 0
-    fake_result.stderr = ""
-    fake_result.stdout = "abc\n"
-    with patch("subprocess.run", return_value=fake_result):
-        assert subject.run_psql("postgres://x", "select 1") == "abc"
+def test_select_race_key_frame_returns_only_race_key_columns() -> None:
+    frame = pd.DataFrame({
+        "source": ["jra"],
+        "kaisai_nen": ["2024"],
+        "kaisai_tsukihi": ["0101"],
+        "keibajo_code": ["05"],
+        "race_bango": ["01"],
+        "ketto_toroku_bango": ["2020100001"],
+        "umaban": [1],
+        "speed_index_avg_5": [50.0],
+    })
+    result = subject.select_race_key_frame(frame)
+    assert list(result.columns) == [
+        "source",
+        "kaisai_nen",
+        "kaisai_tsukihi",
+        "keibajo_code",
+        "race_bango",
+        "ketto_toroku_bango",
+    ]
 
 
-def test_build_label_series_maps_argmax_to_class_labels() -> None:
-    probs = np.array([[0.7, 0.1, 0.1, 0.1], [0.1, 0.1, 0.7, 0.1]])
-    labels = subject.build_label_series(probs)
-    assert labels == ["nige", "sashi"]
+def test_select_race_key_frame_skips_missing_columns() -> None:
+    frame = pd.DataFrame({"source": ["jra"], "race_bango": ["01"]})
+    result = subject.select_race_key_frame(frame)
+    assert list(result.columns) == ["source", "race_bango"]
 
 
-def test_attach_probability_columns_writes_four_columns() -> None:
-    frame = pd.DataFrame({"x": [0, 0]})
+def test_build_probability_frame_writes_four_columns() -> None:
     probs = np.array([[0.4, 0.3, 0.2, 0.1], [0.1, 0.2, 0.3, 0.4]])
-    result = subject.attach_probability_columns(frame, probs)
+    result = subject.build_probability_frame(probs)
+    assert list(result.columns) == ["p_nige", "p_senkou", "p_sashi", "p_oikomi"]
     assert list(result["p_nige"]) == [0.4, 0.1]
     assert list(result["p_oikomi"]) == [0.1, 0.4]
 
 
-def test_attach_label_and_versions_sets_metadata_columns() -> None:
-    frame = pd.DataFrame({"x": [0]})
-    probs = np.array([[0.6, 0.2, 0.1, 0.1]])
-    result = subject.attach_label_and_versions(
-        frame, probs, feature_version="v1", model_version="m1",
+def test_attach_version_columns_sets_metadata_columns() -> None:
+    frame = pd.DataFrame({"p_nige": [0.6]})
+    result = subject.attach_version_columns(
+        frame, feature_version="v1", model_version="jra-running-style-lgbm-prod-v1.5",
     )
-    assert list(result["predicted_label"]) == ["nige"]
     assert list(result["running_style_feature_version"]) == ["v1"]
-    assert list(result["model_version"]) == ["m1"]
+    assert list(result["model_version"]) == ["jra-running-style-lgbm-prod-v1.5"]
 
 
-def test_score_frame_uses_predict_softmax_and_attaches_labels() -> None:
+def test_score_frame_writes_race_key_probability_and_version_columns() -> None:
     booster = MagicMock()
     frame = pd.DataFrame({
-        "race_id": ["r1"],
+        "source": ["jra"],
+        "kaisai_nen": ["2024"],
+        "kaisai_tsukihi": ["0101"],
+        "keibajo_code": ["05"],
+        "race_bango": ["01"],
+        "ketto_toroku_bango": ["2020100001"],
         "umaban": [1],
         "speed_index_avg_5": [50.0],
         "target_running_style_class": [0],
@@ -128,99 +188,156 @@ def test_score_frame_uses_predict_softmax_and_attaches_labels() -> None:
     with patch.object(
         subject, "predict_softmax",
         return_value=np.array([[0.7, 0.1, 0.1, 0.1]]),
-    ) as predict_mock:
+    ):
         result = subject.score_frame(
             booster=booster, frame=frame, feature_version="v1", model_version="m1",
         )
-    assert predict_mock.called
-    assert list(result["predicted_label"]) == ["nige"]
+    assert list(result.columns) == [
+        "source",
+        "kaisai_nen",
+        "kaisai_tsukihi",
+        "keibajo_code",
+        "race_bango",
+        "ketto_toroku_bango",
+        "p_nige",
+        "p_senkou",
+        "p_sashi",
+        "p_oikomi",
+        "running_style_feature_version",
+        "model_version",
+    ]
 
 
-def test_write_predictions_parquet_partitions_by_category_and_year(tmp_path: Path) -> None:
-    output_dir = str(tmp_path / "out")
-    frame = MagicMock(spec=pd.DataFrame)
-    subject.write_predictions_parquet(frame, output_dir)
-    frame.to_parquet.assert_called_once_with(
-        output_dir, partition_cols=["category", "race_year"], index=False,
-    )
-
-
-def test_run_aborts_when_model_version_does_not_match() -> None:
-    psql_runner = MagicMock(
-        return_value='{"model_version": "active-other", "artifact_path": "/p"}',
-    )
-    booster_loader = MagicMock()
-    pandas_reader = MagicMock()
-    args = subject.parse_args([
-        "--features-parquet", "/tmp/feat",
-        "--model-version", "requested-mismatch",
-        "--output-parquet", "/tmp/out",
-        "--running-style-feature-version", "v1",
-        "--pg-url", "postgres://x",
-        "--category", "jra",
-    ])
-    with pytest.raises(RuntimeError):
-        subject.run(
-            args,
-            psql_runner=psql_runner,
-            booster_loader=booster_loader,
-            pandas_reader=pandas_reader,
+def test_score_frame_omits_predicted_class_columns() -> None:
+    booster = MagicMock()
+    frame = pd.DataFrame({
+        "source": ["jra"],
+        "kaisai_nen": ["2024"],
+        "kaisai_tsukihi": ["0101"],
+        "keibajo_code": ["05"],
+        "race_bango": ["01"],
+        "ketto_toroku_bango": ["2020100001"],
+        "umaban": [1],
+        "speed_index_avg_5": [50.0],
+    })
+    with patch.object(
+        subject, "predict_softmax",
+        return_value=np.array([[0.6, 0.2, 0.1, 0.1]]),
+    ):
+        result = subject.score_frame(
+            booster=booster, frame=frame, feature_version="v1", model_version="m1",
         )
+    assert "predicted_class" not in result.columns
+    assert "second_predicted_class" not in result.columns
+    assert "predicted_label" not in result.columns
 
 
-def test_run_happy_path_invokes_booster_and_writes_parquet() -> None:
-    psql_runner = MagicMock(
-        return_value='{"model_version": "active-m", "artifact_path": "/p/model.txt"}',
-    )
+def test_score_frame_with_empty_frame_returns_empty_output() -> None:
+    booster = MagicMock()
+    frame = pd.DataFrame({
+        "source": pd.Series([], dtype="object"),
+        "kaisai_nen": pd.Series([], dtype="object"),
+        "kaisai_tsukihi": pd.Series([], dtype="object"),
+        "keibajo_code": pd.Series([], dtype="object"),
+        "race_bango": pd.Series([], dtype="object"),
+        "ketto_toroku_bango": pd.Series([], dtype="object"),
+        "umaban": pd.Series([], dtype="int64"),
+        "speed_index_avg_5": pd.Series([], dtype="float64"),
+    })
+    with patch.object(
+        subject, "predict_softmax",
+        return_value=np.empty((0, 4), dtype=np.float64),
+    ):
+        result = subject.score_frame(
+            booster=booster, frame=frame, feature_version="v1", model_version="m1",
+        )
+    assert len(result) == 0
+    assert "p_nige" in result.columns
+    assert "running_style_feature_version" in result.columns
+
+
+def test_write_logits_parquet_creates_parent_dir(tmp_path: Path) -> None:
+    output_path = (tmp_path / "logits" / "category=jra" / "race_year=2006" / "data_0.parquet").as_posix()
+    frame = MagicMock(spec=pd.DataFrame)
+    subject.write_logits_parquet(frame, output_path)
+    frame.to_parquet.assert_called_once_with(output_path, index=False)
+    assert (tmp_path / "logits" / "category=jra" / "race_year=2006").is_dir()
+
+
+def test_run_loads_artifact_from_convention_path_and_writes_logits() -> None:
     booster_loader = MagicMock(return_value=MagicMock())
     frame = pd.DataFrame({
-        "race_id": ["r"],
+        "source": ["jra"],
+        "kaisai_nen": ["2024"],
+        "kaisai_tsukihi": ["0101"],
+        "keibajo_code": ["05"],
+        "race_bango": ["01"],
+        "ketto_toroku_bango": ["2020100001"],
         "umaban": [1],
         "speed_index_avg_5": [50.0],
     })
     pandas_reader = MagicMock(return_value=frame)
+    path_exists = MagicMock(return_value=True)
     args = subject.parse_args([
-        "--features-parquet", "/tmp/feat",
-        "--model-version", "active-m",
-        "--output-parquet", "/tmp/out",
+        "--features-parquet", "/tmp/feat.parquet",
+        "--model-version", "jra-running-style-lgbm-prod-v1.5",
+        "--output-parquet", "/tmp/out.parquet",
         "--running-style-feature-version", "v1",
-        "--pg-url", "postgres://x",
         "--category", "jra",
     ])
     with patch.object(
         subject, "predict_softmax",
         return_value=np.array([[0.6, 0.2, 0.1, 0.1]]),
     ):
-        with patch.object(subject, "write_predictions_parquet") as write_mock:
+        with patch.object(subject, "write_logits_parquet") as write_mock:
             subject.run(
                 args,
-                psql_runner=psql_runner,
                 booster_loader=booster_loader,
                 pandas_reader=pandas_reader,
+                path_exists=path_exists,
             )
-    booster_loader.assert_called_once_with(model_file="/p/model.txt")
+    invoked_path = booster_loader.call_args.kwargs["model_file"]
+    assert invoked_path.endswith("tmp/models/jra-running-style-lgbm-prod-v1.5/model.txt")
     assert write_mock.called
 
 
-def test_main_uses_psql_runner_and_lightgbm() -> None:
+def test_run_raises_when_artifact_missing() -> None:
+    booster_loader = MagicMock()
+    pandas_reader = MagicMock()
+    path_exists = MagicMock(return_value=False)
+    args = subject.parse_args([
+        "--features-parquet", "/tmp/feat.parquet",
+        "--model-version", "nonexistent-version",
+        "--output-parquet", "/tmp/out.parquet",
+        "--running-style-feature-version", "v1",
+        "--category", "jra",
+    ])
+    with pytest.raises(FileNotFoundError):
+        subject.run(
+            args,
+            booster_loader=booster_loader,
+            pandas_reader=pandas_reader,
+            path_exists=path_exists,
+        )
+    booster_loader.assert_not_called()
+    pandas_reader.assert_not_called()
+
+
+def test_main_uses_lightgbm_booster_and_pandas_read_parquet() -> None:
     fake_booster = MagicMock()
     argv = [
-        "--features-parquet", "/tmp/feat",
-        "--model-version", "active-m",
-        "--output-parquet", "/tmp/out",
+        "--features-parquet", "/tmp/feat.parquet",
+        "--model-version", "jra-running-style-lgbm-prod-v1.5",
+        "--output-parquet", "/tmp/out.parquet",
         "--running-style-feature-version", "v1",
-        "--pg-url", "postgres://x",
         "--category", "jra",
     ]
     frame = pd.DataFrame({"x": [1]})
-    fake_result = MagicMock()
-    fake_result.returncode = 0
-    fake_result.stderr = ""
-    fake_result.stdout = '{"model_version": "active-m", "artifact_path": "/p/model.txt"}'
     with patch("lightgbm.Booster", return_value=fake_booster) as booster_mock:
-        with patch("subprocess.run", return_value=fake_result):
+        with patch.object(subject, "default_path_exists", return_value=True):
             with patch.object(subject, "score_frame", return_value=frame):
-                with patch.object(subject, "write_predictions_parquet"):
+                with patch.object(subject, "write_logits_parquet"):
                     with patch.object(pd, "read_parquet", return_value=frame):
                         subject.main(argv)
-    booster_mock.assert_called_once_with(model_file="/p/model.txt")
+    invoked_path = booster_mock.call_args.kwargs["model_file"]
+    assert invoked_path.endswith("tmp/models/jra-running-style-lgbm-prod-v1.5/model.txt")

@@ -230,37 +230,6 @@ def compute_predicted_labels(probabilities: np.ndarray) -> np.ndarray:
     return np.argmax(probabilities, axis=1)
 
 
-def apply_race_level_nige_constraint(
-    df: pd.DataFrame,
-    probabilities: np.ndarray,
-    *,
-    nige_class_index: int = 0,
-    min_nige_probability: float = 0.18,
-) -> np.ndarray:
-    """Ensure at most one horse per race is labeled nige by suppressing weaker nige picks."""
-    adjusted = probabilities.copy()
-    if "race_id" not in df.columns:
-        return adjusted
-
-    for _, race_df in df.groupby("race_id", sort=False):
-        indices = race_df.index.to_numpy()
-        if indices.size <= 1:
-            continue
-        race_probs = adjusted[indices]
-        nige_probs = race_probs[:, nige_class_index]
-        top_index = int(np.argmax(nige_probs))
-        if nige_probs[top_index] < min_nige_probability:
-            race_probs[:, nige_class_index] = 0.0
-        else:
-            for row_index in range(indices.size):
-                if row_index != top_index:
-                    race_probs[row_index, nige_class_index] = 0.0
-        row_sums = race_probs.sum(axis=1, keepdims=True)
-        safe_sums = np.where(row_sums <= 0, 1.0, row_sums)
-        adjusted[indices] = race_probs / safe_sums
-    return adjusted
-
-
 def compute_accuracy(predicted: np.ndarray, actual: np.ndarray) -> float:
     if actual.size == 0:
         return float("nan")
@@ -320,8 +289,6 @@ def train_running_style_head(
     feature_columns: list[str],
     categorical_features: list[str],
     params: TrainingParams,
-    *,
-    apply_nige_constraint: bool,
 ) -> tuple[lgb.Booster, np.ndarray]:
     train_subset = filter_labeled_rows(train_df)
     valid_subset = filter_labeled_rows(valid_df)
@@ -346,8 +313,6 @@ def train_running_style_head(
         ],
     )
     probabilities = predict_softmax(booster, valid_df, feature_columns, categorical_features)
-    if apply_nige_constraint:
-        probabilities = apply_race_level_nige_constraint(valid_df, probabilities)
     return booster, probabilities
 
 
@@ -372,7 +337,6 @@ def run_walk_forward_for_year(
     params: TrainingParams,
     *,
     with_field_features: bool,
-    apply_nige_constraint: bool,
 ) -> tuple[pd.DataFrame, FoldMetrics]:
     train_df, valid_df = split_by_year(df, train_start, valid_year)
     train_df = maybe_enrich_with_field_features(train_df, with_field_features)
@@ -383,7 +347,6 @@ def run_walk_forward_for_year(
         feature_columns,
         categorical_features,
         params,
-        apply_nige_constraint=apply_nige_constraint,
     )
     predictions_df = build_predictions_df(valid_df, probabilities)
     evaluation_subset = predictions_df.dropna(subset=[TARGET_COLUMN])
@@ -451,12 +414,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=True,
         help="Compute race-internal field_* features before training/prediction",
     )
-    walk.add_argument(
-        "--race-level-nige-constraint",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Allow at most one nige label per race at inference time",
-    )
     train_prod = subparsers.add_parser("train-production")
     train_prod.add_argument("--csv", type=Path, required=True, help="parquet directory or file")
     train_prod.add_argument("--train-start-date", type=str, default="20160101")
@@ -478,11 +435,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--with-field-features",
         action=argparse.BooleanOptionalAction,
         default=True,
-    )
-    train_prod.add_argument(
-        "--race-level-nige-constraint",
-        action=argparse.BooleanOptionalAction,
-        default=False,
     )
     return parser.parse_args(argv)
 
@@ -520,7 +472,6 @@ def run_walk_forward_command(args: argparse.Namespace) -> None:
             categorical_features,
             params,
             with_field_features=args.with_field_features,
-            apply_nige_constraint=args.race_level_nige_constraint,
         )
         metrics_per_fold.append(metrics)
         all_predictions.append(predictions_df)

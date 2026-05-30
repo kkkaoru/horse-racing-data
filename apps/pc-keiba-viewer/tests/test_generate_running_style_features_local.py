@@ -1,4 +1,4 @@
-"""Tests for generate_running_style_features_local (Phase A)."""
+"""Tests for generate_running_style_features_local (Phase A; TS-SQL delegated)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pytest
 import generate_running_style_features_local as subject
 
 
-def test_parse_args_required_fields() -> None:
+def test_parse_args_required_fields_pg_url() -> None:
     args = subject.parse_args([
         "--pg-url", "postgres://x",
         "--output-dir", "/tmp/out",
@@ -20,6 +20,30 @@ def test_parse_args_required_fields() -> None:
         "--category", "jra",
     ])
     assert args.pg_url == "postgres://x"
+
+
+def test_parse_args_required_fields_output_dir() -> None:
+    args = subject.parse_args([
+        "--pg-url", "u",
+        "--output-dir", "/tmp/out-a",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2006",
+        "--year-to", "2026",
+        "--category", "jra",
+    ])
+    assert args.output_dir == "/tmp/out-a"
+
+
+def test_parse_args_required_fields_feature_version() -> None:
+    args = subject.parse_args([
+        "--pg-url", "u",
+        "--output-dir", "/tmp",
+        "--running-style-feature-version", "v3",
+        "--year-from", "2006",
+        "--year-to", "2026",
+        "--category", "jra",
+    ])
+    assert args.running_style_feature_version == "v3"
 
 
 def test_parse_args_year_range_parsed_as_int() -> None:
@@ -59,7 +83,33 @@ def test_parse_args_default_memory_limit_is_16gb() -> None:
     assert args.memory_limit == "16GB"
 
 
-def test_parse_args_invalid_category_raises() -> None:
+def test_parse_args_overrides_threads() -> None:
+    args = subject.parse_args([
+        "--pg-url", "u",
+        "--output-dir", "/tmp",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2006",
+        "--year-to", "2007",
+        "--category", "jra",
+        "--threads", "12",
+    ])
+    assert args.threads == 12
+
+
+def test_parse_args_overrides_memory_limit() -> None:
+    args = subject.parse_args([
+        "--pg-url", "u",
+        "--output-dir", "/tmp",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2006",
+        "--year-to", "2007",
+        "--category", "jra",
+        "--memory-limit", "24GB",
+    ])
+    assert args.memory_limit == "24GB"
+
+
+def test_parse_args_rejects_invalid_category() -> None:
     with pytest.raises(SystemExit):
         subject.parse_args([
             "--pg-url", "u",
@@ -71,111 +121,262 @@ def test_parse_args_invalid_category_raises() -> None:
         ])
 
 
-def test_apply_duckdb_resources_sets_threads_memory_temp() -> None:
-    con = MagicMock()
-    subject.apply_duckdb_resources(
-        con, threads=8, memory_limit="16GB", temp_dir_limit="200GB",
+def test_parse_args_rejects_ban_ei_category() -> None:
+    with pytest.raises(SystemExit):
+        subject.parse_args([
+            "--pg-url", "u",
+            "--output-dir", "/tmp",
+            "--running-style-feature-version", "v1",
+            "--year-from", "2006",
+            "--year-to", "2007",
+            "--category", "ban-ei",
+        ])
+
+
+def test_parse_args_accepts_jra() -> None:
+    args = subject.parse_args([
+        "--pg-url", "u",
+        "--output-dir", "/tmp",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2006",
+        "--year-to", "2007",
+        "--category", "jra",
+    ])
+    assert args.category == "jra"
+
+
+def test_parse_args_accepts_nar() -> None:
+    args = subject.parse_args([
+        "--pg-url", "u",
+        "--output-dir", "/tmp",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2006",
+        "--year-to", "2007",
+        "--category", "nar",
+    ])
+    assert args.category == "nar"
+
+
+def test_validate_year_range_accepts_equal() -> None:
+    subject.validate_year_range(2020, 2020)
+
+
+def test_validate_year_range_accepts_ascending() -> None:
+    subject.validate_year_range(2006, 2026)
+
+
+def test_validate_year_range_rejects_descending() -> None:
+    with pytest.raises(ValueError, match="year_from"):
+        subject.validate_year_range(2026, 2006)
+
+
+def test_year_to_yyyymmdd_from_pads_year() -> None:
+    assert subject.year_to_yyyymmdd_from(2006) == "20060101"
+
+
+def test_year_to_yyyymmdd_to_pads_year() -> None:
+    assert subject.year_to_yyyymmdd_to(2026) == "20261231"
+
+
+def test_build_print_sql_command_uses_bun_run() -> None:
+    command = subject.build_print_sql_command(
+        category="jra", year_from=2006, year_to=2026, feature_version="v1",
     )
+    assert command[0] == "bun"
+    assert command[1] == "run"
+
+
+def test_build_print_sql_command_targets_print_script() -> None:
+    command = subject.build_print_sql_command(
+        category="jra", year_from=2006, year_to=2026, feature_version="v1",
+    )
+    assert command[2] == (
+        "apps/pc-keiba-viewer/src/scripts/finish-position-features/print-running-style-feature-sql.ts"
+    )
+
+
+def test_build_print_sql_command_passes_source_flag() -> None:
+    command = subject.build_print_sql_command(
+        category="jra", year_from=2006, year_to=2026, feature_version="v1",
+    )
+    assert "--source" in command
+    assert "jra" in command
+
+
+def test_build_print_sql_command_passes_from_to_dates() -> None:
+    command = subject.build_print_sql_command(
+        category="nar", year_from=2006, year_to=2026, feature_version="v1",
+    )
+    assert "20060101" in command
+    assert "20261231" in command
+
+
+def test_build_print_sql_command_passes_feature_version() -> None:
+    command = subject.build_print_sql_command(
+        category="jra", year_from=2006, year_to=2026, feature_version="v7",
+    )
+    assert "--feature-version" in command
+    assert "v7" in command
+
+
+def test_fetch_running_style_sql_returns_stdout() -> None:
+    completed = MagicMock()
+    completed.returncode = 0
+    completed.stdout = "SELECT 1 AS race_year"
+    completed.stderr = ""
+    runner = MagicMock(return_value=completed)
+    sql = subject.fetch_running_style_sql(
+        category="jra",
+        year_from=2006,
+        year_to=2026,
+        feature_version="v1",
+        runner=runner,
+    )
+    assert sql == "SELECT 1 AS race_year"
+
+
+def test_fetch_running_style_sql_invokes_runner_with_command() -> None:
+    completed = MagicMock()
+    completed.returncode = 0
+    completed.stdout = "SELECT 1"
+    completed.stderr = ""
+    runner = MagicMock(return_value=completed)
+    subject.fetch_running_style_sql(
+        category="nar",
+        year_from=2010,
+        year_to=2020,
+        feature_version="v1",
+        runner=runner,
+    )
+    call_args = runner.call_args
+    cmd = call_args.args[0]
+    assert cmd[0] == "bun"
+
+
+def test_fetch_running_style_sql_passes_capture_output_and_text() -> None:
+    completed = MagicMock()
+    completed.returncode = 0
+    completed.stdout = "SELECT 1"
+    completed.stderr = ""
+    runner = MagicMock(return_value=completed)
+    subject.fetch_running_style_sql(
+        category="jra",
+        year_from=2010,
+        year_to=2020,
+        feature_version="v1",
+        runner=runner,
+    )
+    kwargs = runner.call_args.kwargs
+    assert kwargs["capture_output"] is True
+    assert kwargs["text"] is True
+
+
+def test_fetch_running_style_sql_raises_on_nonzero_returncode() -> None:
+    completed = MagicMock()
+    completed.returncode = 1
+    completed.stdout = ""
+    completed.stderr = "boom"
+    runner = MagicMock(return_value=completed)
+    with pytest.raises(RuntimeError, match="exited with code 1"):
+        subject.fetch_running_style_sql(
+            category="jra",
+            year_from=2006,
+            year_to=2026,
+            feature_version="v1",
+            runner=runner,
+        )
+
+
+def test_fetch_running_style_sql_raises_on_empty_stdout() -> None:
+    completed = MagicMock()
+    completed.returncode = 0
+    completed.stdout = "   "
+    completed.stderr = ""
+    runner = MagicMock(return_value=completed)
+    with pytest.raises(RuntimeError, match="empty stdout"):
+        subject.fetch_running_style_sql(
+            category="jra",
+            year_from=2006,
+            year_to=2026,
+            feature_version="v1",
+            runner=runner,
+        )
+
+
+def test_apply_duckdb_resources_sets_threads() -> None:
+    con = MagicMock()
+    subject.apply_duckdb_resources(con, threads=8, memory_limit="16GB")
     assert con.execute.call_args_list[0].args[0] == "SET threads TO 8"
-    assert con.execute.call_args_list[1].args[0] == "SET memory_limit = '16GB'"
-    assert con.execute.call_args_list[2].args[0] == "SET max_temp_directory_size = '200GB'"
 
 
-def test_attach_postgres_runs_install_load_attach_and_session_sets() -> None:
+def test_apply_duckdb_resources_sets_memory_limit() -> None:
+    con = MagicMock()
+    subject.apply_duckdb_resources(con, threads=8, memory_limit="24GB")
+    assert con.execute.call_args_list[1].args[0] == "SET memory_limit = '24GB'"
+
+
+def test_apply_duckdb_resources_disables_progress_bar() -> None:
+    con = MagicMock()
+    subject.apply_duckdb_resources(con, threads=8, memory_limit="16GB")
+    assert con.execute.call_args_list[2].args[0] == "SET enable_progress_bar_print = false"
+
+
+def test_attach_postgres_installs_extension() -> None:
     con = MagicMock()
     subject.attach_postgres(con, "postgres://abc")
-    calls = [call.args[0] for call in con.execute.call_args_list]
-    assert calls[0] == "INSTALL postgres"
-    assert calls[1] == "LOAD postgres"
-    assert calls[2] == "ATTACH 'postgres://abc' AS pg (TYPE postgres, READ_ONLY)"
+    assert con.execute.call_args_list[0].args[0] == "INSTALL postgres"
 
 
-def test_build_source_filter_for_ban_ei_uses_keibajo_83() -> None:
-    assert subject.build_source_filter_sql("ban-ei") == "se.keibajo_code = '83'"
+def test_attach_postgres_loads_extension() -> None:
+    con = MagicMock()
+    subject.attach_postgres(con, "postgres://abc")
+    assert con.execute.call_args_list[1].args[0] == "LOAD postgres"
 
 
-def test_build_source_filter_for_nar_uses_source_nar() -> None:
-    assert subject.build_source_filter_sql("nar") == "se.source = 'nar'"
-
-
-def test_build_source_filter_for_jra_excludes_ban_ei() -> None:
-    assert (
-        subject.build_source_filter_sql("jra")
-        == "se.source = 'jra' AND se.keibajo_code <> '83'"
+def test_attach_postgres_attaches_read_only() -> None:
+    con = MagicMock()
+    subject.attach_postgres(con, "postgres://abc")
+    assert con.execute.call_args_list[2].args[0] == (
+        "ATTACH 'postgres://abc' AS pg (TYPE postgres, READ_ONLY)"
     )
 
 
-def test_build_se_table_name_jra_is_jvd_se() -> None:
-    assert subject.build_se_table_name("jra") == "jvd_se"
+def test_build_hive_copy_sql_wraps_select_in_copy() -> None:
+    sql = subject.build_hive_copy_sql(select_sql="SELECT 1", output_dir="/tmp/out")
+    assert sql.startswith("COPY (SELECT 1) TO '/tmp/out'")
 
 
-def test_build_se_table_name_nar_is_nvd_se() -> None:
-    assert subject.build_se_table_name("nar") == "nvd_se"
-
-
-def test_build_se_table_name_ban_ei_is_nvd_se() -> None:
-    assert subject.build_se_table_name("ban-ei") == "nvd_se"
-
-
-def test_build_ra_table_name_jra_is_jvd_ra() -> None:
-    assert subject.build_ra_table_name("jra") == "jvd_ra"
-
-
-def test_build_ra_table_name_nar_is_nvd_ra() -> None:
-    assert subject.build_ra_table_name("nar") == "nvd_ra"
-
-
-def test_build_year_feature_query_embeds_year_and_version() -> None:
-    sql = subject.build_year_feature_query(
-        category="jra", year=2026, feature_version="v1",
-    )
-    assert "se.kaisai_nen = '2026'" in sql
-    assert "CAST('v1' AS VARCHAR) AS running_style_feature_version" in sql
-
-
-def test_build_year_feature_query_embeds_category_literal() -> None:
-    sql = subject.build_year_feature_query(
-        category="ban-ei", year=2020, feature_version="v1",
-    )
-    assert "CAST('ban-ei' AS VARCHAR) AS category" in sql
-
-
-def test_build_hive_copy_sql_emits_partition_by() -> None:
-    sql = subject.build_hive_copy_sql(
-        select_sql="SELECT 1", output_dir="/tmp/out",
-    )
-    assert "PARTITION_BY (category, race_year)" in sql
+def test_build_hive_copy_sql_partition_by_race_year() -> None:
+    sql = subject.build_hive_copy_sql(select_sql="SELECT 1", output_dir="/tmp/out")
+    assert "PARTITION_BY (race_year)" in sql
 
 
 def test_build_hive_copy_sql_uses_overwrite_or_ignore() -> None:
-    sql = subject.build_hive_copy_sql(
-        select_sql="SELECT 1", output_dir="/tmp/out",
-    )
+    sql = subject.build_hive_copy_sql(select_sql="SELECT 1", output_dir="/tmp/out")
     assert "OVERWRITE_OR_IGNORE TRUE" in sql
 
 
-def test_export_year_features_calls_con_execute_with_copy() -> None:
-    con = MagicMock()
-    subject.export_year_features(
-        con=con,
-        category="jra",
-        year=2026,
-        output_dir="/tmp/out",
-        feature_version="v1",
-    )
-    executed_sql = con.execute.call_args.args[0]
-    assert executed_sql.startswith("COPY (")
-
-
-def test_ensure_output_dir_calls_mkdir_with_parents(tmp_path: Path) -> None:
+def test_ensure_output_dir_creates_nested_directory(tmp_path: Path) -> None:
     target = str(tmp_path / "nested" / "dir")
     subject.ensure_output_dir(target)
     assert Path(target).is_dir()
 
 
-def test_run_orchestrates_year_loop_and_closes_connection() -> None:
+def test_ensure_output_dir_idempotent(tmp_path: Path) -> None:
+    target = str(tmp_path / "dir")
+    subject.ensure_output_dir(target)
+    subject.ensure_output_dir(target)
+    assert Path(target).is_dir()
+
+
+def test_run_calls_ensure_output_dir() -> None:
     con = MagicMock()
     connect = MagicMock(return_value=con)
+    completed = MagicMock()
+    completed.returncode = 0
+    completed.stdout = "SELECT 1 AS race_year"
+    completed.stderr = ""
+    runner = MagicMock(return_value=completed)
     args = subject.parse_args([
         "--pg-url", "postgres://u",
         "--output-dir", "/tmp/x",
@@ -185,15 +386,60 @@ def test_run_orchestrates_year_loop_and_closes_connection() -> None:
         "--category", "jra",
     ])
     with patch.object(subject, "ensure_output_dir") as ensure_mock:
-        subject.run(args, connect)
+        subject.run(args, connect, runner)
     ensure_mock.assert_called_once_with("/tmp/x")
+
+
+def test_run_opens_in_memory_duckdb() -> None:
+    con = MagicMock()
+    connect = MagicMock(return_value=con)
+    completed = MagicMock()
+    completed.returncode = 0
+    completed.stdout = "SELECT 1 AS race_year"
+    completed.stderr = ""
+    runner = MagicMock(return_value=completed)
+    args = subject.parse_args([
+        "--pg-url", "postgres://u",
+        "--output-dir", "/tmp/x",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2020",
+        "--year-to", "2021",
+        "--category", "jra",
+    ])
+    with patch.object(subject, "ensure_output_dir"):
+        subject.run(args, connect, runner)
     connect.assert_called_once_with(":memory:")
+
+
+def test_run_closes_connection() -> None:
+    con = MagicMock()
+    connect = MagicMock(return_value=con)
+    completed = MagicMock()
+    completed.returncode = 0
+    completed.stdout = "SELECT 1 AS race_year"
+    completed.stderr = ""
+    runner = MagicMock(return_value=completed)
+    args = subject.parse_args([
+        "--pg-url", "postgres://u",
+        "--output-dir", "/tmp/x",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2020",
+        "--year-to", "2021",
+        "--category", "jra",
+    ])
+    with patch.object(subject, "ensure_output_dir"):
+        subject.run(args, connect, runner)
     con.close.assert_called_once_with()
 
 
-def test_run_emits_one_copy_per_year() -> None:
+def test_run_emits_single_copy_statement() -> None:
     con = MagicMock()
     connect = MagicMock(return_value=con)
+    completed = MagicMock()
+    completed.returncode = 0
+    completed.stdout = "SELECT race_year FROM pg.foo"
+    completed.stderr = ""
+    runner = MagicMock(return_value=completed)
     args = subject.parse_args([
         "--pg-url", "postgres://u",
         "--output-dir", "/tmp/x",
@@ -203,18 +449,156 @@ def test_run_emits_one_copy_per_year() -> None:
         "--category", "jra",
     ])
     with patch.object(subject, "ensure_output_dir"):
-        subject.run(args, connect)
+        subject.run(args, connect, runner)
     copy_calls = [
         call for call in con.execute.call_args_list
         if call.args[0].startswith("COPY (")
     ]
-    assert len(copy_calls) == 3
+    assert len(copy_calls) == 1
+
+
+def test_run_propagates_subprocess_error() -> None:
+    con = MagicMock()
+    connect = MagicMock(return_value=con)
+    completed = MagicMock()
+    completed.returncode = 7
+    completed.stdout = ""
+    completed.stderr = "fail"
+    runner = MagicMock(return_value=completed)
+    args = subject.parse_args([
+        "--pg-url", "postgres://u",
+        "--output-dir", "/tmp/x",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2020",
+        "--year-to", "2021",
+        "--category", "jra",
+    ])
+    with patch.object(subject, "ensure_output_dir"):
+        with pytest.raises(RuntimeError, match="exited with code 7"):
+            subject.run(args, connect, runner)
+
+
+def test_run_validates_year_range_before_subprocess() -> None:
+    con = MagicMock()
+    connect = MagicMock(return_value=con)
+    runner = MagicMock()
+    args = subject.parse_args([
+        "--pg-url", "postgres://u",
+        "--output-dir", "/tmp/x",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2026",
+        "--year-to", "2020",
+        "--category", "jra",
+    ])
+    with patch.object(subject, "ensure_output_dir"):
+        with pytest.raises(ValueError, match="year_from"):
+            subject.run(args, connect, runner)
+    runner.assert_not_called()
+    connect.assert_not_called()
+
+
+def test_run_executes_set_threads_and_memory_limit() -> None:
+    con = MagicMock()
+    connect = MagicMock(return_value=con)
+    completed = MagicMock()
+    completed.returncode = 0
+    completed.stdout = "SELECT 1 AS race_year"
+    completed.stderr = ""
+    runner = MagicMock(return_value=completed)
+    args = subject.parse_args([
+        "--pg-url", "postgres://u",
+        "--output-dir", "/tmp/x",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2020",
+        "--year-to", "2021",
+        "--category", "jra",
+        "--threads", "16",
+        "--memory-limit", "32GB",
+    ])
+    with patch.object(subject, "ensure_output_dir"):
+        subject.run(args, connect, runner)
+    issued = [call.args[0] for call in con.execute.call_args_list]
+    assert "SET threads TO 16" in issued
+    assert "SET memory_limit = '32GB'" in issued
+
+
+def test_run_executes_attach_postgres_with_pg_url() -> None:
+    con = MagicMock()
+    connect = MagicMock(return_value=con)
+    completed = MagicMock()
+    completed.returncode = 0
+    completed.stdout = "SELECT 1 AS race_year"
+    completed.stderr = ""
+    runner = MagicMock(return_value=completed)
+    args = subject.parse_args([
+        "--pg-url", "postgres://u",
+        "--output-dir", "/tmp/x",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2020",
+        "--year-to", "2021",
+        "--category", "jra",
+    ])
+    with patch.object(subject, "ensure_output_dir"):
+        subject.run(args, connect, runner)
+    issued = [call.args[0] for call in con.execute.call_args_list]
+    assert "ATTACH 'postgres://u' AS pg (TYPE postgres, READ_ONLY)" in issued
+
+
+def test_run_passes_ts_sql_into_copy_wrapper() -> None:
+    con = MagicMock()
+    connect = MagicMock(return_value=con)
+    completed = MagicMock()
+    completed.returncode = 0
+    completed.stdout = "SELECT race_year FROM pg.race_entry_corner_features"
+    completed.stderr = ""
+    runner = MagicMock(return_value=completed)
+    args = subject.parse_args([
+        "--pg-url", "postgres://u",
+        "--output-dir", "/tmp/x",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2020",
+        "--year-to", "2021",
+        "--category", "jra",
+    ])
+    with patch.object(subject, "ensure_output_dir"):
+        subject.run(args, connect, runner)
+    copy_call = next(
+        call for call in con.execute.call_args_list if call.args[0].startswith("COPY (")
+    )
+    assert "SELECT race_year FROM pg.race_entry_corner_features" in copy_call.args[0]
+
+
+def test_run_closes_connection_even_on_execute_failure() -> None:
+    con = MagicMock()
+    con.execute.side_effect = RuntimeError("duckdb boom")
+    connect = MagicMock(return_value=con)
+    completed = MagicMock()
+    completed.returncode = 0
+    completed.stdout = "SELECT 1 AS race_year"
+    completed.stderr = ""
+    runner = MagicMock(return_value=completed)
+    args = subject.parse_args([
+        "--pg-url", "postgres://u",
+        "--output-dir", "/tmp/x",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2020",
+        "--year-to", "2021",
+        "--category", "jra",
+    ])
+    with patch.object(subject, "ensure_output_dir"):
+        with pytest.raises(RuntimeError, match="duckdb boom"):
+            subject.run(args, connect, runner)
+    con.close.assert_called_once_with()
 
 
 def test_main_uses_duckdb_module() -> None:
     fake_duckdb = MagicMock()
     fake_con = MagicMock()
     fake_duckdb.connect.return_value = fake_con
+    fake_completed = MagicMock()
+    fake_completed.returncode = 0
+    fake_completed.stdout = "SELECT 1 AS race_year"
+    fake_completed.stderr = ""
     argv = [
         "--pg-url", "postgres://u",
         "--output-dir", "/tmp/y",
@@ -225,5 +609,29 @@ def test_main_uses_duckdb_module() -> None:
     ]
     with patch.dict("sys.modules", {"duckdb": fake_duckdb}):
         with patch.object(subject, "ensure_output_dir"):
-            subject.main(argv)
+            with patch("generate_running_style_features_local.subprocess.run", return_value=fake_completed):
+                subject.main(argv)
     fake_duckdb.connect.assert_called_once_with(":memory:")
+
+
+def test_main_passes_subprocess_run_as_runner() -> None:
+    fake_duckdb = MagicMock()
+    fake_con = MagicMock()
+    fake_duckdb.connect.return_value = fake_con
+    fake_completed = MagicMock()
+    fake_completed.returncode = 0
+    fake_completed.stdout = "SELECT 1 AS race_year"
+    fake_completed.stderr = ""
+    argv = [
+        "--pg-url", "postgres://u",
+        "--output-dir", "/tmp/y",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2025",
+        "--year-to", "2025",
+        "--category", "jra",
+    ]
+    with patch.dict("sys.modules", {"duckdb": fake_duckdb}):
+        with patch.object(subject, "ensure_output_dir"):
+            with patch("generate_running_style_features_local.subprocess.run", return_value=fake_completed) as run_mock:
+                subject.main(argv)
+    run_mock.assert_called_once()
