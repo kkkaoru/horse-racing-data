@@ -171,13 +171,13 @@ const DEFAULT_PREMIUM_PADDOCK_DISCORD_BOT_NAME = "外部パドック速報";
 const DEFAULT_DETAIL_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
 const PREMIUM_PADDOCK_NOTIFICATION_FORMAT_VERSION = "2026-05-16-v2";
 const PREMIUM_PADDOCK_NOTIFICATION_LOCK_SECONDS = 90;
-// JRA horse-weight fetch scheduling priority (Tokyo/Kyoto 5R first, then
-// 5R-onward JRA, then 1R-4R). `race_bango` is stored zero-padded in
+// JRA horse-weight fetch scheduling priority (Tokyo/Kyoto 5R and 11R first,
+// then 5R-onward JRA, then 1R-4R). `race_bango` is stored zero-padded in
 // realtime_race_sources.race_bango (see storage.ts toRaceSource: row.race_bango
 // is written via padStart(2,"0") in upsertNarRaceSource / upsertJraRaceSource),
 // so we compare against "05" not "5".
 const JRA_PRIORITY_VENUE_CODES = ["05", "08"] satisfies readonly string[];
-const JRA_PRIORITY_RACE_BANGO = "05";
+const JRA_PRIORITY_RACE_BANGOS = ["05", "11"] satisfies readonly string[];
 // Raised from 40 to 90 because the JRA horse-weight HTML often publishes
 // ~30-45 min before post but our previous 40-min window plus the 3-minute
 // tick gate combined into only ~3 attempts per race, so a single failure
@@ -893,10 +893,10 @@ export const isThreeMinuteTick = (date: Date): boolean => date.getUTCMinutes() %
 const isPriorityJraVenue = (keibajoCode: string): boolean =>
   JRA_PRIORITY_VENUE_CODES.includes(keibajoCode);
 
-const isPriorityFiveR = (input: WeightFetchPriorityInput): boolean =>
+const isPriorityRaceBango = (input: WeightFetchPriorityInput): boolean =>
   input.source === "jra" &&
   isPriorityJraVenue(input.keibajoCode) &&
-  input.raceBango === JRA_PRIORITY_RACE_BANGO;
+  JRA_PRIORITY_RACE_BANGOS.includes(input.raceBango);
 
 const isLateJraRace = (input: WeightFetchPriorityInput): boolean =>
   input.source === "jra" &&
@@ -904,7 +904,7 @@ const isLateJraRace = (input: WeightFetchPriorityInput): boolean =>
 
 export const weightFetchPriorityTier = (input: WeightFetchPriorityInput): number => {
   if (input.source !== "jra") return WEIGHT_FETCH_PRIORITY_TIER_NAR;
-  if (isPriorityFiveR(input)) return WEIGHT_FETCH_PRIORITY_TIER_HIGH;
+  if (isPriorityRaceBango(input)) return WEIGHT_FETCH_PRIORITY_TIER_HIGH;
   if (isLateJraRace(input)) return WEIGHT_FETCH_PRIORITY_TIER_MID;
   return WEIGHT_FETCH_PRIORITY_TIER_LOW;
 };
