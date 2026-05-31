@@ -24,9 +24,11 @@
 // Legacy Python score_running_style_local.py is preserved for backward compat;
 // it is simply no longer referenced from the orchestrator.
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 
 import { RUNNING_STYLE_FEATURE_VERSION } from "./running-style-feature-version";
+
+const PARQUET_EXTENSION = ".parquet";
 
 interface GenerateRunningStyleLocalOptions {
   pgUrl: string;
@@ -43,6 +45,7 @@ interface GenerateRunningStyleLocalOptions {
   modelFlatbinJra: string;
   modelFlatbinNar: string;
   rsPFromFlatbinJra: string;
+  force: boolean;
 }
 
 interface SpawnResult {
@@ -69,6 +72,20 @@ interface ColimaProbe {
 
 interface NowProvider {
   (): Date;
+}
+
+interface Logger {
+  (message: string): void;
+}
+
+interface ListDirectoryEntriesFn {
+  (path: string): Promise<readonly string[]>;
+}
+
+interface ChunkParquetCheckArgs {
+  featuresDir: string;
+  yearFrom: number;
+  yearTo: number;
 }
 
 interface CategoryWindow {
@@ -136,6 +153,8 @@ interface RunDeps {
   sleep: SleepRunner;
   probeColima: ColimaProbe;
   now: NowProvider;
+  log: Logger;
+  listDirectoryEntries: ListDirectoryEntriesFn;
 }
 
 interface YearChunk {
@@ -155,6 +174,7 @@ export const DEFAULT_MEMORY_LIMIT = "16GB";
 export const DEFAULT_MAX_YEARS_PER_RUN = 1;
 export const DEFAULT_PHASE_A_CONCURRENCY = 4;
 export const DEFAULT_MEMORY_LIMIT_PER_CHUNK = "";
+export const DEFAULT_FORCE = false;
 export const PHASE_A_SCRIPT =
   "apps/pc-keiba-viewer/src/scripts/generate_running_style_features_local.py";
 export const PHASE_B_SCRIPT =
@@ -200,6 +220,7 @@ export const buildDefaultOptions = (): GenerateRunningStyleLocalOptions => ({
   modelFlatbinJra: "",
   modelFlatbinNar: "",
   rsPFromFlatbinJra: "",
+  force: DEFAULT_FORCE,
 });
 
 const applyArg = (
@@ -261,6 +282,10 @@ const applyArg = (
   }
   if (name === "--rs-p-from-flatbin-jra") {
     options.rsPFromFlatbinJra = requireValue(name, value);
+    return { advanceBy: 2 };
+  }
+  if (name === "--force") {
+    options.force = parseBooleanFlag(value);
     return { advanceBy: 2 };
   }
   throw new Error(`Unknown argument: ${name}`);
@@ -507,15 +532,61 @@ export const buildManifest = (
 export const resolveMemoryLimitPerChunk = (options: GenerateRunningStyleLocalOptions): string =>
   options.memoryLimitPerChunk === "" ? options.memoryLimit : options.memoryLimitPerChunk;
 
+export const buildChunkYearRange = (chunk: YearChunk): readonly number[] =>
+  Array.from(
+    { length: chunk.yearTo - chunk.yearFrom + 1 },
+    (_unused, index) => chunk.yearFrom + index,
+  );
+
+export const buildChunkYearDir = (featuresDir: string, year: number): string =>
+  `${featuresDir}/race_year=${year}`;
+
+const isParquetEntry = (entry: string): boolean => entry.endsWith(PARQUET_EXTENSION);
+
+const yearHasParquet = async (
+  listDirectoryEntries: ListDirectoryEntriesFn,
+  featuresDir: string,
+  year: number,
+): Promise<boolean> => {
+  const dir = buildChunkYearDir(featuresDir, year);
+  const entries = await listDirectoryEntries(dir).catch(() => [] satisfies readonly string[]);
+  return entries.some(isParquetEntry);
+};
+
+export const chunkHasExistingParquet = async (
+  listDirectoryEntries: ListDirectoryEntriesFn,
+  args: ChunkParquetCheckArgs,
+): Promise<boolean> => {
+  const years = buildChunkYearRange({ yearFrom: args.yearFrom, yearTo: args.yearTo });
+  const results = await Promise.all(
+    years.map((year) => yearHasParquet(listDirectoryEntries, args.featuresDir, year)),
+  );
+  return results.every((hit) => hit);
+};
+
 const runPhaseAForChunk = async (
   deps: RunDeps,
   options: GenerateRunningStyleLocalOptions,
   window: CategoryWindow,
   chunk: YearChunk,
 ): Promise<void> => {
+  const featuresDir = buildCategoryFeaturesDir(options, window.category);
+  if (!options.force) {
+    const skip = await chunkHasExistingParquet(deps.listDirectoryEntries, {
+      featuresDir,
+      yearFrom: chunk.yearFrom,
+      yearTo: chunk.yearTo,
+    });
+    if (skip) {
+      deps.log(
+        `[Phase A] skip ${window.category} ${chunk.yearFrom}-${chunk.yearTo} (existing parquet found)`,
+      );
+      return;
+    }
+  }
   const command = buildPhaseACommand({
     pgUrl: options.pgUrl,
-    outputDir: buildCategoryFeaturesDir(options, window.category),
+    outputDir: featuresDir,
     featureVersion: options.runningStyleFeatureVersion,
     yearFrom: chunk.yearFrom,
     yearTo: chunk.yearTo,
@@ -674,6 +745,10 @@ const buildColimaProbe = (): ColimaProbe => async () => {
 
 const buildBunNowProvider = (): NowProvider => () => new Date();
 
+const buildConsoleLogger = (): Logger => (message) => console.log(message);
+
+const buildFsListDirectoryEntries = (): ListDirectoryEntriesFn => async (path) => readdir(path);
+
 /* v8 ignore start */
 if (import.meta.main) {
   const options = parseArgs(process.argv.slice(2));
@@ -682,6 +757,8 @@ if (import.meta.main) {
     sleep: buildBunSleepRunner(),
     probeColima: buildColimaProbe(),
     now: buildBunNowProvider(),
+    log: buildConsoleLogger(),
+    listDirectoryEntries: buildFsListDirectoryEntries(),
   };
   runGenerateRunningStyleLocal(options, deps).catch((error: unknown) => {
     console.error(error instanceof Error ? error.message : error);
