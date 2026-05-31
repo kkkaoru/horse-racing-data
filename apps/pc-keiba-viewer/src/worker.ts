@@ -4,24 +4,14 @@ export { RaceTrendRoom } from "./worker/race-trend-room";
 import openNextWorker from "../.open-next/worker.js";
 import type { DetailSectionCacheWarmMessage } from "./lib/race-detail-section-cache";
 import type { RaceTrendCacheWarmMessage } from "./lib/race-trend-cache";
+import { formatTodayJstDate, formatTomorrowJstDate } from "./worker/jst-date";
 import {
   handleRaceDetailSectionCacheQueue,
   scheduleDueRaceTrendCache,
   scheduleRaceDetailSsrCacheWarm,
+  scheduleTodayRaceDetailSectionCache,
   scheduleTomorrowRaceDetailSectionCache,
 } from "./worker/race-detail-section-cache-warm";
-
-const formatTomorrowJstDate = (now: Date): string => {
-  const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    day: "2-digit",
-    month: "2-digit",
-    timeZone: "Asia/Tokyo",
-    year: "numeric",
-  }).formatToParts(tomorrow);
-  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${lookup.year ?? "1970"}-${lookup.month ?? "01"}-${lookup.day ?? "01"}`;
-};
 
 export default {
   ...openNextWorker,
@@ -41,6 +31,18 @@ export default {
           date: formatTomorrowJstDate(new Date()),
         }),
       );
+    }
+    if (controller.cron === "0 21 * * *") {
+      const todayJst = formatTodayJstDate(new Date());
+      ctx.waitUntil(
+        scheduleTodayRaceDetailSectionCache({
+          ctx,
+          env,
+          openNextWorker,
+          todayJstYmd: todayJst,
+        }),
+      );
+      ctx.waitUntil(scheduleRaceDetailSsrCacheWarm(openNextWorker, env, ctx, { date: todayJst }));
     }
     if (controller.cron === "*/5 * * * *") {
       ctx.waitUntil(scheduleDueRaceTrendCache(openNextWorker, env, ctx));

@@ -61,7 +61,8 @@
     // SSR snapshot. Every 5 minutes warms race trends from 20 minutes before post
     // time. Every 15 minutes refreshes today's SSR snapshot in KV so cache misses
     // never need a full Hyperdrive fan-out.
-    "crons": ["0 12 * * *", "*/5 * * * *", "*/15 * * * *"],
+    // 06:00 JST warms today's detail sections + SSR snapshot for late-registered venues.
+    "crons": ["0 12 * * *", "0 21 * * *", "*/5 * * * *", "*/15 * * * *"],
   },
   "durable_objects": {
     "bindings": [
