@@ -295,12 +295,11 @@ function parseTableProfileLine(
   thresholds: SyncStrategyThresholds,
   mode: "auto" | "full",
 ): TableProfile {
-  const cells = line.split("\t");
-  const tableName = cells[0] ?? "";
-  const rowCount = Number(cells[1] ?? "0");
-  const nTupUpd = Number(cells[2] ?? "0");
-  const hasPrimaryKey = (cells[3] ?? "f") === "t";
-  const tsColumn = cells[4] ?? "";
+  const [tableName = "", rowCountText = "0", nTupUpdText = "0", hasPkText = "f", tsColumn = ""] =
+    line.split("\t");
+  const rowCount = Number(rowCountText);
+  const nTupUpd = Number(nTupUpdText);
+  const hasPrimaryKey = hasPkText === "t";
   const timestampColumn = tsColumn === "" ? null : tsColumn;
   const hasUpdateChurn = nTupUpd >= thresholds.updateChurnMinTuples;
   const strategy = resolveStrategy({
@@ -360,10 +359,10 @@ export interface FingerprintResult {
 }
 
 export function parseFingerprintLine(line: string): FingerprintResult {
-  const [countText, marker] = line.trim().split("\t");
+  const [countText = "", marker = ""] = line.trim().split("\t");
   return {
-    count: Number(countText ?? "0"),
-    marker: marker ?? "",
+    count: Number(countText),
+    marker,
   };
 }
 
@@ -659,6 +658,10 @@ export function buildDependencyPlan(
   const tableByName = new Map(tables.map((table) => [table.tableName, table]));
   const indegree = new Map(tables.map((table) => [table.tableName, 0]));
   const childrenByParent = new Map<string, Set<string>>();
+  // indegree is keyed by every table.tableName, so a lookup with a name that
+  // already passed `tableByName.has(...)` is always defined. The `?? 0` fallback
+  // below is kept for TS narrowing only and is structurally unreachable.
+  const readIndegree = (name: string): number => indegree.get(name) ?? 0;
 
   for (const edge of dependencyEdges) {
     if (!tableByName.has(edge.childTable) || !tableByName.has(edge.parentTable)) {
@@ -672,7 +675,7 @@ export function buildDependencyPlan(
     if (!children.has(edge.childTable)) {
       children.add(edge.childTable);
       childrenByParent.set(edge.parentTable, children);
-      indegree.set(edge.childTable, (indegree.get(edge.childTable) ?? 0) + 1);
+      indegree.set(edge.childTable, readIndegree(edge.childTable) + 1);
     }
   }
 
@@ -684,9 +687,7 @@ export function buildDependencyPlan(
         left.tableName.localeCompare(right.tableName),
     );
 
-  let currentLevel = sortTables(
-    tables.filter((table) => (indegree.get(table.tableName) ?? 0) === 0),
-  );
+  let currentLevel = sortTables(tables.filter((table) => readIndegree(table.tableName) === 0));
   const plan: TableMetadata[][] = [];
   let processedTables = 0;
 
@@ -697,7 +698,7 @@ export function buildDependencyPlan(
 
     for (const table of currentLevel) {
       for (const child of childrenByParent.get(table.tableName) ?? []) {
-        const nextIndegree = (indegree.get(child) ?? 0) - 1;
+        const nextIndegree = readIndegree(child) - 1;
         indegree.set(child, nextIndegree);
         if (nextIndegree === 0) {
           nextNames.add(child);
@@ -714,7 +715,7 @@ export function buildDependencyPlan(
 
   if (processedTables !== tables.length) {
     const cyclicTables = tables
-      .filter((table) => (indegree.get(table.tableName) ?? 0) > 0)
+      .filter((table) => readIndegree(table.tableName) > 0)
       .map((table) => table.tableName)
       .sort();
     throw new Error(`Circular table dependencies detected: ${cyclicTables.join(", ")}`);
@@ -969,6 +970,7 @@ export type RetryOptions = {
   maxAttempts: number;
   retryDelayMs: number;
   sleep: (milliseconds: number) => Promise<void>;
+  computeDelayMs?: (attempt: number) => number;
   onAttemptFailed?: (info: RetryFailureInfo) => void;
   onGaveUp?: (info: RetryGaveUpInfo) => void;
   onRetrySucceeded?: (info: RetryAttemptInfo) => void;
@@ -978,25 +980,171 @@ export async function runWithRetry<T>(
   operation: () => Promise<T>,
   options: RetryOptions,
 ): Promise<T> {
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      const result = await operation();
-      if (attempt > 1) {
-        options.onRetrySucceeded?.({ attempt, maxAttempts: options.maxAttempts });
-      }
-      return result;
-    } catch (error) {
-      if (attempt >= options.maxAttempts) {
-        options.onGaveUp?.({ attempt, maxAttempts: options.maxAttempts, error });
-        throw error;
-      }
-      options.onAttemptFailed?.({
-        attempt,
-        maxAttempts: options.maxAttempts,
-        error,
-        retryDelayMs: options.retryDelayMs,
-      });
-      await options.sleep(options.retryDelayMs);
+  return runRetryAttempt(operation, options, 1);
+}
+
+async function runRetryAttempt<T>(
+  operation: () => Promise<T>,
+  options: RetryOptions,
+  attempt: number,
+): Promise<T> {
+  try {
+    const result = await operation();
+    if (attempt > 1) {
+      options.onRetrySucceeded?.({ attempt, maxAttempts: options.maxAttempts });
     }
+    return result;
+  } catch (error) {
+    if (attempt >= options.maxAttempts) {
+      options.onGaveUp?.({ attempt, maxAttempts: options.maxAttempts, error });
+      throw error;
+    }
+    const delayMs = options.computeDelayMs ? options.computeDelayMs(attempt) : options.retryDelayMs;
+    options.onAttemptFailed?.({
+      attempt,
+      maxAttempts: options.maxAttempts,
+      error,
+      retryDelayMs: delayMs,
+    });
+    await options.sleep(delayMs);
+    return runRetryAttempt(operation, options, attempt + 1);
   }
+}
+
+export interface RetryBackoffConfig {
+  baseMs: number;
+  maxMs: number;
+  jitterMs: number;
+  random?: () => number;
+}
+
+const DEFAULT_RETRY_BASE_SECONDS = 5;
+const DEFAULT_RETRY_MAX_SECONDS = 60;
+const DEFAULT_RETRY_JITTER_MS = 1000;
+
+export function computeBackoffDelayMs(attempt: number, config: RetryBackoffConfig): number {
+  const safeAttempt = Math.max(1, Math.floor(attempt));
+  const exponent = safeAttempt - 1;
+  const exponentialMs = config.baseMs * 2 ** exponent;
+  const randomFn = config.random ?? Math.random;
+  const jitter = config.jitterMs > 0 ? randomFn() * config.jitterMs : 0;
+  const total = exponentialMs + jitter;
+  return Math.min(total, config.maxMs);
+}
+
+export function resolveRetryBackoffConfig(
+  env: Record<string, string | undefined>,
+): RetryBackoffConfig {
+  const legacyBaseSeconds = parseFiniteNonNegativeNumber(env.REPLICA_SYNC_RETRY_DELAY_SECONDS);
+  const baseSeconds =
+    parseFiniteNonNegativeNumber(env.REPLICA_SYNC_RETRY_BASE_DELAY_SECONDS) ??
+    legacyBaseSeconds ??
+    DEFAULT_RETRY_BASE_SECONDS;
+  const maxSeconds =
+    parseFiniteNonNegativeNumber(env.REPLICA_SYNC_RETRY_MAX_DELAY_SECONDS) ??
+    DEFAULT_RETRY_MAX_SECONDS;
+  const baseMs = baseSeconds * 1000;
+  const maxMs = Math.max(baseMs, maxSeconds * 1000);
+  return {
+    baseMs,
+    maxMs,
+    jitterMs: DEFAULT_RETRY_JITTER_MS,
+  };
+}
+
+function parseFiniteNonNegativeNumber(raw: string | undefined): number | null {
+  if (raw === undefined || raw === "") return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+export interface VerifyMismatchPolicy {
+  thresholdRows: number;
+  largeTableRows: number;
+  forceFullReplace: boolean;
+}
+
+export interface VerifyMismatchInput {
+  tableName: string;
+  localCount: number;
+  neonCount: number;
+  rowCount: number;
+  policy: VerifyMismatchPolicy;
+}
+
+export type VerifyMismatchAction =
+  | { kind: "fallback-full"; message: string }
+  | { kind: "skip"; message: string; reason: string };
+
+const DEFAULT_VERIFY_MISMATCH_THRESHOLD_ROWS = 10;
+const DEFAULT_VERIFY_MISMATCH_LARGE_TABLE_ROWS = 100_000;
+
+export function decideVerifyMismatchAction(input: VerifyMismatchInput): VerifyMismatchAction {
+  const diff = Math.abs(input.localCount - input.neonCount);
+  const isLargeTable = input.rowCount >= input.policy.largeTableRows;
+  const isSmallDiff = diff <= input.policy.thresholdRows;
+  const shouldSkip = !input.policy.forceFullReplace && isLargeTable && isSmallDiff;
+  if (shouldSkip) {
+    const reason = `verify mismatch (local=${input.localCount}, neon=${input.neonCount}, diff=${diff})`;
+    return {
+      kind: "skip",
+      reason,
+      message: `${input.tableName}: ${reason} — full-replace too costly (${input.rowCount} rows, ≥${input.policy.largeTableRows} threshold). Skipping. Run reconcile or set REPLICA_VERIFY_MISMATCH_FORCE_FULL_REPLACE=true.`,
+    };
+  }
+  return {
+    kind: "fallback-full",
+    message: `${input.tableName}: verify mismatch (local=${input.localCount}, neon=${input.neonCount}, diff=${diff}) — falling back to full-replace`,
+  };
+}
+
+export function resolveVerifyMismatchPolicy(
+  env: Record<string, string | undefined>,
+): VerifyMismatchPolicy {
+  return {
+    thresholdRows: parsePositiveIntegerOrZero(
+      env.REPLICA_VERIFY_MISMATCH_THRESHOLD_ROWS,
+      DEFAULT_VERIFY_MISMATCH_THRESHOLD_ROWS,
+    ),
+    largeTableRows: parsePositiveIntegerOrZero(
+      env.REPLICA_VERIFY_MISMATCH_LARGE_TABLE_ROWS,
+      DEFAULT_VERIFY_MISMATCH_LARGE_TABLE_ROWS,
+    ),
+    forceFullReplace: parseBoolean(env.REPLICA_VERIFY_MISMATCH_FORCE_FULL_REPLACE, false),
+  };
+}
+
+function parsePositiveIntegerOrZero(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw === "") return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) return fallback;
+  return parsed;
+}
+
+export interface VerifyMismatchSkipErrorInit {
+  tableName: string;
+  localCount: number;
+  neonCount: number;
+  rowCount: number;
+  message: string;
+}
+
+export class VerifyMismatchSkipError extends Error {
+  readonly tableName: string;
+  readonly localCount: number;
+  readonly neonCount: number;
+  readonly rowCount: number;
+
+  constructor(init: VerifyMismatchSkipErrorInit) {
+    super(init.message);
+    this.name = "VerifyMismatchSkipError";
+    this.tableName = init.tableName;
+    this.localCount = init.localCount;
+    this.neonCount = init.neonCount;
+    this.rowCount = init.rowCount;
+  }
+}
+
+export function isVerifyMismatchSkipError(error: unknown): error is VerifyMismatchSkipError {
+  return error instanceof VerifyMismatchSkipError;
 }
