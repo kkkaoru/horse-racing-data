@@ -39,6 +39,7 @@ import {
   putRaceDetailSsrSnapshot,
   type RaceDetailSsrSnapshot,
 } from "../../../lib/race-detail-ssr-cache.server";
+import { buildRaceGlobalSummaryItems } from "../../../lib/race-global-summary";
 import { isCornerPacePredictionSupported } from "../../../lib/race-pace-prediction";
 import { RACE_TREND_PAST14_LOOKBACK_DAYS } from "../../../lib/race-trend-cache";
 import { getRaceTrendTargetsFromSearchParams } from "../../../lib/race-trend-query";
@@ -460,13 +461,17 @@ export async function RaceDetailView({
         <div className="race-global-summary" aria-label="race summary in global header">
           <div>
             <RaceStartCountdown startsAt={raceStartsAt} />
-            <span>{formatKeibajo(keibajoCode)}</span>
-            <span>{formatRaceNumber(raceNumber)}</span>
-            {conditionLabel ? (
-              <span className="race-global-summary-condition">{conditionLabel}</span>
-            ) : null}
-            <span>{getTrackSurfaceLabel(race.trackCode) ?? formatTrack(race.trackCode)}</span>
-            <span>{formatDistance(race.kyori)}</span>
+            {buildRaceGlobalSummaryItems({
+              conditionLabel,
+              keibajoCode,
+              kyori: race.kyori,
+              raceNumber,
+              trackCode: race.trackCode,
+            }).map((item) => (
+              <span className={item.className ?? undefined} key={item.key}>
+                {item.text}
+              </span>
+            ))}
           </div>
         </div>
         {previousRace ? (
