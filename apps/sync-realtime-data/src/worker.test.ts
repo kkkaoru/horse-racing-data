@@ -576,13 +576,57 @@ it("buildPremiumPaddockSignature is stable across reorderings of the same bullet
   expect(left).toBe(right);
 });
 
-it("getPremiumPaddockRetryDelaySeconds returns 30 seconds inside the close-to-race window", () => {
+it("getPremiumPaddockRetryDelaySeconds returns 15 seconds in the hot zone at 5 minutes before race", () => {
   const delay = getPremiumPaddockRetryDelaySeconds(RACE, new Date("2026-05-12T03:55:00Z"));
+  expect(delay).toBe(15);
+});
+
+it("getPremiumPaddockRetryDelaySeconds returns the default delay far outside the window", () => {
+  const delay = getPremiumPaddockRetryDelaySeconds(RACE, new Date("2026-05-11T00:00:00Z"));
+  expect(delay).toBe(120);
+});
+
+it("getPremiumPaddockRetryDelaySeconds returns 15 seconds at exactly 20 minutes before race (hot-zone upper bound)", () => {
+  const delay = getPremiumPaddockRetryDelaySeconds(RACE, new Date("2026-05-12T03:40:00Z"));
+  expect(delay).toBe(15);
+});
+
+it("getPremiumPaddockRetryDelaySeconds returns 15 seconds at 10 minutes before race (hot zone)", () => {
+  const delay = getPremiumPaddockRetryDelaySeconds(RACE, new Date("2026-05-12T03:50:00Z"));
+  expect(delay).toBe(15);
+});
+
+it("getPremiumPaddockRetryDelaySeconds returns 30 seconds at 30 minutes before race (warm zone)", () => {
+  const delay = getPremiumPaddockRetryDelaySeconds(RACE, new Date("2026-05-12T03:30:00Z"));
   expect(delay).toBe(30);
 });
 
-it("getPremiumPaddockRetryDelaySeconds returns the default delay outside the window", () => {
-  const delay = getPremiumPaddockRetryDelaySeconds(RACE, new Date("2026-05-11T00:00:00Z"));
+it("getPremiumPaddockRetryDelaySeconds returns 30 seconds at exactly 40 minutes before race (warm-zone upper bound)", () => {
+  const delay = getPremiumPaddockRetryDelaySeconds(RACE, new Date("2026-05-12T03:20:00Z"));
+  expect(delay).toBe(30);
+});
+
+it("getPremiumPaddockRetryDelaySeconds returns 120 seconds at 50 minutes before race (cold zone)", () => {
+  const delay = getPremiumPaddockRetryDelaySeconds(RACE, new Date("2026-05-12T03:10:00Z"));
+  expect(delay).toBe(120);
+});
+
+it("getPremiumPaddockRetryDelaySeconds returns 120 seconds at 5 minutes after race (past grace window)", () => {
+  const delay = getPremiumPaddockRetryDelaySeconds(RACE, new Date("2026-05-12T04:05:00Z"));
+  expect(delay).toBe(120);
+});
+
+it("getPremiumPaddockRetryDelaySeconds returns 15 seconds at 1 minute after race (still within grace window)", () => {
+  const delay = getPremiumPaddockRetryDelaySeconds(RACE, new Date("2026-05-12T04:01:00Z"));
+  expect(delay).toBe(15);
+});
+
+it("getPremiumPaddockRetryDelaySeconds returns 120 seconds when race start cannot be parsed", () => {
+  const raceWithBadStart: NarRaceSource = { ...RACE, raceStartAtJst: "2026-05-12TXX:XX:00+09:00" };
+  const delay = getPremiumPaddockRetryDelaySeconds(
+    raceWithBadStart,
+    new Date("2026-05-12T03:40:00Z"),
+  );
   expect(delay).toBe(120);
 });
 
