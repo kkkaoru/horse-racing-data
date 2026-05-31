@@ -16,6 +16,13 @@ type OpenNextWorker = {
   fetch(request: Request, env: CloudflareEnv, ctx: PcKeibaExecutionContext): Promise<Response>;
 };
 
+export interface ScheduleTodayRaceDetailSectionCacheParams {
+  ctx: PcKeibaExecutionContext;
+  env: CloudflareEnv;
+  openNextWorker: OpenNextWorker;
+  todayJstYmd: string;
+}
+
 const fetchSelf = (
   openNextWorker: OpenNextWorker,
   request: Request,
@@ -42,6 +49,27 @@ export const scheduleTomorrowRaceDetailSectionCache = async (
   );
   if (!response.ok) {
     throw new Error(`race detail cache schedule failed: ${response.status}`);
+  }
+};
+
+export const scheduleTodayRaceDetailSectionCache = async (
+  params: ScheduleTodayRaceDetailSectionCacheParams,
+): Promise<void> => {
+  const url = new URL(SCHEDULE_PATH, INTERNAL_ORIGIN);
+  url.searchParams.set("date", params.todayJstYmd);
+  const response = await fetchSelf(
+    params.openNextWorker,
+    new Request(url, {
+      headers: {
+        "X-PC-Keiba-Cache-Warm": "scheduled",
+      },
+      method: "POST",
+    }),
+    params.env,
+    params.ctx,
+  );
+  if (!response.ok) {
+    throw new Error(`race detail today cache schedule failed: ${response.status}`);
   }
 };
 
