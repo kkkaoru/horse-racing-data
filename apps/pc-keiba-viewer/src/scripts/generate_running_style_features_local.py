@@ -6,10 +6,15 @@ This module only:
 
 1. Invokes the TS builder via ``subprocess`` to obtain the SQL string,
 2. Connects to DuckDB, attaches PostgreSQL read-only,
-3. Wraps the SQL in ``COPY (FROM postgres_query('pg', '<inner-sql>')) TO
-   <output-dir> (PARTITION_BY (race_year))`` so the inner SELECT is executed
-   PG-side. This avoids DuckDB local-parse failures on PG-only scalar
-   functions (``to_char`` / ``to_date`` / ``interval`` etc.).
+3. For year chunk (no --month-from/--month-to): wraps the SQL in
+   ``COPY (FROM postgres_query('pg', '<inner-sql>')) TO <output-dir>
+   (PARTITION_BY (race_year))`` so the inner SELECT is executed PG-side.
+4. For month chunk (--month-from/--month-to supplied): writes to a single
+   per-month parquet file
+   ``<output-dir>/category=<cat>/race_year=<year>/data_<year>_<mf>_<mt>.parquet``
+   so each month chunk lands on a unique path. Multiple month chunks within
+   the same year therefore accumulate to >= 12 files in the race_year dir,
+   which the driver's ``yearHasFullMonthParquet`` skip check expects.
 
 Run with (cwd MUST be repo root so the TS print-sql subprocess can resolve its
 repo-root-relative path):
@@ -203,8 +208,51 @@ def build_hive_copy_sql(*, select_sql: str, output_dir: str) -> str:
     )
 
 
+def is_month_chunk(args: argparse.Namespace) -> bool:
+    return args.month_from is not None and args.month_to is not None
+
+
+def build_month_chunk_output_path(
+    *, output_dir: str, year: int, month_from: int, month_to: int,
+) -> str:
+    return (
+        f"{output_dir}/race_year={year}/"
+        f"data_{year:04d}_{month_from:02d}_{month_to:02d}.parquet"
+    )
+
+
+def build_month_chunk_copy_sql(*, select_sql: str, output_path: str) -> str:
+    inner = build_postgres_query_subselect(select_sql)
+    return (
+        f"COPY ({inner}) TO '{output_path}' (FORMAT PARQUET, COMPRESSION ZSTD)"
+    )
+
+
+def build_copy_sql_for_args(*, select_sql: str, args: argparse.Namespace) -> str:
+    if not is_month_chunk(args):
+        return build_hive_copy_sql(select_sql=select_sql, output_dir=args.output_dir)
+    output_path = build_month_chunk_output_path(
+        output_dir=args.output_dir,
+        year=args.year_from,
+        month_from=args.month_from,
+        month_to=args.month_to,
+    )
+    return build_month_chunk_copy_sql(select_sql=select_sql, output_path=output_path)
+
+
 def ensure_output_dir(output_dir: str) -> None:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+
+def build_month_chunk_race_year_dir(output_dir: str, year: int) -> str:
+    return f"{output_dir}/race_year={year}"
+
+
+def ensure_output_parents_for_args(args: argparse.Namespace) -> None:
+    ensure_output_dir(args.output_dir)
+    if not is_month_chunk(args):
+        return
+    ensure_output_dir(build_month_chunk_race_year_dir(args.output_dir, args.year_from))
 
 
 def configure_connection(
@@ -214,10 +262,10 @@ def configure_connection(
     attach_postgres(con, args.pg_url)
 
 
-def execute_copy(
-    con: duckdb.DuckDBPyConnection, *, select_sql: str, output_dir: str,
+def execute_copy_for_args(
+    con: duckdb.DuckDBPyConnection, *, select_sql: str, args: argparse.Namespace,
 ) -> None:
-    con.execute(build_hive_copy_sql(select_sql=select_sql, output_dir=output_dir))
+    con.execute(build_copy_sql_for_args(select_sql=select_sql, args=args))
 
 
 def run(
@@ -226,7 +274,7 @@ def run(
     runner: SubprocessRunner,
 ) -> None:
     validate_year_range(args.year_from, args.year_to)
-    ensure_output_dir(args.output_dir)
+    ensure_output_parents_for_args(args)
     from_date, to_date = build_from_to_dates(args)
     select_sql = fetch_running_style_sql(
         category=args.category,
@@ -238,7 +286,7 @@ def run(
     con = duckdb_connect(":memory:")
     try:
         configure_connection(con, args)
-        execute_copy(con, select_sql=select_sql, output_dir=args.output_dir)
+        execute_copy_for_args(con, select_sql=select_sql, args=args)
     finally:
         con.close()
 
