@@ -20,7 +20,6 @@ import {
   formatRaceNumber,
   formatTime,
   formatTrack,
-  getTrackSurfaceLabel,
 } from "../../../../../../../../lib/format";
 import { getRaceTags } from "../../../../../../../../lib/race-classification";
 import {
@@ -28,6 +27,7 @@ import {
   getCachedRaceDetailSsrSnapshot,
   putRaceDetailSsrSnapshot,
 } from "../../../../../../../../lib/race-detail-ssr-cache.server";
+import { buildRaceGlobalSummaryItems } from "../../../../../../../../lib/race-global-summary";
 import { isBanEiKeibajoCode } from "../../../../../../../../lib/runner-format";
 import { getRaceRunningStylesWithCache } from "../../../../../../../../lib/running-style-cache.server";
 import { PaddockSection } from "../../../../../../../races/detail/paddock-section";
@@ -282,13 +282,17 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
       <section className="race-global-summary" aria-label="レース概要">
         <div>
           <RaceStartCountdown startsAt={raceStartsAt} />
-          <span>{formatKeibajo(keibajoCode)}</span>
-          <span>{formatRaceNumber(raceNumber)}</span>
-          {conditionLabel ? (
-            <span className="race-global-summary-condition">{conditionLabel}</span>
-          ) : null}
-          <span>{getTrackSurfaceLabel(race.trackCode) ?? formatTrack(race.trackCode)}</span>
-          <span>{formatDistance(race.kyori)}</span>
+          {buildRaceGlobalSummaryItems({
+            conditionLabel,
+            keibajoCode,
+            kyori: race.kyori,
+            raceNumber,
+            trackCode: race.trackCode,
+          }).map((item) => (
+            <span className={item.className ?? undefined} key={item.key}>
+              {item.text}
+            </span>
+          ))}
         </div>
       </section>
       <nav className="breadcrumbs" aria-label="パンくずリスト">
