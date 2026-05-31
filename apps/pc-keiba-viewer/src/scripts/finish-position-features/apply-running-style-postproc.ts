@@ -68,7 +68,7 @@ interface RawInputRaceKey {
 interface RawInputPassthrough {
   model_version: string;
   running_style_feature_version: string;
-  target_running_style_class: number;
+  target_running_style_class: number | null;
 }
 
 interface PostprocPredictionRow {
@@ -87,7 +87,7 @@ interface PostprocPredictionRow {
   predicted_label: string;
   model_version: string;
   running_style_feature_version: string;
-  target_running_style_class: number;
+  target_running_style_class: number | null;
 }
 
 interface ApplyArgResult {
@@ -179,12 +179,21 @@ const requireString = (value: unknown, name: string): string => {
 
 const coerceNumber = (value: unknown, name: string): number => {
   if (typeof value === "number" && Number.isFinite(value)) return value;
+  // Guard against Number(null) === 0 silently masking missing data. Required
+  // logit / prob columns should always be numeric, so reject null/undefined
+  // explicitly instead of treating them as 0 (same bug class as the
+  // target_running_style_class NULL → nige(0) regression).
+  if (value === null || value === undefined) throw new Error(`Column ${name} is not numeric.`);
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) throw new Error(`Column ${name} is not numeric.`);
   return parsed;
 };
 
-const coerceInteger = (value: unknown, name: string): number => {
+// NULL preserve: Phase A may emit NULL target_running_style_class for races
+// missing corner1_norm; the post-processor must keep those NULLs instead of
+// coercing them to 0 via Number(null) === 0 (which falsely tagged them as nige).
+const coerceIntegerOrNull = (value: unknown, name: string): number | null => {
+  if (value === null || value === undefined) return null;
   const numeric = coerceNumber(value, name);
   return Math.trunc(numeric);
 };
@@ -278,7 +287,7 @@ const extractPassthrough = (
     requireString(raw.running_style_feature_version, "running_style_feature_version"),
     runningStyleFeatureVersion,
   ),
-  target_running_style_class: coerceInteger(
+  target_running_style_class: coerceIntegerOrNull(
     raw.target_running_style_class,
     "target_running_style_class",
   ),
@@ -342,10 +351,15 @@ export const buildReadInputSql = (logitsParquet: string): string =>
 
 const escapeStringLiteral = (value: string): string => value.replaceAll("'", "''");
 
+const NULL_INTEGER_LITERAL = "CAST(NULL AS INTEGER)";
+
 const formatValueForSql = (value: string | number): string => {
   if (typeof value === "number") return Number.isFinite(value) ? String(value) : "NULL";
   return `'${escapeStringLiteral(value)}'`;
 };
+
+const formatNullableIntegerForSql = (value: number | null): string =>
+  value === null ? NULL_INTEGER_LITERAL : formatValueForSql(value);
 
 const formatRowAsValuesTuple = (row: PostprocPredictionRow): string =>
   [
@@ -364,7 +378,7 @@ const formatRowAsValuesTuple = (row: PostprocPredictionRow): string =>
     formatValueForSql(row.predicted_label),
     formatValueForSql(row.model_version),
     formatValueForSql(row.running_style_feature_version),
-    formatValueForSql(row.target_running_style_class),
+    formatNullableIntegerForSql(row.target_running_style_class),
   ].join(", ");
 
 const OUTPUT_COLUMN_NAMES = [
@@ -507,11 +521,13 @@ const defaultLogger = (): PostprocLogger => ({
 const isObjectRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
-const hasDuckDBInstanceFactory = (value: Record<string, unknown>): boolean => {
-  const candidate = value["DuckDBInstance"];
-  if (!isObjectRecord(candidate)) return false;
-  return typeof candidate["create"] === "function";
+const hasCreateMethod = (candidate: unknown): boolean => {
+  if (!isObjectRecord(candidate) && typeof candidate !== "function") return false;
+  return typeof Reflect.get(candidate, "create") === "function";
 };
+
+const hasDuckDBInstanceFactory = (value: Record<string, unknown>): boolean =>
+  hasCreateMethod(value["DuckDBInstance"]);
 
 const isDuckdbModuleLike = (value: unknown): value is DuckDBModuleLike => {
   if (!isObjectRecord(value)) return false;
@@ -524,15 +540,19 @@ const extractNestedDefault = (value: Record<string, unknown>): unknown => value[
 // does not need to resolve the optional `@duckdb/node-api` native addon.
 const DUCKDB_MODULE_SPECIFIER = "@duckdb/node-api";
 
-const loadDuckdbModule = async (): Promise<DuckDBModuleLike> => {
-  const specifier: string = DUCKDB_MODULE_SPECIFIER;
-  const moduleNamespace: unknown = await import(specifier);
+export const resolveDuckdbModule = (moduleNamespace: unknown): DuckDBModuleLike => {
   if (isDuckdbModuleLike(moduleNamespace)) return moduleNamespace;
   if (isObjectRecord(moduleNamespace)) {
     const nested = extractNestedDefault(moduleNamespace);
     if (isDuckdbModuleLike(nested)) return nested;
   }
   throw new Error("@duckdb/node-api does not export DuckDBInstance.");
+};
+
+const loadDuckdbModule = async (): Promise<DuckDBModuleLike> => {
+  const specifier: string = DUCKDB_MODULE_SPECIFIER;
+  const moduleNamespace: unknown = await import(specifier);
+  return resolveDuckdbModule(moduleNamespace);
 };
 
 const main = async (): Promise<void> => {

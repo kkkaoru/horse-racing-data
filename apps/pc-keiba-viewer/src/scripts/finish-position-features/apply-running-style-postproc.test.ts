@@ -16,6 +16,7 @@ import {
   pickArgmax,
   pickSecondArgmax,
   readInputRows,
+  resolveDuckdbModule,
   runCli,
   runPostproc,
   softmaxNormalize,
@@ -36,6 +37,8 @@ const PASSTHROUGH_FIELDS = {
   running_style_feature_version: "v1",
   target_running_style_class: 0,
 };
+
+const PLAIN_FUNCTION = () => undefined;
 
 interface FakeConnectionState {
   rows: readonly Record<string, unknown>[];
@@ -397,6 +400,57 @@ describe("apply-running-style-postproc", () => {
     expect(row.target_running_style_class).toBe(1);
   });
 
+  test("applyPostprocToRow preserves NULL target_running_style_class as null", () => {
+    const row = applyPostprocToRow({
+      raw: {
+        ...RACE_KEY_FIELDS,
+        model_version: "jra-rs-prod",
+        running_style_feature_version: "v1",
+        target_running_style_class: null,
+        p_nige: 0.7,
+        p_senkou: 0.1,
+        p_sashi: 0.1,
+        p_oikomi: 0.1,
+      },
+      runningStyleFeatureVersion: "v1",
+    });
+    expect(row.target_running_style_class).toBe(null);
+  });
+
+  test("applyPostprocToRow preserves undefined target_running_style_class as null", () => {
+    const row = applyPostprocToRow({
+      raw: {
+        ...RACE_KEY_FIELDS,
+        model_version: "jra-rs-prod",
+        running_style_feature_version: "v1",
+        p_nige: 0.7,
+        p_senkou: 0.1,
+        p_sashi: 0.1,
+        p_oikomi: 0.1,
+      },
+      runningStyleFeatureVersion: "v1",
+    });
+    expect(row.target_running_style_class).toBe(null);
+  });
+
+  test("applyPostprocToRow still derives non-null predicted_class when target is null", () => {
+    const row = applyPostprocToRow({
+      raw: {
+        ...RACE_KEY_FIELDS,
+        model_version: "jra-rs-prod",
+        running_style_feature_version: "v1",
+        target_running_style_class: null,
+        p_nige: 0.1,
+        p_senkou: 0.1,
+        p_sashi: 0.7,
+        p_oikomi: 0.1,
+      },
+      runningStyleFeatureVersion: "v1",
+    });
+    expect(row.predicted_class).toBe(2);
+    expect(row.predicted_label).toBe("sashi");
+  });
+
   test("applyPostprocToRow throws when running_style_feature_version mismatches the CLI flag", () => {
     expect(() =>
       applyPostprocToRow({
@@ -540,6 +594,38 @@ describe("apply-running-style-postproc", () => {
         runningStyleFeatureVersion: "v1",
       }),
     ).toThrowError("Column p_nige is not numeric.");
+  });
+
+  test("applyPostprocToRow throws when a probability column is null instead of silently coercing to 0", () => {
+    expect(() =>
+      applyPostprocToRow({
+        raw: {
+          ...RACE_KEY_FIELDS,
+          ...PASSTHROUGH_FIELDS,
+          p_nige: null,
+          p_senkou: 0.3,
+          p_sashi: 0.2,
+          p_oikomi: 0.1,
+        },
+        runningStyleFeatureVersion: "v1",
+      }),
+    ).toThrowError("Column p_nige is not numeric.");
+  });
+
+  test("applyPostprocToRow throws when a logit column is null instead of silently coercing to 0", () => {
+    expect(() =>
+      applyPostprocToRow({
+        raw: {
+          ...RACE_KEY_FIELDS,
+          ...PASSTHROUGH_FIELDS,
+          logit_nige: null,
+          logit_senkou: 0,
+          logit_sashi: 5,
+          logit_oikomi: 0,
+        },
+        runningStyleFeatureVersion: "v1",
+      }),
+    ).toThrowError("Column logit_nige is not numeric.");
   });
 
   test("applyPostprocToRows returns same number of output rows as input rows", () => {
@@ -736,6 +822,54 @@ describe("apply-running-style-postproc", () => {
     ).toBe(true);
   });
 
+  test("buildWriteOutputCopySql emits CAST(NULL AS INTEGER) for null target_running_style_class", () => {
+    const sql = buildWriteOutputCopySql("/tmp/out.parquet", [
+      {
+        source: "jra",
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0530",
+        keibajo_code: "05",
+        race_bango: "02",
+        ketto_toroku_bango: "ABC123",
+        p_nige: 0.4,
+        p_senkou: 0.3,
+        p_sashi: 0.2,
+        p_oikomi: 0.1,
+        predicted_class: 0,
+        second_predicted_class: 1,
+        predicted_label: "nige",
+        model_version: "jra-rs-prod",
+        running_style_feature_version: "v1",
+        target_running_style_class: null,
+      },
+    ]);
+    expect(sql.includes("CAST(NULL AS INTEGER)") satisfies boolean).toBe(true);
+  });
+
+  test("buildWriteOutputCopySql keeps numeric literal for non-null target_running_style_class", () => {
+    const sql = buildWriteOutputCopySql("/tmp/out.parquet", [
+      {
+        source: "jra",
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0530",
+        keibajo_code: "05",
+        race_bango: "02",
+        ketto_toroku_bango: "ABC123",
+        p_nige: 0.4,
+        p_senkou: 0.3,
+        p_sashi: 0.2,
+        p_oikomi: 0.1,
+        predicted_class: 0,
+        second_predicted_class: 1,
+        predicted_label: "nige",
+        model_version: "jra-rs-prod",
+        running_style_feature_version: "v1",
+        target_running_style_class: 3,
+      },
+    ]);
+    expect(sql.includes("CAST(NULL AS INTEGER)") satisfies boolean).toBe(false);
+  });
+
   test("readInputRows runs SELECT query and returns plain objects", async () => {
     const fakeModule = buildFakeModule([
       {
@@ -907,5 +1041,77 @@ describe("apply-running-style-postproc", () => {
         logger: { info: () => undefined },
       }),
     ).rejects.toThrowError("--logits-parquet is required.");
+  });
+
+  test("resolveDuckdbModule accepts an object DuckDBInstance export", () => {
+    const factory = { create: async (_path: string) => new FakeInstance() };
+    const moduleNamespace = { DuckDBInstance: factory };
+    expect(resolveDuckdbModule(moduleNamespace)).toBe(moduleNamespace);
+  });
+
+  test("resolveDuckdbModule accepts a function (class-like) DuckDBInstance export", () => {
+    const fakeDuckDBInstanceFn = Object.assign(
+      function fakeDuckDBInstanceFn() {
+        return undefined;
+      },
+      { create: async (_path: string) => new FakeInstance() },
+    );
+    const moduleNamespace = { DuckDBInstance: fakeDuckDBInstanceFn };
+    expect(resolveDuckdbModule(moduleNamespace)).toBe(moduleNamespace);
+  });
+
+  test("resolveDuckdbModule unwraps a default-namespaced export", () => {
+    const factory = { create: async (_path: string) => new FakeInstance() };
+    const inner = { DuckDBInstance: factory };
+    const moduleNamespace = { default: inner };
+    expect(resolveDuckdbModule(moduleNamespace)).toBe(inner);
+  });
+
+  test("resolveDuckdbModule unwraps a default-namespaced function (class-like) export", () => {
+    const fakeDuckDBInstanceFn = Object.assign(
+      function fakeDuckDBInstanceFn() {
+        return undefined;
+      },
+      { create: async (_path: string) => new FakeInstance() },
+    );
+    const inner = { DuckDBInstance: fakeDuckDBInstanceFn };
+    const moduleNamespace = { default: inner };
+    expect(resolveDuckdbModule(moduleNamespace)).toBe(inner);
+  });
+
+  test("resolveDuckdbModule throws when DuckDBInstance is missing", () => {
+    expect(() => resolveDuckdbModule({ something: "else" })).toThrowError(
+      "@duckdb/node-api does not export DuckDBInstance.",
+    );
+  });
+
+  test("resolveDuckdbModule throws when DuckDBInstance lacks a create factory", () => {
+    expect(() => resolveDuckdbModule({ DuckDBInstance: { create: 42 } })).toThrowError(
+      "@duckdb/node-api does not export DuckDBInstance.",
+    );
+  });
+
+  test("resolveDuckdbModule throws when DuckDBInstance is a function without create method", () => {
+    expect(() => resolveDuckdbModule({ DuckDBInstance: PLAIN_FUNCTION })).toThrowError(
+      "@duckdb/node-api does not export DuckDBInstance.",
+    );
+  });
+
+  test("resolveDuckdbModule throws when DuckDBInstance is null", () => {
+    expect(() => resolveDuckdbModule({ DuckDBInstance: null })).toThrowError(
+      "@duckdb/node-api does not export DuckDBInstance.",
+    );
+  });
+
+  test("resolveDuckdbModule throws when the namespace is null", () => {
+    expect(() => resolveDuckdbModule(null)).toThrowError(
+      "@duckdb/node-api does not export DuckDBInstance.",
+    );
+  });
+
+  test("resolveDuckdbModule throws when default-namespaced inner lacks DuckDBInstance", () => {
+    expect(() => resolveDuckdbModule({ default: { something: "else" } })).toThrowError(
+      "@duckdb/node-api does not export DuckDBInstance.",
+    );
   });
 });

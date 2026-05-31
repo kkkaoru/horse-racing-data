@@ -4,6 +4,7 @@ import { expect, test } from "vitest";
 import {
   BUCKET_LOOKUP_INDEX_COLUMNS,
   BUCKET_RACE_NAME_INDEX_SQL,
+  BUCKET_REPLICA_IDENTITY_SQL,
   BUCKET_TABLE,
   BUCKET_UNIQUE_INDEX_COLUMNS,
   CATEGORY_BAN_EI,
@@ -17,12 +18,14 @@ import {
   PREDICTIONS_TEMP_TABLE,
   buildRunningStyleAnalyzeSqls,
   buildRunningStyleBucketAggregateSql,
+  buildRunningStyleBucketBatchUpsertSql,
   buildRunningStyleBucketEvaluationsDdl,
   buildRunningStyleBucketUpsertSql,
   buildRunningStyleCategoryRaceSourceFilter,
   buildRunningStyleConditionKeySql,
   buildRunningStyleRaceNameExpressionSql,
   escapeSqlLiteral,
+  resolveRunningStyleClassIndex,
 } from "./evaluate-running-style-bucket-sql";
 
 test("BUCKET_TABLE points to running_style_model_bucket_evaluations", () => {
@@ -82,6 +85,28 @@ test("LOG_LOSS_CLASSES lists 4 running-style classes in fixed order", () => {
   expect(LOG_LOSS_CLASSES).toStrictEqual(["nige", "senkou", "sashi", "oikomi"]);
 });
 
+test("resolveRunningStyleClassIndex maps nige to 0", () => {
+  expect(resolveRunningStyleClassIndex("nige")).toBe(0);
+});
+
+test("resolveRunningStyleClassIndex maps senkou to 1", () => {
+  expect(resolveRunningStyleClassIndex("senkou")).toBe(1);
+});
+
+test("resolveRunningStyleClassIndex maps sashi to 2", () => {
+  expect(resolveRunningStyleClassIndex("sashi")).toBe(2);
+});
+
+test("resolveRunningStyleClassIndex maps oikomi to 3", () => {
+  expect(resolveRunningStyleClassIndex("oikomi")).toBe(3);
+});
+
+test("resolveRunningStyleClassIndex throws on unknown label", () => {
+  expect(() => resolveRunningStyleClassIndex("xxx")).toThrowError(
+    "Unknown running-style class label: xxx",
+  );
+});
+
 test("BUCKET_UNIQUE_INDEX_COLUMNS lists 14 unique columns including coalesce expressions", () => {
   expect(BUCKET_UNIQUE_INDEX_COLUMNS).toStrictEqual([
     "model_version",
@@ -126,8 +151,8 @@ test("escapeSqlLiteral returns plain text unchanged", () => {
 });
 
 test("buildRunningStyleRaceNameExpressionSql nullif-trims kyosomei_hondai for grade A/F", () => {
-  expect(buildRunningStyleRaceNameExpressionSql("ra.grade_cd", "ra.kyosomei_hondai")).toBe(
-    "case when ra.grade_cd in ('A','F') then nullif(trim(ra.kyosomei_hondai), '') else null end",
+  expect(buildRunningStyleRaceNameExpressionSql("ra.grade_code", "ra.kyosomei_hondai")).toBe(
+    "case when ra.grade_code in ('A','F') then nullif(trim(ra.kyosomei_hondai), '') else null end",
   );
 });
 
@@ -232,7 +257,33 @@ test("buildRunningStyleBucketEvaluationsDdl emits 16 cm + 8 log_loss + top2 colu
     create index if not exists running_style_model_bucket_evaluations_race_name
       on running_style_model_bucket_evaluations (category, source, race_name, keibajo_code, kyori)
       where race_name is not null;
+    alter table running_style_model_bucket_evaluations
+      replica identity full;
   `);
+});
+
+test("BUCKET_REPLICA_IDENTITY_SQL emits ALTER TABLE ... REPLICA IDENTITY FULL so logical replication UPDATE works", () => {
+  expect(BUCKET_REPLICA_IDENTITY_SQL).toBe(
+    `alter table running_style_model_bucket_evaluations
+      replica identity full`,
+  );
+});
+
+test("buildRunningStyleBucketEvaluationsDdl emits replica identity ALTER TABLE so logical replication UPDATE works after recreate", () => {
+  const ddl = buildRunningStyleBucketEvaluationsDdl();
+  expect(ddl.indexOf("alter table running_style_model_bucket_evaluations")).toBeGreaterThanOrEqual(
+    0,
+  );
+  expect(ddl.indexOf("replica identity full")).toBeGreaterThanOrEqual(0);
+});
+
+test("buildRunningStyleBucketEvaluationsDdl places ALTER TABLE replica identity after the unique index creation", () => {
+  const ddl = buildRunningStyleBucketEvaluationsDdl();
+  const uniqueIndexOffset = ddl.indexOf(
+    "create unique index if not exists running_style_model_bucket_evaluations_uq",
+  );
+  const replicaIdentityOffset = ddl.indexOf("replica identity full");
+  expect(uniqueIndexOffset < replicaIdentityOffset).toBe(true);
 });
 
 test("buildRunningStyleBucketAggregateSql for jra emits full aggregate with 16 cm cells, 8 log_loss cells, top2_hit", () => {
@@ -260,12 +311,13 @@ test("buildRunningStyleBucketAggregateSql for jra emits full aggregate with 16 c
     ),
     race_dims as (
       select r.source, r.kaisai_nen, r.kaisai_tsukihi, r.keibajo_code, r.race_bango,
-             ra.kyori, ra.kyoso_shubetsu_code,
+             nullif(trim(ra.kyori), '')::integer as kyori,
+             ra.kyoso_shubetsu_code,
              ra.kyoso_joken_code as kyoso_joken_code,
              null::text as condition_key,
              ra.track_code as track_code,
-             nullif(trim(ra.grade_cd), '') as grade_code,
-             case when ra.grade_cd in ('A','F') then nullif(trim(ra.kyosomei_hondai), '') else null end as race_name
+             nullif(trim(ra.grade_code), '') as grade_code,
+             case when ra.grade_code in ('A','F') then nullif(trim(ra.kyosomei_hondai), '') else null end as race_name
       from races r
       join jvd_ra ra
         on ra.kaisai_nen = r.kaisai_nen
@@ -273,6 +325,10 @@ test("buildRunningStyleBucketAggregateSql for jra emits full aggregate with 16 c
        and ra.keibajo_code = r.keibajo_code
        and ra.race_bango = r.race_bango
       where true
+        and ra.kyori is not null
+        and length(trim(ra.kyori)) > 0
+        and ra.kyoso_shubetsu_code is not null
+        and length(trim(ra.kyoso_shubetsu_code)) > 0
     ),
     joined as (
       select d.source, d.keibajo_code, d.kyori, d.kyoso_shubetsu_code,
@@ -300,30 +356,30 @@ test("buildRunningStyleBucketAggregateSql for jra emits full aggregate with 16 c
       race_name,
       count(distinct (kaisai_nen, kaisai_tsukihi, race_bango)) race_count,
       count(*) prediction_count,
-      coalesce(sum(case when target_running_style_class = 'nige' and predicted_class = 'nige' then 1 else 0 end), 0) cm_actual_nige_pred_nige_count,
-      coalesce(sum(case when target_running_style_class = 'nige' and predicted_class = 'senkou' then 1 else 0 end), 0) cm_actual_nige_pred_senkou_count,
-      coalesce(sum(case when target_running_style_class = 'nige' and predicted_class = 'sashi' then 1 else 0 end), 0) cm_actual_nige_pred_sashi_count,
-      coalesce(sum(case when target_running_style_class = 'nige' and predicted_class = 'oikomi' then 1 else 0 end), 0) cm_actual_nige_pred_oikomi_count,
-      coalesce(sum(case when target_running_style_class = 'senkou' and predicted_class = 'nige' then 1 else 0 end), 0) cm_actual_senkou_pred_nige_count,
-      coalesce(sum(case when target_running_style_class = 'senkou' and predicted_class = 'senkou' then 1 else 0 end), 0) cm_actual_senkou_pred_senkou_count,
-      coalesce(sum(case when target_running_style_class = 'senkou' and predicted_class = 'sashi' then 1 else 0 end), 0) cm_actual_senkou_pred_sashi_count,
-      coalesce(sum(case when target_running_style_class = 'senkou' and predicted_class = 'oikomi' then 1 else 0 end), 0) cm_actual_senkou_pred_oikomi_count,
-      coalesce(sum(case when target_running_style_class = 'sashi' and predicted_class = 'nige' then 1 else 0 end), 0) cm_actual_sashi_pred_nige_count,
-      coalesce(sum(case when target_running_style_class = 'sashi' and predicted_class = 'senkou' then 1 else 0 end), 0) cm_actual_sashi_pred_senkou_count,
-      coalesce(sum(case when target_running_style_class = 'sashi' and predicted_class = 'sashi' then 1 else 0 end), 0) cm_actual_sashi_pred_sashi_count,
-      coalesce(sum(case when target_running_style_class = 'sashi' and predicted_class = 'oikomi' then 1 else 0 end), 0) cm_actual_sashi_pred_oikomi_count,
-      coalesce(sum(case when target_running_style_class = 'oikomi' and predicted_class = 'nige' then 1 else 0 end), 0) cm_actual_oikomi_pred_nige_count,
-      coalesce(sum(case when target_running_style_class = 'oikomi' and predicted_class = 'senkou' then 1 else 0 end), 0) cm_actual_oikomi_pred_senkou_count,
-      coalesce(sum(case when target_running_style_class = 'oikomi' and predicted_class = 'sashi' then 1 else 0 end), 0) cm_actual_oikomi_pred_sashi_count,
-      coalesce(sum(case when target_running_style_class = 'oikomi' and predicted_class = 'oikomi' then 1 else 0 end), 0) cm_actual_oikomi_pred_oikomi_count,
-      coalesce(sum(case when target_running_style_class = 'nige' then -ln(greatest(p_nige, 1e-15)) else 0 end), 0) log_loss_nige_sum,
-      coalesce(sum(case when target_running_style_class = 'nige' then 1 else 0 end), 0) log_loss_nige_count,
-      coalesce(sum(case when target_running_style_class = 'senkou' then -ln(greatest(p_senkou, 1e-15)) else 0 end), 0) log_loss_senkou_sum,
-      coalesce(sum(case when target_running_style_class = 'senkou' then 1 else 0 end), 0) log_loss_senkou_count,
-      coalesce(sum(case when target_running_style_class = 'sashi' then -ln(greatest(p_sashi, 1e-15)) else 0 end), 0) log_loss_sashi_sum,
-      coalesce(sum(case when target_running_style_class = 'sashi' then 1 else 0 end), 0) log_loss_sashi_count,
-      coalesce(sum(case when target_running_style_class = 'oikomi' then -ln(greatest(p_oikomi, 1e-15)) else 0 end), 0) log_loss_oikomi_sum,
-      coalesce(sum(case when target_running_style_class = 'oikomi' then 1 else 0 end), 0) log_loss_oikomi_count,
+      coalesce(sum(case when target_running_style_class = 0 and predicted_class = 0 then 1 else 0 end), 0) cm_actual_nige_pred_nige_count,
+      coalesce(sum(case when target_running_style_class = 0 and predicted_class = 1 then 1 else 0 end), 0) cm_actual_nige_pred_senkou_count,
+      coalesce(sum(case when target_running_style_class = 0 and predicted_class = 2 then 1 else 0 end), 0) cm_actual_nige_pred_sashi_count,
+      coalesce(sum(case when target_running_style_class = 0 and predicted_class = 3 then 1 else 0 end), 0) cm_actual_nige_pred_oikomi_count,
+      coalesce(sum(case when target_running_style_class = 1 and predicted_class = 0 then 1 else 0 end), 0) cm_actual_senkou_pred_nige_count,
+      coalesce(sum(case when target_running_style_class = 1 and predicted_class = 1 then 1 else 0 end), 0) cm_actual_senkou_pred_senkou_count,
+      coalesce(sum(case when target_running_style_class = 1 and predicted_class = 2 then 1 else 0 end), 0) cm_actual_senkou_pred_sashi_count,
+      coalesce(sum(case when target_running_style_class = 1 and predicted_class = 3 then 1 else 0 end), 0) cm_actual_senkou_pred_oikomi_count,
+      coalesce(sum(case when target_running_style_class = 2 and predicted_class = 0 then 1 else 0 end), 0) cm_actual_sashi_pred_nige_count,
+      coalesce(sum(case when target_running_style_class = 2 and predicted_class = 1 then 1 else 0 end), 0) cm_actual_sashi_pred_senkou_count,
+      coalesce(sum(case when target_running_style_class = 2 and predicted_class = 2 then 1 else 0 end), 0) cm_actual_sashi_pred_sashi_count,
+      coalesce(sum(case when target_running_style_class = 2 and predicted_class = 3 then 1 else 0 end), 0) cm_actual_sashi_pred_oikomi_count,
+      coalesce(sum(case when target_running_style_class = 3 and predicted_class = 0 then 1 else 0 end), 0) cm_actual_oikomi_pred_nige_count,
+      coalesce(sum(case when target_running_style_class = 3 and predicted_class = 1 then 1 else 0 end), 0) cm_actual_oikomi_pred_senkou_count,
+      coalesce(sum(case when target_running_style_class = 3 and predicted_class = 2 then 1 else 0 end), 0) cm_actual_oikomi_pred_sashi_count,
+      coalesce(sum(case when target_running_style_class = 3 and predicted_class = 3 then 1 else 0 end), 0) cm_actual_oikomi_pred_oikomi_count,
+      coalesce(sum(case when target_running_style_class = 0 then -ln(greatest(p_nige, 1e-15)) else 0 end), 0) log_loss_nige_sum,
+      coalesce(sum(case when target_running_style_class = 0 then 1 else 0 end), 0) log_loss_nige_count,
+      coalesce(sum(case when target_running_style_class = 1 then -ln(greatest(p_senkou, 1e-15)) else 0 end), 0) log_loss_senkou_sum,
+      coalesce(sum(case when target_running_style_class = 1 then 1 else 0 end), 0) log_loss_senkou_count,
+      coalesce(sum(case when target_running_style_class = 2 then -ln(greatest(p_sashi, 1e-15)) else 0 end), 0) log_loss_sashi_sum,
+      coalesce(sum(case when target_running_style_class = 2 then 1 else 0 end), 0) log_loss_sashi_count,
+      coalesce(sum(case when target_running_style_class = 3 then -ln(greatest(p_oikomi, 1e-15)) else 0 end), 0) log_loss_oikomi_sum,
+      coalesce(sum(case when target_running_style_class = 3 then 1 else 0 end), 0) log_loss_oikomi_count,
       coalesce(sum(case when target_running_style_class in (predicted_class, second_predicted_class) then 1 else 0 end), 0) top2_hit_count
     from joined
     where target_running_style_class is not null
@@ -358,12 +414,13 @@ test("buildRunningStyleBucketAggregateSql for nar uses nvd_ra, excludes keibajo 
     ),
     race_dims as (
       select r.source, r.kaisai_nen, r.kaisai_tsukihi, r.keibajo_code, r.race_bango,
-             ra.kyori, ra.kyoso_shubetsu_code,
+             nullif(trim(ra.kyori), '')::integer as kyori,
+             ra.kyoso_shubetsu_code,
              ra.kyoso_joken_code as kyoso_joken_code,
              nullif(trim(ra.kyoso_joken_meisho), '') as condition_key,
              ra.track_code as track_code,
-             nullif(trim(ra.grade_cd), '') as grade_code,
-             case when ra.grade_cd in ('A','F') then nullif(trim(ra.kyosomei_hondai), '') else null end as race_name
+             nullif(trim(ra.grade_code), '') as grade_code,
+             case when ra.grade_code in ('A','F') then nullif(trim(ra.kyosomei_hondai), '') else null end as race_name
       from races r
       join nvd_ra ra
         on ra.kaisai_nen = r.kaisai_nen
@@ -371,6 +428,10 @@ test("buildRunningStyleBucketAggregateSql for nar uses nvd_ra, excludes keibajo 
        and ra.keibajo_code = r.keibajo_code
        and ra.race_bango = r.race_bango
       where ra.keibajo_code <> '83'
+        and ra.kyori is not null
+        and length(trim(ra.kyori)) > 0
+        and ra.kyoso_shubetsu_code is not null
+        and length(trim(ra.kyoso_shubetsu_code)) > 0
     ),
     joined as (
       select d.source, d.keibajo_code, d.kyori, d.kyoso_shubetsu_code,
@@ -398,30 +459,30 @@ test("buildRunningStyleBucketAggregateSql for nar uses nvd_ra, excludes keibajo 
       race_name,
       count(distinct (kaisai_nen, kaisai_tsukihi, race_bango)) race_count,
       count(*) prediction_count,
-      coalesce(sum(case when target_running_style_class = 'nige' and predicted_class = 'nige' then 1 else 0 end), 0) cm_actual_nige_pred_nige_count,
-      coalesce(sum(case when target_running_style_class = 'nige' and predicted_class = 'senkou' then 1 else 0 end), 0) cm_actual_nige_pred_senkou_count,
-      coalesce(sum(case when target_running_style_class = 'nige' and predicted_class = 'sashi' then 1 else 0 end), 0) cm_actual_nige_pred_sashi_count,
-      coalesce(sum(case when target_running_style_class = 'nige' and predicted_class = 'oikomi' then 1 else 0 end), 0) cm_actual_nige_pred_oikomi_count,
-      coalesce(sum(case when target_running_style_class = 'senkou' and predicted_class = 'nige' then 1 else 0 end), 0) cm_actual_senkou_pred_nige_count,
-      coalesce(sum(case when target_running_style_class = 'senkou' and predicted_class = 'senkou' then 1 else 0 end), 0) cm_actual_senkou_pred_senkou_count,
-      coalesce(sum(case when target_running_style_class = 'senkou' and predicted_class = 'sashi' then 1 else 0 end), 0) cm_actual_senkou_pred_sashi_count,
-      coalesce(sum(case when target_running_style_class = 'senkou' and predicted_class = 'oikomi' then 1 else 0 end), 0) cm_actual_senkou_pred_oikomi_count,
-      coalesce(sum(case when target_running_style_class = 'sashi' and predicted_class = 'nige' then 1 else 0 end), 0) cm_actual_sashi_pred_nige_count,
-      coalesce(sum(case when target_running_style_class = 'sashi' and predicted_class = 'senkou' then 1 else 0 end), 0) cm_actual_sashi_pred_senkou_count,
-      coalesce(sum(case when target_running_style_class = 'sashi' and predicted_class = 'sashi' then 1 else 0 end), 0) cm_actual_sashi_pred_sashi_count,
-      coalesce(sum(case when target_running_style_class = 'sashi' and predicted_class = 'oikomi' then 1 else 0 end), 0) cm_actual_sashi_pred_oikomi_count,
-      coalesce(sum(case when target_running_style_class = 'oikomi' and predicted_class = 'nige' then 1 else 0 end), 0) cm_actual_oikomi_pred_nige_count,
-      coalesce(sum(case when target_running_style_class = 'oikomi' and predicted_class = 'senkou' then 1 else 0 end), 0) cm_actual_oikomi_pred_senkou_count,
-      coalesce(sum(case when target_running_style_class = 'oikomi' and predicted_class = 'sashi' then 1 else 0 end), 0) cm_actual_oikomi_pred_sashi_count,
-      coalesce(sum(case when target_running_style_class = 'oikomi' and predicted_class = 'oikomi' then 1 else 0 end), 0) cm_actual_oikomi_pred_oikomi_count,
-      coalesce(sum(case when target_running_style_class = 'nige' then -ln(greatest(p_nige, 1e-15)) else 0 end), 0) log_loss_nige_sum,
-      coalesce(sum(case when target_running_style_class = 'nige' then 1 else 0 end), 0) log_loss_nige_count,
-      coalesce(sum(case when target_running_style_class = 'senkou' then -ln(greatest(p_senkou, 1e-15)) else 0 end), 0) log_loss_senkou_sum,
-      coalesce(sum(case when target_running_style_class = 'senkou' then 1 else 0 end), 0) log_loss_senkou_count,
-      coalesce(sum(case when target_running_style_class = 'sashi' then -ln(greatest(p_sashi, 1e-15)) else 0 end), 0) log_loss_sashi_sum,
-      coalesce(sum(case when target_running_style_class = 'sashi' then 1 else 0 end), 0) log_loss_sashi_count,
-      coalesce(sum(case when target_running_style_class = 'oikomi' then -ln(greatest(p_oikomi, 1e-15)) else 0 end), 0) log_loss_oikomi_sum,
-      coalesce(sum(case when target_running_style_class = 'oikomi' then 1 else 0 end), 0) log_loss_oikomi_count,
+      coalesce(sum(case when target_running_style_class = 0 and predicted_class = 0 then 1 else 0 end), 0) cm_actual_nige_pred_nige_count,
+      coalesce(sum(case when target_running_style_class = 0 and predicted_class = 1 then 1 else 0 end), 0) cm_actual_nige_pred_senkou_count,
+      coalesce(sum(case when target_running_style_class = 0 and predicted_class = 2 then 1 else 0 end), 0) cm_actual_nige_pred_sashi_count,
+      coalesce(sum(case when target_running_style_class = 0 and predicted_class = 3 then 1 else 0 end), 0) cm_actual_nige_pred_oikomi_count,
+      coalesce(sum(case when target_running_style_class = 1 and predicted_class = 0 then 1 else 0 end), 0) cm_actual_senkou_pred_nige_count,
+      coalesce(sum(case when target_running_style_class = 1 and predicted_class = 1 then 1 else 0 end), 0) cm_actual_senkou_pred_senkou_count,
+      coalesce(sum(case when target_running_style_class = 1 and predicted_class = 2 then 1 else 0 end), 0) cm_actual_senkou_pred_sashi_count,
+      coalesce(sum(case when target_running_style_class = 1 and predicted_class = 3 then 1 else 0 end), 0) cm_actual_senkou_pred_oikomi_count,
+      coalesce(sum(case when target_running_style_class = 2 and predicted_class = 0 then 1 else 0 end), 0) cm_actual_sashi_pred_nige_count,
+      coalesce(sum(case when target_running_style_class = 2 and predicted_class = 1 then 1 else 0 end), 0) cm_actual_sashi_pred_senkou_count,
+      coalesce(sum(case when target_running_style_class = 2 and predicted_class = 2 then 1 else 0 end), 0) cm_actual_sashi_pred_sashi_count,
+      coalesce(sum(case when target_running_style_class = 2 and predicted_class = 3 then 1 else 0 end), 0) cm_actual_sashi_pred_oikomi_count,
+      coalesce(sum(case when target_running_style_class = 3 and predicted_class = 0 then 1 else 0 end), 0) cm_actual_oikomi_pred_nige_count,
+      coalesce(sum(case when target_running_style_class = 3 and predicted_class = 1 then 1 else 0 end), 0) cm_actual_oikomi_pred_senkou_count,
+      coalesce(sum(case when target_running_style_class = 3 and predicted_class = 2 then 1 else 0 end), 0) cm_actual_oikomi_pred_sashi_count,
+      coalesce(sum(case when target_running_style_class = 3 and predicted_class = 3 then 1 else 0 end), 0) cm_actual_oikomi_pred_oikomi_count,
+      coalesce(sum(case when target_running_style_class = 0 then -ln(greatest(p_nige, 1e-15)) else 0 end), 0) log_loss_nige_sum,
+      coalesce(sum(case when target_running_style_class = 0 then 1 else 0 end), 0) log_loss_nige_count,
+      coalesce(sum(case when target_running_style_class = 1 then -ln(greatest(p_senkou, 1e-15)) else 0 end), 0) log_loss_senkou_sum,
+      coalesce(sum(case when target_running_style_class = 1 then 1 else 0 end), 0) log_loss_senkou_count,
+      coalesce(sum(case when target_running_style_class = 2 then -ln(greatest(p_sashi, 1e-15)) else 0 end), 0) log_loss_sashi_sum,
+      coalesce(sum(case when target_running_style_class = 2 then 1 else 0 end), 0) log_loss_sashi_count,
+      coalesce(sum(case when target_running_style_class = 3 then -ln(greatest(p_oikomi, 1e-15)) else 0 end), 0) log_loss_oikomi_sum,
+      coalesce(sum(case when target_running_style_class = 3 then 1 else 0 end), 0) log_loss_oikomi_count,
       coalesce(sum(case when target_running_style_class in (predicted_class, second_predicted_class) then 1 else 0 end), 0) top2_hit_count
     from joined
     where target_running_style_class is not null
@@ -468,12 +529,13 @@ test("buildRunningStyleBucketAggregateSql escapes single quote in model version"
     ),
     race_dims as (
       select r.source, r.kaisai_nen, r.kaisai_tsukihi, r.keibajo_code, r.race_bango,
-             ra.kyori, ra.kyoso_shubetsu_code,
+             nullif(trim(ra.kyori), '')::integer as kyori,
+             ra.kyoso_shubetsu_code,
              ra.kyoso_joken_code as kyoso_joken_code,
              null::text as condition_key,
              ra.track_code as track_code,
-             nullif(trim(ra.grade_cd), '') as grade_code,
-             case when ra.grade_cd in ('A','F') then nullif(trim(ra.kyosomei_hondai), '') else null end as race_name
+             nullif(trim(ra.grade_code), '') as grade_code,
+             case when ra.grade_code in ('A','F') then nullif(trim(ra.kyosomei_hondai), '') else null end as race_name
       from races r
       join jvd_ra ra
         on ra.kaisai_nen = r.kaisai_nen
@@ -481,6 +543,10 @@ test("buildRunningStyleBucketAggregateSql escapes single quote in model version"
        and ra.keibajo_code = r.keibajo_code
        and ra.race_bango = r.race_bango
       where true
+        and ra.kyori is not null
+        and length(trim(ra.kyori)) > 0
+        and ra.kyoso_shubetsu_code is not null
+        and length(trim(ra.kyoso_shubetsu_code)) > 0
     ),
     joined as (
       select d.source, d.keibajo_code, d.kyori, d.kyoso_shubetsu_code,
@@ -508,30 +574,30 @@ test("buildRunningStyleBucketAggregateSql escapes single quote in model version"
       race_name,
       count(distinct (kaisai_nen, kaisai_tsukihi, race_bango)) race_count,
       count(*) prediction_count,
-      coalesce(sum(case when target_running_style_class = 'nige' and predicted_class = 'nige' then 1 else 0 end), 0) cm_actual_nige_pred_nige_count,
-      coalesce(sum(case when target_running_style_class = 'nige' and predicted_class = 'senkou' then 1 else 0 end), 0) cm_actual_nige_pred_senkou_count,
-      coalesce(sum(case when target_running_style_class = 'nige' and predicted_class = 'sashi' then 1 else 0 end), 0) cm_actual_nige_pred_sashi_count,
-      coalesce(sum(case when target_running_style_class = 'nige' and predicted_class = 'oikomi' then 1 else 0 end), 0) cm_actual_nige_pred_oikomi_count,
-      coalesce(sum(case when target_running_style_class = 'senkou' and predicted_class = 'nige' then 1 else 0 end), 0) cm_actual_senkou_pred_nige_count,
-      coalesce(sum(case when target_running_style_class = 'senkou' and predicted_class = 'senkou' then 1 else 0 end), 0) cm_actual_senkou_pred_senkou_count,
-      coalesce(sum(case when target_running_style_class = 'senkou' and predicted_class = 'sashi' then 1 else 0 end), 0) cm_actual_senkou_pred_sashi_count,
-      coalesce(sum(case when target_running_style_class = 'senkou' and predicted_class = 'oikomi' then 1 else 0 end), 0) cm_actual_senkou_pred_oikomi_count,
-      coalesce(sum(case when target_running_style_class = 'sashi' and predicted_class = 'nige' then 1 else 0 end), 0) cm_actual_sashi_pred_nige_count,
-      coalesce(sum(case when target_running_style_class = 'sashi' and predicted_class = 'senkou' then 1 else 0 end), 0) cm_actual_sashi_pred_senkou_count,
-      coalesce(sum(case when target_running_style_class = 'sashi' and predicted_class = 'sashi' then 1 else 0 end), 0) cm_actual_sashi_pred_sashi_count,
-      coalesce(sum(case when target_running_style_class = 'sashi' and predicted_class = 'oikomi' then 1 else 0 end), 0) cm_actual_sashi_pred_oikomi_count,
-      coalesce(sum(case when target_running_style_class = 'oikomi' and predicted_class = 'nige' then 1 else 0 end), 0) cm_actual_oikomi_pred_nige_count,
-      coalesce(sum(case when target_running_style_class = 'oikomi' and predicted_class = 'senkou' then 1 else 0 end), 0) cm_actual_oikomi_pred_senkou_count,
-      coalesce(sum(case when target_running_style_class = 'oikomi' and predicted_class = 'sashi' then 1 else 0 end), 0) cm_actual_oikomi_pred_sashi_count,
-      coalesce(sum(case when target_running_style_class = 'oikomi' and predicted_class = 'oikomi' then 1 else 0 end), 0) cm_actual_oikomi_pred_oikomi_count,
-      coalesce(sum(case when target_running_style_class = 'nige' then -ln(greatest(p_nige, 1e-15)) else 0 end), 0) log_loss_nige_sum,
-      coalesce(sum(case when target_running_style_class = 'nige' then 1 else 0 end), 0) log_loss_nige_count,
-      coalesce(sum(case when target_running_style_class = 'senkou' then -ln(greatest(p_senkou, 1e-15)) else 0 end), 0) log_loss_senkou_sum,
-      coalesce(sum(case when target_running_style_class = 'senkou' then 1 else 0 end), 0) log_loss_senkou_count,
-      coalesce(sum(case when target_running_style_class = 'sashi' then -ln(greatest(p_sashi, 1e-15)) else 0 end), 0) log_loss_sashi_sum,
-      coalesce(sum(case when target_running_style_class = 'sashi' then 1 else 0 end), 0) log_loss_sashi_count,
-      coalesce(sum(case when target_running_style_class = 'oikomi' then -ln(greatest(p_oikomi, 1e-15)) else 0 end), 0) log_loss_oikomi_sum,
-      coalesce(sum(case when target_running_style_class = 'oikomi' then 1 else 0 end), 0) log_loss_oikomi_count,
+      coalesce(sum(case when target_running_style_class = 0 and predicted_class = 0 then 1 else 0 end), 0) cm_actual_nige_pred_nige_count,
+      coalesce(sum(case when target_running_style_class = 0 and predicted_class = 1 then 1 else 0 end), 0) cm_actual_nige_pred_senkou_count,
+      coalesce(sum(case when target_running_style_class = 0 and predicted_class = 2 then 1 else 0 end), 0) cm_actual_nige_pred_sashi_count,
+      coalesce(sum(case when target_running_style_class = 0 and predicted_class = 3 then 1 else 0 end), 0) cm_actual_nige_pred_oikomi_count,
+      coalesce(sum(case when target_running_style_class = 1 and predicted_class = 0 then 1 else 0 end), 0) cm_actual_senkou_pred_nige_count,
+      coalesce(sum(case when target_running_style_class = 1 and predicted_class = 1 then 1 else 0 end), 0) cm_actual_senkou_pred_senkou_count,
+      coalesce(sum(case when target_running_style_class = 1 and predicted_class = 2 then 1 else 0 end), 0) cm_actual_senkou_pred_sashi_count,
+      coalesce(sum(case when target_running_style_class = 1 and predicted_class = 3 then 1 else 0 end), 0) cm_actual_senkou_pred_oikomi_count,
+      coalesce(sum(case when target_running_style_class = 2 and predicted_class = 0 then 1 else 0 end), 0) cm_actual_sashi_pred_nige_count,
+      coalesce(sum(case when target_running_style_class = 2 and predicted_class = 1 then 1 else 0 end), 0) cm_actual_sashi_pred_senkou_count,
+      coalesce(sum(case when target_running_style_class = 2 and predicted_class = 2 then 1 else 0 end), 0) cm_actual_sashi_pred_sashi_count,
+      coalesce(sum(case when target_running_style_class = 2 and predicted_class = 3 then 1 else 0 end), 0) cm_actual_sashi_pred_oikomi_count,
+      coalesce(sum(case when target_running_style_class = 3 and predicted_class = 0 then 1 else 0 end), 0) cm_actual_oikomi_pred_nige_count,
+      coalesce(sum(case when target_running_style_class = 3 and predicted_class = 1 then 1 else 0 end), 0) cm_actual_oikomi_pred_senkou_count,
+      coalesce(sum(case when target_running_style_class = 3 and predicted_class = 2 then 1 else 0 end), 0) cm_actual_oikomi_pred_sashi_count,
+      coalesce(sum(case when target_running_style_class = 3 and predicted_class = 3 then 1 else 0 end), 0) cm_actual_oikomi_pred_oikomi_count,
+      coalesce(sum(case when target_running_style_class = 0 then -ln(greatest(p_nige, 1e-15)) else 0 end), 0) log_loss_nige_sum,
+      coalesce(sum(case when target_running_style_class = 0 then 1 else 0 end), 0) log_loss_nige_count,
+      coalesce(sum(case when target_running_style_class = 1 then -ln(greatest(p_senkou, 1e-15)) else 0 end), 0) log_loss_senkou_sum,
+      coalesce(sum(case when target_running_style_class = 1 then 1 else 0 end), 0) log_loss_senkou_count,
+      coalesce(sum(case when target_running_style_class = 2 then -ln(greatest(p_sashi, 1e-15)) else 0 end), 0) log_loss_sashi_sum,
+      coalesce(sum(case when target_running_style_class = 2 then 1 else 0 end), 0) log_loss_sashi_count,
+      coalesce(sum(case when target_running_style_class = 3 then -ln(greatest(p_oikomi, 1e-15)) else 0 end), 0) log_loss_oikomi_sum,
+      coalesce(sum(case when target_running_style_class = 3 then 1 else 0 end), 0) log_loss_oikomi_count,
       coalesce(sum(case when target_running_style_class in (predicted_class, second_predicted_class) then 1 else 0 end), 0) top2_hit_count
     from joined
     where target_running_style_class is not null
@@ -541,14 +607,14 @@ test("buildRunningStyleBucketAggregateSql escapes single quote in model version"
   `);
 });
 
-test("buildRunningStyleBucketUpsertSql emits ON CONFLICT additive UPSERT with 41 placeholders and EXCLUDED + table-name addition", () => {
+test("buildRunningStyleBucketUpsertSql emits ON CONFLICT additive UPSERT with 41 psycopg %s placeholders and EXCLUDED + table-name addition", () => {
   expect(buildRunningStyleBucketUpsertSql()).toBe(`
     insert into running_style_model_bucket_evaluations (
       model_version, running_style_feature_version, category, evaluation_window_from, evaluation_window_to, source, keibajo_code, kyori, kyoso_shubetsu_code, kyoso_joken_code, condition_key, track_code, grade_code, race_name, race_count, prediction_count, cm_actual_nige_pred_nige_count, cm_actual_nige_pred_senkou_count, cm_actual_nige_pred_sashi_count, cm_actual_nige_pred_oikomi_count, cm_actual_senkou_pred_nige_count, cm_actual_senkou_pred_senkou_count, cm_actual_senkou_pred_sashi_count, cm_actual_senkou_pred_oikomi_count, cm_actual_sashi_pred_nige_count, cm_actual_sashi_pred_senkou_count, cm_actual_sashi_pred_sashi_count, cm_actual_sashi_pred_oikomi_count, cm_actual_oikomi_pred_nige_count, cm_actual_oikomi_pred_senkou_count, cm_actual_oikomi_pred_sashi_count, cm_actual_oikomi_pred_oikomi_count, log_loss_nige_sum, log_loss_nige_count, log_loss_senkou_sum, log_loss_senkou_count, log_loss_sashi_sum, log_loss_sashi_count, log_loss_oikomi_sum, log_loss_oikomi_count, top2_hit_count,
       evaluated_at
     )
     values (
-      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41,
+      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
       now()
     )
     on conflict (
@@ -588,4 +654,196 @@ test("buildRunningStyleBucketUpsertSql emits ON CONFLICT additive UPSERT with 41
       top2_hit_count = excluded.top2_hit_count + running_style_model_bucket_evaluations.top2_hit_count,
       evaluated_at = now()
   `);
+});
+
+test("buildRunningStyleBucketAggregateSql for jra exposes 4 NOT NULL guard clauses in race_dims CTE", () => {
+  const sql = buildRunningStyleBucketAggregateSql({
+    modelVersion: "vX",
+    category: "jra",
+    fromDate: "20240101",
+    toDate: "20241231",
+    runningStyleFeatureVersion: "v1",
+  });
+  const guards = [
+    sql.indexOf("and ra.kyori is not null"),
+    sql.indexOf("and length(trim(ra.kyori)) > 0"),
+    sql.indexOf("and ra.kyoso_shubetsu_code is not null"),
+    sql.indexOf("and length(trim(ra.kyoso_shubetsu_code)) > 0"),
+  ].map((index) => index >= 0);
+  expect(guards).toStrictEqual([true, true, true, true]);
+});
+
+test("buildRunningStyleBucketAggregateSql for nar exposes 4 NOT NULL guard clauses in race_dims CTE", () => {
+  const sql = buildRunningStyleBucketAggregateSql({
+    modelVersion: "vX",
+    category: "nar",
+    fromDate: "20240101",
+    toDate: "20241231",
+    runningStyleFeatureVersion: "v1",
+  });
+  const guards = [
+    sql.indexOf("and ra.kyori is not null"),
+    sql.indexOf("and length(trim(ra.kyori)) > 0"),
+    sql.indexOf("and ra.kyoso_shubetsu_code is not null"),
+    sql.indexOf("and length(trim(ra.kyoso_shubetsu_code)) > 0"),
+  ].map((index) => index >= 0);
+  expect(guards).toStrictEqual([true, true, true, true]);
+});
+
+test("buildRunningStyleBucketAggregateSql places NOT NULL guards before the race_dims CTE closing paren", () => {
+  const sql = buildRunningStyleBucketAggregateSql({
+    modelVersion: "vX",
+    category: "jra",
+    fromDate: "20240101",
+    toDate: "20241231",
+    runningStyleFeatureVersion: "v1",
+  });
+  const kyoriGuardOffset = sql.indexOf("and ra.kyori is not null");
+  const joinedCteOffset = sql.indexOf("joined as (");
+  expect(kyoriGuardOffset < joinedCteOffset).toBe(true);
+});
+
+test("buildRunningStyleBucketUpsertSql does not emit PG-native $1 placeholder (psycopg incompatible)", () => {
+  const sql = buildRunningStyleBucketUpsertSql();
+  expect(sql.indexOf("$1")).toBe(-1);
+});
+
+test("buildRunningStyleBucketUpsertSql does not emit PG-native $41 placeholder (psycopg incompatible)", () => {
+  const sql = buildRunningStyleBucketUpsertSql();
+  expect(sql.indexOf("$41")).toBe(-1);
+});
+
+test("buildRunningStyleBucketUpsertSql emits exactly 41 psycopg %s placeholders in values clause", () => {
+  const sql = buildRunningStyleBucketUpsertSql();
+  const placeholderMatches = sql.match(/%s/g);
+  expect(placeholderMatches?.length).toBe(41);
+});
+
+test("buildRunningStyleBucketBatchUpsertSql with rowCount 1 emits exactly 41 psycopg %s placeholders (single-row path preserved)", () => {
+  const sql = buildRunningStyleBucketBatchUpsertSql(1);
+  const placeholderMatches = sql.match(/%s/g);
+  expect(placeholderMatches?.length).toBe(41);
+});
+
+test("buildRunningStyleBucketBatchUpsertSql with rowCount 3 emits 123 psycopg %s placeholders (3 * 41)", () => {
+  const sql = buildRunningStyleBucketBatchUpsertSql(3);
+  const placeholderMatches = sql.match(/%s/g);
+  expect(placeholderMatches?.length).toBe(123);
+});
+
+test("buildRunningStyleBucketBatchUpsertSql with rowCount 100 emits 4100 psycopg %s placeholders (100 * 41)", () => {
+  const sql = buildRunningStyleBucketBatchUpsertSql(100);
+  const placeholderMatches = sql.match(/%s/g);
+  expect(placeholderMatches?.length).toBe(4100);
+});
+
+test("buildRunningStyleBucketBatchUpsertSql with rowCount 3 keeps additive ON CONFLICT SET clause for race_count", () => {
+  const sql = buildRunningStyleBucketBatchUpsertSql(3);
+  expect(
+    sql.indexOf(
+      "race_count = excluded.race_count + running_style_model_bucket_evaluations.race_count",
+    ),
+  ).toBeGreaterThanOrEqual(0);
+});
+
+test("buildRunningStyleBucketBatchUpsertSql with rowCount 3 keeps additive ON CONFLICT SET clause for top2_hit_count", () => {
+  const sql = buildRunningStyleBucketBatchUpsertSql(3);
+  expect(
+    sql.indexOf(
+      "top2_hit_count = excluded.top2_hit_count + running_style_model_bucket_evaluations.top2_hit_count",
+    ),
+  ).toBeGreaterThanOrEqual(0);
+});
+
+test("buildRunningStyleBucketBatchUpsertSql with rowCount 3 keeps additive ON CONFLICT SET clause for log_loss_nige_sum", () => {
+  const sql = buildRunningStyleBucketBatchUpsertSql(3);
+  expect(
+    sql.indexOf(
+      "log_loss_nige_sum = excluded.log_loss_nige_sum + running_style_model_bucket_evaluations.log_loss_nige_sum",
+    ),
+  ).toBeGreaterThanOrEqual(0);
+});
+
+test("buildRunningStyleBucketBatchUpsertSql with rowCount 3 keeps the evaluated_at = now() trailing SET", () => {
+  const sql = buildRunningStyleBucketBatchUpsertSql(3);
+  expect(sql.indexOf("evaluated_at = now()")).toBeGreaterThanOrEqual(0);
+});
+
+test("buildRunningStyleBucketBatchUpsertSql with rowCount 1 emits a single VALUES row tuple closed by now()", () => {
+  expect(buildRunningStyleBucketBatchUpsertSql(1)).toBe(`
+    insert into running_style_model_bucket_evaluations (
+      model_version, running_style_feature_version, category, evaluation_window_from, evaluation_window_to, source, keibajo_code, kyori, kyoso_shubetsu_code, kyoso_joken_code, condition_key, track_code, grade_code, race_name, race_count, prediction_count, cm_actual_nige_pred_nige_count, cm_actual_nige_pred_senkou_count, cm_actual_nige_pred_sashi_count, cm_actual_nige_pred_oikomi_count, cm_actual_senkou_pred_nige_count, cm_actual_senkou_pred_senkou_count, cm_actual_senkou_pred_sashi_count, cm_actual_senkou_pred_oikomi_count, cm_actual_sashi_pred_nige_count, cm_actual_sashi_pred_senkou_count, cm_actual_sashi_pred_sashi_count, cm_actual_sashi_pred_oikomi_count, cm_actual_oikomi_pred_nige_count, cm_actual_oikomi_pred_senkou_count, cm_actual_oikomi_pred_sashi_count, cm_actual_oikomi_pred_oikomi_count, log_loss_nige_sum, log_loss_nige_count, log_loss_senkou_sum, log_loss_senkou_count, log_loss_sashi_sum, log_loss_sashi_count, log_loss_oikomi_sum, log_loss_oikomi_count, top2_hit_count,
+      evaluated_at
+    )
+    values
+      (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+    on conflict (
+      model_version, running_style_feature_version, category,
+      evaluation_window_from, evaluation_window_to,
+      source, keibajo_code, kyori, kyoso_shubetsu_code,
+      coalesce(kyoso_joken_code,''), coalesce(condition_key,''),
+      coalesce(track_code,''), coalesce(grade_code,''), coalesce(race_name,'')
+    )
+    do update set
+      race_count = excluded.race_count + running_style_model_bucket_evaluations.race_count,
+      prediction_count = excluded.prediction_count + running_style_model_bucket_evaluations.prediction_count,
+      cm_actual_nige_pred_nige_count = excluded.cm_actual_nige_pred_nige_count + running_style_model_bucket_evaluations.cm_actual_nige_pred_nige_count,
+      cm_actual_nige_pred_senkou_count = excluded.cm_actual_nige_pred_senkou_count + running_style_model_bucket_evaluations.cm_actual_nige_pred_senkou_count,
+      cm_actual_nige_pred_sashi_count = excluded.cm_actual_nige_pred_sashi_count + running_style_model_bucket_evaluations.cm_actual_nige_pred_sashi_count,
+      cm_actual_nige_pred_oikomi_count = excluded.cm_actual_nige_pred_oikomi_count + running_style_model_bucket_evaluations.cm_actual_nige_pred_oikomi_count,
+      cm_actual_senkou_pred_nige_count = excluded.cm_actual_senkou_pred_nige_count + running_style_model_bucket_evaluations.cm_actual_senkou_pred_nige_count,
+      cm_actual_senkou_pred_senkou_count = excluded.cm_actual_senkou_pred_senkou_count + running_style_model_bucket_evaluations.cm_actual_senkou_pred_senkou_count,
+      cm_actual_senkou_pred_sashi_count = excluded.cm_actual_senkou_pred_sashi_count + running_style_model_bucket_evaluations.cm_actual_senkou_pred_sashi_count,
+      cm_actual_senkou_pred_oikomi_count = excluded.cm_actual_senkou_pred_oikomi_count + running_style_model_bucket_evaluations.cm_actual_senkou_pred_oikomi_count,
+      cm_actual_sashi_pred_nige_count = excluded.cm_actual_sashi_pred_nige_count + running_style_model_bucket_evaluations.cm_actual_sashi_pred_nige_count,
+      cm_actual_sashi_pred_senkou_count = excluded.cm_actual_sashi_pred_senkou_count + running_style_model_bucket_evaluations.cm_actual_sashi_pred_senkou_count,
+      cm_actual_sashi_pred_sashi_count = excluded.cm_actual_sashi_pred_sashi_count + running_style_model_bucket_evaluations.cm_actual_sashi_pred_sashi_count,
+      cm_actual_sashi_pred_oikomi_count = excluded.cm_actual_sashi_pred_oikomi_count + running_style_model_bucket_evaluations.cm_actual_sashi_pred_oikomi_count,
+      cm_actual_oikomi_pred_nige_count = excluded.cm_actual_oikomi_pred_nige_count + running_style_model_bucket_evaluations.cm_actual_oikomi_pred_nige_count,
+      cm_actual_oikomi_pred_senkou_count = excluded.cm_actual_oikomi_pred_senkou_count + running_style_model_bucket_evaluations.cm_actual_oikomi_pred_senkou_count,
+      cm_actual_oikomi_pred_sashi_count = excluded.cm_actual_oikomi_pred_sashi_count + running_style_model_bucket_evaluations.cm_actual_oikomi_pred_sashi_count,
+      cm_actual_oikomi_pred_oikomi_count = excluded.cm_actual_oikomi_pred_oikomi_count + running_style_model_bucket_evaluations.cm_actual_oikomi_pred_oikomi_count,
+      log_loss_nige_sum = excluded.log_loss_nige_sum + running_style_model_bucket_evaluations.log_loss_nige_sum,
+      log_loss_nige_count = excluded.log_loss_nige_count + running_style_model_bucket_evaluations.log_loss_nige_count,
+      log_loss_senkou_sum = excluded.log_loss_senkou_sum + running_style_model_bucket_evaluations.log_loss_senkou_sum,
+      log_loss_senkou_count = excluded.log_loss_senkou_count + running_style_model_bucket_evaluations.log_loss_senkou_count,
+      log_loss_sashi_sum = excluded.log_loss_sashi_sum + running_style_model_bucket_evaluations.log_loss_sashi_sum,
+      log_loss_sashi_count = excluded.log_loss_sashi_count + running_style_model_bucket_evaluations.log_loss_sashi_count,
+      log_loss_oikomi_sum = excluded.log_loss_oikomi_sum + running_style_model_bucket_evaluations.log_loss_oikomi_sum,
+      log_loss_oikomi_count = excluded.log_loss_oikomi_count + running_style_model_bucket_evaluations.log_loss_oikomi_count,
+      top2_hit_count = excluded.top2_hit_count + running_style_model_bucket_evaluations.top2_hit_count,
+      evaluated_at = now()
+  `);
+});
+
+test("buildRunningStyleBucketBatchUpsertSql with rowCount 2 emits two comma-separated VALUES row tuples", () => {
+  const sql = buildRunningStyleBucketBatchUpsertSql(2);
+  const rowMatches = sql.match(
+    /\(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now\(\)\)/g,
+  );
+  expect(rowMatches?.length).toBe(2);
+});
+
+test("buildRunningStyleBucketBatchUpsertSql with rowCount 3 places ON CONFLICT after the comma-separated VALUES tuples", () => {
+  const sql = buildRunningStyleBucketBatchUpsertSql(3);
+  const valuesOffset = sql.indexOf("values\n      (%s,");
+  const conflictOffset = sql.indexOf("on conflict (");
+  expect(valuesOffset >= 0 && valuesOffset < conflictOffset).toBe(true);
+});
+
+test("buildRunningStyleBucketBatchUpsertSql throws when rowCount is zero", () => {
+  expect(() => buildRunningStyleBucketBatchUpsertSql(0)).toThrowError(
+    "rowCount must be greater than zero.",
+  );
+});
+
+test("buildRunningStyleBucketBatchUpsertSql throws when rowCount is negative", () => {
+  expect(() => buildRunningStyleBucketBatchUpsertSql(-3)).toThrowError(
+    "rowCount must be greater than zero.",
+  );
+});
+
+test("buildRunningStyleBucketBatchUpsertSql does not emit PG-native $1 placeholder (psycopg incompatible)", () => {
+  const sql = buildRunningStyleBucketBatchUpsertSql(5);
+  expect(sql.indexOf("$1")).toBe(-1);
 });

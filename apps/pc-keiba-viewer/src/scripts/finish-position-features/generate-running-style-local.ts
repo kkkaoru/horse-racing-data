@@ -33,7 +33,7 @@
 // Legacy Python score_running_style_local.py is preserved for backward compat;
 // it is simply no longer referenced from the orchestrator.
 
-import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 
 import { RUNNING_STYLE_FEATURE_VERSION } from "./running-style-feature-version";
 
@@ -98,6 +98,14 @@ interface Logger {
 
 interface ListDirectoryEntriesFn {
   (path: string): Promise<readonly string[]>;
+}
+
+interface FileStat {
+  size: number;
+}
+
+interface StatFileFn {
+  (path: string): Promise<FileStat>;
 }
 
 interface ChunkParquetCheckArgs {
@@ -180,6 +188,7 @@ interface RunDeps {
   now: NowProvider;
   log: Logger;
   listDirectoryEntries: ListDirectoryEntriesFn;
+  statFile: StatFileFn;
 }
 
 interface YearChunk {
@@ -515,7 +524,7 @@ export const buildPhaseCCommand = (args: PhaseCArgs): readonly string[] => [
   args.logitsParquet,
   "--output-parquet",
   args.outputParquet,
-  "--feature-version",
+  "--running-style-feature-version",
   args.featureVersion,
 ];
 
@@ -754,15 +763,32 @@ export const runVoidTasksWithConcurrencyLimit = async (
   await Promise.all(workers);
 };
 
+export const logitsFileHasContent = async (
+  statFile: StatFileFn,
+  path: string,
+): Promise<boolean> => {
+  const result = await statFile(path).catch(() => null);
+  if (result === null) return false;
+  return result.size > 0;
+};
+
 const runPhaseBForCategory = async (
   deps: RunDeps,
   options: GenerateRunningStyleLocalOptions,
   window: CategoryWindow,
 ): Promise<void> => {
+  const outputPath = buildCategoryLogitsDir(options, window.category);
+  if (!options.force) {
+    const skip = await logitsFileHasContent(deps.statFile, outputPath);
+    if (skip) {
+      deps.log(`[Phase B] skip ${window.category} (existing logits parquet at ${outputPath})`);
+      return;
+    }
+  }
   const command = buildPhaseBCommand({
     modelFlatbin: window.modelFlatbin,
     featuresParquet: buildCategoryFeaturesDir(options, window.category),
-    outputParquet: buildCategoryLogitsDir(options, window.category),
+    outputParquet: outputPath,
     category: window.category,
     predictedAt: deps.now().toISOString(),
     modelVersion: window.modelVersion,
@@ -898,6 +924,11 @@ const buildConsoleLogger = (): Logger => (message) => console.log(message);
 
 const buildFsListDirectoryEntries = (): ListDirectoryEntriesFn => async (path) => readdir(path);
 
+const buildFsStatFile = (): StatFileFn => async (path) => {
+  const result = await stat(path);
+  return { size: result.size };
+};
+
 /* v8 ignore start */
 if (import.meta.main) {
   const options = parseArgs(process.argv.slice(2));
@@ -908,6 +939,7 @@ if (import.meta.main) {
     now: buildBunNowProvider(),
     log: buildConsoleLogger(),
     listDirectoryEntries: buildFsListDirectoryEntries(),
+    statFile: buildFsStatFile(),
   };
   runGenerateRunningStyleLocal(options, deps).catch((error: unknown) => {
     console.error(error instanceof Error ? error.message : error);

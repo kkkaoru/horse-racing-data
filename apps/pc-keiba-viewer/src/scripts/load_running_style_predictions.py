@@ -31,6 +31,7 @@ Run with: ``uv run python src/scripts/load_running_style_predictions.py ...``.
 from __future__ import annotations
 
 import argparse
+import decimal
 import importlib
 import io
 import json
@@ -73,6 +74,9 @@ LOAD_COLUMNS: tuple[str, ...] = (
     "p_senkou",
     "p_sashi",
     "p_oikomi",
+    "model_version",
+    "running_style_feature_version",
+    "race_date",
 )
 
 PARQUET_SELECT_COLUMNS: tuple[str, ...] = (
@@ -89,6 +93,7 @@ PARQUET_SELECT_COLUMNS: tuple[str, ...] = (
     "p_sashi",
     "p_oikomi",
     "running_style_feature_version",
+    "model_version",
 )
 
 TEMP_TABLE_SCHEMA: tuple[tuple[str, str], ...] = (
@@ -100,11 +105,14 @@ TEMP_TABLE_SCHEMA: tuple[tuple[str, str], ...] = (
     ("ketto_toroku_bango", "text not null"),
     ("predicted_class", "integer not null"),
     ("second_predicted_class", "integer not null"),
-    ("target_running_style_class", "integer not null"),
+    ("target_running_style_class", "integer"),
     ("p_nige", "numeric not null"),
     ("p_senkou", "numeric not null"),
     ("p_sashi", "numeric not null"),
     ("p_oikomi", "numeric not null"),
+    ("model_version", "text not null"),
+    ("running_style_feature_version", "text not null"),
+    ("race_date", "date not null"),
 )
 
 SINGLE_QUOTE: str = "'"
@@ -113,6 +121,17 @@ DOUBLED_SINGLE_QUOTE: str = "''"
 P_NIGE_INDEX_IN_ROW: int = 8
 P_OIKOMI_INDEX_IN_ROW: int = 11
 PREDICTED_CLASS_INDEX_IN_ROW: int = 6
+RUNNING_STYLE_FEATURE_VERSION_INDEX_IN_ROW: int = 12
+MODEL_VERSION_INDEX_IN_ROW: int = 13
+KAISAI_NEN_INDEX_IN_ROW: int = 1
+KAISAI_TSUKIHI_INDEX_IN_ROW: int = 2
+
+KAISAI_TSUKIHI_LENGTH: int = 4
+MONTH_START_INDEX: int = 0
+MONTH_END_INDEX: int = 2
+DAY_START_INDEX: int = 2
+DAY_END_INDEX: int = 4
+KAISAI_NEN_LENGTH: int = 4
 
 
 class LoadArguments(TypedDict):
@@ -165,26 +184,39 @@ def sql_quote_literal(value: str) -> str:
 
 
 def build_select_from_parquet_sql(args: LoadArguments) -> str:
+    """Build the row-fetch SQL for the Phase C flat predictions file.
+
+    Phase C emits a single parquet file per category (path embeds
+    ``category=jra`` / ``category=nar`` as the literal file name without a Hive
+    partition directory) and the per-row schema carries ``kaisai_nen`` (string
+    year) rather than ``race_year``. The caller (TS driver) hands us the exact
+    file path for the requested category, so we do not need to filter on
+    ``category`` inside the SQL — but we still filter on
+    ``running_style_feature_version`` defensively so a stale parquet cannot
+    silently bias the bucket aggregate.
+    """
     safe_glob = sql_quote_literal(args["predictions_parquet_glob"])
-    safe_category = sql_quote_literal(args["category"])
     safe_rs = sql_quote_literal(args["running_style_feature_version"])
     columns = ", ".join(PARQUET_SELECT_COLUMNS)
     return (
-        f"select {columns} from read_parquet('{safe_glob}', hive_partitioning=1) "
-        f"where category = '{safe_category}' "
-        f"and cast(race_year as integer) between {args['year_from']} and {args['year_to']} "
+        f"select {columns} from read_parquet('{safe_glob}') "
+        f"where cast(kaisai_nen as integer) between {args['year_from']} and {args['year_to']} "
         f"and running_style_feature_version = '{safe_rs}'"
     )
 
 
 def build_version_mismatch_check_sql(args: LoadArguments) -> str:
+    """Build the mismatch-count SQL for the Phase C flat predictions file.
+
+    See ``build_select_from_parquet_sql`` for why ``hive_partitioning=1`` and the
+    ``category = '...'`` predicate are absent: the file path already isolates
+    the category, and ``kaisai_nen`` is the year column on the Phase C schema.
+    """
     safe_glob = sql_quote_literal(args["predictions_parquet_glob"])
-    safe_category = sql_quote_literal(args["category"])
     safe_rs = sql_quote_literal(args["running_style_feature_version"])
     return (
-        f"select count(*) from read_parquet('{safe_glob}', hive_partitioning=1) "
-        f"where category = '{safe_category}' "
-        f"and cast(race_year as integer) between {args['year_from']} and {args['year_to']} "
+        f"select count(*) from read_parquet('{safe_glob}') "
+        f"where cast(kaisai_nen as integer) between {args['year_from']} and {args['year_to']} "
         f"and running_style_feature_version <> '{safe_rs}'"
     )
 
@@ -253,16 +285,40 @@ def coerce_int(value: object) -> int:
 def coerce_float(value: object) -> float:
     if isinstance(value, (int, float, str)):
         return float(value)
+    if isinstance(value, decimal.Decimal):
+        return float(value)
     raise TypeError(f"Cannot coerce value of type {type(value).__name__} to float.")
+
+
+def derive_race_date(kaisai_nen: object, kaisai_tsukihi: object) -> str:
+    """Derive ISO ``YYYY-MM-DD`` from a 4-digit year (``kaisai_nen``) and a
+    4-digit MMDD (``kaisai_tsukihi``).
+
+    The Phase C predictions parquet does not carry a ``race_date`` column, so
+    the loader derives it from these two race-key fields. Strict validation is
+    applied (length + digits) so a malformed parquet cannot silently produce
+    a date PG would reject only at COPY time.
+    """
+    year_text = str(kaisai_nen)
+    day_text = str(kaisai_tsukihi)
+    if len(year_text) != KAISAI_NEN_LENGTH or not year_text.isdigit():
+        raise ValueError(f"Invalid kaisai_nen: {kaisai_nen!r}")
+    if len(day_text) != KAISAI_TSUKIHI_LENGTH or not day_text.isdigit():
+        raise ValueError(f"Invalid kaisai_tsukihi: {kaisai_tsukihi!r}")
+    month = day_text[MONTH_START_INDEX:MONTH_END_INDEX]
+    day = day_text[DAY_START_INDEX:DAY_END_INDEX]
+    return f"{year_text}-{month}-{day}"
 
 
 def attach_second_predicted_class(
     parquet_row: tuple[object, ...],
 ) -> tuple[object, ...]:
     """Insert ``second_predicted_class`` into the 14-tuple parquet row after
-    ``predicted_class``, producing the 13-column tuple expected by the temp
-    table COPY (race-key 6 + predicted_class + second_predicted_class + target +
-    4 probabilities)."""
+    ``predicted_class`` and append ``model_version`` /
+    ``running_style_feature_version`` / derived ``race_date``, producing the
+    16-column tuple expected by the temp table COPY (race-key 6 +
+    predicted_class + second_predicted_class + target + 4 probabilities +
+    model_version + running_style_feature_version + race_date)."""
     head = parquet_row[:PREDICTED_CLASS_INDEX_IN_ROW]
     predicted_class = coerce_int(parquet_row[PREDICTED_CLASS_INDEX_IN_ROW])
     target = parquet_row[PREDICTED_CLASS_INDEX_IN_ROW + 1]
@@ -273,7 +329,22 @@ def attach_second_predicted_class(
         coerce_float(parquet_row[P_OIKOMI_INDEX_IN_ROW]),
     )
     second = compute_second_predicted_class(probabilities, predicted_class)
-    return (*head, predicted_class, second, target, *probabilities)
+    running_style_feature_version = parquet_row[RUNNING_STYLE_FEATURE_VERSION_INDEX_IN_ROW]
+    model_version = parquet_row[MODEL_VERSION_INDEX_IN_ROW]
+    race_date = derive_race_date(
+        parquet_row[KAISAI_NEN_INDEX_IN_ROW],
+        parquet_row[KAISAI_TSUKIHI_INDEX_IN_ROW],
+    )
+    return (
+        *head,
+        predicted_class,
+        second,
+        target,
+        *probabilities,
+        model_version,
+        running_style_feature_version,
+        race_date,
+    )
 
 
 def default_read_predictions(args: LoadArguments) -> tuple[int, list[tuple[object, ...]]]:
@@ -314,14 +385,26 @@ def chunk_rows_for_response(rows: list[tuple[object, ...]]) -> list[list[tuple[o
     return chunks
 
 
+def encode_rpc_value(value: object) -> object:
+    """Convert PG-side scalar values that are not JSON-serializable into a
+    JSON-friendly form. psycopg returns ``numeric`` columns as
+    ``decimal.Decimal``, which ``json.dumps`` cannot serialize; coerce them to
+    ``float`` so the TS driver receives a numeric value it can pass to
+    ``parseFloat`` / arithmetic ops without an extra string-parse step.
+    """
+    if isinstance(value, decimal.Decimal):
+        return float(value)
+    return value
+
+
 def row_to_jsonable(row: tuple[object, ...], description: list[object] | None) -> object:
     if description is None:
-        return list(row)
+        return [encode_rpc_value(value) for value in row]
     columns = [
         col[0] if isinstance(col, (tuple, list)) else getattr(col, "name", str(col))
         for col in description
     ]
-    return {column: row[index] for index, column in enumerate(columns)}
+    return {column: encode_rpc_value(row[index]) for index, column in enumerate(columns)}
 
 
 def emit_sql_rows(
@@ -534,7 +617,8 @@ def main(argv: list[str] | None = None) -> None:
                 "model_version": args["model_version"],
             },
             ensure_ascii=False,
-        )
+        ),
+        file=sys.stderr,
     )
 
 
