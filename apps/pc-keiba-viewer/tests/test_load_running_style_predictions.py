@@ -18,6 +18,7 @@ def _build_argv(**overrides: str) -> list[str]:
         "--predictions-parquet-glob": "tmp/bucket-eval/running-style/v1/predictions/**/*.parquet",
         "--temp-table-name": "bucket_running_style_predictions_loaded",
         "--running-style-feature-version": "v1",
+        "--model-version": "jra-running-style-lgbm-v1.0",
         "--category": "jra",
         "--year-from": "2005",
         "--year-to": "2026",
@@ -36,6 +37,7 @@ def _sample_args(**overrides: object) -> subject.LoadArguments:
         "predictions_parquet_glob": "tmp/preds/**/*.parquet",
         "temp_table_name": "bucket_running_style_predictions_loaded",
         "running_style_feature_version": "v1",
+        "model_version": "jra-running-style-lgbm-v1.0",
         "category": "jra",
         "year_from": 2024,
         "year_to": 2024,
@@ -53,9 +55,25 @@ def test_parse_args_full_set():
     )
     assert args.temp_table_name == "bucket_running_style_predictions_loaded"
     assert args.running_style_feature_version == "v1"
+    assert args.model_version == "jra-running-style-lgbm-v1.0"
     assert args.category == "jra"
     assert args.year_from == 2005
     assert args.year_to == 2026
+
+
+def test_parse_args_requires_model_version():
+    argv = _build_argv()
+    idx = argv.index("--model-version")
+    del argv[idx : idx + 2]
+    with pytest.raises(SystemExit):
+        subject.parse_args(argv)
+
+
+def test_parse_args_accepts_nar_model_version():
+    args = subject.parse_args(
+        _build_argv(**{"--category": "nar", "--model-version": "nar-running-style-lgbm-v2.0"})
+    )
+    assert args.model_version == "nar-running-style-lgbm-v2.0"
 
 
 def test_parse_args_defaults_temp_table_name():
@@ -105,6 +123,7 @@ def test_normalize_arguments_converts_years_to_int():
     assert normalized["category"] == "jra"
     assert normalized["temp_table_name"] == "bucket_running_style_predictions_loaded"
     assert normalized["running_style_feature_version"] == "v1"
+    assert normalized["model_version"] == "jra-running-style-lgbm-v1.0"
 
 
 def test_assert_safe_identifier_accepts_snake_case():
@@ -861,3 +880,4 @@ def test_main_invokes_load_and_prints_json(
     assert payload["year_to"] == 2026
     assert payload["running_style_feature_version"] == "v1"
     assert payload["temp_table_name"] == "bucket_running_style_predictions_loaded"
+    assert payload["model_version"] == "jra-running-style-lgbm-v1.0"
