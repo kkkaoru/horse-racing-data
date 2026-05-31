@@ -248,7 +248,7 @@ it("getRunningStyleBucketEvaluation emits SQL with all dimension predicates when
   expect(queryText).toMatch(/b\.condition_key = /u);
   expect(queryText).toMatch(/b\.track_code = /u);
   expect(queryText).toMatch(/b\.grade_code = /u);
-  expect(queryText).toMatch(/b\.race_name = /u);
+  expect(queryText).toMatch(/regexp_replace\(b\.race_name, /u);
 });
 
 it("getRunningStyleBucketEvaluation omits dimension predicates when only keibajo flag is on", async () => {
@@ -263,7 +263,7 @@ it("getRunningStyleBucketEvaluation omits dimension predicates when only keibajo
   expect(queryText).not.toMatch(/b\.condition_key = /u);
   expect(queryText).not.toMatch(/b\.track_code = /u);
   expect(queryText).not.toMatch(/b\.grade_code = /u);
-  expect(queryText).not.toMatch(/b\.race_name = /u);
+  expect(queryText).not.toMatch(/regexp_replace\(b\.race_name, /u);
 });
 
 it("getRunningStyleBucketEvaluation omits all dimension predicates when every flag is off", async () => {
@@ -278,7 +278,17 @@ it("getRunningStyleBucketEvaluation omits all dimension predicates when every fl
   expect(queryText).not.toMatch(/b\.condition_key = /u);
   expect(queryText).not.toMatch(/b\.track_code = /u);
   expect(queryText).not.toMatch(/b\.grade_code = /u);
-  expect(queryText).not.toMatch(/b\.race_name = /u);
+  expect(queryText).not.toMatch(/regexp_replace\(b\.race_name, /u);
+});
+
+it("getRunningStyleBucketEvaluation normalises trailing U+3000 padding on race_name via regexp_replace", async () => {
+  executeMock.mockResolvedValue({ rows: [PERFECT_AGGREGATE_ROW] });
+  await getRunningStyleBucketEvaluation({ filter: ALL_FLAGS_ON_FILTER });
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(queryText).toMatch(
+    /regexp_replace\(b\.race_name, '\^\[\[:space:\]　\]\+\|\[\[:space:\]　\]\+\$', '', 'g'\) = /u,
+  );
 });
 
 it("getRunningStyleBucketEvaluation returns null when SQL returns zero rows", async () => {

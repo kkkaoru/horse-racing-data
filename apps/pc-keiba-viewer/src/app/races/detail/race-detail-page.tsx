@@ -711,10 +711,13 @@ export async function RaceDetailView({
             category={
               raceSource === "nar" && isBanEiKeibajoCode(keibajoCode) ? "ban-ei" : raceSource
             }
+            day={day}
             kaisaiNen={year}
             kaisaiTsukihi={`${month.padStart(2, "0")}${day.padStart(2, "0")}`}
             keibajoCode={keibajoCode}
+            month={month}
             raceBango={raceNumber}
+            raceNumber={raceNumber}
             runnersByUmaban={Object.fromEntries(
               runners.map((runner) => [
                 Number(runner.umaban ?? "0"),
@@ -724,7 +727,9 @@ export async function RaceDetailView({
                 },
               ]),
             )}
+            searchParams={searchParams}
             source={raceSource}
+            year={year}
           />
         </Suspense>
 
