@@ -24,6 +24,7 @@ import {
   PER_CATEGORY_SLEEP_MS,
   PER_YEAR_SLEEP_MS,
   PHASE_A_SCRIPT,
+  PHASE_A_UV_PROJECT,
   PHASE_B_SCRIPT,
   PHASE_C_SCRIPT,
   RUNNING_STYLE_CATEGORIES,
@@ -294,7 +295,7 @@ describe("generate-running-style-local", () => {
     expect(chunkYears([], 5)).toStrictEqual([]);
   });
 
-  test("buildPhaseACommand emits PHASE_A_SCRIPT path", () => {
+  test("buildPhaseACommand emits PHASE_A_SCRIPT path after uv project flag and python interpreter", () => {
     const cmd = buildPhaseACommand({
       pgUrl: "u",
       outputDir: "/d",
@@ -305,7 +306,29 @@ describe("generate-running-style-local", () => {
       threads: 8,
       memoryLimit: "16GB",
     });
-    expect(cmd[3]).toBe(PHASE_A_SCRIPT);
+    expect(cmd[5]).toBe(PHASE_A_SCRIPT);
+  });
+
+  test("buildPhaseACommand pins uv at pc-keiba-viewer venv via --project flag", () => {
+    const cmd = buildPhaseACommand({
+      pgUrl: "u",
+      outputDir: "/d",
+      featureVersion: "v1",
+      yearFrom: 2020,
+      yearTo: 2024,
+      category: "jra",
+      threads: 8,
+      memoryLimit: "16GB",
+    });
+    expect(cmd[0]).toBe("uv");
+    expect(cmd[1]).toBe("--project");
+    expect(cmd[2]).toBe("apps/pc-keiba-viewer");
+    expect(cmd[3]).toBe("run");
+    expect(cmd[4]).toBe("python");
+  });
+
+  test("PHASE_A_UV_PROJECT equals apps/pc-keiba-viewer so duckdb venv resolves from repo root", () => {
+    expect(PHASE_A_UV_PROJECT).toBe("apps/pc-keiba-viewer");
   });
 
   test("buildPhaseACommand encodes year range as strings", () => {
@@ -319,8 +342,8 @@ describe("generate-running-style-local", () => {
       threads: 8,
       memoryLimit: "16GB",
     });
-    expect(cmd[11]).toBe("2020");
-    expect(cmd[13]).toBe("2024");
+    expect(cmd[13]).toBe("2020");
+    expect(cmd[15]).toBe("2024");
   });
 
   test("buildPhaseBCommand uses bun run with PHASE_B_SCRIPT path", () => {
@@ -737,7 +760,7 @@ describe("generate-running-style-local", () => {
     const spawnCalls: string[] = [];
     const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(
       (command) => {
-        const phaseAHit = command[3] === PHASE_A_SCRIPT ? PHASE_A_SCRIPT : "";
+        const phaseAHit = command[5] === PHASE_A_SCRIPT ? PHASE_A_SCRIPT : "";
         const phaseBHit = command[2] === PHASE_B_SCRIPT ? PHASE_B_SCRIPT : "";
         const phaseCHit = command[2] === PHASE_C_SCRIPT ? PHASE_C_SCRIPT : "";
         spawnCalls.push(phaseBHit || phaseCHit || phaseAHit);
@@ -855,7 +878,7 @@ describe("generate-running-style-local", () => {
     const phaseBInputs: string[] = [];
     const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(
       (command) => {
-        if (command[3] === PHASE_A_SCRIPT) {
+        if (command[5] === PHASE_A_SCRIPT) {
           const outputIndex = command.indexOf("--output-dir");
           phaseAOutputs.push(command[outputIndex + 1] ?? "");
         }

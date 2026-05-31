@@ -9,7 +9,9 @@
 // when launched with cwd=repo root. The Python Phase A script in turn spawns a
 // TS print-sql subprocess that also assumes cwd=repo root, so the convention is
 // uniform: every phase resolves paths against repo root.
-//   Phase A: spawn `uv run python apps/pc-keiba-viewer/src/scripts/generate_running_style_features_local.py`
+//   Phase A: spawn `uv --project apps/pc-keiba-viewer run python apps/pc-keiba-viewer/src/scripts/generate_running_style_features_local.py`
+//           (--project pins uv at the pc-keiba-viewer venv so duckdb/psycopg/lightgbm are visible
+//            even when the driver runs from cwd=repo root)
 //   Phase B: spawn `bun run apps/sync-realtime-data/src/scripts/run-running-style-inference-local.ts`
 //           (precision-0 LightGBM v1.5/v2 via W3 deliverable, bit-exact with production)
 //   Phase C: spawn `bun run apps/pc-keiba-viewer/src/scripts/finish-position-features/apply-running-style-postproc.ts`
@@ -156,6 +158,7 @@ export const PHASE_C_SCRIPT =
   "apps/pc-keiba-viewer/src/scripts/finish-position-features/apply-running-style-postproc.ts";
 export const NIGHT_WINDOW_SET: ReadonlySet<number> = new Set(NIGHT_WINDOW_HOURS_JST);
 export const JRA_V2_MODEL_TAG = "-v2";
+export const PHASE_A_UV_PROJECT = "apps/pc-keiba-viewer";
 
 export const RUNNING_STYLE_CATEGORIES = ["jra", "nar"] satisfies readonly string[];
 
@@ -351,6 +354,8 @@ export const buildCategoryPredictionsDir = (
 
 export const buildPhaseACommand = (args: PhaseAArgs): readonly string[] => [
   "uv",
+  "--project",
+  PHASE_A_UV_PROJECT,
   "run",
   "python",
   PHASE_A_SCRIPT,
