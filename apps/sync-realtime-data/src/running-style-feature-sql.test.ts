@@ -17,6 +17,15 @@ const PER_RACE_SQL_LENGTH_REFERENCE = 41762;
 const D1_TARGET_SQL_SHA256_REFERENCE =
   "b5a4d8228ba07214a65160738a14380edbd08128b6e502cdd89ce97d0da9b88e";
 const D1_TARGET_SQL_LENGTH_REFERENCE = 41977;
+// Batch SQL gets `MATERIALIZED` hints injected for 10 heavy CTEs (rec, target,
+// target_horses, se_lookup, ra_lookup, horse_history_base, jockey_history,
+// trainer_history, pedigree_rec_um, target_months) so PG materializes them once
+// instead of re-inlining per reference. This snapshot pins the post-hint
+// output so any accidental regression on the materialization list trips here.
+const BATCH_JRA_SQL_SHA256_REFERENCE =
+  "dd94801f2ebc78e43a8c7f46f39e002d038e6aba9e74a30cc706ce9a9acb4b33";
+const BATCH_JRA_SQL_LENGTH_REFERENCE = 41628;
+const BATCH_MATERIALIZED_HINT_COUNT = 10;
 
 const BATCH_ARGS_JRA = {
   featureSchemaVersion: "v1",
@@ -128,9 +137,37 @@ it("buildRunningStyleBatchFeatureSql derives history_start from fromDate", () =>
 it("buildRunningStyleBatchFeatureSql shares the same suffix CTE list as the per-race builder", () => {
   const perRace = buildRunningStylePostgresFeatureSql();
   const batch = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
-  const perRaceCteNames = [...perRace.matchAll(/^(\w+) as \(/gm)].map((m) => m[1]);
-  const batchCteNames = [...batch.matchAll(/^(\w+) as \(/gm)].map((m) => m[1]);
+  const perRaceCteNames = [...perRace.matchAll(/^(\w+) as (?:materialized )?\(/gm)].map(
+    (m) => m[1],
+  );
+  const batchCteNames = [...batch.matchAll(/^(\w+) as (?:materialized )?\(/gm)].map((m) => m[1]);
   expect(batchCteNames).toStrictEqual(perRaceCteNames);
+});
+
+it("buildRunningStyleBatchFeatureSql output for jra is byte-identical to materialized-hint snapshot", () => {
+  const sql = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  expect(sql.length).toBe(BATCH_JRA_SQL_LENGTH_REFERENCE);
+  expect(sha256(sql)).toBe(BATCH_JRA_SQL_SHA256_REFERENCE);
+});
+
+it("buildRunningStyleBatchFeatureSql injects MATERIALIZED on exactly the heavy CTE list", () => {
+  const sql = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  const matches = sql.match(/ as materialized \(/g) ?? [];
+  expect(matches.length).toBe(BATCH_MATERIALIZED_HINT_COUNT);
+});
+
+it("buildRunningStyleBatchFeatureSql materializes specific named CTEs", () => {
+  const sql = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  expect(sql.includes("rec as materialized (")).toBe(true);
+  expect(sql.includes("target as materialized (")).toBe(true);
+  expect(sql.includes("horse_history_base as materialized (")).toBe(true);
+  expect(sql.includes("pedigree_rec_um as materialized (")).toBe(true);
+  expect(sql.includes("target_months as materialized (")).toBe(true);
+});
+
+it("buildRunningStylePostgresFeatureSql contains no MATERIALIZED hints (per-race uses default inlining)", () => {
+  const sql = buildRunningStylePostgresFeatureSql();
+  expect(sql.match(/ as materialized \(/g)).toBeNull();
 });
 
 it("buildRunningStyleBatchFeatureSql rejects an invalid source", () => {

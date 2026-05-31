@@ -331,6 +331,18 @@ def test_apply_duckdb_resources_disables_progress_bar() -> None:
     assert con.execute.call_args_list[2].args[0] == "SET enable_progress_bar_print = false"
 
 
+def test_apply_duckdb_resources_sets_timezone_to_utc() -> None:
+    con = MagicMock()
+    subject.apply_duckdb_resources(con, threads=8, memory_limit="16GB")
+    assert con.execute.call_args_list[3].args[0] == "SET timezone = 'UTC'"
+
+
+def test_apply_duckdb_resources_emits_exactly_four_execute_calls() -> None:
+    con = MagicMock()
+    subject.apply_duckdb_resources(con, threads=8, memory_limit="16GB")
+    assert con.execute.call_count == 4
+
+
 def test_attach_postgres_installs_extension() -> None:
     con = MagicMock()
     subject.attach_postgres(con, "postgres://abc")
@@ -357,10 +369,39 @@ def test_attach_postgres_switches_to_pg_catalog_after_attach() -> None:
     assert con.execute.call_args_list[3].args[0] == "USE pg"
 
 
-def test_attach_postgres_emits_exactly_four_execute_calls() -> None:
+def test_attach_postgres_sets_pg_use_binary_copy_true() -> None:
     con = MagicMock()
     subject.attach_postgres(con, "postgres://abc")
-    assert con.execute.call_count == 4
+    assert con.execute.call_args_list[4].args[0] == "SET pg_use_binary_copy = true"
+
+
+def test_attach_postgres_sets_pg_experimental_filter_pushdown_true() -> None:
+    con = MagicMock()
+    subject.attach_postgres(con, "postgres://abc")
+    assert con.execute.call_args_list[5].args[0] == (
+        "SET pg_experimental_filter_pushdown = true"
+    )
+
+
+def test_attach_postgres_sets_pg_pages_per_task_to_1000() -> None:
+    con = MagicMock()
+    subject.attach_postgres(con, "postgres://abc")
+    assert con.execute.call_args_list[6].args[0] == "SET pg_pages_per_task = 1000"
+
+
+def test_attach_postgres_pg_use_binary_copy_after_use_pg() -> None:
+    con = MagicMock()
+    subject.attach_postgres(con, "postgres://abc")
+    issued = [call.args[0] for call in con.execute.call_args_list]
+    use_index = issued.index("USE pg")
+    pragma_index = issued.index("SET pg_use_binary_copy = true")
+    assert use_index < pragma_index
+
+
+def test_attach_postgres_emits_exactly_seven_execute_calls() -> None:
+    con = MagicMock()
+    subject.attach_postgres(con, "postgres://abc")
+    assert con.execute.call_count == 7
 
 
 def test_build_hive_copy_sql_starts_with_copy_open_paren() -> None:
@@ -605,6 +646,52 @@ def test_run_executes_attach_postgres_with_pg_url() -> None:
         subject.run(args, connect, runner)
     issued = [call.args[0] for call in con.execute.call_args_list]
     assert "ATTACH 'postgres://u' AS pg (TYPE postgres, READ_ONLY)" in issued
+
+
+def test_run_emits_pg_pragma_settings_after_use_pg() -> None:
+    con = MagicMock()
+    connect = MagicMock(return_value=con)
+    completed = MagicMock()
+    completed.returncode = 0
+    completed.stdout = "SELECT race_year FROM race_entry_corner_features"
+    completed.stderr = ""
+    runner = MagicMock(return_value=completed)
+    args = subject.parse_args([
+        "--pg-url", "postgres://u",
+        "--output-dir", "/tmp/x",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2020",
+        "--year-to", "2021",
+        "--category", "jra",
+    ])
+    with patch.object(subject, "ensure_output_dir"):
+        subject.run(args, connect, runner)
+    issued = [call.args[0] for call in con.execute.call_args_list]
+    assert "SET pg_use_binary_copy = true" in issued
+    assert "SET pg_experimental_filter_pushdown = true" in issued
+    assert "SET pg_pages_per_task = 1000" in issued
+
+
+def test_run_emits_timezone_utc_setting() -> None:
+    con = MagicMock()
+    connect = MagicMock(return_value=con)
+    completed = MagicMock()
+    completed.returncode = 0
+    completed.stdout = "SELECT race_year FROM race_entry_corner_features"
+    completed.stderr = ""
+    runner = MagicMock(return_value=completed)
+    args = subject.parse_args([
+        "--pg-url", "postgres://u",
+        "--output-dir", "/tmp/x",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2020",
+        "--year-to", "2021",
+        "--category", "jra",
+    ])
+    with patch.object(subject, "ensure_output_dir"):
+        subject.run(args, connect, runner)
+    issued = [call.args[0] for call in con.execute.call_args_list]
+    assert "SET timezone = 'UTC'" in issued
 
 
 def test_run_issues_use_pg_after_attach_for_catalog_lookup() -> None:

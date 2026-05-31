@@ -3,8 +3,9 @@
 //   --pg-url $DATABASE_URL_LOCAL --running-style-feature-version v1 \
 //   --model-version-jra <m> --model-version-nar <m> \
 //   --model-flatbin-jra <path> --model-flatbin-nar <path> \
-//   [--rs-p-from-flatbin-jra <path>]
-// Sequential 3-phase orchestrator (Agent Y4 + W4/W6 switch, bucket-eval X5 design).
+//   [--rs-p-from-flatbin-jra <path>] \
+//   [--max-years-per-run 1] [--phase-a-concurrency 4] [--memory-limit-per-chunk 4GB]
+// Parallel 3-phase orchestrator (Agent Y4 + W4/W6 switch, bucket-eval X5 design + B1 chunk-parallel).
 // All spawned subprocess paths are repo-root relative so the driver works only
 // when launched with cwd=repo root. The Python Phase A script in turn spawns a
 // TS print-sql subprocess that also assumes cwd=repo root, so the convention is
@@ -32,6 +33,8 @@ interface GenerateRunningStyleLocalOptions {
   runningStyleFeatureVersion: string;
   threads: number;
   memoryLimit: string;
+  memoryLimitPerChunk: string;
+  phaseAConcurrency: number;
   maxYearsPerRun: number;
   ignoreNightWindow: boolean;
   outputRoot: string;
@@ -149,7 +152,9 @@ export const PER_CATEGORY_SLEEP_MS = 5000;
 export const DEFAULT_OUTPUT_ROOT = "apps/pc-keiba-viewer/tmp/bucket-eval/running-style";
 export const DEFAULT_THREADS = 8;
 export const DEFAULT_MEMORY_LIMIT = "16GB";
-export const DEFAULT_MAX_YEARS_PER_RUN = 5;
+export const DEFAULT_MAX_YEARS_PER_RUN = 1;
+export const DEFAULT_PHASE_A_CONCURRENCY = 4;
+export const DEFAULT_MEMORY_LIMIT_PER_CHUNK = "";
 export const PHASE_A_SCRIPT =
   "apps/pc-keiba-viewer/src/scripts/generate_running_style_features_local.py";
 export const PHASE_B_SCRIPT =
@@ -185,6 +190,8 @@ export const buildDefaultOptions = (): GenerateRunningStyleLocalOptions => ({
   runningStyleFeatureVersion: RUNNING_STYLE_FEATURE_VERSION,
   threads: DEFAULT_THREADS,
   memoryLimit: DEFAULT_MEMORY_LIMIT,
+  memoryLimitPerChunk: DEFAULT_MEMORY_LIMIT_PER_CHUNK,
+  phaseAConcurrency: DEFAULT_PHASE_A_CONCURRENCY,
   maxYearsPerRun: DEFAULT_MAX_YEARS_PER_RUN,
   ignoreNightWindow: false,
   outputRoot: DEFAULT_OUTPUT_ROOT,
@@ -214,6 +221,14 @@ const applyArg = (
   }
   if (name === "--memory-limit") {
     options.memoryLimit = requireValue(name, value);
+    return { advanceBy: 2 };
+  }
+  if (name === "--memory-limit-per-chunk") {
+    options.memoryLimitPerChunk = requireValue(name, value);
+    return { advanceBy: 2 };
+  }
+  if (name === "--phase-a-concurrency") {
+    options.phaseAConcurrency = Number(requireValue(name, value));
     return { advanceBy: 2 };
   }
   if (name === "--max-years-per-run") {
@@ -489,6 +504,9 @@ export const buildManifest = (
   };
 };
 
+export const resolveMemoryLimitPerChunk = (options: GenerateRunningStyleLocalOptions): string =>
+  options.memoryLimitPerChunk === "" ? options.memoryLimit : options.memoryLimitPerChunk;
+
 const runPhaseAForChunk = async (
   deps: RunDeps,
   options: GenerateRunningStyleLocalOptions,
@@ -503,7 +521,7 @@ const runPhaseAForChunk = async (
     yearTo: chunk.yearTo,
     category: window.category,
     threads: options.threads,
-    memoryLimit: options.memoryLimit,
+    memoryLimit: resolveMemoryLimitPerChunk(options),
   });
   const result = await deps.spawn(command);
   if (result.exitCode !== 0) {
@@ -512,6 +530,34 @@ const runPhaseAForChunk = async (
     );
   }
   await deps.sleep(PER_YEAR_SLEEP_MS);
+};
+
+interface ConcurrencyCursor {
+  next: number;
+}
+
+const runVoidTaskWorker = async (
+  tasks: ReadonlyArray<() => Promise<void>>,
+  cursor: ConcurrencyCursor,
+): Promise<void> => {
+  const idx = cursor.next;
+  cursor.next = idx + 1;
+  const task = tasks[idx];
+  if (task === undefined) return;
+  await task();
+  await runVoidTaskWorker(tasks, cursor);
+};
+
+export const runVoidTasksWithConcurrencyLimit = async (
+  tasks: ReadonlyArray<() => Promise<void>>,
+  concurrency: number,
+): Promise<void> => {
+  if (concurrency <= 0) throw new Error("concurrency must be positive.");
+  if (tasks.length === 0) return;
+  const cursor: ConcurrencyCursor = { next: 0 };
+  const workerCount = Math.min(concurrency, tasks.length);
+  const workers = Array.from({ length: workerCount }, () => runVoidTaskWorker(tasks, cursor));
+  await Promise.all(workers);
 };
 
 const runPhaseBForCategory = async (
@@ -557,10 +603,8 @@ const runPhaseAForCategory = (
   window: CategoryWindow,
 ): Promise<void> => {
   const chunks = chunkYears(window.years, options.maxYearsPerRun);
-  return chunks.reduce<Promise<void>>(
-    (prev, chunk) => prev.then(() => runPhaseAForChunk(deps, options, window, chunk)),
-    Promise.resolve(),
-  );
+  const tasks = chunks.map((chunk) => () => runPhaseAForChunk(deps, options, window, chunk));
+  return runVoidTasksWithConcurrencyLimit(tasks, options.phaseAConcurrency);
 };
 
 const runCategory = async (
@@ -584,15 +628,13 @@ const writeManifest = async (
   await writeFile(path, JSON.stringify(manifest, null, 2), "utf8");
 };
 
-const runAllCategoriesSequentially = (
+const runAllCategoriesInParallel = async (
   deps: RunDeps,
   options: GenerateRunningStyleLocalOptions,
   windows: readonly CategoryWindow[],
-): Promise<void> =>
-  windows.reduce<Promise<void>>(
-    (prev, window) => prev.then(() => runCategory(deps, options, window)),
-    Promise.resolve(),
-  );
+): Promise<void> => {
+  await Promise.all(windows.map((window) => runCategory(deps, options, window)));
+};
 
 export const runGenerateRunningStyleLocal = async (
   options: GenerateRunningStyleLocalOptions,
@@ -604,7 +646,7 @@ export const runGenerateRunningStyleLocal = async (
   const resource = await deps.probeColima();
   assertColimaCapacity(resource);
   const windows = buildCategoryWindows(options);
-  await runAllCategoriesSequentially(deps, options, windows);
+  await runAllCategoriesInParallel(deps, options, windows);
   await writeManifest(options, deps.now());
 };
 

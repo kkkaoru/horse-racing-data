@@ -18,8 +18,13 @@ import {
   isInsideNightWindow,
   isJraV2ModelVersion,
   parseArgs,
+  resolveMemoryLimitPerChunk,
   runGenerateRunningStyleLocal,
+  runVoidTasksWithConcurrencyLimit,
   COLIMA_MIN_CPU,
+  DEFAULT_MAX_YEARS_PER_RUN,
+  DEFAULT_MEMORY_LIMIT_PER_CHUNK,
+  DEFAULT_PHASE_A_CONCURRENCY,
   JRA_V2_MODEL_TAG,
   PER_CATEGORY_SLEEP_MS,
   PER_YEAR_SLEEP_MS,
@@ -38,7 +43,17 @@ describe("generate-running-style-local", () => {
     const options = buildDefaultOptions();
     expect(options.threads).toBe(8);
     expect(options.memoryLimit).toBe("16GB");
-    expect(options.maxYearsPerRun).toBe(5);
+    expect(options.maxYearsPerRun).toBe(1);
+  });
+
+  test("buildDefaultOptions returns phaseAConcurrency of 4", () => {
+    const options = buildDefaultOptions();
+    expect(options.phaseAConcurrency).toBe(4);
+  });
+
+  test("buildDefaultOptions returns empty memoryLimitPerChunk so it falls back to memoryLimit", () => {
+    const options = buildDefaultOptions();
+    expect(options.memoryLimitPerChunk).toBe("");
   });
 
   test("buildDefaultOptions returns empty rsPFromFlatbinJra", () => {
@@ -830,7 +845,7 @@ describe("generate-running-style-local", () => {
       probeColima,
       now: () => FIXED_NIGHT_DATE,
     });
-    expect(phaseBCategories).toStrictEqual(["jra", "nar"]);
+    expect(phaseBCategories.toSorted()).toStrictEqual(["jra", "nar"]);
     expect(phaseCInvocations.length).toBe(2);
   });
 
@@ -909,7 +924,9 @@ describe("generate-running-style-local", () => {
       probeColima,
       now: () => FIXED_NIGHT_DATE,
     });
-    expect(phaseBInputs[0]).toBe(phaseAOutputs[0]);
+    const uniquePhaseAOutputs = [...new Set(phaseAOutputs)].toSorted();
+    const uniquePhaseBInputs = [...new Set(phaseBInputs)].toSorted();
+    expect(uniquePhaseAOutputs).toStrictEqual(uniquePhaseBInputs);
   });
 
   test("runGenerateRunningStyleLocal Phase B receives --model-flatbin per category", async () => {
@@ -943,7 +960,7 @@ describe("generate-running-style-local", () => {
       probeColima,
       now: () => FIXED_NIGHT_DATE,
     });
-    expect(phaseBFlatbins).toStrictEqual(["/p/jra.flatbin", "/p/nar.flatbin"]);
+    expect(phaseBFlatbins.toSorted()).toStrictEqual(["/p/jra.flatbin", "/p/nar.flatbin"]);
   });
 
   test("runGenerateRunningStyleLocal Phase B for jra includes --rs-p-from-flatbin when configured", async () => {
@@ -1151,7 +1168,7 @@ describe("generate-running-style-local", () => {
         probeColima,
         now: () => FIXED_NIGHT_DATE,
       }),
-    ).rejects.toThrowError("Phase B failed for category=jra.");
+    ).rejects.toThrowError(/Phase B failed for category=(jra|nar)\.$/);
   });
 
   test("runGenerateRunningStyleLocal throws when Phase C spawn returns non-zero exit", async () => {
@@ -1181,7 +1198,7 @@ describe("generate-running-style-local", () => {
         probeColima,
         now: () => FIXED_NIGHT_DATE,
       }),
-    ).rejects.toThrowError("Phase C failed for category=jra.");
+    ).rejects.toThrowError(/Phase C failed for category=(jra|nar)\.$/);
   });
 
   test("per-year sleep constant equals 2000", () => {
@@ -1190,5 +1207,275 @@ describe("generate-running-style-local", () => {
 
   test("per-category sleep constant equals 5000", () => {
     expect(PER_CATEGORY_SLEEP_MS).toBe(5000);
+  });
+
+  test("DEFAULT_MAX_YEARS_PER_RUN equals 1 so each chunk covers a single year", () => {
+    expect(DEFAULT_MAX_YEARS_PER_RUN).toBe(1);
+  });
+
+  test("DEFAULT_PHASE_A_CONCURRENCY equals 4 so 4 chunks may run in parallel", () => {
+    expect(DEFAULT_PHASE_A_CONCURRENCY).toBe(4);
+  });
+
+  test("DEFAULT_MEMORY_LIMIT_PER_CHUNK equals empty so it falls back to --memory-limit", () => {
+    expect(DEFAULT_MEMORY_LIMIT_PER_CHUNK).toBe("");
+  });
+
+  test("parseArgs accepts --phase-a-concurrency and sets numeric value", () => {
+    const options = parseArgs([
+      "--pg-url",
+      "u",
+      "--model-version-jra",
+      "mj",
+      "--model-version-nar",
+      "mn",
+      "--model-flatbin-jra",
+      "/p/jra.flatbin",
+      "--model-flatbin-nar",
+      "/p/nar.flatbin",
+      "--phase-a-concurrency",
+      "6",
+    ]);
+    expect(options.phaseAConcurrency).toBe(6);
+  });
+
+  test("parseArgs accepts --memory-limit-per-chunk and stores raw string", () => {
+    const options = parseArgs([
+      "--pg-url",
+      "u",
+      "--model-version-jra",
+      "mj",
+      "--model-version-nar",
+      "mn",
+      "--model-flatbin-jra",
+      "/p/jra.flatbin",
+      "--model-flatbin-nar",
+      "/p/nar.flatbin",
+      "--memory-limit-per-chunk",
+      "4GB",
+    ]);
+    expect(options.memoryLimitPerChunk).toBe("4GB");
+  });
+
+  test("parseArgs throws when --phase-a-concurrency is supplied without a value", () => {
+    expect(() => parseArgs(["--phase-a-concurrency"])).toThrowError(
+      "--phase-a-concurrency requires a value.",
+    );
+  });
+
+  test("parseArgs throws when --memory-limit-per-chunk is supplied without a value", () => {
+    expect(() => parseArgs(["--memory-limit-per-chunk"])).toThrowError(
+      "--memory-limit-per-chunk requires a value.",
+    );
+  });
+
+  test("resolveMemoryLimitPerChunk returns memoryLimit when per-chunk is empty", () => {
+    const options = {
+      ...buildDefaultOptions(),
+      memoryLimit: "16GB",
+      memoryLimitPerChunk: "",
+    };
+    expect(resolveMemoryLimitPerChunk(options)).toBe("16GB");
+  });
+
+  test("resolveMemoryLimitPerChunk returns per-chunk override when configured", () => {
+    const options = {
+      ...buildDefaultOptions(),
+      memoryLimit: "16GB",
+      memoryLimitPerChunk: "4GB",
+    };
+    expect(resolveMemoryLimitPerChunk(options)).toBe("4GB");
+  });
+
+  test("runVoidTasksWithConcurrencyLimit throws when concurrency is zero", async () => {
+    await expect(runVoidTasksWithConcurrencyLimit([], 0)).rejects.toThrowError(
+      "concurrency must be positive.",
+    );
+  });
+
+  test("runVoidTasksWithConcurrencyLimit returns immediately for empty task list", async () => {
+    const result = await runVoidTasksWithConcurrencyLimit([], 4);
+    expect(result).toBe(undefined);
+  });
+
+  test("runVoidTasksWithConcurrencyLimit executes every task exactly once", async () => {
+    const completed: string[] = [];
+    const tasks: ReadonlyArray<() => Promise<void>> = [
+      () => Promise.resolve().then(() => void completed.push("a")),
+      () => Promise.resolve().then(() => void completed.push("b")),
+      () => Promise.resolve().then(() => void completed.push("c")),
+      () => Promise.resolve().then(() => void completed.push("d")),
+      () => Promise.resolve().then(() => void completed.push("e")),
+    ];
+    await runVoidTasksWithConcurrencyLimit(tasks, 2);
+    expect(completed.toSorted()).toStrictEqual(["a", "b", "c", "d", "e"]);
+  });
+
+  test("runVoidTasksWithConcurrencyLimit caps active task count to concurrency", async () => {
+    const observed: number[] = [];
+    const state = { active: 0 };
+    const decrementActive = (): undefined => {
+      state.active -= 1;
+      return undefined;
+    };
+    const probeTask = (): Promise<void> => {
+      state.active += 1;
+      observed.push(state.active);
+      return Promise.resolve().then(decrementActive);
+    };
+    const tasks: ReadonlyArray<() => Promise<void>> = [
+      probeTask,
+      probeTask,
+      probeTask,
+      probeTask,
+      probeTask,
+      probeTask,
+      probeTask,
+      probeTask,
+    ];
+    await runVoidTasksWithConcurrencyLimit(tasks, 3);
+    expect(Math.max(...observed)).toBe(3);
+  });
+
+  test("runGenerateRunningStyleLocal Phase A spawns chunkSize=1 commands by default (1y chunks)", async () => {
+    const phaseAYearPairs: string[] = [];
+    const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(
+      (command) => {
+        if (command[5] === PHASE_A_SCRIPT) {
+          const yearFromIndex = command.indexOf("--year-from");
+          const yearToIndex = command.indexOf("--year-to");
+          phaseAYearPairs.push(`${command[yearFromIndex + 1]}-${command[yearToIndex + 1]}`);
+        }
+        return Promise.resolve({ exitCode: 0 });
+      },
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "mj",
+      modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      ignoreNightWindow: true,
+      outputRoot: "/tmp/chunksize-default",
+    };
+    await runGenerateRunningStyleLocal(options, {
+      spawn,
+      sleep,
+      probeColima,
+      now: () => FIXED_NIGHT_DATE,
+    });
+    expect(phaseAYearPairs.every((pair) => pair.split("-")[0] === pair.split("-")[1])).toBe(true);
+  });
+
+  test("runGenerateRunningStyleLocal Phase A spawn memory limit uses memoryLimitPerChunk override when set", async () => {
+    const phaseAMemoryLimits: string[] = [];
+    const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(
+      (command) => {
+        if (command[5] === PHASE_A_SCRIPT) {
+          const memIndex = command.indexOf("--memory-limit");
+          phaseAMemoryLimits.push(command[memIndex + 1] ?? "");
+        }
+        return Promise.resolve({ exitCode: 0 });
+      },
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "mj",
+      modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      memoryLimit: "16GB",
+      memoryLimitPerChunk: "4GB",
+      ignoreNightWindow: true,
+      outputRoot: "/tmp/memchunk-override",
+    };
+    await runGenerateRunningStyleLocal(options, {
+      spawn,
+      sleep,
+      probeColima,
+      now: () => FIXED_NIGHT_DATE,
+    });
+    expect(phaseAMemoryLimits.every((limit) => limit === "4GB")).toBe(true);
+  });
+
+  test("runGenerateRunningStyleLocal Phase A spawn memory limit falls back to memoryLimit when per-chunk empty", async () => {
+    const phaseAMemoryLimits: string[] = [];
+    const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(
+      (command) => {
+        if (command[5] === PHASE_A_SCRIPT) {
+          const memIndex = command.indexOf("--memory-limit");
+          phaseAMemoryLimits.push(command[memIndex + 1] ?? "");
+        }
+        return Promise.resolve({ exitCode: 0 });
+      },
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "mj",
+      modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      memoryLimit: "16GB",
+      ignoreNightWindow: true,
+      outputRoot: "/tmp/memchunk-fallback",
+    };
+    await runGenerateRunningStyleLocal(options, {
+      spawn,
+      sleep,
+      probeColima,
+      now: () => FIXED_NIGHT_DATE,
+    });
+    expect(phaseAMemoryLimits.every((limit) => limit === "16GB")).toBe(true);
+  });
+
+  test("runGenerateRunningStyleLocal Phase A spawns jra and nar chunks in interleaved order (categories run in parallel)", async () => {
+    const phaseACategories: string[] = [];
+    const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(
+      (command) => {
+        if (command[5] === PHASE_A_SCRIPT) {
+          const categoryIndex = command.indexOf("--category");
+          phaseACategories.push(command[categoryIndex + 1] ?? "");
+        }
+        return Promise.resolve({ exitCode: 0 });
+      },
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "mj",
+      modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      ignoreNightWindow: true,
+      outputRoot: "/tmp/parallel-cats",
+    };
+    await runGenerateRunningStyleLocal(options, {
+      spawn,
+      sleep,
+      probeColima,
+      now: () => FIXED_NIGHT_DATE,
+    });
+    const firstNarIndex = phaseACategories.indexOf("nar");
+    const lastJraIndex = phaseACategories.lastIndexOf("jra");
+    expect(firstNarIndex < lastJraIndex).toBe(true);
   });
 });

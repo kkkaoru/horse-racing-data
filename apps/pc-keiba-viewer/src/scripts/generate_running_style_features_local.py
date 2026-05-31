@@ -130,6 +130,7 @@ def apply_duckdb_resources(
     con.execute(f"SET threads TO {threads}")
     con.execute(f"SET memory_limit = '{memory_limit}'")
     con.execute("SET enable_progress_bar_print = false")
+    con.execute("SET timezone = 'UTC'")
 
 
 def attach_postgres(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
@@ -137,6 +138,9 @@ def attach_postgres(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
     con.execute("LOAD postgres")
     con.execute(f"ATTACH '{pg_url}' AS pg (TYPE postgres, READ_ONLY)")
     con.execute("USE pg")
+    con.execute("SET pg_use_binary_copy = true")
+    con.execute("SET pg_experimental_filter_pushdown = true")
+    con.execute("SET pg_pages_per_task = 1000")
 
 
 def escape_sql_for_postgres_query(select_sql: str) -> str:
