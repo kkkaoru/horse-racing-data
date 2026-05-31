@@ -16,6 +16,11 @@ vi.mock("./scheduled-race-list", () => ({
   populateTodayOddsFetchState: vi.fn(async () => ({ inserted: 0, total: 0 })),
 }));
 
+vi.mock("./expected-race-count", () => ({
+  getExpectedRaceCountForDate: vi.fn(async () => 0),
+}));
+
+import { getExpectedRaceCountForDate } from "./expected-race-count";
 import { fetchAndStoreOdds } from "./fetch-odds";
 import { readCachedOdds } from "./odds-cache";
 import { populateMultiDayOddsFetchState, populateTodayOddsFetchState } from "./scheduled-race-list";
@@ -66,6 +71,8 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.mocked(populateTodayOddsFetchState).mockClear();
   vi.mocked(populateMultiDayOddsFetchState).mockClear();
+  vi.mocked(getExpectedRaceCountForDate).mockReset();
+  vi.mocked(getExpectedRaceCountForDate).mockResolvedValue(0);
   vi.mocked(readCachedOdds).mockReset();
   vi.mocked(readCachedOdds).mockResolvedValue(null);
 });
@@ -776,10 +783,32 @@ it("runScheduledPlan plans 3 days inside the legacy daytime window with rows pre
   expect(vi.mocked(populateTodayOddsFetchState)).not.toHaveBeenCalled();
 });
 
-it("runScheduledPlan triggers self-discovery populate when odds_fetch_state is empty", async () => {
+it("runScheduledPlan triggers self-discovery populate when stateCount is short of expected", async () => {
+  vi.mocked(getExpectedRaceCountForDate).mockResolvedValueOnce(58);
   const env = buildEnv({ REALTIME_HOT_DB: buildDb({ stateCount: 0 }) });
   await runScheduledPlan(env, new Date("2026-05-28T01:00:00Z"));
   expect(vi.mocked(populateTodayOddsFetchState)).toHaveBeenCalledTimes(1);
+});
+
+it("runScheduledPlan triggers populate when stateCount equals 45 and expectedCount equals 58 (Banei missing case)", async () => {
+  vi.mocked(getExpectedRaceCountForDate).mockResolvedValueOnce(58);
+  const env = buildEnv({ REALTIME_HOT_DB: buildDb({ stateCount: 45 }) });
+  await runScheduledPlan(env, new Date("2026-05-28T01:00:00Z"));
+  expect(vi.mocked(populateTodayOddsFetchState)).toHaveBeenCalledTimes(1);
+});
+
+it("runScheduledPlan skips populate when stateCount equals expectedCount (full day populated)", async () => {
+  vi.mocked(getExpectedRaceCountForDate).mockResolvedValueOnce(58);
+  const env = buildEnv({ REALTIME_HOT_DB: buildDb({ stateCount: 58 }) });
+  await runScheduledPlan(env, new Date("2026-05-28T01:00:00Z"));
+  expect(vi.mocked(populateTodayOddsFetchState)).not.toHaveBeenCalled();
+});
+
+it("runScheduledPlan skips populate when both stateCount and expectedCount are zero (no race day)", async () => {
+  vi.mocked(getExpectedRaceCountForDate).mockResolvedValueOnce(0);
+  const env = buildEnv({ REALTIME_HOT_DB: buildDb({ stateCount: 0 }) });
+  await runScheduledPlan(env, new Date("2026-05-28T01:00:00Z"));
+  expect(vi.mocked(populateTodayOddsFetchState)).not.toHaveBeenCalled();
 });
 
 it("runScheduledPopulateMultiDay delegates to populateMultiDayOddsFetchState", async () => {

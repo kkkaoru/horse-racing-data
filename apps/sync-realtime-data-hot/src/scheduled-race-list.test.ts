@@ -292,6 +292,111 @@ it("listTodayRacesFromHyperdrive skips all NAR rows when venue HTML fetch throws
   expect(warnSpy).toHaveBeenCalled();
 });
 
+it("listTodayRacesFromHyperdrive writes a populate-nar-venue empty fetch_log when venue HTML returns zero race links", async () => {
+  const query = vi.fn().mockResolvedValue({
+    rows: [
+      {
+        hasso_jikoku: "1430",
+        kaisai_kai: null,
+        kaisai_nen: "2026",
+        kaisai_nichime: null,
+        kaisai_tsukihi: "0529",
+        keibajo_code: "30",
+        race_bango: "08",
+        source: "nar",
+      },
+    ],
+  });
+  vi.mocked(fetchRaceLinksFromRaceList).mockResolvedValue([]);
+  const logBind = vi.fn((..._args: unknown[]) => ({
+    run: vi.fn(async () => ({ meta: { changes: 1 } })),
+  }));
+  const logPrepare = vi.fn(() => ({ bind: logBind }));
+  const env = {
+    HYPERDRIVE: { connectionString: "postgres://test" },
+    ODDS_HOT_KV: buildKv(),
+    REALTIME_HOT_DB: { prepare: logPrepare } as unknown as D1Database,
+  } as unknown as Env;
+  await listTodayRacesFromHyperdrive(env, "20260529", { pool: { query } as never });
+  expect(logPrepare).toHaveBeenCalledWith(
+    "insert into fetch_logs (race_key, job_type, status, message, created_at) values (?, ?, ?, ?, ?)",
+  );
+  const args = logBind.mock.calls[0];
+  expect(args?.[0]).toBe("nar:20260529:30");
+  expect(args?.[1]).toBe("populate-nar-venue");
+  expect(args?.[2]).toBe("empty");
+});
+
+it("listTodayRacesFromHyperdrive writes a populate-nar-venue error fetch_log when venue HTML fetch throws", async () => {
+  const query = vi.fn().mockResolvedValue({
+    rows: [
+      {
+        hasso_jikoku: "1430",
+        kaisai_kai: null,
+        kaisai_nen: "2026",
+        kaisai_nichime: null,
+        kaisai_tsukihi: "0529",
+        keibajo_code: "30",
+        race_bango: "08",
+        source: "nar",
+      },
+    ],
+  });
+  vi.mocked(fetchRaceLinksFromRaceList).mockRejectedValue(new Error("network down"));
+  const logBind = vi.fn((..._args: unknown[]) => ({
+    run: vi.fn(async () => ({ meta: { changes: 1 } })),
+  }));
+  const logPrepare = vi.fn(() => ({ bind: logBind }));
+  vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const env = {
+    HYPERDRIVE: { connectionString: "postgres://test" },
+    ODDS_HOT_KV: buildKv(),
+    REALTIME_HOT_DB: { prepare: logPrepare } as unknown as D1Database,
+  } as unknown as Env;
+  await listTodayRacesFromHyperdrive(env, "20260529", { pool: { query } as never });
+  expect(logPrepare).toHaveBeenCalledWith(
+    "insert into fetch_logs (race_key, job_type, status, message, created_at) values (?, ?, ?, ?, ?)",
+  );
+  const args = logBind.mock.calls[0];
+  expect(args?.[0]).toBe("nar:20260529:30");
+  expect(args?.[1]).toBe("populate-nar-venue");
+  expect(args?.[2]).toBe("error");
+});
+
+it("listTodayRacesFromHyperdrive swallows logFetch failure during populate-nar-venue empty path", async () => {
+  const query = vi.fn().mockResolvedValue({
+    rows: [
+      {
+        hasso_jikoku: "1430",
+        kaisai_kai: null,
+        kaisai_nen: "2026",
+        kaisai_nichime: null,
+        kaisai_tsukihi: "0529",
+        keibajo_code: "30",
+        race_bango: "08",
+        source: "nar",
+      },
+    ],
+  });
+  vi.mocked(fetchRaceLinksFromRaceList).mockResolvedValue([]);
+  const failingRun = vi.fn(async () => {
+    throw new Error("D1 log insert failed");
+  });
+  const logBind = vi.fn(() => ({ run: failingRun }));
+  const logPrepare = vi.fn(() => ({ bind: logBind }));
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const env = {
+    HYPERDRIVE: { connectionString: "postgres://test" },
+    ODDS_HOT_KV: buildKv(),
+    REALTIME_HOT_DB: { prepare: logPrepare } as unknown as D1Database,
+  } as unknown as Env;
+  const rows = await listTodayRacesFromHyperdrive(env, "20260529", {
+    pool: { query } as never,
+  });
+  expect(rows).toStrictEqual([]);
+  expect(warnSpy).toHaveBeenCalled();
+});
+
 it("listTodayRacesFromHyperdrive uses injected resolveNarDebaUrl when provided", async () => {
   const query = vi.fn().mockResolvedValue({
     rows: [
