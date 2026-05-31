@@ -714,6 +714,87 @@ it("buildRunningStyleBucketFilter resolves a trimmed race name for gradeCode A",
   expect(filter.raceName).toBe("有馬記念");
 });
 
+it("buildRunningStyleBucketFilter strips trailing U+3000 padding from kyosomeiHondai", () => {
+  const filter = buildRunningStyleBucketFilter({
+    race: {
+      source: "jra",
+      keibajoCode: "05",
+      kyori: 2500,
+      kyosoShubetsuCode: "11",
+      kyosoJokenCode: null,
+      kyosoJokenMeisho: null,
+      trackCode: "10",
+      gradeCode: "A",
+      kyosomeiHondai: "有馬記念　　　　　　　　　　",
+    },
+    flags: {
+      keibajo: true,
+      distance: true,
+      kyosoShubetsu: true,
+      kyosoJoken: false,
+      condition: false,
+      track: true,
+      grade: false,
+      raceName: true,
+    },
+  });
+  expect(filter.raceName).toBe("有馬記念");
+});
+
+it("buildRunningStyleBucketFilter strips mixed U+3000 and ASCII whitespace padding around kyosomeiHondai", () => {
+  const filter = buildRunningStyleBucketFilter({
+    race: {
+      source: "nar",
+      keibajoCode: "30",
+      kyori: 2000,
+      kyosoShubetsuCode: "11",
+      kyosoJokenCode: null,
+      kyosoJokenMeisho: "G1",
+      trackCode: null,
+      gradeCode: "F",
+      kyosomeiHondai: " 　 東京大賞典 　 ",
+    },
+    flags: {
+      keibajo: true,
+      distance: true,
+      kyosoShubetsu: true,
+      kyosoJoken: false,
+      condition: false,
+      track: false,
+      grade: false,
+      raceName: true,
+    },
+  });
+  expect(filter.raceName).toBe("東京大賞典");
+});
+
+it("buildRunningStyleBucketFilter returns null raceName when kyosomeiHondai is only U+3000 padding", () => {
+  const filter = buildRunningStyleBucketFilter({
+    race: {
+      source: "jra",
+      keibajoCode: "05",
+      kyori: 2500,
+      kyosoShubetsuCode: "11",
+      kyosoJokenCode: null,
+      kyosoJokenMeisho: null,
+      trackCode: "10",
+      gradeCode: "A",
+      kyosomeiHondai: "　　　　　",
+    },
+    flags: {
+      keibajo: true,
+      distance: true,
+      kyosoShubetsu: true,
+      kyosoJoken: false,
+      condition: false,
+      track: true,
+      grade: false,
+      raceName: true,
+    },
+  });
+  expect(filter.raceName).toBe(null);
+});
+
 it("buildRunningStyleBucketFilter clears the race name when gradeCode is C", () => {
   const filter = buildRunningStyleBucketFilter({
     race: {

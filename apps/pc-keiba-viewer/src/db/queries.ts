@@ -6243,7 +6243,7 @@ export const getRunningStyleBucketEvaluation = cache(
               and (${enabled.condition ? sql`b.condition_key = ${filter.conditionKey}` : sql`true`})
               and (${enabled.track ? sql`b.track_code = ${filter.trackCode}` : sql`true`})
               and (${enabled.grade ? sql`b.grade_code = ${filter.gradeCode}` : sql`true`})
-              and (${enabled.raceName ? sql`b.race_name = ${filter.raceName}` : sql`true`})
+              and (${enabled.raceName ? sql`regexp_replace(b.race_name, '^[[:space:]　]+|[[:space:]　]+$', '', 'g') = ${filter.raceName}` : sql`true`})
           )
           select
             coalesce(sum(race_count), 0)::text as race_count,

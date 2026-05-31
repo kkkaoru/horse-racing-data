@@ -73,6 +73,7 @@ import { getRaceRunningStylesWithCache } from "../../../lib/running-style-cache.
 import {
   buildRunningStyleBucketFilter,
   getRunningStyleDimensionFlags,
+  type RaceRowForRunningStyleBucketFilter,
   type RunningStyleBucketFilter,
   type RunningStyleBucketMetrics,
   type RunningStyleDimensionFlags,
@@ -97,6 +98,14 @@ export interface RunningStyleBucketSectionPayload {
   bucketFilter: RunningStyleBucketFilter | null;
   dimensionFlags: RunningStyleDimensionFlags;
   type: "running-style";
+}
+
+export interface RunningStyleBucketSectionData {
+  bucketEvaluation: RunningStyleBucketMetrics | null;
+  bucketRace: RaceRowForRunningStyleBucketFilter | null;
+  bucketSource: "jra" | "nar" | null;
+  bucketGradeCode: string | null;
+  dimensionFlags: RunningStyleDimensionFlags | null;
 }
 
 export interface DetailSectionParams {
@@ -1031,6 +1040,56 @@ const parseKyoriOrZero = (value: string | null | undefined): number => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+const buildBucketRaceFromRaceDetail = (race: RaceDetail): RaceRowForRunningStyleBucketFilter => ({
+  gradeCode: race.gradeCode ?? null,
+  keibajoCode: race.keibajoCode,
+  kyori: parseKyoriOrZero(race.kyori),
+  kyosoJokenCode: race.kyosoJokenCode ?? null,
+  kyosoJokenMeisho: race.kyosoJokenMeisho ?? null,
+  kyosoShubetsuCode: race.kyosoShubetsuCode ?? "",
+  kyosomeiHondai: race.kyosomeiHondai ?? null,
+  source: race.source,
+  trackCode: race.trackCode ?? null,
+});
+
+const buildEmptyRunningStyleBucketSectionData = (): RunningStyleBucketSectionData => ({
+  bucketEvaluation: null,
+  bucketGradeCode: null,
+  bucketRace: null,
+  bucketSource: null,
+  dimensionFlags: null,
+});
+
+export const getRunningStyleBucketSectionData = async (
+  params: DetailSectionParams,
+): Promise<RunningStyleBucketSectionData> => {
+  const { day, keibajoCode, month, query, raceNumber, raceSource, year } = params;
+  const race = await getRaceDetail(raceSource, year, month, day, keibajoCode, raceNumber);
+  if (!race) {
+    return buildEmptyRunningStyleBucketSectionData();
+  }
+  const isBanEi = race.source === "nar" && isBanEiKeibajoCode(race.keibajoCode);
+  if (isBanEi) {
+    return buildEmptyRunningStyleBucketSectionData();
+  }
+  const flags = getRunningStyleDimensionFlags({
+    gradeCode: race.gradeCode ?? null,
+    isBanEi,
+    query,
+    source: race.source,
+  });
+  const bucketRace = buildBucketRaceFromRaceDetail(race);
+  const bucketFilter = buildRunningStyleBucketFilter({ flags, race: bucketRace });
+  const bucketEvaluation = await getRunningStyleBucketEvaluation({ filter: bucketFilter });
+  return {
+    bucketEvaluation,
+    bucketGradeCode: race.gradeCode ?? null,
+    bucketRace,
+    bucketSource: race.source,
+    dimensionFlags: flags,
+  };
+};
+
 const buildRunningStyleBucketSectionPayload = async (
   params: DetailSectionParams,
 ): Promise<RunningStyleBucketSectionPayload> => {
@@ -1051,17 +1110,7 @@ const buildRunningStyleBucketSectionPayload = async (
   });
   const bucketFilter = buildRunningStyleBucketFilter({
     flags,
-    race: {
-      gradeCode: race.gradeCode ?? null,
-      keibajoCode: race.keibajoCode,
-      kyori: parseKyoriOrZero(race.kyori),
-      kyosoJokenCode: race.kyosoJokenCode ?? null,
-      kyosoJokenMeisho: race.kyosoJokenMeisho ?? null,
-      kyosoShubetsuCode: race.kyosoShubetsuCode ?? "",
-      kyosomeiHondai: race.kyosomeiHondai ?? null,
-      source: race.source,
-      trackCode: race.trackCode ?? null,
-    },
+    race: buildBucketRaceFromRaceDetail(race),
   });
   const bucketEvaluation = await getRunningStyleBucketEvaluation({ filter: bucketFilter });
   return {

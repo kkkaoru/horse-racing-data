@@ -442,6 +442,11 @@ const resolveConditionKey = (race: RaceRowForRunningStyleBucketFilter): string |
   return trimmed === "" ? null : trimmed;
 };
 
+// Strip leading/trailing whitespace AND U+3000 (ideographic space).
+// Required because PG persists `race_name` as char(30) padded with U+3000
+// (e.g. "有馬記念" + U+3000 x 26), which JS String.prototype.trim does not remove.
+const RACE_NAME_OUTER_WHITESPACE_PATTERN = /^[\s　]+|[\s　]+$/gu;
+
 const resolveRaceName = (race: RaceRowForRunningStyleBucketFilter): string | null => {
   if (!isRaceNameEligible(race.gradeCode)) {
     return null;
@@ -450,7 +455,7 @@ const resolveRaceName = (race: RaceRowForRunningStyleBucketFilter): string | nul
   if (hondai === null) {
     return null;
   }
-  const trimmed = hondai.trim();
+  const trimmed = hondai.replace(RACE_NAME_OUTER_WHITESPACE_PATTERN, "");
   return trimmed === "" ? null : trimmed;
 };
 
