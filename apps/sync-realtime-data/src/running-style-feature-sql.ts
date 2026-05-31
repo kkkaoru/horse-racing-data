@@ -953,9 +953,35 @@ target as (
 `;
 };
 
+// CTE names that should be materialized (forced to physically materialize, not
+// inline) when generating the batch SQL. Heavy joins / multi-referenced CTEs
+// benefit because PG inlines small CTEs by default which causes repeated
+// evaluation against the same 10-year window. MATERIALIZED forces the planner
+// to compute once and reuse, simplifying the plan tree dramatically for batch
+// runs that already process millions of rows. Per-race SQL keeps the default
+// (inlineable) since the planner has small enough inputs to optimize freely.
+const BATCH_MATERIALIZED_CTES: ReadonlyArray<string> = [
+  "rec",
+  "target",
+  "target_horses",
+  "se_lookup",
+  "ra_lookup",
+  "horse_history_base",
+  "jockey_history",
+  "trainer_history",
+  "pedigree_rec_um",
+  "target_months",
+];
+
+const applyBatchMaterializedHints = (sql: string): string =>
+  BATCH_MATERIALIZED_CTES.reduce(
+    (acc, cteName) => acc.replace(`${cteName} as (`, `${cteName} as materialized (`),
+    sql,
+  );
+
 export const buildRunningStyleBatchFeatureSql = (
   args: BuildRunningStyleBatchFeatureSqlArgs,
-): string => buildBatchCoreCtesSql(args) + buildSharedFeatureCtesSql();
+): string => applyBatchMaterializedHints(buildBatchCoreCtesSql(args) + buildSharedFeatureCtesSql());
 
 const toStringOrNull = (value: unknown): string | null => {
   if (value === null || value === undefined) return null;
