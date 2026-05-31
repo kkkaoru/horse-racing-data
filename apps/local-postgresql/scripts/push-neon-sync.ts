@@ -14,24 +14,31 @@ import {
   buildNeonApplySql,
   buildTableProfileSql,
   buildTimestampFingerprintSql,
+  computeBackoffDelayMs,
+  decideVerifyMismatchAction,
+  isVerifyMismatchSkipError,
   parseDependencyEdges,
   parseFingerprintLine,
   parseTableMetadata,
   parseTableProfiles,
   pkExpression,
   quoteIdentifier,
-  resolveNonNegativeSecondsEnv,
   resolvePositiveIntegerEnv,
+  resolveRetryBackoffConfig,
+  resolveVerifyMismatchPolicy,
   runPushSync,
   runWithRetry,
   buildNeonPsqlArgs,
   shouldRefreshInclusiveIncrementalMarker,
   timestampKeyExpression,
+  VerifyMismatchSkipError,
   type ProgressEvent,
   type PushSyncConfig,
+  type RetryBackoffConfig,
   type TableMetadata,
   type TableProfile,
   type DependencyEdge,
+  type VerifyMismatchPolicy,
 } from "../src/replica-push/core";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -47,8 +54,6 @@ const DEFAULT_OPERATION_TIMEOUT_SECONDS = 600;
 const OPERATION_TIMEOUT_ENV_KEY = "REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS";
 const DEFAULT_MAX_ATTEMPTS = 5;
 const MAX_ATTEMPTS_ENV_KEY = "REPLICA_SYNC_MAX_ATTEMPTS";
-const DEFAULT_RETRY_DELAY_SECONDS = 5;
-const RETRY_DELAY_ENV_KEY = "REPLICA_SYNC_RETRY_DELAY_SECONDS";
 
 type CommandResult = {
   stdout: string;
@@ -233,8 +238,8 @@ function resolveMaxAttempts(
   return resolvePositiveIntegerEnv(override, env[MAX_ATTEMPTS_ENV_KEY], DEFAULT_MAX_ATTEMPTS);
 }
 
-function resolveRetryDelayMs(env: Record<string, string | undefined>): number {
-  return resolveNonNegativeSecondsEnv(env[RETRY_DELAY_ENV_KEY], DEFAULT_RETRY_DELAY_SECONDS);
+function sleepMs(milliseconds: number): Promise<void> {
+  return new Promise<void>((resolveSleep) => setTimeout(resolveSleep, milliseconds));
 }
 
 function killProcessGroup(child: ChildProcess): void {
@@ -447,11 +452,31 @@ Environment:
                                   spawning a disposable one per query, which avoids the docker
                                   run --rm cleanup hangs that accumulate zombie containers on
                                   Colima. Default: horse-racing-local-postgresql.
-  REPLICA_SYNC_MAX_ATTEMPTS       Max whole-sync attempts. After a per-operation timeout kills
-                                  the run, the script restarts from scratch — incremental sync
-                                  picks up unsynced tables, so retries make progress. Default: 5.
+  REPLICA_SYNC_MAX_ATTEMPTS       Max per-table COPY attempts before giving up on a single
+                                  table. Retries are scoped to the failing COPY only — the
+                                  whole script is no longer respawned on transient TLS errors.
+                                  Default: 5.
+  REPLICA_SYNC_RETRY_BASE_DELAY_SECONDS
+                                  Base delay for exponential backoff (delay grows as
+                                  base * 2^(attempt-1) + jitter). Default: 5.
+  REPLICA_SYNC_RETRY_MAX_DELAY_SECONDS
+                                  Maximum backoff cap in seconds. Default: 60.
   REPLICA_SYNC_RETRY_DELAY_SECONDS
-                                  Delay between attempts. Default: 5.
+                                  Legacy alias: if set and the base-delay variable is unset,
+                                  this is used as the backoff base. Default: 5.
+  REPLICA_VERIFY_MISMATCH_THRESHOLD_ROWS
+                                  When incremental verify shows the Neon row count differs
+                                  from local by AT MOST this many rows AND the table is large
+                                  (see large-table threshold), the table is SKIPPED instead of
+                                  falling back to full-replace. Default: 10.
+  REPLICA_VERIFY_MISMATCH_LARGE_TABLE_ROWS
+                                  Row-count cutoff above which a small verify mismatch causes
+                                  a skip. Tables smaller than this still fall back to
+                                  full-replace as before. Default: 100000.
+  REPLICA_VERIFY_MISMATCH_FORCE_FULL_REPLACE
+                                  Set to true to restore the legacy behavior of always
+                                  falling back to full-replace on any verify mismatch.
+                                  Default: false.
 
 Options:
   --verbose, -v                    Use the legacy multi-line progress format.
@@ -587,25 +612,53 @@ async function loadFingerprint(
   return parseFingerprintLine(result.stdout);
 }
 
-async function syncTableWithPsql(
-  env: Record<string, string | undefined>,
-  table: TableMetadata,
-  deleteMissingRows: boolean,
-  applyMode: "replace" | "upsert",
-  profile: TableProfile | undefined,
-): Promise<void> {
-  if (profile && profile.strategy !== "full-replace") {
-    await syncTableIncrementally(env, table, profile);
-    return;
-  }
-  await syncTableFullReplace(env, table, deleteMissingRows, applyMode);
+interface SyncTableOptions {
+  env: Record<string, string | undefined>;
+  table: TableMetadata;
+  deleteMissingRows: boolean;
+  applyMode: "replace" | "upsert";
+  profile: TableProfile | undefined;
+  retry: {
+    maxAttempts: number;
+    backoff: RetryBackoffConfig;
+  };
+  verifyMismatchPolicy: VerifyMismatchPolicy;
 }
 
-async function syncTableIncrementally(
-  env: Record<string, string | undefined>,
-  table: TableMetadata,
-  profile: TableProfile,
-): Promise<void> {
+async function syncTableWithPsql(options: SyncTableOptions): Promise<void> {
+  const useIncremental = options.profile && options.profile.strategy !== "full-replace";
+  if (useIncremental && options.profile) {
+    await syncTableIncrementally({
+      env: options.env,
+      table: options.table,
+      profile: options.profile,
+      retry: options.retry,
+      verifyMismatchPolicy: options.verifyMismatchPolicy,
+    });
+    return;
+  }
+  await syncTableFullReplace({
+    env: options.env,
+    table: options.table,
+    deleteMissingRows: options.deleteMissingRows,
+    applyMode: options.applyMode,
+    retry: options.retry,
+  });
+}
+
+interface SyncTableIncrementallyOptions {
+  env: Record<string, string | undefined>;
+  table: TableMetadata;
+  profile: TableProfile;
+  retry: {
+    maxAttempts: number;
+    backoff: RetryBackoffConfig;
+  };
+  verifyMismatchPolicy: VerifyMismatchPolicy;
+}
+
+async function syncTableIncrementally(options: SyncTableIncrementallyOptions): Promise<void> {
+  const { env, table, profile, retry, verifyMismatchPolicy } = options;
   const tsColumn = profile.strategy === "timestamp-incremental" ? profile.timestampColumn : null;
   const [localFp, neonFp] = await Promise.all([
     loadFingerprint(env, table, "local", tsColumn),
@@ -636,32 +689,97 @@ async function syncTableIncrementally(
     comparator: incrementalComparatorForTimestampColumn(tsColumn),
   });
 
-  await runCommand("docker", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]), incSql.preCopySql);
-  try {
-    await runCopyPipeline(env, localCopySql, incSql.copySql).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`Failed to incremental-copy ${table.tableName}\n${message}`);
-    });
-    await runCommand(
-      "docker",
-      neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]),
-      incSql.postCopySql,
-    );
-  } catch (error) {
-    await runCommand("docker", neonPsqlArgs(env, ["-q"]), incSql.cleanupSql).catch(() => undefined);
-    throw error;
-  }
+  await runIncrementalCopyWithRetry({ env, table, incSql, localCopySql, retry });
 
   const verifyFp = await loadFingerprint(env, table, "neon", tsColumn);
   if (verifyFp.count !== localFp.count) {
-    writeLine(
-      `[${formatNow()}] ⚠ ${table.tableName}: incremental verify mismatch (local=${localFp.count}, neon=${verifyFp.count}) — falling back to full-replace`,
-    );
-    await syncTableFullReplace(env, table, true, "upsert");
+    const action = decideVerifyMismatchAction({
+      tableName: table.tableName,
+      localCount: localFp.count,
+      neonCount: verifyFp.count,
+      rowCount: profile.rowCount,
+      policy: verifyMismatchPolicy,
+    });
+    if (action.kind === "skip") {
+      writeLine(`[${formatNow()}] ❌ ${action.message}`);
+      throw new VerifyMismatchSkipError({
+        tableName: table.tableName,
+        localCount: localFp.count,
+        neonCount: verifyFp.count,
+        rowCount: profile.rowCount,
+        message: action.message,
+      });
+    }
+    writeLine(`[${formatNow()}] ⚠ ${action.message}`);
+    await syncTableFullReplace({
+      env,
+      table,
+      deleteMissingRows: true,
+      applyMode: "upsert",
+      retry,
+    });
     return;
   }
   writeLine(
     `[${formatNow()}] ✚ ${table.tableName}: ${profile.strategy} synced (count ${neonFp.count} → ${verifyFp.count}, marker=${truncateMarker(localFp.marker)})`,
+  );
+}
+
+interface RunIncrementalCopyWithRetryOptions {
+  env: Record<string, string | undefined>;
+  table: TableMetadata;
+  incSql: ReturnType<typeof buildIncrementalApplySql>;
+  localCopySql: string;
+  retry: {
+    maxAttempts: number;
+    backoff: RetryBackoffConfig;
+  };
+}
+
+async function runIncrementalCopyWithRetry(
+  options: RunIncrementalCopyWithRetryOptions,
+): Promise<void> {
+  const { env, table, incSql, localCopySql, retry } = options;
+  await runWithRetry(
+    async () => {
+      await runCommand(
+        "docker",
+        neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]),
+        incSql.preCopySql,
+      );
+      try {
+        await runCopyPipeline(env, localCopySql, incSql.copySql).catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(`Failed to incremental-copy ${table.tableName}\n${message}`);
+        });
+        await runCommand(
+          "docker",
+          neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]),
+          incSql.postCopySql,
+        );
+      } catch (error) {
+        await runCommand("docker", neonPsqlArgs(env, ["-q"]), incSql.cleanupSql).catch(
+          () => undefined,
+        );
+        throw error;
+      }
+    },
+    {
+      maxAttempts: retry.maxAttempts,
+      retryDelayMs: retry.backoff.baseMs,
+      sleep: sleepMs,
+      computeDelayMs: (attempt) => computeBackoffDelayMs(attempt, retry.backoff),
+      onAttemptFailed: (info) => {
+        writeLine(
+          `[${formatNow()}] ↺ ${table.tableName}: copy attempt ${info.attempt}/${info.maxAttempts} failed: ${describeError(info.error)} — retry in ${(info.retryDelayMs / 1000).toFixed(1)}s (backoff attempt ${info.attempt})`,
+        );
+      },
+      onRetrySucceeded: (info) => {
+        writeLine(
+          `[${formatNow()}] ↻ ${table.tableName}: copy retry succeeded on attempt ${info.attempt}/${info.maxAttempts}`,
+        );
+      },
+    },
   );
 }
 
@@ -670,12 +788,19 @@ function truncateMarker(marker: string): string {
   return `${marker.slice(0, 37)}...`;
 }
 
-async function syncTableFullReplace(
-  env: Record<string, string | undefined>,
-  table: TableMetadata,
-  deleteMissingRows: boolean,
-  applyMode: "replace" | "upsert",
-): Promise<void> {
+interface SyncTableFullReplaceOptions {
+  env: Record<string, string | undefined>;
+  table: TableMetadata;
+  deleteMissingRows: boolean;
+  applyMode: "replace" | "upsert";
+  retry: {
+    maxAttempts: number;
+    backoff: RetryBackoffConfig;
+  };
+}
+
+async function syncTableFullReplace(options: SyncTableFullReplaceOptions): Promise<void> {
+  const { env, table, deleteMissingRows, applyMode, retry } = options;
   const quotedTable = quoteIdentifier(table.tableName);
   const stageTableName = `replica_sync_stage_${process.pid}_${table.tableName.replaceAll(/[^A-Za-z0-9_]/g, "_")}`;
   const neonSql = buildNeonApplySql(table, deleteMissingRows, stageTableName, false, applyMode);
@@ -686,6 +811,34 @@ async function syncTableFullReplace(
     return;
   }
 
+  await runWithRetry(() => runFullReplaceOnce({ env, table, quotedTable, neonSql, batchRows }), {
+    maxAttempts: retry.maxAttempts,
+    retryDelayMs: retry.backoff.baseMs,
+    sleep: sleepMs,
+    computeDelayMs: (attempt) => computeBackoffDelayMs(attempt, retry.backoff),
+    onAttemptFailed: (info) => {
+      writeLine(
+        `[${formatNow()}] ↺ ${table.tableName}: copy attempt ${info.attempt}/${info.maxAttempts} failed: ${describeError(info.error)} — retry in ${(info.retryDelayMs / 1000).toFixed(1)}s (backoff attempt ${info.attempt})`,
+      );
+    },
+    onRetrySucceeded: (info) => {
+      writeLine(
+        `[${formatNow()}] ↻ ${table.tableName}: copy retry succeeded on attempt ${info.attempt}/${info.maxAttempts}`,
+      );
+    },
+  });
+}
+
+interface RunFullReplaceOnceOptions {
+  env: Record<string, string | undefined>;
+  table: TableMetadata;
+  quotedTable: string;
+  neonSql: ReturnType<typeof buildNeonApplySql>;
+  batchRows: number | undefined;
+}
+
+async function runFullReplaceOnce(options: RunFullReplaceOnceOptions): Promise<void> {
+  const { env, table, quotedTable, neonSql, batchRows } = options;
   await runCommand(
     "docker",
     neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]),
@@ -936,7 +1089,7 @@ async function main(): Promise<void> {
     writeLine(`[${formatNow()}] log file: ${logPath}`);
   }
   try {
-    await runSyncWithRetry(cliOptions);
+    await runSync(cliOptions);
   } finally {
     closeLogFile();
   }
@@ -944,31 +1097,6 @@ async function main(): Promise<void> {
 
 function describeError(error: unknown): string {
   return redactSecrets(error instanceof Error ? error.message : String(error));
-}
-
-async function runSyncWithRetry(cliOptions: CliOptions): Promise<void> {
-  const env = loadEnvironment();
-  const maxAttempts = resolveMaxAttempts(cliOptions.maxAttempts, env);
-  const retryDelayMs = resolveRetryDelayMs(env);
-  await runWithRetry(() => runSync(cliOptions), {
-    maxAttempts,
-    retryDelayMs,
-    sleep: (milliseconds) =>
-      new Promise<void>((resolveSleep) => setTimeout(resolveSleep, milliseconds)),
-    onAttemptFailed: (info) => {
-      writeLine(
-        `[${formatNow()}] attempt ${info.attempt}/${info.maxAttempts} failed: ${describeError(info.error)} — retrying in ${Math.round(info.retryDelayMs / 1000)}s`,
-      );
-    },
-    onGaveUp: (info) => {
-      writeLine(
-        `[${formatNow()}] attempt ${info.attempt}/${info.maxAttempts} failed: ${describeError(info.error)} — giving up`,
-      );
-    },
-    onRetrySucceeded: (info) => {
-      writeLine(`[${formatNow()}] retry succeeded on attempt ${info.attempt}/${info.maxAttempts}`);
-    },
-  });
 }
 
 async function runSync(cliOptions: CliOptions): Promise<void> {
@@ -988,27 +1116,72 @@ async function runSync(cliOptions: CliOptions): Promise<void> {
   const profileMap = await loadTableProfileMap(env, config);
   logStrategySummary(profileMap, tables);
 
+  const maxAttempts = resolveMaxAttempts(cliOptions.maxAttempts, env);
+  const backoff = resolveRetryBackoffConfig(env);
+  const verifyMismatchPolicy = resolveVerifyMismatchPolicy(env);
+  const skippedTables: VerifyMismatchSkipError[] = [];
+
   await runPushSync(
     tables,
     config,
     {
       nowSeconds: () => Math.floor(Date.now() / 1000),
-      sleep: (milliseconds) =>
-        new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds)),
+      sleep: sleepMs,
       checkNeonReady: () => checkNeonReady(env),
       syncTable: (table) =>
-        syncTableWithPsql(
+        syncTableWithSkipTracking({
           env,
           table,
-          config.deleteMissingRows,
-          config.applyMode,
-          profileMap.get(table.tableName),
-        ),
+          deleteMissingRows: config.deleteMissingRows,
+          applyMode: config.applyMode,
+          profile: profileMap.get(table.tableName),
+          retry: { maxAttempts, backoff },
+          verifyMismatchPolicy,
+          skippedTables,
+        }),
       report: reportProgress,
     },
     dependencyEdges,
   );
   await syncAnalyticsIndexes(env);
+  reportSkippedTables(skippedTables);
+}
+
+interface SyncTableWithSkipTrackingOptions extends SyncTableOptions {
+  skippedTables: VerifyMismatchSkipError[];
+}
+
+async function syncTableWithSkipTracking(options: SyncTableWithSkipTrackingOptions): Promise<void> {
+  try {
+    await syncTableWithPsql({
+      env: options.env,
+      table: options.table,
+      deleteMissingRows: options.deleteMissingRows,
+      applyMode: options.applyMode,
+      profile: options.profile,
+      retry: options.retry,
+      verifyMismatchPolicy: options.verifyMismatchPolicy,
+    });
+  } catch (error) {
+    if (isVerifyMismatchSkipError(error)) {
+      options.skippedTables.push(error);
+      return;
+    }
+    throw error;
+  }
+}
+
+function reportSkippedTables(skipped: VerifyMismatchSkipError[]): void {
+  if (skipped.length === 0) return;
+  writeLine(
+    `[${formatNow()}] ⚠ Skipped ${skipped.length} table(s) due to verify mismatch; manual reconcile required:`,
+  );
+  for (const skip of skipped) {
+    writeLine(
+      `[${formatNow()}]   - ${skip.tableName} (local=${skip.localCount}, neon=${skip.neonCount}, rowCount=${skip.rowCount})`,
+    );
+  }
+  process.exitCode = 1;
 }
 
 function logStrategySummary(profileMap: Map<string, TableProfile>, tables: TableMetadata[]): void {

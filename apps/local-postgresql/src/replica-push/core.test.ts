@@ -12,7 +12,10 @@ import {
   buildTableProfileSql,
   buildTimestampFingerprintSql,
   calculateEtaSeconds,
+  computeBackoffDelayMs,
+  decideVerifyMismatchAction,
   incrementalComparatorForTimestampColumn,
+  isVerifyMismatchSkipError,
   parseConcurrency,
   parseApplyMode,
   parseDependencyEdges,
@@ -29,20 +32,25 @@ import {
   resolveConcurrency,
   resolveNonNegativeSecondsEnv,
   resolvePositiveIntegerEnv,
+  resolveRetryBackoffConfig,
   resolveStrategy,
+  resolveVerifyMismatchPolicy,
   runPushSync,
   runWithRetry,
   buildNeonPsqlArgs,
   DEFAULT_NEON_PSQL_CONTAINER,
   shouldRefreshInclusiveIncrementalMarker,
   timestampKeyExpression,
+  VerifyMismatchSkipError,
   waitForNeonReady,
   type ProgressEvent,
+  type RetryBackoffConfig,
   type RetryFailureInfo,
   type RetryGaveUpInfo,
   type RetryAttemptInfo,
   type SyncStrategyThresholds,
   type TableMetadata,
+  type VerifyMismatchPolicy,
 } from "./core";
 
 const defaultThresholds: SyncStrategyThresholds = {
@@ -1156,5 +1164,598 @@ describe("runWithRetry", () => {
     ).rejects.toBe("string failure");
     expect(gaveUpCalls).toStrictEqual([{ attempt: 1, maxAttempts: 1, error: "string failure" }]);
     expect(sleepCalls).toStrictEqual([]);
+  });
+
+  it("uses computeDelayMs to derive per-attempt delay and reports it in failure info", async () => {
+    const failedCalls: RetryFailureInfo[] = [];
+    const sleepCalls: number[] = [];
+    const computedAttempts: number[] = [];
+    let attempts = 0;
+    const result = await runWithRetry(
+      async () => {
+        attempts += 1;
+        if (attempts < 3) throw new Error("flaky");
+        return "ok";
+      },
+      {
+        maxAttempts: 5,
+        retryDelayMs: 999,
+        sleep: async (milliseconds) => {
+          sleepCalls.push(milliseconds);
+        },
+        computeDelayMs: (attempt) => {
+          computedAttempts.push(attempt);
+          return attempt * 100;
+        },
+        onAttemptFailed: (info) => failedCalls.push(info),
+      },
+    );
+    expect(result).toBe("ok");
+    expect(attempts).toBe(3);
+    expect(computedAttempts).toStrictEqual([1, 2]);
+    expect(sleepCalls).toStrictEqual([100, 200]);
+    expect(failedCalls.map((info) => info.retryDelayMs)).toStrictEqual([100, 200]);
+  });
+
+  it("succeeds on the final allowed attempt and reports retry succeeded with that attempt number", async () => {
+    const succeededCalls: RetryAttemptInfo[] = [];
+    const failedCalls: RetryFailureInfo[] = [];
+    const gaveUpCalls: RetryGaveUpInfo[] = [];
+    const sleepCalls: number[] = [];
+    let attempts = 0;
+    const result = await runWithRetry(
+      async () => {
+        attempts += 1;
+        if (attempts < 4) throw new Error("flaky");
+        return "final-ok";
+      },
+      {
+        maxAttempts: 4,
+        retryDelayMs: 10,
+        sleep: async (milliseconds) => {
+          sleepCalls.push(milliseconds);
+        },
+        onAttemptFailed: (info) => failedCalls.push(info),
+        onGaveUp: (info) => gaveUpCalls.push(info),
+        onRetrySucceeded: (info) => succeededCalls.push(info),
+      },
+    );
+    expect(result).toBe("final-ok");
+    expect(attempts).toBe(4);
+    expect(succeededCalls).toStrictEqual([{ attempt: 4, maxAttempts: 4 }]);
+    expect(failedCalls.map((info) => info.attempt)).toStrictEqual([1, 2, 3]);
+    expect(gaveUpCalls).toStrictEqual([]);
+    expect(sleepCalls).toStrictEqual([10, 10, 10]);
+  });
+
+  it("supports many retries beyond stack-friendly counts via async recursion", async () => {
+    const sleepCalls: number[] = [];
+    let attempts = 0;
+    const result = await runWithRetry(
+      async () => {
+        attempts += 1;
+        if (attempts < 25) throw new Error("noisy");
+        return attempts;
+      },
+      {
+        maxAttempts: 30,
+        retryDelayMs: 1,
+        sleep: async (milliseconds) => {
+          sleepCalls.push(milliseconds);
+        },
+      },
+    );
+    expect(result).toBe(25);
+    expect(sleepCalls).toHaveLength(24);
+  });
+});
+
+describe("computeBackoffDelayMs", () => {
+  const baseConfig: RetryBackoffConfig = {
+    baseMs: 5000,
+    maxMs: 60_000,
+    jitterMs: 0,
+  };
+
+  it("returns the base delay on the first attempt without jitter", () => {
+    expect(computeBackoffDelayMs(1, baseConfig)).toBe(5000);
+  });
+
+  it("doubles the delay exponentially on later attempts", () => {
+    expect(computeBackoffDelayMs(2, baseConfig)).toBe(10_000);
+    expect(computeBackoffDelayMs(3, baseConfig)).toBe(20_000);
+    expect(computeBackoffDelayMs(4, baseConfig)).toBe(40_000);
+  });
+
+  it("caps the delay at maxMs", () => {
+    expect(computeBackoffDelayMs(10, baseConfig)).toBe(60_000);
+  });
+
+  it("normalizes attempt values below 1 to a single base delay", () => {
+    expect(computeBackoffDelayMs(0, baseConfig)).toBe(5000);
+    expect(computeBackoffDelayMs(-3, baseConfig)).toBe(5000);
+  });
+
+  it("floors fractional attempt values before computing the exponent", () => {
+    expect(computeBackoffDelayMs(2.9, baseConfig)).toBe(10_000);
+  });
+
+  it("adds deterministic jitter when a custom random source is supplied", () => {
+    expect(
+      computeBackoffDelayMs(1, {
+        baseMs: 1000,
+        maxMs: 60_000,
+        jitterMs: 1000,
+        random: () => 0.25,
+      }),
+    ).toBe(1250);
+  });
+
+  it("ignores jitter when jitterMs is zero", () => {
+    expect(
+      computeBackoffDelayMs(1, {
+        baseMs: 2000,
+        maxMs: 60_000,
+        jitterMs: 0,
+        random: () => 0.999,
+      }),
+    ).toBe(2000);
+  });
+
+  it("uses Math.random by default when no random source is supplied", () => {
+    const value = computeBackoffDelayMs(1, {
+      baseMs: 1000,
+      maxMs: 60_000,
+      jitterMs: 500,
+    });
+    expect(value).toBeGreaterThanOrEqual(1000);
+    expect(value).toBeLessThanOrEqual(1500);
+  });
+
+  it("clamps jitter overflow at maxMs", () => {
+    expect(
+      computeBackoffDelayMs(1, {
+        baseMs: 4000,
+        maxMs: 4200,
+        jitterMs: 1000,
+        random: () => 0.9,
+      }),
+    ).toBe(4200);
+  });
+
+  it("returns zero when base is zero and jitter is zero", () => {
+    expect(
+      computeBackoffDelayMs(5, {
+        baseMs: 0,
+        maxMs: 60_000,
+        jitterMs: 0,
+      }),
+    ).toBe(0);
+  });
+
+  it("treats negative jitterMs as no jitter", () => {
+    expect(
+      computeBackoffDelayMs(1, {
+        baseMs: 1000,
+        maxMs: 60_000,
+        jitterMs: -500,
+        random: () => 0.5,
+      }),
+    ).toBe(1000);
+  });
+});
+
+describe("resolveRetryBackoffConfig", () => {
+  it("returns documented defaults when no env vars are set", () => {
+    expect(resolveRetryBackoffConfig({})).toStrictEqual({
+      baseMs: 5000,
+      maxMs: 60_000,
+      jitterMs: 1000,
+    });
+  });
+
+  it("reads the explicit base and max env vars", () => {
+    expect(
+      resolveRetryBackoffConfig({
+        REPLICA_SYNC_RETRY_BASE_DELAY_SECONDS: "3",
+        REPLICA_SYNC_RETRY_MAX_DELAY_SECONDS: "30",
+      }),
+    ).toStrictEqual({
+      baseMs: 3000,
+      maxMs: 30_000,
+      jitterMs: 1000,
+    });
+  });
+
+  it("falls back to the legacy REPLICA_SYNC_RETRY_DELAY_SECONDS when base is unset", () => {
+    expect(
+      resolveRetryBackoffConfig({
+        REPLICA_SYNC_RETRY_DELAY_SECONDS: "7",
+      }),
+    ).toStrictEqual({
+      baseMs: 7000,
+      maxMs: 60_000,
+      jitterMs: 1000,
+    });
+  });
+
+  it("prefers the explicit base over the legacy delay env when both are set", () => {
+    expect(
+      resolveRetryBackoffConfig({
+        REPLICA_SYNC_RETRY_BASE_DELAY_SECONDS: "2",
+        REPLICA_SYNC_RETRY_DELAY_SECONDS: "11",
+      }),
+    ).toStrictEqual({
+      baseMs: 2000,
+      maxMs: 60_000,
+      jitterMs: 1000,
+    });
+  });
+
+  it("ignores empty env strings and uses defaults", () => {
+    expect(
+      resolveRetryBackoffConfig({
+        REPLICA_SYNC_RETRY_BASE_DELAY_SECONDS: "",
+        REPLICA_SYNC_RETRY_MAX_DELAY_SECONDS: "",
+        REPLICA_SYNC_RETRY_DELAY_SECONDS: "",
+      }),
+    ).toStrictEqual({
+      baseMs: 5000,
+      maxMs: 60_000,
+      jitterMs: 1000,
+    });
+  });
+
+  it("ignores negative or non-numeric values and uses defaults", () => {
+    expect(
+      resolveRetryBackoffConfig({
+        REPLICA_SYNC_RETRY_BASE_DELAY_SECONDS: "-1",
+        REPLICA_SYNC_RETRY_MAX_DELAY_SECONDS: "abc",
+      }),
+    ).toStrictEqual({
+      baseMs: 5000,
+      maxMs: 60_000,
+      jitterMs: 1000,
+    });
+  });
+
+  it("clamps the configured max so it is never less than base", () => {
+    expect(
+      resolveRetryBackoffConfig({
+        REPLICA_SYNC_RETRY_BASE_DELAY_SECONDS: "30",
+        REPLICA_SYNC_RETRY_MAX_DELAY_SECONDS: "5",
+      }),
+    ).toStrictEqual({
+      baseMs: 30_000,
+      maxMs: 30_000,
+      jitterMs: 1000,
+    });
+  });
+
+  it("accepts zero as an explicit base seconds value", () => {
+    expect(
+      resolveRetryBackoffConfig({
+        REPLICA_SYNC_RETRY_BASE_DELAY_SECONDS: "0",
+        REPLICA_SYNC_RETRY_MAX_DELAY_SECONDS: "10",
+      }),
+    ).toStrictEqual({
+      baseMs: 0,
+      maxMs: 10_000,
+      jitterMs: 1000,
+    });
+  });
+
+  it("accepts zero seconds for both base and max", () => {
+    expect(
+      resolveRetryBackoffConfig({
+        REPLICA_SYNC_RETRY_BASE_DELAY_SECONDS: "0",
+        REPLICA_SYNC_RETRY_MAX_DELAY_SECONDS: "0",
+      }),
+    ).toStrictEqual({
+      baseMs: 0,
+      maxMs: 0,
+      jitterMs: 1000,
+    });
+  });
+
+  it("supports fractional seconds for both base and max", () => {
+    expect(
+      resolveRetryBackoffConfig({
+        REPLICA_SYNC_RETRY_BASE_DELAY_SECONDS: "0.5",
+        REPLICA_SYNC_RETRY_MAX_DELAY_SECONDS: "1.5",
+      }),
+    ).toStrictEqual({
+      baseMs: 500,
+      maxMs: 1500,
+      jitterMs: 1000,
+    });
+  });
+
+  it("ignores the legacy delay env when it is negative and falls back to default base", () => {
+    expect(
+      resolveRetryBackoffConfig({
+        REPLICA_SYNC_RETRY_DELAY_SECONDS: "-2",
+      }),
+    ).toStrictEqual({
+      baseMs: 5000,
+      maxMs: 60_000,
+      jitterMs: 1000,
+    });
+  });
+});
+
+describe("resolveVerifyMismatchPolicy", () => {
+  it("returns documented defaults when no env vars are set", () => {
+    expect(resolveVerifyMismatchPolicy({})).toStrictEqual({
+      thresholdRows: 10,
+      largeTableRows: 100_000,
+      forceFullReplace: false,
+    });
+  });
+
+  it("reads valid threshold env vars", () => {
+    expect(
+      resolveVerifyMismatchPolicy({
+        REPLICA_VERIFY_MISMATCH_THRESHOLD_ROWS: "25",
+        REPLICA_VERIFY_MISMATCH_LARGE_TABLE_ROWS: "500000",
+        REPLICA_VERIFY_MISMATCH_FORCE_FULL_REPLACE: "true",
+      }),
+    ).toStrictEqual({
+      thresholdRows: 25,
+      largeTableRows: 500_000,
+      forceFullReplace: true,
+    });
+  });
+
+  it("falls back to defaults for empty env strings", () => {
+    expect(
+      resolveVerifyMismatchPolicy({
+        REPLICA_VERIFY_MISMATCH_THRESHOLD_ROWS: "",
+        REPLICA_VERIFY_MISMATCH_LARGE_TABLE_ROWS: "",
+        REPLICA_VERIFY_MISMATCH_FORCE_FULL_REPLACE: "",
+      }),
+    ).toStrictEqual({
+      thresholdRows: 10,
+      largeTableRows: 100_000,
+      forceFullReplace: false,
+    });
+  });
+
+  it("falls back to defaults for negative or fractional integers", () => {
+    expect(
+      resolveVerifyMismatchPolicy({
+        REPLICA_VERIFY_MISMATCH_THRESHOLD_ROWS: "-1",
+        REPLICA_VERIFY_MISMATCH_LARGE_TABLE_ROWS: "1.5",
+      }),
+    ).toStrictEqual({
+      thresholdRows: 10,
+      largeTableRows: 100_000,
+      forceFullReplace: false,
+    });
+  });
+
+  it("accepts zero as an explicit threshold value", () => {
+    expect(
+      resolveVerifyMismatchPolicy({
+        REPLICA_VERIFY_MISMATCH_THRESHOLD_ROWS: "0",
+      }),
+    ).toStrictEqual({
+      thresholdRows: 0,
+      largeTableRows: 100_000,
+      forceFullReplace: false,
+    });
+  });
+});
+
+describe("decideVerifyMismatchAction", () => {
+  const defaultPolicy: VerifyMismatchPolicy = {
+    thresholdRows: 10,
+    largeTableRows: 100_000,
+    forceFullReplace: false,
+  };
+
+  it("returns skip when the table is large and the diff is small", () => {
+    const action = decideVerifyMismatchAction({
+      tableName: "jvd_hc",
+      localCount: 11_793_564,
+      neonCount: 11_793_565,
+      rowCount: 11_793_564,
+      policy: defaultPolicy,
+    });
+    expect(action.kind).toBe("skip");
+    expect(action.message).toBe(
+      "jvd_hc: verify mismatch (local=11793564, neon=11793565, diff=1) — full-replace too costly (11793564 rows, ≥100000 threshold). Skipping. Run reconcile or set REPLICA_VERIFY_MISMATCH_FORCE_FULL_REPLACE=true.",
+    );
+  });
+
+  it("returns fallback-full when the diff exceeds the threshold even for large tables", () => {
+    const action = decideVerifyMismatchAction({
+      tableName: "jvd_hc",
+      localCount: 11_793_564,
+      neonCount: 11_793_500,
+      rowCount: 11_793_564,
+      policy: defaultPolicy,
+    });
+    expect(action.kind).toBe("fallback-full");
+    expect(action.message).toBe(
+      "jvd_hc: verify mismatch (local=11793564, neon=11793500, diff=64) — falling back to full-replace",
+    );
+  });
+
+  it("returns fallback-full when the table is small", () => {
+    const action = decideVerifyMismatchAction({
+      tableName: "small_table",
+      localCount: 100,
+      neonCount: 101,
+      rowCount: 1000,
+      policy: defaultPolicy,
+    });
+    expect(action.kind).toBe("fallback-full");
+  });
+
+  it("returns fallback-full when forceFullReplace is true", () => {
+    const action = decideVerifyMismatchAction({
+      tableName: "jvd_hc",
+      localCount: 11_793_564,
+      neonCount: 11_793_565,
+      rowCount: 11_793_564,
+      policy: {
+        thresholdRows: 10,
+        largeTableRows: 100_000,
+        forceFullReplace: true,
+      },
+    });
+    expect(action.kind).toBe("fallback-full");
+  });
+
+  it("treats the largeTableRows threshold as inclusive", () => {
+    const action = decideVerifyMismatchAction({
+      tableName: "edge",
+      localCount: 100_000,
+      neonCount: 100_001,
+      rowCount: 100_000,
+      policy: defaultPolicy,
+    });
+    expect(action.kind).toBe("skip");
+  });
+
+  it("treats the diff threshold as inclusive", () => {
+    const action = decideVerifyMismatchAction({
+      tableName: "edge",
+      localCount: 1_000_000,
+      neonCount: 1_000_010,
+      rowCount: 1_000_000,
+      policy: defaultPolicy,
+    });
+    expect(action.kind).toBe("skip");
+  });
+
+  it("returns fallback-full when the diff is one above the threshold", () => {
+    const action = decideVerifyMismatchAction({
+      tableName: "edge",
+      localCount: 1_000_000,
+      neonCount: 1_000_011,
+      rowCount: 1_000_000,
+      policy: defaultPolicy,
+    });
+    expect(action.kind).toBe("fallback-full");
+  });
+
+  it("includes the reason on skip actions", () => {
+    const action = decideVerifyMismatchAction({
+      tableName: "jvd_hc",
+      localCount: 100_000,
+      neonCount: 100_001,
+      rowCount: 100_000,
+      policy: defaultPolicy,
+    });
+    expect(action.kind === "skip" ? action.reason : "").toBe(
+      "verify mismatch (local=100000, neon=100001, diff=1)",
+    );
+  });
+
+  it("uses absolute diff so neon ahead of local is treated the same", () => {
+    const action = decideVerifyMismatchAction({
+      tableName: "jvd_hc",
+      localCount: 11_793_565,
+      neonCount: 11_793_564,
+      rowCount: 11_793_565,
+      policy: defaultPolicy,
+    });
+    expect(action.kind).toBe("skip");
+  });
+
+  it("returns fallback-full when rowCount is exactly one below the large table threshold", () => {
+    const action = decideVerifyMismatchAction({
+      tableName: "near_edge",
+      localCount: 99_999,
+      neonCount: 100_000,
+      rowCount: 99_999,
+      policy: defaultPolicy,
+    });
+    expect(action.kind).toBe("fallback-full");
+  });
+
+  it("returns skip with the documented message when local equals neon (diff zero) on a large table", () => {
+    const action = decideVerifyMismatchAction({
+      tableName: "stable",
+      localCount: 200_000,
+      neonCount: 200_000,
+      rowCount: 200_000,
+      policy: defaultPolicy,
+    });
+    expect(action.kind).toBe("skip");
+    expect(action.message).toBe(
+      "stable: verify mismatch (local=200000, neon=200000, diff=0) — full-replace too costly (200000 rows, ≥100000 threshold). Skipping. Run reconcile or set REPLICA_VERIFY_MISMATCH_FORCE_FULL_REPLACE=true.",
+    );
+  });
+
+  it("returns fallback-full when threshold is zero and diff is one on a large table", () => {
+    const action = decideVerifyMismatchAction({
+      tableName: "strict",
+      localCount: 200_000,
+      neonCount: 200_001,
+      rowCount: 200_000,
+      policy: {
+        thresholdRows: 0,
+        largeTableRows: 100_000,
+        forceFullReplace: false,
+      },
+    });
+    expect(action.kind).toBe("fallback-full");
+  });
+
+  it("returns skip when threshold is zero and diff is exactly zero on a large table", () => {
+    const action = decideVerifyMismatchAction({
+      tableName: "strict",
+      localCount: 200_000,
+      neonCount: 200_000,
+      rowCount: 200_000,
+      policy: {
+        thresholdRows: 0,
+        largeTableRows: 100_000,
+        forceFullReplace: false,
+      },
+    });
+    expect(action.kind).toBe("skip");
+  });
+});
+
+describe("VerifyMismatchSkipError", () => {
+  it("captures the table name and counts on the error instance", () => {
+    const error = new VerifyMismatchSkipError({
+      tableName: "jvd_hc",
+      localCount: 100,
+      neonCount: 101,
+      rowCount: 100,
+      message: "verify mismatch — skip",
+    });
+    expect(error.name).toBe("VerifyMismatchSkipError");
+    expect(error.message).toBe("verify mismatch — skip");
+    expect(error.tableName).toBe("jvd_hc");
+    expect(error.localCount).toBe(100);
+    expect(error.neonCount).toBe(101);
+    expect(error.rowCount).toBe(100);
+  });
+
+  it("is identified by isVerifyMismatchSkipError", () => {
+    const error = new VerifyMismatchSkipError({
+      tableName: "x",
+      localCount: 0,
+      neonCount: 0,
+      rowCount: 0,
+      message: "x",
+    });
+    expect(isVerifyMismatchSkipError(error)).toBe(true);
+  });
+
+  it("returns false for unrelated errors", () => {
+    expect(isVerifyMismatchSkipError(new Error("other"))).toBe(false);
+  });
+
+  it("returns false for non-error values", () => {
+    expect(isVerifyMismatchSkipError("string")).toBe(false);
+    expect(isVerifyMismatchSkipError(undefined)).toBe(false);
+    expect(isVerifyMismatchSkipError(null)).toBe(false);
   });
 });
