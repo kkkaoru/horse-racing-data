@@ -657,8 +657,10 @@ describe("generate-running-style-local", () => {
     expect(manifest.rsPFromFlatbin).toStrictEqual({ jra: null, nar: null });
   });
 
-  test("PHASE_A_SCRIPT points at the Agent X3 feature-builder script", () => {
-    expect(PHASE_A_SCRIPT).toBe("src/scripts/generate_running_style_features_local.py");
+  test("PHASE_A_SCRIPT points at the Agent X3 feature-builder script (repo-root relative)", () => {
+    expect(PHASE_A_SCRIPT).toBe(
+      "apps/pc-keiba-viewer/src/scripts/generate_running_style_features_local.py",
+    );
   });
 
   test("PHASE_B_SCRIPT points at the Agent W3 precision-0 LightGBM Bun TS inference script", () => {
@@ -667,10 +669,16 @@ describe("generate-running-style-local", () => {
     );
   });
 
-  test("PHASE_C_SCRIPT points at the Agent X2 post-processing TS script", () => {
+  test("PHASE_C_SCRIPT points at the Agent X2 post-processing TS script (repo-root relative)", () => {
     expect(PHASE_C_SCRIPT).toBe(
-      "src/scripts/finish-position-features/apply-running-style-postproc.ts",
+      "apps/pc-keiba-viewer/src/scripts/finish-position-features/apply-running-style-postproc.ts",
     );
+  });
+
+  test("PHASE_A_SCRIPT, PHASE_B_SCRIPT, and PHASE_C_SCRIPT are all repo-root relative (start with apps/)", () => {
+    expect(PHASE_A_SCRIPT.startsWith("apps/")).toBe(true);
+    expect(PHASE_B_SCRIPT.startsWith("apps/")).toBe(true);
+    expect(PHASE_C_SCRIPT.startsWith("apps/")).toBe(true);
   });
 
   test("runGenerateRunningStyleLocal aborts outside night window when guard active", async () => {

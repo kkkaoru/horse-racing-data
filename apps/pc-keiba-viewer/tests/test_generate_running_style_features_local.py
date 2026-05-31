@@ -195,6 +195,16 @@ def test_build_print_sql_command_targets_print_script() -> None:
     )
 
 
+def test_print_sql_script_is_repo_root_relative_apps_prefix() -> None:
+    assert subject.PRINT_SQL_SCRIPT.startswith("apps/")
+
+
+def test_print_sql_script_constant_matches_repo_root_relative_path() -> None:
+    assert subject.PRINT_SQL_SCRIPT == (
+        "apps/pc-keiba-viewer/src/scripts/finish-position-features/print-running-style-feature-sql.ts"
+    )
+
+
 def test_build_print_sql_command_passes_source_flag() -> None:
     command = subject.build_print_sql_command(
         category="jra", year_from=2006, year_to=2026, feature_version="v1",
