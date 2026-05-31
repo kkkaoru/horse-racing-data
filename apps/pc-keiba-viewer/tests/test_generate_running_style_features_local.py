@@ -1057,3 +1057,379 @@ def test_run_passes_full_year_dates_when_months_omitted() -> None:
     cmd = runner.call_args.args[0]
     assert "20260101" in cmd
     assert "20261231" in cmd
+
+
+def test_is_month_chunk_true_when_both_months_set() -> None:
+    args = subject.parse_args([
+        "--pg-url", "u",
+        "--output-dir", "/tmp",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2026",
+        "--year-to", "2026",
+        "--category", "jra",
+        "--month-from", "2",
+        "--month-to", "2",
+    ])
+    assert subject.is_month_chunk(args) is True
+
+
+def test_is_month_chunk_false_when_months_omitted() -> None:
+    args = subject.parse_args([
+        "--pg-url", "u",
+        "--output-dir", "/tmp",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2026",
+        "--year-to", "2026",
+        "--category", "jra",
+    ])
+    assert subject.is_month_chunk(args) is False
+
+
+def test_is_month_chunk_false_when_only_month_from() -> None:
+    args = subject.parse_args([
+        "--pg-url", "u",
+        "--output-dir", "/tmp",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2026",
+        "--year-to", "2026",
+        "--category", "jra",
+        "--month-from", "3",
+    ])
+    assert subject.is_month_chunk(args) is False
+
+
+def test_is_month_chunk_false_when_only_month_to() -> None:
+    args = subject.parse_args([
+        "--pg-url", "u",
+        "--output-dir", "/tmp",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2026",
+        "--year-to", "2026",
+        "--category", "jra",
+        "--month-to", "5",
+    ])
+    assert subject.is_month_chunk(args) is False
+
+
+def test_build_month_chunk_output_path_single_month() -> None:
+    assert subject.build_month_chunk_output_path(
+        output_dir="/tmp/out", year=2024, month_from=2, month_to=2,
+    ) == "/tmp/out/race_year=2024/data_2024_02_02.parquet"
+
+
+def test_build_month_chunk_output_path_zero_pads_month() -> None:
+    assert subject.build_month_chunk_output_path(
+        output_dir="/tmp/out", year=2006, month_from=1, month_to=1,
+    ) == "/tmp/out/race_year=2006/data_2006_01_01.parquet"
+
+
+def test_build_month_chunk_output_path_december() -> None:
+    assert subject.build_month_chunk_output_path(
+        output_dir="/tmp/out", year=2026, month_from=12, month_to=12,
+    ) == "/tmp/out/race_year=2026/data_2026_12_12.parquet"
+
+
+def test_build_month_chunk_output_path_multi_month_range() -> None:
+    assert subject.build_month_chunk_output_path(
+        output_dir="/tmp/out", year=2024, month_from=3, month_to=4,
+    ) == "/tmp/out/race_year=2024/data_2024_03_04.parquet"
+
+
+def test_build_month_chunk_copy_sql_starts_with_copy_open_paren() -> None:
+    sql = subject.build_month_chunk_copy_sql(
+        select_sql="SELECT 1",
+        output_path="/tmp/out/race_year=2024/data_2024_02_02.parquet",
+    )
+    assert sql.startswith("COPY (")
+
+
+def test_build_month_chunk_copy_sql_targets_output_path() -> None:
+    sql = subject.build_month_chunk_copy_sql(
+        select_sql="SELECT 1",
+        output_path="/tmp/out/race_year=2024/data_2024_02_02.parquet",
+    )
+    assert "TO '/tmp/out/race_year=2024/data_2024_02_02.parquet'" in sql
+
+
+def test_build_month_chunk_copy_sql_has_no_partition_by() -> None:
+    sql = subject.build_month_chunk_copy_sql(
+        select_sql="SELECT 1",
+        output_path="/tmp/out/race_year=2024/data_2024_02_02.parquet",
+    )
+    assert "PARTITION_BY" not in sql
+
+
+def test_build_month_chunk_copy_sql_has_no_overwrite_or_ignore() -> None:
+    sql = subject.build_month_chunk_copy_sql(
+        select_sql="SELECT 1",
+        output_path="/tmp/out/race_year=2024/data_2024_02_02.parquet",
+    )
+    assert "OVERWRITE_OR_IGNORE" not in sql
+
+
+def test_build_month_chunk_copy_sql_uses_zstd_compression() -> None:
+    sql = subject.build_month_chunk_copy_sql(
+        select_sql="SELECT 1",
+        output_path="/tmp/out/race_year=2024/data_2024_02_02.parquet",
+    )
+    assert "COMPRESSION ZSTD" in sql
+
+
+def test_build_month_chunk_copy_sql_wraps_inner_in_postgres_query() -> None:
+    sql = subject.build_month_chunk_copy_sql(
+        select_sql="SELECT 1",
+        output_path="/tmp/out/race_year=2024/data_2024_02_02.parquet",
+    )
+    assert "SELECT * FROM postgres_query('pg', 'SELECT 1')" in sql
+
+
+def test_build_copy_sql_for_args_year_chunk_uses_hive_partition() -> None:
+    args = subject.parse_args([
+        "--pg-url", "u",
+        "--output-dir", "/tmp/out",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2026",
+        "--year-to", "2026",
+        "--category", "jra",
+    ])
+    sql = subject.build_copy_sql_for_args(select_sql="SELECT 1", args=args)
+    assert "PARTITION_BY (race_year)" in sql
+
+
+def test_build_copy_sql_for_args_year_chunk_uses_overwrite_or_ignore() -> None:
+    args = subject.parse_args([
+        "--pg-url", "u",
+        "--output-dir", "/tmp/out",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2026",
+        "--year-to", "2026",
+        "--category", "jra",
+    ])
+    sql = subject.build_copy_sql_for_args(select_sql="SELECT 1", args=args)
+    assert "OVERWRITE_OR_IGNORE TRUE" in sql
+
+
+def test_build_copy_sql_for_args_month_chunk_no_partition_by() -> None:
+    args = subject.parse_args([
+        "--pg-url", "u",
+        "--output-dir", "/tmp/out",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2024",
+        "--year-to", "2024",
+        "--category", "jra",
+        "--month-from", "2",
+        "--month-to", "2",
+    ])
+    sql = subject.build_copy_sql_for_args(select_sql="SELECT 1", args=args)
+    assert "PARTITION_BY" not in sql
+
+
+def test_build_copy_sql_for_args_month_chunk_targets_per_month_file() -> None:
+    args = subject.parse_args([
+        "--pg-url", "u",
+        "--output-dir", "/tmp/out",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2024",
+        "--year-to", "2024",
+        "--category", "jra",
+        "--month-from", "2",
+        "--month-to", "2",
+    ])
+    sql = subject.build_copy_sql_for_args(select_sql="SELECT 1", args=args)
+    assert "TO '/tmp/out/race_year=2024/data_2024_02_02.parquet'" in sql
+
+
+def test_build_month_chunk_race_year_dir_joins_with_race_year_prefix() -> None:
+    assert subject.build_month_chunk_race_year_dir("/tmp/out", 2024) == (
+        "/tmp/out/race_year=2024"
+    )
+
+
+def test_ensure_output_parents_for_args_year_chunk_creates_only_output_dir() -> None:
+    args = subject.parse_args([
+        "--pg-url", "u",
+        "--output-dir", "/tmp/y",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2026",
+        "--year-to", "2026",
+        "--category", "jra",
+    ])
+    with patch.object(subject, "ensure_output_dir") as ensure_mock:
+        subject.ensure_output_parents_for_args(args)
+    ensure_mock.assert_called_once_with("/tmp/y")
+
+
+def test_ensure_output_parents_for_args_month_chunk_creates_race_year_subdir() -> None:
+    args = subject.parse_args([
+        "--pg-url", "u",
+        "--output-dir", "/tmp/y",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2024",
+        "--year-to", "2024",
+        "--category", "jra",
+        "--month-from", "2",
+        "--month-to", "2",
+    ])
+    with patch.object(subject, "ensure_output_dir") as ensure_mock:
+        subject.ensure_output_parents_for_args(args)
+    calls = [call.args[0] for call in ensure_mock.call_args_list]
+    assert calls == ["/tmp/y", "/tmp/y/race_year=2024"]
+
+
+def test_execute_copy_for_args_year_chunk_emits_partition_by_sql() -> None:
+    con = MagicMock()
+    args = subject.parse_args([
+        "--pg-url", "u",
+        "--output-dir", "/tmp/y",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2026",
+        "--year-to", "2026",
+        "--category", "jra",
+    ])
+    subject.execute_copy_for_args(con, select_sql="SELECT 1", args=args)
+    issued = con.execute.call_args.args[0]
+    assert "PARTITION_BY (race_year)" in issued
+
+
+def test_execute_copy_for_args_month_chunk_emits_per_month_file_sql() -> None:
+    con = MagicMock()
+    args = subject.parse_args([
+        "--pg-url", "u",
+        "--output-dir", "/tmp/y",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2024",
+        "--year-to", "2024",
+        "--category", "jra",
+        "--month-from", "5",
+        "--month-to", "5",
+    ])
+    subject.execute_copy_for_args(con, select_sql="SELECT 1", args=args)
+    issued = con.execute.call_args.args[0]
+    assert "TO '/tmp/y/race_year=2024/data_2024_05_05.parquet'" in issued
+
+
+def test_run_month_chunk_writes_to_per_month_file_path() -> None:
+    con = MagicMock()
+    connect = MagicMock(return_value=con)
+    completed = MagicMock()
+    completed.returncode = 0
+    completed.stdout = "SELECT race_year FROM pg.t"
+    completed.stderr = ""
+    runner = MagicMock(return_value=completed)
+    args = subject.parse_args([
+        "--pg-url", "postgres://u",
+        "--output-dir", "/tmp/x",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2024",
+        "--year-to", "2024",
+        "--category", "jra",
+        "--month-from", "2",
+        "--month-to", "2",
+    ])
+    with patch.object(subject, "ensure_output_dir"):
+        subject.run(args, connect, runner)
+    copy_call = next(
+        call for call in con.execute.call_args_list if call.args[0].startswith("COPY (")
+    )
+    assert "TO '/tmp/x/race_year=2024/data_2024_02_02.parquet'" in copy_call.args[0]
+
+
+def test_run_month_chunk_has_no_partition_by_in_copy_sql() -> None:
+    con = MagicMock()
+    connect = MagicMock(return_value=con)
+    completed = MagicMock()
+    completed.returncode = 0
+    completed.stdout = "SELECT race_year FROM pg.t"
+    completed.stderr = ""
+    runner = MagicMock(return_value=completed)
+    args = subject.parse_args([
+        "--pg-url", "postgres://u",
+        "--output-dir", "/tmp/x",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2024",
+        "--year-to", "2024",
+        "--category", "jra",
+        "--month-from", "2",
+        "--month-to", "2",
+    ])
+    with patch.object(subject, "ensure_output_dir"):
+        subject.run(args, connect, runner)
+    copy_call = next(
+        call for call in con.execute.call_args_list if call.args[0].startswith("COPY (")
+    )
+    assert "PARTITION_BY" not in copy_call.args[0]
+
+
+def test_run_month_chunk_creates_race_year_subdir() -> None:
+    con = MagicMock()
+    connect = MagicMock(return_value=con)
+    completed = MagicMock()
+    completed.returncode = 0
+    completed.stdout = "SELECT race_year FROM pg.t"
+    completed.stderr = ""
+    runner = MagicMock(return_value=completed)
+    args = subject.parse_args([
+        "--pg-url", "postgres://u",
+        "--output-dir", "/tmp/x",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2024",
+        "--year-to", "2024",
+        "--category", "jra",
+        "--month-from", "2",
+        "--month-to", "2",
+    ])
+    with patch.object(subject, "ensure_output_dir") as ensure_mock:
+        subject.run(args, connect, runner)
+    calls = [call.args[0] for call in ensure_mock.call_args_list]
+    assert calls == ["/tmp/x", "/tmp/x/race_year=2024"]
+
+
+def test_run_year_chunk_legacy_still_uses_partition_by_sql() -> None:
+    con = MagicMock()
+    connect = MagicMock(return_value=con)
+    completed = MagicMock()
+    completed.returncode = 0
+    completed.stdout = "SELECT race_year FROM pg.t"
+    completed.stderr = ""
+    runner = MagicMock(return_value=completed)
+    args = subject.parse_args([
+        "--pg-url", "postgres://u",
+        "--output-dir", "/tmp/x",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2026",
+        "--year-to", "2026",
+        "--category", "jra",
+    ])
+    with patch.object(subject, "ensure_output_dir"):
+        subject.run(args, connect, runner)
+    copy_call = next(
+        call for call in con.execute.call_args_list if call.args[0].startswith("COPY (")
+    )
+    assert "PARTITION_BY (race_year)" in copy_call.args[0]
+    assert "OVERWRITE_OR_IGNORE TRUE" in copy_call.args[0]
+
+
+def test_run_month_chunk_uses_zstd_compression() -> None:
+    con = MagicMock()
+    connect = MagicMock(return_value=con)
+    completed = MagicMock()
+    completed.returncode = 0
+    completed.stdout = "SELECT race_year FROM pg.t"
+    completed.stderr = ""
+    runner = MagicMock(return_value=completed)
+    args = subject.parse_args([
+        "--pg-url", "postgres://u",
+        "--output-dir", "/tmp/x",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2024",
+        "--year-to", "2024",
+        "--category", "jra",
+        "--month-from", "7",
+        "--month-to", "7",
+    ])
+    with patch.object(subject, "ensure_output_dir"):
+        subject.run(args, connect, runner)
+    copy_call = next(
+        call for call in con.execute.call_args_list if call.args[0].startswith("COPY (")
+    )
+    assert "COMPRESSION ZSTD" in copy_call.args[0]
