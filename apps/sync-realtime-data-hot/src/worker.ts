@@ -1,3 +1,4 @@
+import { getExpectedRaceCountForDate } from "./expected-race-count";
 import { fetchAndStoreOdds } from "./fetch-odds";
 import { formatError } from "./format-error";
 import {
@@ -313,19 +314,21 @@ export const collectPlanDates = (now: Date): string[] => {
 
 export const runScheduledPlan = async (env: Env, now: Date): Promise<void> => {
   const todayYyyymmdd = getTodayJst(now);
-  // Fallback self-discovery: when odds_fetch_state has no row for today, the
-  // legacy worker either has not forwarded yet or is down. Run a one-shot
-  // populate so the planner has something to enqueue this tick instead of
-  // skipping for hours. Multi-day populate (cron 55 20 * * *) seeds tomorrow's
-  // and the day-after's races; the polling planner then iterates today + next
-  // 2 days every minute so races scheduled hours in advance still get the
-  // hourly fetch cadence even at 23:41 JST the night before.
+  // Fallback self-discovery: compare today's actual `odds_fetch_state` row
+  // count against the expected total from Hyperdrive (`jvd_ra` + `nvd_ra`).
+  // When the count is short — e.g. the 05:55 JST populate ran before NAR
+  // venues (Ban'ei, Mizusawa) published their `keiba.go` RaceList HTML, so
+  // only a partial day was seeded — re-run populate so the planner does not
+  // skip the missing venue for the rest of the day. The legacy `=== 0`
+  // gate hid this regression because a single JRA venue was enough to lock
+  // populate out for the entire day.
   const stateCount = await countOddsFetchStateForDate(
     env.REALTIME_HOT_DB,
     todayYyyymmdd.slice(0, 4),
     todayYyyymmdd.slice(4, 8),
   );
-  if (stateCount === 0) {
+  const expectedCount = await getExpectedRaceCountForDate(env, todayYyyymmdd);
+  if (stateCount < expectedCount) {
     await populateTodayOddsFetchState(env, now);
   }
   await Promise.all(collectPlanDates(now).map((yyyymmdd) => planOddsFetches(env, now, yyyymmdd)));
