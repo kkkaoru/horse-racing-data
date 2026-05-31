@@ -1,13 +1,18 @@
-// Run with: bun run src/scripts/finish-position-features/generate-running-style-local.ts \
+// Run with (cwd MUST be repo root):
+//   bun run apps/pc-keiba-viewer/src/scripts/finish-position-features/generate-running-style-local.ts \
 //   --pg-url $DATABASE_URL_LOCAL --running-style-feature-version v1 \
 //   --model-version-jra <m> --model-version-nar <m> \
 //   --model-flatbin-jra <path> --model-flatbin-nar <path> \
 //   [--rs-p-from-flatbin-jra <path>]
-// Sequential 3-phase orchestrator (Agent Y4 + W4/W6 switch, bucket-eval X5 design):
-//   Phase A: spawn `uv run python src/scripts/generate_running_style_features_local.py`
+// Sequential 3-phase orchestrator (Agent Y4 + W4/W6 switch, bucket-eval X5 design).
+// All spawned subprocess paths are repo-root relative so the driver works only
+// when launched with cwd=repo root. The Python Phase A script in turn spawns a
+// TS print-sql subprocess that also assumes cwd=repo root, so the convention is
+// uniform: every phase resolves paths against repo root.
+//   Phase A: spawn `uv run python apps/pc-keiba-viewer/src/scripts/generate_running_style_features_local.py`
 //   Phase B: spawn `bun run apps/sync-realtime-data/src/scripts/run-running-style-inference-local.ts`
 //           (precision-0 LightGBM v1.5/v2 via W3 deliverable, bit-exact with production)
-//   Phase C: spawn `bun run src/scripts/finish-position-features/apply-running-style-postproc.ts`
+//   Phase C: spawn `bun run apps/pc-keiba-viewer/src/scripts/finish-position-features/apply-running-style-postproc.ts`
 // Writes manifest.json after all phases complete. No PG/R2/D1/KV writeback.
 // JRA: prod-v2 (138 feature) chained from v1.5 (117 feature) via --rs-p-from-flatbin.
 // NAR: prod-v1.5 (117 feature) single-stage (no chained predict).
@@ -143,11 +148,12 @@ export const DEFAULT_OUTPUT_ROOT = "apps/pc-keiba-viewer/tmp/bucket-eval/running
 export const DEFAULT_THREADS = 8;
 export const DEFAULT_MEMORY_LIMIT = "16GB";
 export const DEFAULT_MAX_YEARS_PER_RUN = 5;
-export const PHASE_A_SCRIPT = "src/scripts/generate_running_style_features_local.py";
+export const PHASE_A_SCRIPT =
+  "apps/pc-keiba-viewer/src/scripts/generate_running_style_features_local.py";
 export const PHASE_B_SCRIPT =
   "apps/sync-realtime-data/src/scripts/run-running-style-inference-local.ts";
 export const PHASE_C_SCRIPT =
-  "src/scripts/finish-position-features/apply-running-style-postproc.ts";
+  "apps/pc-keiba-viewer/src/scripts/finish-position-features/apply-running-style-postproc.ts";
 export const NIGHT_WINDOW_SET: ReadonlySet<number> = new Set(NIGHT_WINDOW_HOURS_JST);
 export const JRA_V2_MODEL_TAG = "-v2";
 

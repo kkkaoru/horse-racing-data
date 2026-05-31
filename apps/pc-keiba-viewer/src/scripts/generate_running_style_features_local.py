@@ -1,7 +1,7 @@
 """Phase A: generate running-style feature parquet locally (no PG/R2/D1/KV writeback).
 
 Pure executor: SQL ownership is delegated to the TypeScript builder
-``src/scripts/finish-position-features/print-running-style-feature-sql.ts``.
+``apps/pc-keiba-viewer/src/scripts/finish-position-features/print-running-style-feature-sql.ts``.
 This module only:
 
 1. Invokes the TS builder via ``subprocess`` to obtain the SQL string,
@@ -11,8 +11,9 @@ This module only:
    PG-side. This avoids DuckDB local-parse failures on PG-only scalar
    functions (``to_char`` / ``to_date`` / ``interval`` etc.).
 
-Run with:
-    uv run python src/scripts/generate_running_style_features_local.py \\
+Run with (cwd MUST be repo root so the TS print-sql subprocess can resolve its
+repo-root-relative path):
+    uv run python apps/pc-keiba-viewer/src/scripts/generate_running_style_features_local.py \\
         --pg-url $DATABASE_URL_LOCAL \\
         --output-dir apps/pc-keiba-viewer/tmp/bucket-eval/running-style/v1/features \\
         --running-style-feature-version v1 \\
