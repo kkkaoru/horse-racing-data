@@ -18,18 +18,25 @@ import {
   buildPredictionsRoot,
   chunkHasExistingParquet,
   chunkYears,
+  chunkYearsByMonth,
+  expandYearsToMonths,
   isInsideNightWindow,
   isJraV2ModelVersion,
   parseArgs,
   resolveMemoryLimitPerChunk,
   runGenerateRunningStyleLocal,
   runVoidTasksWithConcurrencyLimit,
+  yearHasFullMonthParquet,
+  ALL_MONTHS,
+  CHUNK_GRANULARITIES,
   COLIMA_MIN_CPU,
+  DEFAULT_CHUNK_GRANULARITY,
   DEFAULT_FORCE,
   DEFAULT_MAX_YEARS_PER_RUN,
   DEFAULT_MEMORY_LIMIT_PER_CHUNK,
   DEFAULT_PHASE_A_CONCURRENCY,
   JRA_V2_MODEL_TAG,
+  MONTHS_PER_YEAR,
   PER_CATEGORY_SLEEP_MS,
   PER_YEAR_SLEEP_MS,
   PHASE_A_SCRIPT,
@@ -37,6 +44,7 @@ import {
   PHASE_B_SCRIPT,
   PHASE_C_SCRIPT,
   RUNNING_STYLE_CATEGORIES,
+  type ChunkGranularity,
 } from "./generate-running-style-local";
 
 const FIXED_NIGHT_DATE = new Date("2026-05-30T16:00:00Z"); // 01:00 JST -> inside window
@@ -1625,7 +1633,7 @@ describe("generate-running-style-local", () => {
     expect(result).toBe(false);
   });
 
-  test("runGenerateRunningStyleLocal Phase A skips chunks when listDirectoryEntries reports existing parquet", async () => {
+  test("runGenerateRunningStyleLocal Phase A skips chunks under year-granularity when listDirectoryEntries reports existing parquet", async () => {
     const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(() =>
       Promise.resolve({ exitCode: 0 }),
     );
@@ -1646,6 +1654,7 @@ describe("generate-running-style-local", () => {
       modelFlatbinNar: "/p/nar.flatbin",
       ignoreNightWindow: true,
       outputRoot: "/tmp/resume-skip",
+      chunkGranularity: "year" satisfies ChunkGranularity,
     };
     await runGenerateRunningStyleLocal(options, {
       spawn,
@@ -1661,7 +1670,7 @@ describe("generate-running-style-local", () => {
     expect(phaseASpawnCount).toBe(0);
   });
 
-  test("runGenerateRunningStyleLocal Phase A logs a skip message per chunk when parquet exists", async () => {
+  test("runGenerateRunningStyleLocal Phase A logs a skip message per chunk when parquet exists under year-granularity", async () => {
     const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(() =>
       Promise.resolve({ exitCode: 0 }),
     );
@@ -1682,6 +1691,7 @@ describe("generate-running-style-local", () => {
       modelFlatbinNar: "/p/nar.flatbin",
       ignoreNightWindow: true,
       outputRoot: "/tmp/resume-log",
+      chunkGranularity: "year" satisfies ChunkGranularity,
     };
     await runGenerateRunningStyleLocal(options, {
       spawn,
@@ -1768,5 +1778,615 @@ describe("generate-running-style-local", () => {
       (call) => call[0][5] === PHASE_A_SCRIPT,
     ).length;
     expect(phaseASpawnCount > 0).toBe(true);
+  });
+
+  test("CHUNK_GRANULARITIES lists year and month in that order", () => {
+    expect(CHUNK_GRANULARITIES).toStrictEqual(["year", "month"]);
+  });
+
+  test("DEFAULT_CHUNK_GRANULARITY equals month so per-month spawn becomes the default", () => {
+    expect(DEFAULT_CHUNK_GRANULARITY).toBe("month");
+  });
+
+  test("buildDefaultOptions returns chunkGranularity month by default", () => {
+    expect(buildDefaultOptions().chunkGranularity).toBe("month");
+  });
+
+  test("MONTHS_PER_YEAR equals 12 so year-level resume waits for all 12 month parquet files", () => {
+    expect(MONTHS_PER_YEAR).toBe(12);
+  });
+
+  test("ALL_MONTHS lists 1 through 12 in ascending order", () => {
+    expect(ALL_MONTHS).toStrictEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  });
+
+  test("expandYearsToMonths expands one year into 12 entries", () => {
+    expect(expandYearsToMonths([2024])).toStrictEqual([
+      { year: 2024, month: 1 },
+      { year: 2024, month: 2 },
+      { year: 2024, month: 3 },
+      { year: 2024, month: 4 },
+      { year: 2024, month: 5 },
+      { year: 2024, month: 6 },
+      { year: 2024, month: 7 },
+      { year: 2024, month: 8 },
+      { year: 2024, month: 9 },
+      { year: 2024, month: 10 },
+      { year: 2024, month: 11 },
+      { year: 2024, month: 12 },
+    ]);
+  });
+
+  test("expandYearsToMonths concatenates months from multiple years preserving year order", () => {
+    const result = expandYearsToMonths([2023, 2024]);
+    expect(result.length).toBe(24);
+    expect(result[0]).toStrictEqual({ year: 2023, month: 1 });
+    expect(result[11]).toStrictEqual({ year: 2023, month: 12 });
+    expect(result[12]).toStrictEqual({ year: 2024, month: 1 });
+    expect(result[23]).toStrictEqual({ year: 2024, month: 12 });
+  });
+
+  test("expandYearsToMonths returns empty array for empty years input", () => {
+    expect(expandYearsToMonths([])).toStrictEqual([]);
+  });
+
+  test("chunkYearsByMonth emits 12 chunks per year with year + month set", () => {
+    const result = chunkYearsByMonth([2024]);
+    expect(result.length).toBe(12);
+    expect(result[0]).toStrictEqual({ year: 2024, month: 1 });
+    expect(result[11]).toStrictEqual({ year: 2024, month: 12 });
+  });
+
+  test("chunkYearsByMonth returns empty when years is empty", () => {
+    expect(chunkYearsByMonth([])).toStrictEqual([]);
+  });
+
+  test("buildPhaseACommand omits month tokens when monthFrom is null", () => {
+    const cmd = buildPhaseACommand({
+      pgUrl: "u",
+      outputDir: "/d",
+      featureVersion: "v1",
+      yearFrom: 2024,
+      yearTo: 2024,
+      monthFrom: null,
+      monthTo: null,
+      category: "jra",
+      threads: 8,
+      memoryLimit: "16GB",
+    });
+    expect(cmd.includes("--month-from")).toBe(false);
+    expect(cmd.includes("--month-to")).toBe(false);
+  });
+
+  test("buildPhaseACommand appends --month-from and --month-to when month chunk is requested", () => {
+    const cmd = buildPhaseACommand({
+      pgUrl: "u",
+      outputDir: "/d",
+      featureVersion: "v1",
+      yearFrom: 2024,
+      yearTo: 2024,
+      monthFrom: 3,
+      monthTo: 3,
+      category: "jra",
+      threads: 8,
+      memoryLimit: "16GB",
+    });
+    const monthFromIndex = cmd.indexOf("--month-from");
+    const monthToIndex = cmd.indexOf("--month-to");
+    expect(cmd[monthFromIndex + 1]).toBe("3");
+    expect(cmd[monthToIndex + 1]).toBe("3");
+  });
+
+  test("buildPhaseACommand month tokens appear after the year tokens", () => {
+    const cmd = buildPhaseACommand({
+      pgUrl: "u",
+      outputDir: "/d",
+      featureVersion: "v1",
+      yearFrom: 2024,
+      yearTo: 2024,
+      monthFrom: 5,
+      monthTo: 5,
+      category: "nar",
+      threads: 8,
+      memoryLimit: "16GB",
+    });
+    const yearToIndex = cmd.indexOf("--year-to");
+    const monthFromIndex = cmd.indexOf("--month-from");
+    expect(monthFromIndex > yearToIndex).toBe(true);
+  });
+
+  test("parseArgs accepts --chunk-granularity month and stores it", () => {
+    const options = parseArgs([
+      "--pg-url",
+      "u",
+      "--model-version-jra",
+      "mj",
+      "--model-version-nar",
+      "mn",
+      "--model-flatbin-jra",
+      "/p/jra.flatbin",
+      "--model-flatbin-nar",
+      "/p/nar.flatbin",
+      "--chunk-granularity",
+      "month",
+    ]);
+    expect(options.chunkGranularity).toBe("month");
+  });
+
+  test("parseArgs accepts --chunk-granularity year and stores it", () => {
+    const options = parseArgs([
+      "--pg-url",
+      "u",
+      "--model-version-jra",
+      "mj",
+      "--model-version-nar",
+      "mn",
+      "--model-flatbin-jra",
+      "/p/jra.flatbin",
+      "--model-flatbin-nar",
+      "/p/nar.flatbin",
+      "--chunk-granularity",
+      "year",
+    ]);
+    expect(options.chunkGranularity).toBe("year");
+  });
+
+  test("parseArgs throws when --chunk-granularity is supplied without a value", () => {
+    expect(() => parseArgs(["--chunk-granularity"])).toThrowError(
+      "--chunk-granularity requires a value.",
+    );
+  });
+
+  test("parseArgs throws when --chunk-granularity receives an unsupported value", () => {
+    expect(() =>
+      parseArgs([
+        "--pg-url",
+        "u",
+        "--model-version-jra",
+        "mj",
+        "--model-version-nar",
+        "mn",
+        "--model-flatbin-jra",
+        "/p/jra.flatbin",
+        "--model-flatbin-nar",
+        "/p/nar.flatbin",
+        "--chunk-granularity",
+        "week",
+      ]),
+    ).toThrowError("--chunk-granularity must be one of year, month.");
+  });
+
+  test("yearHasFullMonthParquet returns true when 12 parquet files exist in race_year dir", async () => {
+    const twelveParquet: readonly string[] = [
+      "data_01.parquet",
+      "data_02.parquet",
+      "data_03.parquet",
+      "data_04.parquet",
+      "data_05.parquet",
+      "data_06.parquet",
+      "data_07.parquet",
+      "data_08.parquet",
+      "data_09.parquet",
+      "data_10.parquet",
+      "data_11.parquet",
+      "data_12.parquet",
+    ];
+    const listDirectoryEntries = vi.fn<(path: string) => Promise<readonly string[]>>(() =>
+      Promise.resolve(twelveParquet),
+    );
+    const result = await yearHasFullMonthParquet(listDirectoryEntries, {
+      featuresDir: "/tmp/v1/features/category=jra",
+      year: 2024,
+    });
+    expect(result).toBe(true);
+  });
+
+  test("yearHasFullMonthParquet returns false when only 11 parquet files exist (incomplete year)", async () => {
+    const elevenParquet: readonly string[] = [
+      "data_01.parquet",
+      "data_02.parquet",
+      "data_03.parquet",
+      "data_04.parquet",
+      "data_05.parquet",
+      "data_06.parquet",
+      "data_07.parquet",
+      "data_08.parquet",
+      "data_09.parquet",
+      "data_10.parquet",
+      "data_11.parquet",
+    ];
+    const listDirectoryEntries = vi.fn<(path: string) => Promise<readonly string[]>>(() =>
+      Promise.resolve(elevenParquet),
+    );
+    const result = await yearHasFullMonthParquet(listDirectoryEntries, {
+      featuresDir: "/tmp/v1/features/category=jra",
+      year: 2024,
+    });
+    expect(result).toBe(false);
+  });
+
+  test("yearHasFullMonthParquet ignores non-parquet entries when counting completion", async () => {
+    const mixedEntries: readonly string[] = [
+      "data_01.parquet",
+      "data_02.parquet",
+      "data_03.parquet",
+      "data_04.parquet",
+      "data_05.parquet",
+      "data_06.parquet",
+      "data_07.parquet",
+      "data_08.parquet",
+      "data_09.parquet",
+      "data_10.parquet",
+      "data_11.parquet",
+      "data_12.parquet",
+      "notes.txt",
+      "summary.csv",
+    ];
+    const listDirectoryEntries = vi.fn<(path: string) => Promise<readonly string[]>>(() =>
+      Promise.resolve(mixedEntries),
+    );
+    const result = await yearHasFullMonthParquet(listDirectoryEntries, {
+      featuresDir: "/tmp/v1/features/category=jra",
+      year: 2024,
+    });
+    expect(result).toBe(true);
+  });
+
+  test("yearHasFullMonthParquet returns false when listing rejects (directory missing)", async () => {
+    const listDirectoryEntries = vi.fn<(path: string) => Promise<readonly string[]>>(() =>
+      Promise.reject(new Error("ENOENT")),
+    );
+    const result = await yearHasFullMonthParquet(listDirectoryEntries, {
+      featuresDir: "/tmp/v1/features/category=jra",
+      year: 2024,
+    });
+    expect(result).toBe(false);
+  });
+
+  test("runGenerateRunningStyleLocal Phase A spawns month chunks by default with single-month --month-from/--month-to pairs", async () => {
+    const monthPairs: string[] = [];
+    const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(
+      (command) => {
+        if (command[5] === PHASE_A_SCRIPT) {
+          const monthFromIndex = command.indexOf("--month-from");
+          const monthToIndex = command.indexOf("--month-to");
+          monthPairs.push(`${command[monthFromIndex + 1]}-${command[monthToIndex + 1]}`);
+        }
+        return Promise.resolve({ exitCode: 0 });
+      },
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "mj",
+      modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      ignoreNightWindow: true,
+      outputRoot: "/tmp/month-default-chunk",
+    };
+    await runGenerateRunningStyleLocal(options, {
+      spawn,
+      sleep,
+      probeColima,
+      now: () => FIXED_NIGHT_DATE,
+      log: () => undefined,
+      listDirectoryEntries: () => Promise.resolve([]),
+    });
+    expect(monthPairs.every((pair) => pair.split("-")[0] === pair.split("-")[1])).toBe(true);
+  });
+
+  test("runGenerateRunningStyleLocal Phase A under month granularity emits 12 spawns per year per category", async () => {
+    const phaseASpawnCount = { count: 0 };
+    const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(
+      (command) => {
+        if (command[5] === PHASE_A_SCRIPT) {
+          phaseASpawnCount.count += 1;
+        }
+        return Promise.resolve({ exitCode: 0 });
+      },
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "mj",
+      modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      ignoreNightWindow: true,
+      outputRoot: "/tmp/month-count",
+    };
+    await runGenerateRunningStyleLocal(options, {
+      spawn,
+      sleep,
+      probeColima,
+      now: () => FIXED_NIGHT_DATE,
+      log: () => undefined,
+      listDirectoryEntries: () => Promise.resolve([]),
+    });
+    expect(phaseASpawnCount.count).toBe(420);
+  });
+
+  test("runGenerateRunningStyleLocal Phase A under year granularity emits one spawn per year per category", async () => {
+    const phaseASpawnCount = { count: 0 };
+    const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(
+      (command) => {
+        if (command[5] === PHASE_A_SCRIPT) {
+          phaseASpawnCount.count += 1;
+        }
+        return Promise.resolve({ exitCode: 0 });
+      },
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "mj",
+      modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      ignoreNightWindow: true,
+      outputRoot: "/tmp/year-count",
+      chunkGranularity: "year" satisfies ChunkGranularity,
+    };
+    await runGenerateRunningStyleLocal(options, {
+      spawn,
+      sleep,
+      probeColima,
+      now: () => FIXED_NIGHT_DATE,
+      log: () => undefined,
+      listDirectoryEntries: () => Promise.resolve([]),
+    });
+    expect(phaseASpawnCount.count).toBe(35);
+  });
+
+  test("runGenerateRunningStyleLocal Phase A under month granularity emits --month-from/--month-to ranging from 1 to 12 per year", async () => {
+    const phaseAMonthValues: number[] = [];
+    const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(
+      (command) => {
+        if (command[5] === PHASE_A_SCRIPT) {
+          const monthFromIndex = command.indexOf("--month-from");
+          phaseAMonthValues.push(Number(command[monthFromIndex + 1] ?? "0"));
+        }
+        return Promise.resolve({ exitCode: 0 });
+      },
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "mj",
+      modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      ignoreNightWindow: true,
+      outputRoot: "/tmp/month-range",
+    };
+    await runGenerateRunningStyleLocal(options, {
+      spawn,
+      sleep,
+      probeColima,
+      now: () => FIXED_NIGHT_DATE,
+      log: () => undefined,
+      listDirectoryEntries: () => Promise.resolve([]),
+    });
+    const uniqueMonths = [...new Set(phaseAMonthValues)].toSorted((a, b) => a - b);
+    expect(uniqueMonths).toStrictEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  });
+
+  test("runGenerateRunningStyleLocal Phase A under year granularity omits --month-from in spawned commands", async () => {
+    const sawMonthFlag = { value: false };
+    const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(
+      (command) => {
+        if (command[5] === PHASE_A_SCRIPT && command.includes("--month-from")) {
+          sawMonthFlag.value = true;
+        }
+        return Promise.resolve({ exitCode: 0 });
+      },
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "mj",
+      modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      ignoreNightWindow: true,
+      outputRoot: "/tmp/year-no-month-flag",
+      chunkGranularity: "year" satisfies ChunkGranularity,
+    };
+    await runGenerateRunningStyleLocal(options, {
+      spawn,
+      sleep,
+      probeColima,
+      now: () => FIXED_NIGHT_DATE,
+      log: () => undefined,
+      listDirectoryEntries: () => Promise.resolve([]),
+    });
+    expect(sawMonthFlag.value).toBe(false);
+  });
+
+  test("runGenerateRunningStyleLocal Phase A under month granularity skips a whole year when 12 parquet exist (year-level resume)", async () => {
+    const twelveParquet: readonly string[] = [
+      "data_01.parquet",
+      "data_02.parquet",
+      "data_03.parquet",
+      "data_04.parquet",
+      "data_05.parquet",
+      "data_06.parquet",
+      "data_07.parquet",
+      "data_08.parquet",
+      "data_09.parquet",
+      "data_10.parquet",
+      "data_11.parquet",
+      "data_12.parquet",
+    ];
+    const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(() =>
+      Promise.resolve({ exitCode: 0 }),
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const log = vi.fn<(message: string) => void>(() => undefined);
+    const listDirectoryEntries = vi.fn<(path: string) => Promise<readonly string[]>>(() =>
+      Promise.resolve(twelveParquet),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "mj",
+      modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      ignoreNightWindow: true,
+      outputRoot: "/tmp/month-skip",
+    };
+    await runGenerateRunningStyleLocal(options, {
+      spawn,
+      sleep,
+      probeColima,
+      now: () => FIXED_NIGHT_DATE,
+      log,
+      listDirectoryEntries,
+    });
+    const phaseASpawnCount = spawn.mock.calls.filter(
+      (call) => call[0][5] === PHASE_A_SCRIPT,
+    ).length;
+    expect(phaseASpawnCount).toBe(0);
+  });
+
+  test("runGenerateRunningStyleLocal Phase A under month granularity emits a year-level skip log message", async () => {
+    const twelveParquet: readonly string[] = [
+      "data_01.parquet",
+      "data_02.parquet",
+      "data_03.parquet",
+      "data_04.parquet",
+      "data_05.parquet",
+      "data_06.parquet",
+      "data_07.parquet",
+      "data_08.parquet",
+      "data_09.parquet",
+      "data_10.parquet",
+      "data_11.parquet",
+      "data_12.parquet",
+    ];
+    const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(() =>
+      Promise.resolve({ exitCode: 0 }),
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const log = vi.fn<(message: string) => void>(() => undefined);
+    const listDirectoryEntries = vi.fn<(path: string) => Promise<readonly string[]>>(() =>
+      Promise.resolve(twelveParquet),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "mj",
+      modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      ignoreNightWindow: true,
+      outputRoot: "/tmp/month-skip-log",
+    };
+    await runGenerateRunningStyleLocal(options, {
+      spawn,
+      sleep,
+      probeColima,
+      now: () => FIXED_NIGHT_DATE,
+      log,
+      listDirectoryEntries,
+    });
+    const hadYearLevelSkipLog = log.mock.calls.some(
+      (call) => typeof call[0] === "string" && call[0].includes("year-level resume"),
+    );
+    expect(hadYearLevelSkipLog).toBe(true);
+  });
+
+  test("runGenerateRunningStyleLocal Phase A under month granularity still spawns when fewer than 12 parquet found (incomplete year)", async () => {
+    const onlyOneParquet: readonly string[] = ["data_01.parquet"];
+    const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(() =>
+      Promise.resolve({ exitCode: 0 }),
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const log = vi.fn<(message: string) => void>(() => undefined);
+    const listDirectoryEntries = vi.fn<(path: string) => Promise<readonly string[]>>(() =>
+      Promise.resolve(onlyOneParquet),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "mj",
+      modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      ignoreNightWindow: true,
+      outputRoot: "/tmp/month-skip-partial",
+    };
+    await runGenerateRunningStyleLocal(options, {
+      spawn,
+      sleep,
+      probeColima,
+      now: () => FIXED_NIGHT_DATE,
+      log,
+      listDirectoryEntries,
+    });
+    const phaseASpawnCount = spawn.mock.calls.filter(
+      (call) => call[0][5] === PHASE_A_SCRIPT,
+    ).length;
+    expect(phaseASpawnCount > 0).toBe(true);
+  });
+
+  test("runGenerateRunningStyleLocal Phase A under month granularity throws with year+month in error when spawn fails", async () => {
+    const spawn = vi.fn<() => Promise<{ exitCode: number }>>(() =>
+      Promise.resolve({ exitCode: 1 }),
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "mj",
+      modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      ignoreNightWindow: true,
+    };
+    await expect(
+      runGenerateRunningStyleLocal(options, {
+        spawn,
+        sleep,
+        probeColima,
+        now: () => FIXED_NIGHT_DATE,
+        log: () => undefined,
+        listDirectoryEntries: () => Promise.resolve([]),
+      }),
+    ).rejects.toThrowError(/Phase A failed for category=(jra|nar) year=\d{4} month=\d+\./);
   });
 });

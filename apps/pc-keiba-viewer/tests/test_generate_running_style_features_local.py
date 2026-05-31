@@ -180,7 +180,7 @@ def test_year_to_yyyymmdd_to_pads_year() -> None:
 
 def test_build_print_sql_command_uses_bun_run() -> None:
     command = subject.build_print_sql_command(
-        category="jra", year_from=2006, year_to=2026, feature_version="v1",
+        category="jra", from_date="20060101", to_date="20261231", feature_version="v1",
     )
     assert command[0] == "bun"
     assert command[1] == "run"
@@ -188,7 +188,7 @@ def test_build_print_sql_command_uses_bun_run() -> None:
 
 def test_build_print_sql_command_targets_print_script() -> None:
     command = subject.build_print_sql_command(
-        category="jra", year_from=2006, year_to=2026, feature_version="v1",
+        category="jra", from_date="20060101", to_date="20261231", feature_version="v1",
     )
     assert command[2] == (
         "apps/pc-keiba-viewer/src/scripts/finish-position-features/print-running-style-feature-sql.ts"
@@ -207,7 +207,7 @@ def test_print_sql_script_constant_matches_repo_root_relative_path() -> None:
 
 def test_build_print_sql_command_passes_source_flag() -> None:
     command = subject.build_print_sql_command(
-        category="jra", year_from=2006, year_to=2026, feature_version="v1",
+        category="jra", from_date="20060101", to_date="20261231", feature_version="v1",
     )
     assert "--source" in command
     assert "jra" in command
@@ -215,7 +215,7 @@ def test_build_print_sql_command_passes_source_flag() -> None:
 
 def test_build_print_sql_command_passes_from_to_dates() -> None:
     command = subject.build_print_sql_command(
-        category="nar", year_from=2006, year_to=2026, feature_version="v1",
+        category="nar", from_date="20060101", to_date="20261231", feature_version="v1",
     )
     assert "20060101" in command
     assert "20261231" in command
@@ -223,7 +223,7 @@ def test_build_print_sql_command_passes_from_to_dates() -> None:
 
 def test_build_print_sql_command_passes_feature_version() -> None:
     command = subject.build_print_sql_command(
-        category="jra", year_from=2006, year_to=2026, feature_version="v7",
+        category="jra", from_date="20060101", to_date="20261231", feature_version="v7",
     )
     assert "--feature-version" in command
     assert "v7" in command
@@ -237,8 +237,8 @@ def test_fetch_running_style_sql_returns_stdout() -> None:
     runner = MagicMock(return_value=completed)
     sql = subject.fetch_running_style_sql(
         category="jra",
-        year_from=2006,
-        year_to=2026,
+        from_date="20060101",
+        to_date="20261231",
         feature_version="v1",
         runner=runner,
     )
@@ -253,8 +253,8 @@ def test_fetch_running_style_sql_invokes_runner_with_command() -> None:
     runner = MagicMock(return_value=completed)
     subject.fetch_running_style_sql(
         category="nar",
-        year_from=2010,
-        year_to=2020,
+        from_date="20100101",
+        to_date="20201231",
         feature_version="v1",
         runner=runner,
     )
@@ -271,8 +271,8 @@ def test_fetch_running_style_sql_passes_capture_output_and_text() -> None:
     runner = MagicMock(return_value=completed)
     subject.fetch_running_style_sql(
         category="jra",
-        year_from=2010,
-        year_to=2020,
+        from_date="20100101",
+        to_date="20201231",
         feature_version="v1",
         runner=runner,
     )
@@ -290,8 +290,8 @@ def test_fetch_running_style_sql_raises_on_nonzero_returncode() -> None:
     with pytest.raises(RuntimeError, match="exited with code 1"):
         subject.fetch_running_style_sql(
             category="jra",
-            year_from=2006,
-            year_to=2026,
+            from_date="20060101",
+            to_date="20261231",
             feature_version="v1",
             runner=runner,
         )
@@ -306,8 +306,8 @@ def test_fetch_running_style_sql_raises_on_empty_stdout() -> None:
     with pytest.raises(RuntimeError, match="empty stdout"):
         subject.fetch_running_style_sql(
             category="jra",
-            year_from=2006,
-            year_to=2026,
+            from_date="20060101",
+            to_date="20261231",
             feature_version="v1",
             runner=runner,
         )
@@ -834,3 +834,226 @@ def test_main_passes_subprocess_run_as_runner() -> None:
             with patch("generate_running_style_features_local.subprocess.run", return_value=fake_completed) as run_mock:
                 subject.main(argv)
     run_mock.assert_called_once()
+
+
+def test_parse_args_month_from_defaults_to_none() -> None:
+    args = subject.parse_args([
+        "--pg-url", "u",
+        "--output-dir", "/tmp",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2026",
+        "--year-to", "2026",
+        "--category", "jra",
+    ])
+    assert args.month_from is None
+
+
+def test_parse_args_month_to_defaults_to_none() -> None:
+    args = subject.parse_args([
+        "--pg-url", "u",
+        "--output-dir", "/tmp",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2026",
+        "--year-to", "2026",
+        "--category", "jra",
+    ])
+    assert args.month_to is None
+
+
+def test_parse_args_accepts_month_from_january() -> None:
+    args = subject.parse_args([
+        "--pg-url", "u",
+        "--output-dir", "/tmp",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2026",
+        "--year-to", "2026",
+        "--category", "jra",
+        "--month-from", "1",
+    ])
+    assert args.month_from == 1
+
+
+def test_parse_args_accepts_month_to_december() -> None:
+    args = subject.parse_args([
+        "--pg-url", "u",
+        "--output-dir", "/tmp",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2026",
+        "--year-to", "2026",
+        "--category", "jra",
+        "--month-to", "12",
+    ])
+    assert args.month_to == 12
+
+
+def test_parse_args_accepts_mid_month_pair() -> None:
+    args = subject.parse_args([
+        "--pg-url", "u",
+        "--output-dir", "/tmp",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2026",
+        "--year-to", "2026",
+        "--category", "jra",
+        "--month-from", "6",
+        "--month-to", "7",
+    ])
+    assert args.month_from == 6
+    assert args.month_to == 7
+
+
+def test_parse_args_rejects_month_from_below_one() -> None:
+    with pytest.raises(SystemExit):
+        subject.parse_args([
+            "--pg-url", "u",
+            "--output-dir", "/tmp",
+            "--running-style-feature-version", "v1",
+            "--year-from", "2026",
+            "--year-to", "2026",
+            "--category", "jra",
+            "--month-from", "0",
+        ])
+
+
+def test_parse_args_rejects_month_to_above_twelve() -> None:
+    with pytest.raises(SystemExit):
+        subject.parse_args([
+            "--pg-url", "u",
+            "--output-dir", "/tmp",
+            "--running-style-feature-version", "v1",
+            "--year-from", "2026",
+            "--year-to", "2026",
+            "--category", "jra",
+            "--month-to", "13",
+        ])
+
+
+def test_resolve_month_from_defaults_to_one_when_none() -> None:
+    assert subject.resolve_month_from(None) == 1
+
+
+def test_resolve_month_from_returns_supplied_value() -> None:
+    assert subject.resolve_month_from(4) == 4
+
+
+def test_resolve_month_to_defaults_to_twelve_when_none() -> None:
+    assert subject.resolve_month_to(None) == 12
+
+
+def test_resolve_month_to_returns_supplied_value() -> None:
+    assert subject.resolve_month_to(8) == 8
+
+
+def test_build_from_date_defaults_month_to_january() -> None:
+    assert subject.build_from_date(2026, None) == "20260101"
+
+
+def test_build_from_date_uses_supplied_month() -> None:
+    assert subject.build_from_date(2026, 5) == "20260501"
+
+
+def test_build_from_date_zero_pads_single_digit_month() -> None:
+    assert subject.build_from_date(2026, 3) == "20260301"
+
+
+def test_build_to_date_defaults_month_to_december_with_31_days() -> None:
+    assert subject.build_to_date(2026, None) == "20261231"
+
+
+def test_build_to_date_uses_calendar_last_day_for_april() -> None:
+    assert subject.build_to_date(2026, 4) == "20260430"
+
+
+def test_build_to_date_returns_28_for_february_non_leap_year() -> None:
+    assert subject.build_to_date(2025, 2) == "20250228"
+
+
+def test_build_to_date_returns_29_for_february_leap_year() -> None:
+    assert subject.build_to_date(2024, 2) == "20240229"
+
+
+def test_build_from_to_dates_full_year_when_months_omitted() -> None:
+    args = subject.parse_args([
+        "--pg-url", "u",
+        "--output-dir", "/tmp",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2026",
+        "--year-to", "2026",
+        "--category", "jra",
+    ])
+    assert subject.build_from_to_dates(args) == ("20260101", "20261231")
+
+
+def test_build_from_to_dates_one_month_chunk_for_february_leap() -> None:
+    args = subject.parse_args([
+        "--pg-url", "u",
+        "--output-dir", "/tmp",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2024",
+        "--year-to", "2024",
+        "--category", "jra",
+        "--month-from", "2",
+        "--month-to", "2",
+    ])
+    assert subject.build_from_to_dates(args) == ("20240201", "20240229")
+
+
+def test_build_from_to_dates_mid_month_pair() -> None:
+    args = subject.parse_args([
+        "--pg-url", "u",
+        "--output-dir", "/tmp",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2026",
+        "--year-to", "2026",
+        "--category", "jra",
+        "--month-from", "3",
+        "--month-to", "4",
+    ])
+    assert subject.build_from_to_dates(args) == ("20260301", "20260430")
+
+
+def test_run_passes_month_chunk_dates_to_print_sql() -> None:
+    con = MagicMock()
+    connect = MagicMock(return_value=con)
+    completed = MagicMock()
+    completed.returncode = 0
+    completed.stdout = "SELECT race_year FROM pg.t"
+    completed.stderr = ""
+    runner = MagicMock(return_value=completed)
+    args = subject.parse_args([
+        "--pg-url", "postgres://u",
+        "--output-dir", "/tmp/x",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2024",
+        "--year-to", "2024",
+        "--category", "jra",
+        "--month-from", "2",
+        "--month-to", "2",
+    ])
+    with patch.object(subject, "ensure_output_dir"):
+        subject.run(args, connect, runner)
+    cmd = runner.call_args.args[0]
+    assert "20240201" in cmd
+    assert "20240229" in cmd
+
+
+def test_run_passes_full_year_dates_when_months_omitted() -> None:
+    con = MagicMock()
+    connect = MagicMock(return_value=con)
+    completed = MagicMock()
+    completed.returncode = 0
+    completed.stdout = "SELECT race_year FROM pg.t"
+    completed.stderr = ""
+    runner = MagicMock(return_value=completed)
+    args = subject.parse_args([
+        "--pg-url", "postgres://u",
+        "--output-dir", "/tmp/x",
+        "--running-style-feature-version", "v1",
+        "--year-from", "2026",
+        "--year-to", "2026",
+        "--category", "jra",
+    ])
+    with patch.object(subject, "ensure_output_dir"):
+        subject.run(args, connect, runner)
+    cmd = runner.call_args.args[0]
+    assert "20260101" in cmd
+    assert "20261231" in cmd

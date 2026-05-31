@@ -4,7 +4,16 @@
 //   --model-version-jra <m> --model-version-nar <m> \
 //   --model-flatbin-jra <path> --model-flatbin-nar <path> \
 //   [--rs-p-from-flatbin-jra <path>] \
-//   [--max-years-per-run 1] [--phase-a-concurrency 4] [--memory-limit-per-chunk 4GB]
+//   [--max-years-per-run 1] [--phase-a-concurrency 4] [--memory-limit-per-chunk 4GB] \
+//   [--chunk-granularity month]
+// Chunk granularity (Agent D1):
+//   "month" (default): each Phase A spawn covers a single year-month slice
+//     so the SQL pgsql_tmp spill stays roughly an order of magnitude below
+//     the year-chunk baseline (~6 GB / chunk vs ~75 GB). chunk count grows
+//     ~12x, mitigated by --phase-a-concurrency 4+ and a year-level resume
+//     check (a race_year dir is treated as complete once 12 parquet exist).
+//   "year": legacy behaviour kept for one-shot reruns / debugging. spawns
+//     a single Phase A command per year window.
 // Parallel 3-phase orchestrator (Agent Y4 + W4/W6 switch, bucket-eval X5 design + B1 chunk-parallel).
 // All spawned subprocess paths are repo-root relative so the driver works only
 // when launched with cwd=repo root. The Python Phase A script in turn spawns a
@@ -30,6 +39,14 @@ import { RUNNING_STYLE_FEATURE_VERSION } from "./running-style-feature-version";
 
 const PARQUET_EXTENSION = ".parquet";
 
+export type ChunkGranularity = "year" | "month";
+export const CHUNK_GRANULARITIES: readonly ChunkGranularity[] = ["year", "month"];
+const CHUNK_GRANULARITY_SET: ReadonlySet<string> = new Set<string>(CHUNK_GRANULARITIES);
+
+export const DEFAULT_CHUNK_GRANULARITY: ChunkGranularity = "month";
+export const MONTHS_PER_YEAR = 12;
+export const ALL_MONTHS: readonly number[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+
 interface GenerateRunningStyleLocalOptions {
   pgUrl: string;
   runningStyleFeatureVersion: string;
@@ -38,6 +55,7 @@ interface GenerateRunningStyleLocalOptions {
   memoryLimitPerChunk: string;
   phaseAConcurrency: number;
   maxYearsPerRun: number;
+  chunkGranularity: ChunkGranularity;
   ignoreNightWindow: boolean;
   outputRoot: string;
   modelVersionJra: string;
@@ -88,6 +106,11 @@ interface ChunkParquetCheckArgs {
   yearTo: number;
 }
 
+interface MonthChunkParquetCheckArgs {
+  featuresDir: string;
+  year: number;
+}
+
 interface CategoryWindow {
   category: "jra" | "nar";
   years: readonly number[];
@@ -102,6 +125,8 @@ interface PhaseAArgs {
   featureVersion: string;
   yearFrom: number;
   yearTo: number;
+  monthFrom: number | null;
+  monthTo: number | null;
   category: "jra" | "nar";
   threads: number;
   memoryLimit: string;
@@ -162,6 +187,16 @@ interface YearChunk {
   yearTo: number;
 }
 
+interface MonthChunk {
+  year: number;
+  month: number;
+}
+
+interface YearMonth {
+  year: number;
+  month: number;
+}
+
 export const COLIMA_MIN_CPU = 8;
 export const COLIMA_MIN_MEMORY_GIB = 24;
 export const COLIMA_MIN_DISK_GIB = 100;
@@ -202,6 +237,15 @@ const requireValue = (name: string, value: string | undefined): string => {
 
 const parseBooleanFlag = (raw: string | undefined): boolean => raw === "1" || raw === "true";
 
+const isChunkGranularity = (raw: string): raw is ChunkGranularity => CHUNK_GRANULARITY_SET.has(raw);
+
+const parseChunkGranularity = (raw: string): ChunkGranularity => {
+  if (!isChunkGranularity(raw)) {
+    throw new Error(`--chunk-granularity must be one of ${CHUNK_GRANULARITIES.join(", ")}.`);
+  }
+  return raw;
+};
+
 export const isJraV2ModelVersion = (modelVersion: string): boolean =>
   modelVersion.includes(JRA_V2_MODEL_TAG);
 
@@ -213,6 +257,7 @@ export const buildDefaultOptions = (): GenerateRunningStyleLocalOptions => ({
   memoryLimitPerChunk: DEFAULT_MEMORY_LIMIT_PER_CHUNK,
   phaseAConcurrency: DEFAULT_PHASE_A_CONCURRENCY,
   maxYearsPerRun: DEFAULT_MAX_YEARS_PER_RUN,
+  chunkGranularity: DEFAULT_CHUNK_GRANULARITY,
   ignoreNightWindow: false,
   outputRoot: DEFAULT_OUTPUT_ROOT,
   modelVersionJra: "",
@@ -254,6 +299,10 @@ const applyArg = (
   }
   if (name === "--max-years-per-run") {
     options.maxYearsPerRun = Number(requireValue(name, value));
+    return { advanceBy: 2 };
+  }
+  if (name === "--chunk-granularity") {
+    options.chunkGranularity = parseChunkGranularity(requireValue(name, value));
     return { advanceBy: 2 };
   }
   if (name === "--ignore-night-window") {
@@ -392,7 +441,15 @@ export const buildCategoryPredictionsDir = (
   category: "jra" | "nar",
 ): string => `${buildPredictionsRoot(options)}/category=${category}`;
 
-export const buildPhaseACommand = (args: PhaseAArgs): readonly string[] => [
+const buildPhaseAMonthTokens = (
+  monthFrom: number | null,
+  monthTo: number | null,
+): readonly string[] => {
+  if (monthFrom === null || monthTo === null) return [];
+  return ["--month-from", String(monthFrom), "--month-to", String(monthTo)];
+};
+
+const buildPhaseABaseTokens = (args: PhaseAArgs): readonly string[] => [
   "uv",
   "--project",
   PHASE_A_UV_PROJECT,
@@ -415,6 +472,11 @@ export const buildPhaseACommand = (args: PhaseAArgs): readonly string[] => [
   String(args.threads),
   "--memory-limit",
   args.memoryLimit,
+];
+
+export const buildPhaseACommand = (args: PhaseAArgs): readonly string[] => [
+  ...buildPhaseABaseTokens(args),
+  ...buildPhaseAMonthTokens(args.monthFrom, args.monthTo),
 ];
 
 const buildPhaseBBaseTokens = (args: PhaseBArgs): readonly string[] => [
@@ -479,6 +541,15 @@ export const chunkYears = (years: readonly number[], chunkSize: number): readonl
     .map((offset) => buildYearChunkAt(years, offset, chunkSize))
     .filter((entry): entry is YearChunk => entry !== null);
 };
+
+const expandYearToMonths = (year: number): readonly YearMonth[] =>
+  ALL_MONTHS.map((month) => ({ year, month }));
+
+export const expandYearsToMonths = (years: readonly number[]): readonly YearMonth[] =>
+  years.flatMap(expandYearToMonths);
+
+export const chunkYearsByMonth = (years: readonly number[]): readonly MonthChunk[] =>
+  expandYearsToMonths(years).map(({ year, month }) => ({ year, month }));
 
 const summarizeCategory = (window: CategoryWindow): ManifestCategorySummary => {
   const head = window.years[0];
@@ -564,7 +635,17 @@ export const chunkHasExistingParquet = async (
   return results.every((hit) => hit);
 };
 
-const runPhaseAForChunk = async (
+export const yearHasFullMonthParquet = async (
+  listDirectoryEntries: ListDirectoryEntriesFn,
+  args: MonthChunkParquetCheckArgs,
+): Promise<boolean> => {
+  const dir = buildChunkYearDir(args.featuresDir, args.year);
+  const entries = await listDirectoryEntries(dir).catch(() => [] satisfies readonly string[]);
+  const parquetCount = entries.filter(isParquetEntry).length;
+  return parquetCount >= MONTHS_PER_YEAR;
+};
+
+const runPhaseAForYearChunk = async (
   deps: RunDeps,
   options: GenerateRunningStyleLocalOptions,
   window: CategoryWindow,
@@ -590,6 +671,8 @@ const runPhaseAForChunk = async (
     featureVersion: options.runningStyleFeatureVersion,
     yearFrom: chunk.yearFrom,
     yearTo: chunk.yearTo,
+    monthFrom: null,
+    monthTo: null,
     category: window.category,
     threads: options.threads,
     memoryLimit: resolveMemoryLimitPerChunk(options),
@@ -598,6 +681,46 @@ const runPhaseAForChunk = async (
   if (result.exitCode !== 0) {
     throw new Error(
       `Phase A failed for category=${window.category} years=${chunk.yearFrom}-${chunk.yearTo}.`,
+    );
+  }
+  await deps.sleep(PER_YEAR_SLEEP_MS);
+};
+
+const runPhaseAForMonthChunk = async (
+  deps: RunDeps,
+  options: GenerateRunningStyleLocalOptions,
+  window: CategoryWindow,
+  chunk: MonthChunk,
+): Promise<void> => {
+  const featuresDir = buildCategoryFeaturesDir(options, window.category);
+  if (!options.force) {
+    const skip = await yearHasFullMonthParquet(deps.listDirectoryEntries, {
+      featuresDir,
+      year: chunk.year,
+    });
+    if (skip) {
+      deps.log(
+        `[Phase A] skip ${window.category} ${chunk.year}-${chunk.month} (year-level resume: 12 parquet found)`,
+      );
+      return;
+    }
+  }
+  const command = buildPhaseACommand({
+    pgUrl: options.pgUrl,
+    outputDir: featuresDir,
+    featureVersion: options.runningStyleFeatureVersion,
+    yearFrom: chunk.year,
+    yearTo: chunk.year,
+    monthFrom: chunk.month,
+    monthTo: chunk.month,
+    category: window.category,
+    threads: options.threads,
+    memoryLimit: resolveMemoryLimitPerChunk(options),
+  });
+  const result = await deps.spawn(command);
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `Phase A failed for category=${window.category} year=${chunk.year} month=${chunk.month}.`,
     );
   }
   await deps.sleep(PER_YEAR_SLEEP_MS);
@@ -668,13 +791,39 @@ const runPhaseCForCategory = async (
   }
 };
 
+const buildPhaseAYearTasks = (
+  deps: RunDeps,
+  options: GenerateRunningStyleLocalOptions,
+  window: CategoryWindow,
+): ReadonlyArray<() => Promise<void>> => {
+  const chunks = chunkYears(window.years, options.maxYearsPerRun);
+  return chunks.map((chunk) => () => runPhaseAForYearChunk(deps, options, window, chunk));
+};
+
+const buildPhaseAMonthTasks = (
+  deps: RunDeps,
+  options: GenerateRunningStyleLocalOptions,
+  window: CategoryWindow,
+): ReadonlyArray<() => Promise<void>> => {
+  const chunks = chunkYearsByMonth(window.years);
+  return chunks.map((chunk) => () => runPhaseAForMonthChunk(deps, options, window, chunk));
+};
+
+const buildPhaseATasks = (
+  deps: RunDeps,
+  options: GenerateRunningStyleLocalOptions,
+  window: CategoryWindow,
+): ReadonlyArray<() => Promise<void>> => {
+  if (options.chunkGranularity === "month") return buildPhaseAMonthTasks(deps, options, window);
+  return buildPhaseAYearTasks(deps, options, window);
+};
+
 const runPhaseAForCategory = (
   deps: RunDeps,
   options: GenerateRunningStyleLocalOptions,
   window: CategoryWindow,
 ): Promise<void> => {
-  const chunks = chunkYears(window.years, options.maxYearsPerRun);
-  const tasks = chunks.map((chunk) => () => runPhaseAForChunk(deps, options, window, chunk));
+  const tasks = buildPhaseATasks(deps, options, window);
   return runVoidTasksWithConcurrencyLimit(tasks, options.phaseAConcurrency);
 };
 

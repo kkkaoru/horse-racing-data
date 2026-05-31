@@ -24,6 +24,7 @@ repo-root-relative path):
 from __future__ import annotations
 
 import argparse
+import calendar
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -52,6 +53,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--running-style-feature-version", required=True)
     parser.add_argument("--year-from", required=True, type=int)
     parser.add_argument("--year-to", required=True, type=int)
+    parser.add_argument(
+        "--month-from",
+        type=int,
+        choices=list(range(1, 13)),
+        required=False,
+        default=None,
+        help="(optional) Start month 1-12. Defaults to 1 when unspecified.",
+    )
+    parser.add_argument(
+        "--month-to",
+        type=int,
+        choices=list(range(1, 13)),
+        required=False,
+        default=None,
+        help="(optional) End month 1-12. Defaults to 12 when unspecified.",
+    )
     parser.add_argument("--category", required=True, choices=list(SUPPORTED_CATEGORIES))
     parser.add_argument("--threads", type=int, default=DEFAULT_THREADS)
     parser.add_argument("--memory-limit", default=DEFAULT_MEMORY_LIMIT)
@@ -75,11 +92,37 @@ def year_to_yyyymmdd_to(year: int) -> str:
     return f"{year:04d}1231"
 
 
+def resolve_month_from(month_from: int | None) -> int:
+    return month_from if month_from is not None else 1
+
+
+def resolve_month_to(month_to: int | None) -> int:
+    return month_to if month_to is not None else 12
+
+
+def build_from_date(year_from: int, month_from: int | None) -> str:
+    month = resolve_month_from(month_from)
+    return f"{year_from:04d}{month:02d}01"
+
+
+def build_to_date(year_to: int, month_to: int | None) -> str:
+    month = resolve_month_to(month_to)
+    last_day = calendar.monthrange(year_to, month)[1]
+    return f"{year_to:04d}{month:02d}{last_day:02d}"
+
+
+def build_from_to_dates(args: argparse.Namespace) -> tuple[str, str]:
+    return (
+        build_from_date(args.year_from, args.month_from),
+        build_to_date(args.year_to, args.month_to),
+    )
+
+
 def build_print_sql_command(
     *,
     category: str,
-    year_from: int,
-    year_to: int,
+    from_date: str,
+    to_date: str,
     feature_version: str,
 ) -> list[str]:
     return [
@@ -89,9 +132,9 @@ def build_print_sql_command(
         "--source",
         category,
         "--from-date",
-        year_to_yyyymmdd_from(year_from),
+        from_date,
         "--to-date",
-        year_to_yyyymmdd_to(year_to),
+        to_date,
         "--feature-version",
         feature_version,
     ]
@@ -100,15 +143,15 @@ def build_print_sql_command(
 def fetch_running_style_sql(
     *,
     category: str,
-    year_from: int,
-    year_to: int,
+    from_date: str,
+    to_date: str,
     feature_version: str,
     runner: SubprocessRunner,
 ) -> str:
     command = build_print_sql_command(
         category=category,
-        year_from=year_from,
-        year_to=year_to,
+        from_date=from_date,
+        to_date=to_date,
         feature_version=feature_version,
     )
     completed = runner(command, capture_output=True, check=False, text=True)
@@ -184,10 +227,11 @@ def run(
 ) -> None:
     validate_year_range(args.year_from, args.year_to)
     ensure_output_dir(args.output_dir)
+    from_date, to_date = build_from_to_dates(args)
     select_sql = fetch_running_style_sql(
         category=args.category,
-        year_from=args.year_from,
-        year_to=args.year_to,
+        from_date=from_date,
+        to_date=to_date,
         feature_version=args.running_style_feature_version,
         runner=runner,
     )
