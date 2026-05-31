@@ -120,6 +120,7 @@ class LoadArguments(TypedDict):
     predictions_parquet_glob: str
     temp_table_name: str
     running_style_feature_version: str
+    model_version: str
     category: str
     year_from: int
     year_to: int
@@ -131,6 +132,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--predictions-parquet-glob", type=str, required=True)
     parser.add_argument("--temp-table-name", type=str, default=DEFAULT_TEMP_TABLE)
     parser.add_argument("--running-style-feature-version", type=str, required=True)
+    parser.add_argument("--model-version", type=str, required=True)
     parser.add_argument("--category", type=str, choices=list(SUPPORTED_CATEGORIES), required=True)
     parser.add_argument("--year-from", type=int, required=True)
     parser.add_argument("--year-to", type=int, required=True)
@@ -143,6 +145,7 @@ def normalize_arguments(args: argparse.Namespace) -> LoadArguments:
         "predictions_parquet_glob": args.predictions_parquet_glob,
         "temp_table_name": args.temp_table_name,
         "running_style_feature_version": args.running_style_feature_version,
+        "model_version": args.model_version,
         "category": args.category,
         "year_from": int(args.year_from),
         "year_to": int(args.year_to),
@@ -528,6 +531,7 @@ def main(argv: list[str] | None = None) -> None:
                 "year_from": args["year_from"],
                 "year_to": args["year_to"],
                 "running_style_feature_version": args["running_style_feature_version"],
+                "model_version": args["model_version"],
             },
             ensure_ascii=False,
         )
