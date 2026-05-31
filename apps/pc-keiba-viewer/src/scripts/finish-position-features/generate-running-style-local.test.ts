@@ -6,6 +6,8 @@ import {
   buildCategoryFeaturesDir,
   buildCategoryLogitsDir,
   buildCategoryPredictionsDir,
+  buildChunkYearDir,
+  buildChunkYearRange,
   buildDefaultOptions,
   buildFeaturesRoot,
   buildLogitsRoot,
@@ -14,6 +16,7 @@ import {
   buildPhaseBCommand,
   buildPhaseCCommand,
   buildPredictionsRoot,
+  chunkHasExistingParquet,
   chunkYears,
   isInsideNightWindow,
   isJraV2ModelVersion,
@@ -22,6 +25,7 @@ import {
   runGenerateRunningStyleLocal,
   runVoidTasksWithConcurrencyLimit,
   COLIMA_MIN_CPU,
+  DEFAULT_FORCE,
   DEFAULT_MAX_YEARS_PER_RUN,
   DEFAULT_MEMORY_LIMIT_PER_CHUNK,
   DEFAULT_PHASE_A_CONCURRENCY,
@@ -738,6 +742,8 @@ describe("generate-running-style-local", () => {
         sleep,
         probeColima,
         now: () => FIXED_DAY_DATE,
+        log: () => undefined,
+        listDirectoryEntries: () => Promise.resolve([]),
       }),
     ).rejects.toThrowError(
       "Outside JST night window 23-04. Pass --ignore-night-window 1 to bypass.",
@@ -766,6 +772,8 @@ describe("generate-running-style-local", () => {
         sleep,
         probeColima,
         now: () => FIXED_DAY_DATE,
+        log: () => undefined,
+        listDirectoryEntries: () => Promise.resolve([]),
       }),
     ).rejects.toThrowError("Colima CPU 2 below minimum 8.");
     expect(spawn).not.toHaveBeenCalled();
@@ -801,6 +809,8 @@ describe("generate-running-style-local", () => {
       sleep,
       probeColima,
       now: () => FIXED_NIGHT_DATE,
+      log: () => undefined,
+      listDirectoryEntries: () => Promise.resolve([]),
     });
     const firstA = spawnCalls.indexOf(PHASE_A_SCRIPT);
     const firstB = spawnCalls.indexOf(PHASE_B_SCRIPT);
@@ -844,6 +854,8 @@ describe("generate-running-style-local", () => {
       sleep,
       probeColima,
       now: () => FIXED_NIGHT_DATE,
+      log: () => undefined,
+      listDirectoryEntries: () => Promise.resolve([]),
     });
     expect(phaseBCategories.toSorted()).toStrictEqual(["jra", "nar"]);
     expect(phaseCInvocations.length).toBe(2);
@@ -884,6 +896,8 @@ describe("generate-running-style-local", () => {
       sleep,
       probeColima,
       now: () => FIXED_NIGHT_DATE,
+      log: () => undefined,
+      listDirectoryEntries: () => Promise.resolve([]),
     });
     expect(phaseCInputs).toStrictEqual(phaseBOutputs);
   });
@@ -923,6 +937,8 @@ describe("generate-running-style-local", () => {
       sleep,
       probeColima,
       now: () => FIXED_NIGHT_DATE,
+      log: () => undefined,
+      listDirectoryEntries: () => Promise.resolve([]),
     });
     const uniquePhaseAOutputs = [...new Set(phaseAOutputs)].toSorted();
     const uniquePhaseBInputs = [...new Set(phaseBInputs)].toSorted();
@@ -959,6 +975,8 @@ describe("generate-running-style-local", () => {
       sleep,
       probeColima,
       now: () => FIXED_NIGHT_DATE,
+      log: () => undefined,
+      listDirectoryEntries: () => Promise.resolve([]),
     });
     expect(phaseBFlatbins.toSorted()).toStrictEqual(["/p/jra.flatbin", "/p/nar.flatbin"]);
   });
@@ -996,6 +1014,8 @@ describe("generate-running-style-local", () => {
       sleep,
       probeColima,
       now: () => FIXED_NIGHT_DATE,
+      log: () => undefined,
+      listDirectoryEntries: () => Promise.resolve([]),
     });
     const jraCmd = jraCommands[0] ?? [];
     const chainIndex = jraCmd.indexOf("--rs-p-from-flatbin");
@@ -1035,6 +1055,8 @@ describe("generate-running-style-local", () => {
       sleep,
       probeColima,
       now: () => FIXED_NIGHT_DATE,
+      log: () => undefined,
+      listDirectoryEntries: () => Promise.resolve([]),
     });
     const narCmd = narCommands[0] ?? [];
     expect(narCmd.includes("--rs-p-from-flatbin")).toBe(false);
@@ -1072,6 +1094,8 @@ describe("generate-running-style-local", () => {
       sleep,
       probeColima,
       now: () => FIXED_NIGHT_DATE,
+      log: () => undefined,
+      listDirectoryEntries: () => Promise.resolve([]),
     });
     const jraCmd = jraCommands[0] ?? [];
     expect(jraCmd.includes("--rs-p-from-flatbin")).toBe(false);
@@ -1107,6 +1131,8 @@ describe("generate-running-style-local", () => {
       sleep,
       probeColima,
       now: () => FIXED_NIGHT_DATE,
+      log: () => undefined,
+      listDirectoryEntries: () => Promise.resolve([]),
     });
     expect(phaseBPredictedAts).toStrictEqual([
       "2026-05-30T16:00:00.000Z",
@@ -1137,6 +1163,8 @@ describe("generate-running-style-local", () => {
         sleep,
         probeColima,
         now: () => FIXED_NIGHT_DATE,
+        log: () => undefined,
+        listDirectoryEntries: () => Promise.resolve([]),
       }),
     ).rejects.toThrowError("Phase A failed");
   });
@@ -1167,6 +1195,8 @@ describe("generate-running-style-local", () => {
         sleep,
         probeColima,
         now: () => FIXED_NIGHT_DATE,
+        log: () => undefined,
+        listDirectoryEntries: () => Promise.resolve([]),
       }),
     ).rejects.toThrowError(/Phase B failed for category=(jra|nar)\.$/);
   });
@@ -1197,6 +1227,8 @@ describe("generate-running-style-local", () => {
         sleep,
         probeColima,
         now: () => FIXED_NIGHT_DATE,
+        log: () => undefined,
+        listDirectoryEntries: () => Promise.resolve([]),
       }),
     ).rejects.toThrowError(/Phase C failed for category=(jra|nar)\.$/);
   });
@@ -1368,6 +1400,8 @@ describe("generate-running-style-local", () => {
       sleep,
       probeColima,
       now: () => FIXED_NIGHT_DATE,
+      log: () => undefined,
+      listDirectoryEntries: () => Promise.resolve([]),
     });
     expect(phaseAYearPairs.every((pair) => pair.split("-")[0] === pair.split("-")[1])).toBe(true);
   });
@@ -1404,6 +1438,8 @@ describe("generate-running-style-local", () => {
       sleep,
       probeColima,
       now: () => FIXED_NIGHT_DATE,
+      log: () => undefined,
+      listDirectoryEntries: () => Promise.resolve([]),
     });
     expect(phaseAMemoryLimits.every((limit) => limit === "4GB")).toBe(true);
   });
@@ -1439,6 +1475,8 @@ describe("generate-running-style-local", () => {
       sleep,
       probeColima,
       now: () => FIXED_NIGHT_DATE,
+      log: () => undefined,
+      listDirectoryEntries: () => Promise.resolve([]),
     });
     expect(phaseAMemoryLimits.every((limit) => limit === "16GB")).toBe(true);
   });
@@ -1473,9 +1511,262 @@ describe("generate-running-style-local", () => {
       sleep,
       probeColima,
       now: () => FIXED_NIGHT_DATE,
+      log: () => undefined,
+      listDirectoryEntries: () => Promise.resolve([]),
     });
     const firstNarIndex = phaseACategories.indexOf("nar");
     const lastJraIndex = phaseACategories.lastIndexOf("jra");
     expect(firstNarIndex < lastJraIndex).toBe(true);
+  });
+
+  test("DEFAULT_FORCE equals false so existing parquet is skipped by default", () => {
+    expect(DEFAULT_FORCE).toBe(false);
+  });
+
+  test("buildDefaultOptions returns force=false", () => {
+    expect(buildDefaultOptions().force).toBe(false);
+  });
+
+  test("parseArgs accepts --force 1 and sets force to true", () => {
+    const options = parseArgs([
+      "--pg-url",
+      "u",
+      "--model-version-jra",
+      "mj",
+      "--model-version-nar",
+      "mn",
+      "--model-flatbin-jra",
+      "/p/jra.flatbin",
+      "--model-flatbin-nar",
+      "/p/nar.flatbin",
+      "--force",
+      "1",
+    ]);
+    expect(options.force).toBe(true);
+  });
+
+  test("parseArgs accepts --force 0 and keeps force false", () => {
+    const options = parseArgs([
+      "--pg-url",
+      "u",
+      "--model-version-jra",
+      "mj",
+      "--model-version-nar",
+      "mn",
+      "--model-flatbin-jra",
+      "/p/jra.flatbin",
+      "--model-flatbin-nar",
+      "/p/nar.flatbin",
+      "--force",
+      "0",
+    ]);
+    expect(options.force).toBe(false);
+  });
+
+  test("buildChunkYearRange expands single-year chunk to one year", () => {
+    expect(buildChunkYearRange({ yearFrom: 2024, yearTo: 2024 })).toStrictEqual([2024]);
+  });
+
+  test("buildChunkYearRange expands multi-year chunk into ascending sequence", () => {
+    expect(buildChunkYearRange({ yearFrom: 2022, yearTo: 2024 })).toStrictEqual([2022, 2023, 2024]);
+  });
+
+  test("buildChunkYearDir composes race_year=YEAR subpath under features dir", () => {
+    expect(buildChunkYearDir("/tmp/v1/features/category=jra", 2024)).toBe(
+      "/tmp/v1/features/category=jra/race_year=2024",
+    );
+  });
+
+  test("chunkHasExistingParquet returns true when every year directory has a parquet file", async () => {
+    const listDirectoryEntries = vi.fn<(path: string) => Promise<readonly string[]>>(() =>
+      Promise.resolve(["data_0.parquet"]),
+    );
+    const result = await chunkHasExistingParquet(listDirectoryEntries, {
+      featuresDir: "/tmp/v1/features/category=jra",
+      yearFrom: 2023,
+      yearTo: 2024,
+    });
+    expect(result).toBe(true);
+  });
+
+  test("chunkHasExistingParquet returns false when at least one year directory is missing parquet", async () => {
+    const listDirectoryEntries = vi.fn<(path: string) => Promise<readonly string[]>>((path) =>
+      Promise.resolve(path.endsWith("race_year=2024") ? [] : ["data_0.parquet"]),
+    );
+    const result = await chunkHasExistingParquet(listDirectoryEntries, {
+      featuresDir: "/tmp/v1/features/category=jra",
+      yearFrom: 2023,
+      yearTo: 2024,
+    });
+    expect(result).toBe(false);
+  });
+
+  test("chunkHasExistingParquet returns false when listing rejects (directory missing)", async () => {
+    const listDirectoryEntries = vi.fn<(path: string) => Promise<readonly string[]>>(() =>
+      Promise.reject(new Error("ENOENT")),
+    );
+    const result = await chunkHasExistingParquet(listDirectoryEntries, {
+      featuresDir: "/tmp/v1/features/category=jra",
+      yearFrom: 2023,
+      yearTo: 2023,
+    });
+    expect(result).toBe(false);
+  });
+
+  test("chunkHasExistingParquet returns false when directory contains only non-parquet files", async () => {
+    const listDirectoryEntries = vi.fn<(path: string) => Promise<readonly string[]>>(() =>
+      Promise.resolve(["foo.txt", "bar.csv"]),
+    );
+    const result = await chunkHasExistingParquet(listDirectoryEntries, {
+      featuresDir: "/tmp/v1/features/category=jra",
+      yearFrom: 2024,
+      yearTo: 2024,
+    });
+    expect(result).toBe(false);
+  });
+
+  test("runGenerateRunningStyleLocal Phase A skips chunks when listDirectoryEntries reports existing parquet", async () => {
+    const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(() =>
+      Promise.resolve({ exitCode: 0 }),
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const log = vi.fn<(message: string) => void>(() => undefined);
+    const listDirectoryEntries = vi.fn<(path: string) => Promise<readonly string[]>>(() =>
+      Promise.resolve(["data_0.parquet"]),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "mj",
+      modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      ignoreNightWindow: true,
+      outputRoot: "/tmp/resume-skip",
+    };
+    await runGenerateRunningStyleLocal(options, {
+      spawn,
+      sleep,
+      probeColima,
+      now: () => FIXED_NIGHT_DATE,
+      log,
+      listDirectoryEntries,
+    });
+    const phaseASpawnCount = spawn.mock.calls.filter(
+      (call) => call[0][5] === PHASE_A_SCRIPT,
+    ).length;
+    expect(phaseASpawnCount).toBe(0);
+  });
+
+  test("runGenerateRunningStyleLocal Phase A logs a skip message per chunk when parquet exists", async () => {
+    const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(() =>
+      Promise.resolve({ exitCode: 0 }),
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const log = vi.fn<(message: string) => void>(() => undefined);
+    const listDirectoryEntries = vi.fn<(path: string) => Promise<readonly string[]>>(() =>
+      Promise.resolve(["data_0.parquet"]),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "mj",
+      modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      ignoreNightWindow: true,
+      outputRoot: "/tmp/resume-log",
+    };
+    await runGenerateRunningStyleLocal(options, {
+      spawn,
+      sleep,
+      probeColima,
+      now: () => FIXED_NIGHT_DATE,
+      log,
+      listDirectoryEntries,
+    });
+    const hadSkipLog = log.mock.calls.some(
+      (call) => typeof call[0] === "string" && call[0].startsWith("[Phase A] skip "),
+    );
+    expect(hadSkipLog).toBe(true);
+  });
+
+  test("runGenerateRunningStyleLocal Phase A still spawns when force=true even if parquet exists", async () => {
+    const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(() =>
+      Promise.resolve({ exitCode: 0 }),
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const log = vi.fn<(message: string) => void>(() => undefined);
+    const listDirectoryEntries = vi.fn<(path: string) => Promise<readonly string[]>>(() =>
+      Promise.resolve(["data_0.parquet"]),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "mj",
+      modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      ignoreNightWindow: true,
+      outputRoot: "/tmp/resume-force",
+      force: true,
+    };
+    await runGenerateRunningStyleLocal(options, {
+      spawn,
+      sleep,
+      probeColima,
+      now: () => FIXED_NIGHT_DATE,
+      log,
+      listDirectoryEntries,
+    });
+    const phaseASpawnCount = spawn.mock.calls.filter(
+      (call) => call[0][5] === PHASE_A_SCRIPT,
+    ).length;
+    expect(phaseASpawnCount > 0).toBe(true);
+  });
+
+  test("runGenerateRunningStyleLocal Phase A spawns when parquet listing is empty (no existing data)", async () => {
+    const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(() =>
+      Promise.resolve({ exitCode: 0 }),
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const log = vi.fn<(message: string) => void>(() => undefined);
+    const listDirectoryEntries = vi.fn<(path: string) => Promise<readonly string[]>>(() =>
+      Promise.resolve([]),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "mj",
+      modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      ignoreNightWindow: true,
+      outputRoot: "/tmp/resume-empty",
+    };
+    await runGenerateRunningStyleLocal(options, {
+      spawn,
+      sleep,
+      probeColima,
+      now: () => FIXED_NIGHT_DATE,
+      log,
+      listDirectoryEntries,
+    });
+    const phaseASpawnCount = spawn.mock.calls.filter(
+      (call) => call[0][5] === PHASE_A_SCRIPT,
+    ).length;
+    expect(phaseASpawnCount > 0).toBe(true);
   });
 });
