@@ -23,7 +23,7 @@
     "apps/horse-racing-duckdb": {
       "name": "horse-racing-duckdb",
       "dependencies": {
-        "@ducklings/workers": "1.4.4",
+        "@ducklings/workers": "1.5.2",
         "hono": "4.7.5",
         "horse-racing-schema": "workspace:*",
       },
@@ -372,7 +372,7 @@
 
     "@duckdb/node-bindings-win32-x64": ["@duckdb/node-bindings-win32-x64@1.5.3-r.2", "", { "os": "win32", "cpu": "x64" }, "sha512-/oxN8ZFf2LxhForL+Uc+lEqnzHNvhSEsu3blnk3zu73rKTbD/WvPYIecrenb1ysApRK9ElGxitIYFx8PBuVKxg=="],
 
-    "@ducklings/workers": ["@ducklings/workers@1.4.4", "", { "dependencies": { "@uwdata/flechette": "^2.2.6" }, "peerDependencies": { "vite": "^5.0.0 || ^6.0.0 || ^7.0.0" }, "optionalPeers": ["vite"] }, "sha512-ob4PXEtBT9a826M4nbQ43pTI4nJ6Xo75gfr9abUCWN/pt/vmuvCObqbm///WEcloNreXox+eysfkz1GdhZwcEA=="],
+    "@ducklings/workers": ["@ducklings/workers@1.5.2", "", { "dependencies": { "@uwdata/flechette": "^2.3.0" }, "peerDependencies": { "vite": "^5.0.0 || ^6.0.0 || ^7.0.0" }, "optionalPeers": ["vite"] }, "sha512-KBPYzntnvV8cDXrR5GAebIzDBvV318uwrLMmja8KHbDQ0XQkOJDp1pxACnY4S2JHYv5Y+SfXlkeuFp7EraThtw=="],
 
     "@ecies/ciphers": ["@ecies/ciphers@0.2.6", "", { "peerDependencies": { "@noble/ciphers": "^1.0.0" } }, "sha512-patgsRPKGkhhoBjETV4XxD0En4ui5fbX0hzayqI3M8tvNMGUoUvmyYAIWwlxBc1KX5cturfqByYdj5bYGRpN9g=="],
 
