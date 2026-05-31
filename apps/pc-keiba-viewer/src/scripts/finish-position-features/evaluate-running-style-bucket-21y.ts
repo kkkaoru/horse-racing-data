@@ -9,9 +9,10 @@ import type { BucketEvalRpcChildLike } from "./bucket-eval-rpc-client";
 import {
   buildRunningStyleAnalyzeSqls,
   buildRunningStyleBucketAggregateSql,
+  buildRunningStyleBucketBatchUpsertSql,
   buildRunningStyleBucketEvaluationsDdl,
-  buildRunningStyleBucketUpsertSql,
 } from "./evaluate-running-style-bucket-sql";
+import { runVoidTasksWithConcurrencyLimit } from "./generate-running-style-local";
 
 export type RunningStyleBucketCategory = "jra" | "nar";
 
@@ -28,6 +29,8 @@ export interface RunningStyleBucketEvalCliOptions {
   minColimaCpu: number;
   minColimaMemoryGb: number;
   predictionsRoot: string;
+  categoryFilter: RunningStyleBucketCategory | null;
+  chunkConcurrency: number;
 }
 
 export interface RunningStyleCategoryYearWindow {
@@ -150,11 +153,18 @@ const DEFAULT_PER_YEAR_SLEEP_MS = 2_000;
 const DEFAULT_PER_CATEGORY_SLEEP_MS = 5_000;
 const DEFAULT_MIN_COLIMA_CPU = 8;
 const DEFAULT_MIN_COLIMA_MEMORY_GB = 24;
+const DEFAULT_CHUNK_CONCURRENCY = 1;
+const MIN_CHUNK_CONCURRENCY = 1;
+const MAX_CHUNK_CONCURRENCY = 10;
+// PG bind-parameter cap is 65535. We have 41 columns per row, so 100 rows
+// emit 4100 placeholders — well within budget while reducing round-trips by
+// 100x compared to the per-row UPSERT path.
+const UPSERT_BATCH_SIZE = 100;
 const DEFAULT_PREDICTIONS_ROOT =
   "apps/pc-keiba-viewer/tmp/bucket-eval/running-style/v1/predictions";
-const DEFAULT_PREDICTIONS_PARQUET_GLOB_SUFFIX = "/**/*.parquet";
-const PYTHON_LOADER_SCRIPT = "src/scripts/load_running_style_predictions.py";
+const PYTHON_LOADER_SCRIPT = "apps/pc-keiba-viewer/src/scripts/load_running_style_predictions.py";
 const PYTHON_LOADER_TEMP_TABLE = "bucket_running_style_predictions_loaded";
+const PYTHON_LOADER_UV_PROJECT = "apps/pc-keiba-viewer";
 const JRA_YEARS = [
   2006, 2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021,
   2022, 2023, 2024, 2025, 2026,
@@ -178,7 +188,9 @@ export const buildUsageText = (): string =>
     "    --model-version-nar <nar-model> \\",
     "    [--max-years-per-run 5] \\",
     "    [--statement-timeout-ms 900000] \\",
-    "    [--ignore-night-window]",
+    "    [--ignore-night-window] \\",
+    "    [--category jra|nar] \\",
+    "    [--chunk-concurrency 1]",
   ].join("\n");
 
 const requireValue = (name: string, value: string | undefined): string => {
@@ -199,7 +211,28 @@ export const initialOptions = (): RunningStyleBucketEvalCliOptions => ({
   minColimaCpu: DEFAULT_MIN_COLIMA_CPU,
   minColimaMemoryGb: DEFAULT_MIN_COLIMA_MEMORY_GB,
   predictionsRoot: DEFAULT_PREDICTIONS_ROOT,
+  categoryFilter: null,
+  chunkConcurrency: DEFAULT_CHUNK_CONCURRENCY,
 });
+
+export const parseChunkConcurrency = (raw: string): number => {
+  const value = Number.parseInt(raw, 10);
+  if (!Number.isFinite(value)) {
+    throw new Error(`--chunk-concurrency must be an integer (got: ${raw})`);
+  }
+  if (value < MIN_CHUNK_CONCURRENCY || value > MAX_CHUNK_CONCURRENCY) {
+    throw new Error(
+      `--chunk-concurrency must be between ${MIN_CHUNK_CONCURRENCY} and ${MAX_CHUNK_CONCURRENCY} (got: ${raw})`,
+    );
+  }
+  return value;
+};
+
+export const parseCategoryFilter = (value: string): RunningStyleBucketCategory => {
+  if (value === "jra") return "jra";
+  if (value === "nar") return "nar";
+  throw new Error(`--category must be one of jra, nar (got: ${value})`);
+};
 
 interface ApplyArgResult {
   advanceBy: number;
@@ -241,6 +274,14 @@ export const applyArg = (
   if (name === "--ignore-night-window") {
     options.ignoreNightWindow = true;
     return { advanceBy: 1 };
+  }
+  if (name === "--category") {
+    options.categoryFilter = parseCategoryFilter(requireValue(name, value));
+    return { advanceBy: 2 };
+  }
+  if (name === "--chunk-concurrency") {
+    options.chunkConcurrency = parseChunkConcurrency(requireValue(name, value));
+    return { advanceBy: 2 };
   }
   if (name === "--help" || name === "-h") {
     console.log(buildUsageText());
@@ -462,6 +503,26 @@ const runAggregateForYear = async (
   return result.rows;
 };
 
+export const chunkRows = <Item>(rows: readonly Item[], batchSize: number): Item[][] => {
+  if (batchSize <= 0) {
+    throw new Error("batchSize must be greater than zero.");
+  }
+  const batchCount = Math.ceil(rows.length / batchSize);
+  return Array.from({ length: batchCount }, (_, batchIndex) =>
+    rows.slice(batchIndex * batchSize, batchIndex * batchSize + batchSize),
+  );
+};
+
+const runBatchUpsert = (
+  runner: RunningStyleBucketQueryRunner,
+  context: RunningStyleUpsertContext,
+  batch: readonly RunningStyleAggregateRow[],
+): Promise<unknown> => {
+  const sql = buildRunningStyleBucketBatchUpsertSql(batch.length);
+  const params = batch.flatMap((row) => buildUpsertParams(context, row));
+  return runner.query(sql, params);
+};
+
 const upsertRows = (
   runner: RunningStyleBucketQueryRunner,
   options: RunningStyleBucketEvalCliOptions,
@@ -469,11 +530,11 @@ const upsertRows = (
   year: number,
   rows: RunningStyleAggregateRow[],
 ): Promise<unknown> => {
-  const upsertSql = buildRunningStyleBucketUpsertSql();
   const { fromDate, toDate } = buildYearDateWindow(year);
   const context: RunningStyleUpsertContext = { options, category, fromDate, toDate };
-  return rows.reduce<Promise<unknown>>(
-    (chain, row) => chain.then(() => runner.query(upsertSql, buildUpsertParams(context, row))),
+  const batches = chunkRows(rows, UPSERT_BATCH_SIZE);
+  return batches.reduce<Promise<unknown>>(
+    (chain, batch) => chain.then(() => runBatchUpsert(runner, context, batch)),
     Promise.resolve(),
   );
 };
@@ -496,13 +557,8 @@ export const processYear = async (
 const runSessionTuning = (
   runner: RunningStyleBucketQueryRunner,
   options: RunningStyleBucketEvalCliOptions,
-): Promise<unknown> => {
-  const sqls = ["begin", ...buildSessionTuningSqls(options.statementTimeoutMs)];
-  return runStatementsSerially(runner, sqls, () => {});
-};
-
-const finalizeSessionTuning = (runner: RunningStyleBucketQueryRunner): Promise<unknown> =>
-  runner.query("commit");
+): Promise<unknown> =>
+  runStatementsSerially(runner, buildSessionTuningSqls(options.statementTimeoutMs), () => {});
 
 const runAnalyzes = (
   pool: RunningStyleBucketQueryRunner,
@@ -574,7 +630,6 @@ export const processCategoryChunk = async (
   try {
     await runSessionTuning(client.runner, options);
     await processYearsWithRunner(deps, options, category, client.runner, chunk, acc);
-    await finalizeSessionTuning(client.runner);
   } finally {
     await client.close();
   }
@@ -586,11 +641,12 @@ const processCategoryChunks = (
   category: string,
   yearChunks: number[][],
   acc: RunningStyleBucketEvalAccumulator,
-): Promise<unknown> =>
-  yearChunks.reduce<Promise<unknown>>(
-    (chain, chunk) => chain.then(() => processCategoryChunk(deps, options, category, chunk, acc)),
-    Promise.resolve(),
+): Promise<void> => {
+  const tasks: ReadonlyArray<() => Promise<void>> = yearChunks.map(
+    (chunk) => () => processCategoryChunk(deps, options, category, chunk, acc),
   );
+  return runVoidTasksWithConcurrencyLimit(tasks, options.chunkConcurrency);
+};
 
 const processCategory = async (
   deps: RunRunningStyleBucketEvalDeps,
@@ -605,16 +661,22 @@ const processCategory = async (
   await deps.sleep(options.perCategorySleepMs);
 };
 
-const processAllCategories = (
+const processAllCategories = async (
   deps: RunRunningStyleBucketEvalDeps,
   options: RunningStyleBucketEvalCliOptions,
   windows: RunningStyleCategoryYearWindow[],
   acc: RunningStyleBucketEvalAccumulator,
-): Promise<unknown> =>
-  windows.reduce<Promise<unknown>>(
-    (chain, window) => chain.then(() => processCategory(deps, options, window, acc)),
-    Promise.resolve(),
-  );
+): Promise<void> => {
+  await Promise.all(windows.map((window) => processCategory(deps, options, window, acc)));
+};
+
+export const filterWindowsByCategory = (
+  windows: RunningStyleCategoryYearWindow[],
+  categoryFilter: RunningStyleBucketCategory | null,
+): RunningStyleCategoryYearWindow[] => {
+  if (categoryFilter === null) return windows;
+  return windows.filter((window) => window.category === categoryFilter);
+};
 
 export const runRunningStyleBucketEval = async (
   deps: RunRunningStyleBucketEvalDeps,
@@ -622,8 +684,9 @@ export const runRunningStyleBucketEval = async (
 ): Promise<RunningStyleBucketEvalAccumulator> => {
   const { options, windows } = request;
   const acc: RunningStyleBucketEvalAccumulator = { totalRows: 0, totalRaces: 0 };
+  const filteredWindows = filterWindowsByCategory(windows, options.categoryFilter);
   await ensureBucketTable(deps.pool, deps.log);
-  await processAllCategories(deps, options, windows, acc);
+  await processAllCategories(deps, options, filteredWindows, acc);
   await runAnalyzes(deps.pool, deps.log);
   return acc;
 };
@@ -654,18 +717,20 @@ const checkColima = async (options: RunningStyleBucketEvalCliOptions): Promise<v
   ensureColimaCapacity(resources, options.minColimaCpu, options.minColimaMemoryGb);
 };
 
-export const buildPredictionsParquetGlob = (predictionsRoot: string): string =>
-  `${predictionsRoot}${DEFAULT_PREDICTIONS_PARQUET_GLOB_SUFFIX}`;
+export const buildPredictionsParquetPath = (predictionsRoot: string, category: string): string =>
+  `${predictionsRoot}/category=${category}`;
 
 export const buildPythonLoaderArgv = (args: RunningStyleBucketChunkLoaderArgs): string[] => [
   "uv",
+  "--project",
+  PYTHON_LOADER_UV_PROJECT,
   "run",
   "python",
   PYTHON_LOADER_SCRIPT,
   "--pg-url",
   args.pgUrl,
   "--predictions-parquet-glob",
-  buildPredictionsParquetGlob(args.predictionsRoot),
+  buildPredictionsParquetPath(args.predictionsRoot, args.category),
   "--temp-table-name",
   PYTHON_LOADER_TEMP_TABLE,
   "--category",

@@ -61,6 +61,26 @@ const CM_CLASS_PAIRS: ReadonlyArray<readonly [string, string]> = [
 
 const LOG_LOSS_CLASSES: ReadonlyArray<string> = ["nige", "senkou", "sashi", "oikomi"];
 
+// Predictions loader (load_running_style_predictions.py) writes
+// target_running_style_class / predicted_class / second_predicted_class as
+// INTEGER columns whose values come from apply-running-style-postproc.ts:
+//   nige=0, senkou=1, sashi=2, oikomi=3 (CLASS_LABELS index order).
+// SQL comparisons must use the integer encoding; comparing to the text label
+// (e.g. target_running_style_class = 'nige') raises
+// "invalid input syntax for type integer".
+const RUNNING_STYLE_CLASS_INDEX_BY_LABEL: Readonly<Record<string, number>> = {
+  nige: 0,
+  senkou: 1,
+  sashi: 2,
+  oikomi: 3,
+};
+
+export const resolveRunningStyleClassIndex = (label: string): number => {
+  const index = RUNNING_STYLE_CLASS_INDEX_BY_LABEL[label];
+  if (index === undefined) throw new Error(`Unknown running-style class label: ${label}`);
+  return index;
+};
+
 interface BuildRunningStyleBucketAggregateSqlArgs {
   modelVersion: string;
   category: string;
@@ -84,13 +104,13 @@ const buildCmColumnName = (actual: string, predicted: string): string =>
   `cm_actual_${actual}_pred_${predicted}_count`;
 
 const buildCmSumCaseSql = (actual: string, predicted: string): string =>
-  `coalesce(sum(case when target_running_style_class = '${actual}' and predicted_class = '${predicted}' then 1 else 0 end), 0) ${buildCmColumnName(actual, predicted)}`;
+  `coalesce(sum(case when target_running_style_class = ${resolveRunningStyleClassIndex(actual)} and predicted_class = ${resolveRunningStyleClassIndex(predicted)} then 1 else 0 end), 0) ${buildCmColumnName(actual, predicted)}`;
 
 const buildLogLossSumCaseSql = (className: string): string =>
-  `coalesce(sum(case when target_running_style_class = '${className}' then -ln(greatest(p_${className}, ${LOG_EPSILON})) else 0 end), 0) log_loss_${className}_sum`;
+  `coalesce(sum(case when target_running_style_class = ${resolveRunningStyleClassIndex(className)} then -ln(greatest(p_${className}, ${LOG_EPSILON})) else 0 end), 0) log_loss_${className}_sum`;
 
 const buildLogLossCountCaseSql = (className: string): string =>
-  `coalesce(sum(case when target_running_style_class = '${className}' then 1 else 0 end), 0) log_loss_${className}_count`;
+  `coalesce(sum(case when target_running_style_class = ${resolveRunningStyleClassIndex(className)} then 1 else 0 end), 0) log_loss_${className}_count`;
 
 const buildTop2HitCountSql = (): string =>
   `coalesce(sum(case when target_running_style_class in (predicted_class, second_predicted_class) then 1 else 0 end), 0) top2_hit_count`;
@@ -98,6 +118,15 @@ const buildTop2HitCountSql = (): string =>
 export const BUCKET_RACE_NAME_INDEX_SQL = `create index if not exists ${BUCKET_TABLE}_race_name
       on ${BUCKET_TABLE} (category, source, race_name, keibajo_code, kyori)
       where race_name is not null`;
+
+// Logical replication publishes UPDATEs on this table, so PG requires a
+// REPLICA IDENTITY. USING INDEX cannot point at the _uq index because PG
+// rejects expression indexes (the unique index wraps nullable columns with
+// coalesce(...)) and also requires every covered column to be NOT NULL, so
+// we fall back to FULL. ALTER TABLE ... REPLICA IDENTITY is idempotent and
+// safe to re-run on every DDL bootstrap.
+export const BUCKET_REPLICA_IDENTITY_SQL = `alter table ${BUCKET_TABLE}
+      replica identity full`;
 
 export const buildRunningStyleBucketEvaluationsDdl = (): string => `
     create table if not exists ${BUCKET_TABLE} (
@@ -149,6 +178,7 @@ export const buildRunningStyleBucketEvaluationsDdl = (): string => `
     create index if not exists ${BUCKET_TABLE}_lookup
       on ${BUCKET_TABLE} (${BUCKET_LOOKUP_INDEX_COLUMNS.join(", ")});
     ${BUCKET_RACE_NAME_INDEX_SQL};
+    ${BUCKET_REPLICA_IDENTITY_SQL};
   `;
 
 export const buildRunningStyleCategoryRaceSourceFilter = (
@@ -201,12 +231,13 @@ export const buildRunningStyleBucketAggregateSql = (
     ),
     race_dims as (
       select r.source, r.kaisai_nen, r.kaisai_tsukihi, r.keibajo_code, r.race_bango,
-             ra.kyori, ra.kyoso_shubetsu_code,
+             nullif(trim(ra.kyori), '')::integer as kyori,
+             ra.kyoso_shubetsu_code,
              ${jokenExpr} as kyoso_joken_code,
              ${conditionKeyExpr} as condition_key,
              ${trackExpr} as track_code,
-             nullif(trim(ra.grade_cd), '') as grade_code,
-             ${buildRunningStyleRaceNameExpressionSql("ra.grade_cd", "ra.kyosomei_hondai")} as race_name
+             nullif(trim(ra.grade_code), '') as grade_code,
+             ${buildRunningStyleRaceNameExpressionSql("ra.grade_code", "ra.kyosomei_hondai")} as race_name
       from races r
       join ${raMeta.table} ra
         on ra.kaisai_nen = r.kaisai_nen
@@ -214,6 +245,10 @@ export const buildRunningStyleBucketAggregateSql = (
        and ra.keibajo_code = r.keibajo_code
        and ra.race_bango = r.race_bango
       where ${raMeta.filter}
+        and ra.kyori is not null
+        and length(trim(ra.kyori)) > 0
+        and ra.kyoso_shubetsu_code is not null
+        and length(trim(ra.kyoso_shubetsu_code)) > 0
     ),
     joined as (
       select d.source, d.keibajo_code, d.kyori, d.kyoso_shubetsu_code,
@@ -277,8 +312,12 @@ const buildUpsertColumnList = (): string[] => [
   "top2_hit_count",
 ];
 
+// psycopg cursor.execute(query, params) requires "%s" placeholders, not the
+// PG-native "$N" form. The Python loader (load_running_style_predictions.py)
+// runs each upsert through psycopg, so passing "$1, $2, ..." results in
+// "the query has 0 placeholders but N parameters were passed".
 const buildUpsertPlaceholderList = (count: number): string =>
-  Array.from({ length: count }, (_, index) => `$${index + 1}`).join(", ");
+  Array.from({ length: count }, () => "%s").join(", ");
 
 const buildAdditiveSetClause = (column: string): string =>
   `${column} = excluded.${column} + ${BUCKET_TABLE}.${column}`;
@@ -294,14 +333,18 @@ const buildAdditiveColumns = (): string[] => [
   "top2_hit_count",
 ];
 
-export const buildRunningStyleBucketUpsertSql = (): string => {
-  const columns = buildUpsertColumnList();
-  const placeholders = buildUpsertPlaceholderList(columns.length);
+const buildBucketUpsertOnConflictClause = (): string => {
   const additiveColumns = buildAdditiveColumns();
-  const setClauses = additiveColumns
+  return additiveColumns
     .map((column) => buildAdditiveSetClause(column))
     .concat(["evaluated_at = now()"])
     .join(",\n      ");
+};
+
+export const buildRunningStyleBucketUpsertSql = (): string => {
+  const columns = buildUpsertColumnList();
+  const placeholders = buildUpsertPlaceholderList(columns.length);
+  const setClauses = buildBucketUpsertOnConflictClause();
   return `
     insert into ${BUCKET_TABLE} (
       ${columns.join(", ")},
@@ -311,6 +354,38 @@ export const buildRunningStyleBucketUpsertSql = (): string => {
       ${placeholders},
       now()
     )
+    on conflict (
+      model_version, running_style_feature_version, category,
+      evaluation_window_from, evaluation_window_to,
+      source, keibajo_code, kyori, kyoso_shubetsu_code,
+      coalesce(kyoso_joken_code,''), coalesce(condition_key,''),
+      coalesce(track_code,''), coalesce(grade_code,''), coalesce(race_name,'')
+    )
+    do update set
+      ${setClauses}
+  `;
+};
+
+const buildBatchValuesRowSql = (columnCount: number): string =>
+  `(${buildUpsertPlaceholderList(columnCount)}, now())`;
+
+// Multi-row UPSERT path. PostgreSQL caps bind parameters at 65535, so callers
+// must keep rowCount * column-count under that limit (41 columns * 100 rows =
+// 4100 placeholders, well within budget). ON CONFLICT clause stays additive so
+// re-running the same window keeps producing identical totals as the
+// single-row variant did.
+export const buildRunningStyleBucketBatchUpsertSql = (rowCount: number): string => {
+  if (rowCount <= 0) throw new Error("rowCount must be greater than zero.");
+  const columns = buildUpsertColumnList();
+  const valueRows = Array.from({ length: rowCount }, () => buildBatchValuesRowSql(columns.length));
+  const setClauses = buildBucketUpsertOnConflictClause();
+  return `
+    insert into ${BUCKET_TABLE} (
+      ${columns.join(", ")},
+      evaluated_at
+    )
+    values
+      ${valueRows.join(",\n      ")}
     on conflict (
       model_version, running_style_feature_version, category,
       evaluation_window_from, evaluation_window_to,

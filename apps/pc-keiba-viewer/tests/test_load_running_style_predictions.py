@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import decimal
 import io
 import json
 import sys
@@ -146,15 +147,14 @@ def test_sql_quote_literal_escapes_single_quote():
 
 def test_build_select_from_parquet_sql_filters_versions_and_years():
     args = _sample_args(
-        predictions_parquet_glob="tmp/preds/**/*.parquet",
+        predictions_parquet_glob="tmp/preds/category=jra",
         running_style_feature_version="rsX",
         year_from=2010,
         year_to=2025,
     )
     sql = subject.build_select_from_parquet_sql(args)
-    assert "read_parquet('tmp/preds/**/*.parquet', hive_partitioning=1)" in sql
-    assert "category = 'jra'" in sql
-    assert "between 2010 and 2025" in sql
+    assert "read_parquet('tmp/preds/category=jra')" in sql
+    assert "cast(kaisai_nen as integer) between 2010 and 2025" in sql
     assert "running_style_feature_version = 'rsX'" in sql
     assert "target_running_style_class" in sql
     assert "predicted_class" in sql
@@ -162,18 +162,46 @@ def test_build_select_from_parquet_sql_filters_versions_and_years():
     assert "p_oikomi" in sql
 
 
+def test_build_select_from_parquet_sql_omits_hive_partitioning_and_category_predicate():
+    args = _sample_args(
+        predictions_parquet_glob="tmp/preds/category=jra",
+        running_style_feature_version="rsX",
+        category="jra",
+        year_from=2010,
+        year_to=2025,
+    )
+    sql = subject.build_select_from_parquet_sql(args)
+    assert "hive_partitioning" not in sql
+    assert "category =" not in sql
+    assert "race_year" not in sql
+
+
 def test_build_version_mismatch_check_sql_counts_mismatched_rows():
     args = _sample_args(
+        predictions_parquet_glob="tmp/preds/category=nar",
         running_style_feature_version="rsX",
         category="nar",
         year_from=2020,
         year_to=2024,
     )
     sql = subject.build_version_mismatch_check_sql(args)
-    assert "select count(*) from read_parquet" in sql
+    assert "select count(*) from read_parquet('tmp/preds/category=nar')" in sql
     assert "running_style_feature_version <> 'rsX'" in sql
-    assert "category = 'nar'" in sql
-    assert "between 2020 and 2024" in sql
+    assert "cast(kaisai_nen as integer) between 2020 and 2024" in sql
+
+
+def test_build_version_mismatch_check_sql_omits_hive_partitioning_and_category_predicate():
+    args = _sample_args(
+        predictions_parquet_glob="tmp/preds/category=nar",
+        running_style_feature_version="rsX",
+        category="nar",
+        year_from=2020,
+        year_to=2024,
+    )
+    sql = subject.build_version_mismatch_check_sql(args)
+    assert "hive_partitioning" not in sql
+    assert "category =" not in sql
+    assert "race_year" not in sql
 
 
 def test_build_create_temp_table_sql_includes_all_columns_and_on_commit_drop():
@@ -187,12 +215,122 @@ def test_build_create_temp_table_sql_includes_all_columns_and_on_commit_drop():
     assert "ketto_toroku_bango text not null" in sql
     assert "predicted_class integer not null" in sql
     assert "second_predicted_class integer not null" in sql
-    assert "target_running_style_class integer not null" in sql
+    assert "target_running_style_class integer," in sql
+    assert "target_running_style_class integer not null" not in sql
     assert "p_nige numeric not null" in sql
     assert "p_senkou numeric not null" in sql
     assert "p_sashi numeric not null" in sql
     assert "p_oikomi numeric not null" in sql
+    assert "model_version text not null" in sql
+    assert "running_style_feature_version text not null" in sql
+    assert "race_date date not null" in sql
     assert sql.endswith(") ON COMMIT DROP")
+
+
+def test_temp_table_schema_includes_driver_required_columns():
+    column_names = [name for name, _ in subject.TEMP_TABLE_SCHEMA]
+    assert "model_version" in column_names
+    assert "running_style_feature_version" in column_names
+    assert "race_date" in column_names
+
+
+def test_temp_table_schema_target_running_style_class_is_nullable():
+    schema_map = dict(subject.TEMP_TABLE_SCHEMA)
+    assert schema_map["target_running_style_class"] == "integer"
+
+
+def test_temp_table_schema_predicted_class_remains_not_null():
+    schema_map = dict(subject.TEMP_TABLE_SCHEMA)
+    assert schema_map["predicted_class"] == "integer not null"
+    assert schema_map["second_predicted_class"] == "integer not null"
+
+
+def test_csv_encode_row_emits_empty_field_for_none_target_running_style_class():
+    row: tuple[object, ...] = (
+        "jra",
+        "2006",
+        "0131",
+        "56",
+        "04",
+        "2002103391",
+        3,
+        2,
+        None,
+        0.10,
+        0.20,
+        0.30,
+        0.40,
+        "jra-running-style-lgbm-prod-v2",
+        "v1",
+        "2006-01-31",
+    )
+    encoded = subject.csv_encode_row(row)
+    fields = encoded.split(",")
+    assert fields[8] == ""
+
+
+def test_default_copy_into_pg_writes_empty_csv_field_for_null_target(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    copy_stream = MagicMock()
+    copy_ctx = MagicMock()
+    copy_ctx.__enter__.return_value = copy_stream
+    copy_ctx.__exit__.return_value = False
+
+    cursor = MagicMock()
+    cursor.copy.return_value = copy_ctx
+    cursor_ctx = MagicMock()
+    cursor_ctx.__enter__.return_value = cursor
+    cursor_ctx.__exit__.return_value = False
+
+    pg_con = MagicMock()
+    pg_con.cursor.return_value = cursor_ctx
+
+    psycopg_module = MagicMock()
+    psycopg_module.connect.return_value = pg_con
+
+    import importlib as _importlib
+
+    monkeypatch.setattr(
+        _importlib, "import_module", MagicMock(return_value=psycopg_module)
+    )
+    args = _sample_args()
+    rows: list[tuple[object, ...]] = [
+        (
+            "jra",
+            "2006",
+            "0131",
+            "56",
+            "04",
+            "2002103391",
+            3,
+            2,
+            None,
+            0.10,
+            0.20,
+            0.30,
+            0.40,
+            "jra-running-style-lgbm-prod-v2",
+            "v1",
+            "2006-01-31",
+        ),
+    ]
+    stdout = io.StringIO()
+    stdin = io.StringIO('{"type":"exit"}\n')
+    subject.default_copy_into_pg(args, rows, cast(IO[str], stdout), cast(IO[str], stdin))
+    written_payload = copy_stream.write.call_args.args[0]
+    assert "2002103391,3,2,,0.1," in written_payload
+
+
+def test_load_columns_includes_driver_required_columns():
+    assert "model_version" in subject.LOAD_COLUMNS
+    assert "running_style_feature_version" in subject.LOAD_COLUMNS
+    assert "race_date" in subject.LOAD_COLUMNS
+
+
+def test_parquet_select_columns_includes_model_version():
+    assert "model_version" in subject.PARQUET_SELECT_COLUMNS
+    assert "running_style_feature_version" in subject.PARQUET_SELECT_COLUMNS
 
 
 def test_build_create_temp_table_sql_rejects_unsafe_name():
@@ -305,6 +443,18 @@ def test_coerce_float_handles_str():
     assert subject.coerce_float("0.25") == 0.25
 
 
+def test_coerce_float_handles_decimal():
+    converted = subject.coerce_float(decimal.Decimal("0.123"))
+    assert isinstance(converted, float)
+    assert converted == 0.123
+
+
+def test_coerce_float_handles_decimal_zero():
+    converted = subject.coerce_float(decimal.Decimal("0"))
+    assert isinstance(converted, float)
+    assert converted == 0.0
+
+
 def test_coerce_float_rejects_dict():
     with pytest.raises(TypeError):
         subject.coerce_float({"key": "value"})
@@ -363,6 +513,7 @@ def test_attach_second_predicted_class_inserts_second_into_row():
         0.30,
         0.25,
         "v1",
+        "jra-running-style-lgbm-prod-v2",
     )
     attached = subject.attach_second_predicted_class(parquet_row)
     assert attached == (
@@ -379,6 +530,9 @@ def test_attach_second_predicted_class_inserts_second_into_row():
         0.40,
         0.30,
         0.25,
+        "jra-running-style-lgbm-prod-v2",
+        "v1",
+        "2024-01-01",
     )
 
 
@@ -397,9 +551,65 @@ def test_attach_second_predicted_class_falls_back_when_second_equals_predicted()
         0.30,
         0.25,
         "v1",
+        "nar-running-style-lgbm-v2.0",
     )
     attached = subject.attach_second_predicted_class(parquet_row)
     assert attached[7] == 3
+
+
+def test_attach_second_predicted_class_appends_model_and_feature_version():
+    parquet_row = (
+        "jra",
+        "2023",
+        "1231",
+        "05",
+        "01",
+        "ABC123",
+        1,
+        2,
+        0.05,
+        0.40,
+        0.30,
+        0.25,
+        "v1",
+        "jra-running-style-lgbm-prod-v2",
+    )
+    attached = subject.attach_second_predicted_class(parquet_row)
+    assert attached[13] == "jra-running-style-lgbm-prod-v2"
+    assert attached[14] == "v1"
+    assert attached[15] == "2023-12-31"
+
+
+def test_derive_race_date_builds_iso_string_from_nen_and_tsukihi():
+    assert subject.derive_race_date("2024", "0101") == "2024-01-01"
+
+
+def test_derive_race_date_handles_year_end_date():
+    assert subject.derive_race_date("2023", "1231") == "2023-12-31"
+
+
+def test_derive_race_date_handles_mid_year_date():
+    assert subject.derive_race_date("2010", "0715") == "2010-07-15"
+
+
+def test_derive_race_date_rejects_short_kaisai_nen():
+    with pytest.raises(ValueError):
+        subject.derive_race_date("24", "0101")
+
+
+def test_derive_race_date_rejects_non_digit_kaisai_nen():
+    with pytest.raises(ValueError):
+        subject.derive_race_date("20a4", "0101")
+
+
+def test_derive_race_date_rejects_short_kaisai_tsukihi():
+    with pytest.raises(ValueError):
+        subject.derive_race_date("2024", "101")
+
+
+def test_derive_race_date_rejects_non_digit_kaisai_tsukihi():
+    with pytest.raises(ValueError):
+        subject.derive_race_date("2024", "01x1")
 
 
 def test_serve_sql_rpc_emits_ready_then_closes_on_exit():
@@ -557,6 +767,89 @@ def test_row_to_jsonable_returns_dict_when_description_objects_with_name():
     assert subject.row_to_jsonable((1, "a"), columns) == {"col_a": 1, "col_b": "a"}
 
 
+def test_encode_rpc_value_passes_through_int():
+    assert subject.encode_rpc_value(42) == 42
+
+
+def test_encode_rpc_value_passes_through_float():
+    assert subject.encode_rpc_value(0.125) == 0.125
+
+
+def test_encode_rpc_value_converts_decimal_to_float():
+    converted = subject.encode_rpc_value(decimal.Decimal("0.25"))
+    assert isinstance(converted, float)
+    assert converted == 0.25
+
+
+def test_encode_rpc_value_passes_through_str():
+    assert subject.encode_rpc_value("hello") == "hello"
+
+
+def test_encode_rpc_value_passes_through_none():
+    assert subject.encode_rpc_value(None) is None
+
+
+def test_row_to_jsonable_converts_decimal_to_float_in_list_form():
+    row: tuple[object, ...] = (1, decimal.Decimal("0.5"), "z")
+    result = subject.row_to_jsonable(row, None)
+    assert result == [1, 0.5, "z"]
+    assert isinstance(cast(list[object], result)[1], float)
+
+
+def test_row_to_jsonable_converts_decimal_to_float_in_dict_form():
+    columns: list[object] = [("count",), ("ratio",)]
+    row: tuple[object, ...] = (10, decimal.Decimal("0.875"))
+    result = subject.row_to_jsonable(row, columns)
+    assert result == {"count": 10, "ratio": 0.875}
+    assert isinstance(cast(dict[str, object], result)["ratio"], float)
+
+
+def test_emit_sql_rows_serializes_decimal_row_without_json_error():
+    stdout = io.StringIO()
+    column = MagicMock()
+    column.name = "avg_prob"
+    rows: list[tuple[object, ...]] = [(decimal.Decimal("0.3333333333"),)]
+    subject.emit_sql_rows(cast(IO[str], stdout), "rid", rows, [column])
+    payloads = [json.loads(line) for line in stdout.getvalue().splitlines()]
+    assert len(payloads) == 1
+    assert payloads[0]["type"] == "rows"
+    assert payloads[0]["id"] == "rid"
+    assert payloads[0]["seq"] == 0
+    assert payloads[0]["done"] is True
+    assert payloads[0]["rows"] == [{"avg_prob": 0.3333333333}]
+
+
+def test_serve_sql_rpc_handles_select_returning_decimal_column():
+    cursor = MagicMock()
+    description_col = MagicMock()
+    description_col.name = "bucket_avg"
+    cursor.description = [description_col]
+    cursor.fetchall.return_value = [
+        (decimal.Decimal("0.10"),),
+        (decimal.Decimal("0.20"),),
+        (decimal.Decimal("0.30"),),
+    ]
+    request = json.dumps(
+        {"type": "sql", "id": "agg1", "query": "select avg(p_nige) from t", "params": []}
+    )
+    stdin = io.StringIO(request + "\n" + json.dumps({"type": "exit"}) + "\n")
+    stdout = io.StringIO()
+    subject.serve_sql_rpc(cursor, cast(IO[str], stdin), cast(IO[str], stdout), 0)
+    lines = [json.loads(line) for line in stdout.getvalue().splitlines()]
+    rows_response = [line for line in lines if line["type"] == "rows"][0]
+    assert rows_response == {
+        "type": "rows",
+        "id": "agg1",
+        "seq": 0,
+        "rows": [
+            {"bucket_avg": 0.10},
+            {"bucket_avg": 0.20},
+            {"bucket_avg": 0.30},
+        ],
+        "done": True,
+    }
+
+
 def test_parse_rpc_line_returns_none_for_blank_line():
     assert subject.parse_rpc_line("   \n") is None
 
@@ -607,8 +900,42 @@ def test_write_response_appends_newline_and_flushes():
 
 def test_load_predictions_into_temp_table_invokes_copy_and_returns_row_count():
     rows: list[tuple[object, ...]] = [
-        ("jra", "2024", "0101", "05", "01", "a1", 1, 2, 1, 0.05, 0.60, 0.20, 0.15),
-        ("jra", "2024", "0101", "05", "01", "a2", 2, 1, 2, 0.05, 0.25, 0.50, 0.20),
+        (
+            "jra",
+            "2024",
+            "0101",
+            "05",
+            "01",
+            "a1",
+            1,
+            2,
+            1,
+            0.05,
+            0.60,
+            0.20,
+            0.15,
+            "jra-running-style-lgbm-v1.0",
+            "v1",
+            "2024-01-01",
+        ),
+        (
+            "jra",
+            "2024",
+            "0101",
+            "05",
+            "01",
+            "a2",
+            2,
+            1,
+            2,
+            0.05,
+            0.25,
+            0.50,
+            0.20,
+            "jra-running-style-lgbm-v1.0",
+            "v1",
+            "2024-01-01",
+        ),
     ]
     read_predictions = MagicMock(return_value=(0, rows))
     copy_into_pg = MagicMock()
@@ -712,7 +1039,22 @@ def test_default_read_predictions_reads_rows_when_no_mismatch(
     mismatch_call.fetchone.return_value = (0,)
     select_call = MagicMock()
     select_call.fetchall.return_value = [
-        ("jra", "2024", "0101", "05", "01", "a1", 1, 2, 0.05, 0.60, 0.20, 0.15, "v1"),
+        (
+            "jra",
+            "2024",
+            "0101",
+            "05",
+            "01",
+            "a1",
+            1,
+            2,
+            0.05,
+            0.60,
+            0.20,
+            0.15,
+            "v1",
+            "jra-running-style-lgbm-v1.0",
+        ),
     ]
     duckdb_con.execute.side_effect = [mismatch_call, select_call]
 
@@ -739,6 +1081,9 @@ def test_default_read_predictions_reads_rows_when_no_mismatch(
         0.60,
         0.20,
         0.15,
+        "jra-running-style-lgbm-v1.0",
+        "v1",
+        "2024-01-01",
     )
     duckdb_con.close.assert_called_once()
 
@@ -813,7 +1158,24 @@ def test_default_copy_into_pg_runs_begin_set_create_copy_and_waits_for_exit(
     )
     args = _sample_args()
     rows: list[tuple[object, ...]] = [
-        ("jra", "2024", "0101", "05", "01", "a1", 1, 2, 1, 0.05, 0.60, 0.20, 0.15),
+        (
+            "jra",
+            "2024",
+            "0101",
+            "05",
+            "01",
+            "a1",
+            1,
+            2,
+            1,
+            0.05,
+            0.60,
+            0.20,
+            0.15,
+            "jra-running-style-lgbm-v1.0",
+            "v1",
+            "2024-01-01",
+        ),
     ]
     stdout = io.StringIO()
     stdin = io.StringIO('{"type":"exit"}\n')
@@ -865,7 +1227,7 @@ def test_default_copy_into_pg_skips_copy_when_rows_empty(
     pg_con.commit.assert_called_once()
 
 
-def test_main_invokes_load_and_prints_json(
+def test_main_invokes_load_and_prints_summary_to_stderr(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
     fake_load = MagicMock(return_value=7)
@@ -873,7 +1235,7 @@ def test_main_invokes_load_and_prints_json(
     subject.main(_build_argv())
     fake_load.assert_called_once()
     captured = capsys.readouterr()
-    payload = json.loads(captured.out.strip())
+    payload = json.loads(captured.err.strip())
     assert payload["loaded_rows"] == 7
     assert payload["category"] == "jra"
     assert payload["year_from"] == 2005
@@ -881,3 +1243,14 @@ def test_main_invokes_load_and_prints_json(
     assert payload["running_style_feature_version"] == "v1"
     assert payload["temp_table_name"] == "bucket_running_style_predictions_loaded"
     assert payload["model_version"] == "jra-running-style-lgbm-v1.0"
+
+
+def test_main_does_not_print_summary_to_stdout(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    fake_load = MagicMock(return_value=12)
+    monkeypatch.setattr(subject, "load_predictions_into_temp_table", fake_load)
+    subject.main(_build_argv())
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "loaded_rows" not in captured.out

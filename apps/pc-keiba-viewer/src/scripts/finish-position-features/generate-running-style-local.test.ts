@@ -22,6 +22,7 @@ import {
   expandYearsToMonths,
   isInsideNightWindow,
   isJraV2ModelVersion,
+  logitsFileHasContent,
   parseArgs,
   resolveMemoryLimitPerChunk,
   runGenerateRunningStyleLocal,
@@ -533,14 +534,23 @@ describe("generate-running-style-local", () => {
     expect(cmd[2]).toBe(PHASE_C_SCRIPT);
   });
 
-  test("buildPhaseCCommand encodes feature-version flag", () => {
+  test("buildPhaseCCommand encodes running-style-feature-version flag", () => {
     const cmd = buildPhaseCCommand({
       logitsParquet: "/l",
       outputParquet: "/p",
       featureVersion: "v9",
     });
-    const flagIndex = cmd.indexOf("--feature-version");
+    const flagIndex = cmd.indexOf("--running-style-feature-version");
     expect(cmd[flagIndex + 1]).toBe("v9");
+  });
+
+  test("buildPhaseCCommand does NOT emit legacy --feature-version flag (Phase C accepts only --running-style-feature-version)", () => {
+    const cmd = buildPhaseCCommand({
+      logitsParquet: "/l",
+      outputParquet: "/p",
+      featureVersion: "v9",
+    });
+    expect(cmd.includes("--feature-version")).toBe(false);
   });
 
   test("buildPhaseCCommand encodes logits and output flags", () => {
@@ -752,6 +762,7 @@ describe("generate-running-style-local", () => {
         now: () => FIXED_DAY_DATE,
         log: () => undefined,
         listDirectoryEntries: () => Promise.resolve([]),
+        statFile: () => Promise.reject(new Error("ENOENT")),
       }),
     ).rejects.toThrowError(
       "Outside JST night window 23-04. Pass --ignore-night-window 1 to bypass.",
@@ -782,6 +793,7 @@ describe("generate-running-style-local", () => {
         now: () => FIXED_DAY_DATE,
         log: () => undefined,
         listDirectoryEntries: () => Promise.resolve([]),
+        statFile: () => Promise.reject(new Error("ENOENT")),
       }),
     ).rejects.toThrowError("Colima CPU 2 below minimum 8.");
     expect(spawn).not.toHaveBeenCalled();
@@ -819,6 +831,7 @@ describe("generate-running-style-local", () => {
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
+      statFile: () => Promise.reject(new Error("ENOENT")),
     });
     const firstA = spawnCalls.indexOf(PHASE_A_SCRIPT);
     const firstB = spawnCalls.indexOf(PHASE_B_SCRIPT);
@@ -864,6 +877,7 @@ describe("generate-running-style-local", () => {
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
+      statFile: () => Promise.reject(new Error("ENOENT")),
     });
     expect(phaseBCategories.toSorted()).toStrictEqual(["jra", "nar"]);
     expect(phaseCInvocations.length).toBe(2);
@@ -906,6 +920,7 @@ describe("generate-running-style-local", () => {
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
+      statFile: () => Promise.reject(new Error("ENOENT")),
     });
     expect(phaseCInputs).toStrictEqual(phaseBOutputs);
   });
@@ -947,6 +962,7 @@ describe("generate-running-style-local", () => {
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
+      statFile: () => Promise.reject(new Error("ENOENT")),
     });
     const uniquePhaseAOutputs = [...new Set(phaseAOutputs)].toSorted();
     const uniquePhaseBInputs = [...new Set(phaseBInputs)].toSorted();
@@ -985,6 +1001,7 @@ describe("generate-running-style-local", () => {
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
+      statFile: () => Promise.reject(new Error("ENOENT")),
     });
     expect(phaseBFlatbins.toSorted()).toStrictEqual(["/p/jra.flatbin", "/p/nar.flatbin"]);
   });
@@ -1024,6 +1041,7 @@ describe("generate-running-style-local", () => {
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
+      statFile: () => Promise.reject(new Error("ENOENT")),
     });
     const jraCmd = jraCommands[0] ?? [];
     const chainIndex = jraCmd.indexOf("--rs-p-from-flatbin");
@@ -1065,6 +1083,7 @@ describe("generate-running-style-local", () => {
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
+      statFile: () => Promise.reject(new Error("ENOENT")),
     });
     const narCmd = narCommands[0] ?? [];
     expect(narCmd.includes("--rs-p-from-flatbin")).toBe(false);
@@ -1104,6 +1123,7 @@ describe("generate-running-style-local", () => {
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
+      statFile: () => Promise.reject(new Error("ENOENT")),
     });
     const jraCmd = jraCommands[0] ?? [];
     expect(jraCmd.includes("--rs-p-from-flatbin")).toBe(false);
@@ -1141,6 +1161,7 @@ describe("generate-running-style-local", () => {
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
+      statFile: () => Promise.reject(new Error("ENOENT")),
     });
     expect(phaseBPredictedAts).toStrictEqual([
       "2026-05-30T16:00:00.000Z",
@@ -1173,6 +1194,7 @@ describe("generate-running-style-local", () => {
         now: () => FIXED_NIGHT_DATE,
         log: () => undefined,
         listDirectoryEntries: () => Promise.resolve([]),
+        statFile: () => Promise.reject(new Error("ENOENT")),
       }),
     ).rejects.toThrowError("Phase A failed");
   });
@@ -1205,6 +1227,7 @@ describe("generate-running-style-local", () => {
         now: () => FIXED_NIGHT_DATE,
         log: () => undefined,
         listDirectoryEntries: () => Promise.resolve([]),
+        statFile: () => Promise.reject(new Error("ENOENT")),
       }),
     ).rejects.toThrowError(/Phase B failed for category=(jra|nar)\.$/);
   });
@@ -1237,6 +1260,7 @@ describe("generate-running-style-local", () => {
         now: () => FIXED_NIGHT_DATE,
         log: () => undefined,
         listDirectoryEntries: () => Promise.resolve([]),
+        statFile: () => Promise.reject(new Error("ENOENT")),
       }),
     ).rejects.toThrowError(/Phase C failed for category=(jra|nar)\.$/);
   });
@@ -1410,6 +1434,7 @@ describe("generate-running-style-local", () => {
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
+      statFile: () => Promise.reject(new Error("ENOENT")),
     });
     expect(phaseAYearPairs.every((pair) => pair.split("-")[0] === pair.split("-")[1])).toBe(true);
   });
@@ -1448,6 +1473,7 @@ describe("generate-running-style-local", () => {
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
+      statFile: () => Promise.reject(new Error("ENOENT")),
     });
     expect(phaseAMemoryLimits.every((limit) => limit === "4GB")).toBe(true);
   });
@@ -1485,6 +1511,7 @@ describe("generate-running-style-local", () => {
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
+      statFile: () => Promise.reject(new Error("ENOENT")),
     });
     expect(phaseAMemoryLimits.every((limit) => limit === "16GB")).toBe(true);
   });
@@ -1521,6 +1548,7 @@ describe("generate-running-style-local", () => {
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
+      statFile: () => Promise.reject(new Error("ENOENT")),
     });
     const firstNarIndex = phaseACategories.indexOf("nar");
     const lastJraIndex = phaseACategories.lastIndexOf("jra");
@@ -1663,6 +1691,7 @@ describe("generate-running-style-local", () => {
       now: () => FIXED_NIGHT_DATE,
       log,
       listDirectoryEntries,
+      statFile: () => Promise.reject(new Error("ENOENT")),
     });
     const phaseASpawnCount = spawn.mock.calls.filter(
       (call) => call[0][5] === PHASE_A_SCRIPT,
@@ -1700,6 +1729,7 @@ describe("generate-running-style-local", () => {
       now: () => FIXED_NIGHT_DATE,
       log,
       listDirectoryEntries,
+      statFile: () => Promise.reject(new Error("ENOENT")),
     });
     const hadSkipLog = log.mock.calls.some(
       (call) => typeof call[0] === "string" && call[0].startsWith("[Phase A] skip "),
@@ -1737,6 +1767,7 @@ describe("generate-running-style-local", () => {
       now: () => FIXED_NIGHT_DATE,
       log,
       listDirectoryEntries,
+      statFile: () => Promise.reject(new Error("ENOENT")),
     });
     const phaseASpawnCount = spawn.mock.calls.filter(
       (call) => call[0][5] === PHASE_A_SCRIPT,
@@ -1773,6 +1804,7 @@ describe("generate-running-style-local", () => {
       now: () => FIXED_NIGHT_DATE,
       log,
       listDirectoryEntries,
+      statFile: () => Promise.reject(new Error("ENOENT")),
     });
     const phaseASpawnCount = spawn.mock.calls.filter(
       (call) => call[0][5] === PHASE_A_SCRIPT,
@@ -2076,6 +2108,7 @@ describe("generate-running-style-local", () => {
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
+      statFile: () => Promise.reject(new Error("ENOENT")),
     });
     expect(monthPairs.every((pair) => pair.split("-")[0] === pair.split("-")[1])).toBe(true);
   });
@@ -2111,6 +2144,7 @@ describe("generate-running-style-local", () => {
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
+      statFile: () => Promise.reject(new Error("ENOENT")),
     });
     expect(phaseASpawnCount.count).toBe(420);
   });
@@ -2147,6 +2181,7 @@ describe("generate-running-style-local", () => {
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
+      statFile: () => Promise.reject(new Error("ENOENT")),
     });
     expect(phaseASpawnCount.count).toBe(35);
   });
@@ -2183,6 +2218,7 @@ describe("generate-running-style-local", () => {
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
+      statFile: () => Promise.reject(new Error("ENOENT")),
     });
     const uniqueMonths = [...new Set(phaseAMonthValues)].toSorted((a, b) => a - b);
     expect(uniqueMonths).toStrictEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
@@ -2220,6 +2256,7 @@ describe("generate-running-style-local", () => {
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
+      statFile: () => Promise.reject(new Error("ENOENT")),
     });
     expect(sawMonthFlag.value).toBe(false);
   });
@@ -2267,6 +2304,7 @@ describe("generate-running-style-local", () => {
       now: () => FIXED_NIGHT_DATE,
       log,
       listDirectoryEntries,
+      statFile: () => Promise.reject(new Error("ENOENT")),
     });
     const phaseASpawnCount = spawn.mock.calls.filter(
       (call) => call[0][5] === PHASE_A_SCRIPT,
@@ -2317,6 +2355,7 @@ describe("generate-running-style-local", () => {
       now: () => FIXED_NIGHT_DATE,
       log,
       listDirectoryEntries,
+      statFile: () => Promise.reject(new Error("ENOENT")),
     });
     const hadYearLevelSkipLog = log.mock.calls.some(
       (call) => typeof call[0] === "string" && call[0].includes("year-level resume"),
@@ -2354,6 +2393,7 @@ describe("generate-running-style-local", () => {
       now: () => FIXED_NIGHT_DATE,
       log,
       listDirectoryEntries,
+      statFile: () => Promise.reject(new Error("ENOENT")),
     });
     const phaseASpawnCount = spawn.mock.calls.filter(
       (call) => call[0][5] === PHASE_A_SCRIPT,
@@ -2386,7 +2426,214 @@ describe("generate-running-style-local", () => {
         now: () => FIXED_NIGHT_DATE,
         log: () => undefined,
         listDirectoryEntries: () => Promise.resolve([]),
+        statFile: () => Promise.reject(new Error("ENOENT")),
       }),
     ).rejects.toThrowError(/Phase A failed for category=(jra|nar) year=\d{4} month=\d+\./);
+  });
+
+  test("logitsFileHasContent returns true when statFile resolves with positive size", async () => {
+    const statFile = vi.fn<(path: string) => Promise<{ size: number }>>(() =>
+      Promise.resolve({ size: 56_623_104 }),
+    );
+    const result = await logitsFileHasContent(statFile, "/tmp/v1/logits/category=jra");
+    expect(result).toBe(true);
+  });
+
+  test("logitsFileHasContent returns false when statFile resolves with zero size", async () => {
+    const statFile = vi.fn<(path: string) => Promise<{ size: number }>>(() =>
+      Promise.resolve({ size: 0 }),
+    );
+    const result = await logitsFileHasContent(statFile, "/tmp/v1/logits/category=nar");
+    expect(result).toBe(false);
+  });
+
+  test("logitsFileHasContent returns false when statFile rejects (file missing)", async () => {
+    const statFile = vi.fn<(path: string) => Promise<{ size: number }>>(() =>
+      Promise.reject(new Error("ENOENT")),
+    );
+    const result = await logitsFileHasContent(statFile, "/tmp/v1/logits/category=jra");
+    expect(result).toBe(false);
+  });
+
+  test("runGenerateRunningStyleLocal Phase B skips spawn when existing logits parquet has positive size", async () => {
+    const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(() =>
+      Promise.resolve({ exitCode: 0 }),
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const statFile = vi.fn<(path: string) => Promise<{ size: number }>>(() =>
+      Promise.resolve({ size: 56_623_104 }),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "mj",
+      modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      ignoreNightWindow: true,
+      outputRoot: "/tmp/phase-b-resume-skip",
+    };
+    await runGenerateRunningStyleLocal(options, {
+      spawn,
+      sleep,
+      probeColima,
+      now: () => FIXED_NIGHT_DATE,
+      log: () => undefined,
+      listDirectoryEntries: () => Promise.resolve(["data_0.parquet"]),
+      statFile,
+    });
+    const phaseBSpawnCount = spawn.mock.calls.filter(
+      (call) => call[0][2] === PHASE_B_SCRIPT,
+    ).length;
+    expect(phaseBSpawnCount).toBe(0);
+  });
+
+  test("runGenerateRunningStyleLocal Phase B logs a skip message when existing logits parquet has positive size", async () => {
+    const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(() =>
+      Promise.resolve({ exitCode: 0 }),
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const log = vi.fn<(message: string) => void>(() => undefined);
+    const statFile = vi.fn<(path: string) => Promise<{ size: number }>>(() =>
+      Promise.resolve({ size: 56_623_104 }),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "mj",
+      modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      ignoreNightWindow: true,
+      outputRoot: "/tmp/phase-b-resume-log",
+    };
+    await runGenerateRunningStyleLocal(options, {
+      spawn,
+      sleep,
+      probeColima,
+      now: () => FIXED_NIGHT_DATE,
+      log,
+      listDirectoryEntries: () => Promise.resolve(["data_0.parquet"]),
+      statFile,
+    });
+    const hadSkipLog = log.mock.calls.some(
+      (call) => typeof call[0] === "string" && call[0].startsWith("[Phase B] skip "),
+    );
+    expect(hadSkipLog).toBe(true);
+  });
+
+  test("runGenerateRunningStyleLocal Phase B still spawns when statFile rejects (logits file absent)", async () => {
+    const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(() =>
+      Promise.resolve({ exitCode: 0 }),
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const statFile = vi.fn<(path: string) => Promise<{ size: number }>>(() =>
+      Promise.reject(new Error("ENOENT")),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "mj",
+      modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      ignoreNightWindow: true,
+      outputRoot: "/tmp/phase-b-resume-absent",
+    };
+    await runGenerateRunningStyleLocal(options, {
+      spawn,
+      sleep,
+      probeColima,
+      now: () => FIXED_NIGHT_DATE,
+      log: () => undefined,
+      listDirectoryEntries: () => Promise.resolve([]),
+      statFile,
+    });
+    const phaseBSpawnCount = spawn.mock.calls.filter(
+      (call) => call[0][2] === PHASE_B_SCRIPT,
+    ).length;
+    expect(phaseBSpawnCount).toBe(2);
+  });
+
+  test("runGenerateRunningStyleLocal Phase B still spawns when statFile resolves with zero size (empty file)", async () => {
+    const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(() =>
+      Promise.resolve({ exitCode: 0 }),
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const statFile = vi.fn<(path: string) => Promise<{ size: number }>>(() =>
+      Promise.resolve({ size: 0 }),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "mj",
+      modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      ignoreNightWindow: true,
+      outputRoot: "/tmp/phase-b-resume-empty",
+    };
+    await runGenerateRunningStyleLocal(options, {
+      spawn,
+      sleep,
+      probeColima,
+      now: () => FIXED_NIGHT_DATE,
+      log: () => undefined,
+      listDirectoryEntries: () => Promise.resolve([]),
+      statFile,
+    });
+    const phaseBSpawnCount = spawn.mock.calls.filter(
+      (call) => call[0][2] === PHASE_B_SCRIPT,
+    ).length;
+    expect(phaseBSpawnCount).toBe(2);
+  });
+
+  test("runGenerateRunningStyleLocal Phase B still spawns when force=true even if existing logits parquet has content", async () => {
+    const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(() =>
+      Promise.resolve({ exitCode: 0 }),
+    );
+    const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
+    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
+      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    );
+    const statFile = vi.fn<(path: string) => Promise<{ size: number }>>(() =>
+      Promise.resolve({ size: 56_623_104 }),
+    );
+    const options = {
+      ...buildDefaultOptions(),
+      pgUrl: "u",
+      modelVersionJra: "mj",
+      modelVersionNar: "mn",
+      modelFlatbinJra: "/p/jra.flatbin",
+      modelFlatbinNar: "/p/nar.flatbin",
+      ignoreNightWindow: true,
+      outputRoot: "/tmp/phase-b-resume-force",
+      force: true,
+    };
+    await runGenerateRunningStyleLocal(options, {
+      spawn,
+      sleep,
+      probeColima,
+      now: () => FIXED_NIGHT_DATE,
+      log: () => undefined,
+      listDirectoryEntries: () => Promise.resolve(["data_0.parquet"]),
+      statFile,
+    });
+    const phaseBSpawnCount = spawn.mock.calls.filter(
+      (call) => call[0][2] === PHASE_B_SCRIPT,
+    ).length;
+    expect(phaseBSpawnCount).toBe(2);
   });
 });
