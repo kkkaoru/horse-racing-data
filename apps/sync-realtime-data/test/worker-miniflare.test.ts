@@ -537,7 +537,7 @@ describe("worker scheduling with Miniflare", () => {
           insert into premium_paddock_fetch_state (
             race_key, status, last_fetch_at, updated_at
           )
-          values (?, 'ok', '2026-05-12T11:58:00+09:00', '2026-05-12T11:58:00+09:00')
+          values (?, 'ok', '2026-05-12T11:59:30+09:00', '2026-05-12T11:59:30+09:00')
         `,
       )
       .bind("jra:2026:0512:08:01")

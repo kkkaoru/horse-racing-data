@@ -191,8 +191,12 @@ const TRACK_CONDITION_FETCH_LOCK_MINUTES = 15;
 const QUEUE_RETRY_DELAY_SECONDS = 60;
 const PREMIUM_RACE_DATA_RETRY_DELAY_SECONDS = 20 * 60;
 const PREMIUM_PADDOCK_RETRY_DELAY_SECONDS = 120;
-const PREMIUM_PADDOCK_RECHECK_MINUTES = 3;
-const PREMIUM_PADDOCK_WINDOW_BEFORE_MINUTES = 35;
+const PREMIUM_PADDOCK_RETRY_DELAY_HOT_SECONDS = 15;
+const PREMIUM_PADDOCK_RETRY_DELAY_WARM_SECONDS = 30;
+const PREMIUM_PADDOCK_HOT_WINDOW_MINUTES = 20;
+const PREMIUM_PADDOCK_WARM_WINDOW_MINUTES = 40;
+const PREMIUM_PADDOCK_RECHECK_MINUTES = 1;
+const PREMIUM_PADDOCK_WINDOW_BEFORE_MINUTES = 50;
 const PREMIUM_PADDOCK_WINDOW_AFTER_MINUTES = 2;
 const REALTIME_PLAN_SELF_SCHEDULE_DELAY_SECONDS = 60;
 const REALTIME_PLAN_SELF_SCHEDULE_STALE_SECONDS = 90;
@@ -1644,9 +1648,11 @@ export const getPremiumPaddockRetryDelaySeconds = (
   now = new Date(),
 ): number => {
   const minutes = minutesUntilRace(race, now);
-  if (minutes !== null && minutes <= 15 && minutes >= -PREMIUM_PADDOCK_WINDOW_AFTER_MINUTES) {
-    return 30;
-  }
+  if (minutes === null) return PREMIUM_PADDOCK_RETRY_DELAY_SECONDS;
+  if (minutes < -PREMIUM_PADDOCK_WINDOW_AFTER_MINUTES) return PREMIUM_PADDOCK_RETRY_DELAY_SECONDS;
+  if (minutes <= PREMIUM_PADDOCK_HOT_WINDOW_MINUTES) return PREMIUM_PADDOCK_RETRY_DELAY_HOT_SECONDS;
+  if (minutes <= PREMIUM_PADDOCK_WARM_WINDOW_MINUTES)
+    return PREMIUM_PADDOCK_RETRY_DELAY_WARM_SECONDS;
   return PREMIUM_PADDOCK_RETRY_DELAY_SECONDS;
 };
 
@@ -1768,6 +1774,34 @@ export const planResultFetchesOnly = async (env: Env, targetDate: string): Promi
   await markResultFetchQueued(
     env.REALTIME_DB,
     jobs.map((job) => job.raceKey),
+    toJstIsoString(now),
+  );
+  return jobs.length;
+};
+
+// Premium-paddock-only planner. Used by the "*/2 0-13 * * *" cron so paddock
+// detection effectively polls every 2 minutes (paired with
+// PREMIUM_PADDOCK_RECHECK_MINUTES = 1 to allow re-enqueue between hourly
+// ticks). The hourly "0 0-13 * * *" cron still drives the heavier
+// planRealtimeFetches path; this lightweight job only fans out paddock
+// candidates so we catch early publications without re-running track-condition
+// / weights / discovery work.
+export const planPremiumPaddockFetchesOnly = async (
+  env: Env,
+  targetDate: string,
+): Promise<number> => {
+  const now = getNow(env);
+  if (!isJstPollingWindow(now)) {
+    return 0;
+  }
+  const todayJobs = await planPremiumPaddockFetchesForDate(env, targetDate, now);
+  const nextDay = addDaysToYyyymmdd(targetDate, 1);
+  const tomorrowJobs = await planPremiumPaddockFetchesForDate(env, nextDay, now);
+  const jobs: Job[] = [...todayJobs, ...tomorrowJobs];
+  await enqueueJobs(env, jobs);
+  await markPremiumPaddockQueued(
+    env.REALTIME_DB,
+    jobs.flatMap((job) => (job.type === "fetch-premium-paddock" ? [job.raceKey] : [])),
     toJstIsoString(now),
   );
   return jobs.length;
@@ -3110,6 +3144,15 @@ export default {
           )
           .catch((error: unknown) =>
             logFetch(env.REALTIME_DB, "plan-result-fetches", "error", null, formatError(error)),
+          ),
+      );
+      ctx.waitUntil(
+        planPremiumPaddockFetchesOnly(env, targetDate)
+          .then((count) =>
+            logFetch(env.REALTIME_DB, "plan-premium-paddock", "ok", null, `${count} jobs queued`),
+          )
+          .catch((error: unknown) =>
+            logFetch(env.REALTIME_DB, "plan-premium-paddock", "error", null, formatError(error)),
           ),
       );
       return;

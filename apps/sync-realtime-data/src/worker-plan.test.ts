@@ -500,6 +500,201 @@ it("planPremiumPaddockFetchesForDate skips when recent lastQueuedAt exists", asy
   expect(result).toStrictEqual([]);
 });
 
+it("planPremiumPaddockFetchesForDate enqueues races 45 minutes before start (inside expanded 50-min window)", async () => {
+  const { planPremiumPaddockFetchesForDate } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate, getPremiumPaddockFetchState } =
+    await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
+    {
+      babaCode: "08",
+      debaUrl: "https://www.jra.go.jp/race",
+      discoveredAt: "2026-05-12T00:00:00+09:00",
+      kaisaiKai: "02",
+      kaisaiNen: "2026",
+      kaisaiNichime: "06",
+      kaisaiTsukihi: "0512",
+      keibajoCode: "08",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "01",
+      raceKey: "jra:2026:0512:08:01",
+      raceName: "Test",
+      raceStartAtJst: "2026-05-12T13:00:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "jra",
+      updatedAt: "2026-05-12T00:00:00+09:00",
+    },
+  ] as never);
+  vi.mocked(getPremiumPaddockFetchState).mockResolvedValue(null);
+  const env = buildEnv({ PREMIUM_RACE_ORIGIN: "https://x.test" } as never);
+  const result = await planPremiumPaddockFetchesForDate(
+    env,
+    "20260512",
+    new Date("2026-05-12T03:15:00.000Z"),
+  );
+  expect(result).toStrictEqual([{ raceKey: "jra:2026:0512:08:01", type: "fetch-premium-paddock" }]);
+});
+
+it("planPremiumPaddockFetchesForDate skips races 55 minutes before start (outside 50-min window)", async () => {
+  const { planPremiumPaddockFetchesForDate } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate, getPremiumPaddockFetchState } =
+    await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
+    {
+      babaCode: "08",
+      debaUrl: "https://www.jra.go.jp/race",
+      discoveredAt: "2026-05-12T00:00:00+09:00",
+      kaisaiKai: "02",
+      kaisaiNen: "2026",
+      kaisaiNichime: "06",
+      kaisaiTsukihi: "0512",
+      keibajoCode: "08",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "01",
+      raceKey: "jra:2026:0512:08:01",
+      raceName: "Test",
+      raceStartAtJst: "2026-05-12T13:00:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "jra",
+      updatedAt: "2026-05-12T00:00:00+09:00",
+    },
+  ] as never);
+  vi.mocked(getPremiumPaddockFetchState).mockResolvedValue(null);
+  const env = buildEnv({ PREMIUM_RACE_ORIGIN: "https://x.test" } as never);
+  const result = await planPremiumPaddockFetchesForDate(
+    env,
+    "20260512",
+    new Date("2026-05-12T03:05:00.000Z"),
+  );
+  expect(result).toStrictEqual([]);
+});
+
+it("planPremiumPaddockFetchesForDate enqueues when lastQueuedAt is 90 seconds ago (outside 1-minute recheck gate)", async () => {
+  const { planPremiumPaddockFetchesForDate } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate, getPremiumPaddockFetchState } =
+    await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([
+    {
+      babaCode: "08",
+      debaUrl: "https://www.jra.go.jp/race",
+      discoveredAt: "2026-05-12T00:00:00+09:00",
+      kaisaiKai: "02",
+      kaisaiNen: "2026",
+      kaisaiNichime: "06",
+      kaisaiTsukihi: "0512",
+      keibajoCode: "08",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "01",
+      raceKey: "jra:2026:0512:08:01",
+      raceName: "Test",
+      raceStartAtJst: "2026-05-12T13:00:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "jra",
+      updatedAt: "2026-05-12T00:00:00+09:00",
+    },
+  ] as never);
+  vi.mocked(getPremiumPaddockFetchState).mockResolvedValue({
+    lastQueuedAt: "2026-05-12T03:38:30.000Z",
+    raceKey: "jra:2026:0512:08:01",
+    status: "ok",
+  } as never);
+  const env = buildEnv({ PREMIUM_RACE_ORIGIN: "https://x.test" } as never);
+  const result = await planPremiumPaddockFetchesForDate(
+    env,
+    "20260512",
+    new Date("2026-05-12T03:40:00.000Z"),
+  );
+  expect(result).toStrictEqual([{ raceKey: "jra:2026:0512:08:01", type: "fetch-premium-paddock" }]);
+});
+
+it("planPremiumPaddockFetchesOnly returns 0 outside the JST polling window", async () => {
+  const { planPremiumPaddockFetchesOnly } = await import("./worker");
+  const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-12T13:30:00.000Z" } as never);
+  const count = await planPremiumPaddockFetchesOnly(env, "20260512");
+  expect(count).toBe(0);
+});
+
+it("planPremiumPaddockFetchesOnly returns 0 when no premium config is configured", async () => {
+  const { planPremiumPaddockFetchesOnly } = await import("./worker");
+  const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:40:00.000Z" } as never);
+  const count = await planPremiumPaddockFetchesOnly(env, "20260512");
+  expect(count).toBe(0);
+});
+
+it("planPremiumPaddockFetchesOnly enqueues a fetch-premium-paddock job for a race inside the window", async () => {
+  const { planPremiumPaddockFetchesOnly } = await import("./worker");
+  const {
+    listSchedulableRaceSourcesByDate,
+    getPremiumPaddockFetchState,
+    markPremiumPaddockQueued,
+  } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate)
+    .mockResolvedValueOnce([
+      {
+        babaCode: "08",
+        debaUrl: "https://www.jra.go.jp/race",
+        discoveredAt: "2026-05-12T00:00:00+09:00",
+        kaisaiKai: "02",
+        kaisaiNen: "2026",
+        kaisaiNichime: "06",
+        kaisaiTsukihi: "0512",
+        keibajoCode: "08",
+        lastOddsFetchAt: null,
+        lastOddsQueuedAt: null,
+        lastResultFetchAt: null,
+        lastResultQueuedAt: null,
+        lastWeightFetchAt: null,
+        oddsFetchLockUntil: null,
+        oddsLinks: {},
+        raceBango: "01",
+        raceKey: "jra:2026:0512:08:01",
+        raceName: "Test",
+        raceStartAtJst: "2026-05-12T13:00:00+09:00",
+        resultCompleteAt: null,
+        resultExpectedHorseCount: null,
+        resultFetchLockUntil: null,
+        resultSavedHorseCount: null,
+        source: "jra",
+        updatedAt: "2026-05-12T00:00:00+09:00",
+      },
+    ] as never)
+    .mockResolvedValueOnce([] as never);
+  vi.mocked(getPremiumPaddockFetchState).mockResolvedValue(null);
+  const env = buildEnv({
+    PREMIUM_RACE_ORIGIN: "https://x.test",
+    REALTIME_TEST_NOW: "2026-05-12T03:40:00.000Z",
+  } as never);
+  const count = await planPremiumPaddockFetchesOnly(env, "20260512");
+  expect(count).toBe(1);
+  expect(markPremiumPaddockQueued).toHaveBeenCalled();
+});
+
 it("weightFetchPriorityTier returns 0 for Tokyo 5R", async () => {
   const { weightFetchPriorityTier } = await import("./worker");
   expect(weightFetchPriorityTier({ source: "jra", keibajoCode: "05", raceBango: "05" })).toBe(0);

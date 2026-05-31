@@ -696,3 +696,62 @@ it("scheduled result-poll cron logs plan-result-fetches error when planner rejec
     "planner boom",
   );
 });
+
+it("scheduled result-poll cron also logs plan-premium-paddock ok alongside plan-result-fetches", async () => {
+  const { default: worker } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate, logFetch } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockReset();
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([] as never);
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "*/2 0-13 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv({
+      PREMIUM_RACE_ORIGIN: "https://x.test",
+      REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z",
+    } as never),
+    ctx,
+  );
+  await flushWaits(waits);
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-premium-paddock",
+    "ok",
+    null,
+    "0 jobs queued",
+  );
+});
+
+it("scheduled result-poll cron logs plan-premium-paddock error when paddock planner rejects", async () => {
+  const { default: worker } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate, markPremiumPaddockQueued, logFetch } =
+    await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockReset();
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([] as never);
+  vi.mocked(markPremiumPaddockQueued).mockReset();
+  vi.mocked(markPremiumPaddockQueued).mockRejectedValueOnce(new Error("paddock planner boom"));
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "*/2 0-13 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv({
+      PREMIUM_RACE_ORIGIN: "https://x.test",
+      REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z",
+    } as never),
+    ctx,
+  );
+  await flushWaits(waits);
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-premium-paddock",
+    "error",
+    null,
+    "paddock planner boom",
+  );
+});
