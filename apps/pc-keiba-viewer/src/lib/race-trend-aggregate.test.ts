@@ -263,8 +263,20 @@ test("starterKey leaves the umaban segment empty when missing", () => {
   expect(starterKey({ ...baseRow, umaban: null })).toStrictEqual("nar:2026:0520:44:11:");
 });
 
-test("starterRaceKey builds the canonical race key", () => {
-  expect(starterRaceKey(baseRow)).toStrictEqual("nar:20260520:44:11");
+test("starterRaceKey builds the canonical 4-colon race key", () => {
+  expect(starterRaceKey(baseRow)).toStrictEqual("nar:2026:0520:44:11");
+});
+
+test("starterRaceKey emits the canonical 4-colon key for the 2026-06-01 venue 43 R12 nar race", () => {
+  expect(
+    starterRaceKey({
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0601",
+      keibajoCode: "43",
+      raceBango: "12",
+      source: "nar",
+    }),
+  ).toStrictEqual("nar:2026:0601:43:12");
 });
 
 test("detailFromStarter passes through horse weight and signed delta", () => {
@@ -460,7 +472,7 @@ test("aggregateForTargets uses the current running style from the runner mapping
 test("aggregateForTargets joins historical running style rows for matching starters", () => {
   const historicalRunningStyles: RaceTrendRunningStyleCache[] = [
     {
-      raceKey: "nar:20260520:44:11",
+      raceKey: "nar:2026:0520:44:11",
       horseNumber: "5",
       predictedLabel: "oikomi",
     },
@@ -479,6 +491,41 @@ test("aggregateForTargets joins historical running style rows for matching start
     "20260520",
   );
   expect(result.runningStyleRows[0]?.details[0]?.runningStyle).toStrictEqual("oikomi");
+});
+
+test("aggregateForTargets joins 4-colon historical running style rows for the 2026-06-01 nar bug case", () => {
+  // Direct regression for the E16 bug: the D1 race_running_styles row stored
+  // `nar:2026:0601:43:12` while the viewer used to query `nar:20260601:43:12`.
+  // With the canonical 4-colon buildRaceKey, the historical predicted senkou
+  // row now hits the starter aggregator and surfaces in the detail table.
+  const venue43Row: RaceTrendStarterRow = {
+    ...baseRow,
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0601",
+    keibajoCode: "43",
+    raceBango: "12",
+  };
+  const historicalRunningStyles: RaceTrendRunningStyleCache[] = [
+    {
+      raceKey: "nar:2026:0601:43:12",
+      horseNumber: "5",
+      predictedLabel: "senkou",
+    },
+  ];
+  const result = aggregateForTargets(
+    {
+      starterRows: [venue43Row],
+      currentRunningStyles: [{ horseNumber: "5", predictedLabel: "senkou" }],
+      historicalRunningStyles,
+      raceContext: { keibajoCode: "43", raceBango: "12", source: "nar" },
+      runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
+    },
+    { frame: false, jockey: true, raceNumber: false, runningStyle: true },
+    true,
+    "20260601",
+    "20260601",
+  );
+  expect(result.runningStyleRows[0]?.details[0]?.runningStyle).toStrictEqual("senkou");
 });
 
 test("aggregateForTargets falls back to corner-derived running style when no prediction cache row matches", () => {
@@ -930,7 +977,7 @@ test("aggregateForTargets uses historical running styles keyed on the canonical 
       starterRows: [baseRow],
       currentRunningStyles: [],
       historicalRunningStyles: [
-        { raceKey: "nar:20260520:44:11", horseNumber: "05", predictedLabel: "sashi" },
+        { raceKey: "nar:2026:0520:44:11", horseNumber: "05", predictedLabel: "sashi" },
       ],
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
@@ -1012,7 +1059,7 @@ test("aggregateForTargets normalizes historical running styles keyed by zero-pad
       starterRows: [baseRow],
       currentRunningStyles: [],
       historicalRunningStyles: [
-        { raceKey: "nar:20260520:44:11", horseNumber: "", predictedLabel: "sashi" },
+        { raceKey: "nar:2026:0520:44:11", horseNumber: "", predictedLabel: "sashi" },
       ],
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
@@ -1171,7 +1218,7 @@ test("starterRunningStyleKey concatenates race key and normalized umaban", () =>
       raceBango: "01",
       umaban: "07",
     }),
-  ).toStrictEqual("jra:20260530:05:01:7");
+  ).toStrictEqual("jra:2026:0530:05:01:7");
 });
 
 test("starterRunningStyleKey leaves an empty umaban segment when umaban is null", () => {
@@ -1184,7 +1231,7 @@ test("starterRunningStyleKey leaves an empty umaban segment when umaban is null"
       raceBango: "11",
       umaban: null,
     }),
-  ).toStrictEqual("nar:20260530:44:11:");
+  ).toStrictEqual("nar:2026:0530:44:11:");
 });
 
 test("resolveRowJockeyKey returns the normalized comparison key", () => {

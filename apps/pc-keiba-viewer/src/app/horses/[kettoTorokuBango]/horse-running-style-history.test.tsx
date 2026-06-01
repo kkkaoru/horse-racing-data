@@ -25,7 +25,7 @@ const buildRow = (overrides: Partial<RaceRunningStyleRow>): RaceRunningStyleRow 
   p_senkou: 0.5,
   predictedAt: "2025-05-17T01:00:00Z",
   predictedLabel: "senkou",
-  raceKey: "jra:20250517:05:11",
+  raceKey: "jra:2025:0517:05:11",
   ...overrides,
 });
 
@@ -46,16 +46,16 @@ describe("formatRaceLabel", () => {
   test("emits ISO date prefix and race key", () => {
     const row = buildRow({
       predictedAt: "2025-05-17T01:00:00Z",
-      raceKey: "jra:20250517:05:11",
+      raceKey: "jra:2025:0517:05:11",
     });
-    expect(formatRaceLabel(row)).toBe("2025-05-17 jra:20250517:05:11");
+    expect(formatRaceLabel(row)).toBe("2025-05-17 jra:2025:0517:05:11");
   });
 });
 
 describe("chipText", () => {
   test("combines race label with predicted style", () => {
     const row = buildRow({ predictedLabel: "nige" });
-    expect(chipText(row)).toBe("2025-05-17 jra:20250517:05:11 逃げ");
+    expect(chipText(row)).toBe("2025-05-17 jra:2025:0517:05:11 逃げ");
   });
 });
 
@@ -71,9 +71,9 @@ describe("HorseRunningStyleHistory - chip list", () => {
     render(
       <HorseRunningStyleHistory
         rows={[
-          buildRow({ raceKey: "jra:20250517:05:11", predictedLabel: "nige" }),
+          buildRow({ raceKey: "jra:2025:0517:05:11", predictedLabel: "nige" }),
           buildRow({
-            raceKey: "jra:20250503:05:09",
+            raceKey: "jra:2025:0503:05:09",
             predictedAt: "2025-05-03T01:00:00Z",
             predictedLabel: "sashi",
           }),
@@ -84,8 +84,8 @@ describe("HorseRunningStyleHistory - chip list", () => {
     expect(items).toHaveLength(2);
     const [first, second] = items;
     if (first === undefined || second === undefined) throw new Error("missing items");
-    expect(first.textContent).toBe("2025-05-17 jra:20250517:05:11 逃げ");
-    expect(second.textContent).toBe("2025-05-03 jra:20250503:05:09 差し");
+    expect(first.textContent).toBe("2025-05-17 jra:2025:0517:05:11 逃げ");
+    expect(second.textContent).toBe("2025-05-03 jra:2025:0503:05:09 差し");
   });
 
   test("applies a style-specific css class to each chip", () => {

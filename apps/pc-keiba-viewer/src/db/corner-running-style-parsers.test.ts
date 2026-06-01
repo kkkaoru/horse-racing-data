@@ -61,7 +61,7 @@ describe("numericOrNull", () => {
 });
 
 describe("buildRaceKey", () => {
-  test("emits source:YYYYMMDD:keibajo:race_bango", () => {
+  test("emits 4-colon source:YYYY:MMDD:keibajo:race_bango for jra", () => {
     const key = buildRaceKey({
       source: "jra",
       kaisaiNen: "2025",
@@ -69,10 +69,10 @@ describe("buildRaceKey", () => {
       keibajoCode: "05",
       raceBango: "11",
     });
-    expect(key).toBe("jra:20250517:05:11");
+    expect(key).toBe("jra:2025:0517:05:11");
   });
 
-  test("works for nar races", () => {
+  test("emits 4-colon canonical format for nar races", () => {
     const key = buildRaceKey({
       source: "nar",
       kaisaiNen: "2025",
@@ -80,7 +80,18 @@ describe("buildRaceKey", () => {
       keibajoCode: "42",
       raceBango: "07",
     });
-    expect(key).toBe("nar:20250228:42:07");
+    expect(key).toBe("nar:2025:0228:42:07");
+  });
+
+  test("emits the canonical 4-colon nar key for the 2026-06-01 venue 43 R12 race", () => {
+    const key = buildRaceKey({
+      source: "nar",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0601",
+      keibajoCode: "43",
+      raceBango: "12",
+    });
+    expect(key).toBe("nar:2026:0601:43:12");
   });
 });
 
@@ -135,7 +146,7 @@ describe("requireRunningStyleLabel", () => {
 describe("parseRaceRunningStyleRow", () => {
   test("normalizes raw D1 columns into the typed row", () => {
     const row = parseRaceRunningStyleRow({
-      race_key: "jra:20250517:05:11",
+      race_key: "jra:2025:0517:05:11",
       horse_number: 3,
       ketto_toroku_bango: "2020100001",
       bamei: "ロードカナロア",
@@ -149,7 +160,7 @@ describe("parseRaceRunningStyleRow", () => {
       predicted_label: "senkou",
       predicted_at: "2025-05-17T01:00:00Z",
     });
-    expect(row.raceKey).toBe("jra:20250517:05:11");
+    expect(row.raceKey).toBe("jra:2025:0517:05:11");
     expect(row.horseNumber).toBe(3);
     expect(row.bamei).toBe("ロードカナロア");
     expect(row.predictedLabel).toBe("senkou");
@@ -158,7 +169,7 @@ describe("parseRaceRunningStyleRow", () => {
 
   test("tolerates null bamei", () => {
     const row = parseRaceRunningStyleRow({
-      race_key: "nar:20250228:42:07",
+      race_key: "nar:2025:0228:42:07",
       horse_number: 1,
       ketto_toroku_bango: "2020100002",
       bamei: null,
@@ -179,7 +190,7 @@ describe("parseRaceRunningStyleRow", () => {
   test("throws when predicted_label is outside the canonical set", () => {
     expect(() =>
       parseRaceRunningStyleRow({
-        race_key: "jra:20250517:05:11",
+        race_key: "jra:2025:0517:05:11",
         horse_number: 1,
         ketto_toroku_bango: "h1",
         bamei: null,
@@ -199,7 +210,7 @@ describe("parseRaceRunningStyleRow", () => {
   test("throws when numeric column is missing", () => {
     expect(() =>
       parseRaceRunningStyleRow({
-        race_key: "jra:20250517:05:11",
+        race_key: "jra:2025:0517:05:11",
         horse_number: null,
         ketto_toroku_bango: "h1",
         bamei: null,

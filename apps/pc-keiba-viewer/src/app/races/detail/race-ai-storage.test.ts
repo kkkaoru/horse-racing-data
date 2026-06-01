@@ -43,7 +43,7 @@ describe("race ai storage", () => {
           role: "user",
         },
       ],
-      raceKey: "nar:20260518:35:01",
+      raceKey: "nar:2026:0518:35:01",
       thoughtLogs: [
         {
           content: "thought one",
@@ -65,19 +65,19 @@ describe("race ai storage", () => {
           role: "assistant",
         },
       ],
-      raceKey: "nar:20260518:35:02",
+      raceKey: "nar:2026:0518:35:02",
       thoughtLogs: [],
       updatedAt: "2026-05-18T00:01:00.000Z",
     });
 
-    await deleteRaceAiLog("nar:20260518:35:01");
+    await deleteRaceAiLog("nar:2026:0518:35:01");
 
-    expect(await getRaceAiLog("nar:20260518:35:01")).toMatchObject({
+    expect(await getRaceAiLog("nar:2026:0518:35:01")).toMatchObject({
       messages: [],
-      raceKey: "nar:20260518:35:01",
+      raceKey: "nar:2026:0518:35:01",
       thoughtLogs: [],
     });
-    expect(await getRaceAiLog("nar:20260518:35:02")).toMatchObject({
+    expect(await getRaceAiLog("nar:2026:0518:35:02")).toMatchObject({
       messages: [
         {
           content: "race two",
@@ -85,7 +85,7 @@ describe("race ai storage", () => {
           role: "assistant",
         },
       ],
-      raceKey: "nar:20260518:35:02",
+      raceKey: "nar:2026:0518:35:02",
       thoughtLogs: [],
     });
   });

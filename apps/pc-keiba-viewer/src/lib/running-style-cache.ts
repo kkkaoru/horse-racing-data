@@ -2,7 +2,11 @@ import { buildRaceKey } from "../db/corner-running-style-parsers";
 
 export const DEFAULT_RUNNING_STYLE_CACHE_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
 export const RUNNING_STYLE_CACHE_VERSION = "v3";
-export const RUNNING_STYLE_RACE_KEY_PATTERN = /^(jra|nar):(\d{4})(\d{4}):(\d{1,2}):(\d{1,2})$/u;
+// 4-colon canonical race_key — matches `${source}:${YYYY}:${MMDD}:${keibajo}:${race_bango}`.
+// keibajoCode and raceBango are allowed 1-2 digits so unpadded callsite values still
+// parse, but `buildRaceKey` callers are expected to pass already-padded values per the
+// running-style-cache contract.
+export const RUNNING_STYLE_RACE_KEY_PATTERN = /^(jra|nar):(\d{4}):(\d{4}):(\d{1,2}):(\d{1,2})$/u;
 
 export interface RunningStyleCacheRace {
   source: string;

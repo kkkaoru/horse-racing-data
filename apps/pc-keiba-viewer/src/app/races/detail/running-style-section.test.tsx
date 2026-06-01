@@ -38,7 +38,7 @@ const buildRow = (overrides: Partial<RaceRunningStyleRow>): RaceRunningStyleRow 
   p_senkou: 0.5,
   predictedAt: "2025-05-17T01:00:00Z",
   predictedLabel: "senkou",
-  raceKey: "jra:20250517:05:11",
+  raceKey: "jra:2025:0517:05:11",
   ...overrides,
 });
 

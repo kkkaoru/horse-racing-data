@@ -80,7 +80,7 @@ const buildRow = (overrides: Partial<RaceRunningStyleRow>): RaceRunningStyleRow 
   p_senkou: 0.5,
   predictedAt: "2025-05-17T01:00:00Z",
   predictedLabel: "senkou" satisfies RunningStyleLabel,
-  raceKey: "jra:20250517:05:11",
+  raceKey: "jra:2025:0517:05:11",
   ...overrides,
 });
 
@@ -160,7 +160,7 @@ describe("RunningStyleRaceSection", () => {
         category: "ban-ei",
         modelVersion: "ban-ei-rs-v1.0",
         predictedLabel: "nige",
-        raceKey: "nar:20250517:83:01",
+        raceKey: "nar:2025:0517:83:01",
       }),
     ]);
     getRunningStyleMetricsForActiveModelMock.mockResolvedValue({

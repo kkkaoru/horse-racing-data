@@ -6,11 +6,11 @@ describe("d1 query cache helpers", () => {
   it("builds stable cache keys regardless of object key order", () => {
     const left = buildD1QueryCacheKey("running-style-race", [
       "getRaceRunningStylesFromD1",
-      "nar:20260523:44:12",
+      "nar:2026:0523:44:12",
     ]);
     const right = buildD1QueryCacheKey("running-style-race", [
       "getRaceRunningStylesFromD1",
-      "nar:20260523:44:12",
+      "nar:2026:0523:44:12",
     ]);
     expect(left).toBe(right);
     expect(left).toMatch(/^[0-9a-f]{8}$/u);
