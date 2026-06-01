@@ -830,6 +830,15 @@ export interface BuildRunningStyleBatchFeatureSqlArgs {
   featureSchemaVersion: string;
   fromDate: string;
   source: RunningStyleSource;
+  /**
+   * When true, narrows the `nige` target class so a horse only counts as nige
+   * when it leads at BOTH the 1st AND 2nd corner (corner1_norm = 0 AND
+   * corner2_norm = 0). When false / omitted, retains the existing lax
+   * definition that only checks corner1_norm = 0. Strict mode is opt-in for
+   * new model training; the production worker continues to call the lax
+   * (default) path so existing features parquet is not affected.
+   */
+  strictNigeTarget?: boolean;
   toDate: string;
 }
 
@@ -979,9 +988,39 @@ const applyBatchMaterializedHints = (sql: string): string =>
     sql,
   );
 
+// Markers used to inject corner2_norm / target_corner_2_norm into the batch
+// rec & target CTEs when strict nige target derivation is requested. They
+// match the unique 4-space-indented projections inside `buildBatchCoreCtesSql`
+// and the unique 6-space-indented case-arm inside the target CTE so a single
+// `replace()` call mutates exactly one site per marker. Any future refactor
+// that changes those line shapes must update the markers here in lockstep.
+const BATCH_REC_CORNER1_MARKER = "    f.corner1_norm,\n";
+const BATCH_REC_CORNER1_WITH_CORNER2 = "    f.corner1_norm,\n    f.corner2_norm,\n";
+const BATCH_TARGET_CORNER1_PROPAGATION_MARKER = "    r.corner1_norm as target_corner_1_norm,\n";
+const BATCH_TARGET_CORNER1_PROPAGATION_WITH_CORNER2 =
+  "    r.corner1_norm as target_corner_1_norm,\n    r.corner2_norm as target_corner_2_norm,\n";
+const BATCH_TARGET_NIGE_LAX_CASE_ARM = `when r.corner1_norm = 0 then ${RUNNING_STYLE_CLASS_NIGE}`;
+const BATCH_TARGET_NIGE_STRICT_CASE_ARM = `when r.corner1_norm = 0 and r.corner2_norm = 0 then ${RUNNING_STYLE_CLASS_NIGE}`;
+
+const applyBatchStrictNigeTargetTransform = (sql: string): string =>
+  sql
+    .replace(BATCH_REC_CORNER1_MARKER, BATCH_REC_CORNER1_WITH_CORNER2)
+    .replace(BATCH_TARGET_CORNER1_PROPAGATION_MARKER, BATCH_TARGET_CORNER1_PROPAGATION_WITH_CORNER2)
+    .replace(BATCH_TARGET_NIGE_LAX_CASE_ARM, BATCH_TARGET_NIGE_STRICT_CASE_ARM);
+
 export const buildRunningStyleBatchFeatureSql = (
   args: BuildRunningStyleBatchFeatureSqlArgs,
-): string => applyBatchMaterializedHints(buildBatchCoreCtesSql(args) + buildSharedFeatureCtesSql());
+): string => {
+  // Default (lax) path stays byte-identical to the pre-strict snapshot so the
+  // production worker / parquet pipeline are not affected. Strict mode is an
+  // opt-in transform that adds corner2_norm to the rec & target CTEs and
+  // narrows the nige case-arm to require leading at both 1st and 2nd corner.
+  const lax = applyBatchMaterializedHints(
+    buildBatchCoreCtesSql(args) + buildSharedFeatureCtesSql(),
+  );
+  if (args.strictNigeTarget !== true) return lax;
+  return applyBatchStrictNigeTargetTransform(lax);
+};
 
 const toStringOrNull = (value: unknown): string | null => {
   if (value === null || value === undefined) return null;

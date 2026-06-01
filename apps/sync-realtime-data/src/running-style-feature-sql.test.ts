@@ -407,6 +407,155 @@ it("buildRunningStyleFeaturesForRaceFromPostgres falls back to rows.length when 
   expect(result.sqlRows).toBe(1);
 });
 
+it("buildRunningStyleBatchFeatureSql strictNigeTarget=false (default) is byte-identical to lax snapshot", () => {
+  const sql = buildRunningStyleBatchFeatureSql({
+    featureSchemaVersion: "v1",
+    fromDate: "20050101",
+    source: "jra",
+    strictNigeTarget: false,
+    toDate: "20260531",
+  });
+  expect(sql.length).toBe(BATCH_JRA_SQL_LENGTH_REFERENCE);
+  expect(sha256(sql)).toBe(BATCH_JRA_SQL_SHA256_REFERENCE);
+});
+
+it("buildRunningStyleBatchFeatureSql strict omitted matches strict=false", () => {
+  const omitted = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  const explicitFalse = buildRunningStyleBatchFeatureSql({
+    featureSchemaVersion: "v1",
+    fromDate: "20050101",
+    source: "jra",
+    strictNigeTarget: false,
+    toDate: "20260531",
+  });
+  expect(omitted).toBe(explicitFalse);
+});
+
+it("buildRunningStyleBatchFeatureSql strictNigeTarget=true injects f.corner2_norm into the rec CTE", () => {
+  const sql = buildRunningStyleBatchFeatureSql({
+    featureSchemaVersion: "v1",
+    fromDate: "20050101",
+    source: "jra",
+    strictNigeTarget: true,
+    toDate: "20260531",
+  });
+  expect(sql.includes("    f.corner1_norm,\n    f.corner2_norm,\n")).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql strictNigeTarget=true propagates r.corner2_norm as target_corner_2_norm", () => {
+  const sql = buildRunningStyleBatchFeatureSql({
+    featureSchemaVersion: "v1",
+    fromDate: "20050101",
+    source: "jra",
+    strictNigeTarget: true,
+    toDate: "20260531",
+  });
+  expect(
+    sql.includes(
+      "    r.corner1_norm as target_corner_1_norm,\n    r.corner2_norm as target_corner_2_norm,\n",
+    ),
+  ).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql strictNigeTarget=true rewrites the nige case arm to require corner2_norm=0", () => {
+  const sql = buildRunningStyleBatchFeatureSql({
+    featureSchemaVersion: "v1",
+    fromDate: "20050101",
+    source: "jra",
+    strictNigeTarget: true,
+    toDate: "20260531",
+  });
+  expect(sql.includes("when r.corner1_norm = 0 and r.corner2_norm = 0 then 0")).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql strictNigeTarget=true removes the lax single-corner nige case arm", () => {
+  const sql = buildRunningStyleBatchFeatureSql({
+    featureSchemaVersion: "v1",
+    fromDate: "20050101",
+    source: "jra",
+    strictNigeTarget: true,
+    toDate: "20260531",
+  });
+  expect(sql.includes("when r.corner1_norm = 0 then 0")).toBe(false);
+});
+
+it("buildRunningStyleBatchFeatureSql strictNigeTarget=true keeps senkou/sashi/oikomi thresholds unchanged", () => {
+  const sql = buildRunningStyleBatchFeatureSql({
+    featureSchemaVersion: "v1",
+    fromDate: "20050101",
+    source: "jra",
+    strictNigeTarget: true,
+    toDate: "20260531",
+  });
+  expect(sql.includes("when r.corner1_norm <= 0.3 then 1")).toBe(true);
+  expect(sql.includes("when r.corner1_norm <= 0.7 then 2")).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql strictNigeTarget=true preserves the NULL-corner1 short-circuit", () => {
+  const sql = buildRunningStyleBatchFeatureSql({
+    featureSchemaVersion: "v1",
+    fromDate: "20050101",
+    source: "jra",
+    strictNigeTarget: true,
+    toDate: "20260531",
+  });
+  expect(sql.includes("when r.corner1_norm is null then null")).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql strictNigeTarget=true changes the rendered SQL length vs lax", () => {
+  const lax = buildRunningStyleBatchFeatureSql({
+    featureSchemaVersion: "v1",
+    fromDate: "20050101",
+    source: "jra",
+    strictNigeTarget: false,
+    toDate: "20260531",
+  });
+  const strict = buildRunningStyleBatchFeatureSql({
+    featureSchemaVersion: "v1",
+    fromDate: "20050101",
+    source: "jra",
+    strictNigeTarget: true,
+    toDate: "20260531",
+  });
+  expect(strict.length).toBeGreaterThan(lax.length);
+});
+
+it("buildRunningStyleBatchFeatureSql strictNigeTarget=true still materializes the heavy CTE list", () => {
+  const sql = buildRunningStyleBatchFeatureSql({
+    featureSchemaVersion: "v1",
+    fromDate: "20050101",
+    source: "jra",
+    strictNigeTarget: true,
+    toDate: "20260531",
+  });
+  const matches = sql.match(/ as materialized \(/g) ?? [];
+  expect(matches.length).toBe(BATCH_MATERIALIZED_HINT_COUNT);
+});
+
+it("buildRunningStyleBatchFeatureSql strictNigeTarget=true accepts nar source", () => {
+  const sql = buildRunningStyleBatchFeatureSql({
+    featureSchemaVersion: "v1",
+    fromDate: "20100101",
+    source: "nar",
+    strictNigeTarget: true,
+    toDate: "20260531",
+  });
+  expect(sql.includes("'nar'::text as source")).toBe(true);
+  expect(sql.includes("    f.corner2_norm,\n")).toBe(true);
+  expect(sql.includes("when r.corner1_norm = 0 and r.corner2_norm = 0 then 0")).toBe(true);
+});
+
+it("buildRunningStylePostgresFeatureSql does not contain the strict-nige clause (per-race unaffected)", () => {
+  const sql = buildRunningStylePostgresFeatureSql();
+  expect(sql.includes("when r.corner1_norm = 0 and r.corner2_norm = 0 then 0")).toBe(false);
+  expect(sql.includes("when r.corner1_norm = 0 then 0")).toBe(true);
+});
+
+it("buildRunningStylePostgresFeatureSqlWithD1Target does not contain the strict-nige clause (D1 target unaffected)", () => {
+  const sql = buildRunningStylePostgresFeatureSqlWithD1Target();
+  expect(sql.includes("when r.corner1_norm = 0 and r.corner2_norm = 0 then 0")).toBe(false);
+});
+
 it("buildRunningStyleFeaturesForRaceFromPostgres treats undefined feature column and boolean false as null/0", async () => {
   const query = vi.fn(async () => ({
     rowCount: 1,
