@@ -1656,3 +1656,259 @@ test("compareTrendDetails returns zero when date, race and horse numbers all mat
   const right = buildDetail({ horseNumber: "3" });
   expect(compareTrendDetails(left, right)).toStrictEqual(0);
 });
+
+test("mergeStarterRows returns a single today sibling when past14 is empty", () => {
+  const todaySibling: RaceTrendStarterRow = {
+    source: "nar",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0601",
+    keibajoCode: "43",
+    raceBango: "01",
+    raceName: null,
+    hassoJikoku: null,
+    runnerCount: null,
+    wakuban: "1",
+    umaban: "1",
+    bamei: "テスト",
+    jockeyName: "騎手太郎",
+    tanshoOdds: null,
+    tanshoPopularity: null,
+    finishPosition: 1,
+    sohaTime: null,
+    corner1: null,
+    corner2: null,
+    corner3: null,
+    corner4: null,
+    bataiju: null,
+    zogenFugo: null,
+    zogenSa: null,
+  };
+  expect(mergeStarterRows([], [todaySibling])).toStrictEqual([todaySibling]);
+});
+
+test("mergeStarterRows keeps every today sibling row when past14 is empty", () => {
+  const baseTodayRow: RaceTrendStarterRow = {
+    source: "nar",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0601",
+    keibajoCode: "43",
+    raceBango: "01",
+    raceName: null,
+    hassoJikoku: null,
+    runnerCount: null,
+    wakuban: "1",
+    umaban: "1",
+    bamei: null,
+    jockeyName: null,
+    tanshoOdds: null,
+    tanshoPopularity: null,
+    finishPosition: 0,
+    sohaTime: null,
+    corner1: null,
+    corner2: null,
+    corner3: null,
+    corner4: null,
+    bataiju: null,
+    zogenFugo: null,
+    zogenSa: null,
+  };
+  const row1: RaceTrendStarterRow = { ...baseTodayRow, raceBango: "01", umaban: "1" };
+  const row2: RaceTrendStarterRow = { ...baseTodayRow, raceBango: "02", umaban: "4" };
+  const row3: RaceTrendStarterRow = { ...baseTodayRow, raceBango: "03", umaban: "7" };
+  const result = mergeStarterRows([], [row1, row2, row3]);
+  expect(result).toHaveLength(3);
+});
+
+test("filterTodaySiblingRows narrows ten NAR today rows down to siblings earlier than R11", () => {
+  const venue43Sibling: RaceTrendStarterRow = {
+    source: "nar",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0601",
+    keibajoCode: "43",
+    raceBango: "01",
+    raceName: null,
+    hassoJikoku: null,
+    runnerCount: null,
+    wakuban: "1",
+    umaban: "1",
+    bamei: null,
+    jockeyName: null,
+    tanshoOdds: null,
+    tanshoPopularity: null,
+    finishPosition: 1,
+    sohaTime: null,
+    corner1: null,
+    corner2: null,
+    corner3: null,
+    corner4: null,
+    bataiju: null,
+    zogenFugo: null,
+    zogenSa: null,
+  };
+  const r01: RaceTrendStarterRow = { ...venue43Sibling, raceBango: "01" };
+  const r02: RaceTrendStarterRow = { ...venue43Sibling, raceBango: "02" };
+  const r10: RaceTrendStarterRow = { ...venue43Sibling, raceBango: "10" };
+  const r11Self: RaceTrendStarterRow = { ...venue43Sibling, raceBango: "11" };
+  const target: RaceTrendTodaySiblingTarget = {
+    keibajoCode: "43",
+    raceBango: "11",
+    source: "nar",
+    targetYmd: "20260601",
+  };
+  expect(filterTodaySiblingRows([r01, r02, r10, r11Self], target)).toStrictEqual([r01, r02, r10]);
+});
+
+test("aggregateForTargets aggregates only today siblings when past14 is empty and start equals end", () => {
+  const todayRow: RaceTrendStarterRow = {
+    source: "nar",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0601",
+    keibajoCode: "43",
+    raceBango: "01",
+    raceName: null,
+    hassoJikoku: null,
+    runnerCount: "10",
+    wakuban: "3",
+    umaban: "5",
+    bamei: "シブリングA",
+    jockeyName: "騎手太郎",
+    tanshoOdds: null,
+    tanshoPopularity: null,
+    finishPosition: 2,
+    sohaTime: null,
+    corner1: "04",
+    corner2: "03",
+    corner3: "02",
+    corner4: "02",
+    bataiju: null,
+    zogenFugo: null,
+    zogenSa: null,
+  };
+  const result = aggregateForTargets(
+    {
+      starterRows: [todayRow],
+      currentRunningStyles: [],
+      historicalRunningStyles: [],
+      raceContext: { keibajoCode: "43", raceBango: "11", source: "nar" },
+      runners: [{ frameNumber: "3", horseNumber: "1", jockeyName: "騎手次郎" }],
+    },
+    { frame: true, jockey: false, raceNumber: false, runningStyle: false },
+    true,
+    "20260601",
+    "20260601",
+  );
+  expect(result.runningStyleRows[0]?.starts).toStrictEqual(1);
+});
+
+test("aggregateForTargets aggregates frame-target rows from a venue-43 today sibling list", () => {
+  const venue43FrameRow: RaceTrendStarterRow = {
+    source: "nar",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0601",
+    keibajoCode: "43",
+    raceBango: "01",
+    raceName: null,
+    hassoJikoku: null,
+    runnerCount: "10",
+    wakuban: "3",
+    umaban: "5",
+    bamei: null,
+    jockeyName: "騎手太郎",
+    tanshoOdds: null,
+    tanshoPopularity: null,
+    finishPosition: 2,
+    sohaTime: null,
+    corner1: "04",
+    corner2: "03",
+    corner3: "02",
+    corner4: "02",
+    bataiju: null,
+    zogenFugo: null,
+    zogenSa: null,
+  };
+  const r01Frame3: RaceTrendStarterRow = { ...venue43FrameRow, raceBango: "01", umaban: "5" };
+  const r02Frame3: RaceTrendStarterRow = { ...venue43FrameRow, raceBango: "02", umaban: "6" };
+  const r03Frame3: RaceTrendStarterRow = { ...venue43FrameRow, raceBango: "03", umaban: "7" };
+  const result = aggregateForTargets(
+    {
+      starterRows: [r01Frame3, r02Frame3, r03Frame3],
+      currentRunningStyles: [],
+      historicalRunningStyles: [],
+      raceContext: { keibajoCode: "43", raceBango: "11", source: "nar" },
+      runners: [{ frameNumber: "3", horseNumber: "1", jockeyName: "騎手次郎" }],
+    },
+    { frame: true, jockey: false, raceNumber: false, runningStyle: false },
+    true,
+    "20260601",
+    "20260601",
+  );
+  expect(result.runningStyleRows[0]?.starts).toStrictEqual(3);
+});
+
+test("aggregateForTargets retains today siblings after merging with an empty past14 list", () => {
+  const todayRowA: RaceTrendStarterRow = {
+    source: "nar",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0601",
+    keibajoCode: "43",
+    raceBango: "01",
+    raceName: null,
+    hassoJikoku: null,
+    runnerCount: "10",
+    wakuban: "3",
+    umaban: "5",
+    bamei: null,
+    jockeyName: "騎手太郎",
+    tanshoOdds: null,
+    tanshoPopularity: null,
+    finishPosition: 2,
+    sohaTime: null,
+    corner1: "04",
+    corner2: "03",
+    corner3: "02",
+    corner4: "02",
+    bataiju: null,
+    zogenFugo: null,
+    zogenSa: null,
+  };
+  const todayRowB: RaceTrendStarterRow = {
+    source: "nar",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0601",
+    keibajoCode: "43",
+    raceBango: "02",
+    raceName: null,
+    hassoJikoku: null,
+    runnerCount: "10",
+    wakuban: "3",
+    umaban: "6",
+    bamei: null,
+    jockeyName: "騎手太郎",
+    tanshoOdds: null,
+    tanshoPopularity: null,
+    finishPosition: 1,
+    sohaTime: null,
+    corner1: "04",
+    corner2: "03",
+    corner3: "02",
+    corner4: "02",
+    bataiju: null,
+    zogenFugo: null,
+    zogenSa: null,
+  };
+  const merged = mergeStarterRows([], [todayRowA, todayRowB]);
+  const result = aggregateForTargets(
+    {
+      starterRows: merged,
+      currentRunningStyles: [],
+      historicalRunningStyles: [],
+      raceContext: { keibajoCode: "43", raceBango: "11", source: "nar" },
+      runners: [{ frameNumber: "3", horseNumber: "1", jockeyName: "騎手次郎" }],
+    },
+    { frame: true, jockey: false, raceNumber: false, runningStyle: false },
+    true,
+    "20260601",
+    "20260601",
+  );
+  expect(result.runningStyleRows[0]?.starts).toStrictEqual(2);
+});
