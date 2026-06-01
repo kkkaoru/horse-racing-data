@@ -116,6 +116,24 @@ class FoldMetrics(TypedDict):
     per_class_support: dict[str, int]
 
 
+class WalkForwardEvalMetrics(TypedDict):
+    holdout_year: int
+    train_start_date: str
+    train_end_date: str
+    train_rows: int
+    valid_rows: int
+    precision_nige: float
+    recall_nige: float
+    log_loss_nige: float
+    multi_log_loss: float
+    accuracy: float
+
+
+DEFAULT_WALK_FORWARD_WINDOWS = "2023,2024,2025,2026"
+WALK_FORWARD_PRECISION_GAP_THRESHOLD_PP = 30.0
+LOG_LOSS_EPS = 1e-15
+
+
 def default_training_params() -> TrainingParams:
     return {
         "num_leaves": DEFAULT_NUM_LEAVES,
@@ -277,6 +295,70 @@ def macro_f1_from_precision_recall(precision: dict[str, float], recall: dict[str
     if not f1_scores:
         return float("nan")
     return float(np.mean(f1_scores))
+
+
+def compute_binary_log_loss_nige(probabilities: np.ndarray, actual: np.ndarray) -> float:
+    if actual.size == 0:
+        return float("nan")
+    p_nige = np.clip(probabilities[:, 0], LOG_LOSS_EPS, 1.0 - LOG_LOSS_EPS)
+    is_nige = (actual == 0).astype(np.float64)
+    losses = -(is_nige * np.log(p_nige) + (1.0 - is_nige) * np.log(1.0 - p_nige))
+    return float(losses.mean())
+
+
+def compute_multi_log_loss(probabilities: np.ndarray, actual: np.ndarray) -> float:
+    if actual.size == 0:
+        return float("nan")
+    clipped = np.clip(probabilities, LOG_LOSS_EPS, 1.0 - LOG_LOSS_EPS)
+    selected = clipped[np.arange(actual.size), actual.astype(np.int64)]
+    return float(-np.log(selected).mean())
+
+
+def compute_walk_forward_eval_metrics(
+    probabilities: np.ndarray,
+    actual: np.ndarray,
+    holdout_year: int,
+    train_start_date: str,
+    train_end_date: str,
+    train_rows: int,
+) -> WalkForwardEvalMetrics:
+    predicted = compute_predicted_labels(probabilities)
+    precision, recall, _ = compute_per_class_precision_recall(predicted, actual)
+    return {
+        "holdout_year": holdout_year,
+        "train_start_date": train_start_date,
+        "train_end_date": train_end_date,
+        "train_rows": train_rows,
+        "valid_rows": int(actual.size),
+        "precision_nige": precision["nige"],
+        "recall_nige": recall["nige"],
+        "log_loss_nige": compute_binary_log_loss_nige(probabilities, actual),
+        "multi_log_loss": compute_multi_log_loss(probabilities, actual),
+        "accuracy": compute_accuracy(predicted, actual),
+    }
+
+
+def parse_walk_forward_windows(value: str) -> list[int]:
+    return [int(token.strip()) for token in value.split(",") if token.strip()]
+
+
+def derive_walk_forward_train_end(holdout_year: int) -> str:
+    return f"{holdout_year - 1}1231"
+
+
+def derive_walk_forward_valid_range(holdout_year: int) -> tuple[str, str]:
+    return f"{holdout_year}0101", f"{holdout_year}1231"
+
+
+def detect_walk_forward_precision_regression(
+    walk_forward_precision_nige: float,
+    production_precision_nige: float,
+    gap_threshold_pp: float = WALK_FORWARD_PRECISION_GAP_THRESHOLD_PP,
+) -> bool:
+    if np.isnan(walk_forward_precision_nige) or np.isnan(production_precision_nige):
+        return False
+    gap_pp = (production_precision_nige - walk_forward_precision_nige) * 100.0
+    return gap_pp >= gap_threshold_pp
 
 
 def maybe_enrich_with_field_features(df: pd.DataFrame, enabled: bool) -> pd.DataFrame:
@@ -458,6 +540,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=True,
     )
+    train_prod.add_argument(
+        "--enable-walk-forward-eval",
+        action="store_true",
+        help="Run walk-forward CV evaluation alongside production fit (slower, +20-30%% wall clock)",
+    )
+    train_prod.add_argument(
+        "--walk-forward-windows",
+        type=str,
+        default=DEFAULT_WALK_FORWARD_WINDOWS,
+        help="Comma-separated holdout years for walk-forward eval",
+    )
     return parser.parse_args(argv)
 
 
@@ -571,6 +664,99 @@ def train_full_dataset(
     )
 
 
+def run_walk_forward_eval_for_year(
+    df: pd.DataFrame,
+    holdout_year: int,
+    train_start_date: str,
+    feature_columns: list[str],
+    categorical_features: list[str],
+    params: TrainingParams,
+) -> WalkForwardEvalMetrics:
+    train_end_date = derive_walk_forward_train_end(holdout_year)
+    valid_start, valid_end = derive_walk_forward_valid_range(holdout_year)
+    train_df = filter_by_date_range(df, train_start_date, train_end_date)
+    valid_df = filter_by_date_range(df, valid_start, valid_end)
+    train_labeled = filter_labeled_rows(train_df)
+    valid_labeled = filter_labeled_rows(valid_df)
+    if len(train_labeled) == 0 or len(valid_labeled) == 0:
+        return {
+            "holdout_year": holdout_year,
+            "train_start_date": train_start_date,
+            "train_end_date": train_end_date,
+            "train_rows": int(len(train_labeled)),
+            "valid_rows": int(len(valid_labeled)),
+            "precision_nige": float("nan"),
+            "recall_nige": float("nan"),
+            "log_loss_nige": float("nan"),
+            "multi_log_loss": float("nan"),
+            "accuracy": float("nan"),
+        }
+    _booster, probabilities = train_running_style_head(
+        train_labeled, valid_labeled, feature_columns, categorical_features, params,
+    )
+    actual = valid_labeled[TARGET_COLUMN].to_numpy(dtype=np.int64)
+    return compute_walk_forward_eval_metrics(
+        probabilities, actual, holdout_year, train_start_date, train_end_date, int(len(train_labeled)),
+    )
+
+
+def run_walk_forward_eval_for_windows(
+    df: pd.DataFrame,
+    windows: list[int],
+    train_start_date: str,
+    feature_columns: list[str],
+    categorical_features: list[str],
+    params: TrainingParams,
+) -> dict[str, WalkForwardEvalMetrics]:
+    results: dict[str, WalkForwardEvalMetrics] = {}
+    for year in windows:
+        metrics = run_walk_forward_eval_for_year(
+            df, year, train_start_date, feature_columns, categorical_features, params,
+        )
+        results[str(year)] = metrics
+        print(json.dumps({"walk_forward_eval": metrics}, ensure_ascii=False))
+    return results
+
+
+def compute_production_precision_nige(
+    booster: lgb.Booster,
+    train_subset_full: pd.DataFrame,
+    feature_columns: list[str],
+    categorical_features: list[str],
+    valid_start_date: str,
+) -> float:
+    labeled = filter_labeled_rows(train_subset_full)
+    _, valid_df = split_production_train_valid(labeled, valid_start_date)
+    if len(valid_df) == 0:
+        return float("nan")
+    probabilities = predict_softmax(booster, valid_df, feature_columns, categorical_features)
+    predicted = compute_predicted_labels(probabilities)
+    actual = valid_df[TARGET_COLUMN].to_numpy(dtype=np.int64)
+    precision, _, _ = compute_per_class_precision_recall(predicted, actual)
+    return precision["nige"]
+
+
+def emit_walk_forward_warnings(
+    walk_forward_results: dict[str, WalkForwardEvalMetrics],
+    production_precision_nige: float,
+) -> list[str]:
+    warnings: list[str] = []
+    for year_key, metrics in walk_forward_results.items():
+        if detect_walk_forward_precision_regression(
+            metrics["precision_nige"], production_precision_nige,
+        ):
+            gap_pp = (production_precision_nige - metrics["precision_nige"]) * 100.0
+            message = (
+                f"WARNING: walk-forward {year_key} precision_nige="
+                f"{metrics['precision_nige']:.2f} vs production fit "
+                f"{production_precision_nige:.2f} (-{gap_pp:.0f}pp). "
+                f"Train leakage suspected."
+            )
+            warnings.append(message)
+            print(message)
+    return warnings
+
+
 def write_model_metadata(
     output_dir: Path,
     model_version: str,
@@ -581,6 +767,8 @@ def write_model_metadata(
     train_end: str,
     *,
     with_field_features: bool,
+    walk_forward_results: dict[str, WalkForwardEvalMetrics] | None = None,
+    production_precision_nige: float | None = None,
 ) -> None:
     metadata: dict[str, object] = {
         "model_version": model_version,
@@ -593,6 +781,10 @@ def write_model_metadata(
         "train_end_date": train_end,
         "feature_schema_version": "v2" if with_field_features else "v1",
     }
+    if walk_forward_results is not None:
+        metadata["walk_forward_results"] = walk_forward_results
+    if production_precision_nige is not None and not np.isnan(production_precision_nige):
+        metadata["production_precision_nige"] = production_precision_nige
     (output_dir / "metadata.json").write_text(
         json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8",
     )
@@ -607,6 +799,12 @@ def run_train_production_command(args: argparse.Namespace) -> None:
     categorical_features = detect_categorical_features(feature_columns)
     params = training_params_from_args(args)
     train_subset_full = filter_by_date_range(df, args.train_start_date, args.train_end_date)
+    walk_forward_results: dict[str, WalkForwardEvalMetrics] | None = None
+    if args.enable_walk_forward_eval:
+        windows = parse_walk_forward_windows(args.walk_forward_windows)
+        walk_forward_results = run_walk_forward_eval_for_windows(
+            df, windows, args.train_start_date, feature_columns, categorical_features, params,
+        )
     booster = train_full_dataset(
         train_subset_full,
         feature_columns,
@@ -614,6 +812,12 @@ def run_train_production_command(args: argparse.Namespace) -> None:
         params,
         valid_start_date=args.valid_start_date,
     )
+    production_precision_nige: float | None = None
+    if walk_forward_results is not None:
+        production_precision_nige = compute_production_precision_nige(
+            booster, train_subset_full, feature_columns, categorical_features, args.valid_start_date,
+        )
+        emit_walk_forward_warnings(walk_forward_results, production_precision_nige)
     args.output_model_dir.mkdir(parents=True, exist_ok=True)
     model_path = args.output_model_dir / "model.txt"
     booster.save_model(str(model_path))
@@ -622,6 +826,8 @@ def run_train_production_command(args: argparse.Namespace) -> None:
         int(len(filter_labeled_rows(train_subset_full))),
         args.train_start_date, args.train_end_date,
         with_field_features=args.with_field_features,
+        walk_forward_results=walk_forward_results,
+        production_precision_nige=production_precision_nige,
     )
     elapsed = perf_counter() - started
     print(json.dumps({
