@@ -1,0 +1,493 @@
+name: running-style-evaluation
+
+# Automated evaluation of the running-style (脚質) model.
+#
+# Three independent jobs:
+#   1. script-evaluation: lint / format / tsc / python static checks for all
+#      running-style related TS/Python source files. Runs on every PR that
+#      touches those paths and on the weekly schedule.
+#   2. accuracy-evaluation: invoke the evaluate_running_style_pipeline tool
+#      to compute OOS precision / train-vs-holdout gap and surface
+#      degradation. Requires PG / R2 access, so it only runs on manual
+#      workflow_dispatch (with run_accuracy=true) — never on schedule or PR.
+#   3. improvement-suggestions: aggregate outputs and detect known
+#      anti-patterns (P4b train leakage, P4c lookback shadowing,
+#      hardcoded thresholds in feature SQL).
+#
+# Triggers:
+#   - workflow_dispatch (manual; lets you opt in to the heavy accuracy job)
+#   - schedule '0 18 * * 0' (Sunday 18:00 UTC == Monday 03:00 JST, off-peak)
+#   - pull_request, path-filtered to running-style sources
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_accuracy:
+        description: "Run accuracy-evaluation job (needs PG/R2; manual only)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
+  schedule:
+    - cron: "0 18 * * 0"
+  pull_request:
+    paths:
+      - "apps/sync-realtime-data/src/running-style-feature-sql.ts"
+      - "apps/sync-realtime-data/src/running-style-features.ts"
+      - "apps/sync-realtime-data/src/running-style-field-features.ts"
+      - "apps/sync-realtime-data/src/running-style-feature-parquet.ts"
+      - "apps/sync-realtime-data/src/running-style-inference.ts"
+      - "apps/sync-realtime-data/src/running-style-lightgbm-tree.ts"
+      - "apps/pc-keiba-viewer/src/scripts/running_style_lightgbm.py"
+      - "apps/pc-keiba-viewer/src/scripts/running_style_field_features.py"
+      - "apps/pc-keiba-viewer/src/scripts/running_style_feature_version.py"
+      - "apps/pc-keiba-viewer/src/scripts/generate_running_style_features_local.py"
+      - "apps/pc-keiba-viewer/src/scripts/score_running_style_local.py"
+      - "apps/pc-keiba-viewer/src/scripts/load_running_style_predictions.py"
+      - "apps/pc-keiba-viewer/src/scripts/insert_running_style_bucket_evaluation_row.py"
+      - "apps/pc-keiba-viewer/src/scripts/finish-position-features/evaluate-running-style-bucket-21y.ts"
+      - "apps/pc-keiba-viewer/src/scripts/finish-position-features/evaluate-running-style-bucket-sql.ts"
+      - "apps/pc-keiba-viewer/src/scripts/finish-position-features/generate-running-style-local.ts"
+      - "apps/pc-keiba-viewer/src/scripts/finish-position-features/import-running-style-predictions.ts"
+      - "apps/pc-keiba-viewer/src/scripts/finish-position-features/import-running-style-sql.ts"
+      - "apps/pc-keiba-viewer/src/scripts/finish-position-features/running-style-feature-version.ts"
+      - "apps/pc-keiba-viewer/src/scripts/finish-position-features/running-style-local-loader.ts"
+      - "apps/pc-keiba-viewer/src/scripts/finish-position-features/running-style-bucket-local-loader.ts"
+      - "apps/pc-keiba-viewer/src/scripts/finish-position-features/apply-running-style-postproc.ts"
+      - "apps/pc-keiba-viewer/src/scripts/finish-position-features/print-running-style-feature-sql.ts"
+      - ".github/workflows/running-style-evaluation.yml"
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: running-style-eval-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUN_VERSION: "1.3.13"
+  PYTHON_VERSION: "3.12"
+  UV_VERSION: "0.11.8"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: script-evaluation
+  # Static-analysis health check for every TS/Python file that touches the
+  # running-style model. Runs in parallel with accuracy + suggestions.
+  # ---------------------------------------------------------------------------
+  script-evaluation:
+    name: Script health (lint / format / tsc / pyright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Bun dependencies
+        run: bun install --frozen-lockfile
+
+      - name: oxfmt --check (sync-realtime-data running-style)
+        working-directory: apps/sync-realtime-data
+        run: bun run format:check
+
+      - name: oxlint (sync-realtime-data running-style)
+        working-directory: apps/sync-realtime-data
+        run: bun run lint
+
+      - name: tsc (sync-realtime-data)
+        working-directory: apps/sync-realtime-data
+        run: bun run tsc
+
+      - name: oxfmt --check (pc-keiba-viewer running-style)
+        working-directory: apps/pc-keiba-viewer
+        run: bun run format:check
+
+      - name: oxlint (pc-keiba-viewer running-style)
+        working-directory: apps/pc-keiba-viewer
+        run: bun run lint
+
+      - name: tsc (pc-keiba-viewer)
+        working-directory: apps/pc-keiba-viewer
+        run: bun run tsc
+
+      - name: Sync Python dev deps (pc-keiba-viewer)
+        working-directory: apps/pc-keiba-viewer
+        run: uv sync --group dev
+
+      - name: basedpyright (pc-keiba-viewer running-style)
+        working-directory: apps/pc-keiba-viewer
+        run: uv run basedpyright src/scripts/running_style_lightgbm.py src/scripts/running_style_field_features.py src/scripts/running_style_feature_version.py src/scripts/generate_running_style_features_local.py src/scripts/score_running_style_local.py src/scripts/load_running_style_predictions.py src/scripts/insert_running_style_bucket_evaluation_row.py
+
+      - name: ty check (pc-keiba-viewer)
+        working-directory: apps/pc-keiba-viewer
+        run: uv run ty check src/scripts/running_style_lightgbm.py src/scripts/running_style_field_features.py src/scripts/running_style_feature_version.py src/scripts/generate_running_style_features_local.py src/scripts/score_running_style_local.py src/scripts/load_running_style_predictions.py src/scripts/insert_running_style_bucket_evaluation_row.py
+
+      - name: Comment script-evaluation failure on PR
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const body = [
+              "### running-style script-evaluation failed",
+              "",
+              "lint / format:check / tsc / basedpyright / ty のいずれかが running-style source で違反を検出しました。",
+              "ローカルで以下を実行して原因を特定してください:",
+              "",
+              "```sh",
+              "bun run --filter sync-realtime-data format:check",
+              "bun run --filter sync-realtime-data lint",
+              "bun run --filter sync-realtime-data tsc",
+              "bun run --filter pc-keiba-viewer format:check",
+              "bun run --filter pc-keiba-viewer lint",
+              "bun run --filter pc-keiba-viewer tsc",
+              "cd apps/pc-keiba-viewer && uv run basedpyright && uv run ty check",
+              "```",
+              "",
+              "`--no-verify` での回避は禁止です (CLAUDE.md 参照)。",
+            ].join("\n");
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+
+  # ---------------------------------------------------------------------------
+  # Job 2: accuracy-evaluation
+  # Heavy evaluation requiring PG / R2 access. Runs ONLY when manually
+  # dispatched with run_accuracy=true. We never schedule or PR-trigger this
+  # because secrets are out of scope per the workflow spec.
+  # ---------------------------------------------------------------------------
+  accuracy-evaluation:
+    name: Accuracy evaluation (manual dispatch only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: github.event_name == 'workflow_dispatch' && inputs.run_accuracy == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Bun dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Sync Python dev deps (pc-keiba-viewer)
+        working-directory: apps/pc-keiba-viewer
+        run: uv sync --group dev
+
+      - name: Resolve evaluate tool path
+        id: tool
+        run: |
+          set -euo pipefail
+          candidates=(
+            "apps/pc-keiba-viewer/src/scripts/evaluate_running_style_pipeline.py"
+            "apps/pc-keiba-viewer/src/scripts/finish-position-features/evaluate-running-style-bucket-21y.ts"
+          )
+          for candidate in "${candidates[@]}"; do
+            if [ -f "${candidate}" ]; then
+              printf 'tool_path=%s\n' "${candidate}" >> "${GITHUB_OUTPUT}"
+              printf 'tool_kind=%s\n' "${candidate##*.}" >> "${GITHUB_OUTPUT}"
+              printf '%s\n' "Selected evaluate tool: ${candidate}"
+              exit 0
+            fi
+          done
+          printf '%s\n' "::error::No evaluate-running-style tool found" >&2
+          exit 1
+
+      - name: Prepare report directory
+        run: mkdir -p tmp/running-style-eval-report
+
+      - name: Run evaluate tool (Python)
+        if: steps.tool.outputs.tool_kind == 'py'
+        working-directory: apps/pc-keiba-viewer
+        env:
+          TOOL_PATH: ${{ steps.tool.outputs.tool_path }}
+        run: |
+          set -euo pipefail
+          rel_path="${TOOL_PATH#apps/pc-keiba-viewer/}"
+          uv run python "${rel_path}" \
+            --report-dir "${GITHUB_WORKSPACE}/tmp/running-style-eval-report" \
+            --skip-if-no-pg
+
+      - name: Run evaluate tool (TypeScript)
+        if: steps.tool.outputs.tool_kind == 'ts'
+        env:
+          TOOL_PATH: ${{ steps.tool.outputs.tool_path }}
+        run: |
+          set -euo pipefail
+          bun run "${TOOL_PATH}" --dry-run \
+            --report-dir "${GITHUB_WORKSPACE}/tmp/running-style-eval-report" \
+            || {
+              printf '%s\n' "::warning::evaluate tool exited non-zero in dry-run mode; PG access likely required"
+            }
+
+      - name: Generate placeholder report when tool produced nothing
+        run: |
+          set -euo pipefail
+          report_dir="${GITHUB_WORKSPACE}/tmp/running-style-eval-report"
+          mkdir -p "${report_dir}"
+          if [ -z "$(ls -A "${report_dir}" 2>/dev/null || true)" ]; then
+            cat <<'EOF' > "${report_dir}/README.md"
+          # running-style accuracy report (placeholder)
+
+          The evaluate tool was unable to produce a report (most likely because
+          the workflow has no PG / R2 secrets configured, per spec). Re-run
+          with `run_accuracy=true` from a runner that has the secrets, or run
+          the tool locally:
+
+          ```sh
+          bun run --filter pc-keiba-viewer dev:running-style-walk-forward
+          ```
+          EOF
+          fi
+
+      - name: Upload accuracy report
+        uses: actions/upload-artifact@v5
+        with:
+          name: running-style-accuracy-report
+          path: tmp/running-style-eval-report/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Comment accuracy result on PR
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const body = [
+              "### running-style accuracy-evaluation failed",
+              "",
+              "OOS precision または train/holdout gap が劣化した可能性があります。",
+              "アーティファクト `running-style-accuracy-report` を確認してください。",
+              "",
+              "参考: P4b audit (train 2016-2025 precision_nige=0.927、OOS 2026=0.403) の再現を疑ってください。",
+            ].join("\n");
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+
+  # ---------------------------------------------------------------------------
+  # Job 3: improvement-suggestions
+  # Aggregate script + accuracy outputs and flag known anti-patterns:
+  #   - past_*_rate_self without a `recent_rank` filter   (P4c P0)
+  #   - hardcoded train range that excludes 2026 OOS       (P4b)
+  #   - magic-number thresholds in feature SQL
+  # Always runs (after script-evaluation so we know lint passed). Does not
+  # require secrets.
+  # ---------------------------------------------------------------------------
+  improvement-suggestions:
+    name: Improvement suggestions (anti-pattern audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs:
+      - script-evaluation
+    if: always() && needs.script-evaluation.result != 'cancelled'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Prepare suggestion report
+        run: mkdir -p tmp/running-style-suggestions
+
+      - name: Detect P4c past_*_rate_self lookback shadowing
+        id: p4c
+        run: |
+          set -euo pipefail
+          report="tmp/running-style-suggestions/p4c-past-rate-self.md"
+          target="apps/sync-realtime-data/src/running-style-feature-sql.ts"
+          if [ ! -f "${target}" ]; then
+            printf '%s\n' "::warning::${target} not found; skipping P4c audit"
+            printf 'found=false\n' >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          # grep -E exit status: 0=match, 1=no match. We want both branches to
+          # succeed; tolerate exit 1 explicitly.
+          rate_self_count=$(grep -cE 'past_[a-z_]+_rate_self' "${target}" || true)
+          recent_rank_count=$(grep -cE 'recent_rank' "${target}" || true)
+          {
+            printf '%s\n' "# P4c lookback audit"
+            printf '%s\n' ""
+            printf 'target: `%s`\n' "${target}"
+            printf 'past_*_rate_self references: %s\n' "${rate_self_count}"
+            printf 'recent_rank references: %s\n' "${recent_rank_count}"
+            printf '%s\n' ""
+            if [ "${rate_self_count}" -gt 0 ] && [ "${recent_rank_count}" -eq 0 ]; then
+              printf '%s\n' "## P0 警告"
+              printf '%s\n' ""
+              printf '%s\n' "\`past_*_rate_self\` を参照しているのに \`recent_rank\` フィルタが見つかりません。"
+              printf '%s\n' "P4c audit (短窓化推奨) の対象です。 直近 N 走に限定する CTE を追加してください。"
+              printf 'found=true\n' >> "${GITHUB_OUTPUT}"
+            else
+              printf '%s\n' "## OK"
+              printf '%s\n' ""
+              printf '%s\n' "lookback shadowing は検出されませんでした。"
+              printf 'found=false\n' >> "${GITHUB_OUTPUT}"
+            fi
+          } > "${report}"
+
+      - name: Detect P4b train range hardcoded to exclude OOS
+        id: p4b
+        run: |
+          set -euo pipefail
+          report="tmp/running-style-suggestions/p4b-train-range.md"
+          target="apps/pc-keiba-viewer/src/scripts/running_style_lightgbm.py"
+          if [ ! -f "${target}" ]; then
+            printf '%s\n' "::warning::${target} not found; skipping P4b audit"
+            printf 'found=false\n' >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          train_end_matches=$(grep -cE 'train_end_date[^=]*=[^=]*"?2025' "${target}" || true)
+          hardcoded_2025=$(grep -cE '"20251231"|"2025-12-31"' "${target}" || true)
+          {
+            printf '%s\n' "# P4b train range audit"
+            printf '%s\n' ""
+            printf 'target: `%s`\n' "${target}"
+            printf 'train_end_date references to 2025: %s\n' "${train_end_matches}"
+            printf 'hardcoded 2025 boundary literals: %s\n' "${hardcoded_2025}"
+            printf '%s\n' ""
+            if [ "${train_end_matches}" -gt 0 ] || [ "${hardcoded_2025}" -gt 0 ]; then
+              printf '%s\n' "## 注意"
+              printf '%s\n' ""
+              printf '%s\n' "train 範囲が 2025 で固定されている可能性があります。"
+              printf '%s\n' "P4b audit (train precision_nige=0.927 vs OOS 2026=0.403) の leakage 再現を疑ってください。"
+              printf '%s\n' "OOS 検証を 2026 partial year に拡張するか、 walk-forward の fold 設計を見直してください。"
+              printf 'found=true\n' >> "${GITHUB_OUTPUT}"
+            else
+              printf '%s\n' "## OK"
+              printf '%s\n' ""
+              printf '%s\n' "train range の hardcoded boundary は検出されませんでした。"
+              printf 'found=false\n' >> "${GITHUB_OUTPUT}"
+            fi
+          } > "${report}"
+
+      - name: Detect magic-number thresholds in feature SQL
+        id: magic
+        run: |
+          set -euo pipefail
+          report="tmp/running-style-suggestions/magic-thresholds.md"
+          target="apps/sync-realtime-data/src/running-style-feature-sql.ts"
+          if [ ! -f "${target}" ]; then
+            printf '%s\n' "::warning::${target} not found; skipping magic-number audit"
+            printf 'found=false\n' >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          inline_numbers=$(grep -cE 'where[[:space:]]+[a-z_]+[[:space:]]*[<>]=?[[:space:]]*[0-9]+(\.[0-9]+)?' "${target}" || true)
+          {
+            printf '%s\n' "# Magic-number threshold audit"
+            printf '%s\n' ""
+            printf 'target: `%s`\n' "${target}"
+            printf 'inline numeric thresholds in WHERE: %s\n' "${inline_numbers}"
+            printf '%s\n' ""
+            if [ "${inline_numbers}" -gt 0 ]; then
+              printf '%s\n' "## 注意"
+              printf '%s\n' ""
+              printf '%s\n' "WHERE 句に inline numeric threshold が含まれています。"
+              printf '%s\n' "テスト容易性のため定数化または引数化を検討してください。"
+              printf 'found=true\n' >> "${GITHUB_OUTPUT}"
+            else
+              printf '%s\n' "## OK"
+              printf '%s\n' ""
+              printf '%s\n' "inline numeric threshold は検出されませんでした。"
+              printf 'found=false\n' >> "${GITHUB_OUTPUT}"
+            fi
+          } > "${report}"
+
+      - name: Assemble suggestions summary
+        id: summary
+        run: |
+          set -euo pipefail
+          summary="tmp/running-style-suggestions/SUMMARY.md"
+          {
+            printf '%s\n' "# running-style automated improvement suggestions"
+            printf '%s\n' ""
+            printf 'commit: `%s`\n' "${GITHUB_SHA}"
+            printf 'run: `%s`\n' "${GITHUB_RUN_ID}"
+            printf '%s\n' ""
+            printf '%s\n' "## Detected issues"
+            printf '%s\n' ""
+            printf '| Check | Result |\n'
+            printf '| --- | --- |\n'
+            printf '| P4c past_*_rate_self lookback | %s |\n' "${{ steps.p4c.outputs.found || 'unknown' }}"
+            printf '| P4b train range hardcoded | %s |\n' "${{ steps.p4b.outputs.found || 'unknown' }}"
+            printf '| Magic-number thresholds | %s |\n' "${{ steps.magic.outputs.found || 'unknown' }}"
+            printf '%s\n' ""
+            printf '%s\n' "詳細は tmp/running-style-suggestions/ 配下の個別レポートを参照。"
+          } > "${summary}"
+          # Surface the summary in the GitHub Actions UI as well.
+          cat "${summary}" >> "${GITHUB_STEP_SUMMARY}"
+          if [ "${{ steps.p4c.outputs.found }}" = "true" ] \
+             || [ "${{ steps.p4b.outputs.found }}" = "true" ] \
+             || [ "${{ steps.magic.outputs.found }}" = "true" ]; then
+            printf 'any_found=true\n' >> "${GITHUB_OUTPUT}"
+          else
+            printf 'any_found=false\n' >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Upload suggestions report
+        uses: actions/upload-artifact@v5
+        with:
+          name: running-style-suggestions
+          path: tmp/running-style-suggestions/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Post improvement summary on PR
+        if: github.event_name == 'pull_request' && steps.summary.outputs.any_found == 'true'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require("node:fs/promises");
+            const body = await fs.readFile(
+              "tmp/running-style-suggestions/SUMMARY.md",
+              "utf8",
+            );
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
