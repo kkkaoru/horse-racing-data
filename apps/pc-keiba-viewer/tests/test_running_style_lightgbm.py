@@ -173,7 +173,7 @@ def test_parse_validation_years_accepts_multiple_years():
     assert subject.parse_validation_years("2024,2025") == [2024, 2025]
 
 
-def test_parse_args_walk_forward_uses_defaults():
+def test_parse_args_walk_forward_uses_21_year_default_train_start():
     args = subject.parse_args(
         [
             "walk-forward",
@@ -183,8 +183,37 @@ def test_parse_args_walk_forward_uses_defaults():
             "tmp/out",
         ]
     )
-    assert args.train_start_date == "20160101"
+    assert args.train_start_date == "20050101"
     assert args.validation_years == "2024,2025"
+
+
+def test_parse_args_train_production_uses_21_year_default_train_range():
+    args = subject.parse_args(
+        [
+            "train-production",
+            "--csv",
+            "tmp/in",
+            "--model-version",
+            "prod-v2",
+            "--output-model-dir",
+            "tmp/model",
+        ]
+    )
+    assert args.train_start_date == "20050101"
+    assert args.train_end_date == "20261231"
+    assert args.valid_start_date == "20260101"
+
+
+def test_default_train_start_date_constant_is_2005_for_21_year_range():
+    assert subject.DEFAULT_TRAIN_START_DATE == "20050101"
+
+
+def test_default_train_end_date_constant_is_2026_for_21_year_range():
+    assert subject.DEFAULT_TRAIN_END_DATE == "20261231"
+
+
+def test_default_valid_start_date_constant_holds_out_2026_partial_year():
+    assert subject.DEFAULT_VALID_START_DATE == "20260101"
 
 
 def test_write_predictions_jsonl_writes_each_row(tmp_path: Path):

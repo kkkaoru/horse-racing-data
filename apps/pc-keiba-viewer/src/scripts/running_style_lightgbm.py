@@ -6,10 +6,14 @@ Trains a single 4-class softmax head on target_running_style_class with
 inverse-frequency sample weights (class imbalance correction). Reads the
 Phase A parquet produced by finish_position_features_duckdb.py.
 
+Training range default is 21 years (2005-2026 for NAR, 2006-2026 for JRA),
+matching the bucket eval range. The 2026 partial year is held out as the
+production early-stopping validation slice via --valid-start-date.
+
 Run with:
   cd src/scripts && ../../.venv/bin/python -m running_style_lightgbm walk-forward \\
     --csv ../../tmp/finish-position-features-parquet-jra-v4 \\
-    --train-start-date 20160101 \\
+    --train-start-date 20050101 \\
     --validation-years 2024,2025 \\
     --output-predictions-dir ../../tmp/finish-position-eval/predictions-jra/running-style-lgbm
 """
@@ -78,6 +82,14 @@ DEFAULT_BAGGING_FREQ = 1
 DEFAULT_NUM_ITERATIONS = 2000
 DEFAULT_EARLY_STOPPING_ROUNDS = 100
 DEFAULT_VERBOSE_EVAL = 0
+
+# 21-year training range: 2005-2026 inclusive. NAR feature parquet starts
+# in 2005, JRA starts in 2006 (filtered at category level). 2026 is the
+# latest backfilled year and is sliced off as the early-stop holdout via
+# DEFAULT_VALID_START_DATE so the production model still sees all 21 years.
+DEFAULT_TRAIN_START_DATE = "20050101"
+DEFAULT_TRAIN_END_DATE = "20261231"
+DEFAULT_VALID_START_DATE = "20260101"
 
 
 class TrainingParams(TypedDict):
@@ -399,7 +411,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
     walk = subparsers.add_parser("walk-forward")
     walk.add_argument("--csv", type=Path, required=True, help="parquet directory or file")
-    walk.add_argument("--train-start-date", type=str, default="20160101")
+    walk.add_argument("--train-start-date", type=str, default=DEFAULT_TRAIN_START_DATE)
     walk.add_argument("--validation-years", type=str, default="2024,2025")
     walk.add_argument("--output-predictions-dir", type=Path, required=True)
     walk.add_argument("--output-report", type=Path, default=None)
@@ -416,8 +428,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     train_prod = subparsers.add_parser("train-production")
     train_prod.add_argument("--csv", type=Path, required=True, help="parquet directory or file")
-    train_prod.add_argument("--train-start-date", type=str, default="20160101")
-    train_prod.add_argument("--train-end-date", type=str, required=True, help="YYYYMMDD inclusive")
+    train_prod.add_argument(
+        "--train-start-date",
+        type=str,
+        default=DEFAULT_TRAIN_START_DATE,
+        help="YYYYMMDD inclusive (21-year default starts at NAR 2005-01-01)",
+    )
+    train_prod.add_argument(
+        "--train-end-date",
+        type=str,
+        default=DEFAULT_TRAIN_END_DATE,
+        help="YYYYMMDD inclusive (21-year default ends at backfilled 2026-12-31)",
+    )
     train_prod.add_argument("--model-version", type=str, required=True)
     train_prod.add_argument("--output-model-dir", type=Path, required=True)
     train_prod.add_argument("--num-leaves", type=int, default=DEFAULT_NUM_LEAVES)
@@ -428,7 +450,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     train_prod.add_argument(
         "--valid-start-date",
         type=str,
-        default="20250101",
+        default=DEFAULT_VALID_START_DATE,
         help="Hold out races from this date onward for production early stopping",
     )
     train_prod.add_argument(
