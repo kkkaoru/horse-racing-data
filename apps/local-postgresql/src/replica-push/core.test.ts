@@ -6,6 +6,7 @@ import {
   buildFingerprintSql,
   buildIncrementalApplySql,
   buildIncrementalCopyFromSql,
+  buildJsonlRecord,
   buildMetadataSql,
   buildNeonApplySql,
   buildTableFilterSql,
@@ -13,7 +14,10 @@ import {
   buildTimestampFingerprintSql,
   calculateEtaSeconds,
   computeBackoffDelayMs,
+  computeChunkEtaSeconds,
+  computeChunkPlan,
   decideVerifyMismatchAction,
+  formatRowsPerSecond,
   incrementalComparatorForTimestampColumn,
   isVerifyMismatchSkipError,
   parseConcurrency,
@@ -30,7 +34,10 @@ import {
   quoteIdentifier,
   quoteLiteral,
   resolveConcurrency,
+  resolveDefaultFullReplaceBatchRows,
   resolveNonNegativeSecondsEnv,
+  resolveOperationTimeoutPolicy,
+  resolvePerTableWallClockMs,
   resolvePositiveIntegerEnv,
   resolveRetryBackoffConfig,
   resolveStrategy,
@@ -1490,6 +1497,7 @@ describe("resolveVerifyMismatchPolicy", () => {
       thresholdRows: 10,
       largeTableRows: 100_000,
       forceFullReplace: false,
+      reincrementalMaxDiffPercent: 1,
     });
   });
 
@@ -1504,6 +1512,7 @@ describe("resolveVerifyMismatchPolicy", () => {
       thresholdRows: 25,
       largeTableRows: 500_000,
       forceFullReplace: true,
+      reincrementalMaxDiffPercent: 1,
     });
   });
 
@@ -1518,6 +1527,7 @@ describe("resolveVerifyMismatchPolicy", () => {
       thresholdRows: 10,
       largeTableRows: 100_000,
       forceFullReplace: false,
+      reincrementalMaxDiffPercent: 1,
     });
   });
 
@@ -1531,6 +1541,7 @@ describe("resolveVerifyMismatchPolicy", () => {
       thresholdRows: 10,
       largeTableRows: 100_000,
       forceFullReplace: false,
+      reincrementalMaxDiffPercent: 1,
     });
   });
 
@@ -1543,6 +1554,46 @@ describe("resolveVerifyMismatchPolicy", () => {
       thresholdRows: 0,
       largeTableRows: 100_000,
       forceFullReplace: false,
+      reincrementalMaxDiffPercent: 1,
+    });
+  });
+
+  it("reads explicit REPLICA_SYNC_FULL_REPLACE_THRESHOLD_PERCENT", () => {
+    expect(
+      resolveVerifyMismatchPolicy({
+        REPLICA_SYNC_FULL_REPLACE_THRESHOLD_PERCENT: "2.5",
+      }),
+    ).toStrictEqual({
+      thresholdRows: 10,
+      largeTableRows: 100_000,
+      forceFullReplace: false,
+      reincrementalMaxDiffPercent: 2.5,
+    });
+  });
+
+  it("falls back to default percent when env value is not numeric", () => {
+    expect(
+      resolveVerifyMismatchPolicy({
+        REPLICA_SYNC_FULL_REPLACE_THRESHOLD_PERCENT: "abc",
+      }),
+    ).toStrictEqual({
+      thresholdRows: 10,
+      largeTableRows: 100_000,
+      forceFullReplace: false,
+      reincrementalMaxDiffPercent: 1,
+    });
+  });
+
+  it("accepts zero as an explicit percent value", () => {
+    expect(
+      resolveVerifyMismatchPolicy({
+        REPLICA_SYNC_FULL_REPLACE_THRESHOLD_PERCENT: "0",
+      }),
+    ).toStrictEqual({
+      thresholdRows: 10,
+      largeTableRows: 100_000,
+      forceFullReplace: false,
+      reincrementalMaxDiffPercent: 0,
     });
   });
 });
@@ -1552,6 +1603,7 @@ describe("decideVerifyMismatchAction", () => {
     thresholdRows: 10,
     largeTableRows: 100_000,
     forceFullReplace: false,
+    reincrementalMaxDiffPercent: 1,
   };
 
   it("returns skip when the table is large and the diff is small", () => {
@@ -1568,7 +1620,7 @@ describe("decideVerifyMismatchAction", () => {
     );
   });
 
-  it("returns fallback-full when the diff exceeds the threshold even for large tables", () => {
+  it("returns re-incremental when diff exceeds row threshold but stays under percent threshold on large tables", () => {
     const action = decideVerifyMismatchAction({
       tableName: "jvd_hc",
       localCount: 11_793_564,
@@ -1576,9 +1628,20 @@ describe("decideVerifyMismatchAction", () => {
       rowCount: 11_793_564,
       policy: defaultPolicy,
     });
+    expect(action.kind).toBe("re-incremental");
+  });
+
+  it("returns fallback-full when the diff exceeds both the row and percent thresholds on a large table", () => {
+    const action = decideVerifyMismatchAction({
+      tableName: "jvd_hc",
+      localCount: 1_000_000,
+      neonCount: 980_000,
+      rowCount: 1_000_000,
+      policy: defaultPolicy,
+    });
     expect(action.kind).toBe("fallback-full");
     expect(action.message).toBe(
-      "jvd_hc: verify mismatch (local=11793564, neon=11793500, diff=64) — falling back to full-replace",
+      "jvd_hc: verify mismatch (local=1000000, neon=980000, diff=20000) — falling back to full-replace",
     );
   });
 
@@ -1603,6 +1666,7 @@ describe("decideVerifyMismatchAction", () => {
         thresholdRows: 10,
         largeTableRows: 100_000,
         forceFullReplace: true,
+        reincrementalMaxDiffPercent: 1,
       },
     });
     expect(action.kind).toBe("fallback-full");
@@ -1630,7 +1694,7 @@ describe("decideVerifyMismatchAction", () => {
     expect(action.kind).toBe("skip");
   });
 
-  it("returns fallback-full when the diff is one above the threshold", () => {
+  it("returns re-incremental when the diff is one above the row threshold but well below the percent threshold", () => {
     const action = decideVerifyMismatchAction({
       tableName: "edge",
       localCount: 1_000_000,
@@ -1638,7 +1702,7 @@ describe("decideVerifyMismatchAction", () => {
       rowCount: 1_000_000,
       policy: defaultPolicy,
     });
-    expect(action.kind).toBe("fallback-full");
+    expect(action.kind).toBe("re-incremental");
   });
 
   it("includes the reason on skip actions", () => {
@@ -1690,7 +1754,7 @@ describe("decideVerifyMismatchAction", () => {
     );
   });
 
-  it("returns fallback-full when threshold is zero and diff is one on a large table", () => {
+  it("returns re-incremental when threshold rows is zero but diff stays under percent threshold on a large table", () => {
     const action = decideVerifyMismatchAction({
       tableName: "strict",
       localCount: 200_000,
@@ -1700,9 +1764,10 @@ describe("decideVerifyMismatchAction", () => {
         thresholdRows: 0,
         largeTableRows: 100_000,
         forceFullReplace: false,
+        reincrementalMaxDiffPercent: 1,
       },
     });
-    expect(action.kind).toBe("fallback-full");
+    expect(action.kind).toBe("re-incremental");
   });
 
   it("returns skip when threshold is zero and diff is exactly zero on a large table", () => {
@@ -1715,9 +1780,53 @@ describe("decideVerifyMismatchAction", () => {
         thresholdRows: 0,
         largeTableRows: 100_000,
         forceFullReplace: false,
+        reincrementalMaxDiffPercent: 1,
       },
     });
     expect(action.kind).toBe("skip");
+  });
+
+  it("falls back to full-replace when diff percent meets or exceeds the configured percent on a large table", () => {
+    const action = decideVerifyMismatchAction({
+      tableName: "drifty",
+      localCount: 1_000_000,
+      neonCount: 985_000,
+      rowCount: 1_000_000,
+      policy: defaultPolicy,
+    });
+    expect(action.kind).toBe("fallback-full");
+  });
+
+  it("returns fallback-full when forceFullReplace is true even when percent is small", () => {
+    const action = decideVerifyMismatchAction({
+      tableName: "drifty",
+      localCount: 1_000_000,
+      neonCount: 1_000_500,
+      rowCount: 1_000_000,
+      policy: {
+        thresholdRows: 10,
+        largeTableRows: 100_000,
+        forceFullReplace: true,
+        reincrementalMaxDiffPercent: 1,
+      },
+    });
+    expect(action.kind).toBe("fallback-full");
+  });
+
+  it("returns fallback-full when reincrementalMaxDiffPercent is zero and diff is small percent", () => {
+    const action = decideVerifyMismatchAction({
+      tableName: "edge",
+      localCount: 1_000_000,
+      neonCount: 1_000_500,
+      rowCount: 1_000_000,
+      policy: {
+        thresholdRows: 10,
+        largeTableRows: 100_000,
+        forceFullReplace: false,
+        reincrementalMaxDiffPercent: 0,
+      },
+    });
+    expect(action.kind).toBe("fallback-full");
   });
 });
 
@@ -1757,5 +1866,428 @@ describe("VerifyMismatchSkipError", () => {
     expect(isVerifyMismatchSkipError("string")).toBe(false);
     expect(isVerifyMismatchSkipError(undefined)).toBe(false);
     expect(isVerifyMismatchSkipError(null)).toBe(false);
+  });
+});
+
+describe("resolveDefaultFullReplaceBatchRows", () => {
+  it("returns the documented default 500_000 when env is unset", () => {
+    expect(resolveDefaultFullReplaceBatchRows({})).toBe(500_000);
+  });
+
+  it("returns the documented default 500_000 when env is empty", () => {
+    expect(resolveDefaultFullReplaceBatchRows({ REPLICA_SYNC_COPY_BATCH_ROWS: "" })).toBe(500_000);
+  });
+
+  it("returns the documented default 500_000 when env is not a positive integer", () => {
+    expect(resolveDefaultFullReplaceBatchRows({ REPLICA_SYNC_COPY_BATCH_ROWS: "abc" })).toBe(
+      500_000,
+    );
+    expect(resolveDefaultFullReplaceBatchRows({ REPLICA_SYNC_COPY_BATCH_ROWS: "0" })).toBe(500_000);
+    expect(resolveDefaultFullReplaceBatchRows({ REPLICA_SYNC_COPY_BATCH_ROWS: "-50" })).toBe(
+      500_000,
+    );
+    expect(resolveDefaultFullReplaceBatchRows({ REPLICA_SYNC_COPY_BATCH_ROWS: "1.5" })).toBe(
+      500_000,
+    );
+  });
+
+  it("returns the env-provided positive integer", () => {
+    expect(resolveDefaultFullReplaceBatchRows({ REPLICA_SYNC_COPY_BATCH_ROWS: "250000" })).toBe(
+      250_000,
+    );
+  });
+});
+
+describe("computeChunkPlan", () => {
+  it("returns zero chunks for empty tables", () => {
+    expect(computeChunkPlan(0, 500_000)).toStrictEqual({ chunkRows: 500_000, chunkCount: 0 });
+  });
+
+  it("returns a single chunk when rows fit in one batch", () => {
+    expect(computeChunkPlan(100_000, 500_000)).toStrictEqual({
+      chunkRows: 500_000,
+      chunkCount: 1,
+    });
+  });
+
+  it("returns the ceiling chunk count when rows exceed one batch", () => {
+    expect(computeChunkPlan(2_857_566, 500_000)).toStrictEqual({
+      chunkRows: 500_000,
+      chunkCount: 6,
+    });
+  });
+
+  it("falls back to a single chunk when batch size is non-positive", () => {
+    expect(computeChunkPlan(100, 0)).toStrictEqual({ chunkRows: 100, chunkCount: 1 });
+    expect(computeChunkPlan(100, -10)).toStrictEqual({ chunkRows: 100, chunkCount: 1 });
+  });
+});
+
+describe("resolveOperationTimeoutPolicy", () => {
+  it("returns the documented defaults when env vars are unset", () => {
+    expect(resolveOperationTimeoutPolicy({})).toStrictEqual({
+      wallClockMs: 3_600_000,
+      idleMs: 300_000,
+      warningRatio: 0.8,
+    });
+  });
+
+  it("reads explicit positive integers", () => {
+    expect(
+      resolveOperationTimeoutPolicy({
+        REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS: "7200",
+        REPLICA_SYNC_IDLE_TIMEOUT_SECONDS: "60",
+      }),
+    ).toStrictEqual({
+      wallClockMs: 7_200_000,
+      idleMs: 60_000,
+      warningRatio: 0.8,
+    });
+  });
+
+  it("falls back to default when env is empty", () => {
+    expect(
+      resolveOperationTimeoutPolicy({
+        REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS: "",
+        REPLICA_SYNC_IDLE_TIMEOUT_SECONDS: "",
+      }),
+    ).toStrictEqual({
+      wallClockMs: 3_600_000,
+      idleMs: 300_000,
+      warningRatio: 0.8,
+    });
+  });
+
+  it("falls back to default when env is not an integer", () => {
+    expect(
+      resolveOperationTimeoutPolicy({
+        REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS: "abc",
+        REPLICA_SYNC_IDLE_TIMEOUT_SECONDS: "1.5",
+      }),
+    ).toStrictEqual({
+      wallClockMs: 3_600_000,
+      idleMs: 300_000,
+      warningRatio: 0.8,
+    });
+  });
+});
+
+describe("resolvePerTableWallClockMs", () => {
+  it("returns the fallback when no per-table env var is set", () => {
+    expect(
+      resolvePerTableWallClockMs({
+        env: {},
+        tableName: "jvd_se",
+        fallbackWallClockMs: 3_600_000,
+      }),
+    ).toBe(3_600_000);
+  });
+
+  it("reads a per-table override when set", () => {
+    expect(
+      resolvePerTableWallClockMs({
+        env: { REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS_jvd_se: "5400" },
+        tableName: "jvd_se",
+        fallbackWallClockMs: 3_600_000,
+      }),
+    ).toBe(5_400_000);
+  });
+
+  it("falls back when per-table env value is empty", () => {
+    expect(
+      resolvePerTableWallClockMs({
+        env: { REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS_jvd_se: "" },
+        tableName: "jvd_se",
+        fallbackWallClockMs: 3_600_000,
+      }),
+    ).toBe(3_600_000);
+  });
+
+  it("falls back when per-table env value is not a positive integer", () => {
+    expect(
+      resolvePerTableWallClockMs({
+        env: { REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS_jvd_se: "0" },
+        tableName: "jvd_se",
+        fallbackWallClockMs: 3_600_000,
+      }),
+    ).toBe(3_600_000);
+    expect(
+      resolvePerTableWallClockMs({
+        env: { REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS_jvd_se: "-1" },
+        tableName: "jvd_se",
+        fallbackWallClockMs: 3_600_000,
+      }),
+    ).toBe(3_600_000);
+    expect(
+      resolvePerTableWallClockMs({
+        env: { REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS_jvd_se: "1.5" },
+        tableName: "jvd_se",
+        fallbackWallClockMs: 3_600_000,
+      }),
+    ).toBe(3_600_000);
+  });
+
+  it("does not match a different table name", () => {
+    expect(
+      resolvePerTableWallClockMs({
+        env: { REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS_jvd_se: "5400" },
+        tableName: "nvd_se",
+        fallbackWallClockMs: 1234,
+      }),
+    ).toBe(1234);
+  });
+});
+
+describe("formatRowsPerSecond", () => {
+  it("returns zero when elapsed is zero", () => {
+    expect(formatRowsPerSecond(100, 0)).toBe(0);
+  });
+
+  it("returns zero when rowsDone is zero", () => {
+    expect(formatRowsPerSecond(0, 10)).toBe(0);
+  });
+
+  it("returns rows divided by elapsed seconds", () => {
+    expect(formatRowsPerSecond(8000, 1)).toBe(8000);
+    expect(formatRowsPerSecond(8000, 2)).toBe(4000);
+  });
+
+  it("treats negative inputs as zero", () => {
+    expect(formatRowsPerSecond(-1, 1)).toBe(0);
+    expect(formatRowsPerSecond(1, -1)).toBe(0);
+  });
+});
+
+describe("computeChunkEtaSeconds", () => {
+  it("returns zero when no rows are done yet", () => {
+    expect(computeChunkEtaSeconds(0, 100, 10)).toBe(0);
+  });
+
+  it("returns zero when elapsed is zero", () => {
+    expect(computeChunkEtaSeconds(50, 100, 0)).toBe(0);
+  });
+
+  it("returns the remaining seconds linearly extrapolated from current rate", () => {
+    expect(computeChunkEtaSeconds(25, 100, 10)).toBe(30);
+  });
+
+  it("returns zero when all rows are already done", () => {
+    expect(computeChunkEtaSeconds(100, 100, 10)).toBe(0);
+  });
+
+  it("returns zero when rowsDone exceeds rowsTotal", () => {
+    expect(computeChunkEtaSeconds(200, 100, 10)).toBe(0);
+  });
+});
+
+describe("buildJsonlRecord", () => {
+  it("encodes a chunk-plan event with chunk meta and rows total", () => {
+    const event: ProgressEvent = {
+      type: "chunk-plan",
+      tableName: "jvd_se",
+      rowCount: 2_857_566,
+      chunkCount: 6,
+      chunkRows: 500_000,
+      wallClockTimeoutSeconds: 3600,
+      idleTimeoutSeconds: 300,
+    };
+    expect(
+      buildJsonlRecord({ tsIso: "2026-06-02T10:00:00Z", event, elapsedSeconds: 12 }),
+    ).toStrictEqual({
+      ts: "2026-06-02T10:00:00Z",
+      event: "chunk-plan",
+      elapsed_s: 12,
+      table: "jvd_se",
+      chunk_count: 6,
+      rows: 500_000,
+      rows_total: 2_857_566,
+    });
+  });
+
+  it("encodes a chunk-done event with throughput and ETA", () => {
+    const event: ProgressEvent = {
+      type: "chunk-done",
+      tableName: "jvd_se",
+      chunkIndex: 3,
+      chunkCount: 6,
+      rowsDone: 1_500_000,
+      rowsTotal: 2_857_566,
+      chunkElapsedSeconds: 60,
+      tableElapsedSeconds: 180,
+      rowsPerSecond: 25_000,
+      etaTableSeconds: 50,
+    };
+    expect(
+      buildJsonlRecord({
+        tsIso: "2026-06-02T10:03:00Z",
+        event,
+        elapsedSeconds: 200,
+        attempt: 1,
+        attemptMax: 5,
+      }),
+    ).toStrictEqual({
+      ts: "2026-06-02T10:03:00Z",
+      event: "chunk-done",
+      elapsed_s: 200,
+      table: "jvd_se",
+      chunk_index: 3,
+      chunk_count: 6,
+      rows: 1_500_000,
+      rows_total: 2_857_566,
+      rows_per_second: 25_000,
+      eta_table_s: 50,
+      attempt: 1,
+      attempt_max: 5,
+    });
+  });
+
+  it("encodes a table-start event with rows total and ETA", () => {
+    const event: ProgressEvent = {
+      type: "table-start",
+      tableName: "jvd_se",
+      estimatedRows: 2_857_566,
+      dependencyLevel: 0,
+      levelConcurrency: 2,
+      runningTables: 1,
+      runningTableNames: ["jvd_se"],
+      completedTables: 0,
+      completedTableNames: [],
+      remainingTables: 97,
+      remainingTableNames: [],
+      syncedEstimatedRows: 0,
+      remainingEstimatedRows: 2_857_566,
+      elapsedSeconds: 5,
+      etaSeconds: 720,
+    };
+    expect(
+      buildJsonlRecord({ tsIso: "2026-06-02T10:00:00Z", event, elapsedSeconds: 5 }),
+    ).toStrictEqual({
+      ts: "2026-06-02T10:00:00Z",
+      event: "table-start",
+      elapsed_s: 5,
+      table: "jvd_se",
+      rows_total: 2_857_566,
+      eta_total_s: 720,
+    });
+  });
+
+  it("encodes a table-done event with rows total and ETA", () => {
+    const event: ProgressEvent = {
+      type: "table-done",
+      tableName: "jvd_se",
+      estimatedRows: 2_857_566,
+      dependencyLevel: 0,
+      levelConcurrency: 2,
+      tableElapsedSeconds: 763,
+      runningTables: 1,
+      runningTableNames: [],
+      completedTables: 1,
+      completedTableNames: ["jvd_se"],
+      totalTables: 98,
+      syncedEstimatedRows: 2_857_566,
+      totalEstimatedRows: 100_000_000,
+      remainingTables: 97,
+      remainingTableNames: [],
+      remainingEstimatedRows: 97_142_434,
+      elapsedSeconds: 768,
+      etaSeconds: 360,
+    };
+    expect(
+      buildJsonlRecord({ tsIso: "2026-06-02T10:12:00Z", event, elapsedSeconds: 768 }),
+    ).toStrictEqual({
+      ts: "2026-06-02T10:12:00Z",
+      event: "table-done",
+      elapsed_s: 768,
+      table: "jvd_se",
+      rows_total: 2_857_566,
+      eta_total_s: 360,
+    });
+  });
+
+  it("encodes a timeout-warning event with table name", () => {
+    const event: ProgressEvent = {
+      type: "timeout-warning",
+      tableName: "jvd_se",
+      label: "COPY pipeline",
+      elapsedSeconds: 480,
+      timeoutSeconds: 600,
+      kind: "idle",
+    };
+    expect(
+      buildJsonlRecord({ tsIso: "2026-06-02T10:08:00Z", event, elapsedSeconds: 480 }),
+    ).toStrictEqual({
+      ts: "2026-06-02T10:08:00Z",
+      event: "timeout-warning",
+      elapsed_s: 480,
+      table: "jvd_se",
+    });
+  });
+
+  it("encodes a non-table-scoped event without table fields", () => {
+    const event: ProgressEvent = {
+      type: "start",
+      totalTables: 98,
+      totalEstimatedRows: 100_000_000,
+      dependencyLevels: 1,
+      concurrency: 2,
+    };
+    expect(
+      buildJsonlRecord({ tsIso: "2026-06-02T10:00:00Z", event, elapsedSeconds: 0 }),
+    ).toStrictEqual({
+      ts: "2026-06-02T10:00:00Z",
+      event: "start",
+      elapsed_s: 0,
+    });
+  });
+});
+
+describe("decideVerifyMismatchAction re-incremental action", () => {
+  const defaultPolicy: VerifyMismatchPolicy = {
+    thresholdRows: 10,
+    largeTableRows: 100_000,
+    forceFullReplace: false,
+    reincrementalMaxDiffPercent: 1,
+  };
+
+  it("returns re-incremental with diffPercent that matches actual ratio", () => {
+    const action = decideVerifyMismatchAction({
+      tableName: "jvd_se",
+      localCount: 2_857_566,
+      neonCount: 2_856_779,
+      rowCount: 2_857_566,
+      policy: defaultPolicy,
+    });
+    expect(action.kind).toBe("re-incremental");
+    if (action.kind === "re-incremental") {
+      expect(action.diffPercent).toBeCloseTo(0.02753, 4);
+      expect(
+        action.reason.startsWith("verify mismatch (local=2857566, neon=2856779, diff=787"),
+      ).toBe(true);
+    }
+  });
+
+  it("does not return re-incremental for small tables (still falls back to full-replace)", () => {
+    const action = decideVerifyMismatchAction({
+      tableName: "tiny",
+      localCount: 50_000,
+      neonCount: 50_005,
+      rowCount: 50_000,
+      policy: defaultPolicy,
+    });
+    expect(action.kind).toBe("fallback-full");
+  });
+
+  it("returns re-incremental message that names the configured percent threshold", () => {
+    const action = decideVerifyMismatchAction({
+      tableName: "jvd_se",
+      localCount: 1_000_000,
+      neonCount: 999_900,
+      rowCount: 1_000_000,
+      policy: { ...defaultPolicy, reincrementalMaxDiffPercent: 2 },
+    });
+    if (action.kind !== "re-incremental") throw new Error("expected re-incremental");
+    expect(action.message).toBe(
+      "jvd_se: verify mismatch (local=1000000, neon=999900, diff=100, 0.010%) — under 2% drift, retrying as re-incremental instead of full-replace",
+    );
   });
 });
