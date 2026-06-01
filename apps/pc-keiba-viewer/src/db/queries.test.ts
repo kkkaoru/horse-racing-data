@@ -97,6 +97,31 @@ const ALL_FLAGS_ON_FILTER: RunningStyleBucketFilter = {
   kyori: 2400,
   kyosoJokenCode: "999",
   kyosoShubetsuCode: "11",
+  period: "all",
+  raceName: "東京新聞杯",
+  source: "jra",
+  trackCode: "10",
+};
+
+const OOS_ONLY_FILTER: RunningStyleBucketFilter = {
+  category: "jra",
+  conditionKey: null,
+  enabled: {
+    condition: true,
+    distance: true,
+    grade: true,
+    keibajo: true,
+    kyosoJoken: true,
+    kyosoShubetsu: true,
+    raceName: true,
+    track: true,
+  },
+  gradeCode: "G3",
+  keibajoCode: "05",
+  kyori: 2400,
+  kyosoJokenCode: "999",
+  kyosoShubetsuCode: "11",
+  period: "oos-only",
   raceName: "東京新聞杯",
   source: "jra",
   trackCode: "10",
@@ -120,6 +145,7 @@ const KEIBAJO_ONLY_FILTER: RunningStyleBucketFilter = {
   kyori: 2400,
   kyosoJokenCode: null,
   kyosoShubetsuCode: "11",
+  period: "all",
   raceName: null,
   source: "jra",
   trackCode: null,
@@ -143,6 +169,7 @@ const ALL_FLAGS_OFF_FILTER: RunningStyleBucketFilter = {
   kyori: 2400,
   kyosoJokenCode: null,
   kyosoShubetsuCode: "11",
+  period: "all",
   raceName: null,
   source: "jra",
   trackCode: null,
@@ -166,6 +193,7 @@ const NAR_FILTER: RunningStyleBucketFilter = {
   kyori: 1800,
   kyosoJokenCode: null,
   kyosoShubetsuCode: "11",
+  period: "all",
   raceName: null,
   source: "nar",
   trackCode: null,
@@ -189,6 +217,7 @@ const BAN_EI_FILTER = {
   kyori: 200,
   kyosoJokenCode: null,
   kyosoShubetsuCode: "11",
+  period: "all",
   raceName: null,
   source: "nar",
   trackCode: null,
@@ -369,4 +398,23 @@ it("getRunningStyleBucketEvaluation emits nar source filter and condition predic
   expect(queryText).toMatch(/'nar'/u);
   expect(queryText).toMatch(/b\.condition_key = /u);
   expect(queryText).toMatch(/b\.keibajo_code = /u);
+});
+
+it("getRunningStyleBucketEvaluation omits the evaluation_window_from predicate when period is all", async () => {
+  executeMock.mockResolvedValue({ rows: [PERFECT_AGGREGATE_ROW] });
+  await getRunningStyleBucketEvaluation({ filter: ALL_FLAGS_ON_FILTER });
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(queryText).not.toMatch(/b\.evaluation_window_from/u);
+});
+
+it("getRunningStyleBucketEvaluation injects evaluation_window_from OOS bounds when period is oos-only", async () => {
+  executeMock.mockResolvedValue({ rows: [PERFECT_AGGREGATE_ROW] });
+  await getRunningStyleBucketEvaluation({ filter: OOS_ONLY_FILTER });
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(queryText).toMatch(/b\.evaluation_window_from </u);
+  expect(queryText).toMatch(/b\.evaluation_window_from >=/u);
+  expect(queryText).toMatch(/'20160101'/u);
+  expect(queryText).toMatch(/'20260101'/u);
 });
