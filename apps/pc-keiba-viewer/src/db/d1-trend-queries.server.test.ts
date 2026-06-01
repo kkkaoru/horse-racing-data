@@ -56,7 +56,7 @@ interface BuildContextArgs {
 
 const SAMPLE_RAW_ROW = {
   source: "nar",
-  raceKey: "nar:20260528:50:04",
+  raceKey: "nar:2026:0528:50:04",
   kaisaiNen: "2026",
   kaisaiTsukihi: "0528",
   keibajoCode: "50",
@@ -79,7 +79,7 @@ const SAMPLE_RAW_ROW = {
 
 const SAMPLE_JRA_RAW_ROW = {
   source: "jra",
-  raceKey: "jra:20260528:06:11",
+  raceKey: "jra:2026:0528:06:11",
   kaisaiNen: "2026",
   kaisaiTsukihi: "0528",
   keibajoCode: "06",
@@ -459,7 +459,7 @@ it("getRaceTrendTodayStarterRows overrides tansho odds when REALTIME_HOT_DB retu
   const sparseFallback = { ...SAMPLE_RAW_ROW, tanshoOddsTenth: null, tanshoPopularity: null };
   const { db } = buildD1Stub([sparseFallback]);
   const { db: hotDb } = buildD1Stub([
-    { race_key: "nar:20260528:50:04", combination: "5", odds: 8.4, rank: 3 },
+    { race_key: "nar:2026:0528:50:04", combination: "5", odds: 8.4, rank: 3 },
   ]);
   installContext({ cache: buildCacheStub(), db, hotDb, kv: buildKvStub() });
   const rows = await getRaceTrendTodayStarterRows({
@@ -499,7 +499,7 @@ it("getRaceTrendTodayStarterRows leaves tansho fields null when REALTIME_HOT_DB 
 it("getRaceTrendTodayStarterRows uses HOT odds and null rank when HOT rank is null", async () => {
   const { db } = buildD1Stub([SAMPLE_RAW_ROW]);
   const { db: hotDb } = buildD1Stub([
-    { race_key: "nar:20260528:50:04", combination: "5", odds: 9.9, rank: null },
+    { race_key: "nar:2026:0528:50:04", combination: "5", odds: 9.9, rank: null },
   ]);
   installContext({ cache: buildCacheStub(), db, hotDb, kv: buildKvStub() });
   const rows = await getRaceTrendTodayStarterRows({
@@ -514,7 +514,7 @@ it("getRaceTrendTodayStarterRows uses HOT odds and null rank when HOT rank is nu
 it("getRaceTrendTodayStarterRows uses HOT rank and null odds when HOT odds is null", async () => {
   const { db } = buildD1Stub([SAMPLE_RAW_ROW]);
   const { db: hotDb } = buildD1Stub([
-    { race_key: "nar:20260528:50:04", combination: "5", odds: null, rank: 2 },
+    { race_key: "nar:2026:0528:50:04", combination: "5", odds: null, rank: 2 },
   ]);
   installContext({ cache: buildCacheStub(), db, hotDb, kv: buildKvStub() });
   const rows = await getRaceTrendTodayStarterRows({
@@ -535,7 +535,7 @@ it("getRaceTrendTodayStarterRows leaves tansho fields null when umaban is null a
   };
   const { db } = buildD1Stub([noUmaban]);
   const { db: hotDb } = buildD1Stub([
-    { race_key: "nar:20260528:50:04", combination: "5", odds: 8.4, rank: 3 },
+    { race_key: "nar:2026:0528:50:04", combination: "5", odds: 8.4, rank: 3 },
   ]);
   installContext({ cache: buildCacheStub(), db, hotDb, kv: buildKvStub() });
   const rows = await getRaceTrendTodayStarterRows({
@@ -855,17 +855,17 @@ it("getRaceTrendRunningStylesFromD1 returns empty array when no race keys are su
 
 it("getRaceTrendRunningStylesFromD1 deduplicates and filters blank race keys before binding", async () => {
   const { db, prepared } = buildD1Stub([
-    { race_key: "nar:20260528:50:01", horse_number: 1, predicted_label: "nige" },
+    { race_key: "nar:2026:0528:50:01", horse_number: 1, predicted_label: "nige" },
   ]);
   installContext({ cache: null, db, kv: buildKvStub() });
   await getRaceTrendRunningStylesFromD1([
-    "nar:20260528:50:01",
-    "nar:20260528:50:01",
+    "nar:2026:0528:50:01",
+    "nar:2026:0528:50:01",
     "",
-    "nar:20260528:50:02",
+    "nar:2026:0528:50:02",
   ]);
   expect(db.prepare).toHaveBeenCalledTimes(1);
-  expect(prepared.bind).toHaveBeenCalledWith("nar:20260528:50:01", "nar:20260528:50:02");
+  expect(prepared.bind).toHaveBeenCalledWith("nar:2026:0528:50:01", "nar:2026:0528:50:02");
 });
 
 it("getRaceTrendRunningStylesFromD1 batches IN clause at 200 race keys per chunk", async () => {
@@ -873,7 +873,7 @@ it("getRaceTrendRunningStylesFromD1 batches IN clause at 200 race keys per chunk
   installContext({ cache: null, db, kv: buildKvStub() });
   const keys = Array.from(
     { length: 450 },
-    (_, index) => `nar:20260528:50:${String(index).padStart(2, "0")}`,
+    (_, index) => `nar:2026:0528:50:${String(index).padStart(2, "0")}`,
   );
   await getRaceTrendRunningStylesFromD1(keys);
   expect(db.prepare).toHaveBeenCalledTimes(3);
@@ -882,35 +882,35 @@ it("getRaceTrendRunningStylesFromD1 batches IN clause at 200 race keys per chunk
 
 it("getRaceTrendRunningStylesFromD1 maps result rows into the public cache shape", async () => {
   const { db } = buildD1Stub([
-    { race_key: "nar:20260528:50:01", horse_number: 7, predicted_label: "senkou" },
-    { race_key: "nar:20260528:50:01", horse_number: 9, predicted_label: "sashi" },
-    { race_key: "nar:20260528:50:01", horse_number: 13, predicted_label: "oikomi" },
+    { race_key: "nar:2026:0528:50:01", horse_number: 7, predicted_label: "senkou" },
+    { race_key: "nar:2026:0528:50:01", horse_number: 9, predicted_label: "sashi" },
+    { race_key: "nar:2026:0528:50:01", horse_number: 13, predicted_label: "oikomi" },
   ]);
   installContext({ cache: null, db, kv: buildKvStub() });
-  const rows = await getRaceTrendRunningStylesFromD1(["nar:20260528:50:01"]);
+  const rows = await getRaceTrendRunningStylesFromD1(["nar:2026:0528:50:01"]);
   expect(rows).toStrictEqual([
-    { raceKey: "nar:20260528:50:01", horseNumber: "7", predictedLabel: "senkou" },
-    { raceKey: "nar:20260528:50:01", horseNumber: "9", predictedLabel: "sashi" },
-    { raceKey: "nar:20260528:50:01", horseNumber: "13", predictedLabel: "oikomi" },
+    { raceKey: "nar:2026:0528:50:01", horseNumber: "7", predictedLabel: "senkou" },
+    { raceKey: "nar:2026:0528:50:01", horseNumber: "9", predictedLabel: "sashi" },
+    { raceKey: "nar:2026:0528:50:01", horseNumber: "13", predictedLabel: "oikomi" },
   ]);
 });
 
 it("getRaceTrendRunningStylesFromD1 ignores rows that fail validation", async () => {
   const { db } = buildD1Stub([
-    { race_key: "nar:20260528:50:01", horse_number: 1, predicted_label: "nige" },
-    { race_key: "nar:20260528:50:01", horse_number: 2, predicted_label: "invalid" },
-    { race_key: "nar:20260528:50:01", horse_number: "not-a-number", predicted_label: "sashi" },
+    { race_key: "nar:2026:0528:50:01", horse_number: 1, predicted_label: "nige" },
+    { race_key: "nar:2026:0528:50:01", horse_number: 2, predicted_label: "invalid" },
+    { race_key: "nar:2026:0528:50:01", horse_number: "not-a-number", predicted_label: "sashi" },
   ]);
   installContext({ cache: null, db, kv: buildKvStub() });
-  const rows = await getRaceTrendRunningStylesFromD1(["nar:20260528:50:01"]);
+  const rows = await getRaceTrendRunningStylesFromD1(["nar:2026:0528:50:01"]);
   expect(rows).toStrictEqual([
-    { raceKey: "nar:20260528:50:01", horseNumber: "1", predictedLabel: "nige" },
+    { raceKey: "nar:2026:0528:50:01", horseNumber: "1", predictedLabel: "nige" },
   ]);
 });
 
 it("getRaceTrendRunningStylesFromD1 returns empty array when REALTIME_DB binding is missing", async () => {
   getCloudflareContextMock.mockResolvedValue({ env: {} });
-  const rows = await getRaceTrendRunningStylesFromD1(["nar:20260528:50:01"]);
+  const rows = await getRaceTrendRunningStylesFromD1(["nar:2026:0528:50:01"]);
   expect(rows).toStrictEqual([]);
 });
 
@@ -925,7 +925,7 @@ it("getRaceTrendRunningStylesFromD1 swallows D1 errors and returns empty array",
   };
   installContext({ cache: null, db, kv: buildKvStub() });
   const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
-  const rows = await getRaceTrendRunningStylesFromD1(["nar:20260528:50:01"]);
+  const rows = await getRaceTrendRunningStylesFromD1(["nar:2026:0528:50:01"]);
   expect(rows).toStrictEqual([]);
   expect(consoleError).toHaveBeenCalledWith(
     "D1 race_running_styles query failed",
@@ -956,7 +956,7 @@ it("getRaceTrendRunningStylesFromD1 limits in-flight queries to 3 across many ch
   installContext({ cache: null, db, kv: buildKvStub() });
   const keys = Array.from(
     { length: 2000 },
-    (_, index) => `nar:20260528:50:${String(index).padStart(4, "0")}`,
+    (_, index) => `nar:2026:0528:50:${String(index).padStart(4, "0")}`,
   );
   await getRaceTrendRunningStylesFromD1(keys);
   expect(db.prepare).toHaveBeenCalledTimes(10);
@@ -965,20 +965,20 @@ it("getRaceTrendRunningStylesFromD1 limits in-flight queries to 3 across many ch
 
 it("getRaceTrendRunningStylesFromD1 writes non-empty results to KV with the prefixed cache key", async () => {
   const { db } = buildD1Stub([
-    { race_key: "nar:20260524:47:01", horse_number: 1, predicted_label: "nige" },
-    { race_key: "nar:20260524:47:01", horse_number: 2, predicted_label: "sashi" },
+    { race_key: "nar:2026:0524:47:01", horse_number: 1, predicted_label: "nige" },
+    { race_key: "nar:2026:0524:47:01", horse_number: 2, predicted_label: "sashi" },
   ]);
   const kv = buildKvStub();
   installContext({ cache: null, db, kv });
-  await getRaceTrendRunningStylesFromD1(["nar:20260524:47:01"]);
+  await getRaceTrendRunningStylesFromD1(["nar:2026:0524:47:01"]);
   expect(kv.put).toHaveBeenCalledTimes(1);
   const putArgs = kv.put.mock.calls[0];
   expect(putArgs?.[0]).toBe(
-    "race-trend-running-styles:v1:1:4d3816e7cc1b4d37d604e96941b368ef063ba677",
+    "race-trend-running-styles:v1:1:859ad19b0181e6cd70cb2f69ed62848f5c552cd9",
   );
   expect(JSON.parse(String(putArgs?.[1]))).toStrictEqual([
-    { raceKey: "nar:20260524:47:01", horseNumber: "1", predictedLabel: "nige" },
-    { raceKey: "nar:20260524:47:01", horseNumber: "2", predictedLabel: "sashi" },
+    { raceKey: "nar:2026:0524:47:01", horseNumber: "1", predictedLabel: "nige" },
+    { raceKey: "nar:2026:0524:47:01", horseNumber: "2", predictedLabel: "sashi" },
   ]);
   expect(putArgs?.[2]).toStrictEqual({ expirationTtl: 1800 });
 });
@@ -987,19 +987,19 @@ it("getRaceTrendRunningStylesFromD1 does not write to KV when the D1 result is e
   const { db } = buildD1Stub([]);
   const kv = buildKvStub();
   installContext({ cache: null, db, kv });
-  const rows = await getRaceTrendRunningStylesFromD1(["nar:20260524:47:01"]);
+  const rows = await getRaceTrendRunningStylesFromD1(["nar:2026:0524:47:01"]);
   expect(rows).toStrictEqual([]);
   expect(kv.put).not.toHaveBeenCalled();
 });
 
 it("getRaceTrendRunningStylesFromD1 short-circuits to KV without hitting D1 when cache hit", async () => {
   const cached = [
-    { raceKey: "nar:20260524:47:01", horseNumber: "5", predictedLabel: "oikomi" as const },
+    { raceKey: "nar:2026:0524:47:01", horseNumber: "5", predictedLabel: "oikomi" as const },
   ];
   const { db } = buildD1Stub([]);
   const kv = buildKvStub(JSON.stringify(cached));
   installContext({ cache: null, db, kv });
-  const rows = await getRaceTrendRunningStylesFromD1(["nar:20260524:47:01"]);
+  const rows = await getRaceTrendRunningStylesFromD1(["nar:2026:0524:47:01"]);
   expect(rows).toStrictEqual(cached);
   expect(db.prepare).not.toHaveBeenCalled();
   expect(kv.put).not.toHaveBeenCalled();
@@ -1007,30 +1007,30 @@ it("getRaceTrendRunningStylesFromD1 short-circuits to KV without hitting D1 when
 
 it("getRaceTrendRunningStylesFromD1 falls through to D1 when KV body is corrupt", async () => {
   const { db, prepared } = buildD1Stub([
-    { race_key: "nar:20260524:47:01", horse_number: 8, predicted_label: "senkou" },
+    { race_key: "nar:2026:0524:47:01", horse_number: 8, predicted_label: "senkou" },
   ]);
   const kv = buildKvStub("{not-valid-json");
   installContext({ cache: null, db, kv });
-  const rows = await getRaceTrendRunningStylesFromD1(["nar:20260524:47:01"]);
+  const rows = await getRaceTrendRunningStylesFromD1(["nar:2026:0524:47:01"]);
   expect(rows).toStrictEqual([
-    { raceKey: "nar:20260524:47:01", horseNumber: "8", predictedLabel: "senkou" },
+    { raceKey: "nar:2026:0524:47:01", horseNumber: "8", predictedLabel: "senkou" },
   ]);
   expect(prepared.bind).toHaveBeenCalledTimes(1);
 });
 
 it("getRaceTrendRunningStylesFromD1 sorts race keys before building the cache key", async () => {
   const { db } = buildD1Stub([
-    { race_key: "nar:20260524:42:03", horse_number: 1, predicted_label: "nige" },
+    { race_key: "nar:2026:0524:42:03", horse_number: 1, predicted_label: "nige" },
   ]);
   const kv = buildKvStub();
   installContext({ cache: null, db, kv });
   await getRaceTrendRunningStylesFromD1([
-    "nar:20260524:47:01",
-    "nar:20260524:42:03",
-    "nar:20260524:30:05",
+    "nar:2026:0524:47:01",
+    "nar:2026:0524:42:03",
+    "nar:2026:0524:30:05",
   ]);
   const cacheKey = kv.put.mock.calls[0]?.[0];
-  expect(cacheKey).toBe("race-trend-running-styles:v1:3:3438aed254b1038f225e6c8738bb7272bcc0f086");
+  expect(cacheKey).toBe("race-trend-running-styles:v1:3:15ded4c8838355a303710e9cca31fca33c643267");
 });
 
 it("getRaceTrendTodayRunningStylesFromD1 returns empty array when no race keys are supplied", async () => {
@@ -1043,19 +1043,19 @@ it("getRaceTrendTodayRunningStylesFromD1 returns empty array when no race keys a
 
 it("getRaceTrendTodayRunningStylesFromD1 returns empty array when REALTIME_FEATURES_DB binding is missing", async () => {
   getCloudflareContextMock.mockResolvedValue({ env: {} });
-  const rows = await getRaceTrendTodayRunningStylesFromD1(["nar:20260528:50:01"]);
+  const rows = await getRaceTrendTodayRunningStylesFromD1(["nar:2026:0528:50:01"]);
   expect(rows).toStrictEqual([]);
 });
 
 it("getRaceTrendTodayRunningStylesFromD1 skips KV entirely (no read, no write)", async () => {
   const { db } = buildD1Stub([
-    { race_key: "nar:20260528:50:01", horse_number: 1, predicted_label: "nige" },
+    { race_key: "nar:2026:0528:50:01", horse_number: 1, predicted_label: "nige" },
   ]);
   const kv = buildKvStub("ignored-cache-value");
   installContext({ cache: null, db, kv });
-  const rows = await getRaceTrendTodayRunningStylesFromD1(["nar:20260528:50:01"]);
+  const rows = await getRaceTrendTodayRunningStylesFromD1(["nar:2026:0528:50:01"]);
   expect(rows).toStrictEqual([
-    { raceKey: "nar:20260528:50:01", horseNumber: "1", predictedLabel: "nige" },
+    { raceKey: "nar:2026:0528:50:01", horseNumber: "1", predictedLabel: "nige" },
   ]);
   expect(kv.get).not.toHaveBeenCalled();
   expect(kv.put).not.toHaveBeenCalled();
@@ -1071,7 +1071,7 @@ it("getRaceTrendTodayRunningStylesFromD1 swallows D1 errors and returns empty ar
   };
   installContext({ cache: null, db, kv: buildKvStub() });
   const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-  const rows = await getRaceTrendTodayRunningStylesFromD1(["nar:20260528:50:01"]);
+  const rows = await getRaceTrendTodayRunningStylesFromD1(["nar:2026:0528:50:01"]);
   expect(rows).toStrictEqual([]);
   expect(consoleSpy).toHaveBeenCalledWith(
     "D1 race_running_styles today query failed",
@@ -1093,7 +1093,7 @@ it("getLatestTanshoOddsFromHotD1 returns empty map when raceKeys is empty", asyn
 it("getLatestTanshoOddsFromHotD1 returns empty map when REALTIME_HOT_DB binding is missing", async () => {
   const result = await getLatestTanshoOddsFromHotD1({
     env: buildHotEnv({ hotDb: undefined }),
-    raceKeys: ["nar:20260528:50:04"],
+    raceKeys: ["nar:2026:0528:50:04"],
   });
   expect(result.size).toBe(0);
 });
@@ -1101,7 +1101,7 @@ it("getLatestTanshoOddsFromHotD1 returns empty map when REALTIME_HOT_DB binding 
 it("getLatestTanshoOddsFromHotD1 returns empty map when env is null", async () => {
   const result = await getLatestTanshoOddsFromHotD1({
     env: null,
-    raceKeys: ["nar:20260528:50:04"],
+    raceKeys: ["nar:2026:0528:50:04"],
   });
   expect(result.size).toBe(0);
 });
@@ -1110,24 +1110,24 @@ it("getLatestTanshoOddsFromHotD1 deduplicates and filters blank race keys before
   const { db: hotDb, prepared } = buildD1Stub([]);
   await getLatestTanshoOddsFromHotD1({
     env: buildHotEnv({ hotDb }),
-    raceKeys: ["nar:20260528:50:04", "nar:20260528:50:04", "", "nar:20260528:50:05"],
+    raceKeys: ["nar:2026:0528:50:04", "nar:2026:0528:50:04", "", "nar:2026:0528:50:05"],
   });
-  expect(prepared.bind).toHaveBeenCalledWith("nar:20260528:50:04", "nar:20260528:50:05");
+  expect(prepared.bind).toHaveBeenCalledWith("nar:2026:0528:50:04", "nar:2026:0528:50:05");
 });
 
 it("getLatestTanshoOddsFromHotD1 groups rows by race_key and normalizes combination", async () => {
   const { db: hotDb } = buildD1Stub([
-    { race_key: "nar:20260528:50:04", combination: "05", odds: 12.3, rank: 4 },
-    { race_key: "nar:20260528:50:04", combination: "7", odds: 8.1, rank: 2 },
-    { race_key: "nar:20260528:50:05", combination: "1", odds: 2.5, rank: 1 },
+    { race_key: "nar:2026:0528:50:04", combination: "05", odds: 12.3, rank: 4 },
+    { race_key: "nar:2026:0528:50:04", combination: "7", odds: 8.1, rank: 2 },
+    { race_key: "nar:2026:0528:50:05", combination: "1", odds: 2.5, rank: 1 },
   ]);
   const result = await getLatestTanshoOddsFromHotD1({
     env: buildHotEnv({ hotDb }),
-    raceKeys: ["nar:20260528:50:04", "nar:20260528:50:05"],
+    raceKeys: ["nar:2026:0528:50:04", "nar:2026:0528:50:05"],
   });
-  expect(result.get("nar:20260528:50:04")?.get("5")).toStrictEqual({ odds: 12.3, rank: 4 });
-  expect(result.get("nar:20260528:50:04")?.get("7")).toStrictEqual({ odds: 8.1, rank: 2 });
-  expect(result.get("nar:20260528:50:05")?.get("1")).toStrictEqual({ odds: 2.5, rank: 1 });
+  expect(result.get("nar:2026:0528:50:04")?.get("5")).toStrictEqual({ odds: 12.3, rank: 4 });
+  expect(result.get("nar:2026:0528:50:04")?.get("7")).toStrictEqual({ odds: 8.1, rank: 2 });
+  expect(result.get("nar:2026:0528:50:05")?.get("1")).toStrictEqual({ odds: 2.5, rank: 1 });
 });
 
 it("getLatestTanshoOddsFromHotD1 returns empty map when D1 throws", async () => {
@@ -1143,7 +1143,7 @@ it("getLatestTanshoOddsFromHotD1 returns empty map when D1 throws", async () => 
   const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
   const result = await getLatestTanshoOddsFromHotD1({
     env: buildHotEnv({ hotDb: failing }),
-    raceKeys: ["nar:20260528:50:04"],
+    raceKeys: ["nar:2026:0528:50:04"],
   });
   expect(result.size).toBe(0);
   expect(consoleSpy).toHaveBeenCalledWith("D1 hot tansho odds query failed", expect.any(Error));
@@ -1152,29 +1152,29 @@ it("getLatestTanshoOddsFromHotD1 returns empty map when D1 throws", async () => 
 
 it("getLatestTanshoOddsFromHotD1 skips rows that fail validation", async () => {
   const { db: hotDb } = buildD1Stub([
-    { race_key: "nar:20260528:50:04", combination: "1", odds: 3.4, rank: 1 },
+    { race_key: "nar:2026:0528:50:04", combination: "1", odds: 3.4, rank: 1 },
     { race_key: 123, combination: "2", odds: 5.5, rank: 2 },
-    { race_key: "nar:20260528:50:04", combination: "", odds: 9.9, rank: 9 },
-    { race_key: "nar:20260528:50:04", combination: "abc", odds: 9.9, rank: 9 },
+    { race_key: "nar:2026:0528:50:04", combination: "", odds: 9.9, rank: 9 },
+    { race_key: "nar:2026:0528:50:04", combination: "abc", odds: 9.9, rank: 9 },
   ]);
   const result = await getLatestTanshoOddsFromHotD1({
     env: buildHotEnv({ hotDb }),
-    raceKeys: ["nar:20260528:50:04"],
+    raceKeys: ["nar:2026:0528:50:04"],
   });
   expect(result.size).toBe(1);
-  expect(result.get("nar:20260528:50:04")?.size).toBe(1);
-  expect(result.get("nar:20260528:50:04")?.get("1")).toStrictEqual({ odds: 3.4, rank: 1 });
+  expect(result.get("nar:2026:0528:50:04")?.size).toBe(1);
+  expect(result.get("nar:2026:0528:50:04")?.get("1")).toStrictEqual({ odds: 3.4, rank: 1 });
 });
 
 it("getLatestTanshoOddsFromHotD1 accepts null odds and rank", async () => {
   const { db: hotDb } = buildD1Stub([
-    { race_key: "nar:20260528:50:04", combination: "1", odds: null, rank: null },
+    { race_key: "nar:2026:0528:50:04", combination: "1", odds: null, rank: null },
   ]);
   const result = await getLatestTanshoOddsFromHotD1({
     env: buildHotEnv({ hotDb }),
-    raceKeys: ["nar:20260528:50:04"],
+    raceKeys: ["nar:2026:0528:50:04"],
   });
-  expect(result.get("nar:20260528:50:04")?.get("1")).toStrictEqual({ odds: null, rank: null });
+  expect(result.get("nar:2026:0528:50:04")?.get("1")).toStrictEqual({ odds: null, rank: null });
 });
 
 it("getRaceTrendRunningStylesFromD1 does not throw with 300 race keys (regression: KV key length limit)", async () => {
@@ -1200,16 +1200,16 @@ it("getRaceTrendRunningStylesFromD1 cache key is a fixed prefix + 40 hex char ha
   const { db } = buildD1Stub([]);
   const kv = buildKvStub();
   installContext({ cache: null, db, kv });
-  await getRaceTrendRunningStylesFromD1(["nar:20260524:47:01"]);
+  await getRaceTrendRunningStylesFromD1(["nar:2026:0524:47:01"]);
   const cacheKeyArg: unknown = kv.get.mock.calls[0]?.[0];
   expect(cacheKeyArg).toBe(
-    "race-trend-running-styles:v1:1:4d3816e7cc1b4d37d604e96941b368ef063ba677",
+    "race-trend-running-styles:v1:1:859ad19b0181e6cd70cb2f69ed62848f5c552cd9",
   );
 });
 
 it("getRaceTrendRunningStylesFromD1 falls back to D1 when KV get throws (regression: KV 414 error)", async () => {
   const { db } = buildD1Stub([
-    { race_key: "nar:20260524:47:01", horse_number: 3, predicted_label: "nige" },
+    { race_key: "nar:2026:0524:47:01", horse_number: 3, predicted_label: "nige" },
   ]);
   const kv: KvStub = {
     get: vi.fn<AnyMockFn>().mockRejectedValue(new Error("KV GET failed: 414")),
@@ -1217,9 +1217,9 @@ it("getRaceTrendRunningStylesFromD1 falls back to D1 when KV get throws (regress
   };
   installContext({ cache: null, db, kv });
   const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-  const rows = await getRaceTrendRunningStylesFromD1(["nar:20260524:47:01"]);
+  const rows = await getRaceTrendRunningStylesFromD1(["nar:2026:0524:47:01"]);
   expect(rows).toStrictEqual([
-    { raceKey: "nar:20260524:47:01", horseNumber: "3", predictedLabel: "nige" },
+    { raceKey: "nar:2026:0524:47:01", horseNumber: "3", predictedLabel: "nige" },
   ]);
   expect(consoleSpy).toHaveBeenCalledWith("KV get for running-styles failed", expect.any(Error));
   consoleSpy.mockRestore();
@@ -1227,7 +1227,7 @@ it("getRaceTrendRunningStylesFromD1 falls back to D1 when KV get throws (regress
 
 it("getRaceTrendRunningStylesFromD1 swallows KV put errors and still returns D1 rows", async () => {
   const { db } = buildD1Stub([
-    { race_key: "nar:20260524:47:01", horse_number: 9, predicted_label: "oikomi" },
+    { race_key: "nar:2026:0524:47:01", horse_number: 9, predicted_label: "oikomi" },
   ]);
   const kv: KvStub = {
     get: vi.fn<AnyMockFn>().mockResolvedValue(null),
@@ -1235,9 +1235,9 @@ it("getRaceTrendRunningStylesFromD1 swallows KV put errors and still returns D1 
   };
   installContext({ cache: null, db, kv });
   const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-  const rows = await getRaceTrendRunningStylesFromD1(["nar:20260524:47:01"]);
+  const rows = await getRaceTrendRunningStylesFromD1(["nar:2026:0524:47:01"]);
   expect(rows).toStrictEqual([
-    { raceKey: "nar:20260524:47:01", horseNumber: "9", predictedLabel: "oikomi" },
+    { raceKey: "nar:2026:0524:47:01", horseNumber: "9", predictedLabel: "oikomi" },
   ]);
   expect(consoleSpy).toHaveBeenCalledWith("KV put for running-styles failed", expect.any(Error));
   consoleSpy.mockRestore();
@@ -1340,7 +1340,7 @@ it("getRaceTrendTodayStarterRows leaves wakuban null when horseCount is 0", asyn
 it("getRaceTrendTodayStarterRows filters out rows missing horseCount", async () => {
   const noHorseCount = {
     source: "jra",
-    raceKey: "jra:20260528:06:11",
+    raceKey: "jra:2026:0528:06:11",
     kaisaiNen: "2026",
     kaisaiTsukihi: "0528",
     keibajoCode: "06",

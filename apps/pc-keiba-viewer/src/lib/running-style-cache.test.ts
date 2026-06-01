@@ -12,18 +12,21 @@ import {
 const sampleRace = {
   kaisaiNen: "2026",
   kaisaiTsukihi: "0523",
-  keibajoCode: "4",
-  raceBango: "3",
+  keibajoCode: "04",
+  raceBango: "03",
   source: "jra",
 };
 
 describe("running style cache helpers", () => {
   it("parses a running-style race key", () => {
     const raceKey = buildRaceKey(sampleRace);
+    expect(raceKey).toBe("jra:2026:0523:04:03");
     expect(parseRunningStyleRaceKey(raceKey)).toEqual({
-      ...sampleRace,
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0523",
       keibajoCode: "04",
       raceBango: "03",
+      source: "jra",
     });
     expect(parseRunningStyleRaceKey("invalid")).toBeNull();
     expect(parseRaceDayFromRunningStyleRaceKey(raceKey)).toEqual({

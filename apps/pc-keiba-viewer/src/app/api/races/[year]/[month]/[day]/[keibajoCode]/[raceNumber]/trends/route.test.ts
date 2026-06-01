@@ -283,7 +283,7 @@ it("isCacheableTrendPayload rejects a payload with running-style history but no 
       buildPayload({
         starterRows: [],
         historicalRunningStyles: [
-          { horseNumber: "1", predictedLabel: "nige", raceKey: "nar:20260524:47:01" },
+          { horseNumber: "1", predictedLabel: "nige", raceKey: "nar:2026:0524:47:01" },
         ],
       }),
     ),
@@ -296,7 +296,7 @@ it("isCacheableTrendPayload accepts a payload with both starter rows and running
       buildPayload({
         starterRows: [buildStarterRow()],
         historicalRunningStyles: [
-          { horseNumber: "1", predictedLabel: "nige", raceKey: "nar:20260524:47:01" },
+          { horseNumber: "1", predictedLabel: "nige", raceKey: "nar:2026:0524:47:01" },
         ],
       }),
     ),
@@ -529,7 +529,7 @@ it("GET merges today rows over past14 with newer-wins so today fields beat past1
   });
   getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
   getRaceTrendRunningStylesFromD1Mock.mockResolvedValue([
-    { horseNumber: "5", predictedLabel: "sashi", raceKey: "jra:20260529:05:03" },
+    { horseNumber: "5", predictedLabel: "sashi", raceKey: "jra:2026:0529:05:03" },
   ]);
   const response = await GET(buildTrendRequest(), buildTrendContext());
   expect(response.status).toBe(200);
@@ -562,7 +562,7 @@ it("GET drops DO sibling rows that fail defense-in-depth filter when raceBango i
   getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
   getRaceTrendRunningStylesFromD1Mock.mockResolvedValue([]);
   getRaceTrendTodayRunningStylesFromD1Mock.mockResolvedValue([
-    { horseNumber: "5", predictedLabel: "sashi", raceKey: "jra:20260529:05:03" },
+    { horseNumber: "5", predictedLabel: "sashi", raceKey: "jra:2026:0529:05:03" },
   ]);
   const response = await GET(buildTrendRequest(), buildTrendContext());
   expect(response.status).toBe(200);
@@ -595,7 +595,7 @@ it("GET drops DO rows from a stale day via the defense-in-depth filter", async (
   getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
   getRaceTrendRunningStylesFromD1Mock.mockResolvedValue([]);
   getRaceTrendTodayRunningStylesFromD1Mock.mockResolvedValue([
-    { horseNumber: "6", predictedLabel: "sashi", raceKey: "jra:20260529:05:03" },
+    { horseNumber: "6", predictedLabel: "sashi", raceKey: "jra:2026:0529:05:03" },
   ]);
   const response = await GET(buildTrendRequest(), buildTrendContext());
   expect(response.status).toBe(200);
@@ -671,17 +671,17 @@ it("GET dedupes historicalRunningStyles when past14 and today return overlapping
   fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
   getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
   getRaceTrendRunningStylesFromD1Mock.mockResolvedValue([
-    { horseNumber: "1", predictedLabel: "nige", raceKey: "jra:20260529:05:01" },
-    { horseNumber: "2", predictedLabel: "sashi", raceKey: "jra:20260529:05:01" },
+    { horseNumber: "1", predictedLabel: "nige", raceKey: "jra:2026:0529:05:01" },
+    { horseNumber: "2", predictedLabel: "sashi", raceKey: "jra:2026:0529:05:01" },
   ]);
   getRaceTrendTodayRunningStylesFromD1Mock.mockResolvedValue([
-    { horseNumber: "1", predictedLabel: "oikomi", raceKey: "jra:20260529:05:01" },
+    { horseNumber: "1", predictedLabel: "oikomi", raceKey: "jra:2026:0529:05:01" },
   ]);
   const response = await GET(buildTrendRequest(), buildTrendContext());
   const body = await readJsonAsPayload(response);
   expect(body.historicalRunningStyles).toStrictEqual([
-    { horseNumber: "1", predictedLabel: "nige", raceKey: "jra:20260529:05:01" },
-    { horseNumber: "2", predictedLabel: "sashi", raceKey: "jra:20260529:05:01" },
+    { horseNumber: "1", predictedLabel: "nige", raceKey: "jra:2026:0529:05:01" },
+    { horseNumber: "2", predictedLabel: "sashi", raceKey: "jra:2026:0529:05:01" },
   ]);
 });
 
@@ -730,7 +730,7 @@ it("GET writes cache when payload has both starterRows and historicalRunningStyl
   fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
   getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
   getRaceTrendRunningStylesFromD1Mock.mockResolvedValue([
-    { horseNumber: "1", predictedLabel: "nige", raceKey: "jra:20260529:05:01" },
+    { horseNumber: "1", predictedLabel: "nige", raceKey: "jra:2026:0529:05:01" },
   ]);
   const response = await GET(buildTrendRequest(), buildTrendContext());
   expect(response.status).toBe(200);
@@ -745,7 +745,7 @@ it("GET skips cache write when notifyRaceTrendRoom rejects but still returns 200
   fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
   getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
   getRaceTrendRunningStylesFromD1Mock.mockResolvedValue([
-    { horseNumber: "1", predictedLabel: "nige", raceKey: "jra:20260529:05:01" },
+    { horseNumber: "1", predictedLabel: "nige", raceKey: "jra:2026:0529:05:01" },
   ]);
   notifyRaceTrendRoomMock.mockRejectedValue(new Error("notify boom"));
   const response = await GET(buildTrendRequest(), buildTrendContext());
@@ -761,7 +761,7 @@ it("GET uses MISS-STORED-WARM when warm flag is set and payload is cacheable", a
   fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
   getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
   getRaceTrendRunningStylesFromD1Mock.mockResolvedValue([
-    { horseNumber: "1", predictedLabel: "nige", raceKey: "jra:20260529:05:01" },
+    { horseNumber: "1", predictedLabel: "nige", raceKey: "jra:2026:0529:05:01" },
   ]);
   const response = await GET(request, buildTrendContext());
   expect(response.headers.get("X-Race-Trend-Cache")).toBe("MISS-STORED-WARM");

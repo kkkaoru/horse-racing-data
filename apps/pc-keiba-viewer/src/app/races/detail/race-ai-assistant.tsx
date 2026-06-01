@@ -2001,7 +2001,9 @@ export function RaceAiAssistant(props: RaceAiAssistantProps) {
     [realtimePayload],
   );
 
-  const raceKey = `${props.source}:${props.year}${props.month}${props.day}:${props.keibajoCode}:${props.raceNumber}`;
+  // 4-colon canonical race key — keeps the AI chat IndexedDB / server log
+  // store aligned with the D1 race_running_styles format (`source:YYYY:MMDD:keibajo:race_bango`).
+  const raceKey = `${props.source}:${props.year}:${props.month}${props.day}:${props.keibajoCode}:${props.raceNumber}`;
   const chatId = `${raceKey}:${chatSessionVersion}`;
 
   const resetRuntimeLogs = useCallback(

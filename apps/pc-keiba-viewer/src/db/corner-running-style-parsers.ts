@@ -67,11 +67,13 @@ const requireRunningStyleLabel = (value: unknown): RunningStyleLabel => {
   throw new Error("D1 row predicted_label not in nige/senkou/sashi/oikomi");
 };
 
-const RACE_BANGO_PAD_WIDTH = 2;
-const KEIBAJO_PAD_WIDTH = 2;
-
+// Canonical race_key format is 4-colon: `${source}:${YYYY}:${MMDD}:${keibajo}:${race_bango}`.
+// This matches the D1 `race_running_styles.race_key` stored format so the
+// d1-trend-queries lookup hits. Callsites must zero-pad keibajoCode / raceBango
+// to 2 digits before invoking this — see RaceTrendStarterRow / D1 snapshot rows
+// which already arrive 2-digit-padded.
 const buildRaceKey = (keys: RaceLookupKeys): string =>
-  `${keys.source}:${keys.kaisaiNen}${keys.kaisaiTsukihi}:${keys.keibajoCode.padStart(KEIBAJO_PAD_WIDTH, "0")}:${keys.raceBango.padStart(RACE_BANGO_PAD_WIDTH, "0")}`;
+  `${keys.source}:${keys.kaisaiNen}:${keys.kaisaiTsukihi}:${keys.keibajoCode}:${keys.raceBango}`;
 
 const parseRaceRunningStyleRow = (raw: Record<string, unknown>): RaceRunningStyleRow => ({
   bamei: stringOrNull(raw.bamei),

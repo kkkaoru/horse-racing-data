@@ -52,6 +52,9 @@ const isValidParams = (
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
+// 4-colon canonical race key matching race-ai-assistant.tsx client side and the
+// D1 race_running_styles stored format. Keeps server-side AI log Map<raceKey, ...>
+// in sync with the client IndexedDB key.
 const buildRaceKey = ({
   day,
   keibajoCode,
@@ -66,7 +69,7 @@ const buildRaceKey = ({
   raceNumber: string;
   source: RaceSource;
   year: string;
-}): string => `${source}:${year}${month}${day}:${keibajoCode}:${raceNumber}`;
+}): string => `${source}:${year}:${month}${day}:${keibajoCode}:${raceNumber}`;
 
 const resolveRaceKey = async (request: Request, context: RouteContext): Promise<string | null> => {
   const { day, keibajoCode, month, raceNumber, year } = await context.params;
