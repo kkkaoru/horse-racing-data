@@ -13,6 +13,7 @@ import type {
   RaceTrendDailyTrackSource,
   RaceTrendDailyTrackState,
 } from "horse-racing-realtime/race-trend-daily-track-types";
+import { deriveWakubanString } from "horse-racing-realtime/wakuban";
 import type { Env } from "../types";
 import { mergeJsonHeaders } from "../http";
 
@@ -320,7 +321,24 @@ const isRawSnapshotRow = (value: unknown): value is RawSnapshotRow => {
   );
 };
 
-const toStarterRow = (raw: RawSnapshotRow) => ({
+// Derive wakuban (frame number) from umaban + the race's actual horse
+// count. JRA / NAR / Ban-ei all share the same official frame distribution
+// rule (8 frames, overflow horses shift to higher frames), so the shared
+// helper covers every source. Before this, the DO hard-pinned wakuban to
+// null which made the viewer's race-trend frame filter drop every row for
+// a NAR (and Ban-ei) day.
+const deriveStarterWakuban = (raw: RawSnapshotRow, horseCount: number): string | null => {
+  const horseNumber = Number.parseInt(raw.umaban, 10);
+  if (!Number.isFinite(horseNumber)) return null;
+  return deriveWakubanString({ horseCount, horseNumber });
+};
+
+interface ToStarterRowInput {
+  horseCount: number;
+  raw: RawSnapshotRow;
+}
+
+const toStarterRow = ({ horseCount, raw }: ToStarterRowInput) => ({
   bamei: raw.horseName,
   bataiju: toBataiju(raw.weight),
   corner1: null,
@@ -341,7 +359,7 @@ const toStarterRow = (raw: RawSnapshotRow) => ({
   tanshoOdds: null,
   tanshoPopularity: null,
   umaban: raw.umaban,
-  wakuban: null,
+  wakuban: deriveStarterWakuban(raw, horseCount),
   zogenFugo: raw.changeSign,
   zogenSa: toZogenSa(raw.changeAmount),
 });
@@ -370,6 +388,7 @@ const isMatchingRunningStyle =
 
 const buildRowFromGroup = (input: BuildRowGroupInput): RaceTrendDailyTrackRow => {
   const first = input.rows[0]!;
+  const horseCount = input.rows.length;
   return {
     fetchedAt: first.fetchedAt,
     finishedAt: first.resultCompleteAt,
@@ -383,7 +402,7 @@ const buildRowFromGroup = (input: BuildRowGroupInput): RaceTrendDailyTrackRow =>
         predictedLabel: style.predictedLabel,
         raceKey: style.raceKey,
       })),
-    starterRows: input.rows.map(toStarterRow),
+    starterRows: input.rows.map((raw) => toStarterRow({ horseCount, raw })),
   };
 };
 

@@ -219,7 +219,7 @@ it("getRaceTrendTodayStarterRows binds source and targetYmd as a single-day wind
       raceName: "Test Race",
       hassoJikoku: "1630",
       runnerCount: null,
-      wakuban: null,
+      wakuban: "5",
       umaban: "05",
       bamei: "TestHorse",
       jockeyName: "TestJockey",
@@ -1266,8 +1266,32 @@ it("getRaceTrendTodayStarterRows derives wakuban=8 for a jra row with umaban=18 
   expect(rows[0]?.wakuban).toBe("8");
 });
 
-it("getRaceTrendTodayStarterRows leaves wakuban null for a nar row even with horseCount populated", async () => {
+it("getRaceTrendTodayStarterRows derives wakuban=5 for a nar row with umaban=5 in a 12-horse field", async () => {
   const { db } = buildD1Stub([SAMPLE_RAW_ROW]);
+  installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "50",
+    source: "nar",
+    targetYmd: "20260528",
+  });
+  expect(rows[0]?.wakuban).toBe("5");
+});
+
+it("getRaceTrendTodayStarterRows derives wakuban=8 for a nar row with umaban=16 in a 16-horse field", async () => {
+  const narRow = { ...SAMPLE_RAW_ROW, umaban: "16", horseCount: 16 };
+  const { db } = buildD1Stub([narRow]);
+  installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "50",
+    source: "nar",
+    targetYmd: "20260528",
+  });
+  expect(rows[0]?.wakuban).toBe("8");
+});
+
+it("getRaceTrendTodayStarterRows leaves wakuban null when nar umaban is null", async () => {
+  const narRow = { ...SAMPLE_RAW_ROW, umaban: null };
+  const { db } = buildD1Stub([narRow]);
   installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
   const rows = await getRaceTrendTodayStarterRows({
     keibajoCode: "50",

@@ -522,6 +522,44 @@ test("aggregateForTargets returns nullable rates when the group has no starters"
   expect(result.runningStyleRows[0]?.winRate).toStrictEqual(0);
 });
 
+test("aggregateForTargets aggregates a nar row with wakuban set when frame target is enabled", () => {
+  const narRowWithWakuban: RaceTrendStarterRow = { ...baseRow, source: "nar", wakuban: "3" };
+  const result = aggregateForTargets(
+    {
+      starterRows: [narRowWithWakuban],
+      currentRunningStyles: [],
+      historicalRunningStyles: [],
+      raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
+      runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
+    },
+    { frame: true, jockey: false, raceNumber: false, runningStyle: false },
+    true,
+    "20260520",
+    "20260520",
+  );
+  expect(result.runningStyleRows).toHaveLength(1);
+  expect(result.runningStyleRows[0]?.starts).toStrictEqual(1);
+  expect(result.runningStyleRows[0]?.frameNumber).toStrictEqual("3");
+});
+
+test("aggregateForTargets drops a nar row with null wakuban when frame target is enabled", () => {
+  const narRowWithoutWakuban: RaceTrendStarterRow = { ...baseRow, source: "nar", wakuban: null };
+  const result = aggregateForTargets(
+    {
+      starterRows: [narRowWithoutWakuban],
+      currentRunningStyles: [],
+      historicalRunningStyles: [],
+      raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
+      runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
+    },
+    { frame: true, jockey: false, raceNumber: false, runningStyle: false },
+    true,
+    "20260520",
+    "20260520",
+  );
+  expect(result.runningStyleRows[0]?.starts).toStrictEqual(0);
+});
+
 test("aggregateForTargets keeps frameNumber on the result when ignoreFrame is false", () => {
   const result = aggregateForTargets(
     {

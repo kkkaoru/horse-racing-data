@@ -5,7 +5,8 @@
   "exports": {
     "./nar": "./src/nar.ts",
     "./race-trend-daily-track-types": "./src/race-trend-daily-track-types.ts",
-    "./types": "./src/types.ts"
+    "./types": "./src/types.ts",
+    "./wakuban": "./src/wakuban.ts"
   },
   "scripts": {
     "test": "vitest run",

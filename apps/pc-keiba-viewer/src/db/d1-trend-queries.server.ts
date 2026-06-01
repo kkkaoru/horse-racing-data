@@ -22,10 +22,10 @@ import type {
   RaceTrendRunningStyleCache,
   RaceTrendStarterRow,
 } from "horse-racing-realtime/race-trend-daily-track-types";
+import { deriveWakubanString } from "horse-racing-realtime/wakuban";
 
 import { safeGetCloudflareEnv } from "../lib/cloudflare-context.server";
 import type { RaceSource } from "../lib/codes";
-import { deriveJraWakuban } from "../lib/jra-wakuban";
 import {
   RACE_TREND_PAST14_LOOKBACK_DAYS,
   buildRaceTrendPast14CacheKey,
@@ -359,13 +359,13 @@ const formatHassoJikoku = (raceStartAtJst: string | null): string | null => {
 // features-worker past-14 payload supply the missing fields. Legacy
 // daily_race_entries is NEVER read from this worker (Phase 0 rule 3).
 //
-// 2026-05-30: wakuban is now derived for jra rows from `umaban` + the
-// race's distinct horse_count (the new `race_horse_count` CTE) via
-// `deriveJraWakuban`. The snapshot tables don't carry wakuban directly,
-// and the trend page's today-only default filter would otherwise drop
-// every row when grouping by frame. NAR rows still surface as
-// `wakuban: null` because NAR uses a different frame rule handled
-// elsewhere in the pipeline.
+// 2026-06-01: wakuban is now derived for both JRA and NAR rows from
+// `umaban` + the race's distinct horse_count (the `race_horse_count` CTE)
+// via the shared `deriveWakubanString` helper. The snapshot tables don't
+// carry wakuban directly, and the trend page's today-only default filter
+// (e.g. `?raceTrendTargets=frame`) would otherwise drop every NAR row when
+// grouping by frame. The frame distribution rule is the same official
+// algorithm for JRA / NAR / Ban-ei, so the same helper covers all sources.
 const SELECT_SQL = `
   with latest_result as (
     select race_key, horse_number, finish_position, time
@@ -518,12 +518,11 @@ const pickTanshoOdds = (
   return { tanshoOddsTenth: oddsTenth, tanshoPopularity: entry.rank };
 };
 
-const deriveJraWakubanString = (raw: RawD1Row): string | null => {
-  if (raw.source !== "jra" || raw.umaban === null) return null;
+const deriveStarterWakuban = (raw: RawD1Row): string | null => {
+  if (raw.umaban === null) return null;
   const horseNumber = Number.parseInt(raw.umaban, 10);
   if (!Number.isFinite(horseNumber)) return null;
-  const wakubanValue = deriveJraWakuban({ horseCount: raw.horseCount, horseNumber });
-  return wakubanValue === null ? null : String(wakubanValue);
+  return deriveWakubanString({ horseCount: raw.horseCount, horseNumber });
 };
 
 const toStarterRow = (raw: RawD1Row, oddsMap: TanshoOddsMap): RaceTrendStarterRow => {
@@ -537,7 +536,7 @@ const toStarterRow = (raw: RawD1Row, oddsMap: TanshoOddsMap): RaceTrendStarterRo
     raceName: raw.raceName,
     hassoJikoku: formatHassoJikoku(raw.hassoJikoku),
     runnerCount: null,
-    wakuban: deriveJraWakubanString(raw),
+    wakuban: deriveStarterWakuban(raw),
     umaban: raw.umaban,
     bamei: raw.bamei,
     jockeyName: raw.jockeyName,
