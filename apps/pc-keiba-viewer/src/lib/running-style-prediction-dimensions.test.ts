@@ -13,6 +13,7 @@ import {
   deriveWilsonScoreCI,
   getRunningStyleDimensionFlags,
   isSmallSample,
+  RUNNING_STYLE_BUCKET_PERIOD_PARAM_NAME,
   RUNNING_STYLE_CLASSES,
   RUNNING_STYLE_PREDICTION_PARAM_NAMES,
 } from "./running-style-prediction-dimensions";
@@ -575,6 +576,7 @@ it("buildRunningStyleBucketFilter builds a JRA filter with conditionKey null and
       grade: false,
       raceName: false,
     },
+    period: "all",
   });
 });
 
@@ -1001,4 +1003,203 @@ it("RUNNING_STYLE_PREDICTION_PARAM_NAMES exports the expected URL param mapping"
     grade: "runningStyleGrade",
     raceName: "runningStyleRaceName",
   });
+});
+
+it("RUNNING_STYLE_BUCKET_PERIOD_PARAM_NAME exposes the rs_period URL param name", () => {
+  expect(RUNNING_STYLE_BUCKET_PERIOD_PARAM_NAME).toBe("rs_period");
+});
+
+it("buildRunningStyleBucketFilter defaults the period to all when query is omitted", () => {
+  const filter = buildRunningStyleBucketFilter({
+    race: {
+      source: "jra",
+      keibajoCode: "05",
+      kyori: 2400,
+      kyosoShubetsuCode: "11",
+      kyosoJokenCode: null,
+      kyosoJokenMeisho: null,
+      trackCode: "10",
+      gradeCode: null,
+      kyosomeiHondai: null,
+    },
+    flags: {
+      keibajo: true,
+      distance: true,
+      kyosoShubetsu: true,
+      kyosoJoken: false,
+      condition: false,
+      track: true,
+      grade: false,
+      raceName: false,
+    },
+  });
+  expect(filter.period).toBe("all");
+});
+
+it("buildRunningStyleBucketFilter defaults the period to all when rs_period is missing", () => {
+  const filter = buildRunningStyleBucketFilter({
+    race: {
+      source: "jra",
+      keibajoCode: "05",
+      kyori: 2400,
+      kyosoShubetsuCode: "11",
+      kyosoJokenCode: null,
+      kyosoJokenMeisho: null,
+      trackCode: "10",
+      gradeCode: null,
+      kyosomeiHondai: null,
+    },
+    flags: {
+      keibajo: true,
+      distance: true,
+      kyosoShubetsu: true,
+      kyosoJoken: false,
+      condition: false,
+      track: true,
+      grade: false,
+      raceName: false,
+    },
+    query: {},
+  });
+  expect(filter.period).toBe("all");
+});
+
+it("buildRunningStyleBucketFilter sets the period to oos-only when rs_period equals oos-only", () => {
+  const filter = buildRunningStyleBucketFilter({
+    race: {
+      source: "jra",
+      keibajoCode: "05",
+      kyori: 2400,
+      kyosoShubetsuCode: "11",
+      kyosoJokenCode: null,
+      kyosoJokenMeisho: null,
+      trackCode: "10",
+      gradeCode: null,
+      kyosomeiHondai: null,
+    },
+    flags: {
+      keibajo: true,
+      distance: true,
+      kyosoShubetsu: true,
+      kyosoJoken: false,
+      condition: false,
+      track: true,
+      grade: false,
+      raceName: false,
+    },
+    query: { rs_period: "oos-only" },
+  });
+  expect(filter.period).toBe("oos-only");
+});
+
+it("buildRunningStyleBucketFilter keeps the period as all when rs_period is an unknown string", () => {
+  const filter = buildRunningStyleBucketFilter({
+    race: {
+      source: "jra",
+      keibajoCode: "05",
+      kyori: 2400,
+      kyosoShubetsuCode: "11",
+      kyosoJokenCode: null,
+      kyosoJokenMeisho: null,
+      trackCode: "10",
+      gradeCode: null,
+      kyosomeiHondai: null,
+    },
+    flags: {
+      keibajo: true,
+      distance: true,
+      kyosoShubetsu: true,
+      kyosoJoken: false,
+      condition: false,
+      track: true,
+      grade: false,
+      raceName: false,
+    },
+    query: { rs_period: "bogus" },
+  });
+  expect(filter.period).toBe("all");
+});
+
+it("buildRunningStyleBucketFilter keeps the period as all when rs_period is explicitly all", () => {
+  const filter = buildRunningStyleBucketFilter({
+    race: {
+      source: "jra",
+      keibajoCode: "05",
+      kyori: 2400,
+      kyosoShubetsuCode: "11",
+      kyosoJokenCode: null,
+      kyosoJokenMeisho: null,
+      trackCode: "10",
+      gradeCode: null,
+      kyosomeiHondai: null,
+    },
+    flags: {
+      keibajo: true,
+      distance: true,
+      kyosoShubetsu: true,
+      kyosoJoken: false,
+      condition: false,
+      track: true,
+      grade: false,
+      raceName: false,
+    },
+    query: { rs_period: "all" },
+  });
+  expect(filter.period).toBe("all");
+});
+
+it("buildRunningStyleBucketFilter reads the first array element when rs_period is supplied as an array", () => {
+  const filter = buildRunningStyleBucketFilter({
+    race: {
+      source: "jra",
+      keibajoCode: "05",
+      kyori: 2400,
+      kyosoShubetsuCode: "11",
+      kyosoJokenCode: null,
+      kyosoJokenMeisho: null,
+      trackCode: "10",
+      gradeCode: null,
+      kyosomeiHondai: null,
+    },
+    flags: {
+      keibajo: true,
+      distance: true,
+      kyosoShubetsu: true,
+      kyosoJoken: false,
+      condition: false,
+      track: true,
+      grade: false,
+      raceName: false,
+    },
+    query: { rs_period: ["oos-only", "all"] },
+  });
+  expect(filter.period).toBe("oos-only");
+});
+
+it("buildRunningStyleBucketFilter falls back to all when rs_period is undefined inside query", () => {
+  const filter = buildRunningStyleBucketFilter({
+    race: {
+      source: "jra",
+      keibajoCode: "05",
+      kyori: 2400,
+      kyosoShubetsuCode: "11",
+      kyosoJokenCode: null,
+      kyosoJokenMeisho: null,
+      trackCode: "10",
+      gradeCode: null,
+      kyosomeiHondai: null,
+    },
+    flags: {
+      keibajo: true,
+      distance: true,
+      kyosoShubetsu: true,
+      kyosoJoken: false,
+      condition: false,
+      track: true,
+      grade: false,
+      raceName: false,
+    },
+    query: { rs_period: undefined },
+  });
+  expect(filter.period).toBe("all");
 });

@@ -249,6 +249,211 @@ describe("RunningStyleSection - tab interactions", () => {
   });
 });
 
+describe("RunningStyleSection - race-level nige rank label", () => {
+  test("shows 逃げ for the single predicted=nige row when only one horse is nige", () => {
+    render(
+      <RunningStyleSection
+        rows={[
+          buildRow({
+            horseNumber: 1,
+            bamei: "テスト逃げ馬",
+            predictedLabel: "nige",
+            p_nige: 0.55,
+            p_senkou: 0.25,
+            p_sashi: 0.1,
+            p_oikomi: 0.1,
+          }),
+          buildRow({
+            horseNumber: 2,
+            bamei: "テスト先行馬",
+            predictedLabel: "senkou",
+            p_nige: 0.2,
+            p_senkou: 0.5,
+            p_sashi: 0.2,
+            p_oikomi: 0.1,
+          }),
+        ]}
+        modelMacroF1={null}
+        modelVersion="v1"
+        runnersByUmaban={{}}
+      />,
+    );
+    const labelCells = screen.getAllByRole("cell").filter((cell) => cell.textContent === "逃げ");
+    expect(labelCells.length).toBe(1);
+  });
+
+  test("shows 先行?(p_nige%) for predicted=nige rows ranked 2nd or lower in p_nige", () => {
+    render(
+      <RunningStyleSection
+        rows={[
+          buildRow({
+            horseNumber: 1,
+            bamei: "1番馬",
+            predictedLabel: "nige",
+            p_nige: 0.7,
+            p_senkou: 0.2,
+            p_sashi: 0.05,
+            p_oikomi: 0.05,
+          }),
+          buildRow({
+            horseNumber: 2,
+            bamei: "2番馬",
+            predictedLabel: "nige",
+            p_nige: 0.55,
+            p_senkou: 0.3,
+            p_sashi: 0.1,
+            p_oikomi: 0.05,
+          }),
+          buildRow({
+            horseNumber: 3,
+            bamei: "3番馬",
+            predictedLabel: "nige",
+            p_nige: 0.45,
+            p_senkou: 0.35,
+            p_sashi: 0.15,
+            p_oikomi: 0.05,
+          }),
+        ]}
+        modelMacroF1={null}
+        modelVersion="v1"
+        runnersByUmaban={{}}
+      />,
+    );
+    expect(screen.getByText("先行?(55%)")).toBeTruthy();
+    expect(screen.getByText("先行?(45%)")).toBeTruthy();
+  });
+
+  test("renders the rank-1 nige row with the plain 逃げ label even when other nige rows are demoted", () => {
+    render(
+      <RunningStyleSection
+        rows={[
+          buildRow({
+            horseNumber: 1,
+            bamei: "1番馬",
+            predictedLabel: "nige",
+            p_nige: 0.7,
+            p_senkou: 0.2,
+            p_sashi: 0.05,
+            p_oikomi: 0.05,
+          }),
+          buildRow({
+            horseNumber: 2,
+            bamei: "2番馬",
+            predictedLabel: "nige",
+            p_nige: 0.55,
+            p_senkou: 0.3,
+            p_sashi: 0.1,
+            p_oikomi: 0.05,
+          }),
+        ]}
+        modelMacroF1={null}
+        modelVersion="v1"
+        runnersByUmaban={{}}
+      />,
+    );
+    const labelCells = screen.getAllByRole("cell").filter((cell) => cell.textContent === "逃げ");
+    expect(labelCells.length).toBe(1);
+  });
+
+  test("renders no 逃げ label when no row has predicted=nige", () => {
+    render(
+      <RunningStyleSection
+        rows={[
+          buildRow({
+            horseNumber: 1,
+            bamei: "先行馬A",
+            predictedLabel: "senkou",
+            p_nige: 0.3,
+            p_senkou: 0.5,
+            p_sashi: 0.1,
+            p_oikomi: 0.1,
+          }),
+          buildRow({
+            horseNumber: 2,
+            bamei: "差し馬B",
+            predictedLabel: "sashi",
+            p_nige: 0.1,
+            p_senkou: 0.2,
+            p_sashi: 0.6,
+            p_oikomi: 0.1,
+          }),
+        ]}
+        modelMacroF1={null}
+        modelVersion="v1"
+        runnersByUmaban={{}}
+      />,
+    );
+    const labelCells = screen.getAllByRole("cell").filter((cell) => cell.textContent === "逃げ");
+    expect(labelCells.length).toBe(0);
+  });
+
+  test("breaks p_nige ties by horse_number ascending so the smaller umaban becomes rank-1", () => {
+    render(
+      <RunningStyleSection
+        rows={[
+          buildRow({
+            horseNumber: 5,
+            bamei: "5番馬",
+            predictedLabel: "nige",
+            p_nige: 0.5,
+            p_senkou: 0.3,
+            p_sashi: 0.1,
+            p_oikomi: 0.1,
+          }),
+          buildRow({
+            horseNumber: 3,
+            bamei: "3番馬",
+            predictedLabel: "nige",
+            p_nige: 0.5,
+            p_senkou: 0.3,
+            p_sashi: 0.1,
+            p_oikomi: 0.1,
+          }),
+        ]}
+        modelMacroF1={null}
+        modelVersion="v1"
+        runnersByUmaban={{}}
+      />,
+    );
+    expect(screen.getByText("先行?(50%)")).toBeTruthy();
+    const labelCells = screen.getAllByRole("cell").filter((cell) => cell.textContent === "逃げ");
+    expect(labelCells.length).toBe(1);
+  });
+
+  test("does not demote non-nige predictedLabel rows even when their p_nige is the rank-1 value", () => {
+    render(
+      <RunningStyleSection
+        rows={[
+          buildRow({
+            horseNumber: 1,
+            bamei: "高p_nige先行馬",
+            predictedLabel: "senkou",
+            p_nige: 0.6,
+            p_senkou: 0.3,
+            p_sashi: 0.05,
+            p_oikomi: 0.05,
+          }),
+          buildRow({
+            horseNumber: 2,
+            bamei: "低p_nige逃げ馬",
+            predictedLabel: "nige",
+            p_nige: 0.2,
+            p_senkou: 0.5,
+            p_sashi: 0.2,
+            p_oikomi: 0.1,
+          }),
+        ]}
+        modelMacroF1={null}
+        modelVersion="v1"
+        runnersByUmaban={{}}
+      />,
+    );
+    expect(screen.getByText("先行?(20%)")).toBeTruthy();
+    const labelCells = screen.getAllByRole("cell").filter((cell) => cell.textContent === "先行");
+    expect(labelCells.length).toBe(1);
+  });
+});
+
 describe("RunningStyleBucketEvaluationPanel - rendering", () => {
   test("renders accuracy + Wilson CI + race/prediction counts", () => {
     render(

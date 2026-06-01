@@ -2,6 +2,8 @@
 
 export type RunningStyleClass = "nige" | "senkou" | "sashi" | "oikomi";
 
+export type RunningStyleBucketEvaluationPeriod = "all" | "oos-only";
+
 export type ConfusionMatrix = readonly [
   readonly [number, number, number, number],
   readonly [number, number, number, number],
@@ -32,6 +34,7 @@ export interface RunningStyleBucketFilter {
   gradeCode: string | null;
   raceName: string | null;
   enabled: RunningStyleDimensionFlags;
+  period: RunningStyleBucketEvaluationPeriod;
 }
 
 export interface RunningStylePerClassMetric {
@@ -84,6 +87,7 @@ export interface GetRunningStyleDimensionFlagsInput {
 export interface BuildRunningStyleBucketFilterInput {
   race: RaceRowForRunningStyleBucketFilter;
   flags: RunningStyleDimensionFlags;
+  query?: Record<string, string | string[] | undefined>;
 }
 
 export interface DeriveWilsonScoreCIInput {
@@ -124,6 +128,11 @@ export const RUNNING_STYLE_PREDICTION_PARAM_NAMES = {
   grade: "runningStyleGrade",
   raceName: "runningStyleRaceName",
 } satisfies Record<keyof RunningStyleDimensionFlags, string>;
+
+export const RUNNING_STYLE_BUCKET_PERIOD_PARAM_NAME = "rs_period";
+
+const RUNNING_STYLE_BUCKET_PERIOD_OOS_ONLY = "oos-only";
+const RUNNING_STYLE_BUCKET_PERIOD_ALL = "all";
 
 const SMALL_SAMPLE_THRESHOLD = 30;
 const MIN_SUPPORT_FOR_F1 = 5;
@@ -462,13 +471,27 @@ const resolveRaceName = (race: RaceRowForRunningStyleBucketFilter): string | nul
 const resolveCategory = (source: "jra" | "nar"): string =>
   source === "nar" ? CATEGORY_NAR : CATEGORY_JRA;
 
+const resolvePeriod = (
+  query: Record<string, string | string[] | undefined> | undefined,
+): RunningStyleBucketEvaluationPeriod => {
+  if (query === undefined) {
+    return RUNNING_STYLE_BUCKET_PERIOD_ALL;
+  }
+  const raw = query[RUNNING_STYLE_BUCKET_PERIOD_PARAM_NAME];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return value === RUNNING_STYLE_BUCKET_PERIOD_OOS_ONLY
+    ? RUNNING_STYLE_BUCKET_PERIOD_OOS_ONLY
+    : RUNNING_STYLE_BUCKET_PERIOD_ALL;
+};
+
 export const buildRunningStyleBucketFilter = (
   input: BuildRunningStyleBucketFilterInput,
 ): RunningStyleBucketFilter => {
-  const { race, flags } = input;
+  const { race, flags, query } = input;
   const category = resolveCategory(race.source);
   const conditionKey = resolveConditionKey(race);
   const raceName = resolveRaceName(race);
+  const period = resolvePeriod(query);
   return {
     category,
     source: race.source,
@@ -481,6 +504,7 @@ export const buildRunningStyleBucketFilter = (
     gradeCode: flags.grade ? race.gradeCode : null,
     raceName: flags.raceName ? raceName : null,
     enabled: flags,
+    period,
   };
 };
 

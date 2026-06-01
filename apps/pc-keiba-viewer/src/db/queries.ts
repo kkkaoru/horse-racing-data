@@ -6186,6 +6186,9 @@ const toFiniteNumber = (value: string | number): number => {
 const isJraOrNarCategory = (category: string): category is "jra" | "nar" =>
   category === "jra" || category === "nar";
 
+const RUNNING_STYLE_OOS_TRAIN_FROM = "20160101";
+const RUNNING_STYLE_OOS_TRAIN_TO = "20260101";
+
 export const getRunningStyleBucketEvaluation = cache(
   async (
     args: RunningStyleBucketEvaluationQueryFilter,
@@ -6211,6 +6214,7 @@ export const getRunningStyleBucketEvaluation = cache(
         args.filter.enabled.track,
         args.filter.enabled.grade,
         args.filter.enabled.raceName,
+        args.filter.period,
       ],
       async () => {
         const { filter } = args;
@@ -6218,6 +6222,7 @@ export const getRunningStyleBucketEvaluation = cache(
           return null;
         }
         const enabled = filter.enabled;
+        const oosOnly = filter.period === "oos-only";
         const result = await getDb().execute<RunningStyleBucketAggregateRow>(sql`
           with latest_versions as (
             select
@@ -6244,6 +6249,7 @@ export const getRunningStyleBucketEvaluation = cache(
               and (${enabled.track ? sql`b.track_code = ${filter.trackCode}` : sql`true`})
               and (${enabled.grade ? sql`b.grade_code = ${filter.gradeCode}` : sql`true`})
               and (${enabled.raceName ? sql`regexp_replace(b.race_name, '^[[:space:]　]+|[[:space:]　]+$', '', 'g') = ${filter.raceName}` : sql`true`})
+              and (${oosOnly ? sql`(b.evaluation_window_from < ${RUNNING_STYLE_OOS_TRAIN_FROM} or b.evaluation_window_from >= ${RUNNING_STYLE_OOS_TRAIN_TO})` : sql`true`})
           )
           select
             coalesce(sum(race_count), 0)::text as race_count,

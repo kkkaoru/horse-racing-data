@@ -55,6 +55,8 @@ const PERCENT_DECIMALS = 2;
 const SEARCH_PARAM_KEY = "style";
 const MISSING_NAME_PLACEHOLDER = "馬名不明";
 const MISSING_JOCKEY_PLACEHOLDER = "騎手不明";
+const NIGE_RANK_TOP = 1;
+const SENKOU_RIVAL_DECIMALS = 0;
 const MIN_SUPPORT_FOR_F1 = 5;
 const PANEL_PERCENT_DECIMALS = 1;
 const KAPPA_DECIMALS = 3;
@@ -153,13 +155,43 @@ const resolveJockey = (
   runners: Record<number, RunnerDisplayInfo>,
 ): string => runners[row.horseNumber]?.jockey ?? MISSING_JOCKEY_PLACEHOLDER;
 
+const compareByNigeDesc = (left: RaceRunningStyleRow, right: RaceRunningStyleRow): number =>
+  right.p_nige - left.p_nige || left.horseNumber - right.horseNumber;
+
+const buildNigeRankByHorseNumber = (rows: RaceRunningStyleRow[]): ReadonlyMap<number, number> =>
+  new Map(rows.toSorted(compareByNigeDesc).map((row, index) => [row.horseNumber, index + 1]));
+
+const formatSenkouRivalPercent = (probability: number): string =>
+  `${(probability * 100).toFixed(SENKOU_RIVAL_DECIMALS)}%`;
+
+interface RowLabelResolverInput {
+  row: RaceRunningStyleRow;
+  nigeRankByHorseNumber: ReadonlyMap<number, number>;
+}
+
+const resolveDisplayedStyleLabel = ({
+  row,
+  nigeRankByHorseNumber,
+}: RowLabelResolverInput): string => {
+  if (row.predictedLabel !== "nige") return RUNNING_STYLE_DISPLAY[row.predictedLabel];
+  const rank = nigeRankByHorseNumber.get(row.horseNumber) ?? NIGE_RANK_TOP;
+  if (rank === NIGE_RANK_TOP) return RUNNING_STYLE_DISPLAY.nige;
+  return `先行?(${formatSenkouRivalPercent(row.p_nige)})`;
+};
+
 interface AllRowsTableProps {
   entryStatusByHorse: ReadonlyMap<string, string>;
   rows: RaceRunningStyleRow[];
   runnersByUmaban: Record<number, RunnerDisplayInfo>;
+  nigeRankByHorseNumber: ReadonlyMap<number, number>;
 }
 
-const AllRowsTable = ({ entryStatusByHorse, rows, runnersByUmaban }: AllRowsTableProps) => (
+const AllRowsTable = ({
+  entryStatusByHorse,
+  rows,
+  runnersByUmaban,
+  nigeRankByHorseNumber,
+}: AllRowsTableProps) => (
   <div className="runner-table-wrap">
     <table className="runner-table">
       <thead>
@@ -179,6 +211,7 @@ const AllRowsTable = ({ entryStatusByHorse, rows, runnersByUmaban }: AllRowsTabl
           const entryStatus =
             entryStatusByHorse.get(formatRunnerNumber(String(row.horseNumber))) ?? "";
           const isScratched = entryStatus !== "";
+          const displayedLabel = resolveDisplayedStyleLabel({ row, nigeRankByHorseNumber });
           return (
             <tr
               className={isScratched ? "stats-row-scratched" : undefined}
@@ -193,7 +226,7 @@ const AllRowsTable = ({ entryStatusByHorse, rows, runnersByUmaban }: AllRowsTabl
               <td className="stats-name-cell">
                 {isScratched ? "-" : resolveJockey(row, runnersByUmaban)}
               </td>
-              <td>{isScratched ? "-" : RUNNING_STYLE_DISPLAY[row.predictedLabel]}</td>
+              <td>{isScratched ? "-" : displayedLabel}</td>
               <td>{isScratched ? "-" : formatPercent(row.p_nige)}</td>
               <td>{isScratched ? "-" : formatPercent(row.p_senkou)}</td>
               <td>{isScratched ? "-" : formatPercent(row.p_sashi)}</td>
@@ -627,6 +660,7 @@ export const RunningStyleSection = ({
     () => sortRowsByTab(rows, currentTab, entryStatusByHorse),
     [currentTab, entryStatusByHorse, rows],
   );
+  const nigeRankByHorseNumber = useMemo(() => buildNigeRankByHorseNumber(rows), [rows]);
 
   const handleSelect = (tab: StyleTab): void => {
     setCurrentTab(tab);
@@ -667,6 +701,7 @@ export const RunningStyleSection = ({
         entryStatusByHorse={entryStatusByHorse}
         rows={visibleRows}
         runnersByUmaban={runnersByUmaban}
+        nigeRankByHorseNumber={nigeRankByHorseNumber}
       />
       <MetricsBadge modelMacroF1={modelMacroF1} modelVersion={modelVersion} />
     </section>
