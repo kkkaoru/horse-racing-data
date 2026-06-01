@@ -1,7 +1,8 @@
 // Run with: bun run src/scripts/finish-position-features/apply-running-style-postproc.ts \
 //   --logits-parquet <input.parquet> \
 //   --output-parquet <output.parquet> \
-//   --running-style-feature-version v1
+//   --running-style-feature-version v1 \
+//   [--nige-threshold <float>]
 //
 // Phase C (bucket-eval running-style X5): reads a parquet of per-runner raw
 // probabilities (or LightGBM logits) emitted by Phase B and produces the
@@ -15,6 +16,12 @@
 // here. memory rule `feedback_no_race_level_nige_constraint.md` forbids forcing
 // at most one nige per race; raw softmax + argmax is the final decision.
 //
+// --nige-threshold <T> (default 0): row-level confidence floor for the nige
+// class. When argmax==0 (nige) but p_nige < T, the row falls back to the
+// second-best class. T=0 preserves the legacy pure-argmax behavior. The race-
+// level "only the highest p_nige in the race may stay nige" constraint is NOT
+// applied here; that decision is made in the UI side per P2.
+//
 // W11-X2-Async: refactored onto the @duckdb/node-api neo async API
 // (DuckDBInstance.create + connection.runAndReadAll + connection.run).
 
@@ -22,6 +29,7 @@ interface ApplyRunningStylePostprocOptions {
   logitsParquet: string;
   outputParquet: string;
   runningStyleFeatureVersion: string;
+  nigeThreshold: number;
 }
 
 interface ApplyRunningStylePostprocCliRunDeps {
@@ -107,6 +115,8 @@ const ARGMAX_SECONDARY_INDEX = 1;
 const CLASS_COUNT = 4;
 const ZERO_SUM_FALLBACK_PROB = 1 / CLASS_COUNT;
 const IN_MEMORY_DB_PATH = ":memory:";
+const NIGE_CLASS_INDEX = 0;
+const DEFAULT_NIGE_THRESHOLD = 0;
 
 const requireValue = (name: string, value: string | undefined): string => {
   if (value === undefined) throw new Error(`${name} requires a value.`);
@@ -117,6 +127,7 @@ export const initialOptions = (): ApplyRunningStylePostprocOptions => ({
   logitsParquet: "",
   outputParquet: "",
   runningStyleFeatureVersion: "",
+  nigeThreshold: DEFAULT_NIGE_THRESHOLD,
 });
 
 export const buildUsageText = (): string =>
@@ -125,8 +136,17 @@ export const buildUsageText = (): string =>
     "  bun run src/scripts/finish-position-features/apply-running-style-postproc.ts \\",
     "    --logits-parquet <input.parquet> \\",
     "    --output-parquet <output.parquet> \\",
-    "    --running-style-feature-version <version>",
+    "    --running-style-feature-version <version> \\",
+    "    [--nige-threshold <float>]",
   ].join("\n");
+
+const parseNigeThreshold = (name: string, value: string | undefined): number => {
+  const raw = requireValue(name, value);
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) throw new Error(`${name} must be a finite number (got ${raw}).`);
+  if (parsed < 0) throw new Error(`${name} must be >= 0 (got ${raw}).`);
+  return parsed;
+};
 
 export const applyArg = (
   options: ApplyRunningStylePostprocOptions,
@@ -143,6 +163,10 @@ export const applyArg = (
   }
   if (name === "--running-style-feature-version") {
     options.runningStyleFeatureVersion = requireValue(name, value);
+    return { advanceBy: 2 };
+  }
+  if (name === "--nige-threshold") {
+    options.nigeThreshold = parseNigeThreshold(name, value);
     return { advanceBy: 2 };
   }
   if (name === "--help" || name === "-h") {
@@ -232,6 +256,23 @@ export const pickSecondArgmax = (probabilities: readonly number[]): number => {
   return sorted[ARGMAX_SECONDARY_INDEX] ?? 0;
 };
 
+// Row-level nige confidence floor. When threshold > 0 and the argmax class is
+// nige (index 0) but p_nige is below the floor, the row falls back to the
+// second-best class. threshold == 0 preserves the legacy pure-argmax behavior.
+// The race-level "max p_nige per race" tie-break is applied separately in the
+// UI side, not here.
+export const pickArgmaxWithNigeThreshold = (
+  probabilities: readonly number[],
+  nigeThreshold: number,
+): number => {
+  const argmax = pickArgmax(probabilities);
+  if (nigeThreshold <= DEFAULT_NIGE_THRESHOLD) return argmax;
+  if (argmax !== NIGE_CLASS_INDEX) return argmax;
+  const nigeProb = probabilities[NIGE_CLASS_INDEX] ?? 0;
+  if (nigeProb > nigeThreshold) return argmax;
+  return pickSecondArgmax(probabilities);
+};
+
 export const buildLabelFromClass = (predictedClass: number): string =>
   CLASS_LABELS[predictedClass] ?? "";
 
@@ -297,11 +338,12 @@ interface BuildPredictionRowParams {
   raceKey: RawInputRaceKey;
   passthrough: RawInputPassthrough;
   probabilities: readonly number[];
+  nigeThreshold: number;
 }
 
 const buildPredictionRow = (params: BuildPredictionRowParams): PostprocPredictionRow => {
-  const { raceKey, passthrough, probabilities } = params;
-  const predictedClass = pickArgmax(probabilities);
+  const { raceKey, passthrough, probabilities, nigeThreshold } = params;
+  const predictedClass = pickArgmaxWithNigeThreshold(probabilities, nigeThreshold);
   const secondPredictedClass = pickSecondArgmax(probabilities);
   return {
     source: raceKey.source,
@@ -326,6 +368,7 @@ const buildPredictionRow = (params: BuildPredictionRowParams): PostprocPredictio
 interface ApplyPostprocToRowParams {
   raw: Record<string, unknown>;
   runningStyleFeatureVersion: string;
+  nigeThreshold: number;
 }
 
 export const applyPostprocToRow = (params: ApplyPostprocToRowParams): PostprocPredictionRow => {
@@ -333,17 +376,27 @@ export const applyPostprocToRow = (params: ApplyPostprocToRowParams): PostprocPr
   const probabilities = resolver.resolve(params.raw);
   const raceKey = extractRaceKey(params.raw);
   const passthrough = extractPassthrough(params.raw, params.runningStyleFeatureVersion);
-  return buildPredictionRow({ raceKey, passthrough, probabilities });
+  return buildPredictionRow({
+    raceKey,
+    passthrough,
+    probabilities,
+    nigeThreshold: params.nigeThreshold,
+  });
 };
 
 interface ApplyPostprocToRowsParams {
   rows: readonly Record<string, unknown>[];
   runningStyleFeatureVersion: string;
+  nigeThreshold: number;
 }
 
 export const applyPostprocToRows = (params: ApplyPostprocToRowsParams): PostprocPredictionRow[] =>
   params.rows.map((row) =>
-    applyPostprocToRow({ raw: row, runningStyleFeatureVersion: params.runningStyleFeatureVersion }),
+    applyPostprocToRow({
+      raw: row,
+      runningStyleFeatureVersion: params.runningStyleFeatureVersion,
+      nigeThreshold: params.nigeThreshold,
+    }),
   );
 
 export const buildReadInputSql = (logitsParquet: string): string =>
@@ -485,6 +538,7 @@ export const runPostproc = async (params: RunPostprocParams): Promise<{ rowCount
   const predictionRows = applyPostprocToRows({
     rows: rawRows,
     runningStyleFeatureVersion: params.options.runningStyleFeatureVersion,
+    nigeThreshold: params.options.nigeThreshold,
   });
   await writeOutputRows({
     duckdbModule: params.duckdbModule,
@@ -492,7 +546,7 @@ export const runPostproc = async (params: RunPostprocParams): Promise<{ rowCount
     rows: predictionRows,
   });
   params.logger.info(
-    `[apply-running-style-postproc] running_style_feature_version=${params.options.runningStyleFeatureVersion} input=${params.options.logitsParquet} output=${params.options.outputParquet} rows=${predictionRows.length}`,
+    `[apply-running-style-postproc] running_style_feature_version=${params.options.runningStyleFeatureVersion} nige_threshold=${params.options.nigeThreshold} input=${params.options.logitsParquet} output=${params.options.outputParquet} rows=${predictionRows.length}`,
   );
   return { rowCount: predictionRows.length };
 };

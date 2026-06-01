@@ -14,6 +14,7 @@ import {
   initialOptions,
   parseArgs,
   pickArgmax,
+  pickArgmaxWithNigeThreshold,
   pickSecondArgmax,
   readInputRows,
   resolveDuckdbModule,
@@ -100,11 +101,12 @@ const buildFakeModule = (initialRows: readonly Record<string, unknown>[]): FakeD
 };
 
 describe("apply-running-style-postproc", () => {
-  test("initialOptions returns empty strings for all required options", () => {
+  test("initialOptions returns empty strings for required string options and zero nige threshold", () => {
     expect(initialOptions()).toStrictEqual({
       logitsParquet: "",
       outputParquet: "",
       runningStyleFeatureVersion: "",
+      nigeThreshold: 0,
     });
   });
 
@@ -118,6 +120,10 @@ describe("apply-running-style-postproc", () => {
     expect(buildUsageText().includes("--running-style-feature-version") satisfies boolean).toBe(
       true,
     );
+  });
+
+  test("buildUsageText mentions the optional nige threshold flag", () => {
+    expect(buildUsageText().includes("--nige-threshold") satisfies boolean).toBe(true);
   });
 
   test("applyArg sets --logits-parquet and advances by two", () => {
@@ -139,6 +145,40 @@ describe("apply-running-style-postproc", () => {
     const result = applyArg(options, "--running-style-feature-version", "v1");
     expect(result).toStrictEqual({ advanceBy: 2 });
     expect(options.runningStyleFeatureVersion).toBe("v1");
+  });
+
+  test("applyArg sets --nige-threshold and advances by two", () => {
+    const options = initialOptions();
+    const result = applyArg(options, "--nige-threshold", "0.55");
+    expect(result).toStrictEqual({ advanceBy: 2 });
+    expect(options.nigeThreshold).toBe(0.55);
+  });
+
+  test("applyArg accepts --nige-threshold 0 as the legacy argmax behavior", () => {
+    const options = initialOptions();
+    applyArg(options, "--nige-threshold", "0");
+    expect(options.nigeThreshold).toBe(0);
+  });
+
+  test("applyArg throws when --nige-threshold is missing a value", () => {
+    const options = initialOptions();
+    expect(() => applyArg(options, "--nige-threshold", undefined)).toThrowError(
+      "--nige-threshold requires a value.",
+    );
+  });
+
+  test("applyArg throws when --nige-threshold is not a finite number", () => {
+    const options = initialOptions();
+    expect(() => applyArg(options, "--nige-threshold", "not-a-number")).toThrowError(
+      "--nige-threshold must be a finite number (got not-a-number).",
+    );
+  });
+
+  test("applyArg throws when --nige-threshold is negative", () => {
+    const options = initialOptions();
+    expect(() => applyArg(options, "--nige-threshold", "-0.1")).toThrowError(
+      "--nige-threshold must be >= 0 (got -0.1).",
+    );
   });
 
   test("applyArg throws when a value is missing", () => {
@@ -168,7 +208,7 @@ describe("apply-running-style-postproc", () => {
     exitSpy.mockRestore();
   });
 
-  test("parseArgs returns populated options when all required flags are present", () => {
+  test("parseArgs returns populated options when all required flags are present and defaults nige threshold to zero", () => {
     const result = parseArgs([
       "--logits-parquet",
       "input.parquet",
@@ -181,6 +221,26 @@ describe("apply-running-style-postproc", () => {
       logitsParquet: "input.parquet",
       outputParquet: "output.parquet",
       runningStyleFeatureVersion: "v1",
+      nigeThreshold: 0,
+    });
+  });
+
+  test("parseArgs forwards --nige-threshold into the options object", () => {
+    const result = parseArgs([
+      "--logits-parquet",
+      "input.parquet",
+      "--output-parquet",
+      "output.parquet",
+      "--running-style-feature-version",
+      "v1",
+      "--nige-threshold",
+      "0.6",
+    ]);
+    expect(result).toStrictEqual({
+      logitsParquet: "input.parquet",
+      outputParquet: "output.parquet",
+      runningStyleFeatureVersion: "v1",
+      nigeThreshold: 0.6,
     });
   });
 
@@ -235,6 +295,38 @@ describe("apply-running-style-postproc", () => {
 
   test("pickSecondArgmax returns next index when ties occur", () => {
     expect(pickSecondArgmax([0.5, 0.5, 0, 0])).toBe(1);
+  });
+
+  test("pickArgmaxWithNigeThreshold with threshold zero matches plain argmax for nige row", () => {
+    expect(pickArgmaxWithNigeThreshold([0.6, 0.2, 0.1, 0.1], 0)).toBe(0);
+  });
+
+  test("pickArgmaxWithNigeThreshold with threshold zero matches plain argmax for non-nige row", () => {
+    expect(pickArgmaxWithNigeThreshold([0.1, 0.7, 0.1, 0.1], 0)).toBe(1);
+  });
+
+  test("pickArgmaxWithNigeThreshold keeps nige when p_nige exceeds the threshold strictly", () => {
+    expect(pickArgmaxWithNigeThreshold([0.6, 0.2, 0.1, 0.1], 0.5)).toBe(0);
+  });
+
+  test("pickArgmaxWithNigeThreshold falls back to second-best class when p_nige is below the threshold", () => {
+    expect(pickArgmaxWithNigeThreshold([0.3, 0.25, 0.25, 0.2], 0.5)).toBe(1);
+  });
+
+  test("pickArgmaxWithNigeThreshold treats p_nige == threshold as a fallback (strict greater than)", () => {
+    expect(pickArgmaxWithNigeThreshold([0.5, 0.2, 0.2, 0.1], 0.5)).toBe(1);
+  });
+
+  test("pickArgmaxWithNigeThreshold leaves non-nige argmax unchanged even when threshold is set", () => {
+    expect(pickArgmaxWithNigeThreshold([0.2, 0.6, 0.1, 0.1], 0.5)).toBe(1);
+  });
+
+  test("pickArgmaxWithNigeThreshold falls back to the highest non-nige class when several remain", () => {
+    expect(pickArgmaxWithNigeThreshold([0.4, 0.3, 0.2, 0.1], 0.5)).toBe(1);
+  });
+
+  test("pickArgmaxWithNigeThreshold prefers sashi second when nige falls back and sashi outranks senkou", () => {
+    expect(pickArgmaxWithNigeThreshold([0.45, 0.2, 0.25, 0.1], 0.5)).toBe(2);
   });
 
   test("buildLabelFromClass returns nige for class 0", () => {
@@ -295,6 +387,7 @@ describe("apply-running-style-postproc", () => {
         logit_oikomi: -5,
       },
       runningStyleFeatureVersion: "v1",
+      nigeThreshold: 0,
     });
     expect(row.predicted_class).toBe(2);
     expect(row.predicted_label).toBe("sashi");
@@ -311,6 +404,7 @@ describe("apply-running-style-postproc", () => {
         logit_oikomi: 0,
       },
       runningStyleFeatureVersion: "v1",
+      nigeThreshold: 0,
     });
     expect(row.second_predicted_class).toBe(2);
   });
@@ -328,6 +422,7 @@ describe("apply-running-style-postproc", () => {
         logit_oikomi: 0,
       },
       runningStyleFeatureVersion: "v2",
+      nigeThreshold: 0,
     });
     expect(row.running_style_feature_version).toBe("v2");
   });
@@ -345,6 +440,7 @@ describe("apply-running-style-postproc", () => {
         logit_oikomi: 0,
       },
       runningStyleFeatureVersion: "v1",
+      nigeThreshold: 0,
     });
     expect(row.model_version).toBe("nar-rs-prod-v3");
   });
@@ -362,6 +458,7 @@ describe("apply-running-style-postproc", () => {
         logit_oikomi: 1,
       },
       runningStyleFeatureVersion: "v1",
+      nigeThreshold: 0,
     });
     expect(row.target_running_style_class).toBe(3);
   });
@@ -379,6 +476,7 @@ describe("apply-running-style-postproc", () => {
         p_oikomi: 0.1,
       },
       runningStyleFeatureVersion: "v1",
+      nigeThreshold: 0,
     });
     expect(row.target_running_style_class).toBe(2);
   });
@@ -396,6 +494,7 @@ describe("apply-running-style-postproc", () => {
         p_oikomi: 0.1,
       },
       runningStyleFeatureVersion: "v1",
+      nigeThreshold: 0,
     });
     expect(row.target_running_style_class).toBe(1);
   });
@@ -413,6 +512,7 @@ describe("apply-running-style-postproc", () => {
         p_oikomi: 0.1,
       },
       runningStyleFeatureVersion: "v1",
+      nigeThreshold: 0,
     });
     expect(row.target_running_style_class).toBe(null);
   });
@@ -429,6 +529,7 @@ describe("apply-running-style-postproc", () => {
         p_oikomi: 0.1,
       },
       runningStyleFeatureVersion: "v1",
+      nigeThreshold: 0,
     });
     expect(row.target_running_style_class).toBe(null);
   });
@@ -446,6 +547,7 @@ describe("apply-running-style-postproc", () => {
         p_oikomi: 0.1,
       },
       runningStyleFeatureVersion: "v1",
+      nigeThreshold: 0,
     });
     expect(row.predicted_class).toBe(2);
     expect(row.predicted_label).toBe("sashi");
@@ -465,6 +567,7 @@ describe("apply-running-style-postproc", () => {
           p_oikomi: 0.1,
         },
         runningStyleFeatureVersion: "v2",
+        nigeThreshold: 0,
       }),
     ).toThrowError(
       "Input row running_style_feature_version (v1) does not match --running-style-feature-version (v2).",
@@ -484,6 +587,7 @@ describe("apply-running-style-postproc", () => {
           p_oikomi: 0.1,
         },
         runningStyleFeatureVersion: "v1",
+        nigeThreshold: 0,
       }),
     ).toThrowError("Column model_version is not a string.");
   });
@@ -502,6 +606,7 @@ describe("apply-running-style-postproc", () => {
           p_oikomi: 0.1,
         },
         runningStyleFeatureVersion: "v1",
+        nigeThreshold: 0,
       }),
     ).toThrowError("Column target_running_style_class is not numeric.");
   });
@@ -517,6 +622,7 @@ describe("apply-running-style-postproc", () => {
         p_oikomi: 0.25,
       },
       runningStyleFeatureVersion: "v1",
+      nigeThreshold: 0,
     });
     expect(row.p_nige).toBe(0.25);
     expect(row.p_senkou).toBe(0.25);
@@ -535,6 +641,7 @@ describe("apply-running-style-postproc", () => {
         p_oikomi: 0,
       },
       runningStyleFeatureVersion: "v1",
+      nigeThreshold: 0,
     });
     expect(row.source).toBe("jra");
     expect(row.kaisai_nen).toBe("2026");
@@ -561,6 +668,7 @@ describe("apply-running-style-postproc", () => {
           p_oikomi: 0.1,
         },
         runningStyleFeatureVersion: "v1",
+        nigeThreshold: 0,
       }),
     ).toThrowError("Column source is not a string.");
   });
@@ -576,6 +684,7 @@ describe("apply-running-style-postproc", () => {
         p_oikomi: "0.1",
       },
       runningStyleFeatureVersion: "v1",
+      nigeThreshold: 0,
     });
     expect(row.predicted_class).toBe(0);
   });
@@ -592,6 +701,7 @@ describe("apply-running-style-postproc", () => {
           p_oikomi: 0.1,
         },
         runningStyleFeatureVersion: "v1",
+        nigeThreshold: 0,
       }),
     ).toThrowError("Column p_nige is not numeric.");
   });
@@ -608,6 +718,7 @@ describe("apply-running-style-postproc", () => {
           p_oikomi: 0.1,
         },
         runningStyleFeatureVersion: "v1",
+        nigeThreshold: 0,
       }),
     ).toThrowError("Column p_nige is not numeric.");
   });
@@ -624,8 +735,93 @@ describe("apply-running-style-postproc", () => {
           logit_oikomi: 0,
         },
         runningStyleFeatureVersion: "v1",
+        nigeThreshold: 0,
       }),
     ).toThrowError("Column logit_nige is not numeric.");
+  });
+
+  test("applyPostprocToRow with threshold zero matches legacy argmax for a borderline nige row", () => {
+    const row = applyPostprocToRow({
+      raw: {
+        ...RACE_KEY_FIELDS,
+        ...PASSTHROUGH_FIELDS,
+        p_nige: 0.45,
+        p_senkou: 0.25,
+        p_sashi: 0.2,
+        p_oikomi: 0.1,
+      },
+      runningStyleFeatureVersion: "v1",
+      nigeThreshold: 0,
+    });
+    expect(row.predicted_class).toBe(0);
+    expect(row.predicted_label).toBe("nige");
+  });
+
+  test("applyPostprocToRow with threshold demotes a borderline nige row to second-best class", () => {
+    const row = applyPostprocToRow({
+      raw: {
+        ...RACE_KEY_FIELDS,
+        ...PASSTHROUGH_FIELDS,
+        p_nige: 0.45,
+        p_senkou: 0.25,
+        p_sashi: 0.2,
+        p_oikomi: 0.1,
+      },
+      runningStyleFeatureVersion: "v1",
+      nigeThreshold: 0.5,
+    });
+    expect(row.predicted_class).toBe(1);
+    expect(row.predicted_label).toBe("senkou");
+  });
+
+  test("applyPostprocToRow with threshold keeps a confident nige row as nige", () => {
+    const row = applyPostprocToRow({
+      raw: {
+        ...RACE_KEY_FIELDS,
+        ...PASSTHROUGH_FIELDS,
+        p_nige: 0.7,
+        p_senkou: 0.1,
+        p_sashi: 0.1,
+        p_oikomi: 0.1,
+      },
+      runningStyleFeatureVersion: "v1",
+      nigeThreshold: 0.5,
+    });
+    expect(row.predicted_class).toBe(0);
+    expect(row.predicted_label).toBe("nige");
+  });
+
+  test("applyPostprocToRow with threshold leaves non-nige argmax rows unchanged", () => {
+    const row = applyPostprocToRow({
+      raw: {
+        ...RACE_KEY_FIELDS,
+        ...PASSTHROUGH_FIELDS,
+        p_nige: 0.2,
+        p_senkou: 0.6,
+        p_sashi: 0.1,
+        p_oikomi: 0.1,
+      },
+      runningStyleFeatureVersion: "v1",
+      nigeThreshold: 0.5,
+    });
+    expect(row.predicted_class).toBe(1);
+    expect(row.predicted_label).toBe("senkou");
+  });
+
+  test("applyPostprocToRow keeps second_predicted_class at the true second-best ignoring the nige fallback", () => {
+    const row = applyPostprocToRow({
+      raw: {
+        ...RACE_KEY_FIELDS,
+        ...PASSTHROUGH_FIELDS,
+        p_nige: 0.45,
+        p_senkou: 0.25,
+        p_sashi: 0.2,
+        p_oikomi: 0.1,
+      },
+      runningStyleFeatureVersion: "v1",
+      nigeThreshold: 0.5,
+    });
+    expect(row.second_predicted_class).toBe(1);
   });
 
   test("applyPostprocToRows returns same number of output rows as input rows", () => {
@@ -650,12 +846,15 @@ describe("apply-running-style-postproc", () => {
         },
       ],
       runningStyleFeatureVersion: "v1",
+      nigeThreshold: 0,
     });
     expect(rows.length).toBe(2);
   });
 
   test("applyPostprocToRows returns empty array for zero input rows", () => {
-    expect(applyPostprocToRows({ rows: [], runningStyleFeatureVersion: "v1" })).toStrictEqual([]);
+    expect(
+      applyPostprocToRows({ rows: [], runningStyleFeatureVersion: "v1", nigeThreshold: 0 }),
+    ).toStrictEqual([]);
   });
 
   test("applyPostprocToRows allows multiple nige predictions in same race (no nige cap)", () => {
@@ -689,6 +888,7 @@ describe("apply-running-style-postproc", () => {
         },
       ],
       runningStyleFeatureVersion: "v1",
+      nigeThreshold: 0,
     });
     expect(rows[0]?.predicted_class).toBe(0);
     expect(rows[1]?.predicted_class).toBe(0);
@@ -708,9 +908,53 @@ describe("apply-running-style-postproc", () => {
         },
       ],
       runningStyleFeatureVersion: "v1",
+      nigeThreshold: 0,
     });
     expect(rows[0]?.predicted_class).toBe(0);
     expect(rows[0]?.second_predicted_class).toBe(1);
+  });
+
+  test("applyPostprocToRows with threshold reduces the count of predicted nige rows", () => {
+    const baseRows = [
+      {
+        ...RACE_KEY_FIELDS,
+        ...PASSTHROUGH_FIELDS,
+        p_nige: 0.6,
+        p_senkou: 0.2,
+        p_sashi: 0.1,
+        p_oikomi: 0.1,
+      },
+      {
+        ...RACE_KEY_FIELDS,
+        ...PASSTHROUGH_FIELDS,
+        ketto_toroku_bango: "HORSE2",
+        p_nige: 0.48,
+        p_senkou: 0.32,
+        p_sashi: 0.1,
+        p_oikomi: 0.1,
+      },
+      {
+        ...RACE_KEY_FIELDS,
+        ...PASSTHROUGH_FIELDS,
+        ketto_toroku_bango: "HORSE3",
+        p_nige: 0.45,
+        p_senkou: 0.25,
+        p_sashi: 0.2,
+        p_oikomi: 0.1,
+      },
+    ];
+    const argmaxRows = applyPostprocToRows({
+      rows: baseRows,
+      runningStyleFeatureVersion: "v1",
+      nigeThreshold: 0,
+    });
+    const thresholdRows = applyPostprocToRows({
+      rows: baseRows,
+      runningStyleFeatureVersion: "v1",
+      nigeThreshold: 0.5,
+    });
+    expect(argmaxRows.filter((row) => row.predicted_class === 0).length).toBe(3);
+    expect(thresholdRows.filter((row) => row.predicted_class === 0).length).toBe(1);
   });
 
   test("buildReadInputSql interpolates the logits parquet path", () => {
@@ -978,10 +1222,66 @@ describe("apply-running-style-postproc", () => {
         logitsParquet: "/tmp/in.parquet",
         outputParquet: "/tmp/out.parquet",
         runningStyleFeatureVersion: "v1",
+        nigeThreshold: 0,
       },
     });
     expect(result).toStrictEqual({ rowCount: 1 });
     expect(messages.length).toBe(1);
+  });
+
+  test("runPostproc log message includes the nige threshold value for traceability", async () => {
+    const fakeModule = buildFakeModule([
+      {
+        ...RACE_KEY_FIELDS,
+        ...PASSTHROUGH_FIELDS,
+        p_nige: 0.45,
+        p_senkou: 0.25,
+        p_sashi: 0.2,
+        p_oikomi: 0.1,
+      },
+    ]);
+    const messages: string[] = [];
+    await runPostproc({
+      duckdbModule: fakeModule,
+      logger: {
+        info: (m) => {
+          messages.push(m);
+        },
+      },
+      options: {
+        logitsParquet: "/tmp/in.parquet",
+        outputParquet: "/tmp/out.parquet",
+        runningStyleFeatureVersion: "v1",
+        nigeThreshold: 0.55,
+      },
+    });
+    expect(messages[0]?.includes("nige_threshold=0.55") satisfies boolean).toBe(true);
+  });
+
+  test("runPostproc with threshold demotes borderline nige rows in the written output", async () => {
+    const fakeModule = buildFakeModule([
+      {
+        ...RACE_KEY_FIELDS,
+        ...PASSTHROUGH_FIELDS,
+        p_nige: 0.45,
+        p_senkou: 0.25,
+        p_sashi: 0.2,
+        p_oikomi: 0.1,
+      },
+    ]);
+    await runPostproc({
+      duckdbModule: fakeModule,
+      logger: { info: () => undefined },
+      options: {
+        logitsParquet: "/tmp/in.parquet",
+        outputParquet: "/tmp/out.parquet",
+        runningStyleFeatureVersion: "v1",
+        nigeThreshold: 0.5,
+      },
+    });
+    expect(FakeInstance.sharedState.runStatements[0]?.includes("'senkou'") satisfies boolean).toBe(
+      true,
+    );
   });
 
   test("runPostproc with empty input writes an empty parquet and reports zero rows", async () => {
@@ -998,6 +1298,7 @@ describe("apply-running-style-postproc", () => {
         logitsParquet: "/tmp/empty-in.parquet",
         outputParquet: "/tmp/empty-out.parquet",
         runningStyleFeatureVersion: "v1",
+        nigeThreshold: 0,
       },
     });
     expect(result).toStrictEqual({ rowCount: 0 });
@@ -1030,6 +1331,39 @@ describe("apply-running-style-postproc", () => {
       logger: { info: () => undefined },
     });
     expect(result).toStrictEqual({ rowCount: 1 });
+  });
+
+  test("runCli forwards --nige-threshold from argv into the prediction pipeline", async () => {
+    const fakeModule = buildFakeModule([
+      {
+        ...RACE_KEY_FIELDS,
+        ...PASSTHROUGH_FIELDS,
+        p_nige: 0.45,
+        p_senkou: 0.25,
+        p_sashi: 0.2,
+        p_oikomi: 0.1,
+      },
+    ]);
+    const messages: string[] = [];
+    await runCli({
+      argv: [
+        "--logits-parquet",
+        "/tmp/in.parquet",
+        "--output-parquet",
+        "/tmp/out.parquet",
+        "--running-style-feature-version",
+        "v1",
+        "--nige-threshold",
+        "0.5",
+      ],
+      duckdbModule: fakeModule,
+      logger: {
+        info: (m) => {
+          messages.push(m);
+        },
+      },
+    });
+    expect(messages[0]?.includes("nige_threshold=0.5") satisfies boolean).toBe(true);
   });
 
   test("runCli propagates parseArgs errors for missing arguments", async () => {
