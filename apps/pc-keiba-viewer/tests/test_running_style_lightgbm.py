@@ -41,6 +41,17 @@ def test_resolve_feature_columns_excludes_target_running_style_class():
     assert features == ["speed_index_avg_5"]
 
 
+def test_resolve_feature_columns_excludes_bamei_identifier():
+    columns = [
+        "bamei",
+        "speed_index_avg_5",
+        "corner_pace_avg_3",
+        "target_running_style_class",
+    ]
+    features = subject.resolve_feature_columns(columns)
+    assert features == ["speed_index_avg_5", "corner_pace_avg_3"]
+
+
 def test_detect_categorical_features_returns_only_known_categoricals():
     feature_columns = ["track_code", "kyori_band", "speed_index_avg_5", "grade_code"]
     detected = subject.detect_categorical_features(feature_columns)

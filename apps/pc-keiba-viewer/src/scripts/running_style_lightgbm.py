@@ -39,6 +39,7 @@ META_COLUMNS: tuple[str, ...] = (
     "keibajo_code",
     "race_bango",
     "ketto_toroku_bango",
+    "bamei",
     "umaban",
     "category",
     "race_id",
