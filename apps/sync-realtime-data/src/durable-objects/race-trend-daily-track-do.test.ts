@@ -685,6 +685,195 @@ it("__testables.isRawSnapshotRow returns false for non-object values", () => {
   expect(__testables.isRawSnapshotRow("string")).toBe(false);
 });
 
+it("__testables.buildRowsFromSnapshotResults derives wakuban for a nar row from umaban + horseCount", () => {
+  const snapshotRows: ReadonlyArray<Record<string, unknown>> = [
+    {
+      changeAmount: null,
+      changeSign: null,
+      expectedHorseCount: 2,
+      fetchedAt: "2026-05-31T19:30:00+09:00",
+      finishPosition: "1",
+      hassoJikoku: "2026-05-31T19:30:00+09:00",
+      horseName: "NarHorseA",
+      jockeyName: "JockeyA",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0531",
+      keibajoCode: "43",
+      raceBango: "05",
+      raceKey: "nar:2026:0531:43:05",
+      raceName: "NarRace",
+      resultCompleteAt: "2026-05-31T19:30:00+09:00",
+      savedHorseCount: 2,
+      sohaTime: null,
+      source: "nar",
+      umaban: "1",
+      weight: null,
+    },
+    {
+      changeAmount: null,
+      changeSign: null,
+      expectedHorseCount: 2,
+      fetchedAt: "2026-05-31T19:30:00+09:00",
+      finishPosition: "2",
+      hassoJikoku: "2026-05-31T19:30:00+09:00",
+      horseName: "NarHorseB",
+      jockeyName: "JockeyB",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0531",
+      keibajoCode: "43",
+      raceBango: "05",
+      raceKey: "nar:2026:0531:43:05",
+      raceName: "NarRace",
+      resultCompleteAt: "2026-05-31T19:30:00+09:00",
+      savedHorseCount: 2,
+      sohaTime: null,
+      source: "nar",
+      umaban: "2",
+      weight: null,
+    },
+  ];
+  const filtered = snapshotRows.filter(__testables.isRawSnapshotRow);
+  const rows = __testables.buildRowsFromSnapshotResults(filtered, []);
+  expect(rows[0]!.starterRows.map((row) => row.wakuban)).toStrictEqual(["1", "2"]);
+});
+
+it("__testables.buildRowsFromSnapshotResults derives wakuban for nar 12-horse race", () => {
+  const buildNarRow = (umaban: string, finishPosition: string): Record<string, unknown> => ({
+    changeAmount: null,
+    changeSign: null,
+    expectedHorseCount: 12,
+    fetchedAt: "2026-05-31T19:30:00+09:00",
+    finishPosition,
+    hassoJikoku: "2026-05-31T19:30:00+09:00",
+    horseName: null,
+    jockeyName: null,
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0531",
+    keibajoCode: "43",
+    raceBango: "12",
+    raceKey: "nar:2026:0531:43:12",
+    raceName: null,
+    resultCompleteAt: "2026-05-31T19:30:00+09:00",
+    savedHorseCount: 12,
+    sohaTime: null,
+    source: "nar",
+    umaban,
+    weight: null,
+  });
+  const snapshotRows: ReadonlyArray<Record<string, unknown>> = [
+    buildNarRow("1", "1"),
+    buildNarRow("2", "2"),
+    buildNarRow("3", "3"),
+    buildNarRow("4", "4"),
+    buildNarRow("5", "5"),
+    buildNarRow("6", "6"),
+    buildNarRow("7", "7"),
+    buildNarRow("8", "8"),
+    buildNarRow("9", "9"),
+    buildNarRow("10", "10"),
+    buildNarRow("11", "11"),
+    buildNarRow("12", "12"),
+  ];
+  const filtered = snapshotRows.filter(__testables.isRawSnapshotRow);
+  const rows = __testables.buildRowsFromSnapshotResults(filtered, []);
+  expect(rows[0]!.starterRows.map((row) => row.wakuban)).toStrictEqual([
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "5",
+    "6",
+    "6",
+    "7",
+    "7",
+    "8",
+    "8",
+  ]);
+});
+
+it("__testables.buildRowsFromSnapshotResults derives wakuban for a jra row identically to nar", () => {
+  const snapshotRows: ReadonlyArray<Record<string, unknown>> = [
+    {
+      changeAmount: null,
+      changeSign: null,
+      expectedHorseCount: 2,
+      fetchedAt: "2026-05-31T11:05:00+09:00",
+      finishPosition: "1",
+      hassoJikoku: "2026-05-31T11:00:00+09:00",
+      horseName: "JraHorseA",
+      jockeyName: "JockeyA",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0531",
+      keibajoCode: "06",
+      raceBango: "03",
+      raceKey: "jra:2026:0531:06:03",
+      raceName: "TestRace",
+      resultCompleteAt: "2026-05-31T11:05:00+09:00",
+      savedHorseCount: 2,
+      sohaTime: "1:34.2",
+      source: "jra",
+      umaban: "1",
+      weight: null,
+    },
+    {
+      changeAmount: null,
+      changeSign: null,
+      expectedHorseCount: 2,
+      fetchedAt: "2026-05-31T11:05:00+09:00",
+      finishPosition: "2",
+      hassoJikoku: "2026-05-31T11:00:00+09:00",
+      horseName: "JraHorseB",
+      jockeyName: "JockeyB",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0531",
+      keibajoCode: "06",
+      raceBango: "03",
+      raceKey: "jra:2026:0531:06:03",
+      raceName: "TestRace",
+      resultCompleteAt: "2026-05-31T11:05:00+09:00",
+      savedHorseCount: 2,
+      sohaTime: "1:35.0",
+      source: "jra",
+      umaban: "2",
+      weight: null,
+    },
+  ];
+  const filtered = snapshotRows.filter(__testables.isRawSnapshotRow);
+  const rows = __testables.buildRowsFromSnapshotResults(filtered, []);
+  expect(rows[0]!.starterRows.map((row) => row.wakuban)).toStrictEqual(["1", "2"]);
+});
+
+it("__testables.buildRowsFromSnapshotResults leaves wakuban null when umaban is non-numeric", () => {
+  const snapshotRows: ReadonlyArray<Record<string, unknown>> = [
+    {
+      changeAmount: null,
+      changeSign: null,
+      expectedHorseCount: 1,
+      fetchedAt: "2026-05-31T19:30:00+09:00",
+      finishPosition: "1",
+      hassoJikoku: null,
+      horseName: null,
+      jockeyName: null,
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0531",
+      keibajoCode: "43",
+      raceBango: "05",
+      raceKey: "nar:2026:0531:43:05",
+      raceName: null,
+      resultCompleteAt: null,
+      savedHorseCount: 1,
+      sohaTime: null,
+      source: "nar",
+      umaban: "abc",
+      weight: null,
+    },
+  ];
+  const filtered = snapshotRows.filter(__testables.isRawSnapshotRow);
+  const rows = __testables.buildRowsFromSnapshotResults(filtered, []);
+  expect(rows[0]!.starterRows[0]?.wakuban).toBe(null);
+});
+
 it("__testables.buildRowsFromSnapshotResults flags a partial row as not complete when fewer horses are ranked", () => {
   const snapshotRows: ReadonlyArray<Record<string, unknown>> = [
     {
