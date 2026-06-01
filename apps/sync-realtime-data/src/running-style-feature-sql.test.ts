@@ -11,20 +11,26 @@ import {
   type DailyTargetRow,
 } from "./running-style-feature-sql";
 
+// Wave P4c P0 + P1 + P3: 11 new columns added — past_{nige,senkou,sashi,oikomi}_rate_self_recent_{3,5}
+// (8 short-window self-rate features), jockey_horse_pair_nige_rate +
+// trainer_horse_pair_nige_rate (2 pair-level nige rate features), and
+// field_nige_pressure_rank (1 in-race rank of past_nige_rate_self_recent_5).
+// Snapshots were re-pinned after the addition; downstream parquet schema is
+// additive (existing columns unchanged).
 const PER_RACE_SQL_SHA256_REFERENCE =
-  "339af73a3c06e12160d640401f2dcc0867f79610e09476a22a55d71bcd4f44de";
-const PER_RACE_SQL_LENGTH_REFERENCE = 41762;
+  "4613ff8b55fc1160527b0ce19ac3bb18537cec4482ddecbf18f63a85e257e347";
+const PER_RACE_SQL_LENGTH_REFERENCE = 45475;
 const D1_TARGET_SQL_SHA256_REFERENCE =
-  "b5a4d8228ba07214a65160738a14380edbd08128b6e502cdd89ce97d0da9b88e";
-const D1_TARGET_SQL_LENGTH_REFERENCE = 41977;
+  "c2671a6ca2eb72ab91a598218bab79d4946be13113b90853365d307c448b1058";
+const D1_TARGET_SQL_LENGTH_REFERENCE = 45690;
 // Batch SQL gets `MATERIALIZED` hints injected for 10 heavy CTEs (rec, target,
 // target_horses, se_lookup, ra_lookup, horse_history_base, jockey_history,
 // trainer_history, pedigree_rec_um, target_months) so PG materializes them once
 // instead of re-inlining per reference. This snapshot pins the post-hint
 // output so any accidental regression on the materialization list trips here.
 const BATCH_JRA_SQL_SHA256_REFERENCE =
-  "dd94801f2ebc78e43a8c7f46f39e002d038e6aba9e74a30cc706ce9a9acb4b33";
-const BATCH_JRA_SQL_LENGTH_REFERENCE = 41628;
+  "b57b5b2e776ed6f445a1e44af1a0266c39b9062fc9a5b4f2324b7be779a7b242";
+const BATCH_JRA_SQL_LENGTH_REFERENCE = 45341;
 const BATCH_MATERIALIZED_HINT_COUNT = 10;
 
 const BATCH_ARGS_JRA = {
@@ -580,4 +586,147 @@ it("buildRunningStyleFeaturesForRaceFromPostgres treats undefined feature column
   ]);
   expect(result.rows[0]?.perHorseFeatures.career_win_rate).toBeNull();
   expect(result.rows[0]?.perHorseFeatures.speed_index_avg_5).toBe(0);
+});
+
+it("buildRunningStyleBatchFeatureSql exposes past_nige_rate_self_recent_5 column", () => {
+  const sql = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  expect(sql.includes("as past_nige_rate_self_recent_5")).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql exposes past_senkou_rate_self_recent_5 column", () => {
+  const sql = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  expect(sql.includes("as past_senkou_rate_self_recent_5")).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql exposes past_sashi_rate_self_recent_5 column", () => {
+  const sql = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  expect(sql.includes("as past_sashi_rate_self_recent_5")).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql exposes past_oikomi_rate_self_recent_5 column", () => {
+  const sql = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  expect(sql.includes("as past_oikomi_rate_self_recent_5")).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql exposes past_nige_rate_self_recent_3 column", () => {
+  const sql = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  expect(sql.includes("as past_nige_rate_self_recent_3")).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql exposes past_senkou_rate_self_recent_3 column", () => {
+  const sql = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  expect(sql.includes("as past_senkou_rate_self_recent_3")).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql exposes past_sashi_rate_self_recent_3 column", () => {
+  const sql = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  expect(sql.includes("as past_sashi_rate_self_recent_3")).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql exposes past_oikomi_rate_self_recent_3 column", () => {
+  const sql = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  expect(sql.includes("as past_oikomi_rate_self_recent_3")).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql exposes jockey_horse_pair_nige_rate column", () => {
+  const sql = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  expect(sql.includes("as jockey_horse_pair_nige_rate")).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql exposes trainer_horse_pair_nige_rate column", () => {
+  const sql = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  expect(sql.includes("as trainer_horse_pair_nige_rate")).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql exposes field_nige_pressure_rank column", () => {
+  const sql = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  expect(sql.includes("as field_nige_pressure_rank")).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql uses recent_rank <= 5 filter for short-window self-rate", () => {
+  const sql = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  expect(sql.includes("filter (where b.recent_rank <= 5 and b.corner1_norm = 0)")).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql uses recent_rank <= 3 filter for short-window self-rate", () => {
+  const sql = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  expect(sql.includes("filter (where b.recent_rank <= 3 and b.corner1_norm = 0)")).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql derives jockey_horse_pair_nige_rate via history_horse = target_horse filter", () => {
+  const sql = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  expect(
+    sql.includes(
+      "avg(case when corner1_norm = 0 then 1.0 when corner1_norm is null then null else 0.0 end) filter (where history_horse = target_horse) as jockey_horse_pair_nige_rate",
+    ),
+  ).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql derives trainer_horse_pair_nige_rate via history_horse = target_horse filter", () => {
+  const sql = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  expect(
+    sql.includes(
+      "avg(case when corner1_norm = 0 then 1.0 when corner1_norm is null then null else 0.0 end) filter (where history_horse = target_horse) as trainer_horse_pair_nige_rate",
+    ),
+  ).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql declares the race_by_past_nige_recent_5_desc window", () => {
+  const sql = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  expect(
+    sql.includes(
+      "race_by_past_nige_recent_5_desc as (partition by b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango order by b.past_nige_rate_self_recent_5 desc nulls last)",
+    ),
+  ).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql projects field_nige_pressure_rank via rank() over the new window", () => {
+  const sql = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  expect(
+    sql.includes("rank() over race_by_past_nige_recent_5_desc as field_nige_pressure_rank"),
+  ).toBe(true);
+});
+
+it("buildRunningStylePostgresFeatureSql exposes all 11 new running-style features", () => {
+  const sql = buildRunningStylePostgresFeatureSql();
+  expect(sql.includes("past_nige_rate_self_recent_5")).toBe(true);
+  expect(sql.includes("past_senkou_rate_self_recent_5")).toBe(true);
+  expect(sql.includes("past_sashi_rate_self_recent_5")).toBe(true);
+  expect(sql.includes("past_oikomi_rate_self_recent_5")).toBe(true);
+  expect(sql.includes("past_nige_rate_self_recent_3")).toBe(true);
+  expect(sql.includes("past_senkou_rate_self_recent_3")).toBe(true);
+  expect(sql.includes("past_sashi_rate_self_recent_3")).toBe(true);
+  expect(sql.includes("past_oikomi_rate_self_recent_3")).toBe(true);
+  expect(sql.includes("jockey_horse_pair_nige_rate")).toBe(true);
+  expect(sql.includes("trainer_horse_pair_nige_rate")).toBe(true);
+  expect(sql.includes("field_nige_pressure_rank")).toBe(true);
+});
+
+it("buildRunningStylePostgresFeatureSqlWithD1Target exposes all 11 new running-style features", () => {
+  const sql = buildRunningStylePostgresFeatureSqlWithD1Target();
+  expect(sql.includes("past_nige_rate_self_recent_5")).toBe(true);
+  expect(sql.includes("past_senkou_rate_self_recent_5")).toBe(true);
+  expect(sql.includes("past_sashi_rate_self_recent_5")).toBe(true);
+  expect(sql.includes("past_oikomi_rate_self_recent_5")).toBe(true);
+  expect(sql.includes("past_nige_rate_self_recent_3")).toBe(true);
+  expect(sql.includes("past_senkou_rate_self_recent_3")).toBe(true);
+  expect(sql.includes("past_sashi_rate_self_recent_3")).toBe(true);
+  expect(sql.includes("past_oikomi_rate_self_recent_3")).toBe(true);
+  expect(sql.includes("jockey_horse_pair_nige_rate")).toBe(true);
+  expect(sql.includes("trainer_horse_pair_nige_rate")).toBe(true);
+  expect(sql.includes("field_nige_pressure_rank")).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql strictNigeTarget=true still exposes the 11 new running-style features", () => {
+  const sql = buildRunningStyleBatchFeatureSql({
+    featureSchemaVersion: "v1",
+    fromDate: "20050101",
+    source: "jra",
+    strictNigeTarget: true,
+    toDate: "20260531",
+  });
+  expect(sql.includes("past_nige_rate_self_recent_5")).toBe(true);
+  expect(sql.includes("jockey_horse_pair_nige_rate")).toBe(true);
+  expect(sql.includes("trainer_horse_pair_nige_rate")).toBe(true);
+  expect(sql.includes("field_nige_pressure_rank")).toBe(true);
 });

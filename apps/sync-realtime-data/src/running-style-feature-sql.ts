@@ -344,6 +344,7 @@ jockey_career as (
     avg(case when finish_position = 1 then 1 else 0 end) filter (where coalesce(history_grade_code, '') = coalesce(target_grade_code, '')) as jockey_grade_win_rate,
     count(*) filter (where history_horse = target_horse) as jockey_horse_pair_count,
     avg(case when finish_position = 1 then 1 else 0 end) filter (where history_horse = target_horse) as jockey_horse_pair_win_rate,
+    avg(case when corner1_norm = 0 then 1.0 when corner1_norm is null then null else 0.0 end) filter (where history_horse = target_horse) as jockey_horse_pair_nige_rate,
     avg(case when corner1_norm = 0 then 1.0 when corner1_norm is null then null else 0.0 end) as jockey_nige_rate,
     avg(case when corner1_norm is null then null when corner1_norm > 0 and corner1_norm <= ${RUNNING_STYLE_SENKOU_THRESHOLD} then 1.0 else 0.0 end) as jockey_senkou_rate,
     avg(case when corner1_norm is null then null when corner1_norm > ${RUNNING_STYLE_SENKOU_THRESHOLD} and corner1_norm <= ${RUNNING_STYLE_SASHI_THRESHOLD} then 1.0 else 0.0 end) as jockey_sashi_rate,
@@ -388,6 +389,7 @@ trainer_career as (
     avg(case when finish_position = 1 then 1 else 0 end) filter (where history_keibajo = target_keibajo) as trainer_keibajo_win_rate,
     avg(case when finish_position = 1 then 1 else 0 end) filter (where abs(history_kyori - target_kyori) <= ${SAME_DISTANCE_TOLERANCE}) as trainer_distance_win_rate,
     avg(case when finish_position = 1 then 1 else 0 end) filter (where history_horse = target_horse) as trainer_horse_win_rate,
+    avg(case when corner1_norm = 0 then 1.0 when corner1_norm is null then null else 0.0 end) filter (where history_horse = target_horse) as trainer_horse_pair_nige_rate,
     avg(case when corner1_norm = 0 then 1.0 when corner1_norm is null then null else 0.0 end) as trainer_nige_rate,
     avg(case when corner1_norm is null then null when corner1_norm > 0 and corner1_norm <= ${RUNNING_STYLE_SENKOU_THRESHOLD} then 1.0 else 0.0 end) as trainer_senkou_rate,
     avg(case when corner1_norm is null then null when corner1_norm > ${RUNNING_STYLE_SENKOU_THRESHOLD} and corner1_norm <= ${RUNNING_STYLE_SASHI_THRESHOLD} then 1.0 else 0.0 end) as trainer_sashi_rate,
@@ -632,6 +634,38 @@ horse_running_style_history as (
     avg(case when b.corner1_norm is null then null when b.corner1_norm > 0 and b.corner1_norm <= ${RUNNING_STYLE_SENKOU_THRESHOLD} then 1.0 else 0.0 end) as past_senkou_rate_self,
     avg(case when b.corner1_norm is null then null when b.corner1_norm > ${RUNNING_STYLE_SENKOU_THRESHOLD} and b.corner1_norm <= ${RUNNING_STYLE_SASHI_THRESHOLD} then 1.0 else 0.0 end) as past_sashi_rate_self,
     avg(case when b.corner1_norm is null then null when b.corner1_norm > ${RUNNING_STYLE_SASHI_THRESHOLD} then 1.0 else 0.0 end) as past_oikomi_rate_self,
+    case when count(*) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE} and b.corner1_norm is not null) > 0
+      then (count(*) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE} and b.corner1_norm = 0))::double precision
+        / count(*) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE} and b.corner1_norm is not null)
+      else null end as past_nige_rate_self_recent_5,
+    case when count(*) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE} and b.corner1_norm is not null) > 0
+      then (count(*) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE} and b.corner1_norm > 0 and b.corner1_norm <= ${RUNNING_STYLE_SENKOU_THRESHOLD}))::double precision
+        / count(*) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE} and b.corner1_norm is not null)
+      else null end as past_senkou_rate_self_recent_5,
+    case when count(*) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE} and b.corner1_norm is not null) > 0
+      then (count(*) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE} and b.corner1_norm > ${RUNNING_STYLE_SENKOU_THRESHOLD} and b.corner1_norm <= ${RUNNING_STYLE_SASHI_THRESHOLD}))::double precision
+        / count(*) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE} and b.corner1_norm is not null)
+      else null end as past_sashi_rate_self_recent_5,
+    case when count(*) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE} and b.corner1_norm is not null) > 0
+      then (count(*) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE} and b.corner1_norm > ${RUNNING_STYLE_SASHI_THRESHOLD}))::double precision
+        / count(*) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE} and b.corner1_norm is not null)
+      else null end as past_oikomi_rate_self_recent_5,
+    case when count(*) filter (where b.recent_rank <= 3 and b.corner1_norm is not null) > 0
+      then (count(*) filter (where b.recent_rank <= 3 and b.corner1_norm = 0))::double precision
+        / count(*) filter (where b.recent_rank <= 3 and b.corner1_norm is not null)
+      else null end as past_nige_rate_self_recent_3,
+    case when count(*) filter (where b.recent_rank <= 3 and b.corner1_norm is not null) > 0
+      then (count(*) filter (where b.recent_rank <= 3 and b.corner1_norm > 0 and b.corner1_norm <= ${RUNNING_STYLE_SENKOU_THRESHOLD}))::double precision
+        / count(*) filter (where b.recent_rank <= 3 and b.corner1_norm is not null)
+      else null end as past_senkou_rate_self_recent_3,
+    case when count(*) filter (where b.recent_rank <= 3 and b.corner1_norm is not null) > 0
+      then (count(*) filter (where b.recent_rank <= 3 and b.corner1_norm > ${RUNNING_STYLE_SENKOU_THRESHOLD} and b.corner1_norm <= ${RUNNING_STYLE_SASHI_THRESHOLD}))::double precision
+        / count(*) filter (where b.recent_rank <= 3 and b.corner1_norm is not null)
+      else null end as past_sashi_rate_self_recent_3,
+    case when count(*) filter (where b.recent_rank <= 3 and b.corner1_norm is not null) > 0
+      then (count(*) filter (where b.recent_rank <= 3 and b.corner1_norm > ${RUNNING_STYLE_SASHI_THRESHOLD}))::double precision
+        / count(*) filter (where b.recent_rank <= 3 and b.corner1_norm is not null)
+      else null end as past_oikomi_rate_self_recent_3,
     max(b.corner1_norm) filter (where b.recent_rank = 1) as last_race_corner_1_norm,
     max(b.corner4_norm - b.corner1_norm) filter (where b.recent_rank = 1) as last_race_corner_progression,
     avg(b.corner1_norm) filter (where abs(b.history_kyori - b.target_kyori) <= ${SAME_DISTANCE_TOLERANCE}) as horse_distance_corner_1_norm_avg,
@@ -683,11 +717,12 @@ base_features as (
     hc.days_since_last_race, hc.consecutive_race_count,
     jc.jockey_career_win_rate, jc.jockey_recent_win_rate, jc.jockey_keibajo_win_rate,
     jc.jockey_distance_win_rate, jc.jockey_track_win_rate, jc.jockey_grade_win_rate,
-    jc.jockey_horse_pair_count, jc.jockey_horse_pair_win_rate,
+    jc.jockey_horse_pair_count, jc.jockey_horse_pair_win_rate, jc.jockey_horse_pair_nige_rate,
     jc.jockey_nige_rate, jc.jockey_senkou_rate, jc.jockey_sashi_rate, jc.jockey_oikomi_rate,
     jc.jockey_corner_1_norm_avg, jc.jockey_horse_corner_1_norm_avg,
     jc.jockey_recent_corner_1_norm_avg_90d, jc.jockey_recent_nige_rate_90d,
     tc.trainer_career_win_rate, tc.trainer_keibajo_win_rate, tc.trainer_distance_win_rate, tc.trainer_horse_win_rate,
+    tc.trainer_horse_pair_nige_rate,
     tc.trainer_nige_rate, tc.trainer_senkou_rate, tc.trainer_sashi_rate, tc.trainer_oikomi_rate,
     tc.trainer_corner_1_norm_avg,
     case when sds.race_count >= ${PEDIGREE_MIN_RACES} then sds.sire_distance_win_rate_val else null end as sire_distance_win_rate,
@@ -737,6 +772,14 @@ base_features as (
     rsh.past_senkou_rate_self,
     rsh.past_sashi_rate_self,
     rsh.past_oikomi_rate_self,
+    rsh.past_nige_rate_self_recent_5,
+    rsh.past_senkou_rate_self_recent_5,
+    rsh.past_sashi_rate_self_recent_5,
+    rsh.past_oikomi_rate_self_recent_5,
+    rsh.past_nige_rate_self_recent_3,
+    rsh.past_senkou_rate_self_recent_3,
+    rsh.past_sashi_rate_self_recent_3,
+    rsh.past_oikomi_rate_self_recent_3,
     rsh.last_race_corner_1_norm,
     rsh.last_race_corner_progression,
     rsh.horse_distance_corner_1_norm_avg,
@@ -807,6 +850,7 @@ final_features as (
     rank() over race_by_trainer_career_desc as trainer_career_win_rate_rank_in_race,
     rank() over race_by_pedigree_desc as pedigree_score_for_race_rank_in_race,
     rank() over race_by_same_distance_desc as same_distance_win_rate_rank_in_race,
+    rank() over race_by_past_nige_recent_5_desc as field_nige_pressure_rank,
     b.speed_index_avg_5 - avg(b.speed_index_avg_5) over race_partition as speed_index_avg_5_diff_from_race_avg,
     b.jockey_recent_win_rate - avg(b.jockey_recent_win_rate) over race_partition as jockey_recent_win_rate_diff_from_race_avg,
     b.pedigree_score_for_race - avg(b.pedigree_score_for_race) over race_partition as pedigree_score_diff_from_race_avg
@@ -818,7 +862,8 @@ final_features as (
     race_by_jockey_recent_desc as (partition by b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango order by b.jockey_recent_win_rate desc nulls last),
     race_by_trainer_career_desc as (partition by b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango order by b.trainer_career_win_rate desc nulls last),
     race_by_pedigree_desc as (partition by b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango order by b.pedigree_score_for_race desc nulls last),
-    race_by_same_distance_desc as (partition by b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango order by b.same_distance_win_rate desc nulls last)
+    race_by_same_distance_desc as (partition by b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango order by b.same_distance_win_rate desc nulls last),
+    race_by_past_nige_recent_5_desc as (partition by b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango order by b.past_nige_rate_self_recent_5 desc nulls last)
 )
 select * from final_features order by umaban
 `;
