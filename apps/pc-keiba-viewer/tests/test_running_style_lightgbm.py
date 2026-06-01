@@ -728,6 +728,347 @@ def test_run_train_production_command_default_skips_walk_forward_eval(tmp_path: 
     assert "production_precision_nige" not in metadata
 
 
+def test_parse_args_train_production_bagging_fraction_override_parses():
+    args = subject.parse_args(
+        [
+            "train-production",
+            "--csv",
+            "tmp/in",
+            "--model-version",
+            "prod-v2",
+            "--output-model-dir",
+            "tmp/model",
+            "--bagging-fraction",
+            "0.6",
+        ]
+    )
+    assert args.bagging_fraction == pytest.approx(0.6)
+
+
+def test_parse_args_train_production_bagging_freq_override_parses():
+    args = subject.parse_args(
+        [
+            "train-production",
+            "--csv",
+            "tmp/in",
+            "--model-version",
+            "prod-v2",
+            "--output-model-dir",
+            "tmp/model",
+            "--bagging-freq",
+            "5",
+        ]
+    )
+    assert args.bagging_freq == 5
+
+
+def test_parse_args_train_production_feature_fraction_override_parses():
+    args = subject.parse_args(
+        [
+            "train-production",
+            "--csv",
+            "tmp/in",
+            "--model-version",
+            "prod-v2",
+            "--output-model-dir",
+            "tmp/model",
+            "--feature-fraction",
+            "0.85",
+        ]
+    )
+    assert args.feature_fraction == pytest.approx(0.85)
+
+
+def test_parse_args_train_production_reg_alpha_override_parses():
+    args = subject.parse_args(
+        [
+            "train-production",
+            "--csv",
+            "tmp/in",
+            "--model-version",
+            "prod-v2",
+            "--output-model-dir",
+            "tmp/model",
+            "--reg-alpha",
+            "0.2",
+        ]
+    )
+    assert args.reg_alpha == pytest.approx(0.2)
+
+
+def test_parse_args_train_production_reg_lambda_override_parses():
+    args = subject.parse_args(
+        [
+            "train-production",
+            "--csv",
+            "tmp/in",
+            "--model-version",
+            "prod-v2",
+            "--output-model-dir",
+            "tmp/model",
+            "--reg-lambda",
+            "0.2",
+        ]
+    )
+    assert args.reg_lambda == pytest.approx(0.2)
+
+
+def test_parse_args_train_production_hyperparam_defaults_match_documented_values():
+    args = subject.parse_args(
+        [
+            "train-production",
+            "--csv",
+            "tmp/in",
+            "--model-version",
+            "prod-v2",
+            "--output-model-dir",
+            "tmp/model",
+        ]
+    )
+    assert args.bagging_fraction == pytest.approx(0.8)
+    assert args.bagging_freq == 1
+    assert args.feature_fraction == pytest.approx(0.8)
+    assert args.reg_alpha == pytest.approx(0.1)
+    assert args.reg_lambda == pytest.approx(0.1)
+
+
+def test_parse_args_walk_forward_bagging_fraction_override_parses():
+    args = subject.parse_args(
+        [
+            "walk-forward",
+            "--csv",
+            "tmp/in",
+            "--output-predictions-dir",
+            "tmp/out",
+            "--bagging-fraction",
+            "0.6",
+        ]
+    )
+    assert args.bagging_fraction == pytest.approx(0.6)
+
+
+def test_parse_args_walk_forward_feature_fraction_override_parses():
+    args = subject.parse_args(
+        [
+            "walk-forward",
+            "--csv",
+            "tmp/in",
+            "--output-predictions-dir",
+            "tmp/out",
+            "--feature-fraction",
+            "0.85",
+        ]
+    )
+    assert args.feature_fraction == pytest.approx(0.85)
+
+
+def test_parse_args_walk_forward_reg_alpha_override_parses():
+    args = subject.parse_args(
+        [
+            "walk-forward",
+            "--csv",
+            "tmp/in",
+            "--output-predictions-dir",
+            "tmp/out",
+            "--reg-alpha",
+            "0.2",
+        ]
+    )
+    assert args.reg_alpha == pytest.approx(0.2)
+
+
+def test_parse_args_walk_forward_reg_lambda_override_parses():
+    args = subject.parse_args(
+        [
+            "walk-forward",
+            "--csv",
+            "tmp/in",
+            "--output-predictions-dir",
+            "tmp/out",
+            "--reg-lambda",
+            "0.2",
+        ]
+    )
+    assert args.reg_lambda == pytest.approx(0.2)
+
+
+def test_parse_args_walk_forward_hyperparam_defaults_match_documented_values():
+    args = subject.parse_args(
+        [
+            "walk-forward",
+            "--csv",
+            "tmp/in",
+            "--output-predictions-dir",
+            "tmp/out",
+        ]
+    )
+    assert args.bagging_fraction == pytest.approx(0.8)
+    assert args.bagging_freq == 1
+    assert args.feature_fraction == pytest.approx(0.8)
+    assert args.reg_alpha == pytest.approx(0.1)
+    assert args.reg_lambda == pytest.approx(0.1)
+
+
+def test_training_params_from_args_binds_p4b_recommended_overrides():
+    args = subject.parse_args(
+        [
+            "train-production",
+            "--csv",
+            "tmp/in",
+            "--model-version",
+            "prod-v2",
+            "--output-model-dir",
+            "tmp/model",
+            "--bagging-fraction",
+            "0.6",
+            "--bagging-freq",
+            "5",
+            "--min-child-samples",
+            "50",
+            "--feature-fraction",
+            "0.85",
+            "--reg-alpha",
+            "0.2",
+            "--reg-lambda",
+            "0.2",
+        ]
+    )
+    params = subject.training_params_from_args(args)
+    assert params["bagging_fraction"] == pytest.approx(0.6)
+    assert params["bagging_freq"] == 5
+    assert params["min_child_samples"] == 50
+    assert params["feature_fraction"] == pytest.approx(0.85)
+    assert params["lambda_l1"] == pytest.approx(0.2)
+    assert params["lambda_l2"] == pytest.approx(0.2)
+
+
+def test_training_params_from_args_preserves_legacy_defaults_when_overrides_absent():
+    args = subject.parse_args(
+        [
+            "train-production",
+            "--csv",
+            "tmp/in",
+            "--model-version",
+            "prod-v2",
+            "--output-model-dir",
+            "tmp/model",
+        ]
+    )
+    params = subject.training_params_from_args(args)
+    assert params["bagging_fraction"] == pytest.approx(0.8)
+    assert params["bagging_freq"] == 1
+    assert params["feature_fraction"] == pytest.approx(0.8)
+    assert params["lambda_l1"] == pytest.approx(0.1)
+    assert params["lambda_l2"] == pytest.approx(0.1)
+
+
+def test_write_model_metadata_records_hyperparameters_when_provided(tmp_path: Path):
+    hyperparameters: subject.TrainingParams = {
+        "num_leaves": 63,
+        "learning_rate": 0.05,
+        "min_child_samples": 50,
+        "lambda_l1": 0.2,
+        "lambda_l2": 0.2,
+        "feature_fraction": 0.85,
+        "bagging_fraction": 0.6,
+        "bagging_freq": 5,
+        "num_iterations": 2000,
+        "early_stopping_rounds": 100,
+    }
+    subject.write_model_metadata(
+        tmp_path,
+        "test-version",
+        ["feature_a"],
+        [],
+        500,
+        "20050101",
+        "20261231",
+        with_field_features=True,
+        hyperparameters=hyperparameters,
+    )
+    metadata = json.loads((tmp_path / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["hyperparameters"]["bagging_fraction"] == pytest.approx(0.6)
+    assert metadata["hyperparameters"]["bagging_freq"] == 5
+    assert metadata["hyperparameters"]["feature_fraction"] == pytest.approx(0.85)
+    assert metadata["hyperparameters"]["lambda_l1"] == pytest.approx(0.2)
+    assert metadata["hyperparameters"]["lambda_l2"] == pytest.approx(0.2)
+
+
+def test_write_model_metadata_omits_hyperparameters_when_absent(tmp_path: Path):
+    subject.write_model_metadata(
+        tmp_path,
+        "test-version",
+        ["feature_a"],
+        [],
+        500,
+        "20050101",
+        "20261231",
+        with_field_features=True,
+    )
+    metadata = json.loads((tmp_path / "metadata.json").read_text(encoding="utf-8"))
+    assert "hyperparameters" not in metadata
+
+
+def test_run_train_production_command_writes_hyperparameters_to_metadata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    csv_path = tmp_path / "data.parquet"
+    output_dir = tmp_path / "model"
+    df = pd.DataFrame(
+        {
+            "race_date": ["20240101", "20240102", "20260101", "20260102"],
+            "target_running_style_class": [0, 1, 0, 1],
+            "feature_a": [1.0, 0.5, 0.4, 0.2],
+        }
+    )
+    df.to_parquet(csv_path)
+
+    class _FakeBooster:
+        def save_model(self, path: str) -> None:
+            Path(path).write_text("fake-model", encoding="utf-8")
+
+    monkeypatch.setattr(subject, "load_dataset_parquet", lambda _path: df.copy())
+    monkeypatch.setattr(subject, "maybe_enrich_with_field_features", lambda frame, _enabled: frame)
+    monkeypatch.setattr(subject, "train_full_dataset", lambda *_args, **_kwargs: _FakeBooster())
+    monkeypatch.setattr("builtins.print", lambda *_args, **_kwargs: None)
+    args = subject.parse_args(
+        [
+            "train-production",
+            "--csv",
+            str(csv_path),
+            "--model-version",
+            "test-v1",
+            "--output-model-dir",
+            str(output_dir),
+            "--train-start-date",
+            "20240101",
+            "--train-end-date",
+            "20261231",
+            "--valid-start-date",
+            "20260101",
+            "--no-with-field-features",
+            "--bagging-fraction",
+            "0.6",
+            "--bagging-freq",
+            "5",
+            "--feature-fraction",
+            "0.85",
+            "--reg-alpha",
+            "0.2",
+            "--reg-lambda",
+            "0.2",
+            "--min-child-samples",
+            "50",
+        ]
+    )
+    subject.run_train_production_command(args)
+    metadata = json.loads((output_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["hyperparameters"]["bagging_fraction"] == pytest.approx(0.6)
+    assert metadata["hyperparameters"]["bagging_freq"] == 5
+    assert metadata["hyperparameters"]["feature_fraction"] == pytest.approx(0.85)
+    assert metadata["hyperparameters"]["lambda_l1"] == pytest.approx(0.2)
+    assert metadata["hyperparameters"]["lambda_l2"] == pytest.approx(0.2)
+    assert metadata["hyperparameters"]["min_child_samples"] == 50
+
+
 def test_run_train_production_command_enable_walk_forward_writes_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     csv_path = tmp_path / "data.parquet"
     output_dir = tmp_path / "model"

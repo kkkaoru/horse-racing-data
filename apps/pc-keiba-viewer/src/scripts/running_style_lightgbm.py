@@ -488,6 +488,46 @@ def write_walk_forward_report(metrics_per_fold: list[FoldMetrics], output_path: 
     output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def _add_lgbm_hyperparam_arguments(subparser: argparse.ArgumentParser) -> None:
+    subparser.add_argument("--num-leaves", type=int, default=DEFAULT_NUM_LEAVES)
+    subparser.add_argument("--learning-rate", type=float, default=DEFAULT_LEARNING_RATE)
+    subparser.add_argument("--min-child-samples", type=int, default=DEFAULT_MIN_CHILD_SAMPLES)
+    subparser.add_argument("--num-iterations", type=int, default=DEFAULT_NUM_ITERATIONS)
+    subparser.add_argument(
+        "--early-stopping-rounds", type=int, default=DEFAULT_EARLY_STOPPING_ROUNDS,
+    )
+    subparser.add_argument(
+        "--bagging-fraction",
+        type=float,
+        default=DEFAULT_BAGGING_FRACTION,
+        help="Subsample ratio of training data per bagging round",
+    )
+    subparser.add_argument(
+        "--bagging-freq",
+        type=int,
+        default=DEFAULT_BAGGING_FREQ,
+        help="Bagging frequency (every N iters perform bagging)",
+    )
+    subparser.add_argument(
+        "--feature-fraction",
+        type=float,
+        default=DEFAULT_FEATURE_FRACTION,
+        help="Subsample ratio of columns per tree",
+    )
+    subparser.add_argument(
+        "--reg-alpha",
+        type=float,
+        default=DEFAULT_LAMBDA_L1,
+        help="L1 regularization (lambda_l1)",
+    )
+    subparser.add_argument(
+        "--reg-lambda",
+        type=float,
+        default=DEFAULT_LAMBDA_L2,
+        help="L2 regularization (lambda_l2)",
+    )
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="running_style_lightgbm")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -497,11 +537,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     walk.add_argument("--validation-years", type=str, default="2024,2025")
     walk.add_argument("--output-predictions-dir", type=Path, required=True)
     walk.add_argument("--output-report", type=Path, default=None)
-    walk.add_argument("--num-leaves", type=int, default=DEFAULT_NUM_LEAVES)
-    walk.add_argument("--learning-rate", type=float, default=DEFAULT_LEARNING_RATE)
-    walk.add_argument("--min-child-samples", type=int, default=DEFAULT_MIN_CHILD_SAMPLES)
-    walk.add_argument("--num-iterations", type=int, default=DEFAULT_NUM_ITERATIONS)
-    walk.add_argument("--early-stopping-rounds", type=int, default=DEFAULT_EARLY_STOPPING_ROUNDS)
+    _add_lgbm_hyperparam_arguments(walk)
     walk.add_argument(
         "--with-field-features",
         action=argparse.BooleanOptionalAction,
@@ -524,11 +560,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     train_prod.add_argument("--model-version", type=str, required=True)
     train_prod.add_argument("--output-model-dir", type=Path, required=True)
-    train_prod.add_argument("--num-leaves", type=int, default=DEFAULT_NUM_LEAVES)
-    train_prod.add_argument("--learning-rate", type=float, default=DEFAULT_LEARNING_RATE)
-    train_prod.add_argument("--min-child-samples", type=int, default=DEFAULT_MIN_CHILD_SAMPLES)
-    train_prod.add_argument("--num-iterations", type=int, default=DEFAULT_NUM_ITERATIONS)
-    train_prod.add_argument("--early-stopping-rounds", type=int, default=DEFAULT_EARLY_STOPPING_ROUNDS)
+    _add_lgbm_hyperparam_arguments(train_prod)
     train_prod.add_argument(
         "--valid-start-date",
         type=str,
@@ -561,6 +593,11 @@ def training_params_from_args(args: argparse.Namespace) -> TrainingParams:
     base["min_child_samples"] = args.min_child_samples
     base["num_iterations"] = args.num_iterations
     base["early_stopping_rounds"] = getattr(args, "early_stopping_rounds", DEFAULT_EARLY_STOPPING_ROUNDS)
+    base["bagging_fraction"] = args.bagging_fraction
+    base["bagging_freq"] = args.bagging_freq
+    base["feature_fraction"] = args.feature_fraction
+    base["lambda_l1"] = args.reg_alpha
+    base["lambda_l2"] = args.reg_lambda
     return base
 
 
@@ -769,6 +806,7 @@ def write_model_metadata(
     with_field_features: bool,
     walk_forward_results: dict[str, WalkForwardEvalMetrics] | None = None,
     production_precision_nige: float | None = None,
+    hyperparameters: TrainingParams | None = None,
 ) -> None:
     metadata: dict[str, object] = {
         "model_version": model_version,
@@ -781,6 +819,8 @@ def write_model_metadata(
         "train_end_date": train_end,
         "feature_schema_version": "v2" if with_field_features else "v1",
     }
+    if hyperparameters is not None:
+        metadata["hyperparameters"] = dict(hyperparameters)
     if walk_forward_results is not None:
         metadata["walk_forward_results"] = walk_forward_results
     if production_precision_nige is not None and not np.isnan(production_precision_nige):
@@ -828,6 +868,7 @@ def run_train_production_command(args: argparse.Namespace) -> None:
         with_field_features=args.with_field_features,
         walk_forward_results=walk_forward_results,
         production_precision_nige=production_precision_nige,
+        hyperparameters=params,
     )
     elapsed = perf_counter() - started
     print(json.dumps({
