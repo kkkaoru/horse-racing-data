@@ -8,7 +8,11 @@ import {
   runningStyleParquetVerificationKey,
   validateFeatureCoverage,
 } from "./running-style-feature-parquet";
-import { buildRunningStyleFeaturesForRaceFromPostgres } from "./running-style-feature-sql";
+import {
+  buildRunningStyleFeaturesForRaceFromD1Target,
+  buildRunningStyleFeaturesForRaceFromPostgres,
+} from "./running-style-feature-sql";
+import { listDailyRaceEntriesForRace } from "./daily-feature-build";
 import { runRunningStyleInferenceRowsWithFlatModel } from "./running-style-inference";
 import { getFinishPositionPool } from "./finish-position-lite-pool";
 import {
@@ -60,11 +64,24 @@ export const runRunningStyleWorkerPostgresVerification = async (
   const modelKey = buildRunningStyleFlatModelKey(params.source);
   const model = await loadFlatLightGBMModelFromR2(env.RUNNING_STYLE_MODELS, modelKey);
   const pool = getFinishPositionPool(env);
-  const built = await buildRunningStyleFeaturesForRaceFromPostgres(
-    pool,
-    params,
-    model.header.feature_names,
-  );
+  // Prefer the D1 daily-target path (mirrors the production queue): today's
+  // races have D1 race-day entries before they land in nvd_se, so building from
+  // Postgres alone would return zero rows. Fall back to Postgres only when D1
+  // has no entries (historical-race verification use case).
+  const dailyTargetRows = await listDailyRaceEntriesForRace(env.REALTIME_DB, params);
+  const built =
+    dailyTargetRows.length > 0
+      ? await buildRunningStyleFeaturesForRaceFromD1Target(
+          pool,
+          params,
+          model.header.feature_names,
+          dailyTargetRows,
+        )
+      : await buildRunningStyleFeaturesForRaceFromPostgres(
+          pool,
+          params,
+          model.header.feature_names,
+        );
   const coverage = validateFeatureCoverage(built.rows, model.header.feature_names);
   if (coverage.missingFeatureNames.length > 0) {
     throw new Error(
