@@ -9,13 +9,17 @@ import {
   buildFingerprintSql,
   buildIncrementalApplySql,
   buildIncrementalCopyFromSql,
+  buildJsonlRecord,
   incrementalComparatorForTimestampColumn,
   buildMetadataSql,
   buildNeonApplySql,
   buildTableProfileSql,
   buildTimestampFingerprintSql,
   computeBackoffDelayMs,
+  computeChunkEtaSeconds,
+  computeChunkPlan,
   decideVerifyMismatchAction,
+  formatRowsPerSecond,
   isVerifyMismatchSkipError,
   parseDependencyEdges,
   parseFingerprintLine,
@@ -23,6 +27,9 @@ import {
   parseTableProfiles,
   pkExpression,
   quoteIdentifier,
+  resolveDefaultFullReplaceBatchRows,
+  resolveOperationTimeoutPolicy,
+  resolvePerTableWallClockMs,
   resolvePositiveIntegerEnv,
   resolveRetryBackoffConfig,
   resolveVerifyMismatchPolicy,
@@ -32,6 +39,7 @@ import {
   shouldRefreshInclusiveIncrementalMarker,
   timestampKeyExpression,
   VerifyMismatchSkipError,
+  type OperationTimeoutPolicy,
   type ProgressEvent,
   type PushSyncConfig,
   type RetryBackoffConfig,
@@ -50,10 +58,12 @@ const defaultExcludedLogTables = new Set([
   "finish_position_tuning_random_trials",
   "race_finish_position_features",
 ]);
-const DEFAULT_OPERATION_TIMEOUT_SECONDS = 600;
-const OPERATION_TIMEOUT_ENV_KEY = "REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS";
 const DEFAULT_MAX_ATTEMPTS = 5;
 const MAX_ATTEMPTS_ENV_KEY = "REPLICA_SYNC_MAX_ATTEMPTS";
+const DEFAULT_REINCREMENTAL_ROLLBACK_DAYS = 7;
+const REINCREMENTAL_ROLLBACK_DAYS_ENV_KEY = "REPLICA_SYNC_REINCREMENTAL_ROLLBACK_DAYS";
+const JSONL_LOG_ENV_KEY = "REPLICA_SYNC_LOG_JSONL";
+const TIMEOUT_WARN_INTERVAL_MS = 30_000;
 
 type CommandResult = {
   stdout: string;
@@ -216,21 +226,6 @@ function redactSecrets(value: string): string {
     .replaceAll(/npg_[A-Za-z0-9_-]+/g, "npg_[redacted]");
 }
 
-function applyTimeoutEnv(env: Record<string, string | undefined>): void {
-  const value = env[OPERATION_TIMEOUT_ENV_KEY];
-  if (value !== undefined && process.env[OPERATION_TIMEOUT_ENV_KEY] === undefined) {
-    process.env[OPERATION_TIMEOUT_ENV_KEY] = value;
-  }
-}
-
-function resolveOperationTimeoutMs(): number {
-  const raw = process.env[OPERATION_TIMEOUT_ENV_KEY];
-  const fallback = DEFAULT_OPERATION_TIMEOUT_SECONDS * 1000;
-  if (raw === undefined || raw === "") return fallback;
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : fallback;
-}
-
 function resolveMaxAttempts(
   override: number | null,
   env: Record<string, string | undefined>,
@@ -255,20 +250,142 @@ function killProcessGroup(child: ChildProcess): void {
   }
 }
 
-function armTimeout(
-  child: ChildProcess,
-  label: string,
-  reject: (error: Error) => void,
-): () => void {
-  const timeoutMs = resolveOperationTimeoutMs();
-  const handle = setTimeout(() => {
-    killProcessGroup(child);
-    reject(new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)}s and was killed`));
-  }, timeoutMs);
-  return () => clearTimeout(handle);
+interface TimeoutContext {
+  policy: OperationTimeoutPolicy;
+  wallClockMs: number;
+  tableName: string | null;
 }
 
-function runCommand(command: string, args: string[], input?: string): Promise<CommandResult> {
+interface ArmTimeoutOptions {
+  child: ChildProcess;
+  label: string;
+  context: TimeoutContext;
+  reject: (error: Error) => void;
+  onIdle?: (chunk: Buffer) => void;
+}
+
+interface TimeoutHandles {
+  cancel: () => void;
+  bumpIdle: () => void;
+}
+
+function armTimeout(options: ArmTimeoutOptions): TimeoutHandles {
+  const { child, label, context, reject } = options;
+  const wallClockMs = context.wallClockMs;
+  const idleMs = context.policy.idleMs;
+  const warningRatio = context.policy.warningRatio;
+  const startedAt = Date.now();
+  const state = { idleHandle: scheduleIdle(), wallHandle: scheduleWall(), wallWarned: false };
+
+  function scheduleIdle(): NodeJS.Timeout {
+    return setTimeout(() => {
+      killProcessGroup(child);
+      reject(
+        new Error(
+          `${label} idle for ${Math.round(idleMs / 1000)}s (no stdout/stderr) and was killed`,
+        ),
+      );
+    }, idleMs);
+  }
+
+  function scheduleWall(): NodeJS.Timeout {
+    return setTimeout(() => {
+      killProcessGroup(child);
+      reject(
+        new Error(
+          `${label} timed out after ${Math.round(wallClockMs / 1000)}s wall-clock and was killed`,
+        ),
+      );
+    }, wallClockMs);
+  }
+
+  const warnHandle = setInterval(() => {
+    if (state.wallWarned) return;
+    const elapsedMs = Date.now() - startedAt;
+    if (elapsedMs >= wallClockMs * warningRatio) {
+      state.wallWarned = true;
+      emitTimeoutWarning({
+        label,
+        tableName: context.tableName,
+        elapsedSeconds: Math.round(elapsedMs / 1000),
+        timeoutSeconds: Math.round(wallClockMs / 1000),
+        kind: "wall-clock",
+      });
+    }
+  }, TIMEOUT_WARN_INTERVAL_MS);
+
+  return {
+    cancel: () => {
+      clearTimeout(state.idleHandle);
+      clearTimeout(state.wallHandle);
+      clearInterval(warnHandle);
+    },
+    bumpIdle: () => {
+      clearTimeout(state.idleHandle);
+      state.idleHandle = scheduleIdle();
+    },
+  };
+}
+
+let activeTimeoutPolicy: OperationTimeoutPolicy | null = null;
+let activeEnv: Record<string, string | undefined> = {};
+
+function setActiveTimeoutPolicy(policy: OperationTimeoutPolicy): void {
+  activeTimeoutPolicy = policy;
+}
+
+function setActiveEnv(env: Record<string, string | undefined>): void {
+  activeEnv = env;
+}
+
+function activePolicy(): OperationTimeoutPolicy {
+  if (activeTimeoutPolicy !== null) return activeTimeoutPolicy;
+  return resolveOperationTimeoutPolicy(activeEnv);
+}
+
+function buildTimeoutContext(tableName: string | null): TimeoutContext {
+  const policy = activePolicy();
+  const fallbackWallClockMs = policy.wallClockMs;
+  const wallClockMs =
+    tableName === null
+      ? fallbackWallClockMs
+      : resolvePerTableWallClockMs({ env: activeEnv, tableName, fallbackWallClockMs });
+  return { policy, wallClockMs, tableName };
+}
+
+interface TimeoutWarningInput {
+  label: string;
+  tableName: string | null;
+  elapsedSeconds: number;
+  timeoutSeconds: number;
+  kind: "idle" | "wall-clock";
+}
+
+function emitTimeoutWarning(input: TimeoutWarningInput): void {
+  const namedTable = input.tableName ?? "(no-table)";
+  writeLine(
+    `[${formatNow()}] ⚠ ${namedTable}: ${input.label} still running after ${input.elapsedSeconds}s (${Math.round((input.elapsedSeconds / input.timeoutSeconds) * 100)}% of ${input.timeoutSeconds}s ${input.kind} timeout) — will kill soon`,
+  );
+  writeJsonl({
+    type: "timeout-warning",
+    tableName: input.tableName ?? "",
+    label: input.label,
+    elapsedSeconds: input.elapsedSeconds,
+    timeoutSeconds: input.timeoutSeconds,
+    kind: input.kind,
+  });
+}
+
+interface RunCommandOptions {
+  input?: string;
+  tableName?: string | null;
+}
+
+function runCommand(
+  command: string,
+  args: string[],
+  options: RunCommandOptions = {},
+): Promise<CommandResult> {
   return new Promise((resolveCommand, reject) => {
     const child = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
@@ -278,16 +395,28 @@ function runCommand(command: string, args: string[], input?: string): Promise<Co
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
     const label = redactSecrets(`${command} ${args.join(" ")}`);
-    const cancelTimeout = armTimeout(child, label, reject);
+    const tableName = options.tableName ?? null;
+    const handles = armTimeout({
+      child,
+      label,
+      context: buildTimeoutContext(tableName),
+      reject,
+    });
 
-    child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
-    child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdoutChunks.push(chunk);
+      handles.bumpIdle();
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderrChunks.push(chunk);
+      handles.bumpIdle();
+    });
     child.on("error", (error) => {
-      cancelTimeout();
+      handles.cancel();
       reject(error);
     });
     child.on("close", (code) => {
-      cancelTimeout();
+      handles.cancel();
       const stdout = Buffer.concat(stdoutChunks).toString("utf8");
       const stderr = Buffer.concat(stderrChunks).toString("utf8");
       if (code === 0) {
@@ -297,8 +426,8 @@ function runCommand(command: string, args: string[], input?: string): Promise<Co
       }
     });
 
-    if (input !== undefined) {
-      child.stdin.end(input);
+    if (options.input !== undefined) {
+      child.stdin.end(options.input);
     } else {
       child.stdin.end();
     }
@@ -309,12 +438,16 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-function runCopyPipeline(
-  env: Record<string, string | undefined>,
-  localCopySql: string,
-  neonCopySql: string,
-): Promise<void> {
+interface RunCopyPipelineOptions {
+  env: Record<string, string | undefined>;
+  localCopySql: string;
+  neonCopySql: string;
+  tableName: string | null;
+}
+
+function runCopyPipeline(options: RunCopyPipelineOptions): Promise<void> {
   return new Promise((resolvePipeline, reject) => {
+    const { env, localCopySql, neonCopySql, tableName } = options;
     const command = [
       "docker",
       "compose",
@@ -345,7 +478,6 @@ function runCopyPipeline(
       '"$NEON_DIRECT_DATABASE_URL"',
       "-v",
       "ON_ERROR_STOP=1",
-      "-q",
       "-c",
       '"$NEON_COPY_SQL"',
     ].join(" ");
@@ -364,14 +496,22 @@ function runCopyPipeline(
     });
 
     const stderrChunks: Buffer[] = [];
-    const cancelTimeout = armTimeout(child, "COPY pipeline", reject);
-    child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+    const handles = armTimeout({
+      child,
+      label: tableName === null ? "COPY pipeline" : `COPY pipeline (${tableName})`,
+      context: buildTimeoutContext(tableName),
+      reject,
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderrChunks.push(chunk);
+      handles.bumpIdle();
+    });
     child.on("error", (error) => {
-      cancelTimeout();
+      handles.cancel();
       reject(error);
     });
     child.on("close", (code) => {
-      cancelTimeout();
+      handles.cancel();
       if (code === 0) {
         resolvePipeline();
         return;
@@ -437,15 +577,35 @@ Environment:
                                   transaction; upsert preserves row-level conflict behavior.
   REPLICA_SYNC_SKIP_UNCHANGED     Skip tables whose local and Neon row checksums match.
                                   Default: true.
-  REPLICA_SYNC_COPY_BATCH_ROWS    Optional rows per COPY batch. Empty means one COPY per table.
+  REPLICA_SYNC_COPY_BATCH_ROWS    Rows per COPY batch in full-replace path. Default: 500000.
+                                  Empty value keeps the 500000 default; the legacy
+                                  "one COPY per table" behavior is no longer the default.
   REPLICA_SYNC_DELETE             Delete Neon rows missing locally. Default: true.
   REPLICA_SYNC_INDEXES            Apply sql/analytics-indexes.sql to Neon after rows sync.
                                   Default: true.
   NEON_CONNECT_TIMEOUT_SECONDS    Wait timeout for Neon cold start. Default: 120.
   NEON_CONNECT_RETRY_SECONDS      Retry interval while Neon is warming. Default: 5.
   REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS
-                                  Per-operation timeout that kills any docker/psql child that
-                                  hangs. Default: 600.
+                                  Wall-clock timeout that kills any docker/psql child that
+                                  hangs. Default: 3600.
+  REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS_<table>
+                                  Per-table override for the wall-clock timeout (seconds).
+                                  Example: REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS_jvd_se=7200.
+  REPLICA_SYNC_IDLE_TIMEOUT_SECONDS
+                                  Kill the child if stdout/stderr is silent for this many
+                                  seconds. Catches Neon stalls without waiting wall-clock.
+                                  Default: 300.
+  REPLICA_SYNC_FULL_REPLACE_THRESHOLD_PERCENT
+                                  Verify-mismatch retries the incremental copy with an
+                                  older marker (instead of full-replace) when the diff is
+                                  strictly below this percent of max(local, neon).
+                                  Default: 1 (i.e. 1% drift).
+  REPLICA_SYNC_REINCREMENTAL_ROLLBACK_DAYS
+                                  How many days the timestamp marker is rolled back before
+                                  re-running an incremental copy on verify mismatch.
+                                  Default: 7.
+  REPLICA_SYNC_LOG_JSONL          When set to 1 or true, append one JSON line per progress
+                                  event to tmp/push-neon-sync.jsonl. Default: off.
   REPLICA_SYNC_NEON_PSQL_CONTAINER
                                   Name of the long-lived local container to exec psql in for
                                   Neon connections. The script reuses this container instead of
@@ -515,14 +675,6 @@ async function checkNeonReady(env: Record<string, string | undefined>): Promise<
   } catch {
     return false;
   }
-}
-
-function copyBatchRows(env: Record<string, string | undefined>): number | undefined {
-  if (env.REPLICA_SYNC_COPY_BATCH_ROWS === undefined || env.REPLICA_SYNC_COPY_BATCH_ROWS === "") {
-    return undefined;
-  }
-  const parsed = Number(env.REPLICA_SYNC_COPY_BATCH_ROWS);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function shouldSkipUnchanged(env: Record<string, string | undefined>): boolean {
@@ -710,7 +862,23 @@ async function syncTableIncrementally(options: SyncTableIncrementallyOptions): P
         message: action.message,
       });
     }
-    writeLine(`[${formatNow()}] ⚠ ${action.message}`);
+    if (action.kind === "re-incremental") {
+      const reincrementalHandled = await tryReincrementalReplay({
+        env,
+        table,
+        profile,
+        tsColumn,
+        neonFp,
+        retry,
+        message: action.message,
+      });
+      if (reincrementalHandled) return;
+      writeLine(
+        `[${formatNow()}] ⚠ ${table.tableName}: re-incremental skipped (marker rollback not supported for this strategy) — falling back to full-replace`,
+      );
+    } else {
+      writeLine(`[${formatNow()}] ⚠ ${action.message}`);
+    }
     await syncTableFullReplace({
       env,
       table,
@@ -742,25 +910,29 @@ async function runIncrementalCopyWithRetry(
   const { env, table, incSql, localCopySql, retry } = options;
   await runWithRetry(
     async () => {
-      await runCommand(
-        "docker",
-        neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]),
-        incSql.preCopySql,
-      );
+      await runCommand("docker", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]), {
+        input: incSql.preCopySql,
+        tableName: table.tableName,
+      });
       try {
-        await runCopyPipeline(env, localCopySql, incSql.copySql).catch((error: unknown) => {
+        await runCopyPipeline({
+          env,
+          localCopySql,
+          neonCopySql: incSql.copySql,
+          tableName: table.tableName,
+        }).catch((error: unknown) => {
           const message = error instanceof Error ? error.message : String(error);
           throw new Error(`Failed to incremental-copy ${table.tableName}\n${message}`);
         });
-        await runCommand(
-          "docker",
-          neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]),
-          incSql.postCopySql,
-        );
+        await runCommand("docker", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]), {
+          input: incSql.postCopySql,
+          tableName: table.tableName,
+        });
       } catch (error) {
-        await runCommand("docker", neonPsqlArgs(env, ["-q"]), incSql.cleanupSql).catch(
-          () => undefined,
-        );
+        await runCommand("docker", neonPsqlArgs(env, ["-q"]), {
+          input: incSql.cleanupSql,
+          tableName: table.tableName,
+        }).catch(() => undefined);
         throw error;
       }
     },
@@ -804,7 +976,7 @@ async function syncTableFullReplace(options: SyncTableFullReplaceOptions): Promi
   const quotedTable = quoteIdentifier(table.tableName);
   const stageTableName = `replica_sync_stage_${process.pid}_${table.tableName.replaceAll(/[^A-Za-z0-9_]/g, "_")}`;
   const neonSql = buildNeonApplySql(table, deleteMissingRows, stageTableName, false, applyMode);
-  const batchRows = copyBatchRows(env);
+  const batchRows = resolveDefaultFullReplaceBatchRows(env);
 
   if (shouldSkipUnchanged(env) && (await tableIsUnchanged(env, table))) {
     writeLine(`[${formatNow()}] ⊘ ${table.tableName}: unchanged (skip)`);
@@ -834,49 +1006,161 @@ interface RunFullReplaceOnceOptions {
   table: TableMetadata;
   quotedTable: string;
   neonSql: ReturnType<typeof buildNeonApplySql>;
-  batchRows: number | undefined;
+  batchRows: number;
 }
 
 async function runFullReplaceOnce(options: RunFullReplaceOnceOptions): Promise<void> {
   const { env, table, quotedTable, neonSql, batchRows } = options;
-  await runCommand(
-    "docker",
-    neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]),
-    neonSql.preCopySql,
-  );
+  await runCommand("docker", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]), {
+    input: neonSql.preCopySql,
+    tableName: table.tableName,
+  });
 
   try {
-    if (batchRows === undefined) {
-      const localCopySql = `COPY (SELECT ${table.columnList} FROM public.${quotedTable}) TO STDOUT WITH (FORMAT csv, NULL '\\N');`;
-      await runCopyPipeline(env, localCopySql, neonSql.copySql).catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`Failed to copy ${table.tableName}\n${message}`);
-      });
-    } else {
-      const { stdout: countOutput } = await runCommand(
-        "docker",
-        dockerComposeArgs(env, `SELECT count(*) FROM public.${quotedTable};`),
-      );
-      const rowCount = Number(countOutput.trim());
-      for (let offset = 0; offset < rowCount; offset += batchRows) {
-        const localCopySql = `COPY (SELECT ${table.columnList} FROM public.${quotedTable} ORDER BY ${table.primaryKeyList} LIMIT ${batchRows} OFFSET ${offset}) TO STDOUT WITH (FORMAT csv, NULL '\\N');`;
-        await runCopyPipeline(env, localCopySql, neonSql.copySql).catch((error: unknown) => {
-          const message = error instanceof Error ? error.message : String(error);
-          throw new Error(`Failed to copy ${table.tableName} offset=${offset}\n${message}`);
-        });
-      }
-    }
-    await runCommand(
+    const { stdout: countOutput } = await runCommand(
       "docker",
-      neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]),
-      neonSql.postCopySql,
+      dockerComposeArgs(env, `SELECT count(*) FROM public.${quotedTable};`),
+      { tableName: table.tableName },
     );
+    const rowCount = Number(countOutput.trim());
+    await runFullReplaceChunked({ env, table, quotedTable, neonSql, batchRows, rowCount });
+    await runCommand("docker", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]), {
+      input: neonSql.postCopySql,
+      tableName: table.tableName,
+    });
   } catch (error) {
-    await runCommand("docker", neonPsqlArgs(env, ["-q"]), neonSql.cleanupSql).catch(
-      () => undefined,
-    );
+    await runCommand("docker", neonPsqlArgs(env, ["-q"]), {
+      input: neonSql.cleanupSql,
+      tableName: table.tableName,
+    }).catch(() => undefined);
     throw error;
   }
+}
+
+interface RunFullReplaceChunkedOptions extends RunFullReplaceOnceOptions {
+  rowCount: number;
+}
+
+async function runFullReplaceChunked(options: RunFullReplaceChunkedOptions): Promise<void> {
+  const { env, table, quotedTable, neonSql, batchRows, rowCount } = options;
+  const plan = computeChunkPlan(rowCount, batchRows);
+  const context = buildTimeoutContext(table.tableName);
+  reportChunkPlan({
+    table,
+    plan,
+    rowCount,
+    wallClockSeconds: Math.round(context.wallClockMs / 1000),
+    idleSeconds: Math.round(context.policy.idleMs / 1000),
+  });
+  if (plan.chunkCount === 0) return;
+  const tableStartedAt = nowMs();
+  await iterateChunks({
+    chunkCount: plan.chunkCount,
+    chunkRows: plan.chunkRows,
+    rowCount,
+    run: async (chunkIndex, offset) => {
+      const chunkStartedAt = nowMs();
+      const localCopySql = `COPY (SELECT ${table.columnList} FROM public.${quotedTable} ORDER BY ${table.primaryKeyList} LIMIT ${plan.chunkRows} OFFSET ${offset}) TO STDOUT WITH (FORMAT csv, NULL '\\N');`;
+      await runCopyPipeline({
+        env,
+        localCopySql,
+        neonCopySql: neonSql.copySql,
+        tableName: table.tableName,
+      }).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Failed to copy ${table.tableName} offset=${offset}\n${message}`);
+      });
+      reportChunkDone({
+        table,
+        chunkIndex,
+        chunkCount: plan.chunkCount,
+        rowsDone: Math.min((chunkIndex + 1) * plan.chunkRows, rowCount),
+        rowsTotal: rowCount,
+        chunkElapsedSeconds: Math.max(Math.round((nowMs() - chunkStartedAt) / 1000), 0),
+        tableElapsedSeconds: Math.max(Math.round((nowMs() - tableStartedAt) / 1000), 0),
+      });
+    },
+  });
+}
+
+interface IterateChunksOptions {
+  chunkCount: number;
+  chunkRows: number;
+  rowCount: number;
+  run: (chunkIndex: number, offset: number) => Promise<void>;
+}
+
+async function iterateChunks(options: IterateChunksOptions): Promise<void> {
+  const indexes = Array.from({ length: options.chunkCount }, (_unused, index) => index);
+  await indexes.reduce(
+    (previous, chunkIndex) =>
+      previous.then(() => options.run(chunkIndex, chunkIndex * options.chunkRows)),
+    Promise.resolve(),
+  );
+}
+
+function nowMs(): number {
+  return Date.now();
+}
+
+interface ReportChunkPlanInput {
+  table: TableMetadata;
+  plan: ReturnType<typeof computeChunkPlan>;
+  rowCount: number;
+  wallClockSeconds: number;
+  idleSeconds: number;
+}
+
+function reportChunkPlan(input: ReportChunkPlanInput): void {
+  const event: ProgressEvent = {
+    type: "chunk-plan",
+    tableName: input.table.tableName,
+    rowCount: input.rowCount,
+    chunkCount: input.plan.chunkCount,
+    chunkRows: input.plan.chunkRows,
+    wallClockTimeoutSeconds: input.wallClockSeconds,
+    idleTimeoutSeconds: input.idleSeconds,
+  };
+  writeLine(
+    `[${formatNow()}] ▶ ${input.table.tableName}: ${formatBigNumber(input.rowCount)} rows → ${input.plan.chunkCount} chunks (${formatBigNumber(input.plan.chunkRows)}/chunk) — timeout=${input.wallClockSeconds}s wall / ${input.idleSeconds}s idle`,
+  );
+  writeJsonl(event);
+}
+
+interface ReportChunkDoneInput {
+  table: TableMetadata;
+  chunkIndex: number;
+  chunkCount: number;
+  rowsDone: number;
+  rowsTotal: number;
+  chunkElapsedSeconds: number;
+  tableElapsedSeconds: number;
+}
+
+function reportChunkDone(input: ReportChunkDoneInput): void {
+  const rowsPerSecond = formatRowsPerSecond(input.rowsDone, input.tableElapsedSeconds);
+  const etaTableSeconds = computeChunkEtaSeconds(
+    input.rowsDone,
+    input.rowsTotal,
+    input.tableElapsedSeconds,
+  );
+  const event: ProgressEvent = {
+    type: "chunk-done",
+    tableName: input.table.tableName,
+    chunkIndex: input.chunkIndex + 1,
+    chunkCount: input.chunkCount,
+    rowsDone: input.rowsDone,
+    rowsTotal: input.rowsTotal,
+    chunkElapsedSeconds: input.chunkElapsedSeconds,
+    tableElapsedSeconds: input.tableElapsedSeconds,
+    rowsPerSecond,
+    etaTableSeconds,
+  };
+  const percent = formatPercent(input.rowsDone, input.rowsTotal);
+  writeLine(
+    `[${formatNow()}] · ${input.table.tableName} chunk ${input.chunkIndex + 1}/${input.chunkCount} — ${formatBigNumber(input.rowsDone)}/${formatBigNumber(input.rowsTotal)} rows (${percent}) in ${formatDuration(input.chunkElapsedSeconds)} (${formatBigNumber(Math.round(rowsPerSecond))} r/s), ETA table ${formatDuration(etaTableSeconds)}`,
+  );
+  writeJsonl(event);
 }
 
 function formatNow(): string {
@@ -964,7 +1248,10 @@ async function syncAnalyticsIndexes(env: Record<string, string | undefined>): Pr
 
   console.log(`[${formatNow()}] Applying analytics indexes to Neon`);
   const sql = readFileSync(analyticsIndexesPath, "utf8");
-  await runCommand("docker", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]), sql);
+  await runCommand("docker", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1"]), {
+    input: sql,
+    tableName: "(analytics-indexes)",
+  });
   console.log(`[${formatNow()}] Applied analytics indexes to Neon`);
 }
 
@@ -1075,6 +1362,110 @@ function writeLine(message: string): void {
   }
 }
 
+let jsonlFd: number | null = null;
+let jsonlStartedAt = 0;
+
+function openJsonlSidecarIfEnabled(env: Record<string, string | undefined>): void {
+  const raw = env[JSONL_LOG_ENV_KEY];
+  if (raw !== "1" && raw !== "true") return;
+  const jsonlPath = resolve(appDir, "tmp", "push-neon-sync.jsonl");
+  const dir = dirname(jsonlPath);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+  jsonlFd = openSync(jsonlPath, "a");
+  jsonlStartedAt = Date.now();
+}
+
+function closeJsonlSidecar(): void {
+  if (jsonlFd !== null) {
+    closeSync(jsonlFd);
+    jsonlFd = null;
+  }
+}
+
+function writeJsonl(event: ProgressEvent): void {
+  if (jsonlFd === null) return;
+  const elapsedSeconds = Math.max(Math.round((Date.now() - jsonlStartedAt) / 1000), 0);
+  const record = buildJsonlRecord({ tsIso: new Date().toISOString(), event, elapsedSeconds });
+  writeSync(jsonlFd, `${JSON.stringify(record)}\n`);
+}
+
+interface TryReincrementalReplayOptions {
+  env: Record<string, string | undefined>;
+  table: TableMetadata;
+  profile: TableProfile;
+  tsColumn: string | null;
+  neonFp: { count: number; marker: string };
+  retry: { maxAttempts: number; backoff: RetryBackoffConfig };
+  message: string;
+}
+
+async function tryReincrementalReplay(options: TryReincrementalReplayOptions): Promise<boolean> {
+  const { env, table, profile, tsColumn, neonFp, retry, message } = options;
+  if (profile.strategy !== "timestamp-incremental" || tsColumn === null) return false;
+  const rolledBackMarker = rollbackTimestampMarker(env, neonFp.marker, tsColumn);
+  if (rolledBackMarker === null) return false;
+  writeLine(
+    `[${formatNow()}] ↻ ${table.tableName}: re-incremental replay — ${message}; rolled marker from ${truncateMarker(neonFp.marker)} to ${truncateMarker(rolledBackMarker)}`,
+  );
+  const keyExpression = timestampKeyExpression(tsColumn);
+  const stageTableName = `replica_sync_stage_reinc_${process.pid}_${table.tableName.replaceAll(/[^A-Za-z0-9_]/g, "_")}`;
+  const incSql = buildIncrementalApplySql(table, stageTableName, false);
+  const localCopySql = buildIncrementalCopyFromSql(table, {
+    keyExpression,
+    neonMarker: rolledBackMarker,
+    comparator: incrementalComparatorForTimestampColumn(tsColumn),
+  });
+  await runIncrementalCopyWithRetry({ env, table, incSql, localCopySql, retry });
+  const verifyFp = await loadFingerprint(env, table, "neon", tsColumn);
+  if (verifyFp.count !== profile.rowCount && verifyFp.count !== neonFp.count) {
+    writeLine(
+      `[${formatNow()}] ↻ ${table.tableName}: re-incremental verified neon=${verifyFp.count}`,
+    );
+  }
+  return true;
+}
+
+function resolveReincrementalRollbackDays(env: Record<string, string | undefined>): number {
+  const raw = env[REINCREMENTAL_ROLLBACK_DAYS_ENV_KEY];
+  if (raw === undefined || raw === "") return DEFAULT_REINCREMENTAL_ROLLBACK_DAYS;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) return DEFAULT_REINCREMENTAL_ROLLBACK_DAYS;
+  return parsed;
+}
+
+function rollbackTimestampMarker(
+  env: Record<string, string | undefined>,
+  marker: string,
+  tsColumn: string,
+): string | null {
+  if (marker === "") return null;
+  const days = resolveReincrementalRollbackDays(env);
+  if (tsColumn === "data_sakusei_nengappi") return rollbackDateOnlyMarker(marker, days);
+  return rollbackIsoTimestampMarker(marker, days);
+}
+
+function rollbackDateOnlyMarker(marker: string, days: number): string | null {
+  if (!/^\d{8}$/.test(marker)) return null;
+  const year = Number(marker.slice(0, 4));
+  const month = Number(marker.slice(4, 6));
+  const day = Number(marker.slice(6, 8));
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() - days);
+  const yyyy = date.getUTCFullYear().toString().padStart(4, "0");
+  const mm = (date.getUTCMonth() + 1).toString().padStart(2, "0");
+  const dd = date.getUTCDate().toString().padStart(2, "0");
+  return `${yyyy}${mm}${dd}`;
+}
+
+function rollbackIsoTimestampMarker(marker: string, days: number): string | null {
+  const parsed = new Date(marker);
+  if (Number.isNaN(parsed.getTime())) return null;
+  parsed.setUTCDate(parsed.getUTCDate() - days);
+  return parsed.toISOString();
+}
+
 async function main(): Promise<void> {
   const cliOptions = parseArgs(process.argv.slice(2));
   if (process.argv.includes("--help") || process.argv.includes("-h")) {
@@ -1092,6 +1483,7 @@ async function main(): Promise<void> {
     await runSync(cliOptions);
   } finally {
     closeLogFile();
+    closeJsonlSidecar();
   }
 }
 
@@ -1101,7 +1493,9 @@ function describeError(error: unknown): string {
 
 async function runSync(cliOptions: CliOptions): Promise<void> {
   const env = loadEnvironment();
-  applyTimeoutEnv(env);
+  setActiveEnv(env);
+  setActiveTimeoutPolicy(resolveOperationTimeoutPolicy(env));
+  openJsonlSidecarIfEnabled(env);
   if (cliOptions.indexesOnly) {
     await syncAnalyticsIndexes(env);
     return;

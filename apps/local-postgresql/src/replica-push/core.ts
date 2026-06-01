@@ -123,6 +123,35 @@ export type ProgressEvent =
       etaSeconds: number;
     }
   | {
+      type: "chunk-plan";
+      tableName: string;
+      rowCount: number;
+      chunkCount: number;
+      chunkRows: number;
+      wallClockTimeoutSeconds: number;
+      idleTimeoutSeconds: number;
+    }
+  | {
+      type: "chunk-done";
+      tableName: string;
+      chunkIndex: number;
+      chunkCount: number;
+      rowsDone: number;
+      rowsTotal: number;
+      chunkElapsedSeconds: number;
+      tableElapsedSeconds: number;
+      rowsPerSecond: number;
+      etaTableSeconds: number;
+    }
+  | {
+      type: "timeout-warning";
+      tableName: string;
+      label: string;
+      elapsedSeconds: number;
+      timeoutSeconds: number;
+      kind: "idle" | "wall-clock";
+    }
+  | {
       type: "complete";
       totalTables: number;
       totalEstimatedRows: number;
@@ -1062,6 +1091,7 @@ export interface VerifyMismatchPolicy {
   thresholdRows: number;
   largeTableRows: number;
   forceFullReplace: boolean;
+  reincrementalMaxDiffPercent: number;
 }
 
 export interface VerifyMismatchInput {
@@ -1074,10 +1104,13 @@ export interface VerifyMismatchInput {
 
 export type VerifyMismatchAction =
   | { kind: "fallback-full"; message: string }
-  | { kind: "skip"; message: string; reason: string };
+  | { kind: "skip"; message: string; reason: string }
+  | { kind: "re-incremental"; message: string; reason: string; diffPercent: number };
 
 const DEFAULT_VERIFY_MISMATCH_THRESHOLD_ROWS = 10;
 const DEFAULT_VERIFY_MISMATCH_LARGE_TABLE_ROWS = 100_000;
+const DEFAULT_VERIFY_MISMATCH_REINCREMENTAL_PERCENT = 1;
+const PERCENT_DIVISOR = 100;
 
 export function decideVerifyMismatchAction(input: VerifyMismatchInput): VerifyMismatchAction {
   const diff = Math.abs(input.localCount - input.neonCount);
@@ -1090,6 +1123,21 @@ export function decideVerifyMismatchAction(input: VerifyMismatchInput): VerifyMi
       kind: "skip",
       reason,
       message: `${input.tableName}: ${reason} — full-replace too costly (${input.rowCount} rows, ≥${input.policy.largeTableRows} threshold). Skipping. Run reconcile or set REPLICA_VERIFY_MISMATCH_FORCE_FULL_REPLACE=true.`,
+    };
+  }
+  const denominator = Math.max(input.localCount, input.neonCount, 1);
+  const diffPercent = (diff / denominator) * PERCENT_DIVISOR;
+  const shouldReincremental =
+    !input.policy.forceFullReplace &&
+    isLargeTable &&
+    diffPercent < input.policy.reincrementalMaxDiffPercent;
+  if (shouldReincremental) {
+    const reason = `verify mismatch (local=${input.localCount}, neon=${input.neonCount}, diff=${diff}, ${diffPercent.toFixed(3)}%)`;
+    return {
+      kind: "re-incremental",
+      reason,
+      diffPercent,
+      message: `${input.tableName}: ${reason} — under ${input.policy.reincrementalMaxDiffPercent}% drift, retrying as re-incremental instead of full-replace`,
     };
   }
   return {
@@ -1111,7 +1159,16 @@ export function resolveVerifyMismatchPolicy(
       DEFAULT_VERIFY_MISMATCH_LARGE_TABLE_ROWS,
     ),
     forceFullReplace: parseBoolean(env.REPLICA_VERIFY_MISMATCH_FORCE_FULL_REPLACE, false),
+    reincrementalMaxDiffPercent: parseFiniteNonNegativeNumberOrFallback(
+      env.REPLICA_SYNC_FULL_REPLACE_THRESHOLD_PERCENT,
+      DEFAULT_VERIFY_MISMATCH_REINCREMENTAL_PERCENT,
+    ),
   };
+}
+
+function parseFiniteNonNegativeNumberOrFallback(raw: string | undefined, fallback: number): number {
+  const parsed = parseFiniteNonNegativeNumber(raw);
+  return parsed === null ? fallback : parsed;
 }
 
 function parsePositiveIntegerOrZero(raw: string | undefined, fallback: number): number {
@@ -1147,4 +1204,171 @@ export class VerifyMismatchSkipError extends Error {
 
 export function isVerifyMismatchSkipError(error: unknown): error is VerifyMismatchSkipError {
   return error instanceof VerifyMismatchSkipError;
+}
+
+const DEFAULT_FULL_REPLACE_COPY_BATCH_ROWS = 500_000;
+const DEFAULT_OPERATION_WALL_CLOCK_TIMEOUT_SECONDS = 3600;
+const DEFAULT_OPERATION_IDLE_TIMEOUT_SECONDS = 300;
+const TIMEOUT_WARNING_RATIO = 0.8;
+const PER_TABLE_TIMEOUT_ENV_PREFIX = "REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS_";
+
+export function resolveDefaultFullReplaceBatchRows(
+  env: Record<string, string | undefined>,
+): number {
+  const raw = env.REPLICA_SYNC_COPY_BATCH_ROWS;
+  if (raw === undefined || raw === "") return DEFAULT_FULL_REPLACE_COPY_BATCH_ROWS;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) return DEFAULT_FULL_REPLACE_COPY_BATCH_ROWS;
+  return parsed;
+}
+
+export interface ChunkPlan {
+  chunkRows: number;
+  chunkCount: number;
+}
+
+export function computeChunkPlan(rowCount: number, batchRows: number): ChunkPlan {
+  if (rowCount <= 0) return { chunkRows: batchRows, chunkCount: 0 };
+  if (batchRows <= 0) return { chunkRows: rowCount, chunkCount: 1 };
+  return { chunkRows: batchRows, chunkCount: Math.ceil(rowCount / batchRows) };
+}
+
+export interface OperationTimeoutPolicy {
+  wallClockMs: number;
+  idleMs: number;
+  warningRatio: number;
+}
+
+export function resolveOperationTimeoutPolicy(
+  env: Record<string, string | undefined>,
+): OperationTimeoutPolicy {
+  const wallClockSeconds = parsePositiveIntegerOrZero(
+    env.REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS,
+    DEFAULT_OPERATION_WALL_CLOCK_TIMEOUT_SECONDS,
+  );
+  const idleSeconds = parsePositiveIntegerOrZero(
+    env.REPLICA_SYNC_IDLE_TIMEOUT_SECONDS,
+    DEFAULT_OPERATION_IDLE_TIMEOUT_SECONDS,
+  );
+  return {
+    wallClockMs: Math.max(wallClockSeconds, 1) * 1000,
+    idleMs: Math.max(idleSeconds, 1) * 1000,
+    warningRatio: TIMEOUT_WARNING_RATIO,
+  };
+}
+
+export interface PerTableTimeoutLookupInput {
+  env: Record<string, string | undefined>;
+  tableName: string;
+  fallbackWallClockMs: number;
+}
+
+export function resolvePerTableWallClockMs(input: PerTableTimeoutLookupInput): number {
+  const raw = input.env[`${PER_TABLE_TIMEOUT_ENV_PREFIX}${input.tableName}`];
+  if (raw === undefined || raw === "") return input.fallbackWallClockMs;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) return input.fallbackWallClockMs;
+  return parsed * 1000;
+}
+
+export function formatRowsPerSecond(rowsDone: number, elapsedSeconds: number): number {
+  if (elapsedSeconds <= 0 || rowsDone <= 0) return 0;
+  return rowsDone / elapsedSeconds;
+}
+
+export function computeChunkEtaSeconds(
+  rowsDone: number,
+  rowsTotal: number,
+  elapsedSeconds: number,
+): number {
+  if (rowsDone <= 0 || elapsedSeconds <= 0) return 0;
+  const rowsRemaining = Math.max(rowsTotal - rowsDone, 0);
+  return Math.round((rowsRemaining * elapsedSeconds) / rowsDone);
+}
+
+export interface JsonlRecordInput {
+  tsIso: string;
+  event: ProgressEvent;
+  elapsedSeconds: number;
+  attempt?: number;
+  attemptMax?: number;
+}
+
+export interface JsonlRecord {
+  ts: string;
+  event: ProgressEvent["type"];
+  table?: string;
+  chunk_index?: number;
+  chunk_count?: number;
+  rows?: number;
+  rows_total?: number;
+  rows_per_second?: number;
+  elapsed_s: number;
+  eta_table_s?: number;
+  eta_total_s?: number;
+  attempt?: number;
+  attempt_max?: number;
+}
+
+export function buildJsonlRecord(input: JsonlRecordInput): JsonlRecord {
+  const base: JsonlRecord = {
+    ts: input.tsIso,
+    event: input.event.type,
+    elapsed_s: input.elapsedSeconds,
+  };
+  const enriched = mergeRecordFields(base, input.event);
+  return mergeOptionalAttempts(enriched, input.attempt, input.attemptMax);
+}
+
+function mergeRecordFields(base: JsonlRecord, event: ProgressEvent): JsonlRecord {
+  if (event.type === "chunk-plan") {
+    return {
+      ...base,
+      table: event.tableName,
+      chunk_count: event.chunkCount,
+      rows: event.chunkRows,
+      rows_total: event.rowCount,
+    };
+  }
+  if (event.type === "chunk-done") {
+    return {
+      ...base,
+      table: event.tableName,
+      chunk_index: event.chunkIndex,
+      chunk_count: event.chunkCount,
+      rows: event.rowsDone,
+      rows_total: event.rowsTotal,
+      rows_per_second: event.rowsPerSecond,
+      eta_table_s: event.etaTableSeconds,
+    };
+  }
+  if (event.type === "table-start") {
+    return {
+      ...base,
+      table: event.tableName,
+      rows_total: event.estimatedRows,
+      eta_total_s: event.etaSeconds,
+    };
+  }
+  if (event.type === "table-done") {
+    return {
+      ...base,
+      table: event.tableName,
+      rows_total: event.estimatedRows,
+      eta_total_s: event.etaSeconds,
+    };
+  }
+  if (event.type === "timeout-warning") {
+    return { ...base, table: event.tableName };
+  }
+  return base;
+}
+
+function mergeOptionalAttempts(
+  record: JsonlRecord,
+  attempt: number | undefined,
+  attemptMax: number | undefined,
+): JsonlRecord {
+  if (attempt === undefined && attemptMax === undefined) return record;
+  return { ...record, attempt, attempt_max: attemptMax };
 }
