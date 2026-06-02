@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 
 import { parseFavoritesFromSearchParams } from "../../lib/favorites";
 import { MyPageClient } from "./mypage-client";
+import { UserIdentityPanel } from "./user-identity-panel";
 
 export const dynamic = "force-dynamic";
 
@@ -36,6 +37,7 @@ export default async function MyPage({ searchParams }: MyPageProps) {
         </div>
         <span className="page-count">{initialFavorites.length} 件</span>
       </div>
+      <UserIdentityPanel />
       <MyPageClient initialFavorites={initialFavorites} />
     </section>
   );

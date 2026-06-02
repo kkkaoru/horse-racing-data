@@ -46,6 +46,7 @@ import {
   formatSexAge,
   isBanEiKeibajoCode,
 } from "../../../lib/runner-format";
+import { getOrCreateUserId } from "../../../lib/user-identity-indexeddb";
 import { FrameNumberBadge, HorseNameBadge } from "./frame-number-badge";
 import type { RealtimeRaceRequest } from "./realtime-client";
 import { useRealtimeRacePayload } from "./realtime-client";
@@ -626,6 +627,12 @@ const formatHistoryDate = (value: string): string => {
     second: "2-digit",
   }).format(date);
 };
+
+const HISTORY_USER_ID_DISPLAY_LENGTH = 8;
+const HISTORY_USER_ID_PLACEHOLDER = "-";
+
+export const formatUserIdForHistory = (userId: string | undefined): string =>
+  userId ? userId.slice(0, HISTORY_USER_ID_DISPLAY_LENGTH) : HISTORY_USER_ID_PLACEHOLDER;
 
 const getPaddockApiPath = ({
   day,
@@ -1374,6 +1381,7 @@ export function PaddockSection({
   >("idle");
   const [lastDiscordSentAt, setLastDiscordSentAt] = useState<number | null>(null);
   const [discordCooldownNow, setDiscordCooldownNow] = useState(() => Date.now());
+  const [userId, setUserId] = useState<string | null>(null);
   const submitSequenceRef = useRef(0);
   const optimisticUntilRef = useRef(0);
   const paddockBoardRef = useRef<HTMLElement | null>(null);
@@ -1515,6 +1523,23 @@ export function PaddockSection({
       window.clearInterval(timer);
     };
   }, [lastDiscordSentAt]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+    let cancelled = false;
+    const fetchUserId = async (): Promise<void> => {
+      const id = await getOrCreateUserId();
+      if (!cancelled) {
+        setUserId(id);
+      }
+    };
+    void fetchUserId();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Lazy-load recent race results in the paddock-edit flow so the SSR
   // payload stays small (the historical-results join produces ~360 rows for a
@@ -1698,13 +1723,15 @@ export function PaddockSection({
       const sequence = submitSequenceRef.current + 1;
       submitSequenceRef.current = sequence;
       optimisticUntilRef.current = Date.now() + 8_000;
-      setState((current) => (current ? applyPaddockAction(current, action) : current));
+      const actionWithUser =
+        action.type === "official-rank" || userId === null ? action : { ...action, userId };
+      setState((current) => (current ? applyPaddockAction(current, actionWithUser) : current));
       setError(null);
       void (async () => {
         const response = await fetchWithRetry(
           getPaddockRequestUrl(apiPath),
           {
-            body: JSON.stringify(action),
+            body: JSON.stringify(actionWithUser),
             credentials: "include",
             method: "POST",
           },
@@ -1732,7 +1759,7 @@ export function PaddockSection({
         setError(caught instanceof Error ? caught.message : String(caught));
       });
     },
-    [apiPath, editable, pastRaceEditSessionKey, raceStartsAt],
+    [apiPath, editable, pastRaceEditSessionKey, raceStartsAt, userId],
   );
 
   const notifyDiscord = useCallback(() => {
@@ -1975,6 +2002,13 @@ export function PaddockSection({
                           entry.delta && entry.delta > 0 ? "+1" : "-1"
                         }`}
                   </strong>
+                  <span
+                    aria-label="操作したユーザー"
+                    className="paddock-history-author"
+                    title={entry.userId ?? HISTORY_USER_ID_PLACEHOLDER}
+                  >
+                    {formatUserIdForHistory(entry.userId)}
+                  </span>
                 </li>
               ))}
             </ol>
