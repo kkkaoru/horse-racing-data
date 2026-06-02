@@ -1357,3 +1357,69 @@ it("getRaceTrendTodayStarterRows filters out rows missing horseCount", async () 
   });
   expect(rows).toStrictEqual([]);
 });
+
+// 2026-06-02 regression guard: NAR result snapshots only persist top-3
+// finishers, so a partial result row arriving from D1 carries
+// `horseCount=12` (mapped from `s.result_expected_horse_count`) even though
+// only 3 rows came back for that race. Verify that umaban >= 4 still
+// resolves wakuban correctly in this case, which is the exact bug from
+// nar:2026:0602:43:07.
+it("getRaceTrendTodayStarterRows derives wakuban for nar partial result row where rows.length=3 but horseCount=12", async () => {
+  const narPartialRow = {
+    source: "nar",
+    raceKey: "nar:2026:0602:43:07",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0602",
+    keibajoCode: "43",
+    raceBango: "07",
+    raceName: "Test Partial",
+    hassoJikoku: "2026-06-02T17:45:00+09:00",
+    umaban: "08",
+    horseCount: 12,
+    bamei: "PartialHorse",
+    jockeyName: "PartialJockey",
+    finishPosition: 1,
+    sohaTime: null,
+    bataijuInt: null,
+    zogenFugo: null,
+    zogenSaInt: null,
+  };
+  const { db } = buildD1Stub([narPartialRow]);
+  installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "43",
+    source: "nar",
+    targetYmd: "20260602",
+  });
+  expect(rows[0]?.wakuban).toBe("6");
+});
+
+it("getRaceTrendTodayStarterRows derives wakuban for nar 12-horse sibling umaban=4", async () => {
+  const narSiblingRow = {
+    source: "nar",
+    raceKey: "nar:2026:0602:43:02",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0602",
+    keibajoCode: "43",
+    raceBango: "02",
+    raceName: "Sibling 02",
+    hassoJikoku: "2026-06-02T15:00:00+09:00",
+    umaban: "04",
+    horseCount: 12,
+    bamei: "SiblingHorse",
+    jockeyName: "SiblingJockey",
+    finishPosition: 3,
+    sohaTime: null,
+    bataijuInt: null,
+    zogenFugo: null,
+    zogenSaInt: null,
+  };
+  const { db } = buildD1Stub([narSiblingRow]);
+  installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "43",
+    source: "nar",
+    targetYmd: "20260602",
+  });
+  expect(rows[0]?.wakuban).toBe("4");
+});

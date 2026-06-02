@@ -904,6 +904,97 @@ it("__testables.buildRowsFromSnapshotResults flags a partial row as not complete
   expect(rows[0]!.isComplete).toBe(false);
 });
 
+// 2026-06-02 regression guard: NAR result snapshots only persist top-3
+// finishers, so `input.rows.length` was 3 for a 12-horse race and the
+// wakuban bounds check (`umaban <= horseCount`) failed for every umaban
+// >= 4. `expectedHorseCount` (`result_expected_horse_count` in D1) is
+// written by the result writer before any partial snapshot lands, so it
+// is the authoritative source for the frame derivation.
+it("__testables.buildRowsFromSnapshotResults uses expectedHorseCount over rows.length for nar partial result", () => {
+  const buildPartialRow = (umaban: string, finishPosition: string): Record<string, unknown> => ({
+    changeAmount: null,
+    changeSign: null,
+    expectedHorseCount: 12,
+    fetchedAt: "2026-06-02T17:45:00+09:00",
+    finishPosition,
+    hassoJikoku: "2026-06-02T17:45:00+09:00",
+    horseName: null,
+    jockeyName: null,
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0602",
+    keibajoCode: "43",
+    raceBango: "07",
+    raceKey: "nar:2026:0602:43:07",
+    raceName: null,
+    resultCompleteAt: null,
+    savedHorseCount: 3,
+    sohaTime: null,
+    source: "nar",
+    umaban,
+    weight: null,
+  });
+  const snapshotRows: ReadonlyArray<Record<string, unknown>> = [
+    buildPartialRow("3", "1"),
+    buildPartialRow("8", "2"),
+    buildPartialRow("10", "3"),
+  ];
+  const filtered = snapshotRows.filter(__testables.isRawSnapshotRow);
+  const rows = __testables.buildRowsFromSnapshotResults(filtered, []);
+  expect(rows[0]!.starterRows.map((row) => row.wakuban)).toStrictEqual(["3", "6", "7"]);
+});
+
+it("__testables.buildRowsFromSnapshotResults falls back to rows.length when expectedHorseCount is null", () => {
+  const snapshotRows: ReadonlyArray<Record<string, unknown>> = [
+    {
+      changeAmount: null,
+      changeSign: null,
+      expectedHorseCount: null,
+      fetchedAt: "2026-06-02T19:30:00+09:00",
+      finishPosition: "1",
+      hassoJikoku: "2026-06-02T19:30:00+09:00",
+      horseName: null,
+      jockeyName: null,
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0602",
+      keibajoCode: "43",
+      raceBango: "08",
+      raceKey: "nar:2026:0602:43:08",
+      raceName: null,
+      resultCompleteAt: null,
+      savedHorseCount: null,
+      sohaTime: null,
+      source: "nar",
+      umaban: "1",
+      weight: null,
+    },
+    {
+      changeAmount: null,
+      changeSign: null,
+      expectedHorseCount: null,
+      fetchedAt: "2026-06-02T19:30:00+09:00",
+      finishPosition: "2",
+      hassoJikoku: "2026-06-02T19:30:00+09:00",
+      horseName: null,
+      jockeyName: null,
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0602",
+      keibajoCode: "43",
+      raceBango: "08",
+      raceKey: "nar:2026:0602:43:08",
+      raceName: null,
+      resultCompleteAt: null,
+      savedHorseCount: null,
+      sohaTime: null,
+      source: "nar",
+      umaban: "2",
+      weight: null,
+    },
+  ];
+  const filtered = snapshotRows.filter(__testables.isRawSnapshotRow);
+  const rows = __testables.buildRowsFromSnapshotResults(filtered, []);
+  expect(rows[0]!.starterRows.map((row) => row.wakuban)).toStrictEqual(["1", "2"]);
+});
+
 it("constructor hydrates state via blockConcurrencyWhile when storage has a persisted snapshot", async () => {
   const persisted: RaceTrendDailyTrackState = {
     keibajoCode: "06",
