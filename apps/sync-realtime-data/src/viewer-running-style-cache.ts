@@ -4,7 +4,10 @@ import { putD1QueryCache } from "./d1-query-cache";
 import { evaluateRunningStyleCacheCoverage } from "./running-style-entry-coverage";
 import { putRunningStyleCache } from "./running-style-cache";
 import type { RaceRunningStyleRow, RunningStyleInferenceRace } from "./running-style-d1";
-import { buildRealtimeRaceKeyFromRunningStyle } from "./running-style-features";
+import {
+  buildRealtimeRaceKeyFromRunningStyle,
+  buildViewerRunningStyleRaceKey,
+} from "./running-style-features";
 import { getLatestRaceEntries } from "./storage";
 import type { Env } from "./types";
 
@@ -66,7 +69,7 @@ export const putViewerRunningStyleRaceCache = async ({
   const urlWritten = await putRunningStyleCache({ env, race, rows: coverage.cacheableRows });
   await putD1QueryCache(
     "running-style-race",
-    ["getRaceRunningStylesFromD1", race.raceKey],
+    ["getRaceRunningStylesFromD1", buildViewerRunningStyleRaceKey(race)],
     viewerRows,
     {
       ctx,
