@@ -85,3 +85,8 @@ pre-commit:
     scripts-pytest:
       glob: "scripts/**/*.{py,pyi}"
       run: cd scripts && uv run pytest
+    # apps/pc-keiba-viewer/src/scripts/ 配下 Python (corner_lightgbm / finish_position_* / running_style_* 等)
+    # の品質チェック。 python:check が ruff + ty + basedpyright + pytest --cov-fail-under=95 を一括実行する。
+    python-pc-keiba-viewer:
+      glob: "apps/pc-keiba-viewer/src/scripts/**/*.{py,pyi}"
+      run: bun run --filter pc-keiba-viewer python:check
