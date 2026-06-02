@@ -2,6 +2,12 @@ import type { RaceSource } from "./codes";
 
 const JST_OFFSET_MS = 9 * 60 * 60_000;
 const HOUR_MS = 60 * 60_000;
+const HOURLY_THRESHOLD_MINUTES = 60;
+const FIVE_MIN_THRESHOLD_MINUTES = 15;
+const ONE_MIN_THRESHOLD_MINUTES = 1;
+const HOURLY_INTERVAL_MINUTES = 60;
+const FIVE_MIN_INTERVAL_MINUTES = 5;
+const ONE_MIN_INTERVAL_MINUTES = 1;
 
 export const NAR_ODDS_SALE_START_RULE = {
   createdAt: "2026-05-22",
@@ -18,15 +24,9 @@ interface OddsScheduleOptions {
 }
 
 export const getOddsFetchIntervalMinutes = (minutesUntilRace: number): number | null => {
-  if (minutesUntilRace >= 60) {
-    return 60;
-  }
-  if (minutesUntilRace >= 10) {
-    return 10;
-  }
-  if (minutesUntilRace >= 1) {
-    return 1;
-  }
+  if (minutesUntilRace >= HOURLY_THRESHOLD_MINUTES) return HOURLY_INTERVAL_MINUTES;
+  if (minutesUntilRace >= FIVE_MIN_THRESHOLD_MINUTES) return FIVE_MIN_INTERVAL_MINUTES;
+  if (minutesUntilRace >= ONE_MIN_THRESHOLD_MINUTES) return ONE_MIN_INTERVAL_MINUTES;
   return null;
 };
 
