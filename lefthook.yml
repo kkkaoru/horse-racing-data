@@ -71,6 +71,14 @@ pre-commit:
     test-horse-racing-schema:
       glob: "packages/horse-racing-schema/**/*.ts"
       run: bun run --filter horse-racing-schema test
+    tsc-catboost-json-tree:
+      glob: "packages/catboost-json-tree/**/*.ts"
+      run: bun run --filter catboost-json-tree tsc
+    # test:coverage enforces the vitest thresholds (all >= 95) so coverage
+    # cannot regress without an explicit threshold change.
+    test-catboost-json-tree:
+      glob: "packages/catboost-json-tree/**/*.ts"
+      run: bun run --filter catboost-json-tree test:coverage
     # scripts/ 配下 Python (pywinauto 自動化など) の品質チェック。
     # ruff/ty/basedpyright/pytest はプロジェクト全体に対して動くので {staged_files} は渡さない。
     # NOTE: gobwas matcher (lefthook default) では `dir/**/*.py` は dir 直下を match しないので
