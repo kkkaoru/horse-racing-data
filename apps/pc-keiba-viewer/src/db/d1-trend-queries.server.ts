@@ -360,12 +360,23 @@ const formatHassoJikoku = (raceStartAtJst: string | null): string | null => {
 // daily_race_entries is NEVER read from this worker (Phase 0 rule 3).
 //
 // 2026-06-01: wakuban is now derived for both JRA and NAR rows from
-// `umaban` + the race's distinct horse_count (the `race_horse_count` CTE)
-// via the shared `deriveWakubanString` helper. The snapshot tables don't
-// carry wakuban directly, and the trend page's today-only default filter
-// (e.g. `?raceTrendTargets=frame`) would otherwise drop every NAR row when
+// `umaban` + the race's actual horse_count via the shared
+// `deriveWakubanString` helper. The snapshot tables don't carry wakuban
+// directly, and the trend page's today-only default filter (e.g.
+// `?raceTrendTargets=frame`) would otherwise drop every NAR row when
 // grouping by frame. The frame distribution rule is the same official
 // algorithm for JRA / NAR / Ban-ei, so the same helper covers all sources.
+//
+// 2026-06-02: horse_count source switched from `count(distinct horse_number)
+// over latest_result` to `realtime_race_sources.result_expected_horse_count`.
+// NAR result snapshots only persist top-3 finishers (12-horse race ->
+// 3 rows), so the prior CTE was reporting horseCount=3 and the wakuban
+// bounds check (`horseNumber <= horseCount`) was failing for every umaban
+// >= 4 -> wakuban=null -> the aggregator dropped the row from the frame
+// target. `result_expected_horse_count` is the authoritative source written
+// by the result writer before any partial snapshot lands. When the column is
+// null (very early in the cycle), horseCount falls back to 0 and wakuban
+// stays null, preserving the prior degrade-gracefully behavior.
 const SELECT_SQL = `
   with latest_result as (
     select race_key, horse_number, finish_position, time
@@ -390,11 +401,6 @@ const SELECT_SQL = `
       select max(fetched_at) from horse_weight_snapshots w2
       where w2.race_key = w1.race_key and w2.horse_number = w1.horse_number
     )
-  ),
-  race_horse_count as (
-    select race_key, count(distinct horse_number) as horse_count
-    from latest_result
-    group by race_key
   )
   select
     s.source as source,
@@ -406,7 +412,7 @@ const SELECT_SQL = `
     s.race_name as raceName,
     s.race_start_at_jst as hassoJikoku,
     r.horse_number as umaban,
-    coalesce(hc.horse_count, 0) as horseCount,
+    coalesce(s.result_expected_horse_count, 0) as horseCount,
     e.horse_name as bamei,
     e.jockey_name as jockeyName,
     cast(nullif(replace(r.finish_position, ' ', ''), '') as integer) as finishPosition,
@@ -418,7 +424,6 @@ const SELECT_SQL = `
   join realtime_race_sources s on s.race_key = r.race_key
   left join latest_entry e on e.race_key = r.race_key and e.horse_number = r.horse_number
   left join latest_weight w on w.race_key = r.race_key and w.horse_number = r.horse_number
-  left join race_horse_count hc on hc.race_key = r.race_key
   where s.source = ?
     and s.kaisai_nen || s.kaisai_tsukihi between ? and ?
     and s.keibajo_code = ?

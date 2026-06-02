@@ -386,9 +386,15 @@ const isMatchingRunningStyle =
   (style: RawRunningStyleRow): style is RawRunningStyleRowWithLabel =>
     style.raceKey === raceKey && isRunningStyleLabel(style.predictedLabel);
 
+// NAR result snapshots only persist top-3 finishers, so `input.rows.length`
+// is 3 for a 12-horse race and the wakuban bounds check (`umaban <=
+// horseCount`) fails for every umaban >= 4 -> wakuban=null -> the viewer's
+// frame-target filter drops the row. Prefer `expectedHorseCount` (written
+// by the result writer before any partial snapshot lands) and fall back to
+// `rows.length` only when the column is null (very early in the cycle).
 const buildRowFromGroup = (input: BuildRowGroupInput): RaceTrendDailyTrackRow => {
   const first = input.rows[0]!;
-  const horseCount = input.rows.length;
+  const horseCount = first.expectedHorseCount ?? input.rows.length;
   return {
     fetchedAt: first.fetchedAt,
     finishedAt: first.resultCompleteAt,
