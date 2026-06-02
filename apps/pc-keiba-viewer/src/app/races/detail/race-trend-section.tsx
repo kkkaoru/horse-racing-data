@@ -277,6 +277,13 @@ const sortDetailsByLatestRace = (details: RaceTrendDetail[]): RaceTrendDetail[] 
     return (a.horseNumber ?? "").localeCompare(b.horseNumber ?? "", "ja", { numeric: true });
   });
 
+// Drop entry-only rows (未着順) from the expanded detail panel. The today-sibling
+// SQL path includes 馬番 with `finishPosition=0` so stats (`starts`) stay aligned
+// with the entry table, but the expanded historical-detail table must only show
+// actually-ranked rows or the user sees a row whose 着順 column reads "0".
+export const filterRankedDetails = (details: RaceTrendDetail[]): RaceTrendDetail[] =>
+  details.filter((detail) => detail.finishPosition > 0);
+
 interface RowSortContext {
   scores: Map<string, number | null>;
 }
@@ -937,8 +944,14 @@ function RowFragment({
     (trendTargets.runningStyle ? 1 : 0) +
     (trendTargets.jockey ? 1 : 0) +
     (trendTargets.raceNumber ? 1 : 0);
-  const detailRows = useMemo(() => sortDetailsByLatestRace(row.details), [row.details]);
-  const scoreDetailRows = useMemo(() => sortDetailsByLatestRace(scoreDetails), [scoreDetails]);
+  const detailRows = useMemo(
+    () => sortDetailsByLatestRace(filterRankedDetails(row.details)),
+    [row.details],
+  );
+  const scoreDetailRows = useMemo(
+    () => sortDetailsByLatestRace(filterRankedDetails(scoreDetails)),
+    [scoreDetails],
+  );
   const scoreValue = formatScore({ row, scores: umabanScores });
   const scoreIsClickable = scoreClickable && scoreValue !== SCORE_PLACEHOLDER;
 

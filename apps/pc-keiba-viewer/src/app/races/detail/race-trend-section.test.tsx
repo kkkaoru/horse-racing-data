@@ -11,7 +11,8 @@ vi.mock("./realtime-client", () => ({
     selector({ payload: null }),
 }));
 
-import { RaceTrendSection } from "./race-trend-section";
+import type { RaceTrendDetail } from "../../../lib/race-types";
+import { filterRankedDetails, RaceTrendSection } from "./race-trend-section";
 
 interface MockWebSocketLike {
   url: string;
@@ -824,4 +825,68 @@ test("manual retry button click reconnects after the circuit breaker trips", asy
     fireEvent.click(retryButton);
   });
   expect(installedSockets).toHaveLength(6);
+});
+
+const buildDetail = (finishPosition: number, date: string): RaceTrendDetail => ({
+  source: "jra",
+  date,
+  keibajoCode: "06",
+  raceNumber: "11",
+  raceName: null,
+  runningStyle: null,
+  frameNumber: null,
+  horseNumber: null,
+  horseName: null,
+  jockeyName: null,
+  popularity: null,
+  winOdds: null,
+  finishPosition,
+  time: null,
+  horseWeight: null,
+  horseWeightDelta: null,
+});
+
+test("filterRankedDetails excludes detail rows whose finishPosition is 0", () => {
+  const input: RaceTrendDetail[] = [
+    buildDetail(1, "2026-05-01"),
+    buildDetail(0, "2026-05-08"),
+    buildDetail(3, "2026-05-15"),
+  ];
+  const result = filterRankedDetails(input);
+  expect(result.map((detail) => detail.finishPosition)).toStrictEqual([1, 3]);
+});
+
+test("filterRankedDetails keeps every detail row when all finishPosition values are positive", () => {
+  const input: RaceTrendDetail[] = [
+    buildDetail(1, "2026-05-01"),
+    buildDetail(2, "2026-05-08"),
+    buildDetail(3, "2026-05-15"),
+  ];
+  const result = filterRankedDetails(input);
+  expect(result.map((detail) => detail.finishPosition)).toStrictEqual([1, 2, 3]);
+});
+
+test("filterRankedDetails returns an empty array when every detail row has finishPosition 0", () => {
+  const input: RaceTrendDetail[] = [
+    buildDetail(0, "2026-05-01"),
+    buildDetail(0, "2026-05-08"),
+    buildDetail(0, "2026-05-15"),
+  ];
+  const result = filterRankedDetails(input);
+  expect(result).toStrictEqual([]);
+});
+
+test("filterRankedDetails returns an empty array when the input is empty", () => {
+  const result = filterRankedDetails([]);
+  expect(result).toStrictEqual([]);
+});
+
+test("filterRankedDetails drops negative finishPosition rows defensively for malformed data", () => {
+  const input: RaceTrendDetail[] = [
+    buildDetail(-1, "2026-05-01"),
+    buildDetail(0, "2026-05-08"),
+    buildDetail(2, "2026-05-15"),
+  ];
+  const result = filterRankedDetails(input);
+  expect(result.map((detail) => detail.finishPosition)).toStrictEqual([2]);
 });
