@@ -43,17 +43,37 @@ describe("odds schedule", () => {
     ).toBe(new Date("2026-05-16T08:45:00+09:00").toISOString());
   });
 
-  it("uses ten minute slots from ten minutes to less than one hour before the race", () => {
-    expect(getOddsFetchIntervalMinutes(50)).toBe(10);
+  it("uses five minute slots from fifteen minutes to less than one hour before the race", () => {
+    expect(getOddsFetchIntervalMinutes(50)).toBe(5);
     expect(
       getNextOddsFetchAt(
         "2026-05-14T16:25:00+09:00",
         new Date("2026-05-14T15:37:00+09:00").getTime(),
       ),
-    ).toBe(new Date("2026-05-14T15:45:00+09:00").toISOString());
+    ).toBe(new Date("2026-05-14T15:40:00+09:00").toISOString());
   });
 
-  it("uses one minute slots from one minute to less than ten minutes before the race", () => {
+  it("returns five minute interval at exactly fifteen minutes before the race", () => {
+    expect(getOddsFetchIntervalMinutes(15)).toBe(5);
+  });
+
+  it("returns one minute interval at exactly fourteen minutes before the race", () => {
+    expect(getOddsFetchIntervalMinutes(14)).toBe(1);
+  });
+
+  it("returns hourly interval at exactly sixty minutes before the race", () => {
+    expect(getOddsFetchIntervalMinutes(60)).toBe(60);
+  });
+
+  it("returns one minute interval at exactly one minute before the race", () => {
+    expect(getOddsFetchIntervalMinutes(1)).toBe(1);
+  });
+
+  it("returns null at exactly zero minutes before the race", () => {
+    expect(getOddsFetchIntervalMinutes(0)).toBeNull();
+  });
+
+  it("uses one minute slots from one minute to less than fifteen minutes before the race", () => {
     expect(getOddsFetchIntervalMinutes(5)).toBe(1);
     expect(
       getNextOddsFetchAt(
@@ -84,7 +104,7 @@ describe("odds schedule", () => {
         new Date("2026-05-16T09:10:00+09:00").getTime(),
         "jra",
       ),
-    ).toBe(new Date("2026-05-16T09:15:00+09:00").toISOString());
+    ).toBe(new Date("2026-05-16T09:10:00+09:00").toISOString());
   });
 
   it("schedules NAR odds from the same-day venue sale start", () => {
