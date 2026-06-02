@@ -89,6 +89,14 @@ vi.mock("./running-style-cron", () => ({
   refreshViewerRunningStyleCacheForRace: vi.fn(async () => false),
   runRunningStyleCronTick: vi.fn(async () => ({})),
 }));
+vi.mock("./running-style-feature-materialize", () => ({
+  materializeRunningStyleFeatureParquetsForDate: vi.fn(async () => ({
+    date: "20260513",
+    materialized: 0,
+    scanned: 0,
+    skipped: 0,
+  })),
+}));
 vi.mock("./running-style-queue", () => ({ handleRunningStylePredictionJob: vi.fn() }));
 vi.mock("./postgres", () => ({
   fetchJraRacesByDate: vi.fn(async () => []),
@@ -297,6 +305,78 @@ it("scheduled triggers prewarm path for the prewarm cron", async () => {
     ctx,
   );
   await flushWaits(waits);
+});
+
+it("scheduled prewarm path logs materialize-running-style-features ok on success", async () => {
+  const { default: worker } = await import("./worker");
+  const { materializeRunningStyleFeatureParquetsForDate } =
+    await import("./running-style-feature-materialize");
+  const { logFetch } = await import("./storage");
+  vi.mocked(materializeRunningStyleFeatureParquetsForDate).mockResolvedValueOnce({
+    date: "20260513",
+    materialized: 3,
+    scanned: 3,
+    skipped: 0,
+  });
+  const env = buildEnv();
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "0 12 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    env,
+    ctx,
+  );
+  await flushWaits(waits);
+  expect(materializeRunningStyleFeatureParquetsForDate).toHaveBeenCalledWith(env, "20260513");
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "materialize-running-style-features",
+    "ok",
+    null,
+    JSON.stringify({ date: "20260513", materialized: 3, scanned: 3, skipped: 0, mode: "prewarm" }),
+  );
+});
+
+it("scheduled prewarm path logs materialize-running-style-features error when a race fails", async () => {
+  const { default: worker } = await import("./worker");
+  const { materializeRunningStyleFeatureParquetsForDate } =
+    await import("./running-style-feature-materialize");
+  const { logFetch } = await import("./storage");
+  vi.mocked(materializeRunningStyleFeatureParquetsForDate).mockResolvedValueOnce({
+    date: "20260513",
+    materialized: 0,
+    scanned: 1,
+    skipped: 1,
+    materializeError: "boom",
+  });
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "0 12 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv(),
+    ctx,
+  );
+  await flushWaits(waits);
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "materialize-running-style-features",
+    "error",
+    null,
+    JSON.stringify({
+      date: "20260513",
+      materialized: 0,
+      scanned: 1,
+      skipped: 1,
+      materializeError: "boom",
+      mode: "prewarm",
+    }),
+  );
 });
 
 it("scheduled triggers logWin5CronResult for the WIN5 cron", async () => {

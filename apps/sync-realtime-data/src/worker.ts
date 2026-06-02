@@ -117,6 +117,7 @@ import {
   refreshViewerRunningStyleCachesForDate,
   runRunningStyleCronTick,
 } from "./running-style-cron";
+import { materializeRunningStyleFeatureParquetsForDate } from "./running-style-feature-materialize";
 import { handleRunningStylePredictionJob } from "./running-style-queue";
 import { DAILY_FEATURE_BUILD_CRON, runDailyFeatureBuildForEnv } from "./daily-feature-build";
 import { WIN5_DISCOVER_CRON, logWin5CronResult } from "./win5-cron";
@@ -1330,6 +1331,14 @@ const prewarmRunningStylePredictionsForDate = async (
     targetDate,
     "running-style-prewarm",
   );
+  const materializeResult = await materializeRunningStyleFeatureParquetsForDate(env, targetDate);
+  await logFetch(
+    env.REALTIME_DB,
+    "materialize-running-style-features",
+    materializeResult.materializeError === undefined ? "ok" : "error",
+    null,
+    JSON.stringify({ ...materializeResult, mode: "prewarm" }),
+  );
   const runningStyleResult = await planRunningStylePredictionsForDate(env, targetDate, now);
   const cacheRefreshResult = await refreshViewerRunningStyleCachesForDate(env, targetDate, ctx);
   await logFetch(
@@ -1344,6 +1353,7 @@ const prewarmRunningStylePredictionsForDate = async (
     date: targetDate,
     discovery: discoveryResult,
     features: featureResult,
+    materialize: materializeResult,
     runningStyle: runningStyleResult,
   };
 };
