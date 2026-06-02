@@ -93,6 +93,7 @@ import {
   markPremiumRaceDataQueued,
   markResultFetchQueued,
   markTrackConditionQueued,
+  recordPartialResultFetch,
   recordPremiumPaddockNotificationEvent,
   replacePremiumRaceData,
   runD1Retention,
@@ -169,6 +170,14 @@ const QUEUE_SEND_BATCH_SIZE = 100;
 // cron would re-discover every 2 minutes, which is wasteful.
 const HOURLY_RECOVERY_MINUTE_THRESHOLD = 2;
 const RESULT_FETCH_LOCK_MINUTES = 10;
+// 2026-06-02: NAR keiba.go.jp upstream publishes results progressively — top-3
+// finishers first, then the remaining horses several minutes later. Without a
+// short retry lock the default RESULT_FETCH_LOCK_MINUTES would block re-fetch
+// for the entire 10 min window, leaving the viewer stuck on top-3 only. When
+// we detect a partial result (inserted < expectedHorseCount) we shorten the
+// lock to this value so the next result-poll cron tick (every 2 min) can
+// re-claim and pick up the freshly-published remaining rows.
+const RESULT_FETCH_RETRY_LOCK_MINUTES = 2;
 // NAR result HTML on rare occasions misses "取消" rows so the entry-derived
 // expectedHorseCount over-counts and isComplete stays false forever even after
 // every available result row has been persisted. We backstop that case by
@@ -2131,6 +2140,39 @@ export const shouldApplyNarResultCompletionBackstop = (
   return input.minutesAfterRaceStart >= NAR_RESULT_COMPLETION_BACKSTOP_MINUTES;
 };
 
+interface NarPartialResultRetryInput {
+  expectedHorseCount: number;
+  inserted: number;
+  minutesAfterRaceStart: number | null;
+  source: NarRaceSource["source"];
+}
+
+// NAR-only progressive-publish detector. keiba.go.jp publishes the top-3
+// finishers minutes before the full field, so a fetch right after upstream
+// publishes can land only 3 rows while expectedHorseCount counts all 12.
+// In that window the default RESULT_FETCH_LOCK_MINUTES (= 10) would block
+// re-fetch and leave the viewer stuck on top-3; instead we shorten the lock
+// to RESULT_FETCH_RETRY_LOCK_MINUTES (= 2) so the next cron tick can
+// re-claim and pick up the remaining rows. After
+// NAR_RESULT_COMPLETION_BACKSTOP_MINUTES has elapsed the completion backstop
+// takes over and the race is forced complete, so this retry path
+// intentionally short-circuits before that threshold to avoid infinite retry.
+export const shouldRetryNarPartialResult = (input: NarPartialResultRetryInput): boolean => {
+  if (input.source !== "nar") {
+    return false;
+  }
+  if (input.expectedHorseCount <= 0) {
+    return false;
+  }
+  if (input.inserted >= input.expectedHorseCount) {
+    return false;
+  }
+  if (input.minutesAfterRaceStart === null) {
+    return false;
+  }
+  return input.minutesAfterRaceStart < NAR_RESULT_COMPLETION_BACKSTOP_MINUTES;
+};
+
 const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> => {
   const now = getNow(env);
   const lockUntil = toJstIsoString(new Date(now.getTime() + RESULT_FETCH_LOCK_MINUTES * 60_000));
@@ -2198,14 +2240,57 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
     // <= 0, so the non-null assertion here is provably safe (same pattern as the
     // `match[1]!` regex captures elsewhere in this file). Keeping it as `!`
     // avoids a defensive `?? null` arm that v8 would mark as a dead branch.
+    const minutesAfterRaceStart = -minutesUntilRace(race, now)!;
     const narBackstop = shouldApplyNarResultCompletionBackstop({
       expectedHorseCount,
       inserted,
-      minutesAfterRaceStart: -minutesUntilRace(race, now)!,
+      minutesAfterRaceStart,
       resultCount: results.length,
       source: race.source,
     });
     const isComplete = baseComplete || narBackstop;
+    // 2026-06-02: NAR progressive-publish handling. If the upstream has only
+    // posted top-3 finishers but the field is larger, we record the partial
+    // state with a SHORT retry lock so the next result-poll cron tick can
+    // re-fetch and pick up the freshly-published remaining rows. We still
+    // push the partial rows to the trend DO and bust the viewer cache so the
+    // top-3 surface immediately; only the completion + default lock path is
+    // skipped. After NAR_RESULT_COMPLETION_BACKSTOP_MINUTES the completion
+    // backstop fires and isComplete becomes true, so the retry path
+    // intentionally short-circuits before that threshold.
+    const isPartialRetry =
+      !isComplete &&
+      shouldRetryNarPartialResult({
+        expectedHorseCount,
+        inserted,
+        minutesAfterRaceStart,
+        source: race.source,
+      });
+    if (isPartialRetry) {
+      const retryLockUntil = toJstIsoString(
+        new Date(now.getTime() + RESULT_FETCH_RETRY_LOCK_MINUTES * 60_000),
+      );
+      await recordPartialResultFetch(env.REALTIME_DB, raceKey, fetchedAt, retryLockUntil, {
+        expectedHorseCount,
+        savedHorseCount: inserted,
+      });
+      await pushResultsToRaceTrendDO(
+        env,
+        buildRaceTrendDailyTrackRow({ entries, fetchedAt, isComplete: false, race, results }),
+        race,
+      );
+      if (inserted > 0) {
+        await runTrendCacheBust(env, raceKey, race);
+      }
+      await logFetch(
+        env.REALTIME_DB,
+        "fetch-results",
+        "partial",
+        raceKey,
+        `inserted=${inserted} expected=${expectedHorseCount} retry-lock-minutes=${RESULT_FETCH_RETRY_LOCK_MINUTES}`,
+      );
+      return;
+    }
     await completeResultFetch(env.REALTIME_DB, raceKey, fetchedAt, {
       expectedHorseCount,
       isComplete,
