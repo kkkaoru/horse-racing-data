@@ -6,6 +6,7 @@ import {
   getRunningStyleCacheTtlSeconds,
 } from "./running-style-cache";
 import type { RunningStyleInferenceRace } from "./running-style-d1";
+import { buildViewerRunningStyleRaceKey } from "./running-style-features";
 import type { Env } from "./types";
 
 const getDefaultCache = (): Cache | null =>
@@ -15,14 +16,13 @@ export const isViewerRunningStyleRaceCacheReady = async (
   env: Env,
   race: RunningStyleInferenceRace,
 ): Promise<boolean> => {
-  const raceKey = race.raceKey;
   const raceDay = {
     kaisaiNen: race.kaisaiNen,
     kaisaiTsukihi: race.kaisaiTsukihi,
   };
   const hashCached = await readD1QueryCache<unknown[]>(
     "running-style-race",
-    ["getRaceRunningStylesFromD1", raceKey],
+    ["getRaceRunningStylesFromD1", buildViewerRunningStyleRaceKey(race)],
     { raceDay },
   );
   if (hashCached !== null && hashCached.length > 0) {

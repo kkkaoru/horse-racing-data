@@ -24,6 +24,16 @@ export const normalizeRaceBango = (value: string): string =>
 export const buildRunningStyleRaceKey = (params: RunningStyleRaceParams): string =>
   `${params.source}:${params.kaisaiNen}${params.kaisaiTsukihi}:${normalizeKeibajoCode(params.keibajoCode)}:${normalizeRaceBango(params.raceBango)}`;
 
+// pc-keiba-viewer reads the running-style hash cache under its `buildRaceKey`
+// (corner-running-style-parsers.ts) which is the 4-colon form
+// `${source}:${YYYY}:${MMDD}:${keibajo}:${race_bango}` with keibajo / race_bango
+// zero-padded to 2 digits. The D1 `race_key` stays in the compact
+// `${source}:${YYYYMMDD}:${keibajo}:${race_bango}` form (buildRunningStyleRaceKey),
+// so the viewer cache key (writer + readiness probe) is rebuilt here from the
+// race components and shared so both sides derive the identical key.
+export const buildViewerRunningStyleRaceKey = (params: RunningStyleRaceParams): string =>
+  `${params.source}:${params.kaisaiNen}:${params.kaisaiTsukihi}:${normalizeKeibajoCode(params.keibajoCode)}:${normalizeRaceBango(params.raceBango)}`;
+
 export const buildRealtimeRaceKeyFromRunningStyle = (params: RunningStyleRaceParams): string =>
   buildRealtimeRaceKey(
     params.source,
