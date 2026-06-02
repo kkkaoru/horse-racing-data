@@ -39,6 +39,7 @@ import {
   markPremiumRaceDataQueued,
   markResultFetchQueued,
   markTrackConditionQueued,
+  recordPartialResultFetch,
   recordPremiumPaddockNotificationEvent,
   runD1Retention,
   toHorseTrends,
@@ -138,6 +139,41 @@ it("failResultFetch binds raceKey", async () => {
   const db = { prepare } as unknown as D1Database;
   await failResultFetch(db, "key");
   expect(bind.mock.calls[0]![1]).toBe("key");
+});
+
+it("recordPartialResultFetch binds fetchedAt retryLockUntil and counts", async () => {
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await recordPartialResultFetch(
+    db,
+    "key",
+    "2026-06-02T10:00:00+09:00",
+    "2026-06-02T10:02:00+09:00",
+    {
+      expectedHorseCount: 12,
+      savedHorseCount: 3,
+    },
+  );
+  const args = bind.mock.calls[0]!;
+  expect(args[0]).toBe("2026-06-02T10:00:00+09:00");
+  expect(args[1]).toBe("2026-06-02T10:02:00+09:00");
+  expect(args[2]).toBe(12);
+  expect(args[3]).toBe(3);
+  expect(args[5]).toBe("key");
+});
+
+it("recordPartialResultFetch invokes run once", async () => {
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await recordPartialResultFetch(db, "nar:2026:0602:55:01", "x", "y", {
+    expectedHorseCount: 8,
+    savedHorseCount: 0,
+  });
+  expect(run).toHaveBeenCalledTimes(1);
 });
 
 it("completeTrackConditionFetch binds fetchedAt and keibajoCode", async () => {

@@ -771,6 +771,47 @@ export const failResultFetch = async (db: D1Database, raceKey: string): Promise<
     .run();
 };
 
+// Records a partial NAR result fetch. Unlike completeResultFetch this keeps
+// result_complete_at NULL and sets a SHORT result_fetch_lock_until so the next
+// result-poll cron tick can re-claim and re-fetch once the upstream finishes
+// publishing the remaining rows. Clears last_result_queued_at so the planner
+// can re-enqueue.
+export const recordPartialResultFetch = async (
+  db: D1Database,
+  raceKey: string,
+  fetchedAt: string,
+  retryLockUntil: string,
+  counts: {
+    expectedHorseCount: number;
+    savedHorseCount: number;
+  },
+): Promise<void> => {
+  const now = toJstIsoString();
+  await db
+    .prepare(
+      `
+        update realtime_race_sources
+        set last_result_fetch_at = ?,
+            last_result_queued_at = null,
+            result_fetch_lock_until = ?,
+            result_expected_horse_count = ?,
+            result_saved_horse_count = ?,
+            updated_at = ?
+        where race_key = ?
+          and result_complete_at is null
+      `,
+    )
+    .bind(
+      fetchedAt,
+      retryLockUntil,
+      counts.expectedHorseCount,
+      counts.savedHorseCount,
+      now,
+      raceKey,
+    )
+    .run();
+};
+
 export const insertHorseWeightSnapshot = async (
   db: D1Database,
   raceKey: string,

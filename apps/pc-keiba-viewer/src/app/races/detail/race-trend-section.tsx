@@ -277,12 +277,15 @@ const sortDetailsByLatestRace = (details: RaceTrendDetail[]): RaceTrendDetail[] 
     return (a.horseNumber ?? "").localeCompare(b.horseNumber ?? "", "ja", { numeric: true });
   });
 
-// Drop entry-only rows (未着順) from the expanded detail panel. The today-sibling
-// SQL path includes 馬番 with `finishPosition=0` so stats (`starts`) stay aligned
-// with the entry table, but the expanded historical-detail table must only show
-// actually-ranked rows or the user sees a row whose 着順 column reads "0".
-export const filterRankedDetails = (details: RaceTrendDetail[]): RaceTrendDetail[] =>
-  details.filter((detail) => detail.finishPosition > 0);
+// The today-sibling SQL path includes 馬番 with `finishPosition=0` (entry-only,
+// partial-result NAR races where some horses have not been ranked yet).
+// Aggregation already handles this (starts counts everyone, rates use only
+// ranked horses), but the expanded detail table renders raw finishPosition,
+// so unranked rows must render a placeholder instead of "0".
+export const UNRANKED_FINISH_PLACEHOLDER = "-";
+
+export const formatFinishPosition = (finishPosition: number): string =>
+  finishPosition > 0 ? String(finishPosition) : UNRANKED_FINISH_PLACEHOLDER;
 
 interface RowSortContext {
   scores: Map<string, number | null>;
@@ -944,14 +947,8 @@ function RowFragment({
     (trendTargets.runningStyle ? 1 : 0) +
     (trendTargets.jockey ? 1 : 0) +
     (trendTargets.raceNumber ? 1 : 0);
-  const detailRows = useMemo(
-    () => sortDetailsByLatestRace(filterRankedDetails(row.details)),
-    [row.details],
-  );
-  const scoreDetailRows = useMemo(
-    () => sortDetailsByLatestRace(filterRankedDetails(scoreDetails)),
-    [scoreDetails],
-  );
+  const detailRows = useMemo(() => sortDetailsByLatestRace(row.details), [row.details]);
+  const scoreDetailRows = useMemo(() => sortDetailsByLatestRace(scoreDetails), [scoreDetails]);
   const scoreValue = formatScore({ row, scores: umabanScores });
   const scoreIsClickable = scoreClickable && scoreValue !== SCORE_PLACEHOLDER;
 
@@ -1049,7 +1046,7 @@ function RowFragment({
                       <td>{detail.frameNumber ?? "-"}</td>
                       <td>{formatRunningStyle(detail.runningStyle)}</td>
                       <td>{detail.jockeyName ?? "-"}</td>
-                      <td>{detail.finishPosition}</td>
+                      <td>{formatFinishPosition(detail.finishPosition)}</td>
                       <td>{formatMedian(detail.popularity)}</td>
                       <td>{formatTrendWinOdds(detail.winOdds)}</td>
                       <td>{formatHorseWeight(detail.horseWeight, detail.horseWeightDelta)}</td>
@@ -1116,7 +1113,7 @@ function RowFragment({
                         <td>{detail.frameNumber ?? "-"}</td>
                         <td>{formatRunningStyle(detail.runningStyle)}</td>
                         <td>{detail.jockeyName ?? "-"}</td>
-                        <td>{detail.finishPosition}</td>
+                        <td>{formatFinishPosition(detail.finishPosition)}</td>
                         <td>{formatMedian(detail.popularity)}</td>
                         <td>{formatTrendWinOdds(detail.winOdds)}</td>
                         <td>{formatHorseWeight(detail.horseWeight, detail.horseWeightDelta)}</td>

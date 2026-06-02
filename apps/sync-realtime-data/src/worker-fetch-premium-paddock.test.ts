@@ -26,6 +26,7 @@ vi.mock("./storage", () => ({
   completeOddsFetch: vi.fn(async () => {}),
   failOddsFetch: vi.fn(async () => {}),
   completeResultFetch: vi.fn(async () => {}),
+  recordPartialResultFetch: vi.fn(async () => {}),
   failResultFetch: vi.fn(async () => {}),
   insertOddsSnapshot: vi.fn(async () => 0),
   insertHorseWeightSnapshot: vi.fn(async () => {}),
