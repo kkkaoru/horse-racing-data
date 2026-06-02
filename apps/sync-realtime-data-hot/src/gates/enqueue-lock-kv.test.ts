@@ -40,7 +40,16 @@ it("returns 60 at race start", () => {
   ).toBe(60);
 });
 
-it("returns 60 within final after window (2 minutes after race)", () => {
+it("returns 60 just after race start (1 minute after, still in grace)", () => {
+  expect(
+    calculateEnqueueLockTtlSeconds(
+      new Date("2026-05-28T10:00:00+09:00"),
+      new Date("2026-05-28T10:01:00+09:00"),
+    ),
+  ).toBe(60);
+});
+
+it("returns 60 at past-race grace boundary (2 minutes after race)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
@@ -67,13 +76,13 @@ it("returns 60 at final window edge (10 minutes before race)", () => {
   ).toBe(60);
 });
 
-it("returns 60 at final after window edge (3 minutes after race)", () => {
+it("returns 0 just past grace boundary (3 minutes after race)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
       new Date("2026-05-28T10:03:00+09:00"),
     ),
-  ).toBe(60);
+  ).toBe(0);
 });
 
 it("caps high-frequency TTL to 60 seconds near final boundary (11 minutes before race)", () => {
@@ -157,22 +166,31 @@ it("returns 3600 well before race (120 minutes before)", () => {
   ).toBe(3600);
 });
 
-it("returns 3600 well after race (4 minutes after)", () => {
+it("returns 0 well after race (4 minutes after)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
       new Date("2026-05-28T10:04:00+09:00"),
     ),
-  ).toBe(3600);
+  ).toBe(0);
 });
 
-it("returns 3600 well after race (5 minutes after)", () => {
+it("returns 0 well after race (5 minutes after)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
       new Date("2026-05-28T10:05:00+09:00"),
     ),
-  ).toBe(3600);
+  ).toBe(0);
+});
+
+it("returns 0 far past race (1 hour after race)", () => {
+  expect(
+    calculateEnqueueLockTtlSeconds(
+      new Date("2026-05-28T10:00:00+09:00"),
+      new Date("2026-05-28T11:00:00+09:00"),
+    ),
+  ).toBe(0);
 });
 
 it("isEnqueueLocked returns true when KV value present", async () => {

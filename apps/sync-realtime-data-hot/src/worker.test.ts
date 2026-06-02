@@ -811,6 +811,118 @@ it("runScheduledPlan skips populate when both stateCount and expectedCount are z
   expect(vi.mocked(populateTodayOddsFetchState)).not.toHaveBeenCalled();
 });
 
+it("runScheduledPlan logs and continues when countOddsFetchStateForDate throws", async () => {
+  const logRun = vi.fn(async () => ({ meta: { changes: 1 } }));
+  const prepareMock = vi.fn((sql: string) => {
+    const lowered = sql.toLowerCase();
+    if (lowered.includes("count(*)") && lowered.includes("from odds_fetch_state")) {
+      return {
+        bind: vi.fn(() => ({
+          first: vi.fn(async () => {
+            throw new Error("d1 count failed");
+          }),
+        })),
+      };
+    }
+    if (lowered.includes("insert into fetch_logs")) {
+      return { bind: vi.fn(() => ({ run: logRun })) };
+    }
+    if (lowered.includes("from odds_fetch_state")) {
+      return { bind: vi.fn(() => ({ all: vi.fn(async () => ({ results: [] })) })) };
+    }
+    return { bind: vi.fn(() => ({ run: vi.fn(async () => ({ meta: { changes: 1 } })) })) };
+  });
+  const env = buildEnv({
+    REALTIME_HOT_DB: {
+      batch: vi.fn(async () => []),
+      prepare: prepareMock,
+    } as unknown as D1Database,
+  });
+  await runScheduledPlan(env, new Date("2026-05-28T01:00:00Z"));
+  expect(logRun).toHaveBeenCalled();
+  expect(vi.mocked(populateTodayOddsFetchState)).not.toHaveBeenCalled();
+});
+
+it("runScheduledPlan logs and continues when getExpectedRaceCountForDate throws", async () => {
+  vi.mocked(getExpectedRaceCountForDate).mockRejectedValueOnce(new Error("hyperdrive down"));
+  const logRun = vi.fn(async () => ({ meta: { changes: 1 } }));
+  const env = buildEnv({ REALTIME_HOT_DB: buildDb({ logRun, stateCount: 5 }) });
+  await runScheduledPlan(env, new Date("2026-05-28T01:00:00Z"));
+  expect(logRun).toHaveBeenCalled();
+  expect(vi.mocked(populateTodayOddsFetchState)).not.toHaveBeenCalled();
+});
+
+it("runScheduledPlan logs and continues when populateTodayOddsFetchState throws", async () => {
+  vi.mocked(getExpectedRaceCountForDate).mockResolvedValueOnce(58);
+  vi.mocked(populateTodayOddsFetchState).mockRejectedValueOnce(new Error("populate failed"));
+  const logRun = vi.fn(async () => ({ meta: { changes: 1 } }));
+  const env = buildEnv({ REALTIME_HOT_DB: buildDb({ logRun, stateCount: 0 }) });
+  await runScheduledPlan(env, new Date("2026-05-28T01:00:00Z"));
+  expect(logRun).toHaveBeenCalled();
+});
+
+it("runScheduledPlan uses allSettled so a single planOddsFetches rejection does not block others", async () => {
+  let queueSendCalls = 0;
+  const queueSend = vi.fn(async () => {
+    queueSendCalls += 1;
+    if (queueSendCalls === 1) {
+      throw new Error("queue down on first call");
+    }
+  });
+  const logRun = vi.fn(async () => ({ meta: { changes: 1 } }));
+  // Cron now = 2026-05-29 13:41 UTC = 2026-05-29 22:41 JST, so plan dates
+  // are 20260529, 20260530, 20260531. Each entry's raceStart is set 24h
+  // ahead so the enqueue lock TTL is positive and queue.send is invoked.
+  const prepareMock = vi.fn((sql: string) => {
+    const lowered = sql.toLowerCase();
+    if (lowered.includes("count(*)") && lowered.includes("from odds_fetch_state")) {
+      return { bind: vi.fn(() => ({ first: vi.fn(async () => ({ count: 5 })) })) };
+    }
+    if (lowered.includes("insert into fetch_logs")) {
+      return { bind: vi.fn(() => ({ run: logRun })) };
+    }
+    if (lowered.includes("from odds_fetch_state")) {
+      return {
+        bind: vi.fn(() => ({
+          all: vi.fn(async () => ({
+            results: [
+              {
+                deba_url: "https://example.com",
+                kaisai_nen: "2026",
+                kaisai_tsukihi: "0530",
+                keibajo_code: "42",
+                last_odds_fetch_at: null,
+                odds_links_json: "{}",
+                race_bango: "01",
+                race_key: "nar:20260530:42:01",
+                race_start_at_jst: "2026-05-30T15:00:00+09:00",
+                source: "nar",
+              },
+            ],
+          })),
+        })),
+      };
+    }
+    return { bind: vi.fn(() => ({ run: vi.fn(async () => ({ meta: { changes: 1 } })) })) };
+  });
+  const env = buildEnv({
+    REALTIME_HOT_DB: {
+      batch: vi.fn(async () => []),
+      prepare: prepareMock,
+    } as unknown as D1Database,
+    REALTIME_HOT_JOBS: {
+      send: queueSend,
+      sendBatch: vi.fn(async () => undefined),
+    } as unknown as Queue<Job>,
+  });
+  await runScheduledPlan(env, new Date("2026-05-29T13:41:00Z"));
+  // The first queue.send threw (Promise.all inside planOddsFetches rejected
+  // for that source), but Promise.allSettled in runScheduledPlan kept the
+  // other dates running, so queueSend was hit more than once.
+  expect(queueSend.mock.calls.length).toBeGreaterThan(1);
+  expect(logRun).toHaveBeenCalled();
+});
+
 it("runScheduledPopulateMultiDay delegates to populateMultiDayOddsFetchState", async () => {
   const env = buildEnv();
   await runScheduledPopulateMultiDay(env, new Date("2026-05-28T20:55:00Z"));
@@ -874,6 +986,83 @@ it("handleScheduled dispatches populate-multi-day cron to runScheduledPopulateMu
   );
   expect(vi.mocked(populateMultiDayOddsFetchState)).toHaveBeenCalledTimes(1);
   expect(vi.mocked(populateTodayOddsFetchState)).not.toHaveBeenCalled();
+});
+
+it("handleScheduled catches runScheduledArchive rejection and logs via logFetch", async () => {
+  const logRun = vi.fn(async () => ({ meta: { changes: 1 } }));
+  const prepareMock = vi.fn((sql: string) => {
+    const lowered = sql.toLowerCase();
+    if (lowered.includes("insert into fetch_logs")) {
+      return { bind: vi.fn(() => ({ run: logRun })) };
+    }
+    if (lowered.includes("from odds_snapshots") && lowered.includes("group by")) {
+      return {
+        bind: vi.fn(() => ({
+          all: vi.fn(async () => {
+            throw new Error("archive list failed");
+          }),
+        })),
+      };
+    }
+    return { bind: vi.fn(() => ({ run: vi.fn(async () => ({ meta: { changes: 1 } })) })) };
+  });
+  const env = buildEnv({
+    REALTIME_HOT_DB: {
+      batch: vi.fn(async () => []),
+      prepare: prepareMock,
+    } as unknown as D1Database,
+  });
+  await handleScheduled(
+    {
+      cron: "0 4 * * *",
+      scheduledTime: new Date("2026-05-28T04:00:00Z").getTime(),
+      type: "scheduled",
+    } as unknown as ScheduledEvent,
+    env,
+  );
+  // handleScheduled completed without rethrowing; logFetch recorded the error.
+  expect(logRun).toHaveBeenCalled();
+});
+
+it("handleScheduled falls back to console.error when both inner work and logFetch throw", async () => {
+  const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const prepareMock = vi.fn((sql: string) => {
+    const lowered = sql.toLowerCase();
+    if (lowered.includes("insert into fetch_logs")) {
+      return {
+        bind: vi.fn(() => ({
+          run: vi.fn(async () => {
+            throw new Error("fetch_logs also down");
+          }),
+        })),
+      };
+    }
+    if (lowered.includes("from odds_snapshots") && lowered.includes("group by")) {
+      return {
+        bind: vi.fn(() => ({
+          all: vi.fn(async () => {
+            throw new Error("archive list failed");
+          }),
+        })),
+      };
+    }
+    return { bind: vi.fn(() => ({ run: vi.fn(async () => ({ meta: { changes: 1 } })) })) };
+  });
+  const env = buildEnv({
+    REALTIME_HOT_DB: {
+      batch: vi.fn(async () => []),
+      prepare: prepareMock,
+    } as unknown as D1Database,
+  });
+  await handleScheduled(
+    {
+      cron: "0 4 * * *",
+      scheduledTime: new Date("2026-05-28T04:00:00Z").getTime(),
+      type: "scheduled",
+    } as unknown as ScheduledEvent,
+    env,
+  );
+  expect(consoleSpy).toHaveBeenCalled();
 });
 
 it("handleScheduled does nothing for unknown cron", async () => {
