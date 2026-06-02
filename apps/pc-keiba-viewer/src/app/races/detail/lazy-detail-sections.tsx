@@ -29,6 +29,8 @@ import type {
 import { AbilityTestTable } from "./ability-test-table";
 import { BloodlineSimilarCombinedTable } from "./bloodline-similar-combined-table";
 import { BloodlineStatsTable } from "./bloodline-stats-table";
+import type { FinishPositionBucketSectionData } from "./detail-section-data";
+import { FinishPositionBucketEvaluationPanel } from "./finish-position-bucket-section";
 import { FinishPositionPredictionTable } from "./finish-position-prediction-table";
 import { HorseRaceResultsTable } from "./horse-race-results-table";
 import { OverallScoreTable } from "./overall-score-table";
@@ -156,6 +158,7 @@ type OverallScorePayload = {
 };
 
 type FinishPredictionPayload = {
+  bucket: FinishPositionBucketSectionData;
   evaluation: FinishPredictionEvaluationMetrics;
   inputs: FinishPredictionBuildInputs;
   type: "finish-prediction";
@@ -714,6 +717,14 @@ export function LazyFinishPredictionSection(props: LazyDetailSectionsProps) {
       <div className="section-heading compact">
         <h2>着順予測</h2>
       </div>
+      <FinishPositionBucketEvaluationPanel
+        evaluation={payload.bucket.bucketEvaluation}
+        gradeCode={payload.bucket.bucketGradeCode}
+        modelVersion={payload.bucket.bucketModelVersion}
+        race={payload.bucket.bucketRace}
+        scope={payload.bucket.bucketScope}
+        source={payload.bucket.bucketSource}
+      />
       <FinishPositionPredictionTable
         combinedScoreData={
           scoreState.payload?.type === "time-score"

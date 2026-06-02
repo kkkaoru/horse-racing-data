@@ -3,8 +3,13 @@ import { expect, it } from "vitest";
 
 import {
   buildBucketFilter,
+  buildFinishPositionBucketFilter,
+  buildFinishPositionBucketTiers,
+  deriveFinishPositionWilsonScoreCI,
+  FINISH_POSITION_BUCKET_MODEL_VERSIONS,
   FINISH_PREDICTION_PARAM_NAMES,
   getFinishPredictionDimensionFlags,
+  resolveFinishPositionBucketModelVersion,
 } from "./finish-prediction-dimensions";
 
 it("returns all flags ON by default for NAR non-banei without grade", () => {
@@ -469,6 +474,207 @@ it("derives category as nar for non-banei NAR keibajoCode", () => {
     },
   );
   expect(filter.category).toBe("nar");
+});
+
+it("re-exports jra v7-lineage model version as the single source of truth", () => {
+  expect(FINISH_POSITION_BUCKET_MODEL_VERSIONS.jra).toBe("jra-cb-v7-lineage-wf-21y");
+});
+
+it("re-exports nar v7-lineage model version as the single source of truth", () => {
+  expect(FINISH_POSITION_BUCKET_MODEL_VERSIONS.nar).toBe("nar-xgb-v7-lineage-wf-21y");
+});
+
+it("re-exports banei v7-lineage model version as the single source of truth", () => {
+  expect(FINISH_POSITION_BUCKET_MODEL_VERSIONS.banei).toBe("banei-cb-v7-lineage-wf-21y");
+});
+
+it("resolves the jra model version for the jra category", () => {
+  expect(resolveFinishPositionBucketModelVersion("jra")).toBe("jra-cb-v7-lineage-wf-21y");
+});
+
+it("resolves the nar model version for the nar category", () => {
+  expect(resolveFinishPositionBucketModelVersion("nar")).toBe("nar-xgb-v7-lineage-wf-21y");
+});
+
+it("resolves the banei model version for the ban-ei category", () => {
+  expect(resolveFinishPositionBucketModelVersion("ban-ei")).toBe("banei-cb-v7-lineage-wf-21y");
+});
+
+it("returns null when the category is unknown", () => {
+  expect(resolveFinishPositionBucketModelVersion("unknown")).toBe(null);
+});
+
+it("builds a finish-position bucket filter with modelVersion and default all period", () => {
+  const filter = buildFinishPositionBucketFilter({
+    flags: {
+      keibajo: true,
+      distance: true,
+      kyosoShubetsu: true,
+      kyosoJoken: true,
+      condition: false,
+      track: true,
+      grade: false,
+      raceName: false,
+    },
+    modelVersion: "jra-cb-v7-lineage-wf-21y",
+    query: {},
+    race: {
+      source: "jra",
+      keibajoCode: "05",
+      kyori: "2400",
+      kyosoShubetsuCode: "11",
+      kyosoJokenCode: "005",
+      kyosoJokenMeisho: "3歳未勝利",
+      trackCode: "10",
+      gradeCode: null,
+      kyosomeiHondai: null,
+      conditionKey: null,
+      raceName: null,
+    },
+  });
+  expect(filter.modelVersion).toBe("jra-cb-v7-lineage-wf-21y");
+  expect(filter.period).toBe("all");
+  expect(filter.category).toBe("jra");
+});
+
+it("reads oos-only period from the fp_period query param", () => {
+  const filter = buildFinishPositionBucketFilter({
+    flags: {
+      keibajo: true,
+      distance: false,
+      kyosoShubetsu: false,
+      kyosoJoken: false,
+      condition: false,
+      track: false,
+      grade: false,
+      raceName: false,
+    },
+    modelVersion: "nar-xgb-v7-lineage-wf-21y",
+    query: { fp_period: "oos-only" },
+    race: {
+      source: "nar",
+      keibajoCode: "30",
+      kyori: "1600",
+      kyosoShubetsuCode: "11",
+      kyosoJokenCode: null,
+      kyosoJokenMeisho: "B3",
+      trackCode: "10",
+      gradeCode: null,
+      kyosomeiHondai: null,
+      conditionKey: "B3",
+      raceName: null,
+    },
+  });
+  expect(filter.period).toBe("oos-only");
+});
+
+it("reads the first array element for the fp_period query param", () => {
+  const filter = buildFinishPositionBucketFilter({
+    flags: {
+      keibajo: true,
+      distance: false,
+      kyosoShubetsu: false,
+      kyosoJoken: false,
+      condition: false,
+      track: false,
+      grade: false,
+      raceName: false,
+    },
+    modelVersion: "nar-xgb-v7-lineage-wf-21y",
+    query: { fp_period: ["oos-only", "all"] },
+    race: {
+      source: "nar",
+      keibajoCode: "30",
+      kyori: "1600",
+      kyosoShubetsuCode: "11",
+      kyosoJokenCode: null,
+      kyosoJokenMeisho: "B3",
+      trackCode: "10",
+      gradeCode: null,
+      kyosomeiHondai: null,
+      conditionKey: "B3",
+      raceName: null,
+    },
+  });
+  expect(filter.period).toBe("oos-only");
+});
+
+it("builds three progressively-relaxed bucket tiers with exact flags first", () => {
+  const tiers = buildFinishPositionBucketTiers({
+    keibajo: true,
+    distance: true,
+    kyosoShubetsu: true,
+    kyosoJoken: true,
+    condition: false,
+    track: true,
+    grade: false,
+    raceName: false,
+  });
+  expect(tiers.length).toBe(3);
+  expect(tiers[0]?.level).toBe("exact");
+  expect(tiers[1]?.level).toBe("keibajo");
+  expect(tiers[2]?.level).toBe("category");
+});
+
+it("sets only the keibajo flag for the keibajo fallback tier", () => {
+  const tiers = buildFinishPositionBucketTiers({
+    keibajo: true,
+    distance: true,
+    kyosoShubetsu: true,
+    kyosoJoken: true,
+    condition: false,
+    track: true,
+    grade: false,
+    raceName: false,
+  });
+  expect(tiers[1]?.flags).toStrictEqual({
+    condition: false,
+    distance: false,
+    grade: false,
+    keibajo: true,
+    kyosoJoken: false,
+    kyosoShubetsu: false,
+    raceName: false,
+    track: false,
+  });
+});
+
+it("clears every flag for the category fallback tier", () => {
+  const tiers = buildFinishPositionBucketTiers({
+    keibajo: true,
+    distance: true,
+    kyosoShubetsu: true,
+    kyosoJoken: true,
+    condition: false,
+    track: true,
+    grade: false,
+    raceName: false,
+  });
+  expect(tiers[2]?.flags).toStrictEqual({
+    condition: false,
+    distance: false,
+    grade: false,
+    keibajo: false,
+    kyosoJoken: false,
+    kyosoShubetsu: false,
+    raceName: false,
+    track: false,
+  });
+});
+
+it("returns a zero Wilson interval when there are zero trials", () => {
+  expect(deriveFinishPositionWilsonScoreCI({ successes: 0, trials: 0 })).toStrictEqual({
+    lower: 0,
+    upper: 0,
+  });
+});
+
+it("returns a bounded Wilson interval for a half-success rate", () => {
+  const ci = deriveFinishPositionWilsonScoreCI({ successes: 50, trials: 100 });
+  expect(ci.lower > 0).toBe(true);
+  expect(ci.upper < 1).toBe(true);
+  expect(ci.lower < 0.5).toBe(true);
+  expect(ci.upper > 0.5).toBe(true);
 });
 
 it("parses null kyori as 0 via Number coercion", () => {

@@ -4,6 +4,10 @@ import { beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
+import type {
+  FinishPositionBucketFilter,
+  FinishPositionBucketMetrics,
+} from "../../../lib/finish-prediction-dimensions";
 import type { RaceDetail, Runner } from "../../../lib/race-types";
 import type {
   RunningStyleBucketFilter,
@@ -32,18 +36,27 @@ type GetRunningStyleBucketEvaluationFn = (args: {
   filter: RunningStyleBucketFilter;
 }) => Promise<RunningStyleBucketMetrics | null>;
 
-const { getRaceDetailMock, getRaceRunnersMock, getRunningStyleBucketEvaluationMock } = vi.hoisted(
-  () => ({
-    getRaceDetailMock: vi.fn<GetRaceDetailFn>(),
-    getRaceRunnersMock: vi.fn<GetRaceRunnersFn>(),
-    getRunningStyleBucketEvaluationMock: vi.fn<GetRunningStyleBucketEvaluationFn>(),
-  }),
-);
+type GetFinishPositionBucketEvaluationFn = (args: {
+  filter: FinishPositionBucketFilter;
+}) => Promise<FinishPositionBucketMetrics | null>;
+
+const {
+  getRaceDetailMock,
+  getRaceRunnersMock,
+  getRunningStyleBucketEvaluationMock,
+  getFinishPositionBucketEvaluationMock,
+} = vi.hoisted(() => ({
+  getRaceDetailMock: vi.fn<GetRaceDetailFn>(),
+  getRaceRunnersMock: vi.fn<GetRaceRunnersFn>(),
+  getRunningStyleBucketEvaluationMock: vi.fn<GetRunningStyleBucketEvaluationFn>(),
+  getFinishPositionBucketEvaluationMock: vi.fn<GetFinishPositionBucketEvaluationFn>(),
+}));
 
 vi.mock("../../../db/queries", () => ({
   getActiveFinishPositionPredictions: vi.fn<() => Promise<unknown[]>>(),
   getActiveFinishPredictionEvaluation: vi.fn<() => Promise<unknown>>(),
   getBloodlineStats: vi.fn<() => Promise<unknown[]>>(),
+  getFinishPositionBucketEvaluation: getFinishPositionBucketEvaluationMock,
   getFinishPositionSimilarityFeatures: vi.fn<() => Promise<unknown[]>>(),
   getFinishPositionStats: vi.fn<() => Promise<unknown[]>>(),
   getFrameStats: vi.fn<() => Promise<unknown[]>>(),
@@ -74,8 +87,11 @@ vi.mock("../../../lib/top-races-cache.server", () => ({
   readTopRaceWindowsWithSwr: vi.fn<() => Promise<unknown>>(),
 }));
 
-const { getDetailSectionPayload, getRunningStyleBucketSectionData } =
-  await import("./detail-section-data");
+const {
+  getDetailSectionPayload,
+  getFinishPositionBucketSectionData,
+  getRunningStyleBucketSectionData,
+} = await import("./detail-section-data");
 
 const JRA_RACE: RaceDetail = {
   babajotaiCodeDirt: null,
@@ -187,10 +203,29 @@ const HAPPY_METRICS: RunningStyleBucketMetrics = {
   weightedF1: 0.6,
 };
 
+const FINISH_HAPPY_METRICS: FinishPositionBucketMetrics = {
+  ndcgAt3Avg: 0.63,
+  pairScoreAvg: 0.7,
+  place1Accuracy: 0.52,
+  place2Accuracy: 0.28,
+  place3Accuracy: 0.2,
+  predictionCount: 1500,
+  raceCount: 120,
+  smallSampleWarning: false,
+  top1Accuracy: 0.525,
+  top1AccuracyCI: { lower: 0.49, upper: 0.56 },
+  top3BoxAccuracy: 0.12,
+  top3ExactAccuracy: 0.03,
+  top3PlaceRelationAvg: 0.57,
+  top3WinnerCaptureRate: 0.71,
+  top5WinnerCaptureRate: 0.86,
+};
+
 beforeEach(() => {
   getRaceDetailMock.mockReset();
   getRaceRunnersMock.mockReset();
   getRunningStyleBucketEvaluationMock.mockReset();
+  getFinishPositionBucketEvaluationMock.mockReset();
 });
 
 it("running-style payload returns empty values when getRaceDetail resolves null", async () => {
@@ -735,4 +770,110 @@ it("buildRunningStyleBucketSectionPayload falls back to the keibajo tier and exp
     raceName: false,
     track: false,
   });
+});
+
+it("finish-position bucket returns empty values when getRaceDetail resolves null", async () => {
+  getRaceDetailMock.mockResolvedValueOnce(null);
+  const data = await getFinishPositionBucketSectionData({
+    day: "30",
+    keibajoCode: "06",
+    month: "05",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+  expect(data).toStrictEqual({
+    bucketEvaluation: null,
+    bucketGradeCode: null,
+    bucketModelVersion: null,
+    bucketRace: null,
+    bucketScope: null,
+    bucketSource: null,
+  });
+  expect(getFinishPositionBucketEvaluationMock).not.toHaveBeenCalled();
+});
+
+it("finish-position bucket resolves the JRA v7-lineage model version on an exact-tier hit", async () => {
+  getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
+  getFinishPositionBucketEvaluationMock.mockResolvedValueOnce(FINISH_HAPPY_METRICS);
+  const data = await getFinishPositionBucketSectionData({
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+  expect(data.bucketModelVersion).toBe("jra-cb-v7-lineage-wf-21y");
+  expect(data.bucketEvaluation).toStrictEqual(FINISH_HAPPY_METRICS);
+  expect(data.bucketScope?.level).toBe("exact");
+  expect(data.bucketSource).toBe("jra");
+});
+
+it("finish-position bucket resolves the ban-ei v7-lineage model version", async () => {
+  getRaceDetailMock.mockResolvedValueOnce(BAN_EI_RACE);
+  getFinishPositionBucketEvaluationMock.mockResolvedValueOnce(FINISH_HAPPY_METRICS);
+  const data = await getFinishPositionBucketSectionData({
+    day: "30",
+    keibajoCode: "83",
+    month: "05",
+    query: {},
+    raceNumber: "11",
+    raceSource: "nar",
+    year: "2026",
+  });
+  expect(data.bucketModelVersion).toBe("banei-cb-v7-lineage-wf-21y");
+});
+
+it("finish-position bucket resolves the NAR v7-lineage model version", async () => {
+  getRaceDetailMock.mockResolvedValueOnce(NAR_RACE);
+  getFinishPositionBucketEvaluationMock.mockResolvedValueOnce(FINISH_HAPPY_METRICS);
+  const data = await getFinishPositionBucketSectionData({
+    day: "30",
+    keibajoCode: "55",
+    month: "05",
+    query: {},
+    raceNumber: "01",
+    raceSource: "nar",
+    year: "2026",
+  });
+  expect(data.bucketModelVersion).toBe("nar-xgb-v7-lineage-wf-21y");
+});
+
+it("finish-position bucket falls back to the category tier when exact and keibajo tiers miss", async () => {
+  getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
+  getFinishPositionBucketEvaluationMock
+    .mockResolvedValueOnce(null)
+    .mockResolvedValueOnce(null)
+    .mockResolvedValueOnce(FINISH_HAPPY_METRICS);
+  const data = await getFinishPositionBucketSectionData({
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+  expect(data.bucketScope?.level).toBe("category");
+  expect(getFinishPositionBucketEvaluationMock).toHaveBeenCalledTimes(3);
+});
+
+it("finish-position bucket returns a null evaluation when every tier misses", async () => {
+  getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
+  getFinishPositionBucketEvaluationMock.mockResolvedValue(null);
+  const data = await getFinishPositionBucketSectionData({
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+  expect(data.bucketEvaluation).toBe(null);
+  expect(data.bucketScope).toBe(null);
+  expect(data.bucketModelVersion).toBe("jra-cb-v7-lineage-wf-21y");
 });

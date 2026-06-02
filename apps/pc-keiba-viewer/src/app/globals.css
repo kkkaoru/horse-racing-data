@@ -1216,6 +1216,94 @@ h3 {
   font-weight: var(--number-700-14);
 }
 
+.finish-position-bucket-evaluation-panel {
+  display: grid;
+  gap: var(--space-8px-28);
+  margin-bottom: var(--space-14px-55);
+}
+
+.finish-position-bucket-evaluation-summary {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8px-28) var(--space-12px-9);
+}
+
+.finish-position-bucket-evaluation-summary span {
+  color: var(--muted);
+  font-size: var(--space-15px-1);
+  font-weight: var(--number-800-12);
+}
+
+.finish-position-bucket-evaluation-summary strong {
+  color: var(--ink);
+  font-size: var(--space-15px-1);
+  font-weight: var(--number-800-12);
+}
+
+.finish-position-bucket-evaluation-summary small {
+  color: var(--muted);
+  font-size: var(--space-15px-1);
+  font-weight: var(--number-700-14);
+}
+
+.finish-position-bucket-small-sample-badge {
+  color: var(--muted);
+  font-size: var(--space-13px-92);
+  font-weight: var(--number-700-14);
+}
+
+.finish-position-bucket-scope-notice {
+  color: var(--muted);
+  font-size: var(--space-13px-92);
+  line-height: var(--number-1-45-39);
+}
+
+.finish-position-bucket-model-version {
+  color: var(--muted);
+  font-size: var(--space-13px-92);
+  margin: var(--number-0-2);
+}
+
+.finish-position-bucket-empty-notice {
+  color: var(--muted);
+  font-size: var(--space-13px-92);
+  line-height: var(--number-1-45-39);
+  margin: var(--number-0-2);
+}
+
+.finish-position-bucket-metric-grid {
+  grid-template-columns: repeat(auto-fit, minmax(var(--space-132px-71), var(--space-1fr-51)));
+}
+
+.finish-position-bucket-metric-card {
+  background: var(--surface);
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-8px-28);
+  display: grid;
+  gap: var(--space-6px-33);
+  min-height: var(--space-72px-6);
+  padding: var(--space-12px-9);
+}
+
+.finish-position-bucket-metric-card span {
+  color: var(--muted);
+  font-size: var(--space-15px-1);
+  font-weight: var(--number-800-12);
+}
+
+.finish-position-bucket-metric-card strong {
+  color: var(--ink);
+  font-size: var(--space-18px-31);
+  font-weight: var(--number-800-12);
+}
+
+.finish-position-bucket-metric-ci {
+  color: var(--muted);
+  font-size: var(--space-13px-92);
+  font-weight: var(--number-700-14);
+}
+
 .year-nav {
   display: flex;
   gap: var(--space-8px-28);

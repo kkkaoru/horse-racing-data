@@ -16,6 +16,7 @@ export default defineConfig({
         "src/lib/**/*.ts",
         "src/app/races/calendar.tsx",
         "src/app/races/detail/runners-table.tsx",
+        "src/app/races/detail/finish-position-bucket-section.tsx",
       ],
       exclude: [
         "src/lib/paddock-server.ts",
