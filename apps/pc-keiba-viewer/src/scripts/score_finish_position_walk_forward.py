@@ -59,6 +59,17 @@ CATEGORY_SOURCE: dict[str, str] = {
     CATEGORY_BANEI: "nar",
 }
 
+# Category -> partition / loader-facing category string. Stage 4
+# (``evaluate-bucket-21y-v7lineage.ts``) and ``load_bucket_predictions.py`` both
+# key the bucket-eval slice on the literal ``ban-ei`` (hyphenated), so the parquet
+# ``category`` partition value must use that canonical name even though this
+# script's own ``--category`` flag spells it ``banei`` (no hyphen).
+CATEGORY_PARTITION: dict[str, str] = {
+    CATEGORY_JRA: "jra",
+    CATEGORY_NAR: "nar",
+    CATEGORY_BANEI: "ban-ei",
+}
+
 CATEGORY_NO_CAT_FEATURES: dict[str, bool] = {
     CATEGORY_JRA: True,
     CATEGORY_NAR: False,
@@ -398,7 +409,7 @@ def to_parquet_frame(
         "model_version": args["walk_forward_namespace"],
         "running_style_feature_version": args["running_style_feature_version"],
         "finish_position_version": args["finish_position_version"],
-        "category": args["category"],
+        "category": CATEGORY_PARTITION[args["category"]],
         "race_year": valid_year,
     })
     return frame[list(PARQUET_OUTPUT_COLUMNS)]
