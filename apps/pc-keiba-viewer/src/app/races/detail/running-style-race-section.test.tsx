@@ -88,6 +88,7 @@ const EMPTY_BUCKET_SECTION_DATA: RunningStyleBucketSectionData = {
   bucketEvaluation: null,
   bucketGradeCode: null,
   bucketRace: null,
+  bucketScope: null,
   bucketSource: null,
   dimensionFlags: null,
 };
@@ -298,6 +299,7 @@ describe("RunningStyleRaceSection", () => {
       bucketEvaluation: buildEvaluation({}),
       bucketGradeCode: "A",
       bucketRace: buildBucketRace({}),
+      bucketScope: { flags: buildFlags({}), level: "exact" },
       bucketSource: "jra",
       dimensionFlags: buildFlags({}),
     });
@@ -316,7 +318,7 @@ describe("RunningStyleRaceSection", () => {
       year: "2024",
     });
     const html = renderToString(element);
-    expect(html).toContain("同条件 bucket での検証精度");
+    expect(html).toContain("の脚質精度");
     expect(html).toContain("65.3%");
     expect(getRunningStyleBucketSectionDataMock).toHaveBeenCalledWith({
       day: "22",
@@ -384,6 +386,6 @@ describe("RunningStyleRaceSection", () => {
     });
     const html = renderToString(element);
     expect(html).toContain("テストホース");
-    expect(html).not.toContain("同条件 bucket での検証精度");
+    expect(html).not.toContain("の脚質精度");
   });
 });

@@ -207,6 +207,7 @@ it("running-style payload returns empty values when getRaceDetail resolves null"
   expect(payload).toStrictEqual({
     bucketEvaluation: null,
     bucketFilter: null,
+    bucketScope: null,
     dimensionFlags: {
       condition: false,
       distance: false,
@@ -236,6 +237,7 @@ it("running-style payload skips bucket evaluation fetch for ban-ei race", async 
   expect(payload).toStrictEqual({
     bucketEvaluation: null,
     bucketFilter: null,
+    bucketScope: null,
     dimensionFlags: {
       condition: false,
       distance: false,
@@ -288,6 +290,19 @@ it("running-style payload fetches bucket evaluation with default-on dimension fl
       source: "jra",
       trackCode: "10",
     },
+    bucketScope: {
+      flags: {
+        condition: false,
+        distance: true,
+        grade: false,
+        keibajo: true,
+        kyosoJoken: true,
+        kyosoShubetsu: true,
+        raceName: false,
+        track: true,
+      },
+      level: "exact",
+    },
     dimensionFlags: {
       condition: false,
       distance: true,
@@ -304,7 +319,7 @@ it("running-style payload fetches bucket evaluation with default-on dimension fl
 
 it("running-style payload propagates URL params to disable distance flag", async () => {
   getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
-  getRunningStyleBucketEvaluationMock.mockResolvedValueOnce(null);
+  getRunningStyleBucketEvaluationMock.mockResolvedValue(null);
   const payload = await getDetailSectionPayload("running-style", {
     day: "28",
     keibajoCode: "06",
@@ -383,7 +398,7 @@ it("running-style payload builds NAR filter with condition key fallback from kyo
 
 it("running-style payload returns null bucket evaluation when DB returns no metrics", async () => {
   getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
-  getRunningStyleBucketEvaluationMock.mockResolvedValueOnce(null);
+  getRunningStyleBucketEvaluationMock.mockResolvedValue(null);
   const payload = await getDetailSectionPayload("running-style", {
     day: "28",
     keibajoCode: "06",
@@ -435,6 +450,7 @@ it("getRunningStyleBucketSectionData returns empty bucket data when getRaceDetai
     bucketEvaluation: null,
     bucketGradeCode: null,
     bucketRace: null,
+    bucketScope: null,
     bucketSource: null,
     dimensionFlags: null,
   });
@@ -456,6 +472,7 @@ it("getRunningStyleBucketSectionData returns empty bucket data for ban-ei race",
     bucketEvaluation: null,
     bucketGradeCode: null,
     bucketRace: null,
+    bucketScope: null,
     bucketSource: null,
     dimensionFlags: null,
   });
@@ -488,6 +505,19 @@ it("getRunningStyleBucketSectionData fetches bucket evaluation and exposes bucke
       source: "jra",
       trackCode: "10",
     },
+    bucketScope: {
+      flags: {
+        condition: false,
+        distance: true,
+        grade: false,
+        keibajo: true,
+        kyosoJoken: true,
+        kyosoShubetsu: true,
+        raceName: false,
+        track: true,
+      },
+      level: "exact",
+    },
     bucketSource: "jra",
     dimensionFlags: {
       condition: false,
@@ -504,7 +534,7 @@ it("getRunningStyleBucketSectionData fetches bucket evaluation and exposes bucke
 
 it("getRunningStyleBucketSectionData propagates URL params to dimension flags", async () => {
   getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
-  getRunningStyleBucketEvaluationMock.mockResolvedValueOnce(null);
+  getRunningStyleBucketEvaluationMock.mockResolvedValue(null);
   const data = await getRunningStyleBucketSectionData({
     day: "28",
     keibajoCode: "06",
@@ -528,7 +558,7 @@ it("getRunningStyleBucketSectionData propagates URL params to dimension flags", 
 
 it("getRunningStyleBucketSectionData returns null bucketEvaluation when DB returns no metrics", async () => {
   getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
-  getRunningStyleBucketEvaluationMock.mockResolvedValueOnce(null);
+  getRunningStyleBucketEvaluationMock.mockResolvedValue(null);
   const data = await getRunningStyleBucketSectionData({
     day: "28",
     keibajoCode: "06",
@@ -539,4 +569,170 @@ it("getRunningStyleBucketSectionData returns null bucketEvaluation when DB retur
     year: "2025",
   });
   expect(data.bucketEvaluation).toBe(null);
+  expect(data.bucketScope).toBe(null);
+});
+
+it("getRunningStyleBucketSectionData reports the exact tier when the first call returns metrics", async () => {
+  getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
+  getRunningStyleBucketEvaluationMock.mockResolvedValueOnce(HAPPY_METRICS);
+  const data = await getRunningStyleBucketSectionData({
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+  expect(getRunningStyleBucketEvaluationMock).toHaveBeenCalledTimes(1);
+  expect(data.bucketScope).toStrictEqual({
+    flags: {
+      condition: false,
+      distance: true,
+      grade: false,
+      keibajo: true,
+      kyosoJoken: true,
+      kyosoShubetsu: true,
+      raceName: false,
+      track: true,
+    },
+    level: "exact",
+  });
+});
+
+it("getRunningStyleBucketSectionData falls back to the keibajo tier when the exact call returns null", async () => {
+  getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
+  getRunningStyleBucketEvaluationMock.mockResolvedValueOnce(null);
+  getRunningStyleBucketEvaluationMock.mockResolvedValueOnce(HAPPY_METRICS);
+  const data = await getRunningStyleBucketSectionData({
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+  expect(getRunningStyleBucketEvaluationMock).toHaveBeenCalledTimes(2);
+  const keibajoCallArg = getRunningStyleBucketEvaluationMock.mock.calls[1]?.[0];
+  if (keibajoCallArg === undefined) {
+    throw new Error("expected a second bucket evaluation call");
+  }
+  expect(keibajoCallArg.filter.enabled).toStrictEqual({
+    condition: false,
+    distance: false,
+    grade: false,
+    keibajo: true,
+    kyosoJoken: false,
+    kyosoShubetsu: false,
+    raceName: false,
+    track: false,
+  });
+  expect(data.bucketEvaluation).toStrictEqual(HAPPY_METRICS);
+  expect(data.bucketScope).toStrictEqual({
+    flags: {
+      condition: false,
+      distance: false,
+      grade: false,
+      keibajo: true,
+      kyosoJoken: false,
+      kyosoShubetsu: false,
+      raceName: false,
+      track: false,
+    },
+    level: "keibajo",
+  });
+});
+
+it("getRunningStyleBucketSectionData falls back to the category tier when exact and keibajo return null", async () => {
+  getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
+  getRunningStyleBucketEvaluationMock.mockResolvedValueOnce(null);
+  getRunningStyleBucketEvaluationMock.mockResolvedValueOnce(null);
+  getRunningStyleBucketEvaluationMock.mockResolvedValueOnce(HAPPY_METRICS);
+  const data = await getRunningStyleBucketSectionData({
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+  expect(getRunningStyleBucketEvaluationMock).toHaveBeenCalledTimes(3);
+  const categoryCallArg = getRunningStyleBucketEvaluationMock.mock.calls[2]?.[0];
+  if (categoryCallArg === undefined) {
+    throw new Error("expected a third bucket evaluation call");
+  }
+  expect(categoryCallArg.filter.enabled).toStrictEqual({
+    condition: false,
+    distance: false,
+    grade: false,
+    keibajo: false,
+    kyosoJoken: false,
+    kyosoShubetsu: false,
+    raceName: false,
+    track: false,
+  });
+  expect(data.bucketScope).toStrictEqual({
+    flags: {
+      condition: false,
+      distance: false,
+      grade: false,
+      keibajo: false,
+      kyosoJoken: false,
+      kyosoShubetsu: false,
+      raceName: false,
+      track: false,
+    },
+    level: "category",
+  });
+});
+
+it("buildRunningStyleBucketSectionPayload falls back to the keibajo tier and exposes the broadened filter", async () => {
+  getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
+  getRunningStyleBucketEvaluationMock.mockResolvedValueOnce(null);
+  getRunningStyleBucketEvaluationMock.mockResolvedValueOnce(HAPPY_METRICS);
+  const payload = await getDetailSectionPayload("running-style", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+  if (
+    payload === null ||
+    typeof payload !== "object" ||
+    !("type" in payload) ||
+    payload.type !== "running-style" ||
+    !("bucketScope" in payload) ||
+    !("bucketFilter" in payload)
+  ) {
+    throw new Error("payload must be a running-style payload");
+  }
+  expect(getRunningStyleBucketEvaluationMock).toHaveBeenCalledTimes(2);
+  expect(payload.bucketScope).toStrictEqual({
+    flags: {
+      condition: false,
+      distance: false,
+      grade: false,
+      keibajo: true,
+      kyosoJoken: false,
+      kyosoShubetsu: false,
+      raceName: false,
+      track: false,
+    },
+    level: "keibajo",
+  });
+  expect(payload.bucketFilter?.enabled).toStrictEqual({
+    condition: false,
+    distance: false,
+    grade: false,
+    keibajo: true,
+    kyosoJoken: false,
+    kyosoShubetsu: false,
+    raceName: false,
+    track: false,
+  });
 });

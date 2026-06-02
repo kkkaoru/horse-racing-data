@@ -76,6 +76,7 @@ import {
   type RaceRowForRunningStyleBucketFilter,
   type RunningStyleBucketFilter,
   type RunningStyleBucketMetrics,
+  type RunningStyleBucketScope,
   type RunningStyleDimensionFlags,
 } from "../../../lib/running-style-prediction-dimensions";
 
@@ -96,12 +97,14 @@ export type DetailSection =
 export interface RunningStyleBucketSectionPayload {
   bucketEvaluation: RunningStyleBucketMetrics | null;
   bucketFilter: RunningStyleBucketFilter | null;
+  bucketScope: RunningStyleBucketScope | null;
   dimensionFlags: RunningStyleDimensionFlags;
   type: "running-style";
 }
 
 export interface RunningStyleBucketSectionData {
   bucketEvaluation: RunningStyleBucketMetrics | null;
+  bucketScope: RunningStyleBucketScope | null;
   bucketRace: RaceRowForRunningStyleBucketFilter | null;
   bucketSource: "jra" | "nar" | null;
   bucketGradeCode: string | null;
@@ -118,7 +121,46 @@ export interface DetailSectionParams {
   year: string;
 }
 
+interface RunningStyleBucketTier {
+  level: RunningStyleBucketScope["level"];
+  flags: RunningStyleDimensionFlags;
+}
+
+interface RunningStyleBucketResolution {
+  bucketEvaluation: RunningStyleBucketMetrics | null;
+  bucketFilter: RunningStyleBucketFilter | null;
+  bucketScope: RunningStyleBucketScope | null;
+}
+
+interface ResolveRunningStyleBucketInput {
+  race: RaceRowForRunningStyleBucketFilter;
+  query: Record<string, string | string[] | undefined>;
+  tiers: readonly RunningStyleBucketTier[];
+}
+
 const LISTED_OR_HIGHER_GRADE_CODES = new Set(["A", "B", "C", "D", "F", "G", "H", "L", "S"]);
+
+const RUNNING_STYLE_KEIBAJO_ONLY_FLAGS: RunningStyleDimensionFlags = {
+  condition: false,
+  distance: false,
+  grade: false,
+  keibajo: true,
+  kyosoJoken: false,
+  kyosoShubetsu: false,
+  raceName: false,
+  track: false,
+};
+
+const RUNNING_STYLE_CATEGORY_ONLY_FLAGS: RunningStyleDimensionFlags = {
+  condition: false,
+  distance: false,
+  grade: false,
+  keibajo: false,
+  kyosoJoken: false,
+  kyosoShubetsu: false,
+  raceName: false,
+  track: false,
+};
 
 const CONDITION_ANALYSIS_RELAX_KEYS = [
   "includeRaceTitle",
@@ -1028,9 +1070,51 @@ const EMPTY_RUNNING_STYLE_FLAGS: RunningStyleDimensionFlags = {
 const buildEmptyRunningStyleBucketPayload = (): RunningStyleBucketSectionPayload => ({
   bucketEvaluation: null,
   bucketFilter: null,
+  bucketScope: null,
   dimensionFlags: EMPTY_RUNNING_STYLE_FLAGS,
   type: "running-style",
 });
+
+const EMPTY_RUNNING_STYLE_BUCKET_RESOLUTION: RunningStyleBucketResolution = {
+  bucketEvaluation: null,
+  bucketFilter: null,
+  bucketScope: null,
+};
+
+const buildRunningStyleBucketTiers = (
+  flags: RunningStyleDimensionFlags,
+): readonly RunningStyleBucketTier[] => [
+  { flags, level: "exact" },
+  { flags: RUNNING_STYLE_KEIBAJO_ONLY_FLAGS, level: "keibajo" },
+  { flags: RUNNING_STYLE_CATEGORY_ONLY_FLAGS, level: "category" },
+];
+
+// Resolve the bucket evaluation across progressively-relaxed dimension tiers,
+// stopping at the first tier that returns metrics. Recursion keeps the early-exit
+// behaviour without a for loop or extra nesting.
+const resolveRunningStyleBucketTier = async (
+  input: ResolveRunningStyleBucketInput,
+  index: number,
+): Promise<RunningStyleBucketResolution> => {
+  const tier = input.tiers[index];
+  if (tier === undefined) {
+    return EMPTY_RUNNING_STYLE_BUCKET_RESOLUTION;
+  }
+  const bucketFilter = buildRunningStyleBucketFilter({
+    flags: tier.flags,
+    query: input.query,
+    race: input.race,
+  });
+  const bucketEvaluation = await getRunningStyleBucketEvaluation({ filter: bucketFilter });
+  if (bucketEvaluation === null) {
+    return resolveRunningStyleBucketTier(input, index + 1);
+  }
+  return {
+    bucketEvaluation,
+    bucketFilter,
+    bucketScope: { flags: tier.flags, level: tier.level },
+  };
+};
 
 const parseKyoriOrZero = (value: string | null | undefined): number => {
   if (value === null || value === undefined) {
@@ -1056,6 +1140,7 @@ const buildEmptyRunningStyleBucketSectionData = (): RunningStyleBucketSectionDat
   bucketEvaluation: null,
   bucketGradeCode: null,
   bucketRace: null,
+  bucketScope: null,
   bucketSource: null,
   dimensionFlags: null,
 });
@@ -1079,12 +1164,15 @@ export const getRunningStyleBucketSectionData = async (
     source: race.source,
   });
   const bucketRace = buildBucketRaceFromRaceDetail(race);
-  const bucketFilter = buildRunningStyleBucketFilter({ flags, race: bucketRace });
-  const bucketEvaluation = await getRunningStyleBucketEvaluation({ filter: bucketFilter });
+  const resolution = await resolveRunningStyleBucketTier(
+    { query, race: bucketRace, tiers: buildRunningStyleBucketTiers(flags) },
+    0,
+  );
   return {
-    bucketEvaluation,
+    bucketEvaluation: resolution.bucketEvaluation,
     bucketGradeCode: race.gradeCode ?? null,
     bucketRace,
+    bucketScope: resolution.bucketScope,
     bucketSource: race.source,
     dimensionFlags: flags,
   };
@@ -1108,14 +1196,15 @@ const buildRunningStyleBucketSectionPayload = async (
     query,
     source: race.source,
   });
-  const bucketFilter = buildRunningStyleBucketFilter({
-    flags,
-    race: buildBucketRaceFromRaceDetail(race),
-  });
-  const bucketEvaluation = await getRunningStyleBucketEvaluation({ filter: bucketFilter });
+  const bucketRace = buildBucketRaceFromRaceDetail(race);
+  const resolution = await resolveRunningStyleBucketTier(
+    { query, race: bucketRace, tiers: buildRunningStyleBucketTiers(flags) },
+    0,
+  );
   return {
-    bucketEvaluation,
-    bucketFilter,
+    bucketEvaluation: resolution.bucketEvaluation,
+    bucketFilter: resolution.bucketFilter,
+    bucketScope: resolution.bucketScope,
     dimensionFlags: flags,
     type: "running-style",
   };

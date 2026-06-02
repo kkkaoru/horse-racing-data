@@ -1092,6 +1092,130 @@ h3 {
   color: var(--color-hex-fff-19);
 }
 
+.running-style-bucket-controls {
+  display: grid;
+  gap: var(--space-8px-28);
+  margin-bottom: var(--space-14px-55);
+}
+
+.running-style-bucket-toggles-caption {
+  display: grid;
+  gap: var(--space-4px-18);
+}
+
+.running-style-bucket-toggles-heading {
+  color: var(--ink);
+  font-size: var(--space-15px-1);
+  font-weight: var(--number-800-12);
+  margin: var(--number-0-2);
+}
+
+.running-style-bucket-toggles-help {
+  color: var(--muted);
+  font-size: var(--space-13px-92);
+  line-height: var(--number-1-45-39);
+  margin: var(--number-0-2);
+}
+
+.running-style-bucket-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8px-28);
+}
+
+.running-style-bucket-toggle-label {
+  align-items: center;
+  background: var(--surface);
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-6px-33);
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: var(--space-15px-1);
+  font-weight: var(--number-700-14);
+  gap: var(--space-6px-33);
+  min-height: var(--space-38px-35);
+  padding: var(--space-8px-28) var(--space-12px-9);
+}
+
+.running-style-bucket-toggle-label:has(input:checked) {
+  background: var(--color-hex-2f4437-95);
+  border-color: var(--color-hex-2f4437-95);
+  color: var(--color-hex-fff-19);
+  font-weight: var(--number-800-12);
+}
+
+.running-style-bucket-toggle-label input {
+  accent-color: var(--accent);
+  height: var(--space-16px-10);
+  margin: var(--number-0-2);
+  width: var(--space-16px-10);
+}
+
+.running-style-bucket-evaluation-summary {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8px-28) var(--space-12px-9);
+}
+
+.running-style-bucket-evaluation-summary span {
+  color: var(--muted);
+  font-size: var(--space-15px-1);
+  font-weight: var(--number-800-12);
+}
+
+.running-style-bucket-evaluation-summary strong {
+  color: var(--ink);
+  font-size: var(--space-15px-1);
+  font-weight: var(--number-800-12);
+}
+
+.running-style-bucket-evaluation-summary small {
+  color: var(--muted);
+  font-size: var(--space-15px-1);
+  font-weight: var(--number-700-14);
+}
+
+.running-style-bucket-scope-notice {
+  color: var(--muted);
+  font-size: var(--space-13px-92);
+  line-height: var(--number-1-45-39);
+}
+
+.running-style-bucket-metric-grid {
+  grid-template-columns: repeat(auto-fit, minmax(var(--space-132px-71), var(--space-1fr-51)));
+}
+
+.running-style-bucket-metric-card {
+  background: var(--surface);
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-8px-28);
+  display: grid;
+  gap: var(--space-6px-33);
+  min-height: var(--space-72px-6);
+  padding: var(--space-12px-9);
+}
+
+.running-style-bucket-metric-card span {
+  color: var(--muted);
+  font-size: var(--space-15px-1);
+  font-weight: var(--number-800-12);
+}
+
+.running-style-bucket-metric-card strong {
+  color: var(--ink);
+  font-size: var(--space-18px-31);
+  font-weight: var(--number-800-12);
+}
+
+.running-style-bucket-metric-ci {
+  color: var(--muted);
+  font-size: var(--space-13px-92);
+  font-weight: var(--number-700-14);
+}
+
 .year-nav {
   display: flex;
   gap: var(--space-8px-28);

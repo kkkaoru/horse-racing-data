@@ -16,6 +16,7 @@ import { formatRunnerNumber } from "../../../lib/runner-format";
 import type {
   RaceRowForRunningStyleBucketFilter,
   RunningStyleBucketMetrics,
+  RunningStyleBucketScope,
   RunningStyleClass,
   RunningStyleDimensionFlags,
 } from "../../../lib/running-style-prediction-dimensions";
@@ -59,6 +60,11 @@ const NIGE_RANK_TOP = 1;
 const SENKOU_RIVAL_DECIMALS = 0;
 const MIN_SUPPORT_FOR_F1 = 5;
 const PANEL_PERCENT_DECIMALS = 1;
+const CARD_PERCENT_DECIMALS = 2;
+const SCOPE_LABEL_SEPARATOR = " / ";
+const PANEL_HEADLINE_SUFFIX = " の脚質精度";
+const SCOPE_NOTICE_PREFIX = "該当条件のデータが無いため";
+const SCOPE_NOTICE_SUFFIX = "で集計しています";
 const KAPPA_DECIMALS = 3;
 const LOG_LOSS_DECIMALS = 3;
 const F1_DECIMALS = 3;
@@ -79,6 +85,7 @@ interface RunningStyleSectionProps {
   modelVersion: string | null;
   runnersByUmaban: Record<number, RunnerDisplayInfo>;
   bucketEvaluation?: RunningStyleBucketMetrics | null;
+  bucketScope?: RunningStyleBucketScope | null;
   dimensionFlags?: RunningStyleDimensionFlags | null;
   bucketRace?: RaceRowForRunningStyleBucketFilter | null;
   bucketSource?: "jra" | "nar" | null;
@@ -87,6 +94,21 @@ interface RunningStyleSectionProps {
 
 interface RunningStyleBucketEvaluationPanelProps {
   evaluation: RunningStyleBucketMetrics;
+  scopeLabel: string;
+  isFallback: boolean;
+}
+
+interface RunningStyleBucketMetricCard {
+  key: string;
+  label: string;
+  value: number | null;
+}
+
+interface BucketScopeLabelInput {
+  scope: RunningStyleBucketScope;
+  race: RaceRowForRunningStyleBucketFilter;
+  source: "jra" | "nar";
+  gradeCode: string | null;
 }
 
 interface RunningStyleDimensionTogglesProps {
@@ -295,6 +317,30 @@ const formatAccuracyCI = (evaluation: RunningStyleBucketMetrics): string => {
   return `±${(halfRange * 100).toFixed(PANEL_PERCENT_DECIMALS)}%`;
 };
 
+const formatCardPercent = (value: number | null): string =>
+  value === null ? "-" : `${(value * 100).toFixed(CARD_PERCENT_DECIMALS)}%`;
+
+const formatCardF1 = (value: number | null): string =>
+  value === null ? "-" : value.toFixed(F1_DECIMALS);
+
+const buildBucketMetricCards = (
+  evaluation: RunningStyleBucketMetrics,
+): readonly RunningStyleBucketMetricCard[] => [
+  { key: "accuracy", label: "正解率", value: evaluation.accuracy },
+  { key: "top2Accuracy", label: "Top2正解率", value: evaluation.top2Accuracy },
+  { key: "macroF1", label: "macro-F1", value: evaluation.macroF1 },
+  { key: "weightedF1", label: "weighted-F1", value: evaluation.weightedF1 },
+  { key: "nigeRecall", label: "逃げ的中率", value: evaluation.perClass.nige.recall },
+  { key: "senkouRecall", label: "先行的中率", value: evaluation.perClass.senkou.recall },
+  { key: "sashiRecall", label: "差し的中率", value: evaluation.perClass.sashi.recall },
+  { key: "oikomiRecall", label: "追込的中率", value: evaluation.perClass.oikomi.recall },
+];
+
+const F1_CARD_KEYS = new Set<string>(["macroF1", "weightedF1"]);
+
+const formatBucketMetricCard = (card: RunningStyleBucketMetricCard): string =>
+  F1_CARD_KEYS.has(card.key) ? formatCardF1(card.value) : formatCardPercent(card.value);
+
 const heatmapBackground = ({ count, rowTotal, total }: HeatmapCellInput): string => {
   if (total === 0 || rowTotal === 0) {
     return `hsl(${HEATMAP_HUE}, 30%, ${HEATMAP_MAX_LIGHTNESS}%)`;
@@ -387,24 +433,43 @@ const renderHeatmapRow = (
 
 function RunningStyleBucketEvaluationPanel({
   evaluation,
+  scopeLabel,
+  isFallback,
 }: RunningStyleBucketEvaluationPanelProps): ReactElement {
   const total = sumConfusionMatrixTotal(evaluation.confusionMatrix);
+  const metricCards = buildBucketMetricCards(evaluation);
   return (
-    <div className="running-style-bucket-evaluation-panel" aria-label="脚質予測 bucket 検証結果">
-      <div className="running-style-bucket-summary">
-        <span>同条件 bucket での検証精度</span>
+    <div className="running-style-bucket-evaluation-panel" aria-label="脚質予測の検証結果">
+      <div className="running-style-bucket-evaluation-summary">
+        <span>{buildPanelHeadline(scopeLabel)}</span>
         <strong>
           {formatPanelPercent(evaluation.accuracy)} {formatAccuracyCI(evaluation)}
         </strong>
         <small>
           {evaluation.raceCount.toLocaleString("ja-JP")}レース /{" "}
-          {evaluation.predictionCount.toLocaleString("ja-JP")}予測
+          {evaluation.predictionCount.toLocaleString("ja-JP")}予測で検証
         </small>
         {evaluation.smallSampleWarning ? (
           <span className="running-style-bucket-small-sample-badge">
             (n={evaluation.predictionCount}, small sample)
           </span>
         ) : null}
+      </div>
+      {isFallback ? (
+        <small className="running-style-bucket-scope-notice">{buildScopeNotice(scopeLabel)}</small>
+      ) : null}
+      <div className="analysis-metric-grid running-style-bucket-metric-grid">
+        {metricCards.map((card) => (
+          <div className="running-style-bucket-metric-card" key={card.key}>
+            <span>{card.label}</span>
+            <strong>{formatBucketMetricCard(card)}</strong>
+            {card.key === "accuracy" ? (
+              <small className="running-style-bucket-metric-ci">
+                {formatAccuracyCI(evaluation)}
+              </small>
+            ) : null}
+          </div>
+        ))}
       </div>
       <dl className="running-style-bucket-main-metrics">
         <div>
@@ -525,6 +590,11 @@ const isGradeShown = (gradeCode: string | null): boolean => gradeCode !== null &
 const isRaceNameShown = (gradeCode: string | null): boolean =>
   gradeCode !== null && RACE_NAME_GRADE_CODES.has(gradeCode);
 
+const CATEGORY_SCOPE_LABELS: Record<"jra" | "nar", string> = {
+  jra: "JRA 全体",
+  nar: "NAR 全体",
+};
+
 interface DimensionToggleEntry {
   key: DimensionKey;
   label: string;
@@ -559,6 +629,31 @@ const buildToggleEntries = (
   return entries;
 };
 
+const buildExactScopeLabel = (input: BucketScopeLabelInput): string => {
+  const entries = buildToggleEntries(input.race, input.source, input.gradeCode);
+  const activeLabels = entries
+    .filter((entry) => input.scope.flags[entry.key])
+    .map((entry) => entry.label);
+  return activeLabels.length === 0
+    ? CATEGORY_SCOPE_LABELS[input.source]
+    : activeLabels.join(SCOPE_LABEL_SEPARATOR);
+};
+
+const buildBucketScopeLabel = (input: BucketScopeLabelInput): string => {
+  if (input.scope.level === "category") {
+    return CATEGORY_SCOPE_LABELS[input.source];
+  }
+  if (input.scope.level === "keibajo") {
+    return `${resolveKeibajoLabel(input.race)}（全レース）`;
+  }
+  return buildExactScopeLabel(input);
+};
+
+const buildPanelHeadline = (scopeLabel: string): string => `${scopeLabel}${PANEL_HEADLINE_SUFFIX}`;
+
+const buildScopeNotice = (scopeLabel: string): string =>
+  `${SCOPE_NOTICE_PREFIX}${scopeLabel}${SCOPE_NOTICE_SUFFIX}`;
+
 function RunningStyleDimensionToggles({
   flags,
   race,
@@ -591,27 +686,62 @@ function RunningStyleDimensionToggles({
   );
 
   return (
-    <div className="running-style-bucket-toggles" aria-label="脚質予測 bucket 条件">
-      {entries.map((entry) => renderToggle(entry))}
+    <div className="running-style-bucket-controls">
+      <div className="running-style-bucket-toggles-caption">
+        <h3 className="running-style-bucket-toggles-heading">精度の集計条件</h3>
+        <p className="running-style-bucket-toggles-help">
+          チェックした条件に一致する過去レースで脚質予測の的中精度を集計します。一致するデータが無い場合は条件を緩めて表示します。
+        </p>
+      </div>
+      <div className="running-style-bucket-toggles" aria-label="脚質予測 bucket 条件">
+        {entries.map((entry) => renderToggle(entry))}
+      </div>
     </div>
   );
 }
 
 interface RenderBucketSubSectionProps {
   bucketEvaluation: RunningStyleBucketMetrics | null | undefined;
+  bucketScope: RunningStyleBucketScope | null | undefined;
   dimensionFlags: RunningStyleDimensionFlags | null | undefined;
   bucketRace: RaceRowForRunningStyleBucketFilter | null | undefined;
   bucketSource: "jra" | "nar" | null | undefined;
   bucketGradeCode: string | null | undefined;
 }
 
+interface BucketPanelInput {
+  evaluation: RunningStyleBucketMetrics;
+  scope: RunningStyleBucketScope;
+  race: RaceRowForRunningStyleBucketFilter;
+  source: "jra" | "nar";
+  gradeCode: string | null;
+}
+
+const renderBucketEvaluationPanel = (input: BucketPanelInput): ReactElement => {
+  const scopeLabel = buildBucketScopeLabel({
+    gradeCode: input.gradeCode,
+    race: input.race,
+    scope: input.scope,
+    source: input.source,
+  });
+  return (
+    <RunningStyleBucketEvaluationPanel
+      evaluation={input.evaluation}
+      isFallback={input.scope.level !== "exact"}
+      scopeLabel={scopeLabel}
+    />
+  );
+};
+
 const renderBucketSubSection = (props: RenderBucketSubSectionProps): ReactNode => {
   const flags = props.dimensionFlags ?? null;
   const race = props.bucketRace ?? null;
   const source = props.bucketSource ?? null;
   const evaluation = props.bucketEvaluation ?? null;
+  const scope = props.bucketScope ?? null;
+  const gradeCode = props.bucketGradeCode ?? null;
   const showToggles = flags !== null && race !== null && source !== null;
-  const showPanel = evaluation !== null;
+  const showPanel = evaluation !== null && scope !== null && race !== null && source !== null;
   if (!showToggles && !showPanel) {
     return null;
   }
@@ -622,10 +752,12 @@ const renderBucketSubSection = (props: RenderBucketSubSectionProps): ReactNode =
           flags={flags}
           race={race}
           source={source}
-          gradeCode={props.bucketGradeCode ?? null}
+          gradeCode={gradeCode}
         />
       ) : null}
-      {showPanel ? <RunningStyleBucketEvaluationPanel evaluation={evaluation} /> : null}
+      {showPanel
+        ? renderBucketEvaluationPanel({ evaluation, gradeCode, race, scope, source })
+        : null}
     </>
   );
 };
@@ -636,6 +768,7 @@ export const RunningStyleSection = ({
   modelVersion,
   runnersByUmaban,
   bucketEvaluation,
+  bucketScope,
   dimensionFlags,
   bucketRace,
   bucketSource,
@@ -676,10 +809,11 @@ export const RunningStyleSection = ({
 
   const bucketSubSection = renderBucketSubSection({
     bucketEvaluation,
-    dimensionFlags,
-    bucketRace,
-    bucketSource,
     bucketGradeCode,
+    bucketRace,
+    bucketScope,
+    bucketSource,
+    dimensionFlags,
   });
 
   if (rows.length === 0) {
