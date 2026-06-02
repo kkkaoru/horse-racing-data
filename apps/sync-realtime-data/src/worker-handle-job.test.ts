@@ -107,6 +107,14 @@ vi.mock("./running-style-cron", () => ({
 vi.mock("./running-style-queue", () => ({
   handleRunningStylePredictionJob: vi.fn(async () => null),
 }));
+vi.mock("./running-style-feature-materialize", () => ({
+  materializeRunningStyleFeatureParquetsForDate: vi.fn(async () => ({
+    date: "20260602",
+    materialized: 3,
+    scanned: 3,
+    skipped: 0,
+  })),
+}));
 vi.mock("./postgres", () => ({
   fetchJraRacesByDate: vi.fn(async () => []),
   fetchNarRacesByDate: vi.fn(async () => []),
@@ -276,6 +284,40 @@ it("handleJob delegates plan-running-style-predictions to planRunningStylePredic
   const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
   await handleJob(buildEnv(), { date: "20260512", type: "plan-running-style-predictions" });
   expect(planRunningStylePredictionsForDate).toHaveBeenCalledTimes(1);
+});
+
+it("handleJob materialize-running-style-features logs the materialize summary on success", async () => {
+  const { handleJob } = await import("./worker");
+  const { materializeRunningStyleFeatureParquetsForDate } =
+    await import("./running-style-feature-materialize");
+  const { logFetch } = await import("./storage");
+  await handleJob(buildEnv(), { date: "20260602", type: "materialize-running-style-features" });
+  expect(materializeRunningStyleFeatureParquetsForDate).toHaveBeenCalledTimes(1);
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "materialize-running-style-features",
+    "ok",
+    null,
+    '{"date":"20260602","materialized":3,"scanned":3,"skipped":0}',
+  );
+});
+
+it("handleJob materialize-running-style-features logs the error shape when materialize rejects", async () => {
+  const { handleJob } = await import("./worker");
+  const { materializeRunningStyleFeatureParquetsForDate } =
+    await import("./running-style-feature-materialize");
+  const { logFetch } = await import("./storage");
+  vi.mocked(materializeRunningStyleFeatureParquetsForDate).mockRejectedValueOnce(
+    new Error("materialize boom"),
+  );
+  await handleJob(buildEnv(), { date: "20260602", type: "materialize-running-style-features" });
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "materialize-running-style-features",
+    "ok",
+    null,
+    '{"error":"materialize boom"}',
+  );
 });
 
 it("handleJob delegates generate-running-style-predictions to handleRunningStylePredictionJob", async () => {

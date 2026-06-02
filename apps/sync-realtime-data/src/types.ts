@@ -62,6 +62,10 @@ export type Job =
       date: string;
     }
   | {
+      type: "materialize-running-style-features";
+      date: string;
+    }
+  | {
       type: "generate-running-style-predictions";
       raceKey: string;
       source: "jra" | "nar";

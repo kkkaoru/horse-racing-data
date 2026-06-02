@@ -756,6 +756,21 @@ it("enqueueJobs sends a single non-premium job via send", async () => {
   expect(send).toHaveBeenCalledWith(job);
 });
 
+it("enqueueJobs routes materialize-running-style-features to REALTIME_JOBS.send like plan-running-style-predictions", async () => {
+  const send = vi.fn(async () => {});
+  const sendBatch = vi.fn(async () => {});
+  const premiumSend = vi.fn(async () => {});
+  const env = {
+    PREMIUM_RACE_JOBS: { send: premiumSend, sendBatch: vi.fn() },
+    REALTIME_JOBS: { send, sendBatch },
+  } as unknown as Env;
+  const job: Job = { date: "20260602", type: "materialize-running-style-features" };
+  await enqueueJobs(env, [job]);
+  expect(send).toHaveBeenCalledTimes(1);
+  expect(send).toHaveBeenCalledWith(job);
+  expect(premiumSend).not.toHaveBeenCalled();
+});
+
 it("enqueueJobs batches multiple non-premium jobs via sendBatch", async () => {
   const send = vi.fn(async () => {});
   const sendBatch = vi.fn(async () => {});
