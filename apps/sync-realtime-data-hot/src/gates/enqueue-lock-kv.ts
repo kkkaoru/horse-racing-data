@@ -2,8 +2,9 @@ import type { Env } from "../types";
 
 const ENQUEUE_LOCK_KEY_PREFIX = "odds:enqueue-lock";
 const FINAL_WINDOW_MINUTES_BEFORE = 10;
-const FINAL_WINDOW_MINUTES_AFTER = 3;
+const PAST_RACE_GRACE_MINUTES_AFTER = 2;
 const HIGH_FREQ_WINDOW_MINUTES_BEFORE = 60;
+const LOCK_TTL_SKIP_PAST_RACE = 0;
 const LOCK_TTL_FINAL_SECONDS = 60;
 const LOCK_TTL_HIGH_FREQ_SECONDS = 600;
 const LOCK_TTL_DEFAULT_SECONDS = 3600;
@@ -13,28 +14,23 @@ const buildEnqueueLockKey = (raceKey: string): string => `${ENQUEUE_LOCK_KEY_PRE
 
 export const calculateEnqueueLockTtlSeconds = (raceStart: Date, now: Date): number => {
   const minutesUntilRace = (raceStart.getTime() - now.getTime()) / 60_000;
-  if (
-    minutesUntilRace <= FINAL_WINDOW_MINUTES_BEFORE &&
-    minutesUntilRace >= -FINAL_WINDOW_MINUTES_AFTER
-  ) {
+  // Past races beyond the grace window: signal "skip, do not enqueue" via ttl 0.
+  if (minutesUntilRace < -PAST_RACE_GRACE_MINUTES_AFTER) {
+    return LOCK_TTL_SKIP_PAST_RACE;
+  }
+  if (minutesUntilRace <= FINAL_WINDOW_MINUTES_BEFORE) {
     return LOCK_TTL_FINAL_SECONDS;
   }
-  if (
-    minutesUntilRace > FINAL_WINDOW_MINUTES_BEFORE &&
-    minutesUntilRace <= HIGH_FREQ_WINDOW_MINUTES_BEFORE
-  ) {
+  if (minutesUntilRace <= HIGH_FREQ_WINDOW_MINUTES_BEFORE) {
     const secondsUntilFinal = Math.ceil(
       (minutesUntilRace - FINAL_WINDOW_MINUTES_BEFORE) * SECONDS_PER_MINUTE,
     );
     return Math.min(LOCK_TTL_HIGH_FREQ_SECONDS, secondsUntilFinal);
   }
-  if (minutesUntilRace > HIGH_FREQ_WINDOW_MINUTES_BEFORE) {
-    const secondsUntilHighFreq = Math.ceil(
-      (minutesUntilRace - HIGH_FREQ_WINDOW_MINUTES_BEFORE) * SECONDS_PER_MINUTE,
-    );
-    return Math.min(LOCK_TTL_DEFAULT_SECONDS, secondsUntilHighFreq);
-  }
-  return LOCK_TTL_DEFAULT_SECONDS;
+  const secondsUntilHighFreq = Math.ceil(
+    (minutesUntilRace - HIGH_FREQ_WINDOW_MINUTES_BEFORE) * SECONDS_PER_MINUTE,
+  );
+  return Math.min(LOCK_TTL_DEFAULT_SECONDS, secondsUntilHighFreq);
 };
 
 export const isEnqueueLocked = async (env: Env, raceKey: string): Promise<boolean> => {

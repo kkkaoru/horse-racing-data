@@ -312,6 +312,59 @@ export const collectPlanDates = (now: Date): string[] => {
   return [today, ...futureDates];
 };
 
+const logScheduledError = async (env: Env, jobType: string, error: unknown): Promise<void> => {
+  try {
+    await logFetch(env.REALTIME_HOT_DB, jobType, "error", null, formatError(error));
+  } catch (logError) {
+    // Last-resort: cron must not throw even when D1 itself is down.
+    console.error("scheduled cron failed and logFetch also threw", logError);
+  }
+};
+
+const safeCountOddsFetchStateForDate = async (
+  env: Env,
+  todayYyyymmdd: string,
+): Promise<number | null> => {
+  try {
+    return await countOddsFetchStateForDate(
+      env.REALTIME_HOT_DB,
+      todayYyyymmdd.slice(0, 4),
+      todayYyyymmdd.slice(4, 8),
+    );
+  } catch (error) {
+    await logScheduledError(env, "scheduled-plan-count-state-error", error);
+    return null;
+  }
+};
+
+const safeGetExpectedRaceCount = async (
+  env: Env,
+  todayYyyymmdd: string,
+): Promise<number | null> => {
+  try {
+    return await getExpectedRaceCountForDate(env, todayYyyymmdd);
+  } catch (error) {
+    await logScheduledError(env, "scheduled-plan-expected-count-error", error);
+    return null;
+  }
+};
+
+const safePopulateTodayOddsFetchState = async (env: Env, now: Date): Promise<void> => {
+  try {
+    await populateTodayOddsFetchState(env, now);
+  } catch (error) {
+    await logScheduledError(env, "scheduled-plan-populate-error", error);
+  }
+};
+
+const runPlanForDate = async (env: Env, now: Date, yyyymmdd: string): Promise<void> => {
+  try {
+    await planOddsFetches(env, now, yyyymmdd);
+  } catch (error) {
+    await logScheduledError(env, "scheduled-plan-odds-error", error);
+  }
+};
+
 export const runScheduledPlan = async (env: Env, now: Date): Promise<void> => {
   const todayYyyymmdd = getTodayJst(now);
   // Fallback self-discovery: compare today's actual `odds_fetch_state` row
@@ -322,16 +375,16 @@ export const runScheduledPlan = async (env: Env, now: Date): Promise<void> => {
   // skip the missing venue for the rest of the day. The legacy `=== 0`
   // gate hid this regression because a single JRA venue was enough to lock
   // populate out for the entire day.
-  const stateCount = await countOddsFetchStateForDate(
-    env.REALTIME_HOT_DB,
-    todayYyyymmdd.slice(0, 4),
-    todayYyyymmdd.slice(4, 8),
-  );
-  const expectedCount = await getExpectedRaceCountForDate(env, todayYyyymmdd);
-  if (stateCount < expectedCount) {
-    await populateTodayOddsFetchState(env, now);
+  const stateCount = await safeCountOddsFetchStateForDate(env, todayYyyymmdd);
+  const expectedCount = await safeGetExpectedRaceCount(env, todayYyyymmdd);
+  if (stateCount !== null && expectedCount !== null && stateCount < expectedCount) {
+    await safePopulateTodayOddsFetchState(env, now);
   }
-  await Promise.all(collectPlanDates(now).map((yyyymmdd) => planOddsFetches(env, now, yyyymmdd)));
+  // `Promise.allSettled` ensures one rejected date never blocks the others.
+  // Individual rejections are logged inside `runPlanForDate`.
+  await Promise.allSettled(
+    collectPlanDates(now).map((yyyymmdd) => runPlanForDate(env, now, yyyymmdd)),
+  );
 };
 
 export const runScheduledPopulateMultiDay = async (env: Env, now: Date): Promise<void> => {
@@ -356,18 +409,26 @@ export const runScheduledArchive = async (env: Env, now: Date): Promise<void> =>
   );
 };
 
-export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<void> => {
-  const now = new Date(event.scheduledTime);
-  if (event.cron === PLAN_ODDS_FETCHES_CRON) {
+const dispatchScheduledByCron = async (env: Env, cron: string, now: Date): Promise<void> => {
+  if (cron === PLAN_ODDS_FETCHES_CRON) {
     await runScheduledPlan(env, now);
     return;
   }
-  if (event.cron === ARCHIVE_ODDS_CRON) {
+  if (cron === ARCHIVE_ODDS_CRON) {
     await runScheduledArchive(env, now);
     return;
   }
-  if (event.cron === POPULATE_MULTI_DAY_CRON) {
+  if (cron === POPULATE_MULTI_DAY_CRON) {
     await runScheduledPopulateMultiDay(env, now);
+  }
+};
+
+export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<void> => {
+  const now = new Date(event.scheduledTime);
+  try {
+    await dispatchScheduledByCron(env, event.cron, now);
+  } catch (error) {
+    await logScheduledError(env, "scheduled-cron-error", error);
   }
 };
 

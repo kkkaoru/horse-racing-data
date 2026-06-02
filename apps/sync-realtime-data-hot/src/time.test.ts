@@ -16,29 +16,72 @@ import {
 } from "./time";
 
 describe("odds fetch schedule", () => {
-  it.each([
-    [120, 60],
-    [60.1, 60],
-    [60, 60],
-    [59.9, 10],
-    [10, 10],
-    [9.9, 1],
-    [1, 1],
-    [0.9, null],
-    [0, null],
-    [-1, null],
-  ])("returns %s-minute pre-race interval", (minutesUntilRace, expected) => {
-    expect(getOddsFetchIntervalMinutes(minutesUntilRace)).toBe(expected);
+  it("interval-60min-when-90-min-before", () => {
+    expect(getOddsFetchIntervalMinutes(90)).toBe(60);
   });
 
-  it("aligns odds fetch slots to race start instead of previous fetch time", () => {
+  it("interval-60min-at-exactly-60", () => {
+    expect(getOddsFetchIntervalMinutes(60)).toBe(60);
+  });
+
+  it("interval-5min-when-45-min-before", () => {
+    expect(getOddsFetchIntervalMinutes(45)).toBe(5);
+  });
+
+  it("interval-5min-at-exactly-15", () => {
+    expect(getOddsFetchIntervalMinutes(15)).toBe(5);
+  });
+
+  it("interval-1min-when-14-min-before", () => {
+    expect(getOddsFetchIntervalMinutes(14)).toBe(1);
+  });
+
+  it("interval-1min-at-exactly-1", () => {
+    expect(getOddsFetchIntervalMinutes(1)).toBe(1);
+  });
+
+  it("interval-null-when-zero", () => {
+    expect(getOddsFetchIntervalMinutes(0)).toBeNull();
+  });
+
+  it("interval-null-negative", () => {
+    expect(getOddsFetchIntervalMinutes(-3)).toBeNull();
+  });
+
+  it("interval-fractional-just-below-60-uses-5min", () => {
+    expect(getOddsFetchIntervalMinutes(59.9)).toBe(5);
+  });
+
+  it("interval-fractional-just-below-15-uses-1min", () => {
+    expect(getOddsFetchIntervalMinutes(14.9)).toBe(1);
+  });
+
+  it("interval-fractional-just-below-1-yields-null", () => {
+    expect(getOddsFetchIntervalMinutes(0.9)).toBeNull();
+  });
+
+  it("aligns 5-minute slots to race start in the 60-15 minute window", () => {
     const raceStart = new Date("2026-05-12T11:40:00+09:00");
     expect(getOddsFetchSlotAt(raceStart, new Date("2026-05-12T10:49:39+09:00"))).toBe(
-      "2026-05-12T10:40:00+09:00",
+      "2026-05-12T10:45:00+09:00",
     );
     expect(getOddsFetchSlotAt(raceStart, new Date("2026-05-12T10:50:39+09:00"))).toBe(
       "2026-05-12T10:50:00+09:00",
     );
+  });
+
+  it("aligns 1-minute slots inside the final 15 minutes", () => {
+    const raceStart = new Date("2026-05-12T11:40:00+09:00");
+    expect(getOddsFetchSlotAt(raceStart, new Date("2026-05-12T11:26:30+09:00"))).toBe(
+      "2026-05-12T11:26:00+09:00",
+    );
+    expect(getOddsFetchSlotAt(raceStart, new Date("2026-05-12T11:25:30+09:00"))).toBe(
+      "2026-05-12T11:25:00+09:00",
+    );
+  });
+
+  it("returns null inside the final minute and the post-race slot once T+2 reached", () => {
+    const raceStart = new Date("2026-05-12T11:40:00+09:00");
     expect(getOddsFetchSlotAt(raceStart, new Date("2026-05-12T11:39:30+09:00"))).toBeNull();
     expect(getOddsFetchSlotAt(raceStart, new Date("2026-05-12T11:42:00+09:00"))).toBe(
       "2026-05-12T11:42:00+09:00",
@@ -67,7 +110,7 @@ describe("odds fetch schedule", () => {
   it("returns the next JRA odds slot after the current fetch", () => {
     const raceStart = new Date("2026-05-17T13:05:00+09:00");
     expect(getNextOddsFetchSlotAt(raceStart, new Date("2026-05-17T12:18:09+09:00"), "jra")).toBe(
-      "2026-05-17T12:25:00+09:00",
+      "2026-05-17T12:20:00+09:00",
     );
     expect(getNextOddsFetchSlotAt(raceStart, new Date("2026-05-17T12:56:30+09:00"), "jra")).toBe(
       "2026-05-17T12:57:00+09:00",
@@ -83,14 +126,14 @@ describe("odds fetch schedule", () => {
       "2026-05-16T19:00:00+09:00",
     );
     expect(getNextOddsFetchSlotAt(raceStart, new Date("2026-05-17T15:30:00+09:00"), "jra")).toBe(
-      "2026-05-17T15:40:00+09:00",
+      "2026-05-17T15:35:00+09:00",
     );
   });
 
   it("returns the next regular odds slot for non-JRA races", () => {
     const raceStart = new Date("2026-05-17T13:05:00+09:00");
     expect(getNextOddsFetchSlotAt(raceStart, new Date("2026-05-17T12:18:09+09:00"), "nar")).toBe(
-      "2026-05-17T12:25:00+09:00",
+      "2026-05-17T12:20:00+09:00",
     );
     expect(getNextOddsFetchSlotAt(raceStart, new Date("2026-05-17T13:04:30+09:00"), "nar")).toBe(
       "2026-05-17T13:07:00+09:00",
@@ -179,7 +222,7 @@ describe("odds fetch schedule", () => {
       getNextOddsFetchSlotAt(raceStart, new Date("2026-05-22T13:30:00+09:00"), "nar", {
         narSaleStartAt: saleStart,
       }),
-    ).toBe("2026-05-22T13:40:00+09:00");
+    ).toBe("2026-05-22T13:35:00+09:00");
   });
 
   it("returns null when raceStartAtJst date prefix yields an invalid Date", () => {

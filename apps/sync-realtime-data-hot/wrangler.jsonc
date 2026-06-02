@@ -5,9 +5,12 @@
   "account_id": "78109ec18c7c85b194b19fb32e3bb149",
   "compatibility_date": "2026-05-10",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  // TEMPORARY DIAGNOSTIC (2026-06-02): head_sampling_rate raised from 0.1 to 1.0
+  // so every scheduled() exception trace is observable while we hunt the cause of
+  // the 3.4h cron throw. Will revert to 0.1 once the root cause is confirmed.
   "observability": {
     "enabled": true,
-    "head_sampling_rate": 0.1,
+    "head_sampling_rate": 1,
   },
   "limits": {
     "cpu_ms": 300000,

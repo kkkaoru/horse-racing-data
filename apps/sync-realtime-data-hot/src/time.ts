@@ -2,6 +2,15 @@ const JST_TIME_ZONE = "Asia/Tokyo";
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const FINAL_ODDS_FETCH_DELAY_MINUTES = 2;
 const ONE_HOUR_MS = 60 * 60_000;
+const HOURLY_THRESHOLD_MINUTES = 60;
+const FIVE_MIN_THRESHOLD_MINUTES = 15;
+const ONE_MIN_THRESHOLD_MINUTES = 1;
+const HOURLY_INTERVAL_MINUTES = 60;
+const FIVE_MIN_INTERVAL = 5;
+const ONE_MIN_INTERVAL = 1;
+const REGULAR_OFFSET_MINUTES = [
+  60, 55, 50, 45, 40, 35, 30, 25, 20, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, -2,
+] satisfies readonly number[];
 
 export const NAR_ODDS_SALE_START_RULE = {
   createdAt: "2026-05-22",
@@ -72,15 +81,9 @@ export const formatRaceStartJst = (year: string, monthDay: string, hhmm: string)
   `${year}-${monthDay.slice(0, 2)}-${monthDay.slice(2, 4)}T${hhmm.slice(0, 2)}:${hhmm.slice(2, 4)}:00+09:00`;
 
 export const getOddsFetchIntervalMinutes = (minutesUntilRace: number): number | null => {
-  if (minutesUntilRace >= 60) {
-    return 60;
-  }
-  if (minutesUntilRace >= 10) {
-    return 10;
-  }
-  if (minutesUntilRace >= 1) {
-    return 1;
-  }
+  if (minutesUntilRace >= HOURLY_THRESHOLD_MINUTES) return HOURLY_INTERVAL_MINUTES;
+  if (minutesUntilRace >= FIVE_MIN_THRESHOLD_MINUTES) return FIVE_MIN_INTERVAL;
+  if (minutesUntilRace >= ONE_MIN_THRESHOLD_MINUTES) return ONE_MIN_INTERVAL;
   return null;
 };
 
@@ -208,10 +211,9 @@ export const getNextOddsFetchSlotAt = (
     }
   }
 
-  const regularOffsets = [60, 50, 40, 30, 20, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, -2];
-  const nextSlot = regularOffsets
-    .map((minutesBeforeRace) => new Date(raceStartMs - minutesBeforeRace * 60_000))
-    .find((slot) => slot.getTime() > now.getTime());
+  const nextSlot = REGULAR_OFFSET_MINUTES.map(
+    (minutesBeforeRace) => new Date(raceStartMs - minutesBeforeRace * 60_000),
+  ).find((slot) => slot.getTime() > now.getTime());
   return nextSlot ? toJstIsoString(nextSlot) : null;
 };
 

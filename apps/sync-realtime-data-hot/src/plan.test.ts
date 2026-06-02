@@ -148,3 +148,59 @@ it("uses KV race-list cache when available and skips D1", async () => {
   expect(result.queued).toBeGreaterThan(0);
   expect(env.REALTIME_HOT_DB.prepare).not.toHaveBeenCalled();
 });
+
+it("skips past races and does not enqueue or acquire lock", async () => {
+  // Cache only nar list with a past-race entry; jra list is empty.
+  const pastNar: RaceListEntry[] = [
+    {
+      lastOddsFetchAt: null,
+      raceKey: "nar:20260528:42:01",
+      // Race start 1 hour before "now" (well past the 2-min grace).
+      raceStartAtJst: "2026-05-28T11:00:00+09:00",
+      source: "nar",
+    },
+  ];
+  const env = buildEnv({
+    kvGet: async (key) => {
+      if (key === "odds:race-list:v1:nar:20260528") {
+        return JSON.stringify(pastNar);
+      }
+      if (key === "odds:race-list:v1:jra:20260528") {
+        return JSON.stringify([]);
+      }
+      return null;
+    },
+  });
+  const result = await planOddsFetches(env, new Date("2026-05-28T03:00:00Z"), "20260528");
+  expect(result).toStrictEqual({ queued: 0, skipped: 1 });
+  expect(env.REALTIME_HOT_JOBS.send).not.toHaveBeenCalled();
+  expect(env.ODDS_HOT_KV.put).not.toHaveBeenCalled();
+});
+
+it("future race still enqueues when ttl is positive", async () => {
+  const futureNar: RaceListEntry[] = [
+    {
+      lastOddsFetchAt: null,
+      raceKey: "nar:20260528:42:01",
+      raceStartAtJst: "2026-05-28T15:00:00+09:00",
+      source: "nar",
+    },
+  ];
+  const env = buildEnv({
+    kvGet: async (key) => {
+      if (key === "odds:race-list:v1:nar:20260528") {
+        return JSON.stringify(futureNar);
+      }
+      if (key === "odds:race-list:v1:jra:20260528") {
+        return JSON.stringify([]);
+      }
+      return null;
+    },
+  });
+  const result = await planOddsFetches(env, new Date("2026-05-28T03:00:00Z"), "20260528");
+  expect(result).toStrictEqual({ queued: 1, skipped: 0 });
+  expect(env.REALTIME_HOT_JOBS.send).toHaveBeenCalledWith({
+    raceKey: "nar:20260528:42:01",
+    type: "fetch-odds",
+  });
+});
