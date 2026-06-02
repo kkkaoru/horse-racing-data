@@ -22,6 +22,13 @@ export interface RunningStyleDimensionFlags {
   raceName: boolean;
 }
 
+export type RunningStyleBucketScopeLevel = "exact" | "keibajo" | "category";
+
+export interface RunningStyleBucketScope {
+  level: RunningStyleBucketScopeLevel;
+  flags: RunningStyleDimensionFlags;
+}
+
 export interface RunningStyleBucketFilter {
   category: string;
   source: "jra" | "nar";

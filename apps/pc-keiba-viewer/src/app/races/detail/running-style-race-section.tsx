@@ -28,6 +28,7 @@ const EMPTY_BUCKET_SECTION_DATA: RunningStyleBucketSectionData = {
   bucketEvaluation: null,
   bucketGradeCode: null,
   bucketRace: null,
+  bucketScope: null,
   bucketSource: null,
   dimensionFlags: null,
 };
@@ -71,6 +72,7 @@ export const RunningStyleRaceSection = async ({
       bucketEvaluation={bucketData.bucketEvaluation}
       bucketGradeCode={bucketData.bucketGradeCode}
       bucketRace={bucketData.bucketRace}
+      bucketScope={bucketData.bucketScope}
       bucketSource={bucketData.bucketSource}
       dimensionFlags={bucketData.dimensionFlags}
       modelMacroF1={metrics?.macroF1 ?? null}

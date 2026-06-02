@@ -8,6 +8,7 @@ import type { RaceRunningStyleRow } from "../../../db/corner-running-style-parse
 import type {
   RaceRowForRunningStyleBucketFilter,
   RunningStyleBucketMetrics,
+  RunningStyleBucketScope,
   RunningStyleDimensionFlags,
 } from "../../../lib/running-style-prediction-dimensions";
 
@@ -97,6 +98,21 @@ const buildEvaluation = (
     [10, 25, 90, 125],
   ],
   smallSampleWarning: false,
+  ...overrides,
+});
+
+const buildScope = (overrides: Partial<RunningStyleBucketScope>): RunningStyleBucketScope => ({
+  flags: {
+    keibajo: true,
+    distance: true,
+    kyosoShubetsu: true,
+    kyosoJoken: true,
+    condition: false,
+    track: true,
+    grade: false,
+    raceName: false,
+  },
+  level: "exact",
   ...overrides,
 });
 
@@ -463,6 +479,7 @@ describe("RunningStyleBucketEvaluationPanel - rendering", () => {
         modelVersion="v1"
         runnersByUmaban={{}}
         bucketEvaluation={buildEvaluation({})}
+        bucketScope={buildScope({})}
         dimensionFlags={buildFlags({})}
         bucketRace={buildBucketRace({})}
         bucketSource="jra"
@@ -481,6 +498,7 @@ describe("RunningStyleBucketEvaluationPanel - rendering", () => {
         modelVersion="v1"
         runnersByUmaban={{}}
         bucketEvaluation={buildEvaluation({ qwk: 0.7123 })}
+        bucketScope={buildScope({})}
         dimensionFlags={buildFlags({})}
         bucketRace={buildBucketRace({})}
         bucketSource="jra"
@@ -498,6 +516,7 @@ describe("RunningStyleBucketEvaluationPanel - rendering", () => {
         modelVersion="v1"
         runnersByUmaban={{}}
         bucketEvaluation={buildEvaluation({})}
+        bucketScope={buildScope({})}
         dimensionFlags={buildFlags({})}
         bucketRace={buildBucketRace({})}
         bucketSource="jra"
@@ -519,6 +538,7 @@ describe("RunningStyleBucketEvaluationPanel - rendering", () => {
           predictionCount: 15,
           smallSampleWarning: true,
         })}
+        bucketScope={buildScope({})}
         dimensionFlags={buildFlags({})}
         bucketRace={buildBucketRace({})}
         bucketSource="jra"
@@ -543,6 +563,7 @@ describe("RunningStyleBucketEvaluationPanel - rendering", () => {
             oikomi: { precision: 0.4, recall: 0.3, f1: 0.343, support: 250 },
           },
         })}
+        bucketScope={buildScope({})}
         dimensionFlags={buildFlags({})}
         bucketRace={buildBucketRace({})}
         bucketSource="jra"
@@ -565,6 +586,148 @@ describe("RunningStyleBucketEvaluationPanel - rendering", () => {
     expect(container.querySelector(".running-style-bucket-evaluation-panel")).toBe(null);
     expect(container.querySelector(".running-style-bucket-toggles")).toBe(null);
   });
+
+  test("does not render the bucket panel when bucketScope is null even with metrics", () => {
+    const { container } = render(
+      <RunningStyleSection
+        rows={[buildRow({})]}
+        modelMacroF1={null}
+        modelVersion="v1"
+        runnersByUmaban={{}}
+        bucketEvaluation={buildEvaluation({})}
+        bucketScope={null}
+        dimensionFlags={buildFlags({})}
+        bucketRace={buildBucketRace({})}
+        bucketSource="jra"
+        bucketGradeCode={null}
+      />,
+    );
+    expect(container.querySelector(".running-style-bucket-evaluation-panel")).toBe(null);
+  });
+
+  test("renders the exact scope label joined from active dimensions without a fallback notice", () => {
+    const { container } = render(
+      <RunningStyleSection
+        rows={[buildRow({})]}
+        modelMacroF1={null}
+        modelVersion="v1"
+        runnersByUmaban={{}}
+        bucketEvaluation={buildEvaluation({})}
+        bucketScope={buildScope({ level: "exact" })}
+        dimensionFlags={buildFlags({})}
+        bucketRace={buildBucketRace({})}
+        bucketSource="jra"
+        bucketGradeCode={null}
+      />,
+    );
+    expect(screen.getByText("東京 / 2000m / 3歳以上 / 2勝クラス / 芝直線 の脚質精度")).toBeTruthy();
+    expect(container.querySelector(".running-style-bucket-scope-notice")).toBe(null);
+  });
+
+  test("renders the keibajo fallback label and a fallback notice when scope level is keibajo", () => {
+    render(
+      <RunningStyleSection
+        rows={[buildRow({})]}
+        modelMacroF1={null}
+        modelVersion="v1"
+        runnersByUmaban={{}}
+        bucketEvaluation={buildEvaluation({})}
+        bucketScope={buildScope({
+          flags: {
+            keibajo: true,
+            distance: false,
+            kyosoShubetsu: false,
+            kyosoJoken: false,
+            condition: false,
+            track: false,
+            grade: false,
+            raceName: false,
+          },
+          level: "keibajo",
+        })}
+        dimensionFlags={buildFlags({})}
+        bucketRace={buildBucketRace({ keibajoCode: "30" })}
+        bucketSource="nar"
+        bucketGradeCode={null}
+      />,
+    );
+    expect(screen.getByText("門別（全レース） の脚質精度")).toBeTruthy();
+    expect(
+      screen.getByText("該当条件のデータが無いため門別（全レース）で集計しています"),
+    ).toBeTruthy();
+  });
+
+  test("renders the NAR category fallback label when scope level is category", () => {
+    render(
+      <RunningStyleSection
+        rows={[buildRow({})]}
+        modelMacroF1={null}
+        modelVersion="v1"
+        runnersByUmaban={{}}
+        bucketEvaluation={buildEvaluation({})}
+        bucketScope={buildScope({
+          flags: {
+            keibajo: false,
+            distance: false,
+            kyosoShubetsu: false,
+            kyosoJoken: false,
+            condition: false,
+            track: false,
+            grade: false,
+            raceName: false,
+          },
+          level: "category",
+        })}
+        dimensionFlags={buildFlags({})}
+        bucketRace={buildBucketRace({ source: "nar", keibajoCode: "30" })}
+        bucketSource="nar"
+        bucketGradeCode={null}
+      />,
+    );
+    expect(screen.getByText("NAR 全体 の脚質精度")).toBeTruthy();
+    expect(screen.getByText("該当条件のデータが無いためNAR 全体で集計しています")).toBeTruthy();
+  });
+
+  test("renders the eight headline metric cards including per-class recall", () => {
+    render(
+      <RunningStyleSection
+        rows={[buildRow({})]}
+        modelMacroF1={null}
+        modelVersion="v1"
+        runnersByUmaban={{}}
+        bucketEvaluation={buildEvaluation({})}
+        bucketScope={buildScope({})}
+        dimensionFlags={buildFlags({})}
+        bucketRace={buildBucketRace({})}
+        bucketSource="jra"
+        bucketGradeCode={null}
+      />,
+    );
+    expect(screen.getByText("正解率")).toBeTruthy();
+    expect(screen.getByText("Top2正解率")).toBeTruthy();
+    expect(screen.getByText("逃げ的中率")).toBeTruthy();
+    expect(screen.getByText("追込的中率")).toBeTruthy();
+  });
+
+  test("renders the accuracy headline card formatted with two decimals", () => {
+    const { container } = render(
+      <RunningStyleSection
+        rows={[buildRow({})]}
+        modelMacroF1={null}
+        modelVersion="v1"
+        runnersByUmaban={{}}
+        bucketEvaluation={buildEvaluation({ accuracy: 0.6531 })}
+        bucketScope={buildScope({})}
+        dimensionFlags={buildFlags({})}
+        bucketRace={buildBucketRace({})}
+        bucketSource="jra"
+        bucketGradeCode={null}
+      />,
+    );
+    const cards = container.querySelectorAll(".running-style-bucket-metric-card");
+    expect(cards.length).toBe(8);
+    expect(screen.getByText("65.31%")).toBeTruthy();
+  });
 });
 
 describe("RunningStyleDimensionToggles - JRA branch", () => {
@@ -576,6 +739,7 @@ describe("RunningStyleDimensionToggles - JRA branch", () => {
         modelVersion="v1"
         runnersByUmaban={{}}
         bucketEvaluation={buildEvaluation({})}
+        bucketScope={buildScope({})}
         dimensionFlags={buildFlags({})}
         bucketRace={buildBucketRace({})}
         bucketSource="jra"
@@ -595,6 +759,7 @@ describe("RunningStyleDimensionToggles - JRA branch", () => {
         modelVersion="v1"
         runnersByUmaban={{}}
         bucketEvaluation={buildEvaluation({})}
+        bucketScope={buildScope({})}
         dimensionFlags={buildFlags({})}
         bucketRace={buildBucketRace({ gradeCode: null })}
         bucketSource="jra"
@@ -614,6 +779,7 @@ describe("RunningStyleDimensionToggles - JRA branch", () => {
         modelVersion="v1"
         runnersByUmaban={{}}
         bucketEvaluation={buildEvaluation({})}
+        bucketScope={buildScope({})}
         dimensionFlags={buildFlags({ grade: true })}
         bucketRace={buildBucketRace({ gradeCode: "C", kyosomeiHondai: "重賞テスト" })}
         bucketSource="jra"
@@ -632,6 +798,7 @@ describe("RunningStyleDimensionToggles - JRA branch", () => {
         modelVersion="v1"
         runnersByUmaban={{}}
         bucketEvaluation={buildEvaluation({})}
+        bucketScope={buildScope({})}
         dimensionFlags={buildFlags({ grade: true, raceName: true })}
         bucketRace={buildBucketRace({ gradeCode: "A", kyosomeiHondai: "ジャパンカップ" })}
         bucketSource="jra"
@@ -652,6 +819,7 @@ describe("RunningStyleDimensionToggles - NAR branch", () => {
         modelVersion="v1"
         runnersByUmaban={{}}
         bucketEvaluation={buildEvaluation({})}
+        bucketScope={buildScope({})}
         dimensionFlags={buildFlags({ kyosoJoken: false, track: false, condition: true })}
         bucketRace={buildBucketRace({
           source: "nar",
@@ -674,6 +842,7 @@ describe("RunningStyleDimensionToggles - NAR branch", () => {
         modelVersion="v1"
         runnersByUmaban={{}}
         bucketEvaluation={buildEvaluation({})}
+        bucketScope={buildScope({})}
         dimensionFlags={buildFlags({ kyosoJoken: false, track: false, condition: true })}
         bucketRace={buildBucketRace({ source: "nar", kyosoJokenMeisho: "  " })}
         bucketSource="nar"
@@ -693,6 +862,7 @@ describe("RunningStyleDimensionToggles - click behavior", () => {
         modelVersion="v1"
         runnersByUmaban={{}}
         bucketEvaluation={buildEvaluation({})}
+        bucketScope={buildScope({})}
         dimensionFlags={buildFlags({})}
         bucketRace={buildBucketRace({})}
         bucketSource="jra"
@@ -713,6 +883,7 @@ describe("RunningStyleDimensionToggles - click behavior", () => {
         modelVersion="v1"
         runnersByUmaban={{}}
         bucketEvaluation={buildEvaluation({})}
+        bucketScope={buildScope({})}
         dimensionFlags={buildFlags({
           kyosoJoken: false,
           track: false,
