@@ -1997,3 +1997,111 @@ test("aggregateForTargets retains today siblings after merging with an empty pas
   );
   expect(result.runningStyleRows[0]?.starts).toStrictEqual(2);
 });
+
+// 2026-06-02 race 43/09 hotfix: with entry-based sibling rows, every starter
+// surfaces with finishPosition=0 when result is not yet present (or the row
+// is outside the top-3 of a NAR partial result). The aggregator must still
+// count those rows toward `starts` (frame participation) but MUST NOT count
+// them toward show / quinella / win — otherwise the 0 sentinel would silently
+// lift every rate to 100% for entry-only groups.
+test("aggregateForTargets counts entry-only finishPosition=0 rows toward starts but not show/quinella/win", () => {
+  const entryOnlyRow: RaceTrendStarterRow = {
+    source: "nar",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0601",
+    keibajoCode: "43",
+    raceBango: "01",
+    raceName: null,
+    hassoJikoku: null,
+    runnerCount: null,
+    wakuban: "1",
+    umaban: "1",
+    bamei: "EntryOnlyA",
+    jockeyName: "騎手太郎",
+    tanshoOdds: null,
+    tanshoPopularity: null,
+    finishPosition: 0,
+    sohaTime: null,
+    corner1: null,
+    corner2: null,
+    corner3: null,
+    corner4: null,
+    bataiju: null,
+    zogenFugo: null,
+    zogenSa: null,
+  };
+  const rankedRow: RaceTrendStarterRow = {
+    ...entryOnlyRow,
+    raceBango: "02",
+    umaban: "2",
+    bamei: "RankedB",
+    finishPosition: 1,
+  };
+  const result = aggregateForTargets(
+    {
+      starterRows: [entryOnlyRow, rankedRow],
+      currentRunningStyles: [],
+      historicalRunningStyles: [],
+      raceContext: { keibajoCode: "43", raceBango: "11", source: "nar" },
+      runners: [{ frameNumber: "1", horseNumber: "1", jockeyName: "騎手次郎" }],
+    },
+    { frame: true, jockey: false, raceNumber: false, runningStyle: false },
+    true,
+    "20260601",
+    "20260601",
+  );
+  expect(result.runningStyleRows[0]?.starts).toStrictEqual(2);
+  expect(result.runningStyleRows[0]?.winRate).toStrictEqual(50);
+  expect(result.runningStyleRows[0]?.quinellaRate).toStrictEqual(50);
+  expect(result.runningStyleRows[0]?.showRate).toStrictEqual(50);
+});
+
+// Same regression but with every row entry-only — show/quinella/win must
+// stay 0% and `starts` must still equal the input count. Documents that
+// the `finishPosition === 0` filter is what prevents 100% rates for
+// completely unranked groups.
+test("aggregateForTargets reports 0% rates when every row in the group is entry-only", () => {
+  const entryOnlyRow: RaceTrendStarterRow = {
+    source: "nar",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0601",
+    keibajoCode: "43",
+    raceBango: "01",
+    raceName: null,
+    hassoJikoku: null,
+    runnerCount: null,
+    wakuban: "1",
+    umaban: "1",
+    bamei: "EntryOnlyA",
+    jockeyName: "騎手太郎",
+    tanshoOdds: null,
+    tanshoPopularity: null,
+    finishPosition: 0,
+    sohaTime: null,
+    corner1: null,
+    corner2: null,
+    corner3: null,
+    corner4: null,
+    bataiju: null,
+    zogenFugo: null,
+    zogenSa: null,
+  };
+  const sibling: RaceTrendStarterRow = { ...entryOnlyRow, raceBango: "02", umaban: "2" };
+  const result = aggregateForTargets(
+    {
+      starterRows: [entryOnlyRow, sibling],
+      currentRunningStyles: [],
+      historicalRunningStyles: [],
+      raceContext: { keibajoCode: "43", raceBango: "11", source: "nar" },
+      runners: [{ frameNumber: "1", horseNumber: "1", jockeyName: "騎手次郎" }],
+    },
+    { frame: true, jockey: false, raceNumber: false, runningStyle: false },
+    true,
+    "20260601",
+    "20260601",
+  );
+  expect(result.runningStyleRows[0]?.starts).toStrictEqual(2);
+  expect(result.runningStyleRows[0]?.winRate).toStrictEqual(0);
+  expect(result.runningStyleRows[0]?.quinellaRate).toStrictEqual(0);
+  expect(result.runningStyleRows[0]?.showRate).toStrictEqual(0);
+});

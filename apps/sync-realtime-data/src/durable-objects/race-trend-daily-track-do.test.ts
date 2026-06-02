@@ -1482,3 +1482,117 @@ it("self-pull binds D1 SELECT placeholders in (source, kaisaiNen, kaisaiTsukihi,
   expect(snapshotBind).toHaveBeenCalledWith("jra", "2026", "0531", "06");
   expect(runningStyleBind).toHaveBeenCalledWith("jra", "2026", "0531", "06");
 });
+
+// 2026-06-02 race 43/09 hotfix: simulate the partial-result NAR case where
+// race_entry_snapshots has all 12 starters but race_result_snapshots only
+// captured the top-3 finishers. The DO must surface every entry row so the
+// viewer can include unranked horses in the frame-target aggregation.
+it("__testables.buildRowsFromSnapshotResults yields 12 starter rows when entry has 12 but result only has 3", () => {
+  const buildEntryOnly = (umaban: string): Record<string, unknown> => ({
+    changeAmount: null,
+    changeSign: null,
+    expectedHorseCount: 12,
+    fetchedAt: "2026-06-02T15:06:05+09:00",
+    finishPosition: "",
+    hassoJikoku: "2026-06-02T15:00:00+09:00",
+    horseName: "EntryHorse",
+    jockeyName: "EntryJockey",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0602",
+    keibajoCode: "43",
+    raceBango: "02",
+    raceKey: "nar:2026:0602:43:02",
+    raceName: "Sibling 02",
+    resultCompleteAt: "2026-06-02T15:10:00+09:00",
+    savedHorseCount: 3,
+    sohaTime: null,
+    source: "nar",
+    umaban,
+    weight: null,
+  });
+  const buildRanked = (
+    umaban: string,
+    finishPosition: string,
+    horseName: string,
+  ): Record<string, unknown> => ({
+    ...buildEntryOnly(umaban),
+    finishPosition,
+    horseName,
+    sohaTime: "1234",
+  });
+  const snapshotRows: ReadonlyArray<Record<string, unknown>> = [
+    buildEntryOnly("1"),
+    buildEntryOnly("2"),
+    buildRanked("3", "2", "PlaceHorse"),
+    buildRanked("4", "3", "ShowHorse"),
+    buildEntryOnly("5"),
+    buildEntryOnly("6"),
+    buildEntryOnly("7"),
+    buildEntryOnly("8"),
+    buildEntryOnly("9"),
+    buildEntryOnly("10"),
+    buildEntryOnly("11"),
+    buildRanked("12", "1", "WinnerHorse"),
+  ];
+  const filtered = snapshotRows.filter(__testables.isRawSnapshotRow);
+  const rows = __testables.buildRowsFromSnapshotResults(filtered, []);
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.starterRows).toHaveLength(12);
+  expect(rows[0]!.starterRows.filter((row) => row.finishPosition === 0)).toHaveLength(9);
+  expect(rows[0]!.starterRows.filter((row) => row.wakuban === null)).toHaveLength(0);
+});
+
+it("__testables.buildRowsFromSnapshotResults derives wakuban for every entry-only umaban in a 12-horse partial race", () => {
+  const buildEntryOnly = (umaban: string): Record<string, unknown> => ({
+    changeAmount: null,
+    changeSign: null,
+    expectedHorseCount: 12,
+    fetchedAt: "2026-06-02T16:00:00+09:00",
+    finishPosition: "",
+    hassoJikoku: "2026-06-02T16:00:00+09:00",
+    horseName: null,
+    jockeyName: null,
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0602",
+    keibajoCode: "43",
+    raceBango: "04",
+    raceKey: "nar:2026:0602:43:04",
+    raceName: null,
+    resultCompleteAt: null,
+    savedHorseCount: 0,
+    sohaTime: null,
+    source: "nar",
+    umaban,
+    weight: null,
+  });
+  const snapshotRows: ReadonlyArray<Record<string, unknown>> = [
+    buildEntryOnly("1"),
+    buildEntryOnly("2"),
+    buildEntryOnly("3"),
+    buildEntryOnly("4"),
+    buildEntryOnly("5"),
+    buildEntryOnly("6"),
+    buildEntryOnly("7"),
+    buildEntryOnly("8"),
+    buildEntryOnly("9"),
+    buildEntryOnly("10"),
+    buildEntryOnly("11"),
+    buildEntryOnly("12"),
+  ];
+  const filtered = snapshotRows.filter(__testables.isRawSnapshotRow);
+  const rows = __testables.buildRowsFromSnapshotResults(filtered, []);
+  expect(rows[0]!.starterRows.map((row) => row.wakuban)).toStrictEqual([
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "5",
+    "6",
+    "6",
+    "7",
+    "7",
+    "8",
+    "8",
+  ]);
+});

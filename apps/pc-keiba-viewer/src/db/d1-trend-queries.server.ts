@@ -377,21 +377,34 @@ const formatHassoJikoku = (raceStartAtJst: string | null): string | null => {
 // by the result writer before any partial snapshot lands. When the column is
 // null (very early in the cycle), horseCount falls back to 0 and wakuban
 // stays null, preserving the prior degrade-gracefully behavior.
+//
+// 2026-06-02 (race 43/09 hotfix): base table switched from
+// `race_result_snapshots` to `race_entry_snapshots` and result rows joined
+// in via LEFT JOIN. Reason: NAR result snapshots only persist top-3
+// finishers, so a sibling race that never landed any of its top-3 finishers
+// in a given frame was completely dropped from the response (the user
+// reported枠1 only showing R01 because R02-R08 top-3 didn't include any
+// umaban 1-2 horses). With the entry-based base, every starter shows up
+// once per race regardless of whether result data has arrived. Result fields
+// (finishPosition, sohaTime, bataiju, zogen) coalesce to 0 / null for
+// entry-only rows. The frame aggregator only counts >= 1 as ranked, so
+// entry-only rows contribute to `starts` (frame participation) without
+// inflating show/quinella/win rates.
 const SELECT_SQL = `
-  with latest_result as (
+  with latest_entry as (
+    select race_key, horse_number, horse_name, jockey_name, fetched_at
+    from race_entry_snapshots e1
+    where fetched_at = (
+      select max(fetched_at) from race_entry_snapshots e2
+      where e2.race_key = e1.race_key and e2.horse_number = e1.horse_number
+    )
+  ),
+  latest_result as (
     select race_key, horse_number, finish_position, time
     from race_result_snapshots r1
     where fetched_at = (
       select max(fetched_at) from race_result_snapshots r2
       where r2.race_key = r1.race_key and r2.horse_number = r1.horse_number
-    )
-  ),
-  latest_entry as (
-    select race_key, horse_number, horse_name, jockey_name
-    from race_entry_snapshots e1
-    where fetched_at = (
-      select max(fetched_at) from race_entry_snapshots e2
-      where e2.race_key = e1.race_key and e2.horse_number = e1.horse_number
     )
   ),
   latest_weight as (
@@ -404,31 +417,30 @@ const SELECT_SQL = `
   )
   select
     s.source as source,
-    r.race_key as raceKey,
+    e.race_key as raceKey,
     s.kaisai_nen as kaisaiNen,
     s.kaisai_tsukihi as kaisaiTsukihi,
     s.keibajo_code as keibajoCode,
     s.race_bango as raceBango,
     s.race_name as raceName,
     s.race_start_at_jst as hassoJikoku,
-    r.horse_number as umaban,
+    e.horse_number as umaban,
     coalesce(s.result_expected_horse_count, 0) as horseCount,
     e.horse_name as bamei,
     e.jockey_name as jockeyName,
-    cast(nullif(replace(r.finish_position, ' ', ''), '') as integer) as finishPosition,
+    coalesce(cast(nullif(replace(r.finish_position, ' ', ''), '') as integer), 0) as finishPosition,
     r.time as sohaTime,
     w.weight as bataijuInt,
     w.change_sign as zogenFugo,
     w.change_amount as zogenSaInt
-  from latest_result r
-  join realtime_race_sources s on s.race_key = r.race_key
-  left join latest_entry e on e.race_key = r.race_key and e.horse_number = r.horse_number
-  left join latest_weight w on w.race_key = r.race_key and w.horse_number = r.horse_number
+  from latest_entry e
+  join realtime_race_sources s on s.race_key = e.race_key
+  left join latest_result r on r.race_key = e.race_key and r.horse_number = e.horse_number
+  left join latest_weight w on w.race_key = e.race_key and w.horse_number = e.horse_number
   where s.source = ?
     and s.kaisai_nen || s.kaisai_tsukihi between ? and ?
     and s.keibajo_code = ?
-    and cast(nullif(replace(r.finish_position, ' ', ''), '') as integer) > 0
-  order by s.kaisai_nen desc, s.kaisai_tsukihi desc, s.keibajo_code asc, s.race_bango asc, cast(nullif(r.horse_number, '') as integer) asc
+  order by s.kaisai_nen desc, s.kaisai_tsukihi desc, s.keibajo_code asc, s.race_bango asc, cast(nullif(e.horse_number, '') as integer) asc
 `;
 
 interface SnapshotQueryParams {

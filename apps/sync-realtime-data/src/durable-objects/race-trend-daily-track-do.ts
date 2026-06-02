@@ -128,21 +128,31 @@ const RACE_BANGO_PATTERN = /^\d{2}$/u;
 // (source, kaisai_nen, kaisai_tsukihi, keibajo_code) should be backed by an
 // index on `realtime_race_sources` — verify migrations include one, and add
 // one if not (cold-start /races fan-out is a hot read path).
+//
+// 2026-06-02 (race 43/09 hotfix): base table switched from
+// `race_result_snapshots` to `race_entry_snapshots` so partial-result NAR
+// races (which only persist top-3 finishers) still surface every starter
+// row in the DO snapshot. Without this every frame whose top-3 happened to
+// miss the venue's R02-R08 sibling races was completely absent from the
+// trend section. `latest_fetch_at` now falls back to the entry table's max
+// when no result has landed yet — otherwise an entry-only race would
+// surface with fetchedAt=null and the merge precedence would never accept
+// the row.
 const SNAPSHOT_SELECT_SQL = `
-  with latest_result as (
+  with latest_entry as (
+    select race_key, horse_number, horse_name, jockey_name, fetched_at
+    from race_entry_snapshots e1
+    where fetched_at = (
+      select max(fetched_at) from race_entry_snapshots e2
+      where e2.race_key = e1.race_key and e2.horse_number = e1.horse_number
+    )
+  ),
+  latest_result as (
     select race_key, horse_number, finish_position, time
     from race_result_snapshots r1
     where fetched_at = (
       select max(fetched_at) from race_result_snapshots r2
       where r2.race_key = r1.race_key and r2.horse_number = r1.horse_number
-    )
-  ),
-  latest_entry as (
-    select race_key, horse_number, horse_name, jockey_name
-    from race_entry_snapshots e1
-    where fetched_at = (
-      select max(fetched_at) from race_entry_snapshots e2
-      where e2.race_key = e1.race_key and e2.horse_number = e1.horse_number
     )
   ),
   latest_weight as (
@@ -153,42 +163,48 @@ const SNAPSHOT_SELECT_SQL = `
       where w2.race_key = w1.race_key and w2.horse_number = w1.horse_number
     )
   ),
-  latest_fetch_at as (
+  latest_result_fetch_at as (
     select race_key, max(fetched_at) as fetched_at
     from race_result_snapshots
+    group by race_key
+  ),
+  latest_entry_fetch_at as (
+    select race_key, max(fetched_at) as fetched_at
+    from race_entry_snapshots
     group by race_key
   )
   select
     s.source as source,
-    r.race_key as raceKey,
+    e.race_key as raceKey,
     s.kaisai_nen as kaisaiNen,
     s.kaisai_tsukihi as kaisaiTsukihi,
     s.keibajo_code as keibajoCode,
     s.race_bango as raceBango,
     s.race_name as raceName,
     s.race_start_at_jst as hassoJikoku,
-    r.horse_number as umaban,
+    e.horse_number as umaban,
     e.horse_name as horseName,
     e.jockey_name as jockeyName,
-    r.finish_position as finishPosition,
+    coalesce(r.finish_position, '') as finishPosition,
     r.time as sohaTime,
     w.weight as weight,
     w.change_sign as changeSign,
     w.change_amount as changeAmount,
-    f.fetched_at as fetchedAt,
+    coalesce(rf.fetched_at, ef.fetched_at) as fetchedAt,
     s.result_expected_horse_count as expectedHorseCount,
     s.result_saved_horse_count as savedHorseCount,
     s.result_complete_at as resultCompleteAt
-  from latest_result r
-  join realtime_race_sources s on s.race_key = r.race_key
-  left join latest_entry e on e.race_key = r.race_key and e.horse_number = r.horse_number
-  left join latest_weight w on w.race_key = r.race_key and w.horse_number = r.horse_number
-  left join latest_fetch_at f on f.race_key = r.race_key
+  from latest_entry e
+  join realtime_race_sources s on s.race_key = e.race_key
+  left join latest_result r on r.race_key = e.race_key and r.horse_number = e.horse_number
+  left join latest_weight w on w.race_key = e.race_key and w.horse_number = e.horse_number
+  left join latest_result_fetch_at rf on rf.race_key = e.race_key
+  left join latest_entry_fetch_at ef on ef.race_key = e.race_key
   where s.source = ?
     and s.kaisai_nen = ?
     and s.kaisai_tsukihi = ?
     and s.keibajo_code = ?
-  order by s.race_bango asc, cast(nullif(r.horse_number, '') as integer) asc
+  order by s.race_bango asc, cast(nullif(e.horse_number, '') as integer) asc
 `;
 
 const RUNNING_STYLE_SELECT_SQL = `

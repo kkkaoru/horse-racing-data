@@ -475,10 +475,17 @@ const aggregateRunningStyleRows = (
 
   const aggregated = targetEntries.map(({ index, key, target }) => {
     const groupRows = groupedRowsByTargetKey.get(key) ?? [];
-    const finishPositions = groupRows.map((row) => row.finishPosition);
-    const winCount = groupRows.filter((row) => row.finishPosition === 1).length;
-    const quinellaCount = groupRows.filter((row) => row.finishPosition <= 2).length;
-    const showCount = groupRows.filter((row) => row.finishPosition <= 3).length;
+    // finishPosition === 0 is the sentinel for "no result yet" (entry-only
+    // row, eg. today sibling whose top-3 didn't include this horse). It
+    // must NOT count toward quinella / show / win — otherwise the
+    // `<= 2` / `<= 3` filters would silently lift the rate by every
+    // unranked starter in the group. `starts` still counts these rows so
+    // frame participation reflects the actual field size.
+    const rankedRows = groupRows.filter((row) => row.finishPosition >= 1);
+    const finishPositions = rankedRows.map((row) => row.finishPosition);
+    const winCount = rankedRows.filter((row) => row.finishPosition === 1).length;
+    const quinellaCount = rankedRows.filter((row) => row.finishPosition <= 2).length;
+    const showCount = rankedRows.filter((row) => row.finishPosition <= 3).length;
     const popularities = groupRows
       .map((row) => parseStoredPopularity(row.tanshoPopularity))
       .filter((value): value is number => value !== null);

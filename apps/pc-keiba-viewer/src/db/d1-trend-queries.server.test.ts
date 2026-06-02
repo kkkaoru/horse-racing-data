@@ -1423,3 +1423,144 @@ it("getRaceTrendTodayStarterRows derives wakuban for nar 12-horse sibling umaban
   });
   expect(rows[0]?.wakuban).toBe("4");
 });
+
+// 2026-06-02 race 43/09 hotfix factories: NAR result snapshots only persist
+// top-3 finishers. The old `from race_result_snapshots` query dropped every
+// frame whose top-3 horses happened to miss the sibling races, so 枠1
+// (umaban 1-2) only surfaced from R01 even though every sibling had two
+// frame-1 starters. With the entry-based base table every starter from
+// `race_entry_snapshots` shows up, finishPosition=0 for the 9 horses
+// outside top-3.
+const buildEntryOnlyRow = (umaban: string): Record<string, unknown> => ({
+  source: "nar",
+  raceKey: "nar:2026:0602:43:02",
+  kaisaiNen: "2026",
+  kaisaiTsukihi: "0602",
+  keibajoCode: "43",
+  raceBango: "02",
+  raceName: "Sibling 02",
+  hassoJikoku: "2026-06-02T15:00:00+09:00",
+  umaban,
+  horseCount: 12,
+  bamei: "EntryHorse",
+  jockeyName: "EntryJockey",
+  finishPosition: 0,
+  sohaTime: null,
+  bataijuInt: null,
+  zogenFugo: null,
+  zogenSaInt: null,
+});
+
+const buildSibling04EntryRow = (umaban: string): Record<string, unknown> => ({
+  source: "nar",
+  raceKey: "nar:2026:0602:43:04",
+  kaisaiNen: "2026",
+  kaisaiTsukihi: "0602",
+  keibajoCode: "43",
+  raceBango: "04",
+  raceName: "Sibling 04",
+  hassoJikoku: "2026-06-02T16:00:00+09:00",
+  umaban,
+  horseCount: 12,
+  bamei: "Entry04",
+  jockeyName: "Jockey04",
+  finishPosition: 0,
+  sohaTime: null,
+  bataijuInt: null,
+  zogenFugo: null,
+  zogenSaInt: null,
+});
+
+it("getRaceTrendTodayStarterRows surfaces every entry-only nar starter with finishPosition=0", async () => {
+  const finisherRow: Record<string, unknown> = {
+    source: "nar",
+    raceKey: "nar:2026:0602:43:02",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0602",
+    keibajoCode: "43",
+    raceBango: "02",
+    raceName: "Sibling 02",
+    hassoJikoku: "2026-06-02T15:00:00+09:00",
+    umaban: "12",
+    horseCount: 12,
+    bamei: "WinnerHorse",
+    jockeyName: "WinnerJockey",
+    finishPosition: 1,
+    sohaTime: "1234",
+    bataijuInt: 480,
+    zogenFugo: "+",
+    zogenSaInt: 2,
+  };
+  const placeRow: Record<string, unknown> = {
+    ...buildEntryOnlyRow("03"),
+    bamei: "PlaceHorse",
+    finishPosition: 2,
+  };
+  const showRow: Record<string, unknown> = {
+    ...buildEntryOnlyRow("04"),
+    bamei: "ShowHorse",
+    finishPosition: 3,
+  };
+  const rawRows: Record<string, unknown>[] = [
+    buildEntryOnlyRow("01"),
+    buildEntryOnlyRow("02"),
+    placeRow,
+    showRow,
+    buildEntryOnlyRow("05"),
+    buildEntryOnlyRow("06"),
+    buildEntryOnlyRow("07"),
+    buildEntryOnlyRow("08"),
+    buildEntryOnlyRow("09"),
+    buildEntryOnlyRow("10"),
+    buildEntryOnlyRow("11"),
+    finisherRow,
+  ];
+  const { db } = buildD1Stub(rawRows);
+  installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "43",
+    source: "nar",
+    targetYmd: "20260602",
+  });
+  expect(rows).toHaveLength(12);
+  expect(rows.filter((row) => row.finishPosition === 0)).toHaveLength(9);
+  expect(rows.filter((row) => row.wakuban === null)).toHaveLength(0);
+});
+
+it("getRaceTrendTodayStarterRows derives wakuban for every entry-only umaban 1..12", async () => {
+  const rawRows = [
+    buildSibling04EntryRow("1"),
+    buildSibling04EntryRow("2"),
+    buildSibling04EntryRow("3"),
+    buildSibling04EntryRow("4"),
+    buildSibling04EntryRow("5"),
+    buildSibling04EntryRow("6"),
+    buildSibling04EntryRow("7"),
+    buildSibling04EntryRow("8"),
+    buildSibling04EntryRow("9"),
+    buildSibling04EntryRow("10"),
+    buildSibling04EntryRow("11"),
+    buildSibling04EntryRow("12"),
+  ];
+  const { db } = buildD1Stub(rawRows);
+  installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "43",
+    source: "nar",
+    targetYmd: "20260602",
+  });
+  expect(rows.map((row) => row.wakuban)).toStrictEqual([
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "5",
+    "6",
+    "6",
+    "7",
+    "7",
+    "8",
+    "8",
+  ]);
+});
