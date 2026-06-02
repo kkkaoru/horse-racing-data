@@ -391,6 +391,24 @@ def test_to_parquet_frame_stamps_versions_and_source_keys():
     assert frame["finish_position_version"].tolist() == ["v1", "v1"]
 
 
+def test_to_parquet_frame_category_uses_jra_partition_for_jra():
+    args = _base_args(Path("/tmp"), "jra")
+    frame = subject.to_parquet_frame(_predictions_frame(), args, 2024)
+    assert frame["category"].tolist() == ["jra", "jra"]
+
+
+def test_to_parquet_frame_category_uses_nar_partition_for_nar():
+    args = _base_args(Path("/tmp"), "nar")
+    frame = subject.to_parquet_frame(_predictions_frame(), args, 2024)
+    assert frame["category"].tolist() == ["nar", "nar"]
+
+
+def test_to_parquet_frame_category_uses_hyphenated_ban_ei_partition_for_banei():
+    args = _base_args(Path("/tmp"), "banei")
+    frame = subject.to_parquet_frame(_predictions_frame(), args, 2024)
+    assert frame["category"].tolist() == ["ban-ei", "ban-ei"]
+
+
 def test_default_write_jsonl_writes_five_column_records(tmp_path: Path):
     output_path = tmp_path / "jra-v7-lineage-wf-21y-2024.jsonl"
     subject.default_write_jsonl(_predictions_frame(), output_path)
