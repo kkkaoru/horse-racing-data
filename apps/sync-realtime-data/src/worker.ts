@@ -2754,6 +2754,13 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
       );
       return;
     }
+    if (job.type === "materialize-running-style-features") {
+      const summary = await materializeRunningStyleFeatureParquetsForDate(env, job.date).catch(
+        (error: unknown) => ({ error: formatError(error) }),
+      );
+      await logFetch(env.REALTIME_DB, job.type, "ok", null, JSON.stringify(summary));
+      return;
+    }
     if (job.type === "generate-running-style-predictions") {
       const summary = await handleRunningStylePredictionJob(env, job);
       await logFetch(env.REALTIME_DB, job.type, "ok", job.raceKey, JSON.stringify(summary));
