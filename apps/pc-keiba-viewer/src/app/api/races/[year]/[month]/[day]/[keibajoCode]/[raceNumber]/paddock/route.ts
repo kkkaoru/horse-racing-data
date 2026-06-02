@@ -1,5 +1,7 @@
+// Run with bun. `bun run --filter pc-keiba-viewer dev`
 import { NextResponse } from "next/server";
 
+import { type PaddockAction } from "../../../../../../../../../lib/paddock";
 import {
   getPaddockLiveUrl,
   getPaddockState,
@@ -20,6 +22,36 @@ interface PaddockRouteProps {
     year: string;
   }>;
 }
+
+const USER_ID_PATTERN = /^[A-Za-z0-9_-]+$/u;
+const USER_ID_MIN_LENGTH = 1;
+const USER_ID_MAX_LENGTH = 128;
+
+const isValidUserId = (value: unknown): value is string =>
+  typeof value === "string" &&
+  value.length >= USER_ID_MIN_LENGTH &&
+  value.length <= USER_ID_MAX_LENGTH &&
+  USER_ID_PATTERN.test(value);
+
+const hasUserIdField = (value: object): value is { userId: unknown } => "userId" in value;
+
+export const parsePaddockActionBody = (
+  body: unknown,
+): { action: PaddockAction } | { error: "invalid_user_id" } | null => {
+  if (!isPaddockAction(body)) {
+    return null;
+  }
+  if (body.type === "official-rank") {
+    return { action: body };
+  }
+  if (!hasUserIdField(body) || body.userId === undefined) {
+    return { action: body };
+  }
+  if (!isValidUserId(body.userId)) {
+    return { error: "invalid_user_id" };
+  }
+  return { action: { ...body, userId: body.userId } };
+};
 
 const getCorsHeaders = (request: Request): Record<string, string> => {
   const origin = request.headers.get("origin");
@@ -71,11 +103,15 @@ export async function POST(request: Request, { params }: PaddockRouteProps) {
   }
 
   const body: unknown = await request.json().catch(() => null);
-  if (!isPaddockAction(body)) {
+  const parsed = parsePaddockActionBody(body);
+  if (parsed === null) {
     return NextResponse.json({ error: "invalid_action" }, { status: 400 });
   }
+  if ("error" in parsed) {
+    return NextResponse.json({ error: parsed.error }, { status: 400 });
+  }
 
-  return NextResponse.json(await updatePaddockState(raceParams, body), {
+  return NextResponse.json(await updatePaddockState(raceParams, parsed.action), {
     headers: {
       ...getCorsHeaders(request),
       "Cache-Control": "private, max-age=0, no-store",

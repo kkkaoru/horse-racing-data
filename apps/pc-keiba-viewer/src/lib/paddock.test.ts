@@ -317,4 +317,87 @@ describe("paddock helpers", () => {
   it("treats a negative paddock total without an official rank as non-notifiable", () => {
     expect(isPaddockHorseNotifiable({ officialRank: null, total: -2 })).toBe(false);
   });
+
+  it("score-action-records-user-id-in-history", () => {
+    const state = applyPaddockAction(
+      createPaddockState("race", "2026-05-13T11:59:00.000Z"),
+      {
+        category: "paddock",
+        delta: 1,
+        horseName: "一番",
+        horseNumber: "01",
+        userId: "user-abc",
+      },
+      "2026-05-13T12:00:00.000Z",
+    );
+
+    expect(state.history[0]?.userId).toBe("user-abc");
+    expect(state.history[0]?.type).toBe("score");
+  });
+
+  it("score-action-without-user-id-leaves-undefined", () => {
+    const state = applyPaddockAction(
+      createPaddockState("race", "2026-05-13T11:59:00.000Z"),
+      {
+        category: "attention",
+        delta: 1,
+        horseName: "二番",
+        horseNumber: "02",
+      },
+      "2026-05-13T12:00:00.000Z",
+    );
+
+    expect(state.history[0]?.userId).toBeUndefined();
+    expect(state.history[0]?.type).toBe("score");
+  });
+
+  it("official-rank-action-does-not-record-user-id", () => {
+    const state = applyPaddockAction(
+      createPaddockState("race", "2026-05-13T11:59:00.000Z"),
+      {
+        horseName: "三番",
+        horseNumber: "03",
+        rank: 1,
+        type: "official-rank",
+      },
+      "2026-05-13T12:00:00.000Z",
+    );
+
+    expect(state.history[0]?.userId).toBeUndefined();
+    expect(state.history[0]?.type).toBe("official-rank");
+  });
+
+  it("score-history-with-user-id-survives-100-entry-limit", () => {
+    const base = createPaddockState("race", "2026-05-13T11:59:00.000Z");
+    const seeded = applyPaddockAction(
+      base,
+      {
+        category: "paddock",
+        delta: 1,
+        horseName: "先頭",
+        horseNumber: "01",
+        userId: "user-first",
+      },
+      "2026-05-13T12:00:00.000Z",
+    );
+    const filled = Array.from({ length: PADDOCK_HISTORY_LIMIT - 1 }).reduce<PaddockState>(
+      (current, _, index) =>
+        applyPaddockAction(
+          current,
+          {
+            category: "paddock",
+            delta: 1,
+            horseName: `馬${index}`,
+            horseNumber: String((index % 18) + 1),
+            userId: `user-${index}`,
+          },
+          `2026-05-13T13:${String(index).padStart(2, "0")}:00.000Z`,
+        ),
+      seeded,
+    );
+
+    expect(filled.history).toHaveLength(PADDOCK_HISTORY_LIMIT);
+    expect(filled.history[0]?.userId).toBe("user-98");
+    expect(filled.history[PADDOCK_HISTORY_LIMIT - 1]?.userId).toBe("user-first");
+  });
 });

@@ -3754,9 +3754,9 @@ h3 {
   border-top: var(--space-1px-7) solid var(--line);
   display: grid;
   gap: var(--space-8px-28);
-  grid-template-columns: var(--space-120px-106) minmax(var(--number-0-2), var(--space-1fr-51)) var(
-      --space-96px-66
-    );
+  grid-template-columns:
+    var(--space-120px-106) minmax(var(--number-0-2), var(--space-1fr-51))
+    var(--space-96px-66) var(--space-96px-66);
   padding-top: var(--space-8px-28);
 }
 
@@ -3775,6 +3775,14 @@ h3 {
 .paddock-history strong {
   color: var(--accent-strong);
   font-size: var(--space-15px-1);
+  text-align: right;
+}
+
+.paddock-history-author {
+  color: var(--muted);
+  font-family: monospace;
+  font-size: var(--space-15px-1);
+  font-variant-numeric: tabular-nums;
   text-align: right;
 }
 

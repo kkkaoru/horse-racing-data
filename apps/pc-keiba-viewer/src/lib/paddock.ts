@@ -27,6 +27,7 @@ export interface PaddockHistoryEntry {
     "attention" | "kaeshi" | "officialRank" | "paddock" | "preference" | "total"
   >;
   type: "official-rank" | "score";
+  userId?: string;
 }
 
 export interface PaddockState {
@@ -42,6 +43,7 @@ export interface PaddockScoreAction {
   horseName: string;
   horseNumber: string;
   type?: "score";
+  userId?: string;
 }
 
 export interface PaddockOfficialRankAction {
@@ -215,6 +217,7 @@ export const applyPaddockAction = (
       total: nextHorse.total,
     },
     type: "score",
+    userId: action.userId,
   };
   return {
     history: [historyEntry, ...state.history].slice(0, PADDOCK_HISTORY_LIMIT),

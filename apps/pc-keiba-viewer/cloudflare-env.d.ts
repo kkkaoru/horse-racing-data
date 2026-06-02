@@ -24,10 +24,27 @@ declare global {
     };
   }
 
+  interface PcKeibaKvListKey {
+    name: string;
+    expiration?: number;
+    metadata?: Record<string, string>;
+  }
+
+  interface PcKeibaKvListResult {
+    keys: PcKeibaKvListKey[];
+    list_complete: boolean;
+    cursor?: string;
+  }
+
   interface PcKeibaKvNamespace {
     delete(key: string): Promise<void>;
     get(key: string): Promise<string | null>;
     get<T = unknown>(key: string, options: { type: "json" }): Promise<T | null>;
+    list(options?: {
+      prefix?: string;
+      cursor?: string;
+      limit?: number;
+    }): Promise<PcKeibaKvListResult>;
     put(
       key: string,
       value: string,
