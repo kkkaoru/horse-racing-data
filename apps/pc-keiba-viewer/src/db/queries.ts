@@ -3,6 +3,11 @@ import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { cache } from "react";
 
 import { TRACK_LABELS, type RaceSource } from "../lib/codes";
+import {
+  deriveFinishPositionWilsonScoreCI,
+  type FinishPositionBucketFilter,
+  type FinishPositionBucketMetrics,
+} from "../lib/finish-prediction-dimensions";
 import type {
   AbilityTest,
   BloodlineStatsRow,
@@ -6329,6 +6334,136 @@ export const getRunningStyleBucketEvaluation = cache(
           raceCount: toFiniteNumber(row.race_count),
           top2HitCount: toFiniteNumber(row.top2_hit_count),
         });
+      },
+    ),
+);
+
+export interface FinishPositionBucketEvaluationQueryFilter {
+  filter: FinishPositionBucketFilter;
+}
+
+interface FinishPositionBucketAggregateRow extends Record<string, unknown> {
+  race_count: string | number;
+  prediction_count: string | number;
+  top1_hit_sum: string | number;
+  place1_hit_sum: string | number;
+  place2_hit_sum: string | number;
+  place3_hit_sum: string | number;
+  top3_box_hit_sum: string | number;
+  top3_exact_hit_sum: string | number;
+  top3_winner_capture_sum: string | number;
+  top5_winner_capture_sum: string | number;
+  top3_place_relation_sum: string | number;
+  pair_score_sum: string | number;
+  pair_score_pair_count: string | number;
+  ndcg_at_3_sum: string | number;
+  ndcg_at_3_race_count: string | number;
+}
+
+const FINISH_POSITION_SMALL_SAMPLE_THRESHOLD = 30;
+const FINISH_POSITION_OOS_TRAIN_FROM = "20240101";
+const FINISH_POSITION_OOS_TRAIN_TO = "20260101";
+
+const safeDivide = (numerator: number, denominator: number): number =>
+  denominator === 0 ? 0 : numerator / denominator;
+
+export const getFinishPositionBucketEvaluation = cache(
+  async (
+    args: FinishPositionBucketEvaluationQueryFilter,
+  ): Promise<FinishPositionBucketMetrics | null> =>
+    withDbQueryCache(
+      [
+        "getFinishPositionBucketEvaluation",
+        args.filter.modelVersion,
+        args.filter.category,
+        args.filter.source,
+        args.filter.keibajoCode,
+        args.filter.kyori,
+        args.filter.kyosoShubetsuCode,
+        args.filter.kyosoJokenCode,
+        args.filter.conditionKey,
+        args.filter.trackCode,
+        args.filter.gradeCode,
+        args.filter.raceName,
+        args.filter.enabled.keibajo,
+        args.filter.enabled.distance,
+        args.filter.enabled.kyosoShubetsu,
+        args.filter.enabled.kyosoJoken,
+        args.filter.enabled.condition,
+        args.filter.enabled.track,
+        args.filter.enabled.grade,
+        args.filter.enabled.raceName,
+        args.filter.period,
+      ],
+      async () => {
+        const { filter } = args;
+        const enabled = filter.enabled;
+        const oosOnly = filter.period === "oos-only";
+        const result = await getDb().execute<FinishPositionBucketAggregateRow>(sql`
+          with scoped as (
+            select b.*
+            from model_prediction_bucket_evaluations b
+            where b.model_version = ${filter.modelVersion}
+              and b.category = ${filter.category}
+              and b.source = ${filter.source}
+              and (${enabled.keibajo ? sql`b.keibajo_code = ${filter.keibajoCode}` : sql`true`})
+              and (${enabled.distance ? sql`b.kyori = ${filter.kyori}` : sql`true`})
+              and (${enabled.kyosoShubetsu ? sql`b.kyoso_shubetsu_code = ${filter.kyosoShubetsuCode}` : sql`true`})
+              and (${enabled.kyosoJoken ? sql`b.kyoso_joken_code = ${filter.kyosoJokenCode}` : sql`true`})
+              and (${enabled.condition ? sql`b.condition_key = ${filter.conditionKey}` : sql`true`})
+              and (${enabled.track ? sql`b.track_code = ${filter.trackCode}` : sql`true`})
+              and (${enabled.grade ? sql`b.grade_code = ${filter.gradeCode}` : sql`true`})
+              and (${enabled.raceName ? sql`regexp_replace(b.race_name, '^[[:space:]　]+|[[:space:]　]+$', '', 'g') = ${filter.raceName}` : sql`true`})
+              and (${oosOnly ? sql`(b.evaluation_window_from < ${FINISH_POSITION_OOS_TRAIN_FROM} or b.evaluation_window_from >= ${FINISH_POSITION_OOS_TRAIN_TO})` : sql`true`})
+          )
+          select
+            coalesce(sum(race_count), 0)::text as race_count,
+            coalesce(sum(prediction_count), 0)::text as prediction_count,
+            coalesce(sum(top1_hit_sum), 0)::text as top1_hit_sum,
+            coalesce(sum(place1_hit_sum), 0)::text as place1_hit_sum,
+            coalesce(sum(place2_hit_sum), 0)::text as place2_hit_sum,
+            coalesce(sum(place3_hit_sum), 0)::text as place3_hit_sum,
+            coalesce(sum(top3_box_hit_sum), 0)::text as top3_box_hit_sum,
+            coalesce(sum(top3_exact_hit_sum), 0)::text as top3_exact_hit_sum,
+            coalesce(sum(top3_winner_capture_sum), 0)::text as top3_winner_capture_sum,
+            coalesce(sum(top5_winner_capture_sum), 0)::text as top5_winner_capture_sum,
+            coalesce(sum(top3_place_relation_sum), 0)::text as top3_place_relation_sum,
+            coalesce(sum(pair_score_sum), 0)::text as pair_score_sum,
+            coalesce(sum(pair_score_pair_count), 0)::text as pair_score_pair_count,
+            coalesce(sum(ndcg_at_3_sum), 0)::text as ndcg_at_3_sum,
+            coalesce(sum(ndcg_at_3_race_count), 0)::text as ndcg_at_3_race_count
+          from scoped
+          having coalesce(sum(prediction_count), 0) > 0
+        `);
+        const row = result.rows[0];
+        if (row === undefined) {
+          return null;
+        }
+        const raceCount = toFiniteNumber(row.race_count);
+        const predictionCount = toFiniteNumber(row.prediction_count);
+        const top1HitSum = toFiniteNumber(row.top1_hit_sum);
+        const pairScorePairCount = toFiniteNumber(row.pair_score_pair_count);
+        const ndcgRaceCount = toFiniteNumber(row.ndcg_at_3_race_count);
+        return {
+          ndcgAt3Avg: safeDivide(toFiniteNumber(row.ndcg_at_3_sum), ndcgRaceCount),
+          pairScoreAvg: safeDivide(toFiniteNumber(row.pair_score_sum), pairScorePairCount),
+          place1Accuracy: safeDivide(toFiniteNumber(row.place1_hit_sum), raceCount),
+          place2Accuracy: safeDivide(toFiniteNumber(row.place2_hit_sum), raceCount),
+          place3Accuracy: safeDivide(toFiniteNumber(row.place3_hit_sum), raceCount),
+          predictionCount,
+          raceCount,
+          smallSampleWarning: raceCount < FINISH_POSITION_SMALL_SAMPLE_THRESHOLD,
+          top1Accuracy: safeDivide(top1HitSum, raceCount),
+          top1AccuracyCI: deriveFinishPositionWilsonScoreCI({
+            successes: top1HitSum,
+            trials: raceCount,
+          }),
+          top3BoxAccuracy: safeDivide(toFiniteNumber(row.top3_box_hit_sum), raceCount),
+          top3ExactAccuracy: safeDivide(toFiniteNumber(row.top3_exact_hit_sum), raceCount),
+          top3PlaceRelationAvg: safeDivide(toFiniteNumber(row.top3_place_relation_sum), raceCount),
+          top3WinnerCaptureRate: safeDivide(toFiniteNumber(row.top3_winner_capture_sum), raceCount),
+          top5WinnerCaptureRate: safeDivide(toFiniteNumber(row.top5_winner_capture_sum), raceCount),
+        };
       },
     ),
 );

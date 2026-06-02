@@ -23,8 +23,9 @@ vi.mock("./query-cache", () => ({
   withDbQueryCache: withDbQueryCacheMock,
 }));
 
+import type { FinishPositionBucketFilter } from "../lib/finish-prediction-dimensions";
 import type { RunningStyleBucketFilter } from "../lib/running-style-prediction-dimensions";
-import { getRunningStyleBucketEvaluation } from "./queries";
+import { getFinishPositionBucketEvaluation, getRunningStyleBucketEvaluation } from "./queries";
 
 interface DrizzleSqlLike {
   queryChunks?: unknown[];
@@ -417,4 +418,218 @@ it("getRunningStyleBucketEvaluation injects evaluation_window_from OOS bounds wh
   expect(queryText).toMatch(/b\.evaluation_window_from >=/u);
   expect(queryText).toMatch(/'20160101'/u);
   expect(queryText).toMatch(/'20260101'/u);
+});
+
+const FINISH_ALL_FLAGS_ON_FILTER: FinishPositionBucketFilter = {
+  category: "jra",
+  conditionKey: null,
+  enabled: {
+    condition: false,
+    distance: true,
+    grade: true,
+    keibajo: true,
+    kyosoJoken: true,
+    kyosoShubetsu: true,
+    raceName: true,
+    track: true,
+  },
+  gradeCode: "G3",
+  keibajoCode: "05",
+  kyori: 2400,
+  kyosoJokenCode: "999",
+  kyosoShubetsuCode: "11",
+  modelVersion: "jra-cb-v7-lineage-wf-21y",
+  period: "all",
+  raceName: "東京新聞杯",
+  source: "jra",
+  trackCode: "10",
+};
+
+const FINISH_KEIBAJO_ONLY_FILTER: FinishPositionBucketFilter = {
+  category: "jra",
+  conditionKey: null,
+  enabled: {
+    condition: false,
+    distance: false,
+    grade: false,
+    keibajo: true,
+    kyosoJoken: false,
+    kyosoShubetsu: false,
+    raceName: false,
+    track: false,
+  },
+  gradeCode: null,
+  keibajoCode: "05",
+  kyori: 2400,
+  kyosoJokenCode: null,
+  kyosoShubetsuCode: "11",
+  modelVersion: "jra-cb-v7-lineage-wf-21y",
+  period: "all",
+  raceName: null,
+  source: "jra",
+  trackCode: null,
+};
+
+const FINISH_OOS_ONLY_FILTER: FinishPositionBucketFilter = {
+  category: "nar",
+  conditionKey: null,
+  enabled: {
+    condition: false,
+    distance: false,
+    grade: false,
+    keibajo: true,
+    kyosoJoken: false,
+    kyosoShubetsu: false,
+    raceName: false,
+    track: false,
+  },
+  gradeCode: null,
+  keibajoCode: "44",
+  kyori: 1800,
+  kyosoJokenCode: null,
+  kyosoShubetsuCode: "11",
+  modelVersion: "nar-xgb-v7-lineage-wf-21y",
+  period: "oos-only",
+  raceName: null,
+  source: "nar",
+  trackCode: null,
+};
+
+const FINISH_AGGREGATE_ROW = {
+  ndcg_at_3_race_count: "100",
+  ndcg_at_3_sum: "63",
+  pair_score_pair_count: "5000",
+  pair_score_sum: "3500",
+  place1_hit_sum: "52",
+  place2_hit_sum: "28",
+  place3_hit_sum: "20",
+  prediction_count: "1500",
+  race_count: "100",
+  top1_hit_sum: "52",
+  top3_box_hit_sum: "12",
+  top3_exact_hit_sum: "3",
+  top3_place_relation_sum: "57",
+  top3_winner_capture_sum: "71",
+  top5_winner_capture_sum: "86",
+};
+
+it("getFinishPositionBucketEvaluation pins the explicit model_version predicate without a latest_versions CTE", async () => {
+  executeMock.mockResolvedValue({ rows: [FINISH_AGGREGATE_ROW] });
+  await getFinishPositionBucketEvaluation({ filter: FINISH_ALL_FLAGS_ON_FILTER });
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(queryText).toMatch(/b\.model_version = /u);
+  expect(queryText).toMatch(/'jra-cb-v7-lineage-wf-21y'/u);
+  expect(queryText).not.toMatch(/latest_versions/u);
+});
+
+it("getFinishPositionBucketEvaluation emits all eight dimension predicates when every flag is on", async () => {
+  executeMock.mockResolvedValue({ rows: [FINISH_AGGREGATE_ROW] });
+  await getFinishPositionBucketEvaluation({ filter: FINISH_ALL_FLAGS_ON_FILTER });
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(queryText).toMatch(/b\.keibajo_code = /u);
+  expect(queryText).toMatch(/b\.kyori = /u);
+  expect(queryText).toMatch(/b\.kyoso_shubetsu_code = /u);
+  expect(queryText).toMatch(/b\.kyoso_joken_code = /u);
+  expect(queryText).toMatch(/b\.track_code = /u);
+  expect(queryText).toMatch(/b\.grade_code = /u);
+  expect(queryText).toMatch(/regexp_replace\(b\.race_name, /u);
+});
+
+it("getFinishPositionBucketEvaluation omits dimension predicates when only keibajo flag is on", async () => {
+  executeMock.mockResolvedValue({ rows: [FINISH_AGGREGATE_ROW] });
+  await getFinishPositionBucketEvaluation({ filter: FINISH_KEIBAJO_ONLY_FILTER });
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(queryText).toMatch(/b\.keibajo_code = /u);
+  expect(queryText).not.toMatch(/b\.kyori = /u);
+  expect(queryText).not.toMatch(/b\.kyoso_shubetsu_code = /u);
+  expect(queryText).not.toMatch(/b\.track_code = /u);
+  expect(queryText).not.toMatch(/b\.grade_code = /u);
+  expect(queryText).not.toMatch(/regexp_replace\(b\.race_name, /u);
+});
+
+it("getFinishPositionBucketEvaluation aggregates all fifteen ranking metric columns", async () => {
+  executeMock.mockResolvedValue({ rows: [FINISH_AGGREGATE_ROW] });
+  await getFinishPositionBucketEvaluation({ filter: FINISH_ALL_FLAGS_ON_FILTER });
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(queryText).toMatch(/sum\(top1_hit_sum\)/u);
+  expect(queryText).toMatch(/sum\(place1_hit_sum\)/u);
+  expect(queryText).toMatch(/sum\(place2_hit_sum\)/u);
+  expect(queryText).toMatch(/sum\(place3_hit_sum\)/u);
+  expect(queryText).toMatch(/sum\(top3_box_hit_sum\)/u);
+  expect(queryText).toMatch(/sum\(top3_exact_hit_sum\)/u);
+  expect(queryText).toMatch(/sum\(top3_winner_capture_sum\)/u);
+  expect(queryText).toMatch(/sum\(top5_winner_capture_sum\)/u);
+  expect(queryText).toMatch(/sum\(top3_place_relation_sum\)/u);
+  expect(queryText).toMatch(/sum\(pair_score_sum\)/u);
+  expect(queryText).toMatch(/sum\(pair_score_pair_count\)/u);
+  expect(queryText).toMatch(/sum\(ndcg_at_3_sum\)/u);
+  expect(queryText).toMatch(/sum\(ndcg_at_3_race_count\)/u);
+});
+
+it("getFinishPositionBucketEvaluation omits the evaluation_window_from predicate when period is all", async () => {
+  executeMock.mockResolvedValue({ rows: [FINISH_AGGREGATE_ROW] });
+  await getFinishPositionBucketEvaluation({ filter: FINISH_ALL_FLAGS_ON_FILTER });
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(queryText).not.toMatch(/b\.evaluation_window_from/u);
+});
+
+it("getFinishPositionBucketEvaluation injects evaluation_window_from OOS bounds when period is oos-only", async () => {
+  executeMock.mockResolvedValue({ rows: [FINISH_AGGREGATE_ROW] });
+  await getFinishPositionBucketEvaluation({ filter: FINISH_OOS_ONLY_FILTER });
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(queryText).toMatch(/b\.evaluation_window_from </u);
+  expect(queryText).toMatch(/b\.evaluation_window_from >=/u);
+  expect(queryText).toMatch(/'20240101'/u);
+  expect(queryText).toMatch(/'20260101'/u);
+});
+
+it("getFinishPositionBucketEvaluation returns null when SQL returns zero rows", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+  const result = await getFinishPositionBucketEvaluation({ filter: FINISH_ALL_FLAGS_ON_FILTER });
+  expect(result).toBe(null);
+});
+
+it("getFinishPositionBucketEvaluation derives accuracies and averages from the aggregate row", async () => {
+  executeMock.mockResolvedValue({ rows: [FINISH_AGGREGATE_ROW] });
+  const result = await getFinishPositionBucketEvaluation({ filter: FINISH_ALL_FLAGS_ON_FILTER });
+  expect(result?.raceCount).toBe(100);
+  expect(result?.predictionCount).toBe(1500);
+  expect(result?.top1Accuracy).toBe(0.52);
+  expect(result?.place2Accuracy).toBe(0.28);
+  expect(result?.pairScoreAvg).toBe(0.7);
+  expect(result?.ndcgAt3Avg).toBe(0.63);
+  expect(result?.smallSampleWarning).toBe(false);
+});
+
+it("getFinishPositionBucketEvaluation flags a small sample when race_count is below thirty", async () => {
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        ndcg_at_3_race_count: "10",
+        ndcg_at_3_sum: "6",
+        pair_score_pair_count: "0",
+        pair_score_sum: "0",
+        place1_hit_sum: "5",
+        place2_hit_sum: "2",
+        place3_hit_sum: "1",
+        prediction_count: "120",
+        race_count: "10",
+        top1_hit_sum: "5",
+        top3_box_hit_sum: "1",
+        top3_exact_hit_sum: "0",
+        top3_place_relation_sum: "4",
+        top3_winner_capture_sum: "6",
+        top5_winner_capture_sum: "8",
+      },
+    ],
+  });
+  const result = await getFinishPositionBucketEvaluation({ filter: FINISH_KEIBAJO_ONLY_FILTER });
+  expect(result?.smallSampleWarning).toBe(true);
+  expect(result?.pairScoreAvg).toBe(0);
 });

@@ -3,6 +3,7 @@ import {
   getBloodlineStats,
   getActiveFinishPositionPredictions,
   getActiveFinishPredictionEvaluation,
+  getFinishPositionBucketEvaluation,
   getFinishPositionSimilarityFeatures,
   getFinishPositionStats,
   getFrameStats,
@@ -27,6 +28,15 @@ import {
   getFinishPredictionEvaluation,
   getFinishPredictionEvaluationCategory,
 } from "../../../lib/finish-position-prediction-evaluation";
+import {
+  buildFinishPositionBucketFilter,
+  buildFinishPositionBucketTiers,
+  type FinishPositionBucketMetrics,
+  type FinishPositionBucketScope,
+  type FinishPredictionDimensionFlags,
+  getFinishPredictionDimensionFlags,
+  resolveFinishPositionBucketModelVersion,
+} from "../../../lib/finish-prediction-dimensions";
 import {
   cleanText,
   formatDistance,
@@ -79,6 +89,7 @@ import {
   type RunningStyleBucketScope,
   type RunningStyleDimensionFlags,
 } from "../../../lib/running-style-prediction-dimensions";
+import type { FinishPositionBucketRace } from "./finish-position-bucket-section";
 
 export type DetailSection =
   | "ability"
@@ -109,6 +120,32 @@ export interface RunningStyleBucketSectionData {
   bucketSource: "jra" | "nar" | null;
   bucketGradeCode: string | null;
   dimensionFlags: RunningStyleDimensionFlags | null;
+}
+
+export interface FinishPositionBucketSectionData {
+  bucketEvaluation: FinishPositionBucketMetrics | null;
+  bucketScope: FinishPositionBucketScope | null;
+  bucketRace: FinishPositionBucketRace | null;
+  bucketSource: "jra" | "nar" | null;
+  bucketGradeCode: string | null;
+  bucketModelVersion: string | null;
+}
+
+interface FinishPositionBucketTier {
+  level: FinishPositionBucketScope["level"];
+  flags: FinishPredictionDimensionFlags;
+}
+
+interface FinishPositionBucketResolution {
+  bucketEvaluation: FinishPositionBucketMetrics | null;
+  bucketScope: FinishPositionBucketScope | null;
+}
+
+interface ResolveFinishPositionBucketInput {
+  race: FinishPositionBucketRace;
+  query: Record<string, string | string[] | undefined>;
+  modelVersion: string;
+  tiers: readonly FinishPositionBucketTier[];
 }
 
 export interface DetailSectionParams {
@@ -1178,6 +1215,117 @@ export const getRunningStyleBucketSectionData = async (
   };
 };
 
+const EMPTY_FINISH_POSITION_BUCKET_RESOLUTION: FinishPositionBucketResolution = {
+  bucketEvaluation: null,
+  bucketScope: null,
+};
+
+// Resolve the finish-position bucket evaluation across progressively-relaxed
+// dimension tiers, stopping at the first tier that returns metrics. Recursion
+// keeps the early-exit behaviour without a for loop or extra nesting; the
+// undefined tier guard enforces the three-tier max depth.
+const resolveFinishPositionBucketTier = async (
+  input: ResolveFinishPositionBucketInput,
+  index: number,
+): Promise<FinishPositionBucketResolution> => {
+  const tier = input.tiers[index];
+  if (tier === undefined) {
+    return EMPTY_FINISH_POSITION_BUCKET_RESOLUTION;
+  }
+  const bucketFilter = buildFinishPositionBucketFilter({
+    flags: tier.flags,
+    modelVersion: input.modelVersion,
+    query: input.query,
+    race: {
+      conditionKey: input.race.kyosoJokenMeisho,
+      gradeCode: input.race.gradeCode,
+      keibajoCode: input.race.keibajoCode,
+      kyori: String(input.race.kyori),
+      kyosoJokenCode: input.race.kyosoJokenCode,
+      kyosoJokenMeisho: input.race.kyosoJokenMeisho,
+      kyosoShubetsuCode: input.race.kyosoShubetsuCode,
+      kyosomeiHondai: input.race.kyosomeiHondai,
+      raceName: input.race.kyosomeiHondai,
+      source: input.race.source,
+      trackCode: input.race.trackCode,
+    },
+  });
+  const bucketEvaluation = await getFinishPositionBucketEvaluation({ filter: bucketFilter });
+  if (bucketEvaluation === null) {
+    return resolveFinishPositionBucketTier(input, index + 1);
+  }
+  return {
+    bucketEvaluation,
+    bucketScope: { flags: tier.flags, level: tier.level },
+  };
+};
+
+const buildFinishPositionBucketRaceFromRaceDetail = (
+  race: RaceDetail,
+): FinishPositionBucketRace => ({
+  gradeCode: race.gradeCode ?? null,
+  keibajoCode: race.keibajoCode,
+  kyori: parseKyoriOrZero(race.kyori),
+  kyosoJokenCode: race.kyosoJokenCode ?? null,
+  kyosoJokenMeisho: race.kyosoJokenMeisho ?? null,
+  kyosoShubetsuCode: race.kyosoShubetsuCode ?? "",
+  kyosomeiHondai: race.kyosomeiHondai ?? null,
+  source: race.source,
+  trackCode: race.trackCode ?? null,
+});
+
+const buildEmptyFinishPositionBucketSectionData = (): FinishPositionBucketSectionData => ({
+  bucketEvaluation: null,
+  bucketGradeCode: null,
+  bucketModelVersion: null,
+  bucketRace: null,
+  bucketScope: null,
+  bucketSource: null,
+});
+
+export const getFinishPositionBucketSectionData = async (
+  params: DetailSectionParams,
+): Promise<FinishPositionBucketSectionData> => {
+  const { day, keibajoCode, month, query, raceNumber, raceSource, year } = params;
+  const race = await getRaceDetail(raceSource, year, month, day, keibajoCode, raceNumber);
+  if (!race) {
+    return buildEmptyFinishPositionBucketSectionData();
+  }
+  const isBanEi = race.source === "nar" && isBanEiKeibajoCode(race.keibajoCode);
+  const category = getFinishPredictionEvaluationCategory({
+    keibajoCode: race.keibajoCode,
+    source: race.source,
+  });
+  const modelVersion = resolveFinishPositionBucketModelVersion(category);
+  if (modelVersion === null) {
+    return buildEmptyFinishPositionBucketSectionData();
+  }
+  const flags = getFinishPredictionDimensionFlags({
+    gradeCode: race.gradeCode ?? null,
+    isBanEi,
+    query,
+    source: race.source,
+  });
+  const bucketRace = buildFinishPositionBucketRaceFromRaceDetail(race);
+  const resolution = await resolveFinishPositionBucketTier(
+    {
+      modelVersion,
+      query,
+      race: bucketRace,
+      tiers: buildFinishPositionBucketTiers(flags),
+    },
+    0,
+  );
+  return {
+    bucketEvaluation: resolution.bucketEvaluation,
+    bucketGradeCode: race.gradeCode ?? null,
+    bucketModelVersion: modelVersion,
+    bucketRace,
+    bucketScope: resolution.bucketScope,
+    bucketSource: race.source,
+  };
+};
+
 const buildRunningStyleBucketSectionPayload = async (
   params: DetailSectionParams,
 ): Promise<RunningStyleBucketSectionPayload> => {
@@ -1419,13 +1567,19 @@ export const getDetailSectionPayload = async (
       keibajoCode: race.keibajoCode,
       source: race.source,
     });
-    const [similarityFeatures, modelPredictionFeatures, sameDayVenueJockeyWins, dbEvaluation] =
-      await Promise.all([
-        getFinishPositionSimilarityFeatures(race, runners),
-        getActiveFinishPositionPredictions(race, runners),
-        fetchSameDayVenueJockeyWins(race),
-        getActiveFinishPredictionEvaluation(evaluationCategory),
-      ]);
+    const [
+      similarityFeatures,
+      modelPredictionFeatures,
+      sameDayVenueJockeyWins,
+      dbEvaluation,
+      bucketSectionData,
+    ] = await Promise.all([
+      getFinishPositionSimilarityFeatures(race, runners),
+      getActiveFinishPositionPredictions(race, runners),
+      fetchSameDayVenueJockeyWins(race),
+      getActiveFinishPredictionEvaluation(evaluationCategory),
+      getFinishPositionBucketSectionData(params),
+    ]);
     const staticEvaluation: FinishPredictionEvaluationMetrics =
       FINISH_POSITION_PREDICTION_EVALUATIONS[evaluationCategory];
     const evaluationFromDb: FinishPredictionEvaluationMetrics | null =
@@ -1495,6 +1649,7 @@ export const getDetailSectionPayload = async (
       similarityFeatures,
     };
     return {
+      bucket: bucketSectionData,
       evaluation:
         evaluationFromDb ??
         getFinishPredictionEvaluation({

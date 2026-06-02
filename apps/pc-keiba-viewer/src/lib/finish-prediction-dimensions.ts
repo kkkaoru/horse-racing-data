@@ -1,6 +1,14 @@
 // bun で実行する (bunx oxlint / bunx oxfmt / bunx vitest 経由)
+import {
+  FINISH_POSITION_V7_LINEAGE_MODEL_VERSIONS,
+  type V7LineageCategory,
+} from "../scripts/finish-position-features/v7-lineage-model-versions";
 import type { RaceListItem } from "./race-types";
 import { isBanEiKeibajoCode } from "./runner-format";
+
+export type FinishPositionBucketEvaluationPeriod = "all" | "oos-only";
+
+export type FinishPositionBucketScopeLevel = "exact" | "keibajo" | "category";
 
 export interface FinishPredictionDimensionFlags {
   keibajo: boolean;
@@ -25,6 +33,56 @@ export interface FinishPredictionBucketFilter {
   gradeCode: string | null;
   raceName: string | null;
   enabled: FinishPredictionDimensionFlags;
+}
+
+export interface FinishPositionBucketFilter extends FinishPredictionBucketFilter {
+  modelVersion: string;
+  period: FinishPositionBucketEvaluationPeriod;
+}
+
+export interface FinishPositionBucketScope {
+  level: FinishPositionBucketScopeLevel;
+  flags: FinishPredictionDimensionFlags;
+}
+
+export interface FinishPositionConfidenceInterval {
+  lower: number;
+  upper: number;
+}
+
+export interface FinishPositionBucketMetrics {
+  raceCount: number;
+  predictionCount: number;
+  top1Accuracy: number;
+  place1Accuracy: number;
+  place2Accuracy: number;
+  place3Accuracy: number;
+  top3BoxAccuracy: number;
+  top3ExactAccuracy: number;
+  top3WinnerCaptureRate: number;
+  top5WinnerCaptureRate: number;
+  top3PlaceRelationAvg: number;
+  pairScoreAvg: number;
+  ndcgAt3Avg: number;
+  top1AccuracyCI: FinishPositionConfidenceInterval;
+  smallSampleWarning: boolean;
+}
+
+export interface BuildFinishPositionBucketFilterInput {
+  race: RaceRowForBucketFilter;
+  flags: FinishPredictionDimensionFlags;
+  query: Record<string, string | string[] | undefined>;
+  modelVersion: string;
+}
+
+export interface DeriveFinishPositionWilsonScoreCIInput {
+  successes: number;
+  trials: number;
+}
+
+interface FinishPositionBucketTier {
+  level: FinishPositionBucketScopeLevel;
+  flags: FinishPredictionDimensionFlags;
 }
 
 export interface RunningStyleLocalPredictionRaceKey {
@@ -98,10 +156,49 @@ export const FINISH_PREDICTION_PARAM_NAMES = {
   raceName: "finishPredictionRaceName",
 } satisfies Record<keyof FinishPredictionDimensionFlags, string>;
 
+export const FINISH_POSITION_BUCKET_PERIOD_PARAM_NAME = "fp_period";
+
+// Single source of truth: re-export the per-category v7-lineage model versions
+// from the pipeline DRY constant so the viewer queries the exact model_version
+// that Stage 4 (evaluate-bucket-21y-v7lineage) persisted into
+// model_prediction_bucket_evaluations.
+export const FINISH_POSITION_BUCKET_MODEL_VERSIONS = FINISH_POSITION_V7_LINEAGE_MODEL_VERSIONS;
+
 const RACE_NAME_GRADE_CODES = new Set<string>(["A", "F"]);
 const CATEGORY_BANEI = "ban-ei";
 const CATEGORY_JRA = "jra";
 const CATEGORY_NAR = "nar";
+const FINISH_POSITION_BUCKET_PERIOD_OOS_ONLY = "oos-only";
+const FINISH_POSITION_BUCKET_PERIOD_ALL = "all";
+const FINISH_POSITION_WILSON_Z_95 = 1.96;
+
+const FINISH_POSITION_BUCKET_KEIBAJO_ONLY_FLAGS: FinishPredictionDimensionFlags = {
+  condition: false,
+  distance: false,
+  grade: false,
+  keibajo: true,
+  kyosoJoken: false,
+  kyosoShubetsu: false,
+  raceName: false,
+  track: false,
+};
+
+const FINISH_POSITION_BUCKET_CATEGORY_ONLY_FLAGS: FinishPredictionDimensionFlags = {
+  condition: false,
+  distance: false,
+  grade: false,
+  keibajo: false,
+  kyosoJoken: false,
+  kyosoShubetsu: false,
+  raceName: false,
+  track: false,
+};
+
+const FINISH_POSITION_BUCKET_CATEGORY_TO_MODEL: Record<string, V7LineageCategory> = {
+  "ban-ei": "banei",
+  jra: "jra",
+  nar: "nar",
+};
 
 const readFlag = (query: Record<string, string | string[] | undefined>, name: string): boolean => {
   const raw = query[name];
@@ -176,4 +273,59 @@ export const buildBucketFilter = (
     raceName: flags.raceName ? race.raceName : null,
     enabled: flags,
   };
+};
+
+export const resolveFinishPositionBucketModelVersion = (category: string): string | null => {
+  const modelCategory = FINISH_POSITION_BUCKET_CATEGORY_TO_MODEL[category];
+  if (modelCategory === undefined) {
+    return null;
+  }
+  return FINISH_POSITION_BUCKET_MODEL_VERSIONS[modelCategory];
+};
+
+const resolveFinishPositionPeriod = (
+  query: Record<string, string | string[] | undefined>,
+): FinishPositionBucketEvaluationPeriod => {
+  const raw = query[FINISH_POSITION_BUCKET_PERIOD_PARAM_NAME];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return value === FINISH_POSITION_BUCKET_PERIOD_OOS_ONLY
+    ? FINISH_POSITION_BUCKET_PERIOD_OOS_ONLY
+    : FINISH_POSITION_BUCKET_PERIOD_ALL;
+};
+
+export const buildFinishPositionBucketFilter = (
+  input: BuildFinishPositionBucketFilterInput,
+): FinishPositionBucketFilter => ({
+  ...buildBucketFilter(input.race, input.flags),
+  modelVersion: input.modelVersion,
+  period: resolveFinishPositionPeriod(input.query),
+});
+
+export const buildFinishPositionBucketTiers = (
+  flags: FinishPredictionDimensionFlags,
+): readonly FinishPositionBucketTier[] => [
+  { flags, level: "exact" },
+  { flags: FINISH_POSITION_BUCKET_KEIBAJO_ONLY_FLAGS, level: "keibajo" },
+  { flags: FINISH_POSITION_BUCKET_CATEGORY_ONLY_FLAGS, level: "category" },
+];
+
+export const deriveFinishPositionWilsonScoreCI = (
+  input: DeriveFinishPositionWilsonScoreCIInput,
+): FinishPositionConfidenceInterval => {
+  const { successes, trials } = input;
+  if (trials === 0) {
+    return { lower: 0, upper: 0 };
+  }
+  const z = FINISH_POSITION_WILSON_Z_95;
+  const proportion = successes / trials;
+  const zSquared = z * z;
+  const denominator = 1 + zSquared / trials;
+  const center = (proportion + zSquared / (2 * trials)) / denominator;
+  const marginNumerator = Math.sqrt(
+    (proportion * (1 - proportion)) / trials + zSquared / (4 * trials * trials),
+  );
+  const margin = (z * marginNumerator) / denominator;
+  const lower = Math.max(0, center - margin);
+  const upper = Math.min(1, center + margin);
+  return { lower, upper };
 };
