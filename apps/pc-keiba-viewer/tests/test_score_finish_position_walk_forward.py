@@ -37,6 +37,8 @@ def _base_args(tmp_path: Path, category: str) -> subject.WalkForwardArguments:
         "relevance_rank3": 1,
         "early_stopping_rounds": 30,
         "seed": 20260519,
+        "iteration_id": 0,
+        "calibration_path": None,
     }
 
 
@@ -638,3 +640,165 @@ def test_build_fold_train_valid_filters_by_prior_year_end(monkeypatch: pytest.Mo
     year_mock.assert_called_once_with(df, 2025)
     assert len(train_df) == 1
     assert len(valid_df) == 1
+
+
+def test_parse_args_accepts_iteration_id_and_calibration_path():
+    args = subject.parse_args([
+        "--features-parquet",
+        "tmp/feat",
+        "--category",
+        "jra",
+        "--walk-forward-namespace",
+        "ns",
+        "--year-from",
+        "2024",
+        "--year-to",
+        "2024",
+        "--train-start-date",
+        "20060101",
+        "--output-parquet-root",
+        "tmp/p",
+        "--output-jsonl-dir",
+        "tmp/j",
+        "--iteration-id",
+        "3",
+        "--calibration-path",
+        "tmp/calib.json",
+    ])
+    assert args.iteration_id == 3
+    assert args.calibration_path == Path("tmp/calib.json")
+
+
+def test_normalize_arguments_propagates_iteration_id_and_calibration_path():
+    raw = subject.parse_args([
+        "--features-parquet",
+        "tmp/feat",
+        "--category",
+        "jra",
+        "--walk-forward-namespace",
+        "ns",
+        "--year-from",
+        "2024",
+        "--year-to",
+        "2024",
+        "--train-start-date",
+        "20060101",
+        "--output-parquet-root",
+        "tmp/p",
+        "--output-jsonl-dir",
+        "tmp/j",
+        "--iteration-id",
+        "5",
+        "--calibration-path",
+        "tmp/iso.json",
+    ])
+    normalized = subject.normalize_arguments(raw)
+    assert normalized["iteration_id"] == 5
+    assert normalized["calibration_path"] == Path("tmp/iso.json")
+
+
+def test_normalize_arguments_defaults_iteration_id_to_zero_and_calibration_to_none():
+    raw = subject.parse_args([
+        "--features-parquet",
+        "tmp/feat",
+        "--category",
+        "jra",
+        "--walk-forward-namespace",
+        "ns",
+        "--year-from",
+        "2024",
+        "--year-to",
+        "2024",
+        "--train-start-date",
+        "20060101",
+        "--output-parquet-root",
+        "tmp/p",
+        "--output-jsonl-dir",
+        "tmp/j",
+    ])
+    normalized = subject.normalize_arguments(raw)
+    assert normalized["iteration_id"] == 0
+    assert normalized["calibration_path"] is None
+
+
+def test_load_calibration_map_returns_empty_when_path_none():
+    assert subject.load_calibration_map(None) == {}
+
+
+def test_load_calibration_map_returns_parsed_pairs(tmp_path: Path):
+    path = tmp_path / "iso.json"
+    path.write_text(json.dumps({"jra": [[0.0, 0.1], [1.0, 0.9]]}), encoding="utf-8")
+    out = subject.load_calibration_map(path)
+    assert out == {"jra": [[0.0, 0.1], [1.0, 0.9]]}
+
+
+def test_load_calibration_map_raises_when_root_not_object(tmp_path: Path):
+    path = tmp_path / "iso.json"
+    path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+    with pytest.raises(ValueError) as info:
+        subject.load_calibration_map(path)
+    assert "top-level object" in str(info.value)
+
+
+def test_apply_calibration_returns_input_when_map_empty():
+    predictions = _predictions_frame()
+    out = subject.apply_calibration(predictions, {}, "jra")
+    assert out.equals(predictions)
+
+
+def test_apply_calibration_returns_input_when_bucket_missing():
+    predictions = _predictions_frame()
+    out = subject.apply_calibration(predictions, {"nar": [[0.0, 0.5]]}, "jra")
+    assert out.equals(predictions)
+
+
+def test_apply_calibration_interpolates_and_reranks():
+    predictions = pd.DataFrame({
+        "race_id": ["jra:2024:0512:05:11", "jra:2024:0512:05:11"],
+        "ketto_toroku_bango": ["a", "b"],
+        "umaban": [1, 2],
+        "predicted_score": [0.5, 0.9],
+        "predicted_rank": [2, 1],
+    })
+    calibration_map = {"jra": [[0.0, 0.1], [1.0, 0.7]]}
+    out = subject.apply_calibration(predictions, calibration_map, "jra")
+    assert out["predicted_score"].iloc[0] == pytest.approx(0.4)
+    assert out["predicted_score"].iloc[1] == pytest.approx(0.64)
+    assert out["predicted_rank"].tolist() == [2, 1]
+
+
+def test_apply_calibration_clamps_to_first_pair_when_score_below_min():
+    predictions = pd.DataFrame({
+        "race_id": ["r", "r"],
+        "ketto_toroku_bango": ["a", "b"],
+        "umaban": [1, 2],
+        "predicted_score": [-1.0, 2.0],
+        "predicted_rank": [1, 2],
+    })
+    calibration_map = {"jra": [[0.0, 0.1], [1.0, 0.7]]}
+    out = subject.apply_calibration(predictions, calibration_map, "jra")
+    assert out["predicted_score"].iloc[0] == pytest.approx(0.1)
+    assert out["predicted_score"].iloc[1] == pytest.approx(0.7)
+
+
+def test_apply_calibration_handles_zero_span_segment_without_division_error():
+    predictions = pd.DataFrame({
+        "race_id": ["r"],
+        "ketto_toroku_bango": ["a"],
+        "umaban": [1],
+        "predicted_score": [0.5],
+        "predicted_rank": [1],
+    })
+    calibration_map = {"jra": [[0.5, 0.3], [0.5, 0.4], [1.0, 0.9]]}
+    out = subject.apply_calibration(predictions, calibration_map, "jra")
+    assert out["predicted_score"].iloc[0] == pytest.approx(0.3)
+
+
+def test_apply_calibration_returns_input_when_bucket_pairs_empty():
+    predictions = _predictions_frame()
+    out = subject.apply_calibration(predictions, {"jra": []}, "jra")
+    assert out.equals(predictions)
+
+
+def test_interp_calibrated_returns_score_when_pairs_empty():
+    assert subject.interp_calibrated(0.5, []) == 0.5

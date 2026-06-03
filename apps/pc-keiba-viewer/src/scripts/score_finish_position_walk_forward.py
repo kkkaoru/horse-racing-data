@@ -157,6 +157,8 @@ class WalkForwardArguments(TypedDict):
     relevance_rank3: int
     early_stopping_rounds: int
     seed: int
+    iteration_id: int
+    calibration_path: Path | None
 
 
 class ParquetReaderLike(Protocol):
@@ -220,6 +222,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--relevance-rank3", type=int, default=None)
     parser.add_argument("--early-stopping-rounds", type=int, default=DEFAULT_EARLY_STOPPING_ROUNDS)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    parser.add_argument("--iteration-id", type=int, default=0)
+    parser.add_argument("--calibration-path", type=Path, default=None)
     return parser
 
 
@@ -270,6 +274,10 @@ def normalize_arguments(args: argparse.Namespace) -> WalkForwardArguments:
         ),
         "early_stopping_rounds": int(args.early_stopping_rounds),
         "seed": int(args.seed),
+        "iteration_id": int(args.iteration_id),
+        "calibration_path": (
+            Path(args.calibration_path) if args.calibration_path is not None else None
+        ),
     }
 
 
@@ -464,6 +472,63 @@ def build_fold_train_valid(
     return train_df, valid_df
 
 
+def load_calibration_map(path: Path | None) -> dict[str, list[list[float]]]:
+    """Read calibration JSON ``{bucket_key: [[score, calibrated], ...]}``.
+
+    Empty / missing path returns an empty map so the fold uses raw scores.
+    """
+    if path is None:
+        return {}
+    parsed = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(parsed, dict):
+        raise ValueError(
+            f"calibration JSON must be a top-level object, got {type(parsed)!r}",
+        )
+    return cast(dict[str, list[list[float]]], parsed)
+
+
+def interp_calibrated(score: float, pairs: list[list[float]]) -> float:
+    if not pairs:
+        return score
+    xs = [float(p[0]) for p in pairs]
+    ys = [float(p[1]) for p in pairs]
+    if score <= xs[0]:
+        return ys[0]
+    if score >= xs[-1]:
+        return ys[-1]
+    for index in range(len(xs) - 1):
+        if xs[index] <= score <= xs[index + 1]:
+            span = xs[index + 1] - xs[index]
+            if span == 0:
+                return ys[index]
+            ratio = (score - xs[index]) / span
+            return ys[index] + ratio * (ys[index + 1] - ys[index])
+    return score
+
+
+def apply_calibration(
+    predictions: pd.DataFrame,
+    calibration_map: dict[str, list[list[float]]],
+    bucket_key: str,
+) -> pd.DataFrame:
+    """Apply isotonic calibration if ``bucket_key`` is present in the map."""
+    if not calibration_map:
+        return predictions
+    pairs = calibration_map.get(bucket_key)
+    if not pairs:
+        return predictions
+    out = predictions.copy()
+    out["predicted_score"] = out["predicted_score"].astype(float).map(
+        lambda score: interp_calibrated(float(score), pairs),
+    )
+    out["predicted_rank"] = (
+        out.groupby("race_id")["predicted_score"]
+        .rank(method="first", ascending=False)
+        .astype(int)
+    )
+    return out
+
+
 def score_fold(
     df: pd.DataFrame,
     feature_cols: list[str],
@@ -481,6 +546,8 @@ def score_fold(
         xgboost_trainer=deps["xgboost_trainer"],
     )
     predictions = trainer(train_df, valid_df, feature_cols, fold_args)
+    calibration_map = load_calibration_map(args["calibration_path"])
+    predictions = apply_calibration(predictions, calibration_map, args["category"])
     parquet_frame = to_parquet_frame(predictions, args, valid_year)
     deps["write_parquet"](parquet_frame, args["output_parquet_root"])
     jsonl_path = args["output_jsonl_dir"] / build_jsonl_filename(args, valid_year)
