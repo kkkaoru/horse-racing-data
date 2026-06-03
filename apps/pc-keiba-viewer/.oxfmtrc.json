@@ -7,6 +7,7 @@
   "ignorePatterns": [
     ".next/**",
     "coverage/**",
+    "finish-position/**",
     "logs/**",
     "node_modules/**",
     "tmp/**",
