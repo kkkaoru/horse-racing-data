@@ -1,3 +1,6 @@
+// Run via bun (CLI scripts/push-neon-sync.ts), shared helpers in this module.
+import { createHash } from "node:crypto";
+
 export type TableMetadata = {
   tableName: string;
   estimatedRows: number;
@@ -7,6 +10,14 @@ export type TableMetadata = {
   primaryKeyJoin: string;
   updateList: string;
 };
+
+export type StagePrefixKind = "full" | "incremental" | "reincremental";
+
+export interface BuildStageTableNameInput {
+  kind: StagePrefixKind;
+  pid: number;
+  tableName: string;
+}
 
 export type DependencyEdge = {
   childTable: string;
@@ -44,6 +55,21 @@ export type PushSyncConfig = {
 
 const DEFAULT_SMALL_TABLE_MAX_ROWS = 10000;
 const DEFAULT_UPDATE_CHURN_MIN_TUPLES = 1000;
+// PostgreSQL NAMEDATALEN limit minus the worst-case derived identifier suffix
+// ("_pk" added by buildNeonApplySql for the stage primary key index).
+// Stage table names longer than this collide with their own derived index name
+// after PG silently truncates identifiers > 63 chars.
+const POSTGRES_NAMEDATALEN_LIMIT = 63;
+const STAGE_DERIVED_INDEX_SUFFIX_LENGTH = 3;
+const MAX_STAGE_NAME_LENGTH = POSTGRES_NAMEDATALEN_LIMIT - STAGE_DERIVED_INDEX_SUFFIX_LENGTH;
+const STAGE_HASH_LENGTH = 8;
+const STAGE_NAME_INVALID_CHAR_PATTERN = /[^A-Za-z0-9_]/g;
+const STAGE_NAME_INVALID_CHAR_REPLACEMENT = "_";
+const STAGE_PREFIX_BY_KIND: Record<StagePrefixKind, string> = {
+  full: "replica_sync_stage",
+  incremental: "replica_sync_stage_inc",
+  reincremental: "replica_sync_stage_reinc",
+};
 const TIMESTAMP_COLUMN_PRIORITY: readonly string[] = [
   "updated_at",
   "update_timestamp",
@@ -371,6 +397,33 @@ export function resolveStrategy(input: ResolveStrategyInput): SyncStrategy {
 
 export function quoteIdentifier(identifier: string): string {
   return `"${identifier.replaceAll('"', '""')}"`;
+}
+
+function computeShortStageHash(input: string): string {
+  return createHash("sha1").update(input).digest("hex").slice(0, STAGE_HASH_LENGTH);
+}
+
+// Compose a deterministic per-process stage table name guaranteed to fit
+// within MAX_STAGE_NAME_LENGTH so derived identifiers (e.g. "<stage>_pk")
+// stay below PostgreSQL's NAMEDATALEN limit. Long source-table names are
+// truncated and suffixed with a short sha1 hash for uniqueness.
+export function buildStageTableName(input: BuildStageTableNameInput): string {
+  const sanitized = input.tableName.replaceAll(
+    STAGE_NAME_INVALID_CHAR_PATTERN,
+    STAGE_NAME_INVALID_CHAR_REPLACEMENT,
+  );
+  const prefix = STAGE_PREFIX_BY_KIND[input.kind];
+  const fixedHead = `${prefix}_${input.pid}_`;
+  const base = `${fixedHead}${sanitized}`;
+  if (base.length <= MAX_STAGE_NAME_LENGTH) return base;
+  const hash = computeShortStageHash(sanitized);
+  const reservedTail = `_${hash}`;
+  const truncatedTableLength = Math.max(
+    MAX_STAGE_NAME_LENGTH - fixedHead.length - reservedTail.length,
+    0,
+  );
+  const truncatedTable = sanitized.slice(0, truncatedTableLength);
+  return `${fixedHead}${truncatedTable}${reservedTail}`;
 }
 
 export function buildFingerprintSql(table: TableMetadata): string {

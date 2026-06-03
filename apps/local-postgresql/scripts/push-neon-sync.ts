@@ -10,6 +10,7 @@ import {
   buildIncrementalApplySql,
   buildIncrementalCopyFromSql,
   buildJsonlRecord,
+  buildStageTableName,
   incrementalComparatorForTimestampColumn,
   buildMetadataSql,
   buildNeonApplySql,
@@ -833,7 +834,11 @@ async function syncTableIncrementally(options: SyncTableIncrementallyOptions): P
     );
   }
   const keyExpression = tsColumn === null ? pkExpression(table) : timestampKeyExpression(tsColumn);
-  const stageTableName = `replica_sync_stage_inc_${process.pid}_${table.tableName.replaceAll(/[^A-Za-z0-9_]/g, "_")}`;
+  const stageTableName = buildStageTableName({
+    kind: "incremental",
+    pid: process.pid,
+    tableName: table.tableName,
+  });
   const incSql = buildIncrementalApplySql(table, stageTableName, false);
   const localCopySql = buildIncrementalCopyFromSql(table, {
     keyExpression,
@@ -929,10 +934,11 @@ async function runIncrementalCopyWithRetry(
           tableName: table.tableName,
         });
       } catch (error) {
-        await runCommand("docker", neonPsqlArgs(env, ["-q"]), {
-          input: incSql.cleanupSql,
+        await runCleanupIgnoringFailure({
+          env,
+          cleanupSql: incSql.cleanupSql,
           tableName: table.tableName,
-        }).catch(() => undefined);
+        });
         throw error;
       }
     },
@@ -974,7 +980,11 @@ interface SyncTableFullReplaceOptions {
 async function syncTableFullReplace(options: SyncTableFullReplaceOptions): Promise<void> {
   const { env, table, deleteMissingRows, applyMode, retry } = options;
   const quotedTable = quoteIdentifier(table.tableName);
-  const stageTableName = `replica_sync_stage_${process.pid}_${table.tableName.replaceAll(/[^A-Za-z0-9_]/g, "_")}`;
+  const stageTableName = buildStageTableName({
+    kind: "full",
+    pid: process.pid,
+    tableName: table.tableName,
+  });
   const neonSql = buildNeonApplySql(table, deleteMissingRows, stageTableName, false, applyMode);
   const batchRows = resolveDefaultFullReplaceBatchRows(env);
 
@@ -1029,12 +1039,30 @@ async function runFullReplaceOnce(options: RunFullReplaceOnceOptions): Promise<v
       tableName: table.tableName,
     });
   } catch (error) {
-    await runCommand("docker", neonPsqlArgs(env, ["-q"]), {
-      input: neonSql.cleanupSql,
+    await runCleanupIgnoringFailure({
+      env,
+      cleanupSql: neonSql.cleanupSql,
       tableName: table.tableName,
-    }).catch(() => undefined);
+    });
     throw error;
   }
+}
+
+interface RunCleanupIgnoringFailureOptions {
+  env: Record<string, string | undefined>;
+  cleanupSql: string;
+  tableName: string;
+}
+
+async function runCleanupIgnoringFailure(options: RunCleanupIgnoringFailureOptions): Promise<void> {
+  await runCommand("docker", neonPsqlArgs(options.env, ["-q"]), {
+    input: options.cleanupSql,
+    tableName: options.tableName,
+  }).catch((error: unknown) => {
+    writeLine(
+      `[${formatNow()}] ⚠ ${options.tableName}: cleanup after failure raised ${describeError(error)} — preCopySql DROP IF EXISTS will self-heal on retry`,
+    );
+  });
 }
 
 interface RunFullReplaceChunkedOptions extends RunFullReplaceOnceOptions {
@@ -1410,7 +1438,11 @@ async function tryReincrementalReplay(options: TryReincrementalReplayOptions): P
     `[${formatNow()}] ↻ ${table.tableName}: re-incremental replay — ${message}; rolled marker from ${truncateMarker(neonFp.marker)} to ${truncateMarker(rolledBackMarker)}`,
   );
   const keyExpression = timestampKeyExpression(tsColumn);
-  const stageTableName = `replica_sync_stage_reinc_${process.pid}_${table.tableName.replaceAll(/[^A-Za-z0-9_]/g, "_")}`;
+  const stageTableName = buildStageTableName({
+    kind: "reincremental",
+    pid: process.pid,
+    tableName: table.tableName,
+  });
   const incSql = buildIncrementalApplySql(table, stageTableName, false);
   const localCopySql = buildIncrementalCopyFromSql(table, {
     keyExpression,

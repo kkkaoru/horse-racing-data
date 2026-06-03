@@ -9,6 +9,7 @@ import {
   buildJsonlRecord,
   buildMetadataSql,
   buildNeonApplySql,
+  buildStageTableName,
   buildTableFilterSql,
   buildTableProfileSql,
   buildTimestampFingerprintSql,
@@ -512,6 +513,105 @@ describe("incremental apply SQL", () => {
   });
 });
 
+describe("buildStageTableName", () => {
+  it("returns the unmodified concatenation when full-replace name fits", () => {
+    expect(buildStageTableName({ kind: "full", pid: 11052, tableName: "jvd_se" })).toBe(
+      "replica_sync_stage_11052_jvd_se",
+    );
+  });
+
+  it("returns the unmodified concatenation when incremental name fits", () => {
+    expect(buildStageTableName({ kind: "incremental", pid: 11052, tableName: "jvd_se" })).toBe(
+      "replica_sync_stage_inc_11052_jvd_se",
+    );
+  });
+
+  it("returns the unmodified concatenation when reincremental name fits", () => {
+    expect(buildStageTableName({ kind: "reincremental", pid: 11052, tableName: "jvd_se" })).toBe(
+      "replica_sync_stage_reinc_11052_jvd_se",
+    );
+  });
+
+  it("sanitises invalid identifier characters into underscores", () => {
+    expect(buildStageTableName({ kind: "full", pid: 42, tableName: "weird.table-name" })).toBe(
+      "replica_sync_stage_42_weird_table_name",
+    );
+  });
+
+  it("truncates and hashes the long production-collision name to stay within 60 chars", () => {
+    const name = buildStageTableName({
+      kind: "full",
+      pid: 11052,
+      tableName: "race_finish_position_model_predictions",
+    });
+    expect(name).toBe("replica_sync_stage_11052_race_finish_position_model_fdb19d20");
+  });
+
+  it("keeps the truncated stage name + _pk suffix within PostgreSQL NAMEDATALEN", () => {
+    const name = buildStageTableName({
+      kind: "full",
+      pid: 11052,
+      tableName: "race_finish_position_model_predictions",
+    });
+    expect(`${name}_pk`.length).toBe(63);
+  });
+
+  it("produces deterministic hashed output across calls", () => {
+    const first = buildStageTableName({
+      kind: "full",
+      pid: 11052,
+      tableName: "race_finish_position_model_predictions",
+    });
+    const second = buildStageTableName({
+      kind: "full",
+      pid: 11052,
+      tableName: "race_finish_position_model_predictions",
+    });
+    expect(first).toBe(second);
+  });
+
+  it("hashes incremental prefix collision name to stay within 60 chars", () => {
+    const name = buildStageTableName({
+      kind: "incremental",
+      pid: 99999,
+      tableName: "race_finish_position_model_predictions",
+    });
+    expect(name).toBe("replica_sync_stage_inc_99999_race_finish_position_m_fdb19d20");
+  });
+
+  it("hashes reincremental prefix collision name to stay within 60 chars", () => {
+    const name = buildStageTableName({
+      kind: "reincremental",
+      pid: 99999,
+      tableName: "race_finish_position_model_predictions",
+    });
+    expect(name).toBe("replica_sync_stage_reinc_99999_race_finish_position_fdb19d20");
+  });
+
+  it("differentiates hashes for distinct long source tables", () => {
+    const left = buildStageTableName({
+      kind: "full",
+      pid: 11052,
+      tableName: "race_finish_position_model_predictions_variant_a",
+    });
+    const right = buildStageTableName({
+      kind: "full",
+      pid: 11052,
+      tableName: "race_finish_position_model_predictions_variant_b",
+    });
+    expect(left === right).toBe(false);
+  });
+
+  it("keeps the result ≤ 60 chars even when the table name is far longer than the budget", () => {
+    const name = buildStageTableName({
+      kind: "reincremental",
+      pid: 999999,
+      tableName: "a".repeat(200),
+    });
+    expect(name.length).toBe(60);
+  });
+});
+
 describe("incremental copy edge cases", () => {
   it("returns COPY without WHERE when neonMarker is empty", () => {
     const sql = buildIncrementalCopyFromSql(tableA, {
@@ -798,12 +898,23 @@ describe("parallel push runner", () => {
 
   it("uses persistent Neon apply stage with replace mode", () => {
     const sql = buildNeonApplySql(tableA, false, "stage_persist", false, "replace");
+    expect(sql.preCopySql).toContain('DROP TABLE IF EXISTS public."stage_persist";');
     expect(sql.preCopySql).toContain('CREATE UNLOGGED TABLE public."stage_persist"');
     expect(sql.preCopySql).not.toContain("BEGIN;");
     expect(sql.postCopySql).toContain("BEGIN;");
     expect(sql.postCopySql).toContain('TRUNCATE TABLE public."table_a"');
     expect(sql.postCopySql).toContain('DROP TABLE public."stage_persist"');
     expect(sql.cleanupSql).toBe('DROP TABLE IF EXISTS public."stage_persist";');
+  });
+
+  it("places DROP TABLE IF EXISTS before CREATE UNLOGGED TABLE in non-temporary preCopySql for self-heal on retry", () => {
+    const sql = buildNeonApplySql(tableA, true, "replica_sync_stage_x", false, "upsert");
+    const dropIndex = sql.preCopySql.indexOf('DROP TABLE IF EXISTS public."replica_sync_stage_x";');
+    const createIndex = sql.preCopySql.indexOf(
+      'CREATE UNLOGGED TABLE public."replica_sync_stage_x"',
+    );
+    expect(dropIndex).toBeGreaterThanOrEqual(0);
+    expect(createIndex).toBeGreaterThan(dropIndex);
   });
 
   it("uses persistent Neon apply stage with upsert mode and skips delete when disabled", () => {
