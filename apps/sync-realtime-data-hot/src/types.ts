@@ -115,4 +115,5 @@ export interface Env {
   PC_KEIBA_VIEWER_INTERNAL_TOKEN?: string;
   REALTIME_HOT_TEST_NOW?: string;
   HYPERDRIVE?: HyperdriveBinding;
+  REPLICA_SYNC_HOT_TRUST_ZERO_COUNT?: string;
 }

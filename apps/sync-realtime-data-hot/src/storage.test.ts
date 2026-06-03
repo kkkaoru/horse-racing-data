@@ -105,6 +105,52 @@ it("insertOddsSnapshot skips undefined arrays", async () => {
   expect(count).toBe(0);
 });
 
+it("insertOddsSnapshot uses ON CONFLICT DO UPDATE so re-fetch does not duplicate rows", async () => {
+  const batch = vi.fn(async () => []);
+  const bind = vi.fn(() => ({ bind }));
+  const prepare = vi.fn((_sql: string) => ({ bind }));
+  const db = { batch, prepare } as unknown as D1Database;
+  await insertOddsSnapshot(db, "nar:20260528:42:01", "2026-05-28T10:00:00+09:00", {
+    tansho: [{ combination: "01", odds: 2.8 }],
+  });
+  const sql = String(prepare.mock.calls[0]?.[0] ?? "");
+  expect(/on conflict\(race_key, fetched_at, odds_type, combination\)/u.test(sql)).toBe(true);
+  expect(/do update set odds = excluded\.odds/u.test(sql)).toBe(true);
+});
+
+it("bulkInsertOddsSnapshotRows uses ON CONFLICT DO UPDATE for idempotent backfill", async () => {
+  const { bulkInsertOddsSnapshotRows } = await import("./storage");
+  const batch = vi.fn(async () => []);
+  const bind = vi.fn(() => ({ bind }));
+  const prepare = vi.fn((_sql: string) => ({ bind }));
+  const db = { batch, prepare } as unknown as D1Database;
+  await bulkInsertOddsSnapshotRows(db, [
+    {
+      average_odds: null,
+      combination: "01",
+      fetched_at: "2026-05-28T10:00:00+09:00",
+      max_odds: null,
+      min_odds: null,
+      odds: 2.5,
+      odds_type: "tansho",
+      race_key: "nar:20260528:42:01",
+      rank: 1,
+    },
+  ]);
+  const sql = String(prepare.mock.calls[0]?.[0] ?? "");
+  expect(/on conflict\(race_key, fetched_at, odds_type, combination\)/u.test(sql)).toBe(true);
+});
+
+it("bulkInsertOddsSnapshotRows returns 0 when rows array is empty", async () => {
+  const { bulkInsertOddsSnapshotRows } = await import("./storage");
+  const batch = vi.fn(async () => []);
+  const prepare = vi.fn();
+  const db = { batch, prepare } as unknown as D1Database;
+  const count = await bulkInsertOddsSnapshotRows(db, []);
+  expect(count).toBe(0);
+  expect(batch).not.toHaveBeenCalled();
+});
+
 it("getLatestOddsFromD1 returns null when no rows", async () => {
   const all = vi.fn(async () => ({ results: [] }));
   const bind = vi.fn(() => ({ all }));

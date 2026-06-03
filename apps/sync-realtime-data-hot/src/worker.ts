@@ -340,9 +340,10 @@ const safeCountOddsFetchStateForDate = async (
 const safeGetExpectedRaceCount = async (
   env: Env,
   todayYyyymmdd: string,
+  now: Date,
 ): Promise<number | null> => {
   try {
-    return await getExpectedRaceCountForDate(env, todayYyyymmdd);
+    return await getExpectedRaceCountForDate(env, todayYyyymmdd, { now });
   } catch (error) {
     await logScheduledError(env, "scheduled-plan-expected-count-error", error);
     return null;
@@ -376,7 +377,7 @@ export const runScheduledPlan = async (env: Env, now: Date): Promise<void> => {
   // gate hid this regression because a single JRA venue was enough to lock
   // populate out for the entire day.
   const stateCount = await safeCountOddsFetchStateForDate(env, todayYyyymmdd);
-  const expectedCount = await safeGetExpectedRaceCount(env, todayYyyymmdd);
+  const expectedCount = await safeGetExpectedRaceCount(env, todayYyyymmdd, now);
   if (stateCount !== null && expectedCount !== null && stateCount < expectedCount) {
     await safePopulateTodayOddsFetchState(env, now);
   }

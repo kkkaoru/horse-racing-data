@@ -4,6 +4,7 @@ import { expect, it, vi } from "vitest";
 import {
   acquireEnqueueLock,
   calculateEnqueueLockTtlSeconds,
+  calculateEnqueueLockTtlSecondsFromInput,
   isEnqueueLocked,
 } from "./enqueue-lock-kv";
 import type { Env } from "../types";
@@ -217,4 +218,112 @@ it("acquireEnqueueLock writes KV entry when ttlSeconds positive", async () => {
   expect(env.ODDS_HOT_KV.put).toHaveBeenCalledWith("odds:enqueue-lock:nar:20260528:42:01", "1", {
     expirationTtl: 60,
   });
+});
+
+it("calculateEnqueueLockTtlSecondsFromInput returns 300 catch-up TTL for past race within 60min when lastOddsFetchAt is null", () => {
+  expect(
+    calculateEnqueueLockTtlSecondsFromInput({
+      allowCatchUp: true,
+      lastOddsFetchAt: null,
+      now: new Date("2026-05-28T10:30:00+09:00"),
+      raceStart: new Date("2026-05-28T10:00:00+09:00"),
+    }),
+  ).toBe(300);
+});
+
+it("calculateEnqueueLockTtlSecondsFromInput returns 0 for past race when lastOddsFetchAt is at or after final slot", () => {
+  expect(
+    calculateEnqueueLockTtlSecondsFromInput({
+      allowCatchUp: true,
+      lastOddsFetchAt: "2026-05-28T10:02:00+09:00",
+      now: new Date("2026-05-28T10:30:00+09:00"),
+      raceStart: new Date("2026-05-28T10:00:00+09:00"),
+    }),
+  ).toBe(0);
+});
+
+it("calculateEnqueueLockTtlSecondsFromInput returns 300 catch-up TTL when lastOddsFetchAt is before final slot", () => {
+  expect(
+    calculateEnqueueLockTtlSecondsFromInput({
+      allowCatchUp: true,
+      lastOddsFetchAt: "2026-05-28T09:55:00+09:00",
+      now: new Date("2026-05-28T10:30:00+09:00"),
+      raceStart: new Date("2026-05-28T10:00:00+09:00"),
+    }),
+  ).toBe(300);
+});
+
+it("calculateEnqueueLockTtlSecondsFromInput returns 0 once past 60-minute catch-up window expires", () => {
+  expect(
+    calculateEnqueueLockTtlSecondsFromInput({
+      allowCatchUp: true,
+      lastOddsFetchAt: null,
+      now: new Date("2026-05-28T11:30:00+09:00"),
+      raceStart: new Date("2026-05-28T10:00:00+09:00"),
+    }),
+  ).toBe(0);
+});
+
+it("calculateEnqueueLockTtlSecondsFromInput returns 0 when allowCatchUp is false (legacy behavior)", () => {
+  expect(
+    calculateEnqueueLockTtlSecondsFromInput({
+      allowCatchUp: false,
+      lastOddsFetchAt: null,
+      now: new Date("2026-05-28T10:30:00+09:00"),
+      raceStart: new Date("2026-05-28T10:00:00+09:00"),
+    }),
+  ).toBe(0);
+});
+
+it("calculateEnqueueLockTtlSecondsFromInput defaults allowCatchUp to false when omitted", () => {
+  expect(
+    calculateEnqueueLockTtlSecondsFromInput({
+      now: new Date("2026-05-28T10:30:00+09:00"),
+      raceStart: new Date("2026-05-28T10:00:00+09:00"),
+    }),
+  ).toBe(0);
+});
+
+it("calculateEnqueueLockTtlSecondsFromInput ignores unparseable lastOddsFetchAt and treats it as a missed final slot", () => {
+  expect(
+    calculateEnqueueLockTtlSecondsFromInput({
+      allowCatchUp: true,
+      lastOddsFetchAt: "not-a-date",
+      now: new Date("2026-05-28T10:30:00+09:00"),
+      raceStart: new Date("2026-05-28T10:00:00+09:00"),
+    }),
+  ).toBe(300);
+});
+
+it("calculateEnqueueLockTtlSecondsFromInput honours the future-race high-frequency window even when allowCatchUp is true", () => {
+  expect(
+    calculateEnqueueLockTtlSecondsFromInput({
+      allowCatchUp: true,
+      lastOddsFetchAt: null,
+      now: new Date("2026-05-28T09:00:00+09:00"),
+      raceStart: new Date("2026-05-28T10:00:00+09:00"),
+    }),
+  ).toBe(600);
+});
+
+it("calculateEnqueueLockTtlSecondsFromInput honours the final window even when allowCatchUp is true", () => {
+  expect(
+    calculateEnqueueLockTtlSecondsFromInput({
+      allowCatchUp: true,
+      lastOddsFetchAt: null,
+      now: new Date("2026-05-28T09:55:00+09:00"),
+      raceStart: new Date("2026-05-28T10:00:00+09:00"),
+    }),
+  ).toBe(60);
+});
+
+it("calculateEnqueueLockTtlSecondsFromInput honours the default very-future window even when allowCatchUp is true", () => {
+  expect(
+    calculateEnqueueLockTtlSecondsFromInput({
+      allowCatchUp: true,
+      lastOddsFetchAt: null,
+      now: new Date("2026-05-28T08:00:00+09:00"),
+      raceStart: new Date("2026-05-28T10:00:00+09:00"),
+    }),
+  ).toBe(3600);
 });
