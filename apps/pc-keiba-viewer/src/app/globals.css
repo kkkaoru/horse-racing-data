@@ -1216,6 +1216,60 @@ h3 {
   font-weight: var(--number-700-14);
 }
 
+.running-style-bucket-disclosure {
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-8px-28);
+  display: grid;
+  gap: var(--space-8px-28);
+  padding: var(--space-12px-9);
+}
+
+.running-style-bucket-disclosure > summary {
+  color: var(--ink);
+  cursor: pointer;
+  font-size: var(--space-15px-1);
+  font-weight: var(--number-800-12);
+  list-style: none;
+}
+
+.running-style-bucket-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.running-style-bucket-disclosure > summary::before {
+  color: var(--muted);
+  content: "▾";
+  display: inline-block;
+  font-size: var(--space-13px-92);
+  margin-right: var(--space-6px-33);
+}
+
+.running-style-bucket-disclosure:not([open]) > summary::before {
+  content: "▸";
+}
+
+.running-style-bucket-disclosure-body {
+  display: grid;
+  gap: var(--space-8px-28);
+}
+
+.running-style-bucket-per-class-table,
+.running-style-bucket-per-class-logloss-table,
+.running-style-bucket-heatmap-table {
+  min-width: var(--number-0-2);
+  table-layout: auto;
+  width: auto;
+}
+
+.running-style-bucket-per-class-table th,
+.running-style-bucket-per-class-table td,
+.running-style-bucket-per-class-logloss-table th,
+.running-style-bucket-per-class-logloss-table td,
+.running-style-bucket-heatmap-table th,
+.running-style-bucket-heatmap-table td {
+  white-space: nowrap;
+}
+
 .finish-position-bucket-evaluation-panel {
   display: grid;
   gap: var(--space-8px-28);

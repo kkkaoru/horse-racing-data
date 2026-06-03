@@ -65,7 +65,6 @@ const SCOPE_LABEL_SEPARATOR = " / ";
 const PANEL_HEADLINE_SUFFIX = " の脚質精度";
 const SCOPE_NOTICE_PREFIX = "該当条件のデータが無いため";
 const SCOPE_NOTICE_SUFFIX = "で集計しています";
-const KAPPA_DECIMALS = 3;
 const LOG_LOSS_DECIMALS = 3;
 const F1_DECIMALS = 3;
 const HEATMAP_HUE = 210;
@@ -471,87 +470,77 @@ function RunningStyleBucketEvaluationPanel({
           </div>
         ))}
       </div>
-      <dl className="running-style-bucket-main-metrics">
-        <div>
-          <dt>macro-F1</dt>
-          <dd>{formatF1Value(evaluation.macroF1)}</dd>
+      <details className="running-style-bucket-disclosure" open>
+        <summary>クラス別 metric</summary>
+        <div className="running-style-bucket-disclosure-body">
+          <div className="runner-table-wrap">
+            <table className="runner-table running-style-bucket-per-class-table">
+              <thead>
+                <tr>
+                  <th scope="col">クラス</th>
+                  <th scope="col">precision</th>
+                  <th scope="col">recall</th>
+                  <th scope="col">F1</th>
+                  <th scope="col">support</th>
+                </tr>
+              </thead>
+              <tbody>
+                {renderPerClassRow("nige", evaluation)}
+                {renderPerClassRow("senkou", evaluation)}
+                {renderPerClassRow("sashi", evaluation)}
+                {renderPerClassRow("oikomi", evaluation)}
+              </tbody>
+            </table>
+          </div>
         </div>
-        <div>
-          <dt>weighted-F1</dt>
-          <dd>{formatF1Value(evaluation.weightedF1)}</dd>
+      </details>
+      <details className="running-style-bucket-disclosure" open>
+        <summary>クラス別 log loss</summary>
+        <div className="running-style-bucket-disclosure-body">
+          <div className="runner-table-wrap">
+            <table className="runner-table running-style-bucket-per-class-logloss-table">
+              <thead>
+                <tr>
+                  <th scope="col">クラス</th>
+                  <th scope="col">log loss</th>
+                </tr>
+              </thead>
+              <tbody>
+                {renderPerClassLogLossRow("nige", evaluation)}
+                {renderPerClassLogLossRow("senkou", evaluation)}
+                {renderPerClassLogLossRow("sashi", evaluation)}
+                {renderPerClassLogLossRow("oikomi", evaluation)}
+              </tbody>
+            </table>
+          </div>
         </div>
-        <div>
-          <dt title="Quadratic Weighted Kappa: > 0.6 で good agreement">QWK</dt>
-          <dd>{evaluation.qwk.toFixed(KAPPA_DECIMALS)}</dd>
+      </details>
+      <details className="running-style-bucket-disclosure" open>
+        <summary>confusion matrix (actual × predicted)</summary>
+        <div className="running-style-bucket-disclosure-body">
+          <div className="runner-table-wrap">
+            <table className="runner-table running-style-bucket-heatmap-table">
+              <thead>
+                <tr>
+                  <th scope="col" aria-label="actual class">
+                    actual ＼ predicted
+                  </th>
+                  <th scope="col">{RUNNING_STYLE_CLASS_LABELS.nige}</th>
+                  <th scope="col">{RUNNING_STYLE_CLASS_LABELS.senkou}</th>
+                  <th scope="col">{RUNNING_STYLE_CLASS_LABELS.sashi}</th>
+                  <th scope="col">{RUNNING_STYLE_CLASS_LABELS.oikomi}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {renderHeatmapRow(0, evaluation, total)}
+                {renderHeatmapRow(1, evaluation, total)}
+                {renderHeatmapRow(2, evaluation, total)}
+                {renderHeatmapRow(3, evaluation, total)}
+              </tbody>
+            </table>
+          </div>
         </div>
-        <div>
-          <dt>top-2 accuracy</dt>
-          <dd>{formatPanelPercent(evaluation.top2Accuracy)}</dd>
-        </div>
-        <div>
-          <dt>overall log loss</dt>
-          <dd>{formatLogLossValue(evaluation.overallLogLoss)}</dd>
-        </div>
-      </dl>
-      <div className="running-style-bucket-per-class">
-        <h3>クラス別 metric</h3>
-        <table className="running-style-bucket-per-class-table">
-          <thead>
-            <tr>
-              <th scope="col">クラス</th>
-              <th scope="col">precision</th>
-              <th scope="col">recall</th>
-              <th scope="col">F1</th>
-              <th scope="col">support</th>
-            </tr>
-          </thead>
-          <tbody>
-            {renderPerClassRow("nige", evaluation)}
-            {renderPerClassRow("senkou", evaluation)}
-            {renderPerClassRow("sashi", evaluation)}
-            {renderPerClassRow("oikomi", evaluation)}
-          </tbody>
-        </table>
-      </div>
-      <div className="running-style-bucket-per-class-logloss">
-        <h3>クラス別 log loss</h3>
-        <table className="running-style-bucket-per-class-logloss-table">
-          <thead>
-            <tr>
-              <th scope="col">クラス</th>
-              <th scope="col">log loss</th>
-            </tr>
-          </thead>
-          <tbody>
-            {renderPerClassLogLossRow("nige", evaluation)}
-            {renderPerClassLogLossRow("senkou", evaluation)}
-            {renderPerClassLogLossRow("sashi", evaluation)}
-            {renderPerClassLogLossRow("oikomi", evaluation)}
-          </tbody>
-        </table>
-      </div>
-      <div className="running-style-bucket-confusion-matrix">
-        <h3>confusion matrix (actual × predicted)</h3>
-        <table className="running-style-bucket-heatmap-table">
-          <thead>
-            <tr>
-              <th scope="col" aria-label="actual class">
-                actual ＼ predicted
-              </th>
-              <th scope="col">{RUNNING_STYLE_CLASS_LABELS.nige}</th>
-              <th scope="col">{RUNNING_STYLE_CLASS_LABELS.senkou}</th>
-              <th scope="col">{RUNNING_STYLE_CLASS_LABELS.sashi}</th>
-              <th scope="col">{RUNNING_STYLE_CLASS_LABELS.oikomi}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {renderHeatmapRow(0, evaluation, total)}
-            {renderHeatmapRow(1, evaluation, total)}
-            {renderHeatmapRow(2, evaluation, total)}
-            {renderHeatmapRow(3, evaluation, total)}
-          </tbody>
-        </table>
-      </div>
+      </details>
     </div>
   );
 }

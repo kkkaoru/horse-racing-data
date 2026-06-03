@@ -490,7 +490,7 @@ describe("RunningStyleBucketEvaluationPanel - rendering", () => {
     expect(screen.getByText(/120レース.*1,500予測/u)).toBeTruthy();
   });
 
-  test("renders QWK with three decimal places", () => {
+  test("does not render the removed dl-block QWK / top-2 / overall log loss labels", () => {
     render(
       <RunningStyleSection
         rows={[buildRow({})]}
@@ -505,7 +505,78 @@ describe("RunningStyleBucketEvaluationPanel - rendering", () => {
         bucketGradeCode={null}
       />,
     );
-    expect(screen.getByText("0.712")).toBeTruthy();
+    expect(screen.queryByText("QWK")).toBe(null);
+    expect(screen.queryByText("top-2 accuracy")).toBe(null);
+    expect(screen.queryByText("overall log loss")).toBe(null);
+    expect(screen.queryByText("0.712")).toBe(null);
+  });
+
+  test("does not render the removed running-style-bucket-main-metrics dl", () => {
+    const { container } = render(
+      <RunningStyleSection
+        rows={[buildRow({})]}
+        modelMacroF1={null}
+        modelVersion="v1"
+        runnersByUmaban={{}}
+        bucketEvaluation={buildEvaluation({})}
+        bucketScope={buildScope({})}
+        dimensionFlags={buildFlags({})}
+        bucketRace={buildBucketRace({})}
+        bucketSource="jra"
+        bucketGradeCode={null}
+      />,
+    );
+    expect(container.querySelector(".running-style-bucket-main-metrics")).toBe(null);
+  });
+
+  test("renders the three sub-sections as default-open details disclosures with runner-table styling", () => {
+    const { container } = render(
+      <RunningStyleSection
+        rows={[buildRow({})]}
+        modelMacroF1={null}
+        modelVersion="v1"
+        runnersByUmaban={{}}
+        bucketEvaluation={buildEvaluation({})}
+        bucketScope={buildScope({})}
+        dimensionFlags={buildFlags({})}
+        bucketRace={buildBucketRace({})}
+        bucketSource="jra"
+        bucketGradeCode={null}
+      />,
+    );
+    const disclosures = container.querySelectorAll(".running-style-bucket-disclosure");
+    expect(disclosures.length).toBe(3);
+    const allOpen = Array.from(disclosures).every((node) => node.hasAttribute("open"));
+    expect(allOpen).toBe(true);
+    expect(container.querySelector(".runner-table.running-style-bucket-per-class-table")).not.toBe(
+      null,
+    );
+    expect(
+      container.querySelector(".runner-table.running-style-bucket-per-class-logloss-table"),
+    ).not.toBe(null);
+    expect(container.querySelector(".runner-table.running-style-bucket-heatmap-table")).not.toBe(
+      null,
+    );
+  });
+
+  test("renders summary text for クラス別 metric / クラス別 log loss / confusion matrix", () => {
+    render(
+      <RunningStyleSection
+        rows={[buildRow({})]}
+        modelMacroF1={null}
+        modelVersion="v1"
+        runnersByUmaban={{}}
+        bucketEvaluation={buildEvaluation({})}
+        bucketScope={buildScope({})}
+        dimensionFlags={buildFlags({})}
+        bucketRace={buildBucketRace({})}
+        bucketSource="jra"
+        bucketGradeCode={null}
+      />,
+    );
+    expect(screen.getByText("クラス別 metric")).toBeTruthy();
+    expect(screen.getByText("クラス別 log loss")).toBeTruthy();
+    expect(screen.getByText("confusion matrix (actual × predicted)")).toBeTruthy();
   });
 
   test("renders sixteen confusion matrix cells when bucketEvaluation is given", () => {
