@@ -75,7 +75,38 @@ def test_resolve_pg_url_empty_string_treated_as_unset(monkeypatch: pytest.Monkey
 
 
 def test_category_source_filter_jra():
-    assert subject.category_source_filter("jra", "rec") == "rec.source = 'jra'"
+    assert (
+        subject.category_source_filter("jra", "rec")
+        == "rec.source = 'jra' and rec.keibajo_code in "
+        "('01', '02', '03', '04', '05', '06', '07', '08', '09', '10')"
+    )
+
+
+def test_jra_keibajo_codes_sql_lists_central_venues_only():
+    assert subject.JRA_KEIBAJO_CODES == (
+        "01",
+        "02",
+        "03",
+        "04",
+        "05",
+        "06",
+        "07",
+        "08",
+        "09",
+        "10",
+    )
+    assert (
+        subject.JRA_KEIBAJO_CODES_SQL
+        == "('01', '02', '03', '04', '05', '06', '07', '08', '09', '10')"
+    )
+
+
+def test_upcoming_target_union_sql_jra_restricts_to_central_keibajo():
+    sql = subject.upcoming_target_union_sql("jra", "20260101", "20260131")
+    assert (
+        "se.keibajo_code in ('01', '02', '03', '04', '05', '06', '07', '08', '09', '10')"
+        in sql
+    )
 
 
 def test_category_source_filter_nar_excludes_ban_ei():

@@ -82,6 +82,25 @@ SEASON_WINTER = 3
 NEWCOMER_RACE_JOKEN_CODE = "000"
 UMABAN_NORM_MIN_FIELD = 2
 
+# JRA central-venue keibajo codes (01 札幌 .. 10 小倉). The JRA-VAN feed
+# (jvd_se / jvd_ra) also distributes NAR-venue (keibajo 30-58, data_kubun 'A')
+# and overseas (data_kubun 'B') races, all stamped source='jra' by the
+# corner-feature table. A JRA-only model must restrict TARGET rows to these
+# central venues so NAR / overseas races do not leak in as fake JRA targets.
+JRA_KEIBAJO_CODES: tuple[str, ...] = (
+    "01",
+    "02",
+    "03",
+    "04",
+    "05",
+    "06",
+    "07",
+    "08",
+    "09",
+    "10",
+)
+JRA_KEIBAJO_CODES_SQL = "(" + ", ".join(f"'{code}'" for code in JRA_KEIBAJO_CODES) + ")"
+
 
 DATE_FORMAT = "%Y%m%d"
 
@@ -205,7 +224,7 @@ def resolve_pg_url(cli_value: str | None) -> str:
 
 def category_source_filter(category: str, alias: str) -> str:
     if category == "jra":
-        return f"{alias}.source = 'jra'"
+        return f"{alias}.source = 'jra' and {alias}.keibajo_code in {JRA_KEIBAJO_CODES_SQL}"
     if category == "nar":
         return f"{alias}.source = 'nar' and {alias}.keibajo_code <> '83'"
     if category == "ban-ei":
@@ -416,7 +435,12 @@ def upcoming_target_union_sql(category: str, target_from: str, target_to: str) -
     """Direct source select(s) for the UPCOMING target window, by category."""
     if category == CATEGORY_JRA:
         return _rec_select_from_se_ra(
-            "jra", "jvd_se", "jvd_ra", target_from, target_to, "true"
+            "jra",
+            "jvd_se",
+            "jvd_ra",
+            target_from,
+            target_to,
+            f"se.keibajo_code in {JRA_KEIBAJO_CODES_SQL}",
         )
     if category == CATEGORY_NAR:
         return _rec_select_from_se_ra(
