@@ -44,11 +44,16 @@ def test_build_audit_table_ddl_creates_table() -> None:
     assert "create table if not exists finish_position_cron_executions" in ddl
 
 
-def test_build_audit_insert_sql_placeholders() -> None:
+def test_build_audit_insert_sql_uses_psycopg_placeholders() -> None:
     sql = build_audit_insert_sql()
-    assert "$1" in sql
-    assert "$5" in sql
-    assert "$6" not in sql
+    # psycopg3 client-side binding requires %s placeholders, not $n.
+    assert sql.count("%s") == 5
+    assert "$1" not in sql
+
+
+def test_build_audit_insert_sql_targets_correct_table() -> None:
+    sql = build_audit_insert_sql()
+    assert "insert into finish_position_cron_executions" in sql
 
 
 def test_audit_params_order() -> None:

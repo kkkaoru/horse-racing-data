@@ -34,11 +34,16 @@ def test_primary_key_columns() -> None:
     )
 
 
-def test_build_upsert_sql_single_row_placeholders() -> None:
+def test_build_upsert_sql_single_row_uses_psycopg_placeholders() -> None:
     sql = build_upsert_sql(1)
-    assert "$1" in sql
-    assert "$13" in sql
-    assert "$14" not in sql
+    # 13 INSERT columns, all bound with psycopg3 %s.
+    assert sql.count("%s") == 13
+    assert "$1" not in sql
+
+
+def test_build_upsert_sql_multi_row_placeholder_count() -> None:
+    sql = build_upsert_sql(3)
+    assert sql.count("%s") == 39
 
 
 def test_build_upsert_sql_has_on_conflict_do_update() -> None:

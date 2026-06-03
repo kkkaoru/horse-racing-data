@@ -26,7 +26,9 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import sys
+import threading
 import time
 import traceback
 from collections.abc import Mapping, Sequence
@@ -41,6 +43,7 @@ from predict_lib.audit import (
     build_audit_record,
     build_audit_table_ddl,
 )
+from predict_lib.conn_url import normalise_database_url
 from predict_lib.dedupe import dedupe_batch
 from predict_lib.model_meta import (
     CATEGORIES,
@@ -72,6 +75,38 @@ MODELS_DIR_ENV: str = "MODELS_DIR"
 DEFAULT_DAYS_AHEAD: int = 2
 RACE_ID_KETTO_INDEX: int = 6
 RACE_ID_PART_RANGE: range = range(1, 6)
+# Cloudflare Containers' runtime SIGTERMs batch jobs that never open a listening
+# port (FALLBACK_PORT_TO_CHECK=33 in @cloudflare/containers triggers a liveness
+# probe). The predictor is a pure batch job — it just needs SOMETHING listening
+# so the runtime doesn't reap it during the multi-minute DuckDB feature build.
+LIVENESS_PORT: int = 8080
+LIVENESS_BACKLOG: int = 4
+
+
+def _serve_liveness_socket(port: int) -> None:
+    """Accept-and-close loop on a TCP port so the runtime's liveness probe sees
+    a listening socket. The loop is daemonised + idempotent on socket close so
+    a transient probe error never crashes the predictor."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(("0.0.0.0", port))
+        server.listen(LIVENESS_BACKLOG)
+        while True:
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return
+            try:
+                conn.close()
+            except OSError:
+                continue
+
+
+def _start_liveness_thread(port: int) -> None:
+    """Spawn the liveness server as a daemon thread so the predictor exits
+    naturally when main() returns."""
+    thread = threading.Thread(target=_serve_liveness_socket, args=(port,), daemon=True)
+    thread.start()
 
 
 @dataclass(frozen=True)
@@ -244,8 +279,9 @@ def _try_record_audit(
 
 def main() -> int:
     started = time.monotonic()
+    _start_liveness_thread(LIVENESS_PORT)
     try:
-        database_url = _require_env(NEON_DATABASE_URL_ENV)
+        database_url = normalise_database_url(_require_env(NEON_DATABASE_URL_ENV))
         run_date = _require_env(RUN_DATE_ENV)
         days_ahead = int(os.environ.get(DAYS_AHEAD_ENV, str(DEFAULT_DAYS_AHEAD)))
         models_dir = Path(os.environ.get(MODELS_DIR_ENV, "/models"))

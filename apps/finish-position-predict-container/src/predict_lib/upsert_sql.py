@@ -2,9 +2,15 @@
 
 Mirrors ``apps/pc-keiba-viewer/src/scripts/finish-position-features/import-predictions-sql.ts``:
 same table, primary key, insert columns and ``ON CONFLICT DO UPDATE`` set. We
-write parameterised statements (``$n`` placeholders) so values are bound by the
-driver and never string-interpolated. Chunking keeps each statement well under
-the 16-minute single-query wall and bounds the parameter count per round trip.
+write parameterised statements (psycopg3 ``%s`` placeholders) so values are
+bound by the driver and never string-interpolated. Chunking keeps each
+statement well under the 16-minute single-query wall and bounds the parameter
+count per round trip.
+
+NOTE on placeholders: psycopg3 client-side binding recognises ``%s`` (and
+``%(name)s``) only. ``$n`` is libpq-native (asyncpg / postgres directly) and
+psycopg3 raises ``ProgrammingError: the query has 0 placeholders but N
+parameters were passed`` if you ship ``$n``-bearing SQL with positional params.
 """
 
 from __future__ import annotations
@@ -46,10 +52,14 @@ UPDATABLE_COLUMNS: Final[tuple[str, ...]] = (
 DEFAULT_CHUNK_SIZE: Final[int] = 500
 
 
-def _placeholder_row(row_index: int) -> str:
-    """Build the ``($n, ...)`` placeholder tuple for one row."""
-    start = row_index * len(INSERT_COLUMNS) + 1
-    placeholders = (f"${start + offset}" for offset in range(len(INSERT_COLUMNS)))
+def _placeholder_row(_row_index: int) -> str:
+    """Build the ``(%s, %s, ...)`` psycopg3 placeholder tuple for one row.
+
+    ``row_index`` is retained in the signature for chunking-loop callers, but
+    psycopg3 uses positional ``%s`` (NOT numbered ``$n``) so the offset is
+    unused — every row reuses the same per-column placeholder string.
+    """
+    placeholders = ("%s" for _ in range(len(INSERT_COLUMNS)))
     return "(" + ", ".join(placeholders) + ")"
 
 

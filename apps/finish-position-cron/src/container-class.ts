@@ -7,12 +7,17 @@
 import { Container } from "@cloudflare/containers";
 import type { Env } from "./types";
 
-// The container is a batch job: it exposes no HTTP port and is driven by
-// start({ entrypoint, envVars }) from the Worker's scheduled() handler. We give
-// it generous sleep + no required ports so it runs to completion and is then
-// reaped. Sized to standard-4 in wrangler.jsonc (4 vCPU / 12 GiB / 20 GB) for
-// the DuckDB + CatBoost feature build.
+// The container is a batch job: it exposes a no-op TCP listener on
+// LIVENESS_PORT in predict_upcoming.py purely so Cloudflare Containers'
+// internal liveness probe sees a listening socket and does not SIGTERM the
+// process during the multi-minute DuckDB + CatBoost feature build. Without a
+// defaultPort, the runtime reaps the container ~90s after start. sleepAfter is
+// generous so the alarm loop never expires activity mid-run. Sized to standard-4
+// in wrangler.jsonc (4 vCPU / 12 GiB / 20 GB) for the DuckDB aggregation.
+const LIVENESS_PORT = 8080;
+
 export class FinishPositionPredictContainer extends Container<Env> {
+  override defaultPort = LIVENESS_PORT;
   override sleepAfter = "45m";
   override enableInternet = true;
 }

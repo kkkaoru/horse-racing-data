@@ -73,9 +73,15 @@ def build_audit_table_ddl() -> str:
 
 
 def build_audit_insert_sql() -> str:
-    """Return the parameterised single-row INSERT for the audit table."""
+    """Return the parameterised single-row INSERT for the audit table.
+
+    Uses psycopg3 ``%s`` placeholders (NOT libpq ``$n``): psycopg3 client-side
+    binding only recognises ``%s`` / ``%(name)s`` and raises
+    ``ProgrammingError: the query has 0 placeholders but N parameters were
+    passed`` if you ship ``$n`` text and pass parameters.
+    """
     columns = ", ".join(AUDIT_COLUMNS)
-    placeholders = ", ".join(f"${index + 1}" for index in range(len(AUDIT_COLUMNS)))
+    placeholders = ", ".join("%s" for _ in range(len(AUDIT_COLUMNS)))
     return f"insert into {AUDIT_TABLE} ({columns}) values ({placeholders})"
 
 
