@@ -4,13 +4,14 @@
 //   --metadata-path tmp/models/finish-jra-v1.json
 
 import { spawn } from "node:child_process";
+import { basename } from "node:path";
 
 import type { FeatureCategory } from "./build-finish-position-features-types";
 
 const DEFAULT_BUCKET = "pc-keiba-finish-position-models";
 const WRANGLER_COMMAND = "bunx";
-const MODEL_FILE_NAME = "model.lgb";
 const METADATA_FILE_NAME = "metadata.json";
+const JSON_MODEL_SUFFIX = ".json";
 
 const CATEGORY_SET = new Set<FeatureCategory>(["ban-ei", "jra", "nar"]);
 
@@ -38,10 +39,11 @@ const buildUsageText = (): string =>
   [
     "Usage:",
     "  bun run src/scripts/finish-position-features/upload-finish-model.ts \\",
-    "    --category jra|nar|ban-ei --model-version <id> --model-path <file.lgb> \\",
+    "    --category jra|nar|ban-ei --model-version <id> --model-path <file.lgb|file.json> \\",
     "    [--metadata-path <file.json>] [--bucket <name>] [--remote]",
     "",
-    "Uploads the LightGBM model and optional metadata to the",
+    "Uploads the model (R2 object filename mirrors the --model-path basename,",
+    "e.g. model.lgb or model.json) and optional metadata to the",
     "pc-keiba-finish-position-models R2 bucket via wrangler.",
     "Default --remote=false targets the local wrangler bucket emulation;",
     "pass --remote to push to the production R2 bucket.",
@@ -67,8 +69,15 @@ export const buildObjectKey = (
   filename: string,
 ): string => `finish-position/${category}/${modelVersion}/${filename}`;
 
-export const buildModelObjectKey = (category: FeatureCategory, modelVersion: string): string =>
-  buildObjectKey(category, modelVersion, MODEL_FILE_NAME);
+export const modelFileName = (modelPath: string): string => basename(modelPath);
+
+export const isJsonModel = (modelPath: string): boolean => modelPath.endsWith(JSON_MODEL_SUFFIX);
+
+export const buildModelObjectKey = (
+  category: FeatureCategory,
+  modelVersion: string,
+  modelPath: string,
+): string => buildObjectKey(category, modelVersion, modelFileName(modelPath));
 
 export const buildMetadataObjectKey = (category: FeatureCategory, modelVersion: string): string =>
   buildObjectKey(category, modelVersion, METADATA_FILE_NAME);
@@ -168,9 +177,9 @@ interface UploadStep {
 export const buildUploadSteps = (options: UploadOptions): UploadStep[] => {
   const steps: UploadStep[] = [
     {
-      contentType: "application/octet-stream",
+      contentType: isJsonModel(options.modelPath) ? "application/json" : "application/octet-stream",
       filePath: options.modelPath,
-      objectKey: buildModelObjectKey(options.category, options.modelVersion),
+      objectKey: buildModelObjectKey(options.category, options.modelVersion, options.modelPath),
     },
   ];
   if (options.metadataPath !== null) {
@@ -221,3 +230,4 @@ if (import.meta.main) {
 }
 
 export { buildUsageText, DEFAULT_BUCKET, initialOptions, isUploadableCategory };
+export { JSON_MODEL_SUFFIX, METADATA_FILE_NAME };

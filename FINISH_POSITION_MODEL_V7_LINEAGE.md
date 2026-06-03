@@ -419,3 +419,50 @@ ban-ei-cb-v7-grade model
 - `apps/pc-keiba-viewer/src/scripts/finish-position-features/insert-evaluation-row.py`
 - `apps/local-postgresql/scripts/push-neon-sync.ts`
 - `apps/local-postgresql/scripts/push-neon-status.ts`
+
+---
+
+## 10. Stage 6a — production full-data fit + JSON export + R2 upload (Worker scorers)
+
+Worker (Cloudflare) のリアルタイム推論用に、各カテゴリの production モデルを **full max-range** で再 fit し、TS scorer (`catboost-json-tree` / `xgboost-json-tree`) が読める **JSON** に export して R2 へ upload した。Stage 3 の WF per-fold モデルは eval 専用で保存していないため、これが日次/リアルタイム推論の実体。
+
+### 10.1 fit 条件 (full-data, 全 finish_position 有効 row)
+
+| category | arch                  | parquet                               | feat | iter/rounds          | relevance     | n_train_rows | n_train_races | train range       | dur    |
+| -------- | --------------------- | ------------------------------------- | ---- | -------------------- | ------------- | ------------ | ------------- | ----------------- | ------ |
+| JRA      | CatBoost YetiRank     | `tmp/feat-jra-v7-final`               | 226  | 500 / depth8 / l2 3  | {1:3,2:2,3:1} | 1,585,282    | 128,901       | 20060101–20260517 | 287.3s |
+| NAR      | XGBoost rank:pairwise | `tmp/feat-nar-v7-baba-21y`            | 175  | 450 / depth6 / lr.05 | {1:3,2:2,3:2} | 2,724,631    | 274,604       | 20060101–20260523 | 144.7s |
+| Ban-ei   | CatBoost YetiRank     | `tmp/feat-ban-ei-v7-grade-21y-parity` | 111  | 300 / depth8 / l2 3  | {1:3,2:2,3:1} | 311,142      | 33,851        | 20070101–20260601 | 29.5s  |
+
+`thread_count`/`nthread`=4, `random_seed`=20260519, CatBoost `no_cat_features=True`。fit 前に feat count を 226/175/111 で assert。
+
+### 10.2 artifacts (gitignored scratch `tmp/models/{...}-v7-lineage-wf-21y/`)
+
+- CatBoost: `model.cbm` + `model.json` (`save_model(format='json')`) + `metadata.json`
+- XGBoost: `model.json` (`booster.save_model('model.json')` — production UBJ/JSON, NOT dump_model) + `metadata.json`
+
+### 10.3 R2 key 規約 (Stage 7C inference.ts はこれを read)
+
+bucket `pc-keiba-finish-position-models` (binding `FINISH_POSITION_MODELS`)。key は `upload-finish-model.ts` の `finish-position/{category}/{modelVersion}/{filename}`:
+
+```
+finish-position/jra/jra-cb-v7-lineage-wf-21y/model.json
+finish-position/jra/jra-cb-v7-lineage-wf-21y/metadata.json
+finish-position/nar/nar-xgb-v7-lineage-wf-21y/model.json
+finish-position/nar/nar-xgb-v7-lineage-wf-21y/metadata.json
+finish-position/ban-ei/banei-cb-v7-lineage-wf-21y/model.json
+finish-position/ban-ei/banei-cb-v7-lineage-wf-21y/metadata.json
+```
+
+`category` は `jra` / `nar` / `ban-ei` (ハイフン)。`metadata.json` は `{model_version, architecture, category, feature_count, feature_names (order!), n_train_rows, n_train_races, train_years, train_date_range, hyperparams, scale_and_bias|base_score}` を含み、Worker は `feature_names` の順で feature vector を組む。
+
+### 10.4 JSON↔TS scorer parity (検証済)
+
+`parseCatBoostJsonModel` / `parseXgboostJsonModel` が export を parse し、Python の `RawFormulaVal` / `predict` と同一 ranking を出すことを 3 race ずつ確認:
+
+- **JRA / Ban-ei (CatBoost)**: ranking order 一致 + score diff = **0.0** (bit-exact)
+- **NAR (XGBoost)**: ranking order 一致。score diff ~0.10 は float32 量子化由来 (順位は不変)。**Worker は NAR scoring 前に feature 値を float32 化すべき** (bit-faithful にするため。順位は float64 でも robust)。
+
+### 10.5 reusable script (committed)
+
+`upload-finish-model.ts` を拡張: R2 object filename を `--model-path` の basename から決定するように一般化 (旧 hardcoded `model.lgb` → `model.json` も upload 可)、`.json` model は content-type `application/json`。`isJsonModel` / `modelFileName` を追加し test を更新 (23 tests, package coverage gate green)。日次 cron 再 fit で再利用可能。
