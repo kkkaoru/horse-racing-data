@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LaunchAgent for the daily finish-position-prediction docker pipeline.
+
+  WHY MAC LAUNCHD (NOT CLOUDFLARE CRON):
+    Cloudflare Containers reap batch instances at ~90-110 s regardless of
+    sleepAfter, but the DuckDB feature build + per-category CatBoost / XGBoost
+    scoring needs ~10 min. The Cloudflare Cron Trigger has therefore been
+    disabled in apps/finish-position-cron/wrangler.jsonc (triggers.crons = []),
+    and this LaunchAgent drives the proven local docker pipeline instead —
+    same Dockerfile (apps/finish-position-predict-container/Dockerfile), same
+    image (finish-position-predict-local:split2), same env vars
+    (SOURCE_DATABASE_URL = local Colima PG, NEON_DATABASE_URL = Neon write
+    target, RUN_DATE = today JST in YYYYMMDD form), idempotent UPSERT into
+    race_finish_position_model_predictions.
+
+  SCHEDULE:
+    StartCalendarInterval Hour=3 Minute=0 means JST 03:00. macOS launchd uses
+    the device's local timezone, and this machine is assumed to already run
+    JST. If you ever change the system timezone you MUST adjust the Hour key
+    accordingly — launchd has no timezone-aware option.
+
+  CATCH-UP BEHAVIOUR:
+    StartCalendarInterval will fire on next wake if the scheduled time was
+    missed while the Mac was asleep (this is launchd's "catch up on missed
+    runs" behaviour). The wrapper script's UPSERT is idempotent, so a delayed
+    fire just overwrites today's predictions safely.
+
+  STDOUT/STDERR PATHS:
+    launchd does NOT expand "~", so the paths below are literal absolute
+    paths under /Users/kkk4oru/Library/Logs/finish-position-predict/. The
+    wrapper script also writes a date-stamped log to the same dir.
+
+  SECRETS:
+    No secrets live in this plist. The wrapper script reads
+    NEON_DATABASE_URL from apps/local-postgresql/.env.replica at run time and
+    masks it in the dated log.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.kkk4oru.finish-position-predict</string>
+
+  <key>Program</key>
+  <string>/Users/kkk4oru/ghq/github.com/kkkaoru/horse-racing-data/scripts/launchd/finish-position-predict-daily.sh</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/kkk4oru/ghq/github.com/kkkaoru/horse-racing-data</string>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <!-- JST 03:00 — assumes the Mac is set to Asia/Tokyo. -->
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>KeepAlive</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/kkk4oru/Library/Logs/finish-position-predict/stdout.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/kkk4oru/Library/Logs/finish-position-predict/stderr.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- Only non-secret defaults belong here. The wrapper script reads any
+         credentials it needs (NEON_DATABASE_URL, SOURCE_DATABASE_URL) from
+         apps/local-postgresql/.env.replica + a hardcoded localhost URL. -->
+    <key>RUN_DATE_MODE</key>
+    <string>auto</string>
+    <key>PREDICT_DAYS_AHEAD</key>
+    <string>0</string>
+    <!-- PATH so the wrapper finds docker / colima / awk / date without
+         relying on the user's interactive shell init. /opt/homebrew/bin is
+         Apple-Silicon Homebrew (docker, colima, bun all live there). -->
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>

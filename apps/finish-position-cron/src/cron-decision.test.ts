@@ -18,3 +18,10 @@ test("shouldRunPredictCron rejects a different cron", () => {
 test("shouldRunPredictCron rejects an empty string", () => {
   expect(shouldRunPredictCron("")).toBe(false);
 });
+
+test("shouldRunPredictCron rejects when the wrangler cron array is empty (deployed state)", () => {
+  // wrangler.jsonc currently sets triggers.crons = []. Cloudflare will not fire
+  // scheduled() at all in that state, but defend against an accidental empty
+  // event.cron arriving anyway.
+  expect(shouldRunPredictCron("")).toBe(false);
+});

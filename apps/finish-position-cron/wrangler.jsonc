@@ -11,10 +11,14 @@
     // (project_cloudflare_observability_cost).
     "head_sampling_rate": 0.1,
   },
-  // "0 18 * * *" = 18:00 UTC = JST 03:00. Daily upcoming-race finish-position
-  // prediction. scheduled() starts the Container batch job; see src/worker.ts.
+  // Cron disabled: Cloudflare Containers reaps batch instances at ~90-110s
+  // regardless of sleepAfter; this workload (DuckDB feature build ~10+ min)
+  // cannot complete within that window. Replaced by Mac launchd that runs the
+  // proven local docker pipeline daily at JST 03:00 — see
+  // apps/finish-position-predict-container/DEPLOY.md and scripts/launchd/.
+  // Worker is still deployed for the ad-hoc /run endpoint + /health + D1 audit.
   "triggers": {
-    "crons": ["0 18 * * *"],
+    "crons": [],
   },
   // Container image runs real Python (DuckDB + CatBoost + XGBoost) for the v7
   // feature build + scoring. standard-4 = 4 vCPU / 12 GiB / 20 GB (heaviest

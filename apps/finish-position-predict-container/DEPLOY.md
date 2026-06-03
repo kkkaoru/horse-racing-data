@@ -1,11 +1,16 @@
-# Deploy runbook — daily finish-position prediction (Cloudflare Cron + Container)
+# Deploy runbook — daily finish-position prediction (Mac launchd + local docker)
 
 Automated daily serving of UPCOMING-race finish-position predictions with the
-retrained **v7-lineage** models. Scheduling is a **Cloudflare Cron Trigger**
-(GitHub Workflow for prediction is FORBIDDEN by project rule). The feature build
-needs Python / DuckDB / CatBoost / XGBoost, which a plain Worker cannot run, so a
-**Cloudflare Container** (`finish-position-predict-container`) does the work and a
-tiny **Cron Trigger Worker** (`finish-position-cron`) starts it on schedule.
+retrained **v7-lineage** models. **As of 2026-06-04 the Cloudflare Container
+cron is disabled (`triggers.crons = []` in
+`apps/finish-position-cron/wrangler.jsonc`) because Cloudflare Containers reap
+batch instances at ~90-110 s regardless of `sleepAfter` and the DuckDB feature
+build + per-category scoring needs ~10 min — the workload cannot complete
+inside that window.** Scheduling is now a **Mac LaunchAgent** that runs the
+same docker image locally (see `scripts/launchd/` and the "Mac launchd cron"
+section below). GitHub Workflow for prediction remains FORBIDDEN by project
+rule. The Cloudflare Worker is still deployed for the `/run` on-demand HTTP
+endpoint, `/health`, and the D1 audit table — those are unaffected.
 
 This file is a runbook. None of it has been run for you — **no `wrangler deploy`,
 no image push, no secrets set.** Run the steps below from your machine, logged in
@@ -16,10 +21,27 @@ to your own Cloudflare account, with Docker running.
 
 ---
 
-## Architecture
+## Architecture (current — Mac launchd)
 
 ```
-Cron Trigger ("0 18 * * *" = JST 03:00)
+Mac LaunchAgent (com.kkk4oru.finish-position-predict, JST 03:00 daily)
+        │
+        ▼
+scripts/launchd/finish-position-predict-daily.sh
+        │   - reads NEON_DATABASE_URL from apps/local-postgresql/.env.replica
+        │   - SOURCE_DATABASE_URL defaults to local Colima PG (127.0.0.1:15432)
+        │   - RUN_DATE = today in JST (date -u -v+9H +%Y%m%d)
+        ▼
+docker run --rm --network=host finish-position-predict-local:split2
+  (apps/finish-position-predict-container/Dockerfile)
+        │
+        ▼ predict_upcoming.py, per category (jra / nar / ban-ei):
+```
+
+## Legacy Cloudflare Container architecture (cron disabled 2026-06-04)
+
+```
+Cron Trigger ("0 18 * * *" = JST 03:00)   --  DISABLED, see Mac launchd above
         │
         ▼
 finish-position-cron Worker   ── scheduled(event) ──►  getContainer(...).start({
@@ -267,10 +289,41 @@ the first scheduled run.
 
 ---
 
+## Mac launchd cron (current production scheduler)
+
+All file paths + commands live under `scripts/launchd/`. See
+`scripts/launchd/README.md` for the full runbook. Quick reference:
+
+```sh
+# Install (one-shot)
+launchctl bootstrap gui/$(id -u) \
+  /Users/kkk4oru/ghq/github.com/kkkaoru/horse-racing-data/scripts/launchd/com.kkk4oru.finish-position-predict.plist
+
+# Status
+launchctl print gui/$(id -u)/com.kkk4oru.finish-position-predict | grep -E 'state|last exit code|next firing'
+
+# Manual fire
+launchctl kickstart -k gui/$(id -u)/com.kkk4oru.finish-position-predict
+
+# Uninstall
+launchctl bootout gui/$(id -u)/com.kkk4oru.finish-position-predict
+```
+
+Logs land in `~/Library/Logs/finish-position-predict/`
+(`YYYYMMDD.log` per run, `failures.log` aggregated). Credentials are masked.
+
+Mac sleep behaviour: `StartCalendarInterval` queues a missed firing while the
+Mac is asleep and runs it on next wake. If the Mac is powered off at JST
+03:00 the firing is lost — run the manual fire above to recover. The UPSERT
+is idempotent.
+
 ## Rollback
 
-1. **Disable the cron** (stop new runs) — remove `triggers.crons` from
-   `wrangler.jsonc` and `wrangler deploy`, OR pause the trigger in the dashboard.
+1. **Disable the cron** (stop new runs):
+   - **Mac launchd**: `launchctl bootout gui/$(id -u)/com.kkk4oru.finish-position-predict`.
+   - **Cloudflare** (already disabled): remove `triggers.crons` from
+     `apps/finish-position-cron/wrangler.jsonc` and `wrangler deploy`,
+     OR pause the trigger in the dashboard.
 2. **Revert the active model** so the viewer serves the previous version
    (predictions already written stay; nothing is deleted):
    ```sql

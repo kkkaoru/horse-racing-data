@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# Daily finish-position-prediction docker pipeline wrapper.
+#
+# Driven by the LaunchAgent at scripts/launchd/com.kkk4oru.finish-position-predict.plist
+# (JST 03:00 daily). Replaces the disabled Cloudflare Container cron (Cloudflare
+# Containers reap batch instances at ~90-110 s; this workload needs ~10 min).
+#
+# Idempotent UPSERT into race_finish_position_model_predictions — safe to re-run.
+#
+# Manual invocation (dry-run / today's date):
+#   launchctl kickstart -k gui/$(id -u)/com.kkk4oru.finish-position-predict
+# or directly:
+#   bash scripts/launchd/finish-position-predict-daily.sh
+set -euo pipefail
+
+# Resolve repo root from this script's location (scripts/launchd -> repo root).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$REPO_ROOT"
+
+# Constants.
+IMAGE_TAG="finish-position-predict-local:split2"
+DOCKERFILE_PATH="apps/finish-position-predict-container/Dockerfile"
+SOURCE_DATABASE_URL_DEFAULT="postgresql://horse_racing:horse_racing@127.0.0.1:15432/horse_racing"
+NEON_ENV_FILE="apps/local-postgresql/.env.replica"
+LOG_DIR="/Users/kkk4oru/Library/Logs/finish-position-predict"
+FAILURE_LOG="$LOG_DIR/failures.log"
+
+mkdir -p "$LOG_DIR"
+
+# JST = UTC+9. `date -u +%Y%m%d -v+9H` adds 9 h to current UTC and formats as
+# YYYYMMDD — that is "today in JST" regardless of the Mac's local timezone, so
+# a misconfigured TZ still yields the correct run date.
+RUN_DATE="$(date -u -v+9H +%Y%m%d)"
+RUN_DATE_ISO="${RUN_DATE:0:4}-${RUN_DATE:4:2}-${RUN_DATE:6:2}"
+DATED_LOG="$LOG_DIR/${RUN_DATE}.log"
+
+# tee everything from here on to the dated log. The plist captures the raw
+# stdout/stderr to its own files in $LOG_DIR; this dated log is the
+# per-run record we can later grep for credentials etc.
+exec > >(tee -a "$DATED_LOG") 2>&1
+
+log() {
+  printf '%s [finish-position-predict-daily] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"
+}
+
+fail() {
+  local msg="$1"
+  log "ERROR: $msg"
+  printf '%s RUN_DATE=%s status=error msg=%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$RUN_DATE" "$msg" >> "$FAILURE_LOG"
+  # Best-effort desktop notification; never propagate its failure.
+  osascript -e "display notification \"$msg\" with title \"finish-position cron (RUN_DATE=$RUN_DATE)\"" \
+    >/dev/null 2>&1 || true
+  exit 1
+}
+
+mask() {
+  # Mask credentials in any URL of the form scheme://user:pass@host/...
+  # Used to redact NEON_DATABASE_URL when logging it.
+  sed -E 's#(://)[^:@/]+:[^@]+@#\1***:***@#g'
+}
+
+log "RUN_DATE=$RUN_DATE RUN_DATE_ISO=$RUN_DATE_ISO REPO_ROOT=$REPO_ROOT"
+
+# Pre-flight 1: Colima must be running (docker daemon).
+log "checking colima status..."
+if ! colima status >/dev/null 2>&1; then
+  log "colima not running; attempting to start..."
+  if ! colima start >/dev/null 2>&1; then
+    fail "colima start failed; cannot reach docker"
+  fi
+  log "colima started"
+fi
+
+# Pre-flight 2: docker reachable.
+if ! docker info >/dev/null 2>&1; then
+  fail "docker info failed (colima up but docker unreachable)"
+fi
+
+# Pre-flight 3: image exists locally; rebuild if not.
+if ! docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
+  log "image $IMAGE_TAG missing; building from $DOCKERFILE_PATH..."
+  if ! docker build -f "$DOCKERFILE_PATH" -t "$IMAGE_TAG" "$REPO_ROOT"; then
+    fail "docker build $IMAGE_TAG failed"
+  fi
+  log "image $IMAGE_TAG built"
+fi
+
+# Pre-flight 4: read NEON_DATABASE_URL from .env.replica (single-quoted by
+# convention). Strip surrounding quotes if present.
+if [ ! -f "$NEON_ENV_FILE" ]; then
+  fail "$NEON_ENV_FILE not found"
+fi
+NEON_LINE="$(grep -E '^NEON_DATABASE_URL=' "$NEON_ENV_FILE" | head -1 || true)"
+if [ -z "$NEON_LINE" ]; then
+  fail "NEON_DATABASE_URL not set in $NEON_ENV_FILE"
+fi
+NEON_DATABASE_URL="${NEON_LINE#NEON_DATABASE_URL=}"
+NEON_DATABASE_URL="${NEON_DATABASE_URL%\'}"
+NEON_DATABASE_URL="${NEON_DATABASE_URL#\'}"
+NEON_DATABASE_URL="${NEON_DATABASE_URL%\"}"
+NEON_DATABASE_URL="${NEON_DATABASE_URL#\"}"
+if [ -z "$NEON_DATABASE_URL" ]; then
+  fail "NEON_DATABASE_URL parsed empty from $NEON_ENV_FILE"
+fi
+log "NEON_DATABASE_URL=$(printf '%s' "$NEON_DATABASE_URL" | mask)"
+
+# Pre-flight 5: SOURCE_DATABASE_URL — env override > default local Colima PG.
+SRC="${SOURCE_DATABASE_URL:-$SOURCE_DATABASE_URL_DEFAULT}"
+log "SOURCE_DATABASE_URL=$(printf '%s' "$SRC" | mask)"
+
+# Pre-flight 6: PREDICT_DAYS_AHEAD default 0 (today only). Allow caller override.
+DAYS_AHEAD="${PREDICT_DAYS_AHEAD:-0}"
+
+# Run the prediction container. --network=host so the container can reach the
+# local Colima Postgres on 127.0.0.1:15432 directly. --rm so the container is
+# removed after exit.
+log "starting docker run $IMAGE_TAG RUN_DATE=$RUN_DATE PREDICT_DAYS_AHEAD=$DAYS_AHEAD..."
+set +e
+docker run --rm --network=host \
+  -e SOURCE_DATABASE_URL="$SRC" \
+  -e NEON_DATABASE_URL="$NEON_DATABASE_URL" \
+  -e RUN_DATE="$RUN_DATE" \
+  -e RUN_DATE_ISO="$RUN_DATE_ISO" \
+  -e PREDICT_DAYS_AHEAD="$DAYS_AHEAD" \
+  -e MODELS_DIR=/models \
+  "$IMAGE_TAG"
+docker_exit=$?
+set -e
+log "docker run exited with code=$docker_exit"
+
+# Sanity check: did any credential leak into the dated log? If so, sanitize
+# in-place (still emit a warning). Patterns: Neon role prefix "npg_", local
+# "horse_racing:horse_racing", any "user:pass@" form.
+if grep -E 'npg_[A-Za-z0-9]+|horse_racing:horse_racing|://[^:@/]+:[^@]+@' "$DATED_LOG" >/dev/null 2>&1; then
+  log "WARN: credentials detected in $DATED_LOG; sanitizing in-place"
+  tmp="$(mktemp)"
+  sed -E \
+    -e 's#(://)[^:@/]+:[^@]+@#\1***:***@#g' \
+    -e 's#npg_[A-Za-z0-9]+#npg_***#g' \
+    -e 's#horse_racing:horse_racing#***:***#g' \
+    "$DATED_LOG" > "$tmp"
+  mv "$tmp" "$DATED_LOG"
+fi
+
+if [ "$docker_exit" -ne 0 ]; then
+  fail "docker run exited non-zero ($docker_exit) — see $DATED_LOG"
+fi
+
+log "SUCCESS RUN_DATE=$RUN_DATE"
+exit 0
