@@ -75,18 +75,37 @@ MODELS_DIR_ENV: str = "MODELS_DIR"
 DEFAULT_DAYS_AHEAD: int = 2
 RACE_ID_KETTO_INDEX: int = 6
 RACE_ID_PART_RANGE: range = range(1, 6)
-# Cloudflare Containers' runtime SIGTERMs batch jobs that never open a listening
-# port (FALLBACK_PORT_TO_CHECK=33 in @cloudflare/containers triggers a liveness
-# probe). The predictor is a pure batch job — it just needs SOMETHING listening
-# so the runtime doesn't reap it during the multi-minute DuckDB feature build.
+# Cloudflare Containers reaps batch instances that receive no HTTP traffic
+# (independent of @cloudflare/containers' JS-side sleepAfter). The predictor
+# is a long-running batch job, so we both (a) listen on a port so the start
+# probe + DO containerFetch resolve, AND (b) honour repeated HTTP keepalive
+# pings from the Worker DO's scheduled loop. The server is tiny on purpose —
+# the only HTTP requirement is "200 OK on every request".
 LIVENESS_PORT: int = 8080
-LIVENESS_BACKLOG: int = 4
+LIVENESS_BACKLOG: int = 8
+LIVENESS_RESPONSE: bytes = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+LIVENESS_RECV_BYTES: int = 4096
+
+
+def _handle_liveness_connection(conn: socket.socket) -> None:
+    try:
+        conn.recv(LIVENESS_RECV_BYTES)
+    except OSError:
+        return
+    try:
+        conn.sendall(LIVENESS_RESPONSE)
+    except OSError:
+        return
+    finally:
+        try:
+            conn.close()
+        except OSError:
+            return
 
 
 def _serve_liveness_socket(port: int) -> None:
-    """Accept-and-close loop on a TCP port so the runtime's liveness probe sees
-    a listening socket. The loop is daemonised + idempotent on socket close so
-    a transient probe error never crashes the predictor."""
+    """Trivial HTTP server: 200 OK to every request. Daemonised + idempotent on
+    socket errors so a transient probe error never crashes the predictor."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind(("0.0.0.0", port))
@@ -96,10 +115,7 @@ def _serve_liveness_socket(port: int) -> None:
                 conn, _ = server.accept()
             except OSError:
                 return
-            try:
-                conn.close()
-            except OSError:
-                continue
+            _handle_liveness_connection(conn)
 
 
 def _start_liveness_thread(port: int) -> None:
