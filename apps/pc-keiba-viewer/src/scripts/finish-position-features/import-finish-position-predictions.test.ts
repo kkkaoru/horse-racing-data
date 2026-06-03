@@ -3,6 +3,7 @@ import { expect, test } from "vitest";
 import {
   buildUsageText,
   DEFAULT_BATCH_SIZE,
+  dedupeBatch,
   flattenForInsert,
   initialOptions,
   isCategory,
@@ -124,6 +125,75 @@ test("flattenForInsert returns the row in INSERT_COLUMNS order", () => {
     null,
     3,
   ]);
+});
+
+test("dedupeBatch keeps every distinct primary key intact", () => {
+  expect(
+    dedupeBatch([
+      {
+        race_id: "nar:2025:0906:48:02",
+        ketto_toroku_bango: "2021100501",
+        umaban: 1,
+        predicted_score: 0.1,
+        predicted_rank: 1,
+      },
+      {
+        race_id: "nar:2025:0906:48:02",
+        ketto_toroku_bango: "2021100502",
+        umaban: 2,
+        predicted_score: 0.2,
+        predicted_rank: 2,
+      },
+    ]),
+  ).toStrictEqual([
+    {
+      race_id: "nar:2025:0906:48:02",
+      ketto_toroku_bango: "2021100501",
+      umaban: 1,
+      predicted_score: 0.1,
+      predicted_rank: 1,
+    },
+    {
+      race_id: "nar:2025:0906:48:02",
+      ketto_toroku_bango: "2021100502",
+      umaban: 2,
+      predicted_score: 0.2,
+      predicted_rank: 2,
+    },
+  ]);
+});
+
+test("dedupeBatch collapses duplicate primary keys keeping the last occurrence", () => {
+  expect(
+    dedupeBatch([
+      {
+        race_id: "nar:2025:0906:48:02",
+        ketto_toroku_bango: "0000000000",
+        umaban: 11,
+        predicted_score: 0.3,
+        predicted_rank: 11,
+      },
+      {
+        race_id: "nar:2025:0906:48:02",
+        ketto_toroku_bango: "0000000000",
+        umaban: 12,
+        predicted_score: 0.4,
+        predicted_rank: 12,
+      },
+    ]),
+  ).toStrictEqual([
+    {
+      race_id: "nar:2025:0906:48:02",
+      ketto_toroku_bango: "0000000000",
+      umaban: 12,
+      predicted_score: 0.4,
+      predicted_rank: 12,
+    },
+  ]);
+});
+
+test("dedupeBatch returns an empty array for an empty batch", () => {
+  expect(dedupeBatch([])).toStrictEqual([]);
 });
 
 test("parseArgs requires --input", () => {

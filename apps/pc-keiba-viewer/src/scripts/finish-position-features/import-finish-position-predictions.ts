@@ -128,6 +128,14 @@ export const parsePredictionLine = (line: string): PredictionRecord => {
   };
 };
 
+export const dedupeBatch = (batch: readonly PredictionRecord[]): PredictionRecord[] => {
+  const byPrimaryKey = new Map<string, PredictionRecord>();
+  for (const record of batch) {
+    byPrimaryKey.set(`${record.race_id}|${record.ketto_toroku_bango}`, record);
+  }
+  return Array.from(byPrimaryKey.values());
+};
+
 export const flattenForInsert = (record: PredictionRecord, modelVersion: string): unknown[] => {
   const parts = parseRaceId(record.race_id);
   return [
@@ -212,11 +220,12 @@ const flushBatch = async (
   modelVersion: string,
   batch: PredictionRecord[],
 ): Promise<number> => {
-  if (batch.length === 0) return 0;
-  const sql = buildBatchInsertSql(batch.length);
-  const flat = batch.flatMap((record) => flattenForInsert(record, modelVersion));
+  const deduped = dedupeBatch(batch);
+  if (deduped.length === 0) return 0;
+  const sql = buildBatchInsertSql(deduped.length);
+  const flat = deduped.flatMap((record) => flattenForInsert(record, modelVersion));
   const result = await pool.query(sql, flat);
-  return result.rowCount ?? batch.length;
+  return result.rowCount ?? deduped.length;
 };
 
 const streamFromJsonl = async (
