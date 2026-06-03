@@ -31,9 +31,19 @@ class XgboostBooster:
 
 
 def load_xgboost_booster(model_path: str) -> XgboostBooster:
-    """Load ``model.json`` (XGBoost booster.save_model) into a booster."""
+    """Load ``model.json`` (XGBoost booster.save_model) into a booster.
+
+    Clears the booster's ``feature_names`` after load so predictions made
+    against a positional DMatrix (built in ``predict_lib.scorer`` from the
+    canonical metadata feature order) are not rejected by XGBoost's strict
+    feature-name validation. The matrix column order already matches the
+    metadata ``feature_names`` order from the same model artifact, so
+    positional alignment is guaranteed; the booster's internal name list
+    would otherwise force every caller to also build a named DMatrix.
+    """
     import xgboost
 
     booster = xgboost.Booster()
     booster.load_model(model_path)
+    booster.feature_names = None
     return XgboostBooster(booster)
