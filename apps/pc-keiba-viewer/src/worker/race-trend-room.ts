@@ -1,3 +1,6 @@
+// Run with bun (vitest) / Cloudflare Workers runtime.
+import { DurableObject } from "cloudflare:workers";
+
 interface RaceTrendRoomEvent {
   cacheKey: string | null;
   raceKey: string;
@@ -38,17 +41,12 @@ const getCacheKey = (value: unknown): string | null => {
   return typeof value.cacheKey === "string" ? value.cacheKey : null;
 };
 
-export class RaceTrendRoom {
+export class RaceTrendRoom extends DurableObject<CloudflareEnv> {
   private currentEvent: RaceTrendRoomEvent | null = null;
   private initialized: Promise<void> | null = null;
   private readonly sockets = new Set<WebSocket>();
-  private readonly state: PcKeibaDurableObjectState;
 
-  constructor(state: PcKeibaDurableObjectState) {
-    this.state = state;
-  }
-
-  async fetch(request: Request): Promise<Response> {
+  override async fetch(request: Request): Promise<Response> {
     const raceKey = getRaceKey(request);
     if (!raceKey) {
       return json({ error: "invalid_race_key" }, { status: 400 });
@@ -69,8 +67,8 @@ export class RaceTrendRoom {
   }
 
   private async ensureInitialized(): Promise<void> {
-    this.initialized ??= this.state.blockConcurrencyWhile(async () => {
-      const stored = await this.state.storage.get(STORAGE_KEY);
+    this.initialized ??= this.ctx.blockConcurrencyWhile(async () => {
+      const stored = await this.ctx.storage.get(STORAGE_KEY);
       this.currentEvent = isRaceTrendRoomEvent(stored) ? stored : null;
     });
     await this.initialized;
@@ -101,7 +99,7 @@ export class RaceTrendRoom {
       updatedAt: new Date().toISOString(),
     };
     this.currentEvent = nextEvent;
-    await this.state.storage.put(STORAGE_KEY, nextEvent);
+    await this.ctx.storage.put(STORAGE_KEY, nextEvent);
     this.broadcast(nextEvent);
     return json(nextEvent);
   }

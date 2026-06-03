@@ -1,3 +1,6 @@
+// Run with bun (vitest) / Cloudflare Workers runtime.
+import { DurableObject } from "cloudflare:workers";
+
 import {
   applyPaddockAction,
   createPaddockState,
@@ -45,19 +48,12 @@ const getSyncedState = (
   return Date.parse(kvState.updatedAt) > Date.parse(stored.updatedAt) ? kvState : stored;
 };
 
-export class PaddockRoom {
-  private readonly env: PaddockRoomEnv;
+export class PaddockRoom extends DurableObject<PaddockRoomEnv> {
   private readonly sockets = new Set<WebSocket>();
-  private readonly state: PcKeibaDurableObjectState;
   private initialized: Promise<void> | null = null;
   private currentState: PaddockState | null = null;
 
-  constructor(state: PcKeibaDurableObjectState, env: PaddockRoomEnv) {
-    this.state = state;
-    this.env = env;
-  }
-
-  async fetch(request: Request): Promise<Response> {
+  override async fetch(request: Request): Promise<Response> {
     const raceKey = getRaceKey(request);
     if (!raceKey) {
       return json({ error: "invalid_race_key" }, { status: 400 });
@@ -78,8 +74,8 @@ export class PaddockRoom {
   }
 
   private async ensureInitialized(raceKey: string): Promise<void> {
-    this.initialized ??= this.state.blockConcurrencyWhile(async () => {
-      const stored = await this.state.storage.get(STORAGE_KEY);
+    this.initialized ??= this.ctx.blockConcurrencyWhile(async () => {
+      const stored = await this.ctx.storage.get(STORAGE_KEY);
       const kvState = await this.env.PADDOCK_STATE_KV?.get(getPaddockKvKey(raceKey), {
         type: "json",
       });
@@ -88,7 +84,7 @@ export class PaddockRoom {
           isPaddockState(stored) ? stored : null,
           isPaddockState(kvState) ? kvState : null,
         ) ?? createPaddockState(raceKey);
-      await this.state.storage.put(STORAGE_KEY, this.currentState);
+      await this.ctx.storage.put(STORAGE_KEY, this.currentState);
     });
     await this.initialized;
   }
@@ -117,7 +113,7 @@ export class PaddockRoom {
 
     const nextState = applyPaddockAction(this.currentState, body);
     this.currentState = nextState;
-    await this.state.storage.put(STORAGE_KEY, nextState);
+    await this.ctx.storage.put(STORAGE_KEY, nextState);
     await this.env.PADDOCK_STATE_KV?.put(
       getPaddockKvKey(nextState.raceKey),
       JSON.stringify(nextState),

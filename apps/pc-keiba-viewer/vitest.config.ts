@@ -6,6 +6,8 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      "cloudflare:workers": new URL("./src/test-stubs/cloudflare-workers.ts", import.meta.url)
+        .pathname,
       "server-only": new URL("./src/test-stubs/server-only.ts", import.meta.url).pathname,
     },
   },
