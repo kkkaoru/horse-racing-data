@@ -10,11 +10,16 @@ unchanged repo feature pipeline that already produced the training parquet:
      historical aggregates are computed from prior races only
      (``h.race_date < t.race_date``), so the target race's own outcome never
      leaks in and the vector is computable before the race is run.
-  2. The v7 layer scripts append the lineage / head-to-head / baba-pedigree /
-     trainer (JRA) / ban-ei layers, matching the per-category pipeline in
-     FINISH_POSITION_MODEL_V7_LINEAGE.md sections 4 / 8 / 9. Each preserves
+  2. The FULL per-category layer chain (``pipeline_args.LAYER_CHAIN``) appends
+     the v6 base layers (race-internal / market-signal / sectional-and-weight /
+     futan-juryo / workout / near-miss, as applicable per category) and the v7
+     layers (lineage / head-to-head / baba-pedigree / trainer (JRA) / ban-ei),
+     reproducing the exact feature set each model was trained on (226 JRA / 175
+     NAR / 111 Ban-ei) per FINISH_POSITION_MODEL_V7_LINEAGE.md sections 4 / 8 / 9
+     and FINISH_POSITION_MODEL_V6_STACKED.md section 2. Each layer preserves
      UPCOMING rows via LEFT JOIN (history side filtered to finish_position NOT
-     NULL), so today's races survive with NULL/0 lineage features.
+     NULL), so today's races survive with NULL/0 history features and no
+     missing-layer zero-fill at score time.
   3. The final parquet is read into per-race ordered feature dicts keyed by the
      canonical ``race_id`` so ``predict_upcoming`` can score each race.
 
