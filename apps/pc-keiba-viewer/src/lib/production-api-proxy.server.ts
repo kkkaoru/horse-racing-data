@@ -97,3 +97,31 @@ export const fetchProductionApi = async (path: string, init?: RequestInit): Prom
   }
   return attemptFetch({ headers, init, url }, 1);
 };
+
+// SSE-aware variant of the JSON proxyToProduction helper used by trends.
+// We must not consume the upstream body via `.text()` here: the upstream
+// `text/event-stream` is open-ended and `.text()` would block until the
+// stream closes, defeating the whole point of SSE. Instead, pass the
+// underlying ReadableStream through so chunks reach the browser as they
+// arrive from the production worker.
+const DEFAULT_SSE_CACHE_CONTROL = "no-cache, no-transform";
+const DEFAULT_SSE_CONTENT_TYPE = "text/event-stream";
+const STREAM_SOURCE_HEADER = "X-Horse-Weights-Stream-Source";
+const STREAM_SOURCE_PROXIED = "PROXIED-PRODUCTION";
+
+export const proxyToProductionStream = async (
+  path: string,
+  searchParams: URLSearchParams,
+): Promise<Response> => {
+  const query = searchParams.toString();
+  const upstreamPath = query.length > 0 ? `${path}?${query}` : path;
+  const upstream = await fetchProductionApi(upstreamPath);
+  const headers = {
+    "Cache-Control": upstream.headers.get("Cache-Control") ?? DEFAULT_SSE_CACHE_CONTROL,
+    "Content-Type": upstream.headers.get("Content-Type") ?? DEFAULT_SSE_CONTENT_TYPE,
+    [STREAM_SOURCE_HEADER]: STREAM_SOURCE_PROXIED,
+  };
+  return upstream.body
+    ? new Response(upstream.body, { headers, status: upstream.status })
+    : new Response(null, { headers, status: upstream.status });
+};

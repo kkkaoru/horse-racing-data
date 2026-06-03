@@ -6,6 +6,10 @@
 import { NextResponse } from "next/server";
 
 import { safeGetCloudflareEnv } from "../../../../../../../../../lib/cloudflare-context.server";
+import {
+  proxyToProductionStream,
+  useProductionApiProxy,
+} from "../../../../../../../../../lib/production-api-proxy.server";
 
 interface RouteContext {
   params: Promise<{
@@ -37,11 +41,23 @@ const buildUpstreamUrl = (
 export const dynamic = "force-dynamic";
 
 export const GET = async (request: Request, context: RouteContext): Promise<Response> => {
-  const source = new URL(request.url).searchParams.get("source");
+  const searchParams = new URL(request.url).searchParams;
+  const source = searchParams.get("source");
   if (!isJraOrNar(source)) {
     return NextResponse.json({ error: "invalid source" }, { status: HTTP_BAD_REQUEST });
   }
   const params = await context.params;
+  // Dev fallback: when CF Access creds are present and NODE_ENV=development the
+  // local worker has no REALTIME_DATA service binding (the HorseWeightDO lives
+  // in sync-realtime-data). Proxy straight to production so dev UIs render the
+  // same live stream the live site does. Production code path is unaffected
+  // because `useProductionApiProxy()` is false there.
+  if (useProductionApiProxy()) {
+    return proxyToProductionStream(
+      `/api/races/${params.year}/${params.month}/${params.day}/${params.keibajoCode}/${params.raceNumber}/horse-weights-stream`,
+      searchParams,
+    );
+  }
   const env = await safeGetCloudflareEnv();
   const realtimeData = env?.REALTIME_DATA;
   if (!realtimeData) {

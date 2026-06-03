@@ -1,7 +1,11 @@
 // Run with bun. `bun run --filter pc-keiba-viewer test`
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { buildProductionApiUrl, fetchProductionApi } from "./production-api-proxy.server";
+import {
+  buildProductionApiUrl,
+  fetchProductionApi,
+  proxyToProductionStream,
+} from "./production-api-proxy.server";
 
 const setAccessEnv = (): void => {
   process.env.PC_KEIBA_PRODUCTION_API_ORIGIN = "https://example.test";
@@ -177,5 +181,130 @@ describe("production-api-proxy.server", () => {
     expect(captured).toBeInstanceOf(Error);
     if (!(captured instanceof Error)) throw new Error("unreachable");
     expect(captured.message).toBe("plain-string");
+  });
+
+  it("proxyToProductionStream forwards upstream body and preserves event-stream Content-Type", async () => {
+    setAccessEnv();
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response("event: weight\ndata: {}\n\n", {
+        headers: { "Cache-Control": "no-cache", "Content-Type": "text/event-stream" },
+        status: 200,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await proxyToProductionStream(
+      "/api/races/2026/05/29/05/07/horse-weights-stream",
+      new URLSearchParams("source=jra"),
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toBe("text/event-stream");
+    expect(response.headers.get("Cache-Control")).toBe("no-cache");
+    expect(response.headers.get("X-Horse-Weights-Stream-Source")).toBe("PROXIED-PRODUCTION");
+  });
+
+  it("proxyToProductionStream attaches the search params as a query string on the upstream URL", async () => {
+    setAccessEnv();
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response("ok", {
+        headers: { "Content-Type": "text/event-stream" },
+        status: 200,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await proxyToProductionStream(
+      "/api/races/2026/05/29/05/07/horse-weights-stream",
+      new URLSearchParams("source=nar&debug=1"),
+    );
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://example.test/api/races/2026/05/29/05/07/horse-weights-stream?source=nar&debug=1",
+    );
+  });
+
+  it("proxyToProductionStream omits the question mark when search params are empty", async () => {
+    setAccessEnv();
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response("ok", {
+        headers: { "Content-Type": "text/event-stream" },
+        status: 200,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await proxyToProductionStream(
+      "/api/races/2026/05/29/05/07/horse-weights-stream",
+      new URLSearchParams(),
+    );
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://example.test/api/races/2026/05/29/05/07/horse-weights-stream",
+    );
+  });
+
+  it("proxyToProductionStream falls back to default Cache-Control when upstream lacks one", async () => {
+    setAccessEnv();
+    const upstream = new Response("ok", {
+      headers: { "Content-Type": "text/event-stream" },
+      status: 200,
+    });
+    upstream.headers.delete("Cache-Control");
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(upstream);
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await proxyToProductionStream(
+      "/api/races/2026/05/29/05/07/horse-weights-stream",
+      new URLSearchParams("source=jra"),
+    );
+    expect(response.headers.get("Cache-Control")).toBe("no-cache, no-transform");
+  });
+
+  it("proxyToProductionStream falls back to default Content-Type when upstream lacks one", async () => {
+    setAccessEnv();
+    const upstream = new Response("ok", { status: 200 });
+    upstream.headers.delete("Content-Type");
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(upstream);
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await proxyToProductionStream(
+      "/api/races/2026/05/29/05/07/horse-weights-stream",
+      new URLSearchParams("source=jra"),
+    );
+    expect(response.headers.get("Content-Type")).toBe("text/event-stream");
+  });
+
+  it("proxyToProductionStream returns a null-body Response when upstream body is null", async () => {
+    setAccessEnv();
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(null, {
+        headers: { "Content-Type": "text/event-stream" },
+        status: 204,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await proxyToProductionStream(
+      "/api/races/2026/05/29/05/07/horse-weights-stream",
+      new URLSearchParams("source=jra"),
+    );
+    expect(response.status).toBe(204);
+    expect(response.body).toBeNull();
+    expect(response.headers.get("X-Horse-Weights-Stream-Source")).toBe("PROXIED-PRODUCTION");
+  });
+
+  it("proxyToProductionStream forwards the upstream status code on error responses", async () => {
+    setAccessEnv();
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response("upstream-error", {
+        headers: { "Content-Type": "text/event-stream" },
+        status: 502,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    // Re-mock with a 502 → 502 sequence so the retry path returns the final 502.
+    fetchMock.mockResolvedValue(
+      new Response("upstream-error", {
+        headers: { "Content-Type": "text/event-stream" },
+        status: 502,
+      }),
+    );
+    const response = await proxyToProductionStream(
+      "/api/races/2026/05/29/05/07/horse-weights-stream",
+      new URLSearchParams("source=jra"),
+    );
+    expect(response.status).toBe(502);
   });
 });
