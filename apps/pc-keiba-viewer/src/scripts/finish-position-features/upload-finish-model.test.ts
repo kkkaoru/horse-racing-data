@@ -9,7 +9,9 @@ import {
   buildWranglerArgs,
   DEFAULT_BUCKET,
   initialOptions,
+  isJsonModel,
   isUploadableCategory,
+  modelFileName,
   parseArgs,
   runUpload,
   type UploadOptions,
@@ -50,8 +52,28 @@ test("buildObjectKey lays out objects under finish-position", () => {
   expect(buildObjectKey("jra", "v1", "model.lgb")).toBe("finish-position/jra/v1/model.lgb");
 });
 
-test("buildModelObjectKey appends model.lgb", () => {
-  expect(buildModelObjectKey("nar", "v2")).toBe("finish-position/nar/v2/model.lgb");
+test("buildModelObjectKey mirrors the lgb model path basename", () => {
+  expect(buildModelObjectKey("nar", "v2", "tmp/models/x/model.lgb")).toBe(
+    "finish-position/nar/v2/model.lgb",
+  );
+});
+
+test("buildModelObjectKey mirrors the json model path basename", () => {
+  expect(buildModelObjectKey("jra", "v7", "tmp/models/jra/model.json")).toBe(
+    "finish-position/jra/v7/model.json",
+  );
+});
+
+test("modelFileName extracts the basename from a nested path", () => {
+  expect(modelFileName("tmp/models/jra-cb/model.json")).toBe("model.json");
+});
+
+test("isJsonModel is true for a .json model path", () => {
+  expect(isJsonModel("tmp/models/jra/model.json")).toBe(true);
+});
+
+test("isJsonModel is false for a .lgb model path", () => {
+  expect(isJsonModel("tmp/models/jra/model.lgb")).toBe(false);
 });
 
 test("buildMetadataObjectKey appends metadata.json", () => {
@@ -118,12 +140,12 @@ test("buildWranglerArgs appends --remote when requested", () => {
   expect(args[args.length - 1]).toBe("--remote");
 });
 
-test("buildUploadSteps yields one step for the model when no metadata is set", () => {
+test("buildUploadSteps yields one octet-stream step for an lgb model when no metadata is set", () => {
   const options: UploadOptions = {
     bucket: "bucket",
     category: "jra",
     metadataPath: null,
-    modelPath: "x.lgb",
+    modelPath: "tmp/model.lgb",
     modelVersion: "v1",
     remote: false,
   };
@@ -136,12 +158,30 @@ test("buildUploadSteps yields one step for the model when no metadata is set", (
   expect(first.contentType).toBe("application/octet-stream");
 });
 
+test("buildUploadSteps yields a json model step with application/json content type", () => {
+  const options: UploadOptions = {
+    bucket: "bucket",
+    category: "nar",
+    metadataPath: null,
+    modelPath: "tmp/models/nar/model.json",
+    modelVersion: "nar-xgb-v7-lineage-wf-21y",
+    remote: false,
+  };
+  const steps = buildUploadSteps(options);
+  expect(steps.length).toBe(1);
+  const first = steps[0];
+  expect(first).toBeDefined();
+  if (first === undefined) return;
+  expect(first.objectKey).toBe("finish-position/nar/nar-xgb-v7-lineage-wf-21y/model.json");
+  expect(first.contentType).toBe("application/json");
+});
+
 test("buildUploadSteps adds metadata when a path is provided", () => {
   const options: UploadOptions = {
     bucket: "bucket",
     category: "jra",
     metadataPath: "x.json",
-    modelPath: "x.lgb",
+    modelPath: "tmp/x.lgb",
     modelVersion: "v1",
     remote: false,
   };
@@ -165,7 +205,7 @@ test("runUpload invokes spawner per step and collects keys", async () => {
       bucket: "bucket",
       category: "jra",
       metadataPath: "x.json",
-      modelPath: "x.lgb",
+      modelPath: "tmp/model.lgb",
       modelVersion: "v1",
       remote: true,
     },
