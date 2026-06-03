@@ -26,13 +26,13 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "0.9.10",
     "@types/pg": "8.15.6",
-    "@vitest/coverage-v8": "4.1.5",
+    "@vitest/coverage-v8": "4.1.8",
     "esbuild": "0.28.0",
     "miniflare": "4.20260507.1",
     "oxfmt": "0.48.0",
     "oxlint": "1.63.0",
     "typescript": "5.9.3",
-    "vitest": "4.1.5",
+    "vitest": "4.1.8",
     "wrangler": "4.90.0"
   }
 }

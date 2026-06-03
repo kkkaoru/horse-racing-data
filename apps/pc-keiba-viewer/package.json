@@ -80,7 +80,7 @@
     "@types/pg": "8.15.6",
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.3",
-    "@vitest/coverage-v8": "4.1.5",
+    "@vitest/coverage-v8": "4.1.8",
     "@webgpu/types": "0.1.70",
     "eslint": "10.4.0",
     "fake-indexeddb": "6.2.5",
@@ -89,7 +89,7 @@
     "oxlint": "1.63.0",
     "oxlint-tsgolint": "0.22.1",
     "typescript": "5.9.3",
-    "vitest": "4.1.5",
+    "vitest": "4.1.8",
     "wrangler": "4.90.0"
   }
 }
