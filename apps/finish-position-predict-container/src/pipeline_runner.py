@@ -33,9 +33,11 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
+import threading
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Final
+from typing import IO, Final
 
 from predict_lib.model_meta import Category
 from predict_lib.pipeline_args import (
@@ -63,23 +65,66 @@ def mask_pg_url(text: str) -> str:
     return PG_URL_USERINFO_RE.sub(PG_URL_REDACTED, text)
 
 
-def run_with_stderr_capture(args: Sequence[str]) -> None:
-    """Run a subprocess, surfacing the child's stderr tail on non-zero exit.
+def _tee_stream(src: IO[str], sink: IO[str], buffer: list[str]) -> None:
+    """Forward ``src`` -> ``sink`` line-by-line while also collecting into buffer.
 
-    ``subprocess.run(check=True)`` raises ``CalledProcessError`` but does NOT
-    include the child's stderr in the message, so a silent ``exit 1`` from the
-    feature pipeline turns into an opaque parent-side traceback. Capturing and
-    re-raising with the tail makes those failures diagnosable. Any ``--pg-url``
-    in argv is masked before logging so the Neon password never reaches logs.
+    Used so the child's stderr (heartbeat / progress logs from the bundled
+    feature scripts) keeps streaming through to the parent's stderr in real
+    time AND we still have the tail available to attach to a RuntimeError on
+    non-zero exit. Without this tee, ``subprocess.run(capture_output=True)``
+    would silence the child for the entire (10-30 min) feature build and only
+    surface anything after the child exited — fatal for live observability.
     """
-    result = subprocess.run(list(args), check=False, capture_output=True, text=True)
-    if result.returncode == 0:
+    for line in src:
+        sink.write(line)
+        sink.flush()
+        buffer.append(line)
+
+
+def run_with_stderr_capture(args: Sequence[str]) -> None:
+    """Run a subprocess, streaming output through and capturing stderr tail.
+
+    Without this wrapper ``subprocess.run(check=True)`` raises
+    ``CalledProcessError`` but does NOT include the child's stderr in the
+    message, so a silent ``exit 1`` from the feature pipeline turns into an
+    opaque parent-side traceback. We:
+
+    * stream the child's stdout to the parent's stdout line-by-line so the
+      feature build's JSON heartbeat keeps reaching container logs live;
+    * stream the child's stderr to the parent's stderr line-by-line AND keep
+      the tail in memory so it can be attached to the RuntimeError on failure;
+    * mask any ``--pg-url`` in argv before logging so the Neon password never
+      reaches logs (defensive).
+    """
+    process = subprocess.Popen(
+        list(args),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    stdout_buffer: list[str] = []
+    stderr_buffer: list[str] = []
+    assert process.stdout is not None
+    assert process.stderr is not None
+    stdout_thread = threading.Thread(
+        target=_tee_stream, args=(process.stdout, sys.stdout, stdout_buffer)
+    )
+    stderr_thread = threading.Thread(
+        target=_tee_stream, args=(process.stderr, sys.stderr, stderr_buffer)
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+    returncode = process.wait()
+    stdout_thread.join()
+    stderr_thread.join()
+    if returncode == 0:
         return
     safe_args = [mask_pg_url(arg) for arg in args]
-    stderr_text = result.stderr or ""
+    stderr_text = "".join(stderr_buffer)
     stderr_tail = stderr_text[-STDERR_TAIL_BYTES:]
     message = (
-        f"subprocess failed (exit {result.returncode}): {safe_args}\n"
+        f"subprocess failed (exit {returncode}): {safe_args}\n"
         f"stderr (last {STDERR_TAIL_BYTES} bytes):\n{stderr_tail}"
     )
     raise RuntimeError(message)

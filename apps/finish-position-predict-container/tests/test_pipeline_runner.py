@@ -21,24 +21,46 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from pipeline_runner import has_parquet_output, mask_pg_url, run_with_stderr_capture
 
 
-def testmask_pg_url_redacts_userinfo():
+def test_mask_pg_url_redacts_userinfo():
     masked = mask_pg_url("postgresql://user:secret@host/db")
     assert masked == "postgresql://<redacted>@host/db"
 
 
-def testmask_pg_url_redacts_neon_style_token():
+def test_mask_pg_url_redacts_neon_style_token():
     masked = mask_pg_url("postgresql://neondb_owner:npg_VERYSECRET@ep-foo.aws.neon.tech/neondb?sslmode=require")
     assert "npg_VERYSECRET" not in masked
     assert masked.startswith("postgresql://<redacted>@ep-foo.aws.neon.tech/neondb")
 
 
-def testmask_pg_url_passthrough_when_no_userinfo():
+def test_mask_pg_url_passthrough_when_no_userinfo():
     assert mask_pg_url("python") == "python"
     assert mask_pg_url("/app/pipeline/foo.py") == "/app/pipeline/foo.py"
 
 
 def test_run_succeeds_on_zero_exit():
     run_with_stderr_capture(["python", "-c", "print('ok')"])
+
+
+def test_run_streams_child_stdout_to_parent_stdout(capfd: pytest.CaptureFixture[str]):
+    run_with_stderr_capture([
+        "python",
+        "-c",
+        "import sys; sys.stdout.write('hello-child-stdout\\n'); sys.stdout.flush()",
+    ])
+    captured = capfd.readouterr()
+    assert "hello-child-stdout" in captured.out
+
+
+def test_run_streams_child_stderr_to_parent_stderr_on_success(
+    capfd: pytest.CaptureFixture[str],
+):
+    run_with_stderr_capture([
+        "python",
+        "-c",
+        "import sys; sys.stderr.write('child-progress-log\\n'); sys.stderr.flush()",
+    ])
+    captured = capfd.readouterr()
+    assert "child-progress-log" in captured.err
 
 
 def test_run_raises_runtime_error_with_stderr_tail_on_failure():
@@ -67,18 +89,18 @@ def test_run_masks_pg_url_in_error_message():
     assert "<redacted>" in message
 
 
-def testhas_parquet_output_false_for_missing_dir(tmp_path: Path):
+def test_has_parquet_output_false_for_missing_dir(tmp_path: Path):
     missing = tmp_path / "does-not-exist"
     assert has_parquet_output(missing) is False
 
 
-def testhas_parquet_output_false_for_empty_dir(tmp_path: Path):
+def test_has_parquet_output_false_for_empty_dir(tmp_path: Path):
     empty_dir = tmp_path / "empty"
     empty_dir.mkdir()
     assert has_parquet_output(empty_dir) is False
 
 
-def testhas_parquet_output_true_when_partitioned_parquet_exists(tmp_path: Path):
+def test_has_parquet_output_true_when_partitioned_parquet_exists(tmp_path: Path):
     base = tmp_path / "feat"
     partition = base / "race_year=2026"
     partition.mkdir(parents=True)
