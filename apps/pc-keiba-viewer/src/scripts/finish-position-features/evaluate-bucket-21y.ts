@@ -87,6 +87,7 @@ export interface BucketChunkLoaderArgs {
   runningStyleFeatureVersion: string;
   finishPositionVersion: string;
   modelVersion: string;
+  statementTimeoutMs: number;
 }
 
 export interface BucketChunkClient {
@@ -520,6 +521,7 @@ const buildChunkLoaderArgs = (
     runningStyleFeatureVersion: options.runningStyleFeatureVersion,
     finishPositionVersion: options.finishPositionVersion,
     modelVersion: options.modelVersion,
+    statementTimeoutMs: options.statementTimeoutMs,
   };
 };
 
@@ -640,6 +642,8 @@ export const buildPythonLoaderArgv = (args: BucketChunkLoaderArgs): string[] => 
   args.runningStyleFeatureVersion,
   "--finish-position-version",
   args.finishPositionVersion,
+  "--statement-timeout",
+  `${args.statementTimeoutMs}ms`,
 ];
 
 const openChunkClientImpl = async (args: BucketChunkLoaderArgs): Promise<BucketChunkClient> => {
