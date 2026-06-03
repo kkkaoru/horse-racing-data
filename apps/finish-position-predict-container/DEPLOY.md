@@ -64,23 +64,46 @@ cover today's races that the derived `race_entry_corner_features` table has not
 yet been refreshed with, `--target-date` mode also pulls the day's target rows
 straight from `jvd_se`/`jvd_ra` (JRA) and `nvd_se`/`nvd_ra` (NAR / Ban-ei),
 deduped against the corner-feature rows (corner-feature row wins when present).
-Each v7 layer then LEFT-JOINs its history, preserving UPCOMING rows with NULL/0
-lineage features — exactly how the model saw NULLs in training (CatBoost/XGBoost
+Each layer then LEFT-JOINs its history, preserving UPCOMING rows with NULL/0
+history features — exactly how the model saw NULLs in training (CatBoost/XGBoost
 treat absent numeric inputs as 0; the scorer fills any absent feature with 0.0 in
 the `metadata.json` `feature_names` order, so vector order parity is
 guaranteed).
 
-> **Known follow-up before first production fire — full feature parity.** The
-> base build emits the inline base feature groups; `pipeline_runner.LAYER_CHAIN`
-> appends the v7 layers (lineage / h2h / baba-pedigree / trainer / ban-ei). The
-> intermediate **v6** layers from FINISH_POSITION_MODEL_V7_LINEAGE.md §4
-> (add-race-internal / add-market-signal / add-sectional-and-weight /
-> add-futan-juryo / add-workout / add-near-miss) are NOT yet wired into the chain,
-> so columns they would add are 0.0-filled at score time rather than carrying real
-> values. Scoring still runs and ranks (the scorer projects onto the model's
-> `feature_names` and zero-fills absentees), but extend `LAYER_CHAIN` (and the
-> Dockerfile COPY for those scripts) to the full §4/§8/§9 chain to reach true
-> 226/175/111 feature fidelity before relying on production accuracy.
+> **Full feature parity — wired.** `pipeline_args.LAYER_CHAIN` runs the COMPLETE
+> per-category chain that reproduces the exact feature set each model was trained
+> on (validated against `metadata.json` `feature_names`: 226 JRA / 175 NAR / 111
+> Ban-ei, **0 names missing → no missing-layer zero-fill**). The chains are:
+>
+> - **JRA (226)** — base → `add-race-internal` → `add-market-signal` →
+>   `add-sectional-and-weight` → `add-futan-juryo` → `add-workout` →
+>   `add-near-miss` → `add-grade-race-lineage` → `add-head-to-head` →
+>   `add-baba-pedigree-affinity` → `add-trainer-stable-affinity`.
+> - **NAR (175)** — base → `add-race-internal` → `add-near-miss` →
+>   `add-grade-race-lineage` → `add-head-to-head` → `add-baba-pedigree-affinity`
+>   (NAR was never built with the market / sectional / futan / workout layers, and
+>   the trainer layer is dropped — it is counter-productive on NAR per
+>   FINISH_POSITION_MODEL_V7_LINEAGE.md §8).
+> - **Ban-ei (111)** — base → `add-grade-race-lineage` → `add-head-to-head` →
+>   `add-baba-pedigree-affinity` → `add-banei-futan-class` →
+>   `add-banei-grade-career` (distinct base; no JRA v6 layers).
+>
+> Per-layer flags are shaped in `pipeline_args.build_layer_argv`: the pure-DuckDB
+> `add-race-internal` layer takes only `--input-dir`/`--output-dir`;
+> Postgres-reading layers also take `--pg-url`/`--from-date`; the lineage layer
+> adds `--config lineage-races/{category}.json`; the trainer layer adds
+> `--category {jra,nar}`. The Dockerfile already COPYs the entire
+> `finish-position-features/` directory, so every chain script (and the
+> `lineage-races/` configs + `_resource_defaults.py`) is present in the image.
+>
+> The one-shot "v3 merger" in FINISH_POSITION_MODEL_V6_STACKED.md §2 only
+> re-prioritised the VALUE of market-signal columns that `add-market-signal`
+> already computes straight from Postgres; it adds no new feature NAMES and is not
+> part of the automated 21y v7 build, so it is intentionally not reproduced.
+> Columns sourced from `race_entry_corner_features` (speed indices, corner
+> positions, weather, odds, baba condition) are still NULL for races whose entries
+> / odds the realtime pipeline has not yet ingested — that is intrinsic
+> pre-race data availability, not a missing-layer gap.
 
 ### Why these choices (Cloudflare docs, 2026)
 
