@@ -120,7 +120,11 @@ import {
 } from "./running-style-cron";
 import { materializeRunningStyleFeatureParquetsForDate } from "./running-style-feature-materialize";
 import { handleRunningStylePredictionJob } from "./running-style-queue";
-import { DAILY_FEATURE_BUILD_CRON, runDailyFeatureBuildForEnv } from "./daily-feature-build";
+import {
+  DAILY_FEATURE_BUILD_CRON,
+  probeDailyRaceEntriesFreshness,
+  runDailyFeatureBuildForEnv,
+} from "./daily-feature-build";
 import { WIN5_DISCOVER_CRON, logWin5CronResult } from "./win5-cron";
 import { handleWin5PredictionJob } from "./win5-queue";
 import {
@@ -1328,6 +1332,47 @@ const tryDiscoverUrlsForDate = async (env: Env, targetDate: string, mode: string
   }
 };
 
+// Skip materialize when build-daily-features did not (yet) populate D1.
+// 2026-06-04 incident: keibajo 30 (門別) races never materialized because
+// prewarm fired ahead of the PG → D1 replication for that venue. Returning a
+// zero-row summary lets the running-style-cron */10 tick pick the work up on
+// the next pass without poisoning the materialize log with a per-race error.
+interface MaterializeSkipResult {
+  date: string;
+  materialized: number;
+  materializeError: string;
+  scanned: number;
+  skipped: number;
+}
+
+const buildSkippedMaterializeResult = (
+  targetDate: string,
+  rowCount: number,
+): MaterializeSkipResult => ({
+  date: targetDate,
+  materialized: 0,
+  materializeError: `build-daily-features produced ${rowCount} D1 rows for ${targetDate}; deferring materialize to next cron tick`,
+  scanned: 0,
+  skipped: 0,
+});
+
+const runMaterializeWhenReady = async (env: Env, targetDate: string) => {
+  const probe = await probeDailyRaceEntriesFreshness(env.REALTIME_DB, targetDate, targetDate);
+  if (probe.rowCount > 0) {
+    return materializeRunningStyleFeatureParquetsForDate(env, targetDate);
+  }
+  return buildSkippedMaterializeResult(targetDate, probe.rowCount);
+};
+
+const resolveMaterializeLogStatus = (result: {
+  materializeError?: string;
+  scanned: number;
+}): string => {
+  if (result.materializeError === undefined) return "ok";
+  if (result.scanned === 0) return "skipped";
+  return "error";
+};
+
 const prewarmRunningStylePredictionsForDate = async (
   env: Env,
   targetDate: string,
@@ -1340,11 +1385,11 @@ const prewarmRunningStylePredictionsForDate = async (
     targetDate,
     "running-style-prewarm",
   );
-  const materializeResult = await materializeRunningStyleFeatureParquetsForDate(env, targetDate);
+  const materializeResult = await runMaterializeWhenReady(env, targetDate);
   await logFetch(
     env.REALTIME_DB,
     "materialize-running-style-features",
-    materializeResult.materializeError === undefined ? "ok" : "error",
+    resolveMaterializeLogStatus(materializeResult),
     null,
     JSON.stringify({ ...materializeResult, mode: "prewarm" }),
   );

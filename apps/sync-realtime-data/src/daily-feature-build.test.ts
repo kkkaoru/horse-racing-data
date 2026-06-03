@@ -255,3 +255,38 @@ it("runDailyFeatureBuildForEnv forces a fresh run when forceRefresh is true", as
   await runDailyFeatureBuildForEnv(env, { forceRefresh: true, fromDate: "20260512" });
   expect(querySpy).toHaveBeenCalledOnce();
 });
+
+it("probeDailyRaceEntriesFreshness returns the row count and latest_updated_at from D1", async () => {
+  const { probeDailyRaceEntriesFreshness } = await import("./daily-feature-build");
+  const firstSpy = vi.fn(async () => ({
+    latest_updated_at: "2026-06-04T11:55:00Z",
+    row_count: 525,
+  }));
+  const realtimeDb = {
+    prepare: vi.fn(() => ({
+      bind: vi.fn(() => ({ first: firstSpy })),
+    })),
+  };
+  const result = await probeDailyRaceEntriesFreshness(
+    realtimeDb as unknown as D1Database,
+    "20260604",
+    "20260604",
+  );
+  expect(result).toStrictEqual({ latestUpdatedAt: "2026-06-04T11:55:00Z", rowCount: 525 });
+});
+
+it("probeDailyRaceEntriesFreshness coerces empty rows to a zero-count probe", async () => {
+  const { probeDailyRaceEntriesFreshness } = await import("./daily-feature-build");
+  const firstSpy = vi.fn(async () => null);
+  const realtimeDb = {
+    prepare: vi.fn(() => ({
+      bind: vi.fn(() => ({ first: firstSpy })),
+    })),
+  };
+  const result = await probeDailyRaceEntriesFreshness(
+    realtimeDb as unknown as D1Database,
+    "20260604",
+    "20260604",
+  );
+  expect(result).toStrictEqual({ latestUpdatedAt: null, rowCount: 0 });
+});

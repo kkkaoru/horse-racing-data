@@ -7,7 +7,10 @@ import { Pool } from "pg";
 
 import type { Env } from "./types";
 
-const DEFAULT_POOL_SIZE = 12;
+// Raised from 12 → 24 (2026-06-04 incident) to absorb concurrent
+// running-style inference + retry storms. Hyperdrive fan-in caps upstream
+// PG connection usage, so 24 here is safe against Neon's plan max.
+const DEFAULT_POOL_SIZE = 24;
 let pool: Pool | null = null;
 
 const getConnectionString = (env: Env): string => {

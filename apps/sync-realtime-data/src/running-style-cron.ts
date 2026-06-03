@@ -35,6 +35,13 @@ const DATE_PAD_WIDTH = 2;
 const QUEUE_SEND_BATCH_SIZE = 100;
 const ACTIVE_STATE_TTL_MS = 5 * 60 * 1000;
 const ACTIVE_STATUSES = new Set(["pending", "processing"]);
+// 2026-06-04 incident: before JST midnight rolled over, the cron derived
+// today=06-03 and so never retried the stalled 06-04 races. Sweeping the last
+// 6 hours of yesterday-JST keeps post-midnight races eligible for retry
+// without re-processing dates far enough in the past that all states are
+// settled.
+const YESTERDAY_SWEEP_HOURS = 6;
+const JST_OFFSET_HOURS = 9;
 
 export interface RegisteredRaceRow {
   source: RunningStyleSource;
@@ -292,25 +299,109 @@ const EMPTY_PLAN_SUMMARY = (date: string, error: string): RunningStylePlanSummar
   scanned: 0,
 });
 
+const isWithinYesterdaySweepWindow = (now: Date): boolean => {
+  const jstHour = (now.getUTCHours() + JST_OFFSET_HOURS) % 24;
+  return jstHour < YESTERDAY_SWEEP_HOURS;
+};
+
+export const resolveRunningStyleCronDates = (now: Date): string[] => {
+  const today = formatYYYYMMDDInJst(now);
+  if (!isWithinYesterdaySweepWindow(now)) {
+    return [today];
+  }
+  const yesterday = addDaysToYYYYMMDDInJst(today, -1);
+  return [yesterday, today];
+};
+
+const planRunningStyleForDateSafe = async (
+  env: Env,
+  date: string,
+  now: Date,
+): Promise<RunningStylePlanSummary> =>
+  planRunningStylePredictionsForDate(env, date, now).catch((error: unknown) =>
+    EMPTY_PLAN_SUMMARY(date, formatError(error)),
+  );
+
+const refreshViewerCacheSafe = async (
+  env: Env,
+  date: string,
+  ctx: ExecutionContext | undefined,
+): Promise<ViewerRunningStyleCacheRefreshSummary> =>
+  refreshViewerRunningStyleCachesForDate(env, date, ctx).catch((error: unknown) => ({
+    date,
+    refreshed: 0,
+    refreshError: formatError(error),
+    scanned: 0,
+    skipped: 0,
+  }));
+
+const mergeCacheRefresh = (
+  current: ViewerRunningStyleCacheRefreshSummary | undefined,
+  next: ViewerRunningStyleCacheRefreshSummary,
+): ViewerRunningStyleCacheRefreshSummary => {
+  if (current === undefined) return next;
+  return {
+    date: next.date,
+    refreshed: current.refreshed + next.refreshed,
+    refreshError: next.refreshError ?? current.refreshError,
+    scanned: current.scanned + next.scanned,
+    skipped: current.skipped + next.skipped,
+  };
+};
+
+const mergeRunningStylePlan = (
+  current: RunningStylePlanSummary | undefined,
+  next: RunningStylePlanSummary,
+): RunningStylePlanSummary => {
+  if (current === undefined) return next;
+  return {
+    alreadyQueued: current.alreadyQueued + next.alreadyQueued,
+    completed: current.completed + next.completed,
+    date: next.date,
+    enqueued: current.enqueued + next.enqueued,
+    featureReady: current.featureReady + next.featureReady,
+    missingFeatures: current.missingFeatures + next.missingFeatures,
+    planError: next.planError ?? current.planError,
+    scanned: current.scanned + next.scanned,
+  };
+};
+
+interface RunningStyleCronAccumulator {
+  cacheRefresh: ViewerRunningStyleCacheRefreshSummary | undefined;
+  plan: RunningStylePlanSummary | undefined;
+}
+
+const planAndRefreshForDate = async (
+  env: Env,
+  date: string,
+  now: Date,
+  ctx: ExecutionContext | undefined,
+  acc: RunningStyleCronAccumulator,
+): Promise<RunningStyleCronAccumulator> => {
+  const plan = await planRunningStyleForDateSafe(env, date, now);
+  const cacheRefresh = await refreshViewerCacheSafe(env, date, ctx);
+  return {
+    cacheRefresh: mergeCacheRefresh(acc.cacheRefresh, cacheRefresh),
+    plan: mergeRunningStylePlan(acc.plan, plan),
+  };
+};
+
 export const runRunningStyleCronTick = async (
   env: Env,
   now: Date,
   ctx?: ExecutionContext,
 ): Promise<RunningStylePlanSummary> => {
-  const date = formatYYYYMMDDInJst(now);
-  const plan = await planRunningStylePredictionsForDate(env, date, now).catch((error: unknown) =>
-    EMPTY_PLAN_SUMMARY(date, formatError(error)),
+  const dates = resolveRunningStyleCronDates(now);
+  const aggregated = await dates.reduce<Promise<RunningStyleCronAccumulator>>(
+    async (accPromise, date) => {
+      const acc = await accPromise;
+      return planAndRefreshForDate(env, date, now, ctx, acc);
+    },
+    Promise.resolve({ cacheRefresh: undefined, plan: undefined }),
   );
-  const cacheRefresh = await refreshViewerRunningStyleCachesForDate(env, date, ctx).catch(
-    (error: unknown) => ({
-      date,
-      refreshed: 0,
-      refreshError: formatError(error),
-      scanned: 0,
-      skipped: 0,
-    }),
-  );
-  return { ...plan, cacheRefresh };
+  // resolveRunningStyleCronDates always yields at least today, so plan +
+  // cacheRefresh are guaranteed to be populated after the reduce above.
+  return { ...aggregated.plan!, cacheRefresh: aggregated.cacheRefresh! };
 };
 
 export const refreshViewerRunningStyleCacheForRace = async (

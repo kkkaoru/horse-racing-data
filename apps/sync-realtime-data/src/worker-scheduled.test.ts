@@ -65,6 +65,7 @@ vi.mock("./daily-feature-build", () => ({
   DAILY_FEATURE_BUILD_CRON: "0 19 * * *",
   runDailyFeatureBuildForEnv: vi.fn(async () => ({})),
   listDailyRaceEntriesForRace: vi.fn(async () => []),
+  probeDailyRaceEntriesFreshness: vi.fn(async () => ({ latestUpdatedAt: null, rowCount: 1 })),
 }));
 vi.mock("./win5-queue", () => ({ handleWin5PredictionJob: vi.fn() }));
 vi.mock("./win5-cron", () => ({
@@ -375,6 +376,45 @@ it("scheduled prewarm path logs materialize-running-style-features error when a 
       scanned: 1,
       skipped: 1,
       materializeError: "boom",
+      mode: "prewarm",
+    }),
+  );
+});
+
+it("scheduled prewarm path skips materialize when D1 daily_race_entries is empty", async () => {
+  const { default: worker } = await import("./worker");
+  const { materializeRunningStyleFeatureParquetsForDate } =
+    await import("./running-style-feature-materialize");
+  const { probeDailyRaceEntriesFreshness } = await import("./daily-feature-build");
+  const { logFetch } = await import("./storage");
+  vi.mocked(probeDailyRaceEntriesFreshness).mockResolvedValueOnce({
+    latestUpdatedAt: null,
+    rowCount: 0,
+  });
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "0 12 * * *",
+      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv(),
+    ctx,
+  );
+  await flushWaits(waits);
+  expect(materializeRunningStyleFeatureParquetsForDate).not.toHaveBeenCalled();
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "materialize-running-style-features",
+    "skipped",
+    null,
+    JSON.stringify({
+      date: "20260513",
+      materialized: 0,
+      materializeError:
+        "build-daily-features produced 0 D1 rows for 20260513; deferring materialize to next cron tick",
+      scanned: 0,
+      skipped: 0,
       mode: "prewarm",
     }),
   );

@@ -662,7 +662,7 @@ export interface DailyFeatureBuildFreshnessProbe {
   rowCount: number;
 }
 
-const probeDailyRaceEntriesFreshness = async (
+export const probeDailyRaceEntriesFreshness = async (
   db: D1Database,
   fromDate: string,
   toDate: string,
