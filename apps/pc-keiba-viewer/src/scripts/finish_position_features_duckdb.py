@@ -21,7 +21,7 @@ import shutil
 import sys
 import threading
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import perf_counter
 from typing import TypedDict, final
@@ -83,6 +83,9 @@ NEWCOMER_RACE_JOKEN_CODE = "000"
 UMABAN_NORM_MIN_FIELD = 2
 
 
+DATE_FORMAT = "%Y%m%d"
+
+
 class BuildArgs(TypedDict):
     category: str
     force_clean_output: bool
@@ -105,6 +108,45 @@ def non_negative_float(raw: str) -> float:
     return value
 
 
+def non_negative_int(raw: str) -> int:
+    value = int(raw)
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"value must be >= 0, got {raw}")
+    return value
+
+
+def target_date_arg(raw: str) -> str:
+    try:
+        datetime.strptime(raw, DATE_FORMAT).replace(tzinfo=timezone.utc)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            f"--target-date must be YYYYMMDD, got {raw}"
+        ) from error
+    return raw
+
+
+def add_days(date_yyyymmdd: str, days: int) -> str:
+    base = datetime.strptime(date_yyyymmdd, DATE_FORMAT).replace(tzinfo=timezone.utc)
+    return (base + timedelta(days=days)).strftime(DATE_FORMAT)
+
+
+def resolve_date_range(args: argparse.Namespace) -> tuple[str, str]:
+    """Resolve the (from_date, to_date) target window.
+
+    When ``--target-date`` is provided the target window becomes
+    [target_date, target_date + days_ahead] so the build emits feature rows for
+    that day's races (including UPCOMING races whose ``finish_position`` is still
+    NULL). Historical aggregates are always computed from
+    ``compute_history_start`` BEFORE ``from_date`` via the existing
+    ``h.race_date < t.race_date`` joins, so no target-race outcome leaks in and
+    the window is computable even before the target race has been run.
+    Without ``--target-date`` the explicit ``--from-date`` / ``--to-date`` win.
+    """
+    if args.target_date is None:
+        return args.from_date, args.to_date
+    return args.target_date, add_days(args.target_date, args.days_ahead)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="finish_position_features_duckdb")
     parser.add_argument(
@@ -114,6 +156,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--from-date", type=str, default="20160101")
     parser.add_argument("--to-date", type=str, default="20251231")
+    parser.add_argument(
+        "--target-date",
+        type=target_date_arg,
+        default=None,
+        help=(
+            "YYYYMMDD; build feature rows for this date's races (incl. UPCOMING, "
+            "finish_position NULL). Overrides --from-date / --to-date."
+        ),
+    )
+    parser.add_argument(
+        "--days-ahead",
+        type=non_negative_int,
+        default=0,
+        help="Extra days after --target-date to include (default 0 = that day only).",
+    )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--pg-url", type=str, default=None)
     parser.add_argument("--threads", type=int, default=DEFAULT_THREADS)
@@ -288,12 +345,136 @@ def _rec_select_from_ban_ei(history_start: str, to_date: str) -> str:
     """
 
 
-def build_rec_select_sql(category: str, history_start: str, to_date: str) -> str:
+def _rec_select_from_se_ra(
+    source: str,
+    se_table: str,
+    ra_table: str,
+    target_from: str,
+    target_to: str,
+    keibajo_predicate: str,
+) -> str:
+    """Direct ``*_se`` x ``*_ra`` SELECT for the target window (UPCOMING mode).
+
+    Mirrors the column shape of the corner-feature / ban-ei rec selects but reads
+    straight from the source race tables, so today's races that have NOT yet been
+    materialised into ``race_entry_corner_features`` (the derived table lags) are
+    still emitted as target rows. Post-race-only signals (corner_* / time_sa /
+    kohan_3f) are NULL for unrun races, matching how the model saw NULLs in
+    training; finish_position is parsed when present so already-run races on the
+    same day keep their outcome.
+    """
+    return f"""
+    select
+      '{source}' as source,
+      se.kaisai_nen || se.kaisai_tsukihi as race_date,
+      strptime(se.kaisai_nen || se.kaisai_tsukihi, '%Y%m%d')::date as race_dt,
+      se.kaisai_nen, se.kaisai_tsukihi, se.keibajo_code, se.race_bango,
+      se.ketto_toroku_bango,
+      try_cast(nullif(trim(se.umaban), '') as int) as umaban,
+      se.kishumei_ryakusho, se.chokyoshimei_ryakusho,
+      try_cast(nullif(trim(ra.kyori), '') as int) as kyori,
+      ra.track_code, ra.grade_code, ra.kyoso_joken_code,
+      coalesce(
+        nullif(try_cast(nullif(trim(ra.shusso_tosu), '') as int), 0),
+        count(*) over (
+          partition by se.kaisai_nen, se.kaisai_tsukihi, se.keibajo_code, se.race_bango
+        )
+      ) as shusso_tosu,
+      try_cast(nullif(nullif(trim(se.kakutei_chakujun), ''), '00') as int) as finish_position,
+      case
+        when try_cast(nullif(nullif(trim(se.kakutei_chakujun), ''), '00') as double) is not null
+             and try_cast(nullif(trim(ra.shusso_tosu), '') as double) is not null
+             and try_cast(nullif(trim(ra.shusso_tosu), '') as double) > 0
+        then try_cast(nullif(nullif(trim(se.kakutei_chakujun), ''), '00') as double)
+             / try_cast(nullif(trim(ra.shusso_tosu), '') as double)
+        else null
+      end as finish_norm,
+      try_cast(nullif(trim(se.time_sa), '') as double) as time_sa,
+      try_cast(nullif(trim(se.kohan_3f), '') as double) as kohan_3f,
+      cast(null as double) as corner1_norm,
+      cast(null as double) as corner3_norm,
+      cast(null as double) as corner4_norm,
+      ra.babajotai_code_shiba, ra.babajotai_code_dirt,
+      try_cast(nullif(trim(se.tansho_ninkijun), '') as int) as tansho_ninkijun,
+      try_cast(nullif(trim(se.tansho_odds), '') as double) / 10 as tansho_odds,
+      try_cast(nullif(trim(se.bataiju), '') as int) as bataiju
+    from pg.{se_table} se
+    join pg.{ra_table} ra
+      on ra.kaisai_nen = se.kaisai_nen
+      and ra.kaisai_tsukihi = se.kaisai_tsukihi
+      and ra.keibajo_code = se.keibajo_code
+      and ra.race_bango = se.race_bango
+    where {keibajo_predicate}
+      and se.kaisai_nen between '{target_from[:4]}' and '{target_to[:4]}'
+      and (se.kaisai_nen || se.kaisai_tsukihi) between '{target_from}' and '{target_to}'
+      and se.ketto_toroku_bango is not null
+      and try_cast(nullif(trim(se.umaban), '') as int) is not null
+    """
+
+
+def upcoming_target_union_sql(category: str, target_from: str, target_to: str) -> str:
+    """Direct source select(s) for the UPCOMING target window, by category."""
+    if category == CATEGORY_JRA:
+        return _rec_select_from_se_ra(
+            "jra", "jvd_se", "jvd_ra", target_from, target_to, "true"
+        )
+    if category == CATEGORY_NAR:
+        return _rec_select_from_se_ra(
+            "nar",
+            "nvd_se",
+            "nvd_ra",
+            target_from,
+            target_to,
+            f"se.keibajo_code <> '{BAN_EI_KEIBAJO_CODE}'",
+        )
     if category == CATEGORY_BAN_EI:
-        return _rec_select_from_ban_ei(history_start, to_date)
-    corner_sql = _rec_select_from_corner_features(history_start, to_date)
-    ban_ei_sql = _rec_select_from_ban_ei(history_start, to_date)
-    return f"{corner_sql}\nunion all\n{ban_ei_sql}"
+        return _rec_select_from_se_ra(
+            "nar",
+            "nvd_se",
+            "nvd_ra",
+            target_from,
+            target_to,
+            f"se.keibajo_code = '{BAN_EI_KEIBAJO_CODE}'",
+        )
+    jra_sql = upcoming_target_union_sql(CATEGORY_JRA, target_from, target_to)
+    nar_sql = upcoming_target_union_sql(CATEGORY_NAR, target_from, target_to)
+    ban_ei_sql = upcoming_target_union_sql(CATEGORY_BAN_EI, target_from, target_to)
+    return f"{jra_sql}\nunion all\n{nar_sql}\nunion all\n{ban_ei_sql}"
+
+
+def build_rec_select_sql(
+    category: str,
+    history_start: str,
+    to_date: str,
+    upcoming_window: tuple[str, str] | None = None,
+) -> str:
+    if category == CATEGORY_BAN_EI:
+        base = _rec_select_from_ban_ei(history_start, to_date)
+    else:
+        corner_sql = _rec_select_from_corner_features(history_start, to_date)
+        ban_ei_sql = _rec_select_from_ban_ei(history_start, to_date)
+        base = f"{corner_sql}\nunion all\n{ban_ei_sql}"
+    if upcoming_window is None:
+        return base
+    target_from, target_to = upcoming_window
+    upcoming_sql = upcoming_target_union_sql(category, target_from, target_to)
+    # The direct source rows (priority 1) overlap the corner-feature / ban-ei
+    # rows (priority 0) on the target window. Keep the corner-feature row when it
+    # exists (it carries corner_* signals); fall back to the direct source row
+    # for races not yet materialised into race_entry_corner_features.
+    return f"""
+    select * exclude (_rec_priority) from (
+      select base_union.*, _rec_priority from (
+        select *, 0 as _rec_priority from ({base})
+        union all by name
+        select *, 1 as _rec_priority from ({upcoming_sql})
+      ) base_union
+      qualify row_number() over (
+        partition by source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango
+        order by _rec_priority
+      ) = 1
+    )
+    """
 
 
 def stage_rec_table(
@@ -301,8 +482,9 @@ def stage_rec_table(
     history_start: str,
     to_date: str,
     category: str,
+    upcoming_window: tuple[str, str] | None = None,
 ) -> None:
-    select_sql = build_rec_select_sql(category, history_start, to_date)
+    select_sql = build_rec_select_sql(category, history_start, to_date, upcoming_window)
     run_staged_sql(
         con,
         "source.rec",
@@ -451,11 +633,15 @@ def _stage_empty_jra_stubs(con: duckdb.DuckDBPyConnection) -> None:
 
 
 def stage_source_tables(
-    con: duckdb.DuckDBPyConnection, from_date: str, to_date: str, category: str
+    con: duckdb.DuckDBPyConnection,
+    from_date: str,
+    to_date: str,
+    category: str,
+    upcoming_window: tuple[str, str] | None = None,
 ) -> None:
     history_start = compute_history_start(from_date, HISTORY_LOOKBACK_YEARS)
     _log_source_config(category, history_start, from_date, to_date)
-    stage_rec_table(con, history_start, to_date, category)
+    stage_rec_table(con, history_start, to_date, category, upcoming_window)
     nar_keibajo_filter = BAN_EI_KEIBAJO_CODE if category == CATEGORY_BAN_EI else None
     stage_se_table(
         con, "source.nar_se", "nar_se", "nvd_se", history_start, to_date, nar_keibajo_filter
@@ -1763,11 +1949,12 @@ def stage_source(
     from_date: str,
     to_date: str,
     category: str,
+    upcoming_window: tuple[str, str] | None = None,
 ) -> None:
     log_event("source.stage", "start", 0.0)
     started = perf_counter()
     install_and_attach_pg(con, pg_url)
-    stage_source_tables(con, from_date, to_date, category)
+    stage_source_tables(con, from_date, to_date, category, upcoming_window)
     log_event("source.stage", "done", perf_counter() - started)
 
 
@@ -1896,8 +2083,21 @@ def build_empty_result(output_dir: Path, elapsed: float) -> BuildResult:
     }
 
 
+def resolve_upcoming_window(args: argparse.Namespace, from_date: str, to_date: str) -> tuple[str, str] | None:
+    """Window used to also pull target rows straight from the source tables.
+
+    Only active in ``--target-date`` mode; otherwise None so the historical
+    build keeps reading targets from ``race_entry_corner_features`` unchanged.
+    """
+    if args.target_date is None:
+        return None
+    return from_date, to_date
+
+
 def run(args: argparse.Namespace) -> BuildResult:
     pg_url = resolve_pg_url(args.pg_url)
+    from_date, to_date = resolve_date_range(args)
+    upcoming_window = resolve_upcoming_window(args, from_date, to_date)
     overall_started = perf_counter()
     log_event("run", "start", 0.0)
     heartbeat = Heartbeat(args.heartbeat_interval, args.status_file)
@@ -1906,9 +2106,9 @@ def run(args: argparse.Namespace) -> BuildResult:
     try:
         configure_duckdb_session(con, args.threads, args.memory_limit, args.temp_dir)
         heartbeat.set_stage("source.stage")
-        stage_source(con, pg_url, args.from_date, args.to_date, args.category)
+        stage_source(con, pg_url, from_date, to_date, args.category, upcoming_window)
         heartbeat.set_stage("target.build")
-        target_rows = stage_target(con, args.category, args.from_date, args.to_date)
+        target_rows = stage_target(con, args.category, from_date, to_date)
         years = get_target_years(con)
         log_event("target.years", "done", 0.0, len(years))
         if not years:

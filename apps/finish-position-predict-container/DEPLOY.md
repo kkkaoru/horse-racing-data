@@ -32,13 +32,55 @@ FinishPositionPredictContainer (Durable Object, standard-4: 4 vCPU / 12 GiB / 20
   image = apps/finish-position-predict-container/Dockerfile
         │
         ▼ predict_upcoming.py, per category (jra / nar / ban-ei):
-  1. read upcoming races (today .. today+PREDICT_DAYS_AHEAD) from Neon
-  2. build v7-lineage feature parquet (DuckDB base + v7 layer scripts, reused unchanged)
-  3. load model from R2 finish-position/{category}/{modelVersion}/model.json
-  4. score → rank within race → dedupe → chunked UPSERT into
+  1. build v7-lineage feature parquet for TODAY's races (DuckDB base in
+     --target-date mode + v7 layer scripts, reused unchanged) — see "Today's
+     races feature build" below
+  2. load model from R2 finish-position/{category}/{modelVersion}/model.json
+  3. score → rank within race → dedupe → chunked UPSERT into
      race_finish_position_model_predictions  (model_version = {category}-v7-lineage-wf-21y)
-  5. write 1 detailed audit row to finish_position_cron_executions
+  4. write 1 detailed audit row to finish_position_cron_executions
 ```
+
+### Today's races feature build (UPCOMING + already-run)
+
+The feature build is driven by `RUN_DATE` (JST `YYYYMMDD`, set by the Worker)
+and `PREDICT_DAYS_AHEAD`. `pipeline_runner.py` invokes the reused base
+builder in `--target-date` mode:
+
+```sh
+python finish_position_features_duckdb.py \
+  --category {jra|nar|ban-ei} \
+  --target-date $RUN_DATE --days-ahead $PREDICT_DAYS_AHEAD \
+  --pg-url "$NEON_DATABASE_URL" --output-dir <base>
+```
+
+`--target-date` makes the build emit feature rows for **every** race on
+[RUN_DATE, RUN_DATE + days-ahead], including UPCOMING races whose
+`finish_position` is still NULL. It is leakage-safe by construction: all
+historical aggregates join prior races only (`h.race_date < t.race_date` with
+`finish_position is not null` on the history side), so a target race's own
+outcome is never used and the vector is computable before the race is run. To
+cover today's races that the derived `race_entry_corner_features` table has not
+yet been refreshed with, `--target-date` mode also pulls the day's target rows
+straight from `jvd_se`/`jvd_ra` (JRA) and `nvd_se`/`nvd_ra` (NAR / Ban-ei),
+deduped against the corner-feature rows (corner-feature row wins when present).
+Each v7 layer then LEFT-JOINs its history, preserving UPCOMING rows with NULL/0
+lineage features — exactly how the model saw NULLs in training (CatBoost/XGBoost
+treat absent numeric inputs as 0; the scorer fills any absent feature with 0.0 in
+the `metadata.json` `feature_names` order, so vector order parity is
+guaranteed).
+
+> **Known follow-up before first production fire — full feature parity.** The
+> base build emits the inline base feature groups; `pipeline_runner.LAYER_CHAIN`
+> appends the v7 layers (lineage / h2h / baba-pedigree / trainer / ban-ei). The
+> intermediate **v6** layers from FINISH_POSITION_MODEL_V7_LINEAGE.md §4
+> (add-race-internal / add-market-signal / add-sectional-and-weight /
+> add-futan-juryo / add-workout / add-near-miss) are NOT yet wired into the chain,
+> so columns they would add are 0.0-filled at score time rather than carrying real
+> values. Scoring still runs and ranks (the scorer projects onto the model's
+> `feature_names` and zero-fills absentees), but extend `LAYER_CHAIN` (and the
+> Dockerfile COPY for those scripts) to the full §4/§8/§9 chain to reach true
+> 226/175/111 feature fidelity before relying on production accuracy.
 
 ### Why these choices (Cloudflare docs, 2026)
 

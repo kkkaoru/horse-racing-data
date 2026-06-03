@@ -618,6 +618,60 @@ def test_prepare_output_dir_removes_existing_partition(tmp_path: Path):
     assert (tmp_path / "out").exists()
 
 
+UPCOMING_REC_DATA: list[tuple[object, ...]] = [
+    ("jra", "20250101", "2025", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.4, 0.5, "1", None, 1, 5.0),
+    ("jra", "20260603", "2026", "0603", "05", "11", "h001", 3, "j1", "t1", 1600, "10", "A", "000", 9, None, None, None, None, None, None, None, "1", None, None, None),
+]
+
+
+def _seed_upcoming_rec(con: duckdb.DuckDBPyConnection) -> None:
+    df = pd.DataFrame(UPCOMING_REC_DATA, columns=REC_COLUMNS)
+    con.register("rec_upcoming_df", df)
+    con.execute(
+        """
+        create or replace temp table rec as
+        select source, race_date,
+          strptime(race_date, '%Y%m%d')::date as race_dt,
+          kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+          ketto_toroku_bango, umaban,
+          kishumei_ryakusho, chokyoshimei_ryakusho,
+          kyori, track_code, grade_code, kyoso_joken_code,
+          shusso_tosu,
+          cast(finish_position as integer) as finish_position,
+          cast(finish_norm as double) as finish_norm,
+          cast(time_sa as double) as time_sa, cast(kohan_3f as double) as kohan_3f,
+          cast(corner1_norm as double) as corner1_norm,
+          cast(corner3_norm as double) as corner3_norm,
+          cast(corner4_norm as double) as corner4_norm,
+          babajotai_code_shiba, babajotai_code_dirt,
+          cast(tansho_ninkijun as integer) as tansho_ninkijun,
+          cast(tansho_odds as double) as tansho_odds
+        from rec_upcoming_df
+        """
+    )
+
+
+def test_build_target_table_includes_upcoming_null_finish_position_row():
+    con = duckdb.connect(":memory:")
+    _seed_upcoming_rec(con)
+    subject.build_target_table(con, "jra", "20260603", "20260603")
+    row = con.execute(
+        "select finish_position from target "
+        "where kaisai_nen = '2026' and kaisai_tsukihi = '0603' and race_bango = '11'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] is None
+
+
+def test_build_target_table_target_date_window_excludes_prior_history_row():
+    con = duckdb.connect(":memory:")
+    _seed_upcoming_rec(con)
+    subject.build_target_table(con, "jra", "20260603", "20260603")
+    row = con.execute("select count(*) from target").fetchone()
+    assert row is not None
+    assert row[0] == 1
+
+
 def test_prepare_output_dir_keeps_existing_when_requested(tmp_path: Path):
     leftover = tmp_path / "out" / "race_year=2024" / "data_0.parquet"
     leftover.parent.mkdir(parents=True)

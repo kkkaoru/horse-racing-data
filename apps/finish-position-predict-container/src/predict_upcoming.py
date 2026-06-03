@@ -29,6 +29,7 @@ import os
 import sys
 import time
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from db_driver import ConnectionLike, connect_postgres
@@ -70,6 +71,21 @@ MODELS_DIR_ENV: str = "MODELS_DIR"
 DEFAULT_DAYS_AHEAD: int = 2
 RACE_ID_KETTO_INDEX: int = 6
 RACE_ID_PART_RANGE: range = range(1, 6)
+
+
+@dataclass(frozen=True)
+class PredictWindow:
+    """The TODAY-races feature-build window passed to the pipeline.
+
+    ``target_date`` is the JST ``YYYYMMDD`` run date (the cron Worker's
+    ``RUN_DATE``); ``days_ahead`` widens the window past that day; the build emits
+    feature rows for every race in [target_date, target_date + days_ahead],
+    including UPCOMING ones whose ``finish_position`` is still NULL.
+    """
+
+    target_date: str
+    days_ahead: int
+    database_url: str
 
 
 def _require_env(name: str) -> str:
@@ -141,12 +157,11 @@ def _predict_category(
     connection: ConnectionLike,
     category: Category,
     models_dir: Path,
-    days_ahead: int,
-    database_url: str,
+    window: PredictWindow,
 ) -> int:
     feature_names = _load_model_metadata(models_dir, category)
     booster = _load_booster(models_dir, category)
-    races = _build_feature_rows(category, days_ahead, database_url)
+    races = _build_feature_rows(category, window)
     written = 0
     for race_id, entries in races.items():
         rows = _score_one_race(booster, race_id, category, entries, feature_names)
@@ -167,18 +182,20 @@ def _load_booster(models_dir: Path, category: Category) -> BoosterLike:
 
 def _build_feature_rows(
     category: Category,
-    days_ahead: int,
-    database_url: str,
+    window: PredictWindow,
 ) -> Mapping[str, list[Mapping[str, object]]]:
     """Run the repo feature pipeline and load the resulting parquet per race.
 
-    Delegated to the bundled pipeline scripts (DuckDB base build + v7 layers);
-    see ``DEPLOY.md`` for the exact subprocess invocation chain. Returns a map of
-    ``race_id`` -> ordered entry feature dicts for the upcoming window.
+    Delegated to the bundled pipeline scripts (DuckDB base build in
+    ``--target-date`` mode + v7 layers); see ``DEPLOY.md`` for the exact
+    subprocess invocation chain. Returns a map of ``race_id`` -> ordered entry
+    feature dicts for today's races (incl. UPCOMING).
     """
     from pipeline_runner import build_upcoming_feature_rows  # bundled in image
 
-    return build_upcoming_feature_rows(category, days_ahead, database_url)
+    return build_upcoming_feature_rows(
+        category, window.target_date, window.days_ahead, window.database_url
+    )
 
 
 def _connect(database_url: str) -> ConnectionLike:
@@ -191,13 +208,12 @@ def main() -> int:
     run_date = _require_env(RUN_DATE_ENV)
     days_ahead = int(os.environ.get(DAYS_AHEAD_ENV, str(DEFAULT_DAYS_AHEAD)))
     models_dir = Path(os.environ.get(MODELS_DIR_ENV, "/models"))
+    window = PredictWindow(target_date=run_date, days_ahead=days_ahead, database_url=database_url)
     connection = _connect(database_url)
     races_predicted = 0
     try:
         for category in CATEGORIES:
-            races_predicted += _predict_category(
-                connection, category, models_dir, days_ahead, database_url
-            )
+            races_predicted += _predict_category(connection, category, models_dir, window)
         duration_ms = int((time.monotonic() - started) * 1000)
         _record_audit(connection, run_date, "success", races_predicted, duration_ms, None)
     except (RuntimeError, ValueError, OSError, KeyError) as error:
