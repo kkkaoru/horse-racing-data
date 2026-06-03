@@ -1216,6 +1216,103 @@ h3 {
   font-weight: var(--number-700-14);
 }
 
+.running-style-bucket-nige-recall {
+  background: var(--surface);
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-8px-28);
+  display: grid;
+  gap: var(--space-6px-33);
+  padding: var(--space-12px-9);
+}
+
+.running-style-bucket-nige-recall span {
+  color: var(--muted);
+  font-size: var(--space-15px-1);
+  font-weight: var(--number-800-12);
+}
+
+.running-style-bucket-nige-recall strong {
+  color: var(--ink);
+  font-size: var(--space-20px-52);
+  font-weight: var(--number-800-12);
+}
+
+.running-style-bucket-details {
+  display: grid;
+  gap: var(--space-12px-9);
+}
+
+.running-style-bucket-details > summary {
+  align-items: center;
+  background: var(--surface-muted);
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-8px-28);
+  color: var(--accent-strong);
+  cursor: pointer;
+  display: flex;
+  font-size: var(--space-15px-1);
+  font-weight: var(--number-700-14);
+  justify-content: center;
+  min-height: var(--space-42px-29);
+  padding: var(--space-10px-27) var(--space-12px-9);
+}
+
+.running-style-bucket-details > summary::marker {
+  color: var(--muted);
+}
+
+.running-style-bucket-details-body {
+  display: grid;
+  gap: var(--space-18px-31);
+  padding-top: var(--space-12px-9);
+}
+
+.running-style-stats-card {
+  background: var(--surface);
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-8px-28);
+  display: grid;
+  gap: var(--space-10px-27);
+  padding: var(--space-14px-55);
+}
+
+.running-style-stats-card h3 {
+  color: var(--accent-strong);
+  font-size: var(--space-15px-1);
+  font-weight: var(--number-700-14);
+  margin: var(--number-0-2);
+}
+
+.running-style-bucket-per-class-table,
+.running-style-bucket-per-class-logloss-table {
+  border-collapse: collapse;
+  font-size: var(--space-15px-1);
+  width: var(--space-100pct-12);
+}
+
+.running-style-bucket-per-class-table th,
+.running-style-bucket-per-class-table td,
+.running-style-bucket-per-class-logloss-table th,
+.running-style-bucket-per-class-logloss-table td {
+  border-bottom: var(--space-1px-7) solid var(--line);
+  padding: var(--space-8px-28) var(--space-10px-27);
+  text-align: right;
+}
+
+.running-style-bucket-per-class-table th:first-child,
+.running-style-bucket-per-class-table td:first-child,
+.running-style-bucket-per-class-logloss-table th:first-child,
+.running-style-bucket-per-class-logloss-table td:first-child {
+  text-align: left;
+}
+
+.running-style-bucket-per-class-table thead th,
+.running-style-bucket-per-class-logloss-table thead th {
+  background: var(--surface-muted);
+  color: var(--accent-strong);
+  font-weight: var(--number-700-14);
+}
+
 .finish-position-bucket-evaluation-panel {
   display: grid;
   gap: var(--space-8px-28);

@@ -65,7 +65,6 @@ const SCOPE_LABEL_SEPARATOR = " / ";
 const PANEL_HEADLINE_SUFFIX = " の脚質精度";
 const SCOPE_NOTICE_PREFIX = "該当条件のデータが無いため";
 const SCOPE_NOTICE_SUFFIX = "で集計しています";
-const KAPPA_DECIMALS = 3;
 const LOG_LOSS_DECIMALS = 3;
 const F1_DECIMALS = 3;
 const HEATMAP_HUE = 210;
@@ -338,8 +337,31 @@ const buildBucketMetricCards = (
 
 const F1_CARD_KEYS = new Set<string>(["macroF1", "weightedF1"]);
 
+const NIGE_RECALL_CARD_KEY = "nigeRecall";
+
+const DETAILS_SUMMARY_LABEL = "詳細指標を表示";
+
+const NON_NIGE_DETAILS_HEADING = "脚質の逃げ的中率以外の精度";
+
+const PER_CLASS_HEADING = "クラス別 metric";
+
+const PER_CLASS_LOG_LOSS_HEADING = "クラス別 log loss";
+
+const CONFUSION_MATRIX_HEADING = "confusion matrix (actual × predicted)";
+
 const formatBucketMetricCard = (card: RunningStyleBucketMetricCard): string =>
   F1_CARD_KEYS.has(card.key) ? formatCardF1(card.value) : formatCardPercent(card.value);
+
+const isNigeRecallCard = (card: RunningStyleBucketMetricCard): boolean =>
+  card.key === NIGE_RECALL_CARD_KEY;
+
+const findNigeRecallCard = (
+  cards: readonly RunningStyleBucketMetricCard[],
+): RunningStyleBucketMetricCard | null => cards.find(isNigeRecallCard) ?? null;
+
+const filterNonNigeCards = (
+  cards: readonly RunningStyleBucketMetricCard[],
+): readonly RunningStyleBucketMetricCard[] => cards.filter((card) => !isNigeRecallCard(card));
 
 const heatmapBackground = ({ count, rowTotal, total }: HeatmapCellInput): string => {
   if (total === 0 || rowTotal === 0) {
@@ -431,6 +453,125 @@ const renderHeatmapRow = (
   </tr>
 );
 
+interface MetricCardProps {
+  card: RunningStyleBucketMetricCard;
+  accuracyCI: string | null;
+}
+
+const renderMetricCard = ({ card, accuracyCI }: MetricCardProps): ReactElement => (
+  <div className="running-style-bucket-metric-card" key={card.key}>
+    <span>{card.label}</span>
+    <strong>{formatBucketMetricCard(card)}</strong>
+    {card.key === "accuracy" && accuracyCI !== null ? (
+      <small className="running-style-bucket-metric-ci">{accuracyCI}</small>
+    ) : null}
+  </div>
+);
+
+interface NigeRecallSectionProps {
+  card: RunningStyleBucketMetricCard | null;
+}
+
+const renderNigeRecallSection = ({ card }: NigeRecallSectionProps): ReactElement | null => {
+  if (card === null) return null;
+  return (
+    <div className="running-style-bucket-nige-recall">
+      <span>{card.label}</span>
+      <strong>{formatBucketMetricCard(card)}</strong>
+    </div>
+  );
+};
+
+interface NonNigeGridProps {
+  cards: readonly RunningStyleBucketMetricCard[];
+  accuracyCI: string;
+}
+
+const renderNonNigeMetricGrid = ({ cards, accuracyCI }: NonNigeGridProps): ReactElement => (
+  <section className="running-style-stats-card">
+    <h3>{NON_NIGE_DETAILS_HEADING}</h3>
+    <div className="analysis-metric-grid running-style-bucket-metric-grid">
+      {cards.map((card) => renderMetricCard({ accuracyCI, card }))}
+    </div>
+  </section>
+);
+
+const renderPerClassMetricSection = (evaluation: RunningStyleBucketMetrics): ReactElement => (
+  <section className="running-style-bucket-per-class running-style-stats-card">
+    <h3>{PER_CLASS_HEADING}</h3>
+    <table className="running-style-bucket-per-class-table">
+      <thead>
+        <tr>
+          <th scope="col">クラス</th>
+          <th scope="col">precision</th>
+          <th scope="col">recall</th>
+          <th scope="col">F1</th>
+          <th scope="col">support</th>
+        </tr>
+      </thead>
+      <tbody>
+        {renderPerClassRow("nige", evaluation)}
+        {renderPerClassRow("senkou", evaluation)}
+        {renderPerClassRow("sashi", evaluation)}
+        {renderPerClassRow("oikomi", evaluation)}
+      </tbody>
+    </table>
+  </section>
+);
+
+const renderPerClassLogLossSection = (evaluation: RunningStyleBucketMetrics): ReactElement => (
+  <section className="running-style-bucket-per-class-logloss running-style-stats-card">
+    <h3>{PER_CLASS_LOG_LOSS_HEADING}</h3>
+    <table className="running-style-bucket-per-class-logloss-table">
+      <thead>
+        <tr>
+          <th scope="col">クラス</th>
+          <th scope="col">log loss</th>
+        </tr>
+      </thead>
+      <tbody>
+        {renderPerClassLogLossRow("nige", evaluation)}
+        {renderPerClassLogLossRow("senkou", evaluation)}
+        {renderPerClassLogLossRow("sashi", evaluation)}
+        {renderPerClassLogLossRow("oikomi", evaluation)}
+      </tbody>
+    </table>
+  </section>
+);
+
+interface ConfusionMatrixSectionProps {
+  evaluation: RunningStyleBucketMetrics;
+  total: number;
+}
+
+const renderConfusionMatrixSection = ({
+  evaluation,
+  total,
+}: ConfusionMatrixSectionProps): ReactElement => (
+  <section className="running-style-bucket-confusion-matrix running-style-stats-card">
+    <h3>{CONFUSION_MATRIX_HEADING}</h3>
+    <table className="running-style-bucket-heatmap-table">
+      <thead>
+        <tr>
+          <th scope="col" aria-label="actual class">
+            actual ＼ predicted
+          </th>
+          <th scope="col">{RUNNING_STYLE_CLASS_LABELS.nige}</th>
+          <th scope="col">{RUNNING_STYLE_CLASS_LABELS.senkou}</th>
+          <th scope="col">{RUNNING_STYLE_CLASS_LABELS.sashi}</th>
+          <th scope="col">{RUNNING_STYLE_CLASS_LABELS.oikomi}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {renderHeatmapRow(0, evaluation, total)}
+        {renderHeatmapRow(1, evaluation, total)}
+        {renderHeatmapRow(2, evaluation, total)}
+        {renderHeatmapRow(3, evaluation, total)}
+      </tbody>
+    </table>
+  </section>
+);
+
 function RunningStyleBucketEvaluationPanel({
   evaluation,
   scopeLabel,
@@ -438,12 +579,15 @@ function RunningStyleBucketEvaluationPanel({
 }: RunningStyleBucketEvaluationPanelProps): ReactElement {
   const total = sumConfusionMatrixTotal(evaluation.confusionMatrix);
   const metricCards = buildBucketMetricCards(evaluation);
+  const nigeCard = findNigeRecallCard(metricCards);
+  const nonNigeCards = filterNonNigeCards(metricCards);
+  const accuracyCI = formatAccuracyCI(evaluation);
   return (
     <div className="running-style-bucket-evaluation-panel" aria-label="脚質予測の検証結果">
       <div className="running-style-bucket-evaluation-summary">
         <span>{buildPanelHeadline(scopeLabel)}</span>
         <strong>
-          {formatPanelPercent(evaluation.accuracy)} {formatAccuracyCI(evaluation)}
+          {formatPanelPercent(evaluation.accuracy)} {accuracyCI}
         </strong>
         <small>
           {evaluation.raceCount.toLocaleString("ja-JP")}レース /{" "}
@@ -458,100 +602,16 @@ function RunningStyleBucketEvaluationPanel({
       {isFallback ? (
         <small className="running-style-bucket-scope-notice">{buildScopeNotice(scopeLabel)}</small>
       ) : null}
-      <div className="analysis-metric-grid running-style-bucket-metric-grid">
-        {metricCards.map((card) => (
-          <div className="running-style-bucket-metric-card" key={card.key}>
-            <span>{card.label}</span>
-            <strong>{formatBucketMetricCard(card)}</strong>
-            {card.key === "accuracy" ? (
-              <small className="running-style-bucket-metric-ci">
-                {formatAccuracyCI(evaluation)}
-              </small>
-            ) : null}
-          </div>
-        ))}
-      </div>
-      <dl className="running-style-bucket-main-metrics">
-        <div>
-          <dt>macro-F1</dt>
-          <dd>{formatF1Value(evaluation.macroF1)}</dd>
+      {renderNigeRecallSection({ card: nigeCard })}
+      <details className="running-style-bucket-details">
+        <summary>{DETAILS_SUMMARY_LABEL}</summary>
+        <div className="running-style-bucket-details-body">
+          {renderNonNigeMetricGrid({ accuracyCI, cards: nonNigeCards })}
+          {renderPerClassMetricSection(evaluation)}
+          {renderPerClassLogLossSection(evaluation)}
+          {renderConfusionMatrixSection({ evaluation, total })}
         </div>
-        <div>
-          <dt>weighted-F1</dt>
-          <dd>{formatF1Value(evaluation.weightedF1)}</dd>
-        </div>
-        <div>
-          <dt title="Quadratic Weighted Kappa: > 0.6 で good agreement">QWK</dt>
-          <dd>{evaluation.qwk.toFixed(KAPPA_DECIMALS)}</dd>
-        </div>
-        <div>
-          <dt>top-2 accuracy</dt>
-          <dd>{formatPanelPercent(evaluation.top2Accuracy)}</dd>
-        </div>
-        <div>
-          <dt>overall log loss</dt>
-          <dd>{formatLogLossValue(evaluation.overallLogLoss)}</dd>
-        </div>
-      </dl>
-      <div className="running-style-bucket-per-class">
-        <h3>クラス別 metric</h3>
-        <table className="running-style-bucket-per-class-table">
-          <thead>
-            <tr>
-              <th scope="col">クラス</th>
-              <th scope="col">precision</th>
-              <th scope="col">recall</th>
-              <th scope="col">F1</th>
-              <th scope="col">support</th>
-            </tr>
-          </thead>
-          <tbody>
-            {renderPerClassRow("nige", evaluation)}
-            {renderPerClassRow("senkou", evaluation)}
-            {renderPerClassRow("sashi", evaluation)}
-            {renderPerClassRow("oikomi", evaluation)}
-          </tbody>
-        </table>
-      </div>
-      <div className="running-style-bucket-per-class-logloss">
-        <h3>クラス別 log loss</h3>
-        <table className="running-style-bucket-per-class-logloss-table">
-          <thead>
-            <tr>
-              <th scope="col">クラス</th>
-              <th scope="col">log loss</th>
-            </tr>
-          </thead>
-          <tbody>
-            {renderPerClassLogLossRow("nige", evaluation)}
-            {renderPerClassLogLossRow("senkou", evaluation)}
-            {renderPerClassLogLossRow("sashi", evaluation)}
-            {renderPerClassLogLossRow("oikomi", evaluation)}
-          </tbody>
-        </table>
-      </div>
-      <div className="running-style-bucket-confusion-matrix">
-        <h3>confusion matrix (actual × predicted)</h3>
-        <table className="running-style-bucket-heatmap-table">
-          <thead>
-            <tr>
-              <th scope="col" aria-label="actual class">
-                actual ＼ predicted
-              </th>
-              <th scope="col">{RUNNING_STYLE_CLASS_LABELS.nige}</th>
-              <th scope="col">{RUNNING_STYLE_CLASS_LABELS.senkou}</th>
-              <th scope="col">{RUNNING_STYLE_CLASS_LABELS.sashi}</th>
-              <th scope="col">{RUNNING_STYLE_CLASS_LABELS.oikomi}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {renderHeatmapRow(0, evaluation, total)}
-            {renderHeatmapRow(1, evaluation, total)}
-            {renderHeatmapRow(2, evaluation, total)}
-            {renderHeatmapRow(3, evaluation, total)}
-          </tbody>
-        </table>
-      </div>
+      </details>
     </div>
   );
 }

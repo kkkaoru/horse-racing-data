@@ -490,8 +490,8 @@ describe("RunningStyleBucketEvaluationPanel - rendering", () => {
     expect(screen.getByText(/120レース.*1,500予測/u)).toBeTruthy();
   });
 
-  test("renders QWK with three decimal places", () => {
-    render(
+  test("does not render the legacy main metrics text strip", () => {
+    const { container } = render(
       <RunningStyleSection
         rows={[buildRow({})]}
         modelMacroF1={null}
@@ -505,7 +505,7 @@ describe("RunningStyleBucketEvaluationPanel - rendering", () => {
         bucketGradeCode={null}
       />,
     );
-    expect(screen.getByText("0.712")).toBeTruthy();
+    expect(container.querySelector(".running-style-bucket-main-metrics")).toBe(null);
   });
 
   test("renders sixteen confusion matrix cells when bucketEvaluation is given", () => {
@@ -725,8 +725,168 @@ describe("RunningStyleBucketEvaluationPanel - rendering", () => {
       />,
     );
     const cards = container.querySelectorAll(".running-style-bucket-metric-card");
-    expect(cards.length).toBe(8);
+    expect(cards.length).toBe(7);
     expect(screen.getByText("65.31%")).toBeTruthy();
+  });
+
+  test("renders the nige recall card outside the details element", () => {
+    const { container } = render(
+      <RunningStyleSection
+        rows={[buildRow({})]}
+        modelMacroF1={null}
+        modelVersion="v1"
+        runnersByUmaban={{}}
+        bucketEvaluation={buildEvaluation({})}
+        bucketScope={buildScope({})}
+        dimensionFlags={buildFlags({})}
+        bucketRace={buildBucketRace({})}
+        bucketSource="jra"
+        bucketGradeCode={null}
+      />,
+    );
+    const nigeSection = container.querySelector(".running-style-bucket-nige-recall");
+    expect(nigeSection).not.toBe(null);
+    const detailsEl = container.querySelector(".running-style-bucket-details");
+    expect(detailsEl?.contains(nigeSection)).toBe(false);
+  });
+
+  test("renders only one running-style-bucket-nige-recall element", () => {
+    const { container } = render(
+      <RunningStyleSection
+        rows={[buildRow({})]}
+        modelMacroF1={null}
+        modelVersion="v1"
+        runnersByUmaban={{}}
+        bucketEvaluation={buildEvaluation({})}
+        bucketScope={buildScope({})}
+        dimensionFlags={buildFlags({})}
+        bucketRace={buildBucketRace({})}
+        bucketSource="jra"
+        bucketGradeCode={null}
+      />,
+    );
+    const nigeSections = container.querySelectorAll(".running-style-bucket-nige-recall");
+    expect(nigeSections.length).toBe(1);
+  });
+
+  test("renders details element closed by default without the open attribute", () => {
+    const { container } = render(
+      <RunningStyleSection
+        rows={[buildRow({})]}
+        modelMacroF1={null}
+        modelVersion="v1"
+        runnersByUmaban={{}}
+        bucketEvaluation={buildEvaluation({})}
+        bucketScope={buildScope({})}
+        dimensionFlags={buildFlags({})}
+        bucketRace={buildBucketRace({})}
+        bucketSource="jra"
+        bucketGradeCode={null}
+      />,
+    );
+    const detailsEl = container.querySelector(".running-style-bucket-details");
+    expect(detailsEl instanceof HTMLDetailsElement).toBe(true);
+    expect(detailsEl instanceof HTMLDetailsElement ? detailsEl.open : true).toBe(false);
+  });
+
+  test("renders the summary with the 詳細指標を表示 label", () => {
+    render(
+      <RunningStyleSection
+        rows={[buildRow({})]}
+        modelMacroF1={null}
+        modelVersion="v1"
+        runnersByUmaban={{}}
+        bucketEvaluation={buildEvaluation({})}
+        bucketScope={buildScope({})}
+        dimensionFlags={buildFlags({})}
+        bucketRace={buildBucketRace({})}
+        bucketSource="jra"
+        bucketGradeCode={null}
+      />,
+    );
+    expect(screen.getByText("詳細指標を表示")).toBeTruthy();
+  });
+
+  test("places the non-nige metric grid heading inside the details body", () => {
+    const { container } = render(
+      <RunningStyleSection
+        rows={[buildRow({})]}
+        modelMacroF1={null}
+        modelVersion="v1"
+        runnersByUmaban={{}}
+        bucketEvaluation={buildEvaluation({})}
+        bucketScope={buildScope({})}
+        dimensionFlags={buildFlags({})}
+        bucketRace={buildBucketRace({})}
+        bucketSource="jra"
+        bucketGradeCode={null}
+      />,
+    );
+    const headingNode = screen.getByText("脚質の逃げ的中率以外の精度");
+    const detailsEl = container.querySelector(".running-style-bucket-details");
+    expect(detailsEl?.contains(headingNode)).toBe(true);
+  });
+
+  test("places the クラス別 metric section inside the details body", () => {
+    const { container } = render(
+      <RunningStyleSection
+        rows={[buildRow({})]}
+        modelMacroF1={null}
+        modelVersion="v1"
+        runnersByUmaban={{}}
+        bucketEvaluation={buildEvaluation({})}
+        bucketScope={buildScope({})}
+        dimensionFlags={buildFlags({})}
+        bucketRace={buildBucketRace({})}
+        bucketSource="jra"
+        bucketGradeCode={null}
+      />,
+    );
+    const headingNode = screen.getByText("クラス別 metric");
+    const detailsEl = container.querySelector(".running-style-bucket-details");
+    expect(detailsEl?.contains(headingNode)).toBe(true);
+  });
+
+  test("places the confusion matrix section inside the details body", () => {
+    const { container } = render(
+      <RunningStyleSection
+        rows={[buildRow({})]}
+        modelMacroF1={null}
+        modelVersion="v1"
+        runnersByUmaban={{}}
+        bucketEvaluation={buildEvaluation({})}
+        bucketScope={buildScope({})}
+        dimensionFlags={buildFlags({})}
+        bucketRace={buildBucketRace({})}
+        bucketSource="jra"
+        bucketGradeCode={null}
+      />,
+    );
+    const headingNode = screen.getByText("confusion matrix (actual × predicted)");
+    const detailsEl = container.querySelector(".running-style-bucket-details");
+    expect(detailsEl?.contains(headingNode)).toBe(true);
+  });
+
+  test("opens the details element after clicking the summary and exposes weighted-F1 label", () => {
+    const { container } = render(
+      <RunningStyleSection
+        rows={[buildRow({})]}
+        modelMacroF1={null}
+        modelVersion="v1"
+        runnersByUmaban={{}}
+        bucketEvaluation={buildEvaluation({})}
+        bucketScope={buildScope({})}
+        dimensionFlags={buildFlags({})}
+        bucketRace={buildBucketRace({})}
+        bucketSource="jra"
+        bucketGradeCode={null}
+      />,
+    );
+    fireEvent.click(screen.getByText("詳細指標を表示"));
+    const detailsEl = container.querySelector(".running-style-bucket-details");
+    expect(detailsEl instanceof HTMLDetailsElement).toBe(true);
+    expect(detailsEl instanceof HTMLDetailsElement ? detailsEl.open : false).toBe(true);
+    expect(screen.getByText("weighted-F1")).toBeTruthy();
   });
 });
 
