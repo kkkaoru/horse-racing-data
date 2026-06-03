@@ -45,6 +45,12 @@ test("parseWin5PayoutField trims surrounding whitespace before parsing", () => {
   expect(parsed?.payoutYen).toStrictEqual(99999);
 });
 
+test("parseWin5PayoutField falls back to zero ticket count when ticket digits are non-numeric", () => {
+  const parsed = parseWin5PayoutField("0102030405000012345abc");
+  expect(parsed?.payoutYen).toStrictEqual(12345);
+  expect(parsed?.winningTicketCount).toStrictEqual(0);
+});
+
 test("planCoversWinningCombination returns false when selection count differs from winners", () => {
   expect(planCoversWinningCombination([{ horseNumbers: ["1"] }], ["1", "2", "3", "4", "5"])).toBe(
     false,

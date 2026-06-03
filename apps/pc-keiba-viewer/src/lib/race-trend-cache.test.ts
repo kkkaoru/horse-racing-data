@@ -83,6 +83,16 @@ describe("race trend cache helpers", () => {
     expect(getRaceStartTimeMs({ ...targetRace, hassoJikoku: "bad" })).toBeNull();
   });
 
+  it("returns null when Date.parse cannot build a finite start time from a malformed date", () => {
+    expect(
+      getRaceStartTimeMs({
+        hassoJikoku: "1000",
+        kaisaiNen: "20XY",
+        kaisaiTsukihi: "0520",
+      }),
+    ).toBeNull();
+  });
+
   it("builds the outer race-trend cache key under the v8 namespace", () => {
     const options = buildDefaultRaceTrendCacheOptions("jra", "20260520");
     expect(options.frameStartYmd).toBe("20260506");

@@ -4,6 +4,7 @@ export { RaceTrendRoom } from "./worker/race-trend-room";
 import openNextWorker from "../.open-next/worker.js";
 import type { DetailSectionCacheWarmMessage } from "./lib/race-detail-section-cache";
 import type { RaceTrendCacheWarmMessage } from "./lib/race-trend-cache";
+import { routeWebSocketUpgradeToDurableObject } from "./lib/websocket-do-router";
 import { formatTodayJstDate, formatTomorrowJstDate } from "./worker/jst-date";
 import {
   handleRaceDetailSectionCacheQueue,
@@ -15,7 +16,11 @@ import {
 
 export default {
   ...openNextWorker,
-  fetch: openNextWorker.fetch,
+  fetch(request: Request, env: CloudflareEnv, ctx: PcKeibaExecutionContext): Promise<Response> {
+    return (
+      routeWebSocketUpgradeToDurableObject(request, env) ?? openNextWorker.fetch(request, env, ctx)
+    );
+  },
   queue(
     batch: PcKeibaMessageBatch<DetailSectionCacheWarmMessage | RaceTrendCacheWarmMessage>,
     env: CloudflareEnv,
