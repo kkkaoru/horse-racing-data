@@ -1,0 +1,63 @@
+[project]
+name = "finish-position-predict-container"
+version = "0.0.0"
+requires-python = ">=3.12"
+# Runtime deps for the container image. The unit tests cover predict_lib only
+# (pure, I/O-free); duckdb / catboost / xgboost / psycopg2 are exercised at
+# deploy time per DEPLOY.md, not in CI.
+dependencies = [
+  "catboost>=1.2.10",
+  "duckdb>=1.1.0",
+  "pandas>=2.2.0",
+  "psycopg[binary]>=3.2.0",
+  "pyarrow>=17.0.0",
+  "xgboost>=3.2.0",
+]
+
+[dependency-groups]
+dev = ["basedpyright>=1.34.0", "pytest>=8.4.0", "pytest-cov>=7.0.0", "ruff>=0.8.0", "ty>=0.0.35"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF", "PGH"]
+
+[tool.basedpyright]
+include = ["src", "tests"]
+exclude = ["tmp", "node_modules"]
+extraPaths = ["src"]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+reportAny = "none"
+reportExplicitAny = "error"
+reportImplicitOverride = "error"
+reportImportCycles = "error"
+reportMissingTypeStubs = "none"
+reportUnannotatedClassAttribute = "error"
+reportUnknownArgumentType = "none"
+reportUnknownMemberType = "none"
+reportUnknownVariableType = "none"
+
+[tool.ty.environment]
+extra-paths = ["src"]
+
+# Coverage measures predict_lib (pure helpers) only. predict_upcoming.py is the
+# I/O orchestration entrypoint (Neon TCP, R2, DuckDB subprocess, native
+# CatBoost/XGBoost load) — structurally untestable as a unit and verified at
+# deploy time per DEPLOY.md, so it is intentionally NOT in the --cov list. This
+# does not shrink an existing measured surface (new app).
+[tool.pytest.ini_options]
+addopts = "--cov=predict_lib --cov-report=term-missing --cov-fail-under=95"
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+
+[tool.coverage.report]
+# "\\.\\.\\." excludes Protocol method stubs ("..."), which are definitionally
+# unexecutable — not a code-hiding pragma.
+exclude_lines = ["if __name__ == .__main__.:", "raise SystemExit", "\\.\\.\\."]
+show_missing = true

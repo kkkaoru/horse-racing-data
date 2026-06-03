@@ -1,0 +1,62 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "finish-position-cron",
+  "main": "src/index.ts",
+  "account_id": "78109ec18c7c85b194b19fb32e3bb149",
+  "compatibility_date": "2026-06-03",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    // head_sampling_rate 0.1 is mandatory for new Workers
+    // (project_cloudflare_observability_cost).
+    "head_sampling_rate": 0.1,
+  },
+  // "0 18 * * *" = 18:00 UTC = JST 03:00. Daily upcoming-race finish-position
+  // prediction. scheduled() starts the Container batch job; see src/worker.ts.
+  "triggers": {
+    "crons": ["0 18 * * *"],
+  },
+  // Container image runs real Python (DuckDB + CatBoost + XGBoost) for the v7
+  // feature build + scoring. standard-4 = 4 vCPU / 12 GiB / 20 GB (heaviest
+  // predefined instance type) for the DuckDB aggregation. image_build_context
+  // is the repo root so the Dockerfile can COPY both this app's src and the
+  // reused apps/pc-keiba-viewer feature-pipeline scripts.
+  "containers": [
+    {
+      "class_name": "FinishPositionPredictContainer",
+      "image": "../finish-position-predict-container/Dockerfile",
+      "image_build_context": "../..",
+      "instance_type": "standard-4",
+      "max_instances": 1,
+    },
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "FinishPositionPredictContainer",
+        "name": "FINISH_POSITION_PREDICT_CONTAINER",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["FinishPositionPredictContainer"],
+    },
+  ],
+  // Cron-run audit table (finish_position_cron_executions). Self-contained D1
+  // so the Worker never couples to Neon for its own bookkeeping. Replace the
+  // placeholder database_id during deploy (see DEPLOY.md).
+  "d1_databases": [
+    {
+      "binding": "FINISH_POSITION_CRON_DB",
+      "database_name": "finish-position-cron-db",
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+    },
+  ],
+  // PREDICT_DAYS_AHEAD: how many days past today to include in the upcoming
+  // window. NEON_DATABASE_URL is a secret (wrangler secret put), NOT a var.
+  "vars": {
+    "PREDICT_DAYS_AHEAD": "2",
+  },
+}

@@ -1,0 +1,29 @@
+{
+  "name": "finish-position-cron",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "d1:migrate": "wrangler d1 migrations apply finish-position-cron-db --remote",
+    "d1:migrate:local": "wrangler d1 migrations apply finish-position-cron-db --local",
+    "format": "oxfmt --write src package.json tsconfig.json vitest.config.ts wrangler.jsonc",
+    "format:check": "oxfmt --check src package.json tsconfig.json vitest.config.ts wrangler.jsonc",
+    "lint": "oxlint . --tsconfig ./tsconfig.json --type-aware --import-plugin --node-plugin --promise-plugin --deny-warnings --max-warnings=0",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "tsc": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "0.2.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "4.20260207.0",
+    "@vitest/coverage-v8": "4.1.5",
+    "oxfmt": "0.48.0",
+    "oxlint": "1.63.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.5",
+    "wrangler": "4.90.0"
+  }
+}

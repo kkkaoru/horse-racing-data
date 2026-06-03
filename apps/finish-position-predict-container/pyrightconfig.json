@@ -1,0 +1,17 @@
+{
+  "include": ["src", "tests"],
+  "exclude": ["**/node_modules", "**/tmp", "**/__pycache__"],
+  "extraPaths": ["src"],
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "strict",
+  "reportAny": "none",
+  "reportExplicitAny": "error",
+  "reportImplicitOverride": "error",
+  "reportImportCycles": "error",
+  "reportMissingTypeStubs": "none",
+  "reportUnannotatedClassAttribute": "error",
+  "reportUnknownArgumentType": "none",
+  "reportUnknownLambdaType": "none",
+  "reportUnknownMemberType": "none",
+  "reportUnknownVariableType": "none"
+}
