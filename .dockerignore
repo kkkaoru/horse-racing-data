@@ -1,0 +1,26 @@
+# The finish-position-predict-container image is built with the repo root as its
+# build context (image_build_context "../.." in apps/finish-position-cron/
+# wrangler.jsonc) so the Dockerfile can COPY both the container app and the reused
+# apps/pc-keiba-viewer feature-pipeline scripts. The repo root is ~100 GB, so this
+# file allowlists ONLY the paths the Dockerfile actually COPYs — everything else is
+# excluded to keep the build context tiny and the image build fast.
+
+# Exclude everything by default.
+*
+
+# Re-include the container app's build inputs.
+!apps/finish-position-predict-container/pyproject.toml
+!apps/finish-position-predict-container/src
+!apps/finish-position-predict-container/models
+
+# Re-include the reused viewer feature-pipeline scripts.
+!apps/pc-keiba-viewer/src/scripts/finish_position_features_duckdb.py
+!apps/pc-keiba-viewer/src/scripts/finish-position-features
+
+# Drop caches / compiled bytecode that may live under the re-included src trees.
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+**/.venv
+**/node_modules

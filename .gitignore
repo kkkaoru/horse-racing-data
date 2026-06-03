@@ -170,5 +170,9 @@ apps/sync-realtime-data/running-style/
 apps/pc-keiba-viewer/finish-position/
 catboost_info/
 
+# Baked finish-position model artifacts staged into the container build context
+# (gitignored scratch; pulled from apps/pc-keiba-viewer/tmp/models before deploy)
+apps/finish-position-predict-container/models/
+
 # Claude Code internal artifacts (worktrees, memory caches, etc.)
 .claude/
