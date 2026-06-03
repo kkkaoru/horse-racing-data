@@ -1,0 +1,77 @@
+---
+iteration: {N}
+date: {ISO_TIMESTAMP}
+based_on_iteration: {M}
+lever: {LEVER_ID}
+status: {accept_or_reject}
+quality_gate: {passed_or_failed}
+model_version_jra: {MODEL_VERSION_JRA}
+model_version_nar: {MODEL_VERSION_NAR}
+metrics:
+  wf_21y:
+    jra:
+      top1: {TOP1_JRA}
+      place2: {PLACE2_JRA}
+      place3: {PLACE3_JRA}
+      top3_box: {TOP3_BOX_JRA}
+    nar:
+      top1: {TOP1_NAR}
+      place2: {PLACE2_NAR}
+      place3: {PLACE3_NAR}
+      top3_box: {TOP3_BOX_NAR}
+  delta_vs_prev:
+    jra:
+      top1: {DELTA_TOP1_JRA}
+      place2: {DELTA_PLACE2_JRA}
+      place3: {DELTA_PLACE3_JRA}
+      top3_box: {DELTA_TOP3_BOX_JRA}
+    nar:
+      top1: {DELTA_TOP1_NAR}
+      place2: {DELTA_PLACE2_NAR}
+      place3: {DELTA_PLACE3_NAR}
+      top3_box: {DELTA_TOP3_BOX_NAR}
+  composite_gain_normalized: {COMPOSITE_GAIN}
+  per_bucket_worst:
+    jra: {PER_BUCKET_WORST_JRA}
+    nar: {PER_BUCKET_WORST_NAR}
+training_time:
+  jra: {DURATION_JRA}
+  nar: {DURATION_NAR}
+artifacts:
+  model_dir_jra: {MODEL_DIR_JRA}
+  model_dir_nar: {MODEL_DIR_NAR}
+  predictions_parquet: {PREDICTIONS_PARQUET}
+  bucket_eval_csv: {BUCKET_EVAL_CSV}
+---
+
+## What was tried
+
+{LEVER 説明}
+
+## Implementation summary
+
+{SubAgent commit hashes、 touched files}
+
+## Results
+
+{per-cat top1/place2/place3/top3_box 比較表}
+
+## Per-bucket findings
+
+{weak bucket 改善 / 悪化リスト}
+
+## Decision
+
+{accept / reject + 理由}
+
+## Next iteration recommendation
+
+{Step A の次選定 hint、 lever bank の優先順位調整}
+
+## Quality Gate Results
+
+- tsc: {TSC_RESULT}
+- lint: {LINT_RESULT}
+- format:check: {FORMAT_RESULT}
+- test:coverage: branches={BR}/functions={FN}/lines={LN}/statements={ST}
+- python:check: pytest cov={PY_COV}
