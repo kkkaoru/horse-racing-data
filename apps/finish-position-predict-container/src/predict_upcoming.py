@@ -43,7 +43,7 @@ from predict_lib.audit import (
     build_audit_record,
     build_audit_table_ddl,
 )
-from predict_lib.conn_url import normalise_database_url
+from predict_lib.conn_url import normalise_database_url, resolve_source_url
 from predict_lib.dedupe import dedupe_batch
 from predict_lib.model_meta import (
     CATEGORIES,
@@ -69,9 +69,23 @@ from predict_lib.upsert_sql import (
 )
 
 NEON_DATABASE_URL_ENV: str = "NEON_DATABASE_URL"
+# Optional override: source URL for the DuckDB feature-build subprocess. When
+# set, feature building (which sustains a long-running ATTACH against Postgres
+# and is sensitive to Neon's compute idle timeout) uses this URL instead of
+# ``NEON_DATABASE_URL``. The predictions UPSERT + audit always use
+# ``NEON_DATABASE_URL`` so today's predictions land in the canonical store.
+# Typical local-Docker setup: feature build against the local logical replica
+# (no SSL idle eviction); predictions UPSERT to Neon.
+SOURCE_DATABASE_URL_ENV: str = "SOURCE_DATABASE_URL"
 RUN_DATE_ENV: str = "RUN_DATE"
 DAYS_AHEAD_ENV: str = "PREDICT_DAYS_AHEAD"
 MODELS_DIR_ENV: str = "MODELS_DIR"
+# Optional comma-separated allowlist of categories to predict (e.g.
+# "nar,ban-ei"). When unset or empty, ALL categories in CATEGORIES are
+# attempted. Used to skip a category that is known-broken for the day (e.g.
+# JRA on a non-race-day, or while a Neon-side scan timeout is being debugged)
+# without blocking the others.
+CATEGORIES_ENV: str = "PREDICT_CATEGORIES"
 DEFAULT_DAYS_AHEAD: int = 2
 RACE_ID_KETTO_INDEX: int = 6
 RACE_ID_PART_RANGE: range = range(1, 6)
@@ -146,6 +160,20 @@ def _require_env(name: str) -> str:
         message = f"{name} environment variable is required"
         raise RuntimeError(message)
     return value
+
+
+def _resolve_categories(raw: str | None) -> tuple[Category, ...]:
+    """Filter ``CATEGORIES`` by the optional ``PREDICT_CATEGORIES`` allowlist.
+
+    Empty / unset ``raw`` returns the full canonical tuple. Otherwise only the
+    categories in the comma-separated allowlist are returned, preserving the
+    canonical order. Unknown tokens are dropped (so a typo can never silently
+    select an unsupported category).
+    """
+    if not raw:
+        return CATEGORIES
+    requested = {token.strip() for token in raw.split(",") if token.strip()}
+    return tuple(category for category in CATEGORIES if category in requested)
 
 
 def _load_model_metadata(models_dir: Path, category: Category) -> Sequence[str]:
@@ -298,11 +326,12 @@ def main() -> int:
     _start_liveness_thread(LIVENESS_PORT)
     try:
         database_url = normalise_database_url(_require_env(NEON_DATABASE_URL_ENV))
+        source_url = resolve_source_url(os.environ.get(SOURCE_DATABASE_URL_ENV), database_url)
         run_date = _require_env(RUN_DATE_ENV)
         days_ahead = int(os.environ.get(DAYS_AHEAD_ENV, str(DEFAULT_DAYS_AHEAD)))
         models_dir = Path(os.environ.get(MODELS_DIR_ENV, "/models"))
         window = PredictWindow(
-            target_date=run_date, days_ahead=days_ahead, database_url=database_url
+            target_date=run_date, days_ahead=days_ahead, database_url=source_url
         )
         connection = _connect(database_url)
     except BaseException as bootstrap_error:
@@ -313,27 +342,62 @@ def main() -> int:
         print(f"[predict-upcoming] bootstrap failed: {bootstrap_error}", file=sys.stderr)
         return 1
     races_predicted = 0
-    try:
-        for category in CATEGORIES:
-            races_predicted += _predict_category(connection, category, models_dir, window)
-        duration_ms = int((time.monotonic() - started) * 1000)
-        _record_audit(connection, run_date, "success", races_predicted, duration_ms, None)
-    except BaseException as error:
-        duration_ms = int((time.monotonic() - started) * 1000)
-        # Print the FULL traceback to stderr first so it always reaches container
-        # logs even if the audit write also fails (e.g. poisoned connection).
-        traceback.print_exc()
-        error_text = f"{type(error).__name__}: {error}"
+    categories = _resolve_categories(os.environ.get(CATEGORIES_ENV))
+    failures: list[str] = []
+    for category in categories:
         try:
-            connection.close()
-        except BaseException as close_error:
+            races_predicted += _predict_category(connection, category, models_dir, window)
+        except BaseException as category_error:
+            # Per-category isolation: one category's failure (e.g. Neon SSL
+            # idle-timeout during the long-running DuckDB postgres_scanner) must
+            # not block the others. Log the full traceback then move on. We
+            # collect the error texts so the final audit row records the partial
+            # failure rather than masking it.
+            traceback.print_exc()
+            text = f"{category}: {type(category_error).__name__}: {category_error}"
+            print(f"[predict-upcoming] category failed: {text}", file=sys.stderr)
+            failures.append(text)
+            # Postgres aborts the in-flight transaction on any error; force a
+            # rollback so the next category's audit / upsert work uses a clean
+            # transaction state.
+            try:
+                connection.rollback()
+            except BaseException as rollback_error:
+                print(
+                    f"[predict-upcoming] rollback failed: {rollback_error}",
+                    file=sys.stderr,
+                )
+    duration_ms = int((time.monotonic() - started) * 1000)
+    if failures:
+        status: AuditStatus = "error" if races_predicted == 0 else "partial"
+        error_text = "; ".join(failures)
+        try:
+            _record_audit(connection, run_date, status, races_predicted, duration_ms, error_text)
+        except BaseException as audit_error:
             print(
-                f"[predict-upcoming] post-error close failed: {close_error}",
+                f"[predict-upcoming] audit write failed (inline): {audit_error}",
                 file=sys.stderr,
             )
-        _try_record_audit(database_url, run_date, races_predicted, duration_ms, error_text)
-        print(f"[predict-upcoming] failed: {error_text}", file=sys.stderr)
-        return 1
+            try:
+                connection.close()
+            except BaseException as close_error:
+                print(
+                    f"[predict-upcoming] post-error close failed: {close_error}",
+                    file=sys.stderr,
+                )
+            _try_record_audit(database_url, run_date, races_predicted, duration_ms, error_text)
+            print(f"[predict-upcoming] failed: {error_text}", file=sys.stderr)
+            return 1
+        connection.close()
+        if races_predicted == 0:
+            print(f"[predict-upcoming] failed: {error_text}", file=sys.stderr)
+            return 1
+        print(
+            f"[predict-upcoming] partial run_date={run_date} races_predicted={races_predicted}"
+            f" failures={error_text}"
+        )
+        return 0
+    _record_audit(connection, run_date, "success", races_predicted, duration_ms, None)
     connection.close()
     print(f"[predict-upcoming] ok run_date={run_date} races_predicted={races_predicted}")
     return 0

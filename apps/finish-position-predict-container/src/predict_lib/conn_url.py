@@ -38,3 +38,17 @@ def normalise_database_url(raw: str) -> str:
     """
     stripped = raw.strip()
     return _strip_matching_wrapping_quote(stripped).strip()
+
+
+def resolve_source_url(raw: str | None, default_url: str) -> str:
+    """Resolve the SOURCE_DATABASE_URL with NEON_DATABASE_URL as fallback.
+
+    The feature-build subprocess reads SOURCE; predictions UPSERT goes to NEON.
+    When SOURCE is unset / empty / whitespace-only, fall back to ``default_url``
+    so existing deployments (single NEON URL) keep working unchanged. When
+    SOURCE is provided, it is run through ``normalise_database_url`` to strip
+    accidental wrapping quotes the same way the NEON URL is.
+    """
+    if not raw or not raw.strip():
+        return default_url
+    return normalise_database_url(raw)

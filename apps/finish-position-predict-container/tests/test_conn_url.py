@@ -7,7 +7,7 @@ expected strings, no shared fixtures.
 
 from __future__ import annotations
 
-from predict_lib.conn_url import normalise_database_url
+from predict_lib.conn_url import normalise_database_url, resolve_source_url
 
 
 def test_clean_url_unchanged() -> None:
@@ -90,3 +90,44 @@ def test_idempotent_on_quoted_input() -> None:
 
 def test_only_whitespace_returns_empty() -> None:
     assert normalise_database_url("   \n\t  ") == ""
+
+
+def test_resolve_source_url_returns_default_when_raw_is_none() -> None:
+    default = "postgresql://neon-default/db?sslmode=require"
+    assert resolve_source_url(None, default) == default
+
+
+def test_resolve_source_url_returns_default_when_raw_is_empty_string() -> None:
+    default = "postgresql://neon-default/db?sslmode=require"
+    assert resolve_source_url("", default) == default
+
+
+def test_resolve_source_url_returns_default_when_raw_is_whitespace_only() -> None:
+    default = "postgresql://neon-default/db?sslmode=require"
+    assert resolve_source_url("   \n\t  ", default) == default
+
+
+def test_resolve_source_url_returns_normalised_raw_when_provided() -> None:
+    default = "postgresql://neon-default/db?sslmode=require"
+    raw = "postgresql://horse_racing:horse_racing@127.0.0.1:15432/horse_racing"
+    assert resolve_source_url(raw, default) == raw
+
+
+def test_resolve_source_url_strips_wrapping_quotes_on_provided_value() -> None:
+    default = "postgresql://neon-default/db?sslmode=require"
+    raw = "'postgresql://horse_racing:horse_racing@127.0.0.1:15432/horse_racing'"
+    expected = "postgresql://horse_racing:horse_racing@127.0.0.1:15432/horse_racing"
+    assert resolve_source_url(raw, default) == expected
+
+
+def test_resolve_source_url_strips_surrounding_whitespace_on_provided_value() -> None:
+    default = "postgresql://neon-default/db?sslmode=require"
+    raw = "  postgresql://local/db  \n"
+    assert resolve_source_url(raw, default) == "postgresql://local/db"
+
+
+def test_resolve_source_url_distinct_source_and_default_returned_distinctly() -> None:
+    default = "postgresql://neon-default/db?sslmode=require"
+    source = "postgresql://horse_racing:horse_racing@127.0.0.1:15432/horse_racing"
+    assert resolve_source_url(source, default) != default
+    assert resolve_source_url(source, default) == source
