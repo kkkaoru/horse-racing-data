@@ -1,6 +1,6 @@
 import {
   acquireEnqueueLock,
-  calculateEnqueueLockTtlSeconds,
+  calculateEnqueueLockTtlSecondsFromInput,
   isEnqueueLocked,
 } from "./gates/enqueue-lock-kv";
 import { getRaceListFromKv, putRaceListToKv } from "./gates/race-list-kv-cache";
@@ -48,7 +48,15 @@ const tryEnqueueRace = async ({
   entry,
   now,
 }: TryEnqueueRaceArgs): Promise<RaceEnqueueOutcome> => {
-  const ttl = calculateEnqueueLockTtlSeconds(new Date(entry.raceStartAtJst), now);
+  // Pass `lastOddsFetchAt` + `allowCatchUp` so the TTL function grants a
+  // single final-slot enqueue for past races whose finalSlot was never
+  // captured (task F2 C). Without `allowCatchUp`, past races stay at ttl=0.
+  const ttl = calculateEnqueueLockTtlSecondsFromInput({
+    allowCatchUp: true,
+    lastOddsFetchAt: entry.lastOddsFetchAt,
+    now,
+    raceStart: new Date(entry.raceStartAtJst),
+  });
   // ttl === 0 represents "past race / out of window" — skip enqueue entirely.
   if (ttl === 0) {
     return { enqueued: false };

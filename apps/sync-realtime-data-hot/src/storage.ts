@@ -81,6 +81,9 @@ export const runD1Batches = async (
   }
 };
 
+// ON CONFLICT DO UPDATE keeps retries (catch-up sweep, backfill scripts) idempotent
+// after the (race_key, fetched_at, odds_type, combination) UNIQUE index lands in
+// migration 0003.
 export const insertOddsSnapshot = async (
   db: D1Database,
   raceKey: string,
@@ -91,7 +94,7 @@ export const insertOddsSnapshot = async (
     (rows ?? []).map((row) =>
       db
         .prepare(
-          `insert into odds_snapshots (race_key, fetched_at, odds_type, combination, odds, min_odds, max_odds, average_odds, rank) values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `insert into odds_snapshots (race_key, fetched_at, odds_type, combination, odds, min_odds, max_odds, average_odds, rank) values (?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict(race_key, fetched_at, odds_type, combination) do update set odds = excluded.odds, min_odds = excluded.min_odds, max_odds = excluded.max_odds, average_odds = excluded.average_odds, rank = excluded.rank`,
         )
         .bind(
           raceKey,
@@ -418,6 +421,8 @@ export interface ImportOddsSnapshotRow {
   rank: number | null;
 }
 
+// ON CONFLICT DO UPDATE keeps F1 backfill retries idempotent against the
+// (race_key, fetched_at, odds_type, combination) UNIQUE index (migration 0003).
 export const bulkInsertOddsSnapshotRows = async (
   db: D1Database,
   rows: ImportOddsSnapshotRow[],
@@ -428,7 +433,7 @@ export const bulkInsertOddsSnapshotRows = async (
   const statements = rows.map((row) =>
     db
       .prepare(
-        `insert into odds_snapshots (race_key, fetched_at, odds_type, combination, odds, min_odds, max_odds, average_odds, rank) values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `insert into odds_snapshots (race_key, fetched_at, odds_type, combination, odds, min_odds, max_odds, average_odds, rank) values (?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict(race_key, fetched_at, odds_type, combination) do update set odds = excluded.odds, min_odds = excluded.min_odds, max_odds = excluded.max_odds, average_odds = excluded.average_odds, rank = excluded.rank`,
       )
       .bind(
         row.race_key,

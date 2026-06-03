@@ -95,6 +95,7 @@ interface LogPopulateNarVenueInput {
   venue: NarVenue;
   status: string;
   message: string;
+  jobType?: string;
 }
 
 interface FetchNarVenueLinksInput {
@@ -113,6 +114,12 @@ interface InvalidationTarget {
   yyyymmdd: string;
 }
 
+interface NarDebaUrlSynthInput {
+  yyyymmdd: string;
+  babaCode: string;
+  raceBango: string;
+}
+
 const KEIBAJO_CODE_PAD_WIDTH = 2;
 const RACE_BANGO_PAD_WIDTH = 2;
 const KAISAI_KAI_PAD_WIDTH = 2;
@@ -122,8 +129,11 @@ const EMPTY_ODDS_LINKS_JSON = "{}";
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DEFAULT_DAYS_AHEAD = 2;
 const POPULATE_NAR_VENUE_JOB_TYPE = "populate-nar-venue";
+const POPULATE_NAR_VENUE_HYPERDRIVE_FALLBACK_JOB_TYPE = "populate-nar-venue-hyperdrive-fallback";
 const POPULATE_EMPTY_STATUS = "empty";
 const POPULATE_ERROR_STATUS = "error";
+const POPULATE_FALLBACK_STATUS = "fallback";
+const KEIBA_GO_DEBA_TABLE_BASE_URL = "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable";
 
 const SELECT_TODAY_RACES_SQL = `
   select 'jra' as source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, hasso_jikoku, kaisai_kai, kaisai_nichime
@@ -222,11 +232,10 @@ const collectNarVenues = (rows: IntermediateRow[]): NarVenue[] => {
 const logPopulateNarVenue = async (input: LogPopulateNarVenueInput): Promise<void> => {
   const raceKey = `nar:${input.venue.yyyymmdd}:${input.venue.keibajoCode}`;
   const message = `babaCode=${input.venue.babaCode} ${input.message}`;
-  await logFetch(input.db, POPULATE_NAR_VENUE_JOB_TYPE, input.status, raceKey, message).catch(
-    (error) => {
-      console.warn(`[scheduled-race-list] logPopulateNarVenue failed`, error);
-    },
-  );
+  const jobType = input.jobType ?? POPULATE_NAR_VENUE_JOB_TYPE;
+  await logFetch(input.db, jobType, input.status, raceKey, message).catch((error) => {
+    console.warn(`[scheduled-race-list] logPopulateNarVenue failed`, error);
+  });
 };
 
 const fetchNarVenueLinks = async (input: FetchNarVenueLinksInput): Promise<Map<string, string>> => {
@@ -255,6 +264,50 @@ const fetchNarVenueLinks = async (input: FetchNarVenueLinksInput): Promise<Map<s
   }
 };
 
+// Hyperdrive fallback (task F2 A): when CloudFront blocks the Worker from
+// fetching `keiba.go` RaceList HTML (404 / connection error) the venue map
+// comes back empty. In that case synthesize the per-race DebaTable URL from
+// the data we already have — Hyperdrive's `nvd_ra` row supplies `babaCode`
+// + `yyyymmdd` + `raceBango`, and the keiba.go URL pattern is purely
+// deterministic. Without this fallback, every NAR race is permanently
+// skipped whenever the keiba.go origin is unreachable from the Worker IP.
+const buildNarDebaUrlFromHyperdrive = (input: NarDebaUrlSynthInput): string => {
+  const raceDate = `${input.yyyymmdd.slice(0, 4)}%2F${input.yyyymmdd.slice(4, 6)}%2F${input.yyyymmdd.slice(6, 8)}`;
+  return `${KEIBA_GO_DEBA_TABLE_BASE_URL}?k_raceDate=${raceDate}&k_raceNo=${Number(
+    input.raceBango,
+  )}&k_babaCode=${input.babaCode}`;
+};
+
+const buildHyperdriveNarResolver = (
+  db: D1Database,
+  narRows: IntermediateRow[],
+): NarDebaUrlResolver => {
+  const byKey = new Map<string, string>();
+  narRows.forEach((row) => {
+    const babaCode = NAR_BABA_CODE_LOOKUP[row.keibajoCode];
+    if (!babaCode) {
+      return;
+    }
+    const yyyymmdd = `${row.kaisaiNen}${row.kaisaiTsukihi}`;
+    byKey.set(`${buildVenueKey(yyyymmdd, row.keibajoCode)}:${row.raceBango}`, babaCode);
+  });
+  return async ({ yyyymmdd, keibajoCode, raceBango }) => {
+    const babaCode = byKey.get(`${buildVenueKey(yyyymmdd, keibajoCode)}:${raceBango}`);
+    if (!babaCode) {
+      return null;
+    }
+    const synthesized = buildNarDebaUrlFromHyperdrive({ babaCode, raceBango, yyyymmdd });
+    await logPopulateNarVenue({
+      db,
+      jobType: POPULATE_NAR_VENUE_HYPERDRIVE_FALLBACK_JOB_TYPE,
+      message: `synthesized deba URL ${synthesized} (raceBango=${raceBango})`,
+      status: POPULATE_FALLBACK_STATUS,
+      venue: { babaCode, keibajoCode, yyyymmdd },
+    });
+    return synthesized;
+  };
+};
+
 const buildDefaultNarResolver =
   (venueLinkMap: Map<string, Map<string, string>>): NarDebaUrlResolver =>
   async ({ yyyymmdd, keibajoCode, raceBango }) =>
@@ -271,7 +324,12 @@ const prepareNarResolver = async (input: PrepareNarResolverInput): Promise<NarDe
       return [buildVenueKey(venue.yyyymmdd, venue.keibajoCode), links];
     }),
   );
-  return buildDefaultNarResolver(new Map(entries));
+  // Primary resolver = keiba.go RaceList HTML links.
+  // Fallback resolver = synthesized DebaTable URL from Hyperdrive data,
+  // used when CloudFront 404s the Worker's RaceList fetch (task F2 A).
+  const primary = buildDefaultNarResolver(new Map(entries));
+  const fallback = buildHyperdriveNarResolver(input.db, input.rows);
+  return async (resolverInput) => (await primary(resolverInput)) ?? (await fallback(resolverInput));
 };
 
 const padJraSegment = (value: string | null, width: number): string | null =>

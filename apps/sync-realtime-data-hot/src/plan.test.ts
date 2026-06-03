@@ -149,13 +149,13 @@ it("uses KV race-list cache when available and skips D1", async () => {
   expect(env.REALTIME_HOT_DB.prepare).not.toHaveBeenCalled();
 });
 
-it("skips past races and does not enqueue or acquire lock", async () => {
-  // Cache only nar list with a past-race entry; jra list is empty.
+it("skips past races whose finalSlot was already captured (no catch-up needed)", async () => {
+  // raceStart 11:00 JST, now 12:00 JST (1 hour past). finalSlot = 11:02.
+  // lastOddsFetchAt at 11:03 already past final slot → skip.
   const pastNar: RaceListEntry[] = [
     {
-      lastOddsFetchAt: null,
+      lastOddsFetchAt: "2026-05-28T11:03:00+09:00",
       raceKey: "nar:20260528:42:01",
-      // Race start 1 hour before "now" (well past the 2-min grace).
       raceStartAtJst: "2026-05-28T11:00:00+09:00",
       source: "nar",
     },
@@ -203,4 +203,86 @@ it("future race still enqueues when ttl is positive", async () => {
     raceKey: "nar:20260528:42:01",
     type: "fetch-odds",
   });
+});
+
+it("enqueues a past race within 60 minutes when lastOddsFetchAt never captured the final slot (catch-up)", async () => {
+  // raceStart = 2026-05-28T15:00:00+09:00, now = 2026-05-28T06:30:00Z = 15:30 JST
+  // → 30 minutes past raceStart, final slot = 15:02, lastOddsFetchAt at 14:50 < 15:02.
+  const pastNar: RaceListEntry[] = [
+    {
+      lastOddsFetchAt: "2026-05-28T14:50:00+09:00",
+      raceKey: "nar:20260528:42:01",
+      raceStartAtJst: "2026-05-28T15:00:00+09:00",
+      source: "nar",
+    },
+  ];
+  const env = buildEnv({
+    kvGet: async (key) => {
+      if (key === "odds:race-list:v1:nar:20260528") {
+        return JSON.stringify(pastNar);
+      }
+      if (key === "odds:race-list:v1:jra:20260528") {
+        return JSON.stringify([]);
+      }
+      return null;
+    },
+  });
+  const result = await planOddsFetches(env, new Date("2026-05-28T06:30:00Z"), "20260528");
+  expect(result).toStrictEqual({ queued: 1, skipped: 0 });
+  expect(env.REALTIME_HOT_JOBS.send).toHaveBeenCalledWith({
+    raceKey: "nar:20260528:42:01",
+    type: "fetch-odds",
+  });
+});
+
+it("skips past race when lastOddsFetchAt already covers the final slot", async () => {
+  // Final slot at 15:02, lastOddsFetchAt at 15:05 — final captured, no catch-up.
+  const pastNar: RaceListEntry[] = [
+    {
+      lastOddsFetchAt: "2026-05-28T15:05:00+09:00",
+      raceKey: "nar:20260528:42:01",
+      raceStartAtJst: "2026-05-28T15:00:00+09:00",
+      source: "nar",
+    },
+  ];
+  const env = buildEnv({
+    kvGet: async (key) => {
+      if (key === "odds:race-list:v1:nar:20260528") {
+        return JSON.stringify(pastNar);
+      }
+      if (key === "odds:race-list:v1:jra:20260528") {
+        return JSON.stringify([]);
+      }
+      return null;
+    },
+  });
+  const result = await planOddsFetches(env, new Date("2026-05-28T06:30:00Z"), "20260528");
+  expect(result).toStrictEqual({ queued: 0, skipped: 1 });
+  expect(env.REALTIME_HOT_JOBS.send).not.toHaveBeenCalled();
+});
+
+it("skips past race that is older than the 60-minute catch-up window", async () => {
+  // raceStart = 09:00 JST, now = 11:00 JST → 120 minutes past, beyond catch-up.
+  const ancientNar: RaceListEntry[] = [
+    {
+      lastOddsFetchAt: null,
+      raceKey: "nar:20260528:42:01",
+      raceStartAtJst: "2026-05-28T09:00:00+09:00",
+      source: "nar",
+    },
+  ];
+  const env = buildEnv({
+    kvGet: async (key) => {
+      if (key === "odds:race-list:v1:nar:20260528") {
+        return JSON.stringify(ancientNar);
+      }
+      if (key === "odds:race-list:v1:jra:20260528") {
+        return JSON.stringify([]);
+      }
+      return null;
+    },
+  });
+  const result = await planOddsFetches(env, new Date("2026-05-28T02:00:00Z"), "20260528");
+  expect(result).toStrictEqual({ queued: 0, skipped: 1 });
+  expect(env.REALTIME_HOT_JOBS.send).not.toHaveBeenCalled();
 });

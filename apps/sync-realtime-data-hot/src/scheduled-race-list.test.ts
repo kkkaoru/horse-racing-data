@@ -213,7 +213,7 @@ it("listTodayRacesFromHyperdrive fetches NAR venue race list once per venue usin
   );
 });
 
-it("listTodayRacesFromHyperdrive skips NAR rows whose per-race deba URL is missing from venue HTML", async () => {
+it("listTodayRacesFromHyperdrive falls back to Hyperdrive-synthesized deba URL for NAR rows missing from venue HTML", async () => {
   const query = vi.fn().mockResolvedValue({
     rows: [
       {
@@ -245,7 +245,54 @@ it("listTodayRacesFromHyperdrive skips NAR rows whose per-race deba URL is missi
       url: "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F05%2F29&k_raceNo=8&k_babaCode=36",
     },
   ]);
-  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const env = buildEnv();
+  const rows = await listTodayRacesFromHyperdrive(env, "20260529", {
+    pool: { query } as never,
+  });
+  expect(rows).toStrictEqual([
+    {
+      debaUrl:
+        "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F05%2F29&k_raceNo=8&k_babaCode=36",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0529",
+      keibajoCode: "30",
+      oddsLinksJson: "{}",
+      raceBango: "08",
+      raceKey: "nar:2026:0529:30:08",
+      raceStartAtJst: "2026-05-29T14:30:00+09:00",
+      source: "nar",
+    },
+    {
+      debaUrl:
+        "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F05%2F29&k_raceNo=12&k_babaCode=36",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0529",
+      keibajoCode: "30",
+      oddsLinksJson: "{}",
+      raceBango: "12",
+      raceKey: "nar:2026:0529:30:12",
+      raceStartAtJst: "2026-05-29T15:00:00+09:00",
+      source: "nar",
+    },
+  ]);
+});
+
+it("listTodayRacesFromHyperdrive falls back to Hyperdrive deba URL for all NAR rows when venue HTML fetch throws", async () => {
+  const query = vi.fn().mockResolvedValue({
+    rows: [
+      {
+        hasso_jikoku: "1430",
+        kaisai_kai: null,
+        kaisai_nen: "2026",
+        kaisai_nichime: null,
+        kaisai_tsukihi: "0529",
+        keibajo_code: "30",
+        race_bango: "08",
+        source: "nar",
+      },
+    ],
+  });
+  vi.mocked(fetchRaceLinksFromRaceList).mockRejectedValue(new Error("network down"));
   const env = buildEnv();
   const rows = await listTodayRacesFromHyperdrive(env, "20260529", {
     pool: { query } as never,
@@ -264,32 +311,6 @@ it("listTodayRacesFromHyperdrive skips NAR rows whose per-race deba URL is missi
       source: "nar",
     },
   ]);
-  expect(warnSpy).toHaveBeenCalled();
-});
-
-it("listTodayRacesFromHyperdrive skips all NAR rows when venue HTML fetch throws", async () => {
-  const query = vi.fn().mockResolvedValue({
-    rows: [
-      {
-        hasso_jikoku: "1430",
-        kaisai_kai: null,
-        kaisai_nen: "2026",
-        kaisai_nichime: null,
-        kaisai_tsukihi: "0529",
-        keibajo_code: "30",
-        race_bango: "08",
-        source: "nar",
-      },
-    ],
-  });
-  vi.mocked(fetchRaceLinksFromRaceList).mockRejectedValue(new Error("network down"));
-  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-  const env = buildEnv();
-  const rows = await listTodayRacesFromHyperdrive(env, "20260529", {
-    pool: { query } as never,
-  });
-  expect(rows).toStrictEqual([]);
-  expect(warnSpy).toHaveBeenCalled();
 });
 
 it("listTodayRacesFromHyperdrive writes a populate-nar-venue empty fetch_log when venue HTML returns zero race links", async () => {
@@ -363,7 +384,7 @@ it("listTodayRacesFromHyperdrive writes a populate-nar-venue error fetch_log whe
   expect(args?.[2]).toBe("error");
 });
 
-it("listTodayRacesFromHyperdrive swallows logFetch failure during populate-nar-venue empty path", async () => {
+it("listTodayRacesFromHyperdrive swallows logFetch failure during populate-nar-venue empty path and still produces a fallback row", async () => {
   const query = vi.fn().mockResolvedValue({
     rows: [
       {
@@ -393,7 +414,20 @@ it("listTodayRacesFromHyperdrive swallows logFetch failure during populate-nar-v
   const rows = await listTodayRacesFromHyperdrive(env, "20260529", {
     pool: { query } as never,
   });
-  expect(rows).toStrictEqual([]);
+  expect(rows).toStrictEqual([
+    {
+      debaUrl:
+        "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F05%2F29&k_raceNo=8&k_babaCode=36",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0529",
+      keibajoCode: "30",
+      oddsLinksJson: "{}",
+      raceBango: "08",
+      raceKey: "nar:2026:0529:30:08",
+      raceStartAtJst: "2026-05-29T14:30:00+09:00",
+      source: "nar",
+    },
+  ]);
   expect(warnSpy).toHaveBeenCalled();
 });
 
@@ -773,6 +807,70 @@ it("populateMultiDayOddsFetchState defaults daysAhead to 2 yielding three days w
     ],
     total: 0,
   });
+});
+
+it("listTodayRacesFromHyperdrive logs populate-nar-venue-hyperdrive-fallback fetch_log when fallback synthesizes a deba URL", async () => {
+  const query = vi.fn().mockResolvedValue({
+    rows: [
+      {
+        hasso_jikoku: "1430",
+        kaisai_kai: null,
+        kaisai_nen: "2026",
+        kaisai_nichime: null,
+        kaisai_tsukihi: "0529",
+        keibajo_code: "30",
+        race_bango: "08",
+        source: "nar",
+      },
+    ],
+  });
+  vi.mocked(fetchRaceLinksFromRaceList).mockRejectedValue(new Error("CloudFront 404"));
+  const logBind = vi.fn((..._args: unknown[]) => ({
+    run: vi.fn(async () => ({ meta: { changes: 1 } })),
+  }));
+  const logPrepare = vi.fn(() => ({ bind: logBind }));
+  const env = {
+    HYPERDRIVE: { connectionString: "postgres://test" },
+    ODDS_HOT_KV: buildKv(),
+    REALTIME_HOT_DB: { prepare: logPrepare } as unknown as D1Database,
+  } as unknown as Env;
+  await listTodayRacesFromHyperdrive(env, "20260529", { pool: { query } as never });
+  const fallbackCall = logBind.mock.calls.find(
+    (args) => args[1] === "populate-nar-venue-hyperdrive-fallback",
+  );
+  expect(fallbackCall?.[2]).toBe("fallback");
+  expect(fallbackCall?.[0]).toBe("nar:20260529:30");
+});
+
+it("listTodayRacesFromHyperdrive primary keiba.go links win over Hyperdrive fallback when both produce URLs", async () => {
+  const query = vi.fn().mockResolvedValue({
+    rows: [
+      {
+        hasso_jikoku: "1430",
+        kaisai_kai: null,
+        kaisai_nen: "2026",
+        kaisai_nichime: null,
+        kaisai_tsukihi: "0529",
+        keibajo_code: "30",
+        race_bango: "08",
+        source: "nar",
+      },
+    ],
+  });
+  vi.mocked(fetchRaceLinksFromRaceList).mockResolvedValue([
+    {
+      babaCode: "36",
+      raceNumber: "08",
+      url: "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F05%2F29&k_raceNo=8&k_babaCode=36&primary=1",
+    },
+  ]);
+  const env = buildEnv();
+  const rows = await listTodayRacesFromHyperdrive(env, "20260529", {
+    pool: { query } as never,
+  });
+  expect(rows[0]?.debaUrl).toBe(
+    "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F05%2F29&k_raceNo=8&k_babaCode=36&primary=1",
+  );
 });
 
 it("populateTodayOddsFetchState propagates D1 upsert errors", async () => {
