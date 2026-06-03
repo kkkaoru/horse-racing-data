@@ -9,6 +9,7 @@ const makeEnv = (overrides: Partial<Env>): Env => ({
   FINISH_POSITION_PREDICT_CONTAINER: {} as unknown as Env["FINISH_POSITION_PREDICT_CONTAINER"],
   NEON_DATABASE_URL: "postgres://example",
   PREDICT_DAYS_AHEAD: "2",
+  TRIGGER_TOKEN: "test-token",
   ...overrides,
 });
 

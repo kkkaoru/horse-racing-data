@@ -35,11 +35,20 @@ FinishPositionPredictContainer (Durable Object, standard-4: 4 vCPU / 12 GiB / 20
   1. build v7-lineage feature parquet for TODAY's races (DuckDB base in
      --target-date mode + v7 layer scripts, reused unchanged) — see "Today's
      races feature build" below
-  2. load model from R2 finish-position/{category}/{modelVersion}/model.json
+  2. load model from the baked-in image path
+     /models/finish-position/{category}/{modelVersion}/model.json
+     (no runtime R2-scope dependency; MODELS_DIR=/models, layout mirrors the
+     R2 keys so predict_lib.model_meta.build_r2_object_key resolves unchanged)
   3. score → rank within race → dedupe → chunked UPSERT into
      race_finish_position_model_predictions  (model_version = {category}-v7-lineage-wf-21y)
   4. write 1 detailed audit row to finish_position_cron_executions
 ```
+
+On-demand trigger: in addition to the scheduled cron, the Worker exposes an
+authenticated `POST /run` endpoint (Bearer token = `TRIGGER_TOKEN` secret) that
+starts the same container with either an explicit `runDate` (`YYYYMMDD`) or
+today's JST date. Useful for back-to-back runs, manual retries, or a same-day
+kick after a model swap, without waiting for the next cron tick.
 
 ### Today's races feature build (UPCOMING + already-run)
 
@@ -130,10 +139,12 @@ enableInternet })` is the documented batch / cron container pattern
 - Docker Desktop (or Colima) running locally — required for `wrangler deploy` to
   build + push the container image. Verify with `docker info`.
 - `wrangler login` to your Cloudflare account (account_id `78109ec18c7c85b194b19fb32e3bb149`).
-- The v7-lineage models already uploaded to R2 bucket
-  `pc-keiba-finish-position-models` under
-  `finish-position/{jra,nar,ban-ei}/{modelVersion}/model.json` + `metadata.json`
-  (done in Stage 6a of `FINISH_POSITION_MODEL_V7_LINEAGE.md` §10).
+- The v7-lineage model artifacts staged into the container build context as
+  `apps/finish-position-predict-container/models/finish-position/{jra,nar,ban-ei}/{modelVersion}/{model.json,metadata.json}`
+  (gitignored scratch — see `.gitignore`). Source-of-truth copies live under
+  `apps/pc-keiba-viewer/tmp/models/{jra-cb,nar-xgb,banei-cb}-v7-lineage-wf-21y/`
+  from Stage 6a of `FINISH_POSITION_MODEL_V7_LINEAGE.md` §10; the Dockerfile
+  COPYs them into the image at `/models`.
 - A Neon (Postgres) connection string for the production DB.
 
 ---
@@ -155,29 +166,39 @@ bun run --filter finish-position-cron d1:migrate
 This creates `finish_position_cron_executions` (insert-only audit — never
 DELETE / TRUNCATE / DROP, per project rule).
 
-## Step 2 — grant the Worker the model R2 bucket (read)
+## Step 2 — stage the model artifacts into the container build context
 
-The container reads models from R2. If you want the Worker (rather than the
-container's own egress) to stage models, add the bucket binding. In this scaffold
-the container fetches models over HTTPS directly using its own egress; if you
-prefer a Worker R2 binding, add to `wrangler.jsonc`:
+Models are **baked into the image** (no runtime R2 read). Copy the production
+v7-lineage artifacts into the gitignored build-context scratch dir before
+`wrangler deploy` so the Dockerfile `COPY apps/finish-position-predict-container/models /models`
+picks them up:
 
-```jsonc
-"r2_buckets": [
-  { "binding": "FINISH_POSITION_MODELS", "bucket_name": "pc-keiba-finish-position-models" }
-]
+```sh
+for c in jra:jra-cb nar:nar-xgb ban-ei:banei-cb; do
+  cat=${c%%:*}; prefix=${c##*:}
+  ver=${prefix}-v7-lineage-wf-21y
+  dst=apps/finish-position-predict-container/models/finish-position/${cat}/${ver}
+  mkdir -p "$dst"
+  cp apps/pc-keiba-viewer/tmp/models/${ver}/model.json    "$dst/model.json"
+  cp apps/pc-keiba-viewer/tmp/models/${ver}/metadata.json "$dst/metadata.json"
+done
 ```
 
-and have the deploy/warm step copy the model objects into the container's
-`MODELS_DIR` (`/models`) at start. Either path is acceptable; pick one before
-deploy.
+The destination dir is gitignored (`.gitignore` covers
+`apps/finish-position-predict-container/models/`) — verify with `git status`
+that no `model.json` / `metadata.json` is staged. Expected sizes: JRA `model.json`
+~7.0 MB, NAR ~3.6 MB, Ban-ei ~4.1 MB; `metadata.json` `feature_names` lengths
+must be 226 / 175 / 111 respectively (parity sanity).
 
-## Step 3 — set the Neon secret (never commit it)
+## Step 3 — set the Worker secrets (never commit them)
 
 ```sh
 cd apps/finish-position-cron
 bunx wrangler secret put NEON_DATABASE_URL
 # paste: postgresql://<user>:<password>@<host>/<db>?sslmode=require
+bunx wrangler secret put TRIGGER_TOKEN
+# paste: a long random token (>= 32 chars). Used as the Bearer token by
+# POST /run (on-demand trigger). Treat it like a password.
 ```
 
 `PREDICT_DAYS_AHEAD` is a plain var in `wrangler.jsonc` (default `"2"`); change it
@@ -208,7 +229,19 @@ bun run --filter finish-position-cron deploy
    ```
    (Local containers run without the `max_instances` cap; use a Neon branch /
    throwaway DB for a true dry-run so you do not write into prod.)
-3. **Audit rows** after a real fire:
+3. **On-demand trigger** (after deploy, to predict TODAY immediately without
+   waiting for the next cron tick):
+   ```sh
+   curl -X POST https://finish-position-cron.<your-subdomain>.workers.dev/run \
+     -H "Authorization: Bearer $TRIGGER_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{}'                            # omit runDate → today (JST)
+   # or with an explicit date:
+   #   -d '{"runDate":"20260603"}'
+   ```
+   Expect `{"ok":true,"runDate":"YYYY-MM-DD"}`. A missing / wrong token returns
+   401; a malformed `runDate` returns 400 (no container started).
+4. **Audit rows** after a real fire:
    ```sh
    bunx wrangler d1 execute finish-position-cron-db --remote \
      --command "select run_date, status, races_predicted, duration_ms, error
@@ -217,7 +250,7 @@ bun run --filter finish-position-cron deploy
    ```
    Expect a `started` row from the Worker and (from the container) a `success`
    row with `races_predicted > 0`. An `error` row carries the failure message.
-4. **Predictions written** (Neon):
+5. **Predictions written** (Neon):
    ```sql
    select model_version, source, count(*)
    from race_finish_position_model_predictions

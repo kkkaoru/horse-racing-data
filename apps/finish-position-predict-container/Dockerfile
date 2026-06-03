@@ -44,10 +44,13 @@ COPY apps/finish-position-predict-container/src /app/src
 COPY apps/pc-keiba-viewer/src/scripts/finish_position_features_duckdb.py /app/pipeline/
 COPY apps/pc-keiba-viewer/src/scripts/finish-position-features /app/pipeline/finish-position-features
 
-# Models are NOT baked in — they are pulled from R2
-# (finish-position/{category}/{modelVersion}/) into MODELS_DIR by the deploy /
-# warm step. See DEPLOY.md. The image stays small and model updates need no
-# rebuild.
+# Models are BAKED into the image under MODELS_DIR (/models) so the container has
+# no runtime R2-scope dependency. The directory layout mirrors the R2 object keys
+# (finish-position/{category}/{modelVersion}/{model.json,metadata.json}) so
+# predict_lib.model_meta.build_r2_object_key resolves the baked path unchanged.
+# These model artifacts are gitignored scratch (apps/finish-position-predict-
+# container/models/, see .gitignore) staged into the build context before deploy.
+COPY apps/finish-position-predict-container/models /models
 
 ENV PYTHONPATH=/app/src:/app/pipeline
 
