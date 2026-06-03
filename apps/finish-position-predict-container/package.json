@@ -1,0 +1,18 @@
+{
+  "name": "finish-position-predict-container",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "format": "oxfmt --write package.json pyproject.toml DEPLOY.md",
+    "format:check": "oxfmt --check package.json pyproject.toml DEPLOY.md",
+    "lint": "oxlint . --no-error-on-unmatched-pattern",
+    "python:check": "bun run python:lint && bun run python:typecheck && bun run python:test",
+    "python:lint": "uv run ruff check",
+    "python:test": "uv run pytest",
+    "python:typecheck": "uv run basedpyright --project pyrightconfig.json"
+  },
+  "devDependencies": {
+    "oxfmt": "0.48.0",
+    "oxlint": "1.63.0"
+  }
+}

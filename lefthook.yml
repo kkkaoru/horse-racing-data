@@ -48,6 +48,14 @@ pre-commit:
     test-sync-realtime-data-features:
       glob: "apps/sync-realtime-data-features/**/*.ts"
       run: bun run --filter sync-realtime-data-features test:coverage
+    tsc-finish-position-cron:
+      glob: "apps/finish-position-cron/**/*.ts"
+      run: bun run --filter finish-position-cron tsc
+    # test:coverage enforces the vitest thresholds (all >= 95) so coverage
+    # cannot regress without an explicit threshold change.
+    test-finish-position-cron:
+      glob: "apps/finish-position-cron/**/*.ts"
+      run: bun run --filter finish-position-cron test:coverage
     tsc-horse-racing-duckdb:
       glob: "apps/horse-racing-duckdb/**/*.ts"
       run: bun run --filter horse-racing-duckdb tsc
@@ -110,3 +118,12 @@ pre-commit:
         - "apps/pc-keiba-viewer/src/scripts/*.{py,pyi}"
         - "apps/pc-keiba-viewer/src/scripts/**/*.{py,pyi}"
       run: bun run --filter pc-keiba-viewer python:check
+    # apps/finish-position-predict-container/ 配下 Python (Cloudflare Container の
+    # 着順予測 predict_lib + entrypoint)。 python:check が ruff + basedpyright +
+    # pytest --cov-fail-under=95 (predict_lib) を一括実行する。
+    python-finish-position-predict-container:
+      glob:
+        - "apps/finish-position-predict-container/src/*.{py,pyi}"
+        - "apps/finish-position-predict-container/src/**/*.{py,pyi}"
+        - "apps/finish-position-predict-container/tests/*.{py,pyi}"
+      run: cd apps/finish-position-predict-container && bun run python:check
