@@ -59,6 +59,7 @@ vi.mock("node:fs/promises", () => ({
 const jraExpectation: CategoryExpectation = {
   category: "jra",
   source: "jra",
+  storedSource: "jra",
   modelVersion: "jra-cb-v7-lineage-wf-21y",
   expectedYears: 20,
   top1Low: 0.45,
@@ -68,6 +69,7 @@ const jraExpectation: CategoryExpectation = {
 const naroExpectation: CategoryExpectation = {
   category: "nar",
   source: "nar",
+  storedSource: "nar",
   modelVersion: "nar-xgb-v7-lineage-wf-21y",
   expectedYears: 20,
   top1Low: 0.5,
@@ -77,6 +79,7 @@ const naroExpectation: CategoryExpectation = {
 const baneiExpectation: CategoryExpectation = {
   category: "banei",
   source: "ban-ei",
+  storedSource: "nar",
   modelVersion: "banei-cb-v7-lineage-wf-21y",
   expectedYears: 19,
   top1Low: 0.3,
@@ -92,6 +95,7 @@ test("CATEGORY_EXPECTATIONS lists jra nar banei with their WF model versions", (
     {
       category: "jra",
       source: "jra",
+      storedSource: "jra",
       modelVersion: "jra-cb-v7-lineage-wf-21y",
       expectedYears: 20,
       top1Low: 0.45,
@@ -100,6 +104,7 @@ test("CATEGORY_EXPECTATIONS lists jra nar banei with their WF model versions", (
     {
       category: "nar",
       source: "nar",
+      storedSource: "nar",
       modelVersion: "nar-xgb-v7-lineage-wf-21y",
       expectedYears: 20,
       top1Low: 0.5,
@@ -108,6 +113,7 @@ test("CATEGORY_EXPECTATIONS lists jra nar banei with their WF model versions", (
     {
       category: "banei",
       source: "ban-ei",
+      storedSource: "nar",
       modelVersion: "banei-cb-v7-lineage-wf-21y",
       expectedYears: 19,
       top1Low: 0.3,
@@ -129,12 +135,12 @@ test("buildFoldCoverageSql groups by model_version and source for the given vers
   `);
 });
 
-test("buildTop1PlausibilitySql sums top1_hit_sum and prediction_count", () => {
+test("buildTop1PlausibilitySql sums top1_hit_sum and race_count", () => {
   expect(buildTop1PlausibilitySql("nar-xgb-v7-lineage-wf-21y")).toBe(`
     select
       model_version,
       sum(top1_hit_sum) as top1_hit_sum,
-      sum(prediction_count) as prediction_count
+      sum(race_count) as race_count
     from model_prediction_bucket_evaluations
     where model_version = 'nar-xgb-v7-lineage-wf-21y'
     group by model_version
@@ -218,10 +224,32 @@ test("assessFoldCoverage marks ok when observed years equal expected", () => {
   expect(assessFoldCoverage(jraExpectation, rows)).toStrictEqual({
     category: "jra",
     source: "jra",
+    storedSource: "jra",
     modelVersion: "jra-cb-v7-lineage-wf-21y",
     expectedYears: 20,
     observedYears: 20,
     raceCountSum: 500000,
+    ok: true,
+  });
+});
+
+test("assessFoldCoverage matches ban-ei stored rows by storedSource nar", () => {
+  const rows: FoldCoverageRow[] = [
+    {
+      model_version: "banei-cb-v7-lineage-wf-21y",
+      source: "nar",
+      years: 19,
+      race_count_sum: 31771,
+    },
+  ];
+  expect(assessFoldCoverage(baneiExpectation, rows)).toStrictEqual({
+    category: "banei",
+    source: "ban-ei",
+    storedSource: "nar",
+    modelVersion: "banei-cb-v7-lineage-wf-21y",
+    expectedYears: 19,
+    observedYears: 19,
+    raceCountSum: 31771,
     ok: true,
   });
 });
@@ -239,6 +267,7 @@ test("assessFoldCoverage parses string years and race_count_sum from numeric col
   expect(assessFoldCoverage(naroExpectation, rows)).toStrictEqual({
     category: "nar",
     source: "nar",
+    storedSource: "nar",
     modelVersion: "nar-xgb-v7-lineage-wf-21y",
     expectedYears: 20,
     observedYears: 20,
@@ -247,13 +276,14 @@ test("assessFoldCoverage parses string years and race_count_sum from numeric col
   });
 });
 
-test("assessFoldCoverage flags missing coverage when source row is absent", () => {
+test("assessFoldCoverage flags missing coverage when stored source row is absent", () => {
   const rows: FoldCoverageRow[] = [
     { model_version: "banei-cb-v7-lineage-wf-21y", source: "jra", years: 19, race_count_sum: 1 },
   ];
   expect(assessFoldCoverage(baneiExpectation, rows)).toStrictEqual({
     category: "banei",
     source: "ban-ei",
+    storedSource: "nar",
     modelVersion: "banei-cb-v7-lineage-wf-21y",
     expectedYears: 19,
     observedYears: 0,
@@ -269,6 +299,7 @@ test("assessFoldCoverage flags partial coverage when observed years are short", 
   expect(assessFoldCoverage(jraExpectation, rows)).toStrictEqual({
     category: "jra",
     source: "jra",
+    storedSource: "jra",
     modelVersion: "jra-cb-v7-lineage-wf-21y",
     expectedYears: 20,
     observedYears: 18,
@@ -289,6 +320,7 @@ test("assessFoldCoverage treats a non-numeric race_count_sum as zero", () => {
   expect(assessFoldCoverage(jraExpectation, rows)).toStrictEqual({
     category: "jra",
     source: "jra",
+    storedSource: "jra",
     modelVersion: "jra-cb-v7-lineage-wf-21y",
     expectedYears: 20,
     observedYears: 20,
@@ -309,6 +341,7 @@ test("assessFoldCoverage treats a null race_count_sum as zero", () => {
   expect(assessFoldCoverage(jraExpectation, rows)).toStrictEqual({
     category: "jra",
     source: "jra",
+    storedSource: "jra",
     modelVersion: "jra-cb-v7-lineage-wf-21y",
     expectedYears: 20,
     observedYears: 20,
@@ -317,9 +350,9 @@ test("assessFoldCoverage treats a null race_count_sum as zero", () => {
   });
 });
 
-test("assessTop1Plausibility computes the ratio inside the JRA band", () => {
+test("assessTop1Plausibility computes the per-race ratio inside the JRA band", () => {
   const rows: Top1PlausibilityRow[] = [
-    { model_version: "jra-cb-v7-lineage-wf-21y", top1_hit_sum: 50, prediction_count: 100 },
+    { model_version: "jra-cb-v7-lineage-wf-21y", top1_hit_sum: 50, race_count: 100 },
   ];
   expect(assessTop1Plausibility(jraExpectation, rows)).toStrictEqual({
     category: "jra",
@@ -331,9 +364,23 @@ test("assessTop1Plausibility computes the ratio inside the JRA band", () => {
   });
 });
 
+test("assessTop1Plausibility divides ban-ei hits by race_count not prediction_count", () => {
+  const rows: Top1PlausibilityRow[] = [
+    { model_version: "banei-cb-v7-lineage-wf-21y", top1_hit_sum: "10690", race_count: "31771" },
+  ];
+  expect(assessTop1Plausibility(baneiExpectation, rows)).toStrictEqual({
+    category: "banei",
+    modelVersion: "banei-cb-v7-lineage-wf-21y",
+    top1Rate: 10690 / 31771,
+    low: 0.3,
+    high: 0.4,
+    withinBand: true,
+  });
+});
+
 test("assessTop1Plausibility flags a ratio below the band", () => {
   const rows: Top1PlausibilityRow[] = [
-    { model_version: "nar-xgb-v7-lineage-wf-21y", top1_hit_sum: "10", prediction_count: "100" },
+    { model_version: "nar-xgb-v7-lineage-wf-21y", top1_hit_sum: "10", race_count: "100" },
   ];
   expect(assessTop1Plausibility(naroExpectation, rows)).toStrictEqual({
     category: "nar",
@@ -347,7 +394,7 @@ test("assessTop1Plausibility flags a ratio below the band", () => {
 
 test("assessTop1Plausibility flags a ratio above the band", () => {
   const rows: Top1PlausibilityRow[] = [
-    { model_version: "banei-cb-v7-lineage-wf-21y", top1_hit_sum: 90, prediction_count: 100 },
+    { model_version: "banei-cb-v7-lineage-wf-21y", top1_hit_sum: 90, race_count: 100 },
   ];
   expect(assessTop1Plausibility(baneiExpectation, rows)).toStrictEqual({
     category: "banei",
@@ -359,9 +406,9 @@ test("assessTop1Plausibility flags a ratio above the band", () => {
   });
 });
 
-test("assessTop1Plausibility returns null rate when prediction_count is zero", () => {
+test("assessTop1Plausibility returns null rate when race_count is zero", () => {
   const rows: Top1PlausibilityRow[] = [
-    { model_version: "jra-cb-v7-lineage-wf-21y", top1_hit_sum: 0, prediction_count: 0 },
+    { model_version: "jra-cb-v7-lineage-wf-21y", top1_hit_sum: 0, race_count: 0 },
   ];
   expect(assessTop1Plausibility(jraExpectation, rows)).toStrictEqual({
     category: "jra",
@@ -382,7 +429,9 @@ test("assessRaceCountCrosscheck passes when each year is within tolerance", () =
     { year: "2024", actual_race_count: 3000 },
     { year: "2025", actual_race_count: "3015" },
   ];
-  expect(assessRaceCountCrosscheck("jra", bucketRows, actualRows)).toStrictEqual({
+  expect(
+    assessRaceCountCrosscheck({ source: "jra", storedSource: "jra", bucketRows, actualRows }),
+  ).toStrictEqual({
     source: "jra",
     entries: [
       {
@@ -407,13 +456,15 @@ test("assessRaceCountCrosscheck passes when each year is within tolerance", () =
   });
 });
 
-test("assessRaceCountCrosscheck flags a year outside tolerance and ignores other sources", () => {
+test("assessRaceCountCrosscheck flags a year outside tolerance and ignores other stored sources", () => {
   const bucketRows: BucketYearRaceCountRow[] = [
     { source: "nar", year: "2024", bucket_race_count: 2000 },
-    { source: "ban-ei", year: "2024", bucket_race_count: 999 },
+    { source: "jra", year: "2024", bucket_race_count: 999 },
   ];
   const actualRows: ActualYearRaceCountRow[] = [{ year: "2024", actual_race_count: 1000 }];
-  expect(assessRaceCountCrosscheck("nar", bucketRows, actualRows)).toStrictEqual({
+  expect(
+    assessRaceCountCrosscheck({ source: "nar", storedSource: "nar", bucketRows, actualRows }),
+  ).toStrictEqual({
     source: "nar",
     entries: [
       {
@@ -430,6 +481,42 @@ test("assessRaceCountCrosscheck flags a year outside tolerance and ignores other
   });
 });
 
+test("assessRaceCountCrosscheck filters ban-ei stored nar rows against ban-ei actuals", () => {
+  const bucketRows: BucketYearRaceCountRow[] = [
+    { source: "nar", year: "2024", bucket_race_count: 1700 },
+    { source: "nar", year: "2025", bucket_race_count: 1700 },
+  ];
+  const actualRows: ActualYearRaceCountRow[] = [
+    { year: "2024", actual_race_count: 1700 },
+    { year: "2025", actual_race_count: 1700 },
+  ];
+  expect(
+    assessRaceCountCrosscheck({ source: "ban-ei", storedSource: "nar", bucketRows, actualRows }),
+  ).toStrictEqual({
+    source: "ban-ei",
+    entries: [
+      {
+        source: "ban-ei",
+        year: "2024",
+        bucketRaceCount: 1700,
+        actualRaceCount: 1700,
+        relativeDelta: 0,
+        withinTolerance: true,
+      },
+      {
+        source: "ban-ei",
+        year: "2025",
+        bucketRaceCount: 1700,
+        actualRaceCount: 1700,
+        relativeDelta: 0,
+        withinTolerance: true,
+      },
+    ],
+    worstRelativeDelta: 0,
+    allWithinTolerance: true,
+  });
+});
+
 test("assessRaceCountCrosscheck keeps the larger delta when a later year deviates less", () => {
   const bucketRows: BucketYearRaceCountRow[] = [
     { source: "jra", year: "2023", bucket_race_count: 1300 },
@@ -439,7 +526,9 @@ test("assessRaceCountCrosscheck keeps the larger delta when a later year deviate
     { year: "2023", actual_race_count: 1000 },
     { year: "2024", actual_race_count: 1000 },
   ];
-  expect(assessRaceCountCrosscheck("jra", bucketRows, actualRows)).toStrictEqual({
+  expect(
+    assessRaceCountCrosscheck({ source: "jra", storedSource: "jra", bucketRows, actualRows }),
+  ).toStrictEqual({
     source: "jra",
     entries: [
       {
@@ -466,10 +555,12 @@ test("assessRaceCountCrosscheck keeps the larger delta when a later year deviate
 
 test("assessRaceCountCrosscheck records null delta when actuals are missing", () => {
   const bucketRows: BucketYearRaceCountRow[] = [
-    { source: "ban-ei", year: "2024", bucket_race_count: 500 },
+    { source: "nar", year: "2024", bucket_race_count: 500 },
   ];
   const actualRows: ActualYearRaceCountRow[] = [];
-  expect(assessRaceCountCrosscheck("ban-ei", bucketRows, actualRows)).toStrictEqual({
+  expect(
+    assessRaceCountCrosscheck({ source: "ban-ei", storedSource: "nar", bucketRows, actualRows }),
+  ).toStrictEqual({
     source: "ban-ei",
     entries: [
       {
@@ -489,7 +580,9 @@ test("assessRaceCountCrosscheck records null delta when actuals are missing", ()
 test("assessRaceCountCrosscheck on empty bucket rows is vacuously within tolerance", () => {
   const bucketRows: BucketYearRaceCountRow[] = [];
   const actualRows: ActualYearRaceCountRow[] = [{ year: "2024", actual_race_count: 1000 }];
-  expect(assessRaceCountCrosscheck("jra", bucketRows, actualRows)).toStrictEqual({
+  expect(
+    assessRaceCountCrosscheck({ source: "jra", storedSource: "jra", bucketRows, actualRows }),
+  ).toStrictEqual({
     source: "jra",
     entries: [],
     worstRelativeDelta: null,
@@ -579,6 +672,7 @@ test("collectIssues returns empty when everything passes", () => {
         {
           category: "jra",
           source: "jra",
+          storedSource: "jra",
           modelVersion: "jra-cb-v7-lineage-wf-21y",
           expectedYears: 20,
           observedYears: 20,
@@ -611,6 +705,7 @@ test("collectIssues reports a FAIL line for short fold coverage", () => {
         {
           category: "nar",
           source: "nar",
+          storedSource: "nar",
           modelVersion: "nar-xgb-v7-lineage-wf-21y",
           expectedYears: 20,
           observedYears: 18,
@@ -721,6 +816,7 @@ test("buildReport composes a passing report with no issues", () => {
       {
         category: "jra",
         source: "jra",
+        storedSource: "jra",
         modelVersion: "jra-cb-v7-lineage-wf-21y",
         expectedYears: 20,
         observedYears: 20,
@@ -759,6 +855,7 @@ test("buildReport composes a failing report when fold coverage is short", () => 
       {
         category: "nar",
         source: "nar",
+        storedSource: "nar",
         modelVersion: "nar-xgb-v7-lineage-wf-21y",
         expectedYears: 20,
         observedYears: 5,
@@ -850,7 +947,7 @@ const buildScriptedRunner = (): QueryRunner => {
       return respond([
         {
           model_version: "banei-cb-v7-lineage-wf-21y",
-          source: "ban-ei",
+          source: "nar",
           years: 19,
           race_count_sum: 100,
         },
@@ -859,16 +956,16 @@ const buildScriptedRunner = (): QueryRunner => {
     if (sql.includes("sum(top1_hit_sum) as top1_hit_sum")) {
       if (sql.includes("jra-cb-v7-lineage-wf-21y")) {
         return respond([
-          { model_version: "jra-cb-v7-lineage-wf-21y", top1_hit_sum: 50, prediction_count: 100 },
+          { model_version: "jra-cb-v7-lineage-wf-21y", top1_hit_sum: 50, race_count: 100 },
         ]);
       }
       if (sql.includes("nar-xgb-v7-lineage-wf-21y")) {
         return respond([
-          { model_version: "nar-xgb-v7-lineage-wf-21y", top1_hit_sum: 55, prediction_count: 100 },
+          { model_version: "nar-xgb-v7-lineage-wf-21y", top1_hit_sum: 55, race_count: 100 },
         ]);
       }
       return respond([
-        { model_version: "banei-cb-v7-lineage-wf-21y", top1_hit_sum: 35, prediction_count: 100 },
+        { model_version: "banei-cb-v7-lineage-wf-21y", top1_hit_sum: 35, race_count: 100 },
       ]);
     }
     if (sql.includes("as bucket_race_count")) {

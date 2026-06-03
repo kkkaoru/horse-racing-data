@@ -21,6 +21,7 @@ import { FINISH_POSITION_V7_LINEAGE_MODEL_VERSIONS } from "./v7-lineage-model-ve
 
 export type VerifyCategory = "jra" | "nar" | "banei";
 export type VerifySource = "jra" | "nar" | "ban-ei";
+export type VerifyStoredSource = "jra" | "nar";
 export type OverallStatus = "pass" | "warn" | "fail";
 
 export interface FoldCoverageRow {
@@ -33,7 +34,7 @@ export interface FoldCoverageRow {
 export interface Top1PlausibilityRow {
   model_version: string;
   top1_hit_sum: string | number | null;
-  prediction_count: string | number | null;
+  race_count: string | number | null;
 }
 
 export interface BucketYearRaceCountRow {
@@ -69,6 +70,7 @@ export interface TableExistsRow {
 export interface CategoryExpectation {
   category: VerifyCategory;
   source: VerifySource;
+  storedSource: VerifyStoredSource;
   modelVersion: string;
   expectedYears: number;
   top1Low: number;
@@ -78,6 +80,7 @@ export interface CategoryExpectation {
 export interface FoldCoverageAssessment {
   category: VerifyCategory;
   source: VerifySource;
+  storedSource: VerifyStoredSource;
   modelVersion: string;
   expectedYears: number;
   observedYears: number;
@@ -108,6 +111,13 @@ export interface RaceCountCrosscheckResult {
   entries: RaceCountCrosscheckEntry[];
   worstRelativeDelta: number | null;
   allWithinTolerance: boolean;
+}
+
+export interface AssessRaceCountCrosscheckInput {
+  source: VerifySource;
+  storedSource: VerifyStoredSource;
+  bucketRows: BucketYearRaceCountRow[];
+  actualRows: ActualYearRaceCountRow[];
 }
 
 export interface ActiveModelsSummary {
@@ -170,6 +180,7 @@ const CATEGORY_EXPECTATIONS: CategoryExpectation[] = [
   {
     category: "jra",
     source: "jra",
+    storedSource: "jra",
     modelVersion: FINISH_POSITION_V7_LINEAGE_MODEL_VERSIONS.jra,
     expectedYears: 20,
     top1Low: 0.45,
@@ -178,14 +189,20 @@ const CATEGORY_EXPECTATIONS: CategoryExpectation[] = [
   {
     category: "nar",
     source: "nar",
+    storedSource: "nar",
     modelVersion: FINISH_POSITION_V7_LINEAGE_MODEL_VERSIONS.nar,
     expectedYears: 20,
     top1Low: 0.5,
     top1High: 0.6,
   },
   {
+    // Ban-ei bucket rows are persisted with category='ban-ei' but source='nar'
+    // (keibajo_code='83'), matching the PG path + deployed models. The verifier
+    // therefore matches stored rows by storedSource='nar' while comparing fold
+    // race counts against the keibajo='83' slice of nvd_ra (source='ban-ei').
     category: "banei",
     source: "ban-ei",
+    storedSource: "nar",
     modelVersion: FINISH_POSITION_V7_LINEAGE_MODEL_VERSIONS.banei,
     expectedYears: 19,
     top1Low: 0.3,
@@ -218,7 +235,7 @@ export const buildTop1PlausibilitySql = (modelVersion: string): string => `
     select
       model_version,
       sum(top1_hit_sum) as top1_hit_sum,
-      sum(prediction_count) as prediction_count
+      sum(race_count) as race_count
     from ${BUCKET_TABLE}
     where model_version = '${escapeSqlLiteral(modelVersion)}'
     group by model_version
@@ -278,13 +295,15 @@ export const assessFoldCoverage = (
   rows: FoldCoverageRow[],
 ): FoldCoverageAssessment => {
   const match = rows.find(
-    (row) => row.model_version === expectation.modelVersion && row.source === expectation.source,
+    (row) =>
+      row.model_version === expectation.modelVersion && row.source === expectation.storedSource,
   );
   const observedYears = match === undefined ? 0 : toFiniteNumber(match.years);
   const raceCountSum = match === undefined ? 0 : toFiniteNumber(match.race_count_sum);
   return {
     category: expectation.category,
     source: expectation.source,
+    storedSource: expectation.storedSource,
     modelVersion: expectation.modelVersion,
     expectedYears: expectation.expectedYears,
     observedYears,
@@ -298,9 +317,12 @@ export const assessTop1Plausibility = (
   rows: Top1PlausibilityRow[],
 ): Top1PlausibilityAssessment => {
   const match = rows.find((row) => row.model_version === expectation.modelVersion);
-  const predictionCount = match === undefined ? 0 : toFiniteNumber(match.prediction_count);
+  // top1_hit_sum is a per-race indicator (predicted-rank-1 horse == actual
+  // winner), so the plausible top1 rate divides by race_count, not the
+  // per-horse prediction_count.
+  const raceCount = match === undefined ? 0 : toFiniteNumber(match.race_count);
   const top1HitSum = match === undefined ? 0 : toFiniteNumber(match.top1_hit_sum);
-  const top1Rate = predictionCount > 0 ? top1HitSum / predictionCount : null;
+  const top1Rate = raceCount > 0 ? top1HitSum / raceCount : null;
   const withinBand =
     top1Rate !== null && top1Rate >= expectation.top1Low && top1Rate <= expectation.top1High;
   return {
@@ -339,15 +361,14 @@ const pickWorstDelta = (entries: RaceCountCrosscheckEntry[]): number | null =>
   }, null);
 
 export const assessRaceCountCrosscheck = (
-  source: VerifySource,
-  bucketRows: BucketYearRaceCountRow[],
-  actualRows: ActualYearRaceCountRow[],
+  input: AssessRaceCountCrosscheckInput,
 ): RaceCountCrosscheckResult => {
+  const { source, storedSource, bucketRows, actualRows } = input;
   const actualByYear = new Map<string, number>(
     actualRows.map((row) => [row.year, toFiniteNumber(row.actual_race_count)]),
   );
   const entries = bucketRows
-    .filter((row) => row.source === source)
+    .filter((row) => row.source === storedSource)
     .map((row) =>
       buildCrosscheckEntry(
         source,
@@ -558,7 +579,12 @@ const gatherCrosscheck = async (
     runner,
     buildActualRaceCountSql(expectation.source),
   );
-  return assessRaceCountCrosscheck(expectation.source, bucketRows, actualRows);
+  return assessRaceCountCrosscheck({
+    source: expectation.source,
+    storedSource: expectation.storedSource,
+    bucketRows,
+    actualRows,
+  });
 };
 
 const gatherCron = async (runner: QueryRunner): Promise<CronSummary> => {
