@@ -34,6 +34,7 @@ def test_build_base_argv_uses_target_date_mode_for_jra() -> None:
         "postgresql://u:p@h/db",
         "--output-dir",
         "/tmp/base",
+        "--allow-empty-targets",
     ]
 
 
@@ -52,7 +53,13 @@ def test_build_base_argv_passes_days_ahead_for_nar() -> None:
         "postgresql://u:p@h/db",
         "--output-dir",
         "/tmp/base",
+        "--allow-empty-targets",
     ]
+
+
+def test_build_base_argv_includes_allow_empty_targets_flag() -> None:
+    argv = build_base_argv(BUILDER, "ban-ei", "20260603", 1, URL, Path("/tmp/base"))
+    assert argv[-1] == "--allow-empty-targets"
 
 
 def test_build_layer_argv_race_internal_has_no_pg_url_or_from_date() -> None:

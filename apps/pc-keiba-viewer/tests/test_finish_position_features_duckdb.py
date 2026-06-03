@@ -178,6 +178,16 @@ def test_parse_args_defaults_target_date_none():
     assert args.days_ahead == 0
 
 
+def test_parse_args_allow_empty_targets_defaults_false():
+    args = subject.parse_args([])
+    assert args.allow_empty_targets is False
+
+
+def test_parse_args_allow_empty_targets_sets_true():
+    args = subject.parse_args(["--allow-empty-targets"])
+    assert args.allow_empty_targets is True
+
+
 def test_target_date_arg_accepts_valid_yyyymmdd():
     assert subject.target_date_arg("20260603") == "20260603"
 

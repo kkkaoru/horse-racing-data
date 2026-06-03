@@ -138,7 +138,12 @@ def build_base_argv(
     database_url: str,
     output_dir: Path,
 ) -> list[str]:
-    """Argv for the DuckDB base build in ``--target-date`` (upcoming) mode."""
+    """Argv for the DuckDB base build in ``--target-date`` (upcoming) mode.
+
+    ``--allow-empty-targets`` is always passed in upcoming mode so a category
+    with no races on ``target_date`` (e.g. JRA on a NAR-only weekday) writes an
+    empty parquet directory and exits 0 instead of aborting the whole pipeline.
+    """
     return [
         PYTHON_BIN,
         str(builder_path),
@@ -152,6 +157,7 @@ def build_base_argv(
         database_url,
         "--output-dir",
         str(output_dir),
+        "--allow-empty-targets",
     ]
 
 

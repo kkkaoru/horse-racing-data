@@ -204,6 +204,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--keep-existing-output", action="store_true")
     parser.add_argument("--force-clean-output", action="store_true")
     parser.add_argument("--temp-dir", type=Path, default=None)
+    parser.add_argument(
+        "--allow-empty-targets",
+        action="store_true",
+        help=(
+            "In --target-date mode, exit 0 with an empty output dir when the "
+            "target window has no race rows. Lets the upcoming-prediction "
+            "pipeline skip a category that has no races today without "
+            "aborting the whole run."
+        ),
+    )
     return parser.parse_args(argv)
 
 
