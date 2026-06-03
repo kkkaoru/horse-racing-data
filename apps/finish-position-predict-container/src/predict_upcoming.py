@@ -28,6 +28,7 @@ import json
 import os
 import sys
 import time
+import traceback
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -202,25 +203,84 @@ def _connect(database_url: str) -> ConnectionLike:
     return connect_postgres(database_url)
 
 
+def _try_record_audit(
+    database_url: str,
+    run_date: str,
+    races_predicted: int,
+    duration_ms: int,
+    error_text: str,
+) -> None:
+    """Try to record an audit row; never raise so the real traceback survives.
+
+    Audit recording opens a fresh connection because the original connection may
+    be in a poisoned state (e.g. the original error came from psycopg itself).
+    Any failure here is swallowed and logged to stderr so the caller's traceback
+    still reaches the container logs.
+    """
+    try:
+        audit_connection = _connect(database_url)
+    except BaseException as audit_connect_error:
+        print(
+            f"[predict-upcoming] audit connect failed: {audit_connect_error}",
+            file=sys.stderr,
+        )
+        return
+    try:
+        _record_audit(audit_connection, run_date, "error", races_predicted, duration_ms, error_text)
+    except BaseException as audit_write_error:
+        print(
+            f"[predict-upcoming] audit write failed: {audit_write_error}",
+            file=sys.stderr,
+        )
+    finally:
+        try:
+            audit_connection.close()
+        except BaseException as audit_close_error:
+            print(
+                f"[predict-upcoming] audit close failed: {audit_close_error}",
+                file=sys.stderr,
+            )
+
+
 def main() -> int:
     started = time.monotonic()
-    database_url = _require_env(NEON_DATABASE_URL_ENV)
-    run_date = _require_env(RUN_DATE_ENV)
-    days_ahead = int(os.environ.get(DAYS_AHEAD_ENV, str(DEFAULT_DAYS_AHEAD)))
-    models_dir = Path(os.environ.get(MODELS_DIR_ENV, "/models"))
-    window = PredictWindow(target_date=run_date, days_ahead=days_ahead, database_url=database_url)
-    connection = _connect(database_url)
+    try:
+        database_url = _require_env(NEON_DATABASE_URL_ENV)
+        run_date = _require_env(RUN_DATE_ENV)
+        days_ahead = int(os.environ.get(DAYS_AHEAD_ENV, str(DEFAULT_DAYS_AHEAD)))
+        models_dir = Path(os.environ.get(MODELS_DIR_ENV, "/models"))
+        window = PredictWindow(
+            target_date=run_date, days_ahead=days_ahead, database_url=database_url
+        )
+        connection = _connect(database_url)
+    except BaseException as bootstrap_error:
+        # Pre-connect failure (missing env var, bad URL, Neon down, etc). Nothing
+        # to audit-write into yet — emit the full traceback so a future silent
+        # startup crash is visible in container logs.
+        traceback.print_exc()
+        print(f"[predict-upcoming] bootstrap failed: {bootstrap_error}", file=sys.stderr)
+        return 1
     races_predicted = 0
     try:
         for category in CATEGORIES:
             races_predicted += _predict_category(connection, category, models_dir, window)
         duration_ms = int((time.monotonic() - started) * 1000)
         _record_audit(connection, run_date, "success", races_predicted, duration_ms, None)
-    except (RuntimeError, ValueError, OSError, KeyError) as error:
+    except BaseException as error:
         duration_ms = int((time.monotonic() - started) * 1000)
-        _record_audit(connection, run_date, "error", races_predicted, duration_ms, str(error))
-        connection.close()
-        print(f"[predict-upcoming] failed: {error}", file=sys.stderr)
+        # Print the FULL traceback to stderr first so it always reaches container
+        # logs even if the audit write also fails (e.g. poisoned connection).
+        traceback.print_exc()
+        error_text = f"{type(error).__name__}: {error}"
+        try:
+            connection.close()
+        except BaseException as close_error:
+            print(
+                f"[predict-upcoming] post-error close failed: {close_error}",
+                file=sys.stderr,
+            )
+        _try_record_audit(database_url, run_date, races_predicted, duration_ms, error_text)
+        print(f"[predict-upcoming] failed: {error_text}", file=sys.stderr)
         return 1
     connection.close()
     print(f"[predict-upcoming] ok run_date={run_date} races_predicted={races_predicted}")
