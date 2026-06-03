@@ -461,6 +461,7 @@ test("processCategoryChunk opens loader, runs aggregate per year, closes loader"
       runningStyleFeatureVersion: "v1",
       finishPositionVersion: "v1",
       modelVersion: "active",
+      statementTimeoutMs: 900_000,
     },
   ]);
   expect(closeMock).toHaveBeenCalledTimes(1);
@@ -575,6 +576,7 @@ test("buildPythonLoaderArgv emits the year-from / year-to / parquet-glob flags",
       runningStyleFeatureVersion: "v1",
       finishPositionVersion: "v1",
       modelVersion: "active",
+      statementTimeoutMs: 900_000,
     }),
   ).toStrictEqual([
     "uv",
@@ -597,5 +599,7 @@ test("buildPythonLoaderArgv emits the year-from / year-to / parquet-glob flags",
     "v1",
     "--finish-position-version",
     "v1",
+    "--statement-timeout",
+    "900000ms",
   ]);
 });

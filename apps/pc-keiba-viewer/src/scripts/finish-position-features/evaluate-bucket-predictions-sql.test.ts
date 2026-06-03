@@ -119,8 +119,8 @@ test("escapeSqlLiteral returns plain string unchanged", () => {
 });
 
 test("buildRaceNameExpressionSql returns CASE WHEN filtered on grade A/F", () => {
-  expect(buildRaceNameExpressionSql("ra.grade_cd", "ra.kyosomei_hondai")).toBe(
-    "case when ra.grade_cd in ('A','F') then trim(ra.kyosomei_hondai) else null end",
+  expect(buildRaceNameExpressionSql("ra.grade_code", "ra.kyosomei_hondai")).toBe(
+    "case when ra.grade_code in ('A','F') then trim(ra.kyosomei_hondai) else null end",
   );
 });
 
@@ -202,7 +202,7 @@ test("JRA_RA_RACE_KEY_BUCKET_INDEX_SQL covers jvd_ra race key with INCLUDE", () 
   expect(JRA_RA_RACE_KEY_BUCKET_INDEX_SQL).toBe(
     `create index concurrently if not exists jvd_ra_race_key_bucket_idx
       on jvd_ra (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
-      include (kyori, grade_cd, kyoso_shubetsu_code, kyoso_joken_code, kyoso_joken_meisho, track_code, kyosomei_hondai)`,
+      include (kyori, grade_code, kyoso_shubetsu_code, kyoso_joken_code, kyoso_joken_meisho, track_code, kyosomei_hondai)`,
   );
 });
 
@@ -210,7 +210,7 @@ test("NAR_RA_RACE_KEY_BUCKET_INDEX_SQL covers nvd_ra race key with INCLUDE", () 
   expect(NAR_RA_RACE_KEY_BUCKET_INDEX_SQL).toBe(
     `create index concurrently if not exists nvd_ra_race_key_bucket_idx
       on nvd_ra (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
-      include (kyori, grade_cd, kyoso_shubetsu_code, kyoso_joken_code, kyoso_joken_meisho, track_code, kyosomei_hondai)`,
+      include (kyori, grade_code, kyoso_shubetsu_code, kyoso_joken_code, kyoso_joken_meisho, track_code, kyosomei_hondai)`,
   );
 });
 
@@ -221,10 +221,10 @@ test("buildConcurrentIndexSqls returns the three CREATE INDEX CONCURRENTLY state
       include (ketto_toroku_bango, finish_position, finish_norm, shusso_tosu)`,
     `create index concurrently if not exists jvd_ra_race_key_bucket_idx
       on jvd_ra (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
-      include (kyori, grade_cd, kyoso_shubetsu_code, kyoso_joken_code, kyoso_joken_meisho, track_code, kyosomei_hondai)`,
+      include (kyori, grade_code, kyoso_shubetsu_code, kyoso_joken_code, kyoso_joken_meisho, track_code, kyosomei_hondai)`,
     `create index concurrently if not exists nvd_ra_race_key_bucket_idx
       on nvd_ra (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
-      include (kyori, grade_cd, kyoso_shubetsu_code, kyoso_joken_code, kyoso_joken_meisho, track_code, kyosomei_hondai)`,
+      include (kyori, grade_code, kyoso_shubetsu_code, kyoso_joken_code, kyoso_joken_meisho, track_code, kyosomei_hondai)`,
   ]);
 });
 
@@ -323,8 +323,8 @@ test("buildBucketAggregateSql for jra emits full aggregate query", () => {
              ra.kyoso_joken_code as kyoso_joken_code,
              null::text as condition_key,
              ra.track_code as track_code,
-             nullif(trim(ra.grade_cd), '') as grade_code,
-             case when ra.grade_cd in ('A','F') then trim(ra.kyosomei_hondai) else null end as race_name
+             nullif(trim(ra.grade_code), '') as grade_code,
+             case when ra.grade_code in ('A','F') then trim(ra.kyosomei_hondai) else null end as race_name
       from races r
       join jvd_ra ra
         on ra.kaisai_nen = r.kaisai_nen
@@ -468,8 +468,8 @@ test("buildBucketAggregateSql for nar uses nvd_ra join and condition CASE expres
         else nullif(split_part(trim(ra.kyoso_joken_meisho), ' ', 1), '')
       end as condition_key,
              ra.track_code as track_code,
-             nullif(trim(ra.grade_cd), '') as grade_code,
-             case when ra.grade_cd in ('A','F') then trim(ra.kyosomei_hondai) else null end as race_name
+             nullif(trim(ra.grade_code), '') as grade_code,
+             case when ra.grade_code in ('A','F') then trim(ra.kyosomei_hondai) else null end as race_name
       from races r
       join nvd_ra ra
         on ra.kaisai_nen = r.kaisai_nen
@@ -604,8 +604,8 @@ test("buildBucketAggregateSql for ban-ei nulls track and joken and restricts to 
              null::text as kyoso_joken_code,
              null::text as condition_key,
              null::text as track_code,
-             nullif(trim(ra.grade_cd), '') as grade_code,
-             case when ra.grade_cd in ('A','F') then trim(ra.kyosomei_hondai) else null end as race_name
+             nullif(trim(ra.grade_code), '') as grade_code,
+             case when ra.grade_code in ('A','F') then trim(ra.kyosomei_hondai) else null end as race_name
       from races r
       join nvd_ra ra
         on ra.kaisai_nen = r.kaisai_nen
@@ -740,8 +740,8 @@ test("buildBucketAggregateSql escapes single quote in model version", () => {
              ra.kyoso_joken_code as kyoso_joken_code,
              null::text as condition_key,
              ra.track_code as track_code,
-             nullif(trim(ra.grade_cd), '') as grade_code,
-             case when ra.grade_cd in ('A','F') then trim(ra.kyosomei_hondai) else null end as race_name
+             nullif(trim(ra.grade_code), '') as grade_code,
+             case when ra.grade_code in ('A','F') then trim(ra.kyosomei_hondai) else null end as race_name
       from races r
       join jvd_ra ra
         on ra.kaisai_nen = r.kaisai_nen

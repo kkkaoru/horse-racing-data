@@ -40,6 +40,7 @@ def _sample_args(**overrides: object) -> subject.LoadArguments:
         "category": "jra",
         "year_from": 2024,
         "year_to": 2024,
+        "statement_timeout": "60min",
     }
     base.update(overrides)
     return cast(subject.LoadArguments, base)
@@ -88,6 +89,49 @@ def test_normalize_arguments_converts_years_to_int():
     assert normalized["year_to"] == 2025
     assert normalized["category"] == "jra"
     assert normalized["temp_table_name"] == "tmp_bucket_eval_finish_position_predictions"
+
+
+def test_parse_args_defaults_statement_timeout():
+    argv = _build_argv()
+    args = subject.parse_args(argv)
+    assert args.statement_timeout == subject.DEFAULT_STATEMENT_TIMEOUT
+
+
+def test_parse_args_accepts_custom_statement_timeout():
+    argv = _build_argv(**{"--statement-timeout": "1800000ms"})
+    args = subject.parse_args(argv)
+    assert args.statement_timeout == "1800000ms"
+
+
+def test_normalize_arguments_passes_statement_timeout():
+    argv = _build_argv(**{"--statement-timeout": "45min"})
+    normalized = subject.normalize_arguments(subject.parse_args(argv))
+    assert normalized["statement_timeout"] == "45min"
+
+
+def test_assert_safe_statement_timeout_accepts_interval_literal():
+    assert subject.assert_safe_statement_timeout("60min") == "60min"
+
+
+def test_assert_safe_statement_timeout_accepts_millisecond_literal():
+    assert subject.assert_safe_statement_timeout("1800000ms") == "1800000ms"
+
+
+def test_assert_safe_statement_timeout_rejects_empty():
+    with pytest.raises(ValueError):
+        subject.assert_safe_statement_timeout("")
+
+
+def test_assert_safe_statement_timeout_rejects_injection():
+    with pytest.raises(ValueError):
+        subject.assert_safe_statement_timeout("60min'; drop table x; --")
+
+
+def test_build_set_statement_timeout_sql_embeds_value():
+    assert (
+        subject.build_set_statement_timeout_sql("45min")
+        == b"SET LOCAL statement_timeout = '45min'"
+    )
 
 
 def test_assert_safe_identifier_accepts_snake_case():
@@ -639,7 +683,7 @@ def test_default_copy_into_pg_runs_begin_set_create_copy_and_waits_for_exit(
     subject.default_copy_into_pg(args, rows, cast(IO[str], stdout), cast(IO[str], stdin))
     issued_sqls = [call.args[0] for call in cursor.execute.call_args_list]
     assert issued_sqls[0] == b"BEGIN"
-    assert issued_sqls[1] == b"SET LOCAL statement_timeout = '15min'"
+    assert issued_sqls[1] == b"SET LOCAL statement_timeout = '60min'"
     assert issued_sqls[2].startswith(b"CREATE TEMP TABLE tmp_bucket_eval_finish_position_predictions")
     cursor.copy.assert_called_once()
     copy_query_arg = cursor.copy.call_args.args[0]

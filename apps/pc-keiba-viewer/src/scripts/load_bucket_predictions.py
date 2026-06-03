@@ -33,6 +33,7 @@ from typing import IO, Callable, TypedDict
 
 SUPPORTED_CATEGORIES: tuple[str, str, str] = ("jra", "nar", "ban-ei")
 DEFAULT_TEMP_TABLE: str = "tmp_bucket_eval_finish_position_predictions"
+DEFAULT_STATEMENT_TIMEOUT: str = "60min"
 
 RPC_ROWS_CHUNK_SIZE: int = 1000
 
@@ -93,6 +94,7 @@ class LoadArguments(TypedDict):
     category: str
     year_from: int
     year_to: int
+    statement_timeout: str
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -105,6 +107,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--category", type=str, choices=list(SUPPORTED_CATEGORIES), required=True)
     parser.add_argument("--year-from", type=int, required=True)
     parser.add_argument("--year-to", type=int, required=True)
+    parser.add_argument(
+        "--statement-timeout", type=str, default=DEFAULT_STATEMENT_TIMEOUT
+    )
     return parser.parse_args(argv)
 
 
@@ -118,6 +123,7 @@ def normalize_arguments(args: argparse.Namespace) -> LoadArguments:
         "category": args.category,
         "year_from": int(args.year_from),
         "year_to": int(args.year_to),
+        "statement_timeout": args.statement_timeout,
     }
 
 
@@ -127,6 +133,20 @@ def assert_safe_identifier(name: str) -> str:
     if name == "" or not all(ch.isalnum() or ch == "_" for ch in name):
         raise ValueError(f"Unsafe temp table name: {name!r}")
     return name
+
+
+def assert_safe_statement_timeout(value: str) -> str:
+    """Reject anything that is not a plain Postgres interval literal (digits
+    optionally followed by a unit such as ``min`` / ``ms`` / ``s``) so we can
+    safely interpolate the timeout into a ``SET LOCAL`` statement."""
+    if value == "" or not all(ch.isalnum() for ch in value):
+        raise ValueError(f"Unsafe statement timeout: {value!r}")
+    return value
+
+
+def build_set_statement_timeout_sql(value: str) -> bytes:
+    safe = assert_safe_statement_timeout(value)
+    return f"SET LOCAL statement_timeout = '{safe}'".encode("utf-8")
 
 
 def sql_quote_literal(value: str) -> str:
@@ -396,7 +416,7 @@ def default_copy_into_pg(
     try:
         with pg_con.cursor() as cursor:
             cursor.execute(b"BEGIN")
-            cursor.execute(b"SET LOCAL statement_timeout = '15min'")
+            cursor.execute(build_set_statement_timeout_sql(args["statement_timeout"]))
             cursor.execute(build_create_temp_table_sql(args["temp_table_name"]).encode("utf-8"))
             if len(rows) > 0:
                 copy_query = build_copy_sql(args["temp_table_name"]).encode("utf-8")

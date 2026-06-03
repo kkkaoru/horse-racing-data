@@ -87,11 +87,11 @@ export const RACE_ENTRY_CORNER_FEATURES_BUCKETING_INDEX_SQL = `create index conc
 
 export const JRA_RA_RACE_KEY_BUCKET_INDEX_SQL = `create index concurrently if not exists jvd_ra_race_key_bucket_idx
       on jvd_ra (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
-      include (kyori, grade_cd, kyoso_shubetsu_code, kyoso_joken_code, kyoso_joken_meisho, track_code, kyosomei_hondai)`;
+      include (kyori, grade_code, kyoso_shubetsu_code, kyoso_joken_code, kyoso_joken_meisho, track_code, kyosomei_hondai)`;
 
 export const NAR_RA_RACE_KEY_BUCKET_INDEX_SQL = `create index concurrently if not exists nvd_ra_race_key_bucket_idx
       on nvd_ra (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
-      include (kyori, grade_cd, kyoso_shubetsu_code, kyoso_joken_code, kyoso_joken_meisho, track_code, kyosomei_hondai)`;
+      include (kyori, grade_code, kyoso_shubetsu_code, kyoso_joken_code, kyoso_joken_meisho, track_code, kyosomei_hondai)`;
 
 export const buildBucketEvaluationsDdl = (): string => `
     create table if not exists ${BUCKET_TABLE} (
@@ -216,8 +216,8 @@ export const buildBucketAggregateSql = (args: BuildBucketAggregateSqlArgs): stri
              ${jokenExpr} as kyoso_joken_code,
              ${conditionKeyExpr} as condition_key,
              ${trackExpr} as track_code,
-             nullif(trim(ra.grade_cd), '') as grade_code,
-             ${buildRaceNameExpressionSql("ra.grade_cd", "ra.kyosomei_hondai")} as race_name
+             nullif(trim(ra.grade_code), '') as grade_code,
+             ${buildRaceNameExpressionSql("ra.grade_code", "ra.kyosomei_hondai")} as race_name
       from races r
       join ${raMeta.table} ra
         on ra.kaisai_nen = r.kaisai_nen
