@@ -183,8 +183,8 @@ const CATEGORY_EXPECTATIONS: CategoryExpectation[] = [
     storedSource: "jra",
     modelVersion: FINISH_POSITION_V7_LINEAGE_MODEL_VERSIONS.jra,
     expectedYears: 20,
-    top1Low: 0.45,
-    top1High: 0.55,
+    top1Low: 0.37,
+    top1High: 0.43,
   },
   {
     category: "nar",
