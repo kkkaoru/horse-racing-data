@@ -1,7 +1,8 @@
 """V7-lineage model-version / architecture / R2-key mapping.
 
 Single source of truth for the production finish-position model artifacts, kept
-in lockstep with ``v7-lineage-model-versions.ts`` and ``FINISH_POSITION_MODEL_V7_LINEAGE.md``
+in lockstep with ``v7-lineage-model-versions.ts`` and
+``docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V7_LINEAGE.md``
 section 10.3. The container uses these to resolve which R2 object to score with
 and which ``model_version`` label to stamp on the predictions table.
 """

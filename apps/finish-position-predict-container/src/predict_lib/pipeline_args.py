@@ -11,8 +11,8 @@ the per-script flag surface is encoded here and unit-tested; ``pipeline_runner``
 only executes the vectors and reads the parquet.
 
 The chains reproduce the EXACT feature sets the production models were trained
-on (FINISH_POSITION_MODEL_V7_LINEAGE.md §4 / §8 / §9 / §10 and
-FINISH_POSITION_MODEL_V6_STACKED.md §2):
+on (docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V7_LINEAGE.md §4 / §8 / §9 / §10 and
+docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V6_STACKED.md §2):
 
 * JRA (226 features) — full v6 base chain (race-internal → market-signal →
   sectional-and-weight → futan-juryo → workout → near-miss) then the four v7
@@ -60,9 +60,11 @@ BANEI_GRADE_CAREER_SCRIPT: Final[str] = "add-banei-grade-career-features.py"
 HISTORY_FROM_DATE: Final[str] = "20100101"
 
 # Per-category full layer chain (script basename order). Mirrors the per-category
-# Pipeline sections of FINISH_POSITION_MODEL_V7_LINEAGE.md (§4 / §8 / §9) +
-# FINISH_POSITION_MODEL_V6_STACKED.md (§2), validated against each model's
-# metadata.json feature_names (226 / 175 / 111).
+# Pipeline sections of
+# docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V7_LINEAGE.md
+# (§4 / §8 / §9) +
+# docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V6_STACKED.md (§2),
+# validated against each model's metadata.json feature_names (226 / 175 / 111).
 LAYER_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
     "jra": (
         RACE_INTERNAL_SCRIPT,

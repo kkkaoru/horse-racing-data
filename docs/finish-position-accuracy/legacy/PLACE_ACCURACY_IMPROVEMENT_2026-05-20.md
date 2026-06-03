@@ -2,13 +2,13 @@
 
 **Date**: 2026-05-20
 **Status**: empirical に **不可行** と判定、現 active 維持
-**Related**: `FINISH_POSITION_PREDICTION_DESIGN.md`
+**Related**: `docs/finish-position-accuracy/legacy/FINISH_POSITION_PREDICTION_DESIGN.md`
 
 ---
 
 ## 1. ゴール
 
-JRA / NAR の着順予測で **place2 (2 着的中率) と place3 (3 着的中率)** を +1pp 以上改善する。top1 精度は維持必須 (`FINISH_POSITION_PREDICTION_DESIGN.md` の精度低下禁止原則)。Ban-ei 対象外。
+JRA / NAR の着順予測で **place2 (2 着的中率) と place3 (3 着的中率)** を +1pp 以上改善する。top1 精度は維持必須 (`docs/finish-position-accuracy/legacy/FINISH_POSITION_PREDICTION_DESIGN.md` の精度低下禁止原則)。Ban-ei 対象外。
 
 ### 開始時点の現状
 

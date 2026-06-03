@@ -15,8 +15,11 @@ unchanged repo feature pipeline that already produced the training parquet:
      futan-juryo / workout / near-miss, as applicable per category) and the v7
      layers (lineage / head-to-head / baba-pedigree / trainer (JRA) / ban-ei),
      reproducing the exact feature set each model was trained on (226 JRA / 175
-     NAR / 111 Ban-ei) per FINISH_POSITION_MODEL_V7_LINEAGE.md sections 4 / 8 / 9
-     and FINISH_POSITION_MODEL_V6_STACKED.md section 2. Each layer preserves
+     NAR / 111 Ban-ei) per
+     docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V7_LINEAGE.md
+     sections 4 / 8 / 9 and
+     docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V6_STACKED.md
+     section 2. Each layer preserves
      UPCOMING rows via LEFT JOIN (history side filtered to finish_position NOT
      NULL), so today's races survive with NULL/0 history features and no
      missing-layer zero-fill at score time.

@@ -3,7 +3,7 @@
 I/O wrapper around the native XGBoost runtime — not unit-tested (it needs the
 compiled library + a real model.json), exercised at deploy time per DEPLOY.md.
 Feature rows are already float32-quantised by ``predict_lib.scorer`` per
-FINISH_POSITION_MODEL_V7_LINEAGE.md section 10.4.
+docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V7_LINEAGE.md section 10.4.
 """
 
 from __future__ import annotations

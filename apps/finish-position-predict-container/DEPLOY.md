@@ -114,7 +114,7 @@ guaranteed).
 >   `add-grade-race-lineage` → `add-head-to-head` → `add-baba-pedigree-affinity`
 >   (NAR was never built with the market / sectional / futan / workout layers, and
 >   the trainer layer is dropped — it is counter-productive on NAR per
->   FINISH_POSITION_MODEL_V7_LINEAGE.md §8).
+>   docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V7_LINEAGE.md §8).
 > - **Ban-ei (111)** — base → `add-grade-race-lineage` → `add-head-to-head` →
 >   `add-baba-pedigree-affinity` → `add-banei-futan-class` →
 >   `add-banei-grade-career` (distinct base; no JRA v6 layers).
@@ -127,7 +127,7 @@ guaranteed).
 > `finish-position-features/` directory, so every chain script (and the
 > `lineage-races/` configs + `_resource_defaults.py`) is present in the image.
 >
-> The one-shot "v3 merger" in FINISH_POSITION_MODEL_V6_STACKED.md §2 only
+> The one-shot "v3 merger" in docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V6_STACKED.md §2 only
 > re-prioritised the VALUE of market-signal columns that `add-market-signal`
 > already computes straight from Postgres; it adds no new feature NAMES and is not
 > part of the automated 21y v7 build, so it is intentionally not reproduced.
@@ -165,7 +165,7 @@ enableInternet })` is the documented batch / cron container pattern
   `apps/finish-position-predict-container/models/finish-position/{jra,nar,ban-ei}/{modelVersion}/{model.json,metadata.json}`
   (gitignored scratch — see `.gitignore`). Source-of-truth copies live under
   `apps/pc-keiba-viewer/tmp/models/{jra-cb,nar-xgb,banei-cb}-v7-lineage-wf-21y/`
-  from Stage 6a of `FINISH_POSITION_MODEL_V7_LINEAGE.md` §10; the Dockerfile
+  from Stage 6a of `docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V7_LINEAGE.md` §10; the Dockerfile
   COPYs them into the image at `/models`.
 - A Neon (Postgres) connection string for the production DB.
 
@@ -332,7 +332,7 @@ is idempotent.
    where category = 'jra';
    -- repeat for nar / ban-ei with their previous model_version
    ```
-   (Per `FINISH_POSITION_MODEL_V7_LINEAGE.md` §7 — the old eval rows +
+   (Per `docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V7_LINEAGE.md` §7 — the old eval rows +
    predictions remain, so rollback is immediate.)
 3. The container writes are **UPSERTs only**; there is no DELETE / TRUNCATE /
    DROP at any point, so a bad run can be re-run idempotently after a fix rather

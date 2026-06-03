@@ -27,3 +27,14 @@
 - place3: 3 着的中率
 - top3_box: 上位 3 着箱推し的中率
 - 4 軸すべてを評価軸とし、 top1 単独最適化は禁止
+
+## Legacy MD inventory
+
+Stage 0A.5 で repo root から `legacy/` に移行した既存の着順予測関連 MD ドキュメント (歴史的参照用):
+
+| ファイル                                                                                           | 内容                                                     |
+| -------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| [legacy/FINISH_POSITION_PREDICTION_DESIGN.md](legacy/FINISH_POSITION_PREDICTION_DESIGN.md)         | 着順予測パイプラインの設計原則 (精度低下禁止原則等)      |
+| [legacy/FINISH_POSITION_MODEL_V6_STACKED.md](legacy/FINISH_POSITION_MODEL_V6_STACKED.md)           | JRA `jra-cb-v6-stacked` 仕様書                           |
+| [legacy/FINISH_POSITION_MODEL_V7_LINEAGE.md](legacy/FINISH_POSITION_MODEL_V7_LINEAGE.md)           | v7-lineage (JRA / NAR / Ban-ei) アーキ・walk-forward 21y |
+| [legacy/PLACE_ACCURACY_IMPROVEMENT_2026-05-20.md](legacy/PLACE_ACCURACY_IMPROVEMENT_2026-05-20.md) | place2 / place3 改善検証履歴 (empirical 不可行と判定)    |

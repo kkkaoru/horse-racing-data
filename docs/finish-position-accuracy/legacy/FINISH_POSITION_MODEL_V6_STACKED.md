@@ -3,7 +3,7 @@
 **Date**: 2026-05-20
 **Replaces**: `jra-cb-v5-single` (production active until 2026-05-20)
 **Author**: Claude Code セッション
-**Related**: `FINISH_POSITION_PREDICTION_DESIGN.md`, `PLACE_ACCURACY_IMPROVEMENT_2026-05-20.md`
+**Related**: `docs/finish-position-accuracy/legacy/FINISH_POSITION_PREDICTION_DESIGN.md`, `docs/finish-position-accuracy/legacy/PLACE_ACCURACY_IMPROVEMENT_2026-05-20.md`
 
 ---
 
@@ -349,8 +349,8 @@ NAR の data backfill (apd_se_nv → race_entry_corner_features の loadback) �
 - `apps/pc-keiba-viewer/src/scripts/finish-position-features/_resource_defaults.py` (M5 Pro 用 helper)
 - `apps/pc-keiba-viewer/src/scripts/finish-position-features/hierarchical-rank-assignment.py` (cascade gate、本リリース未使用)
 - `apps/pc-keiba-viewer/scripts/train-env.sh` (OMP/Accelerate thread cap)
-- `FINISH_POSITION_MODEL_V6_STACKED.md` (本仕様書)
-- `PLACE_ACCURACY_IMPROVEMENT_2026-05-20.md` (検証履歴)
+- `docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V6_STACKED.md` (本仕様書)
+- `docs/finish-position-accuracy/legacy/PLACE_ACCURACY_IMPROVEMENT_2026-05-20.md` (検証履歴)
 
 ### Modified
 

@@ -10,7 +10,7 @@ out-of-sample). Architecture is dispatched by ``--category``:
   * ``jra`` / ``banei`` -> CatBoost YetiRank (``--no-cat-features``)
   * ``nar``             -> XGBoost ``rank:pairwise``
 
-Hyperparameters are inherited from ``FINISH_POSITION_MODEL_V7_LINEAGE.md`` and
+Hyperparameters are inherited from ``docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V7_LINEAGE.md`` and
 duplicated as defaults here so a future run reproduces the deployed lineage.
 
 Two outputs are written per fold:

@@ -2,7 +2,9 @@
 
 The actual CatBoost / XGBoost model objects are injected as a ``BoosterLike``
 protocol so this module stays free of heavy native imports and is unit-testable
-with a fake booster. Per ``FINISH_POSITION_MODEL_V7_LINEAGE.md`` section 10.4 the
+with a fake booster. Per
+``docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V7_LINEAGE.md``
+section 10.4 the
 NAR (XGBoost) path must cast features to float32 before scoring for bit-faithful
 parity with the TypeScript scorer; CatBoost ranking is robust at float64.
 """
