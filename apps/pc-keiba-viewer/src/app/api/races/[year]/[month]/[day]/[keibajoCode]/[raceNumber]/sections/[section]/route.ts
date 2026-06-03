@@ -4,6 +4,7 @@ import { getRaceDetail, getRaceSourceByRoute } from "../../../../../../../../../
 import { safeGetCloudflareExecutionContext } from "../../../../../../../../../../lib/cloudflare-context.server";
 import {
   buildFinishPredictionInputsCacheKey,
+  type FinishPredictionStaticPayload,
   getCachedFinishPredictionInputs,
   putFinishPredictionInputsCache,
 } from "../../../../../../../../../../lib/finish-prediction-inputs-cache.server";
@@ -19,8 +20,9 @@ import {
   putDetailSectionCache,
 } from "../../../../../../../../../../lib/race-detail-section-cache.server";
 import {
-  getDetailSectionPayload,
   type DetailSection,
+  getDetailSectionPayload,
+  getFinishPositionBucketSectionData,
 } from "../../../../../../../../../races/detail/detail-section-data";
 
 export const dynamic = "force-dynamic";
@@ -105,6 +107,44 @@ interface ComputedSectionResult {
   payloadType: string;
 }
 
+interface FinishPredictionCacheHitParams {
+  cachedStatic: FinishPredictionStaticPayload;
+  day: string;
+  keibajoCode: string;
+  month: string;
+  raceNumber: string;
+  sectionSearchParams: URLSearchParams;
+  year: string;
+}
+
+const buildFinishPredictionCacheHitResponse = async (
+  params: FinishPredictionCacheHitParams,
+): Promise<Response | null> => {
+  const raceSource = await getRaceSourceByRoute(
+    params.year,
+    params.month,
+    params.day,
+    params.keibajoCode,
+    params.raceNumber,
+  );
+  if (!raceSource) return null;
+  const bucket = await getFinishPositionBucketSectionData({
+    day: params.day,
+    keibajoCode: params.keibajoCode,
+    month: params.month,
+    query: searchParamsToRecord(params.sectionSearchParams),
+    raceNumber: params.raceNumber,
+    raceSource,
+    year: params.year,
+  });
+  return NextResponse.json({
+    bucket,
+    evaluation: params.cachedStatic.evaluation,
+    inputs: params.cachedStatic.inputs,
+    type: "finish-prediction",
+  });
+};
+
 const computeAndStoreSection = async (
   params: ComputeSectionParams,
 ): Promise<ComputedSectionResult | null> => {
@@ -187,13 +227,18 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
       : null;
   if (finishPredictionInputsCacheKey) {
     const cachedStatic = await getCachedFinishPredictionInputs(finishPredictionInputsCacheKey);
-    if (cachedStatic) {
-      return NextResponse.json({
-        evaluation: cachedStatic.evaluation,
-        inputs: cachedStatic.inputs,
-        type: "finish-prediction",
-      });
-    }
+    const cacheHitResponse = cachedStatic
+      ? await buildFinishPredictionCacheHitResponse({
+          cachedStatic,
+          day,
+          keibajoCode,
+          month,
+          raceNumber,
+          sectionSearchParams,
+          year,
+        })
+      : null;
+    if (cacheHitResponse) return cacheHitResponse;
   }
 
   const cacheKey = cacheableDefaultRequest
