@@ -62,8 +62,8 @@ const jraExpectation: CategoryExpectation = {
   storedSource: "jra",
   modelVersion: "jra-cb-v7-lineage-wf-21y",
   expectedYears: 20,
-  top1Low: 0.45,
-  top1High: 0.55,
+  top1Low: 0.37,
+  top1High: 0.43,
 };
 
 const naroExpectation: CategoryExpectation = {
@@ -98,8 +98,8 @@ test("CATEGORY_EXPECTATIONS lists jra nar banei with their WF model versions", (
       storedSource: "jra",
       modelVersion: "jra-cb-v7-lineage-wf-21y",
       expectedYears: 20,
-      top1Low: 0.45,
-      top1High: 0.55,
+      top1Low: 0.37,
+      top1High: 0.43,
     },
     {
       category: "nar",
@@ -352,14 +352,14 @@ test("assessFoldCoverage treats a null race_count_sum as zero", () => {
 
 test("assessTop1Plausibility computes the per-race ratio inside the JRA band", () => {
   const rows: Top1PlausibilityRow[] = [
-    { model_version: "jra-cb-v7-lineage-wf-21y", top1_hit_sum: 50, race_count: 100 },
+    { model_version: "jra-cb-v7-lineage-wf-21y", top1_hit_sum: 40, race_count: 100 },
   ];
   expect(assessTop1Plausibility(jraExpectation, rows)).toStrictEqual({
     category: "jra",
     modelVersion: "jra-cb-v7-lineage-wf-21y",
-    top1Rate: 0.5,
-    low: 0.45,
-    high: 0.55,
+    top1Rate: 0.4,
+    low: 0.37,
+    high: 0.43,
     withinBand: true,
   });
 });
@@ -414,8 +414,8 @@ test("assessTop1Plausibility returns null rate when race_count is zero", () => {
     category: "jra",
     modelVersion: "jra-cb-v7-lineage-wf-21y",
     top1Rate: null,
-    low: 0.45,
-    high: 0.55,
+    low: 0.37,
+    high: 0.43,
     withinBand: false,
   });
 });
@@ -684,9 +684,9 @@ test("collectIssues returns empty when everything passes", () => {
         {
           category: "jra",
           modelVersion: "jra-cb-v7-lineage-wf-21y",
-          top1Rate: 0.5,
-          low: 0.45,
-          high: 0.55,
+          top1Rate: 0.4,
+          low: 0.37,
+          high: 0.43,
           withinBand: true,
         },
       ],
@@ -760,15 +760,15 @@ test("collectIssues reports a WARN line for a top1 ratio that is null", () => {
           category: "jra",
           modelVersion: "jra-cb-v7-lineage-wf-21y",
           top1Rate: null,
-          low: 0.45,
-          high: 0.55,
+          low: 0.37,
+          high: 0.43,
           withinBand: false,
         },
       ],
       crosschecks: [],
       globalEvalPresent: true,
     }),
-  ).toStrictEqual(["WARN top1-plausibility jra: n/a outside [45.00%, 55.00%]"]);
+  ).toStrictEqual(["WARN top1-plausibility jra: n/a outside [37.00%, 43.00%]"]);
 });
 
 test("collectIssues reports a WARN line for a race-count crosscheck deviation", () => {
@@ -828,9 +828,9 @@ test("buildReport composes a passing report with no issues", () => {
       {
         category: "jra",
         modelVersion: "jra-cb-v7-lineage-wf-21y",
-        top1Rate: 0.5,
-        low: 0.45,
-        high: 0.55,
+        top1Rate: 0.4,
+        low: 0.37,
+        high: 0.43,
         withinBand: true,
       },
     ],
@@ -956,7 +956,7 @@ const buildScriptedRunner = (): QueryRunner => {
     if (sql.includes("sum(top1_hit_sum) as top1_hit_sum")) {
       if (sql.includes("jra-cb-v7-lineage-wf-21y")) {
         return respond([
-          { model_version: "jra-cb-v7-lineage-wf-21y", top1_hit_sum: 50, race_count: 100 },
+          { model_version: "jra-cb-v7-lineage-wf-21y", top1_hit_sum: 40, race_count: 100 },
         ]);
       }
       if (sql.includes("nar-xgb-v7-lineage-wf-21y")) {
@@ -1131,9 +1131,9 @@ test("runCli ends the pool and rethrows when verification rejects", async () => 
 
 test("parseArgs prints usage and exits when help is requested", () => {
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
-  const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
+  const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
     throw new Error("exit-0");
-  }) as never as typeof process.exit);
+  });
   expect(() => parseArgs(["--help"])).toThrowError("exit-0");
   expect(exitSpy).toHaveBeenCalledWith(0);
   expect(logSpy).toHaveBeenCalledTimes(1);
