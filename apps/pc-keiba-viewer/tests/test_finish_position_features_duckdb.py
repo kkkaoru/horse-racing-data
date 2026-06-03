@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import pytest
@@ -126,6 +127,144 @@ def test_horse_history_base_select_defines_strict_history_window():
 def test_compute_history_start_subtracts_years_from_yyyy_prefix():
     assert subject.compute_history_start("20160101", 10) == "20060101"
     assert subject.compute_history_start("20251231", 5) == "20201231"
+
+
+def test_parse_args_target_date_and_days_ahead():
+    args = subject.parse_args(["--target-date", "20260603", "--days-ahead", "2"])
+    assert args.target_date == "20260603"
+    assert args.days_ahead == 2
+
+
+def test_parse_args_target_date_defaults_days_ahead_zero():
+    args = subject.parse_args(["--target-date", "20260603"])
+    assert args.target_date == "20260603"
+    assert args.days_ahead == 0
+
+
+def test_parse_args_defaults_target_date_none():
+    args = subject.parse_args([])
+    assert args.target_date is None
+    assert args.days_ahead == 0
+
+
+def test_target_date_arg_accepts_valid_yyyymmdd():
+    assert subject.target_date_arg("20260603") == "20260603"
+
+
+def test_target_date_arg_rejects_malformed():
+    with pytest.raises(argparse.ArgumentTypeError):
+        subject.target_date_arg("2026-06-03")
+
+
+def test_target_date_arg_rejects_impossible_calendar_date():
+    with pytest.raises(argparse.ArgumentTypeError):
+        subject.target_date_arg("20260631")
+
+
+def test_non_negative_int_accepts_zero():
+    assert subject.non_negative_int("0") == 0
+
+
+def test_non_negative_int_rejects_negative():
+    with pytest.raises(argparse.ArgumentTypeError):
+        subject.non_negative_int("-1")
+
+
+def test_add_days_advances_across_month_boundary():
+    assert subject.add_days("20260603", 0) == "20260603"
+    assert subject.add_days("20260603", 2) == "20260605"
+    assert subject.add_days("20260630", 1) == "20260701"
+
+
+def test_resolve_date_range_uses_from_to_when_no_target_date():
+    args = subject.parse_args(["--from-date", "20200101", "--to-date", "20211231"])
+    assert subject.resolve_date_range(args) == ("20200101", "20211231")
+
+
+def test_resolve_date_range_uses_target_date_window_when_set():
+    args = subject.parse_args(["--target-date", "20260603", "--days-ahead", "2"])
+    assert subject.resolve_date_range(args) == ("20260603", "20260605")
+
+
+def test_resolve_date_range_single_day_when_days_ahead_zero():
+    args = subject.parse_args(["--target-date", "20260603"])
+    assert subject.resolve_date_range(args) == ("20260603", "20260603")
+
+
+def test_resolve_upcoming_window_none_without_target_date():
+    args = subject.parse_args(["--from-date", "20200101", "--to-date", "20211231"])
+    assert subject.resolve_upcoming_window(args, "20200101", "20211231") is None
+
+
+def test_resolve_upcoming_window_returns_window_with_target_date():
+    args = subject.parse_args(["--target-date", "20260603"])
+    assert subject.resolve_upcoming_window(args, "20260603", "20260603") == (
+        "20260603",
+        "20260603",
+    )
+
+
+def test_upcoming_target_union_sql_jra_reads_jvd_tables_and_nulls_corners():
+    sql = subject.upcoming_target_union_sql("jra", "20260603", "20260603")
+    assert "pg.jvd_se se" in sql
+    assert "pg.jvd_ra ra" in sql
+    assert "cast(null as double) as corner1_norm" in sql
+    assert "'jra' as source" in sql
+
+
+def test_upcoming_target_union_sql_nullifies_unrun_finish_position():
+    sql = subject.upcoming_target_union_sql("nar", "20260603", "20260603")
+    assert "nullif(nullif(trim(se.kakutei_chakujun), ''), '00') as int) as finish_position" in sql
+
+
+def test_upcoming_target_union_sql_requires_numeric_umaban():
+    sql = subject.upcoming_target_union_sql("jra", "20260603", "20260603")
+    assert "try_cast(nullif(trim(se.umaban), '') as int) is not null" in sql
+
+
+def test_upcoming_target_union_sql_nar_excludes_ban_ei_keibajo():
+    sql = subject.upcoming_target_union_sql("nar", "20260603", "20260603")
+    assert "pg.nvd_se se" in sql
+    assert "se.keibajo_code <> '83'" in sql
+    assert "'nar' as source" in sql
+
+
+def test_upcoming_target_union_sql_ban_ei_filters_to_ban_ei_keibajo():
+    sql = subject.upcoming_target_union_sql("ban-ei", "20260603", "20260603")
+    assert "pg.nvd_se se" in sql
+    assert "se.keibajo_code = '83'" in sql
+
+
+def test_upcoming_target_union_sql_all_unions_three_categories():
+    sql = subject.upcoming_target_union_sql("all", "20260603", "20260603")
+    assert "pg.jvd_se se" in sql
+    assert "se.keibajo_code <> '83'" in sql
+    assert "se.keibajo_code = '83'" in sql
+
+
+def test_build_rec_select_sql_without_upcoming_window_keeps_corner_source():
+    sql = subject.build_rec_select_sql("nar", "20100101", "20251231")
+    assert "from pg.race_entry_corner_features" in sql
+    assert "_rec_priority" not in sql
+
+
+def test_build_rec_select_sql_with_upcoming_window_dedupes_and_adds_direct_source():
+    sql = subject.build_rec_select_sql(
+        "nar", "20100101", "20260603", ("20260603", "20260603")
+    )
+    assert "from pg.race_entry_corner_features" in sql
+    assert "pg.nvd_se se" in sql
+    assert "_rec_priority" in sql
+    assert "row_number() over" in sql
+
+
+def test_build_rec_select_sql_ban_ei_with_upcoming_window_uses_ban_ei_history():
+    sql = subject.build_rec_select_sql(
+        "ban-ei", "20100101", "20260603", ("20260603", "20260603")
+    )
+    assert "from pg.nvd_se se" in sql
+    assert "se.keibajo_code = '83'" in sql
+    assert "_rec_priority" in sql
 
 
 def test_jockey_cte_filters_on_kishumei_ryakusho():
