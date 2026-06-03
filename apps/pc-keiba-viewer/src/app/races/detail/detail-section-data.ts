@@ -47,7 +47,6 @@ import {
 } from "../../../lib/format";
 import { buildNetkeibaRaceId, parseNetkeibaTrainingReviews } from "../../../lib/netkeiba-training";
 import { getPremiumDataTopHorsesWithCache } from "../../../lib/premium-data-top-cache.server";
-import { getOrComputeRaceTimeStats } from "../../../lib/race-time-stats-cache.server";
 import {
   getAgeLabel,
   getConditionLabel,
@@ -61,6 +60,7 @@ import {
   buildRacePacePredictionRowsFromResults,
   isCornerPacePredictionSupported,
 } from "../../../lib/race-pace-prediction";
+import { getOrComputeRaceTimeStats } from "../../../lib/race-time-stats-cache.server";
 import type {
   BloodlineStatsRow,
   FinishPositionStatsRow,

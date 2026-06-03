@@ -5,9 +5,10 @@
 
 import "server-only";
 import { cache } from "react";
+
+import { getRaceTimeStats } from "../db/queries";
 import { safeGetCloudflareRuntime } from "./cloudflare-context.server";
 import type { RaceSource } from "./codes";
-import { getRaceTimeStats } from "../db/queries";
 import { DETAIL_SECTION_CACHE_AFTER_START_SECONDS } from "./race-detail-section-cache";
 import type { RaceDetail, RaceTimeStats, SimilarRaceStatsSettings } from "./race-types";
 
