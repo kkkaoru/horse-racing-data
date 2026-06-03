@@ -1,6 +1,7 @@
 // bun で実行する (bunx vitest)
 import { expect, it } from "vitest";
 
+import { getFinishPredictionEvaluationCategory } from "./finish-position-prediction-evaluation";
 import {
   buildBucketFilter,
   buildFinishPositionBucketFilter,
@@ -502,6 +503,118 @@ it("resolves the banei model version for the ban-ei category", () => {
 
 it("returns null when the category is unknown", () => {
   expect(resolveFinishPositionBucketModelVersion("unknown")).toBe(null);
+});
+
+it("resolves a ban-ei race (source nar keibajo 83) to the banei model version", () => {
+  const category = getFinishPredictionEvaluationCategory({ source: "nar", keibajoCode: "83" });
+  expect(category).toBe("ban-ei");
+  expect(resolveFinishPositionBucketModelVersion(category)).toBe("banei-cb-v7-lineage-wf-21y");
+});
+
+it("builds a ban-ei bucket filter that queries source nar with category ban-ei", () => {
+  const filter = buildFinishPositionBucketFilter({
+    flags: {
+      keibajo: true,
+      distance: true,
+      kyosoShubetsu: true,
+      kyosoJoken: false,
+      condition: true,
+      track: false,
+      grade: false,
+      raceName: false,
+    },
+    modelVersion: "banei-cb-v7-lineage-wf-21y",
+    query: {},
+    race: {
+      source: "nar",
+      keibajoCode: "83",
+      kyori: "200",
+      kyosoShubetsuCode: "11",
+      kyosoJokenCode: null,
+      kyosoJokenMeisho: "B3",
+      trackCode: null,
+      gradeCode: null,
+      kyosomeiHondai: null,
+      conditionKey: "B3",
+      raceName: null,
+    },
+  });
+  expect(filter.modelVersion).toBe("banei-cb-v7-lineage-wf-21y");
+  expect(filter.source).toBe("nar");
+  expect(filter.category).toBe("ban-ei");
+  expect(filter.keibajoCode).toBe("83");
+});
+
+it("resolves a regular NAR race to the nar model version and source nar", () => {
+  const category = getFinishPredictionEvaluationCategory({ source: "nar", keibajoCode: "30" });
+  expect(category).toBe("nar");
+  expect(resolveFinishPositionBucketModelVersion(category)).toBe("nar-xgb-v7-lineage-wf-21y");
+  const filter = buildFinishPositionBucketFilter({
+    flags: {
+      keibajo: true,
+      distance: true,
+      kyosoShubetsu: true,
+      kyosoJoken: false,
+      condition: true,
+      track: true,
+      grade: false,
+      raceName: false,
+    },
+    modelVersion: "nar-xgb-v7-lineage-wf-21y",
+    query: {},
+    race: {
+      source: "nar",
+      keibajoCode: "30",
+      kyori: "1600",
+      kyosoShubetsuCode: "11",
+      kyosoJokenCode: null,
+      kyosoJokenMeisho: "B3",
+      trackCode: "10",
+      gradeCode: null,
+      kyosomeiHondai: null,
+      conditionKey: "B3",
+      raceName: null,
+    },
+  });
+  expect(filter.modelVersion).toBe("nar-xgb-v7-lineage-wf-21y");
+  expect(filter.source).toBe("nar");
+  expect(filter.category).toBe("nar");
+});
+
+it("resolves a JRA race to the jra model version and source jra", () => {
+  const category = getFinishPredictionEvaluationCategory({ source: "jra", keibajoCode: "05" });
+  expect(category).toBe("jra");
+  expect(resolveFinishPositionBucketModelVersion(category)).toBe("jra-cb-v7-lineage-wf-21y");
+  const filter = buildFinishPositionBucketFilter({
+    flags: {
+      keibajo: true,
+      distance: true,
+      kyosoShubetsu: true,
+      kyosoJoken: true,
+      condition: false,
+      track: true,
+      grade: false,
+      raceName: false,
+    },
+    modelVersion: "jra-cb-v7-lineage-wf-21y",
+    query: {},
+    race: {
+      source: "jra",
+      keibajoCode: "05",
+      kyori: "2400",
+      kyosoShubetsuCode: "11",
+      kyosoJokenCode: "005",
+      kyosoJokenMeisho: "3歳未勝利",
+      trackCode: "10",
+      gradeCode: null,
+      kyosomeiHondai: null,
+      conditionKey: null,
+      raceName: null,
+    },
+  });
+  expect(filter.modelVersion).toBe("jra-cb-v7-lineage-wf-21y");
+  expect(filter.source).toBe("jra");
+  expect(filter.category).toBe("jra");
 });
 
 it("builds a finish-position bucket filter with modelVersion and default all period", () => {
