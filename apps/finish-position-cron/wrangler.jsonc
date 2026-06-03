@@ -51,7 +51,7 @@
     {
       "binding": "FINISH_POSITION_CRON_DB",
       "database_name": "finish-position-cron-db",
-      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "database_id": "9475ef83-d1da-4b47-9251-0cb431176aa8",
     },
   ],
   // PREDICT_DAYS_AHEAD: how many days past today to include in the upcoming
