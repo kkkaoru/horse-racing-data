@@ -47,6 +47,7 @@ import {
 } from "../../../lib/format";
 import { buildNetkeibaRaceId, parseNetkeibaTrainingReviews } from "../../../lib/netkeiba-training";
 import { getPremiumDataTopHorsesWithCache } from "../../../lib/premium-data-top-cache.server";
+import { getOrComputeRaceTimeStats } from "../../../lib/race-time-stats-cache.server";
 import {
   getAgeLabel,
   getConditionLabel,
@@ -1461,7 +1462,7 @@ export const getDetailSectionPayload = async (
     let resolvedSettings = context.conditionAnalysisSettings;
     const getConditionAnalysisStats = async (settings: typeof resolvedSettings) =>
       Promise.all([
-        getRaceTimeStats(race, settings),
+        getOrComputeRaceTimeStats({ race, settings }),
         getPayoutStats(race, settings),
         getFinishPositionStats(race, settings),
         getFrameStats(race, settings),
@@ -1492,7 +1493,7 @@ export const getDetailSectionPayload = async (
   if (section === "time-score") {
     const [rows, raceTimeStats] = await Promise.all([
       getTimeScoreRows(race, context.conditionAnalysisSettings),
-      getRaceTimeStats(race, context.conditionAnalysisSettings),
+      getOrComputeRaceTimeStats({ race, settings: context.conditionAnalysisSettings }),
     ]);
     let resolvedSimilarSettings = context.statsSettings;
     let similarRows = await getSimilarRaceStats(race, resolvedSimilarSettings);
