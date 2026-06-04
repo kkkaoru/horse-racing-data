@@ -29,10 +29,15 @@ or a single ``model_version`` string.
 
 iter 23 ensemble optimisation (2026-06-05) produced 4 ACCEPT manifests for JRA
 classes 005 / 701 / 703 / other. Only 703 beats iter 14 globally with
-delta_pp=+0.142pp top1; the other three tie at +0.000pp. Phase B-2A registers
-ONLY 703 in ``PER_CLASS_MODEL_VERSIONS`` to keep the booster pool footprint
-small. The unregistered tied classes (005 / 701 / other) keep falling back to
-iter 14 — see ``docs/finish-position-accuracy/runbook/PER_CLASS_ROUTING.md``.
+delta_pp=+0.142pp top1; the other three tie at +0.000pp. Phase B-2A registered
+ONLY 703 to keep the booster pool footprint small.
+
+iter 25 v2 ensemble optimisation (2026-06-05) produced an ACCEPT manifest for
+JRA class 010 (2勝クラス, n=1583 holdout) with delta_pp=+0.632pp top1 — the
+largest per-class win in the v8 loop. 010 was activated alongside 703 in
+``PER_CLASS_MODEL_VERSIONS``. The unregistered tied classes (005 / 701 /
+other) keep falling back to iter 14 — see
+``docs/finish-position-accuracy/runbook/PER_CLASS_ROUTING.md``.
 """
 
 from __future__ import annotations
@@ -77,10 +82,14 @@ class PerClassEnsemble:
     members: tuple[EnsembleMember, ...]
 
 
-# Phase B-2A registry. Only 703 is registered — the other 3 ACCEPT manifests
-# from iter 23 (005 / 701 / other) tied at +0.000pp and would only inflate the
-# booster pool without measurable accuracy gain. 703 ACCEPTED at +0.142pp top1.
+# Phase B-2A registry. 703 ACCEPTED at +0.142pp top1 (iter 23 ensemble search).
+# 010 ACCEPTED at +0.632pp top1 (iter 25 v2 ensemble — largest per-class win in
+# the v8 loop; iter25 low-cap booster dominates the blend at weight 0.66 with
+# the iter14 baseline carried at 0.20 and iter20/21/22 contributing residual
+# diversity). The remaining iter 23 tied-at-+0.000pp classes (005 / 701 /
+# other) stay unregistered to keep the booster-pool footprint small.
 PER_CLASS_MODEL_VERSIONS: Final[dict[tuple[Category, str], str]] = {
+    ("jra", "010"): "iter25-jra-cb-ensemble-010-v8",
     ("jra", "703"): "iter23-jra-cb-ensemble-703-v8",
 }
 
