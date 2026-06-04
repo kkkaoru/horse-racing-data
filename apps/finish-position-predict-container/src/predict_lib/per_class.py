@@ -34,12 +34,20 @@ ONLY 703 to keep the booster pool footprint small.
 
 iter 25 v2 ensemble optimisation (2026-06-05) produced ACCEPT manifests for
 JRA classes 010 (2勝クラス, n=1583 holdout, delta_pp=+0.632pp top1 — the largest
-per-class win in the v8 loop) and 005 (1勝クラス, n=3147 holdout,
+per-class win in the v8 loop), 005 (1勝クラス, n=3147 holdout,
 delta_pp=+0.095pp top1 — modest but positive, the second smallest gain after
-the tied classes). Both were activated alongside 703 in
-``PER_CLASS_MODEL_VERSIONS``. The remaining unregistered tied classes (701 /
-other) keep falling back to iter 14 — see
+the tied classes) and ``other`` (catch-all for races whose ``kyoso_joken_code``
+is NOT in ``{005, 010, 016, 701, 703}`` or is NULL; n=1064 holdout,
+delta_pp=+0.094pp top1). All three were activated alongside 703 in
+``PER_CLASS_MODEL_VERSIONS``. The remaining unregistered tied classes (016 /
+701) keep falling back to iter 14 — see
 ``docs/finish-position-accuracy/runbook/PER_CLASS_ROUTING.md``.
+
+The ``other`` entry is a virtual code: real races never carry the literal
+``"other"`` as their ``kyoso_joken_code``. :func:`normalize_class_code` maps
+unregistered codes (and NULL) to ``"other"`` before the registry / manifest
+lookup so the offline ``compute_iter20`` ``class_filter_mask`` semantics carry
+over to inference unchanged.
 """
 
 from __future__ import annotations
@@ -90,14 +98,28 @@ class PerClassEnsemble:
 # the iter14 baseline carried at 0.20 and iter20/21/22 contributing residual
 # diversity). 005 ACCEPTED at +0.095pp top1 (iter 25 v2 ensemble — modest but
 # positive; iter14 baseline carries weight 0.51 well above the 0.20 minimum,
-# with iter25 low-cap at 0.33 contributing meaningful diversity). The remaining
-# tied-at-+0.000pp classes (701 / other) stay unregistered to keep the
+# with iter25 low-cap at 0.33 contributing meaningful diversity). ``other``
+# ACCEPTED at +0.094pp top1 (iter 25 v2 ensemble; iter14 baseline dominates at
+# weight 0.64 with iter25 low-cap second at 0.20). The remaining unregistered
+# tied-at-+0.000pp classes (016 / 701) stay unregistered to keep the
 # booster-pool footprint small.
 PER_CLASS_MODEL_VERSIONS: Final[dict[tuple[Category, str], str]] = {
     ("jra", "005"): "iter25-jra-cb-ensemble-005-v8",
     ("jra", "010"): "iter25-jra-cb-ensemble-010-v8",
     ("jra", "703"): "iter23-jra-cb-ensemble-703-v8",
+    ("jra", "other"): "iter25-jra-cb-ensemble-other-v8",
 }
+
+# Real ``kyoso_joken_code`` values that are routed by their literal code rather
+# than the catch-all ``"other"`` bucket. Mirrors the offline
+# ``per_class_ensemble_lib.class_filter_mask`` carve-outs (005 / 010 / 016 /
+# 701 / 703) so the ``compute_iter20`` train-time class boundaries are
+# preserved at inference time. Codes outside this set (and NULL) collapse to
+# ``"other"`` via :func:`normalize_class_code` before the registry lookup.
+NAMED_PER_CLASS_CODES: Final[frozenset[str]] = frozenset(
+    {"005", "010", "016", "701", "703"}
+)
+OTHER_CLASS_CODE: Final[str] = "other"
 
 # Categories that participate in per-class routing. NAR / Ban-ei are excluded
 # so their ``resolve_per_class_model_version`` always returns the category-global
@@ -119,6 +141,27 @@ def is_per_class_enabled_for(category: Category) -> bool:
     return category in PER_CLASS_ENABLED_CATEGORIES
 
 
+def normalize_class_code(kyoso_joken_code: str | None) -> str:
+    """Collapse unregistered codes (and ``None``) to the catch-all ``"other"``.
+
+    Real races carry the raw ``kyoso_joken_code`` value from PG (e.g. ``"005"``,
+    ``"999"``, ``"000"`` or ``None``). The per-class registry only enumerates
+    the five named codes that have a real class boundary in offline training
+    (``NAMED_PER_CLASS_CODES`` = ``{005, 010, 016, 701, 703}``); every other
+    race participates in the ``other`` bucket. This helper performs that
+    mapping once, immediately before the registry lookup, so callers never
+    need to special-case unregistered codes.
+
+    Returned values are guaranteed non-``None`` so downstream code can treat
+    the result as a regular string key.
+    """
+    if kyoso_joken_code is None:
+        return OTHER_CLASS_CODE
+    if kyoso_joken_code in NAMED_PER_CLASS_CODES:
+        return kyoso_joken_code
+    return OTHER_CLASS_CODE
+
+
 def resolve_per_class_model_version(
     category: Category,
     kyoso_joken_code: str | None,
@@ -127,21 +170,23 @@ def resolve_per_class_model_version(
 
     Falls back to ``model_version_for(category)`` when:
 
-    * the category is not per-class enabled (NAR / Ban-ei),
-    * the race has no ``kyoso_joken_code`` (e.g. the column was NULL in PG and
-      the feature build emitted ``None``), or
-    * the class code has no registered per-class winner yet.
+    * the category is not per-class enabled (NAR / Ban-ei), or
+    * the normalised class code (see :func:`normalize_class_code`) has no
+      registered per-class winner yet — i.e. the named-code-or-``"other"``
+      bucket does not appear in ``PER_CLASS_MODEL_VERSIONS``.
 
-    All three branches map to the SAME global model_version so the caller can
+    Both branches map to the SAME global model_version so the caller can
     treat the return value as an opaque label and is never accidentally routed
-    to a non-existent per-class booster.
+    to a non-existent per-class booster. NULL / empty ``kyoso_joken_code``
+    values from PG are folded into the ``"other"`` bucket by the normaliser,
+    so they hit the ``other`` ensemble when it is registered and the category
+    fallback otherwise.
     """
     if not is_per_class_enabled_for(category):
         return model_version_for(category)
-    if kyoso_joken_code is None:
-        return model_version_for(category)
+    normalised = normalize_class_code(kyoso_joken_code)
     return PER_CLASS_MODEL_VERSIONS.get(
-        (category, kyoso_joken_code),
+        (category, normalised),
         model_version_for(category),
     )
 
@@ -299,18 +344,22 @@ def resolve_per_class_resolution(
 
     Routing precedence:
 
-    1. If the category is per-class enabled AND ``kyoso_joken_code`` is provided
-       AND an ensemble manifest exists on disk for the registered model_version,
-       return the parsed ``PerClassEnsemble``.
+    1. If the category is per-class enabled AND an ensemble manifest exists on
+       disk for the normalised class code (named code or ``"other"``), return
+       the parsed ``PerClassEnsemble``.
     2. Otherwise return the string from ``resolve_per_class_model_version``
        (registered single model or category-global fallback).
 
-    The return type union (``PerClassEnsemble | str``) lets the caller pattern-
-    match on ``isinstance(..., PerClassEnsemble)`` to pick the rank-blend path
-    vs the single-booster path.
+    The raw ``kyoso_joken_code`` is first normalised through
+    :func:`normalize_class_code` so unregistered real codes (e.g. ``"999"``)
+    and NULL values both route to the ``"other"`` ensemble when it is
+    registered. The return type union (``PerClassEnsemble | str``) lets the
+    caller pattern-match on ``isinstance(..., PerClassEnsemble)`` to pick the
+    rank-blend path vs the single-booster path.
     """
-    if is_per_class_enabled_for(category) and kyoso_joken_code is not None:
-        ensemble = load_ensemble_manifest(models_dir, category, kyoso_joken_code)
+    if is_per_class_enabled_for(category):
+        normalised = normalize_class_code(kyoso_joken_code)
+        ensemble = load_ensemble_manifest(models_dir, category, normalised)
         if ensemble is not None:
             return ensemble
     return resolve_per_class_model_version(category, kyoso_joken_code)
