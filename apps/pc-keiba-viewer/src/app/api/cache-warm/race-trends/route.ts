@@ -14,7 +14,10 @@ import {
 export const dynamic = "force-dynamic";
 
 const WARM_LOOKAHEAD_SECONDS = 5 * 60;
-const WARM_AFTER_START_SECONDS = 60;
+// Extended to 12 hours so finished races within the same day also stay
+// inside the warm window. This guards against cold-compute slowness right
+// after `runTrendCacheBust` invalidates the day's variants.
+const WARM_AFTER_START_SECONDS = 12 * 60 * 60;
 
 const parseNowMs = (searchParams: URLSearchParams): number => {
   const value = searchParams.get("now");
