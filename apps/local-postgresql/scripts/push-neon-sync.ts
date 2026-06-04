@@ -30,6 +30,7 @@ import {
   quoteIdentifier,
   resolveDefaultFullReplaceBatchRows,
   resolveOperationTimeoutPolicy,
+  resolvePerTableIdleMs,
   resolvePerTableWallClockMs,
   resolvePositiveIntegerEnv,
   resolveRetryBackoffConfig,
@@ -254,6 +255,7 @@ function killProcessGroup(child: ChildProcess): void {
 interface TimeoutContext {
   policy: OperationTimeoutPolicy;
   wallClockMs: number;
+  idleMs: number;
   tableName: string | null;
 }
 
@@ -273,7 +275,7 @@ interface TimeoutHandles {
 function armTimeout(options: ArmTimeoutOptions): TimeoutHandles {
   const { child, label, context, reject } = options;
   const wallClockMs = context.wallClockMs;
-  const idleMs = context.policy.idleMs;
+  const idleMs = context.idleMs;
   const warningRatio = context.policy.warningRatio;
   const startedAt = Date.now();
   const state = { idleHandle: scheduleIdle(), wallHandle: scheduleWall(), wallWarned: false };
@@ -347,11 +349,16 @@ function activePolicy(): OperationTimeoutPolicy {
 function buildTimeoutContext(tableName: string | null): TimeoutContext {
   const policy = activePolicy();
   const fallbackWallClockMs = policy.wallClockMs;
+  const fallbackIdleMs = policy.idleMs;
   const wallClockMs =
     tableName === null
       ? fallbackWallClockMs
       : resolvePerTableWallClockMs({ env: activeEnv, tableName, fallbackWallClockMs });
-  return { policy, wallClockMs, tableName };
+  const idleMs =
+    tableName === null
+      ? fallbackIdleMs
+      : resolvePerTableIdleMs({ env: activeEnv, tableName, fallbackIdleMs });
+  return { policy, wallClockMs, idleMs, tableName };
 }
 
 interface TimeoutWarningInput {
@@ -1078,7 +1085,7 @@ async function runFullReplaceChunked(options: RunFullReplaceChunkedOptions): Pro
     plan,
     rowCount,
     wallClockSeconds: Math.round(context.wallClockMs / 1000),
-    idleSeconds: Math.round(context.policy.idleMs / 1000),
+    idleSeconds: Math.round(context.idleMs / 1000),
   });
   if (plan.chunkCount === 0) return;
   const tableStartedAt = nowMs();
