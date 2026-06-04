@@ -433,6 +433,19 @@ export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<
   }
 };
 
+const formatOuterThrowMessage = (error: unknown): string =>
+  error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error);
+
+export const reportScheduledOuterThrow = async (env: Env, error: unknown): Promise<void> => {
+  const message = formatOuterThrowMessage(error);
+  console.error("scheduled-outer-throw", message);
+  try {
+    await logFetch(env.REALTIME_HOT_DB, "scheduled-outer-throw", "error", null, message);
+  } catch (logError) {
+    console.error("scheduled-outer-throw logFetch fallback", logError);
+  }
+};
+
 export const processFetchOddsJob = async (env: Env, raceKey: string): Promise<void> => {
   const result = await fetchAndStoreOdds(env, raceKey, new Date());
   if (!result) {
@@ -498,7 +511,11 @@ export default {
     return handleFetchRequest(env, request);
   },
   async scheduled(event: ScheduledEvent, env: Env): Promise<void> {
-    await handleScheduled(event, env);
+    try {
+      await handleScheduled(event, env);
+    } catch (error) {
+      await reportScheduledOuterThrow(env, error);
+    }
   },
   async queue(batch: MessageBatch<Job>, env: Env): Promise<void> {
     await handleQueue(batch, env);

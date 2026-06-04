@@ -1,22 +1,19 @@
+import { getOddsFetchIntervalMinutes } from "../time";
 import type { Env } from "../types";
 
 const ENQUEUE_LOCK_KEY_PREFIX = "odds:enqueue-lock";
-const FINAL_WINDOW_MINUTES_BEFORE = 10;
 const PAST_RACE_GRACE_MINUTES_AFTER = 2;
-const HIGH_FREQ_WINDOW_MINUTES_BEFORE = 60;
 // Catch-up window (task F2 C): allow a single final-slot enqueue for races
 // that ran in the last 60 minutes but never had their finalSlot fetched.
 // Beyond that, the race result is in and odds are no longer changing.
 const CATCH_UP_WINDOW_MINUTES_AFTER = 60;
 const LOCK_TTL_SKIP_PAST_RACE = 0;
-const LOCK_TTL_FINAL_SECONDS = 60;
-const LOCK_TTL_HIGH_FREQ_SECONDS = 600;
+// Upper cap (60min cadence). Lower clamp at KV minimum (60s) matches the
+// 1min cadence window and keeps any Cloudflare KV expirationTtl >= 60.
 const LOCK_TTL_DEFAULT_SECONDS = 3600;
 const LOCK_TTL_CATCH_UP_SECONDS = 300;
-// Cloudflare KV requires expirationTtl >= 60. Same numeric value as
-// LOCK_TTL_FINAL_SECONDS but with distinct semantics: this clamps any
-// natural-TTL computation so a tiny remainder near a window boundary
-// never produces a `KV PUT failed: 400 Invalid expiration_ttl` error.
+// Cloudflare KV requires expirationTtl >= 60. Also matches the 1-min
+// cadence interval, so callers in the final window naturally land here.
 const LOCK_TTL_KV_MINIMUM_SECONDS = 60;
 const SECONDS_PER_MINUTE = 60;
 const MS_PER_MINUTE = 60_000;
@@ -63,6 +60,20 @@ const resolveCatchUpTtl = (
   return LOCK_TTL_SKIP_PAST_RACE;
 };
 
+// Lock TTL mirrors the planner cadence interval so a planner tick can
+// always fire on schedule: 60min cadence → 3600s lock, 5min → 300s,
+// 1min → 60s. Anything outside the interval table (final +2 slot or
+// post-grace) falls to the KV minimum so a stale lock cannot block the
+// next opportunity.
+const resolveCadenceLockSeconds = (minutesUntilRace: number): number => {
+  const intervalMinutes = getOddsFetchIntervalMinutes(minutesUntilRace);
+  if (intervalMinutes === null) {
+    return LOCK_TTL_KV_MINIMUM_SECONDS;
+  }
+  const cadenceSeconds = intervalMinutes * SECONDS_PER_MINUTE;
+  return Math.max(LOCK_TTL_KV_MINIMUM_SECONDS, Math.min(LOCK_TTL_DEFAULT_SECONDS, cadenceSeconds));
+};
+
 export const calculateEnqueueLockTtlSeconds = (raceStart: Date, now: Date): number =>
   calculateEnqueueLockTtlSecondsFromInput({ allowCatchUp: false, now, raceStart });
 
@@ -79,25 +90,7 @@ export const calculateEnqueueLockTtlSecondsFromInput = (input: EnqueueLockTtlInp
     }
     return resolveCatchUpTtl(minutesUntilRace, input.raceStart, lastOddsFetchAt);
   }
-  if (minutesUntilRace <= FINAL_WINDOW_MINUTES_BEFORE) {
-    return LOCK_TTL_FINAL_SECONDS;
-  }
-  if (minutesUntilRace <= HIGH_FREQ_WINDOW_MINUTES_BEFORE) {
-    const secondsUntilFinal = Math.ceil(
-      (minutesUntilRace - FINAL_WINDOW_MINUTES_BEFORE) * SECONDS_PER_MINUTE,
-    );
-    return Math.max(
-      LOCK_TTL_KV_MINIMUM_SECONDS,
-      Math.min(LOCK_TTL_HIGH_FREQ_SECONDS, secondsUntilFinal),
-    );
-  }
-  const secondsUntilHighFreq = Math.ceil(
-    (minutesUntilRace - HIGH_FREQ_WINDOW_MINUTES_BEFORE) * SECONDS_PER_MINUTE,
-  );
-  return Math.max(
-    LOCK_TTL_KV_MINIMUM_SECONDS,
-    Math.min(LOCK_TTL_DEFAULT_SECONDS, secondsUntilHighFreq),
-  );
+  return resolveCadenceLockSeconds(minutesUntilRace);
 };
 
 export const isEnqueueLocked = async (env: Env, raceKey: string): Promise<boolean> => {

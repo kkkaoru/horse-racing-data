@@ -23,7 +23,7 @@ const buildEnv = (): Env => {
   return { ODDS_HOT_KV: kv } as Env;
 };
 
-it("returns 60 inside final window (3 minutes before race)", () => {
+it("cadence-60-when-3-min-before (1min cadence interior)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
@@ -32,7 +32,7 @@ it("returns 60 inside final window (3 minutes before race)", () => {
   ).toBe(60);
 });
 
-it("returns 60 at race start", () => {
+it("cadence-60-at-race-start (fractional final slot, null interval)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
@@ -41,7 +41,7 @@ it("returns 60 at race start", () => {
   ).toBe(60);
 });
 
-it("returns 60 just after race start (1 minute after, still in grace)", () => {
+it("cadence-60-during-past-grace-window (-1 min after race)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
@@ -50,7 +50,7 @@ it("returns 60 just after race start (1 minute after, still in grace)", () => {
   ).toBe(60);
 });
 
-it("returns 60 at past-race grace boundary (2 minutes after race)", () => {
+it("cadence-60-at-past-race-grace-boundary (2 min after race)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
@@ -59,7 +59,7 @@ it("returns 60 at past-race grace boundary (2 minutes after race)", () => {
   ).toBe(60);
 });
 
-it("returns 60 at final window before boundary (9 minutes before race)", () => {
+it("cadence-60-when-9-min-before (1min cadence interior)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
@@ -68,7 +68,7 @@ it("returns 60 at final window before boundary (9 minutes before race)", () => {
   ).toBe(60);
 });
 
-it("returns 60 at final window edge (10 minutes before race)", () => {
+it("cadence-60-when-10-min-before (1min cadence interior)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
@@ -77,7 +77,7 @@ it("returns 60 at final window edge (10 minutes before race)", () => {
   ).toBe(60);
 });
 
-it("returns 0 just past grace boundary (3 minutes after race)", () => {
+it("cadence-0-when-past-grace-no-catch-up (3 min after race)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
@@ -86,7 +86,7 @@ it("returns 0 just past grace boundary (3 minutes after race)", () => {
   ).toBe(0);
 });
 
-it("caps high-frequency TTL to 60 seconds near final boundary (11 minutes before race)", () => {
+it("cadence-60-when-11-min-before (1min cadence interior)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
@@ -95,7 +95,7 @@ it("caps high-frequency TTL to 60 seconds near final boundary (11 minutes before
   ).toBe(60);
 });
 
-it("caps high-frequency TTL to 300 seconds (15 minutes before race)", () => {
+it("cadence-300-when-15-min-before (boundary into 5min cadence)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
@@ -104,61 +104,70 @@ it("caps high-frequency TTL to 300 seconds (15 minutes before race)", () => {
   ).toBe(300);
 });
 
-it("caps high-frequency TTL to 540 seconds (19 minutes before race)", () => {
+it("cadence-300-when-19-min-before (5min cadence interior)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
       new Date("2026-05-28T09:41:00+09:00"),
     ),
-  ).toBe(540);
+  ).toBe(300);
 });
 
-it("returns 600 in high-frequency window (45 minutes before race)", () => {
+it("cadence-300-when-30-min-before (5min cadence interior)", () => {
+  expect(
+    calculateEnqueueLockTtlSeconds(
+      new Date("2026-05-28T10:00:00+09:00"),
+      new Date("2026-05-28T09:30:00+09:00"),
+    ),
+  ).toBe(300);
+});
+
+it("cadence-300-when-45-min-before (5min cadence interior)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
       new Date("2026-05-28T09:15:00+09:00"),
     ),
-  ).toBe(600);
+  ).toBe(300);
 });
 
-it("returns 600 at high-frequency window edge (60 minutes before race)", () => {
+it("cadence-300-when-59-min-before (5min cadence upper)", () => {
+  expect(
+    calculateEnqueueLockTtlSeconds(
+      new Date("2026-05-28T10:00:00+09:00"),
+      new Date("2026-05-28T09:01:00+09:00"),
+    ),
+  ).toBe(300);
+});
+
+it("cadence-3600-when-60-min-before (boundary into hourly cadence)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
       new Date("2026-05-28T09:00:00+09:00"),
     ),
-  ).toBe(600);
+  ).toBe(3600);
 });
 
-it("caps default TTL to 60 seconds near high-frequency boundary (61 minutes before race)", () => {
+it("cadence-3600-when-61-min-before (hourly cadence interior)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
       new Date("2026-05-28T08:59:00+09:00"),
     ),
-  ).toBe(60);
+  ).toBe(3600);
 });
 
-it("caps default TTL to 300 seconds (65 minutes before race)", () => {
+it("cadence-3600-when-90-min-before (hourly cadence interior)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
-      new Date("2026-05-28T08:55:00+09:00"),
+      new Date("2026-05-28T08:30:00+09:00"),
     ),
-  ).toBe(300);
+  ).toBe(3600);
 });
 
-it("caps default TTL to 600 seconds (70 minutes before race)", () => {
-  expect(
-    calculateEnqueueLockTtlSeconds(
-      new Date("2026-05-28T10:00:00+09:00"),
-      new Date("2026-05-28T08:50:00+09:00"),
-    ),
-  ).toBe(600);
-});
-
-it("returns 3600 well before race (120 minutes before)", () => {
+it("cadence-3600-when-120-min-before (hourly cadence interior)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
@@ -167,7 +176,16 @@ it("returns 3600 well before race (120 minutes before)", () => {
   ).toBe(3600);
 });
 
-it("returns 0 well after race (4 minutes after)", () => {
+it("cadence-3600-when-200-min-before (hourly cadence interior, far before race)", () => {
+  expect(
+    calculateEnqueueLockTtlSeconds(
+      new Date("2026-05-28T10:00:00+09:00"),
+      new Date("2026-05-28T06:40:00+09:00"),
+    ),
+  ).toBe(3600);
+});
+
+it("cadence-0-well-after-race (4 min after)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
@@ -176,7 +194,7 @@ it("returns 0 well after race (4 minutes after)", () => {
   ).toBe(0);
 });
 
-it("returns 0 well after race (5 minutes after)", () => {
+it("cadence-0-well-after-race (5 min after)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
@@ -185,13 +203,22 @@ it("returns 0 well after race (5 minutes after)", () => {
   ).toBe(0);
 });
 
-it("returns 0 far past race (1 hour after race)", () => {
+it("cadence-0-far-past-race (1 hour after)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
       new Date("2026-05-28T11:00:00+09:00"),
     ),
   ).toBe(0);
+});
+
+it("cadence-60-when-fractional-final-slot (0.5 min before race)", () => {
+  expect(
+    calculateEnqueueLockTtlSeconds(
+      new Date("2026-05-28T10:00:00+09:00"),
+      new Date("2026-05-28T09:59:30+09:00"),
+    ),
+  ).toBe(60);
 });
 
 it("isEnqueueLocked returns true when KV value present", async () => {
@@ -295,7 +322,7 @@ it("calculateEnqueueLockTtlSecondsFromInput ignores unparseable lastOddsFetchAt 
   ).toBe(300);
 });
 
-it("calculateEnqueueLockTtlSecondsFromInput honours the future-race high-frequency window even when allowCatchUp is true", () => {
+it("calculateEnqueueLockTtlSecondsFromInput returns 3600 hourly cadence even when allowCatchUp is true (60min before race)", () => {
   expect(
     calculateEnqueueLockTtlSecondsFromInput({
       allowCatchUp: true,
@@ -303,10 +330,10 @@ it("calculateEnqueueLockTtlSecondsFromInput honours the future-race high-frequen
       now: new Date("2026-05-28T09:00:00+09:00"),
       raceStart: new Date("2026-05-28T10:00:00+09:00"),
     }),
-  ).toBe(600);
+  ).toBe(3600);
 });
 
-it("calculateEnqueueLockTtlSecondsFromInput honours the final window even when allowCatchUp is true", () => {
+it("calculateEnqueueLockTtlSecondsFromInput returns 60 in 1min cadence even when allowCatchUp is true (5min before race)", () => {
   expect(
     calculateEnqueueLockTtlSecondsFromInput({
       allowCatchUp: true,
@@ -317,7 +344,7 @@ it("calculateEnqueueLockTtlSecondsFromInput honours the final window even when a
   ).toBe(60);
 });
 
-it("calculateEnqueueLockTtlSecondsFromInput honours the default very-future window even when allowCatchUp is true", () => {
+it("calculateEnqueueLockTtlSecondsFromInput returns 3600 hourly cadence even when allowCatchUp is true (120min before race)", () => {
   expect(
     calculateEnqueueLockTtlSecondsFromInput({
       allowCatchUp: true,
@@ -328,47 +355,20 @@ it("calculateEnqueueLockTtlSecondsFromInput honours the default very-future wind
   ).toBe(3600);
 });
 
-it("clamps high-frequency boundary TTL to 60 when natural TTL would be 29s (Cloudflare KV minimum)", () => {
+it("cadence-60-at-1min-boundary (1 min before race, lower edge of 1min cadence)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
-      new Date("2026-05-28T09:49:31+09:00"),
+      new Date("2026-05-28T09:59:00+09:00"),
     ),
   ).toBe(60);
 });
 
-it("clamps high-frequency boundary TTL to 60 when natural TTL would be 1s", () => {
+it("cadence-60-just-below-1min-boundary (0.99 min before race, null interval)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
-      new Date("2026-05-28T09:49:59+09:00"),
+      new Date("2026-05-28T09:59:00.600+09:00"),
     ),
   ).toBe(60);
-});
-
-it("clamps default boundary TTL to 60 when natural TTL would be 29s (Cloudflare KV minimum)", () => {
-  expect(
-    calculateEnqueueLockTtlSeconds(
-      new Date("2026-05-28T10:00:00+09:00"),
-      new Date("2026-05-28T08:59:31+09:00"),
-    ),
-  ).toBe(60);
-});
-
-it("preserves default upper cap of 3600 seconds far before race (200 minutes before)", () => {
-  expect(
-    calculateEnqueueLockTtlSeconds(
-      new Date("2026-05-28T10:00:00+09:00"),
-      new Date("2026-05-28T06:40:00+09:00"),
-    ),
-  ).toBe(3600);
-});
-
-it("preserves high-frequency upper cap of 600 seconds in mid-range (30 minutes before race)", () => {
-  expect(
-    calculateEnqueueLockTtlSeconds(
-      new Date("2026-05-28T10:00:00+09:00"),
-      new Date("2026-05-28T09:30:00+09:00"),
-    ),
-  ).toBe(600);
 });

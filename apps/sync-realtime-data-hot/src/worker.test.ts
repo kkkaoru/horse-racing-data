@@ -43,6 +43,7 @@ import worker, {
   parseRaceKeyFromPath,
   processArchiveJob,
   processFetchOddsJob,
+  reportScheduledOuterThrow,
   runScheduledArchive,
   runScheduledPlan,
   runScheduledPopulateMultiDay,
@@ -1245,4 +1246,119 @@ it("default worker queue dispatches to handleQueue", async () => {
   } as unknown as MessageBatch<Job>;
   await worker.queue(batch, env);
   expect(ack).toHaveBeenCalled();
+});
+
+it("scheduled-outer-catch-logs-error-and-stack-to-d1", async () => {
+  const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const logRun = vi.fn(async () => ({ meta: { changes: 1 } }));
+  const bindMock = vi.fn((...args: unknown[]) => {
+    void args;
+    return { run: logRun };
+  });
+  const prepareMock = vi.fn((sql: string) => {
+    void sql;
+    return { bind: bindMock };
+  });
+  const env = buildEnv({
+    REALTIME_HOT_DB: {
+      batch: vi.fn(async () => []),
+      prepare: prepareMock,
+    } as unknown as D1Database,
+  });
+  // Passing `null` as the event makes `event.scheduledTime` throw a
+  // TypeError BEFORE the inner try/catch in handleScheduled, so the
+  // outer try/catch in worker.scheduled fires.
+  await worker.scheduled(null as unknown as ScheduledEvent, env);
+  expect(consoleSpy.mock.calls.length).toBe(1);
+  expect(consoleSpy.mock.calls[0]?.[0]).toBe("scheduled-outer-throw");
+  const insertCalls = prepareMock.mock.calls.filter(([sql]) =>
+    sql.toLowerCase().includes("insert into fetch_logs"),
+  );
+  expect(insertCalls.length).toBe(1);
+  expect(bindMock).toHaveBeenCalledTimes(1);
+  expect(bindMock.mock.calls[0]?.[0]).toBeNull();
+  expect(bindMock.mock.calls[0]?.[1]).toBe("scheduled-outer-throw");
+  expect(bindMock.mock.calls[0]?.[2]).toBe("error");
+  expect(logRun).toHaveBeenCalledTimes(1);
+});
+
+it("scheduled-outer-catch-handles-logfetch-failure", async () => {
+  const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const prepareMock = vi.fn((sql: string) => {
+    void sql;
+    return {
+      bind: vi.fn((...args: unknown[]) => {
+        void args;
+        return {
+          run: vi.fn(async () => {
+            throw new Error("fetch_logs down");
+          }),
+        };
+      }),
+    };
+  });
+  const env = buildEnv({
+    REALTIME_HOT_DB: {
+      batch: vi.fn(async () => []),
+      prepare: prepareMock,
+    } as unknown as D1Database,
+  });
+  await worker.scheduled(null as unknown as ScheduledEvent, env);
+  expect(consoleSpy.mock.calls.length).toBe(2);
+  expect(consoleSpy.mock.calls[0]?.[0]).toBe("scheduled-outer-throw");
+  expect(consoleSpy.mock.calls[1]?.[0]).toBe("scheduled-outer-throw logFetch fallback");
+});
+
+it("scheduled-outer-catch-handles-non-error-object", async () => {
+  const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const bindMock = vi.fn((...args: unknown[]) => {
+    void args;
+    return { run: vi.fn(async () => ({ meta: { changes: 1 } })) };
+  });
+  const env = buildEnv({
+    REALTIME_HOT_DB: {
+      batch: vi.fn(async () => []),
+      prepare: vi.fn((sql: string) => {
+        void sql;
+        return { bind: bindMock };
+      }),
+    } as unknown as D1Database,
+  });
+  await reportScheduledOuterThrow(env, "literal string");
+  expect(consoleSpy.mock.calls[0]?.[0]).toBe("scheduled-outer-throw");
+  expect(consoleSpy.mock.calls[0]?.[1]).toBe("literal string");
+  expect(bindMock.mock.calls[0]?.[3]).toBe("literal string");
+});
+
+it("scheduled-outer-runs-without-error-when-handler-ok", async () => {
+  const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const prepareMock = vi.fn((sql: string) => {
+    const lowered = sql.toLowerCase();
+    if (lowered.includes("count(*)") && lowered.includes("from odds_fetch_state")) {
+      return { bind: vi.fn(() => ({ first: vi.fn(async () => ({ count: 0 })) })) };
+    }
+    if (lowered.includes("from odds_fetch_state")) {
+      return { bind: vi.fn(() => ({ all: vi.fn(async () => ({ results: [] })) })) };
+    }
+    return { bind: vi.fn(() => ({ run: vi.fn(async () => ({ meta: { changes: 1 } })) })) };
+  });
+  const env = buildEnv({
+    REALTIME_HOT_DB: {
+      batch: vi.fn(async () => []),
+      prepare: prepareMock,
+    } as unknown as D1Database,
+  });
+  await worker.scheduled(
+    {
+      cron: "* * * * *",
+      scheduledTime: new Date("2026-05-28T01:00:00Z").getTime(),
+      type: "scheduled",
+    } as unknown as ScheduledEvent,
+    env,
+  );
+  const insertLogCalls = prepareMock.mock.calls.filter(([sql]) =>
+    sql.toLowerCase().includes("insert into fetch_logs"),
+  );
+  expect(insertLogCalls.length).toBe(0);
+  expect(consoleSpy).not.toHaveBeenCalled();
 });
