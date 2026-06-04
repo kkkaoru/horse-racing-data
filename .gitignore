@@ -176,3 +176,5 @@ apps/finish-position-predict-container/models/
 
 # Claude Code internal artifacts (worktrees, memory caches, etc.)
 .claude/
+
+tmp
