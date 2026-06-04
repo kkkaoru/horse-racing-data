@@ -2929,7 +2929,9 @@ export const getFinishPositionLambdarankPredictions = cache(
             with active as (
               select model_version
               from finish_position_active_models
-              where category = ${category} and subclass is null
+              where category = ${category}
+                and (subclass = ${race.kyosoJokenCode} or subclass is null)
+              order by (subclass is null) asc
               limit 1
             ),
             selected_model as (

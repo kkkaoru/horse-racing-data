@@ -57,10 +57,17 @@ COPY apps/pc-keiba-viewer/finish-position/lookups /app/lookups
 # These model artifacts are gitignored scratch (apps/finish-position-predict-
 # container/models/, see .gitignore) staged into the build context before deploy.
 #
-# TODO(per-class): when predict_lib/per_class.py PER_CLASS_MODEL_VERSIONS is
-# populated, add per-class artifact COPY lines mirroring
+# Per-class artifacts (Phase B-2 ENSEMBLE_ACTIVATION_703) are baked under
 #   /models/finish-position/jra/per-class/{kyoso_joken_code}/{model_version}/
-# See docs/finish-position-accuracy/runbook/PER_CLASS_ROUTING.md.
+# matching predict_lib.model_meta.build_r2_object_key. For class 703 the recursive
+# COPY below pulls in the 4 ensemble member single-shot boosters
+#   iter20-jra-cb-perclass-703-v8/model.json
+#   iter20-jra-cb-perclass-703-hpo-v8/model.json
+#   iter21-jra-cb-chain-703-v8/model.json
+#   iter22-jra-cb-residual-703-v8/model.json
+# plus the iter23-jra-cb-ensemble-703-v8/manifest.json that ensemble_scorer.py
+# loads to drive the weighted blend. See docs/finish-position-accuracy/runbook/
+# PER_CLASS_ROUTING.md.
 COPY apps/finish-position-predict-container/models /models
 
 ENV PYTHONPATH=/app/src:/app/pipeline

@@ -24,8 +24,13 @@ vi.mock("./query-cache", () => ({
 }));
 
 import type { FinishPositionBucketFilter } from "../lib/finish-prediction-dimensions";
+import type { RaceDetail, Runner } from "../lib/race-types";
 import type { RunningStyleBucketFilter } from "../lib/running-style-prediction-dimensions";
-import { getFinishPositionBucketEvaluation, getRunningStyleBucketEvaluation } from "./queries";
+import {
+  getFinishPositionBucketEvaluation,
+  getFinishPositionLambdarankPredictions,
+  getRunningStyleBucketEvaluation,
+} from "./queries";
 
 interface DrizzleSqlLike {
   queryChunks?: unknown[];
@@ -632,4 +637,187 @@ it("getFinishPositionBucketEvaluation flags a small sample when race_count is be
   const result = await getFinishPositionBucketEvaluation({ filter: FINISH_KEIBAJO_ONLY_FILTER });
   expect(result?.smallSampleWarning).toBe(true);
   expect(result?.pairScoreAvg).toBe(0);
+});
+
+const PERCLASS_703_RACE: RaceDetail = {
+  babajotaiCodeDirt: "0",
+  babajotaiCodeShiba: "0",
+  gradeCode: null,
+  hassoJikoku: "1430",
+  jockeyNames: [],
+  kaisaiKai: "2",
+  kaisaiNen: "2026",
+  kaisaiNichime: "5",
+  kaisaiTsukihi: "0608",
+  keibajoCode: "05",
+  kyori: "1600",
+  kyosoJokenCode: "703",
+  kyosoJokenMeisho: null,
+  kyosoKigoCode: null,
+  kyosomeiFukudai: null,
+  kyosomeiHondai: null,
+  kyosomeiKakkonai: null,
+  kyosoShubetsuCode: "11",
+  juryoShubetsuCode: "1",
+  raceBango: "11",
+  shussoTosu: "16",
+  source: "jra",
+  tenkoCode: "1",
+  torokuTosu: "16",
+  trackCode: "10",
+};
+
+const PERCLASS_703_RUNNERS: Runner[] = [
+  {
+    bamei: "Alpha",
+    banushimei: null,
+    barei: "4",
+    bataiju: "480",
+    chokyoshimeiRyakusho: null,
+    corner1: null,
+    corner2: null,
+    corner3: null,
+    corner4: null,
+    futanJuryo: "560",
+    kakuteiChakujun: null,
+    kettoTorokuBango: "2020100001",
+    kishumeiRyakusho: null,
+    kohan3f: null,
+    moshokuCode: null,
+    seibetsuCode: "1",
+    sohaTime: null,
+    tanshoNinkijun: null,
+    tanshoOdds: null,
+    timeSa: null,
+    umaban: "1",
+    wakuban: "1",
+    zogenFugo: null,
+    zogenSa: null,
+  },
+  {
+    bamei: "Bravo",
+    banushimei: null,
+    barei: "4",
+    bataiju: "490",
+    chokyoshimeiRyakusho: null,
+    corner1: null,
+    corner2: null,
+    corner3: null,
+    corner4: null,
+    futanJuryo: "560",
+    kakuteiChakujun: null,
+    kettoTorokuBango: "2020100002",
+    kishumeiRyakusho: null,
+    kohan3f: null,
+    moshokuCode: null,
+    seibetsuCode: "1",
+    sohaTime: null,
+    tanshoNinkijun: null,
+    tanshoOdds: null,
+    timeSa: null,
+    umaban: "2",
+    wakuban: "2",
+    zogenFugo: null,
+    zogenSa: null,
+  },
+];
+
+it("getFinishPositionLambdarankPredictions emits subclass-aware active CTE referencing kyosoJokenCode", async () => {
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        model_version: "iter23-jra-cb-ensemble-703-v8",
+        predicted_rank: 1,
+        predicted_score: "0.91",
+        shusso_tosu: 2,
+        umaban: 1,
+      },
+    ],
+  });
+  await getFinishPositionLambdarankPredictions(PERCLASS_703_RACE, PERCLASS_703_RUNNERS);
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(queryText).toMatch(/from finish_position_active_models/u);
+  expect(queryText).toMatch(/where category = /u);
+  expect(queryText).toMatch(/'jra'/u);
+  expect(queryText).toMatch(/and \(subclass = /u);
+  expect(queryText).toMatch(/'703'/u);
+  expect(queryText).toMatch(/or subclass is null\)/u);
+  expect(queryText).toMatch(/order by \(subclass is null\) asc/u);
+});
+
+it("getFinishPositionLambdarankPredictions translates execute rows into prediction features", async () => {
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        model_version: "iter23-jra-cb-ensemble-703-v8",
+        predicted_rank: 1,
+        predicted_score: "0.91",
+        shusso_tosu: 2,
+        umaban: 1,
+      },
+      {
+        model_version: "iter23-jra-cb-ensemble-703-v8",
+        predicted_rank: 2,
+        predicted_score: "0.55",
+        shusso_tosu: 2,
+        umaban: 2,
+      },
+    ],
+  });
+  const result = await getFinishPositionLambdarankPredictions(
+    PERCLASS_703_RACE,
+    PERCLASS_703_RUNNERS,
+  );
+  expect(result.length).toBe(2);
+  expect(result[0]?.horseNumber).toBe("1");
+  expect(result[0]?.modelVersion).toBe("iter23-jra-cb-ensemble-703-v8");
+  expect(result[0]?.predictedFinishNorm).toBe(0);
+  expect(result[0]?.showProbability).toBe(null);
+  expect(result[0]?.winProbability).toBe(null);
+  expect(result[1]?.horseNumber).toBe("2");
+  expect(result[1]?.predictedFinishNorm).toBe(1);
+});
+
+it("getFinishPositionLambdarankPredictions returns empty array when execute throws", async () => {
+  executeMock.mockRejectedValue(new Error("db down"));
+  const result = await getFinishPositionLambdarankPredictions(
+    PERCLASS_703_RACE,
+    PERCLASS_703_RUNNERS,
+  );
+  expect(result.length).toBe(0);
+});
+
+it("getFinishPositionLambdarankPredictions short-circuits without SQL when only one runner is present", async () => {
+  const singleRunner: Runner[] = [
+    {
+      bamei: "Solo",
+      banushimei: null,
+      barei: "4",
+      bataiju: "480",
+      chokyoshimeiRyakusho: null,
+      corner1: null,
+      corner2: null,
+      corner3: null,
+      corner4: null,
+      futanJuryo: "560",
+      kakuteiChakujun: null,
+      kettoTorokuBango: "2020100003",
+      kishumeiRyakusho: null,
+      kohan3f: null,
+      moshokuCode: null,
+      seibetsuCode: "1",
+      sohaTime: null,
+      tanshoNinkijun: null,
+      tanshoOdds: null,
+      timeSa: null,
+      umaban: "1",
+      wakuban: "1",
+      zogenFugo: null,
+      zogenSa: null,
+    },
+  ];
+  const result = await getFinishPositionLambdarankPredictions(PERCLASS_703_RACE, singleRunner);
+  expect(result.length).toBe(0);
+  expect(executeMock).not.toHaveBeenCalled();
 });

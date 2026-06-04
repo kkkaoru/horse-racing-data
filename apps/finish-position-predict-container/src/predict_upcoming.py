@@ -46,8 +46,14 @@ from predict_lib.audit import (
     build_audit_record,
     build_audit_table_ddl,
 )
+from predict_lib.booster_pool import BoosterPool
 from predict_lib.conn_url import normalise_database_url, resolve_source_url
 from predict_lib.dedupe import dedupe_batch
+from predict_lib.ensemble_routing import (
+    EnsembleRouteOutcome,
+    init_member_pool,
+    score_race_with_resolution,
+)
 from predict_lib.model_meta import (
     CATEGORIES,
     METADATA_FILE_NAME,
@@ -56,14 +62,10 @@ from predict_lib.model_meta import (
     architecture_for,
     build_r2_object_key,
     feature_count_for,
+    model_version_for,
 )
-from predict_lib.per_class import resolve_per_class_model_version
-from predict_lib.scorer import (
-    BoosterLike,
-    assert_feature_count,
-    build_feature_matrix,
-    score_matrix,
-)
+from predict_lib.per_class import resolve_per_class_resolution
+from predict_lib.scorer import BoosterLike, assert_feature_count
 from predict_lib.upcoming import build_prediction_rows, rank_race_entries
 from predict_lib.upsert_sql import (
     DEFAULT_CHUNK_SIZE,
@@ -214,18 +216,35 @@ def _extract_race_kyoso_joken_code(entries: Sequence[Mapping[str, object]]) -> s
 
 
 def _score_one_race(
-    booster: BoosterLike,
+    fallback_booster: BoosterLike,
+    pool: BoosterPool,
+    models_dir: Path,
     race_id: str,
     category: Category,
     entries: Sequence[Mapping[str, object]],
     feature_names: Sequence[str],
 ) -> list[list[object]]:
-    matrix = build_feature_matrix(entries, feature_names, architecture_for(category))
-    scores = score_matrix(booster, matrix)
-    ranked = rank_race_entries(entries, scores)
     kyoso_joken_code = _extract_race_kyoso_joken_code(entries)
-    model_version = resolve_per_class_model_version(category, kyoso_joken_code)
-    return build_prediction_rows(race_id, category, ranked, model_version)
+    resolution = resolve_per_class_resolution(models_dir, category, kyoso_joken_code)
+    outcome: EnsembleRouteOutcome = score_race_with_resolution(
+        resolution=resolution,
+        race_id=race_id,
+        entries=entries,
+        feature_names=feature_names,
+        architecture=architecture_for(category),
+        pool=pool,
+        fallback_booster=fallback_booster,
+        fallback_model_version=model_version_for(category),
+    )
+    if outcome.fallback_reason is not None:
+        print(
+            f"[predict-upcoming] ensemble fallback category={category} "
+            f"race_id={race_id} kyoso_joken_code={kyoso_joken_code} "
+            f"reason={outcome.fallback_reason}",
+            file=sys.stderr,
+        )
+    ranked = rank_race_entries(entries, outcome.scores)
+    return build_prediction_rows(race_id, category, ranked, outcome.model_version)
 
 
 def _row_to_pk_map(row: Sequence[object]) -> Mapping[str, object]:
@@ -271,11 +290,18 @@ def _predict_category(
     window: PredictWindow,
 ) -> int:
     feature_names = _load_model_metadata(models_dir, category)
-    booster = _load_booster(models_dir, category)
+    fallback_booster = _load_booster(models_dir, category)
+    # Pool is built per-category at the top of the prediction loop so cold-start
+    # cost is paid once and every race in the loop is a dict lookup. Categories
+    # with no registered ensembles (NAR / Ban-ei today) get an empty pool and
+    # always take the single-model fast path inside score_race_with_resolution.
+    pool = init_member_pool(models_dir, category)
     races = _build_feature_rows(category, window)
     written = 0
     for race_id, entries in races.items():
-        rows = _score_one_race(booster, race_id, category, entries, feature_names)
+        rows = _score_one_race(
+            fallback_booster, pool, models_dir, race_id, category, entries, feature_names
+        )
         written += _flush_predictions(connection, rows)
     return written
 
