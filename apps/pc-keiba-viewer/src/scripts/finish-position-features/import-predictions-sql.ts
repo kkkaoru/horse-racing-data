@@ -2,6 +2,14 @@
 
 const PREDICTIONS_TABLE = "race_finish_position_model_predictions";
 const ACTIVE_MODELS_TABLE = "finish_position_active_models";
+// Phase B per-class JRA routing — see apps/finish-position-predict-container/src/predict_lib/per_class.py
+// and docs/finish-position-accuracy/runbook/PER_CLASS_ROUTING.md.
+// ``subclass = NULL`` is the category-global fallback row (current production
+// behaviour). A non-NULL ``subclass`` registers a per-class model_version for
+// kyoso_joken_code; one row per (category, subclass) is allowed, plus one
+// NULL-subclass fallback per category (enforced by the unique index on
+// (category, coalesce(subclass, ''))).
+const ACTIVE_MODELS_SUBCLASS_INDEX = `${ACTIVE_MODELS_TABLE}_category_subclass_idx`;
 
 const PRIMARY_KEY_COLUMNS = [
   "model_version",
@@ -54,11 +62,22 @@ export const buildPredictionsTableDdl = (): string => `
 
 export const buildActiveModelsTableDdl = (): string => `
     create table if not exists ${ACTIVE_MODELS_TABLE} (
-      category text primary key,
+      category text not null,
+      subclass text,
       model_version text not null,
       activated_at timestamptz not null default now()
     )
   `;
+
+export const buildAddSubclassColumnSql = (): string =>
+  `alter table ${ACTIVE_MODELS_TABLE} add column if not exists subclass text`;
+
+export const buildDropLegacyPkSql = (): string =>
+  `alter table ${ACTIVE_MODELS_TABLE} drop constraint if exists ${ACTIVE_MODELS_TABLE}_pkey`;
+
+export const buildActiveModelsSubclassUniqueIndexSql = (): string =>
+  `create unique index if not exists ${ACTIVE_MODELS_SUBCLASS_INDEX}
+     on ${ACTIVE_MODELS_TABLE} (category, coalesce(subclass, ''))`;
 
 export const buildPredictionsLookupIndexSql = (): string =>
   `create index if not exists ${PREDICTIONS_TABLE}_race_lookup_idx
@@ -87,9 +106,15 @@ export const buildBatchInsertSql = (rowCount: number): string => {
 };
 
 export const buildActivateModelSql = (): string =>
-  `insert into ${ACTIVE_MODELS_TABLE} (category, model_version)
-     values ($1, $2)
-     on conflict (category)
+  `insert into ${ACTIVE_MODELS_TABLE} (category, subclass, model_version)
+     values ($1, null, $2)
+     on conflict (category, coalesce(subclass, ''))
+     do update set model_version = excluded.model_version, activated_at = now()`;
+
+export const buildActivatePerClassModelSql = (): string =>
+  `insert into ${ACTIVE_MODELS_TABLE} (category, subclass, model_version)
+     values ($1, $2, $3)
+     on conflict (category, coalesce(subclass, ''))
      do update set model_version = excluded.model_version, activated_at = now()`;
 
 export {

@@ -3,8 +3,12 @@ import { expect, test } from "vitest";
 import {
   ACTIVE_MODELS_TABLE,
   buildActivateModelSql,
+  buildActivatePerClassModelSql,
+  buildActiveModelsSubclassUniqueIndexSql,
   buildActiveModelsTableDdl,
+  buildAddSubclassColumnSql,
   buildBatchInsertSql,
+  buildDropLegacyPkSql,
   buildPredictionsLookupIndexSql,
   buildPredictionsTableDdl,
   INSERT_COLUMNS,
@@ -56,10 +60,31 @@ test("buildPredictionsTableDdl declares numeric and integer fields", () => {
   expect(ddl).toContain("primary key (model_version, source, kaisai_nen");
 });
 
-test("buildActiveModelsTableDdl exposes category and model_version", () => {
+test("buildActiveModelsTableDdl exposes category, subclass and model_version", () => {
   const ddl = buildActiveModelsTableDdl();
-  expect(ddl).toContain("category text primary key");
+  expect(ddl).toContain("category text not null");
+  expect(ddl).toContain("subclass text");
   expect(ddl).toContain("model_version text not null");
+});
+
+test("buildAddSubclassColumnSql adds the subclass column idempotently", () => {
+  const sql = buildAddSubclassColumnSql();
+  expect(sql).toContain("alter table finish_position_active_models");
+  expect(sql).toContain("add column if not exists subclass text");
+});
+
+test("buildDropLegacyPkSql drops the legacy category-only primary key", () => {
+  const sql = buildDropLegacyPkSql();
+  expect(sql).toContain("alter table finish_position_active_models");
+  expect(sql).toContain("drop constraint if exists finish_position_active_models_pkey");
+});
+
+test("buildActiveModelsSubclassUniqueIndexSql enforces uniqueness over (category, coalesce(subclass, ''))", () => {
+  const sql = buildActiveModelsSubclassUniqueIndexSql();
+  expect(sql).toContain(
+    "create unique index if not exists finish_position_active_models_category_subclass_idx",
+  );
+  expect(sql).toContain("on finish_position_active_models (category, coalesce(subclass, ''))");
 });
 
 test("buildPredictionsLookupIndexSql covers the race tuple", () => {
@@ -83,9 +108,20 @@ test("buildBatchInsertSql includes the conflict clause", () => {
   expect(sql).toContain("prediction_generated_at = now()");
 });
 
-test("buildActivateModelSql upserts the active model row", () => {
+test("buildActivateModelSql upserts the category fallback (NULL subclass) row", () => {
   const sql = buildActivateModelSql();
   expect(sql).toContain("insert into finish_position_active_models");
-  expect(sql).toContain("on conflict (category)");
+  expect(sql).toContain("(category, subclass, model_version)");
+  expect(sql).toContain("values ($1, null, $2)");
+  expect(sql).toContain("on conflict (category, coalesce(subclass, ''))");
+  expect(sql).toContain("model_version = excluded.model_version");
+});
+
+test("buildActivatePerClassModelSql upserts a per-class (category, subclass) row", () => {
+  const sql = buildActivatePerClassModelSql();
+  expect(sql).toContain("insert into finish_position_active_models");
+  expect(sql).toContain("(category, subclass, model_version)");
+  expect(sql).toContain("values ($1, $2, $3)");
+  expect(sql).toContain("on conflict (category, coalesce(subclass, ''))");
   expect(sql).toContain("model_version = excluded.model_version");
 });

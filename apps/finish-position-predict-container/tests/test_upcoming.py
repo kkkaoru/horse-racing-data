@@ -81,3 +81,19 @@ def test_build_prediction_rows_banei_model_version() -> None:
     ranked = rank_race_entries(entries, [0.1])
     rows = build_prediction_rows("ban-ei:2026:0601:83:07", "ban-ei", ranked)
     assert rows[0][0] == "banei-cb-v7-lineage-wf-21y"
+
+
+def test_build_prediction_rows_uses_explicit_model_version_override() -> None:
+    entries = [{"ketto_toroku_bango": "111", "umaban": 1}]
+    ranked = rank_race_entries(entries, [0.42])
+    rows = build_prediction_rows(
+        "jra:2024:0101:45:08", "jra", ranked, "iter21-jra-cb-class005-v8"
+    )
+    assert rows[0][0] == "iter21-jra-cb-class005-v8"
+
+
+def test_build_prediction_rows_falls_back_to_category_when_none_passed() -> None:
+    entries = [{"ketto_toroku_bango": "111", "umaban": 1}]
+    ranked = rank_race_entries(entries, [0.42])
+    rows = build_prediction_rows("jra:2024:0101:45:08", "jra", ranked, None)
+    assert rows[0][0] == "iter14-jra-cb-pacestyle-course-v8"

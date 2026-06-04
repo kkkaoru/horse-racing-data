@@ -56,6 +56,11 @@ COPY apps/pc-keiba-viewer/finish-position/lookups /app/lookups
 # predict_lib.model_meta.build_r2_object_key resolves the baked path unchanged.
 # These model artifacts are gitignored scratch (apps/finish-position-predict-
 # container/models/, see .gitignore) staged into the build context before deploy.
+#
+# TODO(per-class): when predict_lib/per_class.py PER_CLASS_MODEL_VERSIONS is
+# populated, add per-class artifact COPY lines mirroring
+#   /models/finish-position/jra/per-class/{kyoso_joken_code}/{model_version}/
+# See docs/finish-position-accuracy/runbook/PER_CLASS_ROUTING.md.
 COPY apps/finish-position-predict-container/models /models
 
 ENV PYTHONPATH=/app/src:/app/pipeline

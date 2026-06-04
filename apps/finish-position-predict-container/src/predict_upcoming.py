@@ -57,6 +57,7 @@ from predict_lib.model_meta import (
     build_r2_object_key,
     feature_count_for,
 )
+from predict_lib.per_class import resolve_per_class_model_version
 from predict_lib.scorer import (
     BoosterLike,
     assert_feature_count,
@@ -92,6 +93,13 @@ CATEGORIES_ENV: str = "PREDICT_CATEGORIES"
 DEFAULT_DAYS_AHEAD: int = 2
 RACE_ID_KETTO_INDEX: int = 6
 RACE_ID_PART_RANGE: range = range(1, 6)
+# Feature-parquet column name carrying the JRA race-class code (000/005/010/016/
+# 701/703/...). The DuckDB base build projects it as ``kyoso_joken_code`` (see
+# apps/pc-keiba-viewer/src/scripts/finish_position_features_duckdb.py). Used by
+# predict_lib.per_class.resolve_per_class_model_version to route a race to its
+# per-class JRA model when one is registered; absent / None defers to the
+# category-global fallback.
+KYOSO_JOKEN_CODE_FIELD: str = "kyoso_joken_code"
 # Cloudflare Containers reaps batch instances that receive no HTTP traffic
 # (independent of @cloudflare/containers' JS-side sleepAfter). The predictor
 # is a long-running batch job, so we both (a) listen on a port so the start
@@ -187,6 +195,24 @@ def _load_model_metadata(models_dir: Path, category: Category) -> Sequence[str]:
     return feature_names
 
 
+def _extract_race_kyoso_joken_code(entries: Sequence[Mapping[str, object]]) -> str | None:
+    """Return the race's ``kyoso_joken_code`` from the first entry, or None.
+
+    All entries of one race share the same race-class, so the first entry is
+    representative. ``None`` and empty strings collapse to ``None`` so the
+    per-class router falls back to the category-global model.
+    """
+    if not entries:
+        return None
+    raw = entries[0].get(KYOSO_JOKEN_CODE_FIELD)
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if text == "":
+        return None
+    return text
+
+
 def _score_one_race(
     booster: BoosterLike,
     race_id: str,
@@ -197,7 +223,9 @@ def _score_one_race(
     matrix = build_feature_matrix(entries, feature_names, architecture_for(category))
     scores = score_matrix(booster, matrix)
     ranked = rank_race_entries(entries, scores)
-    return build_prediction_rows(race_id, category, ranked)
+    kyoso_joken_code = _extract_race_kyoso_joken_code(entries)
+    model_version = resolve_per_class_model_version(category, kyoso_joken_code)
+    return build_prediction_rows(race_id, category, ranked, model_version)
 
 
 def _row_to_pk_map(row: Sequence[object]) -> Mapping[str, object]:

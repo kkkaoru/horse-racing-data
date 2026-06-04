@@ -2929,7 +2929,7 @@ export const getFinishPositionLambdarankPredictions = cache(
             with active as (
               select model_version
               from finish_position_active_models
-              where category = ${category}
+              where category = ${category} and subclass is null
               limit 1
             ),
             selected_model as (
@@ -3050,7 +3050,10 @@ export const getActiveFinishPredictionEvaluation = cache(
           top5_winner_capture: string | null;
         }>(sql`
           with active as (
-            select model_version from finish_position_active_models where category = ${category} limit 1
+            select model_version
+            from finish_position_active_models
+            where category = ${category} and subclass is null
+            limit 1
           )
           select e.*
           from model_prediction_evaluations e

@@ -61,6 +61,7 @@ def build_prediction_rows(
     race_id: str,
     category: Category,
     ranked: Sequence[RankedHorse],
+    model_version: str | None = None,
 ) -> list[list[object]]:
     """Flatten ranked horses into UPSERT value tuples for one race.
 
@@ -68,12 +69,19 @@ def build_prediction_rows(
     ``predicted_top3_prob`` / ``predicted_finish_position`` are left ``None`` —
     the v7-lineage rankers emit a relevance score + rank, not calibrated
     probabilities (mirrors the importer's ``flattenForInsert``).
+
+    ``model_version`` defaults to the category-global label (``model_version_for``)
+    so existing callers stay backwards-compatible. Per-class JRA routing passes
+    the resolved ``resolve_per_class_model_version`` value so an active per-class
+    winner lands its predictions under its own ``model_version`` row in PG.
     """
     parts: RaceIdParts = parse_race_id(race_id)
-    model_version = model_version_for(category)
+    resolved_model_version = model_version if model_version is not None else model_version_for(
+        category
+    )
     return [
         [
-            model_version,
+            resolved_model_version,
             parts.source,
             parts.kaisai_nen,
             parts.kaisai_tsukihi,

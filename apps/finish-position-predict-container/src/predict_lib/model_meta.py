@@ -20,6 +20,9 @@ Architecture = Literal["catboost", "xgboost"]
 
 CATEGORIES: Final[tuple[Category, ...]] = get_args(Category)
 
+# Per-class JRA model registry — see predict_lib/per_class.py for routing logic.
+# MODEL_VERSION_BY_CATEGORY['jra'] is the fallback model when no class-specific
+# model is registered.
 MODEL_VERSION_BY_CATEGORY: Final[dict[Category, str]] = {
     "jra": "iter14-jra-cb-pacestyle-course-v8",
     "nar": "iter12-nar-xgb-hpo-v8",
