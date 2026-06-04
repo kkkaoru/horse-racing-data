@@ -19,11 +19,11 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260207.0",
-    "@vitest/coverage-v8": "4.1.5",
+    "@vitest/coverage-v8": "4.1.8",
     "oxfmt": "0.48.0",
     "oxlint": "1.63.0",
     "typescript": "5.9.3",
-    "vitest": "4.1.5",
+    "vitest": "4.1.8",
     "wrangler": "4.90.0"
   }
 }
