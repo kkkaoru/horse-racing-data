@@ -1,5 +1,6 @@
-"""Tests for the container-baked model metadata mapping (v7-lineage; v8 boosters
-staged under models/ but not yet wired into the runtime feature pipeline)."""
+"""Tests for the container-baked model metadata mapping (v8 production deploy:
+JRA=iter14-jra-cb-pacestyle-course-v8, NAR=iter12-nar-xgb-hpo-v8, Ban-ei
+unchanged from v7-lineage)."""
 
 from __future__ import annotations
 
@@ -21,11 +22,11 @@ from predict_lib.model_meta import (
 
 
 def test_model_version_jra() -> None:
-    assert model_version_for("jra") == "jra-cb-v7-lineage-wf-21y"
+    assert model_version_for("jra") == "iter14-jra-cb-pacestyle-course-v8"
 
 
 def test_model_version_nar() -> None:
-    assert model_version_for("nar") == "nar-xgb-v7-lineage-wf-21y"
+    assert model_version_for("nar") == "iter12-nar-xgb-hpo-v8"
 
 
 def test_model_version_banei() -> None:
@@ -45,11 +46,11 @@ def test_architecture_banei_catboost() -> None:
 
 
 def test_feature_count_jra() -> None:
-    assert feature_count_for("jra") == 226
+    assert feature_count_for("jra") == 241
 
 
 def test_feature_count_nar() -> None:
-    assert feature_count_for("nar") == 175
+    assert feature_count_for("nar") == 192
 
 
 def test_feature_count_banei() -> None:
@@ -58,7 +59,7 @@ def test_feature_count_banei() -> None:
 
 def test_build_r2_object_key_model() -> None:
     assert build_r2_object_key("jra", "model.json") == (
-        "finish-position/jra/jra-cb-v7-lineage-wf-21y/model.json"
+        "finish-position/jra/iter14-jra-cb-pacestyle-course-v8/model.json"
     )
 
 

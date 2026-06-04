@@ -40,9 +40,15 @@ COPY apps/finish-position-predict-container/src /app/src
 
 # Reused, unchanged feature-pipeline scripts from the viewer. predict_upcoming
 # imports pipeline_runner (a thin bundled adapter, see DEPLOY.md) which shells
-# out to these to build the v7-lineage feature parquet for the upcoming window.
+# out to these to build the v8 feature parquet for the upcoming window.
 COPY apps/pc-keiba-viewer/src/scripts/finish_position_features_duckdb.py /app/pipeline/
 COPY apps/pc-keiba-viewer/src/scripts/finish-position-features /app/pipeline/finish-position-features
+
+# Static lookup parquet baked into the image at /app/lookups (path mirrors
+# predict_lib.pipeline_args.COURSE_LOOKUP_PATH). The v8 iter14 course-numerical
+# layer joins this 119-row constants table at runtime — tracked in git under
+# apps/pc-keiba-viewer/finish-position/lookups/ (see .gitignore negation).
+COPY apps/pc-keiba-viewer/finish-position/lookups /app/lookups
 
 # Models are BAKED into the image under MODELS_DIR (/models) so the container has
 # no runtime R2-scope dependency. The directory layout mirrors the R2 object keys

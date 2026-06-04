@@ -51,7 +51,7 @@ def test_build_prediction_rows_columns_jra() -> None:
     rows = build_prediction_rows("jra:2024:0101:45:08", "jra", ranked)
     assert rows == [
         [
-            "jra-cb-v7-lineage-wf-21y",
+            "iter14-jra-cb-pacestyle-course-v8",
             "jra",
             "2024",
             "0101",
@@ -72,7 +72,7 @@ def test_build_prediction_rows_nar_model_version() -> None:
     entries = [{"ketto_toroku_bango": "222", "umaban": 3}]
     ranked = rank_race_entries(entries, [0.7])
     rows = build_prediction_rows("nar:2026:0523:54:11", "nar", ranked)
-    assert rows[0][0] == "nar-xgb-v7-lineage-wf-21y"
+    assert rows[0][0] == "iter12-nar-xgb-hpo-v8"
     assert rows[0][1] == "nar"
 
 

@@ -1,4 +1,4 @@
-"""Tests for the v7-lineage feature-pipeline subprocess argv builders."""
+"""Tests for the v8 feature-pipeline subprocess argv builders."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from predict_lib.pipeline_args import (
+    COURSE_LOOKUP_PATH,
     HISTORY_FROM_DATE,
     build_base_argv,
     build_layer_argv,
@@ -341,7 +342,7 @@ def test_build_layer_argv_banei_grade_career_has_pg_url_and_from_date_only() -> 
     ]
 
 
-def test_layer_chain_jra_is_full_v6_plus_v7_with_trainer() -> None:
+def test_layer_chain_jra_is_full_v6_plus_v7_with_trainer_plus_v8() -> None:
     chain = layer_chain_for("jra")
     assert list(chain) == [
         "add-race-internal-features.py",
@@ -354,10 +355,12 @@ def test_layer_chain_jra_is_full_v6_plus_v7_with_trainer() -> None:
         "add-head-to-head-features.py",
         "add-baba-pedigree-affinity-features.py",
         "add-trainer-stable-affinity-features.py",
+        "add-pacestyle-features.py",
+        "add-course-numerical-features.py",
     ]
 
 
-def test_layer_chain_nar_is_light_v6_plus_v7_without_trainer() -> None:
+def test_layer_chain_nar_is_light_v6_plus_v7_plus_trainer_plus_pacestyle() -> None:
     chain = layer_chain_for("nar")
     assert list(chain) == [
         "add-race-internal-features.py",
@@ -365,6 +368,8 @@ def test_layer_chain_nar_is_light_v6_plus_v7_without_trainer() -> None:
         "add-grade-race-lineage-features.py",
         "add-head-to-head-features.py",
         "add-baba-pedigree-affinity-features.py",
+        "add-trainer-stable-affinity-features.py",
+        "add-pacestyle-features.py",
     ]
 
 
@@ -377,3 +382,66 @@ def test_layer_chain_ban_ei_appends_futan_and_grade_career() -> None:
         "add-banei-futan-class-features.py",
         "add-banei-grade-career-features.py",
     ]
+
+
+def test_build_layer_argv_pacestyle_passes_pg_url_and_category_for_jra() -> None:
+    argv = build_layer_argv(
+        "add-pacestyle-features.py",
+        "jra",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+    )
+    assert argv == [
+        "python",
+        "/app/pipeline/finish-position-features/add-pacestyle-features.py",
+        "--input-dir",
+        "/tmp/in",
+        "--output-dir",
+        "/tmp/out",
+        "--pg-url",
+        "postgresql://u:p@h/db",
+        "--from-date",
+        HISTORY_FROM_DATE,
+        "--category",
+        "jra",
+    ]
+
+
+def test_build_layer_argv_pacestyle_passes_category_for_nar() -> None:
+    argv = build_layer_argv(
+        "add-pacestyle-features.py",
+        "nar",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+    )
+    assert argv[-2] == "--category"
+    assert argv[-1] == "nar"
+
+
+def test_build_layer_argv_course_numerical_passes_lookup_path() -> None:
+    argv = build_layer_argv(
+        "add-course-numerical-features.py",
+        "jra",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+    )
+    assert argv == [
+        "python",
+        "/app/pipeline/finish-position-features/add-course-numerical-features.py",
+        "--input-dir",
+        "/tmp/in",
+        "--output-dir",
+        "/tmp/out",
+        "--course-lookup",
+        str(COURSE_LOOKUP_PATH),
+    ]
+
+
+def test_course_lookup_path_is_baked_image_location() -> None:
+    assert Path("/app/lookups/course-numerical-features.parquet") == COURSE_LOOKUP_PATH

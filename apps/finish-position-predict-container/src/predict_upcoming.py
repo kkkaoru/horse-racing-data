@@ -11,12 +11,15 @@ verified at deploy time per ``DEPLOY.md``, not by unit tests.
 Flow per category (jra / nar / ban-ei):
   1. List UPCOMING races (today .. today + PREDICT_DAYS_AHEAD, finish_position
      NULL) from Neon via ``NEON_DATABASE_URL``.
-  2. Build the v7-lineage feature parquet by running the repo feature pipeline
-     (DuckDB base build + the v7 layer scripts) against the same Postgres.
+  2. Build the v8 feature parquet (JRA=241 / NAR=192 / Ban-ei=111) by running
+     the repo feature pipeline (DuckDB base build + the v7 layer scripts + the
+     v8 pacestyle / course-numerical layers per
+     ``predict_lib.pipeline_args.LAYER_CHAIN``) against the same Postgres.
   3. Load the production model from R2 ``finish-position/{category}/{modelVersion}/``.
   4. Score, rank within race, and UPSERT into
-     ``race_finish_position_model_predictions`` under ``{category}-v7-lineage-wf-21y``
-     in idempotent, deduped, chunked batches.
+     ``race_finish_position_model_predictions`` under the v8 ``model_version``
+     resolved by ``predict_lib.model_meta.model_version_for`` in idempotent,
+     deduped, chunked batches.
   5. Record one audit row in ``finish_position_cron_executions``.
 
 Run with: ``uv run python src/predict_upcoming.py`` (envvars set by the Worker).

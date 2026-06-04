@@ -167,7 +167,9 @@ tmp/
 apps/sync-realtime-data/running-style/
 
 # wrangler r2 object get local downloads
-apps/pc-keiba-viewer/finish-position/
+apps/pc-keiba-viewer/finish-position/*
+# Keep the v8 baked lookups (small static parquet, source of truth for runtime).
+!apps/pc-keiba-viewer/finish-position/lookups/
 catboost_info/
 
 # Baked finish-position model artifacts staged into the container build context

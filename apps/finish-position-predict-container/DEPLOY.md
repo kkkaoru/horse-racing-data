@@ -1,48 +1,49 @@
 # Deploy runbook — daily finish-position prediction (Mac launchd + local docker)
 
-> **2026-06-04 status — v8 production deploy (NAR iter12 + JRA iter14)**
+> **2026-06-04 status — v8 production deploy COMPLETE (Phase 2 cutover)**
 >
-> The historical predictions table + `finish_position_active_models` were flipped
-> on 2026-06-04 to `iter12-nar-xgb-hpo-v8` (NAR, +0.16pp place3 vs v7-lineage)
-> and `iter14-jra-cb-pacestyle-course-v8` (JRA, +0.16/+0.08/+0.04/+0.11pp on
-> the four metrics — first JRA accept since iter 9). 2.57M NAR + 941K JRA rows
-> UPSERTed into `race_finish_position_model_predictions`.
+> Phase 1 (2026-06-04 earlier): the historical predictions table +
+> `finish_position_active_models` were flipped to `iter12-nar-xgb-hpo-v8` (NAR,
+> +0.16pp place3 vs v7-lineage) and `iter14-jra-cb-pacestyle-course-v8` (JRA,
+> +0.16/+0.08/+0.04/+0.11pp on the four metrics — first JRA accept since
+> iter 9). 2.57M NAR + 941K JRA rows UPSERTed into
+> `race_finish_position_model_predictions`.
+>
+> Phase 2 (2026-06-04 later, THIS COMMIT): the container LAYER_CHAIN +
+> `MODEL_VERSION_BY_CATEGORY` were updated so the daily image now scores
+> UPCOMING races with the v8 boosters. The two new viewer layer scripts
+> (`add-pacestyle-features.py` for iter9 pacestyle + `add-course-numerical-features.py`
+> for iter14 JRA course) are promoted from `tmp/v8/` into
+> `apps/pc-keiba-viewer/src/scripts/finish-position-features/`. The static
+> 119-row course lookup parquet is baked into the image at
+> `/app/lookups/course-numerical-features.parquet` (source of truth:
+> `apps/pc-keiba-viewer/finish-position/lookups/course-numerical-features.parquet`).
+> The v8 chains now produce 241 JRA / 192 NAR / 111 Ban-ei features — matching
+> the booster metadata.
 >
 > Boosters for both v8 versions are baked under
 > `models/finish-position/nar/iter12-nar-xgb-hpo-v8/` (model.json 2.8 MB,
 > 192 feats, best_iter=147) and
 > `models/finish-position/jra/iter14-jra-cb-pacestyle-course-v8/` (model.json
-> 3.8 MB, 241 feats, best_iter=224) — included in the next `docker build`
-> automatically because the Dockerfile already `COPY models /models`.
+> 3.8 MB, 241 feats, best_iter=224).
 >
-> **Daily container still serves v7-lineage for UPCOMING races** because the
-> v8 feature layers (iter9 pacestyle + iter14 course, used by iter12 NAR /
-> iter14 JRA) are not yet wired into `predict_lib.pipeline_args.LAYER_CHAIN`.
-> Feature count mismatch (175 vs 192 NAR, 226 vs 241 JRA) would otherwise
-> fail the score step. Today's predictions table therefore mixes v8 historicals
-> (this commit) + v7-lineage upcoming (existing pipeline) until the runtime
-> feature pipeline ships the new layers.
+> **Remaining manual step (user-side, after this commit):**
 >
-> **Manual cutover step (deferred):**
->
-> 1. Promote the iter9-pacestyle and iter14-course layer scripts from
->    `tmp/v8/iter9_build_pacestyle_features.py` / `tmp/v8/iter14_build_features.py`
->    into `apps/pc-keiba-viewer/src/scripts/finish-position-features/` as
->    `add-pacestyle-features.py` and `add-course-numerical-features.py` with
->    `--target-date` support.
-> 2. Append them to `pipeline_args.LAYER_CHAIN` (both for JRA, pacestyle-only
->    for NAR).
-> 3. Flip `MODEL_VERSION_BY_CATEGORY` + `FEATURE_COUNT_BY_CATEGORY` in
->    `predict_lib/model_meta.py` (and the matching tests + `test_upcoming.py`).
-> 4. Rebuild the image:
+> 1. Rebuild the image:
 >    `cd apps/finish-position-predict-container && docker build -f Dockerfile -t finish-position-predict-local:split2 ../..`
-> 5. Manual smoke run: `bash scripts/launchd/finish-position-predict-daily.sh`
+> 2. Smoke verify the v8 versions are inside the image:
+>    `docker run --rm finish-position-predict-local:split2 python -c "from predict_lib.model_meta import MODEL_VERSION_BY_CATEGORY; print(MODEL_VERSION_BY_CATEGORY)"`
+>    Expect:
+>    `{'jra': 'iter14-jra-cb-pacestyle-course-v8', 'nar': 'iter12-nar-xgb-hpo-v8', 'ban-ei': 'banei-cb-v7-lineage-wf-21y'}`
+> 3. Manual smoke run: `bash scripts/launchd/finish-position-predict-daily.sh`
 >    and verify the predictions table receives `iter12-nar-xgb-hpo-v8` /
->    `iter14-jra-cb-pacestyle-course-v8` rows for today's races.
+>    `iter14-jra-cb-pacestyle-course-v8` rows for today's UPCOMING races.
 
 Automated daily serving of UPCOMING-race finish-position predictions with the
-retrained **v7-lineage** models. **As of 2026-06-04 the Cloudflare Container
-cron is disabled (`triggers.crons = []` in
+**v8 production** models (`iter14-jra-cb-pacestyle-course-v8` JRA,
+`iter12-nar-xgb-hpo-v8` NAR, `banei-cb-v7-lineage-wf-21y` Ban-ei). **As of
+2026-06-04 the Cloudflare Container cron is disabled (`triggers.crons = []`
+in
 `apps/finish-position-cron/wrangler.jsonc`) because Cloudflare Containers reap
 batch instances at ~90-110 s regardless of `sleepAfter` and the DuckDB feature
 build + per-category scoring needs ~10 min — the workload cannot complete
@@ -94,15 +95,17 @@ FinishPositionPredictContainer (Durable Object, standard-4: 4 vCPU / 12 GiB / 20
   image = apps/finish-position-predict-container/Dockerfile
         │
         ▼ predict_upcoming.py, per category (jra / nar / ban-ei):
-  1. build v7-lineage feature parquet for TODAY's races (DuckDB base in
-     --target-date mode + v7 layer scripts, reused unchanged) — see "Today's
-     races feature build" below
+  1. build the v8 feature parquet for TODAY's races (DuckDB base in
+     --target-date mode + per-category LAYER_CHAIN including the v7 layers
+     and the v8 pacestyle / course-numerical layers) — see "Today's races
+     feature build" below
   2. load model from the baked-in image path
      /models/finish-position/{category}/{modelVersion}/model.json
      (no runtime R2-scope dependency; MODELS_DIR=/models, layout mirrors the
      R2 keys so predict_lib.model_meta.build_r2_object_key resolves unchanged)
   3. score → rank within race → dedupe → chunked UPSERT into
-     race_finish_position_model_predictions  (model_version = {category}-v7-lineage-wf-21y)
+     race_finish_position_model_predictions (model_version per
+     predict_lib.model_meta.MODEL_VERSION_BY_CATEGORY)
   4. write 1 detailed audit row to finish_position_cron_executions
 ```
 

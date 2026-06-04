@@ -2,16 +2,13 @@
 
 Single source of truth for the model the daily-prediction container LOADS and
 SCORES TODAY's upcoming races with. As of 2026-06-04 the v8 production deploy
-(JRA=iter14-jra-cb-pacestyle-course-v8, NAR=iter12-nar-xgb-hpo-v8) has been
-flipped on the historical PG predictions table + ``finish_position_active_models``,
-but the iter12/iter14 BOOSTERS need the v8 pacestyle (NAR+JRA) and course (JRA)
-feature layers at runtime which are NOT yet wired into ``pipeline_args.LAYER_CHAIN``.
-Until that pipeline integration ships, the container scores upcoming races with
-the v7-lineage models, and TODAY's predictions table will mix v8 historicals
-+ v7-lineage upcoming until either (a) the pipeline ships or (b) the upcoming
-backfill UPSERTs over the v7-lineage rows with v8 scores. See DEPLOY.md for
-the runbook + the iter12/iter14 baked artifacts under
-``models/finish-position/{nar/jra}/<iter-version>/`` ready for future cutover.
+(JRA=iter14-jra-cb-pacestyle-course-v8, NAR=iter12-nar-xgb-hpo-v8) is fully
+cut over: the historical PG predictions table + ``finish_position_active_models``
+were flipped, the iter12/iter14 BOOSTERS are baked under
+``models/finish-position/{nar/jra}/<iter-version>/``, and the v8 feature
+layers (pacestyle + course) are wired into ``pipeline_args.LAYER_CHAIN``.
+
+Ban-ei is unchanged from v7-lineage — v8 only retrained the JRA + NAR boosters.
 """
 
 from __future__ import annotations
@@ -24,8 +21,8 @@ Architecture = Literal["catboost", "xgboost"]
 CATEGORIES: Final[tuple[Category, ...]] = get_args(Category)
 
 MODEL_VERSION_BY_CATEGORY: Final[dict[Category, str]] = {
-    "jra": "jra-cb-v7-lineage-wf-21y",
-    "nar": "nar-xgb-v7-lineage-wf-21y",
+    "jra": "iter14-jra-cb-pacestyle-course-v8",
+    "nar": "iter12-nar-xgb-hpo-v8",
     "ban-ei": "banei-cb-v7-lineage-wf-21y",
 }
 
@@ -36,8 +33,8 @@ ARCHITECTURE_BY_CATEGORY: Final[dict[Category, Architecture]] = {
 }
 
 FEATURE_COUNT_BY_CATEGORY: Final[dict[Category, int]] = {
-    "jra": 226,
-    "nar": 175,
+    "jra": 241,
+    "nar": 192,
     "ban-ei": 111,
 }
 

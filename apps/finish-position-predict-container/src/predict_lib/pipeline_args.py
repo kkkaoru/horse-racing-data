@@ -1,4 +1,4 @@
-"""Pure builders for the v7-lineage feature-pipeline subprocess argv vectors.
+"""Pure builders for the v8 production feature-pipeline subprocess argv vectors.
 
 The container shells out to the reused viewer feature scripts (the DuckDB base
 build + the per-category FULL layer chain). Getting the flags right is the whole
@@ -10,18 +10,24 @@ to the pure-DuckDB ``add-race-internal-features.py``) makes argparse abort, so
 the per-script flag surface is encoded here and unit-tested; ``pipeline_runner``
 only executes the vectors and reads the parquet.
 
-The chains reproduce the EXACT feature sets the production models were trained
-on (docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V7_LINEAGE.md §4 / §8 / §9 / §10 and
-docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V6_STACKED.md §2):
+The chains reproduce the EXACT feature sets the production v8 models were
+trained on
+(docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V7_LINEAGE.md §4 /
+§8 / §9 / §10 +
+docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V6_STACKED.md §2 +
+the v8 iter9 / iter12 / iter14 builds in ``tmp/v8/``):
 
-* JRA (226 features) — full v6 base chain (race-internal → market-signal →
-  sectional-and-weight → futan-juryo → workout → near-miss) then the four v7
-  layers (lineage → head-to-head → baba-pedigree → trainer).
-* NAR (175 features) — lighter v6 base chain (race-internal → near-miss) then
-  the v7 layers WITHOUT the trainer layer (trainer is counter-productive on NAR
-  per §8); NAR was never built with the market/sectional/futan/workout layers.
-* Ban-ei (111 features) — distinct base (no JRA v6 layers) then lineage →
-  head-to-head → baba-pedigree → ban-ei futan-class → ban-ei grade-career.
+* JRA iter14-jra-cb-pacestyle-course-v8 (241 features) — full v6 base chain
+  (race-internal → market-signal → sectional-and-weight → futan-juryo →
+  workout → near-miss) then the four v7 layers (lineage → head-to-head →
+  baba-pedigree → trainer) then the two v8 layers (pacestyle → course).
+* NAR iter12-nar-xgb-hpo-v8 (192 features) — lighter v6 base chain
+  (race-internal → near-miss) then the v7 layers (lineage → head-to-head →
+  baba-pedigree → trainer; trainer is INCLUDED for v8 NAR, unlike v7-lineage
+  NAR where it was dropped) then the v8 pacestyle layer.
+* Ban-ei (111 features, unchanged from v7-lineage) — distinct base (no JRA v6
+  layers) then lineage → head-to-head → baba-pedigree → ban-ei futan-class →
+  ban-ei grade-career.
 
 The one-shot "v3 merger" mentioned in the V6 doc only re-prioritised the VALUE
 of market-signal columns that ``add-market-signal-features.py`` already computes
@@ -57,14 +63,27 @@ TRAINER_SCRIPT: Final[str] = "add-trainer-stable-affinity-features.py"
 BANEI_FUTAN_CLASS_SCRIPT: Final[str] = "add-banei-futan-class-features.py"
 BANEI_GRADE_CAREER_SCRIPT: Final[str] = "add-banei-grade-career-features.py"
 
+# v8 layers (iter9 pacestyle + iter14 course numerical).
+PACESTYLE_SCRIPT: Final[str] = "add-pacestyle-features.py"
+COURSE_NUMERICAL_SCRIPT: Final[str] = "add-course-numerical-features.py"
+
 HISTORY_FROM_DATE: Final[str] = "20100101"
+
+# Baked course-numerical lookup parquet. Mirrors the
+# COPY apps/pc-keiba-viewer/finish-position/lookups/course-numerical-features.parquet
+# in the Dockerfile so the path is identical inside the image.
+COURSE_LOOKUP_PATH: Final[Path] = Path(
+    "/app/lookups/course-numerical-features.parquet"
+)
 
 # Per-category full layer chain (script basename order). Mirrors the per-category
 # Pipeline sections of
 # docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V7_LINEAGE.md
 # (§4 / §8 / §9) +
-# docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V6_STACKED.md (§2),
-# validated against each model's metadata.json feature_names (226 / 175 / 111).
+# docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V6_STACKED.md (§2)
+# plus the v8 iter9 (pacestyle) and iter14 (course numerical) layers introduced
+# in the tmp/v8/iter{9,12,14} builds. Validated against each model's
+# metadata.json feature_names (241 JRA / 192 NAR / 111 Ban-ei).
 LAYER_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
     "jra": (
         RACE_INTERNAL_SCRIPT,
@@ -77,6 +96,8 @@ LAYER_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
         HEAD_TO_HEAD_SCRIPT,
         BABA_PEDIGREE_SCRIPT,
         TRAINER_SCRIPT,
+        PACESTYLE_SCRIPT,
+        COURSE_NUMERICAL_SCRIPT,
     ),
     "nar": (
         RACE_INTERNAL_SCRIPT,
@@ -84,6 +105,8 @@ LAYER_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
         LINEAGE_SCRIPT,
         HEAD_TO_HEAD_SCRIPT,
         BABA_PEDIGREE_SCRIPT,
+        TRAINER_SCRIPT,
+        PACESTYLE_SCRIPT,
     ),
     "ban-ei": (
         LINEAGE_SCRIPT,
@@ -96,7 +119,9 @@ LAYER_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
 
 # Scripts that read history straight from Postgres need ``--pg-url``. The pure
 # DuckDB ``add-race-internal-features.py`` reads only its input parquet, so it
-# must NOT receive ``--pg-url`` (argparse would abort on the unknown flag).
+# must NOT receive ``--pg-url`` (argparse would abort on the unknown flag). The
+# v8 ``add-course-numerical-features.py`` reads a baked lookup parquet (no PG)
+# so it is also intentionally omitted here.
 SCRIPTS_WITH_PG_URL: Final[frozenset[str]] = frozenset(
     {
         MARKET_SIGNAL_SCRIPT,
@@ -110,6 +135,7 @@ SCRIPTS_WITH_PG_URL: Final[frozenset[str]] = frozenset(
         TRAINER_SCRIPT,
         BANEI_FUTAN_CLASS_SCRIPT,
         BANEI_GRADE_CAREER_SCRIPT,
+        PACESTYLE_SCRIPT,
     }
 )
 
@@ -124,9 +150,15 @@ LINEAGE_CONFIG_BY_CATEGORY: Final[dict[Category, str]] = {
     "ban-ei": "ban-ei.json",
 }
 
-# The trainer layer reads its source rows from jvd_se (jra) or nvd_se (nar).
-# Ban-ei never runs the trainer layer, so it has no entry here.
+# Scripts that accept ``--category {jra,nar}`` (selects the source filter +
+# PG table). The trainer layer disambiguates jvd_se vs nvd_se; the pacestyle
+# layer disambiguates which ``race_running_style_model_predictions`` rows to
+# load. Ban-ei runs neither layer, so it has no entry here.
 TRAINER_CATEGORY_BY_CATEGORY: Final[dict[Category, str]] = {
+    "jra": "jra",
+    "nar": "nar",
+}
+PACESTYLE_CATEGORY_BY_CATEGORY: Final[dict[Category, str]] = {
     "jra": "jra",
     "nar": "nar",
 }
@@ -192,6 +224,20 @@ def _trainer_category_args(script: str, category: Category) -> list[str]:
     return []
 
 
+def _pacestyle_category_args(script: str, category: Category) -> list[str]:
+    """``--category`` for the pacestyle layer (rs preds source filter)."""
+    if script == PACESTYLE_SCRIPT:
+        return ["--category", PACESTYLE_CATEGORY_BY_CATEGORY[category]]
+    return []
+
+
+def _course_lookup_args(script: str) -> list[str]:
+    """``--course-lookup`` for the course-numerical layer (baked parquet path)."""
+    if script == COURSE_NUMERICAL_SCRIPT:
+        return ["--course-lookup", str(COURSE_LOOKUP_PATH)]
+    return []
+
+
 def build_layer_argv(
     script: str,
     category: Category,
@@ -208,7 +254,8 @@ def build_layer_argv(
     * every layer takes ``--input-dir`` / ``--output-dir``;
     * Postgres-reading layers additionally take ``--pg-url`` and ``--from-date``;
     * the lineage layer additionally takes ``--config``;
-    * the trainer layer additionally takes ``--category``.
+    * the trainer + pacestyle layers additionally take ``--category``;
+    * the course-numerical layer additionally takes ``--course-lookup``.
     """
     base = [
         PYTHON_BIN,
@@ -224,6 +271,8 @@ def build_layer_argv(
         + _from_date_args(script)
         + _config_args(script, category, layer_dir)
         + _trainer_category_args(script, category)
+        + _pacestyle_category_args(script, category)
+        + _course_lookup_args(script)
     )
 
 
