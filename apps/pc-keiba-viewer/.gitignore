@@ -12,3 +12,4 @@ node_modules/
 tsconfig.tsbuildinfo
 certificates/
 tmp/bucket-eval/
+catboost_info/
