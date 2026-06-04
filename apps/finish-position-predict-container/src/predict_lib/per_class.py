@@ -32,10 +32,12 @@ classes 005 / 701 / 703 / other. Only 703 beats iter 14 globally with
 delta_pp=+0.142pp top1; the other three tie at +0.000pp. Phase B-2A registered
 ONLY 703 to keep the booster pool footprint small.
 
-iter 25 v2 ensemble optimisation (2026-06-05) produced an ACCEPT manifest for
-JRA class 010 (2勝クラス, n=1583 holdout) with delta_pp=+0.632pp top1 — the
-largest per-class win in the v8 loop. 010 was activated alongside 703 in
-``PER_CLASS_MODEL_VERSIONS``. The unregistered tied classes (005 / 701 /
+iter 25 v2 ensemble optimisation (2026-06-05) produced ACCEPT manifests for
+JRA classes 010 (2勝クラス, n=1583 holdout, delta_pp=+0.632pp top1 — the largest
+per-class win in the v8 loop) and 005 (1勝クラス, n=3147 holdout,
+delta_pp=+0.095pp top1 — modest but positive, the second smallest gain after
+the tied classes). Both were activated alongside 703 in
+``PER_CLASS_MODEL_VERSIONS``. The remaining unregistered tied classes (701 /
 other) keep falling back to iter 14 — see
 ``docs/finish-position-accuracy/runbook/PER_CLASS_ROUTING.md``.
 """
@@ -86,9 +88,13 @@ class PerClassEnsemble:
 # 010 ACCEPTED at +0.632pp top1 (iter 25 v2 ensemble — largest per-class win in
 # the v8 loop; iter25 low-cap booster dominates the blend at weight 0.66 with
 # the iter14 baseline carried at 0.20 and iter20/21/22 contributing residual
-# diversity). The remaining iter 23 tied-at-+0.000pp classes (005 / 701 /
-# other) stay unregistered to keep the booster-pool footprint small.
+# diversity). 005 ACCEPTED at +0.095pp top1 (iter 25 v2 ensemble — modest but
+# positive; iter14 baseline carries weight 0.51 well above the 0.20 minimum,
+# with iter25 low-cap at 0.33 contributing meaningful diversity). The remaining
+# tied-at-+0.000pp classes (701 / other) stay unregistered to keep the
+# booster-pool footprint small.
 PER_CLASS_MODEL_VERSIONS: Final[dict[tuple[Category, str], str]] = {
+    ("jra", "005"): "iter25-jra-cb-ensemble-005-v8",
     ("jra", "010"): "iter25-jra-cb-ensemble-010-v8",
     ("jra", "703"): "iter23-jra-cb-ensemble-703-v8",
 }

@@ -8,11 +8,14 @@ fixture and write a synthetic ``manifest.json`` mirroring the on-disk layout
 that ``build_per_class_manifest_path`` builds.
 
 Phase B-2A adds ensemble routing (``load_ensemble_manifest`` /
-``resolve_per_class_resolution``). The 703 + 010 registrations are asserted both
-in isolation (``test_per_class_model_versions_includes_production_ensembles``) and
-end-to-end (``test_load_ensemble_manifest_*``, ``test_resolve_per_class_resolution_*``).
+``resolve_per_class_resolution``). The 703 + 010 + 005 registrations are
+asserted both in isolation
+(``test_per_class_model_versions_includes_production_ensembles``) and end-to-end
+(``test_load_ensemble_manifest_*``, ``test_resolve_per_class_resolution_*``).
 010 was activated on 2026-06-05 (iter 25 v2 ensemble, +0.632pp top1 — the
-largest per-class win in the v8 loop).
+largest per-class win in the v8 loop); 005 was activated the same day (iter 25
+v2 ensemble, +0.095pp top1 — modest but positive, the second smallest gain
+after the tied classes).
 """
 
 from __future__ import annotations
@@ -47,6 +50,7 @@ JRA_CLASS_005_MODEL_VERSION: str = "iter21-jra-cb-class005-v8"
 JRA_CLASS_010_MODEL_VERSION: str = "iter21-jra-cb-class010-v8"
 JRA_CLASS_703_ENSEMBLE_MODEL_VERSION: str = "iter23-jra-cb-ensemble-703-v8"
 JRA_CLASS_010_ENSEMBLE_MODEL_VERSION: str = "iter25-jra-cb-ensemble-010-v8"
+JRA_CLASS_005_ENSEMBLE_MODEL_VERSION: str = "iter25-jra-cb-ensemble-005-v8"
 
 
 def _write_manifest(
@@ -130,6 +134,51 @@ def _canonical_010_payload() -> dict[str, object]:
     }
 
 
+def _canonical_005_payload() -> dict[str, object]:
+    # Mirrors the production iter 25 v2 ensemble manifest activated 2026-06-05
+    # (+0.095pp top1 vs iter 14 baseline on 3147-race holdout). iter14 carries
+    # a 0.509528 weight (well above the 0.20 minimum) while iter25 low-cap
+    # contributes 0.332733 — the second-largest member.
+    return {
+        "model_version": JRA_CLASS_005_ENSEMBLE_MODEL_VERSION,
+        "category": "jra",
+        "kyoso_joken_code": "005",
+        "ensemble_type": "rank_blend",
+        "members": [
+            {
+                "model_version": JRA_FALLBACK_MODEL_VERSION,
+                "weight": 0.509528,
+                "is_baseline": True,
+            },
+            {
+                "model_version": "iter20-jra-cb-perclass-005-v8",
+                "weight": 0.119616,
+                "is_baseline": False,
+            },
+            {
+                "model_version": "iter20-jra-cb-perclass-005-hpo-v8",
+                "weight": 0.005101,
+                "is_baseline": False,
+            },
+            {
+                "model_version": "iter21-jra-cb-chain-005-v8",
+                "weight": 0.002442,
+                "is_baseline": False,
+            },
+            {
+                "model_version": "iter22-jra-cb-residual-005-v8",
+                "weight": 0.030581,
+                "is_baseline": False,
+            },
+            {
+                "model_version": "iter25-jra-cb-low-cap-005-v8",
+                "weight": 0.332733,
+                "is_baseline": False,
+            },
+        ],
+    }
+
+
 def test_per_class_enabled_categories_contains_jra_only() -> None:
     assert frozenset({"jra"}) == PER_CLASS_ENABLED_CATEGORIES
 
@@ -159,7 +208,9 @@ def test_resolve_falls_back_when_kyoso_joken_code_is_none() -> None:
 
 
 def test_resolve_falls_back_when_no_registered_model_for_code() -> None:
-    assert resolve_per_class_model_version("jra", "005") == JRA_FALLBACK_MODEL_VERSION
+    # 701 is one of the tied-at-+0.000pp classes that stays unregistered (see
+    # the module docstring); pin that the fallback path returns iter14.
+    assert resolve_per_class_model_version("jra", "701") == JRA_FALLBACK_MODEL_VERSION
 
 
 def test_resolve_falls_back_when_no_registered_model_for_other_code() -> None:
@@ -249,6 +300,7 @@ def test_per_class_codes_for_disabled_category_ignores_registry(
 
 def test_per_class_model_versions_includes_production_ensembles() -> None:
     assert PER_CLASS_MODEL_VERSIONS == {
+        ("jra", "005"): JRA_CLASS_005_ENSEMBLE_MODEL_VERSION,
         ("jra", "010"): JRA_CLASS_010_ENSEMBLE_MODEL_VERSION,
         ("jra", "703"): JRA_CLASS_703_ENSEMBLE_MODEL_VERSION,
     }
@@ -267,10 +319,17 @@ def test_resolve_returns_registered_010_ensemble_string() -> None:
     )
 
 
+def test_resolve_returns_registered_005_ensemble_string() -> None:
+    # 005 was activated 2026-06-05 (iter 25 v2 ensemble, +0.095pp top1).
+    assert (
+        resolve_per_class_model_version("jra", "005") == JRA_CLASS_005_ENSEMBLE_MODEL_VERSION
+    )
+
+
 def test_per_class_codes_for_jra_returns_sorted_production_codes() -> None:
-    # per_class_codes_for returns the sorted union of registered JRA codes; 010
-    # and 703 are the two production ensembles as of 2026-06-05.
-    assert per_class_codes_for("jra") == ("010", "703")
+    # per_class_codes_for returns the sorted union of registered JRA codes; 005,
+    # 010 and 703 are the three production ensembles as of 2026-06-05.
+    assert per_class_codes_for("jra") == ("005", "010", "703")
 
 
 def test_ensemble_member_dataclass_signature() -> None:
@@ -389,17 +448,17 @@ def test_load_ensemble_manifest_returns_none_when_json_invalid(tmp_path: Path) -
 
 
 def test_load_ensemble_manifest_returns_none_when_code_not_registered(tmp_path: Path) -> None:
-    # 005 has a manifest file on disk but is not in PER_CLASS_MODEL_VERSIONS,
+    # 701 has a manifest file on disk but is not in PER_CLASS_MODEL_VERSIONS,
     # so the loader must short-circuit before touching the filesystem.
     _write_manifest(
         tmp_path,
         "jra",
-        "005",
-        "iter23-jra-cb-ensemble-005-v8",
+        "701",
+        "iter23-jra-cb-ensemble-701-v8",
         {
-            "model_version": "iter23-jra-cb-ensemble-005-v8",
+            "model_version": "iter23-jra-cb-ensemble-701-v8",
             "category": "jra",
-            "kyoso_joken_code": "005",
+            "kyoso_joken_code": "701",
             "ensemble_type": "rank_blend",
             "members": [
                 {
@@ -410,7 +469,7 @@ def test_load_ensemble_manifest_returns_none_when_code_not_registered(tmp_path: 
             ],
         },
     )
-    assert load_ensemble_manifest(tmp_path, "jra", "005") is None
+    assert load_ensemble_manifest(tmp_path, "jra", "701") is None
 
 
 def test_load_ensemble_manifest_returns_none_when_category_not_enabled(
@@ -631,7 +690,9 @@ def test_resolve_per_class_resolution_falls_back_to_string_when_no_manifest(
 def test_resolve_per_class_resolution_returns_string_when_code_not_registered(
     tmp_path: Path,
 ) -> None:
-    result = resolve_per_class_resolution(tmp_path, "jra", "005")
+    # 701 is one of the tied-at-+0.000pp classes that stays unregistered, so
+    # resolution must drop through to the JRA category-global iter14 fallback.
+    result = resolve_per_class_resolution(tmp_path, "jra", "701")
     assert result == JRA_FALLBACK_MODEL_VERSION
     assert isinstance(result, str)
 
@@ -719,3 +780,51 @@ def test_resolve_per_class_resolution_returns_010_ensemble_when_manifest_present
     assert isinstance(result, PerClassEnsemble)
     assert result.model_version == JRA_CLASS_010_ENSEMBLE_MODEL_VERSION
     assert result.kyoso_joken_code == "010"
+
+
+# --- Phase B-2 / iter 25: 005 ensemble registration tests ---------------
+
+
+def test_load_ensemble_manifest_returns_dataclass_for_005(tmp_path: Path) -> None:
+    # End-to-end: write the production iter 25 v2 manifest, ensure the loader
+    # parses all six members and propagates manifest-level fields. iter14
+    # carries the dominant 0.509528 weight, with iter25 low-cap second at
+    # 0.332733 — the exact production weights.
+    _write_manifest(
+        tmp_path,
+        "jra",
+        "005",
+        JRA_CLASS_005_ENSEMBLE_MODEL_VERSION,
+        _canonical_005_payload(),
+    )
+    result = load_ensemble_manifest(tmp_path, "jra", "005")
+    assert result is not None
+    assert result.model_version == JRA_CLASS_005_ENSEMBLE_MODEL_VERSION
+    assert result.category == "jra"
+    assert result.kyoso_joken_code == "005"
+    assert result.ensemble_type == "rank_blend"
+    assert len(result.members) == 6
+    assert result.members[0].model_version == JRA_FALLBACK_MODEL_VERSION
+    assert result.members[0].weight == 0.509528
+    assert result.members[0].is_baseline is True
+    # iter 25 low-cap booster sits at index 5 with weight 0.332733; the exact
+    # value is part of the production ensemble contract.
+    assert result.members[5].model_version == "iter25-jra-cb-low-cap-005-v8"
+    assert result.members[5].weight == 0.332733
+    assert result.members[5].is_baseline is False
+
+
+def test_resolve_per_class_resolution_returns_005_ensemble_when_manifest_present(
+    tmp_path: Path,
+) -> None:
+    _write_manifest(
+        tmp_path,
+        "jra",
+        "005",
+        JRA_CLASS_005_ENSEMBLE_MODEL_VERSION,
+        _canonical_005_payload(),
+    )
+    result = resolve_per_class_resolution(tmp_path, "jra", "005")
+    assert isinstance(result, PerClassEnsemble)
+    assert result.model_version == JRA_CLASS_005_ENSEMBLE_MODEL_VERSION
+    assert result.kyoso_joken_code == "005"
