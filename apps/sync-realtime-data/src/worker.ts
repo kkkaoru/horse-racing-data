@@ -187,7 +187,12 @@ const RESULT_FETCH_RETRY_LOCK_MINUTES = 2;
 // every available result row has been persisted. We backstop that case by
 // trusting the saved rows once enough time has passed since race start, since
 // any remaining "missing" horse can no longer reasonably be a delayed insert.
-const NAR_RESULT_COMPLETION_BACKSTOP_MINUTES = 10;
+// 2026-06-04: extended 10 -> 60 to keep the progressive-publish partial-retry
+// path engaged long enough for the keiba.go.jp upstream to publish every
+// non-scratched horse (top-3 land first, the rest can take 10-30+ min). The
+// 60-min ceiling still caps infinite retry while letting full-field finish
+// positions reach D1 / the race-trend payload for almost every race.
+const NAR_RESULT_COMPLETION_BACKSTOP_MINUTES = 60;
 // 2026-05-31: lowered from 3 to 2 in tandem with the result-poll cron drop
 // from "*/5" to "*/2". With the previous 5-minute cron + 3-minute throttle
 // 11R results landed in D1 up to ~5 minutes after JRA published them, and
@@ -2199,9 +2204,11 @@ interface NarPartialResultRetryInput {
 // re-fetch and leave the viewer stuck on top-3; instead we shorten the lock
 // to RESULT_FETCH_RETRY_LOCK_MINUTES (= 2) so the next cron tick can
 // re-claim and pick up the remaining rows. After
-// NAR_RESULT_COMPLETION_BACKSTOP_MINUTES has elapsed the completion backstop
-// takes over and the race is forced complete, so this retry path
-// intentionally short-circuits before that threshold to avoid infinite retry.
+// NAR_RESULT_COMPLETION_BACKSTOP_MINUTES (60 min as of 2026-06-04) has
+// elapsed the completion backstop takes over and the race is forced
+// complete, so this retry path intentionally short-circuits before that
+// threshold to avoid infinite retry while still letting every non-scratched
+// horse's finish position land in D1 for the race-trend payload.
 export const shouldRetryNarPartialResult = (input: NarPartialResultRetryInput): boolean => {
   if (input.source !== "nar") {
     return false;
@@ -2300,9 +2307,12 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
     // re-fetch and pick up the freshly-published remaining rows. We still
     // push the partial rows to the trend DO and bust the viewer cache so the
     // top-3 surface immediately; only the completion + default lock path is
-    // skipped. After NAR_RESULT_COMPLETION_BACKSTOP_MINUTES the completion
-    // backstop fires and isComplete becomes true, so the retry path
-    // intentionally short-circuits before that threshold.
+    // skipped. After NAR_RESULT_COMPLETION_BACKSTOP_MINUTES (60 min as of
+    // 2026-06-04, extended from 10 min) the completion backstop fires and
+    // isComplete becomes true, so the retry path intentionally
+    // short-circuits before that threshold. The longer window lets every
+    // non-scratched horse's finish position land in D1 for the race-trend
+    // payload, not just the top-3 progressive publish.
     const isPartialRetry =
       !isComplete &&
       shouldRetryNarPartialResult({

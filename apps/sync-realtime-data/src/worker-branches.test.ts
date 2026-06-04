@@ -861,7 +861,7 @@ it("fetch-results still busts trend cache when partial-final (inserted > 0 but <
   ]);
   vi.mocked(insertRaceResultSnapshot).mockResolvedValue(2);
   // 01:05 UTC = 10:05 JST = 5 min after the 10:00 JST race start, so the
-  // NAR_RESULT_COMPLETION_BACKSTOP_MINUTES (10) window has not yet elapsed
+  // NAR_RESULT_COMPLETION_BACKSTOP_MINUTES (60) window has not yet elapsed
   // and the progressive-publish partial-retry path engages.
   await handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T01:05:00.000Z" }), {
     raceKey: "nar:2026:0512:55:01",
@@ -1291,14 +1291,14 @@ it("planResultFetchesOnly skips race when lastResultFetchAt is within RESULT_FET
 
 // shouldApplyNarResultCompletionBackstop: every NAR backstop condition is met
 // (all available result rows persisted, expectedHorseCount over-counted by 1
-// due to a parser miss on a 取消 row, and 10 minutes have elapsed after race
+// due to a parser miss on a 取消 row, and 60 minutes have elapsed after race
 // start), so the backstop fires to force isComplete=true.
 it("shouldApplyNarResultCompletionBackstop returns true for NAR when every condition holds", async () => {
   const { shouldApplyNarResultCompletionBackstop } = await import("./worker");
   const result = shouldApplyNarResultCompletionBackstop({
     expectedHorseCount: 5,
     inserted: 4,
-    minutesAfterRaceStart: 11,
+    minutesAfterRaceStart: 61,
     resultCount: 4,
     source: "nar",
   });
@@ -1313,7 +1313,7 @@ it("shouldApplyNarResultCompletionBackstop returns false for JRA source", async 
   const result = shouldApplyNarResultCompletionBackstop({
     expectedHorseCount: 5,
     inserted: 4,
-    minutesAfterRaceStart: 11,
+    minutesAfterRaceStart: 61,
     resultCount: 4,
     source: "jra",
   });
@@ -1327,7 +1327,7 @@ it("shouldApplyNarResultCompletionBackstop returns false when resultCount is 0",
   const result = shouldApplyNarResultCompletionBackstop({
     expectedHorseCount: 5,
     inserted: 0,
-    minutesAfterRaceStart: 11,
+    minutesAfterRaceStart: 61,
     resultCount: 0,
     source: "nar",
   });
@@ -1342,7 +1342,7 @@ it("shouldApplyNarResultCompletionBackstop returns false when inserted is below 
   const result = shouldApplyNarResultCompletionBackstop({
     expectedHorseCount: 5,
     inserted: 3,
-    minutesAfterRaceStart: 11,
+    minutesAfterRaceStart: 61,
     resultCount: 4,
     source: "nar",
   });
@@ -1357,7 +1357,7 @@ it("shouldApplyNarResultCompletionBackstop returns false when inserted reaches e
   const result = shouldApplyNarResultCompletionBackstop({
     expectedHorseCount: 4,
     inserted: 4,
-    minutesAfterRaceStart: 11,
+    minutesAfterRaceStart: 61,
     resultCount: 4,
     source: "nar",
   });
@@ -1378,14 +1378,14 @@ it("shouldApplyNarResultCompletionBackstop returns false when minutesAfterRaceSt
   expect(result).toBe(false);
 });
 
-// 5 minutes after race start is below the 10-minute threshold, so a late row
+// 59 minutes after race start is below the 60-minute threshold, so a late row
 // might still arrive and we must not prematurely declare the race complete.
 it("shouldApplyNarResultCompletionBackstop returns false when minutesAfterRaceStart is below threshold", async () => {
   const { shouldApplyNarResultCompletionBackstop } = await import("./worker");
   const result = shouldApplyNarResultCompletionBackstop({
     expectedHorseCount: 5,
     inserted: 4,
-    minutesAfterRaceStart: 5,
+    minutesAfterRaceStart: 59,
     resultCount: 4,
     source: "nar",
   });
@@ -1394,9 +1394,9 @@ it("shouldApplyNarResultCompletionBackstop returns false when minutesAfterRaceSt
 
 // Integration: NAR race where parser missed a 取消 row so expectedHorseCount=5
 // over-counts the real 4 runners, every available result row is in D1, and
-// 11 minutes have passed since race start. The backstop must force the
+// 61 minutes have passed since race start. The backstop must force the
 // completeResultFetch call with isComplete=true.
-it("fetch-results forces NAR isComplete=true via backstop after 11min when inserted equals resultCount below expectedHorseCount", async () => {
+it("fetch-results forces NAR isComplete=true via backstop after 61min when inserted equals resultCount below expectedHorseCount", async () => {
   const { handleJob } = await import("./worker");
   const { claimResultFetch, getRaceSource, insertRaceResultSnapshot, completeResultFetch } =
     await import("./storage");
@@ -1452,7 +1452,7 @@ it("fetch-results forces NAR isComplete=true via backstop after 11min when inser
     { finishPosition: "4", horseName: null, horseNumber: "4", time: null },
   ] as never);
   vi.mocked(insertRaceResultSnapshot).mockResolvedValue(4);
-  await handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T01:11:00.000Z" } as never), {
+  await handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T02:01:00.000Z" } as never), {
     raceKey: "nar:2026:0512:55:01",
     type: "fetch-results",
   });
@@ -1546,7 +1546,7 @@ it("fetch-results keeps NAR isComplete=false when backstop window not yet elapse
 });
 
 // shouldRetryNarPartialResult: NAR race with only top-3 of a 12-horse field
-// inserted, 5 min after race start (well inside the 10-min backstop window).
+// inserted, 5 min after race start (well inside the 60-min backstop window).
 // This is the canonical progressive-publish case the short retry lock targets.
 it("shouldRetryNarPartialResult returns true for NAR partial within backstop window", async () => {
   const { shouldRetryNarPartialResult } = await import("./worker");
@@ -1606,7 +1606,7 @@ it("shouldRetryNarPartialResult returns false after backstop window elapsed", as
   const result = shouldRetryNarPartialResult({
     expectedHorseCount: 12,
     inserted: 3,
-    minutesAfterRaceStart: 11,
+    minutesAfterRaceStart: 61,
     source: "nar",
   });
   expect(result).toBe(false);
@@ -1814,8 +1814,8 @@ it("fetch-results uses default lock and completeResultFetch when NAR field is fu
   expect(recordPartialResultFetch).toHaveBeenCalledTimes(0);
 });
 
-// Integration: NAR race with 12 expected horses, only 3 inserted, but 12
-// minutes after race start (past the 10-min backstop window). The completion
+// Integration: NAR race with 12 expected horses, only 3 inserted, but 61
+// minutes after race start (past the 60-min backstop window). The completion
 // backstop forces isComplete=true and the partial path must NOT engage so
 // the race does not get stuck retrying forever.
 it("fetch-results uses backstop and not partial retry once backstop window elapsed", async () => {
@@ -1877,7 +1877,7 @@ it("fetch-results uses backstop and not partial retry once backstop window elaps
     { finishPosition: "3", horseName: null, horseNumber: "3", time: null },
   ] as never);
   vi.mocked(insertRaceResultSnapshot).mockResolvedValue(3);
-  await handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-06-02T01:12:00.000Z" } as never), {
+  await handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-06-02T02:01:00.000Z" } as never), {
     raceKey: "nar:2026:0602:55:01",
     type: "fetch-results",
   });
