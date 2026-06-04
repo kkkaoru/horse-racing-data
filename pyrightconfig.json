@@ -1,7 +1,10 @@
 {
   "include": ["apps/pc-keiba-viewer/src/scripts", "apps/pc-keiba-viewer/tests"],
   "exclude": ["**/.next", "**/.open-next", "**/node_modules", "**/tmp", "scripts"],
-  "extraPaths": ["apps/pc-keiba-viewer/src/scripts"],
+  "extraPaths": [
+    "apps/pc-keiba-viewer/src/scripts",
+    "apps/pc-keiba-viewer/src/scripts/finish-position-features"
+  ],
   "pythonVersion": "3.12",
   "typeCheckingMode": "strict",
   "reportAny": "none",
