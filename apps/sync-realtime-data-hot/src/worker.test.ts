@@ -162,6 +162,12 @@ const buildEnv = (overrides: Partial<Env> = {}): Env =>
     ...overrides,
   }) as unknown as Env;
 
+const buildCtx = (): ExecutionContext =>
+  ({
+    passThroughOnException: vi.fn(),
+    waitUntil: vi.fn(),
+  }) as unknown as ExecutionContext;
+
 it("parseRaceKeyFromPath returns the decoded race key", () => {
   expect(parseRaceKeyFromPath("/api/odds/nar%3A20260528%3A42%3A01")).toBe("nar:20260528:42:01");
 });
@@ -954,10 +960,11 @@ it("handleScheduled dispatches plan cron to runScheduledPlan", async () => {
   await handleScheduled(
     {
       cron: "* * * * *",
+      noRetry: () => undefined,
       scheduledTime: new Date("2026-05-28T01:00:00Z").getTime(),
-      type: "scheduled",
-    } as unknown as ScheduledEvent,
+    } as unknown as ScheduledController,
     env,
+    buildCtx(),
   );
   expect(vi.mocked(env.REALTIME_HOT_DB.prepare)).toHaveBeenCalled();
 });
@@ -967,10 +974,11 @@ it("handleScheduled dispatches archive cron to runScheduledArchive", async () =>
   await handleScheduled(
     {
       cron: "0 4 * * *",
+      noRetry: () => undefined,
       scheduledTime: new Date("2026-05-28T04:00:00Z").getTime(),
-      type: "scheduled",
-    } as unknown as ScheduledEvent,
+    } as unknown as ScheduledController,
     env,
+    buildCtx(),
   );
   expect(vi.mocked(env.REALTIME_HOT_DB.prepare)).toHaveBeenCalled();
 });
@@ -980,10 +988,11 @@ it("handleScheduled dispatches populate-multi-day cron to runScheduledPopulateMu
   await handleScheduled(
     {
       cron: "55 20 * * *",
+      noRetry: () => undefined,
       scheduledTime: new Date("2026-05-28T20:55:00Z").getTime(),
-      type: "scheduled",
-    } as unknown as ScheduledEvent,
+    } as unknown as ScheduledController,
     env,
+    buildCtx(),
   );
   expect(vi.mocked(populateMultiDayOddsFetchState)).toHaveBeenCalledTimes(1);
   expect(vi.mocked(populateTodayOddsFetchState)).not.toHaveBeenCalled();
@@ -1016,10 +1025,11 @@ it("handleScheduled catches runScheduledArchive rejection and logs via logFetch"
   await handleScheduled(
     {
       cron: "0 4 * * *",
+      noRetry: () => undefined,
       scheduledTime: new Date("2026-05-28T04:00:00Z").getTime(),
-      type: "scheduled",
-    } as unknown as ScheduledEvent,
+    } as unknown as ScheduledController,
     env,
+    buildCtx(),
   );
   // handleScheduled completed without rethrowing; logFetch recorded the error.
   expect(logRun).toHaveBeenCalled();
@@ -1058,10 +1068,11 @@ it("handleScheduled falls back to console.error when both inner work and logFetc
   await handleScheduled(
     {
       cron: "0 4 * * *",
+      noRetry: () => undefined,
       scheduledTime: new Date("2026-05-28T04:00:00Z").getTime(),
-      type: "scheduled",
-    } as unknown as ScheduledEvent,
+    } as unknown as ScheduledController,
     env,
+    buildCtx(),
   );
   expect(consoleSpy).toHaveBeenCalled();
 });
@@ -1071,10 +1082,11 @@ it("handleScheduled does nothing for unknown cron", async () => {
   await handleScheduled(
     {
       cron: "*/5 * * * *",
+      noRetry: () => undefined,
       scheduledTime: new Date().getTime(),
-      type: "scheduled",
-    } as unknown as ScheduledEvent,
+    } as unknown as ScheduledController,
     env,
+    buildCtx(),
   );
   expect(vi.mocked(env.REALTIME_HOT_DB.prepare)).not.toHaveBeenCalled();
   expect(vi.mocked(populateTodayOddsFetchState)).not.toHaveBeenCalled();
@@ -1229,12 +1241,54 @@ it("default worker scheduled dispatches to handleScheduled", async () => {
   await worker.scheduled(
     {
       cron: "* * * * *",
+      noRetry: () => undefined,
       scheduledTime: new Date("2026-05-28T01:00:00Z").getTime(),
-      type: "scheduled",
-    } as unknown as ScheduledEvent,
+    } as unknown as ScheduledController,
     env,
+    buildCtx(),
   );
   expect(vi.mocked(env.REALTIME_HOT_DB.prepare)).toHaveBeenCalled();
+});
+
+it("default worker scheduled accepts the Module Workers (controller, env, ctx) 3-arg signature", async () => {
+  const env = buildEnv();
+  const waitUntil = vi.fn();
+  const ctx = {
+    passThroughOnException: vi.fn(),
+    waitUntil,
+  } as unknown as ExecutionContext;
+  await worker.scheduled(
+    {
+      cron: "* * * * *",
+      noRetry: () => undefined,
+      scheduledTime: new Date("2026-05-28T01:00:00Z").getTime(),
+    } as unknown as ScheduledController,
+    env,
+    ctx,
+  );
+  expect(vi.mocked(env.REALTIME_HOT_DB.prepare)).toHaveBeenCalled();
+  expect(waitUntil).not.toHaveBeenCalled();
+});
+
+it("default worker scheduled outer try/catch still fires when handleScheduled body throws", async () => {
+  const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const logRun = vi.fn(async () => ({ meta: { changes: 1 } }));
+  const prepareMock = vi.fn((sql: string) => {
+    void sql;
+    return { bind: vi.fn(() => ({ run: logRun })) };
+  });
+  const env = buildEnv({
+    REALTIME_HOT_DB: {
+      batch: vi.fn(async () => []),
+      prepare: prepareMock,
+    } as unknown as D1Database,
+  });
+  // Passing `null` as the controller makes `controller.scheduledTime` throw
+  // BEFORE the inner try/catch in handleScheduled, so the outer try/catch in
+  // worker.scheduled fires and reportScheduledOuterThrow runs.
+  await worker.scheduled(null as unknown as ScheduledController, env, buildCtx());
+  expect(consoleSpy.mock.calls[0]?.[0]).toBe("scheduled-outer-throw");
+  expect(logRun).toHaveBeenCalledTimes(1);
 });
 
 it("default worker queue dispatches to handleQueue", async () => {
@@ -1265,10 +1319,10 @@ it("scheduled-outer-catch-logs-error-and-stack-to-d1", async () => {
       prepare: prepareMock,
     } as unknown as D1Database,
   });
-  // Passing `null` as the event makes `event.scheduledTime` throw a
-  // TypeError BEFORE the inner try/catch in handleScheduled, so the
+  // Passing `null` as the controller makes `controller.scheduledTime` throw
+  // a TypeError BEFORE the inner try/catch in handleScheduled, so the
   // outer try/catch in worker.scheduled fires.
-  await worker.scheduled(null as unknown as ScheduledEvent, env);
+  await worker.scheduled(null as unknown as ScheduledController, env, buildCtx());
   expect(consoleSpy.mock.calls.length).toBe(1);
   expect(consoleSpy.mock.calls[0]?.[0]).toBe("scheduled-outer-throw");
   const insertCalls = prepareMock.mock.calls.filter(([sql]) =>
@@ -1303,7 +1357,7 @@ it("scheduled-outer-catch-handles-logfetch-failure", async () => {
       prepare: prepareMock,
     } as unknown as D1Database,
   });
-  await worker.scheduled(null as unknown as ScheduledEvent, env);
+  await worker.scheduled(null as unknown as ScheduledController, env, buildCtx());
   expect(consoleSpy.mock.calls.length).toBe(2);
   expect(consoleSpy.mock.calls[0]?.[0]).toBe("scheduled-outer-throw");
   expect(consoleSpy.mock.calls[1]?.[0]).toBe("scheduled-outer-throw logFetch fallback");
@@ -1351,10 +1405,11 @@ it("scheduled-outer-runs-without-error-when-handler-ok", async () => {
   await worker.scheduled(
     {
       cron: "* * * * *",
+      noRetry: () => undefined,
       scheduledTime: new Date("2026-05-28T01:00:00Z").getTime(),
-      type: "scheduled",
-    } as unknown as ScheduledEvent,
+    } as unknown as ScheduledController,
     env,
+    buildCtx(),
   );
   const insertLogCalls = prepareMock.mock.calls.filter(([sql]) =>
     sql.toLowerCase().includes("insert into fetch_logs"),

@@ -410,24 +410,41 @@ export const runScheduledArchive = async (env: Env, now: Date): Promise<void> =>
   );
 };
 
-const dispatchScheduledByCron = async (env: Env, cron: string, now: Date): Promise<void> => {
-  if (cron === PLAN_ODDS_FETCHES_CRON) {
-    await runScheduledPlan(env, now);
+interface DispatchScheduledArgs {
+  env: Env;
+  cron: string;
+  now: Date;
+  ctx: ExecutionContext;
+}
+
+const dispatchScheduledByCron = async (args: DispatchScheduledArgs): Promise<void> => {
+  // `ctx` is threaded through so any future `ctx.waitUntil(...)` hook in the
+  // per-cron branches can extend the cron's lifetime beyond the immediate
+  // body. Today the existing branches are fully awaited so no waitUntil call
+  // is required, but Module Workers require the 3-arg signature on the
+  // exported `scheduled` handler regardless.
+  void args.ctx;
+  if (args.cron === PLAN_ODDS_FETCHES_CRON) {
+    await runScheduledPlan(args.env, args.now);
     return;
   }
-  if (cron === ARCHIVE_ODDS_CRON) {
-    await runScheduledArchive(env, now);
+  if (args.cron === ARCHIVE_ODDS_CRON) {
+    await runScheduledArchive(args.env, args.now);
     return;
   }
-  if (cron === POPULATE_MULTI_DAY_CRON) {
-    await runScheduledPopulateMultiDay(env, now);
+  if (args.cron === POPULATE_MULTI_DAY_CRON) {
+    await runScheduledPopulateMultiDay(args.env, args.now);
   }
 };
 
-export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<void> => {
-  const now = new Date(event.scheduledTime);
+export const handleScheduled = async (
+  controller: ScheduledController,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<void> => {
+  const now = new Date(controller.scheduledTime);
   try {
-    await dispatchScheduledByCron(env, event.cron, now);
+    await dispatchScheduledByCron({ cron: controller.cron, ctx, env, now });
   } catch (error) {
     await logScheduledError(env, "scheduled-cron-error", error);
   }
@@ -510,9 +527,9 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     return handleFetchRequest(env, request);
   },
-  async scheduled(event: ScheduledEvent, env: Env): Promise<void> {
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     try {
-      await handleScheduled(event, env);
+      await handleScheduled(controller, env, ctx);
     } catch (error) {
       await reportScheduledOuterThrow(env, error);
     }
