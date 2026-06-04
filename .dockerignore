@@ -17,6 +17,9 @@
 !apps/pc-keiba-viewer/src/scripts/finish_position_features_duckdb.py
 !apps/pc-keiba-viewer/src/scripts/finish-position-features
 
+# Re-include the v8 lookup parquets (course numerical features) baked into the image.
+!apps/pc-keiba-viewer/finish-position/lookups
+
 # Drop caches / compiled bytecode that may live under the re-included src trees.
 **/__pycache__
 **/*.pyc
