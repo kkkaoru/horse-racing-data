@@ -13,6 +13,11 @@ const LOCK_TTL_FINAL_SECONDS = 60;
 const LOCK_TTL_HIGH_FREQ_SECONDS = 600;
 const LOCK_TTL_DEFAULT_SECONDS = 3600;
 const LOCK_TTL_CATCH_UP_SECONDS = 300;
+// Cloudflare KV requires expirationTtl >= 60. Same numeric value as
+// LOCK_TTL_FINAL_SECONDS but with distinct semantics: this clamps any
+// natural-TTL computation so a tiny remainder near a window boundary
+// never produces a `KV PUT failed: 400 Invalid expiration_ttl` error.
+const LOCK_TTL_KV_MINIMUM_SECONDS = 60;
 const SECONDS_PER_MINUTE = 60;
 const MS_PER_MINUTE = 60_000;
 
@@ -81,12 +86,18 @@ export const calculateEnqueueLockTtlSecondsFromInput = (input: EnqueueLockTtlInp
     const secondsUntilFinal = Math.ceil(
       (minutesUntilRace - FINAL_WINDOW_MINUTES_BEFORE) * SECONDS_PER_MINUTE,
     );
-    return Math.min(LOCK_TTL_HIGH_FREQ_SECONDS, secondsUntilFinal);
+    return Math.max(
+      LOCK_TTL_KV_MINIMUM_SECONDS,
+      Math.min(LOCK_TTL_HIGH_FREQ_SECONDS, secondsUntilFinal),
+    );
   }
   const secondsUntilHighFreq = Math.ceil(
     (minutesUntilRace - HIGH_FREQ_WINDOW_MINUTES_BEFORE) * SECONDS_PER_MINUTE,
   );
-  return Math.min(LOCK_TTL_DEFAULT_SECONDS, secondsUntilHighFreq);
+  return Math.max(
+    LOCK_TTL_KV_MINIMUM_SECONDS,
+    Math.min(LOCK_TTL_DEFAULT_SECONDS, secondsUntilHighFreq),
+  );
 };
 
 export const isEnqueueLocked = async (env: Env, raceKey: string): Promise<boolean> => {

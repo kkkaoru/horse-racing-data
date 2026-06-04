@@ -327,3 +327,48 @@ it("calculateEnqueueLockTtlSecondsFromInput honours the default very-future wind
     }),
   ).toBe(3600);
 });
+
+it("clamps high-frequency boundary TTL to 60 when natural TTL would be 29s (Cloudflare KV minimum)", () => {
+  expect(
+    calculateEnqueueLockTtlSeconds(
+      new Date("2026-05-28T10:00:00+09:00"),
+      new Date("2026-05-28T09:49:31+09:00"),
+    ),
+  ).toBe(60);
+});
+
+it("clamps high-frequency boundary TTL to 60 when natural TTL would be 1s", () => {
+  expect(
+    calculateEnqueueLockTtlSeconds(
+      new Date("2026-05-28T10:00:00+09:00"),
+      new Date("2026-05-28T09:49:59+09:00"),
+    ),
+  ).toBe(60);
+});
+
+it("clamps default boundary TTL to 60 when natural TTL would be 29s (Cloudflare KV minimum)", () => {
+  expect(
+    calculateEnqueueLockTtlSeconds(
+      new Date("2026-05-28T10:00:00+09:00"),
+      new Date("2026-05-28T08:59:31+09:00"),
+    ),
+  ).toBe(60);
+});
+
+it("preserves default upper cap of 3600 seconds far before race (200 minutes before)", () => {
+  expect(
+    calculateEnqueueLockTtlSeconds(
+      new Date("2026-05-28T10:00:00+09:00"),
+      new Date("2026-05-28T06:40:00+09:00"),
+    ),
+  ).toBe(3600);
+});
+
+it("preserves high-frequency upper cap of 600 seconds in mid-range (30 minutes before race)", () => {
+  expect(
+    calculateEnqueueLockTtlSeconds(
+      new Date("2026-05-28T10:00:00+09:00"),
+      new Date("2026-05-28T09:30:00+09:00"),
+    ),
+  ).toBe(600);
+});
