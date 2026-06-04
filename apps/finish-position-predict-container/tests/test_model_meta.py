@@ -1,4 +1,5 @@
-"""Tests for the v7-lineage model metadata mapping."""
+"""Tests for the container-baked model metadata mapping (v7-lineage; v8 boosters
+staged under models/ but not yet wired into the runtime feature pipeline)."""
 
 from __future__ import annotations
 

@@ -1,5 +1,45 @@
 # Deploy runbook — daily finish-position prediction (Mac launchd + local docker)
 
+> **2026-06-04 status — v8 production deploy (NAR iter12 + JRA iter14)**
+>
+> The historical predictions table + `finish_position_active_models` were flipped
+> on 2026-06-04 to `iter12-nar-xgb-hpo-v8` (NAR, +0.16pp place3 vs v7-lineage)
+> and `iter14-jra-cb-pacestyle-course-v8` (JRA, +0.16/+0.08/+0.04/+0.11pp on
+> the four metrics — first JRA accept since iter 9). 2.57M NAR + 941K JRA rows
+> UPSERTed into `race_finish_position_model_predictions`.
+>
+> Boosters for both v8 versions are baked under
+> `models/finish-position/nar/iter12-nar-xgb-hpo-v8/` (model.json 2.8 MB,
+> 192 feats, best_iter=147) and
+> `models/finish-position/jra/iter14-jra-cb-pacestyle-course-v8/` (model.json
+> 3.8 MB, 241 feats, best_iter=224) — included in the next `docker build`
+> automatically because the Dockerfile already `COPY models /models`.
+>
+> **Daily container still serves v7-lineage for UPCOMING races** because the
+> v8 feature layers (iter9 pacestyle + iter14 course, used by iter12 NAR /
+> iter14 JRA) are not yet wired into `predict_lib.pipeline_args.LAYER_CHAIN`.
+> Feature count mismatch (175 vs 192 NAR, 226 vs 241 JRA) would otherwise
+> fail the score step. Today's predictions table therefore mixes v8 historicals
+> (this commit) + v7-lineage upcoming (existing pipeline) until the runtime
+> feature pipeline ships the new layers.
+>
+> **Manual cutover step (deferred):**
+>
+> 1. Promote the iter9-pacestyle and iter14-course layer scripts from
+>    `tmp/v8/iter9_build_pacestyle_features.py` / `tmp/v8/iter14_build_features.py`
+>    into `apps/pc-keiba-viewer/src/scripts/finish-position-features/` as
+>    `add-pacestyle-features.py` and `add-course-numerical-features.py` with
+>    `--target-date` support.
+> 2. Append them to `pipeline_args.LAYER_CHAIN` (both for JRA, pacestyle-only
+>    for NAR).
+> 3. Flip `MODEL_VERSION_BY_CATEGORY` + `FEATURE_COUNT_BY_CATEGORY` in
+>    `predict_lib/model_meta.py` (and the matching tests + `test_upcoming.py`).
+> 4. Rebuild the image:
+>    `cd apps/finish-position-predict-container && docker build -f Dockerfile -t finish-position-predict-local:split2 ../..`
+> 5. Manual smoke run: `bash scripts/launchd/finish-position-predict-daily.sh`
+>    and verify the predictions table receives `iter12-nar-xgb-hpo-v8` /
+>    `iter14-jra-cb-pacestyle-course-v8` rows for today's races.
+
 Automated daily serving of UPCOMING-race finish-position predictions with the
 retrained **v7-lineage** models. **As of 2026-06-04 the Cloudflare Container
 cron is disabled (`triggers.crons = []` in

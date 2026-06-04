@@ -1,10 +1,17 @@
-"""V7-lineage model-version / architecture / R2-key mapping.
+"""Container-baked model-version / architecture / R2-key mapping.
 
-Single source of truth for the production finish-position model artifacts, kept
-in lockstep with ``v7-lineage-model-versions.ts`` and
-``docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V7_LINEAGE.md``
-section 10.3. The container uses these to resolve which R2 object to score with
-and which ``model_version`` label to stamp on the predictions table.
+Single source of truth for the model the daily-prediction container LOADS and
+SCORES TODAY's upcoming races with. As of 2026-06-04 the v8 production deploy
+(JRA=iter14-jra-cb-pacestyle-course-v8, NAR=iter12-nar-xgb-hpo-v8) has been
+flipped on the historical PG predictions table + ``finish_position_active_models``,
+but the iter12/iter14 BOOSTERS need the v8 pacestyle (NAR+JRA) and course (JRA)
+feature layers at runtime which are NOT yet wired into ``pipeline_args.LAYER_CHAIN``.
+Until that pipeline integration ships, the container scores upcoming races with
+the v7-lineage models, and TODAY's predictions table will mix v8 historicals
++ v7-lineage upcoming until either (a) the pipeline ships or (b) the upcoming
+backfill UPSERTs over the v7-lineage rows with v8 scores. See DEPLOY.md for
+the runbook + the iter12/iter14 baked artifacts under
+``models/finish-position/{nar/jra}/<iter-version>/`` ready for future cutover.
 """
 
 from __future__ import annotations
