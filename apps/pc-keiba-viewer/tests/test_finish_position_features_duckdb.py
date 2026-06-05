@@ -893,6 +893,11 @@ def test_base_features_select_sql_includes_nar_subclass_alias():
     assert "wl.nar_kyoso_joken_meisho" in sql
 
 
+def test_base_features_select_sql_includes_kyoso_joken_code_passthrough():
+    sql = subject.base_features_select_sql("jra")
+    assert "t.kyoso_joken_code as kyoso_joken_code" in sql
+
+
 def _eval_nar_subclass(
     source: str, keibajo_code: str, meisho: str | None
 ) -> str | None:

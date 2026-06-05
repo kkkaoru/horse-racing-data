@@ -23,7 +23,8 @@ member (CatBoost = float64, XGBoost = float32-quantised per
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .model_meta import Architecture
@@ -31,6 +32,7 @@ from .scorer import BoosterLike
 
 CATBOOST_MODEL_FORMAT: str = "json"
 MODEL_JSON_FILE_NAME: str = "model.json"
+FEATURE_NAMES_KEY: str = "feature_names"
 
 
 @dataclass(frozen=True)
@@ -41,10 +43,53 @@ class PoolBooster:
     ``model_version`` string) so the same model_version could theoretically be
     re-loaded under a different arch without changing the lookup key — kept
     immutable + frozen so callers cannot mutate the binding after build.
+
+    ``feature_names`` is the member's OWN ordered training feature list (read
+    from the sibling ``metadata.json``), defaulting to the empty tuple for
+    callers that have not wired it through yet. CatBoost / XGBoost score
+    POSITIONALLY, so the scorer projects each member's entries onto exactly
+    this name order — a member trained on 254 columns must NOT be scored with
+    the 241-wide category-global list, which is the latent fallback bug this
+    field fixes.
     """
 
     booster: BoosterLike
     architecture: Architecture
+    feature_names: tuple[str, ...] = field(default=())
+
+
+def load_member_feature_names(metadata_json_path: Path) -> tuple[str, ...]:
+    """Read a member's ordered ``feature_names`` from its sibling metadata.json.
+
+    The metadata.json lives next to every member ``model.json`` and carries the
+    full ordered ``feature_names`` the member was trained on (verified: the
+    order matches the CatBoost internal ``float_features`` order, so the scorer
+    can project entries positionally). Raises loudly so a corrupt / missing
+    sidecar is never silently swallowed into a wrong-width matrix:
+
+    * ``FileNotFoundError`` — the metadata.json does not exist;
+    * ``ValueError`` — the file is not valid JSON, the ``feature_names`` key is
+      absent, or its value is not a list of strings.
+    """
+    if not metadata_json_path.exists():
+        message = f"member metadata missing: {metadata_json_path}"
+        raise FileNotFoundError(message)
+    try:
+        payload = json.loads(metadata_json_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as decode_error:
+        message = f"member metadata not valid JSON: {metadata_json_path}"
+        raise ValueError(message) from decode_error
+    if not isinstance(payload, dict):
+        message = f"member metadata is not an object: {metadata_json_path}"
+        raise ValueError(message)
+    feature_names = payload.get(FEATURE_NAMES_KEY)
+    if not isinstance(feature_names, list):
+        message = f"member metadata missing feature_names: {metadata_json_path}"
+        raise ValueError(message)
+    if not all(isinstance(name, str) for name in feature_names):
+        message = f"member feature_names not all strings: {metadata_json_path}"
+        raise ValueError(message)
+    return tuple(feature_names)
 
 
 @dataclass(frozen=True)
@@ -162,6 +207,7 @@ def discover_baseline_member_model(
 def build_pool_from_paths(
     paths_by_version: dict[str, Path],
     architecture_by_version: dict[str, Architecture],
+    feature_names_by_version: dict[str, tuple[str, ...]] | None = None,
 ) -> BoosterPool:
     """Load every booster in ``paths_by_version`` into a fresh ``BoosterPool``.
 
@@ -170,12 +216,21 @@ def build_pool_from_paths(
     :func:`load_booster_from_path` raises ``FileNotFoundError`` otherwise. Use
     :func:`discover_member_models` first to filter to existing paths when
     missing members should be tolerated.
+
+    ``feature_names_by_version`` carries each member's OWN ordered feature list
+    (from its metadata.json) so the scorer can build a per-member matrix of the
+    right width. A ``model_version`` absent from the map (or a ``None`` map)
+    stores the empty tuple — the scorer then falls back to the caller-supplied
+    global feature list, preserving the single-model fallback path.
     """
+    names_by_version = feature_names_by_version or {}
     boosters: dict[str, PoolBooster] = {}
     for model_version, path in paths_by_version.items():
         architecture = architecture_by_version[model_version]
         booster = load_booster_from_path(path, architecture)
         boosters[model_version] = PoolBooster(
-            booster=booster, architecture=architecture
+            booster=booster,
+            architecture=architecture,
+            feature_names=names_by_version.get(model_version, ()),
         )
     return BoosterPool(boosters=boosters)

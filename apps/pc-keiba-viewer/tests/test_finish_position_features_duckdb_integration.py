@@ -789,6 +789,34 @@ def test_write_parquet_emits_nar_subclass_column(
     assert "nar_subclass" in columns
 
 
+def test_write_parquet_emits_kyoso_joken_code_column(
+    seeded_con: duckdb.DuckDBPyConnection, tmp_path: Path
+):
+    output_dir = tmp_path / "out"
+    subject.stage_horse_history_derived(seeded_con, [2020], _silent_heartbeat())
+    subject.stage_partner_features(seeded_con, [2020], _silent_heartbeat())
+    subject.materialize_pedigree_stats(seeded_con, "jra")
+    subject.materialize_race_context(seeded_con)
+    subject.stage_track_bias(seeded_con, [2020], _silent_heartbeat())
+    subject.materialize_weather_lookup(seeded_con)
+    subject.write_parquet(
+        seeded_con,
+        subject.assemble_final_select_from_temp_tables("jra"),
+        output_dir,
+        keep_existing=False,
+        force_clean=True,
+    )
+    reader = duckdb.connect(":memory:")
+    columns = [
+        row[0]
+        for row in reader.execute(
+            f"describe select * from read_parquet('{output_dir.as_posix()}/race_year=*/*.parquet')"
+        ).fetchall()
+    ]
+    reader.close()
+    assert "kyoso_joken_code" in columns
+
+
 def test_count_output_rows_counts_written_parquet(
     seeded_con: duckdb.DuckDBPyConnection, tmp_path: Path
 ):

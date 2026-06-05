@@ -1427,6 +1427,7 @@ def base_features_select_sql(category: str) -> str:
       t.source, t.race_date, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango,
       t.ketto_toroku_bango, t.umaban, t.category, t.kyori, t.track_code, t.grade_code, t.shusso_tosu,
       t.finish_position, t.finish_norm,
+      t.kyoso_joken_code as kyoso_joken_code,
       {nar_subclass_expr} as nar_subclass,
       t.target_corner_1_norm, t.target_corner_3_norm, t.target_corner_4_norm, t.target_running_style_class,
       hc.speed_index_avg_5, hc.speed_index_best_5, hc.kohan3f_avg_5, hc.corner_pass_avg_5,

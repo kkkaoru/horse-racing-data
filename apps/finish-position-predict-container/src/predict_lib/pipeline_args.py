@@ -67,6 +67,13 @@ BANEI_GRADE_CAREER_SCRIPT: Final[str] = "add-banei-grade-career-features.py"
 PACESTYLE_SCRIPT: Final[str] = "add-pacestyle-features.py"
 COURSE_NUMERICAL_SCRIPT: Final[str] = "add-course-numerical-features.py"
 
+# iter26 relationship layer (馬体重 x 斤量 x 馬齢 x 距離 x タイム interaction +
+# history-normalized speed, 12 cols). Required at inference for the per-class
+# ensemble residual / chain members trained on the relationship feature set
+# (JRA iter26 = 254 cols, NAR iter30 residual = 174 cols). Reads PG history,
+# so it takes ``--pg-url`` + ``--from-date`` + a source-filter ``--category``.
+RELATIONSHIP_SCRIPT: Final[str] = "add-relationship-r1-features.py"
+
 HISTORY_FROM_DATE: Final[str] = "20100101"
 
 # Baked course-numerical lookup parquet. Mirrors the
@@ -98,6 +105,7 @@ LAYER_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
         TRAINER_SCRIPT,
         PACESTYLE_SCRIPT,
         COURSE_NUMERICAL_SCRIPT,
+        RELATIONSHIP_SCRIPT,
     ),
     "nar": (
         RACE_INTERNAL_SCRIPT,
@@ -107,6 +115,7 @@ LAYER_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
         BABA_PEDIGREE_SCRIPT,
         TRAINER_SCRIPT,
         PACESTYLE_SCRIPT,
+        RELATIONSHIP_SCRIPT,
     ),
     "ban-ei": (
         LINEAGE_SCRIPT,
@@ -136,6 +145,7 @@ SCRIPTS_WITH_PG_URL: Final[frozenset[str]] = frozenset(
         BANEI_FUTAN_CLASS_SCRIPT,
         BANEI_GRADE_CAREER_SCRIPT,
         PACESTYLE_SCRIPT,
+        RELATIONSHIP_SCRIPT,
     }
 )
 
@@ -159,6 +169,14 @@ TRAINER_CATEGORY_BY_CATEGORY: Final[dict[Category, str]] = {
     "nar": "nar",
 }
 PACESTYLE_CATEGORY_BY_CATEGORY: Final[dict[Category, str]] = {
+    "jra": "jra",
+    "nar": "nar",
+}
+# The relationship layer takes ``--category {jra,nar,ban-ei,all}`` to select the
+# PG source filter (jvd_se vs nvd_se, and the ban-ei keibajo carve-out). Only
+# jra / nar run this layer (it is appended to those two chains), so the map has
+# no ban-ei entry — mirrors TRAINER / PACESTYLE.
+RELATIONSHIP_CATEGORY_BY_CATEGORY: Final[dict[Category, str]] = {
     "jra": "jra",
     "nar": "nar",
 }
@@ -231,6 +249,13 @@ def _pacestyle_category_args(script: str, category: Category) -> list[str]:
     return []
 
 
+def _relationship_category_args(script: str, category: Category) -> list[str]:
+    """``--category`` for the relationship layer (jvd_se vs nvd_se source filter)."""
+    if script == RELATIONSHIP_SCRIPT:
+        return ["--category", RELATIONSHIP_CATEGORY_BY_CATEGORY[category]]
+    return []
+
+
 def _course_lookup_args(script: str) -> list[str]:
     """``--course-lookup`` for the course-numerical layer (baked parquet path)."""
     if script == COURSE_NUMERICAL_SCRIPT:
@@ -254,7 +279,8 @@ def build_layer_argv(
     * every layer takes ``--input-dir`` / ``--output-dir``;
     * Postgres-reading layers additionally take ``--pg-url`` and ``--from-date``;
     * the lineage layer additionally takes ``--config``;
-    * the trainer + pacestyle layers additionally take ``--category``;
+    * the trainer + pacestyle + relationship layers additionally take
+      ``--category``;
     * the course-numerical layer additionally takes ``--course-lookup``.
     """
     base = [
@@ -272,6 +298,7 @@ def build_layer_argv(
         + _config_args(script, category, layer_dir)
         + _trainer_category_args(script, category)
         + _pacestyle_category_args(script, category)
+        + _relationship_category_args(script, category)
         + _course_lookup_args(script)
     )
 

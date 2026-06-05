@@ -35,8 +35,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from predict_lib import per_class
 from predict_lib.booster_pool import BoosterPool, PoolBooster
 from predict_lib.ensemble_routing import (
+    SCORE_FEATURE_BY_CATEGORY,
     EnsembleRouteOutcome,
+    MatrixCacheKey,
+    augment_entries_with_score_col,
+    catboost_model_feature_names,
+    column_gap,
+    drop_order_mismatched_members,
+    find_baseline_member,
     init_member_pool,
+    member_feature_names_for_record,
+    member_feature_order_matches,
+    score_member,
     score_race_with_resolution,
 )
 from predict_lib.model_meta import Architecture
@@ -90,6 +100,60 @@ class _WrongLengthBooster:
         return [0.5]
 
 
+class _NamedBooster:
+    """CatBoost-flavoured stub exposing ``feature_names_`` like the native model.
+
+    The native CatBoost JSON booster populates ``feature_names_`` with the exact
+    positional float-feature order. The order-mismatch guard compares it against
+    the metadata-derived order, so this stub lets tests pin both the matching
+    (kept) and disagreeing (dropped) postures."""
+
+    feature_names_: list[str]
+    _offset: float
+
+    def __init__(self, feature_names: Sequence[str], offset: float = 0.0) -> None:
+        self.feature_names_ = list(feature_names)
+        self._offset = offset
+
+    def predict(self, matrix: Sequence[Sequence[float]]) -> Sequence[float]:
+        return [self._offset + float(index) for index, _ in enumerate(matrix)]
+
+
+class _FixedScoreBooster:
+    """Booster returning a fixed, caller-supplied raw score per row.
+
+    The baseline's RAW scores are injected verbatim (no normalisation) into the
+    augmented entries, so the two-pass injection test uses this to control the
+    exact float values that must reappear in the residual member's matrix."""
+
+    _raw_scores: list[float]
+
+    def __init__(self, raw_scores: Sequence[float]) -> None:
+        self._raw_scores = list(raw_scores)
+
+    def predict(self, matrix: Sequence[Sequence[float]]) -> Sequence[float]:
+        return [self._raw_scores[index] for index, _ in enumerate(matrix)]
+
+
+class _MatrixRecordingBooster:
+    """Booster that records every matrix it was scored against.
+
+    Lets the two-pass injection test assert the residual member's matrix carries
+    the baseline's raw scores in the injected score-column position, and that the
+    matrix cache builds a separate matrix per distinct ``(arch, feature order)``
+    key. ``predict`` returns ascending per-row scores so the blend still
+    produces a length-aligned vector."""
+
+    seen_matrices: list[list[list[float]]]
+
+    def __init__(self) -> None:
+        self.seen_matrices = []
+
+    def predict(self, matrix: Sequence[Sequence[float]]) -> Sequence[float]:
+        self.seen_matrices.append([[float(cell) for cell in row] for row in matrix])
+        return [float(index) for index, _ in enumerate(matrix)]
+
+
 def _cb_record(booster: BoosterLike) -> PoolBooster:
     """Wrap a CatBoost-flavoured stub in a ``PoolBooster`` record."""
     return PoolBooster(booster=booster, architecture="catboost")
@@ -98,6 +162,17 @@ def _cb_record(booster: BoosterLike) -> PoolBooster:
 def _xgb_record(booster: BoosterLike) -> PoolBooster:
     """Wrap an XGBoost-flavoured stub in a ``PoolBooster`` record."""
     return PoolBooster(booster=booster, architecture="xgboost")
+
+
+def _cb_record_with_names(
+    booster: BoosterLike,
+    feature_names: Sequence[str],
+) -> PoolBooster:
+    """Wrap a CatBoost stub carrying its OWN ordered ``feature_names`` so the
+    scorer projects entries onto that member-specific order."""
+    return PoolBooster(
+        booster=booster, architecture="catboost", feature_names=tuple(feature_names)
+    )
 
 
 def _write_manifest(
@@ -154,6 +229,56 @@ def _write_baseline_model_json(
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("{}", encoding="utf-8")
     return target
+
+
+def _write_member_metadata_json(
+    models_dir: Path,
+    category: str,
+    kyoso_joken_code: str,
+    model_version: str,
+    payload: object,
+) -> Path:
+    """Write a per-class member's sibling ``metadata.json`` carrying
+    ``feature_names``.
+
+    ``init_member_pool`` now reads this file next to every member ``model.json``
+    so the scorer can project entries onto the member's OWN column order; a
+    member without it is skipped (non-baseline) or raises (baseline). The
+    payload is written verbatim so tests can pass a malformed shape to exercise
+    the corrupt-metadata posture."""
+    target = (
+        models_dir
+        / "finish-position"
+        / category
+        / "per-class"
+        / kyoso_joken_code
+        / model_version
+        / "metadata.json"
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload), encoding="utf-8")
+    return target
+
+
+def _write_baseline_metadata_json(
+    models_dir: Path,
+    category: str,
+    model_version: str,
+    payload: object,
+) -> Path:
+    """Write the category-global baseline's sibling ``metadata.json`` at the
+    canonical single-model layout so ``_resolve_member_feature_names`` finds it
+    next to the baseline ``model.json``."""
+    target = models_dir / "finish-position" / category / model_version / "metadata.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload), encoding="utf-8")
+    return target
+
+
+def _feature_names_payload(feature_names: Sequence[str]) -> dict[str, object]:
+    """Build the metadata.json body ``init_member_pool`` reads (``feature_names``
+    list only — the scorer ignores the rest of the metadata)."""
+    return {"feature_names": list(feature_names)}
 
 
 def _canonical_703_payload() -> dict[str, object]:
@@ -245,6 +370,20 @@ def _three_horse_entries() -> list[dict[str, object]]:
 
 
 FEATURE_NAMES: list[str] = ["feature_a", "feature_b"]
+# Per-member ordered feature list written into each member's metadata.json
+# sidecar. The baseline trains on the plain features; the residual member adds
+# the injected ``iter14_score`` (JRA) column the two-pass scorer supplies. The
+# metadata order must agree with the member booster's ``feature_names_`` or the
+# order-mismatch guard drops it.
+BASELINE_METADATA_FEATURE_NAMES: list[str] = ["feature_a", "feature_b"]
+RESIDUAL_METADATA_FEATURE_NAMES: list[str] = ["feature_a", "feature_b", "iter14_score"]
+NAR_BASELINE_METADATA_FEATURE_NAMES: list[str] = ["feature_a", "feature_b"]
+NAR_RESIDUAL_METADATA_FEATURE_NAMES: list[str] = [
+    "feature_a",
+    "feature_b",
+    "iter12_score",
+]
+JRA_SCORE_COL: str = "iter14_score"
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +439,20 @@ def test_init_member_pool_loads_registered_members(
         _canonical_703_payload(),
     )
     _write_baseline_model_json(tmp_path, "jra", JRA_FALLBACK_MODEL_VERSION)
+    _write_baseline_metadata_json(
+        tmp_path,
+        "jra",
+        JRA_FALLBACK_MODEL_VERSION,
+        _feature_names_payload(BASELINE_METADATA_FEATURE_NAMES),
+    )
     _write_member_model_json(tmp_path, "jra", "703", ITER22_RESIDUAL_703)
+    _write_member_metadata_json(
+        tmp_path,
+        "jra",
+        "703",
+        ITER22_RESIDUAL_703,
+        _feature_names_payload(RESIDUAL_METADATA_FEATURE_NAMES),
+    )
 
     def fake_load(model_path: str) -> BoosterLike:
         return _StubBooster(0.0 if "iter14" in model_path else 0.5)
@@ -320,6 +472,9 @@ def test_init_member_pool_loads_registered_members(
     assert residual_record is not None
     assert baseline_record.architecture == "catboost"
     assert residual_record.architecture == "catboost"
+    # Each member's metadata-derived feature order is stored on its record.
+    assert baseline_record.feature_names == tuple(BASELINE_METADATA_FEATURE_NAMES)
+    assert residual_record.feature_names == tuple(RESIDUAL_METADATA_FEATURE_NAMES)
 
 
 def test_init_member_pool_empty_when_no_registry_entry(
@@ -355,6 +510,13 @@ def test_init_member_pool_filters_out_missing_member_paths(
     )
     # Only the per-class residual is on disk.
     _write_member_model_json(tmp_path, "jra", "703", ITER22_RESIDUAL_703)
+    _write_member_metadata_json(
+        tmp_path,
+        "jra",
+        "703",
+        ITER22_RESIDUAL_703,
+        _feature_names_payload(RESIDUAL_METADATA_FEATURE_NAMES),
+    )
 
     def fake_load(model_path: str) -> BoosterLike:
         return _StubBooster(0.5)
@@ -389,7 +551,20 @@ def test_init_member_pool_skips_other_categories_registry_entries(
         _canonical_703_payload(),
     )
     _write_baseline_model_json(tmp_path, "jra", JRA_FALLBACK_MODEL_VERSION)
+    _write_baseline_metadata_json(
+        tmp_path,
+        "jra",
+        JRA_FALLBACK_MODEL_VERSION,
+        _feature_names_payload(BASELINE_METADATA_FEATURE_NAMES),
+    )
     _write_member_model_json(tmp_path, "jra", "703", ITER22_RESIDUAL_703)
+    _write_member_metadata_json(
+        tmp_path,
+        "jra",
+        "703",
+        ITER22_RESIDUAL_703,
+        _feature_names_payload(RESIDUAL_METADATA_FEATURE_NAMES),
+    )
 
     def fake_load(model_path: str) -> BoosterLike:
         return _StubBooster(0.0)
@@ -424,7 +599,20 @@ def test_init_member_pool_loads_nar_mixed_arch_members(
         _canonical_nar_new_payload(),
     )
     _write_baseline_model_json(tmp_path, "nar", NAR_FALLBACK_MODEL_VERSION)
+    _write_baseline_metadata_json(
+        tmp_path,
+        "nar",
+        NAR_FALLBACK_MODEL_VERSION,
+        _feature_names_payload(NAR_BASELINE_METADATA_FEATURE_NAMES),
+    )
     _write_member_model_json(tmp_path, "nar", "NEW", NAR_RESIDUAL_NEW)
+    _write_member_metadata_json(
+        tmp_path,
+        "nar",
+        "NEW",
+        NAR_RESIDUAL_NEW,
+        _feature_names_payload(NAR_RESIDUAL_METADATA_FEATURE_NAMES),
+    )
 
     def fake_catboost(model_path: str) -> BoosterLike:
         return _StubBooster(0.5)
@@ -444,6 +632,9 @@ def test_init_member_pool_loads_nar_mixed_arch_members(
     # The model_version naming convention pins the arch.
     assert baseline_record.architecture == "xgboost"
     assert residual_record.architecture == "catboost"
+    # Each member's metadata-derived feature order is stored on its record.
+    assert baseline_record.feature_names == tuple(NAR_BASELINE_METADATA_FEATURE_NAMES)
+    assert residual_record.feature_names == tuple(NAR_RESIDUAL_METADATA_FEATURE_NAMES)
 
 
 def test_init_member_pool_nar_loads_baseline_only_once_when_perclass_dup(
@@ -461,10 +652,30 @@ def test_init_member_pool_nar_loads_baseline_only_once_when_perclass_dup(
         NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION,
         _canonical_nar_new_payload(),
     )
-    # Both layouts hold the baseline.
+    # Both layouts hold the baseline (model.json + metadata.json sidecar each).
     _write_baseline_model_json(tmp_path, "nar", NAR_FALLBACK_MODEL_VERSION)
+    _write_baseline_metadata_json(
+        tmp_path,
+        "nar",
+        NAR_FALLBACK_MODEL_VERSION,
+        _feature_names_payload(NAR_BASELINE_METADATA_FEATURE_NAMES),
+    )
     _write_member_model_json(tmp_path, "nar", "NEW", NAR_FALLBACK_MODEL_VERSION)
+    _write_member_metadata_json(
+        tmp_path,
+        "nar",
+        "NEW",
+        NAR_FALLBACK_MODEL_VERSION,
+        _feature_names_payload(NAR_BASELINE_METADATA_FEATURE_NAMES),
+    )
     _write_member_model_json(tmp_path, "nar", "NEW", NAR_RESIDUAL_NEW)
+    _write_member_metadata_json(
+        tmp_path,
+        "nar",
+        "NEW",
+        NAR_RESIDUAL_NEW,
+        _feature_names_payload(NAR_RESIDUAL_METADATA_FEATURE_NAMES),
+    )
 
     captured_paths: list[str] = []
 
@@ -505,6 +716,13 @@ def test_init_member_pool_nar_skips_baseline_when_absent(
         _canonical_nar_new_payload(),
     )
     _write_member_model_json(tmp_path, "nar", "NEW", NAR_RESIDUAL_NEW)
+    _write_member_metadata_json(
+        tmp_path,
+        "nar",
+        "NEW",
+        NAR_RESIDUAL_NEW,
+        _feature_names_payload(NAR_RESIDUAL_METADATA_FEATURE_NAMES),
+    )
 
     def fake_catboost(model_path: str) -> BoosterLike:
         return _StubBooster(0.5)
@@ -734,12 +952,22 @@ def test_score_race_with_resolution_falls_back_when_blend_shape_mismatch() -> No
 
 
 def test_score_race_with_resolution_falls_back_when_outer_shape_mismatch() -> None:
-    """All members return the same wrong-but-uniform length so the inner blend
-    succeeds, but the outer ``len(blended) != len(entries)`` guard fires."""
+    """The non-baseline member returns a wrong-but-uniform length so the inner
+    blend's ``normalize_within_race`` rejects via length mismatch (the outer
+    ``len(blended) != len(entries)`` guard is exercised in the monkeypatched
+    branch below).
+
+    The baseline (is_baseline=True) is scored FIRST and MUST emit a correctly-
+    lengthed vector so the two-pass ``_augment_entries`` can inject its raw
+    scores per entry; the residual then emits the single-row vector that trips
+    the inner scorer. Mirrors the original intent: the inner scorer ValueError
+    surfaces first and the race falls back to the single-model booster."""
     ensemble = _two_member_ensemble()
     pool = BoosterPool(
         boosters={
-            JRA_FALLBACK_MODEL_VERSION: _cb_record(_WrongLengthBooster()),
+            # Baseline returns a length-3 vector (correct) so the augment pass
+            # can index per entry; the residual returns length-1 to mismatch.
+            JRA_FALLBACK_MODEL_VERSION: _cb_record(_StubBooster(0.0)),
             ITER22_RESIDUAL_703: _cb_record(_WrongLengthBooster()),
         }
     )
@@ -757,10 +985,9 @@ def test_score_race_with_resolution_falls_back_when_outer_shape_mismatch() -> No
     )
 
     assert outcome.model_version == JRA_FALLBACK_MODEL_VERSION
-    # Both members emit a single-row vector. ``normalize_within_race`` would
-    # then mismatch race_id (len 3) vs scores (len 1) -> ValueError. So the
-    # inner scorer error surfaces first; the outer shape guard is exercised in
-    # the no-mismatch-inside branch below.
+    # The residual emits a single-row vector. ``normalize_within_race`` then
+    # mismatches race_id (len 3) vs scores (len 1) -> ValueError, so the inner
+    # scorer error surfaces first.
     assert outcome.fallback_reason == "score-error:ValueError"
     assert outcome.scores == [0.9, 1.9, 2.9]
 
@@ -910,3 +1137,873 @@ def test_resolve_member_architecture_falls_back_to_category_default() -> None:
     # NAR default is xgboost.
     result_nar: Architecture = resolve_member_architecture("unknown-mv", "nar")
     assert result_nar == "xgboost"
+
+
+# ---------------------------------------------------------------------------
+# member_feature_order_matches
+
+
+def test_member_feature_order_matches_empty_model_names_is_a_match() -> None:
+    """An EMPTY ``model_feature_names`` (XGBoost / unpopulated) is a no-op
+    match — the order assertion cannot run, so it returns True."""
+    assert member_feature_order_matches((), RESIDUAL_METADATA_FEATURE_NAMES) is True
+
+
+def test_member_feature_order_matches_exact_order_is_a_match() -> None:
+    """Identical positional order returns True."""
+    assert (
+        member_feature_order_matches(
+            RESIDUAL_METADATA_FEATURE_NAMES, RESIDUAL_METADATA_FEATURE_NAMES
+        )
+        is True
+    )
+
+
+def test_member_feature_order_matches_permuted_order_is_a_mismatch() -> None:
+    """A permuted order (same set, different positions) returns False — the
+    matrix the scorer would build is permuted relative to the booster."""
+    permuted = ["feature_b", "feature_a", "iter14_score"]
+    assert member_feature_order_matches(RESIDUAL_METADATA_FEATURE_NAMES, permuted) is False
+
+
+# ---------------------------------------------------------------------------
+# catboost_model_feature_names
+
+
+def test_catboost_model_feature_names_non_catboost_returns_empty() -> None:
+    """An XGBoost record is never order-checked — returns the empty tuple."""
+    record = _xgb_record(_NamedBooster(["feature_a", "feature_b"]))
+    assert catboost_model_feature_names(record) == ()
+
+
+def test_catboost_model_feature_names_attr_absent_returns_empty() -> None:
+    """A CatBoost record whose booster lacks ``feature_names_`` returns empty —
+    the ``getattr(..., None)`` default is not a list/tuple."""
+    record = _cb_record(_StubBooster(0.0))
+    assert catboost_model_feature_names(record) == ()
+
+
+def test_catboost_model_feature_names_attr_not_sequence_returns_empty() -> None:
+    """A ``feature_names_`` that is not a list/tuple (e.g. a string) returns
+    empty rather than mis-comparing character-by-character."""
+
+    class _StrNamesBooster:
+        feature_names_: str = "feature_a,feature_b"
+
+        def predict(self, matrix: Sequence[Sequence[float]]) -> Sequence[float]:
+            return [0.0 for _ in matrix]
+
+    record = _cb_record(_StrNamesBooster())
+    assert catboost_model_feature_names(record) == ()
+
+
+def test_catboost_model_feature_names_non_string_item_returns_empty() -> None:
+    """A ``feature_names_`` list with a non-string item returns empty — the
+    positional comparison needs every name to be a string."""
+
+    class _MixedNamesBooster:
+        feature_names_: list[object]
+
+        def __init__(self) -> None:
+            # Per-instance assignment (not a class default) so ruff RUF012 does
+            # not flag a shared-mutable-default — every test gets a fresh list.
+            self.feature_names_ = ["feature_a", 7]
+
+        def predict(self, matrix: Sequence[Sequence[float]]) -> Sequence[float]:
+            return [0.0 for _ in matrix]
+
+    record = _cb_record(_MixedNamesBooster())
+    assert catboost_model_feature_names(record) == ()
+
+
+def test_catboost_model_feature_names_valid_list_returns_tuple() -> None:
+    """A populated, all-string ``feature_names_`` is returned as a tuple."""
+    record = _cb_record(_NamedBooster(RESIDUAL_METADATA_FEATURE_NAMES))
+    assert catboost_model_feature_names(record) == tuple(RESIDUAL_METADATA_FEATURE_NAMES)
+
+
+# ---------------------------------------------------------------------------
+# drop_order_mismatched_members
+
+
+def test_drop_order_mismatched_members_keeps_matching_catboost() -> None:
+    """A CatBoost member whose native ``feature_names_`` matches its metadata
+    order is kept."""
+    record = _cb_record_with_names(
+        _NamedBooster(RESIDUAL_METADATA_FEATURE_NAMES), RESIDUAL_METADATA_FEATURE_NAMES
+    )
+    pool = BoosterPool(boosters={ITER22_RESIDUAL_703: record})
+    kept = drop_order_mismatched_members(pool)
+    assert kept.has(ITER22_RESIDUAL_703) is True
+
+
+def test_drop_order_mismatched_members_drops_permuted_catboost(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A CatBoost member whose booster order disagrees with metadata is dropped
+    and a ``member-order-mismatch:<mv>`` line is logged to stderr."""
+    permuted_booster = _NamedBooster(["feature_b", "feature_a", "iter14_score"])
+    record = _cb_record_with_names(permuted_booster, RESIDUAL_METADATA_FEATURE_NAMES)
+    pool = BoosterPool(boosters={ITER22_RESIDUAL_703: record})
+
+    kept = drop_order_mismatched_members(pool)
+
+    assert kept.has(ITER22_RESIDUAL_703) is False
+    captured = capsys.readouterr()
+    assert f"member-order-mismatch:{ITER22_RESIDUAL_703}" in captured.err
+
+
+def test_drop_order_mismatched_members_always_keeps_xgboost() -> None:
+    """An XGBoost member (empty ``feature_names_`` after the loader clears it)
+    is never order-checked, so it always passes even with a metadata order set."""
+    record = PoolBooster(
+        booster=_StubBooster(0.0),
+        architecture="xgboost",
+        feature_names=tuple(NAR_BASELINE_METADATA_FEATURE_NAMES),
+    )
+    pool = BoosterPool(boosters={NAR_FALLBACK_MODEL_VERSION: record})
+    kept = drop_order_mismatched_members(pool)
+    assert kept.has(NAR_FALLBACK_MODEL_VERSION) is True
+
+
+# ---------------------------------------------------------------------------
+# init_member_pool — metadata failure postures
+
+
+def test_init_member_pool_skips_member_when_metadata_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A non-baseline member whose sibling metadata.json is ABSENT is skipped
+    (logged ``member-metadata-missing:<mv>``); the baseline still loads so the
+    ensemble can fall back to it."""
+    _write_manifest(
+        tmp_path,
+        "jra",
+        "703",
+        JRA_CLASS_703_ENSEMBLE_MODEL_VERSION,
+        _canonical_703_payload(),
+    )
+    _write_baseline_model_json(tmp_path, "jra", JRA_FALLBACK_MODEL_VERSION)
+    _write_baseline_metadata_json(
+        tmp_path,
+        "jra",
+        JRA_FALLBACK_MODEL_VERSION,
+        _feature_names_payload(BASELINE_METADATA_FEATURE_NAMES),
+    )
+    # Residual model.json on disk but NO metadata.json sidecar.
+    _write_member_model_json(tmp_path, "jra", "703", ITER22_RESIDUAL_703)
+
+    def fake_load(model_path: str) -> BoosterLike:
+        return _StubBooster(0.0)
+
+    _install_fake_catboost_adapter(monkeypatch, fake_load)
+
+    pool = init_member_pool(tmp_path, "jra")
+
+    assert pool.has(JRA_FALLBACK_MODEL_VERSION) is True
+    assert pool.has(ITER22_RESIDUAL_703) is False
+    captured = capsys.readouterr()
+    assert f"member-metadata-missing:{ITER22_RESIDUAL_703}" in captured.err
+
+
+def test_init_member_pool_skips_member_when_metadata_corrupt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A non-baseline member whose metadata.json is malformed (missing
+    ``feature_names`` key) is skipped + logged, exercising the ValueError arm of
+    the non-baseline failure posture."""
+    _write_manifest(
+        tmp_path,
+        "jra",
+        "703",
+        JRA_CLASS_703_ENSEMBLE_MODEL_VERSION,
+        _canonical_703_payload(),
+    )
+    _write_baseline_model_json(tmp_path, "jra", JRA_FALLBACK_MODEL_VERSION)
+    _write_baseline_metadata_json(
+        tmp_path,
+        "jra",
+        JRA_FALLBACK_MODEL_VERSION,
+        _feature_names_payload(BASELINE_METADATA_FEATURE_NAMES),
+    )
+    _write_member_model_json(tmp_path, "jra", "703", ITER22_RESIDUAL_703)
+    # Malformed sidecar: no ``feature_names`` key.
+    _write_member_metadata_json(tmp_path, "jra", "703", ITER22_RESIDUAL_703, {"x": 1})
+
+    def fake_load(model_path: str) -> BoosterLike:
+        return _StubBooster(0.0)
+
+    _install_fake_catboost_adapter(monkeypatch, fake_load)
+
+    pool = init_member_pool(tmp_path, "jra")
+
+    assert pool.has(ITER22_RESIDUAL_703) is False
+    captured = capsys.readouterr()
+    assert f"member-metadata-missing:{ITER22_RESIDUAL_703}" in captured.err
+
+
+def test_init_member_pool_raises_when_baseline_metadata_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The category-global baseline's metadata.json is the fallback safety net —
+    a missing baseline sidecar re-raises ``FileNotFoundError`` rather than
+    silently degrading. The residual has a valid sidecar so the failure is
+    isolated to the baseline path."""
+    _write_manifest(
+        tmp_path,
+        "jra",
+        "703",
+        JRA_CLASS_703_ENSEMBLE_MODEL_VERSION,
+        _canonical_703_payload(),
+    )
+    # Baseline model.json present but NO metadata.json sidecar.
+    _write_baseline_model_json(tmp_path, "jra", JRA_FALLBACK_MODEL_VERSION)
+    _write_member_model_json(tmp_path, "jra", "703", ITER22_RESIDUAL_703)
+    _write_member_metadata_json(
+        tmp_path,
+        "jra",
+        "703",
+        ITER22_RESIDUAL_703,
+        _feature_names_payload(RESIDUAL_METADATA_FEATURE_NAMES),
+    )
+
+    def fake_load(model_path: str) -> BoosterLike:
+        return _StubBooster(0.0)
+
+    _install_fake_catboost_adapter(monkeypatch, fake_load)
+
+    with pytest.raises(FileNotFoundError, match="member metadata missing"):
+        init_member_pool(tmp_path, "jra")
+
+
+def test_init_member_pool_reraises_when_perclass_baseline_metadata_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the baseline model_version is discovered under the PER-CLASS layout
+    (it is a manifest member) but its sibling metadata.json is absent, the
+    per-class resolution arm re-raises rather than skipping — the baseline is the
+    fallback safety net so a broken sidecar fails LOUD on either layout.
+
+    The residual carries a valid sidecar, isolating the failure to the per-class
+    baseline copy."""
+    _write_manifest(
+        tmp_path,
+        "jra",
+        "703",
+        JRA_CLASS_703_ENSEMBLE_MODEL_VERSION,
+        _canonical_703_payload(),
+    )
+    # Baseline placed under per-class with model.json but NO metadata.json.
+    _write_member_model_json(tmp_path, "jra", "703", JRA_FALLBACK_MODEL_VERSION)
+    _write_member_model_json(tmp_path, "jra", "703", ITER22_RESIDUAL_703)
+    _write_member_metadata_json(
+        tmp_path,
+        "jra",
+        "703",
+        ITER22_RESIDUAL_703,
+        _feature_names_payload(RESIDUAL_METADATA_FEATURE_NAMES),
+    )
+
+    def fake_load(model_path: str) -> BoosterLike:
+        return _StubBooster(0.0)
+
+    _install_fake_catboost_adapter(monkeypatch, fake_load)
+
+    with pytest.raises(FileNotFoundError, match="member metadata missing"):
+        init_member_pool(tmp_path, "jra")
+
+
+def test_init_member_pool_drops_order_mismatched_member(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """End-to-end: a CatBoost member whose loaded booster ``feature_names_``
+    disagrees with its metadata order is dropped by the post-load order assertion
+    (logged ``member-order-mismatch:<mv>``). The baseline (matching order) is
+    kept."""
+    _write_manifest(
+        tmp_path,
+        "jra",
+        "703",
+        JRA_CLASS_703_ENSEMBLE_MODEL_VERSION,
+        _canonical_703_payload(),
+    )
+    _write_baseline_model_json(tmp_path, "jra", JRA_FALLBACK_MODEL_VERSION)
+    _write_baseline_metadata_json(
+        tmp_path,
+        "jra",
+        JRA_FALLBACK_MODEL_VERSION,
+        _feature_names_payload(BASELINE_METADATA_FEATURE_NAMES),
+    )
+    _write_member_model_json(tmp_path, "jra", "703", ITER22_RESIDUAL_703)
+    _write_member_metadata_json(
+        tmp_path,
+        "jra",
+        "703",
+        ITER22_RESIDUAL_703,
+        _feature_names_payload(RESIDUAL_METADATA_FEATURE_NAMES),
+    )
+
+    def fake_load(model_path: str) -> BoosterLike:
+        # The baseline booster reports the matching order; the residual booster
+        # reports a PERMUTED order so the post-load assertion drops it.
+        if "iter14" in model_path:
+            return _NamedBooster(BASELINE_METADATA_FEATURE_NAMES)
+        return _NamedBooster(["feature_b", "feature_a", "iter14_score"])
+
+    _install_fake_catboost_adapter(monkeypatch, fake_load)
+
+    pool = init_member_pool(tmp_path, "jra")
+
+    assert pool.has(JRA_FALLBACK_MODEL_VERSION) is True
+    assert pool.has(ITER22_RESIDUAL_703) is False
+    captured = capsys.readouterr()
+    assert f"member-order-mismatch:{ITER22_RESIDUAL_703}" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# member_feature_names_for_record
+
+
+def test_member_feature_names_uses_record_order_when_present() -> None:
+    """A record carrying its OWN ``feature_names`` uses that order, ignoring the
+    caller-supplied global list."""
+    record = _cb_record_with_names(_StubBooster(0.0), RESIDUAL_METADATA_FEATURE_NAMES)
+    result = member_feature_names_for_record(record, FEATURE_NAMES)
+    assert result == tuple(RESIDUAL_METADATA_FEATURE_NAMES)
+
+
+def test_member_feature_names_falls_back_to_global_when_empty() -> None:
+    """A record with an EMPTY ``feature_names`` (legacy / single-model fallback)
+    uses the caller-supplied global list."""
+    record = _cb_record(_StubBooster(0.0))
+    result = member_feature_names_for_record(record, FEATURE_NAMES)
+    assert result == tuple(FEATURE_NAMES)
+
+
+# ---------------------------------------------------------------------------
+# column_gap
+
+
+def test_column_gap_zero_when_all_features_present() -> None:
+    """All required member features are entry keys -> gap 0."""
+    gap = column_gap(["feature_a", "feature_b"], frozenset({"feature_a", "feature_b"}), None)
+    assert gap == 0
+
+
+def test_column_gap_counts_missing_features() -> None:
+    """Member features absent from the entry keys are counted."""
+    gap = column_gap(
+        ["feature_a", "feature_b", "feature_c"], frozenset({"feature_a"}), None
+    )
+    assert gap == 2
+
+
+def test_column_gap_excludes_injected_score_col() -> None:
+    """The injected ``score_col`` is supplied by the two-pass injection, so it is
+    excluded from the gap — a member requiring only the score column beyond the
+    entry keys must NOT gap."""
+    gap = column_gap(
+        ["feature_a", "feature_b", "iter14_score"],
+        frozenset({"feature_a", "feature_b"}),
+        "iter14_score",
+    )
+    assert gap == 0
+
+
+def test_column_gap_score_col_none_keeps_score_required() -> None:
+    """When ``score_col`` is None nothing is discarded — a missing ``iter14_score``
+    counts toward the gap (the score_col-is-None branch)."""
+    gap = column_gap(
+        ["feature_a", "iter14_score"], frozenset({"feature_a"}), None
+    )
+    assert gap == 1
+
+
+# ---------------------------------------------------------------------------
+# find_baseline_member
+
+
+def test_find_baseline_member_returns_flagged_member() -> None:
+    """The member with ``is_baseline=True`` is returned."""
+    ensemble = _two_member_ensemble()
+    baseline = find_baseline_member(ensemble)
+    assert baseline is not None
+    assert baseline.model_version == JRA_FALLBACK_MODEL_VERSION
+    assert baseline.is_baseline is True
+
+
+def test_find_baseline_member_returns_none_when_no_baseline() -> None:
+    """A manifest with no ``is_baseline`` member returns None — the loop walks
+    every member and falls through."""
+    ensemble = PerClassEnsemble(
+        model_version=JRA_CLASS_703_ENSEMBLE_MODEL_VERSION,
+        category="jra",
+        kyoso_joken_code="703",
+        ensemble_type="rank_blend",
+        members=(
+            EnsembleMember(
+                model_version=JRA_FALLBACK_MODEL_VERSION, weight=0.3, is_baseline=False
+            ),
+            EnsembleMember(
+                model_version=ITER22_RESIDUAL_703, weight=0.7, is_baseline=False
+            ),
+        ),
+    )
+    assert find_baseline_member(ensemble) is None
+
+
+# ---------------------------------------------------------------------------
+# augment_entries_with_score_col
+
+
+def test_augment_entries_passes_through_when_score_col_none() -> None:
+    """A category with no synthetic-score feature (``score_col`` None) passes the
+    entries through unchanged."""
+    import numpy as np
+
+    entries = _three_horse_entries()
+    result = augment_entries_with_score_col(entries, None, np.array([1.0, 2.0, 3.0]))
+    assert result == entries
+
+
+def test_augment_entries_injects_raw_scores_verbatim() -> None:
+    """The baseline's RAW scores are injected verbatim under ``score_col`` (no
+    normalisation) — one float per entry, original keys preserved."""
+    import numpy as np
+
+    entries = _three_horse_entries()
+    raw = np.array([12.5, -3.25, 0.0], dtype=np.float64)
+    result = augment_entries_with_score_col(entries, JRA_SCORE_COL, raw)
+
+    assert [entry[JRA_SCORE_COL] for entry in result] == [12.5, -3.25, 0.0]
+    # Original keys survive the merge.
+    assert result[0]["feature_a"] == 0.1
+    assert result[1]["ketto_toroku_bango"] == "9002"
+
+
+# ---------------------------------------------------------------------------
+# SCORE_FEATURE_BY_CATEGORY
+
+
+def test_score_feature_by_category_maps_jra_and_nar() -> None:
+    """The synthetic-score feature is ``iter14_score`` for JRA and
+    ``iter12_score`` for NAR; Ban-ei has no entry (no synthetic score)."""
+    assert SCORE_FEATURE_BY_CATEGORY["jra"] == "iter14_score"
+    assert SCORE_FEATURE_BY_CATEGORY["nar"] == "iter12_score"
+    assert SCORE_FEATURE_BY_CATEGORY.get("ban-ei") is None
+
+
+# ---------------------------------------------------------------------------
+# score_member — column-gap guard
+
+
+def test_score_member_returns_column_gap_when_feature_absent() -> None:
+    """A NON-BASELINE member whose metadata lists a feature ABSENT from the
+    entry keys returns ``(None, member-column-gap:<mv>:<n>)`` so the ensemble
+    falls back rather than silently 0-filling."""
+    member = EnsembleMember(
+        model_version=ITER22_RESIDUAL_703, weight=0.7, is_baseline=False
+    )
+    record = _cb_record_with_names(
+        _StubBooster(0.0), ["feature_a", "feature_b", "missing_feature"]
+    )
+    pool = BoosterPool(boosters={ITER22_RESIDUAL_703: record})
+    matrix_by_key: dict[MatrixCacheKey, Sequence[Sequence[float]]] = {}
+
+    scores, reason = score_member(
+        member, pool, matrix_by_key, _three_horse_entries(), FEATURE_NAMES, JRA_SCORE_COL
+    )
+
+    assert scores is None
+    assert reason == f"member-column-gap:{ITER22_RESIDUAL_703}:1"
+
+
+def test_score_member_baseline_skips_column_gap_guard() -> None:
+    """The BASELINE member is exempt from the column-gap guard because the NAR
+    baseline metadata carries a legacy duplicate-suffix column
+    (``shusso_tosu`` at index 2 + ``shusso_tosu_1`` at 146) that the parquet
+    only emits once — the legacy ``build_feature_matrix`` 0-fill preserves the
+    pre-WIP baseline behaviour for the safety-net booster."""
+    member = EnsembleMember(
+        model_version=JRA_FALLBACK_MODEL_VERSION, weight=0.3, is_baseline=True
+    )
+    record = _cb_record_with_names(
+        _StubBooster(0.0), ["feature_a", "feature_b", "missing_feature"]
+    )
+    pool = BoosterPool(boosters={JRA_FALLBACK_MODEL_VERSION: record})
+    matrix_by_key: dict[MatrixCacheKey, Sequence[Sequence[float]]] = {}
+
+    scores, reason = score_member(
+        member, pool, matrix_by_key, _three_horse_entries(), FEATURE_NAMES, JRA_SCORE_COL
+    )
+
+    # No gap reason — baseline is silently 0-filled by build_feature_matrix.
+    assert reason is None
+    assert scores is not None
+
+
+def test_score_member_does_not_gap_on_injected_score_col() -> None:
+    """A member whose only beyond-entry feature is the injected ``score_col`` does
+    NOT gap on pass 2 (the score_col is supplied by the augment pass)."""
+    member = EnsembleMember(
+        model_version=ITER22_RESIDUAL_703, weight=0.7, is_baseline=False
+    )
+    record = _cb_record_with_names(
+        _StubBooster(0.0), ["feature_a", "feature_b", JRA_SCORE_COL]
+    )
+    pool = BoosterPool(boosters={ITER22_RESIDUAL_703: record})
+    matrix_by_key: dict[MatrixCacheKey, Sequence[Sequence[float]]] = {}
+
+    scores, reason = score_member(
+        member, pool, matrix_by_key, _three_horse_entries(), FEATURE_NAMES, JRA_SCORE_COL
+    )
+
+    assert reason is None
+    assert scores is not None
+
+
+def test_score_member_empty_entries_uses_empty_key_set() -> None:
+    """An empty entries sequence yields an empty key set; a member with a
+    declared feature then gaps (the ``entries[0]`` guard is skipped)."""
+    member = EnsembleMember(
+        model_version=ITER22_RESIDUAL_703, weight=0.7, is_baseline=False
+    )
+    record = _cb_record_with_names(_StubBooster(0.0), ["feature_a"])
+    pool = BoosterPool(boosters={ITER22_RESIDUAL_703: record})
+    matrix_by_key: dict[MatrixCacheKey, Sequence[Sequence[float]]] = {}
+
+    scores, reason = score_member(member, pool, matrix_by_key, [], FEATURE_NAMES, None)
+
+    assert scores is None
+    assert reason == f"member-column-gap:{ITER22_RESIDUAL_703}:1"
+
+
+# ---------------------------------------------------------------------------
+# score_race_with_resolution — column-gap + no-baseline fallback postures
+
+
+def test_score_race_falls_back_when_membercolumn_gap(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An ensemble whose non-baseline member declares a feature absent from the
+    entries falls back to the single-model booster with a
+    ``member-column-gap:<mv>:<n>`` reason (the whole-ensemble fallback posture)."""
+    ensemble = _two_member_ensemble()
+    pool = BoosterPool(
+        boosters={
+            JRA_FALLBACK_MODEL_VERSION: _cb_record_with_names(
+                _StubBooster(0.0), BASELINE_METADATA_FEATURE_NAMES
+            ),
+            ITER22_RESIDUAL_703: _cb_record_with_names(
+                _StubBooster(1.0), ["feature_a", "feature_b", "relationship_missing"]
+            ),
+        }
+    )
+    fallback = _StubBooster(0.4)
+
+    outcome = score_race_with_resolution(
+        resolution=ensemble,
+        race_id="jra:2026:0605:05:08",
+        entries=_three_horse_entries(),
+        feature_names=FEATURE_NAMES,
+        architecture="catboost",
+        pool=pool,
+        fallback_booster=fallback,
+        fallback_model_version=JRA_FALLBACK_MODEL_VERSION,
+    )
+
+    assert outcome.model_version == JRA_FALLBACK_MODEL_VERSION
+    assert outcome.fallback_reason == f"member-column-gap:{ITER22_RESIDUAL_703}:1"
+    assert outcome.scores == [0.4, 1.4, 2.4]
+
+
+def test_score_race_falls_back_when_no_baseline_in_manifest() -> None:
+    """A manifest with NO ``is_baseline`` member trips the new
+    ``score-error:no-baseline`` guard (the baseline is scored first to inject the
+    synthetic score), so the race falls back to the single-model booster."""
+    ensemble = PerClassEnsemble(
+        model_version=JRA_CLASS_703_ENSEMBLE_MODEL_VERSION,
+        category="jra",
+        kyoso_joken_code="703",
+        ensemble_type="rank_blend",
+        members=(
+            EnsembleMember(
+                model_version=JRA_FALLBACK_MODEL_VERSION, weight=0.3, is_baseline=False
+            ),
+            EnsembleMember(
+                model_version=ITER22_RESIDUAL_703, weight=0.7, is_baseline=False
+            ),
+        ),
+    )
+    pool = BoosterPool(
+        boosters={
+            JRA_FALLBACK_MODEL_VERSION: _cb_record(_StubBooster(0.0)),
+            ITER22_RESIDUAL_703: _cb_record(_StubBooster(1.0)),
+        }
+    )
+    fallback = _StubBooster(0.4)
+
+    outcome = score_race_with_resolution(
+        resolution=ensemble,
+        race_id="jra:2026:0605:05:08",
+        entries=_three_horse_entries(),
+        feature_names=FEATURE_NAMES,
+        architecture="catboost",
+        pool=pool,
+        fallback_booster=fallback,
+        fallback_model_version=JRA_FALLBACK_MODEL_VERSION,
+    )
+
+    assert outcome.model_version == JRA_FALLBACK_MODEL_VERSION
+    assert outcome.fallback_reason == "score-error:no-baseline"
+    assert outcome.scores == [0.4, 1.4, 2.4]
+
+
+def test_score_race_falls_back_when_baseline_member_missing_from_pool() -> None:
+    """The baseline is scored FIRST; if it is absent from the pool the
+    ``member-missing:<mv>`` reason surfaces before any non-baseline member is
+    touched, and the race falls back to the single-model booster."""
+    ensemble = _two_member_ensemble()
+    # Only the residual is in the pool; the baseline is missing.
+    pool = BoosterPool(boosters={ITER22_RESIDUAL_703: _cb_record(_StubBooster(1.0))})
+    fallback = _StubBooster(0.4)
+
+    outcome = score_race_with_resolution(
+        resolution=ensemble,
+        race_id="jra:2026:0605:05:08",
+        entries=_three_horse_entries(),
+        feature_names=FEATURE_NAMES,
+        architecture="catboost",
+        pool=pool,
+        fallback_booster=fallback,
+        fallback_model_version=JRA_FALLBACK_MODEL_VERSION,
+    )
+
+    assert outcome.model_version == JRA_FALLBACK_MODEL_VERSION
+    assert outcome.fallback_reason == f"member-missing:{JRA_FALLBACK_MODEL_VERSION}"
+    assert outcome.scores == [0.4, 1.4, 2.4]
+
+
+def test_score_race_falls_back_when_baseline_predict_raises() -> None:
+    """The baseline (scored first) raising surfaces ``score-error:RuntimeError``
+    before pass 2 runs — the race falls back to the single-model booster."""
+    ensemble = _two_member_ensemble()
+    pool = BoosterPool(
+        boosters={
+            JRA_FALLBACK_MODEL_VERSION: _cb_record(_RaisingBooster()),
+            ITER22_RESIDUAL_703: _cb_record(_StubBooster(1.0)),
+        }
+    )
+    fallback = _StubBooster(0.4)
+
+    outcome = score_race_with_resolution(
+        resolution=ensemble,
+        race_id="jra:2026:0605:05:08",
+        entries=_three_horse_entries(),
+        feature_names=FEATURE_NAMES,
+        architecture="catboost",
+        pool=pool,
+        fallback_booster=fallback,
+        fallback_model_version=JRA_FALLBACK_MODEL_VERSION,
+    )
+
+    assert outcome.model_version == JRA_FALLBACK_MODEL_VERSION
+    assert outcome.fallback_reason == "score-error:RuntimeError"
+    assert outcome.scores == [0.4, 1.4, 2.4]
+
+
+# ---------------------------------------------------------------------------
+# Two-pass synthetic-score injection (happy path)
+
+
+def test_score_ensemble_two_pass_injects_baseline_raw_scores() -> None:
+    """The two-pass scorer scores the baseline on the PLAIN entries, then injects
+    its RAW scores verbatim into the residual member's matrix under the JRA
+    ``iter14_score`` column.
+
+    The recording boosters capture every matrix they score. We assert:
+
+    * the baseline matrix has the baseline's feature width (2 cols, no score col);
+    * the residual matrix carries the baseline's RAW scores (verbatim floats) in
+      the injected ``iter14_score`` position (last column of its 3-col order)."""
+    baseline_raw = [7.0, 11.0, 13.0]
+    baseline_booster = _FixedScoreBooster(baseline_raw)
+    residual_booster = _MatrixRecordingBooster()
+    ensemble = _two_member_ensemble()
+    pool = BoosterPool(
+        boosters={
+            JRA_FALLBACK_MODEL_VERSION: _cb_record_with_names(
+                baseline_booster, BASELINE_METADATA_FEATURE_NAMES
+            ),
+            ITER22_RESIDUAL_703: _cb_record_with_names(
+                residual_booster, RESIDUAL_METADATA_FEATURE_NAMES
+            ),
+        }
+    )
+    fallback = _StubBooster(0.4)
+
+    outcome = score_race_with_resolution(
+        resolution=ensemble,
+        race_id="jra:2026:0605:05:08",
+        entries=_three_horse_entries(),
+        feature_names=FEATURE_NAMES,
+        architecture="catboost",
+        pool=pool,
+        fallback_booster=fallback,
+        fallback_model_version=JRA_FALLBACK_MODEL_VERSION,
+    )
+
+    # Happy path: the ensemble label is emitted, no fallback.
+    assert outcome.fallback_reason is None
+    assert outcome.model_version == JRA_CLASS_703_ENSEMBLE_MODEL_VERSION
+    # The residual booster recorded exactly one matrix (3 rows x 3 cols).
+    assert len(residual_booster.seen_matrices) == 1
+    residual_matrix = residual_booster.seen_matrices[0]
+    assert len(residual_matrix) == 3
+    # ``iter14_score`` is the 3rd (index 2) feature in the residual's order, and
+    # carries the baseline's RAW scores verbatim (no normalisation).
+    injected_col = [row[2] for row in residual_matrix]
+    assert injected_col == baseline_raw
+    # The first two columns mirror the plain entry features.
+    assert [row[0] for row in residual_matrix] == [0.1, 0.2, 0.3]
+    assert [row[1] for row in residual_matrix] == [0.4, 0.5, 0.6]
+
+
+def test_score_ensemble_baseline_scored_on_plain_entries() -> None:
+    """Pass 1 scores the baseline on the PLAIN (un-augmented) entries — its
+    matrix has the baseline's 2-col width with NO injected score column."""
+    baseline_booster = _MatrixRecordingBooster()
+    residual_booster = _StubBooster(1.0)
+    ensemble = _two_member_ensemble()
+    pool = BoosterPool(
+        boosters={
+            JRA_FALLBACK_MODEL_VERSION: _cb_record_with_names(
+                baseline_booster, BASELINE_METADATA_FEATURE_NAMES
+            ),
+            ITER22_RESIDUAL_703: _cb_record_with_names(
+                residual_booster, RESIDUAL_METADATA_FEATURE_NAMES
+            ),
+        }
+    )
+    fallback = _StubBooster(0.4)
+
+    outcome = score_race_with_resolution(
+        resolution=ensemble,
+        race_id="jra:2026:0605:05:08",
+        entries=_three_horse_entries(),
+        feature_names=FEATURE_NAMES,
+        architecture="catboost",
+        pool=pool,
+        fallback_booster=fallback,
+        fallback_model_version=JRA_FALLBACK_MODEL_VERSION,
+    )
+
+    assert outcome.fallback_reason is None
+    baseline_matrix = baseline_booster.seen_matrices[0]
+    # Baseline order is 2 columns — no ``iter14_score`` injected on pass 1.
+    assert [len(row) for row in baseline_matrix] == [2, 2, 2]
+    assert [row[0] for row in baseline_matrix] == [0.1, 0.2, 0.3]
+
+
+# ---------------------------------------------------------------------------
+# Matrix cache keying (architecture + feature order)
+
+
+def test_matrix_cache_distinct_for_different_feature_orders() -> None:
+    """Two members with the SAME arch but DIFFERENT feature orders each get their
+    own correctly-shaped matrix (the core wrong-width fix). The baseline (2 cols)
+    and residual (3 cols) record different matrix widths."""
+    baseline_booster = _MatrixRecordingBooster()
+    residual_booster = _MatrixRecordingBooster()
+    ensemble = _two_member_ensemble()
+    pool = BoosterPool(
+        boosters={
+            JRA_FALLBACK_MODEL_VERSION: _cb_record_with_names(
+                baseline_booster, BASELINE_METADATA_FEATURE_NAMES
+            ),
+            ITER22_RESIDUAL_703: _cb_record_with_names(
+                residual_booster, RESIDUAL_METADATA_FEATURE_NAMES
+            ),
+        }
+    )
+    fallback = _StubBooster(0.4)
+
+    outcome = score_race_with_resolution(
+        resolution=ensemble,
+        race_id="jra:2026:0605:05:08",
+        entries=_three_horse_entries(),
+        feature_names=FEATURE_NAMES,
+        architecture="catboost",
+        pool=pool,
+        fallback_booster=fallback,
+        fallback_model_version=JRA_FALLBACK_MODEL_VERSION,
+    )
+
+    assert outcome.fallback_reason is None
+    # Different widths confirm separate matrices were built per member order.
+    baseline_width = len(baseline_booster.seen_matrices[0][0])
+    residual_width = len(residual_booster.seen_matrices[0][0])
+    assert baseline_width == 2
+    assert residual_width == 3
+
+
+def test_matrix_cache_shared_for_same_arch_and_feature_order() -> None:
+    """Two non-baseline members with the SAME arch AND the SAME feature order
+    share one built matrix — the second member's matrix is the cached object, so
+    both record the identical matrix contents from the single build."""
+    member_a = _MatrixRecordingBooster()
+    member_b = _MatrixRecordingBooster()
+    shared_names = RESIDUAL_METADATA_FEATURE_NAMES
+    second_residual_mv = "iter23-jra-cb-residual-703-v8"
+    ensemble = PerClassEnsemble(
+        model_version=JRA_CLASS_703_ENSEMBLE_MODEL_VERSION,
+        category="jra",
+        kyoso_joken_code="703",
+        ensemble_type="rank_blend",
+        members=(
+            EnsembleMember(
+                model_version=JRA_FALLBACK_MODEL_VERSION, weight=0.2, is_baseline=True
+            ),
+            EnsembleMember(
+                model_version=ITER22_RESIDUAL_703, weight=0.4, is_baseline=False
+            ),
+            EnsembleMember(
+                model_version=second_residual_mv, weight=0.4, is_baseline=False
+            ),
+        ),
+    )
+    pool = BoosterPool(
+        boosters={
+            JRA_FALLBACK_MODEL_VERSION: _cb_record_with_names(
+                _FixedScoreBooster([3.0, 5.0, 9.0]), BASELINE_METADATA_FEATURE_NAMES
+            ),
+            ITER22_RESIDUAL_703: _cb_record_with_names(member_a, shared_names),
+            second_residual_mv: _cb_record_with_names(member_b, shared_names),
+        }
+    )
+    fallback = _StubBooster(0.4)
+
+    outcome = score_race_with_resolution(
+        resolution=ensemble,
+        race_id="jra:2026:0605:05:08",
+        entries=_three_horse_entries(),
+        feature_names=FEATURE_NAMES,
+        architecture="catboost",
+        pool=pool,
+        fallback_booster=fallback,
+        fallback_model_version=JRA_FALLBACK_MODEL_VERSION,
+    )
+
+    assert outcome.fallback_reason is None
+    # Both residuals scored the SAME cached matrix (same arch + same order), so
+    # the recorded contents are identical, including the injected score column.
+    assert member_a.seen_matrices[0] == member_b.seen_matrices[0]
+    assert [row[2] for row in member_a.seen_matrices[0]] == [3.0, 5.0, 9.0]
