@@ -69,12 +69,15 @@ def stage_course_lookup(con: duckdb.DuckDBPyConnection, lookup_path: Path) -> No
     """Load + dedupe the lookup parquet on (keibajo_code, kyori, track_code).
 
     The raw lookup has 119 rows that include a couple of NaN-vs-filled splits
-    for the same key; ``any_value(... ignore nulls)`` collapses each key to a
-    single non-null per attribute lossly when both halves are non-conflicting
-    (validated in iter14 build).
+    for the same key; ``any_value(col)`` (DuckDB) already skips NULLs by
+    default, so it collapses each key to a single non-null per attribute
+    lossly when both halves are non-conflicting (validated in iter14 build).
+    The earlier ``ignore nulls`` modifier is not accepted by DuckDB's parser
+    for non-window aggregates (RESPECT/IGNORE NULLS is window-only) and is
+    therefore omitted.
     """
     agg_cols = ", ".join(
-        f"any_value({name} ignore nulls) as {name}" for name in COURSE_FEATURE_NAMES
+        f"any_value({name}) as {name}" for name in COURSE_FEATURE_NAMES
     )
     join_cols = ", ".join(JOIN_KEYS)
     con.execute(
