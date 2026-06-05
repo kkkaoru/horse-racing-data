@@ -5,10 +5,11 @@ The P0 per-class fix scores each ensemble member POSITIONALLY against the
 member's OWN ``feature_names`` (read from its sibling ``metadata.json``) and the
 inference ``LAYER_CHAIN`` for jra + nar now ends with
 ``add-relationship-r1-features.py`` (12 relationship columns). At scoring time
-:func:`predict_lib.ensemble_routing._column_gap` drops any member whose required
-feature KEYS are absent from the entries (logged ``member-column-gap:<mv>:<n>``).
-This script reproduces that gap check OFFLINE so a feature-layer drift is caught
-before a container run silently falls back to the category-global booster.
+The runtime scorer 0-fills any missing entry keys (legacy behaviour preserved
+after the WIP), so an offline coverage check is the only signal that a
+training-time feature is silently dropped at inference. This script reproduces
+that coverage check OFFLINE so a feature-layer drift is caught and reported
+before the run silently 0-fills a relationship column.
 
 Run with ``uv run`` so the app's virtualenv (duckdb, predict_lib on the src
 path) is active::

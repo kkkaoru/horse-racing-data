@@ -350,32 +350,12 @@ def member_feature_names_for_record(
     return tuple(feature_names)
 
 
-def column_gap(
-    member_feature_names: Sequence[str],
-    entry_keys: frozenset[str],
-    score_col: str | None,
-) -> int:
-    """Return how many member features are absent from the entry dict keys.
-
-    The injected score column (``iter14_score`` / ``iter12_score``) is supplied
-    later by the two-pass injection, so it is excluded from the gap count. A
-    non-zero result means the feature layer drifted (e.g. the relationship layer
-    is missing), in which case the scorer would silently 0-fill the missing
-    columns — so the caller treats a gap as a member failure instead.
-    """
-    required = set(member_feature_names)
-    if score_col is not None:
-        required.discard(score_col)
-    return len(required - entry_keys)
-
-
 def score_member(
     member: EnsembleMember,
     pool: BoosterPool,
     matrix_by_key: dict[MatrixCacheKey, Sequence[Sequence[float]]],
     entries: Sequence[Mapping[str, object]],
     feature_names: Sequence[str],
-    score_col: str | None,
 ) -> tuple[np.ndarray | None, str | None]:
     """Score one ensemble member, returning ``(scores, fallback_reason)``.
 
@@ -383,18 +363,12 @@ def score_member(
     order)`` and cached in ``matrix_by_key`` so two members sharing the same
     arch AND feature list reuse one matrix, while two members with DIFFERENT
     feature lists each get their own correctly-shaped matrix — the core fix for
-    the wrong-width fallback bug. Before a NON-BASELINE member's matrix is
-    built the FIRST time, the runtime column-coverage guard checks every
-    required feature (minus the injected ``score_col``) is a KEY on the first
-    entry dict; otherwise the member would be silently 0-filled. The BASELINE
-    is exempt because its metadata may carry a legacy duplicate-suffix column
-    (e.g. NAR ``shusso_tosu`` at index 2 + ``shusso_tosu_1`` at 146 from a
-    historic JOIN that never got cleaned up) — the legacy build_feature_matrix
-    0-fill preserves the pre-WIP behaviour for the safety-net booster.
-    Returns ``(None, "member-missing:<mv>")`` when the booster is absent from
-    the pool, ``(None, "member-column-gap:<mv>:<n>")`` when a non-baseline
-    member's entries lack required columns, ``(None, "score-error:<cls>")``
-    when ``predict`` raises, or ``(array, None)`` on success.
+    the wrong-width fallback bug. Missing entry keys (e.g. legacy duplicate-
+    suffix metadata columns like NAR ``shusso_tosu``+ ``shusso_tosu_1``) get
+    0-filled by :func:`build_feature_matrix`, preserving the pre-WIP fallback
+    behaviour for every member. Returns ``(None, "member-missing:<mv>")`` when
+    the booster is absent from the pool, ``(None, "score-error:<cls>")`` when
+    ``predict`` raises, or ``(array, None)`` on success.
     """
     record = pool.get_record(member.model_version)
     if record is None:
@@ -403,11 +377,6 @@ def score_member(
     cache_key: MatrixCacheKey = (record.architecture, member_names)
     matrix = matrix_by_key.get(cache_key)
     if matrix is None:
-        if not member.is_baseline:
-            entry_keys = frozenset(entries[0].keys()) if entries else frozenset()
-            gap = column_gap(member_names, entry_keys, score_col)
-            if gap > 0:
-                return None, f"member-column-gap:{member.model_version}:{gap}"
         matrix = build_feature_matrix(entries, member_names, record.architecture)
         matrix_by_key[cache_key] = matrix
     try:
@@ -474,7 +443,7 @@ def _score_ensemble(
         return None, "score-error:no-baseline"
     matrix_by_key: dict[MatrixCacheKey, Sequence[Sequence[float]]] = {}
     baseline_scores, baseline_reason = score_member(
-        baseline, pool, matrix_by_key, entries, feature_names, score_col
+        baseline, pool, matrix_by_key, entries, feature_names
     )
     if baseline_scores is None:
         return None, baseline_reason
@@ -485,7 +454,7 @@ def _score_ensemble(
         if member.is_baseline:
             continue
         scored, reason = score_member(
-            member, pool, matrix_by_key, entries_aug, feature_names, score_col
+            member, pool, matrix_by_key, entries_aug, feature_names
         )
         if scored is None:
             return None, reason

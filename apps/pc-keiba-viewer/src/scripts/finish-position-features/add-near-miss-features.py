@@ -520,6 +520,22 @@ def append_features_sql(input_glob: str) -> str:
     joined as (
       select
         b.* exclude (kishumei_ryakusho, tansho_ninkijun, shusso_tosu),
+        -- Re-emit a canonical all-NULL ``shusso_tosu`` alongside the rh-join
+        -- ``shusso_tosu_1`` that survives the EXCLUDE above. The base parquet
+        -- carries a populated ``shusso_tosu``, but the rh re-join (line above)
+        -- collides on the name so DuckDB renames the rh copy to
+        -- ``shusso_tosu_1`` and the EXCLUDE then drops the populated base copy.
+        -- The v8 NAR models were trained on a parquet whose ``shusso_tosu``
+        -- column was constant-NULL (BIGINT) at feature index 2, with the real
+        -- signal living in ``shusso_tosu_1`` — and the CatBoost split on index 2
+        -- learned ``nan_value_treatment=AsFalse`` against that all-NULL column.
+        -- Without this line the inference parquet has no ``shusso_tosu`` at all,
+        -- so every per-class NAR ensemble member hits a one-column coverage gap
+        -- and falls back to the iter12 baseline. Emitting it as a NULL BIGINT
+        -- reproduces the trained distribution exactly (the model keeps taking
+        -- the AsFalse branch) and is a no-op for JRA models, which reference
+        -- only ``shusso_tosu_1``.
+        cast(null as bigint) as shusso_tosu,
         case when h.past_starts > 0
              then h.past_p2_count::double / h.past_starts
              else null end as career_place2_rate,
