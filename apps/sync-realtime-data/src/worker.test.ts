@@ -34,6 +34,8 @@ import {
   premiumRaceKeyFromRequest,
   raceKeyFromRequest,
   raceTrendDailyTrackQueryFromRequest,
+  resolveResultFetchOutcome,
+  resolveRetryLockMinutes,
   RESULT_POLL_CRON,
   sameDayVenueJockeyWinsFromRequest,
   toJstSlotIso,
@@ -931,4 +933,176 @@ it("getNarOddsSaleStartForRace returns null for JRA races", () => {
 it("getNarOddsSaleStartForRace returns a Date for NAR races", () => {
   const result = getNarOddsSaleStartForRace(RACE, "2026-05-12T16:30:00+09:00");
   expect(result).toBeInstanceOf(Date);
+});
+
+// resolveResultFetchOutcome truth table — pins the new 2026-06-05 routing
+// (complete / retry-short / retry-medium / retry-long / give-up) so a
+// regression to the old NAR_RESULT_COMPLETION_BACKSTOP_MINUTES force-complete
+// path is caught immediately. Each case mirrors a row in the spec's fixed
+// truth table.
+
+it("resolveResultFetchOutcome returns complete when saved equals expected (NAR full publish)", () => {
+  const outcome = resolveResultFetchOutcome({
+    expectedHorseCount: 11,
+    inserted: 11,
+    minutesAfterRaceStart: 5,
+    source: "nar",
+  });
+  expect(outcome).toBe("complete");
+});
+
+it("resolveResultFetchOutcome returns retry-short for NAR partial within first 10 minutes", () => {
+  const outcome = resolveResultFetchOutcome({
+    expectedHorseCount: 11,
+    inserted: 3,
+    minutesAfterRaceStart: 5,
+    source: "nar",
+  });
+  expect(outcome).toBe("retry-short");
+});
+
+it("resolveResultFetchOutcome returns retry-medium for NAR partial between 10 and 60 minutes", () => {
+  const outcome = resolveResultFetchOutcome({
+    expectedHorseCount: 11,
+    inserted: 3,
+    minutesAfterRaceStart: 30,
+    source: "nar",
+  });
+  expect(outcome).toBe("retry-medium");
+});
+
+it("resolveResultFetchOutcome returns retry-long for NAR partial between 60 minutes and 24 hours", () => {
+  const outcome = resolveResultFetchOutcome({
+    expectedHorseCount: 11,
+    inserted: 3,
+    minutesAfterRaceStart: 120,
+    source: "nar",
+  });
+  expect(outcome).toBe("retry-long");
+});
+
+it("resolveResultFetchOutcome returns give-up for NAR partial past 24 hours after race start", () => {
+  const outcome = resolveResultFetchOutcome({
+    expectedHorseCount: 11,
+    inserted: 3,
+    minutesAfterRaceStart: 1450,
+    source: "nar",
+  });
+  expect(outcome).toBe("give-up");
+});
+
+it("resolveResultFetchOutcome returns complete when expectedHorseCount is zero (no entries case)", () => {
+  const outcome = resolveResultFetchOutcome({
+    expectedHorseCount: 0,
+    inserted: 0,
+    minutesAfterRaceStart: 10,
+    source: "nar",
+  });
+  expect(outcome).toBe("complete");
+});
+
+it("resolveResultFetchOutcome returns complete for JRA partial (no progressive-publish retry on JRA)", () => {
+  const outcome = resolveResultFetchOutcome({
+    expectedHorseCount: 11,
+    inserted: 3,
+    minutesAfterRaceStart: 5,
+    source: "jra",
+  });
+  expect(outcome).toBe("complete");
+});
+
+it("resolveResultFetchOutcome returns complete for JRA full publish past the legacy backstop window", () => {
+  const outcome = resolveResultFetchOutcome({
+    expectedHorseCount: 18,
+    inserted: 18,
+    minutesAfterRaceStart: 120,
+    source: "jra",
+  });
+  expect(outcome).toBe("complete");
+});
+
+it("resolveResultFetchOutcome returns complete when minutesAfterRaceStart is null", () => {
+  const outcome = resolveResultFetchOutcome({
+    expectedHorseCount: 11,
+    inserted: 3,
+    minutesAfterRaceStart: null,
+    source: "nar",
+  });
+  expect(outcome).toBe("complete");
+});
+
+// Regression guard: the legacy NAR_RESULT_COMPLETION_BACKSTOP_MINUTES (60)
+// force-complete path is gone — at exactly 60 minutes after race start with
+// inserted < expected the resolver must NOT return "complete" or "give-up".
+// 2026-06-05 routes this to retry-long instead so the upstream still gets
+// the rest of the 24h give-up window to publish the missing finishers.
+it("resolveResultFetchOutcome no longer force-completes NAR partial at the legacy 60min backstop boundary", () => {
+  const outcome = resolveResultFetchOutcome({
+    expectedHorseCount: 11,
+    inserted: 3,
+    minutesAfterRaceStart: 60,
+    source: "nar",
+  });
+  expect(outcome).toBe("retry-long");
+});
+
+// Boundary cases: just-under and just-on each phase threshold so a future
+// off-by-one regression in resolveResultFetchOutcome surfaces immediately.
+
+it("resolveResultFetchOutcome routes NAR partial at the 10min boundary to retry-medium", () => {
+  const outcome = resolveResultFetchOutcome({
+    expectedHorseCount: 11,
+    inserted: 3,
+    minutesAfterRaceStart: 10,
+    source: "nar",
+  });
+  expect(outcome).toBe("retry-medium");
+});
+
+it("resolveResultFetchOutcome routes NAR partial just under 24h to retry-long", () => {
+  const outcome = resolveResultFetchOutcome({
+    expectedHorseCount: 11,
+    inserted: 3,
+    minutesAfterRaceStart: 1439,
+    source: "nar",
+  });
+  expect(outcome).toBe("retry-long");
+});
+
+it("resolveResultFetchOutcome routes NAR partial at exactly 24h to give-up", () => {
+  const outcome = resolveResultFetchOutcome({
+    expectedHorseCount: 11,
+    inserted: 3,
+    minutesAfterRaceStart: 1440,
+    source: "nar",
+  });
+  expect(outcome).toBe("give-up");
+});
+
+// resolveRetryLockMinutes truth table — pins the per-phase lock duration
+// so a future tweak that swaps the constants without updating the helper
+// (or vice versa) is caught immediately.
+
+it("resolveRetryLockMinutes returns 2 minutes for retry-short", () => {
+  expect(resolveRetryLockMinutes("retry-short")).toBe(2);
+});
+
+it("resolveRetryLockMinutes returns 5 minutes for retry-medium", () => {
+  expect(resolveRetryLockMinutes("retry-medium")).toBe(5);
+});
+
+it("resolveRetryLockMinutes returns 15 minutes for retry-long", () => {
+  expect(resolveRetryLockMinutes("retry-long")).toBe(15);
+});
+
+it("resolveRetryLockMinutes throws when called with the non-retry outcome complete", () => {
+  expect(() => resolveRetryLockMinutes("complete")).toThrowError(
+    "resolveRetryLockMinutes called with non-retry outcome: complete",
+  );
+});
+
+it("resolveRetryLockMinutes throws when called with the non-retry outcome give-up", () => {
+  expect(() => resolveRetryLockMinutes("give-up")).toThrowError(
+    "resolveRetryLockMinutes called with non-retry outcome: give-up",
+  );
 });

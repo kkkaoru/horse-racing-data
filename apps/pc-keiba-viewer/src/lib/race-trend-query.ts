@@ -18,11 +18,18 @@ const RACE_TREND_SCORE_LINK_FALSE_STRING: string = "0";
 
 const RACE_TREND_TARGET_QUERY_PARAM_ALIASES = ["trendTargets", "trend"] as const;
 
-export const RACE_TREND_TARGET_KEYS = ["runningStyle", "frame", "jockey", "raceNumber"] as const;
+export const RACE_TREND_TARGET_KEYS = [
+  "runningStyle",
+  "frame",
+  "jockey",
+  "trainer",
+  "raceNumber",
+] as const;
 
 export const RACE_TREND_SCORE_CONDITION_QUERY_KEYS = [
   "frame",
   "jockey",
+  "trainer",
   "frameRunningStyle",
 ] as const;
 
@@ -51,12 +58,14 @@ export const DEFAULT_RACE_TREND_TARGETS: RaceTrendTargets = {
   runningStyle: false,
   frame: false,
   jockey: true,
+  trainer: false,
   raceNumber: false,
 };
 
 export const DEFAULT_RACE_TREND_SCORE_CONDITIONS_QUERY: RaceTrendScoreConditionsQuery = {
   frame: true,
   jockey: true,
+  trainer: true,
   frameRunningStyle: false,
 };
 
@@ -64,18 +73,21 @@ const EMPTY_RACE_TREND_TARGETS: RaceTrendTargets = {
   runningStyle: false,
   frame: false,
   jockey: false,
+  trainer: false,
   raceNumber: false,
 };
 
 const EMPTY_RACE_TREND_SCORE_CONDITIONS_QUERY: RaceTrendScoreConditionsQuery = {
   frame: false,
   jockey: false,
+  trainer: false,
   frameRunningStyle: false,
 };
 
 const TARGET_TOKEN_ALIASES: Record<string, RaceTrendTargetKey> = {
   frame: "frame",
   jockey: "jockey",
+  trainer: "trainer",
   race: "raceNumber",
   raceNumber: "raceNumber",
   runningStyle: "runningStyle",
@@ -85,6 +97,7 @@ const TARGET_TOKEN_ALIASES: Record<string, RaceTrendTargetKey> = {
 const SCORE_CONDITION_TOKEN_ALIASES: Record<string, RaceTrendScoreConditionKey> = {
   frame: "frame",
   jockey: "jockey",
+  trainer: "trainer",
   frameRunningStyle: "frameRunningStyle",
 };
 

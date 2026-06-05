@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
 type BrandRunnerStyle = CSSProperties & {
   "--brand-runner-filter": string;
-  "--brand-runner-size": string;
 };
 
 const colorFilters = [
@@ -17,26 +16,41 @@ const colorFilters = [
   "sepia(0.18) saturate(1.25) brightness(0.98)",
 ] as const;
 
-const getTenMinuteBucket = (): number => Math.floor(Date.now() / (10 * 60 * 1000));
+const TEN_MINUTES_MS = 10 * 60 * 1000;
+const SIN_MULTIPLIER = 9301;
+const SIN_OFFSET = 49297;
+const SIN_SCALE = 233280;
+
+const getTenMinuteBucket = (): number => Math.floor(Date.now() / TEN_MINUTES_MS);
 
 const seededRandom = (seed: number): number => {
-  const value = Math.sin(seed * 9301 + 49297) * 233280;
+  const value = Math.sin(seed * SIN_MULTIPLIER + SIN_OFFSET) * SIN_SCALE;
   return value - Math.floor(value);
 };
 
+const buildStyle = (bucket: number): BrandRunnerStyle => {
+  const colorIndex = Math.floor(seededRandom(bucket) * colorFilters.length) % colorFilters.length;
+  return {
+    "--brand-runner-filter": colorFilters[colorIndex] ?? colorFilters[0],
+  };
+};
+
 export function BrandRunner() {
-  const [bucket, setBucket] = useState(getTenMinuteBucket);
-  const style = useMemo<BrandRunnerStyle>(() => {
-    const colorIndex = Math.floor(seededRandom(bucket) * colorFilters.length) % colorFilters.length;
-    const size = 20 + seededRandom(bucket + 11) * 4;
-    return {
-      "--brand-runner-filter": colorFilters[colorIndex] ?? colorFilters[0],
-      "--brand-runner-size": `${size.toFixed(1)}px`,
-    };
-  }, [bucket]);
+  const [bucket, setBucket] = useState<number | null>(null);
+  const style = useMemo<BrandRunnerStyle | undefined>(
+    () => (bucket === null ? undefined : buildStyle(bucket)),
+    [bucket],
+  );
 
   useEffect(() => {
-    const delay = 10 * 60 * 1000 - (Date.now() % (10 * 60 * 1000));
+    setBucket(getTenMinuteBucket());
+  }, []);
+
+  useEffect(() => {
+    if (bucket === null) {
+      return undefined;
+    }
+    const delay = TEN_MINUTES_MS - (Date.now() % TEN_MINUTES_MS);
     const timer = window.setTimeout(() => {
       setBucket(getTenMinuteBucket());
     }, delay);

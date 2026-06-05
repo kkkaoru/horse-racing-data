@@ -39,10 +39,10 @@ export const dynamic = "force-dynamic";
 // recovers via retry rather than stalling SSR navigation. Real values are
 // the priority; the empty/notFound fallback only fires after every retry
 // has been exhausted.
-const RUNNING_STYLE_ATTEMPT_TIMEOUT_MS = 3500;
+const RUNNING_STYLE_ATTEMPT_TIMEOUT_MS = 1800;
 const RUNNING_STYLE_MAX_ATTEMPTS = 2;
 const RUNNING_STYLE_RETRY_BACKOFF_MS = 200;
-const RUNNING_STYLE_TOTAL_TIMEOUT_MS = 9000;
+const RUNNING_STYLE_TOTAL_TIMEOUT_MS = 4000;
 const SNAPSHOT_MAX_ATTEMPTS = 2;
 const SNAPSHOT_RETRY_BACKOFF_MS = 200;
 const SNAPSHOT_ATTEMPT_TIMEOUT_MS = 5000;

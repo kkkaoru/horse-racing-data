@@ -861,3 +861,101 @@ def test_build_target_table_keeps_finish_position_intact():
         "select finish_position, finish_norm from target"
     ).fetchone()
     assert row == (3, 3.0 / 12.0)
+
+
+def test_nar_subclass_named_classes_constant():
+    assert subject.NAR_NAMED_CLASSES == (
+        "OP",
+        "NEW",
+        "MUKATSU",
+        "A",
+        "B",
+        "C",
+        "other",
+    )
+
+
+def test_nar_subclass_case_sql_emits_meisho_regex_matches_with_null_for_non_nar():
+    sql = subject.nar_subclass_case_sql("t.source", "t.keibajo_code", "wl.nar_kyoso_joken_meisho")
+    assert "when t.source <> 'nar' or t.keibajo_code = '83' then null" in sql
+    assert "regexp_matches(wl.nar_kyoso_joken_meisho, 'ＯＰ')" in sql
+    assert "regexp_matches(wl.nar_kyoso_joken_meisho, '新馬')" in sql
+    assert "regexp_matches(wl.nar_kyoso_joken_meisho, '未勝利|未出走')" in sql
+    assert "regexp_matches(wl.nar_kyoso_joken_meisho, 'Ａ')" in sql
+    assert "regexp_matches(wl.nar_kyoso_joken_meisho, 'Ｂ')" in sql
+    assert "regexp_matches(wl.nar_kyoso_joken_meisho, 'Ｃ')" in sql
+    assert "else 'other'" in sql
+
+
+def test_base_features_select_sql_includes_nar_subclass_alias():
+    sql = subject.base_features_select_sql("nar")
+    assert "as nar_subclass" in sql
+    assert "wl.nar_kyoso_joken_meisho" in sql
+
+
+def _eval_nar_subclass(
+    source: str, keibajo_code: str, meisho: str | None
+) -> str | None:
+    import duckdb
+
+    con = duckdb.connect()
+    case_sql = subject.nar_subclass_case_sql("v.source", "v.keibajo_code", "v.meisho")
+    rows = con.execute(
+        f"""
+        with v(source, keibajo_code, meisho) as (
+          values (?::varchar, ?::varchar, ?::varchar)
+        )
+        select {case_sql} from v
+        """,
+        (source, keibajo_code, meisho),
+    ).fetchone()
+    assert rows is not None
+    return rows[0]
+
+
+def test_nar_subclass_returns_null_for_jra_row():
+    assert _eval_nar_subclass("jra", "05", "「３歳　　　　」") is None
+
+
+def test_nar_subclass_returns_null_for_ban_ei_row():
+    assert _eval_nar_subclass("nar", "83", "「　　　Ｃ２　」") is None
+
+
+def test_nar_subclass_returns_op_for_meisho_matching_op():
+    assert _eval_nar_subclass("nar", "30", "「　　　ＯＰ　」") == "OP"
+
+
+def test_nar_subclass_returns_new_for_meisho_matching_shinba():
+    assert _eval_nar_subclass("nar", "30", "「新馬　　　　」") == "NEW"
+
+
+def test_nar_subclass_returns_mukatsu_for_meisho_matching_mishori():
+    assert _eval_nar_subclass("nar", "30", "「　未勝利　　」") == "MUKATSU"
+
+
+def test_nar_subclass_returns_mukatsu_for_meisho_matching_mishusso():
+    assert _eval_nar_subclass("nar", "30", "「　未出走　　」") == "MUKATSU"
+
+
+def test_nar_subclass_returns_a_for_meisho_matching_zenkaku_a():
+    assert _eval_nar_subclass("nar", "30", "「　　　Ａ１　」") == "A"
+
+
+def test_nar_subclass_returns_b_for_meisho_matching_zenkaku_b():
+    assert _eval_nar_subclass("nar", "30", "「　　　Ｂ２　」") == "B"
+
+
+def test_nar_subclass_returns_c_for_meisho_matching_zenkaku_c():
+    assert _eval_nar_subclass("nar", "30", "「　　　Ｃ２　」") == "C"
+
+
+def test_nar_subclass_returns_other_for_meisho_with_no_match():
+    assert _eval_nar_subclass("nar", "30", "「３歳　　　　」") == "other"
+
+
+def test_nar_subclass_returns_other_for_null_meisho():
+    assert _eval_nar_subclass("nar", "30", None) == "other"
+
+
+def test_nar_subclass_precedence_op_wins_over_a():
+    assert _eval_nar_subclass("nar", "30", "「ＯＰ　　Ａ１」") == "OP"

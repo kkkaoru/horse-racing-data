@@ -44,12 +44,15 @@ const buildRunner = (overrides: Partial<Runner>): Runner => ({
   corner2: null,
   corner3: null,
   corner4: null,
+  damSireName: null,
   futanJuryo: "550",
   kakuteiChakujun: "00",
   kettoTorokuBango: "h1",
   kishumeiRyakusho: "騎手",
   kohan3f: null,
   seibetsuCode: "1",
+  sireName: null,
+  sireSireName: null,
   sohaTime: null,
   tanshoNinkijun: null,
   tanshoOdds: "0000",
@@ -196,4 +199,168 @@ test("PaddockSection renders dash when history entry has no user id", async () =
   await waitFor(() => {
     expect(screen.getByLabelText("操作したユーザー").textContent).toBe("-");
   });
+});
+
+test("PaddockSection renders trainer name in horse row when chokyoshimeiRyakusho is present", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      runners={[
+        buildRunner({
+          bamei: "テストホース",
+          chokyoshimeiRyakusho: "佐藤",
+          umaban: "01",
+        }),
+      ]}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getByLabelText("調教師 佐藤").textContent).toBe("調教師佐藤");
+  });
+});
+
+test("PaddockSection renders dash for trainer when chokyoshimeiRyakusho is null", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      runners={[
+        buildRunner({
+          bamei: "テストホース",
+          chokyoshimeiRyakusho: null,
+          umaban: "01",
+        }),
+      ]}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getByLabelText("調教師 -").textContent).toBe("調教師-");
+  });
+});
+
+test("PaddockSection renders sire and grandsire names when bloodline fields are present", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      runners={[
+        buildRunner({
+          bamei: "テストホース",
+          damSireName: "サンデーサイレンス",
+          sireName: "ディープインパクト",
+          sireSireName: "ステイゴールド",
+          umaban: "01",
+        }),
+      ]}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getAllByRole("article").length).toBe(1);
+  });
+  expect(screen.getByText("ディープインパクト").tagName).toBe("DD");
+  expect(screen.getByText("ステイゴールド").tagName).toBe("DD");
+  expect(screen.getByText("サンデーサイレンス").tagName).toBe("DD");
+});
+
+test("PaddockSection renders dash for bloodline when all fields are null", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      runners={[
+        buildRunner({
+          bamei: "テストホース",
+          damSireName: null,
+          sireName: null,
+          sireSireName: null,
+          umaban: "01",
+        }),
+      ]}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getAllByRole("article").length).toBe(1);
+  });
+  const sireDt = screen.getByText("父");
+  const sireSireDt = screen.getByText("父父");
+  const damSireDt = screen.getByText("母父");
+  expect(sireDt.nextElementSibling?.textContent).toBe("-");
+  expect(sireSireDt.nextElementSibling?.textContent).toBe("-");
+  expect(damSireDt.nextElementSibling?.textContent).toBe("-");
+});
+
+test("PaddockSection keeps height-stable empty class on official-rank fact when no rank is registered", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  const { container } = render(
+    <PaddockSection
+      {...baseProps}
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getAllByRole("article").length).toBe(1);
+  });
+  const emptyFact = container.querySelector(".paddock-official-rank-fact-empty");
+  expect(emptyFact === null).toBe(false);
+  expect(emptyFact?.getAttribute("aria-hidden")).toBe("true");
+});
+
+test("PaddockSection read-only table includes trainer and bloodline column headers", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  const stateWithScore: PaddockState = {
+    history: [],
+    horses: {
+      "1": {
+        attention: 0,
+        horseName: "テストホース",
+        horseNumber: "1",
+        kaeshi: 0,
+        officialRank: 1,
+        paddock: 0,
+        preference: 0,
+        total: 0,
+      },
+    },
+    raceKey: "2026:0602:05:01",
+    updatedAt: "2026-06-02T12:00:00.000Z",
+  };
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(stateWithScore));
+
+  render(
+    <PaddockSection
+      day="02"
+      editable={false}
+      keibajoCode="05"
+      month="06"
+      raceNumber="01"
+      recentResults={[]}
+      source="jra"
+      year="2026"
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getAllByRole("columnheader").length).toBeGreaterThan(0);
+  });
+  expect(screen.getByRole("columnheader", { name: "調教師" }).tagName).toBe("TH");
+  expect(screen.getByRole("columnheader", { name: "父" }).tagName).toBe("TH");
+  expect(screen.getByRole("columnheader", { name: "父父" }).tagName).toBe("TH");
+  expect(screen.getByRole("columnheader", { name: "母父" }).tagName).toBe("TH");
 });

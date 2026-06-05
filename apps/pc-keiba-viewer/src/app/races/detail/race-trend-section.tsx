@@ -17,6 +17,7 @@ import {
   parseStoredPopularity,
   parseStoredWinOdds,
   resolveRowJockeyKey,
+  resolveRowTrainerKey,
   runningStyleFromCorners,
   starterRunningStyleKey,
 } from "../../../lib/race-trend-aggregate";
@@ -127,14 +128,18 @@ const TREND_TARGET_LABELS: Record<RaceTrendTargetKey, string> = {
   runningStyle: "脚質",
   frame: "枠",
   jockey: "騎手",
+  trainer: "調教師",
   raceNumber: "レース番号",
 };
 
 const SCORE_CONDITION_LABELS: Record<RaceTrendScoreConditionKey, string> = {
   frame: "枠",
   jockey: "騎手",
+  trainer: "調教師",
   frameRunningStyle: "枠+脚質",
 };
+
+const RACE_TREND_TABLE_HEADING = "脚質・枠・騎手・調教師ごとの勝率";
 
 const SCORE_PLACEHOLDER = "-";
 const SCORE_DECIMAL_PLACES = 2;
@@ -220,6 +225,7 @@ const buildScoreContext = (
     umaban,
     frameNumber: normalizeNumberText(runner.frameNumber),
     jockeyKey: resolveRowJockeyKey(runner.jockeyName),
+    trainerKey: resolveRowTrainerKey(runner.trainerName),
     runningStyle: currentRunningStyleMap.get(umaban) ?? null,
   };
 };
@@ -228,6 +234,11 @@ interface BuildScoreDetailParams {
   row: RaceTrendStarterRow;
   runningStyleByStarterKey: Map<string, RaceTrendRunningStyle>;
 }
+
+const pickStarterChokyoshiName = (row: RaceTrendStarterRow): string | null => {
+  const value = row.chokyoshiName;
+  return typeof value === "string" ? value : null;
+};
 
 const buildScoreDetail = (params: BuildScoreDetailParams): ScoreDetailInput => {
   const { row, runningStyleByStarterKey } = params;
@@ -238,6 +249,7 @@ const buildScoreDetail = (params: BuildScoreDetailParams): ScoreDetailInput => {
     winOdds: parseStoredWinOdds(row.tanshoOdds),
     frameNumber: normalizeNumberText(row.wakuban),
     jockeyKey: resolveRowJockeyKey(row.jockeyName),
+    trainerKey: resolveRowTrainerKey(pickStarterChokyoshiName(row)),
     runningStyle: runningStyleFromMap ?? runningStyleFromCorners(row),
   };
 };
@@ -341,9 +353,34 @@ const parseSortChangeEvent = (value: string): RaceTrendSortKey =>
 // so that e.g. (frame + jockey) shows records matching frame OR records
 // matching jockey, never the AND intersection.
 const SCORE_CONDITION_TREND_TARGETS: Record<RaceTrendScoreConditionKey, RaceTrendTargets> = {
-  frame: { frame: true, runningStyle: false, jockey: false, raceNumber: false },
-  jockey: { frame: false, runningStyle: false, jockey: true, raceNumber: false },
-  frameRunningStyle: { frame: true, runningStyle: true, jockey: false, raceNumber: false },
+  frame: {
+    frame: true,
+    runningStyle: false,
+    jockey: false,
+    trainer: false,
+    raceNumber: false,
+  },
+  jockey: {
+    frame: false,
+    runningStyle: false,
+    jockey: true,
+    trainer: false,
+    raceNumber: false,
+  },
+  trainer: {
+    frame: false,
+    runningStyle: false,
+    jockey: false,
+    trainer: true,
+    raceNumber: false,
+  },
+  frameRunningStyle: {
+    frame: true,
+    runningStyle: true,
+    jockey: false,
+    trainer: false,
+    raceNumber: false,
+  },
 };
 
 const hasAnyScoreCondition = (scoreConditions: RaceTrendScoreConditionsQuery): boolean =>
@@ -382,6 +419,9 @@ const predicateMatchesWinRateForDetail = (
   const { context, detail, trendTargets } = params;
   if (trendTargets.frame && detail.frameNumber !== context.frameNumber) return false;
   if (trendTargets.jockey && resolveRowJockeyKey(detail.jockeyName) !== context.jockeyKey) {
+    return false;
+  }
+  if (trendTargets.trainer && resolveRowTrainerKey(detail.trainerName) !== context.trainerKey) {
     return false;
   }
   if (trendTargets.runningStyle && detail.runningStyle !== context.runningStyle) return false;
@@ -562,6 +602,7 @@ const predicateMatchesWinRate = (params: PredicateMatchesWinRateParams): boolean
   const { context, detail, trendTargets } = params;
   if (trendTargets.frame && detail.frameNumber !== context.frameNumber) return false;
   if (trendTargets.jockey && detail.jockeyKey !== context.jockeyKey) return false;
+  if (trendTargets.trainer && detail.trainerKey !== context.trainerKey) return false;
   if (trendTargets.runningStyle && detail.runningStyle !== context.runningStyle) return false;
   return true;
 };
@@ -698,6 +739,7 @@ function RaceTrendTable({
     (trendTargets.frame ? 1 : 0) +
     (trendTargets.runningStyle ? 1 : 0) +
     (trendTargets.jockey ? 1 : 0) +
+    1 +
     (trendTargets.raceNumber ? 1 : 0);
   const effectiveExpandedKey = rows.some((row) => row.key === expandedKey) ? expandedKey : null;
   const effectiveExpandedScoreKey = rows.some((row) => row.key === expandedScoreKey)
@@ -719,7 +761,7 @@ function RaceTrendTable({
   return (
     <div className="race-trend-table-panel">
       <div className="race-trend-subheading">
-        <h3>脚質・枠・騎手ごとの勝率</h3>
+        <h3>{RACE_TREND_TABLE_HEADING}</h3>
         <span>集計 {raceCount}レース</span>
       </div>
       <div className="stats-table-wrap">
@@ -729,6 +771,7 @@ function RaceTrendTable({
             {trendTargets.frame ? <col className="race-trend-col-frame" /> : null}
             {trendTargets.runningStyle ? <col className="race-trend-col-running-style" /> : null}
             {trendTargets.jockey ? <col className="race-trend-col-jockey" /> : null}
+            <col className="race-trend-col-trainer" />
             {trendTargets.raceNumber ? <col className="race-trend-col-race-number" /> : null}
             <col className="race-trend-col-score" />
             <col className="race-trend-col-rate" />
@@ -759,6 +802,9 @@ function RaceTrendTable({
                   <TrendHeaderLabel>騎手</TrendHeaderLabel>
                 </th>
               ) : null}
+              <th>
+                <TrendHeaderLabel>調教師</TrendHeaderLabel>
+              </th>
               {trendTargets.raceNumber ? (
                 <th>
                   <TrendHeaderLabel>R</TrendHeaderLabel>
@@ -826,6 +872,9 @@ function RaceTrendTable({
                       <span className="race-trend-skeleton race-trend-skeleton-name" />
                     </td>
                   ) : null}
+                  <td>
+                    <span className="race-trend-skeleton race-trend-skeleton-name" />
+                  </td>
                   {trendTargets.raceNumber ? (
                     <td>
                       <span className="race-trend-skeleton race-trend-skeleton-count" />
@@ -946,6 +995,7 @@ function RowFragment({
     (trendTargets.frame ? 1 : 0) +
     (trendTargets.runningStyle ? 1 : 0) +
     (trendTargets.jockey ? 1 : 0) +
+    1 +
     (trendTargets.raceNumber ? 1 : 0);
   const detailRows = useMemo(() => sortDetailsByLatestRace(row.details), [row.details]);
   const scoreDetailRows = useMemo(() => sortDetailsByLatestRace(scoreDetails), [scoreDetails]);
@@ -971,6 +1021,7 @@ function RowFragment({
         {trendTargets.frame ? <td>{row.frameNumber ?? "-"}</td> : null}
         {trendTargets.runningStyle ? <td>{formatRunningStyle(row.runningStyle)}</td> : null}
         {trendTargets.jockey ? <td className="stats-name-cell">{row.jockeyName ?? "-"}</td> : null}
+        <td className="stats-name-cell">{row.trainerName ?? "-"}</td>
         {trendTargets.raceNumber ? <td>{formatRaceNumber(row.raceNumber)}</td> : null}
         <td className="race-trend-score-cell">
           {scoreIsClickable ? (

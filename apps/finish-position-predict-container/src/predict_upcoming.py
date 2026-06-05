@@ -95,13 +95,21 @@ CATEGORIES_ENV: str = "PREDICT_CATEGORIES"
 DEFAULT_DAYS_AHEAD: int = 2
 RACE_ID_KETTO_INDEX: int = 6
 RACE_ID_PART_RANGE: range = range(1, 6)
-# Feature-parquet column name carrying the JRA race-class code (000/005/010/016/
-# 701/703/...). The DuckDB base build projects it as ``kyoso_joken_code`` (see
-# apps/pc-keiba-viewer/src/scripts/finish_position_features_duckdb.py). Used by
-# predict_lib.per_class.resolve_per_class_model_version to route a race to its
-# per-class JRA model when one is registered; absent / None defers to the
-# category-global fallback.
-KYOSO_JOKEN_CODE_FIELD: str = "kyoso_joken_code"
+# Per-category feature-parquet column name carrying the per-class routing
+# code. JRA uses ``kyoso_joken_code`` (000/005/010/016/701/703/...) which the
+# DuckDB base build projects directly from the source rows. NAR uses
+# ``nar_subclass`` (NEW / MUKATSU / C / B / A / OP / other) which the DuckDB
+# base build derives from ``kyoso_joken_meisho`` via a regex CASE expression
+# (apps/pc-keiba-viewer/src/scripts/finish_position_features_duckdb.py
+# ``nar_subclass_case_sql``). Ban-ei has no per-class registry today so its
+# entry is omitted; the upstream extractor short-circuits for disabled
+# categories. Used by predict_lib.per_class.resolve_per_class_model_version
+# to route a race to its per-class model when one is registered; absent /
+# None / disabled defers to the category-global fallback.
+CLASS_CODE_FIELD_BY_CATEGORY: Mapping[Category, str] = {
+    "jra": "kyoso_joken_code",
+    "nar": "nar_subclass",
+}
 # Cloudflare Containers reaps batch instances that receive no HTTP traffic
 # (independent of @cloudflare/containers' JS-side sleepAfter). The predictor
 # is a long-running batch job, so we both (a) listen on a port so the start
@@ -197,16 +205,26 @@ def _load_model_metadata(models_dir: Path, category: Category) -> Sequence[str]:
     return feature_names
 
 
-def _extract_race_kyoso_joken_code(entries: Sequence[Mapping[str, object]]) -> str | None:
-    """Return the race's ``kyoso_joken_code`` from the first entry, or None.
+def extract_race_class_code(
+    category: Category, entries: Sequence[Mapping[str, object]]
+) -> str | None:
+    """Return the race's per-class routing code from the first entry, or None.
 
-    All entries of one race share the same race-class, so the first entry is
-    representative. ``None`` and empty strings collapse to ``None`` so the
-    per-class router falls back to the category-global model.
+    The column name is per-category: JRA reads ``kyoso_joken_code`` (numeric
+    race-class code), NAR reads ``nar_subclass`` (derived sub-class string).
+    Categories not in :data:`CLASS_CODE_FIELD_BY_CATEGORY` (Ban-ei today)
+    return ``None`` so the per-class router short-circuits to the
+    category-global fallback. All entries of one race share the same
+    race-class, so the first entry is representative. ``None`` and empty
+    strings collapse to ``None`` so the per-class router falls back to the
+    category-global model.
     """
     if not entries:
         return None
-    raw = entries[0].get(KYOSO_JOKEN_CODE_FIELD)
+    field = CLASS_CODE_FIELD_BY_CATEGORY.get(category)
+    if field is None:
+        return None
+    raw = entries[0].get(field)
     if raw is None:
         return None
     text = str(raw).strip()
@@ -224,8 +242,8 @@ def _score_one_race(
     entries: Sequence[Mapping[str, object]],
     feature_names: Sequence[str],
 ) -> list[list[object]]:
-    kyoso_joken_code = _extract_race_kyoso_joken_code(entries)
-    resolution = resolve_per_class_resolution(models_dir, category, kyoso_joken_code)
+    class_code = extract_race_class_code(category, entries)
+    resolution = resolve_per_class_resolution(models_dir, category, class_code)
     outcome: EnsembleRouteOutcome = score_race_with_resolution(
         resolution=resolution,
         race_id=race_id,
@@ -239,7 +257,7 @@ def _score_one_race(
     if outcome.fallback_reason is not None:
         print(
             f"[predict-upcoming] ensemble fallback category={category} "
-            f"race_id={race_id} kyoso_joken_code={kyoso_joken_code} "
+            f"race_id={race_id} class_code={class_code} "
             f"reason={outcome.fallback_reason}",
             file=sys.stderr,
         )
