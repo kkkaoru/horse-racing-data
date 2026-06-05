@@ -263,6 +263,7 @@ const buildRaceTrendRawPayload = async (
         frameNumber: runner.wakuban,
         horseNumber: runner.umaban,
         jockeyName: runner.kishumeiRyakusho,
+        trainerName: runner.chokyoshimeiRyakusho,
       })),
       starterRows,
       currentRunningStyles: toCurrentRunningStyles(currentRunningStyles),

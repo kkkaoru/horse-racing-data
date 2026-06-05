@@ -1,7 +1,7 @@
 // Run with bun.
 
 // Public condition union.
-export type RaceTrendScoreCondition = "frame" | "jockey" | "frameRunningStyle";
+export type RaceTrendScoreCondition = "frame" | "jockey" | "trainer" | "frameRunningStyle";
 
 // Score detail aggregated from a past starter row.
 export interface ScoreDetailInput {
@@ -10,6 +10,7 @@ export interface ScoreDetailInput {
   winOdds: number | null;
   frameNumber: string | null;
   jockeyKey: string | null;
+  trainerKey: string | null;
   runningStyle: string | null;
 }
 
@@ -18,6 +19,7 @@ export interface UmabanContext {
   umaban: string;
   frameNumber: string | null;
   jockeyKey: string | null;
+  trainerKey: string | null;
   runningStyle: string | null;
 }
 
@@ -25,6 +27,7 @@ export interface UmabanContext {
 export interface RaceTrendScoreConditions {
   frame: boolean;
   jockey: boolean;
+  trainer: boolean;
   frameRunningStyle: boolean;
 }
 
@@ -98,13 +101,15 @@ const STARTS_FACTOR_OFFSET = 1;
 export const RACE_TREND_SCORE_CONDITION_KEYS = [
   "frame",
   "jockey",
+  "trainer",
   "frameRunningStyle",
 ] satisfies readonly RaceTrendScoreCondition[];
 
-// Default conditions: frame + jockey signal.
+// Default conditions: frame + jockey + trainer signal.
 export const DEFAULT_RACE_TREND_SCORE_CONDITIONS: RaceTrendScoreConditions = {
   frame: true,
   jockey: true,
+  trainer: true,
   frameRunningStyle: false,
 };
 
@@ -151,6 +156,9 @@ const matchByFrame: DetailPredicate = (detail, context) =>
 const matchByJockey: DetailPredicate = (detail, context) =>
   detail.jockeyKey !== null && detail.jockeyKey === context.jockeyKey;
 
+const matchByTrainer: DetailPredicate = (detail, context) =>
+  detail.trainerKey !== null && detail.trainerKey === context.trainerKey;
+
 const matchByFrameRunningStyle: DetailPredicate = (detail, context) =>
   matchByFrame(detail, context) &&
   detail.runningStyle !== null &&
@@ -160,6 +168,7 @@ const matchByFrameRunningStyle: DetailPredicate = (detail, context) =>
 const CONDITION_PREDICATES = new Map<RaceTrendScoreCondition, DetailPredicate>([
   ["frame", matchByFrame],
   ["jockey", matchByJockey],
+  ["trainer", matchByTrainer],
   ["frameRunningStyle", matchByFrameRunningStyle],
 ]);
 
