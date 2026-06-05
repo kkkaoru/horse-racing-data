@@ -82,6 +82,27 @@ SEASON_WINTER = 3
 NEWCOMER_RACE_JOKEN_CODE = "000"
 UMABAN_NORM_MIN_FIELD = 2
 
+# NAR per-class routing labels. The NAR JV feed reports kyoso_joken_code='000' for
+# every race, so the actual class signal lives in the free-text meisho field
+# (kyoso_joken_meisho, e.g. "「　　　Ｃ２　」"). nar_subclass derives a clean
+# routing label via regex on meisho. NULL for JRA + Ban-ei rows.
+NAR_SUBCLASS_OP = "OP"
+NAR_SUBCLASS_NEW = "NEW"
+NAR_SUBCLASS_MUKATSU = "MUKATSU"
+NAR_SUBCLASS_A = "A"
+NAR_SUBCLASS_B = "B"
+NAR_SUBCLASS_C = "C"
+NAR_SUBCLASS_OTHER = "other"
+NAR_NAMED_CLASSES: tuple[str, ...] = (
+    NAR_SUBCLASS_OP,
+    NAR_SUBCLASS_NEW,
+    NAR_SUBCLASS_MUKATSU,
+    NAR_SUBCLASS_A,
+    NAR_SUBCLASS_B,
+    NAR_SUBCLASS_C,
+    NAR_SUBCLASS_OTHER,
+)
+
 # JRA central-venue keibajo codes (01 札幌 .. 10 小倉). The JRA-VAN feed
 # (jvd_se / jvd_ra) also distributes NAR-venue (keibajo 30-58, data_kubun 'A')
 # and overseas (data_kubun 'B') races, all stamped source='jra' by the
@@ -600,7 +621,8 @@ def stage_ra_table(
         stage,
         f"""
         create or replace temp table {table} as
-        select kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, tenko_code
+        select kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, tenko_code,
+               kyoso_joken_meisho
         from pg.{pg_table}
         where kaisai_nen between '{from_year}' and '{to_year}'
           and (kaisai_nen || kaisai_tsukihi) between '{from_date}' and '{to_date}'
@@ -660,7 +682,8 @@ def _stage_empty_jra_stubs(con: duckdb.DuckDBPyConnection) -> None:
         "create or replace temp table jra_ra as "
         "select cast(null as varchar) as kaisai_nen, cast(null as varchar) as kaisai_tsukihi, "
         "cast(null as varchar) as keibajo_code, cast(null as varchar) as race_bango, "
-        "cast(null as varchar) as tenko_code "
+        "cast(null as varchar) as tenko_code, "
+        "cast(null as varchar) as kyoso_joken_meisho "
         "where false",
         row_count_table="jra_ra",
     )
@@ -1355,7 +1378,8 @@ def materialize_weather_lookup(con: duckdb.DuckDBPyConnection) -> None:
         """
         create or replace temp table weather_lookup as
         select t.source, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango, t.ketto_toroku_bango,
-          coalesce(jr.tenko_code, nr.tenko_code) as tenko_code
+          coalesce(jr.tenko_code, nr.tenko_code) as tenko_code,
+          nr.kyoso_joken_meisho as nar_kyoso_joken_meisho
         from target t
         left join jra_ra jr on t.source='jra' and jr.kaisai_nen=t.kaisai_nen and jr.kaisai_tsukihi=t.kaisai_tsukihi
           and jr.keibajo_code=t.keibajo_code and jr.race_bango=t.race_bango
@@ -1366,12 +1390,44 @@ def materialize_weather_lookup(con: duckdb.DuckDBPyConnection) -> None:
     log_event("weather.weather_lookup", "done", perf_counter() - started)
 
 
+def nar_subclass_case_sql(
+    source_col: str,
+    keibajo_col: str,
+    meisho_col: str,
+) -> str:
+    """SQL case expression that derives `nar_subclass` from kyoso_joken_meisho.
+
+    Order matters: highest tier first because OP races may also contain "Ａ" tokens
+    in the meisho text. NULL is returned for JRA + Ban-ei rows (only emit for
+    source='nar' AND keibajo_code <> '83').
+
+    DuckDB's `~` operator does NOT match double-byte Japanese characters reliably,
+    so we use `regexp_matches()` which handles UTF-8 correctly.
+    """
+    return f"""
+    case
+      when {source_col} <> 'nar' or {keibajo_col} = '83' then null
+      when regexp_matches({meisho_col}, 'ＯＰ') then '{NAR_SUBCLASS_OP}'
+      when regexp_matches({meisho_col}, '新馬') then '{NAR_SUBCLASS_NEW}'
+      when regexp_matches({meisho_col}, '未勝利|未出走') then '{NAR_SUBCLASS_MUKATSU}'
+      when regexp_matches({meisho_col}, 'Ａ') then '{NAR_SUBCLASS_A}'
+      when regexp_matches({meisho_col}, 'Ｂ') then '{NAR_SUBCLASS_B}'
+      when regexp_matches({meisho_col}, 'Ｃ') then '{NAR_SUBCLASS_C}'
+      else '{NAR_SUBCLASS_OTHER}'
+    end
+    """
+
+
 def base_features_select_sql(category: str) -> str:
+    nar_subclass_expr = nar_subclass_case_sql(
+        "t.source", "t.keibajo_code", "wl.nar_kyoso_joken_meisho"
+    )
     return f"""
     select
       t.source, t.race_date, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango,
       t.ketto_toroku_bango, t.umaban, t.category, t.kyori, t.track_code, t.grade_code, t.shusso_tosu,
       t.finish_position, t.finish_norm,
+      {nar_subclass_expr} as nar_subclass,
       t.target_corner_1_norm, t.target_corner_3_norm, t.target_corner_4_norm, t.target_running_style_class,
       hc.speed_index_avg_5, hc.speed_index_best_5, hc.kohan3f_avg_5, hc.corner_pass_avg_5,
       hc.career_win_rate, hc.career_place_rate, hc.career_top1_count,

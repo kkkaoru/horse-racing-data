@@ -3737,6 +3737,7 @@ h3 {
   justify-content: center;
   min-width: var(--space-54px-105);
   padding: var(--space-4px-18) var(--space-8px-28);
+  white-space: nowrap;
 }
 
 .paddock-rank-buttons .rank-1,

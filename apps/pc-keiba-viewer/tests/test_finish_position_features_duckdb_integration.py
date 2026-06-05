@@ -126,15 +126,29 @@ def _seed_weight_tables(con: duckdb.DuckDBPyConnection) -> None:
 def _seed_weather_tables(con: duckdb.DuckDBPyConnection) -> None:
     jra_ra = pd.DataFrame(
         [
-            ("2020", "0101", "01", "01", "1"),
+            ("2020", "0101", "01", "01", "1", None),
         ],
-        columns=["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango", "tenko_code"],
+        columns=[
+            "kaisai_nen",
+            "kaisai_tsukihi",
+            "keibajo_code",
+            "race_bango",
+            "tenko_code",
+            "kyoso_joken_meisho",
+        ],
     )
     nar_ra = pd.DataFrame(
         [
-            ("2020", "0601", "01", "02", "2"),
+            ("2020", "0601", "01", "02", "2", "「　　　Ｃ２　」"),
         ],
-        columns=["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango", "tenko_code"],
+        columns=[
+            "kaisai_nen",
+            "kaisai_tsukihi",
+            "keibajo_code",
+            "race_bango",
+            "tenko_code",
+            "kyoso_joken_meisho",
+        ],
     )
     con.register("jra_ra_df", jra_ra)
     con.register("nar_ra_df", nar_ra)
@@ -295,6 +309,7 @@ def test_stage_ra_table_uses_target_date_range(capsys: pytest.CaptureFixture[str
     joined = "\n".join(captured.statements)
     assert "from pg.jvd_ra" in joined
     assert "(kaisai_nen || kaisai_tsukihi) between '20200101' and '20201231'" in joined
+    assert "kyoso_joken_meisho" in joined
     assert "source.jra_ra" in capsys.readouterr().out
 
 
@@ -328,6 +343,7 @@ def test_stage_source_tables_ban_ei_skips_jra_pg_reads(capsys: pytest.CaptureFix
     assert "from pg.jvd_um" not in joined
     assert "from pg.nvd_se" in joined
     assert "and keibajo_code = '83'" in joined
+    assert "kyoso_joken_meisho" in joined
     output = capsys.readouterr().out
     assert "source.jra_se.skip" in output
     assert "source.jra_um.skip" in output
@@ -586,6 +602,21 @@ def test_materialize_weather_lookup_joins_jra_ra(seeded_con: duckdb.DuckDBPyConn
     assert row[0] == "1"
 
 
+def test_materialize_weather_lookup_projects_nar_kyoso_joken_meisho_column():
+    con = duckdb.connect(":memory:")
+    _seed_rec(con)
+    _seed_horse_masters(con)
+    _seed_weight_tables(con)
+    _seed_weather_tables(con)
+    subject.build_target_table(con, "nar", "20200101", "20201231")
+    subject.materialize_weather_lookup(con)
+    row = con.execute(
+        "select nar_kyoso_joken_meisho from weather_lookup where ketto_toroku_bango = 'h003'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "「　　　Ｃ２　」"
+
+
 def test_stage_partner_features_creates_jockey_and_trainer(seeded_con: duckdb.DuckDBPyConnection):
     subject.stage_partner_features(seeded_con, [2020], _silent_heartbeat())
     for table in ("jockey_career", "trainer_career"):
@@ -728,6 +759,34 @@ def test_write_parquet_cleans_output_dir(seeded_con: duckdb.DuckDBPyConnection, 
     assert not stale.exists()
     written = list(output_dir.glob("race_year=*/data_*.parquet"))
     assert written
+
+
+def test_write_parquet_emits_nar_subclass_column(
+    seeded_con: duckdb.DuckDBPyConnection, tmp_path: Path
+):
+    output_dir = tmp_path / "out"
+    subject.stage_horse_history_derived(seeded_con, [2020], _silent_heartbeat())
+    subject.stage_partner_features(seeded_con, [2020], _silent_heartbeat())
+    subject.materialize_pedigree_stats(seeded_con, "jra")
+    subject.materialize_race_context(seeded_con)
+    subject.stage_track_bias(seeded_con, [2020], _silent_heartbeat())
+    subject.materialize_weather_lookup(seeded_con)
+    subject.write_parquet(
+        seeded_con,
+        subject.assemble_final_select_from_temp_tables("jra"),
+        output_dir,
+        keep_existing=False,
+        force_clean=True,
+    )
+    reader = duckdb.connect(":memory:")
+    columns = [
+        row[0]
+        for row in reader.execute(
+            f"describe select * from read_parquet('{output_dir.as_posix()}/race_year=*/*.parquet')"
+        ).fetchall()
+    ]
+    reader.close()
+    assert "nar_subclass" in columns
 
 
 def test_count_output_rows_counts_written_parquet(
