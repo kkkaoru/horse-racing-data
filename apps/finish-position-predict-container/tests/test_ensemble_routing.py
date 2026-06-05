@@ -40,6 +40,7 @@ from predict_lib.ensemble_routing import (
     MatrixCacheKey,
     augment_entries_with_score_col,
     catboost_model_feature_names,
+    column_gap,
     drop_order_mismatched_members,
     find_baseline_member,
     init_member_pool,
@@ -1488,6 +1489,45 @@ def test_member_feature_names_falls_back_to_global_when_empty() -> None:
 
 
 # ---------------------------------------------------------------------------
+# column_gap
+
+
+def test_column_gap_zero_when_all_features_present() -> None:
+    """All required member features are entry keys -> gap 0."""
+    gap = column_gap(["feature_a", "feature_b"], frozenset({"feature_a", "feature_b"}), None)
+    assert gap == 0
+
+
+def test_column_gap_counts_missing_features() -> None:
+    """Member features absent from the entry keys are counted."""
+    gap = column_gap(
+        ["feature_a", "feature_b", "feature_c"], frozenset({"feature_a"}), None
+    )
+    assert gap == 2
+
+
+def test_column_gap_excludes_injected_score_col() -> None:
+    """The injected ``score_col`` is supplied by the two-pass injection, so it is
+    excluded from the gap — a member requiring only the score column beyond the
+    entry keys must NOT gap."""
+    gap = column_gap(
+        ["feature_a", "feature_b", "iter14_score"],
+        frozenset({"feature_a", "feature_b"}),
+        "iter14_score",
+    )
+    assert gap == 0
+
+
+def test_column_gap_score_col_none_keeps_score_required() -> None:
+    """When ``score_col`` is None nothing is discarded — a missing ``iter14_score``
+    counts toward the gap (the score_col-is-None branch)."""
+    gap = column_gap(
+        ["feature_a", "iter14_score"], frozenset({"feature_a"}), None
+    )
+    assert gap == 1
+
+
+# ---------------------------------------------------------------------------
 # find_baseline_member
 
 
@@ -1562,33 +1602,13 @@ def test_score_feature_by_category_maps_jra_and_nar() -> None:
 
 
 # ---------------------------------------------------------------------------
-# score_member — pool lookup + per-member matrix
+# score_member — column-gap guard
 
 
-def test_score_member_returns_missing_when_record_absent() -> None:
-    """A pool missing the member's booster returns
-    ``(None, member-missing:<mv>)`` so the outer scorer falls back to the
-    category-global booster."""
-    member = EnsembleMember(
-        model_version=ITER22_RESIDUAL_703, weight=0.7, is_baseline=False
-    )
-    pool = BoosterPool(boosters={})
-    matrix_by_key: dict[MatrixCacheKey, Sequence[Sequence[float]]] = {}
-
-    scores, reason = score_member(
-        member, pool, matrix_by_key, _three_horse_entries(), FEATURE_NAMES
-    )
-
-    assert scores is None
-    assert reason == f"member-missing:{ITER22_RESIDUAL_703}"
-
-
-def test_score_member_silently_zero_fills_missing_entry_columns() -> None:
-    """A member whose metadata declares an entry-absent column (e.g. NAR
-    baseline ``shusso_tosu`` at index 2 alongside ``shusso_tosu_1`` from a
-    historic join) is 0-filled by ``build_feature_matrix`` rather than rejected
-    — preserves the pre-WIP fallback behaviour now that the per-member matrix
-    handles the wrong-width CatBoostError on its own."""
+def test_score_member_returns_column_gap_when_feature_absent() -> None:
+    """A NON-BASELINE member whose metadata lists a feature ABSENT from the
+    entry keys returns ``(None, member-column-gap:<mv>:<n>)`` so the ensemble
+    falls back rather than silently 0-filling."""
     member = EnsembleMember(
         model_version=ITER22_RESIDUAL_703, weight=0.7, is_baseline=False
     )
@@ -1599,16 +1619,110 @@ def test_score_member_silently_zero_fills_missing_entry_columns() -> None:
     matrix_by_key: dict[MatrixCacheKey, Sequence[Sequence[float]]] = {}
 
     scores, reason = score_member(
-        member, pool, matrix_by_key, _three_horse_entries(), FEATURE_NAMES
+        member, pool, matrix_by_key, _three_horse_entries(), FEATURE_NAMES, JRA_SCORE_COL
+    )
+
+    assert scores is None
+    assert reason == f"member-column-gap:{ITER22_RESIDUAL_703}:1"
+
+
+def test_score_member_baseline_skips_column_gap_guard() -> None:
+    """The BASELINE member is exempt from the column-gap guard because the NAR
+    baseline metadata carries a legacy duplicate-suffix column
+    (``shusso_tosu`` at index 2 + ``shusso_tosu_1`` at 146) that the parquet
+    only emits once — the legacy ``build_feature_matrix`` 0-fill preserves the
+    pre-WIP baseline behaviour for the safety-net booster."""
+    member = EnsembleMember(
+        model_version=JRA_FALLBACK_MODEL_VERSION, weight=0.3, is_baseline=True
+    )
+    record = _cb_record_with_names(
+        _StubBooster(0.0), ["feature_a", "feature_b", "missing_feature"]
+    )
+    pool = BoosterPool(boosters={JRA_FALLBACK_MODEL_VERSION: record})
+    matrix_by_key: dict[MatrixCacheKey, Sequence[Sequence[float]]] = {}
+
+    scores, reason = score_member(
+        member, pool, matrix_by_key, _three_horse_entries(), FEATURE_NAMES, JRA_SCORE_COL
+    )
+
+    # No gap reason — baseline is silently 0-filled by build_feature_matrix.
+    assert reason is None
+    assert scores is not None
+
+
+def test_score_member_does_not_gap_on_injected_score_col() -> None:
+    """A member whose only beyond-entry feature is the injected ``score_col`` does
+    NOT gap on pass 2 (the score_col is supplied by the augment pass)."""
+    member = EnsembleMember(
+        model_version=ITER22_RESIDUAL_703, weight=0.7, is_baseline=False
+    )
+    record = _cb_record_with_names(
+        _StubBooster(0.0), ["feature_a", "feature_b", JRA_SCORE_COL]
+    )
+    pool = BoosterPool(boosters={ITER22_RESIDUAL_703: record})
+    matrix_by_key: dict[MatrixCacheKey, Sequence[Sequence[float]]] = {}
+
+    scores, reason = score_member(
+        member, pool, matrix_by_key, _three_horse_entries(), FEATURE_NAMES, JRA_SCORE_COL
     )
 
     assert reason is None
     assert scores is not None
-    assert len(scores) == 3
+
+
+def test_score_member_empty_entries_uses_empty_key_set() -> None:
+    """An empty entries sequence yields an empty key set; a member with a
+    declared feature then gaps (the ``entries[0]`` guard is skipped)."""
+    member = EnsembleMember(
+        model_version=ITER22_RESIDUAL_703, weight=0.7, is_baseline=False
+    )
+    record = _cb_record_with_names(_StubBooster(0.0), ["feature_a"])
+    pool = BoosterPool(boosters={ITER22_RESIDUAL_703: record})
+    matrix_by_key: dict[MatrixCacheKey, Sequence[Sequence[float]]] = {}
+
+    scores, reason = score_member(member, pool, matrix_by_key, [], FEATURE_NAMES, None)
+
+    assert scores is None
+    assert reason == f"member-column-gap:{ITER22_RESIDUAL_703}:1"
 
 
 # ---------------------------------------------------------------------------
-# score_race_with_resolution — no-baseline fallback posture
+# score_race_with_resolution — column-gap + no-baseline fallback postures
+
+
+def test_score_race_falls_back_when_membercolumn_gap(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An ensemble whose non-baseline member declares a feature absent from the
+    entries falls back to the single-model booster with a
+    ``member-column-gap:<mv>:<n>`` reason (the whole-ensemble fallback posture)."""
+    ensemble = _two_member_ensemble()
+    pool = BoosterPool(
+        boosters={
+            JRA_FALLBACK_MODEL_VERSION: _cb_record_with_names(
+                _StubBooster(0.0), BASELINE_METADATA_FEATURE_NAMES
+            ),
+            ITER22_RESIDUAL_703: _cb_record_with_names(
+                _StubBooster(1.0), ["feature_a", "feature_b", "relationship_missing"]
+            ),
+        }
+    )
+    fallback = _StubBooster(0.4)
+
+    outcome = score_race_with_resolution(
+        resolution=ensemble,
+        race_id="jra:2026:0605:05:08",
+        entries=_three_horse_entries(),
+        feature_names=FEATURE_NAMES,
+        architecture="catboost",
+        pool=pool,
+        fallback_booster=fallback,
+        fallback_model_version=JRA_FALLBACK_MODEL_VERSION,
+    )
+
+    assert outcome.model_version == JRA_FALLBACK_MODEL_VERSION
+    assert outcome.fallback_reason == f"member-column-gap:{ITER22_RESIDUAL_703}:1"
+    assert outcome.scores == [0.4, 1.4, 2.4]
 
 
 def test_score_race_falls_back_when_no_baseline_in_manifest() -> None:
