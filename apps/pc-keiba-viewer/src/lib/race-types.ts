@@ -93,6 +93,9 @@ export interface RaceTrendDetail {
   horseNumber: string | null;
   horseName: string | null;
   jockeyName: string | null;
+  // Optional: populated only for rows whose source carried a trainer name.
+  // Detail rendering falls back to "-" when missing.
+  trainerName?: string | null;
   popularity: number | null;
   winOdds: number | null;
   finishPosition: number;
@@ -110,6 +113,10 @@ export interface RaceTrendRunnerSummary {
   frameNumber: string | null;
   horseNumber: string | null;
   jockeyName: string | null;
+  // Trainer name (optional for backward compatibility with cached payloads
+  // produced before the trainer column was added). The aggregator skips
+  // trainer matching when this is missing.
+  trainerName?: string | null;
 }
 
 export interface RaceTrendRawPayload {
@@ -144,6 +151,11 @@ export interface RaceTrendRunningStyleRow {
   runningStyle: RaceTrendRunningStyle | null;
   frameNumber?: string | null;
   jockeyName?: string | null;
+  // Optional: populated for the current race row even when the trainer
+  // grouping target is off, so the table can always display the trainer
+  // name in its column. The aggregator nulls this only when the trainer
+  // target is off AND the row has no current-race trainer available.
+  trainerName?: string | null;
   raceNumber?: string | null;
   starts: number;
   showRate: number;

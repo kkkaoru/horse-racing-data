@@ -849,3 +849,47 @@ test("formatFinishPosition returns the placeholder when finishPosition is 0", ()
 test("formatFinishPosition returns the placeholder defensively for negative finishPosition", () => {
   expect(formatFinishPosition(-1)).toStrictEqual("-");
 });
+
+const findTrainerCheckboxIn = (fieldset: Element): HTMLInputElement => {
+  const labels = Array.from(fieldset.querySelectorAll("label"));
+  const trainerLabel = labels.find((label) => label.textContent?.includes("調教師"));
+  if (!trainerLabel) throw new Error("trainer toggle label missing");
+  const checkbox = trainerLabel.querySelector("input[type='checkbox']");
+  if (!(checkbox instanceof HTMLInputElement)) throw new Error("trainer checkbox missing");
+  return checkbox;
+};
+
+test("table heading reflects the trainer column rename", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(buildOkResponse(buildRawPayload()));
+  renderSection();
+  await flushAllAsync();
+  expect(screen.getByText("脚質・枠・騎手・調教師ごとの勝率")).toBeTruthy();
+});
+
+test("table thead renders the 調教師 column header", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(buildOkResponse(buildRawPayload()));
+  const { container } = renderSection();
+  await flushAllAsync();
+  const headers = Array.from(container.querySelectorAll("thead th")).map(
+    (node) => node.textContent ?? "",
+  );
+  expect(headers.includes("調教師")).toBe(true);
+});
+
+test("trainer 勝率条件 toggle defaults to off", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(buildOkResponse(buildRawPayload()));
+  const { container } = renderSection();
+  await flushAllAsync();
+  const trendTargetsFieldset = container.querySelector('div[aria-label="勝率条件"] fieldset');
+  if (!trendTargetsFieldset) throw new Error("勝率条件 fieldset missing");
+  expect(findTrainerCheckboxIn(trendTargetsFieldset).checked).toBe(false);
+});
+
+test("trainer スコア計算条件 toggle defaults to on", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(buildOkResponse(buildRawPayload()));
+  const { container } = renderSection();
+  await flushAllAsync();
+  const scoreFieldset = container.querySelector('div[aria-label="スコア計算条件"] fieldset');
+  if (!scoreFieldset) throw new Error("スコア計算条件 fieldset missing");
+  expect(findTrainerCheckboxIn(scoreFieldset).checked).toBe(true);
+});

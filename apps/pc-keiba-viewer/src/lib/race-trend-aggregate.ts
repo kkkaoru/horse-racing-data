@@ -18,6 +18,7 @@ import { buildRaceKey } from "./running-style-cache";
 export interface RaceTrendTargets {
   frame: boolean;
   jockey: boolean;
+  trainer: boolean;
   raceNumber: boolean;
   runningStyle: boolean;
 }
@@ -32,6 +33,7 @@ export interface RaceTrendAggregateOptions {
   endYmd: string;
   ignoreFrame: boolean;
   ignoreJockey: boolean;
+  ignoreTrainer: boolean;
   ignoreRaceNumber: boolean;
   ignoreRunningStyle: boolean;
   jockeySameVenue: boolean;
@@ -51,6 +53,8 @@ interface RaceTrendRunningStyleTarget {
   horseNumber: string | null;
   jockeyKey: string | null;
   jockeyName: string | null;
+  trainerKey: string | null;
+  trainerName: string | null;
   raceNumber: string | null;
   runningStyle: RaceTrendRunningStyle | null;
 }
@@ -258,6 +262,7 @@ export const mergeStarterRowPair = (
   wakuban: pickNonEmptyValue(b.wakuban, a.wakuban),
   bamei: pickNonEmptyValue(b.bamei, a.bamei),
   jockeyName: pickNonEmptyValue(b.jockeyName, a.jockeyName),
+  chokyoshiName: pickNonEmptyValue(b.chokyoshiName, a.chokyoshiName),
   tanshoOdds: pickNonEmptyValue(b.tanshoOdds, a.tanshoOdds),
   tanshoPopularity: pickNonEmptyValue(b.tanshoPopularity, a.tanshoPopularity),
   finishPosition: pickFinishPosition(b.finishPosition, a.finishPosition),
@@ -279,6 +284,15 @@ export const resolveRowJockeyKey = (jockeyName: string | null | undefined): stri
   return normalizeRaceTrendJockeyName(jockeyName);
 };
 
+// Trainer comparison key. Whitespace-trimmed name suffices since the trainer
+// snapshot column already holds a normalized 略称. Returns null when missing
+// so the score / aggregate paths treat trainer as unknown.
+export const resolveRowTrainerKey = (trainerName: string | null | undefined): string | null => {
+  if (!trainerName) return null;
+  const trimmed = trainerName.trim();
+  return trimmed === "" ? null : trimmed;
+};
+
 const parseHorseWeightDelta = (zogenFugo: string | null, zogenSa: string | null): number | null => {
   const magnitude = parseStoredInteger(zogenSa, "000");
   if (magnitude === null) return zogenSa === "0" ? 0 : null;
@@ -288,6 +302,15 @@ const parseHorseWeightDelta = (zogenFugo: string | null, zogenSa: string | null)
 
 const parseHorseWeight = (bataiju: string | null): number | null =>
   parseStoredInteger(bataiju, "000");
+
+// Pull the optional trainer name off a starter row. The optional field plus
+// the row's `extends Record<string, unknown>` index signature widens the
+// inferred type to `{} | unknown`, so this guard narrows back to string | null
+// without an `as` cast (forbidden by the TypeScript rules).
+const pickStarterChokyoshiName = (row: RaceTrendStarterRow): string | null => {
+  const value = row.chokyoshiName;
+  return typeof value === "string" ? value : null;
+};
 
 export const detailFromStarter = (row: RaceTrendStarterRow): RaceTrendDetail => ({
   source: row.source,
@@ -300,6 +323,7 @@ export const detailFromStarter = (row: RaceTrendStarterRow): RaceTrendDetail => 
   horseNumber: row.umaban,
   horseName: row.bamei,
   jockeyName: row.jockeyName,
+  trainerName: pickStarterChokyoshiName(row),
   popularity: parseStoredPopularity(row.tanshoPopularity),
   winOdds: parseStoredWinOdds(row.tanshoOdds),
   finishPosition: row.finishPosition,
@@ -318,27 +342,35 @@ const calculateMedian = (values: number[]): number | null => {
   return left === undefined || right === undefined ? null : (left + right) / 2;
 };
 
+interface RunningStyleTargetKeyValue {
+  frameNumber: string | null;
+  jockeyKey: string | null;
+  trainerKey: string | null;
+  raceNumber: string | null;
+  runningStyle: RaceTrendRunningStyle | null;
+}
+
+interface RunningStyleTargetKeyOptions {
+  ignoreFrame: boolean;
+  ignoreJockey: boolean;
+  ignoreTrainer: boolean;
+  ignoreRaceNumber: boolean;
+  ignoreRunningStyle: boolean;
+}
+
 const runningStyleTargetKey = (
-  value: {
-    frameNumber: string | null;
-    jockeyKey: string | null;
-    raceNumber: string | null;
-    runningStyle: RaceTrendRunningStyle | null;
-  },
-  options: {
-    ignoreFrame: boolean;
-    ignoreJockey: boolean;
-    ignoreRaceNumber: boolean;
-    ignoreRunningStyle: boolean;
-  },
+  value: RunningStyleTargetKeyValue,
+  options: RunningStyleTargetKeyOptions,
 ): string | null => {
   if (!options.ignoreFrame && !value.frameNumber) return null;
   if (!options.ignoreJockey && !value.jockeyKey) return null;
+  if (!options.ignoreTrainer && !value.trainerKey) return null;
   if (!options.ignoreRaceNumber && !value.raceNumber) return null;
   return [
     options.ignoreRunningStyle || !value.runningStyle ? "*" : value.runningStyle,
     options.ignoreFrame ? "*" : value.frameNumber,
     options.ignoreJockey ? "*" : value.jockeyKey,
+    options.ignoreTrainer ? "*" : value.trainerKey,
     options.ignoreRaceNumber ? "*" : value.raceNumber,
   ].join(":");
 };
@@ -458,6 +490,7 @@ const aggregateRunningStyleRows = (
       {
         frameNumber: normalizeNumberText(row.wakuban),
         jockeyKey: resolveTargetJockeyKey(row.jockeyName),
+        trainerKey: resolveRowTrainerKey(pickStarterChokyoshiName(row)),
         raceNumber: normalizeNumberText(row.raceBango),
         runningStyle:
           runningStyleByStarterKey.get(starterRunningStyleKey(row)) ?? runningStyleFromCorners(row),
@@ -505,6 +538,11 @@ const aggregateRunningStyleRows = (
       runningStyle: target.runningStyle,
       frameNumber: options.ignoreFrame ? null : target.frameNumber,
       jockeyName: options.ignoreJockey ? null : target.jockeyName,
+      // trainerName is rendered in the column regardless of the trainer
+      // grouping target. The win-rate aggregation above already honors
+      // ignoreTrainer when computing rates, so showing the runner's
+      // trainer name here gives the user context without affecting math.
+      trainerName: target.trainerName,
       raceNumber: options.ignoreRaceNumber ? null : target.raceNumber,
       starts: groupRows.length,
       showRate: groupRows.length > 0 ? (showCount / groupRows.length) * 100 : 0,
@@ -529,15 +567,21 @@ export const countDistinctRunningStyleDetailRaces = (rows: RaceTrendRunningStyle
     ),
   ).size;
 
+export interface RaceTrendAggregateRunnerInput {
+  frameNumber: string | null;
+  horseNumber: string | null;
+  jockeyName: string | null;
+  // Optional: when missing, the trainer column renders "-" and trainer
+  // filtering treats the row as unfilterable (skips it under the trainer
+  // grouping target).
+  trainerName?: string | null;
+}
+
 export interface RaceTrendAggregateInput {
   currentRunningStyles: RaceTrendCurrentRunningStyle[];
   historicalRunningStyles: RaceTrendRunningStyleCache[];
   raceContext: RaceTrendAggregateRaceContext;
-  runners: ReadonlyArray<{
-    frameNumber: string | null;
-    horseNumber: string | null;
-    jockeyName: string | null;
-  }>;
+  runners: ReadonlyArray<RaceTrendAggregateRunnerInput>;
   starterRows: RaceTrendStarterRow[];
 }
 
@@ -554,6 +598,8 @@ const buildRunningStyleTargets = (
       horseNumber,
       jockeyKey: normalizeRaceTrendJockeyName(runner.jockeyName),
       jockeyName: normalizeText(runner.jockeyName),
+      trainerKey: resolveRowTrainerKey(runner.trainerName),
+      trainerName: normalizeText(runner.trainerName),
       raceNumber: normalizeNumberText(input.raceContext.raceBango),
       runningStyle: horseNumber ? (currentByHorse.get(horseNumber) ?? null) : null,
     };
@@ -584,6 +630,7 @@ export const aggregateForTargets = (
     endYmd,
     ignoreFrame: !trendTargets.frame,
     ignoreJockey: !trendTargets.jockey,
+    ignoreTrainer: !trendTargets.trainer,
     ignoreRaceNumber: !trendTargets.raceNumber,
     ignoreRunningStyle: !trendTargets.runningStyle,
     jockeySameVenue,

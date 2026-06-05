@@ -25,6 +25,7 @@ import {
   parseStoredWinOdds,
   type RaceTrendTodaySiblingTarget,
   resolveRowJockeyKey,
+  resolveRowTrainerKey,
   runningStyleFromCorners,
   starterKey,
   starterRaceKey,
@@ -316,7 +317,7 @@ test("aggregateForTargets aggregates a single matching jockey row", () => {
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -334,7 +335,7 @@ test("aggregateForTargets returns zero races when no starter rows are passed", (
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -351,7 +352,7 @@ test("aggregateForTargets excludes rows outside the date range", () => {
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260101",
     "20260101",
@@ -369,7 +370,7 @@ test("aggregateForTargets excludes rows from a different venue when jockeySameVe
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -387,7 +388,7 @@ test("aggregateForTargets aggregates short and long jockey name variants via isS
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "和田譲治" }],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -405,7 +406,7 @@ test("aggregateForTargets aggregates kyujitai jockey names via isSameJockeyName"
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "沢田龍哉" }],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -423,7 +424,7 @@ test("aggregateForTargets does not aggregate rows with a different jockey", () =
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "高田太郎" }],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -441,7 +442,7 @@ test("aggregateForTargets includes rows from other venues when jockeySameVenue i
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
     false,
     "20260520",
     "20260520",
@@ -461,7 +462,7 @@ test("aggregateForTargets uses the current running style from the runner mapping
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: true },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: true },
     true,
     "20260520",
     "20260520",
@@ -485,7 +486,7 @@ test("aggregateForTargets joins historical running style rows for matching start
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: true },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: true },
     true,
     "20260520",
     "20260520",
@@ -520,7 +521,7 @@ test("aggregateForTargets joins 4-colon historical running style rows for the 20
       raceContext: { keibajoCode: "43", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: true },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: true },
     true,
     "20260601",
     "20260601",
@@ -541,7 +542,7 @@ test("aggregateForTargets falls back to corner-derived running style when no pre
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: false, jockey: false, raceNumber: false, runningStyle: true },
+    { frame: false, jockey: false, trainer: false, raceNumber: false, runningStyle: true },
     true,
     "20260520",
     "20260520",
@@ -559,7 +560,7 @@ test("aggregateForTargets returns nullable rates when the group has no starters"
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -579,7 +580,7 @@ test("aggregateForTargets aggregates a nar row with wakuban set when frame targe
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: true, jockey: false, raceNumber: false, runningStyle: false },
+    { frame: true, jockey: false, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -599,7 +600,7 @@ test("aggregateForTargets drops a nar row with null wakuban when frame target is
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: true, jockey: false, raceNumber: false, runningStyle: false },
+    { frame: true, jockey: false, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -616,7 +617,7 @@ test("aggregateForTargets keeps frameNumber on the result when ignoreFrame is fa
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: true, jockey: true, raceNumber: true, runningStyle: false },
+    { frame: true, jockey: true, trainer: false, raceNumber: true, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -635,7 +636,7 @@ test("aggregateForTargets nulls frame/jockey/raceNumber when their targets are i
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: false, jockey: false, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: false, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -654,7 +655,7 @@ test("aggregateForTargets returns an empty targetHorseNumbers when runner has no
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: null, jockeyName: "山田太郎" }],
     },
-    { frame: false, jockey: true, raceNumber: true, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: true, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -673,7 +674,7 @@ test("aggregateForTargets aggregates per-row medians using even-length winOdds",
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260519",
     "20260520",
@@ -693,7 +694,7 @@ test("aggregateForTargets calculates odd-length medians correctly", () => {
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260518",
     "20260520",
@@ -721,7 +722,7 @@ test("aggregateForTargets handles winners and shows across multiple rows", () =>
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260518",
     "20260520",
@@ -754,7 +755,7 @@ test("aggregateForTargets sort comparator orders rows by descending showRate", (
         { frameNumber: "1", horseNumber: "3", jockeyName: "佐藤次郎" },
       ],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -797,7 +798,7 @@ test("aggregateForTargets skips starter rows whose jockey is empty when jockey t
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -815,7 +816,7 @@ test("aggregateForTargets skips starter rows whose wakuban is empty when frame t
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: true, jockey: false, raceNumber: false, runningStyle: false },
+    { frame: true, jockey: false, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -833,7 +834,7 @@ test("aggregateForTargets skips starter rows whose raceBango is empty when raceN
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: false, jockey: false, raceNumber: true, runningStyle: false },
+    { frame: false, jockey: false, trainer: false, raceNumber: true, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -850,7 +851,7 @@ test("aggregateForTargets filters runner targets that lack a required frameNumbe
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: null, horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: true, jockey: false, raceNumber: false, runningStyle: false },
+    { frame: true, jockey: false, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -867,7 +868,7 @@ test("aggregateForTargets filters runner targets that lack a required jockey", (
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: null }],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -896,7 +897,7 @@ test("aggregateForTargets sorts trend details by race number when dates tie", ()
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -929,7 +930,7 @@ test("aggregateForTargets sorts trend details by horse number when both date and
         { frameNumber: "7", horseNumber: "7", jockeyName: "山田太郎" },
       ],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -963,7 +964,7 @@ test("aggregateForTargets sorts aggregated rows by tied secondary metrics using 
         { frameNumber: "9", horseNumber: "9", jockeyName: "佐藤次郎" },
       ],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -982,7 +983,7 @@ test("aggregateForTargets uses historical running styles keyed on the canonical 
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -1013,7 +1014,7 @@ test("aggregateForTargets sortAggregatedRows orders ties by quinellaRate when sh
         { frameNumber: "9", horseNumber: "9", jockeyName: "佐藤次郎" },
       ],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -1045,7 +1046,7 @@ test("aggregateForTargets sortAggregatedRows breaks frameNumber ties by jockeyNa
         { frameNumber: null, horseNumber: "5", jockeyName: "佐藤次郎" },
       ],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -1064,7 +1065,7 @@ test("aggregateForTargets normalizes historical running styles keyed by zero-pad
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -1093,7 +1094,7 @@ test("aggregateForTargets sortAggregatedRows orders tied rows by raceNumber when
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -1118,7 +1119,7 @@ test("aggregateForTargets sortAggregatedRows handles null targetHorseNumbers in 
         { frameNumber: "3", horseNumber: null, jockeyName: "山田太郎" },
       ],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -1147,7 +1148,7 @@ test("aggregateForTargets sortTrendDetails handles null horseNumbers in tied gro
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -1164,7 +1165,7 @@ test("aggregateForTargets aggregates starter rows that have a blank umaban into 
       raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
     },
-    { frame: false, jockey: true, raceNumber: false, runningStyle: false },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260520",
     "20260520",
@@ -1877,7 +1878,7 @@ test("aggregateForTargets aggregates only today siblings when past14 is empty an
       raceContext: { keibajoCode: "43", raceBango: "11", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "1", jockeyName: "騎手次郎" }],
     },
-    { frame: true, jockey: false, raceNumber: false, runningStyle: false },
+    { frame: true, jockey: false, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260601",
     "20260601",
@@ -1922,7 +1923,7 @@ test("aggregateForTargets aggregates frame-target rows from a venue-43 today sib
       raceContext: { keibajoCode: "43", raceBango: "11", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "1", jockeyName: "騎手次郎" }],
     },
-    { frame: true, jockey: false, raceNumber: false, runningStyle: false },
+    { frame: true, jockey: false, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260601",
     "20260601",
@@ -1990,7 +1991,7 @@ test("aggregateForTargets retains today siblings after merging with an empty pas
       raceContext: { keibajoCode: "43", raceBango: "11", source: "nar" },
       runners: [{ frameNumber: "3", horseNumber: "1", jockeyName: "騎手次郎" }],
     },
-    { frame: true, jockey: false, raceNumber: false, runningStyle: false },
+    { frame: true, jockey: false, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260601",
     "20260601",
@@ -2045,7 +2046,7 @@ test("aggregateForTargets counts entry-only finishPosition=0 rows toward starts 
       raceContext: { keibajoCode: "43", raceBango: "11", source: "nar" },
       runners: [{ frameNumber: "1", horseNumber: "1", jockeyName: "騎手次郎" }],
     },
-    { frame: true, jockey: false, raceNumber: false, runningStyle: false },
+    { frame: true, jockey: false, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260601",
     "20260601",
@@ -2095,7 +2096,7 @@ test("aggregateForTargets reports 0% rates when every row in the group is entry-
       raceContext: { keibajoCode: "43", raceBango: "11", source: "nar" },
       runners: [{ frameNumber: "1", horseNumber: "1", jockeyName: "騎手次郎" }],
     },
-    { frame: true, jockey: false, raceNumber: false, runningStyle: false },
+    { frame: true, jockey: false, trainer: false, raceNumber: false, runningStyle: false },
     true,
     "20260601",
     "20260601",
@@ -2104,4 +2105,112 @@ test("aggregateForTargets reports 0% rates when every row in the group is entry-
   expect(result.runningStyleRows[0]?.winRate).toStrictEqual(0);
   expect(result.runningStyleRows[0]?.quinellaRate).toStrictEqual(0);
   expect(result.runningStyleRows[0]?.showRate).toStrictEqual(0);
+});
+
+test("resolveRowTrainerKey returns the trimmed trainer name as the comparison key", () => {
+  expect(resolveRowTrainerKey("  山本太郎  ")).toStrictEqual("山本太郎");
+});
+
+test("resolveRowTrainerKey returns null for an empty string", () => {
+  expect(resolveRowTrainerKey("")).toBeNull();
+});
+
+test("resolveRowTrainerKey returns null for a whitespace-only string", () => {
+  expect(resolveRowTrainerKey("   ")).toBeNull();
+});
+
+test("resolveRowTrainerKey returns null for null input", () => {
+  expect(resolveRowTrainerKey(null)).toBeNull();
+});
+
+test("resolveRowTrainerKey returns null for undefined input", () => {
+  expect(resolveRowTrainerKey(undefined)).toBeNull();
+});
+
+test("aggregateForTargets surfaces the runner trainer name on the result row", () => {
+  const result = aggregateForTargets(
+    {
+      starterRows: [baseRow],
+      currentRunningStyles: [],
+      historicalRunningStyles: [],
+      raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
+      runners: [
+        { frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎", trainerName: "山本太郎" },
+      ],
+    },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
+    true,
+    "20260520",
+    "20260520",
+  );
+  expect(result.runningStyleRows[0]?.trainerName).toStrictEqual("山本太郎");
+});
+
+test("aggregateForTargets surfaces null trainer name when the runner has no trainer", () => {
+  const result = aggregateForTargets(
+    {
+      starterRows: [baseRow],
+      currentRunningStyles: [],
+      historicalRunningStyles: [],
+      raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
+      runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
+    },
+    { frame: false, jockey: true, trainer: false, raceNumber: false, runningStyle: false },
+    true,
+    "20260520",
+    "20260520",
+  );
+  expect(result.runningStyleRows[0]?.trainerName).toBeNull();
+});
+
+test("aggregateForTargets drops a runner target whose trainer is missing when trainer grouping is required", () => {
+  const result = aggregateForTargets(
+    {
+      starterRows: [baseRow],
+      currentRunningStyles: [],
+      historicalRunningStyles: [],
+      raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
+      runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
+    },
+    { frame: false, jockey: false, trainer: true, raceNumber: false, runningStyle: false },
+    true,
+    "20260520",
+    "20260520",
+  );
+  expect(result.runningStyleRows).toStrictEqual([]);
+});
+
+test("aggregateForTargets groups past starter rows by trainer when trainer grouping is required", () => {
+  const matchingRow: RaceTrendStarterRow = { ...baseRow, chokyoshiName: "山本太郎" };
+  const result = aggregateForTargets(
+    {
+      starterRows: [matchingRow],
+      currentRunningStyles: [],
+      historicalRunningStyles: [],
+      raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
+      runners: [
+        { frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎", trainerName: "山本太郎" },
+      ],
+    },
+    { frame: false, jockey: false, trainer: true, raceNumber: false, runningStyle: false },
+    true,
+    "20260520",
+    "20260520",
+  );
+  expect(result.runningStyleRows[0]?.starts).toStrictEqual(1);
+});
+
+test("detailFromStarter passes through the trainer name when the starter row carries one", () => {
+  const detail = detailFromStarter({ ...baseRow, chokyoshiName: "山本太郎" });
+  expect(detail.trainerName).toStrictEqual("山本太郎");
+});
+
+test("detailFromStarter returns null trainer name when the starter row has none", () => {
+  expect(detailFromStarter(baseRow).trainerName).toBeNull();
+});
+
+test("mergeStarterRowPair lets the newer source fill in the trainer name when the older one was empty", () => {
+  const partialPast: RaceTrendStarterRow = { ...baseRow, chokyoshiName: null };
+  const newerSnapshot: RaceTrendStarterRow = { ...baseRow, chokyoshiName: "山本太郎" };
+  expect(mergeStarterRowPair(partialPast, newerSnapshot).chokyoshiName).toStrictEqual("山本太郎");
 });
