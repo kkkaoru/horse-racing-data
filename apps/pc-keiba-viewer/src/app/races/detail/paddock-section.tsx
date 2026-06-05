@@ -77,6 +77,7 @@ interface PaddockSectionProps {
 }
 
 interface PaddockHorseRowProps {
+  damSireName: string;
   editable: boolean;
   horseName: string;
   horseNumber: string;
@@ -100,12 +101,16 @@ interface PaddockHorseRowProps {
     total: number;
   };
   sexAge: string;
+  sireName: string;
+  sireSireName: string;
   status: string | null;
+  trainerName: string;
   trainingEvaluationGrade: string | null;
   weight: string;
 }
 
 interface PaddockRunnerRow {
+  damSireName: string;
   horseName: string;
   horseNumber: string;
   frameNumber: string | null;
@@ -114,7 +119,10 @@ interface PaddockRunnerRow {
   moshokuCode?: string | null;
   runningStyleLabel: PaddockRunningStyleLabel | null;
   sexAge: string;
+  sireName: string;
+  sireSireName: string;
   status: string;
+  trainerName: string;
   weight: string;
 }
 
@@ -831,7 +839,10 @@ function PremiumPaddockBulletinTable({
   );
 }
 
+const PADDOCK_FACT_PLACEHOLDER = "-";
+
 const PaddockHorseRow = memo(function PaddockHorseRow({
+  damSireName,
   editable,
   frameNumber,
   horseName,
@@ -848,7 +859,10 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
   runningStyleLabel,
   scores,
   sexAge,
+  sireName,
+  sireSireName,
   status,
+  trainerName,
   trainingEvaluationGrade,
   weight,
 }: PaddockHorseRowProps) {
@@ -895,6 +909,13 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
               ) : null}
             </span>
           ) : null}
+          <span
+            aria-label={`調教師 ${trainerName || PADDOCK_FACT_PLACEHOLDER}`}
+            className="paddock-horse-trainer"
+          >
+            <small>調教師</small>
+            <strong>{trainerName || PADDOCK_FACT_PLACEHOLDER}</strong>
+          </span>
           {runningStyleLabel ? (
             <span
               aria-label={`脚質 ${PADDOCK_RUNNING_STYLE_LABELS[runningStyleLabel]}`}
@@ -954,6 +975,18 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
               </dd>
             </div>
           ) : null}
+          <div className="paddock-horse-bloodline-fact">
+            <dt>父</dt>
+            <dd>{sireName || PADDOCK_FACT_PLACEHOLDER}</dd>
+          </div>
+          <div className="paddock-horse-bloodline-fact">
+            <dt>父父</dt>
+            <dd>{sireSireName || PADDOCK_FACT_PLACEHOLDER}</dd>
+          </div>
+          <div className="paddock-horse-bloodline-fact">
+            <dt>母父</dt>
+            <dd>{damSireName || PADDOCK_FACT_PLACEHOLDER}</dd>
+          </div>
         </dl>
         <b>{formatPaddockScore(scores.total)}</b>
       </header>
@@ -1024,11 +1057,15 @@ function PaddockReadOnlyTable({
     }
   >;
   rows: {
+    damSireName: string;
     frameNumber: string | null;
     horseName: string;
     horseNumber: string;
     jockeyName: string;
     moshokuCode?: string | null;
+    sireName: string;
+    sireSireName: string;
+    trainerName: string;
     weight: string;
   }[];
   state: PaddockState | null;
@@ -1178,6 +1215,10 @@ function PaddockReadOnlyTable({
             <col className="paddock-col-horse-number" />
             <col className="paddock-col-name" />
             <col className="paddock-col-jockey" />
+            <col className="paddock-col-trainer" />
+            <col className="paddock-col-bloodline" />
+            <col className="paddock-col-bloodline" />
+            <col className="paddock-col-bloodline" />
             <col className="paddock-col-popularity" />
             <col className="paddock-col-odds" />
             <col className="paddock-col-weight" />
@@ -1195,6 +1236,10 @@ function PaddockReadOnlyTable({
               <th>馬番</th>
               <th>馬名</th>
               <th>騎手名</th>
+              <th>調教師</th>
+              <th>父</th>
+              <th>父父</th>
+              <th>母父</th>
               <th>人気</th>
               <th>単勝</th>
               <th>馬体重</th>
@@ -1273,6 +1318,18 @@ function PaddockReadOnlyTable({
                     ) : (
                       "-"
                     )}
+                  </td>
+                  <td className="paddock-table-trainer-name-cell" data-label="調教師">
+                    {row.trainerName || PADDOCK_FACT_PLACEHOLDER}
+                  </td>
+                  <td className="paddock-table-bloodline-cell" data-label="父">
+                    {row.sireName || PADDOCK_FACT_PLACEHOLDER}
+                  </td>
+                  <td className="paddock-table-bloodline-cell" data-label="父父">
+                    {row.sireSireName || PADDOCK_FACT_PLACEHOLDER}
+                  </td>
+                  <td className="paddock-table-bloodline-cell" data-label="母父">
+                    {row.damSireName || PADDOCK_FACT_PLACEHOLDER}
                   </td>
                   <td className="paddock-table-dynamic-cell" data-label="人気">
                     {formatRealtimePopularity(oddsByHorse.get(row.horseNumber)?.popularity ?? null)}
@@ -1475,6 +1532,7 @@ export function PaddockSection({
         .map((runner, index) => {
           const horseNumber = formatRunnerNumber(runner.umaban);
           return {
+            damSireName: cleanText(runner.damSireName, ""),
             horseName: cleanText(runner.bamei),
             horseNumber,
             frameNumber: cleanText(runner.wakuban, ""),
@@ -1483,7 +1541,10 @@ export function PaddockSection({
             moshokuCode: runner.moshokuCode,
             runningStyleLabel: runningStyleLabelsByHorse?.[horseNumber] ?? null,
             sexAge: formatSexAge(runner.seibetsuCode, runner.barei),
+            sireName: cleanText(runner.sireName, ""),
+            sireSireName: cleanText(runner.sireSireName, ""),
             status: realtimeEntryByHorse.get(horseNumber)?.status || "",
+            trainerName: cleanText(runner.chokyoshimeiRyakusho, ""),
             weight:
               realtimeWeightByHorse.get(horseNumber) ??
               formatHorseWeight(
@@ -1941,6 +2002,7 @@ export function PaddockSection({
             const status = realtimeEntry?.status || runner.status || null;
             return (
               <PaddockHorseRow
+                damSireName={runner.damSireName}
                 editable
                 frameNumber={runner.frameNumber}
                 horseName={runner.horseName}
@@ -1961,7 +2023,10 @@ export function PaddockSection({
                 runningStyleLabel={runner.runningStyleLabel}
                 scores={scores}
                 sexAge={runner.sexAge}
+                sireName={runner.sireName}
+                sireSireName={runner.sireSireName}
                 status={status}
+                trainerName={runner.trainerName}
                 trainingEvaluationGrade={
                   premiumTrainingGradesByHorse.get(runner.horseNumber) ?? null
                 }

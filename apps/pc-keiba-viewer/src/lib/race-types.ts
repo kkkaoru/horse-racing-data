@@ -75,6 +75,9 @@ export interface Runner {
   corner3: string | null;
   corner4: string | null;
   kohan3f: string | null;
+  sireName: string | null;
+  sireSireName: string | null;
+  damSireName: string | null;
 }
 
 export type RaceTrendRunningStyle = "nige" | "senkou" | "sashi" | "oikomi";
