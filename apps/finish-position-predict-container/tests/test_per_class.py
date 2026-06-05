@@ -8,16 +8,18 @@ fixture and write a synthetic ``manifest.json`` mirroring the on-disk layout
 that ``build_per_class_manifest_path`` builds.
 
 Phase B-2A adds ensemble routing (``load_ensemble_manifest`` /
-``resolve_per_class_resolution``). The 703 + 010 + 005 + other registrations
-are asserted both in isolation
+``resolve_per_class_resolution``). The 005 + 010 + 016 + 703 + other
+registrations are asserted both in isolation
 (``test_per_class_model_versions_includes_production_ensembles``) and end-to-end
 (``test_load_ensemble_manifest_*``, ``test_resolve_per_class_resolution_*``).
 010 was activated on 2026-06-05 (iter 25 v2 ensemble, +0.632pp top1 — the
-largest per-class win in the v8 loop); 005 was activated the same day (iter 25
-v2 ensemble, +0.095pp top1 — modest but positive, the second smallest gain
-after the tied classes); the ``other`` catch-all (NOT IN
-``{005, 010, 016, 701, 703}`` or NULL) was activated the same day
-(iter 25 v2 ensemble, +0.094pp top1) and is routed via
+largest per-class win in the v8 loop); 005 / 016 / 703 were re-activated the
+same day with iter 26 v4 ensemble (relationship features added to the member
+pool): 005 flipped from iter 25 v2 (+0.095pp) to iter 26 v4 (+0.572pp), 016
+was newly activated at +0.138pp (was iter 14 fallback because v2 measured
+-0.550 REJECT), 703 flipped from iter 23 (+0.142pp) to iter 26 v4 (+0.189pp).
+The ``other`` catch-all (NOT IN ``{005, 010, 016, 701, 703}`` or NULL) was
+activated on the iter 25 v2 ensemble (+0.094pp top1) and is routed via
 ``normalize_class_code`` which collapses unregistered real codes onto the
 ``"other"`` virtual bucket.
 """
@@ -55,10 +57,11 @@ NAR_FALLBACK_MODEL_VERSION: str = "iter12-nar-xgb-hpo-v8"
 BANEI_FALLBACK_MODEL_VERSION: str = "banei-cb-v7-lineage-wf-21y"
 JRA_CLASS_005_MODEL_VERSION: str = "iter21-jra-cb-class005-v8"
 JRA_CLASS_010_MODEL_VERSION: str = "iter21-jra-cb-class010-v8"
-JRA_CLASS_703_ENSEMBLE_MODEL_VERSION: str = "iter23-jra-cb-ensemble-703-v8"
 JRA_CLASS_010_ENSEMBLE_MODEL_VERSION: str = "iter25-jra-cb-ensemble-010-v8"
-JRA_CLASS_005_ENSEMBLE_MODEL_VERSION: str = "iter25-jra-cb-ensemble-005-v8"
 JRA_CLASS_OTHER_ENSEMBLE_MODEL_VERSION: str = "iter25-jra-cb-ensemble-other-v8"
+JRA_CLASS_005_ENSEMBLE_MODEL_VERSION: str = "iter26-jra-cb-ensemble-005-v8"
+JRA_CLASS_016_ENSEMBLE_MODEL_VERSION: str = "iter26-jra-cb-ensemble-016-v8"
+JRA_CLASS_703_ENSEMBLE_MODEL_VERSION: str = "iter26-jra-cb-ensemble-703-v8"
 
 
 def _write_manifest(
@@ -183,10 +186,11 @@ def _canonical_other_payload() -> dict[str, object]:
 
 
 def _canonical_005_payload() -> dict[str, object]:
-    # Mirrors the production iter 25 v2 ensemble manifest activated 2026-06-05
-    # (+0.095pp top1 vs iter 14 baseline on 3147-race holdout). iter14 carries
-    # a 0.509528 weight (well above the 0.20 minimum) while iter25 low-cap
-    # contributes 0.332733 — the second-largest member.
+    # Mirrors the production iter 26 v4 ensemble manifest activated 2026-06-05
+    # (+0.572pp top1 vs iter 14 baseline on 3147-race holdout — the largest
+    # 005 gain in the v8 loop, flipping the class from iter 25 v2 +0.095pp).
+    # iter 26 relationship booster dominates the blend at weight 0.505597 with
+    # iter 22 residual second at 0.179245 and iter 14 baseline carried at 0.2.
     return {
         "model_version": JRA_CLASS_005_ENSEMBLE_MODEL_VERSION,
         "category": "jra",
@@ -195,32 +199,83 @@ def _canonical_005_payload() -> dict[str, object]:
         "members": [
             {
                 "model_version": JRA_FALLBACK_MODEL_VERSION,
-                "weight": 0.509528,
+                "weight": 0.2,
                 "is_baseline": True,
             },
             {
                 "model_version": "iter20-jra-cb-perclass-005-v8",
-                "weight": 0.119616,
+                "weight": 0.054137,
                 "is_baseline": False,
             },
             {
                 "model_version": "iter20-jra-cb-perclass-005-hpo-v8",
-                "weight": 0.005101,
+                "weight": 0.004774,
                 "is_baseline": False,
             },
             {
                 "model_version": "iter21-jra-cb-chain-005-v8",
-                "weight": 0.002442,
+                "weight": 0.024707,
                 "is_baseline": False,
             },
             {
                 "model_version": "iter22-jra-cb-residual-005-v8",
-                "weight": 0.030581,
+                "weight": 0.179245,
                 "is_baseline": False,
             },
             {
                 "model_version": "iter25-jra-cb-low-cap-005-v8",
-                "weight": 0.332733,
+                "weight": 0.03154,
+                "is_baseline": False,
+            },
+            {
+                "model_version": "iter26-jra-cb-relationships-005-v8",
+                "weight": 0.505597,
+                "is_baseline": False,
+            },
+        ],
+    }
+
+
+def _canonical_016_payload() -> dict[str, object]:
+    # Mirrors the production iter 26 v4 ensemble manifest activated 2026-06-05
+    # (+0.138pp top1 vs iter 14 baseline on 727-race holdout). NEW activation:
+    # 016 was iter 14 fallback before (iter 25 v2 measured -0.550 REJECT).
+    # iter 25 low-cap booster dominates the blend at weight 0.544315 with
+    # iter 26 relationships second at 0.110428 and iter 14 baseline at 0.2.
+    return {
+        "model_version": JRA_CLASS_016_ENSEMBLE_MODEL_VERSION,
+        "category": "jra",
+        "kyoso_joken_code": "016",
+        "ensemble_type": "rank_blend",
+        "members": [
+            {
+                "model_version": JRA_FALLBACK_MODEL_VERSION,
+                "weight": 0.2,
+                "is_baseline": True,
+            },
+            {
+                "model_version": "iter20-jra-cb-perclass-016-v8",
+                "weight": 0.007368,
+                "is_baseline": False,
+            },
+            {
+                "model_version": "iter21-jra-cb-chain-016-v8",
+                "weight": 0.080411,
+                "is_baseline": False,
+            },
+            {
+                "model_version": "iter22-jra-cb-residual-016-v8",
+                "weight": 0.057479,
+                "is_baseline": False,
+            },
+            {
+                "model_version": "iter25-jra-cb-low-cap-016-v8",
+                "weight": 0.544315,
+                "is_baseline": False,
+            },
+            {
+                "model_version": "iter26-jra-cb-relationships-016-v8",
+                "weight": 0.110428,
                 "is_baseline": False,
             },
         ],
@@ -366,28 +421,42 @@ def test_per_class_model_versions_includes_production_ensembles() -> None:
     assert PER_CLASS_MODEL_VERSIONS == {
         ("jra", "005"): JRA_CLASS_005_ENSEMBLE_MODEL_VERSION,
         ("jra", "010"): JRA_CLASS_010_ENSEMBLE_MODEL_VERSION,
+        ("jra", "016"): JRA_CLASS_016_ENSEMBLE_MODEL_VERSION,
         ("jra", "703"): JRA_CLASS_703_ENSEMBLE_MODEL_VERSION,
         ("jra", "other"): JRA_CLASS_OTHER_ENSEMBLE_MODEL_VERSION,
     }
 
 
 def test_resolve_returns_registered_703_ensemble_string() -> None:
+    # 703 was flipped to iter 26 v4 on 2026-06-05 (+0.189pp top1, +0.047pp
+    # delta over the iter 23 ensemble).
     assert (
         resolve_per_class_model_version("jra", "703") == JRA_CLASS_703_ENSEMBLE_MODEL_VERSION
     )
 
 
 def test_resolve_returns_registered_010_ensemble_string() -> None:
-    # 010 was activated 2026-06-05 (iter 25 v2 ensemble, +0.632pp top1).
+    # 010 was activated 2026-06-05 (iter 25 v2 ensemble, +0.632pp top1). iter 26
+    # v4 was only +0.190pp on 010 so v2 stays.
     assert (
         resolve_per_class_model_version("jra", "010") == JRA_CLASS_010_ENSEMBLE_MODEL_VERSION
     )
 
 
 def test_resolve_returns_registered_005_ensemble_string() -> None:
-    # 005 was activated 2026-06-05 (iter 25 v2 ensemble, +0.095pp top1).
+    # 005 was flipped to iter 26 v4 on 2026-06-05 (+0.572pp top1, +0.477pp
+    # delta over the iter 25 v2 ensemble).
     assert (
         resolve_per_class_model_version("jra", "005") == JRA_CLASS_005_ENSEMBLE_MODEL_VERSION
+    )
+
+
+def test_resolve_returns_registered_016_ensemble_string() -> None:
+    # 016 was newly activated on 2026-06-05 with iter 26 v4 (+0.138pp top1).
+    # Before iter 26 it fell back to iter 14 because iter 25 v2 measured
+    # -0.550 REJECT on 016.
+    assert (
+        resolve_per_class_model_version("jra", "016") == JRA_CLASS_016_ENSEMBLE_MODEL_VERSION
     )
 
 
@@ -402,10 +471,12 @@ def test_resolve_returns_registered_other_ensemble_string() -> None:
 
 
 def test_per_class_codes_for_jra_returns_sorted_production_codes() -> None:
-    # per_class_codes_for returns the sorted union of registered JRA codes;
-    # 005, 010, 703 and the virtual ``other`` bucket are the four production
-    # ensembles as of 2026-06-05. Alphabetical sort puts ``other`` last.
-    assert per_class_codes_for("jra") == ("005", "010", "703", "other")
+    # per_class_codes_for returns the sorted union of registered JRA codes.
+    # 005, 010, 016, 703 and the virtual ``other`` bucket are the five
+    # production ensembles as of 2026-06-05 (iter 26 v4 added 005 / 016 / 703
+    # to the iter 25 baseline; 010 / other kept their iter 25 v2 ensembles).
+    # Alphabetical sort puts ``other`` last.
+    assert per_class_codes_for("jra") == ("005", "010", "016", "703", "other")
 
 
 def test_ensemble_member_dataclass_signature() -> None:
@@ -868,10 +939,11 @@ def test_resolve_per_class_resolution_returns_010_ensemble_when_manifest_present
 
 
 def test_load_ensemble_manifest_returns_dataclass_for_005(tmp_path: Path) -> None:
-    # End-to-end: write the production iter 25 v2 manifest, ensure the loader
-    # parses all six members and propagates manifest-level fields. iter14
-    # carries the dominant 0.509528 weight, with iter25 low-cap second at
-    # 0.332733 — the exact production weights.
+    # End-to-end: write the production iter 26 v4 manifest, ensure the loader
+    # parses all seven members and propagates manifest-level fields. iter 26
+    # relationships dominates the blend at weight 0.505597, iter 22 residual
+    # second at 0.179245 with iter 14 baseline carried at 0.2 — the exact
+    # production weights.
     _write_manifest(
         tmp_path,
         "jra",
@@ -885,15 +957,15 @@ def test_load_ensemble_manifest_returns_dataclass_for_005(tmp_path: Path) -> Non
     assert result.category == "jra"
     assert result.kyoso_joken_code == "005"
     assert result.ensemble_type == "rank_blend"
-    assert len(result.members) == 6
+    assert len(result.members) == 7
     assert result.members[0].model_version == JRA_FALLBACK_MODEL_VERSION
-    assert result.members[0].weight == 0.509528
+    assert result.members[0].weight == 0.2
     assert result.members[0].is_baseline is True
-    # iter 25 low-cap booster sits at index 5 with weight 0.332733; the exact
-    # value is part of the production ensemble contract.
-    assert result.members[5].model_version == "iter25-jra-cb-low-cap-005-v8"
-    assert result.members[5].weight == 0.332733
-    assert result.members[5].is_baseline is False
+    # iter 26 relationships booster sits at index 6 with weight 0.505597; the
+    # exact value is part of the production ensemble contract.
+    assert result.members[6].model_version == "iter26-jra-cb-relationships-005-v8"
+    assert result.members[6].weight == 0.505597
+    assert result.members[6].is_baseline is False
 
 
 def test_resolve_per_class_resolution_returns_005_ensemble_when_manifest_present(
@@ -910,6 +982,59 @@ def test_resolve_per_class_resolution_returns_005_ensemble_when_manifest_present
     assert isinstance(result, PerClassEnsemble)
     assert result.model_version == JRA_CLASS_005_ENSEMBLE_MODEL_VERSION
     assert result.kyoso_joken_code == "005"
+
+
+# --- Phase B-2 / iter 26 v4: 016 ensemble registration tests ------------
+
+
+def test_load_ensemble_manifest_returns_dataclass_for_016(tmp_path: Path) -> None:
+    # End-to-end: write the production iter 26 v4 manifest, ensure the loader
+    # parses all six members and propagates manifest-level fields. iter 25
+    # low-cap booster dominates the blend at weight 0.544315, with iter 26
+    # relationships second at 0.110428 — the exact production weights from
+    # the 2026-06-05 NEW 016 activation.
+    _write_manifest(
+        tmp_path,
+        "jra",
+        "016",
+        JRA_CLASS_016_ENSEMBLE_MODEL_VERSION,
+        _canonical_016_payload(),
+    )
+    result = load_ensemble_manifest(tmp_path, "jra", "016")
+    assert result is not None
+    assert result.model_version == JRA_CLASS_016_ENSEMBLE_MODEL_VERSION
+    assert result.category == "jra"
+    assert result.kyoso_joken_code == "016"
+    assert result.ensemble_type == "rank_blend"
+    assert len(result.members) == 6
+    assert result.members[0].model_version == JRA_FALLBACK_MODEL_VERSION
+    assert result.members[0].weight == 0.2
+    assert result.members[0].is_baseline is True
+    # iter 25 low-cap booster sits at index 4 with weight 0.544315; the exact
+    # value is part of the production ensemble contract.
+    assert result.members[4].model_version == "iter25-jra-cb-low-cap-016-v8"
+    assert result.members[4].weight == 0.544315
+    assert result.members[4].is_baseline is False
+    # iter 26 relationships booster sits at index 5 with weight 0.110428.
+    assert result.members[5].model_version == "iter26-jra-cb-relationships-016-v8"
+    assert result.members[5].weight == 0.110428
+    assert result.members[5].is_baseline is False
+
+
+def test_resolve_per_class_resolution_returns_016_ensemble_when_manifest_present(
+    tmp_path: Path,
+) -> None:
+    _write_manifest(
+        tmp_path,
+        "jra",
+        "016",
+        JRA_CLASS_016_ENSEMBLE_MODEL_VERSION,
+        _canonical_016_payload(),
+    )
+    result = resolve_per_class_resolution(tmp_path, "jra", "016")
+    assert isinstance(result, PerClassEnsemble)
+    assert result.model_version == JRA_CLASS_016_ENSEMBLE_MODEL_VERSION
+    assert result.kyoso_joken_code == "016"
 
 
 # --- Phase B-2 / iter 25: ``other`` catch-all ensemble registration tests -

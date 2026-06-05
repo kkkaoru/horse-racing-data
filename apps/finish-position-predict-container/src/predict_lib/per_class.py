@@ -39,8 +39,17 @@ delta_pp=+0.095pp top1 — modest but positive, the second smallest gain after
 the tied classes) and ``other`` (catch-all for races whose ``kyoso_joken_code``
 is NOT in ``{005, 010, 016, 701, 703}`` or is NULL; n=1064 holdout,
 delta_pp=+0.094pp top1). All three were activated alongside 703 in
-``PER_CLASS_MODEL_VERSIONS``. The remaining unregistered tied classes (016 /
-701) keep falling back to iter 14 — see
+``PER_CLASS_MODEL_VERSIONS``.
+
+iter 26 v4 ensemble re-optimisation (2026-06-05) added the iter 26 relationship
+booster (馬体重 x 斤量 x 馬齢 x 距離 x タイム, 12 cols) to the member pool and
+shipped major per-class gains for 005 / 016 / 703. 005 flipped from iter 25 v2
+(+0.095pp) to iter 26 v4 (+0.572pp, +0.477pp delta); 016 was activated for the
+first time at +0.138pp (was iter 14 fallback because v2 measured -0.550 REJECT);
+703 flipped from iter 23 (+0.142pp) to iter 26 v4 (+0.189pp, +0.047pp delta).
+010 and ``other`` stayed on iter 25 v2 because v4 was worse on 010 (+0.190 vs
++0.632) and tied on ``other`` (+0.094). 701 remains unregistered: iter 26 v4
+also REJECT at -1.574pp, falls back to iter 14 — see
 ``docs/finish-position-accuracy/runbook/PER_CLASS_ROUTING.md``.
 
 The ``other`` entry is a virtual code: real races never carry the literal
@@ -92,21 +101,32 @@ class PerClassEnsemble:
     members: tuple[EnsembleMember, ...]
 
 
-# Phase B-2A registry. 703 ACCEPTED at +0.142pp top1 (iter 23 ensemble search).
-# 010 ACCEPTED at +0.632pp top1 (iter 25 v2 ensemble — largest per-class win in
-# the v8 loop; iter25 low-cap booster dominates the blend at weight 0.66 with
-# the iter14 baseline carried at 0.20 and iter20/21/22 contributing residual
-# diversity). 005 ACCEPTED at +0.095pp top1 (iter 25 v2 ensemble — modest but
-# positive; iter14 baseline carries weight 0.51 well above the 0.20 minimum,
-# with iter25 low-cap at 0.33 contributing meaningful diversity). ``other``
-# ACCEPTED at +0.094pp top1 (iter 25 v2 ensemble; iter14 baseline dominates at
-# weight 0.64 with iter25 low-cap second at 0.20). The remaining unregistered
-# tied-at-+0.000pp classes (016 / 701) stay unregistered to keep the
-# booster-pool footprint small.
+# Phase B-2A registry. 005 / 016 / 703 ACTIVATED on 2026-06-05 with the iter 26
+# v4 ensemble (iter 26 relationship features: 馬体重 x 斤量 x 馬齢 x 距離 x
+# タイム interaction columns, 12 cols). iter 26 v4 re-optimised the ensemble
+# pool with the new relationship booster added and shipped major per-class
+# gains:
+#
+# * 005 +0.572pp top1 (was iter 25 v2 +0.095pp; +0.477pp delta). iter 26
+#   relationships booster dominates the blend at weight 0.51 with iter 22
+#   residual at 0.18 and iter 14 baseline carried at 0.20.
+# * 016 +0.138pp top1 (was iter 14 fallback; v2 was -0.550 REJECT). NEW
+#   ensemble activation — iter 25 low-cap dominates at 0.54 with iter 26
+#   relationships at 0.11 and iter 14 baseline at 0.20.
+# * 703 +0.189pp top1 (was iter 23 +0.142pp; +0.047pp delta). iter 26
+#   relationships booster dominates the blend at weight 0.67 with iter 14
+#   baseline at 0.20.
+#
+# 010 keeps iter 25 v2 (+0.632pp top1, the largest per-class win in the v8
+# loop) — iter 26 v4 was only +0.190pp on 010 so v2 stays. ``other`` keeps
+# iter 25 v2 (+0.094pp top1) — v4 tied, no reason to swap. 701 remains
+# unregistered (iter 14 fallback): iter 26 v4 = -1.574pp, no improvement over
+# v2 -1.784pp.
 PER_CLASS_MODEL_VERSIONS: Final[dict[tuple[Category, str], str]] = {
-    ("jra", "005"): "iter25-jra-cb-ensemble-005-v8",
+    ("jra", "005"): "iter26-jra-cb-ensemble-005-v8",
     ("jra", "010"): "iter25-jra-cb-ensemble-010-v8",
-    ("jra", "703"): "iter23-jra-cb-ensemble-703-v8",
+    ("jra", "016"): "iter26-jra-cb-ensemble-016-v8",
+    ("jra", "703"): "iter26-jra-cb-ensemble-703-v8",
     ("jra", "other"): "iter25-jra-cb-ensemble-other-v8",
 }
 

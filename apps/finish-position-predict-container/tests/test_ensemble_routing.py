@@ -36,7 +36,9 @@ from predict_lib.per_class import EnsembleMember, PerClassEnsemble
 from predict_lib.scorer import BoosterLike
 
 JRA_FALLBACK_MODEL_VERSION: str = "iter14-jra-cb-pacestyle-course-v8"
-JRA_CLASS_703_ENSEMBLE_MODEL_VERSION: str = "iter23-jra-cb-ensemble-703-v8"
+# Mirrors the registry entry in ``predict_lib.per_class.PER_CLASS_MODEL_VERSIONS``
+# — 703 was flipped from iter 23 to iter 26 v4 on 2026-06-05 (+0.189pp top1).
+JRA_CLASS_703_ENSEMBLE_MODEL_VERSION: str = "iter26-jra-cb-ensemble-703-v8"
 ITER22_RESIDUAL_703: str = "iter22-jra-cb-residual-703-v8"
 
 
@@ -355,7 +357,7 @@ def test_score_race_with_resolution_single_model_path_uses_resolution_string() -
 
 def test_score_race_with_resolution_single_model_emits_custom_string() -> None:
     """Even when a registered per-class single-model label like
-    ``iter23-jra-cb-ensemble-703-v8`` is passed as the resolution string (no
+    ``iter26-jra-cb-ensemble-703-v8`` is passed as the resolution string (no
     manifest on disk), the outcome carries that label through unchanged."""
     fallback = _StubBooster(0.0)
     pool = BoosterPool(boosters={})
