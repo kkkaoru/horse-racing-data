@@ -61,3 +61,37 @@ test("running-style-retry-backoff-is-preserved", () => {
   const value = match === null ? null : Number(match[1]);
   expect(value).toBe(200);
 });
+
+test("paddock-edit-page-uses-paddock-adjacent-nav-helper", () => {
+  const source = readFileSync(PAGE_PATH, "utf8");
+  const importMatch = source.match(
+    /import \{ getPaddockAdjacentNav \} from "[./]+\/lib\/paddock-adjacent-nav";/,
+  );
+  expect(importMatch === null).toBe(false);
+});
+
+test("paddock-edit-page-derives-adjacent-nav-from-same-venue-races", () => {
+  const source = readFileSync(PAGE_PATH, "utf8");
+  const callMatch = source.match(
+    /getPaddockAdjacentNav\(\{\s*currentRaceBango: raceNumber,\s*sameVenueRaces,\s*\}\)/,
+  );
+  expect(callMatch === null).toBe(false);
+});
+
+test("paddock-edit-page-renders-prev-side-nav-when-previous-race-exists", () => {
+  const source = readFileSync(PAGE_PATH, "utf8");
+  const navMatch = source.match(/className="race-side-nav race-side-nav-prev"/);
+  expect(navMatch === null).toBe(false);
+});
+
+test("paddock-edit-page-renders-next-side-nav-when-next-race-exists", () => {
+  const source = readFileSync(PAGE_PATH, "utf8");
+  const navMatch = source.match(/className="race-side-nav race-side-nav-next"/);
+  expect(navMatch === null).toBe(false);
+});
+
+test("paddock-edit-page-renders-mobile-nav-fallback-spans-for-boundary-races", () => {
+  const source = readFileSync(PAGE_PATH, "utf8");
+  const fallbackMatches = source.match(/<span aria-hidden="true" \/>/g);
+  expect(fallbackMatches?.length).toBe(2);
+});

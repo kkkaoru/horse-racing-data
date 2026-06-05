@@ -3275,6 +3275,20 @@ h3 {
   line-height: inherit;
 }
 
+/* Desktop (>720px) keeps sire / sire-sire / dam-sire names on a single
+   line and truncates with an ellipsis when the value is too long. The
+   `title` attribute on the dd surfaces the full name on hover so the
+   information is still discoverable. Mobile overrides this in the
+   `max-width: 720px` block below. */
+.paddock-horse-bloodline-value {
+  display: block;
+  max-width: var(--space-100pct-12);
+  min-width: var(--number-0-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .paddock-weight-value {
   align-items: center;
   display: inline-flex;
@@ -8360,6 +8374,14 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
       minmax(var(--number-0-2), var(--space-1fr-51))
     );
     max-width: none;
+  }
+
+  /* Mobile: allow sire / sire-sire / dam-sire names to wrap so we don't
+     truncate names that the user really wants to see on a narrow viewport. */
+  .paddock-horse-bloodline-value {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
   }
 
   .paddock-table-wrap {
