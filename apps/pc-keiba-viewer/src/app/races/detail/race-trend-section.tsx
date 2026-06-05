@@ -739,7 +739,7 @@ function RaceTrendTable({
     (trendTargets.frame ? 1 : 0) +
     (trendTargets.runningStyle ? 1 : 0) +
     (trendTargets.jockey ? 1 : 0) +
-    1 +
+    (trendTargets.trainer ? 1 : 0) +
     (trendTargets.raceNumber ? 1 : 0);
   const effectiveExpandedKey = rows.some((row) => row.key === expandedKey) ? expandedKey : null;
   const effectiveExpandedScoreKey = rows.some((row) => row.key === expandedScoreKey)
@@ -771,7 +771,7 @@ function RaceTrendTable({
             {trendTargets.frame ? <col className="race-trend-col-frame" /> : null}
             {trendTargets.runningStyle ? <col className="race-trend-col-running-style" /> : null}
             {trendTargets.jockey ? <col className="race-trend-col-jockey" /> : null}
-            <col className="race-trend-col-trainer" />
+            {trendTargets.trainer ? <col className="race-trend-col-trainer" /> : null}
             {trendTargets.raceNumber ? <col className="race-trend-col-race-number" /> : null}
             <col className="race-trend-col-score" />
             <col className="race-trend-col-rate" />
@@ -802,9 +802,11 @@ function RaceTrendTable({
                   <TrendHeaderLabel>騎手</TrendHeaderLabel>
                 </th>
               ) : null}
-              <th>
-                <TrendHeaderLabel>調教師</TrendHeaderLabel>
-              </th>
+              {trendTargets.trainer ? (
+                <th>
+                  <TrendHeaderLabel>調教師</TrendHeaderLabel>
+                </th>
+              ) : null}
               {trendTargets.raceNumber ? (
                 <th>
                   <TrendHeaderLabel>R</TrendHeaderLabel>
@@ -872,9 +874,11 @@ function RaceTrendTable({
                       <span className="race-trend-skeleton race-trend-skeleton-name" />
                     </td>
                   ) : null}
-                  <td>
-                    <span className="race-trend-skeleton race-trend-skeleton-name" />
-                  </td>
+                  {trendTargets.trainer ? (
+                    <td>
+                      <span className="race-trend-skeleton race-trend-skeleton-name" />
+                    </td>
+                  ) : null}
                   {trendTargets.raceNumber ? (
                     <td>
                       <span className="race-trend-skeleton race-trend-skeleton-count" />
@@ -995,7 +999,7 @@ function RowFragment({
     (trendTargets.frame ? 1 : 0) +
     (trendTargets.runningStyle ? 1 : 0) +
     (trendTargets.jockey ? 1 : 0) +
-    1 +
+    (trendTargets.trainer ? 1 : 0) +
     (trendTargets.raceNumber ? 1 : 0);
   const detailRows = useMemo(() => sortDetailsByLatestRace(row.details), [row.details]);
   const scoreDetailRows = useMemo(() => sortDetailsByLatestRace(scoreDetails), [scoreDetails]);
@@ -1021,7 +1025,9 @@ function RowFragment({
         {trendTargets.frame ? <td>{row.frameNumber ?? "-"}</td> : null}
         {trendTargets.runningStyle ? <td>{formatRunningStyle(row.runningStyle)}</td> : null}
         {trendTargets.jockey ? <td className="stats-name-cell">{row.jockeyName ?? "-"}</td> : null}
-        <td className="stats-name-cell">{row.trainerName ?? "-"}</td>
+        {trendTargets.trainer ? (
+          <td className="stats-name-cell">{row.trainerName ?? "-"}</td>
+        ) : null}
         {trendTargets.raceNumber ? <td>{formatRaceNumber(row.raceNumber)}</td> : null}
         <td className="race-trend-score-cell">
           {scoreIsClickable ? (
