@@ -1,4 +1,4 @@
-"""Tests for per-race ensemble routing (Phase B-2E).
+"""Tests for per-race ensemble routing (Phase B-2E + Phase F).
 
 Covers ``init_member_pool`` (startup walk of the per-class registry +
 manifest loader) and ``score_race_with_resolution`` (per-race scoring path
@@ -11,6 +11,12 @@ Wave-2 production-safety contract: any failure inside the ensemble path
 fall through to the category-global booster with the global ``model_version``
 label so the daily prediction job never crashes on a corrupt per-class
 artefact.
+
+Phase F (2026-06-05) adds NAR per-class routing on top: six NAR sub-classes
+(NEW / MUKATSU / C / A / OP / other) ship with iter 30 ensembles that blend
+the iter 12 XGBoost baseline with iter 30 CatBoost residual members. The
+pool is now architecture-aware so a single pool can serve mixed-arch NAR
+ensembles without dropping accuracy through a wrong-dtype matrix.
 """
 
 from __future__ import annotations
@@ -20,18 +26,20 @@ import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from predict_lib import per_class
-from predict_lib.booster_pool import BoosterPool
+from predict_lib.booster_pool import BoosterPool, PoolBooster
 from predict_lib.ensemble_routing import (
     EnsembleRouteOutcome,
     init_member_pool,
     score_race_with_resolution,
 )
+from predict_lib.model_meta import Architecture
 from predict_lib.per_class import EnsembleMember, PerClassEnsemble
 from predict_lib.scorer import BoosterLike
 
@@ -40,6 +48,9 @@ JRA_FALLBACK_MODEL_VERSION: str = "iter14-jra-cb-pacestyle-course-v8"
 # — 703 was flipped from iter 23 to iter 26 v4 on 2026-06-05 (+0.189pp top1).
 JRA_CLASS_703_ENSEMBLE_MODEL_VERSION: str = "iter26-jra-cb-ensemble-703-v8"
 ITER22_RESIDUAL_703: str = "iter22-jra-cb-residual-703-v8"
+NAR_FALLBACK_MODEL_VERSION: str = "iter12-nar-xgb-hpo-v8"
+NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION: str = "iter30-nar-cb-ensemble-NEW-v8"
+NAR_RESIDUAL_NEW: str = "iter30-nar-cb-residual-NEW-v8"
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +88,16 @@ class _WrongLengthBooster:
 
     def predict(self, matrix: Sequence[Sequence[float]]) -> Sequence[float]:
         return [0.5]
+
+
+def _cb_record(booster: BoosterLike) -> PoolBooster:
+    """Wrap a CatBoost-flavoured stub in a ``PoolBooster`` record."""
+    return PoolBooster(booster=booster, architecture="catboost")
+
+
+def _xgb_record(booster: BoosterLike) -> PoolBooster:
+    """Wrap an XGBoost-flavoured stub in a ``PoolBooster`` record."""
+    return PoolBooster(booster=booster, architecture="xgboost")
 
 
 def _write_manifest(
@@ -122,6 +143,19 @@ def _write_member_model_json(
     return target
 
 
+def _write_baseline_model_json(
+    models_dir: Path,
+    category: str,
+    model_version: str,
+) -> Path:
+    """Write the category-global baseline ``model.json`` at the canonical
+    single-model layout so ``discover_baseline_member_model`` finds it."""
+    target = models_dir / "finish-position" / category / model_version / "model.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("{}", encoding="utf-8")
+    return target
+
+
 def _canonical_703_payload() -> dict[str, object]:
     return {
         "model_version": JRA_CLASS_703_ENSEMBLE_MODEL_VERSION,
@@ -137,6 +171,27 @@ def _canonical_703_payload() -> dict[str, object]:
             {
                 "model_version": ITER22_RESIDUAL_703,
                 "weight": 0.7,
+                "is_baseline": False,
+            },
+        ],
+    }
+
+
+def _canonical_nar_new_payload() -> dict[str, object]:
+    return {
+        "model_version": NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION,
+        "category": "nar",
+        "kyoso_joken_code": "NEW",
+        "ensemble_type": "rank_blend",
+        "members": [
+            {
+                "model_version": NAR_FALLBACK_MODEL_VERSION,
+                "weight": 0.689977,
+                "is_baseline": True,
+            },
+            {
+                "model_version": NAR_RESIDUAL_NEW,
+                "weight": 0.310023,
                 "is_baseline": False,
             },
         ],
@@ -160,6 +215,27 @@ def _two_member_ensemble() -> PerClassEnsemble:
     )
 
 
+def _nar_new_ensemble() -> PerClassEnsemble:
+    return PerClassEnsemble(
+        model_version=NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION,
+        category="nar",
+        kyoso_joken_code="NEW",
+        ensemble_type="rank_blend",
+        members=(
+            EnsembleMember(
+                model_version=NAR_FALLBACK_MODEL_VERSION,
+                weight=0.689977,
+                is_baseline=True,
+            ),
+            EnsembleMember(
+                model_version=NAR_RESIDUAL_NEW,
+                weight=0.310023,
+                is_baseline=False,
+            ),
+        ),
+    )
+
+
 def _three_horse_entries() -> list[dict[str, object]]:
     return [
         {"ketto_toroku_bango": "9001", "umaban": 1, "feature_a": 0.1, "feature_b": 0.4},
@@ -172,7 +248,43 @@ FEATURE_NAMES: list[str] = ["feature_a", "feature_b"]
 
 
 # ---------------------------------------------------------------------------
-# init_member_pool
+# Adapter stubs
+
+
+class _FakeAdapter(ModuleType):
+    """Typed stand-in for ``catboost_adapter`` / ``xgboost_adapter`` modules.
+
+    Both attributes are declared so basedpyright stays quiet on the assignment;
+    only one is actually set per test. The class attribute typing matches the
+    real loaders' signatures.
+    """
+
+    load_catboost_booster: object
+    load_xgboost_booster: object
+
+
+def _install_fake_catboost_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_load: object,
+) -> None:
+    """Inject a stub ``catboost_adapter`` module on ``sys.modules``."""
+    fake_module = _FakeAdapter("catboost_adapter")
+    fake_module.load_catboost_booster = fake_load
+    monkeypatch.setitem(sys.modules, "catboost_adapter", fake_module)
+
+
+def _install_fake_xgboost_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_load: object,
+) -> None:
+    """Inject a stub ``xgboost_adapter`` module on ``sys.modules``."""
+    fake_module = _FakeAdapter("xgboost_adapter")
+    fake_module.load_xgboost_booster = fake_load
+    monkeypatch.setitem(sys.modules, "xgboost_adapter", fake_module)
+
+
+# ---------------------------------------------------------------------------
+# init_member_pool — JRA path
 
 
 def test_init_member_pool_loads_registered_members(
@@ -187,46 +299,37 @@ def test_init_member_pool_loads_registered_members(
         JRA_CLASS_703_ENSEMBLE_MODEL_VERSION,
         _canonical_703_payload(),
     )
-    _write_member_model_json(tmp_path, "jra", "703", JRA_FALLBACK_MODEL_VERSION)
+    _write_baseline_model_json(tmp_path, "jra", JRA_FALLBACK_MODEL_VERSION)
     _write_member_model_json(tmp_path, "jra", "703", ITER22_RESIDUAL_703)
 
     def fake_load(model_path: str) -> BoosterLike:
         return _StubBooster(0.0 if "iter14" in model_path else 0.5)
 
-    monkeypatch.setattr(
-        "predict_lib.booster_pool.load_catboost_booster",
-        fake_load,
-        raising=False,
-    )
-    # The lazy import inside load_booster_from_path is
-    # ``from catboost_adapter import load_catboost_booster`` — install a stub
-    # module on sys.modules so it resolves to our fake without the native
-    # CatBoost runtime.
-    from types import ModuleType
-
-    class _FakeAdapter(ModuleType):
-        load_catboost_booster: object
-
-    fake_module = _FakeAdapter("catboost_adapter")
-    fake_module.load_catboost_booster = fake_load
-    monkeypatch.setitem(sys.modules, "catboost_adapter", fake_module)
+    _install_fake_catboost_adapter(monkeypatch, fake_load)
 
     pool = init_member_pool(tmp_path, "jra")
 
     assert pool.has(JRA_FALLBACK_MODEL_VERSION) is True
     assert pool.has(ITER22_RESIDUAL_703) is True
+    # Sorted: 'iter14-' (...) before 'iter22-' (...).
     assert pool.model_versions() == (JRA_FALLBACK_MODEL_VERSION, ITER22_RESIDUAL_703)
+    # Both JRA members are CatBoost.
+    baseline_record = pool.get_record(JRA_FALLBACK_MODEL_VERSION)
+    residual_record = pool.get_record(ITER22_RESIDUAL_703)
+    assert baseline_record is not None
+    assert residual_record is not None
+    assert baseline_record.architecture == "catboost"
+    assert residual_record.architecture == "catboost"
 
 
 def test_init_member_pool_empty_when_no_registry_entry(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Categories with no registered ensembles (NAR / Ban-ei) -> empty pool."""
-    pool_nar = init_member_pool(tmp_path, "nar")
+    """Categories with no registered ensembles (Ban-ei) -> empty pool. Phase F
+    flipped NAR to enabled, so it now has registered ensembles too — tested
+    separately below."""
     pool_banei = init_member_pool(tmp_path, "ban-ei")
 
-    assert pool_nar.model_versions() == ()
     assert pool_banei.model_versions() == ()
 
 
@@ -241,9 +344,8 @@ def test_init_member_pool_filters_out_missing_member_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Manifest lists two members but only one is on disk -> pool has only the
-    one whose model.json exists. The downstream scoring path will detect the
-    missing one per-race and fall back."""
+    """Manifest lists two members but only the per-class residual is on disk
+    (baseline absent at the category root) -> pool has only the residual."""
     _write_manifest(
         tmp_path,
         "jra",
@@ -251,20 +353,13 @@ def test_init_member_pool_filters_out_missing_member_paths(
         JRA_CLASS_703_ENSEMBLE_MODEL_VERSION,
         _canonical_703_payload(),
     )
-    # Only the residual member exists on disk.
+    # Only the per-class residual is on disk.
     _write_member_model_json(tmp_path, "jra", "703", ITER22_RESIDUAL_703)
-
-    from types import ModuleType
-
-    class _FakeAdapter(ModuleType):
-        load_catboost_booster: object
 
     def fake_load(model_path: str) -> BoosterLike:
         return _StubBooster(0.5)
 
-    fake_module = _FakeAdapter("catboost_adapter")
-    fake_module.load_catboost_booster = fake_load
-    monkeypatch.setitem(sys.modules, "catboost_adapter", fake_module)
+    _install_fake_catboost_adapter(monkeypatch, fake_load)
 
     pool = init_member_pool(tmp_path, "jra")
 
@@ -277,14 +372,13 @@ def test_init_member_pool_skips_other_categories_registry_entries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Iterating the registry, entries for other categories are skipped — the
-    pool requested for ``category`` only loads its own members. Confirms the
-    `cat != category` guard inside the loop."""
+    pool requested for ``category`` only loads its own members."""
     monkeypatch.setattr(
         per_class,
         "PER_CLASS_MODEL_VERSIONS",
         {
             ("jra", "703"): JRA_CLASS_703_ENSEMBLE_MODEL_VERSION,
-            ("nar", "703"): "iter23-nar-xgb-ensemble-703-v8",
+            ("nar", "NEW"): NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION,
         },
     )
     _write_manifest(
@@ -294,26 +388,133 @@ def test_init_member_pool_skips_other_categories_registry_entries(
         JRA_CLASS_703_ENSEMBLE_MODEL_VERSION,
         _canonical_703_payload(),
     )
-    _write_member_model_json(tmp_path, "jra", "703", JRA_FALLBACK_MODEL_VERSION)
+    _write_baseline_model_json(tmp_path, "jra", JRA_FALLBACK_MODEL_VERSION)
     _write_member_model_json(tmp_path, "jra", "703", ITER22_RESIDUAL_703)
-
-    from types import ModuleType
-
-    class _FakeAdapter(ModuleType):
-        load_catboost_booster: object
 
     def fake_load(model_path: str) -> BoosterLike:
         return _StubBooster(0.0)
 
-    fake_module = _FakeAdapter("catboost_adapter")
-    fake_module.load_catboost_booster = fake_load
-    monkeypatch.setitem(sys.modules, "catboost_adapter", fake_module)
+    _install_fake_catboost_adapter(monkeypatch, fake_load)
 
     pool = init_member_pool(tmp_path, "jra")
 
     # NAR's registered entry never produced a manifest load and never inflated
     # the JRA pool.
     assert pool.model_versions() == (JRA_FALLBACK_MODEL_VERSION, ITER22_RESIDUAL_703)
+
+
+# ---------------------------------------------------------------------------
+# init_member_pool — NAR path (Phase F)
+
+
+def test_init_member_pool_loads_nar_mixed_arch_members(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NAR per-class members blend an XGBoost baseline (iter 12) with a
+    CatBoost residual (iter 30). The pool must record the right arch per
+    member so the scorer routes each to the matching feature-matrix dtype.
+    Confirms the architecture-aware walker bound up in
+    :func:`predict_lib.ensemble_routing.init_member_pool`."""
+    _write_manifest(
+        tmp_path,
+        "nar",
+        "NEW",
+        NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION,
+        _canonical_nar_new_payload(),
+    )
+    _write_baseline_model_json(tmp_path, "nar", NAR_FALLBACK_MODEL_VERSION)
+    _write_member_model_json(tmp_path, "nar", "NEW", NAR_RESIDUAL_NEW)
+
+    def fake_catboost(model_path: str) -> BoosterLike:
+        return _StubBooster(0.5)
+
+    def fake_xgboost(model_path: str) -> BoosterLike:
+        return _StubBooster(0.0)
+
+    _install_fake_catboost_adapter(monkeypatch, fake_catboost)
+    _install_fake_xgboost_adapter(monkeypatch, fake_xgboost)
+
+    pool = init_member_pool(tmp_path, "nar")
+
+    baseline_record = pool.get_record(NAR_FALLBACK_MODEL_VERSION)
+    residual_record = pool.get_record(NAR_RESIDUAL_NEW)
+    assert baseline_record is not None
+    assert residual_record is not None
+    # The model_version naming convention pins the arch.
+    assert baseline_record.architecture == "xgboost"
+    assert residual_record.architecture == "catboost"
+
+
+def test_init_member_pool_nar_loads_baseline_only_once_when_perclass_dup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the NAR baseline is ALSO present under per-class/<code>/<baseline_mv>/
+    (e.g. an offline ensemble drop that placed the baseline in both layouts),
+    the per-class copy wins and the category-root copy is skipped — the pool
+    only records the baseline once."""
+    _write_manifest(
+        tmp_path,
+        "nar",
+        "NEW",
+        NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION,
+        _canonical_nar_new_payload(),
+    )
+    # Both layouts hold the baseline.
+    _write_baseline_model_json(tmp_path, "nar", NAR_FALLBACK_MODEL_VERSION)
+    _write_member_model_json(tmp_path, "nar", "NEW", NAR_FALLBACK_MODEL_VERSION)
+    _write_member_model_json(tmp_path, "nar", "NEW", NAR_RESIDUAL_NEW)
+
+    captured_paths: list[str] = []
+
+    def fake_catboost(model_path: str) -> BoosterLike:
+        captured_paths.append(model_path)
+        return _StubBooster(0.5)
+
+    def fake_xgboost(model_path: str) -> BoosterLike:
+        captured_paths.append(model_path)
+        return _StubBooster(0.0)
+
+    _install_fake_catboost_adapter(monkeypatch, fake_catboost)
+    _install_fake_xgboost_adapter(monkeypatch, fake_xgboost)
+
+    pool = init_member_pool(tmp_path, "nar")
+
+    assert pool.has(NAR_FALLBACK_MODEL_VERSION) is True
+    assert pool.has(NAR_RESIDUAL_NEW) is True
+    # The baseline path was loaded exactly once — per-class copy.
+    baseline_loads = [p for p in captured_paths if NAR_FALLBACK_MODEL_VERSION in p]
+    assert len(baseline_loads) == 1
+    assert "per-class" in baseline_loads[0]
+
+
+def test_init_member_pool_nar_skips_baseline_when_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The NAR baseline lives at the category root (NOT under per-class/) —
+    when that file is missing it must NOT show up in the pool, and the per-
+    class residual still loads. Mirrors the JRA missing-member test for the
+    Phase F baseline path."""
+    _write_manifest(
+        tmp_path,
+        "nar",
+        "NEW",
+        NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION,
+        _canonical_nar_new_payload(),
+    )
+    _write_member_model_json(tmp_path, "nar", "NEW", NAR_RESIDUAL_NEW)
+
+    def fake_catboost(model_path: str) -> BoosterLike:
+        return _StubBooster(0.5)
+
+    _install_fake_catboost_adapter(monkeypatch, fake_catboost)
+
+    pool = init_member_pool(tmp_path, "nar")
+
+    assert pool.has(NAR_RESIDUAL_NEW) is True
+    assert pool.has(NAR_FALLBACK_MODEL_VERSION) is False
 
 
 # ---------------------------------------------------------------------------
@@ -387,8 +588,8 @@ def test_score_race_with_resolution_ensemble_happy_path() -> None:
     ensemble = _two_member_ensemble()
     pool = BoosterPool(
         boosters={
-            JRA_FALLBACK_MODEL_VERSION: _StubBooster(0.0),
-            ITER22_RESIDUAL_703: _StubBooster(1.0),
+            JRA_FALLBACK_MODEL_VERSION: _cb_record(_StubBooster(0.0)),
+            ITER22_RESIDUAL_703: _cb_record(_StubBooster(1.0)),
         }
     )
     fallback = _StubBooster(99.0)
@@ -412,6 +613,37 @@ def test_score_race_with_resolution_ensemble_happy_path() -> None:
     assert outcome.scores == [0.0, 0.5, 1.0]
 
 
+def test_score_race_with_resolution_nar_mixed_arch_ensemble_happy_path() -> None:
+    """A NAR ensemble blends an XGBoost baseline + CatBoost residual. The
+    scorer builds a separate feature matrix per arch and the blend produces
+    a length-aligned vector. Pins the Phase F mixed-arch contract."""
+    ensemble = _nar_new_ensemble()
+    pool = BoosterPool(
+        boosters={
+            NAR_FALLBACK_MODEL_VERSION: _xgb_record(_StubBooster(0.0)),
+            NAR_RESIDUAL_NEW: _cb_record(_StubBooster(1.0)),
+        }
+    )
+    fallback = _StubBooster(99.0)
+
+    outcome = score_race_with_resolution(
+        resolution=ensemble,
+        race_id="nar:2026:0605:30:11",
+        entries=_three_horse_entries(),
+        feature_names=FEATURE_NAMES,
+        architecture="xgboost",  # NAR category-global
+        pool=pool,
+        fallback_booster=fallback,
+        fallback_model_version=NAR_FALLBACK_MODEL_VERSION,
+    )
+
+    assert outcome.model_version == NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION
+    assert outcome.fallback_reason is None
+    # Within-race rank-normalisation collapses to the same shape per member, so
+    # the weighted blend of identical normalised vectors is that vector.
+    assert outcome.scores == [0.0, 0.5, 1.0]
+
+
 # ---------------------------------------------------------------------------
 # score_race_with_resolution — failure fallback paths
 
@@ -421,7 +653,9 @@ def test_score_race_with_resolution_falls_back_when_member_missing() -> None:
     with the global model_version label and ``member-missing:<mv>`` reason."""
     ensemble = _two_member_ensemble()
     # Only the iter14 member is in the pool; iter22 is missing.
-    pool = BoosterPool(boosters={JRA_FALLBACK_MODEL_VERSION: _StubBooster(0.0)})
+    pool = BoosterPool(
+        boosters={JRA_FALLBACK_MODEL_VERSION: _cb_record(_StubBooster(0.0))}
+    )
     fallback = _StubBooster(0.4)
 
     outcome = score_race_with_resolution(
@@ -446,8 +680,8 @@ def test_score_race_with_resolution_falls_back_when_member_predict_raises() -> N
     ensemble = _two_member_ensemble()
     pool = BoosterPool(
         boosters={
-            JRA_FALLBACK_MODEL_VERSION: _StubBooster(0.0),
-            ITER22_RESIDUAL_703: _RaisingBooster(),
+            JRA_FALLBACK_MODEL_VERSION: _cb_record(_StubBooster(0.0)),
+            ITER22_RESIDUAL_703: _cb_record(_RaisingBooster()),
         }
     )
     fallback = _StubBooster(0.4)
@@ -475,8 +709,8 @@ def test_score_race_with_resolution_falls_back_when_blend_shape_mismatch() -> No
     ensemble = _two_member_ensemble()
     pool = BoosterPool(
         boosters={
-            JRA_FALLBACK_MODEL_VERSION: _StubBooster(0.0),
-            ITER22_RESIDUAL_703: _WrongLengthBooster(),
+            JRA_FALLBACK_MODEL_VERSION: _cb_record(_StubBooster(0.0)),
+            ITER22_RESIDUAL_703: _cb_record(_WrongLengthBooster()),
         }
     )
     fallback = _StubBooster(0.7)
@@ -505,8 +739,8 @@ def test_score_race_with_resolution_falls_back_when_outer_shape_mismatch() -> No
     ensemble = _two_member_ensemble()
     pool = BoosterPool(
         boosters={
-            JRA_FALLBACK_MODEL_VERSION: _WrongLengthBooster(),
-            ITER22_RESIDUAL_703: _WrongLengthBooster(),
+            JRA_FALLBACK_MODEL_VERSION: _cb_record(_WrongLengthBooster()),
+            ITER22_RESIDUAL_703: _cb_record(_WrongLengthBooster()),
         }
     )
     fallback = _StubBooster(0.9)
@@ -540,8 +774,8 @@ def test_score_race_with_resolution_outer_shape_guard_triggers(
     ensemble = _two_member_ensemble()
     pool = BoosterPool(
         boosters={
-            JRA_FALLBACK_MODEL_VERSION: _StubBooster(0.0),
-            ITER22_RESIDUAL_703: _StubBooster(1.0),
+            JRA_FALLBACK_MODEL_VERSION: _cb_record(_StubBooster(0.0)),
+            ITER22_RESIDUAL_703: _cb_record(_StubBooster(1.0)),
         }
     )
     fallback = _StubBooster(0.7)
@@ -589,8 +823,8 @@ def test_score_race_with_resolution_handles_entries_with_missing_ketto() -> None
     ensemble = _two_member_ensemble()
     pool = BoosterPool(
         boosters={
-            JRA_FALLBACK_MODEL_VERSION: _StubBooster(0.0),
-            ITER22_RESIDUAL_703: _StubBooster(0.0),
+            JRA_FALLBACK_MODEL_VERSION: _cb_record(_StubBooster(0.0)),
+            ITER22_RESIDUAL_703: _cb_record(_StubBooster(0.0)),
         }
     )
     fallback = _StubBooster(0.0)
@@ -624,16 +858,55 @@ def test_score_race_with_resolution_uses_xgboost_path() -> None:
     pool = BoosterPool(boosters={})
 
     outcome = score_race_with_resolution(
-        resolution="iter12-nar-xgb-hpo-v8",
+        resolution=NAR_FALLBACK_MODEL_VERSION,
         race_id="nar:2026:0605:30:11",
         entries=_three_horse_entries(),
         feature_names=FEATURE_NAMES,
         architecture="xgboost",
         pool=pool,
         fallback_booster=fallback,
-        fallback_model_version="iter12-nar-xgb-hpo-v8",
+        fallback_model_version=NAR_FALLBACK_MODEL_VERSION,
     )
 
-    assert outcome.model_version == "iter12-nar-xgb-hpo-v8"
+    assert outcome.model_version == NAR_FALLBACK_MODEL_VERSION
     assert outcome.fallback_reason is None
     assert outcome.scores == [0.2, 1.2, 2.2]
+
+
+# ---------------------------------------------------------------------------
+# Architecture dispatch helpers
+
+
+def test_resolve_member_architecture_returns_xgboost_for_xgb_token() -> None:
+    """The ``_resolve_member_architecture`` dispatcher picks XGBoost for any
+    model_version containing the ``-xgb-`` token (the NAR baseline)."""
+    from predict_lib.ensemble_routing import resolve_member_architecture
+
+    assert resolve_member_architecture(NAR_FALLBACK_MODEL_VERSION, "nar") == "xgboost"
+
+
+def test_resolve_member_architecture_returns_catboost_for_cb_token() -> None:
+    """Member model_versions containing ``-cb-`` are CatBoost regardless of
+    category — covers both JRA per-class members and NAR iter 30 residuals."""
+    from predict_lib.ensemble_routing import resolve_member_architecture
+
+    assert (
+        resolve_member_architecture(JRA_CLASS_703_ENSEMBLE_MODEL_VERSION, "jra")
+        == "catboost"
+    )
+    assert resolve_member_architecture(NAR_RESIDUAL_NEW, "nar") == "catboost"
+
+
+def test_resolve_member_architecture_falls_back_to_category_default() -> None:
+    """An unrecognised model_version (no ``-xgb-`` or ``-cb-`` token) defers to
+    the category default. Mirrors the legacy banei-cb-v7-lineage-wf-21y name
+    which only carries the ``-cb-`` substring in production — the fallback
+    branch here exists for forward-compat with future naming schemes."""
+    from predict_lib.ensemble_routing import resolve_member_architecture
+
+    # A made-up bareword without any token -> defer to JRA default (catboost).
+    result_jra: Architecture = resolve_member_architecture("unknown-mv", "jra")
+    assert result_jra == "catboost"
+    # NAR default is xgboost.
+    result_nar: Architecture = resolve_member_architecture("unknown-mv", "nar")
+    assert result_nar == "xgboost"

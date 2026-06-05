@@ -1,62 +1,48 @@
-"""Per-class JRA model routing (Phase B of the per-class architecture pivot).
+"""Per-class JRA / NAR model routing (Phase B + Phase F of the per-class architecture pivot).
 
 The v8 production deploy (JRA=iter14-jra-cb-pacestyle-course-v8, NAR=iter12-nar-
 xgb-hpo-v8) is a single global model per category. The per-class architecture
-adds an optional second axis — ``kyoso_joken_code`` (race class) — so that future
-per-class winners can be activated piecemeal without disturbing classes that
-have no per-class winner yet.
+adds an optional second axis — a category-specific class code — so per-class
+winners can be activated piecemeal without disturbing classes that have no
+per-class winner yet. The class-code domain depends on the category:
+
+* JRA — ``kyoso_joken_code`` (race-class code: ``005`` / ``010`` / ``016`` /
+  ``701`` / ``703`` / ``other``).
+* NAR — ``nar_subclass`` (derived from ``kyoso_joken_meisho`` by the feature
+  build: ``NEW`` / ``MUKATSU`` / ``C`` / ``B`` / ``A`` / ``OP`` / ``other``).
+* Ban-ei — no per-class registry today.
 
 Routing rules:
 
-* ``PER_CLASS_MODEL_VERSIONS`` maps ``(category, kyoso_joken_code)`` to a
-  registered per-class ``model_version`` string. An entry is added ONLY when a
-  per-class model has beaten the category-global fallback (iter 14 for JRA) on
-  its own subset; an unmapped class falls back to the category-global model.
+* ``PER_CLASS_MODEL_VERSIONS`` maps ``(category, class_code)`` to a registered
+  per-class ``model_version`` string. An entry is added ONLY when a per-class
+  model has beaten the category-global fallback on its own subset; an
+  unmapped class falls back to the category-global model.
 * ``PER_CLASS_ENABLED_CATEGORIES`` lists the categories that participate in the
-  per-class architecture. NAR / Ban-ei are intentionally excluded — neither has
-  an actionable per-class plan yet — so they always return the category-global
-  model regardless of ``kyoso_joken_code``.
+  per-class architecture. Ban-ei is intentionally excluded — it has no
+  actionable per-class plan yet — so it always returns the category-global
+  model regardless of class code.
 
 Phase B-2A (2026-06-05) adds an ENSEMBLE routing layer on top of the registered
 single-model string. When ``PER_CLASS_MODEL_VERSIONS`` resolves to an ensemble
-model_version (e.g. ``iter23-jra-cb-ensemble-703-v8``), the container can read a
-sidecar ``manifest.json`` that lists weighted member booster versions and a
-blend strategy. ``load_ensemble_manifest`` returns the parsed
-``PerClassEnsemble`` dataclass, or ``None`` when no manifest exists (the caller
-then falls back to the single-model path). ``resolve_per_class_resolution`` is
-the unified entry point that returns either a ``PerClassEnsemble`` (multi-model)
-or a single ``model_version`` string.
+model_version (e.g. ``iter26-jra-cb-ensemble-703-v8`` or
+``iter30-nar-cb-ensemble-NEW-v8``), the container can read a sidecar
+``manifest.json`` that lists weighted member booster versions and a blend
+strategy. ``load_ensemble_manifest`` returns the parsed ``PerClassEnsemble``
+dataclass, or ``None`` when no manifest exists (the caller then falls back to
+the single-model path). ``resolve_per_class_resolution`` is the unified entry
+point that returns either a ``PerClassEnsemble`` (multi-model) or a single
+``model_version`` string.
 
-iter 23 ensemble optimisation (2026-06-05) produced 4 ACCEPT manifests for JRA
-classes 005 / 701 / 703 / other. Only 703 beats iter 14 globally with
-delta_pp=+0.142pp top1; the other three tie at +0.000pp. Phase B-2A registered
-ONLY 703 to keep the booster pool footprint small.
-
-iter 25 v2 ensemble optimisation (2026-06-05) produced ACCEPT manifests for
-JRA classes 010 (2勝クラス, n=1583 holdout, delta_pp=+0.632pp top1 — the largest
-per-class win in the v8 loop), 005 (1勝クラス, n=3147 holdout,
-delta_pp=+0.095pp top1 — modest but positive, the second smallest gain after
-the tied classes) and ``other`` (catch-all for races whose ``kyoso_joken_code``
-is NOT in ``{005, 010, 016, 701, 703}`` or is NULL; n=1064 holdout,
-delta_pp=+0.094pp top1). All three were activated alongside 703 in
-``PER_CLASS_MODEL_VERSIONS``.
-
-iter 26 v4 ensemble re-optimisation (2026-06-05) added the iter 26 relationship
-booster (馬体重 x 斤量 x 馬齢 x 距離 x タイム, 12 cols) to the member pool and
-shipped major per-class gains for 005 / 016 / 703. 005 flipped from iter 25 v2
-(+0.095pp) to iter 26 v4 (+0.572pp, +0.477pp delta); 016 was activated for the
-first time at +0.138pp (was iter 14 fallback because v2 measured -0.550 REJECT);
-703 flipped from iter 23 (+0.142pp) to iter 26 v4 (+0.189pp, +0.047pp delta).
-010 and ``other`` stayed on iter 25 v2 because v4 was worse on 010 (+0.190 vs
-+0.632) and tied on ``other`` (+0.094). 701 remains unregistered: iter 26 v4
-also REJECT at -1.574pp, falls back to iter 14 — see
-``docs/finish-position-accuracy/runbook/PER_CLASS_ROUTING.md``.
+iter 26 v4 (JRA, 2026-06-05): 005 / 016 / 703 / 010 / other ensembles activated.
+iter 30 (NAR, 2026-06-05): NEW / MUKATSU / C / A / OP / other ensembles
+activated — six NAR sub-classes routed off ``nar_subclass``. ``B`` stays on the
+iter12 baseline (no ensemble registered).
 
 The ``other`` entry is a virtual code: real races never carry the literal
-``"other"`` as their ``kyoso_joken_code``. :func:`normalize_class_code` maps
-unregistered codes (and NULL) to ``"other"`` before the registry / manifest
-lookup so the offline ``compute_iter20`` ``class_filter_mask`` semantics carry
-over to inference unchanged.
+``"other"`` as their class code. :func:`normalize_class_code` maps unregistered
+codes (and NULL) to ``"other"`` before the registry / manifest lookup so the
+offline ``class_filter_mask`` semantics carry over to inference unchanged.
 """
 
 from __future__ import annotations
@@ -73,10 +59,10 @@ from .model_meta import R2_KEY_PREFIX, Category, model_version_for
 class EnsembleMember:
     """One weighted member booster inside a per-class ensemble manifest.
 
-    Members come from the iter 23 ensemble search artefacts. ``is_baseline``
-    flags the iter 14 fallback booster (carried at a small weight as a safety
-    net); all other members are per-class iterations whose blend weight was
-    optimised on the validation window.
+    Members come from the iter 23+ ensemble search artefacts. ``is_baseline``
+    flags the category-global fallback booster (carried at a small weight as a
+    safety net); all other members are per-class iterations whose blend weight
+    was optimised on the validation window.
     """
 
     model_version: str
@@ -105,47 +91,52 @@ class PerClassEnsemble:
 # v4 ensemble (iter 26 relationship features: 馬体重 x 斤量 x 馬齢 x 距離 x
 # タイム interaction columns, 12 cols). iter 26 v4 re-optimised the ensemble
 # pool with the new relationship booster added and shipped major per-class
-# gains:
+# gains.
 #
-# * 005 +0.572pp top1 (was iter 25 v2 +0.095pp; +0.477pp delta). iter 26
-#   relationships booster dominates the blend at weight 0.51 with iter 22
-#   residual at 0.18 and iter 14 baseline carried at 0.20.
-# * 016 +0.138pp top1 (was iter 14 fallback; v2 was -0.550 REJECT). NEW
-#   ensemble activation — iter 25 low-cap dominates at 0.54 with iter 26
-#   relationships at 0.11 and iter 14 baseline at 0.20.
-# * 703 +0.189pp top1 (was iter 23 +0.142pp; +0.047pp delta). iter 26
-#   relationships booster dominates the blend at weight 0.67 with iter 14
-#   baseline at 0.20.
-#
-# 010 keeps iter 25 v2 (+0.632pp top1, the largest per-class win in the v8
-# loop) — iter 26 v4 was only +0.190pp on 010 so v2 stays. ``other`` keeps
-# iter 25 v2 (+0.094pp top1) — v4 tied, no reason to swap. 701 remains
-# unregistered (iter 14 fallback): iter 26 v4 = -1.574pp, no improvement over
-# v2 -1.784pp.
+# Phase F (2026-06-05) adds NAR per-class routing on top: six NAR sub-classes
+# (NEW / MUKATSU / C / A / OP / other) activated with iter 30 ensembles on
+# iter 12 NAR XGBoost baseline + iter 30 CatBoost residuals. ``B`` stays on
+# the iter 12 fallback (no ensemble registered).
 PER_CLASS_MODEL_VERSIONS: Final[dict[tuple[Category, str], str]] = {
     ("jra", "005"): "iter26-jra-cb-ensemble-005-v8",
     ("jra", "010"): "iter25-jra-cb-ensemble-010-v8",
     ("jra", "016"): "iter26-jra-cb-ensemble-016-v8",
     ("jra", "703"): "iter26-jra-cb-ensemble-703-v8",
     ("jra", "other"): "iter25-jra-cb-ensemble-other-v8",
+    ("nar", "NEW"): "iter30-nar-cb-ensemble-NEW-v8",
+    ("nar", "MUKATSU"): "iter30-nar-cb-ensemble-MUKATSU-v8",
+    ("nar", "C"): "iter30-nar-cb-ensemble-C-v8",
+    ("nar", "A"): "iter30-nar-cb-ensemble-A-v8",
+    ("nar", "OP"): "iter30-nar-cb-ensemble-OP-v8",
+    ("nar", "other"): "iter30-nar-cb-ensemble-other-v8",
 }
 
-# Real ``kyoso_joken_code`` values that are routed by their literal code rather
-# than the catch-all ``"other"`` bucket. Mirrors the offline
-# ``per_class_ensemble_lib.class_filter_mask`` carve-outs (005 / 010 / 016 /
-# 701 / 703) so the ``compute_iter20`` train-time class boundaries are
-# preserved at inference time. Codes outside this set (and NULL) collapse to
-# ``"other"`` via :func:`normalize_class_code` before the registry lookup.
-NAMED_PER_CLASS_CODES: Final[frozenset[str]] = frozenset(
-    {"005", "010", "016", "701", "703"}
-)
+# Real class-code values that are routed by their literal code rather than the
+# catch-all ``"other"`` bucket — split per category because JRA uses numeric
+# ``kyoso_joken_code`` while NAR uses the derived ``nar_subclass`` string. The
+# JRA set mirrors the offline ``per_class_ensemble_lib.class_filter_mask``
+# carve-outs (005 / 010 / 016 / 701 / 703); the NAR set mirrors the offline
+# ``nar_subclass`` regex partition (NEW / MUKATSU / C / B / A / OP). Codes
+# outside the per-category set (and NULL) collapse to ``"other"`` via
+# :func:`normalize_class_code` before the registry lookup. Ban-ei has no
+# per-class plan, so its set is empty.
+NAMED_PER_CLASS_CODES_BY_CATEGORY: Final[dict[Category, frozenset[str]]] = {
+    "jra": frozenset({"005", "010", "016", "701", "703"}),
+    "nar": frozenset({"NEW", "MUKATSU", "C", "B", "A", "OP"}),
+    "ban-ei": frozenset(),
+}
+# Back-compat alias for callers / tests that already imported the JRA-only
+# constant before Phase F. Equivalent to ``NAMED_PER_CLASS_CODES_BY_CATEGORY
+# ["jra"]`` — preserved verbatim so the JRA registry checks stay stable.
+NAMED_PER_CLASS_CODES: Final[frozenset[str]] = NAMED_PER_CLASS_CODES_BY_CATEGORY["jra"]
 OTHER_CLASS_CODE: Final[str] = "other"
 
-# Categories that participate in per-class routing. NAR / Ban-ei are excluded
-# so their ``resolve_per_class_model_version`` always returns the category-global
-# model — adding them here would silently change routing behaviour, so the
-# allowlist is the single switch.
-PER_CLASS_ENABLED_CATEGORIES: Final[frozenset[Category]] = frozenset({"jra"})
+# Categories that participate in per-class routing. Ban-ei is excluded so its
+# ``resolve_per_class_model_version`` always returns the category-global
+# model — adding it here would silently change routing behaviour, so the
+# allowlist is the single switch. Phase F (2026-06-05) adds ``nar`` alongside
+# ``jra`` for the iter 30 NAR ensemble rollout.
+PER_CLASS_ENABLED_CATEGORIES: Final[frozenset[Category]] = frozenset({"jra", "nar"})
 
 # Sub-directory under ``<models_dir>/{R2_KEY_PREFIX}/{category}/`` where
 # per-class artefacts (booster.json + ensemble manifest.json) live. Mirrors the
@@ -161,50 +152,52 @@ def is_per_class_enabled_for(category: Category) -> bool:
     return category in PER_CLASS_ENABLED_CATEGORIES
 
 
-def normalize_class_code(kyoso_joken_code: str | None) -> str:
+def normalize_class_code(category: Category, code: str | None) -> str:
     """Collapse unregistered codes (and ``None``) to the catch-all ``"other"``.
 
-    Real races carry the raw ``kyoso_joken_code`` value from PG (e.g. ``"005"``,
-    ``"999"``, ``"000"`` or ``None``). The per-class registry only enumerates
-    the five named codes that have a real class boundary in offline training
-    (``NAMED_PER_CLASS_CODES`` = ``{005, 010, 016, 701, 703}``); every other
-    race participates in the ``other`` bucket. This helper performs that
-    mapping once, immediately before the registry lookup, so callers never
-    need to special-case unregistered codes.
+    The named-code allowlist is per-category: JRA uses numeric ``kyoso_joken_
+    code`` (``005`` / ``010`` / ``016`` / ``701`` / ``703``), NAR uses the
+    derived ``nar_subclass`` string (``NEW`` / ``MUKATSU`` / ``C`` / ``B`` /
+    ``A`` / ``OP``), Ban-ei has no named codes. Every code outside the
+    per-category set collapses to ``"other"``; NULL also collapses to
+    ``"other"``.
 
-    Returned values are guaranteed non-``None`` so downstream code can treat
-    the result as a regular string key.
+    The mapping happens once, immediately before the registry lookup, so
+    callers never need to special-case unregistered codes. Returned values are
+    guaranteed non-``None`` so downstream code can treat the result as a
+    regular string key.
     """
-    if kyoso_joken_code is None:
+    if code is None:
         return OTHER_CLASS_CODE
-    if kyoso_joken_code in NAMED_PER_CLASS_CODES:
-        return kyoso_joken_code
+    named = NAMED_PER_CLASS_CODES_BY_CATEGORY.get(category, frozenset())
+    if code in named:
+        return code
     return OTHER_CLASS_CODE
 
 
 def resolve_per_class_model_version(
     category: Category,
-    kyoso_joken_code: str | None,
+    class_code: str | None,
 ) -> str:
     """Return per-class model_version if registered, else category fallback.
 
     Falls back to ``model_version_for(category)`` when:
 
-    * the category is not per-class enabled (NAR / Ban-ei), or
+    * the category is not per-class enabled (Ban-ei), or
     * the normalised class code (see :func:`normalize_class_code`) has no
       registered per-class winner yet — i.e. the named-code-or-``"other"``
       bucket does not appear in ``PER_CLASS_MODEL_VERSIONS``.
 
     Both branches map to the SAME global model_version so the caller can
     treat the return value as an opaque label and is never accidentally routed
-    to a non-existent per-class booster. NULL / empty ``kyoso_joken_code``
-    values from PG are folded into the ``"other"`` bucket by the normaliser,
-    so they hit the ``other`` ensemble when it is registered and the category
-    fallback otherwise.
+    to a non-existent per-class booster. NULL / empty class-code values from
+    the feature parquet are folded into the ``"other"`` bucket by the
+    normaliser, so they hit the ``other`` ensemble when it is registered and
+    the category fallback otherwise.
     """
     if not is_per_class_enabled_for(category):
         return model_version_for(category)
-    normalised = normalize_class_code(kyoso_joken_code)
+    normalised = normalize_class_code(category, class_code)
     return PER_CLASS_MODEL_VERSIONS.get(
         (category, normalised),
         model_version_for(category),
@@ -358,7 +351,7 @@ def load_ensemble_manifest(
 def resolve_per_class_resolution(
     models_dir: Path,
     category: Category,
-    kyoso_joken_code: str | None,
+    class_code: str | None,
 ) -> PerClassEnsemble | str:
     """Return either a ``PerClassEnsemble`` (multi-model) or single model_version.
 
@@ -370,16 +363,16 @@ def resolve_per_class_resolution(
     2. Otherwise return the string from ``resolve_per_class_model_version``
        (registered single model or category-global fallback).
 
-    The raw ``kyoso_joken_code`` is first normalised through
-    :func:`normalize_class_code` so unregistered real codes (e.g. ``"999"``)
-    and NULL values both route to the ``"other"`` ensemble when it is
-    registered. The return type union (``PerClassEnsemble | str``) lets the
-    caller pattern-match on ``isinstance(..., PerClassEnsemble)`` to pick the
+    The raw class code is first normalised through :func:`normalize_class_code`
+    so unregistered real codes (e.g. JRA ``"999"`` / NAR ``"X"``) and NULL
+    values both route to the ``"other"`` ensemble when it is registered. The
+    return type union (``PerClassEnsemble | str``) lets the caller
+    pattern-match on ``isinstance(..., PerClassEnsemble)`` to pick the
     rank-blend path vs the single-booster path.
     """
     if is_per_class_enabled_for(category):
-        normalised = normalize_class_code(kyoso_joken_code)
+        normalised = normalize_class_code(category, class_code)
         ensemble = load_ensemble_manifest(models_dir, category, normalised)
         if ensemble is not None:
             return ensemble
-    return resolve_per_class_model_version(category, kyoso_joken_code)
+    return resolve_per_class_model_version(category, class_code)

@@ -165,7 +165,7 @@ def stage_base_input(
           rec.futan_juryo::double as futan_juryo,
           rec.barei::double as barei,
           {bataiju_sql}::double as bataiju
-        from read_parquet('{input_glob}', hive_partitioning=true) b
+        from read_parquet('{input_glob}', hive_partitioning=true, union_by_name=true) b
         left join pg.race_entry_corner_features rec
           on rec.source = b.source
           and rec.kaisai_nen = b.kaisai_nen
@@ -369,7 +369,7 @@ def append_features_sql(input_glob: str) -> str:
     """
     return f"""
     with base as (
-      select * from read_parquet('{input_glob}', hive_partitioning=true)
+      select * from read_parquet('{input_glob}', hive_partitioning=true, union_by_name=true)
     ),
     joined as (
       select
