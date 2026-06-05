@@ -321,6 +321,109 @@ test("PaddockSection keeps height-stable empty class on official-rank fact when 
   expect(emptyFact?.getAttribute("aria-hidden")).toBe("true");
 });
 
+test("PaddockSection renders bloodline value dd with desktop nowrap class", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  const { container } = render(
+    <PaddockSection
+      {...baseProps}
+      runners={[
+        buildRunner({
+          bamei: "テストホース",
+          damSireName: "サンデーサイレンス",
+          sireName: "ディープインパクト",
+          sireSireName: "ステイゴールド",
+          umaban: "01",
+        }),
+      ]}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getAllByRole("article").length).toBe(1);
+  });
+  const bloodlineDdNodes = container.querySelectorAll<HTMLElement>(
+    ".paddock-horse-bloodline-value",
+  );
+  expect(bloodlineDdNodes.length).toBe(3);
+  expect(bloodlineDdNodes[0]?.tagName).toBe("DD");
+  expect(bloodlineDdNodes[0]?.getAttribute("title")).toBe("ディープインパクト");
+  expect(bloodlineDdNodes[1]?.getAttribute("title")).toBe("ステイゴールド");
+  expect(bloodlineDdNodes[2]?.getAttribute("title")).toBe("サンデーサイレンス");
+});
+
+test("PaddockSection recent runs include 枠番 and 馬番 columns", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      recentResults={[
+        {
+          babajotaiCodeDirt: null,
+          babajotaiCodeShiba: null,
+          bamei: "テストホース",
+          banushimei: null,
+          barei: "03",
+          bataiju: "480",
+          chokyoshimeiRyakusho: null,
+          corner1: null,
+          corner2: null,
+          corner3: null,
+          corner4: null,
+          currentBarei: null,
+          currentJockey: null,
+          currentSeibetsuCode: null,
+          currentUmaban: "01",
+          futanJuryo: null,
+          gradeCode: null,
+          hassoJikoku: null,
+          juryoShubetsuCode: null,
+          kaisaiNen: "2026",
+          kaisaiTsukihi: "0530",
+          kakuteiChakujun: "03",
+          keibajoCode: "05",
+          kettoTorokuBango: "h1",
+          kishumeiRyakusho: "騎手",
+          kohan3f: null,
+          kyori: "1600",
+          kyosoJokenCode: null,
+          kyosoJokenMeisho: null,
+          kyosoKigoCode: null,
+          kyosoShubetsuCode: null,
+          kyosomeiFukudai: null,
+          kyosomeiHondai: "テストレース",
+          kyosomeiKakkonai: null,
+          raceBango: "05",
+          seibetsuCode: null,
+          shussoTosu: null,
+          sohaTime: null,
+          tanshoNinkijun: "02",
+          tanshoOdds: "0050",
+          tenkoCode: null,
+          timeSa: null,
+          trackCode: "10",
+          umaban: "07",
+          wakuban: "4",
+          zogenFugo: "+",
+          zogenSa: "0",
+        },
+      ]}
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getAllByRole("article").length).toBe(1);
+  });
+  const frameCell = screen.getByLabelText("枠番");
+  expect(frameCell.textContent).toBe("4");
+  const umaCell = screen.getByLabelText("馬番");
+  expect(umaCell.textContent).toBe("7");
+});
+
 test("PaddockSection read-only table includes trainer and bloodline column headers", async () => {
   getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
   const stateWithScore: PaddockState = {

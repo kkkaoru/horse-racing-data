@@ -505,6 +505,12 @@ function PaddockRecentResults({ loading = false, results }: PaddockRecentResults
               <small>{formatPastResultMeta(result)}</small>
             </span>
             <span className="paddock-recent-stats">
+              <span aria-label="枠番" className="paddock-recent-frame">
+                <FrameNumberBadge value={result.wakuban} />
+              </span>
+              <span aria-label="馬番" className="paddock-recent-uma">
+                {formatRunnerNumber(result.umaban)}
+              </span>
               <span>{formatPastPopularity(result.tanshoNinkijun)}</span>
               <span>{formatPastOdds(result.tanshoOdds)}</span>
               <span>
@@ -977,15 +983,30 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
           ) : null}
           <div className="paddock-horse-bloodline-fact">
             <dt>父</dt>
-            <dd>{sireName || PADDOCK_FACT_PLACEHOLDER}</dd>
+            <dd
+              className="paddock-horse-bloodline-value"
+              title={sireName || PADDOCK_FACT_PLACEHOLDER}
+            >
+              {sireName || PADDOCK_FACT_PLACEHOLDER}
+            </dd>
           </div>
           <div className="paddock-horse-bloodline-fact">
             <dt>父父</dt>
-            <dd>{sireSireName || PADDOCK_FACT_PLACEHOLDER}</dd>
+            <dd
+              className="paddock-horse-bloodline-value"
+              title={sireSireName || PADDOCK_FACT_PLACEHOLDER}
+            >
+              {sireSireName || PADDOCK_FACT_PLACEHOLDER}
+            </dd>
           </div>
           <div className="paddock-horse-bloodline-fact">
             <dt>母父</dt>
-            <dd>{damSireName || PADDOCK_FACT_PLACEHOLDER}</dd>
+            <dd
+              className="paddock-horse-bloodline-value"
+              title={damSireName || PADDOCK_FACT_PLACEHOLDER}
+            >
+              {damSireName || PADDOCK_FACT_PLACEHOLDER}
+            </dd>
           </div>
         </dl>
         <b>{formatPaddockScore(scores.total)}</b>
