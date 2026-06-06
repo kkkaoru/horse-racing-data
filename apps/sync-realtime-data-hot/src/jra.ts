@@ -30,6 +30,24 @@ const CLICK_TIMEOUT_MS = 8_000;
 const CHANGE_TIMEOUT_MS = 3_000;
 const CONTENT_PROBE_LENGTH = 128;
 const ODDS_LIST_RETRY_LIMIT = 2;
+// Increased from 500ms to 10s (task K1-A). The previous `innerHTML({ timeout:
+// 500 })` could win the wait race but lose the read race when JRA upstream
+// rendering trickled into `#odds_list` over 1-2s — leading to silent zero
+// rows on tabs that downstream `parseJraOddsByType` then dropped. With the
+// outer per-tab budget already bounded by `CHANGE_TIMEOUT_MS` (3s) and the
+// retry layer at `fetchJraOddsWithRetry`, a higher inner read timeout
+// converts those silent zero-row tabs into observable populated tabs.
+const INNER_HTML_TIMEOUT_MS = 10_000;
+
+// Result shape for `fetchJraOddsWithPlaywright` (task K1-A). `missingTypes`
+// surfaces the odds tabs whose click/parse step threw, so callers can log a
+// per-race partial-fetch warning instead of silently dropping the missing
+// bet types. An empty array means all 8 tabs returned.
+export interface FetchJraOddsResult {
+  entryHtml: string;
+  latest: Partial<Record<OddsType, OddsData[]>>;
+  missingTypes: OddsType[];
+}
 
 const ODDS_PAGE_LABELS: ReadonlyArray<{ label: string; type: OddsType }> = [
   { label: "単勝・複勝", type: "tansho" },
@@ -602,7 +620,7 @@ const captureProbe = async (page: Page): Promise<{ html: string; url: string }> 
   html: (
     await page
       .locator(ODDS_LIST_SELECTOR)
-      .innerHTML({ timeout: 500 })
+      .innerHTML({ timeout: INNER_HTML_TIMEOUT_MS })
       .catch(() => "")
   ).slice(0, CONTENT_PROBE_LENGTH),
   url: page.url(),
@@ -646,10 +664,9 @@ const clickAndWaitForOdds = async (page: Page, clickAction: () => Promise<void>)
     if (page.url() !== probe.url) {
       break;
     }
-    const html = (await page.locator(ODDS_LIST_SELECTOR).innerHTML({ timeout: 500 })).slice(
-      0,
-      CONTENT_PROBE_LENGTH,
-    );
+    const html = (
+      await page.locator(ODDS_LIST_SELECTOR).innerHTML({ timeout: INNER_HTML_TIMEOUT_MS })
+    ).slice(0, CONTENT_PROBE_LENGTH);
     if (html.length > 0 && html !== probe.html) {
       break;
     }
@@ -689,10 +706,7 @@ const getOddsListHtml = async (page: Page): Promise<string> => {
 const fetchJraOddsWithPlaywrightOnce = async (
   browserBinding: BrowserWorker,
   entryUrl: string,
-): Promise<{
-  entryHtml: string;
-  latest: Partial<Record<OddsType, OddsData[]>>;
-}> => {
+): Promise<FetchJraOddsResult> => {
   const { launch } = await import("@cloudflare/playwright");
   let browser: Browser | null = null;
   try {
@@ -704,6 +718,7 @@ const fetchJraOddsWithPlaywrightOnce = async (
     const entryHtml = await page.content();
     await navigateFromRacePageToOdds(page);
     const latest: Partial<Record<OddsType, OddsData[]>> = {};
+    const missingTypes: OddsType[] = [];
     for (const { label, type } of ODDS_PAGE_LABELS) {
       try {
         if (type !== "tansho") {
@@ -715,24 +730,38 @@ const fetchJraOddsWithPlaywrightOnce = async (
         latest[type] = parseJraOddsByType(type, html);
       } catch (error) {
         console.warn(`Failed to fetch JRA ${type} odds`, error);
+        missingTypes.push(type);
       }
     }
-    return { entryHtml, latest };
+    return { entryHtml, latest, missingTypes };
   } finally {
     await browser?.close();
   }
 };
 
+interface TryFetchOk extends FetchJraOddsResult {
+  ok: true;
+}
+
+interface TryFetchErr {
+  ok: false;
+  error: unknown;
+}
+
+type TryFetchResult = TryFetchErr | TryFetchOk;
+
 const tryFetchOnce = async (
   browserBinding: BrowserWorker,
   entryUrl: string,
-): Promise<
-  | { ok: true; entryHtml: string; latest: Partial<Record<OddsType, OddsData[]>> }
-  | { ok: false; error: unknown }
-> => {
+): Promise<TryFetchResult> => {
   try {
     const result = await fetchJraOddsWithPlaywrightOnce(browserBinding, entryUrl);
-    return { entryHtml: result.entryHtml, latest: result.latest, ok: true };
+    return {
+      entryHtml: result.entryHtml,
+      latest: result.latest,
+      missingTypes: result.missingTypes,
+      ok: true,
+    };
   } catch (error) {
     return { error, ok: false };
   }
@@ -741,10 +770,7 @@ const tryFetchOnce = async (
 const fetchJraOddsWithRetry = async (
   browserBinding: BrowserWorker,
   entryUrl: string,
-): Promise<
-  | { ok: true; entryHtml: string; latest: Partial<Record<OddsType, OddsData[]>> }
-  | { ok: false; error: unknown }
-> => {
+): Promise<TryFetchResult> => {
   const first = await tryFetchOnce(browserBinding, entryUrl);
   if (first.ok) {
     return first;
@@ -760,16 +786,17 @@ const fetchJraOddsWithRetry = async (
 export const fetchJraOddsWithPlaywright = async (
   browserBinding: BrowserWorker | undefined,
   entryUrl: string,
-): Promise<{
-  entryHtml: string;
-  latest: Partial<Record<OddsType, OddsData[]>>;
-}> => {
+): Promise<FetchJraOddsResult> => {
   if (!browserBinding) {
     throw new Error("JRA_BROWSER binding is required to fetch JRA odds.");
   }
   const outcome = await fetchJraOddsWithRetry(browserBinding, entryUrl);
   if (outcome.ok) {
-    return { entryHtml: outcome.entryHtml, latest: outcome.latest };
+    return {
+      entryHtml: outcome.entryHtml,
+      latest: outcome.latest,
+      missingTypes: outcome.missingTypes,
+    };
   }
   throw outcome.error instanceof Error
     ? outcome.error

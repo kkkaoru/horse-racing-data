@@ -997,3 +997,55 @@ it("waitForOddsListWithFallback rejects when both primary and broad fallback sel
   await expect(fetchJraOddsWithPlaywright({} as never, "https://x.test/race")).rejects.toThrow();
   consoleSpy.mockRestore();
 });
+
+it("fetchJraOddsWithPlaywright returns empty missingTypes when every odds tab succeeds (K1-A)", async () => {
+  urlCounter = 0;
+  innerHtmlCounter = 0;
+  const browser = makeBrowser({
+    content: "<html>entry</html>",
+    locators: {
+      "#odds_list": { innerHtml: () => "<table></table>" },
+      "#race_related_link a": { count: 1 },
+    },
+  });
+  await setMockLaunch(browser);
+  const result = await fetchJraOddsWithPlaywright({} as never, "https://x.test/race");
+  expect(result.missingTypes).toStrictEqual([]);
+});
+
+it("fetchJraOddsWithPlaywright reports every non-tansho tab in missingTypes when each click throws (K1-A)", async () => {
+  // tansho is read directly from `#odds_list` after the odds-page navigation
+  // and never goes through `getByText(label).click`, so it stays in `latest`
+  // while every other tab gets pushed into `missingTypes`.
+  urlCounter = 0;
+  innerHtmlCounter = 0;
+  const browser = makeBrowser({
+    content: "<html>entry</html>",
+    locators: {
+      "#odds_list": { innerHtml: () => "<table></table>" },
+      "#race_related_link a": { count: 1 },
+    },
+  });
+  browser.page.getByText = vi.fn(() => ({
+    click: vi.fn(async () => {
+      throw new Error("boom");
+    }),
+    count: vi.fn(async () => 1),
+    filter: vi.fn(),
+    first: vi.fn(),
+    innerHTML: vi.fn(async () => ""),
+    locator: vi.fn(),
+    textContent: vi.fn(async () => null),
+  }));
+  await setMockLaunch(browser);
+  const result = await fetchJraOddsWithPlaywright({} as never, "https://x.test/race");
+  expect(result.missingTypes).toStrictEqual([
+    "fukusho",
+    "wakuren",
+    "umaren",
+    "wide",
+    "umatan",
+    "3renpuku",
+    "3rentan",
+  ]);
+});

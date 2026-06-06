@@ -135,3 +135,13 @@ export const acquireEnqueueLock = async (
     expirationTtl: ttlSeconds,
   });
 };
+
+// Drop the enqueue lock so the next planner tick can re-enqueue this race
+// immediately (task K1-B). Used by the consumer on retryable scrape errors
+// (transient JRA browser failure, network blip) where holding the lock for
+// the full cadence interval would skip the next opportunity to fetch odds.
+// Non-retryable failures (missing binding, missing state) leave the lock in
+// place so the planner does not spin against a known-broken race row.
+export const releaseEnqueueLock = async (env: Env, raceKey: string): Promise<void> => {
+  await env.ODDS_HOT_KV.delete(buildEnqueueLockKey(raceKey));
+};
