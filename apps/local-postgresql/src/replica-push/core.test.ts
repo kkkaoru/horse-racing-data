@@ -2494,9 +2494,9 @@ describe("resolveSkipTables", () => {
   });
 
   it("returns a single-entry set for one table", () => {
-    expect(
-      resolveSkipTables({ REPLICA_SYNC_SKIP_TABLES: "finish_position_cron_executions" }),
-    ).toStrictEqual(new Set(["finish_position_cron_executions"]));
+    expect(resolveSkipTables({ REPLICA_SYNC_SKIP_TABLES: "legacy_logs" })).toStrictEqual(
+      new Set(["legacy_logs"]),
+    );
   });
 
   it("returns a three-entry set for three comma-separated tables", () => {

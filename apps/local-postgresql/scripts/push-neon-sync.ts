@@ -588,8 +588,7 @@ Environment:
                                   Default: true.
   REPLICA_SYNC_SKIP_TABLES        Comma-separated list of tables to skip from sync entirely
                                   (no count, no stage, no insert, no verify). Independent of
-                                  REPLICA_SYNC_SKIP_UNCHANGED. Example:
-                                  finish_position_cron_executions,running_style_cron_executions.
+                                  REPLICA_SYNC_SKIP_UNCHANGED.
   REPLICA_SYNC_COPY_BATCH_ROWS    Rows per COPY batch in full-replace path. Default: 500000.
                                   Empty value keeps the 500000 default; the legacy
                                   "one COPY per table" behavior is no longer the default.
