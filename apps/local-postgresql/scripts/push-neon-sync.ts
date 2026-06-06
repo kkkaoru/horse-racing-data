@@ -34,6 +34,7 @@ import {
   resolvePerTableWallClockMs,
   resolvePositiveIntegerEnv,
   resolveRetryBackoffConfig,
+  resolveSkipTables,
   resolveVerifyMismatchPolicy,
   runPushSync,
   runWithRetry,
@@ -585,6 +586,10 @@ Environment:
                                   transaction; upsert preserves row-level conflict behavior.
   REPLICA_SYNC_SKIP_UNCHANGED     Skip tables whose local and Neon row checksums match.
                                   Default: true.
+  REPLICA_SYNC_SKIP_TABLES        Comma-separated list of tables to skip from sync entirely
+                                  (no count, no stage, no insert, no verify). Independent of
+                                  REPLICA_SYNC_SKIP_UNCHANGED. Example:
+                                  finish_position_cron_executions,running_style_cron_executions.
   REPLICA_SYNC_COPY_BATCH_ROWS    Rows per COPY batch in full-replace path. Default: 500000.
                                   Empty value keeps the 500000 default; the legacy
                                   "one COPY per table" behavior is no longer the default.
@@ -1552,6 +1557,7 @@ async function runSync(cliOptions: CliOptions): Promise<void> {
   const maxAttempts = resolveMaxAttempts(cliOptions.maxAttempts, env);
   const backoff = resolveRetryBackoffConfig(env);
   const verifyMismatchPolicy = resolveVerifyMismatchPolicy(env);
+  const skipTables = resolveSkipTables(env);
   const skippedTables: VerifyMismatchSkipError[] = [];
 
   await runPushSync(
@@ -1570,6 +1576,7 @@ async function runSync(cliOptions: CliOptions): Promise<void> {
           profile: profileMap.get(table.tableName),
           retry: { maxAttempts, backoff },
           verifyMismatchPolicy,
+          skipTables,
           skippedTables,
         }),
       report: reportProgress,
@@ -1581,10 +1588,17 @@ async function runSync(cliOptions: CliOptions): Promise<void> {
 }
 
 interface SyncTableWithSkipTrackingOptions extends SyncTableOptions {
+  skipTables: ReadonlySet<string>;
   skippedTables: VerifyMismatchSkipError[];
 }
 
 async function syncTableWithSkipTracking(options: SyncTableWithSkipTrackingOptions): Promise<void> {
+  if (options.skipTables.has(options.table.tableName)) {
+    writeLine(
+      `[${formatNow()}] ⊘ ${options.table.tableName}: skipped via REPLICA_SYNC_SKIP_TABLES`,
+    );
+    return;
+  }
   try {
     await syncTableWithPsql({
       env: options.env,

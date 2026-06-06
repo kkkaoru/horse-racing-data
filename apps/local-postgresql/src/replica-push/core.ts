@@ -1271,6 +1271,18 @@ const DEFAULT_OPERATION_IDLE_TIMEOUT_SECONDS = 900;
 const TIMEOUT_WARNING_RATIO = 0.8;
 const PER_TABLE_TIMEOUT_ENV_PREFIX = "REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS_";
 const PER_TABLE_IDLE_TIMEOUT_ENV_PREFIX = "REPLICA_SYNC_IDLE_TIMEOUT_SECONDS_";
+const PER_TABLE_SKIP_ENV = "REPLICA_SYNC_SKIP_TABLES";
+
+export function resolveSkipTables(env: Record<string, string | undefined>): ReadonlySet<string> {
+  const raw = env[PER_TABLE_SKIP_ENV]?.trim();
+  if (!raw) return new Set();
+  return new Set(
+    raw
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0),
+  );
+}
 
 export function resolveDefaultFullReplaceBatchRows(
   env: Record<string, string | undefined>,

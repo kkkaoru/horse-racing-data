@@ -42,6 +42,7 @@ import {
   resolvePerTableWallClockMs,
   resolvePositiveIntegerEnv,
   resolveRetryBackoffConfig,
+  resolveSkipTables,
   resolveStrategy,
   resolveVerifyMismatchPolicy,
   runPushSync,
@@ -2475,6 +2476,50 @@ describe("decideVerifyMismatchAction re-incremental action", () => {
     if (action.kind !== "re-incremental") throw new Error("expected re-incremental");
     expect(action.message).toBe(
       "jvd_se: verify mismatch (local=1000000, neon=999900, diff=100, 0.010%) — under 2% drift, retrying as re-incremental instead of full-replace",
+    );
+  });
+});
+
+describe("resolveSkipTables", () => {
+  it("returns an empty set when REPLICA_SYNC_SKIP_TABLES is unset", () => {
+    expect(resolveSkipTables({})).toStrictEqual(new Set());
+  });
+
+  it("returns an empty set when REPLICA_SYNC_SKIP_TABLES is empty string", () => {
+    expect(resolveSkipTables({ REPLICA_SYNC_SKIP_TABLES: "" })).toStrictEqual(new Set());
+  });
+
+  it("returns an empty set when REPLICA_SYNC_SKIP_TABLES is whitespace only", () => {
+    expect(resolveSkipTables({ REPLICA_SYNC_SKIP_TABLES: "   " })).toStrictEqual(new Set());
+  });
+
+  it("returns a single-entry set for one table", () => {
+    expect(
+      resolveSkipTables({ REPLICA_SYNC_SKIP_TABLES: "finish_position_cron_executions" }),
+    ).toStrictEqual(new Set(["finish_position_cron_executions"]));
+  });
+
+  it("returns a three-entry set for three comma-separated tables", () => {
+    expect(
+      resolveSkipTables({ REPLICA_SYNC_SKIP_TABLES: "table_a,table_b,table_c" }),
+    ).toStrictEqual(new Set(["table_a", "table_b", "table_c"]));
+  });
+
+  it("trims surrounding whitespace from each entry", () => {
+    expect(
+      resolveSkipTables({ REPLICA_SYNC_SKIP_TABLES: "  table_a , table_b ,table_c  " }),
+    ).toStrictEqual(new Set(["table_a", "table_b", "table_c"]));
+  });
+
+  it("ignores empty entries produced by trailing commas", () => {
+    expect(resolveSkipTables({ REPLICA_SYNC_SKIP_TABLES: "table_a,table_b," })).toStrictEqual(
+      new Set(["table_a", "table_b"]),
+    );
+  });
+
+  it("ignores empty entries produced by consecutive commas", () => {
+    expect(resolveSkipTables({ REPLICA_SYNC_SKIP_TABLES: "table_a,,table_b" })).toStrictEqual(
+      new Set(["table_a", "table_b"]),
     );
   });
 });
