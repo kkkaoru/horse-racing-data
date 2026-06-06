@@ -272,6 +272,15 @@ const WEIGHT_FETCH_SAME_DAY_COOLDOWN_MINUTES = 60;
 // fallback alive across the entire race day.
 const WEIGHT_RACE_LIST_KV_TTL_SECONDS = 24 * 60 * 60;
 const WEIGHT_RACE_LIST_KV_PREFIX = "realtime:weight-race-list:";
+// Sparse-row guard for horse weight fetches: if parser returns 1 row only,
+// skip the write entirely so existing snapshots are preserved. The next cron
+// will re-fetch.
+const MIN_HORSE_WEIGHT_ROWS_PER_RACE = 2;
+// Notification grace window: if the race start has already passed by less
+// than this margin, we still send the first paddock notification (paddock
+// info is useful even shortly after gate-open). Past the window, suppress
+// only if we have already notified at least once.
+const PREMIUM_PADDOCK_NOTIFY_GRACE_AFTER_START_MS = 10 * 60 * 1000;
 const JRA_KEIBAJO_NAMES: Record<string, string> = {
   "01": "札幌",
   "02": "函館",
@@ -1628,7 +1637,15 @@ export const notifyPremiumPaddockIfNeeded = async (
   fetchedAt: string,
 ): Promise<void> => {
   const payloadSignature = await buildPremiumPaddockSignature(bulletins);
-  if (new Date(race.raceStartAtJst).getTime() <= getNow(env).getTime()) {
+  const currentNotification = await getPremiumPaddockNotificationState(
+    env.REALTIME_DB,
+    race.raceKey,
+  );
+  const startedTooLongAgo =
+    new Date(race.raceStartAtJst).getTime() + PREMIUM_PADDOCK_NOTIFY_GRACE_AFTER_START_MS <=
+    getNow(env).getTime();
+  const alreadyNotified = currentNotification?.lastNotifiedAt != null;
+  if (startedTooLongAgo && alreadyNotified) {
     await recordPremiumPaddockNotificationEvent(env.REALTIME_DB, {
       fetchedAt,
       message: "race already started",
@@ -1685,12 +1702,8 @@ export const notifyPremiumPaddockIfNeeded = async (
     });
     return;
   }
-  const currentNotification = await getPremiumPaddockNotificationState(
-    env.REALTIME_DB,
-    race.raceKey,
-  );
-  if (currentNotification?.lastNotifiedAt) {
-    if (currentNotification.lastNotifiedAt !== fetchedAt) {
+  if (alreadyNotified) {
+    if (currentNotification?.lastNotifiedAt !== fetchedAt) {
       await recordPremiumPaddockNotificationEvent(env.REALTIME_DB, {
         fetchedAt,
         payloadSignature,
@@ -2161,9 +2174,11 @@ const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<void> =>
   if (race.source === "nar") {
     assertNarHorseWeightsComplete(raceKey, entries, weights);
   }
-  if (weights.length > 0 && weights.length < 2) {
-    await insertHorseWeightSnapshot(env.REALTIME_DB, raceKey, fetchedAt, []);
-    throw new Error(`horse weight rows are unexpectedly sparse: ${weights.length}`);
+  if (weights.length > 0 && weights.length < MIN_HORSE_WEIGHT_ROWS_PER_RACE) {
+    console.warn(
+      `horse weight rows are sparse, skipping write: ${raceKey} count=${weights.length}`,
+    );
+    return;
   }
   await insertHorseWeightSnapshot(env.REALTIME_DB, raceKey, fetchedAt, weights);
   if (weights.length > 0) {
