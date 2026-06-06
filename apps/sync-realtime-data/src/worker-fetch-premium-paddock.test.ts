@@ -48,6 +48,7 @@ vi.mock("./storage", () => ({
   updatePremiumPaddockNotificationState: vi.fn(async () => {}),
   claimPremiumPaddockNotificationSend: vi.fn(async () => true),
   recordPremiumPaddockNotificationEvent: vi.fn(async () => {}),
+  applyPremiumPaddockSkipOutcome: vi.fn(async () => {}),
   listTanshoHistory: vi.fn(async () => []),
   listOddsHistoryByType: vi.fn(async () => ({})),
   getLatestOddsFromD1: vi.fn(async () => null),
@@ -192,14 +193,10 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("fetch-premium-paddock auth_required branch updates state and records event", async () => {
+it("fetch-premium-paddock auth_required branch issues a single skip-outcome batch", async () => {
   const { handleJob } = await import("./worker");
-  const {
-    getRaceSource,
-    getPremiumRaceLink,
-    updatePremiumPaddockFetchState,
-    recordPremiumPaddockNotificationEvent,
-  } = await import("./storage");
+  const { getRaceSource, getPremiumRaceLink, applyPremiumPaddockSkipOutcome } =
+    await import("./storage");
   const { fetchPremiumHtmlAttempts, parsePremiumPaddockBulletins } = await import("./premium-race");
   vi.mocked(getRaceSource).mockResolvedValueOnce(buildPremiumPaddockRaceSource());
   vi.mocked(getPremiumRaceLink).mockResolvedValueOnce({
@@ -219,15 +216,15 @@ it("fetch-premium-paddock auth_required branch updates state and records event",
     raceKey: "jra:2026:0512:08:01",
     type: "fetch-premium-paddock",
   });
-  expect(vi.mocked(updatePremiumPaddockFetchState).mock.calls.at(-1)?.[1]).toMatchObject({
-    status: "auth_required",
-  });
-  expect(recordPremiumPaddockNotificationEvent).toHaveBeenCalled();
+  expect(applyPremiumPaddockSkipOutcome).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(applyPremiumPaddockSkipOutcome).mock.calls.at(-1)?.[1]?.fetchState.status).toBe(
+    "auth_required",
+  );
 });
 
-it("fetch-premium-paddock unavailable branch updates state with status unavailable", async () => {
+it("fetch-premium-paddock unavailable branch issues a single skip-outcome batch", async () => {
   const { handleJob } = await import("./worker");
-  const { getRaceSource, getPremiumRaceLink, updatePremiumPaddockFetchState } =
+  const { getRaceSource, getPremiumRaceLink, applyPremiumPaddockSkipOutcome } =
     await import("./storage");
   const { fetchPremiumHtmlAttempts, parsePremiumPaddockBulletins } = await import("./premium-race");
   vi.mocked(getRaceSource).mockResolvedValueOnce(buildPremiumPaddockRaceSource());
@@ -248,14 +245,15 @@ it("fetch-premium-paddock unavailable branch updates state with status unavailab
     raceKey: "jra:2026:0512:08:01",
     type: "fetch-premium-paddock",
   });
-  expect(vi.mocked(updatePremiumPaddockFetchState).mock.calls.at(-1)?.[1]).toMatchObject({
-    status: "unavailable",
-  });
+  expect(applyPremiumPaddockSkipOutcome).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(applyPremiumPaddockSkipOutcome).mock.calls.at(-1)?.[1]?.fetchState.status).toBe(
+    "unavailable",
+  );
 });
 
-it("fetch-premium-paddock pending branch updates state with status pending", async () => {
+it("fetch-premium-paddock pending branch issues a single skip-outcome batch", async () => {
   const { handleJob } = await import("./worker");
-  const { getRaceSource, getPremiumRaceLink, updatePremiumPaddockFetchState } =
+  const { getRaceSource, getPremiumRaceLink, applyPremiumPaddockSkipOutcome } =
     await import("./storage");
   const { fetchPremiumHtmlAttempts, parsePremiumPaddockBulletins } = await import("./premium-race");
   vi.mocked(getRaceSource).mockResolvedValueOnce(buildPremiumPaddockRaceSource());
@@ -276,9 +274,10 @@ it("fetch-premium-paddock pending branch updates state with status pending", asy
     raceKey: "jra:2026:0512:08:01",
     type: "fetch-premium-paddock",
   });
-  expect(vi.mocked(updatePremiumPaddockFetchState).mock.calls.at(-1)?.[1]).toMatchObject({
-    status: "pending",
-  });
+  expect(applyPremiumPaddockSkipOutcome).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(applyPremiumPaddockSkipOutcome).mock.calls.at(-1)?.[1]?.fetchState.status).toBe(
+    "pending",
+  );
 });
 
 it("fetch-premium-paddock falls back through ensurePremiumRaceLink when no existing link", async () => {
@@ -287,7 +286,7 @@ it("fetch-premium-paddock falls back through ensurePremiumRaceLink when no exist
     getRaceSource,
     getPremiumRaceLink,
     upsertPremiumRaceLink,
-    updatePremiumPaddockFetchState,
+    applyPremiumPaddockSkipOutcome,
   } = await import("./storage");
   const { fetchPremiumHtmlAttempts } = await import("./premium-race");
   vi.mocked(getRaceSource).mockResolvedValueOnce(buildPremiumPaddockRaceSource());
@@ -301,12 +300,12 @@ it("fetch-premium-paddock falls back through ensurePremiumRaceLink when no exist
     type: "fetch-premium-paddock",
   });
   expect(upsertPremiumRaceLink).toHaveBeenCalled();
-  expect(updatePremiumPaddockFetchState).toHaveBeenCalled();
+  expect(applyPremiumPaddockSkipOutcome).toHaveBeenCalledTimes(1);
 });
 
-it("fetch-premium-paddock empty branch updates state with status empty", async () => {
+it("fetch-premium-paddock empty branch issues a single skip-outcome batch", async () => {
   const { handleJob } = await import("./worker");
-  const { getRaceSource, getPremiumRaceLink, updatePremiumPaddockFetchState } =
+  const { getRaceSource, getPremiumRaceLink, applyPremiumPaddockSkipOutcome } =
     await import("./storage");
   const { fetchPremiumHtmlAttempts } = await import("./premium-race");
   vi.mocked(getRaceSource).mockResolvedValueOnce(buildPremiumPaddockRaceSource());
@@ -321,9 +320,10 @@ it("fetch-premium-paddock empty branch updates state with status empty", async (
     raceKey: "jra:2026:0512:08:01",
     type: "fetch-premium-paddock",
   });
-  expect(vi.mocked(updatePremiumPaddockFetchState).mock.calls.at(-1)?.[1]).toMatchObject({
-    status: "empty",
-  });
+  expect(applyPremiumPaddockSkipOutcome).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(applyPremiumPaddockSkipOutcome).mock.calls.at(-1)?.[1]?.fetchState.status).toBe(
+    "empty",
+  );
 });
 
 it("fetch-premium-paddock attempts throw + no existing payload throws and writes failed status", async () => {

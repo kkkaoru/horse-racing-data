@@ -53,6 +53,7 @@ vi.mock("./storage", () => ({
   updatePremiumPaddockNotificationState: vi.fn(async () => {}),
   claimPremiumPaddockNotificationSend: vi.fn(async () => true),
   recordPremiumPaddockNotificationEvent: vi.fn(async () => {}),
+  applyPremiumPaddockSkipOutcome: vi.fn(async () => {}),
   listOddsSnapshotsForExport: vi.fn(async () => []),
   listRaceKeysByDateFromHyperdrive: vi.fn(async () => []),
   listRaceSourcesForSeed: vi.fn(async () => []),
