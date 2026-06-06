@@ -113,6 +113,31 @@ log "SOURCE_DATABASE_URL=$(printf '%s' "$SRC" | mask)"
 # Pre-flight 6: PREDICT_DAYS_AHEAD default 0 (today only). Allow caller override.
 DAYS_AHEAD="${PREDICT_DAYS_AHEAD:-0}"
 
+# Pre-flight 7: optional R2 credentials so the container's add-pacestyle layer
+# can read the per-day running-style Parquet directly from
+# pc-keiba-features-archive instead of ATTACHing to Neon. Source the repo-root
+# .env if it exists; un-quote single-quoted values. Falls back to PG when any
+# of the three keys are unset / empty so RS_SOURCE=auto still works.
+ROOT_ENV_FILE="$REPO_ROOT/.env"
+if [ -f "$ROOT_ENV_FILE" ]; then
+  # shellcheck disable=SC2046
+  set -a
+  # shellcheck source=/dev/null
+  source "$ROOT_ENV_FILE"
+  set +a
+fi
+R2_ACCOUNT_ID="${R2_ACCOUNT_ID:-}"
+R2_ACCESS_KEY_ID="${R2_ACCESS_KEY_ID:-}"
+R2_SECRET_ACCESS_KEY="${R2_SECRET_ACCESS_KEY:-}"
+R2_BUCKET="${R2_BUCKET:-pc-keiba-features-archive}"
+if [ -n "$R2_ACCOUNT_ID" ] && [ -n "$R2_ACCESS_KEY_ID" ] && [ -n "$R2_SECRET_ACCESS_KEY" ]; then
+  RS_SOURCE="${RS_SOURCE:-auto}"
+  log "R2 credentials detected — RS_SOURCE=$RS_SOURCE R2_BUCKET=$R2_BUCKET"
+else
+  RS_SOURCE="pg"
+  log "R2 credentials missing — forcing RS_SOURCE=pg (Neon ATTACH fallback)"
+fi
+
 # Run the prediction container. --network=host so the container can reach the
 # local Colima Postgres on 127.0.0.1:15432 directly. --rm so the container is
 # removed after exit.
@@ -125,6 +150,11 @@ docker run --rm --network=host \
   -e RUN_DATE_ISO="$RUN_DATE_ISO" \
   -e PREDICT_DAYS_AHEAD="$DAYS_AHEAD" \
   -e MODELS_DIR=/models \
+  -e RS_SOURCE="$RS_SOURCE" \
+  -e R2_ACCOUNT_ID="$R2_ACCOUNT_ID" \
+  -e R2_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
+  -e R2_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
+  -e R2_BUCKET="$R2_BUCKET" \
   "$IMAGE_TAG"
 docker_exit=$?
 set -e

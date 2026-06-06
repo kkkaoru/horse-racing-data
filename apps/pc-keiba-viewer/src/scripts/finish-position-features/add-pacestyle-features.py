@@ -46,6 +46,17 @@ from _resource_defaults import add_resource_args, apply_to_connection
 
 DEFAULT_PG_URL = "postgresql://horse_racing:horse_racing@127.0.0.1:5432/horse_racing"
 
+# --rs-source selects where running-style probability rows come from. ``r2``
+# reads the per-day Parquet that the sync-realtime-data Worker writes to R2 (key
+# = ``running-style/predictions/by-day/{YYYY}/{MM}/{DD}/{source}/{model_version}.parquet``)
+# under ``pc-keiba-features-archive``. ``pg`` keeps the legacy Neon ATTACH path.
+# ``auto`` tries R2 first, then falls back to PG when the R2 setup raises (e.g.
+# missing token, missing run-date, empty prefix) so the daily container can
+# still finish even before the R2 token is provisioned.
+RS_SOURCE_CHOICES = ("r2", "pg", "auto")
+R2_BUCKET_DEFAULT = "pc-keiba-features-archive"
+R2_PREDICTIONS_PREFIX = "running-style/predictions/by-day"
+
 # Best available running-style model_version per year, per category. Used to
 # select rs_* rows from PG when multiple model_versions exist for the same
 # (source, year). Mirrors tmp/v8/iter9_build_pacestyle_features.py
@@ -81,6 +92,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=os.environ.get("LOCAL_PG_URL", DEFAULT_PG_URL),
     )
     parser.add_argument("--from-date", type=str, default="20100101")
+    parser.add_argument(
+        "--rs-source",
+        choices=RS_SOURCE_CHOICES,
+        default="auto",
+        help=(
+            "Where to read race_running_style probabilities from. "
+            "r2 = pc-keiba-features-archive Parquet; pg = Neon ATTACH (legacy); "
+            "auto = R2 first, fall back to PG on any R2 error."
+        ),
+    )
+    parser.add_argument(
+        "--run-date",
+        type=str,
+        default=None,
+        help=(
+            "Target run date (YYYYMMDD) for rs-source=r2/auto. Selects which "
+            "per-day Parquet shard to glob. Required when rs-source=r2."
+        ),
+    )
     add_resource_args(parser)
     return parser.parse_args(argv)
 
@@ -108,7 +138,7 @@ def build_version_filter_sql(category: str) -> str:
     return " or ".join(clauses)
 
 
-def stage_rs_predictions(
+def stage_rs_predictions_from_pg(
     con: duckdb.DuckDBPyConnection, category: str
 ) -> None:
     """Build a ``rs_preds`` temp keyed by (race_id, ketto_toroku_bango).
@@ -136,6 +166,72 @@ def stage_rs_predictions(
         from pg.race_running_style_model_predictions
         where source = '{category}'
           and ({version_filter})
+        """
+    )
+    con.execute(
+        "create index rs_preds_idx on rs_preds (race_id, ketto_toroku_bango)"
+    )
+
+
+def setup_r2_duckdb_secret(con: duckdb.DuckDBPyConnection) -> None:
+    """Install httpfs and register an R2-backed S3 secret on ``con``.
+
+    Reads ``R2_ACCOUNT_ID`` / ``R2_ACCESS_KEY_ID`` / ``R2_SECRET_ACCESS_KEY``
+    from the environment — KeyError propagates so ``--rs-source=auto`` can fall
+    back to PG when the token is not provisioned yet.
+    """
+    account_id = os.environ["R2_ACCOUNT_ID"]
+    key_id = os.environ["R2_ACCESS_KEY_ID"]
+    secret = os.environ["R2_SECRET_ACCESS_KEY"]
+    con.execute("install httpfs; load httpfs;")
+    con.execute(
+        f"""
+        create or replace secret r2_secret (
+          TYPE S3,
+          KEY_ID '{key_id}',
+          SECRET '{secret}',
+          ENDPOINT '{account_id}.r2.cloudflarestorage.com',
+          REGION 'auto',
+          URL_STYLE 'path'
+        )
+        """
+    )
+
+
+def stage_rs_predictions_from_r2(
+    con: duckdb.DuckDBPyConnection,
+    category: str,
+    run_date_ymd: str,
+    bucket: str,
+) -> None:
+    """Build the ``rs_preds`` temp from the per-day R2 Parquet shard.
+
+    Glob layout matches the Worker output:
+      ``s3://{bucket}/running-style/predictions/by-day/{YYYY}/{MM}/{DD}/{category}/*.parquet``
+
+    The wildcard accepts whichever ``model_version.parquet`` the Worker wrote;
+    the v3 production model collapses to one file per (date, category).
+    """
+    yyyy = run_date_ymd[:4]
+    mm = run_date_ymd[4:6]
+    dd = run_date_ymd[6:8]
+    glob = (
+        f"s3://{bucket}/{R2_PREDICTIONS_PREFIX}/"
+        f"{yyyy}/{mm}/{dd}/{category}/*.parquet"
+    )
+    con.execute(
+        f"""
+        create or replace temp table rs_preds as
+        select
+          '{category}:' || kaisai_nen || ':' || kaisai_tsukihi
+            || ':' || keibajo_code || ':' || race_bango as race_id,
+          ketto_toroku_bango,
+          cast(p_nige as double) as rs_p_nige,
+          cast(p_senkou as double) as rs_p_senkou,
+          cast(p_sashi as double) as rs_p_sashi,
+          cast(p_oikomi as double) as rs_p_oikomi,
+          cast(predicted_class as integer) as rs_predicted_class
+        from read_parquet('{glob}')
         """
     )
     con.execute(
@@ -215,6 +311,33 @@ def write_partitioned(con: duckdb.DuckDBPyConnection, sql: str, output_dir: Path
     )
 
 
+def stage_rs_predictions(
+    con: duckdb.DuckDBPyConnection,
+    args: argparse.Namespace,
+) -> None:
+    """Dispatch to the R2 or PG rs_preds loader based on ``args.rs_source``.
+
+    For ``r2`` any failure propagates. For ``auto`` R2 is attempted first and any
+    Exception falls back to the legacy PG path so an unprovisioned R2 token does
+    not block today's predictions. For ``pg`` the R2 path is never touched.
+    """
+    bucket = os.environ.get("R2_BUCKET", R2_BUCKET_DEFAULT)
+    if args.rs_source in ("r2", "auto"):
+        try:
+            if not args.run_date:
+                raise ValueError(
+                    "--run-date YYYYMMDD is required when --rs-source=r2 or auto"
+                )
+            setup_r2_duckdb_secret(con)
+            stage_rs_predictions_from_r2(con, args.category, args.run_date, bucket)
+            return
+        except Exception:
+            if args.rs_source == "r2":
+                raise
+    install_and_attach_pg(con, args.pg_url)
+    stage_rs_predictions_from_pg(con, args.category)
+
+
 def main() -> None:
     args = parse_args()
     input_glob = f"{args.input_dir.as_posix()}/race_year=*/*.parquet"
@@ -222,8 +345,7 @@ def main() -> None:
     con.execute("PRAGMA enable_object_cache=true")
     apply_to_connection(con, args.threads, args.memory_limit)
     con.execute("SET preserve_insertion_order=false")
-    install_and_attach_pg(con, args.pg_url)
-    stage_rs_predictions(con, args.category)
+    stage_rs_predictions(con, args)
     write_partitioned(con, append_features_sql(input_glob, args.category), args.output_dir)
     con.close()
 
