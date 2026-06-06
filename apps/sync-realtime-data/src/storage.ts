@@ -818,10 +818,10 @@ export const insertHorseWeightSnapshot = async (
   fetchedAt: string,
   weights: HorseWeight[],
 ): Promise<void> => {
-  await db.prepare("delete from horse_weight_snapshots where race_key = ?").bind(raceKey).run();
   if (weights.length === 0) {
     return;
   }
+  await db.prepare("delete from horse_weight_snapshots where race_key = ?").bind(raceKey).run();
   await runD1Batches(
     db,
     weights.map((weight) =>
