@@ -256,9 +256,9 @@ it("planRealtimeFetches returns total job count for empty inputs", async () => {
 it("planRealtimeFetches returns 0 and skips D1 reads outside the JST polling window", async () => {
   const { planRealtimeFetches } = await import("./worker");
   const { listSchedulableRaceSourcesByDate } = await import("./storage");
-  // 2026-05-12T13:30:00Z = JST 22:30, outside the 06-21 polling window.
+  // 2026-05-12T14:30:00Z = JST 23:30, outside the 06-22 polling window.
   const env = buildEnv({
-    REALTIME_TEST_NOW: "2026-05-12T13:30:00.000Z",
+    REALTIME_TEST_NOW: "2026-05-12T14:30:00.000Z",
   });
   const count = await planRealtimeFetches(env, "20260512");
   expect(count).toBe(0);
@@ -636,7 +636,8 @@ it("planPremiumPaddockFetchesForDate enqueues when lastQueuedAt is 90 seconds ag
 
 it("planPremiumPaddockFetchesOnly returns 0 outside the JST polling window", async () => {
   const { planPremiumPaddockFetchesOnly } = await import("./worker");
-  const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-12T13:30:00.000Z" } as never);
+  // 2026-05-12T14:30:00Z = JST 23:30, outside the 06-22 polling window.
+  const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-12T14:30:00.000Z" } as never);
   const count = await planPremiumPaddockFetchesOnly(env, "20260512");
   expect(count).toBe(0);
 });

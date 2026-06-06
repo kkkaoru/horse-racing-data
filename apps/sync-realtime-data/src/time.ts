@@ -2,6 +2,8 @@ const JST_TIME_ZONE = "Asia/Tokyo";
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const FINAL_ODDS_FETCH_DELAY_MINUTES = 2;
 const ONE_HOUR_MS = 60 * 60_000;
+const JST_POLLING_HOUR_START = 6;
+const JST_POLLING_HOUR_END = 22;
 
 export const NAR_ODDS_SALE_START_RULE = {
   createdAt: "2026-05-22",
@@ -217,5 +219,5 @@ export const getNextOddsFetchSlotAt = (
 export const isJstPollingWindow = (date = new Date()): boolean => {
   const { hour } = getJstDateParts(date);
   const parsedHour = Number(hour);
-  return parsedHour >= 6 && parsedHour <= 21;
+  return parsedHour >= JST_POLLING_HOUR_START && parsedHour <= JST_POLLING_HOUR_END;
 };
