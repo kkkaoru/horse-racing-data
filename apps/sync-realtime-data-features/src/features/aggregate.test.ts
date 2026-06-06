@@ -245,6 +245,7 @@ it("dailyRowToStarterRow maps DailyRaceEntryRow fields to viewer StarterRow shap
       ...baseRow,
       bamei: "ホースA",
       bataiju: 452,
+      chokyoshimei_ryakusho: "山田調教師",
       corner_1: 3,
       corner_2: 4,
       finish_position: 2,
@@ -263,6 +264,7 @@ it("dailyRowToStarterRow maps DailyRaceEntryRow fields to viewer StarterRow shap
   ).toStrictEqual({
     bamei: "ホースA",
     bataiju: "452",
+    chokyoshiName: "山田調教師",
     corner1: "3",
     corner2: "4",
     corner3: null,
@@ -289,6 +291,10 @@ it("dailyRowToStarterRow maps DailyRaceEntryRow fields to viewer StarterRow shap
 
 it("dailyRowToStarterRow normalises finish_position null to 0", () => {
   expect(dailyRowToStarterRow(baseRow).finishPosition).toBe(0);
+});
+
+it("dailyRowToStarterRow returns null chokyoshiName when source is null", () => {
+  expect(dailyRowToStarterRow(baseRow).chokyoshiName).toBeNull();
 });
 
 it("dailyRowToStarterRow keeps null odds and popularity when source is null", () => {

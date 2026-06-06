@@ -12,7 +12,7 @@ import type { Env } from "../types";
 const DEFAULT_POOL_SIZE = 12;
 const IDLE_TIMEOUT_MS = 10_000;
 const CONNECTION_TIMEOUT_MS = 5_000;
-const QUERY_TIMEOUT_MS = 25_000;
+const QUERY_TIMEOUT_MS = 60_000;
 
 let pool: Pool | null = null;
 

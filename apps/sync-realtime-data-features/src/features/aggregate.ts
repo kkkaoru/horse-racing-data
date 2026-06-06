@@ -39,6 +39,7 @@ export interface RaceTrendStarterRow {
   umaban: string | null;
   bamei: string | null;
   jockeyName: string | null;
+  chokyoshiName: string | null;
   tanshoOdds: string | null;
   tanshoPopularity: string | null;
   finishPosition: number;
@@ -167,6 +168,7 @@ export const dailyRowToStarterRow = (row: DailyRaceEntryRow): RaceTrendStarterRo
   umaban: numberOrNull(row.umaban),
   bamei: row.bamei,
   jockeyName: row.kishumei_ryakusho,
+  chokyoshiName: row.chokyoshimei_ryakusho,
   tanshoOdds: oddsToStored(row.tansho_odds),
   tanshoPopularity: popularityToStored(row.tansho_ninkijun),
   finishPosition: row.finish_position ?? 0,

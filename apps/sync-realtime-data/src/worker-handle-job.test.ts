@@ -1451,7 +1451,7 @@ it("handleJob fetch-results NAR throws when results empty but expectedHorseCount
   expect(failResultFetch).toHaveBeenCalled();
 });
 
-it("handleJob fetch-weights NAR + sparse weight rows (length 1) clears snapshot and throws", async () => {
+it("handleJob fetch-weights NAR + sparse weight rows (length 1) preserves existing snapshot and warns", async () => {
   const { handleJob } = await import("./worker");
   const { getRaceSource, insertHorseWeightSnapshot } = await import("./storage");
   const { parseHorseWeights } = await import("./keiba-go");
@@ -1485,15 +1485,13 @@ it("handleJob fetch-weights NAR + sparse weight rows (length 1) clears snapshot 
   vi.mocked(parseHorseWeights).mockReturnValueOnce([
     { changeAmount: null, changeSign: null, horseName: null, horseNumber: "1", weight: 500 },
   ] as never);
-  await expect(
-    handleJob(buildEnv(), { raceKey: "nar:2026:0512:55:01", type: "fetch-weights" }),
-  ).rejects.toThrow("horse weight rows are unexpectedly sparse");
-  expect(insertHorseWeightSnapshot).toHaveBeenCalledWith(
-    expect.anything(),
-    "nar:2026:0512:55:01",
-    expect.any(String),
-    [],
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+  await handleJob(buildEnv(), { raceKey: "nar:2026:0512:55:01", type: "fetch-weights" });
+  expect(insertHorseWeightSnapshot).not.toHaveBeenCalled();
+  expect(warnSpy).toHaveBeenCalledWith(
+    "horse weight rows are sparse, skipping write: nar:2026:0512:55:01 count=1",
   );
+  warnSpy.mockRestore();
 });
 
 it("handleJob fetch-results with NAR race source completes when finish-position rows empty", async () => {

@@ -408,14 +408,14 @@ it("getPremiumRaceLink maps row columns to camelCase fields", async () => {
   });
 });
 
-it("insertHorseWeightSnapshot deletes then no-ops when weights is empty", async () => {
+it("insertHorseWeightSnapshot short-circuits without deleting when weights is empty", async () => {
   const run = vi.fn(async () => ({}));
   const bind = vi.fn((..._args: unknown[]) => ({ run }));
   const prepare = vi.fn(() => ({ bind }));
   const batch = vi.fn(async () => []);
   const db = { batch, prepare } as unknown as D1Database;
   await insertHorseWeightSnapshot(db, "key", "now", []);
-  expect(prepare).toHaveBeenCalledTimes(1);
+  expect(prepare).not.toHaveBeenCalled();
   expect(batch).not.toHaveBeenCalled();
 });
 

@@ -190,9 +190,12 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it("notifyPremiumPaddockIfNeeded marks skipped_started when race already started", async () => {
+it("notifyPremiumPaddockIfNeeded marks skipped_started when grace expired and already notified", async () => {
   const { notifyPremiumPaddockIfNeeded } = await import("./worker");
   const storage = await import("./storage");
+  vi.mocked(storage.getPremiumPaddockNotificationState).mockResolvedValueOnce({
+    lastNotifiedAt: "2026-05-12T14:50:00+09:00",
+  } as never);
   const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-12T16:00:00+09:00" } as never);
   await notifyPremiumPaddockIfNeeded(
     env,
@@ -208,6 +211,42 @@ it("notifyPremiumPaddockIfNeeded marks skipped_started when race already started
       status: "skipped_started",
     },
   );
+});
+
+it("notifyPremiumPaddockIfNeeded notifies after race start when never notified before (within grace)", async () => {
+  const { notifyPremiumPaddockIfNeeded } = await import("./worker");
+  const storage = await import("./storage");
+  const env = buildEnv({
+    PREMIUM_PADDOCK_DISCORD_WEBHOOK_URL: "https://discord.example/webhook",
+    REALTIME_TEST_NOW: "2026-05-12T15:05:00+09:00",
+  } as never);
+  await notifyPremiumPaddockIfNeeded(
+    env,
+    buildRace(),
+    buildBulletins(),
+    "2026-05-12T15:05:00+09:00",
+  );
+  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(storage.recordPremiumPaddockNotificationEvent).mock.calls[0]?.[1]).toMatchObject(
+    {
+      status: "ok",
+    },
+  );
+});
+
+it("notifyPremiumPaddockIfNeeded notifies after grace expired when never notified before", async () => {
+  const { notifyPremiumPaddockIfNeeded } = await import("./worker");
+  const env = buildEnv({
+    PREMIUM_PADDOCK_DISCORD_WEBHOOK_URL: "https://discord.example/webhook",
+    REALTIME_TEST_NOW: "2026-05-12T15:20:00+09:00",
+  } as never);
+  await notifyPremiumPaddockIfNeeded(
+    env,
+    buildRace(),
+    buildBulletins(),
+    "2026-05-12T15:20:00+09:00",
+  );
+  expect(fetch).toHaveBeenCalledTimes(1);
 });
 
 it("notifyPremiumPaddockIfNeeded marks skipped_empty when bulletins are empty", async () => {

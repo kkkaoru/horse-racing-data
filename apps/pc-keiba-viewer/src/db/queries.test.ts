@@ -753,6 +753,57 @@ it("getFinishPositionLambdarankPredictions emits subclass-aware active CTE refer
   expect(queryText).toMatch(/order by \(subclass is null\) asc/u);
 });
 
+it("getFinishPositionLambdarankPredictions emits priority 1 active fallback guarded by exists clause", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+  await getFinishPositionLambdarankPredictions(PERCLASS_703_RACE, PERCLASS_703_RUNNERS);
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(queryText).toMatch(/select active\.model_version, 1 as priority/u);
+  expect(queryText).toMatch(
+    /where exists \(\s*select 1\s*from race_finish_position_model_predictions p2\s*where p2\.model_version = active\.model_version/u,
+  );
+});
+
+it("getFinishPositionLambdarankPredictions emits priority 2 fallback over any race prediction", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+  await getFinishPositionLambdarankPredictions(PERCLASS_703_RACE, PERCLASS_703_RUNNERS);
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(queryText).toMatch(/select p3\.model_version, 2 as priority/u);
+  expect(queryText).toMatch(/from race_finish_position_model_predictions p3/u);
+  expect(queryText).toMatch(/group by p3\.model_version/u);
+  expect(queryText).toMatch(/order by priority, recency desc nulls last/u);
+});
+
+it("getFinishPositionLambdarankPredictions returns predictions from priority 2 fallback model_version", async () => {
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        model_version: "iter30-nar-cb-ensemble-A-v8",
+        predicted_rank: 1,
+        predicted_score: "0.88",
+        shusso_tosu: 2,
+        umaban: 1,
+      },
+      {
+        model_version: "iter30-nar-cb-ensemble-A-v8",
+        predicted_rank: 2,
+        predicted_score: "0.42",
+        shusso_tosu: 2,
+        umaban: 2,
+      },
+    ],
+  });
+  const result = await getFinishPositionLambdarankPredictions(
+    PERCLASS_703_RACE,
+    PERCLASS_703_RUNNERS,
+  );
+  expect(result.length).toBe(2);
+  expect(result[0]?.modelVersion).toBe("iter30-nar-cb-ensemble-A-v8");
+  expect(result[0]?.predictedFinishNorm).toBe(0);
+  expect(result[1]?.predictedFinishNorm).toBe(1);
+});
+
 it("getFinishPositionLambdarankPredictions translates execute rows into prediction features", async () => {
   executeMock.mockResolvedValue({
     rows: [
