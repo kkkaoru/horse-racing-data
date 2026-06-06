@@ -1,3 +1,4 @@
+import { releaseEnqueueLock } from "./gates/enqueue-lock-kv";
 import { extractOddsLinks, fetchOdds, fetchRacePage } from "./keiba-go";
 import { fetchJraOddsWithPlaywright } from "./jra";
 import {
@@ -22,11 +23,33 @@ import type { Env, OddsData, OddsFetchStateRow, OddsType } from "./types";
 
 const ODDS_FETCH_LOCK_MINUTES = 10;
 const MS_PER_MINUTE = 60_000;
+// Non-retryable scrape errors leave the planner lock in place so we do not
+// spin against a known-broken row. Anything else (transient browser timeout,
+// JRA upstream stall) drops the lock so the next planner tick can retry.
+const NON_RETRYABLE_ERROR_FRAGMENTS = [
+  "JRA_BROWSER binding",
+  "odds_fetch_state not found",
+] satisfies readonly string[];
+// fetch_logs job_type for a successful insert that missed some odds tabs.
+// Status `warn` so dashboards can flag partial coverage without treating it
+// as a hard error.
+const JRA_PARTIAL_FETCH_JOB_TYPE = "jra-odds-partial-fetch";
+const JRA_PARTIAL_FETCH_STATUS = "warn";
 
 export interface FetchAndStoreOddsResult {
   fetchedAt: string;
   inserted: number;
   latest: Partial<Record<OddsType, OddsData[]>>;
+}
+
+interface ScrapeResult {
+  latest: Partial<Record<OddsType, OddsData[]>>;
+  missingTypes: OddsType[];
+}
+
+interface JraPartialFetchPayload {
+  fetchedTypes: OddsType[];
+  missingTypes: OddsType[];
 }
 
 const parseOddsLinks = (value: string): Partial<Record<OddsType, string>> => {
@@ -77,16 +100,13 @@ export const resolveOddsSlotAt = async (
   return getNarOddsFetchSlotAt(raceStart, now, saleStart);
 };
 
-const scrapeOddsForState = async (
-  env: Env,
-  state: OddsFetchStateRow,
-): Promise<Partial<Record<OddsType, OddsData[]>>> => {
+const scrapeOddsForState = async (env: Env, state: OddsFetchStateRow): Promise<ScrapeResult> => {
   if (state.source === "jra") {
     if (!env.JRA_BROWSER) {
       throw new Error(`JRA_BROWSER binding required for ${state.raceKey}`);
     }
     const result = await fetchJraOddsWithPlaywright(env.JRA_BROWSER, state.debaUrl);
-    return result.latest;
+    return { latest: result.latest, missingTypes: result.missingTypes };
   }
   const entryHtml = await fetchRacePage(state.debaUrl);
   const cachedLinks = parseOddsLinks(state.oddsLinksJson);
@@ -95,7 +115,27 @@ const scrapeOddsForState = async (
   if (Object.keys(cachedLinks).length === 0) {
     await updateOddsLinks(env.REALTIME_HOT_DB, state.raceKey, oddsLinks);
   }
-  return fetchOdds(state.debaUrl, oddsLinks);
+  const latest = await fetchOdds(state.debaUrl, oddsLinks);
+  return { latest, missingTypes: [] };
+};
+
+export const isRetryableScrapeError = (error: unknown): boolean => {
+  const message = error instanceof Error ? error.message : String(error);
+  return !NON_RETRYABLE_ERROR_FRAGMENTS.some((fragment) => message.includes(fragment));
+};
+
+const logJraPartialFetch = async (
+  env: Env,
+  raceKey: string,
+  payload: JraPartialFetchPayload,
+): Promise<void> => {
+  await logFetch(
+    env.REALTIME_HOT_DB,
+    JRA_PARTIAL_FETCH_JOB_TYPE,
+    JRA_PARTIAL_FETCH_STATUS,
+    raceKey,
+    JSON.stringify(payload),
+  );
 };
 
 export const fetchAndStoreOdds = async (
@@ -120,25 +160,52 @@ export const fetchAndStoreOdds = async (
   try {
     const raceStart = getRaceStartFromState(state);
     if (!raceStart) {
+      // Bad race_start_at_jst is structural — leave the enqueue lock so the
+      // planner does not spin on a known-broken row.
       await failOddsFetch(env.REALTIME_HOT_DB, raceKey);
       return null;
     }
     const oddsSlotAt = await resolveOddsSlotAt(env, state, raceStart, now);
-    if (!oddsSlotAt || !isSlotDue(state.lastOddsFetchAt, oddsSlotAt)) {
+    if (oddsSlotAt === null) {
+      // Sale has not opened yet (NAR pre-sale window). Drop the enqueue
+      // lock so the next planner tick can re-evaluate when sale opens; the
+      // cadence-based lock would otherwise keep us off the race for the
+      // full hourly tier even after sale starts.
+      await failOddsFetch(env.REALTIME_HOT_DB, raceKey);
+      await releaseEnqueueLock(env, raceKey);
+      return null;
+    }
+    if (!isSlotDue(state.lastOddsFetchAt, oddsSlotAt)) {
+      // Already fetched for this slot. Keep the lock — the next slot has
+      // its own cadence-driven re-enqueue path.
       await failOddsFetch(env.REALTIME_HOT_DB, raceKey);
       return null;
     }
     const fetchedAt = toJstIsoString(now);
-    const latest = await scrapeOddsForState(env, state);
-    const inserted = await insertOddsSnapshot(env.REALTIME_HOT_DB, raceKey, fetchedAt, latest);
+    const scrape = await scrapeOddsForState(env, state);
+    const inserted = await insertOddsSnapshot(
+      env.REALTIME_HOT_DB,
+      raceKey,
+      fetchedAt,
+      scrape.latest,
+    );
     if (inserted === 0) {
       throw new Error(`odds rows are empty: ${raceKey}`);
     }
     await completeOddsFetch(env.REALTIME_HOT_DB, raceKey, fetchedAt);
     await logFetch(env.REALTIME_HOT_DB, "fetch-odds", "ok", raceKey, null);
-    return { fetchedAt, inserted, latest };
+    if (scrape.missingTypes.length > 0) {
+      await logJraPartialFetch(env, raceKey, {
+        fetchedTypes: Object.keys(scrape.latest) as OddsType[],
+        missingTypes: scrape.missingTypes,
+      });
+    }
+    return { fetchedAt, inserted, latest: scrape.latest };
   } catch (error) {
     await failOddsFetch(env.REALTIME_HOT_DB, raceKey);
+    if (isRetryableScrapeError(error)) {
+      await releaseEnqueueLock(env, raceKey);
+    }
     throw error;
   }
 };

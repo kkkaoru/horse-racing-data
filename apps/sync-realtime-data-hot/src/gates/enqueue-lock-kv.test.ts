@@ -6,10 +6,12 @@ import {
   calculateEnqueueLockTtlSeconds,
   calculateEnqueueLockTtlSecondsFromInput,
   isEnqueueLocked,
+  releaseEnqueueLock,
 } from "./enqueue-lock-kv";
 import type { Env } from "../types";
 
 interface KvMockHandle {
+  delete: ReturnType<typeof vi.fn>;
   get: ReturnType<typeof vi.fn>;
   put: ReturnType<typeof vi.fn>;
 }
@@ -418,4 +420,18 @@ it("cadence-60-just-below-1min-boundary (0.99 min before race, null interval)", 
       new Date("2026-05-28T09:59:00.600+09:00"),
     ),
   ).toBe(60);
+});
+
+it("releaseEnqueueLock deletes the namespaced KV key (K1-B)", async () => {
+  const env = buildEnv();
+  await releaseEnqueueLock(env, "nar:20260528:42:01");
+  const deleteMock = env.ODDS_HOT_KV.delete as unknown as KvMockHandle["delete"];
+  expect(deleteMock).toHaveBeenCalledWith("odds:enqueue-lock:nar:20260528:42:01");
+});
+
+it("releaseEnqueueLock invokes KV delete exactly once (K1-B)", async () => {
+  const env = buildEnv();
+  await releaseEnqueueLock(env, "jra:20260528:08:01");
+  const deleteMock = env.ODDS_HOT_KV.delete as unknown as KvMockHandle["delete"];
+  expect(deleteMock).toHaveBeenCalledTimes(1);
 });
