@@ -9,9 +9,15 @@ import { Pool } from "pg";
 
 import type { Env } from "../types";
 
-const DEFAULT_POOL_SIZE = 12;
+// Pool size was raised 12 -> 24 because burst recompute traffic (multiple JRA
+// races forwarded in parallel by forward-race-for-features) plus 60s query
+// timeout drained all 12 clients and surfaced as
+// "timeout exceeded when trying to connect" (pg-pool wait-queue timeout).
+// CONNECTION_TIMEOUT_MS was bumped 5_000 -> 15_000 so a Hyperdrive cold-start
+// or origin reconnect does not flap the singleton during a single tick.
+const DEFAULT_POOL_SIZE = 24;
 const IDLE_TIMEOUT_MS = 10_000;
-const CONNECTION_TIMEOUT_MS = 5_000;
+const CONNECTION_TIMEOUT_MS = 15_000;
 const QUERY_TIMEOUT_MS = 60_000;
 
 let pool: Pool | null = null;
