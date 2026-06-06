@@ -180,3 +180,4 @@ apps/finish-position-predict-container/models/
 .claude/
 
 tmp
+.neon
