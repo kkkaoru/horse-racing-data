@@ -111,6 +111,10 @@ beforeAll(async () => {
             namespace: "stub-running-style-feature-parquet",
             path: "running-style-feature-parquet",
           }));
+          build.onResolve({ filter: /^\.\/running-style-parquet-export$/ }, () => ({
+            namespace: "stub-running-style-parquet-export",
+            path: "running-style-parquet-export",
+          }));
           build.onResolve({ filter: /^@cloudflare\/playwright$/ }, () => ({
             namespace: "stub-playwright",
             path: "playwright",
@@ -136,6 +140,20 @@ beforeAll(async () => {
               export const putRunningStyleFeatureParquet = async () => 0;
               export const runningStyleParquetVerificationKey = () => "";
               export const validateFeatureCoverage = () => ({ missingCells: 0, missingFeatureNames: [] });
+            `,
+            loader: "js",
+          }));
+          build.onLoad({ filter: /.*/, namespace: "stub-running-style-parquet-export" }, () => ({
+            contents: `
+              export const buildRunningStyleDayParquetKey = () => "";
+              export const exportRunningStyleParquetForDay = async () => ({
+                bytesWritten: 0,
+                fileCount: 0,
+                keys: [],
+                rowCount: 0,
+                skipped: true,
+              });
+              export const serializeRunningStylePredictionParquet = async () => new Uint8Array();
             `,
             loader: "js",
           }));

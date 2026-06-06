@@ -16,6 +16,10 @@ import {
   type RunningStylePendingRace,
 } from "./running-style-d1";
 import { listRunningStyleExpectedHorseCounts } from "./running-style-expected-horses";
+import {
+  exportRunningStyleParquetForDay,
+  type ExportRunningStyleParquetResult,
+} from "./running-style-parquet-export";
 import { putViewerRunningStyleRaceCache } from "./viewer-running-style-cache";
 import {
   buildRunningStyleRaceKey,
@@ -60,6 +64,13 @@ export interface RunningStylePlanRace extends RunningStylePendingRace {
   existingHorseCount: number;
 }
 
+export interface RunningStyleParquetExportSummary {
+  bytesWritten: number;
+  exportError?: string;
+  fileCount: number;
+  rowCount: number;
+}
+
 export interface RunningStylePlanSummary {
   alreadyQueued: number;
   cacheRefresh?: ViewerRunningStyleCacheRefreshSummary;
@@ -68,6 +79,7 @@ export interface RunningStylePlanSummary {
   enqueued: number;
   featureReady: number;
   missingFeatures: number;
+  parquetExport?: RunningStyleParquetExportSummary;
   planError?: string;
   scanned: number;
 }
@@ -349,6 +361,52 @@ const mergeCacheRefresh = (
   };
 };
 
+const SOURCES_FOR_PARQUET_EXPORT: ReadonlyArray<"jra" | "nar"> = ["jra", "nar"];
+
+const exportParquetSafe = async (
+  env: Env,
+  date: string,
+): Promise<RunningStyleParquetExportSummary> => {
+  const exportOne = async (
+    source: "jra" | "nar",
+  ): Promise<ExportRunningStyleParquetResult | { exportError: string }> =>
+    exportRunningStyleParquetForDay({ dateYmd: date, env, source }).catch((error: unknown) => ({
+      exportError: formatError(error),
+    }));
+  const results = await Promise.all(SOURCES_FOR_PARQUET_EXPORT.map(exportOne));
+  const ok = results.filter((r): r is ExportRunningStyleParquetResult => !("exportError" in r));
+  const firstError = results.find((r): r is { exportError: string } => "exportError" in r);
+  return {
+    bytesWritten: ok.reduce((sum, r) => sum + r.bytesWritten, 0),
+    exportError: firstError?.exportError,
+    fileCount: ok.reduce((sum, r) => sum + r.fileCount, 0),
+    rowCount: ok.reduce((sum, r) => sum + r.rowCount, 0),
+  };
+};
+
+const mergeParquetExport = (
+  current: RunningStyleParquetExportSummary | undefined,
+  next: RunningStyleParquetExportSummary,
+): RunningStyleParquetExportSummary => {
+  if (current === undefined) return next;
+  return {
+    bytesWritten: current.bytesWritten + next.bytesWritten,
+    exportError: next.exportError ?? current.exportError,
+    fileCount: current.fileCount + next.fileCount,
+    rowCount: current.rowCount + next.rowCount,
+  };
+};
+
+const resolveMergedParquetExport = (
+  current: RunningStyleParquetExportSummary | undefined,
+  next: RunningStyleParquetExportSummary | undefined,
+): RunningStyleParquetExportSummary | undefined => {
+  if (current === undefined && next === undefined) return undefined;
+  if (current === undefined) return next;
+  if (next === undefined) return current;
+  return mergeParquetExport(current, next);
+};
+
 const mergeRunningStylePlan = (
   current: RunningStylePlanSummary | undefined,
   next: RunningStylePlanSummary,
@@ -361,6 +419,7 @@ const mergeRunningStylePlan = (
     enqueued: current.enqueued + next.enqueued,
     featureReady: current.featureReady + next.featureReady,
     missingFeatures: current.missingFeatures + next.missingFeatures,
+    parquetExport: resolveMergedParquetExport(current.parquetExport, next.parquetExport),
     planError: next.planError ?? current.planError,
     scanned: current.scanned + next.scanned,
   };
@@ -380,9 +439,12 @@ const planAndRefreshForDate = async (
 ): Promise<RunningStyleCronAccumulator> => {
   const plan = await planRunningStyleForDateSafe(env, date, now);
   const cacheRefresh = await refreshViewerCacheSafe(env, date, ctx);
+  const parquetExport = isInferenceEnabled(env) ? await exportParquetSafe(env, date) : undefined;
+  const planWithExport: RunningStylePlanSummary =
+    parquetExport === undefined ? plan : { ...plan, parquetExport };
   return {
     cacheRefresh: mergeCacheRefresh(acc.cacheRefresh, cacheRefresh),
-    plan: mergeRunningStylePlan(acc.plan, plan),
+    plan: mergeRunningStylePlan(acc.plan, planWithExport),
   };
 };
 
