@@ -1680,18 +1680,19 @@ export const getPremiumPaddockFetchState = async (
     : null;
 };
 
-export const updatePremiumPaddockFetchState = async (
+export interface UpdatePremiumPaddockFetchStateParams {
+  fetchedAt?: string | null;
+  message?: string | null;
+  raceKey: string;
+  retryAfter?: string | null;
+  status: string;
+}
+
+export const buildUpdatePremiumPaddockFetchStateStmt = (
   db: D1Database,
-  params: {
-    fetchedAt?: string | null;
-    message?: string | null;
-    raceKey: string;
-    retryAfter?: string | null;
-    status: string;
-  },
-): Promise<void> => {
-  const now = toJstIsoString();
-  await db
+  params: UpdatePremiumPaddockFetchStateParams,
+): D1PreparedStatement =>
+  db
     .prepare(
       `
         insert into premium_paddock_fetch_state (
@@ -1714,9 +1715,14 @@ export const updatePremiumPaddockFetchState = async (
       params.message ?? null,
       params.fetchedAt ?? null,
       params.retryAfter ?? null,
-      now,
-    )
-    .run();
+      toJstIsoString(),
+    );
+
+export const updatePremiumPaddockFetchState = async (
+  db: D1Database,
+  params: UpdatePremiumPaddockFetchStateParams,
+): Promise<void> => {
+  await buildUpdatePremiumPaddockFetchStateStmt(db, params).run();
 };
 
 export const getPremiumPaddockNotificationState = async (
@@ -1761,21 +1767,22 @@ export const getPremiumPaddockNotificationState = async (
     : null;
 };
 
-export const updatePremiumPaddockNotificationState = async (
+export interface UpdatePremiumPaddockNotificationStateParams {
+  message?: string | null;
+  payloadFetchedAt?: string | null;
+  notifiedAt?: string | null;
+  payloadSignature: string;
+  raceKey: string;
+  sendAttemptAt?: string | null;
+  skipReason?: string | null;
+  status: string;
+}
+
+export const buildUpdatePremiumPaddockNotificationStateStmt = (
   db: D1Database,
-  params: {
-    message?: string | null;
-    payloadFetchedAt?: string | null;
-    notifiedAt?: string | null;
-    payloadSignature: string;
-    raceKey: string;
-    sendAttemptAt?: string | null;
-    skipReason?: string | null;
-    status: string;
-  },
-): Promise<void> => {
-  const now = toJstIsoString();
-  await db
+  params: UpdatePremiumPaddockNotificationStateParams,
+): D1PreparedStatement =>
+  db
     .prepare(
       `
         insert into premium_paddock_notification_state (
@@ -1819,9 +1826,14 @@ export const updatePremiumPaddockNotificationState = async (
       params.notifiedAt ?? null,
       params.skipReason ?? null,
       params.message ?? null,
-      now,
-    )
-    .run();
+      toJstIsoString(),
+    );
+
+export const updatePremiumPaddockNotificationState = async (
+  db: D1Database,
+  params: UpdatePremiumPaddockNotificationStateParams,
+): Promise<void> => {
+  await buildUpdatePremiumPaddockNotificationStateStmt(db, params).run();
 };
 
 export const claimPremiumPaddockNotificationSend = async (
@@ -1897,20 +1909,22 @@ export const claimPremiumPaddockNotificationSend = async (
   return result.meta.changes > 0;
 };
 
-export const recordPremiumPaddockNotificationEvent = async (
+export interface RecordPremiumPaddockNotificationEventParams {
+  fetchedAt: string;
+  message?: string | null;
+  payloadSignature: string;
+  raceKey: string;
+  sentAt?: string | null;
+  skipReason?: string | null;
+  status: string;
+}
+
+export const buildRecordPremiumPaddockNotificationEventStmt = (
   db: D1Database,
-  params: {
-    fetchedAt: string;
-    message?: string | null;
-    payloadSignature: string;
-    raceKey: string;
-    sentAt?: string | null;
-    skipReason?: string | null;
-    status: string;
-  },
-): Promise<void> => {
+  params: RecordPremiumPaddockNotificationEventParams,
+): D1PreparedStatement => {
   const now = toJstIsoString();
-  await db
+  return db
     .prepare(
       `
         insert into premium_paddock_notification_events (
@@ -1944,8 +1958,35 @@ export const recordPremiumPaddockNotificationEvent = async (
       params.sentAt ?? null,
       now,
       now,
-    )
-    .run();
+    );
+};
+
+export const recordPremiumPaddockNotificationEvent = async (
+  db: D1Database,
+  params: RecordPremiumPaddockNotificationEventParams,
+): Promise<void> => {
+  await buildRecordPremiumPaddockNotificationEventStmt(db, params).run();
+};
+
+// Single D1 batch round-trip that updates fetch state + records notification
+// event + updates notification state. Used by premium-paddock "skip" outcomes
+// (auth_required / unavailable / pending / empty) to collapse 3 D1 writes
+// into 1 batch RPC, easing D1 overload during the T-120 fetch window.
+export interface ApplyPremiumPaddockSkipOutcomeParams {
+  fetchState: UpdatePremiumPaddockFetchStateParams;
+  notificationEvent: RecordPremiumPaddockNotificationEventParams;
+  notificationState: UpdatePremiumPaddockNotificationStateParams;
+}
+
+export const applyPremiumPaddockSkipOutcome = async (
+  db: D1Database,
+  params: ApplyPremiumPaddockSkipOutcomeParams,
+): Promise<void> => {
+  await db.batch([
+    buildUpdatePremiumPaddockFetchStateStmt(db, params.fetchState),
+    buildRecordPremiumPaddockNotificationEventStmt(db, params.notificationEvent),
+    buildUpdatePremiumPaddockNotificationStateStmt(db, params.notificationState),
+  ]);
 };
 
 export const toHorseTrends = (history: OddsHistoryPoint[]): HorseOddsTrend[] => {

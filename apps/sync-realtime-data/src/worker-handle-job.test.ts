@@ -49,6 +49,7 @@ vi.mock("./storage", () => ({
   updatePremiumPaddockNotificationState: vi.fn(async () => {}),
   claimPremiumPaddockNotificationSend: vi.fn(async () => true),
   recordPremiumPaddockNotificationEvent: vi.fn(async () => {}),
+  applyPremiumPaddockSkipOutcome: vi.fn(async () => {}),
   listTanshoHistory: vi.fn(async () => []),
   listOddsHistoryByType: vi.fn(async () => ({})),
   getLatestOddsFromD1: vi.fn(async () => null),
@@ -819,7 +820,7 @@ it("handleJob fetch-premium-race-data throws when origin set but no race link di
 
 it("handleJob fetch-premium-paddock with valid link + attempts runs the parse + update path", async () => {
   const { handleJob } = await import("./worker");
-  const { getRaceSource, getPremiumRaceLink, updatePremiumPaddockFetchState } =
+  const { getRaceSource, getPremiumRaceLink, applyPremiumPaddockSkipOutcome } =
     await import("./storage");
   const { fetchPremiumHtmlAttempts } = await import("./premium-race");
   vi.mocked(getRaceSource).mockResolvedValue({
@@ -863,7 +864,7 @@ it("handleJob fetch-premium-paddock with valid link + attempts runs the parse + 
     } as never),
     { raceKey: "jra:2026:0512:08:01", type: "fetch-premium-paddock" },
   );
-  expect(updatePremiumPaddockFetchState).toHaveBeenCalled();
+  expect(applyPremiumPaddockSkipOutcome).toHaveBeenCalled();
 });
 
 it("handleJob fetch-premium-paddock skips when current state has future retryAfter", async () => {
