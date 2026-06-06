@@ -10,6 +10,7 @@ vi.mock("./daily-feature-build", () => ({
 }));
 vi.mock("./running-style-feature-sql", () => ({
   buildRunningStyleFeaturesForRaceFromD1Target: vi.fn(),
+  buildRunningStyleFeaturesForRaceFromPostgres: vi.fn(),
 }));
 vi.mock("./running-style-feature-parquet", () => ({
   buildRunningStyleFeatureParquetKey: vi.fn(() => "features.parquet"),
@@ -263,11 +264,60 @@ describe("materializeRunningStyleFeatureParquetForRace", () => {
     });
   });
 
-  it("throws when D1 daily_race_entries are empty", async () => {
+  it("falls back to Hyperdrive-direct Postgres build when D1 daily_race_entries are empty", async () => {
     const { materializeRunningStyleFeatureParquetForRace } =
       await import("./running-style-feature-materialize");
     const { listDailyRaceEntriesForRace } = await import("./daily-feature-build");
+    const {
+      buildRunningStyleFeaturesForRaceFromD1Target,
+      buildRunningStyleFeaturesForRaceFromPostgres,
+    } = await import("./running-style-feature-sql");
+    const { putRunningStyleFeatureParquet, validateFeatureCoverage } =
+      await import("./running-style-feature-parquet");
     vi.mocked(listDailyRaceEntriesForRace).mockResolvedValue([] as never);
+    vi.mocked(buildRunningStyleFeaturesForRaceFromPostgres).mockResolvedValue({
+      elapsedMs: 1,
+      rows: [{}] as never,
+      sqlRows: 1,
+    });
+    vi.mocked(validateFeatureCoverage).mockReturnValue({
+      missingCells: 0,
+      missingFeatureNames: [],
+    });
+    vi.mocked(putRunningStyleFeatureParquet).mockResolvedValue(42);
+    const result = await materializeRunningStyleFeatureParquetForRace({
+      env: makeEnv("1"),
+      featureNames: ["f1"],
+      pool: makePool(),
+      race: {
+        kaisaiNen: "2026",
+        kaisaiTsukihi: "0513",
+        keibajoCode: "08",
+        raceBango: "01",
+        source: "jra",
+      },
+    });
+    expect(result).toStrictEqual({
+      builtRowCount: 1,
+      bytesWritten: 42,
+      featuresR2Key: "features.parquet",
+    });
+    expect(buildRunningStyleFeaturesForRaceFromD1Target).not.toHaveBeenCalled();
+    expect(buildRunningStyleFeaturesForRaceFromPostgres).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws when both D1 and Hyperdrive-direct builds return zero rows", async () => {
+    const { materializeRunningStyleFeatureParquetForRace } =
+      await import("./running-style-feature-materialize");
+    const { listDailyRaceEntriesForRace } = await import("./daily-feature-build");
+    const { buildRunningStyleFeaturesForRaceFromPostgres } =
+      await import("./running-style-feature-sql");
+    vi.mocked(listDailyRaceEntriesForRace).mockResolvedValue([] as never);
+    vi.mocked(buildRunningStyleFeaturesForRaceFromPostgres).mockResolvedValue({
+      elapsedMs: 1,
+      rows: [] as never,
+      sqlRows: 0,
+    });
     await expect(
       materializeRunningStyleFeatureParquetForRace({
         env: makeEnv("1"),
@@ -281,7 +331,7 @@ describe("materializeRunningStyleFeatureParquetForRace", () => {
           source: "jra",
         },
       }),
-    ).rejects.toThrow("no D1 daily_race_entries rows");
+    ).rejects.toThrow("no running-style feature rows found");
   });
 
   it("throws when the PostgreSQL build returns no rows", async () => {

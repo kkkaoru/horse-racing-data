@@ -15,7 +15,11 @@ import {
   putRunningStyleFeatureParquet,
   validateFeatureCoverage,
 } from "./running-style-feature-parquet";
-import { buildRunningStyleFeaturesForRaceFromD1Target } from "./running-style-feature-sql";
+import {
+  buildRunningStyleFeaturesForRaceFromD1Target,
+  buildRunningStyleFeaturesForRaceFromPostgres,
+  type PostgresFeatureBuildSummary,
+} from "./running-style-feature-sql";
 import { buildRunningStyleRaceKey, type RunningStyleRaceParams } from "./running-style-features";
 import {
   buildRunningStyleFlatModelKey,
@@ -63,20 +67,37 @@ export interface MaterializeRunningStyleFeaturesForDateResult {
   materializeError?: string;
 }
 
+// Prefer the D1 daily-target SQL path (matches the production queue) so today's
+// races whose `nvd_se` rows are not yet materialized still resolve. Fall back to
+// the Hyperdrive-direct path when D1 `daily_race_entries` is empty — Phase F
+// removed the historical daily_race_entries window, so the D1 read returns 0
+// rows for most races now. This mirrors the established fallback in
+// running-style-verification.ts (lines 71-84) and keeps Phase 0 rule 3 intact:
+// the D1 read is best-effort only, never the sole data source.
+const buildPostgresFeatureSummary = async (
+  params: MaterializeRunningStyleFeatureParquetParams,
+): Promise<PostgresFeatureBuildSummary> => {
+  const dailyTargetRows = await listDailyRaceEntriesForRace(params.env.REALTIME_DB, params.race);
+  if (dailyTargetRows.length > 0) {
+    return buildRunningStyleFeaturesForRaceFromD1Target(
+      params.pool,
+      params.race,
+      params.featureNames,
+      dailyTargetRows,
+    );
+  }
+  return buildRunningStyleFeaturesForRaceFromPostgres(
+    params.pool,
+    params.race,
+    params.featureNames,
+  );
+};
+
 const buildAndPutRunningStyleFeatureParquet = async (
   params: MaterializeRunningStyleFeatureParquetParams,
 ): Promise<MaterializeRunningStyleFeatureParquetResult> => {
   const raceKey = buildRunningStyleRaceKey(params.race);
-  const dailyTargetRows = await listDailyRaceEntriesForRace(params.env.REALTIME_DB, params.race);
-  if (dailyTargetRows.length === 0) {
-    throw new Error(`no D1 daily_race_entries rows for race ${raceKey}; run build-daily-features`);
-  }
-  const built = await buildRunningStyleFeaturesForRaceFromD1Target(
-    params.pool,
-    params.race,
-    params.featureNames,
-    dailyTargetRows,
-  );
+  const built = await buildPostgresFeatureSummary(params);
   if (built.rows.length === 0) {
     throw new Error(`no running-style feature rows found for race ${raceKey}`);
   }
