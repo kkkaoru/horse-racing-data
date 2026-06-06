@@ -281,6 +281,12 @@ const MIN_HORSE_WEIGHT_ROWS_PER_RACE = 2;
 // info is useful even shortly after gate-open). Past the window, suppress
 // only if we have already notified at least once.
 const PREMIUM_PADDOCK_NOTIFY_GRACE_AFTER_START_MS = 10 * 60 * 1000;
+// JST hours at which planRealtimeFetches fires `discover-premium-races`.
+// 20:00 prepares tomorrow's premium race links. 09:00 is the recovery slot
+// for the previous 20:00 tick when D1 overload or Hyperdrive timeout left
+// the discovery step incomplete, so today's paddock pipeline still has
+// fresh links instead of running empty until the next 20:00 tick.
+const PREMIUM_RACE_DISCOVERY_HOURS_JST = [9, 20] satisfies readonly number[];
 const JRA_KEIBAJO_NAMES: Record<string, string> = {
   "01": "札幌",
   "02": "函館",
@@ -342,6 +348,21 @@ interface WeightCandidate {
 interface WeightCandidatePair {
   race: SchedulableRaceSource;
   minutes: number | null;
+}
+
+// Variants of the candidate types used by the KV fallback path. The KV
+// fallback re-reads races one-by-one with `getRaceSource`, which returns
+// the lighter `NarRaceSource` (no result-fetch / odds-queued state) — the
+// fallback only needs raceStartAtJst + lastWeightFetchAt to re-apply the
+// lead-time and cooldown gating that the live-query path already enforces.
+interface FallbackWeightCandidatePair {
+  race: NarRaceSource;
+  minutes: number | null;
+}
+
+interface FallbackWeightCandidate {
+  race: NarRaceSource;
+  minutes: number;
 }
 
 interface ForwardRaceSourceArgs {
@@ -1064,6 +1085,28 @@ export const weightFetchPriorityTier = (input: WeightFetchPriorityInput): number
 const isWeightCandidate = (pair: WeightCandidatePair): pair is WeightCandidate =>
   pair.minutes !== null;
 
+const isFallbackWeightCandidate = (
+  pair: FallbackWeightCandidatePair,
+): pair is FallbackWeightCandidate => pair.minutes !== null;
+
+// Re-applies the lead-time + cooldown gating used by the live-query path so
+// the KV fallback does not enqueue past races or races still inside the
+// per-race cooldown window. Without this filter the 24h KV TTL would cause
+// every minute-cron tick to re-enqueue stale race keys after Hyperdrive
+// returns an empty result.
+const isFallbackWeightCandidateDue = (candidate: FallbackWeightCandidate, now: Date): boolean =>
+  candidate.minutes <= WEIGHT_FETCH_LEAD_MINUTES &&
+  isDue(
+    candidate.race.lastWeightFetchAt,
+    resolveWeightFetchCooldownMinutes(
+      candidate.race.raceStartAtJst,
+      candidate.race.lastWeightFetchAt,
+    ),
+    now,
+  );
+
+const isNarRaceSourcePresent = (race: NarRaceSource | null): race is NarRaceSource => race !== null;
+
 export const compareWeightCandidates = (a: WeightCandidate, b: WeightCandidate): number => {
   const ta = weightFetchPriorityTier({
     source: a.race.source,
@@ -1080,8 +1123,8 @@ export const compareWeightCandidates = (a: WeightCandidate, b: WeightCandidate):
 };
 
 export const isPremiumRaceDiscoveryTick = (date: Date): boolean => {
-  const jst = toJstIsoString(date);
-  return jst.slice(11, 16) === "20:00";
+  const hour = Number(getJstDateParts(date).hour);
+  return PREMIUM_RACE_DISCOVERY_HOURS_JST.includes(hour);
 };
 
 const getLatestSuccessfulRealtimePlanAt = async (env: Env): Promise<string | null> => {
@@ -2023,9 +2066,19 @@ export const planRealtimeFetches = async (env: Env, targetDate: string): Promise
       );
     } else {
       const fallback = await readWeightRaceListFallbackFromKv(env, targetDate);
-      fallback.forEach((entry) => {
-        jobs.push({ raceKey: entry.raceKey, type: "fetch-weights" });
-      });
+      const fallbackRaces = await Promise.all(
+        fallback.map((entry) => getRaceSource(env.REALTIME_DB, entry.raceKey)),
+      );
+      fallbackRaces
+        .filter(isNarRaceSourcePresent)
+        .map(
+          (race): FallbackWeightCandidatePair => ({ race, minutes: minutesUntilRace(race, now) }),
+        )
+        .filter(isFallbackWeightCandidate)
+        .filter((candidate) => isFallbackWeightCandidateDue(candidate, now))
+        .forEach((candidate) => {
+          jobs.push({ raceKey: candidate.race.raceKey, type: "fetch-weights" });
+        });
     }
     for (const race of races) {
       const minutes = minutesUntilRace(race, now);

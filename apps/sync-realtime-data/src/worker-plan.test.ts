@@ -1578,8 +1578,47 @@ it("resolveWeightFetchCooldownMinutes falls back to 24h when lastFetchAt is not 
 
 it("planRealtimeFetches falls back to KV race list when Hyperdrive returns no rows", async () => {
   const { planRealtimeFetches } = await import("./worker");
-  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  const { listSchedulableRaceSourcesByDate, getRaceSource } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([]);
+  vi.mocked(getRaceSource).mockImplementation(async (_db, raceKey) =>
+    raceKey === "jra:2026:0606:05:01"
+      ? {
+          babaCode: "05",
+          debaUrl: "https://www.jra.go.jp/race/r1",
+          kaisaiKai: "02",
+          kaisaiNen: "2026",
+          kaisaiNichime: "06",
+          kaisaiTsukihi: "0606",
+          keibajoCode: "05",
+          lastOddsFetchAt: null,
+          lastWeightFetchAt: null,
+          oddsLinks: {},
+          raceBango: "01",
+          raceKey: "jra:2026:0606:05:01",
+          raceName: "Fallback1",
+          raceStartAtJst: "2026-06-06T13:30:00+09:00",
+          source: "jra",
+        }
+      : raceKey === "jra:2026:0606:05:02"
+        ? {
+            babaCode: "05",
+            debaUrl: "https://www.jra.go.jp/race/r2",
+            kaisaiKai: "02",
+            kaisaiNen: "2026",
+            kaisaiNichime: "06",
+            kaisaiTsukihi: "0606",
+            keibajoCode: "05",
+            lastOddsFetchAt: null,
+            lastWeightFetchAt: null,
+            oddsLinks: {},
+            raceBango: "02",
+            raceKey: "jra:2026:0606:05:02",
+            raceName: "Fallback2",
+            raceStartAtJst: "2026-06-06T14:00:00+09:00",
+            source: "jra",
+          }
+        : null,
+  );
   const kvGet = vi.fn(async () =>
     JSON.stringify([
       { raceKey: "jra:2026:0606:05:01", source: "jra" },
@@ -1607,6 +1646,174 @@ it("planRealtimeFetches falls back to KV race list when Hyperdrive returns no ro
     ...sentBatched.filter((m) => m.body.type === "fetch-weights").map((m) => m.body.raceKey),
   ];
   expect(allWeightKeys).toStrictEqual(["jra:2026:0606:05:01", "jra:2026:0606:05:02"]);
+});
+
+it("planRealtimeFetches KV fallback excludes race when within same-day cooldown", async () => {
+  const { planRealtimeFetches } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate, getRaceSource } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([]);
+  vi.mocked(getRaceSource).mockResolvedValue({
+    babaCode: "05",
+    debaUrl: "https://www.jra.go.jp/race/cooldown",
+    kaisaiKai: "02",
+    kaisaiNen: "2026",
+    kaisaiNichime: "06",
+    kaisaiTsukihi: "0606",
+    keibajoCode: "05",
+    lastOddsFetchAt: null,
+    lastWeightFetchAt: "2026-06-06T11:45:00+09:00",
+    oddsLinks: {},
+    raceBango: "03",
+    raceKey: "jra:2026:0606:05:03",
+    raceName: "CooldownLocked",
+    raceStartAtJst: "2026-06-06T13:30:00+09:00",
+    source: "jra",
+  });
+  const kvGet = vi.fn(async () =>
+    JSON.stringify([{ raceKey: "jra:2026:0606:05:03", source: "jra" }]),
+  );
+  const kvPut = vi.fn(async () => {});
+  const sendBatch = vi.fn(async () => {});
+  const send = vi.fn(async () => {});
+  const env = buildEnv({
+    DETAIL_SECTION_CACHE_KV: { get: kvGet, put: kvPut } as unknown as KVNamespace,
+    REALTIME_TEST_NOW: "2026-06-06T03:00:00.000Z",
+  });
+  env.REALTIME_JOBS = { send, sendBatch } as never;
+  await planRealtimeFetches(env, "20260606");
+  const sentSingle = (send.mock.calls as unknown as [{ raceKey: string; type: string }][]).map(
+    (c) => c[0],
+  );
+  const sentBatched =
+    (
+      sendBatch.mock.calls as unknown as [{ body: { raceKey: string; type: string } }[]][]
+    )[0]?.[0] ?? [];
+  const weightCount =
+    sentSingle.filter((j) => j.type === "fetch-weights").length +
+    sentBatched.filter((m) => m.body.type === "fetch-weights").length;
+  expect(weightCount).toBe(0);
+});
+
+it("planRealtimeFetches KV fallback excludes race when beyond 180-min lead-time", async () => {
+  const { planRealtimeFetches } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate, getRaceSource } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([]);
+  vi.mocked(getRaceSource).mockResolvedValue({
+    babaCode: "05",
+    debaUrl: "https://www.jra.go.jp/race/leadtime",
+    kaisaiKai: "02",
+    kaisaiNen: "2026",
+    kaisaiNichime: "06",
+    kaisaiTsukihi: "0606",
+    keibajoCode: "05",
+    lastOddsFetchAt: null,
+    lastWeightFetchAt: null,
+    oddsLinks: {},
+    raceBango: "04",
+    raceKey: "jra:2026:0606:05:04",
+    raceName: "LeadTimeAhead",
+    raceStartAtJst: "2026-06-06T16:30:00+09:00",
+    source: "jra",
+  });
+  const kvGet = vi.fn(async () =>
+    JSON.stringify([{ raceKey: "jra:2026:0606:05:04", source: "jra" }]),
+  );
+  const kvPut = vi.fn(async () => {});
+  const sendBatch = vi.fn(async () => {});
+  const send = vi.fn(async () => {});
+  const env = buildEnv({
+    DETAIL_SECTION_CACHE_KV: { get: kvGet, put: kvPut } as unknown as KVNamespace,
+    REALTIME_TEST_NOW: "2026-06-06T03:00:00.000Z",
+  });
+  env.REALTIME_JOBS = { send, sendBatch } as never;
+  await planRealtimeFetches(env, "20260606");
+  const sentSingle = (send.mock.calls as unknown as [{ raceKey: string; type: string }][]).map(
+    (c) => c[0],
+  );
+  const sentBatched =
+    (
+      sendBatch.mock.calls as unknown as [{ body: { raceKey: string; type: string } }[]][]
+    )[0]?.[0] ?? [];
+  const weightCount =
+    sentSingle.filter((j) => j.type === "fetch-weights").length +
+    sentBatched.filter((m) => m.body.type === "fetch-weights").length;
+  expect(weightCount).toBe(0);
+});
+
+it("planRealtimeFetches KV fallback excludes race when getRaceSource returns null", async () => {
+  const { planRealtimeFetches } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate, getRaceSource } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([]);
+  vi.mocked(getRaceSource).mockResolvedValue(null);
+  const kvGet = vi.fn(async () =>
+    JSON.stringify([{ raceKey: "jra:2026:0606:05:05", source: "jra" }]),
+  );
+  const kvPut = vi.fn(async () => {});
+  const sendBatch = vi.fn(async () => {});
+  const send = vi.fn(async () => {});
+  const env = buildEnv({
+    DETAIL_SECTION_CACHE_KV: { get: kvGet, put: kvPut } as unknown as KVNamespace,
+    REALTIME_TEST_NOW: "2026-06-06T03:00:00.000Z",
+  });
+  env.REALTIME_JOBS = { send, sendBatch } as never;
+  await planRealtimeFetches(env, "20260606");
+  const sentSingle = (send.mock.calls as unknown as [{ raceKey: string; type: string }][]).map(
+    (c) => c[0],
+  );
+  const sentBatched =
+    (
+      sendBatch.mock.calls as unknown as [{ body: { raceKey: string; type: string } }[]][]
+    )[0]?.[0] ?? [];
+  const weightCount =
+    sentSingle.filter((j) => j.type === "fetch-weights").length +
+    sentBatched.filter((m) => m.body.type === "fetch-weights").length;
+  expect(weightCount).toBe(0);
+});
+
+it("planRealtimeFetches KV fallback excludes race when raceStartAtJst is unparseable", async () => {
+  const { planRealtimeFetches } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate, getRaceSource } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValue([]);
+  vi.mocked(getRaceSource).mockResolvedValue({
+    babaCode: "05",
+    debaUrl: "https://www.jra.go.jp/race/badtime",
+    kaisaiKai: "02",
+    kaisaiNen: "2026",
+    kaisaiNichime: "06",
+    kaisaiTsukihi: "0606",
+    keibajoCode: "05",
+    lastOddsFetchAt: null,
+    lastWeightFetchAt: null,
+    oddsLinks: {},
+    raceBango: "06",
+    raceKey: "jra:2026:0606:05:06",
+    raceName: "BadTime",
+    raceStartAtJst: "invalid",
+    source: "jra",
+  });
+  const kvGet = vi.fn(async () =>
+    JSON.stringify([{ raceKey: "jra:2026:0606:05:06", source: "jra" }]),
+  );
+  const kvPut = vi.fn(async () => {});
+  const sendBatch = vi.fn(async () => {});
+  const send = vi.fn(async () => {});
+  const env = buildEnv({
+    DETAIL_SECTION_CACHE_KV: { get: kvGet, put: kvPut } as unknown as KVNamespace,
+    REALTIME_TEST_NOW: "2026-06-06T03:00:00.000Z",
+  });
+  env.REALTIME_JOBS = { send, sendBatch } as never;
+  await planRealtimeFetches(env, "20260606");
+  const sentSingle = (send.mock.calls as unknown as [{ raceKey: string; type: string }][]).map(
+    (c) => c[0],
+  );
+  const sentBatched =
+    (
+      sendBatch.mock.calls as unknown as [{ body: { raceKey: string; type: string } }[]][]
+    )[0]?.[0] ?? [];
+  const weightCount =
+    sentSingle.filter((j) => j.type === "fetch-weights").length +
+    sentBatched.filter((m) => m.body.type === "fetch-weights").length;
+  expect(weightCount).toBe(0);
 });
 
 it("planRealtimeFetches writes the KV race list when the live query returns rows", async () => {
