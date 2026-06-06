@@ -8,16 +8,18 @@ fixture and write a synthetic ``manifest.json`` mirroring the on-disk layout
 that ``build_per_class_manifest_path`` builds.
 
 Phase B-2A adds ensemble routing (``load_ensemble_manifest`` /
-``resolve_per_class_resolution``). The 703 + 010 + 005 + other registrations
-are asserted both in isolation
+``resolve_per_class_resolution``). The 005 + 010 + 016 + 703 + other
+registrations are asserted both in isolation
 (``test_per_class_model_versions_includes_production_ensembles``) and end-to-end
 (``test_load_ensemble_manifest_*``, ``test_resolve_per_class_resolution_*``).
 010 was activated on 2026-06-05 (iter 25 v2 ensemble, +0.632pp top1 — the
-largest per-class win in the v8 loop); 005 was activated the same day (iter 25
-v2 ensemble, +0.095pp top1 — modest but positive, the second smallest gain
-after the tied classes); the ``other`` catch-all (NOT IN
-``{005, 010, 016, 701, 703}`` or NULL) was activated the same day
-(iter 25 v2 ensemble, +0.094pp top1) and is routed via
+largest per-class win in the v8 loop); 005 / 016 / 703 were re-activated the
+same day with iter 26 v4 ensemble (relationship features added to the member
+pool): 005 flipped from iter 25 v2 (+0.095pp) to iter 26 v4 (+0.572pp), 016
+was newly activated at +0.138pp (was iter 14 fallback because v2 measured
+-0.550 REJECT), 703 flipped from iter 23 (+0.142pp) to iter 26 v4 (+0.189pp).
+The ``other`` catch-all (NOT IN ``{005, 010, 016, 701, 703}`` or NULL) was
+activated on the iter 25 v2 ensemble (+0.094pp top1) and is routed via
 ``normalize_class_code`` which collapses unregistered real codes onto the
 ``"other"`` virtual bucket.
 """
@@ -36,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from predict_lib import per_class
 from predict_lib.per_class import (
     NAMED_PER_CLASS_CODES,
+    NAMED_PER_CLASS_CODES_BY_CATEGORY,
     OTHER_CLASS_CODE,
     PER_CLASS_ENABLED_CATEGORIES,
     PER_CLASS_MODEL_VERSIONS,
@@ -55,10 +58,23 @@ NAR_FALLBACK_MODEL_VERSION: str = "iter12-nar-xgb-hpo-v8"
 BANEI_FALLBACK_MODEL_VERSION: str = "banei-cb-v7-lineage-wf-21y"
 JRA_CLASS_005_MODEL_VERSION: str = "iter21-jra-cb-class005-v8"
 JRA_CLASS_010_MODEL_VERSION: str = "iter21-jra-cb-class010-v8"
-JRA_CLASS_703_ENSEMBLE_MODEL_VERSION: str = "iter23-jra-cb-ensemble-703-v8"
 JRA_CLASS_010_ENSEMBLE_MODEL_VERSION: str = "iter25-jra-cb-ensemble-010-v8"
-JRA_CLASS_005_ENSEMBLE_MODEL_VERSION: str = "iter25-jra-cb-ensemble-005-v8"
 JRA_CLASS_OTHER_ENSEMBLE_MODEL_VERSION: str = "iter25-jra-cb-ensemble-other-v8"
+JRA_CLASS_005_ENSEMBLE_MODEL_VERSION: str = "iter26-jra-cb-ensemble-005-v8"
+JRA_CLASS_016_ENSEMBLE_MODEL_VERSION: str = "iter26-jra-cb-ensemble-016-v8"
+JRA_CLASS_703_ENSEMBLE_MODEL_VERSION: str = "iter26-jra-cb-ensemble-703-v8"
+NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION: str = "iter30-nar-cb-ensemble-NEW-v8"
+NAR_CLASS_MUKATSU_ENSEMBLE_MODEL_VERSION: str = "iter30-nar-cb-ensemble-MUKATSU-v8"
+NAR_CLASS_C_ENSEMBLE_MODEL_VERSION: str = "iter30-nar-cb-ensemble-C-v8"
+NAR_CLASS_A_ENSEMBLE_MODEL_VERSION: str = "iter30-nar-cb-ensemble-A-v8"
+NAR_CLASS_OP_ENSEMBLE_MODEL_VERSION: str = "iter30-nar-cb-ensemble-OP-v8"
+NAR_CLASS_OTHER_ENSEMBLE_MODEL_VERSION: str = "iter30-nar-cb-ensemble-other-v8"
+NAR_RESIDUAL_NEW: str = "iter30-nar-cb-residual-NEW-v8"
+NAR_RESIDUAL_MUKATSU: str = "iter30-nar-cb-residual-MUKATSU-v8"
+NAR_RESIDUAL_C: str = "iter30-nar-cb-residual-C-v8"
+NAR_RESIDUAL_A: str = "iter30-nar-cb-residual-A-v8"
+NAR_RESIDUAL_OP: str = "iter30-nar-cb-residual-OP-v8"
+NAR_RESIDUAL_OTHER: str = "iter30-nar-cb-residual-other-v8"
 
 
 def _write_manifest(
@@ -183,10 +199,11 @@ def _canonical_other_payload() -> dict[str, object]:
 
 
 def _canonical_005_payload() -> dict[str, object]:
-    # Mirrors the production iter 25 v2 ensemble manifest activated 2026-06-05
-    # (+0.095pp top1 vs iter 14 baseline on 3147-race holdout). iter14 carries
-    # a 0.509528 weight (well above the 0.20 minimum) while iter25 low-cap
-    # contributes 0.332733 — the second-largest member.
+    # Mirrors the production iter 26 v4 ensemble manifest activated 2026-06-05
+    # (+0.572pp top1 vs iter 14 baseline on 3147-race holdout — the largest
+    # 005 gain in the v8 loop, flipping the class from iter 25 v2 +0.095pp).
+    # iter 26 relationship booster dominates the blend at weight 0.505597 with
+    # iter 22 residual second at 0.179245 and iter 14 baseline carried at 0.2.
     return {
         "model_version": JRA_CLASS_005_ENSEMBLE_MODEL_VERSION,
         "category": "jra",
@@ -195,56 +212,107 @@ def _canonical_005_payload() -> dict[str, object]:
         "members": [
             {
                 "model_version": JRA_FALLBACK_MODEL_VERSION,
-                "weight": 0.509528,
+                "weight": 0.2,
                 "is_baseline": True,
             },
             {
                 "model_version": "iter20-jra-cb-perclass-005-v8",
-                "weight": 0.119616,
+                "weight": 0.054137,
                 "is_baseline": False,
             },
             {
                 "model_version": "iter20-jra-cb-perclass-005-hpo-v8",
-                "weight": 0.005101,
+                "weight": 0.004774,
                 "is_baseline": False,
             },
             {
                 "model_version": "iter21-jra-cb-chain-005-v8",
-                "weight": 0.002442,
+                "weight": 0.024707,
                 "is_baseline": False,
             },
             {
                 "model_version": "iter22-jra-cb-residual-005-v8",
-                "weight": 0.030581,
+                "weight": 0.179245,
                 "is_baseline": False,
             },
             {
                 "model_version": "iter25-jra-cb-low-cap-005-v8",
-                "weight": 0.332733,
+                "weight": 0.03154,
+                "is_baseline": False,
+            },
+            {
+                "model_version": "iter26-jra-cb-relationships-005-v8",
+                "weight": 0.505597,
                 "is_baseline": False,
             },
         ],
     }
 
 
-def test_per_class_enabled_categories_contains_jra_only() -> None:
-    assert frozenset({"jra"}) == PER_CLASS_ENABLED_CATEGORIES
+def _canonical_016_payload() -> dict[str, object]:
+    # Mirrors the production iter 26 v4 ensemble manifest activated 2026-06-05
+    # (+0.138pp top1 vs iter 14 baseline on 727-race holdout). NEW activation:
+    # 016 was iter 14 fallback before (iter 25 v2 measured -0.550 REJECT).
+    # iter 25 low-cap booster dominates the blend at weight 0.544315 with
+    # iter 26 relationships second at 0.110428 and iter 14 baseline at 0.2.
+    return {
+        "model_version": JRA_CLASS_016_ENSEMBLE_MODEL_VERSION,
+        "category": "jra",
+        "kyoso_joken_code": "016",
+        "ensemble_type": "rank_blend",
+        "members": [
+            {
+                "model_version": JRA_FALLBACK_MODEL_VERSION,
+                "weight": 0.2,
+                "is_baseline": True,
+            },
+            {
+                "model_version": "iter20-jra-cb-perclass-016-v8",
+                "weight": 0.007368,
+                "is_baseline": False,
+            },
+            {
+                "model_version": "iter21-jra-cb-chain-016-v8",
+                "weight": 0.080411,
+                "is_baseline": False,
+            },
+            {
+                "model_version": "iter22-jra-cb-residual-016-v8",
+                "weight": 0.057479,
+                "is_baseline": False,
+            },
+            {
+                "model_version": "iter25-jra-cb-low-cap-016-v8",
+                "weight": 0.544315,
+                "is_baseline": False,
+            },
+            {
+                "model_version": "iter26-jra-cb-relationships-016-v8",
+                "weight": 0.110428,
+                "is_baseline": False,
+            },
+        ],
+    }
+
+
+def test_per_class_enabled_categories_contains_jra_and_nar() -> None:
+    # Phase F (2026-06-05) adds NAR alongside JRA. Ban-ei stays disabled — no
+    # per-class plan yet.
+    assert frozenset({"jra", "nar"}) == PER_CLASS_ENABLED_CATEGORIES
 
 
 def test_is_per_class_enabled_for_jra_returns_true() -> None:
     assert is_per_class_enabled_for("jra") is True
 
 
-def test_is_per_class_enabled_for_nar_returns_false() -> None:
-    assert is_per_class_enabled_for("nar") is False
+def test_is_per_class_enabled_for_nar_returns_true() -> None:
+    # Phase F flipped this from False to True. NAR now routes off
+    # ``nar_subclass`` to the iter 30 ensembles.
+    assert is_per_class_enabled_for("nar") is True
 
 
 def test_is_per_class_enabled_for_banei_returns_false() -> None:
     assert is_per_class_enabled_for("ban-ei") is False
-
-
-def test_resolve_falls_back_when_category_not_enabled() -> None:
-    assert resolve_per_class_model_version("nar", "005") == NAR_FALLBACK_MODEL_VERSION
 
 
 def test_resolve_falls_back_when_category_not_enabled_banei() -> None:
@@ -304,16 +372,18 @@ def test_resolve_returns_fallback_for_unregistered_code_when_registry_has_other(
 def test_resolve_ignores_registry_when_category_not_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Ban-ei stays disabled even when an entry is hand-injected — the
+    # ``PER_CLASS_ENABLED_CATEGORIES`` allowlist is the single switch and a
+    # rogue registry row cannot route a Ban-ei race to a per-class booster.
     monkeypatch.setattr(
         per_class,
         "PER_CLASS_MODEL_VERSIONS",
-        {("nar", "005"): "iter21-nar-xgb-class005-v8"},
+        {("ban-ei", "999"): "banei-cb-class999-v8"},
     )
-    assert per_class.resolve_per_class_model_version("nar", "005") == NAR_FALLBACK_MODEL_VERSION
-
-
-def test_per_class_codes_for_nar_returns_empty_when_disabled() -> None:
-    assert per_class_codes_for("nar") == ()
+    assert (
+        per_class.resolve_per_class_model_version("ban-ei", "999")
+        == BANEI_FALLBACK_MODEL_VERSION
+    )
 
 
 def test_per_class_codes_for_banei_returns_empty_when_disabled() -> None:
@@ -351,12 +421,14 @@ def test_per_class_codes_for_jra_filters_other_category_entries(
 def test_per_class_codes_for_disabled_category_ignores_registry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Ban-ei is the only disabled category in Phase F; even if a registry row
+    # were injected, the gate must short-circuit to an empty tuple.
     monkeypatch.setattr(
         per_class,
         "PER_CLASS_MODEL_VERSIONS",
-        {("nar", "005"): "iter21-nar-xgb-class005-v8"},
+        {("ban-ei", "999"): "banei-cb-class999-v8"},
     )
-    assert per_class.per_class_codes_for("nar") == ()
+    assert per_class.per_class_codes_for("ban-ei") == ()
 
 
 # --- Phase B-2A: registry + dataclass + ensemble-routing tests ------------
@@ -366,28 +438,48 @@ def test_per_class_model_versions_includes_production_ensembles() -> None:
     assert PER_CLASS_MODEL_VERSIONS == {
         ("jra", "005"): JRA_CLASS_005_ENSEMBLE_MODEL_VERSION,
         ("jra", "010"): JRA_CLASS_010_ENSEMBLE_MODEL_VERSION,
+        ("jra", "016"): JRA_CLASS_016_ENSEMBLE_MODEL_VERSION,
         ("jra", "703"): JRA_CLASS_703_ENSEMBLE_MODEL_VERSION,
         ("jra", "other"): JRA_CLASS_OTHER_ENSEMBLE_MODEL_VERSION,
+        ("nar", "NEW"): NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION,
+        ("nar", "MUKATSU"): NAR_CLASS_MUKATSU_ENSEMBLE_MODEL_VERSION,
+        ("nar", "C"): NAR_CLASS_C_ENSEMBLE_MODEL_VERSION,
+        ("nar", "A"): NAR_CLASS_A_ENSEMBLE_MODEL_VERSION,
+        ("nar", "OP"): NAR_CLASS_OP_ENSEMBLE_MODEL_VERSION,
+        ("nar", "other"): NAR_CLASS_OTHER_ENSEMBLE_MODEL_VERSION,
     }
 
 
 def test_resolve_returns_registered_703_ensemble_string() -> None:
+    # 703 was flipped to iter 26 v4 on 2026-06-05 (+0.189pp top1, +0.047pp
+    # delta over the iter 23 ensemble).
     assert (
         resolve_per_class_model_version("jra", "703") == JRA_CLASS_703_ENSEMBLE_MODEL_VERSION
     )
 
 
 def test_resolve_returns_registered_010_ensemble_string() -> None:
-    # 010 was activated 2026-06-05 (iter 25 v2 ensemble, +0.632pp top1).
+    # 010 was activated 2026-06-05 (iter 25 v2 ensemble, +0.632pp top1). iter 26
+    # v4 was only +0.190pp on 010 so v2 stays.
     assert (
         resolve_per_class_model_version("jra", "010") == JRA_CLASS_010_ENSEMBLE_MODEL_VERSION
     )
 
 
 def test_resolve_returns_registered_005_ensemble_string() -> None:
-    # 005 was activated 2026-06-05 (iter 25 v2 ensemble, +0.095pp top1).
+    # 005 was flipped to iter 26 v4 on 2026-06-05 (+0.572pp top1, +0.477pp
+    # delta over the iter 25 v2 ensemble).
     assert (
         resolve_per_class_model_version("jra", "005") == JRA_CLASS_005_ENSEMBLE_MODEL_VERSION
+    )
+
+
+def test_resolve_returns_registered_016_ensemble_string() -> None:
+    # 016 was newly activated on 2026-06-05 with iter 26 v4 (+0.138pp top1).
+    # Before iter 26 it fell back to iter 14 because iter 25 v2 measured
+    # -0.550 REJECT on 016.
+    assert (
+        resolve_per_class_model_version("jra", "016") == JRA_CLASS_016_ENSEMBLE_MODEL_VERSION
     )
 
 
@@ -402,10 +494,28 @@ def test_resolve_returns_registered_other_ensemble_string() -> None:
 
 
 def test_per_class_codes_for_jra_returns_sorted_production_codes() -> None:
-    # per_class_codes_for returns the sorted union of registered JRA codes;
-    # 005, 010, 703 and the virtual ``other`` bucket are the four production
-    # ensembles as of 2026-06-05. Alphabetical sort puts ``other`` last.
-    assert per_class_codes_for("jra") == ("005", "010", "703", "other")
+    # per_class_codes_for returns the sorted union of registered JRA codes.
+    # 005, 010, 016, 703 and the virtual ``other`` bucket are the five
+    # production ensembles as of 2026-06-05 (iter 26 v4 added 005 / 016 / 703
+    # to the iter 25 baseline; 010 / other kept their iter 25 v2 ensembles).
+    # Alphabetical sort puts ``other`` last.
+    assert per_class_codes_for("jra") == ("005", "010", "016", "703", "other")
+
+
+def test_per_class_codes_for_nar_returns_sorted_production_codes() -> None:
+    # Phase F production NAR codes: NEW / MUKATSU / C / A / OP / other.
+    # ``B`` is NOT registered (stays on iter 12 fallback) so it does not
+    # appear here even though it lives in ``NAMED_PER_CLASS_CODES_BY_CATEGORY
+    # ['nar']``. ASCII sort: 'A' (65) < 'C' < 'M' < 'N' < 'O' (79) < 'o'
+    # (111) — capital letters precede lowercase, so ``other`` lands last.
+    assert per_class_codes_for("nar") == (
+        "A",
+        "C",
+        "MUKATSU",
+        "NEW",
+        "OP",
+        "other",
+    )
 
 
 def test_ensemble_member_dataclass_signature() -> None:
@@ -551,36 +661,38 @@ def test_load_ensemble_manifest_returns_none_when_code_not_registered(tmp_path: 
 def test_load_ensemble_manifest_returns_none_when_category_not_enabled(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # Use Ban-ei so the test stays meaningful in Phase F (NAR became enabled).
+    # load_ensemble_manifest does NOT gate on PER_CLASS_ENABLED_CATEGORIES —
+    # it gates only on registry presence + filesystem. The category gate is
+    # in resolve_per_class_resolution. This test pins that contract: a
+    # hand-injected disabled-category registry row still loads its manifest.
     monkeypatch.setattr(
         per_class,
         "PER_CLASS_MODEL_VERSIONS",
-        {("nar", "703"): "iter23-nar-xgb-ensemble-703-v8"},
+        {("ban-ei", "703"): "banei-cb-ensemble-703-v7-lineage"},
     )
     _write_manifest(
         tmp_path,
-        "nar",
+        "ban-ei",
         "703",
-        "iter23-nar-xgb-ensemble-703-v8",
+        "banei-cb-ensemble-703-v7-lineage",
         {
-            "model_version": "iter23-nar-xgb-ensemble-703-v8",
-            "category": "nar",
+            "model_version": "banei-cb-ensemble-703-v7-lineage",
+            "category": "ban-ei",
             "kyoso_joken_code": "703",
             "ensemble_type": "rank_blend",
             "members": [
                 {
-                    "model_version": NAR_FALLBACK_MODEL_VERSION,
+                    "model_version": BANEI_FALLBACK_MODEL_VERSION,
                     "weight": 1.0,
                     "is_baseline": True,
                 },
             ],
         },
     )
-    # load_ensemble_manifest does not gate on PER_CLASS_ENABLED_CATEGORIES — it
-    # gates only on registry presence + filesystem. The category gate is in
-    # resolve_per_class_resolution. This test pins that contract.
-    result = per_class.load_ensemble_manifest(tmp_path, "nar", "703")
+    result = per_class.load_ensemble_manifest(tmp_path, "ban-ei", "703")
     assert result is not None
-    assert result.category == "nar"
+    assert result.category == "ban-ei"
 
 
 def test_load_ensemble_manifest_rejects_payload_with_wrong_category(tmp_path: Path) -> None:
@@ -790,10 +902,10 @@ def test_resolve_per_class_resolution_returns_other_label_when_kyoso_joken_code_
 def test_resolve_per_class_resolution_returns_string_when_category_not_enabled(
     tmp_path: Path,
 ) -> None:
-    # Even if a NAR manifest existed on disk for a NAR-registered ensemble, the
-    # disabled-category guard must short-circuit to the NAR global fallback.
-    result = resolve_per_class_resolution(tmp_path, "nar", "703")
-    assert result == NAR_FALLBACK_MODEL_VERSION
+    # Ban-ei stays disabled in Phase F — the guard must short-circuit to the
+    # Ban-ei global fallback even when a code is provided.
+    result = resolve_per_class_resolution(tmp_path, "ban-ei", "703")
+    assert result == BANEI_FALLBACK_MODEL_VERSION
     assert isinstance(result, str)
 
 
@@ -868,10 +980,11 @@ def test_resolve_per_class_resolution_returns_010_ensemble_when_manifest_present
 
 
 def test_load_ensemble_manifest_returns_dataclass_for_005(tmp_path: Path) -> None:
-    # End-to-end: write the production iter 25 v2 manifest, ensure the loader
-    # parses all six members and propagates manifest-level fields. iter14
-    # carries the dominant 0.509528 weight, with iter25 low-cap second at
-    # 0.332733 — the exact production weights.
+    # End-to-end: write the production iter 26 v4 manifest, ensure the loader
+    # parses all seven members and propagates manifest-level fields. iter 26
+    # relationships dominates the blend at weight 0.505597, iter 22 residual
+    # second at 0.179245 with iter 14 baseline carried at 0.2 — the exact
+    # production weights.
     _write_manifest(
         tmp_path,
         "jra",
@@ -885,15 +998,15 @@ def test_load_ensemble_manifest_returns_dataclass_for_005(tmp_path: Path) -> Non
     assert result.category == "jra"
     assert result.kyoso_joken_code == "005"
     assert result.ensemble_type == "rank_blend"
-    assert len(result.members) == 6
+    assert len(result.members) == 7
     assert result.members[0].model_version == JRA_FALLBACK_MODEL_VERSION
-    assert result.members[0].weight == 0.509528
+    assert result.members[0].weight == 0.2
     assert result.members[0].is_baseline is True
-    # iter 25 low-cap booster sits at index 5 with weight 0.332733; the exact
-    # value is part of the production ensemble contract.
-    assert result.members[5].model_version == "iter25-jra-cb-low-cap-005-v8"
-    assert result.members[5].weight == 0.332733
-    assert result.members[5].is_baseline is False
+    # iter 26 relationships booster sits at index 6 with weight 0.505597; the
+    # exact value is part of the production ensemble contract.
+    assert result.members[6].model_version == "iter26-jra-cb-relationships-005-v8"
+    assert result.members[6].weight == 0.505597
+    assert result.members[6].is_baseline is False
 
 
 def test_resolve_per_class_resolution_returns_005_ensemble_when_manifest_present(
@@ -910,6 +1023,59 @@ def test_resolve_per_class_resolution_returns_005_ensemble_when_manifest_present
     assert isinstance(result, PerClassEnsemble)
     assert result.model_version == JRA_CLASS_005_ENSEMBLE_MODEL_VERSION
     assert result.kyoso_joken_code == "005"
+
+
+# --- Phase B-2 / iter 26 v4: 016 ensemble registration tests ------------
+
+
+def test_load_ensemble_manifest_returns_dataclass_for_016(tmp_path: Path) -> None:
+    # End-to-end: write the production iter 26 v4 manifest, ensure the loader
+    # parses all six members and propagates manifest-level fields. iter 25
+    # low-cap booster dominates the blend at weight 0.544315, with iter 26
+    # relationships second at 0.110428 — the exact production weights from
+    # the 2026-06-05 NEW 016 activation.
+    _write_manifest(
+        tmp_path,
+        "jra",
+        "016",
+        JRA_CLASS_016_ENSEMBLE_MODEL_VERSION,
+        _canonical_016_payload(),
+    )
+    result = load_ensemble_manifest(tmp_path, "jra", "016")
+    assert result is not None
+    assert result.model_version == JRA_CLASS_016_ENSEMBLE_MODEL_VERSION
+    assert result.category == "jra"
+    assert result.kyoso_joken_code == "016"
+    assert result.ensemble_type == "rank_blend"
+    assert len(result.members) == 6
+    assert result.members[0].model_version == JRA_FALLBACK_MODEL_VERSION
+    assert result.members[0].weight == 0.2
+    assert result.members[0].is_baseline is True
+    # iter 25 low-cap booster sits at index 4 with weight 0.544315; the exact
+    # value is part of the production ensemble contract.
+    assert result.members[4].model_version == "iter25-jra-cb-low-cap-016-v8"
+    assert result.members[4].weight == 0.544315
+    assert result.members[4].is_baseline is False
+    # iter 26 relationships booster sits at index 5 with weight 0.110428.
+    assert result.members[5].model_version == "iter26-jra-cb-relationships-016-v8"
+    assert result.members[5].weight == 0.110428
+    assert result.members[5].is_baseline is False
+
+
+def test_resolve_per_class_resolution_returns_016_ensemble_when_manifest_present(
+    tmp_path: Path,
+) -> None:
+    _write_manifest(
+        tmp_path,
+        "jra",
+        "016",
+        JRA_CLASS_016_ENSEMBLE_MODEL_VERSION,
+        _canonical_016_payload(),
+    )
+    result = resolve_per_class_resolution(tmp_path, "jra", "016")
+    assert isinstance(result, PerClassEnsemble)
+    assert result.model_version == JRA_CLASS_016_ENSEMBLE_MODEL_VERSION
+    assert result.kyoso_joken_code == "016"
 
 
 # --- Phase B-2 / iter 25: ``other`` catch-all ensemble registration tests -
@@ -930,33 +1096,78 @@ def test_other_class_code_constant_value() -> None:
     assert OTHER_CLASS_CODE == "other"
 
 
-def testnormalize_class_code_returns_other_when_none() -> None:
+def testnormalize_class_code_returns_other_when_none_jra() -> None:
     # NULL ``kyoso_joken_code`` (PG column was NULL or feature build emitted
-    # ``None``) collapses to the ``"other"`` bucket.
-    assert normalize_class_code(None) == "other"
+    # ``None``) collapses to the ``"other"`` bucket regardless of category.
+    assert normalize_class_code("jra", None) == "other"
 
 
-def testnormalize_class_code_returns_other_when_unknown() -> None:
-    # Real unregistered codes (e.g. ``"999"``, ``"000"``) collapse to the
+def testnormalize_class_code_returns_other_when_none_nar() -> None:
+    # NULL ``nar_subclass`` (e.g. a JRA / Ban-ei row passed through with NULL
+    # in the column) also collapses — but only NAR's named-code set is
+    # consulted before the fallback.
+    assert normalize_class_code("nar", None) == "other"
+
+
+def testnormalize_class_code_returns_other_when_none_banei() -> None:
+    # Ban-ei has no named codes; the all-other branch maps everything,
+    # including ``None``, to ``"other"``.
+    assert normalize_class_code("ban-ei", None) == "other"
+
+
+def testnormalize_class_code_returns_other_when_unknown_jra() -> None:
+    # Real unregistered JRA codes (e.g. ``"999"``, ``"000"``) collapse to the
     # ``"other"`` bucket — same routing as NULL.
-    assert normalize_class_code("999") == "other"
-    assert normalize_class_code("000") == "other"
+    assert normalize_class_code("jra", "999") == "other"
+    assert normalize_class_code("jra", "000") == "other"
 
 
-def testnormalize_class_code_returns_named_code_when_known() -> None:
-    # All five named codes pass through verbatim — they have their own class
-    # boundary in offline training so the registry routes them by literal code.
-    assert normalize_class_code("005") == "005"
-    assert normalize_class_code("010") == "010"
-    assert normalize_class_code("016") == "016"
-    assert normalize_class_code("701") == "701"
-    assert normalize_class_code("703") == "703"
+def testnormalize_class_code_returns_other_when_unknown_nar() -> None:
+    # An unregistered NAR sub-class string (lowercase, mixed-case, partial
+    # match etc.) collapses to ``"other"`` — only the six named NAR codes
+    # pass through verbatim.
+    assert normalize_class_code("nar", "x") == "other"
+    assert normalize_class_code("nar", "new") == "other"  # case-sensitive
+
+
+def testnormalize_class_code_returns_named_code_when_known_jra() -> None:
+    # All five named JRA codes pass through verbatim — they have their own
+    # class boundary in offline training so the registry routes them by
+    # literal code.
+    assert normalize_class_code("jra", "005") == "005"
+    assert normalize_class_code("jra", "010") == "010"
+    assert normalize_class_code("jra", "016") == "016"
+    assert normalize_class_code("jra", "701") == "701"
+    assert normalize_class_code("jra", "703") == "703"
+
+
+def testnormalize_class_code_returns_named_code_when_known_nar() -> None:
+    # All six named NAR sub-classes pass through verbatim. ``B`` is included
+    # in the named set even though it does NOT have a registered ensemble —
+    # the named-code allowlist is the offline class boundary, the registry
+    # is the inference-time mapping; they are independent.
+    assert normalize_class_code("nar", "NEW") == "NEW"
+    assert normalize_class_code("nar", "MUKATSU") == "MUKATSU"
+    assert normalize_class_code("nar", "C") == "C"
+    assert normalize_class_code("nar", "B") == "B"
+    assert normalize_class_code("nar", "A") == "A"
+    assert normalize_class_code("nar", "OP") == "OP"
+
+
+def testnormalize_class_code_jra_code_collapses_under_nar_category() -> None:
+    # A JRA code passed under the NAR category is NOT a named NAR code, so
+    # the normaliser collapses it to ``"other"``. Categorical isolation is
+    # mandatory because ``PER_CLASS_MODEL_VERSIONS`` keys on
+    # ``(category, code)`` — leaking would route NAR races to JRA models.
+    assert normalize_class_code("nar", "703") == "other"
 
 
 def testnormalize_class_code_passes_other_string_through() -> None:
     # The literal ``"other"`` string is its own fixed point — it is the
     # registry key so callers (and tests) can also pass it directly.
-    assert normalize_class_code("other") == "other"
+    assert normalize_class_code("jra", "other") == "other"
+    assert normalize_class_code("nar", "other") == "other"
+    assert normalize_class_code("ban-ei", "other") == "other"
 
 
 def test_load_ensemble_manifest_returns_dataclass_for_other(tmp_path: Path) -> None:
@@ -1061,4 +1272,420 @@ def test_resolve_per_class_resolution_unregistered_named_code_skips_other_manife
     )
     result = resolve_per_class_resolution(tmp_path, "jra", "701")
     assert result == JRA_FALLBACK_MODEL_VERSION
+    assert isinstance(result, str)
+
+
+# --- Phase F: NAR named-code routing tests ------------------------------
+
+
+def test_named_per_class_codes_by_category_pins_nar_offline_subclass_set() -> None:
+    # NAR named-code allowlist mirrors the offline ``nar_subclass`` regex
+    # partition: ``OP / NEW / MUKATSU / A / B / C``. Adding a new sub-class
+    # must move both this constant and the regex in
+    # ``finish_position_features_duckdb.nar_subclass_case_sql``.
+    assert NAMED_PER_CLASS_CODES_BY_CATEGORY["nar"] == frozenset(
+        {"NEW", "MUKATSU", "C", "B", "A", "OP"}
+    )
+
+
+def test_named_per_class_codes_by_category_pins_jra_offline_class_set() -> None:
+    # JRA named-code allowlist is unchanged from Phase B (pin so Phase F
+    # cannot regress it).
+    assert NAMED_PER_CLASS_CODES_BY_CATEGORY["jra"] == frozenset(
+        {"005", "010", "016", "701", "703"}
+    )
+
+
+def test_named_per_class_codes_by_category_banei_is_empty() -> None:
+    # Ban-ei never registers a per-class — keep the allowlist empty.
+    assert NAMED_PER_CLASS_CODES_BY_CATEGORY["ban-ei"] == frozenset()
+
+
+def test_named_per_class_codes_backward_compat_alias_matches_jra() -> None:
+    # The legacy module-level ``NAMED_PER_CLASS_CODES`` constant (Phase B
+    # callers) is preserved as an alias for the JRA entry. Tests / callers
+    # that imported it before Phase F keep working unchanged.
+    assert NAMED_PER_CLASS_CODES_BY_CATEGORY["jra"] == NAMED_PER_CLASS_CODES
+
+
+def test_resolve_returns_registered_nar_new_ensemble_string() -> None:
+    # NAR NEW was activated 2026-06-05 with the iter 30 ensemble.
+    assert (
+        resolve_per_class_model_version("nar", "NEW")
+        == NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION
+    )
+
+
+def test_resolve_returns_registered_nar_mukatsu_ensemble_string() -> None:
+    assert (
+        resolve_per_class_model_version("nar", "MUKATSU")
+        == NAR_CLASS_MUKATSU_ENSEMBLE_MODEL_VERSION
+    )
+
+
+def test_resolve_returns_registered_nar_c_ensemble_string() -> None:
+    assert (
+        resolve_per_class_model_version("nar", "C") == NAR_CLASS_C_ENSEMBLE_MODEL_VERSION
+    )
+
+
+def test_resolve_returns_registered_nar_a_ensemble_string() -> None:
+    assert (
+        resolve_per_class_model_version("nar", "A") == NAR_CLASS_A_ENSEMBLE_MODEL_VERSION
+    )
+
+
+def test_resolve_returns_registered_nar_op_ensemble_string() -> None:
+    assert (
+        resolve_per_class_model_version("nar", "OP")
+        == NAR_CLASS_OP_ENSEMBLE_MODEL_VERSION
+    )
+
+
+def test_resolve_returns_registered_nar_other_ensemble_string() -> None:
+    # The literal ``"other"`` argument is the post-normalisation key.
+    assert (
+        resolve_per_class_model_version("nar", "other")
+        == NAR_CLASS_OTHER_ENSEMBLE_MODEL_VERSION
+    )
+
+
+def test_resolve_falls_back_for_nar_b_class_unregistered() -> None:
+    # ``B`` is a named NAR code (in ``NAMED_PER_CLASS_CODES_BY_CATEGORY``) but
+    # is NOT in ``PER_CLASS_MODEL_VERSIONS`` — the normaliser keeps it as
+    # ``"B"`` so the registry lookup misses and the resolver returns the NAR
+    # category-global iter 12 fallback. Mirrors the JRA 701 fallback case.
+    assert resolve_per_class_model_version("nar", "B") == NAR_FALLBACK_MODEL_VERSION
+
+
+def test_resolve_routes_unknown_nar_code_to_other_ensemble() -> None:
+    # Unknown sub-class strings collapse to ``"other"`` before the lookup —
+    # same routing as NULL.
+    assert (
+        resolve_per_class_model_version("nar", "X")
+        == NAR_CLASS_OTHER_ENSEMBLE_MODEL_VERSION
+    )
+
+
+def test_resolve_routes_nar_null_subclass_to_other_ensemble() -> None:
+    # NULL ``nar_subclass`` (NAR row with no meisho match → ``other``) hits
+    # the registered ``other`` ensemble.
+    assert (
+        resolve_per_class_model_version("nar", None)
+        == NAR_CLASS_OTHER_ENSEMBLE_MODEL_VERSION
+    )
+
+
+# --- Phase F: NAR ensemble manifest load tests --------------------------
+
+
+def _canonical_nar_new_payload() -> dict[str, object]:
+    return {
+        "model_version": NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION,
+        "category": "nar",
+        "kyoso_joken_code": "NEW",
+        "ensemble_type": "rank_blend",
+        "members": [
+            {
+                "model_version": NAR_FALLBACK_MODEL_VERSION,
+                "weight": 0.689977,
+                "is_baseline": True,
+            },
+            {
+                "model_version": NAR_RESIDUAL_NEW,
+                "weight": 0.310023,
+                "is_baseline": False,
+            },
+        ],
+    }
+
+
+def _canonical_nar_mukatsu_payload() -> dict[str, object]:
+    return {
+        "model_version": NAR_CLASS_MUKATSU_ENSEMBLE_MODEL_VERSION,
+        "category": "nar",
+        "kyoso_joken_code": "MUKATSU",
+        "ensemble_type": "rank_blend",
+        "members": [
+            {
+                "model_version": NAR_FALLBACK_MODEL_VERSION,
+                "weight": 0.5,
+                "is_baseline": True,
+            },
+            {
+                "model_version": NAR_RESIDUAL_MUKATSU,
+                "weight": 0.5,
+                "is_baseline": False,
+            },
+        ],
+    }
+
+
+def _canonical_nar_c_payload() -> dict[str, object]:
+    return {
+        "model_version": NAR_CLASS_C_ENSEMBLE_MODEL_VERSION,
+        "category": "nar",
+        "kyoso_joken_code": "C",
+        "ensemble_type": "rank_blend",
+        "members": [
+            {
+                "model_version": NAR_FALLBACK_MODEL_VERSION,
+                "weight": 0.6,
+                "is_baseline": True,
+            },
+            {
+                "model_version": NAR_RESIDUAL_C,
+                "weight": 0.4,
+                "is_baseline": False,
+            },
+        ],
+    }
+
+
+def _canonical_nar_a_payload() -> dict[str, object]:
+    return {
+        "model_version": NAR_CLASS_A_ENSEMBLE_MODEL_VERSION,
+        "category": "nar",
+        "kyoso_joken_code": "A",
+        "ensemble_type": "rank_blend",
+        "members": [
+            {
+                "model_version": NAR_FALLBACK_MODEL_VERSION,
+                "weight": 0.55,
+                "is_baseline": True,
+            },
+            {
+                "model_version": NAR_RESIDUAL_A,
+                "weight": 0.45,
+                "is_baseline": False,
+            },
+        ],
+    }
+
+
+def _canonical_nar_op_payload() -> dict[str, object]:
+    return {
+        "model_version": NAR_CLASS_OP_ENSEMBLE_MODEL_VERSION,
+        "category": "nar",
+        "kyoso_joken_code": "OP",
+        "ensemble_type": "rank_blend",
+        "members": [
+            {
+                "model_version": NAR_FALLBACK_MODEL_VERSION,
+                "weight": 0.65,
+                "is_baseline": True,
+            },
+            {
+                "model_version": NAR_RESIDUAL_OP,
+                "weight": 0.35,
+                "is_baseline": False,
+            },
+        ],
+    }
+
+
+def _canonical_nar_other_payload() -> dict[str, object]:
+    return {
+        "model_version": NAR_CLASS_OTHER_ENSEMBLE_MODEL_VERSION,
+        "category": "nar",
+        "kyoso_joken_code": "other",
+        "ensemble_type": "rank_blend",
+        "members": [
+            {
+                "model_version": NAR_FALLBACK_MODEL_VERSION,
+                "weight": 0.45,
+                "is_baseline": True,
+            },
+            {
+                "model_version": NAR_RESIDUAL_OTHER,
+                "weight": 0.55,
+                "is_baseline": False,
+            },
+        ],
+    }
+
+
+def test_load_ensemble_manifest_returns_dataclass_for_nar_new(tmp_path: Path) -> None:
+    _write_manifest(
+        tmp_path,
+        "nar",
+        "NEW",
+        NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION,
+        _canonical_nar_new_payload(),
+    )
+    result = load_ensemble_manifest(tmp_path, "nar", "NEW")
+    assert result is not None
+    assert result.model_version == NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION
+    assert result.category == "nar"
+    assert result.kyoso_joken_code == "NEW"
+    assert result.ensemble_type == "rank_blend"
+    assert len(result.members) == 2
+    assert result.members[0].model_version == NAR_FALLBACK_MODEL_VERSION
+    assert result.members[0].is_baseline is True
+    assert result.members[1].model_version == NAR_RESIDUAL_NEW
+    assert result.members[1].is_baseline is False
+
+
+def test_load_ensemble_manifest_returns_dataclass_for_nar_mukatsu(
+    tmp_path: Path,
+) -> None:
+    _write_manifest(
+        tmp_path,
+        "nar",
+        "MUKATSU",
+        NAR_CLASS_MUKATSU_ENSEMBLE_MODEL_VERSION,
+        _canonical_nar_mukatsu_payload(),
+    )
+    result = load_ensemble_manifest(tmp_path, "nar", "MUKATSU")
+    assert result is not None
+    assert result.kyoso_joken_code == "MUKATSU"
+    assert len(result.members) == 2
+
+
+def test_load_ensemble_manifest_returns_dataclass_for_nar_c(tmp_path: Path) -> None:
+    _write_manifest(
+        tmp_path,
+        "nar",
+        "C",
+        NAR_CLASS_C_ENSEMBLE_MODEL_VERSION,
+        _canonical_nar_c_payload(),
+    )
+    result = load_ensemble_manifest(tmp_path, "nar", "C")
+    assert result is not None
+    assert result.kyoso_joken_code == "C"
+    assert result.members[1].model_version == NAR_RESIDUAL_C
+
+
+def test_load_ensemble_manifest_returns_dataclass_for_nar_a(tmp_path: Path) -> None:
+    _write_manifest(
+        tmp_path,
+        "nar",
+        "A",
+        NAR_CLASS_A_ENSEMBLE_MODEL_VERSION,
+        _canonical_nar_a_payload(),
+    )
+    result = load_ensemble_manifest(tmp_path, "nar", "A")
+    assert result is not None
+    assert result.kyoso_joken_code == "A"
+    assert result.members[1].model_version == NAR_RESIDUAL_A
+
+
+def test_load_ensemble_manifest_returns_dataclass_for_nar_op(tmp_path: Path) -> None:
+    _write_manifest(
+        tmp_path,
+        "nar",
+        "OP",
+        NAR_CLASS_OP_ENSEMBLE_MODEL_VERSION,
+        _canonical_nar_op_payload(),
+    )
+    result = load_ensemble_manifest(tmp_path, "nar", "OP")
+    assert result is not None
+    assert result.kyoso_joken_code == "OP"
+    assert result.members[1].model_version == NAR_RESIDUAL_OP
+
+
+def test_load_ensemble_manifest_returns_dataclass_for_nar_other(
+    tmp_path: Path,
+) -> None:
+    _write_manifest(
+        tmp_path,
+        "nar",
+        "other",
+        NAR_CLASS_OTHER_ENSEMBLE_MODEL_VERSION,
+        _canonical_nar_other_payload(),
+    )
+    result = load_ensemble_manifest(tmp_path, "nar", "other")
+    assert result is not None
+    assert result.kyoso_joken_code == "other"
+    assert result.members[1].model_version == NAR_RESIDUAL_OTHER
+
+
+def test_load_ensemble_manifest_returns_none_for_nar_b_no_registry(
+    tmp_path: Path,
+) -> None:
+    # ``B`` is a named NAR code but has no registry entry — the loader must
+    # short-circuit on the registry miss before touching the filesystem.
+    _write_manifest(
+        tmp_path,
+        "nar",
+        "B",
+        "iter30-nar-cb-ensemble-B-v8",
+        {
+            "model_version": "iter30-nar-cb-ensemble-B-v8",
+            "category": "nar",
+            "kyoso_joken_code": "B",
+            "ensemble_type": "rank_blend",
+            "members": [
+                {
+                    "model_version": NAR_FALLBACK_MODEL_VERSION,
+                    "weight": 1.0,
+                    "is_baseline": True,
+                },
+            ],
+        },
+    )
+    assert load_ensemble_manifest(tmp_path, "nar", "B") is None
+
+
+# --- Phase F: NAR resolve_per_class_resolution tests --------------------
+
+
+def test_resolve_per_class_resolution_returns_nar_new_ensemble_when_manifest_present(
+    tmp_path: Path,
+) -> None:
+    _write_manifest(
+        tmp_path,
+        "nar",
+        "NEW",
+        NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION,
+        _canonical_nar_new_payload(),
+    )
+    result = resolve_per_class_resolution(tmp_path, "nar", "NEW")
+    assert isinstance(result, PerClassEnsemble)
+    assert result.model_version == NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION
+    assert result.kyoso_joken_code == "NEW"
+
+
+def test_resolve_per_class_resolution_returns_nar_other_ensemble_for_unknown(
+    tmp_path: Path,
+) -> None:
+    # Unknown NAR sub-class strings collapse to ``"other"`` and route to the
+    # registered NAR other ensemble.
+    _write_manifest(
+        tmp_path,
+        "nar",
+        "other",
+        NAR_CLASS_OTHER_ENSEMBLE_MODEL_VERSION,
+        _canonical_nar_other_payload(),
+    )
+    result = resolve_per_class_resolution(tmp_path, "nar", "Z")
+    assert isinstance(result, PerClassEnsemble)
+    assert result.model_version == NAR_CLASS_OTHER_ENSEMBLE_MODEL_VERSION
+    assert result.kyoso_joken_code == "other"
+
+
+def test_resolve_per_class_resolution_nar_b_falls_back_to_iter12(
+    tmp_path: Path,
+) -> None:
+    # ``B`` is named but unregistered — even with ``other`` manifest on disk
+    # the normaliser keeps it as ``"B"`` so the registry miss falls through to
+    # the NAR iter 12 fallback.
+    _write_manifest(
+        tmp_path,
+        "nar",
+        "other",
+        NAR_CLASS_OTHER_ENSEMBLE_MODEL_VERSION,
+        _canonical_nar_other_payload(),
+    )
+    result = resolve_per_class_resolution(tmp_path, "nar", "B")
+    assert result == NAR_FALLBACK_MODEL_VERSION
+    assert isinstance(result, str)
+
+
+def test_resolve_per_class_resolution_banei_stays_on_fallback(
+    tmp_path: Path,
+) -> None:
+    # Ban-ei is still disabled in Phase F — never returns an ensemble.
+    result = resolve_per_class_resolution(tmp_path, "ban-ei", "703")
+    assert result == BANEI_FALLBACK_MODEL_VERSION
     assert isinstance(result, str)

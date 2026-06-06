@@ -101,6 +101,21 @@ const LEGACY_FIVE_COLUMNS = [
   "same_day_jockey_win_score",
 ];
 
+const RELATIONSHIP_R1_COLUMNS: readonly string[] = [
+  "bataiju_futan_ratio",
+  "futan_per_barei",
+  "bataiju_per_kyori_log",
+  "bataiju_diff_from_race_mean",
+  "bataiju_rank_in_race",
+  "futan_minus_bataiju_zscore_in_race",
+  "barei_diff_from_race_mean",
+  "past_speed_kg_normalized_avg5",
+  "past_speed_futan_normalized_avg5",
+  "past_speed_age_adjusted_avg5",
+  "past_speed_volatility_5",
+  "past_finish_position_volatility_5",
+] satisfies readonly string[];
+
 const ALL_FEATURE_COLUMNS = [
   ...HORSE_CAREER_COLUMNS,
   ...JOCKEY_TRAINER_COLUMNS,
@@ -108,6 +123,7 @@ const ALL_FEATURE_COLUMNS = [
   ...RACE_CONTEXT_COLUMNS,
   ...RECENT_FORM_COLUMNS,
   ...LEGACY_FIVE_COLUMNS,
+  ...RELATIONSHIP_R1_COLUMNS,
 ];
 
 const FEATURE_COLUMN_TYPES: Record<string, string> = {
@@ -118,6 +134,7 @@ const FEATURE_COLUMN_TYPES: Record<string, string> = {
   last_race_class_diff: "integer",
   last_race_distance_diff: "integer",
   rival_count_at_distance: "integer",
+  bataiju_rank_in_race: "integer",
   is_grade_race: "smallint",
 };
 
@@ -252,4 +269,5 @@ export {
   PRIMARY_KEY_COLUMNS,
   RACE_CONTEXT_COLUMNS,
   RECENT_FORM_COLUMNS,
+  RELATIONSHIP_R1_COLUMNS,
 };

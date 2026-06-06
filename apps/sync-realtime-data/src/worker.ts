@@ -181,18 +181,36 @@ const RESULT_FETCH_LOCK_MINUTES = 10;
 // we detect a partial result (inserted < expectedHorseCount) we shorten the
 // lock to this value so the next result-poll cron tick (every 2 min) can
 // re-claim and pick up the freshly-published remaining rows.
+// 2026-06-05: replaces the old NAR_RESULT_COMPLETION_BACKSTOP_MINUTES
+// force-complete path with a progressive retry — the lock interval grows as
+// the gap since race start grows (short / medium / long) and the race only
+// gets force-completed after RESULT_FETCH_GIVE_UP_HOURS. The previous 60-min
+// backstop force-completed races that the upstream eventually publishes
+// minutes-to-hours later, so the missing finishers were permanently dropped
+// from the D1 race-result snapshot.
 const RESULT_FETCH_RETRY_LOCK_MINUTES = 2;
-// NAR result HTML on rare occasions misses "取消" rows so the entry-derived
-// expectedHorseCount over-counts and isComplete stays false forever even after
-// every available result row has been persisted. We backstop that case by
-// trusting the saved rows once enough time has passed since race start, since
-// any remaining "missing" horse can no longer reasonably be a delayed insert.
-// 2026-06-04: extended 10 -> 60 to keep the progressive-publish partial-retry
-// path engaged long enough for the keiba.go.jp upstream to publish every
-// non-scratched horse (top-3 land first, the rest can take 10-30+ min). The
-// 60-min ceiling still caps infinite retry while letting full-field finish
-// positions reach D1 / the race-trend payload for almost every race.
-const NAR_RESULT_COMPLETION_BACKSTOP_MINUTES = 60;
+// 2026-06-05: medium-phase retry lock used between RESULT_FETCH_RETRY_MEDIUM_THRESHOLD_MINUTES
+// and RESULT_FETCH_RETRY_LONG_THRESHOLD_MINUTES after race start. Reduces D1
+// + upstream HTTP load while still re-fetching often enough to land late
+// publishes inside the same hour.
+const RESULT_FETCH_RETRY_MEDIUM_LOCK_MINUTES = 5;
+// 2026-06-05: long-phase retry lock used between RESULT_FETCH_RETRY_LONG_THRESHOLD_MINUTES
+// and RESULT_FETCH_GIVE_UP_HOURS after race start. Long enough that we are
+// not hammering the upstream after the obvious publish window but short
+// enough to catch the rare multi-hour late publishes that the previous
+// 60-min backstop discarded.
+const RESULT_FETCH_RETRY_LONG_LOCK_MINUTES = 15;
+// 2026-06-05: boundary between short and medium retry phases. Within this
+// window keiba.go.jp typically publishes the remaining finishers within one
+// or two cron ticks, so a 2-minute lock is appropriate.
+const RESULT_FETCH_RETRY_MEDIUM_THRESHOLD_MINUTES = 10;
+// 2026-06-05: boundary between medium and long retry phases.
+const RESULT_FETCH_RETRY_LONG_THRESHOLD_MINUTES = 60;
+// 2026-06-05: max age (since race start) we keep retrying a partial result
+// fetch. After this point we mark the race complete with whatever has been
+// saved so far so the planner stops re-enqueuing forever. 24h covers every
+// observed real-world late-publish gap on keiba.go.jp / JRA.
+const RESULT_FETCH_GIVE_UP_HOURS = 24;
 // 2026-05-31: lowered from 3 to 2 in tandem with the result-poll cron drop
 // from "*/5" to "*/2". With the previous 5-minute cron + 3-minute throttle
 // 11R results landed in D1 up to ~5 minutes after JRA published them, and
@@ -231,20 +249,29 @@ const PREMIUM_PADDOCK_NOTIFICATION_LOCK_SECONDS = 90;
 // so we compare against "05" not "5".
 const JRA_PRIORITY_VENUE_CODES = ["05", "08"] satisfies readonly string[];
 const JRA_PRIORITY_RACE_BANGOS = ["05", "11"] satisfies readonly string[];
-// Raised from 40 to 90 because the JRA horse-weight HTML often publishes
-// ~30-45 min before post but our previous 40-min window plus the 3-minute
-// tick gate combined into only ~3 attempts per race, so a single failure
-// pushed the first successful fetch past post time. 90 min gives ~18
-// attempts on a 5-minute cron and the in-page parse is cheap.
-const WEIGHT_FETCH_LEAD_MINUTES = 90;
+// 2026-06-06: raised from 90 to 180 so the 15-minute weight-plan cron has
+// 12 attempts per race instead of 6, recovering from any single Hyperdrive
+// read timeout that leaves planRealtimeFetches with an empty race list.
+// Paired with the cron change from "0 0-13 * * *" (hourly) to
+// "*/15 0-14 * * *" (15-min) and with WEIGHT_FETCH_SAME_DAY_COOLDOWN_MINUTES
+// so a single in-day failure no longer locks out re-fetch for 24 hours.
+const WEIGHT_FETCH_LEAD_MINUTES = 180;
 const WEIGHT_FETCH_PRIORITY_TIER_HIGH = 0;
 const WEIGHT_FETCH_PRIORITY_TIER_MID = 1;
 const WEIGHT_FETCH_PRIORITY_TIER_LOW = 2;
 const WEIGHT_FETCH_PRIORITY_TIER_NAR = 3;
 const WEIGHT_FETCH_BANGO_PRIORITY_THRESHOLD = 5;
-// Once a weight fetch succeeds we wait 24h before re-fetching (extracted from
-// inline literal at the old planRealtimeFetches weight-push site).
+// Once a weight fetch succeeds on a different JST date than the race we wait
+// 24h before re-fetching. When the previous fetch is on the same JST date as
+// the race we only wait 1h, so any partial-page failure has many retries
+// before post time instead of being silently locked out for the whole day.
 const WEIGHT_FETCH_INTERVAL_MINUTES = 24 * 60;
+const WEIGHT_FETCH_SAME_DAY_COOLDOWN_MINUTES = 60;
+// KV TTL for the weight-race-list fallback (used when Hyperdrive returns an
+// empty result so the plan still has something to enqueue). 24h keeps the
+// fallback alive across the entire race day.
+const WEIGHT_RACE_LIST_KV_TTL_SECONDS = 24 * 60 * 60;
+const WEIGHT_RACE_LIST_KV_PREFIX = "realtime:weight-race-list:";
 const JRA_KEIBAJO_NAMES: Record<string, string> = {
   "01": "札幌",
   "02": "函館",
@@ -942,6 +969,69 @@ export const latestTimestamp = (...timestamps: (string | null)[]): string | null
 };
 
 export const isThreeMinuteTick = (date: Date): boolean => date.getUTCMinutes() % 3 === 0;
+
+// JST yyyy-mm-dd slice from an ISO-with-offset string. Returns empty string
+// when the input cannot be parsed so the caller can treat that as "no date
+// match" and fall back to the 24h cooldown.
+export const extractJstDate = (value: string | null): string => {
+  if (!value) return "";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? "" : toJstIsoString(parsed).slice(0, 10);
+};
+
+// 1h cooldown when the previous fetch landed on the same JST date as the
+// race, 24h cooldown otherwise. The same-day path keeps retries flowing for
+// any in-day failure (partial parse, transient origin error). The 24h path
+// kicks in once we successfully fetched yesterday's weights so a stale row
+// from a previous calendar day does not block today's first attempt.
+export const resolveWeightFetchCooldownMinutes = (
+  raceStartAtJst: string,
+  lastFetchAt: string | null,
+): number => {
+  if (!lastFetchAt) return WEIGHT_FETCH_INTERVAL_MINUTES;
+  const raceDate = raceStartAtJst.slice(0, 10);
+  const fetchDate = extractJstDate(lastFetchAt);
+  return raceDate && raceDate === fetchDate
+    ? WEIGHT_FETCH_SAME_DAY_COOLDOWN_MINUTES
+    : WEIGHT_FETCH_INTERVAL_MINUTES;
+};
+
+interface WeightRaceListKvEntry {
+  raceKey: string;
+  source: "jra" | "nar";
+}
+
+const buildWeightRaceListKvKey = (date: string): string => `${WEIGHT_RACE_LIST_KV_PREFIX}${date}`;
+
+// KV-backed fallback so a Hyperdrive read timeout (which surfaces as an empty
+// SchedulableRaceSource list) does not silently skip weight planning. We write
+// the minimal {raceKey, source} list on every successful plan and read it back
+// when the live query returns empty.
+export const readWeightRaceListFallbackFromKv = async (
+  env: Env,
+  date: string,
+): Promise<WeightRaceListKvEntry[]> => {
+  if (!env.DETAIL_SECTION_CACHE_KV) return [];
+  const raw = await env.DETAIL_SECTION_CACHE_KV.get(buildWeightRaceListKvKey(date));
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as WeightRaceListKvEntry[]) : [];
+  } catch {
+    return [];
+  }
+};
+
+export const writeWeightRaceListFallbackToKv = async (
+  env: Env,
+  date: string,
+  entries: WeightRaceListKvEntry[],
+): Promise<void> => {
+  if (!env.DETAIL_SECTION_CACHE_KV) return;
+  await env.DETAIL_SECTION_CACHE_KV.put(buildWeightRaceListKvKey(date), JSON.stringify(entries), {
+    expirationTtl: WEIGHT_RACE_LIST_KV_TTL_SECONDS,
+  });
+};
 
 const isPriorityJraVenue = (keibajoCode: string): boolean =>
   JRA_PRIORITY_VENUE_CODES.includes(keibajoCode);
@@ -1901,11 +1991,29 @@ export const planRealtimeFetches = async (env: Env, targetDate: string): Promise
       .filter(
         (c) =>
           c.minutes <= WEIGHT_FETCH_LEAD_MINUTES &&
-          isDue(c.race.lastWeightFetchAt, WEIGHT_FETCH_INTERVAL_MINUTES, now),
+          isDue(
+            c.race.lastWeightFetchAt,
+            resolveWeightFetchCooldownMinutes(c.race.raceStartAtJst, c.race.lastWeightFetchAt),
+            now,
+          ),
       );
     [...weightCandidates].sort(compareWeightCandidates).forEach((c) => {
       jobs.push({ raceKey: c.race.raceKey, type: "fetch-weights" });
     });
+    if (races.length > 0) {
+      await writeWeightRaceListFallbackToKv(
+        env,
+        targetDate,
+        races.map(
+          (race): WeightRaceListKvEntry => ({ raceKey: race.raceKey, source: race.source }),
+        ),
+      );
+    } else {
+      const fallback = await readWeightRaceListFallbackFromKv(env, targetDate);
+      fallback.forEach((entry) => {
+        jobs.push({ raceKey: entry.raceKey, type: "fetch-weights" });
+      });
+    }
     for (const race of races) {
       const minutes = minutesUntilRace(race, now);
       if (minutes === null) {
@@ -1965,6 +2073,67 @@ export const planRealtimeFetches = async (env: Env, targetDate: string): Promise
     jobs.flatMap((job) => (job.type === "fetch-premium-race-data" ? [job.raceKey] : [])),
     queuedAt,
   );
+  return jobs.length;
+};
+
+interface FetchWeightsBatchInput {
+  date: string;
+  force: boolean;
+  source: "all" | "jra" | "nar";
+}
+
+const FETCH_WEIGHTS_BATCH_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/u;
+const FETCH_WEIGHTS_BATCH_SOURCE_NORMALIZER: ReadonlyMap<string, "all" | "jra" | "nar"> = new Map([
+  ["all", "all"],
+  ["jra", "jra"],
+  ["nar", "nar"],
+]);
+
+// Validates the manual force-trigger POST body. Accepts `YYYY-MM-DD` date,
+// optional `source` (jra/nar/all default jra), and optional `force` boolean
+// that bypasses the per-race cooldown so an operator can re-fetch a race
+// whose previous attempt only stored a partial / empty bataiju snapshot.
+export const parseFetchWeightsBatchBody = (
+  body: { date?: string; force?: boolean; source?: string } | null,
+): FetchWeightsBatchInput | null => {
+  if (!body || typeof body.date !== "string") return null;
+  if (!FETCH_WEIGHTS_BATCH_DATE_PATTERN.test(body.date)) return null;
+  const rawSource = body.source ?? "jra";
+  const source = FETCH_WEIGHTS_BATCH_SOURCE_NORMALIZER.get(rawSource);
+  if (!source) return null;
+  return {
+    date: body.date,
+    force: body.force === true,
+    source,
+  };
+};
+
+// Bulk-enqueues fetch-weights jobs for every schedulable race on `date`
+// matching `source`. When `force` is false the per-race cooldown still
+// applies; when true every matching race is enqueued unconditionally. The
+// 15-min cron + 180-min lead time covers the happy path, this endpoint
+// exists for operator-driven backfill after a Hyperdrive outage.
+export const enqueueFetchWeightsBatch = async (
+  env: Env,
+  input: FetchWeightsBatchInput,
+): Promise<number> => {
+  const targetDate = input.date.replace(/-/gu, "");
+  const races = await listSchedulableRaceSourcesByDate(env.REALTIME_DB, targetDate);
+  const now = getNow(env);
+  const matchingRaces = races.filter(
+    (race) => input.source === "all" || race.source === input.source,
+  );
+  const dueRaces = input.force
+    ? matchingRaces
+    : matchingRaces.filter((race) =>
+        isDue(
+          race.lastWeightFetchAt,
+          resolveWeightFetchCooldownMinutes(race.raceStartAtJst, race.lastWeightFetchAt),
+          now,
+        ),
+      );
+  const jobs: Job[] = dueRaces.map((race) => ({ raceKey: race.raceKey, type: "fetch-weights" }));
+  await enqueueJobs(env, jobs);
   return jobs.length;
 };
 
@@ -2157,72 +2326,178 @@ const pushResultsToRaceTrendDO = async (
   }
 };
 
-interface NarResultCompletionBackstopInput {
+export type ResultFetchOutcome =
+  | "complete"
+  | "retry-short"
+  | "retry-medium"
+  | "retry-long"
+  | "give-up";
+
+interface ResolveResultFetchOutcomeInput {
   expectedHorseCount: number;
   inserted: number;
   minutesAfterRaceStart: number | null;
-  resultCount: number;
   source: NarRaceSource["source"];
 }
 
-// NAR-only backstop that forces isComplete=true once every available result row
-// has been persisted and enough time has passed since race start, so a parser
-// miss on excluded ("取消" etc.) horses no longer keeps the race stuck at
-// isComplete=false forever.
-export const shouldApplyNarResultCompletionBackstop = (
-  input: NarResultCompletionBackstopInput,
-): boolean => {
-  if (input.source !== "nar") {
-    return false;
-  }
-  if (input.resultCount === 0) {
-    return false;
-  }
-  if (input.inserted < input.resultCount) {
-    return false;
+// 2026-06-05: replaces the old NAR-only completion backstop + partial-retry
+// helper pair with a single resolver that returns the routing decision for
+// fetchAndStoreResults. JRA always returns "complete" because the JRA result
+// HTML publishes the full field atomically (no progressive publish) — same
+// behavior as before. NAR partial results route through a progressive retry
+// (retry-short / retry-medium / retry-long) up to RESULT_FETCH_GIVE_UP_HOURS,
+// after which "give-up" force-completes with whatever rows have been saved.
+// This eliminates the previous 60-min backstop force-complete window that
+// permanently dropped finishers the upstream eventually published.
+export const resolveResultFetchOutcome = (
+  input: ResolveResultFetchOutcomeInput,
+): ResultFetchOutcome => {
+  if (input.expectedHorseCount <= 0) {
+    return "complete";
   }
   if (input.inserted >= input.expectedHorseCount) {
-    return false;
+    return "complete";
+  }
+  if (input.source === "jra") {
+    return "complete";
   }
   if (input.minutesAfterRaceStart === null) {
-    return false;
+    return "complete";
   }
-  return input.minutesAfterRaceStart >= NAR_RESULT_COMPLETION_BACKSTOP_MINUTES;
+  if (input.minutesAfterRaceStart >= RESULT_FETCH_GIVE_UP_HOURS * 60) {
+    return "give-up";
+  }
+  if (input.minutesAfterRaceStart < RESULT_FETCH_RETRY_MEDIUM_THRESHOLD_MINUTES) {
+    return "retry-short";
+  }
+  return input.minutesAfterRaceStart < RESULT_FETCH_RETRY_LONG_THRESHOLD_MINUTES
+    ? "retry-medium"
+    : "retry-long";
 };
 
-interface NarPartialResultRetryInput {
+const RETRY_LOCK_MINUTES_BY_OUTCOME: ReadonlyMap<ResultFetchOutcome, number> = new Map([
+  ["retry-short", RESULT_FETCH_RETRY_LOCK_MINUTES],
+  ["retry-medium", RESULT_FETCH_RETRY_MEDIUM_LOCK_MINUTES],
+  ["retry-long", RESULT_FETCH_RETRY_LONG_LOCK_MINUTES],
+]);
+
+// 2026-06-05: Returns the partial-result lock duration (minutes) the caller
+// should apply to recordPartialResultFetch for a given retry-phase outcome.
+// Non-retry outcomes throw because the caller is expected to branch on
+// outcome before reaching this helper.
+export const resolveRetryLockMinutes = (outcome: ResultFetchOutcome): number => {
+  const minutes = RETRY_LOCK_MINUTES_BY_OUTCOME.get(outcome);
+  if (minutes === undefined) {
+    throw new Error(`resolveRetryLockMinutes called with non-retry outcome: ${outcome}`);
+  }
+  return minutes;
+};
+
+interface DispatchResultFetchOutcomeInput {
+  entries: Omit<RaceEntry, "fetchedAt">[];
+  env: Env;
   expectedHorseCount: number;
+  fetchedAt: string;
   inserted: number;
-  minutesAfterRaceStart: number | null;
-  source: NarRaceSource["source"];
+  now: Date;
+  outcome: ResultFetchOutcome;
+  race: NarRaceSource;
+  raceKey: string;
+  results: Omit<RaceResult, "fetchedAt">[];
 }
 
-// NAR-only progressive-publish detector. keiba.go.jp publishes the top-3
-// finishers minutes before the full field, so a fetch right after upstream
-// publishes can land only 3 rows while expectedHorseCount counts all 12.
-// In that window the default RESULT_FETCH_LOCK_MINUTES (= 10) would block
-// re-fetch and leave the viewer stuck on top-3; instead we shorten the lock
-// to RESULT_FETCH_RETRY_LOCK_MINUTES (= 2) so the next cron tick can
-// re-claim and pick up the remaining rows. After
-// NAR_RESULT_COMPLETION_BACKSTOP_MINUTES (60 min as of 2026-06-04) has
-// elapsed the completion backstop takes over and the race is forced
-// complete, so this retry path intentionally short-circuits before that
-// threshold to avoid infinite retry while still letting every non-scratched
-// horse's finish position land in D1 for the race-trend payload.
-export const shouldRetryNarPartialResult = (input: NarPartialResultRetryInput): boolean => {
-  if (input.source !== "nar") {
-    return false;
+// 2026-06-05: Routes the resolveResultFetchOutcome decision to the right
+// storage write + side effects (DO push + viewer trend cache bust). Split
+// out of fetchAndStoreResults so the per-outcome branching stays at one
+// level of indentation and the helper itself is unit-testable in isolation.
+const dispatchResultFetchOutcome = async (
+  input: DispatchResultFetchOutcomeInput,
+): Promise<void> => {
+  const isRetry =
+    input.outcome === "retry-short" ||
+    input.outcome === "retry-medium" ||
+    input.outcome === "retry-long";
+  if (isRetry) {
+    await handleRetryResultFetch(input);
+    return;
   }
-  if (input.expectedHorseCount <= 0) {
-    return false;
+  await handleCompleteResultFetch(input);
+};
+
+const handleRetryResultFetch = async (input: DispatchResultFetchOutcomeInput): Promise<void> => {
+  const retryLockMinutes = resolveRetryLockMinutes(input.outcome);
+  const retryLockUntil = toJstIsoString(new Date(input.now.getTime() + retryLockMinutes * 60_000));
+  await recordPartialResultFetch(
+    input.env.REALTIME_DB,
+    input.raceKey,
+    input.fetchedAt,
+    retryLockUntil,
+    {
+      expectedHorseCount: input.expectedHorseCount,
+      savedHorseCount: input.inserted,
+    },
+  );
+  await pushResultsToRaceTrendDO(
+    input.env,
+    buildRaceTrendDailyTrackRow({
+      entries: input.entries,
+      fetchedAt: input.fetchedAt,
+      isComplete: false,
+      race: input.race,
+      results: input.results,
+    }),
+    input.race,
+  );
+  if (input.inserted > 0) {
+    await runTrendCacheBust(input.env, input.raceKey, input.race);
   }
-  if (input.inserted >= input.expectedHorseCount) {
-    return false;
+  await logFetch(
+    input.env.REALTIME_DB,
+    "fetch-results",
+    "partial",
+    input.raceKey,
+    `inserted=${input.inserted} expected=${input.expectedHorseCount} retry-lock-minutes=${retryLockMinutes}`,
+  );
+};
+
+const handleCompleteResultFetch = async (input: DispatchResultFetchOutcomeInput): Promise<void> => {
+  // baseComplete + give-up both finalize the race; both set isComplete=true so
+  // the planner stops re-enqueuing. JRA partial (saved<expected) is the one
+  // case where we complete with isComplete=false — preserves the pre-2026-06-05
+  // JRA behavior because JRA result HTML publishes the full field atomically
+  // so a saved<expected on JRA means the parser missed a row (different
+  // failure mode from the NAR progressive-publish gap).
+  const isComplete =
+    input.outcome === "give-up" ||
+    (input.expectedHorseCount > 0 && input.inserted >= input.expectedHorseCount) ||
+    input.expectedHorseCount === 0;
+  await completeResultFetch(input.env.REALTIME_DB, input.raceKey, input.fetchedAt, {
+    expectedHorseCount: input.expectedHorseCount,
+    isComplete,
+    savedHorseCount: input.inserted,
+  });
+  await pushResultsToRaceTrendDO(
+    input.env,
+    buildRaceTrendDailyTrackRow({
+      entries: input.entries,
+      fetchedAt: input.fetchedAt,
+      isComplete,
+      race: input.race,
+      results: input.results,
+    }),
+    input.race,
+  );
+  // Always bust the viewer trend cache when ANY result row landed (not just
+  // when the full field is parsed). JRA / NAR sometimes publish results in
+  // multiple stages — for example a long objection delay can hold the last
+  // 1-2 horses while the leading horses are already on the result page. If
+  // we only bust on `isComplete` the merged race-trend payload keeps the
+  // pre-race "no result yet" cache for that race until natural TTL expiry,
+  // which is exactly the "1R-11R confirmed but 12R detail still shows them
+  // as unfinished" failure mode this commit targets.
+  if (input.inserted > 0) {
+    await runTrendCacheBust(input.env, input.raceKey, input.race);
   }
-  if (input.minutesAfterRaceStart === null) {
-    return false;
-  }
-  return input.minutesAfterRaceStart < NAR_RESULT_COMPLETION_BACKSTOP_MINUTES;
 };
 
 const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> => {
@@ -2287,86 +2562,36 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
       throw new Error(`race result rows are empty: ${raceKey}`);
     }
     const inserted = await insertRaceResultSnapshot(env.REALTIME_DB, raceKey, fetchedAt, results);
-    const baseComplete = expectedHorseCount > 0 && inserted >= expectedHorseCount;
     // isRaceFinished above guarantees minutesUntilRace(race, now) is non-null and
     // <= 0, so the non-null assertion here is provably safe (same pattern as the
     // `match[1]!` regex captures elsewhere in this file). Keeping it as `!`
     // avoids a defensive `?? null` arm that v8 would mark as a dead branch.
     const minutesAfterRaceStart = -minutesUntilRace(race, now)!;
-    const narBackstop = shouldApplyNarResultCompletionBackstop({
+    // 2026-06-05: replaces the old baseComplete + NAR-backstop + partial-retry
+    // chain with a single outcome resolver. NAR partial results progressively
+    // retry (retry-short / retry-medium / retry-long) up to
+    // RESULT_FETCH_GIVE_UP_HOURS (24h) before falling through to a forced
+    // completion. JRA always lands on "complete" because the JRA result HTML
+    // publishes the full field atomically (no progressive publish window to
+    // retry through).
+    const outcome = resolveResultFetchOutcome({
       expectedHorseCount,
       inserted,
       minutesAfterRaceStart,
-      resultCount: results.length,
       source: race.source,
     });
-    const isComplete = baseComplete || narBackstop;
-    // 2026-06-02: NAR progressive-publish handling. If the upstream has only
-    // posted top-3 finishers but the field is larger, we record the partial
-    // state with a SHORT retry lock so the next result-poll cron tick can
-    // re-fetch and pick up the freshly-published remaining rows. We still
-    // push the partial rows to the trend DO and bust the viewer cache so the
-    // top-3 surface immediately; only the completion + default lock path is
-    // skipped. After NAR_RESULT_COMPLETION_BACKSTOP_MINUTES (60 min as of
-    // 2026-06-04, extended from 10 min) the completion backstop fires and
-    // isComplete becomes true, so the retry path intentionally
-    // short-circuits before that threshold. The longer window lets every
-    // non-scratched horse's finish position land in D1 for the race-trend
-    // payload, not just the top-3 progressive publish.
-    const isPartialRetry =
-      !isComplete &&
-      shouldRetryNarPartialResult({
-        expectedHorseCount,
-        inserted,
-        minutesAfterRaceStart,
-        source: race.source,
-      });
-    if (isPartialRetry) {
-      const retryLockUntil = toJstIsoString(
-        new Date(now.getTime() + RESULT_FETCH_RETRY_LOCK_MINUTES * 60_000),
-      );
-      await recordPartialResultFetch(env.REALTIME_DB, raceKey, fetchedAt, retryLockUntil, {
-        expectedHorseCount,
-        savedHorseCount: inserted,
-      });
-      await pushResultsToRaceTrendDO(
-        env,
-        buildRaceTrendDailyTrackRow({ entries, fetchedAt, isComplete: false, race, results }),
-        race,
-      );
-      if (inserted > 0) {
-        await runTrendCacheBust(env, raceKey, race);
-      }
-      await logFetch(
-        env.REALTIME_DB,
-        "fetch-results",
-        "partial",
-        raceKey,
-        `inserted=${inserted} expected=${expectedHorseCount} retry-lock-minutes=${RESULT_FETCH_RETRY_LOCK_MINUTES}`,
-      );
-      return;
-    }
-    await completeResultFetch(env.REALTIME_DB, raceKey, fetchedAt, {
-      expectedHorseCount,
-      isComplete,
-      savedHorseCount: inserted,
-    });
-    await pushResultsToRaceTrendDO(
+    await dispatchResultFetchOutcome({
+      entries,
       env,
-      buildRaceTrendDailyTrackRow({ entries, fetchedAt, isComplete, race, results }),
+      expectedHorseCount,
+      fetchedAt,
+      inserted,
+      now,
+      outcome,
       race,
-    );
-    // Always bust the viewer trend cache when ANY result row landed (not just
-    // when the full field is parsed). JRA / NAR sometimes publish results in
-    // multiple stages — for example a long objection delay can hold the last
-    // 1-2 horses while the leading horses are already on the result page. If
-    // we only bust on `isComplete` the merged race-trend payload keeps the
-    // pre-race "no result yet" cache for that race until natural TTL expiry,
-    // which is exactly the "1R-11R confirmed but 12R detail still shows them
-    // as unfinished" failure mode this commit targets.
-    if (inserted > 0) {
-      await runTrendCacheBust(env, raceKey, race);
-    }
+      raceKey,
+      results,
+    });
   } catch (error) {
     await failResultFetch(env.REALTIME_DB, raceKey);
     throw error;
@@ -3179,6 +3404,24 @@ export default {
       const job = (await request.json()) as Job;
       await enqueueJobs(env, [job]);
       return json({ ok: true });
+    }
+
+    if (url.pathname === "/api/jobs/fetch-weights" && request.method === "POST") {
+      const expectedToken = env.REALTIME_ADMIN_TOKEN;
+      if (!expectedToken || request.headers.get("authorization") !== `Bearer ${expectedToken}`) {
+        return json({ error: "forbidden" }, { status: 403 });
+      }
+      const body = (await request.json().catch(() => null)) as {
+        date?: string;
+        force?: boolean;
+        source?: string;
+      } | null;
+      const validBody = parseFetchWeightsBatchBody(body);
+      if (!validBody) {
+        return json({ error: "invalid body" }, { status: 400 });
+      }
+      const enqueued = await enqueueFetchWeightsBatch(env, validBody);
+      return json({ enqueued, ok: true });
     }
 
     const runningStylePostgresVerificationParams = parseRunningStylePostgresVerificationParams(url);
