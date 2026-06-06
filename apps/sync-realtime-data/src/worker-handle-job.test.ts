@@ -809,6 +809,35 @@ it("handleJob discover-urls exercises the inner NAR race-list link processing", 
 
 it("handleJob fetch-premium-race-data throws when origin set but no race link discovered", async () => {
   const { handleJob } = await import("./worker");
+  const { getRaceSource, getPremiumRaceLink } = await import("./storage");
+  vi.mocked(getRaceSource).mockResolvedValue({
+    babaCode: "08",
+    debaUrl: "https://www.jra.go.jp/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: "02",
+    kaisaiNen: "2026",
+    kaisaiNichime: "06",
+    kaisaiTsukihi: "0512",
+    keibajoCode: "08",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "jra:2026:0512:08:01",
+    raceName: "Test",
+    raceStartAtJst: "2026-05-12T13:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "jra",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(getPremiumRaceLink).mockResolvedValue(null);
   await expect(
     handleJob(buildEnv({ PREMIUM_RACE_ORIGIN: "https://x.test" } as never), {
       raceKey: "jra:2026:0512:08:01",

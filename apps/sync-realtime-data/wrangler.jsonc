@@ -137,6 +137,14 @@
       "binding": "RUNNING_STYLE_MODELS",
       "bucket_name": "pc-keiba-finish-position-models",
     },
+    {
+      // Shared with sync-realtime-data-features. The running-style cron tick
+      // writes per-day per-source prediction Parquet files here so the
+      // container-side finish-position pipeline can read them via DuckDB
+      // httpfs instead of going back to Neon Postgres.
+      "binding": "FEATURES_ARCHIVE",
+      "bucket_name": "pc-keiba-features-archive",
+    },
   ],
   "durable_objects": {
     "bindings": [

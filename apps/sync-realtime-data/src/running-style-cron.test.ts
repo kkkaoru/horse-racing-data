@@ -291,3 +291,40 @@ test("runRunningStyleCronTick aggregates planError + refreshError across two dat
   expect(result.planError).toBe("multi-day boom");
   expect(result.cacheRefresh?.refreshError).toBe("multi-day boom");
 });
+
+test("runRunningStyleCronTick records parquetExport summary when FEATURES_ARCHIVE is bound", async () => {
+  const send = vi.fn();
+  const put = vi.fn(async (_key: string, _body: Uint8Array, _options?: unknown) => undefined);
+  // D1.prepare returns a chain where bind().all() yields empty results so the
+  // export quickly returns the "no rows for day" skipped summary.
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ all, bind }));
+  const env = {
+    FEATURES_ARCHIVE: { put } as unknown as R2Bucket,
+    REALTIME_DB: { prepare } as unknown as D1Database,
+    REALTIME_JOBS: { send, sendBatch: vi.fn() },
+    RUNNING_STYLE_D1_WRITE_ENABLED: "1",
+  } as unknown as Env;
+  const result = await runRunningStyleCronTick(env, new Date("2026-06-04T06:00:00Z"));
+  expect(result.parquetExport?.fileCount).toBe(0);
+  expect(result.parquetExport?.rowCount).toBe(0);
+  expect(result.parquetExport?.bytesWritten).toBe(0);
+});
+
+test("runRunningStyleCronTick omits parquetExport when inference flag disabled", async () => {
+  const send = vi.fn();
+  const put = vi.fn(async (_key: string, _body: Uint8Array, _options?: unknown) => undefined);
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ all, bind }));
+  const env = {
+    FEATURES_ARCHIVE: { put } as unknown as R2Bucket,
+    REALTIME_DB: { prepare } as unknown as D1Database,
+    REALTIME_JOBS: { send, sendBatch: vi.fn() },
+    RUNNING_STYLE_D1_WRITE_ENABLED: "0",
+  } as unknown as Env;
+  const result = await runRunningStyleCronTick(env, new Date("2026-06-04T06:00:00Z"));
+  expect(result.parquetExport).toBeUndefined();
+  expect(put).not.toHaveBeenCalled();
+});

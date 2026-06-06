@@ -123,6 +123,7 @@ export interface Env {
   DATABASE_TARGET?: string;
   DATABASE_URL_NEON?: string;
   DETAIL_SECTION_CACHE_KV?: KVNamespace;
+  FEATURES_ARCHIVE?: R2Bucket;
   HYPERDRIVE?: HyperdriveBinding;
   JRA_BROWSER?: BrowserWorker;
   ODDS_CACHE: DurableObjectNamespace;
