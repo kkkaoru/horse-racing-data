@@ -103,7 +103,7 @@ beforeAll(async () => {
             namespace: "stub-postgres",
             path: "postgres",
           }));
-          build.onResolve({ filter: /^\.\.?\/finish-position-lite-pool$/ }, () => ({
+          build.onResolve({ filter: /^\.\/finish-position-lite-pool$/ }, () => ({
             namespace: "stub-finish-position-lite-pool",
             path: "finish-position-lite-pool",
           }));

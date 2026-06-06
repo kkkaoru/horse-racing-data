@@ -16,11 +16,6 @@ import type {
 import { deriveWakubanString } from "horse-racing-realtime/wakuban";
 import type { Env } from "../types";
 import { mergeJsonHeaders } from "../http";
-import {
-  buildTrainerKeyForLookup,
-  fetchTrainerMapForVenueDay,
-  type TrainerFetchArgs,
-} from "./race-trend-trainer-fetch";
 
 interface RaceTrendStorageLike {
   get: (key: string) => Promise<RaceTrendDailyTrackState | undefined>;
@@ -33,12 +28,9 @@ interface RaceTrendStateLike {
   storage: RaceTrendStorageLike;
 }
 
-type TrainerFetcherFn = (args: TrainerFetchArgs) => Promise<Map<string, string>>;
-
 interface CreateForTestParams {
   env: Env;
   state: RaceTrendStateLike;
-  trainerFetcher?: TrainerFetcherFn;
 }
 
 interface AlarmContext {
@@ -64,11 +56,6 @@ interface RawSnapshotRow extends Record<string, unknown> {
   umaban: string;
   horseName: string | null;
   jockeyName: string | null;
-  // Filled by post-D1 Hyperdrive enrichment in refreshFromD1. D1
-  // race_entry_snapshots does not carry trainer so this is undefined
-  // straight out of D1 and gets overwritten (or set to null) when the
-  // trainer Map has a hit / miss for (raceBango, umaban).
-  chokyoshiName?: string | null;
   finishPosition: string;
   sohaTime: string | null;
   weight: number | null;
@@ -350,14 +337,6 @@ const isRawSnapshotRow = (value: unknown): value is RawSnapshotRow => {
   );
 };
 
-const decorateWithTrainer = (
-  base: RawSnapshotRow,
-  trainerMap: ReadonlyMap<string, string>,
-): RawSnapshotRow => ({
-  ...base,
-  chokyoshiName: trainerMap.get(buildTrainerKeyForLookup(base.raceBango, base.umaban)) ?? null,
-});
-
 // Derive wakuban (frame number) from umaban + the race's actual horse
 // count. JRA / NAR / Ban-ei all share the same official frame distribution
 // rule (8 frames, overflow horses shift to higher frames), so the shared
@@ -378,7 +357,6 @@ interface ToStarterRowInput {
 const toStarterRow = ({ horseCount, raw }: ToStarterRowInput) => ({
   bamei: raw.horseName,
   bataiju: toBataiju(raw.weight),
-  chokyoshiName: raw.chokyoshiName ?? null,
   corner1: null,
   corner2: null,
   corner3: null,
@@ -487,12 +465,6 @@ const querySnapshotRows = async ({
     .bind(parsed.source, kaisaiNen, kaisaiTsukihi, parsed.keibajoCode)
     .all<Record<string, unknown>>();
   return result.results.filter((row): row is RawSnapshotRow => isRawSnapshotRow(row));
-};
-
-const collectRaceBangoList = (rows: ReadonlyArray<RawSnapshotRow>): string[] => {
-  const seen = new Set<string>();
-  rows.forEach((row) => seen.add(row.raceBango));
-  return Array.from(seen).toSorted();
 };
 
 const queryRunningStyleRows = async ({
@@ -615,10 +587,6 @@ export class RaceTrendDailyTrackDO {
   private state: RaceTrendDailyTrackState | null = null;
   private readonly env: Env;
   private readonly doState: RaceTrendStateLike;
-  // Injected via createForTest so the Hyperdrive trainer JOIN can be
-  // stubbed without dragging pg / postgres.ts into the test surface.
-  // Production constructor wires the real fetcher.
-  private readonly trainerFetcher: TrainerFetcherFn = fetchTrainerMapForVenueDay;
   // The DurableObjectId.name is unavailable on the raw `state.id` handle in
   // Cloudflare's runtime when the DO was created via `idFromName`. Callers
   // pass the id name implicitly by routing requests through the right stub,
@@ -660,7 +628,6 @@ export class RaceTrendDailyTrackDO {
     Reflect.set(instance, "doState", params.state);
     Reflect.set(instance, "state", null);
     Reflect.set(instance, "parsed", null);
-    Reflect.set(instance, "trainerFetcher", params.trainerFetcher ?? fetchTrainerMapForVenueDay);
     await params.state.blockConcurrencyWhile(async () => {
       const stored = await params.state.storage.get(STORAGE_KEY);
       if (stored !== undefined) {
@@ -784,17 +751,10 @@ export class RaceTrendDailyTrackDO {
   }
 
   private async refreshFromD1(args: QuerySnapshotsArgs): Promise<void> {
-    const [baseRows, runningStyleRows] = await Promise.all([
+    const [snapshotRows, runningStyleRows] = await Promise.all([
       querySnapshotRows(args),
       queryRunningStyleRows(args),
     ]);
-    const trainerArgs: TrainerFetchArgs = {
-      env: args.env,
-      parsed: args.parsed,
-      raceBangoList: collectRaceBangoList(baseRows),
-    };
-    const trainerMap = await this.trainerFetcher(trainerArgs);
-    const snapshotRows = baseRows.map((row) => decorateWithTrainer(row, trainerMap));
     const rows = buildRowsFromSnapshotResults(snapshotRows, runningStyleRows);
     const updatedAt = new Date().toISOString();
     const merged = buildAlarmReplacementState(rows, this.state, args.parsed, updatedAt);
@@ -860,9 +820,7 @@ export const buildRaceTrendDailyTrackDoIdName = (args: BuildDoNameArgs): string 
 // without going through the DO HTTP layer.
 export const __testables = {
   buildRowsFromSnapshotResults,
-  collectRaceBangoList,
   computeNextAlarmDelayMs,
-  decorateWithTrainer,
   isRawSnapshotRow,
   mergeIncomingRow,
   selectRaces,
