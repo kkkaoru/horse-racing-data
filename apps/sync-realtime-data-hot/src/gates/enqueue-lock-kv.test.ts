@@ -95,22 +95,26 @@ it("cadence-60-when-11-min-before (1min cadence interior)", () => {
   ).toBe(60);
 });
 
-it("cadence-300-when-15-min-before (boundary into 5min cadence)", () => {
+it("cadence-60-when-15-min-before (boundary into 5min cadence, gap to T-1 boundary is zero)", () => {
+  // T-15 is the lower edge of the 5-min tier. Any lock here would block
+  // T-14 (first 1-min slot). Cap to KV minimum (60s) so the 1-min cadence
+  // can take over immediately.
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
       new Date("2026-05-28T09:45:00+09:00"),
     ),
-  ).toBe(300);
+  ).toBe(60);
 });
 
-it("cadence-300-when-19-min-before (5min cadence interior)", () => {
+it("cadence-240-when-19-min-before (5min cadence interior, capped at gap to T-15)", () => {
+  // gap to T-15 = 4min = 240s, cadence = 300s. min(300, 240) = 240s.
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
       new Date("2026-05-28T09:41:00+09:00"),
     ),
-  ).toBe(300);
+  ).toBe(240);
 });
 
 it("cadence-300-when-30-min-before (5min cadence interior)", () => {
@@ -140,34 +144,39 @@ it("cadence-300-when-59-min-before (5min cadence upper)", () => {
   ).toBe(300);
 });
 
-it("cadence-3600-when-60-min-before (boundary into hourly cadence)", () => {
+it("cadence-60-when-60-min-before (boundary T-60, capped to KV minimum at tier lower edge)", () => {
+  // T-60 is the lower edge of the hourly tier; any longer lock would
+  // block the immediately-following 5-min tier slot at T-59. Cap to KV
+  // minimum so the 5-min cadence can take over at the next planner tick.
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
       new Date("2026-05-28T09:00:00+09:00"),
     ),
-  ).toBe(3600);
+  ).toBe(60);
 });
 
-it("cadence-3600-when-61-min-before (hourly cadence interior)", () => {
+it("cadence-60-when-61-min-before (hourly cadence near T-60 boundary, capped to KV minimum)", () => {
+  // gap to T-60 = 1min = 60s, KV minimum = 60s.
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
       new Date("2026-05-28T08:59:00+09:00"),
     ),
-  ).toBe(3600);
+  ).toBe(60);
 });
 
-it("cadence-3600-when-90-min-before (hourly cadence interior)", () => {
+it("cadence-1800-when-90-min-before (hourly cadence interior, capped at gap to T-60)", () => {
+  // gap to T-60 = 30min = 1800s, hourly cadence = 3600s, min = 1800s.
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
       new Date("2026-05-28T08:30:00+09:00"),
     ),
-  ).toBe(3600);
+  ).toBe(1800);
 });
 
-it("cadence-3600-when-120-min-before (hourly cadence interior)", () => {
+it("cadence-3600-when-120-min-before (gap to T-60 is exactly the hourly cadence)", () => {
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
@@ -177,12 +186,46 @@ it("cadence-3600-when-120-min-before (hourly cadence interior)", () => {
 });
 
 it("cadence-3600-when-200-min-before (hourly cadence interior, far before race)", () => {
+  // gap to T-60 = 140min = 8400s, but hourly cadence caps at 3600s.
   expect(
     calculateEnqueueLockTtlSeconds(
       new Date("2026-05-28T10:00:00+09:00"),
       new Date("2026-05-28T06:40:00+09:00"),
     ),
   ).toBe(3600);
+});
+
+it("cadence-240-when-64-min-before (regression test for 5R 03 starvation bug)", () => {
+  // 06-06 incident: at T-64 the legacy 3600s lock spanned past T-15 and T-1
+  // entirely, blocking 5min and 1min cadence enqueues for that race while
+  // the previous race in the same venue (T-30) kept being fetched.
+  expect(
+    calculateEnqueueLockTtlSeconds(
+      new Date("2026-05-28T10:00:00+09:00"),
+      new Date("2026-05-28T08:56:00+09:00"),
+    ),
+  ).toBe(240);
+});
+
+it("cadence-60-when-16-min-before (5min cadence near T-15 boundary, capped to KV minimum)", () => {
+  // T-16: gap to T-15 = 1min = 60s, cadence = 300s. min(300, 60) = 60.
+  expect(
+    calculateEnqueueLockTtlSeconds(
+      new Date("2026-05-28T10:00:00+09:00"),
+      new Date("2026-05-28T09:44:00+09:00"),
+    ),
+  ).toBe(60);
+});
+
+it("cadence-60-when-5-min-before (1min cadence, gap to T-1 of 4min larger than cadence)", () => {
+  // T-5 is in the 1-min tier (1 <= T < 15). cadence = 60s, gap = 4min =
+  // 240s, min(60, 240) = 60. Tier-cap doesn't kick in here.
+  expect(
+    calculateEnqueueLockTtlSeconds(
+      new Date("2026-05-28T10:00:00+09:00"),
+      new Date("2026-05-28T09:55:00+09:00"),
+    ),
+  ).toBe(60);
 });
 
 it("cadence-0-well-after-race (4 min after)", () => {
@@ -322,7 +365,9 @@ it("calculateEnqueueLockTtlSecondsFromInput ignores unparseable lastOddsFetchAt 
   ).toBe(300);
 });
 
-it("calculateEnqueueLockTtlSecondsFromInput returns 3600 hourly cadence even when allowCatchUp is true (60min before race)", () => {
+it("calculateEnqueueLockTtlSecondsFromInput returns 60 at T-60 with allowCatchUp true (tier lower edge)", () => {
+  // T-60 is at the lower edge of the hourly tier; gap = 0 → KV minimum.
+  // Tier-cap applies independently of allowCatchUp.
   expect(
     calculateEnqueueLockTtlSecondsFromInput({
       allowCatchUp: true,
@@ -330,10 +375,11 @@ it("calculateEnqueueLockTtlSecondsFromInput returns 3600 hourly cadence even whe
       now: new Date("2026-05-28T09:00:00+09:00"),
       raceStart: new Date("2026-05-28T10:00:00+09:00"),
     }),
-  ).toBe(3600);
+  ).toBe(60);
 });
 
 it("calculateEnqueueLockTtlSecondsFromInput returns 60 in 1min cadence even when allowCatchUp is true (5min before race)", () => {
+  // T-5: gap to T-1 = 4min = 240s, cadence = 60s. min(60, 240) = 60.
   expect(
     calculateEnqueueLockTtlSecondsFromInput({
       allowCatchUp: true,
@@ -345,6 +391,7 @@ it("calculateEnqueueLockTtlSecondsFromInput returns 60 in 1min cadence even when
 });
 
 it("calculateEnqueueLockTtlSecondsFromInput returns 3600 hourly cadence even when allowCatchUp is true (120min before race)", () => {
+  // T-120: gap to T-60 = 60min = 3600s, cadence = 3600s. min = 3600.
   expect(
     calculateEnqueueLockTtlSecondsFromInput({
       allowCatchUp: true,
