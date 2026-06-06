@@ -11,6 +11,7 @@ import {
   writeToEdgeCache,
 } from "./gates/edge-cache";
 import { readLatestOddsFromKv, writeLatestOddsToKv } from "./gates/latest-odds-kv-mirror";
+import { shouldRunOddsCron } from "./gates/polling-window-gate";
 import {
   computeArchiveCutoffIso,
   putArchiveRowToR2,
@@ -425,6 +426,12 @@ const dispatchScheduledByCron = async (args: DispatchScheduledArgs): Promise<voi
   // exported `scheduled` handler regardless.
   void args.ctx;
   if (args.cron === PLAN_ODDS_FETCHES_CRON) {
+    // Race-window gate: planner cron only runs when at least one race is
+    // within [now - 30min, now + 3h]. The other crons (`0 4`, `55 20`) bypass
+    // the gate because populate / archive must run outside the race window.
+    if (!(await shouldRunOddsCron(args.env, args.now))) {
+      return;
+    }
     await runScheduledPlan(args.env, args.now);
     return;
   }
