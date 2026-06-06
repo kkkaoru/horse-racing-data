@@ -9,7 +9,10 @@ import {
   getRaceRunners,
   getSameVenueRacesByDate,
 } from "../../../db/queries";
-import { safeGetCloudflareExecutionContext } from "../../../lib/cloudflare-context.server";
+import {
+  safeGetCloudflareEnv,
+  safeGetCloudflareExecutionContext,
+} from "../../../lib/cloudflare-context.server";
 import { SOURCE_LABELS, type RaceSource } from "../../../lib/codes";
 import { formatCourseParagraphs, getCourseFacts, getCourseImagePath } from "../../../lib/course";
 import {
@@ -45,6 +48,7 @@ import { RACE_TREND_PAST14_LOOKBACK_DAYS } from "../../../lib/race-trend-cache";
 import { shouldRestrictTrendDisplayToToday } from "../../../lib/race-trend-display";
 import { getRaceTrendTargetsFromSearchParams } from "../../../lib/race-trend-query";
 import type { RaceDetail } from "../../../lib/race-types";
+import { loadInitialRealtimePayloadServer } from "../../../lib/realtime-payload.server";
 import {
   formatCarriedWeight,
   formatHorseWeight,
@@ -324,6 +328,11 @@ export async function RaceDetailView({
     source: raceSource,
     year,
   } satisfies RealtimeRaceRequest;
+  const realtimeEnv = await safeGetCloudflareEnv();
+  const initialRealtimePayload = await loadInitialRealtimePayloadServer({
+    env: realtimeEnv,
+    request: { day, keibajoCode, month, raceNumber, source: raceSource, year },
+  }).catch(() => null);
   const raceStartsAt = getRaceStartsAt(year, month, day, race.hassoJikoku);
   const sharePath = getRaceDetailPath({
     kaisaiNen: year,
@@ -440,7 +449,7 @@ export async function RaceDetailView({
     sharePath,
   };
   return (
-    <RealtimeRaceProvider initialPayload={null} request={realtimeRequest}>
+    <RealtimeRaceProvider initialPayload={initialRealtimePayload} request={realtimeRequest}>
       <section className="page-shell">
         <RaceShareControls path={sharePath} />
         <div className="race-global-summary" aria-label="race summary in global header">
@@ -694,7 +703,7 @@ export async function RaceDetailView({
           ) : (
             <RunnersTable
               decodeHexHorseWeight={decodeHexHorseWeight}
-              initialRealtimePayload={null}
+              initialRealtimePayload={initialRealtimePayload}
               realtimeRequest={realtimeRequest}
               runners={runners}
             />
@@ -770,7 +779,7 @@ export async function RaceDetailView({
         <RealtimeRaceSection
           apiBaseUrl={realtimeApiBaseUrl}
           day={day}
-          initialPayload={null}
+          initialPayload={initialRealtimePayload}
           keibajoCode={keibajoCode}
           month={month}
           raceNumber={raceNumber}

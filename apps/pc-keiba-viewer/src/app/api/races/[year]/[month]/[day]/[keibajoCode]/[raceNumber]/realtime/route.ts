@@ -16,13 +16,15 @@ import {
   buildDevRealtimePayload,
   isDevScraperEnabled,
 } from "../../../../../../../../../lib/dev-realtime-scraper.server";
-import { fetchHorseWeightsFromD1 } from "../../../../../../../../../lib/horse-weight-d1-fallback.server";
 import {
   buildRealtimePayloadFromHot,
-  HOT_WORKER_ORIGIN,
   type HotOddsPayload,
-  isHotOddsPayload,
 } from "../../../../../../../../../lib/hot-odds-payload.server";
+import {
+  buildRaceKey,
+  buildRealtimePayloadForRequest,
+  fetchOddsFromHot,
+} from "../../../../../../../../../lib/realtime-payload.server";
 
 interface RouteContext {
   params: Promise<{
@@ -34,111 +36,12 @@ interface RouteContext {
   }>;
 }
 
-interface BuildRaceKeyParams {
-  day: string;
-  keibajoCode: string;
-  month: string;
-  raceNumber: string;
-  source: RaceSource;
-  year: string;
-}
-
-interface HorseWeightEntry {
-  changeAmount: number | null;
-  changeSign: string | null;
-  horseName: string | null;
-  horseNumber: string;
-  weight: number | null;
-}
-
-interface HorseWeightSnapshot {
-  fetchedAt: string;
-  horses: HorseWeightEntry[];
-}
-
-interface FetchHorseWeightsParams {
-  day: string;
-  keibajoCode: string;
-  month: string;
-  raceNumber: string;
-  realtimeData: { fetch: typeof fetch };
-  source: RaceSource;
-  year: string;
-}
-
-interface ResolveHorseWeightsParams {
-  db: PcKeibaD1Database | undefined;
-  fromDO: HorseWeightSnapshot | null;
-  raceKey: string;
-}
-
 const NO_STORE_HEADERS = { "cache-control": "no-store" };
-const REALTIME_DATA_ORIGIN = "https://realtime";
-const HORSE_WEIGHTS_LATEST_OK_STATUS = 200;
 
 const isRaceSource = (value: string | null): value is RaceSource =>
   value === "jra" || value === "nar";
 
-const padRaceNumber = (raceNumber: string): string => raceNumber.padStart(2, "0");
-
-const isHorseWeightSnapshot = (value: unknown): value is HorseWeightSnapshot => {
-  if (typeof value !== "object" || value === null) return false;
-  const fetchedAt: unknown = Reflect.get(value, "fetchedAt");
-  const horses: unknown = Reflect.get(value, "horses");
-  return typeof fetchedAt === "string" && Array.isArray(horses);
-};
-
-export const buildRaceKey = (params: BuildRaceKeyParams): string =>
-  `${params.source}:${params.year}:${params.month}${params.day}:${params.keibajoCode}:${padRaceNumber(params.raceNumber)}`;
-
-const buildHorseWeightsLatestUrl = (
-  params: Omit<FetchHorseWeightsParams, "realtimeData">,
-): string =>
-  `${REALTIME_DATA_ORIGIN}/api/${params.source}/races/${params.year}/${params.month}/${params.day}/${params.keibajoCode}/${padRaceNumber(params.raceNumber)}/horse-weights-latest`;
-
-export const fetchHorseWeightsLatest = async (
-  params: FetchHorseWeightsParams,
-): Promise<HorseWeightSnapshot | null> => {
-  try {
-    const response = await params.realtimeData.fetch(buildHorseWeightsLatestUrl(params));
-    if (response.status !== HORSE_WEIGHTS_LATEST_OK_STATUS) {
-      return null;
-    }
-    const json: unknown = await response.json();
-    return isHorseWeightSnapshot(json) ? json : null;
-  } catch {
-    return null;
-  }
-};
-
-export const fetchOddsFromHot = async (
-  hot: CloudflareEnv["REALTIME_HOT"],
-  raceKey: string,
-): Promise<HotOddsPayload | null> => {
-  if (!hot) {
-    return null;
-  }
-  try {
-    const response = await hot.fetch(`${HOT_WORKER_ORIGIN}/api/odds/${raceKey}`);
-    if (!response.ok) {
-      return null;
-    }
-    const json: unknown = await response.json();
-    return isHotOddsPayload(json) ? json : null;
-  } catch {
-    return null;
-  }
-};
-
-export const resolveHorseWeights = async (
-  params: ResolveHorseWeightsParams,
-): Promise<HorseWeightSnapshot | null> => {
-  if (params.fromDO !== null) return params.fromDO;
-  if (params.db === undefined) return null;
-  return fetchHorseWeightsFromD1({ db: params.db, raceKey: params.raceKey });
-};
-
-export { buildRealtimePayloadFromHot, type HotOddsPayload };
+export { buildRaceKey, buildRealtimePayloadFromHot, fetchOddsFromHot, type HotOddsPayload };
 
 export const dynamic = "force-dynamic";
 
@@ -162,32 +65,10 @@ export async function GET(request: Request, context: RouteContext) {
     return NextResponse.json(payload, { headers: NO_STORE_HEADERS });
   }
 
-  const raceKey = buildRaceKey({
-    day,
-    keibajoCode,
-    month,
-    raceNumber,
-    source: sourceParam,
-    year,
-  });
   const env = await safeGetCloudflareEnv();
-  const realtimeData = env?.REALTIME_DATA;
-  const [odds, fromDO] = await Promise.all([
-    fetchOddsFromHot(env?.REALTIME_HOT, raceKey),
-    realtimeData
-      ? fetchHorseWeightsLatest({
-          day,
-          keibajoCode,
-          month,
-          raceNumber,
-          realtimeData,
-          source: sourceParam,
-          year,
-        })
-      : Promise.resolve(null),
-  ]);
-  const horseWeights = await resolveHorseWeights({ db: env?.REALTIME_DB, fromDO, raceKey });
-  const payload = buildRealtimePayloadFromHot(raceKey, odds);
-  const merged = horseWeights === null ? payload : { ...payload, horseWeights };
+  const merged = await buildRealtimePayloadForRequest({
+    env,
+    request: { day, keibajoCode, month, raceNumber, source: sourceParam, year },
+  });
   return NextResponse.json(merged, { headers: NO_STORE_HEADERS });
 }
