@@ -231,20 +231,29 @@ const PREMIUM_PADDOCK_NOTIFICATION_LOCK_SECONDS = 90;
 // so we compare against "05" not "5".
 const JRA_PRIORITY_VENUE_CODES = ["05", "08"] satisfies readonly string[];
 const JRA_PRIORITY_RACE_BANGOS = ["05", "11"] satisfies readonly string[];
-// Raised from 40 to 90 because the JRA horse-weight HTML often publishes
-// ~30-45 min before post but our previous 40-min window plus the 3-minute
-// tick gate combined into only ~3 attempts per race, so a single failure
-// pushed the first successful fetch past post time. 90 min gives ~18
-// attempts on a 5-minute cron and the in-page parse is cheap.
-const WEIGHT_FETCH_LEAD_MINUTES = 90;
+// 2026-06-06: raised from 90 to 180 so the 15-minute weight-plan cron has
+// 12 attempts per race instead of 6, recovering from any single Hyperdrive
+// read timeout that leaves planRealtimeFetches with an empty race list.
+// Paired with the cron change from "0 0-13 * * *" (hourly) to
+// "*/15 0-14 * * *" (15-min) and with WEIGHT_FETCH_SAME_DAY_COOLDOWN_MINUTES
+// so a single in-day failure no longer locks out re-fetch for 24 hours.
+const WEIGHT_FETCH_LEAD_MINUTES = 180;
 const WEIGHT_FETCH_PRIORITY_TIER_HIGH = 0;
 const WEIGHT_FETCH_PRIORITY_TIER_MID = 1;
 const WEIGHT_FETCH_PRIORITY_TIER_LOW = 2;
 const WEIGHT_FETCH_PRIORITY_TIER_NAR = 3;
 const WEIGHT_FETCH_BANGO_PRIORITY_THRESHOLD = 5;
-// Once a weight fetch succeeds we wait 24h before re-fetching (extracted from
-// inline literal at the old planRealtimeFetches weight-push site).
+// Once a weight fetch succeeds on a different JST date than the race we wait
+// 24h before re-fetching. When the previous fetch is on the same JST date as
+// the race we only wait 1h, so any partial-page failure has many retries
+// before post time instead of being silently locked out for the whole day.
 const WEIGHT_FETCH_INTERVAL_MINUTES = 24 * 60;
+const WEIGHT_FETCH_SAME_DAY_COOLDOWN_MINUTES = 60;
+// KV TTL for the weight-race-list fallback (used when Hyperdrive returns an
+// empty result so the plan still has something to enqueue). 24h keeps the
+// fallback alive across the entire race day.
+const WEIGHT_RACE_LIST_KV_TTL_SECONDS = 24 * 60 * 60;
+const WEIGHT_RACE_LIST_KV_PREFIX = "realtime:weight-race-list:";
 const JRA_KEIBAJO_NAMES: Record<string, string> = {
   "01": "札幌",
   "02": "函館",
@@ -942,6 +951,69 @@ export const latestTimestamp = (...timestamps: (string | null)[]): string | null
 };
 
 export const isThreeMinuteTick = (date: Date): boolean => date.getUTCMinutes() % 3 === 0;
+
+// JST yyyy-mm-dd slice from an ISO-with-offset string. Returns empty string
+// when the input cannot be parsed so the caller can treat that as "no date
+// match" and fall back to the 24h cooldown.
+export const extractJstDate = (value: string | null): string => {
+  if (!value) return "";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? "" : toJstIsoString(parsed).slice(0, 10);
+};
+
+// 1h cooldown when the previous fetch landed on the same JST date as the
+// race, 24h cooldown otherwise. The same-day path keeps retries flowing for
+// any in-day failure (partial parse, transient origin error). The 24h path
+// kicks in once we successfully fetched yesterday's weights so a stale row
+// from a previous calendar day does not block today's first attempt.
+export const resolveWeightFetchCooldownMinutes = (
+  raceStartAtJst: string,
+  lastFetchAt: string | null,
+): number => {
+  if (!lastFetchAt) return WEIGHT_FETCH_INTERVAL_MINUTES;
+  const raceDate = raceStartAtJst.slice(0, 10);
+  const fetchDate = extractJstDate(lastFetchAt);
+  return raceDate && raceDate === fetchDate
+    ? WEIGHT_FETCH_SAME_DAY_COOLDOWN_MINUTES
+    : WEIGHT_FETCH_INTERVAL_MINUTES;
+};
+
+interface WeightRaceListKvEntry {
+  raceKey: string;
+  source: "jra" | "nar";
+}
+
+const buildWeightRaceListKvKey = (date: string): string => `${WEIGHT_RACE_LIST_KV_PREFIX}${date}`;
+
+// KV-backed fallback so a Hyperdrive read timeout (which surfaces as an empty
+// SchedulableRaceSource list) does not silently skip weight planning. We write
+// the minimal {raceKey, source} list on every successful plan and read it back
+// when the live query returns empty.
+export const readWeightRaceListFallbackFromKv = async (
+  env: Env,
+  date: string,
+): Promise<WeightRaceListKvEntry[]> => {
+  if (!env.DETAIL_SECTION_CACHE_KV) return [];
+  const raw = await env.DETAIL_SECTION_CACHE_KV.get(buildWeightRaceListKvKey(date));
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as WeightRaceListKvEntry[]) : [];
+  } catch {
+    return [];
+  }
+};
+
+export const writeWeightRaceListFallbackToKv = async (
+  env: Env,
+  date: string,
+  entries: WeightRaceListKvEntry[],
+): Promise<void> => {
+  if (!env.DETAIL_SECTION_CACHE_KV) return;
+  await env.DETAIL_SECTION_CACHE_KV.put(buildWeightRaceListKvKey(date), JSON.stringify(entries), {
+    expirationTtl: WEIGHT_RACE_LIST_KV_TTL_SECONDS,
+  });
+};
 
 const isPriorityJraVenue = (keibajoCode: string): boolean =>
   JRA_PRIORITY_VENUE_CODES.includes(keibajoCode);
@@ -1901,11 +1973,29 @@ export const planRealtimeFetches = async (env: Env, targetDate: string): Promise
       .filter(
         (c) =>
           c.minutes <= WEIGHT_FETCH_LEAD_MINUTES &&
-          isDue(c.race.lastWeightFetchAt, WEIGHT_FETCH_INTERVAL_MINUTES, now),
+          isDue(
+            c.race.lastWeightFetchAt,
+            resolveWeightFetchCooldownMinutes(c.race.raceStartAtJst, c.race.lastWeightFetchAt),
+            now,
+          ),
       );
     [...weightCandidates].sort(compareWeightCandidates).forEach((c) => {
       jobs.push({ raceKey: c.race.raceKey, type: "fetch-weights" });
     });
+    if (races.length > 0) {
+      await writeWeightRaceListFallbackToKv(
+        env,
+        targetDate,
+        races.map(
+          (race): WeightRaceListKvEntry => ({ raceKey: race.raceKey, source: race.source }),
+        ),
+      );
+    } else {
+      const fallback = await readWeightRaceListFallbackFromKv(env, targetDate);
+      fallback.forEach((entry) => {
+        jobs.push({ raceKey: entry.raceKey, type: "fetch-weights" });
+      });
+    }
     for (const race of races) {
       const minutes = minutesUntilRace(race, now);
       if (minutes === null) {
@@ -1965,6 +2055,67 @@ export const planRealtimeFetches = async (env: Env, targetDate: string): Promise
     jobs.flatMap((job) => (job.type === "fetch-premium-race-data" ? [job.raceKey] : [])),
     queuedAt,
   );
+  return jobs.length;
+};
+
+interface FetchWeightsBatchInput {
+  date: string;
+  force: boolean;
+  source: "all" | "jra" | "nar";
+}
+
+const FETCH_WEIGHTS_BATCH_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/u;
+const FETCH_WEIGHTS_BATCH_SOURCE_NORMALIZER: ReadonlyMap<string, "all" | "jra" | "nar"> = new Map([
+  ["all", "all"],
+  ["jra", "jra"],
+  ["nar", "nar"],
+]);
+
+// Validates the manual force-trigger POST body. Accepts `YYYY-MM-DD` date,
+// optional `source` (jra/nar/all default jra), and optional `force` boolean
+// that bypasses the per-race cooldown so an operator can re-fetch a race
+// whose previous attempt only stored a partial / empty bataiju snapshot.
+export const parseFetchWeightsBatchBody = (
+  body: { date?: string; force?: boolean; source?: string } | null,
+): FetchWeightsBatchInput | null => {
+  if (!body || typeof body.date !== "string") return null;
+  if (!FETCH_WEIGHTS_BATCH_DATE_PATTERN.test(body.date)) return null;
+  const rawSource = body.source ?? "jra";
+  const source = FETCH_WEIGHTS_BATCH_SOURCE_NORMALIZER.get(rawSource);
+  if (!source) return null;
+  return {
+    date: body.date,
+    force: body.force === true,
+    source,
+  };
+};
+
+// Bulk-enqueues fetch-weights jobs for every schedulable race on `date`
+// matching `source`. When `force` is false the per-race cooldown still
+// applies; when true every matching race is enqueued unconditionally. The
+// 15-min cron + 180-min lead time covers the happy path, this endpoint
+// exists for operator-driven backfill after a Hyperdrive outage.
+export const enqueueFetchWeightsBatch = async (
+  env: Env,
+  input: FetchWeightsBatchInput,
+): Promise<number> => {
+  const targetDate = input.date.replace(/-/gu, "");
+  const races = await listSchedulableRaceSourcesByDate(env.REALTIME_DB, targetDate);
+  const now = getNow(env);
+  const matchingRaces = races.filter(
+    (race) => input.source === "all" || race.source === input.source,
+  );
+  const dueRaces = input.force
+    ? matchingRaces
+    : matchingRaces.filter((race) =>
+        isDue(
+          race.lastWeightFetchAt,
+          resolveWeightFetchCooldownMinutes(race.raceStartAtJst, race.lastWeightFetchAt),
+          now,
+        ),
+      );
+  const jobs: Job[] = dueRaces.map((race) => ({ raceKey: race.raceKey, type: "fetch-weights" }));
+  await enqueueJobs(env, jobs);
   return jobs.length;
 };
 
@@ -3179,6 +3330,24 @@ export default {
       const job = (await request.json()) as Job;
       await enqueueJobs(env, [job]);
       return json({ ok: true });
+    }
+
+    if (url.pathname === "/api/jobs/fetch-weights" && request.method === "POST") {
+      const expectedToken = env.REALTIME_ADMIN_TOKEN;
+      if (!expectedToken || request.headers.get("authorization") !== `Bearer ${expectedToken}`) {
+        return json({ error: "forbidden" }, { status: 403 });
+      }
+      const body = (await request.json().catch(() => null)) as {
+        date?: string;
+        force?: boolean;
+        source?: string;
+      } | null;
+      const validBody = parseFetchWeightsBatchBody(body);
+      if (!validBody) {
+        return json({ error: "invalid body" }, { status: 400 });
+      }
+      const enqueued = await enqueueFetchWeightsBatch(env, validBody);
+      return json({ enqueued, ok: true });
     }
 
     const runningStylePostgresVerificationParams = parseRunningStylePostgresVerificationParams(url);
