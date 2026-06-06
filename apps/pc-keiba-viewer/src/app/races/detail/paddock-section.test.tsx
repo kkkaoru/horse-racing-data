@@ -5,7 +5,7 @@ import React from "react";
 import { afterEach, expect, test, vi } from "vitest";
 
 import type { PaddockHistoryEntry, PaddockState } from "../../../lib/paddock";
-import type { Runner } from "../../../lib/race-types";
+import type { HorseRaceResult, Runner } from "../../../lib/race-types";
 
 const fetchWithRetryMock = vi.fn<(input: string, init?: RequestInit) => Promise<Response>>();
 const getOrCreateUserIdMock = vi.fn<() => Promise<string>>();
@@ -88,6 +88,56 @@ const buildPaddockState = (history: PaddockHistoryEntry[]): PaddockState => ({
   horses: {},
   raceKey: "2026:0602:05:01",
   updatedAt: "2026-06-02T12:00:00.000Z",
+});
+
+const buildPastResult = (overrides: Partial<HorseRaceResult>): HorseRaceResult => ({
+  babajotaiCodeDirt: null,
+  babajotaiCodeShiba: null,
+  bamei: "テストホース",
+  banushimei: null,
+  barei: "03",
+  bataiju: "480",
+  chokyoshimeiRyakusho: null,
+  corner1: null,
+  corner2: null,
+  corner3: null,
+  corner4: null,
+  currentBarei: null,
+  currentJockey: null,
+  currentSeibetsuCode: null,
+  currentUmaban: "01",
+  futanJuryo: "550",
+  gradeCode: null,
+  hassoJikoku: null,
+  juryoShubetsuCode: null,
+  kaisaiNen: "2026",
+  kaisaiTsukihi: "0301",
+  kakuteiChakujun: "01",
+  keibajoCode: "05",
+  kettoTorokuBango: "h1",
+  kishumeiRyakusho: "騎手",
+  kohan3f: null,
+  kyori: "1600",
+  kyosoJokenCode: null,
+  kyosoJokenMeisho: null,
+  kyosoKigoCode: null,
+  kyosomeiFukudai: null,
+  kyosomeiHondai: "過去レース",
+  kyosomeiKakkonai: null,
+  kyosoShubetsuCode: null,
+  raceBango: "01",
+  seibetsuCode: "1",
+  sohaTime: null,
+  tanshoNinkijun: "01",
+  tanshoOdds: "0010",
+  tenkoCode: null,
+  timeSa: null,
+  trackCode: null,
+  umaban: "01",
+  wakuban: "3",
+  zogenFugo: "+",
+  zogenSa: "0",
+  ...overrides,
 });
 
 const makeJsonResponse = (body: unknown): Response =>
@@ -270,6 +320,58 @@ test("PaddockSection renders sire and grandsire names when bloodline fields are 
   expect(screen.getByText("ディープインパクト").tagName).toBe("DD");
   expect(screen.getByText("ステイゴールド").tagName).toBe("DD");
   expect(screen.getByText("サンデーサイレンス").tagName).toBe("DD");
+});
+
+test("PaddockSection recent-results wakuban uses FrameNumberBadge with frame-3 class for parity with race detail", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      recentResults={[buildPastResult({ currentUmaban: "01", wakuban: "3" })]}
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  const wrapper = await screen.findByLabelText("枠番");
+  const badge = wrapper.querySelector("span.frame-number-badge");
+  expect(badge?.className).toBe("frame-number-badge frame-3");
+  expect(badge?.textContent).toBe("3");
+});
+
+test("PaddockSection recent-results wakuban renders frame-1 badge for the white frame", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      recentResults={[buildPastResult({ currentUmaban: "01", wakuban: "1" })]}
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  const wrapper = await screen.findByLabelText("枠番");
+  const badge = wrapper.querySelector("span.frame-number-badge");
+  expect(badge?.className).toBe("frame-number-badge frame-1");
+});
+
+test("PaddockSection recent-results wakuban renders frame-8 badge for the pink frame", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      recentResults={[buildPastResult({ currentUmaban: "01", wakuban: "8" })]}
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  const wrapper = await screen.findByLabelText("枠番");
+  const badge = wrapper.querySelector("span.frame-number-badge");
+  expect(badge?.className).toBe("frame-number-badge frame-8");
 });
 
 test("PaddockSection renders dash for bloodline when all fields are null", async () => {
