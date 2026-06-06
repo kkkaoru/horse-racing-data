@@ -41,7 +41,6 @@ import {
   markTrackConditionQueued,
   recordPartialResultFetch,
   recordPremiumPaddockNotificationEvent,
-  applyPremiumPaddockSkipOutcome,
   runD1Retention,
   toHorseTrends,
   toOddsTrendsByType,
@@ -1964,39 +1963,4 @@ it("deleteRaceRunningStylesChunk falls back to rowids.length when rows_written i
   const { deleteRaceRunningStylesChunk } = await import("./storage");
   const result = await deleteRaceRunningStylesChunk(db, { chunkSize: 500, sinceRowid: 0 });
   expect(result.deletedRowCount).toBe(1);
-});
-
-it("applyPremiumPaddockSkipOutcome runs all three stmts in a single db.batch", async () => {
-  const bind = vi.fn(() => ({}));
-  const prepare = vi.fn(() => ({ bind }));
-  const batch = vi.fn<(stmts: D1PreparedStatement[]) => Promise<D1Result[]>>(async () => []);
-  const db = { batch, prepare } as unknown as D1Database;
-  await applyPremiumPaddockSkipOutcome(db, {
-    fetchState: {
-      fetchedAt: "2026-06-06T13:00:00+09:00",
-      message: "pending:proxy",
-      raceKey: "jra:2026:0606:08:01",
-      retryAfter: "2026-06-06T13:00:15+09:00",
-      status: "pending",
-    },
-    notificationEvent: {
-      fetchedAt: "2026-06-06T13:00:00+09:00",
-      message: "premium paddock is pending: proxy",
-      payloadSignature: "sig-empty",
-      raceKey: "jra:2026:0606:08:01",
-      skipReason: "pending",
-      status: "skipped_pending",
-    },
-    notificationState: {
-      message: "premium paddock is pending: proxy",
-      payloadFetchedAt: "2026-06-06T13:00:00+09:00",
-      payloadSignature: "sig-empty",
-      raceKey: "jra:2026:0606:08:01",
-      skipReason: "pending",
-      status: "skipped_pending",
-    },
-  });
-  expect(batch).toHaveBeenCalledTimes(1);
-  expect(prepare).toHaveBeenCalledTimes(3);
-  expect(batch.mock.calls[0]![0]).toHaveLength(3);
 });

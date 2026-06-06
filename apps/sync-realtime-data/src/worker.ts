@@ -54,11 +54,6 @@ import {
   readCachedPremiumPaddock,
   writeCachedPremiumPaddock,
 } from "./premium-paddock-cache";
-import {
-  clearPremiumPaddockPendingMark,
-  readPremiumPaddockPendingMark,
-  writePremiumPaddockPendingMark,
-} from "./premium-paddock-pending-mark";
 import { fetchJraRacesByDate, fetchNarRacesByDate } from "./postgres";
 import { buildRealtimeRaceKey, raceKeyFromRealtimePath, type RealtimeSource } from "./race-key";
 import {
@@ -94,7 +89,6 @@ import {
   listRaceSourcesForSeed,
   listSchedulableRaceSourcesByDate,
   logFetch,
-  applyPremiumPaddockSkipOutcome,
   markPremiumPaddockQueued,
   markPremiumRaceDataQueued,
   markResultFetchQueued,
@@ -1320,68 +1314,6 @@ export const planTrackConditionFetchesForDate = async (
   });
 };
 
-interface PremiumPaddockEligibilityInput {
-  now: Date;
-  race: NarRaceSource;
-  state: {
-    lastFetchAt: string | null;
-    lastQueuedAt: string | null;
-    retryAfter: string | null;
-    status: string;
-  } | null;
-}
-
-const PREMIUM_PADDOCK_RECHECK_MS = PREMIUM_PADDOCK_RECHECK_MINUTES * 60_000;
-
-export const isPremiumPaddockEligibleAtPlan = (input: PremiumPaddockEligibilityInput): boolean => {
-  if (input.race.source !== "jra") return false;
-  const minutes = minutesUntilRace(input.race, input.now);
-  if (minutes === null) return false;
-  if (minutes > PREMIUM_PADDOCK_WINDOW_BEFORE_MINUTES) return false;
-  if (minutes < -PREMIUM_PADDOCK_WINDOW_AFTER_MINUTES) return false;
-  const state = input.state;
-  if (state?.retryAfter && new Date(state.retryAfter).getTime() > input.now.getTime()) return false;
-  if (
-    state?.lastQueuedAt &&
-    new Date(state.lastQueuedAt).getTime() > input.now.getTime() - PREMIUM_PADDOCK_RECHECK_MS
-  ) {
-    return false;
-  }
-  if (
-    state?.lastFetchAt &&
-    new Date(state.lastFetchAt).getTime() > input.now.getTime() - PREMIUM_PADDOCK_RECHECK_MS
-  ) {
-    return false;
-  }
-  return true;
-};
-
-interface PremiumPaddockPlanCandidate {
-  race: NarRaceSource;
-  state: Awaited<ReturnType<typeof getPremiumPaddockFetchState>>;
-}
-
-const tryReadPremiumPaddockState = async (
-  env: Env,
-  race: NarRaceSource,
-): Promise<PremiumPaddockPlanCandidate | null> => {
-  const state = await getPremiumPaddockFetchState(env.REALTIME_DB, race.raceKey);
-  return { race, state };
-};
-
-const collectPremiumPaddockPlanJob = (
-  entry: PromiseSettledResult<PremiumPaddockPlanCandidate | null>,
-  now: Date,
-): Job[] => {
-  if (entry.status !== "fulfilled" || !entry.value) return [];
-  const eligible = isPremiumPaddockEligibleAtPlan({
-    now,
-    race: entry.value.race,
-    state: entry.value.state,
-  });
-  return eligible ? [{ raceKey: entry.value.race.raceKey, type: "fetch-premium-paddock" }] : [];
-};
-
 export const planPremiumPaddockFetchesForDate = async (
   env: Env,
   targetDate: string,
@@ -1392,16 +1324,39 @@ export const planPremiumPaddockFetchesForDate = async (
   }
   await ensureJraRaceSourcesAreCurrent(env, targetDate);
   const races = await listSchedulableRaceSourcesByDate(env.REALTIME_DB, targetDate);
-  // Promise.allSettled so a single D1 overload on getPremiumPaddockFetchState
-  // does not throw out the entire plan-premium-paddock tick. Successful state
-  // reads still produce queue jobs; failed reads are dropped and re-tried by
-  // the next cron tick.
-  const settled = await Promise.allSettled(
-    races
-      .filter((race) => race.source === "jra")
-      .map((race) => tryReadPremiumPaddockState(env, race)),
-  );
-  return settled.flatMap((entry) => collectPremiumPaddockPlanJob(entry, now));
+  const jobs: Job[] = [];
+  for (const race of races) {
+    if (race.source !== "jra") {
+      continue;
+    }
+    const minutes = minutesUntilRace(race, now);
+    if (minutes === null || minutes > PREMIUM_PADDOCK_WINDOW_BEFORE_MINUTES) {
+      continue;
+    }
+    const state = await getPremiumPaddockFetchState(env.REALTIME_DB, race.raceKey);
+    if (minutes < -PREMIUM_PADDOCK_WINDOW_AFTER_MINUTES) {
+      continue;
+    }
+    if (state?.retryAfter && new Date(state.retryAfter).getTime() > now.getTime()) {
+      continue;
+    }
+    if (
+      state?.lastQueuedAt &&
+      new Date(state.lastQueuedAt).getTime() >
+        now.getTime() - PREMIUM_PADDOCK_RECHECK_MINUTES * 60_000
+    ) {
+      continue;
+    }
+    if (
+      state?.lastFetchAt &&
+      new Date(state.lastFetchAt).getTime() >
+        now.getTime() - PREMIUM_PADDOCK_RECHECK_MINUTES * 60_000
+    ) {
+      continue;
+    }
+    jobs.push({ raceKey: race.raceKey, type: "fetch-premium-paddock" });
+  }
+  return jobs;
 };
 
 export const planPremiumRaceDataFetchesForDate = async (
@@ -2832,118 +2787,9 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
   });
 };
 
-type PremiumPaddockSkipKind = "auth_required" | "unavailable" | "pending" | "empty";
-
-interface PremiumPaddockSkipDescriptor {
-  fetchMessage: string;
-  fetchStatus: string;
-  notificationMessage: string;
-  notificationStatus: string;
-  skipReason: string;
-}
-
-const PREMIUM_PADDOCK_SKIP_DESCRIPTORS: Record<
-  PremiumPaddockSkipKind,
-  (mode: string) => PremiumPaddockSkipDescriptor
-> = {
-  auth_required: (mode) => ({
-    fetchMessage: `auth_required:${mode}`,
-    fetchStatus: "auth_required",
-    notificationMessage: `premium paddock auth required: ${mode}`,
-    notificationStatus: "skipped_auth_required",
-    skipReason: "auth_required",
-  }),
-  empty: (mode) => ({
-    fetchMessage: `empty:${mode}`,
-    fetchStatus: "empty",
-    notificationMessage: `premium paddock rows are empty: ${mode}`,
-    notificationStatus: "skipped_empty",
-    skipReason: "empty",
-  }),
-  pending: (mode) => ({
-    fetchMessage: `pending:${mode}`,
-    fetchStatus: "pending",
-    notificationMessage: `premium paddock is pending: ${mode}`,
-    notificationStatus: "skipped_pending",
-    skipReason: "pending",
-  }),
-  unavailable: (mode) => ({
-    fetchMessage: `unavailable:${mode}`,
-    fetchStatus: "unavailable",
-    notificationMessage: `premium paddock is unavailable: ${mode}`,
-    notificationStatus: "skipped_unavailable",
-    skipReason: "unavailable",
-  }),
-};
-
-export const resolvePremiumPaddockSkipKind = (parsed: {
-  authRequired: boolean;
-  bulletins: readonly unknown[];
-  pending: boolean;
-  unavailable: boolean;
-}): PremiumPaddockSkipKind | null => {
-  if (parsed.authRequired) return "auth_required";
-  if (parsed.unavailable) return "unavailable";
-  if (parsed.pending) return "pending";
-  if (parsed.bulletins.length === 0) return "empty";
-  return null;
-};
-
-interface ApplyPremiumPaddockSkipBranchInput {
-  fetchedAt: string;
-  mode: string;
-  race: NarRaceSource;
-  raceKey: string;
-  skipKind: PremiumPaddockSkipKind;
-}
-
-const applyPremiumPaddockSkipBranch = async (
-  env: Env,
-  input: ApplyPremiumPaddockSkipBranchInput,
-): Promise<void> => {
-  const descriptor = PREMIUM_PADDOCK_SKIP_DESCRIPTORS[input.skipKind](input.mode);
-  const retryAfter = getPremiumPaddockRetryAfter(env, input.race);
-  const payloadSignature = await buildPremiumPaddockSignature([]);
-  await clearCachedPremiumPaddock(env, input.raceKey);
-  await applyPremiumPaddockSkipOutcome(env.REALTIME_DB, {
-    fetchState: {
-      fetchedAt: input.fetchedAt,
-      message: descriptor.fetchMessage,
-      raceKey: input.raceKey,
-      retryAfter,
-      status: descriptor.fetchStatus,
-    },
-    notificationEvent: {
-      fetchedAt: input.fetchedAt,
-      message: descriptor.notificationMessage,
-      payloadSignature,
-      raceKey: input.raceKey,
-      skipReason: descriptor.skipReason,
-      status: descriptor.notificationStatus,
-    },
-    notificationState: {
-      message: descriptor.notificationMessage,
-      payloadFetchedAt: input.fetchedAt,
-      payloadSignature,
-      raceKey: input.raceKey,
-      skipReason: descriptor.skipReason,
-      status: descriptor.notificationStatus,
-    },
-  });
-  if (input.skipKind === "pending") {
-    await writePremiumPaddockPendingMark(env, input.raceKey);
-  } else {
-    await clearPremiumPaddockPendingMark(env, input.raceKey);
-  }
-  await retryPremiumPaddockWhileInWindow(env, input.race);
-};
-
 const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<void> => {
   const race = await getRaceSource(env.REALTIME_DB, raceKey);
   if (!race || race.source !== "jra") {
-    return;
-  }
-  if (await readPremiumPaddockPendingMark(env, raceKey)) {
     return;
   }
   const currentState = await getPremiumPaddockFetchState(env.REALTIME_DB, raceKey);
@@ -3008,18 +2854,126 @@ const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<v
   }
   const parsed = selectedAttempt.parsed;
   const fetchedAt = toJstIsoString();
-  const skipKind = resolvePremiumPaddockSkipKind(parsed);
-  if (skipKind) {
-    await applyPremiumPaddockSkipBranch(env, {
+  if (parsed.authRequired) {
+    await clearCachedPremiumPaddock(env, raceKey);
+    const retryAfter = getPremiumPaddockRetryAfter(env, race);
+    const payloadSignature = await buildPremiumPaddockSignature([]);
+    await updatePremiumPaddockFetchState(env.REALTIME_DB, {
       fetchedAt,
-      mode: selectedAttempt.mode,
-      race,
+      message: `auth_required:${selectedAttempt.mode}`,
       raceKey,
-      skipKind,
+      retryAfter,
+      status: "auth_required",
     });
+    await recordPremiumPaddockNotificationEvent(env.REALTIME_DB, {
+      fetchedAt,
+      message: `premium paddock auth required: ${selectedAttempt.mode}`,
+      payloadSignature,
+      raceKey,
+      skipReason: "auth_required",
+      status: "skipped_auth_required",
+    });
+    await updatePremiumPaddockNotificationState(env.REALTIME_DB, {
+      message: `premium paddock auth required: ${selectedAttempt.mode}`,
+      payloadFetchedAt: fetchedAt,
+      payloadSignature,
+      raceKey,
+      skipReason: "auth_required",
+      status: "skipped_auth_required",
+    });
+    await retryPremiumPaddockWhileInWindow(env, race);
     return;
   }
-  await clearPremiumPaddockPendingMark(env, raceKey);
+  if (parsed.unavailable) {
+    await clearCachedPremiumPaddock(env, raceKey);
+    const retryAfter = getPremiumPaddockRetryAfter(env, race);
+    const payloadSignature = await buildPremiumPaddockSignature([]);
+    await updatePremiumPaddockFetchState(env.REALTIME_DB, {
+      fetchedAt,
+      message: `unavailable:${selectedAttempt.mode}`,
+      raceKey,
+      retryAfter,
+      status: "unavailable",
+    });
+    await recordPremiumPaddockNotificationEvent(env.REALTIME_DB, {
+      fetchedAt,
+      message: `premium paddock is unavailable: ${selectedAttempt.mode}`,
+      payloadSignature,
+      raceKey,
+      skipReason: "unavailable",
+      status: "skipped_unavailable",
+    });
+    await updatePremiumPaddockNotificationState(env.REALTIME_DB, {
+      message: `premium paddock is unavailable: ${selectedAttempt.mode}`,
+      payloadFetchedAt: fetchedAt,
+      payloadSignature,
+      raceKey,
+      skipReason: "unavailable",
+      status: "skipped_unavailable",
+    });
+    await retryPremiumPaddockWhileInWindow(env, race);
+    return;
+  }
+  if (parsed.pending) {
+    await clearCachedPremiumPaddock(env, raceKey);
+    const retryAfter = getPremiumPaddockRetryAfter(env, race);
+    const payloadSignature = await buildPremiumPaddockSignature([]);
+    await updatePremiumPaddockFetchState(env.REALTIME_DB, {
+      fetchedAt,
+      message: `pending:${selectedAttempt.mode}`,
+      raceKey,
+      retryAfter,
+      status: "pending",
+    });
+    await recordPremiumPaddockNotificationEvent(env.REALTIME_DB, {
+      fetchedAt,
+      message: `premium paddock is pending: ${selectedAttempt.mode}`,
+      payloadSignature,
+      raceKey,
+      skipReason: "pending",
+      status: "skipped_pending",
+    });
+    await updatePremiumPaddockNotificationState(env.REALTIME_DB, {
+      message: `premium paddock is pending: ${selectedAttempt.mode}`,
+      payloadFetchedAt: fetchedAt,
+      payloadSignature,
+      raceKey,
+      skipReason: "pending",
+      status: "skipped_pending",
+    });
+    await retryPremiumPaddockWhileInWindow(env, race);
+    return;
+  }
+  if (parsed.bulletins.length === 0) {
+    await clearCachedPremiumPaddock(env, raceKey);
+    const retryAfter = getPremiumPaddockRetryAfter(env, race);
+    const payloadSignature = await buildPremiumPaddockSignature([]);
+    await updatePremiumPaddockFetchState(env.REALTIME_DB, {
+      fetchedAt,
+      message: `empty:${selectedAttempt.mode}`,
+      raceKey,
+      retryAfter,
+      status: "empty",
+    });
+    await recordPremiumPaddockNotificationEvent(env.REALTIME_DB, {
+      fetchedAt,
+      message: `premium paddock rows are empty: ${selectedAttempt.mode}`,
+      payloadSignature,
+      raceKey,
+      skipReason: "empty",
+      status: "skipped_empty",
+    });
+    await updatePremiumPaddockNotificationState(env.REALTIME_DB, {
+      message: `premium paddock rows are empty: ${selectedAttempt.mode}`,
+      payloadFetchedAt: fetchedAt,
+      payloadSignature,
+      raceKey,
+      skipReason: "empty",
+      status: "skipped_empty",
+    });
+    await retryPremiumPaddockWhileInWindow(env, race);
+    return;
+  }
   await replacePremiumRaceData(env.REALTIME_DB, {
     fetchedAt,
     link,
