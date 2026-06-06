@@ -78,10 +78,14 @@ afterEach(() => {
   vi.mocked(readCachedOdds).mockResolvedValue(null);
 });
 
+const POLLING_WINDOW_KV_KEY = "odds-polling-window:active";
+
 const buildKv = (): KVNamespace =>
   ({
     delete: vi.fn(async () => undefined),
-    get: vi.fn(async () => null),
+    // Default polling-window gate to active so existing planner-cron tests
+    // exercise the same runScheduledPlan path they did before the gate.
+    get: vi.fn(async (key: string) => (key === POLLING_WINDOW_KV_KEY ? "true" : null)),
     put: vi.fn(async () => undefined),
   }) as unknown as KVNamespace;
 
@@ -967,6 +971,25 @@ it("handleScheduled dispatches plan cron to runScheduledPlan", async () => {
     buildCtx(),
   );
   expect(vi.mocked(env.REALTIME_HOT_DB.prepare)).toHaveBeenCalled();
+});
+
+it("handleScheduled skips runScheduledPlan when the polling-window gate cache reports inactive", async () => {
+  const env = buildEnv();
+  const kvGet = env.ODDS_HOT_KV.get as unknown as ReturnType<typeof vi.fn>;
+  kvGet.mockImplementation(async (key: string) =>
+    key === "odds-polling-window:active" ? "false" : null,
+  );
+  await handleScheduled(
+    {
+      cron: "* * * * *",
+      noRetry: () => undefined,
+      scheduledTime: new Date("2026-05-28T01:00:00Z").getTime(),
+    } as unknown as ScheduledController,
+    env,
+    buildCtx(),
+  );
+  expect(vi.mocked(getExpectedRaceCountForDate)).not.toHaveBeenCalled();
+  expect(vi.mocked(populateTodayOddsFetchState)).not.toHaveBeenCalled();
 });
 
 it("handleScheduled dispatches archive cron to runScheduledArchive", async () => {
