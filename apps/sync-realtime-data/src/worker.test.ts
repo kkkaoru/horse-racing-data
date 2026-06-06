@@ -197,8 +197,28 @@ it("isPremiumRaceDiscoveryTick returns true at 20:00 JST", () => {
   expect(isPremiumRaceDiscoveryTick(new Date("2026-05-12T11:00:00Z"))).toBe(true);
 });
 
+it("isPremiumRaceDiscoveryTick returns true at 09:00 JST", () => {
+  expect(isPremiumRaceDiscoveryTick(new Date("2026-05-12T00:00:00Z"))).toBe(true);
+});
+
+it("isPremiumRaceDiscoveryTick returns true mid-hour at 09:30 JST", () => {
+  expect(isPremiumRaceDiscoveryTick(new Date("2026-05-12T00:30:00Z"))).toBe(true);
+});
+
+it("isPremiumRaceDiscoveryTick returns true mid-hour at 20:45 JST", () => {
+  expect(isPremiumRaceDiscoveryTick(new Date("2026-05-12T11:45:00Z"))).toBe(true);
+});
+
+it("isPremiumRaceDiscoveryTick returns false at 08:00 JST", () => {
+  expect(isPremiumRaceDiscoveryTick(new Date("2026-05-11T23:00:00Z"))).toBe(false);
+});
+
 it("isPremiumRaceDiscoveryTick returns false at 19:00 JST", () => {
   expect(isPremiumRaceDiscoveryTick(new Date("2026-05-12T10:00:00Z"))).toBe(false);
+});
+
+it("isPremiumRaceDiscoveryTick returns false at 21:00 JST", () => {
+  expect(isPremiumRaceDiscoveryTick(new Date("2026-05-12T12:00:00Z"))).toBe(false);
 });
 
 it("getJstDayStart builds a Date for the JST midnight", () => {
