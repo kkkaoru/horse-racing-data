@@ -2956,7 +2956,7 @@ export const getFinishPositionLambdarankPredictions = cache(
             selected_model as (
               select model_version
               from (
-                select p.model_version, 0 as priority
+                select p.model_version, 0 as priority, max(p.predicted_at) as recency
                 from race_finish_position_model_predictions p
                 join active on p.model_version =
                   active.model_version || '-rs-overlay-' || ${race.kaisaiNen} || ${race.kaisaiTsukihi}
@@ -2965,11 +2965,31 @@ export const getFinishPositionLambdarankPredictions = cache(
                   and p.kaisai_tsukihi = ${race.kaisaiTsukihi}
                   and p.keibajo_code = ${race.keibajoCode}
                   and p.race_bango = ${race.raceBango}
+                group by p.model_version
                 union all
-                select active.model_version, 1 as priority
+                select active.model_version, 1 as priority, null::timestamptz as recency
                 from active
+                where exists (
+                  select 1
+                  from race_finish_position_model_predictions p2
+                  where p2.model_version = active.model_version
+                    and p2.source = ${race.source}
+                    and p2.kaisai_nen = ${race.kaisaiNen}
+                    and p2.kaisai_tsukihi = ${race.kaisaiTsukihi}
+                    and p2.keibajo_code = ${race.keibajoCode}
+                    and p2.race_bango = ${race.raceBango}
+                )
+                union all
+                select p3.model_version, 2 as priority, max(p3.predicted_at) as recency
+                from race_finish_position_model_predictions p3
+                where p3.source = ${race.source}
+                  and p3.kaisai_nen = ${race.kaisaiNen}
+                  and p3.kaisai_tsukihi = ${race.kaisaiTsukihi}
+                  and p3.keibajo_code = ${race.keibajoCode}
+                  and p3.race_bango = ${race.raceBango}
+                group by p3.model_version
               ) candidates
-              order by priority
+              order by priority, recency desc nulls last
               limit 1
             )
             select
