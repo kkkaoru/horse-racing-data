@@ -3447,6 +3447,15 @@ h3 {
   white-space: nowrap;
 }
 
+/* Restore JRA standard wakuban color contract (white on dark frames, dark
+   on light frames) inside the recent-results stats row. Without this, the
+   broader `.paddock-recent-stats span` rule above would force every frame
+   badge to `var(--muted)` and break the parity with the race-detail
+   runners table where wakuban already uses `--frame-color`. */
+.paddock-recent-stats .frame-number-badge {
+  color: var(--frame-color);
+}
+
 .paddock-recent-results-empty {
   align-items: stretch;
   background: var(--color-hex-f8fbf7-4);
