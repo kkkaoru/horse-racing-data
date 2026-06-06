@@ -20,7 +20,18 @@ import { getJstDateParts } from "./time";
 import type { Env } from "./types";
 
 const KV_KEY_PREFIX = "expected-race-count:";
+const KV_LAST_KNOWN_GOOD_KEY = "expected-race-count:last-known-good";
 const KV_TTL_SECONDS = 300;
+// 7-day last-known-good TTL: long enough that a multi-day Hyperdrive
+// outage during the morning planner still has a fallback total to seed
+// the planner with, short enough that a stale schema change cannot poison
+// the cache indefinitely.
+const KV_LAST_KNOWN_GOOD_TTL_SECONDS = 7 * 24 * 60 * 60;
+// Hyperdrive `Promise.race` budget. The planner cron fires every minute,
+// so a 5-second timeout still leaves headroom for the rest of the tick to
+// run. Without this guard the planner can stall a whole tick waiting on
+// a single saturated upstream query.
+const HYPERDRIVE_TIMEOUT_MS = 5_000;
 const RACE_DAY_HOUR_START = 9;
 const RACE_DAY_HOUR_END = 22;
 const TRUST_ZERO_ENV_FLAG = "1";
@@ -73,6 +84,31 @@ const queryHyperdriveExpectedCount = async (pool: Pool, ymd: string): Promise<nu
   return toCount(row.jra) + toCount(row.nar);
 };
 
+// Bounded-budget wrapper around the Hyperdrive query so a stalled upstream
+// connection (replica lag, pool saturation) cannot block the planner past
+// its cron tick. `null` on timeout / underlying rejection — callers fall
+// back to the last-known-good KV value (task F3).
+const queryHyperdriveExpectedCountWithTimeout = async (
+  pool: Pool,
+  ymd: string,
+): Promise<number | null> => {
+  const timeoutPromise = new Promise<null>((resolve) => {
+    setTimeout(() => resolve(null), HYPERDRIVE_TIMEOUT_MS);
+  });
+  return Promise.race([queryHyperdriveExpectedCount(pool, ymd), timeoutPromise]).catch(() => null);
+};
+
+const parseLastKnownGoodValue = (raw: string | null): number | null => parseCachedValue(raw);
+
+const readLastKnownGoodFromKv = async (env: Env): Promise<number | null> =>
+  parseLastKnownGoodValue(await env.ODDS_HOT_KV.get(KV_LAST_KNOWN_GOOD_KEY));
+
+const writeLastKnownGoodToKv = async (env: Env, total: number): Promise<void> => {
+  await env.ODDS_HOT_KV.put(KV_LAST_KNOWN_GOOD_KEY, total.toString(), {
+    expirationTtl: KV_LAST_KNOWN_GOOD_TTL_SECONDS,
+  });
+};
+
 // Inside the JST race-day window (default 09:00-22:00) a Hyperdrive `total=0`
 // is far more likely to be a transient query failure / replica lag than a
 // genuine "zero races today". Withholding the KV write lets the next cron tick
@@ -109,10 +145,21 @@ export const getExpectedRaceCountForDate = async (
     return cached;
   }
   const pool = context.pool ?? getHotPool(env);
-  const total = await queryHyperdriveExpectedCount(pool, ymd);
-  if (shouldSkipZeroCache(total, env, resolveNow(context.now))) {
-    return total;
+  // Bounded-budget query (task F3): on Hyperdrive timeout or rejection,
+  // fall back to the rolling last-known-good total in KV so the planner
+  // can still seed today's plan even when the upstream replica is
+  // saturated. Last-known-good is written below on successful non-zero
+  // queries; it survives `KV_LAST_KNOWN_GOOD_TTL_SECONDS` (= 7 days).
+  const queriedTotal = await queryHyperdriveExpectedCountWithTimeout(pool, ymd);
+  if (queriedTotal === null) {
+    return (await readLastKnownGoodFromKv(env)) ?? 0;
   }
-  await env.ODDS_HOT_KV.put(kvKey, total.toString(), { expirationTtl: KV_TTL_SECONDS });
-  return total;
+  if (shouldSkipZeroCache(queriedTotal, env, resolveNow(context.now))) {
+    return queriedTotal;
+  }
+  await env.ODDS_HOT_KV.put(kvKey, queriedTotal.toString(), { expirationTtl: KV_TTL_SECONDS });
+  if (queriedTotal > 0) {
+    await writeLastKnownGoodToKv(env, queriedTotal);
+  }
+  return queriedTotal;
 };
