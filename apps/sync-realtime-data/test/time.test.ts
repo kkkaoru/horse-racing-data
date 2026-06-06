@@ -204,6 +204,8 @@ describe("JST time helpers", () => {
     expect(isJstPollingWindow(new Date("2026-05-11T20:59:00.000Z"))).toBe(false);
     expect(isJstPollingWindow(new Date("2026-05-11T21:00:00.000Z"))).toBe(true);
     expect(isJstPollingWindow(new Date("2026-05-12T12:59:00.000Z"))).toBe(true);
-    expect(isJstPollingWindow(new Date("2026-05-12T13:00:00.000Z"))).toBe(false);
+    expect(isJstPollingWindow(new Date("2026-05-12T13:00:00.000Z"))).toBe(true);
+    expect(isJstPollingWindow(new Date("2026-05-12T13:59:00.000Z"))).toBe(true);
+    expect(isJstPollingWindow(new Date("2026-05-12T14:00:00.000Z"))).toBe(false);
   });
 });
