@@ -1067,6 +1067,7 @@ function RowFragment({
                   <col className="race-trend-detail-col-frame" />
                   <col className="race-trend-detail-col-running-style" />
                   <col className="race-trend-detail-col-jockey" />
+                  <col className="race-trend-detail-col-trainer" />
                   <col className="race-trend-detail-col-finish" />
                   <col className="race-trend-detail-col-popularity" />
                   <col className="race-trend-detail-col-odds" />
@@ -1083,6 +1084,7 @@ function RowFragment({
                     <th>枠</th>
                     <th>脚質</th>
                     <th>騎手</th>
+                    <th>調教師</th>
                     <th>着順</th>
                     <th>人気</th>
                     <th>単勝</th>
@@ -1103,6 +1105,7 @@ function RowFragment({
                       <td>{detail.frameNumber ?? "-"}</td>
                       <td>{formatRunningStyle(detail.runningStyle)}</td>
                       <td>{detail.jockeyName ?? "-"}</td>
+                      <td className="race-trend-detail-trainer">{detail.trainerName ?? "-"}</td>
                       <td>{formatFinishPosition(detail.finishPosition)}</td>
                       <td>{formatMedian(detail.popularity)}</td>
                       <td>{formatTrendWinOdds(detail.winOdds)}</td>
@@ -1134,6 +1137,7 @@ function RowFragment({
                     <col className="race-trend-detail-col-frame" />
                     <col className="race-trend-detail-col-running-style" />
                     <col className="race-trend-detail-col-jockey" />
+                    <col className="race-trend-detail-col-trainer" />
                     <col className="race-trend-detail-col-finish" />
                     <col className="race-trend-detail-col-popularity" />
                     <col className="race-trend-detail-col-odds" />
@@ -1150,6 +1154,7 @@ function RowFragment({
                       <th>枠</th>
                       <th>脚質</th>
                       <th>騎手</th>
+                      <th>調教師</th>
                       <th>着順</th>
                       <th>人気</th>
                       <th>単勝</th>
@@ -1170,6 +1175,7 @@ function RowFragment({
                         <td>{detail.frameNumber ?? "-"}</td>
                         <td>{formatRunningStyle(detail.runningStyle)}</td>
                         <td>{detail.jockeyName ?? "-"}</td>
+                        <td className="race-trend-detail-trainer">{detail.trainerName ?? "-"}</td>
                         <td>{formatFinishPosition(detail.finishPosition)}</td>
                         <td>{formatMedian(detail.popularity)}</td>
                         <td>{formatTrendWinOdds(detail.winOdds)}</td>
