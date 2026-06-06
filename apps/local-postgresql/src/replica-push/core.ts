@@ -507,8 +507,9 @@ export function buildIncrementalApplySql(
     `  ORDER BY ${table.primaryKeyList}`,
     ") AS stage",
   ].join("\n");
+  // OVERRIDING SYSTEM VALUE preserves Neon-side GENERATED ALWAYS identity columns while remaining a no-op for non-identity columns and BY DEFAULT identities.
   const applySql = [
-    `INSERT INTO public.${quotedTableName} (${table.columnList}) ${deduplicatedStageSelect} ON CONFLICT (${table.primaryKeyList}) ${conflictAction};`,
+    `INSERT INTO public.${quotedTableName} (${table.columnList}) OVERRIDING SYSTEM VALUE ${deduplicatedStageSelect} ON CONFLICT (${table.primaryKeyList}) ${conflictAction};`,
   ].join("\n");
   const dropStageSql = temporaryStage ? "" : `DROP TABLE ${stageTableReference};\n`;
   return {
@@ -700,15 +701,16 @@ export function buildNeonApplySql(
     ? `DELETE FROM public.${quotedTableName} AS target WHERE NOT EXISTS (SELECT 1 FROM ${stageTableReference} AS stage WHERE ${table.primaryKeyJoin});\n`
     : "";
   const dropStageSql = temporaryStage ? "" : `DROP TABLE ${stageTableReference};\n`;
+  // OVERRIDING SYSTEM VALUE preserves Neon-side GENERATED ALWAYS identity columns while remaining a no-op for non-identity columns and BY DEFAULT identities.
   const applySql =
     applyMode === "replace"
       ? [
           `TRUNCATE TABLE public.${quotedTableName};`,
-          `INSERT INTO public.${quotedTableName} (${table.columnList}) ${deduplicatedStageSelect};`,
+          `INSERT INTO public.${quotedTableName} (${table.columnList}) OVERRIDING SYSTEM VALUE ${deduplicatedStageSelect};`,
         ].join("\n")
       : [
           `CREATE INDEX ${quotedStageIndexName} ON ${stageTableReference} (${table.primaryKeyList});`,
-          `INSERT INTO public.${quotedTableName} (${table.columnList}) ${deduplicatedStageSelect} ON CONFLICT (${table.primaryKeyList}) ${conflictAction};`,
+          `INSERT INTO public.${quotedTableName} (${table.columnList}) OVERRIDING SYSTEM VALUE ${deduplicatedStageSelect} ON CONFLICT (${table.primaryKeyList}) ${conflictAction};`,
           deleteSql,
         ].join("\n");
 
