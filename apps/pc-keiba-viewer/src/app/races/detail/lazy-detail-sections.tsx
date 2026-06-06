@@ -33,6 +33,7 @@ import type { FinishPositionBucketSectionData } from "./detail-section-data";
 import { FinishPositionBucketEvaluationPanel } from "./finish-position-bucket-section";
 import { FinishPositionPredictionTable } from "./finish-position-prediction-table";
 import { HorseRaceResultsTable } from "./horse-race-results-table";
+import { MobileCollapsibleSection } from "./mobile-collapsible-section";
 import { OverallScoreTable } from "./overall-score-table";
 import { PremiumDataTopHorsesTable } from "./premium-data-top-section";
 import { RaceConditionAnalysisSection } from "./race-condition-analysis-section";
@@ -717,14 +718,16 @@ export function LazyFinishPredictionSection(props: LazyDetailSectionsProps) {
       <div className="section-heading compact">
         <h2>着順予測</h2>
       </div>
-      <FinishPositionBucketEvaluationPanel
-        evaluation={payload.bucket.bucketEvaluation}
-        gradeCode={payload.bucket.bucketGradeCode}
-        modelVersion={payload.bucket.bucketModelVersion}
-        race={payload.bucket.bucketRace}
-        scope={payload.bucket.bucketScope}
-        source={payload.bucket.bucketSource}
-      />
+      <MobileCollapsibleSection title="着順予測精度">
+        <FinishPositionBucketEvaluationPanel
+          evaluation={payload.bucket.bucketEvaluation}
+          gradeCode={payload.bucket.bucketGradeCode}
+          modelVersion={payload.bucket.bucketModelVersion}
+          race={payload.bucket.bucketRace}
+          scope={payload.bucket.bucketScope}
+          source={payload.bucket.bucketSource}
+        />
+      </MobileCollapsibleSection>
       <FinishPositionPredictionTable
         combinedScoreData={
           scoreState.payload?.type === "time-score"

@@ -36,7 +36,10 @@
       "0 12 * * *",
       "30 12 * * *",
       "30 18 * * *",
-      "0 0-13 * * *",
+      // 2026-06-06: 0 0-13 (hourly, JST 09-22) -> */15 0-14 (every 15 min,
+      // JST 09:00-23:45). Paired with WEIGHT_FETCH_LEAD_MINUTES = 180 so
+      // each race has ~12 attempts to capture bataiju before post time.
+      "*/15 0-14 * * *",
       // 2026-05-31: shortened from "*/5" to "*/2" so freshly-confirmed JRA
       // and NAR race results land in D1 (and bust the merged race-trend
       // cache) within one or two cron ticks instead of up to five minutes.

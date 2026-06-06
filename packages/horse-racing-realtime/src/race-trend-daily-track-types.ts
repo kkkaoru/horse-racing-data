@@ -19,6 +19,10 @@ export interface RaceTrendStarterRow extends Record<string, unknown> {
   umaban: string | null;
   bamei: string | null;
   jockeyName: string | null;
+  // Optional so callers that predate trainer support continue to compile.
+  // When absent the aggregator treats trainer as unknown and the trainer
+  // filter degrades to a no-op for that row.
+  chokyoshiName?: string | null;
   tanshoOdds: string | null;
   tanshoPopularity: string | null;
   finishPosition: number;

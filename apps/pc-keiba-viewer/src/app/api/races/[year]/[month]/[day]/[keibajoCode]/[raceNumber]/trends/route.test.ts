@@ -181,12 +181,15 @@ const buildRunner = (overrides: Partial<Runner> = {}): Runner => ({
   corner2: null,
   corner3: null,
   corner4: null,
+  damSireName: null,
   futanJuryo: null,
   kakuteiChakujun: null,
   kettoTorokuBango: null,
   kishumeiRyakusho: null,
   kohan3f: null,
   seibetsuCode: null,
+  sireName: null,
+  sireSireName: null,
   sohaTime: null,
   tanshoNinkijun: null,
   tanshoOdds: null,
@@ -697,8 +700,8 @@ it("GET runners array maps wakuban/umaban/kishumeiRyakusho into the payload", as
   const response = await GET(buildTrendRequest(), buildTrendContext());
   const body = await readJsonAsPayload(response);
   expect(body.runners).toStrictEqual([
-    { frameNumber: "1", horseNumber: "01", jockeyName: "山田太郎" },
-    { frameNumber: "5", horseNumber: "08", jockeyName: "鈴木花子" },
+    { frameNumber: "1", horseNumber: "01", jockeyName: "山田太郎", trainerName: null },
+    { frameNumber: "5", horseNumber: "08", jockeyName: "鈴木花子", trainerName: null },
   ]);
 });
 

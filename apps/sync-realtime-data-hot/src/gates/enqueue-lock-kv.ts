@@ -17,6 +17,12 @@ const LOCK_TTL_CATCH_UP_SECONDS = 300;
 const LOCK_TTL_KV_MINIMUM_SECONDS = 60;
 const SECONDS_PER_MINUTE = 60;
 const MS_PER_MINUTE = 60_000;
+// Cadence boundaries (in minutes-until-race). When a long-cadence lock would
+// span past one of these, we cap the TTL so the next planner tick can
+// re-enqueue immediately under the new cadence. This is what unblocks the
+// "1 venue starves next race" bug (task F1): at T-64 the hourly cadence
+// otherwise locks for 60min and blocks the 5min/1min tiers entirely.
+const CADENCE_BOUNDARIES_MINUTES = [60, 15, 1] satisfies readonly number[];
 
 interface EnqueueLockTtlInput {
   raceStart: Date;
@@ -60,18 +66,37 @@ const resolveCatchUpTtl = (
   return LOCK_TTL_SKIP_PAST_RACE;
 };
 
+// Minutes remaining inside the current cadence tier. We pick the largest
+// cadence boundary that is `<= minutesUntilRace` — that boundary is the
+// lower edge of the current tier. The gap is `minutesUntilRace - boundary`,
+// i.e. the time until we drop into the next (finer) tier. For
+// `minutesUntilRace=64` the current tier is hourly (lower edge T-60), gap
+// = 4min — so the lock is capped at 4min and the 5-min tier can take over
+// immediately at T-60. Returns `null` when no boundary is `<=` the input
+// (sub-1min final slot) — caller falls through to KV minimum.
+const minutesRemainingInCurrentCadenceTier = (minutesUntilRace: number): number | null => {
+  const lowerEdge = CADENCE_BOUNDARIES_MINUTES.find((boundary) => boundary <= minutesUntilRace);
+  return lowerEdge === undefined ? null : minutesUntilRace - lowerEdge;
+};
+
 // Lock TTL mirrors the planner cadence interval so a planner tick can
 // always fire on schedule: 60min cadence → 3600s lock, 5min → 300s,
 // 1min → 60s. Anything outside the interval table (final +2 slot or
 // post-grace) falls to the KV minimum so a stale lock cannot block the
-// next opportunity.
+// next opportunity. We additionally cap the TTL at the gap to the next
+// cadence boundary so a single hourly-tier lock cannot block the 5min /
+// 1min tiers that follow it (task F1).
 const resolveCadenceLockSeconds = (minutesUntilRace: number): number => {
   const intervalMinutes = getOddsFetchIntervalMinutes(minutesUntilRace);
   if (intervalMinutes === null) {
     return LOCK_TTL_KV_MINIMUM_SECONDS;
   }
   const cadenceSeconds = intervalMinutes * SECONDS_PER_MINUTE;
-  return Math.max(LOCK_TTL_KV_MINIMUM_SECONDS, Math.min(LOCK_TTL_DEFAULT_SECONDS, cadenceSeconds));
+  const tierGapMinutes = minutesRemainingInCurrentCadenceTier(minutesUntilRace);
+  const tierCapSeconds =
+    tierGapMinutes === null ? cadenceSeconds : tierGapMinutes * SECONDS_PER_MINUTE;
+  const cappedSeconds = Math.min(cadenceSeconds, tierCapSeconds);
+  return Math.max(LOCK_TTL_KV_MINIMUM_SECONDS, Math.min(LOCK_TTL_DEFAULT_SECONDS, cappedSeconds));
 };
 
 export const calculateEnqueueLockTtlSeconds = (raceStart: Date, now: Date): number =>
@@ -109,4 +134,14 @@ export const acquireEnqueueLock = async (
   await env.ODDS_HOT_KV.put(buildEnqueueLockKey(raceKey), "1", {
     expirationTtl: ttlSeconds,
   });
+};
+
+// Drop the enqueue lock so the next planner tick can re-enqueue this race
+// immediately (task K1-B). Used by the consumer on retryable scrape errors
+// (transient JRA browser failure, network blip) where holding the lock for
+// the full cadence interval would skip the next opportunity to fetch odds.
+// Non-retryable failures (missing binding, missing state) leave the lock in
+// place so the planner does not spin against a known-broken race row.
+export const releaseEnqueueLock = async (env: Env, raceKey: string): Promise<void> => {
+  await env.ODDS_HOT_KV.delete(buildEnqueueLockKey(raceKey));
 };

@@ -241,6 +241,108 @@ it("fetch POST /api/jobs enqueues the job when token matches", async () => {
   expect(response.status).toBe(200);
 });
 
+it("fetch POST /api/jobs/fetch-weights returns 403 when authorization mismatches", async () => {
+  const { default: worker } = await import("./worker");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/jobs/fetch-weights", {
+      body: JSON.stringify({ date: "2026-06-06", source: "jra" }),
+      headers: { authorization: "Bearer wrong" },
+      method: "POST",
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(403);
+});
+
+it("fetch POST /api/jobs/fetch-weights returns 403 when REALTIME_ADMIN_TOKEN is missing", async () => {
+  const { default: worker } = await import("./worker");
+  const env = buildEnv();
+  const envWithoutToken = { ...env, REALTIME_ADMIN_TOKEN: undefined } as unknown as Env;
+  const response = await worker.fetch(
+    new Request("https://x.test/api/jobs/fetch-weights", {
+      body: JSON.stringify({ date: "2026-06-06", source: "jra" }),
+      headers: { authorization: "Bearer secret" },
+      method: "POST",
+    }),
+    envWithoutToken,
+    buildCtx(),
+  );
+  expect(response.status).toBe(403);
+});
+
+it("fetch POST /api/jobs/fetch-weights returns 400 when body is malformed", async () => {
+  const { default: worker } = await import("./worker");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/jobs/fetch-weights", {
+      body: JSON.stringify({ source: "jra" }),
+      headers: { authorization: "Bearer secret" },
+      method: "POST",
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(400);
+});
+
+it("fetch POST /api/jobs/fetch-weights returns 400 when body is not parseable JSON", async () => {
+  const { default: worker } = await import("./worker");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/jobs/fetch-weights", {
+      body: "not-json",
+      headers: { authorization: "Bearer secret" },
+      method: "POST",
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(400);
+});
+
+it("fetch POST /api/jobs/fetch-weights returns 200 with enqueued count when body is valid", async () => {
+  const { default: worker } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
+    {
+      babaCode: "05",
+      debaUrl: "https://www.jra.go.jp/race/route",
+      discoveredAt: "2026-06-06T00:00:00+09:00",
+      kaisaiKai: "02",
+      kaisaiNen: "2026",
+      kaisaiNichime: "06",
+      kaisaiTsukihi: "0606",
+      keibajoCode: "05",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "01",
+      raceKey: "jra:2026:0606:05:01",
+      raceName: "RouteOk",
+      raceStartAtJst: "2026-06-06T13:00:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "jra",
+      updatedAt: "2026-06-06T00:00:00+09:00",
+    },
+  ] as never);
+  const response = await worker.fetch(
+    new Request("https://x.test/api/jobs/fetch-weights", {
+      body: JSON.stringify({ date: "2026-06-06", force: true, source: "jra" }),
+      headers: { authorization: "Bearer secret" },
+      method: "POST",
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+});
+
 it("fetch GET /api/jra/races/.../realtime returns the realtime payload", async () => {
   const { default: worker } = await import("./worker");
   const response = await worker.fetch(

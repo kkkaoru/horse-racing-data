@@ -849,3 +849,197 @@ test("formatFinishPosition returns the placeholder when finishPosition is 0", ()
 test("formatFinishPosition returns the placeholder defensively for negative finishPosition", () => {
   expect(formatFinishPosition(-1)).toStrictEqual("-");
 });
+
+const findTrainerCheckboxIn = (fieldset: Element): HTMLInputElement => {
+  const labels = Array.from(fieldset.querySelectorAll("label"));
+  const trainerLabel = labels.find((label) => label.textContent?.includes("調教師"));
+  if (!trainerLabel) throw new Error("trainer toggle label missing");
+  const checkbox = trainerLabel.querySelector("input[type='checkbox']");
+  if (!(checkbox instanceof HTMLInputElement)) throw new Error("trainer checkbox missing");
+  return checkbox;
+};
+
+test("table heading reflects the trainer column rename", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(buildOkResponse(buildRawPayload()));
+  renderSection();
+  await flushAllAsync();
+  expect(screen.getByText("脚質・枠・騎手・調教師ごとの勝率")).toBeTruthy();
+});
+
+test("table thead omits the 調教師 column header when 勝率条件 trainer toggle is OFF (default)", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(buildOkResponse(buildRawPayload()));
+  const { container } = renderSection();
+  await flushAllAsync();
+  const headers = new Set(
+    Array.from(container.querySelectorAll("thead th")).map((node) => node.textContent ?? ""),
+  );
+  // 騎手 is on by DEFAULT_RACE_TREND_TARGETS so it must render; trainer is off
+  // by default per the new linkage, so the 調教師 header must NOT render.
+  expect(headers.has("騎手")).toBe(true);
+  expect(headers.has("調教師")).toBe(false);
+});
+
+test("table thead renders the 調教師 column header after the 勝率条件 trainer toggle is enabled", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(buildOkResponse(buildRawPayload()));
+  const { container } = renderSection();
+  await flushAllAsync();
+  const trendTargetsFieldset = container.querySelector('div[aria-label="勝率条件"] fieldset');
+  if (!trendTargetsFieldset) throw new Error("勝率条件 fieldset missing");
+  const trainerCheckbox = findTrainerCheckboxIn(trendTargetsFieldset);
+  await act(async () => {
+    fireEvent.click(trainerCheckbox);
+  });
+  const headers = new Set(
+    Array.from(container.querySelectorAll("thead th")).map((node) => node.textContent ?? ""),
+  );
+  expect(headers.has("調教師")).toBe(true);
+});
+
+test("trainer 勝率条件 toggle defaults to off", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(buildOkResponse(buildRawPayload()));
+  const { container } = renderSection();
+  await flushAllAsync();
+  const trendTargetsFieldset = container.querySelector('div[aria-label="勝率条件"] fieldset');
+  if (!trendTargetsFieldset) throw new Error("勝率条件 fieldset missing");
+  expect(findTrainerCheckboxIn(trendTargetsFieldset).checked).toBe(false);
+});
+
+test("trainer スコア計算条件 toggle defaults to on", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(buildOkResponse(buildRawPayload()));
+  const { container } = renderSection();
+  await flushAllAsync();
+  const scoreFieldset = container.querySelector('div[aria-label="スコア計算条件"] fieldset');
+  if (!scoreFieldset) throw new Error("スコア計算条件 fieldset missing");
+  expect(findTrainerCheckboxIn(scoreFieldset).checked).toBe(true);
+});
+
+const buildDetailPayloadWithTrainer = (): RaceTrendRawPayload => ({
+  starterRows: [
+    {
+      source: "jra",
+      kaisaiNen: "2025",
+      kaisaiTsukihi: "0601",
+      keibajoCode: "06",
+      raceBango: "10",
+      raceName: "過去レース",
+      hassoJikoku: "1500",
+      runnerCount: "10",
+      wakuban: "3",
+      umaban: "5",
+      bamei: "サンプル",
+      jockeyName: "山田太郎",
+      chokyoshiName: "山本太郎",
+      tanshoOdds: "0050",
+      tanshoPopularity: "03",
+      finishPosition: 2,
+      sohaTime: null,
+      corner1: "04",
+      corner2: "03",
+      corner3: "02",
+      corner4: "02",
+      bataiju: "498",
+      zogenFugo: "+",
+      zogenSa: "004",
+    },
+  ],
+  currentRunningStyles: [],
+  historicalRunningStyles: [],
+  raceContext: { keibajoCode: "06", raceBango: "11", source: "jra" },
+  runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
+});
+
+test("expanded detail table thead renders 調教師 column header", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(buildOkResponse(buildDetailPayloadWithTrainer()));
+  const { container } = renderSection();
+  await flushAllAsync();
+  const detailToggle = container.querySelector("button.race-trend-detail-toggle");
+  if (!(detailToggle instanceof HTMLButtonElement)) throw new Error("detail toggle missing");
+  await act(async () => {
+    fireEvent.click(detailToggle);
+  });
+  const detailHeaders = Array.from(
+    container.querySelectorAll(".race-trend-detail-table thead th"),
+  ).map((node) => node.textContent ?? "");
+  expect(detailHeaders).toStrictEqual([
+    "日付",
+    "場",
+    "R",
+    "馬番",
+    "枠",
+    "脚質",
+    "騎手",
+    "調教師",
+    "着順",
+    "人気",
+    "単勝",
+    "馬体重",
+    "馬名",
+    "レース名",
+  ]);
+});
+
+test("expanded detail table tbody renders the trainer name from the starter row", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(buildOkResponse(buildDetailPayloadWithTrainer()));
+  const { container } = renderSection();
+  await flushAllAsync();
+  const detailToggle = container.querySelector("button.race-trend-detail-toggle");
+  if (!(detailToggle instanceof HTMLButtonElement)) throw new Error("detail toggle missing");
+  await act(async () => {
+    fireEvent.click(detailToggle);
+  });
+  const trainerCell = container.querySelector(
+    ".race-trend-detail-table tbody td.race-trend-detail-trainer",
+  );
+  expect(trainerCell?.textContent).toStrictEqual("山本太郎");
+});
+
+const buildDetailPayloadWithoutTrainer = (): RaceTrendRawPayload => ({
+  starterRows: [
+    {
+      source: "jra",
+      kaisaiNen: "2025",
+      kaisaiTsukihi: "0601",
+      keibajoCode: "06",
+      raceBango: "10",
+      raceName: "過去レース",
+      hassoJikoku: "1500",
+      runnerCount: "10",
+      wakuban: "3",
+      umaban: "5",
+      bamei: "サンプル",
+      jockeyName: "山田太郎",
+      tanshoOdds: "0050",
+      tanshoPopularity: "03",
+      finishPosition: 2,
+      sohaTime: null,
+      corner1: "04",
+      corner2: "03",
+      corner3: "02",
+      corner4: "02",
+      bataiju: "498",
+      zogenFugo: "+",
+      zogenSa: "004",
+    },
+  ],
+  currentRunningStyles: [],
+  historicalRunningStyles: [],
+  raceContext: { keibajoCode: "06", raceBango: "11", source: "jra" },
+  runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
+});
+
+test("expanded detail table renders a dash when the trainer name is missing", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    buildOkResponse(buildDetailPayloadWithoutTrainer()),
+  );
+  const { container } = renderSection();
+  await flushAllAsync();
+  const detailToggle = container.querySelector("button.race-trend-detail-toggle");
+  if (!(detailToggle instanceof HTMLButtonElement)) throw new Error("detail toggle missing");
+  await act(async () => {
+    fireEvent.click(detailToggle);
+  });
+  const trainerCell = container.querySelector(
+    ".race-trend-detail-table tbody td.race-trend-detail-trainer",
+  );
+  expect(trainerCell?.textContent).toStrictEqual("-");
+});

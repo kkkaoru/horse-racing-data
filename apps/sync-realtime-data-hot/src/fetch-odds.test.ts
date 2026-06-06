@@ -9,7 +9,9 @@ vi.mock("./keiba-go", () => ({
 
 vi.mock("./jra", () => ({
   fetchJraOddsWithPlaywright: vi.fn(async () => ({
+    entryHtml: "<html></html>",
     latest: { tansho: [{ combination: "01", odds: 3.5 }] },
+    missingTypes: [],
   })),
 }));
 
@@ -18,6 +20,7 @@ import { fetchJraOddsWithPlaywright } from "./jra";
 import {
   fetchAndStoreOdds,
   getRaceStartFromState,
+  isRetryableScrapeError,
   isSlotDue,
   resolveOddsSlotAt,
 } from "./fetch-odds";
@@ -112,9 +115,17 @@ const buildDb = (options: BuildDbOptions = {}): D1Database => {
   return { batch, prepare: prepareMock } as unknown as D1Database;
 };
 
+const buildKv = (): KVNamespace =>
+  ({
+    delete: vi.fn(async () => undefined),
+    get: vi.fn(async () => null),
+    put: vi.fn(async () => undefined),
+  }) as unknown as KVNamespace;
+
 const buildEnv = (overrides: Partial<Env> = {}, dbOptions: BuildDbOptions = {}): Env =>
   ({
     JRA_BROWSER: {} as Env["JRA_BROWSER"],
+    ODDS_HOT_KV: buildKv(),
     REALTIME_HOT_DB: buildDb(dbOptions),
     ...overrides,
   }) as unknown as Env;
@@ -271,4 +282,115 @@ it("fetchAndStoreOdds throws when scrape returns zero rows", async () => {
   await expect(
     fetchAndStoreOdds(env, "nar:20260528:42:01", new Date("2026-05-28T05:55:00Z")),
   ).rejects.toThrow();
+});
+
+it("isRetryableScrapeError returns true for transient errors (K1-B)", () => {
+  expect(isRetryableScrapeError(new Error("Playwright timeout"))).toBe(true);
+});
+
+it("isRetryableScrapeError returns false when the message contains JRA_BROWSER binding (K1-B)", () => {
+  expect(isRetryableScrapeError(new Error("JRA_BROWSER binding required for jra:x"))).toBe(false);
+});
+
+it("isRetryableScrapeError returns false when the message contains odds_fetch_state not found (K1-B)", () => {
+  expect(isRetryableScrapeError(new Error("odds_fetch_state not found: nar:y"))).toBe(false);
+});
+
+it("isRetryableScrapeError stringifies non-Error rejection values to evaluate retryability (K1-B)", () => {
+  expect(isRetryableScrapeError("random string failure")).toBe(true);
+});
+
+it("fetchAndStoreOdds releases the enqueue lock when sale has not opened yet (K1-B)", async () => {
+  // NAR sale opens at 09:00 JST; with now = 08:00 JST the slot resolver
+  // returns null and we drop the lock so the next planner tick can take
+  // over once sale starts.
+  const env = buildEnv();
+  const result = await fetchAndStoreOdds(
+    env,
+    "nar:20260528:42:01",
+    new Date("2026-05-27T23:00:00Z"),
+  );
+  expect(result).toBeNull();
+  expect(env.ODDS_HOT_KV.delete).toHaveBeenCalledWith("odds:enqueue-lock:nar:20260528:42:01");
+});
+
+it("fetchAndStoreOdds keeps the enqueue lock when slot was already fetched (K1-B not-due maintain)", async () => {
+  const env = buildEnv(
+    {},
+    {
+      state: sampleNarState({ lastOddsFetchAt: "2026-05-28T15:30:00+09:00" }),
+    },
+  );
+  const result = await fetchAndStoreOdds(
+    env,
+    "nar:20260528:42:01",
+    new Date("2026-05-28T05:00:00Z"),
+  );
+  expect(result).toBeNull();
+  expect(env.ODDS_HOT_KV.delete).not.toHaveBeenCalled();
+});
+
+it("fetchAndStoreOdds releases the enqueue lock on a retryable scrape error (K1-B)", async () => {
+  vi.mocked(fetchOdds).mockRejectedValueOnce(new Error("network reset"));
+  const env = buildEnv();
+  await expect(
+    fetchAndStoreOdds(env, "nar:20260528:42:01", new Date("2026-05-28T05:55:00Z")),
+  ).rejects.toThrow("network reset");
+  expect(env.ODDS_HOT_KV.delete).toHaveBeenCalledWith("odds:enqueue-lock:nar:20260528:42:01");
+});
+
+it("fetchAndStoreOdds keeps the enqueue lock when JRA_BROWSER binding is missing (K1-B non-retryable)", async () => {
+  const env = buildEnv(
+    { JRA_BROWSER: undefined },
+    {
+      state: sampleNarState({ source: "jra", oddsLinksJson: "{}" }),
+    },
+  );
+  await expect(
+    fetchAndStoreOdds(env, "jra:20260528:08:01", new Date("2026-05-28T03:00:00Z")),
+  ).rejects.toThrow("JRA_BROWSER binding");
+  expect(env.ODDS_HOT_KV.delete).not.toHaveBeenCalled();
+});
+
+it("fetchAndStoreOdds keeps the enqueue lock when raceStart cannot be parsed (K1-B structural)", async () => {
+  const env = buildEnv({}, { state: sampleNarState({ raceStartAtJst: "not-a-date" }) });
+  const result = await fetchAndStoreOdds(env, "nar:20260528:42:01", new Date());
+  expect(result).toBeNull();
+  expect(env.ODDS_HOT_KV.delete).not.toHaveBeenCalled();
+});
+
+it("fetchAndStoreOdds writes a partial-fetch warn log when missingTypes is non-empty (K1-A)", async () => {
+  vi.mocked(fetchJraOddsWithPlaywright).mockResolvedValueOnce({
+    entryHtml: "<html></html>",
+    latest: { tansho: [{ combination: "01", odds: 3.5 }] },
+    missingTypes: ["umaren", "wide"],
+  });
+  const dbOptions: BuildDbOptions = {
+    state: sampleNarState({ source: "jra", oddsLinksJson: "{}" }),
+  };
+  const env = buildEnv({}, dbOptions);
+  const prepareMock = env.REALTIME_HOT_DB.prepare as unknown as ReturnType<typeof vi.fn>;
+  await fetchAndStoreOdds(env, "jra:20260528:08:01", new Date("2026-05-28T03:00:00Z"));
+  const fetchLogCalls = prepareMock.mock.calls.filter((call: unknown[]) =>
+    String(call[0]).toLowerCase().includes("insert into fetch_logs"),
+  );
+  expect(fetchLogCalls.length >= 2).toBe(true);
+});
+
+it("fetchAndStoreOdds skips the partial-fetch log when every JRA tab succeeded (K1-A)", async () => {
+  vi.mocked(fetchJraOddsWithPlaywright).mockResolvedValueOnce({
+    entryHtml: "<html></html>",
+    latest: { tansho: [{ combination: "01", odds: 3.5 }] },
+    missingTypes: [],
+  });
+  const dbOptions: BuildDbOptions = {
+    state: sampleNarState({ source: "jra", oddsLinksJson: "{}" }),
+  };
+  const env = buildEnv({}, dbOptions);
+  const prepareMock = env.REALTIME_HOT_DB.prepare as unknown as ReturnType<typeof vi.fn>;
+  await fetchAndStoreOdds(env, "jra:20260528:08:01", new Date("2026-05-28T03:00:00Z"));
+  const fetchLogCalls = prepareMock.mock.calls.filter((call: unknown[]) =>
+    String(call[0]).toLowerCase().includes("insert into fetch_logs"),
+  );
+  expect(fetchLogCalls).toHaveLength(1);
 });

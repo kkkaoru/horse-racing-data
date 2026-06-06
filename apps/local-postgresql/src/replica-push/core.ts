@@ -1261,9 +1261,14 @@ export function isVerifyMismatchSkipError(error: unknown): error is VerifyMismat
 
 const DEFAULT_FULL_REPLACE_COPY_BATCH_ROWS = 500_000;
 const DEFAULT_OPERATION_WALL_CLOCK_TIMEOUT_SECONDS = 3600;
-const DEFAULT_OPERATION_IDLE_TIMEOUT_SECONDS = 300;
+// Raised from 300s to 900s because postCopySql (CREATE INDEX / PRIMARY KEY) for
+// large tables (e.g. race_finish_position_model_predictions ~10M rows) can take
+// 5-15 minutes on Neon while emitting no output. Wall-clock timeout still caps
+// the whole operation at 1h, so the bigger idle window does not extend total runtime.
+const DEFAULT_OPERATION_IDLE_TIMEOUT_SECONDS = 900;
 const TIMEOUT_WARNING_RATIO = 0.8;
 const PER_TABLE_TIMEOUT_ENV_PREFIX = "REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS_";
+const PER_TABLE_IDLE_TIMEOUT_ENV_PREFIX = "REPLICA_SYNC_IDLE_TIMEOUT_SECONDS_";
 
 export function resolveDefaultFullReplaceBatchRows(
   env: Record<string, string | undefined>,
@@ -1316,12 +1321,26 @@ export interface PerTableTimeoutLookupInput {
   fallbackWallClockMs: number;
 }
 
+export interface PerTableIdleTimeoutLookupInput {
+  env: Record<string, string | undefined>;
+  tableName: string;
+  fallbackIdleMs: number;
+}
+
 export function resolvePerTableWallClockMs(input: PerTableTimeoutLookupInput): number {
   const raw = input.env[`${PER_TABLE_TIMEOUT_ENV_PREFIX}${input.tableName}`];
   if (raw === undefined || raw === "") return input.fallbackWallClockMs;
   const parsed = Number(raw);
   if (!Number.isInteger(parsed) || parsed <= 0) return input.fallbackWallClockMs;
   return parsed * 1000;
+}
+
+export function resolvePerTableIdleMs(input: PerTableIdleTimeoutLookupInput): number {
+  const raw = input.env[`${PER_TABLE_IDLE_TIMEOUT_ENV_PREFIX}${input.tableName}`];
+  if (raw === undefined || raw === "") return input.fallbackIdleMs;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) return input.fallbackIdleMs;
+  return Math.max(parsed, 1) * 1000;
 }
 
 export function formatRowsPerSecond(rowsDone: number, elapsedSeconds: number): number {

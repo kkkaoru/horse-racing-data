@@ -12,10 +12,42 @@ import type {
 } from "./types";
 
 const ODDS_LIST_SELECTOR = "#odds_list";
-const NAVIGATION_TIMEOUT_MS = 15_000;
+// Bumped from 15s to 25s to absorb JRA upstream rendering lag observed on
+// 06-06 (multiple `#odds_list` timeouts around 05:32 / 10:06 JST). The
+// outer cron is 1-min, but `* * * * *` ticks fire sequentially so this
+// timeout primarily delays the affected fetch — not the next race's tick.
+const NAVIGATION_TIMEOUT_MS = 25_000;
+// Broad fallback selectors for the odds list container — used after the
+// primary `#odds_list` lookup fails so a JRA template change cannot
+// silently freeze odds polling for an entire venue. We attach only to
+// confirm the element exists; the real innerHTML extraction still targets
+// `#odds_list`.
+const ODDS_LIST_FALLBACK_SELECTORS = [
+  "[id*='odds']",
+  "[class*='odds']",
+] satisfies readonly string[];
 const CLICK_TIMEOUT_MS = 8_000;
 const CHANGE_TIMEOUT_MS = 3_000;
 const CONTENT_PROBE_LENGTH = 128;
+const ODDS_LIST_RETRY_LIMIT = 2;
+// Increased from 500ms to 10s (task K1-A). The previous `innerHTML({ timeout:
+// 500 })` could win the wait race but lose the read race when JRA upstream
+// rendering trickled into `#odds_list` over 1-2s — leading to silent zero
+// rows on tabs that downstream `parseJraOddsByType` then dropped. With the
+// outer per-tab budget already bounded by `CHANGE_TIMEOUT_MS` (3s) and the
+// retry layer at `fetchJraOddsWithRetry`, a higher inner read timeout
+// converts those silent zero-row tabs into observable populated tabs.
+const INNER_HTML_TIMEOUT_MS = 10_000;
+
+// Result shape for `fetchJraOddsWithPlaywright` (task K1-A). `missingTypes`
+// surfaces the odds tabs whose click/parse step threw, so callers can log a
+// per-race partial-fetch warning instead of silently dropping the missing
+// bet types. An empty array means all 8 tabs returned.
+export interface FetchJraOddsResult {
+  entryHtml: string;
+  latest: Partial<Record<OddsType, OddsData[]>>;
+  missingTypes: OddsType[];
+}
 
 const ODDS_PAGE_LABELS: ReadonlyArray<{ label: string; type: OddsType }> = [
   { label: "単勝・複勝", type: "tansho" },
@@ -588,11 +620,41 @@ const captureProbe = async (page: Page): Promise<{ html: string; url: string }> 
   html: (
     await page
       .locator(ODDS_LIST_SELECTOR)
-      .innerHTML({ timeout: 500 })
+      .innerHTML({ timeout: INNER_HTML_TIMEOUT_MS })
       .catch(() => "")
   ).slice(0, CONTENT_PROBE_LENGTH),
   url: page.url(),
 });
+
+const waitForOddsListWithFallback = async (page: Page): Promise<void> => {
+  // Primary selector first. On timeout, try the broad fallback selectors
+  // so a JRA template change (#odds_list rename / class swap) cannot make
+  // every fetch a hard timeout. The broader matches are conservative —
+  // any element with `odds` in id or class qualifies — but we only use
+  // them as evidence the page rendered; downstream `parseJraOddsByType`
+  // continues to target the canonical `#odds_list` HTML.
+  const primary = await page
+    .waitForSelector(ODDS_LIST_SELECTOR, {
+      state: "attached",
+      timeout: NAVIGATION_TIMEOUT_MS,
+    })
+    .then(() => true)
+    .catch(() => false);
+  if (primary) {
+    return;
+  }
+  const fallbacks = await Promise.all(
+    ODDS_LIST_FALLBACK_SELECTORS.map((selector) =>
+      page
+        .waitForSelector(selector, { state: "attached", timeout: NAVIGATION_TIMEOUT_MS })
+        .then(() => true)
+        .catch(() => false),
+    ),
+  );
+  if (!fallbacks.some(Boolean)) {
+    throw new Error("JRA #odds_list selector and all fallbacks timed out.");
+  }
+};
 
 const clickAndWaitForOdds = async (page: Page, clickAction: () => Promise<void>): Promise<void> => {
   const probe = await captureProbe(page);
@@ -602,19 +664,15 @@ const clickAndWaitForOdds = async (page: Page, clickAction: () => Promise<void>)
     if (page.url() !== probe.url) {
       break;
     }
-    const html = (await page.locator(ODDS_LIST_SELECTOR).innerHTML({ timeout: 500 })).slice(
-      0,
-      CONTENT_PROBE_LENGTH,
-    );
+    const html = (
+      await page.locator(ODDS_LIST_SELECTOR).innerHTML({ timeout: INNER_HTML_TIMEOUT_MS })
+    ).slice(0, CONTENT_PROBE_LENGTH);
     if (html.length > 0 && html !== probe.html) {
       break;
     }
     await page.waitForTimeout(100);
   }
-  await page.waitForSelector(ODDS_LIST_SELECTOR, {
-    state: "attached",
-    timeout: NAVIGATION_TIMEOUT_MS,
-  });
+  await waitForOddsListWithFallback(page);
 };
 
 const navigateFromRacePageToOdds = async (page: Page): Promise<void> => {
@@ -645,16 +703,10 @@ const getOddsListHtml = async (page: Page): Promise<string> => {
   return `<div id="odds_list">${innerHtml}</div>`;
 };
 
-export const fetchJraOddsWithPlaywright = async (
-  browserBinding: BrowserWorker | undefined,
+const fetchJraOddsWithPlaywrightOnce = async (
+  browserBinding: BrowserWorker,
   entryUrl: string,
-): Promise<{
-  entryHtml: string;
-  latest: Partial<Record<OddsType, OddsData[]>>;
-}> => {
-  if (!browserBinding) {
-    throw new Error("JRA_BROWSER binding is required to fetch JRA odds.");
-  }
+): Promise<FetchJraOddsResult> => {
   const { launch } = await import("@cloudflare/playwright");
   let browser: Browser | null = null;
   try {
@@ -666,6 +718,7 @@ export const fetchJraOddsWithPlaywright = async (
     const entryHtml = await page.content();
     await navigateFromRacePageToOdds(page);
     const latest: Partial<Record<OddsType, OddsData[]>> = {};
+    const missingTypes: OddsType[] = [];
     for (const { label, type } of ODDS_PAGE_LABELS) {
       try {
         if (type !== "tansho") {
@@ -677,12 +730,77 @@ export const fetchJraOddsWithPlaywright = async (
         latest[type] = parseJraOddsByType(type, html);
       } catch (error) {
         console.warn(`Failed to fetch JRA ${type} odds`, error);
+        missingTypes.push(type);
       }
     }
-    return { entryHtml, latest };
+    return { entryHtml, latest, missingTypes };
   } finally {
     await browser?.close();
   }
+};
+
+interface TryFetchOk extends FetchJraOddsResult {
+  ok: true;
+}
+
+interface TryFetchErr {
+  ok: false;
+  error: unknown;
+}
+
+type TryFetchResult = TryFetchErr | TryFetchOk;
+
+const tryFetchOnce = async (
+  browserBinding: BrowserWorker,
+  entryUrl: string,
+): Promise<TryFetchResult> => {
+  try {
+    const result = await fetchJraOddsWithPlaywrightOnce(browserBinding, entryUrl);
+    return {
+      entryHtml: result.entryHtml,
+      latest: result.latest,
+      missingTypes: result.missingTypes,
+      ok: true,
+    };
+  } catch (error) {
+    return { error, ok: false };
+  }
+};
+
+const fetchJraOddsWithRetry = async (
+  browserBinding: BrowserWorker,
+  entryUrl: string,
+): Promise<TryFetchResult> => {
+  const first = await tryFetchOnce(browserBinding, entryUrl);
+  if (first.ok) {
+    return first;
+  }
+  // Single retry on outer failure (task F4): JRA Playwright sessions can
+  // hit transient `#odds_list` timeouts when the JRA upstream is slow to
+  // render. We tear down and re-launch a fresh browser session before
+  // surfacing the error so a temporary stall does not skip the full slot.
+  console.warn("JRA odds fetch attempt 1 failed, retrying", first.error);
+  return tryFetchOnce(browserBinding, entryUrl);
+};
+
+export const fetchJraOddsWithPlaywright = async (
+  browserBinding: BrowserWorker | undefined,
+  entryUrl: string,
+): Promise<FetchJraOddsResult> => {
+  if (!browserBinding) {
+    throw new Error("JRA_BROWSER binding is required to fetch JRA odds.");
+  }
+  const outcome = await fetchJraOddsWithRetry(browserBinding, entryUrl);
+  if (outcome.ok) {
+    return {
+      entryHtml: outcome.entryHtml,
+      latest: outcome.latest,
+      missingTypes: outcome.missingTypes,
+    };
+  }
+  throw outcome.error instanceof Error
+    ? outcome.error
+    : new Error(`JRA odds fetch failed after ${ODDS_LIST_RETRY_LIMIT} attempts.`);
 };
 
 export const fetchJraResultHtmlWithPlaywright = async (

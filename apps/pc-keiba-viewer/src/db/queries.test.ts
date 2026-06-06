@@ -29,6 +29,7 @@ import type { RunningStyleBucketFilter } from "../lib/running-style-prediction-d
 import {
   getFinishPositionBucketEvaluation,
   getFinishPositionLambdarankPredictions,
+  getRaceRunners,
   getRunningStyleBucketEvaluation,
 } from "./queries";
 
@@ -678,6 +679,7 @@ const PERCLASS_703_RUNNERS: Runner[] = [
     corner2: null,
     corner3: null,
     corner4: null,
+    damSireName: null,
     futanJuryo: "560",
     kakuteiChakujun: null,
     kettoTorokuBango: "2020100001",
@@ -685,6 +687,8 @@ const PERCLASS_703_RUNNERS: Runner[] = [
     kohan3f: null,
     moshokuCode: null,
     seibetsuCode: "1",
+    sireName: null,
+    sireSireName: null,
     sohaTime: null,
     tanshoNinkijun: null,
     tanshoOdds: null,
@@ -704,6 +708,7 @@ const PERCLASS_703_RUNNERS: Runner[] = [
     corner2: null,
     corner3: null,
     corner4: null,
+    damSireName: null,
     futanJuryo: "560",
     kakuteiChakujun: null,
     kettoTorokuBango: "2020100002",
@@ -711,6 +716,8 @@ const PERCLASS_703_RUNNERS: Runner[] = [
     kohan3f: null,
     moshokuCode: null,
     seibetsuCode: "1",
+    sireName: null,
+    sireSireName: null,
     sohaTime: null,
     tanshoNinkijun: null,
     tanshoOdds: null,
@@ -800,6 +807,7 @@ it("getFinishPositionLambdarankPredictions short-circuits without SQL when only 
       corner2: null,
       corner3: null,
       corner4: null,
+      damSireName: null,
       futanJuryo: "560",
       kakuteiChakujun: null,
       kettoTorokuBango: "2020100003",
@@ -807,6 +815,8 @@ it("getFinishPositionLambdarankPredictions short-circuits without SQL when only 
       kohan3f: null,
       moshokuCode: null,
       seibetsuCode: "1",
+      sireName: null,
+      sireSireName: null,
       sohaTime: null,
       tanshoNinkijun: null,
       tanshoOdds: null,
@@ -820,4 +830,218 @@ it("getFinishPositionLambdarankPredictions short-circuits without SQL when only 
   const result = await getFinishPositionLambdarankPredictions(PERCLASS_703_RACE, singleRunner);
   expect(result.length).toBe(0);
   expect(executeMock).not.toHaveBeenCalled();
+});
+
+it("race-runners-nar-includes-sire-name", async () => {
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        bamei: "テスト馬",
+        banushimei: null,
+        barei: "4",
+        bataiju: "480",
+        chokyoshimeiRyakusho: null,
+        corner1: null,
+        corner2: null,
+        corner3: null,
+        corner4: null,
+        damSireName: "母父馬",
+        futanJuryo: "560",
+        kakuteiChakujun: null,
+        kettoTorokuBango: "2020100001",
+        kishumeiRyakusho: null,
+        kohan3f: null,
+        moshokuCode: null,
+        seibetsuCode: "1",
+        sireName: "父馬",
+        sireSireName: "父父馬",
+        sohaTime: null,
+        tanshoNinkijun: null,
+        tanshoOdds: null,
+        timeSa: null,
+        umaban: "1",
+        wakuban: "1",
+        zogenFugo: null,
+        zogenSa: null,
+      },
+    ],
+  });
+  const runners = await getRaceRunners("nar", "2026", "06", "05", "44", "01");
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(queryText).toMatch(/primary_um\.ketto_joho_01b/u);
+  expect(queryText).toMatch(/secondary_um\.ketto_joho_01b/u);
+  expect(queryText).toMatch(/primary_um\s*\n\s*on primary_um\.ketto_toroku_bango/u);
+  expect(queryText).toMatch(/secondary_um\s*\n\s*on secondary_um\.ketto_toroku_bango/u);
+  expect(runners[0]?.sireName).toBe("父馬");
+});
+
+it("race-runners-nar-falls-back-to-nvd-um-when-nvd-nu-missing", async () => {
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        bamei: "テスト馬",
+        banushimei: null,
+        barei: "4",
+        bataiju: "480",
+        chokyoshimeiRyakusho: null,
+        corner1: null,
+        corner2: null,
+        corner3: null,
+        corner4: null,
+        damSireName: "母父馬",
+        futanJuryo: "560",
+        kakuteiChakujun: null,
+        kettoTorokuBango: "2020100002",
+        kishumeiRyakusho: null,
+        kohan3f: null,
+        moshokuCode: null,
+        seibetsuCode: "1",
+        sireName: "フォールバック父",
+        sireSireName: null,
+        sohaTime: null,
+        tanshoNinkijun: null,
+        tanshoOdds: null,
+        timeSa: null,
+        umaban: "1",
+        wakuban: "1",
+        zogenFugo: null,
+        zogenSa: null,
+      },
+    ],
+  });
+  const runners = await getRaceRunners("nar", "2026", "06", "05", "44", "01");
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(queryText).toMatch(/coalesce\(\s*nullif\(regexp_replace\(primary_um\.ketto_joho_01b/u);
+  expect(queryText).toMatch(/nullif\(regexp_replace\(secondary_um\.ketto_joho_01b/u);
+  expect(runners[0]?.sireName).toBe("フォールバック父");
+});
+
+it("race-runners-jra-includes-sire-name", async () => {
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        bamei: "JRA馬",
+        banushimei: null,
+        barei: "4",
+        bataiju: "480",
+        chokyoshimeiRyakusho: null,
+        corner1: null,
+        corner2: null,
+        corner3: null,
+        corner4: null,
+        damSireName: "JRA母父",
+        futanJuryo: "560",
+        kakuteiChakujun: null,
+        kettoTorokuBango: "2020100003",
+        kishumeiRyakusho: null,
+        kohan3f: null,
+        moshokuCode: null,
+        seibetsuCode: "1",
+        sireName: "JRA父馬",
+        sireSireName: "JRA父父馬",
+        sohaTime: null,
+        tanshoNinkijun: null,
+        tanshoOdds: null,
+        timeSa: null,
+        umaban: "1",
+        wakuban: "1",
+        zogenFugo: null,
+        zogenSa: null,
+      },
+    ],
+  });
+  const runners = await getRaceRunners("jra", "2026", "06", "05", "05", "11");
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(queryText).toMatch(/um\.ketto_joho_01b/u);
+  expect(queryText).toMatch(/um\.ketto_joho_03b/u);
+  expect(queryText).toMatch(/um\.ketto_joho_05b/u);
+  expect(queryText).toMatch(/left join\s+um\s*\n\s*on um\.ketto_toroku_bango/u);
+  expect(runners[0]?.sireName).toBe("JRA父馬");
+  expect(runners[0]?.damSireName).toBe("JRA母父");
+});
+
+it("race-runners-trims-whitespace-from-sire-name", async () => {
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        bamei: "全角空白馬",
+        banushimei: null,
+        barei: "4",
+        bataiju: "480",
+        chokyoshimeiRyakusho: null,
+        corner1: null,
+        corner2: null,
+        corner3: null,
+        corner4: null,
+        damSireName: null,
+        futanJuryo: "560",
+        kakuteiChakujun: null,
+        kettoTorokuBango: "2020100004",
+        kishumeiRyakusho: null,
+        kohan3f: null,
+        moshokuCode: null,
+        seibetsuCode: "1",
+        sireName: "正規化父",
+        sireSireName: null,
+        sohaTime: null,
+        tanshoNinkijun: null,
+        tanshoOdds: null,
+        timeSa: null,
+        umaban: "1",
+        wakuban: "1",
+        zogenFugo: null,
+        zogenSa: null,
+      },
+    ],
+  });
+  const runners = await getRaceRunners("jra", "2026", "06", "05", "05", "11");
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(queryText).toMatch(
+    /regexp_replace\(um\.ketto_joho_01b, '\^\[\[:space:\]　\]\+\|\[\[:space:\]　\]\+\$', '', 'g'\)/u,
+  );
+  expect(runners[0]?.sireName).toBe("正規化父");
+});
+
+it("race-runners-null-when-both-bloodline-tables-empty", async () => {
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        bamei: "血統不明馬",
+        banushimei: null,
+        barei: "4",
+        bataiju: "480",
+        chokyoshimeiRyakusho: null,
+        corner1: null,
+        corner2: null,
+        corner3: null,
+        corner4: null,
+        damSireName: null,
+        futanJuryo: "560",
+        kakuteiChakujun: null,
+        kettoTorokuBango: "2020100005",
+        kishumeiRyakusho: null,
+        kohan3f: null,
+        moshokuCode: null,
+        seibetsuCode: "1",
+        sireName: null,
+        sireSireName: null,
+        sohaTime: null,
+        tanshoNinkijun: null,
+        tanshoOdds: null,
+        timeSa: null,
+        umaban: "1",
+        wakuban: "1",
+        zogenFugo: null,
+        zogenSa: null,
+      },
+    ],
+  });
+  const runners = await getRaceRunners("nar", "2026", "06", "05", "44", "01");
+  expect(runners[0]?.sireName).toBe(null);
+  expect(runners[0]?.sireSireName).toBe(null);
+  expect(runners[0]?.damSireName).toBe(null);
 });

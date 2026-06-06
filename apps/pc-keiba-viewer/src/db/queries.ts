@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { cache } from "react";
 
 import { TRACK_LABELS, type RaceSource } from "../lib/codes";
@@ -541,8 +541,24 @@ export const getRaceRunners = cache(
               se.corner_2 as "corner2",
               se.corner_3 as "corner3",
               se.corner_4 as "corner4",
-              se.kohan_3f as "kohan3f"
+              se.kohan_3f as "kohan3f",
+              coalesce(
+                nullif(regexp_replace(primary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+                nullif(regexp_replace(secondary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')
+              ) as "sireName",
+              coalesce(
+                nullif(regexp_replace(primary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+                nullif(regexp_replace(secondary_um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')
+              ) as "sireSireName",
+              coalesce(
+                nullif(regexp_replace(primary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
+                nullif(regexp_replace(secondary_um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')
+              ) as "damSireName"
             from ${nvdSe} se
+            left join ${nvdNu} primary_um
+              on primary_um.ketto_toroku_bango = se.ketto_toroku_bango
+            left join ${nvdUm} secondary_um
+              on secondary_um.ketto_toroku_bango = se.ketto_toroku_bango
             left join lateral (
               -- JRA-transfer NAR runners (e.g. アローグレイシャー at 門別) have
               -- no nvd_se past races, so without the jvd_se arm the SSR
@@ -596,43 +612,46 @@ export const getRaceRunners = cache(
           return result.rows;
         }
 
-        return getDb()
-          .select({
-            wakuban: table.wakuban,
-            umaban: table.umaban,
-            kettoTorokuBango: table.kettoTorokuBango,
-            bamei: table.bamei,
-            moshokuCode: table.moshokuCode,
-            seibetsuCode: table.seibetsuCode,
-            barei: table.barei,
-            futanJuryo: table.futanJuryo,
-            kishumeiRyakusho: table.kishumeiRyakusho,
-            chokyoshimeiRyakusho: table.chokyoshimeiRyakusho,
-            banushimei: table.banushimei,
-            bataiju: table.bataiju,
-            zogenFugo: table.zogenFugo,
-            zogenSa: table.zogenSa,
-            kakuteiChakujun: table.kakuteiChakujun,
-            tanshoOdds: table.tanshoOdds,
-            tanshoNinkijun: table.tanshoNinkijun,
-            sohaTime: table.sohaTime,
-            timeSa: table.timeSa,
-            corner1: table.corner1,
-            corner2: table.corner2,
-            corner3: table.corner3,
-            corner4: table.corner4,
-            kohan3f: table.kohan3f,
-          })
-          .from(table)
-          .where(
-            and(
-              eq(table.kaisaiNen, year),
-              eq(table.kaisaiTsukihi, monthDay),
-              eq(table.keibajoCode, keibajoCode),
-              eq(table.raceBango, raceNumber),
-            ),
-          )
-          .orderBy(asc(table.umaban), asc(table.kettoTorokuBango));
+        const jraResult = await getDb().execute<Runner & Record<string, unknown>>(sql`
+          select
+            se.wakuban,
+            se.umaban,
+            se.ketto_toroku_bango as "kettoTorokuBango",
+            se.bamei,
+            se.moshoku_code as "moshokuCode",
+            se.seibetsu_code as "seibetsuCode",
+            se.barei,
+            se.futan_juryo as "futanJuryo",
+            se.kishumei_ryakusho as "kishumeiRyakusho",
+            se.chokyoshimei_ryakusho as "chokyoshimeiRyakusho",
+            se.banushimei,
+            se.bataiju,
+            se.zogen_fugo as "zogenFugo",
+            se.zogen_sa as "zogenSa",
+            se.kakutei_chakujun as "kakuteiChakujun",
+            se.tansho_odds as "tanshoOdds",
+            se.tansho_ninkijun as "tanshoNinkijun",
+            se.soha_time as "sohaTime",
+            se.time_sa as "timeSa",
+            se.corner_1 as "corner1",
+            se.corner_2 as "corner2",
+            se.corner_3 as "corner3",
+            se.corner_4 as "corner4",
+            se.kohan_3f as "kohan3f",
+            nullif(regexp_replace(um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '') as "sireName",
+            nullif(regexp_replace(um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '') as "sireSireName",
+            nullif(regexp_replace(um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '') as "damSireName"
+          from ${table} se
+          left join ${jvdUm} um
+            on um.ketto_toroku_bango = se.ketto_toroku_bango
+          where
+            se.kaisai_nen = ${year}
+            and se.kaisai_tsukihi = ${monthDay}
+            and se.keibajo_code = ${keibajoCode}
+            and se.race_bango = ${raceNumber}
+          order by se.umaban asc, se.ketto_toroku_bango asc
+        `);
+        return jraResult.rows;
       },
     );
   },

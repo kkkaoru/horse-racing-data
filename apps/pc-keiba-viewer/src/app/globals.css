@@ -3275,6 +3275,20 @@ h3 {
   line-height: inherit;
 }
 
+/* Desktop (>720px) keeps sire / sire-sire / dam-sire names on a single
+   line and truncates with an ellipsis when the value is too long. The
+   `title` attribute on the dd surfaces the full name on hover so the
+   information is still discoverable. Mobile overrides this in the
+   `max-width: 720px` block below. */
+.paddock-horse-bloodline-value {
+  display: block;
+  max-width: var(--space-100pct-12);
+  min-width: var(--number-0-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .paddock-weight-value {
   align-items: center;
   display: inline-flex;
@@ -3431,6 +3445,15 @@ h3 {
   font-weight: var(--number-800-12);
   text-align: left;
   white-space: nowrap;
+}
+
+/* Restore JRA standard wakuban color contract (white on dark frames, dark
+   on light frames) inside the recent-results stats row. Without this, the
+   broader `.paddock-recent-stats span` rule above would force every frame
+   badge to `var(--muted)` and break the parity with the race-detail
+   runners table where wakuban already uses `--frame-color`. */
+.paddock-recent-stats .frame-number-badge {
+  color: var(--frame-color);
 }
 
 .paddock-recent-results-empty {
@@ -3737,6 +3760,7 @@ h3 {
   justify-content: center;
   min-width: var(--space-54px-105);
   padding: var(--space-4px-18) var(--space-8px-28);
+  white-space: nowrap;
 }
 
 .paddock-rank-buttons .rank-1,
@@ -4974,6 +4998,19 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 
 .mobile-filter-disclosure-toggle {
   display: none;
+}
+
+.mobile-collapsible-section {
+  display: grid;
+  gap: var(--space-10px-27);
+}
+
+.mobile-collapsible-section-toggle {
+  display: none;
+}
+
+.mobile-collapsible-section-desktop-heading {
+  display: contents;
 }
 
 .race-results-filter-panel {
@@ -8336,6 +8373,38 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
     padding: var(--space-4px-18) var(--space-8px-28);
   }
 
+  .mobile-collapsible-section-toggle {
+    align-items: center;
+    background: var(--surface);
+    border: var(--space-1px-7) solid var(--line);
+    border-radius: var(--space-8px-28);
+    color: var(--accent-strong);
+    cursor: pointer;
+    display: flex;
+    font: inherit;
+    font-size: var(--space-15px-1);
+    font-weight: var(--number-800-12);
+    justify-content: space-between;
+    min-height: var(--space-44px-23);
+    padding: var(--space-10px-27) var(--space-12px-9);
+    text-align: left;
+    width: var(--space-100pct-12);
+  }
+
+  .mobile-collapsible-section-toggle-state {
+    background: var(--surface-muted);
+    border: var(--space-1px-7) solid var(--line);
+    border-radius: var(--space-999px-30);
+    color: var(--muted);
+    flex: var(--number-0-2) var(--number-0-2) auto;
+    font-size: var(--space-15px-1);
+    padding: var(--space-4px-18) var(--space-8px-28);
+  }
+
+  .mobile-collapsible-section-desktop-heading {
+    display: none;
+  }
+
   .race-results-filter-panel {
     grid-template-columns: var(--space-1fr-51);
   }
@@ -8359,6 +8428,14 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
       minmax(var(--number-0-2), var(--space-1fr-51))
     );
     max-width: none;
+  }
+
+  /* Mobile: allow sire / sire-sire / dam-sire names to wrap so we don't
+     truncate names that the user really wants to see on a narrow viewport. */
+  .paddock-horse-bloodline-value {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
   }
 
   .paddock-table-wrap {

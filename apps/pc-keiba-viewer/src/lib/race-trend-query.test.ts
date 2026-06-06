@@ -1,3 +1,4 @@
+// Run with: bunx vitest run src/lib/race-trend-query.test.ts
 import { describe, expect, it } from "vitest";
 
 import {
@@ -39,12 +40,14 @@ describe("race trend query helpers", () => {
       runningStyle: false,
       frame: false,
       jockey: true,
+      trainer: false,
       raceNumber: false,
     });
     expect(DEFAULT_RACE_TREND_TARGETS).toStrictEqual({
       runningStyle: false,
       frame: false,
       jockey: true,
+      trainer: false,
       raceNumber: false,
     });
     expect(
@@ -52,6 +55,7 @@ describe("race trend query helpers", () => {
         runningStyle: false,
         frame: false,
         jockey: true,
+        trainer: false,
         raceNumber: false,
       }),
     ).toBe(true);
@@ -71,33 +75,46 @@ describe("race trend query helpers", () => {
   it("parses single target trend shortcuts", () => {
     expect(
       getRaceTrendTargetsFromSearchParams(new URLSearchParams("raceTrendTargets=style")),
-    ).toEqual({
+    ).toStrictEqual({
       frame: false,
       jockey: false,
+      trainer: false,
       raceNumber: false,
       runningStyle: true,
     });
     expect(
       getRaceTrendTargetsFromSearchParams(new URLSearchParams("raceTrendTargets=frame")),
-    ).toEqual({
+    ).toStrictEqual({
       frame: true,
       jockey: false,
+      trainer: false,
       raceNumber: false,
       runningStyle: false,
     });
     expect(
       getRaceTrendTargetsFromSearchParams(new URLSearchParams("raceTrendTargets=jockey")),
-    ).toEqual({
+    ).toStrictEqual({
       frame: false,
       jockey: true,
+      trainer: false,
+      raceNumber: false,
+      runningStyle: false,
+    });
+    expect(
+      getRaceTrendTargetsFromSearchParams(new URLSearchParams("raceTrendTargets=trainer")),
+    ).toStrictEqual({
+      frame: false,
+      jockey: false,
+      trainer: true,
       raceNumber: false,
       runningStyle: false,
     });
     expect(
       getRaceTrendTargetsFromSearchParams(new URLSearchParams("raceTrendTargets=raceNumber")),
-    ).toEqual({
+    ).toStrictEqual({
       frame: false,
       jockey: false,
+      trainer: false,
       raceNumber: true,
       runningStyle: false,
     });
@@ -105,16 +122,18 @@ describe("race trend query helpers", () => {
 
   it("parses none and invalid tokens", () => {
     expect(parseRaceTrendTargets(null)).toBeNull();
-    expect(parseRaceTrendTargets("none")).toEqual({
+    expect(parseRaceTrendTargets("none")).toStrictEqual({
       frame: false,
       jockey: false,
+      trainer: false,
       raceNumber: false,
       runningStyle: false,
     });
     expect(parseRaceTrendTargets("unknown")).toBeNull();
-    expect(parseRaceTrendTargets("frame,style")).toEqual({
+    expect(parseRaceTrendTargets("frame,style")).toStrictEqual({
       frame: true,
       jockey: false,
+      trainer: false,
       raceNumber: false,
       runningStyle: true,
     });
@@ -125,6 +144,7 @@ describe("race trend query helpers", () => {
       serializeRaceTrendTargets({
         frame: false,
         jockey: false,
+        trainer: false,
         raceNumber: false,
         runningStyle: false,
       }),
@@ -133,20 +153,30 @@ describe("race trend query helpers", () => {
       serializeRaceTrendTargets({
         frame: true,
         jockey: true,
+        trainer: false,
         raceNumber: false,
         runningStyle: false,
       }),
     ).toBe("frame,jockey");
     expect(
+      serializeRaceTrendTargets({
+        frame: false,
+        jockey: false,
+        trainer: true,
+        raceNumber: false,
+        runningStyle: false,
+      }),
+    ).toBe("trainer");
+    expect(
       isSameRaceTrendTargets(
-        { runningStyle: false, frame: false, jockey: true, raceNumber: false },
-        { runningStyle: false, frame: false, jockey: true, raceNumber: false },
+        { runningStyle: false, frame: false, jockey: true, trainer: false, raceNumber: false },
+        { runningStyle: false, frame: false, jockey: true, trainer: false, raceNumber: false },
       ),
     ).toBe(true);
     expect(
       isSameRaceTrendTargets(
-        { runningStyle: false, frame: false, jockey: true, raceNumber: false },
-        { runningStyle: false, frame: false, jockey: false, raceNumber: false },
+        { runningStyle: false, frame: false, jockey: true, trainer: false, raceNumber: false },
+        { runningStyle: false, frame: false, jockey: false, trainer: false, raceNumber: false },
       ),
     ).toBe(false);
   });
@@ -163,12 +193,14 @@ describe("race trend score condition query helpers", () => {
     expect(getRaceTrendScoreConditionsFromSearchParams(new URLSearchParams())).toStrictEqual({
       frame: true,
       jockey: true,
+      trainer: true,
       frameRunningStyle: false,
     });
     expect(
       isDefaultRaceTrendScoreConditionsQuery({
         frame: true,
         jockey: true,
+        trainer: true,
         frameRunningStyle: false,
       }),
     ).toBe(true);
@@ -196,43 +228,55 @@ describe("race trend score condition query helpers", () => {
   });
 
   it("parses none as all-false conditions", () => {
-    expect(parseRaceTrendScoreConditionsQuery("none")).toEqual({
+    expect(parseRaceTrendScoreConditionsQuery("none")).toStrictEqual({
       frame: false,
       jockey: false,
+      trainer: false,
       frameRunningStyle: false,
     });
   });
 
   it("parses an empty string as all-false conditions", () => {
-    expect(parseRaceTrendScoreConditionsQuery("")).toEqual({
+    expect(parseRaceTrendScoreConditionsQuery("")).toStrictEqual({
       frame: false,
       jockey: false,
+      trainer: false,
       frameRunningStyle: false,
     });
   });
 
   it("parses single token shortcuts", () => {
-    expect(parseRaceTrendScoreConditionsQuery("frame")).toEqual({
+    expect(parseRaceTrendScoreConditionsQuery("frame")).toStrictEqual({
       frame: true,
       jockey: false,
+      trainer: false,
       frameRunningStyle: false,
     });
-    expect(parseRaceTrendScoreConditionsQuery("jockey")).toEqual({
+    expect(parseRaceTrendScoreConditionsQuery("jockey")).toStrictEqual({
       frame: false,
       jockey: true,
+      trainer: false,
       frameRunningStyle: false,
     });
-    expect(parseRaceTrendScoreConditionsQuery("frameRunningStyle")).toEqual({
+    expect(parseRaceTrendScoreConditionsQuery("trainer")).toStrictEqual({
       frame: false,
       jockey: false,
+      trainer: true,
+      frameRunningStyle: false,
+    });
+    expect(parseRaceTrendScoreConditionsQuery("frameRunningStyle")).toStrictEqual({
+      frame: false,
+      jockey: false,
+      trainer: false,
       frameRunningStyle: true,
     });
   });
 
   it("parses comma separated tokens and ignores unknown tokens around known ones", () => {
-    expect(parseRaceTrendScoreConditionsQuery("frame,unknown,jockey")).toEqual({
+    expect(parseRaceTrendScoreConditionsQuery("frame,unknown,jockey")).toStrictEqual({
       frame: true,
       jockey: true,
+      trainer: false,
       frameRunningStyle: false,
     });
   });
@@ -247,6 +291,7 @@ describe("race trend score condition query helpers", () => {
       serializeRaceTrendScoreConditionsQuery({
         frame: false,
         jockey: false,
+        trainer: false,
         frameRunningStyle: false,
       }),
     ).toBe("none");
@@ -257,27 +302,34 @@ describe("race trend score condition query helpers", () => {
       serializeRaceTrendScoreConditionsQuery({
         frame: false,
         jockey: true,
+        trainer: false,
         frameRunningStyle: true,
       }),
     ).toBe("jockey,frameRunningStyle");
   });
 
-  it("round-trips parse and serialize for the default conditions", () => {
+  it("serializes trainer condition selected by itself", () => {
     expect(
-      serializeRaceTrendScoreConditionsQuery(
-        parseRaceTrendScoreConditionsQuery("jockey") ?? {
-          frame: false,
-          jockey: false,
-          frameRunningStyle: false,
-        },
-      ),
-    ).toBe("jockey");
+      serializeRaceTrendScoreConditionsQuery({
+        frame: false,
+        jockey: false,
+        trainer: true,
+        frameRunningStyle: false,
+      }),
+    ).toBe("trainer");
   });
 
-  it("default has frame and jockey", () => {
+  it("round-trips parse and serialize for the default conditions", () => {
+    const parsed = parseRaceTrendScoreConditionsQuery("jockey");
+    if (!parsed) throw new Error("parse failed");
+    expect(serializeRaceTrendScoreConditionsQuery(parsed)).toBe("jockey");
+  });
+
+  it("default has frame, jockey, and trainer", () => {
     expect(DEFAULT_RACE_TREND_SCORE_CONDITIONS_QUERY).toStrictEqual({
       frame: true,
       jockey: true,
+      trainer: true,
       frameRunningStyle: false,
     });
   });
@@ -285,8 +337,8 @@ describe("race trend score condition query helpers", () => {
   it("compares score conditions by exact equality (same)", () => {
     expect(
       isSameRaceTrendScoreConditionsQuery(
-        { frame: false, jockey: true, frameRunningStyle: false },
-        { frame: false, jockey: true, frameRunningStyle: false },
+        { frame: false, jockey: true, trainer: false, frameRunningStyle: false },
+        { frame: false, jockey: true, trainer: false, frameRunningStyle: false },
       ),
     ).toBe(true);
   });
@@ -294,8 +346,17 @@ describe("race trend score condition query helpers", () => {
   it("compares score conditions by exact equality (different)", () => {
     expect(
       isSameRaceTrendScoreConditionsQuery(
-        { frame: false, jockey: true, frameRunningStyle: false },
-        { frame: true, jockey: true, frameRunningStyle: false },
+        { frame: false, jockey: true, trainer: false, frameRunningStyle: false },
+        { frame: true, jockey: true, trainer: false, frameRunningStyle: false },
+      ),
+    ).toBe(false);
+  });
+
+  it("compares score conditions by trainer flag", () => {
+    expect(
+      isSameRaceTrendScoreConditionsQuery(
+        { frame: true, jockey: true, trainer: true, frameRunningStyle: false },
+        { frame: true, jockey: true, trainer: false, frameRunningStyle: false },
       ),
     ).toBe(false);
   });
@@ -305,6 +366,7 @@ describe("race trend score condition query helpers", () => {
       isDefaultRaceTrendScoreConditionsQuery({
         frame: true,
         jockey: false,
+        trainer: false,
         frameRunningStyle: false,
       }),
     ).toBe(false);
