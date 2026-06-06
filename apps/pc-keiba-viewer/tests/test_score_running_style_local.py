@@ -88,7 +88,12 @@ def test_parse_args_requires_feature_version() -> None:
 
 def test_repo_root_returns_horse_racing_data_directory() -> None:
     root = subject.repo_root()
-    assert root.name == "horse-racing-data"
+    # When running from a git worktree under .claude/worktrees/<name>/, the
+    # directory name is the worktree id rather than the canonical
+    # "horse-racing-data". The invariant we actually rely on (repo_root is the
+    # top of the checkout that contains apps/pc-keiba-viewer/...) holds in both
+    # the canonical checkout AND every worktree.
+    assert (root / "apps" / "pc-keiba-viewer").is_dir()
 
 
 def test_resolve_artifact_path_uses_tmp_models_convention() -> None:
