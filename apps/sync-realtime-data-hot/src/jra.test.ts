@@ -891,3 +891,161 @@ it("fetchJraOddsWithPlaywright clicks the exact オッズ filtered link when cou
   const result = await fetchJraOddsWithPlaywright({} as never, "https://x.test/race");
   expect(result.entryHtml).toBe("<html>entry</html>");
 });
+
+it("fetchJraOddsWithPlaywright retries once when the first browser session throws on launch (F4 retry)", async () => {
+  urlCounter = 0;
+  innerHtmlCounter = 0;
+  const okBrowser = makeBrowser({
+    content: "<html>entry</html>",
+    locators: {
+      "#odds_list": { innerHtml: () => "<table></table>" },
+      "#race_related_link a": { count: 1 },
+    },
+  });
+  const mod = await import("@cloudflare/playwright");
+  const launch = mod.launch as unknown as ReturnType<typeof vi.fn>;
+  launch.mockReset();
+  launch.mockRejectedValueOnce(new Error("transient launch failure"));
+  launch.mockResolvedValueOnce({ close: okBrowser.close, newContext: okBrowser.newContext });
+  const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const result = await fetchJraOddsWithPlaywright({} as never, "https://x.test/race");
+  expect(result.entryHtml).toBe("<html>entry</html>");
+  expect(launch).toHaveBeenCalledTimes(2);
+  expect(consoleSpy).toHaveBeenCalled();
+  consoleSpy.mockRestore();
+});
+
+it("fetchJraOddsWithPlaywright surfaces the second-attempt error when both retries fail", async () => {
+  urlCounter = 0;
+  innerHtmlCounter = 0;
+  const mod = await import("@cloudflare/playwright");
+  const launch = mod.launch as unknown as ReturnType<typeof vi.fn>;
+  launch.mockReset();
+  launch.mockRejectedValueOnce(new Error("first failure"));
+  launch.mockRejectedValueOnce(new Error("second failure"));
+  const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  await expect(fetchJraOddsWithPlaywright({} as never, "https://x.test/race")).rejects.toThrow(
+    "second failure",
+  );
+  expect(launch).toHaveBeenCalledTimes(2);
+  consoleSpy.mockRestore();
+});
+
+it("fetchJraOddsWithPlaywright wraps non-Error rejection values in an Error before throwing", async () => {
+  urlCounter = 0;
+  innerHtmlCounter = 0;
+  const mod = await import("@cloudflare/playwright");
+  const launch = mod.launch as unknown as ReturnType<typeof vi.fn>;
+  launch.mockReset();
+  launch.mockRejectedValueOnce("non-error one");
+  launch.mockRejectedValueOnce("non-error two");
+  const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  await expect(fetchJraOddsWithPlaywright({} as never, "https://x.test/race")).rejects.toThrow(
+    "JRA odds fetch failed after",
+  );
+  consoleSpy.mockRestore();
+});
+
+it("waitForOddsListWithFallback falls back to broad selectors when #odds_list times out (F4 selector fallback)", async () => {
+  // Drive `clickAndWaitForOdds` through `fetchJraOddsWithPlaywright`: the
+  // first `waitForSelector('#odds_list', ...)` rejects, then the broad
+  // selector probes succeed and the run continues without throwing.
+  urlCounter = 0;
+  innerHtmlCounter = 0;
+  const browser = makeBrowser({
+    content: "<html>entry</html>",
+    locators: {
+      "#odds_list": { innerHtml: () => "<table></table>" },
+      "#race_related_link a": { count: 1 },
+    },
+  });
+  const calls: string[] = [];
+  const waitForSelectorMock = vi.fn(async (selector: string) => {
+    calls.push(selector);
+    if (selector === "#odds_list") {
+      throw new Error("primary selector timeout");
+    }
+    return undefined;
+  });
+  browser.page.waitForSelector = waitForSelectorMock;
+  await setMockLaunch(browser);
+  const result = await fetchJraOddsWithPlaywright({} as never, "https://x.test/race");
+  expect(result.entryHtml).toBe("<html>entry</html>");
+  expect(calls).toContain("#odds_list");
+  expect(calls).toContain("[id*='odds']");
+  expect(calls).toContain("[class*='odds']");
+});
+
+it("waitForOddsListWithFallback rejects when both primary and broad fallback selectors time out", async () => {
+  // Both attempts (retry + retry) hit primary + fallback rejections, so
+  // the whole call eventually surfaces the timeout error.
+  urlCounter = 0;
+  innerHtmlCounter = 0;
+  const browser = makeBrowser({
+    content: "<html>entry</html>",
+    locators: {
+      "#odds_list": { innerHtml: () => "<table></table>" },
+      "#race_related_link a": { count: 1 },
+    },
+  });
+  browser.page.waitForSelector = vi.fn(async (selector: string) => {
+    void selector;
+    throw new Error("all selectors timed out");
+  });
+  await setMockLaunch(browser);
+  const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  await expect(fetchJraOddsWithPlaywright({} as never, "https://x.test/race")).rejects.toThrow();
+  consoleSpy.mockRestore();
+});
+
+it("fetchJraOddsWithPlaywright returns empty missingTypes when every odds tab succeeds (K1-A)", async () => {
+  urlCounter = 0;
+  innerHtmlCounter = 0;
+  const browser = makeBrowser({
+    content: "<html>entry</html>",
+    locators: {
+      "#odds_list": { innerHtml: () => "<table></table>" },
+      "#race_related_link a": { count: 1 },
+    },
+  });
+  await setMockLaunch(browser);
+  const result = await fetchJraOddsWithPlaywright({} as never, "https://x.test/race");
+  expect(result.missingTypes).toStrictEqual([]);
+});
+
+it("fetchJraOddsWithPlaywright reports every non-tansho tab in missingTypes when each click throws (K1-A)", async () => {
+  // tansho is read directly from `#odds_list` after the odds-page navigation
+  // and never goes through `getByText(label).click`, so it stays in `latest`
+  // while every other tab gets pushed into `missingTypes`.
+  urlCounter = 0;
+  innerHtmlCounter = 0;
+  const browser = makeBrowser({
+    content: "<html>entry</html>",
+    locators: {
+      "#odds_list": { innerHtml: () => "<table></table>" },
+      "#race_related_link a": { count: 1 },
+    },
+  });
+  browser.page.getByText = vi.fn(() => ({
+    click: vi.fn(async () => {
+      throw new Error("boom");
+    }),
+    count: vi.fn(async () => 1),
+    filter: vi.fn(),
+    first: vi.fn(),
+    innerHTML: vi.fn(async () => ""),
+    locator: vi.fn(),
+    textContent: vi.fn(async () => null),
+  }));
+  await setMockLaunch(browser);
+  const result = await fetchJraOddsWithPlaywright({} as never, "https://x.test/race");
+  expect(result.missingTypes).toStrictEqual([
+    "fukusho",
+    "wakuren",
+    "umaren",
+    "wide",
+    "umatan",
+    "3renpuku",
+    "3rentan",
+  ]);
+});

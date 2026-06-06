@@ -10,6 +10,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from predict_lib.pipeline_args import (
     COURSE_LOOKUP_PATH,
     HISTORY_FROM_DATE,
+    RELATIONSHIP_CATEGORY_BY_CATEGORY,
+    RELATIONSHIP_SCRIPT,
+    SCRIPTS_WITH_PG_URL,
     build_base_argv,
     build_layer_argv,
     layer_chain_for,
@@ -357,6 +360,7 @@ def test_layer_chain_jra_is_full_v6_plus_v7_with_trainer_plus_v8() -> None:
         "add-trainer-stable-affinity-features.py",
         "add-pacestyle-features.py",
         "add-course-numerical-features.py",
+        "add-relationship-r1-features.py",
     ]
 
 
@@ -370,6 +374,7 @@ def test_layer_chain_nar_is_light_v6_plus_v7_plus_trainer_plus_pacestyle() -> No
         "add-baba-pedigree-affinity-features.py",
         "add-trainer-stable-affinity-features.py",
         "add-pacestyle-features.py",
+        "add-relationship-r1-features.py",
     ]
 
 
@@ -445,3 +450,76 @@ def test_build_layer_argv_course_numerical_passes_lookup_path() -> None:
 
 def test_course_lookup_path_is_baked_image_location() -> None:
     assert Path("/app/lookups/course-numerical-features.parquet") == COURSE_LOOKUP_PATH
+
+
+def test_build_layer_argv_relationship_passes_pg_url_from_date_and_category_for_jra() -> None:
+    argv = build_layer_argv(
+        RELATIONSHIP_SCRIPT,
+        "jra",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+    )
+    # The relationship layer reads PG history, so it must receive ``--pg-url``
+    # with the supplied URL (the script has a default pg-url, so a wiring
+    # omission would be SILENT and score against the wrong DB), ``--from-date``
+    # to bound the scan, and ``--category`` with the mapped source filter.
+    assert argv == [
+        "python",
+        "/app/pipeline/finish-position-features/add-relationship-r1-features.py",
+        "--input-dir",
+        "/tmp/in",
+        "--output-dir",
+        "/tmp/out",
+        "--pg-url",
+        "postgresql://u:p@h/db",
+        "--from-date",
+        HISTORY_FROM_DATE,
+        "--category",
+        "jra",
+    ]
+
+
+def test_build_layer_argv_relationship_passes_category_for_nar() -> None:
+    argv = build_layer_argv(
+        RELATIONSHIP_SCRIPT,
+        "nar",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+    )
+    assert "--pg-url" in argv
+    assert argv[argv.index("--pg-url") + 1] == URL
+    assert argv[-2] == "--category"
+    assert argv[-1] == "nar"
+
+
+def test_build_layer_argv_non_relationship_script_omits_relationship_category() -> None:
+    argv = build_layer_argv(
+        "add-course-numerical-features.py",
+        "jra",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+    )
+    assert argv == [
+        "python",
+        "/app/pipeline/finish-position-features/add-course-numerical-features.py",
+        "--input-dir",
+        "/tmp/in",
+        "--output-dir",
+        "/tmp/out",
+        "--course-lookup",
+        str(COURSE_LOOKUP_PATH),
+    ]
+
+
+def test_relationship_script_is_in_scripts_with_pg_url() -> None:
+    assert RELATIONSHIP_SCRIPT in SCRIPTS_WITH_PG_URL
+
+
+def test_relationship_category_map_has_exactly_jra_and_nar_keys() -> None:
+    assert set(RELATIONSHIP_CATEGORY_BY_CATEGORY.keys()) == {"jra", "nar"}

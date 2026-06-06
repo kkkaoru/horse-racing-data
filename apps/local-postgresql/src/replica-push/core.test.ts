@@ -38,6 +38,7 @@ import {
   resolveDefaultFullReplaceBatchRows,
   resolveNonNegativeSecondsEnv,
   resolveOperationTimeoutPolicy,
+  resolvePerTableIdleMs,
   resolvePerTableWallClockMs,
   resolvePositiveIntegerEnv,
   resolveRetryBackoffConfig,
@@ -2038,7 +2039,7 @@ describe("resolveOperationTimeoutPolicy", () => {
   it("returns the documented defaults when env vars are unset", () => {
     expect(resolveOperationTimeoutPolicy({})).toStrictEqual({
       wallClockMs: 3_600_000,
-      idleMs: 300_000,
+      idleMs: 900_000,
       warningRatio: 0.8,
     });
   });
@@ -2064,7 +2065,7 @@ describe("resolveOperationTimeoutPolicy", () => {
       }),
     ).toStrictEqual({
       wallClockMs: 3_600_000,
-      idleMs: 300_000,
+      idleMs: 900_000,
       warningRatio: 0.8,
     });
   });
@@ -2077,7 +2078,7 @@ describe("resolveOperationTimeoutPolicy", () => {
       }),
     ).toStrictEqual({
       wallClockMs: 3_600_000,
-      idleMs: 300_000,
+      idleMs: 900_000,
       warningRatio: 0.8,
     });
   });
@@ -2146,6 +2147,78 @@ describe("resolvePerTableWallClockMs", () => {
         fallbackWallClockMs: 1234,
       }),
     ).toBe(1234);
+  });
+});
+
+describe("resolvePerTableIdleMs", () => {
+  it("returns the fallback when no per-table env var is set", () => {
+    expect(
+      resolvePerTableIdleMs({
+        env: {},
+        tableName: "race_finish_position_model_predictions",
+        fallbackIdleMs: 900_000,
+      }),
+    ).toBe(900_000);
+  });
+
+  it("reads a per-table override when set", () => {
+    expect(
+      resolvePerTableIdleMs({
+        env: { REPLICA_SYNC_IDLE_TIMEOUT_SECONDS_race_finish_position_model_predictions: "1800" },
+        tableName: "race_finish_position_model_predictions",
+        fallbackIdleMs: 900_000,
+      }),
+    ).toBe(1_800_000);
+  });
+
+  it("falls back when per-table env value is empty", () => {
+    expect(
+      resolvePerTableIdleMs({
+        env: { REPLICA_SYNC_IDLE_TIMEOUT_SECONDS_race_finish_position_model_predictions: "" },
+        tableName: "race_finish_position_model_predictions",
+        fallbackIdleMs: 900_000,
+      }),
+    ).toBe(900_000);
+  });
+
+  it("falls back when per-table env value is zero", () => {
+    expect(
+      resolvePerTableIdleMs({
+        env: { REPLICA_SYNC_IDLE_TIMEOUT_SECONDS_race_finish_position_model_predictions: "0" },
+        tableName: "race_finish_position_model_predictions",
+        fallbackIdleMs: 900_000,
+      }),
+    ).toBe(900_000);
+  });
+
+  it("falls back when per-table env value is negative", () => {
+    expect(
+      resolvePerTableIdleMs({
+        env: { REPLICA_SYNC_IDLE_TIMEOUT_SECONDS_race_finish_position_model_predictions: "-1" },
+        tableName: "race_finish_position_model_predictions",
+        fallbackIdleMs: 900_000,
+      }),
+    ).toBe(900_000);
+  });
+
+  it("falls back when per-table env value is not an integer", () => {
+    expect(
+      resolvePerTableIdleMs({
+        env: { REPLICA_SYNC_IDLE_TIMEOUT_SECONDS_race_finish_position_model_predictions: "1.5" },
+        tableName: "race_finish_position_model_predictions",
+        fallbackIdleMs: 900_000,
+      }),
+    ).toBe(900_000);
+  });
+
+  it("does not match a different table name", () => {
+    expect(
+      resolvePerTableIdleMs({
+        env: { REPLICA_SYNC_IDLE_TIMEOUT_SECONDS_race_finish_position_model_predictions: "1800" },
+        tableName: "nvd_se",
+        fallbackIdleMs: 4321,
+      }),
+    ).toBe(4321);
   });
 });
 

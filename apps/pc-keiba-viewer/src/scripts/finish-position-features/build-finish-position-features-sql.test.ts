@@ -14,7 +14,14 @@ import {
   PRIMARY_KEY_COLUMNS,
   RACE_CONTEXT_COLUMNS,
   RECENT_FORM_COLUMNS,
+  RELATIONSHIP_R1_COLUMNS,
 } from "./build-finish-position-features-sql";
+
+const splitCreateTableDdl = (sql: string): readonly string[] =>
+  sql.split(",").map((part) => part.trim());
+
+const findFeatureDdl = (sql: string, column: string): string | undefined =>
+  splitCreateTableDdl(sql).find((part) => part.startsWith(`${column} `));
 
 test("FEATURE_TABLE_NAME is the expected target table", () => {
   expect(FEATURE_TABLE_NAME).toBe("race_finish_position_features");
@@ -70,8 +77,147 @@ test("ALL_FEATURE_COLUMNS has no duplicates", () => {
   expect(ALL_FEATURE_COLUMNS.length).toBe(new Set(ALL_FEATURE_COLUMNS).size);
 });
 
-test("ALL_FEATURE_COLUMNS aggregates to 54 entries", () => {
-  expect(ALL_FEATURE_COLUMNS.length).toBe(54);
+test("ALL_FEATURE_COLUMNS aggregates to 66 entries", () => {
+  expect(ALL_FEATURE_COLUMNS.length).toBe(66);
+});
+
+test("RELATIONSHIP_R1_COLUMNS lists the twelve iter-26 relationship features", () => {
+  expect(RELATIONSHIP_R1_COLUMNS).toStrictEqual([
+    "bataiju_futan_ratio",
+    "futan_per_barei",
+    "bataiju_per_kyori_log",
+    "bataiju_diff_from_race_mean",
+    "bataiju_rank_in_race",
+    "futan_minus_bataiju_zscore_in_race",
+    "barei_diff_from_race_mean",
+    "past_speed_kg_normalized_avg5",
+    "past_speed_futan_normalized_avg5",
+    "past_speed_age_adjusted_avg5",
+    "past_speed_volatility_5",
+    "past_finish_position_volatility_5",
+  ]);
+});
+
+test("ALL_FEATURE_COLUMNS includes bataiju_futan_ratio", () => {
+  expect(ALL_FEATURE_COLUMNS.indexOf("bataiju_futan_ratio") >= 0).toStrictEqual(true);
+});
+
+test("ALL_FEATURE_COLUMNS includes futan_per_barei", () => {
+  expect(ALL_FEATURE_COLUMNS.indexOf("futan_per_barei") >= 0).toStrictEqual(true);
+});
+
+test("ALL_FEATURE_COLUMNS includes bataiju_per_kyori_log", () => {
+  expect(ALL_FEATURE_COLUMNS.indexOf("bataiju_per_kyori_log") >= 0).toStrictEqual(true);
+});
+
+test("ALL_FEATURE_COLUMNS includes bataiju_diff_from_race_mean", () => {
+  expect(ALL_FEATURE_COLUMNS.indexOf("bataiju_diff_from_race_mean") >= 0).toStrictEqual(true);
+});
+
+test("ALL_FEATURE_COLUMNS includes bataiju_rank_in_race", () => {
+  expect(ALL_FEATURE_COLUMNS.indexOf("bataiju_rank_in_race") >= 0).toStrictEqual(true);
+});
+
+test("ALL_FEATURE_COLUMNS includes futan_minus_bataiju_zscore_in_race", () => {
+  expect(ALL_FEATURE_COLUMNS.indexOf("futan_minus_bataiju_zscore_in_race") >= 0).toStrictEqual(
+    true,
+  );
+});
+
+test("ALL_FEATURE_COLUMNS includes barei_diff_from_race_mean", () => {
+  expect(ALL_FEATURE_COLUMNS.indexOf("barei_diff_from_race_mean") >= 0).toStrictEqual(true);
+});
+
+test("ALL_FEATURE_COLUMNS includes past_speed_kg_normalized_avg5", () => {
+  expect(ALL_FEATURE_COLUMNS.indexOf("past_speed_kg_normalized_avg5") >= 0).toStrictEqual(true);
+});
+
+test("ALL_FEATURE_COLUMNS includes past_speed_futan_normalized_avg5", () => {
+  expect(ALL_FEATURE_COLUMNS.indexOf("past_speed_futan_normalized_avg5") >= 0).toStrictEqual(true);
+});
+
+test("ALL_FEATURE_COLUMNS includes past_speed_age_adjusted_avg5", () => {
+  expect(ALL_FEATURE_COLUMNS.indexOf("past_speed_age_adjusted_avg5") >= 0).toStrictEqual(true);
+});
+
+test("ALL_FEATURE_COLUMNS includes past_speed_volatility_5", () => {
+  expect(ALL_FEATURE_COLUMNS.indexOf("past_speed_volatility_5") >= 0).toStrictEqual(true);
+});
+
+test("ALL_FEATURE_COLUMNS includes past_finish_position_volatility_5", () => {
+  expect(ALL_FEATURE_COLUMNS.indexOf("past_finish_position_volatility_5") >= 0).toStrictEqual(true);
+});
+
+test("buildCreateTableSql declares bataiju_rank_in_race as integer", () => {
+  expect(findFeatureDdl(buildCreateTableSql(), "bataiju_rank_in_race")).toStrictEqual(
+    "bataiju_rank_in_race integer",
+  );
+});
+
+test("buildCreateTableSql declares bataiju_futan_ratio as numeric", () => {
+  expect(findFeatureDdl(buildCreateTableSql(), "bataiju_futan_ratio")).toStrictEqual(
+    "bataiju_futan_ratio numeric",
+  );
+});
+
+test("buildCreateTableSql declares futan_per_barei as numeric", () => {
+  expect(findFeatureDdl(buildCreateTableSql(), "futan_per_barei")).toStrictEqual(
+    "futan_per_barei numeric",
+  );
+});
+
+test("buildCreateTableSql declares bataiju_per_kyori_log as numeric", () => {
+  expect(findFeatureDdl(buildCreateTableSql(), "bataiju_per_kyori_log")).toStrictEqual(
+    "bataiju_per_kyori_log numeric",
+  );
+});
+
+test("buildCreateTableSql declares bataiju_diff_from_race_mean as numeric", () => {
+  expect(findFeatureDdl(buildCreateTableSql(), "bataiju_diff_from_race_mean")).toStrictEqual(
+    "bataiju_diff_from_race_mean numeric",
+  );
+});
+
+test("buildCreateTableSql declares futan_minus_bataiju_zscore_in_race as numeric", () => {
+  expect(findFeatureDdl(buildCreateTableSql(), "futan_minus_bataiju_zscore_in_race")).toStrictEqual(
+    "futan_minus_bataiju_zscore_in_race numeric",
+  );
+});
+
+test("buildCreateTableSql declares barei_diff_from_race_mean as numeric", () => {
+  expect(findFeatureDdl(buildCreateTableSql(), "barei_diff_from_race_mean")).toStrictEqual(
+    "barei_diff_from_race_mean numeric",
+  );
+});
+
+test("buildCreateTableSql declares past_speed_kg_normalized_avg5 as numeric", () => {
+  expect(findFeatureDdl(buildCreateTableSql(), "past_speed_kg_normalized_avg5")).toStrictEqual(
+    "past_speed_kg_normalized_avg5 numeric",
+  );
+});
+
+test("buildCreateTableSql declares past_speed_futan_normalized_avg5 as numeric", () => {
+  expect(findFeatureDdl(buildCreateTableSql(), "past_speed_futan_normalized_avg5")).toStrictEqual(
+    "past_speed_futan_normalized_avg5 numeric",
+  );
+});
+
+test("buildCreateTableSql declares past_speed_age_adjusted_avg5 as numeric", () => {
+  expect(findFeatureDdl(buildCreateTableSql(), "past_speed_age_adjusted_avg5")).toStrictEqual(
+    "past_speed_age_adjusted_avg5 numeric",
+  );
+});
+
+test("buildCreateTableSql declares past_speed_volatility_5 as numeric", () => {
+  expect(findFeatureDdl(buildCreateTableSql(), "past_speed_volatility_5")).toStrictEqual(
+    "past_speed_volatility_5 numeric",
+  );
+});
+
+test("buildCreateTableSql declares past_finish_position_volatility_5 as numeric", () => {
+  expect(findFeatureDdl(buildCreateTableSql(), "past_finish_position_volatility_5")).toStrictEqual(
+    "past_finish_position_volatility_5 numeric",
+  );
 });
 
 test("buildCreateTableSql contains the table name", () => {

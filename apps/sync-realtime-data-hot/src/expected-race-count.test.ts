@@ -231,3 +231,97 @@ it("getExpectedRaceCountForDate uses real clock when context.now is omitted (smo
   expect(total).toBe(7);
   expect(query).not.toHaveBeenCalled();
 });
+
+it("getExpectedRaceCountForDate falls back to last-known-good KV when Hyperdrive rejects", async () => {
+  // Primary cache miss → query rejects → read LKG from KV.
+  const kvGet = vi.fn(async (key: string) =>
+    key === "expected-race-count:last-known-good" ? "42" : null,
+  );
+  const kvPut = vi.fn(async () => undefined);
+  const env = buildEnv(buildKv(kvGet, kvPut));
+  const query = vi.fn(async () => {
+    throw new Error("hyperdrive down");
+  });
+  const total = await getExpectedRaceCountForDate(env, "20260531", {
+    now: ON_WINDOW_NOW,
+    pool: { query } as never,
+  });
+  expect(total).toBe(42);
+  expect(kvPut).not.toHaveBeenCalled();
+});
+
+it("getExpectedRaceCountForDate returns zero when both Hyperdrive and last-known-good fail", async () => {
+  const kvGet = vi.fn(async () => null);
+  const kvPut = vi.fn(async () => undefined);
+  const env = buildEnv(buildKv(kvGet, kvPut));
+  const query = vi.fn(async () => {
+    throw new Error("hyperdrive down");
+  });
+  const total = await getExpectedRaceCountForDate(env, "20260531", {
+    now: ON_WINDOW_NOW,
+    pool: { query } as never,
+  });
+  expect(total).toBe(0);
+  expect(kvPut).not.toHaveBeenCalled();
+});
+
+it("getExpectedRaceCountForDate writes last-known-good on successful non-zero query", async () => {
+  const kvGet = vi.fn(async () => null);
+  const kvPut = vi.fn(async () => undefined);
+  const env = buildEnv(buildKv(kvGet, kvPut));
+  const query = vi.fn().mockResolvedValue({ rows: [{ jra: 12, nar: 38 }] });
+  const total = await getExpectedRaceCountForDate(env, "20260531", {
+    now: ON_WINDOW_NOW,
+    pool: { query } as never,
+  });
+  expect(total).toBe(50);
+  expect(kvPut).toHaveBeenCalledWith("expected-race-count:last-known-good", "50", {
+    expirationTtl: 604800,
+  });
+});
+
+it("getExpectedRaceCountForDate skips last-known-good write when query returns zero", async () => {
+  const kvGet = vi.fn(async () => null);
+  const kvPut = vi.fn(async () => undefined);
+  const env = buildEnv(buildKv(kvGet, kvPut));
+  const query = vi.fn().mockResolvedValue({ rows: [{ jra: 0, nar: 0 }] });
+  const total = await getExpectedRaceCountForDate(env, "20260531", {
+    now: OFF_WINDOW_NOW,
+    pool: { query } as never,
+  });
+  expect(total).toBe(0);
+  // KV put for per-day cache happens, but LKG put does not.
+  expect(kvPut).toHaveBeenCalledWith("expected-race-count:20260531", "0", {
+    expirationTtl: 300,
+  });
+  expect(kvPut).not.toHaveBeenCalledWith(
+    "expected-race-count:last-known-good",
+    expect.any(String),
+    expect.any(Object),
+  );
+});
+
+it("getExpectedRaceCountForDate returns last-known-good when Hyperdrive times out past the budget", async () => {
+  const kvGet = vi.fn(async (key: string) =>
+    key === "expected-race-count:last-known-good" ? "33" : null,
+  );
+  const kvPut = vi.fn(async () => undefined);
+  const env = buildEnv(buildKv(kvGet, kvPut));
+  // Pool returns a promise that never resolves within the timeout window.
+  const query = vi.fn(
+    () =>
+      new Promise<{ rows: { jra: number; nar: number }[] }>((resolve) => {
+        setTimeout(() => resolve({ rows: [{ jra: 1, nar: 1 }] }), 10_000);
+      }),
+  );
+  vi.useFakeTimers();
+  const promise = getExpectedRaceCountForDate(env, "20260531", {
+    now: ON_WINDOW_NOW,
+    pool: { query } as never,
+  });
+  await vi.advanceTimersByTimeAsync(5_001);
+  const total = await promise;
+  vi.useRealTimers();
+  expect(total).toBe(33);
+  expect(kvPut).not.toHaveBeenCalled();
+});

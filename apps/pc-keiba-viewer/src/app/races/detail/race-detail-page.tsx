@@ -60,6 +60,7 @@ import {
   LazyPremiumDataTopSection,
   LazyRacePacePredictionSection,
 } from "./lazy-detail-sections";
+import { MobileCollapsibleSection } from "./mobile-collapsible-section";
 import { PaddockSection } from "./paddock-section";
 import { RaceAiAssistant } from "./race-ai-assistant";
 import { RaceShareControls } from "./race-share-controls";
@@ -541,29 +542,40 @@ export async function RaceDetailView({
           </div>
         </div>
 
-        <section className="detail-grid" aria-label="race details">
-          <DetailCell label="副題" value={race.kyosomeiFukudai} />
-          <DetailCell label="括弧内名称" value={race.kyosomeiKakkonai} />
-          <DetailCell label="条件" value={conditionLabel} />
-          <DetailCell
-            label={race.source === "nar" ? "重賞種別" : "グレード"}
-            value={getGradeLabel(race.gradeCode, race.source)}
-          />
-          <DetailCell
-            label="競走記号"
-            value={hideUnspecifiedDetailValue(getRaceSymbolDetailLabel(race.kyosoKigoCode))}
-          />
-          <DetailCell
-            label="重量種別"
-            value={hideUnspecifiedDetailValue(getWeightLabel(race.juryoShubetsuCode))}
-          />
-          <DetailCell label="出走頭数" suffix=" 頭" value={formatCountValue(race.shussoTosu)} />
-          <DetailCell label="登録頭数" suffix=" 頭" value={formatCountValue(race.torokuTosu)} />
-          <DetailLinkCell href={visibleJraRaceEntryUrl} label="JRA出馬表" value="公式ページ" />
-          <DetailLinkCell href={visibleJraRaceResultUrl} label="JRA成績" value="公式ページ" />
-          <DetailCell label="天候" value={formatWeather(race.tenkoCode)} />
-          <DetailCell label="芝馬場" value={formatBaba(race.babajotaiCodeShiba)} />
-          <DetailCell label="ダート馬場" value={formatBaba(race.babajotaiCodeDirt)} />
+        <section className="race-detail-info-section" aria-label="race details">
+          <MobileCollapsibleSection
+            heading={
+              <div className="section-heading compact">
+                <h2>レース情報</h2>
+              </div>
+            }
+            title="レース情報"
+          >
+            <div className="detail-grid">
+              <DetailCell label="副題" value={race.kyosomeiFukudai} />
+              <DetailCell label="括弧内名称" value={race.kyosomeiKakkonai} />
+              <DetailCell label="条件" value={conditionLabel} />
+              <DetailCell
+                label={race.source === "nar" ? "重賞種別" : "グレード"}
+                value={getGradeLabel(race.gradeCode, race.source)}
+              />
+              <DetailCell
+                label="競走記号"
+                value={hideUnspecifiedDetailValue(getRaceSymbolDetailLabel(race.kyosoKigoCode))}
+              />
+              <DetailCell
+                label="重量種別"
+                value={hideUnspecifiedDetailValue(getWeightLabel(race.juryoShubetsuCode))}
+              />
+              <DetailCell label="出走頭数" suffix=" 頭" value={formatCountValue(race.shussoTosu)} />
+              <DetailCell label="登録頭数" suffix=" 頭" value={formatCountValue(race.torokuTosu)} />
+              <DetailLinkCell href={visibleJraRaceEntryUrl} label="JRA出馬表" value="公式ページ" />
+              <DetailLinkCell href={visibleJraRaceResultUrl} label="JRA成績" value="公式ページ" />
+              <DetailCell label="天候" value={formatWeather(race.tenkoCode)} />
+              <DetailCell label="芝馬場" value={formatBaba(race.babajotaiCodeShiba)} />
+              <DetailCell label="ダート馬場" value={formatBaba(race.babajotaiCodeDirt)} />
+            </div>
+          </MobileCollapsibleSection>
         </section>
 
         <TrackConditionSection trackCode={race.trackCode} />
@@ -614,57 +626,63 @@ export async function RaceDetailView({
         />
 
         <section className="course-section">
-          <div className="section-heading compact">
-            <h2>コース情報</h2>
-            <span>
-              {formatKeibajo(keibajoCode)} {formatTrack(race.trackCode)}{" "}
-              {formatDistance(race.kyori)}
-            </span>
-          </div>
-          <div className="course-panel">
-            <div className="course-summary">
-              <span>{formatTrack(race.trackCode)}</span>
-              <strong>{formatDistance(race.kyori)}</strong>
-              <span>
-                改修日{" "}
-                {courseInfo
-                  ? formatDate(
-                      courseInfo.courseKaishuNengappi.slice(0, 4),
-                      courseInfo.courseKaishuNengappi.slice(4, 8),
-                    )
-                  : "-"}
-              </span>
-            </div>
-            {courseFacts.length > 0 ? (
-              <dl className="course-facts">
-                {courseFacts.map((fact) => (
-                  <div key={fact.label}>
-                    <dt>{fact.label}</dt>
-                    <dd>{fact.value}</dd>
-                  </div>
-                ))}
-              </dl>
-            ) : null}
-            {courseImagePath ? (
-              <figure className="course-image">
-                <Image
-                  src={courseImagePath}
-                  alt={`${formatKeibajo(keibajoCode)} ${formatTrack(race.trackCode)} ${formatDistance(race.kyori)} コース図`}
-                  width={900}
-                  height={480}
-                  sizes="(max-width: 720px) 100vw, 900px"
-                />
-              </figure>
-            ) : null}
-            <details className="course-description">
-              <summary>コース説明を表示</summary>
-              <div>
-                {courseParagraphs.map((paragraph) => (
-                  <p key={paragraph}>{paragraph}</p>
-                ))}
+          <MobileCollapsibleSection
+            heading={
+              <div className="section-heading compact">
+                <h2>コース情報</h2>
+                <span>
+                  {formatKeibajo(keibajoCode)} {formatTrack(race.trackCode)}{" "}
+                  {formatDistance(race.kyori)}
+                </span>
               </div>
-            </details>
-          </div>
+            }
+            title="コース情報"
+          >
+            <div className="course-panel">
+              <div className="course-summary">
+                <span>{formatTrack(race.trackCode)}</span>
+                <strong>{formatDistance(race.kyori)}</strong>
+                <span>
+                  改修日{" "}
+                  {courseInfo
+                    ? formatDate(
+                        courseInfo.courseKaishuNengappi.slice(0, 4),
+                        courseInfo.courseKaishuNengappi.slice(4, 8),
+                      )
+                    : "-"}
+                </span>
+              </div>
+              {courseFacts.length > 0 ? (
+                <dl className="course-facts">
+                  {courseFacts.map((fact) => (
+                    <div key={fact.label}>
+                      <dt>{fact.label}</dt>
+                      <dd>{fact.value}</dd>
+                    </div>
+                  ))}
+                </dl>
+              ) : null}
+              {courseImagePath ? (
+                <figure className="course-image">
+                  <Image
+                    src={courseImagePath}
+                    alt={`${formatKeibajo(keibajoCode)} ${formatTrack(race.trackCode)} ${formatDistance(race.kyori)} コース図`}
+                    width={900}
+                    height={480}
+                    sizes="(max-width: 720px) 100vw, 900px"
+                  />
+                </figure>
+              ) : null}
+              <details className="course-description">
+                <summary>コース説明を表示</summary>
+                <div>
+                  {courseParagraphs.map((paragraph) => (
+                    <p key={paragraph}>{paragraph}</p>
+                  ))}
+                </div>
+              </details>
+            </div>
+          </MobileCollapsibleSection>
         </section>
 
         <section className="runners-section">

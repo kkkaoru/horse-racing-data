@@ -21,6 +21,7 @@ import {
   formatTime,
   formatTrack,
 } from "../../../../../../../../lib/format";
+import { getPaddockAdjacentNav } from "../../../../../../../../lib/paddock-adjacent-nav";
 import { getRaceTags } from "../../../../../../../../lib/race-classification";
 import {
   buildRaceDetailSsrCacheKey,
@@ -39,10 +40,10 @@ export const dynamic = "force-dynamic";
 // recovers via retry rather than stalling SSR navigation. Real values are
 // the priority; the empty/notFound fallback only fires after every retry
 // has been exhausted.
-const RUNNING_STYLE_ATTEMPT_TIMEOUT_MS = 3500;
+const RUNNING_STYLE_ATTEMPT_TIMEOUT_MS = 1800;
 const RUNNING_STYLE_MAX_ATTEMPTS = 2;
 const RUNNING_STYLE_RETRY_BACKOFF_MS = 200;
-const RUNNING_STYLE_TOTAL_TIMEOUT_MS = 9000;
+const RUNNING_STYLE_TOTAL_TIMEOUT_MS = 4000;
 const SNAPSHOT_MAX_ATTEMPTS = 2;
 const SNAPSHOT_RETRY_BACKOFF_MS = 200;
 const SNAPSHOT_ATTEMPT_TIMEOUT_MS = 5000;
@@ -247,7 +248,11 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
   if (!snapshot) {
     notFound();
   }
-  const { race, runners } = snapshot;
+  const { race, runners, sameVenueRaces } = snapshot;
+  const adjacentNav = getPaddockAdjacentNav({
+    currentRaceBango: raceNumber,
+    sameVenueRaces,
+  });
   if (!cachedSnapshot) {
     const cloudflareCtx = await safeGetCloudflareExecutionContext();
     cloudflareCtx?.waitUntil(
@@ -295,6 +300,24 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
           ))}
         </div>
       </section>
+      {adjacentNav.previous ? (
+        <Link
+          aria-label={`前のレースのパドック編集 ${adjacentNav.previous.label}`}
+          className="race-side-nav race-side-nav-prev"
+          href={adjacentNav.previous.path}
+        >
+          <span className="race-nav-icon" aria-hidden="true" />
+        </Link>
+      ) : null}
+      {adjacentNav.next ? (
+        <Link
+          aria-label={`次のレースのパドック編集 ${adjacentNav.next.label}`}
+          className="race-side-nav race-side-nav-next"
+          href={adjacentNav.next.path}
+        >
+          <span className="race-nav-icon" aria-hidden="true" />
+        </Link>
+      ) : null}
       <nav className="breadcrumbs" aria-label="パンくずリスト">
         <Link href="/races">開催日一覧</Link>
         <Link href={`/races/${year}/${month}/${day}/${keibajoCode}`}>
@@ -303,6 +326,32 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
         <Link href={raceDetailPath}>{formatRaceNumber(raceNumber)}</Link>
         <span>パドック編集</span>
       </nav>
+      {adjacentNav.previous || adjacentNav.next ? (
+        <nav className="race-mobile-nav" aria-label="same venue paddock edit navigation">
+          {adjacentNav.previous ? (
+            <Link
+              aria-label={`前のレースのパドック編集 ${adjacentNav.previous.label}`}
+              className="race-mobile-nav-prev"
+              href={adjacentNav.previous.path}
+            >
+              <span className="race-nav-icon" aria-hidden="true" />
+            </Link>
+          ) : (
+            <span aria-hidden="true" />
+          )}
+          {adjacentNav.next ? (
+            <Link
+              aria-label={`次のレースのパドック編集 ${adjacentNav.next.label}`}
+              className="race-mobile-nav-next"
+              href={adjacentNav.next.path}
+            >
+              <span className="race-nav-icon" aria-hidden="true" />
+            </Link>
+          ) : (
+            <span aria-hidden="true" />
+          )}
+        </nav>
+      ) : null}
 
       <header className="page-title-row paddock-edit-title-row">
         <div>
