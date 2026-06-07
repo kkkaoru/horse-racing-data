@@ -216,7 +216,10 @@ describe("buildFinishPredictionRowsFromResults", () => {
       currentRaceDate: "20260514",
       currentSource: "nar",
       currentTrackCode: "24",
-      results: [],
+      results: [
+        result({ currentUmaban: "01", kakuteiChakujun: "03", keibajoCode: "35", kyori: "1600" }),
+        result({ currentUmaban: "01", kakuteiChakujun: "05", keibajoCode: "35", kyori: "1600" }),
+      ],
       runners: [runner({ tanshoNinkijun: "02", tanshoOdds: "0040" })],
     });
     const sprintRows = buildFinishPredictionRowsFromResults({
@@ -226,7 +229,10 @@ describe("buildFinishPredictionRowsFromResults", () => {
       currentRaceDate: "20260514",
       currentSource: "nar",
       currentTrackCode: "24",
-      results: [],
+      results: [
+        result({ currentUmaban: "01", kakuteiChakujun: "03", keibajoCode: "35", kyori: "1200" }),
+        result({ currentUmaban: "01", kakuteiChakujun: "05", keibajoCode: "35", kyori: "1200" }),
+      ],
       runners: [runner({ tanshoNinkijun: "02", tanshoOdds: "0040" })],
     });
 
