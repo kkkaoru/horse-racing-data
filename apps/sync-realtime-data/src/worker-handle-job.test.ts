@@ -1303,9 +1303,10 @@ it("handleJob fetch-jra-track-condition with successful claim and empty races fa
   });
 });
 
-it("handleJob fetch-results with JRA race source completes when isRaceFinished", async () => {
+it("handleJob fetch-results with JRA race source throws when entry and result both parse empty", async () => {
   const { handleJob } = await import("./worker");
-  const { claimResultFetch, getRaceSource, completeResultFetch } = await import("./storage");
+  const { claimResultFetch, getRaceSource, completeResultFetch, failResultFetch } =
+    await import("./storage");
   vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
   vi.mocked(getRaceSource).mockResolvedValueOnce({
     babaCode: "08",
@@ -1334,11 +1335,14 @@ it("handleJob fetch-results with JRA race source completes when isRaceFinished",
     source: "jra",
     updatedAt: "2026-05-12T00:00:00+09:00",
   } as never);
-  await handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z" } as never), {
-    raceKey: "jra:2026:0512:08:01",
-    type: "fetch-results",
-  });
-  expect(completeResultFetch).toHaveBeenCalledTimes(1);
+  await expect(
+    handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z" } as never), {
+      raceKey: "jra:2026:0512:08:01",
+      type: "fetch-results",
+    }),
+  ).rejects.toThrow("race entry rows are empty: jra:2026:0512:08:01");
+  expect(failResultFetch).toHaveBeenCalled();
+  expect(completeResultFetch).not.toHaveBeenCalled();
 });
 
 it("handleJob fetch-weights with JRA race source runs assert + insertHorseWeightSnapshot", async () => {
@@ -1524,9 +1528,10 @@ it("handleJob fetch-weights NAR + sparse weight rows (length 1) preserves existi
   warnSpy.mockRestore();
 });
 
-it("handleJob fetch-results with NAR race source completes when finish-position rows empty", async () => {
+it("handleJob fetch-results with NAR race source throws when entry and result both parse empty", async () => {
   const { handleJob } = await import("./worker");
-  const { claimResultFetch, getRaceSource, completeResultFetch } = await import("./storage");
+  const { claimResultFetch, getRaceSource, completeResultFetch, failResultFetch } =
+    await import("./storage");
   vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
   vi.mocked(getRaceSource).mockResolvedValueOnce({
     babaCode: "22",
@@ -1555,11 +1560,14 @@ it("handleJob fetch-results with NAR race source completes when finish-position 
     source: "nar",
     updatedAt: "2026-05-12T00:00:00+09:00",
   } as never);
-  await handleJob(buildEnv(), {
-    raceKey: "nar:2026:0512:55:01",
-    type: "fetch-results",
-  });
-  expect(completeResultFetch).toHaveBeenCalledTimes(1);
+  await expect(
+    handleJob(buildEnv(), {
+      raceKey: "nar:2026:0512:55:01",
+      type: "fetch-results",
+    }),
+  ).rejects.toThrow("race entry rows are empty: nar:2026:0512:55:01");
+  expect(failResultFetch).toHaveBeenCalled();
+  expect(completeResultFetch).not.toHaveBeenCalled();
 });
 
 it("isD1OverloadError returns true for D1 DB is overloaded message", async () => {
