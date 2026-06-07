@@ -7,6 +7,7 @@ import type { FinishPredictionBuildInputs } from "../../../lib/finish-position-p
 import {
   buildFinishPredictionMarketOverrides,
   buildFinishPredictionRowsFromInputs,
+  NEW_HORSE_MAIDEN_CODE,
   RACE_FINISH_PREDICTION_RESULTS_EVENT,
 } from "../../../lib/finish-position-prediction";
 import type { FinishPredictionEvaluationMetrics } from "../../../lib/finish-position-prediction-evaluation";
@@ -386,9 +387,11 @@ export function FinishPositionPredictionTable({
   inputs,
   realtimeRequest,
 }: FinishPositionPredictionTableProps) {
+  const isNewHorseMaiden = inputs.currentKyosoJokenCode === NEW_HORSE_MAIDEN_CODE;
   const [expandedHorseNumber, setExpandedHorseNumber] = useState<string | null>(null);
+  const [oddsCorrectionEnabled, setOddsCorrectionEnabled] = useState<boolean>(!isNewHorseMaiden);
   const [displayRows, setDisplayRows] = useState<FinishPredictionRow[]>(() =>
-    buildFinishPredictionRowsFromInputs(inputs),
+    buildFinishPredictionRowsFromInputs({ ...inputs, oddsCorrectionEnabled }),
   );
   const [paddockState, setPaddockState] = useState<PaddockState | null>(null);
   const { payload } = useRealtimeRacePayload(realtimeRequest, null);
@@ -474,9 +477,11 @@ export function FinishPositionPredictionTable({
     const tanshoRows = payload?.odds?.latest.tansho ?? [];
     const marketOverrides =
       tanshoRows.length > 0 ? buildFinishPredictionMarketOverrides(tanshoRows) : undefined;
-    setDisplayRows(buildFinishPredictionRowsFromInputs(inputs, marketOverrides));
+    setDisplayRows(
+      buildFinishPredictionRowsFromInputs({ ...inputs, oddsCorrectionEnabled }, marketOverrides),
+    );
     setExpandedHorseNumber(null);
-  }, [inputs, payload?.odds?.latest.tansho]);
+  }, [inputs, oddsCorrectionEnabled, payload?.odds?.latest.tansho]);
 
   useEffect(() => {
     let isActive = true;
@@ -541,6 +546,16 @@ export function FinishPositionPredictionTable({
   return (
     <>
       <FinishPredictionEvaluationPanel evaluation={evaluation} />
+      <div className="finish-prediction-odds-toggle">
+        <label>
+          <input
+            checked={oddsCorrectionEnabled}
+            onChange={(event) => setOddsCorrectionEnabled(event.target.checked)}
+            type="checkbox"
+          />
+          <span>オッズ補正</span>
+        </label>
+      </div>
       <div className="stats-table-wrap">
         <table className="stats-table analysis-table finish-prediction-table">
           <colgroup>

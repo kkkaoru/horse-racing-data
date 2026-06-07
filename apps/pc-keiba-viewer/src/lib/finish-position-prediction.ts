@@ -29,6 +29,7 @@ export interface FinishPredictionBuildInputs {
   currentSource: RaceSource;
   currentTrackCode?: string | null;
   modelPredictionFeatures?: FinishPositionModelPredictionFeature[];
+  oddsCorrectionEnabled?: boolean;
   results: HorseRaceResult[];
   runners: Runner[];
   sameDayVenueJockeyWins?: SameDayVenueJockeyWinFeature[];
@@ -131,7 +132,7 @@ const CATEGORY_CONFIG: Record<FinishPredictionCategory, FinishPredictionConfig> 
 
 const GRADED_RACE_CODES = new Set(["A", "B", "C", "D", "E", "F", "G", "H", "L"]);
 
-const NEW_HORSE_MAIDEN_CODE = "701";
+export const NEW_HORSE_MAIDEN_CODE = "701";
 
 const NEW_HORSE_MAIDEN_MODEL_BOOST = 4;
 
@@ -578,6 +579,7 @@ export const buildFinishPredictionRowsFromResults = ({
   currentTrackCode,
   marketOverrides,
   modelPredictionFeatures = [],
+  oddsCorrectionEnabled,
   results,
   runners,
   sameDayVenueJockeyWins = [],
@@ -636,9 +638,12 @@ export const buildFinishPredictionRowsFromResults = ({
     );
     const runnerConfig = getHorseHistoryAdjustedConfig(config, horseResults.length, category);
     const isNewHorseMaiden = cleanText(currentKyosoJokenCode, "") === NEW_HORSE_MAIDEN_CODE;
-    const finalRunnerConfig: FinishPredictionConfig = isNewHorseMaiden
-      ? { ...runnerConfig, oddsWeight: 0, popularityWeight: 0 }
-      : runnerConfig;
+    const isOddsCorrectionApplied = oddsCorrectionEnabled ?? !isNewHorseMaiden;
+    const finalRunnerConfig: FinishPredictionConfig = {
+      ...runnerConfig,
+      oddsWeight: isOddsCorrectionApplied ? runnerConfig.oddsWeight : 0,
+      popularityWeight: isNewHorseMaiden ? 0 : runnerConfig.popularityWeight,
+    };
     const averageParams = {
       config: finalRunnerConfig,
       currentDistance,
