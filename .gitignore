@@ -181,3 +181,6 @@ apps/finish-position-predict-container/models/
 
 tmp
 .neon
+
+temp/*
+!temp/.gitignore
