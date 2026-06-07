@@ -2364,3 +2364,135 @@ it("runWeightWatchdog logs an error when the d1 query throws and does not enqueu
   expect(send).not.toHaveBeenCalled();
   expect(sendBatch).not.toHaveBeenCalled();
 });
+
+// 2026-06-07: cover the new RESULT_FETCH_QUEUE_STALE_MINUTES branch in
+// `buildResultFetchJobIfDue`. Without this guard a `last_result_queued_at`
+// row left behind by an early-return path (claim race, transient skip)
+// permanently blocked the planner from re-enqueueing the race even after
+// the result-fetch lock expired.
+
+it("planResultFetchesOnly re-enqueues fetch-results when lastResultQueuedAt is older than the stale threshold", async () => {
+  const { planResultFetchesOnly } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
+    {
+      babaCode: "08",
+      debaUrl: "https://www.jra.go.jp/race",
+      discoveredAt: "2026-06-07T00:00:00+09:00",
+      kaisaiKai: "03",
+      kaisaiNen: "2026",
+      kaisaiNichime: "01",
+      kaisaiTsukihi: "0607",
+      keibajoCode: "09",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: "2026-06-07T10:56:02+09:00",
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "03",
+      raceKey: "jra:2026:0607:09:03",
+      raceName: "阪神3R",
+      raceStartAtJst: "2026-06-07T10:50:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: "2026-06-07T11:06:05+09:00",
+      resultSavedHorseCount: null,
+      source: "jra",
+      updatedAt: "2026-06-07T00:00:00+09:00",
+    },
+  ] as never);
+  const send = vi.fn(async () => {});
+  const env = buildEnv({
+    REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
+    REALTIME_TEST_NOW: "2026-06-07T04:30:00.000Z",
+  });
+  const count = await planResultFetchesOnly(env, "20260607");
+  expect(count).toBe(1);
+  expect(send).toHaveBeenCalledWith({ raceKey: "jra:2026:0607:09:03", type: "fetch-results" });
+});
+
+it("planResultFetchesOnly skips fetch-results when lastResultQueuedAt is fresh (within stale threshold)", async () => {
+  const { planResultFetchesOnly } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
+    {
+      babaCode: "08",
+      debaUrl: "https://www.jra.go.jp/race",
+      discoveredAt: "2026-06-07T00:00:00+09:00",
+      kaisaiKai: "03",
+      kaisaiNen: "2026",
+      kaisaiNichime: "01",
+      kaisaiTsukihi: "0607",
+      keibajoCode: "09",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: "2026-06-07T13:25:00+09:00",
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "03",
+      raceKey: "jra:2026:0607:09:03",
+      raceName: "阪神3R",
+      raceStartAtJst: "2026-06-07T10:50:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "jra",
+      updatedAt: "2026-06-07T00:00:00+09:00",
+    },
+  ] as never);
+  const send = vi.fn(async () => {});
+  const env = buildEnv({
+    REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
+    REALTIME_TEST_NOW: "2026-06-07T04:30:00.000Z",
+  });
+  const count = await planResultFetchesOnly(env, "20260607");
+  expect(count).toBe(0);
+  expect(send).not.toHaveBeenCalled();
+});
+
+it("planResultFetchesOnly enqueues fetch-results for a finished race that has never been queued", async () => {
+  const { planResultFetchesOnly } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
+    {
+      babaCode: "08",
+      debaUrl: "https://www.jra.go.jp/race",
+      discoveredAt: "2026-06-07T00:00:00+09:00",
+      kaisaiKai: "03",
+      kaisaiNen: "2026",
+      kaisaiNichime: "01",
+      kaisaiTsukihi: "0607",
+      keibajoCode: "09",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "03",
+      raceKey: "jra:2026:0607:09:03",
+      raceName: "阪神3R",
+      raceStartAtJst: "2026-06-07T10:50:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "jra",
+      updatedAt: "2026-06-07T00:00:00+09:00",
+    },
+  ] as never);
+  const send = vi.fn(async () => {});
+  const env = buildEnv({
+    REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
+    REALTIME_TEST_NOW: "2026-06-07T04:30:00.000Z",
+  });
+  const count = await planResultFetchesOnly(env, "20260607");
+  expect(count).toBe(1);
+  expect(send).toHaveBeenCalledWith({ raceKey: "jra:2026:0607:09:03", type: "fetch-results" });
+});

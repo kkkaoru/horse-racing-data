@@ -218,6 +218,16 @@ const RESULT_FETCH_GIVE_UP_HOURS = 24;
 // window. Each result-poll tick is one cheap SELECT against
 // realtime_race_sources so D1 still has plenty of CPU headroom.
 const RESULT_FETCH_INTERVAL_MINUTES = 2;
+// 2026-06-07: re-enqueue threshold for races whose `last_result_queued_at`
+// stayed set without ever being cleared by `completeResultFetch` /
+// `failResultFetch` / `recordPartialResultFetch`. When a `fetch-results` job
+// is dequeued but takes an early-return path (claim failed, race not finished
+// yet, transient skip) the queued_at column is never reset, so the planner
+// permanently skips that race even after the lock has expired. This stale
+// threshold MUST be strictly larger than the longest retry lock window
+// (`RESULT_FETCH_RETRY_LONG_LOCK_MINUTES` = 15) plus a small grace, so we do
+// not race the in-flight job. 20 minutes = 15 + 5 grace.
+const RESULT_FETCH_QUEUE_STALE_MINUTES = 20;
 // JST 09-22 (= UTC 00-13) is the race-day result-poller cron. Distinct from
 // the hourly "0 0-13 * * *" plan-realtime-fetches cron so we only run the
 // result poller without re-triggering the heavier hourly work. Tightened to
@@ -2155,13 +2165,19 @@ const buildResultFetchJobIfDue = (
   const resultLockUntil = race.resultFetchLockUntil
     ? new Date(race.resultFetchLockUntil).getTime()
     : Number.NaN;
+  const queuedAtMs = race.lastResultQueuedAt
+    ? new Date(race.lastResultQueuedAt).getTime()
+    : Number.NaN;
+  const queuedTooLongAgo =
+    !Number.isNaN(queuedAtMs) &&
+    now.getTime() - queuedAtMs > RESULT_FETCH_QUEUE_STALE_MINUTES * 60_000;
   const isResultFetchEligible =
     minutes <= 0 &&
     (race.source === "nar" || race.source === "jra") &&
     !race.resultCompleteAt &&
     isDue(race.lastResultFetchAt, RESULT_FETCH_INTERVAL_MINUTES, now) &&
     (Number.isNaN(resultLockUntil) || resultLockUntil <= now.getTime()) &&
-    !race.lastResultQueuedAt;
+    (!race.lastResultQueuedAt || queuedTooLongAgo);
   return isResultFetchEligible ? { raceKey: race.raceKey, type: "fetch-results" } : null;
 };
 
