@@ -18,7 +18,7 @@ const mocks = vi.hoisted(() => ({
   getRaceTrendTodayRunningStylesFromD1Mock: vi.fn<(...args: never[]) => unknown>(),
   getRaceTrendTodaySiblingRunnerDataMock: vi.fn<(...args: never[]) => unknown>(),
   getRaceTrendTodayStarterRowsMock: vi.fn<(...args: never[]) => unknown>(),
-  notifyRaceTrendRoomMock: vi.fn<(...args: never[]) => unknown>(),
+  notifyRaceTrendRoomIfChangedMock: vi.fn<(...args: never[]) => unknown>(),
   putRaceTrendCacheMock: vi.fn<(...args: never[]) => unknown>(),
   useProductionApiProxyMock: vi.fn<() => boolean>(),
 }));
@@ -61,7 +61,7 @@ vi.mock("../../../../../../../../../lib/race-trend-daily-track-client.server", (
 }));
 
 vi.mock("../../../../../../../../../lib/race-trend-room.server", () => ({
-  notifyRaceTrendRoom: mocks.notifyRaceTrendRoomMock,
+  notifyRaceTrendRoomIfChanged: mocks.notifyRaceTrendRoomIfChangedMock,
 }));
 
 vi.mock("../../../../../../../../../lib/running-style-cache.server", () => ({
@@ -83,7 +83,7 @@ const {
   getRaceTrendTodayRunningStylesFromD1Mock,
   getRaceTrendTodaySiblingRunnerDataMock,
   getRaceTrendTodayStarterRowsMock,
-  notifyRaceTrendRoomMock,
+  notifyRaceTrendRoomIfChangedMock,
   putRaceTrendCacheMock,
   useProductionApiProxyMock,
 } = mocks;
@@ -260,7 +260,7 @@ beforeEach(() => {
   getRaceTrendTodayRunningStylesFromD1Mock.mockReset();
   getRaceTrendTodaySiblingRunnerDataMock.mockReset();
   getRaceTrendTodayStarterRowsMock.mockReset();
-  notifyRaceTrendRoomMock.mockReset();
+  notifyRaceTrendRoomIfChangedMock.mockReset();
   putRaceTrendCacheMock.mockReset();
   useProductionApiProxyMock.mockReset();
   useProductionApiProxyMock.mockReturnValue(false);
@@ -271,7 +271,7 @@ beforeEach(() => {
   getRaceTrendTodaySiblingRunnerDataMock.mockResolvedValue([]);
   getCachedRaceTrendResponseMock.mockResolvedValue(null);
   putRaceTrendCacheMock.mockResolvedValue(undefined);
-  notifyRaceTrendRoomMock.mockResolvedValue(true);
+  notifyRaceTrendRoomIfChangedMock.mockResolvedValue(true);
   getRaceRunnersMock.mockResolvedValue([buildRunner()]);
 });
 
@@ -748,11 +748,11 @@ it("GET writes cache when payload has both starterRows and historicalRunningStyl
   const response = await GET(buildTrendRequest(), buildTrendContext());
   expect(response.status).toBe(200);
   expect(putRaceTrendCacheMock).toHaveBeenCalledTimes(1);
-  expect(notifyRaceTrendRoomMock).toHaveBeenCalledTimes(1);
+  expect(notifyRaceTrendRoomIfChangedMock).toHaveBeenCalledTimes(1);
   expect(response.headers.get("X-Race-Trend-Cache")).toBe("MISS-STORED");
 });
 
-it("GET skips cache write when notifyRaceTrendRoom rejects but still returns 200", async () => {
+it("GET skips cache write when notifyRaceTrendRoomIfChanged rejects but still returns 200", async () => {
   getRaceDetailMock.mockResolvedValue(buildRaceDetail());
   getRaceTrendPast14StarterRowsMock.mockResolvedValue([buildStarterRow({ raceBango: "01" })]);
   fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
@@ -760,7 +760,7 @@ it("GET skips cache write when notifyRaceTrendRoom rejects but still returns 200
   getRaceTrendRunningStylesFromD1Mock.mockResolvedValue([
     { horseNumber: "1", predictedLabel: "nige", raceKey: "jra:2026:0529:05:01" },
   ]);
-  notifyRaceTrendRoomMock.mockRejectedValue(new Error("notify boom"));
+  notifyRaceTrendRoomIfChangedMock.mockRejectedValue(new Error("notify boom"));
   const response = await GET(buildTrendRequest(), buildTrendContext());
   expect(response.status).toBe(200);
 });

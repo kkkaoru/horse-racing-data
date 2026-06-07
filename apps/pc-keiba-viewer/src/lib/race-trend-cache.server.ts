@@ -29,6 +29,15 @@ const CACHE_CONTROL_HEADER = "public, max-age=%d";
 const CACHE_URL_BASE = "https://pc-keiba-viewer.local/race-trend-cache/";
 const DEFAULT_CONTENT_TYPE = "application/json; charset=utf-8";
 
+// In-flight gate for KV PUT. When concurrent rebuilds finish at the same
+// time (race-detail notify-storm) we previously sent N identical PUTs to
+// DETAIL_SECTION_CACHE_KV, which 429-throttled the namespace. The gate is
+// stored in KV itself so it spans Worker isolates. 60s is the KV
+// expirationTtl minimum; a stale gate self-clears within that window.
+const KV_PUT_IN_FLIGHT_PREFIX = "race-trend-kv-put-in-flight:";
+const KV_PUT_IN_FLIGHT_TTL_SECONDS = 60;
+const KV_PUT_IN_FLIGHT_VALUE = "1";
+
 type CacheSource = "cache-api" | "kv";
 
 const memoryCache = new Map<string, { body: string; expiresAt: number }>();
@@ -105,6 +114,44 @@ export const getCachedRaceTrendResponse = async (cacheKey: string): Promise<Resp
   return buildCachedResponse(kvBody, "kv");
 };
 
+const getKvPutInFlightKey = (cacheKey: string): string => `${KV_PUT_IN_FLIGHT_PREFIX}${cacheKey}`;
+
+const isKvPutInFlight = async (kv: PcKeibaKvNamespace, cacheKey: string): Promise<boolean> => {
+  try {
+    return (await kv.get(getKvPutInFlightKey(cacheKey))) === KV_PUT_IN_FLIGHT_VALUE;
+  } catch {
+    return false;
+  }
+};
+
+const markKvPutInFlight = async (kv: PcKeibaKvNamespace, cacheKey: string): Promise<void> => {
+  try {
+    await kv.put(getKvPutInFlightKey(cacheKey), KV_PUT_IN_FLIGHT_VALUE, {
+      expirationTtl: KV_PUT_IN_FLIGHT_TTL_SECONDS,
+    });
+  } catch {
+    // Gate-mark failure is non-fatal; the main PUT below will still attempt.
+  }
+};
+
+const putKvIfNotInFlight = async ({
+  body,
+  cacheKey,
+  kv,
+  ttlSeconds,
+}: {
+  body: string;
+  cacheKey: string;
+  kv: PcKeibaKvNamespace;
+  ttlSeconds: number;
+}): Promise<void> => {
+  if (await isKvPutInFlight(kv, cacheKey)) {
+    return;
+  }
+  await markKvPutInFlight(kv, cacheKey);
+  await kv.put(cacheKey, body, { expirationTtl: ttlSeconds });
+};
+
 export const putRaceTrendCache = async ({
   body,
   cacheKey,
@@ -125,6 +172,7 @@ export const putRaceTrendCache = async ({
   });
 
   const cacheControl = CACHE_CONTROL_HEADER.replace("%d", String(ttlSeconds));
+  const kv = env?.DETAIL_SECTION_CACHE_KV;
   await Promise.all([
     getDefaultCache()?.put(
       getCacheRequest(cacheKey),
@@ -135,7 +183,7 @@ export const putRaceTrendCache = async ({
         },
       }),
     ),
-    env?.DETAIL_SECTION_CACHE_KV?.put(cacheKey, body, { expirationTtl: ttlSeconds }),
+    kv ? putKvIfNotInFlight({ body, cacheKey, kv, ttlSeconds }) : undefined,
   ]);
 };
 
