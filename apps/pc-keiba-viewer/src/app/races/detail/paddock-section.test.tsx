@@ -569,3 +569,68 @@ test("PaddockSection read-only table includes trainer and bloodline column heade
   expect(screen.getByRole("columnheader", { name: "父父" }).tagName).toBe("TH");
   expect(screen.getByRole("columnheader", { name: "母父" }).tagName).toBe("TH");
 });
+
+test("PaddockSection lazy recent-results clears skeleton after fetch failure (loading=false on catch)", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockImplementation((input: string, init?: RequestInit) => {
+    if (init?.method === "POST") {
+      return Promise.resolve(makeJsonResponse(buildPaddockState([])));
+    }
+    if (input.includes("/recent-results")) {
+      return Promise.reject(new Error("recent-results upstream 500"));
+    }
+    return Promise.resolve(makeJsonResponse(buildPaddockState([])));
+  });
+
+  render(
+    <PaddockSection
+      day="02"
+      editable
+      keibajoCode="05"
+      month="06"
+      raceNumber="01"
+      source="jra"
+      year="2026"
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.queryByLabelText("近走成績を読み込み中")).toBeNull();
+  });
+  expect(screen.getByText("初出走").tagName).toBe("SPAN");
+});
+
+test("PaddockSection lazy recent-results clears skeleton via safety timer when fetch never resolves", async () => {
+  vi.useFakeTimers();
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  const pendingForever: Promise<Response> = new Promise<Response>(() => undefined);
+  fetchWithRetryMock.mockImplementation((input: string, init?: RequestInit) => {
+    if (init?.method === "POST") {
+      return Promise.resolve(makeJsonResponse(buildPaddockState([])));
+    }
+    if (input.includes("/recent-results")) {
+      return pendingForever;
+    }
+    return Promise.resolve(makeJsonResponse(buildPaddockState([])));
+  });
+
+  render(
+    <PaddockSection
+      day="02"
+      editable
+      keibajoCode="05"
+      month="06"
+      raceNumber="01"
+      source="jra"
+      year="2026"
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  expect(screen.queryByLabelText("近走成績を読み込み中")).not.toBeNull();
+  await vi.advanceTimersByTimeAsync(8001);
+  expect(screen.queryByLabelText("近走成績を読み込み中")).toBeNull();
+  expect(screen.getByText("初出走").tagName).toBe("SPAN");
+  vi.useRealTimers();
+});

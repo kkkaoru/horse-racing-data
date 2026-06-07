@@ -166,6 +166,11 @@ const PUBLIC_DETAIL_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
 const OFFICIAL_RANK_OPTIONS: PaddockOfficialRank[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 const PAST_RACE_EDIT_UNLOCK_MS = 10 * 60 * 1000;
 const PADDOCK_REMAINING_MARKER_TOP = 112;
+// Hard ceiling for the recent-results skeleton. The request itself uses
+// fetchWithRetry (3 attempts ~600ms-2s), but Cloudflare Access redirects and
+// stalled colos can keep the original promise unsettled, so the timer ensures
+// the paddock edit UI never blocks longer than this.
+const RECENT_RESULTS_FETCH_TIMEOUT_MS = 8000;
 const PADDOCK_RUNNING_STYLE_LABELS: Record<PaddockRunningStyleLabel, string> = {
   nige: "逃げ",
   oikomi: "追い込み",
@@ -1633,6 +1638,11 @@ export function PaddockSection({
   // rejection even when our `catch` handles it. Since the request is a
   // single GET (no retry loop), letting it finish and ignoring the result
   // via the `cancelled` flag is just as efficient and silent.
+  //
+  // A wall-clock safety timer guarantees the skeleton clears even if the
+  // upstream stalls (Cloudflare Access redirect loop, queued worker, KV
+  // saturation) so the paddock edit UI never gets blocked behind an
+  // indefinite loading state.
   useEffect(() => {
     if (!editable || recentResults !== undefined) {
       return undefined;
@@ -1648,6 +1658,14 @@ export function PaddockSection({
     setRecentResultsLoading(true);
     const isRecentResultsResponse = (value: unknown): value is { results?: HorseRaceResult[] } =>
       typeof value === "object" && value !== null && !Array.isArray(value);
+    const settleWithEmpty = (): void => {
+      if (cancelled) {
+        return;
+      }
+      setLazyRecentResults((current) => current ?? []);
+      setRecentResultsLoading(false);
+    };
+    const safetyTimer = window.setTimeout(settleWithEmpty, RECENT_RESULTS_FETCH_TIMEOUT_MS);
     const loadRecentResults = async (): Promise<void> => {
       try {
         const response = await fetchWithRetry(requestUrl);
@@ -1677,6 +1695,7 @@ export function PaddockSection({
     void loadRecentResults();
     return () => {
       cancelled = true;
+      window.clearTimeout(safetyTimer);
     };
   }, [day, editable, keibajoCode, month, raceNumber, recentResults, source, year]);
 

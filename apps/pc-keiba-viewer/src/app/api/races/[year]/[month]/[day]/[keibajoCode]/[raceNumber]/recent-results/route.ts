@@ -9,6 +9,7 @@
 import { NextResponse } from "next/server";
 
 import { getHorseRaceResults, getRaceSourceByRoute } from "../../../../../../../../../db/queries";
+import { safeGetCloudflareExecutionContext } from "../../../../../../../../../lib/cloudflare-context.server";
 import type { RaceSource } from "../../../../../../../../../lib/codes";
 import {
   buildRecentResultsCacheKey,
@@ -97,7 +98,15 @@ export async function GET(request: Request, context: RouteContext) {
     sourceScope,
   );
   const body = JSON.stringify({ results });
-  await putRecentResultsCache(cacheKey, body);
+  // Defer the cache write (Cache API + KV) so a KV 429 / write failure cannot
+  // turn the response into a 500. The client otherwise sees `setLoading(false)`
+  // only after `fetchWithRetry` exhausts its retry budget, leaving the skeleton
+  // visible for several seconds whenever KV is rate-limited.
+  const cloudflareCtx = await safeGetCloudflareExecutionContext();
+  const persistCachePut = putRecentResultsCache(cacheKey, body).catch(() => undefined);
+  if (cloudflareCtx) {
+    cloudflareCtx.waitUntil(persistCachePut);
+  }
   return new Response(body, {
     headers: {
       "Cache-Control": `public, max-age=${RECENT_RESULTS_CACHE_TTL_SECONDS}`,
