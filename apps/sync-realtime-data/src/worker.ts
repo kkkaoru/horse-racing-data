@@ -556,9 +556,14 @@ export const buildRealtimeRouteResponse = async (
       cachedTrackCondition ?? (await getLatestTrackConditionForRace(env.REALTIME_DB, raceKey));
     return await buildRealtimePayload(env.REALTIME_DB, raceKey, source, hotOdds, trackCondition);
   } catch (error) {
-    await logFetch(env.REALTIME_DB, "realtime-route", "error", raceKey, formatError(error)).catch(
-      () => undefined,
-    );
+    await logFetch(
+      env.REALTIME_DB,
+      "realtime-route",
+      "error",
+      raceKey,
+      formatError(error),
+      env.DETAIL_SECTION_CACHE_KV,
+    ).catch(() => undefined);
     return buildDegradedRealtimePayload(raceKey, hotOdds);
   }
 };
@@ -1490,7 +1495,14 @@ const tryEnsureDiscoveredUrlsAreCurrent = async (env: Env, targetDate: string): 
   try {
     await ensureDiscoveredUrlsAreCurrent(env, targetDate);
   } catch (error) {
-    await logFetch(env.REALTIME_DB, "discover-urls", "error", null, formatError(error));
+    await logFetch(
+      env.REALTIME_DB,
+      "discover-urls",
+      "error",
+      null,
+      formatError(error),
+      env.DETAIL_SECTION_CACHE_KV,
+    );
   }
 };
 
@@ -1509,7 +1521,14 @@ const tryBuildDailyFeaturesForDate = async (env: Env, targetDate: string, mode: 
     );
     return result;
   } catch (error) {
-    await logFetch(env.REALTIME_DB, "build-daily-features", "error", null, formatError(error));
+    await logFetch(
+      env.REALTIME_DB,
+      "build-daily-features",
+      "error",
+      null,
+      formatError(error),
+      env.DETAIL_SECTION_CACHE_KV,
+    );
     return null;
   }
 };
@@ -1526,7 +1545,14 @@ const tryDiscoverUrlsForDate = async (env: Env, targetDate: string, mode: string
     );
     return result;
   } catch (error) {
-    await logFetch(env.REALTIME_DB, "discover-urls", "error", null, formatError(error));
+    await logFetch(
+      env.REALTIME_DB,
+      "discover-urls",
+      "error",
+      null,
+      formatError(error),
+      env.DETAIL_SECTION_CACHE_KV,
+    );
     return null;
   }
 };
@@ -3295,6 +3321,7 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
       "error",
       "raceKey" in job ? job.raceKey : null,
       formatError(error),
+      env.DETAIL_SECTION_CACHE_KV,
     );
     throw error;
   }
@@ -3672,7 +3699,14 @@ export default {
             logFetch(env.REALTIME_DB, "plan-result-fetches", "ok", null, `${count} jobs queued`),
           )
           .catch((error: unknown) =>
-            logFetch(env.REALTIME_DB, "plan-result-fetches", "error", null, formatError(error)),
+            logFetch(
+              env.REALTIME_DB,
+              "plan-result-fetches",
+              "error",
+              null,
+              formatError(error),
+              env.DETAIL_SECTION_CACHE_KV,
+            ),
           ),
       );
       ctx.waitUntil(
@@ -3681,7 +3715,14 @@ export default {
             logFetch(env.REALTIME_DB, "plan-premium-paddock", "ok", null, `${count} jobs queued`),
           )
           .catch((error: unknown) =>
-            logFetch(env.REALTIME_DB, "plan-premium-paddock", "error", null, formatError(error)),
+            logFetch(
+              env.REALTIME_DB,
+              "plan-premium-paddock",
+              "error",
+              null,
+              formatError(error),
+              env.DETAIL_SECTION_CACHE_KV,
+            ),
           ),
       );
       return;
@@ -3701,6 +3742,7 @@ export default {
               "error",
               null,
               formatError(error),
+              env.DETAIL_SECTION_CACHE_KV,
             ),
           )
           .then(() => undefined),
@@ -3729,7 +3771,14 @@ export default {
             ),
           )
           .catch((error: unknown) =>
-            logFetch(env.REALTIME_DB, "build-daily-features", "error", null, formatError(error)),
+            logFetch(
+              env.REALTIME_DB,
+              "build-daily-features",
+              "error",
+              null,
+              formatError(error),
+              env.DETAIL_SECTION_CACHE_KV,
+            ),
           ),
       );
       return;
@@ -3741,7 +3790,14 @@ export default {
             logFetch(env.REALTIME_DB, "d1-retention", "ok", null, JSON.stringify(result)),
           )
           .catch((error: unknown) =>
-            logFetch(env.REALTIME_DB, "d1-retention", "error", null, formatError(error)),
+            logFetch(
+              env.REALTIME_DB,
+              "d1-retention",
+              "error",
+              null,
+              formatError(error),
+              env.DETAIL_SECTION_CACHE_KV,
+            ),
           ),
       );
       return;

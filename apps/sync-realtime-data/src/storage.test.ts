@@ -340,6 +340,71 @@ it("logFetch tolerates null raceKey and null message", async () => {
   expect(bind).toHaveBeenCalledTimes(1);
 });
 
+it("logFetch inserts and writes a dedupe sentinel when KV miss", async () => {
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const kvGet = vi.fn(async () => null);
+  const kvPut = vi.fn(async () => undefined);
+  const kv = { get: kvGet, put: kvPut } as unknown as KVNamespace;
+  await logFetch(db, "plan-realtime-fetches", "error", null, "boom", kv);
+  expect(kvGet).toHaveBeenCalledTimes(1);
+  expect(kvPut).toHaveBeenCalledTimes(1);
+  expect(prepare).toHaveBeenCalledTimes(1);
+});
+
+it("logFetch skips D1 insert when the dedupe sentinel is present", async () => {
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const kvGet = vi.fn(async () => "1");
+  const kvPut = vi.fn(async () => undefined);
+  const kv = { get: kvGet, put: kvPut } as unknown as KVNamespace;
+  await logFetch(db, "plan-realtime-fetches", "error", null, "boom", kv);
+  expect(prepare).not.toHaveBeenCalled();
+  expect(kvPut).not.toHaveBeenCalled();
+});
+
+it("logFetch falls back to D1 insert when KV get rejects", async () => {
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const kvGet = vi.fn(async () => {
+    throw new Error("kv get boom");
+  });
+  const kvPut = vi.fn(async () => undefined);
+  const kv = { get: kvGet, put: kvPut } as unknown as KVNamespace;
+  await logFetch(db, "plan-realtime-fetches", "error", "race-1", "boom", kv);
+  expect(prepare).toHaveBeenCalledTimes(1);
+  expect(kvPut).toHaveBeenCalledTimes(1);
+});
+
+it("logFetch tolerates a KV put rejection without throwing", async () => {
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const kvGet = vi.fn(async () => null);
+  const kvPut = vi.fn(async () => {
+    throw new Error("kv put boom");
+  });
+  const kv = { get: kvGet, put: kvPut } as unknown as KVNamespace;
+  await logFetch(db, "plan-realtime-fetches", "error", null, null, kv);
+  expect(prepare).toHaveBeenCalledTimes(1);
+});
+
+it("logFetch performs the D1 insert when kv is undefined", async () => {
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await logFetch(db, "plan-realtime-fetches", "error", "race-1", "boom", undefined);
+  expect(prepare).toHaveBeenCalledTimes(1);
+});
+
 it("runD1Retention returns fetch-logs count from D1 prepare/bind/run result", async () => {
   const run = vi.fn(async () => ({ meta: { rows_written: 3 } }));
   const bind = vi.fn((..._args: unknown[]) => ({ run }));
