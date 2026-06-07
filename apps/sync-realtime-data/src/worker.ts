@@ -237,6 +237,20 @@ const PREMIUM_PADDOCK_WINDOW_BEFORE_MINUTES = 120;
 const PREMIUM_PADDOCK_WINDOW_AFTER_MINUTES = 2;
 const REALTIME_PLAN_SELF_SCHEDULE_DELAY_SECONDS = 60;
 const REALTIME_PLAN_SELF_SCHEDULE_STALE_SECONDS = 90;
+// 2026-06-07: D1 overload error markers used to detect when a plan-realtime
+// run failed because the D1 binding was throttled rather than because of a
+// real bug. When seen, we open a circuit breaker that suppresses the next
+// few cron ticks + queue retries so the queue does not multiply itself into
+// thousands of identical jobs that all hit the same overloaded D1 instance.
+const D1_OVERLOAD_MARKERS: readonly string[] = ["D1 DB is overloaded", "Too many requests queued"];
+const PLAN_REALTIME_CIRCUIT_BREAKER_KV_KEY = "plan-realtime-fetches:circuit-breaker";
+const PLAN_REALTIME_CIRCUIT_BREAKER_KV_VALUE = "open";
+const PLAN_REALTIME_CIRCUIT_BREAKER_TTL_SECONDS = 120;
+// Queue-side retry delay used only when the failure was caused by D1 overload.
+// 60s base + random 0..120s jitter prevents the next retry wave from landing
+// on the same second across all batched plan-realtime jobs.
+const PLAN_REALTIME_OVERLOAD_RETRY_DELAY_BASE_SECONDS = 60;
+const PLAN_REALTIME_OVERLOAD_RETRY_DELAY_JITTER_SECONDS = 120;
 const DEFAULT_PREMIUM_RACE_QUEUE_DELAY_SECONDS = 15;
 const DEFAULT_PREMIUM_PADDOCK_DISCORD_BOT_NAME = "外部パドック速報";
 const DEFAULT_DETAIL_ORIGIN = "https://pc-keiba-viewer.kkk4oru.com";
@@ -1075,6 +1089,35 @@ export const isPremiumRaceDiscoveryTick = (date: Date): boolean => {
   return jst.slice(11, 16) === "20:00";
 };
 
+// 2026-06-07: D1 retry-loop saturation guard. plan-realtime-fetches is the
+// fan-out job that the queue auto-retried when D1 was throttled, which in
+// turn re-fired the entire fan-out and amplified the load instead of letting
+// D1 cool down. These helpers let both the cron path and the queue path
+// short-circuit until the breaker expires.
+export const isD1OverloadError = (error: unknown): boolean => {
+  if (!(error instanceof Error)) return false;
+  return D1_OVERLOAD_MARKERS.some((marker) => error.message.includes(marker));
+};
+
+export const isPlanRealtimeCircuitBreakerOpen = async (env: Env): Promise<boolean> => {
+  if (!env.DETAIL_SECTION_CACHE_KV) return false;
+  const value = await env.DETAIL_SECTION_CACHE_KV.get(PLAN_REALTIME_CIRCUIT_BREAKER_KV_KEY);
+  return value === PLAN_REALTIME_CIRCUIT_BREAKER_KV_VALUE;
+};
+
+export const tripPlanRealtimeCircuitBreaker = async (env: Env): Promise<void> => {
+  if (!env.DETAIL_SECTION_CACHE_KV) return;
+  await env.DETAIL_SECTION_CACHE_KV.put(
+    PLAN_REALTIME_CIRCUIT_BREAKER_KV_KEY,
+    PLAN_REALTIME_CIRCUIT_BREAKER_KV_VALUE,
+    { expirationTtl: PLAN_REALTIME_CIRCUIT_BREAKER_TTL_SECONDS },
+  );
+};
+
+export const buildPlanRealtimeOverloadRetryDelaySeconds = (): number =>
+  PLAN_REALTIME_OVERLOAD_RETRY_DELAY_BASE_SECONDS +
+  Math.floor(Math.random() * PLAN_REALTIME_OVERLOAD_RETRY_DELAY_JITTER_SECONDS);
+
 const getLatestSuccessfulRealtimePlanAt = async (env: Env): Promise<string | null> => {
   const row = await env.REALTIME_DB.prepare(
     `
@@ -1107,6 +1150,9 @@ const enqueueSelfRealtimePlanIfStale = async (env: Env, date: string, now = getN
   if (!isJstPollingWindow(now)) {
     return;
   }
+  if (await isPlanRealtimeCircuitBreakerOpen(env)) {
+    return;
+  }
   const latest = await getLatestSuccessfulRealtimePlanAt(env);
   if (
     latest &&
@@ -1133,6 +1179,9 @@ const enqueueNextSelfRealtimePlan = async (env: Env, date: string, now = getNow(
   if (!isJstPollingWindow(now)) {
     return;
   }
+  if (await isPlanRealtimeCircuitBreakerOpen(env)) {
+    return;
+  }
   await env.REALTIME_JOBS.send(
     { date, selfSchedule: true, type: "plan-realtime-fetches" },
     { delaySeconds: REALTIME_PLAN_SELF_SCHEDULE_DELAY_SECONDS },
@@ -1141,6 +1190,9 @@ const enqueueNextSelfRealtimePlan = async (env: Env, date: string, now = getNow(
 
 const runRealtimePlannerWatchdogIfStale = async (env: Env, date: string, now = getNow(env)) => {
   if (!isJstPollingWindow(now)) {
+    return;
+  }
+  if (await isPlanRealtimeCircuitBreakerOpen(env)) {
     return;
   }
   const latest = await getLatestSuccessfulRealtimePlanAt(env);
@@ -3020,6 +3072,12 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
       return;
     }
     if (job.type === "plan-realtime-fetches") {
+      if (await isPlanRealtimeCircuitBreakerOpen(env)) {
+        await logFetch(env.REALTIME_DB, job.type, "skipped", null, "circuit breaker open").catch(
+          () => {},
+        );
+        return;
+      }
       const count = await planRealtimeFetches(env, job.date);
       await logFetch(env.REALTIME_DB, job.type, "ok", null, `${count} jobs queued`);
       if (job.selfSchedule) {
@@ -3160,6 +3218,9 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
     await fetchAndStoreWeights(env, job.raceKey);
     await logFetch(env.REALTIME_DB, job.type, "ok", job.raceKey, null);
   } catch (error) {
+    if (job.type === "plan-realtime-fetches" && isD1OverloadError(error)) {
+      await tripPlanRealtimeCircuitBreaker(env).catch(() => {});
+    }
     await logFetch(
       env.REALTIME_DB,
       job.type,
@@ -3640,8 +3701,11 @@ export default {
       try {
         await handleJob(env, message.body);
         message.ack();
-      } catch {
-        message.retry({ delaySeconds: QUEUE_RETRY_DELAY_SECONDS });
+      } catch (error) {
+        const delaySeconds = isD1OverloadError(error)
+          ? buildPlanRealtimeOverloadRetryDelaySeconds()
+          : QUEUE_RETRY_DELAY_SECONDS;
+        message.retry({ delaySeconds });
       }
     }
   },

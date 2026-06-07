@@ -876,3 +876,45 @@ it("scheduled result-poll cron logs plan-premium-paddock error when paddock plan
     "paddock planner boom",
   );
 });
+
+it("queue retries with long delay when handleJob throws a D1 overload error", async () => {
+  const { default: worker } = await import("./worker");
+  const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
+  vi.mocked(runDailyFeatureBuildForEnv).mockRejectedValueOnce(
+    new Error("D1_ERROR: D1 DB is overloaded. Please try again later."),
+  );
+  const ack = vi.fn();
+  const retry = vi.fn();
+  const message = {
+    ack,
+    body: { date: "20260512", type: "build-daily-features" } satisfies Job,
+    retry,
+  };
+  await worker.queue(
+    { messages: [message], queue: "q", retryAll: () => {}, ackAll: () => {} } as never,
+    buildEnv(),
+  );
+  expect(retry).toHaveBeenCalledTimes(1);
+  const callArg = retry.mock.calls[0]?.[0] as { delaySeconds?: number } | undefined;
+  expect(callArg?.delaySeconds !== undefined).toBe(true);
+  expect((callArg?.delaySeconds ?? 0) >= 60).toBe(true);
+  expect((callArg?.delaySeconds ?? 0) < 180).toBe(true);
+});
+
+it("queue retries with standard delay when handleJob throws a non-overload error", async () => {
+  const { default: worker } = await import("./worker");
+  const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
+  vi.mocked(runDailyFeatureBuildForEnv).mockRejectedValueOnce(new Error("unrelated boom"));
+  const ack = vi.fn();
+  const retry = vi.fn();
+  const message = {
+    ack,
+    body: { date: "20260512", type: "build-daily-features" } satisfies Job,
+    retry,
+  };
+  await worker.queue(
+    { messages: [message], queue: "q", retryAll: () => {}, ackAll: () => {} } as never,
+    buildEnv(),
+  );
+  expect(retry).toHaveBeenCalledWith({ delaySeconds: 60 });
+});
