@@ -68,6 +68,7 @@ const {
   fetchProductionApiMock,
   fetchRaceTrendDailyTrackMock,
   getCachedRaceTrendResponseMock,
+  getCloudflareContextMock,
   getRaceDetailMock,
   getRaceRunnersMock,
   getRaceRunningStylesWithCacheMock,
@@ -243,6 +244,7 @@ beforeEach(() => {
   fetchProductionApiMock.mockReset();
   fetchRaceTrendDailyTrackMock.mockReset();
   getCachedRaceTrendResponseMock.mockReset();
+  getCloudflareContextMock.mockReset();
   getRaceDetailMock.mockReset();
   getRaceRunnersMock.mockReset();
   getRaceRunningStylesWithCacheMock.mockReset();
@@ -861,4 +863,67 @@ it("GET calls getRaceTrendTodayStarterRows when DO promise rejects (do-error-fal
   const response = await GET(buildTrendRequest(), buildTrendContext());
   expect(response.status).toBe(200);
   expect(getRaceTrendTodayStarterRowsMock).toHaveBeenCalledTimes(1);
+});
+
+it("GET defers KV cache write through ctx.waitUntil when Cloudflare ctx is available", async () => {
+  const waitUntilMock = vi.fn<(promise: Promise<unknown>) => void>();
+  getCloudflareContextMock.mockResolvedValue({ ctx: { waitUntil: waitUntilMock }, env: null });
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([buildStarterRow({ raceBango: "01" })]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  getRaceTrendRunningStylesFromD1Mock.mockResolvedValue([
+    { horseNumber: "1", predictedLabel: "nige", raceKey: "jra:2026:0529:05:01" },
+  ]);
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.status).toBe(200);
+  expect(putRaceTrendCacheMock).toHaveBeenCalledTimes(1);
+  expect(waitUntilMock).toHaveBeenCalledTimes(1);
+  const deferredPromise = waitUntilMock.mock.calls[0]?.[0];
+  expect(deferredPromise).toBeInstanceOf(Promise);
+});
+
+it("GET still returns 200 when putRaceTrendCache rejects with no Cloudflare ctx", async () => {
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([buildStarterRow({ raceBango: "01" })]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  getRaceTrendRunningStylesFromD1Mock.mockResolvedValue([
+    { horseNumber: "1", predictedLabel: "nige", raceKey: "jra:2026:0529:05:01" },
+  ]);
+  putRaceTrendCacheMock.mockRejectedValue(new Error("kv 429"));
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.status).toBe(200);
+  expect(putRaceTrendCacheMock).toHaveBeenCalledTimes(1);
+  expect(response.headers.get("X-Race-Trend-Cache")).toBe("MISS-STORED");
+});
+
+it("GET still returns 200 when putRaceTrendCache rejects via ctx.waitUntil deferral", async () => {
+  const waitUntilMock = vi.fn<(promise: Promise<unknown>) => void>();
+  getCloudflareContextMock.mockResolvedValue({ ctx: { waitUntil: waitUntilMock }, env: null });
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([buildStarterRow({ raceBango: "01" })]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  getRaceTrendRunningStylesFromD1Mock.mockResolvedValue([
+    { horseNumber: "1", predictedLabel: "nige", raceKey: "jra:2026:0529:05:01" },
+  ]);
+  putRaceTrendCacheMock.mockRejectedValue(new Error("kv 429"));
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.status).toBe(200);
+  expect(waitUntilMock).toHaveBeenCalledTimes(1);
+});
+
+it("GET does not invoke ctx.waitUntil when payload is not cacheable", async () => {
+  const waitUntilMock = vi.fn<(promise: Promise<unknown>) => void>();
+  getCloudflareContextMock.mockResolvedValue({ ctx: { waitUntil: waitUntilMock }, env: null });
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.status).toBe(200);
+  expect(putRaceTrendCacheMock).not.toHaveBeenCalled();
+  expect(waitUntilMock).not.toHaveBeenCalled();
+  expect(response.headers.get("X-Race-Trend-Cache")).toBe("MISS-EMPTY-SKIPPED");
 });

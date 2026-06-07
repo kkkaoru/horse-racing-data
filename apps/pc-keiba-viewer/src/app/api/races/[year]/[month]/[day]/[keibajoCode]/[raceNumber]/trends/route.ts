@@ -13,7 +13,10 @@ import {
   getRaceRunners,
   getRaceSourceByRoute,
 } from "../../../../../../../../../db/queries";
-import { safeGetCloudflareEnv } from "../../../../../../../../../lib/cloudflare-context.server";
+import {
+  safeGetCloudflareEnv,
+  safeGetCloudflareExecutionContext,
+} from "../../../../../../../../../lib/cloudflare-context.server";
 import type { RaceSource } from "../../../../../../../../../lib/codes";
 import {
   fetchProductionApi,
@@ -350,7 +353,16 @@ export async function GET(request: Request, context: RouteContext) {
   const body = JSON.stringify(payload);
   const hasUsableData = isCacheableTrendPayload(payload);
   if (hasUsableData) {
-    await putRaceTrendCache({ body, cacheKey, race });
+    // Defer the cache write (Cache API + KV) so a KV 429 / write failure
+    // cannot turn the trend response into a 500. The KV-backed putter is
+    // the most frequent 429 victim under load; the client otherwise sees
+    // `fetchWithRetry` exhaust its budget and the trend section stays
+    // skeleton, mirroring the recent-results route fix.
+    const persistCachePut = putRaceTrendCache({ body, cacheKey, race }).catch(() => undefined);
+    const cloudflareCtx = await safeGetCloudflareExecutionContext();
+    if (cloudflareCtx) {
+      cloudflareCtx.waitUntil(persistCachePut);
+    }
     await notifyRaceTrendRoom(
       { day, keibajoCode, month, raceNumber, source, year },
       { cacheKey },
