@@ -35,18 +35,18 @@ const buildRow = (overrides: Partial<RaceTrendStarterRow> = {}): RaceTrendStarte
   ...overrides,
 });
 
-it("buildTodaySiblingRunnerLookup keys entries by raceBango:umaban", () => {
+it("buildTodaySiblingRunnerLookup keys entries by raceBango and parsed umaban", () => {
   const lookup = buildTodaySiblingRunnerLookup([
     { raceBango: "01", umaban: "01", wakuban: "1", chokyoshiName: "調教師A" },
     { raceBango: "01", umaban: "02", wakuban: "1", chokyoshiName: "調教師B" },
   ]);
-  expect(lookup.get("01:01")).toStrictEqual({
+  expect(lookup.get("01:1")).toStrictEqual({
     raceBango: "01",
     umaban: "01",
     wakuban: "1",
     chokyoshiName: "調教師A",
   });
-  expect(lookup.get("01:02")).toStrictEqual({
+  expect(lookup.get("01:2")).toStrictEqual({
     raceBango: "01",
     umaban: "02",
     wakuban: "1",
@@ -54,14 +54,14 @@ it("buildTodaySiblingRunnerLookup keys entries by raceBango:umaban", () => {
   });
 });
 
-it("buildTodaySiblingRunnerLookup keeps the last entry when keys collide", () => {
+it("buildTodaySiblingRunnerLookup keeps the last entry when normalized keys collide", () => {
   const lookup = buildTodaySiblingRunnerLookup([
     { raceBango: "01", umaban: "01", wakuban: "1", chokyoshiName: "古い" },
-    { raceBango: "01", umaban: "01", wakuban: "2", chokyoshiName: "新しい" },
+    { raceBango: "01", umaban: "1", wakuban: "2", chokyoshiName: "新しい" },
   ]);
-  expect(lookup.get("01:01")).toStrictEqual({
+  expect(lookup.get("01:1")).toStrictEqual({
     raceBango: "01",
-    umaban: "01",
+    umaban: "1",
     wakuban: "2",
     chokyoshiName: "新しい",
   });
@@ -163,6 +163,36 @@ it("mergeTodaySiblingRunnerData returns a copy of the original rows when entries
   expect(merged).toHaveLength(1);
   expect(merged[0]?.wakuban).toBe("2");
   expect(merged[0]?.bamei).toBe("コピーテスト");
+});
+
+it("mergeTodaySiblingRunnerData merges unpadded row umaban against zero-padded entry umaban", () => {
+  const row = buildRow({ raceBango: "01", umaban: "5", wakuban: null });
+  const entries: TodaySiblingRunnerEntry[] = [
+    { raceBango: "01", umaban: "05", wakuban: "3", chokyoshiName: "調教師Z" },
+  ];
+  const merged = mergeTodaySiblingRunnerData([row], entries);
+  expect(merged[0]?.wakuban).toBe("3");
+  expect(merged[0]?.chokyoshiName).toBe("調教師Z");
+});
+
+it("mergeTodaySiblingRunnerData merges row umaban with surrounding whitespace against zero-padded entry", () => {
+  const row = buildRow({ raceBango: "01", umaban: " 7 ", wakuban: null });
+  const entries: TodaySiblingRunnerEntry[] = [
+    { raceBango: "01", umaban: "07", wakuban: "4", chokyoshiName: "調教師W" },
+  ];
+  const merged = mergeTodaySiblingRunnerData([row], entries);
+  expect(merged[0]?.wakuban).toBe("4");
+  expect(merged[0]?.chokyoshiName).toBe("調教師W");
+});
+
+it("mergeTodaySiblingRunnerData falls back to the raw umaban when not numeric", () => {
+  const row = buildRow({ raceBango: "01", umaban: "abc", wakuban: null });
+  const entries: TodaySiblingRunnerEntry[] = [
+    { raceBango: "01", umaban: "abc", wakuban: "9", chokyoshiName: "調教師Q" },
+  ];
+  const merged = mergeTodaySiblingRunnerData([row], entries);
+  expect(merged[0]?.wakuban).toBe("9");
+  expect(merged[0]?.chokyoshiName).toBe("調教師Q");
 });
 
 it("mergeTodaySiblingRunnerData supports multiple rows across races", () => {

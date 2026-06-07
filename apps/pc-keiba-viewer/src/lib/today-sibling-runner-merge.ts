@@ -15,7 +15,22 @@ export interface TodaySiblingRunnerEntry {
   chokyoshiName: string | null;
 }
 
-const buildEntryKey = (raceBango: string, umaban: string): string => `${raceBango}:${umaban}`;
+// race_entry_snapshots stores horse_number unpadded ("1"..."16") while jvd_se /
+// nvd_se stores umaban zero-padded ("01"..."16"). Without normalisation the
+// merge key collides for umaban >= 10 only, leaving 1-9 horses with null
+// trainer / wakuban. Normalising both sides to the parsed-integer form
+// removes the padding asymmetry without altering the externally visible
+// umaban string on either record. Whitespace inputs are tolerated because
+// snapshot values occasionally carry stray padding from upstream feeds.
+const normalizeUmabanForKey = (umaban: string): string => {
+  const trimmed = umaban.trim();
+  if (trimmed === "") return "";
+  const parsed = Number.parseInt(trimmed, 10);
+  return Number.isFinite(parsed) ? String(parsed) : trimmed;
+};
+
+const buildEntryKey = (raceBango: string, umaban: string): string =>
+  `${raceBango}:${normalizeUmabanForKey(umaban)}`;
 
 export const buildTodaySiblingRunnerLookup = (
   entries: ReadonlyArray<TodaySiblingRunnerEntry>,
