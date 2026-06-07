@@ -522,12 +522,58 @@ describe("buildFinishPredictionRowsFromResults", () => {
     const maidenOddsWeight = maidenWithOddsOn[0]?.details.find(
       (detail) => detail.label === "単勝",
     )?.weight;
+    const maidenPopularityWeight = maidenWithOddsOn[0]?.details.find(
+      (detail) => detail.label === "人気",
+    )?.weight;
     const nonMaidenOddsWeight = nonMaidenWithOddsOff[0]?.details.find(
       (detail) => detail.label === "単勝",
     )?.weight;
+    const nonMaidenPopularityWeight = nonMaidenWithOddsOff[0]?.details.find(
+      (detail) => detail.label === "人気",
+    )?.weight;
 
     expect(maidenOddsWeight).toBe(0.15);
+    expect(maidenPopularityWeight).toBe(0.04);
     expect(nonMaidenOddsWeight).toBe(0);
+    expect(nonMaidenPopularityWeight).toBe(0);
+  });
+
+  it("toggling odds correction OFF zeroes popularity for non-maiden race", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      currentDistance: "1600",
+      currentKeibajoCode: "05",
+      currentKyosoJokenCode: "703",
+      currentRaceDate: "20260607",
+      currentSource: "jra",
+      oddsCorrectionEnabled: false,
+      results: [],
+      runners: [runner({ tanshoNinkijun: "01", tanshoOdds: "0020", umaban: "01" })],
+    });
+
+    const oddsWeight = rows[0]?.details.find((detail) => detail.label === "単勝")?.weight;
+    const popularityWeight = rows[0]?.details.find((detail) => detail.label === "人気")?.weight;
+
+    expect(oddsWeight).toBe(0);
+    expect(popularityWeight).toBe(0);
+  });
+
+  it("toggling odds correction ON enables popularity for new-horse maiden race", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      currentDistance: "1600",
+      currentKeibajoCode: "05",
+      currentKyosoJokenCode: "701",
+      currentRaceDate: "20260607",
+      currentSource: "jra",
+      oddsCorrectionEnabled: true,
+      results: [],
+      runners: [runner({ tanshoNinkijun: "01", tanshoOdds: "0020", umaban: "01" })],
+    });
+
+    const oddsWeight = rows[0]?.details.find((detail) => detail.label === "単勝")?.weight;
+    const popularityWeight = rows[0]?.details.find((detail) => detail.label === "人気")?.weight;
+
+    expect(oddsWeight).toBe(0.15);
+    expect(popularityWeight).toBe(0.04);
   });
 
   it("keeps base modelWeight when kyosoJokenCode is not the new-horse maiden code", () => {
@@ -554,7 +600,7 @@ describe("buildFinishPredictionRowsFromResults", () => {
     const popularityWeight = rows[0]?.details.find((detail) => detail.label === "人気")?.weight;
 
     expect(modelWeight).toBe(0.08);
-    expect(popularityWeight).toBe(0.05);
+    expect(popularityWeight).toBe(0.04);
   });
 
   it("doubles oddsWeight for JRA runners with no prior results", () => {

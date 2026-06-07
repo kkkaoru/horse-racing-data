@@ -92,7 +92,7 @@ const CATEGORY_CONFIG: Record<FinishPredictionCategory, FinishPredictionConfig> 
     minDistanceWeight: 0.4,
     modelWeight: 0.08,
     oddsWeight: 0.1,
-    popularityWeight: 0.01,
+    popularityWeight: 0.001,
     recentWeight: 0.18,
     sameDayJockeyWeight: 0,
     similarityWeight: 0.1,
@@ -107,7 +107,7 @@ const CATEGORY_CONFIG: Record<FinishPredictionCategory, FinishPredictionConfig> 
     minDistanceWeight: 0.25,
     modelWeight: 0.08,
     oddsWeight: 0.066,
-    popularityWeight: 0.01,
+    popularityWeight: 0.001,
     recentWeight: 0.09,
     sameDayJockeyWeight: 0.03,
     similarityWeight: 0.04,
@@ -122,7 +122,7 @@ const CATEGORY_CONFIG: Record<FinishPredictionCategory, FinishPredictionConfig> 
     minDistanceWeight: 0.25,
     modelWeight: 0.06,
     oddsWeight: 0.05,
-    popularityWeight: 0.01,
+    popularityWeight: 0.001,
     recentWeight: 0.12,
     sameDayJockeyWeight: 0.02,
     similarityWeight: 0.06,
@@ -642,7 +642,7 @@ export const buildFinishPredictionRowsFromResults = ({
     const finalRunnerConfig: FinishPredictionConfig = {
       ...runnerConfig,
       oddsWeight: isOddsCorrectionApplied ? runnerConfig.oddsWeight : 0,
-      popularityWeight: isNewHorseMaiden ? 0 : runnerConfig.popularityWeight,
+      popularityWeight: isOddsCorrectionApplied ? runnerConfig.popularityWeight : 0,
     };
     const averageParams = {
       config: finalRunnerConfig,
