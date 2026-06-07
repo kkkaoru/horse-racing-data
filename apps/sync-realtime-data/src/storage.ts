@@ -31,6 +31,17 @@ import type {
 } from "./premium-race";
 
 const D1_BATCH_SIZE = 100;
+// Dedupe identical fetch_logs INSERTs across a short window to keep D1 write
+// pressure flat during retry storms (e.g. plan-realtime-fetches looping on the
+// same error). 60s aligns with queue retry backoff and lets retention sweeps
+// still see one row per distinct outcome.
+const LOG_DEDUPE_KV_PREFIX = "log-dedupe:";
+const LOG_DEDUPE_TTL_SECONDS = 60;
+const LOG_DEDUPE_HASH_OFFSET = 2166136261;
+const LOG_DEDUPE_HASH_PRIME = 16777619;
+const LOG_DEDUPE_HASH_MASK = 0xffffffff;
+const LOG_DEDUPE_NULL_TOKEN = "null";
+const LOG_DEDUPE_HEX_RADIX = 16;
 
 const parsePremiumDataTopReasons = (value: string): string[] => {
   try {
@@ -919,13 +930,49 @@ export const insertRaceResultSnapshot = async (
   return results.length;
 };
 
+const fnv1aHex = (value: string): string => {
+  const hash = Array.from(value).reduce(
+    (acc, char) => ((acc ^ char.charCodeAt(0)) * LOG_DEDUPE_HASH_PRIME) & LOG_DEDUPE_HASH_MASK,
+    LOG_DEDUPE_HASH_OFFSET,
+  );
+  return (hash >>> 0).toString(LOG_DEDUPE_HEX_RADIX);
+};
+
+const buildLogDedupeKey = (
+  jobType: string,
+  status: string,
+  raceKey: string | null,
+  message: string | null,
+): string => {
+  const messageHash = message === null ? LOG_DEDUPE_NULL_TOKEN : fnv1aHex(message);
+  const raceToken = raceKey ?? LOG_DEDUPE_NULL_TOKEN;
+  return `${LOG_DEDUPE_KV_PREFIX}${jobType}:${status}:${raceToken}:${messageHash}`;
+};
+
+const shouldSkipFetchLog = async (
+  kv: KVNamespace | undefined,
+  jobType: string,
+  status: string,
+  raceKey: string | null,
+  message: string | null,
+): Promise<boolean> => {
+  if (!kv) return false;
+  const key = buildLogDedupeKey(jobType, status, raceKey, message);
+  const seen = await kv.get(key).catch(() => null);
+  if (seen) return true;
+  await kv.put(key, "1", { expirationTtl: LOG_DEDUPE_TTL_SECONDS }).catch(() => undefined);
+  return false;
+};
+
 export const logFetch = async (
   db: D1Database,
   jobType: string,
   status: string,
   raceKey: string | null,
   message: string | null,
+  kv?: KVNamespace,
 ): Promise<void> => {
+  if (await shouldSkipFetchLog(kv, jobType, status, raceKey, message)) return;
   await db
     .prepare(
       "insert into fetch_logs (race_key, job_type, status, message, created_at) values (?, ?, ?, ?, ?)",

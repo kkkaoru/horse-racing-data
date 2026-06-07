@@ -351,6 +351,7 @@ it("handleJob logs an error and rethrows when the dispatched action throws", asy
     "error",
     null,
     "boom",
+    undefined,
   );
 });
 

@@ -266,6 +266,7 @@ it("scheduled prewarm path stringifies non-Error rejections from postgres", asyn
     "error",
     null,
     "raw-string-error",
+    undefined,
   );
 });
 
@@ -291,6 +292,7 @@ it("scheduled prewarm path logs discover-urls error when upsertDiscoveredUrls th
     "error",
     null,
     "postgres boom",
+    undefined,
   );
 });
 
@@ -527,6 +529,7 @@ it("scheduled multi-day-prep cron logs build-daily-features error when runDailyF
     "error",
     null,
     "build boom",
+    undefined,
   );
 });
 
@@ -552,6 +555,7 @@ it("scheduled multi-day-prep cron stringifies non-Error rejection from runDailyF
     "error",
     null,
     "raw-string-build-error",
+    undefined,
   );
 });
 
@@ -682,6 +686,7 @@ it("scheduled logs error when daily-feature-build cron enqueue rejects", async (
     "error",
     null,
     "queue boom",
+    undefined,
   );
 });
 
@@ -707,6 +712,7 @@ it("scheduled logs error when prewarm running-style cron rejects", async () => {
     "error",
     null,
     "prewarm boom",
+    undefined,
   );
 });
 
@@ -731,6 +737,7 @@ it("scheduled logs error when D1 retention cron rejects", async () => {
     "error",
     null,
     "retention boom",
+    undefined,
   );
 });
 
@@ -815,6 +822,7 @@ it("scheduled result-poll cron logs plan-result-fetches error when planner rejec
     "error",
     null,
     "planner boom",
+    undefined,
   );
 });
 
@@ -874,5 +882,6 @@ it("scheduled result-poll cron logs plan-premium-paddock error when paddock plan
     "error",
     null,
     "paddock planner boom",
+    undefined,
   );
 });
