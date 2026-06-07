@@ -6622,6 +6622,35 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   margin-bottom: var(--space-14px-55);
 }
 
+.finish-prediction-odds-toggle {
+  margin-bottom: var(--space-14px-55);
+}
+
+.finish-prediction-odds-toggle label {
+  align-items: center;
+  background: var(--surface);
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-6px-33);
+  cursor: pointer;
+  display: inline-flex;
+  gap: var(--space-8px-28);
+  min-height: var(--space-40px-47);
+  padding: var(--space-8px-28) var(--space-12px-9);
+}
+
+.finish-prediction-odds-toggle input {
+  accent-color: var(--accent);
+  height: var(--space-16px-10);
+  margin: var(--number-0-2);
+  width: var(--space-16px-10);
+}
+
+.finish-prediction-odds-toggle span {
+  color: var(--muted);
+  font-size: var(--space-15px-1);
+  font-weight: var(--number-800-12);
+}
+
 .premium-data-top-section {
   margin-bottom: var(--space-16px-67);
 }
