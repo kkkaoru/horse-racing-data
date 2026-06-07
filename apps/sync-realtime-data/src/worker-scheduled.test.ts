@@ -885,7 +885,6 @@ it("scheduled result-poll cron logs plan-premium-paddock error when paddock plan
     undefined,
   );
 });
-
 it("queue retries with long delay when handleJob throws a D1 overload error", async () => {
   const { default: worker } = await import("./worker");
   const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
@@ -926,4 +925,27 @@ it("queue retries with standard delay when handleJob throws a non-overload error
     buildEnv(),
   );
   expect(retry).toHaveBeenCalledWith({ delaySeconds: 60 });
+});
+
+it("scheduled triggers the weight watchdog for the every-minute cron", async () => {
+  const { default: worker } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  const { ctx, waits } = buildCtx();
+  await worker.scheduled(
+    {
+      cron: "* * * * *",
+      scheduledTime: Date.parse("2026-06-07T03:00:00.000Z"),
+      noRetry: () => {},
+    } as unknown as ScheduledController,
+    buildEnv(),
+    ctx,
+  );
+  await flushWaits(waits);
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "weight-watchdog",
+    "ok",
+    null,
+    "no stale weight races",
+  );
 });

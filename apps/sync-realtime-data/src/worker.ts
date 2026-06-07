@@ -281,6 +281,15 @@ const WEIGHT_FETCH_BANGO_PRIORITY_THRESHOLD = 5;
 // before post time instead of being silently locked out for the whole day.
 const WEIGHT_FETCH_INTERVAL_MINUTES = 24 * 60;
 const WEIGHT_FETCH_SAME_DAY_COOLDOWN_MINUTES = 60;
+// Near-race cooldown override: when the race is within
+// WEIGHT_FETCH_NEAR_RACE_THRESHOLD_MINUTES of post time (and not too far
+// past it), shorten the cooldown to 10 minutes so a recent partial / empty
+// snapshot does not lock out re-fetch for the entire 60-minute same-day
+// window when post time is imminent.
+const WEIGHT_FETCH_NEAR_RACE_COOLDOWN_MINUTES = 10;
+const WEIGHT_FETCH_NEAR_RACE_THRESHOLD_MINUTES = 30;
+const WEIGHT_FETCH_NEAR_RACE_POST_LIMIT_MINUTES = 10;
+const MILLISECONDS_PER_MINUTE = 60_000;
 // KV TTL for the weight-race-list fallback (used when Hyperdrive returns an
 // empty result so the plan still has something to enqueue). 24h keeps the
 // fallback alive across the entire race day.
@@ -301,6 +310,17 @@ const PREMIUM_PADDOCK_NOTIFY_GRACE_AFTER_START_MS = 10 * 60 * 1000;
 // the discovery step incomplete, so today's paddock pipeline still has
 // fresh links instead of running empty until the next 20:00 tick.
 const PREMIUM_RACE_DISCOVERY_HOURS_JST = [9, 20] satisfies readonly number[];
+// Weight watchdog: a dedicated every-minute cron path that bypasses the
+// heavier plan-realtime-fetches code path so a circuit-breaker open state
+// (D1 saturation) does not silently skip weight enqueueing for upcoming
+// races. The watchdog inspects realtime_race_sources directly and enqueues
+// fetch-weights jobs for races within the lookahead window whose last
+// weight fetch is null or older than the stale threshold.
+export const WEIGHT_WATCHDOG_CRON = "* * * * *";
+const WEIGHT_WATCHDOG_LOOKAHEAD_MINUTES = 180;
+const WEIGHT_WATCHDOG_LOOKBACK_MINUTES = 30;
+const WEIGHT_WATCHDOG_STALE_THRESHOLD_MINUTES = 5;
+const WEIGHT_WATCHDOG_MAX_PER_TICK = 8;
 const JRA_KEIBAJO_NAMES: Record<string, string> = {
   "01": "札幌",
   "02": "函館",
@@ -1033,13 +1053,34 @@ export const extractJstDate = (value: string | null): string => {
 // any in-day failure (partial parse, transient origin error). The 24h path
 // kicks in once we successfully fetched yesterday's weights so a stale row
 // from a previous calendar day does not block today's first attempt.
-export const resolveWeightFetchCooldownMinutes = (
-  raceStartAtJst: string,
-  lastFetchAt: string | null,
-): number => {
-  if (!lastFetchAt) return WEIGHT_FETCH_INTERVAL_MINUTES;
-  const raceDate = raceStartAtJst.slice(0, 10);
-  const fetchDate = extractJstDate(lastFetchAt);
+// When `now` is provided and the race is within
+// WEIGHT_FETCH_NEAR_RACE_THRESHOLD_MINUTES of post time (and not more than
+// WEIGHT_FETCH_NEAR_RACE_POST_LIMIT_MINUTES after it), shorten the cooldown
+// to WEIGHT_FETCH_NEAR_RACE_COOLDOWN_MINUTES so the watchdog has many fast
+// retries before the race ends.
+export interface WeightFetchCooldownInput {
+  lastFetchAt: string | null;
+  now?: Date;
+  raceStartAtJst: string;
+}
+
+const isNearRace = (raceStartAtJst: string, now: Date): boolean => {
+  const raceStartMs = new Date(raceStartAtJst).getTime();
+  if (Number.isNaN(raceStartMs)) return false;
+  const minutesUntil = (raceStartMs - now.getTime()) / MILLISECONDS_PER_MINUTE;
+  return (
+    minutesUntil < WEIGHT_FETCH_NEAR_RACE_THRESHOLD_MINUTES &&
+    minutesUntil > -WEIGHT_FETCH_NEAR_RACE_POST_LIMIT_MINUTES
+  );
+};
+
+export const resolveWeightFetchCooldownMinutes = (input: WeightFetchCooldownInput): number => {
+  if (input.now && isNearRace(input.raceStartAtJst, input.now)) {
+    return WEIGHT_FETCH_NEAR_RACE_COOLDOWN_MINUTES;
+  }
+  if (!input.lastFetchAt) return WEIGHT_FETCH_INTERVAL_MINUTES;
+  const raceDate = input.raceStartAtJst.slice(0, 10);
+  const fetchDate = extractJstDate(input.lastFetchAt);
   return raceDate && raceDate === fetchDate
     ? WEIGHT_FETCH_SAME_DAY_COOLDOWN_MINUTES
     : WEIGHT_FETCH_INTERVAL_MINUTES;
@@ -1082,6 +1123,86 @@ export const writeWeightRaceListFallbackToKv = async (
   });
 };
 
+export interface StaleWeightFetchRace {
+  lastWeightFetchAt: string | null;
+  raceKey: string;
+  raceStartAtJst: string;
+}
+
+interface StaleWeightFetchRaceRow {
+  last_weight_fetch_at: string | null;
+  race_key: string;
+  race_start_at_jst: string;
+}
+
+// Direct D1 query for races whose post time falls inside the watchdog
+// lookahead window and whose last weight fetch is null or older than the
+// stale threshold. Keeps the watchdog independent of the heavier
+// plan-realtime-fetches code path so a circuit-breaker open state does not
+// silently skip weight enqueueing.
+export const findStaleWeightFetchRaces = async (
+  db: D1Database,
+  now: Date,
+): Promise<readonly StaleWeightFetchRace[]> => {
+  const lookAheadIso = new Date(
+    now.getTime() + WEIGHT_WATCHDOG_LOOKAHEAD_MINUTES * MILLISECONDS_PER_MINUTE,
+  ).toISOString();
+  const lookBackIso = new Date(
+    now.getTime() - WEIGHT_WATCHDOG_LOOKBACK_MINUTES * MILLISECONDS_PER_MINUTE,
+  ).toISOString();
+  const staleIso = new Date(
+    now.getTime() - WEIGHT_WATCHDOG_STALE_THRESHOLD_MINUTES * MILLISECONDS_PER_MINUTE,
+  ).toISOString();
+  const result = await db
+    .prepare(
+      `
+        select race_key, race_start_at_jst, last_weight_fetch_at
+        from realtime_race_sources
+        where race_start_at_jst > ?
+          and race_start_at_jst < ?
+          and (last_weight_fetch_at is null or last_weight_fetch_at < ?)
+        order by race_start_at_jst
+        limit ?
+      `,
+    )
+    .bind(lookBackIso, lookAheadIso, staleIso, WEIGHT_WATCHDOG_MAX_PER_TICK)
+    .all<StaleWeightFetchRaceRow>();
+  return result.results.map((row) => ({
+    lastWeightFetchAt: row.last_weight_fetch_at,
+    raceKey: row.race_key,
+    raceStartAtJst: row.race_start_at_jst,
+  }));
+};
+
+// Dedicated weight watchdog tick. Runs every minute alongside the existing
+// "*/15 0-14" weight plan cron and the every-minute plan-realtime-fetches
+// path on the hot worker. The watchdog only touches a single D1 read and
+// the queue, so a Hyperdrive saturation that opens the planner circuit
+// breaker still leaves weight fetches flowing here.
+export const runWeightWatchdog = async (env: Env, now: Date): Promise<void> => {
+  try {
+    const stale = await findStaleWeightFetchRaces(env.REALTIME_DB, now);
+    if (stale.length === 0) {
+      await logFetch(env.REALTIME_DB, "weight-watchdog", "ok", null, "no stale weight races");
+      return;
+    }
+    const jobs: Job[] = stale.map((race) => ({
+      raceKey: race.raceKey,
+      type: "fetch-weights",
+    }));
+    await enqueueJobs(env, jobs);
+    await logFetch(
+      env.REALTIME_DB,
+      "weight-watchdog",
+      "ok",
+      null,
+      JSON.stringify({ enqueued: jobs.length }),
+    );
+  } catch (error: unknown) {
+    await logFetch(env.REALTIME_DB, "weight-watchdog", "error", null, formatError(error));
+  }
+};
+
 const isPriorityJraVenue = (keibajoCode: string): boolean =>
   JRA_PRIORITY_VENUE_CODES.includes(keibajoCode);
 
@@ -1117,10 +1238,11 @@ const isFallbackWeightCandidateDue = (candidate: FallbackWeightCandidate, now: D
   candidate.minutes <= WEIGHT_FETCH_LEAD_MINUTES &&
   isDue(
     candidate.race.lastWeightFetchAt,
-    resolveWeightFetchCooldownMinutes(
-      candidate.race.raceStartAtJst,
-      candidate.race.lastWeightFetchAt,
-    ),
+    resolveWeightFetchCooldownMinutes({
+      lastFetchAt: candidate.race.lastWeightFetchAt,
+      now,
+      raceStartAtJst: candidate.race.raceStartAtJst,
+    }),
     now,
   );
 
@@ -2127,7 +2249,11 @@ export const planRealtimeFetches = async (env: Env, targetDate: string): Promise
           c.minutes <= WEIGHT_FETCH_LEAD_MINUTES &&
           isDue(
             c.race.lastWeightFetchAt,
-            resolveWeightFetchCooldownMinutes(c.race.raceStartAtJst, c.race.lastWeightFetchAt),
+            resolveWeightFetchCooldownMinutes({
+              lastFetchAt: c.race.lastWeightFetchAt,
+              now,
+              raceStartAtJst: c.race.raceStartAtJst,
+            }),
             now,
           ),
       );
@@ -2272,7 +2398,11 @@ export const enqueueFetchWeightsBatch = async (
     : matchingRaces.filter((race) =>
         isDue(
           race.lastWeightFetchAt,
-          resolveWeightFetchCooldownMinutes(race.raceStartAtJst, race.lastWeightFetchAt),
+          resolveWeightFetchCooldownMinutes({
+            lastFetchAt: race.lastWeightFetchAt,
+            now,
+            raceStartAtJst: race.raceStartAtJst,
+          }),
           now,
         ),
       );
@@ -3811,6 +3941,10 @@ export default {
     if (controller.cron === TODAY_BACKFILL_CRON) {
       const today = getTodayJst(scheduledAt);
       ctx.waitUntil(prewarmRaceDataForDate(env, today, scheduledAt, ctx, "today-backfill"));
+      return;
+    }
+    if (controller.cron === WEIGHT_WATCHDOG_CRON) {
+      ctx.waitUntil(runWeightWatchdog(env, scheduledAt));
       return;
     }
     const job = getCronJob(controller.cron, scheduledAt);
