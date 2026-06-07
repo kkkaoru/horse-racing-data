@@ -1560,3 +1560,169 @@ it("handleJob fetch-results with NAR race source completes when finish-position 
   });
   expect(completeResultFetch).toHaveBeenCalledTimes(1);
 });
+
+it("isD1OverloadError returns true for D1 DB is overloaded message", async () => {
+  const { isD1OverloadError } = await import("./worker");
+  expect(isD1OverloadError(new Error("D1_ERROR: D1 DB is overloaded"))).toBe(true);
+});
+
+it("isD1OverloadError returns true for Too many requests queued message", async () => {
+  const { isD1OverloadError } = await import("./worker");
+  expect(isD1OverloadError(new Error("Too many requests queued for this D1"))).toBe(true);
+});
+
+it("isD1OverloadError returns false for a non-overload Error", async () => {
+  const { isD1OverloadError } = await import("./worker");
+  expect(isD1OverloadError(new Error("kaboom"))).toBe(false);
+});
+
+it("isD1OverloadError returns false when value is not an Error instance", async () => {
+  const { isD1OverloadError } = await import("./worker");
+  expect(isD1OverloadError("D1 DB is overloaded")).toBe(false);
+});
+
+it("isPlanRealtimeCircuitBreakerOpen returns false when KV binding is absent", async () => {
+  const { isPlanRealtimeCircuitBreakerOpen } = await import("./worker");
+  const env = buildEnv();
+  expect(await isPlanRealtimeCircuitBreakerOpen(env)).toBe(false);
+});
+
+it("isPlanRealtimeCircuitBreakerOpen returns true when KV value is open", async () => {
+  const { isPlanRealtimeCircuitBreakerOpen } = await import("./worker");
+  const get = vi.fn(async () => "open");
+  const put = vi.fn(async () => {});
+  const env = buildEnv({
+    DETAIL_SECTION_CACHE_KV: { get, put } as unknown as KVNamespace,
+  });
+  expect(await isPlanRealtimeCircuitBreakerOpen(env)).toBe(true);
+});
+
+it("isPlanRealtimeCircuitBreakerOpen returns false when KV value is null", async () => {
+  const { isPlanRealtimeCircuitBreakerOpen } = await import("./worker");
+  const get = vi.fn(async () => null);
+  const put = vi.fn(async () => {});
+  const env = buildEnv({
+    DETAIL_SECTION_CACHE_KV: { get, put } as unknown as KVNamespace,
+  });
+  expect(await isPlanRealtimeCircuitBreakerOpen(env)).toBe(false);
+});
+
+it("tripPlanRealtimeCircuitBreaker no-ops when KV binding is absent", async () => {
+  const { tripPlanRealtimeCircuitBreaker } = await import("./worker");
+  const env = buildEnv();
+  await tripPlanRealtimeCircuitBreaker(env);
+  expect(env.DETAIL_SECTION_CACHE_KV).toBeUndefined();
+});
+
+it("tripPlanRealtimeCircuitBreaker writes open with TTL 120s", async () => {
+  const { tripPlanRealtimeCircuitBreaker } = await import("./worker");
+  const get = vi.fn(async () => null);
+  const put = vi.fn(async () => {});
+  const env = buildEnv({
+    DETAIL_SECTION_CACHE_KV: { get, put } as unknown as KVNamespace,
+  });
+  await tripPlanRealtimeCircuitBreaker(env);
+  expect(put).toHaveBeenCalledWith("plan-realtime-fetches:circuit-breaker", "open", {
+    expirationTtl: 120,
+  });
+});
+
+it("buildPlanRealtimeOverloadRetryDelaySeconds returns delay within 60..179 range", async () => {
+  const { buildPlanRealtimeOverloadRetryDelaySeconds } = await import("./worker");
+  const value = buildPlanRealtimeOverloadRetryDelaySeconds();
+  expect(value >= 60).toBe(true);
+  expect(value < 180).toBe(true);
+});
+
+it("handleJob plan-realtime-fetches short-circuits when circuit breaker is open", async () => {
+  const { handleJob } = await import("./worker");
+  const { logFetch, listSchedulableRaceSourcesByDate } = await import("./storage");
+  const get = vi.fn(async () => "open");
+  const put = vi.fn(async () => {});
+  const env = buildEnv({
+    DETAIL_SECTION_CACHE_KV: { get, put } as unknown as KVNamespace,
+  });
+  await handleJob(env, { date: "20260512", type: "plan-realtime-fetches" });
+  expect(listSchedulableRaceSourcesByDate).not.toHaveBeenCalled();
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-realtime-fetches",
+    "skipped",
+    null,
+    "circuit breaker open",
+  );
+});
+
+it("handleJob plan-realtime-fetches trips circuit breaker when D1 overload error escapes", async () => {
+  const { handleJob } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockRejectedValueOnce(
+    new Error("D1_ERROR: D1 DB is overloaded. Please try again later."),
+  );
+  const get = vi.fn(async () => null);
+  const put = vi.fn(async () => {});
+  const env = buildEnv({
+    DETAIL_SECTION_CACHE_KV: { get, put } as unknown as KVNamespace,
+    REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z",
+  });
+  await expect(handleJob(env, { date: "20260512", type: "plan-realtime-fetches" })).rejects.toThrow(
+    "D1 DB is overloaded",
+  );
+  expect(put).toHaveBeenCalledWith("plan-realtime-fetches:circuit-breaker", "open", {
+    expirationTtl: 120,
+  });
+});
+
+it("handleJob plan-realtime-fetches does not trip breaker for non-overload errors", async () => {
+  const { handleJob } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockRejectedValueOnce(new Error("kaboom"));
+  const get = vi.fn(async () => null);
+  const put = vi.fn(async () => {});
+  const env = buildEnv({
+    DETAIL_SECTION_CACHE_KV: { get, put } as unknown as KVNamespace,
+    REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z",
+  });
+  await expect(handleJob(env, { date: "20260512", type: "plan-realtime-fetches" })).rejects.toThrow(
+    "kaboom",
+  );
+  expect(put).not.toHaveBeenCalled();
+});
+
+it("handleJob plan-realtime-fetches swallows KV put error inside trip path", async () => {
+  const { handleJob } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockRejectedValueOnce(
+    new Error("Too many requests queued"),
+  );
+  const get = vi.fn(async () => null);
+  const put = vi.fn(async () => {
+    throw new Error("kv down");
+  });
+  const env = buildEnv({
+    DETAIL_SECTION_CACHE_KV: { get, put } as unknown as KVNamespace,
+    REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z",
+  });
+  await expect(handleJob(env, { date: "20260512", type: "plan-realtime-fetches" })).rejects.toThrow(
+    "Too many requests queued",
+  );
+});
+
+it("handleJob plan-realtime-fetches swallows logFetch error in skipped path", async () => {
+  const { handleJob } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  vi.mocked(logFetch).mockRejectedValueOnce(new Error("log down"));
+  const get = vi.fn(async () => "open");
+  const put = vi.fn(async () => {});
+  const env = buildEnv({
+    DETAIL_SECTION_CACHE_KV: { get, put } as unknown as KVNamespace,
+  });
+  await handleJob(env, { date: "20260512", type: "plan-realtime-fetches" });
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-realtime-fetches",
+    "skipped",
+    null,
+    "circuit breaker open",
+  );
+});
