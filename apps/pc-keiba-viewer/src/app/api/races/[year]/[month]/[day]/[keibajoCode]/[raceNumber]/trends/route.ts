@@ -39,7 +39,7 @@ import {
   fetchRaceTrendDailyTrack,
   type RaceTrendDailyTrackFetchResult,
 } from "../../../../../../../../../lib/race-trend-daily-track-client.server";
-import { notifyRaceTrendRoom } from "../../../../../../../../../lib/race-trend-room.server";
+import { notifyRaceTrendRoomIfChanged } from "../../../../../../../../../lib/race-trend-room.server";
 import type {
   RaceDetail,
   RaceTrendRawPayload,
@@ -351,10 +351,11 @@ export async function GET(request: Request, context: RouteContext) {
   const hasUsableData = isCacheableTrendPayload(payload);
   if (hasUsableData) {
     await putRaceTrendCache({ body, cacheKey, race });
-    await notifyRaceTrendRoom(
-      { day, keibajoCode, month, raceNumber, source, year },
-      { cacheKey },
-    ).catch(() => false);
+    await notifyRaceTrendRoomIfChanged({
+      body,
+      event: { cacheKey },
+      params: { day, keibajoCode, month, raceNumber, source, year },
+    }).catch(() => false);
   }
 
   return new Response(body, {

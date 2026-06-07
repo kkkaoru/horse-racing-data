@@ -14,7 +14,8 @@ vi.mock("./realtime-trend-day-cache.server", () => ({
   bustRealtimeRowsForDay: vi.fn<() => Promise<undefined>>(async () => undefined),
 }));
 
-import { bustRaceTrendCachesForDay } from "./race-trend-cache.server";
+import { bustRaceTrendCachesForDay, putRaceTrendCache } from "./race-trend-cache.server";
+import type { RaceDetail } from "./race-types";
 
 type AnyMockFn = (...args: never[]) => unknown;
 
@@ -136,4 +137,96 @@ it("bustRaceTrendCachesForDay emits one today key per distinct venue", async () 
     "race-trend-today:v9:nar:20260529:44",
     "race-trend-today:v9:nar:20260529:50",
   ]);
+});
+
+const buildRaceDetail = (overrides: Partial<RaceDetail> = {}): RaceDetail => ({
+  babajotaiCodeDirt: null,
+  babajotaiCodeShiba: null,
+  gradeCode: null,
+  hassoJikoku: "1500",
+  juryoShubetsuCode: null,
+  kaisaiKai: null,
+  kaisaiNen: "2099",
+  kaisaiNichime: null,
+  kaisaiTsukihi: "0529",
+  keibajoCode: "05",
+  kyori: null,
+  kyosoJokenCode: null,
+  kyosoJokenMeisho: null,
+  kyosoKigoCode: null,
+  kyosoShubetsuCode: null,
+  kyosomeiFukudai: null,
+  kyosomeiHondai: null,
+  kyosomeiKakkonai: null,
+  raceBango: "07",
+  shussoTosu: null,
+  source: "jra",
+  tenkoCode: null,
+  torokuTosu: null,
+  trackCode: null,
+  ...overrides,
+});
+
+it("putRaceTrendCache skips KV PUT when an in-flight gate marker is present", async () => {
+  const kv = buildKvStub();
+  kv.get.mockResolvedValue("1");
+  getCloudflareContextMock.mockResolvedValue({ env: { DETAIL_SECTION_CACHE_KV: kv }, ctx: null });
+  await putRaceTrendCache({ body: "{}", cacheKey: "race-trend-key-A", race: buildRaceDetail() });
+  expect(kv.put).not.toHaveBeenCalled();
+});
+
+it("putRaceTrendCache writes the in-flight marker then the body when no gate is present", async () => {
+  const kv = buildKvStub();
+  kv.get.mockResolvedValue(null);
+  getCloudflareContextMock.mockResolvedValue({ env: { DETAIL_SECTION_CACHE_KV: kv }, ctx: null });
+  await putRaceTrendCache({
+    body: '{"k":1}',
+    cacheKey: "race-trend-key-B",
+    race: buildRaceDetail(),
+  });
+  expect(kv.put).toHaveBeenCalledTimes(2);
+  expect(kv.put.mock.calls[0]?.[0]).toBe("race-trend-kv-put-in-flight:race-trend-key-B");
+  expect(kv.put.mock.calls[1]?.[0]).toBe("race-trend-key-B");
+});
+
+it("putRaceTrendCache treats KV gate get failure as no-gate and still writes the body", async () => {
+  const kv = buildKvStub();
+  kv.get.mockRejectedValue(new Error("kv get boom"));
+  getCloudflareContextMock.mockResolvedValue({ env: { DETAIL_SECTION_CACHE_KV: kv }, ctx: null });
+  await putRaceTrendCache({
+    body: '{"k":2}',
+    cacheKey: "race-trend-key-C",
+    race: buildRaceDetail(),
+  });
+  const putCalls = kv.put.mock.calls.map((call) => String(call[0]));
+  expect(putCalls).toStrictEqual([
+    "race-trend-kv-put-in-flight:race-trend-key-C",
+    "race-trend-key-C",
+  ]);
+});
+
+it("putRaceTrendCache still writes body when in-flight marker put fails", async () => {
+  const kv = buildKvStub();
+  kv.get.mockResolvedValue(null);
+  kv.put.mockRejectedValueOnce(new Error("marker put boom")).mockResolvedValueOnce(undefined);
+  getCloudflareContextMock.mockResolvedValue({ env: { DETAIL_SECTION_CACHE_KV: kv }, ctx: null });
+  await putRaceTrendCache({
+    body: '{"k":3}',
+    cacheKey: "race-trend-key-D",
+    race: buildRaceDetail(),
+  });
+  expect(kv.put).toHaveBeenCalledTimes(2);
+  expect(kv.put.mock.calls[1]?.[0]).toBe("race-trend-key-D");
+});
+
+it("putRaceTrendCache is a no-op when ttlSeconds is zero (past race)", async () => {
+  const kv = buildKvStub();
+  getCloudflareContextMock.mockResolvedValue({ env: { DETAIL_SECTION_CACHE_KV: kv }, ctx: null });
+  await putRaceTrendCache({
+    body: "{}",
+    cacheKey: "race-trend-key-E",
+    race: buildRaceDetail({ kaisaiNen: "2000" }),
+  });
+  expect(kv.put).not.toHaveBeenCalled();
+  expect(kv.get).not.toHaveBeenCalled();
 });
