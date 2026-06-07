@@ -865,10 +865,18 @@ export const insertRaceEntrySnapshot = async (
   fetchedAt: string,
   entries: Omit<RaceEntry, "fetchedAt">[],
 ): Promise<number> => {
-  await db.prepare("delete from race_entry_snapshots where race_key = ?").bind(raceKey).run();
+  // 2026-06-07: same shape as the W1 weight-snapshot fix (storage.ts:821) but
+  // for race_entry_snapshots. The DELETE must NOT run when the upstream
+  // returned an empty parse, otherwise a transient blank wipes the saved
+  // entries for that race_key. Empty entries downstream collapse
+  // expectedHorseCount to 0 inside fetchAndStoreResults, which makes
+  // resolveResultFetchOutcome return "complete" with savedHorseCount=0 and
+  // permanently freezes race_result_snapshots at 0 rows (observed for
+  // jra:2026:0607:05:04 / 東京 4R).
   if (entries.length === 0) {
     return 0;
   }
+  await db.prepare("delete from race_entry_snapshots where race_key = ?").bind(raceKey).run();
   await runD1Batches(
     db,
     entries.map((entry) =>
