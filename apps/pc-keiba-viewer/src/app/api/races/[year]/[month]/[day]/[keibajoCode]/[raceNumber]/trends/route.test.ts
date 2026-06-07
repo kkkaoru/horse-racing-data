@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   getRaceTrendPast14StarterRowsMock: vi.fn<(...args: never[]) => unknown>(),
   getRaceTrendRunningStylesFromD1Mock: vi.fn<(...args: never[]) => unknown>(),
   getRaceTrendTodayRunningStylesFromD1Mock: vi.fn<(...args: never[]) => unknown>(),
+  getRaceTrendTodaySiblingRunnerDataMock: vi.fn<(...args: never[]) => unknown>(),
   getRaceTrendTodayStarterRowsMock: vi.fn<(...args: never[]) => unknown>(),
   notifyRaceTrendRoomMock: vi.fn<(...args: never[]) => unknown>(),
   putRaceTrendCacheMock: vi.fn<(...args: never[]) => unknown>(),
@@ -38,6 +39,10 @@ vi.mock("../../../../../../../../../db/queries", () => ({
   getRaceDetail: mocks.getRaceDetailMock,
   getRaceRunners: mocks.getRaceRunnersMock,
   getRaceSourceByRoute: mocks.getRaceSourceByRouteMock,
+}));
+
+vi.mock("../../../../../../../../../db/today-sibling-runner-data.server", () => ({
+  getRaceTrendTodaySiblingRunnerData: mocks.getRaceTrendTodaySiblingRunnerDataMock,
 }));
 
 vi.mock("../../../../../../../../../lib/production-api-proxy.server", () => ({
@@ -75,6 +80,7 @@ const {
   getRaceTrendPast14StarterRowsMock,
   getRaceTrendRunningStylesFromD1Mock,
   getRaceTrendTodayRunningStylesFromD1Mock,
+  getRaceTrendTodaySiblingRunnerDataMock,
   getRaceTrendTodayStarterRowsMock,
   notifyRaceTrendRoomMock,
   putRaceTrendCacheMock,
@@ -250,6 +256,7 @@ beforeEach(() => {
   getRaceTrendPast14StarterRowsMock.mockReset();
   getRaceTrendRunningStylesFromD1Mock.mockReset();
   getRaceTrendTodayRunningStylesFromD1Mock.mockReset();
+  getRaceTrendTodaySiblingRunnerDataMock.mockReset();
   getRaceTrendTodayStarterRowsMock.mockReset();
   notifyRaceTrendRoomMock.mockReset();
   putRaceTrendCacheMock.mockReset();
@@ -259,6 +266,7 @@ beforeEach(() => {
   getRaceRunningStylesWithCacheMock.mockResolvedValue([]);
   getRaceTrendRunningStylesFromD1Mock.mockResolvedValue([]);
   getRaceTrendTodayRunningStylesFromD1Mock.mockResolvedValue([]);
+  getRaceTrendTodaySiblingRunnerDataMock.mockResolvedValue([]);
   getCachedRaceTrendResponseMock.mockResolvedValue(null);
   putRaceTrendCacheMock.mockResolvedValue(undefined);
   notifyRaceTrendRoomMock.mockResolvedValue(true);
@@ -861,4 +869,65 @@ it("GET calls getRaceTrendTodayStarterRows when DO promise rejects (do-error-fal
   const response = await GET(buildTrendRequest(), buildTrendContext());
   expect(response.status).toBe(200);
   expect(getRaceTrendTodayStarterRowsMock).toHaveBeenCalledTimes(1);
+});
+
+it("GET skips getRaceTrendTodaySiblingRunnerData when there are no today-sibling rows", async () => {
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.status).toBe(200);
+  expect(getRaceTrendTodaySiblingRunnerDataMock).not.toHaveBeenCalled();
+});
+
+it("GET merges wakuban and chokyoshiName from getRaceTrendTodaySiblingRunnerData into today-sibling rows", async () => {
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  const todaySiblingRow = buildStarterRow({
+    bamei: "サイブリングホース",
+    chokyoshiName: null,
+    finishPosition: 0,
+    raceBango: "03",
+    source: "jra",
+    umaban: "05",
+    wakuban: null,
+  });
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({
+    rows: [buildDailyTrackRow("03", [todaySiblingRow])],
+    status: "hit",
+  });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  getRaceTrendTodaySiblingRunnerDataMock.mockResolvedValue([
+    { chokyoshiName: "森秀行", raceBango: "03", umaban: "05", wakuban: "3" },
+  ]);
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.status).toBe(200);
+  const body = await readJsonAsPayload(response);
+  expect(body.starterRows.length).toBe(1);
+  expect(body.starterRows[0]?.wakuban).toBe("3");
+  expect(body.starterRows[0]?.chokyoshiName).toBe("森秀行");
+});
+
+it("GET degrades to snapshot values when getRaceTrendTodaySiblingRunnerData rejects", async () => {
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  const todaySiblingRow = buildStarterRow({
+    finishPosition: 0,
+    raceBango: "03",
+    source: "jra",
+    umaban: "05",
+    wakuban: "2",
+  });
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({
+    rows: [buildDailyTrackRow("03", [todaySiblingRow])],
+    status: "hit",
+  });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  getRaceTrendTodaySiblingRunnerDataMock.mockRejectedValue(new Error("hyperdrive boom"));
+  const response = await GET(buildTrendRequest(), buildTrendContext());
+  expect(response.status).toBe(200);
+  const body = await readJsonAsPayload(response);
+  expect(body.starterRows.length).toBe(1);
+  expect(body.starterRows[0]?.wakuban).toBe("2");
 });
