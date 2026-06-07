@@ -406,7 +406,7 @@ describe("buildFinishPredictionRowsFromResults", () => {
     expect(rows[0]?.score).toBe(0.5);
   });
 
-  it("boosts modelWeight and dampens popularityWeight for JRA new-horse maiden races", () => {
+  it("boosts modelWeight by 4x and zeroes odds and popularity weights for JRA new-horse maiden races", () => {
     const rows = buildFinishPredictionRowsFromResults({
       currentDistance: "1600",
       currentKeibajoCode: "09",
@@ -428,9 +428,41 @@ describe("buildFinishPredictionRowsFromResults", () => {
 
     const modelWeight = rows[0]?.details.find((detail) => detail.label === "モデル")?.weight;
     const popularityWeight = rows[0]?.details.find((detail) => detail.label === "人気")?.weight;
+    const oddsWeight = rows[0]?.details.find((detail) => detail.label === "単勝")?.weight;
 
-    expect(modelWeight).toBe(0.16);
-    expect(popularityWeight).toBe(0.04);
+    expect(modelWeight).toBe(0.32);
+    expect(popularityWeight).toBe(0);
+    expect(oddsWeight).toBe(0);
+  });
+
+  it("forces oddsWeight and popularityWeight to exactly zero for NAR new-horse maiden races with no prior results", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      currentDistance: "1600",
+      currentKeibajoCode: "35",
+      currentKyosoJokenCode: "701",
+      currentRaceDate: "20260607",
+      currentSource: "nar",
+      currentTrackCode: "24",
+      modelPredictionFeatures: [
+        {
+          horseNumber: "01",
+          modelVersion: "iter12-nar-generic",
+          predictedFinishNorm: 0.1,
+          showProbability: 0.6,
+          winProbability: 0.4,
+        },
+      ],
+      results: [],
+      runners: [runner({ tanshoNinkijun: "01", tanshoOdds: "0020", umaban: "01" })],
+    });
+
+    const modelWeight = rows[0]?.details.find((detail) => detail.label === "モデル")?.weight;
+    const popularityWeight = rows[0]?.details.find((detail) => detail.label === "人気")?.weight;
+    const oddsWeight = rows[0]?.details.find((detail) => detail.label === "単勝")?.weight;
+
+    expect(modelWeight).toBe(0.24);
+    expect(popularityWeight).toBe(0);
+    expect(oddsWeight).toBe(0);
   });
 
   it("keeps base modelWeight when kyosoJokenCode is not the new-horse maiden code", () => {

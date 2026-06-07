@@ -133,9 +133,7 @@ const GRADED_RACE_CODES = new Set(["A", "B", "C", "D", "E", "F", "G", "H", "L"])
 
 const NEW_HORSE_MAIDEN_CODE = "701";
 
-const NEW_HORSE_MAIDEN_MODEL_BOOST = 2;
-
-const NEW_HORSE_MAIDEN_POPULARITY_DAMP = 0.5;
+const NEW_HORSE_MAIDEN_MODEL_BOOST = 4;
 
 const ODDS_RESTORE_MULTIPLIER_NON_BANEI = 2;
 
@@ -341,10 +339,6 @@ const getConditionAdjustedConfig = ({
 
   if (cleanText(currentKyosoJokenCode, "") === NEW_HORSE_MAIDEN_CODE) {
     config.modelWeight = config.modelWeight * NEW_HORSE_MAIDEN_MODEL_BOOST;
-    config.popularityWeight = Math.max(
-      0,
-      config.popularityWeight * NEW_HORSE_MAIDEN_POPULARITY_DAMP,
-    );
   }
 
   return config;
@@ -641,8 +635,12 @@ export const buildFinishPredictionRowsFromResults = ({
         cleanText(result.chokyoshimeiRyakusho, "") === cleanText(runner.chokyoshimeiRyakusho, ""),
     );
     const runnerConfig = getHorseHistoryAdjustedConfig(config, horseResults.length, category);
+    const isNewHorseMaiden = cleanText(currentKyosoJokenCode, "") === NEW_HORSE_MAIDEN_CODE;
+    const finalRunnerConfig: FinishPredictionConfig = isNewHorseMaiden
+      ? { ...runnerConfig, oddsWeight: 0, popularityWeight: 0 }
+      : runnerConfig;
     const averageParams = {
-      config: runnerConfig,
+      config: finalRunnerConfig,
       currentDistance,
       currentRaceDate,
       currentTrackCode,
@@ -663,25 +661,25 @@ export const buildFinishPredictionRowsFromResults = ({
         label: "競走成績",
         reason: `${category}向け重みで過去${horseAverage.count}走の着順、距離、馬場、日付を評価`,
         value: horseAverage.value,
-        weight: runnerConfig.horseWeight,
+        weight: finalRunnerConfig.horseWeight,
       },
       {
         label: "近走",
         reason: `直近${recentAverage.count}走を強めに評価`,
         value: recentAverage.value,
-        weight: runnerConfig.recentWeight,
+        weight: finalRunnerConfig.recentWeight,
       },
       {
         label: "騎手",
         reason: `今回騎手と一致する過去${jockeyAverage.count}走を評価`,
         value: jockeyAverage.value,
-        weight: runnerConfig.jockeyWeight,
+        weight: finalRunnerConfig.jockeyWeight,
       },
       {
         label: "調教師",
         reason: `今回調教師と一致する過去${trainerAverage.count}走を評価`,
         value: trainerAverage.value,
-        weight: runnerConfig.trainerWeight,
+        weight: finalRunnerConfig.trainerWeight,
       },
       {
         label: "人気",
@@ -689,7 +687,7 @@ export const buildFinishPredictionRowsFromResults = ({
           ? "リアルタイムの人気順を出走頭数で正規化"
           : "最新の人気順を出走頭数で正規化",
         value: normalizeParsedPopularity(storedPopularity, runnerCount),
-        weight: runnerConfig.popularityWeight,
+        weight: finalRunnerConfig.popularityWeight,
       },
       {
         label: "単勝",
@@ -697,7 +695,7 @@ export const buildFinishPredictionRowsFromResults = ({
           ? "リアルタイムの単勝オッズを対数で正規化"
           : "最新の単勝オッズを対数で正規化",
         value: normalizeParsedOdds(storedOdds),
-        weight: runnerConfig.oddsWeight,
+        weight: finalRunnerConfig.oddsWeight,
       },
       {
         label: "同日同場の騎手勝利",
@@ -705,7 +703,7 @@ export const buildFinishPredictionRowsFromResults = ({
           ? `${sameDayJockey.feature.jockeyName}騎手が同じ競馬場の当日${sameDayJockey.feature.latestRaceNumber}Rまでに${sameDayJockey.feature.winCount}勝`
           : "同じ競馬場の当日勝利情報なし",
         value: sameDayJockey?.value ?? null,
-        weight: runnerConfig.sameDayJockeyWeight,
+        weight: finalRunnerConfig.sameDayJockeyWeight,
       },
       {
         label: "類似レース",
