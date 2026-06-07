@@ -13,6 +13,7 @@ import {
   getRaceRunners,
   getRaceSourceByRoute,
 } from "../../../../../../../../../db/queries";
+import { getRaceTrendTodaySiblingRunnerData } from "../../../../../../../../../db/today-sibling-runner-data.server";
 import { safeGetCloudflareEnv } from "../../../../../../../../../lib/cloudflare-context.server";
 import type { RaceSource } from "../../../../../../../../../lib/codes";
 import {
@@ -47,6 +48,10 @@ import type {
   Runner,
 } from "../../../../../../../../../lib/race-types";
 import { getRaceRunningStylesWithCache } from "../../../../../../../../../lib/running-style-cache.server";
+import {
+  mergeTodaySiblingRunnerData,
+  type TodaySiblingRunnerEntry,
+} from "../../../../../../../../../lib/today-sibling-runner-merge";
 
 interface RouteContext {
   params: Promise<{
@@ -122,6 +127,14 @@ const safeDoResultPromise = (
 const safeLegacyTodayPromise = (
   promise: Promise<RaceTrendStarterRow[]>,
 ): Promise<RaceTrendStarterRow[]> => promise.catch(() => []);
+
+// Hyperdrive (R1) fetch wrapper: a single jvd_se / nvd_se outage must not
+// black out the trend section. Fall back to an empty entry list so the
+// merge step degrades to a no-op and the today-sibling rows still render
+// with whatever wakuban the DO derived plus a "-" trainer column.
+const safeSiblingRunnerEntriesPromise = (
+  promise: Promise<TodaySiblingRunnerEntry[]>,
+): Promise<TodaySiblingRunnerEntry[]> => promise.catch(() => []);
 
 const toCurrentRunningStyles = (
   rows: ReadonlyArray<{ horseNumber: number; predictedLabel: RaceTrendRunningStyle }>,
@@ -230,12 +243,34 @@ const buildRaceTrendRawPayload = async (
   // stale-day or other-venue rows (the DO is partitioned per
   // (source, ymd, keibajoCode) but the flattened payload still carries
   // raw `RaceTrendStarterRow` records we should re-narrow before merge).
-  const todaySiblingRows = filterTodaySiblingRows(rawTodaySiblingRows, {
+  const todaySiblingRowsFromSnapshots = filterTodaySiblingRows(rawTodaySiblingRows, {
     keibajoCode: race.keibajoCode,
     raceBango: race.raceBango,
     source: race.source,
     targetYmd,
   });
+  // race_entry_snapshots carries neither wakuban nor chokyoshi_name, so the
+  // DO and legacy snapshot paths populate at most a derived wakuban (from
+  // umaban + horse_count) and always leave chokyoshiName undefined. Backfill
+  // both columns from jvd_se / nvd_se in a single round trip so the trend
+  // section's expanded detail panel for a sibling race shows real values
+  // instead of "-".
+  const siblingRunnerEntries =
+    todaySiblingRowsFromSnapshots.length === 0
+      ? []
+      : await safeSiblingRunnerEntriesPromise(
+          getRaceTrendTodaySiblingRunnerData({
+            beforeRaceBango: race.raceBango,
+            keibajoCode: race.keibajoCode,
+            monthDay: race.kaisaiTsukihi,
+            source: race.source,
+            year: race.kaisaiNen,
+          }),
+        );
+  const todaySiblingRows = mergeTodaySiblingRunnerData(
+    todaySiblingRowsFromSnapshots,
+    siblingRunnerEntries,
+  );
   const starterRows = mergeStarterRows(past14Rows, todaySiblingRows);
   const currentRunningStyles = await currentRunningStylesPromise;
   const past14RaceKeys = Array.from(new Set(past14Rows.map(starterRaceKey)));
