@@ -406,6 +406,107 @@ describe("buildFinishPredictionRowsFromResults", () => {
     expect(rows[0]?.score).toBe(0.5);
   });
 
+  it("boosts modelWeight and dampens popularityWeight for JRA new-horse maiden races", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      currentDistance: "1600",
+      currentKeibajoCode: "09",
+      currentKyosoJokenCode: "701",
+      currentRaceDate: "20260607",
+      currentSource: "jra",
+      modelPredictionFeatures: [
+        {
+          horseNumber: "01",
+          modelVersion: "iter14-jra-generic",
+          predictedFinishNorm: 0.1,
+          showProbability: 0.6,
+          winProbability: 0.4,
+        },
+      ],
+      results: [],
+      runners: [runner({ tanshoNinkijun: "01", tanshoOdds: "0020", umaban: "01" })],
+    });
+
+    const modelWeight = rows[0]?.details.find((detail) => detail.label === "モデル")?.weight;
+    const popularityWeight = rows[0]?.details.find((detail) => detail.label === "人気")?.weight;
+
+    expect(modelWeight).toBe(0.16);
+    expect(popularityWeight).toBe(0.04);
+  });
+
+  it("keeps base modelWeight when kyosoJokenCode is not the new-horse maiden code", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      currentDistance: "1600",
+      currentKeibajoCode: "09",
+      currentKyosoJokenCode: "703",
+      currentRaceDate: "20260607",
+      currentSource: "jra",
+      modelPredictionFeatures: [
+        {
+          horseNumber: "01",
+          modelVersion: "iter14-jra-generic",
+          predictedFinishNorm: 0.1,
+          showProbability: 0.6,
+          winProbability: 0.4,
+        },
+      ],
+      results: [],
+      runners: [runner({ tanshoNinkijun: "01", tanshoOdds: "0020", umaban: "01" })],
+    });
+
+    const modelWeight = rows[0]?.details.find((detail) => detail.label === "モデル")?.weight;
+    const popularityWeight = rows[0]?.details.find((detail) => detail.label === "人気")?.weight;
+
+    expect(modelWeight).toBe(0.08);
+    expect(popularityWeight).toBe(0.05);
+  });
+
+  it("doubles oddsWeight for JRA runners with no prior results", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      currentDistance: "1600",
+      currentKeibajoCode: "05",
+      currentRaceDate: "20260607",
+      currentSource: "jra",
+      results: [],
+      runners: [runner({ tanshoNinkijun: "01", tanshoOdds: "0020", umaban: "01" })],
+    });
+
+    const oddsWeight = rows[0]?.details.find((detail) => detail.label === "単勝")?.weight;
+
+    expect(oddsWeight).toBe(0.15);
+  });
+
+  it("doubles oddsWeight for NAR runners with no prior results", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      currentDistance: "1600",
+      currentKeibajoCode: "35",
+      currentRaceDate: "20260607",
+      currentSource: "nar",
+      currentTrackCode: "24",
+      results: [],
+      runners: [runner({ tanshoNinkijun: "01", tanshoOdds: "0020", umaban: "01" })],
+    });
+
+    const oddsWeight = rows[0]?.details.find((detail) => detail.label === "単勝")?.weight;
+
+    expect(oddsWeight).toBe(0.13);
+  });
+
+  it("keeps oddsWeight unchanged for ban-ei runners with no prior results", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      currentDistance: "200",
+      currentKeibajoCode: "83",
+      currentRaceDate: "20260607",
+      currentSource: "nar",
+      currentTrackCode: null,
+      results: [],
+      runners: [runner({ tanshoNinkijun: "01", tanshoOdds: "0020", umaban: "01" })],
+    });
+
+    const oddsWeight = rows[0]?.details.find((detail) => detail.label === "単勝")?.weight;
+
+    expect(oddsWeight).toBe(0.12);
+  });
+
   it("re-ranks rows when realtime market overrides change popularity and odds", () => {
     const inputs: FinishPredictionBuildInputs = {
       currentDistance: "1600",

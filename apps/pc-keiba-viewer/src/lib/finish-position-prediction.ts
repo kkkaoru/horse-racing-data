@@ -131,6 +131,16 @@ const CATEGORY_CONFIG: Record<FinishPredictionCategory, FinishPredictionConfig> 
 
 const GRADED_RACE_CODES = new Set(["A", "B", "C", "D", "E", "F", "G", "H", "L"]);
 
+const NEW_HORSE_MAIDEN_CODE = "701";
+
+const NEW_HORSE_MAIDEN_MODEL_BOOST = 2;
+
+const NEW_HORSE_MAIDEN_POPULARITY_DAMP = 0.5;
+
+const ODDS_RESTORE_MULTIPLIER_NON_BANEI = 2;
+
+const ODDS_RESTORE_MULTIPLIER_BANEI = 1;
+
 const clampScore = (value: number): number => Math.max(0, Math.min(1, value));
 
 const roundScore = (value: number): number => Math.round(value * 100) / 100;
@@ -329,19 +339,30 @@ const getConditionAdjustedConfig = ({
     config.sameDayJockeyWeight *= 0.75;
   }
 
+  if (cleanText(currentKyosoJokenCode, "") === NEW_HORSE_MAIDEN_CODE) {
+    config.modelWeight = config.modelWeight * NEW_HORSE_MAIDEN_MODEL_BOOST;
+    config.popularityWeight = Math.max(
+      0,
+      config.popularityWeight * NEW_HORSE_MAIDEN_POPULARITY_DAMP,
+    );
+  }
+
   return config;
 };
 
 const getHorseHistoryAdjustedConfig = (
   baseConfig: FinishPredictionConfig,
   horseResultsCount: number,
+  category: FinishPredictionCategory,
 ): FinishPredictionConfig => {
   if (horseResultsCount <= 1) {
+    const oddsRestoreMultiplier =
+      category === "ban-ei" ? ODDS_RESTORE_MULTIPLIER_BANEI : ODDS_RESTORE_MULTIPLIER_NON_BANEI;
     return {
       ...baseConfig,
       horseWeight: Math.max(0.12, baseConfig.horseWeight - 0.04),
       jockeyWeight: baseConfig.jockeyWeight + 0.025,
-      oddsWeight: baseConfig.oddsWeight + 0.015,
+      oddsWeight: baseConfig.oddsWeight * oddsRestoreMultiplier + 0.015,
       popularityWeight: baseConfig.popularityWeight + 0.035,
       sameDayJockeyWeight: baseConfig.sameDayJockeyWeight + 0.015,
       trainerWeight: baseConfig.trainerWeight + 0.015,
@@ -619,7 +640,7 @@ export const buildFinishPredictionRowsFromResults = ({
         cleanText(result.chokyoshimeiRyakusho, "") &&
         cleanText(result.chokyoshimeiRyakusho, "") === cleanText(runner.chokyoshimeiRyakusho, ""),
     );
-    const runnerConfig = getHorseHistoryAdjustedConfig(config, horseResults.length);
+    const runnerConfig = getHorseHistoryAdjustedConfig(config, horseResults.length, category);
     const averageParams = {
       config: runnerConfig,
       currentDistance,
