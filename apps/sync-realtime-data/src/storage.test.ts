@@ -437,13 +437,15 @@ it("insertHorseWeightSnapshot replaces existing rows when weights present", asyn
   expect(batch).toHaveBeenCalledTimes(1);
 });
 
-it("insertRaceEntrySnapshot returns 0 when entries empty after delete", async () => {
+it("insertRaceEntrySnapshot returns 0 without running delete when entries empty", async () => {
   const run = vi.fn(async () => ({}));
   const bind = vi.fn((..._args: unknown[]) => ({ run }));
   const prepare = vi.fn(() => ({ bind }));
   const batch = vi.fn(async () => []);
   const db = { batch, prepare } as unknown as D1Database;
   expect(await insertRaceEntrySnapshot(db, "key", "now", [])).toBe(0);
+  expect(prepare).not.toHaveBeenCalled();
+  expect(batch).not.toHaveBeenCalled();
 });
 
 it("insertRaceEntrySnapshot returns row count when entries present", async () => {
@@ -463,6 +465,15 @@ it("insertRaceResultSnapshot returns 0 when results empty", async () => {
   const batch = vi.fn(async () => []);
   const db = { batch, prepare: vi.fn() } as unknown as D1Database;
   expect(await insertRaceResultSnapshot(db, "key", "now", [])).toBe(0);
+});
+
+it("insertRaceResultSnapshot does not run delete when results empty", async () => {
+  const prepare = vi.fn();
+  const batch = vi.fn(async () => []);
+  const db = { batch, prepare } as unknown as D1Database;
+  await insertRaceResultSnapshot(db, "key", "now", []);
+  expect(prepare).not.toHaveBeenCalled();
+  expect(batch).not.toHaveBeenCalled();
 });
 
 it("insertRaceResultSnapshot returns row count when results present", async () => {
