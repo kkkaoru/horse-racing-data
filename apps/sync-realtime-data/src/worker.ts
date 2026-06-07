@@ -2558,6 +2558,15 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
     ).length;
     const results =
       race.source === "jra" ? parseJraRaceResults(resultHtml) : parseRaceResults(resultHtml);
+    // 2026-06-07: when the entry HTML parses to 0 horses AND the result HTML
+    // parses to 0 rows, treat it as a transient upstream parse failure and keep
+    // the race in the retry pool. Without this guard expectedHorseCount = 0
+    // falls through, insertRaceResultSnapshot short-circuits on 0 rows, and
+    // resolveResultFetchOutcome returns "complete" → permanently locks the
+    // race at 0 result rows (same shape as the BBB fix 3c7f877 for entries).
+    if (entryHorseNumbers.length === 0 && results.length === 0) {
+      throw new Error(`race entry rows are empty: ${raceKey}`);
+    }
     if (expectedHorseCount > 0 && results.length === 0) {
       throw new Error(`race result rows are empty: ${raceKey}`);
     }
