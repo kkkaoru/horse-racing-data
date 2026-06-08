@@ -11,6 +11,18 @@
 #   launchctl kickstart -k gui/$(id -u)/com.kkk4oru.finish-position-predict
 # or directly:
 #   bash scripts/launchd/finish-position-predict-daily.sh
+#
+# RUN_DATE override:
+#   The caller may set RUN_DATE=YYYYMMDD (e.g. for tomorrow's predictions from
+#   the hourly race-prediction-guard launchd). When unset, defaults to today
+#   JST. The container always interprets RUN_DATE as JST YYYYMMDD.
+#
+# Lock coordination:
+#   Holds /tmp/finish-position-predict.lock for the duration of the docker run
+#   so the JST 03:00 cron and the hourly race-prediction-guard (which can also
+#   fire this script with PREDICT_DAYS_AHEAD=1 to cover tomorrow) cannot race.
+#   The lock is a plain directory (mkdir is atomic on macOS — flock is not
+#   shipped with macOS).
 set -euo pipefail
 
 # Resolve repo root from this script's location (scripts/launchd -> repo root).
@@ -25,13 +37,26 @@ SOURCE_DATABASE_URL_DEFAULT="postgresql://horse_racing:horse_racing@127.0.0.1:15
 NEON_ENV_FILE="apps/local-postgresql/.env.replica"
 LOG_DIR="/Users/kkk4oru/Library/Logs/finish-position-predict"
 FAILURE_LOG="$LOG_DIR/failures.log"
+LOCK_DIR="/tmp/finish-position-predict.lock"
 
 mkdir -p "$LOG_DIR"
 
+# Single-writer lock shared with hourly race-prediction-guard. mkdir is atomic
+# on macOS (test-and-set in one syscall). If lock is held, exit 0 with a log
+# — a concurrent docker run would just race the same UPSERT and waste
+# colima/docker capacity for ~10 min.
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  printf '%s [finish-position-predict-daily] lock %s held; another run in progress, skipping\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$LOCK_DIR" >> "$LOG_DIR/lock-skips.log"
+  exit 0
+fi
+trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+
 # JST = UTC+9. `date -u +%Y%m%d -v+9H` adds 9 h to current UTC and formats as
 # YYYYMMDD — that is "today in JST" regardless of the Mac's local timezone, so
-# a misconfigured TZ still yields the correct run date.
-RUN_DATE="$(date -u -v+9H +%Y%m%d)"
+# a misconfigured TZ still yields the correct run date. RUN_DATE env override
+# is honored (used by the race-prediction-guard to target tomorrow JST).
+RUN_DATE="${RUN_DATE:-$(date -u -v+9H +%Y%m%d)}"
 RUN_DATE_ISO="${RUN_DATE:0:4}-${RUN_DATE:4:2}-${RUN_DATE:6:2}"
 DATED_LOG="$LOG_DIR/${RUN_DATE}.log"
 
