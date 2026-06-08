@@ -125,33 +125,42 @@ correct regardless of system TZ; only the **firing time** depends on it.
 # `com.kkk4oru.race-prediction-guard` — hourly completeness guard
 
 The second LaunchAgent (`com.kkk4oru.race-prediction-guard.plist` +
-`race-prediction-guard.sh`) fires 13 times per JST day:
+`race-prediction-guard.sh`) fires 15 times per JST day:
 
-| Fires (Hour:00 JST) | Target date guarded | Days-ahead env passed to finish-position     |
-| ------------------- | ------------------- | -------------------------------------------- |
-| 00, 01, 02, ... 09  | TODAY JST           | `PREDICT_DAYS_AHEAD=0`                       |
-| 21, 22, 23          | TOMORROW JST        | `PREDICT_DAYS_AHEAD=1` + `RUN_DATE=tomorrow` |
+| Fires (Hour:00 JST) | Target dates guarded     | Notes                                                                                       |
+| ------------------- | ------------------------ | ------------------------------------------------------------------------------------------- |
+| 00, 01, 02, ... 09  | TODAY JST                | `PREDICT_DAYS_AHEAD=0`                                                                      |
+| 19, 20              | TODAY JST                | Evening top-up for late NAR / Ban-ei rerun after lineup updates                             |
+| 21, 22, 23          | TODAY JST + TOMORROW JST | Pre-warm + final today catch-up. TOMORROW uses `PREDICT_DAYS_AHEAD=1` + `RUN_DATE=tomorrow` |
 
 Per tick:
 
 1. Take a single-writer lock at `/tmp/race-prediction-guard.lock` (atomic
    `mkdir`); exit 0 if already held by another guard.
-2. Choose `TARGET_DATE` based on the JST hour (see table above). The hour is
-   read live but `DRY_RUN=1` accepts a `FORCE_HOUR` override for testing.
-3. Query Cloudflare D1 `sync-realtime-data.realtime_race_sources` for
-   `COUNT(DISTINCT race_key) WHERE substr(race_start_at_jst,1,10)='YYYY-MM-DD'`.
-   If 0 → exit (no races today/tomorrow).
-4. For each of the two prediction kinds, query Neon for
-   `COUNT(DISTINCT (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango))`
-   in the matching predictions table for that JST date. If `actual < expected`,
-   kick:
-   - **running-style (脚質):** `POST` to
-     `https://sync-realtime-data.kkk4oru.com/api/jobs` with
-     `{"type":"plan-running-style-predictions","date":"$TARGET_DATE"}` and the
-     `REALTIME_ADMIN_TOKEN` from `apps/sync-realtime-data/.dev.vars`.
-   - **finish-position (着順):** `RUN_DATE=$TARGET_DATE PREDICT_DAYS_AHEAD=$TARGET_DAYS_AHEAD bash scripts/launchd/finish-position-predict-daily.sh`.
-     If `/tmp/finish-position-predict.lock` is already held (by the JST
-     03:00 cron or a previous guard fire), the kick is skipped this tick.
+2. Resolve the target dates based on the JST hour (see table above). The hour
+   is read live but `DRY_RUN=1` accepts a `FORCE_HOUR` override for testing.
+   `DRY_RUN=1 FORCE_TARGET_DATE=YYYYMMDD` additionally overrides both the
+   today and tomorrow dates so the empty-D1 discover-urls path can be
+   exercised deterministically.
+3. For each target date, run `guard_target`:
+   - Query Cloudflare D1 `sync-realtime-data.realtime_race_sources` for
+     `COUNT(DISTINCT race_key) WHERE substr(race_start_at_jst,1,10)='YYYY-MM-DD'`.
+   - **If the D1 count is 0**, POST `{"type":"discover-urls","date":"YYYYMMDD"}`
+     to `https://sync-realtime-data.kkk4oru.com/api/jobs` and stop processing
+     that target — the worker upsert is naturally idempotent and the next
+     hourly tick will see the freshly-discovered rows and proceed with
+     predictions. (In DRY_RUN, only the planned POST is logged.)
+   - Else query Neon for
+     `COUNT(DISTINCT (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango))`
+     in each predictions table for that JST date. If `actual < expected`,
+     kick:
+     - **running-style (脚質):** `POST` to
+       `https://sync-realtime-data.kkk4oru.com/api/jobs` with
+       `{"type":"plan-running-style-predictions","date":"$TARGET_DATE"}` and the
+       `REALTIME_ADMIN_TOKEN` from `apps/sync-realtime-data/.dev.vars`.
+     - **finish-position (着順):** `RUN_DATE=$TARGET_DATE PREDICT_DAYS_AHEAD=$TARGET_DAYS_AHEAD bash scripts/launchd/finish-position-predict-daily.sh`.
+       If `/tmp/finish-position-predict.lock` is already held (by the JST
+       03:00 cron or a previous guard fire), the kick is skipped this tick.
 
 ### Idempotency
 
@@ -169,6 +178,16 @@ exits without kicking. No state file is needed.
 ### Install
 
 ```sh
+cp scripts/launchd/com.kkk4oru.race-prediction-guard.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kkk4oru.race-prediction-guard.plist
+```
+
+If you previously installed an older version of this plist (e.g. the
+13-fire variant) you MUST `bootout` and `bootstrap` again so launchd
+picks up the new `StartCalendarInterval` array:
+
+```sh
+launchctl bootout gui/$(id -u)/com.kkk4oru.race-prediction-guard 2>/dev/null || true
 cp scripts/launchd/com.kkk4oru.race-prediction-guard.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kkk4oru.race-prediction-guard.plist
 ```
@@ -192,11 +211,18 @@ launchctl kickstart -k gui/$(id -u)/com.kkk4oru.race-prediction-guard
 # Dry-run that only prints planned kicks
 DRY_RUN=1 bash scripts/launchd/race-prediction-guard.sh
 
-# Dry-run forcing the "today" branch (hour 0..9)
+# Dry-run forcing the "today only" morning band (hour 0..9)
 DRY_RUN=1 FORCE_HOUR=05 bash scripts/launchd/race-prediction-guard.sh
 
-# Dry-run forcing the "tomorrow" branch (hour 21..23)
+# Dry-run forcing the "today only" evening top-up band (hour 19..20)
+DRY_RUN=1 FORCE_HOUR=19 bash scripts/launchd/race-prediction-guard.sh
+
+# Dry-run forcing the "today + tomorrow" pre-warm band (hour 21..23)
 DRY_RUN=1 FORCE_HOUR=22 bash scripts/launchd/race-prediction-guard.sh
+
+# Dry-run that exercises the empty-D1 discover-urls kick path
+DRY_RUN=1 FORCE_HOUR=22 FORCE_TARGET_DATE=20300101 \
+  bash scripts/launchd/race-prediction-guard.sh
 ```
 
 ### Logs

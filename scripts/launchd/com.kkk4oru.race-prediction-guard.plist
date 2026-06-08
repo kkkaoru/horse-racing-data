@@ -11,9 +11,10 @@
     coordination ("kick only if today is incomplete") needs to run somewhere
     that can talk to both Neon and D1 — that is most cleanly here.
 
-  SCHEDULE (13 fires/day in JST):
-    * Hour 0..9  (Minute 0)  -> guard TODAY    JST
-    * Hour 21..23 (Minute 0) -> guard TOMORROW JST
+  SCHEDULE (15 fires/day in JST):
+    * Hour 0..9   (Minute 0) -> guard TODAY    JST
+    * Hour 19..20 (Minute 0) -> guard TODAY    JST (evening top-up)
+    * Hour 21..23 (Minute 0) -> guard TODAY + TOMORROW JST (pre-warm)
     macOS launchd uses the device's local timezone, and this machine is
     assumed to already run JST. If you ever change the system timezone you
     MUST adjust each Hour key accordingly — launchd has no timezone-aware
@@ -21,12 +22,17 @@
     via `date -u -v+9H`, so the *which-day-to-guard* logic is robust to TZ
     drift; only the *when-to-fire* depends on the system TZ.
 
-  WHY 0..9 + 21..23:
+  WHY 0..9 + 19..20 + 21..23:
     The 0..9 window is the "race day" window — entries / final odds are
     usually live well before 09:00 JST, and we want predictions ready by
-    the time the user looks. The 21..23 window pre-warms TOMORROW JST so
-    the 00:00 fire has less to do and a sleepy Mac at midnight still has
-    something baked the night before.
+    the time the user looks. The 19..20 window catches late-evening
+    NAR / Ban-ei races that finish after 18:00 JST so a same-day rerun
+    after lineup changes is still covered. The 21..23 window pre-warms
+    TOMORROW JST AND retries TODAY so the 00:00 fire has less to do and
+    a sleepy Mac at midnight still has something baked the night before.
+    All three windows ALSO kick `discover-urls` when D1 has zero races
+    for the target date, so an empty-D1 morning gets a self-healing nudge
+    before the next tick tries to plan predictions.
 
   CATCH-UP / IDEMPOTENCY:
     StartCalendarInterval queues missed firings while the Mac is asleep and
@@ -100,7 +106,16 @@
       <key>Hour</key><integer>9</integer>
       <key>Minute</key><integer>0</integer>
     </dict>
-    <!-- 21:00..23:00 JST: guard TOMORROW JST (3 fires, pre-warm). -->
+    <!-- 19:00..20:00 JST: guard TODAY JST (2 fires, evening top-up). -->
+    <dict>
+      <key>Hour</key><integer>19</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>20</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <!-- 21:00..23:00 JST: guard TODAY + TOMORROW JST (3 fires, pre-warm). -->
     <dict>
       <key>Hour</key><integer>21</integer>
       <key>Minute</key><integer>0</integer>
