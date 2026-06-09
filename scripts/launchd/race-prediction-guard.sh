@@ -41,6 +41,7 @@
 #   DRY_RUN=1 FORCE_HOUR=19 bash scripts/launchd/race-prediction-guard.sh     # today (evening)
 #   DRY_RUN=1 FORCE_HOUR=22 bash scripts/launchd/race-prediction-guard.sh     # today + tomorrow
 #   DRY_RUN=1 FORCE_HOUR=22 FORCE_TARGET_DATE=20300101 bash ...               # exercise discover-urls path
+#   DRY_RUN=1 FORCE_HOUR=05 FORCE_NO_CORNER_FEATURES=1 bash ...               # exercise corner-features build path
 set -euo pipefail
 
 # Resolve repo root from this script's location (scripts/launchd -> repo root).
@@ -58,10 +59,13 @@ D1_BINDING_NAME="sync-realtime-data"
 WRANGLER_CONFIG="apps/sync-realtime-data/wrangler.jsonc"
 RS_TABLE="race_running_style_model_predictions"
 FP_TABLE="race_finish_position_model_predictions"
+CORNER_FEATURES_TABLE="race_entry_corner_features"
 JOBS_KICK_URL="https://sync-realtime-data.kkk4oru.com/api/jobs"
 RS_KICK_JOB_TYPE="plan-running-style-predictions"
 DISCOVER_JOB_TYPE="discover-urls"
 FINISH_SCRIPT="$REPO_ROOT/scripts/launchd/finish-position-predict-daily.sh"
+CORNER_FEATURES_BUILD_FILTER="pc-keiba-viewer"
+CORNER_FEATURES_BUILD_SCRIPT="dev:build-corner-features"
 
 mkdir -p "$LOG_DIR"
 
@@ -148,6 +152,94 @@ with psycopg.connect(dsn) as conn, conn.cursor() as cur:
     row = cur.fetchone()
     print(row[0] if row else 0)
 PY
+}
+
+# Query Neon for COUNT(*) in race_entry_corner_features for the given
+# (nen, tsukihi). Used to detect whether corner features for the target date
+# have been built (a prerequisite for plan-running-style-predictions).
+neon_corner_features_count() {
+  local nen="$1"
+  local tsukihi="$2"
+  uv run --quiet --with 'psycopg[binary]' python - "$nen" "$tsukihi" <<'PY'
+import os
+import sys
+
+import psycopg
+
+nen, tsukihi = sys.argv[1], sys.argv[2]
+dsn = os.environ["NEON_DATABASE_URL"]
+sql = (
+    "SELECT COUNT(*) FROM race_entry_corner_features"
+    " WHERE kaisai_nen = %s AND kaisai_tsukihi = %s"
+)
+with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+    cur.execute(sql, (nen, tsukihi))
+    row = cur.fetchone()
+    print(row[0] if row else 0)
+PY
+}
+
+# Check whether Neon race_entry_corner_features has rows for the target date.
+# If not, run the build-corner-feature-table bun script for that single date
+# across all sources (jra + nar + ban-ei). The bun script is idempotent —
+# its INSERT uses `on conflict (source, kaisai_nen, kaisai_tsukihi,
+# keibajo_code, race_bango, ketto_toroku_bango) do update set ...`, so a
+# second run for the same date is a fast UPSERT, not a duplicate.
+#
+# Args:
+#   $1 target_nen       e.g. 2026
+#   $2 target_tsukihi   e.g. 0609
+#   $3 target_date      e.g. 20260609
+#   $4 label            "today" or "tomorrow"
+# Returns:
+#   0 — corner features present, or build succeeded (running-style may proceed)
+#   1 — count parse failed or build failed (running-style kick must be skipped)
+corner_features_check_and_build() {
+  local target_nen="$1"
+  local target_tsukihi="$2"
+  local target_date="$3"
+  local label="$4"
+
+  log "corner-features check ($CORNER_FEATURES_TABLE) for nen=$target_nen tsukihi=$target_tsukihi ($label) ..."
+  local cf_count
+  cf_count="$(neon_corner_features_count "$target_nen" "$target_tsukihi" || true)"
+  if ! printf '%s' "$cf_count" | grep -Eq '^[0-9]+$'; then
+    log "ERROR: failed to parse corner-features count for $label from Neon (got: $cf_count)"
+    return 1
+  fi
+
+  # DRY_RUN-only override that simulates a missing corner-features state.
+  if [ "${DRY_RUN:-0}" = "1" ] && [ "${FORCE_NO_CORNER_FEATURES:-0}" = "1" ]; then
+    log "corner-features[$label]: actual=$cf_count (FORCE_NO_CORNER_FEATURES=1 — treating as 0)"
+    cf_count=0
+  else
+    log "corner-features[$label]: actual=$cf_count"
+  fi
+
+  if [ "$cf_count" != "0" ]; then
+    log "corner-features[$label] present — skip build"
+    return 0
+  fi
+
+  log "corner-features[$label] absent — building for date=$target_date (source-scope=all)"
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    log "DRY_RUN: would exec DATABASE_URL_NEON=*** bun run --filter $CORNER_FEATURES_BUILD_FILTER $CORNER_FEATURES_BUILD_SCRIPT -- --target neon --source-scope all --from-date $target_date --to-date $target_date"
+    log "corner-features build end (DRY_RUN — no rows written)"
+    return 0
+  fi
+
+  log "corner-features build start (date=$target_date)"
+  local build_status=0
+  DATABASE_URL_NEON="$NEON_DATABASE_URL" \
+    bun run --filter "$CORNER_FEATURES_BUILD_FILTER" "$CORNER_FEATURES_BUILD_SCRIPT" -- \
+      --target neon --source-scope all --from-date "$target_date" --to-date "$target_date" \
+    || build_status=$?
+  if [ "$build_status" != "0" ]; then
+    log "ERROR: corner-features build failed for $label (date=$target_date status=$build_status)"
+    return 1
+  fi
+  log "corner-features build end (date=$target_date status=0)"
+  return 0
 }
 
 # Read REALTIME_ADMIN_TOKEN once (only needed for worker kicks).
@@ -241,24 +333,33 @@ guard_target() {
     return 0
   fi
 
+  # --- corner-features prerequisite (needed before running-style) ---
+  local corner_features_ok=1
+  corner_features_check_and_build "$target_nen" "$target_tsukihi" "$target_date" "$label" \
+    || corner_features_ok=0
+
   # --- running-style guard ---
-  log "checking running-style coverage in Neon ($RS_TABLE) for nen=$target_nen tsukihi=$target_tsukihi ($label) ..."
-  local rs_actual
-  rs_actual="$(neon_count "$RS_TABLE" "$target_nen" "$target_tsukihi" || true)"
-  if ! printf '%s' "$rs_actual" | grep -Eq '^[0-9]+$'; then
-    log "ERROR: failed to parse running-style count for $label from Neon (got: $rs_actual)"
-    return 1
-  fi
-  log "running-style[$label]: actual=$rs_actual expected=$expected_count"
-  if [ "$rs_actual" -lt "$expected_count" ]; then
-    log "running-style[$label] INCOMPLETE — kicking $RS_KICK_JOB_TYPE for date=$target_date"
-    if [ "${DRY_RUN:-0}" = "1" ]; then
-      log "DRY_RUN: would POST $JOBS_KICK_URL body={\"type\":\"$RS_KICK_JOB_TYPE\",\"date\":\"$target_date\"}"
-    else
-      kick_worker_job "running-style-$label" "{\"type\":\"$RS_KICK_JOB_TYPE\",\"date\":\"$target_date\"}"
-    fi
+  if [ "$corner_features_ok" != "1" ]; then
+    log "running-style[$label] SKIPPED — corner-features unavailable for $target_date"
   else
-    log "running-style[$label] COMPLETE — skip kick"
+    log "checking running-style coverage in Neon ($RS_TABLE) for nen=$target_nen tsukihi=$target_tsukihi ($label) ..."
+    local rs_actual
+    rs_actual="$(neon_count "$RS_TABLE" "$target_nen" "$target_tsukihi" || true)"
+    if ! printf '%s' "$rs_actual" | grep -Eq '^[0-9]+$'; then
+      log "ERROR: failed to parse running-style count for $label from Neon (got: $rs_actual)"
+      return 1
+    fi
+    log "running-style[$label]: actual=$rs_actual expected=$expected_count"
+    if [ "$rs_actual" -lt "$expected_count" ]; then
+      log "running-style[$label] INCOMPLETE — kicking $RS_KICK_JOB_TYPE for date=$target_date"
+      if [ "${DRY_RUN:-0}" = "1" ]; then
+        log "DRY_RUN: would POST $JOBS_KICK_URL body={\"type\":\"$RS_KICK_JOB_TYPE\",\"date\":\"$target_date\"}"
+      else
+        kick_worker_job "running-style-$label" "{\"type\":\"$RS_KICK_JOB_TYPE\",\"date\":\"$target_date\"}"
+      fi
+    else
+      log "running-style[$label] COMPLETE — skip kick"
+    fi
   fi
 
   # --- finish-position guard ---
@@ -285,7 +386,7 @@ guard_target() {
     log "finish-position[$label] COMPLETE — skip kick"
   fi
 
-  log "guard_target done (label=$label target=$target_date_iso expected=$expected_count rs=$rs_actual fp=$fp_actual)"
+  log "guard_target done (label=$label target=$target_date_iso expected=$expected_count rs=${rs_actual:-skipped} fp=$fp_actual cf_ok=$corner_features_ok)"
 }
 
 # DRY_RUN-only override so the dry-run can be aimed at a date with known
