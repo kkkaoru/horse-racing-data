@@ -92,9 +92,9 @@ describe("loadOrBuildRunningStyleFeatureParquet", () => {
       putRunningStyleFeatureParquet,
       validateFeatureCoverage,
     } = await import("./running-style-feature-parquet");
-    vi.mocked(loadRunningStyleFeatureParquet)
-      .mockRejectedValueOnce(new Error("R2 object not found: features.parquet"))
-      .mockResolvedValueOnce([{}] as never);
+    vi.mocked(loadRunningStyleFeatureParquet).mockRejectedValueOnce(
+      new Error("R2 object not found: features.parquet"),
+    );
     vi.mocked(listDailyRaceEntriesForRace).mockResolvedValue([{}] as never);
     vi.mocked(buildRunningStyleFeaturesForRaceFromD1Target).mockResolvedValue({
       elapsedMs: 1,
@@ -120,6 +120,8 @@ describe("loadOrBuildRunningStyleFeatureParquet", () => {
     });
     expect(result.rebuilt).toBe(true);
     expect(putRunningStyleFeatureParquet).toHaveBeenCalledTimes(1);
+    expect(loadRunningStyleFeatureParquet).toHaveBeenCalledTimes(1);
+    expect(result.rows.length).toBe(1);
   });
 
   it("rethrows a non-not-found R2 error", async () => {
@@ -156,9 +158,7 @@ describe("loadOrBuildRunningStyleFeatureParquet", () => {
       putRunningStyleFeatureParquet,
       validateFeatureCoverage,
     } = await import("./running-style-feature-parquet");
-    vi.mocked(loadRunningStyleFeatureParquet)
-      .mockResolvedValueOnce([] as never)
-      .mockResolvedValueOnce([{}] as never);
+    vi.mocked(loadRunningStyleFeatureParquet).mockResolvedValueOnce([] as never);
     vi.mocked(listDailyRaceEntriesForRace).mockResolvedValue([{}] as never);
     vi.mocked(buildRunningStyleFeaturesForRaceFromD1Target).mockResolvedValue({
       elapsedMs: 1,
@@ -183,6 +183,7 @@ describe("loadOrBuildRunningStyleFeatureParquet", () => {
       },
     });
     expect(result.rebuilt).toBe(true);
+    expect(loadRunningStyleFeatureParquet).toHaveBeenCalledTimes(1);
   });
 
   it("rebuilds when the R2 object has a coverage gap", async () => {
@@ -196,9 +197,7 @@ describe("loadOrBuildRunningStyleFeatureParquet", () => {
       putRunningStyleFeatureParquet,
       validateFeatureCoverage,
     } = await import("./running-style-feature-parquet");
-    vi.mocked(loadRunningStyleFeatureParquet)
-      .mockResolvedValueOnce([{}] as never)
-      .mockResolvedValueOnce([{}] as never);
+    vi.mocked(loadRunningStyleFeatureParquet).mockResolvedValueOnce([{}] as never);
     vi.mocked(validateFeatureCoverage)
       .mockReturnValueOnce({ missingCells: 1, missingFeatureNames: ["new_feat"] })
       .mockReturnValueOnce({ missingCells: 0, missingFeatureNames: [] });
@@ -222,6 +221,49 @@ describe("loadOrBuildRunningStyleFeatureParquet", () => {
       },
     });
     expect(result.rebuilt).toBe(true);
+    expect(loadRunningStyleFeatureParquet).toHaveBeenCalledTimes(1);
+  });
+
+  it("on rebuild returns the in-memory rows from the build step without re-fetching from R2", async () => {
+    const { loadOrBuildRunningStyleFeatureParquet } =
+      await import("./running-style-feature-materialize");
+    const { listDailyRaceEntriesForRace } = await import("./daily-feature-build");
+    const { buildRunningStyleFeaturesForRaceFromD1Target } =
+      await import("./running-style-feature-sql");
+    const {
+      loadRunningStyleFeatureParquet,
+      putRunningStyleFeatureParquet,
+      validateFeatureCoverage,
+    } = await import("./running-style-feature-parquet");
+    const builtRows = [{ raceKey: "jra:20260513:08:01", umaban: 1 }];
+    vi.mocked(loadRunningStyleFeatureParquet).mockRejectedValueOnce(
+      new Error("R2 object not found: features.parquet"),
+    );
+    vi.mocked(listDailyRaceEntriesForRace).mockResolvedValue([{}] as never);
+    vi.mocked(buildRunningStyleFeaturesForRaceFromD1Target).mockResolvedValue({
+      elapsedMs: 1,
+      rows: builtRows as never,
+      sqlRows: 1,
+    });
+    vi.mocked(validateFeatureCoverage).mockReturnValue({
+      missingCells: 0,
+      missingFeatureNames: [],
+    });
+    vi.mocked(putRunningStyleFeatureParquet).mockResolvedValue(10);
+    const result = await loadOrBuildRunningStyleFeatureParquet({
+      env: makeEnv("1"),
+      featureNames: ["f1"],
+      pool: makePool(),
+      race: {
+        kaisaiNen: "2026",
+        kaisaiTsukihi: "0513",
+        keibajoCode: "08",
+        raceBango: "01",
+        source: "jra",
+      },
+    });
+    expect(result.rows).toBe(builtRows);
+    expect(loadRunningStyleFeatureParquet).toHaveBeenCalledTimes(1);
   });
 });
 

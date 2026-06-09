@@ -98,10 +98,18 @@
         "max_concurrency": 4,
       },
       {
+        // 2026-06-09: lowered from 3 to 1 after wrangler tail reported
+        // "Exceeded Memory Limit" on the running-style queue. Each job loads a
+        // full flat LightGBM model ArrayBuffer + DataView from R2 and a per-
+        // race feature Parquet (ArrayBuffer + Buffer copy + decoded rows) into
+        // the same 128 MiB isolate. With max_concurrency: 3 the isolate held
+        // three model+parquet workloads simultaneously and Workers killed the
+        // isolate before it could ack. Serializing keeps the same throughput
+        // (jobs are short) while halving peak resident memory.
         "queue": "sync-realtime-data-running-style-jobs",
         "max_batch_size": 1,
         "max_batch_timeout": 5,
-        "max_concurrency": 3,
+        "max_concurrency": 1,
       },
       {
         "queue": "sync-realtime-data-win5-jobs",

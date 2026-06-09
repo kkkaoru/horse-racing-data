@@ -56,7 +56,7 @@ export interface LoadOrBuildRunningStyleFeatureParquetParams {
 export interface LoadOrBuildRunningStyleFeatureParquetResult {
   featuresR2Key: string;
   rebuilt: boolean;
-  rows: RaceHorseFeatureRow[];
+  rows: ReadonlyArray<RaceHorseFeatureRow>;
 }
 
 export interface MaterializeRunningStyleFeaturesForDateResult {
@@ -65,6 +65,10 @@ export interface MaterializeRunningStyleFeaturesForDateResult {
   scanned: number;
   skipped: number;
   materializeError?: string;
+}
+
+interface BuildAndPutRunningStyleFeatureParquetInternalResult extends MaterializeRunningStyleFeatureParquetResult {
+  rows: ReadonlyArray<RaceHorseFeatureRow>;
 }
 
 // Prefer the D1 daily-target SQL path (matches the production queue) so today's
@@ -93,9 +97,9 @@ const buildPostgresFeatureSummary = async (
   );
 };
 
-const buildAndPutRunningStyleFeatureParquet = async (
+const buildAndPutRunningStyleFeatureParquetInternal = async (
   params: MaterializeRunningStyleFeatureParquetParams,
-): Promise<MaterializeRunningStyleFeatureParquetResult> => {
+): Promise<BuildAndPutRunningStyleFeatureParquetInternalResult> => {
   const raceKey = buildRunningStyleRaceKey(params.race);
   const built = await buildPostgresFeatureSummary(params);
   if (built.rows.length === 0) {
@@ -114,7 +118,7 @@ const buildAndPutRunningStyleFeatureParquet = async (
     built.rows,
     params.featureNames,
   );
-  return { builtRowCount: built.rows.length, bytesWritten, featuresR2Key };
+  return { builtRowCount: built.rows.length, bytesWritten, featuresR2Key, rows: built.rows };
 };
 
 const isR2NotFoundError = (error: unknown): boolean =>
@@ -138,24 +142,31 @@ export const loadOrBuildRunningStyleFeatureParquet = async (
   if (loaded !== null && loaded.length > 0 && !coverageMissing) {
     return { featuresR2Key, rebuilt: false, rows: loaded };
   }
-  const built = await buildAndPutRunningStyleFeatureParquet({
+  // Memory mitigation (2026-06-09): the previous implementation re-fetched the
+  // freshly-uploaded Parquet from R2 here, which doubled peak ArrayBuffer +
+  // Buffer + decoded-row residency on the rebuild path inside the 128 MiB
+  // isolate. The internal builder now hands the in-memory rows back so the
+  // round-trip is skipped — the file in R2 is identical to the rows we just
+  // assembled, so the second load was pure overhead.
+  const built = await buildAndPutRunningStyleFeatureParquetInternal({
     env: params.env,
     featureNames: params.featureNames,
     pool: params.pool,
     race: params.race,
   });
-  const rows = await loadRunningStyleFeatureParquet(
-    params.env.RUNNING_STYLE_MODELS,
-    built.featuresR2Key,
-    params.featureNames,
-  );
-  return { featuresR2Key: built.featuresR2Key, rebuilt: true, rows };
+  return { featuresR2Key: built.featuresR2Key, rebuilt: true, rows: built.rows };
 };
 
 export const materializeRunningStyleFeatureParquetForRace = async (
   params: MaterializeRunningStyleFeatureParquetParams,
-): Promise<MaterializeRunningStyleFeatureParquetResult> =>
-  buildAndPutRunningStyleFeatureParquet(params);
+): Promise<MaterializeRunningStyleFeatureParquetResult> => {
+  const built = await buildAndPutRunningStyleFeatureParquetInternal(params);
+  return {
+    builtRowCount: built.builtRowCount,
+    bytesWritten: built.bytesWritten,
+    featuresR2Key: built.featuresR2Key,
+  };
+};
 
 const buildRaceParamsFromRegisteredRow = (row: RegisteredRaceRow): RunningStyleRaceParams => ({
   kaisaiNen: row.kaisai_nen,
