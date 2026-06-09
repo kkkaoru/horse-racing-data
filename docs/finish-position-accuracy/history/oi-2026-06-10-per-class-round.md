@@ -115,6 +115,8 @@ The launchd cron (JST 03:00) re-running on 06-10 is harmless: it reuses the now-
 
 A same-night lever (reweight / hand-engineered venue features / specialist on the existing feature set) is exhausted for Ōi — all four were rejected, three on robustness grounds and one (audit) confirming there is no bug to exploit. The next genuine improvement requires a **new horse/venue signal** (e.g. a learned Ōi-track embedding, sectional pace dynamics specific to the 1400m/1600m Ōi configurations, or a fresh class of horse-form features) trained via a **multi-hour full retrain or HPO/L4 retrain** — not a same-night blend or feature bolt-on. Until such a signal is sourced and validated under per-year WF + paired bootstrap, the production per-class config remains the best available for the Ōi card.
 
+**Follow-on:** [`oi-2026-06-10-rounds-r2-r4-pgvector.md`](oi-2026-06-10-rounds-r2-r4-pgvector.md) (iter 33) pushed three further Ōi rounds (R2 reweight detail, R3 standalone-specialist robustness, R4 blended specialist) under a strengthened nested-split + bootstrap-LB + Holm gate, plus a parallel pgvector-JRA-member probe — all rejected. It also records the power-analysis conclusion that the Ōi-only gate is statistically underpowered (best top1 bootstrap LB95 = −0.2593pp), so the path forward is global-NAR-powered judging of a genuinely-new signal, not a same-night Ōi lever.
+
 ## Quality Gate Results
 
 - tsc: n/a — no code change this round
