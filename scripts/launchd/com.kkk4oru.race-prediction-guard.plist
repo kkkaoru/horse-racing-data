@@ -1,0 +1,155 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LaunchAgent for the hourly race-prediction completeness guard.
+
+  WHY MAC LAUNCHD (NOT CLOUDFLARE CRON):
+    Cloudflare Containers reap batch instances at ~90-110 s regardless of
+    sleepAfter (see com.kkk4oru.finish-position-predict.plist for the full
+    backstory). The finish-position docker pipeline this guard re-invokes is
+    the same ~10 min workload, so the same launchd-on-Mac escape applies.
+    The running-style worker is itself Cloudflare-Worker friendly, but the
+    coordination ("kick only if today is incomplete") needs to run somewhere
+    that can talk to both Neon and D1 — that is most cleanly here.
+
+  SCHEDULE (15 fires/day in JST):
+    * Hour 0..9   (Minute 0) -> guard TODAY    JST
+    * Hour 19..20 (Minute 0) -> guard TODAY    JST (evening top-up)
+    * Hour 21..23 (Minute 0) -> guard TODAY + TOMORROW JST (pre-warm)
+    macOS launchd uses the device's local timezone, and this machine is
+    assumed to already run JST. If you ever change the system timezone you
+    MUST adjust each Hour key accordingly — launchd has no timezone-aware
+    option. The wrapper script computes the target JST date independently
+    via `date -u -v+9H`, so the *which-day-to-guard* logic is robust to TZ
+    drift; only the *when-to-fire* depends on the system TZ.
+
+  WHY 0..9 + 19..20 + 21..23:
+    The 0..9 window is the "race day" window — entries / final odds are
+    usually live well before 09:00 JST, and we want predictions ready by
+    the time the user looks. The 19..20 window catches late-evening
+    NAR / Ban-ei races that finish after 18:00 JST so a same-day rerun
+    after lineup changes is still covered. The 21..23 window pre-warms
+    TOMORROW JST AND retries TODAY so the 00:00 fire has less to do and
+    a sleepy Mac at midnight still has something baked the night before.
+    All three windows ALSO kick `discover-urls` when D1 has zero races
+    for the target date, so an empty-D1 morning gets a self-healing nudge
+    before the next tick tries to plan predictions.
+
+  CATCH-UP / IDEMPOTENCY:
+    StartCalendarInterval queues missed firings while the Mac is asleep and
+    fires once on next wake. The guard re-evaluates Neon coverage every tick;
+    Neon is the state of truth, so a duplicate fire after a kick simply sees
+    "complete" and exits. No state file is needed.
+
+  STDOUT/STDERR PATHS:
+    launchd does NOT expand "~", so the paths below are literal absolute
+    paths under /Users/kkk4oru/Library/Logs/race-prediction-guard/. The
+    wrapper script also writes a per-JST-day dated log to the same dir.
+
+  SECRETS:
+    No secrets live in this plist. The wrapper script reads
+    REALTIME_ADMIN_TOKEN from apps/sync-realtime-data/.dev.vars and
+    NEON_DATABASE_URL from apps/local-postgresql/.env.replica at run time,
+    and masks both in the dated log.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.kkk4oru.race-prediction-guard</string>
+
+  <key>Program</key>
+  <string>/Users/kkk4oru/ghq/github.com/kkkaoru/horse-racing-data/scripts/launchd/race-prediction-guard.sh</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/kkk4oru/ghq/github.com/kkkaoru/horse-racing-data</string>
+
+  <key>StartCalendarInterval</key>
+  <array>
+    <!-- 00:00..09:00 JST: guard TODAY JST (10 fires). -->
+    <dict>
+      <key>Hour</key><integer>0</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>1</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>2</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>3</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>4</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>5</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>6</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>7</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>8</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>9</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <!-- 19:00..20:00 JST: guard TODAY JST (2 fires, evening top-up). -->
+    <dict>
+      <key>Hour</key><integer>19</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>20</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <!-- 21:00..23:00 JST: guard TODAY + TOMORROW JST (3 fires, pre-warm). -->
+    <dict>
+      <key>Hour</key><integer>21</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>22</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>23</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+  </array>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>KeepAlive</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/kkk4oru/Library/Logs/race-prediction-guard/stdout.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/kkk4oru/Library/Logs/race-prediction-guard/stderr.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- PATH so the wrapper finds bunx / wrangler / jq / docker / colima / uv
+         / date without relying on the user's interactive shell init.
+         /opt/homebrew/bin is Apple-Silicon Homebrew (where bun, jq, uv,
+         docker, colima all live). -->
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>
