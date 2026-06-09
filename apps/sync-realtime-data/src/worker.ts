@@ -163,6 +163,7 @@ import type {
   HorseWeight,
   Job,
   NarRaceSource,
+  OddsType,
   RaceEntry,
   RaceResult,
   RealtimeRacePayload,
@@ -369,6 +370,17 @@ const HOT_WORKER_ORIGIN = "https://sync-realtime-data-hot.kkk4oru.com";
 const FEATURES_WORKER_ORIGIN = "https://sync-realtime-data-features.kkk4oru.com";
 const FORWARD_RESPONSE_BODY_MAX_LENGTH = 200;
 
+// Per-race D1 upsert retry tuning. The discover-urls job historically failed
+// atomically on a single `D1_ERROR: Internal error in D1 DB storage caused
+// object to be reset` or `Idle connection closed`, so the entire date's races
+// were left unseen by downstream cron. The fix is per-race try / catch with
+// bounded exponential backoff so one transient D1 error only loses that one
+// race — the rest of the date is still ingested.
+const DISCOVER_UPSERT_MAX_ATTEMPTS = 3;
+const DISCOVER_UPSERT_BASE_DELAY_MS = 200;
+const DISCOVER_UPSERT_BACKOFF_MULTIPLIER = 4;
+const DISCOVER_UPSERT_FAILED_RACE_KEYS_MAX = 50;
+
 const readForwardResponseBody = async (response: Response): Promise<string> => {
   try {
     const text = await response.text();
@@ -428,6 +440,26 @@ interface ForwardRaceForFeaturesArgs {
   kaisaiTsukihi: string;
   keibajoCode: string;
   raceBango: string;
+}
+
+type DiscoverUpsertOutcome = "inserted" | "retried" | "failed";
+
+interface DiscoverUpsertResult {
+  raceKey: string;
+  outcome: DiscoverUpsertOutcome;
+}
+
+interface DiscoverUpsertCounters {
+  inserted: number;
+  retried: number;
+  failed: number;
+  failedRaceKeys: readonly string[];
+}
+
+interface RetryUpsertArgs {
+  raceKey: string;
+  attempt: (attempt: number) => Promise<void>;
+  sleep: (ms: number) => Promise<void>;
 }
 
 const buildRaceStartAtJst = (
@@ -678,13 +710,192 @@ export const buildFallbackRaceRow = (
   };
 };
 
-const upsertDiscoveredUrls = async (
+const defaultDiscoverSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+// Single attempt of `attempt(N)` with bounded exponential backoff retry on
+// throw. Backoff = base * multiplier^(attempt-1) so default = 200ms / 800ms /
+// 3200ms. Returns the outcome of the per-race upsert; never re-throws because
+// the caller wants to continue processing the rest of the date's races.
+const runUpsertWithRetry = async (args: RetryUpsertArgs): Promise<DiscoverUpsertOutcome> => {
+  const attemptOnce = async (attempt: number): Promise<DiscoverUpsertOutcome> => {
+    try {
+      await args.attempt(attempt);
+      return attempt === 1 ? "inserted" : "retried";
+    } catch (error) {
+      if (attempt >= DISCOVER_UPSERT_MAX_ATTEMPTS) {
+        return "failed";
+      }
+      const delay =
+        DISCOVER_UPSERT_BASE_DELAY_MS * DISCOVER_UPSERT_BACKOFF_MULTIPLIER ** (attempt - 1);
+      // Log every retry so partial-progress is visible in tail -f.
+      console.error(
+        `discover-urls upsert retry raceKey=${args.raceKey} attempt=${attempt} error=${formatError(error)} nextDelayMs=${delay}`,
+      );
+      await args.sleep(delay);
+      return attemptOnce(attempt + 1);
+    }
+  };
+  return attemptOnce(1);
+};
+
+interface UpsertOneJraArgs {
+  env: Env;
+  race: LocalRaceRow;
+  sleep: (ms: number) => Promise<void>;
+}
+
+const upsertOneJraRaceWithRetry = async (
+  args: UpsertOneJraArgs,
+): Promise<DiscoverUpsertResult | null> => {
+  const entryUrl = buildJraEntryUrlFromRace(args.race);
+  if (!entryUrl) {
+    return null;
+  }
+  const raceBango = args.race.race_bango.padStart(2, "0");
+  const jraRaceKey = buildRealtimeRaceKey(
+    "jra",
+    args.race.kaisai_nen,
+    args.race.kaisai_tsukihi,
+    args.race.keibajo_code,
+    raceBango,
+  );
+  const outcome = await runUpsertWithRetry({
+    attempt: async () => {
+      await upsertJraRaceSource(args.env.REALTIME_DB, args.race, entryUrl);
+    },
+    raceKey: jraRaceKey,
+    sleep: args.sleep,
+  });
+  if (outcome === "failed") {
+    return { outcome, raceKey: jraRaceKey };
+  }
+  await forwardRaceSourceToHot(args.env, {
+    debaUrl: entryUrl,
+    kaisaiNen: args.race.kaisai_nen,
+    kaisaiTsukihi: args.race.kaisai_tsukihi,
+    keibajoCode: args.race.keibajo_code,
+    oddsLinksJson: "{}",
+    raceBango,
+    raceKey: jraRaceKey,
+    raceStartAtJst: buildRaceStartAtJst(
+      args.race.kaisai_nen,
+      args.race.kaisai_tsukihi,
+      args.race.hasso_jikoku,
+    ),
+    source: "jra",
+  });
+  await forwardRaceForFeatures(args.env, {
+    kaisaiNen: args.race.kaisai_nen,
+    kaisaiTsukihi: args.race.kaisai_tsukihi,
+    keibajoCode: args.race.keibajo_code,
+    raceBango,
+    raceKey: jraRaceKey,
+    source: "jra",
+  });
+  return { outcome, raceKey: jraRaceKey };
+};
+
+interface UpsertOneNarArgs {
+  env: Env;
+  link: KeibaGoRaceLink;
+  race: LocalRaceRow;
+  keibajoCode: string;
+  oddsLinks: Partial<Record<OddsType, string>>;
+  sleep: (ms: number) => Promise<void>;
+}
+
+const upsertOneNarRaceWithRetry = async (args: UpsertOneNarArgs): Promise<DiscoverUpsertResult> => {
+  const raceBango = args.race.race_bango.padStart(2, "0");
+  const narRaceKey = buildRealtimeRaceKey(
+    "nar",
+    args.race.kaisai_nen,
+    args.race.kaisai_tsukihi,
+    args.keibajoCode,
+    raceBango,
+  );
+  const outcome = await runUpsertWithRetry({
+    attempt: async () => {
+      await upsertNarRaceSource(args.env.REALTIME_DB, args.link, args.race, args.oddsLinks);
+    },
+    raceKey: narRaceKey,
+    sleep: args.sleep,
+  });
+  if (outcome === "failed") {
+    return { outcome, raceKey: narRaceKey };
+  }
+  await forwardRaceSourceToHot(args.env, {
+    debaUrl: args.link.url,
+    kaisaiNen: args.race.kaisai_nen,
+    kaisaiTsukihi: args.race.kaisai_tsukihi,
+    keibajoCode: args.keibajoCode,
+    oddsLinksJson: JSON.stringify(args.oddsLinks),
+    raceBango,
+    raceKey: narRaceKey,
+    raceStartAtJst: buildRaceStartAtJst(
+      args.race.kaisai_nen,
+      args.race.kaisai_tsukihi,
+      args.race.hasso_jikoku,
+    ),
+    source: "nar",
+  });
+  await forwardRaceForFeatures(args.env, {
+    kaisaiNen: args.race.kaisai_nen,
+    kaisaiTsukihi: args.race.kaisai_tsukihi,
+    keibajoCode: args.keibajoCode,
+    raceBango,
+    raceKey: narRaceKey,
+    source: "nar",
+  });
+  return { outcome, raceKey: narRaceKey };
+};
+
+const accumulateOutcome = (
+  counters: DiscoverUpsertCounters,
+  result: DiscoverUpsertResult | null,
+): DiscoverUpsertCounters => {
+  if (!result) {
+    return counters;
+  }
+  if (result.outcome === "inserted") {
+    return { ...counters, inserted: counters.inserted + 1 };
+  }
+  if (result.outcome === "retried") {
+    return { ...counters, retried: counters.retried + 1 };
+  }
+  const truncated = counters.failedRaceKeys.length < DISCOVER_UPSERT_FAILED_RACE_KEYS_MAX;
+  return {
+    ...counters,
+    failed: counters.failed + 1,
+    failedRaceKeys: truncated
+      ? [...counters.failedRaceKeys, result.raceKey]
+      : counters.failedRaceKeys,
+  };
+};
+
+const INITIAL_DISCOVER_COUNTERS: DiscoverUpsertCounters = {
+  failed: 0,
+  failedRaceKeys: [],
+  inserted: 0,
+  retried: 0,
+};
+
+interface UpsertDiscoveredUrlsOptions {
+  sleep: (ms: number) => Promise<void>;
+}
+
+export const upsertDiscoveredUrls = async (
   env: Env,
   targetDate: string,
+  options: UpsertDiscoveredUrlsOptions,
 ): Promise<{
   fallbackRaceListCount: number;
+  failed: number;
+  failedRaceKeys: readonly string[];
+  inserted: number;
   jraRaceCount: number;
   localRaceCount: number;
+  retried: number;
   topRaceListCount: number;
   upserted: number;
 }> => {
@@ -717,42 +928,12 @@ const upsertDiscoveredUrls = async (
     ]),
   );
 
-  let upserted = 0;
+  const jraResults: (DiscoverUpsertResult | null)[] = [];
   for (const race of jraRaces) {
-    const entryUrl = buildJraEntryUrlFromRace(race);
-    if (!entryUrl) {
-      continue;
-    }
-    await upsertJraRaceSource(env.REALTIME_DB, race, entryUrl);
-    const raceBango = race.race_bango.padStart(2, "0");
-    const jraRaceKey = buildRealtimeRaceKey(
-      "jra",
-      race.kaisai_nen,
-      race.kaisai_tsukihi,
-      race.keibajo_code,
-      raceBango,
-    );
-    await forwardRaceSourceToHot(env, {
-      debaUrl: entryUrl,
-      kaisaiNen: race.kaisai_nen,
-      kaisaiTsukihi: race.kaisai_tsukihi,
-      keibajoCode: race.keibajo_code,
-      oddsLinksJson: "{}",
-      raceBango,
-      raceKey: jraRaceKey,
-      raceStartAtJst: buildRaceStartAtJst(race.kaisai_nen, race.kaisai_tsukihi, race.hasso_jikoku),
-      source: "jra",
-    });
-    await forwardRaceForFeatures(env, {
-      kaisaiNen: race.kaisai_nen,
-      kaisaiTsukihi: race.kaisai_tsukihi,
-      keibajoCode: race.keibajo_code,
-      raceBango,
-      raceKey: jraRaceKey,
-      source: "jra",
-    });
-    upserted += 1;
+    const result = await upsertOneJraRaceWithRetry({ env, race, sleep: options.sleep });
+    jraResults.push(result);
   }
+  const narResults: DiscoverUpsertResult[] = [];
   for (const raceList of targetRaceListUrls) {
     const links = await fetchRaceLinksFromRaceList(raceList.url);
     for (const link of links) {
@@ -773,47 +954,31 @@ const upsertDiscoveredUrls = async (
         continue;
       }
       const oddsLinks = extractOddsLinks(racePageHtml, link.url);
-      await upsertNarRaceSource(env.REALTIME_DB, link, race, oddsLinks);
-      const raceBango = race.race_bango.padStart(2, "0");
-      const narRaceKey = buildRealtimeRaceKey(
-        "nar",
-        race.kaisai_nen,
-        race.kaisai_tsukihi,
+      const result = await upsertOneNarRaceWithRetry({
+        env,
         keibajoCode,
-        raceBango,
-      );
-      await forwardRaceSourceToHot(env, {
-        debaUrl: link.url,
-        kaisaiNen: race.kaisai_nen,
-        kaisaiTsukihi: race.kaisai_tsukihi,
-        keibajoCode,
-        oddsLinksJson: JSON.stringify(oddsLinks),
-        raceBango,
-        raceKey: narRaceKey,
-        raceStartAtJst: buildRaceStartAtJst(
-          race.kaisai_nen,
-          race.kaisai_tsukihi,
-          race.hasso_jikoku,
-        ),
-        source: "nar",
+        link,
+        oddsLinks,
+        race,
+        sleep: options.sleep,
       });
-      await forwardRaceForFeatures(env, {
-        kaisaiNen: race.kaisai_nen,
-        kaisaiTsukihi: race.kaisai_tsukihi,
-        keibajoCode,
-        raceBango,
-        raceKey: narRaceKey,
-        source: "nar",
-      });
-      upserted += 1;
+      narResults.push(result);
     }
   }
+  const counters = [...jraResults, ...narResults].reduce(
+    accumulateOutcome,
+    INITIAL_DISCOVER_COUNTERS,
+  );
   return {
     fallbackRaceListCount: fallbackRaceListUrls.length,
+    failed: counters.failed,
+    failedRaceKeys: counters.failedRaceKeys,
+    inserted: counters.inserted,
     jraRaceCount: jraRaces.length,
     localRaceCount: localRaces.length,
+    retried: counters.retried,
     topRaceListCount: raceListUrls.length,
-    upserted,
+    upserted: counters.inserted + counters.retried,
   };
 };
 
@@ -1489,7 +1654,7 @@ const ensureDiscoveredUrlsAreCurrent = async (env: Env, targetDate: string): Pro
   if (d1RaceCount >= localRaces.length + jraRaces.length && hasAllExpectedKeibajoCodes) {
     return;
   }
-  await upsertDiscoveredUrls(env, targetDate);
+  await upsertDiscoveredUrls(env, targetDate, { sleep: defaultDiscoverSleep });
 };
 
 export const enqueueJobs = async (env: Env, jobs: Job[]): Promise<void> => {
@@ -1667,7 +1832,7 @@ const tryBuildDailyFeaturesForDate = async (env: Env, targetDate: string, mode: 
 
 const tryDiscoverUrlsForDate = async (env: Env, targetDate: string, mode: string) => {
   try {
-    const result = await upsertDiscoveredUrls(env, targetDate);
+    const result = await upsertDiscoveredUrls(env, targetDate, { sleep: defaultDiscoverSleep });
     await logFetch(
       env.REALTIME_DB,
       "discover-urls",
@@ -3300,7 +3465,7 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
   try {
     if (job.type === "discover-urls") {
       const [result, premiumResult] = await Promise.all([
-        upsertDiscoveredUrls(env, job.date),
+        upsertDiscoveredUrls(env, job.date, { sleep: defaultDiscoverSleep }),
         discoverPremiumRacesForDate(env, job.date),
       ]);
       const races = await listSchedulableRaceSourcesByDate(env.REALTIME_DB, job.date);

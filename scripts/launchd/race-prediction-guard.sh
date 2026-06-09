@@ -42,6 +42,8 @@
 #   DRY_RUN=1 FORCE_HOUR=22 bash scripts/launchd/race-prediction-guard.sh     # today + tomorrow
 #   DRY_RUN=1 FORCE_HOUR=22 FORCE_TARGET_DATE=20300101 bash ...               # exercise discover-urls path
 #   DRY_RUN=1 FORCE_HOUR=05 FORCE_NO_CORNER_FEATURES=1 bash ...               # exercise corner-features build path
+#   DRY_RUN=1 FORCE_HOUR=05 FORCE_VENUE_COUNTS=44:7,30:12 \
+#     FORCE_EXPECTED_COUNT=42 FORCE_TARGET_DATE=20300101 bash ...             # exercise per-venue coverage check path
 set -euo pipefail
 
 # Resolve repo root from this script's location (scripts/launchd -> repo root).
@@ -66,6 +68,24 @@ DISCOVER_JOB_TYPE="discover-urls"
 FINISH_SCRIPT="$REPO_ROOT/scripts/launchd/finish-position-predict-daily.sh"
 CORNER_FEATURES_BUILD_FILTER="pc-keiba-viewer"
 CORNER_FEATURES_BUILD_SCRIPT="dev:build-corner-features"
+
+# Per-venue coverage lower bounds. NAR major venues typically run 10-12 races
+# per active day, JRA major venues typically run 12; if D1 shows fewer than
+# these we treat the date as partially-discovered and re-kick discover-urls.
+# Higher race counts are fine (some days have extra races).
+# Today's incident: 大井 (44) ended up at 7 races because discover-urls D1
+# write retries all failed — this guard would have caught that and re-kicked.
+EXPECTED_NAR_RACES_PER_VENUE=10
+EXPECTED_JRA_RACES_PER_VENUE=11
+
+# NAR major venue keibajo_codes (門別/盛岡/水沢/浦和/船橋/大井/川崎/金沢/笠松/
+# 名古屋/園田/姫路/高知/佐賀/帯広). Listed as a space-separated string so the
+# Bash 3.2 shipped with macOS can iterate them without associative arrays.
+NAR_MAJOR_VENUE_CODES="30 35 36 42 43 44 46 47 48 50 51 53 54 55 56 57 65 66"
+
+# JRA major venue keibajo_codes (札幌/函館/福島/新潟/東京/中山/中京/京都/阪神/
+# 小倉). All 10 official JRA tracks; not all run on a given day.
+JRA_MAJOR_VENUE_CODES="01 02 03 04 05 06 07 08 09 10"
 
 mkdir -p "$LOG_DIR"
 
@@ -293,6 +313,104 @@ kick_worker_job() {
   log "$description kick HTTP=$http_code response=$(cat "$response_file" 2>/dev/null || echo '<no response>')"
 }
 
+# Query D1 for per-venue race counts on the target date, emitting one
+# `<keibajo_code> <count>` line per row to stdout. Returns 0 on success even
+# when the result set is empty; the caller decides what to do with the rows.
+# When DRY_RUN=1 and FORCE_VENUE_COUNTS is set, the override is parsed instead
+# of touching D1 so the partial-coverage path can be exercised offline.
+#
+# Args:
+#   $1 target_date_iso   e.g. 2026-06-09
+query_d1_venue_counts() {
+  local target_date_iso="$1"
+  if [ "${DRY_RUN:-0}" = "1" ] && [ -n "${FORCE_VENUE_COUNTS:-}" ]; then
+    # Log to stderr so it doesn't interleave with stdout rows the caller reads.
+    log "DRY_RUN: FORCE_VENUE_COUNTS=$FORCE_VENUE_COUNTS override (target=$target_date_iso, skipping D1 query)" >&2
+    printf '%s' "$FORCE_VENUE_COUNTS" | tr ',' '\n' | awk -F: 'NF==2 {print $1" "$2}'
+    return 0
+  fi
+  local d1_query="SELECT keibajo_code, COUNT(*) AS c FROM realtime_race_sources WHERE substr(race_start_at_jst, 1, 10) = '${target_date_iso}' GROUP BY keibajo_code;"
+  local d1_result
+  d1_result="$(bunx wrangler d1 execute "$D1_BINDING_NAME" --remote --config "$WRANGLER_CONFIG" --command "$d1_query" --json 2>&1 || true)"
+  printf '%s' "$d1_result" | jq -r '.[0].results[]? | "\(.keibajo_code) \(.c)"' 2>/dev/null || true
+}
+
+# Decide whether a (keibajo_code, count) pair is under the per-venue
+# expected lower bound. Returns 0 (true) when the venue is "suspicious",
+# 1 (false) when at-or-above the bound or the code is not in either major
+# venue list (so we don't kick on minor / unscheduled venues).
+#
+# Args:
+#   $1 keibajo_code   e.g. 44
+#   $2 count          e.g. 7
+is_venue_under_threshold() {
+  local keibajo_code="$1"
+  local count="$2"
+  if [[ " $NAR_MAJOR_VENUE_CODES " == *" $keibajo_code "* ]]; then
+    [ "$count" -lt "$EXPECTED_NAR_RACES_PER_VENUE" ] && return 0
+    return 1
+  fi
+  if [[ " $JRA_MAJOR_VENUE_CODES " == *" $keibajo_code "* ]]; then
+    [ "$count" -lt "$EXPECTED_JRA_RACES_PER_VENUE" ] && return 0
+    return 1
+  fi
+  # Unknown / non-major venue: not under threshold (do not kick on these).
+  return 1
+}
+
+# Per-venue coverage check. Compares each major-venue's D1 race count for the
+# target date against the configured lower bound. If ANY major venue is under,
+# log a structured WARN line and re-kick discover-urls.
+#
+# Today's incident was the canonical failure mode this catches: NAR 大井 (44)
+# had only 7 races in D1 when it should have had 12, because the discover-urls
+# cron + retries all failed with D1_ERROR / Idle connection closed and gave up.
+#
+# Args:
+#   $1 target_date         e.g. 20260609
+#   $2 target_date_iso     e.g. 2026-06-09
+#   $3 label               "today" or "tomorrow"
+# Returns:
+#   0 — check passed OR re-kick was logged (caller proceeds either way)
+check_venue_coverage() {
+  local target_date="$1"
+  local target_date_iso="$2"
+  local label="$3"
+
+  log "checking per-venue coverage in D1 for $target_date_iso ($label) ..."
+  local rows
+  rows="$(query_d1_venue_counts "$target_date_iso")"
+  if [ -z "$rows" ]; then
+    log "per-venue check[$label]: no rows returned from D1 (target=$target_date_iso) — skip"
+    return 0
+  fi
+
+  local under_venues=""
+  while read -r keibajo_code count; do
+    if [ -z "$keibajo_code" ] || [ -z "$count" ]; then
+      continue
+    fi
+    log "per-venue[$label] keibajo_code=$keibajo_code count=$count"
+    if is_venue_under_threshold "$keibajo_code" "$count"; then
+      under_venues="$under_venues $keibajo_code=$count"
+    fi
+  done <<< "$rows"
+
+  if [ -z "$under_venues" ]; then
+    log "per-venue coverage[$label] OK — all listed major venues meet thresholds"
+    return 0
+  fi
+
+  log "WARN per-venue coverage[$label] INCOMPLETE — under-threshold venues:$under_venues"
+  log "re-kicking $DISCOVER_JOB_TYPE for date=$target_date (per-venue partial-coverage recovery)"
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    log "DRY_RUN: would POST $JOBS_KICK_URL body={\"type\":\"$DISCOVER_JOB_TYPE\",\"date\":\"$target_date\"}"
+  else
+    kick_worker_job "discover-urls-coverage-$label" "{\"type\":\"$DISCOVER_JOB_TYPE\",\"date\":\"$target_date\"}"
+  fi
+  return 0
+}
+
 # Per-target guard. Args:
 #   $1 target_date_yyyymmdd  e.g. 20260609
 #   $2 target_date_iso       e.g. 2026-06-09
@@ -320,6 +438,13 @@ guard_target() {
     log "ERROR: failed to parse expected race count for $label from D1 (result tail: $(printf '%s' "$d1_result" | tail -c 400))"
     return 1
   fi
+  # DRY_RUN-only override so the per-venue coverage path can be exercised
+  # without touching a real D1. FORCE_EXPECTED_COUNT is applied AFTER the live
+  # D1 query so any parse error is still surfaced above.
+  if [ "${DRY_RUN:-0}" = "1" ] && [ -n "${FORCE_EXPECTED_COUNT:-}" ]; then
+    log "DRY_RUN: FORCE_EXPECTED_COUNT=$FORCE_EXPECTED_COUNT override (was: $expected_count)"
+    expected_count="$FORCE_EXPECTED_COUNT"
+  fi
   log "EXPECTED_COUNT[$label]=$expected_count (distinct race_key in realtime_race_sources)"
 
   if [ "$expected_count" = "0" ]; then
@@ -332,6 +457,14 @@ guard_target() {
     log "$label: discover-urls kicked — predictions will be evaluated on next hourly tick"
     return 0
   fi
+
+  # --- per-venue coverage check (catches partial discover-urls failures) ---
+  # Re-kicks discover-urls when any NAR/JRA major venue has fewer races than
+  # the expected lower bound. Runs independently from running-style /
+  # finish-position checks: even when the per-venue check re-kicks, we still
+  # proceed with the downstream checks so any predictions we can compute now
+  # still go through.
+  check_venue_coverage "$target_date" "$target_date_iso" "$label"
 
   # --- corner-features prerequisite (needed before running-style) ---
   local corner_features_ok=1

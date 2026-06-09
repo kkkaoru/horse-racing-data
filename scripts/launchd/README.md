@@ -150,6 +150,25 @@ Per tick:
      that target — the worker upsert is naturally idempotent and the next
      hourly tick will see the freshly-discovered rows and proceed with
      predictions. (In DRY_RUN, only the planned POST is logged.)
+   - **If the D1 count is > 0**, run a per-venue coverage check: GROUP BY
+     `keibajo_code` on `realtime_race_sources` for the JST date and compare
+     each row against the per-venue lower bounds.
+     NAR major venues (`30 35 36 42 43 44 46 47 48 50 51 53 54 55 56 57 65 66`)
+     use `EXPECTED_NAR_RACES_PER_VENUE` (10). Typical day is 10-12 races;
+     under-10 is partial-coverage. This is the check that would have caught
+     today's incident: 大井 (44) at 7 races was below the threshold and the
+     guard would have re-kicked discover-urls.
+     JRA major venues (`01 02 03 04 05 06 07 08 09 10`) use
+     `EXPECTED_JRA_RACES_PER_VENUE` (11). JRA always runs 12 race cards, so
+     anything below 11 is incomplete. Unknown / non-major `keibajo_code` rows
+     do not trigger a re-kick.
+     If ANY listed major venue is under threshold the guard logs a
+     `WARN per-venue coverage[$label] INCOMPLETE` line and POSTs
+     `discover-urls` again. The worker UPSERT is idempotent so re-discovery
+     is cheap. The per-venue check runs independently from the running-style
+     and finish-position checks below: even when it re-kicks, the downstream
+     prediction checks still proceed so partial predictions still go through.
+     The next hourly tick re-evaluates.
    - **Corner-features prerequisite (before running-style only).** Query Neon
      `race_entry_corner_features` for a count restricted to the target
      (kaisai_nen, kaisai_tsukihi). If 0, run the `dev:build-corner-features`
@@ -240,6 +259,15 @@ DRY_RUN=1 FORCE_HOUR=22 FORCE_TARGET_DATE=20300101 \
 
 # Dry-run that exercises the corner-features build path
 DRY_RUN=1 FORCE_HOUR=05 FORCE_NO_CORNER_FEATURES=1 \
+  bash scripts/launchd/race-prediction-guard.sh
+
+# Dry-run that exercises the per-venue coverage check path.
+# FORCE_VENUE_COUNTS=keibajo:count[,keibajo:count...] feeds synthetic D1
+# venue counts; FORCE_EXPECTED_COUNT=N bypasses the EXPECTED_COUNT=0 early
+# return so per-venue evaluation actually runs. The example below mirrors
+# the 2026-06-09 incident: 大井 (44) at 7 races + JRA 札幌 (05) at 8 races.
+DRY_RUN=1 FORCE_HOUR=05 FORCE_TARGET_DATE=20300101 \
+  FORCE_EXPECTED_COUNT=42 FORCE_VENUE_COUNTS=44:7,30:12,36:11,05:8 \
   bash scripts/launchd/race-prediction-guard.sh
 ```
 
