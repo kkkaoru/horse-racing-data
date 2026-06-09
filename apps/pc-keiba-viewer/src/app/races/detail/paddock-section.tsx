@@ -72,6 +72,9 @@ interface PaddockSectionProps {
   recentResults?: HorseRaceResult[];
   runningStyleLabelsByHorse?: Partial<Record<string, PaddockRunningStyleLabel>>;
   runners: Runner[];
+  // showBloodline: when false the read-only table omits 父/父父/母父 cells and
+  // headers. The editable detail page passes true to keep the pedigree facts.
+  showBloodline: boolean;
   source: RaceSource;
   year: string;
 }
@@ -659,7 +662,7 @@ const getPaddockApiPath = ({
   month,
   raceNumber,
   year,
-}: Omit<PaddockSectionProps, "runners" | "source">): string =>
+}: Pick<PaddockSectionProps, "day" | "keibajoCode" | "month" | "raceNumber" | "year">): string =>
   `/api/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/paddock`;
 
 const getRecentResultsApiPath = ({
@@ -671,8 +674,9 @@ const getRecentResultsApiPath = ({
 }: Pick<PaddockSectionProps, "day" | "keibajoCode" | "month" | "raceNumber" | "year">): string =>
   `/api/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/recent-results`;
 
-const getPaddockDiscordApiPath = (props: Omit<PaddockSectionProps, "runners" | "source">): string =>
-  `${getPaddockApiPath(props)}/discord`;
+const getPaddockDiscordApiPath = (
+  props: Pick<PaddockSectionProps, "day" | "keibajoCode" | "month" | "raceNumber" | "year">,
+): string => `${getPaddockApiPath(props)}/discord`;
 
 const getPremiumRaceRequestPath = ({
   day,
@@ -986,32 +990,34 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
               </dd>
             </div>
           ) : null}
-          <div className="paddock-horse-bloodline-fact">
-            <dt>父</dt>
-            <dd
-              className="paddock-horse-bloodline-value"
-              title={sireName || PADDOCK_FACT_PLACEHOLDER}
-            >
-              {sireName || PADDOCK_FACT_PLACEHOLDER}
-            </dd>
-          </div>
-          <div className="paddock-horse-bloodline-fact">
-            <dt>父父</dt>
-            <dd
-              className="paddock-horse-bloodline-value"
-              title={sireSireName || PADDOCK_FACT_PLACEHOLDER}
-            >
-              {sireSireName || PADDOCK_FACT_PLACEHOLDER}
-            </dd>
-          </div>
-          <div className="paddock-horse-bloodline-fact">
-            <dt>母父</dt>
-            <dd
-              className="paddock-horse-bloodline-value"
-              title={damSireName || PADDOCK_FACT_PLACEHOLDER}
-            >
-              {damSireName || PADDOCK_FACT_PLACEHOLDER}
-            </dd>
+          <div className="paddock-horse-bloodline-row">
+            <div className="paddock-horse-bloodline-fact">
+              <dt>父</dt>
+              <dd
+                className="paddock-horse-bloodline-value"
+                title={sireName || PADDOCK_FACT_PLACEHOLDER}
+              >
+                {sireName || PADDOCK_FACT_PLACEHOLDER}
+              </dd>
+            </div>
+            <div className="paddock-horse-bloodline-fact">
+              <dt>父父</dt>
+              <dd
+                className="paddock-horse-bloodline-value"
+                title={sireSireName || PADDOCK_FACT_PLACEHOLDER}
+              >
+                {sireSireName || PADDOCK_FACT_PLACEHOLDER}
+              </dd>
+            </div>
+            <div className="paddock-horse-bloodline-fact">
+              <dt>母父</dt>
+              <dd
+                className="paddock-horse-bloodline-value"
+                title={damSireName || PADDOCK_FACT_PLACEHOLDER}
+              >
+                {damSireName || PADDOCK_FACT_PLACEHOLDER}
+              </dd>
+            </div>
           </div>
         </dl>
         <b>{formatPaddockScore(scores.total)}</b>
@@ -1073,6 +1079,7 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
 function PaddockReadOnlyTable({
   oddsByHorse,
   rows,
+  showBloodline,
   state,
 }: {
   oddsByHorse: Map<
@@ -1094,6 +1101,7 @@ function PaddockReadOnlyTable({
     trainerName: string;
     weight: string;
   }[];
+  showBloodline: boolean;
   state: PaddockState | null;
 }) {
   const [activeScoreTooltip, setActiveScoreTooltip] = useState<PaddockScoreTooltipState | null>(
@@ -1242,9 +1250,13 @@ function PaddockReadOnlyTable({
             <col className="paddock-col-name" />
             <col className="paddock-col-jockey" />
             <col className="paddock-col-trainer" />
-            <col className="paddock-col-bloodline" />
-            <col className="paddock-col-bloodline" />
-            <col className="paddock-col-bloodline" />
+            {showBloodline ? (
+              <>
+                <col className="paddock-col-bloodline" />
+                <col className="paddock-col-bloodline" />
+                <col className="paddock-col-bloodline" />
+              </>
+            ) : null}
             <col className="paddock-col-popularity" />
             <col className="paddock-col-odds" />
             <col className="paddock-col-weight" />
@@ -1263,9 +1275,13 @@ function PaddockReadOnlyTable({
               <th>馬名</th>
               <th>騎手名</th>
               <th>調教師</th>
-              <th>父</th>
-              <th>父父</th>
-              <th>母父</th>
+              {showBloodline ? (
+                <>
+                  <th>父</th>
+                  <th>父父</th>
+                  <th>母父</th>
+                </>
+              ) : null}
               <th>人気</th>
               <th>単勝</th>
               <th>馬体重</th>
@@ -1348,15 +1364,19 @@ function PaddockReadOnlyTable({
                   <td className="paddock-table-trainer-name-cell" data-label="調教師">
                     {row.trainerName || PADDOCK_FACT_PLACEHOLDER}
                   </td>
-                  <td className="paddock-table-bloodline-cell" data-label="父">
-                    {row.sireName || PADDOCK_FACT_PLACEHOLDER}
-                  </td>
-                  <td className="paddock-table-bloodline-cell" data-label="父父">
-                    {row.sireSireName || PADDOCK_FACT_PLACEHOLDER}
-                  </td>
-                  <td className="paddock-table-bloodline-cell" data-label="母父">
-                    {row.damSireName || PADDOCK_FACT_PLACEHOLDER}
-                  </td>
+                  {showBloodline ? (
+                    <>
+                      <td className="paddock-table-bloodline-cell" data-label="父">
+                        {row.sireName || PADDOCK_FACT_PLACEHOLDER}
+                      </td>
+                      <td className="paddock-table-bloodline-cell" data-label="父父">
+                        {row.sireSireName || PADDOCK_FACT_PLACEHOLDER}
+                      </td>
+                      <td className="paddock-table-bloodline-cell" data-label="母父">
+                        {row.damSireName || PADDOCK_FACT_PLACEHOLDER}
+                      </td>
+                    </>
+                  ) : null}
                   <td className="paddock-table-dynamic-cell" data-label="人気">
                     {formatRealtimePopularity(oddsByHorse.get(row.horseNumber)?.popularity ?? null)}
                   </td>
@@ -1439,6 +1459,7 @@ export function PaddockSection({
   recentResults,
   runningStyleLabelsByHorse,
   runners,
+  showBloodline,
   source,
   year,
 }: PaddockSectionProps) {
@@ -2077,7 +2098,12 @@ export function PaddockSection({
           })}
         </section>
       ) : (
-        <PaddockReadOnlyTable oddsByHorse={realtimeOddsByHorse} rows={runnerRows} state={state} />
+        <PaddockReadOnlyTable
+          oddsByHorse={realtimeOddsByHorse}
+          rows={runnerRows}
+          showBloodline={showBloodline}
+          state={state}
+        />
       )}
       {editable && runnerRows.length > 0 ? (
         <PaddockRemainingIndicator boardRef={paddockBoardRef} total={runnerRows.length} />

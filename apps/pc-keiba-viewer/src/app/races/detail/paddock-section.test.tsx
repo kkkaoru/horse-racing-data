@@ -153,6 +153,7 @@ const baseProps = {
   month: "06",
   raceNumber: "01",
   recentResults: [],
+  showBloodline: true,
   source: "jra" as const,
   year: "2026",
 };
@@ -526,7 +527,7 @@ test("PaddockSection recent runs include 枠番 and 馬番 columns", async () =>
   expect(umaCell.textContent).toBe("7");
 });
 
-test("PaddockSection read-only table includes trainer and bloodline column headers", async () => {
+test("PaddockSection read-only table includes trainer and bloodline column headers when showBloodline is true", async () => {
   getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
   const stateWithScore: PaddockState = {
     history: [],
@@ -555,6 +556,7 @@ test("PaddockSection read-only table includes trainer and bloodline column heade
       month="06"
       raceNumber="01"
       recentResults={[]}
+      showBloodline
       source="jra"
       year="2026"
       runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
@@ -568,6 +570,138 @@ test("PaddockSection read-only table includes trainer and bloodline column heade
   expect(screen.getByRole("columnheader", { name: "父" }).tagName).toBe("TH");
   expect(screen.getByRole("columnheader", { name: "父父" }).tagName).toBe("TH");
   expect(screen.getByRole("columnheader", { name: "母父" }).tagName).toBe("TH");
+});
+
+test("PaddockSection read-only table omits bloodline column headers when showBloodline is false", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  const stateWithScore: PaddockState = {
+    history: [],
+    horses: {
+      "1": {
+        attention: 0,
+        horseName: "テストホース",
+        horseNumber: "1",
+        kaeshi: 0,
+        officialRank: 1,
+        paddock: 0,
+        preference: 0,
+        total: 0,
+      },
+    },
+    raceKey: "2026:0602:05:01",
+    updatedAt: "2026-06-02T12:00:00.000Z",
+  };
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(stateWithScore));
+
+  render(
+    <PaddockSection
+      day="02"
+      editable={false}
+      keibajoCode="05"
+      month="06"
+      raceNumber="01"
+      recentResults={[]}
+      showBloodline={false}
+      source="jra"
+      year="2026"
+      runners={[
+        buildRunner({
+          bamei: "テストホース",
+          damSireName: "サンデーサイレンス",
+          sireName: "ディープインパクト",
+          sireSireName: "ステイゴールド",
+          umaban: "01",
+        }),
+      ]}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getAllByRole("columnheader").length).toBeGreaterThan(0);
+  });
+  expect(screen.getByRole("columnheader", { name: "調教師" }).tagName).toBe("TH");
+  expect(screen.queryByRole("columnheader", { name: "父" })).toBeNull();
+  expect(screen.queryByRole("columnheader", { name: "父父" })).toBeNull();
+  expect(screen.queryByRole("columnheader", { name: "母父" })).toBeNull();
+});
+
+test("PaddockSection read-only table omits bloodline value cells when showBloodline is false", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  const stateWithScore: PaddockState = {
+    history: [],
+    horses: {
+      "1": {
+        attention: 0,
+        horseName: "テストホース",
+        horseNumber: "1",
+        kaeshi: 0,
+        officialRank: 1,
+        paddock: 0,
+        preference: 0,
+        total: 0,
+      },
+    },
+    raceKey: "2026:0602:05:01",
+    updatedAt: "2026-06-02T12:00:00.000Z",
+  };
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(stateWithScore));
+
+  const { container } = render(
+    <PaddockSection
+      day="02"
+      editable={false}
+      keibajoCode="05"
+      month="06"
+      raceNumber="01"
+      recentResults={[]}
+      showBloodline={false}
+      source="jra"
+      year="2026"
+      runners={[
+        buildRunner({
+          bamei: "テストホース",
+          damSireName: "サンデーサイレンス",
+          sireName: "ディープインパクト",
+          sireSireName: "ステイゴールド",
+          umaban: "01",
+        }),
+      ]}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getAllByRole("columnheader").length).toBeGreaterThan(0);
+  });
+  const bloodlineCells = container.querySelectorAll(".paddock-table-bloodline-cell");
+  expect(bloodlineCells.length).toBe(0);
+});
+
+test("PaddockSection editable bloodline row wraps three bloodline facts in a flex container", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  const { container } = render(
+    <PaddockSection
+      {...baseProps}
+      runners={[
+        buildRunner({
+          bamei: "テストホース",
+          damSireName: "サンデーサイレンス",
+          sireName: "ディープインパクト",
+          sireSireName: "ステイゴールド",
+          umaban: "01",
+        }),
+      ]}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getAllByRole("article").length).toBe(1);
+  });
+  const bloodlineRows = container.querySelectorAll(".paddock-horse-bloodline-row");
+  expect(bloodlineRows.length).toBe(1);
+  const factsInRow = bloodlineRows[0]?.querySelectorAll(".paddock-horse-bloodline-fact");
+  expect(factsInRow?.length).toBe(3);
 });
 
 test("PaddockSection lazy recent-results clears skeleton after fetch failure (loading=false on catch)", async () => {
@@ -589,6 +723,7 @@ test("PaddockSection lazy recent-results clears skeleton after fetch failure (lo
       keibajoCode="05"
       month="06"
       raceNumber="01"
+      showBloodline
       source="jra"
       year="2026"
       runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
@@ -622,6 +757,7 @@ test("PaddockSection lazy recent-results clears skeleton via safety timer when f
       keibajoCode="05"
       month="06"
       raceNumber="01"
+      showBloodline
       source="jra"
       year="2026"
       runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
