@@ -186,6 +186,7 @@ describe("prediction tables scratched runners", () => {
   it("moves scratched overall score rows last and hides score and realtime odds", () => {
     renderWithRealtime(
       <OverallScoreTable
+        expandAll={false}
         realtimeRequest={realtimeRequest}
         rows={[
           overallRow({ horseName: "取消馬", horseNumber: "02", score: 1 }),

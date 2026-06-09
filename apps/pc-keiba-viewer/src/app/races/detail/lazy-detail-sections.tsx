@@ -617,6 +617,7 @@ function LazyResultsSection(props: LazyDetailSectionsProps) {
 export function LazyOverallScoreSection(props: LazyDetailSectionsProps) {
   const searchParams = useSearchParams();
   const state = useSectionPayload("overall-score", props, searchParams);
+  const [sectionExpanded, setSectionExpanded] = useState(false);
   if (state.status === "loading" && state.payload === null) {
     return <SectionSkeleton title={SECTION_TITLES["overall-score"]} />;
   }
@@ -632,21 +633,25 @@ export function LazyOverallScoreSection(props: LazyDetailSectionsProps) {
       aria-busy={state.status === "loading"}
       className="similar-stats-section lazy-detail-section"
     >
-      <div className="section-heading compact">
-        <h2>総合スコア</h2>
-      </div>
-      <OverallScoreTable
-        realtimeRequest={{
-          apiBaseUrl: props.realtimeApiBaseUrl,
-          day: props.day,
-          keibajoCode: props.keibajoCode,
-          month: props.month,
-          raceNumber: props.raceNumber,
-          source: props.source,
-          year: props.year,
-        }}
-        rows={payload.rows}
-      />
+      <MobileCollapsibleSection
+        heading={<h2>総合スコア</h2>}
+        title="総合スコア"
+        onOpenChange={setSectionExpanded}
+      >
+        <OverallScoreTable
+          expandAll={sectionExpanded}
+          realtimeRequest={{
+            apiBaseUrl: props.realtimeApiBaseUrl,
+            day: props.day,
+            keibajoCode: props.keibajoCode,
+            month: props.month,
+            raceNumber: props.raceNumber,
+            source: props.source,
+            year: props.year,
+          }}
+          rows={payload.rows}
+        />
+      </MobileCollapsibleSection>
     </section>
   );
 }
