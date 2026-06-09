@@ -14,6 +14,16 @@ import type {
 
 const replaceMock = vi.fn<(href: string, options?: { scroll?: boolean }) => void>();
 
+const noopFn = (): void => undefined;
+
+const MOBILE_MEDIA_QUERY_LIST = {
+  addEventListener: noopFn,
+  addListener: noopFn,
+  matches: true,
+  removeEventListener: noopFn,
+  removeListener: noopFn,
+};
+
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ replace: replaceMock }),
   useSearchParams: () => new URLSearchParams(),
@@ -1011,6 +1021,54 @@ describe("RunningStyleDimensionToggles - NAR branch", () => {
     );
     expect(screen.getByLabelText("条件")).toBeTruthy();
   });
+});
+
+test("RunningStyleBucketEvaluationPanel renders togglesNode inside details body when expanded", () => {
+  const { container } = render(
+    <RunningStyleSection
+      rows={[buildRow({})]}
+      modelMacroF1={null}
+      modelVersion="v1"
+      runnersByUmaban={{}}
+      bucketEvaluation={buildEvaluation({})}
+      bucketScope={buildScope({})}
+      dimensionFlags={buildFlags({})}
+      bucketRace={buildBucketRace({})}
+      bucketSource="jra"
+      bucketGradeCode={null}
+    />,
+  );
+  const detailsEl = container.querySelector(".running-style-bucket-details");
+  if (detailsEl instanceof HTMLDetailsElement) {
+    detailsEl.open = true;
+  }
+  const bodyEl = container.querySelector(".running-style-bucket-details-body");
+  const togglesHeading = screen.getByText("精度の集計条件");
+  expect(bodyEl?.contains(togglesHeading)).toBe(true);
+});
+
+test("MobileCollapsibleSection wrapper defaults to closed on mobile viewport", () => {
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn(() => MOBILE_MEDIA_QUERY_LIST),
+  );
+  const { container } = render(
+    <RunningStyleSection
+      rows={[buildRow({})]}
+      modelMacroF1={null}
+      modelVersion="v1"
+      runnersByUmaban={{}}
+      bucketEvaluation={buildEvaluation({})}
+      bucketScope={buildScope({})}
+      dimensionFlags={buildFlags({})}
+      bucketRace={buildBucketRace({})}
+      bucketSource="jra"
+      bucketGradeCode={null}
+    />,
+  );
+  const bodyEl = container.querySelector(".mobile-collapsible-section-body");
+  expect(bodyEl?.hasAttribute("hidden")).toBe(true);
+  vi.unstubAllGlobals();
 });
 
 describe("RunningStyleDimensionToggles - click behavior", () => {
