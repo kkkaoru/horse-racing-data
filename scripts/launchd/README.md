@@ -150,6 +150,20 @@ Per tick:
      that target — the worker upsert is naturally idempotent and the next
      hourly tick will see the freshly-discovered rows and proceed with
      predictions. (In DRY_RUN, only the planned POST is logged.)
+   - **Corner-features prerequisite (before running-style only).** Query Neon
+     `race_entry_corner_features` for a count restricted to the target
+     (kaisai_nen, kaisai_tsukihi). If 0, run the `dev:build-corner-features`
+     bun script in `pc-keiba-viewer` for that one date across
+     `--source-scope all` with `DATABASE_URL_NEON` set to `NEON_DATABASE_URL`.
+     The bun script's INSERT uses an UPSERT on the composite key (source,
+     kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+     ketto_toroku_bango), so re-running on the same date is a fast UPSERT,
+     not a duplicate insert. If rows are already present the build is skipped
+     entirely. If the build fails the running-style kick is skipped for that
+     target (finish-position still proceeds since it uses a different code
+     path). In DRY_RUN, only the planned bun command is logged; pass
+     `FORCE_NO_CORNER_FEATURES=1` to simulate a missing-features state and
+     exercise the build path.
    - Else query Neon for
      `COUNT(DISTINCT (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango))`
      in each predictions table for that JST date. If `actual < expected`,
@@ -222,6 +236,10 @@ DRY_RUN=1 FORCE_HOUR=22 bash scripts/launchd/race-prediction-guard.sh
 
 # Dry-run that exercises the empty-D1 discover-urls kick path
 DRY_RUN=1 FORCE_HOUR=22 FORCE_TARGET_DATE=20300101 \
+  bash scripts/launchd/race-prediction-guard.sh
+
+# Dry-run that exercises the corner-features build path
+DRY_RUN=1 FORCE_HOUR=05 FORCE_NO_CORNER_FEATURES=1 \
   bash scripts/launchd/race-prediction-guard.sh
 ```
 
