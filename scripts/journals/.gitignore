@@ -1,0 +1,3 @@
+# Downloaded J-STAGE PDFs are a local cache, not source — never track them.
+cache/
+*.pdf
