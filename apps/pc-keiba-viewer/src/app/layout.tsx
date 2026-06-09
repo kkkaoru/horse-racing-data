@@ -8,6 +8,7 @@ import { StylesheetReloadGuard } from "./stylesheet-reload-guard";
 
 import "./vars.css";
 import "./globals.css";
+import "./globals-paddock-pedigree.css";
 
 export const metadata: Metadata = {
   title: {

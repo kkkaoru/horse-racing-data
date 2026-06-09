@@ -8,6 +8,7 @@ import type { RealtimeRaceRequest } from "./realtime-client";
 import { useRealtimeRacePayload } from "./realtime-client";
 
 interface OverallScoreTableProps {
+  expandAll: boolean;
   realtimeRequest: RealtimeRaceRequest;
   rows: OverallScoreRow[];
 }
@@ -107,7 +108,7 @@ const OverallScoreTableRow = memo(function OverallScoreTableRow({
   );
 });
 
-export function OverallScoreTable({ realtimeRequest, rows }: OverallScoreTableProps) {
+export function OverallScoreTable({ expandAll, realtimeRequest, rows }: OverallScoreTableProps) {
   const [expandedHorseNumber, setExpandedHorseNumber] = useState<string | null>(null);
   const { payload } = useRealtimeRacePayload(realtimeRequest, null);
   const realtimeOddsByHorse = useMemo(
@@ -167,7 +168,7 @@ export function OverallScoreTable({ realtimeRequest, rows }: OverallScoreTablePr
               return (
                 <OverallScoreTableRow
                   entryStatus={entryStatusByHorse.get(horseNumber) ?? ""}
-                  isExpanded={expandedHorseNumber === row.horseNumber}
+                  isExpanded={expandAll || expandedHorseNumber === row.horseNumber}
                   key={row.horseNumber}
                   realtimeOdds={realtimeOdds?.odds ?? row.storedOdds}
                   realtimePopularity={realtimeOdds?.popularity ?? row.storedPopularity}

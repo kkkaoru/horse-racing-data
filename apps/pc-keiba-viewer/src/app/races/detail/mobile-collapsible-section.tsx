@@ -8,6 +8,7 @@ import { useEffect, useId, useState } from "react";
 interface MobileCollapsibleSectionProps {
   children: ReactNode;
   heading?: ReactNode;
+  onOpenChange?: (expanded: boolean) => void;
   title: string;
 }
 
@@ -27,6 +28,7 @@ const resolveToggleAriaLabel = (params: { expanded: boolean; title: string }): s
 export function MobileCollapsibleSection({
   children,
   heading,
+  onOpenChange,
   title,
 }: MobileCollapsibleSectionProps) {
   const [mobile, setMobile] = useState(false);
@@ -65,6 +67,12 @@ export function MobileCollapsibleSection({
       mediaQuery.removeListener(updateMode);
     };
   }, []);
+
+  useEffect(() => {
+    if (onOpenChange) {
+      onOpenChange(expanded);
+    }
+  }, [expanded, onOpenChange]);
 
   return (
     <div className="mobile-collapsible-section">

@@ -395,6 +395,7 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
         }}
         runningStyleLabelsByHorse={runningStyleLabelsByHorse}
         runners={runners}
+        showBloodline
         source={source}
         year={year}
       />

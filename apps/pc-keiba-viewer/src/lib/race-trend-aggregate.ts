@@ -585,12 +585,51 @@ export interface RaceTrendAggregateInput {
   starterRows: RaceTrendStarterRow[];
 }
 
+interface BuildCornerDerivedRunningStyleMapParams {
+  raceBango: string;
+  starterRows: ReadonlyArray<RaceTrendStarterRow>;
+}
+
+// Corner-derived fallback for the per-runner "current race" running-style
+// column. When the upstream prediction cache (currentRunningStyles) is empty
+// or partial, the row's 脚質 column would otherwise collapse to "-" (or in
+// the failure mode that produced this fix, a stale default leak from
+// upstream). Deriving it from the today-sibling starterRows for the same
+// raceBango lets the column reflect the horse's observed corner pattern even
+// when the predictor has not run yet.
+export const buildCornerDerivedRunningStyleMap = (
+  params: BuildCornerDerivedRunningStyleMapParams,
+): Map<string, RaceTrendRunningStyle> => {
+  const normalizedRaceBango = normalizeNumberText(params.raceBango);
+  const entries = params.starterRows
+    .filter((row) => normalizeNumberText(row.raceBango) === normalizedRaceBango)
+    .map((row) => {
+      const horseNumber = normalizeNumberText(row.umaban);
+      const derived = runningStyleFromCorners({
+        corner1: row.corner1,
+        corner2: row.corner2,
+        corner3: row.corner3,
+        corner4: row.corner4,
+        runnerCount: row.runnerCount,
+      });
+      return horseNumber && derived
+        ? ([horseNumber, derived] satisfies [string, RaceTrendRunningStyle])
+        : null;
+    })
+    .filter((entry): entry is [string, RaceTrendRunningStyle] => entry !== null);
+  return new Map(entries);
+};
+
 const buildRunningStyleTargets = (
   input: RaceTrendAggregateInput,
 ): RaceTrendRunningStyleTarget[] => {
   const currentByHorse = new Map(
     input.currentRunningStyles.map((row) => [row.horseNumber, row.predictedLabel]),
   );
+  const cornerDerivedByHorse = buildCornerDerivedRunningStyleMap({
+    raceBango: input.raceContext.raceBango,
+    starterRows: input.starterRows,
+  });
   return input.runners.map((runner) => {
     const horseNumber = normalizeNumberText(runner.horseNumber);
     return {
@@ -601,7 +640,9 @@ const buildRunningStyleTargets = (
       trainerKey: resolveRowTrainerKey(runner.trainerName),
       trainerName: normalizeText(runner.trainerName),
       raceNumber: normalizeNumberText(input.raceContext.raceBango),
-      runningStyle: horseNumber ? (currentByHorse.get(horseNumber) ?? null) : null,
+      runningStyle: horseNumber
+        ? (currentByHorse.get(horseNumber) ?? cornerDerivedByHorse.get(horseNumber) ?? null)
+        : null,
     };
   });
 };

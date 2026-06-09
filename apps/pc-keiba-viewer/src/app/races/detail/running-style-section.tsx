@@ -21,6 +21,7 @@ import type {
   RunningStyleDimensionFlags,
 } from "../../../lib/running-style-prediction-dimensions";
 import { RUNNING_STYLE_PREDICTION_PARAM_NAMES } from "../../../lib/running-style-prediction-dimensions";
+import { MobileCollapsibleSection } from "./mobile-collapsible-section";
 import { useRealtimeRaceSelector } from "./realtime-client";
 
 const STYLE_TAB_VALUES = ["nige", "senkou", "sashi", "oikomi"] as const;
@@ -95,6 +96,7 @@ interface RunningStyleBucketEvaluationPanelProps {
   evaluation: RunningStyleBucketMetrics;
   scopeLabel: string;
   isFallback: boolean;
+  togglesNode: ReactNode;
 }
 
 interface RunningStyleBucketMetricCard {
@@ -576,6 +578,7 @@ function RunningStyleBucketEvaluationPanel({
   evaluation,
   scopeLabel,
   isFallback,
+  togglesNode,
 }: RunningStyleBucketEvaluationPanelProps): ReactElement {
   const total = sumConfusionMatrixTotal(evaluation.confusionMatrix);
   const metricCards = buildBucketMetricCards(evaluation);
@@ -606,6 +609,7 @@ function RunningStyleBucketEvaluationPanel({
       <details className="running-style-bucket-details">
         <summary>{DETAILS_SUMMARY_LABEL}</summary>
         <div className="running-style-bucket-details-body">
+          {togglesNode}
           {renderNonNigeMetricGrid({ accuracyCI, cards: nonNigeCards })}
           {renderPerClassMetricSection(evaluation)}
           {renderPerClassLogLossSection(evaluation)}
@@ -775,7 +779,10 @@ interface BucketPanelInput {
   race: RaceRowForRunningStyleBucketFilter;
   source: "jra" | "nar";
   gradeCode: string | null;
+  togglesNode: ReactNode;
 }
+
+const BUCKET_MOBILE_TITLE = "脚質予測 精度の集計条件";
 
 const renderBucketEvaluationPanel = (input: BucketPanelInput): ReactElement => {
   const scopeLabel = buildBucketScopeLabel({
@@ -785,11 +792,14 @@ const renderBucketEvaluationPanel = (input: BucketPanelInput): ReactElement => {
     source: input.source,
   });
   return (
-    <RunningStyleBucketEvaluationPanel
-      evaluation={input.evaluation}
-      isFallback={input.scope.level !== "exact"}
-      scopeLabel={scopeLabel}
-    />
+    <MobileCollapsibleSection title={BUCKET_MOBILE_TITLE}>
+      <RunningStyleBucketEvaluationPanel
+        evaluation={input.evaluation}
+        isFallback={input.scope.level !== "exact"}
+        scopeLabel={scopeLabel}
+        togglesNode={input.togglesNode}
+      />
+    </MobileCollapsibleSection>
   );
 };
 
@@ -800,26 +810,27 @@ const renderBucketSubSection = (props: RenderBucketSubSectionProps): ReactNode =
   const evaluation = props.bucketEvaluation ?? null;
   const scope = props.bucketScope ?? null;
   const gradeCode = props.bucketGradeCode ?? null;
-  const showToggles = flags !== null && race !== null && source !== null;
   const showPanel = evaluation !== null && scope !== null && race !== null && source !== null;
-  if (!showToggles && !showPanel) {
+  if (!showPanel) {
     return null;
   }
-  return (
-    <>
-      {showToggles ? (
-        <RunningStyleDimensionToggles
-          flags={flags}
-          race={race}
-          source={source}
-          gradeCode={gradeCode}
-        />
-      ) : null}
-      {showPanel
-        ? renderBucketEvaluationPanel({ evaluation, gradeCode, race, scope, source })
-        : null}
-    </>
-  );
+  const togglesNode =
+    flags === null ? null : (
+      <RunningStyleDimensionToggles
+        flags={flags}
+        race={race}
+        source={source}
+        gradeCode={gradeCode}
+      />
+    );
+  return renderBucketEvaluationPanel({
+    evaluation,
+    gradeCode,
+    race,
+    scope,
+    source,
+    togglesNode,
+  });
 };
 
 export const RunningStyleSection = ({

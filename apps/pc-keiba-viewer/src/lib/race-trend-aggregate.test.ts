@@ -7,6 +7,7 @@ import { expect, test } from "vitest";
 
 import {
   aggregateForTargets,
+  buildCornerDerivedRunningStyleMap,
   compareAggregatedRows,
   compareRaceBango,
   compareTrendDetails,
@@ -2213,4 +2214,215 @@ test("mergeStarterRowPair lets the newer source fill in the trainer name when th
   const partialPast: RaceTrendStarterRow = { ...baseRow, chokyoshiName: null };
   const newerSnapshot: RaceTrendStarterRow = { ...baseRow, chokyoshiName: "山本太郎" };
   expect(mergeStarterRowPair(partialPast, newerSnapshot).chokyoshiName).toStrictEqual("山本太郎");
+});
+
+test("buildRunningStyleTargets uses currentByHorse prediction when available", () => {
+  const todayRow: RaceTrendStarterRow = {
+    source: "nar",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0609",
+    keibajoCode: "44",
+    raceBango: "12",
+    raceName: null,
+    hassoJikoku: null,
+    runnerCount: "10",
+    wakuban: "3",
+    umaban: "5",
+    bamei: null,
+    jockeyName: "山田太郎",
+    tanshoOdds: null,
+    tanshoPopularity: null,
+    finishPosition: 0,
+    sohaTime: null,
+    corner1: "01",
+    corner2: "01",
+    corner3: "01",
+    corner4: "01",
+    bataiju: null,
+    zogenFugo: null,
+    zogenSa: null,
+  };
+  const result = aggregateForTargets(
+    {
+      starterRows: [todayRow],
+      currentRunningStyles: [{ horseNumber: "5", predictedLabel: "senkou" }],
+      historicalRunningStyles: [],
+      raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
+      runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
+    },
+    { frame: false, jockey: false, trainer: false, raceNumber: false, runningStyle: true },
+    true,
+    "20260609",
+    "20260609",
+  );
+  expect(result.runningStyleRows[0]?.runningStyle).toStrictEqual("senkou");
+});
+
+test("buildRunningStyleTargets falls back to corner-derived when prediction missing", () => {
+  const todayLeaderRow: RaceTrendStarterRow = {
+    source: "nar",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0609",
+    keibajoCode: "44",
+    raceBango: "12",
+    raceName: null,
+    hassoJikoku: null,
+    runnerCount: "10",
+    wakuban: "3",
+    umaban: "5",
+    bamei: null,
+    jockeyName: "山田太郎",
+    tanshoOdds: null,
+    tanshoPopularity: null,
+    finishPosition: 0,
+    sohaTime: null,
+    corner1: "01",
+    corner2: "01",
+    corner3: "01",
+    corner4: "01",
+    bataiju: null,
+    zogenFugo: null,
+    zogenSa: null,
+  };
+  const result = aggregateForTargets(
+    {
+      starterRows: [todayLeaderRow],
+      currentRunningStyles: [],
+      historicalRunningStyles: [],
+      raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
+      runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
+    },
+    { frame: false, jockey: false, trainer: false, raceNumber: false, runningStyle: true },
+    true,
+    "20260609",
+    "20260609",
+  );
+  expect(result.runningStyleRows[0]?.runningStyle).toStrictEqual("nige");
+});
+
+test("buildRunningStyleTargets returns null when neither prediction nor corner available", () => {
+  const todayPredictionlessRow: RaceTrendStarterRow = {
+    source: "nar",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0609",
+    keibajoCode: "44",
+    raceBango: "12",
+    raceName: null,
+    hassoJikoku: null,
+    runnerCount: "10",
+    wakuban: "3",
+    umaban: "5",
+    bamei: null,
+    jockeyName: "山田太郎",
+    tanshoOdds: null,
+    tanshoPopularity: null,
+    finishPosition: 0,
+    sohaTime: null,
+    corner1: null,
+    corner2: null,
+    corner3: null,
+    corner4: null,
+    bataiju: null,
+    zogenFugo: null,
+    zogenSa: null,
+  };
+  const result = aggregateForTargets(
+    {
+      starterRows: [todayPredictionlessRow],
+      currentRunningStyles: [],
+      historicalRunningStyles: [],
+      raceContext: { keibajoCode: "44", raceBango: "12", source: "nar" },
+      runners: [{ frameNumber: "3", horseNumber: "5", jockeyName: "山田太郎" }],
+    },
+    { frame: false, jockey: false, trainer: false, raceNumber: false, runningStyle: true },
+    true,
+    "20260609",
+    "20260609",
+  );
+  expect(result.runningStyleRows[0]?.runningStyle).toBeNull();
+});
+
+test("buildCornerDerivedRunningStyleMap keys results by horseNumber and excludes null derivations", () => {
+  const leaderRow: RaceTrendStarterRow = {
+    source: "nar",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0609",
+    keibajoCode: "44",
+    raceBango: "12",
+    raceName: null,
+    hassoJikoku: null,
+    runnerCount: "10",
+    wakuban: "1",
+    umaban: "1",
+    bamei: null,
+    jockeyName: null,
+    tanshoOdds: null,
+    tanshoPopularity: null,
+    finishPosition: 0,
+    sohaTime: null,
+    corner1: "01",
+    corner2: "01",
+    corner3: "01",
+    corner4: "01",
+    bataiju: null,
+    zogenFugo: null,
+    zogenSa: null,
+  };
+  const closerRow: RaceTrendStarterRow = {
+    source: "nar",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0609",
+    keibajoCode: "44",
+    raceBango: "12",
+    raceName: null,
+    hassoJikoku: null,
+    runnerCount: "10",
+    wakuban: "3",
+    umaban: "2",
+    bamei: null,
+    jockeyName: null,
+    tanshoOdds: null,
+    tanshoPopularity: null,
+    finishPosition: 0,
+    sohaTime: null,
+    corner1: "08",
+    corner2: "08",
+    corner3: "08",
+    corner4: "08",
+    bataiju: null,
+    zogenFugo: null,
+    zogenSa: null,
+  };
+  const blankRow: RaceTrendStarterRow = {
+    source: "nar",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0609",
+    keibajoCode: "44",
+    raceBango: "12",
+    raceName: null,
+    hassoJikoku: null,
+    runnerCount: "10",
+    wakuban: "5",
+    umaban: "3",
+    bamei: null,
+    jockeyName: null,
+    tanshoOdds: null,
+    tanshoPopularity: null,
+    finishPosition: 0,
+    sohaTime: null,
+    corner1: null,
+    corner2: null,
+    corner3: null,
+    corner4: null,
+    bataiju: null,
+    zogenFugo: null,
+    zogenSa: null,
+  };
+  const map = buildCornerDerivedRunningStyleMap({
+    raceBango: "12",
+    starterRows: [leaderRow, closerRow, blankRow],
+  });
+  expect(map.size).toStrictEqual(2);
+  expect(map.get("1")).toStrictEqual("nige");
+  expect(map.get("2")).toStrictEqual("oikomi");
 });

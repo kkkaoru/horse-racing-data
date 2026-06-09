@@ -1,3 +1,8 @@
+@import "./globals-running-style-mobile.css";
+@import "./globals-finish-prediction-mobile.css";
+@import "./globals-overall-score-mobile.css";
+@import "./globals-paddock-pedigree.css";
+
 * {
   box-sizing: border-box;
 }
@@ -3275,18 +3280,14 @@ h3 {
   line-height: inherit;
 }
 
-/* Desktop (>720px) keeps sire / sire-sire / dam-sire names on a single
-   line and truncates with an ellipsis when the value is too long. The
-   `title` attribute on the dd surfaces the full name on hover so the
-   information is still discoverable. Mobile overrides this in the
-   `max-width: 720px` block below. */
+/* Show sire / sire-sire / dam-sire names in full on both desktop and
+   mobile. The `title` attribute on the dd still surfaces the full name
+   on hover for parity with previous behavior. */
 .paddock-horse-bloodline-value {
   display: block;
-  max-width: var(--space-100pct-12);
   min-width: var(--number-0-2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .paddock-weight-value {

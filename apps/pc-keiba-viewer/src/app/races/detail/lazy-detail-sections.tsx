@@ -617,6 +617,7 @@ function LazyResultsSection(props: LazyDetailSectionsProps) {
 export function LazyOverallScoreSection(props: LazyDetailSectionsProps) {
   const searchParams = useSearchParams();
   const state = useSectionPayload("overall-score", props, searchParams);
+  const [sectionExpanded, setSectionExpanded] = useState(false);
   if (state.status === "loading" && state.payload === null) {
     return <SectionSkeleton title={SECTION_TITLES["overall-score"]} />;
   }
@@ -632,21 +633,25 @@ export function LazyOverallScoreSection(props: LazyDetailSectionsProps) {
       aria-busy={state.status === "loading"}
       className="similar-stats-section lazy-detail-section"
     >
-      <div className="section-heading compact">
-        <h2>総合スコア</h2>
-      </div>
-      <OverallScoreTable
-        realtimeRequest={{
-          apiBaseUrl: props.realtimeApiBaseUrl,
-          day: props.day,
-          keibajoCode: props.keibajoCode,
-          month: props.month,
-          raceNumber: props.raceNumber,
-          source: props.source,
-          year: props.year,
-        }}
-        rows={payload.rows}
-      />
+      <MobileCollapsibleSection
+        heading={<h2>総合スコア</h2>}
+        title="総合スコア"
+        onOpenChange={setSectionExpanded}
+      >
+        <OverallScoreTable
+          expandAll={sectionExpanded}
+          realtimeRequest={{
+            apiBaseUrl: props.realtimeApiBaseUrl,
+            day: props.day,
+            keibajoCode: props.keibajoCode,
+            month: props.month,
+            raceNumber: props.raceNumber,
+            source: props.source,
+            year: props.year,
+          }}
+          rows={payload.rows}
+        />
+      </MobileCollapsibleSection>
     </section>
   );
 }
@@ -876,7 +881,7 @@ function LazyConditionSection(props: LazyDetailSectionsProps) {
   );
 }
 
-function LazyTimeScoreSection(props: LazyDetailSectionsProps) {
+export function LazyTimeScoreSection(props: LazyDetailSectionsProps) {
   const searchParams = useSearchParams();
   const [showBloodline, setShowBloodline] = useState(false);
   const [showSimilar, setShowSimilar] = useState(false);
@@ -896,77 +901,83 @@ function LazyTimeScoreSection(props: LazyDetailSectionsProps) {
       aria-busy={state.status === "loading"}
       className="similar-stats-section lazy-detail-section"
     >
-      <div className="section-heading compact">
-        <h2>総合評価スコア</h2>
-      </div>
-      <div className="stats-category-list">
-        <BloodlineSimilarCombinedTable
-          bloodlineRows={payload.bloodlineRows}
-          correlationRows={payload.correlationRows}
-          realtimeRequest={{
-            apiBaseUrl: props.realtimeApiBaseUrl,
-            day: props.day,
-            keibajoCode: props.keibajoCode,
-            month: props.month,
-            raceNumber: props.raceNumber,
-            source: props.source,
-            year: props.year,
-          }}
-          rows={payload.similarRows}
-          runners={payload.runners}
-          timeRows={payload.rows}
-        />
-        <div className="stats-section-toggle-wrap">
-          <button
-            aria-expanded={showBloodline}
-            className="stats-control-button stats-section-toggle"
-            type="button"
-            onClick={() => {
-              setShowBloodline((current) => !current);
+      <MobileCollapsibleSection
+        heading={
+          <div className="section-heading compact">
+            <h2>総合評価スコア</h2>
+          </div>
+        }
+        title="総合評価スコア"
+      >
+        <div className="stats-category-list">
+          <BloodlineSimilarCombinedTable
+            bloodlineRows={payload.bloodlineRows}
+            correlationRows={payload.correlationRows}
+            realtimeRequest={{
+              apiBaseUrl: props.realtimeApiBaseUrl,
+              day: props.day,
+              keibajoCode: props.keibajoCode,
+              month: props.month,
+              raceNumber: props.raceNumber,
+              source: props.source,
+              year: props.year,
             }}
-          >
-            {showBloodline ? "血統成績を閉じる" : "血統成績を表示"}
-          </button>
-          <button
-            aria-expanded={showSimilar}
-            className="stats-control-button stats-section-toggle"
-            type="button"
-            onClick={() => {
-              setShowSimilar((current) => !current);
-            }}
-          >
-            {showSimilar ? "同条件成績を閉じる" : "同条件成績を表示"}
-          </button>
+            rows={payload.similarRows}
+            runners={payload.runners}
+            timeRows={payload.rows}
+          />
+          <div className="stats-section-toggle-wrap">
+            <button
+              aria-expanded={showBloodline}
+              className="stats-control-button stats-section-toggle"
+              type="button"
+              onClick={() => {
+                setShowBloodline((current) => !current);
+              }}
+            >
+              {showBloodline ? "血統成績を閉じる" : "血統成績を表示"}
+            </button>
+            <button
+              aria-expanded={showSimilar}
+              className="stats-control-button stats-section-toggle"
+              type="button"
+              onClick={() => {
+                setShowSimilar((current) => !current);
+              }}
+            >
+              {showSimilar ? "同条件成績を閉じる" : "同条件成績を表示"}
+            </button>
+          </div>
+          {showBloodline ? (
+            <section className="stats-category-section">
+              <div className="section-heading compact">
+                <h3>血統成績</h3>
+              </div>
+              <BloodlineStatsTable
+                conditionLabels={payload.conditionLabels}
+                rows={payload.bloodlineRows}
+                runners={payload.runners}
+                settings={payload.bloodlineSettings}
+                source={payload.source}
+              />
+            </section>
+          ) : null}
+          {showSimilar ? (
+            <section className="stats-category-section">
+              <div className="section-heading compact">
+                <h3>同条件成績</h3>
+              </div>
+              <SimilarRaceStatsTable
+                conditionLabels={payload.conditionLabels}
+                rows={payload.similarRows}
+                runners={payload.runners}
+                settings={payload.settings}
+                source={payload.source}
+              />
+            </section>
+          ) : null}
         </div>
-        {showBloodline ? (
-          <section className="stats-category-section">
-            <div className="section-heading compact">
-              <h3>血統成績</h3>
-            </div>
-            <BloodlineStatsTable
-              conditionLabels={payload.conditionLabels}
-              rows={payload.bloodlineRows}
-              runners={payload.runners}
-              settings={payload.bloodlineSettings}
-              source={payload.source}
-            />
-          </section>
-        ) : null}
-        {showSimilar ? (
-          <section className="stats-category-section">
-            <div className="section-heading compact">
-              <h3>同条件成績</h3>
-            </div>
-            <SimilarRaceStatsTable
-              conditionLabels={payload.conditionLabels}
-              rows={payload.similarRows}
-              runners={payload.runners}
-              settings={payload.settings}
-              source={payload.source}
-            />
-          </section>
-        ) : null}
-      </div>
+      </MobileCollapsibleSection>
     </section>
   );
 }

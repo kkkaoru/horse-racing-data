@@ -617,6 +617,7 @@ export async function RaceDetailView({
           month={month}
           raceNumber={raceNumber}
           runners={runners}
+          showBloodline={false}
           source={race.source}
           year={year}
         />

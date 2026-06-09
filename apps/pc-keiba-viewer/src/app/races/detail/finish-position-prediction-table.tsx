@@ -28,8 +28,11 @@ import type {
 } from "../../../lib/race-types";
 import { formatRunnerNumber } from "../../../lib/runner-format";
 import { buildCombinedScoreRows, type CombinedScoreRow } from "./bloodline-similar-combined-table";
+import { MobileCollapsibleSection } from "./mobile-collapsible-section";
 import type { RealtimeRaceRequest } from "./realtime-client";
 import { useRealtimeRacePayload } from "./realtime-client";
+
+const FINISH_PREDICTION_EVALUATION_TITLE = "着順予測精度";
 
 interface FinishPositionPredictionTableProps {
   combinedScoreData?: FinishPredictionCombinedScoreData | null;
@@ -275,6 +278,18 @@ function FinishPredictionEvaluationPanel({
         })}
       </div>
     </div>
+  );
+}
+
+export function WrappedFinishPredictionEvaluation({
+  evaluation,
+}: {
+  evaluation: FinishPredictionEvaluationMetrics;
+}) {
+  return (
+    <MobileCollapsibleSection title={FINISH_PREDICTION_EVALUATION_TITLE}>
+      <FinishPredictionEvaluationPanel evaluation={evaluation} />
+    </MobileCollapsibleSection>
   );
 }
 
@@ -537,7 +552,7 @@ export function FinishPositionPredictionTable({
   if (displayRows.length === 0) {
     return (
       <>
-        <FinishPredictionEvaluationPanel evaluation={evaluation} />
+        <WrappedFinishPredictionEvaluation evaluation={evaluation} />
         <p className="empty-state">着順予測を表示できるデータがありません。</p>
       </>
     );
@@ -545,7 +560,7 @@ export function FinishPositionPredictionTable({
 
   return (
     <>
-      <FinishPredictionEvaluationPanel evaluation={evaluation} />
+      <WrappedFinishPredictionEvaluation evaluation={evaluation} />
       <div className="finish-prediction-odds-toggle">
         <label>
           <input
