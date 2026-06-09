@@ -6,6 +6,7 @@ import {
   DEFAULT_CAP_DELAY_MS,
   DEFAULT_MAX_ATTEMPTS,
   DEFAULT_RETRYABLE_STATUSES,
+  DEFAULT_TIMEOUT_MS,
   fetchWithRetry,
   parseRetryAfter,
 } from "./retry-fetch";
@@ -230,9 +231,9 @@ it("fetchWithRetry forwards init headers to fetch", async () => {
     init: { headers: { "User-Agent": "ut-agent" } },
   });
   expect(mock).toHaveBeenCalledTimes(1);
-  expect(mock.mock.calls[0]?.[1]).toStrictEqual({
-    headers: { "User-Agent": "ut-agent" },
-  });
+  const passedInit: RequestInit | undefined = mock.mock.calls[0]?.[1];
+  expect(passedInit?.headers).toStrictEqual({ "User-Agent": "ut-agent" });
+  expect(passedInit?.signal instanceof AbortSignal).toBe(true);
 });
 
 it("fetchWithRetry respects custom retryableStatuses set", async () => {
@@ -280,4 +281,61 @@ it("fetchWithRetry uses defaultNow when now option omitted", async () => {
   const response = await fetchWithRetry(TEST_URL, { sleep });
   expect(response.status).toBe(200);
   expect(sleep).toHaveBeenCalledWith(0);
+});
+
+it("fetchWithRetry aborts a hanging fetch via timeout and retries", async () => {
+  const timeoutError = new Error("operation timed out");
+  timeoutError.name = "TimeoutError";
+  const successResponse = new Response("done", { status: 200 });
+  const fetchMock = vi
+    .fn()
+    .mockRejectedValueOnce(timeoutError)
+    .mockResolvedValueOnce(successResponse);
+  vi.stubGlobal("fetch", fetchMock);
+  const sleep = vi.fn(noSleep);
+  const response = await fetchWithRetry(TEST_URL, { sleep, timeoutMs: 50 });
+  expect(response.status).toBe(200);
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(sleep).toHaveBeenCalledTimes(1);
+  expect(sleep).toHaveBeenNthCalledWith(1, 1000);
+});
+
+it("fetchWithRetry surfaces the timeout error after exhausting attempts", async () => {
+  const timeoutError = new Error("operation timed out");
+  timeoutError.name = "TimeoutError";
+  const fetchMock = vi.fn().mockRejectedValue(timeoutError);
+  vi.stubGlobal("fetch", fetchMock);
+  const sleep = vi.fn(noSleep);
+  await expect(
+    fetchWithRetry(TEST_URL, { sleep, timeoutMs: 50, maxAttempts: 2 }),
+  ).rejects.toThrowError("fetchWithRetry exhausted attempts due to upstream timeout");
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(sleep).toHaveBeenCalledTimes(1);
+});
+
+it("fetchWithRetry honors a caller-provided signal in combination with the internal timeout", async () => {
+  const successResponse = new Response("ok", { status: 200 });
+  const fetchMock = vi.fn().mockResolvedValue(successResponse);
+  vi.stubGlobal("fetch", fetchMock);
+  const callerController = new AbortController();
+  const response = await fetchWithRetry(TEST_URL, {
+    sleep: noSleep,
+    timeoutMs: 50,
+    init: { signal: callerController.signal },
+  });
+  expect(response.status).toBe(200);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  const passedInit: RequestInit | undefined = fetchMock.mock.calls[0]?.[1];
+  expect(passedInit?.signal instanceof AbortSignal).toBe(true);
+  expect(passedInit?.signal).not.toBe(callerController.signal);
+});
+
+it("fetchWithRetry uses 10000 ms default timeout when not specified", async () => {
+  const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+  const successResponse = new Response("ok", { status: 200 });
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(successResponse));
+  const response = await fetchWithRetry(TEST_URL, { sleep: noSleep });
+  expect(response.status).toBe(200);
+  expect(DEFAULT_TIMEOUT_MS).toBe(10000);
+  expect(timeoutSpy).toHaveBeenCalledWith(10000);
 });

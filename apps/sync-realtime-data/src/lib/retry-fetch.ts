@@ -2,12 +2,15 @@
 // Bounded exponential backoff fetch helper for transient HTTP failures.
 // Retries 408 / 425 / 429 / 503 with `Retry-After` honored; other non-OK statuses
 // and network errors propagate immediately on the failing attempt.
+// Each attempt is guarded by a per-attempt timeout so a slow / hung upstream
+// (e.g. keiba.go.jp) cannot hold the Workers handler past Cloudflare's wall-time.
 
 export interface RetryFetchOptions {
   init?: RequestInit;
   maxAttempts?: number;
   baseDelayMs?: number;
   capDelayMs?: number;
+  timeoutMs?: number;
   retryableStatuses?: ReadonlySet<number>;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
@@ -18,6 +21,7 @@ interface ResolvedRetryConfig {
   maxAttempts: number;
   baseDelayMs: number;
   capDelayMs: number;
+  timeoutMs: number;
   retryableStatuses: ReadonlySet<number>;
   sleep: (ms: number) => Promise<void>;
   now: () => number;
@@ -37,14 +41,22 @@ interface RetryDelayArgs {
   now: number;
 }
 
+interface AttemptArgs {
+  url: string;
+  attempt: number;
+  config: ResolvedRetryConfig;
+}
+
 export const DEFAULT_RETRYABLE_STATUSES: ReadonlySet<number> = new Set([408, 425, 429, 503]);
 export const DEFAULT_MAX_ATTEMPTS = 3;
 export const DEFAULT_BASE_DELAY_MS = 1000;
 export const DEFAULT_CAP_DELAY_MS = 8000;
+export const DEFAULT_TIMEOUT_MS = 10_000;
 const MS_PER_SECOND = 1000;
 const POWER_OF_TWO_BASE = 2;
 const MIN_DELAY_MS = 0;
 const NUMERIC_HEADER_PATTERN = /^-?\d+(?:\.\d+)?$/u;
+const ABORT_ERROR_NAMES: ReadonlySet<string> = new Set(["AbortError", "TimeoutError"]);
 
 const defaultSleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -56,6 +68,7 @@ const resolveConfig = (options: RetryFetchOptions | undefined): ResolvedRetryCon
   maxAttempts: options?.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
   baseDelayMs: options?.baseDelayMs ?? DEFAULT_BASE_DELAY_MS,
   capDelayMs: options?.capDelayMs ?? DEFAULT_CAP_DELAY_MS,
+  timeoutMs: options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
   retryableStatuses: options?.retryableStatuses ?? DEFAULT_RETRYABLE_STATUSES,
   sleep: options?.sleep ?? defaultSleep,
   now: options?.now ?? defaultNow,
@@ -100,30 +113,64 @@ const resolveRetryDelay = (args: RetryDelayArgs): number => {
 const isRetryableStatus = (status: number, retryableStatuses: ReadonlySet<number>): boolean =>
   retryableStatuses.has(status);
 
+const buildSignal = (callerSignal: AbortSignal | undefined, timeoutMs: number): AbortSignal => {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  if (callerSignal === undefined) {
+    return timeoutSignal;
+  }
+  return AbortSignal.any([callerSignal, timeoutSignal]);
+};
+
+const buildAttemptInit = (config: ResolvedRetryConfig): RequestInit => ({
+  ...config.init,
+  signal: buildSignal(config.init?.signal ?? undefined, config.timeoutMs),
+});
+
+const isAbortLikeError = (error: unknown): boolean =>
+  error instanceof Error && ABORT_ERROR_NAMES.has(error.name);
+
 const tryAttempt = async (url: string, config: ResolvedRetryConfig): Promise<Response> =>
-  fetch(url, config.init);
+  fetch(url, buildAttemptInit(config));
 
 const shouldRetry = (response: Response, attempt: number, config: ResolvedRetryConfig): boolean =>
   attempt < config.maxAttempts && isRetryableStatus(response.status, config.retryableStatuses);
 
-const runAttempt = async (
-  url: string,
-  attempt: number,
-  config: ResolvedRetryConfig,
-): Promise<Response> => {
-  const response = await tryAttempt(url, config);
-  if (!shouldRetry(response, attempt, config)) {
-    return response;
+const handleAbortAndRetry = async (args: AttemptArgs): Promise<Response> => {
+  if (args.attempt >= args.config.maxAttempts) {
+    throw new Error("fetchWithRetry exhausted attempts due to upstream timeout");
   }
+  const delay = computeBackoffDelay({
+    attempt: args.attempt,
+    baseDelayMs: args.config.baseDelayMs,
+    capDelayMs: args.config.capDelayMs,
+  });
+  await args.config.sleep(delay);
+  return runAttempt({ url: args.url, attempt: args.attempt + 1, config: args.config });
+};
+
+const handleStatusAndRetry = async (args: AttemptArgs, response: Response): Promise<Response> => {
   const delay = resolveRetryDelay({
     retryAfterHeader: response.headers.get("Retry-After"),
-    attempt,
-    baseDelayMs: config.baseDelayMs,
-    capDelayMs: config.capDelayMs,
-    now: config.now(),
+    attempt: args.attempt,
+    baseDelayMs: args.config.baseDelayMs,
+    capDelayMs: args.config.capDelayMs,
+    now: args.config.now(),
   });
-  await config.sleep(delay);
-  return runAttempt(url, attempt + 1, config);
+  await args.config.sleep(delay);
+  return runAttempt({ url: args.url, attempt: args.attempt + 1, config: args.config });
+};
+
+const runAttempt = async (args: AttemptArgs): Promise<Response> => {
+  const response = await tryAttempt(args.url, args.config).catch((error: unknown) => {
+    if (isAbortLikeError(error)) {
+      return handleAbortAndRetry(args);
+    }
+    throw error;
+  });
+  if (!shouldRetry(response, args.attempt, args.config)) {
+    return response;
+  }
+  return handleStatusAndRetry(args, response);
 };
 
 export const fetchWithRetry = async (
@@ -131,5 +178,5 @@ export const fetchWithRetry = async (
   options?: RetryFetchOptions,
 ): Promise<Response> => {
   const config = resolveConfig(options);
-  return runAttempt(url, 1, config);
+  return runAttempt({ url, attempt: 1, config });
 };
