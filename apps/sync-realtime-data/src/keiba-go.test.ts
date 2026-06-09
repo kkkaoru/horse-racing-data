@@ -1,6 +1,6 @@
 // run with: bun run test
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { fetchRacePage } from "./keiba-go";
+import { fetchRacePage, fetchTodayRaceListUrls, TOP_PAGE_RETRYABLE_STATUSES } from "./keiba-go";
 
 const SJIS_TOKYO_BYTES = [0x93, 0x8c, 0x8b, 0x9e];
 const TEST_URL = "https://www.keiba.go.jp/test";
@@ -171,4 +171,45 @@ it("fetchRacePage prefers Content-Type charset over meta tag", async () => {
   );
   const html = await fetchRacePage(TEST_URL);
   expect(html).toBe('<html><head><meta charset="utf-8"></head><body>東京</body></html>');
+});
+
+it("TOP_PAGE_RETRYABLE_STATUSES enumerates 404 and transient 4xx/5xx codes for the NAR top page", () => {
+  const sortNumeric = (left: number, right: number): number => left - right;
+  expect(Array.from(TOP_PAGE_RETRYABLE_STATUSES).toSorted(sortNumeric)).toStrictEqual([
+    404, 408, 425, 429, 502, 503, 504,
+  ]);
+});
+
+it("fetchTodayRaceListUrls retries on transient 404 and succeeds on second attempt", async () => {
+  const fetchMock = vi
+    .fn<typeof fetch>()
+    .mockResolvedValueOnce(new Response("nope", { status: 404 }))
+    .mockResolvedValueOnce(
+      new Response("<html><body></body></html>", {
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+        status: 200,
+      }),
+    );
+  vi.stubGlobal("fetch", fetchMock);
+  const result = await fetchTodayRaceListUrls("20260609");
+  expect(result).toStrictEqual([]);
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+});
+
+it("fetchTodayRaceListUrls bubbles up 404 after exhausting retry attempts", async () => {
+  const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response("nope", { status: 404 }));
+  vi.stubGlobal("fetch", fetchMock);
+  await expect(fetchTodayRaceListUrls("20260609")).rejects.toThrowError(
+    "Failed to fetch https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/TodayRaceInfoTop: 404",
+  );
+  expect(fetchMock).toHaveBeenCalledTimes(3);
+});
+
+it("fetchRacePage does not retry on 404 (sub-page 404 bubbles immediately)", async () => {
+  const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response("nope", { status: 404 }));
+  vi.stubGlobal("fetch", fetchMock);
+  await expect(fetchRacePage(TEST_URL)).rejects.toThrowError(
+    "Failed to fetch https://www.keiba.go.jp/test: 404",
+  );
+  expect(fetchMock).toHaveBeenCalledTimes(1);
 });

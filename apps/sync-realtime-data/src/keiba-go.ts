@@ -12,6 +12,16 @@ const HEAD_SNIFF_BYTES = 1024;
 const HTML_CHARSET_PATTERN = /charset=["']?([a-z0-9_-]+)/iu;
 const HTTP_CHARSET_PATTERN = /charset=([^;]+)/iu;
 const DEFAULT_CHARSET = "utf-8";
+// NAR top page occasionally returns transient 404 / 5xx even when the page exists;
+// retry these along with the standard transient statuses. Sub-page fetches must NOT
+// inherit this — 404 on a DebaTable / RaceList page is a legitimate "no race" signal.
+export const TOP_PAGE_RETRYABLE_STATUSES: ReadonlySet<number> = new Set([
+  404, 408, 425, 429, 502, 503, 504,
+]);
+
+interface FetchHtmlOptions {
+  retryableStatuses?: ReadonlySet<number>;
+}
 
 export const BABA_CODE_TO_LOCAL_KEIBAJO = NAR_BABA_CODE_TO_LOCAL_KEIBAJO;
 
@@ -119,7 +129,7 @@ const detectCharsetFromHeaders = (response: Response): string | null => {
   return normalizeCharset(match[1]);
 };
 
-const fetchHtml = async (url: string): Promise<string> => {
+const fetchHtml = async (url: string, options?: FetchHtmlOptions): Promise<string> => {
   const response = await fetchWithRetry(url, {
     init: {
       headers: {
@@ -127,6 +137,7 @@ const fetchHtml = async (url: string): Promise<string> => {
         "User-Agent": USER_AGENT,
       },
     },
+    retryableStatuses: options?.retryableStatuses,
   });
   if (!response.ok) {
     throw new Error(`Failed to fetch ${url}: ${response.status}`);
@@ -163,7 +174,7 @@ const extractBabaCode = (url: string): string | null => {
 };
 
 export const fetchTodayRaceListUrls = async (targetDate: string): Promise<RaceListUrl[]> => {
-  const html = await fetchHtml(TOP_PAGE_URL);
+  const html = await fetchHtml(TOP_PAGE_URL, { retryableStatuses: TOP_PAGE_RETRYABLE_STATUSES });
   const article = html.match(TODAY_RACE_ARTICLE_PATTERN)?.[1] ?? html;
   const target = `${targetDate.slice(0, 4)}/${targetDate.slice(4, 6)}/${targetDate.slice(6, 8)}`;
   const paths = dedupe(
