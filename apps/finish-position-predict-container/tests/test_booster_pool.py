@@ -48,6 +48,8 @@ ITER21_CHAIN: str = "iter21-jra-cb-chain-703-v8"
 ITER22_RESIDUAL: str = "iter22-jra-cb-residual-703-v8"
 NAR_BASELINE: str = "iter12-nar-xgb-hpo-v8"
 NAR_RESIDUAL_NEW: str = "iter30-nar-cb-residual-NEW-v8"
+NAR_LGB_RESIDUAL_C: str = "iter36-nar-lgb-lambdarank-residual-C-v8"
+CLASS_C: str = "C"
 MEMBER_FEATURE_NAMES: tuple[str, ...] = ("feature_a", "feature_b", "iter14_score")
 
 
@@ -121,6 +123,19 @@ class _FakeXgboostAdapter(ModuleType):
     load_xgboost_booster: Callable[[str], BoosterLike]
 
 
+class _FakeLightgbmAdapter(ModuleType):
+    """Typed stand-in for the ``lightgbm_adapter`` module.
+
+    Mirrors :class:`_FakeXgboostAdapter` but for the LightGBM loader used by the
+    iter 36 NAR class-C LambdaRank residual member. The lazy
+    ``from lightgbm_adapter import load_lightgbm_booster`` inside
+    ``load_booster_from_path`` resolves to this attribute when the instance is
+    registered in ``sys.modules``.
+    """
+
+    load_lightgbm_booster: Callable[[str], BoosterLike]
+
+
 def _install_fake_catboost_adapter(
     monkeypatch: pytest.MonkeyPatch,
     fake_load: Callable[[str], BoosterLike],
@@ -147,6 +162,28 @@ def _install_fake_xgboost_adapter(
     monkeypatch.setitem(sys.modules, "xgboost_adapter", fake_module)
 
 
+def _install_fake_lightgbm_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_load: Callable[[str], BoosterLike],
+) -> None:
+    """Inject a stub ``lightgbm_adapter`` module so ``load_booster_from_path``'s
+    lazy ``from lightgbm_adapter import load_lightgbm_booster`` resolves to the
+    test double without importing the native LightGBM runtime.
+    """
+    fake_module = _FakeLightgbmAdapter("lightgbm_adapter")
+    fake_module.load_lightgbm_booster = fake_load
+    monkeypatch.setitem(sys.modules, "lightgbm_adapter", fake_module)
+
+
+def _write_fake_model_txt(model_dir: Path) -> Path:
+    """Write a placeholder ``model.txt`` mirror so ``discover_member_models``
+    finds a LightGBM member's native-text artifact at its resolved file name."""
+    model_dir.mkdir(parents=True, exist_ok=True)
+    path = model_dir / "model.txt"
+    path.write_text("tree\n", encoding="utf-8")
+    return path
+
+
 # ---------------------------------------------------------------------------
 # PoolBooster dataclass
 
@@ -162,6 +199,15 @@ def test_pool_booster_dataclass_supports_xgboost() -> None:
     booster = _StubBooster("nar-baseline")
     record = PoolBooster(booster=booster, architecture="xgboost")
     assert record.architecture == "xgboost"
+
+
+def test_pool_booster_dataclass_supports_lightgbm() -> None:
+    # iter 36 NAR class-C residual is a LightGBM LambdaRank member — the pool
+    # record carries the ``lightgbm`` arch so the scorer routes it to the
+    # float64 (un-quantised) matrix path.
+    booster = _StubBooster("nar-lgb-residual")
+    record = PoolBooster(booster=booster, architecture="lightgbm")
+    assert record.architecture == "lightgbm"
 
 
 def test_pool_booster_feature_names_defaults_to_empty_tuple() -> None:
@@ -400,6 +446,43 @@ def test_discover_member_models_walks_nar_subclass_layout(tmp_path: Path) -> Non
     assert found == {NAR_RESIDUAL_NEW: expected_residual}
 
 
+def test_discover_member_models_resolves_lightgbm_model_txt(tmp_path: Path) -> None:
+    """A LightGBM member (``-lgb-`` / ``-lambdarank-`` token) serialises to
+    ``model.txt`` — the discoverer must resolve that file name (NOT the
+    ``model.json`` CatBoost / XGBoost members use) or the iter 36 NAR class-C
+    member would be silently dropped."""
+    base = tmp_path / NAR_CATEGORY / "per-class" / CLASS_C
+    expected_txt = _write_fake_model_txt(base / NAR_LGB_RESIDUAL_C)
+    # A ``model.json`` in the same dir must NOT be picked for the lgb member.
+    _write_fake_model_json(base / NAR_LGB_RESIDUAL_C)
+
+    found = discover_member_models(
+        tmp_path,
+        NAR_CATEGORY,
+        CLASS_C,
+        (NAR_LGB_RESIDUAL_C,),
+    )
+    assert found == {NAR_LGB_RESIDUAL_C: expected_txt}
+
+
+def test_discover_member_models_skips_lightgbm_member_when_only_json_present(
+    tmp_path: Path,
+) -> None:
+    """A LightGBM member dir holding only ``model.json`` (no ``model.txt``) is
+    skipped — the discoverer looks for ``model.txt`` for lgb members, so a
+    mis-serialised member never loads under the wrong loader."""
+    base = tmp_path / NAR_CATEGORY / "per-class" / CLASS_C
+    _write_fake_model_json(base / NAR_LGB_RESIDUAL_C)
+
+    found = discover_member_models(
+        tmp_path,
+        NAR_CATEGORY,
+        CLASS_C,
+        (NAR_LGB_RESIDUAL_C,),
+    )
+    assert found == {}
+
+
 # ---------------------------------------------------------------------------
 # discover_baseline_member_model
 
@@ -481,6 +564,87 @@ def test_load_booster_from_path_delegates_to_xgboost_adapter(
 
     assert result is stub_booster
     assert captured["model_path"] == str(path)
+
+
+def test_load_booster_from_path_lightgbm_raises_when_file_missing(
+    tmp_path: Path,
+) -> None:
+    """The file-missing check runs before any arch dispatch — the LightGBM
+    branch surfaces the same ``FileNotFoundError`` as the other branches."""
+    missing = tmp_path / "nope" / "model.txt"
+    with pytest.raises(FileNotFoundError, match="booster missing"):
+        load_booster_from_path(missing, "lightgbm")
+
+
+def test_load_booster_from_path_delegates_to_lightgbm_adapter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The LightGBM dispatch (iter 36 NAR class-C residual) loads the native
+    ``model.txt`` text dump through the lazily-imported ``lightgbm_adapter``."""
+    path = _write_fake_model_txt(tmp_path / NAR_LGB_RESIDUAL_C)
+    captured: dict[str, str] = {}
+    stub_booster = _StubBooster("nar-lgb-residual")
+
+    def fake_load(model_path: str) -> BoosterLike:
+        captured["model_path"] = model_path
+        return stub_booster
+
+    _install_fake_lightgbm_adapter(monkeypatch, fake_load)
+
+    result = load_booster_from_path(path, "lightgbm")
+
+    assert result is stub_booster
+    assert captured["model_path"] == str(path)
+
+
+def test_load_booster_from_path_lightgbm_real_round_trip(tmp_path: Path) -> None:
+    """End-to-end with the REAL lightgbm runtime: train a tiny LambdaRank
+    booster on toy data, save its ``model.txt`` text dump, load it through
+    ``load_booster_from_path`` (which lazily imports the real
+    ``lightgbm_adapter``), and confirm ``predict`` returns one float per row.
+
+    Pins the production load + score path for the LightGBM member without a
+    baked artifact — if the adapter signature or the native predict contract
+    ever drifts this fails loudly rather than at deploy time."""
+    lightgbm = pytest.importorskip("lightgbm")
+    numpy = pytest.importorskip("numpy")
+    feature_names = ["feature_a", "feature_b"]
+    # LightGBM's Dataset builder needs an ndarray (a plain list-of-lists is
+    # rejected); the scored matrix at predict time may still be a list-of-lists.
+    train_rows = numpy.array(
+        [
+            [0.1, 0.2],
+            [0.3, 0.1],
+            [0.5, 0.9],
+            [0.2, 0.4],
+            [0.8, 0.1],
+            [0.9, 0.6],
+        ],
+        dtype=numpy.float64,
+    )
+    labels = numpy.array([0, 1, 2, 0, 1, 2])
+    dataset = lightgbm.Dataset(
+        train_rows, label=labels, group=[3, 3], feature_name=feature_names
+    )
+    params = {
+        "objective": "lambdarank",
+        "num_leaves": 4,
+        "min_data_in_leaf": 1,
+        "min_data_in_bin": 1,
+        "verbose": -1,
+    }
+    booster = lightgbm.train(params, dataset, num_boost_round=3)
+    model_dir = tmp_path / NAR_LGB_RESIDUAL_C
+    model_dir.mkdir(parents=True, exist_ok=True)
+    model_path = model_dir / "model.txt"
+    booster.save_model(str(model_path))
+
+    loaded = load_booster_from_path(model_path, "lightgbm")
+    scores = loaded.predict([[0.1, 0.2], [0.3, 0.1], [0.5, 0.9]])
+
+    assert len(scores) == 3
+    assert all(isinstance(score, float) for score in scores)
 
 
 # ---------------------------------------------------------------------------
@@ -568,6 +732,42 @@ def test_build_pool_from_paths_mixed_arch_for_nar_ensemble(
     assert isinstance(residual_loaded, _StubBooster)
     assert baseline_loaded.tag == f"xgb:{baseline_path}"
     assert residual_loaded.tag == f"cb:{residual_path}"
+
+
+def test_build_pool_from_paths_loads_lightgbm_member(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An iter 36 NAR class-C ensemble member set spans XGBoost (iter 12
+    baseline) + LightGBM (iter 36 LambdaRank residual). The pool loads the
+    LightGBM member through its adapter and the record preserves the
+    ``lightgbm`` arch so the scorer builds a float64 matrix for it."""
+    baseline_path = _write_fake_model_json(tmp_path / NAR_BASELINE)
+    lgb_path = _write_fake_model_txt(tmp_path / NAR_LGB_RESIDUAL_C)
+
+    def fake_xgboost_load(model_path: str) -> BoosterLike:
+        return _StubBooster(f"xgb:{model_path}")
+
+    def fake_lightgbm_load(model_path: str) -> BoosterLike:
+        return _StubBooster(f"lgb:{model_path}")
+
+    _install_fake_xgboost_adapter(monkeypatch, fake_xgboost_load)
+    _install_fake_lightgbm_adapter(monkeypatch, fake_lightgbm_load)
+
+    pool = build_pool_from_paths(
+        {NAR_BASELINE: baseline_path, NAR_LGB_RESIDUAL_C: lgb_path},
+        {NAR_BASELINE: "xgboost", NAR_LGB_RESIDUAL_C: "lightgbm"},
+    )
+
+    baseline_record = pool.get_record(NAR_BASELINE)
+    lgb_record = pool.get_record(NAR_LGB_RESIDUAL_C)
+    assert baseline_record is not None
+    assert lgb_record is not None
+    assert baseline_record.architecture == "xgboost"
+    assert lgb_record.architecture == "lightgbm"
+    lgb_loaded = lgb_record.booster
+    assert isinstance(lgb_loaded, _StubBooster)
+    assert lgb_loaded.tag == f"lgb:{lgb_path}"
 
 
 def test_build_pool_from_paths_empty_input_returns_empty_pool() -> None:

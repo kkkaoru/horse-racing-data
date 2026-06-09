@@ -65,6 +65,21 @@ def test_build_feature_row_xgboost_float32_quantised() -> None:
     assert row == [expected]
 
 
+def test_build_feature_row_lightgbm_keeps_float64() -> None:
+    # LightGBM ranking is robust at float64 — ONLY XGBoost is float32-quantised.
+    # 0.1 is NOT representable in float32, so the un-quantised float64 value
+    # differs from the XGBoost-quantised one, pinning the architecture branch.
+    quantised = struct.unpack("f", struct.pack("f", 0.1))[0]
+    row = build_feature_row({"x": 0.1}, ["x"], "lightgbm")
+    assert row == [0.1]
+    assert row != [quantised]
+
+
+def test_build_feature_row_lightgbm_order_preserved() -> None:
+    row = build_feature_row({"a": 1.0, "b": 2.0, "c": 3.0}, ["c", "a", "b"], "lightgbm")
+    assert row == [3.0, 1.0, 2.0]
+
+
 def test_build_feature_matrix_two_entries() -> None:
     matrix = build_feature_matrix(
         [{"a": 1.0, "b": 2.0}, {"a": 3.0, "b": 4.0}], ["a", "b"], "catboost"

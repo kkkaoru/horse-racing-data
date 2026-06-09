@@ -3,11 +3,12 @@ name = "finish-position-predict-container"
 version = "0.0.0"
 requires-python = ">=3.12"
 # Runtime deps for the container image. The unit tests cover predict_lib only
-# (pure, I/O-free); duckdb / catboost / xgboost / psycopg2 are exercised at
-# deploy time per DEPLOY.md, not in CI.
+# (pure, I/O-free); duckdb / catboost / xgboost / lightgbm / psycopg2 are
+# exercised at deploy time per DEPLOY.md, not in CI.
 dependencies = [
   "catboost>=1.2.10",
   "duckdb>=1.1.0",
+  "lightgbm>=4.5.0",
   "pandas>=2.2.0",
   "psycopg[binary]>=3.2.0",
   "pyarrow>=17.0.0",

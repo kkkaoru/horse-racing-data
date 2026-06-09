@@ -20,9 +20,12 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# System libs DuckDB / psycopg2 need at runtime.
+# System libs the native runtimes need: libpq5 (DuckDB / psycopg2) and libgomp1
+# (the GNU OpenMP runtime LightGBM's wheel dynamically links via libgomp.so.1 —
+# CatBoost / XGBoost bundle their own OpenMP, but LightGBM does not, so without
+# libgomp1 the per-class LightGBM member fails to import at score time).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libpq5 ca-certificates \
+    && apt-get install -y --no-install-recommends libpq5 libgomp1 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python deps from this app's pyproject (locked at build time).
@@ -30,6 +33,7 @@ COPY apps/finish-position-predict-container/pyproject.toml ./pyproject.toml
 RUN uv pip install --system \
     "catboost>=1.2.10" \
     "duckdb>=1.1.0" \
+    "lightgbm>=4.5.0" \
     "pandas>=2.2.0" \
     "psycopg[binary]>=3.2.0" \
     "pyarrow>=17.0.0" \

@@ -40,8 +40,10 @@ def build_feature_row(
 ) -> list[float]:
     """Project one race entry onto ``feature_names`` order as a float row.
 
-    Missing features default to ``0.0`` (CatBoost/XGBoost treat absent numeric
-    inputs as 0 in this pipeline). XGBoost rows are float32-quantised.
+    Missing features default to ``0.0`` (CatBoost / XGBoost / LightGBM treat
+    absent numeric inputs as 0 in this pipeline). ONLY XGBoost rows are
+    float32-quantised for bit-faithful parity with the TS scorer; CatBoost and
+    LightGBM ranking are robust at float64, so both keep the un-quantised path.
     """
     raw = [float(_coerce(entry.get(name))) for name in feature_names]
     if architecture == "xgboost":

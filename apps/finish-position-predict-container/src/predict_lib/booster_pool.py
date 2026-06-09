@@ -1,8 +1,13 @@
 """Multi-booster loading + lookup for ensemble routing (Phase B-2C + Phase F).
 
-Manages a pool of CatBoost / XGBoost JSON boosters loaded at startup. Lookup by
-``model_version`` string at scoring time. Per-class ensemble routing uses this
-to get all member models in one shot.
+Manages a pool of CatBoost / XGBoost JSON + LightGBM text boosters loaded at
+startup. Lookup by ``model_version`` string at scoring time. Per-class ensemble
+routing uses this to get all member models in one shot.
+
+iter 36 (NAR class C, 2026-06-10) adds a LightGBM LambdaRank residual member to
+the per-class ensemble; the pool loads its native ``model.txt`` text dump
+through the lazily-imported ``lightgbm_adapter`` and scores it positionally on
+the member's own metadata feature order, exactly like the CatBoost members.
 
 For single-model routing (iter14 JRA / iter12 NAR fallback), the existing
 booster loading path (``catboost_adapter.load_catboost_booster`` /
@@ -27,7 +32,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .model_meta import Architecture
+from .model_meta import Architecture, member_model_file_name
 from .scorer import BoosterLike
 
 CATBOOST_MODEL_FORMAT: str = "json"
@@ -136,30 +141,40 @@ class BoosterPool:
 
 
 def load_booster_from_path(
-    model_json_path: Path, architecture: Architecture
+    model_path: Path, architecture: Architecture
 ) -> BoosterLike:
-    """Load a single CatBoost / XGBoost JSON model from ``model_json_path``.
+    """Load a single CatBoost / XGBoost / LightGBM model from ``model_path``.
 
     Dispatches by ``architecture``: ``"catboost"`` -> CatBoost JSON (used by
     JRA per-class + NAR iter 30 residual CatBoost members); ``"xgboost"`` ->
     XGBoost JSON (used by the NAR iter 12 baseline carried as a member of NAR
-    iter 30 ensembles). Raises ``FileNotFoundError`` when the path does not
-    exist so the caller can decide whether a missing member is fatal
-    (single-shot deploy) or fall-back-safe (ensemble with optional members).
-    The native runtimes are imported lazily so ``predict_lib`` stays free of
-    native imports at type-check time, mirroring the JRA-only Phase B-2C
-    behaviour.
+    iter 30/36 ensembles); ``"lightgbm"`` -> LightGBM native text dump
+    (``model.txt``, used by the NAR iter 36 LambdaRank residual member). The
+    LightGBM artifact path resolves to ``model.txt`` upstream in
+    :func:`discover_member_models` via
+    :func:`predict_lib.model_meta.member_model_file_name`, so ``model_path``
+    already points at the correct extension by the time the loader dispatches.
+
+    Raises ``FileNotFoundError`` when the path does not exist so the caller can
+    decide whether a missing member is fatal (single-shot deploy) or
+    fall-back-safe (ensemble with optional members). The native runtimes are
+    imported lazily so ``predict_lib`` stays free of native imports at
+    type-check time, mirroring the JRA-only Phase B-2C behaviour.
     """
-    if not model_json_path.exists():
-        message = f"booster missing: {model_json_path}"
+    if not model_path.exists():
+        message = f"booster missing: {model_path}"
         raise FileNotFoundError(message)
+    if architecture == "lightgbm":
+        from lightgbm_adapter import load_lightgbm_booster
+
+        return load_lightgbm_booster(str(model_path))
     if architecture == "xgboost":
         from xgboost_adapter import load_xgboost_booster
 
-        return load_xgboost_booster(str(model_json_path))
+        return load_xgboost_booster(str(model_path))
     from catboost_adapter import load_catboost_booster
 
-    return load_catboost_booster(str(model_json_path))
+    return load_catboost_booster(str(model_path))
 
 
 def discover_member_models(
@@ -170,15 +185,19 @@ def discover_member_models(
 ) -> dict[str, Path]:
     """Resolve on-disk paths for each member ``model_version``.
 
-    Searches ``{models_root}/{category}/per-class/{kyoso_joken_code}/{mv}/model.json``
-    for every entry in ``member_model_versions`` and returns the subset that
-    actually exists. Missing members are silently skipped — the caller decides
-    whether to abort or score the ensemble with the surviving members.
+    Searches ``{models_root}/{category}/per-class/{kyoso_joken_code}/{mv}/
+    {model.json|model.txt}`` for every entry in ``member_model_versions`` and
+    returns the subset that actually exists. The artifact file name is resolved
+    per member via :func:`predict_lib.model_meta.member_model_file_name`:
+    CatBoost / XGBoost members serialise to ``model.json`` while a LightGBM
+    member (``-lgb-`` / ``-lambdarank-`` token) serialises to ``model.txt``.
+    Missing members are silently skipped — the caller decides whether to abort
+    or score the ensemble with the surviving members.
     """
     base = models_root / category / "per-class" / kyoso_joken_code
     found: dict[str, Path] = {}
     for model_version in member_model_versions:
-        candidate = base / model_version / MODEL_JSON_FILE_NAME
+        candidate = base / model_version / member_model_file_name(model_version)
         if candidate.exists():
             found[model_version] = candidate
     return found

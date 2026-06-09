@@ -61,6 +61,9 @@ ITER22_RESIDUAL_703: str = "iter22-jra-cb-residual-703-v8"
 NAR_FALLBACK_MODEL_VERSION: str = "iter12-nar-xgb-hpo-v8"
 NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION: str = "iter30-nar-cb-ensemble-NEW-v8"
 NAR_RESIDUAL_NEW: str = "iter30-nar-cb-residual-NEW-v8"
+# iter 36 NAR class-C: ensemble label + the LightGBM LambdaRank residual member.
+NAR_CLASS_C_ENSEMBLE_MODEL_VERSION: str = "iter36-nar-lgb-ensemble-C-v8"
+NAR_LGB_RESIDUAL_C: str = "iter36-nar-lgb-lambdarank-residual-C-v8"
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +167,12 @@ def _xgb_record(booster: BoosterLike) -> PoolBooster:
     return PoolBooster(booster=booster, architecture="xgboost")
 
 
+def _lgb_record(booster: BoosterLike) -> PoolBooster:
+    """Wrap a LightGBM-flavoured stub in a ``PoolBooster`` record (iter 36 NAR
+    class-C LambdaRank residual member)."""
+    return PoolBooster(booster=booster, architecture="lightgbm")
+
+
 def _cb_record_with_names(
     booster: BoosterLike,
     feature_names: Sequence[str],
@@ -215,6 +224,30 @@ def _write_member_model_json(
     )
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("{}", encoding="utf-8")
+    return target
+
+
+def _write_member_model_txt(
+    models_dir: Path,
+    category: str,
+    kyoso_joken_code: str,
+    model_version: str,
+) -> Path:
+    """Write a LightGBM per-class member's ``model.txt`` mirror so
+    ``discover_member_models`` finds the native-text artifact (lgb members
+    serialise to ``model.txt`` rather than the CatBoost / XGBoost
+    ``model.json``)."""
+    target = (
+        models_dir
+        / "finish-position"
+        / category
+        / "per-class"
+        / kyoso_joken_code
+        / model_version
+        / "model.txt"
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("tree\n", encoding="utf-8")
     return target
 
 
@@ -323,6 +356,50 @@ def _canonical_nar_new_payload() -> dict[str, object]:
     }
 
 
+def _canonical_nar_c_payload() -> dict[str, object]:
+    """iter 36 NAR class-C manifest: XGBoost baseline + LightGBM LambdaRank
+    residual member."""
+    return {
+        "model_version": NAR_CLASS_C_ENSEMBLE_MODEL_VERSION,
+        "category": "nar",
+        "kyoso_joken_code": "C",
+        "ensemble_type": "rank_blend",
+        "members": [
+            {
+                "model_version": NAR_FALLBACK_MODEL_VERSION,
+                "weight": 0.55,
+                "is_baseline": True,
+            },
+            {
+                "model_version": NAR_LGB_RESIDUAL_C,
+                "weight": 0.45,
+                "is_baseline": False,
+            },
+        ],
+    }
+
+
+def _nar_c_ensemble() -> PerClassEnsemble:
+    return PerClassEnsemble(
+        model_version=NAR_CLASS_C_ENSEMBLE_MODEL_VERSION,
+        category="nar",
+        kyoso_joken_code="C",
+        ensemble_type="rank_blend",
+        members=(
+            EnsembleMember(
+                model_version=NAR_FALLBACK_MODEL_VERSION,
+                weight=0.55,
+                is_baseline=True,
+            ),
+            EnsembleMember(
+                model_version=NAR_LGB_RESIDUAL_C,
+                weight=0.45,
+                is_baseline=False,
+            ),
+        ),
+    )
+
+
 def _two_member_ensemble() -> PerClassEnsemble:
     return PerClassEnsemble(
         model_version=JRA_CLASS_703_ENSEMBLE_MODEL_VERSION,
@@ -383,6 +460,13 @@ NAR_RESIDUAL_METADATA_FEATURE_NAMES: list[str] = [
     "feature_b",
     "iter12_score",
 ]
+# The iter 36 LightGBM LambdaRank residual is trained with the injected NAR
+# baseline score (``iter12_score``) just like the iter 30 CatBoost residual.
+NAR_LGB_RESIDUAL_METADATA_FEATURE_NAMES: list[str] = [
+    "feature_a",
+    "feature_b",
+    "iter12_score",
+]
 JRA_SCORE_COL: str = "iter14_score"
 
 
@@ -391,15 +475,17 @@ JRA_SCORE_COL: str = "iter14_score"
 
 
 class _FakeAdapter(ModuleType):
-    """Typed stand-in for ``catboost_adapter`` / ``xgboost_adapter`` modules.
+    """Typed stand-in for ``catboost_adapter`` / ``xgboost_adapter`` /
+    ``lightgbm_adapter`` modules.
 
-    Both attributes are declared so basedpyright stays quiet on the assignment;
-    only one is actually set per test. The class attribute typing matches the
-    real loaders' signatures.
+    All three attributes are declared so basedpyright stays quiet on the
+    assignment; only one is actually set per test. The class attribute typing
+    matches the real loaders' signatures.
     """
 
     load_catboost_booster: object
     load_xgboost_booster: object
+    load_lightgbm_booster: object
 
 
 def _install_fake_catboost_adapter(
@@ -420,6 +506,17 @@ def _install_fake_xgboost_adapter(
     fake_module = _FakeAdapter("xgboost_adapter")
     fake_module.load_xgboost_booster = fake_load
     monkeypatch.setitem(sys.modules, "xgboost_adapter", fake_module)
+
+
+def _install_fake_lightgbm_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_load: object,
+) -> None:
+    """Inject a stub ``lightgbm_adapter`` module on ``sys.modules`` so the iter 36
+    NAR class-C LightGBM member loads through the test double."""
+    fake_module = _FakeAdapter("lightgbm_adapter")
+    fake_module.load_lightgbm_booster = fake_load
+    monkeypatch.setitem(sys.modules, "lightgbm_adapter", fake_module)
 
 
 # ---------------------------------------------------------------------------
@@ -735,6 +832,60 @@ def test_init_member_pool_nar_skips_baseline_when_absent(
     assert pool.has(NAR_FALLBACK_MODEL_VERSION) is False
 
 
+def test_init_member_pool_loads_nar_lightgbm_member(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """iter 36 NAR class-C blends an XGBoost baseline (iter 12) with a LightGBM
+    LambdaRank residual (iter 36). The walker must discover the residual's
+    ``model.txt`` (NOT ``model.json``), load it through the LightGBM adapter,
+    and record the ``lightgbm`` arch so the scorer routes it to the float64
+    matrix path. End-to-end pin of the iter 36 container half."""
+    _write_manifest(
+        tmp_path,
+        "nar",
+        "C",
+        NAR_CLASS_C_ENSEMBLE_MODEL_VERSION,
+        _canonical_nar_c_payload(),
+    )
+    _write_baseline_model_json(tmp_path, "nar", NAR_FALLBACK_MODEL_VERSION)
+    _write_baseline_metadata_json(
+        tmp_path,
+        "nar",
+        NAR_FALLBACK_MODEL_VERSION,
+        _feature_names_payload(NAR_BASELINE_METADATA_FEATURE_NAMES),
+    )
+    # The lgb residual serialises to model.txt (NOT model.json).
+    _write_member_model_txt(tmp_path, "nar", "C", NAR_LGB_RESIDUAL_C)
+    _write_member_metadata_json(
+        tmp_path,
+        "nar",
+        "C",
+        NAR_LGB_RESIDUAL_C,
+        _feature_names_payload(NAR_LGB_RESIDUAL_METADATA_FEATURE_NAMES),
+    )
+
+    def fake_xgboost(model_path: str) -> BoosterLike:
+        return _StubBooster(0.0)
+
+    def fake_lightgbm(model_path: str) -> BoosterLike:
+        return _StubBooster(0.5)
+
+    _install_fake_xgboost_adapter(monkeypatch, fake_xgboost)
+    _install_fake_lightgbm_adapter(monkeypatch, fake_lightgbm)
+
+    pool = init_member_pool(tmp_path, "nar")
+
+    baseline_record = pool.get_record(NAR_FALLBACK_MODEL_VERSION)
+    lgb_record = pool.get_record(NAR_LGB_RESIDUAL_C)
+    assert baseline_record is not None
+    assert lgb_record is not None
+    assert baseline_record.architecture == "xgboost"
+    assert lgb_record.architecture == "lightgbm"
+    # The lgb member's metadata-derived feature order is stored on its record.
+    assert lgb_record.feature_names == tuple(NAR_LGB_RESIDUAL_METADATA_FEATURE_NAMES)
+
+
 # ---------------------------------------------------------------------------
 # EnsembleRouteOutcome dataclass
 
@@ -860,6 +1011,68 @@ def test_score_race_with_resolution_nar_mixed_arch_ensemble_happy_path() -> None
     # Within-race rank-normalisation collapses to the same shape per member, so
     # the weighted blend of identical normalised vectors is that vector.
     assert outcome.scores == [0.0, 0.5, 1.0]
+
+
+def test_score_race_with_resolution_nar_lightgbm_ensemble_happy_path() -> None:
+    """iter 36 NAR class-C blends an XGBoost baseline + LightGBM LambdaRank
+    residual. The scorer builds a float32 matrix for the XGBoost baseline and a
+    float64 matrix for the LightGBM member, scores both, and blends them to a
+    length-aligned vector under the iter 36 ensemble label. Pins the iter 36
+    mixed-arch contract end-to-end through the public scoring entry point."""
+    ensemble = _nar_c_ensemble()
+    pool = BoosterPool(
+        boosters={
+            NAR_FALLBACK_MODEL_VERSION: _xgb_record(_StubBooster(0.0)),
+            NAR_LGB_RESIDUAL_C: _lgb_record(_StubBooster(1.0)),
+        }
+    )
+    fallback = _StubBooster(99.0)
+
+    outcome = score_race_with_resolution(
+        resolution=ensemble,
+        race_id="nar:2026:0610:30:11",
+        entries=_three_horse_entries(),
+        feature_names=FEATURE_NAMES,
+        architecture="xgboost",  # NAR category-global
+        pool=pool,
+        fallback_booster=fallback,
+        fallback_model_version=NAR_FALLBACK_MODEL_VERSION,
+    )
+
+    assert outcome.model_version == NAR_CLASS_C_ENSEMBLE_MODEL_VERSION
+    assert outcome.fallback_reason is None
+    assert outcome.scores == [0.0, 0.5, 1.0]
+
+
+def test_score_race_with_resolution_falls_back_when_lightgbm_member_raises() -> None:
+    """If the iter 36 LightGBM residual's ``predict`` raises at runtime, the
+    whole-ensemble fallback posture still holds: the race scores with the
+    category-global single-model booster under the NAR fallback label and a
+    ``score-error:RuntimeError`` reason. Confirms adding the lgb arm did NOT
+    break the existing fallback-to-iter12 safety net."""
+    ensemble = _nar_c_ensemble()
+    pool = BoosterPool(
+        boosters={
+            NAR_FALLBACK_MODEL_VERSION: _xgb_record(_StubBooster(0.0)),
+            NAR_LGB_RESIDUAL_C: _lgb_record(_RaisingBooster()),
+        }
+    )
+    fallback = _StubBooster(0.4)
+
+    outcome = score_race_with_resolution(
+        resolution=ensemble,
+        race_id="nar:2026:0610:30:11",
+        entries=_three_horse_entries(),
+        feature_names=FEATURE_NAMES,
+        architecture="xgboost",
+        pool=pool,
+        fallback_booster=fallback,
+        fallback_model_version=NAR_FALLBACK_MODEL_VERSION,
+    )
+
+    assert outcome.model_version == NAR_FALLBACK_MODEL_VERSION
+    assert outcome.fallback_reason == "score-error:RuntimeError"
+    assert outcome.scores == [0.4, 1.4, 2.4]
 
 
 # ---------------------------------------------------------------------------
@@ -1122,6 +1335,27 @@ def test_resolve_member_architecture_returns_catboost_for_cb_token() -> None:
         == "catboost"
     )
     assert resolve_member_architecture(NAR_RESIDUAL_NEW, "nar") == "catboost"
+
+
+def test_resolve_member_architecture_returns_lightgbm_for_lgb_token() -> None:
+    """The iter 36 NAR class-C residual carries the ``-lgb-`` (and
+    ``-lambdarank-``) token, so the dispatcher resolves it to LightGBM. The
+    LightGBM check runs FIRST so the member never falls through to the
+    ``-cb-`` / ``-xgb-`` arms."""
+    from predict_lib.ensemble_routing import resolve_member_architecture
+
+    assert resolve_member_architecture(NAR_LGB_RESIDUAL_C, "nar") == "lightgbm"
+
+
+def test_resolve_member_architecture_returns_lightgbm_for_lambdarank_token() -> None:
+    """A member named only with the ``-lambdarank-`` objective token (no
+    ``-lgb-`` arch token) still resolves to LightGBM."""
+    from predict_lib.ensemble_routing import resolve_member_architecture
+
+    assert (
+        resolve_member_architecture("iter36-nar-lambdarank-residual-C-v8", "nar")
+        == "lightgbm"
+    )
 
 
 def test_resolve_member_architecture_falls_back_to_category_default() -> None:

@@ -52,6 +52,7 @@ from .model_meta import (
     Architecture,
     Category,
     architecture_for,
+    is_lightgbm_model_version,
     model_version_for,
 )
 from .per_class import (
@@ -130,10 +131,16 @@ def resolve_member_architecture(
     XGBoost) is identified by its model_version string; per-class residuals
     follow the category-default arch as encoded in their model_version naming
     convention. NAR ensembles today blend an XGBoost baseline (iter12-nar-xgb-
-    hpo-v8) with CatBoost residuals (iter30-nar-cb-*), so the discriminator is
-    the ``-xgb-`` / ``-cb-`` substring in the model_version. JRA ensembles are
-    homogeneous CatBoost — no per-member dispatch needed there.
+    hpo-v8) with CatBoost residuals (iter30-nar-cb-*) AND, from iter 36, a
+    LightGBM LambdaRank residual (iter36-nar-lgb-lambdarank-residual-C-v8), so
+    the discriminator is the ``-lgb-`` / ``-lambdarank-`` / ``-xgb-`` / ``-cb-``
+    substring in the model_version. The LightGBM token is checked FIRST so a
+    member carrying both ``-lgb-`` and a stray ``-cb-`` lookalike still resolves
+    to LightGBM. JRA ensembles are homogeneous CatBoost — no per-member dispatch
+    needed there.
     """
+    if is_lightgbm_model_version(member_mv):
+        return "lightgbm"
     if "-xgb-" in member_mv:
         return "xgboost"
     if "-cb-" in member_mv:

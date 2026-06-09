@@ -97,6 +97,13 @@ class PerClassEnsemble:
 # (NEW / MUKATSU / C / A / OP / other) activated with iter 30 ensembles on
 # iter 12 NAR XGBoost baseline + iter 30 CatBoost residuals. ``B`` stays on
 # the iter 12 fallback (no ensemble registered).
+#
+# iter 36 (NAR class C, 2026-06-10) flips C from the iter 30 CatBoost ensemble
+# to ``iter36-nar-lgb-ensemble-C-v8`` — a blend that adds a LightGBM LambdaRank
+# residual member (``iter36-nar-lgb-lambdarank-residual-C-v8``) alongside the
+# iter 12 XGBoost baseline. The new member's ``model.txt`` text dump is loaded
+# through ``lightgbm_adapter`` and scored positionally on its own metadata
+# feature order. Other NAR classes are unchanged.
 PER_CLASS_MODEL_VERSIONS: Final[dict[tuple[Category, str], str]] = {
     ("jra", "005"): "iter26-jra-cb-ensemble-005-v8",
     ("jra", "010"): "iter25-jra-cb-ensemble-010-v8",
@@ -105,7 +112,7 @@ PER_CLASS_MODEL_VERSIONS: Final[dict[tuple[Category, str], str]] = {
     ("jra", "other"): "iter25-jra-cb-ensemble-other-v8",
     ("nar", "NEW"): "iter30-nar-cb-ensemble-NEW-v8",
     ("nar", "MUKATSU"): "iter30-nar-cb-ensemble-MUKATSU-v8",
-    ("nar", "C"): "iter30-nar-cb-ensemble-C-v8",
+    ("nar", "C"): "iter36-nar-lgb-ensemble-C-v8",
     ("nar", "A"): "iter30-nar-cb-ensemble-A-v8",
     ("nar", "OP"): "iter30-nar-cb-ensemble-OP-v8",
     ("nar", "other"): "iter30-nar-cb-ensemble-other-v8",

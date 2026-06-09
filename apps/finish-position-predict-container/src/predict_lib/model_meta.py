@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Final, Literal, get_args
 
 Category = Literal["jra", "nar", "ban-ei"]
-Architecture = Literal["catboost", "xgboost"]
+Architecture = Literal["catboost", "xgboost", "lightgbm"]
 
 CATEGORIES: Final[tuple[Category, ...]] = get_args(Category)
 
@@ -43,7 +43,46 @@ FEATURE_COUNT_BY_CATEGORY: Final[dict[Category, int]] = {
 
 R2_KEY_PREFIX: Final[str] = "finish-position"
 MODEL_FILE_NAME: Final[str] = "model.json"
+# LightGBM boosters are serialised with the native text dump
+# (``Booster.save_model`` -> ``model.txt``) rather than the CatBoost / XGBoost
+# JSON format, so a per-class LightGBM member's artifact file is named
+# ``model.txt`` and discovered through :func:`member_model_file_name`.
+LGB_MODEL_FILE_NAME: Final[str] = "model.txt"
 METADATA_FILE_NAME: Final[str] = "metadata.json"
+
+# Substrings that mark a per-class ensemble MEMBER ``model_version`` as a
+# LightGBM booster (e.g. ``iter36-nar-lgb-lambdarank-residual-C-v8``). Detection
+# is by substring so a member trained under either the ``-lgb-`` arch token or
+# the ``-lambdarank-`` objective token resolves to the LightGBM architecture +
+# the ``model.txt`` artifact file. The ENSEMBLE label
+# (``iter36-nar-lgb-ensemble-C-v8``) never flows through architecture / file
+# resolution — it is the registry value parsed by ``per_class``, not a member —
+# so its embedded ``-lgb-`` token is never mis-read as a member arch.
+LGB_MODEL_VERSION_TOKENS: Final[tuple[str, ...]] = ("-lgb-", "-lambdarank-")
+
+
+def is_lightgbm_model_version(model_version: str) -> bool:
+    """Return True when a member ``model_version`` names a LightGBM booster.
+
+    Matches on the ``-lgb-`` / ``-lambdarank-`` tokens (see
+    ``LGB_MODEL_VERSION_TOKENS``). Used by both the architecture dispatcher and
+    the on-disk artifact-file resolver so the two never disagree on whether a
+    member is LightGBM.
+    """
+    return any(token in model_version for token in LGB_MODEL_VERSION_TOKENS)
+
+
+def member_model_file_name(model_version: str) -> str:
+    """Return the on-disk model artifact file name for a per-class member.
+
+    LightGBM members serialise to ``model.txt`` (native text dump); CatBoost /
+    XGBoost members serialise to ``model.json``. Pure string dispatch on the
+    member ``model_version`` token so the discoverer can resolve the right
+    sibling file before the booster is loaded.
+    """
+    if is_lightgbm_model_version(model_version):
+        return LGB_MODEL_FILE_NAME
+    return MODEL_FILE_NAME
 
 
 def is_category(value: str) -> bool:
