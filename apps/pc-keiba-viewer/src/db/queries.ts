@@ -2956,7 +2956,7 @@ export const getFinishPositionLambdarankPredictions = cache(
             selected_model as (
               select model_version
               from (
-                select p.model_version, 0 as priority, max(p.predicted_at) as recency
+                select p.model_version, 0 as priority, max(p.prediction_generated_at) as recency
                 from race_finish_position_model_predictions p
                 join active on p.model_version =
                   active.model_version || '-rs-overlay-' || ${race.kaisaiNen} || ${race.kaisaiTsukihi}
@@ -2980,7 +2980,7 @@ export const getFinishPositionLambdarankPredictions = cache(
                     and p2.race_bango = ${race.raceBango}
                 )
                 union all
-                select p3.model_version, 2 as priority, max(p3.predicted_at) as recency
+                select p3.model_version, 2 as priority, max(p3.prediction_generated_at) as recency
                 from race_finish_position_model_predictions p3
                 where p3.source = ${race.source}
                   and p3.kaisai_nen = ${race.kaisaiNen}

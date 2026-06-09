@@ -775,6 +775,17 @@ it("getFinishPositionLambdarankPredictions emits priority 2 fallback over any ra
   expect(queryText).toMatch(/order by priority, recency desc nulls last/u);
 });
 
+it("getFinishPositionLambdarankPredictions references prediction_generated_at on race_finish_position_model_predictions", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+  await getFinishPositionLambdarankPredictions(PERCLASS_703_RACE, PERCLASS_703_RUNNERS);
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(queryText).toMatch(/max\(p\.prediction_generated_at\) as recency/u);
+  expect(queryText).toMatch(/max\(p3\.prediction_generated_at\) as recency/u);
+  expect(queryText).not.toMatch(/p\.predicted_at/u);
+  expect(queryText).not.toMatch(/p3\.predicted_at/u);
+});
+
 it("getFinishPositionLambdarankPredictions returns predictions from priority 2 fallback model_version", async () => {
   executeMock.mockResolvedValue({
     rows: [
