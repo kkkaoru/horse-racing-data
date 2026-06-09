@@ -1,15 +1,22 @@
-// Run with bun. Queue handler skeleton for running-style prediction.
-// Real model loading + flat LightGBM inference will be ported in a later Phase;
-// this stub demonstrates the persist path and DailyRaceEntryRow → row mapping.
+// Run with bun. Queue handler stub for running-style prediction.
+// Real model loading + flat LightGBM inference will be ported in a later
+// Phase. Until then this handler MUST NOT write predicted rows: the previous
+// skeleton hard-coded predicted_label="senkou" for every horse, and the
+// viewer was reading those rows in preference to the real inference output
+// from sync-realtime-data's REALTIME_DB. The viewer side now reads REALTIME_DB
+// first, and this writer is disabled so features-db stops accumulating
+// all-senkou stub rows. Existing stub rows are NOT deleted
+// (feedback_no_data_delete).
 
 import { decodeRaceFeaturesParquet } from "../features/parquet";
 import { buildRaceParquetR2Key } from "../features/r2-key";
-import { upsertRunningStyle, upsertRunningStyleInferenceState } from "../storage";
-import type { DailyRaceEntryRow, Env, Job, RaceJobKey, RunningStyleRow } from "../types";
+import { upsertRunningStyleInferenceState } from "../storage";
+import type { Env, Job, RaceJobKey } from "../types";
 
 const RUNNING_STYLE_MODEL_VERSION = "skeleton-v0";
-const DEFAULT_PROBABILITY = 0.25;
-const DEFAULT_LABEL = "senkou";
+const SKELETON_DISABLED_STATUS = "skeleton-disabled";
+const SKELETON_DISABLED_MESSAGE =
+  "skeleton inference disabled to prevent all-senkou stub leak (real LightGBM inference not yet ported)";
 
 // Auto-recovery helper: enqueue a build-race-features job so the next
 // inference attempt finds a parquet in R2. Shape mirrors toBuildJobMessage
@@ -25,38 +32,6 @@ const enqueueBuildRaceFeaturesJob = async (job: RaceJobKey, env: Env): Promise<v
     type: "build-race-features",
   };
   await env.REALTIME_FEATURES_JOBS.send(message);
-};
-
-// Use loose `==` against null so both `null` AND runtime `undefined` are
-// treated as "no value". TypeScript types the parquet row fields as
-// `T | null`, but hyparquet can leak `undefined` for optional columns,
-// which D1's prepared-statement bind rejects with D1_TYPE_ERROR.
-const toRunningStyleRow = (
-  row: DailyRaceEntryRow,
-  job: RaceJobKey,
-  predictedAt: string,
-): RunningStyleRow | null => {
-  if (row.umaban == null) {
-    return null;
-  }
-  if (row.ketto_toroku_bango == null) {
-    return null;
-  }
-  return {
-    raceKey: job.raceKey,
-    horseNumber: row.umaban,
-    kettoTorokuBango: row.ketto_toroku_bango,
-    bamei: row.bamei ?? null,
-    category: job.source,
-    kaisaiNen: job.kaisaiNen,
-    modelVersion: RUNNING_STYLE_MODEL_VERSION,
-    pNige: DEFAULT_PROBABILITY,
-    pSenkou: DEFAULT_PROBABILITY,
-    pSashi: DEFAULT_PROBABILITY,
-    pOikomi: DEFAULT_PROBABILITY,
-    predictedLabel: DEFAULT_LABEL,
-    predictedAt,
-  };
 };
 
 export interface RunningStylePredictionResult {
@@ -92,14 +67,14 @@ export const handleRunningStylePredictionJob = async (
     await enqueueBuildRaceFeaturesJob(job, env);
     return { raceKey: job.raceKey, writtenCount: 0 };
   }
+  // The parquet is present, but the real LightGBM inference path is not
+  // ported yet. We deliberately skip `upsertRunningStyle` so that
+  // features-db.race_running_styles stops receiving all-senkou stub rows.
+  // The inference_state row is still written with a dedicated
+  // "skeleton-disabled" status so the orchestration layer can observe that
+  // the job ran (and did not silently no-op).
   const bytes = new Uint8Array(await object.arrayBuffer());
   const rows = await decodeRaceFeaturesParquet(bytes);
-  const styleRows = rows
-    .map((row) => toRunningStyleRow(row, job, job.predictedAt))
-    .filter((row): row is RunningStyleRow => row !== null);
-  for (const row of styleRows) {
-    await upsertRunningStyle(env.REALTIME_FEATURES_DB, row);
-  }
   await upsertRunningStyleInferenceState(env.REALTIME_FEATURES_DB, {
     raceKey: job.raceKey,
     source: job.source,
@@ -107,14 +82,14 @@ export const handleRunningStylePredictionJob = async (
     kaisaiTsukihi: job.kaisaiTsukihi,
     keibajoCode: job.keibajoCode,
     raceBango: job.raceBango,
-    status: "completed",
+    status: SKELETON_DISABLED_STATUS,
     featuresR2Key: r2Key,
     modelVersion: RUNNING_STYLE_MODEL_VERSION,
     expectedHorseCount: rows.length,
-    writtenHorseCount: styleRows.length,
+    writtenHorseCount: 0,
     attemptedAt: job.predictedAt,
     completedAt: new Date().toISOString(),
-    errorMessage: null,
+    errorMessage: SKELETON_DISABLED_MESSAGE,
   });
-  return { raceKey: job.raceKey, writtenCount: styleRows.length };
+  return { raceKey: job.raceKey, writtenCount: 0 };
 };

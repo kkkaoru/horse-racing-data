@@ -72,10 +72,38 @@ const chunkArray = <T>(items: ReadonlyArray<T>, size: number): T[][] => {
   );
 };
 
+// REALTIME_DB (sync-realtime-data worker) stores `race_running_styles.race_key`
+// in 4-colon form `${source}:${YYYYMMDD}:${keibajo}:${raceBango}` because the
+// real running-style inference writer concatenates kaisaiNen + kaisaiTsukihi.
+// The viewer side (race-trend-aggregate) emits 5-colon
+// `${source}:${YYYY}:${MMDD}:${keibajo}:${raceBango}` via starterRaceKey().
+// These two helpers normalize between the two so the query binds the on-disk
+// format while the returned cache rows still match the viewer's lookup key.
+const FIVE_COLON_PARTS = 5;
+const FOUR_COLON_PARTS = 4;
+const YYYY_LENGTH = 4;
+const YYYYMMDD_LENGTH = 8;
+
+const toRealtimeDbRaceKey = (key: string): string => {
+  const parts = key.split(":");
+  if (parts.length !== FIVE_COLON_PARTS) return key;
+  return `${parts[0]}:${parts[1]}${parts[2]}:${parts[3]}:${parts[4]}`;
+};
+
+const toFiveColonRaceKey = (key: string): string => {
+  const parts = key.split(":");
+  if (parts.length !== FOUR_COLON_PARTS) return key;
+  const yyyymmdd = parts[1] ?? "";
+  if (yyyymmdd.length !== YYYYMMDD_LENGTH) return key;
+  const yyyy = yyyymmdd.slice(0, YYYY_LENGTH);
+  const mmdd = yyyymmdd.slice(YYYY_LENGTH, YYYYMMDD_LENGTH);
+  return `${parts[0]}:${yyyy}:${mmdd}:${parts[2]}:${parts[3]}`;
+};
+
 const toRunningStyleCache = (raw: RawRunningStyleD1Row): RaceTrendRunningStyleCache => ({
   horseNumber: String(raw.horse_number),
   predictedLabel: raw.predicted_label,
-  raceKey: raw.race_key,
+  raceKey: toFiveColonRaceKey(raw.race_key),
 });
 
 const buildRunningStyleSelectSql = (placeholders: string): string =>
@@ -160,13 +188,15 @@ const writeRunningStylesToKv = async (
   }
 };
 
-// Prefer REALTIME_FEATURES_DB (new D1, post Phase E). Fall back to REALTIME_DB
-// only when the new binding is missing — eg preview deploys that have not yet
-// picked up the features worker binding. The new D1 has the same
-// `race_running_styles` schema as the legacy D1 because the features worker
-// migration was a clean schema copy.
+// Prefer REALTIME_DB (sync-realtime-data worker) because that DB carries the
+// real running-style inference output. REALTIME_FEATURES_DB previously held a
+// SKELETON stub that hard-coded every prediction to "senkou"; reading from the
+// stub leaked stale all-senkou data into the viewer. The stub writer has been
+// disabled separately, but we also invert the priority here so even legacy
+// stub rows (left in place — feedback_no_data_delete) cannot win over the real
+// 4-colon race_key entries in REALTIME_DB.
 const pickRunningStylesDb = (env: CloudflareEnv | null): PcKeibaD1Database | null =>
-  env?.REALTIME_FEATURES_DB ?? env?.REALTIME_DB ?? null;
+  env?.REALTIME_DB ?? env?.REALTIME_FEATURES_DB ?? null;
 
 interface RunWorkerArgs {
   chunks: ReadonlyArray<ReadonlyArray<string>>;
@@ -198,9 +228,10 @@ const queryRunningStylesFromDb = async (
     chunk: ReadonlyArray<string>,
   ): Promise<RaceTrendRunningStyleCache[]> => {
     const placeholders = chunk.map(() => "?").join(",");
+    const bindKeys = chunk.map(toRealtimeDbRaceKey);
     const result = await db
       .prepare(buildRunningStyleSelectSql(placeholders))
-      .bind(...chunk)
+      .bind(...bindKeys)
       .all();
     return result.results.filter(isRawRunningStyleD1Row).map(toRunningStyleCache);
   };
