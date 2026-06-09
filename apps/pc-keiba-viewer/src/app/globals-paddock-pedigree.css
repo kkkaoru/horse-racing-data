@@ -10,11 +10,79 @@
   word-break: break-word;
 }
 
-/* Mobile: stack 父 / 父父 / 母父 vertically inside the editable card so
-   long names get the full row width instead of competing on a single line.
-   The parent .paddock-horse-race-facts is a 3-column grid on mobile, so
-   each bloodline fact spans every column to occupy its own row. */
+/*
+ * Paddock pedigree row layout (editable cards on /paddock detail page).
+ *
+ * The 父 / 父父 / 母父 cells live inside `.paddock-horse-race-facts` but
+ * are wrapped in `.paddock-horse-bloodline-row` so they participate in a
+ * flex layout dedicated to the bloodline values. The cell widths are
+ * derived from the content length (`flex: 0 0 auto` + `width: max-content`)
+ * so each sire / sire-sire / dam-sire name takes only the space it needs.
+ *
+ * Desktop (>720px): single-line, no truncation. Names render in full and
+ * the row can horizontally overflow only its own track because the parent
+ * grid keeps a `grid-column: 1 / -1` span for the bloodline row.
+ *
+ * Mobile (≤720px): wrap allowed so long names don't push the card off-
+ * screen. The `.paddock-horse-bloodline-value` desktop nowrap is relaxed
+ * to keep the existing reading-on-narrow-viewport behavior.
+ */
+
+.paddock-horse-race-facts > .paddock-horse-bloodline-row {
+  align-items: start;
+  column-gap: var(--space-12px-9);
+  display: flex;
+  flex-wrap: nowrap;
+  grid-column: var(--number-1-7) / var(--number-1-9);
+  grid-template-rows: none;
+  justify-content: start;
+  min-height: var(--space-36px-81);
+  row-gap: var(--space-6px-33);
+  width: var(--space-100pct-12);
+}
+
+.paddock-horse-race-facts > .paddock-horse-bloodline-row > .paddock-horse-bloodline-fact {
+  align-content: start;
+  align-items: start;
+  display: grid;
+  flex: var(--number-0-2) var(--number-0-2) auto;
+  gap: var(--space-5px-17);
+  grid-template-rows: var(--space-10px-27) var(--space-20px-52);
+  justify-items: start;
+  min-height: var(--space-36px-81);
+  min-width: var(--number-0-2);
+  text-align: left;
+  width: max-content;
+}
+
+/* Desktop: keep sire / sire-sire / dam-sire on a single line and render
+   the full name (no ellipsis, no max-width cap). The bloodline cell width
+   is driven by the content via `width: max-content` on the wrapper. */
+.paddock-horse-race-facts > .paddock-horse-bloodline-row .paddock-horse-bloodline-value {
+  display: block;
+  max-width: none;
+  min-width: var(--number-0-2);
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+  width: max-content;
+}
+
+/* Mobile (≤720px): stack 父 / 父父 / 母父 vertically inside the editable card.
+   Both the wrapper and the original .paddock-horse-bloodline-fact rule
+   coexist — the wrapper allows wrap, individual facts column-flow. */
 @media (max-width: 720px) {
+  .paddock-horse-race-facts > .paddock-horse-bloodline-row {
+    flex-wrap: wrap;
+  }
+
+  .paddock-horse-race-facts > .paddock-horse-bloodline-row .paddock-horse-bloodline-value {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    width: auto;
+  }
+
   .paddock-horse-bloodline-fact {
     flex-direction: column;
     gap: var(--space-4px-18);
