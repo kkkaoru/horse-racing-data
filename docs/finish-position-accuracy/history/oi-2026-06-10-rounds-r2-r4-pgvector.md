@@ -156,6 +156,8 @@ The Ōi-only gate is **statistically underpowered**: a saturated ensemble over t
 
 The 005 pgvector near-miss is the template: directional 4/4 positivity at n=3147 is not yet a real effect; the only honest way to adopt a new member is to make its effect big enough (new signal) or its holdout big enough (full-NAR / multi-day) that the bootstrap LB95 clears zero.
 
+**Follow-on:** [`oi-2026-06-10-r5-nar-similarity-member.md`](oi-2026-06-10-r5-nar-similarity-member.md) (iter 34) built exactly recommendation (1) — a NAR kNN similarity ("pgvector-style") member judged on the FULL powered NAR holdout. The probe PROCEEDED (the signal is genuinely orthogonal: within-race Spearman vs production ~0.82–0.88, real winner signal, null collapses), but the judge REJECTED all 7 NAR classes (`adopted_classes=[]`): the optimizer assigned the vector member ≈0 weight everywhere, proving the orthogonal variance is target-noise. That closes the 7-lever saturation conclusion — the bottleneck was never holdout power, it is a saturated feature set.
+
 ## Quality Gate Results
 
 - tsc: n/a — no code change adopted this round
