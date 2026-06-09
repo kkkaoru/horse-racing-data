@@ -4,8 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 POSTGRES_APP_DIR="$ROOT_DIR/apps/local-postgresql"
 VIEWER_APP_DIR="$ROOT_DIR/apps/pc-keiba-viewer"
+REPLICA_ENV_FILE="$POSTGRES_APP_DIR/.env.replica"
 VIEWER_PORT=443
 LIVE_RELAY_PORT="${PC_KEIBA_PRODUCTION_LIVE_RELAY_PORT:-3010}"
+VIEWER_DATABASE_TARGET=""
 
 load_viewer_env() {
   if [[ -f "$VIEWER_APP_DIR/.env.local" ]]; then
@@ -14,6 +16,41 @@ load_viewer_env() {
     source "$VIEWER_APP_DIR/.env.local"
     set +a
   fi
+}
+
+load_replica_env() {
+  if [[ -f "$REPLICA_ENV_FILE" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$REPLICA_ENV_FILE"
+    set +a
+  fi
+}
+
+resolve_viewer_database_target() {
+  if [[ -n "${PC_KEIBA_DATABASE_TARGET:-}" ]]; then
+    VIEWER_DATABASE_TARGET="$PC_KEIBA_DATABASE_TARGET"
+  elif [[ -n "${DATABASE_URL_NEON:-}" || -n "${NEON_DATABASE_URL:-}" ]]; then
+    VIEWER_DATABASE_TARGET="neon"
+  else
+    VIEWER_DATABASE_TARGET="local"
+  fi
+
+  if [[ "$VIEWER_DATABASE_TARGET" == "neon" ]]; then
+    if [[ -z "${DATABASE_URL_NEON:-}" && -n "${NEON_DATABASE_URL:-}" ]]; then
+      export DATABASE_URL_NEON="$NEON_DATABASE_URL"
+    fi
+    if [[ -z "${DATABASE_URL_NEON:-}" ]]; then
+      echo "DATABASE_URL_NEON or NEON_DATABASE_URL is required for PC_KEIBA_DATABASE_TARGET=neon." >&2
+      exit 1
+    fi
+  fi
+}
+
+should_start_postgres() {
+  [[ "$VIEWER_DATABASE_TARGET" == "local" ]] ||
+    [[ "$VIEWER_DATABASE_TARGET" == "cloudflare" &&
+      "${PC_KEIBA_ALLOW_CLOUDFLARE_DB_IN_NEXT_DEV:-}" != "1" ]]
 }
 
 is_postgres_running() {
@@ -51,10 +88,18 @@ start_live_relay_in_background() {
   bun --cwd "$VIEWER_APP_DIR" dev:production-live-relay >/dev/null 2>&1 &
 }
 
-if is_postgres_running; then
-  echo "local-postgresql is already running. Skipping DB start."
+load_viewer_env
+load_replica_env
+resolve_viewer_database_target
+
+if should_start_postgres; then
+  if is_postgres_running; then
+    echo "local-postgresql is already running. Skipping DB start."
+  else
+    start_postgres_in_background
+  fi
 else
-  start_postgres_in_background
+  echo "Using PC_KEIBA_DATABASE_TARGET=$VIEWER_DATABASE_TARGET. Skipping local-postgresql start."
 fi
 
 start_live_relay_in_background
@@ -64,5 +109,5 @@ if is_viewer_running; then
   exit 0
 fi
 
-echo "Starting pc-keiba-viewer (dev:https) on port $VIEWER_PORT..."
-exec env PC_KEIBA_DATABASE_TARGET=local bun --cwd "$VIEWER_APP_DIR" dev:https
+echo "Starting pc-keiba-viewer (dev:https) on port $VIEWER_PORT with PC_KEIBA_DATABASE_TARGET=$VIEWER_DATABASE_TARGET..."
+exec env PC_KEIBA_DATABASE_TARGET="$VIEWER_DATABASE_TARGET" bun --cwd "$VIEWER_APP_DIR" dev:https

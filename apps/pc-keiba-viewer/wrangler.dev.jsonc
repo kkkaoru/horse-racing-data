@@ -40,6 +40,8 @@
       "binding": "REALTIME_DB",
       "database_name": "sync-realtime-data",
       "database_id": "d12ebd45-2aff-4d74-8556-295c1da9177e",
+      // Used only when `PC_KEIBA_CLOUDFLARE_REMOTE_BINDINGS=1` opts
+      // next dev into Cloudflare remote bindings.
       "remote": true,
     },
   ],
