@@ -5,6 +5,16 @@ Running aggregate digest. One row per **kept** paper; full structured extraction
 
 _Collection **COMPLETE**: all of Vols **5–37** (1994–2026) screened (Vols 1–4 are not on J-STAGE). **Kept: 119** of ~490 articles examined._
 
+> **Scope of this digest** — the rows below cover only the **curated Journal of Equine Science**
+> (`jes`) papers. A separate **raw** corpus, **馬の科学 (Uma no Kagaku)** — a JRA 競走馬総合研究所
+> internal bulletin, **Vol.50–56, 28 issues, full text, not yet relevance-screened** — lives under
+> [`horse-sciences/`](./horse-sciences/README.md) with its catalog at
+> [`horse-sciences/README.md`](./horse-sciences/README.md). Its scope overlaps the same
+> feature families synthesized below — exercise physiology / fitness (心拍・乳酸・VO₂),
+> 整形外科 / 腱・骨折 injury & soundness, 呼吸器, 遺伝 / 系統 genetics & pedigree,
+> 馬体 / 装蹄 / 歩様 conformation / gait, 暑熱 / 環境, plus JRA-specific surveillance — but
+> because it is unscreened, no per-paper "kept" rows are listed here; see the catalog instead.
+
 ---
 
 ## Top picks (highest direct actionability)

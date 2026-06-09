@@ -7,6 +7,15 @@ code `jes`, Online ISSN 1347-7501) that are **useful for racehorse finishing-pos
 Source listing: <https://www.jstage.jst.go.jp/browse/jes/37/0/_contents/-char/en>
 (processed **newest volume/issue first**).
 
+> **Note — `docs/journals/` now hosts TWO collections:**
+>
+> - **(a) Journal of Equine Science** (`jes`, J-STAGE) — the curated, per-paper, relevance-screened
+>   collection that the rest of this file documents.
+> - **(b) 馬の科学 (Uma no Kagaku)** — a companion **raw** full-issue corpus under
+>   [`horse-sciences/`](./horse-sciences/README.md), a JRA 競走馬総合研究所 internal bulletin
+>   captured in full but **not yet relevance-screened**. See
+>   [Companion collection — 馬の科学](#companion-collection--馬の科学-jra-競走馬総合研究所) below.
+
 ## Layout
 
 | Path                       | Purpose                                                                                                                                 |
@@ -73,3 +82,40 @@ and `download_pdf()` for polite PDF retrieval with retry. CLI: `contents --vol N
 and `download --pdf-url URL --dest PATH`. Cached PDFs live in `scripts/journals/cache/`
 (git-ignored / not tracked). PDF→text used `pypdf`; a few old scanned volumes (Vol 6) required
 OCR (tesseract).
+
+The companion 馬の科学 corpus is built by a separate helper, `scripts/journals/reflow_es.py`
+(see the companion section below); the two scripts share only the git-ignored
+`scripts/journals/cache/` PDF cache.
+
+## Companion collection — 馬の科学 (JRA 競走馬総合研究所)
+
+A second, separate collection lives under [`horse-sciences/`](./horse-sciences/README.md). It
+is a Japanese-language, JRA-internal bulletin captured as a **raw full-issue corpus** — the
+counterpart to, but deliberately distinct from, the curated `jes` collection above.
+
+- **誌名 / source**: 馬の科学 (_Uma no Kagaku_), published by **JRA 競走馬総合研究所**
+  (Equine Research Institute, Japan Racing Association). Source page:
+  <https://company.jra.jp/equinst/publications/es.html>
+- **Coverage**: **Vol.50 (2013) – Vol.56 No.4 (2019-12)**. The journal **休刊** (ceased) at
+  Vol.56 No.4. JRA hosts PDFs only for Vol.50–56; older volumes are not online.
+- **Raw, not curated** — KEY DIFFERENCE from the `jes` collection: every issue is captured
+  **in full** (要約なし / not summarized), and the corpus is **not yet relevance-screened**
+  into kept/skip per-paper rows. The `jes` collection is curated to 119 kept papers; this one
+  is a complete-text corpus awaiting screening.
+- **Layout**: [`horse-sciences/README.md`](./horse-sciences/README.md) is the full 28-issue
+  catalog (発行日 + PDF URLs). Each issue is one file
+  `horse-sciences/volNN-noM-YYYY-MM.md` with a hand-cleaned `## 目次` plus the full PDF body
+  text — **28 issue files** in all.
+- **Vol.50 caveat**: for Vol.50 (No.1–4) JRA hosts only the cover / 目次 scan (1–2 pages);
+  full-text PDFs begin at **Vol.51**. Documented per-file.
+- **vol55-no2 added**: Vol.55 No.2 was the one previously missing issue and has been added
+  (full text).
+- **Relevance to finishing-position prediction**: the same feature families as the `jes`
+  collection — exercise physiology / fitness (心拍・乳酸・VO₂), 整形外科 / 腱・骨折 injury &
+  soundness, 呼吸器, 遺伝 / 系統 genetics & pedigree, 馬体 / 装蹄 / 歩様 conformation / gait,
+  暑熱 / 環境, plus JRA-specific surveillance — but as **raw text, awaiting screening**.
+- **Tooling**: `scripts/journals/reflow_es.py` (+ `test_reflow_es.py`, 25 tests) is a
+  deterministic, content-preserving body reflow (rejoins wrapped TOC / leader lines, strips
+  PDF control-char garbage) guarded by a char-multiset invariant. Extraction used **PyMuPDF**
+  (resolves the `90pv-RKSJ-H` CID fonts) with a **tesseract** OCR fallback. Cached PDFs live in
+  `scripts/journals/cache/` (git-ignored).
