@@ -12,7 +12,6 @@ import {
   normalizeJockeyNameForComparison,
 } from "../../../lib/jockey-name";
 import type { Runner } from "../../../lib/race-types";
-import { pickFinishPosition } from "../../../lib/runner-finish-position";
 import {
   formatCarriedWeight,
   formatHorseWeight,
@@ -32,7 +31,6 @@ interface RunnersTableProps {
   initialRealtimePayload?: RealtimeRacePayload | null;
   realtimeRequest?: RealtimeRaceRequest;
   runners: Runner[];
-  trendFinishPositionByHorse: ReadonlyMap<string, number>;
 }
 
 interface SortState {
@@ -146,7 +144,6 @@ export function RunnersTable({
   initialRealtimePayload = null,
   realtimeRequest,
   runners,
-  trendFinishPositionByHorse,
 }: RunnersTableProps) {
   const [sort, setSort] = useState<SortState | null>(null);
   const { payload } = useRealtimeRacePayload(
@@ -300,12 +297,6 @@ export function RunnersTable({
     const trainerName = cleanText(runner.chokyoshimeiRyakusho);
     const ownerName = cleanText(runner.banushimei);
     const entryStatus = realtimeEntry?.status || "";
-    const entryFinishPosition = realtimeFinishPosition ?? runner.kakuteiChakujun;
-    const trendFinishPosition = trendFinishPositionByHorse.get(horseNumber) ?? null;
-    const mergedFinishPosition = pickFinishPosition({
-      entryValue: entryFinishPosition,
-      trendValue: trendFinishPosition,
-    });
 
     return (
       <tr
@@ -381,7 +372,7 @@ export function RunnersTable({
             ? formatStoredOdds(runner.tanshoOdds)
             : formatRealtimeOdds(realtimeOdds)}
         </td>
-        <td>{formatRunnerValue(mergedFinishPosition, "00")}</td>
+        <td>{formatRunnerValue(realtimeFinishPosition ?? runner.kakuteiChakujun, "00")}</td>
         {showCornerRanks ? <td>{formatCornerRanks(runner)}</td> : null}
       </tr>
     );

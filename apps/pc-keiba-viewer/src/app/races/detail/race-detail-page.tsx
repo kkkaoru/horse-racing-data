@@ -46,9 +46,8 @@ import { buildRaceGlobalSummaryItems } from "../../../lib/race-global-summary";
 import { isCornerPacePredictionSupported } from "../../../lib/race-pace-prediction";
 import { RACE_TREND_PAST14_LOOKBACK_DAYS } from "../../../lib/race-trend-cache";
 import { shouldRestrictTrendDisplayToToday } from "../../../lib/race-trend-display";
-import { getRaceTrendPayloadForRace } from "../../../lib/race-trend-payload.server";
 import { getRaceTrendTargetsFromSearchParams } from "../../../lib/race-trend-query";
-import type { RaceDetail, RaceTrendDetail, RaceTrendPayload } from "../../../lib/race-types";
+import type { RaceDetail } from "../../../lib/race-types";
 import { loadInitialRealtimePayloadServer } from "../../../lib/realtime-payload.server";
 import {
   formatCarriedWeight,
@@ -235,33 +234,6 @@ const DetailLinkCell = ({
 const tryGetWaitUntilContext = (): Promise<PcKeibaExecutionContext | null> =>
   safeGetCloudflareExecutionContext();
 
-// SSR aggregates the trend payload via `getRaceTrendPayloadForRace` so the
-// runners-table can merge the trend-derived historical finishPosition before
-// first paint. The merge logic in `RunnersTable` still falls back to the
-// entry-side kakuteiChakujun when the trend map has no entry for a horse,
-// so a trend-side fetch failure degrades to the previous behaviour.
-type UsableTrendDetail = RaceTrendDetail & { horseNumber: string };
-
-const toTrendFinishEntry = (detail: UsableTrendDetail): [string, number] => [
-  detail.horseNumber,
-  detail.finishPosition,
-];
-
-const isUsableTrendDetail = (detail: RaceTrendDetail): detail is UsableTrendDetail =>
-  detail.finishPosition > 0 && detail.horseNumber !== null;
-
-const buildTrendFinishPositionByHorse = (
-  trendPayload: RaceTrendPayload | null,
-): Map<string, number> => {
-  if (!trendPayload) {
-    return new Map<string, number>();
-  }
-  const entries = trendPayload.runningStyleRows.flatMap((row) =>
-    row.details.filter(isUsableTrendDetail).map(toTrendFinishEntry),
-  );
-  return new Map(entries);
-};
-
 const loadRaceDetailSnapshotFromDb = async (params: {
   day: string;
   initialRace: RaceDetail | null;
@@ -375,18 +347,6 @@ export async function RaceDetailView({
   const visibleJraRaceEntryUrl = showJraResultLink ? null : jraRaceEntryUrl;
   const visibleJraRaceResultUrl = showJraResultLink ? jraRaceResultUrl : null;
   const decodeHexHorseWeight = raceSource === "nar" && isBanEiKeibajoCode(keibajoCode);
-  // SSR-side trend payload fetch: we ignore failures so a single trend
-  // outage cannot break the runners table. The merge logic in
-  // `RunnersTable` then falls back to the entry-side kakuteiChakujun.
-  const trendPayloadForSsr = await getRaceTrendPayloadForRace({
-    day,
-    keibajoCode,
-    month,
-    raceNumber,
-    source: raceSource,
-    year,
-  }).catch(() => null);
-  const trendFinishPositionByHorse = buildTrendFinishPositionByHorse(trendPayloadForSsr);
   // Race-trend section always prefetches a 14-day window so the date picker
   // can filter client-side. The minStartDate stays at target − 14d so manual
   // widening still works. For both JRA and NAR R2 and later, the default
@@ -746,7 +706,6 @@ export async function RaceDetailView({
               initialRealtimePayload={initialRealtimePayload}
               realtimeRequest={realtimeRequest}
               runners={runners}
-              trendFinishPositionByHorse={trendFinishPositionByHorse}
             />
           )}
         </section>
