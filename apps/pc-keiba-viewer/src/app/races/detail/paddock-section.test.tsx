@@ -601,6 +601,84 @@ test("PaddockSection lazy recent-results clears skeleton after fetch failure (lo
   expect(screen.getByText("初出走").tagName).toBe("SPAN");
 });
 
+test("PaddockSection renders long sire name fully in editable card without truncation", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      runners={[
+        buildRunner({
+          bamei: "テストホース",
+          damSireName: null,
+          sireName: "ノーザンダンサーロングロングネーム　　　　　",
+          sireSireName: null,
+          umaban: "01",
+        }),
+      ]}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getAllByRole("article").length).toBe(1);
+  });
+  const sireDd = screen.getByText("ノーザンダンサーロングロングネーム", { exact: false });
+  expect(sireDd.tagName).toBe("DD");
+  expect(sireDd.className).toBe("paddock-horse-bloodline-value");
+});
+
+test("PaddockSection renders long sire name in read-only table without truncation", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  const stateWithScore: PaddockState = {
+    history: [],
+    horses: {
+      "1": {
+        attention: 0,
+        horseName: "テストホース",
+        horseNumber: "1",
+        kaeshi: 0,
+        officialRank: 1,
+        paddock: 0,
+        preference: 0,
+        total: 0,
+      },
+    },
+    raceKey: "2026:0602:05:01",
+    updatedAt: "2026-06-02T12:00:00.000Z",
+  };
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(stateWithScore));
+
+  render(
+    <PaddockSection
+      day="02"
+      editable={false}
+      keibajoCode="05"
+      month="06"
+      raceNumber="01"
+      recentResults={[]}
+      source="jra"
+      year="2026"
+      runners={[
+        buildRunner({
+          bamei: "テストホース",
+          damSireName: null,
+          sireName: "ノーザンダンサーロングロングネーム　　　　　",
+          sireSireName: null,
+          umaban: "01",
+        }),
+      ]}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getAllByRole("columnheader").length).toBeGreaterThan(0);
+  });
+  const sireTd = screen.getByText("ノーザンダンサーロングロングネーム", { exact: false });
+  expect(sireTd.tagName).toBe("TD");
+  expect(sireTd.className).toBe("paddock-table-bloodline-cell");
+});
+
 test("PaddockSection lazy recent-results clears skeleton via safety timer when fetch never resolves", async () => {
   vi.useFakeTimers();
   getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");

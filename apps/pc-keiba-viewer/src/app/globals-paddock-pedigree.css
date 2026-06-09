@@ -1,0 +1,27 @@
+/* Read-only paddock table: pedigree columns (父 / 父父 / 母父) get a
+   minimum column width and wrap names rather than truncate. The dd
+   cells in the editable card already wrap via .paddock-horse-bloodline-value. */
+.paddock-col-bloodline {
+  width: var(--space-128px-68);
+}
+
+.paddock-table-bloodline-cell {
+  white-space: normal;
+  word-break: break-word;
+}
+
+/* Mobile: stack 父 / 父父 / 母父 vertically inside the editable card so
+   long names get the full row width instead of competing on a single line.
+   The parent .paddock-horse-race-facts is a 3-column grid on mobile, so
+   each bloodline fact spans every column to occupy its own row. */
+@media (max-width: 720px) {
+  .paddock-horse-bloodline-fact {
+    flex-direction: column;
+    gap: var(--space-4px-18);
+    grid-column: var(--number-1-7) / var(--number-1-9);
+  }
+
+  .paddock-horse-bloodline-value {
+    max-width: var(--space-100pct-12);
+  }
+}
