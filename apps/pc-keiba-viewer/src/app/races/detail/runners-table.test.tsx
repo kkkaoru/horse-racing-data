@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import React from "react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, test } from "vitest";
 
 import type { Runner } from "../../../lib/race-types";
 import { RunnersTable } from "./runners-table";
@@ -45,7 +45,12 @@ afterEach(cleanup);
 
 describe("runners table", () => {
   it("renders runner values in readable format", () => {
-    render(<RunnersTable runners={[runner({ bamei: "牝馬", seibetsuCode: "2", umaban: "01" })]} />);
+    render(
+      <RunnersTable
+        runners={[runner({ bamei: "牝馬", seibetsuCode: "2", umaban: "01" })]}
+        trendFinishPositionByHorse={new Map()}
+      />,
+    );
 
     expect(screen.getAllByText("1")).toHaveLength(2);
     expect(screen.getByText("牝 / 3歳")).toBeTruthy();
@@ -83,6 +88,7 @@ describe("runners table", () => {
           }),
           runner({ bamei: "二番", kakuteiChakujun: "00", tanshoOdds: "0000", umaban: "02" }),
         ]}
+        trendFinishPositionByHorse={new Map()}
       />,
     );
 
@@ -112,6 +118,7 @@ describe("runners table", () => {
           runner({ bamei: "二番", tanshoOdds: "0050", umaban: "02" }),
           runner({ bamei: "三番", tanshoOdds: "0000", umaban: "03" }),
         ]}
+        trendFinishPositionByHorse={new Map()}
       />,
     );
 
@@ -127,6 +134,7 @@ describe("runners table", () => {
           runner({ bamei: "二番", tanshoOdds: "0046", umaban: "02" }),
           runner({ bamei: "九番", tanshoOdds: "1138", umaban: "09" }),
         ]}
+        trendFinishPositionByHorse={new Map()}
       />,
     );
 
@@ -142,6 +150,7 @@ describe("runners table", () => {
           runner({ bamei: "一番", umaban: "01" }),
           runner({ bamei: "二番", umaban: "02" }),
         ]}
+        trendFinishPositionByHorse={new Map()}
       />,
     );
 
@@ -156,6 +165,7 @@ describe("runners table", () => {
           runner({ bamei: "先頭維持", tanshoOdds: "abc", umaban: null }),
           runner({ bamei: "二番目維持", tanshoOdds: null, umaban: "" }),
         ]}
+        trendFinishPositionByHorse={new Map()}
       />,
     );
 
@@ -176,6 +186,7 @@ describe("runners table", () => {
             umaban: "01",
           }),
         ]}
+        trendFinishPositionByHorse={new Map()}
       />,
     );
 
@@ -219,6 +230,7 @@ describe("runners table", () => {
           runner({ bamei: "一番", tanshoOdds: "9999", umaban: "01" }),
           runner({ bamei: "二番", tanshoOdds: "9999", umaban: "02" }),
         ]}
+        trendFinishPositionByHorse={new Map()}
       />,
     );
 
@@ -252,6 +264,7 @@ describe("runners table", () => {
           source: null,
         }}
         runners={[runner({ bamei: "一番", kishumeiRyakusho: "元騎手", umaban: "01" })]}
+        trendFinishPositionByHorse={new Map()}
       />,
     );
 
@@ -293,6 +306,7 @@ describe("runners table", () => {
           runner({ bamei: "一番", kishumeiRyakusho: "増田充", umaban: "01" }),
           runner({ bamei: "二番", kishumeiRyakusho: "シャベ", umaban: "02" }),
         ]}
+        trendFinishPositionByHorse={new Map()}
       />,
     );
 
@@ -327,6 +341,7 @@ describe("runners table", () => {
           source: null,
         }}
         runners={[runner({ bamei: "一番", kishumeiRyakusho: "坂井瑠星", umaban: "01" })]}
+        trendFinishPositionByHorse={new Map()}
       />,
     );
 
@@ -364,6 +379,7 @@ describe("runners table", () => {
           source: null,
         }}
         runners={[runner({ bamei: "一番", umaban: "01" })]}
+        trendFinishPositionByHorse={new Map()}
       />,
     );
 
@@ -403,6 +419,7 @@ describe("runners table", () => {
           runner({ bamei: "一番", kakuteiChakujun: "00", umaban: "01" }),
           runner({ bamei: "二番", kakuteiChakujun: "00", umaban: "02" }),
         ]}
+        trendFinishPositionByHorse={new Map()}
       />,
     );
 
@@ -425,10 +442,91 @@ describe("runners table", () => {
             zogenSa: "008",
           }),
         ]}
+        trendFinishPositionByHorse={new Map()}
       />,
     );
 
     expect(screen.getByText("1198kg (+8)")).toBeTruthy();
     expect(screen.getByText("620")).toBeTruthy();
   });
+});
+
+test('RunnersTable renders trend finishPosition when entry kakuteiChakujun is "00"', () => {
+  render(
+    <RunnersTable
+      runners={[
+        {
+          barei: "03",
+          banushimei: "馬主",
+          bamei: "トレンド馬",
+          bataiju: "480",
+          chokyoshimeiRyakusho: "調教師",
+          corner1: null,
+          corner2: null,
+          corner3: null,
+          corner4: null,
+          damSireName: null,
+          futanJuryo: "550",
+          kakuteiChakujun: "00",
+          kettoTorokuBango: "2023100001",
+          kishumeiRyakusho: "騎手",
+          seibetsuCode: "1",
+          sireName: null,
+          sireSireName: null,
+          sohaTime: null,
+          timeSa: null,
+          kohan3f: null,
+          tanshoNinkijun: null,
+          tanshoOdds: "0000",
+          umaban: "01",
+          wakuban: "1",
+          zogenFugo: "+",
+          zogenSa: "0",
+        },
+      ]}
+      trendFinishPositionByHorse={new Map([["1", 3]])}
+    />,
+  );
+
+  expect(screen.getByText("3")).toBeTruthy();
+});
+
+test("RunnersTable renders entry value when trend missing for horse", () => {
+  render(
+    <RunnersTable
+      runners={[
+        {
+          barei: "03",
+          banushimei: "馬主",
+          bamei: "エントリー馬",
+          bataiju: "480",
+          chokyoshimeiRyakusho: "調教師",
+          corner1: null,
+          corner2: null,
+          corner3: null,
+          corner4: null,
+          damSireName: null,
+          futanJuryo: "550",
+          kakuteiChakujun: "05",
+          kettoTorokuBango: "2023100002",
+          kishumeiRyakusho: "騎手",
+          seibetsuCode: "1",
+          sireName: null,
+          sireSireName: null,
+          sohaTime: null,
+          timeSa: null,
+          kohan3f: null,
+          tanshoNinkijun: null,
+          tanshoOdds: "0000",
+          umaban: "02",
+          wakuban: "2",
+          zogenFugo: "+",
+          zogenSa: "0",
+        },
+      ]}
+      trendFinishPositionByHorse={new Map()}
+    />,
+  );
+
+  expect(screen.getByText("5")).toBeTruthy();
 });
