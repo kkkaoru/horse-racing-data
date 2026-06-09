@@ -19,6 +19,8 @@ _Collection **COMPLETE**: all of Vols **5–37** (1994–2026) screened (Vols 1�
 
 ---
 
+_**★** = a standout, highest-priority paper: its features are the most directly actionable / pipeline-ready for 着順 prediction. Used in the family-synthesis lists and the master-index titles below._
+
 ## Top picks (highest direct actionability)
 
 - **`30_1909`** — SDF tendinopathy risk factors, Japan: ORs from pure race-DB fields (finishing pos ≥10th 2.50, sloppy track 1.69, distance <1300 m 1.45, fav rank ≥8 1.49, BW ≥470 kg 1.55, BW loss ≥5 kg 1.59, gelding 3.09, days-off ≥90 1.75). Injury-risk **and** performance signal.
