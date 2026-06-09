@@ -197,7 +197,11 @@ test("runningStyleFromCorners returns oikomi for high ratio", () => {
   ).toStrictEqual("oikomi");
 });
 
-test("runningStyleFromCorners returns senkou when runnerCount is missing and corner <= 4", () => {
+test("runningStyleFromCorners returns null when runnerCount is missing and corner is past nige", () => {
+  // Senkou-leak regression guard: with corner=3 and no runnerCount the
+  // function used to hard-code "senkou", which surfaced on race-trend
+  // sibling rows as every past entry showing 先行. With the fix it must
+  // defer to the prediction cache by returning null.
   expect(
     runningStyleFromCorners({
       corner1: "03",
@@ -206,10 +210,10 @@ test("runningStyleFromCorners returns senkou when runnerCount is missing and cor
       corner4: null,
       runnerCount: null,
     }),
-  ).toStrictEqual("senkou");
+  ).toBeNull();
 });
 
-test("runningStyleFromCorners returns sashi when runnerCount is missing and corner is between 5 and 8", () => {
+test("runningStyleFromCorners returns null when runnerCount is missing and corner is mid-pack", () => {
   expect(
     runningStyleFromCorners({
       corner1: "07",
@@ -218,10 +222,10 @@ test("runningStyleFromCorners returns sashi when runnerCount is missing and corn
       corner4: null,
       runnerCount: null,
     }),
-  ).toStrictEqual("sashi");
+  ).toBeNull();
 });
 
-test("runningStyleFromCorners returns oikomi when runnerCount is missing and corner is past 8", () => {
+test("runningStyleFromCorners returns null when runnerCount is missing and corner is past 8", () => {
   expect(
     runningStyleFromCorners({
       corner1: "12",
@@ -230,7 +234,35 @@ test("runningStyleFromCorners returns oikomi when runnerCount is missing and cor
       corner4: null,
       runnerCount: null,
     }),
-  ).toStrictEqual("oikomi");
+  ).toBeNull();
+});
+
+test("runningStyleFromCorners still returns nige when runnerCount is missing and corner is 1", () => {
+  // nige is unambiguous without runnerCount because corner==1 means the
+  // horse held the lead independently of field size.
+  expect(
+    runningStyleFromCorners({
+      corner1: "01",
+      corner2: null,
+      corner3: null,
+      corner4: null,
+      runnerCount: null,
+    }),
+  ).toStrictEqual("nige");
+});
+
+test("runningStyleFromCorners returns null when runnerCount is 1 and corner is past nige", () => {
+  // runnerCount=1 is a degenerate field (treated equal to missing for
+  // ratio purposes), so the same null-fallback applies.
+  expect(
+    runningStyleFromCorners({
+      corner1: "02",
+      corner2: null,
+      corner3: null,
+      corner4: null,
+      runnerCount: "01",
+    }),
+  ).toBeNull();
 });
 
 test("runningStyleFromCorners falls back to the next corner when the first one is missing", () => {

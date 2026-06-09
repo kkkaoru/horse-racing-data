@@ -108,6 +108,16 @@ export const getJockeyNameAliases = (value: string): string[] => {
   return [value, ...JOCKEY_DEMURO_ALIASES];
 };
 
+// Map a recorded corner position to a running-style label. Returns null when
+// the data is insufficient for a confident call so the trend display falls
+// through to the prediction cache instead of leaking a heuristic guess.
+//
+// Without a runnerCount we can only safely identify nige (corner position 1):
+// the recorded corner number alone cannot distinguish a mid-pack horse in a
+// 6-horse field from a tail-end horse in a 12-horse field. Returning a
+// hard-coded label here used to leak "senkou" for every corner-2..4 row whose
+// runnerCount the upstream DO had not yet populated, which surfaced as the
+// race-trend section showing every past-race entry as senkou.
 export const runningStyleFromCorners = ({
   corner1,
   corner2,
@@ -129,11 +139,7 @@ export const runningStyleFromCorners = ({
   if (corner === null) return null;
   if (corner <= 1) return "nige";
   const parsedRunnerCount = parseStoredInteger(runnerCount, "00");
-  if (parsedRunnerCount === null || parsedRunnerCount <= 1) {
-    if (corner <= 4) return "senkou";
-    if (corner <= 8) return "sashi";
-    return "oikomi";
-  }
+  if (parsedRunnerCount === null || parsedRunnerCount <= 1) return null;
   const ratio = (corner - 1) / Math.max(parsedRunnerCount - 1, 1);
   if (ratio <= 0.35) return "senkou";
   if (ratio <= 0.7) return "sashi";
