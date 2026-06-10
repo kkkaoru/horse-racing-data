@@ -1,14 +1,59 @@
 #!/usr/bin/env bash
-# Hourly race-prediction completeness guard.
+# Race-prediction freshness guard.
 #
 # Driven by the LaunchAgent at scripts/launchd/com.kkk4oru.race-prediction-guard.plist:
-#   * JST 00:00 .. 09:00 (10 hourly fires) -> guard TODAY    JST
-#   * JST 10:00 .. 18:00 (9  hourly fires) -> guard TODAY    JST (afternoon band)
-#   * JST 19:00 .. 20:00 (2  hourly fires) -> guard TODAY    JST (evening top-up)
-#   * JST 21:00 .. 23:00 (3  hourly fires) -> guard TOMORROW JST + TODAY JST
-# Total 24 fires/day. Re-runs are idempotent: Neon prediction tables are the
-# state of truth — if every distinct race_key for TARGET_DATE_ISO already has
-# at least one row in the respective table, the guard exits without kicking.
+#   * JST 00:00 .. 09:00 (10 hourly  fires) -> guard TODAY    JST
+#   * JST 10:00 .. 20:00 (33 20-min  fires) -> guard TODAY    JST (race-hours band)
+#   * JST 21:00 .. 23:00 ( 3 hourly  fires) -> guard TOMORROW JST + TODAY JST
+# Total ~46 fires/day. During race hours (10-20) the guard always re-kicks the
+# finish-position pipeline even when predictions already exist, so that fresh
+# bataiju (announced ~T-30..40 min) and updated odds flow into each race before
+# post. Outside race hours the skip-when-complete logic is preserved so we do
+# not waste compute when no new data is expected.
+#
+# Freshness-aware re-prediction (PART 2 change):
+#   During JST 10:00-20:00 ("race hours") the finish-position guard ignores
+#   whether fp_actual >= expected_count and always kicks the pipeline, because
+#   bataiju/odds land in D1 ~30-40 min before post and the prediction should
+#   incorporate them. The concurrent-run lock (FINISH_LOCK_DIR) is still
+#   respected — two docker runs never race each other.
+#
+# Two prediction kinds are guarded:
+#   1. running-style (脚質)   -> Cloudflare Worker job (POST /api/jobs).
+#   2. finish-position (着順)  -> local docker pipeline via
+#                                 scripts/launchd/finish-position-predict-daily.sh.
+#
+# Source of truth for "expected races":
+#   Cloudflare D1 sync-realtime-data.realtime_race_sources where
+#   substr(race_start_at_jst, 1, 10) = TARGET_DATE_ISO. race_start_at_jst is
+#   ISO 8601 with +09:00 offset, so substr(...,1,10) is the JST calendar date.
+#
+# Source of truth for "actually predicted":
+#   Neon Postgres race_running_style_model_predictions /
+#   race_finish_position_model_predictions, both keyed by the quadruple
+#   (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango). The matching D1
+#   columns have the same names + same TEXT format (year=YYYY, monthDay=MMDD).
+#
+# When D1 has ZERO races for a target date, the guard kicks the worker
+# `discover-urls` job (UPSERT-idempotent on the worker side) so the next
+# tick has rows to plan against. No prediction kick fires that hour.
+#
+# Locks:
+#   /tmp/race-prediction-guard.lock  -- guard-level (single concurrent guard)
+#   /tmp/finish-position-predict.lock -- shared with finish-position-predict-daily.sh
+#                                        so JST 03:00 cron and the hourly kick
+#                                        cannot race the same docker run.
+#
+# Manual / dry-run:
+#   DRY_RUN=1 bash scripts/launchd/race-prediction-guard.sh
+#   DRY_RUN=1 FORCE_HOUR=05 bash scripts/launchd/race-prediction-guard.sh     # today
+#   DRY_RUN=1 FORCE_HOUR=14 bash scripts/launchd/race-prediction-guard.sh     # race hours (freshness mode)
+#   DRY_RUN=1 FORCE_HOUR=19 bash scripts/launchd/race-prediction-guard.sh     # today (evening)
+#   DRY_RUN=1 FORCE_HOUR=22 bash scripts/launchd/race-prediction-guard.sh     # today + tomorrow
+#   DRY_RUN=1 FORCE_HOUR=22 FORCE_TARGET_DATE=20300101 bash ...               # exercise discover-urls path
+#   DRY_RUN=1 FORCE_HOUR=05 FORCE_NO_CORNER_FEATURES=1 bash ...               # exercise corner-features build path
+#   DRY_RUN=1 FORCE_HOUR=05 FORCE_VENUE_COUNTS=44:7,30:12 \
+#     FORCE_EXPECTED_COUNT=42 FORCE_TARGET_DATE=20300101 bash ...             # exercise per-venue coverage check path
 #
 # Two prediction kinds are guarded:
 #   1. running-style (脚質)   -> Cloudflare Worker job (POST /api/jobs).
@@ -417,11 +462,13 @@ check_venue_coverage() {
 #   $2 target_date_iso       e.g. 2026-06-09
 #   $3 days_ahead            0 (today) or 1 (tomorrow)
 #   $4 label                 "today" or "tomorrow" — for log messages
+#   $5 jst_hour              current JST hour (00..23) — controls freshness mode
 guard_target() {
   local target_date="$1"
   local target_date_iso="$2"
   local days_ahead="$3"
   local label="$4"
+  local jst_hour="$5"
 
   local target_nen="${target_date:0:4}"
   local target_tsukihi="${target_date:4:4}"
@@ -497,6 +544,25 @@ guard_target() {
   fi
 
   # --- finish-position guard ---
+  #
+  # Freshness-aware skip logic:
+  #   During race hours (JST 10:00-20:00) bataiju (馬体重) for upcoming races
+  #   is typically announced ~T-30..40 min before post, and odds continue to
+  #   shift. We therefore ALWAYS re-kick the pipeline during race hours, even
+  #   when fp_actual >= expected_count, so predictions incorporate the latest
+  #   bataiju/odds. The concurrent-run lock (FINISH_LOCK_DIR) is still checked
+  #   — two docker runs never overlap.
+  #
+  #   Outside race hours (0-9, 21-23) the old "skip when complete" logic is
+  #   preserved: no new race data is expected, so a re-run would be pure
+  #   compute waste.
+  #
+  #   "race hours" = JST hour in [10, 20] inclusive.
+  local is_race_hours=0
+  if [ "$jst_hour" -ge 10 ] && [ "$jst_hour" -le 20 ]; then
+    is_race_hours=1
+  fi
+
   log "checking finish-position coverage in Neon ($FP_TABLE) for nen=$target_nen tsukihi=$target_tsukihi ($label) ..."
   local fp_actual
   fp_actual="$(neon_count "$FP_TABLE" "$target_nen" "$target_tsukihi" || true)"
@@ -504,9 +570,22 @@ guard_target() {
     log "ERROR: failed to parse finish-position count for $label from Neon (got: $fp_actual)"
     return 1
   fi
-  log "finish-position[$label]: actual=$fp_actual expected=$expected_count"
+  log "finish-position[$label]: actual=$fp_actual expected=$expected_count is_race_hours=$is_race_hours"
+
+  # Decide whether to kick: kick when incomplete OR when in race hours
+  # (freshness re-prediction for bataiju/odds).
+  local should_kick=0
   if [ "$fp_actual" -lt "$expected_count" ]; then
-    log "finish-position[$label] INCOMPLETE — preparing kick (RUN_DATE=$target_date PREDICT_DAYS_AHEAD=$days_ahead)"
+    log "finish-position[$label] INCOMPLETE — will kick (RUN_DATE=$target_date PREDICT_DAYS_AHEAD=$days_ahead)"
+    should_kick=1
+  elif [ "$is_race_hours" = "1" ]; then
+    log "finish-position[$label] complete but race-hours freshness — will re-kick (RUN_DATE=$target_date PREDICT_DAYS_AHEAD=$days_ahead)"
+    should_kick=1
+  else
+    log "finish-position[$label] COMPLETE (outside race hours) — skip kick"
+  fi
+
+  if [ "$should_kick" = "1" ]; then
     if [ -d "$FINISH_LOCK_DIR" ]; then
       log "finish-position-predict lock $FINISH_LOCK_DIR held — another run in progress, skip kick"
     elif [ "${DRY_RUN:-0}" = "1" ]; then
@@ -516,11 +595,9 @@ guard_target() {
       RUN_DATE="$target_date" PREDICT_DAYS_AHEAD="$days_ahead" RUN_DATE_MODE=auto \
         bash "$FINISH_SCRIPT" || log "finish-position-predict-daily.sh exited non-zero (continuing)"
     fi
-  else
-    log "finish-position[$label] COMPLETE — skip kick"
   fi
 
-  log "guard_target done (label=$label target=$target_date_iso expected=$expected_count rs=${rs_actual:-skipped} fp=$fp_actual cf_ok=$corner_features_ok)"
+  log "guard_target done (label=$label target=$target_date_iso expected=$expected_count rs=${rs_actual:-skipped} fp=$fp_actual cf_ok=$corner_features_ok is_race_hours=$is_race_hours)"
 }
 
 # DRY_RUN-only override so the dry-run can be aimed at a date with known
@@ -538,30 +615,26 @@ if [ "${DRY_RUN:-0}" = "1" ] && [ -n "${FORCE_TARGET_DATE:-}" ]; then
 fi
 
 # Per-hour dispatch.
-#   0-9   -> TODAY only
-#   10-18 -> TODAY only (afternoon band — ensures afternoon/evening races are
-#             re-predicted after any morning failure and covers the window when
-#             PC-Keiba may eventually publish final odds into nvd_se)
-#   19-20 -> TODAY only (evening top-up)
-#   21-23 -> TODAY + TOMORROW (pre-warm)
+#   0-9   -> TODAY only (hourly; no races, skip-when-complete)
+#   10-20 -> TODAY only (20-min cadence during race hours; freshness re-predict)
+#   21-23 -> TODAY + TOMORROW (hourly pre-warm; skip-when-complete)
 #   else  -> exit (not a scheduled window)
+#
+# JST_HOUR is passed to guard_target as $5 so the finish-position skip logic
+# can distinguish race-hours (freshness mode) from non-race-hours.
 case "$JST_HOUR" in
   0[0-9])
-    log "window=today JST_HOUR=$JST_HOUR (0-9 morning band)"
-    guard_target "$TODAY_DATE" "$TODAY_ISO" 0 "today"
+    log "window=today JST_HOUR=$JST_HOUR (0-9 morning band, hourly, skip-when-complete)"
+    guard_target "$TODAY_DATE" "$TODAY_ISO" 0 "today" "$JST_HOUR"
     ;;
-  1[0-8])
-    log "window=today JST_HOUR=$JST_HOUR (10-18 afternoon band)"
-    guard_target "$TODAY_DATE" "$TODAY_ISO" 0 "today"
-    ;;
-  19|20)
-    log "window=today JST_HOUR=$JST_HOUR (19-20 evening top-up band)"
-    guard_target "$TODAY_DATE" "$TODAY_ISO" 0 "today"
+  1[0-9]|20)
+    log "window=today JST_HOUR=$JST_HOUR (10-20 race-hours band, 20-min cadence, freshness re-predict)"
+    guard_target "$TODAY_DATE" "$TODAY_ISO" 0 "today" "$JST_HOUR"
     ;;
   21|22|23)
-    log "window=today+tomorrow JST_HOUR=$JST_HOUR (21-23 pre-warm band)"
-    guard_target "$TODAY_DATE" "$TODAY_ISO" 0 "today"
-    guard_target "$TOMORROW_DATE" "$TOMORROW_ISO" 1 "tomorrow"
+    log "window=today+tomorrow JST_HOUR=$JST_HOUR (21-23 pre-warm band, skip-when-complete)"
+    guard_target "$TODAY_DATE" "$TODAY_ISO" 0 "today" "$JST_HOUR"
+    guard_target "$TOMORROW_DATE" "$TOMORROW_ISO" 1 "tomorrow" "$JST_HOUR"
     ;;
   *)
     log "outside guard window (JST_HOUR=$JST_HOUR) — exit 0"
