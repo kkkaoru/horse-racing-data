@@ -161,9 +161,15 @@ def stage_base_input(
         select
           b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango,
           b.ketto_toroku_bango, b.race_date, b.race_year,
-          rec.kyori::double as kyori,
-          rec.futan_juryo::double as futan_juryo,
-          rec.barei::double as barei,
+          coalesce(rec.kyori::double, b.kyori::double) as kyori,
+          coalesce(
+            rec.futan_juryo::double,
+            try_cast(nullif(trim(se.futan_juryo), '') as double) / 10.0
+          ) as futan_juryo,
+          coalesce(
+            rec.barei::double,
+            try_cast(nullif(trim(se.barei), '') as double)
+          ) as barei,
           {bataiju_sql}::double as bataiju
         from read_parquet('{input_glob}', hive_partitioning=true, union_by_name=true) b
         left join pg.race_entry_corner_features rec

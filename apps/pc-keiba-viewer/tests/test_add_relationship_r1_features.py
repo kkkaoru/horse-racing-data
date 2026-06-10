@@ -205,10 +205,13 @@ def test_stage_base_input_left_joins_race_entry_corner_features_on_umaban() -> N
     body = " ".join(captured)
     assert "left join pg.race_entry_corner_features rec" in body
     assert "rec.umaban = b.umaban" in body
-    # The kyori / futan_juryo / barei columns are sourced from the corner table.
+    # kyori / futan_juryo / barei use COALESCE with se fallback for upcoming races.
     assert "rec.kyori" in body
     assert "rec.futan_juryo" in body
     assert "rec.barei" in body
+    assert "coalesce" in body.lower()
+    assert "se.futan_juryo" in body
+    assert "se.barei" in body
 
 
 def test_stage_base_input_left_joins_jvd_se_for_bataiju_when_jra() -> None:
@@ -788,7 +791,8 @@ def test_write_partitioned_writes_parquet_files(tmp_path: Path) -> None:
 
 def test_stage_base_input_end_to_end_projects_columns_from_pg_join(tmp_path: Path) -> None:
     """Drive stage_base_input against a real DuckDB connection with synthetic
-    in-memory pg.race_entry_corner_features + pg.jvd_se and a synthetic parquet."""
+    in-memory pg.race_entry_corner_features + pg.jvd_se and a synthetic parquet.
+    rec is present -> rec wins (COALESCE keeps rec value unchanged for completed races)."""
     parquet_dir = tmp_path / "input"
     parquet_dir.mkdir()
     seed_con = duckdb.connect(":memory:")
@@ -798,12 +802,12 @@ def test_stage_base_input_end_to_end_projects_columns_from_pg_join(tmp_path: Pat
         select * from (
           values
             ('jra', '2025', '0415', '05', '11', 1::integer, 'horse_a',
-              '20250415', 2025),
+              '20250415', 2025, 1600::integer),
             ('jra', '2025', '0415', '05', '11', 2::integer, 'horse_b',
-              '20250415', 2025)
+              '20250415', 2025, 1600::integer)
         ) as v(
           source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, umaban,
-          ketto_toroku_bango, race_date, race_year
+          ketto_toroku_bango, race_date, race_year, kyori
         )
         """
     )
@@ -815,31 +819,34 @@ def test_stage_base_input_end_to_end_projects_columns_from_pg_join(tmp_path: Pat
 
     con = duckdb.connect(":memory:")
     con.execute("create schema pg")
+    # rec has futan_juryo=56.0 (kg) and barei=5 (age) as stored in the corner table.
     con.execute(
         """
         create table pg.race_entry_corner_features as
         select * from (
           values
             ('jra', '2025', '0415', '05', '11', 1::integer, 'horse_a',
-              1600::integer, '560'::varchar, 5::integer),
+              1600::integer, 56.0::double, 5::integer),
             ('jra', '2025', '0415', '05', '11', 2::integer, 'horse_b',
-              1600::integer, '540'::varchar, 4::integer)
+              1600::integer, 54.0::double, 4::integer)
         ) as v(
           source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, umaban,
           ketto_toroku_bango, kyori, futan_juryo, barei
         )
         """
     )
+    # se has futan_juryo in 0.1kg units (560=56.0kg) and barei as zero-padded string.
+    # COALESCE must pick rec first, so output should still be 56.0/54.0 (not 560/540).
     con.execute(
         """
         create table pg.jvd_se as
         select * from (
           values
-            ('2025', '0415', '05', '11', 'horse_a', '480'::varchar),
-            ('2025', '0415', '05', '11', 'horse_b', '   460  '::varchar)
+            ('2025', '0415', '05', '11', 'horse_a', '480'::varchar, '560'::varchar, '05'::varchar),
+            ('2025', '0415', '05', '11', 'horse_b', '   460  '::varchar, '540'::varchar, '04'::varchar)
         ) as v(
           kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-          ketto_toroku_bango, bataiju
+          ketto_toroku_bango, bataiju, futan_juryo, barei
         )
         """
     )
@@ -853,10 +860,210 @@ def test_stage_base_input_end_to_end_projects_columns_from_pg_join(tmp_path: Pat
         """
     ).fetchall()
     con.close()
+    # rec is present: rec wins, futan_juryo = rec's kg value (not se's raw 0.1kg units)
     assert rows == [
-        ("horse_a", 1600.0, 560.0, 5.0, 480.0),
-        ("horse_b", 1600.0, 540.0, 4.0, 460.0),
+        ("horse_a", 1600.0, 56.0, 5.0, 480.0),
+        ("horse_b", 1600.0, 54.0, 4.0, 460.0),
     ]
+
+
+def test_stage_base_input_se_fallback_for_upcoming_race_nar(tmp_path: Path) -> None:
+    """For upcoming NAR races rec is absent (LEFT JOIN miss). futan_juryo and barei
+    must fall back to nvd_se with the correct unit conversion: futan_juryo/10 (0.1kg->kg)
+    and barei cast from zero-padded string ('05'->5.0)."""
+    parquet_dir = tmp_path / "input"
+    parquet_dir.mkdir()
+    seed_con = duckdb.connect(":memory:")
+    seed_con.execute(
+        """
+        create or replace temp table seed as
+        select * from (
+          values
+            ('nar', '2026', '0611', '30', '01', 1::integer, 'horse_upcoming',
+              '20260611', 2026, 1400::integer)
+        ) as v(
+          source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, umaban,
+          ketto_toroku_bango, race_date, race_year, kyori
+        )
+        """
+    )
+    seed_con.execute(
+        f"copy (select * from seed) to '{parquet_dir.as_posix()}'"
+        " (format parquet, partition_by (race_year), overwrite_or_ignore true)"
+    )
+    seed_con.close()
+
+    con = duckdb.connect(":memory:")
+    con.execute("create schema pg")
+    # rec is empty: simulates upcoming race not yet in race_entry_corner_features
+    con.execute(
+        """
+        create table pg.race_entry_corner_features(
+          source varchar, kaisai_nen varchar, kaisai_tsukihi varchar,
+          keibajo_code varchar, race_bango varchar, umaban integer,
+          ketto_toroku_bango varchar, kyori integer, futan_juryo varchar, barei integer
+        )
+        """
+    )
+    # nvd_se has futan_juryo='520' (0.1kg units = 52.0kg) and barei='03' (3 years old)
+    con.execute(
+        """
+        create table pg.nvd_se as
+        select * from (
+          values
+            ('2026', '0611', '30', '01', 'horse_upcoming',
+             '   '::varchar, '520'::varchar, '03'::varchar)
+        ) as v(
+          kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+          ketto_toroku_bango, bataiju, futan_juryo, barei
+        )
+        """
+    )
+    glob = f"{parquet_dir.as_posix()}/race_year=*/*.parquet"
+    subject.stage_base_input(con, glob, "nar")
+    rows = con.execute(
+        """
+        select ketto_toroku_bango, kyori, futan_juryo, barei, bataiju
+        from base_input
+        """
+    ).fetchall()
+    con.close()
+    # rec absent: se fallback used. futan_juryo = 520/10 = 52.0, barei = '03' -> 3.0
+    # kyori falls back to b.kyori (from parquet) = 1400.0
+    assert len(rows) == 1
+    assert rows[0][0] == "horse_upcoming"
+    assert rows[0][1] == pytest.approx(1400.0)
+    assert rows[0][2] == pytest.approx(52.0)
+    assert rows[0][3] == pytest.approx(3.0)
+    # bataiju is blank -> NULL
+    assert rows[0][4] is None
+
+
+def test_stage_base_input_se_fallback_for_upcoming_race_jra(tmp_path: Path) -> None:
+    """For upcoming JRA races rec is absent. futan_juryo and barei must fall back
+    to jvd_se with the same unit convention as NAR (both use 0.1kg / zero-padded)."""
+    parquet_dir = tmp_path / "input"
+    parquet_dir.mkdir()
+    seed_con = duckdb.connect(":memory:")
+    seed_con.execute(
+        """
+        create or replace temp table seed as
+        select * from (
+          values
+            ('jra', '2026', '0614', '05', '01', 1::integer, 'horse_jra_up',
+              '20260614', 2026, 2000::integer)
+        ) as v(
+          source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, umaban,
+          ketto_toroku_bango, race_date, race_year, kyori
+        )
+        """
+    )
+    seed_con.execute(
+        f"copy (select * from seed) to '{parquet_dir.as_posix()}'"
+        " (format parquet, partition_by (race_year), overwrite_or_ignore true)"
+    )
+    seed_con.close()
+
+    con = duckdb.connect(":memory:")
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create table pg.race_entry_corner_features(
+          source varchar, kaisai_nen varchar, kaisai_tsukihi varchar,
+          keibajo_code varchar, race_bango varchar, umaban integer,
+          ketto_toroku_bango varchar, kyori integer, futan_juryo varchar, barei integer
+        )
+        """
+    )
+    # jvd_se has futan_juryo='565' (0.1kg = 56.5kg) and barei='04' (4 years old)
+    con.execute(
+        """
+        create table pg.jvd_se as
+        select * from (
+          values
+            ('2026', '0614', '05', '01', 'horse_jra_up',
+             '464'::varchar, '565'::varchar, '04'::varchar)
+        ) as v(
+          kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+          ketto_toroku_bango, bataiju, futan_juryo, barei
+        )
+        """
+    )
+    glob = f"{parquet_dir.as_posix()}/race_year=*/*.parquet"
+    subject.stage_base_input(con, glob, "jra")
+    rows = con.execute(
+        """
+        select ketto_toroku_bango, kyori, futan_juryo, barei, bataiju
+        from base_input
+        """
+    ).fetchall()
+    con.close()
+    assert len(rows) == 1
+    assert rows[0][0] == "horse_jra_up"
+    assert rows[0][1] == pytest.approx(2000.0)
+    assert rows[0][2] == pytest.approx(56.5)
+    assert rows[0][3] == pytest.approx(4.0)
+    assert rows[0][4] == pytest.approx(464.0)
+
+
+def test_stage_base_input_all_null_when_rec_and_se_both_absent(tmp_path: Path) -> None:
+    """When both rec and se have no matching row, futan_juryo and barei are NULL."""
+    parquet_dir = tmp_path / "input"
+    parquet_dir.mkdir()
+    seed_con = duckdb.connect(":memory:")
+    seed_con.execute(
+        """
+        create or replace temp table seed as
+        select * from (
+          values
+            ('nar', '2026', '0611', '30', '01', 1::integer, 'horse_ghost',
+              '20260611', 2026, 1600::integer)
+        ) as v(
+          source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, umaban,
+          ketto_toroku_bango, race_date, race_year, kyori
+        )
+        """
+    )
+    seed_con.execute(
+        f"copy (select * from seed) to '{parquet_dir.as_posix()}'"
+        " (format parquet, partition_by (race_year), overwrite_or_ignore true)"
+    )
+    seed_con.close()
+
+    con = duckdb.connect(":memory:")
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create table pg.race_entry_corner_features(
+          source varchar, kaisai_nen varchar, kaisai_tsukihi varchar,
+          keibajo_code varchar, race_bango varchar, umaban integer,
+          ketto_toroku_bango varchar, kyori integer, futan_juryo varchar, barei integer
+        )
+        """
+    )
+    con.execute(
+        """
+        create table pg.nvd_se(
+          kaisai_nen varchar, kaisai_tsukihi varchar, keibajo_code varchar,
+          race_bango varchar, ketto_toroku_bango varchar,
+          bataiju varchar, futan_juryo varchar, barei varchar
+        )
+        """
+    )
+    glob = f"{parquet_dir.as_posix()}/race_year=*/*.parquet"
+    subject.stage_base_input(con, glob, "nar")
+    rows = con.execute(
+        """
+        select ketto_toroku_bango, futan_juryo, barei, bataiju
+        from base_input
+        """
+    ).fetchall()
+    con.close()
+    assert len(rows) == 1
+    assert rows[0][0] == "horse_ghost"
+    assert rows[0][1] is None
+    assert rows[0][2] is None
+    assert rows[0][3] is None
 
 
 def test_stage_base_input_end_to_end_emits_null_when_pg_rows_missing(tmp_path: Path) -> None:
@@ -864,6 +1071,8 @@ def test_stage_base_input_end_to_end_emits_null_when_pg_rows_missing(tmp_path: P
 
     This is the documented "row without history" path that downstream stages
     tolerate (group A / B compute NULL because of nullif divisors).
+    Both rec and se have no matching row -> futan_juryo/barei/bataiju all NULL.
+    kyori falls back to b.kyori (parquet) since rec is absent.
     """
     parquet_dir = tmp_path / "input"
     parquet_dir.mkdir()
@@ -874,10 +1083,10 @@ def test_stage_base_input_end_to_end_emits_null_when_pg_rows_missing(tmp_path: P
         select * from (
           values
             ('jra', '2025', '0415', '05', '11', 9::integer, 'horse_z',
-              '20250415', 2025)
+              '20250415', 2025, 1800::integer)
         ) as v(
           source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, umaban,
-          ketto_toroku_bango, race_date, race_year
+          ketto_toroku_bango, race_date, race_year, kyori
         )
         """
     )
@@ -899,11 +1108,13 @@ def test_stage_base_input_end_to_end_emits_null_when_pg_rows_missing(tmp_path: P
         )
         """
     )
+    # jvd_se must include futan_juryo and barei columns (accessed by COALESCE fallback)
     con.execute(
         """
         create table pg.jvd_se(
           kaisai_nen varchar, kaisai_tsukihi varchar, keibajo_code varchar,
-          race_bango varchar, ketto_toroku_bango varchar, bataiju varchar
+          race_bango varchar, ketto_toroku_bango varchar,
+          bataiju varchar, futan_juryo varchar, barei varchar
         )
         """
     )
@@ -916,32 +1127,37 @@ def test_stage_base_input_end_to_end_emits_null_when_pg_rows_missing(tmp_path: P
         """
     ).fetchall()
     con.close()
-    assert rows == [("horse_z", None, None, None, None)]
+    # rec absent: kyori falls back to b.kyori=1800.0; futan/barei/bataiju NULL (se also absent)
+    assert len(rows) == 1
+    assert rows[0][0] == "horse_z"
+    assert rows[0][1] == pytest.approx(1800.0)
+    assert rows[0][2] is None
+    assert rows[0][3] is None
+    assert rows[0][4] is None
 
 
 def test_main_runs_end_to_end_with_stubbed_pg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """End-to-end main(): we stub install_and_attach_pg so no real PG is
     required, and verify the output parquet has the expected new columns +
-    row count.
+    row count. rec is present for both horses -> rec wins COALESCE.
     """
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
     input_dir.mkdir()
     seed_con = duckdb.connect(":memory:")
-    # seed parquet must include umaban so stage_base_input's LEFT JOIN against
-    # pg.race_entry_corner_features can resolve.
+    # seed parquet must include umaban and kyori (b.kyori is the COALESCE fallback).
     seed_con.execute(
         """
         create or replace temp table seed as
         select * from (
           values
             ('jra', '2025', '0415', '05', '11', 1::integer, 'horse_a',
-              '20250415', 2025),
+              '20250415', 2025, 1600::integer),
             ('jra', '2025', '0415', '05', '11', 2::integer, 'horse_b',
-              '20250415', 2025)
+              '20250415', 2025, 1600::integer)
         ) as v(
           source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, umaban,
-          ketto_toroku_bango, race_date, race_year
+          ketto_toroku_bango, race_date, race_year, kyori
         )
         """
     )
@@ -958,19 +1174,19 @@ def test_main_runs_end_to_end_with_stubbed_pg(monkeypatch: pytest.MonkeyPatch, t
             create table pg.race_entry_corner_features as
             select * from (
               values
-                -- Target rows (current race 2025-04-15)
+                -- Target rows (current race 2025-04-15): futan_juryo in kg (56.0/54.0)
                 ('jra', '2025', '0415', '05', '11', 1::integer, 'horse_a',
-                  '20250415'::varchar, 1600::integer, '560'::varchar, 5::integer,
+                  '20250415'::varchar, 1600::integer, 56.0::double, 5::integer,
                   NULL::double, NULL::double),
                 ('jra', '2025', '0415', '05', '11', 2::integer, 'horse_b',
-                  '20250415'::varchar, 1600::integer, '540'::varchar, 4::integer,
+                  '20250415'::varchar, 1600::integer, 54.0::double, 4::integer,
                   NULL::double, NULL::double),
                 -- Past rows for horse_a (eligible history)
                 ('jra', '2025', '0215', '05', '11', 1::integer, 'horse_a',
-                  '20250215'::varchar, 1600::integer, '560'::varchar, 5::integer,
+                  '20250215'::varchar, 1600::integer, 56.0::double, 5::integer,
                   1.0::double, 95.0::double),
                 ('jra', '2024', '1215', '05', '11', 1::integer, 'horse_a',
-                  '20241215'::varchar, 1600::integer, '550'::varchar, 4::integer,
+                  '20241215'::varchar, 1600::integer, 55.0::double, 4::integer,
                   3.0::double, 96.0::double)
             ) as v(
               source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
@@ -979,18 +1195,20 @@ def test_main_runs_end_to_end_with_stubbed_pg(monkeypatch: pytest.MonkeyPatch, t
             )
             """
         )
+        # jvd_se must include futan_juryo and barei columns (used by COALESCE fallback).
+        # rec is present for all rows so se values won't be used, but columns must exist.
         con.execute(
             """
             create table pg.jvd_se as
             select * from (
               values
-                ('2025', '0415', '05', '11', 'horse_a', '480'::varchar),
-                ('2025', '0415', '05', '11', 'horse_b', '460'::varchar),
-                ('2025', '0215', '05', '11', 'horse_a', '478'::varchar),
-                ('2024', '1215', '05', '11', 'horse_a', '482'::varchar)
+                ('2025', '0415', '05', '11', 'horse_a', '480'::varchar, '560'::varchar, '05'::varchar),
+                ('2025', '0415', '05', '11', 'horse_b', '460'::varchar, '540'::varchar, '04'::varchar),
+                ('2025', '0215', '05', '11', 'horse_a', '478'::varchar, '560'::varchar, '05'::varchar),
+                ('2024', '1215', '05', '11', 'horse_a', '482'::varchar, '550'::varchar, '04'::varchar)
             ) as v(
               kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-              ketto_toroku_bango, bataiju
+              ketto_toroku_bango, bataiju, futan_juryo, barei
             )
             """
         )
@@ -1024,11 +1242,11 @@ def test_main_runs_end_to_end_with_stubbed_pg(monkeypatch: pytest.MonkeyPatch, t
     ).fetchall()
     verify_con.close()
     horse_map = {r[0]: r for r in rows}
-    # horse_a: bataiju=480, futan_juryo=560 -> ratio = 560/480
-    assert horse_map["horse_a"][1] == pytest.approx(560.0 / 480.0, rel=1e-6)
+    # horse_a: bataiju=480, futan_juryo=56.0 (rec value, kg) -> ratio = 56.0/480.0
+    assert horse_map["horse_a"][1] == pytest.approx(56.0 / 480.0, rel=1e-6)
     # horse_a has past races -> past_speed_kg_normalized_avg5 is defined
     assert horse_map["horse_a"][3] is not None
-    # horse_b: bataiju=460, futan_juryo=540 -> ratio = 540/460
-    assert horse_map["horse_b"][1] == pytest.approx(540.0 / 460.0, rel=1e-6)
+    # horse_b: bataiju=460, futan_juryo=54.0 (rec value, kg) -> ratio = 54.0/460.0
+    assert horse_map["horse_b"][1] == pytest.approx(54.0 / 460.0, rel=1e-6)
     # horse_b has no past races -> past_speed_kg_normalized_avg5 is NULL
     assert horse_map["horse_b"][3] is None
