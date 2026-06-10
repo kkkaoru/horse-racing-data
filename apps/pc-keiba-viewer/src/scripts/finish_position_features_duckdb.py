@@ -235,6 +235,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "aborting the whole run."
         ),
     )
+    parser.add_argument(
+        "--realtime-odds",
+        type=Path,
+        default=None,
+        dest="realtime_odds",
+        help=(
+            "Path to a parquet/CSV file with columns "
+            "(keibajo_code TEXT, race_bango TEXT, umaban INT, "
+            "tansho_odds_realtime DOUBLE, ninkijun_realtime INT). "
+            "When provided the UPCOMING branch COALESCEs realtime odds "
+            "over the nvd_se/jvd_se fallback so odds_score / popularity_score "
+            "are populated for today's races. Absent → current NULL-fallback "
+            "behaviour (backward-compatible)."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -412,6 +427,15 @@ def _rec_select_from_se_ra(
     kohan_3f) are NULL for unrun races, matching how the model saw NULLs in
     training; finish_position is parsed when present so already-run races on the
     same day keep their outcome.
+
+    When the ``realtime_odds_rt`` temp table is present (loaded by
+    ``stage_realtime_odds_table`` before this query runs) the odds/rank columns
+    COALESCE: realtime value first (direct multiplier, already in the units the
+    formulas expect), then the nvd_se / jvd_se fallback (4-char /10 raw string).
+    An empty ``realtime_odds_rt`` table (created by
+    ``_drop_realtime_odds_table_if_exists``) produces the same result as NULL for
+    every row, so the fallback path is always executed when no realtime data is
+    available — preserving the existing behaviour exactly.
     """
     return f"""
     select
@@ -445,8 +469,14 @@ def _rec_select_from_se_ra(
       cast(null as double) as corner3_norm,
       cast(null as double) as corner4_norm,
       ra.babajotai_code_shiba, ra.babajotai_code_dirt,
-      try_cast(nullif(trim(se.tansho_ninkijun), '') as int) as tansho_ninkijun,
-      try_cast(nullif(trim(se.tansho_odds), '') as double) / 10 as tansho_odds,
+      coalesce(
+        rt.ninkijun_realtime,
+        try_cast(nullif(trim(se.tansho_ninkijun), '') as int)
+      ) as tansho_ninkijun,
+      coalesce(
+        rt.tansho_odds_realtime,
+        try_cast(nullif(trim(se.tansho_odds), '') as double) / 10
+      ) as tansho_odds,
       try_cast(nullif(trim(se.bataiju), '') as int) as bataiju
     from pg.{se_table} se
     join pg.{ra_table} ra
@@ -454,6 +484,10 @@ def _rec_select_from_se_ra(
       and ra.kaisai_tsukihi = se.kaisai_tsukihi
       and ra.keibajo_code = se.keibajo_code
       and ra.race_bango = se.race_bango
+    left join {REALTIME_ODDS_TABLE} rt
+      on rt.keibajo_code = se.keibajo_code
+      and rt.race_bango = se.race_bango
+      and rt.umaban = try_cast(nullif(trim(se.umaban), '') as int)
     where {keibajo_predicate}
       and se.kaisai_nen between '{target_from[:4]}' and '{target_to[:4]}'
       and (se.kaisai_nen || se.kaisai_tsukihi) between '{target_from}' and '{target_to}'
@@ -632,6 +666,71 @@ def stage_ra_table(
     )
 
 
+REALTIME_ODDS_TABLE = "realtime_odds_rt"
+
+
+def stage_realtime_odds_table(con: duckdb.DuckDBPyConnection, path: Path) -> int:
+    """Load a pre-fetched realtime-odds file into a DuckDB temp table.
+
+    Accepts parquet or CSV (auto-detected by DuckDB from the extension).
+    The file must have columns:
+      keibajo_code TEXT, race_bango TEXT, umaban INT,
+      tansho_odds_realtime DOUBLE, ninkijun_realtime INT
+
+    Returns the row count (0 if the file is empty — the COALESCE falls back to
+    the nvd_se / jvd_se value silently).
+    """
+    log_event("source.realtime_odds", "start", 0.0)
+    started = perf_counter()
+    suffix = path.suffix.lower()
+    if suffix in (".parquet", ".pq"):
+        read_expr = f"read_parquet('{path.as_posix()}')"
+    else:
+        read_expr = f"read_csv('{path.as_posix()}', auto_detect=true)"
+    con.execute(
+        f"""
+        create or replace temp table {REALTIME_ODDS_TABLE} as
+        select
+          cast(keibajo_code as varchar) as keibajo_code,
+          cast(race_bango as varchar) as race_bango,
+          cast(umaban as int) as umaban,
+          cast(tansho_odds_realtime as double) as tansho_odds_realtime,
+          cast(ninkijun_realtime as int) as ninkijun_realtime
+        from {read_expr}
+        """
+    )
+    con.execute(
+        f"create index {REALTIME_ODDS_TABLE}_idx "
+        f"on {REALTIME_ODDS_TABLE} (keibajo_code, race_bango, umaban)"
+    )
+    row = con.execute(f"select count(*) from {REALTIME_ODDS_TABLE}").fetchone()
+    rc = int(row[0]) if row is not None else 0
+    log_event("source.realtime_odds", "done", perf_counter() - started, rc)
+    return rc
+
+
+def create_empty_realtime_odds_stub(con: duckdb.DuckDBPyConnection) -> None:
+    """Create an empty realtime_odds_rt stub so COALESCE refs resolve safely.
+
+    Called by ``stage_source_tables`` when no realtime-odds file is provided.
+    The stub has the correct schema (zero rows) so the LEFT JOIN in
+    ``_rec_select_from_se_ra`` compiles and returns NULL for every horse,
+    preserving the existing nvd_se / jvd_se fallback path exactly.
+    """
+    con.execute(
+        f"""
+        create or replace temp table {REALTIME_ODDS_TABLE} as
+        select
+          cast(null as varchar) as keibajo_code,
+          cast(null as varchar) as race_bango,
+          cast(null as int) as umaban,
+          cast(null as double) as tansho_odds_realtime,
+          cast(null as int) as ninkijun_realtime
+        where false
+        """
+    )
+
+
 def _log_source_config(category: str, history_start: str, from_date: str, to_date: str) -> None:
     print(
         json.dumps(
@@ -695,9 +794,18 @@ def stage_source_tables(
     to_date: str,
     category: str,
     upcoming_window: tuple[str, str] | None = None,
+    realtime_odds_path: Path | None = None,
 ) -> None:
     history_start = compute_history_start(from_date, HISTORY_LOOKBACK_YEARS)
     _log_source_config(category, history_start, from_date, to_date)
+    # Realtime-odds table must exist before stage_rec_table builds the upcoming
+    # SELECT (which LEFT JOINs against it). An empty stub is created when no
+    # file is provided so the COALESCE references resolve safely without
+    # conditional SQL generation.
+    if realtime_odds_path is not None:
+        stage_realtime_odds_table(con, realtime_odds_path)
+    else:
+        create_empty_realtime_odds_stub(con)
     stage_rec_table(con, history_start, to_date, category, upcoming_window)
     nar_keibajo_filter = BAN_EI_KEIBAJO_CODE if category == CATEGORY_BAN_EI else None
     stage_se_table(
@@ -2041,11 +2149,12 @@ def stage_source(
     to_date: str,
     category: str,
     upcoming_window: tuple[str, str] | None = None,
+    realtime_odds_path: Path | None = None,
 ) -> None:
     log_event("source.stage", "start", 0.0)
     started = perf_counter()
     install_and_attach_pg(con, pg_url)
-    stage_source_tables(con, from_date, to_date, category, upcoming_window)
+    stage_source_tables(con, from_date, to_date, category, upcoming_window, realtime_odds_path)
     log_event("source.stage", "done", perf_counter() - started)
 
 
@@ -2197,7 +2306,15 @@ def run(args: argparse.Namespace) -> BuildResult:
     try:
         configure_duckdb_session(con, args.threads, args.memory_limit, args.temp_dir)
         heartbeat.set_stage("source.stage")
-        stage_source(con, pg_url, from_date, to_date, args.category, upcoming_window)
+        stage_source(
+            con,
+            pg_url,
+            from_date,
+            to_date,
+            args.category,
+            upcoming_window,
+            args.realtime_odds,
+        )
         heartbeat.set_stage("target.build")
         target_rows = stage_target(con, args.category, from_date, to_date)
         years = get_target_years(con)

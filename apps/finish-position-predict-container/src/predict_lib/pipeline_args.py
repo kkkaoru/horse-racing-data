@@ -189,14 +189,21 @@ def build_base_argv(
     days_ahead: int,
     database_url: str,
     output_dir: Path,
+    realtime_odds_path: Path | None = None,
 ) -> list[str]:
     """Argv for the DuckDB base build in ``--target-date`` (upcoming) mode.
 
     ``--allow-empty-targets`` is always passed in upcoming mode so a category
     with no races on ``target_date`` (e.g. JRA on a NAR-only weekday) writes an
     empty parquet directory and exits 0 instead of aborting the whole pipeline.
+
+    When ``realtime_odds_path`` is provided the ``--realtime-odds`` flag is
+    appended so the DuckDB builder COALESCEs real-time tansho odds (from the
+    hot worker) over the nvd_se / jvd_se fallback for UPCOMING races, reviving
+    ``odds_score`` / ``popularity_score`` at inference time. Absent → the
+    builder falls back to the current NULL-odds path unchanged.
     """
-    return [
+    argv = [
         PYTHON_BIN,
         str(builder_path),
         "--category",
@@ -211,6 +218,9 @@ def build_base_argv(
         str(output_dir),
         "--allow-empty-targets",
     ]
+    if realtime_odds_path is not None:
+        argv += ["--realtime-odds", str(realtime_odds_path)]
+    return argv
 
 
 def _pg_args(script: str, database_url: str) -> list[str]:

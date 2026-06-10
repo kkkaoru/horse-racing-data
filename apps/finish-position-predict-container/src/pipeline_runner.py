@@ -137,6 +137,68 @@ def _final_parquet_dir(category: Category) -> Path:
     return WORK_DIR / f"feat-{category}-v7-final"
 
 
+def _query_upcoming_race_keys(
+    database_url: str,
+    target_date: str,
+    days_ahead: int,
+    category: Category,
+) -> list[tuple[str, str]]:
+    """Query (keibajo_code, race_bango) for upcoming races from Neon.
+
+    Used to drive the per-race realtime-odds fetch so only races that will be
+    predicted receive a GET request. Returns an empty list on any error so the
+    caller falls back to the NULL-odds path gracefully.
+
+    The query reads ``nvd_se`` / ``jvd_se`` for the target window and returns
+    DISTINCT (keibajo_code, race_bango) pairs whose ``kakutei_chakujun`` is
+    blank (UPCOMING). The DuckDB feature build derives ``finish_position`` from
+    the same tables so the race set is consistent.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from db_driver import connect_postgres
+
+    try:
+        from_dt = datetime.strptime(target_date, "%Y%m%d").replace(tzinfo=UTC)
+        to_dt = from_dt + timedelta(days=days_ahead)
+        target_from = target_date
+        target_to = to_dt.strftime("%Y%m%d")
+        if category == "jra":
+            se_table = "jvd_se"
+            keibajo_filter = (
+                "keibajo_code in ('01','02','03','04','05','06','07','08','09','10')"
+            )
+        elif category == "nar":
+            se_table = "nvd_se"
+            keibajo_filter = "keibajo_code <> '83'"
+        else:
+            se_table = "nvd_se"
+            keibajo_filter = "keibajo_code = '83'"
+
+        sql = f"""
+            select distinct keibajo_code, race_bango
+            from {se_table}
+            where kaisai_nen between '{target_from[:4]}' and '{target_to[:4]}'
+              and (kaisai_nen || kaisai_tsukihi) between '{target_from}' and '{target_to}'
+              and {keibajo_filter}
+              and ketto_toroku_bango is not null
+              and (kakutei_chakujun is null or trim(kakutei_chakujun) in ('', '00'))
+            order by keibajo_code, race_bango
+        """
+        conn = connect_postgres(database_url)
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        rows = cursor.fetchall()
+        conn.close()
+        return [(str(r[0]).strip(), str(r[1]).strip()) for r in rows if r[0] and r[1]]
+    except Exception as exc:
+        print(
+            f"[realtime-odds] race-key query failed category={category} error={exc}",
+            file=sys.stderr,
+        )
+        return []
+
+
 def build_upcoming_feature_rows(
     category: Category,
     target_date: str,
@@ -149,11 +211,24 @@ def build_upcoming_feature_rows(
     JRA on a NAR-only weekday). In that case the per-category layer chain is
     skipped — there is nothing to score — and the caller continues with the
     next category without raising.
+
+    A realtime-odds fetch is attempted before the base build; on failure (HTTP
+    error, timeout, empty response) the fetch is skipped gracefully and the
+    build falls back to the existing NULL-odds path so the prediction always
+    completes even when the hot worker is unavailable.
     """
     import pandas as pd
 
+    from realtime_odds_fetcher import fetch_realtime_odds_parquet  # bundled in image
+
     final_dir = _final_parquet_dir(category)
-    built = build_pipeline(category, target_date, days_ahead, database_url, final_dir)
+    race_keys = _query_upcoming_race_keys(database_url, target_date, days_ahead, category)
+    realtime_odds_path = fetch_realtime_odds_parquet(
+        category, target_date, WORK_DIR, race_keys
+    )
+    built = build_pipeline(
+        category, target_date, days_ahead, database_url, final_dir, realtime_odds_path
+    )
     if not built:
         return {}
     frame = pd.read_parquet(final_dir)
@@ -182,12 +257,17 @@ def build_pipeline(
     days_ahead: int,
     database_url: str,
     final_dir: Path,
+    realtime_odds_path: Path | None = None,
 ) -> bool:
     """Run the DuckDB base build then each v7 layer into ``final_dir``.
 
     Returns ``True`` when a populated ``final_dir`` was produced, ``False`` when
     the base build emitted zero target rows (in which case the layer chain is
     skipped because layer scripts cannot read an empty parquet directory).
+
+    When ``realtime_odds_path`` is provided it is forwarded to the DuckDB base
+    build via ``--realtime-odds`` so real-time tansho odds from the hot worker
+    flow into ``odds_score`` / ``popularity_score``.
     """
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     base_dir = WORK_DIR / f"feat-{category}-base"
@@ -199,6 +279,7 @@ def build_pipeline(
             days_ahead,
             database_url,
             base_dir,
+            realtime_odds_path,
         )
     )
     if not has_parquet_output(base_dir):

@@ -523,3 +523,53 @@ def test_relationship_script_is_in_scripts_with_pg_url() -> None:
 
 def test_relationship_category_map_has_exactly_jra_and_nar_keys() -> None:
     assert set(RELATIONSHIP_CATEGORY_BY_CATEGORY.keys()) == {"jra", "nar"}
+
+
+# ---------------------------------------------------------------------------
+# build_base_argv — realtime-odds optional arg
+# ---------------------------------------------------------------------------
+
+
+def test_build_base_argv_without_realtime_odds_omits_flag() -> None:
+    argv = build_base_argv(BUILDER, "nar", "20260610", 0, URL, Path("/tmp/base"))
+    assert "--realtime-odds" not in argv
+
+
+def test_build_base_argv_with_realtime_odds_path_appends_flag() -> None:
+    argv = build_base_argv(
+        BUILDER, "nar", "20260610", 0, URL, Path("/tmp/base"),
+        realtime_odds_path=Path("/tmp/predict-upcoming/realtime-odds-nar.parquet"),
+    )
+    assert "--realtime-odds" in argv
+    assert argv[argv.index("--realtime-odds") + 1] == (
+        "/tmp/predict-upcoming/realtime-odds-nar.parquet"
+    )
+
+
+def test_build_base_argv_with_realtime_odds_still_ends_with_allow_empty_targets() -> None:
+    argv = build_base_argv(
+        BUILDER, "jra", "20260610", 2, URL, Path("/tmp/base"),
+        realtime_odds_path=Path("/tmp/predict-upcoming/realtime-odds-jra.parquet"),
+    )
+    assert "--allow-empty-targets" in argv
+
+
+def test_build_base_argv_realtime_odds_none_produces_same_argv_as_before() -> None:
+    # Passing None explicitly must produce the same result as omitting the arg
+    # so existing callers are unaffected.
+    argv_implicit = build_base_argv(BUILDER, "jra", "20260610", 0, URL, Path("/tmp/base"))
+    argv_explicit_none = build_base_argv(
+        BUILDER, "jra", "20260610", 0, URL, Path("/tmp/base"), realtime_odds_path=None
+    )
+    assert argv_implicit == argv_explicit_none
+
+
+def test_build_base_argv_with_realtime_odds_for_ban_ei_appends_flag() -> None:
+    argv = build_base_argv(
+        BUILDER, "ban-ei", "20260610", 0, URL, Path("/tmp/base"),
+        realtime_odds_path=Path("/tmp/predict-upcoming/realtime-odds-ban-ei.parquet"),
+    )
+    assert "--realtime-odds" in argv
+    assert argv[argv.index("--realtime-odds") + 1] == (
+        "/tmp/predict-upcoming/realtime-odds-ban-ei.parquet"
+    )

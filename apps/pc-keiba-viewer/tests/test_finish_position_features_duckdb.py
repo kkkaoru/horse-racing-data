@@ -964,3 +964,280 @@ def test_nar_subclass_returns_other_for_null_meisho():
 
 def test_nar_subclass_precedence_op_wins_over_a():
     assert _eval_nar_subclass("nar", "30", "「ＯＰ　　Ａ１」") == "OP"
+
+
+# ---------------------------------------------------------------------------
+# --realtime-odds argument parsing
+# ---------------------------------------------------------------------------
+
+
+def test_parse_args_realtime_odds_defaults_to_none() -> None:
+    args = subject.parse_args(["--category", "nar"])
+    assert args.realtime_odds is None
+
+
+def test_parse_args_realtime_odds_accepts_path() -> None:
+    args = subject.parse_args(["--realtime-odds", "/tmp/odds.parquet"])
+    assert args.realtime_odds == Path("/tmp/odds.parquet")
+
+
+# ---------------------------------------------------------------------------
+# stage_realtime_odds_table — parquet load + row count
+# ---------------------------------------------------------------------------
+
+
+def _make_realtime_odds_parquet(tmp_path: Path) -> Path:
+    """Write a minimal realtime-odds parquet to tmp_path and return the path."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    table = pa.table(
+        {
+            "keibajo_code": pa.array(["44", "44"], type=pa.string()),
+            "race_bango": pa.array(["01", "01"], type=pa.string()),
+            "umaban": pa.array([1, 2], type=pa.int32()),
+            "tansho_odds_realtime": pa.array([7.3, 12.5], type=pa.float64()),
+            "ninkijun_realtime": pa.array([1, 2], type=pa.int32()),
+        }
+    )
+    path = tmp_path / "realtime_odds.parquet"
+    pq.write_table(table, str(path))
+    return path
+
+
+def test_stage_realtime_odds_table_loads_parquet(tmp_path: Path) -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    path = _make_realtime_odds_parquet(tmp_path)
+    rc = subject.stage_realtime_odds_table(con, path)
+    assert rc == 2
+    rows = con.execute(
+        "select keibajo_code, race_bango, umaban, tansho_odds_realtime, ninkijun_realtime"
+        f" from {subject.REALTIME_ODDS_TABLE} order by umaban"
+    ).fetchall()
+    assert rows == [("44", "01", 1, 7.3, 1), ("44", "01", 2, 12.5, 2)]
+
+
+def test_stage_realtime_odds_table_empty_parquet_returns_zero(tmp_path: Path) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    import duckdb
+
+    table = pa.table(
+        {
+            "keibajo_code": pa.array([], type=pa.string()),
+            "race_bango": pa.array([], type=pa.string()),
+            "umaban": pa.array([], type=pa.int32()),
+            "tansho_odds_realtime": pa.array([], type=pa.float64()),
+            "ninkijun_realtime": pa.array([], type=pa.int32()),
+        }
+    )
+    path = tmp_path / "empty.parquet"
+    pq.write_table(table, str(path))
+    con = duckdb.connect()
+    rc = subject.stage_realtime_odds_table(con, path)
+    assert rc == 0
+
+
+def test_create_empty_realtime_odds_stub_creates_zero_row_table() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    subject.create_empty_realtime_odds_stub(con)
+    rc_row = con.execute(f"select count(*) from {subject.REALTIME_ODDS_TABLE}").fetchone()
+    assert rc_row is not None
+    assert rc_row[0] == 0
+
+
+# ---------------------------------------------------------------------------
+# stage_source_tables — realtime_odds_path routing
+# ---------------------------------------------------------------------------
+
+
+def test_stage_source_tables_creates_stub_when_no_realtime_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """When realtime_odds_path=None a zero-row stub table is created (no error)."""
+    import duckdb
+
+    con = duckdb.connect()
+
+    # Stub out the PG-reading stage calls so we exercise only the realtime
+    # table setup without needing a real Postgres.
+    monkeypatch.setattr(subject, "install_and_attach_pg", lambda *_: None)
+    monkeypatch.setattr(subject, "stage_rec_table", lambda *_, **__: None)
+    monkeypatch.setattr(subject, "stage_se_table", lambda *_, **__: None)
+    monkeypatch.setattr(subject, "stage_um_table", lambda *_, **__: None)
+    monkeypatch.setattr(subject, "stage_ra_table", lambda *_, **__: None)
+    monkeypatch.setattr(subject, "_stage_empty_jra_stubs", lambda _: None)
+
+    subject.stage_source_tables(con, "20260610", "20260610", "nar", None, None)
+
+    rc_row = con.execute(f"select count(*) from {subject.REALTIME_ODDS_TABLE}").fetchone()
+    assert rc_row is not None
+    assert rc_row[0] == 0
+
+
+def test_stage_source_tables_loads_realtime_odds_when_path_provided(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """When realtime_odds_path is set stage_realtime_odds_table is called."""
+    import duckdb
+
+    con = duckdb.connect()
+    path = _make_realtime_odds_parquet(tmp_path)
+
+    monkeypatch.setattr(subject, "install_and_attach_pg", lambda *_: None)
+    monkeypatch.setattr(subject, "stage_rec_table", lambda *_, **__: None)
+    monkeypatch.setattr(subject, "stage_se_table", lambda *_, **__: None)
+    monkeypatch.setattr(subject, "stage_um_table", lambda *_, **__: None)
+    monkeypatch.setattr(subject, "stage_ra_table", lambda *_, **__: None)
+    monkeypatch.setattr(subject, "_stage_empty_jra_stubs", lambda _: None)
+
+    subject.stage_source_tables(con, "20260610", "20260610", "nar", None, path)
+
+    rc_row = con.execute(f"select count(*) from {subject.REALTIME_ODDS_TABLE}").fetchone()
+    assert rc_row is not None
+    assert rc_row[0] == 2
+
+
+# ---------------------------------------------------------------------------
+# COALESCE behaviour: realtime first, nvd_se fallback, NULL when both absent
+# ---------------------------------------------------------------------------
+
+
+def _eval_coalesce_in_duckdb(
+    se_tansho_odds: str | None,
+    se_tansho_ninkijun: str | None,
+    rt_odds: float | None,
+    rt_rank: int | None,
+) -> tuple[float | None, int | None]:
+    """Run the COALESCE SQL used in _rec_select_from_se_ra via in-memory DuckDB."""
+    import duckdb
+
+    con = duckdb.connect()
+    # Replicate the realtime_odds_rt stub with one row.
+    con.execute(
+        f"""
+        create temp table {subject.REALTIME_ODDS_TABLE} as
+        select
+          cast(?::varchar as varchar) as keibajo_code,
+          cast(?::varchar as varchar) as race_bango,
+          cast(?::int as int) as umaban,
+          cast(?::double as double) as tansho_odds_realtime,
+          cast(?::int as int) as ninkijun_realtime
+        """,
+        ("44", "01", 1, rt_odds, rt_rank),
+    )
+    # Replicate the COALESCE expressions from _rec_select_from_se_ra.
+    rows = con.execute(
+        f"""
+        select
+          coalesce(
+            rt.tansho_odds_realtime,
+            try_cast(nullif(trim(?::varchar), '') as double) / 10
+          ) as tansho_odds,
+          coalesce(
+            rt.ninkijun_realtime,
+            try_cast(nullif(trim(?::varchar), '') as int)
+          ) as tansho_ninkijun
+        from (select 1 as umaban, '44' as keibajo_code, '01' as race_bango) se
+        left join {subject.REALTIME_ODDS_TABLE} rt
+          on rt.keibajo_code = se.keibajo_code
+          and rt.race_bango = se.race_bango
+          and rt.umaban = se.umaban
+        """,
+        (se_tansho_odds, se_tansho_ninkijun),
+    ).fetchone()
+    assert rows is not None
+    return rows[0], rows[1]
+
+
+def test_coalesce_uses_realtime_odds_when_present() -> None:
+    # Realtime = 7.3x (rank 1); nvd_se has stale '0000' (NULL → fallback stays 7.3)
+    odds, rank = _eval_coalesce_in_duckdb("0000", "00", 7.3, 1)
+    assert odds == pytest.approx(7.3)
+    assert rank == 1
+
+
+def test_coalesce_falls_back_to_se_when_realtime_absent() -> None:
+    # No realtime row for this horse → rt cols are NULL → se '0073' / 10 = 7.3
+    odds, rank = _eval_coalesce_in_duckdb("0073", "01", None, None)
+    assert odds == pytest.approx(7.3)
+    assert rank == 1
+
+
+def test_coalesce_returns_zero_from_se_when_both_realtime_absent_and_se_all_zeros() -> None:
+    # No realtime AND se has '0000' (JV-Link "no odds" sentinel = 0.0 after /10).
+    # The COALESCE itself produces 0.0; the downstream legacy_five_cte formula
+    # guards with ``odds_value > 0`` so odds_score is still NULL at feature time.
+    odds, rank = _eval_coalesce_in_duckdb("0000", None, None, None)
+    assert odds == pytest.approx(0.0)
+    assert rank is None
+
+
+def test_coalesce_returns_null_when_se_is_empty_string_and_realtime_absent() -> None:
+    # Truly absent odds in se → empty/NULL → COALESCE yields NULL.
+    odds, rank = _eval_coalesce_in_duckdb("", None, None, None)
+    assert odds is None
+    assert rank is None
+
+
+def test_coalesce_units_realtime_is_direct_multiplier() -> None:
+    # Realtime 1.4x → odds_score = ln(1.4)/ln(300) ≈ 0.059. Verify units are
+    # NOT divided by 10 (which would give 0.14x → different score).
+    import math
+
+    odds, _ = _eval_coalesce_in_duckdb("0014", "01", 1.4, 1)
+    assert odds == pytest.approx(1.4)
+    # odds_score formula: ln(max(odds,1))/ln(300), clamped [0,1]
+    expected_score = math.log(max(1.4, 1.0)) / math.log(300)
+    assert expected_score == pytest.approx(math.log(1.4) / math.log(300))
+
+
+def test_coalesce_partial_realtime_coverage_uses_realtime_for_present_horses() -> None:
+    # Realtime covers umaban=1 but not umaban=2.
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        f"""
+        create temp table {subject.REALTIME_ODDS_TABLE} as
+        select * from (
+          values
+            ('44'::varchar, '01'::varchar, 1::int, 7.3::double, 1::int)
+        ) t(keibajo_code, race_bango, umaban, tansho_odds_realtime, ninkijun_realtime)
+        """
+    )
+    # Horse 1: realtime present
+    row1 = con.execute(
+        f"""
+        select coalesce(rt.tansho_odds_realtime,
+                        try_cast(nullif(trim('0073'), '') as double) / 10)
+        from (select 1 as umaban, '44' as keibajo_code, '01' as race_bango) se
+        left join {subject.REALTIME_ODDS_TABLE} rt
+          on rt.keibajo_code = se.keibajo_code
+          and rt.race_bango = se.race_bango
+          and rt.umaban = se.umaban
+        """
+    ).fetchone()
+    assert row1 is not None
+    assert row1[0] == pytest.approx(7.3)
+
+    # Horse 2: no realtime row → fallback '0125' / 10 = 12.5
+    row2 = con.execute(
+        f"""
+        select coalesce(rt.tansho_odds_realtime,
+                        try_cast(nullif(trim('0125'), '') as double) / 10)
+        from (select 2 as umaban, '44' as keibajo_code, '01' as race_bango) se
+        left join {subject.REALTIME_ODDS_TABLE} rt
+          on rt.keibajo_code = se.keibajo_code
+          and rt.race_bango = se.race_bango
+          and rt.umaban = se.umaban
+        """
+    ).fetchone()
+    assert row2 is not None
+    assert row2[0] == pytest.approx(12.5)
