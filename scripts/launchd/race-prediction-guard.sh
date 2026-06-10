@@ -3,9 +3,10 @@
 #
 # Driven by the LaunchAgent at scripts/launchd/com.kkk4oru.race-prediction-guard.plist:
 #   * JST 00:00 .. 09:00 (10 hourly fires) -> guard TODAY    JST
+#   * JST 10:00 .. 18:00 (9  hourly fires) -> guard TODAY    JST (afternoon band)
 #   * JST 19:00 .. 20:00 (2  hourly fires) -> guard TODAY    JST (evening top-up)
 #   * JST 21:00 .. 23:00 (3  hourly fires) -> guard TOMORROW JST + TODAY JST
-# Total 15 fires/day. Re-runs are idempotent: Neon prediction tables are the
+# Total 24 fires/day. Re-runs are idempotent: Neon prediction tables are the
 # state of truth — if every distinct race_key for TARGET_DATE_ISO already has
 # at least one row in the respective table, the guard exits without kicking.
 #
@@ -538,12 +539,19 @@ fi
 
 # Per-hour dispatch.
 #   0-9   -> TODAY only
+#   10-18 -> TODAY only (afternoon band — ensures afternoon/evening races are
+#             re-predicted after any morning failure and covers the window when
+#             PC-Keiba may eventually publish final odds into nvd_se)
 #   19-20 -> TODAY only (evening top-up)
 #   21-23 -> TODAY + TOMORROW (pre-warm)
 #   else  -> exit (not a scheduled window)
 case "$JST_HOUR" in
   0[0-9])
     log "window=today JST_HOUR=$JST_HOUR (0-9 morning band)"
+    guard_target "$TODAY_DATE" "$TODAY_ISO" 0 "today"
+    ;;
+  1[0-8])
+    log "window=today JST_HOUR=$JST_HOUR (10-18 afternoon band)"
     guard_target "$TODAY_DATE" "$TODAY_ISO" 0 "today"
     ;;
   19|20)

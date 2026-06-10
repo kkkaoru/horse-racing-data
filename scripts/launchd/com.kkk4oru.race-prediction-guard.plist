@@ -11,8 +11,9 @@
     coordination ("kick only if today is incomplete") needs to run somewhere
     that can talk to both Neon and D1 — that is most cleanly here.
 
-  SCHEDULE (15 fires/day in JST):
+  SCHEDULE (24 fires/day in JST):
     * Hour 0..9   (Minute 0) -> guard TODAY    JST
+    * Hour 10..18 (Minute 0) -> guard TODAY    JST (afternoon band)
     * Hour 19..20 (Minute 0) -> guard TODAY    JST (evening top-up)
     * Hour 21..23 (Minute 0) -> guard TODAY + TOMORROW JST (pre-warm)
     macOS launchd uses the device's local timezone, and this machine is
@@ -22,17 +23,23 @@
     via `date -u -v+9H`, so the *which-day-to-guard* logic is robust to TZ
     drift; only the *when-to-fire* depends on the system TZ.
 
-  WHY 0..9 + 19..20 + 21..23:
+  WHY 0..9 + 10..18 + 19..20 + 21..23:
     The 0..9 window is the "race day" window — entries / final odds are
     usually live well before 09:00 JST, and we want predictions ready by
-    the time the user looks. The 19..20 window catches late-evening
-    NAR / Ban-ei races that finish after 18:00 JST so a same-day rerun
-    after lineup changes is still covered. The 21..23 window pre-warms
-    TOMORROW JST AND retries TODAY so the 00:00 fire has less to do and
-    a sleepy Mac at midnight still has something baked the night before.
-    All three windows ALSO kick `discover-urls` when D1 has zero races
-    for the target date, so an empty-D1 morning gets a self-healing nudge
-    before the next tick tries to plan predictions.
+    the time the user looks. The 10..18 afternoon band closes the previous
+    gap that left afternoon and evening races without any re-prediction
+    guard if the 03:00 JST run failed or stalled; it also positions the
+    pipeline to pick up final published odds into nvd_se as soon as
+    PC-Keiba syncs them intra-day (NAR afternoon odds typically land
+    before post time once the operator triggers an update). The 19..20
+    window catches late-evening NAR / Ban-ei races that finish after
+    18:00 JST so a same-day rerun after lineup changes is still covered.
+    The 21..23 window pre-warms TOMORROW JST AND retries TODAY so the
+    00:00 fire has less to do and a sleepy Mac at midnight still has
+    something baked the night before. All four windows ALSO kick
+    `discover-urls` when D1 has zero races for the target date, so an
+    empty-D1 morning gets a self-healing nudge before the next tick tries
+    to plan predictions.
 
   CATCH-UP / IDEMPOTENCY:
     StartCalendarInterval queues missed firings while the Mac is asleep and
@@ -104,6 +111,43 @@
     </dict>
     <dict>
       <key>Hour</key><integer>9</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <!-- 10:00..18:00 JST: guard TODAY JST (9 fires, afternoon band). -->
+    <dict>
+      <key>Hour</key><integer>10</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>11</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>12</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>13</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>14</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>15</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>16</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>17</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>18</integer>
       <key>Minute</key><integer>0</integer>
     </dict>
     <!-- 19:00..20:00 JST: guard TODAY JST (2 fires, evening top-up). -->
