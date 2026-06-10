@@ -477,7 +477,10 @@ def _rec_select_from_se_ra(
         rt.tansho_odds_realtime,
         try_cast(nullif(trim(se.tansho_odds), '') as double) / 10
       ) as tansho_odds,
-      try_cast(nullif(trim(se.bataiju), '') as int) as bataiju
+      coalesce(
+        rt.bataiju_realtime,
+        try_cast(nullif(trim(se.bataiju), '') as int)
+      ) as bataiju
     from pg.{se_table} se
     join pg.{ra_table} ra
       on ra.kaisai_nen = se.kaisai_nen
@@ -675,7 +678,14 @@ def stage_realtime_odds_table(con: duckdb.DuckDBPyConnection, path: Path) -> int
     Accepts parquet or CSV (auto-detected by DuckDB from the extension).
     The file must have columns:
       keibajo_code TEXT, race_bango TEXT, umaban INT,
-      tansho_odds_realtime DOUBLE, ninkijun_realtime INT
+      tansho_odds_realtime DOUBLE, ninkijun_realtime INT,
+      bataiju_realtime INT (nullable — present when weight was available at
+      fetch time, NULL otherwise; COALESCE in _rec_select_from_se_ra falls back
+      to the nvd_se / jvd_se bataiju field for NULL rows).
+
+    The ``bataiju_realtime`` column is loaded with ``try_cast`` so parquet files
+    written before this feature (which lack the column) still load cleanly via
+    DuckDB's column-missing-as-null behaviour.
 
     Returns the row count (0 if the file is empty — the COALESCE falls back to
     the nvd_se / jvd_se value silently).
@@ -695,7 +705,8 @@ def stage_realtime_odds_table(con: duckdb.DuckDBPyConnection, path: Path) -> int
           cast(race_bango as varchar) as race_bango,
           cast(umaban as int) as umaban,
           cast(tansho_odds_realtime as double) as tansho_odds_realtime,
-          cast(ninkijun_realtime as int) as ninkijun_realtime
+          cast(ninkijun_realtime as int) as ninkijun_realtime,
+          try_cast(bataiju_realtime as int) as bataiju_realtime
         from {read_expr}
         """
     )
@@ -716,6 +727,8 @@ def create_empty_realtime_odds_stub(con: duckdb.DuckDBPyConnection) -> None:
     The stub has the correct schema (zero rows) so the LEFT JOIN in
     ``_rec_select_from_se_ra`` compiles and returns NULL for every horse,
     preserving the existing nvd_se / jvd_se fallback path exactly.
+    Includes ``bataiju_realtime`` so the COALESCE in the UPCOMING branch
+    references a known column even when no realtime file was provided.
     """
     con.execute(
         f"""
@@ -725,7 +738,8 @@ def create_empty_realtime_odds_stub(con: duckdb.DuckDBPyConnection) -> None:
           cast(null as varchar) as race_bango,
           cast(null as int) as umaban,
           cast(null as double) as tansho_odds_realtime,
-          cast(null as int) as ninkijun_realtime
+          cast(null as int) as ninkijun_realtime,
+          cast(null as int) as bataiju_realtime
         where false
         """
     )

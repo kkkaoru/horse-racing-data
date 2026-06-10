@@ -998,6 +998,7 @@ def _make_realtime_odds_parquet(tmp_path: Path) -> Path:
             "umaban": pa.array([1, 2], type=pa.int32()),
             "tansho_odds_realtime": pa.array([7.3, 12.5], type=pa.float64()),
             "ninkijun_realtime": pa.array([1, 2], type=pa.int32()),
+            "bataiju_realtime": pa.array([447, None], type=pa.int32()),
         }
     )
     path = tmp_path / "realtime_odds.parquet"
@@ -1013,10 +1014,10 @@ def test_stage_realtime_odds_table_loads_parquet(tmp_path: Path) -> None:
     rc = subject.stage_realtime_odds_table(con, path)
     assert rc == 2
     rows = con.execute(
-        "select keibajo_code, race_bango, umaban, tansho_odds_realtime, ninkijun_realtime"
+        "select keibajo_code, race_bango, umaban, tansho_odds_realtime, ninkijun_realtime, bataiju_realtime"
         f" from {subject.REALTIME_ODDS_TABLE} order by umaban"
     ).fetchall()
-    assert rows == [("44", "01", 1, 7.3, 1), ("44", "01", 2, 12.5, 2)]
+    assert rows == [("44", "01", 1, 7.3, 1, 447), ("44", "01", 2, 12.5, 2, None)]
 
 
 def test_stage_realtime_odds_table_empty_parquet_returns_zero(tmp_path: Path) -> None:
@@ -1031,6 +1032,7 @@ def test_stage_realtime_odds_table_empty_parquet_returns_zero(tmp_path: Path) ->
             "umaban": pa.array([], type=pa.int32()),
             "tansho_odds_realtime": pa.array([], type=pa.float64()),
             "ninkijun_realtime": pa.array([], type=pa.int32()),
+            "bataiju_realtime": pa.array([], type=pa.int32()),
         }
     )
     path = tmp_path / "empty.parquet"
@@ -1048,6 +1050,13 @@ def test_create_empty_realtime_odds_stub_creates_zero_row_table() -> None:
     rc_row = con.execute(f"select count(*) from {subject.REALTIME_ODDS_TABLE}").fetchone()
     assert rc_row is not None
     assert rc_row[0] == 0
+    # Verify bataiju_realtime column is present so COALESCE references resolve.
+    cols = con.execute(
+        f"select column_name from information_schema.columns"
+        f" where table_name = '{subject.REALTIME_ODDS_TABLE}'"
+    ).fetchall()
+    col_names = [c[0] for c in cols]
+    assert "bataiju_realtime" in col_names
 
 
 # ---------------------------------------------------------------------------
@@ -1114,12 +1123,14 @@ def _eval_coalesce_in_duckdb(
     se_tansho_ninkijun: str | None,
     rt_odds: float | None,
     rt_rank: int | None,
-) -> tuple[float | None, int | None]:
+    se_bataiju: str | None = None,
+    rt_bataiju: int | None = None,
+) -> tuple[float | None, int | None, int | None]:
     """Run the COALESCE SQL used in _rec_select_from_se_ra via in-memory DuckDB."""
     import duckdb
 
     con = duckdb.connect()
-    # Replicate the realtime_odds_rt stub with one row.
+    # Replicate the realtime_odds_rt stub with one row including bataiju_realtime.
     con.execute(
         f"""
         create temp table {subject.REALTIME_ODDS_TABLE} as
@@ -1128,9 +1139,10 @@ def _eval_coalesce_in_duckdb(
           cast(?::varchar as varchar) as race_bango,
           cast(?::int as int) as umaban,
           cast(?::double as double) as tansho_odds_realtime,
-          cast(?::int as int) as ninkijun_realtime
+          cast(?::int as int) as ninkijun_realtime,
+          cast(?::int as int) as bataiju_realtime
         """,
-        ("44", "01", 1, rt_odds, rt_rank),
+        ("44", "01", 1, rt_odds, rt_rank, rt_bataiju),
     )
     # Replicate the COALESCE expressions from _rec_select_from_se_ra.
     rows = con.execute(
@@ -1143,29 +1155,33 @@ def _eval_coalesce_in_duckdb(
           coalesce(
             rt.ninkijun_realtime,
             try_cast(nullif(trim(?::varchar), '') as int)
-          ) as tansho_ninkijun
+          ) as tansho_ninkijun,
+          coalesce(
+            rt.bataiju_realtime,
+            try_cast(nullif(trim(?::varchar), '') as int)
+          ) as bataiju
         from (select 1 as umaban, '44' as keibajo_code, '01' as race_bango) se
         left join {subject.REALTIME_ODDS_TABLE} rt
           on rt.keibajo_code = se.keibajo_code
           and rt.race_bango = se.race_bango
           and rt.umaban = se.umaban
         """,
-        (se_tansho_odds, se_tansho_ninkijun),
+        (se_tansho_odds, se_tansho_ninkijun, se_bataiju),
     ).fetchone()
     assert rows is not None
-    return rows[0], rows[1]
+    return rows[0], rows[1], rows[2]
 
 
 def test_coalesce_uses_realtime_odds_when_present() -> None:
     # Realtime = 7.3x (rank 1); nvd_se has stale '0000' (NULL → fallback stays 7.3)
-    odds, rank = _eval_coalesce_in_duckdb("0000", "00", 7.3, 1)
+    odds, rank, _ = _eval_coalesce_in_duckdb("0000", "00", 7.3, 1)
     assert odds == pytest.approx(7.3)
     assert rank == 1
 
 
 def test_coalesce_falls_back_to_se_when_realtime_absent() -> None:
     # No realtime row for this horse → rt cols are NULL → se '0073' / 10 = 7.3
-    odds, rank = _eval_coalesce_in_duckdb("0073", "01", None, None)
+    odds, rank, _ = _eval_coalesce_in_duckdb("0073", "01", None, None)
     assert odds == pytest.approx(7.3)
     assert rank == 1
 
@@ -1174,14 +1190,14 @@ def test_coalesce_returns_zero_from_se_when_both_realtime_absent_and_se_all_zero
     # No realtime AND se has '0000' (JV-Link "no odds" sentinel = 0.0 after /10).
     # The COALESCE itself produces 0.0; the downstream legacy_five_cte formula
     # guards with ``odds_value > 0`` so odds_score is still NULL at feature time.
-    odds, rank = _eval_coalesce_in_duckdb("0000", None, None, None)
+    odds, rank, _ = _eval_coalesce_in_duckdb("0000", None, None, None)
     assert odds == pytest.approx(0.0)
     assert rank is None
 
 
 def test_coalesce_returns_null_when_se_is_empty_string_and_realtime_absent() -> None:
     # Truly absent odds in se → empty/NULL → COALESCE yields NULL.
-    odds, rank = _eval_coalesce_in_duckdb("", None, None, None)
+    odds, rank, _ = _eval_coalesce_in_duckdb("", None, None, None)
     assert odds is None
     assert rank is None
 
@@ -1191,7 +1207,7 @@ def test_coalesce_units_realtime_is_direct_multiplier() -> None:
     # NOT divided by 10 (which would give 0.14x → different score).
     import math
 
-    odds, _ = _eval_coalesce_in_duckdb("0014", "01", 1.4, 1)
+    odds, _, _ = _eval_coalesce_in_duckdb("0014", "01", 1.4, 1)
     assert odds == pytest.approx(1.4)
     # odds_score formula: ln(max(odds,1))/ln(300), clamped [0,1]
     expected_score = math.log(max(1.4, 1.0)) / math.log(300)
@@ -1208,8 +1224,8 @@ def test_coalesce_partial_realtime_coverage_uses_realtime_for_present_horses() -
         create temp table {subject.REALTIME_ODDS_TABLE} as
         select * from (
           values
-            ('44'::varchar, '01'::varchar, 1::int, 7.3::double, 1::int)
-        ) t(keibajo_code, race_bango, umaban, tansho_odds_realtime, ninkijun_realtime)
+            ('44'::varchar, '01'::varchar, 1::int, 7.3::double, 1::int, 447::int)
+        ) t(keibajo_code, race_bango, umaban, tansho_odds_realtime, ninkijun_realtime, bataiju_realtime)
         """
     )
     # Horse 1: realtime present
@@ -1241,3 +1257,29 @@ def test_coalesce_partial_realtime_coverage_uses_realtime_for_present_horses() -
     ).fetchone()
     assert row2 is not None
     assert row2[0] == pytest.approx(12.5)
+
+
+# ---------------------------------------------------------------------------
+# COALESCE bataiju: realtime_realtime first, nvd_se fallback, NULL when both absent
+# ---------------------------------------------------------------------------
+
+
+def test_coalesce_bataiju_uses_realtime_when_present() -> None:
+    _, _, bataiju = _eval_coalesce_in_duckdb("0000", "00", 7.3, 1, "450", 447)
+    assert bataiju == 447
+
+
+def test_coalesce_bataiju_falls_back_to_se_when_realtime_absent() -> None:
+    _, _, bataiju = _eval_coalesce_in_duckdb("0073", "01", None, None, "450", None)
+    assert bataiju == 450
+
+
+def test_coalesce_bataiju_returns_null_when_both_absent() -> None:
+    _, _, bataiju = _eval_coalesce_in_duckdb("0073", "01", None, None, "", None)
+    assert bataiju is None
+
+
+def test_coalesce_bataiju_realtime_overrides_se_value() -> None:
+    # Realtime weight (490) should override stale se weight (450).
+    _, _, bataiju = _eval_coalesce_in_duckdb("0073", "01", 7.3, 1, "450", 490)
+    assert bataiju == 490
