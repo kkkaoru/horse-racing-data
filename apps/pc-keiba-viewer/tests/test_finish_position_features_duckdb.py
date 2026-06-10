@@ -793,7 +793,7 @@ def test_base_features_select_sql_includes_extended_horse_features():
 
 
 def test_per_year_specs_registers_horse_running_style_history():
-    names = [spec["name"] for spec in subject.PER_YEAR_SPECS]
+    names = [spec["name"] for spec in subject.build_per_year_specs(subject.CATEGORY_JRA)]
     assert "horse_running_style_history" in names
 
 
@@ -1283,3 +1283,220 @@ def test_coalesce_bataiju_realtime_overrides_se_value() -> None:
     # Realtime weight (490) should override stale se weight (450).
     _, _, bataiju = _eval_coalesce_in_duckdb("0073", "01", 7.3, 1, "450", 490)
     assert bataiju == 490
+
+
+# ---------------------------------------------------------------------------
+# Fix 0a-2: stage_um_table and stage_ra_table must be called exactly once for JRA
+# ---------------------------------------------------------------------------
+
+
+def test_stage_source_tables_calls_stage_um_table_exactly_once_for_jra(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Duplicate-staging bug fix: jra_um must be staged only once per call."""
+    import duckdb
+
+    con = duckdb.connect()
+    um_calls: list[tuple[object, ...]] = []
+
+    def capture_um(*args: object, **_kwargs: object) -> None:
+        um_calls.append(args)
+
+    monkeypatch.setattr(subject, "install_and_attach_pg", lambda *_: None)
+    monkeypatch.setattr(subject, "stage_rec_table", lambda *_, **__: None)
+    monkeypatch.setattr(subject, "stage_se_table", lambda *_, **__: None)
+    monkeypatch.setattr(subject, "stage_um_table", capture_um)
+    monkeypatch.setattr(subject, "stage_ra_table", lambda *_, **__: None)
+    monkeypatch.setattr(subject, "_stage_empty_jra_stubs", lambda _: None)
+
+    subject.stage_source_tables(con, "20260610", "20260610", "jra", None, None)
+
+    jra_um_calls = [c for c in um_calls if len(c) >= 3 and c[2] == "jra_um"]
+    assert len(jra_um_calls) == 1
+
+
+def test_stage_source_tables_calls_stage_ra_table_exactly_once_for_jra(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Duplicate-staging bug fix: jra_ra must be staged only once per call."""
+    import duckdb
+
+    con = duckdb.connect()
+    ra_calls: list[tuple[object, ...]] = []
+
+    def capture_ra(*args: object, **_kwargs: object) -> None:
+        ra_calls.append(args)
+
+    monkeypatch.setattr(subject, "install_and_attach_pg", lambda *_: None)
+    monkeypatch.setattr(subject, "stage_rec_table", lambda *_, **__: None)
+    monkeypatch.setattr(subject, "stage_se_table", lambda *_, **__: None)
+    monkeypatch.setattr(subject, "stage_um_table", lambda *_, **__: None)
+    monkeypatch.setattr(subject, "stage_ra_table", capture_ra)
+    monkeypatch.setattr(subject, "_stage_empty_jra_stubs", lambda _: None)
+
+    subject.stage_source_tables(con, "20260610", "20260610", "jra", None, None)
+
+    jra_ra_calls = [c for c in ra_calls if len(c) >= 3 and c[2] == "jra_ra"]
+    assert len(jra_ra_calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# Fix 0b: legacy_five_cte — popularity_score / odds_score median fallback
+# ---------------------------------------------------------------------------
+
+
+def _eval_legacy_scores_in_duckdb(
+    ninkijun: int | None,
+    odds_value: float | None,
+    runner_count: int,
+    category: str,
+) -> tuple[float | None, float | None]:
+    """Evaluate popularity_score and odds_score from legacy_five_cte SQL.
+
+    Exercises the COALESCE median fallback by setting up a minimal DuckDB
+    environment with a single-row legacy_target and empty legacy_horse_avg.
+    """
+    import duckdb
+    import math
+
+    con = duckdb.connect()
+
+    # Build the CTE text for the given category.
+    cte_text = subject.legacy_five_cte("true", category)
+
+    # horse_history_base: one row with all needed columns (no history → avg = NULL).
+    con.execute(
+        """
+        create temp table horse_history_base as
+        select
+          'jra'::varchar as source,
+          '2026'::varchar as kaisai_nen,
+          '0101'::varchar as kaisai_tsukihi,
+          '01'::varchar as keibajo_code,
+          '01'::varchar as race_bango,
+          '0000000001'::varchar as ketto_toroku_bango,
+          0.5::double as finish_norm,
+          1::int as recent_rank
+        limit 0
+        """
+    )
+    # target: one row for the horse being scored.
+    con.execute(
+        """
+        create temp table target as
+        select
+          'jra'::varchar as source,
+          '2026'::varchar as kaisai_nen,
+          '0101'::varchar as kaisai_tsukihi,
+          '01'::varchar as keibajo_code,
+          '01'::varchar as race_bango,
+          '0000000001'::varchar as ketto_toroku_bango
+        """
+    )
+    ninkijun_val = f"{ninkijun}::int" if ninkijun is not None else "null::int"
+    odds_val = f"{odds_value}::double" if odds_value is not None else "null::double"
+    runner_val = f"{runner_count}::int"
+    # rec: single row supplying tansho_ninkijun, tansho_odds, shusso_tosu.
+    con.execute(
+        f"""
+        create temp table rec as
+        select
+          'jra'::varchar as source,
+          '2026'::varchar as kaisai_nen,
+          '0101'::varchar as kaisai_tsukihi,
+          '01'::varchar as keibajo_code,
+          '01'::varchar as race_bango,
+          '0000000001'::varchar as ketto_toroku_bango,
+          {ninkijun_val} as tansho_ninkijun,
+          {odds_val} as tansho_odds,
+          {runner_val} as shusso_tosu
+        """
+    )
+    row = con.execute(
+        f"with {cte_text} select popularity_score, odds_score from legacy_features"
+    ).fetchone()
+    assert row is not None
+    pop: float | None = row[0]
+    odds: float | None = row[1]
+    _ = math  # suppress unused import warning
+    return pop, odds
+
+
+def test_legacy_five_cte_popularity_score_uses_computed_value_when_present_jra() -> None:
+    # ninkijun=1 out of 8 runners → score = (1-1)/(8-1) = 0.0
+    pop, _ = _eval_legacy_scores_in_duckdb(1, 5.0, 8, subject.CATEGORY_JRA)
+    assert pop == pytest.approx(0.0)
+
+
+def test_legacy_five_cte_popularity_score_uses_median_fallback_when_null_jra() -> None:
+    # ninkijun=NULL (odds not yet posted) → COALESCE yields JRA median
+    pop, _ = _eval_legacy_scores_in_duckdb(None, None, 8, subject.CATEGORY_JRA)
+    assert pop == pytest.approx(subject.POPULARITY_SCORE_MEDIAN_JRA)
+
+
+def test_legacy_five_cte_odds_score_uses_computed_value_when_present_jra() -> None:
+    import math
+
+    # odds_value=5.0 → score = ln(5)/ln(300) ≈ 0.356
+    _, odds = _eval_legacy_scores_in_duckdb(1, 5.0, 8, subject.CATEGORY_JRA)
+    expected = math.log(5.0) / math.log(300.0)
+    assert odds == pytest.approx(expected)
+
+
+def test_legacy_five_cte_odds_score_uses_median_fallback_when_null_jra() -> None:
+    # odds_value=NULL → COALESCE yields JRA median
+    _, odds = _eval_legacy_scores_in_duckdb(None, None, 8, subject.CATEGORY_JRA)
+    assert odds == pytest.approx(subject.ODDS_SCORE_MEDIAN_JRA)
+
+
+def test_legacy_five_cte_popularity_score_uses_median_fallback_when_null_nar() -> None:
+    # ninkijun=NULL for NAR race → COALESCE yields NAR median
+    pop, _ = _eval_legacy_scores_in_duckdb(None, None, 8, subject.CATEGORY_NAR)
+    assert pop == pytest.approx(subject.POPULARITY_SCORE_MEDIAN_NAR)
+
+
+def test_legacy_five_cte_odds_score_uses_median_fallback_when_null_nar() -> None:
+    # odds_value=NULL for NAR race → COALESCE yields NAR median
+    _, odds = _eval_legacy_scores_in_duckdb(None, None, 8, subject.CATEGORY_NAR)
+    assert odds == pytest.approx(subject.ODDS_SCORE_MEDIAN_NAR)
+
+
+def test_legacy_five_cte_odds_score_uses_median_fallback_when_null_banei() -> None:
+    # Ban-ei shares NAR medians
+    _, odds = _eval_legacy_scores_in_duckdb(None, None, 8, subject.CATEGORY_BAN_EI)
+    assert odds == pytest.approx(subject.ODDS_SCORE_MEDIAN_NAR)
+
+
+def test_legacy_five_cte_popularity_score_not_null_for_any_category() -> None:
+    # Median fallback ensures popularity_score is never NULL even when ninkijun absent
+    for cat in (subject.CATEGORY_JRA, subject.CATEGORY_NAR, subject.CATEGORY_BAN_EI):
+        pop, _ = _eval_legacy_scores_in_duckdb(None, None, 8, cat)
+        assert pop is not None
+
+
+def test_legacy_five_cte_odds_score_not_null_for_any_category() -> None:
+    # Median fallback ensures odds_score is never NULL even when odds absent
+    for cat in (subject.CATEGORY_JRA, subject.CATEGORY_NAR, subject.CATEGORY_BAN_EI):
+        _, odds = _eval_legacy_scores_in_duckdb(None, None, 8, cat)
+        assert odds is not None
+
+
+# ---------------------------------------------------------------------------
+# Fix 0b: _build_per_year_specs — legacy_features cte_builder uses correct category
+# ---------------------------------------------------------------------------
+
+
+def test_build_per_year_specs_legacy_features_uses_jra_median() -> None:
+    specs = subject.build_per_year_specs(subject.CATEGORY_JRA)
+    legacy_spec = next(s for s in specs if s["name"] == "legacy_features")
+    cte_text = legacy_spec["cte_builder"]("true")
+    assert str(subject.ODDS_SCORE_MEDIAN_JRA) in cte_text
+
+
+def test_build_per_year_specs_legacy_features_uses_nar_median() -> None:
+    specs = subject.build_per_year_specs(subject.CATEGORY_NAR)
+    legacy_spec = next(s for s in specs if s["name"] == "legacy_features")
+    cte_text = legacy_spec["cte_builder"]("true")
+    assert str(subject.ODDS_SCORE_MEDIAN_NAR) in cte_text

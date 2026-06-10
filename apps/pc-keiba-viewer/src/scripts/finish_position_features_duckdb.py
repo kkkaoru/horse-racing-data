@@ -82,6 +82,16 @@ SEASON_WINTER = 3
 NEWCOMER_RACE_JOKEN_CODE = "000"
 UMABAN_NORM_MIN_FIELD = 2
 
+# Empirical training-set medians for popularity_score and odds_score (derived
+# from feat-jra-v7-final / feat-nar-v7-baba training parquets, finish_position
+# IS NOT NULL rows only).  Used as COALESCE fallback at inference time when
+# realtime odds are not yet available (UPCOMING races), so the model receives
+# the median rather than NULL.
+POPULARITY_SCORE_MEDIAN_JRA: float = 0.5000
+POPULARITY_SCORE_MEDIAN_NAR: float = 0.5000
+ODDS_SCORE_MEDIAN_JRA: float = 0.5664
+ODDS_SCORE_MEDIAN_NAR: float = 0.5048
+
 # NAR per-class routing labels. The NAR JV feed reports kyoso_joken_code='000' for
 # every race, so the actual class signal lives in the free-text meisho field
 # (kyoso_joken_meisho, e.g. "「　　　Ｃ２　」"). nar_subclass derives a clean
@@ -835,8 +845,6 @@ def stage_source_tables(
     stage_se_table(con, "source.jra_se", "jra_se", "jvd_se", history_start, to_date)
     stage_um_table(con, "source.jra_um", "jra_um", "jvd_um")
     stage_ra_table(con, "source.jra_ra", "jra_ra", "jvd_ra", from_date, to_date)
-    stage_um_table(con, "source.jra_um", "jra_um", "jvd_um")
-    stage_ra_table(con, "source.jra_ra", "jra_ra", "jvd_ra", from_date, to_date)
 
 
 def build_target_table(con: duckdb.DuckDBPyConnection, category: str, from_date: str, to_date: str) -> None:
@@ -1426,7 +1434,15 @@ def recent_form_cte() -> str:
     """
 
 
-def legacy_five_cte(target_filter: str = "true") -> str:
+def legacy_five_cte(target_filter: str = "true", category: str = CATEGORY_JRA) -> str:
+    # Select empirical training medians by category.  Ban-ei shares NAR medians
+    # as both are NAR-feed races with similar odds distributions.
+    popularity_median = (
+        POPULARITY_SCORE_MEDIAN_JRA if category == CATEGORY_JRA else POPULARITY_SCORE_MEDIAN_NAR
+    )
+    odds_median = (
+        ODDS_SCORE_MEDIAN_JRA if category == CATEGORY_JRA else ODDS_SCORE_MEDIAN_NAR
+    )
     return f"""
     legacy_horse_avg as (
       select source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango,
@@ -1450,12 +1466,18 @@ def legacy_five_cte(target_filter: str = "true") -> str:
       select t.source, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango, t.ketto_toroku_bango,
         lha.avg_finish,
         lha.recent_finish,
-        case when t.runner_count > 1 and t.ninkijun is not null
-             then greatest(0::double, least(1::double, (t.ninkijun - 1)::double / nullif(t.runner_count - 1, 0)))
-             else null end as popularity_score,
-        case when t.odds_value is not null and t.odds_value > 0
-             then greatest(0::double, least(1::double, ln(greatest(t.odds_value, 1::double)) / ln(300::double)))
-             else null end as odds_score
+        coalesce(
+          case when t.runner_count > 1 and t.ninkijun is not null
+               then greatest(0::double, least(1::double, (t.ninkijun - 1)::double / nullif(t.runner_count - 1, 0)))
+               else null end,
+          {popularity_median}::double
+        ) as popularity_score,
+        coalesce(
+          case when t.odds_value is not null and t.odds_value > 0
+               then greatest(0::double, least(1::double, ln(greatest(t.odds_value, 1::double)) / ln(300::double)))
+               else null end,
+          {odds_median}::double
+        ) as odds_score
       from legacy_target t
       left join legacy_horse_avg lha using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
     )
@@ -2092,24 +2114,31 @@ def materialize_target_current_bataiju(con: duckdb.DuckDBPyConnection) -> int:
     return rc
 
 
-PER_YEAR_SPECS: list[DerivedStageSpec] = [
-    {"name": "horse_career", "cte_builder": lambda _: horse_career_cte(), "final_cte": "horse_career"},
-    {"name": "recent_form", "cte_builder": lambda _: recent_form_cte(), "final_cte": "recent_form"},
-    {"name": "legacy_features", "cte_builder": legacy_five_cte, "final_cte": "legacy_features"},
-    {"name": "weight_agg", "cte_builder": weight_cte, "final_cte": "weight_agg"},
-    {
-        "name": "horse_running_style_history",
-        "cte_builder": horse_running_style_history_cte,
-        "final_cte": "horse_running_style_history",
-    },
-]
+def build_per_year_specs(category: str) -> list[DerivedStageSpec]:
+    return [
+        {"name": "horse_career", "cte_builder": lambda _: horse_career_cte(), "final_cte": "horse_career"},
+        {"name": "recent_form", "cte_builder": lambda _: recent_form_cte(), "final_cte": "recent_form"},
+        {
+            "name": "legacy_features",
+            "cte_builder": lambda tf, cat=category: legacy_five_cte(tf, cat),
+            "final_cte": "legacy_features",
+        },
+        {"name": "weight_agg", "cte_builder": weight_cte, "final_cte": "weight_agg"},
+        {
+            "name": "horse_running_style_history",
+            "cte_builder": horse_running_style_history_cte,
+            "final_cte": "horse_running_style_history",
+        },
+    ]
 
 
 def stage_horse_history_derived(
     con: duckdb.DuckDBPyConnection,
     years: list[int],
     heartbeat: Heartbeat,
+    category: str = CATEGORY_JRA,
 ) -> None:
+    per_year_specs = build_per_year_specs(category)
     log_event("horse_history_derived", "start", 0.0)
     overall_start = perf_counter()
     heartbeat.set_substage("se_lookup")
@@ -2122,11 +2151,11 @@ def stage_horse_history_derived(
         base_start = perf_counter()
         base_rows = materialize_horse_history_base(con, year_filter)
         log_event(f"horse_history_base.year{year}", "done", perf_counter() - base_start, base_rows)
-        for spec in PER_YEAR_SPECS:
+        for spec in per_year_specs:
             stage_start = perf_counter()
             execute_derived_stage(con, spec, year_filter, idx == 0)
             log_event(f"{spec['name']}.year{year}", "done", perf_counter() - stage_start)
-    for spec in PER_YEAR_SPECS:
+    for spec in per_year_specs:
         row_result = con.execute(f"select count(*) from {spec['final_cte']}").fetchone()
         rows = int(row_result[0]) if row_result is not None else 0
         log_event(f"{spec['name']}.total", "done", 0.0, rows)
@@ -2338,7 +2367,7 @@ def run(args: argparse.Namespace) -> BuildResult:
             log_event("run", "skip", perf_counter() - overall_started, 0)
             return build_empty_result(args.output_dir, perf_counter() - overall_started)
         heartbeat.set_stage("horse_history_derived")
-        stage_horse_history_derived(con, years, heartbeat)
+        stage_horse_history_derived(con, years, heartbeat, args.category)
         stage_partner_features(con, years, heartbeat)
         heartbeat.set_stage("pedigree")
         materialize_pedigree_stats(con, args.category)
