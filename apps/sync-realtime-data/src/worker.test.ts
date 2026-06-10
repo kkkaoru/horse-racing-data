@@ -22,6 +22,7 @@ import {
   getPremiumPaddockRetryAfter,
   getPremiumPaddockRetryDelaySeconds,
   getRaceStart,
+  horseWeightRaceKeyFromRequest,
   isDue,
   isPremiumRaceDiscoveryTick,
   isPremiumRaceJob,
@@ -1125,4 +1126,38 @@ it("resolveRetryLockMinutes throws when called with the non-retry outcome give-u
   expect(() => resolveRetryLockMinutes("give-up")).toThrowError(
     "resolveRetryLockMinutes called with non-retry outcome: give-up",
   );
+});
+
+it("horseWeightRaceKeyFromRequest parses a percent-encoded nar race key", () => {
+  expect(
+    horseWeightRaceKeyFromRequest(
+      new URL("https://x.test/api/horse-weight/nar%3A2026%3A0610%3A44%3A01"),
+    ),
+  ).toBe("nar:2026:0610:44:01");
+});
+
+it("horseWeightRaceKeyFromRequest parses a percent-encoded jra race key", () => {
+  expect(
+    horseWeightRaceKeyFromRequest(
+      new URL("https://x.test/api/horse-weight/jra%3A2026%3A0607%3A05%3A11"),
+    ),
+  ).toBe("jra:2026:0607:05:11");
+});
+
+it("horseWeightRaceKeyFromRequest returns null for a non-matching path", () => {
+  expect(horseWeightRaceKeyFromRequest(new URL("https://x.test/api/other"))).toBeNull();
+});
+
+it("horseWeightRaceKeyFromRequest returns null when race key has wrong source", () => {
+  expect(
+    horseWeightRaceKeyFromRequest(
+      new URL("https://x.test/api/horse-weight/bad%3A2026%3A0610%3A44%3A01"),
+    ),
+  ).toBeNull();
+});
+
+it("horseWeightRaceKeyFromRequest returns null when race key has wrong format", () => {
+  expect(
+    horseWeightRaceKeyFromRequest(new URL("https://x.test/api/horse-weight/not-a-race-key")),
+  ).toBeNull();
 });

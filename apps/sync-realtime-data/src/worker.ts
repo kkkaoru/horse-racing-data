@@ -3651,6 +3651,22 @@ export const raceKeyFromRequest = (url: URL): string | null => {
   return raceKeyFromRealtimePath(url.pathname);
 };
 
+// Flat horse-weight endpoint: GET /api/horse-weight/{percent-encoded raceKey}
+// Used by the finish-position-predict container to read bataiju for upcoming
+// races (available in D1 ~30-40 min before post time via the weight watchdog).
+// Returns the HorseWeightSnapshot JSON from HORSE_WEIGHT_DO, or 204 when no
+// snapshot has been stored yet. Race key format mirrors /api/odds/{raceKey}:
+//   {source}:{YYYY}:{MMDD}:{keibajo_code}:{race_bango}  (percent-encoded)
+// e.g. /api/horse-weight/nar%3A2026%3A0610%3A44%3A01
+export const horseWeightRaceKeyFromRequest = (url: URL): string | null => {
+  const match = url.pathname.match(/^\/api\/horse-weight\/(.+)$/u);
+  if (!match?.[1]) return null;
+  const decoded = decodeURIComponent(match[1]);
+  // Validate race key shape: {jra|nar}:{YYYY}:{MMDD}:{KK}:{RR}
+  if (!/^(jra|nar):\d{4}:\d{4}:[0-9A-Z]{2}:\d{2}$/u.test(decoded)) return null;
+  return decoded;
+};
+
 const horseWeightsStreamPathRegex =
   /^\/api\/(jra|nar)\/races\/(\d{4})\/(\d{2})\/(\d{2})\/([0-9A-Z]{2})\/(\d{2})\/horse-weights-stream$/u;
 const horseWeightsLatestPathRegex =
@@ -3980,6 +3996,14 @@ export default {
         env.HORSE_WEIGHT_DO.idFromName(horseWeightsLatestRaceKey),
       );
       return proxyHorseWeightLatestFromStub(latestStub);
+    }
+
+    const horseWeightFlatRaceKey = horseWeightRaceKeyFromRequest(url);
+    if (horseWeightFlatRaceKey && request.method === "GET") {
+      const flatStub = env.HORSE_WEIGHT_DO.get(
+        env.HORSE_WEIGHT_DO.idFromName(horseWeightFlatRaceKey),
+      );
+      return proxyHorseWeightLatestFromStub(flatStub);
     }
 
     const raceTrendQuery = raceTrendDailyTrackQueryFromRequest(url);

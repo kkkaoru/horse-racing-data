@@ -16,12 +16,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from realtime_odds_fetcher import (
     HOT_WORKER_BASE_URL,
+    WEIGHT_WORKER_BASE_URL,
     RealtimeOddsFetcher,
     build_race_key,
     encode_race_key,
     extract_rows,
+    extract_weight_map,
     fetch_odds_for_race,
     fetch_realtime_odds_parquet,
+    fetch_weight_for_race,
+    merge_weight_into_rows,
 )
 
 # ruff wants uppercase-before-lowercase; reorder alphabetically
@@ -292,6 +296,7 @@ def test_fetch_realtime_odds_parquet_writes_parquet_on_success(
         "umaban",
         "tansho_odds_realtime",
         "ninkijun_realtime",
+        "bataiju_realtime",
     }
     assert list(df.sort_values("umaban")["tansho_odds_realtime"]) == [7.3, 12.5]
 
@@ -324,3 +329,250 @@ def test_realtime_odds_fetcher_protocol_is_satisfied_by_stub() -> None:
     """Confirm _StubFetcher satisfies the Protocol (runtime check)."""
     stub = _StubFetcher({})
     assert isinstance(stub, RealtimeOddsFetcher)
+
+
+# ---------------------------------------------------------------------------
+# extract_weight_map — JSON response parsing for horse weight
+# ---------------------------------------------------------------------------
+
+
+def testextract_weight_map_returns_correct_map() -> None:
+    response: dict[str, object] = {
+        "fetchedAt": "2026-06-10T14:00:00+09:00",
+        "horses": [
+            {"horseNumber": 1, "horseName": "TestHorse", "weight": 447,
+             "changeSign": "+", "changeAmount": 2},
+            {"horseNumber": 2, "horseName": "OtherHorse", "weight": 500,
+             "changeSign": "0", "changeAmount": 0},
+        ],
+    }
+    result = extract_weight_map(response)
+    assert result == {1: 447, 2: 500}
+
+
+def testextract_weight_map_returns_empty_when_horses_absent() -> None:
+    response: dict[str, object] = {"fetchedAt": "2026-06-10T14:00:00+09:00"}
+    assert extract_weight_map(response) == {}
+
+
+def testextract_weight_map_returns_empty_when_horses_not_list() -> None:
+    response: dict[str, object] = {"horses": "bad"}
+    assert extract_weight_map(response) == {}
+
+
+def testextract_weight_map_skips_entries_with_missing_fields() -> None:
+    response: dict[str, object] = {
+        "horses": [
+            {"horseName": "NoNumber", "weight": 400},  # missing horseNumber
+            {"horseNumber": 2, "horseName": "NoWeight"},  # missing weight
+            {"horseNumber": 3, "horseName": "Valid", "weight": 450},
+        ]
+    }
+    result = extract_weight_map(response)
+    assert result == {3: 450}
+
+
+def testextract_weight_map_skips_non_dict_entries() -> None:
+    response: dict[str, object] = {
+        "horses": [None, "bad", {"horseNumber": 1, "weight": 450}]
+    }
+    result = extract_weight_map(response)
+    assert result == {1: 450}
+
+
+def testextract_weight_map_skips_zero_and_negative_weight() -> None:
+    response: dict[str, object] = {
+        "horses": [
+            {"horseNumber": 1, "weight": 0},
+            {"horseNumber": 2, "weight": -1},
+            {"horseNumber": 3, "weight": 450},
+        ]
+    }
+    result = extract_weight_map(response)
+    assert result == {3: 450}
+
+
+def testextract_weight_map_handles_string_number_fields() -> None:
+    response: dict[str, object] = {
+        "horses": [
+            {"horseNumber": "1", "weight": "447"},
+        ]
+    }
+    result = extract_weight_map(response)
+    assert result == {1: 447}
+
+
+def testextract_weight_map_skips_unconvertible_fields() -> None:
+    response: dict[str, object] = {
+        "horses": [
+            {"horseNumber": "bad", "weight": 450},
+            {"horseNumber": 2, "weight": "bad"},
+            {"horseNumber": 3, "weight": 460},
+        ]
+    }
+    result = extract_weight_map(response)
+    assert result == {3: 460}
+
+
+# ---------------------------------------------------------------------------
+# fetch_weight_for_race — Protocol injection (no network)
+# ---------------------------------------------------------------------------
+
+
+def testfetch_weight_for_race_calls_correct_url() -> None:
+    encoded_key = "nar%3A2026%3A0610%3A44%3A01"
+    expected_url = f"{WEIGHT_WORKER_BASE_URL}/{encoded_key}"
+    stub = _StubFetcher(
+        {expected_url: {"horses": [{"horseNumber": 1, "weight": 447}]}}
+    )
+    result = fetch_weight_for_race(stub, "nar", "20260610", "44", "01")
+    assert stub.calls == [expected_url]
+    assert result == {1: 447}
+
+
+def testfetch_weight_for_race_returns_empty_on_error() -> None:
+    class _ErrorFetcher:
+        def fetch(self, url: str, timeout: float) -> dict[str, object]:
+            raise OSError("connection refused")
+
+    result = fetch_weight_for_race(_ErrorFetcher(), "nar", "20260610", "44", "01")
+    assert result == {}
+
+
+def testfetch_weight_for_race_returns_empty_when_no_horses() -> None:
+    encoded_key = "nar%3A2026%3A0610%3A44%3A02"
+    url = f"{WEIGHT_WORKER_BASE_URL}/{encoded_key}"
+    stub = _StubFetcher({url: {}})  # response has no "horses" key
+    result = fetch_weight_for_race(stub, "nar", "20260610", "44", "02")
+    assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# merge_weight_into_rows
+# ---------------------------------------------------------------------------
+
+
+def testmerge_weight_into_rows_merges_by_umaban() -> None:
+    odds_rows = [
+        ("44", "01", 1, 7.3, 1),
+        ("44", "01", 2, 12.5, 2),
+    ]
+    weight_map = {1: 447, 2: 500}
+    result = merge_weight_into_rows(odds_rows, weight_map)
+    assert result == [
+        ("44", "01", 1, 7.3, 1, 447),
+        ("44", "01", 2, 12.5, 2, 500),
+    ]
+
+
+def testmerge_weight_into_rows_uses_none_for_missing_umaban() -> None:
+    odds_rows = [
+        ("44", "01", 1, 7.3, 1),
+        ("44", "01", 2, 12.5, 2),
+    ]
+    weight_map = {1: 447}  # umaban=2 not in weight map
+    result = merge_weight_into_rows(odds_rows, weight_map)
+    assert result == [
+        ("44", "01", 1, 7.3, 1, 447),
+        ("44", "01", 2, 12.5, 2, None),
+    ]
+
+
+def testmerge_weight_into_rows_empty_weight_map_gives_all_none() -> None:
+    odds_rows = [("44", "01", 1, 7.3, 1)]
+    result = merge_weight_into_rows(odds_rows, {})
+    assert result == [("44", "01", 1, 7.3, 1, None)]
+
+
+def testmerge_weight_into_rows_empty_odds_rows_returns_empty() -> None:
+    result = merge_weight_into_rows([], {1: 447})
+    assert result == []
+
+
+# ---------------------------------------------------------------------------
+# fetch_realtime_odds_parquet — bataiju_realtime in written parquet
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_realtime_odds_parquet_includes_bataiju_realtime_when_weight_available(
+    tmp_path: Path,
+) -> None:
+    """When weight fetch succeeds bataiju_realtime is populated in the parquet."""
+    import pandas as pd
+
+    def _make_odds_url(keibajo: str, race: str) -> str:
+        import urllib.parse
+        key = f"nar:2026:0610:{keibajo}:{race}"
+        encoded = urllib.parse.quote(key, safe="")
+        return f"{HOT_WORKER_BASE_URL}/{encoded}"
+
+    def _make_weight_url(keibajo: str, race: str) -> str:
+        import urllib.parse
+        key = f"nar:2026:0610:{keibajo}:{race}"
+        encoded = urllib.parse.quote(key, safe="")
+        return f"{WEIGHT_WORKER_BASE_URL}/{encoded}"
+
+    responses: dict[str, dict[str, object]] = {
+        _make_odds_url("44", "01"): {
+            "latest": {
+                "tansho": [
+                    {"combination": "1", "odds": 7.3, "rank": 1},
+                ]
+            }
+        },
+        _make_weight_url("44", "01"): {
+            "horses": [{"horseNumber": 1, "weight": 447}]
+        },
+    }
+    stub = _StubFetcher(responses)
+
+    result = fetch_realtime_odds_parquet(
+        "nar",
+        "20260610",
+        tmp_path,
+        race_keys=[("44", "01")],
+        fetcher=stub,
+    )
+
+    assert result is not None
+    df = pd.read_parquet(result)
+    assert len(df) == 1
+    assert df.iloc[0]["bataiju_realtime"] == 447
+
+
+def test_fetch_realtime_odds_parquet_bataiju_is_none_when_weight_fetch_fails(
+    tmp_path: Path,
+) -> None:
+    """When weight fetch fails bataiju_realtime is None (not a crash)."""
+    import pandas as pd
+
+    def _make_odds_url(keibajo: str, race: str) -> str:
+        import urllib.parse
+        key = f"nar:2026:0610:{keibajo}:{race}"
+        encoded = urllib.parse.quote(key, safe="")
+        return f"{HOT_WORKER_BASE_URL}/{encoded}"
+
+    # Only odds URL is in the stub; weight URL raises OSError.
+    responses: dict[str, dict[str, object]] = {
+        _make_odds_url("44", "03"): {
+            "latest": {
+                "tansho": [
+                    {"combination": "1", "odds": 5.0, "rank": 1},
+                ]
+            }
+        },
+    }
+    stub = _StubFetcher(responses)
+
+    result = fetch_realtime_odds_parquet(
+        "nar",
+        "20260610",
+        tmp_path,
+        race_keys=[("44", "03")],
+        fetcher=stub,
+    )
+
+    assert result is not None
+    df = pd.read_parquet(result)
+    assert len(df) == 1
+    assert df.iloc[0]["bataiju_realtime"] is None or pd.isna(df.iloc[0]["bataiju_realtime"])

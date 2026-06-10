@@ -1,8 +1,8 @@
-"""Fetch per-race realtime tansho odds from the hot worker and write a parquet.
+"""Fetch per-race realtime tansho odds and bataiju from the Cloudflare workers.
 
 This module is excluded from the coverage gate (only ``predict_lib`` is
 measured) because it performs live HTTP I/O against the public Cloudflare
-hot-worker endpoint. It is verified at deploy time, not in CI unit tests.
+worker endpoints. It is verified at deploy time, not in CI unit tests.
 
 The ``RealtimeOddsFetcher`` Protocol makes the HTTP layer injectable so
 pipeline_runner tests can stub the fetcher without patching ``urllib``.
@@ -12,13 +12,18 @@ Flow per category run:
      the supplied database connection (already opened by predict_upcoming.py).
   2. For each race key call
      ``GET https://sync-realtime-data-hot.kkk4oru.com/api/odds/{raceKey}``
-     (no auth required). Timeout = 5 s. Failure of ANY individual request is
-     logged and treated as "no odds for that race" — the COALESCE in the
-     DuckDB builder then falls back to the nvd_se / jvd_se value (still NULL
+     (hot worker, no auth required). Timeout = 5 s. Failure of ANY individual
+     request is logged and treated as "no odds for that race" — the COALESCE in
+     the DuckDB builder then falls back to the nvd_se / jvd_se value (still NULL
      for pre-sync upcoming races, same as before this feature).
-  3. Collect rows: (keibajo_code, race_bango, umaban, tansho_odds_realtime,
-     ninkijun_realtime) from the latest snapshot in each response.
-  4. Write the collected rows to a parquet file under ``work_dir`` and return
+  3. Also fetch
+     ``GET https://sync-realtime-data.kkk4oru.com/api/horse-weight/{raceKey}``
+     (main worker, no auth required). Timeout = 5 s. Failure is swallowed; the
+     DuckDB builder then COALESCEs the bataiju realtime value first, then falls
+     back to the nvd_se/jvd_se raw string field.
+  4. Collect rows: (keibajo_code, race_bango, umaban, tansho_odds_realtime,
+     ninkijun_realtime, bataiju_realtime) merging odds + weight by umaban.
+  5. Write the collected rows to a parquet file under ``work_dir`` and return
      the path. Returns ``None`` when zero rows were collected (empty-path).
 
 Race key construction:
@@ -26,14 +31,11 @@ Race key construction:
   e.g.  nar:2026:0610:44:01
   Colons must be percent-encoded in the URL path segment: nar%3A2026%3A...
 
-Units note (verified against feasibility report §3):
-  D1 odds column = direct multiplier (e.g. 7.3).
-  The DuckDB builder's COALESCE uses this value directly for the formula
-  ``ln(max(odds, 1)) / ln(300)`` — no divide-by-10 needed (unlike nvd_se's
-  4-char /10 raw string path).
-  D1 rank column = ninkijun, 1 = favourite (ascending) — same convention as
-  nvd_se tansho_ninkijun. The builder's popularity_score formula
-  ``(ninkijun-1) / (runner_count-1)`` works unchanged.
+Units notes:
+  D1 odds column = direct multiplier (e.g. 7.3). No divide-by-10.
+  D1 rank column = ninkijun, 1 = favourite (ascending). Same as nvd_se.
+  D1 / DO weight column = integer kg (e.g. 447). Same units as nvd_se.bataiju
+  (which is also a raw integer-string, e.g. "447"). No conversion needed.
 """
 
 from __future__ import annotations
@@ -46,7 +48,16 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 HOT_WORKER_BASE_URL: str = "https://sync-realtime-data-hot.kkk4oru.com/api/odds"
+WEIGHT_WORKER_BASE_URL: str = "https://sync-realtime-data.kkk4oru.com/api/horse-weight"
 FETCH_TIMEOUT_SECONDS: float = 5.0
+
+# Cloudflare WAF blocks Python's default User-Agent (empty / "Python-urllib/3.x").
+# Any explicit, non-empty UA string passes. We use a descriptive internal UA so
+# logs on the worker side are legible and clearly identify the predict container.
+_REQUEST_HEADERS: dict[str, str] = {
+    "Accept": "application/json",
+    "User-Agent": "horse-racing-data-predict/1.0",
+}
 
 # NAR keibajo_code for Ban-ei (Obihiro). Ban-ei odds ARE in D1 (confirmed in
 # feasibility report), so Ban-ei uses the same fetch path as regular NAR.
@@ -76,10 +87,17 @@ class RealtimeOddsFetcher(Protocol):
 
 
 class HttpRealtimeOddsFetcher:
-    """Production fetcher: plain ``urllib.request`` GET (no auth needed)."""
+    """Production fetcher: plain ``urllib.request`` GET with explicit headers.
+
+    Cloudflare WAF (protecting both the hot worker and the main worker) rejects
+    requests with Python's default empty User-Agent with HTTP 403.  Setting an
+    explicit ``User-Agent`` (any non-empty string) and ``Accept`` header makes
+    every request pass the WAF without weakening the graceful-fallback logic.
+    """
 
     def fetch(self, url: str, timeout: float) -> dict[str, object]:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        req = urllib.request.Request(url, headers=_REQUEST_HEADERS)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")
         result: dict[str, object] = json.loads(raw)
         return result
@@ -135,6 +153,56 @@ def extract_rows(
     return rows
 
 
+def extract_weight_map(response: dict[str, object]) -> dict[int, int]:
+    """Extract ``{umaban -> bataiju_kg}`` from a horse-weight response.
+
+    Returns an empty dict when the response has no ``horses`` list or when
+    individual entries are malformed (graceful degradation — the DuckDB builder
+    falls back to the nvd_se field for missing umaban keys).
+    """
+    horses = response.get("horses")
+    if not isinstance(horses, list):
+        return {}
+    result: dict[int, int] = {}
+    for entry in horses:
+        if not isinstance(entry, dict):
+            continue
+        horse_number = entry.get("horseNumber")
+        weight_val = entry.get("weight")
+        if horse_number is None or weight_val is None:
+            continue
+        try:
+            umaban = int(str(horse_number).strip())
+            bataiju = int(weight_val)
+        except (ValueError, TypeError):
+            continue
+        if bataiju > 0:
+            result[umaban] = bataiju
+    return result
+
+
+def fetch_weight_for_race(
+    fetcher: RealtimeOddsFetcher,
+    source: str,
+    target_date: str,
+    keibajo_code: str,
+    race_bango: str,
+) -> dict[int, int]:
+    """Fetch bataiju map ``{umaban -> kg}`` for one race; empty dict on any error."""
+    race_key = build_race_key(source, target_date, keibajo_code, race_bango)
+    encoded = encode_race_key(race_key)
+    url = f"{WEIGHT_WORKER_BASE_URL}/{encoded}"
+    try:
+        response = fetcher.fetch(url, FETCH_TIMEOUT_SECONDS)
+    except Exception as exc:
+        print(
+            f"[realtime-weight] fetch failed race_key={race_key} error={exc}",
+            file=sys.stderr,
+        )
+        return {}
+    return extract_weight_map(response)
+
+
 def fetch_odds_for_race(
     fetcher: RealtimeOddsFetcher,
     source: str,
@@ -157,8 +225,29 @@ def fetch_odds_for_race(
     return extract_rows(keibajo_code, race_bango, response)
 
 
+# OddsRow = (keibajo_code, race_bango, umaban, tansho_odds, ninkijun)
+_OddsRow = tuple[str, str, int, float, int]
+# RealtimeRow = (keibajo_code, race_bango, umaban, tansho_odds, ninkijun, bataiju|None)
+_RealtimeRow = tuple[str, str, int, float, int, int | None]
+
+
+def merge_weight_into_rows(
+    odds_rows: list[_OddsRow],
+    weight_map: dict[int, int],
+) -> list[_RealtimeRow]:
+    """Merge bataiju values into odds rows by umaban.
+
+    Horses present in ``odds_rows`` but absent from ``weight_map`` get
+    ``None`` for bataiju so the DuckDB COALESCE falls back to nvd_se.
+    """
+    return [
+        (r[0], r[1], r[2], r[3], r[4], weight_map.get(r[2]))
+        for r in odds_rows
+    ]
+
+
 def _write_parquet(
-    rows: list[tuple[str, str, int, float, int]],
+    rows: list[_RealtimeRow],
     path: Path,
 ) -> None:
     """Write collected rows to a parquet file using pyarrow."""
@@ -172,6 +261,9 @@ def _write_parquet(
             "umaban": pa.array([r[2] for r in rows], type=pa.int32()),
             "tansho_odds_realtime": pa.array([r[3] for r in rows], type=pa.float64()),
             "ninkijun_realtime": pa.array([r[4] for r in rows], type=pa.int32()),
+            "bataiju_realtime": pa.array(
+                [r[5] for r in rows], type=pa.int32()
+            ),
         }
     )
     pq.write_table(table, str(path))
@@ -184,26 +276,26 @@ def fetch_realtime_odds_parquet(
     race_keys: list[tuple[str, str]] | None = None,
     fetcher: RealtimeOddsFetcher | None = None,
 ) -> Path | None:
-    """Fetch realtime odds for all races in ``category`` on ``target_date``.
+    """Fetch realtime odds + bataiju for all races in ``category`` on ``target_date``.
 
     ``race_keys`` is a list of (keibajo_code, race_bango) pairs to fetch. When
-    ``None`` it is resolved from the Neon DB (not yet wired — the container's
-    predict_upcoming already has the list via the upcoming-race query; this
-    function currently reads ``PREDICT_RACE_KEYS_ENV`` as a JSON-encoded list
-    injected by the Worker, or derives it from the feature parquet if available,
-    or returns ``None`` when no keys are discoverable so the pipeline falls back
-    gracefully).
+    ``None`` the function logs a warning and returns ``None`` so the caller
+    falls back to the NULL-odds / NULL-bataiju path gracefully.
 
     In the current implementation the function is called with explicit
     ``race_keys`` from ``predict_upcoming.py``; the ``None`` path is a safety
-    fallback that logs a warning and returns ``None``.
+    fallback.
 
     On success writes a parquet to ``work_dir / realtime-odds-{category}.parquet``
-    and returns the path. Returns ``None`` when zero rows were collected (graceful
-    empty path — the DuckDB builder uses the nvd_se fallback).
+    with columns (keibajo_code, race_bango, umaban, tansho_odds_realtime,
+    ninkijun_realtime, bataiju_realtime) and returns the path. Returns ``None``
+    when zero odds rows were collected (graceful empty path — the DuckDB builder
+    uses the nvd_se fallback for odds; bataiju_realtime column is absent so the
+    COALESCE falls through to the se field).
 
-    Any individual race fetch failure is swallowed (logged to stderr); the
-    remaining races are still fetched.
+    Bataiju fetch failures are swallowed individually; horses missing from the
+    weight response get NULL bataiju_realtime so COALESCE falls back to nvd_se.
+    Any individual odds fetch failure is also swallowed (logged to stderr).
     """
     if fetcher is None:
         fetcher = HttpRealtimeOddsFetcher()
@@ -217,10 +309,13 @@ def fetch_realtime_odds_parquet(
         return None
 
     source = _SOURCE_BY_CATEGORY.get(category, "nar")
-    all_rows: list[tuple[str, str, int, float, int]] = []
+    all_rows: list[_RealtimeRow] = []
     for keibajo_code, race_bango in race_keys:
-        rows = fetch_odds_for_race(fetcher, source, target_date, keibajo_code, race_bango)
-        all_rows.extend(rows)
+        odds_rows = fetch_odds_for_race(fetcher, source, target_date, keibajo_code, race_bango)
+        if not odds_rows:
+            continue
+        weight_map = fetch_weight_for_race(fetcher, source, target_date, keibajo_code, race_bango)
+        all_rows.extend(merge_weight_into_rows(odds_rows, weight_map))
 
     if not all_rows:
         print(
@@ -233,9 +328,10 @@ def fetch_realtime_odds_parquet(
     out_path = work_dir / f"realtime-odds-{category}.parquet"
     work_dir.mkdir(parents=True, exist_ok=True)
     _write_parquet(all_rows, out_path)
+    bataiju_count = sum(1 for r in all_rows if r[5] is not None)
     print(
         f"[realtime-odds] wrote {len(all_rows)} rows to {out_path} "
-        f"category={category} races={len(race_keys)}",
+        f"category={category} races={len(race_keys)} bataiju={bataiju_count}/{len(all_rows)}",
         file=sys.stderr,
     )
     return out_path
