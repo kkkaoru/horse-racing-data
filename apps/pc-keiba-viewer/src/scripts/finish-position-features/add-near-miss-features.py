@@ -39,6 +39,7 @@ from pathlib import Path
 import duckdb
 
 from _resource_defaults import add_resource_args, apply_to_connection
+from pedigree_staging import stage_horse_pedigree
 
 RACE_PARTITION = "source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango"
 RACE_PARTITION_BY = "b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango"
@@ -162,24 +163,6 @@ def stage_horse_context(con: duckdb.DuckDBPyConnection) -> None:
     )
     con.execute(
         "create index horse_context_idx on horse_context (source, ketto_toroku_bango, race_date)"
-    )
-
-
-def stage_horse_pedigree(con: duckdb.DuckDBPyConnection) -> None:
-    """Build horse → sire / damsire mapping from jvd_um."""
-    con.execute(
-        """
-        create or replace temp table horse_pedigree as
-        select
-          ketto_toroku_bango,
-          nullif(trim(ketto_joho_01a), '') as sire_id,
-          nullif(trim(ketto_joho_04a), '') as damsire_id
-        from pg.jvd_um
-        where ketto_toroku_bango is not null
-        """
-    )
-    con.execute(
-        "create index horse_pedigree_idx on horse_pedigree (ketto_toroku_bango)"
     )
 
 

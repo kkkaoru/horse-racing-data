@@ -28,6 +28,7 @@ from pathlib import Path
 import duckdb
 
 from _resource_defaults import add_resource_args, apply_to_connection
+from pedigree_staging import stage_horse_pedigree
 
 RACE_PARTITION = "source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango"
 DEFAULT_PG_URL = "postgresql://horse_racing:horse_racing@127.0.0.1:5432/horse_racing"
@@ -113,23 +114,6 @@ def stage_race_history_with_baba(con: duckdb.DuckDBPyConnection, from_date: str)
     )
     con.execute(
         "create index race_history_horse_idx on race_history (source, ketto_toroku_bango, baba_cond, race_date)"
-    )
-
-
-def stage_horse_pedigree(con: duckdb.DuckDBPyConnection) -> None:
-    con.execute(
-        """
-        create or replace temp table horse_pedigree as
-        select
-          ketto_toroku_bango,
-          nullif(trim(ketto_joho_01a), '') as sire_id,
-          nullif(trim(ketto_joho_04a), '') as damsire_id
-        from pg.jvd_um
-        where ketto_toroku_bango is not null
-        """
-    )
-    con.execute(
-        "create index horse_pedigree_idx on horse_pedigree (ketto_toroku_bango)"
     )
 
 
