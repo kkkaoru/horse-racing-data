@@ -358,3 +358,102 @@ def wilson_lower_bound(p: float, n: int, z: float = WILSON_Z_SCORE) -> float:
     )
     lower = (center - margin) / denom
     return max(0.0, lower)
+
+
+def _assign_within_race_rank(df: pd.DataFrame, score_col: str) -> pd.DataFrame:
+    """Attach ``_within_rank`` (1-based) per race, sorted by ``score_col`` desc.
+
+    Tiebreak: ``ketto_toroku_bango`` ascending (matches ``_rank_blended_within_race``).
+    Returns the DataFrame sorted race_id / score desc / horse asc with an added
+    integer column ``_within_rank`` starting from 1 per race group.
+    """
+    ordered = df.sort_values(
+        by=[_RACE_ID_COL, score_col, _HORSE_COL],
+        ascending=[True, False, True],
+        kind="stable",
+    ).reset_index(drop=True)
+    ordered["_within_rank"] = ordered.groupby(_RACE_ID_COL, sort=False).cumcount() + 1
+    return ordered
+
+
+def compute_fukusho_2p(df: pd.DataFrame) -> float:
+    """Set-membership fukusho-2p: mean over races of (≥2 of predicted top-3 hit actual top-3).
+
+    Per race: 1 if |predicted_top3 ∩ actual_top3| ≥ 2 else 0, where
+    predicted_top3 is the set of horses with the 3 highest blended_scores
+    (tiebreak: ketto_toroku_bango ascending) and actual_top3 is the set of
+    horses whose actual_finish_position ≤ 3.
+
+    Races with < 3 finishers are included in the denominator (they can score 0
+    or 1 depending on how many of their ≤3-field entries hit). Consistent with
+    the I1 root-cause probe definition (fukusho_2p = fukusho_cnt >= 2 where
+    fukusho_cnt counts predicted_rank<=3 rows with actual_finish_position<=3).
+
+    Returns 0.0 for empty DataFrame.
+    """
+    if df.empty:
+        return 0.0
+    ranked = _assign_within_race_rank(df, _BLENDED_COL)
+    # Keep predicted top-3 rows per race
+    top3 = ranked[ranked["_within_rank"] <= _TOPK_BOX_SIZE].copy()
+    actual_num = pd.to_numeric(top3[_ACTUAL_COL], errors="coerce")
+    top3 = top3.assign(_actual_num=actual_num)
+    # Per race: count predicted top-3 that actually finished top-3
+    top3_hit = top3[top3["_actual_num"] <= _TOPK_BOX_SIZE]
+    fukusho_cnt = top3_hit.groupby(_RACE_ID_COL, sort=False).size()
+    # Races not in fukusho_cnt have count 0; reindex to all races
+    all_races = ranked[_RACE_ID_COL].unique()
+    fukusho_cnt = fukusho_cnt.reindex(all_races, fill_value=0)
+    hits = int((fukusho_cnt >= 2).sum())
+    total = len(all_races)
+    return hits / float(total)
+
+
+def compute_rentai_hit(df: pd.DataFrame) -> float:
+    """Set-membership rentai-hit: mean over races of (predicted top-2 == actual top-2 set).
+
+    Per race: 1 if the predicted top-2 SET equals the actual top-2 set (both
+    predicted top-2 horses finished in the actual top-2, unordered) else 0.
+    Predicted top-2 is determined by the 2 highest blended_scores (tiebreak:
+    ketto_toroku_bango ascending). Consistent with the I1 root-cause probe
+    definition: rentai_hit = actual_top2.issubset(pred_top2) and len(pred_top2) >= 2.
+
+    Races with fewer than 2 finishers are included in the denominator and
+    score 0. Returns 0.0 for empty DataFrame.
+    """
+    if df.empty:
+        return 0.0
+    ranked = _assign_within_race_rank(df, _BLENDED_COL)
+    all_races = ranked[_RACE_ID_COL].unique()
+    total = len(all_races)
+    # Predicted top-2 rows
+    top2 = ranked[ranked["_within_rank"] <= 2].copy()
+    actual_num_top2 = pd.to_numeric(top2[_ACTUAL_COL], errors="coerce")
+    top2 = top2.assign(_actual_num=actual_num_top2)
+    # Per race: count predicted top-2 rows with valid actual value
+    pred_top2_size = (
+        top2.dropna(subset=["_actual_num"])
+        .groupby(_RACE_ID_COL, sort=False)
+        .size()
+        .reindex(all_races, fill_value=0)
+    )
+    # Per race: count predicted top-2 rows whose actual finish ≤ 2
+    top2_in_actual = top2[top2["_actual_num"] <= 2]
+    pred_in_actual2_cnt = (
+        top2_in_actual.groupby(_RACE_ID_COL, sort=False)
+        .size()
+        .reindex(all_races, fill_value=0)
+    )
+    # Per race: count actual top-2 horses (actual_finish_position ≤ 2)
+    actual_num_all = pd.to_numeric(ranked[_ACTUAL_COL], errors="coerce")
+    ranked_with_actual = ranked.assign(_actual_num=actual_num_all)
+    actual_top2_cnt = (
+        ranked_with_actual[ranked_with_actual["_actual_num"] <= 2]
+        .groupby(_RACE_ID_COL, sort=False)
+        .size()
+        .reindex(all_races, fill_value=0)
+    )
+    # rentai_hit: pred_top2_size >= 2 AND pred_in_actual2_cnt == actual_top2_cnt
+    hit_mask = (pred_top2_size >= 2) & (pred_in_actual2_cnt == actual_top2_cnt)
+    hits = int(hit_mask.sum())
+    return hits / float(total)

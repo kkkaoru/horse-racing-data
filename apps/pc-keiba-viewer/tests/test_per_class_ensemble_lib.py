@@ -581,3 +581,202 @@ def test_load_class_predictions_year_dir_with_no_parquet_files_is_skipped(
     })
     out = subject.load_class_predictions(tmp_path, "005", [2018], pg_map)
     assert out.empty
+
+
+# ---------------------------------------------------------------------------
+# compute_fukusho_2p
+# ---------------------------------------------------------------------------
+
+
+def _make_blended(
+    race_ids: list[str],
+    horses: list[str],
+    scores: list[float],
+    actuals: list[int],
+) -> pd.DataFrame:
+    return pd.DataFrame({
+        "race_id": race_ids,
+        "ketto_toroku_bango": horses,
+        "blended_score": scores,
+        "actual_finish_position": actuals,
+    })
+
+
+def test_compute_fukusho_2p_two_of_three_hit_returns_one():
+    # Predicted top-3: a(score=3, actual=1), b(score=2, actual=4), c(score=1, actual=3)
+    # pred top-3 actual finishes: {1, 4, 3} — 1 and 3 are <=3, so fukusho_cnt=2 → hit
+    df = _make_blended(
+        ["r1", "r1", "r1", "r1"],
+        ["a", "b", "c", "d"],
+        [3.0, 2.0, 1.0, 0.5],
+        [1, 4, 3, 2],
+    )
+    assert subject.compute_fukusho_2p(df) == 1.0
+
+
+def test_compute_fukusho_2p_only_one_of_three_hit_returns_zero():
+    # Predicted top-3: a(score=3, actual=1), b(score=2, actual=5), c(score=1, actual=6)
+    # pred top-3 actual finishes: {1, 5, 6} — only 1 is <=3, fukusho_cnt=1 → miss
+    df = _make_blended(
+        ["r1", "r1", "r1", "r1"],
+        ["a", "b", "c", "d"],
+        [3.0, 2.0, 1.0, 0.5],
+        [1, 5, 6, 2],
+    )
+    assert subject.compute_fukusho_2p(df) == 0.0
+
+
+def test_compute_fukusho_2p_all_three_hit_returns_one():
+    # Predicted top-3: a(actual=2), b(actual=1), c(actual=3) — all <=3, fukusho_cnt=3 → hit
+    df = _make_blended(
+        ["r1", "r1", "r1"],
+        ["a", "b", "c"],
+        [3.0, 2.0, 1.0],
+        [2, 1, 3],
+    )
+    assert subject.compute_fukusho_2p(df) == 1.0
+
+
+def test_compute_fukusho_2p_two_races_mixed_returns_half():
+    # r1: 2-of-3 hit (score=1.0), r2: 1-of-3 hit (score=0.0) → mean=0.5
+    df = _make_blended(
+        ["r1", "r1", "r1", "r1", "r2", "r2", "r2", "r2"],
+        ["a", "b", "c", "d", "e", "f", "g", "h"],
+        [3.0, 2.0, 1.0, 0.5, 3.0, 2.0, 1.0, 0.5],
+        [1, 4, 3, 2, 1, 5, 6, 2],
+    )
+    assert subject.compute_fukusho_2p(df) == pytest.approx(0.5)
+
+
+def test_compute_fukusho_2p_short_field_two_horses_returns_zero():
+    # Only 2 horses in race: at most 2 predicted-top-3 candidates, but need >=2 AND <=3
+    # a(actual=1), b(actual=2) — both <=3 but there are only 2 predicted rows, fukusho_cnt=2 → hit
+    # Wait: head(3) on 2 rows gives 2 rows; {1,2} both <=3, cnt=2 → hit=1
+    # But per I1 semantics short races CAN hit if both score; let's test a 1-horse race returns 0
+    df = _make_blended(
+        ["r1"],
+        ["a"],
+        [1.0],
+        [1],
+    )
+    assert subject.compute_fukusho_2p(df) == 0.0
+
+
+def test_compute_fukusho_2p_two_horse_race_both_top3_returns_one():
+    # 2 horses, both finish top-3; head(3)=2 rows, fukusho_cnt=2 → hit
+    df = _make_blended(
+        ["r1", "r1"],
+        ["a", "b"],
+        [2.0, 1.0],
+        [1, 2],
+    )
+    assert subject.compute_fukusho_2p(df) == 1.0
+
+
+def test_compute_fukusho_2p_empty_dataframe_returns_zero():
+    df = pd.DataFrame({
+        "race_id": pd.Series([], dtype=str),
+        "ketto_toroku_bango": pd.Series([], dtype=str),
+        "blended_score": pd.Series([], dtype=float),
+        "actual_finish_position": pd.Series([], dtype=int),
+    })
+    assert subject.compute_fukusho_2p(df) == 0.0
+
+
+def test_compute_fukusho_2p_tiebreak_by_ketto_toroku_bango():
+    # Scores tie at 2.0 for b and c; b < c alphabetically so b is picked 2nd, c 3rd
+    # a(score=3, actual=5), b(score=2, actual=2), c(score=2, actual=3)
+    # Predicted top-3 by score: a(5), b(2), c(3) — {5,2,3}: 2 and 3 are <=3, cnt=2 → hit
+    df = _make_blended(
+        ["r1", "r1", "r1", "r1"],
+        ["a", "b", "c", "d"],
+        [3.0, 2.0, 2.0, 1.0],
+        [5, 2, 3, 1],
+    )
+    assert subject.compute_fukusho_2p(df) == 1.0
+
+
+# ---------------------------------------------------------------------------
+# compute_rentai_hit
+# ---------------------------------------------------------------------------
+
+
+def test_compute_rentai_hit_predicted_top2_equals_actual_top2_returns_one():
+    # Predicted top-2: a(score=2, actual=2), b(score=1, actual=1) → pred_top2={2,1}
+    # actual_top2 = {1,2} → subset match AND len>=2 → hit
+    df = _make_blended(
+        ["r1", "r1", "r1"],
+        ["a", "b", "c"],
+        [2.0, 1.0, 0.5],
+        [2, 1, 3],
+    )
+    assert subject.compute_rentai_hit(df) == 1.0
+
+
+def test_compute_rentai_hit_one_miss_in_predicted_top2_returns_zero():
+    # Predicted top-2: a(score=2, actual=1), b(score=1, actual=4) → pred_top2={1,4}
+    # actual_top2 = {1,2} → 2 not in pred_top2 → miss
+    df = _make_blended(
+        ["r1", "r1", "r1"],
+        ["a", "b", "c"],
+        [2.0, 1.0, 0.5],
+        [1, 4, 2],
+    )
+    assert subject.compute_rentai_hit(df) == 0.0
+
+
+def test_compute_rentai_hit_two_races_mixed_returns_half():
+    # r1: hit (pred top-2 actual={1,2}), r2: miss (pred top-2 actual={1,4})
+    df = _make_blended(
+        ["r1", "r1", "r1", "r2", "r2", "r2"],
+        ["a", "b", "c", "d", "e", "f"],
+        [2.0, 1.0, 0.5, 2.0, 1.0, 0.5],
+        [2, 1, 3, 1, 4, 2],
+    )
+    assert subject.compute_rentai_hit(df) == pytest.approx(0.5)
+
+
+def test_compute_rentai_hit_single_horse_race_returns_zero():
+    # Only 1 horse: len(pred_top2)=1 < 2 → not a hit
+    df = _make_blended(
+        ["r1"],
+        ["a"],
+        [1.0],
+        [1],
+    )
+    assert subject.compute_rentai_hit(df) == 0.0
+
+
+def test_compute_rentai_hit_empty_dataframe_returns_zero():
+    df = pd.DataFrame({
+        "race_id": pd.Series([], dtype=str),
+        "ketto_toroku_bango": pd.Series([], dtype=str),
+        "blended_score": pd.Series([], dtype=float),
+        "actual_finish_position": pd.Series([], dtype=int),
+    })
+    assert subject.compute_rentai_hit(df) == 0.0
+
+
+def test_compute_rentai_hit_both_predicted_top2_outside_actual_top2_returns_zero():
+    # Predicted top-2: a(actual=3), b(actual=4) → pred_top2={3,4}
+    # actual_top2={1,2} → {1,2} not subset of {3,4} → miss
+    df = _make_blended(
+        ["r1", "r1", "r1", "r1"],
+        ["a", "b", "c", "d"],
+        [2.0, 1.0, 0.5, 0.1],
+        [3, 4, 1, 2],
+    )
+    assert subject.compute_rentai_hit(df) == 0.0
+
+
+def test_compute_rentai_hit_tiebreak_by_ketto_toroku_bango():
+    # Scores tie at 1.0 for a and b; a < b alphabetically → a is top-1, b is top-2
+    # a(score=1, actual=1), b(score=1, actual=2) → pred_top2={1,2}
+    # actual_top2 = {1,2} → hit
+    df = _make_blended(
+        ["r1", "r1", "r1"],
+        ["a", "b", "c"],
+        [1.0, 1.0, 0.5],
+        [1, 2, 3],
+    )
+    assert subject.compute_rentai_hit(df) == 1.0
