@@ -87,6 +87,19 @@ it("PUT uses default TTL when env unset", async () => {
   expect(storage.setAlarm.mock.calls[0]![0]).toBe(1_000_000 + 7200 * 1000 + 60_000);
 });
 
+it("PUT stores entry with 4h TTL when ODDS_DO_TTL_SECONDS=14400", async () => {
+  vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+  const { state, storage } = buildState(new Map());
+  const cache = new OddsCacheHot(state as unknown as DurableObjectState, buildEnv("14400"));
+  await cache.fetch(
+    new Request("https://odds-cache/races/narKey", {
+      body: JSON.stringify({ fetchedAt: "2026-06-11T03:00:00+09:00", latest: {} }),
+      method: "PUT",
+    }),
+  );
+  expect(storage.setAlarm.mock.calls[0]![0]).toBe(1_000_000 + 14400 * 1000 + 60_000);
+});
+
 it("PUT falls back to default TTL when env value is invalid", async () => {
   vi.spyOn(Date, "now").mockReturnValue(1_000_000);
   const { state, storage } = buildState(new Map());

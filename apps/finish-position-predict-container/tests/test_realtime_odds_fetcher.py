@@ -11,6 +11,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from typing import cast, final
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -25,6 +26,7 @@ from realtime_odds_fetcher import (
     fetch_odds_for_race,
     fetch_realtime_odds_parquet,
     fetch_weight_for_race,
+    fetch_with_retry,
     merge_weight_into_rows,
 )
 
@@ -576,3 +578,161 @@ def test_fetch_realtime_odds_parquet_bataiju_is_none_when_weight_fetch_fails(
     df = pd.read_parquet(result)
     assert len(df) == 1
     assert df.iloc[0]["bataiju_realtime"] is None or pd.isna(df.iloc[0]["bataiju_realtime"])
+
+
+# ---------------------------------------------------------------------------
+# fetch_with_retry — exponential backoff retry helper
+# ---------------------------------------------------------------------------
+
+
+def testfetch_with_retry_succeeds_on_first_attempt_no_sleep() -> None:
+    """When the first fetch succeeds, no sleep is called."""
+    expected: dict[str, object] = {"latest": {"tansho": []}}
+
+    @final
+    class _OnceFetcher:
+        def fetch(self, url: str, timeout: float) -> dict[str, object]:
+            return expected
+
+    with patch("realtime_odds_fetcher.time.sleep") as mock_sleep:
+        result = fetch_with_retry(_OnceFetcher(), "http://example.com", 5.0)
+    assert result is expected
+    mock_sleep.assert_not_called()
+
+
+def testfetch_with_retry_retries_on_first_failure_and_succeeds() -> None:
+    """First attempt raises TimeoutError; second attempt succeeds."""
+    expected: dict[str, object] = {
+        "latest": {"tansho": [{"combination": "1", "odds": 7.3, "rank": 1}]}
+    }
+    calls: list[int] = []
+
+    @final
+    class _TransientFetcher:
+        def fetch(self, url: str, timeout: float) -> dict[str, object]:
+            calls.append(1)
+            if len(calls) == 1:
+                raise TimeoutError("timed out")
+            return expected
+
+    with patch("realtime_odds_fetcher.time.sleep") as mock_sleep:
+        result = fetch_with_retry(
+            _TransientFetcher(), "http://example.com", 5.0, max_retries=2, backoff_base=0.5
+        )
+    assert result is expected
+    assert len(calls) == 2
+    mock_sleep.assert_called_once_with(0.5)
+
+
+def testfetch_with_retry_retries_twice_then_succeeds() -> None:
+    """First two attempts raise OSError; third attempt succeeds."""
+    expected: dict[str, object] = {"ok": True}
+    calls: list[int] = []
+
+    @final
+    class _TwoFailFetcher:
+        def fetch(self, url: str, timeout: float) -> dict[str, object]:
+            calls.append(1)
+            if len(calls) <= 2:
+                raise OSError("connection refused")
+            return expected
+
+    with patch("realtime_odds_fetcher.time.sleep") as mock_sleep:
+        result = fetch_with_retry(
+            _TwoFailFetcher(), "http://example.com", 5.0, max_retries=2, backoff_base=0.5
+        )
+    assert result is expected
+    assert len(calls) == 3
+    assert mock_sleep.call_count == 2
+    mock_sleep.assert_any_call(0.5)
+    mock_sleep.assert_any_call(1.0)
+
+
+def testfetch_with_retry_raises_after_all_retries_exhausted() -> None:
+    """All attempts fail: the final exception is propagated to the caller."""
+
+    @final
+    class _AlwaysFailFetcher:
+        def fetch(self, url: str, timeout: float) -> dict[str, object]:
+            raise TimeoutError("always times out")
+
+    with patch("realtime_odds_fetcher.time.sleep"):
+        try:
+            fetch_with_retry(
+                _AlwaysFailFetcher(), "http://example.com", 5.0, max_retries=2, backoff_base=0.5
+            )
+            raised = False
+        except TimeoutError:
+            raised = True
+    assert raised
+
+
+def testfetch_with_retry_zero_retries_raises_immediately() -> None:
+    """With max_retries=0, the single attempt failure propagates immediately."""
+
+    @final
+    class _FailFetcher:
+        def fetch(self, url: str, timeout: float) -> dict[str, object]:
+            raise OSError("fail")
+
+    with patch("realtime_odds_fetcher.time.sleep") as mock_sleep:
+        try:
+            fetch_with_retry(
+                _FailFetcher(), "http://example.com", 5.0, max_retries=0, backoff_base=0.5
+            )
+            raised = False
+        except OSError:
+            raised = True
+    assert raised
+    mock_sleep.assert_not_called()
+
+
+def test_fetch_odds_for_race_retries_on_transient_failure() -> None:
+    """fetch_odds_for_race retries on transient failure then returns rows."""
+    calls: list[int] = []
+
+    @final
+    class _TransientOddsFetcher:
+        def fetch(self, url: str, timeout: float) -> dict[str, object]:
+            calls.append(1)
+            if len(calls) == 1:
+                raise TimeoutError("first attempt timeout")
+            return {"latest": {"tansho": [{"combination": "1", "odds": 7.3, "rank": 1}]}}
+
+    with patch("realtime_odds_fetcher.time.sleep"):
+        rows = fetch_odds_for_race(_TransientOddsFetcher(), "nar", "20260610", "44", "01")
+    assert rows == [("44", "01", 1, 7.3, 1)]
+    assert len(calls) == 2
+
+
+def test_fetch_weight_for_race_retries_on_transient_failure() -> None:
+    """fetch_weight_for_race retries on transient failure then returns weight map."""
+    calls: list[int] = []
+
+    @final
+    class _TransientWeightFetcher:
+        def fetch(self, url: str, timeout: float) -> dict[str, object]:
+            calls.append(1)
+            if len(calls) == 1:
+                raise TimeoutError("first attempt timeout")
+            return {"horses": [{"horseNumber": 1, "weight": 447}]}
+
+    with patch("realtime_odds_fetcher.time.sleep"):
+        result = fetch_weight_for_race(_TransientWeightFetcher(), "nar", "20260610", "44", "01")
+    assert result == {1: 447}
+    assert len(calls) == 2
+
+
+def test_fetch_odds_for_race_returns_empty_after_all_retries_fail() -> None:
+    """fetch_odds_for_race returns empty list when all retry attempts fail."""
+    mock_sleep = MagicMock()
+
+    @final
+    class _AlwaysFailOddsFetcher:
+        def fetch(self, url: str, timeout: float) -> dict[str, object]:
+            raise TimeoutError("always fails")
+
+    with patch("realtime_odds_fetcher.time.sleep", mock_sleep):
+        rows = fetch_odds_for_race(_AlwaysFailOddsFetcher(), "nar", "20260610", "44", "01")
+    assert rows == []
+    assert mock_sleep.call_count == 2  # 2 retries means 2 sleeps before final raise

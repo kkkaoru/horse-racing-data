@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -58,6 +59,9 @@ _REQUEST_HEADERS: dict[str, str] = {
     "Accept": "application/json",
     "User-Agent": "horse-racing-data-predict/1.0",
 }
+
+FETCH_MAX_RETRIES: int = 2
+FETCH_BACKOFF_BASE_SECONDS: float = 0.5
 
 # NAR keibajo_code for Ban-ei (Obihiro). Ban-ei odds ARE in D1 (confirmed in
 # feasibility report), so Ban-ei uses the same fetch path as regular NAR.
@@ -101,6 +105,39 @@ class HttpRealtimeOddsFetcher:
             raw = resp.read().decode("utf-8")
         result: dict[str, object] = json.loads(raw)
         return result
+
+
+def fetch_with_retry(
+    fetcher: RealtimeOddsFetcher,
+    url: str,
+    timeout: float,
+    max_retries: int = FETCH_MAX_RETRIES,
+    backoff_base: float = FETCH_BACKOFF_BASE_SECONDS,
+) -> dict[str, object]:
+    """Fetch ``url`` with exponential-backoff retry on transient errors.
+
+    Retries up to ``max_retries`` times with ``backoff_base * 2**attempt``
+    seconds between attempts (0.5s, 1.0s for the defaults). Raises on the
+    final failure so the caller can decide how to log/swallow.
+
+    Total added latency per race: at most 0.5 + 1.0 = 1.5 s extra, well within
+    the >50 min run budget.
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            return fetcher.fetch(url, timeout)
+        except Exception as exc:
+            if attempt == max_retries:
+                raise
+            sleep_seconds = backoff_base * (2**attempt)
+            print(
+                f"[realtime-odds] fetch attempt {attempt + 1} failed url={url} "
+                f"error={exc!r} — retrying in {sleep_seconds:.1f}s",
+                file=sys.stderr,
+            )
+            time.sleep(sleep_seconds)
+    # unreachable — loop always raises or returns
+    raise RuntimeError("unreachable")  # pragma: no cover
 
 
 def build_race_key(source: str, target_date: str, keibajo_code: str, race_bango: str) -> str:
@@ -193,7 +230,7 @@ def fetch_weight_for_race(
     encoded = encode_race_key(race_key)
     url = f"{WEIGHT_WORKER_BASE_URL}/{encoded}"
     try:
-        response = fetcher.fetch(url, FETCH_TIMEOUT_SECONDS)
+        response = fetch_with_retry(fetcher, url, FETCH_TIMEOUT_SECONDS)
     except Exception as exc:
         print(
             f"[realtime-weight] fetch failed race_key={race_key} error={exc}",
@@ -215,7 +252,7 @@ def fetch_odds_for_race(
     encoded = encode_race_key(race_key)
     url = f"{HOT_WORKER_BASE_URL}/{encoded}"
     try:
-        response = fetcher.fetch(url, FETCH_TIMEOUT_SECONDS)
+        response = fetch_with_retry(fetcher, url, FETCH_TIMEOUT_SECONDS)
     except Exception as exc:
         print(
             f"[realtime-odds] fetch failed race_key={race_key} error={exc}",
