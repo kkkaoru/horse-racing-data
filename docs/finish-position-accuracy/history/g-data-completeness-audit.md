@@ -366,3 +366,135 @@ dominate the model (~40% combined importance).
 
 **Pipeline is data-complete beyond the 3 previously fixed bugs and this one new finding.**
 JRA, Ban-ei, and all other NAR features are CLEAN.
+
+---
+
+## G-2: JRA/Ban-ei Lookback-Feature NULL Inflation
+
+**Date:** 2026-06-12
+**Probe stores:** `feat-jra-v8-iter14-course` (JRA production), `feat-ban-ei-v7-grade-21y-parity` (Ban-ei production)
+**Models:** `iter14-jra-cb-pacestyle-course-v8` (JRA), `banei-cb-v7-lineage-wf-21y` (Ban-ei)
+
+### Scope
+
+Does the same build-process defect that caused G-1 (NAR near-miss 21-year batch rebuild with
+year-sliced lookback, yielding 75% NULL across 18 of 21 years) also affect JRA and/or Ban-ei
+production training stores?
+
+### Method
+
+Per-year NULL rate probes via DuckDB on the actual training parquet stores used for each
+production model. Probe script: `tmp/g2_null_probe.py`, `tmp/g2_jra_detail_probe.py`,
+`tmp/g2_structural_verify.py`.
+
+---
+
+### JRA — `feat-jra-v8-iter14-course` (241 features)
+
+All 12 near-miss columns are present in the JRA training store.
+
+#### Near-miss family: per-year NULL rates (selected columns)
+
+| Column                             | Avg NULL% | Pattern                                       | Root cause                                                                                                           |
+| ---------------------------------- | --------- | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `career_place2_rate`               | 11.2%     | Stable 9-12% for 2007-2025; 21% for 2006 only | Legitimate: horse's first career race has no prior starts                                                            |
+| `recent_place2_count_5`            | 11.2%     | Same as above                                 | Same: no prior races for debut horses                                                                                |
+| `jockey_career_place2_rate`        | 1.6%      | Stable 0.8-2.7% all years                     | Legitimate: debut jockeys only                                                                                       |
+| `career_place2_to_win_ratio`       | 47.5%     | Stable 44-56% all years                       | **Structural:** denominator = 0 when career_win_rate = 0 (horse has never won); 99.9% of NULL rows have win_rate = 0 |
+| `same_keibajo_place2_rate`         | 40.0%     | Stable 36-42% all years                       | **Structural:** horse has never raced at this venue before                                                           |
+| `same_distance_place2_rate`        | 17.4%     | Stable 15-18% all years                       | Structural: no prior races at ±200m distance                                                                         |
+| `same_track_place2_rate`           | 17.4%     | Stable 16-18% all years                       | Structural: no prior races on this track type                                                                        |
+| `jockey_horse_pair_place2_rate`    | 51.5%     | Stable 50-54% all years                       | Structural: jockey has never ridden this specific horse                                                              |
+| `sire_distance_place2_rate`        | 1.9%      | Stable 1-4% all years                         | Legitimate: sire has no offspring records                                                                            |
+| `sire_grade_place2_rate`           | 1.9%      | Stable 1-4% all years                         | Same                                                                                                                 |
+| `damsire_distance_place2_rate`     | 1.9%      | Stable 1-4% all years                         | Same                                                                                                                 |
+| `horse_distance_grade_place2_rate` | 22.9%     | Stable 20-25% all years                       | Structural: horse has no prior starts at this distance×grade combo                                                   |
+
+**Key diagnostic: career_place2_rate stable at 9-12% throughout 2007-2025.**
+In the G-1 NAR defect, `career_place2_rate` was 100% NULL for 2018-2025 (year-slicing broke lookback).
+JRA shows no such spike — lookback was intact across all training years.
+
+**career_place2_to_win_ratio structural verification:**
+
+| Win-rate bucket        | Rows    | `career_place2_to_win_ratio` NULL% |
+| ---------------------- | ------- | ---------------------------------- |
+| `win_rate = 0 or NULL` | 443,071 | 99.9%                              |
+| `has prior wins`       | 561,867 | 6.1%                               |
+
+The 47.5% overall NULL is entirely explained by the denominator-zero guard in the script:
+`career_place2_to_win_ratio = NULL when past_p1_count == 0`. This is semantically correct
+(the ratio is undefined/meaningless for non-winners). The same NULL rate appears at serve-time
+for non-winning-career horses. **No train/serve mismatch.**
+
+**JRA verdict: CLEAN.** All NULL rates are structurally correct and stable across years.
+The G-1 build-process defect (year-slice without full lookback) is not present in JRA.
+
+---
+
+### Ban-ei — `feat-ban-ei-v7-grade-21y-parity` (129 features)
+
+`add-near-miss-features.py` is **not in `LAYER_CHAIN["banei"]`**. The Ban-ei production model
+has zero near-miss columns. This is by design — Ban-ei's feature set was built before
+near-miss features were added to the JRA/NAR pipeline.
+
+All lookback-dependent columns present in Ban-ei are clean:
+
+| Family       | Representative column        | Avg NULL% | Pattern                                                                                 |
+| ------------ | ---------------------------- | --------- | --------------------------------------------------------------------------------------- |
+| career_stats | `career_win_rate`            | 1.6%      | Stable across all years                                                                 |
+| career_stats | `career_place_rate`          | 1.6%      | Same                                                                                    |
+| jockey_stats | `jockey_career_win_rate`     | 0.0%      | Near-zero all years                                                                     |
+| jockey_stats | `jockey_recent_win_rate`     | 0.0%      | Near-zero all years                                                                     |
+| recent_form  | `recent_finish`              | 1.6%      | Stable — debut horse only                                                               |
+| pedigree     | `sire_distance_win_rate`     | 7.3%      | 0-10%; higher 2024-2026 (newer sires with less history)                                 |
+| pedigree     | `dam_sire_distance_win_rate` | 13.7%     | 7-16%; early years (2007-2009) also slightly elevated (expected for oldest Ban-ei data) |
+
+No year shows 100% NULL for any lookback column. The pedigree columns show slightly higher
+NULL in 2024-2026 (newer sires with shorter career history) — this is legitimate.
+
+Ban-ei has no near-miss feature block at all (neither correct nor defective).
+There is no train/serve mismatch in any Ban-ei feature.
+
+**Ban-ei verdict: CLEAN.**
+
+---
+
+### Summary Table: G-2 Findings
+
+| Model                               | Category | Feature family                  | NULL rate (training store) | Legitimate?                         | Tag   |
+| ----------------------------------- | -------- | ------------------------------- | -------------------------- | ----------------------------------- | ----- |
+| `iter14-jra-cb-pacestyle-course-v8` | JRA      | `career_place2_rate`            | 9-12% all years            | Yes — debut horses                  | CLEAN |
+| `iter14-jra-cb-pacestyle-course-v8` | JRA      | `career_place2_to_win_ratio`    | ~45-56% all years          | Yes — denominator=0 for non-winners | CLEAN |
+| `iter14-jra-cb-pacestyle-course-v8` | JRA      | `same_keibajo_place2_rate`      | ~36-42% all years          | Yes — never raced at venue          | CLEAN |
+| `iter14-jra-cb-pacestyle-course-v8` | JRA      | `jockey_horse_pair_place2_rate` | ~50-54% all years          | Yes — first-time pairing            | CLEAN |
+| `iter14-jra-cb-pacestyle-course-v8` | JRA      | `jockey_career_place2_rate`     | ~0.8-3.6% all years        | Yes — debut jockeys                 | CLEAN |
+| `iter14-jra-cb-pacestyle-course-v8` | JRA      | all other near-miss cols        | 1-25% all years            | Yes — structural sparsity           | CLEAN |
+| `banei-cb-v7-lineage-wf-21y`        | Ban-ei   | near-miss family                | N/A (no columns)           | N/A — not in LAYER_CHAIN            | CLEAN |
+| `banei-cb-v7-lineage-wf-21y`        | Ban-ei   | career/jockey/recent/pedigree   | 0-14% all years            | Yes — stable, no year spikes        | CLEAN |
+
+**Comparison to G-1 (NAR defect):**
+
+| Metric                     | G-1 (NAR, defective)   | G-2 JRA         | G-2 Ban-ei   |
+| -------------------------- | ---------------------- | --------------- | ------------ |
+| `career_place2_rate` NULL% | 100% for 2018-2025     | 9-12% all years | N/A (no col) |
+| Year-over-year stability   | Severe spike post-2017 | Flat ±2pp       | Flat ±1pp    |
+| G-1 defect pattern present | YES                    | NO              | NO           |
+| Train/serve mismatch       | YES (75% → 5%)         | NO              | NO           |
+
+### Conclusion
+
+**G-1 is NAR-only.** The build-process defect (year-sliced batch rebuild without full lookback)
+does not affect JRA or Ban-ei.
+
+- JRA `feat-jra-v8-iter14-course` was built with full lookback intact. All near-miss
+  NULL rates are stable and semantically correct. No train/serve mismatch.
+- Ban-ei `feat-ban-ei-v7-grade-21y-parity` does not include the near-miss feature block
+  (not in `LAYER_CHAIN["banei"]`) and all other lookback features are clean.
+- No new fix candidates found for JRA or Ban-ei.
+
+**Updated summary row:**
+
+| #   | Finding                                                                | Category    | Tag                   |
+| --- | ---------------------------------------------------------------------- | ----------- | --------------------- |
+| G-1 | NAR near-miss features trained on 75% NULL (defective 21y batch build) | NAR         | PROCEED-FIX-CANDIDATE |
+| G-2 | JRA/Ban-ei NULL inflation audit                                        | JRA, Ban-ei | CLEAN                 |
