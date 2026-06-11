@@ -138,6 +138,36 @@ log "SOURCE_DATABASE_URL=$(printf '%s' "$SRC" | mask)"
 # Pre-flight 6: PREDICT_DAYS_AHEAD default 0 (today only). Allow caller override.
 DAYS_AHEAD="${PREDICT_DAYS_AHEAD:-0}"
 
+# Pre-flight 6b: PREDICT_CATEGORIES — scope which categories the container
+# runs.  Three-way resolution (highest priority wins):
+#
+#   1. Explicit caller env override (e.g. from the race-prediction-guard or a
+#      manual invocation): honoured as-is.
+#   2. Time-based auto-scope when called from the scheduled 03:00 JST slot:
+#      jvd_se (JRA mirror) is not available until ~09:03 JST, so running JRA
+#      at 03:00 always returns races=0 and wastes ~30 s.  When the JST hour is
+#      00-08 (the 03:00 cron window, including catch-up fires after a sleep)
+#      AND no explicit override is set, automatically restrict to nar,ban-ei.
+#   3. Unset (empty string): the container's own default runs ALL categories.
+#      This is the path for the 09:30 JST run and for any guard-kicked run.
+#
+# Phase-3 Fix #1: adding the 09:30 plist entry is the primary JRA odds fix;
+# this auto-scope is the complementary "skip JRA at 03:00" optimisation that
+# avoids wasteful races=0 runs without requiring a second plist.
+if [ -n "${PREDICT_CATEGORIES:-}" ]; then
+  # Explicit override from caller — use it unchanged.
+  log "PREDICT_CATEGORIES=$PREDICT_CATEGORIES (caller override)"
+else
+  JST_HOUR_NOW="$(date -u -v+9H +%H)"
+  if [ "$JST_HOUR_NOW" -le 8 ]; then
+    PREDICT_CATEGORIES="nar,ban-ei"
+    log "PREDICT_CATEGORIES=$PREDICT_CATEGORIES (auto-scoped: JST_HOUR=$JST_HOUR_NOW < 09 — JRA mirror not yet ready)"
+  else
+    PREDICT_CATEGORIES=""
+    log "PREDICT_CATEGORIES=<all> (JST_HOUR=$JST_HOUR_NOW >= 09 — JRA mirror available)"
+  fi
+fi
+
 # Pre-flight 7: optional R2 credentials so the container's add-pacestyle layer
 # can read the per-day running-style Parquet directly from
 # pc-keiba-features-archive instead of ATTACHing to Neon. Source the repo-root
@@ -166,7 +196,7 @@ fi
 # Run the prediction container. --network=host so the container can reach the
 # local Colima Postgres on 127.0.0.1:15432 directly. --rm so the container is
 # removed after exit.
-log "starting docker run $IMAGE_TAG RUN_DATE=$RUN_DATE PREDICT_DAYS_AHEAD=$DAYS_AHEAD..."
+log "starting docker run $IMAGE_TAG RUN_DATE=$RUN_DATE PREDICT_DAYS_AHEAD=$DAYS_AHEAD PREDICT_CATEGORIES=${PREDICT_CATEGORIES:-<all>}..."
 set +e
 docker run --rm --network=host \
   -e SOURCE_DATABASE_URL="$SRC" \
@@ -180,6 +210,7 @@ docker run --rm --network=host \
   -e R2_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
   -e R2_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
   -e R2_BUCKET="$R2_BUCKET" \
+  ${PREDICT_CATEGORIES:+-e PREDICT_CATEGORIES="$PREDICT_CATEGORIES"} \
   "$IMAGE_TAG"
 docker_exit=$?
 set -e

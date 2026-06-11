@@ -14,11 +14,27 @@
     target, RUN_DATE = today JST in YYYYMMDD form), idempotent UPSERT into
     race_finish_position_model_predictions.
 
-  SCHEDULE:
-    StartCalendarInterval Hour=3 Minute=0 means JST 03:00. macOS launchd uses
-    the device's local timezone, and this machine is assumed to already run
-    JST. If you ever change the system timezone you MUST adjust the Hour key
-    accordingly — launchd has no timezone-aware option.
+  SCHEDULE (Phase-3 Fix #1 — JRA serve-skew fix):
+    Two StartCalendarInterval entries fire this plist:
+
+    1. JST 03:00 daily  — NAR + Ban-ei only (PREDICT_CATEGORIES=nar,ban-ei).
+       jvd_se (JRA mirror) is not yet available at 03:00 JST (mirror arrives
+       ~09:03 JST), so attempting JRA at this time always finds races=0 and
+       wastes ~30s. Scoping to nar+ban-ei eliminates the wasted work and makes
+       the 03:00 run category-clean.
+
+    2. JST 09:30 daily  — ALL categories (PREDICT_CATEGORIES unset = all).
+       By 09:30 JST the PC-Keiba daily sync has mirrored jvd_se (~09:03 JST)
+       and the hot worker has 12+ h of JRA advance-odds snapshots in D1
+       (advance-odds window opens at 19:00 JST prior evening). This run is the
+       first opportunity for JRA predictions with REAL odds instead of the
+       OOD-median fallback that was applied when only the 03:00 run existed.
+       On weekdays (no JRA races) the JRA category finds races=0 and exits in
+       ~30s — harmless. On Sat/Sun it finds the day's JRA races and scores them
+       with real odds.
+
+    The race-prediction-guard (10:00-20:40 JST, 20-min cadence) continues to
+    re-kick the pipeline during race hours for bataiju / odds freshness.
 
   CATCH-UP BEHAVIOUR:
     StartCalendarInterval will fire on next wake if the scheduled time was
@@ -49,13 +65,25 @@
   <string>/Users/kkk4oru/ghq/github.com/kkkaoru/horse-racing-data</string>
 
   <key>StartCalendarInterval</key>
-  <dict>
-    <!-- JST 03:00 — assumes the Mac is set to Asia/Tokyo. -->
-    <key>Hour</key>
-    <integer>3</integer>
-    <key>Minute</key>
-    <integer>0</integer>
-  </dict>
+  <array>
+    <!-- JST 03:00 daily — NAR + Ban-ei only (JRA mirror not yet available). -->
+    <dict>
+      <key>Hour</key>
+      <integer>3</integer>
+      <key>Minute</key>
+      <integer>0</integer>
+    </dict>
+    <!-- JST 09:30 daily — ALL categories. JRA mirror arrives ~09:03 JST;
+         hot-worker D1 has 12+ h of JRA advance-odds snapshots by this time.
+         On weekdays JRA finds races=0 and skips in ~30s (harmless).
+         On Sat/Sun this is the first run that can fetch REAL JRA odds. -->
+    <dict>
+      <key>Hour</key>
+      <integer>9</integer>
+      <key>Minute</key>
+      <integer>30</integer>
+    </dict>
+  </array>
 
   <key>RunAtLoad</key>
   <false/>
