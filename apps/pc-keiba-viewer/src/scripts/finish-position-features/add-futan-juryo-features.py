@@ -5,7 +5,10 @@ feature parquet, producing a new layer (v5).
 
 Pattern B post-processor:
   - reads input parquet (hive-partitioned by race_year)
-  - joins with PG `race_entry_corner_features` for futan_juryo per horse
+  - joins with PG `race_entry_corner_features` (primary) + `jvd_se` (fallback)
+    for futan_juryo per horse; the COALESCE ensures PG wins for historical rows
+    while upcoming races absent from race_entry_corner_features are filled from
+    jvd_se.futan_juryo (text 0.1 kg units, divided by 10.0 to kg)
   - computes per-horse + race-internal features
   - writes new parquet partitioned by race_year
 
@@ -58,21 +61,61 @@ def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
     con.execute(f"attach '{pg_url}' as pg (type postgres, read_only)")
 
 
-def stage_futan_juryo(con: duckdb.DuckDBPyConnection, from_date: str, to_date: str) -> None:
+def stage_futan_juryo(
+    con: duckdb.DuckDBPyConnection,
+    from_date: str,
+    to_date: str,
+    se_table: str = "pg.jvd_se",
+) -> None:
+    """Stage current-race futan_juryo with a fallback for upcoming races.
+
+    ``futan_raw`` — per-race current futan_juryo, used by both the per-race
+    current-weight lookup and ``stage_horse_history()``.  Built from
+    ``se_table`` (``jvd_se`` / ``nvd_se``) LEFT JOINed against
+    ``race_entry_corner_features``.  The COALESCE ensures:
+      * historical rows: PG rec value wins (authoritative, no training regression)
+      * upcoming rows absent from rec: se fallback fills the gap (se.futan_juryo
+        is text in 0.1 kg units, e.g. ``'540'`` = 54.0 kg)
+
+    Including upcoming-race rows in ``futan_raw`` is intentional: at training
+    time ``race_entry_corner_features`` includes the target race, so
+    ``past_futan_juryo_avg5`` was computed with that race in the window.  The
+    se fallback mirrors this behaviour at serve time.  Debutants (no prior
+    races in ``race_entry_corner_features``) have a single se row, yielding
+    ``past_futan_juryo_diff = 0`` — consistent with the training data.
+    """
     con.execute(
         f"""
         create or replace temp table futan_raw as
         select
-          source,
-          kaisai_nen,
-          kaisai_tsukihi,
-          keibajo_code,
-          race_bango,
-          ketto_toroku_bango,
-          try_cast(futan_juryo as double) / 10.0 as futan_juryo
-        from pg.race_entry_corner_features
-        where race_date between '{from_date}' and '{to_date}'
-          and futan_juryo is not null
+          coalesce(rec.source, b.source) as source,
+          coalesce(rec.kaisai_nen, b.kaisai_nen) as kaisai_nen,
+          coalesce(rec.kaisai_tsukihi, b.kaisai_tsukihi) as kaisai_tsukihi,
+          coalesce(rec.keibajo_code, b.keibajo_code) as keibajo_code,
+          coalesce(rec.race_bango, b.race_bango) as race_bango,
+          coalesce(rec.ketto_toroku_bango, b.ketto_toroku_bango) as ketto_toroku_bango,
+          coalesce(
+            try_cast(rec.futan_juryo as double) / 10.0,
+            try_cast(nullif(trim(b.futan_juryo), '') as double) / 10.0
+          ) as futan_juryo
+        from {se_table} b
+        left join pg.race_entry_corner_features rec
+          on rec.kaisai_nen = b.kaisai_nen
+          and rec.kaisai_tsukihi = b.kaisai_tsukihi
+          and rec.keibajo_code = b.keibajo_code
+          and rec.race_bango = b.race_bango
+          and rec.ketto_toroku_bango = b.ketto_toroku_bango
+          and rec.race_date between '{from_date}' and '{to_date}'
+        where
+          b.kaisai_nen is not null
+          and b.kaisai_tsukihi is not null
+          and b.keibajo_code is not null
+          and b.race_bango is not null
+          and b.ketto_toroku_bango is not null
+          and coalesce(
+                try_cast(rec.futan_juryo as double) / 10.0,
+                try_cast(nullif(trim(b.futan_juryo), '') as double) / 10.0
+              ) is not null
         """
     )
     con.execute(
@@ -81,7 +124,13 @@ def stage_futan_juryo(con: duckdb.DuckDBPyConnection, from_date: str, to_date: s
 
 
 def stage_horse_history(con: duckdb.DuckDBPyConnection) -> None:
-    """Pre-compute per-horse past futan stats for join."""
+    """Pre-compute per-horse futan stats for join.
+
+    Uses ``futan_raw`` as source, which includes both past and upcoming races
+    for each horse.  At training time ``race_entry_corner_features`` included
+    the target race, so ``past_futan_juryo_avg5`` was computed with that race
+    in the window; the se fallback mirrors this behaviour at serve time.
+    """
     con.execute(
         """
         create or replace temp table horse_futan_hist as
