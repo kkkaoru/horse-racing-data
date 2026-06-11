@@ -6,7 +6,11 @@ existing v2 finish-position feature parquet directory, producing v3.
 This is a post-processor that:
   - reads the v2 parquet (already includes race-internal rank/diff features)
   - joins with PG `race_entry_corner_features` to pull raw tansho_odds,
-    tansho_ninkijun (not present in v2)
+    tansho_ninkijun (not present in v2) for historical rows
+  - for upcoming rows absent from race_entry_corner_features (which lags behind
+    real-time), falls back to tansho_odds / tansho_ninkijun already present in
+    the input parquet (populated via the COALESCE(realtime→jvd_se/nvd_se) path
+    in finish_position_features_duckdb.py)
   - computes 7 new market-signal features per-horse with race-internal ranks
   - writes a new v3 parquet partitioned by race_year
 
@@ -58,12 +62,68 @@ def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
 def stage_raw_odds(
     con: duckdb.DuckDBPyConnection, from_date: str, to_date: str
 ) -> None:
+    """Stage raw odds from PG race_entry_corner_features (historical rows only).
+
+    This table lags behind real-time and will miss upcoming race rows.  Those
+    gaps are filled by stage_parquet_odds() + merge_odds_tables().
+    """
     con.execute(
         f"""
         create or replace temp table raw_odds as
         select {PG_RAW_ODDS_COLUMNS}
         from pg.race_entry_corner_features
         where race_date between '{from_date}' and '{to_date}'
+        """
+    )
+
+
+def stage_parquet_odds(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
+    """Stage tansho_odds / tansho_ninkijun from the input parquet.
+
+    The base-build parquet already contains these columns via the
+    COALESCE(realtime→jvd_se/nvd_se) path in finish_position_features_duckdb.py,
+    so upcoming race rows that are absent from race_entry_corner_features still
+    carry valid odds data here.  NULL input-parquet rows are excluded so the
+    COALESCE in merge_odds_tables() prefers explicit values.
+    """
+    con.execute(
+        f"""
+        create or replace temp table parquet_odds as
+        select
+          source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+          ketto_toroku_bango,
+          cast(tansho_odds as double) as tansho_odds_raw,
+          cast(tansho_ninkijun as int) as tansho_ninkijun_raw
+        from read_parquet('{input_glob}', hive_partitioning=true)
+        where tansho_odds is not null
+        """
+    )
+
+
+def merge_odds_tables(con: duckdb.DuckDBPyConnection) -> None:
+    """Merge PG and parquet odds into raw_odds_merged.
+
+    For each horse-row the PG value takes priority (it is the canonical
+    historical source); the parquet value is used as a fallback for rows absent
+    from race_entry_corner_features (i.e. upcoming races).  Both tansho_odds_raw
+    and tansho_ninkijun_raw are coalesced independently so a partial match still
+    fills whichever column is available.
+    """
+    con.execute(
+        f"""
+        create or replace temp table raw_odds_merged as
+        select
+          coalesce(pg.source, p.source) as source,
+          coalesce(pg.kaisai_nen, p.kaisai_nen) as kaisai_nen,
+          coalesce(pg.kaisai_tsukihi, p.kaisai_tsukihi) as kaisai_tsukihi,
+          coalesce(pg.keibajo_code, p.keibajo_code) as keibajo_code,
+          coalesce(pg.race_bango, p.race_bango) as race_bango,
+          coalesce(pg.ketto_toroku_bango, p.ketto_toroku_bango) as ketto_toroku_bango,
+          coalesce(pg.tansho_odds_raw, p.tansho_odds_raw) as tansho_odds_raw,
+          coalesce(pg.tansho_ninkijun_raw, p.tansho_ninkijun_raw) as tansho_ninkijun_raw
+        from parquet_odds p
+        left join raw_odds pg
+          using ({RACE_PARTITION}, ketto_toroku_bango)
         """
     )
 
@@ -78,7 +138,7 @@ def append_features_sql(input_glob: str) -> str:
         r.tansho_odds_raw,
         r.tansho_ninkijun_raw
       from base_v2 b
-      left join raw_odds r using ({RACE_PARTITION}, ketto_toroku_bango)
+      left join raw_odds_merged r using ({RACE_PARTITION}, ketto_toroku_bango)
     )
     select
       b.*,
@@ -129,6 +189,8 @@ def main() -> None:
     con.execute("PRAGMA enable_object_cache=true")
     install_and_attach_pg(con, args.pg_url)
     stage_raw_odds(con, args.from_date, args.to_date)
+    stage_parquet_odds(con, input_glob)
+    merge_odds_tables(con)
     write_partitioned(con, append_features_sql(input_glob), args.output_dir)
     con.close()
 
