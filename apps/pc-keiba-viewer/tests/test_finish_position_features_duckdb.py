@@ -1623,3 +1623,76 @@ def test_nar_subclass_2yo_3yo_route_to_global_fallback_without_ensemble() -> Non
     """
     assert subject.NAR_SUBCLASS_2YO in subject.NAR_NAMED_CLASSES
     assert subject.NAR_SUBCLASS_3YO in subject.NAR_NAMED_CLASSES
+
+
+# ---------------------------------------------------------------------------
+# Bug 1 fix — build_target_table and base_features_select_sql must emit
+# tansho_odds and tansho_ninkijun so the market-signal post-processor layer
+# can read them from the base-build parquet without a BinderException.
+# ---------------------------------------------------------------------------
+
+
+def test_base_features_select_sql_includes_tansho_odds_and_ninkijun() -> None:
+    """base_features_select_sql() must reference t.tansho_odds and
+    t.tansho_ninkijun so the market-signal layer can read those columns from
+    the output parquet without a BinderException.
+    """
+    sql = subject.base_features_select_sql("jra")
+    assert "t.tansho_odds" in sql, "t.tansho_odds missing from base_features_select_sql"
+    assert "t.tansho_ninkijun" in sql, "t.tansho_ninkijun missing from base_features_select_sql"
+
+
+def test_build_target_table_emits_tansho_odds_and_ninkijun() -> None:
+    """build_target_table() must project tansho_odds and tansho_ninkijun from
+    rec into the target table so that base_features_select_sql can reference
+    them via t.tansho_odds / t.tansho_ninkijun.
+
+    This test catches any regression where the columns are removed from the
+    target table definition, which would re-introduce Bug 1.
+    """
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        """
+        create or replace temp table rec as
+        select * from (
+          values
+            ('jra', '20260607', date '2026-06-07', '2026', '0607', '05', '11',
+              'horse_a', 3, 'jockey_a', 'trainer_a',
+              1600, '11', 'A', '99', 12, null::int, null::double,
+              'name_a', 'fukudai_a',
+              null::double, null::double, null::double, null::double,
+              '1', '1', 2, 5.0, null::int, null::double),
+            ('jra', '20260607', date '2026-06-07', '2026', '0607', '05', '11',
+              'horse_b', 5, 'jockey_b', 'trainer_b',
+              1600, '11', 'A', '99', 12, null::int, null::double,
+              'name_b', 'fukudai_b',
+              null::double, null::double, null::double, null::double,
+              '1', '1', 1, 8.0, null::int, null::double)
+        ) as v(
+          source, race_date, race_dt, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+          ketto_toroku_bango, umaban, kishumei_ryakusho, chokyoshimei_ryakusho,
+          kyori, track_code, grade_code, kyoso_joken_code, shusso_tosu,
+          finish_position, finish_norm,
+          kyosomei_hondai, kyosomei_fukudai,
+          time_sa, kohan_3f, corner3_norm, corner4_norm,
+          babajotai_code_shiba, babajotai_code_dirt,
+          tansho_ninkijun, tansho_odds, bataiju, corner1_norm
+        )
+        """
+    )
+    subject.build_target_table(con, "jra", "20260607", "20260607")
+    col_names = [
+        c[0]
+        for c in con.execute("describe target").fetchall()
+    ]
+    assert "tansho_odds" in col_names, "tansho_odds not in target — market-signal layer will crash"
+    assert "tansho_ninkijun" in col_names, "tansho_ninkijun not in target — market-signal layer will crash"
+    # Values must be non-null and correct
+    rows = con.execute(
+        "select ketto_toroku_bango, tansho_odds, tansho_ninkijun from target order by ketto_toroku_bango"
+    ).fetchall()
+    assert rows[0] == ("horse_a", 5.0, 2)
+    assert rows[1] == ("horse_b", 8.0, 1)
+    con.close()

@@ -889,6 +889,8 @@ def build_target_table(con: duckdb.DuckDBPyConnection, category: str, from_date:
             when rec.corner1_norm <= {RUNNING_STYLE_SASHI_THRESHOLD} then {RUNNING_STYLE_CLASS_SASHI}
             else {RUNNING_STYLE_CLASS_OIKOMI}
           end as target_running_style_class,
+          cast(rec.tansho_odds as double) as tansho_odds,
+          cast(rec.tansho_ninkijun as int) as tansho_ninkijun,
           'v1' as feature_schema_version,
           cast(substr(rec.race_date, 1, 4) as int) as race_year
         from rec
@@ -1688,6 +1690,8 @@ def base_features_select_sql(category: str) -> str:
       end as season_band,
       t.feature_schema_version,
       t.race_year,
+      t.tansho_odds,
+      t.tansho_ninkijun,
       t.source || ':' || t.kaisai_nen || ':' || t.kaisai_tsukihi || ':' || t.keibajo_code || ':' || t.race_bango as race_id
     from target t
     left join horse_career hc using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)

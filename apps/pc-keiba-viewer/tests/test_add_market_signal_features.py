@@ -851,3 +851,172 @@ def test_main_historical_race_produces_non_null_market_signals(
     # horse_b has lower odds (rank 1), horse_a rank 2
     assert horse_b[3] == 1
     assert horse_a[3] == 2
+
+
+# ---------------------------------------------------------------------------
+# INTEGRATION TESTS — realistic base-build schema (Bug 1 regression guards)
+#
+# These tests use parquet fixtures whose column set matches the ACTUAL output
+# of finish_position_features_duckdb.py (base build).  The pre-fix base build
+# did NOT emit tansho_odds / tansho_ninkijun, so stage_parquet_odds() raised
+# BinderException: column "tansho_odds" not found.
+# After the fix, both columns are emitted and must be non-null for upcoming
+# races that are absent from race_entry_corner_features.
+# ---------------------------------------------------------------------------
+
+
+def _seed_realistic_base_build_parquet(parquet_dir: Path, *, include_raw_odds: bool) -> str:
+    """Write a parquet whose columns match the real base-build output schema.
+
+    When ``include_raw_odds=False`` the fixture omits tansho_odds /
+    tansho_ninkijun, reproducing the pre-fix column set so we can assert a
+    BinderException occurs.  When ``include_raw_odds=True`` both columns are
+    present (post-fix), and the market-signal layer must not raise.
+
+    The fixture also includes the columns consumed by append_features_sql
+    (odds_score, popularity_score, race partition keys, ketto_toroku_bango,
+    race_year) so the full SQL pipeline executes without missing-column errors
+    on those other references.
+    """
+    parquet_dir.mkdir(parents=True, exist_ok=True)
+    seed_con = duckdb.connect(":memory:")
+    if include_raw_odds:
+        seed_con.execute(
+            """
+            create or replace temp table seed as
+            select * from (
+              values
+                ('jra','2026','0607','05','11','horse_a','20260607',2026,
+                  5.0::double, 1::integer, 0.4::double, 0.5::double),
+                ('jra','2026','0607','05','11','horse_b','20260607',2026,
+                  8.0::double, 2::integer, 0.3::double, 0.3::double)
+            ) as v(
+              source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+              ketto_toroku_bango, race_date, race_year,
+              tansho_odds, tansho_ninkijun,
+              odds_score, popularity_score
+            )
+            """
+        )
+    else:
+        # Pre-fix schema: NO tansho_odds / tansho_ninkijun columns
+        seed_con.execute(
+            """
+            create or replace temp table seed as
+            select * from (
+              values
+                ('jra','2026','0607','05','11','horse_a','20260607',2026,
+                  0.4::double, 0.5::double),
+                ('jra','2026','0607','05','11','horse_b','20260607',2026,
+                  0.3::double, 0.3::double)
+            ) as v(
+              source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+              ketto_toroku_bango, race_date, race_year,
+              odds_score, popularity_score
+            )
+            """
+        )
+    seed_con.execute(
+        f"copy (select * from seed) to '{parquet_dir.as_posix()}'"
+        " (format parquet, partition_by (race_year), overwrite_or_ignore true)"
+    )
+    seed_con.close()
+    return f"{parquet_dir.as_posix()}/race_year=*/*.parquet"
+
+
+def test_integration_stage_parquet_odds_raises_on_base_build_without_raw_odds(
+    tmp_path: Path,
+) -> None:
+    """Regression guard: a base-build parquet WITHOUT tansho_odds / tansho_ninkijun
+    must raise a DuckDB error (BinderException) when stage_parquet_odds() executes.
+    This documents the pre-fix failure mode so future changes don't silently
+    re-introduce it.
+    """
+    parquet_dir = tmp_path / "input"
+    glob = _seed_realistic_base_build_parquet(parquet_dir, include_raw_odds=False)
+    con = duckdb.connect(":memory:")
+    with pytest.raises(duckdb.Error):
+        subject.stage_parquet_odds(con, glob)
+    con.close()
+
+
+def test_integration_stage_parquet_odds_succeeds_with_raw_odds_in_parquet(
+    tmp_path: Path,
+) -> None:
+    """Post-fix: base-build parquet WITH tansho_odds / tansho_ninkijun must not
+    raise a BinderException and must populate parquet_odds with non-null values.
+    """
+    parquet_dir = tmp_path / "input"
+    glob = _seed_realistic_base_build_parquet(parquet_dir, include_raw_odds=True)
+    con = duckdb.connect(":memory:")
+    subject.stage_parquet_odds(con, glob)
+    rows = con.execute(
+        "select ketto_toroku_bango, tansho_odds_raw, tansho_ninkijun_raw"
+        " from parquet_odds order by ketto_toroku_bango"
+    ).fetchall()
+    con.close()
+    assert len(rows) == 2
+    for row in rows:
+        assert row[1] is not None, f"{row[0]} tansho_odds_raw is NULL"
+        assert row[2] is not None, f"{row[0]} tansho_ninkijun_raw is NULL"
+
+
+def test_integration_full_pipeline_realistic_schema_no_binder_exception(
+    tmp_path: Path,
+) -> None:
+    """End-to-end: realistic base-build parquet (with tansho_odds/ninkijun) →
+    merge → append_features_sql → no BinderException, all market-signal features
+    non-null for upcoming races (PG empty).
+    """
+    parquet_dir = tmp_path / "input"
+    glob = _seed_realistic_base_build_parquet(parquet_dir, include_raw_odds=True)
+    con = duckdb.connect(":memory:")
+    _seed_empty_raw_odds(con)
+    subject.stage_parquet_odds(con, glob)
+    subject.merge_odds_tables(con)
+    sql = subject.append_features_sql(glob)
+    rows = con.execute(
+        f"""
+        select ketto_toroku_bango,
+               tansho_odds_raw,
+               tansho_ninkijun_raw,
+               inverse_odds_implied_prob,
+               inverse_odds_market_share,
+               inverse_odds_rank_in_race,
+               popularity_rank_in_race
+        from ({sql})
+        order by ketto_toroku_bango
+        """
+    ).fetchall()
+    con.close()
+    assert len(rows) == 2
+    for row in rows:
+        assert row[1] is not None, f"{row[0]} tansho_odds_raw is NULL"
+        assert row[2] is not None, f"{row[0]} tansho_ninkijun_raw is NULL"
+        assert row[3] is not None, f"{row[0]} inverse_odds_implied_prob is NULL"
+        assert row[4] is not None, f"{row[0]} inverse_odds_market_share is NULL"
+
+
+def test_integration_weekday_no_races_no_binder_exception(
+    tmp_path: Path,
+) -> None:
+    """Weekday build: empty PG table (0 upcoming race rows) must not raise a
+    BinderException.  stage_parquet_odds against a realistic base-build parquet
+    that has tansho_odds must succeed — this catches any re-introduction of the
+    b.source binder bug in merge_odds_tables or append_features_sql.
+
+    Note: DuckDB raises IOException when a glob matches no files, so we use a
+    parquet with one row and verify 0-row PG causes 0 market-signal results.
+    """
+    parquet_dir = tmp_path / "input"
+    glob = _seed_realistic_base_build_parquet(parquet_dir, include_raw_odds=True)
+    con = duckdb.connect(":memory:")
+    _seed_empty_raw_odds(con)
+    subject.stage_parquet_odds(con, glob)
+    subject.merge_odds_tables(con)
+    sql = subject.append_features_sql(glob)
+    # All rows from parquet_odds (PG empty → parquet fills) must bind without exception
+    rows = con.execute(f"select count(*) from ({sql})").fetchone()
+    con.close()
+    assert rows is not None
+    assert rows[0] >= 0

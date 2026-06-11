@@ -61,6 +61,18 @@ def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
     con.execute(f"attach '{pg_url}' as pg (type postgres, read_only)")
 
 
+def _source_literal_from_se_table(se_table: str) -> str:
+    """Derive the source literal ('jra' or 'nar') from the se_table name.
+
+    jvd_se is the JRA feed table  → source = 'jra'
+    nvd_se is the NAR/Ban-ei feed → source = 'nar'
+    Any other table name falls back to 'nar'.
+    """
+    if "jvd_se" in se_table:
+        return "jra"
+    return "nar"
+
+
 def stage_futan_juryo(
     con: duckdb.DuckDBPyConnection,
     from_date: str,
@@ -83,12 +95,17 @@ def stage_futan_juryo(
     se fallback mirrors this behaviour at serve time.  Debutants (no prior
     races in ``race_entry_corner_features``) have a single se row, yielding
     ``past_futan_juryo_diff = 0`` — consistent with the training data.
+
+    ``jvd_se`` / ``nvd_se`` have no ``source`` column, so the source value is
+    derived via ``_source_literal_from_se_table`` and injected as a literal
+    into the COALESCE fallback arm.
     """
+    source_lit = _source_literal_from_se_table(se_table)
     con.execute(
         f"""
         create or replace temp table futan_raw as
         select
-          coalesce(rec.source, b.source) as source,
+          coalesce(rec.source, '{source_lit}') as source,
           coalesce(rec.kaisai_nen, b.kaisai_nen) as kaisai_nen,
           coalesce(rec.kaisai_tsukihi, b.kaisai_tsukihi) as kaisai_tsukihi,
           coalesce(rec.keibajo_code, b.keibajo_code) as keibajo_code,
