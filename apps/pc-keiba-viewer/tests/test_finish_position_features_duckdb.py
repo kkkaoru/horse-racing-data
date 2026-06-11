@@ -871,6 +871,8 @@ def test_nar_subclass_named_classes_constant():
         "A",
         "B",
         "C",
+        "2YO",
+        "3YO",
         "other",
     )
 
@@ -881,6 +883,8 @@ def test_nar_subclass_case_sql_emits_meisho_regex_matches_with_null_for_non_nar(
     assert "regexp_matches(wl.nar_kyoso_joken_meisho, 'ＯＰ')" in sql
     assert "regexp_matches(wl.nar_kyoso_joken_meisho, '新馬')" in sql
     assert "regexp_matches(wl.nar_kyoso_joken_meisho, '未勝利|未出走')" in sql
+    assert "regexp_matches(wl.nar_kyoso_joken_meisho, '２歳|2歳')" in sql
+    assert "regexp_matches(wl.nar_kyoso_joken_meisho, '３歳|3歳')" in sql
     assert "regexp_matches(wl.nar_kyoso_joken_meisho, 'Ａ')" in sql
     assert "regexp_matches(wl.nar_kyoso_joken_meisho, 'Ｂ')" in sql
     assert "regexp_matches(wl.nar_kyoso_joken_meisho, 'Ｃ')" in sql
@@ -954,8 +958,8 @@ def test_nar_subclass_returns_c_for_meisho_matching_zenkaku_c():
     assert _eval_nar_subclass("nar", "30", "「　　　Ｃ２　」") == "C"
 
 
-def test_nar_subclass_returns_other_for_meisho_with_no_match():
-    assert _eval_nar_subclass("nar", "30", "「３歳　　　　」") == "other"
+def test_nar_subclass_returns_3yo_for_meisho_with_fullwidth_3_sai():
+    assert _eval_nar_subclass("nar", "30", "「３歳　　　　」") == "3YO"
 
 
 def test_nar_subclass_returns_other_for_null_meisho():
@@ -1500,3 +1504,122 @@ def test_build_per_year_specs_legacy_features_uses_nar_median() -> None:
     legacy_spec = next(s for s in specs if s["name"] == "legacy_features")
     cte_text = legacy_spec["cte_builder"]("true")
     assert str(subject.ODDS_SCORE_MEDIAN_NAR) in cte_text
+
+
+# ---------------------------------------------------------------------------
+# Fix B001: Ban-ei historical builder uses double-nullif for '00' DQ rows
+# ---------------------------------------------------------------------------
+
+
+def test_build_rec_select_sql_ban_ei_uses_double_nullif_for_finish_position() -> None:
+    """B001: Ban-ei rec SQL must use double nullif so '00' → NULL (not 0)."""
+    sql = subject.build_rec_select_sql("ban-ei", "20160101", "20251231", None)
+    assert "nullif(nullif(trim(se.kakutei_chakujun), ''), '00') as int) as finish_position" in sql
+
+
+def test_build_rec_select_sql_ban_ei_uses_double_nullif_in_finish_norm_case() -> None:
+    """B001: finish_norm CASE expression must also exclude '00' DQ rows.
+
+    finish_position (1) + CASE when-condition (1) + CASE then-expression (1) = 3 total.
+    """
+    sql = subject.build_rec_select_sql("ban-ei", "20160101", "20251231", None)
+    # finish_position line + two CASE expression references = 3 total occurrences.
+    assert sql.count("nullif(nullif(trim(se.kakutei_chakujun), ''), '00')") == 3
+
+
+def test_ban_ei_double_nullif_drops_00_finish_position_via_duckdb() -> None:
+    """B001: DuckDB confirms try_cast('00' via single-nullif)=0 and double-nullif=NULL."""
+    import duckdb
+
+    con = duckdb.connect()
+    # Single nullif: '00' is not '' so passes through, try_cast('00' as int) = 0.
+    single_row = con.execute(
+        "select try_cast(nullif(trim('00'), '') as int)"
+    ).fetchone()
+    assert single_row is not None
+    assert single_row[0] == 0  # This was the bug: 0 leaks into training.
+
+    # Double nullif: '00' is explicitly excluded → NULL → filtered by IS NOT NULL.
+    double_row = con.execute(
+        "select try_cast(nullif(nullif(trim('00'), ''), '00') as int)"
+    ).fetchone()
+    assert double_row is not None
+    assert double_row[0] is None  # Fix: NULL → row excluded from training.
+
+
+def test_ban_ei_double_nullif_preserves_valid_finish_positions_via_duckdb() -> None:
+    """B001: valid positions like '01', '02', '16' are unaffected by the fix."""
+    import duckdb
+
+    con = duckdb.connect()
+    rows = con.execute(
+        """
+        select
+          val,
+          try_cast(nullif(nullif(trim(val), ''), '00') as int) as fixed_pos
+        from (values ('01'), ('02'), ('16'), ('  3  ')) t(val)
+        order by val
+        """
+    ).fetchall()
+    assert rows == [("  3  ", 3), ("01", 1), ("02", 2), ("16", 16)]
+
+
+# ---------------------------------------------------------------------------
+# Fix F001: NAR 2YO / 3YO subclass arms
+# ---------------------------------------------------------------------------
+
+
+def test_nar_subclass_constants_2yo_and_3yo_defined() -> None:
+    assert subject.NAR_SUBCLASS_2YO == "2YO"
+    assert subject.NAR_SUBCLASS_3YO == "3YO"
+
+
+def test_nar_subclass_returns_2yo_for_fullwidth_2_sai() -> None:
+    assert _eval_nar_subclass("nar", "30", "２歳　　　　　　　　　") == "2YO"
+
+
+def test_nar_subclass_returns_3yo_for_fullwidth_3_sai() -> None:
+    assert _eval_nar_subclass("nar", "30", "３歳　　　　　　　　　") == "3YO"
+
+
+def test_nar_subclass_returns_3yo_for_3sai_with_dash_variant() -> None:
+    # e.g. "３歳　　　－３　　　　"
+    assert _eval_nar_subclass("nar", "30", "３歳　　　－３　　　　") == "3YO"
+
+
+def test_nar_subclass_returns_2yo_for_ascii_2_sai() -> None:
+    # Halfwidth "2歳" variant should also match.
+    assert _eval_nar_subclass("nar", "30", "2歳　　　　　　　　　") == "2YO"
+
+
+def test_nar_subclass_returns_3yo_for_ascii_3_sai() -> None:
+    assert _eval_nar_subclass("nar", "30", "3歳　　　　　　　　　") == "3YO"
+
+
+def test_nar_subclass_2yo_does_not_match_ban_ei_row() -> None:
+    # Ban-ei (keibajo '83') must still return NULL regardless of meisho.
+    assert _eval_nar_subclass("nar", "83", "２歳　　　　") is None
+
+
+def test_nar_subclass_2yo_does_not_match_jra_row() -> None:
+    assert _eval_nar_subclass("jra", "05", "２歳　　　　") is None
+
+
+def test_nar_subclass_op_still_takes_precedence_over_age_arms() -> None:
+    # Hypothetical meisho containing both "ＯＰ" and "２歳" — OP wins (higher in CASE).
+    assert _eval_nar_subclass("nar", "30", "ＯＰ２歳") == "OP"
+
+
+def test_nar_subclass_other_still_routes_non_age_non_class_meisho() -> None:
+    # A meisho that genuinely has no class / age marker falls to 'other'.
+    assert _eval_nar_subclass("nar", "30", "　　　　　　　　　　　") == "other"
+
+
+def test_nar_subclass_2yo_3yo_route_to_global_fallback_without_ensemble() -> None:
+    """F001 backward-safety: 2YO/3YO without a registered per-class ensemble should
+    route the same as 'other' today — both fall through to the global model.
+    This test verifies that NAR_SUBCLASS_2YO and NAR_SUBCLASS_3YO are recognised
+    values in NAR_NAMED_CLASSES (not unknown tokens) so routing logic can handle them.
+    """
+    assert subject.NAR_SUBCLASS_2YO in subject.NAR_NAMED_CLASSES
+    assert subject.NAR_SUBCLASS_3YO in subject.NAR_NAMED_CLASSES

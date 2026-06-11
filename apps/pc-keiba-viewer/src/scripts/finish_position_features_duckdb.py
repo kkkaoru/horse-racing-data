@@ -102,6 +102,8 @@ NAR_SUBCLASS_MUKATSU = "MUKATSU"
 NAR_SUBCLASS_A = "A"
 NAR_SUBCLASS_B = "B"
 NAR_SUBCLASS_C = "C"
+NAR_SUBCLASS_2YO = "2YO"
+NAR_SUBCLASS_3YO = "3YO"
 NAR_SUBCLASS_OTHER = "other"
 NAR_NAMED_CLASSES: tuple[str, ...] = (
     NAR_SUBCLASS_OP,
@@ -110,6 +112,8 @@ NAR_NAMED_CLASSES: tuple[str, ...] = (
     NAR_SUBCLASS_A,
     NAR_SUBCLASS_B,
     NAR_SUBCLASS_C,
+    NAR_SUBCLASS_2YO,
+    NAR_SUBCLASS_3YO,
     NAR_SUBCLASS_OTHER,
 )
 
@@ -388,12 +392,12 @@ def _rec_select_from_ban_ei(history_start: str, to_date: str) -> str:
           partition by se.kaisai_nen, se.kaisai_tsukihi, se.keibajo_code, se.race_bango
         )
       ) as shusso_tosu,
-      try_cast(nullif(trim(se.kakutei_chakujun), '') as int) as finish_position,
+      try_cast(nullif(nullif(trim(se.kakutei_chakujun), ''), '00') as int) as finish_position,
       case
-        when try_cast(nullif(trim(se.kakutei_chakujun), '') as double) is not null
+        when try_cast(nullif(nullif(trim(se.kakutei_chakujun), ''), '00') as double) is not null
              and try_cast(nullif(trim(ra.shusso_tosu), '') as double) is not null
              and try_cast(nullif(trim(ra.shusso_tosu), '') as double) > 0
-        then try_cast(nullif(trim(se.kakutei_chakujun), '') as double)
+        then try_cast(nullif(nullif(trim(se.kakutei_chakujun), ''), '00') as double)
              / try_cast(nullif(trim(ra.shusso_tosu), '') as double)
         else null
       end as finish_norm,
@@ -1554,6 +1558,8 @@ def nar_subclass_case_sql(
       when regexp_matches({meisho_col}, 'ＯＰ') then '{NAR_SUBCLASS_OP}'
       when regexp_matches({meisho_col}, '新馬') then '{NAR_SUBCLASS_NEW}'
       when regexp_matches({meisho_col}, '未勝利|未出走') then '{NAR_SUBCLASS_MUKATSU}'
+      when regexp_matches({meisho_col}, '２歳|2歳') then '{NAR_SUBCLASS_2YO}'
+      when regexp_matches({meisho_col}, '３歳|3歳') then '{NAR_SUBCLASS_3YO}'
       when regexp_matches({meisho_col}, 'Ａ') then '{NAR_SUBCLASS_A}'
       when regexp_matches({meisho_col}, 'Ｂ') then '{NAR_SUBCLASS_B}'
       when regexp_matches({meisho_col}, 'Ｃ') then '{NAR_SUBCLASS_C}'
