@@ -3,8 +3,10 @@
 | Field   | Value                                                                                                                                |
 | ------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | Date    | 2026-06-13                                                                                                                           |
-| Status  | COMPLETE                                                                                                                             |
+| Status  | COMPLETE — **NAR ADOPT superseded by full-system deploy judge REJECT** (see `nar-schemeD-deploy-judge.md`, commit 5e6186e)           |
 | Purpose | Test whether extending relevance labels beyond rank 3 (sub-4 ordering) improves finish-position prediction across NAR / JRA / Banei. |
+
+> **SUPERSESSION NOTE (2026-06-13, post-experiment)**: The NAR scheme-D ADOPT below measured the **base model alone**. The follow-up full-production-system judge (scheme-D base + retrained iter30/36 per-class residual ensembles, TRUE production baseline, 45,573 races 2023–2026) returned **REJECT**: f2p LB95 = −0.00481, 0/4 positive axes, veto-floor fail (top1 −0.40pp, place3 −0.43pp). Root cause: per-class residuals + blend weights are calibrated to iter12's score distribution; a scheme-D base shifts that distribution and the blended system regresses. **Production unchanged** (iter12-nar-xgb-hpo-v8 + iter30/36). Lesson re-confirmed: adoption decisions must be judged against the full serving system, not the base model in isolation.
 
 ---
 
@@ -125,27 +127,29 @@ Survivors: **none** — all schemes fail cheap filter. D has all-negative deltas
 
 ## 6. Summary Table
 
-| Category | Scheme | Filter | WF Verdict | Best signal                           |
-| -------- | ------ | ------ | ---------- | ------------------------------------- |
-| NAR      | D      | PASS   | **ADOPT**  | place3 +4.0pp, f2p_lb95 +0.00174      |
-| NAR      | B      | PASS   | **ADOPT**  | place3 +3.4pp, f2p_lb95 +0.00091      |
-| NAR      | C      | SKIP   | n/a        | O(N²) XGB rank:pairwise infeasible    |
-| JRA      | D      | PASS   | **REJECT** | f2p_lb95 −0.00357, inconsistent folds |
-| JRA      | C      | FAIL   | n/a        | top1 −3.1pp                           |
-| JRA      | B      | FAIL   | n/a        | top1 −2.2pp                           |
-| Banei    | D      | FAIL   | n/a        | all-negative deltas                   |
-| Banei    | C      | FAIL   | n/a        | top1 −1.5pp                           |
-| Banei    | B      | FAIL   | n/a        | all-negative deltas                   |
+| Category | Scheme | Filter | WF Verdict (base model only)            | Best signal                           |
+| -------- | ------ | ------ | --------------------------------------- | ------------------------------------- |
+| NAR      | D      | PASS   | ADOPT → **REJECT at full-system judge** | place3 +4.0pp, f2p_lb95 +0.00174      |
+| NAR      | B      | PASS   | ADOPT (base only; not deploy-judged)    | place3 +3.4pp, f2p_lb95 +0.00091      |
+| NAR      | C      | SKIP   | n/a                                     | O(N²) XGB rank:pairwise infeasible    |
+| JRA      | D      | PASS   | **REJECT**                              | f2p_lb95 −0.00357, inconsistent folds |
+| JRA      | C      | FAIL   | n/a                                     | top1 −3.1pp                           |
+| JRA      | B      | FAIL   | n/a                                     | top1 −2.2pp                           |
+| Banei    | D      | FAIL   | n/a                                     | all-negative deltas                   |
+| Banei    | C      | FAIL   | n/a                                     | top1 −1.5pp                           |
+| Banei    | B      | FAIL   | n/a                                     | all-negative deltas                   |
 
 ---
 
 ## 7. Verdict per Category
 
-### NAR — best scheme: D (also B adopted as backup)
+### NAR — best scheme at base-model level: D (B also passed) — **but full-system judge REJECTED D**
 
-**Both D and B adopted for NAR.** The epsilon sub-4 tail meaningfully improves place3/top3_box without hurting top1. D is preferred (larger gains, higher LB95). The key mechanism: XGBoost `rank:pairwise` uses all horse pairs within a race; adding a small positive relevance to ranks 4–12 creates additional training signal for ordering mid-field horses, which cascades into better discrimination of the 3rd-place finisher.
+At the **base-model level**, both D and B passed the gate. The epsilon sub-4 tail improves place3/top3_box without hurting top1 when measuring the base XGBoost alone. The mechanism: XGBoost `rank:pairwise` uses all horse pairs within a race; adding a small positive relevance to ranks 4–12 creates additional ordering signal for mid-field horses, which cascades into better discrimination of the 3rd-place finisher.
 
-Top-3 labels unchanged ({3, 2, 1}) → **no dilution of top-3 precision signal**.
+Top-3 labels unchanged ({3, 2, 1}) → no dilution of the top-3 precision signal at the base level.
+
+**However**, the production system is not the base model alone — it is iter12 + per-class residual ensembles (iter30/36) whose residual features and blend weights are calibrated to iter12's score distribution. The full-system deploy judge (`nar-schemeD-deploy-judge.md`) retrained the entire chain on scheme-D and measured **regression**: f2p LB95 = −0.00481, top1 −0.40pp, place3 −0.43pp. **Final verdict: REJECT — production unchanged.**
 
 ### JRA — no adoption
 
@@ -159,11 +163,11 @@ All schemes fail the cheap filter — the small dataset (157k rows) combined wit
 
 ## 8. Implications and Next Steps
 
-1. **NAR production**: Adopt scheme D as the new NAR relevance function. Update `nar_cheap_filter()` and `nar_walk_forward()` in production training scripts to use `scheme_D`.
+1. **NAR production**: ~~Adopt scheme D~~ — **superseded**. The full-system deploy judge REJECTED scheme-D (f2p LB95 = −0.00481 vs TRUE production baseline). Production stays on iter12 + iter30/36 with the current {3, 2, 2} relevance. See `nar-schemeD-deploy-judge.md`.
 2. **JRA and Banei**: Retain current schemes ({1:3, 2:2, 3:1}). No change warranted.
-3. **NAR scheme B**: Also adopted but D is dominant. B can serve as an ensemble diversity source if future investigations warrant.
+3. **NAR scheme B**: Passed base-model gate (weaker than D). Given D's full-system REJECT and the shared root cause (any relevance change shifts the base score distribution that per-class residuals are calibrated to), a B deploy judge is expected to fail the same way — not pursued.
 4. **CatBoost+YetiRank with float labels**: Schemes C and B showed the YetiRank objective is sensitive to label inflation — large extended integer labels (B: 7/6/5/4/3/2/1) cause severe top1 regression in JRA/Banei. D's epsilon tail (0.1/0.08/0.05/0.02) avoids this by keeping sub-4 labels small.
-5. **NAR B vs D trade-off**: D provides stronger statistical evidence (f2p LB95 = +0.00174 vs +0.00091). If simplicity is preferred, D alone is sufficient.
+5. **Key lesson (re-confirmed at scale)**: a base-model WF gain does not transfer to the production blend when downstream per-class residuals/blend weights are calibrated to the old base score distribution. Adoption gates must run against the full serving system — same conclusion as the NAR G-1+F1 retrain judge (#262) and the D-phase NULL-routing lesson.
 
 ---
 
