@@ -72,6 +72,10 @@ NUM_CLASSES = 4
 CLASS_LABELS: tuple[str, str, str, str] = ("nige", "senkou", "sashi", "oikomi")
 PROBABILITY_COLUMNS: tuple[str, str, str, str] = ("p_nige", "p_senkou", "p_sashi", "p_oikomi")
 
+# rs_p_* columns are running-style probability predictions derived from the target —
+# including them causes label leakage. Exclude explicitly from all training feature sets.
+LEAK_COLUMNS: tuple[str, str, str, str] = ("rs_p_nige", "rs_p_senkou", "rs_p_sashi", "rs_p_oikomi")
+
 DEFAULT_NUM_LEAVES = 63
 DEFAULT_LEARNING_RATE = 0.05
 DEFAULT_MIN_CHILD_SAMPLES = 30
@@ -151,7 +155,7 @@ def default_training_params() -> TrainingParams:
 
 
 def resolve_feature_columns(df_columns: list[str]) -> list[str]:
-    excluded = set(META_COLUMNS) | set(LABEL_COLUMNS)
+    excluded = set(META_COLUMNS) | set(LABEL_COLUMNS) | set(LEAK_COLUMNS)
     return [column for column in df_columns if column not in excluded]
 
 

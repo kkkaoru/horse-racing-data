@@ -52,6 +52,24 @@ def test_resolve_feature_columns_excludes_bamei_identifier():
     assert features == ["speed_index_avg_5", "corner_pace_avg_3"]
 
 
+def test_resolve_feature_columns_excludes_rs_p_leak_columns():
+    columns = [
+        "speed_index_avg_5",
+        "rs_p_nige",
+        "rs_p_senkou",
+        "rs_p_sashi",
+        "rs_p_oikomi",
+        "corner_pace_avg_3",
+        "target_running_style_class",
+    ]
+    features = subject.resolve_feature_columns(columns)
+    assert features == ["speed_index_avg_5", "corner_pace_avg_3"]
+
+
+def test_leak_columns_constant_contains_all_four_rs_p_columns():
+    assert subject.LEAK_COLUMNS == ("rs_p_nige", "rs_p_senkou", "rs_p_sashi", "rs_p_oikomi")
+
+
 def test_detect_categorical_features_returns_only_known_categoricals():
     feature_columns = ["track_code", "kyori_band", "speed_index_avg_5", "grade_code"]
     detected = subject.detect_categorical_features(feature_columns)
