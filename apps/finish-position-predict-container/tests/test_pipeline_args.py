@@ -9,6 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from predict_lib.pipeline_args import (
     COURSE_LOOKUP_PATH,
+    EXOTIC_CATEGORY_BY_CATEGORY,
+    EXOTIC_SCRIPT,
     HISTORY_FROM_DATE,
     RELATIONSHIP_CATEGORY_BY_CATEGORY,
     RELATIONSHIP_SCRIPT,
@@ -375,6 +377,7 @@ def test_layer_chain_nar_is_light_v6_plus_v7_plus_trainer_plus_pacestyle() -> No
         "add-trainer-stable-affinity-features.py",
         "add-pacestyle-features.py",
         "add-relationship-r1-features.py",
+        "add_exotic_odds_features.py",
     ]
 
 
@@ -573,3 +576,51 @@ def test_build_base_argv_with_realtime_odds_for_ban_ei_appends_flag() -> None:
     assert argv[argv.index("--realtime-odds") + 1] == (
         "/tmp/predict-upcoming/realtime-odds-ban-ei.parquet"
     )
+
+
+def test_exotic_script_is_in_layer_chain_nar() -> None:
+    chain = layer_chain_for("nar")
+    assert EXOTIC_SCRIPT in chain
+
+
+def test_exotic_script_is_not_in_layer_chain_jra() -> None:
+    chain = layer_chain_for("jra")
+    assert EXOTIC_SCRIPT not in chain
+
+
+def test_exotic_script_is_not_in_layer_chain_ban_ei() -> None:
+    chain = layer_chain_for("ban-ei")
+    assert EXOTIC_SCRIPT not in chain
+
+
+def test_exotic_script_is_in_scripts_with_pg_url() -> None:
+    assert EXOTIC_SCRIPT in SCRIPTS_WITH_PG_URL
+
+
+def test_exotic_category_map_has_exactly_nar_key() -> None:
+    assert set(EXOTIC_CATEGORY_BY_CATEGORY.keys()) == {"nar"}
+
+
+def test_build_layer_argv_exotic_passes_pg_url_from_date_and_category_for_nar() -> None:
+    argv = build_layer_argv(
+        EXOTIC_SCRIPT,
+        "nar",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+    )
+    assert argv == [
+        "python",
+        f"/app/pipeline/finish-position-features/{EXOTIC_SCRIPT}",
+        "--input-dir",
+        "/tmp/in",
+        "--output-dir",
+        "/tmp/out",
+        "--pg-url",
+        "postgresql://u:p@h/db",
+        "--from-date",
+        HISTORY_FROM_DATE,
+        "--category",
+        "nar",
+    ]

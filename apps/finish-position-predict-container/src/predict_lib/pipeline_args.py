@@ -74,6 +74,10 @@ COURSE_NUMERICAL_SCRIPT: Final[str] = "add-course-numerical-features.py"
 # so it takes ``--pg-url`` + ``--from-date`` + a source-filter ``--category``.
 RELATIONSHIP_SCRIPT: Final[str] = "add-relationship-r1-features.py"
 
+# iter-post exotic odds layer — NAR only (JRA ABORT per feasibility probe).
+# Uses underscore naming (not dash) — matches the actual filename.
+EXOTIC_SCRIPT: Final[str] = "add_exotic_odds_features.py"
+
 HISTORY_FROM_DATE: Final[str] = "20100101"
 
 # Baked course-numerical lookup parquet. Mirrors the
@@ -116,6 +120,7 @@ LAYER_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
         TRAINER_SCRIPT,
         PACESTYLE_SCRIPT,
         RELATIONSHIP_SCRIPT,
+        EXOTIC_SCRIPT,
     ),
     "ban-ei": (
         LINEAGE_SCRIPT,
@@ -146,6 +151,7 @@ SCRIPTS_WITH_PG_URL: Final[frozenset[str]] = frozenset(
         BANEI_GRADE_CAREER_SCRIPT,
         PACESTYLE_SCRIPT,
         RELATIONSHIP_SCRIPT,
+        EXOTIC_SCRIPT,
     }
 )
 
@@ -178,6 +184,12 @@ PACESTYLE_CATEGORY_BY_CATEGORY: Final[dict[Category, str]] = {
 # no ban-ei entry — mirrors TRAINER / PACESTYLE.
 RELATIONSHIP_CATEGORY_BY_CATEGORY: Final[dict[Category, str]] = {
     "jra": "jra",
+    "nar": "nar",
+}
+
+# The exotic-odds layer takes ``--category {nar,ban-ei}`` (JRA has no signal).
+# Only NAR runs this layer currently, so only "nar" has an entry.
+EXOTIC_CATEGORY_BY_CATEGORY: Final[dict[Category, str]] = {
     "nar": "nar",
 }
 
@@ -273,6 +285,13 @@ def _course_lookup_args(script: str) -> list[str]:
     return []
 
 
+def _exotic_category_args(script: str, category: Category) -> list[str]:
+    """``--category`` for the exotic-odds layer (nar or ban-ei source filter)."""
+    if script == EXOTIC_SCRIPT and category in EXOTIC_CATEGORY_BY_CATEGORY:
+        return ["--category", EXOTIC_CATEGORY_BY_CATEGORY[category]]
+    return []
+
+
 def build_layer_argv(
     script: str,
     category: Category,
@@ -310,6 +329,7 @@ def build_layer_argv(
         + _pacestyle_category_args(script, category)
         + _relationship_category_args(script, category)
         + _course_lookup_args(script)
+        + _exotic_category_args(script, category)
     )
 
 

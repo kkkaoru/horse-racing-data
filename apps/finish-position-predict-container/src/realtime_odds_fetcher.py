@@ -190,6 +190,59 @@ def extract_rows(
     return rows
 
 
+def extract_sanrenpuku_p3(response: dict[str, object]) -> dict[int, float]:
+    """Extract {umaban: exotic_sanrenpuku_p3} from a hot-worker odds response.
+
+    Parses ``latest["3renpuku"]`` (the hot-worker key for sanrenpuku / 3連複).
+    Each entry has the form ``{"combination": "1-2-3", "odds": 25.5}``.
+
+    For each entry: computes inv_prob = 1/odds for each horse in the triple,
+    accumulates per horse, then overround-normalizes the totals.
+
+    Returns an empty dict when ``latest["3renpuku"]`` is absent, empty, or all
+    entries are malformed.  Individual malformed entries are skipped.
+    """
+    latest = response.get("latest")
+    if not isinstance(latest, dict):
+        return {}
+    # The hot-worker (sync-realtime-data-hot) uses the key "3renpuku" for
+    # sanrenpuku (3連複) odds — matching the RealtimeOddsType enum in
+    # packages/horse-racing-realtime/src/types.ts.
+    sanrenpuku = latest.get("3renpuku")
+    if not isinstance(sanrenpuku, list) or not sanrenpuku:
+        return {}
+    raw: dict[int, float] = {}
+    for entry in sanrenpuku:
+        if not isinstance(entry, dict):
+            continue
+        combination = entry.get("combination")
+        odds_val = entry.get("odds")
+        if combination is None or odds_val is None:
+            continue
+        try:
+            odds = float(odds_val)
+        except (ValueError, TypeError):
+            continue
+        if odds <= 0:
+            continue
+        parts = str(combination).split("-")
+        if len(parts) != 3:
+            continue
+        try:
+            horses = [int(p.strip()) for p in parts]
+        except (ValueError, TypeError):
+            continue
+        inv = 1.0 / odds
+        for h in horses:
+            raw[h] = raw.get(h, 0.0) + inv
+    if not raw:
+        return {}
+    total = sum(raw.values())
+    if total <= 0:
+        return {}
+    return {h: v / total for h, v in raw.items()}
+
+
 def extract_weight_map(response: dict[str, object]) -> dict[int, int]:
     """Extract ``{umaban -> bataiju_kg}`` from a horse-weight response.
 
@@ -262,6 +315,34 @@ def fetch_odds_for_race(
     return extract_rows(keibajo_code, race_bango, response)
 
 
+def fetch_odds_and_sanrenpuku_for_race(
+    fetcher: RealtimeOddsFetcher,
+    source: str,
+    target_date: str,
+    keibajo_code: str,
+    race_bango: str,
+) -> tuple[list[tuple[str, str, int, float, int]], dict[int, float]]:
+    """Fetch odds and sanrenpuku for one race in a single HTTP request.
+
+    Returns (tansho_rows, sanrenpuku_p3_map). Both are empty on any error.
+    The sanrenpuku map is also empty when the response has no sanrenpuku data.
+    """
+    race_key = build_race_key(source, target_date, keibajo_code, race_bango)
+    encoded = encode_race_key(race_key)
+    url = f"{HOT_WORKER_BASE_URL}/{encoded}"
+    try:
+        response = fetch_with_retry(fetcher, url, FETCH_TIMEOUT_SECONDS)
+    except Exception as exc:
+        print(
+            f"[realtime-odds] fetch failed race_key={race_key} error={exc}",
+            file=sys.stderr,
+        )
+        return [], {}
+    rows = extract_rows(keibajo_code, race_bango, response)
+    sanrenpuku_map = extract_sanrenpuku_p3(response)
+    return rows, sanrenpuku_map
+
+
 # OddsRow = (keibajo_code, race_bango, umaban, tansho_odds, ninkijun)
 _OddsRow = tuple[str, str, int, float, int]
 # RealtimeRow = (keibajo_code, race_bango, umaban, tansho_odds, ninkijun, bataiju|None)
@@ -286,11 +367,15 @@ def merge_weight_into_rows(
 def _write_parquet(
     rows: list[_RealtimeRow],
     path: Path,
+    sanrenpuku_map: dict[tuple[str, str, int], float] | None = None,
 ) -> None:
     """Write collected rows to a parquet file using pyarrow."""
     import pyarrow as pa
     import pyarrow.parquet as pq
 
+    resolved_map: dict[tuple[str, str, int], float] = (
+        sanrenpuku_map if sanrenpuku_map is not None else {}
+    )
     table = pa.table(
         {
             "keibajo_code": pa.array([r[0] for r in rows], type=pa.string()),
@@ -300,6 +385,9 @@ def _write_parquet(
             "ninkijun_realtime": pa.array([r[4] for r in rows], type=pa.int32()),
             "bataiju_realtime": pa.array(
                 [r[5] for r in rows], type=pa.int32()
+            ),
+            "exotic_sanrenpuku_p3_realtime": pa.array(
+                [resolved_map.get((r[0], r[1], r[2])) for r in rows], type=pa.float64()
             ),
         }
     )
@@ -347,12 +435,17 @@ def fetch_realtime_odds_parquet(
 
     source = _SOURCE_BY_CATEGORY.get(category, "nar")
     all_rows: list[_RealtimeRow] = []
+    all_sanrenpuku: dict[tuple[str, str, int], float] = {}
     for keibajo_code, race_bango in race_keys:
-        odds_rows = fetch_odds_for_race(fetcher, source, target_date, keibajo_code, race_bango)
+        odds_rows, sanrenpuku_map = fetch_odds_and_sanrenpuku_for_race(
+            fetcher, source, target_date, keibajo_code, race_bango
+        )
         if not odds_rows:
             continue
         weight_map = fetch_weight_for_race(fetcher, source, target_date, keibajo_code, race_bango)
         all_rows.extend(merge_weight_into_rows(odds_rows, weight_map))
+        for umaban, p3 in sanrenpuku_map.items():
+            all_sanrenpuku[(keibajo_code, race_bango, umaban)] = p3
 
     if not all_rows:
         print(
@@ -364,7 +457,7 @@ def fetch_realtime_odds_parquet(
 
     out_path = work_dir / f"realtime-odds-{category}.parquet"
     work_dir.mkdir(parents=True, exist_ok=True)
-    _write_parquet(all_rows, out_path)
+    _write_parquet(all_rows, out_path, sanrenpuku_map=all_sanrenpuku)
     bataiju_count = sum(1 for r in all_rows if r[5] is not None)
     print(
         f"[realtime-odds] wrote {len(all_rows)} rows to {out_path} "

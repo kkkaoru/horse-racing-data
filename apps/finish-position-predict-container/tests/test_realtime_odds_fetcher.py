@@ -22,7 +22,9 @@ from realtime_odds_fetcher import (
     build_race_key,
     encode_race_key,
     extract_rows,
+    extract_sanrenpuku_p3,
     extract_weight_map,
+    fetch_odds_and_sanrenpuku_for_race,
     fetch_odds_for_race,
     fetch_realtime_odds_parquet,
     fetch_weight_for_race,
@@ -299,6 +301,7 @@ def test_fetch_realtime_odds_parquet_writes_parquet_on_success(
         "tansho_odds_realtime",
         "ninkijun_realtime",
         "bataiju_realtime",
+        "exotic_sanrenpuku_p3_realtime",
     }
     assert list(df.sort_values("umaban")["tansho_odds_realtime"]) == [7.3, 12.5]
 
@@ -736,3 +739,357 @@ def test_fetch_odds_for_race_returns_empty_after_all_retries_fail() -> None:
         rows = fetch_odds_for_race(_AlwaysFailOddsFetcher(), "nar", "20260610", "44", "01")
     assert rows == []
     assert mock_sleep.call_count == 2  # 2 retries means 2 sleeps before final raise
+
+
+# ---------------------------------------------------------------------------
+# extract_sanrenpuku_p3 — JSON response parsing
+# ---------------------------------------------------------------------------
+
+
+def testextract_sanrenpuku_p3_returns_normalized_map() -> None:
+    """Basic case: valid sanrenpuku list returns normalized per-horse map."""
+    response: dict[str, object] = {
+        "latest": {
+            "tansho": [],
+            "3renpuku": [
+                {"combination": "1-2-3", "odds": 10.0},
+                {"combination": "1-2-4", "odds": 20.0},
+            ],
+        }
+    }
+    result = extract_sanrenpuku_p3(response)
+    # Horse 1 appears in both: inv_prob = 1/10 + 1/20 = 0.15
+    # Horse 2 appears in both: inv_prob = 1/10 + 1/20 = 0.15
+    # Horse 3 appears once: inv_prob = 1/10 = 0.10
+    # Horse 4 appears once: inv_prob = 1/20 = 0.05
+    # total = 0.15 + 0.15 + 0.10 + 0.05 = 0.45
+    assert set(result.keys()) == {1, 2, 3, 4}
+    total = sum(result.values())
+    assert abs(total - 1.0) < 1e-9
+
+
+def testextract_sanrenpuku_p3_empty_when_sanrenpuku_absent() -> None:
+    response: dict[str, object] = {"latest": {"tansho": []}}
+    assert extract_sanrenpuku_p3(response) == {}
+
+
+def testextract_sanrenpuku_p3_empty_when_latest_absent() -> None:
+    response: dict[str, object] = {}
+    assert extract_sanrenpuku_p3(response) == {}
+
+
+def testextract_sanrenpuku_p3_empty_when_latest_not_dict() -> None:
+    response: dict[str, object] = {"latest": None}
+    assert extract_sanrenpuku_p3(response) == {}
+
+
+def testextract_sanrenpuku_p3_empty_when_sanrenpuku_empty_list() -> None:
+    response: dict[str, object] = {"latest": {"3renpuku": []}}
+    assert extract_sanrenpuku_p3(response) == {}
+
+
+def testextract_sanrenpuku_p3_skips_malformed_combination() -> None:
+    """Entries with wrong number of dash-separated parts are skipped."""
+    response: dict[str, object] = {
+        "latest": {
+            "3renpuku": [
+                {"combination": "1-2", "odds": 10.0},        # only 2 parts
+                {"combination": "1-2-3-4", "odds": 10.0},    # 4 parts
+                {"combination": "1-2-3", "odds": 5.0},       # valid
+            ]
+        }
+    }
+    result = extract_sanrenpuku_p3(response)
+    # Only the last entry is valid
+    assert set(result.keys()) == {1, 2, 3}
+    assert abs(sum(result.values()) - 1.0) < 1e-9
+
+
+def testextract_sanrenpuku_p3_skips_non_numeric_horses() -> None:
+    """Entries where horse numbers can't be parsed as int are skipped."""
+    response: dict[str, object] = {
+        "latest": {
+            "3renpuku": [
+                {"combination": "1-X-3", "odds": 10.0},    # bad horse
+                {"combination": "1-2-3", "odds": 8.0},     # valid
+            ]
+        }
+    }
+    result = extract_sanrenpuku_p3(response)
+    assert set(result.keys()) == {1, 2, 3}
+
+
+def testextract_sanrenpuku_p3_skips_zero_or_negative_odds() -> None:
+    response: dict[str, object] = {
+        "latest": {
+            "3renpuku": [
+                {"combination": "1-2-3", "odds": 0.0},
+                {"combination": "1-2-4", "odds": -5.0},
+                {"combination": "2-3-4", "odds": 10.0},
+            ]
+        }
+    }
+    result = extract_sanrenpuku_p3(response)
+    assert set(result.keys()) == {2, 3, 4}
+
+
+def testextract_sanrenpuku_p3_skips_non_dict_entries() -> None:
+    response: dict[str, object] = {
+        "latest": {
+            "3renpuku": [
+                None,
+                "bad",
+                {"combination": "1-2-3", "odds": 10.0},
+            ]
+        }
+    }
+    result = extract_sanrenpuku_p3(response)
+    assert set(result.keys()) == {1, 2, 3}
+
+
+def testextract_sanrenpuku_p3_skips_entries_missing_fields() -> None:
+    response: dict[str, object] = {
+        "latest": {
+            "3renpuku": [
+                {"combination": "1-2-3"},             # missing odds
+                {"odds": 10.0},                        # missing combination
+                {"combination": "4-5-6", "odds": 8.0},  # valid
+            ]
+        }
+    }
+    result = extract_sanrenpuku_p3(response)
+    assert set(result.keys()) == {4, 5, 6}
+
+
+def testextract_sanrenpuku_p3_normalization_sums_to_one() -> None:
+    """Values must sum to exactly 1.0 after normalization."""
+    response: dict[str, object] = {
+        "latest": {
+            "3renpuku": [
+                {"combination": "1-2-3", "odds": 5.0},
+                {"combination": "1-2-4", "odds": 10.0},
+                {"combination": "1-3-4", "odds": 15.0},
+                {"combination": "2-3-4", "odds": 25.0},
+            ]
+        }
+    }
+    result = extract_sanrenpuku_p3(response)
+    assert abs(sum(result.values()) - 1.0) < 1e-9
+
+
+def testextract_sanrenpuku_p3_skips_bad_odds_type() -> None:
+    """Non-numeric odds values are skipped."""
+    response: dict[str, object] = {
+        "latest": {
+            "3renpuku": [
+                {"combination": "1-2-3", "odds": "bad"},
+                {"combination": "4-5-6", "odds": 12.0},
+            ]
+        }
+    }
+    result = extract_sanrenpuku_p3(response)
+    assert set(result.keys()) == {4, 5, 6}
+
+
+# ---------------------------------------------------------------------------
+# fetch_odds_and_sanrenpuku_for_race — combined fetch (no network)
+# ---------------------------------------------------------------------------
+
+
+def testfetch_odds_and_sanrenpuku_returns_both_on_success() -> None:
+    """When the response has both tansho and sanrenpuku, returns rows + map."""
+    encoded_key = "nar%3A2026%3A0610%3A44%3A01"
+    url = f"{HOT_WORKER_BASE_URL}/{encoded_key}"
+    stub = _StubFetcher(
+        {
+            url: {
+                "latest": {
+                    "tansho": [{"combination": "1", "odds": 7.3, "rank": 1}],
+                    "3renpuku": [
+                        {"combination": "1-2-3", "odds": 25.0},
+                    ],
+                }
+            }
+        }
+    )
+    rows, sanrenpuku_map = fetch_odds_and_sanrenpuku_for_race(
+        stub, "nar", "20260610", "44", "01"
+    )
+    assert rows == [("44", "01", 1, 7.3, 1)]
+    assert set(sanrenpuku_map.keys()) == {1, 2, 3}
+    assert abs(sum(sanrenpuku_map.values()) - 1.0) < 1e-9
+
+
+def testfetch_odds_and_sanrenpuku_returns_empty_both_on_network_error() -> None:
+    """On HTTP error, returns ([], {})."""
+
+    class _ErrorFetcher:
+        def fetch(self, url: str, timeout: float) -> dict[str, object]:
+            raise OSError("network error")
+
+    rows, sanrenpuku_map = fetch_odds_and_sanrenpuku_for_race(
+        _ErrorFetcher(), "nar", "20260610", "44", "01"
+    )
+    assert rows == []
+    assert sanrenpuku_map == {}
+
+
+def testfetch_odds_and_sanrenpuku_returns_empty_map_when_sanrenpuku_absent() -> None:
+    """When response has tansho but no sanrenpuku, rows are returned, map is empty."""
+    encoded_key = "nar%3A2026%3A0610%3A44%3A02"
+    url = f"{HOT_WORKER_BASE_URL}/{encoded_key}"
+    stub = _StubFetcher(
+        {
+            url: {
+                "latest": {
+                    "tansho": [{"combination": "1", "odds": 5.0, "rank": 1}],
+                }
+            }
+        }
+    )
+    rows, sanrenpuku_map = fetch_odds_and_sanrenpuku_for_race(
+        stub, "nar", "20260610", "44", "02"
+    )
+    assert rows == [("44", "02", 1, 5.0, 1)]
+    assert sanrenpuku_map == {}
+
+
+def testfetch_odds_and_sanrenpuku_calls_hot_worker_url() -> None:
+    """Verifies the correct URL is called."""
+    encoded_key = "nar%3A2026%3A0610%3A44%3A05"
+    expected_url = f"{HOT_WORKER_BASE_URL}/{encoded_key}"
+    stub = _StubFetcher({expected_url: {"latest": {"tansho": [], "3renpuku": []}}})
+    fetch_odds_and_sanrenpuku_for_race(stub, "nar", "20260610", "44", "05")
+    assert stub.calls == [expected_url]
+
+
+# ---------------------------------------------------------------------------
+# fetch_realtime_odds_parquet — exotic_sanrenpuku_p3_realtime column
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_realtime_odds_parquet_has_exotic_sanrenpuku_column(
+    tmp_path: Path,
+) -> None:
+    """The written parquet always has exotic_sanrenpuku_p3_realtime column."""
+    import pandas as pd
+
+    def _make_url(keibajo: str, race: str) -> str:
+        import urllib.parse
+        key = f"nar:2026:0610:{keibajo}:{race}"
+        encoded = urllib.parse.quote(key, safe="")
+        return f"{HOT_WORKER_BASE_URL}/{encoded}"
+
+    responses: dict[str, dict[str, object]] = {
+        _make_url("44", "01"): {
+            "latest": {
+                "tansho": [
+                    {"combination": "1", "odds": 7.3, "rank": 1},
+                    {"combination": "2", "odds": 12.5, "rank": 2},
+                ],
+                "3renpuku": [
+                    {"combination": "1-2-3", "odds": 25.0},
+                    {"combination": "1-2-4", "odds": 18.0},
+                ],
+            }
+        },
+    }
+    stub = _StubFetcher(responses)
+
+    result = fetch_realtime_odds_parquet(
+        "nar",
+        "20260610",
+        tmp_path,
+        race_keys=[("44", "01")],
+        fetcher=stub,
+    )
+
+    assert result is not None
+    df = pd.read_parquet(result)
+    assert "exotic_sanrenpuku_p3_realtime" in df.columns
+
+
+def test_fetch_realtime_odds_parquet_exotic_column_none_when_no_sanrenpuku(
+    tmp_path: Path,
+) -> None:
+    """When sanrenpuku data is absent, exotic_sanrenpuku_p3_realtime is all None."""
+    import pandas as pd
+
+    def _make_url(keibajo: str, race: str) -> str:
+        import urllib.parse
+        key = f"nar:2026:0610:{keibajo}:{race}"
+        encoded = urllib.parse.quote(key, safe="")
+        return f"{HOT_WORKER_BASE_URL}/{encoded}"
+
+    responses: dict[str, dict[str, object]] = {
+        _make_url("44", "06"): {
+            "latest": {
+                "tansho": [
+                    {"combination": "1", "odds": 5.0, "rank": 1},
+                ],
+                # no sanrenpuku key
+            }
+        },
+    }
+    stub = _StubFetcher(responses)
+
+    result = fetch_realtime_odds_parquet(
+        "nar",
+        "20260610",
+        tmp_path,
+        race_keys=[("44", "06")],
+        fetcher=stub,
+    )
+
+    assert result is not None
+    df = pd.read_parquet(result)
+    assert "exotic_sanrenpuku_p3_realtime" in df.columns
+    assert bool(df["exotic_sanrenpuku_p3_realtime"].isna().all())
+
+
+def test_fetch_realtime_odds_parquet_exotic_column_populated_for_known_horses(
+    tmp_path: Path,
+) -> None:
+    """Horses in sanrenpuku get non-None values; unknown horses get None."""
+    import pandas as pd
+
+    def _make_url(keibajo: str, race: str) -> str:
+        import urllib.parse
+        key = f"nar:2026:0610:{keibajo}:{race}"
+        encoded = urllib.parse.quote(key, safe="")
+        return f"{HOT_WORKER_BASE_URL}/{encoded}"
+
+    responses: dict[str, dict[str, object]] = {
+        _make_url("44", "07"): {
+            "latest": {
+                "tansho": [
+                    {"combination": "1", "odds": 5.0, "rank": 1},
+                    {"combination": "2", "odds": 10.0, "rank": 2},
+                ],
+                "3renpuku": [
+                    {"combination": "1-2-3", "odds": 20.0},
+                ],
+            }
+        },
+    }
+    stub = _StubFetcher(responses)
+
+    result = fetch_realtime_odds_parquet(
+        "nar",
+        "20260610",
+        tmp_path,
+        race_keys=[("44", "07")],
+        fetcher=stub,
+    )
+
+    assert result is not None
+    df = pd.read_parquet(result)
+    df_sorted = df.sort_values("umaban").reset_index(drop=True)
+    # Horse 1 and 2 are in tansho; sanrenpuku covers 1,2,3 but only 1 and 2 are in tansho
+    assert not pd.isna(df_sorted.iloc[0]["exotic_sanrenpuku_p3_realtime"])  # horse 1
+    assert not pd.isna(df_sorted.iloc[1]["exotic_sanrenpuku_p3_realtime"])  # horse 2
+    # Values sum (they're fractions of the total; horses 1 and 2 each get a share)
+    p3_h1 = df_sorted.iloc[0]["exotic_sanrenpuku_p3_realtime"]
+    p3_h2 = df_sorted.iloc[1]["exotic_sanrenpuku_p3_realtime"]
+    assert p3_h1 > 0.0
+    assert p3_h2 > 0.0
