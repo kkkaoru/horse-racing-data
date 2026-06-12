@@ -574,3 +574,97 @@ Any future attempt to replace v3+fitted-calibrators in production MUST satisfy A
 6. **Identity calibrators are NOT acceptable for production**: any model deployed must use
    fitted isotonic calibrators validated on the same model's output distribution. Raw argmax
    (config b) was rejected at the serve-path comparison step; that decision stands.
+
+---
+
+## FINAL ADJUDICATION: CONFIG-A vs CONFIG-B Rigorous 4-Split Comparison (2026-06-13)
+
+### Protocol
+
+Executed the mandatory protocol required by PROD-INCIDENT-2: ≥4 independent year-holdout splits,
+serve-path comparison with v3+fitted-calibrators as baseline, per-class F1/P/R tables, nige-recall
+gate. Script: `tmp/rs_adjudication_comparison.py`. Results: `tmp/rs_adjudication_result.json`.
+
+- **CONFIG-A**: `jra-running-style-lgbm-prod-v3` (146 features, inverse-freq weights) + OvR
+  isotonic calibrators fitted on year c → evaluated on year c+1 (calibrated argmax)
+- **CONFIG-B**: `jra-running-style-lgbm-prod-v4.1-balanced2-146` (134 features, balanced2:
+  nige×0.65, senkou×1.0, sashi×1.0, oikomi×0.85) + raw argmax (identity calibrators, no-op)
+
+Note: both models are trained on the full 21-year dataset. The serve-path difference is
+that CONFIG-A applies fitted isotonic calibration; CONFIG-B applies raw softmax argmax.
+This is the exact comparison the PROD-INCIDENT-2 required bar specified.
+
+### Per-Split Results
+
+| Split     | Eval n | A acc  | B acc  | A macro-F1 | B macro-F1 | Winner |
+| --------- | ------ | ------ | ------ | ---------- | ---------- | ------ |
+| 2021→2022 | 40,882 | 0.6499 | 0.5941 | 0.6491     | 0.5899     | **A**  |
+| 2022→2023 | 38,119 | 0.6481 | 0.5939 | 0.6494     | 0.5914     | **A**  |
+| 2023→2024 | 40,108 | 0.6554 | 0.5989 | 0.6559     | 0.5951     | **A**  |
+| 2024→2025 | 36,337 | 0.6524 | 0.5972 | 0.6511     | 0.5927     | **A**  |
+
+CONFIG-A wins macro-F1 in **4/4 splits**. CONFIG-B deficit: −5.92 to −6.08pp per split.
+
+### Per-Class Analysis (mean B−A delta over 4 splits)
+
+| Class  | A F1 (mean) | B F1 (mean) | Δ F1 (B−A)  | A Recall (mean) | B Recall (mean) | Δ Recall (B−A) |
+| ------ | ----------- | ----------- | ----------- | --------------- | --------------- | -------------- |
+| nige   | 0.648       | 0.568       | **−8.00pp** | 0.688           | 0.646           | −4.13pp        |
+| senkou | 0.632       | 0.588       | **−4.44pp** | 0.639           | 0.629           | −0.99pp        |
+| sashi  | 0.634       | 0.555       | **−7.96pp** | 0.631           | 0.506           | **−12.52pp**   |
+| oikomi | 0.692       | 0.659       | **−3.25pp** | 0.677           | 0.662           | −1.49pp        |
+
+**Per-split breakdown (2024→2025, most recent):**
+
+| Class  | A P   | A R   | A F1  | B P   | B R   | B F1  | Δ F1   |
+| ------ | ----- | ----- | ----- | ----- | ----- | ----- | ------ |
+| nige   | 0.608 | 0.675 | 0.640 | 0.506 | 0.637 | 0.564 | −7.6pp |
+| senkou | 0.622 | 0.651 | 0.636 | 0.551 | 0.644 | 0.594 | −4.2pp |
+| sashi  | 0.639 | 0.633 | 0.636 | 0.617 | 0.498 | 0.551 | −8.5pp |
+| oikomi | 0.715 | 0.670 | 0.692 | 0.659 | 0.665 | 0.662 | −3.0pp |
+
+### Decision Rule Application
+
+| Rule                             | Criterion                                                                                  | Result         |
+| -------------------------------- | ------------------------------------------------------------------------------------------ | -------------- |
+| Macro-F1 wins ≥3/4               | CONFIG-A wins 4/4                                                                          | **A wins**     |
+| No class F1 collapse >2pp avg    | All 4 classes far exceed −2pp: nige −8.00pp, sashi −7.96pp, senkou −4.44pp, oikomi −3.25pp | **FAIL for B** |
+| No nige-recall collapse >5pp avg | Nige recall Δ = −4.13pp (within threshold)                                                 | **PASS**       |
+
+All three criteria decisively favor CONFIG-A. CONFIG-B's deficit is structural: the 12-feature
+reduction (146→134) and balanced2 class-weight shift together degrade calibrated accuracy by
+~5.4-5.6pp and macro-F1 by ~5.9-6.1pp across all splits. The calibration step (fitted isotonic
+v3) recovers ~+2.5pp accuracy that CONFIG-B's raw argmax cannot match.
+
+### ROOT CAUSE of CONFIG-B DEFICIT
+
+The core finding: the apparent v4.1 gain seen in earlier raw-vs-raw tests (+1.25pp macro-F1
+on 2024 single holdout) was an artifact of comparing both configs uncalibrated. Once the
+production serve path (v3+fitted-calibrators) is applied as the baseline, CONFIG-B is uniformly
+dominated. The balanced2 weight shift alone cannot compensate for the loss of:
+
+1. 12 features dropped from v3→v4.1 (including historically important v3 features)
+2. Fitted isotonic calibration (+2.2–2.7pp accuracy per Phase-1 4/4 gate)
+
+### VERDICT
+
+**WINNER: CONFIG-A (jra-running-style-lgbm-prod-v3 + fitted isotonic calibrators)**
+
+- Wins macro-F1 in 4/4 splits
+- Wins all per-class F1 comparisons (all 4 classes)
+- CONFIG-B fails class F1 collapse rule (all 4 classes exceed −2pp threshold)
+- Decision rule: Rule 1 alone (4/4) is sufficient; Rules 2–3 reinforce
+
+**Deploy action: NONE — CONFIG-A is already in production.**
+
+Production state confirmed:
+
+- R2 `running-style/models/jra/latest.flatbin` → `jra-running-style-lgbm-prod-v3` (146 features, 49 MB)
+- R2 `running-style/models/jra/calibrators.json` → fitted v3 isotonic calibrators (fit_year=2025)
+- NAR: unchanged throughout (v3+fitted-calibrators, not in scope)
+
+**CONFIG-B (v4.1-balanced2-146 with identity calibrators) is definitively REJECTED.** Any
+future balanced2 attempt must address the calibration gap: train a balanced2 model on 146
+features (requiring worker SQL update for the 25 missing features) and validate with fitted
+isotonic calibrators on its own output distribution, using v3+fitted-calibrators as the
+serve-path baseline on ≥4 splits.
