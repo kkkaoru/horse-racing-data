@@ -138,6 +138,12 @@ DEFAULT_WALK_FORWARD_WINDOWS = "2023,2024,2025,2026"
 WALK_FORWARD_PRECISION_GAP_THRESHOLD_PP = 30.0
 LOG_LOSS_EPS = 1e-15
 
+# Per-class multipliers for the "balanced2" weight scheme.
+# Applied on top of inverse-frequency base weights.
+# nige×0.65 slightly under-weights the front-runner class;
+# oikomi×0.85 slightly under-weights the closer class.
+BALANCED2_WEIGHT_MULTIPLIERS: tuple[float, float, float, float] = (0.65, 1.0, 1.0, 0.85)
+
 
 def default_training_params() -> TrainingParams:
     return {
@@ -212,6 +218,23 @@ def compute_inverse_frequency_weights(labels: pd.Series) -> np.ndarray:
     safe_counts = np.where(class_counts == 0, 1.0, class_counts)
     inverse_frequencies = label_array.size / (NUM_CLASSES * safe_counts)
     return inverse_frequencies[label_array]
+
+
+def compute_weighted_sample_weights(
+    labels: pd.Series, class_multipliers: tuple[float, float, float, float]
+) -> np.ndarray:
+    """Apply per-class multipliers on top of inverse-frequency base weights."""
+    base_weights = compute_inverse_frequency_weights(labels)
+    label_array = labels.to_numpy(dtype=np.int64)
+    multiplier_array = np.array(class_multipliers, dtype=np.float64)
+    return base_weights * multiplier_array[label_array]
+
+
+def resolve_sample_weights(labels: pd.Series, class_weight_scheme: str) -> np.ndarray:
+    """Resolve sample weights by scheme name. 'balanced2' applies BALANCED2_WEIGHT_MULTIPLIERS."""
+    if class_weight_scheme == "balanced2":
+        return compute_weighted_sample_weights(labels, BALANCED2_WEIGHT_MULTIPLIERS)
+    return compute_inverse_frequency_weights(labels)
 
 
 def lgb_params_for_multiclass(params: TrainingParams) -> dict[str, object]:
@@ -588,6 +611,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_WALK_FORWARD_WINDOWS,
         help="Comma-separated holdout years for walk-forward eval",
     )
+    train_prod.add_argument(
+        "--class-weight-scheme",
+        type=str,
+        default="inverse_freq",
+        choices=["inverse_freq", "balanced2"],
+        help="Sample weight scheme: inverse_freq (default) or balanced2 (nige×0.65, senkou×1.0, sashi×1.0, oikomi×0.85)",
+    )
     return parser.parse_args(argv)
 
 
@@ -666,13 +696,14 @@ def train_full_dataset(
     params: TrainingParams,
     *,
     valid_start_date: str | None = None,
+    class_weight_scheme: str = "inverse_freq",
 ) -> lgb.Booster:
     train_subset = filter_labeled_rows(train_df)
     if valid_start_date is not None:
         fit_df, valid_df = split_production_train_valid(train_subset, valid_start_date)
         if len(valid_df) == 0:
             raise ValueError(f"production validation split is empty from {valid_start_date}")
-        train_weights = compute_inverse_frequency_weights(fit_df[TARGET_COLUMN])
+        train_weights = resolve_sample_weights(fit_df[TARGET_COLUMN], class_weight_scheme)
         valid_weights = np.ones(len(valid_df), dtype=np.float64)
         train_dataset = build_lgb_dataset(
             fit_df, fit_df[TARGET_COLUMN], train_weights,
@@ -693,7 +724,7 @@ def train_full_dataset(
             ],
         )
 
-    train_weights = compute_inverse_frequency_weights(train_subset[TARGET_COLUMN])
+    train_weights = resolve_sample_weights(train_subset[TARGET_COLUMN], class_weight_scheme)
     train_dataset = build_lgb_dataset(
         train_subset, train_subset[TARGET_COLUMN], train_weights,
         feature_columns, categorical_features,
@@ -812,6 +843,7 @@ def write_model_metadata(
     walk_forward_results: dict[str, WalkForwardEvalMetrics] | None = None,
     production_precision_nige: float | None = None,
     hyperparameters: TrainingParams | None = None,
+    class_weight_scheme: str | None = None,
 ) -> None:
     metadata: dict[str, object] = {
         "model_version": model_version,
@@ -826,6 +858,8 @@ def write_model_metadata(
     }
     if hyperparameters is not None:
         metadata["hyperparameters"] = dict(hyperparameters)
+    if class_weight_scheme is not None:
+        metadata["class_weight_scheme"] = class_weight_scheme
     if walk_forward_results is not None:
         metadata["walk_forward_results"] = walk_forward_results
     if production_precision_nige is not None and not np.isnan(production_precision_nige):
@@ -856,6 +890,7 @@ def run_train_production_command(args: argparse.Namespace) -> None:
         categorical_features,
         params,
         valid_start_date=args.valid_start_date,
+        class_weight_scheme=args.class_weight_scheme,
     )
     production_precision_nige: float | None = None
     if walk_forward_results is not None:
@@ -874,6 +909,7 @@ def run_train_production_command(args: argparse.Namespace) -> None:
         walk_forward_results=walk_forward_results,
         production_precision_nige=production_precision_nige,
         hyperparameters=params,
+        class_weight_scheme=args.class_weight_scheme,
     )
     elapsed = perf_counter() - started
     print(json.dumps({

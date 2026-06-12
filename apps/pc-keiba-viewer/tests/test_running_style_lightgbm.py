@@ -721,8 +721,10 @@ def test_run_train_production_command_default_skips_walk_forward_eval(tmp_path: 
         _params: subject.TrainingParams,
         *,
         valid_start_date: str | None = None,
+        class_weight_scheme: str = "inverse_freq",
     ) -> _FakeBooster:
         assert valid_start_date == "20260101"
+        assert class_weight_scheme == "inverse_freq"
         return _FakeBooster()
 
     def _no_walk_forward(*_args: object, **_kwargs: object) -> dict[str, subject.WalkForwardEvalMetrics]:
@@ -1038,6 +1040,37 @@ def test_write_model_metadata_omits_hyperparameters_when_absent(tmp_path: Path):
     assert "hyperparameters" not in metadata
 
 
+def test_write_model_metadata_records_class_weight_scheme_when_provided(tmp_path: Path):
+    subject.write_model_metadata(
+        tmp_path,
+        "test-version",
+        ["feature_a"],
+        [],
+        500,
+        "20050101",
+        "20261231",
+        with_field_features=True,
+        class_weight_scheme="balanced2",
+    )
+    metadata = json.loads((tmp_path / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["class_weight_scheme"] == "balanced2"
+
+
+def test_write_model_metadata_omits_class_weight_scheme_when_absent(tmp_path: Path):
+    subject.write_model_metadata(
+        tmp_path,
+        "test-version",
+        ["feature_a"],
+        [],
+        500,
+        "20050101",
+        "20261231",
+        with_field_features=True,
+    )
+    metadata = json.loads((tmp_path / "metadata.json").read_text(encoding="utf-8"))
+    assert "class_weight_scheme" not in metadata
+
+
 def test_run_train_production_command_writes_hyperparameters_to_metadata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     csv_path = tmp_path / "data.parquet"
     output_dir = tmp_path / "model"
@@ -1096,6 +1129,65 @@ def test_run_train_production_command_writes_hyperparameters_to_metadata(tmp_pat
     assert metadata["hyperparameters"]["lambda_l1"] == pytest.approx(0.2)
     assert metadata["hyperparameters"]["lambda_l2"] == pytest.approx(0.2)
     assert metadata["hyperparameters"]["min_child_samples"] == 50
+
+
+def test_compute_weighted_sample_weights_balanced2_multiplies_base():
+    # nige=class 0 (2 samples), senkou=class 1 (2 samples) — equal base weights before multiplier
+    labels = pd.Series([0, 0, 1, 1])
+    multipliers: tuple[float, float, float, float] = (0.65, 1.0, 1.0, 0.85)
+    weights = subject.compute_weighted_sample_weights(labels, multipliers)
+    nige_weight = weights[0]
+    senkou_weight = weights[2]
+    assert nige_weight == pytest.approx(senkou_weight * 0.65)
+
+
+def test_resolve_sample_weights_inverse_freq_passthrough():
+    labels = pd.Series([0, 0, 1, 1, 2, 3])
+    expected = subject.compute_inverse_frequency_weights(labels)
+    result = subject.resolve_sample_weights(labels, "inverse_freq")
+    np.testing.assert_array_almost_equal(result, expected)
+
+
+def test_resolve_sample_weights_balanced2_scheme():
+    labels = pd.Series([0, 0, 1, 1])
+    inverse_freq = subject.compute_inverse_frequency_weights(labels)
+    balanced2 = subject.resolve_sample_weights(labels, "balanced2")
+    # nige weights should be scaled down vs inverse_freq
+    assert balanced2[0] < inverse_freq[0]
+    # senkou weights keep 1.0 multiplier so they match inverse_freq
+    assert balanced2[2] == pytest.approx(inverse_freq[2])
+
+
+def test_parse_args_class_weight_scheme_default():
+    args = subject.parse_args(
+        [
+            "train-production",
+            "--csv",
+            "tmp/in",
+            "--model-version",
+            "prod-v2",
+            "--output-model-dir",
+            "tmp/model",
+        ]
+    )
+    assert args.class_weight_scheme == "inverse_freq"
+
+
+def test_parse_args_class_weight_scheme_balanced2():
+    args = subject.parse_args(
+        [
+            "train-production",
+            "--csv",
+            "tmp/in",
+            "--model-version",
+            "prod-v2",
+            "--output-model-dir",
+            "tmp/model",
+            "--class-weight-scheme",
+            "balanced2",
+        ]
+    )
+    assert args.class_weight_scheme == "balanced2"
 
 
 def test_run_train_production_command_enable_walk_forward_writes_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

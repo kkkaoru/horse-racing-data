@@ -200,3 +200,83 @@ nige-precision is the priority (downstream `rs_p_*` probability consumers also b
 from better-calibrated probabilities), or (b) balanced2 uncalibrated argmax for
 class-label display if macro-F1 is the priority. Do NOT pair balanced2 with the OLD
 production calibrators (fitted on inverse-freq output distribution — mismatched).
+
+---
+
+## Deploy — Serving Config (b): balanced2 raw argmax
+
+Date: 2026-06-13  
+Decision: User approved config (b) — macro-F1 priority, raw argmax, NO calibration for JRA.
+
+### Model
+
+| Item                | Value                                         |
+| ------------------- | --------------------------------------------- |
+| Model version       | `jra-running-style-lgbm-prod-v4-balanced2`    |
+| Training data       | `feat-v20-merged/jra` (2006-2026, 21y)        |
+| Train rows          | 836,109 (labeled)                             |
+| Feature count       | 159 (rs_p_* leak columns excluded)            |
+| Class weight scheme | balanced2 (nige×0.65, senkou×1.0, sashi×1.0, oikomi×0.85) |
+| Best iteration      | 1,290 (early-stop on 2026 partial val)        |
+| Val logloss         | 1.08775                                       |
+| Hyperparameters     | num_leaves=63, lr=0.05, ES=100, bagging=0.6@5, feature=0.85, L1=L2=0.2 |
+| R2 model key        | `running-style/models/jra/latest.flatbin`     |
+| Flatbin size        | 25.9 MB (645,000 nodes, 5,160 trees)          |
+
+### Identity Calibrators (no-op, config b)
+
+To comply with no-delete policy on R2 and implement raw argmax for config (b),
+the production calibrators.json key was OVERWRITTEN (not deleted) with an identity
+piecewise-linear table (100 knots, x→x for all 4 classes).
+
+| Item                   | Value                                                                    |
+| ---------------------- | ------------------------------------------------------------------------ |
+| R2 calibrators key     | `running-style/models/jra/calibrators.json`                              |
+| Identity doc           | `docs/finish-position-accuracy/calibrators/jra-rs-v4-identity-calibrators.json` |
+| fit_year               | 9999 (sentinel: identity)                                                |
+| Mathematical effect    | applyRunningStyleCalibration(identity) == input (verified by unit test)  |
+
+NAR calibrators (`running-style/models/nar/calibrators.json`) — UNTOUCHED.
+
+### Training Issues Resolved
+
+1. **rs_p_* leak**: `feat-v20-merged` parquet contains `rs_p_nige/senkou/sashi/oikomi`
+   columns (running-style probs from previous model iteration). These caused massive
+   label leakage (84.8% accuracy on validation data when included). Fixed by adding
+   `LEAK_COLUMNS` exclusion to `running_style_lightgbm.py:resolve_feature_columns`.
+
+2. **Early-stop with 2026 partial**: The 2026 partial val (10,236 rows) is small
+   enough that balanced2 weights drive the validation loss to a local minimum at
+   iteration 15 (without leak columns). After leak fix, the model converges normally
+   at iteration 1,290.
+
+### Smoke Test (2026-06-13)
+
+Eval on 2026 partial holdout (10,236 labeled rows, Jan-May 2026):
+
+| Metric   | v4-balanced2 | v3-baseline (ref) |
+| -------- | ------------ | ----------------- |
+| Accuracy | 0.4961       | ~0.48 (WF ref)    |
+| macro-F1 | 0.4746       | ~0.467 (WF ref)   |
+
+| Class  | Precision | Recall | F1    | Pred count |
+| ------ | --------- | ------ | ----- | ---------- |
+| nige   | 0.371     | 0.367  | 0.369 | 803        |
+| senkou | 0.452     | 0.564  | 0.502 | 3481       |
+| sashi  | 0.493     | 0.400  | 0.442 | 2983       |
+| oikomi | 0.585     | 0.586  | 0.585 | 2969       |
+
+- Prob sums all 1.0: ✓
+- No NaN in probs: ✓
+- Nige pred share: 0.078 (actual: 0.079) — correctly calibrated, no over-prediction ✓
+- Nige recall dropped from ~0.508 (v3 baseline) to 0.367 — over-prediction resolved ✓
+- All smoke gates: **PASS**
+
+### Downstream Note (no action required)
+
+`rs_p_*` feature columns in finish-position parquets are fed from this RS model's
+probability outputs. With balanced2 weights, the output distribution shifts: nige
+probability mass decreases, senkou/sashi probability mass increases. The `rs_p_*`
+features have 90.7% NULL in finish-position training (per rsp-backfill probe) and
+low importance. Distribution change impact on finish-position accuracy is expected
+to be negligible (consistent with rsp-backfill findings).

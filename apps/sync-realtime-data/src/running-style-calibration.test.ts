@@ -59,6 +59,47 @@ test("applyRunningStyleCalibration with identity calibrators preserves argmax an
   expect(result.probabilities.nige).toBeCloseTo(0.7);
 });
 
+test("applyRunningStyleCalibration with identity calibrators is a complete no-op for all classes", () => {
+  const prediction: RunningStylePrediction = {
+    predictedClass: 0,
+    predictedLabel: "nige",
+    probabilities: { nige: 0.4, senkou: 0.3, sashi: 0.2, oikomi: 0.1 },
+  };
+  const result = applyRunningStyleCalibration(prediction, IDENTITY_CALIBRATORS);
+  expect(result.predictedClass).toBe(0);
+  expect(result.predictedLabel).toBe("nige");
+  expect(result.probabilities.nige).toBeCloseTo(0.4);
+  expect(result.probabilities.senkou).toBeCloseTo(0.3);
+  expect(result.probabilities.sashi).toBeCloseTo(0.2);
+  expect(result.probabilities.oikomi).toBeCloseTo(0.1);
+});
+
+test("applyRunningStyleCalibration with 100-knot identity calibrators is a no-op", () => {
+  const knots100x: number[] = Array.from({ length: 100 }, (_, i) => i / 99);
+  const knots100y: number[] = Array.from({ length: 100 }, (_, i) => i / 99);
+  const identity100: RunningStyleCalibrationTable = {
+    calibrators: {
+      nige: { x: knots100x, y: knots100y },
+      senkou: { x: knots100x, y: knots100y },
+      sashi: { x: knots100x, y: knots100y },
+      oikomi: { x: knots100x, y: knots100y },
+    },
+    category: "jra",
+    classes: ["nige", "senkou", "sashi", "oikomi"],
+    fit_year: 9999,
+  };
+  const prediction: RunningStylePrediction = {
+    predictedClass: 2,
+    predictedLabel: "sashi",
+    probabilities: { nige: 0.1, senkou: 0.15, sashi: 0.5, oikomi: 0.25 },
+  };
+  const result = applyRunningStyleCalibration(prediction, identity100);
+  expect(result.predictedLabel).toBe("sashi");
+  expect(result.predictedClass).toBe(2);
+  expect(result.probabilities.sashi).toBeCloseTo(0.5);
+  expect(result.probabilities.oikomi).toBeCloseTo(0.25);
+});
+
 test("applyRunningStyleCalibration renormalizes: result probabilities sum to 1.0", () => {
   const result = applyRunningStyleCalibration(PREDICTION_NIGE, IDENTITY_CALIBRATORS);
   const total =
