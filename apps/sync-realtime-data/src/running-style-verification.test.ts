@@ -25,6 +25,10 @@ vi.mock("./running-style-model-binary", () => ({
   buildRunningStyleFlatModelKey: vi.fn(() => "models/v7-lineage.bin"),
   loadFlatLightGBMModelFromR2: vi.fn(),
 }));
+vi.mock("./running-style-calibration", () => ({
+  buildCalibrationR2Key: vi.fn(() => "running-style/models/jra/calibrators.json"),
+  loadCalibratorsFromR2: vi.fn(),
+}));
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -214,4 +218,106 @@ it("runRunningStyleWorkerPostgresVerification throws when missing model features
       source: "jra",
     }),
   ).rejects.toThrow("PostgreSQL feature build missing model features: a");
+});
+
+it("runRunningStyleWorkerPostgresVerification passes calibrators to inference when load succeeds", async () => {
+  const { runRunningStyleWorkerPostgresVerification } =
+    await import("./running-style-verification");
+  const { loadFlatLightGBMModelFromR2 } = await import("./running-style-model-binary");
+  const { buildRunningStyleFeaturesForRaceFromPostgres } =
+    await import("./running-style-feature-sql");
+  const { listDailyRaceEntriesForRace } = await import("./daily-feature-build");
+  const { loadRunningStyleFeatureParquet, putRunningStyleFeatureParquet, validateFeatureCoverage } =
+    await import("./running-style-feature-parquet");
+  const { runRunningStyleInferenceRowsWithFlatModel } = await import("./running-style-inference");
+  const { loadCalibratorsFromR2 } = await import("./running-style-calibration");
+  const calibratorsTable = {
+    calibrators: {
+      nige: { x: [0, 1], y: [0, 1] },
+      senkou: { x: [0, 1], y: [0, 1] },
+      sashi: { x: [0, 1], y: [0, 1] },
+      oikomi: { x: [0, 1], y: [0, 1] },
+    },
+    category: "jra",
+    classes: ["nige", "senkou", "sashi", "oikomi"],
+    fit_year: 2025,
+  };
+  vi.mocked(loadFlatLightGBMModelFromR2).mockResolvedValue({
+    header: { feature_names: ["a"] },
+  } as never);
+  vi.mocked(listDailyRaceEntriesForRace).mockResolvedValue([]);
+  vi.mocked(buildRunningStyleFeaturesForRaceFromPostgres).mockResolvedValue({
+    elapsedMs: 1,
+    rows: [{}],
+  } as never);
+  vi.mocked(validateFeatureCoverage).mockReturnValue({ missingCells: 0, missingFeatureNames: [] });
+  vi.mocked(putRunningStyleFeatureParquet).mockResolvedValue(1024);
+  vi.mocked(loadRunningStyleFeatureParquet).mockResolvedValue([{}] as never);
+  vi.mocked(runRunningStyleInferenceRowsWithFlatModel).mockResolvedValue({
+    modelVersion: "v7-lineage",
+    writtenCount: 1,
+  } as never);
+  vi.mocked(loadCalibratorsFromR2).mockResolvedValue(calibratorsTable as never);
+
+  const env = { REALTIME_DB: {}, RUNNING_STYLE_MODELS: {} } as unknown as Env;
+  await runRunningStyleWorkerPostgresVerification(
+    env,
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      keibajoCode: "08",
+      raceBango: "01",
+      source: "jra",
+    },
+    "2026-05-12T11:30:00.000Z",
+  );
+  expect(
+    vi.mocked(runRunningStyleInferenceRowsWithFlatModel).mock.calls[0]?.[1]?.calibrators,
+  ).toStrictEqual(calibratorsTable);
+});
+
+it("runRunningStyleWorkerPostgresVerification falls back to uncalibrated when calibrators load fails", async () => {
+  const { runRunningStyleWorkerPostgresVerification } =
+    await import("./running-style-verification");
+  const { loadFlatLightGBMModelFromR2 } = await import("./running-style-model-binary");
+  const { buildRunningStyleFeaturesForRaceFromPostgres } =
+    await import("./running-style-feature-sql");
+  const { listDailyRaceEntriesForRace } = await import("./daily-feature-build");
+  const { loadRunningStyleFeatureParquet, putRunningStyleFeatureParquet, validateFeatureCoverage } =
+    await import("./running-style-feature-parquet");
+  const { runRunningStyleInferenceRowsWithFlatModel } = await import("./running-style-inference");
+  const { loadCalibratorsFromR2 } = await import("./running-style-calibration");
+  vi.mocked(loadFlatLightGBMModelFromR2).mockResolvedValue({
+    header: { feature_names: ["a"] },
+  } as never);
+  vi.mocked(listDailyRaceEntriesForRace).mockResolvedValue([]);
+  vi.mocked(buildRunningStyleFeaturesForRaceFromPostgres).mockResolvedValue({
+    elapsedMs: 1,
+    rows: [{}],
+  } as never);
+  vi.mocked(validateFeatureCoverage).mockReturnValue({ missingCells: 0, missingFeatureNames: [] });
+  vi.mocked(putRunningStyleFeatureParquet).mockResolvedValue(1024);
+  vi.mocked(loadRunningStyleFeatureParquet).mockResolvedValue([{}] as never);
+  vi.mocked(runRunningStyleInferenceRowsWithFlatModel).mockResolvedValue({
+    modelVersion: "v7-lineage",
+    writtenCount: 1,
+  } as never);
+  vi.mocked(loadCalibratorsFromR2).mockRejectedValue(new Error("calibrators not found"));
+
+  const env = { REALTIME_DB: {}, RUNNING_STYLE_MODELS: {} } as unknown as Env;
+  const summary = await runRunningStyleWorkerPostgresVerification(
+    env,
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      keibajoCode: "08",
+      raceBango: "01",
+      source: "jra",
+    },
+    "2026-05-12T11:30:00.000Z",
+  );
+  expect(summary.writtenCount).toBe(1);
+  expect(
+    vi.mocked(runRunningStyleInferenceRowsWithFlatModel).mock.calls[0]?.[1]?.calibrators,
+  ).toBeUndefined();
 });

@@ -19,7 +19,24 @@ import {
   buildRunningStyleFlatModelKey,
   loadFlatLightGBMModelFromR2,
 } from "./running-style-model-binary";
+import {
+  buildCalibrationR2Key,
+  loadCalibratorsFromR2,
+  type RunningStyleCalibrationTable,
+} from "./running-style-calibration";
 import type { Env } from "./types";
+
+const tryLoadCalibrators = async (
+  bucket: R2Bucket,
+  source: "jra" | "nar",
+): Promise<RunningStyleCalibrationTable | undefined> => {
+  try {
+    return await loadCalibratorsFromR2(bucket, buildCalibrationR2Key(source));
+  } catch {
+    console.error("Failed to load running-style calibrators, falling back to uncalibrated");
+    return undefined;
+  }
+};
 
 export interface RunningStyleVerificationSummary {
   featureBuildMs?: number;
@@ -63,6 +80,7 @@ export const runRunningStyleWorkerPostgresVerification = async (
   const raceDate = `${params.kaisaiNen}${params.kaisaiTsukihi}`;
   const modelKey = buildRunningStyleFlatModelKey(params.source);
   const model = await loadFlatLightGBMModelFromR2(env.RUNNING_STYLE_MODELS, modelKey);
+  const calibrators = await tryLoadCalibrators(env.RUNNING_STYLE_MODELS, params.source);
   const pool = getFinishPositionPool(env);
   // Prefer the D1 daily-target path (mirrors the production queue): today's
   // races have D1 race-day entries before they land in nvd_se, so building from
@@ -105,6 +123,7 @@ export const runRunningStyleWorkerPostgresVerification = async (
     model.header.feature_names,
   );
   const inference = await runRunningStyleInferenceRowsWithFlatModel(env.REALTIME_DB, {
+    calibrators,
     model,
     predictedAt,
     rows,

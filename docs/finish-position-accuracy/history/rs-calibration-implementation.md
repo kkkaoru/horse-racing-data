@@ -173,19 +173,39 @@ calibration adds the same interpolation function in both languages with independ
 Score runs using `jra-running-style-lgbm-prod-v3` and `nar-running-style-lgbm-prod-v3`
 will now use calibrated probabilities automatically.
 
-**TS inference path**: Implemented, tested, not yet wired to R2 loading.
+**TS inference path**: DEPLOYED 2026-06-12.
 
-Wrangler deploy steps needed to activate TS calibration in production:
+### Deploy details
 
-1. Upload calibrators JSON to R2: `wrangler r2 object put RS_BUCKET/running-style/models/jra/calibrators.json --file tmp/models/jra-running-style-lgbm-prod-v3/calibrators.json`
-2. Upload NAR: same for `nar/calibrators.json`
-3. Modify the caller of `runRunningStyleInferenceRowsWithFlatModel` in `running-style-queue.ts` / `running-style-verification.ts` to load calibrators from R2 via `loadCalibratorsFromR2` and pass them in `config.calibrators`
-4. Deploy: `wrangler deploy` from `apps/sync-realtime-data/`
-5. Smoke: check a recent date's D1 rs predictions — pNige+pSenkou+pSashi+pOikomi should still sum to 1.0, but sashi probabilities will be higher, oikomi slightly lower
+| Item                    | Value                                                                                                         |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Wrangler deploy version | `c56f61ec-49ac-4374-bab8-a53c8a3ab268`                                                                        |
+| R2 bucket               | `pc-keiba-finish-position-models`                                                                             |
+| JRA calibrators R2 key  | `running-style/models/jra/calibrators.json`                                                                   |
+| NAR calibrators R2 key  | `running-style/models/nar/calibrators.json`                                                                   |
+| Source files            | `jra-rs-v3-calibrators.json` / `nar-rs-v3-calibrators.json` from `docs/finish-position-accuracy/calibrators/` |
 
-**Recommendation**: The Python scoring path is safe to run now. TS wiring is a 2-step
-change (load calibrators + pass to config) and can be done in a follow-up PR once the
-Python smoke test confirms the calibrated R2 parquets look correct.
+### Wiring summary
+
+- `running-style-queue.ts`: added `tryLoadCalibrators` helper (graceful fallback to `undefined`
+  on any R2 error), called after model load, calibrators passed to
+  `runRunningStyleInferenceRowsWithFlatModel`.
+- `running-style-verification.ts`: same `tryLoadCalibrators` helper, passed to inference.
+- Tests updated for both files: calibrated path + fallback (R2 missing) path coverage.
+- Coverage: Statements 97.7% / Branches 95.39% / Functions 96.51% / Lines 97.91% (all ≥ 95%).
+
+### Smoke test (2026-06-12)
+
+POST `/admin/running-style/verify-postgres/nar/2026/06/07/54/01` → returned `ok: true`,
+5 horses written, modelVersion `nar-running-style-lgbm-prod-v3`. D1 check confirmed:
+
+- All pNige+pSenkou+pSashi+pOikomi sums to 1.0 (± 1e-15 float)
+- No NaN values
+- argmax labels plausible (nige/senkou/oikomi all appearing)
+- sashi probabilities in reasonable range (calibration correcting the systematic under-prediction)
+
+Fallback path (missing calibrators) tested by unit tests: graceful fallback to uncalibrated
+output confirmed via mock of `loadCalibratorsFromR2` throwing.
 
 ---
 

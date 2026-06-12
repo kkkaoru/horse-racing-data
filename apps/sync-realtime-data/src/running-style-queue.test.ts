@@ -35,6 +35,10 @@ vi.mock("./running-style-features", () => ({
 vi.mock("./running-style-inference", () => ({
   runRunningStyleInferenceRowsWithFlatModel: vi.fn(),
 }));
+vi.mock("./running-style-calibration", () => ({
+  buildCalibrationR2Key: vi.fn(() => "running-style/models/jra/calibrators.json"),
+  loadCalibratorsFromR2: vi.fn(),
+}));
 vi.mock("./running-style-model-binary", () => ({
   buildRunningStyleFlatModelKey: vi.fn(() => "models/jra/latest.flatbin"),
   loadFlatLightGBMModelFromR2: vi.fn(),
@@ -250,4 +254,80 @@ it("captures cacheCompletedRunningStyles errors via cacheError", async () => {
   const summary = await handleRunningStylePredictionJob(buildEnv(), JOB);
   expect(summary?.cacheError).toBe("d1 read failure");
   expect(summary?.cacheWritten).toBe(false);
+});
+
+it("passes calibrators to inference when loadCalibratorsFromR2 resolves", async () => {
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const { getRunningStyleInferenceState } = await import("./running-style-d1");
+  const { loadFlatLightGBMModelFromR2 } = await import("./running-style-model-binary");
+  const { loadOrBuildRunningStyleFeatureParquet } =
+    await import("./running-style-feature-materialize");
+  const { filterRunningStyleFeatureRowsByActiveEntries } =
+    await import("./running-style-expected-horses");
+  const { runRunningStyleInferenceRowsWithFlatModel } = await import("./running-style-inference");
+  const { loadCalibratorsFromR2 } = await import("./running-style-calibration");
+  const calibratorsTable = {
+    calibrators: {
+      nige: { x: [0, 1], y: [0, 1] },
+      senkou: { x: [0, 1], y: [0, 1] },
+      sashi: { x: [0, 1], y: [0, 1] },
+      oikomi: { x: [0, 1], y: [0, 1] },
+    },
+    category: "jra",
+    classes: ["nige", "senkou", "sashi", "oikomi"],
+    fit_year: 2025,
+  };
+  vi.mocked(getRunningStyleInferenceState).mockResolvedValue(null);
+  vi.mocked(loadFlatLightGBMModelFromR2).mockResolvedValue({
+    header: { feature_names: ["x"], model_version: "v7-lineage" },
+  } as never);
+  vi.mocked(loadOrBuildRunningStyleFeatureParquet).mockResolvedValue({
+    featuresR2Key: "features.parquet",
+    rebuilt: false,
+    rows: [{ umaban: 1 }],
+  } as never);
+  vi.mocked(filterRunningStyleFeatureRowsByActiveEntries).mockReturnValue([{ umaban: 1 }] as never);
+  vi.mocked(runRunningStyleInferenceRowsWithFlatModel).mockResolvedValue({
+    modelVersion: "v7-lineage",
+    writtenCount: 1,
+  } as never);
+  vi.mocked(loadCalibratorsFromR2).mockResolvedValue(calibratorsTable as never);
+
+  await handleRunningStylePredictionJob(buildEnv(), JOB);
+  expect(
+    vi.mocked(runRunningStyleInferenceRowsWithFlatModel).mock.calls[0]?.[1]?.calibrators,
+  ).toStrictEqual(calibratorsTable);
+});
+
+it("falls back to uncalibrated inference when loadCalibratorsFromR2 rejects", async () => {
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const { getRunningStyleInferenceState } = await import("./running-style-d1");
+  const { loadFlatLightGBMModelFromR2 } = await import("./running-style-model-binary");
+  const { loadOrBuildRunningStyleFeatureParquet } =
+    await import("./running-style-feature-materialize");
+  const { filterRunningStyleFeatureRowsByActiveEntries } =
+    await import("./running-style-expected-horses");
+  const { runRunningStyleInferenceRowsWithFlatModel } = await import("./running-style-inference");
+  const { loadCalibratorsFromR2 } = await import("./running-style-calibration");
+  vi.mocked(getRunningStyleInferenceState).mockResolvedValue(null);
+  vi.mocked(loadFlatLightGBMModelFromR2).mockResolvedValue({
+    header: { feature_names: ["x"], model_version: "v7-lineage" },
+  } as never);
+  vi.mocked(loadOrBuildRunningStyleFeatureParquet).mockResolvedValue({
+    featuresR2Key: "features.parquet",
+    rebuilt: false,
+    rows: [{ umaban: 1 }],
+  } as never);
+  vi.mocked(filterRunningStyleFeatureRowsByActiveEntries).mockReturnValue([{ umaban: 1 }] as never);
+  vi.mocked(runRunningStyleInferenceRowsWithFlatModel).mockResolvedValue({
+    modelVersion: "v7-lineage",
+    writtenCount: 1,
+  } as never);
+  vi.mocked(loadCalibratorsFromR2).mockRejectedValue(new Error("R2 not found"));
+
+  const summary = await handleRunningStylePredictionJob(buildEnv(), JOB);
+  expect(summary?.writtenCount).toBe(1);
+  expect(
+    vi.mocked(runRunningStyleInferenceRowsWithFlatModel).mock.calls[0]?.[1]?.calibrators,
+  ).toBeUndefined();
 });

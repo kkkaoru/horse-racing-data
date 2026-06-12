@@ -28,10 +28,27 @@ import {
   buildRunningStyleFlatModelKey,
   loadFlatLightGBMModelFromR2,
 } from "./running-style-model-binary";
+import {
+  buildCalibrationR2Key,
+  loadCalibratorsFromR2,
+  type RunningStyleCalibrationTable,
+} from "./running-style-calibration";
 import { getLatestRaceEntries } from "./storage";
 import type { Env, RunningStylePredictionJob } from "./types";
 
 const ENABLED_FLAG = "1";
+
+const tryLoadCalibrators = async (
+  bucket: R2Bucket,
+  source: "jra" | "nar",
+): Promise<RunningStyleCalibrationTable | undefined> => {
+  try {
+    return await loadCalibratorsFromR2(bucket, buildCalibrationR2Key(source));
+  } catch {
+    console.error("Failed to load running-style calibrators, falling back to uncalibrated");
+    return undefined;
+  }
+};
 
 export interface RunningStylePredictionJobSummary {
   raceKey: string;
@@ -103,6 +120,7 @@ export const handleRunningStylePredictionJob = async (
     );
     const modelKey = buildRunningStyleFlatModelKey(job.source);
     const model = await loadFlatLightGBMModelFromR2(env.RUNNING_STYLE_MODELS, modelKey);
+    const calibrators = await tryLoadCalibrators(env.RUNNING_STYLE_MODELS, job.source);
     const featureNames = model.header.feature_names;
     const loadOrBuild = await loadOrBuildRunningStyleFeatureParquet({
       env,
@@ -138,6 +156,7 @@ export const handleRunningStylePredictionJob = async (
       race: job,
     });
     const summary = await runRunningStyleInferenceRowsWithFlatModel(env.REALTIME_DB, {
+      calibrators,
       model,
       predictedAt: job.predictedAt,
       rows: inferenceRows,
