@@ -482,3 +482,95 @@ is 0.85x which reduces its prediction share). Distribution is within reasonable 
 - R2 `running-style/models/jra/latest.flatbin` → `jra-running-style-lgbm-prod-v4.1-balanced2-146` (134 features, 19.2 MB)
 - R2 `running-style/models/jra/calibrators.json` → identity calibrators v4.1 (no-op, raw argmax)
 - NAR: unchanged throughout
+
+---
+
+## PROD-INCIDENT-2: v4.1 Deployed with Identity Calibrators + Invalid Gate (2026-06-13)
+
+### What Happened
+
+Commit `847d6d0` deployed `jra-running-style-lgbm-prod-v4.1-balanced2-146` (134 features) to
+R2 `running-style/models/jra/latest.flatbin` AND overwrote
+`running-style/models/jra/calibrators.json` with identity (no-op) calibrators. This:
+
+1. **Wiped the validated isotonic calibration** win documented in
+   `docs/finish-position-accuracy/history/rs-calibration-implementation.md`:
+   multi-year 4/4 gate, ECE −77%, argmax +2.2-2.7pp. The v3+fitted-calibrators combination
+   is the verified production baseline — it cannot be replaced without a gate that explicitly
+   compares against it on the serve path.
+
+2. **Used an invalid gate**: The v4.1 pre-retrain validation (`tmp/validate_balanced2_146feat.py`)
+   compared balanced2 raw vs baseline raw on a single 2024 holdout split. It did NOT compare
+   against v3+fitted-calibrators (the real production serve path), did NOT run multi-year
+   splits (≥4 required), and did NOT check per-class F1 under the calibrated serve path.
+   The "PASS" was therefore single-split raw-vs-raw — not sufficient for a production flip.
+
+3. **Violated the recorded REJECT decision** in the FINAL DECISION section above (04:30 JST):
+   "balanced2 production flip = REJECTED. Production stays on baseline weights + production
+   calibrators." The v4.1 deploy bypassed this decision without explicit orchestrator/user
+   reversal.
+
+### Root Cause
+
+The gate added for v4.1 addressed the feature-count mismatch from v4 (correctly) but
+silently dropped the serve-path calibration comparison that was the reason for the FINAL
+DECISION REJECT. A single-split raw-vs-raw gate is necessary but not sufficient.
+
+### Revert Actions (2026-06-13)
+
+1. Uploaded `tmp/models/jra-running-style-lgbm-prod-v3/model.flatbin` (49 MB, 146 features)
+   to R2 `running-style/models/jra/latest.flatbin` — overwriting v4.1.
+2. Uploaded `docs/finish-position-accuracy/calibrators/jra-rs-v3-calibrators.json`
+   (fitted isotonic, fit_year=2025, non-identity) to R2
+   `running-style/models/jra/calibrators.json` — restoring v3 fitted calibrators.
+
+Both uploads executed via:
+
+```
+bunx wrangler r2 object put "pc-keiba-finish-position-models/running-style/models/jra/latest.flatbin" \
+  --file ".../tmp/models/jra-running-style-lgbm-prod-v3/model.flatbin" \
+  --content-type "application/octet-stream" --remote
+bunx wrangler r2 object put "pc-keiba-finish-position-models/running-style/models/jra/calibrators.json" \
+  --file ".../docs/finish-position-accuracy/calibrators/jra-rs-v3-calibrators.json" \
+  --content-type "application/json" --remote
+```
+
+### Post-Revert Smoke Test (PASS)
+
+```
+POST /admin/running-style/verify-postgres/jra/2026/06/13/02/02
+→ {"ok":true,"featureCount":146,"modelVersion":"jra-running-style-lgbm-prod-v3",
+   "missingCells":0,"missingFeatureNames":[],"writtenCount":14} HTTP 200
+```
+
+Key checks:
+
+- `featureCount: 146` — v3 feature set ✓
+- `modelVersion: jra-running-style-lgbm-prod-v3` ✓
+- `missingCells: 0` ✓
+- calibrators: fitted isotonic (fit_year=2025, non-identity, verified locally) ✓
+
+### Production State After Revert
+
+- R2 `running-style/models/jra/latest.flatbin` → `jra-running-style-lgbm-prod-v3` (146 features, 49 MB)
+- R2 `running-style/models/jra/calibrators.json` → fitted v3 isotonic calibrators (fit_year=2025)
+- NAR: unchanged throughout
+
+### Required Bar for Any Future balanced2 (or Other Non-v3) Deploy
+
+Any future attempt to replace v3+fitted-calibrators in production MUST satisfy ALL of:
+
+1. **Multi-year gate (≥4 splits)**: evaluate on at least 4 independent year-holdout splits
+   (e.g., 2021, 2022, 2023, 2024, 2025). A single-split result is not sufficient.
+2. **Serve-path comparison**: the gate baseline MUST be `v3+fitted-calibrators` (the actual
+   production serve path), not raw-vs-raw. Use the calibrated output distribution for all
+   accuracy/F1/recall metrics.
+3. **Per-class F1 table**: report nige/senkou/sashi/oikomi F1, precision, recall for the
+   proposed model vs v3+fitted-calibrators on the same serve path.
+4. **No nige-recall collapse**: nige recall must not drop more than 5pp vs v3+fitted-calibrators
+   (nige is the primary use case for the class-weight intervention).
+5. **Explicit orchestrator/user approval**: the gate results must be reviewed and approved
+   before upload. "ADOPT-READY" on a raw-vs-raw gate does NOT constitute approval for production.
+6. **Identity calibrators are NOT acceptable for production**: any model deployed must use
+   fitted isotonic calibrators validated on the same model's output distribution. Raw argmax
+   (config b) was rejected at the serve-path comparison step; that decision stands.
