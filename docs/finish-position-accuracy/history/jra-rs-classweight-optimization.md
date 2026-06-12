@@ -388,3 +388,97 @@ The Cloudflare Worker `running-style-feature-sql.ts` must be updated to compute 
 25 missing features before any v4-class model (159 features, including `tansho_odds_raw`,
 `inverse_odds_*`, `field_avg_style_*`, `self_style_dominant_rate`, `umaban_x_nige_history`,
 etc.) can be safely deployed. The Mac batch pipeline computes these; the worker SQL does not.
+
+---
+
+## v4.1 Deploy — Serve-Path-Parity balanced2 model (2026-06-13)
+
+### Context
+
+After the v4 revert, the goal remained: deploy balanced2 weights with serve-parity. Strategy:
+train only on the feature subset that the Cloudflare Worker SQL actually computes (v3 feature
+set ∩ current parquet = 134 features). This eliminates the 25 serve-null features by never
+putting them in the model, guaranteeing missingCells=0 is a TRUE signal.
+
+### Validation Gate (pre-retrain)
+
+Script: `tmp/validate_balanced2_146feat.py` — balanced2 vs baseline on 2024 holdout using
+only v3∩parquet features (132 features, before field enrichment).
+
+| Metric   | Baseline (inverse_freq) | balanced2 | Delta   |
+| -------- | ----------------------- | --------- | ------- |
+| macro-F1 | 0.4720                  | 0.4844    | +0.0125 |
+| Accuracy | 0.4871                  | 0.4998    | +0.0126 |
+
+Gate criterion: balanced2 macro-F1 ≥ baseline macro-F1 → **PASS**
+
+Result saved to `tmp/balanced2_validation_result.json`.
+
+### Production Retrain
+
+| Item                | Value                                                                     |
+| ------------------- | ------------------------------------------------------------------------- |
+| Model version       | `jra-running-style-lgbm-prod-v4.1-balanced2-146`                          |
+| Training data       | `feat-v20-merged/jra` (2006-2026, full range)                             |
+| Train rows          | 836,109 (labeled, balanced2 weights)                                      |
+| Feature count       | 134 (v3∩parquet, after field enrichment; 12 v3 cols missing from parquet) |
+| Class weight scheme | balanced2 (nige×0.65, senkou×1.0, sashi×1.0, oikomi×0.85)                 |
+| Best iteration      | 956 (early-stop on 2026 partial val: 10,236 rows)                         |
+| Val logloss         | 1.09277                                                                   |
+| Hyperparameters     | num_leaves=63, lr=0.05, ES=100, bagging=0.6@5, feature=0.85, L1=L2=0.2    |
+| Training time       | 133.6 s (ES fit) / 324 s total                                            |
+| R2 model key        | `running-style/models/jra/latest.flatbin`                                 |
+| Flatbin size        | ~19.2 MB (3,824 trees × 4 classes = fewer trees than v4 due to ES@956)    |
+
+Feature count detail: 132 base v3∩parquet + 2 field-enriched v3 features
+(`field_avg_past_first_3f`, `self_speed_index_vs_field_top`) = 134 total.
+The 12 v3 features absent from parquet are computed by the worker SQL but unused by
+this model — harmless.
+
+### Identity Calibrators (config b: raw argmax)
+
+Overwritten `running-style/models/jra/calibrators.json` with identity piecewise-linear
+table (100 knots, x→x for all 4 classes). Template copied from
+`docs/finish-position-accuracy/calibrators/jra-rs-v4-identity-calibrators.json`
+with `model_version` updated to `jra-running-style-lgbm-prod-v4.1-balanced2-146`.
+
+### Smoke Tests (both PASS)
+
+```
+POST /admin/running-style/verify-postgres/jra/2026/06/13/09/05
+→ {"ok":true,"featureCount":134,"modelVersion":"jra-running-style-lgbm-prod-v4.1-balanced2-146",
+   "missingCells":0,"missingFeatureNames":[],"writtenCount":11} HTTP 200
+
+POST /admin/running-style/verify-postgres/jra/2026/06/13/09/08
+→ {"ok":true,"featureCount":134,"modelVersion":"jra-running-style-lgbm-prod-v4.1-balanced2-146",
+   "missingCells":0,"missingFeatureNames":[],"writtenCount":15} HTTP 200
+```
+
+Key checks:
+
+- `featureCount: 134` — only serve-computable features (no null-at-serve columns) ✓
+- `missingCells: 0` — TRUE signal (v3∩parquet guarantee) ✓
+- `modelVersion` — correct v4.1 identifier ✓
+
+### Prediction Regeneration (2026-06-13)
+
+Regenerated all 30 JRA races via `POST /admin/running-style/verify-postgres/jra/2026/06/13/{keibajo}/{race}`.
+All 414 horse prediction rows replaced from v3 to v4.1-balanced2-146.
+
+Final D1 distribution after regeneration:
+
+| Label  | Count | Share | v3 share (ref) |
+| ------ | ----- | ----- | -------------- |
+| nige   | 65    | 15.7% | 10.8%          |
+| senkou | 240   | 58.0% | 49.5%          |
+| sashi  | 95    | 22.9% | 37.4%          |
+| oikomi | 14    | 3.4%  | 2.3%           |
+
+Note: balanced2 weights shift nige slightly upward vs v3, while sashi narrows (oikomi weight
+is 0.85x which reduces its prediction share). Distribution is within reasonable range.
+
+### Production State After v4.1 Deploy
+
+- R2 `running-style/models/jra/latest.flatbin` → `jra-running-style-lgbm-prod-v4.1-balanced2-146` (134 features, 19.2 MB)
+- R2 `running-style/models/jra/calibrators.json` → identity calibrators v4.1 (no-op, raw argmax)
+- NAR: unchanged throughout
