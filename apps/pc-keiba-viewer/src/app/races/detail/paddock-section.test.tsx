@@ -375,6 +375,48 @@ test("PaddockSection recent-results wakuban renders frame-8 badge for the pink f
   expect(badge?.className).toBe("frame-number-badge frame-8");
 });
 
+test("PaddockSection recent-results shows the jockey name of the past race row", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      recentResults={[
+        buildPastResult({
+          currentUmaban: "01",
+          kishumeiRyakusho: "ルメール",
+        }),
+      ]}
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  const jockeyCell = await screen.findByLabelText("騎手");
+  expect(jockeyCell.textContent).toBe("騎手 ルメール");
+});
+
+test("PaddockSection recent-results falls back to dash when past jockey name is null", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      recentResults={[
+        buildPastResult({
+          currentUmaban: "01",
+          kishumeiRyakusho: null,
+        }),
+      ]}
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  const jockeyCell = await screen.findByLabelText("騎手");
+  expect(jockeyCell.textContent).toBe("騎手 -");
+});
+
 test("PaddockSection renders dash for bloodline when all fields are null", async () => {
   getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
   fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));

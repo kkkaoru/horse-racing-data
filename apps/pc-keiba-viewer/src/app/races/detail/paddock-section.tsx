@@ -25,6 +25,7 @@ import {
   getPreferredJockeyName,
   isSameJockeyName,
   normalizeJockeyNameForComparison,
+  normalizeJockeyNameForDisplay,
 } from "../../../lib/jockey-name";
 import {
   isPaddockHorseNotifiable,
@@ -441,6 +442,13 @@ const formatPastResultMeta = (result: HorseRaceResult): string =>
     formatDistance(result.kyori),
   ].join(" / ");
 
+const PADDOCK_RECENT_JOCKEY_FALLBACK = "-";
+
+const formatPastJockeyName = (value: string | null | undefined): string => {
+  const cleaned = normalizeJockeyNameForDisplay(value);
+  return cleaned === "" ? PADDOCK_RECENT_JOCKEY_FALLBACK : cleaned;
+};
+
 interface PaddockRecentResultsProps {
   loading?: boolean;
   results: HorseRaceResult[] | null;
@@ -511,6 +519,9 @@ function PaddockRecentResults({ loading = false, results }: PaddockRecentResults
               <strong>{formatPastRaceName(result)}</strong>
               <small>{formatPastRaceConditions(result)}</small>
               <small>{formatPastResultMeta(result)}</small>
+              <small aria-label="騎手" className="paddock-recent-jockey">
+                騎手 {formatPastJockeyName(result.kishumeiRyakusho)}
+              </small>
             </span>
             <span className="paddock-recent-stats">
               <span aria-label="枠番" className="paddock-recent-frame">
