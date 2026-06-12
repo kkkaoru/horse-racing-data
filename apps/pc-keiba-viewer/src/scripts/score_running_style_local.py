@@ -29,6 +29,12 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
+from running_style_calibration import (
+    RunningStyleCalibrators,
+    apply_calibration,
+    calibrators_path_for_model_version,
+    load_calibrators,
+)
 from running_style_lightgbm import (
     PROBABILITY_COLUMNS,
     predict_softmax,
@@ -123,9 +129,12 @@ def score_frame(
     frame: pd.DataFrame,
     feature_version: str,
     model_version: str,
+    calibrators: RunningStyleCalibrators | None = None,
 ) -> pd.DataFrame:
     feature_columns = resolve_feature_columns(list(frame.columns))
     probabilities = predict_softmax(booster, frame, feature_columns, [])
+    if calibrators is not None:
+        probabilities = apply_calibration(probabilities, calibrators)
     race_keys = select_race_key_frame(frame)
     probability_frame = build_probability_frame(probabilities)
     combined = pd.concat([race_keys, probability_frame], axis=1)
@@ -143,6 +152,17 @@ def default_path_exists(path: str) -> bool:
     return Path(path).exists()
 
 
+def try_load_calibrators(
+    model_version: str,
+    path_exists: PathExistsLike,
+) -> RunningStyleCalibrators | None:
+    """Attempt to load calibrators for model_version; return None when absent."""
+    calibrators_path = calibrators_path_for_model_version(model_version)
+    if not path_exists(calibrators_path):
+        return None
+    return load_calibrators(calibrators_path)
+
+
 def run(
     args: argparse.Namespace,
     *,
@@ -155,11 +175,13 @@ def run(
     )
     booster = booster_loader(model_file=artifact_path)
     frame = pandas_reader(args.features_parquet)
+    calibrators = try_load_calibrators(args.model_version, path_exists=path_exists)
     scored = score_frame(
         booster=booster,
         frame=frame,
         feature_version=args.running_style_feature_version,
         model_version=args.model_version,
+        calibrators=calibrators,
     )
     write_logits_parquet(scored, args.output_parquet)
 

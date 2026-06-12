@@ -26,6 +26,10 @@ import {
   type RaceHorseFeatureRow,
 } from "./running-style-r2";
 import { upsertRaceRunningStyles, type RaceRunningStyleRow } from "./running-style-d1";
+import {
+  applyRunningStyleCalibration,
+  type RunningStyleCalibrationTable,
+} from "./running-style-calibration";
 
 export interface InferenceConfig {
   modelKey: string;
@@ -56,6 +60,7 @@ export interface LoadedFlatRowsInferenceConfig {
   model: FlatLightGBMModel;
   rows: ReadonlyArray<RaceHorseFeatureRow>;
   predictedAt: string;
+  calibrators?: RunningStyleCalibrationTable;
 }
 
 const groupByRace = (
@@ -138,9 +143,13 @@ const buildFlatPredictionForHorse = (
   row: RaceHorseFeatureRow,
   fieldRow: HorseFieldRow,
   model: FlatLightGBMModel,
+  calibrators?: RunningStyleCalibrationTable,
 ): RunningStylePrediction => {
   const features = mergeFeatureMap(row.perHorseFeatures, fieldRow);
-  return predictFlatRunningStyle(model, features);
+  const prediction = predictFlatRunningStyle(model, features);
+  return calibrators === undefined
+    ? prediction
+    : applyRunningStyleCalibration(prediction, calibrators);
 };
 
 const predictRace = (
@@ -163,12 +172,13 @@ const predictRaceFlat = (
   rows: ReadonlyArray<RaceHorseFeatureRow>,
   model: FlatLightGBMModel,
   predictedAt: string,
+  calibrators?: RunningStyleCalibrationTable,
 ): RaceRunningStyleRow[] => {
   const fieldRows = computeFieldFeaturesPerHorse(extractPeerInputs(rows));
   return rows.map((row, index) =>
     predictionRowFromResult(
       row,
-      buildFlatPredictionForHorse(row, fieldRows[index]!, model),
+      buildFlatPredictionForHorse(row, fieldRows[index]!, model, calibrators),
       model.header.model_version,
       predictedAt,
     ),
@@ -244,7 +254,7 @@ export const runRunningStyleInferenceRowsWithFlatModel = async (
   const grouped = groupByRace(config.rows);
   const predictions: RaceRunningStyleRow[] = [];
   grouped.forEach((raceRows) => {
-    predictRaceFlat(raceRows, config.model, config.predictedAt).forEach((row) =>
+    predictRaceFlat(raceRows, config.model, config.predictedAt, config.calibrators).forEach((row) =>
       predictions.push(row),
     );
   });

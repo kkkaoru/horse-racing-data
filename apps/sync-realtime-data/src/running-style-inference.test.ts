@@ -8,6 +8,7 @@ import {
   runRunningStyleInferenceRowsWithFlatModel,
 } from "./running-style-inference";
 import type { CompactLightGBMModel } from "./running-style-lightgbm-tree";
+import type { RunningStyleCalibrationTable } from "./running-style-calibration";
 import type { RaceHorseFeatureRow } from "./running-style-r2";
 
 const TEST_MODEL: CompactLightGBMModel = {
@@ -265,4 +266,44 @@ test("runRunningStyleInferenceRowsWithFlatModel is also callable directly with a
     rows: [HORSE_ROW_1, HORSE_ROW_2],
   });
   expect(summary.raceCount).toBe(1);
+});
+
+const IDENTITY_CALIBRATORS: RunningStyleCalibrationTable = {
+  calibrators: {
+    nige: { x: [0, 1], y: [0, 1] },
+    oikomi: { x: [0, 1], y: [0, 1] },
+    sashi: { x: [0, 1], y: [0, 1] },
+    senkou: { x: [0, 1], y: [0, 1] },
+  },
+  category: "jra",
+  classes: ["nige", "senkou", "sashi", "oikomi"],
+  fit_year: 2024,
+};
+
+test("runRunningStyleInferenceRowsWithFlatModel applies calibrators when provided and completes without error", async () => {
+  const bucket = buildMockFlatBucket("flat/key");
+  const { loadFlatLightGBMModelFromR2 } = await import("./running-style-model-binary");
+  const model = await loadFlatLightGBMModelFromR2(bucket, "flat/key");
+  const { db } = buildMockD1();
+  const summary = await runRunningStyleInferenceRowsWithFlatModel(db, {
+    calibrators: IDENTITY_CALIBRATORS,
+    model,
+    predictedAt: "2026-05-18T10:00:00Z",
+    rows: [HORSE_ROW_1, HORSE_ROW_2],
+  });
+  expect(summary.horseCount).toBe(2);
+  expect(summary.raceCount).toBe(1);
+});
+
+test("runRunningStyleInferenceRowsWithFlatModel without calibrators produces same result as before", async () => {
+  const bucket = buildMockFlatBucket("flat/key");
+  const { loadFlatLightGBMModelFromR2 } = await import("./running-style-model-binary");
+  const model = await loadFlatLightGBMModelFromR2(bucket, "flat/key");
+  const { calls, db } = buildMockD1();
+  await runRunningStyleInferenceRowsWithFlatModel(db, {
+    model,
+    predictedAt: "2026-05-18T10:00:00Z",
+    rows: [HORSE_ROW_1],
+  });
+  expect(calls[0]?.[11]).toBe("nige");
 });

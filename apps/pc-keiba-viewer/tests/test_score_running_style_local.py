@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -10,6 +11,7 @@ import pandas as pd
 import pytest
 
 import score_running_style_local as subject
+from running_style_calibration import RunningStyleCalibrators, CalibrationTable
 
 
 def test_parse_args_minimum_required() -> None:
@@ -295,12 +297,13 @@ def test_run_loads_artifact_from_convention_path_and_writes_logits() -> None:
         return_value=np.array([[0.6, 0.2, 0.1, 0.1]]),
     ):
         with patch.object(subject, "write_logits_parquet") as write_mock:
-            subject.run(
-                args,
-                booster_loader=booster_loader,
-                pandas_reader=pandas_reader,
-                path_exists=path_exists,
-            )
+            with patch.object(subject, "try_load_calibrators", return_value=None):
+                subject.run(
+                    args,
+                    booster_loader=booster_loader,
+                    pandas_reader=pandas_reader,
+                    path_exists=path_exists,
+                )
     invoked_path = booster_loader.call_args.kwargs["model_file"]
     assert invoked_path.endswith("tmp/models/jra-running-style-lgbm-prod-v1.5/model.txt")
     assert write_mock.called
@@ -328,6 +331,180 @@ def test_run_raises_when_artifact_missing() -> None:
     pandas_reader.assert_not_called()
 
 
+def _make_calibrators() -> RunningStyleCalibrators:
+    table = CalibrationTable(x=[0.0, 1.0], y=[0.0, 1.0])
+    return RunningStyleCalibrators(
+        category="jra",
+        fit_year=2025,
+        classes=["nige", "senkou", "sashi", "oikomi"],
+        calibrators={"nige": table, "senkou": table, "sashi": table, "oikomi": table},
+    )
+
+
+def test_score_frame_with_calibrators_applies_calibration() -> None:
+    """score_frame with calibrators should pass probabilities through apply_calibration."""
+    booster = MagicMock()
+    frame = pd.DataFrame({
+        "source": ["jra"],
+        "kaisai_nen": ["2024"],
+        "kaisai_tsukihi": ["0101"],
+        "keibajo_code": ["05"],
+        "race_bango": ["01"],
+        "ketto_toroku_bango": ["2020100001"],
+        "umaban": [1],
+        "speed_index_avg_5": [50.0],
+    })
+    calibrated_probs = np.array([[0.6, 0.2, 0.1, 0.1]])
+    with patch.object(
+        subject, "predict_softmax",
+        return_value=np.array([[0.7, 0.1, 0.1, 0.1]]),
+    ):
+        with patch.object(
+            subject, "apply_calibration",
+            return_value=calibrated_probs,
+        ) as apply_mock:
+            result = subject.score_frame(
+                booster=booster,
+                frame=frame,
+                feature_version="v3",
+                model_version="jra-running-style-lgbm-prod-v3",
+                calibrators=_make_calibrators(),
+            )
+    apply_mock.assert_called_once()
+    assert float(result["p_nige"].iloc[0]) == pytest.approx(0.6)
+
+
+def test_score_frame_without_calibrators_skips_calibration() -> None:
+    """score_frame with calibrators=None must not call apply_calibration."""
+    booster = MagicMock()
+    frame = pd.DataFrame({
+        "source": ["jra"],
+        "kaisai_nen": ["2024"],
+        "kaisai_tsukihi": ["0101"],
+        "keibajo_code": ["05"],
+        "race_bango": ["01"],
+        "ketto_toroku_bango": ["2020100001"],
+        "umaban": [1],
+        "speed_index_avg_5": [50.0],
+    })
+    with patch.object(
+        subject, "predict_softmax",
+        return_value=np.array([[0.7, 0.1, 0.1, 0.1]]),
+    ):
+        with patch.object(subject, "apply_calibration") as apply_mock:
+            subject.score_frame(
+                booster=booster,
+                frame=frame,
+                feature_version="v3",
+                model_version="jra-running-style-lgbm-prod-v3",
+                calibrators=None,
+            )
+    apply_mock.assert_not_called()
+
+
+def testtry_load_calibrators_returns_none_when_file_absent() -> None:
+    path_exists = MagicMock(return_value=False)
+    result = subject.try_load_calibrators("jra-running-style-lgbm-prod-v3", path_exists=path_exists)
+    assert result is None
+
+
+def testtry_load_calibrators_returns_calibrators_when_present(tmp_path: Path) -> None:
+    # Write a real calibrators file
+    payload = {
+        "category": "jra",
+        "fit_year": 2025,
+        "classes": ["nige", "senkou", "sashi", "oikomi"],
+        "calibrators": {
+            cls: {"x": [0.0, 1.0], "y": [0.0, 1.0]}
+            for cls in ("nige", "senkou", "sashi", "oikomi")
+        },
+    }
+    calib_file = tmp_path / "calibrators.json"
+    calib_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    path_exists_real = MagicMock(return_value=True)
+    with patch.object(
+        subject, "calibrators_path_for_model_version",
+        return_value=str(calib_file),
+    ):
+        result = subject.try_load_calibrators(
+            "jra-running-style-lgbm-prod-v3",
+            path_exists=path_exists_real,
+        )
+    assert result is not None
+    assert result["category"] == "jra"
+
+
+def test_run_passes_calibrators_when_present(tmp_path: Path) -> None:
+    """run() should attempt to load calibrators and pass them to score_frame."""
+    booster_loader = MagicMock(return_value=MagicMock())
+    frame = pd.DataFrame({
+        "source": ["jra"],
+        "kaisai_nen": ["2024"],
+        "kaisai_tsukihi": ["0101"],
+        "keibajo_code": ["05"],
+        "race_bango": ["01"],
+        "ketto_toroku_bango": ["2020100001"],
+        "umaban": [1],
+        "speed_index_avg_5": [50.0],
+    })
+    pandas_reader = MagicMock(return_value=frame)
+    path_exists = MagicMock(return_value=True)
+    args = subject.parse_args([
+        "--features-parquet", "/tmp/feat.parquet",
+        "--model-version", "jra-running-style-lgbm-prod-v3",
+        "--output-parquet", "/tmp/out.parquet",
+        "--running-style-feature-version", "v3",
+        "--category", "jra",
+    ])
+    dummy_calibrators = _make_calibrators()
+    with patch.object(subject, "predict_softmax", return_value=np.array([[0.6, 0.2, 0.1, 0.1]])):
+        with patch.object(subject, "write_logits_parquet"):
+            with patch.object(subject, "try_load_calibrators", return_value=dummy_calibrators) as calib_mock:
+                subject.run(
+                    args,
+                    booster_loader=booster_loader,
+                    pandas_reader=pandas_reader,
+                    path_exists=path_exists,
+                )
+    calib_mock.assert_called_once_with("jra-running-style-lgbm-prod-v3", path_exists=path_exists)
+
+
+def test_run_passes_none_calibrators_when_absent() -> None:
+    """run() should pass calibrators=None to score_frame when file does not exist."""
+    booster_loader = MagicMock(return_value=MagicMock())
+    frame = pd.DataFrame({
+        "source": ["jra"],
+        "kaisai_nen": ["2024"],
+        "kaisai_tsukihi": ["0101"],
+        "keibajo_code": ["05"],
+        "race_bango": ["01"],
+        "ketto_toroku_bango": ["2020100001"],
+        "umaban": [1],
+        "speed_index_avg_5": [50.0],
+    })
+    pandas_reader = MagicMock(return_value=frame)
+    path_exists = MagicMock(return_value=True)
+    args = subject.parse_args([
+        "--features-parquet", "/tmp/feat.parquet",
+        "--model-version", "jra-running-style-lgbm-prod-v3",
+        "--output-parquet", "/tmp/out.parquet",
+        "--running-style-feature-version", "v3",
+        "--category", "jra",
+    ])
+    with patch.object(subject, "predict_softmax", return_value=np.array([[0.6, 0.2, 0.1, 0.1]])):
+        with patch.object(subject, "write_logits_parquet"):
+            with patch.object(subject, "try_load_calibrators", return_value=None):
+                with patch.object(subject, "apply_calibration") as apply_mock:
+                    subject.run(
+                        args,
+                        booster_loader=booster_loader,
+                        pandas_reader=pandas_reader,
+                        path_exists=path_exists,
+                    )
+    apply_mock.assert_not_called()
+
+
 def test_main_uses_lightgbm_booster_and_pandas_read_parquet() -> None:
     fake_booster = MagicMock()
     argv = [
@@ -340,9 +517,10 @@ def test_main_uses_lightgbm_booster_and_pandas_read_parquet() -> None:
     frame = pd.DataFrame({"x": [1]})
     with patch("lightgbm.Booster", return_value=fake_booster) as booster_mock:
         with patch.object(subject, "default_path_exists", return_value=True):
-            with patch.object(subject, "score_frame", return_value=frame):
-                with patch.object(subject, "write_logits_parquet"):
-                    with patch.object(pd, "read_parquet", return_value=frame):
-                        subject.main(argv)
+            with patch.object(subject, "try_load_calibrators", return_value=None):
+                with patch.object(subject, "score_frame", return_value=frame):
+                    with patch.object(subject, "write_logits_parquet"):
+                        with patch.object(pd, "read_parquet", return_value=frame):
+                            subject.main(argv)
     invoked_path = booster_mock.call_args.kwargs["model_file"]
     assert invoked_path.endswith("tmp/models/jra-running-style-lgbm-prod-v1.5/model.txt")
