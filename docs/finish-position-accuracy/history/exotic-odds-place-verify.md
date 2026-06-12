@@ -1,6 +1,6 @@
 # Exotic Odds Place-Signal Verification
 
-**Date:** 2026-06-12
+**Date:** 2026-06-12 (re-run: 2026-06-12 with actual feat-nar-exotic-v1 + feat-ban-ei-exotic-v1)
 **Continuation of:** exotic-odds-availability.md (commit 684749b), exotic-odds-place-signal.md (commit e0904c7)
 **Status:** REJECT (both NAR and Ban-ei — top1 veto)
 
@@ -170,5 +170,44 @@ Exotic odds (wide, sanrenpuku, umaren) carry complementary place-signal that tan
 - `tmp/feat-banei-v7grade-exotic/` — Ban-ei exotic features on v7-grade base (2016–2026, untracked)
 - `tmp/exotic_verify_nar_results.json` — NAR verification results (untracked)
 - `tmp/exotic_verify_banei_results.json` — Ban-ei verification results (untracked)
-- `apps/pc-keiba-viewer/src/scripts/finish-position-features/add_exotic_odds_features.py` — Feature builder (untracked; do not commit on REJECT)
-- `apps/pc-keiba-viewer/tests/test_add_exotic_odds_features.py` — Tests (untracked)
+- `apps/pc-keiba-viewer/src/scripts/finish-position-features/add_exotic_odds_features.py` — Feature builder (committed)
+- `apps/pc-keiba-viewer/tests/test_add_exotic_odds_features.py` — Tests (committed, 53 tests, 97.56% coverage)
+
+---
+
+## Re-run Results (2026-06-12, feat-nar-exotic-v1 + feat-ban-ei-exotic-v1)
+
+Full walk-forward 2023–2026 using:
+
+- NAR: `feat-nar-v8-iter9-pacestyle` → `feat-nar-exotic-v1` (196 features), base from `wf-nar-f1pedigree-predictions`
+- Ban-ei: `feat-ban-ei-v7-lineage-21y` → `feat-ban-ei-exotic-v1` (128 features), base from `wf-banei-f1pedigree-predictions`
+
+Bug discovered and fixed: DuckDB `COPY ... PARTITION_BY (race_year)` strips `race_year` from written parquet files. Fixed in `write_partitioned()` by materializing to temp table and writing per-year files explicitly.
+
+### NAR Re-run Results (pooled 2023–2026, 45,573 races, bootstrap LB95 10k iters seed=42)
+
+| Metric     | Base (%) | Exotic (%) | Diff (pp) | LB95 (pp) |
+| ---------- | -------- | ---------- | --------- | --------- |
+| top1       | 58.649   | 58.614     | −0.035    | −0.237    |
+| place2     | 93.656   | 93.630     | −0.026    | −0.138    |
+| place3     | 99.309   | 99.263     | −0.046    | −0.090    |
+| fukusho_2p | 97.547   | 97.545     | −0.002    | −0.079    |
+| top3_box   | 87.995   | 87.986     | −0.009    | −0.149    |
+
+ADOPT gate: fukusho_2p LB95 −0.079pp < 0 → **REJECT**. No signal at any metric. Confirms frontier.
+
+### Ban-ei Re-run Results (pooled 2023–2026, 5,976 races, bootstrap LB95 10k iters seed=42)
+
+| Metric     | Base (%) | Exotic (%) | Diff (pp) | LB95 (pp) |
+| ---------- | -------- | ---------- | --------- | --------- |
+| top1       | 34.454   | 34.220     | −0.234    | −0.987    |
+| place2     | 78.129   | 78.815     | +0.686    | −0.050    |
+| place3     | 95.900   | 96.369     | +0.469    | +0.067    |
+| fukusho_2p | 88.621   | 89.391     | +0.770    | +0.167    |
+| top3_box   | 63.303   | 65.077     | +1.774    | +0.853    |
+
+ADOPT gate: fukusho_2p LB95 +0.167pp PASS, place3 LB95 +0.067pp PASS, but top1 −0.234pp < −0.05pp veto floor → **REJECT**.
+
+Place signal is genuine (top3_box +1.774pp, LB95 +0.853pp). Blocked by top1 veto. A dedicated place model (separate from win model) could exploit this signal without top1 regression.
+
+Artifacts: `tmp/feat-nar-exotic-v1/`, `tmp/feat-ban-ei-exotic-v1/`, `tmp/score-nar-exotic-v1/`, `tmp/score-ban-ei-exotic-v1/`, `tmp/nar-exotic-v1-comparison.json`, `tmp/banei-exotic-v1-comparison.json` (all untracked tmp/).
