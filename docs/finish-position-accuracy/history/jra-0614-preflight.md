@@ -151,6 +151,53 @@ and whether the split2 rebuild was confirmed (grep for `stage_parquet_odds` in 6
 
 ---
 
+---
+
+## 2026-06-13 Hotfix: Exotic Layer Unwired from NAR Chain (commit ba26d3f)
+
+**Time**: ~04:30 JST 2026-06-13
+**Trigger**: Production smoke of split2-candidate (d88f031fbf81) failed with
+`ArrowTypeError: Unable to merge: Field race_year has incompatible types: int64 vs dictionary<values=int32, indices=int32, ordered=0>`
+
+**Root cause**: Commit 5bb13b8 wired `add_exotic_odds_features.py` into `LAYER_CHAIN['nar']` in
+`pipeline_args.py`. The script's parquet writer emits `race_year` with a schema incompatible with
+the rest of the chain. The sanrenpuku model is not deployed (task #289 pending); the chain-wiring
+was premature.
+
+**Fix applied (minimal-risk unwire)**:
+
+- `apps/finish-position-predict-container/src/predict_lib/pipeline_args.py`: removed `EXOTIC_SCRIPT`
+  from `LAYER_CHAIN['nar']` tuple. All constants, `SCRIPTS_WITH_PG_URL` entry, `EXOTIC_CATEGORY_BY_CATEGORY`,
+  `_exotic_category_args()` helper, and `build_layer_argv` call retained for #289 re-wiring.
+- `apps/finish-position-predict-container/tests/test_pipeline_args.py`: updated two tests —
+  `test_layer_chain_nar_is_light_v6_plus_v7_plus_trainer_plus_pacestyle` (removed exotic entry from
+  expected list); renamed `test_exotic_script_is_in_layer_chain_nar` →
+  `test_exotic_script_is_not_in_layer_chain_nar` (assertion flipped to `not in`). 460 tests pass,
+  100% coverage.
+
+**Docker rebuild**: `finish-position-predict-local:split2-candidate2`
+Image ID: `sha256:d81c4deb343062e9da51a99ad68a6cc9adc811827a7a266440dcbb4f631946ea`
+Built at: 2026-06-13T04:29:00 JST
+
+**Smoke test** (`RUN_DATE=20260612 bash scripts/launchd/finish-position-predict-daily.sh`):
+
+- Exit code: **0**
+- `[predict-upcoming] ok run_date=20260612 races_predicted=382`
+- NAR: 382 rows predicted successfully (36 races × ~10.6 horses)
+- Ban-ei: 0 rows (no ban-ei races on 20260612, correct skip)
+- JRA: auto-scoped out (JST_HOUR=04 < 09, expected)
+- No ArrowTypeError, no ERROR lines in final run
+- Realtime odds fetched: 380 rows, bataiju=380/380
+
+**Final split2 image**: `sha256:d81c4deb343062e9da51a99ad68a6cc9adc811827a7a266440dcbb4f631946ea`
+(candidate2 retagged as split2 — same image as candidate2)
+
+**Verdict for 09:30 JST 2026-06-14**: **GO** — split2 now carries all serve-skew fixes (Fix 1/2/3,
+BinderException fix) and the exotic-layer ArrowTypeError is resolved. JRA chain unchanged (13 layers,
+241 features, iter14). The 09:30 cron will use this image for JRA + NAR + Ban-ei.
+
+---
+
 ## Other Notes
 
 - **NAR exotic layer (5bb13b8)**: The current source `pipeline_args.py` adds `add_exotic_odds_features.py` to the NAR chain, but split2's baked `pipeline_args.py` does not. This is NAR-only; no JRA impact. A rebuild will bring the exotic layer into NAR as well (the script exists in current source at `apps/pc-keiba-viewer/src/scripts/finish-position-features/add_exotic_odds_features.py` — NEW as of 5bb13b8, needs to be present before rebuild).
