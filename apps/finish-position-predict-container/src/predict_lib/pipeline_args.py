@@ -120,7 +120,6 @@ LAYER_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
         TRAINER_SCRIPT,
         PACESTYLE_SCRIPT,
         RELATIONSHIP_SCRIPT,
-        EXOTIC_SCRIPT,
     ),
     "ban-ei": (
         LINEAGE_SCRIPT,

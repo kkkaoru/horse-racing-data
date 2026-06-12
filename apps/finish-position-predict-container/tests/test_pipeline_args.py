@@ -377,7 +377,6 @@ def test_layer_chain_nar_is_light_v6_plus_v7_plus_trainer_plus_pacestyle() -> No
         "add-trainer-stable-affinity-features.py",
         "add-pacestyle-features.py",
         "add-relationship-r1-features.py",
-        "add_exotic_odds_features.py",
     ]
 
 
@@ -578,9 +577,9 @@ def test_build_base_argv_with_realtime_odds_for_ban_ei_appends_flag() -> None:
     )
 
 
-def test_exotic_script_is_in_layer_chain_nar() -> None:
+def test_exotic_script_is_not_in_layer_chain_nar() -> None:
     chain = layer_chain_for("nar")
-    assert EXOTIC_SCRIPT in chain
+    assert EXOTIC_SCRIPT not in chain
 
 
 def test_exotic_script_is_not_in_layer_chain_jra() -> None:
