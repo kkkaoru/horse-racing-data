@@ -1,5 +1,5 @@
 """Tests for the container-baked model metadata mapping (v8 production deploy:
-JRA=iter14-jra-cb-pacestyle-course-v8, NAR=iter12-nar-xgb-hpo-v8, Ban-ei
+JRA=iter19-jra-cb-kohan3f-going-v8, NAR=iter12-nar-xgb-hpo-v8, Ban-ei
 unchanged from v7-lineage)."""
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ NAR_CB_RESIDUAL_C: str = "iter30-nar-cb-residual-C-v8"
 
 
 def test_model_version_jra() -> None:
-    assert model_version_for("jra") == "iter14-jra-cb-pacestyle-course-v8"
+    assert model_version_for("jra") == "iter19-jra-cb-kohan3f-going-v8"
 
 
 def test_model_version_nar() -> None:
@@ -53,7 +53,7 @@ def test_architecture_banei_catboost() -> None:
 
 
 def test_feature_count_jra() -> None:
-    assert feature_count_for("jra") == 241
+    assert feature_count_for("jra") == 244
 
 
 def test_feature_count_nar() -> None:
@@ -66,7 +66,7 @@ def test_feature_count_banei() -> None:
 
 def test_build_r2_object_key_model() -> None:
     assert build_r2_object_key("jra", "model.json") == (
-        "finish-position/jra/iter14-jra-cb-pacestyle-course-v8/model.json"
+        "finish-position/jra/iter19-jra-cb-kohan3f-going-v8/model.json"
     )
 
 

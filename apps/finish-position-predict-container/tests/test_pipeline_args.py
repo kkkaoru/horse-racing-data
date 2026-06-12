@@ -12,8 +12,10 @@ from predict_lib.pipeline_args import (
     EXOTIC_CATEGORY_BY_CATEGORY,
     EXOTIC_SCRIPT,
     HISTORY_FROM_DATE,
+    KOHAN3F_GOING_SCRIPT,
     RELATIONSHIP_CATEGORY_BY_CATEGORY,
     RELATIONSHIP_SCRIPT,
+    SCRIPTS_WITH_FROM_DATE,
     SCRIPTS_WITH_PG_URL,
     build_base_argv,
     build_layer_argv,
@@ -347,7 +349,7 @@ def test_build_layer_argv_banei_grade_career_has_pg_url_and_from_date_only() -> 
     ]
 
 
-def test_layer_chain_jra_is_full_v6_plus_v7_with_trainer_plus_v8() -> None:
+def test_layer_chain_jra_is_full_v6_plus_v7_with_trainer_plus_v8_plus_kohan3f() -> None:
     chain = layer_chain_for("jra")
     assert list(chain) == [
         "add-race-internal-features.py",
@@ -363,6 +365,7 @@ def test_layer_chain_jra_is_full_v6_plus_v7_with_trainer_plus_v8() -> None:
         "add-pacestyle-features.py",
         "add-course-numerical-features.py",
         "add-relationship-r1-features.py",
+        "add_kohan3f_going_features.py",
     ]
 
 
@@ -623,3 +626,52 @@ def test_build_layer_argv_exotic_passes_pg_url_from_date_and_category_for_nar() 
         "--category",
         "nar",
     ]
+
+
+# ---------------------------------------------------------------------------
+# iter19 kohan3f going-conditional layer
+# ---------------------------------------------------------------------------
+
+
+def test_layer_chain_jra_has_kohan3f_going_as_last_script() -> None:
+    chain = layer_chain_for("jra")
+    assert chain[-1] == KOHAN3F_GOING_SCRIPT
+
+
+def test_build_layer_argv_kohan3f_going_passes_pg_url_only_no_from_date() -> None:
+    argv = build_layer_argv(
+        KOHAN3F_GOING_SCRIPT,
+        "jra",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+    )
+    assert argv == [
+        "python",
+        f"/app/pipeline/finish-position-features/{KOHAN3F_GOING_SCRIPT}",
+        "--input-dir",
+        "/tmp/in",
+        "--output-dir",
+        "/tmp/out",
+        "--pg-url",
+        "postgresql://u:p@h/db",
+    ]
+
+
+def test_kohan3f_going_script_is_in_scripts_with_pg_url() -> None:
+    assert KOHAN3F_GOING_SCRIPT in SCRIPTS_WITH_PG_URL
+
+
+def test_kohan3f_going_script_is_not_in_scripts_with_from_date() -> None:
+    assert KOHAN3F_GOING_SCRIPT not in SCRIPTS_WITH_FROM_DATE
+
+
+def test_kohan3f_going_script_is_not_in_layer_chain_nar() -> None:
+    chain = layer_chain_for("nar")
+    assert KOHAN3F_GOING_SCRIPT not in chain
+
+
+def test_kohan3f_going_script_is_not_in_layer_chain_ban_ei() -> None:
+    chain = layer_chain_for("ban-ei")
+    assert KOHAN3F_GOING_SCRIPT not in chain

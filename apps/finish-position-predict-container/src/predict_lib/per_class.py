@@ -1,13 +1,15 @@
 """Per-class JRA / NAR model routing (Phase B + Phase F of the per-class architecture pivot).
 
-The v8 production deploy (JRA=iter14-jra-cb-pacestyle-course-v8, NAR=iter12-nar-
+The v8 production deploy (JRA=iter19-jra-cb-kohan3f-going-v8, NAR=iter12-nar-
 xgb-hpo-v8) is a single global model per category. The per-class architecture
 adds an optional second axis — a category-specific class code — so per-class
 winners can be activated piecemeal without disturbing classes that have no
 per-class winner yet. The class-code domain depends on the category:
 
 * JRA — ``kyoso_joken_code`` (race-class code: ``005`` / ``010`` / ``016`` /
-  ``701`` / ``703`` / ``other``).
+  ``701`` / ``703`` / ``other``). As of iter 19 (2026-06-13) JRA routes
+  base-only — all JRA per-class entries have been removed from
+  ``PER_CLASS_MODEL_VERSIONS``.
 * NAR — ``nar_subclass`` (derived from ``kyoso_joken_meisho`` by the feature
   build: ``NEW`` / ``MUKATSU`` / ``C`` / ``B`` / ``A`` / ``OP`` / ``other``).
 * Ban-ei — no per-class registry today.
@@ -25,19 +27,20 @@ Routing rules:
 
 Phase B-2A (2026-06-05) adds an ENSEMBLE routing layer on top of the registered
 single-model string. When ``PER_CLASS_MODEL_VERSIONS`` resolves to an ensemble
-model_version (e.g. ``iter26-jra-cb-ensemble-703-v8`` or
-``iter30-nar-cb-ensemble-NEW-v8``), the container can read a sidecar
-``manifest.json`` that lists weighted member booster versions and a blend
+model_version (e.g. ``iter30-nar-cb-ensemble-NEW-v8``), the container can read a
+sidecar ``manifest.json`` that lists weighted member booster versions and a blend
 strategy. ``load_ensemble_manifest`` returns the parsed ``PerClassEnsemble``
 dataclass, or ``None`` when no manifest exists (the caller then falls back to
 the single-model path). ``resolve_per_class_resolution`` is the unified entry
 point that returns either a ``PerClassEnsemble`` (multi-model) or a single
 ``model_version`` string.
 
-iter 26 v4 (JRA, 2026-06-05): 005 / 016 / 703 / 010 / other ensembles activated.
 iter 30 (NAR, 2026-06-05): NEW / MUKATSU / C / A / OP / other ensembles
 activated — six NAR sub-classes routed off ``nar_subclass``. ``B`` stays on the
 iter12 baseline (no ensemble registered).
+
+iter 19 (JRA, 2026-06-13): base-only deploy — all JRA per-class entries removed.
+See ``PER_CLASS_MODEL_VERSIONS`` comment block for full rationale.
 
 The ``other`` entry is a virtual code: real races never carry the literal
 ``"other"`` as their class code. :func:`normalize_class_code` maps unregistered
@@ -104,12 +107,13 @@ class PerClassEnsemble:
 # iter 12 XGBoost baseline. The new member's ``model.txt`` text dump is loaded
 # through ``lightgbm_adapter`` and scored positionally on its own metadata
 # feature order. Other NAR classes are unchanged.
+#
+# iter 19 (JRA, 2026-06-13): base-only deploy — all JRA per-class entries
+# removed. The iter19-jra-cb-kohan3f-going-v8 base model (+3 going-conditional
+# kohan3f features, 241→244 features) beats the full iter25/26 per-class system
+# on the 2023-2026 holdout (fukusho_2p LB95 +0.10pp). JRA routes to category-
+# global base for all class codes.
 PER_CLASS_MODEL_VERSIONS: Final[dict[tuple[Category, str], str]] = {
-    ("jra", "005"): "iter26-jra-cb-ensemble-005-v8",
-    ("jra", "010"): "iter25-jra-cb-ensemble-010-v8",
-    ("jra", "016"): "iter26-jra-cb-ensemble-016-v8",
-    ("jra", "703"): "iter26-jra-cb-ensemble-703-v8",
-    ("jra", "other"): "iter25-jra-cb-ensemble-other-v8",
     ("nar", "NEW"): "iter30-nar-cb-ensemble-NEW-v8",
     ("nar", "MUKATSU"): "iter30-nar-cb-ensemble-MUKATSU-v8",
     ("nar", "C"): "iter36-nar-lgb-ensemble-C-v8",

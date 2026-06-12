@@ -78,6 +78,10 @@ RELATIONSHIP_SCRIPT: Final[str] = "add-relationship-r1-features.py"
 # Uses underscore naming (not dash) — matches the actual filename.
 EXOTIC_SCRIPT: Final[str] = "add_exotic_odds_features.py"
 
+# iter19 going-conditional kohan_3f layer — JRA only (NAR / Ban-ei have no
+# verified signal). Uses underscore naming (matches the actual filename).
+KOHAN3F_GOING_SCRIPT: Final[str] = "add_kohan3f_going_features.py"
+
 HISTORY_FROM_DATE: Final[str] = "20100101"
 
 # Baked course-numerical lookup parquet. Mirrors the
@@ -110,6 +114,7 @@ LAYER_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
         PACESTYLE_SCRIPT,
         COURSE_NUMERICAL_SCRIPT,
         RELATIONSHIP_SCRIPT,
+        KOHAN3F_GOING_SCRIPT,
     ),
     "nar": (
         RACE_INTERNAL_SCRIPT,
@@ -151,12 +156,32 @@ SCRIPTS_WITH_PG_URL: Final[frozenset[str]] = frozenset(
         PACESTYLE_SCRIPT,
         RELATIONSHIP_SCRIPT,
         EXOTIC_SCRIPT,
+        KOHAN3F_GOING_SCRIPT,  # reads PG but uses --history-from-year, NOT --from-date
     }
 )
 
 # Scripts that accept ``--from-date`` to bound their Postgres history scan. The
 # race-internal layer has no Postgres scan and so takes no ``--from-date``.
-SCRIPTS_WITH_FROM_DATE: Final[frozenset[str]] = SCRIPTS_WITH_PG_URL
+# NOTE: KOHAN3F_GOING_SCRIPT uses --history-from-year instead of --from-date,
+# so it is intentionally excluded here.
+SCRIPTS_WITH_FROM_DATE: Final[frozenset[str]] = frozenset(
+    {
+        MARKET_SIGNAL_SCRIPT,
+        SECTIONAL_WEIGHT_SCRIPT,
+        FUTAN_JURYO_SCRIPT,
+        WORKOUT_SCRIPT,
+        NEAR_MISS_SCRIPT,
+        LINEAGE_SCRIPT,
+        HEAD_TO_HEAD_SCRIPT,
+        BABA_PEDIGREE_SCRIPT,
+        TRAINER_SCRIPT,
+        BANEI_FUTAN_CLASS_SCRIPT,
+        BANEI_GRADE_CAREER_SCRIPT,
+        PACESTYLE_SCRIPT,
+        RELATIONSHIP_SCRIPT,
+        EXOTIC_SCRIPT,
+    }
+)
 
 # Lineage config file basename per category (lives under lineage-races/).
 LINEAGE_CONFIG_BY_CATEGORY: Final[dict[Category, str]] = {

@@ -51,7 +51,7 @@ def test_build_prediction_rows_columns_jra() -> None:
     rows = build_prediction_rows("jra:2024:0101:45:08", "jra", ranked)
     assert rows == [
         [
-            "iter14-jra-cb-pacestyle-course-v8",
+            "iter19-jra-cb-kohan3f-going-v8",
             "jra",
             "2024",
             "0101",
@@ -96,4 +96,4 @@ def test_build_prediction_rows_falls_back_to_category_when_none_passed() -> None
     entries = [{"ketto_toroku_bango": "111", "umaban": 1}]
     ranked = rank_race_entries(entries, [0.42])
     rows = build_prediction_rows("jra:2024:0101:45:08", "jra", ranked, None)
-    assert rows[0][0] == "iter14-jra-cb-pacestyle-course-v8"
+    assert rows[0][0] == "iter19-jra-cb-kohan3f-going-v8"

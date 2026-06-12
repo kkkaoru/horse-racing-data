@@ -32,6 +32,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+import predict_lib.ensemble_routing as ensemble_routing_module
 from predict_lib import per_class
 from predict_lib.booster_pool import BoosterPool, PoolBooster
 from predict_lib.ensemble_routing import (
@@ -53,9 +54,11 @@ from predict_lib.model_meta import Architecture
 from predict_lib.per_class import EnsembleMember, PerClassEnsemble
 from predict_lib.scorer import BoosterLike
 
-JRA_FALLBACK_MODEL_VERSION: str = "iter14-jra-cb-pacestyle-course-v8"
-# Mirrors the registry entry in ``predict_lib.per_class.PER_CLASS_MODEL_VERSIONS``
-# — 703 was flipped from iter 23 to iter 26 v4 on 2026-06-05 (+0.189pp top1).
+JRA_FALLBACK_MODEL_VERSION: str = "iter19-jra-cb-kohan3f-going-v8"
+# iter 25/26 JRA per-class ensembles were active through 2026-06-12; iter 19
+# (2026-06-13) dropped all JRA per-class entries from the registry (base-only).
+# Tests that exercise the JRA ensemble code path inject the registry via
+# monkeypatch so they remain meaningful even after the flip.
 JRA_CLASS_703_ENSEMBLE_MODEL_VERSION: str = "iter26-jra-cb-ensemble-703-v8"
 ITER22_RESIDUAL_703: str = "iter22-jra-cb-residual-703-v8"
 NAR_FALLBACK_MODEL_VERSION: str = "iter12-nar-xgb-hpo-v8"
@@ -64,6 +67,22 @@ NAR_RESIDUAL_NEW: str = "iter30-nar-cb-residual-NEW-v8"
 # iter 36 NAR class-C: ensemble label + the LightGBM LambdaRank residual member.
 NAR_CLASS_C_ENSEMBLE_MODEL_VERSION: str = "iter36-nar-lgb-ensemble-C-v8"
 NAR_LGB_RESIDUAL_C: str = "iter36-nar-lgb-lambdarank-residual-C-v8"
+
+
+def _inject_jra_703_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Patch PER_CLASS_MODEL_VERSIONS in BOTH per_class and ensemble_routing.
+
+    ensemble_routing does ``from .per_class import PER_CLASS_MODEL_VERSIONS``
+    so it holds its own local reference. Patching only ``per_class`` leaves the
+    reference inside ``ensemble_routing`` stale. Both must be patched so
+    ``init_member_pool`` sees the injected JRA 703 entry.
+
+    Required for all JRA ensemble path tests after the iter 19 base-only flip
+    (2026-06-13), which removed all JRA per-class registry entries.
+    """
+    registry = {("jra", "703"): JRA_CLASS_703_ENSEMBLE_MODEL_VERSION}
+    monkeypatch.setattr(per_class, "PER_CLASS_MODEL_VERSIONS", registry)
+    monkeypatch.setattr(ensemble_routing_module, "PER_CLASS_MODEL_VERSIONS", registry)
 
 
 # ---------------------------------------------------------------------------
@@ -527,7 +546,11 @@ def test_init_member_pool_loads_registered_members(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Happy path: registry entry + manifest + on-disk members -> populated pool."""
+    """Happy path: registry entry + manifest + on-disk members -> populated pool.
+    iter 19 (2026-06-13) dropped all JRA per-class registry entries; this test
+    injects the 703 entry via monkeypatch so the JRA ensemble code path stays
+    exercised after the base-only flip."""
+    _inject_jra_703_registry(monkeypatch)
     _write_manifest(
         tmp_path,
         "jra",
@@ -552,7 +575,7 @@ def test_init_member_pool_loads_registered_members(
     )
 
     def fake_load(model_path: str) -> BoosterLike:
-        return _StubBooster(0.0 if "iter14" in model_path else 0.5)
+        return _StubBooster(0.0 if "iter19" in model_path else 0.5)
 
     _install_fake_catboost_adapter(monkeypatch, fake_load)
 
@@ -597,7 +620,9 @@ def test_init_member_pool_filters_out_missing_member_paths(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Manifest lists two members but only the per-class residual is on disk
-    (baseline absent at the category root) -> pool has only the residual."""
+    (baseline absent at the category root) -> pool has only the residual.
+    Registry injection required after the iter 19 base-only flip."""
+    _inject_jra_703_registry(monkeypatch)
     _write_manifest(
         tmp_path,
         "jra",
@@ -632,14 +657,12 @@ def test_init_member_pool_skips_other_categories_registry_entries(
 ) -> None:
     """Iterating the registry, entries for other categories are skipped — the
     pool requested for ``category`` only loads its own members."""
-    monkeypatch.setattr(
-        per_class,
-        "PER_CLASS_MODEL_VERSIONS",
-        {
-            ("jra", "703"): JRA_CLASS_703_ENSEMBLE_MODEL_VERSION,
-            ("nar", "NEW"): NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION,
-        },
-    )
+    registry = {
+        ("jra", "703"): JRA_CLASS_703_ENSEMBLE_MODEL_VERSION,
+        ("nar", "NEW"): NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION,
+    }
+    monkeypatch.setattr(per_class, "PER_CLASS_MODEL_VERSIONS", registry)
+    monkeypatch.setattr(ensemble_routing_module, "PER_CLASS_MODEL_VERSIONS", registry)
     _write_manifest(
         tmp_path,
         "jra",
@@ -1511,7 +1534,9 @@ def test_init_member_pool_skips_member_when_metadata_missing(
 ) -> None:
     """A non-baseline member whose sibling metadata.json is ABSENT is skipped
     (logged ``member-metadata-missing:<mv>``); the baseline still loads so the
-    ensemble can fall back to it."""
+    ensemble can fall back to it. Registry injection required after the iter 19
+    base-only flip."""
+    _inject_jra_703_registry(monkeypatch)
     _write_manifest(
         tmp_path,
         "jra",
@@ -1549,7 +1574,9 @@ def test_init_member_pool_skips_member_when_metadata_corrupt(
 ) -> None:
     """A non-baseline member whose metadata.json is malformed (missing
     ``feature_names`` key) is skipped + logged, exercising the ValueError arm of
-    the non-baseline failure posture."""
+    the non-baseline failure posture. Registry injection required after the iter 19
+    base-only flip."""
+    _inject_jra_703_registry(monkeypatch)
     _write_manifest(
         tmp_path,
         "jra",
@@ -1587,7 +1614,9 @@ def test_init_member_pool_raises_when_baseline_metadata_missing(
     """The category-global baseline's metadata.json is the fallback safety net —
     a missing baseline sidecar re-raises ``FileNotFoundError`` rather than
     silently degrading. The residual has a valid sidecar so the failure is
-    isolated to the baseline path."""
+    isolated to the baseline path. Registry injection required after the iter 19
+    base-only flip."""
+    _inject_jra_703_registry(monkeypatch)
     _write_manifest(
         tmp_path,
         "jra",
@@ -1625,7 +1654,8 @@ def test_init_member_pool_reraises_when_perclass_baseline_metadata_missing(
     fallback safety net so a broken sidecar fails LOUD on either layout.
 
     The residual carries a valid sidecar, isolating the failure to the per-class
-    baseline copy."""
+    baseline copy. Registry injection required after the iter 19 base-only flip."""
+    _inject_jra_703_registry(monkeypatch)
     _write_manifest(
         tmp_path,
         "jra",
@@ -1661,7 +1691,8 @@ def test_init_member_pool_drops_order_mismatched_member(
     """End-to-end: a CatBoost member whose loaded booster ``feature_names_``
     disagrees with its metadata order is dropped by the post-load order assertion
     (logged ``member-order-mismatch:<mv>``). The baseline (matching order) is
-    kept."""
+    kept. Registry injection required after the iter 19 base-only flip."""
+    _inject_jra_703_registry(monkeypatch)
     _write_manifest(
         tmp_path,
         "jra",
@@ -1688,7 +1719,7 @@ def test_init_member_pool_drops_order_mismatched_member(
     def fake_load(model_path: str) -> BoosterLike:
         # The baseline booster reports the matching order; the residual booster
         # reports a PERMUTED order so the post-load assertion drops it.
-        if "iter14" in model_path:
+        if "iter19" in model_path:
             return _NamedBooster(BASELINE_METADATA_FEATURE_NAMES)
         return _NamedBooster(["feature_b", "feature_a", "iter14_score"])
 
