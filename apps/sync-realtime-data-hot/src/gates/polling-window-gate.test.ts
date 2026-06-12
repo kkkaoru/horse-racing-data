@@ -73,15 +73,37 @@ it("JRA today: returns true at 09:00 JST when last race is 17:30 JST", async () 
   expect(result).toBe(true);
 });
 
-it("JRA today: returns false at 08:00 JST when last race is 17:30 JST", async () => {
+it("JRA today: returns true at 08:00 JST overnight advance window when last race is 17:30 JST", async () => {
   const kv = buildKv();
   const { db } = buildDb([
     { last_start: "2026-06-07T17:30:00+09:00", source: "jra", yyyy_mm_dd: "2026-06-07" },
   ]);
   const env = buildEnv(db, kv);
-  // 2026-06-06T23:00:00Z = 2026-06-07T08:00:00 JST
+  // 2026-06-06T23:00:00Z = 2026-06-07T08:00:00 JST: continuous advance sale active overnight
   const result = await shouldRunOddsCron(env, new Date("2026-06-06T23:00:00Z"));
-  expect(result).toBe(false);
+  expect(result).toBe(true);
+});
+
+it("JRA today: returns true at 03:00 JST overnight advance window when last race is 17:30 JST", async () => {
+  const kv = buildKv();
+  const { db } = buildDb([
+    { last_start: "2026-06-07T17:30:00+09:00", source: "jra", yyyy_mm_dd: "2026-06-07" },
+  ]);
+  const env = buildEnv(db, kv);
+  // 2026-06-06T18:00:00Z = 2026-06-07T03:00:00 JST: covers the overnight hourly slot
+  const result = await shouldRunOddsCron(env, new Date("2026-06-06T18:00:00Z"));
+  expect(result).toBe(true);
+});
+
+it("JRA today: returns true at 00:00 JST overnight advance window when last race is 17:30 JST", async () => {
+  const kv = buildKv();
+  const { db } = buildDb([
+    { last_start: "2026-06-07T17:30:00+09:00", source: "jra", yyyy_mm_dd: "2026-06-07" },
+  ]);
+  const env = buildEnv(db, kv);
+  // 2026-06-06T15:00:00Z = 2026-06-07T00:00:00 JST: lower bound edge
+  const result = await shouldRunOddsCron(env, new Date("2026-06-06T15:00:00Z"));
+  expect(result).toBe(true);
 });
 
 it("JRA today: returns false at 18:01 JST when last race is 17:30 JST (past post-race grace)", async () => {
@@ -139,11 +161,10 @@ it("JRA tomorrow prep: returns true at 23:59 JST today when race is tomorrow", a
   expect(result).toBe(true);
 });
 
-it("JRA tomorrow prep: returns false at 00:00 JST next day when only tomorrow has race", async () => {
-  // From the viewpoint of 2026-06-08T00:00:00 JST, today is 2026-06-08 and
-  // "tomorrow" (2026-06-09) has no race. The 2026-06-08 row is "today", not
-  // tomorrow, so prep window logic does not apply and JRA today is not yet
-  // active (09:00 lower bound).
+it("JRA today: returns true at 00:00 JST when only the now-today row has race (overnight rollover)", async () => {
+  // From the viewpoint of 2026-06-08T00:00:00 JST, today is 2026-06-08 and the
+  // 2026-06-08 row becomes "today". With the JRA today lower bound at 00:00 JST,
+  // the overnight advance-sale gate is already active.
   const kv = buildKv();
   const { db } = buildDb([
     { last_start: "2026-06-08T15:30:00+09:00", source: "jra", yyyy_mm_dd: "2026-06-08" },
@@ -151,6 +172,18 @@ it("JRA tomorrow prep: returns false at 00:00 JST next day when only tomorrow ha
   const env = buildEnv(db, kv);
   // 2026-06-07T15:00:00Z = 2026-06-08T00:00:00 JST
   const result = await shouldRunOddsCron(env, new Date("2026-06-07T15:00:00Z"));
+  expect(result).toBe(true);
+});
+
+it("JRA today: returns false at 16:00 JST when no race today and no race tomorrow (off-day)", async () => {
+  // Sanity check that the overnight bound change does not turn the gate
+  // permanently true on off-days: with no jraToday and no jraTomorrow row,
+  // the gate stays closed regardless of hour.
+  const kv = buildKv();
+  const { db } = buildDb([]);
+  const env = buildEnv(db, kv);
+  // 2026-06-07T07:00:00Z = 2026-06-07T16:00:00 JST
+  const result = await shouldRunOddsCron(env, new Date("2026-06-07T07:00:00Z"));
   expect(result).toBe(false);
 });
 

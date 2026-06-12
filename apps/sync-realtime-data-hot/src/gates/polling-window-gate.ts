@@ -4,12 +4,14 @@
 //
 //   - NAR: same-day sale opens at JST 10:00, races end by ~22:00.
 //   - JRA: weekend / monday-holiday only, advance sale opens the previous
-//     evening at JST 19:00 and runs through race day.
+//     evening at JST 19:00 and runs continuously through race day. The
+//     overnight 00:00-08:59 JST window on race day is also part of the
+//     advance-sale window, so fetching continues across midnight.
 //
 // Gate is true when ANY of the following holds (logical OR):
 //
 //   (A) JRA race is scheduled today (JST) AND now is in
-//       [09:00 JST, last_jra_today_start + 30min].
+//       [00:00 JST, last_jra_today_start + 30min].
 //   (B) JRA race is scheduled tomorrow (JST) AND now is in
 //       [19:00 JST, 23:59:59 JST] of today. This is the prep window for
 //       advance betting that opens the evening before.
@@ -44,7 +46,7 @@ const POLLING_WINDOW_KV_TTL_SECONDS = 60;
 const KV_VALUE_TRUE = "true";
 const KV_VALUE_FALSE = "false";
 const JRA_BETTING_OPEN_PREP_HOUR = 19;
-const JRA_BETTING_OPEN_TODAY_HOUR = 9;
+const JRA_BETTING_OPEN_TODAY_HOUR = 0;
 const NAR_BETTING_OPEN_TODAY_HOUR = 10;
 const POST_RACE_GRACE_MINUTES = 30;
 const MINUTE_MS = 60_000;

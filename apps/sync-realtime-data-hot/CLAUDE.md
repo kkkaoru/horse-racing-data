@@ -11,15 +11,15 @@
 
 新 D1 への書き込み圧力も将来 saturate させないため、以下の 7 層 Gate で **「触る前に弾く」** 設計を維持:
 
-| Gate | 場所                                        | 役割                                                         |
-| ---- | ------------------------------------------- | ------------------------------------------------------------ |
-| 1    | `src/gates/polling-window-gate.ts`          | JST 06-21 外は cron tick 完全 no-op                          |
-| 2    | `src/gates/race-list-kv-cache.ts`           | 当日 race 一覧 KV cache (race_key + race_start + last_fetch) |
-| 3    | `src/gates/enqueue-lock-kv.ts`              | 動的 TTL (発走 ±5min は 0、-30min~ は 20s、それ以外 60s)     |
-| 4    | `src/gates/edge-cache.ts`                   | Cache API for GET /api/odds/:raceKey, insert 同期 purge      |
-| 5    | `src/gates/latest-odds-kv-mirror.ts`        | 最新オッズ KV mirror、fetched_at 鮮度チェック                |
-| 6    | `src/gates/r2-archive.ts`                   | 7 日超の odds_snapshots を R2 にミラー (削除しない)          |
-| 7    | `src/gates/edge-cache.ts` (D1 query 結果版) | Cache API で D1 read 結果を colo-local cache                 |
+| Gate | 場所                                        | 役割                                                                                                                                                         |
+| ---- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1    | `src/gates/polling-window-gate.ts`          | 対象日に race があれば JRA: 00:00–last_start+30min / NAR: 10:00–last_start+30min / JRA prep: 19:00–翌 00:00 のいずれかが満たされない時間帯は cron tick no-op |
+| 2    | `src/gates/race-list-kv-cache.ts`           | 当日 race 一覧 KV cache (race_key + race_start + last_fetch)                                                                                                 |
+| 3    | `src/gates/enqueue-lock-kv.ts`              | 動的 TTL (発走 ±5min は 0、-30min~ は 20s、それ以外 60s)                                                                                                     |
+| 4    | `src/gates/edge-cache.ts`                   | Cache API for GET /api/odds/:raceKey, insert 同期 purge                                                                                                      |
+| 5    | `src/gates/latest-odds-kv-mirror.ts`        | 最新オッズ KV mirror、fetched_at 鮮度チェック                                                                                                                |
+| 6    | `src/gates/r2-archive.ts`                   | 7 日超の odds_snapshots を R2 にミラー (削除しない)                                                                                                          |
+| 7    | `src/gates/edge-cache.ts` (D1 query 結果版) | Cache API で D1 read 結果を colo-local cache                                                                                                                 |
 
 **`?fresh=1` / `X-Odds-Force-Fresh: 1`** で全 cache layer を bypass して D1 直行。発走 ±5 分窓では viewer 側が常に force-fresh を使う。
 
