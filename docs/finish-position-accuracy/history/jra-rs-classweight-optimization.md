@@ -288,3 +288,103 @@ to be negligible (consistent with rsp-backfill findings).
 **balanced2 production flip = REJECTED.** Under the calibrated serve path (production since 2026-06-12), balanced2 + new calibrators gives +0.71pp accuracy but **macro-F1 −0.29pp and nige recall −10.2pp** vs current production — sacrificing per-class balance (the USER's judging criterion) for aggregate accuracy. Per the serve-path-first rule and the rank-invariance/per-class precedents, production stays on baseline weights + production calibrators (jra-running-style-lgbm-prod-v3 + calibrators).
 
 **Any agent considering uploading `jra-running-style-lgbm-prod-v4-balanced2` artifacts (flatbin/calibrators in tmp/models/) to R2 or flipping the RS active model: STOP. This configuration is REJECTED. Do not deploy.**
+
+---
+
+## PROD-INCIDENT-AVERTED: v4 Deployed in Violation of REJECTED Status (2026-06-13)
+
+### What Happened
+
+Commit `8debecc` uploaded `jra-running-style-lgbm-prod-v4-balanced2` to R2 as
+`running-style/models/jra/latest.flatbin` despite the explicit REJECTED verdict above.
+An autonomous audit was triggered to verify the serve path.
+
+### Feature-Count Mismatch (Root Cause of Prod Risk)
+
+The v4 model was trained on **159 features** using the Mac DuckDB batch pipeline, which
+computes features that the Cloudflare Worker's TypeScript SQL builder
+(`running-style-feature-sql.ts`) does NOT produce. At serve time, the worker sets these
+features to `null`, which GBDT routes via `defaultLeft` — a different code path than
+training (where real values were present).
+
+**25 features present at training time, always null at serve time:**
+
+| Feature                                       | Model splits (severity)               |
+| --------------------------------------------- | ------------------------------------- |
+| `field_avg_past_corner_1_norm`                | 4,642 — 3rd most-used in entire model |
+| `field_avg_style_concentration`               | 3,069                                 |
+| `field_style_diversity`                       | 3,049                                 |
+| `popularity_odds_disagreement`                | 2,660                                 |
+| `odds_score_diff_from_race_avg`               | 2,275                                 |
+| `popularity_score_diff_from_race_avg`         | 2,463                                 |
+| `pedigree_score_diff_from_race_avg_1`         | 2,382                                 |
+| `jockey_recent_win_rate_diff_from_race_avg_1` | 1,879                                 |
+| `tansho_ninkijun_raw`                         | 1,432                                 |
+| `self_style_dominant_rate`                    | 1,180                                 |
+| `umaban_x_nige_history`                       | 1,015                                 |
+| `tansho_odds_raw`                             | 989                                   |
+| `inverse_odds_market_share`                   | 876                                   |
+| `pedigree_score_for_race_rank_in_race_1`      | 788                                   |
+| `inverse_odds_implied_prob`                   | 514                                   |
+| `same_distance_win_rate_rank_in_race_1`       | 561                                   |
+| `trainer_career_win_rate_rank_in_race_1`      | 654                                   |
+| `days_since_last_race_log`                    | 1,027                                 |
+| `popularity_rank_in_race`                     | 303                                   |
+| `inverse_odds_rank_in_race`                   | 224                                   |
+| `jockey_recent_win_rate_rank_in_race_1`       | 499                                   |
+| `is_returning_from_layoff`                    | 7                                     |
+| `speed_index_avg_5_rank_in_race_1`            | 0                                     |
+| `speed_index_best_5_rank_in_race_1`           | 0                                     |
+| `speed_index_avg_5_diff_from_race_avg_1`      | 0                                     |
+
+22 of 25 missing features have actual splits in the model. The `field_avg_past_corner_1_norm`
+feature alone (4,642 splits) is the 3rd most-used feature, causing pervasive train/serve skew.
+
+### False-Negative from Verification Endpoint
+
+The endpoint `verify-postgres` reported `missingCells: 0, missingFeatureNames: []` for the v4
+model. This is a known limitation: `validateFeatureCoverage` only detects features completely
+absent from `perHorseFeatures` (key not present). The TS SQL `rowToFeaturePayload` sets
+`perHorseFeatures[name] = null` for any column missing from the PG result — the key exists
+with value null, so the coverage check passes. The null values silently degrade inference.
+
+### Accuracy Note
+
+The v4 deploy report cited 76.4% accuracy on a 2026 holdout — this is heavily inflated
+(in-sample-ish: 2026 partial = early-stop validation slice, same as feat-v20-merged training
+data). The honest OOS estimate remains ~49-50% (consistent with prior WF experiments at
+feature-parity). With 25 features forced to null at serve time, actual serve accuracy
+would be further degraded below even that estimate.
+
+### Revert Actions (2026-06-13)
+
+1. Uploaded `tmp/models/jra-running-style-lgbm-prod-v3/model.flatbin` (49 MB, 146 features)
+   to R2 `running-style/models/jra/latest.flatbin` — overwriting v4.
+2. Uploaded `docs/finish-position-accuracy/calibrators/jra-rs-v3-calibrators.json`
+   (fitted isotonic, fit_year=2025, non-identity) to R2
+   `running-style/models/jra/calibrators.json` — restoring v3 calibrators.
+
+### Post-Revert Smoke Tests (both passed)
+
+```
+POST /admin/running-style/verify-postgres/jra/2026/06/07/05/01
+→ {"ok":true,"featureCount":146,"modelVersion":"jra-running-style-lgbm-prod-v3",
+   "missingCells":0,"missingFeatureNames":[],"writtenCount":16} HTTP 200
+
+POST /admin/running-style/verify-postgres/jra/2026/06/07/05/08
+→ {"ok":true,"featureCount":146,"modelVersion":"jra-running-style-lgbm-prod-v3",
+   "missingCells":0,"missingFeatureNames":[],"writtenCount":17} HTTP 200
+```
+
+### Production State After Revert
+
+- R2 `running-style/models/jra/latest.flatbin` → `jra-running-style-lgbm-prod-v3` (146 features)
+- R2 `running-style/models/jra/calibrators.json` → fitted v3 isotonic calibrators (fit_year=2025)
+- NAR: unchanged throughout (was not touched by the v4 deploy)
+
+### Prerequisite for v4 Deployment (if attempted in future)
+
+The Cloudflare Worker `running-style-feature-sql.ts` must be updated to compute all
+25 missing features before any v4-class model (159 features, including `tansho_odds_raw`,
+`inverse_odds_*`, `field_avg_style_*`, `self_style_dominant_rate`, `umaban_x_nige_history`,
+etc.) can be safely deployed. The Mac batch pipeline computes these; the worker SQL does not.
