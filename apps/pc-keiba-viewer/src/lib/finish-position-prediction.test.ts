@@ -689,6 +689,108 @@ describe("buildFinishPredictionRowsFromResults", () => {
     expect(oddsWeight).toBe(0.12);
   });
 
+  it("OFF with marketOverrides present produces identical scores and rank order as OFF without marketOverrides", () => {
+    const inputs: FinishPredictionBuildInputs = {
+      currentDistance: "1600",
+      currentKeibajoCode: "05",
+      currentRaceDate: "20260523",
+      currentSource: "jra",
+      results: [],
+      runners: [
+        runner({ umaban: "01", tanshoNinkijun: "05", tanshoOdds: "0100" }),
+        runner({ umaban: "02", bamei: "二号", tanshoNinkijun: "01", tanshoOdds: "0015" }),
+      ],
+    };
+    const rowsNoOverrides = buildFinishPredictionRowsFromResults({
+      ...inputs,
+      oddsCorrectionEnabled: false,
+    });
+    const rowsWithOverrides = buildFinishPredictionRowsFromResults({
+      ...inputs,
+      marketOverrides: new Map([
+        ["1", { odds: 2.5, popularity: 2 }],
+        ["2", { odds: 9.9, popularity: 7 }],
+      ]),
+      oddsCorrectionEnabled: false,
+    });
+
+    expect(rowsNoOverrides.map((r) => r.horseNumber)).toStrictEqual(
+      rowsWithOverrides.map((r) => r.horseNumber),
+    );
+    expect(rowsNoOverrides.map((r) => r.predictedRank)).toStrictEqual(
+      rowsWithOverrides.map((r) => r.predictedRank),
+    );
+    expect(rowsNoOverrides.map((r) => r.score)).toStrictEqual(
+      rowsWithOverrides.map((r) => r.score),
+    );
+  });
+
+  it("toggle ON then OFF returns same score order as initial OFF state, and ON produces different order", () => {
+    // Horse "02" has a strong model prediction (low predictedFinishNorm = better rank)
+    // so in OFF state (no odds weight) horse "02" comes first.
+    // With ON + market overrides that give horse "01" popularity=1 and horse "02" popularity=10,
+    // horse "01" moves to the front.
+    const inputs: FinishPredictionBuildInputs = {
+      currentDistance: "1600",
+      currentKeibajoCode: "05",
+      currentRaceDate: "20260523",
+      currentSource: "jra",
+      modelPredictionFeatures: [
+        {
+          horseNumber: "01",
+          modelVersion: "iter14-jra-lightgbm",
+          predictedFinishNorm: 0.95,
+          showProbability: 0.05,
+          winProbability: 0.02,
+        },
+        {
+          horseNumber: "02",
+          modelVersion: "iter14-jra-lightgbm",
+          predictedFinishNorm: 0.05,
+          showProbability: 0.9,
+          winProbability: 0.7,
+        },
+      ],
+      results: [],
+      runners: [
+        runner({ umaban: "01", tanshoNinkijun: "05", tanshoOdds: "0100" }),
+        runner({ umaban: "02", bamei: "二号", tanshoNinkijun: "01", tanshoOdds: "0015" }),
+      ],
+    };
+    const realtimeOverrides = new Map([
+      ["1", { odds: 1.5, popularity: 1 }],
+      ["2", { odds: 99, popularity: 10 }],
+    ]);
+    const initialOffRows = buildFinishPredictionRowsFromResults({
+      ...inputs,
+      oddsCorrectionEnabled: false,
+    });
+    const onRows = buildFinishPredictionRowsFromResults({
+      ...inputs,
+      marketOverrides: realtimeOverrides,
+      oddsCorrectionEnabled: true,
+    });
+    const toggledBackOffRows = buildFinishPredictionRowsFromResults({
+      ...inputs,
+      oddsCorrectionEnabled: false,
+    });
+
+    // OFF state: horse "02" wins due to strong model (predictedFinishNorm=0.05)
+    expect(initialOffRows[0]?.horseNumber).toStrictEqual("2");
+    // ON state with overrides: horse "01" gets popularity=1 → moves to front
+    expect(onRows[0]?.horseNumber).toStrictEqual("1");
+    // Toggling back to OFF produces same order as initial OFF
+    expect(initialOffRows.map((r) => r.horseNumber)).toStrictEqual(
+      toggledBackOffRows.map((r) => r.horseNumber),
+    );
+    expect(initialOffRows.map((r) => r.score)).toStrictEqual(
+      toggledBackOffRows.map((r) => r.score),
+    );
+    expect(onRows.map((r) => r.horseNumber)).not.toStrictEqual(
+      initialOffRows.map((r) => r.horseNumber),
+    );
+  });
+
   it("re-ranks rows when realtime market overrides change popularity and odds", () => {
     const inputs: FinishPredictionBuildInputs = {
       currentDistance: "1600",

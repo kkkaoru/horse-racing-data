@@ -515,7 +515,9 @@ export function FinishPositionPredictionTable({
   useEffect(() => {
     const tanshoRows = payload?.odds?.latest.tansho ?? [];
     const marketOverrides =
-      tanshoRows.length > 0 ? buildFinishPredictionMarketOverrides(tanshoRows) : undefined;
+      oddsCorrectionEnabled && tanshoRows.length > 0
+        ? buildFinishPredictionMarketOverrides(tanshoRows)
+        : undefined;
     setDisplayRows(
       buildFinishPredictionRowsFromInputs({ ...inputs, oddsCorrectionEnabled }, marketOverrides),
     );
