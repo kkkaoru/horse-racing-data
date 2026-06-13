@@ -25,42 +25,81 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(),
 }));
 vi.mock("../../../lib/fetch-with-retry", () => ({
-  fetchWithRetry: vi.fn<() => Promise<Response>>(
-    () =>
-      new Promise<Response>((resolve) => {
-        resolve(
-          new Response(
-            JSON.stringify({
-              bloodlineRows: [],
-              bloodlineSettings: {},
-              conditionLabels: {
-                age: null,
-                class: null,
-                distance: null,
-                frame: "",
-                monthWindow: "",
-                raceNumber: "",
-                raceSubtitle: null,
-                raceTitle: null,
-                sex: null,
-                surface: null,
-                turn: null,
-                venue: null,
-                weight: null,
-              },
-              correlationRows: [],
-              rows: [],
-              runners: [],
-              settings: {},
-              similarRows: [],
-              source: "jra",
-              type: "time-score",
-            }),
-            { headers: { "content-type": "application/json" }, status: 200 },
-          ),
-        );
-      }),
-  ),
+  fetchWithRetry: vi.fn<(input: RequestInfo | URL) => Promise<Response>>((input) => {
+    const url = typeof input === "string" ? input : "";
+    if (url.endsWith("/sections/results")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            classConditionName: null,
+            currentDistance: null,
+            currentKeibajoCode: "05",
+            currentRaceDate: "20270601",
+            currentTrackCode: null,
+            defaultIncludeClass: false,
+            results: [],
+            runners: [],
+            source: "jra",
+            sourceScope: "all",
+            type: "results",
+          }),
+          { headers: { "content-type": "application/json" }, status: 200 },
+        ),
+      );
+    }
+    if (url.endsWith("/sections/training")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            sourceLabel: "src",
+            stableComments: [],
+            trainings: [],
+            type: "training",
+          }),
+          { headers: { "content-type": "application/json" }, status: 200 },
+        ),
+      );
+    }
+    if (url.endsWith("/sections/condition")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ type: "condition" }), {
+          headers: { "content-type": "application/json" },
+          status: 200,
+        }),
+      );
+    }
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          bloodlineRows: [],
+          bloodlineSettings: {},
+          conditionLabels: {
+            age: null,
+            class: null,
+            distance: null,
+            frame: "",
+            monthWindow: "",
+            raceNumber: "",
+            raceSubtitle: null,
+            raceTitle: null,
+            sex: null,
+            surface: null,
+            turn: null,
+            venue: null,
+            weight: null,
+          },
+          correlationRows: [],
+          rows: [],
+          runners: [],
+          settings: {},
+          similarRows: [],
+          source: "jra",
+          type: "time-score",
+        }),
+        { headers: { "content-type": "application/json" }, status: 200 },
+      ),
+    );
+  }),
 }));
 
 vi.mock("./bloodline-similar-combined-table", () => ({
@@ -79,6 +118,10 @@ vi.mock("./similar-race-stats-table", () => ({
 
 vi.mock("./overall-score-table", () => ({
   OverallScoreTable: () => <div data-testid="overall-score-table-stub">overall</div>,
+}));
+
+vi.mock("./horse-race-results-chart", () => ({
+  HorseRaceResultsChart: () => <div data-testid="horse-race-results-chart-stub">chart</div>,
 }));
 
 vi.mock("./horse-race-results-table", () => ({
@@ -119,7 +162,8 @@ vi.mock("./finish-position-bucket-section", () => ({
   ),
 }));
 
-import { LazyTimeScoreSection } from "./lazy-detail-sections";
+import { fetchWithRetry } from "../../../lib/fetch-with-retry";
+import { LazyDetailSections, LazyTimeScoreSection } from "./lazy-detail-sections";
 
 const installMatchMediaMockTimeScore = (initialMatches: boolean): MockMediaQueryListController => {
   const listeners = new Set<(event: MockMediaQueryEvent) => void>();
@@ -199,4 +243,166 @@ test("LazyTimeScoreSection expands by default on desktop viewport", async () => 
   expect(toggle.getAttribute("aria-expanded")).toStrictEqual("true");
   const bodyContent = screen.getByTestId("bloodline-similar-combined-stub");
   expect(bodyContent.parentElement?.parentElement?.hasAttribute("hidden")).toStrictEqual(false);
+});
+
+test("LazyDetailSections renders the results chart section directly below the results section", async () => {
+  installMatchMediaMockTimeScore(false);
+  await act(async () => {
+    render(
+      <LazyDetailSections
+        day="11"
+        keibajoCode="05"
+        month="06"
+        raceNumber="01"
+        realtimeApiBaseUrl=""
+        source="jra"
+        year="2027"
+      />,
+    );
+  });
+  await waitFor(() => {
+    expect(screen.getByTestId("horse-race-results-chart-stub").textContent).toStrictEqual("chart");
+  });
+  await waitFor(() => {
+    expect(
+      screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent),
+    ).toStrictEqual(["総合評価スコア", "競走成績", "競走成績グラフ", "同条件レース分析"]);
+  });
+  const resultsStub = screen.getByTestId("horse-race-results-table-stub");
+  const chartStub = screen.getByTestId("horse-race-results-chart-stub");
+  expect(resultsStub.compareDocumentPosition(chartStub)).toStrictEqual(4);
+  const resultsFetchCalls = vi
+    .mocked(fetchWithRetry)
+    .mock.calls.filter(
+      (call) => typeof call[0] === "string" && call[0].includes("/sections/results"),
+    );
+  expect(resultsFetchCalls.length).toBe(1);
+  expect(resultsFetchCalls[0]?.[0]).toStrictEqual("/api/races/2027/06/11/05/01/sections/results");
+});
+
+test("LazyDetailSections renders a chart section error when the results fetch fails", async () => {
+  installMatchMediaMockTimeScore(false);
+  vi.mocked(fetchWithRetry).mockImplementation((input) => {
+    const url = typeof input === "string" ? input : "";
+    if (url === "/api/races/2027/06/12/05/01/sections/results") {
+      return Promise.resolve(
+        new Response("", { status: 500, statusText: "Internal Server Error" }),
+      );
+    }
+    if (url === "/api/races/2027/06/12/05/01/sections/training") {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            sourceLabel: "src",
+            stableComments: [],
+            trainings: [],
+            type: "training",
+          }),
+          { headers: { "content-type": "application/json" }, status: 200 },
+        ),
+      );
+    }
+    if (url === "/api/races/2027/06/12/05/01/sections/condition") {
+      return Promise.resolve(
+        new Response(JSON.stringify({ type: "condition" }), {
+          headers: { "content-type": "application/json" },
+          status: 200,
+        }),
+      );
+    }
+    return Promise.resolve(
+      new Response(JSON.stringify({ type: "time-score" }), {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      }),
+    );
+  });
+  await act(async () => {
+    render(
+      <LazyDetailSections
+        day="12"
+        keibajoCode="05"
+        month="06"
+        raceNumber="01"
+        realtimeApiBaseUrl=""
+        source="jra"
+        year="2027"
+      />,
+    );
+  });
+  await waitFor(() => {
+    expect(
+      screen.getAllByText("データを取得できませんでした: 500 Internal Server Error").length,
+    ).toStrictEqual(2);
+  });
+  await waitFor(() => {
+    expect(
+      screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent),
+    ).toStrictEqual(["総合評価スコア", "競走成績", "競走成績グラフ", "同条件レース分析"]);
+  });
+});
+
+test("LazyDetailSections renders a chart section error when the results payload type is invalid", async () => {
+  installMatchMediaMockTimeScore(false);
+  vi.mocked(fetchWithRetry).mockImplementation((input) => {
+    const url = typeof input === "string" ? input : "";
+    if (url === "/api/races/2027/06/13/05/01/sections/results") {
+      return Promise.resolve(
+        new Response(JSON.stringify({ type: "bogus" }), {
+          headers: { "content-type": "application/json" },
+          status: 200,
+        }),
+      );
+    }
+    if (url === "/api/races/2027/06/13/05/01/sections/training") {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            sourceLabel: "src",
+            stableComments: [],
+            trainings: [],
+            type: "training",
+          }),
+          { headers: { "content-type": "application/json" }, status: 200 },
+        ),
+      );
+    }
+    if (url === "/api/races/2027/06/13/05/01/sections/condition") {
+      return Promise.resolve(
+        new Response(JSON.stringify({ type: "condition" }), {
+          headers: { "content-type": "application/json" },
+          status: 200,
+        }),
+      );
+    }
+    return Promise.resolve(
+      new Response(JSON.stringify({ type: "time-score" }), {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      }),
+    );
+  });
+  await act(async () => {
+    render(
+      <LazyDetailSections
+        day="13"
+        keibajoCode="05"
+        month="06"
+        raceNumber="01"
+        realtimeApiBaseUrl=""
+        source="jra"
+        year="2027"
+      />,
+    );
+  });
+  await waitFor(() => {
+    expect(
+      screen.getAllByText("データを取得できませんでした: Invalid section payload").length,
+    ).toStrictEqual(2);
+  });
+  await waitFor(() => {
+    expect(
+      screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent),
+    ).toStrictEqual(["総合評価スコア", "競走成績", "競走成績グラフ", "同条件レース分析"]);
+  });
 });

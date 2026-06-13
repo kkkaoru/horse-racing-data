@@ -9853,3 +9853,137 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
     width: min(calc(var(--space-100pct-12) - var(--space-160px-65)), var(--space-2240px-162));
   }
 }
+
+/* Race-results performance chart grid + per-horse correlation matrix */
+.race-results-chart-controls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10px-27);
+  margin-bottom: var(--space-10px-27);
+}
+
+.race-results-chart-section .stats-control-button[aria-pressed="true"] {
+  background: var(--color-hex-e8f3ee-58);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.race-results-chart-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6px-33);
+}
+
+.race-results-chart-swatch {
+  display: inline-block;
+  width: var(--space-12px-9);
+  height: var(--space-12px-9);
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-4px-18);
+}
+
+.race-results-chart-grid {
+  display: grid;
+  grid-template-columns: minmax(var(--number-0-2), var(--space-1fr-51));
+  gap: var(--space-12px-9);
+}
+
+.race-results-chart-panel {
+  min-width: var(--number-0-2);
+}
+
+.race-results-chart-panel h3 {
+  margin: var(--number-0-2) var(--number-0-2) var(--space-6px-33);
+  font-size: var(--space-15px-1);
+}
+
+@media (min-width: 960px) {
+  .race-results-chart-grid {
+    grid-template-columns: repeat(
+      var(--number-2-1),
+      minmax(var(--number-0-2), var(--space-1fr-51))
+    );
+  }
+}
+
+.race-results-chart-view-toggle {
+  border-bottom: var(--space-1px-7) solid var(--line);
+  padding-bottom: var(--space-10px-27);
+}
+
+.race-results-correlation-matrix {
+  overflow-x: auto;
+}
+
+.race-results-correlation-matrix-grid {
+  display: grid;
+  align-items: center;
+  gap: var(--space-6px-33) var(--space-4px-18);
+}
+
+.race-results-correlation-row-label {
+  padding-right: var(--space-8px-28);
+  font-size: var(--space-13px-92);
+  font-weight: var(--number-600-22);
+  white-space: nowrap;
+}
+
+.race-results-correlation-cell {
+  font-size: var(--space-13px-92);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.race-results-correlation-date {
+  white-space: nowrap;
+}
+
+.race-results-correlation-rank-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-28px-42);
+  height: var(--space-28px-42);
+  border-radius: var(--space-50pct-13);
+}
+
+.race-results-correlation-sparkline-cell {
+  min-width: var(--number-0-2);
+}
+
+.race-results-correlation-sparkline {
+  display: block;
+}
+
+.race-results-correlation-delta-cell {
+  display: inline-flex;
+  flex-direction: column;
+  gap: var(--space-4px-18);
+}
+
+.race-results-correlation-delta-plot {
+  display: flex;
+  flex-direction: column;
+  min-width: var(--space-28px-42);
+  height: var(--space-56px-165);
+}
+
+.race-results-correlation-delta-half {
+  display: flex;
+  justify-content: center;
+  height: var(--space-50pct-13);
+}
+
+.race-results-correlation-delta-half.upper {
+  align-items: flex-end;
+  border-bottom: var(--space-1px-7) solid var(--line);
+}
+
+.race-results-correlation-delta-half.lower {
+  align-items: flex-start;
+}
+
+.race-results-correlation-delta-bar {
+  width: var(--space-12px-9);
+  border-radius: var(--space-1px-7);
+}

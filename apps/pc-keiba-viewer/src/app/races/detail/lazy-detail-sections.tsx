@@ -32,6 +32,7 @@ import { BloodlineStatsTable } from "./bloodline-stats-table";
 import type { FinishPositionBucketSectionData } from "./detail-section-data";
 import { FinishPositionBucketEvaluationPanel } from "./finish-position-bucket-section";
 import { FinishPositionPredictionTable } from "./finish-position-prediction-table";
+import { HorseRaceResultsChart } from "./horse-race-results-chart";
 import { HorseRaceResultsTable } from "./horse-race-results-table";
 import { MobileCollapsibleSection } from "./mobile-collapsible-section";
 import { OverallScoreTable } from "./overall-score-table";
@@ -207,6 +208,10 @@ const SECTION_TITLES: Record<DetailSection, string> = {
   "time-score": "総合評価スコア",
   training: "調教・追い切り",
 };
+
+// Not part of SECTION_TITLES because that map is keyed by DetailSection and this
+// extra section reuses the existing "results" payload instead of a new section key.
+const RESULTS_CHART_SECTION_TITLE = "競走成績グラフ";
 
 const GENERIC_STATS_QUERY_KEYS = new Set([
   "statsAge",
@@ -614,6 +619,32 @@ function LazyResultsSection(props: LazyDetailSectionsProps) {
   );
 }
 
+function LazyResultsChartSection(props: LazyDetailSectionsProps) {
+  const searchParams = useSearchParams();
+  const state = useSectionPayload("results", props, searchParams);
+  if (state.status === "loading" && state.payload === null) {
+    return <SectionSkeleton title={RESULTS_CHART_SECTION_TITLE} />;
+  }
+  if (state.status === "error") {
+    return <SectionError error={state.error} title={RESULTS_CHART_SECTION_TITLE} />;
+  }
+  const payload = state.payload;
+  if (!payload || payload.type !== "results") {
+    return <SectionError error="Invalid section payload" title={RESULTS_CHART_SECTION_TITLE} />;
+  }
+  return (
+    <section
+      aria-busy={state.status === "loading"}
+      className="race-results-chart-section lazy-detail-section"
+    >
+      <div className="section-heading compact">
+        <h2>{RESULTS_CHART_SECTION_TITLE}</h2>
+      </div>
+      <HorseRaceResultsChart results={payload.results} />
+    </section>
+  );
+}
+
 export function LazyOverallScoreSection(props: LazyDetailSectionsProps) {
   const searchParams = useSearchParams();
   const state = useSectionPayload("overall-score", props, searchParams);
@@ -987,6 +1018,7 @@ export function LazyDetailSections(props: LazyDetailSectionsProps) {
     <>
       <LazyTimeScoreSection {...props} />
       <LazyResultsSection {...props} />
+      <LazyResultsChartSection {...props} />
       <LazyTrainingSection {...props} />
       {props.source === "nar" ? <LazyAbilitySection {...props} /> : null}
       <LazyConditionSection {...props} />
