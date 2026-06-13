@@ -1185,6 +1185,95 @@ it("forwardRaceForFeatures does not call logFetch when the features worker retur
   expect(vi.mocked(logFetch)).not.toHaveBeenCalled();
 });
 
+it("forwardRaceForFeatures passes an AbortSignal to the features worker fetch so the call can be aborted", async () => {
+  const { forwardRaceForFeatures } = await import("./worker");
+  const featuresFetch = vi.fn(
+    async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({ ok: true })),
+  );
+  await forwardRaceForFeatures(
+    buildEnv({
+      PC_KEIBA_VIEWER_INTERNAL_TOKEN: "internal-token",
+      REALTIME_FEATURES: { fetch: featuresFetch } as never,
+    } as never),
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      keibajoCode: "08",
+      raceBango: "01",
+      raceKey: "jra:2026:0512:08:04",
+      source: "jra",
+    },
+  );
+  const call = featuresFetch.mock.calls[0];
+  const init = call?.[1];
+  expect(init?.signal instanceof AbortSignal).toBe(true);
+});
+
+it("forwardRaceForFeatures aborts the features worker fetch after the configured timeout and logs the timeout message", async () => {
+  vi.useFakeTimers();
+  const { forwardRaceForFeatures } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  const featuresFetch = vi.fn((_url: string, init?: RequestInit) => {
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => {
+        const abortError = new Error("aborted");
+        abortError.name = "AbortError";
+        reject(abortError);
+      });
+    });
+  });
+  const pending = forwardRaceForFeatures(
+    buildEnv({
+      PC_KEIBA_VIEWER_INTERNAL_TOKEN: "internal-token",
+      REALTIME_FEATURES: { fetch: featuresFetch } as never,
+    } as never),
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      keibajoCode: "08",
+      raceBango: "01",
+      raceKey: "jra:2026:0512:08:05",
+      source: "jra",
+    },
+  );
+  await vi.advanceTimersByTimeAsync(5000);
+  await pending;
+  vi.useRealTimers();
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "forward-race-for-features",
+    "error",
+    "jra:2026:0512:08:05",
+    "timeout after 5000ms",
+  );
+});
+
+it("forwardRaceForFeatures clears the timeout when the features worker responds in time", async () => {
+  vi.useFakeTimers();
+  const { forwardRaceForFeatures } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  const featuresFetch = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+  await forwardRaceForFeatures(
+    buildEnv({
+      PC_KEIBA_VIEWER_INTERNAL_TOKEN: "internal-token",
+      REALTIME_FEATURES: { fetch: featuresFetch } as never,
+    } as never),
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      keibajoCode: "08",
+      raceBango: "01",
+      raceKey: "jra:2026:0512:08:06",
+      source: "jra",
+    },
+  );
+  // Advance past the timeout window; nothing should fire because clearTimeout
+  // ran in the finally block.
+  await vi.advanceTimersByTimeAsync(10_000);
+  vi.useRealTimers();
+  expect(logFetch).not.toHaveBeenCalled();
+});
+
 it("fetchHotOddsPayload returns null when REALTIME_HOT is not configured", async () => {
   const { fetchHotOddsPayload } = await import("./worker");
   expect(await fetchHotOddsPayload(buildEnv(), "jra:2026:0512:08:01")).toBeNull();

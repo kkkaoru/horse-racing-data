@@ -2227,7 +2227,7 @@ it("extractJstDate returns the JST date slice for a UTC iso input", async () => 
   expect(extractJstDate("2026-06-06T03:00:00.000Z")).toBe("2026-06-06");
 });
 
-it("findStaleWeightFetchRaces binds the lookback, lookahead, stale and limit values to the d1 statement", async () => {
+it("findStaleWeightFetchRaces binds the lookback, lookahead, stale and limit values as JST iso strings", async () => {
   const { findStaleWeightFetchRaces } = await import("./worker");
   const all = vi.fn(async () => ({ results: [] }));
   const bind = vi.fn(() => ({ all }));
@@ -2235,11 +2235,36 @@ it("findStaleWeightFetchRaces binds the lookback, lookahead, stale and limit val
   const db = { prepare } as unknown as D1Database;
   await findStaleWeightFetchRaces(db, new Date("2026-06-07T03:00:00.000Z"));
   expect(bind).toHaveBeenCalledWith(
-    "2026-06-07T02:30:00.000Z",
-    "2026-06-07T06:00:00.000Z",
-    "2026-06-07T02:55:00.000Z",
+    "2026-06-07T11:30:00+09:00",
+    "2026-06-07T15:00:00+09:00",
+    "2026-06-07T11:55:00+09:00",
     8,
   );
+});
+
+it("findStaleWeightFetchRaces binds JST iso strings that lexically compare correctly against stored race_start_at_jst values", async () => {
+  const { findStaleWeightFetchRaces } = await import("./worker");
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  // 11:13 JST today (UTC 02:13). Reproduces the prod scenario where the
+  // pre-fix UTC bounds lex-compared wrong against stored JST values.
+  await findStaleWeightFetchRaces(db, new Date("2026-06-13T02:13:00.000Z"));
+  expect(bind).toHaveBeenCalledWith(
+    "2026-06-13T10:43:00+09:00",
+    "2026-06-13T14:13:00+09:00",
+    "2026-06-13T11:08:00+09:00",
+    8,
+  );
+  // Watchdog SQL: race_start_at_jst > lookBack AND < lookAhead AND
+  // (last_weight_fetch_at IS NULL OR < stale). Confirm a real stored JST
+  // race-start string the bug previously missed now lex-compares correctly.
+  const storedRaceStartJst = "2026-06-13T11:30:00+09:00";
+  const storedLookBack = "2026-06-13T10:43:00+09:00";
+  const storedLookAhead = "2026-06-13T14:13:00+09:00";
+  expect(storedRaceStartJst > storedLookBack).toBe(true);
+  expect(storedRaceStartJst < storedLookAhead).toBe(true);
 });
 
 it("findStaleWeightFetchRaces maps the d1 rows into StaleWeightFetchRace records", async () => {

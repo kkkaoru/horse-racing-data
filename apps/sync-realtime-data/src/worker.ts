@@ -369,6 +369,13 @@ const json = (body: unknown, init?: ResponseInit): Response =>
 const HOT_WORKER_ORIGIN = "https://sync-realtime-data-hot.kkk4oru.com";
 const FEATURES_WORKER_ORIGIN = "https://sync-realtime-data-features.kkk4oru.com";
 const FORWARD_RESPONSE_BODY_MAX_LENGTH = 200;
+// 2026-06-13: bound the wall-time of the fire-and-forget features-worker POST.
+// Without this, a hung or Hyperdrive-timeout features worker keeps the queue
+// consumer slot (`max_concurrency: 3`) occupied long enough to starve other
+// plan-realtime-fetches jobs. 5s is plenty for the recompute-and-build-parquet
+// endpoint to ack — its actual work is queued internally.
+const FORWARD_RACE_FEATURES_TIMEOUT_MS = 5000;
+const FORWARD_RACE_FEATURES_TIMEOUT_MESSAGE_PREFIX = "timeout";
 
 // Per-race D1 upsert retry tuning. The discover-urls job historically failed
 // atomically on a single `D1_ERROR: Internal error in D1 DB storage caused
@@ -512,9 +519,19 @@ export const forwardRaceSourceToHot = async (
   }
 };
 
+const isAbortError = (error: unknown): boolean =>
+  error instanceof Error && error.name === "AbortError";
+
+const formatForwardRaceFeaturesError = (error: unknown): string =>
+  isAbortError(error)
+    ? `${FORWARD_RACE_FEATURES_TIMEOUT_MESSAGE_PREFIX} after ${FORWARD_RACE_FEATURES_TIMEOUT_MS}ms`
+    : formatError(error);
+
 // Fire-and-forget POST to the new features worker so the new R2 Parquet build
 // + new D1 inference pipeline can pick up the race the moment we discover it.
 // fail-soft: any error is logged but the upstream race upsert is never blocked.
+// 2026-06-13: bounded with an AbortController-driven timeout so a hung features
+// worker cannot tie up the queue consumer slot for the whole queue retry budget.
 export const forwardRaceForFeatures = async (
   env: Env,
   args: ForwardRaceForFeaturesArgs,
@@ -522,6 +539,8 @@ export const forwardRaceForFeatures = async (
   if (!env.REALTIME_FEATURES || !env.PC_KEIBA_VIEWER_INTERNAL_TOKEN) {
     return;
   }
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), FORWARD_RACE_FEATURES_TIMEOUT_MS);
   try {
     const response = await env.REALTIME_FEATURES.fetch(
       `${FEATURES_WORKER_ORIGIN}/api/internal/recompute-and-build-parquet`,
@@ -532,6 +551,7 @@ export const forwardRaceForFeatures = async (
           "x-pc-keiba-internal-token": env.PC_KEIBA_VIEWER_INTERNAL_TOKEN,
         },
         method: "POST",
+        signal: controller.signal,
       },
     );
     if (!response.ok) {
@@ -551,8 +571,10 @@ export const forwardRaceForFeatures = async (
       "forward-race-for-features",
       "error",
       args.raceKey,
-      formatError(error),
+      formatForwardRaceFeaturesError(error),
     ).catch(() => undefined);
+  } finally {
+    clearTimeout(timeoutId);
   }
 };
 
@@ -1319,15 +1341,21 @@ export const findStaleWeightFetchRaces = async (
   db: D1Database,
   now: Date,
 ): Promise<readonly StaleWeightFetchRace[]> => {
-  const lookAheadIso = new Date(
-    now.getTime() + WEIGHT_WATCHDOG_LOOKAHEAD_MINUTES * MILLISECONDS_PER_MINUTE,
-  ).toISOString();
-  const lookBackIso = new Date(
-    now.getTime() - WEIGHT_WATCHDOG_LOOKBACK_MINUTES * MILLISECONDS_PER_MINUTE,
-  ).toISOString();
-  const staleIso = new Date(
-    now.getTime() - WEIGHT_WATCHDOG_STALE_THRESHOLD_MINUTES * MILLISECONDS_PER_MINUTE,
-  ).toISOString();
+  // race_start_at_jst / last_weight_fetch_at are stored as JST strings such as
+  // "2026-06-13T11:05:00+09:00". D1 (SQLite) compares strings lexically, so
+  // these bounds MUST also be JST strings. UTC ISO strings from `toISOString()`
+  // (e.g. "2026-06-13T02:05:00.000Z") would sort wrongly against JST values:
+  // the lex compare hits at position 11, where JST hour "1" > UTC hour "0",
+  // making the watchdog never see today's stale rows.
+  const lookAheadJst = toJstIsoString(
+    new Date(now.getTime() + WEIGHT_WATCHDOG_LOOKAHEAD_MINUTES * MILLISECONDS_PER_MINUTE),
+  );
+  const lookBackJst = toJstIsoString(
+    new Date(now.getTime() - WEIGHT_WATCHDOG_LOOKBACK_MINUTES * MILLISECONDS_PER_MINUTE),
+  );
+  const staleJst = toJstIsoString(
+    new Date(now.getTime() - WEIGHT_WATCHDOG_STALE_THRESHOLD_MINUTES * MILLISECONDS_PER_MINUTE),
+  );
   const result = await db
     .prepare(
       `
@@ -1340,7 +1368,7 @@ export const findStaleWeightFetchRaces = async (
         limit ?
       `,
     )
-    .bind(lookBackIso, lookAheadIso, staleIso, WEIGHT_WATCHDOG_MAX_PER_TICK)
+    .bind(lookBackJst, lookAheadJst, staleJst, WEIGHT_WATCHDOG_MAX_PER_TICK)
     .all<StaleWeightFetchRaceRow>();
   return result.results.map((row) => ({
     lastWeightFetchAt: row.last_weight_fetch_at,
