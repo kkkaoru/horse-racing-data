@@ -8,6 +8,8 @@ REPLICA_ENV_FILE="$POSTGRES_APP_DIR/.env.replica"
 VIEWER_PORT=443
 LIVE_RELAY_PORT="${PC_KEIBA_PRODUCTION_LIVE_RELAY_PORT:-3010}"
 VIEWER_DATABASE_TARGET=""
+POSTGRES_START_PID=""
+POSTGRES_START_LOG=""
 
 load_viewer_env() {
   if [[ -f "$VIEWER_APP_DIR/.env.local" ]]; then
@@ -70,8 +72,26 @@ is_live_relay_running() {
 }
 
 start_postgres_in_background() {
-  echo "Starting local-postgresql in background..."
-  bun --cwd "$POSTGRES_APP_DIR" start >/dev/null 2>&1 &
+  local log_dir="$POSTGRES_APP_DIR/tmp"
+  mkdir -p "$log_dir"
+  POSTGRES_START_LOG="$log_dir/start-db.log"
+  echo "Starting local-postgresql in background... (logs: $POSTGRES_START_LOG)"
+  bun --cwd "$POSTGRES_APP_DIR" start >"$POSTGRES_START_LOG" 2>&1 &
+  POSTGRES_START_PID=$!
+}
+
+wait_for_postgres_ready() {
+  if [[ -z "$POSTGRES_START_PID" ]]; then
+    return 0
+  fi
+  echo "Waiting for local-postgresql to become ready..."
+  if wait "$POSTGRES_START_PID"; then
+    echo "local-postgresql is ready."
+    return 0
+  fi
+  echo "ERROR: local-postgresql failed to start. Last lines of $POSTGRES_START_LOG:" >&2
+  tail -n 30 "$POSTGRES_START_LOG" >&2 || true
+  return 1
 }
 
 start_live_relay_in_background() {
@@ -103,6 +123,10 @@ else
 fi
 
 start_live_relay_in_background
+
+if ! wait_for_postgres_ready; then
+  exit 1
+fi
 
 if is_viewer_running; then
   echo "pc-keiba-viewer is already listening on port $VIEWER_PORT. Skipping viewer start."
