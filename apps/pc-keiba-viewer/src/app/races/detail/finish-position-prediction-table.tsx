@@ -89,6 +89,12 @@ export const buildAllOnToggles = (): Record<CorrectionFeatureKey, boolean> =>
     boolean
   >;
 
+export const buildAllOffToggles = (): Record<CorrectionFeatureKey, boolean> =>
+  Object.fromEntries(ALL_CORRECTION_FEATURE_KEYS.map((k) => [k, false])) as Record<
+    CorrectionFeatureKey,
+    boolean
+  >;
+
 export const buildTogglesFromStored = (
   stored: Record<string, unknown>,
 ): Record<CorrectionFeatureKey, boolean> =>
@@ -148,6 +154,10 @@ export const getCorrectionTogglesSnapshot = (): Record<CorrectionFeatureKey, boo
 
 const getCorrectionTogglesServerSnapshot = (): Record<CorrectionFeatureKey, boolean> =>
   ALL_ON_TOGGLES_CACHE;
+
+interface CorrectionMasterCheckboxProps {
+  rawToggles: Record<CorrectionFeatureKey, boolean>;
+}
 
 interface FinishPositionPredictionTableProps {
   combinedScoreData?: FinishPredictionCombinedScoreData | null;
@@ -476,6 +486,35 @@ const FinishPredictionTableRow = memo(function FinishPredictionTableRow({
   );
 });
 
+export function CorrectionMasterCheckbox({ rawToggles }: CorrectionMasterCheckboxProps) {
+  // Compute whether all features are on, all off, or mixed
+  const allOn = ALL_CORRECTION_FEATURE_KEYS.every((k) => rawToggles[k]);
+  const allOff = ALL_CORRECTION_FEATURE_KEYS.every((k) => !rawToggles[k]);
+  const mixed = !allOn && !allOff;
+
+  return (
+    <label htmlFor="correction-checkbox-all">
+      <input
+        checked={allOn}
+        id="correction-checkbox-all"
+        onChange={() => {}}
+        ref={(el: HTMLInputElement | null) => {
+          if (el !== null) {
+            el.indeterminate = mixed;
+          }
+        }}
+        type="checkbox"
+        onClick={() => {
+          const next = allOn ? buildAllOffToggles() : buildAllOnToggles();
+          window.localStorage.setItem(CORRECTION_TOGGLES_STORAGE_KEY, JSON.stringify(next));
+          window.dispatchEvent(new Event(CORRECTION_TOGGLES_CHANGE_EVENT));
+        }}
+      />
+      <span>すべて</span>
+    </label>
+  );
+}
+
 export function FinishPositionPredictionTable({
   combinedScoreData = null,
   combinedScoreLoading = false,
@@ -655,6 +694,8 @@ export function FinishPositionPredictionTable({
     <>
       <WrappedFinishPredictionEvaluation evaluation={evaluation} />
       <div className="finish-prediction-odds-toggle">
+        <CorrectionMasterCheckbox rawToggles={rawToggles} />
+        <span className="correction-toggle-separator" aria-hidden="true" />
         {CORRECTION_FEATURES.map((feature) => (
           <label htmlFor={`correction-checkbox-${feature.key}`} key={feature.key}>
             <input

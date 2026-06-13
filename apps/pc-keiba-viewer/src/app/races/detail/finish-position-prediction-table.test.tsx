@@ -1,13 +1,15 @@
 // Run with: bunx vitest run src/app/races/detail/finish-position-prediction-table.test.tsx
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import React from "react";
 import { afterEach, expect, test, vi } from "vitest";
 
 import { FINISH_POSITION_PREDICTION_EVALUATIONS } from "../../../lib/finish-position-prediction-evaluation";
 import {
+  buildAllOffToggles,
   buildAllOnToggles,
   buildTogglesFromStored,
+  CorrectionMasterCheckbox,
   getCorrectionTogglesSnapshot,
   WrappedFinishPredictionEvaluation,
 } from "./finish-position-prediction-table";
@@ -164,4 +166,128 @@ test("buildTogglesFromStored sets false for keys explicitly set false, true for 
     similarity: false,
     trainer: true,
   });
+});
+
+test("buildAllOffToggles returns all feature keys set to false", () => {
+  const result = buildAllOffToggles();
+  expect(result).toStrictEqual({
+    horse: false,
+    jockey: false,
+    odds: false,
+    popularity: false,
+    recent: false,
+    sameDayJockey: false,
+    similarity: false,
+    trainer: false,
+  });
+});
+
+test("CorrectionMasterCheckbox: click when all-on writes all false to localStorage", () => {
+  installMatchMediaMock(false);
+  const mockSetItem = vi.fn<(key: string, value: string) => void>();
+  vi.stubGlobal("localStorage", { setItem: mockSetItem, getItem: vi.fn<(key: string) => string | null>() });
+  const dispatchSpy = vi.spyOn(window, "dispatchEvent");
+  render(<CorrectionMasterCheckbox rawToggles={buildAllOnToggles()} />);
+  fireEvent.click(screen.getByRole("checkbox"));
+  expect(mockSetItem).toHaveBeenCalledWith(
+    "pc-keiba:correction-toggles",
+    JSON.stringify({
+      horse: false,
+      jockey: false,
+      odds: false,
+      popularity: false,
+      recent: false,
+      sameDayJockey: false,
+      similarity: false,
+      trainer: false,
+    }),
+  );
+  expect(dispatchSpy).toHaveBeenCalledOnce();
+});
+
+test("CorrectionMasterCheckbox: click when all-off writes all true to localStorage", () => {
+  installMatchMediaMock(false);
+  const mockSetItem = vi.fn<(key: string, value: string) => void>();
+  vi.stubGlobal("localStorage", { setItem: mockSetItem, getItem: vi.fn<(key: string) => string | null>() });
+  const dispatchSpy = vi.spyOn(window, "dispatchEvent");
+  render(<CorrectionMasterCheckbox rawToggles={buildAllOffToggles()} />);
+  fireEvent.click(screen.getByRole("checkbox"));
+  expect(mockSetItem).toHaveBeenCalledWith(
+    "pc-keiba:correction-toggles",
+    JSON.stringify({
+      horse: true,
+      jockey: true,
+      odds: true,
+      popularity: true,
+      recent: true,
+      sameDayJockey: true,
+      similarity: true,
+      trainer: true,
+    }),
+  );
+  expect(dispatchSpy).toHaveBeenCalledOnce();
+});
+
+test("CorrectionMasterCheckbox: click when mixed writes all true to localStorage", () => {
+  installMatchMediaMock(false);
+  const mockSetItem = vi.fn<(key: string, value: string) => void>();
+  vi.stubGlobal("localStorage", { setItem: mockSetItem, getItem: vi.fn<(key: string) => string | null>() });
+  const dispatchSpy = vi.spyOn(window, "dispatchEvent");
+  const mixedToggles = {
+    horse: true,
+    jockey: false,
+    odds: true,
+    popularity: true,
+    recent: true,
+    sameDayJockey: true,
+    similarity: true,
+    trainer: true,
+  };
+  render(<CorrectionMasterCheckbox rawToggles={mixedToggles} />);
+  fireEvent.click(screen.getByRole("checkbox"));
+  expect(mockSetItem).toHaveBeenCalledWith(
+    "pc-keiba:correction-toggles",
+    JSON.stringify({
+      horse: true,
+      jockey: true,
+      odds: true,
+      popularity: true,
+      recent: true,
+      sameDayJockey: true,
+      similarity: true,
+      trainer: true,
+    }),
+  );
+  expect(dispatchSpy).toHaveBeenCalledOnce();
+});
+
+test("CorrectionMasterCheckbox: checked true iff all on", () => {
+  installMatchMediaMock(false);
+  render(<CorrectionMasterCheckbox rawToggles={buildAllOnToggles()} />);
+  const checkbox = screen.getByRole("checkbox") as HTMLInputElement;
+  expect(checkbox.checked).toStrictEqual(true);
+});
+
+test("CorrectionMasterCheckbox: checked false when all off", () => {
+  installMatchMediaMock(false);
+  render(<CorrectionMasterCheckbox rawToggles={buildAllOffToggles()} />);
+  const checkbox = screen.getByRole("checkbox") as HTMLInputElement;
+  expect(checkbox.checked).toStrictEqual(false);
+});
+
+test("CorrectionMasterCheckbox: indeterminate true when mixed", () => {
+  installMatchMediaMock(false);
+  const mixedToggles = {
+    horse: true,
+    jockey: false,
+    odds: true,
+    popularity: true,
+    recent: true,
+    sameDayJockey: true,
+    similarity: true,
+    trainer: true,
+  };
+  render(<CorrectionMasterCheckbox rawToggles={mixedToggles} />);
+  const el = document.querySelector("#correction-checkbox-all") as HTMLInputElement;
+  expect(el.indeterminate).toStrictEqual(true);
 });

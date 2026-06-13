@@ -6664,6 +6664,13 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   line-height: var(--number-1-45-39);
 }
 
+.correction-toggle-separator {
+  align-self: stretch;
+  border-left: var(--space-1px-7) solid var(--line);
+  display: inline-block;
+  width: var(--number-0-2);
+}
+
 .premium-data-top-section {
   margin-bottom: var(--space-16px-67);
 }
