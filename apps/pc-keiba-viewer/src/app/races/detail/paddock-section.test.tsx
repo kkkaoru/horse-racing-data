@@ -90,6 +90,31 @@ const buildPaddockState = (history: PaddockHistoryEntry[]): PaddockState => ({
   updatedAt: "2026-06-02T12:00:00.000Z",
 });
 
+// State whose horse "1" (umaban "01" normalized) carries the given counts so the
+// editable card renders the metric controls at the requested boundary values.
+const buildPaddockStateWithHorseOne = (counts: {
+  attention: number;
+  kaeshi: number;
+  paddock: number;
+  preference: number;
+}): PaddockState => ({
+  history: [],
+  horses: {
+    "1": {
+      attention: counts.attention,
+      horseName: "テストホース",
+      horseNumber: "1",
+      kaeshi: counts.kaeshi,
+      officialRank: null,
+      paddock: counts.paddock,
+      preference: counts.preference,
+      total: 0,
+    },
+  },
+  raceKey: "2026:0602:05:01",
+  updatedAt: "2026-06-02T12:00:00.000Z",
+});
+
 const buildPastResult = (overrides: Partial<HorseRaceResult>): HorseRaceResult => ({
   babajotaiCodeDirt: null,
   babajotaiCodeShiba: null,
@@ -890,4 +915,172 @@ test("PaddockSection lazy recent-results clears skeleton via safety timer when f
   expect(screen.queryByLabelText("近走成績を読み込み中")).toBeNull();
   expect(screen.getByText("初出走").tagName).toBe("SPAN");
   vi.useRealTimers();
+});
+
+test("PaddockSection disables 返し plus and keeps minus enabled at the upper cap of three", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(
+    makeJsonResponse(
+      buildPaddockStateWithHorseOne({ attention: 0, kaeshi: 3, paddock: 0, preference: 0 }),
+    ),
+  );
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  const plusButton = await screen.findByRole("button", { name: "テストホース 返し+" });
+  const minusButton = await screen.findByRole("button", { name: "テストホース 返し-" });
+  expect(plusButton.hasAttribute("disabled")).toStrictEqual(true);
+  expect(minusButton.hasAttribute("disabled")).toStrictEqual(false);
+});
+
+test("PaddockSection disables 返し minus and keeps plus enabled at the lower cap of minus three", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(
+    makeJsonResponse(
+      buildPaddockStateWithHorseOne({ attention: 0, kaeshi: -3, paddock: 0, preference: 0 }),
+    ),
+  );
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  const plusButton = await screen.findByRole("button", { name: "テストホース 返し+" });
+  const minusButton = await screen.findByRole("button", { name: "テストホース 返し-" });
+  expect(minusButton.hasAttribute("disabled")).toStrictEqual(true);
+  expect(plusButton.hasAttribute("disabled")).toStrictEqual(false);
+});
+
+test("PaddockSection keeps both 返し buttons enabled when the count is two below the cap of three", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(
+    makeJsonResponse(
+      buildPaddockStateWithHorseOne({ attention: 0, kaeshi: 2, paddock: 0, preference: 0 }),
+    ),
+  );
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  const plusButton = await screen.findByRole("button", { name: "テストホース 返し+" });
+  const minusButton = await screen.findByRole("button", { name: "テストホース 返し-" });
+  expect(plusButton.hasAttribute("disabled")).toStrictEqual(false);
+  expect(minusButton.hasAttribute("disabled")).toStrictEqual(false);
+});
+
+test("PaddockSection disables 好き and keeps 嫌い enabled at the upper cap of ten", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(
+    makeJsonResponse(
+      buildPaddockStateWithHorseOne({ attention: 0, kaeshi: 0, paddock: 0, preference: 10 }),
+    ),
+  );
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  const plusButton = await screen.findByRole("button", { name: "テストホース 好き" });
+  const minusButton = await screen.findByRole("button", { name: "テストホース 嫌い" });
+  expect(plusButton.hasAttribute("disabled")).toStrictEqual(true);
+  expect(minusButton.hasAttribute("disabled")).toStrictEqual(false);
+});
+
+test("PaddockSection disables 嫌い and keeps 好き enabled at the lower cap of minus ten", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(
+    makeJsonResponse(
+      buildPaddockStateWithHorseOne({ attention: 0, kaeshi: 0, paddock: 0, preference: -10 }),
+    ),
+  );
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  const plusButton = await screen.findByRole("button", { name: "テストホース 好き" });
+  const minusButton = await screen.findByRole("button", { name: "テストホース 嫌い" });
+  expect(minusButton.hasAttribute("disabled")).toStrictEqual(true);
+  expect(plusButton.hasAttribute("disabled")).toStrictEqual(false);
+});
+
+test("PaddockSection keeps both 好み buttons enabled when the count is nine below the cap of ten", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(
+    makeJsonResponse(
+      buildPaddockStateWithHorseOne({ attention: 0, kaeshi: 0, paddock: 0, preference: 9 }),
+    ),
+  );
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  const plusButton = await screen.findByRole("button", { name: "テストホース 好き" });
+  const minusButton = await screen.findByRole("button", { name: "テストホース 嫌い" });
+  expect(plusButton.hasAttribute("disabled")).toStrictEqual(false);
+  expect(minusButton.hasAttribute("disabled")).toStrictEqual(false);
+});
+
+test("PaddockSection disables 気配+ and keeps 気配- enabled at the upper cap of five", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(
+    makeJsonResponse(
+      buildPaddockStateWithHorseOne({ attention: 0, kaeshi: 0, paddock: 5, preference: 0 }),
+    ),
+  );
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  const plusButton = await screen.findByRole("button", { name: "テストホース 気配+" });
+  const minusButton = await screen.findByRole("button", { name: "テストホース 気配-" });
+  expect(plusButton.hasAttribute("disabled")).toStrictEqual(true);
+  expect(minusButton.hasAttribute("disabled")).toStrictEqual(false);
+});
+
+test("PaddockSection disables 注目- and keeps 注目+ enabled at the lower cap of minus five", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(
+    makeJsonResponse(
+      buildPaddockStateWithHorseOne({ attention: -5, kaeshi: 0, paddock: 0, preference: 0 }),
+    ),
+  );
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  const plusButton = await screen.findByRole("button", { name: "テストホース 注目+" });
+  const minusButton = await screen.findByRole("button", { name: "テストホース 注目-" });
+  expect(minusButton.hasAttribute("disabled")).toStrictEqual(true);
+  expect(plusButton.hasAttribute("disabled")).toStrictEqual(false);
 });

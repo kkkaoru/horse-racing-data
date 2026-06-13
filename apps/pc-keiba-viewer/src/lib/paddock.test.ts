@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   PADDOCK_HISTORY_LIMIT,
+  PADDOCK_METRIC_COEFFICIENT,
+  PADDOCK_METRIC_MAX_COUNT,
   applyPaddockAction,
   createPaddockState,
   getPaddockKvKey,
@@ -58,7 +60,7 @@ describe("paddock helpers", () => {
       officialRank: 3,
       paddock: 4,
       preference: 6,
-      total: 7.8,
+      total: 8.7,
     });
   });
 
@@ -80,7 +82,7 @@ describe("paddock helpers", () => {
       officialRank: null,
       paddock: 2,
       preference: 0,
-      total: 2.5,
+      total: 3.1,
     });
   });
 
@@ -159,7 +161,7 @@ describe("paddock helpers", () => {
       horseName: "一番",
       paddock: -1,
       preference: 1,
-      total: -0.7,
+      total: -1,
     });
   });
 
@@ -365,6 +367,224 @@ describe("paddock helpers", () => {
 
     expect(state.history[0]?.userId).toBeUndefined();
     expect(state.history[0]?.type).toBe("official-rank");
+  });
+
+  it("exposes the metric coefficient map with the new weights", () => {
+    expect(PADDOCK_METRIC_COEFFICIENT).toStrictEqual({
+      attention: 0.5,
+      kaeshi: 0.7,
+      paddock: 1.3,
+      preference: 0.3,
+    });
+  });
+
+  it("exposes the per-metric maximum count map", () => {
+    expect(PADDOCK_METRIC_MAX_COUNT).toStrictEqual({
+      attention: 5,
+      kaeshi: 3,
+      paddock: 5,
+      preference: 10,
+    });
+  });
+
+  it("clamps the paddock count at the positive cap of five", () => {
+    const state = Array.from({ length: 7 }).reduce<PaddockState>(
+      (current, _, index) =>
+        applyPaddockAction(
+          current,
+          {
+            category: "paddock",
+            delta: 1,
+            horseName: "一番",
+            horseNumber: "01",
+          },
+          `2026-05-13T12:0${String(index)}:00.000Z`,
+        ),
+      createPaddockState("race"),
+    );
+
+    expect(state.horses["1"]?.paddock).toBe(5);
+    expect(state.horses["1"]?.total).toBe(6.5);
+  });
+
+  it("clamps the paddock count at the negative cap of minus five", () => {
+    const state = Array.from({ length: 7 }).reduce<PaddockState>(
+      (current, _, index) =>
+        applyPaddockAction(
+          current,
+          {
+            category: "paddock",
+            delta: -1,
+            horseName: "一番",
+            horseNumber: "01",
+          },
+          `2026-05-13T12:0${String(index)}:00.000Z`,
+        ),
+      createPaddockState("race"),
+    );
+
+    expect(state.horses["1"]?.paddock).toBe(-5);
+    expect(state.horses["1"]?.total).toBe(-6.5);
+  });
+
+  it("clamps the attention count at the positive cap of five", () => {
+    const state = Array.from({ length: 7 }).reduce<PaddockState>(
+      (current, _, index) =>
+        applyPaddockAction(
+          current,
+          {
+            category: "attention",
+            delta: 1,
+            horseName: "二番",
+            horseNumber: "02",
+          },
+          `2026-05-13T12:0${String(index)}:00.000Z`,
+        ),
+      createPaddockState("race"),
+    );
+
+    expect(state.horses["2"]?.attention).toBe(5);
+    expect(state.horses["2"]?.total).toBe(2.5);
+  });
+
+  it("clamps the attention count at the negative cap of minus five", () => {
+    const state = Array.from({ length: 7 }).reduce<PaddockState>(
+      (current, _, index) =>
+        applyPaddockAction(
+          current,
+          {
+            category: "attention",
+            delta: -1,
+            horseName: "二番",
+            horseNumber: "02",
+          },
+          `2026-05-13T12:0${String(index)}:00.000Z`,
+        ),
+      createPaddockState("race"),
+    );
+
+    expect(state.horses["2"]?.attention).toBe(-5);
+    expect(state.horses["2"]?.total).toBe(-2.5);
+  });
+
+  it("clamps the kaeshi count at the positive cap of three", () => {
+    const state = Array.from({ length: 5 }).reduce<PaddockState>(
+      (current, _, index) =>
+        applyPaddockAction(
+          current,
+          {
+            category: "kaeshi",
+            delta: 1,
+            horseName: "三番",
+            horseNumber: "03",
+          },
+          `2026-05-13T12:0${String(index)}:00.000Z`,
+        ),
+      createPaddockState("race"),
+    );
+
+    expect(state.horses["3"]?.kaeshi).toBe(3);
+  });
+
+  it("clamps the kaeshi count at the negative cap of minus three", () => {
+    const state = Array.from({ length: 5 }).reduce<PaddockState>(
+      (current, _, index) =>
+        applyPaddockAction(
+          current,
+          {
+            category: "kaeshi",
+            delta: -1,
+            horseName: "三番",
+            horseNumber: "03",
+          },
+          `2026-05-13T12:0${String(index)}:00.000Z`,
+        ),
+      createPaddockState("race"),
+    );
+
+    expect(state.horses["3"]?.kaeshi).toBe(-3);
+  });
+
+  it("clamps the preference count at the positive cap of ten", () => {
+    const state = Array.from({ length: 12 }).reduce<PaddockState>(
+      (current, _, index) =>
+        applyPaddockAction(
+          current,
+          {
+            category: "preference",
+            delta: 1,
+            horseName: "四番",
+            horseNumber: "04",
+          },
+          `2026-05-13T12:${String(index).padStart(2, "0")}:00.000Z`,
+        ),
+      createPaddockState("race"),
+    );
+
+    expect(state.horses["4"]?.preference).toBe(10);
+    expect(state.horses["4"]?.total).toBe(3);
+  });
+
+  it("clamps the preference count at the negative cap of minus ten", () => {
+    const state = Array.from({ length: 12 }).reduce<PaddockState>(
+      (current, _, index) =>
+        applyPaddockAction(
+          current,
+          {
+            category: "preference",
+            delta: -1,
+            horseName: "四番",
+            horseNumber: "04",
+          },
+          `2026-05-13T12:${String(index).padStart(2, "0")}:00.000Z`,
+        ),
+      createPaddockState("race"),
+    );
+
+    expect(state.horses["4"]?.preference).toBe(-10);
+    expect(state.horses["4"]?.total).toBe(-3);
+  });
+
+  it("reaches the paddock cap exactly from the boundary then holds steady", () => {
+    const atFour = Array.from({ length: 4 }).reduce<PaddockState>(
+      (current, _, index) =>
+        applyPaddockAction(
+          current,
+          {
+            category: "paddock",
+            delta: 1,
+            horseName: "五番",
+            horseNumber: "05",
+          },
+          `2026-05-13T12:0${String(index)}:00.000Z`,
+        ),
+      createPaddockState("race"),
+    );
+    expect(atFour.horses["5"]?.paddock).toBe(4);
+
+    const atFive = applyPaddockAction(
+      atFour,
+      {
+        category: "paddock",
+        delta: 1,
+        horseName: "五番",
+        horseNumber: "05",
+      },
+      "2026-05-13T12:05:00.000Z",
+    );
+    expect(atFive.horses["5"]?.paddock).toBe(5);
+
+    const stillFive = applyPaddockAction(
+      atFive,
+      {
+        category: "paddock",
+        delta: 1,
+        horseName: "五番",
+        horseNumber: "05",
+      },
+      "2026-05-13T12:06:00.000Z",
+    );
+    expect(stillFive.horses["5"]?.paddock).toBe(5);
   });
 
   it("score-history-with-user-id-survives-100-entry-limit", () => {

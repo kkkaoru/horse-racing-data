@@ -58,6 +58,28 @@ export type PaddockAction = PaddockOfficialRankAction | PaddockScoreAction;
 const PADDOCK_METRICS = new Set<PaddockMetric>(["attention", "kaeshi", "paddock", "preference"]);
 const PADDOCK_OFFICIAL_RANKS: PaddockOfficialRank[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
+// Weight applied to each metric count when computing the aggregate total.
+export const PADDOCK_METRIC_COEFFICIENT: Record<PaddockMetric, number> = {
+  attention: 0.5,
+  kaeshi: 0.7,
+  paddock: 1.3,
+  preference: 0.3,
+};
+
+// Symmetric per-metric cap; stored counts clamp to [-MAX, +MAX].
+export const PADDOCK_METRIC_MAX_COUNT: Record<PaddockMetric, number> = {
+  attention: 5,
+  kaeshi: 3,
+  paddock: 5,
+  preference: 10,
+};
+
+const clampPaddockMetricValue = (category: PaddockMetric, value: number): number =>
+  Math.max(
+    -PADDOCK_METRIC_MAX_COUNT[category],
+    Math.min(PADDOCK_METRIC_MAX_COUNT[category], value),
+  );
+
 const isPaddockMetric = (value: unknown): value is PaddockMetric =>
   value === "attention" || value === "kaeshi" || value === "paddock" || value === "preference";
 
@@ -95,7 +117,11 @@ const normalizeHorseNumber = (value: string): string =>
 
 const calculateTotal = (
   horse: Pick<PaddockHorseScore, "attention" | "kaeshi" | "paddock" | "preference">,
-): number => horse.paddock + horse.kaeshi + horse.attention * 0.5 + horse.preference * 0.3;
+): number =>
+  horse.paddock * PADDOCK_METRIC_COEFFICIENT.paddock +
+  horse.kaeshi * PADDOCK_METRIC_COEFFICIENT.kaeshi +
+  horse.attention * PADDOCK_METRIC_COEFFICIENT.attention +
+  horse.preference * PADDOCK_METRIC_COEFFICIENT.preference;
 
 export const normalizePaddockHorseScore = (
   value: Partial<PaddockHorseScore> | undefined,
@@ -198,7 +224,10 @@ export const applyPaddockAction = (
   const nextHorse = {
     ...current,
     horseName: action.horseName || current.horseName,
-    [action.category]: current[action.category] + action.delta,
+    [action.category]: clampPaddockMetricValue(
+      action.category,
+      current[action.category] + action.delta,
+    ),
   };
   nextHorse.total = calculateTotal(nextHorse);
   const historyEntry: PaddockHistoryEntry = {

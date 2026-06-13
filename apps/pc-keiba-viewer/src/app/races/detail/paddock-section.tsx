@@ -32,6 +32,7 @@ import {
   isPaddockState,
   applyPaddockAction,
   normalizePaddockHorseScore,
+  PADDOCK_METRIC_MAX_COUNT,
   shouldSkipPaddockDiscordNotification,
   type PaddockAction,
   type PaddockMetric,
@@ -1046,6 +1047,7 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
               <span>{METRIC_LABELS[metric].title}</span>
               <button
                 aria-label={`${horseName} ${METRIC_LABELS[metric].minus}`}
+                disabled={scores[metric] <= -PADDOCK_METRIC_MAX_COUNT[metric]}
                 type="button"
                 onClick={() => score(metric, -1)}
               >
@@ -1054,6 +1056,7 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
               <output>{scores[metric]}</output>
               <button
                 aria-label={`${horseName} ${METRIC_LABELS[metric].plus}`}
+                disabled={scores[metric] >= PADDOCK_METRIC_MAX_COUNT[metric]}
                 type="button"
                 onClick={() => score(metric, 1)}
               >
