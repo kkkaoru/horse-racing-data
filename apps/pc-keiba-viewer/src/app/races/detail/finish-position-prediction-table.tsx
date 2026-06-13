@@ -98,9 +98,10 @@ export const buildAllOffToggles = (): Record<CorrectionFeatureKey, boolean> =>
 export const buildTogglesFromStored = (
   stored: Record<string, unknown>,
 ): Record<CorrectionFeatureKey, boolean> =>
-  Object.fromEntries(
-    ALL_CORRECTION_FEATURE_KEYS.map((k) => [k, stored[k] !== false]),
-  ) as Record<CorrectionFeatureKey, boolean>;
+  Object.fromEntries(ALL_CORRECTION_FEATURE_KEYS.map((k) => [k, stored[k] !== false])) as Record<
+    CorrectionFeatureKey,
+    boolean
+  >;
 
 // Module-level cache: useSyncExternalStore requires getSnapshot to return the same
 // reference when the underlying value has not changed, to avoid infinite re-render loops.
@@ -703,10 +704,7 @@ export function FinishPositionPredictionTable({
               id={`correction-checkbox-${feature.key}`}
               onChange={(event) => {
                 const next = { ...rawToggles, [feature.key]: event.target.checked };
-                window.localStorage.setItem(
-                  CORRECTION_TOGGLES_STORAGE_KEY,
-                  JSON.stringify(next),
-                );
+                window.localStorage.setItem(CORRECTION_TOGGLES_STORAGE_KEY, JSON.stringify(next));
                 window.dispatchEvent(new Event(CORRECTION_TOGGLES_CHANGE_EVENT));
               }}
               type="checkbox"

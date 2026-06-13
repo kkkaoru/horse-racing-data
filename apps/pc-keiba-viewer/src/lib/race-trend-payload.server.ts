@@ -7,7 +7,6 @@
 // so the runners-table can merge trend-derived finishPosition values
 // before first paint.
 import "server-only";
-
 import type { RaceTrendStarterRow } from "horse-racing-realtime/race-trend-daily-track-types";
 
 import {
@@ -32,6 +31,7 @@ import {
   fetchRaceTrendDailyTrack,
   type RaceTrendDailyTrackFetchResult,
 } from "./race-trend-daily-track-client.server";
+import { DEFAULT_RACE_TREND_TARGETS, type RaceTrendTargets } from "./race-trend-query";
 import type {
   RaceDetail,
   RaceTrendPayload,
@@ -39,7 +39,6 @@ import type {
   RaceTrendRunningStyle,
   Runner,
 } from "./race-types";
-import { DEFAULT_RACE_TREND_TARGETS, type RaceTrendTargets } from "./race-trend-query";
 import { getRaceRunningStylesWithCache } from "./running-style-cache.server";
 import {
   mergeTodaySiblingRunnerData,

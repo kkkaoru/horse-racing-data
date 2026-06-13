@@ -185,7 +185,10 @@ test("buildAllOffToggles returns all feature keys set to false", () => {
 test("CorrectionMasterCheckbox: click when all-on writes all false to localStorage", () => {
   installMatchMediaMock(false);
   const mockSetItem = vi.fn<(key: string, value: string) => void>();
-  vi.stubGlobal("localStorage", { setItem: mockSetItem, getItem: vi.fn<(key: string) => string | null>() });
+  vi.stubGlobal("localStorage", {
+    setItem: mockSetItem,
+    getItem: vi.fn<(key: string) => string | null>(),
+  });
   const dispatchSpy = vi.spyOn(window, "dispatchEvent");
   render(<CorrectionMasterCheckbox rawToggles={buildAllOnToggles()} />);
   fireEvent.click(screen.getByRole("checkbox"));
@@ -208,7 +211,10 @@ test("CorrectionMasterCheckbox: click when all-on writes all false to localStora
 test("CorrectionMasterCheckbox: click when all-off writes all true to localStorage", () => {
   installMatchMediaMock(false);
   const mockSetItem = vi.fn<(key: string, value: string) => void>();
-  vi.stubGlobal("localStorage", { setItem: mockSetItem, getItem: vi.fn<(key: string) => string | null>() });
+  vi.stubGlobal("localStorage", {
+    setItem: mockSetItem,
+    getItem: vi.fn<(key: string) => string | null>(),
+  });
   const dispatchSpy = vi.spyOn(window, "dispatchEvent");
   render(<CorrectionMasterCheckbox rawToggles={buildAllOffToggles()} />);
   fireEvent.click(screen.getByRole("checkbox"));
@@ -231,7 +237,10 @@ test("CorrectionMasterCheckbox: click when all-off writes all true to localStora
 test("CorrectionMasterCheckbox: click when mixed writes all true to localStorage", () => {
   installMatchMediaMock(false);
   const mockSetItem = vi.fn<(key: string, value: string) => void>();
-  vi.stubGlobal("localStorage", { setItem: mockSetItem, getItem: vi.fn<(key: string) => string | null>() });
+  vi.stubGlobal("localStorage", {
+    setItem: mockSetItem,
+    getItem: vi.fn<(key: string) => string | null>(),
+  });
   const dispatchSpy = vi.spyOn(window, "dispatchEvent");
   const mixedToggles = {
     horse: true,

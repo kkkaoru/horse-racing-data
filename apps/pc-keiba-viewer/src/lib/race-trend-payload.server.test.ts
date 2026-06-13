@@ -66,13 +66,13 @@ import type {
 } from "horse-racing-realtime/race-trend-daily-track-types";
 
 import type { RaceTrendDailyTrackFetchResult } from "./race-trend-daily-track-client.server";
-import type { RaceDetail, Runner } from "./race-types";
 import {
   buildRaceTrendRawPayloadForRace,
   getRaceTrendPayloadForRace,
   isCacheableTrendPayload,
   pickTodaySiblingRowsAndSource,
 } from "./race-trend-payload.server";
+import type { RaceDetail, Runner } from "./race-types";
 
 const buildStarterRow = (overrides: Partial<RaceTrendStarterRow> = {}): RaceTrendStarterRow => ({
   bamei: "テスト",
