@@ -308,8 +308,9 @@ const buildFinishPredictionOutput = (
   const realtime = supplementalPayloads?.realtime ?? null;
   const { entryStatusByHorse, jockeyByHorse, oddsByHorse } = getRealtimeMaps(realtime);
   const tanshoRows = realtime?.odds?.latest.tansho ?? [];
+  // JSON export always uses odds-corrected prediction for best-available signal
   const finishRows = buildFinishPredictionRowsFromInputs(
-    finishPayload.inputs,
+    { ...finishPayload.inputs, oddsCorrectionEnabled: true },
     tanshoRows.length > 0 ? buildFinishPredictionMarketOverrides(tanshoRows) : undefined,
   );
   const combinedScoreByHorse = getCombinedScoreByHorse(sectionPayloads ?? {}, realtime);

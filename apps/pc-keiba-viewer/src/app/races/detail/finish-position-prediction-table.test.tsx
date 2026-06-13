@@ -34,9 +34,7 @@ afterEach(() => {
 test("WrappedFinishPredictionEvaluation collapses panel by default on mobile viewport", () => {
   installMatchMediaMock(true);
   render(
-    <WrappedFinishPredictionEvaluation
-      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.nar}
-    />,
+    <WrappedFinishPredictionEvaluation evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.nar} />,
   );
   const toggle = screen.getByRole("button", { name: "着順予測精度 セクションを開く" });
   expect(toggle.getAttribute("aria-expanded")).toStrictEqual("false");
@@ -47,12 +45,26 @@ test("WrappedFinishPredictionEvaluation collapses panel by default on mobile vie
 test("WrappedFinishPredictionEvaluation shows panel by default on desktop viewport", () => {
   installMatchMediaMock(false);
   render(
-    <WrappedFinishPredictionEvaluation
-      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
-    />,
+    <WrappedFinishPredictionEvaluation evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra} />,
   );
   const toggle = screen.getByRole("button", { name: "着順予測精度 セクションを閉じる" });
   expect(toggle.getAttribute("aria-expanded")).toStrictEqual("true");
   const panel = document.querySelector(".finish-prediction-evaluation-panel");
   expect(panel?.closest("[hidden]")).toStrictEqual(null);
+});
+
+test("RACE_FINISH_PREDICTION_RESULTS_EVENT is not dispatched when rendering evaluation panel", () => {
+  // Regression: the event listener that unconditionally replaced displayRows
+  // (ignoring oddsCorrectionEnabled) was removed. Verify no such event is dispatched.
+  installMatchMediaMock(false);
+  const dispatchSpy = vi.spyOn(window, "dispatchEvent");
+  render(
+    <WrappedFinishPredictionEvaluation evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.nar} />,
+  );
+  const dispatchedFinishEvents = dispatchSpy.mock.calls
+    .map((call) => call[0])
+    .filter((e): e is CustomEvent => e instanceof CustomEvent)
+    .map((e) => e.type)
+    .filter((type) => type === "race:finish-prediction-results");
+  expect(dispatchedFinishEvents).toStrictEqual([]);
 });

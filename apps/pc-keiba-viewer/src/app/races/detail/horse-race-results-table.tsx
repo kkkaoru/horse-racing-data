@@ -5,10 +5,6 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 
 import type { RaceSource } from "../../../lib/codes";
 import {
-  buildFinishPredictionRowsFromResults,
-  RACE_FINISH_PREDICTION_RESULTS_EVENT,
-} from "../../../lib/finish-position-prediction";
-import {
   cleanText,
   formatDate,
   formatDistance,
@@ -738,32 +734,6 @@ export function HorseRaceResultsTable({
     keibajoCode: currentKeibajoCode,
     source,
   });
-
-  useEffect(() => {
-    window.dispatchEvent(
-      new CustomEvent(RACE_FINISH_PREDICTION_RESULTS_EVENT, {
-        detail: {
-          rows: buildFinishPredictionRowsFromResults({
-            currentDistance,
-            currentKeibajoCode,
-            currentRaceDate,
-            currentSource: source,
-            currentTrackCode,
-            results: visibleResults,
-            runners,
-          }),
-        },
-      }),
-    );
-  }, [
-    currentDistance,
-    currentKeibajoCode,
-    currentRaceDate,
-    currentTrackCode,
-    runners,
-    source,
-    visibleResults,
-  ]);
 
   useEffect(() => {
     if (!showRacePacePrediction) {

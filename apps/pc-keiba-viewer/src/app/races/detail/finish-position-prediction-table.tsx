@@ -1,13 +1,20 @@
 "use client";
 
-import { Fragment, memo, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import {
+  Fragment,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
 import type { FinishPredictionBuildInputs } from "../../../lib/finish-position-prediction";
 import {
   buildFinishPredictionMarketOverrides,
   buildFinishPredictionRowsFromInputs,
-  RACE_FINISH_PREDICTION_RESULTS_EVENT,
 } from "../../../lib/finish-position-prediction";
 import type { FinishPredictionEvaluationMetrics } from "../../../lib/finish-position-prediction-evaluation";
 import { getPreferredJockeyName } from "../../../lib/jockey-name";
@@ -83,40 +90,6 @@ interface FinishPredictionTableRowProps {
   realtimePopularity: number | null | undefined;
   row: FinishPredictionRow;
 }
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null;
-
-const isNullableNumber = (value: unknown): value is number | null =>
-  value === null || typeof value === "number";
-
-const isFinishPredictionRow = (value: unknown): value is FinishPredictionRow => {
-  if (!isRecord(value)) {
-    return false;
-  }
-  return (
-    typeof value.horseNumber === "string" &&
-    typeof value.horseName === "string" &&
-    typeof value.jockeyName === "string" &&
-    typeof value.predictedRank === "number" &&
-    typeof value.score === "number" &&
-    typeof value.confidence === "number" &&
-    isNullableNumber(value.storedOdds) &&
-    isNullableNumber(value.storedPopularity) &&
-    Array.isArray(value.details)
-  );
-};
-
-const getRowsFromResultsUpdateEvent = (event: Event): FinishPredictionRow[] | null => {
-  if (!(event instanceof CustomEvent) || !isRecord(event.detail)) {
-    return null;
-  }
-  const eventRows = event.detail.rows;
-  if (!Array.isArray(eventRows) || !eventRows.every(isFinishPredictionRow)) {
-    return null;
-  }
-  return eventRows;
-};
 
 const formatPopularity = (value: number | null): string => (value === null ? "-" : `${value}`);
 
@@ -559,22 +532,6 @@ export function FinishPositionPredictionTable({
     realtimeRequest.year,
   ]);
 
-  useEffect(() => {
-    const handleResultsUpdate = (event: Event) => {
-      const nextRows = getRowsFromResultsUpdateEvent(event);
-      if (nextRows === null) {
-        return;
-      }
-      setDisplayRows(nextRows);
-      setExpandedHorseNumber(null);
-    };
-
-    window.addEventListener(RACE_FINISH_PREDICTION_RESULTS_EVENT, handleResultsUpdate);
-    return () => {
-      window.removeEventListener(RACE_FINISH_PREDICTION_RESULTS_EVENT, handleResultsUpdate);
-    };
-  }, []);
-
   if (displayRows.length === 0) {
     return (
       <>
@@ -604,7 +561,7 @@ export function FinishPositionPredictionTable({
           <span>オッズで予想を補正</span>
         </label>
         <span className="finish-prediction-odds-toggle-hint">
-          オフ: モデル予想をそのまま表示 / オン: 最新オッズで補正
+          オフ: オッズによる補正なし / オン: 最新オッズで予想を補正
         </span>
       </div>
       <div className="stats-table-wrap">
