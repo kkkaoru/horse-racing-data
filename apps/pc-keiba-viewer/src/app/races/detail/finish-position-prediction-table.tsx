@@ -11,7 +11,10 @@ import {
 } from "react";
 
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
-import type { FinishPredictionBuildInputs } from "../../../lib/finish-position-prediction";
+import type {
+  CorrectionToggles,
+  FinishPredictionBuildInputs,
+} from "../../../lib/finish-position-prediction";
 import {
   buildFinishPredictionMarketOverrides,
   buildFinishPredictionRowsFromInputs,
@@ -40,27 +43,111 @@ import { useRealtimeRacePayload } from "./realtime-client";
 
 const FINISH_PREDICTION_EVALUATION_TITLE = "着順予測精度";
 
-const ODDS_CORRECTION_STORAGE_KEY = "pc-keiba:odds-correction-enabled";
-const ODDS_CORRECTION_CHANGE_EVENT = "pc-keiba:odds-correction-change";
+const CORRECTION_TOGGLES_STORAGE_KEY = "pc-keiba:correction-toggles";
+const CORRECTION_TOGGLES_CHANGE_EVENT = "pc-keiba:correction-toggles-change";
 
-const subscribeOddsCorrection = (onStoreChange: () => void): (() => void) => {
+type CorrectionFeatureKey =
+  | "horse"
+  | "jockey"
+  | "odds"
+  | "popularity"
+  | "recent"
+  | "sameDayJockey"
+  | "similarity"
+  | "trainer";
+
+interface CorrectionFeatureConfig {
+  key: CorrectionFeatureKey;
+  label: string;
+}
+
+const ALL_CORRECTION_FEATURE_KEYS: CorrectionFeatureKey[] = [
+  "horse",
+  "jockey",
+  "odds",
+  "popularity",
+  "recent",
+  "sameDayJockey",
+  "similarity",
+  "trainer",
+];
+
+const CORRECTION_FEATURES: CorrectionFeatureConfig[] = [
+  { key: "horse", label: "競走成績" },
+  { key: "recent", label: "近走" },
+  { key: "jockey", label: "騎手" },
+  { key: "trainer", label: "調教師" },
+  { key: "popularity", label: "人気" },
+  { key: "odds", label: "単勝" },
+  { key: "sameDayJockey", label: "同日同場の騎手勝利" },
+  { key: "similarity", label: "類似レース" },
+];
+
+export const buildAllOnToggles = (): Record<CorrectionFeatureKey, boolean> =>
+  Object.fromEntries(ALL_CORRECTION_FEATURE_KEYS.map((k) => [k, true])) as Record<
+    CorrectionFeatureKey,
+    boolean
+  >;
+
+export const buildTogglesFromStored = (
+  stored: Record<string, unknown>,
+): Record<CorrectionFeatureKey, boolean> =>
+  Object.fromEntries(
+    ALL_CORRECTION_FEATURE_KEYS.map((k) => [k, stored[k] !== false]),
+  ) as Record<CorrectionFeatureKey, boolean>;
+
+// Module-level cache: useSyncExternalStore requires getSnapshot to return the same
+// reference when the underlying value has not changed, to avoid infinite re-render loops.
+const ALL_ON_TOGGLES_CACHE: Record<CorrectionFeatureKey, boolean> = buildAllOnToggles();
+
+interface CorrectionTogglesCache {
+  key: string | null;
+  toggles: Record<CorrectionFeatureKey, boolean>;
+}
+
+const correctionTogglesCache: CorrectionTogglesCache = {
+  key: null,
+  toggles: ALL_ON_TOGGLES_CACHE,
+};
+
+const subscribeCorrectionToggles = (onStoreChange: () => void): (() => void) => {
   if (typeof window === "undefined") {
     return () => {};
   }
-  window.addEventListener(ODDS_CORRECTION_CHANGE_EVENT, onStoreChange);
+  window.addEventListener(CORRECTION_TOGGLES_CHANGE_EVENT, onStoreChange);
   return () => {
-    window.removeEventListener(ODDS_CORRECTION_CHANGE_EVENT, onStoreChange);
+    window.removeEventListener(CORRECTION_TOGGLES_CHANGE_EVENT, onStoreChange);
   };
 };
 
-const getOddsCorrectionSnapshot = (): boolean => {
+export const getCorrectionTogglesSnapshot = (): Record<CorrectionFeatureKey, boolean> => {
   if (typeof window === "undefined" || typeof window.localStorage === "undefined") {
-    return false;
+    return ALL_ON_TOGGLES_CACHE;
   }
-  return window.localStorage.getItem(ODDS_CORRECTION_STORAGE_KEY) === "true";
+  const stored = window.localStorage.getItem(CORRECTION_TOGGLES_STORAGE_KEY);
+  if (stored === null) {
+    return ALL_ON_TOGGLES_CACHE;
+  }
+  // Return cached reference if the raw stored string has not changed
+  if (stored === correctionTogglesCache.key) {
+    return correctionTogglesCache.toggles;
+  }
+  try {
+    const parsed: unknown = JSON.parse(stored);
+    if (typeof parsed !== "object" || parsed === null) {
+      return ALL_ON_TOGGLES_CACHE;
+    }
+    const next = buildTogglesFromStored(parsed as Record<string, unknown>);
+    correctionTogglesCache.key = stored;
+    correctionTogglesCache.toggles = next;
+    return next;
+  } catch {
+    return ALL_ON_TOGGLES_CACHE;
+  }
 };
 
-const getOddsCorrectionServerSnapshot = (): boolean => false;
+const getCorrectionTogglesServerSnapshot = (): Record<CorrectionFeatureKey, boolean> =>
+  ALL_ON_TOGGLES_CACHE;
 
 interface FinishPositionPredictionTableProps {
   combinedScoreData?: FinishPredictionCombinedScoreData | null;
@@ -397,13 +484,35 @@ export function FinishPositionPredictionTable({
   realtimeRequest,
 }: FinishPositionPredictionTableProps) {
   const [expandedHorseNumber, setExpandedHorseNumber] = useState<string | null>(null);
-  const oddsCorrectionEnabled = useSyncExternalStore(
-    subscribeOddsCorrection,
-    getOddsCorrectionSnapshot,
-    getOddsCorrectionServerSnapshot,
+  const rawToggles = useSyncExternalStore(
+    subscribeCorrectionToggles,
+    getCorrectionTogglesSnapshot,
+    getCorrectionTogglesServerSnapshot,
+  );
+  const correctionToggles: CorrectionToggles = useMemo(
+    () => ({
+      horseEnabled: rawToggles.horse,
+      jockeyEnabled: rawToggles.jockey,
+      oddsEnabled: rawToggles.odds,
+      popularityEnabled: rawToggles.popularity,
+      recentEnabled: rawToggles.recent,
+      sameDayJockeyEnabled: rawToggles.sameDayJockey,
+      similarityEnabled: rawToggles.similarity,
+      trainerEnabled: rawToggles.trainer,
+    }),
+    [
+      rawToggles.horse,
+      rawToggles.jockey,
+      rawToggles.odds,
+      rawToggles.popularity,
+      rawToggles.recent,
+      rawToggles.sameDayJockey,
+      rawToggles.similarity,
+      rawToggles.trainer,
+    ],
   );
   const [displayRows, setDisplayRows] = useState<FinishPredictionRow[]>(() =>
-    buildFinishPredictionRowsFromInputs({ ...inputs, oddsCorrectionEnabled }),
+    buildFinishPredictionRowsFromInputs({ ...inputs, correctionToggles }),
   );
   const [paddockState, setPaddockState] = useState<PaddockState | null>(null);
   const { payload } = useRealtimeRacePayload(realtimeRequest, null);
@@ -487,15 +596,16 @@ export function FinishPositionPredictionTable({
 
   useEffect(() => {
     const tanshoRows = payload?.odds?.latest.tansho ?? [];
+    const anyOddsRelatedOn = correctionToggles.oddsEnabled || correctionToggles.popularityEnabled;
     const marketOverrides =
-      oddsCorrectionEnabled && tanshoRows.length > 0
+      anyOddsRelatedOn && tanshoRows.length > 0
         ? buildFinishPredictionMarketOverrides(tanshoRows)
         : undefined;
     setDisplayRows(
-      buildFinishPredictionRowsFromInputs({ ...inputs, oddsCorrectionEnabled }, marketOverrides),
+      buildFinishPredictionRowsFromInputs({ ...inputs, correctionToggles }, marketOverrides),
     );
     setExpandedHorseNumber(null);
-  }, [inputs, oddsCorrectionEnabled, payload?.odds?.latest.tansho]);
+  }, [inputs, correctionToggles, payload?.odds?.latest.tansho]);
 
   useEffect(() => {
     let isActive = true;
@@ -545,23 +655,26 @@ export function FinishPositionPredictionTable({
     <>
       <WrappedFinishPredictionEvaluation evaluation={evaluation} />
       <div className="finish-prediction-odds-toggle">
-        <label htmlFor="odds-correction-checkbox">
-          <input
-            checked={oddsCorrectionEnabled}
-            id="odds-correction-checkbox"
-            onChange={(event) => {
-              window.localStorage.setItem(
-                ODDS_CORRECTION_STORAGE_KEY,
-                String(event.target.checked),
-              );
-              window.dispatchEvent(new Event(ODDS_CORRECTION_CHANGE_EVENT));
-            }}
-            type="checkbox"
-          />
-          <span>オッズで予想を補正</span>
-        </label>
+        {CORRECTION_FEATURES.map((feature) => (
+          <label htmlFor={`correction-checkbox-${feature.key}`} key={feature.key}>
+            <input
+              checked={rawToggles[feature.key]}
+              id={`correction-checkbox-${feature.key}`}
+              onChange={(event) => {
+                const next = { ...rawToggles, [feature.key]: event.target.checked };
+                window.localStorage.setItem(
+                  CORRECTION_TOGGLES_STORAGE_KEY,
+                  JSON.stringify(next),
+                );
+                window.dispatchEvent(new Event(CORRECTION_TOGGLES_CHANGE_EVENT));
+              }}
+              type="checkbox"
+            />
+            <span>{feature.label}</span>
+          </label>
+        ))}
         <span className="finish-prediction-odds-toggle-hint">
-          オフ: オッズによる補正なし / オン: 最新オッズで予想を補正
+          オフ: その補正を無効化 / オン: 最新データで予想を補正
         </span>
       </div>
       <div className="stats-table-wrap">

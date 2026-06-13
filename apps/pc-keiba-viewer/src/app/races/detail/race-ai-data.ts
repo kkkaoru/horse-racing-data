@@ -7,6 +7,7 @@ import { fetchWithRetry } from "../../../lib/fetch-with-retry";
 import {
   buildFinishPredictionMarketOverrides,
   buildFinishPredictionRowsFromInputs,
+  type CorrectionToggles,
   type FinishPredictionBuildInputs,
 } from "../../../lib/finish-position-prediction";
 import { getPreferredJockeyName } from "../../../lib/jockey-name";
@@ -32,6 +33,17 @@ import type {
 import { formatRunnerNumber } from "../../../lib/runner-format";
 import { buildCombinedScoreRows, type CombinedScoreRow } from "./bloodline-similar-combined-table";
 import { buildRealtimeUrl, isRealtimeRacePayload } from "./realtime-client";
+
+const ALL_CORRECTIONS_ON: CorrectionToggles = {
+  horseEnabled: true,
+  jockeyEnabled: true,
+  oddsEnabled: true,
+  popularityEnabled: true,
+  recentEnabled: true,
+  sameDayJockeyEnabled: true,
+  similarityEnabled: true,
+  trainerEnabled: true,
+};
 
 export interface RaceAiDataBase {
   basePostgresqlData: {
@@ -527,7 +539,7 @@ const buildFinishPredictionOutput = (
   const tanshoRows = realtime?.odds?.latest.tansho ?? [];
   // AI assistant always uses odds-corrected prediction for best-available signal
   const finishRows = buildFinishPredictionRowsFromInputs(
-    { ...finishPayload.inputs, oddsCorrectionEnabled: true },
+    { ...finishPayload.inputs, correctionToggles: ALL_CORRECTIONS_ON },
     tanshoRows.length > 0 ? buildFinishPredictionMarketOverrides(tanshoRows) : undefined,
   );
   const combinedScoreByHorse = getCombinedScoreByHorse(sectionPayloads ?? {}, realtime);

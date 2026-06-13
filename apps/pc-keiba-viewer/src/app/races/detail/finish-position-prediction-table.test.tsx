@@ -5,7 +5,12 @@ import React from "react";
 import { afterEach, expect, test, vi } from "vitest";
 
 import { FINISH_POSITION_PREDICTION_EVALUATIONS } from "../../../lib/finish-position-prediction-evaluation";
-import { WrappedFinishPredictionEvaluation } from "./finish-position-prediction-table";
+import {
+  buildAllOnToggles,
+  buildTogglesFromStored,
+  getCorrectionTogglesSnapshot,
+  WrappedFinishPredictionEvaluation,
+} from "./finish-position-prediction-table";
 
 interface MockMediaQueryEvent {
   matches: boolean;
@@ -67,4 +72,96 @@ test("RACE_FINISH_PREDICTION_RESULTS_EVENT is not dispatched when rendering eval
     .map((e) => e.type)
     .filter((type) => type === "race:finish-prediction-results");
   expect(dispatchedFinishEvents).toStrictEqual([]);
+});
+
+test("getCorrectionTogglesSnapshot returns all ON when localStorage has no key", () => {
+  vi.stubGlobal("window", { localStorage: { getItem: vi.fn<() => null>(() => null) } });
+  const result = getCorrectionTogglesSnapshot();
+  expect(result).toStrictEqual({
+    horse: true,
+    jockey: true,
+    odds: true,
+    popularity: true,
+    recent: true,
+    sameDayJockey: true,
+    similarity: true,
+    trainer: true,
+  });
+});
+
+test("getCorrectionTogglesSnapshot returns all ON when localStorage returns invalid JSON", () => {
+  vi.stubGlobal("window", { localStorage: { getItem: vi.fn<() => string>(() => "not-json") } });
+  const result = getCorrectionTogglesSnapshot();
+  expect(result).toStrictEqual({
+    horse: true,
+    jockey: true,
+    odds: true,
+    popularity: true,
+    recent: true,
+    sameDayJockey: true,
+    similarity: true,
+    trainer: true,
+  });
+});
+
+test("getCorrectionTogglesSnapshot reads false values from localStorage", () => {
+  vi.stubGlobal("window", {
+    localStorage: {
+      getItem: vi.fn<() => string>(() => JSON.stringify({ odds: false, popularity: false })),
+    },
+  });
+  const result = getCorrectionTogglesSnapshot();
+  expect(result).toStrictEqual({
+    horse: true,
+    jockey: true,
+    odds: false,
+    popularity: false,
+    recent: true,
+    sameDayJockey: true,
+    similarity: true,
+    trainer: true,
+  });
+});
+
+test("getCorrectionTogglesSnapshot returns all ON when localStorage returns non-object JSON", () => {
+  vi.stubGlobal("window", { localStorage: { getItem: vi.fn<() => string>(() => '"string"') } });
+  const result = getCorrectionTogglesSnapshot();
+  expect(result).toStrictEqual({
+    horse: true,
+    jockey: true,
+    odds: true,
+    popularity: true,
+    recent: true,
+    sameDayJockey: true,
+    similarity: true,
+    trainer: true,
+  });
+});
+
+test("buildAllOnToggles returns all feature keys set to true", () => {
+  const result = buildAllOnToggles();
+  expect(result).toStrictEqual({
+    horse: true,
+    jockey: true,
+    odds: true,
+    popularity: true,
+    recent: true,
+    sameDayJockey: true,
+    similarity: true,
+    trainer: true,
+  });
+});
+
+test("buildTogglesFromStored sets false for keys explicitly set false, true for everything else", () => {
+  const result = buildTogglesFromStored({ odds: false, similarity: false });
+  expect(result).toStrictEqual({
+    horse: true,
+    jockey: true,
+    odds: false,
+    popularity: true,
+    recent: true,
+    sameDayJockey: true,
+    similarity: false,
+    trainer: true,
+  });
 });

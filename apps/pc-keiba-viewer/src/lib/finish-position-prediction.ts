@@ -19,6 +19,17 @@ export interface FinishPredictionMarketOverride {
   popularity: number | null;
 }
 
+export interface CorrectionToggles {
+  horseEnabled: boolean;
+  jockeyEnabled: boolean;
+  oddsEnabled: boolean;
+  popularityEnabled: boolean;
+  recentEnabled: boolean;
+  sameDayJockeyEnabled: boolean;
+  similarityEnabled: boolean;
+  trainerEnabled: boolean;
+}
+
 export interface FinishPredictionBuildInputs {
   currentDistance: string | null | undefined;
   currentGradeCode?: string | null;
@@ -29,7 +40,7 @@ export interface FinishPredictionBuildInputs {
   currentSource: RaceSource;
   currentTrackCode?: string | null;
   modelPredictionFeatures?: FinishPositionModelPredictionFeature[];
-  oddsCorrectionEnabled?: boolean;
+  correctionToggles?: CorrectionToggles;
   results: HorseRaceResult[];
   runners: Runner[];
   sameDayVenueJockeyWins?: SameDayVenueJockeyWinFeature[];
@@ -582,7 +593,7 @@ export const buildFinishPredictionRowsFromResults = ({
   currentTrackCode,
   marketOverrides,
   modelPredictionFeatures = [],
-  oddsCorrectionEnabled,
+  correctionToggles,
   results,
   runners,
   sameDayVenueJockeyWins = [],
@@ -641,11 +652,26 @@ export const buildFinishPredictionRowsFromResults = ({
     );
     const runnerConfig = getHorseHistoryAdjustedConfig(config, horseResults.length, category);
     const isNewHorseMaiden = cleanText(currentKyosoJokenCode, "") === NEW_HORSE_MAIDEN_CODE;
-    const isOddsCorrectionApplied = oddsCorrectionEnabled ?? !isNewHorseMaiden;
+    // Default: all corrections ON, except odds+popularity are OFF for new-horse maiden
+    const defaultOddsOn = !isNewHorseMaiden;
+    const oddsOn = correctionToggles?.oddsEnabled ?? defaultOddsOn;
+    const popularityOn = correctionToggles?.popularityEnabled ?? defaultOddsOn;
+    const horseOn = correctionToggles?.horseEnabled ?? true;
+    const recentOn = correctionToggles?.recentEnabled ?? true;
+    const jockeyOn = correctionToggles?.jockeyEnabled ?? true;
+    const trainerOn = correctionToggles?.trainerEnabled ?? true;
+    const sameDayJockeyOn = correctionToggles?.sameDayJockeyEnabled ?? true;
+    const similarityOn = correctionToggles?.similarityEnabled ?? true;
     const finalRunnerConfig: FinishPredictionConfig = {
       ...runnerConfig,
-      oddsWeight: isOddsCorrectionApplied ? runnerConfig.oddsWeight : 0,
-      popularityWeight: isOddsCorrectionApplied ? runnerConfig.popularityWeight : 0,
+      horseWeight: horseOn ? runnerConfig.horseWeight : 0,
+      jockeyWeight: jockeyOn ? runnerConfig.jockeyWeight : 0,
+      oddsWeight: oddsOn ? runnerConfig.oddsWeight : 0,
+      popularityWeight: popularityOn ? runnerConfig.popularityWeight : 0,
+      recentWeight: recentOn ? runnerConfig.recentWeight : 0,
+      sameDayJockeyWeight: sameDayJockeyOn ? runnerConfig.sameDayJockeyWeight : 0,
+      similarityWeight: similarityOn ? runnerConfig.similarityWeight : 0,
+      trainerWeight: trainerOn ? runnerConfig.trainerWeight : 0,
     };
     const averageParams = {
       config: finalRunnerConfig,
@@ -723,7 +749,7 @@ export const buildFinishPredictionRowsFromResults = ({
           similarity?.averageFinishPosition === undefined
             ? null
             : clampScore((similarity.averageFinishPosition - 1) / (runnerCount - 1)),
-        weight: config.similarityWeight,
+        weight: finalRunnerConfig.similarityWeight,
       },
       ...getModelCandidates(models, config.modelWeight),
     ];
