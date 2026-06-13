@@ -16,13 +16,33 @@ const DEFAULT_TTL_SECONDS = 7200;
 const MIN_TTL_SECONDS = 60;
 const ALARM_BUFFER_MS = 60_000;
 const MS_PER_SECOND = 1000;
-const MAX_POINTS_PER_RACE = 60;
+// Per-odds-type point budget. tansho drives the viewer trend line graph and
+// gets the largest share (~50 snapshots * 16 horses). Larger-combination types
+// (umaren=120, umatan=240, 3rentan=trifecta) get smaller budgets so the
+// serialized StoredOddsState stays under the Durable Object 128 KiB per-value
+// limit (verified by a budget guard test; worst case ~118 KiB).
+const ODDS_HISTORY_POINTS_LIMIT_BY_TYPE = {
+  "3renpuku": 30,
+  "3rentan": 30,
+  fukusho: 160,
+  tansho: 800,
+  umaren: 120,
+  umatan: 60,
+  wakuren: 144,
+  wide: 60,
+} satisfies Record<OddsType, number>;
 
 interface StoredOddsState {
   expiresAt: number;
   fetchedAt: string | null;
   historyByType: Partial<Record<OddsType, OddsTrendPoint[]>>;
   latest: Partial<Record<OddsType, OddsData[]>>;
+}
+
+interface AppendPointsArgs {
+  existing: OddsTrendPoint[];
+  next: OddsTrendPoint[];
+  oddsType: OddsType;
 }
 
 interface PutOddsBody {
@@ -61,14 +81,10 @@ const oddsDataToTrendPoint = (fetchedAt: string, row: OddsData): OddsTrendPoint 
   rank: row.rank ?? null,
 });
 
-const appendPointsForType = (
-  existing: OddsTrendPoint[],
-  next: OddsTrendPoint[],
-): OddsTrendPoint[] => {
+const appendPointsForType = ({ existing, next, oddsType }: AppendPointsArgs): OddsTrendPoint[] => {
+  const limit = ODDS_HISTORY_POINTS_LIMIT_BY_TYPE[oddsType];
   const merged = [...existing, ...next];
-  return merged.length > MAX_POINTS_PER_RACE
-    ? merged.slice(merged.length - MAX_POINTS_PER_RACE)
-    : merged;
+  return merged.length > limit ? merged.slice(merged.length - limit) : merged;
 };
 
 const mergeHistory = (
@@ -83,7 +99,11 @@ const mergeHistory = (
       return;
     }
     const points = rows.map((row) => oddsDataToTrendPoint(fetchedAt, row));
-    next[oddsType] = appendPointsForType(current[oddsType] ?? [], points);
+    next[oddsType] = appendPointsForType({
+      existing: current[oddsType] ?? [],
+      next: points,
+      oddsType,
+    });
   });
   return next;
 };
