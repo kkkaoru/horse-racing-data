@@ -287,19 +287,23 @@ it("handleGetOdds returns the KV mirror payload but does not write it to the edg
   expect(cacheMock.put).not.toHaveBeenCalled();
 });
 
-it("handleGetOdds returns the DO payload and writes it to the edge cache when history is non-empty", async () => {
+it("handleGetOdds returns the DO payload and writes it to the edge cache when tansho snapshots meet the threshold", async () => {
   vi.mocked(readCachedOdds).mockResolvedValueOnce({
-    fetchedAt: "2026-05-28T10:00:00+09:00",
+    fetchedAt: "2026-05-28T10:09:00+09:00",
     history: [
       {
         horseNumber: "01",
         points: [
-          {
-            fetchedAt: "2026-05-28T10:00:00+09:00",
-            horseNumber: "01",
-            odds: 2.5,
-            popularity: 1,
-          },
+          { fetchedAt: "2026-05-28T10:00:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+          { fetchedAt: "2026-05-28T10:01:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+          { fetchedAt: "2026-05-28T10:02:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+          { fetchedAt: "2026-05-28T10:03:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+          { fetchedAt: "2026-05-28T10:04:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+          { fetchedAt: "2026-05-28T10:05:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+          { fetchedAt: "2026-05-28T10:06:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+          { fetchedAt: "2026-05-28T10:07:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+          { fetchedAt: "2026-05-28T10:08:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+          { fetchedAt: "2026-05-28T10:09:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
         ],
       },
     ],
@@ -337,6 +341,167 @@ it("handleGetOdds falls through to KV mirror when DO history is empty", async ()
   );
   expect(response.status).toBe(200);
   expect(cacheMock.put).not.toHaveBeenCalled();
+});
+
+it("handleGetOdds falls through to KV mirror when DO tansho has only 5 distinct snapshots (below threshold)", async () => {
+  vi.mocked(readCachedOdds).mockResolvedValueOnce({
+    fetchedAt: "2026-05-28T10:04:00+09:00",
+    history: [
+      {
+        horseNumber: "01",
+        points: [
+          { fetchedAt: "2026-05-28T10:00:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+          { fetchedAt: "2026-05-28T10:01:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+          { fetchedAt: "2026-05-28T10:02:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+          { fetchedAt: "2026-05-28T10:03:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+          { fetchedAt: "2026-05-28T10:04:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+        ],
+      },
+    ],
+    historyByType: {},
+    latest: { tansho: [{ combination: "01", odds: 2.5, rank: 1 }] },
+  });
+  const env = buildEnv();
+  const kvGet = env.ODDS_HOT_KV.get as unknown as ReturnType<typeof vi.fn>;
+  kvGet.mockResolvedValueOnce(
+    JSON.stringify({
+      fetchedAt: new Date().toISOString(),
+      latest: { tansho: [{ combination: "01" }] },
+    }),
+  );
+  const response = await handleGetOdds(
+    env,
+    new Request("https://x/api/odds/nar:20260528:42:01"),
+    "nar:20260528:42:01",
+  );
+  expect(response.status).toBe(200);
+  expect(cacheMock.put).not.toHaveBeenCalled();
+});
+
+it("handleGetOdds serves from DO when tansho has exactly 10 distinct snapshots (boundary)", async () => {
+  vi.mocked(readCachedOdds).mockResolvedValueOnce({
+    fetchedAt: "2026-05-28T10:09:00+09:00",
+    history: [
+      {
+        horseNumber: "01",
+        points: [
+          { fetchedAt: "2026-05-28T10:00:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+          { fetchedAt: "2026-05-28T10:01:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+          { fetchedAt: "2026-05-28T10:02:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+          { fetchedAt: "2026-05-28T10:03:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+          { fetchedAt: "2026-05-28T10:04:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+          { fetchedAt: "2026-05-28T10:05:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+          { fetchedAt: "2026-05-28T10:06:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+          { fetchedAt: "2026-05-28T10:07:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+          { fetchedAt: "2026-05-28T10:08:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+          { fetchedAt: "2026-05-28T10:09:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+        ],
+      },
+    ],
+    historyByType: {},
+    latest: { tansho: [{ combination: "01", odds: 2.5, rank: 1 }] },
+  });
+  const response = await handleGetOdds(
+    buildEnv(),
+    new Request("https://x/api/odds/nar:20260528:42:01"),
+    "nar:20260528:42:01",
+  );
+  expect(response.status).toBe(200);
+  expect(cacheMock.put).toHaveBeenCalledTimes(1);
+});
+
+it("handleGetOdds serves from DO when tansho has 50 distinct snapshots across multiple horses", async () => {
+  const buildPointsForHorse = (
+    horseNumber: string,
+  ): { fetchedAt: string; horseNumber: string; odds: number; popularity: number }[] =>
+    Array.from({ length: 25 }, (_, index) => ({
+      fetchedAt: `2026-05-28T10:${String(index).padStart(2, "0")}:00+09:00`,
+      horseNumber,
+      odds: 2.5,
+      popularity: 1,
+    }));
+  vi.mocked(readCachedOdds).mockResolvedValueOnce({
+    fetchedAt: "2026-05-28T10:24:00+09:00",
+    history: [
+      { horseNumber: "01", points: buildPointsForHorse("01") },
+      {
+        horseNumber: "02",
+        points: Array.from({ length: 25 }, (_, index) => ({
+          fetchedAt: `2026-05-28T10:${String(index + 25).padStart(2, "0")}:00+09:00`,
+          horseNumber: "02",
+          odds: 3.0,
+          popularity: 2,
+        })),
+      },
+    ],
+    historyByType: {},
+    latest: { tansho: [{ combination: "01", odds: 2.5, rank: 1 }] },
+  });
+  const response = await handleGetOdds(
+    buildEnv(),
+    new Request("https://x/api/odds/nar:20260528:42:01"),
+    "nar:20260528:42:01",
+  );
+  expect(response.status).toBe(200);
+  expect(cacheMock.put).toHaveBeenCalledTimes(1);
+});
+
+it("handleGetOdds falls through to D1 result cache when DO tansho is shallow and KV mirror is missing", async () => {
+  vi.mocked(readCachedOdds).mockResolvedValueOnce({
+    fetchedAt: "2026-05-28T10:02:00+09:00",
+    history: [
+      {
+        horseNumber: "01",
+        points: [
+          { fetchedAt: "2026-05-28T10:00:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+          { fetchedAt: "2026-05-28T10:01:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+          { fetchedAt: "2026-05-28T10:02:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+        ],
+      },
+    ],
+    historyByType: {},
+    latest: { tansho: [{ combination: "01", odds: 2.5, rank: 1 }] },
+  });
+  cacheMock.match.mockResolvedValueOnce(undefined);
+  cacheMock.match.mockResolvedValueOnce(
+    new Response(
+      JSON.stringify({
+        fetchedAt: "2026-05-28T11:00:00+09:00",
+        history: [],
+        historyByType: {},
+        latest: {},
+      }),
+    ),
+  );
+  const response = await handleGetOdds(
+    buildEnv(),
+    new Request("https://x/api/odds/nar:20260528:42:01"),
+    "nar:20260528:42:01",
+  );
+  expect(response.status).toBe(200);
+});
+
+it("handleGetOdds falls through to D1 query when DO tansho is shallow and no other cache layer hits", async () => {
+  vi.mocked(readCachedOdds).mockResolvedValueOnce({
+    fetchedAt: "2026-05-28T10:00:00+09:00",
+    history: [
+      {
+        horseNumber: "01",
+        points: [
+          { fetchedAt: "2026-05-28T10:00:00+09:00", horseNumber: "01", odds: 2.5, popularity: 1 },
+        ],
+      },
+    ],
+    historyByType: {},
+    latest: { tansho: [{ combination: "01", odds: 2.5, rank: 1 }] },
+  });
+  const response = await handleGetOdds(
+    buildEnv(),
+    new Request("https://x/api/odds/nar:20260528:42:01"),
+    "nar:20260528:42:01",
+  );
+  expect(response.status).toBe(200);
+  expect(cacheMock.put).toHaveBeenCalled();
 });
 
 it("handleGetOdds is fail-soft when DO read throws", async () => {

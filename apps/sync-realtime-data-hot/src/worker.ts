@@ -46,6 +46,13 @@ const POPULATE_MULTI_DAY_CRON = "55 20 * * *";
 const ARCHIVE_QUERY_LIMIT = 200;
 const D1_RESULT_CACHE_QUERIES = ["latest", "tanshoHistory", "oddsHistoryByType"];
 const PLAN_DAYS_AHEAD = 2;
+// Minimum distinct tansho snapshots required for the DO cache to be trusted
+// as a trend source. The viewer's オッズ推移 line chart becomes visually
+// meaningful around 5-10 timepoints. Below this floor the DO is treated as
+// shallow (e.g. fresh races, or races whose DO state was built under an
+// older per-type history cap) and we fall through to the D1 path which
+// returns full uncapped history.
+const MIN_DO_TRUSTED_SNAPSHOTS = 10;
 
 interface OddsPayload {
   fetchedAt: string | null;
@@ -71,6 +78,23 @@ export const buildOddsPayloadFromD1 = async (env: Env, raceKey: string): Promise
     historyByType: toOddsTrendsByType(byType),
     latest: latest?.latest ?? {},
   };
+};
+
+// Counts distinct `fetchedAt` values across all tansho trend points in the
+// cached payload. `history` lists one entry per horse, so its raw length is
+// not a reliable proxy for how many snapshots the viewer can draw.
+const countTanshoSnapshots = (cached: OddsPayload): number => {
+  const trends = cached.history;
+  if (trends.length === 0) {
+    return 0;
+  }
+  const fetchedAts = new Set<string>();
+  trends.forEach((trend) => {
+    trend.points.forEach((point) => {
+      fetchedAts.add(point.fetchedAt);
+    });
+  });
+  return fetchedAts.size;
 };
 
 const readDoCacheSafe = async (env: Env, raceKey: string): Promise<OddsPayload | null> => {
@@ -105,7 +129,7 @@ export const handleGetOdds = async (
     return cached;
   }
   const doCached = await readDoCacheSafe(env, raceKey);
-  if (doCached && doCached.history.length > 0) {
+  if (doCached && countTanshoSnapshots(doCached) >= MIN_DO_TRUSTED_SNAPSHOTS) {
     await writeToEdgeCache(raceKey, doCached, env);
     return jsonResponse(doCached);
   }
