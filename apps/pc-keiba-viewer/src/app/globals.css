@@ -6624,7 +6624,12 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 }
 
 .finish-prediction-odds-toggle {
+  align-items: center;
+  column-gap: var(--space-12px-9);
+  display: flex;
+  flex-wrap: wrap;
   margin-bottom: var(--space-14px-55);
+  row-gap: var(--space-6px-33);
 }
 
 .finish-prediction-odds-toggle label {
@@ -6650,6 +6655,13 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   color: var(--muted);
   font-size: var(--space-15px-1);
   font-weight: var(--number-800-12);
+}
+
+.finish-prediction-odds-toggle-hint {
+  color: var(--muted);
+  font-size: var(--space-13px-92);
+  font-weight: var(--number-400-46);
+  line-height: var(--number-1-45-39);
 }
 
 .premium-data-top-section {
