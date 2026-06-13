@@ -1,13 +1,12 @@
 "use client";
 
-import { Fragment, memo, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
 import type { FinishPredictionBuildInputs } from "../../../lib/finish-position-prediction";
 import {
   buildFinishPredictionMarketOverrides,
   buildFinishPredictionRowsFromInputs,
-  NEW_HORSE_MAIDEN_CODE,
   RACE_FINISH_PREDICTION_RESULTS_EVENT,
 } from "../../../lib/finish-position-prediction";
 import type { FinishPredictionEvaluationMetrics } from "../../../lib/finish-position-prediction-evaluation";
@@ -33,6 +32,28 @@ import type { RealtimeRaceRequest } from "./realtime-client";
 import { useRealtimeRacePayload } from "./realtime-client";
 
 const FINISH_PREDICTION_EVALUATION_TITLE = "着順予測精度";
+
+const ODDS_CORRECTION_STORAGE_KEY = "pc-keiba:odds-correction-enabled";
+const ODDS_CORRECTION_CHANGE_EVENT = "pc-keiba:odds-correction-change";
+
+const subscribeOddsCorrection = (onStoreChange: () => void): (() => void) => {
+  if (typeof window === "undefined") {
+    return () => {};
+  }
+  window.addEventListener(ODDS_CORRECTION_CHANGE_EVENT, onStoreChange);
+  return () => {
+    window.removeEventListener(ODDS_CORRECTION_CHANGE_EVENT, onStoreChange);
+  };
+};
+
+const getOddsCorrectionSnapshot = (): boolean => {
+  if (typeof window === "undefined" || typeof window.localStorage === "undefined") {
+    return false;
+  }
+  return window.localStorage.getItem(ODDS_CORRECTION_STORAGE_KEY) === "true";
+};
+
+const getOddsCorrectionServerSnapshot = (): boolean => false;
 
 interface FinishPositionPredictionTableProps {
   combinedScoreData?: FinishPredictionCombinedScoreData | null;
@@ -402,9 +423,12 @@ export function FinishPositionPredictionTable({
   inputs,
   realtimeRequest,
 }: FinishPositionPredictionTableProps) {
-  const isNewHorseMaiden = inputs.currentKyosoJokenCode === NEW_HORSE_MAIDEN_CODE;
   const [expandedHorseNumber, setExpandedHorseNumber] = useState<string | null>(null);
-  const [oddsCorrectionEnabled, setOddsCorrectionEnabled] = useState<boolean>(!isNewHorseMaiden);
+  const oddsCorrectionEnabled = useSyncExternalStore(
+    subscribeOddsCorrection,
+    getOddsCorrectionSnapshot,
+    getOddsCorrectionServerSnapshot,
+  );
   const [displayRows, setDisplayRows] = useState<FinishPredictionRow[]>(() =>
     buildFinishPredictionRowsFromInputs({ ...inputs, oddsCorrectionEnabled }),
   );
@@ -562,14 +586,24 @@ export function FinishPositionPredictionTable({
     <>
       <WrappedFinishPredictionEvaluation evaluation={evaluation} />
       <div className="finish-prediction-odds-toggle">
-        <label>
+        <label htmlFor="odds-correction-checkbox">
           <input
             checked={oddsCorrectionEnabled}
-            onChange={(event) => setOddsCorrectionEnabled(event.target.checked)}
+            id="odds-correction-checkbox"
+            onChange={(event) => {
+              window.localStorage.setItem(
+                ODDS_CORRECTION_STORAGE_KEY,
+                String(event.target.checked),
+              );
+              window.dispatchEvent(new Event(ODDS_CORRECTION_CHANGE_EVENT));
+            }}
             type="checkbox"
           />
-          <span>オッズ補正</span>
+          <span>オッズで予想を補正</span>
         </label>
+        <span className="finish-prediction-odds-toggle-hint">
+          オフ: モデル予想をそのまま表示 / オン: 最新オッズで補正
+        </span>
       </div>
       <div className="stats-table-wrap">
         <table className="stats-table analysis-table finish-prediction-table">

@@ -533,7 +533,7 @@ describe("buildFinishPredictionRowsFromResults", () => {
     )?.weight;
 
     expect(maidenOddsWeight).toBe(0.15);
-    expect(maidenPopularityWeight).toBe(0.04);
+    expect(maidenPopularityWeight).toBe(0.01);
     expect(nonMaidenOddsWeight).toBe(0);
     expect(nonMaidenPopularityWeight).toBe(0);
   });
@@ -573,7 +573,46 @@ describe("buildFinishPredictionRowsFromResults", () => {
     const popularityWeight = rows[0]?.details.find((detail) => detail.label === "人気")?.weight;
 
     expect(oddsWeight).toBe(0.15);
-    expect(popularityWeight).toBe(0.04);
+    expect(popularityWeight).toBe(0.01);
+  });
+
+  it("maiden field with odds correction ON is NOT sorted by raw popularity order", () => {
+    // Runner 1: high predictedFinishNorm (bad model score), top popularity (rank=1)
+    // Runner 2: low predictedFinishNorm (good model score), low popularity (rank=8)
+    // With popularityWeight=0.01 the model-led order should place runner 2 ahead of runner 1
+    const rows = buildFinishPredictionRowsFromResults({
+      currentDistance: "1600",
+      currentKeibajoCode: "05",
+      currentKyosoJokenCode: "701",
+      currentRaceDate: "20260607",
+      currentSource: "jra",
+      modelPredictionFeatures: [
+        {
+          horseNumber: "01",
+          modelVersion: "iter14-jra-lightgbm",
+          predictedFinishNorm: 0.9,
+          showProbability: 0.1,
+          winProbability: 0.05,
+        },
+        {
+          horseNumber: "02",
+          modelVersion: "iter14-jra-lightgbm",
+          predictedFinishNorm: 0.05,
+          showProbability: 0.7,
+          winProbability: 0.45,
+        },
+      ],
+      oddsCorrectionEnabled: true,
+      results: [],
+      runners: [
+        runner({ tanshoNinkijun: "01", tanshoOdds: "0020", umaban: "01" }),
+        runner({ tanshoNinkijun: "08", tanshoOdds: "0150", umaban: "02" }),
+      ],
+    });
+
+    // Popularity order would put horse 1 first; model-led order puts horse 2 first
+    expect(rows[0]?.horseNumber).toBe("2");
+    expect(rows[1]?.horseNumber).toBe("1");
   });
 
   it("keeps base modelWeight when kyosoJokenCode is not the new-horse maiden code", () => {
@@ -600,7 +639,7 @@ describe("buildFinishPredictionRowsFromResults", () => {
     const popularityWeight = rows[0]?.details.find((detail) => detail.label === "人気")?.weight;
 
     expect(modelWeight).toBe(0.08);
-    expect(popularityWeight).toBe(0.04);
+    expect(popularityWeight).toBe(0.01);
   });
 
   it("doubles oddsWeight for JRA runners with no prior results", () => {

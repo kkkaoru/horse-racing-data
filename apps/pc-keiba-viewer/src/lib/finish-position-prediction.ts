@@ -140,6 +140,9 @@ const ODDS_RESTORE_MULTIPLIER_NON_BANEI = 2;
 
 const ODDS_RESTORE_MULTIPLIER_BANEI = 1;
 
+// Market is a weak prior for debut horses — keep model-led
+const DEBUT_POPULARITY_WEIGHT_BUMP = 0.008;
+
 const clampScore = (value: number): number => Math.max(0, Math.min(1, value));
 
 const roundScore = (value: number): number => Math.round(value * 100) / 100;
@@ -358,7 +361,7 @@ const getHorseHistoryAdjustedConfig = (
       horseWeight: Math.max(0.12, baseConfig.horseWeight - 0.04),
       jockeyWeight: baseConfig.jockeyWeight + 0.025,
       oddsWeight: baseConfig.oddsWeight * oddsRestoreMultiplier + 0.015,
-      popularityWeight: baseConfig.popularityWeight + 0.035,
+      popularityWeight: baseConfig.popularityWeight + DEBUT_POPULARITY_WEIGHT_BUMP,
       sameDayJockeyWeight: baseConfig.sameDayJockeyWeight + 0.015,
       trainerWeight: baseConfig.trainerWeight + 0.015,
     };
