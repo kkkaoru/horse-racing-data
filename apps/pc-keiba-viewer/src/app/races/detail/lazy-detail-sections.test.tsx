@@ -121,7 +121,42 @@ vi.mock("./overall-score-table", () => ({
 }));
 
 vi.mock("./horse-race-results-chart", () => ({
-  HorseRaceResultsChart: () => <div data-testid="horse-race-results-chart-stub">chart</div>,
+  HorseRaceResultsChart: ({
+    day,
+    keibajoCode,
+    month,
+    raceNumber,
+    runners,
+    source,
+    targetKeibajoCode,
+    targetRaceDate,
+    year,
+  }: {
+    day?: string;
+    keibajoCode?: string;
+    month?: string;
+    raceNumber?: string;
+    runners?: unknown[];
+    source?: string;
+    targetKeibajoCode?: string | null;
+    targetRaceDate?: string | null;
+    year?: string;
+  }) => (
+    <div
+      data-day={day ?? ""}
+      data-keibajo-code={keibajoCode ?? ""}
+      data-month={month ?? ""}
+      data-race-number={raceNumber ?? ""}
+      data-runners-passed={runners === undefined ? "missing" : "present"}
+      data-source={source ?? ""}
+      data-target-keibajo-code={targetKeibajoCode ?? ""}
+      data-target-race-date={targetRaceDate ?? ""}
+      data-testid="horse-race-results-chart-stub"
+      data-year={year ?? ""}
+    >
+      chart
+    </div>
+  ),
 }));
 
 vi.mock("./horse-race-results-table", () => ({
@@ -271,6 +306,15 @@ test("LazyDetailSections renders the results chart section directly below the re
   const resultsStub = screen.getByTestId("horse-race-results-table-stub");
   const chartStub = screen.getByTestId("horse-race-results-chart-stub");
   expect(resultsStub.compareDocumentPosition(chartStub)).toStrictEqual(4);
+  expect(chartStub.getAttribute("data-runners-passed")).toStrictEqual("present");
+  expect(chartStub.getAttribute("data-target-keibajo-code")).toStrictEqual("05");
+  expect(chartStub.getAttribute("data-target-race-date")).toStrictEqual("20270601");
+  expect(chartStub.getAttribute("data-year")).toStrictEqual("2027");
+  expect(chartStub.getAttribute("data-month")).toStrictEqual("06");
+  expect(chartStub.getAttribute("data-day")).toStrictEqual("11");
+  expect(chartStub.getAttribute("data-keibajo-code")).toStrictEqual("05");
+  expect(chartStub.getAttribute("data-race-number")).toStrictEqual("01");
+  expect(chartStub.getAttribute("data-source")).toStrictEqual("jra");
   const resultsFetchCalls = vi
     .mocked(fetchWithRetry)
     .mock.calls.filter(

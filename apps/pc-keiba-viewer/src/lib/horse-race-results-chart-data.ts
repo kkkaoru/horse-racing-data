@@ -3,19 +3,61 @@
 // `results` section payload (HorseRaceResult rows) into per-horse chart series.
 import { cleanText } from "./format";
 import type { HorseRaceResult } from "./race-types";
-import { isBanEiKeibajoCode } from "./runner-format";
+import { formatRunnerNumber, isBanEiKeibajoCode } from "./runner-format";
 
 export type HorseRaceChartMetric = "finish" | "popularity" | "weight" | "weightDelta";
 
 export interface HorseRaceChartPoint {
   dateValue: number; // Date.UTC(yyyy, mm - 1, dd) milliseconds
+  // Race distance ("kyori"); populated only for finish & popularity metrics so
+  // their tooltips can show distance. Weight/delta points leave it null.
+  jockey?: string | null;
+  // Jockey short name ("kishumeiRyakusho"); populated only for finish &
+  // popularity metrics. Weight/delta points leave it null.
+  kyori?: string | null;
+  // True for the synthetic upcoming-race point appended for weight & weightDelta
+  // metrics. Omitted/false for every past point.
+  isUpcoming?: boolean;
   raceDate: string; // "YYYYMMDD"
   value: number;
+}
+
+// One entered runner of the upcoming (target) race; supplies its frame and the
+// to-be-weighed values that seed the upcoming chart point / correlation row.
+export interface HorseRaceChartRunner {
+  bataiju: string | null;
+  kettoTorokuBango: string | null;
+  umaban: string | null;
+  wakuban: string | null;
+  zogenFugo: string | null;
+  zogenSa: string | null;
+}
+
+// One horse's realtime upcoming-race weight, already decoded to numbers (kg) by
+// the realtime weight stream. `weightDelta` carries the sign already applied
+// (changeSign === "-" ? -changeAmount : changeAmount). Keyed back to a series by
+// `umaban`. When `weight` is a finite number it overrides the static-runner
+// bataiju path; otherwise the static path is kept as the fallback.
+export interface UpcomingWeightOverride {
+  umaban: string | null;
+  weight: number | null;
+  weightDelta: number | null;
+}
+
+// Resolved numeric weight/delta for one horse's upcoming point/row.
+interface UpcomingWeightValues {
+  weight: number;
+  weightDelta: number | null;
 }
 
 export interface HorseRaceChartSeries {
   bamei: string;
   color: string;
+  // Entered-race wakuban for this horse (matched by trimmed kettoTorokuBango),
+  // or null when the horse is not in the upcoming race / no runners supplied.
+  // The UI resolves the actual stroke color from this frame; `color` stays as a
+  // fallback.
+  frame: string | null;
   kettoTorokuBango: string;
   points: HorseRaceChartPoint[]; // ascending by dateValue, tie by raceBango asc
   umaban: number | null; // numeric currentUmaban
@@ -63,6 +105,43 @@ interface SeriesColorInput {
   unusedColors: string[];
 }
 
+// Options for buildHorseRaceChartSeriesList; runners + target context are
+// optional so callers that only need past points can omit them. `upcomingWeights`
+// carries the realtime numeric weight/delta that takes precedence over the
+// static-runner bataiju path when present for a matching umaban.
+export interface BuildHorseRaceChartSeriesListOptions {
+  metric: HorseRaceChartMetric;
+  results: HorseRaceResult[];
+  runners?: HorseRaceChartRunner[];
+  targetKeibajoCode?: string | null;
+  targetRaceDate?: string | null; // "YYYYMMDD"
+  upcomingWeights?: UpcomingWeightOverride[];
+}
+
+// Options for buildHorseRaceCorrelationRows; same optional target context so the
+// upcoming race can be appended as the newest row, plus the realtime numeric
+// weight override applied identically to the series builder.
+export interface BuildHorseRaceCorrelationRowsOptions {
+  kettoTorokuBango: string;
+  results: HorseRaceResult[];
+  runners?: HorseRaceChartRunner[];
+  targetKeibajoCode?: string | null;
+  targetRaceDate?: string | null; // "YYYYMMDD"
+  upcomingWeights?: UpcomingWeightOverride[];
+}
+
+// Resolved upcoming-race context: a matched runner, the target race date, and the
+// optional realtime numeric weight override for the same horse (null when no
+// realtime entry matched its umaban). Shared by the series-point and
+// correlation-row builders.
+interface UpcomingRaceContext {
+  dateValue: number;
+  keibajoCode: string | null;
+  raceDate: string;
+  runner: HorseRaceChartRunner;
+  weightOverride: UpcomingWeightOverride | null;
+}
+
 const RACE_DATE_PATTERN = /^\d{8}$/;
 const ALL_ZERO_PATTERN = /^0+$/;
 const RACE_DATE_YEAR_LENGTH = 4;
@@ -75,6 +154,9 @@ const INVALID_WEIGHT_FFF = "FFF";
 const NON_BANEI_UNMEASURED_WEIGHT = 999;
 const HEX_RADIX = 16;
 const NEGATIVE_SIGN = "-";
+// formatRunnerNumber returns this sentinel for a blank / non-positive umaban; an
+// override or runner umaban that normalizes to it must never key the map.
+const EMPTY_UMABAN_KEY = "-";
 const UNKNOWN_BAMEI = "不明";
 const DATE_PART_LENGTH = 2;
 const DATE_PAD_CHAR = "0";
@@ -161,12 +243,15 @@ const isInvalidWeightText = (cleaned: string): boolean =>
 const decodeWeightValue = (cleaned: string, decodeHex: boolean): number =>
   decodeHex ? Number.parseInt(cleaned, HEX_RADIX) : Number(cleaned);
 
-const parseWeight = (result: HorseRaceResult): number | null => {
-  const cleaned = cleanText(result.bataiju, "");
+// Parse a raw bataiju field with the keibajo's encoding (Ban-ei hex vs decimal),
+// rejecting the 000/FFF/999 sentinels. Shared by past-result rows and the
+// upcoming-race runner so both plot identically.
+const parseWeightFields = (bataiju: string | null, keibajoCode: string | null): number | null => {
+  const cleaned = cleanText(bataiju, "");
   if (isInvalidWeightText(cleaned)) {
     return null;
   }
-  const decodeHex = isBanEiKeibajoCode(result.keibajoCode);
+  const decodeHex = isBanEiKeibajoCode(keibajoCode);
   const parsed = decodeWeightValue(cleaned, decodeHex);
   if (!Number.isFinite(parsed)) {
     return null;
@@ -174,20 +259,40 @@ const parseWeight = (result: HorseRaceResult): number | null => {
   return !decodeHex && parsed === NON_BANEI_UNMEASURED_WEIGHT ? null : parsed;
 };
 
-const parseWeightDelta = (result: HorseRaceResult): number | null => {
-  if (parseWeight(result) === null) {
+interface WeightDeltaFields {
+  bataiju: string | null;
+  keibajoCode: string | null;
+  zogenFugo: string | null;
+  zogenSa: string | null;
+}
+
+// Parse a raw zogenSa/zogenFugo delta with the keibajo's encoding; null unless
+// the matching weight is also valid. Shared by past rows and the upcoming runner.
+const parseWeightDeltaFields = (fields: WeightDeltaFields): number | null => {
+  if (parseWeightFields(fields.bataiju, fields.keibajoCode) === null) {
     return null;
   }
-  const cleaned = cleanText(result.zogenSa, "");
+  const cleaned = cleanText(fields.zogenSa, "");
   if (isInvalidWeightText(cleaned)) {
     return null;
   }
-  const parsed = decodeWeightValue(cleaned, isBanEiKeibajoCode(result.keibajoCode));
+  const parsed = decodeWeightValue(cleaned, isBanEiKeibajoCode(fields.keibajoCode));
   if (!Number.isFinite(parsed)) {
     return null;
   }
-  return cleanText(result.zogenFugo, "") === NEGATIVE_SIGN ? -parsed : parsed;
+  return cleanText(fields.zogenFugo, "") === NEGATIVE_SIGN ? -parsed : parsed;
 };
+
+const parseWeight = (result: HorseRaceResult): number | null =>
+  parseWeightFields(result.bataiju, result.keibajoCode);
+
+const parseWeightDelta = (result: HorseRaceResult): number | null =>
+  parseWeightDeltaFields({
+    bataiju: result.bataiju,
+    keibajoCode: result.keibajoCode,
+    zogenFugo: result.zogenFugo,
+    zogenSa: result.zogenSa,
+  });
 
 const METRIC_VALUE_EXTRACTORS: Record<
   HorseRaceChartMetric,
@@ -218,13 +323,100 @@ const toDateValue = (raceDate: string): number =>
     Number(raceDate.slice(RACE_DATE_MONTH_END, RACE_DATE_DAY_END)),
   );
 
-const toChartPointSource = (result: HorseRaceResult, value: number): HorseRaceChartPointSource => {
+// Metrics whose past points carry distance + jockey for the tooltip. Weight and
+// weightDelta points leave those fields null.
+const METADATA_METRICS = new Set<HorseRaceChartMetric>(["finish", "popularity"]);
+
+// Metrics that gain a synthetic upcoming-race point. Finish & popularity have no
+// result yet for the target race, so they get none.
+const UPCOMING_POINT_METRICS = new Set<HorseRaceChartMetric>(["weight", "weightDelta"]);
+
+const toChartPointSource = (
+  result: HorseRaceResult,
+  value: number,
+  metric: HorseRaceChartMetric,
+): HorseRaceChartPointSource => {
   const raceDate = toRaceDate(result);
   const dateValue = toDateValue(raceDate);
+  const carriesMetadata = METADATA_METRICS.has(metric);
   return {
     dateValue,
-    point: { dateValue, raceDate, value },
+    point: {
+      dateValue,
+      jockey: carriesMetadata ? cleanText(result.kishumeiRyakusho, "") || null : null,
+      kyori: carriesMetadata ? cleanText(result.kyori, "") || null : null,
+      raceDate,
+      value,
+    },
     raceBango: result.raceBango,
+  };
+};
+
+const UPCOMING_RACE_BANGO = "99";
+
+// Read the static-runner weight/delta from the bataiju/zogen fields, used as the
+// fallback when no realtime numeric weight matched the horse.
+const staticUpcomingWeight = (context: UpcomingRaceContext): number | null =>
+  parseWeightFields(context.runner.bataiju, context.keibajoCode);
+
+const staticUpcomingWeightDelta = (context: UpcomingRaceContext): number | null =>
+  parseWeightDeltaFields({
+    bataiju: context.runner.bataiju,
+    keibajoCode: context.keibajoCode,
+    zogenFugo: context.runner.zogenFugo,
+    zogenSa: context.runner.zogenSa,
+  });
+
+// Resolve the upcoming weight/delta for one horse: prefer the realtime numeric
+// override (already decoded kg + signed delta) when its weight is a finite
+// number, otherwise fall back to parsing the static-runner bataiju fields.
+// Returns null when neither source yields a usable weight (so no point/row is
+// appended).
+const resolveUpcomingWeightValues = (context: UpcomingRaceContext): UpcomingWeightValues | null => {
+  const override = context.weightOverride;
+  if (override !== null && override.weight !== null && Number.isFinite(override.weight)) {
+    return { weight: override.weight, weightDelta: override.weightDelta };
+  }
+  const staticWeight = staticUpcomingWeight(context);
+  if (staticWeight === null) {
+    return null;
+  }
+  return { weight: staticWeight, weightDelta: staticUpcomingWeightDelta(context) };
+};
+
+// Read the upcoming horse's value for the given metric; only weight/delta yield
+// a value (the guard in buildUpcomingPoint never calls this for other metrics).
+const upcomingMetricValue = (
+  values: UpcomingWeightValues,
+  metric: HorseRaceChartMetric,
+): number | null => (metric === "weight" ? values.weight : values.weightDelta);
+
+// Build the synthetic upcoming weight/delta point, or null when the horse has no
+// usable weight (missing runner, 000/FFF/999 sentinel, non-numeric, and no
+// realtime override).
+const buildUpcomingPointSource = (
+  context: UpcomingRaceContext,
+  metric: HorseRaceChartMetric,
+): HorseRaceChartPointSource | null => {
+  const values = resolveUpcomingWeightValues(context);
+  if (values === null) {
+    return null;
+  }
+  const value = upcomingMetricValue(values, metric);
+  if (value === null) {
+    return null;
+  }
+  return {
+    dateValue: context.dateValue,
+    point: {
+      dateValue: context.dateValue,
+      isUpcoming: true,
+      jockey: null,
+      kyori: null,
+      raceDate: context.raceDate,
+      value,
+    },
+    raceBango: UPCOMING_RACE_BANGO,
   };
 };
 
@@ -235,18 +427,35 @@ const compareRaceDateOrderKeys = (left: RaceDateOrderKey, right: RaceDateOrderKe
   return compareText(left.raceBango, right.raceBango);
 };
 
-const buildSeriesPoints = (
-  results: HorseRaceResult[],
-  metric: HorseRaceChartMetric,
-): HorseRaceChartPoint[] =>
-  results
-    .filter(hasValidRaceDate)
-    .flatMap((result) => {
-      const value = getHorseRaceChartMetricValue(result, metric);
-      return value === null ? [] : [toChartPointSource(result, value)];
-    })
+interface BuildSeriesPointsInput {
+  metric: HorseRaceChartMetric;
+  results: HorseRaceResult[];
+  // Upcoming-race context for this horse, or null when the horse is not entered
+  // / no target context supplied. Only weight & weightDelta consume it.
+  upcoming: UpcomingRaceContext | null;
+}
+
+// Collect the optional upcoming weight/delta point as a 0-or-1 element list so
+// flatMap can append it without branching the array type.
+const collectUpcomingPointSources = (
+  input: BuildSeriesPointsInput,
+): HorseRaceChartPointSource[] => {
+  if (input.upcoming === null || !UPCOMING_POINT_METRICS.has(input.metric)) {
+    return [];
+  }
+  const source = buildUpcomingPointSource(input.upcoming, input.metric);
+  return source === null ? [] : [source];
+};
+
+const buildSeriesPoints = (input: BuildSeriesPointsInput): HorseRaceChartPoint[] => {
+  const pastSources = input.results.filter(hasValidRaceDate).flatMap((result) => {
+    const value = getHorseRaceChartMetricValue(result, input.metric);
+    return value === null ? [] : [toChartPointSource(result, value, input.metric)];
+  });
+  return [...pastSources, ...collectUpcomingPointSources(input)]
     .toSorted(compareRaceDateOrderKeys)
     .map((source) => source.point);
+};
 
 const buildSeriesDrafts = (results: HorseRaceResult[]): HorseRaceChartSeriesDraft[] => {
   const drafts = new Map<string, HorseRaceChartSeriesDraft>();
@@ -321,13 +530,83 @@ const resolveFallbackColor = (input: SeriesColorInput): string => {
 const resolveSeriesColor = (input: SeriesColorInput): string =>
   input.umaban === null ? resolveFallbackColor(input) : resolveUmabanColor(input.umaban);
 
+// Index runners by trimmed kettoTorokuBango; blank keys are dropped so they can
+// never match a series. The last runner wins on duplicate keys.
+const buildRunnerMap = (runners: HorseRaceChartRunner[]): Map<string, HorseRaceChartRunner> => {
+  const map = new Map<string, HorseRaceChartRunner>();
+  runners.forEach((runner) => {
+    const ketto = cleanText(runner.kettoTorokuBango, "");
+    if (ketto) {
+      map.set(ketto, runner);
+    }
+  });
+  return map;
+};
+
+const resolveSeriesFrame = (runner: HorseRaceChartRunner | undefined): string | null =>
+  runner === undefined ? null : cleanText(runner.wakuban, "") || null;
+
+// Index the realtime numeric weight overrides by normalized umaban (the same
+// normalization runner umaban uses) so a series can match its realtime entry by
+// horse number. Entries whose umaban normalizes to the "-" sentinel are dropped
+// so they can never match a horse; the last entry wins on duplicate keys.
+const buildUpcomingWeightMap = (
+  upcomingWeights: UpcomingWeightOverride[],
+): Map<string, UpcomingWeightOverride> => {
+  const map = new Map<string, UpcomingWeightOverride>();
+  upcomingWeights.forEach((entry) => {
+    const key = formatRunnerNumber(entry.umaban);
+    if (key !== EMPTY_UMABAN_KEY) {
+      map.set(key, entry);
+    }
+  });
+  return map;
+};
+
+interface UpcomingContextInputs {
+  runnerMap: Map<string, HorseRaceChartRunner>;
+  targetKeibajoCode: string | null;
+  targetRaceDate: string | null;
+  weightMap: Map<string, UpcomingWeightOverride>;
+}
+
+// Resolve the upcoming-race context for one horse: requires a matching runner
+// and a well-formed target race date. Returns null otherwise so no point/row is
+// appended. The realtime weight override is matched by the runner's normalized
+// umaban (null when no realtime entry matched).
+const resolveUpcomingContext = (
+  ketto: string,
+  inputs: UpcomingContextInputs,
+): UpcomingRaceContext | null => {
+  const runner = inputs.runnerMap.get(ketto);
+  const raceDate = inputs.targetRaceDate ?? "";
+  if (runner === undefined || !RACE_DATE_PATTERN.test(raceDate)) {
+    return null;
+  }
+  const umabanKey = formatRunnerNumber(runner.umaban);
+  return {
+    dateValue: toDateValue(raceDate),
+    keibajoCode: inputs.targetKeibajoCode ?? null,
+    raceDate,
+    runner,
+    weightOverride:
+      umabanKey === EMPTY_UMABAN_KEY ? null : (inputs.weightMap.get(umabanKey) ?? null),
+  };
+};
+
 export const buildHorseRaceChartSeriesList = (
-  results: HorseRaceResult[],
-  metric: HorseRaceChartMetric,
+  options: BuildHorseRaceChartSeriesListOptions,
 ): HorseRaceChartSeries[] => {
-  const drafts = buildSeriesDrafts(results).toSorted(compareSeriesDrafts);
+  const drafts = buildSeriesDrafts(options.results).toSorted(compareSeriesDrafts);
   const umabanKeyedCount = drafts.filter(isUmabanKeyedDraft).length;
   const unusedColors = collectUnusedColors(drafts);
+  const runnerMap = buildRunnerMap(options.runners ?? []);
+  const upcomingInputs: UpcomingContextInputs = {
+    runnerMap,
+    targetKeibajoCode: options.targetKeibajoCode ?? null,
+    targetRaceDate: options.targetRaceDate ?? null,
+    weightMap: buildUpcomingWeightMap(options.upcomingWeights ?? []),
+  };
   return drafts.map((draft, index) => ({
     bamei: draft.bamei,
     color: resolveSeriesColor({
@@ -336,8 +615,13 @@ export const buildHorseRaceChartSeriesList = (
       umabanKeyedCount,
       unusedColors,
     }),
+    frame: resolveSeriesFrame(runnerMap.get(draft.kettoTorokuBango)),
     kettoTorokuBango: draft.kettoTorokuBango,
-    points: buildSeriesPoints(draft.results, metric),
+    points: buildSeriesPoints({
+      metric: options.metric,
+      results: draft.results,
+      upcoming: resolveUpcomingContext(draft.kettoTorokuBango, upcomingInputs),
+    }),
     umaban: draft.umaban,
   }));
 };
@@ -359,21 +643,61 @@ const toCorrelationRowSource = (result: HorseRaceResult): HorseRaceCorrelationRo
   };
 };
 
+// Build the upcoming-race correlation row from the resolved weight values: only
+// weight and weightDelta are known (finish/popularity null). The realtime numeric
+// override takes precedence over the static-runner bataiju path, identical to the
+// series builder. Returns a 0-or-1 element list so it can be concatenated without
+// branching the array type; an unusable weight (no override and a sentinel static
+// value) drops the row entirely.
+const collectUpcomingCorrelationRowSources = (
+  context: UpcomingRaceContext | null,
+): HorseRaceCorrelationRowSource[] => {
+  if (context === null) {
+    return [];
+  }
+  const values = resolveUpcomingWeightValues(context);
+  if (values === null) {
+    return [];
+  }
+  return [
+    {
+      dateValue: context.dateValue,
+      raceBango: UPCOMING_RACE_BANGO,
+      row: {
+        dateValue: context.dateValue,
+        finish: null,
+        popularity: null,
+        raceDate: context.raceDate,
+        weight: values.weight,
+        weightDelta: values.weightDelta,
+      },
+    },
+  ];
+};
+
 // Rows are kept even when every metric is null so the correlation view still
 // shows that the race happened; sentinel and Ban-ei hex handling is shared
-// with the per-metric series via getHorseRaceChartMetricValue.
+// with the per-metric series via getHorseRaceChartMetricValue. When runner +
+// target context match the horse, the upcoming race is appended as the newest
+// row (weight/delta only).
 export const buildHorseRaceCorrelationRows = (
-  results: HorseRaceResult[],
-  kettoTorokuBango: string,
+  options: BuildHorseRaceCorrelationRowsOptions,
 ): HorseRaceCorrelationRow[] => {
-  const targetKetto = cleanText(kettoTorokuBango, "");
+  const targetKetto = cleanText(options.kettoTorokuBango, "");
   if (!targetKetto) {
     return [];
   }
-  return results
+  const upcoming = resolveUpcomingContext(targetKetto, {
+    runnerMap: buildRunnerMap(options.runners ?? []),
+    targetKeibajoCode: options.targetKeibajoCode ?? null,
+    targetRaceDate: options.targetRaceDate ?? null,
+    weightMap: buildUpcomingWeightMap(options.upcomingWeights ?? []),
+  });
+  const pastSources = options.results
     .filter((result) => cleanText(result.kettoTorokuBango, "") === targetKetto)
     .filter(hasValidRaceDate)
-    .map(toCorrelationRowSource)
+    .map(toCorrelationRowSource);
+  return [...pastSources, ...collectUpcomingCorrelationRowSources(upcoming)]
     .toSorted(compareRaceDateOrderKeys)
     .map((source) => source.row);
 };

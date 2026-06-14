@@ -640,7 +640,18 @@ function LazyResultsChartSection(props: LazyDetailSectionsProps) {
       <div className="section-heading compact">
         <h2>{RESULTS_CHART_SECTION_TITLE}</h2>
       </div>
-      <HorseRaceResultsChart results={payload.results} />
+      <HorseRaceResultsChart
+        day={props.day}
+        keibajoCode={props.keibajoCode}
+        month={props.month}
+        raceNumber={props.raceNumber}
+        results={payload.results}
+        runners={payload.runners}
+        source={props.source}
+        targetKeibajoCode={payload.currentKeibajoCode}
+        targetRaceDate={payload.currentRaceDate}
+        year={props.year}
+      />
     </section>
   );
 }

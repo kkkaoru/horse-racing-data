@@ -2,9 +2,12 @@
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import React from "react";
-import type { ReactNode } from "react";
+import type { ReactElement, ReactNode } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 
+import type { HorseRaceChartRunner } from "../../../lib/horse-race-results-chart-data";
+import type { HorseWeightSnapshot } from "../../../lib/horse-weight-stream-client";
+import { useHorseWeightStream } from "../../../lib/horse-weight-stream-client";
 import type { HorseRaceResult } from "../../../lib/race-types";
 import { HorseRaceResultsChart } from "./horse-race-results-chart";
 
@@ -17,12 +20,28 @@ interface LineChartStubProps {
   syncId?: string;
 }
 
+interface LinePointStub {
+  isUpcoming?: boolean;
+}
+
 interface LineStubProps {
+  data?: LinePointStub[];
   name?: string;
+  stroke?: string;
+  strokeWidth?: number;
 }
 
 interface YAxisStubProps {
   reversed?: boolean;
+}
+
+interface MetricTooltipInjectedProps {
+  active?: boolean;
+  payload?: { payload: { dateValue: number; jockey: string; kyori: string }; value: number }[];
+}
+
+interface TooltipStubProps {
+  content?: ReactElement<MetricTooltipInjectedProps>;
 }
 
 interface MatrixStubProps {
@@ -31,7 +50,17 @@ interface MatrixStubProps {
 
 vi.mock("recharts", () => ({
   CartesianGrid: () => <div data-testid="cartesian-grid-stub" />,
-  Line: ({ name }: LineStubProps) => <div data-testid="line-stub">{name}</div>,
+  Line: ({ data, name, stroke, strokeWidth }: LineStubProps) => (
+    <div
+      data-stroke={stroke}
+      data-stroke-width={strokeWidth}
+      data-testid="line-stub"
+      data-total-points={data?.length ?? 0}
+      data-upcoming-points={data?.filter((point) => point.isUpcoming === true).length ?? 0}
+    >
+      {name}
+    </div>
+  ),
   LineChart: ({ children, syncId }: LineChartStubProps) => (
     <div data-sync-id={syncId} data-testid="line-chart-stub">
       {children}
@@ -40,7 +69,16 @@ vi.mock("recharts", () => ({
   ResponsiveContainer: ({ children }: ChartChildrenStubProps) => (
     <div data-testid="responsive-container-stub">{children}</div>
   ),
-  Tooltip: () => <div data-testid="tooltip-stub" />,
+  Tooltip: ({ content }: TooltipStubProps) => (
+    <div data-has-content={content === undefined ? "false" : "true"} data-testid="tooltip-stub">
+      {content === undefined
+        ? null
+        : React.cloneElement(content, {
+            active: true,
+            payload: [{ payload: { dateValue: 0, jockey: "ルメール", kyori: "2000" }, value: 1 }],
+          })}
+    </div>
+  ),
   XAxis: () => <div data-testid="x-axis-stub" />,
   YAxis: ({ reversed }: YAxisStubProps) => (
     <div data-testid="y-axis-stub">{reversed === true ? "reversed" : "normal"}</div>
@@ -51,6 +89,10 @@ vi.mock("./horse-race-results-correlation-matrix", () => ({
   HorseRaceResultsCorrelationMatrix: ({ rows }: MatrixStubProps) => (
     <div data-testid="correlation-matrix-stub">{rows.length}</div>
   ),
+}));
+
+vi.mock("../../../lib/horse-weight-stream-client", () => ({
+  useHorseWeightStream: vi.fn<() => HorseWeightSnapshot | null>(() => null),
 }));
 
 afterEach(() => {
@@ -105,6 +147,16 @@ const chartResult = (overrides: Partial<HorseRaceResult>): HorseRaceResult => ({
   wakuban: "1",
   zogenFugo: "+",
   zogenSa: "002",
+  ...overrides,
+});
+
+const chartRunner = (overrides: Partial<HorseRaceChartRunner>): HorseRaceChartRunner => ({
+  bataiju: "486",
+  kettoTorokuBango: "2022100001",
+  umaban: "01",
+  wakuban: "1",
+  zogenFugo: "+",
+  zogenSa: "006",
   ...overrides,
 });
 
@@ -217,6 +269,144 @@ test("renders one line per horse in every panel", () => {
     "1 アルファ",
     "2 ベータ",
   ]);
+});
+
+test("strokes a chart line with the entered-race frame color from the runner wakuban", () => {
+  render(
+    <HorseRaceResultsChart
+      results={[chartResult({ wakuban: "3" })]}
+      runners={[chartRunner({ wakuban: "3" })]}
+      targetKeibajoCode="05"
+      targetRaceDate="20260601"
+    />,
+  );
+  expect(
+    screen.getAllByTestId("line-stub").map((line) => line.getAttribute("data-stroke")),
+  ).toStrictEqual(["#d71920", "#d71920", "#d71920", "#d71920"]);
+});
+
+test("colors the chip swatch with the entered-race frame color", () => {
+  const { container } = render(
+    <HorseRaceResultsChart
+      results={[chartResult({ wakuban: "3" })]}
+      runners={[chartRunner({ wakuban: "3" })]}
+      targetKeibajoCode="05"
+      targetRaceDate="20260601"
+    />,
+  );
+  const swatch = container.querySelector<HTMLElement>(".race-results-chart-swatch");
+  expect(swatch?.style.backgroundColor).toStrictEqual("#d71920");
+});
+
+test("boosts the stroke width for the white frame and keeps the default width otherwise", () => {
+  render(
+    <HorseRaceResultsChart
+      results={[
+        chartResult({ wakuban: "1" }),
+        chartResult({
+          bamei: "ベータ",
+          currentUmaban: "03",
+          kakuteiChakujun: "02",
+          kettoTorokuBango: "2022100002",
+          umaban: "03",
+          wakuban: "3",
+        }),
+      ]}
+      runners={[
+        chartRunner({ umaban: "01", wakuban: "1" }),
+        chartRunner({ kettoTorokuBango: "2022100002", umaban: "03", wakuban: "3" }),
+      ]}
+      targetKeibajoCode="05"
+      targetRaceDate="20260601"
+    />,
+  );
+  expect(
+    screen.getAllByTestId("line-stub").map((line) => line.getAttribute("data-stroke-width")),
+  ).toStrictEqual(["3.2", "2.4", "3.2", "2.4", "3.2", "2.4", "3.2", "2.4"]);
+});
+
+test("falls back to the palette color when no runner matches the horse", () => {
+  render(<HorseRaceResultsChart results={[chartResult({})]} />);
+  expect(
+    screen.getAllByTestId("line-stub").map((line) => line.getAttribute("data-stroke")),
+  ).toStrictEqual(["#d62728", "#d62728", "#d62728", "#d62728"]);
+});
+
+test("appends one upcoming point to the weight panel without adding it to the finish panel", () => {
+  render(
+    <HorseRaceResultsChart
+      results={[chartResult({})]}
+      runners={[chartRunner({})]}
+      targetKeibajoCode="05"
+      targetRaceDate="20260601"
+    />,
+  );
+  const lines = screen.getAllByTestId("line-stub");
+  expect(lines[0]?.getAttribute("data-total-points")).toStrictEqual("1");
+  expect(lines[0]?.getAttribute("data-upcoming-points")).toStrictEqual("0");
+  expect(lines[2]?.getAttribute("data-total-points")).toStrictEqual("2");
+  expect(lines[2]?.getAttribute("data-upcoming-points")).toStrictEqual("1");
+});
+
+test("appends the realtime upcoming weight point to the weight panel but not the finish panel", () => {
+  vi.mocked(useHorseWeightStream).mockReturnValue({
+    fetchedAt: "2026-06-13T09:01:00Z",
+    horses: [
+      { changeAmount: 2, changeSign: null, horseName: "アルファ", horseNumber: "1", weight: 444 },
+    ],
+  });
+  render(
+    <HorseRaceResultsChart
+      day="13"
+      keibajoCode="09"
+      month="06"
+      raceNumber="01"
+      results={[chartResult({})]}
+      runners={[chartRunner({})]}
+      source="jra"
+      targetKeibajoCode="09"
+      targetRaceDate="20260613"
+      year="2026"
+    />,
+  );
+  const lines = screen.getAllByTestId("line-stub");
+  expect(lines[0]?.getAttribute("data-total-points")).toStrictEqual("1");
+  expect(lines[0]?.getAttribute("data-upcoming-points")).toStrictEqual("0");
+  expect(lines[2]?.getAttribute("data-total-points")).toStrictEqual("2");
+  expect(lines[2]?.getAttribute("data-upcoming-points")).toStrictEqual("1");
+});
+
+test("renders no upcoming weight point when the realtime stream has no snapshot", () => {
+  vi.mocked(useHorseWeightStream).mockReturnValue(null);
+  render(
+    <HorseRaceResultsChart
+      day="13"
+      keibajoCode="09"
+      month="06"
+      raceNumber="01"
+      results={[chartResult({})]}
+      source="jra"
+      targetKeibajoCode="09"
+      targetRaceDate="20260613"
+      year="2026"
+    />,
+  );
+  const lines = screen.getAllByTestId("line-stub");
+  expect(lines[2]?.getAttribute("data-total-points")).toStrictEqual("1");
+  expect(lines[2]?.getAttribute("data-upcoming-points")).toStrictEqual("0");
+});
+
+test("renders distance and jockey in the finish and popularity tooltips only", () => {
+  render(<HorseRaceResultsChart results={[chartResult({})]} />);
+  const tooltips = screen.getAllByTestId("tooltip-stub");
+  expect(tooltips.map((tooltip) => tooltip.getAttribute("data-has-content"))).toStrictEqual([
+    "true",
+    "true",
+    "false",
+    "false",
+  ]);
+  expect(screen.getAllByText("距離 2000m").length).toStrictEqual(2);
+  expect(screen.getAllByText("騎手 ルメール").length).toStrictEqual(2);
 });
 
 test("hides one horse in every panel via its chip and shows it again on the second click", () => {
@@ -333,6 +523,44 @@ test("switches to the correlation view and back to the overview", () => {
   fireEvent.click(screen.getByRole("button", { name: "俯瞰（指標別）" }));
   expect(screen.getAllByTestId("line-chart-stub").length).toStrictEqual(4);
   expect(screen.queryAllByTestId("correlation-matrix-stub").length).toStrictEqual(0);
+});
+
+test("appends the upcoming weight column to the correlation matrix rows", () => {
+  render(
+    <HorseRaceResultsChart
+      results={[chartResult({})]}
+      runners={[chartRunner({})]}
+      targetKeibajoCode="05"
+      targetRaceDate="20260601"
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "馬別（相関）" }));
+  expect(screen.getByTestId("correlation-matrix-stub").textContent).toStrictEqual("2");
+});
+
+test("appends the realtime upcoming weight column to the correlation matrix rows", () => {
+  vi.mocked(useHorseWeightStream).mockReturnValue({
+    fetchedAt: "2026-06-13T09:01:00Z",
+    horses: [
+      { changeAmount: 2, changeSign: null, horseName: "アルファ", horseNumber: "1", weight: 444 },
+    ],
+  });
+  render(
+    <HorseRaceResultsChart
+      day="13"
+      keibajoCode="09"
+      month="06"
+      raceNumber="01"
+      results={[chartResult({})]}
+      runners={[chartRunner({})]}
+      source="jra"
+      targetKeibajoCode="09"
+      targetRaceDate="20260613"
+      year="2026"
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "馬別（相関）" }));
+  expect(screen.getByTestId("correlation-matrix-stub").textContent).toStrictEqual("2");
 });
 
 test("hides the bulk buttons and single-selects the first horse in the correlation view", () => {

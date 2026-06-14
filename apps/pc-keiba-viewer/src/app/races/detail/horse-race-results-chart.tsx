@@ -11,6 +11,7 @@ import {
   YAxis,
 } from "recharts";
 
+import { formatDistance } from "../../../lib/format";
 import {
   buildHorseRaceChartSeriesList,
   buildHorseRaceCorrelationRows,
@@ -22,15 +23,30 @@ import {
 } from "../../../lib/horse-race-results-chart-data";
 import type {
   HorseRaceChartMetric,
+  HorseRaceChartPoint,
+  HorseRaceChartRunner,
   HorseRaceChartSeries,
+  UpcomingWeightOverride,
 } from "../../../lib/horse-race-results-chart-data";
+import { useHorseWeightStream } from "../../../lib/horse-weight-stream-client";
+import type { HorseWeightEntry } from "../../../lib/horse-weight-stream-client";
 import type { HorseRaceResult } from "../../../lib/race-types";
+import { FRAME_COLORS, getFrameColor } from "./frame-number-badge";
 import { HorseRaceResultsCorrelationMatrix } from "./horse-race-results-correlation-matrix";
 
 type ChartViewMode = "overview" | "correlation";
 
 interface HorseRaceResultsChartProps {
+  day?: string;
+  keibajoCode?: string;
+  month?: string;
+  raceNumber?: string;
   results: HorseRaceResult[];
+  runners?: HorseRaceChartRunner[];
+  source?: string;
+  targetKeibajoCode?: string | null;
+  targetRaceDate?: string | null;
+  year?: string;
 }
 
 interface ChartInitialDimension {
@@ -42,18 +58,50 @@ interface ChartLineDot {
   r: number;
 }
 
+interface ChartTooltipPayloadEntry {
+  payload?: HorseRaceChartPoint;
+  value?: number | string;
+}
+
+interface MetricTooltipProps {
+  active?: boolean;
+  metric: HorseRaceChartMetric;
+  payload?: ChartTooltipPayloadEntry[];
+}
+
 interface OverviewPanelsProps {
   hiddenHorses: ReadonlySet<string>;
   seriesListsByMetric: Record<HorseRaceChartMetric, HorseRaceChartSeries[]>;
 }
 
+interface SeriesListsInput {
+  results: HorseRaceResult[];
+  runners: HorseRaceChartRunner[] | undefined;
+  targetKeibajoCode: string | null | undefined;
+  targetRaceDate: string | null | undefined;
+  upcomingWeights: UpcomingWeightOverride[];
+}
+
 type ChartYAxisDomain = [number, "auto"] | ["auto", "auto"];
 
 const CHART_WINDOW_YEARS = 3;
+// Realtime weight change sign that flips the (already decoded) change amount
+// negative; matches HorseWeightEntry.changeSign emitted by the weight stream.
+const WEIGHT_NEGATIVE_SIGN = "-";
 const CHART_PANEL_HEIGHT = 260;
 const CHART_GRID_STROKE = "#d8e0da";
 const CHART_GRID_DASH = "3 3";
-const CHART_LINE_STROKE_WIDTH = 1.5;
+// Match オッズ推移: a normal series uses 2.4 and a white frame is boosted to
+// 3.2 so its white line stays visible on the white chart background.
+const CHART_LINE_STROKE_WIDTH = 2.4;
+const WHITE_FRAME_LINE_STROKE_WIDTH = 3.2;
+const WHITE_FRAME_HEX = "#ffffff";
+// Frames whose badge color is white, derived from the shared FRAME_COLORS table
+// (the same source オッズ推移 uses) so the white-frame stroke boost stays
+// data-driven instead of relying on a magic frame number.
+const WHITE_FRAME_NUMBERS: ReadonlySet<string> = new Set(
+  Object.keys(FRAME_COLORS).filter((frame) => FRAME_COLORS[frame] === WHITE_FRAME_HEX),
+);
 const CHART_INITIAL_DIMENSION: ChartInitialDimension = { height: 1, width: 1 };
 const CHART_LINE_DOT: ChartLineDot = { r: 2 };
 // The four overview panels share one syncId and match hover points by X value,
@@ -86,20 +134,96 @@ const Y_AXIS_DOMAIN_BY_METRIC: Record<HorseRaceChartMetric, ChartYAxisDomain> = 
   weight: VALUE_AXIS_DOMAIN,
   weightDelta: VALUE_AXIS_DOMAIN,
 };
+// Only the rank panels carry per-race distance + jockey on their points, so only
+// they get the custom tooltip; weight/delta panels keep the default tooltip.
+const METRIC_HAS_RACE_CONTEXT: Record<HorseRaceChartMetric, boolean> = {
+  finish: true,
+  popularity: true,
+  weight: false,
+  weightDelta: false,
+};
 
 const getHorseChipLabel = (series: HorseRaceChartSeries): string =>
   `${series.umaban ?? "-"} ${series.bamei}`;
 
+// Color = オッズ推移: the entered-race frame color (resolved from series.frame)
+// takes precedence so a horse's chart line matches its odds-trend line; the
+// palette color stays only as a fallback when the horse has no frame.
+const resolveSeriesStroke = (series: HorseRaceChartSeries): string =>
+  getFrameColor(series.frame) ?? series.color;
+
+const resolveSeriesStrokeWidth = (series: HorseRaceChartSeries): number =>
+  series.frame !== null && WHITE_FRAME_NUMBERS.has(series.frame)
+    ? WHITE_FRAME_LINE_STROKE_WIDTH
+    : CHART_LINE_STROKE_WIDTH;
+
 // Horse grouping is metric-independent, so every list shares the same horses
 // in the same order; only the plotted points differ between metrics.
-const buildSeriesListsByMetric = (
-  recentResults: HorseRaceResult[],
-): Record<HorseRaceChartMetric, HorseRaceChartSeries[]> => ({
-  finish: buildHorseRaceChartSeriesList(recentResults, "finish"),
-  popularity: buildHorseRaceChartSeriesList(recentResults, "popularity"),
-  weight: buildHorseRaceChartSeriesList(recentResults, "weight"),
-  weightDelta: buildHorseRaceChartSeriesList(recentResults, "weightDelta"),
+const buildSeriesListsByMetric = ({
+  results,
+  runners,
+  targetKeibajoCode,
+  targetRaceDate,
+  upcomingWeights,
+}: SeriesListsInput): Record<HorseRaceChartMetric, HorseRaceChartSeries[]> => ({
+  finish: buildHorseRaceChartSeriesList({ metric: "finish", results, runners }),
+  popularity: buildHorseRaceChartSeriesList({ metric: "popularity", results, runners }),
+  weight: buildHorseRaceChartSeriesList({
+    metric: "weight",
+    results,
+    runners,
+    targetKeibajoCode,
+    targetRaceDate,
+    upcomingWeights,
+  }),
+  weightDelta: buildHorseRaceChartSeriesList({
+    metric: "weightDelta",
+    results,
+    runners,
+    targetKeibajoCode,
+    targetRaceDate,
+    upcomingWeights,
+  }),
 });
+
+// Apply the realtime change sign to the (already decoded) change amount so the
+// delta carries its direction: a "-" sign negates the amount, anything else
+// keeps it positive. Null when no change amount is available.
+const signedWeightDelta = (entry: HorseWeightEntry): number | null =>
+  entry.changeAmount === null
+    ? null
+    : entry.changeSign === WEIGHT_NEGATIVE_SIGN
+      ? -entry.changeAmount
+      : entry.changeAmount;
+
+// Convert one realtime weight snapshot into the numeric upcoming-weight overrides
+// the chart-data lib consumes. The weight + changeAmount arrive already decoded
+// (kg); the delta sign is applied here so the lib never re-parses strings.
+const toUpcomingWeightOverrides = (horses: HorseWeightEntry[]): UpcomingWeightOverride[] =>
+  horses.map((horse) => ({
+    umaban: horse.horseNumber,
+    weight: horse.weight,
+    weightDelta: signedWeightDelta(horse),
+  }));
+
+const MetricTooltip = ({ active, metric, payload }: MetricTooltipProps) => {
+  const entry = payload?.at(0);
+  if (active !== true || !entry?.payload) {
+    return null;
+  }
+  const point = entry.payload;
+  return (
+    <div className="race-results-chart-tooltip">
+      <p className="race-results-chart-tooltip-date">{formatHorseRaceChartDate(point.dateValue)}</p>
+      <p className="race-results-chart-tooltip-value">
+        {String(entry.value ?? point.value)}
+        {HORSE_RACE_CHART_METRIC_UNITS[metric]}
+      </p>
+      <p className="race-results-chart-tooltip-meta">距離 {formatDistance(point.kyori)}</p>
+      <p className="race-results-chart-tooltip-meta">騎手 {point.jockey ?? "-"}</p>
+    </div>
+  );
+};
 
 const OverviewPanels = ({ hiddenHorses, seriesListsByMetric }: OverviewPanelsProps) => (
   <div className="race-results-chart-grid">
@@ -125,10 +249,14 @@ const OverviewPanels = ({ hiddenHorses, seriesListsByMetric }: OverviewPanelsPro
               domain={Y_AXIS_DOMAIN_BY_METRIC[metric]}
               reversed={REVERSED_Y_AXIS_BY_METRIC[metric]}
             />
-            <Tooltip
-              formatter={(value) => `${String(value)}${HORSE_RACE_CHART_METRIC_UNITS[metric]}`}
-              labelFormatter={(label) => formatHorseRaceChartDate(Number(label))}
-            />
+            {METRIC_HAS_RACE_CONTEXT[metric] ? (
+              <Tooltip content={<MetricTooltip metric={metric} />} />
+            ) : (
+              <Tooltip
+                formatter={(value) => `${String(value)}${HORSE_RACE_CHART_METRIC_UNITS[metric]}`}
+                labelFormatter={(label) => formatHorseRaceChartDate(Number(label))}
+              />
+            )}
             {seriesListsByMetric[metric]
               .filter((series) => !hiddenHorses.has(series.kettoTorokuBango))
               .map((series) => (
@@ -139,8 +267,8 @@ const OverviewPanels = ({ hiddenHorses, seriesListsByMetric }: OverviewPanelsPro
                   isAnimationActive={false}
                   key={series.kettoTorokuBango}
                   name={getHorseChipLabel(series)}
-                  stroke={series.color}
-                  strokeWidth={CHART_LINE_STROKE_WIDTH}
+                  stroke={resolveSeriesStroke(series)}
+                  strokeWidth={resolveSeriesStrokeWidth(series)}
                   type="monotone"
                 />
               ))}
@@ -151,23 +279,66 @@ const OverviewPanels = ({ hiddenHorses, seriesListsByMetric }: OverviewPanelsPro
   </div>
 );
 
-export const HorseRaceResultsChart = ({ results }: HorseRaceResultsChartProps) => {
+export const HorseRaceResultsChart = ({
+  day,
+  keibajoCode,
+  month,
+  raceNumber,
+  results,
+  runners,
+  source,
+  targetKeibajoCode,
+  targetRaceDate,
+  year,
+}: HorseRaceResultsChartProps) => {
   const [viewMode, setViewMode] = useState<ChartViewMode>("overview");
   const [hiddenHorses, setHiddenHorses] = useState<ReadonlySet<string>>(new Set<string>());
   const [selectedHorse, setSelectedHorse] = useState<string | null>(null);
+  // Mirror runners-table: subscribe to the realtime 馬体重 stream so the upcoming
+  // weight/delta come from the live snapshot (the static results payload leaves
+  // them blank). `initial: null` lets the hook self-fetch via SSE on mount, the
+  // same source the runners table resolves weight from in dev.
+  const horseWeightSnapshot = useHorseWeightStream({
+    day: day ?? "",
+    initial: null,
+    keibajoCode: keibajoCode ?? "",
+    month: month ?? "",
+    raceNumber: raceNumber ?? "",
+    source: source ?? "",
+    year: year ?? "",
+  });
+  const upcomingWeights = useMemo(
+    () => toUpcomingWeightOverrides(horseWeightSnapshot?.horses ?? []),
+    [horseWeightSnapshot],
+  );
   const filteredResults = useMemo(
     () => filterHorseRaceResultsToRecentYears(results, CHART_WINDOW_YEARS),
     [results],
   );
   const seriesListsByMetric = useMemo(
-    () => buildSeriesListsByMetric(filteredResults),
-    [filteredResults],
+    () =>
+      buildSeriesListsByMetric({
+        results: filteredResults,
+        runners,
+        targetKeibajoCode,
+        targetRaceDate,
+        upcomingWeights,
+      }),
+    [filteredResults, runners, targetKeibajoCode, targetRaceDate, upcomingWeights],
   );
   const chipSeriesList = seriesListsByMetric.finish;
   const selectedKetto = selectedHorse ?? chipSeriesList.at(0)?.kettoTorokuBango ?? "";
   const correlationRows = useMemo(
-    () => buildHorseRaceCorrelationRows(filteredResults, selectedKetto),
-    [filteredResults, selectedKetto],
+    () =>
+      buildHorseRaceCorrelationRows({
+        kettoTorokuBango: selectedKetto,
+        results: filteredResults,
+        runners,
+        targetKeibajoCode,
+        targetRaceDate,
+        upcomingWeights,
+      }),
+    [filteredResults, runners, selectedKetto, targetKeibajoCode, targetRaceDate, upcomingWeights],
   );
   if (filteredResults.length === 0) {
     return <p className="empty-state">表示できる競走成績がありません</p>;
@@ -255,7 +426,7 @@ export const HorseRaceResultsChart = ({ results }: HorseRaceResultsChartProps) =
               <span
                 aria-hidden="true"
                 className="race-results-chart-swatch"
-                style={{ backgroundColor: series.color }}
+                style={{ backgroundColor: resolveSeriesStroke(series) }}
               />
               {getHorseChipLabel(series)}
             </button>

@@ -347,6 +347,67 @@ test("renders signed delta bars with per-sign colors and labels", () => {
   ).toStrictEqual(["+6", "-4"]);
 });
 
+test("renders the upcoming-race weight column with empty finish and popularity badges", () => {
+  const { container } = render(
+    <HorseRaceResultsCorrelationMatrix
+      rows={[
+        correlationRow({ finish: 1, popularity: 2, weight: 480 }),
+        correlationRow({
+          dateValue: Date.UTC(2026, 5, 1),
+          finish: null,
+          popularity: null,
+          raceDate: "20260601",
+          weight: 486,
+          weightDelta: 6,
+        }),
+      ]}
+    />,
+  );
+  expect(
+    Array.from(container.querySelectorAll(".race-results-correlation-date")).map(
+      (cell) => cell.textContent,
+    ),
+  ).toStrictEqual(["26/03/22", "26/06/01"]);
+  expect(
+    Array.from(container.querySelectorAll(".race-results-correlation-weight-label")).map(
+      (label) => label.textContent,
+    ),
+  ).toStrictEqual(["480", "486"]);
+  expect(
+    Array.from(container.querySelectorAll(".race-results-correlation-rank-badge")).map(
+      (badge) => badge.textContent,
+    ),
+  ).toStrictEqual(["1", "-", "2", "-"]);
+});
+
+test("renders the realtime upcoming weight value as the newest weight column", () => {
+  const { container } = render(
+    <HorseRaceResultsCorrelationMatrix
+      rows={[
+        correlationRow({ finish: 1, popularity: 2, weight: 480, weightDelta: 6 }),
+        correlationRow({
+          dateValue: Date.UTC(2026, 5, 13),
+          finish: null,
+          popularity: null,
+          raceDate: "20260613",
+          weight: 444,
+          weightDelta: 2,
+        }),
+      ]}
+    />,
+  );
+  expect(
+    Array.from(container.querySelectorAll(".race-results-correlation-weight-label")).map(
+      (label) => label.textContent,
+    ),
+  ).toStrictEqual(["480", "444"]);
+  expect(
+    Array.from(container.querySelectorAll(".race-results-correlation-delta-label")).map(
+      (label) => label.textContent,
+    ),
+  ).toStrictEqual(["+6", "+2"]);
+});
+
 test("renders a gray stub for a zero delta and only a dash for a missing delta", () => {
   const { container } = render(
     <HorseRaceResultsCorrelationMatrix
