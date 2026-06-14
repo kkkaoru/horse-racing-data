@@ -506,7 +506,7 @@ describe("buildFinishPredictionRowsFromResults", () => {
     expect(oddsWeight).toBe(0);
   });
 
-  it("odds correction default is overridable by explicit correctionToggles", () => {
+  it("odds strength default is overridable by explicit correctionToggles", () => {
     const maidenWithOddsOn = buildFinishPredictionRowsFromResults({
       currentDistance: "1600",
       currentKeibajoCode: "05",
@@ -514,13 +514,10 @@ describe("buildFinishPredictionRowsFromResults", () => {
       currentRaceDate: "20260607",
       currentSource: "jra",
       correctionToggles: {
-        horseEnabled: true,
+        formEnabled: true,
         jockeyEnabled: true,
-        oddsEnabled: true,
-        popularityEnabled: true,
-        recentEnabled: true,
+        oddsPopularityStrength: 1,
         sameDayJockeyEnabled: true,
-        similarityEnabled: true,
         trainerEnabled: true,
       },
       results: [],
@@ -533,13 +530,10 @@ describe("buildFinishPredictionRowsFromResults", () => {
       currentRaceDate: "20260607",
       currentSource: "jra",
       correctionToggles: {
-        horseEnabled: true,
+        formEnabled: true,
         jockeyEnabled: true,
-        oddsEnabled: false,
-        popularityEnabled: false,
-        recentEnabled: true,
+        oddsPopularityStrength: 0,
         sameDayJockeyEnabled: true,
-        similarityEnabled: true,
         trainerEnabled: true,
       },
       results: [],
@@ -565,7 +559,7 @@ describe("buildFinishPredictionRowsFromResults", () => {
     expect(nonMaidenPopularityWeight).toBe(0);
   });
 
-  it("toggling odds correction OFF zeroes popularity for non-maiden race", () => {
+  it("strength 0 zeroes both odds and popularity for non-maiden race", () => {
     const rows = buildFinishPredictionRowsFromResults({
       currentDistance: "1600",
       currentKeibajoCode: "05",
@@ -573,13 +567,10 @@ describe("buildFinishPredictionRowsFromResults", () => {
       currentRaceDate: "20260607",
       currentSource: "jra",
       correctionToggles: {
-        horseEnabled: true,
+        formEnabled: true,
         jockeyEnabled: true,
-        oddsEnabled: false,
-        popularityEnabled: false,
-        recentEnabled: true,
+        oddsPopularityStrength: 0,
         sameDayJockeyEnabled: true,
-        similarityEnabled: true,
         trainerEnabled: true,
       },
       results: [],
@@ -593,7 +584,7 @@ describe("buildFinishPredictionRowsFromResults", () => {
     expect(popularityWeight).toBe(0);
   });
 
-  it("toggling odds correction ON enables popularity for new-horse maiden race", () => {
+  it("strength 1 restores base odds and popularity for new-horse maiden race", () => {
     const rows = buildFinishPredictionRowsFromResults({
       currentDistance: "1600",
       currentKeibajoCode: "05",
@@ -601,13 +592,10 @@ describe("buildFinishPredictionRowsFromResults", () => {
       currentRaceDate: "20260607",
       currentSource: "jra",
       correctionToggles: {
-        horseEnabled: true,
+        formEnabled: true,
         jockeyEnabled: true,
-        oddsEnabled: true,
-        popularityEnabled: true,
-        recentEnabled: true,
+        oddsPopularityStrength: 1,
         sameDayJockeyEnabled: true,
-        similarityEnabled: true,
         trainerEnabled: true,
       },
       results: [],
@@ -621,7 +609,82 @@ describe("buildFinishPredictionRowsFromResults", () => {
     expect(popularityWeight).toBe(0.01);
   });
 
-  it("maiden field with odds correction ON is NOT sorted by raw popularity order", () => {
+  it("strength 2 doubles base odds and popularity weights", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      currentDistance: "1600",
+      currentKeibajoCode: "05",
+      currentKyosoJokenCode: "703",
+      currentRaceDate: "20260607",
+      currentSource: "jra",
+      correctionToggles: {
+        formEnabled: true,
+        jockeyEnabled: true,
+        oddsPopularityStrength: 2,
+        sameDayJockeyEnabled: true,
+        trainerEnabled: true,
+      },
+      results: [],
+      runners: [runner({ tanshoNinkijun: "01", tanshoOdds: "0020", umaban: "01" })],
+    });
+
+    const oddsWeight = rows[0]?.details.find((detail) => detail.label === "単勝")?.weight;
+    const popularityWeight = rows[0]?.details.find((detail) => detail.label === "人気")?.weight;
+
+    expect(oddsWeight).toBe(0.31);
+    expect(popularityWeight).toBe(0.03);
+  });
+
+  it("clamps strength above the maximum down to 2x base weights", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      currentDistance: "1600",
+      currentKeibajoCode: "05",
+      currentKyosoJokenCode: "703",
+      currentRaceDate: "20260607",
+      currentSource: "jra",
+      correctionToggles: {
+        formEnabled: true,
+        jockeyEnabled: true,
+        oddsPopularityStrength: 5,
+        sameDayJockeyEnabled: true,
+        trainerEnabled: true,
+      },
+      results: [],
+      runners: [runner({ tanshoNinkijun: "01", tanshoOdds: "0020", umaban: "01" })],
+    });
+
+    const oddsWeight = rows[0]?.details.find((detail) => detail.label === "単勝")?.weight;
+    const popularityWeight = rows[0]?.details.find((detail) => detail.label === "人気")?.weight;
+
+    expect(oddsWeight).toBe(0.31);
+    expect(popularityWeight).toBe(0.03);
+  });
+
+  it("clamps negative strength up to zero", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      currentDistance: "1600",
+      currentKeibajoCode: "05",
+      currentKyosoJokenCode: "703",
+      currentRaceDate: "20260607",
+      currentSource: "jra",
+      correctionToggles: {
+        formEnabled: true,
+        jockeyEnabled: true,
+        oddsPopularityStrength: -3,
+        sameDayJockeyEnabled: true,
+        trainerEnabled: true,
+      },
+      results: [],
+      runners: [runner({ tanshoNinkijun: "01", tanshoOdds: "0020", umaban: "01" })],
+    });
+
+    const oddsWeight = rows[0]?.details.find((detail) => detail.label === "単勝")?.weight;
+    const popularityWeight = rows[0]?.details.find((detail) => detail.label === "人気")?.weight;
+
+    expect(oddsWeight).toBe(0);
+    expect(popularityWeight).toBe(0);
+  });
+
+  it("maiden field with full strength is NOT sorted by raw popularity order", () => {
     // Runner 1: high predictedFinishNorm (bad model score), top popularity (rank=1)
     // Runner 2: low predictedFinishNorm (good model score), low popularity (rank=8)
     // With popularityWeight=0.01 the model-led order should place runner 2 ahead of runner 1
@@ -648,13 +711,10 @@ describe("buildFinishPredictionRowsFromResults", () => {
         },
       ],
       correctionToggles: {
-        horseEnabled: true,
+        formEnabled: true,
         jockeyEnabled: true,
-        oddsEnabled: true,
-        popularityEnabled: true,
-        recentEnabled: true,
+        oddsPopularityStrength: 1,
         sameDayJockeyEnabled: true,
-        similarityEnabled: true,
         trainerEnabled: true,
       },
       results: [],
@@ -758,13 +818,10 @@ describe("buildFinishPredictionRowsFromResults", () => {
     const rowsNoOverrides = buildFinishPredictionRowsFromResults({
       ...inputs,
       correctionToggles: {
-        horseEnabled: true,
+        formEnabled: true,
         jockeyEnabled: true,
-        oddsEnabled: false,
-        popularityEnabled: false,
-        recentEnabled: true,
+        oddsPopularityStrength: 0,
         sameDayJockeyEnabled: true,
-        similarityEnabled: true,
         trainerEnabled: true,
       },
     });
@@ -775,13 +832,10 @@ describe("buildFinishPredictionRowsFromResults", () => {
         ["2", { odds: 9.9, popularity: 7 }],
       ]),
       correctionToggles: {
-        horseEnabled: true,
+        formEnabled: true,
         jockeyEnabled: true,
-        oddsEnabled: false,
-        popularityEnabled: false,
-        recentEnabled: true,
+        oddsPopularityStrength: 0,
         sameDayJockeyEnabled: true,
-        similarityEnabled: true,
         trainerEnabled: true,
       },
     });
@@ -836,13 +890,10 @@ describe("buildFinishPredictionRowsFromResults", () => {
     const initialOffRows = buildFinishPredictionRowsFromResults({
       ...inputs,
       correctionToggles: {
-        horseEnabled: true,
+        formEnabled: true,
         jockeyEnabled: true,
-        oddsEnabled: false,
-        popularityEnabled: false,
-        recentEnabled: true,
+        oddsPopularityStrength: 0,
         sameDayJockeyEnabled: true,
-        similarityEnabled: true,
         trainerEnabled: true,
       },
     });
@@ -850,26 +901,20 @@ describe("buildFinishPredictionRowsFromResults", () => {
       ...inputs,
       marketOverrides: realtimeOverrides,
       correctionToggles: {
-        horseEnabled: true,
+        formEnabled: true,
         jockeyEnabled: true,
-        oddsEnabled: true,
-        popularityEnabled: true,
-        recentEnabled: true,
+        oddsPopularityStrength: 1,
         sameDayJockeyEnabled: true,
-        similarityEnabled: true,
         trainerEnabled: true,
       },
     });
     const toggledBackOffRows = buildFinishPredictionRowsFromResults({
       ...inputs,
       correctionToggles: {
-        horseEnabled: true,
+        formEnabled: true,
         jockeyEnabled: true,
-        oddsEnabled: false,
-        popularityEnabled: false,
-        recentEnabled: true,
+        oddsPopularityStrength: 0,
         sameDayJockeyEnabled: true,
-        similarityEnabled: true,
         trainerEnabled: true,
       },
     });
@@ -916,16 +961,13 @@ describe("buildFinishPredictionRowsFromResults", () => {
     expect(dynamicRows[0]?.storedOdds).toBe(12);
   });
 
-  it("zeroes horseWeight when horseEnabled is false", () => {
+  it("zeroes horseWeight when formEnabled is false", () => {
     const rows = buildFinishPredictionRowsFromResults({
       correctionToggles: {
-        horseEnabled: false,
+        formEnabled: false,
         jockeyEnabled: true,
-        oddsEnabled: true,
-        popularityEnabled: true,
-        recentEnabled: true,
+        oddsPopularityStrength: 1,
         sameDayJockeyEnabled: true,
-        similarityEnabled: true,
         trainerEnabled: true,
       },
       currentDistance: "1600",
@@ -940,16 +982,13 @@ describe("buildFinishPredictionRowsFromResults", () => {
     expect(horseWeight).toStrictEqual(0);
   });
 
-  it("zeroes recentWeight when recentEnabled is false", () => {
+  it("zeroes recentWeight when formEnabled is false", () => {
     const rows = buildFinishPredictionRowsFromResults({
       correctionToggles: {
-        horseEnabled: true,
+        formEnabled: false,
         jockeyEnabled: true,
-        oddsEnabled: true,
-        popularityEnabled: true,
-        recentEnabled: false,
+        oddsPopularityStrength: 1,
         sameDayJockeyEnabled: true,
-        similarityEnabled: true,
         trainerEnabled: true,
       },
       currentDistance: "1600",
@@ -964,99 +1003,13 @@ describe("buildFinishPredictionRowsFromResults", () => {
     expect(recentWeight).toStrictEqual(0);
   });
 
-  it("zeroes jockeyWeight when jockeyEnabled is false", () => {
+  it("zeroes similarityWeight when formEnabled is false", () => {
     const rows = buildFinishPredictionRowsFromResults({
       correctionToggles: {
-        horseEnabled: true,
-        jockeyEnabled: false,
-        oddsEnabled: true,
-        popularityEnabled: true,
-        recentEnabled: true,
-        sameDayJockeyEnabled: true,
-        similarityEnabled: true,
-        trainerEnabled: true,
-      },
-      currentDistance: "1600",
-      currentKeibajoCode: "05",
-      currentRaceDate: "20260607",
-      currentSource: "jra",
-      results: [],
-      runners: [runner({ tanshoNinkijun: "01", tanshoOdds: "0020", umaban: "01" })],
-    });
-
-    const jockeyWeight = rows[0]?.details.find((detail) => detail.label === "騎手")?.weight;
-    expect(jockeyWeight).toStrictEqual(0);
-  });
-
-  it("zeroes trainerWeight when trainerEnabled is false", () => {
-    const rows = buildFinishPredictionRowsFromResults({
-      correctionToggles: {
-        horseEnabled: true,
+        formEnabled: false,
         jockeyEnabled: true,
-        oddsEnabled: true,
-        popularityEnabled: true,
-        recentEnabled: true,
+        oddsPopularityStrength: 1,
         sameDayJockeyEnabled: true,
-        similarityEnabled: true,
-        trainerEnabled: false,
-      },
-      currentDistance: "1600",
-      currentKeibajoCode: "05",
-      currentRaceDate: "20260607",
-      currentSource: "jra",
-      results: [],
-      runners: [runner({ tanshoNinkijun: "01", tanshoOdds: "0020", umaban: "01" })],
-    });
-
-    const trainerWeight = rows[0]?.details.find((detail) => detail.label === "調教師")?.weight;
-    expect(trainerWeight).toStrictEqual(0);
-  });
-
-  it("zeroes sameDayJockeyWeight when sameDayJockeyEnabled is false", () => {
-    const rows = buildFinishPredictionRowsFromResults({
-      correctionToggles: {
-        horseEnabled: true,
-        jockeyEnabled: true,
-        oddsEnabled: true,
-        popularityEnabled: true,
-        recentEnabled: true,
-        sameDayJockeyEnabled: false,
-        similarityEnabled: true,
-        trainerEnabled: true,
-      },
-      currentDistance: "1400",
-      currentKeibajoCode: "45",
-      currentRaceDate: "20260514",
-      currentSource: "nar",
-      currentTrackCode: "24",
-      results: [],
-      runners: [
-        runner({
-          kishumeiRyakusho: "山田太郎",
-          tanshoNinkijun: "03",
-          tanshoOdds: "0060",
-          umaban: "01",
-        }),
-      ],
-      sameDayVenueJockeyWins: [{ jockeyName: "山田太郎", latestRaceNumber: "05", winCount: 2 }],
-    });
-
-    const sameDayWeight = rows[0]?.details.find(
-      (detail) => detail.label === "同日同場の騎手勝利",
-    )?.weight;
-    expect(sameDayWeight).toStrictEqual(0);
-  });
-
-  it("zeroes similarityWeight when similarityEnabled is false", () => {
-    const rows = buildFinishPredictionRowsFromResults({
-      correctionToggles: {
-        horseEnabled: true,
-        jockeyEnabled: true,
-        oddsEnabled: true,
-        popularityEnabled: true,
-        recentEnabled: true,
-        sameDayJockeyEnabled: true,
-        similarityEnabled: false,
         trainerEnabled: true,
       },
       currentDistance: "1400",
@@ -1084,16 +1037,133 @@ describe("buildFinishPredictionRowsFromResults", () => {
     expect(similarityWeight).toStrictEqual(0);
   });
 
-  it("all toggles OFF produces stable order by horse number as tiebreaker", () => {
+  it("keeps horse, recent, and similarity weights when formEnabled is true", () => {
     const rows = buildFinishPredictionRowsFromResults({
       correctionToggles: {
-        horseEnabled: false,
+        formEnabled: true,
+        jockeyEnabled: true,
+        oddsPopularityStrength: 1,
+        sameDayJockeyEnabled: true,
+        trainerEnabled: true,
+      },
+      currentDistance: "1400",
+      currentKeibajoCode: "35",
+      currentRaceDate: "20260514",
+      currentSource: "nar",
+      currentTrackCode: "24",
+      results: [
+        result({
+          currentUmaban: "01",
+          kakuteiChakujun: "02",
+          keibajoCode: "35",
+          kyori: "1400",
+          trackCode: "24",
+        }),
+      ],
+      runners: [runner({ tanshoNinkijun: "00", tanshoOdds: "0000", umaban: "01" })],
+      similarityFeatures: [
+        {
+          averageFinishPosition: 1,
+          horseNumber: "01",
+          neighborCount: 12,
+          showRate: 0.75,
+          similarityScore: 0.9,
+          winRate: 0.25,
+        },
+      ],
+    });
+
+    const horseWeight = rows[0]?.details.find((detail) => detail.label === "競走成績")?.weight;
+    const recentWeight = rows[0]?.details.find((detail) => detail.label === "近走")?.weight;
+    const similarityWeight = rows[0]?.details.find(
+      (detail) => detail.label === "類似レース",
+    )?.weight;
+    expect(horseWeight).toBeGreaterThan(0);
+    expect(recentWeight).toBeGreaterThan(0);
+    expect(similarityWeight).toBeGreaterThan(0);
+  });
+
+  it("zeroes jockeyWeight when jockeyEnabled is false", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      correctionToggles: {
+        formEnabled: true,
         jockeyEnabled: false,
-        oddsEnabled: false,
-        popularityEnabled: false,
-        recentEnabled: false,
+        oddsPopularityStrength: 1,
+        sameDayJockeyEnabled: true,
+        trainerEnabled: true,
+      },
+      currentDistance: "1600",
+      currentKeibajoCode: "05",
+      currentRaceDate: "20260607",
+      currentSource: "jra",
+      results: [],
+      runners: [runner({ tanshoNinkijun: "01", tanshoOdds: "0020", umaban: "01" })],
+    });
+
+    const jockeyWeight = rows[0]?.details.find((detail) => detail.label === "騎手")?.weight;
+    expect(jockeyWeight).toStrictEqual(0);
+  });
+
+  it("zeroes trainerWeight when trainerEnabled is false", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      correctionToggles: {
+        formEnabled: true,
+        jockeyEnabled: true,
+        oddsPopularityStrength: 1,
+        sameDayJockeyEnabled: true,
+        trainerEnabled: false,
+      },
+      currentDistance: "1600",
+      currentKeibajoCode: "05",
+      currentRaceDate: "20260607",
+      currentSource: "jra",
+      results: [],
+      runners: [runner({ tanshoNinkijun: "01", tanshoOdds: "0020", umaban: "01" })],
+    });
+
+    const trainerWeight = rows[0]?.details.find((detail) => detail.label === "調教師")?.weight;
+    expect(trainerWeight).toStrictEqual(0);
+  });
+
+  it("zeroes sameDayJockeyWeight when sameDayJockeyEnabled is false", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      correctionToggles: {
+        formEnabled: true,
+        jockeyEnabled: true,
+        oddsPopularityStrength: 1,
         sameDayJockeyEnabled: false,
-        similarityEnabled: false,
+        trainerEnabled: true,
+      },
+      currentDistance: "1400",
+      currentKeibajoCode: "45",
+      currentRaceDate: "20260514",
+      currentSource: "nar",
+      currentTrackCode: "24",
+      results: [],
+      runners: [
+        runner({
+          kishumeiRyakusho: "山田太郎",
+          tanshoNinkijun: "03",
+          tanshoOdds: "0060",
+          umaban: "01",
+        }),
+      ],
+      sameDayVenueJockeyWins: [{ jockeyName: "山田太郎", latestRaceNumber: "05", winCount: 2 }],
+    });
+
+    const sameDayWeight = rows[0]?.details.find(
+      (detail) => detail.label === "同日同場の騎手勝利",
+    )?.weight;
+    expect(sameDayWeight).toStrictEqual(0);
+  });
+
+  it("all corrections OFF (raw model) produces stable order by horse number as tiebreaker", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      correctionToggles: {
+        formEnabled: false,
+        jockeyEnabled: false,
+        oddsPopularityStrength: 0,
+        sameDayJockeyEnabled: false,
         trainerEnabled: false,
       },
       currentDistance: "1600",
@@ -1110,6 +1180,113 @@ describe("buildFinishPredictionRowsFromResults", () => {
 
     // When model has no data all scores are 0.5; tiebreaker is horse number ascending
     expect(rows.map((r) => r.horseNumber)).toStrictEqual(["1", "2", "3"]);
+  });
+
+  it("all corrections OFF zeroes every correction weight (raw model-only prediction)", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      correctionToggles: {
+        formEnabled: false,
+        jockeyEnabled: false,
+        oddsPopularityStrength: 0,
+        sameDayJockeyEnabled: false,
+        trainerEnabled: false,
+      },
+      currentDistance: "1600",
+      currentKeibajoCode: "05",
+      currentRaceDate: "20260607",
+      currentSource: "jra",
+      results: [result({ currentUmaban: "01", kakuteiChakujun: "02", shussoTosu: "10" })],
+      runners: [runner({ tanshoNinkijun: "01", tanshoOdds: "0020", umaban: "01" })],
+    });
+
+    const horseWeight = rows[0]?.details.find((detail) => detail.label === "競走成績")?.weight;
+    const recentWeight = rows[0]?.details.find((detail) => detail.label === "近走")?.weight;
+    const jockeyWeight = rows[0]?.details.find((detail) => detail.label === "騎手")?.weight;
+    const trainerWeight = rows[0]?.details.find((detail) => detail.label === "調教師")?.weight;
+    const oddsWeight = rows[0]?.details.find((detail) => detail.label === "単勝")?.weight;
+    const popularityWeight = rows[0]?.details.find((detail) => detail.label === "人気")?.weight;
+    const similarityWeight = rows[0]?.details.find(
+      (detail) => detail.label === "類似レース",
+    )?.weight;
+    const sameDayWeight = rows[0]?.details.find(
+      (detail) => detail.label === "同日同場の騎手勝利",
+    )?.weight;
+    expect(horseWeight).toStrictEqual(0);
+    expect(recentWeight).toStrictEqual(0);
+    expect(jockeyWeight).toStrictEqual(0);
+    expect(trainerWeight).toStrictEqual(0);
+    expect(oddsWeight).toStrictEqual(0);
+    expect(popularityWeight).toStrictEqual(0);
+    expect(similarityWeight).toStrictEqual(0);
+    expect(sameDayWeight).toStrictEqual(0);
+  });
+
+  it("falls back to numeric date diff weighting when race dates are not 8-digit", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      currentDistance: "1600",
+      currentKeibajoCode: "05",
+      currentRaceDate: "abcd",
+      currentSource: "jra",
+      results: [
+        result({
+          currentUmaban: "01",
+          kaisaiNen: "20",
+          kaisaiTsukihi: "26",
+          kakuteiChakujun: "01",
+          shussoTosu: "10",
+        }),
+      ],
+      runners: [runner({ tanshoNinkijun: "01", tanshoOdds: "0020", umaban: "01" })],
+    });
+
+    const horseWeight = rows[0]?.details.find((detail) => detail.label === "競走成績")?.weight;
+    expect(horseWeight).toBeGreaterThan(0);
+  });
+
+  it("uses the neutral distance weight when distance is unparseable", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      currentDistance: null,
+      currentKeibajoCode: "05",
+      currentRaceDate: "20260607",
+      currentSource: "jra",
+      results: [
+        result({ currentUmaban: "01", kakuteiChakujun: "02", kyori: null, shussoTosu: "10" }),
+      ],
+      runners: [runner({ tanshoNinkijun: "01", tanshoOdds: "0020", umaban: "01" })],
+    });
+
+    const horseDetail = rows[0]?.details.find((detail) => detail.label === "競走成績");
+    expect(horseDetail?.value).toBeGreaterThan(0);
+  });
+
+  it("aggregates show/win probabilities across multiple usable models", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      currentDistance: "1600",
+      currentKeibajoCode: "05",
+      currentRaceDate: "20260607",
+      currentSource: "jra",
+      modelPredictionFeatures: [
+        {
+          horseNumber: "01",
+          modelVersion: "finish-lightgbm-10y",
+          predictedFinishNorm: 0.2,
+          showProbability: 0.8,
+          winProbability: 0.5,
+        },
+        {
+          horseNumber: "01",
+          modelVersion: "finish-lstm-10y",
+          predictedFinishNorm: 0.3,
+          showProbability: 0.6,
+          winProbability: 0.3,
+        },
+      ],
+      results: [],
+      runners: [runner({ tanshoNinkijun: "00", tanshoOdds: "0000", umaban: "01" })],
+    });
+
+    expect(rows[0]?.winProbability).toBeGreaterThan(0);
+    expect(rows[0]?.showProbability).toBeGreaterThan(0);
   });
 
   it("when correctionToggles is undefined, defaults match old behavior: odds+popularity ON for non-maiden", () => {

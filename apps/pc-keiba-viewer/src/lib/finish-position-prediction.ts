@@ -20,13 +20,10 @@ export interface FinishPredictionMarketOverride {
 }
 
 export interface CorrectionToggles {
-  horseEnabled: boolean;
+  formEnabled: boolean;
   jockeyEnabled: boolean;
-  oddsEnabled: boolean;
-  popularityEnabled: boolean;
-  recentEnabled: boolean;
+  oddsPopularityStrength: number;
   sameDayJockeyEnabled: boolean;
-  similarityEnabled: boolean;
   trainerEnabled: boolean;
 }
 
@@ -145,6 +142,14 @@ const GRADED_RACE_CODES = new Set(["A", "B", "C", "D", "E", "F", "G", "H", "L"])
 
 export const NEW_HORSE_MAIDEN_CODE = "701";
 
+// Odds/popularity correction strength: shared between the lib, the slider UI, and tests.
+// 1.0 == the historical default coefficient behavior; 0 disables odds/popularity entirely.
+export const ODDS_POPULARITY_DEFAULT_STRENGTH = 1;
+
+export const ODDS_POPULARITY_MAX_STRENGTH = 2;
+
+export const ODDS_POPULARITY_STRENGTH_STEP = 0.1;
+
 const NEW_HORSE_MAIDEN_MODEL_BOOST = 4;
 
 const ODDS_RESTORE_MULTIPLIER_NON_BANEI = 2;
@@ -155,6 +160,10 @@ const ODDS_RESTORE_MULTIPLIER_BANEI = 1;
 const DEBUT_POPULARITY_WEIGHT_BUMP = 0.008;
 
 const clampScore = (value: number): number => Math.max(0, Math.min(1, value));
+
+// Clamp the odds/popularity strength factor into the supported [0, max] range.
+const clampStrength = (value: number): number =>
+  Math.max(0, Math.min(ODDS_POPULARITY_MAX_STRENGTH, value));
 
 const roundScore = (value: number): number => Math.round(value * 100) / 100;
 
@@ -652,25 +661,24 @@ export const buildFinishPredictionRowsFromResults = ({
     );
     const runnerConfig = getHorseHistoryAdjustedConfig(config, horseResults.length, category);
     const isNewHorseMaiden = cleanText(currentKyosoJokenCode, "") === NEW_HORSE_MAIDEN_CODE;
-    // Default: all corrections ON, except odds+popularity are OFF for new-horse maiden
-    const defaultOddsOn = !isNewHorseMaiden;
-    const oddsOn = correctionToggles?.oddsEnabled ?? defaultOddsOn;
-    const popularityOn = correctionToggles?.popularityEnabled ?? defaultOddsOn;
-    const horseOn = correctionToggles?.horseEnabled ?? true;
-    const recentOn = correctionToggles?.recentEnabled ?? true;
+    // Default odds/popularity strength: full (1) for normal races, but 0 for new-horse
+    // maiden races where the market is an unreliable prior (preserves historical behavior).
+    const defaultStrength = isNewHorseMaiden ? 0 : ODDS_POPULARITY_DEFAULT_STRENGTH;
+    const strength = clampStrength(correctionToggles?.oddsPopularityStrength ?? defaultStrength);
+    // Single combined flag gates 競走成績/近走/類似レース together.
+    const formOn = correctionToggles?.formEnabled ?? true;
     const jockeyOn = correctionToggles?.jockeyEnabled ?? true;
     const trainerOn = correctionToggles?.trainerEnabled ?? true;
     const sameDayJockeyOn = correctionToggles?.sameDayJockeyEnabled ?? true;
-    const similarityOn = correctionToggles?.similarityEnabled ?? true;
     const finalRunnerConfig: FinishPredictionConfig = {
       ...runnerConfig,
-      horseWeight: horseOn ? runnerConfig.horseWeight : 0,
+      horseWeight: formOn ? runnerConfig.horseWeight : 0,
       jockeyWeight: jockeyOn ? runnerConfig.jockeyWeight : 0,
-      oddsWeight: oddsOn ? runnerConfig.oddsWeight : 0,
-      popularityWeight: popularityOn ? runnerConfig.popularityWeight : 0,
-      recentWeight: recentOn ? runnerConfig.recentWeight : 0,
+      oddsWeight: runnerConfig.oddsWeight * strength,
+      popularityWeight: runnerConfig.popularityWeight * strength,
+      recentWeight: formOn ? runnerConfig.recentWeight : 0,
       sameDayJockeyWeight: sameDayJockeyOn ? runnerConfig.sameDayJockeyWeight : 0,
-      similarityWeight: similarityOn ? runnerConfig.similarityWeight : 0,
+      similarityWeight: formOn ? runnerConfig.similarityWeight : 0,
       trainerWeight: trainerOn ? runnerConfig.trainerWeight : 0,
     };
     const averageParams = {

@@ -10,6 +10,7 @@ import {
   buildFinishPredictionRowsFromInputs,
   type CorrectionToggles,
   type FinishPredictionBuildInputs,
+  ODDS_POPULARITY_DEFAULT_STRENGTH,
 } from "../../../lib/finish-position-prediction";
 import { getPreferredJockeyName } from "../../../lib/jockey-name";
 import {
@@ -36,13 +37,10 @@ import { buildCombinedScoreRows, type CombinedScoreRow } from "./bloodline-simil
 import { buildRealtimeUrl, isRealtimeRacePayload } from "./realtime-client";
 
 const ALL_CORRECTIONS_ON: CorrectionToggles = {
-  horseEnabled: true,
+  formEnabled: true,
   jockeyEnabled: true,
-  oddsEnabled: true,
-  popularityEnabled: true,
-  recentEnabled: true,
+  oddsPopularityStrength: ODDS_POPULARITY_DEFAULT_STRENGTH,
   sameDayJockeyEnabled: true,
-  similarityEnabled: true,
   trainerEnabled: true,
 };
 
