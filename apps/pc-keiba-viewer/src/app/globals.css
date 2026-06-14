@@ -6644,11 +6644,21 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   padding: var(--space-8px-28) var(--space-12px-9);
 }
 
-.finish-prediction-odds-toggle input {
+.finish-prediction-odds-toggle input[type="checkbox"] {
   accent-color: var(--accent);
   height: var(--space-16px-10);
   margin: var(--number-0-2);
   width: var(--space-16px-10);
+}
+
+.correction-strength-control input[type="range"] {
+  accent-color: var(--accent);
+  cursor: pointer;
+  width: var(--space-140px-70);
+}
+
+.correction-strength-value {
+  font-variant-numeric: tabular-nums;
 }
 
 .finish-prediction-odds-toggle span {
@@ -9895,6 +9905,36 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 .race-results-chart-panel h3 {
   margin: var(--number-0-2) var(--number-0-2) var(--space-6px-33);
   font-size: var(--space-15px-1);
+}
+
+.race-results-chart-tooltip {
+  background: var(--surface);
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-8px-28);
+  box-shadow: var(--number-0-2) var(--space-10px-27) var(--space-24px-50)
+    var(--color-rgb-24-44-32-16pct-100);
+  color: var(--text);
+  line-height: var(--number-1-45-39);
+  padding: var(--space-8px-28) var(--space-10px-27);
+}
+
+.race-results-chart-tooltip p {
+  margin: var(--number-0-2);
+}
+
+.race-results-chart-tooltip-date {
+  font-size: var(--space-13px-92);
+  font-weight: var(--number-700-14);
+}
+
+.race-results-chart-tooltip-value {
+  font-size: var(--space-15px-1);
+  font-weight: var(--number-800-12);
+}
+
+.race-results-chart-tooltip-meta {
+  color: var(--muted);
+  font-size: var(--space-13px-92);
 }
 
 @media (min-width: 960px) {
