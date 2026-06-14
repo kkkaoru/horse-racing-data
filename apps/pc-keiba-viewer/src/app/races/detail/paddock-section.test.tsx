@@ -32,6 +32,11 @@ vi.mock("next/link", () => ({
     React.createElement("a", { href }, children),
 }));
 
+vi.mock("./paddock-recent-results-chart", () => ({
+  PaddockRecentResultsChart: () =>
+    React.createElement("div", { "data-testid": "paddock-recent-chart-stub" }),
+}));
+
 const { PaddockSection, formatUserIdForHistory } = await import("./paddock-section");
 
 const buildRunner = (overrides: Partial<Runner>): Runner => ({
@@ -1083,4 +1088,78 @@ test("PaddockSection disables 注目- and keeps 注目+ enabled at the lower cap
   const minusButton = await screen.findByRole("button", { name: "テストホース 注目-" });
   expect(minusButton.hasAttribute("disabled")).toStrictEqual(true);
   expect(plusButton.hasAttribute("disabled")).toStrictEqual(false);
+});
+
+test("PaddockSection 近走 defaults to text mode showing the past race row and no chart", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      recentResults={[buildPastResult({ currentUmaban: "01", kyosomeiHondai: "過去レース" })]}
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  const textButton = await screen.findByRole("button", { name: "テキスト" });
+  const graphButton = await screen.findByRole("button", { name: "グラフ" });
+  expect(textButton.getAttribute("aria-pressed")).toBe("true");
+  expect(graphButton.getAttribute("aria-pressed")).toBe("false");
+  expect(screen.getByText("過去レース").tagName).toBe("STRONG");
+  expect(screen.queryByTestId("paddock-recent-chart-stub")).toBeNull();
+});
+
+test("PaddockSection 近走 graph button switches to chart and hides the past race text", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      recentResults={[buildPastResult({ currentUmaban: "01", kyosomeiHondai: "過去レース" })]}
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  const graphButton = await screen.findByRole("button", { name: "グラフ" });
+  graphButton.click();
+
+  await waitFor(() => {
+    expect(screen.queryByTestId("paddock-recent-chart-stub")).not.toBeNull();
+  });
+  const textButton = await screen.findByRole("button", { name: "テキスト" });
+  expect(graphButton.getAttribute("aria-pressed")).toBe("true");
+  expect(textButton.getAttribute("aria-pressed")).toBe("false");
+  expect(screen.queryByText("過去レース")).toBeNull();
+});
+
+test("PaddockSection 近走 text button switches back from chart to the past race text", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      recentResults={[buildPastResult({ currentUmaban: "01", kyosomeiHondai: "過去レース" })]}
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  const graphButton = await screen.findByRole("button", { name: "グラフ" });
+  graphButton.click();
+
+  await waitFor(() => {
+    expect(screen.queryByTestId("paddock-recent-chart-stub")).not.toBeNull();
+  });
+
+  const textButton = await screen.findByRole("button", { name: "テキスト" });
+  textButton.click();
+
+  await waitFor(() => {
+    expect(screen.queryByTestId("paddock-recent-chart-stub")).toBeNull();
+  });
+  expect(textButton.getAttribute("aria-pressed")).toBe("true");
+  expect(graphButton.getAttribute("aria-pressed")).toBe("false");
+  expect(screen.getByText("過去レース").tagName).toBe("STRONG");
 });

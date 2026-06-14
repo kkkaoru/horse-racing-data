@@ -50,10 +50,15 @@ import {
 } from "../../../lib/runner-format";
 import { getOrCreateUserId } from "../../../lib/user-identity-indexeddb";
 import { FrameNumberBadge, HorseNameBadge } from "./frame-number-badge";
+import { PaddockRecentResultsChart } from "./paddock-recent-results-chart";
 import type { RealtimeRaceRequest } from "./realtime-client";
 import { useRealtimeRacePayload } from "./realtime-client";
 
 type PaddockRunningStyleLabel = "nige" | "senkou" | "sashi" | "oikomi";
+
+// Per-horse display mode for the 近走 area. Text keeps the legacy slice-of-three
+// list; graph renders the full retrievable history as a single combined chart.
+type PaddockRecentResultsViewMode = "text" | "graph";
 
 interface PaddockSectionProps {
   day: string;
@@ -456,8 +461,16 @@ interface PaddockRecentResultsProps {
 }
 
 const PADDOCK_RECENT_RESULTS_SKELETON_COUNT = 3;
+const PADDOCK_RECENT_RESULTS_TEXT_LIMIT = 3;
+const PADDOCK_RECENT_RESULTS_DEFAULT_VIEW_MODE: PaddockRecentResultsViewMode = "text";
 
 function PaddockRecentResults({ loading = false, results }: PaddockRecentResultsProps) {
+  // Local per-horse view mode: this component is rendered once per horse from the
+  // memoized PaddockHorseRow, so the state persists across parent re-renders.
+  const [viewMode, setViewMode] = useState<PaddockRecentResultsViewMode>(
+    PADDOCK_RECENT_RESULTS_DEFAULT_VIEW_MODE,
+  );
+
   if (loading && results === null) {
     return (
       <section
@@ -507,44 +520,70 @@ function PaddockRecentResults({ loading = false, results }: PaddockRecentResults
     );
   }
 
+  const isGraphMode = viewMode === "graph";
+
   return (
     <section className="paddock-recent-results" aria-label="近走成績">
       <h3>近走</h3>
-      <ol>
-        {results.slice(0, 3).map((result) => (
-          <li
-            key={`${result.kaisaiNen}${result.kaisaiTsukihi}-${result.keibajoCode}-${result.raceBango}`}
-          >
-            <span className="paddock-recent-finish">{formatPastRank(result.kakuteiChakujun)}</span>
-            <span className="paddock-recent-race">
-              <strong>{formatPastRaceName(result)}</strong>
-              <small>{formatPastRaceConditions(result)}</small>
-              <small>{formatPastResultMeta(result)}</small>
-              <small aria-label="騎手" className="paddock-recent-jockey">
-                騎手 {formatPastJockeyName(result.kishumeiRyakusho)}
-              </small>
-            </span>
-            <span className="paddock-recent-stats">
-              <span aria-label="枠番" className="paddock-recent-frame">
-                <FrameNumberBadge value={result.wakuban} />
+      <div className="paddock-recent-view-controls" aria-label="近走の表示切替">
+        <button
+          aria-pressed={!isGraphMode}
+          className="stats-control-button"
+          type="button"
+          onClick={() => setViewMode("text")}
+        >
+          テキスト
+        </button>
+        <button
+          aria-pressed={isGraphMode}
+          className="stats-control-button"
+          type="button"
+          onClick={() => setViewMode("graph")}
+        >
+          グラフ
+        </button>
+      </div>
+      {isGraphMode ? (
+        <PaddockRecentResultsChart results={results} />
+      ) : (
+        <ol>
+          {results.slice(0, PADDOCK_RECENT_RESULTS_TEXT_LIMIT).map((result) => (
+            <li
+              key={`${result.kaisaiNen}${result.kaisaiTsukihi}-${result.keibajoCode}-${result.raceBango}`}
+            >
+              <span className="paddock-recent-finish">
+                {formatPastRank(result.kakuteiChakujun)}
               </span>
-              <span aria-label="馬番" className="paddock-recent-uma">
-                {formatRunnerNumber(result.umaban)}
+              <span className="paddock-recent-race">
+                <strong>{formatPastRaceName(result)}</strong>
+                <small>{formatPastRaceConditions(result)}</small>
+                <small>{formatPastResultMeta(result)}</small>
+                <small aria-label="騎手" className="paddock-recent-jockey">
+                  騎手 {formatPastJockeyName(result.kishumeiRyakusho)}
+                </small>
               </span>
-              <span>{formatPastPopularity(result.tanshoNinkijun)}</span>
-              <span>{formatPastOdds(result.tanshoOdds)}</span>
-              <span>
-                {formatHorseWeight(
-                  result.bataiju,
-                  result.zogenFugo,
-                  result.zogenSa,
-                  isBanEiKeibajoCode(result.keibajoCode),
-                )}
+              <span className="paddock-recent-stats">
+                <span aria-label="枠番" className="paddock-recent-frame">
+                  <FrameNumberBadge value={result.wakuban} />
+                </span>
+                <span aria-label="馬番" className="paddock-recent-uma">
+                  {formatRunnerNumber(result.umaban)}
+                </span>
+                <span>{formatPastPopularity(result.tanshoNinkijun)}</span>
+                <span>{formatPastOdds(result.tanshoOdds)}</span>
+                <span>
+                  {formatHorseWeight(
+                    result.bataiju,
+                    result.zogenFugo,
+                    result.zogenSa,
+                    isBanEiKeibajoCode(result.keibajoCode),
+                  )}
+                </span>
               </span>
-            </span>
-          </li>
-        ))}
-      </ol>
+            </li>
+          ))}
+        </ol>
+      )}
     </section>
   );
 }
