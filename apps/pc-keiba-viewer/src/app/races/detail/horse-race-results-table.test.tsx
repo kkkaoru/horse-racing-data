@@ -218,12 +218,12 @@ describe("horse race results table", () => {
       expect(screen.getByText("履歴あり")).toBeTruthy();
     });
     await waitFor(() => {
-      expect(screen.getByLabelText("直近nヶ月")).toHaveProperty("value", "30");
+      expect(screen.getByLabelText("表示期間（直近◯ヶ月）")).toHaveProperty("value", "29");
     });
     expect(screen.queryByText("条件に一致する競走成績はありません。")).toBeNull();
   });
 
-  it("defaults recent months to 12", () => {
+  it("defaults recent months to 7", () => {
     render(
       <HorseRaceResultsTable
         classConditionName={null}
@@ -239,7 +239,7 @@ describe("horse race results table", () => {
       />,
     );
 
-    expect(screen.getByLabelText("直近nヶ月")).toHaveProperty("value", "12");
+    expect(screen.getByLabelText("表示期間（直近◯ヶ月）")).toHaveProperty("value", "7");
   });
 
   it("keeps a manually entered finish rank limit even when it filters out rows", async () => {
@@ -268,7 +268,7 @@ describe("horse race results table", () => {
       expect(screen.getByText("ランク外")).toBeTruthy();
     });
 
-    const finishRankInput = screen.getByLabelText("着順 n着以内");
+    const finishRankInput = screen.getByLabelText("着順で絞り込む（◯着以内）");
     if (!(finishRankInput instanceof HTMLInputElement)) {
       throw new TypeError("finish rank control is not an input");
     }
@@ -276,6 +276,142 @@ describe("horse race results table", () => {
 
     expect(finishRankInput.value).toBe("2");
     expect(screen.queryByText("ランク外")).toBeNull();
+  });
+
+  it("steps the recent months input by two", () => {
+    render(
+      <HorseRaceResultsTable
+        classConditionName={null}
+        currentDistance="1800"
+        currentKeibajoCode="05"
+        currentRaceDate="20260322"
+        currentTrackCode="24"
+        defaultIncludeClass={false}
+        results={[result({ bamei: "対象", currentUmaban: "01" })]}
+        runners={[]}
+        source="jra"
+        sourceScope="all"
+      />,
+    );
+
+    expect(screen.getByLabelText("表示期間（直近◯ヶ月）")).toHaveProperty("step", "2");
+  });
+
+  it("renders the clearer filter labels", () => {
+    render(
+      <HorseRaceResultsTable
+        classConditionName={null}
+        currentDistance="1800"
+        currentKeibajoCode="05"
+        currentRaceDate="20260322"
+        currentTrackCode="24"
+        defaultIncludeClass={false}
+        results={[result({ bamei: "対象", currentUmaban: "01" })]}
+        runners={[]}
+        source="jra"
+        sourceScope="all"
+      />,
+    );
+
+    expect(screen.getByText("着順で絞り込む（◯着以内）")).toBeTruthy();
+    expect(screen.getByText("表示期間（直近◯ヶ月）")).toBeTruthy();
+  });
+
+  it("excludes rows without a finish from the main table but keeps them in the detail table", () => {
+    render(
+      <HorseRaceResultsTable
+        classConditionName={null}
+        currentDistance="1800"
+        currentKeibajoCode="05"
+        currentRaceDate="20260322"
+        currentTrackCode="24"
+        defaultIncludeClass={false}
+        results={[
+          result({
+            bamei: "対象馬",
+            currentUmaban: "01",
+            kakuteiChakujun: "01",
+            kaisaiTsukihi: "0301",
+            kyosomeiHondai: "確定レース",
+            raceBango: "05",
+          }),
+          result({
+            bamei: "対象馬",
+            currentUmaban: "01",
+            kakuteiChakujun: "00",
+            kaisaiTsukihi: "0201",
+            kyosomeiHondai: "未確定レース",
+            raceBango: "06",
+          }),
+        ]}
+        runners={[]}
+        source="jra"
+        sourceScope="all"
+      />,
+    );
+
+    expect(screen.getByText("確定レース")).toBeTruthy();
+    expect(screen.queryByText("未確定レース")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "詳細" }));
+
+    expect(screen.getByText("未確定レース")).toBeTruthy();
+  });
+
+  it("orders a longer fast race before a shorter race by distance relevance and time", () => {
+    const { container } = render(
+      <HorseRaceResultsTable
+        classConditionName={null}
+        currentDistance="1800"
+        currentKeibajoCode="05"
+        currentRaceDate="20260322"
+        currentTrackCode="24"
+        defaultIncludeClass={false}
+        results={[
+          result({
+            bamei: "対象馬",
+            currentUmaban: "01",
+            kakuteiChakujun: "01",
+            kaisaiTsukihi: "0301",
+            kyori: "1900",
+            kyosomeiHondai: "速い1900",
+            raceBango: "05",
+            sohaTime: "1100",
+          }),
+          result({
+            bamei: "対象馬",
+            currentUmaban: "01",
+            kakuteiChakujun: "02",
+            kaisaiTsukihi: "0201",
+            kyori: "1800",
+            kyosomeiHondai: "遅い1800",
+            raceBango: "06",
+            sohaTime: "1200",
+          }),
+          result({
+            bamei: "対象馬",
+            currentUmaban: "01",
+            kakuteiChakujun: "03",
+            kaisaiTsukihi: "0101",
+            kyori: "1700",
+            kyosomeiHondai: "短い1700",
+            raceBango: "07",
+            sohaTime: "1000",
+          }),
+        ]}
+        runners={[]}
+        source="jra"
+        sourceScope="all"
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("馬ごとの表示数"), { target: { value: "all" } });
+
+    const raceNameCells = [...container.querySelectorAll("tbody tr td.race-results-name-cell")].map(
+      (cell) => cell.textContent,
+    );
+
+    expect(raceNameCells).toStrictEqual(["速い1900", "遅い1800", "短い1700"]);
   });
 
   it("hides last 3F sort and values for ban-ei race detail pages", () => {

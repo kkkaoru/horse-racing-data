@@ -35,8 +35,9 @@ type ResultLimit = "all" | "1" | "3" | "5" | "10";
 type SortDirection = "asc" | "desc";
 type SortKey = "date" | "kohan3f" | "sohaTime";
 
-const DEFAULT_RECENT_MONTHS = 12;
+const DEFAULT_RECENT_MONTHS = 7;
 const RECENT_MONTHS_RELAX_STEP = 2;
+const RECENT_MONTHS_STEP = 2;
 
 interface HorseRaceResultsTableProps {
   classConditionName: string | null;
@@ -49,6 +50,11 @@ interface HorseRaceResultsTableProps {
   runners: Runner[];
   source: RaceSource;
   sourceScope: RaceSource | "all";
+}
+
+interface DistanceRelevanceContext {
+  baseDistance: number;
+  decodeBanEiSohaTime: boolean;
 }
 
 const SORT_LABELS: Record<SortKey, string> = {
@@ -273,17 +279,78 @@ const getRunnerNumberOptions = (runners: Runner[], results: HorseRaceResult[]): 
 const getCoveredRunnerNumbers = (results: HorseRaceResult[]): Set<string> =>
   new Set(results.map((result) => cleanText(result.currentUmaban, "")).filter(Boolean));
 
-const compareByTimeAndDate = (left: HorseRaceResult, right: HorseRaceResult): number => {
-  const timeCompared = compareNullable(
-    getSortValue(left, "sohaTime"),
-    getSortValue(right, "sohaTime"),
-    "asc",
-  );
-  if (timeCompared !== 0) {
-    return timeCompared;
+// Decode a soha time into comparable total-tenths so faster times compare smaller.
+// Ban-ei encodes minutes/seconds/tenths packed in decimal (e.g. "3188" -> 3:18.8),
+// while other tracks store the value directly in tenths.
+const parseSohaTimeTenths = (
+  value: string | null | undefined,
+  decodeBanEi: boolean,
+): number | null => {
+  const raw = parseNumber(value);
+  if (raw === null) {
+    return null;
   }
-  return compareNullable(getRaceDateValue(left), getRaceDateValue(right), "desc");
+  if (!decodeBanEi) {
+    return raw;
+  }
+  const padded = cleanText(value, "").padStart(4, "0");
+  const minutes = Number(padded.slice(0, -3));
+  const seconds = Number(padded.slice(-3, -1));
+  const tenths = Number(padded.slice(-1));
+  return minutes * 600 + seconds * 10 + tenths;
 };
+
+// Distance difference relative to the target distance, null when distance is missing.
+const getDistanceDiff = (result: HorseRaceResult, baseDistance: number): number | null => {
+  const distance = getDistanceValue(result);
+  if (distance === null || !Number.isFinite(baseDistance)) {
+    return null;
+  }
+  return Math.abs(distance - baseDistance);
+};
+
+// Standalone comparator factory for sort callbacks (typescript.md rule 17).
+// Orders a horse's candidate races by distance-relevance + faster time:
+//   Tier 1 (distance >= target): faster soha time asc, tiebreak smaller distance-diff, then date desc.
+//   Tier 2 (distance < target): smaller distance-diff asc, then faster soha time asc, then date desc.
+// Tier 1 entirely precedes Tier 2. Null distance/time sorts last within its tier via compareNullable.
+const createDistanceRelevanceComparator =
+  ({ baseDistance, decodeBanEiSohaTime }: DistanceRelevanceContext) =>
+  (left: HorseRaceResult, right: HorseRaceResult): number => {
+    const leftDistance = getDistanceValue(left);
+    const rightDistance = getDistanceValue(right);
+    const leftInTier1 =
+      leftDistance !== null && Number.isFinite(baseDistance) && leftDistance >= baseDistance;
+    const rightInTier1 =
+      rightDistance !== null && Number.isFinite(baseDistance) && rightDistance >= baseDistance;
+    if (leftInTier1 !== rightInTier1) {
+      return leftInTier1 ? -1 : 1;
+    }
+    const leftTime = parseSohaTimeTenths(left.sohaTime, decodeBanEiSohaTime);
+    const rightTime = parseSohaTimeTenths(right.sohaTime, decodeBanEiSohaTime);
+    const leftDiff = getDistanceDiff(left, baseDistance);
+    const rightDiff = getDistanceDiff(right, baseDistance);
+    if (leftInTier1) {
+      const timeCompared = compareNullable(leftTime, rightTime, "asc");
+      if (timeCompared !== 0) {
+        return timeCompared;
+      }
+      const diffCompared = compareNullable(leftDiff, rightDiff, "asc");
+      if (diffCompared !== 0) {
+        return diffCompared;
+      }
+      return compareNullable(getRaceDateValue(left), getRaceDateValue(right), "desc");
+    }
+    const diffCompared = compareNullable(leftDiff, rightDiff, "asc");
+    if (diffCompared !== 0) {
+      return diffCompared;
+    }
+    const timeCompared = compareNullable(leftTime, rightTime, "asc");
+    if (timeCompared !== 0) {
+      return timeCompared;
+    }
+    return compareNullable(getRaceDateValue(left), getRaceDateValue(right), "desc");
+  };
 
 export function HorseRaceResultsTable({
   classConditionName,
@@ -325,6 +392,7 @@ export function HorseRaceResultsTable({
     direction: "asc",
     key: "sohaTime",
   });
+  const [sortTouched, setSortTouched] = useState(false);
   const sourceScopeChecked = sourceScope === source;
   const sourceScopeLabel = source === "jra" ? "中央競馬のみ" : "地方競馬のみ";
   const updateSourceScope = (checked: boolean) => {
@@ -469,6 +537,11 @@ export function HorseRaceResultsTable({
       return (!hasMin || distance >= activeMin) && (!hasMax || distance <= max);
     };
 
+    const compareByDistanceRelevance = createDistanceRelevanceComparator({
+      baseDistance,
+      decodeBanEiSohaTime: isBanEiKeibajoCode(currentKeibajoCode),
+    });
+
     const getVisibleResults = ({
       activeClassFilter,
       activeRecentDateMin,
@@ -496,11 +569,12 @@ export function HorseRaceResultsTable({
           continue;
         }
         const finishRank = parseNumber(result.kakuteiChakujun);
-        if (
-          useFinishRankFilter &&
-          hasFinishRankLimit &&
-          (finishRank === null || finishRank > parsedFinishRankLimit)
-        ) {
+        // Rows without a confirmed finish are always excluded from the main table
+        // (the expandable detail table still shows them); relaxation never reintroduces them.
+        if (finishRank === null) {
+          continue;
+        }
+        if (useFinishRankFilter && hasFinishRankLimit && finishRank > parsedFinishRankLimit) {
           continue;
         }
         const jockeyMatched =
@@ -532,22 +606,10 @@ export function HorseRaceResultsTable({
         );
         const shouldUseFallback =
           !sameDistanceOnly && inRangeResults.length === 0 && includeOutOfRangeFallback;
+        // Distance-relevance + faster-time ordering drives which races survive the per-horse limit.
         const prioritizedResults = shouldUseFallback
-          ? horseResults.toSorted((left, right) => {
-              const leftDistance = getDistanceValue(left);
-              const rightDistance = getDistanceValue(right);
-              const leftDiff =
-                leftDistance === null || !Number.isFinite(baseDistance)
-                  ? null
-                  : Math.abs(leftDistance - baseDistance);
-              const rightDiff =
-                rightDistance === null || !Number.isFinite(baseDistance)
-                  ? null
-                  : Math.abs(rightDistance - baseDistance);
-              const distanceCompared = compareNullable(leftDiff, rightDiff, "asc");
-              return distanceCompared !== 0 ? distanceCompared : compareByTimeAndDate(left, right);
-            })
-          : inRangeResults.toSorted(compareByTimeAndDate);
+          ? horseResults.toSorted(compareByDistanceRelevance)
+          : inRangeResults.toSorted(compareByDistanceRelevance);
 
         return prioritizedResults.filter((result) => {
           if (limitCount === null) {
@@ -563,40 +625,44 @@ export function HorseRaceResultsTable({
         });
       });
 
-      return selectedResults
-        .filter((result) => {
-          const distance = getDistanceValue(result);
-          return distance !== null;
-        })
-        .toSorted((left, right) => {
-          const primary = compareNullable(
-            getSortValue(left, sort.key),
-            getSortValue(right, sort.key),
-            sort.direction,
+      const distanceFilteredResults = selectedResults.filter((result) => {
+        const distance = getDistanceValue(result);
+        return distance !== null;
+      });
+      // Default display order follows distance-relevance + faster time; an explicit sort
+      // button (date/kohan3f/sohaTime) overrides it via the user-selected key/direction.
+      if (!sortTouched) {
+        return distanceFilteredResults.toSorted(compareByDistanceRelevance);
+      }
+      return distanceFilteredResults.toSorted((left, right) => {
+        const primary = compareNullable(
+          getSortValue(left, sort.key),
+          getSortValue(right, sort.key),
+          sort.direction,
+        );
+        if (primary !== 0) {
+          return primary;
+        }
+        if (sort.key !== "sohaTime") {
+          const timeCompared = compareNullable(
+            getSortValue(left, "sohaTime"),
+            getSortValue(right, "sohaTime"),
+            "asc",
           );
-          if (primary !== 0) {
-            return primary;
+          if (timeCompared !== 0) {
+            return timeCompared;
           }
-          if (sort.key !== "sohaTime") {
-            const timeCompared = compareNullable(
-              getSortValue(left, "sohaTime"),
-              getSortValue(right, "sohaTime"),
-              "asc",
-            );
-            if (timeCompared !== 0) {
-              return timeCompared;
-            }
-          }
-          const dateCompared = compareNullable(
-            getRaceDateValue(left),
-            getRaceDateValue(right),
-            "desc",
-          );
-          if (dateCompared !== 0) {
-            return dateCompared;
-          }
-          return Number(left.currentUmaban ?? 0) - Number(right.currentUmaban ?? 0);
-        });
+        }
+        const dateCompared = compareNullable(
+          getRaceDateValue(left),
+          getRaceDateValue(right),
+          "desc",
+        );
+        if (dateCompared !== 0) {
+          return dateCompared;
+        }
+        return Number(left.currentUmaban ?? 0) - Number(right.currentUmaban ?? 0);
+      });
     };
 
     const initialOptions = {
@@ -704,6 +770,7 @@ export function HorseRaceResultsTable({
   }, [
     baseDistance,
     classFilter,
+    currentKeibajoCode,
     currentRaceDate,
     distanceMinTouched,
     distanceMax,
@@ -727,6 +794,7 @@ export function HorseRaceResultsTable({
     selectedRunnerNumbers,
     selectedRunnerNumberSet,
     sort,
+    sortTouched,
   ]);
   const visibleResults = visibleResultsState.results;
   const showRacePacePrediction = isCornerPacePredictionSupported({
@@ -831,6 +899,7 @@ export function HorseRaceResultsTable({
   };
 
   const changeSort = (key: SortKey) => {
+    setSortTouched(true);
     setSort((current) => ({
       direction: current.key === key && current.direction === "asc" ? "desc" : "asc",
       key,
@@ -956,7 +1025,7 @@ export function HorseRaceResultsTable({
             </select>
           </label>
           <label>
-            <span>着順 n着以内</span>
+            <span>着順で絞り込む（◯着以内）</span>
             <input
               inputMode="numeric"
               min="1"
@@ -1042,11 +1111,12 @@ export function HorseRaceResultsTable({
             </span>
           </label>
           <label>
-            <span>直近nヶ月</span>
+            <span>表示期間（直近◯ヶ月）</span>
             <input
               inputMode="numeric"
               min="1"
               placeholder={String(DEFAULT_RECENT_MONTHS)}
+              step={RECENT_MONTHS_STEP}
               type="number"
               value={recentMonths}
               onChange={(event) => {
