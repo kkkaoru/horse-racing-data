@@ -116,6 +116,7 @@ interface PaddockHorseRowProps {
   status: string | null;
   trainerName: string;
   trainingEvaluationGrade: string | null;
+  upcomingRaceDate: string;
   weight: string;
 }
 
@@ -159,6 +160,14 @@ type PaddockScoreTooltipState = {
 };
 
 type PaddockTableSortMode = "officialRank" | "relativeScore";
+
+// The horse's latest weight + signed change parsed from the "456(+4)" runner
+// label, used to seed the 近走 chart's upcoming current-race point. Both are null
+// when the source label has no usable numeric value.
+interface PaddockUpcomingWeightValues {
+  weight: number | null;
+  weightDelta: number | null;
+}
 
 const METRIC_LABELS: Record<PaddockMetric, { minus: string; plus: string; title: string }> = {
   attention: { minus: "注目-", plus: "注目+", title: "注目度" },
@@ -251,6 +260,27 @@ const parseHorseWeightLabel = (
     return { change: null, weight: value };
   }
   return { change: match[2] ?? null, weight: match[1] ?? value };
+};
+
+// Read the leading numeric value (with optional sign) from a label fragment like
+// "480kg" or "+4", ignoring any trailing unit text. Null when no number leads.
+const toLeadingFiniteNumberOrNull = (value: string | null): number | null => {
+  if (value === null) {
+    return null;
+  }
+  const parsed = Number.parseFloat(value.trim());
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+// Turn the "456(+4)" / "480kg (+4)" runner weight label into numeric weight +
+// signed change for the 近走 chart's upcoming current-race point. Either field is
+// null when its source text is missing or not a finite number.
+export const parseUpcomingWeightValues = (label: string): PaddockUpcomingWeightValues => {
+  const parsed = parseHorseWeightLabel(label);
+  return {
+    weight: toLeadingFiniteNumberOrNull(parsed.weight),
+    weightDelta: toLeadingFiniteNumberOrNull(parsed.change),
+  };
 };
 
 function PaddockWeightValue({ value }: { value: string }) {
@@ -458,13 +488,24 @@ const formatPastJockeyName = (value: string | null | undefined): string => {
 interface PaddockRecentResultsProps {
   loading?: boolean;
   results: HorseRaceResult[] | null;
+  upcomingRaceDate: string;
+  upcomingWeight: number | null;
+  upcomingWeightDelta: number | null;
 }
 
 const PADDOCK_RECENT_RESULTS_SKELETON_COUNT = 3;
 const PADDOCK_RECENT_RESULTS_TEXT_LIMIT = 3;
 const PADDOCK_RECENT_RESULTS_DEFAULT_VIEW_MODE: PaddockRecentResultsViewMode = "text";
+// Comfortable inline gap so the テキスト / グラフ toggles are not cramped.
+const PADDOCK_RECENT_VIEW_CONTROLS_STYLE: CSSProperties = { display: "flex", gap: 8 };
 
-function PaddockRecentResults({ loading = false, results }: PaddockRecentResultsProps) {
+function PaddockRecentResults({
+  loading = false,
+  results,
+  upcomingRaceDate,
+  upcomingWeight,
+  upcomingWeightDelta,
+}: PaddockRecentResultsProps) {
   // Local per-horse view mode: this component is rendered once per horse from the
   // memoized PaddockHorseRow, so the state persists across parent re-renders.
   const [viewMode, setViewMode] = useState<PaddockRecentResultsViewMode>(
@@ -525,7 +566,11 @@ function PaddockRecentResults({ loading = false, results }: PaddockRecentResults
   return (
     <section className="paddock-recent-results" aria-label="近走成績">
       <h3>近走</h3>
-      <div className="paddock-recent-view-controls" aria-label="近走の表示切替">
+      <div
+        className="paddock-recent-view-controls"
+        aria-label="近走の表示切替"
+        style={PADDOCK_RECENT_VIEW_CONTROLS_STYLE}
+      >
         <button
           aria-pressed={!isGraphMode}
           className="stats-control-button"
@@ -544,7 +589,12 @@ function PaddockRecentResults({ loading = false, results }: PaddockRecentResults
         </button>
       </div>
       {isGraphMode ? (
-        <PaddockRecentResultsChart results={results} />
+        <PaddockRecentResultsChart
+          results={results}
+          upcomingRaceDate={upcomingRaceDate}
+          upcomingWeight={upcomingWeight}
+          upcomingWeightDelta={upcomingWeightDelta}
+        />
       ) : (
         <ol>
           {results.slice(0, PADDOCK_RECENT_RESULTS_TEXT_LIMIT).map((result) => (
@@ -930,11 +980,13 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
   status,
   trainerName,
   trainingEvaluationGrade,
+  upcomingRaceDate,
   weight,
 }: PaddockHorseRowProps) {
   const score = (category: PaddockMetric, delta: -1 | 1) => {
     onScore({ category, delta, horseName, horseNumber });
   };
+  const upcomingWeightValues = parseUpcomingWeightValues(weight);
   const displayJockeyName = getPreferredJockeyName(jockeyName, realtimeJockeyName);
   const isScratched = Boolean(status);
   const startsLabel =
@@ -1073,7 +1125,13 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
         </dl>
         <b>{formatPaddockScore(scores.total)}</b>
       </header>
-      <PaddockRecentResults loading={recentResultsLoading} results={recentResults} />
+      <PaddockRecentResults
+        loading={recentResultsLoading}
+        results={recentResults}
+        upcomingRaceDate={upcomingRaceDate}
+        upcomingWeight={upcomingWeightValues.weight}
+        upcomingWeightDelta={upcomingWeightValues.weightDelta}
+      />
       {editable && isScratched ? (
         <div className="paddock-score-unavailable" aria-disabled="true">
           <strong>{status}</strong>
@@ -1562,6 +1620,9 @@ export function PaddockSection({
   const livePath = `${apiPath}/live`;
   const editPath = `/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}/paddock`;
   const raceDetailPath = `/races/${year}/${month}/${day}/${keibajoCode}/${raceNumber}`;
+  // YYYYMMDD of the upcoming (target) race; seeds the 近走 chart's latest-weight
+  // point at the current race date.
+  const upcomingRaceDate = `${year}${month}${day}`;
   const publicRaceDetailUrl = `${PUBLIC_DETAIL_ORIGIN}${raceDetailPath}`;
   const { payload: realtimePayload } = useRealtimeRacePayload(
     realtimeRequest ?? {
@@ -2144,6 +2205,7 @@ export function PaddockSection({
                 trainingEvaluationGrade={
                   premiumTrainingGradesByHorse.get(runner.horseNumber) ?? null
                 }
+                upcomingRaceDate={upcomingRaceDate}
                 weight={runner.weight}
                 onScore={submitScore}
               />

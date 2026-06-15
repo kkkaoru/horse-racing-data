@@ -32,12 +32,28 @@ vi.mock("next/link", () => ({
     React.createElement("a", { href }, children),
 }));
 
+interface PaddockRecentChartStubProps {
+  upcomingRaceDate: string;
+  upcomingWeight: number | null;
+  upcomingWeightDelta: number | null;
+}
+
 vi.mock("./paddock-recent-results-chart", () => ({
-  PaddockRecentResultsChart: () =>
-    React.createElement("div", { "data-testid": "paddock-recent-chart-stub" }),
+  PaddockRecentResultsChart: ({
+    upcomingRaceDate,
+    upcomingWeight,
+    upcomingWeightDelta,
+  }: PaddockRecentChartStubProps) =>
+    React.createElement("div", {
+      "data-testid": "paddock-recent-chart-stub",
+      "data-upcoming-race-date": upcomingRaceDate,
+      "data-upcoming-weight": String(upcomingWeight),
+      "data-upcoming-weight-delta": String(upcomingWeightDelta),
+    }),
 }));
 
-const { PaddockSection, formatUserIdForHistory } = await import("./paddock-section");
+const { PaddockSection, formatUserIdForHistory, parseUpcomingWeightValues } =
+  await import("./paddock-section");
 
 const buildRunner = (overrides: Partial<Runner>): Runner => ({
   bamei: "テストホース",
@@ -1162,4 +1178,102 @@ test("PaddockSection 近走 text button switches back from chart to the past rac
   expect(textButton.getAttribute("aria-pressed")).toBe("true");
   expect(graphButton.getAttribute("aria-pressed")).toBe("false");
   expect(screen.getByText("過去レース").tagName).toBe("STRONG");
+});
+
+test("PaddockSection 近走 toggle container has a comfortable inline gap between buttons", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      recentResults={[buildPastResult({ currentUmaban: "01", kyosomeiHondai: "過去レース" })]}
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  const controls = await screen.findByLabelText("近走の表示切替");
+  expect(controls.style.display).toBe("flex");
+  expect(controls.style.gap).toBe("8px");
+});
+
+test("PaddockSection 近走 chart receives the upcoming weight, delta and race date props", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      recentResults={[buildPastResult({ currentUmaban: "01", kyosomeiHondai: "過去レース" })]}
+      runners={[
+        buildRunner({
+          bamei: "テストホース",
+          bataiju: "486",
+          umaban: "01",
+          zogenFugo: "+",
+          zogenSa: "4",
+        }),
+      ]}
+    />,
+  );
+
+  const graphButton = await screen.findByRole("button", { name: "グラフ" });
+  graphButton.click();
+
+  const chart = await screen.findByTestId("paddock-recent-chart-stub");
+  expect(chart.getAttribute("data-upcoming-race-date")).toBe("20260602");
+  expect(chart.getAttribute("data-upcoming-weight")).toBe("486");
+  expect(chart.getAttribute("data-upcoming-weight-delta")).toBe("4");
+});
+
+test("PaddockSection 近走 chart receives null upcoming weight when the runner has no weight", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      recentResults={[buildPastResult({ currentUmaban: "01", kyosomeiHondai: "過去レース" })]}
+      runners={[
+        buildRunner({
+          bamei: "テストホース",
+          bataiju: "000",
+          umaban: "01",
+          zogenFugo: "+",
+          zogenSa: "0",
+        }),
+      ]}
+    />,
+  );
+
+  const graphButton = await screen.findByRole("button", { name: "グラフ" });
+  graphButton.click();
+
+  const chart = await screen.findByTestId("paddock-recent-chart-stub");
+  expect(chart.getAttribute("data-upcoming-weight")).toBe("null");
+  expect(chart.getAttribute("data-upcoming-weight-delta")).toBe("null");
+});
+
+test("parseUpcomingWeightValues parses weight and signed change from a kg label", () => {
+  expect(parseUpcomingWeightValues("486kg (+4)")).toStrictEqual({ weight: 486, weightDelta: 4 });
+});
+
+test("parseUpcomingWeightValues parses a negative change", () => {
+  expect(parseUpcomingWeightValues("452kg (-6)")).toStrictEqual({ weight: 452, weightDelta: -6 });
+});
+
+test("parseUpcomingWeightValues parses a zero change", () => {
+  expect(parseUpcomingWeightValues("480kg (+0)")).toStrictEqual({ weight: 480, weightDelta: 0 });
+});
+
+test("parseUpcomingWeightValues returns null delta when the label has no parentheses", () => {
+  expect(parseUpcomingWeightValues("480kg")).toStrictEqual({ weight: 480, weightDelta: null });
+});
+
+test("parseUpcomingWeightValues returns null weight when the label is a dash", () => {
+  expect(parseUpcomingWeightValues("-")).toStrictEqual({ weight: null, weightDelta: null });
+});
+
+test("parseUpcomingWeightValues parses a bare numeric weight without a kg suffix", () => {
+  expect(parseUpcomingWeightValues("456(+4)")).toStrictEqual({ weight: 456, weightDelta: 4 });
 });
