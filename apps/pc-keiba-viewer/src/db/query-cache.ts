@@ -1,5 +1,6 @@
 import "server-only";
 import { safeGetCloudflareEnv } from "../lib/cloudflare-context.server";
+import { isEmptyQueryResult } from "../lib/db-query-cacheability";
 import { getDatabaseTarget } from "./client";
 import { withDbRetry } from "./db-retry";
 
@@ -178,6 +179,13 @@ export const withDbQueryCache = async <T>(
   }
 
   const value = await loadWithRetry();
+  // Never cache an empty result. A delayed upstream Neon mirror sync can make
+  // a query transiently return no rows; caching that would serve a stale
+  // "no data" state for up to the TTL even after the data lands. Skipping the
+  // write keeps populated results cacheable while avoiding negative caching.
+  if (isEmptyQueryResult(value)) {
+    return value;
+  }
   const body = JSON.stringify(value);
   const writes: Promise<unknown>[] = [];
   if (defaultCache !== null) {

@@ -84,6 +84,13 @@ export interface RunningStylePlanSummary {
   scanned: number;
 }
 
+interface SettledPlanSummaryInput {
+  completed: number;
+  date: string;
+  missingFeatures: number;
+  scanned: number;
+}
+
 const padDatePart = (value: number): string => String(value).padStart(DATE_PAD_WIDTH, "0");
 
 export const formatYYYYMMDDInJst = (now: Date): string => {
@@ -153,6 +160,44 @@ const isActiveState = (state: RunningStyleInferenceStateDetail | undefined, now:
   return now.getTime() - attemptedAt <= ACTIVE_STATE_TTL_MS;
 };
 
+const toRunningStyleRaceKey = (row: RegisteredRaceRow): string =>
+  buildRunningStyleRaceKey({
+    kaisaiNen: row.kaisai_nen,
+    kaisaiTsukihi: row.kaisai_tsukihi,
+    keibajoCode: row.keibajo_code,
+    raceBango: row.race_bango,
+    source: row.source,
+  });
+
+const isRunningStyleStateCompleted = (
+  state: RunningStyleInferenceStateDetail | undefined,
+): boolean =>
+  state?.status === "completed" &&
+  state.writtenHorseCount !== null &&
+  state.expectedHorseCount !== null &&
+  state.writtenHorseCount >= state.expectedHorseCount;
+
+// D1-only completion probe used to short-circuit the Neon feature-count query.
+// Returns true when every registered race already has a completed inference
+// state (an empty race list trivially satisfies this).
+const allRegisteredRacesCompleted = (
+  registeredRaces: ReadonlyArray<RegisteredRaceRow>,
+  states: ReadonlyMap<string, RunningStyleInferenceStateDetail>,
+): boolean =>
+  registeredRaces.every((row) =>
+    isRunningStyleStateCompleted(states.get(toRunningStyleRaceKey(row))),
+  );
+
+const buildSettledPlanSummary = (input: SettledPlanSummaryInput): RunningStylePlanSummary => ({
+  alreadyQueued: 0,
+  completed: input.completed,
+  date: input.date,
+  enqueued: 0,
+  featureReady: 0,
+  missingFeatures: input.missingFeatures,
+  scanned: input.scanned,
+});
+
 // Planner does not gate on race_entry_corner_features anymore: today's races
 // often arrive in realtime_race_sources before their derived feature cache is
 // built. The per-race worker `handleRunningStylePredictionJob` builds features
@@ -189,11 +234,7 @@ export const selectRacesNeedingRunningStyleInference = (
     const expectedHorseCount = expectedHorseCounts.get(race.raceKey) ?? featureCount;
     const existingHorseCount = predictionCounts.get(race.raceKey) ?? 0;
     const state = states.get(race.raceKey);
-    const stateCompleted =
-      state?.status === "completed" &&
-      state.writtenHorseCount !== null &&
-      state.expectedHorseCount !== null &&
-      state.writtenHorseCount >= state.expectedHorseCount;
+    const stateCompleted = isRunningStyleStateCompleted(state);
     const predictionsMeetExpected =
       expectedHorseCount > 0 && existingHorseCount >= expectedHorseCount;
     if (stateCompleted || predictionsMeetExpected) {
@@ -249,32 +290,38 @@ export const planRunningStylePredictionsForDate = async (
 ): Promise<RunningStylePlanSummary> => {
   const { races: registeredRaces } = await listRunningStyleRacesByDate(env, date);
   if (!isInferenceEnabled(env)) {
-    return {
-      alreadyQueued: 0,
+    return buildSettledPlanSummary({
       completed: 0,
       date,
-      enqueued: 0,
-      featureReady: 0,
       missingFeatures: registeredRaces.length,
       scanned: registeredRaces.length,
-    };
+    });
+  }
+  const raceKeys = registeredRaces.map(toRunningStyleRaceKey);
+  const [predictionCounts, states] = await Promise.all([
+    listRaceRunningStyleCounts(env.REALTIME_DB, raceKeys, { bypassCache: true }),
+    listRunningStyleInferenceStates(env.REALTIME_DB, raceKeys),
+  ]);
+  // Cost guard: when every registered race already has a completed inference
+  // state there is nothing to enqueue, so skip the Neon feature-count query.
+  // This lets Neon compute autosuspend during idle windows (overnight,
+  // post-race) without changing enqueue behavior. The full select path below
+  // would also enqueue zero races in this case, so the result is equivalent.
+  if (allRegisteredRacesCompleted(registeredRaces, states)) {
+    return buildSettledPlanSummary({
+      completed: registeredRaces.length,
+      date,
+      missingFeatures: 0,
+      scanned: registeredRaces.length,
+    });
   }
   const pool = getFinishPositionPool(env);
   const featureCounts = await listFeatureCountsByDate(pool, date);
-  const raceKeys = registeredRaces.map((row) =>
-    buildRunningStyleRaceKey({
-      kaisaiNen: row.kaisai_nen,
-      kaisaiTsukihi: row.kaisai_tsukihi,
-      keibajoCode: row.keibajo_code,
-      raceBango: row.race_bango,
-      source: row.source,
-    }),
+  const expectedHorseCounts = await listRunningStyleExpectedHorseCounts(
+    env.REALTIME_DB,
+    raceKeys,
+    featureCounts,
   );
-  const [predictionCounts, states, expectedHorseCounts] = await Promise.all([
-    listRaceRunningStyleCounts(env.REALTIME_DB, raceKeys, { bypassCache: true }),
-    listRunningStyleInferenceStates(env.REALTIME_DB, raceKeys),
-    listRunningStyleExpectedHorseCounts(env.REALTIME_DB, raceKeys, featureCounts),
-  ]);
   const selected = selectRacesNeedingRunningStyleInference(
     registeredRaces,
     featureCounts,
