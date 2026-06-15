@@ -1,7 +1,7 @@
 "use client";
 
 // Run with bun (rendered by the race-detail 競走成績グラフ section).
-// Race-aligned correlation matrix: one chronological column per race, the four
+// Race-aligned correlation matrix: one chronological column per race, the
 // metrics vertically aligned so one vertical scan reads a race's full context.
 import type { CSSProperties } from "react";
 
@@ -54,6 +54,36 @@ interface DeltaBarCellProps {
   maxAbsDelta: number;
 }
 
+// 着順 - 人気. A negative gap means the horse finished ahead of where the market
+// ranked it (over-performance); a positive gap means it ran below expectation.
+type MarketGapTone = "over" | "under" | "even";
+
+interface MarketGapAppearance {
+  className: string;
+  label: string;
+  tone: MarketGapTone;
+}
+
+interface RankCellProps {
+  isUpcoming: boolean;
+  rank: number | null;
+}
+
+interface MarketGapCellProps {
+  finish: number | null;
+  isUpcoming: boolean;
+  popularity: number | null;
+}
+
+interface MatrixValueRowProps {
+  cellClassName: string;
+  keyPrefix: string;
+  label: string;
+  rows: HorseRaceCorrelationRow[];
+  upcomingRaceDate: string | null;
+  value: (row: HorseRaceCorrelationRow) => string;
+}
+
 const RANK_BADGE_TEXT_LIGHT = "#ffffff";
 const RANK_BADGE_TEXT_DARK = "#1f2937";
 // Shared bucket scale for 着順 and 人気: matching colors in one column mean the
@@ -94,6 +124,21 @@ const MATRIX_DATE_DAY_START = 6;
 const MATRIX_DATE_END = 8;
 const EMPTY_VALUE_LABEL = "-";
 const MATRIX_FULL_WIDTH_CELL_STYLE: CSSProperties = { gridColumn: "2 / -1" };
+const UPCOMING_CELL_CLASS = "race-results-correlation-upcoming";
+const MARKET_GAP_OVER_CLASS = "race-results-correlation-gap-over";
+const MARKET_GAP_UNDER_CLASS = "race-results-correlation-gap-under";
+const MARKET_GAP_EVEN_CLASS = "race-results-correlation-gap-even";
+const MARKET_GAP_EVEN_LABEL = "±0";
+const EVEN_MARKET_GAP_APPEARANCE: MarketGapAppearance = {
+  className: MARKET_GAP_EVEN_CLASS,
+  label: MARKET_GAP_EVEN_LABEL,
+  tone: "even",
+};
+const NULL_MARKET_GAP_APPEARANCE: MarketGapAppearance = {
+  className: MARKET_GAP_EVEN_CLASS,
+  label: EMPTY_VALUE_LABEL,
+  tone: "even",
+};
 
 const findRankBucketAppearance = (rank: number | null): RankBucketAppearance => {
   if (rank === null) {
@@ -104,6 +149,25 @@ const findRankBucketAppearance = (rank: number | null): RankBucketAppearance => 
 
 export const getRankBucketColor = (rank: number | null): string =>
   findRankBucketAppearance(rank).backgroundColor;
+
+// Resolve the 着順 vs 人気 gap into a tone + signed label. A horse finishing
+// better than its popularity rank (smaller finish number) over-performed, which
+// the matrix highlights as the headline comparison.
+export const getMarketGapAppearance = (
+  finish: number | null,
+  popularity: number | null,
+): MarketGapAppearance => {
+  if (finish === null || popularity === null) {
+    return NULL_MARKET_GAP_APPEARANCE;
+  }
+  const gap = finish - popularity;
+  if (gap === 0) {
+    return EVEN_MARKET_GAP_APPEARANCE;
+  }
+  return gap < 0
+    ? { className: MARKET_GAP_OVER_CLASS, label: String(gap), tone: "over" }
+    : { className: MARKET_GAP_UNDER_CLASS, label: `+${gap}`, tone: "under" };
+};
 
 export const buildWeightSparkline = ({
   columnWidth,
@@ -205,6 +269,62 @@ const buildMatrixGridStyle = (columnCount: number): CSSProperties => ({
   gridTemplateColumns: `max-content repeat(${columnCount}, minmax(${MATRIX_COLUMN_MIN_WIDTH_PX}px, 1fr))`,
 });
 
+// The synthetic upcoming/target race is the newest row whose finish AND
+// popularity are still null while its weight is known (mirrors how the data
+// layer appends it). Its raceDate keys the highlighted column.
+const findUpcomingRaceDate = (rows: HorseRaceCorrelationRow[]): string | null => {
+  const upcoming = rows.findLast(
+    (row) => row.finish === null && row.popularity === null && row.weight !== null,
+  );
+  return upcoming === undefined ? null : upcoming.raceDate;
+};
+
+const toCellClassName = (baseClassName: string, isUpcoming: boolean): string =>
+  isUpcoming ? `${baseClassName} ${UPCOMING_CELL_CLASS}` : baseClassName;
+
+const RankCell = ({ isUpcoming, rank }: RankCellProps) => (
+  <span className={toCellClassName("race-results-correlation-cell", isUpcoming)}>
+    <span className="race-results-correlation-rank-badge" style={getRankBadgeStyle(rank)}>
+      {formatMatrixNumber(rank)}
+    </span>
+  </span>
+);
+
+const MarketGapCell = ({ finish, isUpcoming, popularity }: MarketGapCellProps) => {
+  const appearance = getMarketGapAppearance(finish, popularity);
+  return (
+    <span className={toCellClassName("race-results-correlation-cell", isUpcoming)}>
+      <span
+        className={`race-results-correlation-gap-badge ${appearance.className}`}
+        data-tone={appearance.tone}
+      >
+        {appearance.label}
+      </span>
+    </span>
+  );
+};
+
+const MatrixValueRow = ({
+  cellClassName,
+  keyPrefix,
+  label,
+  rows,
+  upcomingRaceDate,
+  value,
+}: MatrixValueRowProps) => (
+  <>
+    <span className="race-results-correlation-row-label">{label}</span>
+    {rows.map((row) => (
+      <span
+        className={toCellClassName(cellClassName, row.raceDate === upcomingRaceDate)}
+        key={`${keyPrefix}-${row.raceDate}`}
+      >
+        {value(row)}
+      </span>
+    ))}
+  </>
+);
+
 const DeltaBarCell = ({ delta, maxAbsDelta }: DeltaBarCellProps) => {
   const barStyle = getDeltaBarStyle(delta, maxAbsDelta);
   return (
@@ -250,42 +370,45 @@ export const HorseRaceResultsCorrelationMatrix = ({
     rows,
   });
   const maxAbsDelta = getMaxAbsDelta(rows);
+  const upcomingRaceDate = findUpcomingRaceDate(rows);
   return (
     <div className="race-results-correlation-matrix">
       <div
         className="race-results-correlation-matrix-grid"
         style={buildMatrixGridStyle(rows.length)}
       >
-        <span className="race-results-correlation-row-label">日付</span>
-        {rows.map((row) => (
-          <span
-            className="race-results-correlation-cell race-results-correlation-date"
-            key={`date-${row.raceDate}`}
-          >
-            {formatMatrixDate(row.raceDate)}
-          </span>
-        ))}
+        <MatrixValueRow
+          cellClassName="race-results-correlation-cell race-results-correlation-date"
+          keyPrefix="date"
+          label="日付"
+          rows={rows}
+          upcomingRaceDate={upcomingRaceDate}
+          value={(row) => formatMatrixDate(row.raceDate)}
+        />
         <span className="race-results-correlation-row-label">着順</span>
         {rows.map((row) => (
-          <span className="race-results-correlation-cell" key={`finish-${row.raceDate}`}>
-            <span
-              className="race-results-correlation-rank-badge"
-              style={getRankBadgeStyle(row.finish)}
-            >
-              {formatMatrixNumber(row.finish)}
-            </span>
-          </span>
+          <RankCell
+            isUpcoming={row.raceDate === upcomingRaceDate}
+            key={`finish-${row.raceDate}`}
+            rank={row.finish}
+          />
         ))}
         <span className="race-results-correlation-row-label">人気</span>
         {rows.map((row) => (
-          <span className="race-results-correlation-cell" key={`popularity-${row.raceDate}`}>
-            <span
-              className="race-results-correlation-rank-badge"
-              style={getRankBadgeStyle(row.popularity)}
-            >
-              {formatMatrixNumber(row.popularity)}
-            </span>
-          </span>
+          <RankCell
+            isUpcoming={row.raceDate === upcomingRaceDate}
+            key={`popularity-${row.raceDate}`}
+            rank={row.popularity}
+          />
+        ))}
+        <span className="race-results-correlation-row-label">差</span>
+        {rows.map((row) => (
+          <MarketGapCell
+            finish={row.finish}
+            isUpcoming={row.raceDate === upcomingRaceDate}
+            key={`gap-${row.raceDate}`}
+            popularity={row.popularity}
+          />
         ))}
         <span className="race-results-correlation-row-label">馬体重</span>
         <span
@@ -324,7 +447,10 @@ export const HorseRaceResultsCorrelationMatrix = ({
         <span aria-hidden="true" className="race-results-correlation-row-label" />
         {rows.map((row) => (
           <span
-            className="race-results-correlation-cell race-results-correlation-weight-label"
+            className={toCellClassName(
+              "race-results-correlation-cell race-results-correlation-weight-label",
+              row.raceDate === upcomingRaceDate,
+            )}
             key={`weight-${row.raceDate}`}
           >
             {formatMatrixNumber(row.weight)}
@@ -332,10 +458,24 @@ export const HorseRaceResultsCorrelationMatrix = ({
         ))}
         <span className="race-results-correlation-row-label">増減</span>
         {rows.map((row) => (
-          <span className="race-results-correlation-cell" key={`delta-${row.raceDate}`}>
+          <span
+            className={toCellClassName(
+              "race-results-correlation-cell",
+              row.raceDate === upcomingRaceDate,
+            )}
+            key={`delta-${row.raceDate}`}
+          >
             <DeltaBarCell delta={row.weightDelta} maxAbsDelta={maxAbsDelta} />
           </span>
         ))}
+        <MatrixValueRow
+          cellClassName="race-results-correlation-cell race-results-correlation-futan-label"
+          keyPrefix="futan"
+          label="斤量"
+          rows={rows}
+          upcomingRaceDate={upcomingRaceDate}
+          value={(row) => formatMatrixNumber(row.futan)}
+        />
       </div>
     </div>
   );

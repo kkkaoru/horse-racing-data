@@ -6,7 +6,11 @@ import type { ReactElement, ReactNode } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 
 import type { HorseRaceResult } from "../../../lib/race-types";
-import { PaddockChartDot, PaddockRecentResultsChart } from "./paddock-recent-results-chart";
+import {
+  PaddockChartDot,
+  PaddockRecentResultsChart,
+  PaddockRecentTooltip,
+} from "./paddock-recent-results-chart";
 
 interface ChartChildrenStubProps {
   children?: ReactNode;
@@ -14,6 +18,7 @@ interface ChartChildrenStubProps {
 
 interface ComposedChartRowStub {
   dateValue: number;
+  futan: number | null;
   isUpcoming?: boolean;
   weight: number | null;
   weightDelta: number | null;
@@ -35,6 +40,8 @@ interface LineStubProps {
 interface YAxisStubProps {
   label?: string;
   reversed?: boolean;
+  tickCount?: number;
+  width?: number;
   yAxisId?: string;
 }
 
@@ -61,6 +68,7 @@ interface PaddockTooltipInjectedProps {
 interface HorseRaceResultRowStub {
   dateValue: number;
   finish: number | null;
+  futan: number | null;
   keibajoCode: string;
   kishumeiRyakusho: string | null;
   kyori: string | null;
@@ -78,6 +86,7 @@ interface TooltipStubProps {
 const TOOLTIP_FIXTURE_ROW: HorseRaceResultRowStub = {
   dateValue: 0,
   finish: 1,
+  futan: 55,
   keibajoCode: "05",
   kishumeiRyakusho: "ルメール",
   kyori: "2000",
@@ -94,6 +103,7 @@ vi.mock("recharts", () => ({
   ),
   ComposedChart: ({ children, data }: ComposedChartStubProps) => (
     <div
+      data-last-futan={String(data?.at(-1)?.futan ?? "none")}
       data-last-is-upcoming={String(data?.at(-1)?.isUpcoming ?? false)}
       data-last-weight={String(data?.at(-1)?.weight ?? "none")}
       data-last-weight-delta={String(data?.at(-1)?.weightDelta ?? "none")}
@@ -137,8 +147,14 @@ vi.mock("recharts", () => ({
     </div>
   ),
   XAxis: ({ scale }: XAxisStubProps) => <div data-scale={scale} data-testid="x-axis-stub" />,
-  YAxis: ({ label, reversed, yAxisId }: YAxisStubProps) => (
-    <div data-label={label} data-testid="y-axis-stub" data-y-axis-id={yAxisId}>
+  YAxis: ({ label, reversed, tickCount, width, yAxisId }: YAxisStubProps) => (
+    <div
+      data-label={label}
+      data-testid="y-axis-stub"
+      data-tick-count={String(tickCount)}
+      data-width={String(width)}
+      data-y-axis-id={yAxisId}
+    >
       {reversed === true ? "reversed" : "normal"}
     </div>
   ),
@@ -217,7 +233,7 @@ test("renders the empty state when every row has an invalid race date", () => {
   expect(screen.queryAllByTestId("composed-chart-stub").length).toStrictEqual(0);
 });
 
-test("renders all four metric series as lines in chip render order by default", () => {
+test("renders finish, popularity, weight and weightDelta lines by default and hides futan", () => {
   render(<PaddockRecentResultsChart results={[chartResult({})]} />);
   expect(screen.getAllByTestId("composed-chart-stub").length).toStrictEqual(1);
   expect(screen.getAllByTestId("line-stub").map((line) => line.textContent)).toStrictEqual([
@@ -226,6 +242,48 @@ test("renders all four metric series as lines in chip render order by default", 
     "馬体重",
     "馬体重増減",
   ]);
+});
+
+test("pressing the futan chip adds the violet futan line on the futan axis", () => {
+  render(<PaddockRecentResultsChart results={[chartResult({})]} />);
+  fireEvent.click(screen.getByRole("button", { name: "斤量" }));
+  expect(screen.getAllByTestId("line-stub").at(4)?.getAttribute("data-data-key")).toStrictEqual(
+    "futan",
+  );
+  expect(screen.getAllByTestId("line-stub").at(4)?.getAttribute("data-stroke")).toStrictEqual(
+    "#7c3aed",
+  );
+  expect(screen.getAllByTestId("line-stub").at(4)?.getAttribute("data-y-axis-id")).toStrictEqual(
+    "futan",
+  );
+  expect(screen.getAllByTestId("line-stub").at(4)?.getAttribute("data-dash")).toStrictEqual("4 4");
+});
+
+test("renders the futan chip pressed off by default", () => {
+  render(<PaddockRecentResultsChart results={[chartResult({})]} />);
+  expect(screen.getByRole("button", { name: "斤量" }).getAttribute("aria-pressed")).toStrictEqual(
+    "false",
+  );
+});
+
+test("the futan chip exposes the shared chip class and data-active flag", () => {
+  render(<PaddockRecentResultsChart results={[chartResult({})]} />);
+  expect(screen.getByRole("button", { name: "斤量" }).getAttribute("class")).toStrictEqual(
+    "stats-control-button race-results-chart-chip",
+  );
+  expect(screen.getByRole("button", { name: "斤量" }).getAttribute("data-active")).toStrictEqual(
+    "false",
+  );
+});
+
+test("an active chip reports data-active true while staying aria-pressed", () => {
+  render(<PaddockRecentResultsChart results={[chartResult({})]} />);
+  expect(screen.getByRole("button", { name: "着順" }).getAttribute("data-active")).toStrictEqual(
+    "true",
+  );
+  expect(screen.getByRole("button", { name: "着順" }).getAttribute("aria-pressed")).toStrictEqual(
+    "true",
+  );
 });
 
 test("renders the weight-delta series as an orange line on the delta axis", () => {
@@ -241,14 +299,14 @@ test("renders the weight-delta series as an orange line on the delta axis", () =
   );
 });
 
-test("maps each metric line to its data key and stroke color", () => {
+test("maps each visible metric line to its data key and revised stroke color", () => {
   render(<PaddockRecentResultsChart results={[chartResult({})]} />);
   expect(
     screen.getAllByTestId("line-stub").map((line) => line.getAttribute("data-data-key")),
   ).toStrictEqual(["finish", "popularity", "weight", "weightDelta"]);
   expect(
     screen.getAllByTestId("line-stub").map((line) => line.getAttribute("data-stroke")),
-  ).toStrictEqual(["#dc2626", "#2563eb", "#0f766e", "#ea580c"]);
+  ).toStrictEqual(["#c81e1e", "#1d4ed8", "#047857", "#ea580c"]);
 });
 
 test("renders the finish line solid and the popularity line dashed", () => {
@@ -258,18 +316,26 @@ test("renders the finish line solid and the popularity line dashed", () => {
   ).toStrictEqual(["none", "6 3", "none", "none"]);
 });
 
-test("assigns the rank, weight and delta axes to their metric lines", () => {
+test("assigns the rank, weight and delta axes to their default metric lines", () => {
   render(<PaddockRecentResultsChart results={[chartResult({})]} />);
   expect(
     screen.getAllByTestId("line-stub").map((line) => line.getAttribute("data-y-axis-id")),
   ).toStrictEqual(["rank", "rank", "weight", "delta"]);
 });
 
-test("renders three visible y axes in rank, weight, delta order", () => {
+test("renders three visible y axes in rank, weight, delta order by default", () => {
   render(<PaddockRecentResultsChart results={[chartResult({})]} />);
   expect(
     screen.getAllByTestId("y-axis-stub").map((axis) => axis.getAttribute("data-y-axis-id")),
   ).toStrictEqual(["rank", "weight", "delta"]);
+});
+
+test("shows the futan axis only after the futan chip is pressed", () => {
+  render(<PaddockRecentResultsChart results={[chartResult({})]} />);
+  fireEvent.click(screen.getByRole("button", { name: "斤量" }));
+  expect(
+    screen.getAllByTestId("y-axis-stub").map((axis) => axis.getAttribute("data-y-axis-id")),
+  ).toStrictEqual(["rank", "weight", "delta", "futan"]);
 });
 
 test("reverses only the rank axis and keeps the weight and delta axes normal", () => {
@@ -281,11 +347,29 @@ test("reverses only the rank axis and keeps the weight and delta axes normal", (
   ]);
 });
 
-test("labels the three y axes with their metric names", () => {
+test("labels the three default y axes with their metric names", () => {
   render(<PaddockRecentResultsChart results={[chartResult({})]} />);
   expect(
     screen.getAllByTestId("y-axis-stub").map((axis) => axis.getAttribute("data-label")),
   ).toStrictEqual(["着順/人気", "馬体重", "増減"]);
+});
+
+test("labels the futan axis with its metric name once shown", () => {
+  render(<PaddockRecentResultsChart results={[chartResult({})]} />);
+  fireEvent.click(screen.getByRole("button", { name: "斤量" }));
+  expect(
+    screen.getAllByTestId("y-axis-stub").map((axis) => axis.getAttribute("data-label")),
+  ).toStrictEqual(["着順/人気", "馬体重", "増減", "斤量"]);
+});
+
+test("widens the value axes and caps tick counts for readability", () => {
+  render(<PaddockRecentResultsChart results={[chartResult({})]} />);
+  expect(
+    screen.getAllByTestId("y-axis-stub").map((axis) => axis.getAttribute("data-width")),
+  ).toStrictEqual(["36", "48", "44"]);
+  expect(
+    screen.getAllByTestId("y-axis-stub").map((axis) => axis.getAttribute("data-tick-count")),
+  ).toStrictEqual(["6", "6", "6"]);
 });
 
 test("renders a dashed cartesian grid behind the chart", () => {
@@ -329,7 +413,7 @@ test("renders the legend and passes every plottable row to the chart", () => {
   );
 });
 
-test("renders all four toggle chips pressed on by default", () => {
+test("renders four metric chips pressed on and the futan chip pressed off by default", () => {
   render(<PaddockRecentResultsChart results={[chartResult({})]} />);
   expect(screen.getByRole("button", { name: "着順" }).getAttribute("aria-pressed")).toStrictEqual(
     "true",
@@ -343,6 +427,9 @@ test("renders all four toggle chips pressed on by default", () => {
   expect(
     screen.getByRole("button", { name: "馬体重増減" }).getAttribute("aria-pressed"),
   ).toStrictEqual("true");
+  expect(screen.getByRole("button", { name: "斤量" }).getAttribute("aria-pressed")).toStrictEqual(
+    "false",
+  );
 });
 
 test("hiding the weight chip drops the weight line and hides the weight axis", () => {
@@ -406,6 +493,144 @@ test("re-pressing a hidden chip restores its line and axis", () => {
   ).toStrictEqual(["finish", "popularity", "weight", "weightDelta"]);
 });
 
+test("the combine toggle is pressed off by default and labels the weight axis as plain weight", () => {
+  render(<PaddockRecentResultsChart results={[chartResult({})]} />);
+  expect(
+    screen.getByRole("button", { name: "馬体重に斤量を合算" }).getAttribute("aria-pressed"),
+  ).toStrictEqual("false");
+  expect(
+    screen.getAllByTestId("y-axis-stub").map((axis) => axis.getAttribute("data-label")),
+  ).toStrictEqual(["着順/人気", "馬体重", "増減"]);
+});
+
+test("turning the combine toggle on sums carried weight into the weight row value", () => {
+  render(
+    <PaddockRecentResultsChart results={[chartResult({ bataiju: "480", futanJuryo: "550" })]} />,
+  );
+  expect(screen.getByTestId("composed-chart-stub").getAttribute("data-last-weight")).toStrictEqual(
+    "480",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "馬体重に斤量を合算" }));
+  expect(screen.getByTestId("composed-chart-stub").getAttribute("data-last-weight")).toStrictEqual(
+    "535",
+  );
+});
+
+test("turning the combine toggle on relabels the weight axis and chip", () => {
+  render(<PaddockRecentResultsChart results={[chartResult({})]} />);
+  fireEvent.click(screen.getByRole("button", { name: "馬体重に斤量を合算" }));
+  expect(
+    screen.getAllByTestId("y-axis-stub").map((axis) => axis.getAttribute("data-label")),
+  ).toStrictEqual(["着順/人気", "馬体重+斤量", "増減"]);
+  expect(
+    screen.getByRole("button", { name: "馬体重+斤量" }).getAttribute("aria-pressed"),
+  ).toStrictEqual("true");
+});
+
+test("the period slider defaults to 全N走 and the most recent ten races when fewer than ten exist", () => {
+  render(
+    <PaddockRecentResultsChart
+      results={[
+        chartResult({ kaisaiTsukihi: "0101", raceBango: "01" }),
+        chartResult({ kaisaiTsukihi: "0202", raceBango: "02" }),
+        chartResult({ kaisaiTsukihi: "0303", raceBango: "03" }),
+      ]}
+    />,
+  );
+  expect(screen.getByText("全3走").textContent).toStrictEqual("全3走");
+  expect(screen.getByRole("slider").getAttribute("value")).toStrictEqual("3");
+  expect(screen.getByTestId("composed-chart-stub").getAttribute("data-row-count")).toStrictEqual(
+    "3",
+  );
+});
+
+test("the period slider defaults to 直近10走 when more than ten races exist", () => {
+  render(
+    <PaddockRecentResultsChart
+      results={[
+        chartResult({ kaisaiTsukihi: "0101", raceBango: "01" }),
+        chartResult({ kaisaiTsukihi: "0102", raceBango: "02" }),
+        chartResult({ kaisaiTsukihi: "0103", raceBango: "03" }),
+        chartResult({ kaisaiTsukihi: "0104", raceBango: "04" }),
+        chartResult({ kaisaiTsukihi: "0105", raceBango: "05" }),
+        chartResult({ kaisaiTsukihi: "0106", raceBango: "06" }),
+        chartResult({ kaisaiTsukihi: "0107", raceBango: "07" }),
+        chartResult({ kaisaiTsukihi: "0108", raceBango: "08" }),
+        chartResult({ kaisaiTsukihi: "0109", raceBango: "09" }),
+        chartResult({ kaisaiTsukihi: "0110", raceBango: "10" }),
+        chartResult({ kaisaiTsukihi: "0111", raceBango: "11" }),
+        chartResult({ kaisaiTsukihi: "0112", raceBango: "12" }),
+      ]}
+    />,
+  );
+  expect(screen.getByText("直近10走").textContent).toStrictEqual("直近10走");
+  expect(screen.getByRole("slider").getAttribute("value")).toStrictEqual("10");
+  expect(screen.getByTestId("composed-chart-stub").getAttribute("data-row-count")).toStrictEqual(
+    "10",
+  );
+});
+
+test("lowering the period slider trims the chart to the most recent races and shows 直近N走", () => {
+  render(
+    <PaddockRecentResultsChart
+      results={[
+        chartResult({ kaisaiTsukihi: "0101", raceBango: "01" }),
+        chartResult({ kaisaiTsukihi: "0202", raceBango: "02" }),
+        chartResult({ kaisaiTsukihi: "0303", raceBango: "03" }),
+        chartResult({ kaisaiTsukihi: "0404", raceBango: "04" }),
+        chartResult({ kaisaiTsukihi: "0505", raceBango: "05" }),
+      ]}
+    />,
+  );
+  expect(screen.getByText("全5走").textContent).toStrictEqual("全5走");
+  fireEvent.change(screen.getByRole("slider"), { target: { value: "3" } });
+  expect(screen.getByText("直近3走").textContent).toStrictEqual("直近3走");
+  expect(screen.getByTestId("composed-chart-stub").getAttribute("data-row-count")).toStrictEqual(
+    "3",
+  );
+});
+
+test("orders same-date races by raceBango ascending via the tie-breaker comparator", () => {
+  render(
+    <PaddockRecentResultsChart
+      results={[
+        chartResult({ kaisaiTsukihi: "0322", raceBango: "02", bataiju: "470" }),
+        chartResult({ kaisaiTsukihi: "0322", raceBango: "01", bataiju: "460" }),
+      ]}
+    />,
+  );
+  expect(screen.getByText("全2走").textContent).toStrictEqual("全2走");
+  expect(screen.getByTestId("composed-chart-stub").getAttribute("data-row-count")).toStrictEqual(
+    "2",
+  );
+  expect(screen.getByTestId("composed-chart-stub").getAttribute("data-last-weight")).toStrictEqual(
+    "470",
+  );
+});
+
+test("keeps the upcoming point even when it falls outside a trimmed recent window", () => {
+  render(
+    <PaddockRecentResultsChart
+      results={[
+        chartResult({ kaisaiTsukihi: "0101", raceBango: "01" }),
+        chartResult({ kaisaiTsukihi: "0202", raceBango: "02" }),
+        chartResult({ kaisaiTsukihi: "0303", raceBango: "03" }),
+        chartResult({ kaisaiTsukihi: "0404", raceBango: "04" }),
+      ]}
+      upcomingRaceDate="20260614"
+      upcomingWeight={500}
+      upcomingWeightDelta={2}
+    />,
+  );
+  fireEvent.change(screen.getByRole("slider"), { target: { value: "3" } });
+  expect(screen.getByTestId("composed-chart-stub").getAttribute("data-row-count")).toStrictEqual(
+    "4",
+  );
+  expect(
+    screen.getByTestId("composed-chart-stub").getAttribute("data-last-is-upcoming"),
+  ).toStrictEqual("true");
+});
+
 test("appends the upcoming weight point as the newest row when props are valid", () => {
   render(
     <PaddockRecentResultsChart
@@ -427,6 +652,9 @@ test("appends the upcoming weight point as the newest row when props are valid",
   expect(
     screen.getByTestId("composed-chart-stub").getAttribute("data-last-weight-delta"),
   ).toStrictEqual("6");
+  expect(screen.getByTestId("composed-chart-stub").getAttribute("data-last-futan")).toStrictEqual(
+    "none",
+  );
 });
 
 test("falls back to a null upcoming delta when the delta prop is not finite", () => {
@@ -483,29 +711,29 @@ test("omits the upcoming point when the weight prop is not a finite number", () 
 test("PaddockChartDot renders a larger radius four circle for the upcoming point", () => {
   const { container } = render(
     <svg>
-      <PaddockChartDot cx={10} cy={20} payload={{ isUpcoming: true }} stroke="#0f766e" />
+      <PaddockChartDot cx={10} cy={20} payload={{ isUpcoming: true }} stroke="#047857" />
     </svg>,
   );
   const circle = container.querySelector("circle");
   expect(circle?.getAttribute("r")).toStrictEqual("4");
-  expect(circle?.getAttribute("fill")).toStrictEqual("#0f766e");
+  expect(circle?.getAttribute("fill")).toStrictEqual("#047857");
 });
 
 test("PaddockChartDot renders the default radius two circle for a past point", () => {
   const { container } = render(
     <svg>
-      <PaddockChartDot cx={10} cy={20} payload={{ isUpcoming: false }} stroke="#dc2626" />
+      <PaddockChartDot cx={10} cy={20} payload={{ isUpcoming: false }} stroke="#c81e1e" />
     </svg>,
   );
   const circle = container.querySelector("circle");
   expect(circle?.getAttribute("r")).toStrictEqual("2");
-  expect(circle?.getAttribute("stroke")).toStrictEqual("#dc2626");
+  expect(circle?.getAttribute("stroke")).toStrictEqual("#c81e1e");
 });
 
 test("PaddockChartDot renders nothing when the coordinates are missing", () => {
   const { container } = render(
     <svg>
-      <PaddockChartDot payload={{ isUpcoming: true }} stroke="#0f766e" />
+      <PaddockChartDot payload={{ isUpcoming: true }} stroke="#047857" />
     </svg>,
   );
   expect(container.querySelectorAll("circle").length).toStrictEqual(0);
@@ -514,7 +742,7 @@ test("PaddockChartDot renders nothing when the coordinates are missing", () => {
 test("PaddockChartDot renders nothing when only the y coordinate is missing", () => {
   const { container } = render(
     <svg>
-      <PaddockChartDot cx={10} payload={{ isUpcoming: false }} stroke="#dc2626" />
+      <PaddockChartDot cx={10} payload={{ isUpcoming: false }} stroke="#c81e1e" />
     </svg>,
   );
   expect(container.querySelectorAll("circle").length).toStrictEqual(0);
@@ -544,6 +772,7 @@ test("renders the tooltip with the date, every metric value and the metadata fie
   expect(screen.getByText("人気 3番人気").textContent).toStrictEqual("人気 3番人気");
   expect(screen.getByText("馬体重 480kg").textContent).toStrictEqual("馬体重 480kg");
   expect(screen.getByText("馬体重増減 6kg").textContent).toStrictEqual("馬体重増減 6kg");
+  expect(screen.getByText("斤量 55kg").textContent).toStrictEqual("斤量 55kg");
   expect(screen.getByText("枠番 3").textContent).toStrictEqual("枠番 3");
   expect(screen.getByText("騎手 ルメール").textContent).toStrictEqual("騎手 ルメール");
   expect(screen.getByText("距離 2000m").textContent).toStrictEqual("距離 2000m");
@@ -557,4 +786,95 @@ test("renders the tooltip with a white background and dark text for mobile reada
   expect(tooltip?.style.backgroundColor).toStrictEqual("#ffffff");
   expect(tooltip?.style.color).toStrictEqual("#1f2937");
   expect(tooltip?.style.maxWidth).toStrictEqual("220px");
+});
+
+test("PaddockRecentTooltip renders nothing when it is not active", () => {
+  const { container } = render(
+    <PaddockRecentTooltip
+      active={false}
+      payload={[
+        {
+          payload: {
+            dateValue: 0,
+            finish: 1,
+            futan: 55,
+            isUpcoming: false,
+            keibajoCode: "05",
+            kishumeiRyakusho: "ルメール",
+            kyori: "2000",
+            popularity: 3,
+            raceDate: "20260322",
+            wakuban: "3",
+            weight: 480,
+            weightDelta: 6,
+          },
+        },
+      ]}
+    />,
+  );
+  expect(container.querySelectorAll("div").length).toStrictEqual(0);
+});
+
+test("PaddockRecentTooltip renders nothing when there is no payload entry", () => {
+  const { container } = render(<PaddockRecentTooltip active={true} payload={[]} />);
+  expect(container.querySelectorAll("div").length).toStrictEqual(0);
+});
+
+test("PaddockRecentTooltip omits null metric lines and shows dash meta with a fallback frame", () => {
+  render(
+    <PaddockRecentTooltip
+      active={true}
+      payload={[
+        {
+          payload: {
+            dateValue: 0,
+            finish: null,
+            futan: null,
+            isUpcoming: false,
+            keibajoCode: "",
+            kishumeiRyakusho: null,
+            kyori: null,
+            popularity: null,
+            raceDate: "20260322",
+            wakuban: null,
+            weight: null,
+            weightDelta: null,
+          },
+        },
+      ]}
+    />,
+  );
+  expect(screen.queryAllByText("着順 1着").length).toStrictEqual(0);
+  expect(screen.getByText("枠番 -").textContent).toStrictEqual("枠番 -");
+  expect(screen.getByText("騎手 -").textContent).toStrictEqual("騎手 -");
+  const tooltip = screen.getByText("1970/01/01").parentElement;
+  expect(tooltip?.style.borderColor).toStrictEqual("#9ca3af");
+});
+
+test("PaddockRecentTooltip treats whitespace-only jockey and wakuban as a dash", () => {
+  render(
+    <PaddockRecentTooltip
+      active={true}
+      payload={[
+        {
+          payload: {
+            dateValue: 0,
+            finish: 2,
+            futan: 55,
+            isUpcoming: false,
+            keibajoCode: "05",
+            kishumeiRyakusho: "  ",
+            kyori: "2000",
+            popularity: 4,
+            raceDate: "20260322",
+            wakuban: "  ",
+            weight: 480,
+            weightDelta: -4,
+          },
+        },
+      ]}
+    />,
+  );
+  expect(screen.getByText("枠番 -").textContent).toStrictEqual("枠番 -");
+  expect(screen.getByText("騎手 -").textContent).toStrictEqual("騎手 -");
 });

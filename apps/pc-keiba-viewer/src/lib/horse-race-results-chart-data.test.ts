@@ -4,8 +4,11 @@ import { describe, expect, it } from "vitest";
 import {
   buildHorseRaceChartSeriesList,
   buildHorseRaceCorrelationRows,
+  countHorseRaceResultsSpanMonths,
+  filterHorseRaceResultsToRecentMonths,
   filterHorseRaceResultsToRecentYears,
   formatHorseRaceChartDate,
+  getCombinedWeightValue,
   getHorseRaceChartMetricValue,
   HORSE_RACE_CHART_METRIC_LABELS,
   HORSE_RACE_CHART_METRIC_UNITS,
@@ -307,6 +310,157 @@ describe("horse race results chart data", () => {
     expect(getHorseRaceChartMetricValue(row, "weightDelta")).toBeNull();
   });
 
+  it("parses a non-Ban-ei carried weight from decigrams to kilograms", () => {
+    expect(
+      getHorseRaceChartMetricValue(buildResult({ futanJuryo: "560", keibajoCode: "05" }), "futan"),
+    ).toBe(56);
+  });
+
+  it("decodes a Ban-ei carried weight as a hexadecimal kilogram value", () => {
+    expect(
+      getHorseRaceChartMetricValue(buildResult({ futanJuryo: "3E8", keibajoCode: "83" }), "futan"),
+    ).toBe(1000);
+  });
+
+  it("returns null for a null carried weight", () => {
+    expect(getHorseRaceChartMetricValue(buildResult({ futanJuryo: null }), "futan")).toBeNull();
+  });
+
+  it("returns null for the FFF carried weight sentinel", () => {
+    expect(getHorseRaceChartMetricValue(buildResult({ futanJuryo: "FFF" }), "futan")).toBeNull();
+  });
+
+  it("returns null for the all-zero carried weight sentinel", () => {
+    expect(getHorseRaceChartMetricValue(buildResult({ futanJuryo: "000" }), "futan")).toBeNull();
+  });
+
+  it("returns null for a non-numeric carried weight", () => {
+    expect(
+      getHorseRaceChartMetricValue(buildResult({ futanJuryo: "ABC", keibajoCode: "05" }), "futan"),
+    ).toBeNull();
+  });
+
+  it("returns the plain body weight when combineFutan is off", () => {
+    expect(
+      getCombinedWeightValue(
+        buildResult({ bataiju: "480", futanJuryo: "560", keibajoCode: "05" }),
+        false,
+      ),
+    ).toBe(480);
+  });
+
+  it("adds the carried weight to the body weight when combineFutan is on", () => {
+    expect(
+      getCombinedWeightValue(
+        buildResult({ bataiju: "480", futanJuryo: "560", keibajoCode: "05" }),
+        true,
+      ),
+    ).toBe(536);
+  });
+
+  it("returns the body weight alone when combineFutan is on but the carried weight is null", () => {
+    expect(
+      getCombinedWeightValue(
+        buildResult({ bataiju: "480", futanJuryo: "000", keibajoCode: "05" }),
+        true,
+      ),
+    ).toBe(480);
+  });
+
+  it("returns null when combineFutan is on but the body weight is null", () => {
+    expect(
+      getCombinedWeightValue(
+        buildResult({ bataiju: "000", futanJuryo: "560", keibajoCode: "05" }),
+        true,
+      ),
+    ).toBeNull();
+  });
+
+  it("plots the combined body and carried weight on past weight points when combineFutan is true", () => {
+    const seriesList = buildHorseRaceChartSeriesList({
+      combineFutan: true,
+      metric: "weight",
+      results: [
+        buildResult({
+          kaisaiNen: "2025",
+          kaisaiTsukihi: "0112",
+          bataiju: "480",
+          futanJuryo: "560",
+          keibajoCode: "05",
+        }),
+      ],
+    });
+    expect(seriesList[0]?.points).toStrictEqual([
+      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 536 },
+    ]);
+  });
+
+  it("plots the plain body weight on past weight points when combineFutan is omitted", () => {
+    const seriesList = buildHorseRaceChartSeriesList({
+      metric: "weight",
+      results: [
+        buildResult({
+          kaisaiNen: "2025",
+          kaisaiTsukihi: "0112",
+          bataiju: "480",
+          futanJuryo: "560",
+          keibajoCode: "05",
+        }),
+      ],
+    });
+    expect(seriesList[0]?.points).toStrictEqual([
+      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 480 },
+    ]);
+  });
+
+  it("leaves the synthetic upcoming weight point unchanged when combineFutan is true", () => {
+    const seriesList = buildHorseRaceChartSeriesList({
+      combineFutan: true,
+      metric: "weight",
+      results: [
+        buildResult({
+          kaisaiNen: "2025",
+          kaisaiTsukihi: "0112",
+          bataiju: "480",
+          futanJuryo: "560",
+          keibajoCode: "05",
+        }),
+      ],
+      runners: [buildRunner({ kettoTorokuBango: "2020000001", bataiju: "486" })],
+      targetKeibajoCode: "05",
+      targetRaceDate: "20260601",
+    });
+    expect(seriesList[0]?.points).toStrictEqual([
+      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 536 },
+      {
+        dateValue: 1780272000000,
+        isUpcoming: true,
+        jockey: null,
+        kyori: null,
+        raceDate: "20260601",
+        value: 486,
+      },
+    ]);
+  });
+
+  it("ignores combineFutan for non-weight metrics", () => {
+    const seriesList = buildHorseRaceChartSeriesList({
+      combineFutan: true,
+      metric: "finish",
+      results: [
+        buildResult({
+          kaisaiNen: "2025",
+          kaisaiTsukihi: "0112",
+          kakuteiChakujun: "03",
+          futanJuryo: "560",
+        }),
+      ],
+    });
+    expect(seriesList[0]?.points).toStrictEqual([
+      { dateValue: 1736640000000, jockey: "山田", kyori: "1200", raceDate: "20250112", value: 3 },
+    ]);
+  });
+
   it("returns an empty series list for empty results", () => {
     expect(buildHorseRaceChartSeriesList({ metric: "finish", results: [] })).toStrictEqual([]);
   });
@@ -330,7 +484,7 @@ describe("horse race results chart data", () => {
     expect(seriesList).toStrictEqual([
       {
         bamei: "テストホース",
-        color: "#d62728",
+        color: "#e6194b",
         frame: null,
         kettoTorokuBango: "2020000001",
         points: [
@@ -387,7 +541,7 @@ describe("horse race results chart data", () => {
     expect(seriesList).toStrictEqual([
       {
         bamei: "テストホース",
-        color: "#d62728",
+        color: "#e6194b",
         frame: null,
         kettoTorokuBango: "2020000001",
         points: [
@@ -433,7 +587,7 @@ describe("horse race results chart data", () => {
     expect(seriesList).toStrictEqual([
       {
         bamei: "テストホース",
-        color: "#d62728",
+        color: "#e6194b",
         frame: null,
         kettoTorokuBango: "2020000001",
         points: [],
@@ -485,9 +639,9 @@ describe("horse race results chart data", () => {
     });
     expect(seriesList.map((series) => series.umaban)).toStrictEqual([1, 2, 3]);
     expect(seriesList.map((series) => series.color)).toStrictEqual([
-      "#d62728",
-      "#1f77b4",
-      "#2ca02c",
+      "#e6194b",
+      "#3cb44b",
+      "#4363d8",
     ]);
   });
 
@@ -539,7 +693,7 @@ describe("horse race results chart data", () => {
       "0000000001",
       "9999999999",
     ]);
-    expect(seriesList.map((series) => series.color)).toStrictEqual(["#d62728", "#1f77b4"]);
+    expect(seriesList.map((series) => series.color)).toStrictEqual(["#e6194b", "#3cb44b"]);
   });
 
   it("cycles palette colors so umaban 19 matches umaban 1", () => {
@@ -550,7 +704,7 @@ describe("horse race results chart data", () => {
         buildResult({ currentUmaban: "01", kettoTorokuBango: "2020000001" }),
       ],
     });
-    expect(seriesList.map((series) => series.color)).toStrictEqual(["#d62728", "#d62728"]);
+    expect(seriesList.map((series) => series.color)).toStrictEqual(["#e6194b", "#e6194b"]);
   });
 
   it("assigns the fallback color for an out-of-range umaban", () => {
@@ -569,7 +723,7 @@ describe("horse race results chart data", () => {
         buildResult({ currentUmaban: null, kettoTorokuBango: "2020000009" }),
       ],
     });
-    expect(seriesList.map((series) => series.color)).toStrictEqual(["#1f77b4", "#d62728"]);
+    expect(seriesList.map((series) => series.color)).toStrictEqual(["#3cb44b", "#e6194b"]);
   });
 
   it("cycles fallback colors through the palette entries unused by umaban-keyed series", () => {
@@ -598,25 +752,25 @@ describe("horse race results chart data", () => {
       ],
     });
     expect(seriesList.map((series) => series.color)).toStrictEqual([
-      "#d62728",
-      "#1f77b4",
-      "#2ca02c",
-      "#ff7f0e",
-      "#9467bd",
-      "#8c564b",
-      "#e377c2",
-      "#17becf",
-      "#bcbd22",
-      "#7f7f7f",
-      "#393b79",
-      "#637939",
-      "#8c6d31",
-      "#843c39",
-      "#7b4173",
-      "#5254a3",
-      "#0f766e",
-      "#b45309",
-      "#2ca02c",
+      "#e6194b",
+      "#3cb44b",
+      "#4363d8",
+      "#f58231",
+      "#911eb4",
+      "#42d4f4",
+      "#f032e6",
+      "#bfa600",
+      "#9a6324",
+      "#469990",
+      "#800000",
+      "#000075",
+      "#e60073",
+      "#808000",
+      "#3d8b00",
+      "#7a3cff",
+      "#d35400",
+      "#0089a3",
+      "#4363d8",
     ]);
   });
 
@@ -645,8 +799,8 @@ describe("horse race results chart data", () => {
         buildResult({ currentUmaban: null, kettoTorokuBango: "3000000001" }),
       ],
     });
-    expect(seriesList[17]?.color).toBe("#b45309");
-    expect(seriesList[18]?.color).toBe("#d62728");
+    expect(seriesList[17]?.color).toBe("#0089a3");
+    expect(seriesList[18]?.color).toBe("#e6194b");
   });
 
   it("skips rows with invalid dates when building points", () => {
@@ -1206,15 +1360,16 @@ describe("horse race results chart data", () => {
     expect(rows).toStrictEqual([]);
   });
 
-  it("builds a correlation row with all four metrics parsed", () => {
+  it("builds a correlation row with every metric parsed", () => {
     const rows = buildHorseRaceCorrelationRows({
       kettoTorokuBango: "2020000001",
-      results: [buildResult({ zogenFugo: "-", zogenSa: "008" })],
+      results: [buildResult({ futanJuryo: "560", zogenFugo: "-", zogenSa: "008" })],
     });
     expect(rows).toStrictEqual([
       {
         dateValue: 1736640000000,
         finish: 1,
+        futan: 56,
         popularity: 1,
         raceDate: "20250112",
         weight: 480,
@@ -1223,12 +1378,24 @@ describe("horse race results chart data", () => {
     ]);
   });
 
-  it("keeps a correlation row when all four metrics are null", () => {
+  it("leaves the upcoming correlation row futan null", () => {
+    const rows = buildHorseRaceCorrelationRows({
+      kettoTorokuBango: "2020000001",
+      results: [buildResult({ kaisaiNen: "2025", kaisaiTsukihi: "0112", futanJuryo: "560" })],
+      runners: [buildRunner({ kettoTorokuBango: "2020000001", bataiju: "486" })],
+      targetKeibajoCode: "05",
+      targetRaceDate: "20260601",
+    });
+    expect(rows.map((row) => row.futan)).toStrictEqual([56, null]);
+  });
+
+  it("keeps a correlation row when every metric is null", () => {
     const rows = buildHorseRaceCorrelationRows({
       kettoTorokuBango: "2020000001",
       results: [
         buildResult({
           bataiju: "000",
+          futanJuryo: "000",
           kakuteiChakujun: "00",
           tanshoNinkijun: "00",
           zogenFugo: "+",
@@ -1240,6 +1407,7 @@ describe("horse race results chart data", () => {
       {
         dateValue: 1736640000000,
         finish: null,
+        futan: null,
         popularity: null,
         raceDate: "20250112",
         weight: null,
@@ -1315,6 +1483,7 @@ describe("horse race results chart data", () => {
       {
         dateValue: 1736640000000,
         finish: 1,
+        futan: 1376,
         popularity: 1,
         raceDate: "20250112",
         weight: 1000,
@@ -1350,6 +1519,7 @@ describe("horse race results chart data", () => {
       {
         dateValue: 1736640000000,
         finish: 1,
+        futan: 56,
         popularity: 1,
         raceDate: "20250112",
         weight: 480,
@@ -1358,6 +1528,7 @@ describe("horse race results chart data", () => {
       {
         dateValue: 1780272000000,
         finish: null,
+        futan: null,
         popularity: null,
         raceDate: "20260601",
         weight: 486,
@@ -1391,6 +1562,7 @@ describe("horse race results chart data", () => {
     expect(rows[1]).toStrictEqual({
       dateValue: 1780272000000,
       finish: null,
+      futan: null,
       popularity: null,
       raceDate: "20260601",
       weight: 1010,
@@ -1438,6 +1610,7 @@ describe("horse race results chart data", () => {
     expect(rows[1]).toStrictEqual({
       dateValue: 1780272000000,
       finish: null,
+      futan: null,
       popularity: null,
       raceDate: "20260601",
       weight: 486,
@@ -1477,6 +1650,7 @@ describe("horse race results chart data", () => {
       {
         dateValue: 1736640000000,
         finish: 1,
+        futan: 56,
         popularity: 1,
         raceDate: "20250112",
         weight: 480,
@@ -1485,6 +1659,7 @@ describe("horse race results chart data", () => {
       {
         dateValue: 1780272000000,
         finish: null,
+        futan: null,
         popularity: null,
         raceDate: "20260601",
         weight: 444,
@@ -1513,6 +1688,7 @@ describe("horse race results chart data", () => {
     expect(rows[1]).toStrictEqual({
       dateValue: 1780272000000,
       finish: null,
+      futan: null,
       popularity: null,
       raceDate: "20260601",
       weight: 486,
@@ -1526,6 +1702,7 @@ describe("horse race results chart data", () => {
       "popularity",
       "weight",
       "weightDelta",
+      "futan",
     ]);
   });
 
@@ -1535,6 +1712,7 @@ describe("horse race results chart data", () => {
       popularity: "人気",
       weight: "馬体重",
       weightDelta: "馬体重増減",
+      futan: "斤量",
     });
   });
 
@@ -1544,6 +1722,7 @@ describe("horse race results chart data", () => {
       popularity: "番人気",
       weight: "kg",
       weightDelta: "kg",
+      futan: "kg",
     });
   });
 
@@ -1553,5 +1732,91 @@ describe("horse race results chart data", () => {
 
   it("formats a UTC date with two-digit month and day", () => {
     expect(formatHorseRaceChartDate(1763856000000)).toBe("2025/11/23");
+  });
+
+  it("counts the inclusive calendar-month span across a year boundary", () => {
+    const span = countHorseRaceResultsSpanMonths([
+      buildResult({ kaisaiNen: "2024", kaisaiTsukihi: "1115" }),
+      buildResult({ kaisaiNen: "2025", kaisaiTsukihi: "0203" }),
+    ]);
+    expect(span).toBe(4);
+  });
+
+  it("counts a single valid result as a one-month span", () => {
+    const span = countHorseRaceResultsSpanMonths([
+      buildResult({ kaisaiNen: "2025", kaisaiTsukihi: "0415" }),
+    ]);
+    expect(span).toBe(1);
+  });
+
+  it("ignores invalid race dates when counting the month span", () => {
+    const span = countHorseRaceResultsSpanMonths([
+      buildResult({ kaisaiNen: "2025", kaisaiTsukihi: "0415" }),
+      buildResult({ kaisaiNen: "20XY", kaisaiTsukihi: "0801" }),
+    ]);
+    expect(span).toBe(1);
+  });
+
+  it("returns a zero month span for an empty input", () => {
+    expect(countHorseRaceResultsSpanMonths([])).toBe(0);
+  });
+
+  it("returns a zero month span when every race date is invalid", () => {
+    expect(
+      countHorseRaceResultsSpanMonths([buildResult({ kaisaiNen: "20XY", kaisaiTsukihi: "0801" })]),
+    ).toBe(0);
+  });
+
+  it("keeps every result when the requested months equal the full span", () => {
+    const filtered = filterHorseRaceResultsToRecentMonths(
+      [
+        buildResult({ kaisaiNen: "2024", kaisaiTsukihi: "1115" }),
+        buildResult({ kaisaiNen: "2025", kaisaiTsukihi: "0203" }),
+      ],
+      4,
+    );
+    expect(filtered.map((row) => row.kaisaiNen + row.kaisaiTsukihi)).toStrictEqual([
+      "20241115",
+      "20250203",
+    ]);
+  });
+
+  it("keeps only the newest calendar month when the requested months is one", () => {
+    const filtered = filterHorseRaceResultsToRecentMonths(
+      [
+        buildResult({ kaisaiNen: "2025", kaisaiTsukihi: "0203" }),
+        buildResult({ kaisaiNen: "2025", kaisaiTsukihi: "0228" }),
+        buildResult({ kaisaiNen: "2025", kaisaiTsukihi: "0115" }),
+      ],
+      1,
+    );
+    expect(filtered.map((row) => row.kaisaiNen + row.kaisaiTsukihi)).toStrictEqual([
+      "20250203",
+      "20250228",
+    ]);
+  });
+
+  it("drops invalid race dates while filtering to recent months", () => {
+    const filtered = filterHorseRaceResultsToRecentMonths(
+      [
+        buildResult({ kaisaiNen: "2025", kaisaiTsukihi: "0203" }),
+        buildResult({ kaisaiNen: "20XY", kaisaiTsukihi: "0228" }),
+      ],
+      1,
+    );
+    expect(filtered.map((row) => row.kaisaiNen + row.kaisaiTsukihi)).toStrictEqual(["20250203"]);
+  });
+
+  it("returns an empty array when filtering an empty input to recent months", () => {
+    expect(filterHorseRaceResultsToRecentMonths([], 3)).toStrictEqual([]);
+  });
+
+  it("returns an empty array when every race date is invalid while filtering months", () => {
+    expect(
+      filterHorseRaceResultsToRecentMonths(
+        [buildResult({ kaisaiNen: "20XY", kaisaiTsukihi: "0801" })],
+        3,
+      ),
+    ).toStrictEqual([]);
   });
 });

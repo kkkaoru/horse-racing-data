@@ -9,6 +9,7 @@ import {
   buildWeightSparkline,
   formatDeltaLabel,
   getDeltaBarStyle,
+  getMarketGapAppearance,
   getRankBucketColor,
   HorseRaceResultsCorrelationMatrix,
 } from "./horse-race-results-correlation-matrix";
@@ -20,6 +21,7 @@ afterEach(() => {
 const correlationRow = (overrides: Partial<HorseRaceCorrelationRow>): HorseRaceCorrelationRow => ({
   dateValue: Date.UTC(2026, 2, 22),
   finish: 1,
+  futan: 56,
   popularity: 2,
   raceDate: "20260322",
   weight: 480,
@@ -56,6 +58,46 @@ test("getRankBucketColor returns the light bucket for ranks 10 and beyond", () =
 
 test("getRankBucketColor returns the null bucket for a missing rank", () => {
   expect(getRankBucketColor(null)).toStrictEqual("#e5e7eb");
+});
+
+test("getMarketGapAppearance flags an over-performance when finish beats popularity", () => {
+  expect(getMarketGapAppearance(1, 6)).toStrictEqual({
+    className: "race-results-correlation-gap-over",
+    label: "-5",
+    tone: "over",
+  });
+});
+
+test("getMarketGapAppearance flags an under-performance when finish trails popularity", () => {
+  expect(getMarketGapAppearance(8, 2)).toStrictEqual({
+    className: "race-results-correlation-gap-under",
+    label: "+6",
+    tone: "under",
+  });
+});
+
+test("getMarketGapAppearance marks an even result when finish equals popularity", () => {
+  expect(getMarketGapAppearance(3, 3)).toStrictEqual({
+    className: "race-results-correlation-gap-even",
+    label: "±0",
+    tone: "even",
+  });
+});
+
+test("getMarketGapAppearance returns a dash when finish is missing", () => {
+  expect(getMarketGapAppearance(null, 4)).toStrictEqual({
+    className: "race-results-correlation-gap-even",
+    label: "-",
+    tone: "even",
+  });
+});
+
+test("getMarketGapAppearance returns a dash when popularity is missing", () => {
+  expect(getMarketGapAppearance(4, null)).toStrictEqual({
+    className: "race-results-correlation-gap-even",
+    label: "-",
+    tone: "even",
+  });
 });
 
 test("formatDeltaLabel prefixes positive deltas with a plus sign", () => {
@@ -234,7 +276,7 @@ test("renders the row labels and the race-aligned date header", () => {
     Array.from(container.querySelectorAll(".race-results-correlation-row-label")).map(
       (label) => label.textContent,
     ),
-  ).toStrictEqual(["日付", "着順", "人気", "馬体重", "", "増減"]);
+  ).toStrictEqual(["日付", "着順", "人気", "差", "馬体重", "", "増減", "斤量"]);
   expect(
     Array.from(container.querySelectorAll(".race-results-correlation-date")).map(
       (cell) => cell.textContent,
@@ -287,6 +329,42 @@ test("renders finish and popularity badges with the shared bucket colors", () =>
   ]);
 });
 
+test("renders the market-gap badges with per-tone classes and signed labels", () => {
+  const { container } = render(
+    <HorseRaceResultsCorrelationMatrix
+      rows={[
+        correlationRow({ finish: 1, popularity: 6 }),
+        correlationRow({
+          dateValue: Date.UTC(2026, 4, 10),
+          finish: 8,
+          popularity: 2,
+          raceDate: "20260510",
+        }),
+        correlationRow({
+          dateValue: Date.UTC(2026, 5, 1),
+          finish: 3,
+          popularity: 3,
+          raceDate: "20260601",
+        }),
+      ]}
+    />,
+  );
+  const badges = Array.from(
+    container.querySelectorAll<HTMLElement>(".race-results-correlation-gap-badge"),
+  );
+  expect(badges.map((badge) => badge.textContent)).toStrictEqual(["-5", "+6", "±0"]);
+  expect(badges.map((badge) => badge.getAttribute("data-tone"))).toStrictEqual([
+    "over",
+    "under",
+    "even",
+  ]);
+  expect(badges.map((badge) => badge.className)).toStrictEqual([
+    "race-results-correlation-gap-badge race-results-correlation-gap-over",
+    "race-results-correlation-gap-badge race-results-correlation-gap-under",
+    "race-results-correlation-gap-badge race-results-correlation-gap-even",
+  ]);
+});
+
 test("renders the weight sparkline with per-column value labels", () => {
   const { container } = render(
     <HorseRaceResultsCorrelationMatrix
@@ -311,6 +389,23 @@ test("renders the weight sparkline with per-column value labels", () => {
       (label) => label.textContent,
     ),
   ).toStrictEqual(["480", "-", "490"]);
+});
+
+test("renders the futan row with one-decimal and integer kilogram values", () => {
+  const { container } = render(
+    <HorseRaceResultsCorrelationMatrix
+      rows={[
+        correlationRow({ futan: 56 }),
+        correlationRow({ dateValue: Date.UTC(2026, 3, 5), futan: 55.5, raceDate: "20260405" }),
+        correlationRow({ dateValue: Date.UTC(2026, 4, 10), futan: null, raceDate: "20260510" }),
+      ]}
+    />,
+  );
+  expect(
+    Array.from(container.querySelectorAll(".race-results-correlation-futan-label")).map(
+      (cell) => cell.textContent,
+    ),
+  ).toStrictEqual(["56", "55.5", "-"]);
 });
 
 test("renders signed delta bars with per-sign colors and labels", () => {
@@ -347,14 +442,15 @@ test("renders signed delta bars with per-sign colors and labels", () => {
   ).toStrictEqual(["+6", "-4"]);
 });
 
-test("renders the upcoming-race weight column with empty finish and popularity badges", () => {
+test("highlights the upcoming-race column across every metric row", () => {
   const { container } = render(
     <HorseRaceResultsCorrelationMatrix
       rows={[
-        correlationRow({ finish: 1, popularity: 2, weight: 480 }),
+        correlationRow({ finish: 1, futan: 56, popularity: 2, weight: 480 }),
         correlationRow({
           dateValue: Date.UTC(2026, 5, 1),
           finish: null,
+          futan: null,
           popularity: null,
           raceDate: "20260601",
           weight: 486,
@@ -364,48 +460,69 @@ test("renders the upcoming-race weight column with empty finish and popularity b
     />,
   );
   expect(
-    Array.from(container.querySelectorAll(".race-results-correlation-date")).map(
-      (cell) => cell.textContent,
-    ),
-  ).toStrictEqual(["26/03/22", "26/06/01"]);
+    Array.from(
+      container.querySelectorAll(
+        ".race-results-correlation-date.race-results-correlation-upcoming",
+      ),
+    ).map((cell) => cell.textContent),
+  ).toStrictEqual(["26/06/01"]);
   expect(
-    Array.from(container.querySelectorAll(".race-results-correlation-weight-label")).map(
-      (label) => label.textContent,
-    ),
-  ).toStrictEqual(["480", "486"]);
+    Array.from(
+      container.querySelectorAll(
+        ".race-results-correlation-weight-label.race-results-correlation-upcoming",
+      ),
+    ).map((cell) => cell.textContent),
+  ).toStrictEqual(["486"]);
   expect(
-    Array.from(container.querySelectorAll(".race-results-correlation-rank-badge")).map(
-      (badge) => badge.textContent,
-    ),
-  ).toStrictEqual(["1", "-", "2", "-"]);
+    Array.from(
+      container.querySelectorAll(
+        ".race-results-correlation-futan-label.race-results-correlation-upcoming",
+      ),
+    ).map((cell) => cell.textContent),
+  ).toStrictEqual(["-"]);
+  expect(container.querySelectorAll(".race-results-correlation-upcoming").length).toStrictEqual(7);
 });
 
-test("renders the realtime upcoming weight value as the newest weight column", () => {
+test("renders no upcoming highlight when every race has a finish", () => {
   const { container } = render(
     <HorseRaceResultsCorrelationMatrix
       rows={[
-        correlationRow({ finish: 1, popularity: 2, weight: 480, weightDelta: 6 }),
+        correlationRow({ finish: 1, popularity: 2, weight: 480 }),
         correlationRow({
-          dateValue: Date.UTC(2026, 5, 13),
+          dateValue: Date.UTC(2026, 4, 10),
+          finish: 3,
+          popularity: 4,
+          raceDate: "20260510",
+          weight: 482,
+        }),
+      ]}
+    />,
+  );
+  expect(container.querySelectorAll(".race-results-correlation-upcoming").length).toStrictEqual(0);
+});
+
+test("keeps the upcoming-race finish and popularity badges empty", () => {
+  const { container } = render(
+    <HorseRaceResultsCorrelationMatrix
+      rows={[
+        correlationRow({ finish: 1, popularity: 2, weight: 480 }),
+        correlationRow({
+          dateValue: Date.UTC(2026, 5, 1),
           finish: null,
+          futan: null,
           popularity: null,
-          raceDate: "20260613",
-          weight: 444,
-          weightDelta: 2,
+          raceDate: "20260601",
+          weight: 486,
+          weightDelta: 6,
         }),
       ]}
     />,
   );
   expect(
-    Array.from(container.querySelectorAll(".race-results-correlation-weight-label")).map(
-      (label) => label.textContent,
+    Array.from(container.querySelectorAll(".race-results-correlation-rank-badge")).map(
+      (badge) => badge.textContent,
     ),
-  ).toStrictEqual(["480", "444"]);
-  expect(
-    Array.from(container.querySelectorAll(".race-results-correlation-delta-label")).map(
-      (label) => label.textContent,
-    ),
-  ).toStrictEqual(["+6", "+2"]);
+  ).toStrictEqual(["1", "-", "2", "-"]);
 });
 
 test("renders a gray stub for a zero delta and only a dash for a missing delta", () => {

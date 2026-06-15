@@ -15,7 +15,8 @@ import { formatDistance } from "../../../lib/format";
 import {
   buildHorseRaceChartSeriesList,
   buildHorseRaceCorrelationRows,
-  filterHorseRaceResultsToRecentYears,
+  countHorseRaceResultsSpanMonths,
+  filterHorseRaceResultsToRecentMonths,
   formatHorseRaceChartDate,
   HORSE_RACE_CHART_METRIC_LABELS,
   HORSE_RACE_CHART_METRIC_UNITS,
@@ -71,10 +72,12 @@ interface MetricTooltipProps {
 
 interface OverviewPanelsProps {
   hiddenHorses: ReadonlySet<string>;
+  metricLabels: Record<HorseRaceChartMetric, string>;
   seriesListsByMetric: Record<HorseRaceChartMetric, HorseRaceChartSeries[]>;
 }
 
 interface SeriesListsInput {
+  combineFutan: boolean;
   results: HorseRaceResult[];
   runners: HorseRaceChartRunner[] | undefined;
   targetKeibajoCode: string | null | undefined;
@@ -84,7 +87,6 @@ interface SeriesListsInput {
 
 type ChartYAxisDomain = [number, "auto"] | ["auto", "auto"];
 
-const CHART_WINDOW_YEARS = 3;
 // Realtime weight change sign that flips the (already decoded) change amount
 // negative; matches HorseWeightEntry.changeSign emitted by the weight stream.
 const WEIGHT_NEGATIVE_SIGN = "-";
@@ -117,6 +119,14 @@ const CHIP_GROUP_LABELS: Record<ChartViewMode, string> = {
   correlation: "相関を表示する馬の選択",
   overview: "馬ごとの表示切替",
 };
+// Period slider bounds: at least one month must be selectable, and the slider is
+// only useful when the available history spans more than one month.
+const MIN_PERIOD_MONTHS = 1;
+const PERIOD_SLIDER_STEP = 1;
+const COMBINE_FUTAN_LABEL = "馬体重に斤量を合算";
+// Heading shown on the weight panel while body weight + carried weight are summed,
+// so the reader can tell the plotted line is the combined value.
+const COMBINED_WEIGHT_HEADING = "馬体重+斤量";
 // Rank metrics (finish / popularity) read best at the top, so their Y axis is
 // reversed and anchored at rank 1; value metrics use a plain auto domain.
 const RANK_AXIS_DOMAIN: [number, "auto"] = [1, "auto"];
@@ -127,24 +137,44 @@ const REVERSED_Y_AXIS_BY_METRIC: Record<HorseRaceChartMetric, boolean> = {
   popularity: true,
   weight: false,
   weightDelta: false,
+  futan: false,
 };
 const Y_AXIS_DOMAIN_BY_METRIC: Record<HorseRaceChartMetric, ChartYAxisDomain> = {
   finish: RANK_AXIS_DOMAIN,
   popularity: RANK_AXIS_DOMAIN,
   weight: VALUE_AXIS_DOMAIN,
   weightDelta: VALUE_AXIS_DOMAIN,
+  futan: VALUE_AXIS_DOMAIN,
 };
 // Only the rank panels carry per-race distance + jockey on their points, so only
-// they get the custom tooltip; weight/delta panels keep the default tooltip.
+// they get the custom tooltip; weight/delta/futan panels keep the default tooltip.
 const METRIC_HAS_RACE_CONTEXT: Record<HorseRaceChartMetric, boolean> = {
   finish: true,
   popularity: true,
   weight: false,
   weightDelta: false,
+  futan: false,
 };
 
 const getHorseChipLabel = (series: HorseRaceChartSeries): string =>
   `${series.umaban ?? "-"} ${series.bamei}`;
+
+// Resolve the null-sentinel selection to the full available span so the default
+// (null) shows every recorded month; an explicit selection is used as-is.
+const resolvePeriodMonths = (selectedMonths: number | null, maxSpanMonths: number): number =>
+  selectedMonths ?? maxSpanMonths;
+
+// Label the active window: the full span reads as 全期間, any narrower window as
+// 直近Nヶ月 so the reader knows how much history is on screen.
+const formatPeriodLabel = (resolvedMonths: number, maxSpanMonths: number): string =>
+  resolvedMonths >= maxSpanMonths ? "全期間" : `直近${resolvedMonths}ヶ月`;
+
+// Override only the weight heading while futan is combined; every other panel
+// keeps its base label so the separate 斤量 panel stays independent.
+const resolveMetricLabels = (combineFutan: boolean): Record<HorseRaceChartMetric, string> =>
+  combineFutan
+    ? { ...HORSE_RACE_CHART_METRIC_LABELS, weight: COMBINED_WEIGHT_HEADING }
+    : HORSE_RACE_CHART_METRIC_LABELS;
 
 // Color = オッズ推移: the entered-race frame color (resolved from series.frame)
 // takes precedence so a horse's chart line matches its odds-trend line; the
@@ -160,6 +190,7 @@ const resolveSeriesStrokeWidth = (series: HorseRaceChartSeries): number =>
 // Horse grouping is metric-independent, so every list shares the same horses
 // in the same order; only the plotted points differ between metrics.
 const buildSeriesListsByMetric = ({
+  combineFutan,
   results,
   runners,
   targetKeibajoCode,
@@ -169,6 +200,7 @@ const buildSeriesListsByMetric = ({
   finish: buildHorseRaceChartSeriesList({ metric: "finish", results, runners }),
   popularity: buildHorseRaceChartSeriesList({ metric: "popularity", results, runners }),
   weight: buildHorseRaceChartSeriesList({
+    combineFutan,
     metric: "weight",
     results,
     runners,
@@ -184,6 +216,7 @@ const buildSeriesListsByMetric = ({
     targetRaceDate,
     upcomingWeights,
   }),
+  futan: buildHorseRaceChartSeriesList({ metric: "futan", results, runners }),
 });
 
 // Apply the realtime change sign to the (already decoded) change amount so the
@@ -225,11 +258,15 @@ const MetricTooltip = ({ active, metric, payload }: MetricTooltipProps) => {
   );
 };
 
-const OverviewPanels = ({ hiddenHorses, seriesListsByMetric }: OverviewPanelsProps) => (
+const OverviewPanels = ({
+  hiddenHorses,
+  metricLabels,
+  seriesListsByMetric,
+}: OverviewPanelsProps) => (
   <div className="race-results-chart-grid">
     {HORSE_RACE_CHART_METRICS.map((metric) => (
       <section className="race-results-chart-panel" key={metric}>
-        <h3>{HORSE_RACE_CHART_METRIC_LABELS[metric]}</h3>
+        <h3>{metricLabels[metric]}</h3>
         <ResponsiveContainer
           height={CHART_PANEL_HEIGHT}
           initialDimension={CHART_INITIAL_DIMENSION}
@@ -294,6 +331,10 @@ export const HorseRaceResultsChart = ({
   const [viewMode, setViewMode] = useState<ChartViewMode>("overview");
   const [hiddenHorses, setHiddenHorses] = useState<ReadonlySet<string>>(new Set<string>());
   const [selectedHorse, setSelectedHorse] = useState<string | null>(null);
+  // null means "full available history": resolvePeriodMonths maps it to the max
+  // span so the slider defaults to 全期間 without hardcoding a literal default.
+  const [selectedMonths, setSelectedMonths] = useState<number | null>(null);
+  const [combineFutan, setCombineFutan] = useState<boolean>(false);
   // Mirror runners-table: subscribe to the realtime 馬体重 stream so the upcoming
   // weight/delta come from the live snapshot (the static results payload leaves
   // them blank). `initial: null` lets the hook self-fetch via SSE on mount, the
@@ -311,20 +352,23 @@ export const HorseRaceResultsChart = ({
     () => toUpcomingWeightOverrides(horseWeightSnapshot?.horses ?? []),
     [horseWeightSnapshot],
   );
+  const maxSpanMonths = useMemo(() => countHorseRaceResultsSpanMonths(results), [results]);
+  const resolvedMonths = resolvePeriodMonths(selectedMonths, maxSpanMonths);
   const filteredResults = useMemo(
-    () => filterHorseRaceResultsToRecentYears(results, CHART_WINDOW_YEARS),
-    [results],
+    () => filterHorseRaceResultsToRecentMonths(results, resolvedMonths),
+    [results, resolvedMonths],
   );
   const seriesListsByMetric = useMemo(
     () =>
       buildSeriesListsByMetric({
+        combineFutan,
         results: filteredResults,
         runners,
         targetKeibajoCode,
         targetRaceDate,
         upcomingWeights,
       }),
-    [filteredResults, runners, targetKeibajoCode, targetRaceDate, upcomingWeights],
+    [combineFutan, filteredResults, runners, targetKeibajoCode, targetRaceDate, upcomingWeights],
   );
   const chipSeriesList = seriesListsByMetric.finish;
   const selectedKetto = selectedHorse ?? chipSeriesList.at(0)?.kettoTorokuBango ?? "";
@@ -344,6 +388,9 @@ export const HorseRaceResultsChart = ({
     return <p className="empty-state">表示できる競走成績がありません</p>;
   }
   const isOverview = viewMode === "overview";
+  const periodLabel = formatPeriodLabel(resolvedMonths, maxSpanMonths);
+  const isPeriodSliderEnabled = maxSpanMonths > MIN_PERIOD_MONTHS;
+  const metricLabels = resolveMetricLabels(combineFutan);
   const toggleHorse = (kettoTorokuBango: string) => {
     setHiddenHorses((current) => {
       const next = new Set(current);
@@ -386,6 +433,35 @@ export const HorseRaceResultsChart = ({
             </button>
           ))}
         </div>
+        {isPeriodSliderEnabled && (
+          <label className="race-results-chart-period">
+            <span className="race-results-chart-period-label">表示期間</span>
+            <input
+              className="race-results-chart-period-slider"
+              max={maxSpanMonths}
+              min={MIN_PERIOD_MONTHS}
+              step={PERIOD_SLIDER_STEP}
+              type="range"
+              value={resolvedMonths}
+              onChange={(event) => {
+                setSelectedMonths(Number(event.target.value));
+              }}
+            />
+            <span className="race-results-chart-period-value">{periodLabel}</span>
+          </label>
+        )}
+        {isOverview && (
+          <label className="race-results-chart-combine-futan">
+            <input
+              checked={combineFutan}
+              type="checkbox"
+              onChange={(event) => {
+                setCombineFutan(event.target.checked);
+              }}
+            />
+            {COMBINE_FUTAN_LABEL}
+          </label>
+        )}
         {isOverview && (
           <div aria-label="全馬の表示切替" className="stats-section-toggle-wrap" role="group">
             <button
@@ -417,6 +493,7 @@ export const HorseRaceResultsChart = ({
             <button
               aria-pressed={isChipPressed(series.kettoTorokuBango)}
               className="stats-control-button race-results-chart-chip"
+              data-active={isChipPressed(series.kettoTorokuBango)}
               key={series.kettoTorokuBango}
               type="button"
               onClick={() => {
@@ -434,7 +511,11 @@ export const HorseRaceResultsChart = ({
         </div>
       </div>
       {isOverview ? (
-        <OverviewPanels hiddenHorses={hiddenHorses} seriesListsByMetric={seriesListsByMetric} />
+        <OverviewPanels
+          hiddenHorses={hiddenHorses}
+          metricLabels={metricLabels}
+          seriesListsByMetric={seriesListsByMetric}
+        />
       ) : (
         <HorseRaceResultsCorrelationMatrix rows={correlationRows} />
       )}

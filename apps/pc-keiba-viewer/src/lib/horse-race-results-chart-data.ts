@@ -5,7 +5,7 @@ import { cleanText } from "./format";
 import type { HorseRaceResult } from "./race-types";
 import { formatRunnerNumber, isBanEiKeibajoCode } from "./runner-format";
 
-export type HorseRaceChartMetric = "finish" | "popularity" | "weight" | "weightDelta";
+export type HorseRaceChartMetric = "finish" | "popularity" | "weight" | "weightDelta" | "futan";
 
 export interface HorseRaceChartPoint {
   dateValue: number; // Date.UTC(yyyy, mm - 1, dd) milliseconds
@@ -68,6 +68,7 @@ export interface HorseRaceChartSeries {
 export interface HorseRaceCorrelationRow {
   dateValue: number; // Date.UTC(yyyy, mm - 1, dd) milliseconds
   finish: number | null;
+  futan: number | null;
   popularity: number | null;
   raceDate: string; // "YYYYMMDD"
   weight: number | null;
@@ -110,6 +111,9 @@ interface SeriesColorInput {
 // carries the realtime numeric weight/delta that takes precedence over the
 // static-runner bataiju path when present for a matching umaban.
 export interface BuildHorseRaceChartSeriesListOptions {
+  // When true, the past "weight" points plot body weight plus carried weight
+  // (馬体重 + 斤量) summed; ignored by every other metric. Defaults to off.
+  combineFutan?: boolean;
   metric: HorseRaceChartMetric;
   results: HorseRaceResult[];
   runners?: HorseRaceChartRunner[];
@@ -153,6 +157,9 @@ const INVALID_WEIGHT_FFF = "FFF";
 // it would distort the Y axis, so the chart treats it as missing.
 const NON_BANEI_UNMEASURED_WEIGHT = 999;
 const HEX_RADIX = 16;
+// Non-Ban-ei futanJuryo is stored in 0.1kg units; divide to recover kilograms.
+const FUTAN_DECIGRAM_DIVISOR = 10;
+const MONTHS_PER_YEAR = 12;
 const NEGATIVE_SIGN = "-";
 // formatRunnerNumber returns this sentinel for a blank / non-positive umaban; an
 // override or runner umaban that normalizes to it must never key the map.
@@ -160,26 +167,31 @@ const EMPTY_UMABAN_KEY = "-";
 const UNKNOWN_BAMEI = "不明";
 const DATE_PART_LENGTH = 2;
 const DATE_PAD_CHAR = "0";
-// 18 visually distinct hues that stay readable on a white chart background.
+// 18 maximally-distinguishable categorical colors for per-horse lines, ordered so
+// adjacent umaban land on well-separated hues. Every entry is saturated and dark
+// enough to stay legible against the white chart background; the previous set was
+// replaced because its grays/olive/brown tones were too muddy and low-contrast to
+// tell apart. Hues sweep the wheel (red→green→blue→orange→purple→cyan→magenta→
+// gold...) with no near-duplicate pairs, so 18 horses remain individually readable.
 const HORSE_RACE_CHART_COLORS: string[] = [
-  "#d62728",
-  "#1f77b4",
-  "#2ca02c",
-  "#ff7f0e",
-  "#9467bd",
-  "#8c564b",
-  "#e377c2",
-  "#17becf",
-  "#bcbd22",
-  "#7f7f7f",
-  "#393b79",
-  "#637939",
-  "#8c6d31",
-  "#843c39",
-  "#7b4173",
-  "#5254a3",
-  "#0f766e",
-  "#b45309",
+  "#e6194b",
+  "#3cb44b",
+  "#4363d8",
+  "#f58231",
+  "#911eb4",
+  "#42d4f4",
+  "#f032e6",
+  "#bfa600",
+  "#9a6324",
+  "#469990",
+  "#800000",
+  "#000075",
+  "#e60073",
+  "#808000",
+  "#3d8b00",
+  "#7a3cff",
+  "#d35400",
+  "#0089a3",
 ];
 // Used only when the palette index falls outside the array (e.g. a malformed
 // negative or fractional umaban); keeps the series renderable instead of blank.
@@ -190,6 +202,7 @@ export const HORSE_RACE_CHART_METRICS: HorseRaceChartMetric[] = [
   "popularity",
   "weight",
   "weightDelta",
+  "futan",
 ];
 
 export const HORSE_RACE_CHART_METRIC_LABELS: Record<HorseRaceChartMetric, string> = {
@@ -197,6 +210,7 @@ export const HORSE_RACE_CHART_METRIC_LABELS: Record<HorseRaceChartMetric, string
   popularity: "人気",
   weight: "馬体重",
   weightDelta: "馬体重増減",
+  futan: "斤量",
 };
 
 export const HORSE_RACE_CHART_METRIC_UNITS: Record<HorseRaceChartMetric, string> = {
@@ -204,6 +218,7 @@ export const HORSE_RACE_CHART_METRIC_UNITS: Record<HorseRaceChartMetric, string>
   popularity: "番人気",
   weight: "kg",
   weightDelta: "kg",
+  futan: "kg",
 };
 
 const toRaceDate = (result: HorseRaceResult): string => result.kaisaiNen + result.kaisaiTsukihi;
@@ -226,6 +241,41 @@ export const filterHorseRaceResultsToRecentYears = (
     String(Number(newestDate.slice(0, RACE_DATE_YEAR_LENGTH)) - years) +
     newestDate.slice(RACE_DATE_YEAR_LENGTH);
   return validResults.filter((result) => toRaceDate(result) >= cutoff);
+};
+
+// Convert a "YYYYMMDD" string into a flat calendar-month index so spans and
+// cutoffs are plain integer arithmetic regardless of year boundaries.
+const raceDateMonthIndex = (raceDate: string): number => {
+  const year = Number(raceDate.slice(0, RACE_DATE_YEAR_LENGTH));
+  const month = Number(raceDate.slice(RACE_DATE_YEAR_LENGTH, RACE_DATE_MONTH_END));
+  return year * MONTHS_PER_YEAR + (month - 1);
+};
+
+export const countHorseRaceResultsSpanMonths = (results: HorseRaceResult[]): number => {
+  const monthIndices = results
+    .filter(hasValidRaceDate)
+    .map((result) => raceDateMonthIndex(toRaceDate(result)));
+  if (monthIndices.length === 0) {
+    return 0;
+  }
+  return Math.max(...monthIndices) - Math.min(...monthIndices) + 1;
+};
+
+export const filterHorseRaceResultsToRecentMonths = (
+  results: HorseRaceResult[],
+  months: number,
+): HorseRaceResult[] => {
+  const validResults = results.filter(hasValidRaceDate);
+  if (validResults.length === 0) {
+    return [];
+  }
+  const newestMonthIndex = Math.max(
+    ...validResults.map((result) => raceDateMonthIndex(toRaceDate(result))),
+  );
+  const cutoffMonthIndex = newestMonthIndex - (months - 1);
+  return validResults.filter(
+    (result) => raceDateMonthIndex(toRaceDate(result)) >= cutoffMonthIndex,
+  );
 };
 
 const parseNumber = (value: string | null | undefined): number | null => {
@@ -294,6 +344,37 @@ const parseWeightDelta = (result: HorseRaceResult): number | null =>
     zogenSa: result.zogenSa,
   });
 
+// Parse the carried weight (futanJuryo) to a number in kilograms, mirroring the
+// formatCarriedWeight decode in runner-format.ts: Ban-ei stores hex kilograms,
+// other keibajo store 0.1kg decigrams. 000/FFF/blank are missing-value sentinels.
+const parseFutan = (result: HorseRaceResult): number | null => {
+  const cleaned = cleanText(result.futanJuryo, "");
+  if (!cleaned || cleaned.toUpperCase() === INVALID_WEIGHT_FFF || ALL_ZERO_PATTERN.test(cleaned)) {
+    return null;
+  }
+  const decodeHex = isBanEiKeibajoCode(result.keibajoCode);
+  const parsed = decodeHex ? Number.parseInt(cleaned, HEX_RADIX) : Number(cleaned);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  return decodeHex ? parsed : parsed / FUTAN_DECIGRAM_DIVISOR;
+};
+
+// Body weight optionally combined with carried weight (馬体重 + 斤量). When
+// combineFutan is false this is the plain parsed body weight. When true and the
+// body weight is present, the carried weight is added (treated as 0 kg when its
+// own field is missing); a missing body weight yields null in either mode.
+export const getCombinedWeightValue = (
+  result: HorseRaceResult,
+  combineFutan: boolean,
+): number | null => {
+  const weight = parseWeight(result);
+  if (!combineFutan || weight === null) {
+    return weight;
+  }
+  return weight + (parseFutan(result) ?? 0);
+};
+
 const METRIC_VALUE_EXTRACTORS: Record<
   HorseRaceChartMetric,
   (result: HorseRaceResult) => number | null
@@ -302,6 +383,7 @@ const METRIC_VALUE_EXTRACTORS: Record<
   popularity: (result) => parseNumber(result.tanshoNinkijun),
   weight: (result) => parseWeight(result),
   weightDelta: (result) => parseWeightDelta(result),
+  futan: (result) => parseFutan(result),
 };
 
 export const getHorseRaceChartMetricValue = (
@@ -428,6 +510,9 @@ const compareRaceDateOrderKeys = (left: RaceDateOrderKey, right: RaceDateOrderKe
 };
 
 interface BuildSeriesPointsInput {
+  // When true, past "weight" points sum body weight and carried weight; other
+  // metrics ignore it. The synthetic upcoming point is never affected.
+  combineFutan: boolean;
   metric: HorseRaceChartMetric;
   results: HorseRaceResult[];
   // Upcoming-race context for this horse, or null when the horse is not entered
@@ -447,9 +532,17 @@ const collectUpcomingPointSources = (
   return source === null ? [] : [source];
 };
 
+// Resolve a past point's value: the "weight" metric routes through
+// getCombinedWeightValue so the combineFutan toggle can add carried weight; every
+// other metric keeps its plain extractor.
+const resolvePastValue = (input: BuildSeriesPointsInput, result: HorseRaceResult): number | null =>
+  input.metric === "weight"
+    ? getCombinedWeightValue(result, input.combineFutan)
+    : getHorseRaceChartMetricValue(result, input.metric);
+
 const buildSeriesPoints = (input: BuildSeriesPointsInput): HorseRaceChartPoint[] => {
   const pastSources = input.results.filter(hasValidRaceDate).flatMap((result) => {
-    const value = getHorseRaceChartMetricValue(result, input.metric);
+    const value = resolvePastValue(input, result);
     return value === null ? [] : [toChartPointSource(result, value, input.metric)];
   });
   return [...pastSources, ...collectUpcomingPointSources(input)]
@@ -618,6 +711,7 @@ export const buildHorseRaceChartSeriesList = (
     frame: resolveSeriesFrame(runnerMap.get(draft.kettoTorokuBango)),
     kettoTorokuBango: draft.kettoTorokuBango,
     points: buildSeriesPoints({
+      combineFutan: options.combineFutan ?? false,
       metric: options.metric,
       results: draft.results,
       upcoming: resolveUpcomingContext(draft.kettoTorokuBango, upcomingInputs),
@@ -635,6 +729,7 @@ const toCorrelationRowSource = (result: HorseRaceResult): HorseRaceCorrelationRo
     row: {
       dateValue,
       finish: getHorseRaceChartMetricValue(result, "finish"),
+      futan: getHorseRaceChartMetricValue(result, "futan"),
       popularity: getHorseRaceChartMetricValue(result, "popularity"),
       raceDate,
       weight: getHorseRaceChartMetricValue(result, "weight"),
@@ -666,6 +761,7 @@ const collectUpcomingCorrelationRowSources = (
       row: {
         dateValue: context.dateValue,
         finish: null,
+        futan: null,
         popularity: null,
         raceDate: context.raceDate,
         weight: values.weight,

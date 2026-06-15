@@ -9892,6 +9892,92 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   border-radius: var(--space-4px-18);
 }
 
+/* Period sliders (overview + paddock) — consistent with .correction-strength-control */
+.race-results-chart-period {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8px-28);
+}
+
+.race-results-chart-period-label {
+  color: var(--muted);
+  font-size: var(--space-13px-92);
+  font-weight: var(--number-600-22);
+}
+
+.race-results-chart-period-slider,
+.paddock-recent-chart-period-input {
+  accent-color: var(--accent);
+  cursor: pointer;
+  min-width: var(--space-160px-65);
+}
+
+.race-results-chart-period-value {
+  font-size: var(--space-13px-92);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--number-600-22);
+}
+
+.paddock-recent-chart-period {
+  margin-bottom: var(--space-6px-33);
+}
+
+.paddock-recent-chart-period-label {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8px-28);
+}
+
+.paddock-recent-chart-period-text {
+  color: var(--muted);
+  font-size: var(--space-13px-92);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--number-600-22);
+}
+
+/* Combine 馬体重+斤量 toggle — matches the other chart control chips */
+.race-results-chart-combine-futan {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6px-33);
+  color: var(--muted);
+  font-size: var(--space-13px-92);
+  font-weight: var(--number-600-22);
+}
+
+.race-results-chart-combine-futan input[type="checkbox"] {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* On/off chip state (#9): make hidden vs shown lines unmistakable */
+.race-results-chart-chip[data-active="true"] {
+  background: var(--color-hex-e8f3ee-58);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+  font-weight: var(--number-600-22);
+  opacity: var(--number-1-7);
+}
+
+.race-results-chart-chip[data-active="false"] {
+  border-style: dashed;
+  border-color: var(--line);
+  color: var(--muted);
+  font-weight: var(--number-400-46);
+  opacity: var(--number-0-55-48);
+  text-decoration: line-through;
+}
+
+/* De-emphasise the OFF swatch — works for both the dedicated swatch span and
+   the paddock chips' inline-styled swatch (filter/opacity layer over inline). */
+.race-results-chart-chip[data-active="false"] .race-results-chart-swatch,
+.race-results-chart-chip[data-active="false"] span[aria-hidden="true"] {
+  filter: grayscale(var(--space-80pct-202));
+  opacity: var(--number-0-5-10);
+}
+
 .race-results-chart-grid {
   display: grid;
   grid-template-columns: minmax(var(--number-0-2), var(--space-1fr-51));
@@ -10026,4 +10112,51 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 .race-results-correlation-delta-bar {
   width: var(--space-12px-9);
   border-radius: var(--space-1px-7);
+}
+
+/* Highlight the upcoming/target race column so it stands out from past races */
+.race-results-correlation-upcoming {
+  background: var(--color-hex-e8f3ee-58);
+  box-shadow: inset var(--space-2px-25) var(--number-0-2) var(--number-0-2) var(--accent);
+}
+
+/* 斤量 value cell — matches the 馬体重 (weight) value cell treatment */
+.race-results-correlation-weight-label,
+.race-results-correlation-futan-label {
+  color: var(--muted);
+  font-weight: var(--number-600-22);
+}
+
+/* 差 (着順 - 人気) gap badge — compact, centered, rounded like the rank badge */
+.race-results-correlation-gap-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--space-28px-42);
+  padding: var(--space-2px-25) var(--space-6px-33);
+  border-radius: var(--space-50pct-13);
+  font-size: var(--space-13px-92);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--number-700-14);
+}
+
+/* Over-performance: finished better than the market ranked it */
+.race-results-correlation-gap-over,
+.race-results-correlation-gap-badge[data-tone="over"] {
+  background: var(--color-rgba-15-107-79-0-12-36);
+  color: var(--color-hex-166534-49);
+}
+
+/* Under-performance: ran below market expectation — cautionary tone */
+.race-results-correlation-gap-under,
+.race-results-correlation-gap-badge[data-tone="under"] {
+  background: var(--color-rgba-220-38-38-0-12-110);
+  color: var(--color-hex-b91c1c-111);
+}
+
+/* Even / missing — muted neutral */
+.race-results-correlation-gap-even,
+.race-results-correlation-gap-badge[data-tone="even"] {
+  background: var(--surface-muted);
+  color: var(--muted);
 }

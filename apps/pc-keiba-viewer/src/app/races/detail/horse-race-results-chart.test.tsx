@@ -22,6 +22,7 @@ interface LineChartStubProps {
 
 interface LinePointStub {
   isUpcoming?: boolean;
+  value?: number;
 }
 
 interface LineStubProps {
@@ -57,6 +58,7 @@ vi.mock("recharts", () => ({
       data-testid="line-stub"
       data-total-points={data?.length ?? 0}
       data-upcoming-points={data?.filter((point) => point.isUpcoming === true).length ?? 0}
+      data-value-sum={(data ?? []).reduce((sum, point) => sum + (point.value ?? 0), 0)}
     >
       {name}
     </div>
@@ -178,12 +180,12 @@ test("renders the empty state when every row has an invalid race date", () => {
   expect(screen.queryAllByTestId("line-chart-stub").length).toStrictEqual(0);
 });
 
-test("renders the four metric panels simultaneously in the fixed order", () => {
+test("renders the five metric panels simultaneously in the fixed order", () => {
   render(<HorseRaceResultsChart results={[chartResult({})]} />);
   expect(
     screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent),
-  ).toStrictEqual(["着順", "人気", "馬体重", "馬体重増減"]);
-  expect(screen.getAllByTestId("line-chart-stub").length).toStrictEqual(4);
+  ).toStrictEqual(["着順", "人気", "馬体重", "馬体重増減", "斤量"]);
+  expect(screen.getAllByTestId("line-chart-stub").length).toStrictEqual(5);
 });
 
 test("renders the view toggle with the overview mode pressed by default", () => {
@@ -222,7 +224,7 @@ test("renders the view toggle, bulk buttons and horse chips in the overview mode
   ]);
 });
 
-test("applies the shared sync id to all four overview panels", () => {
+test("applies the shared sync id to all five overview panels", () => {
   render(<HorseRaceResultsChart results={[chartResult({})]} />);
   expect(
     screen.getAllByTestId("line-chart-stub").map((chart) => chart.getAttribute("data-sync-id")),
@@ -231,14 +233,16 @@ test("applies the shared sync id to all four overview panels", () => {
     "race-results-overview",
     "race-results-overview",
     "race-results-overview",
+    "race-results-overview",
   ]);
 });
 
-test("reverses the Y axis for the rank panels and keeps it normal for the weight panels", () => {
+test("reverses the Y axis for the rank panels and keeps it normal for the weight and futan panels", () => {
   render(<HorseRaceResultsChart results={[chartResult({})]} />);
   expect(screen.getAllByTestId("y-axis-stub").map((axis) => axis.textContent)).toStrictEqual([
     "reversed",
     "reversed",
+    "normal",
     "normal",
     "normal",
   ]);
@@ -268,6 +272,8 @@ test("renders one line per horse in every panel", () => {
     "2 ベータ",
     "1 アルファ",
     "2 ベータ",
+    "1 アルファ",
+    "2 ベータ",
   ]);
 });
 
@@ -282,7 +288,7 @@ test("strokes a chart line with the entered-race frame color from the runner wak
   );
   expect(
     screen.getAllByTestId("line-stub").map((line) => line.getAttribute("data-stroke")),
-  ).toStrictEqual(["#d71920", "#d71920", "#d71920", "#d71920"]);
+  ).toStrictEqual(["#d71920", "#d71920", "#d71920", "#d71920", "#d71920"]);
 });
 
 test("colors the chip swatch with the entered-race frame color", () => {
@@ -322,14 +328,14 @@ test("boosts the stroke width for the white frame and keeps the default width ot
   );
   expect(
     screen.getAllByTestId("line-stub").map((line) => line.getAttribute("data-stroke-width")),
-  ).toStrictEqual(["3.2", "2.4", "3.2", "2.4", "3.2", "2.4", "3.2", "2.4"]);
+  ).toStrictEqual(["3.2", "2.4", "3.2", "2.4", "3.2", "2.4", "3.2", "2.4", "3.2", "2.4"]);
 });
 
 test("falls back to the palette color when no runner matches the horse", () => {
   render(<HorseRaceResultsChart results={[chartResult({})]} />);
   expect(
     screen.getAllByTestId("line-stub").map((line) => line.getAttribute("data-stroke")),
-  ).toStrictEqual(["#d62728", "#d62728", "#d62728", "#d62728"]);
+  ).toStrictEqual(["#e6194b", "#e6194b", "#e6194b", "#e6194b", "#e6194b"]);
 });
 
 test("appends one upcoming point to the weight panel without adding it to the finish panel", () => {
@@ -404,6 +410,7 @@ test("renders distance and jockey in the finish and popularity tooltips only", (
     "true",
     "false",
     "false",
+    "false",
   ]);
   expect(screen.getAllByText("距離 2000m").length).toStrictEqual(2);
   expect(screen.getAllByText("騎手 ルメール").length).toStrictEqual(2);
@@ -435,12 +442,15 @@ test("hides one horse in every panel via its chip and shows it again on the seco
     "2 ベータ",
     "2 ベータ",
     "2 ベータ",
+    "2 ベータ",
   ]);
   fireEvent.click(screen.getByRole("button", { name: "1 アルファ" }));
   expect(
     screen.getByRole("button", { name: "1 アルファ" }).getAttribute("aria-pressed"),
   ).toStrictEqual("true");
   expect(screen.getAllByTestId("line-stub").map((line) => line.textContent)).toStrictEqual([
+    "1 アルファ",
+    "2 ベータ",
     "1 アルファ",
     "2 ベータ",
     "1 アルファ",
@@ -485,6 +495,8 @@ test("hides every horse in every panel via 全馬非表示 and restores them via
     "2 ベータ",
     "1 アルファ",
     "2 ベータ",
+    "1 アルファ",
+    "2 ベータ",
   ]);
   expect(
     screen.getByRole("button", { name: "1 アルファ" }).getAttribute("aria-pressed"),
@@ -521,7 +533,7 @@ test("switches to the correlation view and back to the overview", () => {
   expect(screen.queryAllByTestId("line-chart-stub").length).toStrictEqual(0);
   expect(screen.getByTestId("correlation-matrix-stub").textContent).toStrictEqual("2");
   fireEvent.click(screen.getByRole("button", { name: "俯瞰（指標別）" }));
-  expect(screen.getAllByTestId("line-chart-stub").length).toStrictEqual(4);
+  expect(screen.getAllByTestId("line-chart-stub").length).toStrictEqual(5);
   expect(screen.queryAllByTestId("correlation-matrix-stub").length).toStrictEqual(0);
 });
 
@@ -636,4 +648,94 @@ test("passes zero correlation rows when no row has a ketto number", () => {
     "馬別（相関）",
   ]);
   expect(screen.getByTestId("correlation-matrix-stub").textContent).toStrictEqual("0");
+});
+
+test("plots the carried weight on the futan panel without crashing", () => {
+  render(<HorseRaceResultsChart results={[chartResult({ futanJuryo: "550" })]} />);
+  const lines = screen.getAllByTestId("line-stub");
+  expect(lines[4]?.getAttribute("data-value-sum")).toStrictEqual("55");
+  expect(lines[4]?.getAttribute("data-total-points")).toStrictEqual("1");
+});
+
+test("hides the period slider when the history spans a single month", () => {
+  render(<HorseRaceResultsChart results={[chartResult({ kaisaiTsukihi: "0322" })]} />);
+  expect(screen.queryAllByRole("slider").length).toStrictEqual(0);
+});
+
+test("defaults the period slider to the full span and labels it 全期間", () => {
+  render(
+    <HorseRaceResultsChart
+      results={[
+        chartResult({ kaisaiTsukihi: "0310", raceBango: "01" }),
+        chartResult({ kaisaiTsukihi: "0612", raceBango: "02" }),
+      ]}
+    />,
+  );
+  expect(screen.getByRole("slider").getAttribute("value")).toStrictEqual("4");
+  expect(screen.getByText("全期間").textContent).toStrictEqual("全期間");
+  expect(screen.getAllByTestId("line-stub")[0]?.getAttribute("data-total-points")).toStrictEqual(
+    "2",
+  );
+});
+
+test("filters the panels to the recent window and labels it 直近Nヶ月 when the slider moves", () => {
+  render(
+    <HorseRaceResultsChart
+      results={[
+        chartResult({ kaisaiTsukihi: "0310", raceBango: "01" }),
+        chartResult({ kaisaiTsukihi: "0612", raceBango: "02" }),
+      ]}
+    />,
+  );
+  fireEvent.change(screen.getByRole("slider"), { target: { value: "1" } });
+  expect(screen.getByText("直近1ヶ月").textContent).toStrictEqual("直近1ヶ月");
+  expect(screen.getAllByTestId("line-stub")[0]?.getAttribute("data-total-points")).toStrictEqual(
+    "1",
+  );
+});
+
+test("keeps the weight panel plain and the heading 馬体重 when the combine toggle is off", () => {
+  render(<HorseRaceResultsChart results={[chartResult({ bataiju: "480", futanJuryo: "550" })]} />);
+  expect(screen.getAllByTestId("line-stub")[2]?.getAttribute("data-value-sum")).toStrictEqual(
+    "480",
+  );
+  expect(
+    screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent),
+  ).toStrictEqual(["着順", "人気", "馬体重", "馬体重増減", "斤量"]);
+});
+
+test("sums weight and futan and relabels the weight heading when the combine toggle is on", () => {
+  render(<HorseRaceResultsChart results={[chartResult({ bataiju: "480", futanJuryo: "550" })]} />);
+  fireEvent.click(screen.getByRole("checkbox", { name: "馬体重に斤量を合算" }));
+  expect(screen.getAllByTestId("line-stub")[2]?.getAttribute("data-value-sum")).toStrictEqual(
+    "535",
+  );
+  expect(
+    screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent),
+  ).toStrictEqual(["着順", "人気", "馬体重+斤量", "馬体重増減", "斤量"]);
+  expect(screen.getAllByTestId("line-stub")[4]?.getAttribute("data-value-sum")).toStrictEqual("55");
+});
+
+test("marks each chip with a data-active flag matching its pressed state", () => {
+  render(
+    <HorseRaceResultsChart
+      results={[
+        chartResult({}),
+        chartResult({
+          bamei: "ベータ",
+          currentUmaban: "02",
+          kakuteiChakujun: "02",
+          kettoTorokuBango: "2022100002",
+          umaban: "02",
+        }),
+      ]}
+    />,
+  );
+  expect(
+    screen.getByRole("button", { name: "1 アルファ" }).getAttribute("data-active"),
+  ).toStrictEqual("true");
+  fireEvent.click(screen.getByRole("button", { name: "1 アルファ" }));
+  expect(
+    screen.getByRole("button", { name: "1 アルファ" }).getAttribute("data-active"),
+  ).toStrictEqual("false");
 });
