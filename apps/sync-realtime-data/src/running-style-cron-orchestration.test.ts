@@ -349,3 +349,101 @@ it("runRunningStyleCronTick captures plan error as planError on summary", async 
   const summary = await runRunningStyleCronTick(buildEnv(), new Date("2026-05-12T12:00:00.000Z"));
   expect(summary.planError).toBe("boom");
 });
+
+it("planRunningStylePredictionsForDate skips the Neon feature-count query when every race is completed", async () => {
+  const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
+  const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
+  const { listRunningStyleInferenceStates } = await import("./running-style-d1");
+  const { getFinishPositionPool } = await import("./finish-position-lite-pool");
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
+    races: [
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0512",
+        keibajo_code: "08",
+        race_bango: "01",
+        source: "jra",
+      },
+    ],
+    source: "d1",
+  });
+  vi.mocked(listRunningStyleInferenceStates).mockResolvedValue(
+    new Map([
+      [
+        "jra:20260512:08:01",
+        {
+          attemptedAt: "2026-05-12T11:00:00.000Z",
+          completedAt: "2026-05-12T11:05:00.000Z",
+          expectedHorseCount: 16,
+          featuresR2Key: null,
+          modelVersion: "v7",
+          raceKey: "jra:20260512:08:01",
+          status: "completed",
+          writtenHorseCount: 16,
+        },
+      ],
+    ]),
+  );
+  const summary = await planRunningStylePredictionsForDate(
+    buildEnv(),
+    "20260512",
+    new Date("2026-05-12T12:00:00.000Z"),
+  );
+  expect(summary.completed).toBe(1);
+  expect(summary.enqueued).toBe(0);
+  expect(summary.scanned).toBe(1);
+  expect(getFinishPositionPool).not.toHaveBeenCalled();
+});
+
+it("planRunningStylePredictionsForDate still queries Neon when only some races are completed", async () => {
+  const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
+  const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
+  const { listRunningStyleInferenceStates } = await import("./running-style-d1");
+  const { getFinishPositionPool } = await import("./finish-position-lite-pool");
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
+    races: [
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0512",
+        keibajo_code: "08",
+        race_bango: "01",
+        source: "jra",
+      },
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0512",
+        keibajo_code: "08",
+        race_bango: "02",
+        source: "jra",
+      },
+    ],
+    source: "d1",
+  });
+  vi.mocked(listRunningStyleInferenceStates).mockResolvedValue(
+    new Map([
+      [
+        "jra:20260512:08:01",
+        {
+          attemptedAt: "2026-05-12T11:00:00.000Z",
+          completedAt: "2026-05-12T11:05:00.000Z",
+          expectedHorseCount: 16,
+          featuresR2Key: null,
+          modelVersion: "v7",
+          raceKey: "jra:20260512:08:01",
+          status: "completed",
+          writtenHorseCount: 16,
+        },
+      ],
+    ]),
+  );
+  const send = vi.fn(async () => {});
+  const sendBatch = vi.fn(async () => {});
+  const summary = await planRunningStylePredictionsForDate(
+    buildEnv({ RUNNING_STYLE_JOBS: { send, sendBatch } }),
+    "20260512",
+    new Date("2026-05-12T12:00:00.000Z"),
+  );
+  expect(summary.completed).toBe(1);
+  expect(summary.enqueued).toBe(1);
+  expect(getFinishPositionPool).toHaveBeenCalledTimes(1);
+});
