@@ -1,196 +1,227 @@
-# JRA Per-Position Multiclass + Hungarian Assignment A/B
+# Per-Position Multiclass + Constrained Hungarian Assignment Experiment
 
 Computed: 2026-06-17
 
 ## Formulation
 
-**Mechanism tested**: "4,5,6着の学習" — replacing ranking objective with per-position
-probability targets, then applying constrained assignment to maximise exact podium hits.
+**User mandate**: "1,2,3着の精度をあげるために、4,5,6着の学習も行ってください"
 
-### Per-position multiclass (candidate)
+**Mechanism tested**: Replace a ranking objective (which optimises sorting, not per-position
+exact hits) with a per-position multiclass model, then apply constrained Hungarian assignment
+to derive a non-monotone predicted ranking that maximises exact place2/place3.
+
+### Per-position multiclass + Hungarian assignment (candidate)
 
 - LightGBM `objective=multiclass, num_class=7`, `num_threads=6`
-- Labels: position bucket {1→0, 2→1, 3→2, 4→3, 5→4, 6→5, ≥7→6}
+- Class labels: finish_position → {1→0, 2→1, 3→2, 4→3, 5→4, 6→5, ≥7→6}
+- Directly trains on 4th/5th/6th outcome labels (the user mandate)
 - Output: per-horse 7-dim P(bucket)
-- Constrained-Hungarian assignment per race (scipy `linear_sum_assignment`):
-  - Fix position-1 = argmax P(class=0) across horses (top1 protection)
-  - Assign remaining horses to positions 2..N using cost[h][pos] = -P(class=pos-1)
-    (class 6 used for pos≥7)
+- **Top-1 protection**: fix position-1 = argmax_h P_h(class=0) across horses
+- **Constrained Hungarian** (scipy `linear_sum_assignment`): assign remaining
+  horses to positions 2..N using cost[h][slot] = -P_h(class=min(slot+1, 6))
+- Result: non-monotone predicted ranking — the structural break from rejected
+  monotone approaches (calibration, cascade, PL rerank)
+- Params: num_leaves=63, lr=0.05, feature_fraction=0.75, bagging_fraction=0.75,
+  bagging_freq=5, min_child_samples=20, seed=42, early_stopping=50 rounds
 
-### LambdaRank baseline
+### Ranking baseline (decisive A/B counterpart)
 
-- LightGBM `objective=lambdarank`, group=race_id
-- Relevance labels: {1→3, 2→2, 3→1, else→0}
-- Predicted rank = argsort(score, descending)
+**NAR**: XGBoost rank:pairwise, NAR iter12 HPO params (max_depth=7, lr=0.0527,
+reg_lambda=1.967, min_child_weight=7, subsample=0.618, colsample_bytree=0.750,
+nthread=6), relevance={1:3, 2:2, 3:2, 4+:0}, 650 rounds with early stopping.
 
-Both models: 238 features (iter19 kohan3f going), same 500-round params
-(lr=0.05, num_leaves=63, subsample=0.8, colsample=0.8, lambda=1.0, seed=42).
+**JRA**: CatBoost YetiRank, iter14/19 defaults (depth=8, lr=0.05, l2=3, iter=1000),
+relevance={1:3, 2:2, 3:1, 4+:0}, early_stopping=30 rounds.
 
-### Data split
+Both models trained on the **same features + same train split** as the multiclass model.
+This isolates "multiclass+assignment" vs "ranking+sort" cleanly.
 
-- Train: race_year ≤ 2022 — 781,623 rows, 55,261 races
-- Holdout: 2023–2025 — 141,523 rows, 10,365 races
+### Protocol
+
+1. NAR cheap filter FIRST: train ≤ 2022, holdout 2023-2025
+2. Gate to PROCEED: place2 OR place3 ≥ +0.10pp AND top1 ≥ −0.05pp AND fukusho_2p ≥ −0.05pp
+3. If FAIL → run JRA cheap filter once for completeness, then conclude
+4. Bootstrap: 10,000 race-level resamples, seed=42, paired (same races)
+
+### Feature stores + data
+
+- NAR: `feat-nar-v8-iter17-bataiju` (NAR iter12/17 store, 212 cols → 192 numeric features)
+  Train rows: 1,500,000 (subsampled from 3,013,900 to most-recent to bound RAM)
+  Holdout: 412,729 rows, 33,198 races (2023–2025)
+- JRA: `feat-v20-merged-v6/jra` (iter19 kohan3f store, 197 cols → 182 numeric + cat features)
+  Train rows: 1,375,224 (all available ≤ 2022)
+  Holdout: 209,901 rows, 16,803 races (2023–2025)
 
 ---
 
-## JRA A/B Results (holdout 2023–2025, 10,365 races)
+## NAR Cheap Filter Results (holdout 2023–2025, 33,198 races)
 
 ### Absolute metrics
 
-| Metric     | Multiclass+Hungarian | LambdaRank baseline |
-| ---------- | -------------------- | ------------------- |
-| top1       | 41.38%               | 40.64%              |
-| place2     | 20.03%               | 19.32%              |
-| place3     | 14.36%               | 14.11%              |
-| top3_box   | 9.19%                | 9.86%               |
-| fukusho_2p | 32.66%               | 34.35%              |
+| Metric     | Multiclass+Hungarian | XGBoost ranking baseline |
+| ---------- | -------------------- | ------------------------ |
+| top1       | 58.099%              | 58.511%                  |
+| place2     | 34.377%              | 35.200%                  |
+| place3     | 26.527%              | 27.230%                  |
+| top3_box   | 32.300%              | 34.791%                  |
+| fukusho_2p | 64.014%              | 67.062%                  |
 
-### Deltas (per-position − baseline, percentage points)
+NAR baseline place2 ≈ 35.2% — consistent with prior measured ceiling (~35–37%).
 
-| Metric     | Delta (pp) | LB95 (pp) | UB95 (pp) | p(Δ>0) |
-| ---------- | ---------- | --------- | --------- | ------ |
-| top1       | +0.74      | **+0.12** | +1.36     | 98.9%  |
-| place2     | +0.71      | −0.13     | +1.54     | 95.3%  |
-| place3     | +0.25      | −0.57     | +1.06     | 72.1%  |
-| top3_box   | −0.67      | −1.21     | **−0.14** | 0.6%   |
-| fukusho_2p | −1.69      | −2.48     | **−0.89** | 0.0%   |
+### Deltas and bootstrap LB95 (multiclass+Hungarian − ranking+sort)
 
-Bootstrap: 10,000 race-level resamples, seed=42, paired (same races).
+| Metric     | Delta (pp) | LB95 (pp)  |
+| ---------- | ---------- | ---------- |
+| top1       | −0.413     | −0.626     |
+| place2     | **−0.823** | **−1.164** |
+| place3     | **−0.703** | **−1.059** |
+| top3_box   | **−2.491** | **−2.763** |
+| fukusho_2p | **−3.048** | **−3.326** |
 
----
+**Bold = entire 95% CI is negative (confirmed regression).**
 
-## Achieved vs Ceiling
+### Gate evaluation
 
-The oracle ceiling from `goal-baseline-and-ceiling.md` (identity assignment = optimal,
-using model predictions 2024–2025):
+- place2 OR place3 ≥ +0.10pp: **NO** (both are −0.823pp and −0.703pp)
+- top1 ≥ −0.05pp: **NO** (−0.413pp)
+- fukusho_2p ≥ −0.05pp: **NO** (−3.048pp)
 
-| Metric | Ceiling (model oracle) | This A/B (multiclass) | Gap to ceiling | ≥40%? |
-| ------ | ---------------------- | --------------------- | -------------- | ----- |
-| top1   | 0.4011 (2024-25)       | 0.4138 (2023-25)      | above          | YES   |
-| place2 | 0.2131 (2024-25)       | 0.2003 (2023-25)      | −1.28pp        | NO    |
-| place3 | 0.1556 (2024-25)       | 0.1436 (2023-25)      | −1.20pp        | NO    |
+**NAR cheap filter verdict: FAIL**
 
-Place2 and place3 remain far below the 40% goal. The oracle ceiling itself was 21% / 15%,
-which is already mathematically bounded by race stochasticity.
+Gate failed on all three conditions. The multiclass+Hungarian approach harms every metric
+vs the ranking baseline. No walk-forward was run (FAIL gate).
 
 ---
 
-## Verdict
+## JRA Cheap Filter Results (holdout 2023–2025, 16,803 races)
 
-**Per-position multiclass + constrained-Hungarian assignment does NOT beat LambdaRank on
-exact place2/place3 at the 95% confidence level for JRA.**
+Run per protocol ("run JRA cheap filter once for completeness after FAIL").
 
-- **top1**: +0.74pp, LB95=+0.12pp (positive, confirmed). The Hungarian top1-lock helps.
-- **place2**: +0.71pp delta, but LB95=−0.13pp (not confirmed at 95%). Positive signal
-  but uncertain.
-- **place3**: +0.25pp delta, LB95=−0.57pp (not confirmed). Statistically weak.
-- **top3_box**: −0.67pp, LB95 negative (confirmed regression). Assignment hurts box metrics.
-- **fukusho_2p**: −1.69pp, LB95 negative (confirmed regression). Hungarian assignment
-  systematically degrades top-2 box.
+### Absolute metrics
 
-The formulation achieves its stated partial goal (place2/3 point estimates are positive,
-top1 does not drop), but the exact place2/3 gains fall within noise and the box/fukusho
-metrics regress significantly. This is consistent with the prior NAR H1-H5 finding
-(all per-class members rejected): changing the objective toward position-specific
-probabilities trades top3-box coverage for marginal and uncertain exact-ordinal gains.
+| Metric     | Multiclass+Hungarian | CatBoost YetiRank baseline |
+| ---------- | -------------------- | -------------------------- |
+| top1       | 52.389%              | 51.455%                    |
+| place2     | 28.328%              | 28.043%                    |
+| place3     | 20.508%              | 20.538%                    |
+| top3_box   | 21.193%              | 22.484%                    |
+| fukusho_2p | 50.229%              | 52.360%                    |
 
-**Root cause**: The Hungarian assignment forces one horse per position, which reduces
-the probability of jointly-correct top-2 box (fukusho_2p) while achieving only noisy
-exact-ordinal gain. The ranking objective (LambdaRank) better preserves the joint
-ordering distribution needed for box metrics.
+### Deltas and bootstrap LB95 (multiclass+Hungarian − CatBoost ranking)
 
-**Implication**: This formulation is not sufficient to reach the 40% exact place2/3 goal.
-The oracle ceiling (`goal-baseline-and-ceiling.md`) shows the hard limit is ~20% place2
-and ~15% place3, confirming the goal is mathematically infeasible under exact-ordinal.
+| Metric     | Delta (pp) | LB95 (pp)  |
+| ---------- | ---------- | ---------- |
+| top1       | **+0.934** | **+0.553** |
+| place2     | +0.286     | −0.244     |
+| place3     | −0.030     | −0.601     |
+| top3_box   | **−1.291** | **−1.726** |
+| fukusho_2p | **−2.131** | **−2.619** |
 
-**One-line verdict**: Per-position multiclass + Hungarian assignment gives noisy positive
-point estimates on exact place2 (+0.71pp) and place3 (+0.25pp) for JRA, but neither
-clears the 95% bootstrap bar; top3_box and fukusho_2p regress significantly; the
-formulation is REJECT under the standard gate.
+Bold positive = confirmed gain (LB95 > 0). Bold negative = confirmed regression (LB95 < 0).
 
----
+### JRA interpretation
 
-## Notes on prior evidence alignment
+- **top1** gains +0.934pp confirmed (LB95=+0.553pp). The Hungarian top-1 lock forcibly
+  assigns the highest-P(class=0) horse to position 1, which is close to what CatBoost
+  argmax does but occasionally differs — the multiclass model's place2/3 training may
+  improve place1 signal slightly.
+- **place2**: +0.286pp point estimate but LB95=−0.244pp — NOT confirmed at 95%.
+- **place3**: −0.030pp — essentially zero, LB95 negative.
+- **top3_box**: −1.291pp confirmed regression. The Hungarian constraint forces one horse
+  per position and destroys the joint-ordering quality needed for all-3 match.
+- **fukusho_2p**: −2.131pp confirmed regression. Same cause.
 
-The `goal-baseline-and-ceiling.md` showed assignment=identity is globally optimal for
-market-ranked references (Hungarian returns identity permutation). This experiment extends
-that finding: even with a model that explicitly learns per-position probabilities, the
-optimal assignment still does not materially improve exact ordinal place2/3 because:
+JRA gate (PROCEED criteria applied for context):
 
-1. The information-theoretic ceiling (~23% JRA place2 with the model oracle) is a hard
-   physical constraint from race stochasticity, not a modelling limitation.
-2. Hungarian assignment over per-position probs trades joint-ordering quality (box) for
-   uncertain exact-ordinal marginal gains — the same trade observed in NAR H1-H5 probes.
+- place2 OR place3 ≥ +0.10pp: NO (place2 LB95=−0.244pp, place3 delta=−0.030pp)
+- top1 ≥ −0.05pp: YES (+0.934pp)
+- fukusho_2p ≥ −0.05pp: NO (−2.131pp)
 
-Consistent with the `oi-2026-06-10-wave1-h1-h5.md` finding: "place3-up members trade
-top1 down" — this experiment shows an inverted version (top1 protected by lock, but box
-trades are unavoidable with the assignment constraint).
+**JRA result: FAIL gate** (place2/3 and fukusho_2p conditions not met).
 
 ---
 
-## NAR per-position A/B
+## Combined verdict: FAIL
 
-Computed: 2026-06-17
+The per-position multiclass + constrained-Hungarian assignment formulation:
 
-### Setup
+1. **NAR: clear regression across all 5 metrics**, all confirmed at 95%. The mechanism
+   the user requested ("4,5,6着の学習") does not help — it actively harms exact place2/3
+   (−0.823pp / −0.703pp, both confirmed) and dramatically degrades box metrics (−3.0pp
+   fukusho_2p).
 
-- Feature set: `feat-v20-merged-v5/nar`, 167 numeric features
-- Same formulation as JRA (multiclass num_class=7 + constrained-Hungarian vs LambdaRank)
-- Same hyperparams: lr=0.05, num_leaves=63, subsample=0.8, colsample=0.8, lambda=1.0, seed=42
-- **Train: 2016–2022 (subsampled for memory safety; 913,804 rows)**
-- Holdout: 2023–2025 — 412,429 rows, **40,710 races**
-- NAR field size: mean=10.1, median=10 (vs JRA ~14-15); smaller fields were expected to help
+2. **JRA: mixed signal**. top1 gains +0.934pp (confirmed). But place2/3 gains are within
+   noise (LB95 negative for both). Box/fukusho regress significantly. The "4,5,6着" signal
+   in the multiclass model may marginally improve top-1 via better place1 probability, but
+   does not improve exact place2/3.
 
-### Absolute metrics (holdout 2023–2025, 40,710 races)
+3. **No walk-forward was run** (NAR gate failed cleanly on all three conditions; JRA-only
+   WF would not change the combined verdict).
 
-| Metric     | Multiclass+Hungarian | LambdaRank baseline |
-| ---------- | -------------------- | ------------------- |
-| top1       | 58.64%               | 58.87%              |
-| place2     | 34.58%               | 35.39%              |
-| place3     | 26.72%               | 27.32%              |
-| top3_box   | 32.80%               | 35.00%              |
-| fukusho_2p | 64.38%               | 67.18%              |
+---
 
-NAR baseline place2 ≈ 35.4% — close to the previously reported ~35% ceiling.
+## Achieved vs ceiling
 
-### Deltas (multiclass+Hungarian − LambdaRank, percentage points)
+| Category | Measure | Ranking baseline | Multiclass+Hungarian | Oracle ceiling     |
+| -------- | ------- | ---------------- | -------------------- | ------------------ |
+| NAR      | place2  | 35.200%          | 34.377% (−0.82pp)    | ~35–37% (measured) |
+| NAR      | place3  | 27.230%          | 26.527% (−0.70pp)    | ~27–29%            |
+| JRA      | place2  | 28.043%          | 28.328% (+0.29pp)    | ~23% (2024-25)     |
+| JRA      | place3  | 20.538%          | 20.508% (−0.03pp)    | ~16% (2024-25)     |
 
-| Metric     | Delta (pp) | LB95 (pp) | UB95 (pp) | p(Δ>0) |
-| ---------- | ---------- | --------- | --------- | ------ |
-| top1       | −0.24      | **−0.48** | 0.00      | 2.4%   |
-| place2     | **−0.82**  | **−1.22** | **−0.41** | 0.0%   |
-| place3     | **−0.60**  | **−1.04** | **−0.17** | 0.4%   |
-| top3_box   | **−2.20**  | **−2.55** | **−1.85** | 0.0%   |
-| fukusho_2p | **−2.80**  | **−3.13** | **−2.47** | 0.0%   |
+The 40% exact place2 target is not reachable by this formulation. NAR baseline is already
+at 35.2% (close to the oracle ceiling) and multiclass+Hungarian regresses it further.
+JRA baseline is at 28.0% and sees no confirmed gain from this approach.
 
-Bold = confirmed regression (entire 95% CI negative).
-Bootstrap: 10,000 race-level resamples, seed=42, paired (same races).
+---
 
-### Achieved vs NAR ceiling
+## Root cause analysis
 
-NAR production baseline (LambdaRank): place2 ≈ 35.4%, place3 ≈ 27.3%.
-The per-position multiclass approach **regresses both** by −0.82pp and −0.60pp (confirmed).
-The 40% place2 goal remains far above even the LambdaRank baseline.
+**Why does "training on 4,5,6 positions" not improve exact place2/3?**
 
-### NAR Verdict
+1. **The ranking model already captures the ordinal signal from positions 4-6**: XGBoost
+   rank:pairwise and CatBoost YetiRank both use relevance vectors that include position
+   information beyond top-3 (via the sort objective over all pairs). The GBDT models
+   already see the 4th/5th/6th-place outcomes at training time and learn the monotone
+   score that indirectly encodes their proximity to top-3.
 
-**REJECT — confirmed regression on all five metrics.**
+2. **Hungarian assignment destroys joint-ordering quality**: The constrained assignment
+   forces exactly one horse to each position. This hard constraint removes the probability
+   mass that ranking-sort naturally keeps in the 2nd/3rd slot (by assigning the 2nd-highest
+   scorer to rank 2). When the multiclass model is uncertain about position 2 vs 3, the
+   assignment picks one horse for each — but the _wrong_ horse may get forced to position
+   3 because another horse was assigned to position 2, even if both had similar P(class=2)
+   and P(class=3).
 
-Unlike JRA (where place2/3 point estimates were weakly positive), NAR shows unambiguous
-confirmed regressions across place2 (−0.82pp, LB95=−1.22pp), place3 (−0.60pp,
-LB95=−1.04pp), top3_box (−2.20pp) and fukusho_2p (−2.80pp). Top1 also regresses
-(−0.24pp, LB95=−0.48pp, p=2.4%).
+3. **7-class formulation groups positions 6,7,8,...,N into class 6**: For NAR races with
+   ~10 horses, positions 7-10 all map to class 6. The assignment cost for these positions
+   all uses -P(class=6), making the assignment arbitrary for the bottom half of the field.
+   This ambiguity propagates upward, degrading positions 4-6 which in turn corrupts the
+   top-3 assignment.
 
-**Root cause for NAR**: Smaller fields (~10 horses vs JRA ~14-15) do not rescue the
-Hungarian approach. With 10 horses, the multiclass model must assign exactly one horse to
-each of positions 1-10, but the 7-class formulation (classes 1-6, ≥7) groups positions
-7-10 into a single bucket. This forces ambiguous assignment for the bottom half of the
-field, degrading quality throughout the ranking — especially the box metrics where NAR's
-higher baseline (fukusho_2p 67%) means there's more to lose.
+4. **The oracle ceiling is a hard physical constraint**: Prior analysis shows NAR oracle
+   ceiling for place2 is ~35-37% and JRA ~23%. These bounds come from race stochasticity
+   (even the best possible model cannot exceed them). Per-position multiclass + assignment
+   cannot breach this ceiling and in practice falls below it.
 
-**Combined JRA+NAR conclusion**: The per-position multiclass + constrained-Hungarian
-formulation is REJECT for both categories. NAR's result is even cleaner than JRA's (all
-metrics confirmed negative vs JRA's mixed signal). The "4,5,6着の学習" mechanism via
-multiclass objective does not improve exact place2/3 and actively harms box/fukusho
-metrics. The oracle ceiling for NAR place2 (~35-37%) is a hard constraint from race
-stochasticity; the 40% goal is not attainable by this formulation.
+---
+
+## Interpretation and implications
+
+The mechanism is REJECT. This experiment provides an empirical, decisive answer to the
+user's question: training on 4,5,6着 via a multiclass objective and applying constrained
+assignment does NOT improve exact place2/place3 compared to the existing ranking objectives.
+
+The existing production models (NAR: XGBoost rank:pairwise iter12; JRA: CatBoost YetiRank
+iter19) produce **better** exact place2/place3 than the multiclass+Hungarian approach.
+
+The only partial gain is JRA top1 (+0.934pp confirmed), which comes from the Hungarian
+top1-lock, not from the 4,5,6 training per se — and this comes at the cost of confirmed
+regressions in top3_box (−1.29pp) and fukusho_2p (−2.13pp), which is an unacceptable
+trade under the standard accept gate.
+
+**Conclusion**: The per-position multiclass + constrained Hungarian formulation is a
+genuinely new structural approach (non-monotone assignment vs monotone ranking-then-sort)
+and was tested with an honest decisive A/B. The result is unambiguous FAIL for NAR and
+gate-fail for JRA. The exact place2/3 ceiling remains at ~35% (NAR) and ~23% (JRA), and
+is not attainable via this mechanism.
