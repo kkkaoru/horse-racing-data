@@ -101,7 +101,59 @@ All features clear |ρ| < 0.08 in both full and holdout windows. The dilution is
 
 ---
 
-## 5. Signal vs Rarity Assessment
+## 5. Per-Class Subgroup Analysis (JRA)
+
+Per-class market baseline computed separately within each class from the `blinker_off` population, bucketed by tansho_ninkijun. Bootstrap CI 95% (2000 iterations).
+
+Class mapping from `kyoso_joken_code` / `grade_code`:
+
+| Bucket    | Source codes                                                    |
+| --------- | --------------------------------------------------------------- |
+| 新馬      | kyoso_joken_code='703'                                          |
+| 未勝利    | kyoso_joken_code IN ('701','702','005','004','006','007','008') |
+| 1勝C      | kyoso_joken_code IN ('009','010')                               |
+| 2勝C      | kyoso_joken_code IN ('016','015')                               |
+| 3勝C      | kyoso_joken_code='014'                                          |
+| OP/Listed | kyoso_joken_code='999', grade IN ('E','L',' ')                  |
+| 重賞G3    | kyoso_joken_code='999', grade='C'                               |
+| 重賞G2    | kyoso_joken_code='999', grade='B'                               |
+| 重賞G1    | kyoso_joken_code='999', grade='A'                               |
+
+### 5.1 first_blinker per class
+
+| Class     | n      | avg_ninki | win_lift    | win_CI         | p3_lift     | p3_CI          | Significant?              |
+| --------- | ------ | --------- | ----------- | -------------- | ----------- | -------------- | ------------------------- |
+| 新馬      | 16,971 | 8.3       | −0.15pp     | [−0.48, +0.16] | **−1.26pp** | [−1.83, −0.68] | No (p3 CI fully negative) |
+| 未勝利    | 10,204 | 8.6       | −0.28pp     | [−0.66, +0.15] | **−1.77pp** | [−2.44, −1.05] | No (p3 CI fully negative) |
+| 1勝C      | 2,238  | 8.5       | +0.17pp     | [−0.77, +1.15] | −1.28pp     | [−2.84, +0.24] | No                        |
+| 2勝C      | 778    | 9.3       | +1.36pp     | [−0.31, +3.03] | +0.03pp     | [−2.54, +2.60] | No (CI wide, includes 0)  |
+| OP/Listed | 664    | 8.5       | **−2.07pp** | [−3.43, −0.57] | −2.80pp     | [−5.51, +0.06] | No (negative)             |
+| 重賞G3    | 322    | 9.6       | +0.07pp     | [−2.11, +2.24] | −2.08pp     | [−5.49, +1.65] | No                        |
+| 重賞G2    | 138    | 10.1      | −1.34pp     | [−3.51, +1.56] | −0.16pp     | [−5.24, +5.63] | No                        |
+| 重賞G1    | 170    | 10.5      | +0.40pp     | [−1.96, +3.34] | +0.36pp     | [−4.34, +5.66] | No                        |
+
+No class shows CI excluding 0 in the positive direction. The 2勝C cell (+1.36pp win) has a wide CI spanning 0 (n=778, p=0.09 approx). OP/Listed shows significantly negative lift.
+
+### 5.2 true_reapplication per class
+
+| Class     | n     | avg_ninki | win_lift | win_CI         | p3_lift | p3_CI           | Significant?       |
+| --------- | ----- | --------- | -------- | -------------- | ------- | --------------- | ------------------ |
+| 新馬      | 1,319 | 7.9       | +0.37pp  | [−0.92, +1.74] | +1.41pp | [−0.71, +3.61]  | No (CI includes 0) |
+| 未勝利    | 3,392 | 8.9       | −0.16pp  | [−0.87, +0.57] | +0.28pp | [−1.04, +1.55]  | No                 |
+| 1勝C      | 1,328 | 9.2       | +0.12pp  | [−0.94, +1.32] | +0.13pp | [−1.68, +2.09]  | No                 |
+| 2勝C      | 399   | 9.5       | −0.95pp  | [−2.71, +0.80] | −0.83pp | [−4.34, +2.68]  | No                 |
+| OP/Listed | 266   | 9.5       | +1.46pp  | [−1.17, +4.09] | −0.49pp | [−4.63, +4.02]  | No                 |
+| 重賞G3    | 117   | 10.2      | −1.64pp  | [−4.20, +1.78] | −1.23pp | [−7.21, +4.75]  | No                 |
+| 重賞G2    | 50    | 10.7      | +0.80pp  | [−3.20, +6.80] | +1.69pp | [−8.31, +11.69] | No (n too thin)    |
+| 重賞G1    | 26    | 11.7      | −1.85pp  | —              | −4.62pp | [−8.47, +3.07]  | No (n too thin)    |
+
+All cells span 0 or are negative. The 新馬 reapplication cell (+1.41pp p3) is the closest to positive but CI lower bound is −0.71pp — not significant. n=1,319 but effect does not clear noise floor.
+
+**Cross-class conclusion:** The blinker effect does **not** concentrate in any identifiable subgroup. There is no class-conditional adoption path. The 2勝C first-blinker cell is the only positive directional win result with some plausibility, but n=778 and CI includes 0; pursuing per-class routing based on this signal would require a much larger, more confident effect.
+
+---
+
+## 7. Signal vs Rarity Assessment
 
 | Feature            | Coverage (n)  | Subgroup lift           | ρ      | Assessment                      |
 | ------------------ | ------------- | ----------------------- | ------ | ------------------------------- |
@@ -113,25 +165,28 @@ The signals are not "rare-but-strong" — they are rare AND directionally flat-t
 
 ---
 
-## 6. Verdict
+## 8. Verdict
 
-**JRA: ABORT**
+**JRA: ABORT (aggregate and per-class)**
 
-- Neither PROCEED criterion met:
+- Neither PROCEED criterion met at aggregate level:
   - Subgroup lift: all CIs include 0 or are negative; no robust market-orthogonal outperformance
   - Partial ρ: max |ρ| = 0.045, well below 0.08 threshold in both full and holdout windows
-- The market appears to correctly price blinker changes. First-blinker horses actually run slightly below their market expectation (consistent with market incorporating the blinker as a performance signal by giving longer odds).
-- Adding blinker features would not be information-free: they correlate slightly with WORSE outcomes (market already prices it), so they would provide marginal at best, and risk GBDT over-indexing on a noisy feature.
+- Per-class analysis (8 race-class buckets × 2 blinker categories = 16 cells) shows **no cell with positive CI excluding 0**. The hypothesis that blinker lift concentrates in younger/lower-condition horses is not supported: 新馬 and 未勝利 first-blinker cells are the most negative (p3 CI fully negative). 2勝C win is nominally positive (+1.36pp) but CI spans 0 and n=778.
+- The market appears to correctly price blinker changes. First-blinker horses actually run slightly below their market expectation — consistent with the market already incorporating the blinker signal via longer odds.
+- Adding blinker features would not be information-free: they correlate slightly with WORSE outcomes (market already prices it), risking GBDT over-indexing on noise.
 
 **NAR: N/A (no data — all `blinker_shiyo_kubun='0'`)**
 
 ---
 
-## 7. Method Notes
+## 9. Method Notes
 
 - Join: `jvd_se` × `race_entry_corner_features` on (ketto_toroku_bango, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
 - Excluded: kakutei_chakujun='00' (scratch/DNS), finish_position=NULL
 - Market baseline: blinker_off population only (n=1,675,903), bucketed by tansho_ninkijun (popularity rank)
 - Bootstrap: 2000 iterations, seed=42
 - Partial ρ: Frisch-Waugh residualization of ranks, one control (popularity)
-- DuckDB not used (direct PG query via psycopg2); analysis script at `/tmp/blinker_refined.py` (not git-tracked)
+- DuckDB not used (direct PG query via psycopg2); analysis scripts at `/tmp/blinker_refined.py`, `/tmp/blinker_class_perclass.py` (not git-tracked)
+- Per-class baseline: computed per-class from `blinker_off` only (no cross-class contamination)
+- NAR per-class: not applicable (all blinker_shiyo_kubun='0'); Ban-ei is a subset of NAR — same N/A
