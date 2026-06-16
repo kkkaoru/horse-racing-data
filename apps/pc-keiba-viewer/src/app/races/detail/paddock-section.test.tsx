@@ -1,6 +1,7 @@
 // Run with: bun run test src/app/races/detail/paddock-section.test.tsx
 
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import type { RealtimeRacePayload } from "horse-racing-realtime/types";
 import React from "react";
 import { afterEach, expect, test, vi } from "vitest";
 
@@ -23,8 +24,12 @@ vi.mock("../../../lib/paddock-client-url", () => ({
   getPaddockRequestUrl: (path: string) => `http://localhost${path}`,
 }));
 
+const useRealtimeRacePayloadMock = vi.fn<() => { payload: RealtimeRacePayload | null }>(() => ({
+  payload: null,
+}));
+
 vi.mock("./realtime-client", () => ({
-  useRealtimeRacePayload: () => ({ payload: null }),
+  useRealtimeRacePayload: () => useRealtimeRacePayloadMock(),
 }));
 
 vi.mock("next/link", () => ({
@@ -33,6 +38,7 @@ vi.mock("next/link", () => ({
 }));
 
 interface PaddockRecentChartStubProps {
+  upcomingPopularity: number | null;
   upcomingRaceDate: string;
   upcomingWeight: number | null;
   upcomingWeightDelta: number | null;
@@ -40,12 +46,14 @@ interface PaddockRecentChartStubProps {
 
 vi.mock("./paddock-recent-results-chart", () => ({
   PaddockRecentResultsChart: ({
+    upcomingPopularity,
     upcomingRaceDate,
     upcomingWeight,
     upcomingWeightDelta,
   }: PaddockRecentChartStubProps) =>
     React.createElement("div", {
       "data-testid": "paddock-recent-chart-stub",
+      "data-upcoming-popularity": String(upcomingPopularity),
       "data-upcoming-race-date": upcomingRaceDate,
       "data-upcoming-weight": String(upcomingWeight),
       "data-upcoming-weight-delta": String(upcomingWeightDelta),
@@ -208,6 +216,8 @@ afterEach(() => {
   cleanup();
   fetchWithRetryMock.mockReset();
   getOrCreateUserIdMock.mockReset();
+  useRealtimeRacePayloadMock.mockReset();
+  useRealtimeRacePayloadMock.mockReturnValue({ payload: null });
 });
 
 test("formatUserIdForHistory truncates to first eight characters", () => {
@@ -1224,6 +1234,49 @@ test("PaddockSection 近走 chart receives the upcoming weight, delta and race d
   expect(chart.getAttribute("data-upcoming-race-date")).toBe("20260602");
   expect(chart.getAttribute("data-upcoming-weight")).toBe("486");
   expect(chart.getAttribute("data-upcoming-weight-delta")).toBe("4");
+  expect(chart.getAttribute("data-upcoming-popularity")).toBe("null");
+});
+
+test("PaddockSection 近走 chart receives the realtime tansho popularity by umaban", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+  useRealtimeRacePayloadMock.mockReturnValue({
+    payload: {
+      horseWeights: null,
+      odds: {
+        fetchedAt: "2026-06-02T12:00:00Z",
+        horseTrends: [],
+        history: [],
+        latest: { tansho: [{ combination: "1", odds: 3.2, rank: 2 }] },
+      },
+      raceEntries: null,
+      raceKey: "jra:20260602:05:01",
+      raceResults: null,
+      source: null,
+    },
+  });
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      recentResults={[buildPastResult({ currentUmaban: "01", kyosomeiHondai: "過去レース" })]}
+      runners={[
+        buildRunner({
+          bamei: "テストホース",
+          bataiju: "486",
+          umaban: "01",
+          zogenFugo: "+",
+          zogenSa: "4",
+        }),
+      ]}
+    />,
+  );
+
+  const graphButton = await screen.findByRole("button", { name: "グラフ" });
+  graphButton.click();
+
+  const chart = await screen.findByTestId("paddock-recent-chart-stub");
+  expect(chart.getAttribute("data-upcoming-popularity")).toBe("2");
 });
 
 test("PaddockSection 近走 chart receives null upcoming weight when the runner has no weight", async () => {

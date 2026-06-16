@@ -488,6 +488,7 @@ const formatPastJockeyName = (value: string | null | undefined): string => {
 interface PaddockRecentResultsProps {
   loading?: boolean;
   results: HorseRaceResult[] | null;
+  upcomingPopularity: number | null;
   upcomingRaceDate: string;
   upcomingWeight: number | null;
   upcomingWeightDelta: number | null;
@@ -502,6 +503,7 @@ const PADDOCK_RECENT_VIEW_CONTROLS_STYLE: CSSProperties = { display: "flex", gap
 function PaddockRecentResults({
   loading = false,
   results,
+  upcomingPopularity,
   upcomingRaceDate,
   upcomingWeight,
   upcomingWeightDelta,
@@ -591,6 +593,7 @@ function PaddockRecentResults({
       {isGraphMode ? (
         <PaddockRecentResultsChart
           results={results}
+          upcomingPopularity={upcomingPopularity}
           upcomingRaceDate={upcomingRaceDate}
           upcomingWeight={upcomingWeight}
           upcomingWeightDelta={upcomingWeightDelta}
@@ -1128,6 +1131,7 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
       <PaddockRecentResults
         loading={recentResultsLoading}
         results={recentResults}
+        upcomingPopularity={realtimePopularity}
         upcomingRaceDate={upcomingRaceDate}
         upcomingWeight={upcomingWeightValues.weight}
         upcomingWeightDelta={upcomingWeightValues.weightDelta}

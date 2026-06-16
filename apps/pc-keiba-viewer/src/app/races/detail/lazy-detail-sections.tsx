@@ -645,6 +645,7 @@ function LazyResultsChartSection(props: LazyDetailSectionsProps) {
         keibajoCode={props.keibajoCode}
         month={props.month}
         raceNumber={props.raceNumber}
+        realtimeApiBaseUrl={props.realtimeApiBaseUrl}
         results={payload.results}
         runners={payload.runners}
         source={props.source}

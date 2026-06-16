@@ -20,6 +20,7 @@ interface ComposedChartRowStub {
   dateValue: number;
   futan: number | null;
   isUpcoming?: boolean;
+  popularity: number | null;
   weight: number | null;
   weightDelta: number | null;
 }
@@ -105,6 +106,7 @@ vi.mock("recharts", () => ({
     <div
       data-last-futan={String(data?.at(-1)?.futan ?? "none")}
       data-last-is-upcoming={String(data?.at(-1)?.isUpcoming ?? false)}
+      data-last-popularity={String(data?.at(-1)?.popularity ?? "none")}
       data-last-weight={String(data?.at(-1)?.weight ?? "none")}
       data-last-weight-delta={String(data?.at(-1)?.weightDelta ?? "none")}
       data-row-count={data?.length ?? 0}
@@ -251,7 +253,7 @@ test("pressing the futan chip adds the violet futan line on the futan axis", () 
     "futan",
   );
   expect(screen.getAllByTestId("line-stub").at(4)?.getAttribute("data-stroke")).toStrictEqual(
-    "#7c3aed",
+    "#7048e8",
   );
   expect(screen.getAllByTestId("line-stub").at(4)?.getAttribute("data-y-axis-id")).toStrictEqual(
     "futan",
@@ -286,13 +288,13 @@ test("an active chip reports data-active true while staying aria-pressed", () =>
   );
 });
 
-test("renders the weight-delta series as an orange line on the delta axis", () => {
+test("renders the weight-delta series as an amber line on the delta axis", () => {
   render(<PaddockRecentResultsChart results={[chartResult({})]} />);
   expect(screen.getAllByTestId("line-stub").at(3)?.getAttribute("data-data-key")).toStrictEqual(
     "weightDelta",
   );
   expect(screen.getAllByTestId("line-stub").at(3)?.getAttribute("data-stroke")).toStrictEqual(
-    "#ea580c",
+    "#f59f00",
   );
   expect(screen.getAllByTestId("line-stub").at(3)?.getAttribute("data-y-axis-id")).toStrictEqual(
     "delta",
@@ -306,7 +308,7 @@ test("maps each visible metric line to its data key and revised stroke color", (
   ).toStrictEqual(["finish", "popularity", "weight", "weightDelta"]);
   expect(
     screen.getAllByTestId("line-stub").map((line) => line.getAttribute("data-stroke")),
-  ).toStrictEqual(["#c81e1e", "#1d4ed8", "#047857", "#ea580c"]);
+  ).toStrictEqual(["#e03131", "#1971c2", "#0ca678", "#f59f00"]);
 });
 
 test("renders the finish line solid and the popularity line dashed", () => {
@@ -376,7 +378,7 @@ test("renders a dashed cartesian grid behind the chart", () => {
   render(<PaddockRecentResultsChart results={[chartResult({})]} />);
   expect(screen.getByTestId("cartesian-grid-stub").getAttribute("data-dash")).toStrictEqual("3 3");
   expect(screen.getByTestId("cartesian-grid-stub").getAttribute("data-stroke")).toStrictEqual(
-    "#e5e7eb",
+    "#e9ecef",
   );
 });
 
@@ -392,7 +394,7 @@ test("renders a zero reference line on the delta axis", () => {
     "delta",
   );
   expect(screen.getByTestId("reference-line-stub").getAttribute("data-stroke")).toStrictEqual(
-    "#9ca3af",
+    "#adb5bd",
   );
 });
 
@@ -691,13 +693,36 @@ test("omits the upcoming point when the race date is not eight digits", () => {
   ).toStrictEqual("false");
 });
 
-test("omits the upcoming point when the weight prop is not a finite number", () => {
+test("still emits the upcoming row from a finite delta when the weight prop is not finite", () => {
   render(
     <PaddockRecentResultsChart
       results={[chartResult({ kaisaiTsukihi: "0322" })]}
       upcomingRaceDate="20260614"
       upcomingWeight={null}
       upcomingWeightDelta={6}
+    />,
+  );
+  expect(screen.getByTestId("composed-chart-stub").getAttribute("data-row-count")).toStrictEqual(
+    "2",
+  );
+  expect(
+    screen.getByTestId("composed-chart-stub").getAttribute("data-last-is-upcoming"),
+  ).toStrictEqual("true");
+  expect(screen.getByTestId("composed-chart-stub").getAttribute("data-last-weight")).toStrictEqual(
+    "none",
+  );
+  expect(
+    screen.getByTestId("composed-chart-stub").getAttribute("data-last-weight-delta"),
+  ).toStrictEqual("6");
+});
+
+test("omits the upcoming row when weight, delta and popularity are all absent", () => {
+  render(
+    <PaddockRecentResultsChart
+      results={[chartResult({ kaisaiTsukihi: "0322" })]}
+      upcomingRaceDate="20260614"
+      upcomingWeight={null}
+      upcomingWeightDelta={null}
     />,
   );
   expect(screen.getByTestId("composed-chart-stub").getAttribute("data-row-count")).toStrictEqual(
@@ -708,32 +733,100 @@ test("omits the upcoming point when the weight prop is not a finite number", () 
   ).toStrictEqual("false");
 });
 
+test("plots the upcoming popularity even when no weight snapshot exists yet", () => {
+  render(
+    <PaddockRecentResultsChart
+      results={[chartResult({ kaisaiTsukihi: "0322" })]}
+      upcomingPopularity={2}
+      upcomingRaceDate="20260614"
+      upcomingWeight={null}
+      upcomingWeightDelta={null}
+    />,
+  );
+  expect(screen.getByTestId("composed-chart-stub").getAttribute("data-row-count")).toStrictEqual(
+    "2",
+  );
+  expect(
+    screen.getByTestId("composed-chart-stub").getAttribute("data-last-is-upcoming"),
+  ).toStrictEqual("true");
+  expect(
+    screen.getByTestId("composed-chart-stub").getAttribute("data-last-popularity"),
+  ).toStrictEqual("2");
+  expect(screen.getByTestId("composed-chart-stub").getAttribute("data-last-weight")).toStrictEqual(
+    "none",
+  );
+  expect(
+    screen.getByTestId("composed-chart-stub").getAttribute("data-last-weight-delta"),
+  ).toStrictEqual("none");
+});
+
+test("plots the upcoming weight with an absent popularity when only weight is provided", () => {
+  render(
+    <PaddockRecentResultsChart
+      results={[chartResult({ kaisaiTsukihi: "0322" })]}
+      upcomingRaceDate="20260614"
+      upcomingWeight={486}
+      upcomingWeightDelta={6}
+    />,
+  );
+  expect(
+    screen.getByTestId("composed-chart-stub").getAttribute("data-last-is-upcoming"),
+  ).toStrictEqual("true");
+  expect(screen.getByTestId("composed-chart-stub").getAttribute("data-last-weight")).toStrictEqual(
+    "486",
+  );
+  expect(
+    screen.getByTestId("composed-chart-stub").getAttribute("data-last-popularity"),
+  ).toStrictEqual("none");
+});
+
+test("plots both upcoming weight and popularity when both are provided", () => {
+  render(
+    <PaddockRecentResultsChart
+      results={[chartResult({ kaisaiTsukihi: "0322" })]}
+      upcomingPopularity={3}
+      upcomingRaceDate="20260614"
+      upcomingWeight={500}
+      upcomingWeightDelta={4}
+    />,
+  );
+  expect(screen.getByTestId("composed-chart-stub").getAttribute("data-last-weight")).toStrictEqual(
+    "500",
+  );
+  expect(
+    screen.getByTestId("composed-chart-stub").getAttribute("data-last-weight-delta"),
+  ).toStrictEqual("4");
+  expect(
+    screen.getByTestId("composed-chart-stub").getAttribute("data-last-popularity"),
+  ).toStrictEqual("3");
+});
+
 test("PaddockChartDot renders a larger radius four circle for the upcoming point", () => {
   const { container } = render(
     <svg>
-      <PaddockChartDot cx={10} cy={20} payload={{ isUpcoming: true }} stroke="#047857" />
+      <PaddockChartDot cx={10} cy={20} payload={{ isUpcoming: true }} stroke="#0ca678" />
     </svg>,
   );
   const circle = container.querySelector("circle");
   expect(circle?.getAttribute("r")).toStrictEqual("4");
-  expect(circle?.getAttribute("fill")).toStrictEqual("#047857");
+  expect(circle?.getAttribute("fill")).toStrictEqual("#0ca678");
 });
 
 test("PaddockChartDot renders the default radius two circle for a past point", () => {
   const { container } = render(
     <svg>
-      <PaddockChartDot cx={10} cy={20} payload={{ isUpcoming: false }} stroke="#c81e1e" />
+      <PaddockChartDot cx={10} cy={20} payload={{ isUpcoming: false }} stroke="#e03131" />
     </svg>,
   );
   const circle = container.querySelector("circle");
   expect(circle?.getAttribute("r")).toStrictEqual("2");
-  expect(circle?.getAttribute("stroke")).toStrictEqual("#c81e1e");
+  expect(circle?.getAttribute("stroke")).toStrictEqual("#e03131");
 });
 
 test("PaddockChartDot renders nothing when the coordinates are missing", () => {
   const { container } = render(
     <svg>
-      <PaddockChartDot payload={{ isUpcoming: true }} stroke="#047857" />
+      <PaddockChartDot payload={{ isUpcoming: true }} stroke="#0ca678" />
     </svg>,
   );
   expect(container.querySelectorAll("circle").length).toStrictEqual(0);
@@ -742,19 +835,40 @@ test("PaddockChartDot renders nothing when the coordinates are missing", () => {
 test("PaddockChartDot renders nothing when only the y coordinate is missing", () => {
   const { container } = render(
     <svg>
-      <PaddockChartDot cx={10} payload={{ isUpcoming: false }} stroke="#c81e1e" />
+      <PaddockChartDot cx={10} payload={{ isUpcoming: false }} stroke="#e03131" />
     </svg>,
   );
   expect(container.querySelectorAll("circle").length).toStrictEqual(0);
 });
 
-test("omits the upcoming point when the weight prop is an infinite number", () => {
+test("drops only the weight value when the weight prop is an infinite number", () => {
   render(
     <PaddockRecentResultsChart
       results={[chartResult({ kaisaiTsukihi: "0322" })]}
       upcomingRaceDate="20260614"
       upcomingWeight={Number.POSITIVE_INFINITY}
       upcomingWeightDelta={6}
+    />,
+  );
+  expect(screen.getByTestId("composed-chart-stub").getAttribute("data-row-count")).toStrictEqual(
+    "2",
+  );
+  expect(
+    screen.getByTestId("composed-chart-stub").getAttribute("data-last-is-upcoming"),
+  ).toStrictEqual("true");
+  expect(screen.getByTestId("composed-chart-stub").getAttribute("data-last-weight")).toStrictEqual(
+    "none",
+  );
+});
+
+test("omits the upcoming row when the date is absent even though popularity is finite", () => {
+  render(
+    <PaddockRecentResultsChart
+      results={[chartResult({ kaisaiTsukihi: "0322" })]}
+      upcomingPopularity={2}
+      upcomingRaceDate={null}
+      upcomingWeight={null}
+      upcomingWeightDelta={null}
     />,
   );
   expect(screen.getByTestId("composed-chart-stub").getAttribute("data-row-count")).toStrictEqual(
@@ -848,7 +962,7 @@ test("PaddockRecentTooltip omits null metric lines and shows dash meta with a fa
   expect(screen.getByText("枠番 -").textContent).toStrictEqual("枠番 -");
   expect(screen.getByText("騎手 -").textContent).toStrictEqual("騎手 -");
   const tooltip = screen.getByText("1970/01/01").parentElement;
-  expect(tooltip?.style.borderColor).toStrictEqual("#9ca3af");
+  expect(tooltip?.style.borderColor).toStrictEqual("#adb5bd");
 });
 
 test("PaddockRecentTooltip treats whitespace-only jockey and wakuban as a dash", () => {
@@ -877,4 +991,170 @@ test("PaddockRecentTooltip treats whitespace-only jockey and wakuban as a dash",
   );
   expect(screen.getByText("枠番 -").textContent).toStrictEqual("枠番 -");
   expect(screen.getByText("騎手 -").textContent).toStrictEqual("騎手 -");
+});
+
+test("renders the finish chip swatch with the crimson palette color", () => {
+  render(<PaddockRecentResultsChart results={[chartResult({})]} />);
+  const swatch = screen.getByRole("button", { name: "着順" }).querySelector("span");
+  expect(swatch?.style.backgroundColor).toStrictEqual("#e03131");
+});
+
+test("renders the popularity chip swatch with the blue palette color", () => {
+  render(<PaddockRecentResultsChart results={[chartResult({})]} />);
+  const swatch = screen.getByRole("button", { name: "人気" }).querySelector("span");
+  expect(swatch?.style.backgroundColor).toStrictEqual("#1971c2");
+});
+
+test("renders the weight chip swatch with the emerald palette color", () => {
+  render(<PaddockRecentResultsChart results={[chartResult({})]} />);
+  const swatch = screen.getByRole("button", { name: "馬体重" }).querySelector("span");
+  expect(swatch?.style.backgroundColor).toStrictEqual("#0ca678");
+});
+
+test("renders the weight-delta chip swatch with the amber palette color", () => {
+  render(<PaddockRecentResultsChart results={[chartResult({})]} />);
+  const swatch = screen.getByRole("button", { name: "馬体重増減" }).querySelector("span");
+  expect(swatch?.style.backgroundColor).toStrictEqual("#f59f00");
+});
+
+test("renders the futan chip swatch with the violet palette color", () => {
+  render(<PaddockRecentResultsChart results={[chartResult({})]} />);
+  const swatch = screen.getByRole("button", { name: "斤量" }).querySelector("span");
+  expect(swatch?.style.backgroundColor).toStrictEqual("#7048e8");
+});
+
+test("plots the upcoming popularity on the synthetic upcoming row when provided", () => {
+  render(
+    <PaddockRecentResultsChart
+      results={[chartResult({ kaisaiTsukihi: "0322" })]}
+      upcomingPopularity={2}
+      upcomingRaceDate="20260614"
+      upcomingWeight={486}
+      upcomingWeightDelta={6}
+    />,
+  );
+  expect(
+    screen.getByTestId("composed-chart-stub").getAttribute("data-last-is-upcoming"),
+  ).toStrictEqual("true");
+  expect(
+    screen.getByTestId("composed-chart-stub").getAttribute("data-last-popularity"),
+  ).toStrictEqual("2");
+});
+
+test("omits the upcoming popularity when it is below the minimum rank of one", () => {
+  render(
+    <PaddockRecentResultsChart
+      results={[chartResult({ kaisaiTsukihi: "0322" })]}
+      upcomingPopularity={0}
+      upcomingRaceDate="20260614"
+      upcomingWeight={486}
+      upcomingWeightDelta={6}
+    />,
+  );
+  expect(
+    screen.getByTestId("composed-chart-stub").getAttribute("data-last-is-upcoming"),
+  ).toStrictEqual("true");
+  expect(
+    screen.getByTestId("composed-chart-stub").getAttribute("data-last-popularity"),
+  ).toStrictEqual("none");
+});
+
+test("omits the upcoming popularity when it is not a finite number", () => {
+  render(
+    <PaddockRecentResultsChart
+      results={[chartResult({ kaisaiTsukihi: "0322" })]}
+      upcomingPopularity={Number.NaN}
+      upcomingRaceDate="20260614"
+      upcomingWeight={486}
+      upcomingWeightDelta={6}
+    />,
+  );
+  expect(
+    screen.getByTestId("composed-chart-stub").getAttribute("data-last-popularity"),
+  ).toStrictEqual("none");
+});
+
+test("omits the upcoming popularity when no upcoming popularity prop is given", () => {
+  render(
+    <PaddockRecentResultsChart
+      results={[chartResult({ kaisaiTsukihi: "0322" })]}
+      upcomingRaceDate="20260614"
+      upcomingWeight={486}
+      upcomingWeightDelta={6}
+    />,
+  );
+  expect(
+    screen.getByTestId("composed-chart-stub").getAttribute("data-last-is-upcoming"),
+  ).toStrictEqual("true");
+  expect(
+    screen.getByTestId("composed-chart-stub").getAttribute("data-last-popularity"),
+  ).toStrictEqual("none");
+});
+
+test("the period slider defaults to ten and exposes ten as the slider value when exactly ten races exist", () => {
+  render(
+    <PaddockRecentResultsChart
+      results={[
+        chartResult({ kaisaiTsukihi: "0101", raceBango: "01" }),
+        chartResult({ kaisaiTsukihi: "0102", raceBango: "02" }),
+        chartResult({ kaisaiTsukihi: "0103", raceBango: "03" }),
+        chartResult({ kaisaiTsukihi: "0104", raceBango: "04" }),
+        chartResult({ kaisaiTsukihi: "0105", raceBango: "05" }),
+        chartResult({ kaisaiTsukihi: "0106", raceBango: "06" }),
+        chartResult({ kaisaiTsukihi: "0107", raceBango: "07" }),
+        chartResult({ kaisaiTsukihi: "0108", raceBango: "08" }),
+        chartResult({ kaisaiTsukihi: "0109", raceBango: "09" }),
+        chartResult({ kaisaiTsukihi: "0110", raceBango: "10" }),
+      ]}
+    />,
+  );
+  expect(screen.getByText("全10走").textContent).toStrictEqual("全10走");
+  expect(screen.getByRole("slider").getAttribute("value")).toStrictEqual("10");
+  expect(screen.getByRole("slider").getAttribute("max")).toStrictEqual("10");
+});
+
+test("the period slider defaults to all races when between three and ten races exist", () => {
+  render(
+    <PaddockRecentResultsChart
+      results={[
+        chartResult({ kaisaiTsukihi: "0101", raceBango: "01" }),
+        chartResult({ kaisaiTsukihi: "0102", raceBango: "02" }),
+        chartResult({ kaisaiTsukihi: "0103", raceBango: "03" }),
+        chartResult({ kaisaiTsukihi: "0104", raceBango: "04" }),
+        chartResult({ kaisaiTsukihi: "0105", raceBango: "05" }),
+        chartResult({ kaisaiTsukihi: "0106", raceBango: "06" }),
+        chartResult({ kaisaiTsukihi: "0107", raceBango: "07" }),
+      ]}
+    />,
+  );
+  expect(screen.getByText("全7走").textContent).toStrictEqual("全7走");
+  expect(screen.getByRole("slider").getAttribute("value")).toStrictEqual("7");
+  expect(screen.getByRole("slider").getAttribute("max")).toStrictEqual("7");
+});
+
+test("the period slider max equals the total so more than ten races stay selectable", () => {
+  render(
+    <PaddockRecentResultsChart
+      results={[
+        chartResult({ kaisaiTsukihi: "0101", raceBango: "01" }),
+        chartResult({ kaisaiTsukihi: "0102", raceBango: "02" }),
+        chartResult({ kaisaiTsukihi: "0103", raceBango: "03" }),
+        chartResult({ kaisaiTsukihi: "0104", raceBango: "04" }),
+        chartResult({ kaisaiTsukihi: "0105", raceBango: "05" }),
+        chartResult({ kaisaiTsukihi: "0106", raceBango: "06" }),
+        chartResult({ kaisaiTsukihi: "0107", raceBango: "07" }),
+        chartResult({ kaisaiTsukihi: "0108", raceBango: "08" }),
+        chartResult({ kaisaiTsukihi: "0109", raceBango: "09" }),
+        chartResult({ kaisaiTsukihi: "0110", raceBango: "10" }),
+        chartResult({ kaisaiTsukihi: "0111", raceBango: "11" }),
+        chartResult({ kaisaiTsukihi: "0112", raceBango: "12" }),
+      ]}
+    />,
+  );
+  expect(screen.getByRole("slider").getAttribute("max")).toStrictEqual("12");
+  fireEvent.change(screen.getByRole("slider"), { target: { value: "12" } });
+  expect(screen.getByText("全12走").textContent).toStrictEqual("全12走");
+  expect(screen.getByTestId("composed-chart-stub").getAttribute("data-row-count")).toStrictEqual(
+    "12",
+  );
 });

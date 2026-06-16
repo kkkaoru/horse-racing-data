@@ -1,6 +1,7 @@
 // Run with: bunx vitest run src/app/races/detail/horse-race-results-chart.test.tsx
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import type { RealtimeOddsData, RealtimeRacePayload } from "horse-racing-realtime/types";
 import React from "react";
 import type { ReactElement, ReactNode } from "react";
 import { afterEach, expect, test, vi } from "vitest";
@@ -10,6 +11,12 @@ import type { HorseWeightSnapshot } from "../../../lib/horse-weight-stream-clien
 import { useHorseWeightStream } from "../../../lib/horse-weight-stream-client";
 import type { HorseRaceResult } from "../../../lib/race-types";
 import { HorseRaceResultsChart } from "./horse-race-results-chart";
+import { useRealtimeRacePayload } from "./realtime-client";
+
+interface RealtimePayloadResult {
+  error: string | null;
+  payload: RealtimeRacePayload | null;
+}
 
 interface ChartChildrenStubProps {
   children?: ReactNode;
@@ -45,8 +52,12 @@ interface TooltipStubProps {
   content?: ReactElement<MetricTooltipInjectedProps>;
 }
 
-interface MatrixStubProps {
-  rows: unknown[];
+interface PaddockChartStubProps {
+  results: HorseRaceResult[];
+  upcomingPopularity?: number | null;
+  upcomingRaceDate?: string | null;
+  upcomingWeight?: number | null;
+  upcomingWeightDelta?: number | null;
 }
 
 vi.mock("recharts", () => ({
@@ -87,9 +98,22 @@ vi.mock("recharts", () => ({
   ),
 }));
 
-vi.mock("./horse-race-results-correlation-matrix", () => ({
-  HorseRaceResultsCorrelationMatrix: ({ rows }: MatrixStubProps) => (
-    <div data-testid="correlation-matrix-stub">{rows.length}</div>
+vi.mock("./paddock-recent-results-chart", () => ({
+  PaddockRecentResultsChart: ({
+    results,
+    upcomingPopularity,
+    upcomingRaceDate,
+    upcomingWeight,
+    upcomingWeightDelta,
+  }: PaddockChartStubProps) => (
+    <div
+      data-results-count={results.length}
+      data-testid="paddock-recent-chart-stub"
+      data-upcoming-popularity={String(upcomingPopularity)}
+      data-upcoming-race-date={upcomingRaceDate ?? ""}
+      data-upcoming-weight={String(upcomingWeight)}
+      data-upcoming-weight-delta={String(upcomingWeightDelta)}
+    />
   ),
 }));
 
@@ -97,10 +121,31 @@ vi.mock("../../../lib/horse-weight-stream-client", () => ({
   useHorseWeightStream: vi.fn<() => HorseWeightSnapshot | null>(() => null),
 }));
 
+vi.mock("./realtime-client", () => ({
+  useRealtimeRacePayload: vi.fn<() => RealtimePayloadResult>(() => ({
+    error: null,
+    payload: null,
+  })),
+}));
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
 });
+
+const mockTanshoPayload = (tansho: RealtimeOddsData[]) => {
+  vi.mocked(useRealtimeRacePayload).mockReturnValue({
+    error: null,
+    payload: {
+      horseWeights: null,
+      odds: { fetchedAt: "2026-06-13T09:01:00Z", horseTrends: [], history: [], latest: { tansho } },
+      raceEntries: null,
+      raceKey: "jra:20260613:09:01",
+      raceResults: null,
+      source: null,
+    },
+  });
+};
 
 const chartResult = (overrides: Partial<HorseRaceResult>): HorseRaceResult => ({
   babajotaiCodeDirt: "1",
@@ -196,7 +241,7 @@ test("renders the view toggle with the overview mode pressed by default", () => 
   expect(
     screen.getByRole("button", { name: "馬別（相関）" }).getAttribute("aria-pressed"),
   ).toStrictEqual("false");
-  expect(screen.queryAllByTestId("correlation-matrix-stub").length).toStrictEqual(0);
+  expect(screen.queryAllByTestId("paddock-recent-chart-stub").length).toStrictEqual(0);
 });
 
 test("renders the view toggle, bulk buttons and horse chips in the overview mode", () => {
@@ -402,6 +447,63 @@ test("renders no upcoming weight point when the realtime stream has no snapshot"
   expect(lines[2]?.getAttribute("data-upcoming-points")).toStrictEqual("0");
 });
 
+test("plots the target-race popularity newest point on the popularity panel from the realtime odds", () => {
+  vi.mocked(useHorseWeightStream).mockReturnValue({
+    fetchedAt: "2026-06-13T09:01:00Z",
+    horses: [
+      { changeAmount: 2, changeSign: null, horseName: "アルファ", horseNumber: "1", weight: 444 },
+    ],
+  });
+  mockTanshoPayload([{ combination: "1", rank: 3 }]);
+  render(
+    <HorseRaceResultsChart
+      day="13"
+      keibajoCode="09"
+      month="06"
+      raceNumber="01"
+      realtimeApiBaseUrl="https://example.com"
+      results={[chartResult({})]}
+      runners={[chartRunner({})]}
+      source="jra"
+      targetKeibajoCode="09"
+      targetRaceDate="20260613"
+      year="2026"
+    />,
+  );
+  const lines = screen.getAllByTestId("line-stub");
+  expect(lines[1]?.getAttribute("data-total-points")).toStrictEqual("2");
+  expect(lines[1]?.getAttribute("data-upcoming-points")).toStrictEqual("1");
+  expect(lines[1]?.getAttribute("data-value-sum")).toStrictEqual("5");
+});
+
+test("renders no upcoming popularity point when the realtime odds have no tansho rank", () => {
+  vi.mocked(useHorseWeightStream).mockReturnValue({
+    fetchedAt: "2026-06-13T09:01:00Z",
+    horses: [
+      { changeAmount: 2, changeSign: null, horseName: "アルファ", horseNumber: "1", weight: 444 },
+    ],
+  });
+  mockTanshoPayload([]);
+  render(
+    <HorseRaceResultsChart
+      day="13"
+      keibajoCode="09"
+      month="06"
+      raceNumber="01"
+      realtimeApiBaseUrl="https://example.com"
+      results={[chartResult({})]}
+      runners={[chartRunner({})]}
+      source="jra"
+      targetKeibajoCode="09"
+      targetRaceDate="20260613"
+      year="2026"
+    />,
+  );
+  const lines = screen.getAllByTestId("line-stub");
+  expect(lines[1]?.getAttribute("data-total-points")).toStrictEqual("1");
+  expect(lines[1]?.getAttribute("data-upcoming-points")).toStrictEqual("0");
+});
+
 test("renders distance and jockey in the finish and popularity tooltips only", () => {
   render(<HorseRaceResultsChart results={[chartResult({})]} />);
   const tooltips = screen.getAllByTestId("tooltip-stub");
@@ -506,7 +608,7 @@ test("hides every horse in every panel via 全馬非表示 and restores them via
   ).toStrictEqual("true");
 });
 
-test("switches to the correlation view and back to the overview", () => {
+test("renders the paddock chart for the selected horse in the correlation view and back to the overview", () => {
   render(
     <HorseRaceResultsChart
       results={[
@@ -531,38 +633,29 @@ test("switches to the correlation view and back to the overview", () => {
     screen.getByRole("button", { name: "俯瞰（指標別）" }).getAttribute("aria-pressed"),
   ).toStrictEqual("false");
   expect(screen.queryAllByTestId("line-chart-stub").length).toStrictEqual(0);
-  expect(screen.getByTestId("correlation-matrix-stub").textContent).toStrictEqual("2");
+  expect(
+    screen.getByTestId("paddock-recent-chart-stub").getAttribute("data-results-count"),
+  ).toStrictEqual("2");
   fireEvent.click(screen.getByRole("button", { name: "俯瞰（指標別）" }));
   expect(screen.getAllByTestId("line-chart-stub").length).toStrictEqual(5);
-  expect(screen.queryAllByTestId("correlation-matrix-stub").length).toStrictEqual(0);
+  expect(screen.queryAllByTestId("paddock-recent-chart-stub").length).toStrictEqual(0);
 });
 
-test("appends the upcoming weight column to the correlation matrix rows", () => {
-  render(
-    <HorseRaceResultsChart
-      results={[chartResult({})]}
-      runners={[chartRunner({})]}
-      targetKeibajoCode="05"
-      targetRaceDate="20260601"
-    />,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "馬別（相関）" }));
-  expect(screen.getByTestId("correlation-matrix-stub").textContent).toStrictEqual("2");
-});
-
-test("appends the realtime upcoming weight column to the correlation matrix rows", () => {
+test("passes the upcoming race date, weight, delta and popularity to the correlation paddock chart", () => {
   vi.mocked(useHorseWeightStream).mockReturnValue({
     fetchedAt: "2026-06-13T09:01:00Z",
     horses: [
-      { changeAmount: 2, changeSign: null, horseName: "アルファ", horseNumber: "1", weight: 444 },
+      { changeAmount: 2, changeSign: "-", horseName: "アルファ", horseNumber: "1", weight: 444 },
     ],
   });
+  mockTanshoPayload([{ combination: "1", rank: 3 }]);
   render(
     <HorseRaceResultsChart
       day="13"
       keibajoCode="09"
       month="06"
       raceNumber="01"
+      realtimeApiBaseUrl="https://example.com"
       results={[chartResult({})]}
       runners={[chartRunner({})]}
       source="jra"
@@ -572,7 +665,24 @@ test("appends the realtime upcoming weight column to the correlation matrix rows
     />,
   );
   fireEvent.click(screen.getByRole("button", { name: "馬別（相関）" }));
-  expect(screen.getByTestId("correlation-matrix-stub").textContent).toStrictEqual("2");
+  const chart = screen.getByTestId("paddock-recent-chart-stub");
+  expect(chart.getAttribute("data-upcoming-race-date")).toStrictEqual("20260613");
+  expect(chart.getAttribute("data-upcoming-weight")).toStrictEqual("444");
+  expect(chart.getAttribute("data-upcoming-weight-delta")).toStrictEqual("-2");
+  expect(chart.getAttribute("data-upcoming-popularity")).toStrictEqual("3");
+});
+
+test("passes null upcoming values to the correlation paddock chart when no override matches", () => {
+  render(
+    <HorseRaceResultsChart
+      results={[chartResult({}), chartResult({ kaisaiTsukihi: "0510", raceBango: "02" })]}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "馬別（相関）" }));
+  const chart = screen.getByTestId("paddock-recent-chart-stub");
+  expect(chart.getAttribute("data-upcoming-weight")).toStrictEqual("null");
+  expect(chart.getAttribute("data-upcoming-weight-delta")).toStrictEqual("null");
+  expect(chart.getAttribute("data-upcoming-popularity")).toStrictEqual("null");
 });
 
 test("hides the bulk buttons and single-selects the first horse in the correlation view", () => {
@@ -606,7 +716,7 @@ test("hides the bulk buttons and single-selects the first horse in the correlati
   ).toStrictEqual("false");
 });
 
-test("switches the correlated horse when another chip is clicked", () => {
+test("switches the correlated horse paddock chart when another chip is clicked", () => {
   render(
     <HorseRaceResultsChart
       results={[
@@ -624,30 +734,31 @@ test("switches the correlated horse when another chip is clicked", () => {
     />,
   );
   fireEvent.click(screen.getByRole("button", { name: "馬別（相関）" }));
-  expect(screen.getByTestId("correlation-matrix-stub").textContent).toStrictEqual("2");
+  expect(
+    screen.getByTestId("paddock-recent-chart-stub").getAttribute("data-results-count"),
+  ).toStrictEqual("2");
   fireEvent.click(screen.getByRole("button", { name: "2 ベータ" }));
-  expect(screen.getByTestId("correlation-matrix-stub").textContent).toStrictEqual("1");
+  expect(
+    screen.getByTestId("paddock-recent-chart-stub").getAttribute("data-results-count"),
+  ).toStrictEqual("1");
   expect(
     screen.getByRole("button", { name: "2 ベータ" }).getAttribute("aria-pressed"),
   ).toStrictEqual("true");
   expect(
     screen.getByRole("button", { name: "1 アルファ" }).getAttribute("aria-pressed"),
   ).toStrictEqual("false");
-  fireEvent.click(screen.getByRole("button", { name: "2 ベータ" }));
-  expect(screen.getByTestId("correlation-matrix-stub").textContent).toStrictEqual("1");
-  expect(
-    screen.getByRole("button", { name: "2 ベータ" }).getAttribute("aria-pressed"),
-  ).toStrictEqual("true");
 });
 
-test("passes zero correlation rows when no row has a ketto number", () => {
+test("renders an empty paddock chart when no row has a ketto number in the correlation view", () => {
   render(<HorseRaceResultsChart results={[chartResult({ kettoTorokuBango: " " })]} />);
   fireEvent.click(screen.getByRole("button", { name: "馬別（相関）" }));
   expect(screen.getAllByRole("button").map((button) => button.textContent)).toStrictEqual([
     "俯瞰（指標別）",
     "馬別（相関）",
   ]);
-  expect(screen.getByTestId("correlation-matrix-stub").textContent).toStrictEqual("0");
+  expect(
+    screen.getByTestId("paddock-recent-chart-stub").getAttribute("data-results-count"),
+  ).toStrictEqual("0");
 });
 
 test("plots the carried weight on the futan panel without crashing", () => {
@@ -676,6 +787,45 @@ test("defaults the period slider to the full span and labels it 全期間", () =
   expect(screen.getAllByTestId("line-stub")[0]?.getAttribute("data-total-points")).toStrictEqual(
     "2",
   );
+});
+
+test("hides the months period slider while the correlation view is active", () => {
+  render(
+    <HorseRaceResultsChart
+      results={[
+        chartResult({ kaisaiTsukihi: "0310", raceBango: "01" }),
+        chartResult({ kaisaiTsukihi: "0612", raceBango: "02" }),
+      ]}
+    />,
+  );
+  expect(screen.queryAllByRole("slider").length).toStrictEqual(1);
+  fireEvent.click(screen.getByRole("button", { name: "馬別（相関）" }));
+  expect(screen.queryAllByRole("slider").length).toStrictEqual(0);
+});
+
+test("renders the 表示期間 months label in the overview mode when the span exceeds one month", () => {
+  render(
+    <HorseRaceResultsChart
+      results={[
+        chartResult({ kaisaiTsukihi: "0310", raceBango: "01" }),
+        chartResult({ kaisaiTsukihi: "0612", raceBango: "02" }),
+      ]}
+    />,
+  );
+  expect(screen.queryByText("表示期間")).not.toStrictEqual(null);
+});
+
+test("hides the 表示期間 months label entirely while the correlation view is active", () => {
+  render(
+    <HorseRaceResultsChart
+      results={[
+        chartResult({ kaisaiTsukihi: "0310", raceBango: "01" }),
+        chartResult({ kaisaiTsukihi: "0612", raceBango: "02" }),
+      ]}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "馬別（相関）" }));
+  expect(screen.queryByText("表示期間")).toStrictEqual(null);
 });
 
 test("filters the panels to the recent window and labels it 直近Nヶ月 when the slider moves", () => {

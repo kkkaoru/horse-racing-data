@@ -126,6 +126,7 @@ vi.mock("./horse-race-results-chart", () => ({
     keibajoCode,
     month,
     raceNumber,
+    realtimeApiBaseUrl,
     runners,
     source,
     targetKeibajoCode,
@@ -136,6 +137,7 @@ vi.mock("./horse-race-results-chart", () => ({
     keibajoCode?: string;
     month?: string;
     raceNumber?: string;
+    realtimeApiBaseUrl?: string;
     runners?: unknown[];
     source?: string;
     targetKeibajoCode?: string | null;
@@ -147,6 +149,7 @@ vi.mock("./horse-race-results-chart", () => ({
       data-keibajo-code={keibajoCode ?? ""}
       data-month={month ?? ""}
       data-race-number={raceNumber ?? ""}
+      data-realtime-api-base-url={realtimeApiBaseUrl ?? ""}
       data-runners-passed={runners === undefined ? "missing" : "present"}
       data-source={source ?? ""}
       data-target-keibajo-code={targetKeibajoCode ?? ""}
@@ -289,7 +292,7 @@ test("LazyDetailSections renders the results chart section directly below the re
         keibajoCode="05"
         month="06"
         raceNumber="01"
-        realtimeApiBaseUrl=""
+        realtimeApiBaseUrl="https://realtime.example"
         source="jra"
         year="2027"
       />,
@@ -315,6 +318,9 @@ test("LazyDetailSections renders the results chart section directly below the re
   expect(chartStub.getAttribute("data-keibajo-code")).toStrictEqual("05");
   expect(chartStub.getAttribute("data-race-number")).toStrictEqual("01");
   expect(chartStub.getAttribute("data-source")).toStrictEqual("jra");
+  expect(chartStub.getAttribute("data-realtime-api-base-url")).toStrictEqual(
+    "https://realtime.example",
+  );
   const resultsFetchCalls = vi
     .mocked(fetchWithRetry)
     .mock.calls.filter(

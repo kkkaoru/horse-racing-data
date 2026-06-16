@@ -40,6 +40,7 @@ type PaddockChartMetricKey = "finish" | "popularity" | "weight" | "weightDelta" 
 
 export interface PaddockRecentResultsChartProps {
   results: HorseRaceResult[];
+  upcomingPopularity?: number | null;
   upcomingRaceDate?: string | null;
   upcomingWeight?: number | null;
   upcomingWeightDelta?: number | null;
@@ -70,10 +71,13 @@ interface PaddockRecentChartRowSource {
   row: PaddockRecentChartRow;
 }
 
-// The resolved upcoming weight/delta + date used to seed the synthetic point.
+// The resolved upcoming weight/delta/popularity + date used to seed the
+// synthetic point. Each metric is independent: any of them may be null while
+// the row is still emitted as long as at least one resolved value remains.
 interface PaddockUpcomingPointInput {
+  popularity: number | null;
   raceDate: string;
-  weight: number;
+  weight: number | null;
   weightDelta: number | null;
 }
 
@@ -162,19 +166,22 @@ const FUTAN_AXIS_ID = "futan";
 const RANK_AXIS_DOMAIN: [number, "auto"] = [1, "auto"];
 const VALUE_AXIS_DOMAIN: ["auto", "auto"] = ["auto", "auto"];
 const TIME_AXIS_DOMAIN: ["dataMin", "dataMax"] = ["dataMin", "dataMax"];
-// Per-metric line colors revised (#8): a clearly-distinguishable, saturated set
-// that stays readable on the white chart background. Hues are well separated —
-// crimson, royal blue, emerald, orange, violet — with no near-duplicate pairs.
-const FINISH_LINE_COLOR = "#c81e1e"; // crimson red — 着順
-const POPULARITY_LINE_COLOR = "#1d4ed8"; // royal blue — 人気
-const WEIGHT_LINE_COLOR = "#047857"; // emerald green — 馬体重
-const DELTA_LINE_COLOR = "#ea580c"; // orange — 馬体重増減
-const FUTAN_LINE_COLOR = "#7c3aed"; // violet — 斤量
-const REFERENCE_LINE_COLOR = "#9ca3af";
-const TOOLTIP_FRAME_FALLBACK_COLOR = "#9ca3af";
+// Unified metric palette shared with the 競走成績グラフ 馬別相関 mode (req 4): a
+// clearly-distinguishable, saturated set that stays readable on the white chart
+// background. Hues are well separated — crimson, blue, emerald, amber, violet —
+// with no near-duplicate pairs.
+const FINISH_LINE_COLOR = "#e03131"; // crimson red — 着順
+const POPULARITY_LINE_COLOR = "#1971c2"; // blue — 人気
+const WEIGHT_LINE_COLOR = "#0ca678"; // emerald green — 馬体重
+const DELTA_LINE_COLOR = "#f59f00"; // amber — 馬体重増減
+const FUTAN_LINE_COLOR = "#7048e8"; // violet — 斤量
+const REFERENCE_LINE_COLOR = "#adb5bd";
+const TOOLTIP_FRAME_FALLBACK_COLOR = "#adb5bd";
 const POPULARITY_DASH = "6 3";
 const FUTAN_DASH = "4 4";
 const REFERENCE_LINE_Y = 0;
+// Popularity ranks start at 1 (favourite); anything below is treated as unknown.
+const MIN_POPULARITY_RANK = 1;
 const EMPTY_LABEL = "-";
 const TOOLTIP_BORDER_WIDTH = 2;
 const CHART_MARGIN = { bottom: 8, left: 12, right: 12, top: 8 };
@@ -194,7 +201,7 @@ const WEIGHT_FUTAN_AXIS_LABEL = "馬体重+斤量";
 const DELTA_AXIS_LABEL = "増減";
 const FUTAN_AXIS_LABEL = "斤量";
 const GRID_DASH = "3 3";
-const GRID_STROKE = "#e5e7eb";
+const GRID_STROKE = "#e9ecef";
 const LEGEND_WRAPPER_STYLE: ChartLegendWrapperStyle = { fontSize: 12 };
 const TOOLTIP_WRAPPER_STYLE: ChartTooltipWrapperStyle = { zIndex: 50 };
 // futan defaults to hidden to keep the initial chart uncluttered (TASK 1).
@@ -337,8 +344,10 @@ const toChartRowSource = (
 const UPCOMING_RACE_BANGO = "99";
 
 // Build the synthetic upcoming-race row source: the current-race latest weight +
-// delta at the target date. Rank/futan metrics stay null so their lines do not
-// extend past the latest weighed race.
+// delta + target-race popularity at the target date. Each metric is filled
+// independently (any may be null), so the popularity line can reach the upcoming
+// point even with no weight snapshot yet. finish/futan stay null so those lines
+// do not extend past the latest result (no result yet for the upcoming race).
 const toUpcomingRowSource = (input: PaddockUpcomingPointInput): PaddockRecentChartRowSource => {
   const dateValue = toDateValue(input.raceDate);
   return {
@@ -352,7 +361,7 @@ const toUpcomingRowSource = (input: PaddockUpcomingPointInput): PaddockRecentCha
       keibajoCode: "",
       kishumeiRyakusho: null,
       kyori: null,
-      popularity: null,
+      popularity: input.popularity,
       raceDate: input.raceDate,
       wakuban: null,
       weight: input.weight,
@@ -361,22 +370,37 @@ const toUpcomingRowSource = (input: PaddockUpcomingPointInput): PaddockRecentCha
   };
 };
 
-// Resolve the optional upcoming point: requires an 8-digit date AND a finite
-// weight. A non-finite delta falls back to null so its line still connects.
+// Resolve the upcoming target-race popularity: a finite rank >= 1 becomes the
+// point value, anything else falls back to null so the line stops at the latest
+// past race rather than plotting an invalid rank.
+const resolveUpcomingPopularity = (popularity: number | null | undefined): number | null =>
+  typeof popularity === "number" && Number.isFinite(popularity) && popularity >= MIN_POPULARITY_RANK
+    ? popularity
+    : null;
+
+// Resolve an optional finite metric value: anything non-finite becomes null so
+// the metric is simply absent from the upcoming row rather than plotting garbage.
+const resolveFiniteMetric = (value: number | null | undefined): number | null =>
+  typeof value === "number" && Number.isFinite(value) ? value : null;
+
+// Resolve the optional upcoming point: requires an 8-digit date AND at least one
+// resolved metric among weight, weightDelta or popularity. Each metric is filled
+// independently so e.g. the popularity line can reach the upcoming point even
+// when no weight snapshot exists yet (odds live before the weigh-in).
 const resolveUpcomingPointInput = (
   props: PaddockRecentResultsChartProps,
 ): PaddockUpcomingPointInput | null => {
   const raceDate = props.upcomingRaceDate ?? "";
-  const weight = props.upcomingWeight;
-  if (!RACE_DATE_PATTERN.test(raceDate) || typeof weight !== "number" || !Number.isFinite(weight)) {
+  if (!RACE_DATE_PATTERN.test(raceDate)) {
     return null;
   }
-  const delta = props.upcomingWeightDelta;
-  return {
-    raceDate,
-    weight,
-    weightDelta: typeof delta === "number" && Number.isFinite(delta) ? delta : null,
-  };
+  const weight = resolveFiniteMetric(props.upcomingWeight);
+  const weightDelta = resolveFiniteMetric(props.upcomingWeightDelta);
+  const popularity = resolveUpcomingPopularity(props.upcomingPopularity);
+  if (weight === null && weightDelta === null && popularity === null) {
+    return null;
+  }
+  return { popularity, raceDate, weight, weightDelta };
 };
 
 // Keep only the most-recent N past sources by date (ties resolved by raceBango),

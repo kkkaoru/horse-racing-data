@@ -14,7 +14,6 @@ import {
 import { formatDistance } from "../../../lib/format";
 import {
   buildHorseRaceChartSeriesList,
-  buildHorseRaceCorrelationRows,
   countHorseRaceResultsSpanMonths,
   filterHorseRaceResultsToRecentMonths,
   formatHorseRaceChartDate,
@@ -32,8 +31,11 @@ import type {
 import { useHorseWeightStream } from "../../../lib/horse-weight-stream-client";
 import type { HorseWeightEntry } from "../../../lib/horse-weight-stream-client";
 import type { HorseRaceResult } from "../../../lib/race-types";
+import { formatRunnerNumber } from "../../../lib/runner-format";
 import { FRAME_COLORS, getFrameColor } from "./frame-number-badge";
-import { HorseRaceResultsCorrelationMatrix } from "./horse-race-results-correlation-matrix";
+import { PaddockRecentResultsChart } from "./paddock-recent-results-chart";
+import { useRealtimeRacePayload } from "./realtime-client";
+import type { RealtimeRaceRequest } from "./realtime-client";
 
 type ChartViewMode = "overview" | "correlation";
 
@@ -42,6 +44,7 @@ interface HorseRaceResultsChartProps {
   keibajoCode?: string;
   month?: string;
   raceNumber?: string;
+  realtimeApiBaseUrl?: string;
   results: HorseRaceResult[];
   runners?: HorseRaceChartRunner[];
   source?: string;
@@ -83,6 +86,21 @@ interface SeriesListsInput {
   targetKeibajoCode: string | null | undefined;
   targetRaceDate: string | null | undefined;
   upcomingWeights: UpcomingWeightOverride[];
+}
+
+// One realtime 単勝 (win) odds row, narrowed to the fields the popularity point
+// needs: the runner number (combination) and its market rank.
+interface RealtimeTanshoRow {
+  combination: string;
+  rank?: number;
+}
+
+// The selected horse's resolved upcoming weight/delta/popularity, threaded into
+// the paddock 近走 chart for the 馬別相関 view (null when no override matched).
+interface SelectedUpcoming {
+  popularity: number | null;
+  weight: number | null;
+  weightDelta: number | null;
 }
 
 type ChartYAxisDomain = [number, "auto"] | ["auto", "auto"];
@@ -198,7 +216,14 @@ const buildSeriesListsByMetric = ({
   upcomingWeights,
 }: SeriesListsInput): Record<HorseRaceChartMetric, HorseRaceChartSeries[]> => ({
   finish: buildHorseRaceChartSeriesList({ metric: "finish", results, runners }),
-  popularity: buildHorseRaceChartSeriesList({ metric: "popularity", results, runners }),
+  popularity: buildHorseRaceChartSeriesList({
+    metric: "popularity",
+    results,
+    runners,
+    targetKeibajoCode,
+    targetRaceDate,
+    upcomingWeights,
+  }),
   weight: buildHorseRaceChartSeriesList({
     combineFutan,
     metric: "weight",
@@ -229,15 +254,70 @@ const signedWeightDelta = (entry: HorseWeightEntry): number | null =>
       ? -entry.changeAmount
       : entry.changeAmount;
 
-// Convert one realtime weight snapshot into the numeric upcoming-weight overrides
-// the chart-data lib consumes. The weight + changeAmount arrive already decoded
-// (kg); the delta sign is applied here so the lib never re-parses strings.
-const toUpcomingWeightOverrides = (horses: HorseWeightEntry[]): UpcomingWeightOverride[] =>
+// Build a popularity-by-umaban map from the realtime tansho odds: each entry's
+// combination is normalized to a runner number key so a horse can match its
+// realtime tansho rank (1 = favourite). Missing ranks resolve to null.
+const buildPopularityByUmaban = (tansho: RealtimeTanshoRow[]): Map<string, number | null> =>
+  new Map(tansho.map((row) => [formatRunnerNumber(row.combination), row.rank ?? null]));
+
+// Convert one realtime weight snapshot into the numeric upcoming overrides the
+// chart-data lib consumes. The weight + changeAmount arrive already decoded (kg);
+// the delta sign is applied here so the lib never re-parses strings. The upcoming
+// popularity for each horse is read from the realtime tansho map by umaban (null
+// when no tansho rank matched the horse number).
+const toUpcomingWeightOverrides = (
+  horses: HorseWeightEntry[],
+  popularityByUmaban: Map<string, number | null>,
+): UpcomingWeightOverride[] =>
   horses.map((horse) => ({
+    popularity: popularityByUmaban.get(formatRunnerNumber(horse.horseNumber)) ?? null,
     umaban: horse.horseNumber,
     weight: horse.weight,
     weightDelta: signedWeightDelta(horse),
   }));
+
+// Empty upcoming context for the 馬別相関 chart when no override matched the
+// selected horse, so the paddock chart simply omits the synthetic latest point.
+const EMPTY_SELECTED_UPCOMING: SelectedUpcoming = {
+  popularity: null,
+  weight: null,
+  weightDelta: null,
+};
+
+// Filter the chart's results to a single horse by trimmed kettoTorokuBango so the
+// 馬別相関 paddock chart only plots the selected horse's races.
+const filterResultsToHorse = (
+  results: HorseRaceResult[],
+  selectedKetto: string,
+): HorseRaceResult[] =>
+  selectedKetto === ""
+    ? []
+    : results.filter((result) => (result.kettoTorokuBango ?? "").trim() === selectedKetto);
+
+// Resolve the selected horse's upcoming weight/delta/popularity for the paddock
+// chart: find its entered runner (matched by kettoTorokuBango) to read the umaban,
+// then look up the realtime override keyed by that normalized umaban. Returns the
+// empty context when the horse is not entered or no override matched.
+const resolveSelectedUpcoming = (
+  upcomingWeights: UpcomingWeightOverride[],
+  runners: HorseRaceChartRunner[],
+  selectedKetto: string,
+): SelectedUpcoming => {
+  const runner = runners.find((entry) => (entry.kettoTorokuBango ?? "").trim() === selectedKetto);
+  if (runner === undefined) {
+    return EMPTY_SELECTED_UPCOMING;
+  }
+  const umabanKey = formatRunnerNumber(runner.umaban);
+  const override = upcomingWeights.find((entry) => formatRunnerNumber(entry.umaban) === umabanKey);
+  if (override === undefined) {
+    return EMPTY_SELECTED_UPCOMING;
+  }
+  return {
+    popularity: override.popularity,
+    weight: override.weight,
+    weightDelta: override.weightDelta,
+  };
+};
 
 const MetricTooltip = ({ active, metric, payload }: MetricTooltipProps) => {
   const entry = payload?.at(0);
@@ -321,6 +401,7 @@ export const HorseRaceResultsChart = ({
   keibajoCode,
   month,
   raceNumber,
+  realtimeApiBaseUrl,
   results,
   runners,
   source,
@@ -348,9 +429,28 @@ export const HorseRaceResultsChart = ({
     source: source ?? "",
     year: year ?? "",
   });
+  // Subscribe to the realtime 単勝 odds so the target-race popularity (tansho
+  // rank) seeds the newest point on the 人気 panel + the 馬別相関 paddock chart.
+  const realtimeRequest = useMemo(
+    (): RealtimeRaceRequest => ({
+      apiBaseUrl: realtimeApiBaseUrl ?? "",
+      day: day ?? "",
+      keibajoCode: keibajoCode ?? "",
+      month: month ?? "",
+      raceNumber: raceNumber ?? "",
+      source: source ?? "",
+      year: year ?? "",
+    }),
+    [day, keibajoCode, month, raceNumber, realtimeApiBaseUrl, source, year],
+  );
+  const { payload: realtimePayload } = useRealtimeRacePayload(realtimeRequest, null);
+  const popularityByUmaban = useMemo(
+    () => buildPopularityByUmaban(realtimePayload?.odds?.latest.tansho ?? []),
+    [realtimePayload],
+  );
   const upcomingWeights = useMemo(
-    () => toUpcomingWeightOverrides(horseWeightSnapshot?.horses ?? []),
-    [horseWeightSnapshot],
+    () => toUpcomingWeightOverrides(horseWeightSnapshot?.horses ?? [], popularityByUmaban),
+    [horseWeightSnapshot, popularityByUmaban],
   );
   const maxSpanMonths = useMemo(() => countHorseRaceResultsSpanMonths(results), [results]);
   const resolvedMonths = resolvePeriodMonths(selectedMonths, maxSpanMonths);
@@ -372,24 +472,27 @@ export const HorseRaceResultsChart = ({
   );
   const chipSeriesList = seriesListsByMetric.finish;
   const selectedKetto = selectedHorse ?? chipSeriesList.at(0)?.kettoTorokuBango ?? "";
-  const correlationRows = useMemo(
-    () =>
-      buildHorseRaceCorrelationRows({
-        kettoTorokuBango: selectedKetto,
-        results: filteredResults,
-        runners,
-        targetKeibajoCode,
-        targetRaceDate,
-        upcomingWeights,
-      }),
-    [filteredResults, runners, selectedKetto, targetKeibajoCode, targetRaceDate, upcomingWeights],
+  // The 馬別相関 view reuses the paddock 近走 chart for the selected horse, feeding
+  // it that horse's FULL (not month-filtered) results so the chart's own
+  // races-count slider governs the window; the chart-level months slider is
+  // hidden in this mode to avoid two competing period controls.
+  const selectedHorseResults = useMemo(
+    () => filterResultsToHorse(results, selectedKetto),
+    [results, selectedKetto],
+  );
+  const selectedUpcoming = useMemo(
+    () => resolveSelectedUpcoming(upcomingWeights, runners ?? [], selectedKetto),
+    [runners, selectedKetto, upcomingWeights],
   );
   if (filteredResults.length === 0) {
     return <p className="empty-state">表示できる競走成績がありません</p>;
   }
   const isOverview = viewMode === "overview";
   const periodLabel = formatPeriodLabel(resolvedMonths, maxSpanMonths);
-  const isPeriodSliderEnabled = maxSpanMonths > MIN_PERIOD_MONTHS;
+  // Show the whole months-period block (label + slider + value) only in the
+  // overview mode; the 馬別相関 paddock chart owns its own races-count slider, so
+  // rendering the months 表示期間 label there would leave an orphan heading.
+  const isMonthsPeriodVisible = isOverview && maxSpanMonths > MIN_PERIOD_MONTHS;
   const metricLabels = resolveMetricLabels(combineFutan);
   const toggleHorse = (kettoTorokuBango: string) => {
     setHiddenHorses((current) => {
@@ -433,7 +536,7 @@ export const HorseRaceResultsChart = ({
             </button>
           ))}
         </div>
-        {isPeriodSliderEnabled && (
+        {isMonthsPeriodVisible && (
           <label className="race-results-chart-period">
             <span className="race-results-chart-period-label">表示期間</span>
             <input
@@ -517,7 +620,13 @@ export const HorseRaceResultsChart = ({
           seriesListsByMetric={seriesListsByMetric}
         />
       ) : (
-        <HorseRaceResultsCorrelationMatrix rows={correlationRows} />
+        <PaddockRecentResultsChart
+          results={selectedHorseResults}
+          upcomingPopularity={selectedUpcoming.popularity}
+          upcomingRaceDate={targetRaceDate}
+          upcomingWeight={selectedUpcoming.weight}
+          upcomingWeightDelta={selectedUpcoming.weightDelta}
+        />
       )}
     </div>
   );
