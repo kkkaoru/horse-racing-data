@@ -125,3 +125,72 @@ optimal assignment still does not materially improve exact ordinal place2/3 beca
 Consistent with the `oi-2026-06-10-wave1-h1-h5.md` finding: "place3-up members trade
 top1 down" — this experiment shows an inverted version (top1 protected by lock, but box
 trades are unavoidable with the assignment constraint).
+
+---
+
+## NAR per-position A/B
+
+Computed: 2026-06-17
+
+### Setup
+
+- Feature set: `feat-v20-merged-v5/nar`, 167 numeric features
+- Same formulation as JRA (multiclass num_class=7 + constrained-Hungarian vs LambdaRank)
+- Same hyperparams: lr=0.05, num_leaves=63, subsample=0.8, colsample=0.8, lambda=1.0, seed=42
+- **Train: 2016–2022 (subsampled for memory safety; 913,804 rows)**
+- Holdout: 2023–2025 — 412,429 rows, **40,710 races**
+- NAR field size: mean=10.1, median=10 (vs JRA ~14-15); smaller fields were expected to help
+
+### Absolute metrics (holdout 2023–2025, 40,710 races)
+
+| Metric     | Multiclass+Hungarian | LambdaRank baseline |
+| ---------- | -------------------- | ------------------- |
+| top1       | 58.64%               | 58.87%              |
+| place2     | 34.58%               | 35.39%              |
+| place3     | 26.72%               | 27.32%              |
+| top3_box   | 32.80%               | 35.00%              |
+| fukusho_2p | 64.38%               | 67.18%              |
+
+NAR baseline place2 ≈ 35.4% — close to the previously reported ~35% ceiling.
+
+### Deltas (multiclass+Hungarian − LambdaRank, percentage points)
+
+| Metric     | Delta (pp) | LB95 (pp) | UB95 (pp) | p(Δ>0) |
+| ---------- | ---------- | --------- | --------- | ------ |
+| top1       | −0.24      | **−0.48** | 0.00      | 2.4%   |
+| place2     | **−0.82**  | **−1.22** | **−0.41** | 0.0%   |
+| place3     | **−0.60**  | **−1.04** | **−0.17** | 0.4%   |
+| top3_box   | **−2.20**  | **−2.55** | **−1.85** | 0.0%   |
+| fukusho_2p | **−2.80**  | **−3.13** | **−2.47** | 0.0%   |
+
+Bold = confirmed regression (entire 95% CI negative).
+Bootstrap: 10,000 race-level resamples, seed=42, paired (same races).
+
+### Achieved vs NAR ceiling
+
+NAR production baseline (LambdaRank): place2 ≈ 35.4%, place3 ≈ 27.3%.
+The per-position multiclass approach **regresses both** by −0.82pp and −0.60pp (confirmed).
+The 40% place2 goal remains far above even the LambdaRank baseline.
+
+### NAR Verdict
+
+**REJECT — confirmed regression on all five metrics.**
+
+Unlike JRA (where place2/3 point estimates were weakly positive), NAR shows unambiguous
+confirmed regressions across place2 (−0.82pp, LB95=−1.22pp), place3 (−0.60pp,
+LB95=−1.04pp), top3_box (−2.20pp) and fukusho_2p (−2.80pp). Top1 also regresses
+(−0.24pp, LB95=−0.48pp, p=2.4%).
+
+**Root cause for NAR**: Smaller fields (~10 horses vs JRA ~14-15) do not rescue the
+Hungarian approach. With 10 horses, the multiclass model must assign exactly one horse to
+each of positions 1-10, but the 7-class formulation (classes 1-6, ≥7) groups positions
+7-10 into a single bucket. This forces ambiguous assignment for the bottom half of the
+field, degrading quality throughout the ranking — especially the box metrics where NAR's
+higher baseline (fukusho_2p 67%) means there's more to lose.
+
+**Combined JRA+NAR conclusion**: The per-position multiclass + constrained-Hungarian
+formulation is REJECT for both categories. NAR's result is even cleaner than JRA's (all
+metrics confirmed negative vs JRA's mixed signal). The "4,5,6着の学習" mechanism via
+multiclass objective does not improve exact place2/3 and actively harms box/fukusho
+metrics. The oracle ceiling for NAR place2 (~35-37%) is a hard constraint from race
+stochasticity; the 40% goal is not attainable by this formulation.
