@@ -1,255 +1,714 @@
-# Plan B: Place-Specialized Approaches for 2着/3着 >40%
+# Plan B: Per-Position Multinomial Model + Hungarian Assignment
 
-**Date:** 2026-06-17  
-**Scope:** JRA & NAR 2着 / 3着 accuracy beyond current frontier, keeping top1 intact.  
-**Distinct from:** Plan A (sub-4 graded-relevance — covered by sibling agent).
+**Date:** 2026-06-17
+**Scope:** JRA & NAR 2着/3着 exact-ordinal accuracy toward >40%, with top1 improving ~5%.
+**User mandate:** train on 4th/5th/6th ordering; the prediction target AND assignment policy must
+change — not just the relevance scheme.
+**Distinct from:** Plan A (sub-4 graded-relevance full-system training — see goal-plan-A-graded-fullsystem.md).
 
 ---
 
 ## What Has Been Tried and Definitively Closed
 
-Before proposing new angles, all rejected paths are listed to prevent re-proposal.
+The following approaches have been empirically rejected and must NOT be re-proposed.
 
-| Approach                                                         | Verdict                                                    | Key doc                                                         |
-| ---------------------------------------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------- | ------------- |
-| LambdaRank place_weighted objective                              | REJECT — top1 −11.77pp, place2 −7.72pp                     | PLACE_ACCURACY_IMPROVEMENT_2026-05-20.md §4.2                   |
-| Binary place2/place3 specialist (standalone)                     | REJECT — place2 17.9% vs 27.4% baseline                    | Same, §4.2                                                      |
-| Hierarchical cascade (binary specialist)                         | REJECT — place2 −6.1–11.6pp across thresholds              | Same, §4.3                                                      |
-| Hierarchical cascade (transformer specialist)                    | REJECT — place2 −7.3pp                                     | Same, §4.3                                                      |
-| Conditional P(2nd                                                | ≠1st) attention head (MLX)                                 | REJECT — place2 −8.4pp; cascade −6.76pp                         | Same, Phase B |
-| Plackett-Luce re-rank                                            | REJECT — zero lift (mathematically identical to raw score) | rootcause-i6-architecture.md §3.2                               |
-| C4 joint placement score (3P̂₁+2P̂₃, isotonic calibration)         | REJECT on real data — fuku LB95 negative for JRA/NAR       | phase3-calibration-c4-rerank.md                                 |
-| Re-rank by P(place2) independently                               | REJECT — catastrophic −10pp top1 (simulation + empirical)  | rootcause-i6-architecture.md §3.2                               |
-| Asymmetric loss boosting place2 (r331/r341 variants)             | REJECT — top1 and place2 both degrade                      | PLACE_ACCURACY_IMPROVEMENT_2026-05-20.md §7-ter                 |
-| Pedigree×distance×grade higher-order features                    | REJECT — redundant with existing sire_distance_win_rate    | Same, Phase D                                                   |
-| Graded relevance sub-4 (scheme B/C/D) JRA                        | REJECT WF                                                  | graded-relevance-experiments.md §4                              |
-| Graded relevance sub-4 (scheme D) NAR full-system                | REJECT — per-class residuals break on score shift          | graded-relevance-experiments.md §7, nar-schemeD-deploy-judge.md |
-| Exotic odds (umaren/wide/sanrenpuku) as features — JRA           | ABORT — partial ρ 0.02–0.03 on is_top3 (below gate 0.08)   | exotic-odds-place-signal.md; jra-fukusho-odds-probe.md          |
-| Exotic odds — NAR                                                | REJECT — o3/o2 2024 ingest gap + fuku LB95 < 0             | exotic-odds-place-verify.md (re-run)                            |
-| Exotic odds — Ban-ei standalone                                  | REJECT — top1 −0.234pp veto                                | exotic-odds-place-verify.md                                     |
-| Fukusho odds (JRA) as place signal                               | ABORT — ρ +0.024 on is_top3 < gate                         | jra-fukusho-odds-probe.md                                       |
-| JRA per-class LGB lambdarank residual                            | REJECT all 6 classes (bootstrap power, not model quality)  | jra-perclass-residual-feasibility.md                            |
-| Near-miss features (career_place2_rate, jockey_place2_rate etc.) | +0.14pp place2 JRA only — too small for >40% target        | PLACE_ACCURACY_IMPROVEMENT_2026-05-20.md Phase A                |
-| NAR sanrenpuku at serve time                                     | STOP — 100% NULL at 03:00 cron (serve/train mismatch)      | sanrenpuku-serve-gate.md                                        |
-
----
-
-## Root-Cause Recap (from I1–I7 analysis)
-
-The fundamental constraint documented across I1/I6:
-
-- P(finish=2) and P(finish=1) are both driven by horse quality → they are near-identical signals.
-- JRA top1 ~52% and place2/3 are near the Pareto frontier of the current 241-feature set.
-- "Exact-ordinal" place2/place3 (which horse finishes exactly 2nd/3rd) is near-ill-posed: 47–62% of misses are adjacent-position swaps that no model can reliably separate.
-- Market odds efficiency wall: odds already encode 56% of predictive information (Ban-ei clean test: odds-only gain 56%, removing odds costs 7.95pp top1). JRA/NAR similarly odds-dependent.
-- C4 re-rank failed on REAL data (only worked in synthetic) because P̂₁ and P̂₃ are order-correlated monotone functions of the same raw score in single-score GBDT.
-
-The conclusion from I6: **architecture is not the binding constraint; signal saturation is.** New approaches must either (a) introduce genuinely new orthogonal signals or (b) exploit structural properties not yet encoded.
+| Approach                                                            | Verdict                                                                 | Key doc                                                         |
+| ------------------------------------------------------------------- | ----------------------------------------------------------------------- | --------------------------------------------------------------- |
+| LambdaRank place_weighted objective                                 | REJECT — top1 −11.77pp, place2 −7.72pp                                  | PLACE_ACCURACY_IMPROVEMENT_2026-05-20.md §4.2                   |
+| Binary place2/place3 specialist (standalone)                        | REJECT — place2 17.9% vs 27.4% baseline                                 | Same, §4.2                                                      |
+| Hierarchical cascade (binary specialist)                            | REJECT — place2 −6.1–11.6pp across thresholds                           | Same, §4.3                                                      |
+| Hierarchical cascade (transformer specialist)                       | REJECT — place2 −7.3pp                                                  | Same, §4.3                                                      |
+| Conditional P(2nd\|≠1st) attention head (MLX)                       | REJECT — place2 −8.4pp; cascade −6.76pp                                 | Same, Phase B                                                   |
+| Plackett-Luce re-rank (post-hoc)                                    | ZERO LIFT — mathematically identical to raw score ordering              | rootcause-i6-architecture.md §3.2                               |
+| C4 joint placement re-rank (3P̂₁+2P̂₃, isotonic calibration)          | REJECT on real holdout — fuku LB95 negative JRA/NAR                     | phase3-calibration-c4-rerank.md                                 |
+| Re-rank by P(place2) independently                                  | REJECT — catastrophic −10pp top1 (simulation + empirical)               | rootcause-i6-architecture.md §3.2                               |
+| Asymmetric loss boosting place2 (r331/r341 variants)                | REJECT — top1 and place2 both degrade                                   | PLACE_ACCURACY_IMPROVEMENT_2026-05-20.md §7-ter                 |
+| Graded relevance sub-4 (scheme B/C/D) JRA — iter14 base             | REJECT WF (fold-inconsistent, f2p_lb95 −0.00357)                        | graded-relevance-experiments.md §4                              |
+| Graded relevance sub-4 (scheme D) NAR — full-system judge           | REJECT — per-class residuals break on score shift                       | graded-relevance-experiments.md §7, nar-schemeD-deploy-judge.md |
+| Exotic odds (umaren/wide/sanrenpuku) as features — JRA              | ABORT — partial ρ 0.02–0.03 on is_top3 (below gate 0.08)                | exotic-odds-place-signal.md; jra-fukusho-odds-probe.md          |
+| Exotic odds — NAR                                                   | REJECT — 2024 ingest gap + fuku LB95 < 0                                | exotic-odds-place-verify.md                                     |
+| Exotic odds — Ban-ei standalone (unified win model)                 | REJECT — top1 −0.234pp veto in unified model                            | exotic-odds-place-verify.md                                     |
+| Fukusho odds (JRA) as place signal                                  | ABORT — ρ +0.024 on is_top3 < gate                                      | jra-fukusho-odds-probe.md                                       |
+| JRA per-class LGB lambdarank residual (iter iters 20–36)            | REJECT all 6 classes                                                    | jra-perclass-residual-feasibility.md                            |
+| Near-miss features (career_place2_rate, jockey_place2_rate etc.)    | +0.14pp place2 JRA only — sub-1pp lever cannot close +16pp gap          | PLACE_ACCURACY_IMPROVEMENT_2026-05-20.md Phase A                |
+| NAR sanrenpuku at serve time                                        | STOP — 100% NULL at 03:00 cron (serve/train mismatch)                   | sanrenpuku-serve-gate.md                                        |
+| Residual ensembles + meta-learning (iters 15–18 for JRA; 30–36 NAR) | 4 consecutive REJECTs — v7-lineage saturation                           | project_v7_lineage_saturation_2026_06_04.md                     |
+| NAR G-1+F1 combined retrain                                         | REJECT — serve-path regression −0.63pp after NULL routing was adapted   | project_nar_g1f1_combined_adopt_2026_06_12.md                   |
+| Relationship / partial-ρ features (nige_vs_field, log_odds_z etc.)  | All ABORT/REJECT — GBDT already non-linearly captures via existing feat | project_relationship_perclass_investigation_2026_06_12.md       |
 
 ---
 
-## Five Candidate Angles — Assessed
+## Root-Cause Recap (I1–I6)
 
-### Angle 1: Trained Plackett-Luce / Listwise Objective with Sub-4 Labels (place-aware)
+The key structural insight that motivates Plan B:
 
-**What it is:**  
-The "Plackett-Luce / listwise trained PL objective" here is distinct from post-hoc PL re-ordering of raw scores (which was proven zero-lift in I6). The question is whether **training** with a full permutation likelihood that down-weights ranks 4+ specifically relative to 1/2/3 adds information. This is what graded-relevance scheme-D attempted for NAR (adding epsilon labels 0.1/0.08 for ranks 4–8).
+> The current pipeline outputs ONE score per horse, sorts descending, and reads off ordinal
+> positions. This is optimal for NDCG / ranking / top1, but NOT for exact-ordinal hits at
+> position k. The horse ranked #2 by overall quality is NOT necessarily the horse most likely
+> to finish EXACTLY 2nd — yet we assign them rank 2.
 
-**Novelty vs prior work:**  
-Scheme-D NAR passed the base-model WF gate (+4.0pp place3 at base level) but FAILED the full-system judge: the per-class residual ensembles (iter30/36) are calibrated to iter12's score distribution; scheme-D shifts that distribution and the blended system regresses (f2p LB95 = −0.00481, top1 −0.40pp, place3 −0.43pp). The same failure mode is expected for scheme-B.
+Key empirical facts from I1/I6:
 
-**For JRA specifically:** scheme-D REJECT at WF (fold-level inconsistent, f2p_lb95 −0.00357). Scheme B/C fail cheap filter (top1 −2.2–3.1pp).
+- P(finish=1) and P(finish=2) are both driven by horse quality → highly correlated.
+- C4 re-rank confirmed: P̂₁ and P̂₃ from isotonic calibration of a single-score ranker are
+  order-correlated monotone functions within each race → combining them with any weights
+  produces the same rank ordering. (**Confirmed on real holdout, not just synthetic.**)
+- "Exact-ordinal" place2/place3 is partially ill-posed: 47–62% of misses are adjacent-
+  position swaps. Current baselines: JRA place2 ~22%, NAR place2 ~35%.
+- Target >40% across JRA AND NAR is +18pp gap for JRA.
 
-**Verdict: REJECTED REHASH** — this is exactly what graded-relevance experiments tested. The sub-4 epsilon tail idea is not a new lever; it was fully evaluated and rejected at the full-system level for the only category (NAR) where the base model showed signal. A clean-room retrain without per-class ensembles would be required to isolate the base-model gain, but per-class ensembles are integral to production.
+The C4 failure (phase3-calibration-c4-rerank.md, §Technical notes) gives the critical
+constraint: re-ranking by calibrated single-score probs cannot lift exact-ordinal place2/3
+because all P̂_k are monotone in the same underlying score.
 
-**Expected place2/3 lift:** 0pp net at full-system level (confirmed empirically).
-
----
-
-### Angle 2: Two-Stage Conditioned-on-Rank Place Classifier
-
-**What it is:**  
-Stage-1 ranker produces a rank-1 prediction. Stage-2 classifies is-2nd / is-3rd conditioned on stage-1 score + field context (remaining horses after removing the predicted winner). The conditioned variant is claimed to differ from prior binary specialists because it explicitly knows who is predicted to win.
-
-**Prior work relevance:**  
-The "conditional_place2_logit" head in the MLX transformer (Phase B of PLACE_ACCURACY_IMPROVEMENT_2026-05-20.md) is exactly this: it concatenates the softmax-weighted "winner embedding" with each horse's embedding → MLP → P(2nd). Result: −6.76pp place2 vs baseline via hierarchical cascade, and the transformer's rank head was also −8.5pp vs GBDT on top1.
-
-The I6 simulation additionally tested strategy D: "predict rank1 by P(1), then re-rank rest by P(2|≠rank1)". Result: −1.167pp place2. The root cause is consistent: P(2nd | ≠rank1) is dominated by the same quality signal — the conditional doesn't get "new information about who specifically runs 2nd."
-
-**What genuinely differs from prior work:**  
-The transformer's conditional head used learned embeddings on the same feature set. A GBDT-based two-stage where stage-2 features include _field-relative signals computed after removing the predicted winner_ (e.g., who is now the relative favorite, new within-race odds ranks) might differ — but those derived features are computable from existing features already in the model (odds_rank_in_race, popularity_rank_in_race already encode field position). GBDT already learns this partition implicitly.
-
-**Feasibility:**  
-Would require a new inference-time pipeline: run stage-1 prediction → compute stage-2 field-relative features → run stage-2 for each remaining horse → combine. High engineering cost, 0 empirical precedent showing gain over GBDT in this domain.
-
-**Expected place2/3 lift:** Negative to zero. Confirmed by MLX conditional head (−6.76pp) and simulation (−1.167pp). Conditioned-on-rank does not escape the quality-correlation trap.
-
-**Verdict: REJECTED REHASH** — the conditional structure has been tested both architecturally (MLX) and in simulation (I6 strategy D). Both show negative results for the same root cause.
+**The only escape from this monotonicity trap is a model that outputs a DIFFERENT score
+for each target position k — i.e., a genuine per-position probability matrix that is
+NOT constrained to be rank-correlated across positions.** This is the Plan B formulation.
 
 ---
 
-### Angle 3: Conditional Score Calibration per Position Rank (Per-rank Isotonic)
+## Plan B Formulation: Per-Position Multinomial + Hungarian Assignment
 
-**What it is:**  
-Calibrate separately for each predicted rank slot (rank-1 horses, rank-2 horses, etc.). Fit isotonic regressions that map raw score → P(actual=2nd | predicted_rank=2) vs. the current approach of calibrating across all horses. If rank-2 predicted horses have a systematically different calibration curve, correcting this could improve place2 accuracy.
+### Why this is genuinely new (not a rehash)
 
-**Novel vs prior work:**  
-The C4 calibration experiment (phase3-calibration-c4-rerank.md) used isotonic calibration on the full score distribution to produce P̂₁ and P̂₃, then re-ranked by 3P̂₁+2P̂₃. It did NOT fit per-rank-slot calibrations. This is a narrow distinction but genuine.
+This table distinguishes Plan B from every rejected approach:
 
-**Expected lift assessment:**  
-The C4 experiment showed B==D (combining calibrated P̂₁ and P̂₃ with different weights produces the same ordering because P̂₁ and P̂₃ are monotone in the same raw score). Per-rank calibration would not change this ordering: if P(actual=2nd | predicted_rank=2) is calibrated more accurately, but the raw score ranking is the same, the re-ranking by calibrated probabilities still produces the same output as ranking by raw score (the calibration is monotone-preserving by construction of isotonic regression). The only way per-rank calibration produces different orderings is if the calibration has flat regions (ties), and those ties happen to favor the wrong horse. This was tested implicitly in phase3: "The small number of rank changes that do occur (~13% of horse positions) arise from ties created by the isotonic calibration's flat regions, and these changes do not systematically improve or hurt aggregate metrics."
+| Rejected approach                           | Why it fails                                                              | Why Plan B differs                                                             |
+| ------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Plackett-Luce re-rank (post-hoc)            | BT model is monotone in latent strength → same ordering as raw score      | Plan B trains a DIRECT P(k)-head, non-monotone across k per horse              |
+| C4 joint placement re-rank (post-hoc)       | Calibrated probs are order-correlated (all from single score) — same rank | Plan B avoids calibrating a single score; it trains P(k) heads jointly         |
+| Per-class HARD split (iter20)               | Single-score model split by sub-class → still monotone within class       | Plan B changes the PREDICTION TARGET, not the data partition                   |
+| Post-hoc cascade (binary specialist)        | Cascade uses independent binary models that conflict with top1 ordering   | Plan B uses joint assignment (Hungarian) to maximize EXPECTED total exact hits |
+| Residual ensembles / meta stacking          | Residual on a monotone score cannot break the rank correlation            | Plan B trains heads directly on ordinal labels, no upstream monotone score     |
+| Per-place calibration/blend (phase3 REJECT) | Isotonic calibration of a single score → B==D (same ordering, confirmed)  | Plan B has multiple INDEPENDENT score dimensions (one per k); non-monotone     |
 
-**Expected place2/3 lift:** ~0pp. Monotone calibration preserves ordinal ranks; non-monotone calibration introduces noise that is not directional.
-
-**Verdict: NOT GENUINELY NOVEL** — this is a minor variant of the C4 calibration experiment. The root cause (P̂₁ and P̂₃ are monotone in the same score) applies equally. Low effort but near-zero expected gain.
-
----
-
-### Angle 4: Exotic Odds for Place in a LATE-PASS Display-Only or Separate Place Model
-
-**What it is:**  
-Since exotic odds (wide/sanrenpuku/umaren) are blocked at 03:00 JST serve time for NAR/Ban-ei, and are redundant with tansho for JRA, there are two sub-angles:
-
-**4a. JRA: dedicated late-pass place model (10:00 JST re-predict)**  
-JRA advance odds ARE available at 03:00 JST (−19 h pre-race-day). Fukusho implied probability was ABORT (partial ρ = 0.024 on is_top3). Sanrenpuku/wide/umaren were ABORT for JRA (highest ρ = 0.08 for sanrenpuku, below gate, per exotic-odds-place-signal.md). JRA exotic odds do not add place signal beyond tansho because the JRA pari-mutuel market efficiently prices all bet types off the same pool information.
-
-**4b. Ban-ei: dedicated place model using exotic odds, ignoring top1**  
-The Ban-ei exotic verify showed top3_box +1.774pp (LB95 +0.853pp) and fukusho_2p +0.770pp (LB95 +0.167pp) with exotic odds added. These are blocked only by top1 −0.234pp veto. A dedicated Ban-ei PLACE model (separate from the win model, optimizing fukusho_2p or place3 directly) could exploit exotic odds without top1 regression.
-
-**4c. NAR: 10:00 JST re-predict pass with sanrenpuku**  
-The NAR sanrenpuku serve-gate doc explicitly identifies this as a path: implement a second prediction run at 10:00 JST when sanrenpuku becomes available. The 2024 o3/o2 ingest gap also needs fixing. The base verify showed +0.16pp place2 / +0.0031pp f2p pooled (2023–2025 first run), though the 2024 regression drove the overall REJECT. Once the ingest gap is fixed and a later cron is available, this becomes a viable probe.
-
-**Novelty:**  
-4b (Ban-ei dedicated place model) is genuinely untried — all prior experiments used a unified win+place model. 4c (NAR 10:00 JST pass) is a known-deferred path, not yet attempted. 4a (JRA) is exhausted.
-
-**Expected lift:**
-
-- 4b Ban-ei: place3 +1.4pp, fukusho_2p +0.77pp (from existing verify data); top1 no constraint in a place-only model. Feasibility: medium — requires a separate prediction slot that does not overwrite the win-model output, plus a display path for "place prediction."
-- 4c NAR: +0.16pp place2 expected IF the 10:00 JST pass is implemented and the ingest gap is fixed. Small gain.
-- 4a JRA: 0pp (exhausted).
-
-**Cost/gate:**  
-4b requires: (a) Ban-ei place model training (separate objective, e.g. fukusho_2p-weighted loss or direct place3 target), (b) a serve-time slot that runs at a time when exotic odds are available (~12:00 JST for Ban-ei), (c) viewer-side display for a "place prediction" that is separate from the win prediction. Gate: the place model must NOT regress an existing metric; it runs in parallel and outputs a different prediction column.
+The decisive difference: **Plan B trains P(finish=k | horse, race) DIRECTLY for each
+position k ∈ {1,...,7+}, producing a matrix P[horse, position] that is not constrained
+to be rank-sorted along either axis.** The horse-position assignment is then solved as an
+optimal assignment problem (Hungarian algorithm), which can produce non-monotone mappings
+(e.g., horse ranked 3rd by P(win) could be assigned rank 2 if P(finish=2) for that horse
+is unusually high).
 
 ---
 
-### Angle 5: Field-Composition Signal — Rivalry / Suppression Features
+## 1. Per-Position Probability Model
 
-**What it is:**  
-Encode WHY specific horses consistently finish 2nd: head-to-head rivalry patterns against specific dominant horses, pace-composition effects on place3 specifically, and field-size-adjusted probability of a specific finish slot.
+### 1.1 Prediction target
 
-**Sub-features:**
+For each horse h in race r with N starters, predict:
 
-- `career_place2_rate_when_odds_favorite_present` — does this horse specifically run 2nd when there is a dominant favorite?
-- `h2h_place2_rate_vs_specific_styles` — when field contains N front-runners, this horse's historical place2 rate
-- `competitor_dominance_index` — max(1/odds) in field relative to own 1/odds; when this index is high (one dominant horse), does the horse benefit or suffer in the 2nd/3rd slot?
-- `field_pace_scenario_place2_rate` — 2着率 partitioned by predicted running-style distribution of field (slow pace / contested pace)
+```
+P(finish_position = k | horse_h, race_r)   for k ∈ {1, 2, 3, 4, 5, 6, 7+}
+```
 
-**Prior work assessment:**  
-The near-miss features (2026-05-20 Phase A) included `career_place2_rate` and `field_dominant_favorite_indicator` (odds ratio of 1st/2nd favorite), giving +0.14pp place2 on the v7 baseline. The relationship/per-class investigation (2026-06-12) showed that partial ρ is necessary but not sufficient — GBDT may already capture these non-linearly. However, the specific conditioning on "rival horse identity/style" is distinct from the unconditional `career_place2_rate` that was tried.
+This is a multinomial distribution over 7 position buckets. The 7+ bucket collapses all
+positions ≥ 7 to avoid sparsity in large fields. For races with N ≤ 6, the 7+ bucket
+has zero probability by construction (enforced via a field-size mask at inference time).
 
-**What is genuinely untried:**  
-`h2h_avg_finish_diff_vs_field` exists (I6 §2.3). What does NOT exist: the conditional variant that looks specifically at "finish position when GBDT-predicted rank-1 horse from THIS field is in the race." This requires knowing the predicted winner at feature engineering time (creating a leak risk) — OR using the historical identity of dominant horses that this horse has repeatedly raced against.
+**Why 7 buckets, not N classes:**
 
-**Feasibility:**  
-Pure horse-vs-horse historical rivalry: `GROUP BY (horse_A_id, horse_B_id)` → `avg(horse_A_position WHERE horse_B_position = 1)`. This is leak-free (all prior races). The challenge: sparse cells (most horse pairs rarely meet), especially for young horses. JRA has more repeated matchups than NAR.
+- Horse count varies from 6 to 18 per race (JRA) or 6 to 16 (NAR).
+- Using per-race variable N classes requires N-variable softmax — incompatible with fixed
+  GBDT architecture.
+- The key information for exact-ordinal is positions 1/2/3 (the ones we measure). Buckets
+  4/5/6/7+ carry 4th/5th/6th ordering information (satisfying the user mandate) while
+  keeping the output space tractable.
+- An alternative is a fixed-width 16-class output and zeroing probabilities for positions
+  > field_size at inference. This is valid but wastes modeling capacity. 7-bucket is the
+  > recommended default; 4+/5+/6+/7+ can be merged if NAR small fields cause sparsity.
 
-**Expected place2/3 lift:**  
-Near-miss v7 features gave +0.14pp on a CatBoost that was below production (~47% vs 52% production baseline). On production baseline, the proportional gain is likely +0.05–0.12pp — below the >40% target. The I6 verdict: "Rivalry/competition-dynamic features: where the remaining headroom lies, regardless of architecture." However, the 2026-06-11 saturation conclusion ("all levers exhausted") reduces confidence. The relationship features investigate (2026-06-12) specifically tested rivalry-adjacent signals (h2h, within-race-relative) and found GBDT already non-linearly captures them.
+**This directly satisfies the user mandate:** the model explicitly trains on P(finish=4),
+P(finish=5), P(finish=6), and P(finish=7+), learning the ordinal structure of positions
+4–7 alongside positions 1–3. The 4th/5th/6th placement labels from historical data are
+used as direct training targets, not just as epsilon-weight heuristics.
 
-**Verdict: MARGINAL NOVEL** — rivalry features are not a prior-rejected rehash, but the near-miss Phase A and relationship investigation both found incremental gains of 0.1–0.2pp at best. This will not reach the >40% target without additional stacked levers.
+### 1.2 Label construction
+
+For each (horse, race) row in the feature store:
+
+```python
+# finish_position is the actual finish ordinal (1-indexed, integer)
+# Construct multinomial label: integer in {1..7} (7 = "finished 7th or later")
+def position_bucket(finish_position: int) -> int:
+    return min(finish_position, 7)
+```
+
+Leak safety: identical to the current pipeline. Feature store is built from races
+completed BEFORE the prediction date. The finish_position label is the actual final
+position of the horse in the TRAINING race — always available at training time (all rows
+in the feature parquet represent completed races). No leak risk.
+
+**Scratch handling:** horses that did not finish (DNF/scratch, finish_position = None or 0) are excluded from training rows — consistent with the current pipeline which also
+excludes them from relevance labels.
+
+### 1.3 Framework options
+
+Three candidate frameworks, ordered by recommendation:
+
+#### Option A (Recommended): LightGBM Multiclass
+
+```python
+# lgb.Dataset with label = position_bucket (0-indexed: 0..6 for positions 1..7+)
+# Objective: multiclass (softmax)
+# n_classes: 7
+# num_leaves, max_depth: same as current NAR iter12 / JRA iter19 params as starting point
+# Eval metric: multi_logloss (training monitor)
+# Custom eval metric: top1_acc, place2_acc, place3_acc (from assignment — computed at race level)
+
+import lightgbm as lgb
+params = {
+    "objective": "multiclass",
+    "num_class": 7,
+    "metric": "multi_logloss",
+    "num_leaves": 127,  # iter12 NAR baseline
+    "max_depth": -1,
+    "learning_rate": 0.05,
+    "n_estimators": 1000,
+    "subsample": 0.618,
+    "colsample_bytree": 0.8,
+    "lambda_l2": 3.0,
+    "random_state": 2068,
+}
+model = lgb.train(params, train_set, valid_sets=[val_set],
+                  callbacks=[lgb.early_stopping(50)])
+# Output: P[horse, 7] matrix per race via model.predict()
+```
+
+Advantages: reuses existing iter12/iter19 hyperparameter knowledge, multiclass is
+natively supported, fast, well-calibrated softmax output.
+
+#### Option B: CatBoost MultiClassification
+
+```python
+from catboost import CatBoostClassifier
+model = CatBoostClassifier(
+    loss_function="MultiClass",
+    classes_count=7,
+    depth=8,
+    learning_rate=0.05,
+    l2_leaf_reg=3.0,
+    iterations=1000,
+    eval_metric="Accuracy",
+    random_seed=2068,
+)
+# Output: model.predict_proba() → P[horse, 7]
+```
+
+Advantage: aligns with JRA iter19 CatBoost base (same framework). But MultiClass is
+a classifier, not a ranker — does not use within-race group structure during training.
+This is a meaningful difference from Option A.
+
+#### Option C: LightGBM Rank + Position-specific Output Heads (Ensemble)
+
+Train 6 independent binary LGB models, one per position k ∈ {1,2,3,4,5,6}:
+
+```python
+# Model_k: binary lgb, label = (finish_position == k)
+# P(finish=k) = model_k.predict() after per-race normalization: P_k /= sum(P_k)
+```
+
+This is a "one-vs-rest" decomposition. Advantage: each model optimizes directly for the
+binary precision at position k using the existing binary ranking infrastructure.
+Disadvantage: the 6 models are trained independently so they can conflict (P₁ and P₂
+may not sum to ≤ 1 before normalization, requiring a secondary calibration step). This
+increases implementation complexity and may introduce inconsistencies.
+
+**Recommendation: Option A (LGB multiclass) for the initial experiment.** It is the
+cleanest, most directly supported formulation. Option B as a fallback if JRA-specific
+CatBoost infrastructure makes LGB inconvenient. Option C only if multiclass softmax
+shows poor calibration on this task.
+
+### 1.4 Field-size variability
+
+The 7-bucket scheme handles fields of size 6–18 as follows:
+
+- For a field of N horses, positions N+1 through 7+ have zero probability by construction
+  (no horse can finish in a position that doesn't exist).
+- At inference: after computing the P[horse, 7] matrix, zero out positions k > N for all
+  horses, then renormalize each row: `P[h, k] = 0 for k > N; P[h] /= P[h].sum()`.
+- During training: the label distribution naturally reflects N ≤ 7 (e.g. a 6-horse race
+  has no 7th-place finisher). This is self-consistent because `position_bucket(k) = min(k, 7)`.
+- For N > 7 (common in JRA): the 7+ bucket absorbs all positions 7–18. The model learns
+  that the marginal probability of each 7+ bucket is ~ (N−6)/N for random horses, but the
+  exact-ordinal metrics only measure positions 1–3, so the 7+ bucket is a "discard" class.
+
+**Sparse positions consideration for NAR:** NAR fields are typically 6–12 horses.
+Position 6 has non-trivial mass (10–16% of horses) but position 7 is sparse for
+6-horse fields. Run a field-size distribution audit on the training data before finalizing
+the bucket scheme. If races with N=6 are >10% of NAR data, consider a 6-bucket scheme
+(positions 1–5 + 6+) to avoid label sparsity.
+
+### 1.5 Feature store reuse
+
+No new features are required. The per-position model trains on the SAME feature store
+as the current production models:
+
+- **JRA:** `feat-jra-v8-iter19-kohan3f-going` (244 features — iter19 deployed store)
+- **NAR:** `feat-nar-v8-iter26-relationships` + `feat-nar-v8-iter12-exotic` overlay
+  (173 base features — iter12 deployed store)
+
+The feature set already includes market-signal features that encode WHERE in the field
+each horse sits (odds_rank_in_race, popularity_rank_in_race, inverse_odds_market_share,
+h2h_win_rate_vs_field). These field-relative features give the multinomial model
+information about position-specific dynamics without requiring new data.
+
+**No DuckDB rebuild needed.** The existing R2 parquet feature stores are used directly.
+This saves ~40+ minutes of feature regeneration per category.
 
 ---
 
-## Ranked Plan
+## 2. Optimal Assignment via Hungarian Algorithm
 
-| Rank | Angle                                                                  | Novelty                                      | Expected place2/3 lift                                  | Cost       | Gate                                         | Status                                             |
-| ---- | ---------------------------------------------------------------------- | -------------------------------------------- | ------------------------------------------------------- | ---------- | -------------------------------------------- | -------------------------------------------------- |
-| 1    | **4b: Ban-ei dedicated place model** (exotic odds + place objective)   | GENUINE — separate place model never tried   | place3 +1.4pp / fukusho_2p +0.77pp (from verified data) | Medium     | Top1 no constraint; place3 / fukusho_2p gate | UNTRIED — recommended                              |
-| 2    | **4c: NAR 10:00 JST re-predict pass** (after sanrenpuku available)     | GENUINE — requires infra + ingest fix        | place2 +0.16pp (rough estimate)                         | High infra | fuku LB95 > 0 on fixed 2024 data             | DEFERRED — needs 10:00 JST cron + o3/o2 ingest fix |
-| 3    | **Rivalry/suppression features** (horse-vs-dominant-field composition) | MARGINAL — sub-species of near-miss features | place2 +0.05–0.12pp                                     | Medium     | Incremental gate vs iter14/iter12            | NOT YET TRIED at this specificity                  |
-| 4    | Conditional per-rank isotonic calibration                              | NOT NOVEL — variant of C4                    | ~0pp                                                    | Low        | —                                            | EFFECTIVELY TESTED                                 |
-| 5    | Two-stage conditioned-on-rank place classifier                         | REHASH — MLX conditional head + I6 sim D     | Negative                                                | High       | —                                            | REJECTED                                           |
-| 6    | Trained PL / sub-4 graded relevance                                    | REHASH — scheme-D full-system REJECT         | 0pp net                                                 | High       | —                                            | REJECTED                                           |
+### 2.1 Why Hungarian, not monotone sort
 
----
+Given the P[N×7] probability matrix for a race with N horses:
 
-## Top 2 Genuinely Novel Place-Specific Levers
+- **Monotone sort** assigns rank k to the horse with the highest P(finish=k). This is
+  equivalent to `predicted_rank = argsort(-P[:, k])` per column — which cannot produce
+  globally optimal exact hits because column-wise argmax doesn't enforce bijection.
+- **Hungarian algorithm** solves `min sum_ij cost[i,j] * assignment[i,j]` subject to
+  assignment being a bijection (one horse per position, one position per horse).
 
-### Lever 1: Ban-ei Dedicated Place Model with Exotic Odds
+For exact-ordinal maximization, the cost matrix is:
 
-**What is new:** Treating the Ban-ei place prediction as a SEPARATE model objective from the win model. Currently, the single CatBoost YetiRank model optimizes top1 ranking and that implicitly produces place predictions. Exotic odds (wide/sanrenpuku/umaren) were REJECT for the unified model because they hurt top1 (−0.234pp), but there is NO reason to include them in a model that does NOT optimize for top1. A dedicated model trained with a place3/fukusho_2p-weighted objective or direct classification target `is_top3` would be free to use exotic odds without the top1 trade-off.
+```python
+from scipy.optimize import linear_sum_assignment
 
-**Expected 2着/3着 effect:**  
-From the Ban-ei exotic verify (2023–2026, N=5,976 races):
+def assign_positions(P: np.ndarray, field_size: int) -> np.ndarray:
+    """
+    P: shape (N, 7) — per-horse per-position probabilities, normalized, 0-indexed positions
+    Returns: predicted_rank array (1-indexed) of length N
+    """
+    # Only assign positions 1..min(N, 7) (or N if N < 7)
+    n_positions = min(field_size, 7)
+    P_sub = P[:, :n_positions]   # N x n_positions (cols 0..n_positions-1 = positions 1..n_pos)
 
-- place3 +1.774pp (LB95 +0.853pp) — verified from add_exotic_odds_features.py
-- fukusho_2p +0.770pp (LB95 +0.167pp)
-- top2 (place2) +0.686pp (LB95 −0.050pp, weak)
+    # Hungarian minimizes cost; we want to maximize sum of P[i, assignment[i]]
+    # cost = -P_sub
+    row_ind, col_ind = linear_sum_assignment(-P_sub)
 
-These numbers are from adding exotic features to a WIN model. A place-objective model will likely show higher place3/fukusho_2p gains because it can weight place-correctness more strongly.
+    predicted_rank = np.zeros(field_size, dtype=int)
+    for horse_idx, position_idx in zip(row_ind, col_ind):
+        predicted_rank[horse_idx] = position_idx + 1  # 1-indexed
 
-**Scope limitation:** This applies to Ban-ei only. JRA exotic odds are redundant with tansho (ρ < 0.03 for is_top3 residual). NAR is blocked by ingest gap and serve timing.
+    # Horses not assigned a position in 1..n_positions (if N > 7):
+    # assign them ranks n_positions+1.. N by descending P(7+)
+    unassigned = [i for i in range(field_size) if predicted_rank[i] == 0]
+    p_7plus = P[unassigned, 6]  # column index 6 = position 7+
+    order = np.argsort(-p_7plus)
+    for rank_offset, horse_idx in enumerate(np.array(unassigned)[order]):
+        predicted_rank[horse_idx] = n_positions + 1 + rank_offset
 
-**Implementation path:**
+    return predicted_rank
+```
 
-1. Train a Ban-ei place model: same feature set as `feat-ban-ei-v7-lineage-21y` + exotic features from `feat-banei-v7grade-exotic`, but with a classification target `is_top3` (binary per horse) or a place-weighted ranking objective.
-2. Run 21-year WF using 2015–2025 train / 2023–2026 holdout.
-3. Gate: fukusho_2p LB95 > 0 AND place3 LB95 > 0; top1 is NOT a gate (this is a place model).
-4. Serve as a separate prediction column; viewer shows both win-rank and place-rank.
-5. Exotic odds available at 12:00 JST Ban-ei serve time (confirmed from sanrenpuku-serve-gate.md).
+**Crucial property:** the Hungarian assignment can produce a NON-MONOTONE mapping.
+Example: horse A has P(1)=0.55, P(2)=0.10; horse B has P(1)=0.20, P(2)=0.60.
+Monotone sort assigns rank 1 to A and rank 2 to B.
+But what if horse C has P(1)=0.18, P(2)=0.25, P(3)=0.35?
+Hungarian might assign: A→rank1, C→rank2, B→rank3 (if P(2)+P(3) for the combined
+assignment is higher). This is the structural break from all prior approaches.
 
-**Compute cost:** ~30 min (Ban-ei is the smallest dataset, ~160K rows).
+**This non-monotonicity is exactly why Hungarian can lift exact place2/3 beyond the
+monotone-sort frontier — and why the C4 calibration failed (it was still monotone).**
 
----
+### 2.2 Expected exact-hit improvement (theoretical)
 
-### Lever 2: NAR 10:00 JST Re-Predict Pass with Exotic Odds (Conditional-Go)
+Given a race where horse A has (P(1)=0.40, P(2)=0.15) and horse B has (P(1)=0.25, P(2)=0.50):
 
-**What is new:** The sanrenpuku-serve-gate.md STOP was explicitly declared "until (a) a 10:00 JST re-predict cron is implemented and validated, or (b) NAR advance sanrenpuku odds become available." A 10:00 JST NAR re-predict pass:
+- Monotone sort → A is rank 1, B is rank 2.
+  - E[exact_place2_hit] = P_B(2) = 0.50 (if B is assigned rank 2).
+- Hungarian (2-horse version): assigns A→rank1 (P(1)=0.40), B→rank2 (P(2)=0.50).
+  - Same as monotone here.
+- For 3+ horses with crossing P(k) profiles, Hungarian can differ from monotone.
 
-- Sanrenpuku (3renpuku) is available from 10:00 JST for all standard NAR venues.
-- The 2024 o3/o2 ingest gap caused the REJECT in prior verify; fixing this gap and re-running would remove the primary regression driver.
-- The launchd 03:00 JST cron provides baseline predictions; the 10:00 JST pass would UPDATE them with the exotic-enhanced model.
+The asymptotic maximum achievable by Hungarian with perfect P[N×7] probabilities is the
+oracle ceiling (being measured in Wave1 parallel agent — `goal-baseline-and-ceiling.md`).
 
-**Expected 2着/3着 effect (estimate):**  
-The first NAR verify (2023–2025, original feat-nar-exotic-v8) showed +0.16pp place2 pooled (before 2024 gap regression). The re-run (feat-nar-exotic-v1, 2023–2026) showed −0.035pp top1, −0.026pp place2 (driven by 2024). If the 2024 ingest gap is fixed and sanrenpuku is available at serve:
+### 2.3 Inference-time feasibility
 
-- Estimated place2: +0.10–0.20pp (small but real signal from 2023/2025 years)
-- The effect is modest — well below the >40% target by itself.
+Hungarian for N=16 is trivially fast (scipy.optimize.linear_sum_assignment is O(N³);
+at N=16, this is ~4096 operations per race). For a 16-horse field: <1ms on CPU.
+At serve time (Cloudflare Worker / Python predict script), the Hungarian step adds
+negligible latency.
 
-**Scope limitation:** Small gain for NAR. This lever is more about "recovering available signal that was deferred" than providing a breakthrough.
-
-**Implementation path:**
-
-1. Fix o3/o2 NAR 2024 ingest gap in the warehouse (source: nvd_o3/nvd_o2 for 2024 NAR missing).
-2. Verify fixed 2024 data in the exotic verify (re-run `add_exotic_odds_features.py` for 2024 NAR).
-3. Add 10:00 JST launchd slot that re-runs `finish_position_predict.py` for NAR with exotic features populated.
-4. Gate: fuku LB95 > 0 on the re-run verify before deploying.
-
-**Compute cost:** ~1h for infra + verification (DuckDB NAR exotic feature rebuild ~20 min, WF verify ~30 min).
-
----
-
-## Why Neither Lever Reaches >40% Place2/3 Globally
-
-The target ">40% 2着/3着" is ambitious:
-
-- Current best: JRA place2 ~28.6%, NAR place2 ~35.8%
-- The identified levers are Ban-ei place3 (+1.4pp) and NAR place2 (+0.1–0.2pp)
-- JRA has no identified lever for place improvement at this stage (fukusho ABORT, exotic ABORT, graded-relevance WF REJECT, per-class LGB REJECT)
-
-The structural constraint from the science saturation analysis (2026-06-11) remains: exact-ordinal place2/3 is partially ill-posed (adjacent swaps), and market efficiency already absorbs most predictable signal. Reaching >40% globally requires either:  
-(a) New data sources not currently available (per-horse sectional splits, pre-race workout times, auction prices for maiden)  
-(b) Resolving the exact-ordinal ill-posedness by redefining the metric as fukusho_2p (combinatorial top-3 set) rather than exact place2/place3  
-(c) Significant improvement in NAR top1 (+2–5pp) that would carry place2/3 with it
-
-The two levers above are the **only genuinely novel place-specific improvements identified** given the current data envelope.
+**Implementation note:** `scipy.optimize.linear_sum_assignment` is available in the
+current Python environment (scipy is already a dependency). No new packages required.
 
 ---
 
-## Relation to Existing History
+## 3. Top1 Protection
 
-- `project_place_improvement_infeasible.md` — covers 2026-05-20 conclusion; Levers 1 and 2 above are post-that-date findings (exotic odds verification came in 2026-06-12)
-- `project_science_track_saturation_2026_06_11.md` — Lever 1 (Ban-ei place model) is NOT covered by that saturation analysis (which focused on unified models); Lever 2 (NAR ingest fix) is the deferred conditional-go from sanrenpuku-serve-gate.md
-- `exotic-odds-place-verify.md` — provides the numerical basis for Lever 1 estimates
-- `sanrenpuku-serve-gate.md` — defines the pre-conditions for Lever 2
+### 3.1 The tension
+
+Hungarian maximizes total expected exact hits across ALL positions. The natural Hungarian
+formulation does NOT guarantee that the position-1 assignment goes to the horse with the
+highest P(finish=1). It might assign rank 1 to a horse that has P(1)=0.30 if that
+decision allows a globally better assignment for positions 2 and 3.
+
+This would degrade top1 accuracy, violating the user requirement of top1 NOT degrading
+and ideally +5%.
+
+### 3.2 Resolution: Constrained Hungarian
+
+Two policy options, both cleanly resolvable:
+
+**Policy A (Recommended): Constrain rank-1 to argmax P(finish=1), then Hungarian
+for positions 2..N.**
+
+```python
+def assign_positions_top1_protected(P: np.ndarray, field_size: int) -> np.ndarray:
+    n_positions = min(field_size, 7)
+
+    # Step 1: Fix rank-1 to the horse with highest P(finish=1)
+    top1_horse = int(np.argmax(P[:, 0]))  # column 0 = position 1
+
+    # Step 2: Build reduced problem: N-1 horses × positions 2..n_positions
+    remaining_horses = [i for i in range(field_size) if i != top1_horse]
+    if len(remaining_horses) == 0:
+        return np.array([1])
+
+    P_reduced = P[np.array(remaining_horses), 1:n_positions]  # (N-1) x (n_pos-1)
+
+    # Step 3: Hungarian on reduced problem
+    row_ind, col_ind = linear_sum_assignment(-P_reduced)
+
+    predicted_rank = np.zeros(field_size, dtype=int)
+    predicted_rank[top1_horse] = 1
+    for r, c in zip(row_ind, col_ind):
+        predicted_rank[remaining_horses[r]] = c + 2  # 1-indexed, starting from rank 2
+
+    # Assign remaining (unassigned for 7+ bucket)
+    unassigned = [i for i in range(field_size) if predicted_rank[i] == 0]
+    p_7plus = P[unassigned, 6]
+    order = np.argsort(-p_7plus)
+    for rank_offset, horse_idx in enumerate(np.array(unassigned)[order]):
+        predicted_rank[horse_idx] = n_positions + 1 + rank_offset
+
+    return predicted_rank
+```
+
+This guarantees: top1 accuracy = accuracy of the underlying multinomial model's P(1)
+argmax, which should be AT LEAST as good as the current ranker's top1 if the multinomial
+model is well-trained (because top1 accuracy depends only on whether the model correctly
+gives the highest P(finish=1) to the actual winner).
+
+**Policy B:** Unconstrained Hungarian + top1 veto (if top1 degrades vs baseline, fall
+back to Policy A). Use Policy A from the start to avoid evaluation complexity.
+
+### 3.3 Will top1 improve +5%?
+
+Top1 improvement in this formulation comes entirely from the quality of P(finish=1)
+from the multinomial model — specifically whether the argmax of column 0 beats the
+argmax of the current single-score ranker.
+
+**The multinomial model has an advantage on top1 if and only if the multiclass
+softmax objective produces a better-calibrated P(finish=1) than the pairwise-rank
+objective.** The pairwise-rank objective (YetiRank, LambdaRank, rank:pairwise) is
+directly optimized for ordering, while multiclass is optimized for per-class
+log-likelihood. In theory, multiclass gives better probability estimates but potentially
+worse pairwise ordering. In practice for 7-class problems with strong ordinal structure,
+multiclass can match or exceed rankers on top-k accuracy.
+
+**Empirical expectation:** Top1 improvement of +5% is optimistic as a guarantee.
+The realistic range is −2pp to +3pp vs the current model depending on how well the
+multiclass objective aligns with top1. The user's +5% target is better served by
+Plan A (graded relevance sub-4) which directly optimizes the ranking objective, or
+by HPO on the multinomial model specifically tuning P(1) precision.
+
+**Gate policy:** Accept if top1 ≥ baseline − 0.05pp (no regression tolerance, same
+veto floor as all experiments). The +5% top1 is a goal, not a hard requirement for
+Plan B's ADOPT decision.
+
+---
+
+## 4. Distinctiveness from DO-NOT-RETEST List
+
+### 4.1 vs Plackett-Luce re-rank (zero lift, I6 §3.2)
+
+Plackett-Luce post-hoc re-ordering: takes the existing single-score ranker output,
+constructs a BT strength from scores, computes expected rank. This is PROVABLY equivalent
+to the original ordering because BT expected rank is a monotone function of the latent
+score. **Plan B does not use a single score at all** — it trains an independent P(k)
+for each position k, so the P(1) and P(2) columns of the output matrix need not be
+rank-correlated. This is the structural difference: post-hoc PL cannot break
+monotonicity; a trained multinomial CAN.
+
+### 4.2 vs Per-class HARD split iter20
+
+iter20 split the training data by race class (JRA class code) and trained a separate
+ranker per class. It still trained a single-score ranker per class → still monotone
+within each class → no improvement in exact-place assignment. **Plan B does not split
+by class; it changes the PREDICTION TARGET from a scalar ranking score to a
+per-position probability vector.**
+
+### 4.3 vs Post-hoc cascade (hierarchical binary specialist)
+
+The cascade (Phase B, 2026-05-20) trained a separate binary model `P(finish=2)` and used
+it to re-rank after fixing rank 1. This model produced a single score (P(2)) that was then
+used to sort. The problem: P(finish=2) is bell-shaped in quality (moderately good horses
+have higher P(2) than the best or worst horses), causing catastrophic top1 regression when
+re-ranked. **Plan B does NOT re-rank by P(k) for any single k** — it uses the full matrix
+jointly via Hungarian assignment, which preserves top1 by construction (Policy A).
+
+### 4.4 vs Residual ensembles (iter30–36)
+
+Residual ensembles stacked a second model on top of the first model's score. Both the
+base and residual output a SCALAR ranking score. The blend is still a weighted sum of
+two scalars → still monotone. **Plan B changes the MODEL FAMILY, not the ensemble
+architecture.** The multinomial model has NO scalar score — it has a vector output.
+
+### 4.5 vs Per-place calibration/blend (phase3 REJECT)
+
+Phase 3 calibration fit isotonic regressions on the output of the SAME single-score
+ranker to produce P̂₁ and P̂₃. The critical finding (confirmed on real holdout): P̂₁ and
+P̂₃ are monotone in the same raw score within each race → combining them with any weights
+produces the same ordering (B==D on real data). **Plan B does not calibrate a single-score
+ranker.** The multinomial model's P(1) and P(2) come from DIFFERENT output neurons trained
+with DIFFERENT gradients — they need not be monotone in the same underlying representation.
+This is the key structural distinction from Phase 3.
+
+---
+
+## 5. Evaluation and Gate
+
+### 5.1 Metrics
+
+Primary metrics, following the definition in `aggregate_bucket_eval_duckdb.py:341-350`:
+
+| Metric       | Definition                                                             |
+| ------------ | ---------------------------------------------------------------------- |
+| `top1`       | `predicted_rank=1 AND finish_position=1` (per race, fraction of races) |
+| `place2`     | `predicted_rank=2 AND finish_position=2` (per race, fraction of races) |
+| `place3`     | `predicted_rank=3 AND finish_position=3` (per race, fraction of races) |
+| `top3_box`   | all three {predicted_rank=1,2,3} match actual {1,2,3} in any order     |
+| `fukusho_2p` | ≥2 of predicted top-3 finish in actual top-3                           |
+
+Secondary: `top3_winner_capture_hit` (actual winner in predicted top-3).
+
+### 5.2 Baseline
+
+- **JRA:** `iter19-jra-cb-kohan3f-going-v8` (base-only, 244 features, current production)
+- **NAR:** `iter12-nar-xgb-hpo-v8` + iter30/36 per-class ensemble blends (current production)
+
+Current baselines (from deployed system, holdout 2023-2026):
+
+- JRA: top1 ~44.5%, place2 ~22.0%, place3 ~17.0%, fukusho_2p ~68.4%
+- NAR: top1 ~58.5%, place2 ~35.1%, place3 ~27.0%, fukusho_2p ~87.8%
+
+### 5.3 Gate (4-axis multi-metric, identical to project standard)
+
+```
+fukusho_2p LB95 > 0.0          (paired bootstrap, 10k iters, seed=42)
+AND  positive_axes >= 2         (axes = {top1, place2, place3, top3_box})
+AND  positive_place_axes >= 1   (at least one of {place2, place3} positive)
+AND  veto_floor: all axes >= -0.05pp
+```
+
+Accept as additional uplift if top1 improves; do NOT veto if top1 is flat (+/- 0.05pp).
+
+### 5.4 Holdout and nested splits
+
+- **Holdout:** 2023-2026 (same 11,703 JRA races / 45,573 NAR races as all prior experiments)
+- **Walk-forward:** 3-fold (2023 / 2024 / 2025), then pool, then LB95 on the pool
+- **Tuning split:** 2021-2022 (for HPO if needed — not initial experiment)
+
+### 5.5 Oracle ceiling dependency
+
+The achievable place2/3 accuracy from Plan B is **hard-capped by the oracle ceiling**
+being measured in the Wave1 parallel task (`goal-baseline-and-ceiling.md`). The oracle
+ceiling is the best achievable place2/3 if P[horse, position] were perfect (i.e., if the
+model knew the true marginal probabilities exactly).
+
+- If oracle ceiling < 40% for exact-ordinal place2: the >40% target is infeasible.
+  Plan B should still be pursued to maximize toward the ceiling.
+- If oracle ceiling ≥ 40%: the target is theoretically achievable, and Plan B's
+  per-position model is the correct architectural path toward it.
+- Recommendation: run Plan B experiment regardless of ceiling. If ceiling is low (e.g.
+  30%), redefine success as "achieve oracle-ceiling −5pp" rather than ">40% absolute."
+
+---
+
+## 6. Realistic Expectation
+
+### 6.1 Mechanism for place2/3 improvement
+
+The multinomial model can improve place2 accuracy via two distinct mechanisms:
+
+1. **Diagonal dominance in the P matrix for 2nd-place horses:** horses that consistently
+   run 2nd (e.g., chronic bridesmaid horses, strong in a sprint but weak in a sprint
+   final) should show high P(2) relative to P(1). A multiclass model trained on all
+   ordinal labels simultaneously can learn this pattern from training data.
+
+2. **Hungarian assignment of 2nd/3rd slots to horses with genuinely non-monotone
+   P profiles.** In races where horse A's P(1) > P(2) > P(3) but horse B's P(2) > P(1)
+   (because B is a place specialist), Hungarian assigns rank 2 to B even though A has
+   a higher overall quality score.
+
+### 6.2 Why place2/3 = 40% is uncertain
+
+The adjacent-swap problem (47–62% of misses): a model assigning rank 2 to the horse
+most likely to actually finish 2nd cannot exceed the oracle ceiling imposed by race
+randomness. In typical horse races, ~30–40% of races have the top-2 quality horses
+swap 1st/2nd place due to running conditions, traffic, pace dynamics — information that
+is NOT in the feature store. No model architecture can exceed this ceiling.
+
+**Most likely outcome range:**
+
+- JRA place2: +0.5pp to +2.0pp above iter19 baseline (from ~22% to ~23%)
+- NAR place2: +0.2pp to +1.5pp above iter12+ensemble baseline (from ~35% to ~37%)
+- These are modest but directional — they represent the best achievable with the current
+  feature set, given the architectural change.
+- Reaching 40% place2 for JRA (+18pp) is NOT expected without new data sources.
+
+The multinomial + Hungarian approach gives the MAXIMUM exact-ordinal accuracy achievable
+for the current 244/173-feature envelope — it is the theoretically optimal assignment
+policy given calibrated per-position probabilities. But the ceiling is determined by
+signal quality, not the assignment mechanism.
+
+### 6.3 Top1 improvement path to +5%
+
+For top1 to improve +5% (from ~44.5% JRA to ~46.7%), the multinomial model's P(finish=1)
+argmax must outperform the CatBoost YetiRank model's ranking by +5pp. This is achievable
+only if:
+
+(a) The multiclass objective produces a better representation of the win signal than
+the pairwise-ranking objective, OR
+(b) The multinomial model benefits from the sub-4 ordinal information (positions 4/5/6/7+)
+as indirect supervision that sharpens the P(1) head.
+
+Mechanism (b) is the main theoretical motivation: knowing the ordering of positions 4+
+provides additional pairwise-comparison signal about horse quality that the 7-bucket
+multiclass objective can exploit, while NDCG@3 (used by YetiRank) ignores this signal
+entirely. This is analogous to why sub-4 graded relevance (Plan A) lifts top1 in some
+experiments — the sub-4 ordering provides extra gradient signal that refines the model's
+quality representation.
+
+---
+
+## 7. Memory and Compute Plan
+
+All training subject to the HARD memory rule: ONE heavy train at a time, DuckDB 6GB/4
+threads cap, memory_pressure < 30% free before starting any heavy step (M5 Pro 48GB,
+Colima reserving 24GB → effective free budget ~24GB).
+
+| Step                                       | Framework      | RAM peak | Duration  | Constraint            |
+| ------------------------------------------ | -------------- | -------- | --------- | --------------------- |
+| JRA cheap filter (LGB multiclass, 1M rows) | LightGBM       | ~3 GB    | ~4 min    | Safe                  |
+| JRA walk-forward WF (3 folds)              | LightGBM       | ~3 GB    | ~15 min   | Safe (solo)           |
+| NAR cheap filter (LGB multiclass, 3M rows) | LightGBM       | ~6 GB    | ~8 min    | Safe (solo)           |
+| NAR walk-forward WF (3 folds)              | LightGBM       | ~8 GB    | ~35 min   | Solo only             |
+| Hungarian assignment (inference, per race) | scipy (Python) | <100 MB  | <1ms/race | Negligible            |
+| Feature parquet load (R2 read)             | DuckDB         | ~6 GB    | ~10 min   | 6GB/4threads enforced |
+
+**Sequencing:** Run JRA first (cheaper, ~20 min total). Then NAR. Do NOT run in parallel —
+LGB multiclass on 3M NAR rows peaks at ~8 GB, exceeding safe parallel budget.
+
+**DuckDB note:** Feature parquet loading from R2 uses `SET memory_limit = '6GB'; SET threads = 4;`
+per the hard rule. Training itself runs entirely in Python/NumPy — DuckDB is only used
+for feature loading.
+
+---
+
+## 8. Implementation Checklist
+
+### Phase 1: Data prep (no compute cost)
+
+- [ ] Verify `finish_position` column availability in feature parquets for JRA and NAR.
+      (Currently used as the relevance label — confirm it is an integer, not a rank float.)
+- [ ] Compute position_bucket distribution: `SELECT min(fp), max(fp), percentile_cont(0.9) …`
+      to check field-size distribution and validate 7-bucket scheme.
+- [ ] Check for NULL / DNF rows (finish_position IS NULL): count them and confirm the
+      current data pipeline already excludes them.
+
+### Phase 2: JRA experiment
+
+1. Write `tmp/plan_b/train_jra_multinomial.py`:
+   - Load `feat-jra-v8-iter19-kohan3f-going` parquet (same 244 features as iter19)
+   - Construct position_bucket label (7 classes, 0-indexed)
+   - Cheap filter: train ≤ 2022, holdout 2023-2025
+   - If cheap filter PASS (place2 positive AND not catastrophic top1 drop):
+   - Walk-forward: 3 folds (2023 / 2024 / 2025)
+   - Apply `assign_positions_top1_protected()` at each fold
+   - Pool predictions, compute metrics, paired bootstrap LB95
+
+2. Gate evaluation using `aggregate_bucket_eval_duckdb.py` logic (or inline equivalent).
+
+3. Compare vs `iter19-jra-cb-kohan3f-going-v8` on holdout 2023-2026.
+
+### Phase 3: NAR experiment (if JRA PASS)
+
+1. Write `tmp/plan_b/train_nar_multinomial.py` — same structure, using NAR iter12 feature
+   store (173 features).
+
+2. NAR has per-class ensembles (iter30/36). For the Plan B judge:
+   - Option 1: Run Plan B as a REPLACEMENT for the base model — judge against the full
+     production pipeline (iter12 + iter30/36) as baseline.
+   - Option 2: Run Plan B as an ADDITIONAL model and blend with the existing ensemble.
+   - **Recommendation: Option 1 first.** If Plan B base model beats iter12 base + ensemble
+     at the base level, consider co-training the per-class layer against Plan B base WF scores.
+   - Same WELD risk as Plan A (Experiment 3): if the NAR Plan B base shifts score
+     distribution, per-class residuals calibrated to iter12's distribution will regress.
+   - **For the initial judge: measure Plan B base model alone (no per-class) vs production
+     full system.** This is the correct minimum bar: Plan B must beat the full production
+     system even WITHOUT per-class ensembles to be deployment-worthy.
+
+---
+
+## 9. Sequencing and Go/No-Go Criteria
+
+```
+JRA cheap filter (~4 min)
+  └── FAIL (top1 drop >2pp OR place2 <0) → STOP; architecture may not be suitable;
+              document and close Plan B for JRA
+  └── PASS → JRA WF (3 folds, ~15 min)
+       └── ADOPT (gate passes) → commit iter20-jra-plan-b-multinomial; swap production
+       └── REJECT → investigate which fold drives failure; document; close JRA Plan B
+
+NAR cheap filter (~8 min, independent of JRA result)
+  └── FAIL → STOP
+  └── PASS → NAR WF (3 folds, ~35 min)
+       └── Base model vs production full system:
+            ADOPT (gate passes) → co-train per-class layer → full-system judge → flip
+            REJECT → document; close NAR Plan B
+
+```
+
+JRA and NAR cheap filters can run sequentially (NAR first if JRA is low-priority, or
+JRA first to get a faster signal). Do NOT run simultaneously.
+
+---
+
+## 10. Connection to Existing History
+
+- `rootcause-i6-architecture.md §3.2` — confirmed Plackett-Luce and C4 are bounded by
+  monotonicity; Plan B explicitly breaks monotonicity with a direct per-position model.
+- `phase3-calibration-c4-rerank.md` — proved P̂₁ and P̂₃ from a single-score model are
+  order-correlated on real data; Plan B avoids this by having separate model heads trained
+  on the full ordinal distribution.
+- `PLACE_ACCURACY_IMPROVEMENT_2026-05-20.md` — closed binary specialists, cascade, and
+  LambdaRank place-weight; Plan B avoids all of these (no binary specialist, no cascade,
+  no place-weighted ranking objective).
+- `graded-relevance-experiments.md` — sub-4 epsilon labels (Plan A); Plan B uses sub-4
+  labels as DIRECT TRAINING TARGETS for the 4th/5th/6th position buckets, not as epsilon
+  gradients for a ranking objective.
+- `project_science_track_saturation_2026_06_11.md` — identified that features are at
+  frontier; Plan B does NOT require new features; it changes the model family and
+  assignment policy on the existing feature store.
+
+---
+
+## 11. Standard Place-Specific Lever Ranking (secondary to Plan B)
+
+The following levers complement Plan B but do not require Plan B as a prerequisite.
+They are ranked by expected lift × implementation cost.
+
+| Rank | Lever                                                            | Novelty                                    | Expected place2/3 lift                    | Cost   |
+| ---- | ---------------------------------------------------------------- | ------------------------------------------ | ----------------------------------------- | ------ |
+| 1    | **Plan B (multinomial + Hungarian, this doc)**                   | GENUINE — never tried                      | +0.5–2.0pp place2 JRA; +0.2–1.5pp NAR     | Medium |
+| 2    | **Ban-ei dedicated place model** (exotic odds + place objective) | GENUINE — separate place model never tried | place3 +1.4pp / fukusho_2p +0.77pp Ban-ei | Medium |
+| 3    | **NAR 10:00 JST re-predict pass** (after sanrenpuku available)   | GENUINE — requires infra + ingest fix      | place2 +0.10–0.20pp NAR (deferred path)   | High   |
+| 4    | Conditional per-rank isotonic calibration                        | NOT NOVEL — variant of C4                  | ~0pp                                      | Low    |
+| 5    | Rivalry/suppression features (horse-vs-dominant-field)           | MARGINAL — sub-species of near-miss        | place2 +0.05–0.12pp                       | Medium |
+| 6    | Two-stage conditioned-on-rank place classifier                   | REHASH — MLX conditional head + I6 sim D   | Negative                                  | High   |
+| 7    | Trained PL / sub-4 graded relevance (base model only)            | REHASH — scheme-D full-system REJECT       | 0pp net                                   | High   |
