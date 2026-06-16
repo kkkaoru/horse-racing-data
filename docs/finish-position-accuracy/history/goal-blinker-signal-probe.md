@@ -153,6 +153,60 @@ All cells span 0 or are negative. The 新馬 reapplication cell (+1.41pp p3) is 
 
 ---
 
+## 6. 障害 (Jump) Races and Age Breakdown (JRA)
+
+### 6.1 障害 races (kyoso_shubetsu_code IN ('21','22','23'))
+
+Blinker use in jump races is materially higher than flat (519 blinker-on starts vs 12,315 blinker-off in joined dataset). Jump horses average popularity ~5–6 vs ~8–9 in flat, reflecting smaller fields.
+
+| Category             | n   | avg_ninki | win_lift | win_CI          | p3_lift | p3_CI            | Routable?           |
+| -------------------- | --- | --------- | -------- | --------------- | ------- | ---------------- | ------------------- |
+| first_blinker        | 113 | 5.7       | +3.81pp  | [−2.38, +10.01] | +1.28pp | [−7.57, +9.24]   | No (CI wide, n=113) |
+| true_reapplication   | 24  | 6.4       | +9.20pp  | [−3.30, +25.86] | −1.66pp | [−18.33, +15.01] | No (n too thin)     |
+| blinker_continuation | 379 | 5.4       | +0.08pp  | [−2.82, +3.51]  | −0.78pp | [−5.53, +3.97]   | No                  |
+
+障害 first_blinker shows nominally positive win lift (+3.81pp) but n=113 is far below the n≥300 threshold and the CI lower bound is −2.38pp. The reapplication cell (n=24) is noise only. **Not routable.**
+
+### 6.2 Age breakdown
+
+Per-age market baseline computed from blinker_off population in each age bucket.
+
+#### first_blinker by age
+
+| Age  | n      | avg_ninki | win_lift | win_CI         | p3_lift     | p3_CI              | Routable?                 |
+| ---- | ------ | --------- | -------- | -------------- | ----------- | ------------------ | ------------------------- |
+| 2yo  | 2,861  | 8.6       | −0.68pp  | [−1.38, +0.09] | **−2.09pp** | **[−3.39, −0.80]** | No (negative)             |
+| 3yo  | 14,653 | 8.6       | −0.14pp  | [−0.49, +0.23] | **−1.40pp** | **[−1.96, −0.83]** | No (p3 CI fully negative) |
+| 4yo+ | 13,988 | 8.4       | −0.15pp  | [−0.52, +0.21] | **−1.34pp** | **[−1.99, −0.72]** | No (p3 CI fully negative) |
+
+All age buckets negative on place-3. 2yo horses show the strongest negative signal (p3_lift −2.09pp, CI [−3.39, −0.80]).
+
+#### true_reapplication by age
+
+| Age  | n     | avg_ninki | win_lift | win_CI         | p3_lift | p3_CI           | Routable?       |
+| ---- | ----- | --------- | -------- | -------------- | ------- | --------------- | --------------- |
+| 2yo  | 45    | 9.1       | +0.11pp  | [−4.34, +6.78] | +2.18pp | [−8.94, +13.29] | No (n too thin) |
+| 3yo  | 1,217 | 8.3       | +0.02pp  | [−1.22, +1.33] | −0.37pp | [−2.42, +1.85]  | No              |
+| 4yo+ | 5,644 | 9.0       | −0.03pp  | [−0.54, +0.54] | +0.44pp | [−0.57, +1.43]  | No              |
+
+Flat across all ages for reapplication. 4yo+ p3 +0.44pp CI [−0.57, +1.43] — largest positive cell but CI lower bound negative.
+
+### 6.3 Routable cells summary
+
+**Threshold: CI entirely positive AND n ≥ 300.**
+
+Scanning all (category × class) and (category × age) cells:
+
+> **Zero routable cells found across all dimensions (class × age × jump/flat).**
+
+The closest candidates:
+
+- 障害 first_blinker: +3.81pp win but CI [−2.38, +10.01], n=113 — too thin, CI spans 0
+- 2勝C first_blinker: +1.36pp win but CI [−0.31, +3.03], n=778 — CI spans 0
+- 新馬 reapplication p3: +1.41pp but CI [−0.71, +3.61] — CI spans 0
+
+---
+
 ## 7. Signal vs Rarity Assessment
 
 | Feature            | Coverage (n)  | Subgroup lift           | ρ      | Assessment                      |
@@ -172,7 +226,7 @@ The signals are not "rare-but-strong" — they are rare AND directionally flat-t
 - Neither PROCEED criterion met at aggregate level:
   - Subgroup lift: all CIs include 0 or are negative; no robust market-orthogonal outperformance
   - Partial ρ: max |ρ| = 0.045, well below 0.08 threshold in both full and holdout windows
-- Per-class analysis (8 race-class buckets × 2 blinker categories = 16 cells) shows **no cell with positive CI excluding 0**. The hypothesis that blinker lift concentrates in younger/lower-condition horses is not supported: 新馬 and 未勝利 first-blinker cells are the most negative (p3 CI fully negative). 2勝C win is nominally positive (+1.36pp) but CI spans 0 and n=778.
+- Extended per-class analysis (9 race-class buckets including 障害 × 2 blinker categories, plus 3 age buckets = 24+ cells) shows **zero routable cells (CI entirely positive with n≥300)**. The hypothesis that blinker lift concentrates in younger/lower-condition horses is falsified: 新馬 and 未勝利 first-blinker p3 CIs are fully negative. 2勝C win is nominally positive (+1.36pp) but CI spans 0 (n=778). 障害 first-blinker shows +3.81pp win but n=113 and CI lower bound is −2.38pp. 2yo first-blinker is the most negative age slice (p3 −2.09pp, CI fully negative).
 - The market appears to correctly price blinker changes. First-blinker horses actually run slightly below their market expectation — consistent with the market already incorporating the blinker signal via longer odds.
 - Adding blinker features would not be information-free: they correlate slightly with WORSE outcomes (market already prices it), risking GBDT over-indexing on noise.
 
@@ -187,6 +241,8 @@ The signals are not "rare-but-strong" — they are rare AND directionally flat-t
 - Market baseline: blinker_off population only (n=1,675,903), bucketed by tansho_ninkijun (popularity rank)
 - Bootstrap: 2000 iterations, seed=42
 - Partial ρ: Frisch-Waugh residualization of ranks, one control (popularity)
-- DuckDB not used (direct PG query via psycopg2); analysis scripts at `/tmp/blinker_refined.py`, `/tmp/blinker_class_perclass.py` (not git-tracked)
+- DuckDB not used (direct PG query via psycopg2); analysis scripts at `/tmp/blinker_refined.py`, `/tmp/blinker_class_perclass.py`, `/tmp/blinker_shogai_age_full.py` (not git-tracked)
+- 障害 identification: kyoso_shubetsu_code IN ('21','22','23') in race_entry_corner_features
+- Age: jvd_se.barei (character varying, cast to int); buckets 2yo/3yo/4yo+
 - Per-class baseline: computed per-class from `blinker_off` only (no cross-class contamination)
 - NAR per-class: not applicable (all blinker_shiyo_kubun='0'); Ban-ei is a subset of NAR — same N/A
