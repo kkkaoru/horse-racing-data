@@ -1,9 +1,12 @@
 # E-top2 place-preserving XGBoost override — deploy doc (iter22-jra-etop2)
 
-## Status: STAGED (2026-06-18) — smoke2 PASS, awaiting orchestrator flip
+## Status: READY TO FLIP (2026-06-18) — final smoke PASS, awaiting orchestrator registry flip
 
-JRA_ETOP2_ENABLED = False in committed code until orchestrator flips.
-Smoke2 (iter22-etop2-smoke2): exit 0, 357 predictions, 24 races, override fired.
+JRA_ETOP2_ENABLED = True committed (commit b92a7ce).
+R2 artifacts uploaded: finish-position/jra/xgb-jra-2013-v8/{model,metadata}.json in bucket
+pc-keiba-finish-position-models (remote, confirmed downloadable).
+Final smoke (iter22-etop2-final): exit 0, 357 predictions, override fired 3x, Neon write SUCCESS
+(357 rows of iter22-jra-etop2 confirmed in Neon for kaisai_tsukihi=0607).
 Rollback anchor: split2 image = 4d1746f535e5 (iter20-jra-cb-2013-v8).
 
 ## What it is
@@ -127,27 +130,48 @@ Neon write: 357 rows of model_version='iter22-jra-etop2' in
 race_finish_position_model_predictions (kaisai_nen=2026, kaisai_tsukihi=0607).
 AdminShutdown: no occurrence — lazy connect fix confirmed effective.
 
+## Smoke test 3 — FINAL (iter22-etop2-final, 2026-06-18) — PASS
+
+Image: finish-position-predict-local:iter22-etop2-final.
+Bakes in: JRA_ETOP2_ENABLED=True (commit b92a7ce, flag-flip commit).
+R2: finish-position/jra/xgb-jra-2013-v8/{model,metadata}.json uploaded to
+pc-keiba-finish-position-models (remote, both confirmed downloadable before run).
+RUN_DATE=20260607, PREDICT_CATEGORIES=jra.
+
+Exit code: 0.
+Feature pipeline: all layers ran, 357 rows base build.
+Races: 357 runners / 24 JRA races (keibajo=05, 09).
+Override fired: 3 times (race_id jra:2026:0607:05:01 class=703,
+jra:2026:0607:09:02 class=703, jra:2026:0607:09:11 class=999).
+Class 701 gate: no class=701 race on date → exclusion gate not triggered.
+Neon write: 357 rows confirmed in race_finish_position_model_predictions
+WHERE kaisai_nen='2026' AND kaisai_tsukihi='0607' AND model_version='iter22-jra-etop2'.
+(SELECT confirmed via psycopg from host after docker exit.)
+BinderException: none.
+AdminShutdown: none (lazy-connect fix from commit 47598be effective).
+Unique rank-1/race: confirmed by construction (apply_etop2_scores invariant).
+
+Verdict: CLEAN PASS. All gates satisfied. Ready for orchestrator registry flip.
+
 ## Flip runbook (orchestrator)
 
-Prerequisites:
+All prerequisites MET:
 
-1. Override fired confirmed (etop2 log line present): DONE (class=703, 1/1 races).
-2. Scoring code PASS (no exception in \_score_one_race_etop2): DONE.
-3. XGB model uploaded to R2: finish-position/jra/xgb-jra-2013-v8/{model,metadata}.json.
+1. JRA_ETOP2_ENABLED=True in committed code (b92a7ce). DONE.
+2. R2 artifacts in pc-keiba-finish-position-models at
+   finish-position/jra/xgb-jra-2013-v8/{model,metadata}.json. DONE.
+3. Candidate image iter22-etop2-final built and clean smoke PASS. DONE.
 
-Step 1: flip JRA_ETOP2_ENABLED in model_meta.py:
-JRA_ETOP2_ENABLED: Final[bool] = True
+Remaining steps (orchestrator only):
 
-Step 2: rebuild production image:
-docker build -f apps/finish-position-predict-container/Dockerfile \
- -t finish-position-predict-local:split2 .
+Step 1: retag candidate as production split2:
+docker tag finish-position-predict-local:iter22-etop2-final \
+ finish-position-predict-local:split2
 
-Step 3: update active_models in Neon:
+Step 2: update active_models in Neon:
 UPDATE finish_position_active_models
 SET model_version = 'iter22-jra-etop2'
 WHERE category = 'jra';
-
-Step 4: commit + tag.
 
 ## Rollback
 
