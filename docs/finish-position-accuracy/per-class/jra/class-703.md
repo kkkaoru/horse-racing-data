@@ -34,9 +34,10 @@ _(To be populated as experiments are designed — see ROADMAP.md)_
 
 ## Evaluation Log
 
-| Date       | Hypothesis                      | Method          | Verdict | Ref               |
-| ---------- | ------------------------------- | --------------- | ------- | ----------------- |
-| 2026-06-17 | RL policy-gradient ranker (MLX) | REINFORCE / MLP | ABORT   | See section below |
+| Date       | Hypothesis                                  | Method                            | Verdict | Ref               |
+| ---------- | ------------------------------------------- | --------------------------------- | ------- | ----------------- |
+| 2026-06-17 | RL policy-gradient ranker (MLX)             | REINFORCE / MLP                   | ABORT   | See section below |
+| 2026-06-17 | Ensemble (GBDT+kNN+RL method-diverse blend) | rank-avg / opt-w / Ridge stacking | ABORT   | See section below |
 
 ---
 
@@ -116,3 +117,81 @@ All three main metrics are strongly negative. ABORT threshold: LB95 ≥ 0 requir
 5. **Architecture ceiling.** A 2-layer MLP with 64 hidden units on 236 features is a weak learner. GBDT's ensemble of thousands of trees represents a substantially richer function class for tabular data.
 
 **Conclusion:** REINFORCE / policy-gradient ranking on JRA tabular data is clearly inferior to GBDT. This is the expected result for tabular ranking problems and confirms the established empirical finding that tree-based methods dominate neural networks on structured/tabular data. The RL approach would require orders of magnitude more data, a stronger base model (e.g., transformer ranker fine-tuned with policy gradient), or a fundamentally different reward formulation (e.g., NDCG relaxation with smooth gradients) to compete.
+
+---
+
+## Ensemble (GBDT+kNN+RL method-diverse blend)
+
+**Date:** 2026-06-17
+**Verdict: ABORT**
+
+### Motivation
+
+The prior probes established three independently-derived per-horse scores for JRA 703:
+
+- **GBDT** (`iter19-jra-cb-kohan3f-going-v8`): strong (~48–49% top1 on 703 holdout).
+- **kNN** (pgvector-kNN probe, k=50, horse_ability embedding): weak (~36%), but partial-ρ = −0.0892 after controlling for GBDT + odds — marginally orthogonal by the probe gate.
+- **RL** (REINFORCE/MLP policy-gradient ranker): weak (~38–39%), individual ABORT.
+
+The question: does combining them beat GBDT-alone? Ensembling helps only when the components are both accurate **and** de-correlated. Here they are weak (~12pp below GBDT) and likely highly correlated (all use the same 236 features).
+
+### Experimental design
+
+Blind holdout discipline:
+
+- **Tune split** (weight selection): race_year 2023–2024 (n=2,155 races)
+- **Blind gate split**: race_year 2025 (n=1,103 races)
+
+Three blend methods evaluated:
+
+1. **Rank-average**: per-race rank-normalize each method, weight 1/3 each.
+2. **Weight-optimized**: grid search over (w_gbdt, w_rl, w_knn) with constraint w_gbdt ≥ 0.5 on the tune split; apply best weights to blind.
+3. **Ridge stacking**: fit Ridge regression (target = −finish_position) on rank-normalized scores in tune split, predict on blind.
+
+Per-horse scores:
+
+- GBDT: `iter19_score` from WF prediction parquets (already computed).
+- RL: re-trained on 2013–2021 with same architecture as probe (MLX MLP, 236 features, early-stop at epoch 17, val top1=37.57%).
+- kNN: horse_ability embedding (15 features), k=50, `StandardScaler` fit on 2013–2021 train, kNN score = `1 − mean(finish_norm of k nearest neighbors)`. All neighbors strictly from train years (confirmed in probe doc).
+
+Coverage: 100% of races had all three scores available for both tune and blind splits.
+
+### Results
+
+#### GBDT-alone baseline
+
+| Split            |   top1 | place2 | place3 |
+| ---------------- | -----: | -----: | -----: |
+| Tune (2023–2024) | 48.68% | 26.31% | 18.65% |
+| Blind (2025)     | 48.23% | 25.66% | 20.40% |
+
+#### All blend methods (blind split 2025, n=1,103 races)
+
+| Method                            |   top1 | place2 | place3 | top3_box | fukusho_2p |   Δtop1 | Δplace2 | Δplace3 | LB95 (top1) |
+| --------------------------------- | -----: | -----: | -----: | -------: | ---------: | ------: | ------: | ------: | ----------: |
+| rank_avg (1/3, 1/3, 1/3)          | 42.07% | 21.67% | 15.23% |   12.78% |     65.82% | −6.17pp | −3.99pp | −5.17pp |     −8.61pp |
+| opt_w (GBDT=1.0, RL=0.0, kNN=0.0) | 48.23% | 25.66% | 20.40% |   18.40% |     72.89% | +0.00pp | +0.00pp | +0.00pp |     −2.45pp |
+| Ridge stacking                    | 48.32% | 25.75% | 20.40% |   18.40% |     72.89% | +0.09pp | +0.09pp | +0.00pp |     −2.36pp |
+
+**Ridge stacking coefficients** (fit on tune): `gbdt=+0.628, rl=+0.017, knn=−0.063`.
+
+#### Key observations
+
+- **Weight optimizer assigns 100% to GBDT.** The tune-split grid search over w_gbdt ∈ [0.5, 1.0] finds the global optimum at w_gbdt=1.0, w_rl=0.0, w_knn=0.0 — meaning no blend of the three methods improves over GBDT alone on the selection split.
+- **Ridge stacking is nearly identical to GBDT-alone.** The Ridge coefficients assign near-zero weight to RL (+0.017) and a negative weight to kNN (−0.063), confirming the kNN score adds noise rather than signal in the full model context. The blind-split top1 improvement (+0.09pp) is within bootstrap noise: LB95 = −2.36pp (required ≥ 0).
+- **Rank-average severely hurts.** Diluting GBDT scores with the two weak components (RL~38%, kNN~36%) collapses top1 by −6.17pp and place2 by −3.99pp. This is the expected result when combining a strong model (49%) with two methods that individually underperform by ~12pp.
+- **ABORT gate:** best-blend LB95 = −2.36pp < 0 required. All deltas on the blind split are either zero or statistically indistinguishable from zero.
+
+### Why the ensemble fails
+
+1. **Accuracy asymmetry is too large.** GBDT outperforms RL and kNN by ~12pp. For ensemble averaging to help, components need to be roughly equal in accuracy (or the weaker components must win on specific subsets that GBDT loses). Here, GBDT is uniformly dominant: whenever GBDT is wrong, the probability that RL or kNN is right is no higher than their individual ~36–38% rates — much lower than the 50% complementarity needed to net a gain.
+
+2. **The kNN partial-ρ (−0.089) is real but insufficient.** The probe gate tests whether a marginally-orthogonal signal exists. It does — but "orthogonal to GBDT+odds" is not the same as "adds net value in a blend." The Ridge coefficient for kNN is **negative** (−0.063): after controlling for GBDT rank, higher kNN score is weakly associated with _worse_ finish outcomes on the tune split. This means the kNN's marginal signal is too noisy to survive blending.
+
+3. **RL and kNN share the same 236 features as GBDT.** Any residual signal the MLP captures is a noisy approximation of what the GBDT already extracts optimally from the same feature set. True method diversity (e.g., a model using entirely different data sources) would be needed for useful de-correlation.
+
+4. **This outcome was predicted a priori.** The prior kNN ensemble member test (iter32-jra-vec-knn-703-v8) showed top1 delta = −0.166pp when used as a blended member. The method-diverse blend here reproduces and extends that finding: combining GBDT with method-inferior components dilutes the dominant signal.
+
+### Conclusion
+
+**ABORT.** The method-diverse ensemble (GBDT + kNN + RL) does not beat GBDT-alone on JRA 703. The weight optimizer degenerates to GBDT-only (w=1.0, 0.0, 0.0) on the tune split; the blind-split LB95 = −2.36pp confirms no real improvement. Adding structurally different but accuracy-inferior components to a strong GBDT is confirmed to dilute performance. This closes the method-diversity avenue for JRA 703 unless a new component with individual accuracy ≥ GBDT or a qualitatively different feature source (not the same 236-feature set) can be identified.
