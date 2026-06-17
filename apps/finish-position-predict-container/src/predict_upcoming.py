@@ -343,7 +343,7 @@ def _record_audit(
 
 
 def _predict_category(
-    connection: ConnectionLike,
+    database_url: str,
     category: Category,
     models_dir: Path,
     window: PredictWindow,
@@ -355,7 +355,6 @@ def _predict_category(
     # with no registered ensembles (NAR / Ban-ei today) get an empty pool and
     # always take the single-model fast path inside score_race_with_resolution.
     pool = init_member_pool(models_dir, category)
-    races = _build_feature_rows(category, window)
 
     # E-top2 path: load XGB companion model for JRA when the flag is active.
     # The XGB model uses the same 244-feature order as CB iter20 (same store).
@@ -363,7 +362,13 @@ def _predict_category(
     if JRA_ETOP2_ENABLED and category == "jra":
         xgb_etop2_booster = _load_xgb_etop2_booster(models_dir)
 
-    written = 0
+    # Score all races before opening the Neon write connection. The feature
+    # build is the longest step (DuckDB base build + 14 layer scripts, typically
+    # 2-5 min) and Neon autosuspends after ~60s of idle — connecting before the
+    # build would cause AdminShutdown on the first UPSERT. Scoring is CPU-bound
+    # and connection-free, so we defer the Neon connect until the first write.
+    races = _build_feature_rows(category, window)
+    scored: list[list[list[object]]] = []
     for race_id, entries in races.items():
         if xgb_etop2_booster is not None:
             rows = _score_one_race_etop2(
@@ -377,7 +382,22 @@ def _predict_category(
             rows = _score_one_race(
                 fallback_booster, pool, models_dir, race_id, category, entries, feature_names
             )
-        written += _flush_predictions(connection, rows)
+        scored.append(rows)
+
+    # All races scored — now open the Neon connection and flush.
+    connection = _connect(database_url)
+    try:
+        written = 0
+        for rows in scored:
+            written += _flush_predictions(connection, rows)
+    finally:
+        try:
+            connection.close()
+        except BaseException as close_error:
+            print(
+                f"[predict-upcoming] connection close failed category={category}: {close_error}",
+                file=sys.stderr,
+            )
     return written
 
 
@@ -432,15 +452,19 @@ def _try_record_audit(
     run_date: str,
     races_predicted: int,
     duration_ms: int,
-    error_text: str,
+    error_text: str | None,
 ) -> None:
     """Try to record an audit row; never raise so the real traceback survives.
 
-    Audit recording opens a fresh connection because the original connection may
-    be in a poisoned state (e.g. the original error came from psycopg itself).
-    Any failure here is swallowed and logged to stderr so the caller's traceback
-    still reaches the container logs.
+    Opens a fresh Neon connection for each audit write. Used for both success
+    and failure paths so the audit connection is always opened lazily — after
+    the feature build and UPSERT are complete — avoiding Neon autosuspend on
+    long-running feature pipelines. ``error_text=None`` records a "success"
+    row; a non-empty string records "error" or "partial" as appropriate.
+    Any failure here is swallowed and logged to stderr so the caller's
+    traceback still reaches the container logs.
     """
+    status: AuditStatus = "success" if error_text is None else "error"
     try:
         audit_connection = _connect(database_url)
     except BaseException as audit_connect_error:
@@ -450,7 +474,7 @@ def _try_record_audit(
         )
         return
     try:
-        _record_audit(audit_connection, run_date, "error", races_predicted, duration_ms, error_text)
+        _record_audit(audit_connection, run_date, status, races_predicted, duration_ms, error_text)
     except BaseException as audit_write_error:
         print(
             f"[predict-upcoming] audit write failed: {audit_write_error}",
@@ -478,7 +502,13 @@ def main() -> int:
         window = PredictWindow(
             target_date=run_date, days_ahead=days_ahead, database_url=source_url
         )
-        connection = _connect(database_url)
+        # Validate the Neon URL at startup (fail fast on bad credentials /
+        # unreachable host) but immediately close the probe connection. The
+        # write connection is opened lazily inside _predict_category, after the
+        # feature build, so Neon autosuspend during the long feature-build phase
+        # cannot kill the write connection before the first UPSERT.
+        probe = _connect(database_url)
+        probe.close()
     except BaseException as bootstrap_error:
         # Pre-connect failure (missing env var, bad URL, Neon down, etc). Nothing
         # to audit-write into yet — emit the full traceback so a future silent
@@ -491,7 +521,7 @@ def main() -> int:
     failures: list[str] = []
     for category in categories:
         try:
-            races_predicted += _predict_category(connection, category, models_dir, window)
+            races_predicted += _predict_category(database_url, category, models_dir, window)
         except BaseException as category_error:
             # Per-category isolation: one category's failure (e.g. Neon SSL
             # idle-timeout during the long-running DuckDB postgres_scanner) must
@@ -502,38 +532,10 @@ def main() -> int:
             text = f"{category}: {type(category_error).__name__}: {category_error}"
             print(f"[predict-upcoming] category failed: {text}", file=sys.stderr)
             failures.append(text)
-            # Postgres aborts the in-flight transaction on any error; force a
-            # rollback so the next category's audit / upsert work uses a clean
-            # transaction state.
-            try:
-                connection.rollback()
-            except BaseException as rollback_error:
-                print(
-                    f"[predict-upcoming] rollback failed: {rollback_error}",
-                    file=sys.stderr,
-                )
     duration_ms = int((time.monotonic() - started) * 1000)
     if failures:
-        status: AuditStatus = "error" if races_predicted == 0 else "partial"
         error_text = "; ".join(failures)
-        try:
-            _record_audit(connection, run_date, status, races_predicted, duration_ms, error_text)
-        except BaseException as audit_error:
-            print(
-                f"[predict-upcoming] audit write failed (inline): {audit_error}",
-                file=sys.stderr,
-            )
-            try:
-                connection.close()
-            except BaseException as close_error:
-                print(
-                    f"[predict-upcoming] post-error close failed: {close_error}",
-                    file=sys.stderr,
-                )
-            _try_record_audit(database_url, run_date, races_predicted, duration_ms, error_text)
-            print(f"[predict-upcoming] failed: {error_text}", file=sys.stderr)
-            return 1
-        connection.close()
+        _try_record_audit(database_url, run_date, races_predicted, duration_ms, error_text)
         if races_predicted == 0:
             print(f"[predict-upcoming] failed: {error_text}", file=sys.stderr)
             return 1
@@ -542,8 +544,7 @@ def main() -> int:
             f" failures={error_text}"
         )
         return 0
-    _record_audit(connection, run_date, "success", races_predicted, duration_ms, None)
-    connection.close()
+    _try_record_audit(database_url, run_date, races_predicted, duration_ms, None)
     print(f"[predict-upcoming] ok run_date={run_date} races_predicted={races_predicted}")
     return 0
 
