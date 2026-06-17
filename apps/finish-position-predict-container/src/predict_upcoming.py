@@ -54,18 +54,22 @@ from predict_lib.ensemble_routing import (
     init_member_pool,
     score_race_with_resolution,
 )
+from predict_lib.etop2_override import apply_etop2_scores, is_etop2_override_active
 from predict_lib.model_meta import (
     CATEGORIES,
+    JRA_ETOP2_ENABLED,
+    JRA_ETOP2_MODEL_VERSION,
     METADATA_FILE_NAME,
     MODEL_FILE_NAME,
     Category,
     architecture_for,
     build_r2_object_key,
+    build_r2_xgb_etop2_key,
     feature_count_for,
     model_version_for,
 )
 from predict_lib.per_class import resolve_per_class_resolution
-from predict_lib.scorer import BoosterLike, assert_feature_count
+from predict_lib.scorer import BoosterLike, assert_feature_count, build_feature_matrix, score_matrix
 from predict_lib.upcoming import build_prediction_rows, rank_race_entries
 from predict_lib.upsert_sql import (
     DEFAULT_CHUNK_SIZE,
@@ -265,6 +269,43 @@ def _score_one_race(
     return build_prediction_rows(race_id, category, ranked, outcome.model_version)
 
 
+def _score_one_race_etop2(
+    cb_booster: BoosterLike,
+    xgb_booster: BoosterLike,
+    race_id: str,
+    entries: Sequence[Mapping[str, object]],
+    feature_names: Sequence[str],
+) -> list[list[object]]:
+    """Score one JRA race with E-top2 place-preserving override.
+
+    Both CB iter20 and XGB xgb-jra-2013-v8 score the same feature matrix
+    (identical 244-feature order). The override is applied per-race:
+    when XGB#1 == CB#2 and race class != 701, CB#2 is promoted to rank-1.
+
+    The class code is read from the ``kyoso_joken_code`` column of the first
+    entry (same field used by :func:`extract_race_class_code` for JRA). If the
+    column is absent, the class is treated as None (override eligible).
+    """
+    # Both models use the same 244-feature order
+    cb_matrix = build_feature_matrix(entries, feature_names, "catboost")
+    xgb_matrix = build_feature_matrix(entries, feature_names, "xgboost")
+    cb_scores = score_matrix(cb_booster, cb_matrix)
+    xgb_scores = score_matrix(xgb_booster, xgb_matrix)
+
+    class_code = extract_race_class_code("jra", entries)
+    override_scores = apply_etop2_scores(cb_scores, xgb_scores, class_code)
+
+    fired = is_etop2_override_active(cb_scores, xgb_scores, class_code)
+    if fired:
+        print(
+            f"[etop2] override fired race_id={race_id} class={class_code}",
+            file=sys.stderr,
+        )
+
+    ranked = rank_race_entries(entries, override_scores)
+    return build_prediction_rows(race_id, "jra", ranked, JRA_ETOP2_MODEL_VERSION)
+
+
 def _row_to_pk_map(row: Sequence[object]) -> Mapping[str, object]:
     race_id = ":".join(str(row[index]) for index in RACE_ID_PART_RANGE)
     return {"race_id": race_id, "ketto_toroku_bango": row[RACE_ID_KETTO_INDEX]}
@@ -315,11 +356,27 @@ def _predict_category(
     # always take the single-model fast path inside score_race_with_resolution.
     pool = init_member_pool(models_dir, category)
     races = _build_feature_rows(category, window)
+
+    # E-top2 path: load XGB companion model for JRA when the flag is active.
+    # The XGB model uses the same 244-feature order as CB iter20 (same store).
+    xgb_etop2_booster: BoosterLike | None = None
+    if JRA_ETOP2_ENABLED and category == "jra":
+        xgb_etop2_booster = _load_xgb_etop2_booster(models_dir)
+
     written = 0
     for race_id, entries in races.items():
-        rows = _score_one_race(
-            fallback_booster, pool, models_dir, race_id, category, entries, feature_names
-        )
+        if xgb_etop2_booster is not None:
+            rows = _score_one_race_etop2(
+                fallback_booster,
+                xgb_etop2_booster,
+                race_id,
+                entries,
+                feature_names,
+            )
+        else:
+            rows = _score_one_race(
+                fallback_booster, pool, models_dir, race_id, category, entries, feature_names
+            )
         written += _flush_predictions(connection, rows)
     return written
 
@@ -333,6 +390,19 @@ def _load_booster(models_dir: Path, category: Category) -> BoosterLike:
     from catboost_adapter import load_catboost_booster  # bundled in image
 
     return load_catboost_booster(str(model_path))
+
+
+def _load_xgb_etop2_booster(models_dir: Path) -> BoosterLike:
+    """Load the XGBoost companion model for E-top2 JRA override.
+
+    Resolves the artifact at ``models/finish-position/jra/xgb-jra-2013-v8/
+    model.json`` (same path as baked into the image alongside CB iter20).
+    Called once at category startup when JRA_ETOP2_ENABLED is True.
+    """
+    model_path = models_dir / build_r2_xgb_etop2_key(MODEL_FILE_NAME)
+    from xgboost_adapter import load_xgboost_booster  # bundled in image
+
+    return load_xgboost_booster(str(model_path))
 
 
 def _build_feature_rows(
