@@ -99,3 +99,56 @@ Note on 2016+ borderline: If the orchestrator wishes to apply a relaxed gate (to
 **Ban-ei verdict:** ABORT under strict gate. 2016+ is the closest candidate (+0.44pp top1, LB95 +0.019pp, place2 +0.25pp) but place3 regresses −0.057pp (threshold = −0.05pp). Recommend orchestrator decides whether to apply relaxed gate given small holdout size.
 
 No deploy actions taken. No production module edits.
+
+---
+
+## Ban-ei WF confirmation
+
+**Date:** 2026-06-17
+**Scope:** Ban-ei 2016+ vs 2007 baseline, 3-fold walk-forward confirmation
+**Method:** 3-fold WF (holdout 2023 / 2024 / 2025; each fold trains on [start..fold_year−1]).
+CatBoost YetiRank, depth=8, lr=0.05, l2=3.0, iter=300, od_wait=30, seed=2068, thread_count=6.
+Paired bootstrap LB95 (10k resamples, seed=42). Features: 116 cols (111 numeric + 5 categorical).
+
+### Per-fold deltas (challenger 2016+ minus baseline 2007+, pp)
+
+| Fold  | Holdout year | n_races | top1 delta | place2 delta | place3 delta | top3_box delta | fukusho_2p delta |
+| ----- | ------------ | ------- | ---------- | ------------ | ------------ | -------------- | ---------------- |
+| fold1 | 2023         | 1,788   | +0.112pp   | +0.167pp     | −0.391pp     | +0.279pp       | +0.224pp         |
+| fold2 | 2024         | 1,788   | +0.783pp   | +0.448pp     | +0.503pp     | −0.224pp       | +0.671pp         |
+| fold3 | 2025         | 1,692   | −0.178pp   | +0.059pp     | +0.000pp     | +0.177pp       | −0.355pp         |
+
+### Pooled metrics (5,268 races, 3 folds combined)
+
+| Model                  | top1 (%) | place2 (%) | place3 (%) | top3_box (%) | fukusho_2p (%) |
+| ---------------------- | -------- | ---------- | ---------- | ------------ | -------------- |
+| **2007+ (baseline)**   | 34.377   | 55.979     | 43.660     | 9.169        | 63.212         |
+| **2016+ (challenger)** | 34.624   | 56.207     | 43.698     | 9.244        | 63.402         |
+
+### Pooled deltas + paired bootstrap LB95
+
+| Metric     | delta (pp)   | LB95 (pp)    |
+| ---------- | ------------ | ------------ |
+| **top1**   | **+0.247pp** | **−0.190pp** |
+| place2     | +0.228pp     | −0.152pp     |
+| place3     | +0.038pp     | −0.361pp     |
+| top3_box   | +0.076pp     | −0.171pp     |
+| fukusho_2p | +0.190pp     | −0.247pp     |
+
+### Gate evaluation (relaxed: top1 LB95 ≥ 0, place2 positive, place3 ≥ −0.10pp)
+
+| Gate                             | Result   | Value    |
+| -------------------------------- | -------- | -------- |
+| top1 LB95 ≥ 0                    | **FAIL** | −0.190pp |
+| place2 positive                  | PASS     | +0.228pp |
+| place3 ≥ −0.10pp (relaxed floor) | PASS     | +0.038pp |
+
+### VERDICT: ABORT
+
+The 3-fold WF does NOT confirm the cheap-filter signal. The pooled top1 delta is +0.247pp (raw positive) but the paired bootstrap LB95 = −0.190pp — the interval crosses zero, meaning the improvement is not statistically robust across the 3-year WF. The per-fold pattern is highly inconsistent: fold2 (2024) shows a strong +0.783pp top1 gain, but fold1 (2023) is only +0.112pp and fold3 (2025) reverses to −0.178pp. This fold instability indicates the 2016+ window advantage is year-specific noise rather than a structural improvement.
+
+The cheap-filter (single-holdout, task #17) showed LB95 = +0.019pp on holdout 2023-2025 — just barely positive. The multi-fold WF reveals that result was driven primarily by the 2024 year and does not hold across all years.
+
+**Decision: ABORT. Keep 2007+ full-history as the Ban-ei production training window. No deploy.**
+
+Root cause: With only ~1,700 races per holdout year, the per-fold variance swamps the signal. The raw deltas (+0.25pp pooled top1) are real in expectation but the confidence interval is too wide to justify a production flip.
