@@ -146,7 +146,7 @@ jobs:
 
       - name: Comment script-evaluation failure on PR
         if: failure() && github.event_name == 'pull_request'
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const body = [
@@ -290,7 +290,7 @@ jobs:
 
       - name: Comment accuracy result on PR
         if: failure() && github.event_name == 'pull_request'
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const body = [
@@ -477,7 +477,7 @@ jobs:
 
       - name: Post improvement summary on PR
         if: github.event_name == 'pull_request' && steps.summary.outputs.any_found == 'true'
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require("node:fs/promises");
