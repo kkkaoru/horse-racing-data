@@ -1,11 +1,11 @@
 """Container-baked model-version / architecture / R2-key mapping.
 
 Single source of truth for the model the daily-prediction container LOADS and
-SCORES TODAY's upcoming races with. As of 2026-06-13 the v8 production deploy is
-JRA=iter19-jra-cb-kohan3f-going-v8 (244 features, base-only; drops iter25/26
-per-class ensembles), NAR=iter12-nar-xgb-hpo-v8.
+SCORES TODAY's upcoming races with. As of 2026-06-17 the v8 production deploy is
+JRA=iter20-jra-cb-2013-v8 (244 features, base-only; train start 20130101),
+NAR=iter12-nar-xgb-hpo-v8.
 The historical PG predictions table + ``finish_position_active_models``
-were flipped, the iter12/iter19 BOOSTERS are baked under
+were flipped, the iter12/iter20 BOOSTERS are baked under
 ``models/finish-position/{nar/jra}/<iter-version>/``, and the v8 feature
 layers (pacestyle + course) are wired into ``pipeline_args.LAYER_CHAIN``.
 
@@ -25,7 +25,7 @@ CATEGORIES: Final[tuple[Category, ...]] = get_args(Category)
 # MODEL_VERSION_BY_CATEGORY['jra'] is the fallback model when no class-specific
 # model is registered.
 MODEL_VERSION_BY_CATEGORY: Final[dict[Category, str]] = {
-    "jra": "iter19-jra-cb-kohan3f-going-v8",
+    "jra": "iter20-jra-cb-2013-v8",
     "nar": "iter12-nar-xgb-hpo-v8",
     "ban-ei": "banei-cb-v7-lineage-wf-21y",
 }

@@ -54,7 +54,7 @@ from predict_lib.model_meta import Architecture
 from predict_lib.per_class import EnsembleMember, PerClassEnsemble
 from predict_lib.scorer import BoosterLike
 
-JRA_FALLBACK_MODEL_VERSION: str = "iter19-jra-cb-kohan3f-going-v8"
+JRA_FALLBACK_MODEL_VERSION: str = "iter20-jra-cb-2013-v8"
 # iter 25/26 JRA per-class ensembles were active through 2026-06-12; iter 19
 # (2026-06-13) dropped all JRA per-class entries from the registry (base-only).
 # Tests that exercise the JRA ensemble code path inject the registry via
@@ -575,7 +575,7 @@ def test_init_member_pool_loads_registered_members(
     )
 
     def fake_load(model_path: str) -> BoosterLike:
-        return _StubBooster(0.0 if "iter19" in model_path else 0.5)
+        return _StubBooster(0.0 if "iter20" in model_path else 0.5)
 
     _install_fake_catboost_adapter(monkeypatch, fake_load)
 
@@ -1719,7 +1719,7 @@ def test_init_member_pool_drops_order_mismatched_member(
     def fake_load(model_path: str) -> BoosterLike:
         # The baseline booster reports the matching order; the residual booster
         # reports a PERMUTED order so the post-load assertion drops it.
-        if "iter19" in model_path:
+        if "iter20" in model_path:
             return _NamedBooster(BASELINE_METADATA_FEATURE_NAMES)
         return _NamedBooster(["feature_b", "feature_a", "iter14_score"])
 
