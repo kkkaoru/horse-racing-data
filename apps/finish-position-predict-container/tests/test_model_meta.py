@@ -146,9 +146,9 @@ def test_member_model_file_name_xgboost_is_model_json() -> None:
 # E-top2 constants and helpers
 
 
-def test_jra_etop2_enabled_is_false_by_default() -> None:
-    """JRA_ETOP2_ENABLED must be False until the orchestrator flips it."""
-    assert JRA_ETOP2_ENABLED is False
+def test_jra_etop2_enabled_is_true() -> None:
+    """JRA_ETOP2_ENABLED is True after orchestrator flip (2026-06-18)."""
+    assert JRA_ETOP2_ENABLED is True
 
 
 def test_jra_etop2_model_version() -> None:

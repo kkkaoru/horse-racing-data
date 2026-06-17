@@ -56,13 +56,12 @@ MODEL_FILE_NAME: Final[str] = "model.json"
 # ---------------------------------------------------------------------------
 # E-top2 place-preserving override (iter22-jra-etop2, STAGED 2026-06-18)
 # ---------------------------------------------------------------------------
-# Set to True to activate dual-model loading at container startup: the predict
-# loop loads both CB iter20 AND XGB xgb-jra-2013-v8 for JRA, applies the
-# E-top2 score override per race (see predict_lib.etop2_override), and writes
-# predictions under ETOP2_JRA_MODEL_VERSION instead of MODEL_VERSION_BY_CATEGORY
-# ["jra"]. Set to False (default) to keep the production CB-only path.
-# Flip to True by orchestrator after smoke pass + active_models UPDATE.
-JRA_ETOP2_ENABLED: Final[bool] = False
+# True = dual-model loading is ACTIVE at container startup: the predict loop
+# loads both CB iter20 AND XGB xgb-jra-2013-v8 for JRA, applies the E-top2
+# score override per race (see predict_lib.etop2_override), and writes
+# predictions under JRA_ETOP2_MODEL_VERSION instead of MODEL_VERSION_BY_CATEGORY
+# ["jra"]. Flipped to True by orchestrator after smoke2 PASS (2026-06-18).
+JRA_ETOP2_ENABLED: Final[bool] = True
 
 # The XGB model version baked at models/finish-position/jra/xgb-jra-2013-v8/.
 # Used to build the R2 object key for the XGB model file at startup when
