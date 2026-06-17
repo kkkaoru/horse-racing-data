@@ -1,13 +1,12 @@
 # E-top2 place-preserving XGBoost override — deploy doc (iter22-jra-etop2)
 
-## Status: READY TO FLIP (2026-06-18) — final smoke PASS, awaiting orchestrator registry flip
+## Status: DEPLOYED (2026-06-18) — iter22-jra-etop2 active in production
 
-JRA_ETOP2_ENABLED = True committed (commit b92a7ce).
-R2 artifacts uploaded: finish-position/jra/xgb-jra-2013-v8/{model,metadata}.json in bucket
-pc-keiba-finish-position-models (remote, confirmed downloadable).
-Final smoke (iter22-etop2-final): exit 0, 357 predictions, override fired 3x, Neon write SUCCESS
-(357 rows of iter22-jra-etop2 confirmed in Neon for kaisai_tsukihi=0607).
-Rollback anchor: split2 image = 4d1746f535e5 (iter20-jra-cb-2013-v8).
+JRA_ETOP2_ENABLED = True (commit b92a7ce). split2 = iter22-etop2-final (8d5cbd7b).
+active_models flipped: LOCAL PG + Neon both show model_version='iter22-jra-etop2' for category='jra'.
+Rollback: `docker tag finish-position-predict-local:split2-iter20-rollback finish-position-predict-local:split2`
+
+- revert active_models to 'iter20-jra-cb-2013-v8'. Anchor: split2-iter20-rollback = 4d1746f535e5.
 
 ## What it is
 
