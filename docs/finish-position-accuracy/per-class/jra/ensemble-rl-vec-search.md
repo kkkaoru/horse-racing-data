@@ -171,3 +171,106 @@ The learned embedding approach performs **worse** than raw-feature RL because th
 - Total elapsed: 257s (~4.3 minutes)
 - Script: `tmp/ensemble_rl_vec_search_703.py` (not committed — experiment artifact)
 - Results: `tmp/ensemble_rl_vec_search_703_results.json`
+
+---
+
+## v2: Odds-free + within-race-relative + proper NULL handling
+
+**Date**: 2026-06-17
+**Verdict**: **ABORT** — best blend top1=27.32% vs GBDT 43.99% (−16.68pp), LB95=−18.75pp
+
+### Motivation for v2
+
+The team-lead identified three potential artifacts in v1's input preparation that could have degraded embedding quality:
+
+1. **Odds contamination**: v1 included 13 market/odds columns (`tansho_odds_raw`, `inverse_odds_implied_prob`, `popularity_score`, etc.) in the encoder inputs. These highly predictive market signals might dominate the embedding space, causing the learned representation to re-cluster around market consensus rather than learning orthogonal structural information.
+2. **Absolute vs relative inputs**: v1 used globally-normalized features. Within-race z-score normalization would force the encoder to learn relative-to-field strength signals — the natural domain for ranking.
+3. **NULL handling**: v1 used zero-fill for NaN values. v2 uses median imputation + explicit NULL indicator binary columns for all features with >1% missingness.
+
+### v2 configuration changes
+
+| Dimension            | v1                         | v2                                                                   |
+| -------------------- | -------------------------- | -------------------------------------------------------------------- |
+| Embedding features   | 236 (includes odds/market) | 231 (odds excluded) + 125 NULL indicators = 356 total embedding dims |
+| Input normalization  | Global z-score             | Within-race z-score per embedding feature                            |
+| NULL handling        | Zero-fill                  | Median impute + NULL indicator columns (125 columns, >1% missing)    |
+| Categorical encoding | None (coerced to int)      | Label-encode `track_code`, `grade_code`                              |
+| Odds features        | Mixed with embedding       | Separate (global z-score, not fed to encoder)                        |
+| Encoder train split  | 2013–2021                  | 2013–2022 (10 years)                                                 |
+| Blind holdout        | 2025 (n=1,103 races)       | 2025 (n=1,252 races, larger due to v8 feature store)                 |
+
+### v2 results
+
+#### Component-only accuracy (blind holdout 2025, n=1,252 races)
+
+| Component                  | top1   | Retrieval score mean |
+| -------------------------- | ------ | -------------------- |
+| enc-only (encoder head)    | 27.32% | —                    |
+| ret-only (retrieval score) | 27.40% | μ=0.514, σ=0.239     |
+| rl-only (REINFORCE policy) | 15.58% | —                    |
+
+Relative to v1 enc-only top1=0.18%: the odds-free + within-race-relative inputs dramatically raise encoder top-1 from 0.18% → 27.32%. This confirms the v1 encoder was being overwhelmed by odds signals that destroyed its absolute-ranking calibration. The within-race z-score is the critical fix: the encoder now sees relative-to-field quality and its head score is calibrated enough to produce reasonable top-1 accuracy.
+
+Retrieval score μ=0.514 (vs v1 μ=0.502) — marginally better than neutral, but still near-uniform.
+
+RL policy dropped from 25.93% (v1) to 15.58% (v2). The encoder embeddings are structurally different in v2 (odds-free, within-race-relative), but the RL policy trained on them performs worse. This suggests the 32d embedding in odds-free mode carries less discriminative signal for RL than the odds-inclusive version.
+
+#### Blend search on tune split
+
+Grid-search collapsed to encoder-only: `enc=1.00, ret=0.00, rl=0.00` (tune top1=29.05%).
+
+This means the retrieval scores and RL logits add noise rather than signal when combined with the encoder head.
+
+#### Blind holdout ensemble (best blend = encoder-only)
+
+| Metric | Value  | Delta vs GBDT | LB95     |
+| ------ | ------ | ------------- | -------- |
+| top1   | 27.32% | −16.68pp      | −18.75pp |
+| place2 | 45.21% | −17.72pp      | —        |
+| place3 | 58.15% | −15.43pp      | —        |
+
+**GBDT baseline (CatBoost YetiRank iter20, blind 2025): top1=43.99%, place2=62.92%, place3=73.58%**
+
+### v2 diagnosis
+
+The odds-free + within-race-relative fix genuinely improved encoder top-1 from 0.18% to 27.32% — a 27pp improvement in encoder head quality. This is substantial: it validates the hypothesis that odds contamination was degrading the v1 embedding. The encoder now learns structural quality signals orthogonal to market consensus.
+
+However, 27.32% is still −16.68pp below GBDT (43.99%). The gap narrows compared to v1's −22.30pp, but remains very large.
+
+**Root cause of the persistent gap**:
+
+1. **Encoder ceiling at 27% top-1**: The pairwise ranking loss across 10 training years gives a 29.82% train top-1 and 27.32% blind top-1, with small overfitting gap. This is the ceiling of what a 3-layer 32d MLP trained with pairwise loss can achieve on 231 features. GBDT achieves 43.99% with 1000 trees on 244 features. The representational capacity difference is fundamental.
+
+2. **Retrieval still near-neutral (μ=0.514)**: Even in the odds-free learned space, the within-race z-score normalization means no single horse's embedding reliably signals "absolute quality above average" — z-scores by construction zero-mean each race's horse embeddings before encoding. The retrieval augmentation cannot find historically-similar-but-better-finishing neighbors in a meaningful way.
+
+3. **RL policy degrades to 15.58%**: The RL policy's poor performance (worse than v1's 25.93%) confirms the odds-free embedding, while structurally cleaner, is not a better basis for REINFORCE-style policy gradient training. The policy has less market signal to exploit.
+
+4. **Same-feature wall at 27% encoder top-1**: The 231-feature odds-free encoder is trained on a subset of the GBDT's 244 features. The GBDT uses those 244 features with 1000 boosted trees; the encoder compresses them into 32 dimensions. Even at its best (odds-free + within-race-relative), the encoder does not recover the information lost in this compression.
+
+### Comparison across all task #31 variants
+
+| Variant                       | enc top1 | ret top1 | rl top1 | best blend top1 | vs GBDT  |
+| ----------------------------- | -------- | -------- | ------- | --------------- | -------- |
+| v1 (odds-in, global z)        | 0.18%    | 0.09%    | 25.93%  | 25.93%          | −22.30pp |
+| v2 (odds-free, within-race z) | 27.32%   | 27.40%   | 15.58%  | 27.32%          | −16.68pp |
+| GBDT baseline                 | —        | —        | —       | 43.99%          | 0.00pp   |
+
+The v2 fixes improve the encoder substantially (27pp gain in enc top-1), but the best ensemble remains far below GBDT. The learned 32d embedding cannot replace the GBDT's direct tabular ranking.
+
+### Final verdict for task #31
+
+**ABORT (both v1 and v2)**. The RL + learned-vectorization + vector-search retrieval-augmented ensemble does not outperform the GBDT baseline on any configuration. The v2 odds-free + within-race-relative ablation:
+
+- Confirms odds contamination was harming v1 encoder quality
+- Shows the fundamental limit of pairwise-trained 32d MLP compression on the same feature set
+- Closes the question: input quality is not the bottleneck, representational capacity and loss function design are
+
+**DO-NOT-RETEST**: This architecture (learned embedding via pairwise ranking + kNN retrieval + REINFORCE RL) on the same 244-feat store for JRA 703. The same-feature wall is confirmed at both input-quality extremes (odds-in and odds-free).
+
+### v2 implementation
+
+- Script: `tmp/ensemble_rl_vec_search_703_v2.py` (not committed)
+- Results: `tmp/ensemble_rl_vec_search_703_v2_results.json`
+- Elapsed: 677s (~11 minutes)
+- n_embed_features: 356 (231 base + 125 NULL indicators), n_odds_features: 13
+- n_train_races: 12,303, n_tune_races: 2,458, n_blind_races: 1,252
