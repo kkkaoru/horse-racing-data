@@ -385,13 +385,13 @@ For each candidate, the lifecycle is:
 
 ## §9. Current Status
 
-| Candidate          | Status  | Started | Verdict |
-| ------------------ | ------- | ------- | ------- |
-| NAR B ML           | pending | —       | —       |
-| NAR 3YO FEAT       | pending | —       | —       |
-| JRA 016 FEAT       | pending | —       | —       |
-| pgvector race-cond | pending | —       | —       |
-| NAR C place-obj    | pending | —       | —       |
-| RL probe           | pending | —       | —       |
-| JRA 999 FEAT       | pending | —       | —       |
-| NAR 2YO FEAT       | pending | —       | —       |
+| Candidate          | Status    | Started    | Verdict                                                     |
+| ------------------ | --------- | ---------- | ----------------------------------------------------------- |
+| NAR B ML           | COMPLETED | 2026-06-17 | ABORT — iter30 CB residual, no LB95≥0 on any primary metric |
+| NAR 3YO FEAT       | pending   | —          | —                                                           |
+| JRA 016 FEAT       | pending   | —          | —                                                           |
+| pgvector race-cond | pending   | —          | —                                                           |
+| NAR C place-obj    | pending   | —          | —                                                           |
+| RL probe           | pending   | —          | —                                                           |
+| JRA 999 FEAT       | pending   | —          | —                                                           |
+| NAR 2YO FEAT       | pending   | —          | —                                                           |
