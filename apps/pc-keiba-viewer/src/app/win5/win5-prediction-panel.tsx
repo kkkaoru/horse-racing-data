@@ -81,7 +81,7 @@ export function Win5PredictionPanel({ day, month, prediction, year }: Win5Predic
         </output>
       </div>
 
-      <div aria-label="予算プリセット" className="running-style-tabs" role="group">
+      <fieldset aria-label="予算プリセット" className="running-style-tabs">
         <button
           aria-pressed={budgetYen === WIN5_DEFAULT_BUDGET_YEN}
           className="running-style-tab"
@@ -98,7 +98,7 @@ export function Win5PredictionPanel({ day, month, prediction, year }: Win5Predic
         >
           推奨 {formatYen(prediction.recommendedBudgetYen)}
         </button>
-      </div>
+      </fieldset>
 
       <div aria-label="選択中の買い目" className="win5-pick-summary">
         {plan.selections.map((selection) => {

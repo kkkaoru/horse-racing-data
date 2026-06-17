@@ -78,7 +78,7 @@ const OverallScoreTableRow = memo(function OverallScoreTableRow({
       </tr>
       {isExpanded && !isScratched ? (
         <tr className="stats-detail-row">
-          <td colSpan={6}>
+          <td colSpan={6} aria-label="総合スコア詳細内訳">
             <div className="stats-detail-panel">
               <table className="stats-detail-table correlation-detail-table overall-score-detail-table">
                 <thead>

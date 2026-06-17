@@ -1,4 +1,5 @@
 // run with: bun run test
+import type { DurableObjectState } from "@cloudflare/workers-types";
 import { afterEach, expect, it, vi } from "vitest";
 import {
   TrackConditionCache,

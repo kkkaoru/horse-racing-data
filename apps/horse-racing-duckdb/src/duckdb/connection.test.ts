@@ -13,10 +13,14 @@ vi.mock("@ducklings/workers", () => {
 
   return {
     init: vi.fn().mockResolvedValue(undefined),
-    DuckDB: vi.fn(() => ({
-      connect: mockConnect,
-      close: mockClose,
-    })),
+    // vitest 4 requires a constructable implementation for `new DuckDB()`;
+    // arrow functions returning objects are no longer treated as constructors.
+    DuckDB: vi.fn(
+      class {
+        connect = mockConnect;
+        close = mockClose;
+      },
+    ),
   };
 });
 

@@ -1302,7 +1302,7 @@ export function HorseRaceResultsTable({
                     </tr>
                     {expanded ? (
                       <tr className="race-results-detail-row" key={`detail-${runnerNumber}`}>
-                        <td colSpan={showLast3fColumn ? 25 : 24}>
+                        <td aria-label="競走成績の詳細" colSpan={showLast3fColumn ? 25 : 24}>
                           <div className="race-results-detail-panel">
                             <table className="race-results-detail-table">
                               <thead>

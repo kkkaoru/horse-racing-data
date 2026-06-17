@@ -12,7 +12,7 @@
     "python:typecheck": "uv run basedpyright --project pyrightconfig.json"
   },
   "devDependencies": {
-    "oxfmt": "0.48.0",
-    "oxlint": "1.63.0"
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:"
   }
 }

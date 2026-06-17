@@ -1,6 +1,7 @@
 .env.local
 .open-next/
 .next/
+next-env.d.ts
 .wrangler/
 .claude/
 __pycache__/

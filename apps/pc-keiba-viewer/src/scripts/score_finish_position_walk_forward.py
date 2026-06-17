@@ -518,9 +518,8 @@ def apply_calibration(
     if not pairs:
         return predictions
     out = predictions.copy()
-    out["predicted_score"] = out["predicted_score"].astype(float).map(
-        lambda score: interp_calibrated(float(score), pairs),
-    )
+    scores_arr = out["predicted_score"].astype(float).to_numpy()
+    out["predicted_score"] = [interp_calibrated(float(value), pairs) for value in scores_arr]
     out["predicted_rank"] = (
         out.groupby("race_id")["predicted_score"]
         .rank(method="first", ascending=False)

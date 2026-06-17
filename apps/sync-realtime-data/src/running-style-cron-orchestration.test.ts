@@ -2,6 +2,15 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Env } from "./types";
 
+const queueSendOk = async (): Promise<QueueSendResponse> => ({
+  metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } },
+});
+
+const queueMetricsOk = async (): Promise<QueueMetrics> => ({
+  backlogCount: 0,
+  backlogBytes: 0,
+});
+
 vi.mock("./finish-position-lite-pool", () => ({
   getFinishPositionPool: vi.fn(() => ({ query: vi.fn(async () => ({ rows: [] })) })),
 }));
@@ -90,10 +99,11 @@ it("planRunningStylePredictionsForDate enqueues jobs when races need running-sty
     ],
     source: "d1",
   });
-  const send = vi.fn(async () => {});
-  const sendBatch = vi.fn(async () => {});
+  const metrics = vi.fn(queueMetricsOk);
+  const send = vi.fn(queueSendOk);
+  const sendBatch = vi.fn(queueSendOk);
   const env = buildEnv({
-    RUNNING_STYLE_JOBS: { send, sendBatch },
+    RUNNING_STYLE_JOBS: { metrics, send, sendBatch },
   });
   const summary = await planRunningStylePredictionsForDate(
     env,
@@ -238,10 +248,11 @@ it("planRunningStylePredictionsForDate sends a batch when more than one race is 
     ],
     source: "d1",
   });
-  const send = vi.fn(async () => {});
-  const sendBatch = vi.fn(async () => {});
+  const metrics = vi.fn(queueMetricsOk);
+  const send = vi.fn(queueSendOk);
+  const sendBatch = vi.fn(queueSendOk);
   const env = buildEnv({
-    RUNNING_STYLE_JOBS: { send, sendBatch },
+    RUNNING_STYLE_JOBS: { metrics, send, sendBatch },
   });
   const summary = await planRunningStylePredictionsForDate(
     env,
@@ -436,10 +447,11 @@ it("planRunningStylePredictionsForDate still queries Neon when only some races a
       ],
     ]),
   );
-  const send = vi.fn(async () => {});
-  const sendBatch = vi.fn(async () => {});
+  const metrics = vi.fn(queueMetricsOk);
+  const send = vi.fn(queueSendOk);
+  const sendBatch = vi.fn(queueSendOk);
   const summary = await planRunningStylePredictionsForDate(
-    buildEnv({ RUNNING_STYLE_JOBS: { send, sendBatch } }),
+    buildEnv({ RUNNING_STYLE_JOBS: { metrics, send, sendBatch } }),
     "20260512",
     new Date("2026-05-12T12:00:00.000Z"),
   );

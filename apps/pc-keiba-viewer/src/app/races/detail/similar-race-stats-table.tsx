@@ -411,7 +411,7 @@ export const SimilarRaceStatsTable = memo(function SimilarRaceStatsTable({
 
     return (
       <tr className="stats-detail-row">
-        <td colSpan={colSpan}>
+        <td aria-label="類似レースの詳細" colSpan={colSpan}>
           <div className="stats-detail-panel">
             <table className="stats-detail-table">
               <thead>
@@ -469,7 +469,7 @@ export const SimilarRaceStatsTable = memo(function SimilarRaceStatsTable({
 
     return (
       <tr className="stats-detail-row">
-        <td colSpan={11}>
+        <td aria-label="類似スコアの詳細内訳" colSpan={11}>
           <div className="stats-detail-panel">
             <table className="stats-detail-table similar-score-detail-table">
               <thead>

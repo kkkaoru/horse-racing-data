@@ -765,7 +765,11 @@ export function PaddockRecentResultsChart(props: PaddockRecentResultsChartProps)
   return (
     <div>
       <PaddockPeriodSlider onChange={setRecentCount} recentCount={recentCount} total={total} />
-      <div aria-label="近走グラフの表示系列" role="group" style={CHIP_ROW_STYLE}>
+      <fieldset
+        aria-label="近走グラフの表示系列"
+        className="paddock-chip-row"
+        style={CHIP_ROW_STYLE}
+      >
         {PADDOCK_METRIC_CHIPS.map((config) => (
           <PaddockMetricChip
             config={
@@ -784,7 +788,7 @@ export function PaddockRecentResultsChart(props: PaddockRecentResultsChartProps)
             setCombineWeightFutan((current) => !current);
           }}
         />
-      </div>
+      </fieldset>
       <PaddockChartCanvas
         combineWeightFutan={combineWeightFutan}
         hiddenMetrics={hiddenMetrics}

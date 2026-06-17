@@ -23,20 +23,20 @@
   },
   "dependencies": {
     "horse-racing-realtime": "workspace:*",
-    "pg": "8.16.3",
-    "pg-cloudflare": "1.3.0"
+    "pg": "catalog:",
+    "pg-cloudflare": "catalog:"
   },
   "devDependencies": {
-    "@cloudflare/playwright": "1.3.0",
-    "@cloudflare/vitest-pool-workers": "0.9.10",
-    "@types/pg": "8.15.6",
-    "@vitest/coverage-v8": "4.1.5",
-    "esbuild": "0.28.0",
-    "miniflare": "4.20260507.1",
-    "oxfmt": "0.48.0",
-    "oxlint": "1.63.0",
-    "typescript": "5.9.3",
-    "vitest": "4.1.5",
-    "wrangler": "4.90.0"
+    "@cloudflare/playwright": "catalog:",
+    "@cloudflare/vitest-pool-workers": "catalog:",
+    "@types/pg": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
+    "esbuild": "catalog:",
+    "miniflare": "catalog:",
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
   }
 }

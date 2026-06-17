@@ -384,7 +384,7 @@ export const BloodlineStatsTable = memo(function BloodlineStatsTable({
 
     return (
       <tr className="stats-detail-row">
-        <td colSpan={colSpan}>
+        <td aria-label="血統別成績の詳細" colSpan={colSpan}>
           <div className="stats-detail-panel">
             <table className="stats-detail-table">
               <thead>
@@ -484,7 +484,7 @@ export const BloodlineStatsTable = memo(function BloodlineStatsTable({
 
     return (
       <tr className="stats-detail-row">
-        <td colSpan={colSpan}>
+        <td aria-label="血統カテゴリの詳細" colSpan={colSpan}>
           <div className="stats-detail-panel">
             <table className="stats-detail-table">
               <thead>

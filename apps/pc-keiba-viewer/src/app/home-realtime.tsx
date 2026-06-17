@@ -364,11 +364,7 @@ export function HomeRealtime({
             {nextScheduledTaskAt ? new Date(nextScheduledTaskAt).toLocaleTimeString("ja-JP") : "-"}
           </span>
         </div>
-        <div
-          className="home-schedule-filters"
-          aria-label="スケジュール一覧の種類フィルター"
-          role="group"
-        >
+        <fieldset className="home-schedule-filters" aria-label="スケジュール一覧の種類フィルター">
           {SCHEDULE_TASK_KINDS.map((kind) => (
             <label className="home-schedule-filter-chip" key={kind}>
               <input
@@ -379,7 +375,7 @@ export function HomeRealtime({
               <span>{SCHEDULE_TASK_LABELS[kind]}</span>
             </label>
           ))}
-        </div>
+        </fieldset>
         {raceWindowsStatus === "loading" ? (
           <HomeRaceListSkeleton count={3} />
         ) : raceWindowsStatus === "error" ? (

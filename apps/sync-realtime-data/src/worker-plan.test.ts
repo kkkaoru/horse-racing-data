@@ -2,6 +2,15 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Env } from "./types";
 
+const queueSendOk = async (): Promise<QueueSendResponse> => ({
+  metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } },
+});
+
+const queueMetricsOk = async (): Promise<QueueMetrics> => ({
+  backlogCount: 0,
+  backlogBytes: 0,
+});
+
 vi.mock("./storage", () => ({
   logFetch: vi.fn(async () => {}),
   upsertNarRaceSource: vi.fn(async () => {}),
@@ -2428,9 +2437,9 @@ it("planResultFetchesOnly re-enqueues fetch-results when lastResultQueuedAt is o
       updatedAt: "2026-06-07T00:00:00+09:00",
     },
   ] as never);
-  const send = vi.fn(async () => {});
+  const send = vi.fn(queueSendOk);
   const env = buildEnv({
-    REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
+    REALTIME_JOBS: { metrics: vi.fn(queueMetricsOk), send, sendBatch: vi.fn(queueSendOk) },
     REALTIME_TEST_NOW: "2026-06-07T04:30:00.000Z",
   });
   const count = await planResultFetchesOnly(env, "20260607");
@@ -2470,9 +2479,9 @@ it("planResultFetchesOnly skips fetch-results when lastResultQueuedAt is fresh (
       updatedAt: "2026-06-07T00:00:00+09:00",
     },
   ] as never);
-  const send = vi.fn(async () => {});
+  const send = vi.fn(queueSendOk);
   const env = buildEnv({
-    REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
+    REALTIME_JOBS: { metrics: vi.fn(queueMetricsOk), send, sendBatch: vi.fn(queueSendOk) },
     REALTIME_TEST_NOW: "2026-06-07T04:30:00.000Z",
   });
   const count = await planResultFetchesOnly(env, "20260607");
@@ -2512,9 +2521,9 @@ it("planResultFetchesOnly enqueues fetch-results for a finished race that has ne
       updatedAt: "2026-06-07T00:00:00+09:00",
     },
   ] as never);
-  const send = vi.fn(async () => {});
+  const send = vi.fn(queueSendOk);
   const env = buildEnv({
-    REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
+    REALTIME_JOBS: { metrics: vi.fn(queueMetricsOk), send, sendBatch: vi.fn(queueSendOk) },
     REALTIME_TEST_NOW: "2026-06-07T04:30:00.000Z",
   });
   const count = await planResultFetchesOnly(env, "20260607");

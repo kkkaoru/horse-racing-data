@@ -526,7 +526,7 @@ const FinishPredictionTableRow = memo(function FinishPredictionTableRow({
       </tr>
       {isExpanded && !isScratched ? (
         <tr className="stats-detail-row">
-          <td colSpan={12}>
+          <td colSpan={12} aria-label="着順予測詳細内訳">
             <div className="stats-detail-panel">
               <table className="stats-detail-table correlation-detail-table overall-score-detail-table">
                 <thead>
@@ -829,7 +829,7 @@ export function FinishPositionPredictionTable({
               <th>
                 <span className="finish-prediction-header-label">騎手名</span>
               </th>
-              <th>
+              <th aria-label="予想着順">
                 <span className="finish-prediction-header-label">
                   <span>予想</span>
                   <span>着順</span>
@@ -841,19 +841,19 @@ export function FinishPositionPredictionTable({
               <th>
                 <span className="finish-prediction-header-label">単勝</span>
               </th>
-              <th>
+              <th aria-label="着順予測スコア">
                 <span className="finish-prediction-header-label">
                   <span>着順予測</span>
                   <span>スコア</span>
                 </span>
               </th>
-              <th>
+              <th aria-label="総合評価スコア">
                 <span className="finish-prediction-header-label">
                   <span>総合評価</span>
                   <span>スコア</span>
                 </span>
               </th>
-              <th>
+              <th aria-label="パドックスコア">
                 <span className="finish-prediction-header-label">
                   <span>パドック</span>
                   <span>スコア</span>
@@ -862,7 +862,7 @@ export function FinishPositionPredictionTable({
               <th>
                 <span className="finish-prediction-header-label">勝率</span>
               </th>
-              <th>
+              <th aria-label="3着内率">
                 <span className="finish-prediction-header-label">
                   <span>3着内</span>
                   <span>率</span>

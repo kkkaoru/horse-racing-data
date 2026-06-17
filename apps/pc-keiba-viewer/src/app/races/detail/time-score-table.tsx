@@ -231,7 +231,7 @@ export function TimeScoreTable({ correlationRows, realtimeRequest, rows }: TimeS
                   </tr>
                   {isExpanded ? (
                     <tr className="stats-detail-row time-score-detail-row">
-                      <td colSpan={6}>
+                      <td colSpan={6} aria-label="タイムスコア詳細内訳">
                         <div className="stats-detail-panel">
                           <table className="stats-detail-table time-score-detail-table">
                             <thead>

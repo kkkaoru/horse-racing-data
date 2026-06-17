@@ -1,4 +1,5 @@
 // Run with bun.
+import type { DurableObjectState } from "@cloudflare/workers-types";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { OddsCacheHot, getOddsCacheId, readCachedOdds, writeCachedOdds } from "./odds-cache";

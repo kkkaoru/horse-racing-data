@@ -5,7 +5,7 @@
     "setup": "bash scripts/setup.sh",
     "verify": "bash scripts/verify.sh",
     "maintenance": "bash scripts/maintenance.sh",
-    "lint": "bunx oxlint",
+    "lint": "bunx oxlint --no-error-on-unmatched-pattern",
     "format": "bunx oxfmt",
     "format:check": "bunx oxfmt --check"
   },

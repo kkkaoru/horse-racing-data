@@ -739,6 +739,14 @@ main {
   margin-bottom: var(--space-10px-27);
 }
 
+fieldset.home-schedule-filters {
+  border: var(--number-0-2);
+  margin-block-start: var(--number-0-2);
+  margin-inline: var(--number-0-2);
+  min-inline-size: var(--number-0-2);
+  padding: var(--number-0-2);
+}
+
 .home-schedule-filter-chip {
   align-items: center;
   background: var(--surface);
@@ -1076,6 +1084,13 @@ h3 {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-8px-28);
+}
+
+fieldset.running-style-tabs {
+  border: var(--number-0-2);
+  margin: var(--number-0-2);
+  min-inline-size: var(--number-0-2);
+  padding: var(--number-0-2);
 }
 
 .running-style-tab {
@@ -2706,6 +2721,14 @@ h3 {
 .paddock-board {
   display: grid;
   gap: var(--space-14px-55);
+}
+
+fieldset.paddock-chip-row {
+  border: var(--number-0-2);
+  margin-block-start: var(--number-0-2);
+  margin-inline: var(--number-0-2);
+  min-inline-size: var(--number-0-2);
+  padding: var(--number-0-2);
 }
 
 .paddock-section-edit {
@@ -4588,6 +4611,10 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   padding: var(--space-12px-9);
 }
 
+figure.odds-trend-chart {
+  margin: var(--number-0-2);
+}
+
 .odds-trend-plot {
   background: var(--color-hex-eaf2ec-96);
   border-radius: var(--space-6px-33);
@@ -5941,6 +5968,13 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
   flex-wrap: wrap;
   gap: var(--space-10px-27);
   justify-content: flex-start;
+}
+
+fieldset.stats-section-toggle-wrap {
+  border: var(--number-0-2);
+  margin: var(--number-0-2);
+  min-inline-size: var(--number-0-2);
+  padding: var(--number-0-2);
 }
 
 .stats-section-toggle {
@@ -10033,6 +10067,11 @@ body:has(.paddock-edit-footer-sticky) .page-shell {
 }
 
 .race-results-chart-view-toggle {
+  border-bottom: var(--space-1px-7) solid var(--line);
+  padding-bottom: var(--space-10px-27);
+}
+
+fieldset.race-results-chart-view-toggle {
   border-bottom: var(--space-1px-7) solid var(--line);
   padding-bottom: var(--space-10px-27);
 }

@@ -529,7 +529,7 @@ export const BloodlineSimilarCombinedTable = memo(function BloodlineSimilarCombi
 
     return (
       <tr className="stats-detail-row">
-        <td colSpan={10}>
+        <td aria-label="スコアの詳細内訳" colSpan={10}>
           <div className="stats-detail-panel">
             <table className="stats-detail-table combined-score-detail-table">
               <thead>

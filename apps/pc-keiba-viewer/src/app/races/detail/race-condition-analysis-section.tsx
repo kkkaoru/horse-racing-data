@@ -553,7 +553,7 @@ export const RaceConditionAnalysisSection = memo(function RaceConditionAnalysisS
                       </tr>
                       {isExpanded ? (
                         <tr className="stats-detail-row">
-                          <td colSpan={8}>
+                          <td aria-label="着順分析の詳細" colSpan={8}>
                             <div className="stats-detail-panel">
                               <table className="stats-detail-table">
                                 <thead>
@@ -660,7 +660,7 @@ export const RaceConditionAnalysisSection = memo(function RaceConditionAnalysisS
                       </tr>
                       {isExpanded ? (
                         <tr className="stats-detail-row">
-                          <td colSpan={6}>
+                          <td aria-label="払戻分析の詳細" colSpan={6}>
                             <div className="stats-detail-panel">
                               <table className="stats-detail-table analysis-payout-detail-table">
                                 <thead>
@@ -749,7 +749,7 @@ export const RaceConditionAnalysisSection = memo(function RaceConditionAnalysisS
                       </tr>
                       {isExpanded ? (
                         <tr className="stats-detail-row">
-                          <td colSpan={6}>
+                          <td aria-label="オッズ分析の詳細" colSpan={6}>
                             <div className="stats-detail-panel">
                               <table className="stats-detail-table">
                                 <thead>

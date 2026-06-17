@@ -143,12 +143,9 @@ def to_relevance(finish_position: int, tiers: dict[int, int] | None = None) -> i
 
 def to_relevance_series(finish_positions: pd.Series, tiers: dict[int, int] | None = None) -> pd.Series:
     table = tiers if tiers is not None else RELEVANCE_TIERS
-    return (
-        finish_positions.fillna(0)
-        .astype(int)
-        .map(lambda pos: to_relevance(pos, table))
-        .astype(int)
-    )
+    positions = finish_positions.fillna(0).astype(int).to_numpy(dtype=np.int64)
+    relevances = [to_relevance(int(pos), table) for pos in positions]
+    return pd.Series(relevances, index=finish_positions.index, dtype=int)
 
 
 def resolve_relevance_tiers(tier_name: str | None) -> dict[int, int]:
@@ -406,7 +403,7 @@ def score_dataset(booster: "lgb.Booster", df: pd.DataFrame) -> pd.DataFrame:
         select_feature_frame(sorted_df, feature_columns),
         detect_categorical_features(feature_columns),
     )
-    scores = booster.predict(frame, num_iteration=booster.best_iteration)
+    scores = cast(FloatArray, booster.predict(frame, num_iteration=booster.best_iteration))
     sorted_df = sorted_df.copy()
     sorted_df["predicted_score"] = pd.Series(scores, index=sorted_df.index)
     sorted_df["predicted_rank"] = rank_within_race(sorted_df)

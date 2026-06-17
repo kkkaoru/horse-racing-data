@@ -4,6 +4,15 @@ import type { Env, Job, NarRaceSource, RaceEntry, RaceResult } from "./types";
 import type { PremiumRacePayload, SchedulableRaceSource } from "./storage";
 import type { PremiumRaceLink, PremiumTrainingReview } from "./premium-race";
 
+const queueSendOk = async (): Promise<QueueSendResponse> => ({
+  metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } },
+});
+
+const queueMetricsOk = async (): Promise<QueueMetrics> => ({
+  backlogCount: 0,
+  backlogBytes: 0,
+});
+
 vi.mock("./storage", () => ({
   logFetch: vi.fn(async () => {}),
   upsertNarRaceSource: vi.fn(async () => {}),
@@ -166,8 +175,9 @@ interface BuildEnvOverrides extends Partial<
 
 const buildEnv = (overrides?: BuildEnvOverrides): Env => {
   const baseQueue: Queue<Job> = {
-    send: vi.fn(async (_message: Job) => {}),
-    sendBatch: vi.fn(async () => {}),
+    metrics: vi.fn(queueMetricsOk),
+    send: vi.fn(queueSendOk),
+    sendBatch: vi.fn(queueSendOk),
   };
   const base = {
     PREMIUM_RACE_JOBS: baseQueue,
@@ -406,9 +416,13 @@ afterEach(() => {
 // and the reverse arm. Both branches of the toSorted compare must run.
 it("enqueueJobs sorts fetch-premium-paddock before other premium jobs (both sort arms)", async () => {
   const { enqueueJobs } = await import("./worker");
-  const premiumSend = vi.fn(async () => {});
+  const premiumSend = vi.fn(queueSendOk);
   const env = buildEnv({
-    PREMIUM_RACE_JOBS: { send: premiumSend, sendBatch: vi.fn(async () => {}) },
+    PREMIUM_RACE_JOBS: {
+      metrics: vi.fn(queueMetricsOk),
+      send: premiumSend,
+      sendBatch: vi.fn(queueSendOk),
+    },
   });
   const jobs: Job[] = [
     { date: "20260512", type: "discover-premium-race-links" },
@@ -522,9 +536,9 @@ it("scheduled plan-realtime-fetches skips self-enqueue when latest plan is fresh
       return;
     }
   });
-  const send = vi.fn(async () => {});
+  const send = vi.fn(queueSendOk);
   const env = buildEnv({
-    REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
+    REALTIME_JOBS: { metrics: vi.fn(queueMetricsOk), send, sendBatch: vi.fn(queueSendOk) },
     REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z",
   });
   const recentIso = "2026-05-12T02:59:30+09:00";
@@ -887,9 +901,9 @@ it("planResultFetchesOnly runs hourly discovery recovery and enqueues due result
   ]);
   // Now = 12:00 JST (= 03:00 UTC) so the JST minute is 00 and the recovery
   // discovery side-effect path fires this tick.
-  const send = vi.fn(async () => {});
+  const send = vi.fn(queueSendOk);
   const env = buildEnv({
-    REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
+    REALTIME_JOBS: { metrics: vi.fn(queueMetricsOk), send, sendBatch: vi.fn(queueSendOk) },
     REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z",
   });
   const count = await planResultFetchesOnly(env, "20260512");
@@ -904,9 +918,9 @@ it("planResultFetchesOnly skips discovery recovery outside the first minute of t
   const { listSchedulableRaceSourcesByDate } = await import("./storage");
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([]);
   // Now = 12:04 JST (= 03:04 UTC) — minute 04 is past the threshold.
-  const send = vi.fn(async () => {});
+  const send = vi.fn(queueSendOk);
   const env = buildEnv({
-    REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
+    REALTIME_JOBS: { metrics: vi.fn(queueMetricsOk), send, sendBatch: vi.fn(queueSendOk) },
     REALTIME_TEST_NOW: "2026-05-12T03:04:00.000Z",
   });
   const count = await planResultFetchesOnly(env, "20260512");
@@ -1185,9 +1199,9 @@ it("planResultFetchesOnly enqueues fetch-results for a finished NAR race with no
   vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
     buildNarSchedulableRaceSource({ raceName: "Finished" }),
   ]);
-  const send = vi.fn(async () => {});
+  const send = vi.fn(queueSendOk);
   const env = buildEnv({
-    REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
+    REALTIME_JOBS: { metrics: vi.fn(queueMetricsOk), send, sendBatch: vi.fn(queueSendOk) },
     REALTIME_TEST_NOW: "2026-05-12T02:00:00.000Z",
   });
   const count = await planResultFetchesOnly(env, "20260512");
@@ -1205,9 +1219,9 @@ it("planResultFetchesOnly skips race that already has resultCompleteAt", async (
       resultCompleteAt: "2026-05-12T10:10:00+09:00",
     }),
   ]);
-  const send = vi.fn(async () => {});
+  const send = vi.fn(queueSendOk);
   const env = buildEnv({
-    REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
+    REALTIME_JOBS: { metrics: vi.fn(queueMetricsOk), send, sendBatch: vi.fn(queueSendOk) },
     REALTIME_TEST_NOW: "2026-05-12T02:00:00.000Z",
   });
   const count = await planResultFetchesOnly(env, "20260512");
@@ -1223,9 +1237,9 @@ it("planResultFetchesOnly skips race that has not started yet", async () => {
       raceStartAtJst: "2026-05-12T15:00:00+09:00",
     }),
   ]);
-  const send = vi.fn(async () => {});
+  const send = vi.fn(queueSendOk);
   const env = buildEnv({
-    REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
+    REALTIME_JOBS: { metrics: vi.fn(queueMetricsOk), send, sendBatch: vi.fn(queueSendOk) },
     REALTIME_TEST_NOW: "2026-05-12T02:00:00.000Z",
   });
   const count = await planResultFetchesOnly(env, "20260512");
@@ -1241,9 +1255,9 @@ it("planResultFetchesOnly skips race when lastResultQueuedAt is set", async () =
       raceName: "QueuedAlready",
     }),
   ]);
-  const send = vi.fn(async () => {});
+  const send = vi.fn(queueSendOk);
   const env = buildEnv({
-    REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
+    REALTIME_JOBS: { metrics: vi.fn(queueMetricsOk), send, sendBatch: vi.fn(queueSendOk) },
     REALTIME_TEST_NOW: "2026-05-12T02:00:00.000Z",
   });
   const count = await planResultFetchesOnly(env, "20260512");
@@ -1259,9 +1273,9 @@ it("planResultFetchesOnly skips race when resultFetchLockUntil is still in the f
       resultFetchLockUntil: "2026-05-12T20:00:00+09:00",
     }),
   ]);
-  const send = vi.fn(async () => {});
+  const send = vi.fn(queueSendOk);
   const env = buildEnv({
-    REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
+    REALTIME_JOBS: { metrics: vi.fn(queueMetricsOk), send, sendBatch: vi.fn(queueSendOk) },
     REALTIME_TEST_NOW: "2026-05-12T02:00:00.000Z",
   });
   const count = await planResultFetchesOnly(env, "20260512");
@@ -1280,9 +1294,9 @@ it("planResultFetchesOnly skips race when lastResultFetchAt is within RESULT_FET
       raceName: "Throttle",
     }),
   ]);
-  const send = vi.fn(async () => {});
+  const send = vi.fn(queueSendOk);
   const env = buildEnv({
-    REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
+    REALTIME_JOBS: { metrics: vi.fn(queueMetricsOk), send, sendBatch: vi.fn(queueSendOk) },
     REALTIME_TEST_NOW: "2026-05-12T02:00:00.000Z",
   });
   const count = await planResultFetchesOnly(env, "20260512");

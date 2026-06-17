@@ -856,56 +856,56 @@ function RaceTrendTable({
             {isLoading ? (
               Array.from({ length: 5 }, (_, index) => (
                 <tr className="race-trend-skeleton-row" key={`race-trend-skeleton-${index}`}>
-                  <td>
+                  <td aria-label="読み込み中">
                     <span className="race-trend-skeleton race-trend-skeleton-count" />
                   </td>
                   {trendTargets.frame ? (
-                    <td>
+                    <td aria-label="読み込み中">
                       <span className="race-trend-skeleton race-trend-skeleton-count" />
                     </td>
                   ) : null}
                   {trendTargets.runningStyle ? (
-                    <td>
+                    <td aria-label="読み込み中">
                       <span className="race-trend-skeleton race-trend-skeleton-count" />
                     </td>
                   ) : null}
                   {trendTargets.jockey ? (
-                    <td>
+                    <td aria-label="読み込み中">
                       <span className="race-trend-skeleton race-trend-skeleton-name" />
                     </td>
                   ) : null}
                   {trendTargets.trainer ? (
-                    <td>
+                    <td aria-label="読み込み中">
                       <span className="race-trend-skeleton race-trend-skeleton-name" />
                     </td>
                   ) : null}
                   {trendTargets.raceNumber ? (
-                    <td>
+                    <td aria-label="読み込み中">
                       <span className="race-trend-skeleton race-trend-skeleton-count" />
                     </td>
                   ) : null}
-                  <td className="race-trend-score-cell">
+                  <td aria-label="読み込み中" className="race-trend-score-cell">
                     <span className="race-trend-skeleton race-trend-skeleton-count" />
                   </td>
-                  <td>
+                  <td aria-label="読み込み中">
                     <span className="race-trend-skeleton race-trend-skeleton-rate" />
                   </td>
-                  <td>
+                  <td aria-label="読み込み中">
                     <span className="race-trend-skeleton race-trend-skeleton-rate" />
                   </td>
-                  <td>
+                  <td aria-label="読み込み中">
                     <span className="race-trend-skeleton race-trend-skeleton-rate" />
                   </td>
-                  <td>
+                  <td aria-label="読み込み中">
                     <span className="race-trend-skeleton race-trend-skeleton-count" />
                   </td>
-                  <td>
+                  <td aria-label="読み込み中">
                     <span className="race-trend-skeleton race-trend-skeleton-rate" />
                   </td>
-                  <td>
+                  <td aria-label="読み込み中">
                     <span className="race-trend-skeleton race-trend-skeleton-count" />
                   </td>
-                  <td>
+                  <td aria-label="読み込み中">
                     <span className="race-trend-skeleton race-trend-skeleton-rate" />
                   </td>
                 </tr>
@@ -947,7 +947,7 @@ function RaceTrendTable({
               })
             ) : (
               <tr>
-                <td className="race-trend-empty-cell" colSpan={colSpan}>
+                <td aria-label="該当データなし" className="race-trend-empty-cell" colSpan={colSpan}>
                   <div className="race-trend-empty-state">
                     <p className="race-trend-empty-label">{RACE_TREND_EMPTY_LABEL}</p>
                     <p className="race-trend-empty-detail">{RACE_TREND_EMPTY_DETAIL}</p>
@@ -1009,7 +1009,7 @@ function RowFragment({
   return (
     <>
       <tr className={isExpanded || isScoreExpanded ? "stats-row-expanded" : undefined}>
-        <td className="race-trend-horse-number-cell">
+        <td aria-label="馬番" className="race-trend-horse-number-cell">
           <button
             aria-expanded={isExpanded}
             className="stats-detail-toggle race-trend-detail-toggle"
@@ -1056,7 +1056,7 @@ function RowFragment({
       </tr>
       {isExpanded ? (
         <tr className="stats-detail-row">
-          <td colSpan={colSpan}>
+          <td aria-label="詳細内訳" colSpan={colSpan}>
             <div className="stats-detail-panel">
               <table className="stats-detail-table race-trend-detail-table aggregate">
                 <colgroup>
@@ -1882,7 +1882,7 @@ export function RaceTrendSection({
         </details>
 
         {hasStaleRefresh && rawPayload !== null && status !== "error" ? (
-          <div className="race-trend-stale-banner" role="status">
+          <output className="race-trend-stale-banner">
             <span>{RACE_TREND_STALE_LABEL}</span>
             <button
               aria-busy={isRefreshing}
@@ -1893,7 +1893,7 @@ export function RaceTrendSection({
             >
               {RACE_TREND_RETRY_LABEL}
             </button>
-          </div>
+          </output>
         ) : null}
 
         <RaceTrendTable

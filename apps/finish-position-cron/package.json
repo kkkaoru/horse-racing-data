@@ -15,15 +15,15 @@
     "tsc": "tsc --noEmit"
   },
   "dependencies": {
-    "@cloudflare/containers": "0.2.0"
+    "@cloudflare/containers": "0.3.7"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "4.20260207.0",
-    "@vitest/coverage-v8": "4.1.5",
-    "oxfmt": "0.48.0",
-    "oxlint": "1.63.0",
-    "typescript": "5.9.3",
-    "vitest": "4.1.5",
-    "wrangler": "4.90.0"
+    "@cloudflare/workers-types": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
   }
 }

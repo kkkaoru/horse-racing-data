@@ -517,10 +517,9 @@ export const HorseRaceResultsChart = ({
   return (
     <div className="race-results-chart">
       <div className="race-results-chart-controls">
-        <div
+        <fieldset
           aria-label="表示形式の切替"
           className="stats-section-toggle-wrap race-results-chart-view-toggle"
-          role="group"
         >
           {CHART_VIEW_MODES.map((mode) => (
             <button
@@ -535,7 +534,7 @@ export const HorseRaceResultsChart = ({
               {CHART_VIEW_MODE_LABELS[mode]}
             </button>
           ))}
-        </div>
+        </fieldset>
         {isMonthsPeriodVisible && (
           <label className="race-results-chart-period">
             <span className="race-results-chart-period-label">表示期間</span>
@@ -566,7 +565,7 @@ export const HorseRaceResultsChart = ({
           </label>
         )}
         {isOverview && (
-          <div aria-label="全馬の表示切替" className="stats-section-toggle-wrap" role="group">
+          <fieldset aria-label="全馬の表示切替" className="stats-section-toggle-wrap">
             <button
               className="stats-control-button"
               type="button"
@@ -585,13 +584,9 @@ export const HorseRaceResultsChart = ({
             >
               全馬非表示
             </button>
-          </div>
+          </fieldset>
         )}
-        <div
-          aria-label={CHIP_GROUP_LABELS[viewMode]}
-          className="stats-section-toggle-wrap"
-          role="group"
-        >
+        <fieldset aria-label={CHIP_GROUP_LABELS[viewMode]} className="stats-section-toggle-wrap">
           {chipSeriesList.map((series) => (
             <button
               aria-pressed={isChipPressed(series.kettoTorokuBango)}
@@ -611,7 +606,7 @@ export const HorseRaceResultsChart = ({
               {getHorseChipLabel(series)}
             </button>
           ))}
-        </div>
+        </fieldset>
       </div>
       {isOverview ? (
         <OverviewPanels

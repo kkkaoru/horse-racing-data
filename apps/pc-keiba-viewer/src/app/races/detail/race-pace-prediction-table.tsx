@@ -165,7 +165,7 @@ export function RacePacePredictionTable({ rows }: RacePacePredictionTableProps) 
                     </tr>
                     {isExpanded ? (
                       <tr className="stats-detail-row">
-                        <td colSpan={8}>
+                        <td colSpan={8} aria-label="ペース予測詳細内訳">
                           <div className="stats-detail-panel">
                             <table className="stats-detail-table correlation-detail-table">
                               <thead>
