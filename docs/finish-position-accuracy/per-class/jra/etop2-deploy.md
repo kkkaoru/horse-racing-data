@@ -1,8 +1,9 @@
 # E-top2 place-preserving XGBoost override — deploy doc (iter22-jra-etop2)
 
-## Status: STAGED (2026-06-18)
+## Status: STAGED (2026-06-18) — smoke2 PASS, awaiting orchestrator flip
 
-JRA_ETOP2_ENABLED = False until orchestrator flips.
+JRA_ETOP2_ENABLED = False in committed code until orchestrator flips.
+Smoke2 (iter22-etop2-smoke2): exit 0, 357 predictions, 24 races, override fired.
 Rollback anchor: split2 image = 4d1746f535e5 (iter20-jra-cb-2013-v8).
 
 ## What it is
@@ -107,6 +108,24 @@ This failure is pre-existing and category-isolated -- it does not affect scoring
 correctness. In production the feature build uses SOURCE_DATABASE_URL (local PG)
 and the Neon connection is kept alive by the audit path; smoke failure here is
 expected when the Neon link is left idle for the full 21-minute feature build.
+
+## Smoke test 2 (iter22-etop2-smoke2, 2026-06-18) — PASS
+
+Image: finish-position-predict-local:iter22-etop2-smoke2.
+Bakes in: JRA_ETOP2_ENABLED=True + lazy Neon connect fix (commit 47598be).
+RUN_DATE=20260607, PREDICT_CATEGORIES=jra.
+Lazy-connect fix: write connection opened inside \_predict_category() AFTER
+\_build_feature_rows() completes, right before first UPSERT. Probe-and-close
+at startup for fail-fast credential validation.
+
+Exit code: 0 (confirmed via DB write — 357 predictions in Neon).
+Feature pipeline: all 14 JRA layers ran to completion.
+Races: 24 JRA races on 20260607 (keibajo=05 + keibajo=09, 12 races each).
+Runners: 357 total, rank-1 count = 24 (exactly one rank-1 per race).
+Override: fired for class=703 races (class != 701 gate passed).
+Neon write: 357 rows of model_version='iter22-jra-etop2' in
+race_finish_position_model_predictions (kaisai_nen=2026, kaisai_tsukihi=0607).
+AdminShutdown: no occurrence — lazy connect fix confirmed effective.
 
 ## Flip runbook (orchestrator)
 
