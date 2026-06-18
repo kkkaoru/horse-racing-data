@@ -22,10 +22,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 # Import the cross-module helpers directly so the tests stay I/O-free.
 from predict_upcoming import (
-    _make_handler_class,
     execute,
     extract_race_class_code,
     flush_predictions,
+    make_handler_class,
 )
 
 # ---------------------------------------------------------------------------
@@ -309,7 +309,7 @@ def test_flush_predictions_returns_fresh_conn_after_reconnect() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _make_handler_class — staticmethod binding (regression for 4-arg TypeError)
+# make_handler_class — staticmethod binding (regression for 4-arg TypeError)
 # ---------------------------------------------------------------------------
 #
 # Python's descriptor protocol makes plain function class attributes behave as
@@ -337,7 +337,7 @@ def _fake_rescore(category: str, run_date: str, days_ahead: int) -> int:
 
 def test_make_handler_class_predict_fn_callable_without_instance() -> None:
     """predict_fn on the handler class must be callable as a plain 3-arg function."""
-    handler_cls = _make_handler_class(_fake_predict, _fake_rescore)
+    handler_cls = make_handler_class(_fake_predict, _fake_rescore)
     # Call directly on the class (no instance) — must NOT inject self.
     result = handler_cls.predict_fn("nar", "20260618", 0)
     assert result == len("nar")
@@ -345,7 +345,7 @@ def test_make_handler_class_predict_fn_callable_without_instance() -> None:
 
 def test_make_handler_class_rescore_fn_callable_without_instance() -> None:
     """rescore_fn on the handler class must be callable as a plain 3-arg function."""
-    handler_cls = _make_handler_class(_fake_predict, _fake_rescore)
+    handler_cls = make_handler_class(_fake_predict, _fake_rescore)
     rescore = handler_cls.rescore_fn
     assert rescore is not None
     result = rescore("jra", "20260618", 1)
@@ -354,13 +354,13 @@ def test_make_handler_class_rescore_fn_callable_without_instance() -> None:
 
 def test_make_handler_class_rescore_fn_none_when_not_provided() -> None:
     """When rescore_fn=None, the class attribute must also be None."""
-    handler_cls = _make_handler_class(_fake_predict, None)
+    handler_cls = make_handler_class(_fake_predict, None)
     assert handler_cls.rescore_fn is None
 
 
 def test_make_handler_class_predict_fn_not_bound_method() -> None:
     """Accessing predict_fn on the class must NOT produce a bound method."""
-    handler_cls = _make_handler_class(_fake_predict, _fake_rescore)
+    handler_cls = make_handler_class(_fake_predict, _fake_rescore)
     import inspect
 
     # A bound method has a __self__; a staticmethod result does not.
@@ -373,7 +373,7 @@ def test_make_handler_class_predict_fn_accepts_exactly_3_args() -> None:
     """Directly verify that predict_fn does NOT silently accept a 4th positional arg."""
     import inspect
 
-    handler_cls = _make_handler_class(_fake_predict, _fake_rescore)
+    handler_cls = make_handler_class(_fake_predict, _fake_rescore)
     sig = inspect.signature(handler_cls.predict_fn)
     params = list(sig.parameters.values())
     assert len(params) == 3, (

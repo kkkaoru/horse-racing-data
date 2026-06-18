@@ -884,8 +884,8 @@ def _make_rescore_fn(
 class _PredictHandler(http.server.BaseHTTPRequestHandler):
     """Minimal HTTP/1.1 request handler for ``/ping`` and ``/predict``."""
 
-    predict_fn: PredictCategoryFn  # injected by _make_handler_class
-    rescore_fn: PredictCategoryFn | None  # injected by _make_handler_class
+    predict_fn: PredictCategoryFn  # injected by make_handler_class
+    rescore_fn: PredictCategoryFn | None  # injected by make_handler_class
 
     @override
     def log_message(self, format: str, *args: object) -> None:
@@ -949,7 +949,7 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
 
-def _make_handler_class(
+def make_handler_class(
     predict_fn: PredictCategoryFn,
     rescore_fn: PredictCategoryFn | None,
 ) -> type[_PredictHandler]:
@@ -985,7 +985,7 @@ def serve_http(
     to (``iter_predict_chunks``, ``parse_predict_params``, etc.) is fully tested
     in ``tests/test_serve.py``.
     """
-    handler_cls = _make_handler_class(predict_fn, rescore_fn)
+    handler_cls = make_handler_class(predict_fn, rescore_fn)
     with http.server.HTTPServer(("0.0.0.0", port), handler_cls) as httpd:
         print(f"[predict-serve] listening on :{port}", file=sys.stderr)
         httpd.serve_forever()
