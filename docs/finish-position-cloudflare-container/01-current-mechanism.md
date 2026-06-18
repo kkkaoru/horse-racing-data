@@ -372,7 +372,16 @@ INSERT INTO finish_position_cron_executions (
 
 ### Known Constraints for CF Container Port
 
-1. **90–110s reap timeout:** Incompatible with 210+ s (NAR full run) or 600+ s (all categories). **BLOCKER.**
+> **2026-06-19 更新**: CF Container への移行設計が `04-off-mac-migration-plan.md` に完成。
+> 以下の制約評価は 2026-06-03 時点のもの。held request + `renewActivityTimeout()` 設計では
+> per-category (~1–2.5 min) は問題なく収まると見込まれる。PHASE 2 pilot で実測確認後に確定。
+> off-Mac migration の全体フローは `04-off-mac-migration-plan.md` §5 参照。
+
+1. **90–110s reap timeout (歴史的制約):** 2026-06-03 の試行では `start()` + DO alarm keepalive で
+   ~90 s に SIGTERM されたが、現在の CF docs は 10 m idle timeout + `renewActivityTimeout()` による
+   explicit keepalive + 15 m graceful-stop を定義する。**held request + `renewActivityTimeout()` 設計に
+   移行することで解消見込み。03-architecture-design.md §1.4 および 04-off-mac-migration-plan.md §2 参照。
+   pilot 実測前は "partially superseded" として扱う。**
 2. **Layer chain sequential:** Can't parallelize 14 JRA layers; each reads parquet, scans PG, writes next. **OPTIMIZATION GAP.**
 3. **Postgres ATTACH sensitive to idle:** Neon's idle timeout can fire if layer pauses >5 min. The base build and early layers keep it active, but a stalled layer could trigger eviction. **MITIGATED: local Colima replica; CF Container would need to attach to Neon directly (SSL, slow).**
 4. **Per-category sequential:** Feature build runs JRA then NAR then Ban-ei. No inter-category parallelism. **OPTIMIZATION GAP.**
@@ -435,7 +444,17 @@ INSERT INTO finish_position_cron_executions (
 - macOS continues to run Docker (proven, 3.5 min); CF Worker polls for completion & logs
 - **Effort: LOW (adds CF Worker wrapper, no substantive change to prediction logic); Payoff: Observability, audit trail in D1**
 
-### Recommendation
+### 2026-06-19 Off-Mac Migration Update
+
+**off-Mac migration 設計が完成した。** `04-off-mac-migration-plan.md` に以下を含む:
+
+- Neon pre-wake cron (JST 02:52 / 09:22) を先行 deploy する設計
+- held `/predict` + `renewActivityTimeout()` による reap-safe Container 実行
+- Neon 直 feature-build cost 対策の評価(結論: cost 受容 + pre-wake で latency 最適化)
+- PHASE 1 (pre-wake) → PHASE 2 (pilot) → PHASE 3 (dual-run) → PHASE 4 (cutover) の go/no-go gate
+- Mac launchd を cutover 確認まで authority として維持する方針
+
+### Recommendation (2026-06-03 時点)
 
 **For CF Container porting in a future phase:** Pursue **Option C (pre-compute features offline)** combined with **Option A (targeted layer speedups)**. Neither alone hits the 90s mark, but together they could:
 

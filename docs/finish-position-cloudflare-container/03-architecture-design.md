@@ -411,6 +411,12 @@ truth.
 - **New surfaces to operate** — a Queue, a DLQ, and two DO classes vs one launchd
   plist. More moving parts than Mac.
 
+**2026-06-19 更新**: off-Mac migration 設計が `04-off-mac-migration-plan.md` に完成。
+以下の Recommendation を具体化した pilot フローは 04 を参照。
+PHASE 1 (Neon pre-wake 先行 deploy) → PHASE 2 (held-request pilot, NAR category) →
+PHASE 3 (dual-run, 本番 Neon) → PHASE 4 (cutover) の順で実施。
+Mac launchd は PHASE 4 cutover 確認まで authority を維持する。
+
 **Recommendation (concrete):**
 
 1. **Keep Mac launchd as production now.** Do not disable it.
