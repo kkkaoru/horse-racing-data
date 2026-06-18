@@ -40,6 +40,7 @@ const bindMock = vi.fn(() => ({ run: runMock }));
 const prepareMock = vi.fn(() => ({ bind: bindMock }));
 
 const makeEnv = (): Env => ({
+  FEATURES_CACHE: {} as unknown as R2Bucket,
   FINISH_POSITION_CRON_DB: { prepare: prepareMock } as unknown as D1Database,
   FINISH_POSITION_PREDICT_CONTAINER: {} as unknown as Env["FINISH_POSITION_PREDICT_CONTAINER"],
   NEON_DATABASE_URL: "postgres://example",
@@ -107,6 +108,24 @@ test("handleFetch enqueues predict and returns 202 for an authorized explicit RU
   expect(startMock).not.toHaveBeenCalled();
 });
 
+test("handleFetch defaults to mode full when body omits mode", async () => {
+  await handleFetch(
+    triggerRequest("secret-token", JSON.stringify({ runDate: "20260603" })),
+    makeEnv(),
+  );
+  expect(enqueueMock).toHaveBeenCalledTimes(1);
+  expect(enqueueMock).toHaveBeenCalledWith(expect.objectContaining({ mode: "full" }));
+});
+
+test("handleFetch passes mode rescore when body specifies mode rescore", async () => {
+  await handleFetch(
+    triggerRequest("secret-token", JSON.stringify({ mode: "rescore", runDate: "20260603" })),
+    makeEnv(),
+  );
+  expect(enqueueMock).toHaveBeenCalledTimes(1);
+  expect(enqueueMock).toHaveBeenCalledWith(expect.objectContaining({ mode: "rescore" }));
+});
+
 test("handleFetch defaults to today's JST date when the body omits runDate", async () => {
   const response = await handleFetch(triggerRequest("secret-token", ""), makeEnv());
   expect(response.status).toBe(202);
@@ -171,6 +190,22 @@ test("handleScheduled does not call warmNeon for the predict cron", async () => 
   await handleScheduled(makeEvent("0 18 * * *"), makeEnv());
   expect(warmNeonMock).not.toHaveBeenCalled();
   expect(getContainerMock).toHaveBeenCalledTimes(1);
+});
+
+test("handleScheduled enqueues rescore for RESCORE_CRON_RACE_HOURS", async () => {
+  await handleScheduled(makeEvent("*/20 1-11 * * *"), makeEnv());
+  expect(enqueueMock).toHaveBeenCalledTimes(1);
+  expect(enqueueMock).toHaveBeenCalledWith(
+    expect.objectContaining({ daysAhead: 0, mode: "rescore" }),
+  );
+  expect(warmNeonMock).not.toHaveBeenCalled();
+  expect(getContainerMock).not.toHaveBeenCalled();
+});
+
+test("handleScheduled rescore enqueue does not start container", async () => {
+  await handleScheduled(makeEvent("*/20 1-11 * * *"), makeEnv());
+  expect(startMock).not.toHaveBeenCalled();
+  expect(prepareMock).not.toHaveBeenCalled();
 });
 
 test("queue default handler delegates to handleQueue", async () => {

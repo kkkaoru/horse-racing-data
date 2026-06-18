@@ -22,11 +22,17 @@ export const WARM_CRON_PRE_JRA = "25 0 * * *";
 // Warm cron: every 30 min during race hours (01:00-11:59 UTC == JST 10:00-20:59)
 export const WARM_CRON_RACE_HOURS = "*/30 1-11 * * *";
 
+// Rescore cron: every 20 min during race hours (01:00-11:59 UTC == JST 10:00-20:59)
+// NOTE: This cron is NOT active in wrangler.jsonc triggers yet — enabled after pilot phase.
+export const RESCORE_CRON_RACE_HOURS = "*/20 1-11 * * *";
+
 const WARM_CRONS: ReadonlySet<string> = new Set([
   WARM_CRON_PRE_NAR,
   WARM_CRON_PRE_JRA,
   WARM_CRON_RACE_HOURS,
 ]);
+
+const RESCORE_CRONS: ReadonlySet<string> = new Set([RESCORE_CRON_RACE_HOURS]);
 
 // Only the configured cron triggers a prediction run. Any other cron string
 // (or no cron at all, which is the deployed state) is ignored.
@@ -34,3 +40,6 @@ export const shouldRunPredictCron = (cron: string): boolean => cron === PREDICT_
 
 // Returns true when the cron string matches one of the Neon pre-wake schedules.
 export const shouldRunWarmCron = (cron: string): boolean => WARM_CRONS.has(cron);
+
+// Returns true when the cron string matches one of the rescore (race-hours freshness) schedules.
+export const shouldRunRescoreCron = (cron: string): boolean => RESCORE_CRONS.has(cron);

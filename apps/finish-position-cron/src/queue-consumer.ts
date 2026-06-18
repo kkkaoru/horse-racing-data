@@ -12,6 +12,7 @@ const PREDICT_HOST = "http://do";
 interface PredictUrlParams {
   category: string;
   daysAhead: number;
+  mode: string;
   runDate: string;
 }
 
@@ -19,13 +20,14 @@ const buildPredictUrl = (params: PredictUrlParams): string => {
   const searchParams = new URLSearchParams({
     category: params.category,
     daysAhead: String(params.daysAhead),
+    mode: params.mode,
     runDate: params.runDate,
   });
   return `${PREDICT_HOST}${PREDICT_PATH}?${searchParams.toString()}`;
 };
 
 const processMessage = async (message: Message<PredictQueueMessage>, env: Env): Promise<void> => {
-  const { category, runYmd, runDate, daysAhead } = message.body;
+  const { category, runYmd, runDate, daysAhead, mode } = message.body;
   const alreadyRunning = await isAlreadyRunning({ category, env, runYmd });
   if (alreadyRunning) {
     message.ack();
@@ -43,7 +45,7 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
   const stub = env.FINISH_POSITION_PREDICT_CONTAINER.get(doId);
   try {
     const response = await stub.fetch(
-      new Request(buildPredictUrl({ category, daysAhead, runDate })),
+      new Request(buildPredictUrl({ category, daysAhead, mode, runDate })),
     );
     if (!response.body) throw new Error("Empty response from predict DO");
     const result = await parseNdjsonStream(response.body);

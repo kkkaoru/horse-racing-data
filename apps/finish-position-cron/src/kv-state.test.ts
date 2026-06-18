@@ -8,6 +8,7 @@ const putMock = vi.fn(async () => undefined);
 const getMock = vi.fn(async () => null as string | null);
 
 const makeEnv = (): Env => ({
+  FEATURES_CACHE: {} as unknown as R2Bucket,
   FINISH_POSITION_CRON_DB: {} as unknown as D1Database,
   FINISH_POSITION_PREDICT_CONTAINER: {} as unknown as Env["FINISH_POSITION_PREDICT_CONTAINER"],
   NEON_DATABASE_URL: "postgres://example",

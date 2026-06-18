@@ -3,10 +3,12 @@
 import { expect, test } from "vitest";
 import {
   PREDICT_CRON,
+  RESCORE_CRON_RACE_HOURS,
   WARM_CRON_PRE_JRA,
   WARM_CRON_PRE_NAR,
   WARM_CRON_RACE_HOURS,
   shouldRunPredictCron,
+  shouldRunRescoreCron,
   shouldRunWarmCron,
 } from "./cron-decision";
 
@@ -66,4 +68,28 @@ test("shouldRunWarmCron rejects an empty string", () => {
 
 test("shouldRunWarmCron rejects an unrelated cron", () => {
   expect(shouldRunWarmCron("*/10 * * * *")).toBe(false);
+});
+
+test("RESCORE_CRON_RACE_HOURS is the every-20-min race-hours schedule", () => {
+  expect(RESCORE_CRON_RACE_HOURS).toBe("*/20 1-11 * * *");
+});
+
+test("shouldRunRescoreCron matches the rescore race-hours cron", () => {
+  expect(shouldRunRescoreCron("*/20 1-11 * * *")).toBe(true);
+});
+
+test("shouldRunRescoreCron rejects the warm race-hours cron", () => {
+  expect(shouldRunRescoreCron("*/30 1-11 * * *")).toBe(false);
+});
+
+test("shouldRunRescoreCron rejects the predict cron", () => {
+  expect(shouldRunRescoreCron("0 18 * * *")).toBe(false);
+});
+
+test("shouldRunRescoreCron rejects an empty string", () => {
+  expect(shouldRunRescoreCron("")).toBe(false);
+});
+
+test("shouldRunRescoreCron rejects an unrelated cron", () => {
+  expect(shouldRunRescoreCron("*/10 * * * *")).toBe(false);
 });

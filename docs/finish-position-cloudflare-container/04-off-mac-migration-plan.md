@@ -23,16 +23,17 @@ per-category (~1–2.5 min) は明らかに収まる**。
 
 ### 移行で変わること vs 変わらないこと
 
-| 側面                           | 変わらない                       | 変わる                                               |
-| ------------------------------ | -------------------------------- | ---------------------------------------------------- |
-| predict_upcoming.py のロジック | 全て                             | SOURCE_DATABASE_URL が Neon 直(CF に 127.0.0.1 なし) |
-| 予測の書き込み先               | Neon UPSERT(idempotent)          | —                                                    |
-| PREDICT_CATEGORIES 分割        | 既存 env var で zero code change | —                                                    |
-| 予測のトリガー                 | —                                | launchd → CF Cron Trigger                            |
-| container 起動方式             | —                                | start() → held fetch('/predict?category=…')          |
-| keepalive 方式                 | —                                | DO alarm → renewActivityTimeout() per heartbeat      |
-| カテゴリ並列                   | 直列(Mac)                        | 並列 container(各 category 独立 DO instance)         |
-| Mac の役割                     | authority + fallback             | pilot 確認まで authority 維持。cutover 後 fallback   |
+| 側面                           | 変わらない                       | 変わる                                                  |
+| ------------------------------ | -------------------------------- | ------------------------------------------------------- |
+| predict_upcoming.py のロジック | 全て                             | SOURCE_DATABASE_URL が Neon 直(CF に 127.0.0.1 なし)    |
+| 予測の書き込み先               | Neon UPSERT(idempotent)          | —                                                       |
+| PREDICT_CATEGORIES 分割        | 既存 env var で zero code change | —                                                       |
+| 予測のトリガー                 | —                                | launchd → CF Cron Trigger                               |
+| container 起動方式             | —                                | start() → held fetch('/predict?category=…')             |
+| keepalive 方式                 | —                                | DO alarm → renewActivityTimeout() per heartbeat         |
+| カテゴリ並列                   | 直列(Mac)                        | 並列 container(各 category 独立 DO instance)            |
+| Mac の役割                     | authority + fallback             | pilot 確認まで authority 維持。cutover 後 fallback      |
+| race-hours freshness           | Mac `race-prediction-guard`      | PHASE 3 から CF rescore cron (\*/20 1-11, mode=rescore) |
 
 ---
 
@@ -405,6 +406,82 @@ PG DSN に追加する。これは **Python 側の `predict_lib/conn_url.py` で
 Neon の compute idle timeout はアプリ側 TCP keepalive とは独立した server-side 設定。
 feature build の layer chain は基本的に継続的に PG に query しているため、
 実用上は問題にならない可能性が高い。pilot で実測確認が必要。
+
+---
+
+## 3A. Build-once + cheap-rescore design (Neon cost mitigation)
+
+### 概要
+
+race-hours 再予測(JST 10:00–20:59, 20 分ごと)を CF Cron で実現する際、
+毎回フル feature build (21 年 Neon scan, ~2–3 min/category) を実行すると
+Neon compute cost が爆発する。これを防ぐ設計が **build-once + cheap-rescore**。
+
+### mode=full と mode=rescore の違い
+
+| mode      | 処理内容                                                             | Neon 使用           | 実行頻度                |
+| --------- | -------------------------------------------------------------------- | ------------------- | ----------------------- |
+| `full`    | フル DuckDB feature build (21y scan) → score → features を R2 に保存 | ~2–3 min active/run | 日次 2 回 (03:00/09:30) |
+| `rescore` | R2 から cached features 読み取り + 最新オッズ取得 → re-score のみ    | なし (R2 のみ)      | レース時間帯 20 分ごと  |
+
+- `mode=full` は daily 03:00 NAR/ban-ei + 09:30 JRA 実行時に使う。
+  feature build 完了後、生成した features parquet を R2 (FEATURES_CACHE) に書き込む。
+- `mode=rescore` はレース時間帯の freshness run に使う。
+  R2 から当日の cached features を読み取り、最新オッズを合成して re-score する。
+  21 年分の Neon scan は不要なので ~10–30 s/category で完了する。
+
+### Queue message への mode 伝播
+
+`PredictQueueMessage` に `mode: PredictMode` フィールドを追加。
+Queue producer → consumer → container `/predict?mode=full|rescore` へ伝播する。
+
+```
+enqueuePredict({ mode: "rescore", daysAhead: 0, ... })
+  → PREDICT_QUEUE send { mode: "rescore", ... }
+  → handleQueue: buildPredictUrl({ mode: "rescore", ... })
+  → container /predict?category=jra&daysAhead=0&mode=rescore&runDate=20260619
+```
+
+### R2 key format
+
+features キャッシュの R2 key 例:
+
+```
+features/{runYmd}/{category}/features.parquet
+# 例: features/20260619/jra/features.parquet
+```
+
+この key は container 側 (`serve.py`) が full 時に put し、rescore 時に get する。
+`FEATURES_CACHE` binding (bucket: `pc-keiba-features-archive`) が wrangler.jsonc に追加済み。
+
+### cost 比較
+
+| シナリオ                       | Neon compute              | 壁時計       |
+| ------------------------------ | ------------------------- | ------------ |
+| full (daily 2x)                | ~2–3 min × 2 = ~5 min/day | ~2–3 min/run |
+| rescore (20 min × 11h × 3 cat) | 0 (R2 のみ)               | ~10–30 s/run |
+
+`mode=rescore` により race-hours freshness が Neon cost ゼロで実現できる。
+
+### race-hours rescore cron の現状
+
+- `RESCORE_CRON_RACE_HOURS = "*/20 1-11 * * *"` を `cron-decision.ts` に定義済み。
+- `shouldRunRescoreCron()` を `worker.ts` の `handleScheduled` に組み込み済み。
+- **wrangler.jsonc の triggers にはコメントアウトで記載** — PHASE 3 pilot 完了まで active にしない。
+- Mac の `race-prediction-guard` launchd (20 分, JST 10:00–20:40) が引き続き authority。
+
+### end-state: Mac を反復 on-demand ループから外す
+
+PHASE 3 以降、CF が以下の全 cadence を担う:
+
+```
+03:00 JST — NAR/ban-ei full predict (CF cron + container, mode=full)
+09:30 JST — JRA full predict         (CF cron + container, mode=full)
+JST 10:00-20:59, 20 min ごと — rescore (CF cron, mode=rescore, no container start)
+```
+
+**Mac は fallback のみ。反復 on-demand ループは CF が完全に肩代わりする。**
+Mac launchd は PHASE 4 cutover 後も残すが authority は CF に移る。
 
 ---
 
@@ -907,10 +984,13 @@ Section 5 (Feasibility verdict) の Recommendation に:
    stuck した場合のリセット手順、wrangler tail の監視をどう自動化するか、
    などの運用設計が未整備。
 
-4. **race-hours re-predict (intra-day) は本設計の scope 外。** Mac の
-   `race-prediction-guard` launchd (JST 10:00–20:40, 20 min interval) に相当する
-   CF Cron Trigger は本 plan では PHASE 3 以降の扱い。
-   cutover 後も intra-day freshness が必要な場合は追加設計が必要。
+4. **race-hours re-predict (rescore mode) は設計済みだが PHASE 3 まで inactive。**
+   `RESCORE_CRON_RACE_HOURS = "*/20 1-11 * * *"` と `shouldRunRescoreCron()` は実装済みで
+   wrangler.jsonc にコメントアウトで記載している (§3A 参照)。ただし有効化は
+   PHASE 3 pilot (full-mode container が SIGTERM なしで完走することを ≥3 run 確認) 後のみ。
+   Mac `race-prediction-guard` launchd が引き続き authority。
+   rescore が機能するには full run が当日 features を R2 に書いている必要がある —
+   container full-mode が安定するまで rescore は独立して意味を持たない。
 
 5. **E-top2 の JRA leg が最も重い (~2.5 min)。** JRA は NAR より重く、
    E-top2 enabled で XGB + CB の両方をロードして score する。pilot では
