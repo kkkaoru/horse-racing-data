@@ -1,44 +1,22 @@
 // Run with bun. Durable-Object-backed Container class for the predictor image.
-// This is a thin binding wrapper around @cloudflare/containers — it only sets
-// shared config and extends Container, which cannot be instantiated inside the
-// vitest pool, so it is excluded from the coverage gate (the start() options it
-// receives are built + tested in dispatch.ts).
-//
-// IMPORTANT: Cloudflare Containers reaps batch instances that receive no
-// inbound HTTP traffic, independent of sleepAfter. To survive the multi-minute
-// DuckDB + CatBoost feature build we run a DO-side keepalive loop:
-// onStart() schedules a recurring containerFetch every KEEPALIVE_INTERVAL_SECS
-// against the LIVENESS_PORT HTTP server in predict_upcoming.py. The loop stops
-// on its own when the container exits (containerFetch raises after the
-// process is gone). Without this loop the container is SIGTERM'd ~90s after
-// the Worker request returns and only a partial traceback survives.
+// Held-fetch design: the queue consumer calls stub.fetch("/predict?...") which
+// the DO proxies via containerFetch — the in-flight containerFetch keeps the
+// container alive without any keepalive loop. sleepAfter resets automatically
+// per CF docs while the HTTP request is in-flight. container-class.ts is
+// excluded from the coverage gate (see vitest.config.ts).
 
 import { Container } from "@cloudflare/containers";
 import type { Env } from "./types";
 
-const LIVENESS_PORT = 8080;
-const KEEPALIVE_INTERVAL_SECS = 30;
-const KEEPALIVE_CALLBACK = "keepalivePing";
-const KEEPALIVE_PATH = "/keepalive";
+const DEFAULT_PORT = 8080;
+const SLEEP_AFTER = "15m";
 
 export class FinishPositionPredictContainer extends Container<Env> {
-  override defaultPort = LIVENESS_PORT;
-  override sleepAfter = "45m";
+  override defaultPort = DEFAULT_PORT;
+  override sleepAfter = SLEEP_AFTER;
   override enableInternet = true;
 
-  override async onStart(): Promise<void> {
-    await this.schedule(KEEPALIVE_INTERVAL_SECS, KEEPALIVE_CALLBACK, {});
-  }
-
-  async keepalivePing(): Promise<void> {
-    try {
-      const response = await this.containerFetch(new Request(`http://container${KEEPALIVE_PATH}`));
-      if (!response.ok) {
-        return;
-      }
-    } catch {
-      return;
-    }
-    await this.schedule(KEEPALIVE_INTERVAL_SECS, KEEPALIVE_CALLBACK, {});
+  override async fetch(request: Request): Promise<Response> {
+    return this.containerFetch(request);
   }
 }

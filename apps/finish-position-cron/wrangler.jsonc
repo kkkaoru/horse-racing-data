@@ -7,31 +7,27 @@
   "compatibility_flags": ["nodejs_compat"],
   "observability": {
     "enabled": true,
-    // head_sampling_rate 0.1 is mandatory for new Workers
-    // (project_cloudflare_observability_cost).
     "head_sampling_rate": 0.1,
   },
-  // Cron disabled: Cloudflare Containers reaps batch instances at ~90-110s
-  // regardless of sleepAfter; this workload (DuckDB feature build ~10+ min)
-  // cannot complete within that window. Replaced by Mac launchd that runs the
-  // proven local docker pipeline daily at JST 03:00 — see
-  // apps/finish-position-predict-container/DEPLOY.md and scripts/launchd/.
-  // Worker is still deployed for the ad-hoc /run endpoint + /health + D1 audit.
+  // Predict cron (container) remains disabled: Cloudflare Containers reaps
+  // batch instances at ~90-110s regardless of sleepAfter; this workload
+  // (DuckDB feature build ~10+ min) cannot complete within that window.
+  // Replaced by Mac launchd that runs the proven local docker pipeline daily
+  // at JST 03:00 — see apps/finish-position-predict-container/DEPLOY.md and
+  // scripts/launchd/.
+  // Warm crons issue a lightweight SELECT 1 to wake the Neon compute endpoint
+  // before prediction windows and during race hours. They complete in <1s and
+  // are safe to run inside a Worker (no container involved).
   "triggers": {
-    "crons": [],
+    "crons": ["55 17 * * *", "25 0 * * *", "*/30 1-11 * * *"],
   },
-  // Container image runs real Python (DuckDB + CatBoost + XGBoost) for the v7
-  // feature build + scoring. standard-4 = 4 vCPU / 12 GiB / 20 GB (heaviest
-  // predefined instance type) for the DuckDB aggregation. image_build_context
-  // is the repo root so the Dockerfile can COPY both this app's src and the
-  // reused apps/pc-keiba-viewer feature-pipeline scripts.
   "containers": [
     {
       "class_name": "FinishPositionPredictContainer",
       "image": "../finish-position-predict-container/Dockerfile",
       "image_build_context": "../..",
       "instance_type": "standard-4",
-      "max_instances": 1,
+      "max_instances": 3,
     },
   ],
   "durable_objects": {
@@ -48,9 +44,6 @@
       "new_sqlite_classes": ["FinishPositionPredictContainer"],
     },
   ],
-  // Cron-run audit table (finish_position_cron_executions). Self-contained D1
-  // so the Worker never couples to Neon for its own bookkeeping. Replace the
-  // placeholder database_id during deploy (see DEPLOY.md).
   "d1_databases": [
     {
       "binding": "FINISH_POSITION_CRON_DB",
@@ -58,9 +51,24 @@
       "database_id": "9475ef83-d1da-4b47-9251-0cb431176aa8",
     },
   ],
-  // PREDICT_DAYS_AHEAD: how many days past today to include in the upcoming
-  // window. NEON_DATABASE_URL is a secret (wrangler secret put), NOT a var.
   "vars": {
     "PREDICT_DAYS_AHEAD": "2",
   },
+  "queues": {
+    "producers": [{ "binding": "PREDICT_QUEUE", "queue": "finish-position-predict-queue" }],
+    "consumers": [
+      {
+        "queue": "finish-position-predict-queue",
+        "max_batch_size": 3,
+        "max_batch_timeout": 5,
+        "dead_letter_queue": "finish-position-predict-dlq",
+      },
+    ],
+  },
+  "kv_namespaces": [
+    {
+      "binding": "PREDICT_STATE",
+      "id": "PLACEHOLDER_KV_ID",
+    },
+  ],
 }

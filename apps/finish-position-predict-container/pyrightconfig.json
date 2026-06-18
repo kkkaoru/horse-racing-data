@@ -9,6 +9,7 @@
   "reportImplicitOverride": "error",
   "reportImportCycles": "error",
   "reportMissingTypeStubs": "none",
+  "reportPrivateUsage": "none",
   "reportUnannotatedClassAttribute": "error",
   "reportUnknownArgumentType": "none",
   "reportUnknownLambdaType": "none",

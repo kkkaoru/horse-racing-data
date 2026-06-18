@@ -1,7 +1,7 @@
 """Container-baked model-version / architecture / R2-key mapping.
 
 Single source of truth for the model the daily-prediction container LOADS and
-SCORES TODAY's upcoming races with. As of 2026-06-17 the v8 production deploy is
+SCORES TODAY's upcoming races with. As of 2026-06-18 the v8 production deploy is
 JRA=iter20-jra-cb-2013-v8 (244 features, base-only; train start 20130101),
 NAR=iter12-nar-xgb-hpo-v8.
 The historical PG predictions table + ``finish_position_active_models``
@@ -10,6 +10,14 @@ were flipped, the iter12/iter20 BOOSTERS are baked under
 layers (pacestyle + course) are wired into ``pipeline_args.LAYER_CHAIN``.
 
 Ban-ei is unchanged from v7-lineage — v8 only retrained the JRA + NAR boosters.
+
+E-top2 (iter22-jra-etop2, STAGED 2026-06-18):
+  Applies a place-preserving XGBoost override on top of CB iter20 for JRA.
+  XGB model: ``xgb-jra-2013-v8`` (rank:ndcg, 244 features, train 2013-2022).
+  Override fires when XGB#1 == CB#2 and race class != 701. Blind 2025 gate:
+  top1 LB95 +0.58pp, place2 LB95 +0.06pp, place3 +0.00pp — ADOPT.
+  Flip is gated on orchestrator verification of place2 + active_models UPDATE.
+  Config flag: JRA_ETOP2_ENABLED = True activates dual-model load at startup.
 """
 
 from __future__ import annotations
@@ -44,6 +52,26 @@ FEATURE_COUNT_BY_CATEGORY: Final[dict[Category, int]] = {
 
 R2_KEY_PREFIX: Final[str] = "finish-position"
 MODEL_FILE_NAME: Final[str] = "model.json"
+
+# ---------------------------------------------------------------------------
+# E-top2 place-preserving override (iter22-jra-etop2, STAGED 2026-06-18)
+# ---------------------------------------------------------------------------
+# True = dual-model loading is ACTIVE at container startup: the predict loop
+# loads both CB iter20 AND XGB xgb-jra-2013-v8 for JRA, applies the E-top2
+# score override per race (see predict_lib.etop2_override), and writes
+# predictions under JRA_ETOP2_MODEL_VERSION instead of MODEL_VERSION_BY_CATEGORY
+# ["jra"]. Flipped to True by orchestrator after smoke2 PASS (2026-06-18).
+JRA_ETOP2_ENABLED: Final[bool] = True
+
+# The XGB model version baked at models/finish-position/jra/xgb-jra-2013-v8/.
+# Used to build the R2 object key for the XGB model file at startup when
+# JRA_ETOP2_ENABLED is True.
+JRA_ETOP2_XGB_MODEL_VERSION: Final[str] = "xgb-jra-2013-v8"
+
+# The model_version label written to the predictions table when E-top2 is active.
+# Distinct from MODEL_VERSION_BY_CATEGORY["jra"] so E-top2 rows are queryable
+# separately in race_finish_position_model_predictions.
+JRA_ETOP2_MODEL_VERSION: Final[str] = "iter22-jra-etop2"
 # LightGBM boosters are serialised with the native text dump
 # (``Booster.save_model`` -> ``model.txt``) rather than the CatBoost / XGBoost
 # JSON format, so a per-class LightGBM member's artifact file is named
@@ -118,3 +146,15 @@ def feature_count_for(category: Category) -> int:
 def build_r2_object_key(category: Category, file_name: str) -> str:
     """Build the R2 object key ``finish-position/{category}/{modelVersion}/{file}``."""
     return f"{R2_KEY_PREFIX}/{category}/{model_version_for(category)}/{file_name}"
+
+
+def build_r2_xgb_etop2_key(file_name: str) -> str:
+    """Build the R2 object key for the E-top2 JRA XGBoost artifact.
+
+    Constructs ``finish-position/jra/{JRA_ETOP2_XGB_MODEL_VERSION}/{file}``.
+    Separate from :func:`build_r2_object_key` because the XGB model is a
+    companion artifact to the CB iter20 primary model — not a standalone
+    replacement — so it lives under its own ``model_version`` directory and
+    must not be confused with the category-global CB model path.
+    """
+    return f"{R2_KEY_PREFIX}/jra/{JRA_ETOP2_XGB_MODEL_VERSION}/{file_name}"

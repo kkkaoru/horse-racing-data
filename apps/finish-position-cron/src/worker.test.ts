@@ -3,15 +3,34 @@
 
 import { beforeEach, expect, test, vi } from "vitest";
 
-const { startMock, getContainerMock } = vi.hoisted(() => {
-  const start = vi.fn(async () => undefined);
-  return { getContainerMock: vi.fn(() => ({ start })), startMock: start };
-});
+const { startMock, getContainerMock, warmNeonMock, enqueueMock, handleQueueMock } = vi.hoisted(
+  () => {
+    const start = vi.fn(async () => undefined);
+    const warmNeon = vi.fn(async () => undefined);
+    const enqueuePredict = vi.fn(async () => ["jra", "nar", "ban-ei"]);
+    const handleQueue = vi.fn(async () => undefined);
+    return {
+      getContainerMock: vi.fn(() => ({ start })),
+      startMock: start,
+      warmNeonMock: warmNeon,
+      enqueueMock: enqueuePredict,
+      handleQueueMock: handleQueue,
+    };
+  },
+);
 
 vi.mock("@cloudflare/containers", () => ({
   Container: class {},
   getContainer: getContainerMock,
 }));
+
+vi.mock("./neon-warm", () => ({
+  warmNeon: warmNeonMock,
+}));
+
+vi.mock("./queue-producer", () => ({ enqueuePredict: enqueueMock }));
+
+vi.mock("./queue-consumer", () => ({ handleQueue: handleQueueMock }));
 
 import workerDefault, { handleFetch, handleScheduled } from "./worker";
 import type { Env } from "./types";
@@ -25,6 +44,8 @@ const makeEnv = (): Env => ({
   FINISH_POSITION_PREDICT_CONTAINER: {} as unknown as Env["FINISH_POSITION_PREDICT_CONTAINER"],
   NEON_DATABASE_URL: "postgres://example",
   PREDICT_DAYS_AHEAD: "2",
+  PREDICT_QUEUE: {} as unknown as Env["PREDICT_QUEUE"],
+  PREDICT_STATE: {} as unknown as KVNamespace,
   TRIGGER_TOKEN: "secret-token",
 });
 
@@ -46,6 +67,10 @@ beforeEach(() => {
   prepareMock.mockClear();
   bindMock.mockClear();
   runMock.mockClear();
+  warmNeonMock.mockClear();
+  enqueueMock.mockClear();
+  handleQueueMock.mockClear();
+  enqueueMock.mockResolvedValue(["jra", "nar", "ban-ei"]);
 });
 
 test("fetch returns a health payload for GET", async () => {
@@ -59,40 +84,34 @@ test("fetch returns a health payload for GET", async () => {
 test("handleFetch rejects an unauthenticated trigger with 401", async () => {
   const response = await handleFetch(triggerRequest(null, ""), makeEnv());
   expect(response.status).toBe(401);
-  expect(startMock).not.toHaveBeenCalled();
+  expect(enqueueMock).not.toHaveBeenCalled();
 });
 
 test("handleFetch rejects a wrong-token trigger with 401", async () => {
   const response = await handleFetch(triggerRequest("wrong-token", ""), makeEnv());
   expect(response.status).toBe(401);
-  expect(startMock).not.toHaveBeenCalled();
+  expect(enqueueMock).not.toHaveBeenCalled();
 });
 
-test("handleFetch starts the container for an authorized explicit RUN_DATE", async () => {
+test("handleFetch enqueues predict and returns 202 for an authorized explicit RUN_DATE", async () => {
   const response = await handleFetch(
     triggerRequest("secret-token", JSON.stringify({ runDate: "20260603" })),
     makeEnv(),
   );
-  expect(response.status).toBe(200);
-  const body = (await response.json()) as { ok: boolean; runDate: string };
+  expect(response.status).toBe(202);
+  const body = (await response.json()) as { ok: boolean; runDate: string; queued: string[] };
   expect(body.ok).toBe(true);
   expect(body.runDate).toBe("2026-06-03");
-  expect(startMock).toHaveBeenCalledTimes(1);
-});
-
-test("handleFetch writes a started audit row for an authorized trigger", async () => {
-  await handleFetch(
-    triggerRequest("secret-token", JSON.stringify({ runDate: "20260603" })),
-    makeEnv(),
-  );
-  expect(prepareMock).toHaveBeenCalledTimes(1);
-  expect(runMock).toHaveBeenCalledTimes(1);
+  expect(body.queued).toStrictEqual(["jra", "nar", "ban-ei"]);
+  expect(enqueueMock).toHaveBeenCalledTimes(1);
+  expect(startMock).not.toHaveBeenCalled();
 });
 
 test("handleFetch defaults to today's JST date when the body omits runDate", async () => {
   const response = await handleFetch(triggerRequest("secret-token", ""), makeEnv());
-  expect(response.status).toBe(200);
-  expect(startMock).toHaveBeenCalledTimes(1);
+  expect(response.status).toBe(202);
+  expect(enqueueMock).toHaveBeenCalledTimes(1);
+  expect(startMock).not.toHaveBeenCalled();
 });
 
 test("handleFetch returns 400 for a malformed RUN_DATE", async () => {
@@ -101,7 +120,7 @@ test("handleFetch returns 400 for a malformed RUN_DATE", async () => {
     makeEnv(),
   );
   expect(response.status).toBe(400);
-  expect(startMock).not.toHaveBeenCalled();
+  expect(enqueueMock).not.toHaveBeenCalled();
 });
 
 test("handleScheduled is a no-op for an unmatched cron", async () => {
@@ -125,4 +144,50 @@ test("handleScheduled writes a started audit row", async () => {
 test("scheduled default handler delegates to handleScheduled", async () => {
   await workerDefault.scheduled(makeEvent("0 18 * * *"), makeEnv());
   expect(startMock).toHaveBeenCalledTimes(1);
+});
+
+test("handleScheduled calls warmNeon for the pre-NAR warm cron", async () => {
+  await handleScheduled(makeEvent("55 17 * * *"), makeEnv());
+  expect(warmNeonMock).toHaveBeenCalledTimes(1);
+  expect(warmNeonMock).toHaveBeenCalledWith("postgres://example");
+  expect(getContainerMock).not.toHaveBeenCalled();
+});
+
+test("handleScheduled calls warmNeon for the pre-JRA warm cron", async () => {
+  await handleScheduled(makeEvent("25 0 * * *"), makeEnv());
+  expect(warmNeonMock).toHaveBeenCalledTimes(1);
+  expect(warmNeonMock).toHaveBeenCalledWith("postgres://example");
+  expect(getContainerMock).not.toHaveBeenCalled();
+});
+
+test("handleScheduled calls warmNeon for the race-hours warm cron", async () => {
+  await handleScheduled(makeEvent("*/30 1-11 * * *"), makeEnv());
+  expect(warmNeonMock).toHaveBeenCalledTimes(1);
+  expect(warmNeonMock).toHaveBeenCalledWith("postgres://example");
+  expect(getContainerMock).not.toHaveBeenCalled();
+});
+
+test("handleScheduled does not call warmNeon for the predict cron", async () => {
+  await handleScheduled(makeEvent("0 18 * * *"), makeEnv());
+  expect(warmNeonMock).not.toHaveBeenCalled();
+  expect(getContainerMock).toHaveBeenCalledTimes(1);
+});
+
+test("queue default handler delegates to handleQueue", async () => {
+  const batch = { messages: [] } as unknown as MessageBatch<import("./types").PredictQueueMessage>;
+  await workerDefault.queue(batch, makeEnv());
+  expect(handleQueueMock).toHaveBeenCalledTimes(1);
+  expect(handleQueueMock).toHaveBeenCalledWith(
+    batch,
+    expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
+  );
+});
+
+test("handleFetch does not write an audit row when enqueueing", async () => {
+  await handleFetch(
+    triggerRequest("secret-token", JSON.stringify({ runDate: "20260603" })),
+    makeEnv(),
+  );
+  expect(prepareMock).not.toHaveBeenCalled();
+  expect(enqueueMock).toHaveBeenCalledTimes(1);
 });

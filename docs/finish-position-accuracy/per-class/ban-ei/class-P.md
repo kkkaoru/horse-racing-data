@@ -34,6 +34,7 @@ _(To be populated as experiments are designed — see ROADMAP.md)_
 
 ## Evaluation Log
 
-| Date | Hypothesis | Method | Verdict | Ref |
-| ---- | ---------- | ------ | ------- | --- |
-| —    | —          | —      | —       | —   |
+| Date       | Hypothesis            | Method      | Verdict | Ref                     |
+| ---------- | --------------------- | ----------- | ------- | ----------------------- |
+| —          | —                     | —           | —       | —                       |
+| 2026-06-19 | E-top2 override probe | XGB+CB swap | ABORT   | etop2-override-probe.md |

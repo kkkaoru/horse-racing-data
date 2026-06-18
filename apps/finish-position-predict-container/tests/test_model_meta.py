@@ -12,10 +12,15 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from predict_lib.model_meta import (
+    JRA_ETOP2_ENABLED,
+    JRA_ETOP2_MODEL_VERSION,
+    JRA_ETOP2_XGB_MODEL_VERSION,
     LGB_MODEL_FILE_NAME,
     MODEL_FILE_NAME,
+    R2_KEY_PREFIX,
     architecture_for,
     build_r2_object_key,
+    build_r2_xgb_etop2_key,
     feature_count_for,
     is_category,
     is_lightgbm_model_version,
@@ -135,3 +140,30 @@ def test_member_model_file_name_catboost_is_model_json() -> None:
 
 def test_member_model_file_name_xgboost_is_model_json() -> None:
     assert member_model_file_name("iter12-nar-xgb-hpo-v8") == "model.json"
+
+
+# ---------------------------------------------------------------------------
+# E-top2 constants and helpers
+
+
+def test_jra_etop2_enabled_is_true() -> None:
+    """JRA_ETOP2_ENABLED is True after orchestrator flip (2026-06-18)."""
+    assert JRA_ETOP2_ENABLED is True
+
+
+def test_jra_etop2_model_version() -> None:
+    assert JRA_ETOP2_MODEL_VERSION == "iter22-jra-etop2"
+
+
+def test_jra_etop2_xgb_model_version() -> None:
+    assert JRA_ETOP2_XGB_MODEL_VERSION == "xgb-jra-2013-v8"
+
+
+def test_build_r2_xgb_etop2_key_model_json() -> None:
+    key = build_r2_xgb_etop2_key("model.json")
+    assert key == f"{R2_KEY_PREFIX}/jra/xgb-jra-2013-v8/model.json"
+
+
+def test_build_r2_xgb_etop2_key_metadata_json() -> None:
+    key = build_r2_xgb_etop2_key("metadata.json")
+    assert key == f"{R2_KEY_PREFIX}/jra/xgb-jra-2013-v8/metadata.json"

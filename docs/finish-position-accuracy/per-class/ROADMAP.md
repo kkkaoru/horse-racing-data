@@ -385,13 +385,13 @@ For each candidate, the lifecycle is:
 
 ## §9. Current Status
 
-| Candidate          | Status  | Started | Verdict |
-| ------------------ | ------- | ------- | ------- |
-| NAR B ML           | pending | —       | —       |
-| NAR 3YO FEAT       | pending | —       | —       |
-| JRA 016 FEAT       | pending | —       | —       |
-| pgvector race-cond | pending | —       | —       |
-| NAR C place-obj    | pending | —       | —       |
-| RL probe           | pending | —       | —       |
-| JRA 999 FEAT       | pending | —       | —       |
-| NAR 2YO FEAT       | pending | —       | —       |
+| Candidate          | Status    | Started    | Verdict                                                                               |
+| ------------------ | --------- | ---------- | ------------------------------------------------------------------------------------- |
+| NAR B ML           | COMPLETED | 2026-06-17 | ABORT — iter30 CB residual, no LB95≥0 on any primary metric                           |
+| NAR 3YO FEAT       | pending   | —          | —                                                                                     |
+| JRA 016 FEAT       | COMPLETED | 2026-06-17 | ABORT — all 4 class-transition features ρ ≤ 0.026, well below 0.08 bar (both windows) |
+| pgvector race-cond | pending   | —          | —                                                                                     |
+| NAR C place-obj    | pending   | —          | —                                                                                     |
+| RL probe           | pending   | —          | —                                                                                     |
+| JRA 999 FEAT       | COMPLETED | 2026-06-17 | ABORT — all 5 jump features ρ<0.02 (best=0.015), GBDT captures jump via generic form  |
+| NAR 2YO FEAT       | pending   | —          | —                                                                                     |
