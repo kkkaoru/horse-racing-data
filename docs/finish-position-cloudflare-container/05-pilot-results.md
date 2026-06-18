@@ -19,7 +19,15 @@
 
 `racesPredicted>0` を CF HTTP serve mode で得られず。根因 = **HTTP `/predict` の
 keepalive チャンクが pipeline 実行中に流れないバグ**。詳細は下記「Phase 2」節。
-**本番 cutover は本バグ修正まで不可。Mac launchd authority を維持する。**
+
+## Go/No-Go 判定 (Phase 3 = keepalive 修正後の再 pilot): **NO-GO (新ブロッカー)**
+
+keepalive バグ (commit `44fa09f`) は **修正・実証済み** (progress が ~10s 毎に stream、
+DO reap なし、フル pipeline が 15 分枠内で完走)。しかし `racesPredicted` は依然 **0**。
+**新たな独立ブロッカーを CF container ログで特定**: head-to-head features layer の
+**DuckDB OutOfMemoryException (7.4 GiB/7.4 GiB used)** で feature build が中断する。
+`standard-4` (4 vCPU / 12 GiB) では DuckDB の実効メモリ上限が ~7.4 GiB で足りない。
+詳細は下記「Phase 3」節。**本番 cutover は本 OOM 修正まで不可。Mac launchd authority を維持する。**
 
 ---
 
@@ -200,3 +208,105 @@ CF Container は **HTTP serve mode 必須** (port 8080 probe + held-fetch keepal
   (6/19 当日・6/20 翌日でも 0、Mac は 6/19 で 36 races)。
 - Neon コスト: CLI mode の 21y scan は base build ~200-260s。HTTP mode でも同等の
   scan が background で走るため、本番化時は同コスト想定 (cutover 前に実測要)。
+
+---
+
+## Phase 3: keepalive 修正後の再 pilot (2026-06-19)
+
+keepalive バグ修正 (commit `44fa09f`、`iter_predict_chunks` を threaded keepalive 化) を
+main から取り込み、再 deploy + 再 pilot を実施。
+
+### deploy
+
+| 項目              | 値                                                                   |
+| ----------------- | -------------------------------------------------------------------- |
+| Worker Version ID | `48112547-eff5-47d4-b665-2cb17fcfaf95` (keepalive 修正後の最終)      |
+| Container Image   | `5c701855` (44fa09f から再ビルド)                                    |
+| crons             | warm 3 件のみ (`55 17` / `25 0` / `*/30 1-11`)、predict/rescore 無効 |
+| /health           | 200 OK                                                               |
+
+(途中で NEON_DATABASE_URL secret を `.env.replica` の direct endpoint に再設定し再 deploy、
+Version `48112547`。データ branch は同一なので結果に影響なし。)
+
+### keepalive 修正の実証 (ローカル HTTP mode、同一 image `5c701855`)
+
+`GET /predict?category=nar&daysAhead=2&mode=full&runDate=20260619` の NDJSON stream:
+
+```
+20:32:32 {"type":"progress","stage":"starting","elapsed_s":0.0}
+20:32:32 {"type":"progress","stage":"predict","elapsed_s":0.0}
+20:32:42 {"type":"progress","stage":"predict","elapsed_s":10.1}
+20:32:52 {"type":"progress","stage":"predict","elapsed_s":20.2}
+... (以降 ~10s 毎に継続) ...
+20:42:33 {"type":"progress","stage":"predict","elapsed_s":603.6}
+```
+
+→ **progress が ~10s 毎に確実に stream される (keepalive 効いている)**。
+DO の `renewActivityTimeout` が継続的に呼ばれ、**reap は発生しない**。
+Phase 2 の「2 行で無音」は完全に解消。**keepalive バグは修正確認。**
+
+### CF 本番 run (NAR、複数回)
+
+| runDate    | 所要時間 (pipeline) | KV status | racesPredicted | reap/SIGTERM |
+| ---------- | ------------------- | --------- | -------------- | ------------ |
+| `20260619` | ~330-480s           | success   | **0**          | なし         |
+
+全 run が 15 分枠内で完走・SIGTERM/reap なし。`progress` 間隔 ~10s。
+しかし `racesPredicted` は依然 **0**。Neon `race_finish_position_model_predictions` の
+6/19 NAR は **375 rows / 36 races (gen 06:37 JST = Mac launchd 由来)** のまま、
+**CF run 完了後 (06:57 JST) も件数・timestamp が一切更新されず** = CF は 0 件 UPSERT。
+
+### root-cause: head-to-head features layer の DuckDB OOM
+
+CF container observability ログ (`containers` dataset、applicationId `a0348266`) を取得して特定:
+
+```
+[realtime-odds] zero rows collected category=nar target_date=20260619 races=60 — null-odds fallback
+... (base build 成功、layer chain 進行) ...
+Traceback (most recent call last):
+  File "/app/pipeline/finish-position-features/add-head-to-head-features.py", line 270, in <module>
+  File ".../add-head-to-head-features.py", line 263, in main
+  File ".../add-head-to-head-features.py", line 124, in stage_current_pair_aggregates
+_duckdb.OutOfMemoryException: Out of Memory Error:
+  could not allocate block of size 256.0 KiB (7.4 GiB/7.4 GiB used)
+```
+
+- base build は 60 races / 732 rows を正常生成。
+- その後の **head-to-head features layer (`stage_current_pair_aggregates`、pairwise 集計)**
+  が DuckDB の実効メモリ上限 **7.4 GiB** を使い切り OOM。
+- container は `standard-4` (4 vCPU / **12 GiB**) だが DuckDB auto-detect の memory_limit +
+  OS/Python overhead で実使用上限が ~7.4 GiB に留まり、pairwise 集計が収まらない。
+- 2 回の CF run (21:47 / 21:57 UTC) で **同一 OOM が再現** = 確定的なブロッカー。
+
+ローカル比較で確証: 同一 image `5c701855` を **CLI mode** (メモリ ~23 GiB の docker host) で
+6/19 daysAhead=2 を流すと **`races_predicted=732`** で完走・Neon UPSERT 正常。
+→ コード/モデル/Neon は健全。**差分はメモリ予算のみ** (CF 12 GiB → DuckDB 実効 7.4 GiB が不足)。
+
+### NO-GO 理由と必要な修正 (Phase 4 候補)
+
+keepalive は解決したが、**head-to-head layer の DuckDB OOM** で feature build が完走しないため
+`racesPredicted>0` に到達不能 = **production cutover 不可**。
+
+必要な修正 (別タスク):
+
+- (a) `instance_type` をより大きいメモリ tier に引き上げ (例 `standard-4` → メモリ増の tier)。
+- (b) `add-head-to-head-features.py` の `stage_current_pair_aggregates` に DuckDB
+  `SET memory_limit=...` + `SET preserve_insertion_order=false` + temp spill (disk) を設定し、
+  メモリ予算内で完走させる (OOM メッセージが提示する 3 解決策そのもの)。
+- (c) pairwise 集計を per-venue / per-race で chunk 化し peak メモリを削減。
+- いずれか適用後、ローカルを 7.4 GiB 制約付きで再現 smoke → CF 再 deploy → 再 pilot。
+
+### 確証できたこと / できなかったこと (Phase 3 時点)
+
+- ✅ keepalive 修正 (progress ~10s 毎 stream、reap なし、15 分枠内完走) — **解決確認**
+- ✅ plumbing (KV dedup / Queue / DO / container 起動 / SIGTERM なし)
+- ✅ pipeline 健全性 (CLI mode で `races_predicted=732`・Neon UPSERT 正常)
+- ❌ CF (`standard-4` 12 GiB) で `racesPredicted>0` — head-to-head layer DuckDB OOM でブロック
+- ❌ Neon への CF 由来 UPSERT (件数・timestamp 不変で確認)
+
+### メモ
+
+- 「Cloudflare で着順予測を生成可能」は **メモリ予算を満たせば成立** (CLI 同一 image で 732 実証済み)。
+  残る障壁は実行環境のメモリのみで、コード/データ経路は確証済み。
+- `memory_budget_kernel_panic` の教訓と整合: DuckDB は memory_limit/threads/temp spill の明示が必須。
+  CF firecracker では host メモリが固定 (12 GiB) のため、Mac (24 GiB Colima) で通っても CF で OOM する。
