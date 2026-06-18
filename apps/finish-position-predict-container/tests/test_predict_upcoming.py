@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 # Import the cross-module helpers directly so the tests stay I/O-free.
 from predict_upcoming import (
+    _make_handler_class,
     execute,
     extract_race_class_code,
     flush_predictions,
@@ -305,3 +306,77 @@ def test_flush_predictions_returns_fresh_conn_after_reconnect() -> None:
     assert returned_conn is fresh_conn
     assert written == 1
     assert fresh_conn.committed >= 1
+
+
+# ---------------------------------------------------------------------------
+# _make_handler_class — staticmethod binding (regression for 4-arg TypeError)
+# ---------------------------------------------------------------------------
+#
+# Python's descriptor protocol makes plain function class attributes behave as
+# bound methods when accessed on an instance, injecting ``self`` as the first
+# argument.  This caused a ``TypeError`` in production:
+#   _make_predict_fn.<locals>._predict() takes 3 positional arguments but 4
+#   were given
+# because ``self.predict_fn(category, run_date, days_ahead)`` was dispatched as
+# ``predict_fn(self, category, run_date, days_ahead)``.
+#
+# The fix wraps the callables with ``staticmethod`` at class-definition time.
+# These tests pin that contract: the class attributes must remain plain 3-arg
+# callables callable without any instance, i.e. NOT bound methods.
+
+
+def _fake_predict(category: str, run_date: str, days_ahead: int) -> int:
+    """Dummy predict_fn that returns the length of category as a sentinel."""
+    return len(category)
+
+
+def _fake_rescore(category: str, run_date: str, days_ahead: int) -> int:
+    """Dummy rescore_fn that returns a fixed sentinel value."""
+    return 99
+
+
+def test_make_handler_class_predict_fn_callable_without_instance() -> None:
+    """predict_fn on the handler class must be callable as a plain 3-arg function."""
+    handler_cls = _make_handler_class(_fake_predict, _fake_rescore)
+    # Call directly on the class (no instance) — must NOT inject self.
+    result = handler_cls.predict_fn("nar", "20260618", 0)
+    assert result == len("nar")
+
+
+def test_make_handler_class_rescore_fn_callable_without_instance() -> None:
+    """rescore_fn on the handler class must be callable as a plain 3-arg function."""
+    handler_cls = _make_handler_class(_fake_predict, _fake_rescore)
+    rescore = handler_cls.rescore_fn
+    assert rescore is not None
+    result = rescore("jra", "20260618", 1)
+    assert result == 99
+
+
+def test_make_handler_class_rescore_fn_none_when_not_provided() -> None:
+    """When rescore_fn=None, the class attribute must also be None."""
+    handler_cls = _make_handler_class(_fake_predict, None)
+    assert handler_cls.rescore_fn is None
+
+
+def test_make_handler_class_predict_fn_not_bound_method() -> None:
+    """Accessing predict_fn on the class must NOT produce a bound method."""
+    handler_cls = _make_handler_class(_fake_predict, _fake_rescore)
+    import inspect
+
+    # A bound method has a __self__; a staticmethod result does not.
+    assert not inspect.ismethod(handler_cls.predict_fn), (
+        "predict_fn must not be a bound method — staticmethod wrapping is required"
+    )
+
+
+def test_make_handler_class_predict_fn_accepts_exactly_3_args() -> None:
+    """Directly verify that predict_fn does NOT silently accept a 4th positional arg."""
+    import inspect
+
+    handler_cls = _make_handler_class(_fake_predict, _fake_rescore)
+    sig = inspect.signature(handler_cls.predict_fn)
+    params = list(sig.parameters.values())
+    assert len(params) == 3, (
+        f"predict_fn must have exactly 3 parameters (category, run_date, days_ahead), "
+        f"got {len(params)}: {[p.name for p in params]}"
+    )

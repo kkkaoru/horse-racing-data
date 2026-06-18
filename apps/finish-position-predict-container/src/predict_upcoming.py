@@ -51,7 +51,7 @@ import traceback
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import override
+from typing import final, override
 
 from db_driver import ConnectionLike, connect_postgres_with_retry, is_transient_error
 from predict_lib.audit import (
@@ -953,13 +953,22 @@ def _make_handler_class(
     predict_fn: PredictCategoryFn,
     rescore_fn: PredictCategoryFn | None,
 ) -> type[_PredictHandler]:
-    """Return a ``_PredictHandler`` subclass with ``predict_fn`` and ``rescore_fn`` bound."""
+    """Return a ``_PredictHandler`` subclass with ``predict_fn`` and ``rescore_fn`` bound.
 
+    ``predict_fn`` and ``rescore_fn`` are stored as ``staticmethod`` objects so
+    that Python's descriptor protocol does NOT inject ``self`` when they are
+    accessed on an instance.  Plain function assignment to a class attribute
+    creates a bound method and prepends ``self``, which causes a 4-argument
+    ``TypeError`` on the 3-argument ``_predict`` signature.
+    """
+    _predict: PredictCategoryFn = predict_fn
+    _rescore: PredictCategoryFn | None = rescore_fn
+
+    @final
     class _BoundHandler(_PredictHandler):
-        pass
+        predict_fn = staticmethod(_predict)
+        rescore_fn = staticmethod(_rescore) if _rescore is not None else None
 
-    _BoundHandler.predict_fn = predict_fn
-    _BoundHandler.rescore_fn = rescore_fn
     return _BoundHandler
 
 
