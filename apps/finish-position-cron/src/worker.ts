@@ -15,14 +15,23 @@ import { handleQueue } from "./queue-consumer";
 import { enqueuePredict } from "./queue-producer";
 import { getRunDateJst, getRunYmdJst } from "./time";
 import { isAuthorized, isTriggerRequest, parseRunDates } from "./trigger";
-import type { CronAuditRecord, Env, PredictMode, PredictQueueMessage, RunDates } from "./types";
+import type {
+  CronAuditRecord,
+  Env,
+  PredictCategory,
+  PredictMode,
+  PredictQueueMessage,
+  RunDates,
+} from "./types";
 
 const CONTAINER_INSTANCE_NAME = "daily-finish-position-predict";
 const ZERO_RACES = 0;
 const RUN_DATE_FIELD = "runDate";
 const MODE_FIELD = "mode";
+const CATEGORY_FIELD = "category";
 const DEFAULT_MODE: PredictMode = "full";
 const VALID_MODES: ReadonlySet<string> = new Set(["full", "rescore"]);
+const VALID_CATEGORIES: ReadonlySet<string> = new Set(["jra", "nar", "ban-ei"]);
 const RESCORE_DAYS_AHEAD = 0;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_BAD_REQUEST = 400;
@@ -64,6 +73,13 @@ const resolveMode = (body: Record<string, unknown>): PredictMode => {
     : DEFAULT_MODE;
 };
 
+const resolveCategory = (body: Record<string, unknown>): PredictCategory | undefined => {
+  const requested = body[CATEGORY_FIELD];
+  return typeof requested === "string" && VALID_CATEGORIES.has(requested)
+    ? (requested as PredictCategory)
+    : undefined;
+};
+
 const resolveTriggerDates = (body: Record<string, unknown>): RunDates => {
   const requested = body[RUN_DATE_FIELD];
   if (typeof requested === "string") {
@@ -89,6 +105,7 @@ const handleTrigger = async (request: Request, env: Env): Promise<Response> => {
   const dates = resolveTriggerDates(body);
   const mode = resolveMode(body);
   const queued = await enqueuePredict({
+    category: resolveCategory(body),
     daysAhead: Number(env.PREDICT_DAYS_AHEAD),
     env,
     mode,

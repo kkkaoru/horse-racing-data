@@ -10,6 +10,7 @@ import type { Env } from "./types";
 
 const DEFAULT_PORT = 8080;
 const SLEEP_AFTER = "15m";
+const MODELS_DIR_DEFAULT = "/models";
 
 export class FinishPositionPredictContainer extends Container<Env> {
   override defaultPort = DEFAULT_PORT;
@@ -17,6 +18,15 @@ export class FinishPositionPredictContainer extends Container<Env> {
   override enableInternet = true;
 
   override async fetch(request: Request): Promise<Response> {
+    // Inject Worker runtime secrets into container env before containerFetch
+    // starts the container. The Dockerfile default PREDICT_SERVE_MODE=http
+    // activates the HTTP /predict server mode. NEON_DATABASE_URL is required
+    // at container bootstrap time.
+    this.envVars = {
+      MODELS_DIR: MODELS_DIR_DEFAULT,
+      NEON_DATABASE_URL: this.env.NEON_DATABASE_URL,
+      PREDICT_DAYS_AHEAD: this.env.PREDICT_DAYS_AHEAD,
+    };
     return this.containerFetch(request);
   }
 }

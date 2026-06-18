@@ -104,24 +104,24 @@ test("writes started state when not already running", async () => {
   );
 });
 
-test("calls stub.fetch with correct URL including mode=full", async () => {
+test("calls stub.fetch with correct URL including mode=full using YYYYMMDD runDate", async () => {
   await handleQueue(makeBatch([makeMessage()]), makeEnv());
   expect(stubFetchMock).toHaveBeenCalledTimes(1);
   const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
   expect(fetchRequest.url).toBe(
-    "http://do/predict?category=jra&daysAhead=2&mode=full&runDate=2026-06-03",
+    "http://do/predict?category=jra&daysAhead=2&mode=full&runDate=20260603",
   );
 });
 
-test("calls stub.fetch with mode=rescore when message has mode rescore", async () => {
+test("calls stub.fetch with mode=rescore when message has mode rescore using YYYYMMDD", async () => {
   await handleQueue(
-    makeBatch([makeMessage({ daysAhead: 0, mode: "rescore", runDate: "2026-06-19" })]),
+    makeBatch([makeMessage({ daysAhead: 0, mode: "rescore", runYmd: "20260619" })]),
     makeEnv(),
   );
   expect(stubFetchMock).toHaveBeenCalledTimes(1);
   const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
   expect(fetchRequest.url).toBe(
-    "http://do/predict?category=jra&daysAhead=0&mode=rescore&runDate=2026-06-19",
+    "http://do/predict?category=jra&daysAhead=0&mode=rescore&runDate=20260619",
   );
 });
 

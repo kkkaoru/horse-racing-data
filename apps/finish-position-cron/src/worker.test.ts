@@ -218,6 +218,34 @@ test("queue default handler delegates to handleQueue", async () => {
   );
 });
 
+test("handleFetch passes category nar when body specifies category nar", async () => {
+  enqueueMock.mockResolvedValue(["nar"]);
+  await handleFetch(
+    triggerRequest("secret-token", JSON.stringify({ category: "nar", runDate: "20260603" })),
+    makeEnv(),
+  );
+  expect(enqueueMock).toHaveBeenCalledTimes(1);
+  expect(enqueueMock).toHaveBeenCalledWith(expect.objectContaining({ category: "nar" }));
+});
+
+test("handleFetch omits category when body does not specify category", async () => {
+  await handleFetch(
+    triggerRequest("secret-token", JSON.stringify({ runDate: "20260603" })),
+    makeEnv(),
+  );
+  expect(enqueueMock).toHaveBeenCalledTimes(1);
+  expect(enqueueMock).toHaveBeenCalledWith(expect.objectContaining({ category: undefined }));
+});
+
+test("handleFetch ignores invalid category and calls enqueue without category", async () => {
+  await handleFetch(
+    triggerRequest("secret-token", JSON.stringify({ category: "invalid", runDate: "20260603" })),
+    makeEnv(),
+  );
+  expect(enqueueMock).toHaveBeenCalledTimes(1);
+  expect(enqueueMock).toHaveBeenCalledWith(expect.objectContaining({ category: undefined }));
+});
+
 test("handleFetch does not write an audit row when enqueueing", async () => {
   await handleFetch(
     triggerRequest("secret-token", JSON.stringify({ runDate: "20260603" })),
