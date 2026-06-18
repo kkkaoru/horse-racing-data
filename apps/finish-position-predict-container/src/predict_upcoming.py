@@ -27,6 +27,7 @@ Run with: ``uv run python src/predict_upcoming.py`` (envvars set by the Worker).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import socket
@@ -38,7 +39,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from db_driver import ConnectionLike, connect_postgres
+from db_driver import ConnectionLike, _is_transient_error, connect_postgres_with_retry
 from predict_lib.audit import (
     AuditStatus,
     audit_params,
@@ -311,22 +312,68 @@ def _row_to_pk_map(row: Sequence[object]) -> Mapping[str, object]:
     return {"race_id": race_id, "ketto_toroku_bango": row[RACE_ID_KETTO_INDEX]}
 
 
-def _execute(connection: ConnectionLike, sql: str, params: Sequence[object]) -> None:
-    cursor = connection.cursor()
-    cursor.execute(sql, params)
-    connection.commit()
+def _execute(
+    connection: ConnectionLike,
+    sql: str,
+    params: Sequence[object],
+    database_url: str,
+) -> ConnectionLike:
+    """Execute ``sql`` against ``connection``, reconnecting once on transient loss.
+
+    Returns the (possibly new) connection so callers can rebind after a
+    reconnect. On AdminShutdown or "connection is lost/closed" mid-write,
+    opens a fresh Neon connection via :func:`_connect` and retries the
+    statement once. Any second failure propagates to the caller.
+    """
+    try:
+        cursor = connection.cursor()
+        cursor.execute(sql, params)
+        connection.commit()
+        return connection
+    except BaseException as exc:
+        if not _is_transient_error(exc):
+            raise
+        # Transient mid-write failure: attempt a single reconnect then retry.
+        print(
+            f"[predict-upcoming] mid-write transient error ({type(exc).__name__}): {exc} "
+            "— reconnecting and retrying once",
+            file=sys.stderr,
+        )
+        try:
+            connection.rollback()
+        except BaseException as rb_exc:
+            print(
+                f"[predict-upcoming] rollback failed: {rb_exc}",
+                file=sys.stderr,
+            )
+        with contextlib.suppress(BaseException):
+            connection.close()
+        fresh = _connect(database_url)
+        cursor = fresh.cursor()
+        cursor.execute(sql, params)
+        fresh.commit()
+        return fresh
 
 
-def _flush_predictions(connection: ConnectionLike, rows: Sequence[Sequence[object]]) -> int:
+def _flush_predictions(
+    connection: ConnectionLike,
+    rows: Sequence[Sequence[object]],
+    database_url: str,
+) -> tuple[int, ConnectionLike]:
+    """Flush ``rows`` to Neon in chunks; reconnects on transient mid-write errors.
+
+    Returns ``(written, connection)`` where ``connection`` may be a fresh object
+    after a reconnect so the caller can update its reference.
+    """
     deduped = dedupe_batch([_row_to_pk_map(row) for row in rows])
     if not deduped:
-        return 0
+        return 0, connection
     written = 0
     for chunk in chunk_rows(rows, DEFAULT_CHUNK_SIZE):
         sql = build_upsert_sql(len(chunk))
-        _execute(connection, sql, flatten_params(chunk))
+        connection = _execute(connection, sql, flatten_params(chunk), database_url)
         written += len(chunk)
-    return written
+    return written, connection
 
 
 def _record_audit(
@@ -336,10 +383,11 @@ def _record_audit(
     races_predicted: int,
     duration_ms: int,
     error: str | None,
+    database_url: str,
 ) -> None:
-    _execute(connection, build_audit_table_ddl(), [])
+    _execute(connection, build_audit_table_ddl(), [], database_url)
     record = build_audit_record(run_date, status, races_predicted, duration_ms, error)
-    _execute(connection, build_audit_insert_sql(), audit_params(record))
+    _execute(connection, build_audit_insert_sql(), audit_params(record), database_url)
 
 
 def _predict_category(
@@ -385,11 +433,15 @@ def _predict_category(
         scored.append(rows)
 
     # All races scored — now open the Neon connection and flush.
+    # _flush_predictions may internally reconnect on AdminShutdown / "connection
+    # is lost" mid-write and returns the (possibly new) connection so we can
+    # close the right object at the end.
     connection = _connect(database_url)
     try:
         written = 0
         for rows in scored:
-            written += _flush_predictions(connection, rows)
+            rows_written, connection = _flush_predictions(connection, rows, database_url)
+            written += rows_written
     finally:
         try:
             connection.close()
@@ -444,7 +496,8 @@ def _build_feature_rows(
 
 
 def _connect(database_url: str) -> ConnectionLike:
-    return connect_postgres(database_url)
+    """Open a Neon connection with retry on transient errors (DNS blips, AdminShutdown)."""
+    return connect_postgres_with_retry(database_url)
 
 
 def _try_record_audit(
@@ -474,7 +527,15 @@ def _try_record_audit(
         )
         return
     try:
-        _record_audit(audit_connection, run_date, status, races_predicted, duration_ms, error_text)
+        _record_audit(
+            audit_connection,
+            run_date,
+            status,
+            races_predicted,
+            duration_ms,
+            error_text,
+            database_url,
+        )
     except BaseException as audit_write_error:
         print(
             f"[predict-upcoming] audit write failed: {audit_write_error}",
@@ -499,9 +560,7 @@ def main() -> int:
         run_date = _require_env(RUN_DATE_ENV)
         days_ahead = int(os.environ.get(DAYS_AHEAD_ENV, str(DEFAULT_DAYS_AHEAD)))
         models_dir = Path(os.environ.get(MODELS_DIR_ENV, "/models"))
-        window = PredictWindow(
-            target_date=run_date, days_ahead=days_ahead, database_url=source_url
-        )
+        window = PredictWindow(target_date=run_date, days_ahead=days_ahead, database_url=source_url)
         # Validate the Neon URL at startup (fail fast on bad credentials /
         # unreachable host) but immediately close the probe connection. The
         # write connection is opened lazily inside _predict_category, after the
