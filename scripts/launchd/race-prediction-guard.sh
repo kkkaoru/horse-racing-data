@@ -54,6 +54,8 @@
 #   DRY_RUN=1 FORCE_HOUR=05 FORCE_NO_CORNER_FEATURES=1 bash ...               # exercise corner-features build path
 #   DRY_RUN=1 FORCE_HOUR=05 FORCE_VENUE_COUNTS=44:7,30:12 \
 #     FORCE_EXPECTED_COUNT=42 FORCE_TARGET_DATE=20300101 bash ...             # exercise per-venue coverage check path
+#   DRY_RUN=1 FORCE_HOUR=14 FORCE_D1_FAIL=1 bash ...                         # exercise D1-unavailable path (race hours)
+#   DRY_RUN=1 FORCE_HOUR=05 FORCE_D1_FAIL=1 bash ...                         # exercise D1-unavailable path (non-race hours)
 #
 # Two prediction kinds are guarded:
 #   1. running-style (脚質)   -> Cloudflare Worker job (POST /api/jobs).
@@ -90,6 +92,8 @@
 #   DRY_RUN=1 FORCE_HOUR=05 FORCE_NO_CORNER_FEATURES=1 bash ...               # exercise corner-features build path
 #   DRY_RUN=1 FORCE_HOUR=05 FORCE_VENUE_COUNTS=44:7,30:12 \
 #     FORCE_EXPECTED_COUNT=42 FORCE_TARGET_DATE=20300101 bash ...             # exercise per-venue coverage check path
+#   DRY_RUN=1 FORCE_HOUR=14 FORCE_D1_FAIL=1 bash ...                         # exercise D1-unavailable path (race hours)
+#   DRY_RUN=1 FORCE_HOUR=05 FORCE_D1_FAIL=1 bash ...                         # exercise D1-unavailable path (non-race hours)
 set -euo pipefail
 
 # Resolve repo root from this script's location (scripts/launchd -> repo root).
@@ -475,72 +479,116 @@ guard_target() {
 
   log "=== guard_target label=$label target=$target_date_iso (days_ahead=$days_ahead) ==="
 
+  # --- is_race_hours: calculated FIRST, before any D1 query ---
+  # "race hours" = JST hour in [10, 20] inclusive.
+  # Must be known before the D1 query so that D1 failure handling can branch
+  # on whether we are in a freshness-critical window.
+  local is_race_hours=0
+  if [ "$jst_hour" -ge 10 ] && [ "$jst_hour" -le 20 ]; then
+    is_race_hours=1
+  fi
+
   # Query D1 for the expected race count for target_date_iso.
+  # D1 is queried via bunx wrangler which requires CLOUDFLARE_API_TOKEN in a
+  # non-interactive (launchd) environment. If the query fails (token missing /
+  # refresh error / network) we enter the d1_unavailable path.
   log "querying D1 expected race_key count for $target_date_iso ..."
   local d1_query="SELECT COUNT(DISTINCT race_key) AS c FROM realtime_race_sources WHERE substr(race_start_at_jst, 1, 10) = '${target_date_iso}';"
   local d1_result
-  d1_result="$(bunx wrangler d1 execute "$D1_BINDING_NAME" --remote --config "$WRANGLER_CONFIG" --command "$d1_query" --json 2>&1 || true)"
+  # DRY_RUN-only hook: FORCE_D1_FAIL=1 injects a fake error string so the
+  # D1-unavailable path can be exercised without touching real D1.
+  if [ "${DRY_RUN:-0}" = "1" ] && [ "${FORCE_D1_FAIL:-0}" = "1" ]; then
+    d1_result="In a non-interactive environment, it's necessary to set a CLOUDFLARE_API_TOKEN environment variable for wrangler to work"
+    log "DRY_RUN: FORCE_D1_FAIL=1 — injecting fake D1 error response"
+  else
+    d1_result="$(bunx wrangler d1 execute "$D1_BINDING_NAME" --remote --config "$WRANGLER_CONFIG" --command "$d1_query" --json 2>&1 || true)"
+  fi
   local expected_count
   expected_count="$(printf '%s' "$d1_result" | jq -r '.[0].results[0].c // empty' 2>/dev/null || true)"
+
+  # --- D1 unavailability handling ---
+  # If expected_count is empty/null (parse failure = D1 error), branch on
+  # is_race_hours:
+  #   is_race_hours=1: finish-position kick does NOT need D1 (uses Neon +
+  #     realtime-odds HTTPS only), so we skip D1-dependent checks and proceed
+  #     directly to the finish-position guard with unconditional kick.
+  #   is_race_hours=0: we cannot determine expected_count, so we cannot make
+  #     safe progress on any check — abort as before.
+  local d1_unavailable=0
   if [ -z "$expected_count" ] || [ "$expected_count" = "null" ]; then
-    log "ERROR: failed to parse expected race count for $label from D1 (result tail: $(printf '%s' "$d1_result" | tail -c 400))"
-    return 1
-  fi
-  # DRY_RUN-only override so the per-venue coverage path can be exercised
-  # without touching a real D1. FORCE_EXPECTED_COUNT is applied AFTER the live
-  # D1 query so any parse error is still surfaced above.
-  if [ "${DRY_RUN:-0}" = "1" ] && [ -n "${FORCE_EXPECTED_COUNT:-}" ]; then
-    log "DRY_RUN: FORCE_EXPECTED_COUNT=$FORCE_EXPECTED_COUNT override (was: $expected_count)"
-    expected_count="$FORCE_EXPECTED_COUNT"
-  fi
-  log "EXPECTED_COUNT[$label]=$expected_count (distinct race_key in realtime_race_sources)"
-
-  if [ "$expected_count" = "0" ]; then
-    log "no D1 races for $label ($target_date_iso) — kicking $DISCOVER_JOB_TYPE for date=$target_date"
-    if [ "${DRY_RUN:-0}" = "1" ]; then
-      log "DRY_RUN: would POST $JOBS_KICK_URL body={\"type\":\"$DISCOVER_JOB_TYPE\",\"date\":\"$target_date\"}"
+    if [ "$is_race_hours" = "1" ]; then
+      log "WARN: failed to parse expected race count for $label from D1 (result tail: $(printf '%s' "$d1_result" | tail -c 400))"
+      log "WARN: D1 unavailable but is_race_hours=1 — skipping D1-dependent checks; finish-position kick will proceed unconditionally"
+      d1_unavailable=1
     else
-      kick_worker_job "discover-urls-$label" "{\"type\":\"$DISCOVER_JOB_TYPE\",\"date\":\"$target_date\"}"
-    fi
-    log "$label: discover-urls kicked — predictions will be evaluated on next hourly tick"
-    return 0
-  fi
-
-  # --- per-venue coverage check (catches partial discover-urls failures) ---
-  # Re-kicks discover-urls when any NAR/JRA major venue has fewer races than
-  # the expected lower bound. Runs independently from running-style /
-  # finish-position checks: even when the per-venue check re-kicks, we still
-  # proceed with the downstream checks so any predictions we can compute now
-  # still go through.
-  check_venue_coverage "$target_date" "$target_date_iso" "$label"
-
-  # --- corner-features prerequisite (needed before running-style) ---
-  local corner_features_ok=1
-  corner_features_check_and_build "$target_nen" "$target_tsukihi" "$target_date" "$label" \
-    || corner_features_ok=0
-
-  # --- running-style guard ---
-  if [ "$corner_features_ok" != "1" ]; then
-    log "running-style[$label] SKIPPED — corner-features unavailable for $target_date"
-  else
-    log "checking running-style coverage in Neon ($RS_TABLE) for nen=$target_nen tsukihi=$target_tsukihi ($label) ..."
-    local rs_actual
-    rs_actual="$(neon_count "$RS_TABLE" "$target_nen" "$target_tsukihi" || true)"
-    if ! printf '%s' "$rs_actual" | grep -Eq '^[0-9]+$'; then
-      log "ERROR: failed to parse running-style count for $label from Neon (got: $rs_actual)"
+      log "ERROR: failed to parse expected race count for $label from D1 (result tail: $(printf '%s' "$d1_result" | tail -c 400))"
       return 1
     fi
-    log "running-style[$label]: actual=$rs_actual expected=$expected_count"
-    if [ "$rs_actual" -lt "$expected_count" ]; then
-      log "running-style[$label] INCOMPLETE — kicking $RS_KICK_JOB_TYPE for date=$target_date"
-      if [ "${DRY_RUN:-0}" = "1" ]; then
-        log "DRY_RUN: would POST $JOBS_KICK_URL body={\"type\":\"$RS_KICK_JOB_TYPE\",\"date\":\"$target_date\"}"
-      else
-        kick_worker_job "running-style-$label" "{\"type\":\"$RS_KICK_JOB_TYPE\",\"date\":\"$target_date\"}"
-      fi
-    else
-      log "running-style[$label] COMPLETE — skip kick"
+  fi
+
+  if [ "$d1_unavailable" = "0" ]; then
+    # DRY_RUN-only override so the per-venue coverage path can be exercised
+    # without touching a real D1. FORCE_EXPECTED_COUNT is applied AFTER the
+    # live D1 query so any parse error is still surfaced above.
+    if [ "${DRY_RUN:-0}" = "1" ] && [ -n "${FORCE_EXPECTED_COUNT:-}" ]; then
+      log "DRY_RUN: FORCE_EXPECTED_COUNT=$FORCE_EXPECTED_COUNT override (was: $expected_count)"
+      expected_count="$FORCE_EXPECTED_COUNT"
     fi
+    log "EXPECTED_COUNT[$label]=$expected_count (distinct race_key in realtime_race_sources)"
+
+    if [ "$expected_count" = "0" ]; then
+      log "no D1 races for $label ($target_date_iso) — kicking $DISCOVER_JOB_TYPE for date=$target_date"
+      if [ "${DRY_RUN:-0}" = "1" ]; then
+        log "DRY_RUN: would POST $JOBS_KICK_URL body={\"type\":\"$DISCOVER_JOB_TYPE\",\"date\":\"$target_date\"}"
+      else
+        kick_worker_job "discover-urls-$label" "{\"type\":\"$DISCOVER_JOB_TYPE\",\"date\":\"$target_date\"}"
+      fi
+      log "$label: discover-urls kicked — predictions will be evaluated on next hourly tick"
+      return 0
+    fi
+
+    # --- per-venue coverage check (catches partial discover-urls failures) ---
+    # Re-kicks discover-urls when any NAR/JRA major venue has fewer races than
+    # the expected lower bound. Runs independently from running-style /
+    # finish-position checks: even when the per-venue check re-kicks, we still
+    # proceed with the downstream checks so any predictions we can compute now
+    # still go through.
+    check_venue_coverage "$target_date" "$target_date_iso" "$label"
+
+    # --- corner-features prerequisite (needed before running-style) ---
+    local corner_features_ok=1
+    corner_features_check_and_build "$target_nen" "$target_tsukihi" "$target_date" "$label" \
+      || corner_features_ok=0
+
+    # --- running-style guard ---
+    if [ "$corner_features_ok" != "1" ]; then
+      log "running-style[$label] SKIPPED — corner-features unavailable for $target_date"
+    else
+      log "checking running-style coverage in Neon ($RS_TABLE) for nen=$target_nen tsukihi=$target_tsukihi ($label) ..."
+      local rs_actual
+      rs_actual="$(neon_count "$RS_TABLE" "$target_nen" "$target_tsukihi" || true)"
+      if ! printf '%s' "$rs_actual" | grep -Eq '^[0-9]+$'; then
+        log "ERROR: failed to parse running-style count for $label from Neon (got: $rs_actual)"
+        return 1
+      fi
+      log "running-style[$label]: actual=$rs_actual expected=$expected_count"
+      if [ "$rs_actual" -lt "$expected_count" ]; then
+        log "running-style[$label] INCOMPLETE — kicking $RS_KICK_JOB_TYPE for date=$target_date"
+        if [ "${DRY_RUN:-0}" = "1" ]; then
+          log "DRY_RUN: would POST $JOBS_KICK_URL body={\"type\":\"$RS_KICK_JOB_TYPE\",\"date\":\"$target_date\"}"
+        else
+          kick_worker_job "running-style-$label" "{\"type\":\"$RS_KICK_JOB_TYPE\",\"date\":\"$target_date\"}"
+        fi
+      else
+        log "running-style[$label] COMPLETE — skip kick"
+      fi
+    fi
+  else
+    # d1_unavailable=1 (race hours only): D1-dependent checks skipped.
+    local corner_features_ok=0
+    log "per-venue-coverage[$label] SKIPPED — D1 unavailable"
+    log "corner-features[$label] SKIPPED — D1 unavailable"
+    log "running-style[$label] SKIPPED — D1 unavailable"
   fi
 
   # --- finish-position guard ---
@@ -557,11 +605,11 @@ guard_target() {
   #   preserved: no new race data is expected, so a re-run would be pure
   #   compute waste.
   #
-  #   "race hours" = JST hour in [10, 20] inclusive.
-  local is_race_hours=0
-  if [ "$jst_hour" -ge 10 ] && [ "$jst_hour" -le 20 ]; then
-    is_race_hours=1
-  fi
+  #   When D1 is unavailable (d1_unavailable=1), finish-position kick runs
+  #   because: (a) is_race_hours=1 is guaranteed at this branch, (b) the kick
+  #   itself uses only Neon + realtime-odds HTTPS and does NOT need D1.
+  #   expected_count comparison is skipped; fp_actual is still queried from
+  #   Neon (informational only).
 
   log "checking finish-position coverage in Neon ($FP_TABLE) for nen=$target_nen tsukihi=$target_tsukihi ($label) ..."
   local fp_actual
@@ -570,12 +618,16 @@ guard_target() {
     log "ERROR: failed to parse finish-position count for $label from Neon (got: $fp_actual)"
     return 1
   fi
-  log "finish-position[$label]: actual=$fp_actual expected=$expected_count is_race_hours=$is_race_hours"
+  log "finish-position[$label]: actual=$fp_actual expected=${expected_count:-D1_UNAVAILABLE} is_race_hours=$is_race_hours d1_unavailable=$d1_unavailable"
 
-  # Decide whether to kick: kick when incomplete OR when in race hours
-  # (freshness re-prediction for bataiju/odds).
+  # Decide whether to kick:
+  #   d1_unavailable=1 + is_race_hours=1: unconditional kick (no expected_count)
+  #   d1_unavailable=0: kick when incomplete OR when in race hours (freshness)
   local should_kick=0
-  if [ "$fp_actual" -lt "$expected_count" ]; then
+  if [ "$d1_unavailable" = "1" ]; then
+    log "finish-position[$label] D1-unavailable race-hours — unconditional kick (RUN_DATE=$target_date PREDICT_DAYS_AHEAD=$days_ahead)"
+    should_kick=1
+  elif [ "$fp_actual" -lt "$expected_count" ]; then
     log "finish-position[$label] INCOMPLETE — will kick (RUN_DATE=$target_date PREDICT_DAYS_AHEAD=$days_ahead)"
     should_kick=1
   elif [ "$is_race_hours" = "1" ]; then
@@ -597,7 +649,7 @@ guard_target() {
     fi
   fi
 
-  log "guard_target done (label=$label target=$target_date_iso expected=$expected_count rs=${rs_actual:-skipped} fp=$fp_actual cf_ok=$corner_features_ok is_race_hours=$is_race_hours)"
+  log "guard_target done (label=$label target=$target_date_iso expected=${expected_count:-D1_UNAVAILABLE} rs=${rs_actual:-skipped} fp=$fp_actual cf_ok=$corner_features_ok is_race_hours=$is_race_hours d1_unavailable=$d1_unavailable)"
 }
 
 # DRY_RUN-only override so the dry-run can be aimed at a date with known
