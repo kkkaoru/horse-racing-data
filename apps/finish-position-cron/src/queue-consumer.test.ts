@@ -1,26 +1,31 @@
-// Run with bun. Tests for the queue consumer.
+// Run with bun. Tests for the queue consumer (DO-backed dedup).
 
 import { beforeEach, expect, test, vi } from "vitest";
 import type { Env, PredictQueueMessage } from "./types";
 
-const { isAlreadyRunningMock, writeRunStateMock, parseNdjsonStreamMock } = vi.hoisted(() => {
-  const isAlreadyRunning = vi.fn(async () => false);
-  const writeRunState = vi.fn(async () => undefined);
+interface ClaimResult {
+  proceed: boolean;
+  state?: string;
+}
+
+const { claimRunMock, completeRunMock, parseNdjsonStreamMock } = vi.hoisted(() => {
+  const claimRun = vi.fn(async (): Promise<ClaimResult> => ({ proceed: true }));
+  const completeRun = vi.fn(async () => undefined);
   const parseNdjsonStream = vi.fn(async () => ({
     type: "result" as const,
     racesPredicted: 5,
     category: "jra",
   }));
   return {
-    isAlreadyRunningMock: isAlreadyRunning,
-    writeRunStateMock: writeRunState,
+    claimRunMock: claimRun,
+    completeRunMock: completeRun,
     parseNdjsonStreamMock: parseNdjsonStream,
   };
 });
 
-vi.mock("./kv-state", () => ({
-  isAlreadyRunning: isAlreadyRunningMock,
-  writeRunState: writeRunStateMock,
+vi.mock("./do-state", () => ({
+  claimRun: claimRunMock,
+  completeRun: completeRunMock,
 }));
 
 vi.mock("./ndjson-stream", () => ({
@@ -50,7 +55,7 @@ const makeEnv = (): Env => ({
   NEON_DATABASE_URL: "postgres://example",
   PREDICT_DAYS_AHEAD: "2",
   PREDICT_QUEUE: {} as unknown as Env["PREDICT_QUEUE"],
-  PREDICT_STATE: {} as unknown as KVNamespace,
+  PREDICT_RUN_COORDINATOR: {} as unknown as Env["PREDICT_RUN_COORDINATOR"],
   TRIGGER_TOKEN: "secret-token",
 });
 
@@ -78,10 +83,10 @@ beforeEach(() => {
   idFromNameMock.mockClear();
   getMock.mockClear();
   stubFetchMock.mockClear();
-  isAlreadyRunningMock.mockClear();
-  writeRunStateMock.mockClear();
+  claimRunMock.mockClear();
+  completeRunMock.mockClear();
   parseNdjsonStreamMock.mockClear();
-  isAlreadyRunningMock.mockResolvedValue(false);
+  claimRunMock.mockResolvedValue({ proceed: true });
   parseNdjsonStreamMock.mockResolvedValue({ type: "result", racesPredicted: 5, category: "jra" });
   stubFetchMock.mockResolvedValue(
     new Response(JSON.stringify({ type: "result", racesPredicted: 5, category: "jra" }), {
@@ -90,17 +95,17 @@ beforeEach(() => {
   );
 });
 
-test("skips and acks when isAlreadyRunning is true", async () => {
-  isAlreadyRunningMock.mockResolvedValue(true);
+test("skips and acks when claimRun returns proceed:false", async () => {
+  claimRunMock.mockResolvedValue({ proceed: false, state: "started" });
   await handleQueue(makeBatch([makeMessage()]), makeEnv());
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(stubFetchMock).not.toHaveBeenCalled();
 });
 
-test("writes started state when not already running", async () => {
+test("calls claimRun with correct params when processing", async () => {
   await handleQueue(makeBatch([makeMessage()]), makeEnv());
-  expect(writeRunStateMock).toHaveBeenCalledWith(
-    expect.objectContaining({ state: expect.objectContaining({ status: "started" }) }),
+  expect(claimRunMock).toHaveBeenCalledWith(
+    expect.objectContaining({ category: "jra", runYmd: "20260603" }),
   );
 });
 
@@ -125,22 +130,20 @@ test("calls stub.fetch with mode=rescore when message has mode rescore using YYY
   );
 });
 
-test("writes success state and acks on success", async () => {
+test("calls completeRun with success and acks on success", async () => {
   await handleQueue(makeBatch([makeMessage()]), makeEnv());
-  expect(writeRunStateMock).toHaveBeenLastCalledWith(
-    expect.objectContaining({
-      state: expect.objectContaining({ status: "success", racesPredicted: 5 }),
-    }),
+  expect(completeRunMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "success", racesPredicted: 5 }),
   );
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(retryMock).not.toHaveBeenCalled();
 });
 
-test("writes error state and calls message.retry on failure", async () => {
+test("calls completeRun with error and calls message.retry on failure", async () => {
   stubFetchMock.mockRejectedValue(new Error("network timeout"));
   await handleQueue(makeBatch([makeMessage()]), makeEnv());
-  expect(writeRunStateMock).toHaveBeenLastCalledWith(
-    expect.objectContaining({ state: expect.objectContaining({ status: "error" }) }),
+  expect(completeRunMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "error", racesPredicted: 0 }),
   );
   expect(retryMock).toHaveBeenCalledTimes(1);
   expect(ackMock).not.toHaveBeenCalled();
@@ -155,11 +158,11 @@ test("processes multiple messages in batch", async () => {
   expect(ackMock).toHaveBeenCalledTimes(3);
 });
 
-test("writes error state and retries when response.body is null", async () => {
+test("calls completeRun with error and retries when response.body is null", async () => {
   stubFetchMock.mockResolvedValue(new Response(null, { status: 200 }));
   await handleQueue(makeBatch([makeMessage()]), makeEnv());
-  expect(writeRunStateMock).toHaveBeenLastCalledWith(
-    expect.objectContaining({ state: expect.objectContaining({ status: "error" }) }),
+  expect(completeRunMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "error", racesPredicted: 0 }),
   );
   expect(retryMock).toHaveBeenCalledTimes(1);
   expect(ackMock).not.toHaveBeenCalled();

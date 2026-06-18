@@ -46,7 +46,7 @@ const makeEnv = (): Env => ({
   NEON_DATABASE_URL: "postgres://example",
   PREDICT_DAYS_AHEAD: "2",
   PREDICT_QUEUE: {} as unknown as Env["PREDICT_QUEUE"],
-  PREDICT_STATE: {} as unknown as KVNamespace,
+  PREDICT_RUN_COORDINATOR: {} as unknown as Env["PREDICT_RUN_COORDINATOR"],
   TRIGGER_TOKEN: "secret-token",
 });
 

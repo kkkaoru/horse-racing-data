@@ -44,12 +44,21 @@
         "class_name": "FinishPositionPredictContainer",
         "name": "FINISH_POSITION_PREDICT_CONTAINER",
       },
+      // Strong-consistency run dedup/state coordinator (replaces KV PREDICT_STATE).
+      {
+        "class_name": "PredictRunCoordinator",
+        "name": "PREDICT_RUN_COORDINATOR",
+      },
     ],
   },
   "migrations": [
     {
       "tag": "v1",
       "new_sqlite_classes": ["FinishPositionPredictContainer"],
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["PredictRunCoordinator"],
     },
   ],
   "d1_databases": [
@@ -73,12 +82,9 @@
       },
     ],
   },
-  "kv_namespaces": [
-    {
-      "binding": "PREDICT_STATE",
-      "id": "d984fba531804927ac1b551200d4b3cb",
-    },
-  ],
+  // KV namespace (id: d984fba531804927ac1b551200d4b3cb) is orphaned — binding removed.
+  // The namespace data is retained as-is; no deletion required.
+  // DO-backed strong-consistency coordinator (PREDICT_RUN_COORDINATOR) replaces it.
   "r2_buckets": [
     {
       // Feature parquet cache written by "full" runs and read by "rescore" runs.

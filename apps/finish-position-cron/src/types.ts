@@ -1,6 +1,7 @@
 // Run with bun. Type definitions for the finish-position-cron Worker.
 
 import type { Container } from "@cloudflare/containers";
+import type { PredictRunCoordinator } from "./predict-run-coordinator";
 
 export type PredictCategory = "jra" | "nar" | "ban-ei";
 
@@ -14,7 +15,9 @@ export interface Env {
   NEON_DATABASE_URL: string;
   PREDICT_DAYS_AHEAD: string;
   TRIGGER_TOKEN: string;
-  PREDICT_STATE: KVNamespace;
+  // KV namespace (id: d984fba531804927ac1b551200d4b3cb) is orphaned — binding removed.
+  // DO-backed strong-consistency coordinator replaces KV for run dedup/state.
+  PREDICT_RUN_COORDINATOR: DurableObjectNamespace<PredictRunCoordinator>;
   PREDICT_QUEUE: Queue<PredictQueueMessage>;
   // R2 binding for per-run feature parquet cache (full→put, rescore→get).
   FEATURES_CACHE: R2Bucket;

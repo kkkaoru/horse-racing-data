@@ -4,6 +4,14 @@ import { defineConfig } from "vitest/config";
 const COVERAGE_THRESHOLD = 95;
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      // cloudflare:workers is a workerd built-in that does not exist in the vitest
+      // pool. A minimal stub satisfies the DurableObject extends signature for tests.
+      "cloudflare:workers": new URL("./src/test-stubs/cloudflare-workers.ts", import.meta.url)
+        .pathname,
+    },
+  },
   test: {
     coverage: {
       provider: "v8",
@@ -20,6 +28,9 @@ export default defineConfig({
         // pool. Its only logic (start() options) is built + tested in
         // dispatch.ts. Documented exclusion per CLAUDE.md coverage rules.
         "src/container-class.ts",
+        // Vitest-only stubs for workerd built-ins (cloudflare:workers).
+        // These are not production code; including them would inflate coverage artificially.
+        "src/test-stubs/**",
       ],
       thresholds: {
         lines: COVERAGE_THRESHOLD,

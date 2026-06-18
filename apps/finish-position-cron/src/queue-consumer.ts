@@ -1,7 +1,8 @@
 // Run with bun. Queue consumer: processes one predict message per batch invocation.
-// For each message: dedup via KV, call the Container DO stub's fetch, track state.
+// For each message: dedup via DO coordinator (strong consistency), call the Container
+// DO stub's fetch, track state.
 
-import { isAlreadyRunning, writeRunState } from "./kv-state";
+import { claimRun, completeRun } from "./do-state";
 import { parseNdjsonStream } from "./ndjson-stream";
 import type { Env, PredictQueueMessage } from "./types";
 
@@ -29,17 +30,11 @@ const buildPredictUrl = (params: PredictUrlParams): string => {
 
 const processMessage = async (message: Message<PredictQueueMessage>, env: Env): Promise<void> => {
   const { category, runYmd, daysAhead, mode } = message.body;
-  const alreadyRunning = await isAlreadyRunning({ category, env, runYmd });
-  if (alreadyRunning) {
+  const claimed = await claimRun({ category, env, runYmd });
+  if (!claimed.proceed) {
     message.ack();
     return;
   }
-  await writeRunState({
-    category,
-    env,
-    runYmd,
-    state: { startedAt: new Date().toISOString(), status: "started" },
-  });
   const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(
     `${PREDICT_DO_NAME_PREFIX}${category}`,
   );
@@ -50,28 +45,22 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
     );
     if (!response.body) throw new Error("Empty response from predict DO");
     const result = await parseNdjsonStream(response.body);
-    await writeRunState({
+    await completeRun({
       category,
       env,
+      racesPredicted: result.racesPredicted,
       runYmd,
-      state: {
-        racesPredicted: result.racesPredicted,
-        startedAt: new Date().toISOString(),
-        status: "success",
-      },
+      status: "success",
     });
     message.ack();
   } catch (err) {
     console.error(`Predict failed for category=${category} runYmd=${runYmd}:`, String(err));
-    await writeRunState({
+    await completeRun({
       category,
       env,
+      racesPredicted: 0,
       runYmd,
-      state: {
-        error: String(err),
-        startedAt: new Date().toISOString(),
-        status: "error",
-      },
+      status: "error",
     });
     message.retry();
   }

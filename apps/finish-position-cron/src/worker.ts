@@ -11,6 +11,7 @@ import {
 } from "./cron-decision";
 import { buildPredictStartOptions } from "./dispatch";
 import { warmNeon } from "./neon-warm";
+import { PredictRunCoordinator } from "./predict-run-coordinator";
 import { handleQueue } from "./queue-consumer";
 import { enqueuePredict } from "./queue-producer";
 import { getRunDateJst, getRunYmdJst } from "./time";
@@ -37,7 +38,7 @@ const HTTP_UNAUTHORIZED = 401;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_ACCEPTED = 202;
 
-export { FinishPositionPredictContainer };
+export { FinishPositionPredictContainer, PredictRunCoordinator };
 
 const healthResponse = (): Response =>
   Response.json({ cron: PREDICT_CRON, name: "finish-position-cron", ok: true });
