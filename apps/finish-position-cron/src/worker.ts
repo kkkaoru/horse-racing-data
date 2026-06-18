@@ -1,5 +1,4 @@
-// Run with bun. Fetch (health + on-demand trigger) + scheduled (cron -> container)
-// handlers.
+// Run with bun. Fetch (health + on-demand trigger) + scheduled (cron -> container) + queue handlers.
 
 import { getContainer } from "@cloudflare/containers";
 import { buildAuditBindParams, buildAuditInsertSql, buildAuditRecord } from "./audit";
@@ -7,34 +6,30 @@ import { FinishPositionPredictContainer } from "./container-class";
 import { PREDICT_CRON, shouldRunPredictCron, shouldRunWarmCron } from "./cron-decision";
 import { buildPredictStartOptions } from "./dispatch";
 import { warmNeon } from "./neon-warm";
+import { handleQueue } from "./queue-consumer";
+import { enqueuePredict } from "./queue-producer";
 import { getRunDateJst, getRunYmdJst } from "./time";
 import { isAuthorized, isTriggerRequest, parseRunDates } from "./trigger";
-import type { CronAuditRecord, Env, RunDates } from "./types";
+import type { CronAuditRecord, Env, PredictQueueMessage, RunDates } from "./types";
 
 const CONTAINER_INSTANCE_NAME = "daily-finish-position-predict";
 const ZERO_RACES = 0;
 const RUN_DATE_FIELD = "runDate";
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_BAD_REQUEST = 400;
+const HTTP_ACCEPTED = 202;
 
 export { FinishPositionPredictContainer };
 
 const healthResponse = (): Response =>
   Response.json({ cron: PREDICT_CRON, name: "finish-position-cron", ok: true });
 
-// Persist one audit row. Excluded from coverage with worker.ts (D1 binding),
-// but the record + SQL it uses are built by tested helpers.
 const recordAudit = async (env: Env, record: CronAuditRecord): Promise<void> => {
   await env.FINISH_POSITION_CRON_DB.prepare(buildAuditInsertSql())
     .bind(...buildAuditBindParams(record))
     .run();
 };
 
-// Start the predictor container as a batch job for the given run dates. Uses
-// start() (not fetch) because the container exposes no port — it runs the
-// entrypoint to completion. start() resolves once the container has launched;
-// the audit row here marks the dispatch, and the container writes its own
-// detailed audit row on completion (see predict_lib/audit.py).
 const runPrediction = async (env: Env, dates: RunDates): Promise<void> => {
   const startedAt = Date.now();
   const container = getContainer(env.FINISH_POSITION_PREDICT_CONTAINER, CONTAINER_INSTANCE_NAME);
@@ -53,8 +48,6 @@ const runPrediction = async (env: Env, dates: RunDates): Promise<void> => {
   );
 };
 
-// Resolve the run date for an on-demand trigger: an explicit "YYYYMMDD" in the
-// JSON body, or today's JST date when the body omits it.
 const resolveTriggerDates = (body: Record<string, unknown>): RunDates => {
   const requested = body[RUN_DATE_FIELD];
   if (typeof requested === "string") {
@@ -72,14 +65,18 @@ const parseBody = async (request: Request): Promise<Record<string, unknown>> => 
   return JSON.parse(text) as Record<string, unknown>;
 };
 
-// Authenticated POST /run: start a prediction for an explicit or today's date.
 const handleTrigger = async (request: Request, env: Env): Promise<Response> => {
   if (!isAuthorized(request.headers.get("authorization"), env.TRIGGER_TOKEN)) {
     return Response.json({ error: "unauthorized", ok: false }, { status: HTTP_UNAUTHORIZED });
   }
   const dates = resolveTriggerDates(await parseBody(request));
-  await runPrediction(env, dates);
-  return Response.json({ ok: true, runDate: dates.runDate });
+  const queued = await enqueuePredict({
+    daysAhead: Number(env.PREDICT_DAYS_AHEAD),
+    env,
+    runDate: dates.runDate,
+    runYmd: dates.runYmd,
+  });
+  return Response.json({ ok: true, queued, runDate: dates.runDate }, { status: HTTP_ACCEPTED });
 };
 
 const guardedTrigger = async (request: Request, env: Env): Promise<Response> => {
@@ -119,5 +116,8 @@ export default {
   },
   async scheduled(event: ScheduledEvent, env: Env): Promise<void> {
     await handleScheduled(event, env);
+  },
+  async queue(batch: MessageBatch<PredictQueueMessage>, env: Env): Promise<void> {
+    await handleQueue(batch, env);
   },
 };
