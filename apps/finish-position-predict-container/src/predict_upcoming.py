@@ -22,12 +22,25 @@ Flow per category (jra / nar / ban-ei):
      deduped, chunked batches.
   5. Record one audit row in ``finish_position_cron_executions``.
 
+Startup gate
+------------
+Set ``PREDICT_SERVE_MODE=http`` (env var) OR pass ``--serve`` (CLI argument) to
+start the HTTP ``/predict`` server mode instead of the one-shot CLI batch run.
+In server mode:
+  - ``GET /ping``    → 200 ``ok``  (Container health-check probe)
+  - ``GET /predict?category=...&runDate=...&daysAhead=0``
+                     → 200 Transfer-Encoding: chunked, application/x-ndjson
+                       NDJSON progress lines + final result line per request
+
 Run with: ``uv run python src/predict_upcoming.py`` (envvars set by the Worker).
+Server:   ``PREDICT_SERVE_MODE=http uv run python src/predict_upcoming.py``
+       or ``uv run python src/predict_upcoming.py --serve``
 """
 
 from __future__ import annotations
 
 import contextlib
+import http.server
 import json
 import os
 import socket
@@ -38,6 +51,7 @@ import traceback
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import override
 
 from db_driver import ConnectionLike, connect_postgres_with_retry, is_transient_error
 from predict_lib.audit import (
@@ -71,6 +85,15 @@ from predict_lib.model_meta import (
 )
 from predict_lib.per_class import resolve_per_class_resolution
 from predict_lib.scorer import BoosterLike, assert_feature_count, build_feature_matrix, score_matrix
+from predict_lib.serve import (
+    CacheMissError,
+    PredictCategoryFn,
+    R2Config,
+    build_r2_feat_cache_key,
+    iter_predict_chunks,
+    parse_predict_params,
+    parse_request_path,
+)
 from predict_lib.upcoming import build_prediction_rows, rank_race_entries
 from predict_lib.upsert_sql import (
     DEFAULT_CHUNK_SIZE,
@@ -79,6 +102,14 @@ from predict_lib.upsert_sql import (
     flatten_params,
 )
 
+PREDICT_SERVE_MODE_ENV: str = "PREDICT_SERVE_MODE"
+"""When set to ``http``, the container starts an HTTP server instead of CLI batch."""
+# R2 feature-cache environment variables (optional — all must be present to
+# enable R2 caching; any missing var silently disables R2 put/get).
+R2_ACCOUNT_ID_ENV: str = "R2_ACCOUNT_ID"
+R2_ACCESS_KEY_ID_ENV: str = "R2_ACCESS_KEY_ID"
+R2_SECRET_ACCESS_KEY_ENV: str = "R2_SECRET_ACCESS_KEY"
+R2_BUCKET_ENV: str = "R2_BUCKET"
 NEON_DATABASE_URL_ENV: str = "NEON_DATABASE_URL"
 # Optional override: source URL for the DuckDB feature-build subprocess. When
 # set, feature building (which sustains a long-running ATTACH against Postgres
@@ -115,13 +146,15 @@ CLASS_CODE_FIELD_BY_CATEGORY: Mapping[Category, str] = {
     "jra": "kyoso_joken_code",
     "nar": "nar_subclass",
 }
+HTTP_PORT: int = 8080
+"""Port the HTTP server listens on in both CLI batch mode (liveness) and server mode."""
 # Cloudflare Containers reaps batch instances that receive no HTTP traffic
 # (independent of @cloudflare/containers' JS-side sleepAfter). The predictor
 # is a long-running batch job, so we both (a) listen on a port so the start
 # probe + DO containerFetch resolve, AND (b) honour repeated HTTP keepalive
 # pings from the Worker DO's scheduled loop. The server is tiny on purpose —
 # the only HTTP requirement is "200 OK on every request".
-LIVENESS_PORT: int = 8080
+LIVENESS_PORT: int = HTTP_PORT
 LIVENESS_BACKLOG: int = 8
 LIVENESS_RESPONSE: bytes = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
 LIVENESS_RECV_BYTES: int = 4096
@@ -551,7 +584,438 @@ def _try_record_audit(
             )
 
 
+# ---------------------------------------------------------------------------
+# HTTP server mode (PREDICT_SERVE_MODE=http or --serve)
+# ---------------------------------------------------------------------------
+
+
+def _load_r2_config() -> R2Config | None:
+    """Build an :class:`R2Config` from environment variables, or ``None``.
+
+    Returns ``None`` when any of the four required env vars is absent or empty
+    so the caller can silently skip R2 operations on a non-containerised run
+    (e.g. local ``docker run`` without R2 secrets, or Mac launchd cron).
+    """
+    account_id = os.environ.get(R2_ACCOUNT_ID_ENV, "").strip()
+    access_key_id = os.environ.get(R2_ACCESS_KEY_ID_ENV, "").strip()
+    secret_access_key = os.environ.get(R2_SECRET_ACCESS_KEY_ENV, "").strip()
+    bucket = os.environ.get(R2_BUCKET_ENV, "").strip()
+    if not account_id or not access_key_id or not secret_access_key or not bucket:
+        return None
+    return R2Config(
+        account_id=account_id,
+        access_key_id=access_key_id,
+        secret_access_key=secret_access_key,
+        bucket=bucket,
+    )
+
+
+def _r2_put_parquet(r2: R2Config, object_key: str, local_path: Path) -> None:
+    """Upload a local parquet file to R2 via the S3-compatible API.
+
+    Uses stdlib ``urllib.request`` + HMAC-SHA256 AWS Signature Version 4 so no
+    external dep is added.  On any failure (network, auth, missing file) the
+    exception propagates to the caller, which logs and continues so the
+    prediction run is never blocked by a cache upload failure.
+
+    Args:
+        r2:          R2 credentials and bucket name.
+        object_key:  R2 object key (e.g. ``feat-cache/jra/20260619/features.parquet``).
+        local_path:  Local parquet path to upload.
+    """
+    import hashlib
+    import hmac
+    import urllib.request
+    from datetime import UTC, datetime
+
+    data = local_path.read_bytes()
+    content_hash = hashlib.sha256(data).hexdigest()
+    now = datetime.now(UTC)
+    amzdate = now.strftime("%Y%m%dT%H%M%SZ")
+    datestamp = now.strftime("%Y%m%d")
+    host = f"{r2.account_id}.r2.cloudflarestorage.com"
+    url = f"https://{host}/{r2.bucket}/{object_key}"
+
+    canonical_headers = f"host:{host}\nx-amz-content-sha256:{content_hash}\nx-amz-date:{amzdate}\n"
+    signed_headers = "host;x-amz-content-sha256;x-amz-date"
+    canonical_request = (
+        f"PUT\n/{r2.bucket}/{object_key}\n\n{canonical_headers}\n{signed_headers}\n{content_hash}"
+    )
+
+    credential_scope = f"{datestamp}/auto/s3/aws4_request"
+    string_to_sign = (
+        f"AWS4-HMAC-SHA256\n{amzdate}\n{credential_scope}\n"
+        + hashlib.sha256(canonical_request.encode()).hexdigest()
+    )
+
+    def _sign(key: bytes, msg: str) -> bytes:
+        return hmac.new(key, msg.encode(), hashlib.sha256).digest()
+
+    signing_key = _sign(
+        _sign(
+            _sign(
+                _sign(
+                    f"AWS4{r2.secret_access_key}".encode(),
+                    datestamp,
+                ),
+                "auto",
+            ),
+            "s3",
+        ),
+        "aws4_request",
+    )
+    signature = hmac.new(signing_key, string_to_sign.encode(), hashlib.sha256).hexdigest()
+    auth_header = (
+        f"AWS4-HMAC-SHA256 Credential={r2.access_key_id}/{credential_scope},"
+        f" SignedHeaders={signed_headers}, Signature={signature}"
+    )
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method="PUT",
+        headers={
+            "Authorization": auth_header,
+            "x-amz-date": amzdate,
+            "x-amz-content-sha256": content_hash,
+            "Content-Type": "application/octet-stream",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        _ = resp.read()
+    print(
+        f"[predict-serve] R2 put ok key={object_key} bytes={len(data)}",
+        file=sys.stderr,
+    )
+
+
+def _r2_get_parquet(r2: R2Config, object_key: str, dest_path: Path) -> bool:
+    """Download an R2 object to ``dest_path``.
+
+    Returns ``True`` on success, ``False`` when the object does not exist (HTTP
+    404).  Any other error (network, auth) propagates to the caller.
+
+    Args:
+        r2:          R2 credentials and bucket name.
+        object_key:  R2 object key to download.
+        dest_path:   Local destination path (will be created / overwritten).
+    """
+    import hashlib
+    import hmac
+    import urllib.error
+    import urllib.request
+    from datetime import UTC, datetime
+
+    payload_hash = hashlib.sha256(b"").hexdigest()
+    now = datetime.now(UTC)
+    amzdate = now.strftime("%Y%m%dT%H%M%SZ")
+    datestamp = now.strftime("%Y%m%d")
+    host = f"{r2.account_id}.r2.cloudflarestorage.com"
+    url = f"https://{host}/{r2.bucket}/{object_key}"
+
+    canonical_headers = f"host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amzdate}\n"
+    signed_headers = "host;x-amz-content-sha256;x-amz-date"
+    canonical_request = (
+        f"GET\n/{r2.bucket}/{object_key}\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
+    )
+
+    credential_scope = f"{datestamp}/auto/s3/aws4_request"
+    string_to_sign = (
+        f"AWS4-HMAC-SHA256\n{amzdate}\n{credential_scope}\n"
+        + hashlib.sha256(canonical_request.encode()).hexdigest()
+    )
+
+    def _sign(key: bytes, msg: str) -> bytes:
+        return hmac.new(key, msg.encode(), hashlib.sha256).digest()
+
+    signing_key = _sign(
+        _sign(
+            _sign(
+                _sign(
+                    f"AWS4{r2.secret_access_key}".encode(),
+                    datestamp,
+                ),
+                "auto",
+            ),
+            "s3",
+        ),
+        "aws4_request",
+    )
+    signature = hmac.new(signing_key, string_to_sign.encode(), hashlib.sha256).hexdigest()
+    auth_header = (
+        f"AWS4-HMAC-SHA256 Credential={r2.access_key_id}/{credential_scope},"
+        f" SignedHeaders={signed_headers}, Signature={signature}"
+    )
+    req = urllib.request.Request(
+        url,
+        method="GET",
+        headers={
+            "Authorization": auth_header,
+            "x-amz-date": amzdate,
+            "x-amz-content-sha256": payload_hash,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = resp.read()
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return False
+        raise
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    dest_path.write_bytes(data)
+    print(
+        f"[predict-serve] R2 get ok key={object_key} bytes={len(data)}",
+        file=sys.stderr,
+    )
+    return True
+
+
+def _make_predict_fn(
+    database_url: str,
+    models_dir: Path,
+    source_url: str,
+    r2: R2Config | None,
+) -> PredictCategoryFn:
+    """Build the full-pipeline ``predict_fn`` adapter for :func:`iter_predict_chunks`.
+
+    Wraps ``_predict_category`` with the environment-resolved Neon URL, models
+    directory, and source URL so the serve handler only passes (category,
+    run_date, days_ahead) per request.
+
+    When *r2* is not ``None``, the final feature parquet is uploaded to R2 after
+    a successful prediction run so ``mode=rescore`` can reuse it on subsequent
+    calls.  Any R2 upload failure is logged and swallowed so the prediction run
+    is never blocked by a cache-write failure.
+    """
+
+    def _predict(category_str: str, run_date: str, days_ahead: int) -> int:
+        from predict_lib.model_meta import resolve_category
+
+        category = resolve_category(category_str)
+        window = PredictWindow(target_date=run_date, days_ahead=days_ahead, database_url=source_url)
+        written = _predict_category(database_url, category, models_dir, window)
+        # Upload the built feature parquet to R2 so rescore can reuse it.
+        if r2 is not None:
+            _try_r2_put(r2, category_str, run_date)
+        return written
+
+    return _predict
+
+
+def _try_r2_put(r2: R2Config, category: str, run_date: str) -> None:
+    """Upload the local feature parquet to R2; log + swallow any failure."""
+    from pipeline_runner import WORK_DIR  # bundled in image
+
+    final_dir = WORK_DIR / f"feat-{category}-v7-final"
+    # Collect all parquet files from the final dir (partitioned layout).
+    parquet_files = list(final_dir.rglob("*.parquet"))
+    if not parquet_files:
+        print(
+            f"[predict-serve] R2 put skip: no parquet in {final_dir}",
+            file=sys.stderr,
+        )
+        return
+    # Use the first (or only) parquet file as the cache payload.
+    # Single-file assumption is valid for the final merged layer output.
+    local_path = parquet_files[0]
+    object_key = build_r2_feat_cache_key(category, run_date)
+    try:
+        _r2_put_parquet(r2, object_key, local_path)
+    except BaseException as put_err:
+        print(
+            f"[predict-serve] R2 put failed key={object_key} error={put_err}",
+            file=sys.stderr,
+        )
+
+
+def _make_rescore_fn(
+    database_url: str,
+    models_dir: Path,
+    source_url: str,
+    r2: R2Config | None,
+) -> PredictCategoryFn:
+    """Build the rescore-path ``rescore_fn`` adapter for :func:`iter_predict_chunks`.
+
+    The rescore path:
+    1. Checks R2 (or the local ``/tmp`` cache directory) for a pre-built feature
+       parquet from a previous ``mode=full`` run.
+    2. If found, re-scores using the cached features (skipping the 21y Neon scan).
+    3. If NOT found, raises :class:`CacheMissError` so ``iter_predict_chunks``
+       falls back to the full pipeline automatically.
+
+    When *r2* is ``None`` (R2 env vars absent), the function only checks the
+    local ``/tmp`` working directory and raises ``CacheMissError`` when no local
+    parquet is present.
+    """
+
+    def _rescore(category_str: str, run_date: str, days_ahead: int) -> int:
+        from pipeline_runner import WORK_DIR  # bundled in image
+        from predict_lib.model_meta import resolve_category
+
+        category = resolve_category(category_str)
+        final_dir = WORK_DIR / f"feat-{category}-v7-final"
+
+        # Step 1: ensure the feature parquet is available locally.
+        if not any(final_dir.rglob("*.parquet")):
+            if r2 is not None:
+                object_key = build_r2_feat_cache_key(category_str, run_date)
+                # Try to download from R2 into the local working dir.
+                dest_path = final_dir / "features.parquet"
+                got = _r2_get_parquet(r2, object_key, dest_path)
+                if not got:
+                    raise CacheMissError(
+                        f"R2 cache miss: {object_key} not found in bucket {r2.bucket}"
+                    )
+            else:
+                raise CacheMissError(
+                    f"no local feature cache for category={category_str} run_date={run_date}"
+                )
+
+        # Step 2: score from the locally cached features (no DuckDB base build).
+        # _predict_category calls build_upcoming_feature_rows internally.
+        # When the final_dir already contains a parquet, the pipeline_runner
+        # build is skipped via has_parquet_output short-circuit.
+        window = PredictWindow(target_date=run_date, days_ahead=days_ahead, database_url=source_url)
+        return _predict_category(database_url, category, models_dir, window)
+
+    return _rescore
+
+
+class _PredictHandler(http.server.BaseHTTPRequestHandler):
+    """Minimal HTTP/1.1 request handler for ``/ping`` and ``/predict``."""
+
+    predict_fn: PredictCategoryFn  # injected by _make_handler_class
+    rescore_fn: PredictCategoryFn | None  # injected by _make_handler_class
+
+    @override
+    def log_message(self, format: str, *args: object) -> None:
+        # Redirect access log to stderr to avoid polluting stdout.
+        print(f"[predict-serve] {format % args}", file=sys.stderr)
+
+    def do_GET(self) -> None:  # N802: stdlib BaseHTTPRequestHandler requires this name
+        path, query = parse_request_path(self.path)
+
+        if path == "/ping":
+            body = b"ok"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if path == "/predict":
+            result = parse_predict_params(query)
+            if isinstance(result, str):
+                # Validation error — return 400 before writing any body.
+                error_body = result.encode()
+                self.send_response(400)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(error_body)))
+                self.end_headers()
+                self.wfile.write(error_body)
+                return
+
+            # Start 200 chunked response immediately so the DO renews its timeout.
+            self.send_response(200)
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Content-Type", "application/x-ndjson")
+            self.end_headers()
+
+            for chunk in iter_predict_chunks(result, self.predict_fn, rescore_fn=self.rescore_fn):
+                # HTTP/1.1 chunked encoding: hex length + CRLF + data + CRLF
+                size_line = f"{len(chunk):X}\r\n".encode()
+                try:
+                    self.wfile.write(size_line + chunk + b"\r\n")
+                    self.wfile.flush()
+                except OSError as write_err:
+                    print(
+                        f"[predict-serve] write error: {write_err}",
+                        file=sys.stderr,
+                    )
+                    return
+
+            # Terminating chunk
+            try:
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+            except OSError:
+                pass
+            return
+
+        # Unknown path
+        self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+
+def _make_handler_class(
+    predict_fn: PredictCategoryFn,
+    rescore_fn: PredictCategoryFn | None,
+) -> type[_PredictHandler]:
+    """Return a ``_PredictHandler`` subclass with ``predict_fn`` and ``rescore_fn`` bound."""
+
+    class _BoundHandler(_PredictHandler):
+        pass
+
+    _BoundHandler.predict_fn = predict_fn
+    _BoundHandler.rescore_fn = rescore_fn
+    return _BoundHandler
+
+
+def serve_http(
+    port: int,
+    predict_fn: PredictCategoryFn,
+    rescore_fn: PredictCategoryFn | None = None,
+) -> None:
+    """Start the blocking HTTP server on *port*.
+
+    This function never returns (the server runs until the process is killed).
+    It is intentionally NOT covered by unit tests — it is the I/O-boundary glue
+    that creates the real socket and blocks forever.  The pure logic it delegates
+    to (``iter_predict_chunks``, ``parse_predict_params``, etc.) is fully tested
+    in ``tests/test_serve.py``.
+    """
+    handler_cls = _make_handler_class(predict_fn, rescore_fn)
+    with http.server.HTTPServer(("0.0.0.0", port), handler_cls) as httpd:
+        print(f"[predict-serve] listening on :{port}", file=sys.stderr)
+        httpd.serve_forever()
+
+
+def _is_serve_mode(argv: list[str]) -> bool:
+    """Return True when the process should start HTTP server mode.
+
+    Activated by ``PREDICT_SERVE_MODE=http`` environment variable OR by passing
+    ``--serve`` as a CLI argument.  Case-insensitive env-var check to tolerate
+    ``HTTP`` / ``Http`` typos.
+    """
+    if os.environ.get(PREDICT_SERVE_MODE_ENV, "").strip().lower() == "http":
+        return True
+    return "--serve" in argv
+
+
 def main() -> int:
+    """Entry point for both CLI batch mode and HTTP server mode.
+
+    Server mode is activated when ``PREDICT_SERVE_MODE=http`` is set or ``--serve``
+    is passed.  Otherwise, the one-shot CLI batch run is executed (Mac launchd
+    cron path — unchanged).
+    """
+    if _is_serve_mode(sys.argv):
+        try:
+            database_url = normalise_database_url(_require_env(NEON_DATABASE_URL_ENV))
+            source_url = resolve_source_url(os.environ.get(SOURCE_DATABASE_URL_ENV), database_url)
+            models_dir = Path(os.environ.get(MODELS_DIR_ENV, "/models"))
+        except BaseException as bootstrap_error:
+            traceback.print_exc()
+            print(f"[predict-serve] bootstrap failed: {bootstrap_error}", file=sys.stderr)
+            return 1
+        r2 = _load_r2_config()
+        predict_fn = _make_predict_fn(database_url, models_dir, source_url, r2)
+        rescore_fn = _make_rescore_fn(database_url, models_dir, source_url, r2)
+        serve_http(HTTP_PORT, predict_fn, rescore_fn)
+        return 0  # unreachable but satisfies the return type
+
     started = time.monotonic()
     _start_liveness_thread(LIVENESS_PORT)
     try:
