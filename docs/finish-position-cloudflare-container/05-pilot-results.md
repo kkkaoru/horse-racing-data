@@ -310,3 +310,67 @@ keepalive は解決したが、**head-to-head layer の DuckDB OOM** で feature
   残る障壁は実行環境のメモリのみで、コード/データ経路は確証済み。
 - `memory_budget_kernel_panic` の教訓と整合: DuckDB は memory_limit/threads/temp spill の明示が必須。
   CF firecracker では host メモリが固定 (12 GiB) のため、Mac (24 GiB Colima) で通っても CF で OOM する。
+
+---
+
+## Phase 4: DuckDB OOM 修正 (2026-06-19)
+
+### 修正内容
+
+OOM の根本原因は 2 層構造:
+
+1. **メモリ limit の誤検出** — `_resource_defaults.py` の自動算出が `/proc/meminfo` を参照しており、
+   Colima VM の全体メモリ (~23 GiB) を報告していた。`docker --memory=12g` によるcgroup v2 制限
+   (`/sys/fs/cgroup/memory.max` = 12 GiB) を認識できず、memory_limit が ~10-11 GiB に設定されて
+   cgroup に上限を超えて OOM kill されていた。
+
+2. **`stage_current_pair_aggregates` の O(全期間²) クエリ** — `current_field` を race_history
+   (NAR 全期間 2.4M 行) に対して自己 JOIN していたため、推論時 (60 races のみ) でも
+   訓練時と同等の 18M pair rows を生成・JOIN するメモリピークが発生していた。
+
+### 採用案: 案 A (メモリ規律 + クエリ最適化)
+
+`instance_type` 変更 (案 B) は不要。以下 3 つの変更で案 A が成立した:
+
+| 変更                                                                                     | 効果                                                                                                   |
+| ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `_resource_defaults.py`: cgroup v2 検出                                                  | `/sys/fs/cgroup/memory.max` を優先して CF container の 12 GiB を正確に取得                             |
+| `_resource_defaults.py`: `DEFAULT_MEM_FRACTION` 0.66→0.50                                | OS + Python overhead 用に 50% 残す → CF では 6 GiB limit                                               |
+| `_resource_defaults.py`: threads を memory cap で制限                                    | `floor(6 / 1.5) = 4` threads (= standard-4 の vCPU 数と一致) で per-thread 並列 hash join メモリを抑制 |
+| `_resource_defaults.py`: `temp_directory` + `max_temp_directory_size` を常に設定         | memory_limit 超過時に disk spill で OOM を回避                                                         |
+| `add-head-to-head-features.py`: `stage_target_races` 追加                                | 入力 parquet の race key を抽出 (推論時: ~60 race keys のみ)                                           |
+| `add-head-to-head-features.py`: `stage_current_pair_aggregates` に target_races フィルタ | `current_field = race_history ⋈ target_races` で O(全期間²) → O(60²) に削減                            |
+
+### `--memory=12g` 実測結果 (NAR, runDate=20260619)
+
+| 項目                      | 値                                                                                            |
+| ------------------------- | --------------------------------------------------------------------------------------------- |
+| Docker image              | `finish-position-predict-local:cf-oom-fix`                                                    |
+| memory_limit (検出値)     | `6GB` (cgroup v2 12 GiB の 50%)                                                               |
+| threads (自動算出)        | `4` (= floor(6GB / 1.5) = FALLBACK_THREADS)                                                   |
+| h2h layer (layer-3) 出力  | 177 KB parquet、feat-nar-layer-3/race_year=2026/ に確認                                       |
+| feat-nar-v7-final 列数    | 236 列 (h2h 6 列含む)                                                                         |
+| h2h_encounter_count       | 存在・値正常                                                                                  |
+| OutOfMemoryException      | **なし** (Phase 3 は `5.5 GiB/5.5 GiB` で OOM — 完全解消)                                     |
+| racesPredicted (本テスト) | result 到達 (UPSERT は read-only replica 接続のため `ReadOnlySqlTransaction`、**h2h は通過**) |
+| 所要時間                  | **788s (~13.1 分)** = CF 15 分 Queue consumer 枠内                                            |
+
+### Mac 非回帰確認
+
+- cgroup v2 は macOS に存在しない → `sysctl -n hw.memsize` が引き続き優先される
+- Mac (48 GiB 物理) では memory_limit = 24 GB、threads = min(15, floor(24/1.5)) = 15 → cap 効かず従来と同等
+- Mac の Colima (24 GiB) では memory_limit = 12 GB、threads = min(12, floor(12/1.5)) = 8 → 上限は Mac 時代より小さいが安全域
+- spill は memory_limit 超過時のみ発火 — Mac ではほぼ発火しない
+- Python tests: **2411 passed (97.26% cov)** — 回帰なし (4 tests 追加)
+
+### Go/No-Go 判定 (Phase 4 = OOM 修正): **GO (h2h 通過)** / deploy 保留
+
+OOM は完全解消。h2h layer の出力・列数・値が正常。所要 788s は 15 分枠内。
+`racesPredicted>0` の最終確証は read-only 制限のない Neon 接続 (production secret) で
+CF deploy 後に取得する。**Mac launchd authority は維持**。
+
+### 次ステップ
+
+1. 本 commit を main に push (orchestrator が実施)
+2. CF deploy + 本番 pilot (`/predict?category=nar&runDate=<当日>`) で `racesPredicted>0` を確認
+3. JRA / Ban-ei カテゴリ smoke
