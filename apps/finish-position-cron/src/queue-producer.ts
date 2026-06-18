@@ -1,6 +1,6 @@
 // Run with bun. Enqueues per-category predict messages onto PREDICT_QUEUE.
 
-import type { Env, PredictCategory, PredictQueueMessage } from "./types";
+import type { Env, PredictCategory, PredictMode, PredictQueueMessage } from "./types";
 
 const ALL_CATEGORIES: PredictCategory[] = ["jra", "nar", "ban-ei"];
 
@@ -9,6 +9,7 @@ interface EnqueuePredictParams {
   runDate: string;
   runYmd: string;
   daysAhead: number;
+  mode: PredictMode;
   category?: PredictCategory;
 }
 
@@ -19,6 +20,7 @@ export const enqueuePredict = async (params: EnqueuePredictParams): Promise<Pred
       params.env.PREDICT_QUEUE.send({
         category: cat,
         daysAhead: params.daysAhead,
+        mode: params.mode,
         runDate: params.runDate,
         runDateIso: params.runDate,
         runYmd: params.runYmd,

@@ -41,6 +41,7 @@ const stubFetchMock = vi.fn(
 const getMock = vi.fn(() => ({ fetch: stubFetchMock }));
 
 const makeEnv = (): Env => ({
+  FEATURES_CACHE: {} as unknown as R2Bucket,
   FINISH_POSITION_CRON_DB: {} as unknown as D1Database,
   FINISH_POSITION_PREDICT_CONTAINER: {
     get: getMock,
@@ -59,6 +60,7 @@ const makeMessage = (overrides: Partial<PredictQueueMessage> = {}): Message<Pred
     body: {
       category: "jra",
       daysAhead: 2,
+      mode: "full",
       runDate: "2026-06-03",
       runDateIso: "2026-06-03",
       runYmd: "20260603",
@@ -102,11 +104,25 @@ test("writes started state when not already running", async () => {
   );
 });
 
-test("calls stub.fetch with correct URL", async () => {
+test("calls stub.fetch with correct URL including mode=full", async () => {
   await handleQueue(makeBatch([makeMessage()]), makeEnv());
   expect(stubFetchMock).toHaveBeenCalledTimes(1);
   const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
-  expect(fetchRequest.url).toBe("http://do/predict?category=jra&daysAhead=2&runDate=2026-06-03");
+  expect(fetchRequest.url).toBe(
+    "http://do/predict?category=jra&daysAhead=2&mode=full&runDate=2026-06-03",
+  );
+});
+
+test("calls stub.fetch with mode=rescore when message has mode rescore", async () => {
+  await handleQueue(
+    makeBatch([makeMessage({ daysAhead: 0, mode: "rescore", runDate: "2026-06-19" })]),
+    makeEnv(),
+  );
+  expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
+  expect(fetchRequest.url).toBe(
+    "http://do/predict?category=jra&daysAhead=0&mode=rescore&runDate=2026-06-19",
+  );
 });
 
 test("writes success state and acks on success", async () => {
@@ -137,4 +153,14 @@ test("processes multiple messages in batch", async () => {
   await handleQueue(makeBatch([msg1, msg2, msg3]), makeEnv());
   expect(stubFetchMock).toHaveBeenCalledTimes(3);
   expect(ackMock).toHaveBeenCalledTimes(3);
+});
+
+test("writes error state and retries when response.body is null", async () => {
+  stubFetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+  await handleQueue(makeBatch([makeMessage()]), makeEnv());
+  expect(writeRunStateMock).toHaveBeenLastCalledWith(
+    expect.objectContaining({ state: expect.objectContaining({ status: "error" }) }),
+  );
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).not.toHaveBeenCalled();
 });

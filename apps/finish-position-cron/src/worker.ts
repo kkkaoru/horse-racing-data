@@ -3,18 +3,27 @@
 import { getContainer } from "@cloudflare/containers";
 import { buildAuditBindParams, buildAuditInsertSql, buildAuditRecord } from "./audit";
 import { FinishPositionPredictContainer } from "./container-class";
-import { PREDICT_CRON, shouldRunPredictCron, shouldRunWarmCron } from "./cron-decision";
+import {
+  PREDICT_CRON,
+  shouldRunPredictCron,
+  shouldRunRescoreCron,
+  shouldRunWarmCron,
+} from "./cron-decision";
 import { buildPredictStartOptions } from "./dispatch";
 import { warmNeon } from "./neon-warm";
 import { handleQueue } from "./queue-consumer";
 import { enqueuePredict } from "./queue-producer";
 import { getRunDateJst, getRunYmdJst } from "./time";
 import { isAuthorized, isTriggerRequest, parseRunDates } from "./trigger";
-import type { CronAuditRecord, Env, PredictQueueMessage, RunDates } from "./types";
+import type { CronAuditRecord, Env, PredictMode, PredictQueueMessage, RunDates } from "./types";
 
 const CONTAINER_INSTANCE_NAME = "daily-finish-position-predict";
 const ZERO_RACES = 0;
 const RUN_DATE_FIELD = "runDate";
+const MODE_FIELD = "mode";
+const DEFAULT_MODE: PredictMode = "full";
+const VALID_MODES: ReadonlySet<string> = new Set(["full", "rescore"]);
+const RESCORE_DAYS_AHEAD = 0;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_ACCEPTED = 202;
@@ -48,6 +57,13 @@ const runPrediction = async (env: Env, dates: RunDates): Promise<void> => {
   );
 };
 
+const resolveMode = (body: Record<string, unknown>): PredictMode => {
+  const requested = body[MODE_FIELD];
+  return typeof requested === "string" && VALID_MODES.has(requested)
+    ? (requested as PredictMode)
+    : DEFAULT_MODE;
+};
+
 const resolveTriggerDates = (body: Record<string, unknown>): RunDates => {
   const requested = body[RUN_DATE_FIELD];
   if (typeof requested === "string") {
@@ -69,10 +85,13 @@ const handleTrigger = async (request: Request, env: Env): Promise<Response> => {
   if (!isAuthorized(request.headers.get("authorization"), env.TRIGGER_TOKEN)) {
     return Response.json({ error: "unauthorized", ok: false }, { status: HTTP_UNAUTHORIZED });
   }
-  const dates = resolveTriggerDates(await parseBody(request));
+  const body = await parseBody(request);
+  const dates = resolveTriggerDates(body);
+  const mode = resolveMode(body);
   const queued = await enqueuePredict({
     daysAhead: Number(env.PREDICT_DAYS_AHEAD),
     env,
+    mode,
     runDate: dates.runDate,
     runYmd: dates.runYmd,
   });
@@ -98,6 +117,19 @@ export const handleFetch = async (request: Request, env: Env): Promise<Response>
 export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<void> => {
   if (shouldRunWarmCron(event.cron)) {
     await warmNeon(env.NEON_DATABASE_URL);
+    return;
+  }
+  if (shouldRunRescoreCron(event.cron)) {
+    // Enqueue rescore messages for all categories (race-hours freshness).
+    // daysAhead=0: only today's races need re-scoring.
+    const scheduledAt = new Date(event.scheduledTime);
+    await enqueuePredict({
+      daysAhead: RESCORE_DAYS_AHEAD,
+      env,
+      mode: "rescore",
+      runDate: getRunDateJst(scheduledAt),
+      runYmd: getRunYmdJst(scheduledAt),
+    });
     return;
   }
   if (!shouldRunPredictCron(event.cron)) {

@@ -4,6 +4,10 @@ import type { Container } from "@cloudflare/containers";
 
 export type PredictCategory = "jra" | "nar" | "ban-ei";
 
+// "full" = full DuckDB feature build + score + write features to R2 cache.
+// "rescore" = read cached features from R2 + latest odds + re-score only (no 21y Neon scan).
+export type PredictMode = "full" | "rescore";
+
 export interface Env {
   FINISH_POSITION_PREDICT_CONTAINER: DurableObjectNamespace<Container<Env>>;
   FINISH_POSITION_CRON_DB: D1Database;
@@ -12,6 +16,8 @@ export interface Env {
   TRIGGER_TOKEN: string;
   PREDICT_STATE: KVNamespace;
   PREDICT_QUEUE: Queue<PredictQueueMessage>;
+  // R2 binding for per-run feature parquet cache (full→put, rescore→get).
+  FEATURES_CACHE: R2Bucket;
 }
 
 export type CronAuditStatus = "started" | "success" | "error";
@@ -41,6 +47,7 @@ export interface PredictQueueMessage {
   runYmd: string;
   category: PredictCategory;
   daysAhead: number;
+  mode: PredictMode;
 }
 
 export interface PredictRunState {

@@ -5,6 +5,7 @@ import { buildPredictStartOptions } from "./dispatch";
 import type { Env } from "./types";
 
 const makeEnv = (overrides: Partial<Env>): Env => ({
+  FEATURES_CACHE: {} as unknown as R2Bucket,
   FINISH_POSITION_CRON_DB: {} as unknown as D1Database,
   FINISH_POSITION_PREDICT_CONTAINER: {} as unknown as Env["FINISH_POSITION_PREDICT_CONTAINER"],
   NEON_DATABASE_URL: "postgres://example",
