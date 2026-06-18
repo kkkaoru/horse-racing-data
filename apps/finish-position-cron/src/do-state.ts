@@ -8,6 +8,7 @@ const DO_NAME = "predict-run-coordinator";
 const CLAIM_PATH = "/claim";
 const COMPLETE_PATH = "/complete";
 const STATE_PATH = "/state";
+const CLAIM_RACE_PATH = "/claim-race";
 const DO_HOST = "http://do";
 const HTTP_OK = 200;
 
@@ -28,6 +29,14 @@ interface ClaimParams {
   env: Env;
   runYmd: string;
   category: string;
+}
+
+interface ClaimRaceParams {
+  env: Env;
+  runYmd: string;
+  category: string;
+  keibajoCode: string;
+  raceBango: string;
 }
 
 const getCoordinatorStub = (env: Env): DurableObjectStub => {
@@ -67,6 +76,29 @@ export const completeRun = async (params: CompleteParams): Promise<void> => {
   if (response.status !== HTTP_OK) {
     throw new Error(`DO complete failed: ${response.status}`);
   }
+};
+
+// Per-race rescore claim. Returns proceed:true only for the first caller of a
+// (runYmd, category, keibajo, race); later callers get proceed:false so the
+// per-race coordinator enqueues each race for rescore at most once per day.
+export const claimRescoreRace = async (params: ClaimRaceParams): Promise<ClaimResult> => {
+  const stub = getCoordinatorStub(params.env);
+  const response = await stub.fetch(
+    new Request(`${DO_HOST}${CLAIM_RACE_PATH}`, {
+      body: JSON.stringify({
+        category: params.category,
+        keibajoCode: params.keibajoCode,
+        raceBango: params.raceBango,
+        runYmd: params.runYmd,
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    }),
+  );
+  if (response.status !== HTTP_OK) {
+    throw new Error(`DO claim-race failed: ${response.status}`);
+  }
+  return response.json() as Promise<ClaimResult>;
 };
 
 export const getRunState = async (params: ClaimParams): Promise<unknown> => {

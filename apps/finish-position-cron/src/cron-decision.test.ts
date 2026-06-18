@@ -2,11 +2,13 @@
 
 import { expect, test } from "vitest";
 import {
+  COORDINATOR_CRON_RACE_HOURS,
   PREDICT_CRON,
   RESCORE_CRON_RACE_HOURS,
   WARM_CRON_PRE_JRA,
   WARM_CRON_PRE_NAR,
   WARM_CRON_RACE_HOURS,
+  shouldRunCoordinatorCron,
   shouldRunPredictCron,
   shouldRunRescoreCron,
   shouldRunWarmCron,
@@ -92,4 +94,32 @@ test("shouldRunRescoreCron rejects an empty string", () => {
 
 test("shouldRunRescoreCron rejects an unrelated cron", () => {
   expect(shouldRunRescoreCron("*/10 * * * *")).toBe(false);
+});
+
+test("COORDINATOR_CRON_RACE_HOURS is the every-5-min race-hours schedule", () => {
+  expect(COORDINATOR_CRON_RACE_HOURS).toBe("*/5 1-11 * * *");
+});
+
+test("shouldRunCoordinatorCron matches the coordinator race-hours cron", () => {
+  expect(shouldRunCoordinatorCron("*/5 1-11 * * *")).toBe(true);
+});
+
+test("shouldRunCoordinatorCron rejects the rescore cron", () => {
+  expect(shouldRunCoordinatorCron("*/20 1-11 * * *")).toBe(false);
+});
+
+test("shouldRunCoordinatorCron rejects the warm race-hours cron", () => {
+  expect(shouldRunCoordinatorCron("*/30 1-11 * * *")).toBe(false);
+});
+
+test("shouldRunCoordinatorCron rejects the predict cron", () => {
+  expect(shouldRunCoordinatorCron("0 18 * * *")).toBe(false);
+});
+
+test("shouldRunCoordinatorCron rejects an empty string", () => {
+  expect(shouldRunCoordinatorCron("")).toBe(false);
+});
+
+test("shouldRunWarmCron rejects the coordinator cron", () => {
+  expect(shouldRunWarmCron("*/5 1-11 * * *")).toBe(false);
 });

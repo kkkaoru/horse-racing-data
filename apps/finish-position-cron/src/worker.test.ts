@@ -3,21 +3,28 @@
 
 import { beforeEach, expect, test, vi } from "vitest";
 
-const { startMock, getContainerMock, warmNeonMock, enqueueMock, handleQueueMock } = vi.hoisted(
-  () => {
-    const start = vi.fn(async () => undefined);
-    const warmNeon = vi.fn(async () => undefined);
-    const enqueuePredict = vi.fn(async () => ["jra", "nar", "ban-ei"]);
-    const handleQueue = vi.fn(async () => undefined);
-    return {
-      getContainerMock: vi.fn(() => ({ start })),
-      startMock: start,
-      warmNeonMock: warmNeon,
-      enqueueMock: enqueuePredict,
-      handleQueueMock: handleQueue,
-    };
-  },
-);
+const {
+  startMock,
+  getContainerMock,
+  warmNeonMock,
+  enqueueMock,
+  handleQueueMock,
+  coordinatorTickMock,
+} = vi.hoisted(() => {
+  const start = vi.fn(async () => undefined);
+  const warmNeon = vi.fn(async () => undefined);
+  const enqueuePredict = vi.fn(async () => ["jra", "nar", "ban-ei"]);
+  const handleQueue = vi.fn(async () => undefined);
+  const runRaceCoordinatorTick = vi.fn(async () => []);
+  return {
+    getContainerMock: vi.fn(() => ({ start })),
+    startMock: start,
+    warmNeonMock: warmNeon,
+    enqueueMock: enqueuePredict,
+    handleQueueMock: handleQueue,
+    coordinatorTickMock: runRaceCoordinatorTick,
+  };
+});
 
 vi.mock("@cloudflare/containers", () => ({
   Container: class {},
@@ -31,6 +38,11 @@ vi.mock("./neon-warm", () => ({
 vi.mock("./queue-producer", () => ({ enqueuePredict: enqueueMock }));
 
 vi.mock("./queue-consumer", () => ({ handleQueue: handleQueueMock }));
+
+vi.mock("./race-coordinator", () => ({
+  DEFAULT_RESCORE_LEAD_MINUTES: 25,
+  runRaceCoordinatorTick: coordinatorTickMock,
+}));
 
 import workerDefault, { handleFetch, handleScheduled } from "./worker";
 import type { Env } from "./types";
@@ -47,6 +59,7 @@ const makeEnv = (): Env => ({
   PREDICT_DAYS_AHEAD: "2",
   PREDICT_QUEUE: {} as unknown as Env["PREDICT_QUEUE"],
   PREDICT_RUN_COORDINATOR: {} as unknown as Env["PREDICT_RUN_COORDINATOR"],
+  REALTIME_DB: {} as unknown as D1Database,
   TRIGGER_TOKEN: "secret-token",
 });
 
@@ -71,7 +84,9 @@ beforeEach(() => {
   warmNeonMock.mockClear();
   enqueueMock.mockClear();
   handleQueueMock.mockClear();
+  coordinatorTickMock.mockClear();
   enqueueMock.mockResolvedValue(["jra", "nar", "ban-ei"]);
+  coordinatorTickMock.mockResolvedValue([]);
 });
 
 test("fetch returns a health payload for GET", async () => {
@@ -206,6 +221,25 @@ test("handleScheduled rescore enqueue does not start container", async () => {
   await handleScheduled(makeEvent("*/20 1-11 * * *"), makeEnv());
   expect(startMock).not.toHaveBeenCalled();
   expect(prepareMock).not.toHaveBeenCalled();
+});
+
+test("handleScheduled runs the per-race coordinator for the coordinator cron", async () => {
+  await handleScheduled(makeEvent("*/5 1-11 * * *"), makeEnv());
+  expect(coordinatorTickMock).toHaveBeenCalledTimes(1);
+  expect(coordinatorTickMock).toHaveBeenCalledWith(expect.objectContaining({ leadMinutes: 25 }));
+});
+
+test("handleScheduled coordinator cron does not start container or warm or enqueue per-category", async () => {
+  await handleScheduled(makeEvent("*/5 1-11 * * *"), makeEnv());
+  expect(startMock).not.toHaveBeenCalled();
+  expect(prepareMock).not.toHaveBeenCalled();
+  expect(warmNeonMock).not.toHaveBeenCalled();
+  expect(enqueueMock).not.toHaveBeenCalled();
+});
+
+test("handleScheduled does not run the coordinator for the rescore cron", async () => {
+  await handleScheduled(makeEvent("*/20 1-11 * * *"), makeEnv());
+  expect(coordinatorTickMock).not.toHaveBeenCalled();
 });
 
 test("queue default handler delegates to handleQueue", async () => {

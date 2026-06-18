@@ -202,3 +202,96 @@ test("fetch GET /state without query params uses empty string keys and returns n
   const body = (await response.json()) as { state: null };
   expect(body.state).toBe(null);
 });
+
+test("claimRace returns proceed:true for a new per-race key", async () => {
+  const coordinator = makeCoordinator();
+  const result = await coordinator.claimRace({
+    category: "jra",
+    keibajoCode: "05",
+    raceBango: "11",
+    runYmd: "20260619",
+  });
+  expect(result).toStrictEqual({ proceed: true });
+  expect(storageMock.put).toHaveBeenCalledTimes(1);
+});
+
+test("claimRace stores the per-race key under the rescore namespace", async () => {
+  const coordinator = makeCoordinator();
+  await coordinator.claimRace({
+    category: "jra",
+    keibajoCode: "05",
+    raceBango: "11",
+    runYmd: "20260619",
+  });
+  const [key] = storageMock.put.mock.calls[0] as [string, StoredRecord];
+  expect(key).toBe("rescore:20260619:jra:05:11");
+});
+
+test("claimRace returns proceed:false when the per-race key already exists", async () => {
+  storageMap.set("rescore:20260619:jra:05:11", { status: "enqueued", timestamp: 1000 });
+  const coordinator = makeCoordinator();
+  const result = await coordinator.claimRace({
+    category: "jra",
+    keibajoCode: "05",
+    raceBango: "11",
+    runYmd: "20260619",
+  });
+  expect(result).toStrictEqual({ proceed: false, state: "enqueued" });
+  expect(storageMock.put).not.toHaveBeenCalled();
+});
+
+test("claimRace uses blockConcurrencyWhile for serialisation", async () => {
+  const coordinator = makeCoordinator();
+  await coordinator.claimRace({
+    category: "nar",
+    keibajoCode: "30",
+    raceBango: "02",
+    runYmd: "20260619",
+  });
+  expect(blockConcurrencyWhileMock).toHaveBeenCalledTimes(1);
+});
+
+test("fetch POST /claim-race returns proceed:true for a new race", async () => {
+  const coordinator = makeCoordinator();
+  const request = new Request("http://do/claim-race", {
+    body: JSON.stringify({
+      category: "jra",
+      keibajoCode: "05",
+      raceBango: "11",
+      runYmd: "20260619",
+    }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  const response = await coordinator.fetch(request);
+  expect(response.status).toBe(200);
+  const body = (await response.json()) as { proceed: boolean };
+  expect(body.proceed).toBe(true);
+});
+
+test("fetch POST /claim-race returns proceed:false when already claimed", async () => {
+  storageMap.set("rescore:20260619:jra:05:11", { status: "enqueued", timestamp: 1000 });
+  const coordinator = makeCoordinator();
+  const request = new Request("http://do/claim-race", {
+    body: JSON.stringify({
+      category: "jra",
+      keibajoCode: "05",
+      raceBango: "11",
+      runYmd: "20260619",
+    }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  const response = await coordinator.fetch(request);
+  expect(response.status).toBe(200);
+  const body = (await response.json()) as { proceed: boolean; state: string };
+  expect(body.proceed).toBe(false);
+  expect(body.state).toBe("enqueued");
+});
+
+test("fetch GET /claim-race returns 405 method not allowed", async () => {
+  const coordinator = makeCoordinator();
+  const request = new Request("http://do/claim-race");
+  const response = await coordinator.fetch(request);
+  expect(response.status).toBe(405);
+});

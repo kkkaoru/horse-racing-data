@@ -23,6 +23,13 @@
       "55 17 * * *", // JST 02:55 — Neon pre-wake (NAR/Ban-ei)
       "25 0 * * *", // JST 09:25 — Neon pre-wake (JRA)
       "*/30 1-11 * * *", // JST 10:00-20:59 — Neon keep-warm during race hours
+      // Per-race coordinator cron (every 5 min, JST 10:00-20:59): inspects
+      // realtime_race_sources.race_start_at_jst and enqueues a per-race rescore
+      // message for each race within T-X of post time. SHADOW-SAFE: the per-race
+      // rescore consumer (task B) is not wired yet, so an enqueued message has
+      // no effect on production predictions — it only reads D1 + writes the
+      // queue, and never starts the container or touches predict / warm crons.
+      "*/5 1-11 * * *", // JST 10:00-20:59 — per-race rescore coordinator (shadow)
       // Race-hours rescore cron (every 20 min, JST 10:00-20:59) is intentionally
       // disabled until PHASE 3 pilot confirms full-mode container viability.
       // To enable: uncomment the line below and wrangler deploy.
@@ -67,9 +74,26 @@
       "database_name": "finish-position-cron-db",
       "database_id": "9475ef83-d1da-4b47-9251-0cb431176aa8",
     },
+    {
+      // Read-only access to the sync-realtime-data D1, which owns
+      // realtime_race_sources (race_start_at_jst = JST ISO post time). The
+      // per-race coordinator only SELECTs from this DB to gate which races are
+      // within their T-X rescore window. Same source the running-style
+      // coordinator and the launchd race-prediction guard already read; Neon
+      // does not carry race_start_at_jst and a service binding would add an
+      // HTTP hop, so a direct read-only D1 binding is the shortest read path.
+      "binding": "REALTIME_DB",
+      "database_name": "sync-realtime-data",
+      "database_id": "d12ebd45-2aff-4d74-8556-295c1da9177e",
+    },
   ],
   "vars": {
     "PREDICT_DAYS_AHEAD": "2",
+    // Per-race coordinator shadow gate. "0" (default) = the coordinator cron
+    // fires but enqueues nothing, so deploying it does not change production
+    // predictions. Flip to "1" only after the per-race rescore consumer (task B)
+    // is wired and verified.
+    "COORDINATOR_ENABLED": "0",
   },
   "queues": {
     "producers": [{ "binding": "PREDICT_QUEUE", "queue": "finish-position-predict-queue" }],

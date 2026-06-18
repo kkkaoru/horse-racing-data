@@ -18,10 +18,11 @@ const makeEnv = (): Env => ({
     get: getMock,
     idFromName: idFromNameMock,
   } as unknown as Env["PREDICT_RUN_COORDINATOR"],
+  REALTIME_DB: {} as unknown as D1Database,
   TRIGGER_TOKEN: "secret-token",
 });
 
-import { claimRun, completeRun, getRunState } from "./do-state";
+import { claimRescoreRace, claimRun, completeRun, getRunState } from "./do-state";
 
 beforeEach(() => {
   fetchMock.mockClear();
@@ -107,4 +108,68 @@ test("getRunState throws when DO returns non-200", async () => {
 test("claimRun uses singleton DO name predict-run-coordinator", async () => {
   await claimRun({ category: "jra", env: makeEnv(), runYmd: "20260603" });
   expect(idFromNameMock).toHaveBeenCalledWith("predict-run-coordinator");
+});
+
+test("claimRescoreRace calls DO /claim-race and returns the result", async () => {
+  fetchMock.mockResolvedValue(new Response(JSON.stringify({ proceed: true }), { status: 200 }));
+  const result = await claimRescoreRace({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "11",
+    runYmd: "20260619",
+  });
+  expect(result).toStrictEqual({ proceed: true });
+  const req = (fetchMock.mock.calls[0] as [Request])[0];
+  expect(req.url).toBe("http://do/claim-race");
+  expect(req.method).toBe("POST");
+});
+
+test("claimRescoreRace sends the per-race key fields in the body", async () => {
+  fetchMock.mockResolvedValue(new Response(JSON.stringify({ proceed: true }), { status: 200 }));
+  await claimRescoreRace({
+    category: "nar",
+    env: makeEnv(),
+    keibajoCode: "30",
+    raceBango: "02",
+    runYmd: "20260619",
+  });
+  const req = (fetchMock.mock.calls[0] as [Request])[0];
+  const body = (await req.json()) as {
+    category: string;
+    keibajoCode: string;
+    raceBango: string;
+    runYmd: string;
+  };
+  expect(body.category).toBe("nar");
+  expect(body.keibajoCode).toBe("30");
+  expect(body.raceBango).toBe("02");
+  expect(body.runYmd).toBe("20260619");
+});
+
+test("claimRescoreRace returns proceed:false when DO returns it", async () => {
+  fetchMock.mockResolvedValue(
+    new Response(JSON.stringify({ proceed: false, state: "enqueued" }), { status: 200 }),
+  );
+  const result = await claimRescoreRace({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "11",
+    runYmd: "20260619",
+  });
+  expect(result).toStrictEqual({ proceed: false, state: "enqueued" });
+});
+
+test("claimRescoreRace throws when DO returns non-200", async () => {
+  fetchMock.mockResolvedValue(new Response("error", { status: 500 }));
+  await expect(
+    claimRescoreRace({
+      category: "jra",
+      env: makeEnv(),
+      keibajoCode: "05",
+      raceBango: "11",
+      runYmd: "20260619",
+    }),
+  ).rejects.toThrow("DO claim-race failed: 500");
 });

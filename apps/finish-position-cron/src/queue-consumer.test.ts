@@ -56,6 +56,7 @@ const makeEnv = (): Env => ({
   PREDICT_DAYS_AHEAD: "2",
   PREDICT_QUEUE: {} as unknown as Env["PREDICT_QUEUE"],
   PREDICT_RUN_COORDINATOR: {} as unknown as Env["PREDICT_RUN_COORDINATOR"],
+  REALTIME_DB: {} as unknown as D1Database,
   TRIGGER_TOKEN: "secret-token",
 });
 

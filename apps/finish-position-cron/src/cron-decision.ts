@@ -26,6 +26,13 @@ export const WARM_CRON_RACE_HOURS = "*/30 1-11 * * *";
 // NOTE: This cron is NOT active in wrangler.jsonc triggers yet — enabled after pilot phase.
 export const RESCORE_CRON_RACE_HOURS = "*/20 1-11 * * *";
 
+// Per-race coordinator cron: every 5 min during race hours
+// (01:00-11:59 UTC == JST 10:00-20:59). Finer-grained than RESCORE so each race
+// can be enqueued close to its post time T-X window. Shadow-safe: it only
+// enqueues per-race rescore messages; it does not start the container or touch
+// the predict / warm crons. Mirrors the running-style "*/10" coordinator.
+export const COORDINATOR_CRON_RACE_HOURS = "*/5 1-11 * * *";
+
 const WARM_CRONS: ReadonlySet<string> = new Set([
   WARM_CRON_PRE_NAR,
   WARM_CRON_PRE_JRA,
@@ -33,6 +40,8 @@ const WARM_CRONS: ReadonlySet<string> = new Set([
 ]);
 
 const RESCORE_CRONS: ReadonlySet<string> = new Set([RESCORE_CRON_RACE_HOURS]);
+
+const COORDINATOR_CRONS: ReadonlySet<string> = new Set([COORDINATOR_CRON_RACE_HOURS]);
 
 // Only the configured cron triggers a prediction run. Any other cron string
 // (or no cron at all, which is the deployed state) is ignored.
@@ -43,3 +52,6 @@ export const shouldRunWarmCron = (cron: string): boolean => WARM_CRONS.has(cron)
 
 // Returns true when the cron string matches one of the rescore (race-hours freshness) schedules.
 export const shouldRunRescoreCron = (cron: string): boolean => RESCORE_CRONS.has(cron);
+
+// Returns true when the cron string matches the per-race coordinator schedule.
+export const shouldRunCoordinatorCron = (cron: string): boolean => COORDINATOR_CRONS.has(cron);

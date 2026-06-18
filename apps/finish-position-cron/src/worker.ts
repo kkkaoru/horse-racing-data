@@ -5,6 +5,7 @@ import { buildAuditBindParams, buildAuditInsertSql, buildAuditRecord } from "./a
 import { FinishPositionPredictContainer } from "./container-class";
 import {
   PREDICT_CRON,
+  shouldRunCoordinatorCron,
   shouldRunPredictCron,
   shouldRunRescoreCron,
   shouldRunWarmCron,
@@ -14,6 +15,7 @@ import { warmNeon } from "./neon-warm";
 import { PredictRunCoordinator } from "./predict-run-coordinator";
 import { handleQueue } from "./queue-consumer";
 import { enqueuePredict } from "./queue-producer";
+import { DEFAULT_RESCORE_LEAD_MINUTES, runRaceCoordinatorTick } from "./race-coordinator";
 import { getRunDateJst, getRunYmdJst } from "./time";
 import { isAuthorized, isTriggerRequest, parseRunDates } from "./trigger";
 import type {
@@ -135,6 +137,18 @@ export const handleFetch = async (request: Request, env: Env): Promise<Response>
 export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<void> => {
   if (shouldRunWarmCron(event.cron)) {
     await warmNeon(env.NEON_DATABASE_URL);
+    return;
+  }
+  if (shouldRunCoordinatorCron(event.cron)) {
+    // Per-race timing layer: enqueue rescore messages for races within T-X of
+    // post time. Shadow-safe — the rescore consumer (task B) is not wired yet,
+    // so an enqueued message is a no-op for production predictions. Does not
+    // start the container or touch the predict / warm crons.
+    await runRaceCoordinatorTick({
+      env,
+      leadMinutes: DEFAULT_RESCORE_LEAD_MINUTES,
+      now: new Date(event.scheduledTime),
+    });
     return;
   }
   if (shouldRunRescoreCron(event.cron)) {
