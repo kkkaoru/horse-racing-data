@@ -3,16 +3,26 @@
 Covers: parse_predict_params (incl. mode param), parse_request_path,
 mask_error_message, build_progress_line, build_result_line,
 build_r2_feat_cache_key, iter_predict_chunks (mode=full, mode=rescore,
-rescore-fallback), CacheMissError.
+rescore-fallback, threaded keepalive), CacheMissError.
 
 ``_predict_category`` is mocked via the ``predict_fn`` / ``rescore_fn``
 arguments so no real Neon / DuckDB / ML I/O is performed.  Coverage is
 measured under ``--cov=predict_lib`` (``pyproject.toml``).
+
+Threading keepalive design note
+---------------------------------
+``iter_predict_chunks`` runs the prediction callable in a background thread
+and yields progress lines at ``progress_interval_s`` intervals while the
+thread is alive.  Tests that exercise this behaviour inject:
+  - ``sleep_fn=_noop_sleep`` to avoid real 1-second sleeps (existing tests).
+  - A ``threading.Event``-controlled predict_fn + a clock that advances on
+    each ``sleep_fn`` call to drive the keepalive loop deterministically.
 """
 
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Callable
 
 import pytest
@@ -21,6 +31,8 @@ from predict_lib.serve import (
     CacheMissError,
     PredictParams,
     R2Config,
+    SleepFn,
+    TimeFn,
     build_progress_line,
     build_r2_feat_cache_key,
     build_result_line,
@@ -29,6 +41,34 @@ from predict_lib.serve import (
     parse_predict_params,
     parse_request_path,
 )
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+
+def _noop_sleep(_: float) -> None:
+    """No-op sleep injected into tests that do not need wall-clock delays."""
+
+
+def _make_time_fn(increments: list[float]) -> Callable[[], float]:
+    """Return a monotonic-clock stub that returns successive values."""
+    calls = iter(increments)
+    current = [0.0]
+
+    def _tick() -> float:
+        try:
+            current[0] = next(calls)
+        except StopIteration:
+            current[0] += 1.0
+        return current[0]
+
+    return _tick
+
+
+def _mock_predict_ok(category: str, run_date: str, days_ahead: int) -> int:
+    return 42
+
 
 # ---------------------------------------------------------------------------
 # parse_request_path
@@ -258,28 +298,9 @@ def test_build_result_line_valid_json() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_time_fn(increments: list[float]) -> Callable[[], float]:
-    """Return a monotonic-clock stub that returns successive values."""
-    calls = iter(increments)
-    current = [0.0]
-
-    def _tick() -> float:
-        try:
-            current[0] = next(calls)
-        except StopIteration:
-            current[0] += 1.0
-        return current[0]
-
-    return _tick
-
-
-def _mock_predict_ok(category: str, run_date: str, days_ahead: int) -> int:
-    return 42
-
-
 def test_iter_predict_chunks_success_yields_progress_then_result() -> None:
     params = PredictParams(category="jra", run_date="20260619", days_ahead=0)
-    chunks = list(iter_predict_chunks(params, _mock_predict_ok))
+    chunks = list(iter_predict_chunks(params, _mock_predict_ok, sleep_fn=_noop_sleep))
 
     # At minimum: starting + predict + result lines
     assert len(chunks) >= 3
@@ -293,7 +314,7 @@ def test_iter_predict_chunks_success_yields_progress_then_result() -> None:
 
 def test_iter_predict_chunks_result_is_success() -> None:
     params = PredictParams(category="nar", run_date="20260619", days_ahead=1)
-    chunks = list(iter_predict_chunks(params, _mock_predict_ok))
+    chunks = list(iter_predict_chunks(params, _mock_predict_ok, sleep_fn=_noop_sleep))
     last = json.loads(chunks[-1].decode())
     assert last["type"] == "result"
     assert last["status"] == "success"
@@ -304,7 +325,7 @@ def test_iter_predict_chunks_result_is_success() -> None:
 
 def test_iter_predict_chunks_first_chunk_is_starting_progress() -> None:
     params = PredictParams(category="ban-ei", run_date="20260619", days_ahead=0)
-    chunks = list(iter_predict_chunks(params, _mock_predict_ok))
+    chunks = list(iter_predict_chunks(params, _mock_predict_ok, sleep_fn=_noop_sleep))
     first = json.loads(chunks[0].decode())
     assert first["type"] == "progress"
     assert first["stage"] == "starting"
@@ -312,7 +333,7 @@ def test_iter_predict_chunks_first_chunk_is_starting_progress() -> None:
 
 def test_iter_predict_chunks_predict_progress_emitted() -> None:
     params = PredictParams(category="jra", run_date="20260619", days_ahead=0)
-    chunks = list(iter_predict_chunks(params, _mock_predict_ok))
+    chunks = list(iter_predict_chunks(params, _mock_predict_ok, sleep_fn=_noop_sleep))
     parsed = [json.loads(c.decode()) for c in chunks]
     stages = [p.get("stage") for p in parsed if p.get("type") == "progress"]
     assert "predict" in stages
@@ -329,7 +350,7 @@ def _mock_predict_raises(category: str, run_date: str, days_ahead: int) -> int:
 
 def test_iter_predict_chunks_exception_yields_error_result() -> None:
     params = PredictParams(category="jra", run_date="20260619", days_ahead=0)
-    chunks = list(iter_predict_chunks(params, _mock_predict_raises))
+    chunks = list(iter_predict_chunks(params, _mock_predict_raises, sleep_fn=_noop_sleep))
     last = json.loads(chunks[-1].decode())
     assert last["type"] == "result"
     assert last["status"] == "error"
@@ -338,14 +359,14 @@ def test_iter_predict_chunks_exception_yields_error_result() -> None:
 
 def test_iter_predict_chunks_exception_races_predicted_is_zero() -> None:
     params = PredictParams(category="jra", run_date="20260619", days_ahead=0)
-    chunks = list(iter_predict_chunks(params, _mock_predict_raises))
+    chunks = list(iter_predict_chunks(params, _mock_predict_raises, sleep_fn=_noop_sleep))
     last = json.loads(chunks[-1].decode())
     assert last["racesPredicted"] == 0
 
 
 def test_iter_predict_chunks_exception_masks_credentials() -> None:
     params = PredictParams(category="jra", run_date="20260619", days_ahead=0)
-    chunks = list(iter_predict_chunks(params, _mock_predict_raises))
+    chunks = list(iter_predict_chunks(params, _mock_predict_raises, sleep_fn=_noop_sleep))
     last_bytes = chunks[-1]
     assert b"pw" not in last_bytes
     assert b"[REDACTED]" in last_bytes
@@ -353,7 +374,7 @@ def test_iter_predict_chunks_exception_masks_credentials() -> None:
 
 def test_iter_predict_chunks_exception_error_includes_exception_type() -> None:
     params = PredictParams(category="jra", run_date="20260619", days_ahead=0)
-    chunks = list(iter_predict_chunks(params, _mock_predict_raises))
+    chunks = list(iter_predict_chunks(params, _mock_predict_raises, sleep_fn=_noop_sleep))
     last = json.loads(chunks[-1].decode())
     assert "RuntimeError" in last["error"]
 
@@ -366,70 +387,80 @@ def test_iter_predict_chunks_never_raises() -> None:
 
     params = PredictParams(category="jra", run_date="20260619", days_ahead=0)
     # If this raises, the test fails — the generator must catch all exceptions.
-    chunks = list(iter_predict_chunks(params, _explode))
+    chunks = list(iter_predict_chunks(params, _explode, sleep_fn=_noop_sleep))
     assert len(chunks) >= 1
 
 
 # ---------------------------------------------------------------------------
-# iter_predict_chunks — interval-based progress gating
+# iter_predict_chunks — interval-based progress gating (pre-thread checks)
 # ---------------------------------------------------------------------------
 
 
 def test_iter_predict_chunks_feature_build_progress_when_interval_elapsed() -> None:
-    """The feature-build progress line fires when the interval elapses at that checkpoint.
+    """The feature-build progress line fires when interval elapses at that checkpoint.
 
-    time_fn() call order inside iter_predict_chunks:
+    time_fn() call order inside iter_predict_chunks (fast mock, no loop iterations):
       1  started=                          (0.0)
       2  _elapsed() in "starting" yield    (0.0)
       3  last_progress=                    (0.0)
-      4  now= (feature-build gate)         (20.0)  <- now - last_progress = 20 >= 10 -> fires
+      4  now= (feature-build gate)         (20.0)  <- 20 - 0 >= 10 -> fires
       5  _elapsed() in "feature-build"     (20.0)
-      (last_progress = now = 20.0 in branch)
+      (last_progress = 20.0)
       6  _elapsed() in "predict" yield     (20.0)
       7  last_progress=                    (20.0)
-      ...
+      ... keepalive loop (0 iterations for instant mock) ...
+      8+ post-pipeline check
     """
+    # Provide enough values; after index 7 the stub increments by 1.0 each call.
     time_fn = _make_time_fn([0.0, 0.0, 0.0, 20.0, 20.0, 20.0, 20.0, 20.0, 25.0, 30.0])
     params = PredictParams(category="jra", run_date="20260619", days_ahead=0)
     chunks = list(
-        iter_predict_chunks(params, _mock_predict_ok, time_fn=time_fn, progress_interval_s=10.0)
+        iter_predict_chunks(
+            params,
+            _mock_predict_ok,
+            time_fn=time_fn,
+            sleep_fn=_noop_sleep,
+            progress_interval_s=10.0,
+        )
     )
     parsed = [json.loads(c.decode()) for c in chunks]
     stages = {p.get("stage") for p in parsed if p.get("type") == "progress"}
-    # With elapsed time > interval at the feature-build gate, that stage fires
     assert "feature-build" in stages
 
 
 def test_iter_predict_chunks_no_extra_progress_within_interval() -> None:
     """When all calls complete before the interval, no extra progress is emitted."""
-    # All time_fn calls return 0 so interval never elapses
-    time_fn = _make_time_fn([0.0] * 20)
+    # All time_fn calls return 0.0 so interval never elapses.
+    time_fn = _make_time_fn([0.0] * 30)
     params = PredictParams(category="jra", run_date="20260619", days_ahead=0)
     chunks = list(
-        iter_predict_chunks(params, _mock_predict_ok, time_fn=time_fn, progress_interval_s=10.0)
+        iter_predict_chunks(
+            params,
+            _mock_predict_ok,
+            time_fn=time_fn,
+            sleep_fn=_noop_sleep,
+            progress_interval_s=10.0,
+        )
     )
     parsed = [json.loads(c.decode()) for c in chunks]
-    # starting + predict lines must be present (always emitted unconditionally)
-    # feature-build line is skipped when interval has NOT elapsed
     stages = {p.get("stage") for p in parsed if p.get("type") == "progress"}
     assert "starting" in stages
     assert "predict" in stages
+    assert "feature-build" not in stages
 
 
 def test_iter_predict_chunks_post_pipeline_progress_when_interval_elapsed() -> None:
     """After predict_fn returns, a completion progress is emitted if interval elapsed.
 
-    The generator calls time_fn() in this order:
-      1 started=         (setup)
-      2 _elapsed() in "starting" yield
-      3 last_progress=   (after starting)
-      4 now= (feature-build gate)
-      5 _elapsed() in "predict" yield
-      6 last_progress= (reset after "predict" emit)
-      7 now= (post-pipeline check)
-
-    For "complete" to emit: time[7] - time[6] >= interval.
-    We therefore return 0.0 for calls 1-6 and 100.0 for call 7+.
+    time_fn() call order (no feature-build gate, fast mock, 0 loop iterations):
+      1 started=         (0.0)
+      2 _elapsed() "starting"              (0.0)
+      3 last_progress=                     (0.0)
+      4 now= (feature-build gate)          (0.0) -> gate does not fire
+      5 _elapsed() "predict"               (0.0)
+      6 last_progress= (reset)             (0.0)
+      ... loop: 0 iterations for instant mock ...
+      7 now (post-pipeline check)          (100.0) -> 100-0 >= 10 -> fires
     """
     call_count = [0]
 
@@ -441,7 +472,13 @@ def test_iter_predict_chunks_post_pipeline_progress_when_interval_elapsed() -> N
 
     params = PredictParams(category="jra", run_date="20260619", days_ahead=0)
     chunks = list(
-        iter_predict_chunks(params, _mock_predict_ok, time_fn=_slow_time, progress_interval_s=10.0)
+        iter_predict_chunks(
+            params,
+            _mock_predict_ok,
+            time_fn=_slow_time,
+            sleep_fn=_noop_sleep,
+            progress_interval_s=10.0,
+        )
     )
     parsed = [json.loads(c.decode()) for c in chunks]
     stages = {p.get("stage") for p in parsed if p.get("type") == "progress"}
@@ -577,7 +614,7 @@ def test_iter_predict_chunks_mode_full_default_calls_predict_fn() -> None:
         return 5
 
     params = PredictParams(category="jra", run_date="20260619", days_ahead=0, mode="full")
-    chunks = list(iter_predict_chunks(params, _fn))
+    chunks = list(iter_predict_chunks(params, _fn, sleep_fn=_noop_sleep))
     assert called[0]
     last = json.loads(chunks[-1].decode())
     assert last["status"] == "success"
@@ -602,7 +639,9 @@ def test_iter_predict_chunks_mode_rescore_calls_rescore_fn() -> None:
         return 99  # should not be reached
 
     params = PredictParams(category="jra", run_date="20260619", days_ahead=0, mode="rescore")
-    chunks = list(iter_predict_chunks(params, _full_fn, rescore_fn=_mock_rescore_ok))
+    chunks = list(
+        iter_predict_chunks(params, _full_fn, rescore_fn=_mock_rescore_ok, sleep_fn=_noop_sleep)
+    )
     assert not full_called[0], "predict_fn (full) must not be called when rescore succeeds"
     last = json.loads(chunks[-1].decode())
     assert last["status"] == "success"
@@ -611,7 +650,11 @@ def test_iter_predict_chunks_mode_rescore_calls_rescore_fn() -> None:
 
 def test_iter_predict_chunks_mode_rescore_result_has_correct_fields() -> None:
     params = PredictParams(category="nar", run_date="20260619", days_ahead=1, mode="rescore")
-    chunks = list(iter_predict_chunks(params, _mock_predict_ok, rescore_fn=_mock_rescore_ok))
+    chunks = list(
+        iter_predict_chunks(
+            params, _mock_predict_ok, rescore_fn=_mock_rescore_ok, sleep_fn=_noop_sleep
+        )
+    )
     last = json.loads(chunks[-1].decode())
     assert last["type"] == "result"
     assert last["category"] == "nar"
@@ -632,7 +675,9 @@ def test_iter_predict_chunks_rescore_cache_miss_falls_back_to_full() -> None:
     """CacheMissError from rescore_fn must trigger fallback to predict_fn."""
     params = PredictParams(category="jra", run_date="20260619", days_ahead=0, mode="rescore")
     chunks = list(
-        iter_predict_chunks(params, _mock_predict_ok, rescore_fn=_mock_rescore_cache_miss)
+        iter_predict_chunks(
+            params, _mock_predict_ok, rescore_fn=_mock_rescore_cache_miss, sleep_fn=_noop_sleep
+        )
     )
     last = json.loads(chunks[-1].decode())
     assert last["status"] == "success"
@@ -643,7 +688,9 @@ def test_iter_predict_chunks_rescore_cache_miss_emits_fallback_progress() -> Non
     """A rescore-fallback-to-full progress line must be emitted on CacheMissError."""
     params = PredictParams(category="jra", run_date="20260619", days_ahead=0, mode="rescore")
     chunks = list(
-        iter_predict_chunks(params, _mock_predict_ok, rescore_fn=_mock_rescore_cache_miss)
+        iter_predict_chunks(
+            params, _mock_predict_ok, rescore_fn=_mock_rescore_cache_miss, sleep_fn=_noop_sleep
+        )
     )
     parsed = [json.loads(c.decode()) for c in chunks]
     stages = {p.get("stage") for p in parsed if p.get("type") == "progress"}
@@ -653,7 +700,9 @@ def test_iter_predict_chunks_rescore_cache_miss_emits_fallback_progress() -> Non
 def test_iter_predict_chunks_rescore_no_rescore_fn_falls_back_to_full() -> None:
     """When mode=rescore but rescore_fn=None, must fall back to predict_fn."""
     params = PredictParams(category="jra", run_date="20260619", days_ahead=0, mode="rescore")
-    chunks = list(iter_predict_chunks(params, _mock_predict_ok, rescore_fn=None))
+    chunks = list(
+        iter_predict_chunks(params, _mock_predict_ok, rescore_fn=None, sleep_fn=_noop_sleep)
+    )
     last = json.loads(chunks[-1].decode())
     assert last["status"] == "success"
     assert last["racesPredicted"] == 42
@@ -662,7 +711,9 @@ def test_iter_predict_chunks_rescore_no_rescore_fn_falls_back_to_full() -> None:
 def test_iter_predict_chunks_rescore_no_fn_emits_fallback_progress() -> None:
     """When mode=rescore with no rescore_fn, fallback progress must be emitted."""
     params = PredictParams(category="jra", run_date="20260619", days_ahead=0, mode="rescore")
-    chunks = list(iter_predict_chunks(params, _mock_predict_ok))  # no rescore_fn
+    chunks = list(
+        iter_predict_chunks(params, _mock_predict_ok, sleep_fn=_noop_sleep)
+    )  # no rescore_fn
     parsed = [json.loads(c.decode()) for c in chunks]
     stages = {p.get("stage") for p in parsed if p.get("type") == "progress"}
     assert "rescore-fallback-to-full" in stages
@@ -675,7 +726,11 @@ def test_iter_predict_chunks_rescore_non_cache_miss_propagates_as_error() -> Non
         raise RuntimeError("unexpected DB error")
 
     params = PredictParams(category="jra", run_date="20260619", days_ahead=0, mode="rescore")
-    chunks = list(iter_predict_chunks(params, _mock_predict_ok, rescore_fn=_rescore_runtime_err))
+    chunks = list(
+        iter_predict_chunks(
+            params, _mock_predict_ok, rescore_fn=_rescore_runtime_err, sleep_fn=_noop_sleep
+        )
+    )
     last = json.loads(chunks[-1].decode())
     assert last["status"] == "error"
     assert "RuntimeError" in last["error"]
@@ -693,5 +748,350 @@ def test_iter_predict_chunks_rescore_non_cache_miss_does_not_call_full_fn() -> N
         raise RuntimeError("unexpected")
 
     params = PredictParams(category="jra", run_date="20260619", days_ahead=0, mode="rescore")
-    list(iter_predict_chunks(params, _full_fn, rescore_fn=_rescore_runtime_err))
+    list(
+        iter_predict_chunks(params, _full_fn, rescore_fn=_rescore_runtime_err, sleep_fn=_noop_sleep)
+    )
     assert not full_called[0]
+
+
+# ---------------------------------------------------------------------------
+# threading behaviour: verify via iter_predict_chunks (no private imports)
+# ---------------------------------------------------------------------------
+
+
+def test_threaded_predict_fn_result_is_returned_in_success_line() -> None:
+    """The return value of predict_fn run in a thread must appear in the result line."""
+    params = PredictParams(category="jra", run_date="20260619", days_ahead=0)
+    chunks = list(iter_predict_chunks(params, _mock_predict_ok, sleep_fn=_noop_sleep))
+    last = json.loads(chunks[-1].decode())
+    assert last["racesPredicted"] == 42
+
+
+def test_threaded_predict_fn_exception_surfaces_as_error_result() -> None:
+    """An exception raised by predict_fn in its thread must yield an error result line."""
+
+    def _raise(category: str, run_date: str, days_ahead: int) -> int:
+        raise ValueError("thread boom")
+
+    params = PredictParams(category="jra", run_date="20260619", days_ahead=0)
+    chunks = list(iter_predict_chunks(params, _raise, sleep_fn=_noop_sleep))
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "error"
+    assert "ValueError" in last["error"]
+
+
+def test_threaded_predict_fn_does_not_block_generator_indefinitely() -> None:
+    """Verify the generator terminates (background thread does not block main thread forever)."""
+    done = threading.Event()
+    done.set()  # immediately unblocked
+
+    def _unblocked(category: str, run_date: str, days_ahead: int) -> int:
+        done.wait()
+        return 7
+
+    params = PredictParams(category="jra", run_date="20260619", days_ahead=0)
+    chunks = list(iter_predict_chunks(params, _unblocked, sleep_fn=_noop_sleep))
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "success"
+    assert last["racesPredicted"] == 7
+
+
+# ---------------------------------------------------------------------------
+# iter_predict_chunks — threaded keepalive: progress lines during long predict
+# ---------------------------------------------------------------------------
+
+
+def _make_blocking_predict(
+    done_event: threading.Event, return_value: int = 55
+) -> Callable[[str, str, int], int]:
+    """Return a predict_fn that blocks until *done_event* is set."""
+
+    def _predict(category: str, run_date: str, days_ahead: int) -> int:
+        done_event.wait()
+        return return_value
+
+    return _predict
+
+
+def _make_advancing_clock(
+    step: float,
+    sleep_event: threading.Event | None = None,
+) -> tuple[TimeFn, SleepFn, list[float]]:
+    """Return a (time_fn, sleep_fn, history) triple for deterministic keepalive tests.
+
+    Each call to *sleep_fn* advances the clock by *step* seconds and optionally
+    sets *sleep_event* so the test can synchronise with the generator's poll loop.
+    *history* records every value returned by *time_fn* for assertion.
+    """
+    clock = [0.0]
+    history: list[float] = []
+
+    def _time() -> float:
+        val = clock[0]
+        history.append(val)
+        return val
+
+    def _sleep(_: float) -> None:
+        clock[0] += step
+        if sleep_event is not None:
+            sleep_event.set()
+
+    return _time, _sleep, history
+
+
+def test_iter_predict_chunks_keepalive_emits_progress_during_blocking_predict() -> None:
+    """Progress lines must be yielded DURING a long-running predict_fn call.
+
+    Mechanism: a clock that advances by 15 s on each sleep_fn call (> the 10 s
+    interval), so two sleep calls produce two keepalive progress yields before
+    the predict completes.
+
+    The test unblocks the predict_fn after the generator has yielded at least
+    two keepalive progress lines (checked by consuming the generator item by item
+    from a background thread so the generator is not suspended indefinitely).
+    """
+    done = threading.Event()
+    predict_fn = _make_blocking_predict(done, return_value=88)
+
+    # Clock advances 15 s per sleep call — well above the 10 s interval.
+    time_fn, sleep_fn, _ = _make_advancing_clock(step=15.0)
+
+    params = PredictParams(category="jra", run_date="20260619", days_ahead=0)
+
+    # Collect chunks in a background thread, unblocking predict after 2 keepalives.
+    collected: list[bytes] = []
+    progress_count = [0]
+    generator_done = threading.Event()
+
+    def _consume() -> None:
+        gen = iter_predict_chunks(
+            params,
+            predict_fn,
+            time_fn=time_fn,
+            sleep_fn=sleep_fn,
+            progress_interval_s=10.0,
+        )
+        for chunk in gen:
+            collected.append(chunk)
+            parsed = json.loads(chunk.decode())
+            if parsed.get("type") == "progress" and parsed.get("stage") == "predict":
+                progress_count[0] += 1
+                # Unblock the predict_fn after 2 keepalive lines so the generator
+                # terminates rather than looping forever.
+                if progress_count[0] >= 2:
+                    done.set()
+        generator_done.set()
+
+    consumer = threading.Thread(target=_consume, daemon=True)
+    consumer.start()
+    generator_done.wait(timeout=10.0)
+    assert generator_done.is_set(), "generator did not complete within 10 s"
+
+    parsed_all = [json.loads(c.decode()) for c in collected]
+    progress_stages = [p.get("stage") for p in parsed_all if p.get("type") == "progress"]
+
+    # At least 2 keepalive "predict" progress lines emitted during the blocking call.
+    assert progress_stages.count("predict") >= 2, (
+        f"expected >=2 keepalive 'predict' lines, got stages={progress_stages}"
+    )
+    # Final line is a success result.
+    last = parsed_all[-1]
+    assert last["type"] == "result"
+    assert last["status"] == "success"
+    assert last["racesPredicted"] == 88
+
+
+def test_iter_predict_chunks_result_after_keepalive_has_correct_races_predicted() -> None:
+    """racesPredicted in the result line must reflect what predict_fn returned."""
+    done = threading.Event()
+    predict_fn = _make_blocking_predict(done, return_value=123)
+    time_fn, sleep_fn, _ = _make_advancing_clock(step=15.0)
+    params = PredictParams(category="nar", run_date="20260619", days_ahead=0)
+
+    collected: list[bytes] = []
+    progress_count = [0]
+    generator_done = threading.Event()
+
+    def _consume() -> None:
+        gen = iter_predict_chunks(
+            params,
+            predict_fn,
+            time_fn=time_fn,
+            sleep_fn=sleep_fn,
+            progress_interval_s=10.0,
+        )
+        for chunk in gen:
+            collected.append(chunk)
+            parsed = json.loads(chunk.decode())
+            if parsed.get("type") == "progress" and parsed.get("stage") == "predict":
+                progress_count[0] += 1
+                if progress_count[0] >= 1:
+                    done.set()
+        generator_done.set()
+
+    consumer = threading.Thread(target=_consume, daemon=True)
+    consumer.start()
+    generator_done.wait(timeout=10.0)
+
+    last = json.loads(collected[-1].decode())
+    assert last["racesPredicted"] == 123
+    assert last["status"] == "success"
+
+
+def test_iter_predict_chunks_keepalive_exception_in_thread_yields_error_result() -> None:
+    """An exception in the background predict thread must yield an error result.
+
+    Uses an Event-controlled fn that raises after being unblocked.
+    """
+    done = threading.Event()
+
+    def _predict_raise(category: str, run_date: str, days_ahead: int) -> int:
+        done.wait()
+        raise RuntimeError("thread crash: postgresql://user:pw@host/db")
+
+    time_fn, sleep_fn, _ = _make_advancing_clock(step=15.0)
+    params = PredictParams(category="jra", run_date="20260619", days_ahead=0)
+
+    collected: list[bytes] = []
+    progress_count = [0]
+    generator_done = threading.Event()
+
+    def _consume() -> None:
+        gen = iter_predict_chunks(
+            params,
+            _predict_raise,
+            time_fn=time_fn,
+            sleep_fn=sleep_fn,
+            progress_interval_s=10.0,
+        )
+        for chunk in gen:
+            collected.append(chunk)
+            parsed = json.loads(chunk.decode())
+            if parsed.get("type") == "progress" and parsed.get("stage") == "predict":
+                progress_count[0] += 1
+                if progress_count[0] >= 1:
+                    done.set()
+        generator_done.set()
+
+    consumer = threading.Thread(target=_consume, daemon=True)
+    consumer.start()
+    generator_done.wait(timeout=10.0)
+    assert generator_done.is_set()
+
+    last = json.loads(collected[-1].decode())
+    assert last["type"] == "result"
+    assert last["status"] == "error"
+    assert "RuntimeError" in last["error"]
+    # Credentials must be masked in the threaded error path too.
+    assert b"pw" not in collected[-1]
+    assert b"[REDACTED]" in collected[-1]
+
+
+def test_iter_predict_chunks_keepalive_rescore_cache_miss_fallback_with_progress() -> None:
+    """CacheMissError from rescore_fn in thread triggers fallback + keepalive in fallback phase."""
+    rescore_done = threading.Event()
+    predict_done = threading.Event()
+
+    def _rescore_miss(category: str, run_date: str, days_ahead: int) -> int:
+        rescore_done.wait()
+        raise CacheMissError("no cache")
+
+    def _predict_full(category: str, run_date: str, days_ahead: int) -> int:
+        predict_done.wait()
+        return 77
+
+    time_fn, sleep_fn, _ = _make_advancing_clock(step=15.0)
+    params = PredictParams(category="jra", run_date="20260619", days_ahead=0, mode="rescore")
+
+    collected: list[bytes] = []
+    rescore_progress_seen = [0]
+    fallback_seen = [False]
+    fallback_predict_progress_seen = [0]
+    generator_done = threading.Event()
+
+    def _consume() -> None:
+        gen = iter_predict_chunks(
+            params,
+            _predict_full,
+            rescore_fn=_rescore_miss,
+            time_fn=time_fn,
+            sleep_fn=sleep_fn,
+            progress_interval_s=10.0,
+        )
+        for chunk in gen:
+            collected.append(chunk)
+            parsed = json.loads(chunk.decode())
+            if parsed.get("type") == "progress":
+                stage = parsed.get("stage")
+                if stage == "predict" and not fallback_seen[0]:
+                    rescore_progress_seen[0] += 1
+                    if rescore_progress_seen[0] >= 1:
+                        rescore_done.set()
+                elif stage == "rescore-fallback-to-full":
+                    fallback_seen[0] = True
+                elif stage == "predict" and fallback_seen[0]:
+                    fallback_predict_progress_seen[0] += 1
+                    if fallback_predict_progress_seen[0] >= 1:
+                        predict_done.set()
+        generator_done.set()
+
+    consumer = threading.Thread(target=_consume, daemon=True)
+    consumer.start()
+    generator_done.wait(timeout=15.0)
+    assert generator_done.is_set()
+
+    parsed_all = [json.loads(c.decode()) for c in collected]
+    stages = [p.get("stage") for p in parsed_all if p.get("type") == "progress"]
+    assert "rescore-fallback-to-full" in stages
+
+    last = parsed_all[-1]
+    assert last["type"] == "result"
+    assert last["status"] == "success"
+    assert last["racesPredicted"] == 77
+
+
+def test_iter_predict_chunks_keepalive_fallback_exception_yields_error() -> None:
+    """When the fallback predict_fn raises after CacheMissError, yield an error result."""
+    done = threading.Event()
+
+    def _rescore_miss(category: str, run_date: str, days_ahead: int) -> int:
+        raise CacheMissError("miss")
+
+    def _predict_raise(category: str, run_date: str, days_ahead: int) -> int:
+        done.wait()
+        raise RuntimeError("fallback exploded")
+
+    time_fn, sleep_fn, _ = _make_advancing_clock(step=15.0)
+    params = PredictParams(category="nar", run_date="20260619", days_ahead=0, mode="rescore")
+
+    collected: list[bytes] = []
+    fallback_predict_seen = [0]
+    generator_done = threading.Event()
+
+    def _consume() -> None:
+        gen = iter_predict_chunks(
+            params,
+            _predict_raise,
+            rescore_fn=_rescore_miss,
+            time_fn=time_fn,
+            sleep_fn=sleep_fn,
+            progress_interval_s=10.0,
+        )
+        for chunk in gen:
+            collected.append(chunk)
+            parsed = json.loads(chunk.decode())
+            if parsed.get("type") == "progress" and parsed.get("stage") == "predict":
+                fallback_predict_seen[0] += 1
+                if fallback_predict_seen[0] >= 1:
+                    done.set()
+        generator_done.set()
+
+    consumer = threading.Thread(target=_consume, daemon=True)
+    consumer.start()
+    generator_done.wait(timeout=10.0)
+    assert generator_done.is_set()
+
+    last = json.loads(collected[-1].decode())
+    assert last["type"] == "result"
+    assert last["status"] == "error"
+    assert "RuntimeError" in last["error"]

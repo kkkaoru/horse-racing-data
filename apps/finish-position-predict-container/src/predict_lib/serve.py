@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from collections.abc import Callable, Generator
 from dataclasses import dataclass
@@ -323,6 +324,18 @@ Raises:
 TimeFn = Callable[[], float]
 """Returns the current monotonic time in seconds (injectable for testing)."""
 
+SleepFn = Callable[[float], None]
+"""Suspends execution for the given number of seconds (injectable for testing)."""
+
+_POLL_INTERVAL_S: Final[float] = 1.0
+"""How often (in seconds) the keepalive loop polls the worker thread for completion.
+
+This is kept at 1 s so the generator wakes up frequently enough to detect when
+the pipeline finishes, while still yielding progress only every
+``progress_interval_s`` (~10 s).  The separation between poll granularity and
+keepalive frequency prevents busy-waiting while still producing timely keepalives.
+"""
+
 
 def _run_predict_fn(
     predict_fn: PredictCategoryFn,
@@ -336,12 +349,38 @@ def _run_predict_fn(
     return predict_fn(params.category, params.run_date, params.days_ahead)
 
 
+def _run_in_thread(
+    fn: Callable[[], int],
+) -> tuple[threading.Thread, list[int], list[BaseException]]:
+    """Run *fn* in a daemon thread; return (thread, result_box, error_box).
+
+    ``result_box`` is a 1-element list that will hold the return value of *fn*
+    when it completes successfully.  ``error_box`` is a 1-element list that will
+    hold the exception when *fn* raises.  Exactly one of the two will be
+    populated after the thread finishes.  The caller polls ``thread.is_alive()``
+    (or calls ``thread.join(timeout=...)``) to detect completion.
+    """
+    result_box: list[int] = []
+    error_box: list[BaseException] = []
+
+    def _target() -> None:
+        try:
+            result_box.append(fn())
+        except BaseException as exc:
+            error_box.append(exc)
+
+    thread = threading.Thread(target=_target, daemon=True)
+    thread.start()
+    return thread, result_box, error_box
+
+
 def iter_predict_chunks(
     params: PredictParams,
     predict_fn: PredictCategoryFn,
     *,
     rescore_fn: PredictCategoryFn | None = None,
     time_fn: TimeFn = time.monotonic,
+    sleep_fn: SleepFn = time.sleep,
     progress_interval_s: float = PROGRESS_INTERVAL_S,
 ) -> Generator[bytes, None, None]:
     """Yield NDJSON bytes chunks for a single ``/predict`` request.
@@ -352,12 +391,24 @@ def iter_predict_chunks(
     - **Progress lines** at the start and just before the long-running pipeline
       call (yielded eagerly so the Worker DO renews its activity timeout before
       the multi-minute feature-build step begins).
-    - Additional **progress lines** when *progress_interval_s* has elapsed
-      since the last one (checked at the stage boundary).
+    - **Periodic keepalive progress lines** every *progress_interval_s* seconds
+      **while the pipeline is running in a background thread**.  Each yielded
+      line causes the Worker DO to call ``renewActivityTimeout``, preventing the
+      Container runtime from reaping the long-running job.
     - A ``"rescore-fallback-to-full"`` progress line when ``mode=rescore`` but
       *rescore_fn* raised a cache-miss exception and the pipeline fell back to
       *predict_fn*.
     - A single **result line** as the last yield -- either success or error.
+
+    Threading keepalive design
+    --------------------------
+    The prediction pipeline (*predict_fn* / *rescore_fn*) is launched in a
+    background daemon thread via :func:`_run_in_thread`.  The generator's main
+    thread loops with ``thread.join(timeout=_POLL_INTERVAL_S)``; when the join
+    times out (thread still alive) AND *progress_interval_s* has elapsed since
+    the last yield, a new ``"predict"`` progress line is emitted.  This ensures
+    the DO receives a keepalive chunk roughly every *progress_interval_s* seconds
+    throughout the entire 3-8-minute pipeline run.
 
     Mode dispatch:
     - ``mode=full`` (default) -- always calls *predict_fn*.
@@ -377,6 +428,7 @@ def iter_predict_chunks(
         rescore_fn:          Optional rescore-path callable; ``None`` triggers
                              automatic fallback to *predict_fn* for rescore mode.
         time_fn:             Monotonic clock (injectable for deterministic tests).
+        sleep_fn:            Sleep callable (injectable for deterministic tests).
         progress_interval_s: Minimum seconds between progress keepalive lines.
     """
     started = time_fn()
@@ -402,31 +454,97 @@ def iter_predict_chunks(
     last_progress = time_fn()  # reset after forced emit
 
     races_predicted = 0
-    try:
-        if params.mode == "rescore":
-            if rescore_fn is None:
-                # No rescore fn available — fall back to full pipeline immediately.
-                yield build_progress_line("rescore-fallback-to-full", _elapsed())
-                races_predicted = _run_predict_fn(predict_fn, params)
-            else:
-                try:
-                    races_predicted = _run_predict_fn(rescore_fn, params)
-                except CacheMissError:
-                    yield build_progress_line("rescore-fallback-to-full", _elapsed())
-                    races_predicted = _run_predict_fn(predict_fn, params)
+
+    # Determine which callable to run first and whether a rescore->full fallback
+    # may be needed.
+    use_rescore_first = params.mode == "rescore" and rescore_fn is not None
+    needs_rescore_fallback = params.mode == "rescore" and rescore_fn is None
+
+    if needs_rescore_fallback:
+        # No rescore fn available — fall back to full pipeline immediately.
+        yield build_progress_line("rescore-fallback-to-full", _elapsed())
+        last_progress = time_fn()
+
+    # Choose the first callable to launch in a thread.
+    # Capture the chosen callable in a single variable so basedpyright sees one
+    # unambiguous definition of ``first_call``.
+    if use_rescore_first:
+        assert rescore_fn is not None
+        _rescore_fn_ref: PredictCategoryFn = rescore_fn
+
+        def _call_rescore() -> int:
+            return _run_predict_fn(_rescore_fn_ref, params)
+
+        first_call: Callable[[], int] = _call_rescore
+    else:
+
+        def _call_predict() -> int:
+            return _run_predict_fn(predict_fn, params)
+
+        first_call = _call_predict
+
+    thread, result_box, error_box = _run_in_thread(first_call)
+
+    # Keepalive loop: poll the thread while it runs, yielding progress lines so
+    # the Worker DO can call renewActivityTimeout and the Container is not reaped.
+    while thread.is_alive():
+        sleep_fn(_POLL_INTERVAL_S)
+        now = time_fn()
+        if now - last_progress >= progress_interval_s:
+            yield build_progress_line("predict", _elapsed())
+            last_progress = now
+
+    thread.join()  # final join to synchronise memory visibility
+
+    # Check thread outcome.
+    if error_box:
+        first_exc = error_box[0]
+
+        # If rescore raised CacheMissError, fall back to the full pipeline.
+        if use_rescore_first and isinstance(first_exc, CacheMissError):
+            yield build_progress_line("rescore-fallback-to-full", _elapsed())
+            last_progress = time_fn()
+
+            def _fallback_call() -> int:
+                return _run_predict_fn(predict_fn, params)
+
+            fb_thread, fb_result_box, fb_error_box = _run_in_thread(_fallback_call)
+
+            while fb_thread.is_alive():
+                sleep_fn(_POLL_INTERVAL_S)
+                now = time_fn()
+                if now - last_progress >= progress_interval_s:
+                    yield build_progress_line("predict", _elapsed())
+                    last_progress = now
+
+            fb_thread.join()
+
+            if fb_error_box:
+                fallback_exc = fb_error_box[0]
+                error_msg = f"{type(fallback_exc).__name__}: {fallback_exc}"
+                yield build_result_line(
+                    params.category,
+                    params.run_date,
+                    races_predicted,
+                    status="error",
+                    error=error_msg,
+                )
+                return
+
+            races_predicted = fb_result_box[0]
         else:
-            # mode=full (default)
-            races_predicted = _run_predict_fn(predict_fn, params)
-    except Exception as exc:
-        error_msg = f"{type(exc).__name__}: {exc}"
-        yield build_result_line(
-            params.category,
-            params.run_date,
-            races_predicted,
-            status="error",
-            error=error_msg,
-        )
-        return
+            # Non-CacheMissError (or non-rescore path): encode as error result.
+            error_msg = f"{type(first_exc).__name__}: {first_exc}"
+            yield build_result_line(
+                params.category,
+                params.run_date,
+                races_predicted,
+                status="error",
+                error=error_msg,
+            )
+            return
+    else:
+        races_predicted = result_box[0]
 
     # Post-pipeline progress (only if interval elapsed -- pipeline was fast in tests).
     now = time_fn()
