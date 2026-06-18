@@ -15,7 +15,8 @@
     "tsc": "tsc --noEmit"
   },
   "dependencies": {
-    "@cloudflare/containers": "0.3.7"
+    "@cloudflare/containers": "0.3.7",
+    "@neondatabase/serverless": "catalog:"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "catalog:",

@@ -3,14 +3,19 @@
 
 import { beforeEach, expect, test, vi } from "vitest";
 
-const { startMock, getContainerMock } = vi.hoisted(() => {
+const { startMock, getContainerMock, warmNeonMock } = vi.hoisted(() => {
   const start = vi.fn(async () => undefined);
-  return { getContainerMock: vi.fn(() => ({ start })), startMock: start };
+  const warmNeon = vi.fn(async () => undefined);
+  return { getContainerMock: vi.fn(() => ({ start })), startMock: start, warmNeonMock: warmNeon };
 });
 
 vi.mock("@cloudflare/containers", () => ({
   Container: class {},
   getContainer: getContainerMock,
+}));
+
+vi.mock("./neon-warm", () => ({
+  warmNeon: warmNeonMock,
 }));
 
 import workerDefault, { handleFetch, handleScheduled } from "./worker";
@@ -46,6 +51,7 @@ beforeEach(() => {
   prepareMock.mockClear();
   bindMock.mockClear();
   runMock.mockClear();
+  warmNeonMock.mockClear();
 });
 
 test("fetch returns a health payload for GET", async () => {
@@ -125,4 +131,31 @@ test("handleScheduled writes a started audit row", async () => {
 test("scheduled default handler delegates to handleScheduled", async () => {
   await workerDefault.scheduled(makeEvent("0 18 * * *"), makeEnv());
   expect(startMock).toHaveBeenCalledTimes(1);
+});
+
+test("handleScheduled calls warmNeon for the pre-NAR warm cron", async () => {
+  await handleScheduled(makeEvent("55 17 * * *"), makeEnv());
+  expect(warmNeonMock).toHaveBeenCalledTimes(1);
+  expect(warmNeonMock).toHaveBeenCalledWith("postgres://example");
+  expect(getContainerMock).not.toHaveBeenCalled();
+});
+
+test("handleScheduled calls warmNeon for the pre-JRA warm cron", async () => {
+  await handleScheduled(makeEvent("25 0 * * *"), makeEnv());
+  expect(warmNeonMock).toHaveBeenCalledTimes(1);
+  expect(warmNeonMock).toHaveBeenCalledWith("postgres://example");
+  expect(getContainerMock).not.toHaveBeenCalled();
+});
+
+test("handleScheduled calls warmNeon for the race-hours warm cron", async () => {
+  await handleScheduled(makeEvent("*/30 1-11 * * *"), makeEnv());
+  expect(warmNeonMock).toHaveBeenCalledTimes(1);
+  expect(warmNeonMock).toHaveBeenCalledWith("postgres://example");
+  expect(getContainerMock).not.toHaveBeenCalled();
+});
+
+test("handleScheduled does not call warmNeon for the predict cron", async () => {
+  await handleScheduled(makeEvent("0 18 * * *"), makeEnv());
+  expect(warmNeonMock).not.toHaveBeenCalled();
+  expect(getContainerMock).toHaveBeenCalledTimes(1);
 });

@@ -4,8 +4,9 @@
 import { getContainer } from "@cloudflare/containers";
 import { buildAuditBindParams, buildAuditInsertSql, buildAuditRecord } from "./audit";
 import { FinishPositionPredictContainer } from "./container-class";
-import { PREDICT_CRON, shouldRunPredictCron } from "./cron-decision";
+import { PREDICT_CRON, shouldRunPredictCron, shouldRunWarmCron } from "./cron-decision";
 import { buildPredictStartOptions } from "./dispatch";
+import { warmNeon } from "./neon-warm";
 import { getRunDateJst, getRunYmdJst } from "./time";
 import { isAuthorized, isTriggerRequest, parseRunDates } from "./trigger";
 import type { CronAuditRecord, Env, RunDates } from "./types";
@@ -98,6 +99,10 @@ export const handleFetch = async (request: Request, env: Env): Promise<Response>
 };
 
 export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<void> => {
+  if (shouldRunWarmCron(event.cron)) {
+    await warmNeon(env.NEON_DATABASE_URL);
+    return;
+  }
   if (!shouldRunPredictCron(event.cron)) {
     return;
   }
