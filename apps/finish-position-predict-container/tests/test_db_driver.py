@@ -2,7 +2,7 @@
 
 ``db_driver.py`` is excluded from the ``--cov=predict_lib`` gate (it is an
 I/O boundary module, not part of predict_lib). These tests verify the pure
-helper logic — ``_is_transient_error`` dispatch and the retry-with-backoff
+helper logic — ``is_transient_error`` dispatch and the retry-with-backoff
 contract of ``connect_postgres_with_retry`` — without any real psycopg calls.
 """
 
@@ -18,69 +18,69 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from db_driver import (
     CONNECT_MAX_RETRIES,
     ConnectionLike,
-    _is_transient_error,
     connect_postgres_with_retry,
+    is_transient_error,
 )
 
 # ---------------------------------------------------------------------------
-# _is_transient_error
+# is_transient_error
 # ---------------------------------------------------------------------------
 
 
 def test_is_transient_admin_shutdown() -> None:
     # AdminShutdown is always transient (class name match).
     exc = type("AdminShutdown", (Exception,), {})("terminating connection")
-    assert _is_transient_error(exc) is True
+    assert is_transient_error(exc) is True
 
 
 def test_is_transient_name_or_service_not_known() -> None:
     exc = Exception("failed to resolve host 'ep.neon.tech': Name or service not known")
-    assert _is_transient_error(exc) is True
+    assert is_transient_error(exc) is True
 
 
 def test_is_transient_connection_is_lost() -> None:
     exc = Exception("the connection is lost")
-    assert _is_transient_error(exc) is True
+    assert is_transient_error(exc) is True
 
 
 def test_is_transient_connection_is_closed() -> None:
     exc = Exception("the connection is closed")
-    assert _is_transient_error(exc) is True
+    assert is_transient_error(exc) is True
 
 
 def test_is_transient_connection_refused() -> None:
     exc = Exception("connection refused to 127.0.0.1:5432")
-    assert _is_transient_error(exc) is True
+    assert is_transient_error(exc) is True
 
 
 def test_is_transient_could_not_connect() -> None:
     exc = Exception("could not connect to server: Connection timed out")
-    assert _is_transient_error(exc) is True
+    assert is_transient_error(exc) is True
 
 
 def test_is_transient_server_closed_unexpectedly() -> None:
     exc = Exception("server closed the connection unexpectedly")
-    assert _is_transient_error(exc) is True
+    assert is_transient_error(exc) is True
 
 
 def test_is_transient_ssl_closed() -> None:
     exc = Exception("SSL connection has been closed unexpectedly")
-    assert _is_transient_error(exc) is True
+    assert is_transient_error(exc) is True
 
 
 def test_is_not_transient_bad_password() -> None:
     exc = Exception("password authentication failed for user 'foo'")
-    assert _is_transient_error(exc) is False
+    assert is_transient_error(exc) is False
 
 
 def test_is_not_transient_wrong_database() -> None:
     exc = Exception('database "nonexistent" does not exist')
-    assert _is_transient_error(exc) is False
+    assert is_transient_error(exc) is False
 
 
 def test_is_not_transient_programming_error() -> None:
     exc = type("ProgrammingError", (Exception,), {})("syntax error at or near 'X'")
-    assert _is_transient_error(exc) is False
+    assert is_transient_error(exc) is False
 
 
 # ---------------------------------------------------------------------------

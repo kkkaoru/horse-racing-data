@@ -73,7 +73,7 @@ def connect_postgres(database_url: str) -> ConnectionLike:
     return cast("ConnectionLike", connect_fn(database_url))
 
 
-def _is_transient_error(exc: BaseException) -> bool:
+def is_transient_error(exc: BaseException) -> bool:
     """Return True when ``exc`` looks like a transient Neon/network error.
 
     Checks both the exception class name (for ``AdminShutdown``, which is a
@@ -108,7 +108,7 @@ def connect_postgres_with_retry(
         try:
             return connect_postgres(database_url)
         except BaseException as exc:
-            if not _is_transient_error(exc):
+            if not is_transient_error(exc):
                 raise
             last_exc = exc
             if attempt == max_retries:

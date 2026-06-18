@@ -20,11 +20,11 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-# Import the private helpers directly so the tests stay I/O-free.
+# Import the cross-module helpers directly so the tests stay I/O-free.
 from predict_upcoming import (
-    _execute,
-    _flush_predictions,
+    execute,
     extract_race_class_code,
+    flush_predictions,
 )
 
 # ---------------------------------------------------------------------------
@@ -168,7 +168,7 @@ def testextract_race_class_code_coerces_non_string_value() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _execute — reconnect-on-write
+# execute — reconnect-on-write
 # ---------------------------------------------------------------------------
 
 _DB_URL = "postgresql://host/db"
@@ -177,7 +177,7 @@ _DB_URL = "postgresql://host/db"
 def test_execute_succeeds_on_happy_path() -> None:
     # Normal path: execute+commit returns the same connection unchanged.
     conn = _StubConnection()
-    result = _execute(conn, "SELECT 1", [], _DB_URL)
+    result = execute(conn, "SELECT 1", [], _DB_URL)
     assert result is conn
     assert conn.committed == 1
     assert conn.rolledback == 0
@@ -188,7 +188,7 @@ def test_execute_non_transient_error_propagates_without_reconnect() -> None:
     auth_exc = Exception("password authentication failed")
     conn = _StubConnection(raise_on_execute=auth_exc)
     try:
-        _execute(conn, "SELECT 1", [], _DB_URL)
+        execute(conn, "SELECT 1", [], _DB_URL)
     except Exception as exc:
         assert exc is auth_exc
     else:
@@ -203,7 +203,7 @@ def test_execute_reconnects_and_retries_on_admin_shutdown() -> None:
     fresh_conn = _StubConnection()
 
     with patch("predict_upcoming._connect", return_value=fresh_conn) as mock_connect:
-        result = _execute(bad_conn, "INSERT ...", ["p"], _DB_URL)
+        result = execute(bad_conn, "INSERT ...", ["p"], _DB_URL)
 
     assert result is fresh_conn
     assert fresh_conn.committed == 1
@@ -217,7 +217,7 @@ def test_execute_reconnects_on_connection_is_lost() -> None:
     fresh_conn = _StubConnection()
 
     with patch("predict_upcoming._connect", return_value=fresh_conn):
-        result = _execute(bad_conn, "INSERT ...", [], _DB_URL)
+        result = execute(bad_conn, "INSERT ...", [], _DB_URL)
 
     assert result is fresh_conn
     assert fresh_conn.committed == 1
@@ -231,7 +231,7 @@ def test_execute_retry_failure_propagates() -> None:
 
     with patch("predict_upcoming._connect", return_value=also_bad_conn):
         try:
-            _execute(bad_conn, "INSERT ...", [], _DB_URL)
+            execute(bad_conn, "INSERT ...", [], _DB_URL)
         except RuntimeError as exc:
             assert "retry also failed" in str(exc)
         else:
@@ -252,14 +252,14 @@ def test_execute_rollback_failure_is_swallowed() -> None:
     fresh_conn = _StubConnection()
 
     with patch("predict_upcoming._connect", return_value=fresh_conn):
-        result = _execute(bad_conn, "INSERT ...", [], _DB_URL)
+        result = execute(bad_conn, "INSERT ...", [], _DB_URL)
 
     assert result is fresh_conn
     assert fresh_conn.committed == 1
 
 
 # ---------------------------------------------------------------------------
-# _flush_predictions — per-race dedup + reconnect propagation
+# flush_predictions — per-race dedup + reconnect propagation
 # ---------------------------------------------------------------------------
 
 
@@ -276,7 +276,7 @@ def _make_pred_row(race_id: str, ketto: str) -> list[object]:
 
 def test_flush_predictions_empty_rows_returns_zero() -> None:
     conn = _StubConnection()
-    written, returned_conn = _flush_predictions(conn, [], _DB_URL)
+    written, returned_conn = flush_predictions(conn, [], _DB_URL)
     assert written == 0
     assert returned_conn is conn
     assert conn.committed == 0
@@ -285,14 +285,14 @@ def test_flush_predictions_empty_rows_returns_zero() -> None:
 def test_flush_predictions_writes_rows_and_returns_connection() -> None:
     conn = _StubConnection()
     rows = [_make_pred_row("20260619:05:11:01:01", "HORSE1")]
-    written, returned_conn = _flush_predictions(conn, rows, _DB_URL)
+    written, returned_conn = flush_predictions(conn, rows, _DB_URL)
     assert written == 1
     assert returned_conn is conn
     assert conn.committed >= 1
 
 
 def test_flush_predictions_returns_fresh_conn_after_reconnect() -> None:
-    # Simulate AdminShutdown on first _execute call; verify the returned
+    # Simulate AdminShutdown on first execute call; verify the returned
     # connection is the fresh one (not the original dead conn).
     admin_exc = type("AdminShutdown", (Exception,), {})("terminating connection")
     dead_conn = _StubConnection(raise_on_execute=admin_exc)
@@ -300,7 +300,7 @@ def test_flush_predictions_returns_fresh_conn_after_reconnect() -> None:
 
     with patch("predict_upcoming._connect", return_value=fresh_conn):
         rows = [_make_pred_row("20260619:05:11:01:01", "HORSE1")]
-        written, returned_conn = _flush_predictions(dead_conn, rows, _DB_URL)
+        written, returned_conn = flush_predictions(dead_conn, rows, _DB_URL)
 
     assert returned_conn is fresh_conn
     assert written == 1

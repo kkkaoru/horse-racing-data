@@ -16,11 +16,11 @@ pre-odds median fallback のまま配信された。
 
 ### 3 つの失敗モード
 
-| #   | エラー種別                                               | 発生経路                                                                                                                                  |
-| --- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | `psycopg.errors.AdminShutdown`                           | Neon compute が長時間フィーチャビルド中に autosuspend → write connection が dead socket を掴む。`_flush_predictions` の `_execute` で発生 |
-| 2   | `psycopg.OperationalError` / "Name or service not known" | container 起動直後の Docker bridge resolver blip による DNS 失敗。bootstrap probe で発生し retry なしで `exit 1`                          |
-| 3   | "connection is lost" / "connection is closed"            | Neon が connect と初回 use の間に TCP 接続を close （race condition）                                                                     |
+| #   | エラー種別                                               | 発生経路                                                                                                                                |
+| --- | -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `psycopg.errors.AdminShutdown`                           | Neon compute が長時間フィーチャビルド中に autosuspend → write connection が dead socket を掴む。`flush_predictions` の `execute` で発生 |
+| 2   | `psycopg.OperationalError` / "Name or service not known" | container 起動直後の Docker bridge resolver blip による DNS 失敗。bootstrap probe で発生し retry なしで `exit 1`                        |
+| 3   | "connection is lost" / "connection is closed"            | Neon が connect と初回 use の間に TCP 接続を close （race condition）                                                                   |
 
 いずれも transient であり、再接続で解消する。また 6/17 夜 run でも同種の stall が
 確認されており、chronic な問題であった（単発 incident ではない）。
@@ -66,28 +66,38 @@ CONNECT_BACKOFF_BASE_SECONDS: float = 1.0
 - 全 category 失敗時のみ `sys.exit(1)`（launchd が翌日再試行）
 - 部分成功時は成功 category 分の predictions が serve に反映される
 
-### 3. reconnect-on-write（`_execute` の mid-write transient 対応）
+### 3. reconnect-on-write（`execute` の mid-write transient 対応）
 
-`_execute` が mid-write transient エラーを検知した場合に 1 回だけ reconnect+retry する。
+`execute` が mid-write transient エラーを検知した場合に 1 回だけ reconnect+retry する。
 
 - 古い接続は `rollback()` → `contextlib.suppress` で `close()`（どちらも失敗しても無視）
 - `_connect(db_url)` で新接続を取得して同じ SQL を再実行
-- `_flush_predictions` が `(written, connection)` を返すよう変更 → caller が reconnect 後の正しい接続を `close()` する
+- `flush_predictions` が `(written, connection)` を返すよう変更 → caller が reconnect 後の正しい接続を `close()` する
 - retry も失敗した場合はそのエラーを呼び元に伝播
 
-### 4. `_is_transient_error` helper (`db_driver.py`)
+### 4. `is_transient_error` helper (`db_driver.py`)
 
 AdminShutdown（クラス名マッチ）と OperationalError 系（メッセージ部分マッチ）を
-一元判定するヘルパー。`_execute` と `connect_postgres_with_retry` の両方が参照する。
+一元判定するヘルパー。`execute` と `connect_postgres_with_retry` の両方が参照する。
+
+### 公開 API リネーム（cross-module 越境のため）
+
+`db_driver.is_transient_error` / `predict_upcoming.execute` /
+`predict_upcoming.flush_predictions` の 3 つは別モジュール（`predict_upcoming`
+本体・テスト）から import して使う cross-module API のため、先頭アンダースコアの
+private 名（`_is_transient_error` / `_execute` / `_flush_predictions`）から公開名へ
+リネームした。これにより basedpyright の `reportPrivateUsage` を config 緩和なし
+（`pyrightconfig.json` 無改変）で 0 errors にしている。lint/型チェックの disable を
+新規追加する代わりに、設計として正しい公開 API 化で解消する方針。
 
 ---
 
 ## テスト / カバレッジ
 
-| ファイル                                | 追加テスト内容                                                                                                                                                      |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tests/test_db_driver.py` (新規)        | `_is_transient_error` 正/負判定 11 ケース、`connect_postgres_with_retry` retry contract・バックオフスケジュール・非 transient 即 raise・デフォルト定数整合 9 ケース |
-| `tests/test_predict_upcoming.py` (追加) | `_execute` reconnect 系 5 ケース、`_flush_predictions` reconnect propagation 3 ケース                                                                               |
+| ファイル                                | 追加テスト内容                                                                                                                                                     |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `tests/test_db_driver.py` (新規)        | `is_transient_error` 正/負判定 11 ケース、`connect_postgres_with_retry` retry contract・バックオフスケジュール・非 transient 即 raise・デフォルト定数整合 9 ケース |
+| `tests/test_predict_upcoming.py` (追加) | `execute` reconnect 系 5 ケース、`flush_predictions` reconnect propagation 3 ケース                                                                                |
 
 - predict_lib coverage: **100%**（678 statements / 204 branches、全 miss=0）
 - 全テスト: **529 passed**

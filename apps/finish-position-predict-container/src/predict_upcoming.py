@@ -39,7 +39,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from db_driver import ConnectionLike, _is_transient_error, connect_postgres_with_retry
+from db_driver import ConnectionLike, connect_postgres_with_retry, is_transient_error
 from predict_lib.audit import (
     AuditStatus,
     audit_params,
@@ -312,7 +312,7 @@ def _row_to_pk_map(row: Sequence[object]) -> Mapping[str, object]:
     return {"race_id": race_id, "ketto_toroku_bango": row[RACE_ID_KETTO_INDEX]}
 
 
-def _execute(
+def execute(
     connection: ConnectionLike,
     sql: str,
     params: Sequence[object],
@@ -331,7 +331,7 @@ def _execute(
         connection.commit()
         return connection
     except BaseException as exc:
-        if not _is_transient_error(exc):
+        if not is_transient_error(exc):
             raise
         # Transient mid-write failure: attempt a single reconnect then retry.
         print(
@@ -355,7 +355,7 @@ def _execute(
         return fresh
 
 
-def _flush_predictions(
+def flush_predictions(
     connection: ConnectionLike,
     rows: Sequence[Sequence[object]],
     database_url: str,
@@ -371,7 +371,7 @@ def _flush_predictions(
     written = 0
     for chunk in chunk_rows(rows, DEFAULT_CHUNK_SIZE):
         sql = build_upsert_sql(len(chunk))
-        connection = _execute(connection, sql, flatten_params(chunk), database_url)
+        connection = execute(connection, sql, flatten_params(chunk), database_url)
         written += len(chunk)
     return written, connection
 
@@ -385,9 +385,9 @@ def _record_audit(
     error: str | None,
     database_url: str,
 ) -> None:
-    _execute(connection, build_audit_table_ddl(), [], database_url)
+    execute(connection, build_audit_table_ddl(), [], database_url)
     record = build_audit_record(run_date, status, races_predicted, duration_ms, error)
-    _execute(connection, build_audit_insert_sql(), audit_params(record), database_url)
+    execute(connection, build_audit_insert_sql(), audit_params(record), database_url)
 
 
 def _predict_category(
@@ -433,14 +433,14 @@ def _predict_category(
         scored.append(rows)
 
     # All races scored — now open the Neon connection and flush.
-    # _flush_predictions may internally reconnect on AdminShutdown / "connection
+    # flush_predictions may internally reconnect on AdminShutdown / "connection
     # is lost" mid-write and returns the (possibly new) connection so we can
     # close the right object at the end.
     connection = _connect(database_url)
     try:
         written = 0
         for rows in scored:
-            rows_written, connection = _flush_predictions(connection, rows, database_url)
+            rows_written, connection = flush_predictions(connection, rows, database_url)
             written += rows_written
     finally:
         try:
