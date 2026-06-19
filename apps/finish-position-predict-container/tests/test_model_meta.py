@@ -180,9 +180,9 @@ def test_build_r2_xgb_etop2_key_metadata_json() -> None:
 # NAR E-top2 constants and helpers (iter23-nar-etop2)
 
 
-def test_nar_etop2_enabled_is_false_pre_training() -> None:
-    """NAR_ETOP2_ENABLED stays False until CB-2013 is trained + smoke2 PASS."""
-    assert NAR_ETOP2_ENABLED is False
+def test_nar_etop2_enabled_is_true_post_training() -> None:
+    """NAR_ETOP2_ENABLED is True after CB-2013 trained, R2 uploaded, smoke2 PASS (2026-06-19)."""
+    assert NAR_ETOP2_ENABLED is True
 
 
 def test_nar_etop2_model_version() -> None:
