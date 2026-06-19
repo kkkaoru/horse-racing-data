@@ -489,10 +489,19 @@ const formatPastResultMeta = (result: HorseRaceResult): string =>
   ].join(" / ");
 
 const PADDOCK_RECENT_JOCKEY_FALLBACK = "-";
-// Blinker marks for the per-race stats list: ○ when worn, - otherwise. Only JRA
-// populates blinkerShiyoKubun, so NAR/Ban-ei rows always show -.
-const BLINKER_WORN_MARK = "○";
-const BLINKER_NOT_WORN_MARK = "-";
+// Blinker token for the per-race stats list. Only JRA populates
+// blinkerShiyoKubun, so NAR/Ban-ei rows never wear one; non-wearing races render
+// nothing so the worn races stand out clearly among 人気/オッズ/馬体重.
+const BLINKER_WORN_LABEL = "ブリンカー";
+// Small tinted pill so the indicator is obviously the blinker marker rather than
+// a bare ○ lost among the other per-race stat values.
+const BLINKER_WORN_PILL_STYLE: CSSProperties = {
+  backgroundColor: "#fdecef",
+  borderRadius: 4,
+  color: "#c2185b",
+  fontSize: "0.7rem",
+  padding: "0 6px",
+};
 
 const formatPastJockeyName = (value: string | null | undefined): string => {
   const cleaned = normalizeJockeyNameForDisplay(value);
@@ -647,9 +656,9 @@ function PaddockRecentResults({
                   )}
                 </span>
                 <span aria-label="ブリンカー" className="paddock-recent-blinker">
-                  {isWearingBlinker(result.blinkerShiyoKubun)
-                    ? BLINKER_WORN_MARK
-                    : BLINKER_NOT_WORN_MARK}
+                  {isWearingBlinker(result.blinkerShiyoKubun) ? (
+                    <span style={BLINKER_WORN_PILL_STYLE}>{BLINKER_WORN_LABEL}</span>
+                  ) : null}
                 </span>
               </span>
             </li>

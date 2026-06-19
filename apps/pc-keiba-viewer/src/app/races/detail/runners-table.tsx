@@ -8,7 +8,6 @@ import {
   BLINKER_PATTERN_LABELS,
   BLINKER_PATTERN_SHORT_LABELS,
   type BlinkerPattern,
-  isWearingBlinker,
 } from "../../../lib/blinker-pattern";
 import { cleanText } from "../../../lib/format";
 import { useHorseWeightStream } from "../../../lib/horse-weight-stream-client";
@@ -380,6 +379,9 @@ export function RunnersTable({
           ) : (
             <HorseNameBadge coatCode={runner.moshokuCode} name={horseName} />
           )}
+          {entryStatus ? <span className="runner-status-badge">{entryStatus}</span> : null}
+        </td>
+        <td className="runner-blinker-cell">
           {blinkerPattern ? (
             <span
               className={`runner-blinker-pattern-badge pattern-${blinkerPattern}`}
@@ -387,11 +389,9 @@ export function RunnersTable({
             >
               {BLINKER_PATTERN_SHORT_LABELS[blinkerPattern]}
             </span>
-          ) : null}
-          {entryStatus ? <span className="runner-status-badge">{entryStatus}</span> : null}
-        </td>
-        <td className="runner-blinker-cell">
-          {isWearingBlinker(runner.blinkerShiyoKubun) ? "○" : "-"}
+          ) : (
+            "-"
+          )}
         </td>
         <td>{formatSexAge(runner.seibetsuCode, runner.barei)}</td>
         <td>{formatCarriedWeight(runner.futanJuryo, decodeHexHorseWeight)}</td>

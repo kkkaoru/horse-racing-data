@@ -473,7 +473,7 @@ test("PaddockSection recent-results falls back to dash when past jockey name is 
   expect(jockeyCell.textContent).toBe("騎手 -");
 });
 
-test("PaddockSection recent-results shows the worn blinker mark for a past race wearing a blinker", async () => {
+test("PaddockSection recent-results shows the ブリンカー token for a past race wearing a blinker", async () => {
   getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
   fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
 
@@ -494,10 +494,10 @@ test("PaddockSection recent-results shows the worn blinker mark for a past race 
     expect(screen.getAllByRole("article").length).toBe(1);
   });
   const blinkerMark = container.querySelector(".paddock-recent-blinker");
-  expect(blinkerMark?.textContent).toBe("○");
+  expect(blinkerMark?.textContent).toBe("ブリンカー");
 });
 
-test("PaddockSection recent-results shows the dash blinker mark for a past race without a blinker", async () => {
+test("PaddockSection recent-results omits the ブリンカー token for a past race without a blinker", async () => {
   getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
   fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
 
@@ -518,7 +518,7 @@ test("PaddockSection recent-results shows the dash blinker mark for a past race 
     expect(screen.getAllByRole("article").length).toBe(1);
   });
   const blinkerMark = container.querySelector(".paddock-recent-blinker");
-  expect(blinkerMark?.textContent).toBe("-");
+  expect(blinkerMark?.textContent).toBe("");
 });
 
 test("PaddockSection renders the first-attachment blinker pattern badge for a debut wearing horse", async () => {

@@ -124,6 +124,7 @@ interface PaddockMetricChipConfig {
 }
 
 interface PaddockChartDotPayload {
+  blinker?: string | null;
   isUpcoming?: boolean;
 }
 
@@ -132,6 +133,13 @@ interface PaddockChartDotProps {
   cy?: number;
   payload?: PaddockChartDotPayload;
   stroke?: string;
+}
+
+// Inputs the dot renderer reads to pick its marker shape, decoupled from the
+// recharts dot props so the pure decision can be unit-tested in isolation.
+interface ChartDotKindInput {
+  blinker: string | null | undefined;
+  isUpcoming: boolean | undefined;
 }
 
 interface PaddockTooltipPayloadEntry {
@@ -162,6 +170,13 @@ const CHART_HEIGHT = 340;
 const CHART_INITIAL_DIMENSION: ChartInitialDimension = { height: 1, width: 1 };
 const CHART_LINE_DOT: ChartLineDot = { r: 2 };
 const UPCOMING_DOT_RADIUS = 4;
+// A blinker-worn past race keeps its normal filled dot but gains an outer hollow
+// ring so the reader can SEE which races had a blinker without hovering. The ring
+// is drawn in the series stroke color (color identity preserved) at a radius
+// larger than the dot so it reads as a halo.
+const BLINKER_RING_RADIUS = 5;
+const BLINKER_RING_STROKE_WIDTH = 1.5;
+const BLINKER_RING_FILL = "none";
 const RANK_AXIS_ID = "rank";
 const WEIGHT_AXIS_ID = "weight";
 const DELTA_AXIS_ID = "delta";
@@ -239,6 +254,15 @@ const CHIP_ROW_STYLE: CSSProperties = {
   flexWrap: "wrap",
   fontSize: 12,
   gap: 6,
+  marginBottom: 6,
+};
+// One-line hint that explains the on-chart blinker ring so a viewer knows the
+// halo marks a blinker-worn race without opening a tooltip.
+const BLINKER_HINT_LABEL = "○ = ブリンカー装着";
+const BLINKER_HINT_COLOR = "#495057";
+const BLINKER_HINT_STYLE: CSSProperties = {
+  color: BLINKER_HINT_COLOR,
+  fontSize: 11,
   marginBottom: 6,
 };
 const CHIP_STYLE: CSSProperties = {
@@ -444,6 +468,17 @@ const countValidResults = (props: PaddockRecentResultsChartProps): number =>
 const resolveDefaultRecentCount = (total: number): number =>
   Math.max(PERIOD_MIN_COUNT, Math.min(PERIOD_DEFAULT_COUNT, total));
 
+// Decide whether a point wears a blinker-marker ring. The upcoming synthetic
+// point never wears one (it has no recorded result), so a wearing flag only
+// matters on a past point. Pure so the marker decision is unit-testable.
+export const shouldRenderBlinkerRing = ({ blinker, isUpcoming }: ChartDotKindInput): boolean =>
+  isUpcoming !== true && isWearingBlinker(blinker);
+
+// Resolve the filled-dot radius: the upcoming point uses the larger dot, every
+// past point keeps the normal small dot.
+const resolveDotRadius = (isUpcoming: boolean | undefined): number =>
+  isUpcoming === true ? UPCOMING_DOT_RADIUS : CHART_LINE_DOT.r;
+
 export const PaddockChartDot = ({
   cx,
   cy,
@@ -453,8 +488,22 @@ export const PaddockChartDot = ({
   if (cx === undefined || cy === undefined) {
     return null;
   }
-  const radius = payload?.isUpcoming === true ? UPCOMING_DOT_RADIUS : CHART_LINE_DOT.r;
-  return <circle cx={cx} cy={cy} fill={stroke} r={radius} stroke={stroke} />;
+  const radius = resolveDotRadius(payload?.isUpcoming);
+  return (
+    <g>
+      {shouldRenderBlinkerRing({ blinker: payload?.blinker, isUpcoming: payload?.isUpcoming }) ? (
+        <circle
+          cx={cx}
+          cy={cy}
+          fill={BLINKER_RING_FILL}
+          r={BLINKER_RING_RADIUS}
+          stroke={stroke}
+          strokeWidth={BLINKER_RING_STROKE_WIDTH}
+        />
+      ) : null}
+      <circle cx={cx} cy={cy} fill={stroke} r={radius} stroke={stroke} />
+    </g>
+  );
 };
 
 const PaddockTooltipMetricLine = ({
@@ -800,6 +849,7 @@ export function PaddockRecentResultsChart(props: PaddockRecentResultsChartProps)
           }}
         />
       </fieldset>
+      <p style={BLINKER_HINT_STYLE}>{BLINKER_HINT_LABEL}</p>
       <PaddockChartCanvas
         combineWeightFutan={combineWeightFutan}
         hiddenMetrics={hiddenMetrics}

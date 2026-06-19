@@ -483,24 +483,27 @@ describe("runners table", () => {
     expect(rowTexts()[1]).toContain("一番");
   });
 
-  it("renders the blinker column with maru when blinkerShiyoKubun is 1 and dash otherwise", () => {
+  it("renders a dash in the blinker column for horses without a blinker pattern", () => {
     render(
       <RunnersTable
         runners={[
-          runner({ bamei: "着用馬", blinkerShiyoKubun: "1", umaban: "01" }),
-          runner({ bamei: "未着用馬", blinkerShiyoKubun: "0", umaban: "02" }),
+          runner({ bamei: "対象外馬一", umaban: "01" }),
+          runner({ bamei: "対象外馬二", umaban: "02" }),
         ]}
       />,
     );
 
     expect(screen.getByRole("columnheader", { name: "ブリンカー" })).toBeTruthy();
-    expect(screen.getByText("○")).toBeTruthy();
-    expect(rowTexts()[0]).toContain("着用馬");
-    expect(rowTexts()[0]).toContain("○");
-    expect(rowTexts()[1]).toContain("未着用馬");
+    expect(screen.queryByText("○")).toBeNull();
+    const firstBlinkerCell = screen
+      .getByText("対象外馬一")
+      .closest("tr")
+      ?.querySelector(".runner-blinker-cell");
+    expect(firstBlinkerCell?.textContent).toBe("-");
+    expect(firstBlinkerCell?.querySelector(".runner-blinker-pattern-badge")).toBeNull();
   });
 
-  it("renders the blinker pattern badge with its compact Japanese label for horses present in blinkerPatterns", () => {
+  it("renders the blinker pattern label badge inside the blinker column cell, not the horse-name cell", () => {
     render(
       <RunnersTable
         blinkerPatterns={[{ kettoTorokuBango: "2023100001", pattern: "A" }]}
@@ -514,10 +517,16 @@ describe("runners table", () => {
     const badge = screen.getByTitle("初ブリンカー");
     expect(badge.textContent).toBe("初装着");
     expect(badge.className).toBe("runner-blinker-pattern-badge pattern-A");
-    expect(rowTexts()[1]).toContain("対象外馬");
-    expect(
-      screen.getByText("対象外馬").closest("tr")?.querySelector(".runner-blinker-pattern-badge"),
-    ).toBeNull();
+    expect(badge.closest(".runner-blinker-cell")).toBeTruthy();
+    expect(badge.closest(".runner-horse-cell")).toBeNull();
+    const targetRow = screen.getByText("初装着馬").closest("tr");
+    expect(targetRow?.querySelector(".runner-horse-cell .runner-blinker-pattern-badge")).toBeNull();
+    const excludedBlinkerCell = screen
+      .getByText("対象外馬")
+      .closest("tr")
+      ?.querySelector(".runner-blinker-cell");
+    expect(excludedBlinkerCell?.textContent).toBe("-");
+    expect(excludedBlinkerCell?.querySelector(".runner-blinker-pattern-badge")).toBeNull();
   });
 
   it("decodes ban-ei hexadecimal horse weights", () => {

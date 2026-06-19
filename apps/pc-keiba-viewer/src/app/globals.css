@@ -3230,13 +3230,23 @@ fieldset.paddock-chip-row {
    variants stay monochrome (letter-coded) because no semantic per-pattern color
    exists in vars.css and the CSS lint forbids new hex literals. */
 .runner-col-blinker {
-  width: var(--space-9pct-238);
+  min-width: var(--space-120px-106);
+  width: var(--space-120px-106);
 }
 
 .runner-blinker-cell {
   color: var(--text);
   font-variant-numeric: tabular-nums;
   text-align: center;
+}
+
+/* Override the table-wide nowrap/ellipsis (defined later with equal specificity)
+   so the longest pattern label (e.g. 「初装着(新馬)」) shows in full inside the
+   widened column; the header th keeps its default single-line clipping. */
+.runner-table td.runner-blinker-cell {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
 }
 
 .paddock-recent-blinker {
@@ -3249,14 +3259,14 @@ fieldset.paddock-chip-row {
   align-items: center;
   background: var(--surface-muted);
   border: var(--space-1px-7) solid var(--line);
-  border-radius: var(--space-999px-30);
+  border-radius: var(--space-6px-33);
   color: var(--text);
   display: inline-flex;
-  font-size: var(--space-15px-1);
-  font-weight: var(--number-900-16);
+  font-size: var(--space-13px-92);
+  font-weight: var(--number-700-14);
   gap: var(--space-5px-17);
-  line-height: var(--number-1-7);
-  padding: var(--space-3px-22) var(--space-8px-28);
+  line-height: var(--number-1-35-27);
+  padding: var(--space-2px-25) var(--space-8px-28);
   white-space: nowrap;
   width: fit-content;
 }
@@ -3280,42 +3290,42 @@ fieldset.paddock-chip-row {
 .runner-blinker-pattern-badge.pattern-A,
 .paddock-blinker-pattern-badge.pattern-A {
   background: var(--blinker-pattern-a-bg);
-  border-color: var(--blinker-pattern-a-fg);
+  border-color: var(--blinker-pattern-a-border);
   color: var(--blinker-pattern-a-fg);
 }
 
 .runner-blinker-pattern-badge.pattern-B,
 .paddock-blinker-pattern-badge.pattern-B {
   background: var(--blinker-pattern-b-bg);
-  border-color: var(--blinker-pattern-b-fg);
+  border-color: var(--blinker-pattern-b-border);
   color: var(--blinker-pattern-b-fg);
 }
 
 .runner-blinker-pattern-badge.pattern-C,
 .paddock-blinker-pattern-badge.pattern-C {
   background: var(--blinker-pattern-c-bg);
-  border-color: var(--blinker-pattern-c-fg);
+  border-color: var(--blinker-pattern-c-border);
   color: var(--blinker-pattern-c-fg);
 }
 
 .runner-blinker-pattern-badge.pattern-D,
 .paddock-blinker-pattern-badge.pattern-D {
   background: var(--blinker-pattern-d-bg);
-  border-color: var(--blinker-pattern-d-fg);
+  border-color: var(--blinker-pattern-d-border);
   color: var(--blinker-pattern-d-fg);
 }
 
 .runner-blinker-pattern-badge.pattern-E,
 .paddock-blinker-pattern-badge.pattern-E {
   background: var(--blinker-pattern-e-bg);
-  border-color: var(--blinker-pattern-e-fg);
+  border-color: var(--blinker-pattern-e-border);
   color: var(--blinker-pattern-e-fg);
 }
 
 .runner-blinker-pattern-badge.pattern-F,
 .paddock-blinker-pattern-badge.pattern-F {
   background: var(--blinker-pattern-f-bg);
-  border-color: var(--blinker-pattern-f-fg);
+  border-color: var(--blinker-pattern-f-border);
   color: var(--blinker-pattern-f-fg);
 }
 

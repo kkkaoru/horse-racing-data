@@ -10,6 +10,7 @@ import {
   PaddockChartDot,
   PaddockRecentResultsChart,
   PaddockRecentTooltip,
+  shouldRenderBlinkerRing,
 } from "./paddock-recent-results-chart";
 
 interface ChartChildrenStubProps {
@@ -844,6 +845,102 @@ test("PaddockChartDot renders nothing when only the y coordinate is missing", ()
     </svg>,
   );
   expect(container.querySelectorAll("circle").length).toStrictEqual(0);
+});
+
+test("PaddockChartDot draws the blinker ring plus a normal dot for a worn past point", () => {
+  const { container } = render(
+    <svg>
+      <PaddockChartDot
+        cx={10}
+        cy={20}
+        payload={{ blinker: "1", isUpcoming: false }}
+        stroke="#0ca678"
+      />
+    </svg>,
+  );
+  const circles = container.querySelectorAll("circle");
+  expect(circles.length).toStrictEqual(2);
+  expect(circles[0]?.getAttribute("r")).toStrictEqual("5");
+  expect(circles[0]?.getAttribute("fill")).toStrictEqual("none");
+  expect(circles[0]?.getAttribute("stroke")).toStrictEqual("#0ca678");
+  expect(circles[1]?.getAttribute("r")).toStrictEqual("2");
+  expect(circles[1]?.getAttribute("fill")).toStrictEqual("#0ca678");
+});
+
+test("PaddockChartDot draws only the normal dot for a not-worn past point", () => {
+  const { container } = render(
+    <svg>
+      <PaddockChartDot
+        cx={10}
+        cy={20}
+        payload={{ blinker: "0", isUpcoming: false }}
+        stroke="#e03131"
+      />
+    </svg>,
+  );
+  const circles = container.querySelectorAll("circle");
+  expect(circles.length).toStrictEqual(1);
+  expect(circles[0]?.getAttribute("r")).toStrictEqual("2");
+  expect(circles[0]?.getAttribute("fill")).toStrictEqual("#e03131");
+});
+
+test("PaddockChartDot draws only the normal dot when the blinker flag is null", () => {
+  const { container } = render(
+    <svg>
+      <PaddockChartDot
+        cx={10}
+        cy={20}
+        payload={{ blinker: null, isUpcoming: false }}
+        stroke="#1971c2"
+      />
+    </svg>,
+  );
+  const circles = container.querySelectorAll("circle");
+  expect(circles.length).toStrictEqual(1);
+  expect(circles[0]?.getAttribute("r")).toStrictEqual("2");
+});
+
+test("PaddockChartDot draws the larger dot without a ring for the upcoming point even when worn", () => {
+  const { container } = render(
+    <svg>
+      <PaddockChartDot
+        cx={10}
+        cy={20}
+        payload={{ blinker: "1", isUpcoming: true }}
+        stroke="#0ca678"
+      />
+    </svg>,
+  );
+  const circles = container.querySelectorAll("circle");
+  expect(circles.length).toStrictEqual(1);
+  expect(circles[0]?.getAttribute("r")).toStrictEqual("4");
+});
+
+test("shouldRenderBlinkerRing returns true for a worn past point", () => {
+  expect(shouldRenderBlinkerRing({ blinker: "1", isUpcoming: false })).toStrictEqual(true);
+});
+
+test("shouldRenderBlinkerRing returns false for a not-worn past point", () => {
+  expect(shouldRenderBlinkerRing({ blinker: "0", isUpcoming: false })).toStrictEqual(false);
+});
+
+test("shouldRenderBlinkerRing returns false for a null blinker flag", () => {
+  expect(shouldRenderBlinkerRing({ blinker: null, isUpcoming: false })).toStrictEqual(false);
+});
+
+test("shouldRenderBlinkerRing returns false for an undefined blinker flag", () => {
+  expect(shouldRenderBlinkerRing({ blinker: undefined, isUpcoming: undefined })).toStrictEqual(
+    false,
+  );
+});
+
+test("shouldRenderBlinkerRing returns false for the worn upcoming point", () => {
+  expect(shouldRenderBlinkerRing({ blinker: "1", isUpcoming: true })).toStrictEqual(false);
+});
+
+test("renders the on-chart blinker ring hint above the paddock chart", () => {
+  render(<PaddockRecentResultsChart results={[chartResult({})]} />);
+  expect(screen.getByText("○ = ブリンカー装着").textContent).toStrictEqual("○ = ブリンカー装着");
 });
 
 test("drops only the weight value when the weight prop is an infinite number", () => {

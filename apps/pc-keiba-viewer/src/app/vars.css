@@ -427,6 +427,27 @@
   --value-space-9px-21: 9px;
   --value-surface: #ffffff;
   --value-surface-muted: #edf3ed;
+  /* Refined low-saturation blinker pattern pills: soft tint background +
+     darker same-hue text. Initial (A/B) green family, resume (C/D) amber→orange,
+     removal (E) red, continuation (F) blue. Border is a faint same-hue tint. */
+  --value-blinker-pattern-a-bg: #eef6f1;
+  --value-blinker-pattern-a-fg: #38694b;
+  --value-blinker-pattern-a-border: #cfe5d8;
+  --value-blinker-pattern-b-bg: #f0f6f2;
+  --value-blinker-pattern-b-fg: #45685a;
+  --value-blinker-pattern-b-border: #d4e3da;
+  --value-blinker-pattern-c-bg: #f7f1e2;
+  --value-blinker-pattern-c-fg: #826629;
+  --value-blinker-pattern-c-border: #e7dcc1;
+  --value-blinker-pattern-d-bg: #f8efe7;
+  --value-blinker-pattern-d-fg: #92583a;
+  --value-blinker-pattern-d-border: #ecd8ca;
+  --value-blinker-pattern-e-bg: #f7edec;
+  --value-blinker-pattern-e-fg: #9e4a44;
+  --value-blinker-pattern-e-border: #ebd2cf;
+  --value-blinker-pattern-f-bg: #ecf2f8;
+  --value-blinker-pattern-f-fg: #3f6188;
+  --value-blinker-pattern-f-border: #d3e0ee;
 }
 
 :root {
@@ -560,21 +581,28 @@
   --color-rgba-86-130-124-0-3-229: var(--value-color-rgba-86-130-124-0-3-229);
   --color-transparent-2: var(--value-color-transparent-2);
   --danger: var(--value-danger);
-  /* Blinker pattern badges: 6 glance-distinguishable color pairs. Initial fits
-     (A/B) share a green family, resume (C/D) warm amber→orange, removal (E) red,
-     continuation (F) blue. */
-  --blinker-pattern-a-bg: var(--color-hex-e9f8ef-24);
-  --blinker-pattern-a-fg: var(--color-hex-166534-49);
-  --blinker-pattern-b-bg: var(--color-hex-dff5ec-102);
-  --blinker-pattern-b-fg: var(--color-hex-2f4437-95);
-  --blinker-pattern-c-bg: var(--color-hex-fff8db-27);
-  --blinker-pattern-c-fg: var(--color-hex-6b5300-29);
-  --blinker-pattern-d-bg: var(--color-hex-fff4e5-65);
-  --blinker-pattern-d-fg: var(--color-hex-9a3412-85);
-  --blinker-pattern-e-bg: var(--color-hex-fff7f5-69);
-  --blinker-pattern-e-fg: var(--color-hex-b91c1c-111);
-  --blinker-pattern-f-bg: var(--color-hex-e8f3ff-105);
-  --blinker-pattern-f-fg: var(--color-hex-1d4ed8-113);
+  /* Blinker pattern badges: 6 glance-distinguishable, refined low-saturation
+     pills. Initial (A/B) green family, resume (C/D) warm amber→orange, removal
+     (E) red, continuation (F) blue. Each has a soft tint bg, darker same-hue
+     text, and a faint same-hue border. */
+  --blinker-pattern-a-bg: var(--value-blinker-pattern-a-bg);
+  --blinker-pattern-a-fg: var(--value-blinker-pattern-a-fg);
+  --blinker-pattern-a-border: var(--value-blinker-pattern-a-border);
+  --blinker-pattern-b-bg: var(--value-blinker-pattern-b-bg);
+  --blinker-pattern-b-fg: var(--value-blinker-pattern-b-fg);
+  --blinker-pattern-b-border: var(--value-blinker-pattern-b-border);
+  --blinker-pattern-c-bg: var(--value-blinker-pattern-c-bg);
+  --blinker-pattern-c-fg: var(--value-blinker-pattern-c-fg);
+  --blinker-pattern-c-border: var(--value-blinker-pattern-c-border);
+  --blinker-pattern-d-bg: var(--value-blinker-pattern-d-bg);
+  --blinker-pattern-d-fg: var(--value-blinker-pattern-d-fg);
+  --blinker-pattern-d-border: var(--value-blinker-pattern-d-border);
+  --blinker-pattern-e-bg: var(--value-blinker-pattern-e-bg);
+  --blinker-pattern-e-fg: var(--value-blinker-pattern-e-fg);
+  --blinker-pattern-e-border: var(--value-blinker-pattern-e-border);
+  --blinker-pattern-f-bg: var(--value-blinker-pattern-f-bg);
+  --blinker-pattern-f-fg: var(--value-blinker-pattern-f-fg);
+  --blinker-pattern-f-border: var(--value-blinker-pattern-f-border);
   --gold: var(--value-gold);
   --ink: var(--value-ink);
   --line: var(--value-line);

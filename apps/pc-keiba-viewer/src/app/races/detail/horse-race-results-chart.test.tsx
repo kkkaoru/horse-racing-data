@@ -10,7 +10,7 @@ import type { HorseRaceChartRunner } from "../../../lib/horse-race-results-chart
 import type { HorseWeightSnapshot } from "../../../lib/horse-weight-stream-client";
 import { useHorseWeightStream } from "../../../lib/horse-weight-stream-client";
 import type { HorseRaceResult } from "../../../lib/race-types";
-import { HorseRaceResultsChart } from "./horse-race-results-chart";
+import { HorseRaceResultsChart, OverviewChartDot } from "./horse-race-results-chart";
 import { useRealtimeRacePayload } from "./realtime-client";
 
 interface RealtimePayloadResult {
@@ -895,6 +895,67 @@ test("sums weight and futan and relabels the weight heading when the combine tog
     screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent),
   ).toStrictEqual(["着順", "人気", "馬体重+斤量", "馬体重増減", "斤量"]);
   expect(screen.getAllByTestId("line-stub")[4]?.getAttribute("data-value-sum")).toStrictEqual("55");
+});
+
+test("OverviewChartDot draws the blinker ring plus a normal dot for a worn point", () => {
+  const { container } = render(
+    <svg>
+      <OverviewChartDot cx={10} cy={20} payload={{ blinker: "1" }} stroke="#e6194b" />
+    </svg>,
+  );
+  const circles = container.querySelectorAll("circle");
+  expect(circles.length).toStrictEqual(2);
+  expect(circles[0]?.getAttribute("r")).toStrictEqual("5");
+  expect(circles[0]?.getAttribute("fill")).toStrictEqual("none");
+  expect(circles[0]?.getAttribute("stroke")).toStrictEqual("#e6194b");
+  expect(circles[1]?.getAttribute("r")).toStrictEqual("2");
+  expect(circles[1]?.getAttribute("fill")).toStrictEqual("#e6194b");
+});
+
+test("OverviewChartDot draws only the normal dot for a not-worn point", () => {
+  const { container } = render(
+    <svg>
+      <OverviewChartDot cx={10} cy={20} payload={{ blinker: "0" }} stroke="#1971c2" />
+    </svg>,
+  );
+  const circles = container.querySelectorAll("circle");
+  expect(circles.length).toStrictEqual(1);
+  expect(circles[0]?.getAttribute("r")).toStrictEqual("2");
+  expect(circles[0]?.getAttribute("fill")).toStrictEqual("#1971c2");
+});
+
+test("OverviewChartDot draws only the normal dot when the blinker flag is null", () => {
+  const { container } = render(
+    <svg>
+      <OverviewChartDot cx={10} cy={20} payload={{ blinker: null }} stroke="#0ca678" />
+    </svg>,
+  );
+  const circles = container.querySelectorAll("circle");
+  expect(circles.length).toStrictEqual(1);
+  expect(circles[0]?.getAttribute("r")).toStrictEqual("2");
+});
+
+test("OverviewChartDot renders nothing when the coordinates are missing", () => {
+  const { container } = render(
+    <svg>
+      <OverviewChartDot payload={{ blinker: "1" }} stroke="#e6194b" />
+    </svg>,
+  );
+  expect(container.querySelectorAll("circle").length).toStrictEqual(0);
+});
+
+test("OverviewChartDot renders nothing when only the y coordinate is missing", () => {
+  const { container } = render(
+    <svg>
+      <OverviewChartDot cx={10} payload={{ blinker: "0" }} stroke="#1971c2" />
+    </svg>,
+  );
+  expect(container.querySelectorAll("circle").length).toStrictEqual(0);
+});
+
+test("renders the on-chart blinker ring hint above the overview panels", () => {
+  render(<HorseRaceResultsChart results={[chartResult({})]} />);
+  expect(screen.getByText("○ = ブリンカー装着").textContent).toStrictEqual("○ = ブリンカー装着");
 });
 
 test("marks each chip with a data-active flag matching its pressed state", () => {

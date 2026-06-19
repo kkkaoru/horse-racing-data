@@ -1,5 +1,6 @@
 "use client";
 
+import type { CSSProperties, ReactElement } from "react";
 import { useMemo, useState } from "react";
 import {
   CartesianGrid,
@@ -61,6 +62,19 @@ interface ChartInitialDimension {
 
 interface ChartLineDot {
   r: number;
+}
+
+// Minimal blinker flag carried on the dot's payload; the overview rank/value
+// points carry the raw "blinkerShiyoKubun" so the per-point marker can read it.
+interface OverviewDotPayload {
+  blinker?: string | null;
+}
+
+interface OverviewChartDotProps {
+  cx?: number;
+  cy?: number;
+  payload?: OverviewDotPayload;
+  stroke?: string;
 }
 
 interface ChartTooltipPayloadEntry {
@@ -125,6 +139,22 @@ const WHITE_FRAME_NUMBERS: ReadonlySet<string> = new Set(
 );
 const CHART_INITIAL_DIMENSION: ChartInitialDimension = { height: 1, width: 1 };
 const CHART_LINE_DOT: ChartLineDot = { r: 2 };
+// A blinker-worn past race keeps its normal filled dot but gains an outer hollow
+// ring (drawn in the series stroke color) so the reader can SEE which past races
+// had a blinker without hovering, while preserving the line's color identity.
+const BLINKER_RING_RADIUS = 5;
+const BLINKER_RING_STROKE_WIDTH = 1.5;
+const BLINKER_RING_FILL = "none";
+// One-line hint shown above the overview panels so a viewer knows the on-chart
+// ring marks a past race where the horse wore a blinker. Styled inline so no
+// globals.css change is needed for this marker feature.
+const BLINKER_HINT_LABEL = "○ = ブリンカー装着";
+const BLINKER_HINT_COLOR = "#495057";
+const BLINKER_HINT_STYLE: CSSProperties = {
+  color: BLINKER_HINT_COLOR,
+  fontSize: 11,
+  margin: "0 0 6px",
+};
 // The four overview panels share one syncId and match hover points by X value,
 // so hovering one date highlights the same race date in every panel.
 const OVERVIEW_SYNC_ID = "race-results-overview";
@@ -323,6 +353,35 @@ const resolveSelectedUpcoming = (
   };
 };
 
+// Custom per-point dot for the overview lines: a normal small filled dot, plus
+// an outer hollow ring when the point's race wore a blinker (blinker === "1").
+// The synthetic upcoming point carries blinker null, so it never gets a ring.
+export const OverviewChartDot = ({
+  cx,
+  cy,
+  payload,
+  stroke,
+}: OverviewChartDotProps): ReactElement | null => {
+  if (cx === undefined || cy === undefined) {
+    return null;
+  }
+  return (
+    <g>
+      {isWearingBlinker(payload?.blinker) ? (
+        <circle
+          cx={cx}
+          cy={cy}
+          fill={BLINKER_RING_FILL}
+          r={BLINKER_RING_RADIUS}
+          stroke={stroke}
+          strokeWidth={BLINKER_RING_STROKE_WIDTH}
+        />
+      ) : null}
+      <circle cx={cx} cy={cy} fill={stroke} r={CHART_LINE_DOT.r} stroke={stroke} />
+    </g>
+  );
+};
+
 const MetricTooltip = ({ active, metric, payload }: MetricTooltipProps) => {
   const entry = payload?.at(0);
   if (active !== true || !entry?.payload) {
@@ -350,57 +409,60 @@ const OverviewPanels = ({
   metricLabels,
   seriesListsByMetric,
 }: OverviewPanelsProps) => (
-  <div className="race-results-chart-grid">
-    {HORSE_RACE_CHART_METRICS.map((metric) => (
-      <section className="race-results-chart-panel" key={metric}>
-        <h3>{metricLabels[metric]}</h3>
-        <ResponsiveContainer
-          height={CHART_PANEL_HEIGHT}
-          initialDimension={CHART_INITIAL_DIMENSION}
-          width="100%"
-        >
-          <LineChart syncId={OVERVIEW_SYNC_ID} syncMethod={CHART_SYNC_METHOD}>
-            <CartesianGrid stroke={CHART_GRID_STROKE} strokeDasharray={CHART_GRID_DASH} />
-            <XAxis
-              dataKey="dateValue"
-              domain={TIME_AXIS_DOMAIN}
-              scale="time"
-              tickFormatter={formatHorseRaceChartDate}
-              type="number"
-            />
-            <YAxis
-              allowDecimals={false}
-              domain={Y_AXIS_DOMAIN_BY_METRIC[metric]}
-              reversed={REVERSED_Y_AXIS_BY_METRIC[metric]}
-            />
-            {METRIC_HAS_RACE_CONTEXT[metric] ? (
-              <Tooltip content={<MetricTooltip metric={metric} />} />
-            ) : (
-              <Tooltip
-                formatter={(value) => `${String(value)}${HORSE_RACE_CHART_METRIC_UNITS[metric]}`}
-                labelFormatter={(label) => formatHorseRaceChartDate(Number(label))}
+  <>
+    <p style={BLINKER_HINT_STYLE}>{BLINKER_HINT_LABEL}</p>
+    <div className="race-results-chart-grid">
+      {HORSE_RACE_CHART_METRICS.map((metric) => (
+        <section className="race-results-chart-panel" key={metric}>
+          <h3>{metricLabels[metric]}</h3>
+          <ResponsiveContainer
+            height={CHART_PANEL_HEIGHT}
+            initialDimension={CHART_INITIAL_DIMENSION}
+            width="100%"
+          >
+            <LineChart syncId={OVERVIEW_SYNC_ID} syncMethod={CHART_SYNC_METHOD}>
+              <CartesianGrid stroke={CHART_GRID_STROKE} strokeDasharray={CHART_GRID_DASH} />
+              <XAxis
+                dataKey="dateValue"
+                domain={TIME_AXIS_DOMAIN}
+                scale="time"
+                tickFormatter={formatHorseRaceChartDate}
+                type="number"
               />
-            )}
-            {seriesListsByMetric[metric]
-              .filter((series) => !hiddenHorses.has(series.kettoTorokuBango))
-              .map((series) => (
-                <Line
-                  data={series.points}
-                  dataKey="value"
-                  dot={CHART_LINE_DOT}
-                  isAnimationActive={false}
-                  key={series.kettoTorokuBango}
-                  name={getHorseChipLabel(series)}
-                  stroke={resolveSeriesStroke(series)}
-                  strokeWidth={resolveSeriesStrokeWidth(series)}
-                  type="monotone"
+              <YAxis
+                allowDecimals={false}
+                domain={Y_AXIS_DOMAIN_BY_METRIC[metric]}
+                reversed={REVERSED_Y_AXIS_BY_METRIC[metric]}
+              />
+              {METRIC_HAS_RACE_CONTEXT[metric] ? (
+                <Tooltip content={<MetricTooltip metric={metric} />} />
+              ) : (
+                <Tooltip
+                  formatter={(value) => `${String(value)}${HORSE_RACE_CHART_METRIC_UNITS[metric]}`}
+                  labelFormatter={(label) => formatHorseRaceChartDate(Number(label))}
                 />
-              ))}
-          </LineChart>
-        </ResponsiveContainer>
-      </section>
-    ))}
-  </div>
+              )}
+              {seriesListsByMetric[metric]
+                .filter((series) => !hiddenHorses.has(series.kettoTorokuBango))
+                .map((series) => (
+                  <Line
+                    data={series.points}
+                    dataKey="value"
+                    dot={<OverviewChartDot />}
+                    isAnimationActive={false}
+                    key={series.kettoTorokuBango}
+                    name={getHorseChipLabel(series)}
+                    stroke={resolveSeriesStroke(series)}
+                    strokeWidth={resolveSeriesStrokeWidth(series)}
+                    type="monotone"
+                  />
+                ))}
+            </LineChart>
+          </ResponsiveContainer>
+        </section>
+      ))}
+    </div>
+  </>
 );
 
 export const HorseRaceResultsChart = ({
