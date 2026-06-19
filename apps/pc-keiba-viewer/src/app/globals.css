@@ -3274,6 +3274,51 @@ fieldset.paddock-chip-row {
   font-weight: inherit;
 }
 
+/* Per-pattern color coding so the 6 blinker states are distinguishable at a
+   glance. Background + text + border all shift per pattern; defined via vars.css
+   aliases so globals.css stays free of raw color literals. */
+.runner-blinker-pattern-badge.pattern-A,
+.paddock-blinker-pattern-badge.pattern-A {
+  background: var(--blinker-pattern-a-bg);
+  border-color: var(--blinker-pattern-a-fg);
+  color: var(--blinker-pattern-a-fg);
+}
+
+.runner-blinker-pattern-badge.pattern-B,
+.paddock-blinker-pattern-badge.pattern-B {
+  background: var(--blinker-pattern-b-bg);
+  border-color: var(--blinker-pattern-b-fg);
+  color: var(--blinker-pattern-b-fg);
+}
+
+.runner-blinker-pattern-badge.pattern-C,
+.paddock-blinker-pattern-badge.pattern-C {
+  background: var(--blinker-pattern-c-bg);
+  border-color: var(--blinker-pattern-c-fg);
+  color: var(--blinker-pattern-c-fg);
+}
+
+.runner-blinker-pattern-badge.pattern-D,
+.paddock-blinker-pattern-badge.pattern-D {
+  background: var(--blinker-pattern-d-bg);
+  border-color: var(--blinker-pattern-d-fg);
+  color: var(--blinker-pattern-d-fg);
+}
+
+.runner-blinker-pattern-badge.pattern-E,
+.paddock-blinker-pattern-badge.pattern-E {
+  background: var(--blinker-pattern-e-bg);
+  border-color: var(--blinker-pattern-e-fg);
+  color: var(--blinker-pattern-e-fg);
+}
+
+.runner-blinker-pattern-badge.pattern-F,
+.paddock-blinker-pattern-badge.pattern-F {
+  background: var(--blinker-pattern-f-bg);
+  border-color: var(--blinker-pattern-f-fg);
+  color: var(--blinker-pattern-f-fg);
+}
+
 .paddock-status-badge,
 .runner-status-badge {
   background: var(--color-hex-fff4e5-65);

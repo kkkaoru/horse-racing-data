@@ -1084,8 +1084,7 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
               aria-label={`ブリンカー ${BLINKER_PATTERN_LABELS[blinkerPattern]}`}
               className={`paddock-blinker-pattern-badge pattern-${blinkerPattern}`}
             >
-              <span>ブリンカー</span>
-              <strong>{blinkerPattern}</strong>
+              <strong>{BLINKER_PATTERN_LABELS[blinkerPattern]}</strong>
             </span>
           ) : null}
           {status ? <span className="paddock-status-badge">{status}</span> : null}

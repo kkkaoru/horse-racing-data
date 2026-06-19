@@ -6,6 +6,7 @@ import { useMemo, useState } from "react";
 
 import {
   BLINKER_PATTERN_LABELS,
+  BLINKER_PATTERN_SHORT_LABELS,
   type BlinkerPattern,
   isWearingBlinker,
 } from "../../../lib/blinker-pattern";
@@ -384,7 +385,7 @@ export function RunnersTable({
               className={`runner-blinker-pattern-badge pattern-${blinkerPattern}`}
               title={BLINKER_PATTERN_LABELS[blinkerPattern]}
             >
-              {blinkerPattern}
+              {BLINKER_PATTERN_SHORT_LABELS[blinkerPattern]}
             </span>
           ) : null}
           {entryStatus ? <span className="runner-status-badge">{entryStatus}</span> : null}

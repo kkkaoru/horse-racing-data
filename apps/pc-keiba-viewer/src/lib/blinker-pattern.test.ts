@@ -3,6 +3,7 @@ import { expect, test } from "vitest";
 
 import {
   BLINKER_PATTERN_LABELS,
+  BLINKER_PATTERN_SHORT_LABELS,
   classifyBlinkerPattern,
   isWearingBlinker,
 } from "./blinker-pattern";
@@ -27,18 +28,29 @@ test("isWearingBlinker returns false for a blank string", () => {
   expect(isWearingBlinker("")).toBe(false);
 });
 
-test("BLINKER_PATTERN_LABELS maps every pattern to its Japanese label", () => {
+test("BLINKER_PATTERN_LABELS maps every pattern to its full Japanese label", () => {
   expect(BLINKER_PATTERN_LABELS).toStrictEqual({
-    A: "初装着(初出走以外)",
-    B: "初装着(初出走)",
-    C: "再装着(近1-2走休止)",
-    D: "再装着(3走以上休止)",
+    A: "初ブリンカー",
+    B: "初ブリンカー(初出走)",
+    C: "ブリンカー再装着",
+    D: "ブリンカー再装着(3走以上ぶり)",
     E: "ブリンカー解除",
-    F: "継続着用",
+    F: "ブリンカー継続",
   });
 });
 
-test("classifyBlinkerPattern returns B when wearing now with no past races", () => {
+test("BLINKER_PATTERN_SHORT_LABELS maps every pattern to its compact Japanese label", () => {
+  expect(BLINKER_PATTERN_SHORT_LABELS).toStrictEqual({
+    A: "初装着",
+    B: "初装着(新馬)",
+    C: "再装着",
+    D: "再装着(久々)",
+    E: "解除",
+    F: "継続",
+  });
+});
+
+test("classifyBlinkerPattern returns B when wearing now with no past races (debut)", () => {
   expect(classifyBlinkerPattern("1", [])).toBe("B");
 });
 
@@ -48,14 +60,6 @@ test("classifyBlinkerPattern returns A when wearing now and never wore before (a
 
 test("classifyBlinkerPattern returns A when wearing now and past values are null", () => {
   expect(classifyBlinkerPattern("1", [null, null])).toBe("A");
-});
-
-test("classifyBlinkerPattern returns F when wearing now and most recent past wore it", () => {
-  expect(classifyBlinkerPattern("1", ["1", "0", "0"])).toBe("F");
-});
-
-test("classifyBlinkerPattern returns F when wearing now and every past race wore it", () => {
-  expect(classifyBlinkerPattern("1", ["1", "1"])).toBe("F");
 });
 
 test("classifyBlinkerPattern returns C for a one-race gap (most recent off, prior on)", () => {
@@ -74,6 +78,22 @@ test("classifyBlinkerPattern returns D for a four-race gap", () => {
   expect(classifyBlinkerPattern("1", ["0", "0", "0", "0", "1"])).toBe("D");
 });
 
+test("classifyBlinkerPattern returns F when wearing now and every past race wore it", () => {
+  expect(classifyBlinkerPattern("1", ["1", "1"])).toBe("F");
+});
+
+test("classifyBlinkerPattern returns F when wearing now and the most recent three+ wore it", () => {
+  expect(classifyBlinkerPattern("1", ["1", "1", "1", "0", "0"])).toBe("F");
+});
+
+test("classifyBlinkerPattern returns F when wearing now and only the last race wore it", () => {
+  expect(classifyBlinkerPattern("1", ["1", "0", "0"])).toBe("F");
+});
+
+test("classifyBlinkerPattern returns F when wearing now and the last two races wore it", () => {
+  expect(classifyBlinkerPattern("1", ["1", "1", "0", "1"])).toBe("F");
+});
+
 test("classifyBlinkerPattern returns E when not wearing now and every past race wore it", () => {
   expect(classifyBlinkerPattern("0", ["1", "1", "1"])).toBe("E");
 });
@@ -82,8 +102,16 @@ test("classifyBlinkerPattern returns E for a single past wearing race when remov
   expect(classifyBlinkerPattern("0", ["1"])).toBe("E");
 });
 
+test("classifyBlinkerPattern returns E when not wearing now and the most recent three+ wore it", () => {
+  expect(classifyBlinkerPattern("0", ["1", "1", "1", "0"])).toBe("E");
+});
+
+test("classifyBlinkerPattern returns null when not wearing now and only the last two wore it", () => {
+  expect(classifyBlinkerPattern("0", ["1", "1", "0"])).toBe(null);
+});
+
 test("classifyBlinkerPattern returns null when not wearing now and only some past races wore it", () => {
-  expect(classifyBlinkerPattern("0", ["1", "0"])).toBe(null);
+  expect(classifyBlinkerPattern("0", ["0", "1"])).toBe(null);
 });
 
 test("classifyBlinkerPattern returns null when not wearing now with no past races (debut)", () => {

@@ -538,7 +538,8 @@ test("PaddockSection renders the first-attachment blinker pattern badge for a de
   });
   const badge = container.querySelector(".paddock-blinker-pattern-badge");
   expect(badge?.className).toBe("paddock-blinker-pattern-badge pattern-B");
-  expect(badge?.getAttribute("aria-label")).toBe("ブリンカー 初装着(初出走)");
+  expect(badge?.textContent).toBe("初ブリンカー(初出走)");
+  expect(badge?.getAttribute("aria-label")).toBe("ブリンカー 初ブリンカー(初出走)");
 });
 
 test("PaddockSection renders the first-attachment-not-debut blinker pattern badge over past unworn races", async () => {
@@ -560,7 +561,8 @@ test("PaddockSection renders the first-attachment-not-debut blinker pattern badg
   });
   const badge = container.querySelector(".paddock-blinker-pattern-badge");
   expect(badge?.className).toBe("paddock-blinker-pattern-badge pattern-A");
-  expect(badge?.getAttribute("aria-label")).toBe("ブリンカー 初装着(初出走以外)");
+  expect(badge?.textContent).toBe("初ブリンカー");
+  expect(badge?.getAttribute("aria-label")).toBe("ブリンカー 初ブリンカー");
 });
 
 test("PaddockSection renders no blinker pattern badge when the horse never wears one", async () => {

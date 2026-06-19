@@ -500,7 +500,7 @@ describe("runners table", () => {
     expect(rowTexts()[1]).toContain("未着用馬");
   });
 
-  it("renders the A-F blinker pattern badge for horses present in blinkerPatterns", () => {
+  it("renders the blinker pattern badge with its compact Japanese label for horses present in blinkerPatterns", () => {
     render(
       <RunnersTable
         blinkerPatterns={[{ kettoTorokuBango: "2023100001", pattern: "A" }]}
@@ -511,8 +511,8 @@ describe("runners table", () => {
       />,
     );
 
-    const badge = screen.getByTitle("初装着(初出走以外)");
-    expect(badge.textContent).toBe("A");
+    const badge = screen.getByTitle("初ブリンカー");
+    expect(badge.textContent).toBe("初装着");
     expect(badge.className).toBe("runner-blinker-pattern-badge pattern-A");
     expect(rowTexts()[1]).toContain("対象外馬");
     expect(

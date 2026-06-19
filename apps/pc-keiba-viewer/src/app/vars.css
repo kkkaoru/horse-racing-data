@@ -559,6 +559,21 @@
   --color-rgba-86-130-124-0-3-229: var(--value-color-rgba-86-130-124-0-3-229);
   --color-transparent-2: var(--value-color-transparent-2);
   --danger: var(--value-danger);
+  /* Blinker pattern badges: 6 glance-distinguishable color pairs. Initial fits
+     (A/B) share a green family, resume (C/D) warm amber→orange, removal (E) red,
+     continuation (F) blue. */
+  --blinker-pattern-a-bg: var(--color-hex-e9f8ef-24);
+  --blinker-pattern-a-fg: var(--color-hex-166534-49);
+  --blinker-pattern-b-bg: var(--color-hex-dff5ec-102);
+  --blinker-pattern-b-fg: var(--color-hex-2f4437-95);
+  --blinker-pattern-c-bg: var(--color-hex-fff8db-27);
+  --blinker-pattern-c-fg: var(--color-hex-6b5300-29);
+  --blinker-pattern-d-bg: var(--color-hex-fff4e5-65);
+  --blinker-pattern-d-fg: var(--color-hex-9a3412-85);
+  --blinker-pattern-e-bg: var(--color-hex-fff7f5-69);
+  --blinker-pattern-e-fg: var(--color-hex-b91c1c-111);
+  --blinker-pattern-f-bg: var(--color-hex-e8f3ff-105);
+  --blinker-pattern-f-fg: var(--color-hex-1d4ed8-113);
   --gold: var(--value-gold);
   --ink: var(--value-ink);
   --line: var(--value-line);
