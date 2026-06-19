@@ -96,3 +96,87 @@ test("enqueuePredict sends rescore mode when mode is rescore", async () => {
     runYmd: "20260619",
   });
 });
+
+test("enqueuePredict attaches keibajoCode and raceBango for a per-race rescore", async () => {
+  const categories = await enqueuePredict({
+    category: "nar",
+    daysAhead: 0,
+    env: makeEnv(),
+    keibajoCode: "45",
+    mode: "rescore",
+    raceBango: "12",
+    runDate: "2026-06-19",
+    runYmd: "20260619",
+  });
+  expect(sendMock).toHaveBeenCalledTimes(1);
+  expect(categories).toStrictEqual(["nar"]);
+  expect(sendMock).toHaveBeenCalledWith({
+    category: "nar",
+    daysAhead: 0,
+    keibajoCode: "45",
+    mode: "rescore",
+    raceBango: "12",
+    runDate: "2026-06-19",
+    runDateIso: "2026-06-19",
+    runYmd: "20260619",
+  });
+});
+
+test("enqueuePredict omits per-race fields when only keibajoCode is provided", async () => {
+  await enqueuePredict({
+    category: "nar",
+    daysAhead: 0,
+    env: makeEnv(),
+    keibajoCode: "45",
+    mode: "rescore",
+    runDate: "2026-06-19",
+    runYmd: "20260619",
+  });
+  expect(sendMock).toHaveBeenCalledWith({
+    category: "nar",
+    daysAhead: 0,
+    mode: "rescore",
+    runDate: "2026-06-19",
+    runDateIso: "2026-06-19",
+    runYmd: "20260619",
+  });
+});
+
+test("enqueuePredict omits per-race fields when only raceBango is provided", async () => {
+  await enqueuePredict({
+    category: "nar",
+    daysAhead: 0,
+    env: makeEnv(),
+    mode: "rescore",
+    raceBango: "12",
+    runDate: "2026-06-19",
+    runYmd: "20260619",
+  });
+  expect(sendMock).toHaveBeenCalledWith({
+    category: "nar",
+    daysAhead: 0,
+    mode: "rescore",
+    runDate: "2026-06-19",
+    runDateIso: "2026-06-19",
+    runYmd: "20260619",
+  });
+});
+
+test("enqueuePredict multi-category path has no per-race fields", async () => {
+  await enqueuePredict({
+    daysAhead: 2,
+    env: makeEnv(),
+    mode: "full",
+    runDate: "2026-06-03",
+    runYmd: "20260603",
+  });
+  expect(sendMock).toHaveBeenCalledTimes(3);
+  expect(sendMock).toHaveBeenCalledWith({
+    category: "jra",
+    daysAhead: 2,
+    mode: "full",
+    runDate: "2026-06-03",
+    runDateIso: "2026-06-03",
+    runYmd: "20260603",
+  });
+});

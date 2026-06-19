@@ -288,3 +288,85 @@ test("handleFetch does not write an audit row when enqueueing", async () => {
   expect(prepareMock).not.toHaveBeenCalled();
   expect(enqueueMock).toHaveBeenCalledTimes(1);
 });
+
+test("handleFetch forwards keibajoCode and raceBango for a per-race NAR rescore", async () => {
+  enqueueMock.mockResolvedValue(["nar"]);
+  await handleFetch(
+    triggerRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "nar",
+        keibajoCode: "45",
+        mode: "rescore",
+        raceBango: "12",
+        runDate: "20260619",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(enqueueMock).toHaveBeenCalledTimes(1);
+  expect(enqueueMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      category: "nar",
+      keibajoCode: "45",
+      mode: "rescore",
+      raceBango: "12",
+    }),
+  );
+});
+
+test("handleFetch trims whitespace from keibajoCode and raceBango", async () => {
+  enqueueMock.mockResolvedValue(["nar"]);
+  await handleFetch(
+    triggerRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "nar",
+        keibajoCode: " 45 ",
+        mode: "rescore",
+        raceBango: " 12 ",
+        runDate: "20260619",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(enqueueMock).toHaveBeenCalledWith(
+    expect.objectContaining({ keibajoCode: "45", raceBango: "12" }),
+  );
+});
+
+test("handleFetch treats a blank keibajoCode as absent", async () => {
+  await handleFetch(
+    triggerRequest(
+      "secret-token",
+      JSON.stringify({ category: "nar", keibajoCode: "   ", raceBango: "12", runDate: "20260619" }),
+    ),
+    makeEnv(),
+  );
+  expect(enqueueMock).toHaveBeenCalledWith(
+    expect.objectContaining({ keibajoCode: undefined, raceBango: "12" }),
+  );
+});
+
+test("handleFetch treats a non-string raceBango as absent", async () => {
+  await handleFetch(
+    triggerRequest(
+      "secret-token",
+      JSON.stringify({ category: "nar", keibajoCode: "45", raceBango: 12, runDate: "20260619" }),
+    ),
+    makeEnv(),
+  );
+  expect(enqueueMock).toHaveBeenCalledWith(
+    expect.objectContaining({ keibajoCode: "45", raceBango: undefined }),
+  );
+});
+
+test("handleFetch omits per-race fields for the per-category path", async () => {
+  await handleFetch(
+    triggerRequest("secret-token", JSON.stringify({ runDate: "20260603" })),
+    makeEnv(),
+  );
+  expect(enqueueMock).toHaveBeenCalledWith(
+    expect.objectContaining({ keibajoCode: undefined, raceBango: undefined }),
+  );
+});

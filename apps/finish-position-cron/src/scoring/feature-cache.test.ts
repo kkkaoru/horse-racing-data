@@ -48,12 +48,13 @@ test("refreshLateBindingColumns overwrites the 5 late-binding columns from fresh
     row: {
       odds_score: 0.5664,
       popularity_score: 0.5,
-      shusso_tosu: 16,
+      shusso_tosu: null,
       tansho_ninkijun: null,
       tansho_odds: null,
       weight_avg_5: 476,
       weight_diff_from_avg: null,
     },
+    runnerCount: 16,
     tanshoNinkijun: 3,
     tanshoOdds: 3.5,
   });
@@ -64,11 +65,60 @@ test("refreshLateBindingColumns overwrites the 5 late-binding columns from fresh
   expect(refreshed.weight_diff_from_avg).toBe(8);
 });
 
+test("refreshLateBindingColumns derives popularity_score from the explicit runnerCount", () => {
+  const refreshed = refreshLateBindingColumns({
+    category: "jra",
+    currentBataiju: null,
+    row: { shusso_tosu: null, weight_avg_5: 470 },
+    runnerCount: 13,
+    tanshoNinkijun: 3,
+    tanshoOdds: 5,
+  });
+  expect(refreshed.popularity_score).toBe(2 / 12);
+});
+
+test("refreshLateBindingColumns falls back to the median when runnerCount is null", () => {
+  const refreshed = refreshLateBindingColumns({
+    category: "jra",
+    currentBataiju: null,
+    row: { shusso_tosu: null, weight_avg_5: 470 },
+    runnerCount: null,
+    tanshoNinkijun: 3,
+    tanshoOdds: 5,
+  });
+  expect(refreshed.popularity_score).toBe(0.5);
+});
+
+test("refreshLateBindingColumns falls back to the median when runnerCount is 1", () => {
+  const refreshed = refreshLateBindingColumns({
+    category: "jra",
+    currentBataiju: null,
+    row: { shusso_tosu: null, weight_avg_5: 470 },
+    runnerCount: 1,
+    tanshoNinkijun: 1,
+    tanshoOdds: 5,
+  });
+  expect(refreshed.popularity_score).toBe(0.5);
+});
+
+test("refreshLateBindingColumns ignores the structurally-null cached shusso_tosu", () => {
+  const refreshed = refreshLateBindingColumns({
+    category: "jra",
+    currentBataiju: null,
+    row: { shusso_tosu: null, weight_avg_5: 470 },
+    runnerCount: 16,
+    tanshoNinkijun: 8,
+    tanshoOdds: 20,
+  });
+  expect(refreshed.popularity_score).toBe(7 / 15);
+});
+
 test("refreshLateBindingColumns keeps early-binding columns untouched", () => {
   const refreshed = refreshLateBindingColumns({
     category: "jra",
     currentBataiju: 484,
-    row: { career_win_rate: 0.25, shusso_tosu: 12, weight_avg_5: 470 },
+    row: { career_win_rate: 0.25, shusso_tosu: null, weight_avg_5: 470 },
+    runnerCount: 12,
     tanshoNinkijun: 1,
     tanshoOdds: 2.1,
   });
@@ -80,11 +130,12 @@ test("refreshLateBindingColumns falls back to cached odds when realtime is null"
     category: "jra",
     currentBataiju: null,
     row: {
-      shusso_tosu: 10,
+      shusso_tosu: null,
       tansho_ninkijun: 5,
       tansho_odds: 12,
       weight_avg_5: 460,
     },
+    runnerCount: 10,
     tanshoNinkijun: null,
     tanshoOdds: null,
   });
@@ -94,27 +145,17 @@ test("refreshLateBindingColumns falls back to cached odds when realtime is null"
   expect(refreshed.weight_diff_from_avg).toBe(null);
 });
 
-test("refreshLateBindingColumns coerces a decoded bigint shusso_tosu", () => {
-  const refreshed = refreshLateBindingColumns({
-    category: "jra",
-    currentBataiju: 480,
-    row: { shusso_tosu: 16n, weight_avg_5: 470 },
-    tanshoNinkijun: 8,
-    tanshoOdds: 20,
-  });
-  expect(refreshed.popularity_score).toBe(7 / 15);
-});
-
 test("refreshLateBindingColumns parses string-valued cached odds from the parquet", () => {
   const refreshed = refreshLateBindingColumns({
     category: "jra",
     currentBataiju: null,
     row: {
-      shusso_tosu: 10,
+      shusso_tosu: null,
       tansho_ninkijun: "4",
       tansho_odds: "8.0",
       weight_avg_5: 460,
     },
+    runnerCount: 10,
     tanshoNinkijun: null,
     tanshoOdds: null,
   });
@@ -127,11 +168,12 @@ test("refreshLateBindingColumns treats an empty-string cached odds cell as missi
     category: "jra",
     currentBataiju: null,
     row: {
-      shusso_tosu: 10,
+      shusso_tosu: null,
       tansho_ninkijun: "",
       tansho_odds: "   ",
       weight_avg_5: 460,
     },
+    runnerCount: 10,
     tanshoNinkijun: null,
     tanshoOdds: null,
   });
@@ -144,11 +186,12 @@ test("refreshLateBindingColumns treats a non-numeric cached odds cell as missing
     category: "jra",
     currentBataiju: null,
     row: {
-      shusso_tosu: 10,
+      shusso_tosu: null,
       tansho_ninkijun: "n/a",
       tansho_odds: "n/a",
       weight_avg_5: 460,
     },
+    runnerCount: 10,
     tanshoNinkijun: null,
     tanshoOdds: null,
   });
@@ -159,22 +202,12 @@ test("refreshLateBindingColumns treats a NaN-number cached weight_avg_5 as missi
   const refreshed = refreshLateBindingColumns({
     category: "jra",
     currentBataiju: 480,
-    row: { shusso_tosu: 12, tansho_ninkijun: 3, tansho_odds: 4, weight_avg_5: Number.NaN },
+    row: { shusso_tosu: null, tansho_ninkijun: 3, tansho_odds: 4, weight_avg_5: Number.NaN },
+    runnerCount: 12,
     tanshoNinkijun: null,
     tanshoOdds: null,
   });
   expect(refreshed.weight_diff_from_avg).toBe(null);
-});
-
-test("refreshLateBindingColumns treats a non-primitive cached runner_count as missing", () => {
-  const refreshed = refreshLateBindingColumns({
-    category: "jra",
-    currentBataiju: 480,
-    row: { shusso_tosu: { bad: 1 }, tansho_ninkijun: 3, tansho_odds: 4, weight_avg_5: 470 },
-    tanshoNinkijun: 3,
-    tanshoOdds: 4,
-  });
-  expect(refreshed.popularity_score).toBe(0.5);
 });
 
 test("toJraRaceEntry reads ketto + umaban identity, coercing a bigint umaban", () => {

@@ -232,3 +232,21 @@ test("rescoreJraRace still scores when the realtime odds + weight maps are empty
   expect(result.status).toBe("ok");
   expect(result.predictionCount).toBe(3);
 });
+
+test("rescoreJraRace uses the odds-map size as runner_count so popularity is per-horse", async () => {
+  fetchOddsMock.mockResolvedValue(
+    new Map([
+      [1, { tanshoNinkijun: 1, tanshoOdds: 2.5 }],
+      [2, { tanshoNinkijun: 2, tanshoOdds: 5 }],
+      [3, { tanshoNinkijun: 3, tanshoOdds: 9 }],
+    ]),
+  );
+  fetchWeightMock.mockResolvedValue(new Map());
+  const env = makeEnv(async () => cacheObject);
+  await rescoreJraRace({ env, fetchImpl: fetch, message: makeMessage() });
+  const call = queryMock.mock.calls[0] as unknown as [string, (string | number | null)[]];
+  const predictedScores = [call[1][8], call[1][21], call[1][34]];
+  expect(predictedScores).toStrictEqual([
+    0.8595943543380781, 0.6043951943871245, 0.43878901639259865,
+  ]);
+});

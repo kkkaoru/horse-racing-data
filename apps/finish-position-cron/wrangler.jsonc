@@ -94,6 +94,10 @@
     // predictions. Flip to "1" only after the per-race rescore consumer (task B)
     // is wired and verified.
     "COORDINATOR_ENABLED": "0",
+    // R2 bucket for the cached feature parquet GET in the container rescore path.
+    // R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY are set as secrets
+    // via `wrangler secret put` — never store secret values here.
+    "R2_BUCKET": "pc-keiba-features-archive",
   },
   "queues": {
     "producers": [{ "binding": "PREDICT_QUEUE", "queue": "finish-position-predict-queue" }],

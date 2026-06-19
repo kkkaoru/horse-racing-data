@@ -32,6 +32,9 @@ import type { FeatureEntry } from "./feature-projection";
 const JRA_CATEGORY = "jra";
 const RACE_ID_NEN_END = 4;
 const RACE_CLASS_FIELD = "kyoso_joken_code";
+// popularity_score needs runner_count > 1; a 0- or 1-entry odds map cannot give
+// a valid denominator, so it degrades to the category median (null runnerCount).
+const ODDS_MAP_RUNNER_FLOOR = 1;
 
 const PREDICTIONS_TABLE = "race_finish_position_model_predictions";
 const PRIMARY_KEY_COLUMNS = [
@@ -131,21 +134,39 @@ interface RefreshRowsInput {
   weightMap: Map<number, number>;
 }
 
-const refreshRow = (row: FeatureEntry, input: RefreshRowsInput): JraRaceEntry => {
-  const entry = toJraRaceEntry(row);
-  const odds = input.oddsMap.get(entry.umaban);
+// The popularity_score denominator is the per-race field size. The cache's
+// shusso_tosu column is NULL at rescore time, so it is sourced from the count of
+// horses with valid live tansho odds (oddsMap.size). An empty / single-horse
+// odds map (e.g. the odds fetch failed) yields null so computePopularityScore
+// falls back to the category median, matching the graceful-degradation contract.
+const runnerCountFromOdds = (
+  oddsMap: Map<number, { tanshoOdds: number; tanshoNinkijun: number }>,
+): number | null => (oddsMap.size > ODDS_MAP_RUNNER_FLOOR ? oddsMap.size : null);
+
+interface RefreshRowInput {
+  row: FeatureEntry;
+  rowsInput: RefreshRowsInput;
+  runnerCount: number | null;
+}
+
+const refreshRow = (input: RefreshRowInput): JraRaceEntry => {
+  const entry = toJraRaceEntry(input.row);
+  const odds = input.rowsInput.oddsMap.get(entry.umaban);
   const refreshed = refreshLateBindingColumns({
     category: JRA_CATEGORY,
-    currentBataiju: input.weightMap.get(entry.umaban) ?? null,
-    row,
+    currentBataiju: input.rowsInput.weightMap.get(entry.umaban) ?? null,
+    row: input.row,
+    runnerCount: input.runnerCount,
     tanshoNinkijun: odds?.tanshoNinkijun ?? null,
     tanshoOdds: odds?.tanshoOdds ?? null,
   });
   return toJraRaceEntry(refreshed);
 };
 
-const buildEntries = (input: RefreshRowsInput): JraRaceEntry[] =>
-  input.rows.map((row) => refreshRow(row, input));
+const buildEntries = (input: RefreshRowsInput): JraRaceEntry[] => {
+  const runnerCount = runnerCountFromOdds(input.oddsMap);
+  return input.rows.map((row) => refreshRow({ row, rowsInput: input, runnerCount }));
+};
 
 // Build a $n-placeholder VALUES tuple for one row (INSERT_COLUMNS wide). The
 // columnCount * rowIndex offset gives each row its own consecutive parameters.

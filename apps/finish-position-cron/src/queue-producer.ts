@@ -11,10 +11,26 @@ interface EnqueuePredictParams {
   daysAhead: number;
   mode: PredictMode;
   category?: PredictCategory;
+  // Per-race rescore targeting. Present only when the trigger carries a single
+  // category plus an explicit race; attached to every message this call sends.
+  // Absent on the legacy per-category path, keeping those messages unchanged.
+  keibajoCode?: string;
+  raceBango?: string;
 }
+
+// Spread the per-race target only when both fields are defined so the
+// `satisfies PredictQueueMessage` typing stays exact and per-category messages
+// keep their original shape (no undefined keibajoCode/raceBango keys).
+const buildPerRaceTarget = (
+  params: EnqueuePredictParams,
+): Pick<PredictQueueMessage, "keibajoCode" | "raceBango"> =>
+  params.keibajoCode !== undefined && params.raceBango !== undefined
+    ? { keibajoCode: params.keibajoCode, raceBango: params.raceBango }
+    : {};
 
 export const enqueuePredict = async (params: EnqueuePredictParams): Promise<PredictCategory[]> => {
   const categories = params.category ? [params.category] : ALL_CATEGORIES;
+  const perRaceTarget = buildPerRaceTarget(params);
   await Promise.all(
     categories.map((cat) =>
       params.env.PREDICT_QUEUE.send({
@@ -24,6 +40,7 @@ export const enqueuePredict = async (params: EnqueuePredictParams): Promise<Pred
         runDate: params.runDate,
         runDateIso: params.runDate,
         runYmd: params.runYmd,
+        ...perRaceTarget,
       } satisfies PredictQueueMessage),
     ),
   );

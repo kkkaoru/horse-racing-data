@@ -128,6 +128,18 @@ CORNER_FEATURES_BUILD_SCRIPT="dev:build-corner-features"
 EXPECTED_NAR_RACES_PER_VENUE=10
 EXPECTED_JRA_RACES_PER_VENUE=11
 
+# Finish-position offload flag (CF cutover). When FINISH_POSITION_OFFLOADED_TO_CF=1
+# the guard SKIPS the local docker finish-position (着順) kick entirely, because
+# the finish-position predictions are produced per-race by the Cloudflare
+# finish-position-cron Worker + container (per-race coordinator → queue →
+# predict-{category} DO held /predict → Neon UPSERT). All OTHER guard duties are
+# unchanged: running-style (脚質) worker kicks, discover-urls, and per-venue
+# coverage checks still run, so the Mac remains the source of truth for those.
+# Default (unset / any value != "1") = NOT offloaded → the local finish-position
+# kick runs exactly as before. This makes the cutover fully reversible: flip the
+# env var back (or remove it) to restore the local docker finish-position run.
+FINISH_POSITION_OFFLOADED_TO_CF="${FINISH_POSITION_OFFLOADED_TO_CF:-0}"
+
 # NAR major venue keibajo_codes (門別/盛岡/水沢/浦和/船橋/大井/川崎/金沢/笠松/
 # 名古屋/園田/姫路/高知/佐賀/帯広). Listed as a space-separated string so the
 # Bash 3.2 shipped with macOS can iterate them without associative arrays.
@@ -610,6 +622,16 @@ guard_target() {
   #   itself uses only Neon + realtime-odds HTTPS and does NOT need D1.
   #   expected_count comparison is skipped; fp_actual is still queried from
   #   Neon (informational only).
+
+  # CF cutover: when finish-position is offloaded to the Cloudflare Worker +
+  # container per-race pipeline, the local docker kick is skipped entirely. This
+  # guard still ran every running-style / discover-urls / coverage duty above —
+  # only the 着順 kick below is bypassed. Fully reversible via the env var.
+  if [ "$FINISH_POSITION_OFFLOADED_TO_CF" = "1" ]; then
+    log "finish-position[$label] OFFLOADED to Cloudflare (FINISH_POSITION_OFFLOADED_TO_CF=1) — skip local docker kick"
+    log "guard_target done (label=$label target=$target_date_iso expected=${expected_count:-D1_UNAVAILABLE} rs=${rs_actual:-skipped} fp=offloaded cf_ok=$corner_features_ok is_race_hours=$is_race_hours d1_unavailable=$d1_unavailable)"
+    return 0
+  fi
 
   log "checking finish-position coverage in Neon ($FP_TABLE) for nen=$target_nen tsukihi=$target_tsukihi ($label) ..."
   local fp_actual

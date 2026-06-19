@@ -33,6 +33,15 @@ export interface Env {
   PREDICT_QUEUE: Queue<PredictQueueMessage>;
   // R2 binding for per-run feature parquet cache (full→put, rescore→get).
   FEATURES_CACHE: R2Bucket;
+  // R2 S3 credentials forwarded into the container env so the Python rescore path
+  // (predict_upcoming.py::_load_r2_config) can GET the cached feature parquet via
+  // S3 SigV4. R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY are Worker
+  // secrets; R2_BUCKET is a plain var. All optional — _load_r2_config treats an
+  // absent/empty value as "skip R2".
+  R2_ACCOUNT_ID?: string;
+  R2_ACCESS_KEY_ID?: string;
+  R2_SECRET_ACCESS_KEY?: string;
+  R2_BUCKET?: string;
 }
 
 export type CronAuditStatus = "started" | "success" | "error";

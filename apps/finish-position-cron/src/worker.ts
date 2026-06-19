@@ -32,6 +32,8 @@ const ZERO_RACES = 0;
 const RUN_DATE_FIELD = "runDate";
 const MODE_FIELD = "mode";
 const CATEGORY_FIELD = "category";
+const KEIBAJO_CODE_FIELD = "keibajoCode";
+const RACE_BANGO_FIELD = "raceBango";
 const DEFAULT_MODE: PredictMode = "full";
 const VALID_MODES: ReadonlySet<string> = new Set(["full", "rescore"]);
 const VALID_CATEGORIES: ReadonlySet<string> = new Set(["jra", "nar", "ban-ei"]);
@@ -83,6 +85,19 @@ const resolveCategory = (body: Record<string, unknown>): PredictCategory | undef
     : undefined;
 };
 
+// A per-race target field (keibajoCode / raceBango) is a non-empty trimmed
+// string when present; anything else (absent, non-string, blank) is treated as
+// undefined so the legacy per-category path stays untouched.
+const resolveRaceTargetField = (
+  body: Record<string, unknown>,
+  field: string,
+): string | undefined => {
+  const requested = body[field];
+  if (typeof requested !== "string") return undefined;
+  const trimmed = requested.trim();
+  return trimmed === "" ? undefined : trimmed;
+};
+
 const resolveTriggerDates = (body: Record<string, unknown>): RunDates => {
   const requested = body[RUN_DATE_FIELD];
   if (typeof requested === "string") {
@@ -111,7 +126,9 @@ const handleTrigger = async (request: Request, env: Env): Promise<Response> => {
     category: resolveCategory(body),
     daysAhead: Number(env.PREDICT_DAYS_AHEAD),
     env,
+    keibajoCode: resolveRaceTargetField(body, KEIBAJO_CODE_FIELD),
     mode,
+    raceBango: resolveRaceTargetField(body, RACE_BANGO_FIELD),
     runDate: dates.runDate,
     runYmd: dates.runYmd,
   });

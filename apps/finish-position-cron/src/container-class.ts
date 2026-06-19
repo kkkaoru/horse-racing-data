@@ -11,6 +11,7 @@ import type { Env } from "./types";
 const DEFAULT_PORT = 8080;
 const SLEEP_AFTER = "15m";
 const MODELS_DIR_DEFAULT = "/models";
+const EMPTY_ENV_VALUE = "";
 
 export class FinishPositionPredictContainer extends Container<Env> {
   override defaultPort = DEFAULT_PORT;
@@ -26,6 +27,13 @@ export class FinishPositionPredictContainer extends Container<Env> {
       MODELS_DIR: MODELS_DIR_DEFAULT,
       NEON_DATABASE_URL: this.env.NEON_DATABASE_URL,
       PREDICT_DAYS_AHEAD: this.env.PREDICT_DAYS_AHEAD,
+      // R2 S3 credentials for the Python rescore path. envVars is
+      // Record<string,string>, so coerce an undefined secret/var to "" — an empty
+      // value is exactly what _load_r2_config treats as absent ("skip R2").
+      R2_ACCOUNT_ID: this.env.R2_ACCOUNT_ID ?? EMPTY_ENV_VALUE,
+      R2_ACCESS_KEY_ID: this.env.R2_ACCESS_KEY_ID ?? EMPTY_ENV_VALUE,
+      R2_SECRET_ACCESS_KEY: this.env.R2_SECRET_ACCESS_KEY ?? EMPTY_ENV_VALUE,
+      R2_BUCKET: this.env.R2_BUCKET ?? EMPTY_ENV_VALUE,
     };
     return this.containerFetch(request);
   }

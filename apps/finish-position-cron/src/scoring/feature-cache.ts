@@ -23,7 +23,6 @@ const CACHE_FILE_NAME = "features.parquet";
 const RACE_ID_FIELD = "race_id";
 const KETTO_FIELD = "ketto_toroku_bango";
 const UMABAN_FIELD = "umaban";
-const RUNNER_COUNT_FIELD = "shusso_tosu";
 const WEIGHT_AVG_5_FIELD = "weight_avg_5";
 const ODDS_SCORE_FIELD = "odds_score";
 const POPULARITY_SCORE_FIELD = "popularity_score";
@@ -84,19 +83,25 @@ export interface RefreshLateBindingInput {
   tanshoOdds: number | null;
   tanshoNinkijun: number | null;
   currentBataiju: number | null;
+  // Field size for the popularity_score denominator. The cache's shusso_tosu
+  // column is structurally NULL at rescore time (the add-near-miss-features
+  // layer re-emits it as NULL), so the caller supplies the live runner count
+  // (the number of horses with valid tansho odds). null falls back to median.
+  runnerCount: number | null;
 }
 
 // Overwrite the 5 late-binding columns on a cached row with values recomputed
 // from the freshest odds + bataiju, keeping every early-binding column intact.
-// weight_avg_5 is read from the cache (history-derived); runner_count from the
-// cached shusso_tosu. Returns a new row object (does not mutate the input).
+// weight_avg_5 is read from the cache (history-derived); runner_count is the
+// caller-supplied live field size (the cached shusso_tosu is NULL). Returns a
+// new row object (does not mutate the input).
 export const refreshLateBindingColumns = (input: RefreshLateBindingInput): FeatureEntry => {
   const cachedOdds = numberOrNull(input.row[TANSHO_ODDS_FIELD]);
   const cachedNinkijun = numberOrNull(input.row[TANSHO_NINKIJUN_FIELD]);
   const late = computeLateBindingColumns({
     category: input.category,
     odds: {
-      runnerCount: numberOrNull(input.row[RUNNER_COUNT_FIELD]),
+      runnerCount: input.runnerCount,
       tanshoNinkijun: input.tanshoNinkijun ?? cachedNinkijun,
       tanshoOdds: input.tanshoOdds ?? cachedOdds,
     },
