@@ -264,8 +264,8 @@ test("retries a JRA per-race rescore when the consumer throws", async () => {
   errorSpy.mockRestore();
 });
 
-test("skips and acks a NAR per-race rescore (only JRA is Worker-native)", async () => {
-  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+test("routes a NAR per-race rescore to the container held /predict (not Worker-native)", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   await handleQueue(
     makeBatch([
       makeMessage({
@@ -279,10 +279,139 @@ test("skips and acks a NAR per-race rescore (only JRA is Worker-native)", async 
     ]),
     makeEnv(),
   );
+  expect(stubFetchMock).toHaveBeenCalledTimes(1);
   expect(rescoreJraRaceMock).not.toHaveBeenCalled();
+  expect(claimRunMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  consoleSpy.mockRestore();
+});
+
+test("targets the per-race rescore at the predict-nar DO with the exact query URL", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 0,
+        keibajoCode: "44",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(idFromNameMock).toHaveBeenCalledWith("predict-nar");
+  const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
+  expect(fetchRequest.url).toBe(
+    "http://do/predict?category=nar&daysAhead=0&mode=rescore&keibajoCode=44&raceBango=01&runDate=20260619",
+  );
+  consoleSpy.mockRestore();
+});
+
+test("acks a NAR per-race rescore when the container returns racesPredicted greater than zero", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 0,
+        keibajoCode: "44",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(retryMock).not.toHaveBeenCalled();
-  warnSpy.mockRestore();
+  consoleSpy.mockRestore();
+});
+
+test("acks a NAR per-race rescore when the container returns racesPredicted zero (no retry)", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  parseNdjsonStreamMock.mockResolvedValue({ type: "result", racesPredicted: 0, category: "nar" });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 0,
+        keibajoCode: "44",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
+  consoleSpy.mockRestore();
+});
+
+test("retries a NAR per-race rescore when the container fetch throws", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  stubFetchMock.mockRejectedValue(new Error("container down"));
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 0,
+        keibajoCode: "44",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).not.toHaveBeenCalled();
+  errorSpy.mockRestore();
+});
+
+test("retries a NAR per-race rescore when the container response body is null", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  stubFetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 0,
+        keibajoCode: "44",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).not.toHaveBeenCalled();
+  errorSpy.mockRestore();
+});
+
+test("routes a Ban-ei per-race rescore to the predict-ban-ei container DO (not Worker-native)", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "ban-ei",
+        daysAhead: 0,
+        keibajoCode: "83",
+        mode: "rescore",
+        raceBango: "07",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  expect(rescoreJraRaceMock).not.toHaveBeenCalled();
+  expect(idFromNameMock).toHaveBeenCalledWith("predict-ban-ei");
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  consoleSpy.mockRestore();
 });
 
 test("keeps a per-category rescore (no keibajo) on the container path", async () => {
