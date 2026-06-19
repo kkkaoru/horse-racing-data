@@ -8,20 +8,38 @@ interface ClaimResult {
   state?: string;
 }
 
-const { claimRunMock, completeRunMock, parseNdjsonStreamMock } = vi.hoisted(() => {
-  const claimRun = vi.fn(async (): Promise<ClaimResult> => ({ proceed: true }));
-  const completeRun = vi.fn(async () => undefined);
-  const parseNdjsonStream = vi.fn(async () => ({
-    type: "result" as const,
-    racesPredicted: 5,
-    category: "jra",
-  }));
-  return {
-    claimRunMock: claimRun,
-    completeRunMock: completeRun,
-    parseNdjsonStreamMock: parseNdjsonStream,
-  };
-});
+interface RescoreResult {
+  status: "ok" | "cache_miss" | "race_not_found";
+  racesPredicted: number;
+  predictionCount: number;
+  etop2Fired: boolean;
+}
+
+const { claimRunMock, completeRunMock, parseNdjsonStreamMock, rescoreJraRaceMock } = vi.hoisted(
+  () => {
+    const claimRun = vi.fn(async (): Promise<ClaimResult> => ({ proceed: true }));
+    const completeRun = vi.fn(async () => undefined);
+    const parseNdjsonStream = vi.fn(async () => ({
+      type: "result" as const,
+      racesPredicted: 5,
+      category: "jra",
+    }));
+    const rescoreJraRace = vi.fn(
+      async (): Promise<RescoreResult> => ({
+        etop2Fired: false,
+        predictionCount: 3,
+        racesPredicted: 1,
+        status: "ok",
+      }),
+    );
+    return {
+      claimRunMock: claimRun,
+      completeRunMock: completeRun,
+      parseNdjsonStreamMock: parseNdjsonStream,
+      rescoreJraRaceMock: rescoreJraRace,
+    };
+  },
+);
 
 vi.mock("./do-state", () => ({
   claimRun: claimRunMock,
@@ -30,6 +48,10 @@ vi.mock("./do-state", () => ({
 
 vi.mock("./ndjson-stream", () => ({
   parseNdjsonStream: parseNdjsonStreamMock,
+}));
+
+vi.mock("./scoring/rescore-consumer", () => ({
+  rescoreJraRace: rescoreJraRaceMock,
 }));
 
 import { handleQueue } from "./queue-consumer";
@@ -87,6 +109,13 @@ beforeEach(() => {
   claimRunMock.mockClear();
   completeRunMock.mockClear();
   parseNdjsonStreamMock.mockClear();
+  rescoreJraRaceMock.mockClear();
+  rescoreJraRaceMock.mockResolvedValue({
+    etop2Fired: false,
+    predictionCount: 3,
+    racesPredicted: 1,
+    status: "ok",
+  });
   claimRunMock.mockResolvedValue({ proceed: true });
   parseNdjsonStreamMock.mockResolvedValue({ type: "result", racesPredicted: 5, category: "jra" });
   stubFetchMock.mockResolvedValue(
@@ -167,4 +196,101 @@ test("calls completeRun with error and retries when response.body is null", asyn
   );
   expect(retryMock).toHaveBeenCalledTimes(1);
   expect(ackMock).not.toHaveBeenCalled();
+});
+
+test("routes a JRA per-race rescore to the Worker-native consumer (no container)", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "05",
+        mode: "rescore",
+        raceBango: "11",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(rescoreJraRaceMock).toHaveBeenCalledTimes(1);
+  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(claimRunMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  consoleSpy.mockRestore();
+});
+
+test("acks a JRA per-race rescore that returns cache_miss without retrying", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  rescoreJraRaceMock.mockResolvedValue({
+    etop2Fired: false,
+    predictionCount: 0,
+    racesPredicted: 0,
+    status: "cache_miss",
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "05",
+        mode: "rescore",
+        raceBango: "11",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
+  consoleSpy.mockRestore();
+});
+
+test("retries a JRA per-race rescore when the consumer throws", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  rescoreJraRaceMock.mockRejectedValue(new Error("neon down"));
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "05",
+        mode: "rescore",
+        raceBango: "11",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).not.toHaveBeenCalled();
+  errorSpy.mockRestore();
+});
+
+test("skips and acks a NAR per-race rescore (only JRA is Worker-native)", async () => {
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 0,
+        keibajoCode: "44",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(rescoreJraRaceMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
+  warnSpy.mockRestore();
+});
+
+test("keeps a per-category rescore (no keibajo) on the container path", async () => {
+  await handleQueue(
+    makeBatch([makeMessage({ daysAhead: 0, mode: "rescore", runYmd: "20260619" })]),
+    makeEnv(),
+  );
+  expect(rescoreJraRaceMock).not.toHaveBeenCalled();
+  expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).toHaveBeenCalledTimes(1);
 });

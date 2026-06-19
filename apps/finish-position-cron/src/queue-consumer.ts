@@ -4,11 +4,14 @@
 
 import { claimRun, completeRun } from "./do-state";
 import { parseNdjsonStream } from "./ndjson-stream";
+import { rescoreJraRace } from "./scoring/rescore-consumer";
 import type { Env, PredictQueueMessage } from "./types";
 
 const PREDICT_DO_NAME_PREFIX = "predict-";
 const PREDICT_PATH = "/predict";
 const PREDICT_HOST = "http://do";
+const RESCORE_MODE = "rescore";
+const JRA_CATEGORY = "jra";
 
 interface PredictUrlParams {
   category: string;
@@ -28,7 +31,40 @@ const buildPredictUrl = (params: PredictUrlParams): string => {
   return `${PREDICT_HOST}${PREDICT_PATH}?${searchParams.toString()}`;
 };
 
+// A per-race rescore is targeted at one race (mode="rescore" with both a
+// keibajo_code and a race_bango set by the per-race coordinator). Per-category
+// rescores (no keibajo_code) stay on the container path.
+const isPerRaceRescore = (body: PredictQueueMessage): boolean =>
+  body.mode === RESCORE_MODE && body.keibajoCode !== undefined && body.raceBango !== undefined;
+
+// Worker-native JRA per-race rescore: no container, no 21y Neon scan. Only JRA
+// is wired (NAR / Ban-ei per-race rescore is a follow-up), so other categories
+// are skipped + acked. cache_miss / race_not_found are acked (retry is futile);
+// fetch / score / UPSERT errors retry.
+const processPerRaceRescore = async (
+  message: Message<PredictQueueMessage>,
+  env: Env,
+): Promise<void> => {
+  const { category, runYmd } = message.body;
+  if (category !== JRA_CATEGORY) {
+    console.warn(`Skipping per-race rescore for unsupported category=${category} runYmd=${runYmd}`);
+    message.ack();
+    return;
+  }
+  try {
+    const result = await rescoreJraRace({ env, fetchImpl: fetch, message: message.body });
+    console.log(
+      `Rescore JRA runYmd=${runYmd} status=${result.status} predictions=${result.predictionCount} etop2=${result.etop2Fired}`,
+    );
+    message.ack();
+  } catch (err) {
+    console.error(`Rescore JRA failed runYmd=${runYmd}:`, String(err));
+    message.retry();
+  }
+};
+
 const processMessage = async (message: Message<PredictQueueMessage>, env: Env): Promise<void> => {
+  if (isPerRaceRescore(message.body)) return processPerRaceRescore(message, env);
   const { category, runYmd, daysAhead, mode } = message.body;
   const claimed = await claimRun({ category, env, runYmd });
   if (!claimed.proceed) {
