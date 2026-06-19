@@ -89,11 +89,11 @@
   ],
   "vars": {
     "PREDICT_DAYS_AHEAD": "2",
-    // Per-race coordinator shadow gate. "0" (default) = the coordinator cron
-    // fires but enqueues nothing, so deploying it does not change production
-    // predictions. Flip to "1" only after the per-race rescore consumer (task B)
-    // is wired and verified.
-    "COORDINATOR_ENABLED": "0",
+    // Per-race coordinator gate. "1" = active — the coordinator cron enqueues
+    // per-race rescore messages for NAR/Ban-ei (container held /predict) and JRA
+    // (Worker-native rescoreJraRace). Flipped from "0" (shadow) after NAR full-path
+    // e2e verification on 2026-06-19.
+    "COORDINATOR_ENABLED": "1",
     // R2 bucket for the cached feature parquet GET in the container rescore path.
     // R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY are set as secrets
     // via `wrangler secret put` — never store secret values here.

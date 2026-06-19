@@ -40,3 +40,23 @@ test("parseNdjsonStream throws when last line is not type result", async () => {
   const progress = JSON.stringify({ type: "progress", message: "started" });
   await expect(parseNdjsonStream(makeStream(progress))).rejects.toThrow("Expected result line");
 });
+
+test("parseNdjsonStream returns parquetBase64 and parquetKey when present in result line", async () => {
+  const resultLine = JSON.stringify({
+    type: "result",
+    racesPredicted: 8,
+    category: "nar",
+    parquetBase64: "dGVzdA==",
+    parquetKey: "feat-cache/nar/20260619/features.parquet",
+  });
+  const result = await parseNdjsonStream(makeStream(resultLine));
+  expect(result.parquetBase64).toBe("dGVzdA==");
+  expect(result.parquetKey).toBe("feat-cache/nar/20260619/features.parquet");
+});
+
+test("parseNdjsonStream returns undefined parquetBase64/parquetKey when absent", async () => {
+  const resultLine = JSON.stringify({ type: "result", racesPredicted: 5, category: "jra" });
+  const result = await parseNdjsonStream(makeStream(resultLine));
+  expect(result.parquetBase64).toBeUndefined();
+  expect(result.parquetKey).toBeUndefined();
+});

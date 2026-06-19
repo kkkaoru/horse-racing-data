@@ -967,6 +967,133 @@ def test_iter_predict_chunks_keepalive_emits_progress_during_blocking_predict() 
     assert last["racesPredicted"] == 88
 
 
+# ---------------------------------------------------------------------------
+# build_result_line — parquet proxy fields
+# ---------------------------------------------------------------------------
+
+
+def test_build_result_line_with_parquet_fields() -> None:
+    """When parquet_base64 and parquet_key are provided, they appear in the result."""
+    line = build_result_line(
+        "nar",
+        "20260619",
+        8,
+        status="success",
+        parquet_base64="dGVzdA==",
+        parquet_key="feat-cache/nar/20260619/features.parquet",
+    )
+    parsed = json.loads(line.decode())
+    assert parsed["parquetBase64"] == "dGVzdA=="
+    assert parsed["parquetKey"] == "feat-cache/nar/20260619/features.parquet"
+
+
+def test_build_result_line_without_parquet_fields() -> None:
+    """When parquet fields are absent, the result line must not include them."""
+    line = build_result_line("jra", "20260619", 5, status="success")
+    parsed = json.loads(line.decode())
+    assert "parquetBase64" not in parsed
+    assert "parquetKey" not in parsed
+
+
+def test_build_result_line_parquet_key_only_excluded() -> None:
+    """When only parquet_key is set (no base64), the field must still be absent."""
+    key = "feat-cache/jra/20260619/features.parquet"
+    line = build_result_line("jra", "20260619", 5, status="success", parquet_key=key)
+    parsed = json.loads(line.decode())
+    assert "parquetBase64" not in parsed
+
+
+# ---------------------------------------------------------------------------
+# iter_predict_chunks — parquet_payload_fn injection
+# ---------------------------------------------------------------------------
+
+
+def test_iter_predict_chunks_full_mode_calls_parquet_payload_fn() -> None:
+    """On mode=full success, parquet_payload_fn must be called and embedded in result."""
+    called = [False]
+
+    def _parquet_payload() -> tuple[str, str] | None:
+        called[0] = True
+        return "dGVzdA==", "feat-cache/nar/20260619/features.parquet"
+
+    params = PredictParams(category="nar", run_date="20260619", days_ahead=0, mode="full")
+    chunks = list(
+        iter_predict_chunks(
+            params, _mock_predict_ok, parquet_payload_fn=_parquet_payload, sleep_fn=_noop_sleep
+        )
+    )
+    assert called[0]
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "success"
+    assert last.get("parquetBase64") == "dGVzdA=="
+    assert last.get("parquetKey") == "feat-cache/nar/20260619/features.parquet"
+
+
+def test_iter_predict_chunks_rescore_mode_does_not_call_parquet_payload_fn() -> None:
+    """On mode=rescore, parquet_payload_fn must NOT be called (only called for full)."""
+    called = [False]
+
+    def _parquet_payload() -> tuple[str, str] | None:
+        called[0] = True
+        return "dGVzdA==", "key"
+
+    params = PredictParams(category="nar", run_date="20260619", days_ahead=0, mode="rescore")
+    list(
+        iter_predict_chunks(
+            params,
+            _mock_predict_ok,
+            rescore_fn=_mock_rescore_ok,
+            parquet_payload_fn=_parquet_payload,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    assert not called[0]
+
+
+def test_iter_predict_chunks_parquet_payload_fn_error_swallowed() -> None:
+    """An exception from parquet_payload_fn must not block the success result."""
+
+    def _failing_payload() -> tuple[str, str] | None:
+        raise RuntimeError("disk read failed")
+
+    params = PredictParams(category="nar", run_date="20260619", days_ahead=0, mode="full")
+    chunks = list(
+        iter_predict_chunks(
+            params, _mock_predict_ok, parquet_payload_fn=_failing_payload, sleep_fn=_noop_sleep
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "success"
+    assert "parquetBase64" not in last
+
+
+def test_iter_predict_chunks_parquet_payload_fn_none_result() -> None:
+    """When parquet_payload_fn returns None, no parquet fields appear in result."""
+
+    def _no_parquet() -> tuple[str, str] | None:
+        return None
+
+    params = PredictParams(category="jra", run_date="20260619", days_ahead=0, mode="full")
+    chunks = list(
+        iter_predict_chunks(
+            params, _mock_predict_ok, parquet_payload_fn=_no_parquet, sleep_fn=_noop_sleep
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert "parquetBase64" not in last
+    assert "parquetKey" not in last
+
+
+def test_iter_predict_chunks_no_parquet_payload_fn_no_fields() -> None:
+    """When parquet_payload_fn is not provided (None), result has no parquet fields."""
+    params = PredictParams(category="jra", run_date="20260619", days_ahead=0, mode="full")
+    chunks = list(
+        iter_predict_chunks(params, _mock_predict_ok, sleep_fn=_noop_sleep)
+    )
+    last = json.loads(chunks[-1].decode())
+    assert "parquetBase64" not in last
+
+
 def test_iter_predict_chunks_result_after_keepalive_has_correct_races_predicted() -> None:
     """racesPredicted in the result line must reflect what predict_fn returned."""
     done = threading.Event()

@@ -183,6 +183,26 @@ def test_coerce_optional_float_unsupported_type_is_none() -> None:
     assert coerce_optional_float([1, 2]) is None
 
 
+def test_coerce_optional_float_nan_is_none() -> None:
+    assert coerce_optional_float(float("nan")) is None
+
+
+def test_coerce_optional_float_positive_inf_is_none() -> None:
+    assert coerce_optional_float(float("inf")) is None
+
+
+def test_coerce_optional_float_negative_inf_is_none() -> None:
+    assert coerce_optional_float(float("-inf")) is None
+
+
+def test_coerce_optional_float_nan_string_is_none() -> None:
+    assert coerce_optional_float("nan") is None
+
+
+def test_coerce_optional_float_inf_string_is_none() -> None:
+    assert coerce_optional_float("inf") is None
+
+
 def test_coerce_optional_int_float_truncates() -> None:
     assert coerce_optional_int(12.0) == 12
 
@@ -197,6 +217,10 @@ def test_coerce_optional_int_none() -> None:
 
 def test_coerce_optional_int_empty_string() -> None:
     assert coerce_optional_int("") is None
+
+
+def test_coerce_optional_int_nan_is_none() -> None:
+    assert coerce_optional_int(float("nan")) is None
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +273,14 @@ def test_apply_late_binding_coerces_str_shusso_tosu() -> None:
 def test_apply_late_binding_none_shusso_tosu_uses_median() -> None:
     entry: dict[str, object] = {"shusso_tosu": None, "weight_avg_5": 450.0}
     result = apply_late_binding_to_entry(entry, OddsSnapshot(4.5, 5), WeightSnapshot(458.0), "nar")
+    assert result["popularity_score"] == 0.5
+
+
+def test_apply_late_binding_nan_shusso_tosu_uses_nar_median() -> None:
+    entry: dict[str, object] = {"shusso_tosu": float("nan"), "weight_avg_5": 450.0}
+    result = apply_late_binding_to_entry(
+        entry, OddsSnapshot(None, None), WeightSnapshot(None), "nar"
+    )
     assert result["popularity_score"] == 0.5
 
 

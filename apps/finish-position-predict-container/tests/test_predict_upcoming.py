@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 # Import the cross-module helpers directly so the tests stay I/O-free.
 from predict_lib.rescore import RaceScope
-from predict_lib.serve import PredictCategoryFn
+from predict_lib.serve import ParquetPayloadFn, PredictCategoryFn
 from predict_upcoming import (
     execute,
     extract_race_class_code,
@@ -332,6 +332,11 @@ def _fake_predict(category: str, run_date: str, days_ahead: int) -> int:
     return len(category)
 
 
+def _fake_parquet_payload() -> tuple[str, str] | None:
+    """Dummy parquet_payload_fn that returns None (no parquet available)."""
+    return None
+
+
 def _fake_rescore(category: str, run_date: str, days_ahead: int) -> int:
     """Dummy rescore_fn that returns a fixed sentinel value."""
     return 99
@@ -345,15 +350,23 @@ def _fake_rescore_factory(scope: RaceScope) -> PredictCategoryFn:
 
 def test_make_handler_class_predict_fn_callable_without_instance() -> None:
     """predict_fn on the handler class must be callable as a plain 3-arg function."""
-    handler_cls = make_handler_class(_fake_predict, _fake_rescore_factory)
+    handler_cls = make_handler_class(_fake_predict, _fake_parquet_payload, _fake_rescore_factory)
     # Call directly on the class (no instance) — must NOT inject self.
     result = handler_cls.predict_fn("nar", "20260618", 0)
     assert result == len("nar")
 
 
+def test_make_handler_class_parquet_payload_fn_callable_without_instance() -> None:
+    """parquet_payload_fn stored as staticmethod must be callable without an instance."""
+    handler_cls = make_handler_class(_fake_predict, _fake_parquet_payload, _fake_rescore_factory)
+    fn: ParquetPayloadFn = handler_cls.__dict__["parquet_payload_fn"].__func__
+    result = fn()
+    assert result is None
+
+
 def test_make_handler_class_rescore_factory_callable_without_instance() -> None:
     """rescore_factory on the handler class must be callable without an instance."""
-    handler_cls = make_handler_class(_fake_predict, _fake_rescore_factory)
+    handler_cls = make_handler_class(_fake_predict, _fake_parquet_payload, _fake_rescore_factory)
     factory = handler_cls.rescore_factory
     assert factory is not None
     rescore = factory(RaceScope())
@@ -363,13 +376,13 @@ def test_make_handler_class_rescore_factory_callable_without_instance() -> None:
 
 def test_make_handler_class_rescore_factory_none_when_not_provided() -> None:
     """When rescore_factory=None, the class attribute must also be None."""
-    handler_cls = make_handler_class(_fake_predict, None)
+    handler_cls = make_handler_class(_fake_predict, _fake_parquet_payload, None)
     assert handler_cls.rescore_factory is None
 
 
 def test_make_handler_class_predict_fn_not_bound_method() -> None:
     """Accessing predict_fn on the class must NOT produce a bound method."""
-    handler_cls = make_handler_class(_fake_predict, _fake_rescore_factory)
+    handler_cls = make_handler_class(_fake_predict, _fake_parquet_payload, _fake_rescore_factory)
     import inspect
 
     # A bound method has a __self__; a staticmethod result does not.
@@ -382,7 +395,7 @@ def test_make_handler_class_predict_fn_accepts_exactly_3_args() -> None:
     """Directly verify that predict_fn does NOT silently accept a 4th positional arg."""
     import inspect
 
-    handler_cls = make_handler_class(_fake_predict, _fake_rescore_factory)
+    handler_cls = make_handler_class(_fake_predict, _fake_parquet_payload, _fake_rescore_factory)
     sig = inspect.signature(handler_cls.predict_fn)
     params = list(sig.parameters.values())
     assert len(params) == 3, (

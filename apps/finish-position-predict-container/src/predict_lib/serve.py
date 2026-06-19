@@ -251,6 +251,8 @@ def build_result_line(
     *,
     status: str,
     error: str | None = None,
+    parquet_base64: str | None = None,
+    parquet_key: str | None = None,
 ) -> bytes:
     """Return a single UTF-8 NDJSON result line (newline-terminated).
 
@@ -258,12 +260,19 @@ def build_result_line(
     ``"success"`` or ``"error"``.  ``error`` is included only when non-None
     (masked via :func:`mask_error_message` before encoding).
 
+    When ``parquet_base64`` and ``parquet_key`` are both provided (only on
+    ``mode=full`` success), the Worker DO reads these fields and proxies the
+    parquet bytes to R2 via its FEATURES_CACHE binding — bypassing the
+    read-only S3 token limitation in the Container.
+
     Args:
         category:        The category that was predicted (e.g. ``"jra"``).
         run_date:        The YYYYMMDD run date.
         races_predicted: Number of races written (may be partial on error).
         status:          ``"success"`` or ``"error"``.
         error:           Optional exception message; credentials will be masked.
+        parquet_base64:  Optional base64-encoded feature parquet bytes for Worker R2 proxy.
+        parquet_key:     Optional R2 object key matching ``build_r2_feat_cache_key``.
     """
     payload: dict[str, object] = {
         "type": "result",
@@ -274,6 +283,10 @@ def build_result_line(
     }
     if error is not None:
         payload["error"] = mask_error_message(error)
+    if parquet_base64 is not None:
+        payload["parquetBase64"] = parquet_base64
+    if parquet_key is not None:
+        payload["parquetKey"] = parquet_key
     return (json.dumps(payload, ensure_ascii=False) + "\n").encode()
 
 
@@ -409,11 +422,22 @@ def _run_in_thread(
     return thread, result_box, error_box
 
 
+ParquetPayloadFn = Callable[[], tuple[str, str] | None]
+"""Returns ``(parquet_base64, parquet_key)`` after a successful full run, or ``None``.
+
+Called by ``iter_predict_chunks`` once after the full-pipeline thread completes
+successfully (not on error, not on rescore-only path).  The result is injected
+into the final result line so the Worker DO can proxy the parquet bytes to R2
+without requiring a write-capable S3 token in the Container environment.
+"""
+
+
 def iter_predict_chunks(
     params: PredictParams,
     predict_fn: PredictCategoryFn,
     *,
     rescore_fn: PredictCategoryFn | None = None,
+    parquet_payload_fn: ParquetPayloadFn | None = None,
     time_fn: TimeFn = time.monotonic,
     sleep_fn: SleepFn = time.sleep,
     progress_interval_s: float = PROGRESS_INTERVAL_S,
@@ -462,6 +486,11 @@ def iter_predict_chunks(
         predict_fn:          Full-pipeline callable matching :data:`PredictCategoryFn`.
         rescore_fn:          Optional rescore-path callable; ``None`` triggers
                              automatic fallback to *predict_fn* for rescore mode.
+        parquet_payload_fn:  Optional callable invoked after a successful full-pipeline
+                             run.  Returns ``(parquet_base64, parquet_key)`` or ``None``
+                             when no parquet is available.  The result is embedded in the
+                             success result line so the Worker DO can proxy the bytes to
+                             R2 without a write-capable S3 token.
         time_fn:             Monotonic clock (injectable for deterministic tests).
         sleep_fn:            Sleep callable (injectable for deterministic tests).
         progress_interval_s: Minimum seconds between progress keepalive lines.
@@ -586,9 +615,25 @@ def iter_predict_chunks(
     if now - last_progress >= progress_interval_s:
         yield build_progress_line("complete", _elapsed())
 
+    # On a successful full-pipeline run, embed the parquet payload so the Worker
+    # DO can proxy the bytes to R2 via its FEATURES_CACHE binding (bypassing the
+    # read-only S3 token limitation in the Container env).  Errors from the
+    # payload fn are swallowed — a missing cache upload must not block predictions.
+    parquet_b64: str | None = None
+    parquet_key_val: str | None = None
+    if parquet_payload_fn is not None and params.mode == "full":
+        try:
+            payload_result = parquet_payload_fn()
+            if payload_result is not None:
+                parquet_b64, parquet_key_val = payload_result
+        except BaseException:
+            pass
+
     yield build_result_line(
         params.category,
         params.run_date,
         races_predicted,
         status="success",
+        parquet_base64=parquet_b64,
+        parquet_key=parquet_key_val,
     )

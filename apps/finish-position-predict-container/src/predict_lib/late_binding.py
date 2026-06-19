@@ -111,10 +111,14 @@ class WeightSnapshot(NamedTuple):
 
 
 def coerce_optional_float(value: object) -> float | None:
-    """Coerce ``value`` to ``float`` or ``None`` (None / empty string -> None).
+    """Coerce ``value`` to ``float`` or ``None`` (None / empty string / NaN -> None).
 
     Cache parquet cells arrive as ``str`` / ``None`` / numeric depending on the
-    column dtype, so the recompute coerces defensively before arithmetic.
+    column dtype, so the recompute coerces defensively before arithmetic.  A
+    non-finite result (``NaN`` / ``+-inf``) collapses to ``None`` so downstream
+    coercions hit the documented median / NULL fallback instead of propagating a
+    poisoned float — a pandas float64 cell of ``NaN`` (e.g. a NULL ``shusso_tosu``
+    at morning-build time) must behave exactly like a missing value.
     """
     if value is None:
         return None
@@ -123,13 +127,15 @@ def coerce_optional_float(value: object) -> float | None:
         if text == "":
             return None
         try:
-            return float(text)
+            parsed = float(text)
         except ValueError:
             return None
+        return parsed if math.isfinite(parsed) else None
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        coerced = float(value)
+        return coerced if math.isfinite(coerced) else None
     return None
 
 

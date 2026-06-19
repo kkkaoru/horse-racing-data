@@ -39,6 +39,7 @@ Server:   ``PREDICT_SERVE_MODE=http uv run python src/predict_upcoming.py``
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import http.server
 import json
@@ -94,6 +95,7 @@ from predict_lib.rescore import (
 from predict_lib.scorer import BoosterLike, assert_feature_count, build_feature_matrix, score_matrix
 from predict_lib.serve import (
     CacheMissError,
+    ParquetPayloadFn,
     PredictCategoryFn,
     PredictParams,
     R2Config,
@@ -657,82 +659,6 @@ def _load_r2_config() -> R2Config | None:
     )
 
 
-def _r2_put_parquet(r2: R2Config, object_key: str, local_path: Path) -> None:
-    """Upload a local parquet file to R2 via the S3-compatible API.
-
-    Uses stdlib ``urllib.request`` + HMAC-SHA256 AWS Signature Version 4 so no
-    external dep is added.  On any failure (network, auth, missing file) the
-    exception propagates to the caller, which logs and continues so the
-    prediction run is never blocked by a cache upload failure.
-
-    Args:
-        r2:          R2 credentials and bucket name.
-        object_key:  R2 object key (e.g. ``feat-cache/jra/20260619/features.parquet``).
-        local_path:  Local parquet path to upload.
-    """
-    import hashlib
-    import hmac
-    import urllib.request
-    from datetime import UTC, datetime
-
-    data = local_path.read_bytes()
-    content_hash = hashlib.sha256(data).hexdigest()
-    now = datetime.now(UTC)
-    amzdate = now.strftime("%Y%m%dT%H%M%SZ")
-    datestamp = now.strftime("%Y%m%d")
-    host = f"{r2.account_id}.r2.cloudflarestorage.com"
-    url = f"https://{host}/{r2.bucket}/{object_key}"
-
-    canonical_headers = f"host:{host}\nx-amz-content-sha256:{content_hash}\nx-amz-date:{amzdate}\n"
-    signed_headers = "host;x-amz-content-sha256;x-amz-date"
-    canonical_request = (
-        f"PUT\n/{r2.bucket}/{object_key}\n\n{canonical_headers}\n{signed_headers}\n{content_hash}"
-    )
-
-    credential_scope = f"{datestamp}/auto/s3/aws4_request"
-    string_to_sign = (
-        f"AWS4-HMAC-SHA256\n{amzdate}\n{credential_scope}\n"
-        + hashlib.sha256(canonical_request.encode()).hexdigest()
-    )
-
-    def _sign(key: bytes, msg: str) -> bytes:
-        return hmac.new(key, msg.encode(), hashlib.sha256).digest()
-
-    signing_key = _sign(
-        _sign(
-            _sign(
-                _sign(
-                    f"AWS4{r2.secret_access_key}".encode(),
-                    datestamp,
-                ),
-                "auto",
-            ),
-            "s3",
-        ),
-        "aws4_request",
-    )
-    signature = hmac.new(signing_key, string_to_sign.encode(), hashlib.sha256).hexdigest()
-    auth_header = (
-        f"AWS4-HMAC-SHA256 Credential={r2.access_key_id}/{credential_scope},"
-        f" SignedHeaders={signed_headers}, Signature={signature}"
-    )
-    req = urllib.request.Request(
-        url,
-        data=data,
-        method="PUT",
-        headers={
-            "Authorization": auth_header,
-            "x-amz-date": amzdate,
-            "x-amz-content-sha256": content_hash,
-            "Content-Type": "application/octet-stream",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        _ = resp.read()
-    print(
-        f"[predict-serve] R2 put ok key={object_key} bytes={len(data)}",
-        file=sys.stderr,
-    )
 
 
 def _r2_get_parquet(r2: R2Config, object_key: str, dest_path: Path) -> bool:
@@ -822,18 +748,22 @@ def _make_predict_fn(
     models_dir: Path,
     source_url: str,
     r2: R2Config | None,
-) -> PredictCategoryFn:
-    """Build the full-pipeline ``predict_fn`` adapter for :func:`iter_predict_chunks`.
+) -> tuple[PredictCategoryFn, ParquetPayloadFn]:
+    """Build the full-pipeline ``predict_fn`` and ``parquet_payload_fn`` adapters.
 
-    Wraps ``_predict_category`` with the environment-resolved Neon URL, models
-    directory, and source URL so the serve handler only passes (category,
-    run_date, days_ahead) per request.
+    Returns a tuple of:
+    - ``predict_fn``: the prediction callable passed to ``iter_predict_chunks``.
+    - ``parquet_payload_fn``: reads the built feature parquet from the local
+      tmp directory and returns ``(parquet_base64, parquet_key)`` so the Worker
+      DO can proxy the bytes to R2 via its FEATURES_CACHE binding — bypassing the
+      read-only S3 token limitation in the Container env.  Falls back silently to
+      the legacy ``_try_r2_put`` (SigV4 PUT) when both R2 credentials AND the
+      parquet file exist.
 
-    When *r2* is not ``None``, the final feature parquet is uploaded to R2 after
-    a successful prediction run so ``mode=rescore`` can reuse it on subsequent
-    calls.  Any R2 upload failure is logged and swallowed so the prediction run
-    is never blocked by a cache-write failure.
+    Both functions share a thread-safe ``_last_run`` state box so the payload fn
+    can retrieve category/run_date after the predict thread completes.
     """
+    _last_run: list[tuple[str, str]] = []
 
     def _predict(category_str: str, run_date: str, days_ahead: int) -> int:
         from predict_lib.model_meta import resolve_category
@@ -841,38 +771,38 @@ def _make_predict_fn(
         category = resolve_category(category_str)
         window = PredictWindow(target_date=run_date, days_ahead=days_ahead, database_url=source_url)
         written = _predict_category(database_url, category, models_dir, window)
-        # Upload the built feature parquet to R2 so rescore can reuse it.
-        if r2 is not None:
-            _try_r2_put(r2, category_str, run_date)
+        # Record the last successful run so parquet_payload_fn can retrieve it.
+        if _last_run:
+            _last_run.clear()
+        _last_run.append((category_str, run_date))
         return written
 
-    return _predict
+    def _parquet_payload() -> tuple[str, str] | None:
+        """Return ``(parquet_base64, parquet_key)`` for the last successful run."""
+        from pipeline_runner import WORK_DIR  # bundled in image
 
-
-def _try_r2_put(r2: R2Config, category: str, run_date: str) -> None:
-    """Upload the local feature parquet to R2; log + swallow any failure."""
-    from pipeline_runner import WORK_DIR  # bundled in image
-
-    final_dir = WORK_DIR / f"feat-{category}-v7-final"
-    # Collect all parquet files from the final dir (partitioned layout).
-    parquet_files = list(final_dir.rglob("*.parquet"))
-    if not parquet_files:
+        if not _last_run:
+            return None
+        category_str, run_date = _last_run[-1]
+        final_dir = WORK_DIR / f"feat-{category_str}-v7-final"
+        parquet_files = list(final_dir.rglob("*.parquet"))
+        if not parquet_files:
+            print(
+                f"[predict-serve] parquet_payload skip: no parquet in {final_dir}",
+                file=sys.stderr,
+            )
+            return None
+        local_path = parquet_files[0]
+        parquet_key = build_r2_feat_cache_key(category_str, run_date)
+        data = local_path.read_bytes()
+        encoded = base64.b64encode(data).decode("ascii")
         print(
-            f"[predict-serve] R2 put skip: no parquet in {final_dir}",
+            f"[predict-serve] parquet_payload ready key={parquet_key} bytes={len(data)}",
             file=sys.stderr,
         )
-        return
-    # Use the first (or only) parquet file as the cache payload.
-    # Single-file assumption is valid for the final merged layer output.
-    local_path = parquet_files[0]
-    object_key = build_r2_feat_cache_key(category, run_date)
-    try:
-        _r2_put_parquet(r2, object_key, local_path)
-    except BaseException as put_err:
-        print(
-            f"[predict-serve] R2 put failed key={object_key} error={put_err}",
-            file=sys.stderr,
-        )
+        return encoded, parquet_key
+
+    return _predict, _parquet_payload
 
 
 def _ensure_cached_parquet(
@@ -1058,6 +988,7 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
     """Minimal HTTP/1.1 request handler for ``/ping`` and ``/predict``."""
 
     predict_fn: PredictCategoryFn  # injected by make_handler_class
+    parquet_payload_fn: ParquetPayloadFn  # injected by make_handler_class
     rescore_factory: RescoreFactory | None  # injected by make_handler_class
 
     @override
@@ -1102,7 +1033,12 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
                 if self.rescore_factory is not None
                 else None
             )
-            for chunk in iter_predict_chunks(result, self.predict_fn, rescore_fn=rescore_fn):
+            for chunk in iter_predict_chunks(
+                result,
+                self.predict_fn,
+                rescore_fn=rescore_fn,
+                parquet_payload_fn=self.parquet_payload_fn,
+            ):
                 # HTTP/1.1 chunked encoding: hex length + CRLF + data + CRLF
                 size_line = f"{len(chunk):X}\r\n".encode()
                 try:
@@ -1131,24 +1067,25 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
 
 def make_handler_class(
     predict_fn: PredictCategoryFn,
+    parquet_payload_fn: ParquetPayloadFn,
     rescore_factory: RescoreFactory | None,
 ) -> type[_PredictHandler]:
-    """Return a ``_PredictHandler`` subclass with ``predict_fn`` + ``rescore_factory`` bound.
+    """Return a ``_PredictHandler`` subclass with bound callables.
 
-    ``predict_fn`` is stored as a ``staticmethod`` object so Python's descriptor
-    protocol does NOT inject ``self`` when accessed on an instance.  Plain
-    function assignment to a class attribute creates a bound method and prepends
-    ``self``, which causes a 4-argument ``TypeError`` on the 3-argument
-    ``_predict`` signature.  ``rescore_factory`` is invoked per request inside
+    ``predict_fn`` and ``parquet_payload_fn`` are stored as ``staticmethod``
+    objects so Python's descriptor protocol does NOT inject ``self`` when
+    accessed on an instance.  ``rescore_factory`` is invoked per request inside
     ``do_GET`` with the request's race scope, so it is also stored as a
     ``staticmethod`` to avoid the same ``self`` injection.
     """
     _predict: PredictCategoryFn = predict_fn
+    _parquet_payload: ParquetPayloadFn = parquet_payload_fn
     _rescore_factory: RescoreFactory | None = rescore_factory
 
     @final
     class _BoundHandler(_PredictHandler):
         predict_fn = staticmethod(_predict)
+        parquet_payload_fn = staticmethod(_parquet_payload)
         rescore_factory = staticmethod(_rescore_factory) if _rescore_factory is not None else None
 
     return _BoundHandler
@@ -1157,6 +1094,7 @@ def make_handler_class(
 def serve_http(
     port: int,
     predict_fn: PredictCategoryFn,
+    parquet_payload_fn: ParquetPayloadFn,
     rescore_factory: RescoreFactory | None = None,
 ) -> None:
     """Start the blocking HTTP server on *port*.
@@ -1167,7 +1105,7 @@ def serve_http(
     to (``iter_predict_chunks``, ``parse_predict_params``, etc.) is fully tested
     in ``tests/test_serve.py``.
     """
-    handler_cls = make_handler_class(predict_fn, rescore_factory)
+    handler_cls = make_handler_class(predict_fn, parquet_payload_fn, rescore_factory)
     with http.server.HTTPServer(("0.0.0.0", port), handler_cls) as httpd:
         print(f"[predict-serve] listening on :{port}", file=sys.stderr)
         httpd.serve_forever()
@@ -1202,9 +1140,9 @@ def main() -> int:
             print(f"[predict-serve] bootstrap failed: {bootstrap_error}", file=sys.stderr)
             return 1
         r2 = _load_r2_config()
-        predict_fn = _make_predict_fn(database_url, models_dir, source_url, r2)
+        predict_fn, parquet_payload_fn = _make_predict_fn(database_url, models_dir, source_url, r2)
         rescore_factory = _make_rescore_factory(database_url, models_dir, source_url, r2)
-        serve_http(HTTP_PORT, predict_fn, rescore_factory)
+        serve_http(HTTP_PORT, predict_fn, parquet_payload_fn, rescore_factory)
         return 0  # unreachable but satisfies the return type
 
     started = time.monotonic()

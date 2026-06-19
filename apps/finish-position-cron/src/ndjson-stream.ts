@@ -9,10 +9,17 @@ interface NdjsonLine {
   type: string;
 }
 
-interface PredictResultLine extends NdjsonLine {
+export interface PredictResultLine extends NdjsonLine {
   type: "result";
   racesPredicted: number;
   category: string;
+  // Optional Worker-R2-proxy fields: present only on mode=full success when the
+  // Container embedded the feature parquet bytes in the NDJSON result line.
+  // The Worker DO decodes these and proxies the bytes to FEATURES_CACHE (R2
+  // binding) so rescore runs can reuse the parquet without a write-capable S3
+  // token in the Container env.
+  parquetBase64?: string;
+  parquetKey?: string;
 }
 
 const isResultLine = (line: NdjsonLine): line is PredictResultLine => line.type === RESULT_TYPE;
