@@ -11,6 +11,7 @@ import {
   YAxis,
 } from "recharts";
 
+import { isWearingBlinker } from "../../../lib/blinker-pattern";
 import { formatDistance } from "../../../lib/format";
 import {
   buildHorseRaceChartSeriesList,
@@ -142,6 +143,9 @@ const CHIP_GROUP_LABELS: Record<ChartViewMode, string> = {
 const MIN_PERIOD_MONTHS = 1;
 const PERIOD_SLIDER_STEP = 1;
 const COMBINE_FUTAN_LABEL = "馬体重に斤量を合算";
+// Tooltip line shown only when the hovered race's blinker flag is "1"; JRA is the
+// only category that populates blinkerShiyoKubun, so this never shows for NAR.
+const BLINKER_WORN_TOOLTIP_LABEL = "ブリンカー ○";
 // Heading shown on the weight panel while body weight + carried weight are summed,
 // so the reader can tell the plotted line is the combined value.
 const COMBINED_WEIGHT_HEADING = "馬体重+斤量";
@@ -334,6 +338,9 @@ const MetricTooltip = ({ active, metric, payload }: MetricTooltipProps) => {
       </p>
       <p className="race-results-chart-tooltip-meta">距離 {formatDistance(point.kyori)}</p>
       <p className="race-results-chart-tooltip-meta">騎手 {point.jockey ?? "-"}</p>
+      {isWearingBlinker(point.blinker) ? (
+        <p className="race-results-chart-tooltip-meta">{BLINKER_WORN_TOOLTIP_LABEL}</p>
+      ) : null}
     </div>
   );
 };

@@ -17,6 +17,7 @@ interface ChartChildrenStubProps {
 }
 
 interface ComposedChartRowStub {
+  blinker: string | null;
   dateValue: number;
   futan: number | null;
   isUpcoming?: boolean;
@@ -67,6 +68,7 @@ interface PaddockTooltipInjectedProps {
 }
 
 interface HorseRaceResultRowStub {
+  blinker: string | null;
   dateValue: number;
   finish: number | null;
   futan: number | null;
@@ -85,6 +87,7 @@ interface TooltipStubProps {
 }
 
 const TOOLTIP_FIXTURE_ROW: HorseRaceResultRowStub = {
+  blinker: "1",
   dateValue: 0,
   finish: 1,
   futan: 55,
@@ -104,6 +107,8 @@ vi.mock("recharts", () => ({
   ),
   ComposedChart: ({ children, data }: ComposedChartStubProps) => (
     <div
+      data-first-blinker={data?.at(0)?.blinker ?? "none"}
+      data-last-blinker={data?.at(-1)?.blinker ?? "none"}
       data-last-futan={String(data?.at(-1)?.futan ?? "none")}
       data-last-is-upcoming={String(data?.at(-1)?.isUpcoming ?? false)}
       data-last-popularity={String(data?.at(-1)?.popularity ?? "none")}
@@ -891,6 +896,7 @@ test("renders the tooltip with the date, every metric value and the metadata fie
   expect(screen.getByText("騎手 ルメール").textContent).toStrictEqual("騎手 ルメール");
   expect(screen.getByText("距離 2000m").textContent).toStrictEqual("距離 2000m");
   expect(screen.getByText("競馬場 東京").textContent).toStrictEqual("競馬場 東京");
+  expect(screen.getByText("ブリンカー ○").textContent).toStrictEqual("ブリンカー ○");
 });
 
 test("renders the tooltip with a white background and dark text for mobile readability", () => {
@@ -909,6 +915,7 @@ test("PaddockRecentTooltip renders nothing when it is not active", () => {
       payload={[
         {
           payload: {
+            blinker: "1",
             dateValue: 0,
             finish: 1,
             futan: 55,
@@ -941,6 +948,7 @@ test("PaddockRecentTooltip omits null metric lines and shows dash meta with a fa
       payload={[
         {
           payload: {
+            blinker: null,
             dateValue: 0,
             finish: null,
             futan: null,
@@ -972,6 +980,7 @@ test("PaddockRecentTooltip treats whitespace-only jockey and wakuban as a dash",
       payload={[
         {
           payload: {
+            blinker: null,
             dateValue: 0,
             finish: 2,
             futan: 55,
@@ -991,6 +1000,97 @@ test("PaddockRecentTooltip treats whitespace-only jockey and wakuban as a dash",
   );
   expect(screen.getByText("枠番 -").textContent).toStrictEqual("枠番 -");
   expect(screen.getByText("騎手 -").textContent).toStrictEqual("騎手 -");
+});
+
+test("populates the chart row blinker flag from the worn result", () => {
+  render(<PaddockRecentResultsChart results={[chartResult({ blinkerShiyoKubun: "1" })]} />);
+  expect(
+    screen.getByTestId("composed-chart-stub").getAttribute("data-first-blinker"),
+  ).toStrictEqual("1");
+});
+
+test("populates the chart row blinker flag from the not-worn result", () => {
+  render(<PaddockRecentResultsChart results={[chartResult({ blinkerShiyoKubun: "0" })]} />);
+  expect(
+    screen.getByTestId("composed-chart-stub").getAttribute("data-first-blinker"),
+  ).toStrictEqual("0");
+});
+
+test("leaves the chart row blinker flag none when the result has no blinker value", () => {
+  render(<PaddockRecentResultsChart results={[chartResult({ blinkerShiyoKubun: null })]} />);
+  expect(
+    screen.getByTestId("composed-chart-stub").getAttribute("data-first-blinker"),
+  ).toStrictEqual("none");
+});
+
+test("leaves the upcoming synthetic row blinker flag none", () => {
+  render(
+    <PaddockRecentResultsChart
+      results={[chartResult({ blinkerShiyoKubun: "1", kaisaiTsukihi: "0322" })]}
+      upcomingRaceDate="20260614"
+      upcomingWeight={486}
+      upcomingWeightDelta={6}
+    />,
+  );
+  expect(screen.getByTestId("composed-chart-stub").getAttribute("data-last-blinker")).toStrictEqual(
+    "none",
+  );
+});
+
+test("PaddockRecentTooltip shows the worn blinker line when the row blinker is 1", () => {
+  render(
+    <PaddockRecentTooltip
+      active={true}
+      payload={[
+        {
+          payload: {
+            blinker: "1",
+            dateValue: 0,
+            finish: 1,
+            futan: 55,
+            isUpcoming: false,
+            keibajoCode: "05",
+            kishumeiRyakusho: "ルメール",
+            kyori: "2000",
+            popularity: 3,
+            raceDate: "20260322",
+            wakuban: "3",
+            weight: 480,
+            weightDelta: 6,
+          },
+        },
+      ]}
+    />,
+  );
+  expect(screen.getByText("ブリンカー ○").textContent).toStrictEqual("ブリンカー ○");
+});
+
+test("PaddockRecentTooltip omits the blinker line when the row blinker is 0", () => {
+  render(
+    <PaddockRecentTooltip
+      active={true}
+      payload={[
+        {
+          payload: {
+            blinker: "0",
+            dateValue: 0,
+            finish: 1,
+            futan: 55,
+            isUpcoming: false,
+            keibajoCode: "05",
+            kishumeiRyakusho: "ルメール",
+            kyori: "2000",
+            popularity: 3,
+            raceDate: "20260322",
+            wakuban: "3",
+            weight: 480,
+            weightDelta: 6,
+          },
+        },
+      ]}
+    />,
+  );
+  expect(screen.queryAllByText("ブリンカー ○").length).toStrictEqual(0);
 });
 
 test("renders the finish chip swatch with the crimson palette color", () => {

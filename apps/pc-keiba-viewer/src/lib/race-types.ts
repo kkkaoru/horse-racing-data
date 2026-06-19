@@ -75,6 +75,7 @@ export interface Runner {
   corner3: string | null;
   corner4: string | null;
   kohan3f: string | null;
+  blinkerShiyoKubun?: string | null;
   sireName: string | null;
   sireSireName: string | null;
   damSireName: string | null;
@@ -231,6 +232,7 @@ export interface HorseRaceResult extends Record<string, unknown> {
   corner3: string | null;
   corner4: string | null;
   kohan3f: string | null;
+  blinkerShiyoKubun?: string | null;
 }
 
 export interface CourseInfo {

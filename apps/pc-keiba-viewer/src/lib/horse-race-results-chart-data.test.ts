@@ -390,7 +390,14 @@ describe("horse race results chart data", () => {
       ],
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 536 },
+      {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 536,
+      },
     ]);
   });
 
@@ -408,7 +415,14 @@ describe("horse race results chart data", () => {
       ],
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 480 },
+      {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 480,
+      },
     ]);
   });
 
@@ -430,8 +444,16 @@ describe("horse race results chart data", () => {
       targetRaceDate: "20260601",
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 536 },
       {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 536,
+      },
+      {
+        blinker: null,
         dateValue: 1780272000000,
         isUpcoming: true,
         jockey: null,
@@ -456,7 +478,146 @@ describe("horse race results chart data", () => {
       ],
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: "山田", kyori: "1200", raceDate: "20250112", value: 3 },
+      {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: "山田",
+        kyori: "1200",
+        raceDate: "20250112",
+        value: 3,
+      },
+    ]);
+  });
+
+  it("carries the wearing blinker flag from a finish result point", () => {
+    const seriesList = buildHorseRaceChartSeriesList({
+      metric: "finish",
+      results: [
+        buildResult({
+          kaisaiNen: "2025",
+          kaisaiTsukihi: "0112",
+          kakuteiChakujun: "03",
+          blinkerShiyoKubun: "1",
+        }),
+      ],
+    });
+    expect(seriesList[0]?.points).toStrictEqual([
+      {
+        blinker: "1",
+        dateValue: 1736640000000,
+        jockey: "山田",
+        kyori: "1200",
+        raceDate: "20250112",
+        value: 3,
+      },
+    ]);
+  });
+
+  it("carries the not-wearing blinker flag from a popularity result point", () => {
+    const seriesList = buildHorseRaceChartSeriesList({
+      metric: "popularity",
+      results: [
+        buildResult({
+          kaisaiNen: "2025",
+          kaisaiTsukihi: "0112",
+          tanshoNinkijun: "04",
+          blinkerShiyoKubun: "0",
+        }),
+      ],
+    });
+    expect(seriesList[0]?.points).toStrictEqual([
+      {
+        blinker: "0",
+        dateValue: 1736640000000,
+        jockey: "山田",
+        kyori: "1200",
+        raceDate: "20250112",
+        value: 4,
+      },
+    ]);
+  });
+
+  it("carries the wearing blinker flag onto a weight result point", () => {
+    const seriesList = buildHorseRaceChartSeriesList({
+      metric: "weight",
+      results: [
+        buildResult({
+          kaisaiNen: "2025",
+          kaisaiTsukihi: "0112",
+          bataiju: "480",
+          blinkerShiyoKubun: "1",
+        }),
+      ],
+    });
+    expect(seriesList[0]?.points).toStrictEqual([
+      {
+        blinker: "1",
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 480,
+      },
+    ]);
+  });
+
+  it("treats a blank blinker flag as null on a result point", () => {
+    const seriesList = buildHorseRaceChartSeriesList({
+      metric: "finish",
+      results: [
+        buildResult({
+          kaisaiNen: "2025",
+          kaisaiTsukihi: "0112",
+          kakuteiChakujun: "03",
+          blinkerShiyoKubun: " ",
+        }),
+      ],
+    });
+    expect(seriesList[0]?.points).toStrictEqual([
+      {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: "山田",
+        kyori: "1200",
+        raceDate: "20250112",
+        value: 3,
+      },
+    ]);
+  });
+
+  it("leaves the synthetic upcoming point blinker null", () => {
+    const seriesList = buildHorseRaceChartSeriesList({
+      metric: "weight",
+      results: [
+        buildResult({
+          kaisaiNen: "2025",
+          kaisaiTsukihi: "0112",
+          bataiju: "480",
+          blinkerShiyoKubun: "1",
+        }),
+      ],
+      runners: [buildRunner({ kettoTorokuBango: "2020000001", bataiju: "486" })],
+      targetKeibajoCode: "05",
+      targetRaceDate: "20260601",
+    });
+    expect(seriesList[0]?.points).toStrictEqual([
+      {
+        blinker: "1",
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 480,
+      },
+      {
+        blinker: null,
+        dateValue: 1780272000000,
+        isUpcoming: true,
+        jockey: null,
+        kyori: null,
+        raceDate: "20260601",
+        value: 486,
+      },
     ]);
   });
 
@@ -488,6 +649,7 @@ describe("horse race results chart data", () => {
         kettoTorokuBango: "2020000001",
         points: [
           {
+            blinker: null,
             dateValue: 1715472000000,
             jockey: "山田",
             kyori: "1200",
@@ -495,6 +657,7 @@ describe("horse race results chart data", () => {
             value: 1,
           },
           {
+            blinker: null,
             dateValue: 1736640000000,
             jockey: "山田",
             kyori: "1200",
@@ -545,6 +708,7 @@ describe("horse race results chart data", () => {
         kettoTorokuBango: "2020000001",
         points: [
           {
+            blinker: null,
             dateValue: 1748736000000,
             jockey: "山田",
             kyori: "1200",
@@ -552,6 +716,7 @@ describe("horse race results chart data", () => {
             value: 3,
           },
           {
+            blinker: null,
             dateValue: 1748736000000,
             jockey: "山田",
             kyori: "1200",
@@ -559,6 +724,7 @@ describe("horse race results chart data", () => {
             value: 1,
           },
           {
+            blinker: null,
             dateValue: 1748736000000,
             jockey: "山田",
             kyori: "1200",
@@ -566,6 +732,7 @@ describe("horse race results chart data", () => {
             value: 4,
           },
           {
+            blinker: null,
             dateValue: 1748736000000,
             jockey: "山田",
             kyori: "1200",
@@ -811,7 +978,14 @@ describe("horse race results chart data", () => {
       ],
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1709164800000, jockey: "山田", kyori: "1200", raceDate: "20240229", value: 2 },
+      {
+        blinker: null,
+        dateValue: 1709164800000,
+        jockey: "山田",
+        kyori: "1200",
+        raceDate: "20240229",
+        value: 2,
+      },
     ]);
   });
 
@@ -871,8 +1045,16 @@ describe("horse race results chart data", () => {
       targetRaceDate: "20260601",
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 480 },
       {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 480,
+      },
+      {
+        blinker: null,
         dateValue: 1780272000000,
         isUpcoming: true,
         jockey: null,
@@ -892,8 +1074,16 @@ describe("horse race results chart data", () => {
       targetRaceDate: "20260601",
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 480 },
       {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 480,
+      },
+      {
+        blinker: null,
         dateValue: 1780272000000,
         isUpcoming: true,
         jockey: null,
@@ -928,8 +1118,16 @@ describe("horse race results chart data", () => {
       targetRaceDate: "20260601",
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 4 },
       {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 4,
+      },
+      {
+        blinker: null,
         dateValue: 1780272000000,
         isUpcoming: true,
         jockey: null,
@@ -956,8 +1154,16 @@ describe("horse race results chart data", () => {
       targetRaceDate: "20260601",
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 1000 },
       {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 1000,
+      },
+      {
+        blinker: null,
         dateValue: 1780272000000,
         isUpcoming: true,
         jockey: null,
@@ -977,7 +1183,14 @@ describe("horse race results chart data", () => {
       targetRaceDate: "20260601",
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 480 },
+      {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 480,
+      },
     ]);
   });
 
@@ -990,7 +1203,14 @@ describe("horse race results chart data", () => {
       targetRaceDate: "20260601",
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 480 },
+      {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 480,
+      },
     ]);
   });
 
@@ -1003,7 +1223,14 @@ describe("horse race results chart data", () => {
       targetRaceDate: "20260601",
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 480 },
+      {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 480,
+      },
     ]);
   });
 
@@ -1016,7 +1243,14 @@ describe("horse race results chart data", () => {
       targetRaceDate: "20260601",
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 480 },
+      {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 480,
+      },
     ]);
   });
 
@@ -1029,7 +1263,14 @@ describe("horse race results chart data", () => {
       targetRaceDate: "2026060",
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 480 },
+      {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 480,
+      },
     ]);
   });
 
@@ -1057,7 +1298,14 @@ describe("horse race results chart data", () => {
       targetRaceDate: "20260601",
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 4 },
+      {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 4,
+      },
     ]);
   });
 
@@ -1071,8 +1319,16 @@ describe("horse race results chart data", () => {
       upcomingWeights: [{ popularity: null, umaban: "1", weight: 444, weightDelta: 2 }],
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 480 },
       {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 480,
+      },
+      {
+        blinker: null,
         dateValue: 1780272000000,
         isUpcoming: true,
         jockey: null,
@@ -1101,8 +1357,16 @@ describe("horse race results chart data", () => {
       upcomingWeights: [{ popularity: null, umaban: "1", weight: 444, weightDelta: -6 }],
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 4 },
       {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 4,
+      },
+      {
+        blinker: null,
         dateValue: 1780272000000,
         isUpcoming: true,
         jockey: null,
@@ -1123,8 +1387,16 @@ describe("horse race results chart data", () => {
       upcomingWeights: [{ popularity: null, umaban: "01", weight: 444, weightDelta: 2 }],
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 480 },
       {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 480,
+      },
+      {
+        blinker: null,
         dateValue: 1780272000000,
         isUpcoming: true,
         jockey: null,
@@ -1145,8 +1417,16 @@ describe("horse race results chart data", () => {
       upcomingWeights: [{ popularity: null, umaban: "1", weight: null, weightDelta: null }],
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 480 },
       {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 480,
+      },
+      {
+        blinker: null,
         dateValue: 1780272000000,
         isUpcoming: true,
         jockey: null,
@@ -1167,8 +1447,16 @@ describe("horse race results chart data", () => {
       upcomingWeights: [{ popularity: null, umaban: "7", weight: 444, weightDelta: 2 }],
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 480 },
       {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 480,
+      },
+      {
+        blinker: null,
         dateValue: 1780272000000,
         isUpcoming: true,
         jockey: null,
@@ -1189,7 +1477,14 @@ describe("horse race results chart data", () => {
       upcomingWeights: [{ popularity: null, umaban: "1", weight: null, weightDelta: 2 }],
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 480 },
+      {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 480,
+      },
     ]);
   });
 
@@ -1203,8 +1498,16 @@ describe("horse race results chart data", () => {
       upcomingWeights: [{ popularity: null, umaban: " ", weight: 444, weightDelta: 2 }],
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 480 },
       {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 480,
+      },
+      {
+        blinker: null,
         dateValue: 1780272000000,
         isUpcoming: true,
         jockey: null,
@@ -1225,8 +1528,16 @@ describe("horse race results chart data", () => {
       upcomingWeights: [{ popularity: null, umaban: "1", weight: 444, weightDelta: 2 }],
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 480 },
       {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 480,
+      },
+      {
+        blinker: null,
         dateValue: 1780272000000,
         isUpcoming: true,
         jockey: null,
@@ -1255,7 +1566,14 @@ describe("horse race results chart data", () => {
       upcomingWeights: [{ popularity: null, umaban: "1", weight: 444, weightDelta: null }],
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 4 },
+      {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 4,
+      },
     ]);
   });
 
@@ -1268,7 +1586,14 @@ describe("horse race results chart data", () => {
       targetRaceDate: "20260601",
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: "山田", kyori: "1200", raceDate: "20250112", value: 3 },
+      {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: "山田",
+        kyori: "1200",
+        raceDate: "20250112",
+        value: 3,
+      },
     ]);
   });
 
@@ -1281,7 +1606,14 @@ describe("horse race results chart data", () => {
       targetRaceDate: "20260601",
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: "山田", kyori: "1200", raceDate: "20250112", value: 2 },
+      {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: "山田",
+        kyori: "1200",
+        raceDate: "20250112",
+        value: 2,
+      },
     ]);
   });
 
@@ -1295,8 +1627,16 @@ describe("horse race results chart data", () => {
       upcomingWeights: [{ popularity: 3, umaban: "1", weight: null, weightDelta: null }],
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: "山田", kyori: "1200", raceDate: "20250112", value: 2 },
       {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: "山田",
+        kyori: "1200",
+        raceDate: "20250112",
+        value: 2,
+      },
+      {
+        blinker: null,
         dateValue: 1780272000000,
         isUpcoming: true,
         jockey: null,
@@ -1317,8 +1657,16 @@ describe("horse race results chart data", () => {
       upcomingWeights: [{ popularity: 5, umaban: "01", weight: null, weightDelta: null }],
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: "山田", kyori: "1200", raceDate: "20250112", value: 2 },
       {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: "山田",
+        kyori: "1200",
+        raceDate: "20250112",
+        value: 2,
+      },
+      {
+        blinker: null,
         dateValue: 1780272000000,
         isUpcoming: true,
         jockey: null,
@@ -1339,8 +1687,16 @@ describe("horse race results chart data", () => {
       upcomingWeights: [{ popularity: 1, umaban: "1", weight: null, weightDelta: null }],
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: "山田", kyori: "1200", raceDate: "20250112", value: 2 },
       {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: "山田",
+        kyori: "1200",
+        raceDate: "20250112",
+        value: 2,
+      },
+      {
+        blinker: null,
         dateValue: 1780272000000,
         isUpcoming: true,
         jockey: null,
@@ -1361,7 +1717,14 @@ describe("horse race results chart data", () => {
       upcomingWeights: [{ popularity: null, umaban: "1", weight: 444, weightDelta: 2 }],
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: "山田", kyori: "1200", raceDate: "20250112", value: 2 },
+      {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: "山田",
+        kyori: "1200",
+        raceDate: "20250112",
+        value: 2,
+      },
     ]);
   });
 
@@ -1375,7 +1738,14 @@ describe("horse race results chart data", () => {
       upcomingWeights: [{ popularity: 0, umaban: "1", weight: 444, weightDelta: 2 }],
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: "山田", kyori: "1200", raceDate: "20250112", value: 2 },
+      {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: "山田",
+        kyori: "1200",
+        raceDate: "20250112",
+        value: 2,
+      },
     ]);
   });
 
@@ -1389,7 +1759,14 @@ describe("horse race results chart data", () => {
       upcomingWeights: [{ popularity: 4, umaban: "7", weight: null, weightDelta: null }],
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: "山田", kyori: "1200", raceDate: "20250112", value: 2 },
+      {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: "山田",
+        kyori: "1200",
+        raceDate: "20250112",
+        value: 2,
+      },
     ]);
   });
 
@@ -1403,7 +1780,14 @@ describe("horse race results chart data", () => {
       upcomingWeights: [{ popularity: 3, umaban: "1", weight: null, weightDelta: null }],
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: "山田", kyori: "1200", raceDate: "20250112", value: 3 },
+      {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: "山田",
+        kyori: "1200",
+        raceDate: "20250112",
+        value: 3,
+      },
     ]);
   });
 
@@ -1417,8 +1801,16 @@ describe("horse race results chart data", () => {
       upcomingWeights: [{ popularity: 3, umaban: "1", weight: 444, weightDelta: 2 }],
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 480 },
       {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 480,
+      },
+      {
+        blinker: null,
         dateValue: 1780272000000,
         isUpcoming: true,
         jockey: null,
@@ -1443,7 +1835,14 @@ describe("horse race results chart data", () => {
       ],
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: "佐藤", kyori: "2000", raceDate: "20250112", value: 4 },
+      {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: "佐藤",
+        kyori: "2000",
+        raceDate: "20250112",
+        value: 4,
+      },
     ]);
   });
 
@@ -1461,7 +1860,14 @@ describe("horse race results chart data", () => {
       ],
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 480 },
+      {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 480,
+      },
     ]);
   });
 
@@ -1479,7 +1885,14 @@ describe("horse race results chart data", () => {
       ],
     });
     expect(seriesList[0]?.points).toStrictEqual([
-      { dateValue: 1736640000000, jockey: null, kyori: null, raceDate: "20250112", value: 3 },
+      {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 3,
+      },
     ]);
   });
 

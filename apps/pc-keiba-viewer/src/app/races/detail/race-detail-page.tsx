@@ -4,12 +4,14 @@ import { notFound } from "next/navigation";
 import { Suspense } from "react";
 
 import {
+  getHorseRaceResults,
   getRaceCourseInfo,
   getRaceDetail,
   getRaceRunners,
   getSameVenueRacesByDate,
 } from "../../../db/queries";
 import { getRaceFinishPositionsFromD1 } from "../../../db/race-finish-d1.server";
+import { type BlinkerPattern, classifyBlinkerPattern } from "../../../lib/blinker-pattern";
 import {
   safeGetCloudflareEnv,
   safeGetCloudflareExecutionContext,
@@ -48,7 +50,7 @@ import { isCornerPacePredictionSupported } from "../../../lib/race-pace-predicti
 import { RACE_TREND_PAST14_LOOKBACK_DAYS } from "../../../lib/race-trend-cache";
 import { shouldRestrictTrendDisplayToToday } from "../../../lib/race-trend-display";
 import { getRaceTrendTargetsFromSearchParams } from "../../../lib/race-trend-query";
-import type { RaceDetail } from "../../../lib/race-types";
+import type { HorseRaceResult, RaceDetail, Runner } from "../../../lib/race-types";
 import { loadInitialRealtimePayloadServer } from "../../../lib/realtime-payload.server";
 import {
   formatCarriedWeight,
@@ -168,6 +170,32 @@ const formatStoredOddsForExport = (value: string | null | undefined): string => 
   }
   const parsed = Number(cleaned);
   return Number.isFinite(parsed) ? (parsed / 10).toFixed(1) : "-";
+};
+
+interface BlinkerPatternEntry {
+  kettoTorokuBango: string;
+  pattern: BlinkerPattern;
+}
+
+// `results` are every entered horse's past races, most-recent-first (queries.ts
+// orders the history by date desc). The blinker classifier needs that order to
+// derive the A-F pattern, so we keep it and only filter to the target horse.
+const buildBlinkerPatterns = (params: {
+  results: ReadonlyArray<HorseRaceResult>;
+  runners: ReadonlyArray<Runner>;
+}): BlinkerPatternEntry[] => {
+  const { results, runners } = params;
+  return runners.flatMap((runner) => {
+    const kettoTorokuBango = cleanText(runner.kettoTorokuBango, "");
+    if (kettoTorokuBango === "") {
+      return [];
+    }
+    const past = results
+      .filter((result) => cleanText(result.kettoTorokuBango, "") === kettoTorokuBango)
+      .map((result) => result.blinkerShiyoKubun);
+    const pattern = classifyBlinkerPattern(runner.blinkerShiyoKubun, past);
+    return pattern === null ? [] : [{ kettoTorokuBango, pattern }];
+  });
 };
 
 const DetailCell = ({
@@ -345,6 +373,19 @@ export async function RaceDetailView({
     source: raceSource,
     year,
   }).catch(() => []);
+  // Per-horse blinker A-F pattern for the 出走馬 table. getHorseRaceResults
+  // returns every entered horse's past races (most-recent-first) and is
+  // withDbQueryCache-cached, so it is shared with the 競走成績 section. The
+  // fetch is wrapped so a history failure never breaks the page.
+  const horseRaceResults = await getHorseRaceResults(
+    raceSource,
+    year,
+    month,
+    day,
+    keibajoCode,
+    raceNumber,
+  ).catch(() => []);
+  const blinkerPatterns = buildBlinkerPatterns({ results: horseRaceResults, runners });
   const raceStartsAt = getRaceStartsAt(year, month, day, race.hassoJikoku);
   const sharePath = getRaceDetailPath({
     kaisaiNen: year,
@@ -715,6 +756,7 @@ export async function RaceDetailView({
             <p className="empty-state">出走馬情報はまだありません。</p>
           ) : (
             <RunnersTable
+              blinkerPatterns={blinkerPatterns}
               d1FinishPositions={d1FinishPositions}
               decodeHexHorseWeight={decodeHexHorseWeight}
               initialRealtimePayload={initialRealtimePayload}

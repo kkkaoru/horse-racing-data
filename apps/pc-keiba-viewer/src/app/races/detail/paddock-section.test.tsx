@@ -473,6 +473,116 @@ test("PaddockSection recent-results falls back to dash when past jockey name is 
   expect(jockeyCell.textContent).toBe("騎手 -");
 });
 
+test("PaddockSection recent-results shows the worn blinker mark for a past race wearing a blinker", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  const { container } = render(
+    <PaddockSection
+      {...baseProps}
+      recentResults={[
+        buildPastResult({
+          blinkerShiyoKubun: "1",
+          currentUmaban: "01",
+        }),
+      ]}
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getAllByRole("article").length).toBe(1);
+  });
+  const blinkerMark = container.querySelector(".paddock-recent-blinker");
+  expect(blinkerMark?.textContent).toBe("○");
+});
+
+test("PaddockSection recent-results shows the dash blinker mark for a past race without a blinker", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  const { container } = render(
+    <PaddockSection
+      {...baseProps}
+      recentResults={[
+        buildPastResult({
+          blinkerShiyoKubun: "0",
+          currentUmaban: "01",
+        }),
+      ]}
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getAllByRole("article").length).toBe(1);
+  });
+  const blinkerMark = container.querySelector(".paddock-recent-blinker");
+  expect(blinkerMark?.textContent).toBe("-");
+});
+
+test("PaddockSection renders the first-attachment blinker pattern badge for a debut wearing horse", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  const { container } = render(
+    <PaddockSection
+      {...baseProps}
+      recentResults={[]}
+      runners={[buildRunner({ blinkerShiyoKubun: "1", bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getAllByRole("article").length).toBe(1);
+  });
+  const badge = container.querySelector(".paddock-blinker-pattern-badge");
+  expect(badge?.className).toBe("paddock-blinker-pattern-badge pattern-B");
+  expect(badge?.getAttribute("aria-label")).toBe("ブリンカー 初装着(初出走)");
+});
+
+test("PaddockSection renders the first-attachment-not-debut blinker pattern badge over past unworn races", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  const { container } = render(
+    <PaddockSection
+      {...baseProps}
+      recentResults={[
+        buildPastResult({ blinkerShiyoKubun: "0", currentUmaban: "01", raceBango: "01" }),
+      ]}
+      runners={[buildRunner({ blinkerShiyoKubun: "1", bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getAllByRole("article").length).toBe(1);
+  });
+  const badge = container.querySelector(".paddock-blinker-pattern-badge");
+  expect(badge?.className).toBe("paddock-blinker-pattern-badge pattern-A");
+  expect(badge?.getAttribute("aria-label")).toBe("ブリンカー 初装着(初出走以外)");
+});
+
+test("PaddockSection renders no blinker pattern badge when the horse never wears one", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  const { container } = render(
+    <PaddockSection
+      {...baseProps}
+      recentResults={[
+        buildPastResult({ blinkerShiyoKubun: "0", currentUmaban: "01", raceBango: "01" }),
+      ]}
+      runners={[buildRunner({ blinkerShiyoKubun: "0", bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getAllByRole("article").length).toBe(1);
+  });
+  expect(container.querySelector(".paddock-blinker-pattern-badge") === null).toBe(true);
+});
+
 test("PaddockSection renders dash for bloodline when all fields are null", async () => {
   getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
   fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));

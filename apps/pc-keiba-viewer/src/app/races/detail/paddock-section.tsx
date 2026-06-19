@@ -12,6 +12,12 @@ import {
   useState,
 } from "react";
 
+import {
+  BLINKER_PATTERN_LABELS,
+  classifyBlinkerPattern,
+  isWearingBlinker,
+  type BlinkerPattern,
+} from "../../../lib/blinker-pattern";
 import type { RaceSource } from "../../../lib/codes";
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
 import {
@@ -87,6 +93,9 @@ interface PaddockSectionProps {
 }
 
 interface PaddockHorseRowProps {
+  // This-race blinker flag for the horse (Runner.blinkerShiyoKubun); combined with
+  // recentResults to classify the A-F blinker pattern. Null/absent for NAR.
+  currentBlinker: string | null;
   damSireName: string;
   editable: boolean;
   horseName: string;
@@ -121,6 +130,7 @@ interface PaddockHorseRowProps {
 }
 
 interface PaddockRunnerRow {
+  currentBlinker: string | null;
   damSireName: string;
   horseName: string;
   horseNumber: string;
@@ -479,6 +489,10 @@ const formatPastResultMeta = (result: HorseRaceResult): string =>
   ].join(" / ");
 
 const PADDOCK_RECENT_JOCKEY_FALLBACK = "-";
+// Blinker marks for the per-race stats list: ○ when worn, - otherwise. Only JRA
+// populates blinkerShiyoKubun, so NAR/Ban-ei rows always show -.
+const BLINKER_WORN_MARK = "○";
+const BLINKER_NOT_WORN_MARK = "-";
 
 const formatPastJockeyName = (value: string | null | undefined): string => {
   const cleaned = normalizeJockeyNameForDisplay(value);
@@ -631,6 +645,11 @@ function PaddockRecentResults({
                     result.zogenSa,
                     isBanEiKeibajoCode(result.keibajoCode),
                   )}
+                </span>
+                <span aria-label="ブリンカー" className="paddock-recent-blinker">
+                  {isWearingBlinker(result.blinkerShiyoKubun)
+                    ? BLINKER_WORN_MARK
+                    : BLINKER_NOT_WORN_MARK}
                 </span>
               </span>
             </li>
@@ -960,7 +979,20 @@ function PremiumPaddockBulletinTable({
 
 const PADDOCK_FACT_PLACEHOLDER = "-";
 
+// Resolve the A-F blinker pattern for a horse from its this-race flag plus its
+// past races (most-recent-first via blinkerShiyoKubun). Returns null when no
+// pattern applies (the common case for NAR rows where the column is all '0').
+const resolveBlinkerPattern = (
+  currentBlinker: string | null,
+  recentResults: HorseRaceResult[] | null,
+): BlinkerPattern | null =>
+  classifyBlinkerPattern(
+    currentBlinker,
+    (recentResults ?? []).map((result) => result.blinkerShiyoKubun),
+  );
+
 const PaddockHorseRow = memo(function PaddockHorseRow({
+  currentBlinker,
   damSireName,
   editable,
   frameNumber,
@@ -990,6 +1022,7 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
     onScore({ category, delta, horseName, horseNumber });
   };
   const upcomingWeightValues = parseUpcomingWeightValues(weight);
+  const blinkerPattern = resolveBlinkerPattern(currentBlinker, recentResults);
   const displayJockeyName = getPreferredJockeyName(jockeyName, realtimeJockeyName);
   const isScratched = Boolean(status);
   const startsLabel =
@@ -1044,6 +1077,15 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
             >
               <span>脚質</span>
               <strong>{PADDOCK_RUNNING_STYLE_LABELS[runningStyleLabel]}</strong>
+            </span>
+          ) : null}
+          {blinkerPattern ? (
+            <span
+              aria-label={`ブリンカー ${BLINKER_PATTERN_LABELS[blinkerPattern]}`}
+              className={`paddock-blinker-pattern-badge pattern-${blinkerPattern}`}
+            >
+              <span>ブリンカー</span>
+              <strong>{blinkerPattern}</strong>
             </span>
           ) : null}
           {status ? <span className="paddock-status-badge">{status}</span> : null}
@@ -1697,6 +1739,7 @@ export function PaddockSection({
         .map((runner, index) => {
           const horseNumber = formatRunnerNumber(runner.umaban);
           return {
+            currentBlinker: runner.blinkerShiyoKubun ?? null,
             damSireName: cleanText(runner.damSireName, ""),
             horseName: cleanText(runner.bamei),
             horseNumber,
@@ -2181,6 +2224,7 @@ export function PaddockSection({
             const status = realtimeEntry?.status || runner.status || null;
             return (
               <PaddockHorseRow
+                currentBlinker={runner.currentBlinker}
                 damSireName={runner.damSireName}
                 editable
                 frameNumber={runner.frameNumber}

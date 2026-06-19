@@ -22,6 +22,7 @@ import {
   YAxis,
 } from "recharts";
 
+import { isWearingBlinker } from "../../../lib/blinker-pattern";
 import { formatDistance, formatKeibajo } from "../../../lib/format";
 import {
   formatHorseRaceChartDate,
@@ -50,6 +51,9 @@ export interface PaddockRecentResultsChartProps {
 // values and the metadata the tooltip shows. `isUpcoming` marks the synthetic
 // current-race latest-weight point so it can render with a larger dot.
 interface PaddockRecentChartRow {
+  // Raw blinker flag ("blinkerShiyoKubun") for this race: "1" when the horse wore
+  // a blinker. The upcoming synthetic row leaves it null (no result yet).
+  blinker: string | null;
   dateValue: number;
   finish: number | null;
   futan: number | null;
@@ -183,6 +187,8 @@ const REFERENCE_LINE_Y = 0;
 // Popularity ranks start at 1 (favourite); anything below is treated as unknown.
 const MIN_POPULARITY_RANK = 1;
 const EMPTY_LABEL = "-";
+// Tooltip line shown only when the race's blinker flag is "1" (JRA-only data).
+const BLINKER_WORN_TOOLTIP_LABEL = "ブリンカー ○";
 const TOOLTIP_BORDER_WIDTH = 2;
 const CHART_MARGIN = { bottom: 8, left: 12, right: 12, top: 8 };
 const AXIS_TICK: ChartAxisTick = { fontSize: 11 };
@@ -325,6 +331,7 @@ const toChartRowSource = (
     dateValue,
     raceBango: result.raceBango,
     row: {
+      blinker: result.blinkerShiyoKubun ?? null,
       dateValue,
       finish: getHorseRaceChartMetricValue(result, "finish"),
       futan: getHorseRaceChartMetricValue(result, "futan"),
@@ -354,6 +361,7 @@ const toUpcomingRowSource = (input: PaddockUpcomingPointInput): PaddockRecentCha
     dateValue,
     raceBango: UPCOMING_RACE_BANGO,
     row: {
+      blinker: null,
       dateValue,
       finish: null,
       futan: null,
@@ -524,6 +532,9 @@ export const PaddockRecentTooltip = ({
       <PaddockTooltipMetaLine label="騎手" value={formatTooltipJockey(row.kishumeiRyakusho)} />
       <PaddockTooltipMetaLine label="距離" value={formatDistance(row.kyori)} />
       <PaddockTooltipMetaLine label="競馬場" value={formatKeibajo(row.keibajoCode)} />
+      {isWearingBlinker(row.blinker) ? (
+        <p className="race-results-chart-tooltip-meta">{BLINKER_WORN_TOOLTIP_LABEL}</p>
+      ) : null}
     </div>
   );
 };

@@ -45,7 +45,10 @@ interface YAxisStubProps {
 
 interface MetricTooltipInjectedProps {
   active?: boolean;
-  payload?: { payload: { dateValue: number; jockey: string; kyori: string }; value: number }[];
+  payload?: {
+    payload: { blinker: string | null; dateValue: number; jockey: string; kyori: string };
+    value: number;
+  }[];
 }
 
 interface TooltipStubProps {
@@ -59,6 +62,11 @@ interface PaddockChartStubProps {
   upcomingWeight?: number | null;
   upcomingWeightDelta?: number | null;
 }
+
+// Mutable blinker flag injected into the tooltip stub's payload so individual
+// tests can drive the overview tooltip's blinker line on / off. Reset per test.
+// The `mock` prefix lets vitest hoist it above the recharts factory below.
+const mockTooltipBlinker: { value: string | null } = { value: null };
 
 vi.mock("recharts", () => ({
   CartesianGrid: () => <div data-testid="cartesian-grid-stub" />,
@@ -88,7 +96,17 @@ vi.mock("recharts", () => ({
         ? null
         : React.cloneElement(content, {
             active: true,
-            payload: [{ payload: { dateValue: 0, jockey: "ルメール", kyori: "2000" }, value: 1 }],
+            payload: [
+              {
+                payload: {
+                  blinker: mockTooltipBlinker.value,
+                  dateValue: 0,
+                  jockey: "ルメール",
+                  kyori: "2000",
+                },
+                value: 1,
+              },
+            ],
           })}
     </div>
   ),
@@ -131,6 +149,7 @@ vi.mock("./realtime-client", () => ({
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  mockTooltipBlinker.value = null;
 });
 
 const mockTanshoPayload = (tansho: RealtimeOddsData[]) => {
@@ -516,6 +535,18 @@ test("renders distance and jockey in the finish and popularity tooltips only", (
   ]);
   expect(screen.getAllByText("距離 2000m").length).toStrictEqual(2);
   expect(screen.getAllByText("騎手 ルメール").length).toStrictEqual(2);
+});
+
+test("shows the worn blinker line in the rank tooltips when the hovered point blinker is 1", () => {
+  mockTooltipBlinker.value = "1";
+  render(<HorseRaceResultsChart results={[chartResult({ blinkerShiyoKubun: "1" })]} />);
+  expect(screen.getAllByText("ブリンカー ○").length).toStrictEqual(2);
+});
+
+test("omits the blinker line in the rank tooltips when the hovered point blinker is null", () => {
+  mockTooltipBlinker.value = null;
+  render(<HorseRaceResultsChart results={[chartResult({ blinkerShiyoKubun: "0" })]} />);
+  expect(screen.queryAllByText("ブリンカー ○").length).toStrictEqual(0);
 });
 
 test("hides one horse in every panel via its chip and shows it again on the second click", () => {

@@ -4,6 +4,11 @@ import type { RealtimeRacePayload } from "horse-racing-realtime/types";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 
+import {
+  BLINKER_PATTERN_LABELS,
+  type BlinkerPattern,
+  isWearingBlinker,
+} from "../../../lib/blinker-pattern";
 import { cleanText } from "../../../lib/format";
 import { useHorseWeightStream } from "../../../lib/horse-weight-stream-client";
 import {
@@ -32,7 +37,13 @@ interface D1FinishPositionEntry {
   horseNumber: string;
 }
 
+interface BlinkerPatternEntry {
+  kettoTorokuBango: string;
+  pattern: BlinkerPattern;
+}
+
 interface RunnersTableProps {
+  blinkerPatterns?: ReadonlyArray<BlinkerPatternEntry>;
   d1FinishPositions?: ReadonlyArray<D1FinishPositionEntry>;
   decodeHexHorseWeight?: boolean;
   initialRealtimePayload?: RealtimeRacePayload | null;
@@ -156,6 +167,7 @@ const isChangedJockey = (
 };
 
 export function RunnersTable({
+  blinkerPatterns,
   d1FinishPositions,
   decodeHexHorseWeight = false,
   initialRealtimePayload = null,
@@ -163,6 +175,10 @@ export function RunnersTable({
   runners,
 }: RunnersTableProps) {
   const [sort, setSort] = useState<SortState | null>(null);
+  const blinkerPatternByHorse = useMemo(
+    () => new Map((blinkerPatterns ?? []).map((entry) => [entry.kettoTorokuBango, entry.pattern])),
+    [blinkerPatterns],
+  );
   const { payload } = useRealtimeRacePayload(
     realtimeRequest ?? {
       apiBaseUrl: "",
@@ -341,6 +357,7 @@ export function RunnersTable({
     const trainerName = cleanText(runner.chokyoshimeiRyakusho);
     const ownerName = cleanText(runner.banushimei);
     const entryStatus = realtimeEntry?.status || "";
+    const blinkerPattern = blinkerPatternByHorse.get(cleanText(runner.kettoTorokuBango, ""));
 
     return (
       <tr
@@ -362,7 +379,18 @@ export function RunnersTable({
           ) : (
             <HorseNameBadge coatCode={runner.moshokuCode} name={horseName} />
           )}
+          {blinkerPattern ? (
+            <span
+              className={`runner-blinker-pattern-badge pattern-${blinkerPattern}`}
+              title={BLINKER_PATTERN_LABELS[blinkerPattern]}
+            >
+              {blinkerPattern}
+            </span>
+          ) : null}
           {entryStatus ? <span className="runner-status-badge">{entryStatus}</span> : null}
+        </td>
+        <td className="runner-blinker-cell">
+          {isWearingBlinker(runner.blinkerShiyoKubun) ? "○" : "-"}
         </td>
         <td>{formatSexAge(runner.seibetsuCode, runner.barei)}</td>
         <td>{formatCarriedWeight(runner.futanJuryo, decodeHexHorseWeight)}</td>
@@ -434,6 +462,7 @@ export function RunnersTable({
           <col className="runner-col-frame" />
           <col className="runner-col-number" />
           <col className="runner-col-horse" />
+          <col className="runner-col-blinker" />
           <col className="runner-col-sex-age" />
           <col className="runner-col-weight" />
           <col className="runner-col-person" />
@@ -449,6 +478,7 @@ export function RunnersTable({
             <th className="runner-frame-header">枠</th>
             <th>{renderSortButton("umaban")}</th>
             <th>馬名</th>
+            <th>ブリンカー</th>
             <th>性齢</th>
             <th>負担</th>
             <th>騎手</th>
