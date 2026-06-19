@@ -3230,7 +3230,7 @@ fieldset.paddock-chip-row {
    variants stay monochrome (letter-coded) because no semantic per-pattern color
    exists in vars.css and the CSS lint forbids new hex literals. */
 .runner-col-blinker {
-  width: var(--space-6pct-151);
+  width: var(--space-9pct-238);
 }
 
 .runner-blinker-cell {

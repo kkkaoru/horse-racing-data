@@ -423,6 +423,7 @@
   --value-space-96px-66: 96px;
   --value-space-980px-171: 980px;
   --value-space-999px-30: 999px;
+  --value-space-9pct-238: 9%;
   --value-space-9px-21: 9px;
   --value-surface: #ffffff;
   --value-surface-muted: #edf3ed;
@@ -868,6 +869,7 @@
   --space-96px-66: var(--value-space-96px-66);
   --space-980px-171: var(--value-space-980px-171);
   --space-999px-30: var(--value-space-999px-30);
+  --space-9pct-238: var(--value-space-9pct-238);
   --space-9px-21: var(--value-space-9px-21);
   --surface: var(--value-surface);
   --surface-muted: var(--value-surface-muted);
