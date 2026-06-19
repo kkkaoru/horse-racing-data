@@ -412,6 +412,77 @@ describe("runners table", () => {
     expect(rowTexts()[1]).toContain("2");
   });
 
+  it("shows the D1 finish position when PG kakuteiChakujun is empty and no realtime result exists", () => {
+    render(
+      <RunnersTable
+        d1FinishPositions={[{ finishPosition: "3", horseNumber: "01" }]}
+        runners={[runner({ bamei: "一番", kakuteiChakujun: "00", umaban: "01" })]}
+      />,
+    );
+
+    expect(screen.getByText("3")).toBeTruthy();
+  });
+
+  it("prefers the realtime finish position over the D1 finish position", () => {
+    render(
+      <RunnersTable
+        d1FinishPositions={[{ finishPosition: "7", horseNumber: "12" }]}
+        initialRealtimePayload={{
+          horseWeights: null,
+          odds: null,
+          raceEntries: null,
+          raceResults: {
+            fetchedAt: "2026-06-19T18:50:00+09:00",
+            horses: [
+              {
+                fetchedAt: "2026-06-19T18:50:00+09:00",
+                finishPosition: "1",
+                horseName: "十二番",
+                horseNumber: "12",
+                time: "1:54.3",
+              },
+            ],
+          },
+          raceKey: "nar:2026:0619:45:11",
+          source: null,
+        }}
+        runners={[runner({ bamei: "十二番", kakuteiChakujun: "00", umaban: "12", wakuban: "6" })]}
+      />,
+    );
+
+    expect(screen.getByText("1")).toBeTruthy();
+    expect(screen.queryByText("7")).toBeNull();
+  });
+
+  it("falls back to the PG finish position when the D1 finish is the all-zero placeholder", () => {
+    render(
+      <RunnersTable
+        d1FinishPositions={[{ finishPosition: "0", horseNumber: "12" }]}
+        runners={[runner({ bamei: "十二番", kakuteiChakujun: "9", umaban: "12", wakuban: "6" })]}
+      />,
+    );
+
+    expect(screen.getByText("9")).toBeTruthy();
+  });
+
+  it("sorts by the D1 finish position when PG kakuteiChakujun is empty", () => {
+    render(
+      <RunnersTable
+        d1FinishPositions={[
+          { finishPosition: "2", horseNumber: "01" },
+          { finishPosition: "1", horseNumber: "02" },
+        ]}
+        runners={[
+          runner({ bamei: "一番", kakuteiChakujun: "00", umaban: "01" }),
+          runner({ bamei: "二番", kakuteiChakujun: "00", umaban: "02" }),
+        ]}
+      />,
+    );
+
+    expect(rowTexts()[0]).toContain("二番");
+    expect(rowTexts()[1]).toContain("一番");
+  });
+
   it("decodes ban-ei hexadecimal horse weights", () => {
     render(
       <RunnersTable

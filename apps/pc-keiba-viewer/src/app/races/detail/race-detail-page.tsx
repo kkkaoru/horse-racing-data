@@ -9,6 +9,7 @@ import {
   getRaceRunners,
   getSameVenueRacesByDate,
 } from "../../../db/queries";
+import { getRaceFinishPositionsFromD1 } from "../../../db/race-finish-d1.server";
 import {
   safeGetCloudflareEnv,
   safeGetCloudflareExecutionContext,
@@ -333,6 +334,17 @@ export async function RaceDetailView({
     env: realtimeEnv,
     request: { day, keibajoCode, month, raceNumber, source: raceSource, year },
   }).catch(() => null);
+  // D1 (race_result_snapshots) seed for the 着順 column when the PostgreSQL
+  // mirror has not imported the finish yet. Precedence in RunnersTable:
+  // live realtime payload > this D1 seed > PG kakuteiChakujun.
+  const d1FinishPositions = await getRaceFinishPositionsFromD1({
+    day,
+    keibajoCode,
+    month,
+    raceNumber,
+    source: raceSource,
+    year,
+  }).catch(() => []);
   const raceStartsAt = getRaceStartsAt(year, month, day, race.hassoJikoku);
   const sharePath = getRaceDetailPath({
     kaisaiNen: year,
@@ -703,6 +715,7 @@ export async function RaceDetailView({
             <p className="empty-state">出走馬情報はまだありません。</p>
           ) : (
             <RunnersTable
+              d1FinishPositions={d1FinishPositions}
               decodeHexHorseWeight={decodeHexHorseWeight}
               initialRealtimePayload={initialRealtimePayload}
               realtimeRequest={realtimeRequest}
