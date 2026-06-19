@@ -344,6 +344,23 @@ CATEGORY_NAR = "nar"
 CATEGORY_JRA = "jra"
 
 
+def signed_zogen_sa_sql(fugo_expr: str, sa_expr: str) -> str:
+    """SQL for the signed official-weight delta from the last race.
+
+    ``sa_expr`` is the magnitude column (e.g. ``"002"``) and ``fugo_expr`` is the
+    sign column (``"-"`` for a loss, ``"+"`` or blank for a gain). The ``"000"`` /
+    ``"FFF"`` (case-insensitive) / blank sentinels mean "no data" and map to NULL,
+    so the feature is never a misleading 0. The result is a signed integer:
+    ``-magnitude`` when the sign column is ``"-"`` and ``+magnitude`` otherwise.
+    """
+    return (
+        f"case when nullif(upper(trim({sa_expr})), '') is null"
+        f" or upper(trim({sa_expr})) in ('000', 'FFF') then null"
+        f" else try_cast(trim({sa_expr}) as int)"
+        f" * case when trim({fugo_expr}) = '-' then -1 else 1 end end"
+    )
+
+
 def _rec_select_from_corner_features(history_start: str, to_date: str) -> str:
     """Build rec SELECT from race_entry_corner_features (no bataiju enrichment).
 
@@ -368,7 +385,8 @@ def _rec_select_from_corner_features(history_start: str, to_date: str) -> str:
       time_sa, kohan_3f, corner1_norm, corner3_norm, corner4_norm,
       babajotai_code_shiba, babajotai_code_dirt,
       tansho_ninkijun, tansho_odds,
-      cast(null as int) as bataiju
+      cast(null as int) as bataiju,
+      try_cast(nullif(trim(seibetsu_code), '') as int) as seibetsu_code
     from pg.race_entry_corner_features
     where race_date between '{history_start}' and '{to_date}'
     """
@@ -409,7 +427,8 @@ def _rec_select_from_ban_ei(history_start: str, to_date: str) -> str:
       ra.babajotai_code_shiba, ra.babajotai_code_dirt,
       try_cast(nullif(trim(se.tansho_ninkijun), '') as int) as tansho_ninkijun,
       try_cast(nullif(trim(se.tansho_odds), '') as double) / 10 as tansho_odds,
-      try_cast(nullif(trim(se.bataiju), '') as int) as bataiju
+      try_cast(nullif(trim(se.bataiju), '') as int) as bataiju,
+      try_cast(nullif(trim(se.seibetsu_code), '') as int) as seibetsu_code
     from pg.nvd_se se
 
     join pg.nvd_ra ra
@@ -494,7 +513,8 @@ def _rec_select_from_se_ra(
       coalesce(
         rt.bataiju_realtime,
         try_cast(nullif(trim(se.bataiju), '') as int)
-      ) as bataiju
+      ) as bataiju,
+      try_cast(nullif(trim(se.seibetsu_code), '') as int) as seibetsu_code
     from pg.{se_table} se
     join pg.{ra_table} ra
       on ra.kaisai_nen = se.kaisai_nen
@@ -624,7 +644,9 @@ def stage_se_table(
         f"""
         create or replace temp table {table} as
         select kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango,
-               try_cast(nullif(trim(bataiju), '') as int) as bataiju
+               try_cast(nullif(trim(bataiju), '') as int) as bataiju,
+               cast(zogen_sa as varchar) as zogen_sa,
+               cast(zogen_fugo as varchar) as zogen_fugo
         from pg.{pg_table}
         where kaisai_nen between '{history_year}' and '{to_year}'
           and (kaisai_nen || kaisai_tsukihi) between '{history_start}' and '{to_date}'
@@ -790,7 +812,8 @@ def _stage_empty_jra_stubs(con: duckdb.DuckDBPyConnection) -> None:
         "create or replace temp table jra_se as "
         "select cast(null as varchar) as kaisai_nen, cast(null as varchar) as kaisai_tsukihi, "
         "cast(null as varchar) as keibajo_code, cast(null as varchar) as race_bango, "
-        "cast(null as varchar) as ketto_toroku_bango, cast(null as int) as bataiju "
+        "cast(null as varchar) as ketto_toroku_bango, cast(null as int) as bataiju, "
+        "cast(null as varchar) as zogen_sa, cast(null as varchar) as zogen_fugo "
         "where false",
         row_count_table="jra_se",
     )
@@ -891,6 +914,9 @@ def build_target_table(con: duckdb.DuckDBPyConnection, category: str, from_date:
           end as target_running_style_class,
           cast(rec.tansho_odds as double) as tansho_odds,
           cast(rec.tansho_ninkijun as int) as tansho_ninkijun,
+          rec.seibetsu_code,
+          case when rec.kaisai_tsukihi is null or length(rec.kaisai_tsukihi) < 2 then null
+               else cast(substr(rec.kaisai_tsukihi, 1, 2) as int) end as kaisai_month,
           'v1' as feature_schema_version,
           cast(substr(rec.race_date, 1, 4) as int) as race_year
         from rec
@@ -1410,6 +1436,7 @@ def weight_cte(target_filter: str = "true") -> str:
     weight_agg as (
       select b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango, b.ketto_toroku_bango,
         max(tcb.current_bataiju) as current_bataiju_kept,
+        max(tcb.target_zogen_sa) as zogen_sa,
         avg(b.history_bataiju) filter (where b.recent_rank <= {RECENT_WINDOW_SIZE}) as weight_avg_5
       from horse_history_base b
       left join target_current_bataiju tcb
@@ -1692,6 +1719,9 @@ def base_features_select_sql(category: str) -> str:
       t.race_year,
       t.tansho_odds,
       t.tansho_ninkijun,
+      t.seibetsu_code,
+      wa.zogen_sa as zogen_sa,
+      t.kaisai_month,
       t.source || ':' || t.kaisai_nen || ':' || t.kaisai_tsukihi || ':' || t.keibajo_code || ':' || t.race_bango as race_id
     from target t
     left join horse_career hc using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
@@ -2081,16 +2111,18 @@ def materialize_se_lookup(con: duckdb.DuckDBPyConnection) -> int:
     log_event("se_lookup.build", "start", 0.0)
     started = perf_counter()
     con.execute(
-        """
+        f"""
         create or replace temp table se_lookup as
         select 'jra' as source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
                ketto_toroku_bango,
-               try_cast(nullif(trim(cast(bataiju as varchar)), '') as int) as bataiju
+               try_cast(nullif(trim(cast(bataiju as varchar)), '') as int) as bataiju,
+               {signed_zogen_sa_sql("zogen_fugo", "zogen_sa")} as zogen_sa
         from jra_se where ketto_toroku_bango is not null
         union all
         select 'nar' as source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
                ketto_toroku_bango,
-               try_cast(nullif(trim(cast(bataiju as varchar)), '') as int) as bataiju
+               try_cast(nullif(trim(cast(bataiju as varchar)), '') as int) as bataiju,
+               {signed_zogen_sa_sql("zogen_fugo", "zogen_sa")} as zogen_sa
         from nar_se where ketto_toroku_bango is not null
         """
     )
@@ -2112,7 +2144,8 @@ def materialize_target_current_bataiju(con: duckdb.DuckDBPyConnection) -> int:
         """
         create or replace temp table target_current_bataiju as
         select t.source, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango,
-               t.ketto_toroku_bango, s.bataiju as current_bataiju
+               t.ketto_toroku_bango, s.bataiju as current_bataiju,
+               s.zogen_sa as target_zogen_sa
         from target t
         left join se_lookup s
           using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)

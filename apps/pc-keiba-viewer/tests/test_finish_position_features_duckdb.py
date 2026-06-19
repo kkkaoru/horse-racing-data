@@ -581,31 +581,31 @@ def test_build_target_table_emits_running_style_label_via_duckdb():
               1600, '11', 'A', '99', 16, 1, 1.0/16,
               'name_a', 'fukudai_a',
               null::double, null::double, null::double, null::double,
-              '1', '1', 1, 50.0, null::int, 0.00),
+              '1', '1', 1, 50.0, null::int, 0.00, 1),
             ('jra', '20250101', date '2025-01-01', '2025', '0101', '05', '01',
               '2020100002', 5, 'jockey_b', 'trainer_b',
               1600, '11', 'A', '99', 16, 2, 2.0/16,
               'name_b', 'fukudai_b',
               null::double, null::double, null::double, null::double,
-              '1', '1', 2, 100.0, null::int, 0.20),
+              '1', '1', 2, 100.0, null::int, 0.20, 1),
             ('jra', '20250101', date '2025-01-01', '2025', '0101', '05', '01',
               '2020100003', 8, 'jockey_c', 'trainer_c',
               1600, '11', 'A', '99', 16, 10, 10.0/16,
               'name_c', 'fukudai_c',
               null::double, null::double, null::double, null::double,
-              '1', '1', 5, 500.0, null::int, 0.50),
+              '1', '1', 5, 500.0, null::int, 0.50, 1),
             ('jra', '20250101', date '2025-01-01', '2025', '0101', '05', '01',
               '2020100004', 12, 'jockey_d', 'trainer_d',
               1600, '11', 'A', '99', 16, 15, 15.0/16,
               'name_d', 'fukudai_d',
               null::double, null::double, null::double, null::double,
-              '1', '1', 12, 1500.0, null::int, 0.95),
+              '1', '1', 12, 1500.0, null::int, 0.95, 1),
             ('jra', '20250101', date '2025-01-01', '2025', '0101', '05', '01',
               '2020100005', 16, 'jockey_e', 'trainer_e',
               1600, '11', 'A', '99', 16, null::int, null::double,
               'name_e', 'fukudai_e',
               null::double, null::double, null::double, null::double,
-              '1', '1', 16, 2000.0, null::int, null::double)
+              '1', '1', 16, 2000.0, null::int, null::double, 1)
         ) as v(
           source, race_date, race_dt, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
           ketto_toroku_bango, umaban, kishumei_ryakusho, chokyoshimei_ryakusho,
@@ -613,7 +613,7 @@ def test_build_target_table_emits_running_style_label_via_duckdb():
           kyosomei_hondai, kyosomei_fukudai,
           time_sa, kohan_3f, corner3_norm, corner4_norm,
           babajotai_code_shiba, babajotai_code_dirt,
-          tansho_ninkijun, tansho_odds, bataiju, corner1_norm
+          tansho_ninkijun, tansho_odds, bataiju, corner1_norm, seibetsu_code
         )
         """
     )
@@ -844,7 +844,7 @@ def test_build_target_table_keeps_finish_position_intact():
               1800, '11', 'A', '99', 12, 3, 3.0/12,
               'name_x', 'fukudai_x',
               null::double, null::double, null::double, null::double,
-              '1', '1', 3, 250.0, null::int, 0.18)
+              '1', '1', 3, 250.0, null::int, 0.18, 1)
         ) as v(
           source, race_date, race_dt, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
           ketto_toroku_bango, umaban, kishumei_ryakusho, chokyoshimei_ryakusho,
@@ -852,7 +852,7 @@ def test_build_target_table_keeps_finish_position_intact():
           kyosomei_hondai, kyosomei_fukudai,
           time_sa, kohan_3f, corner3_norm, corner4_norm,
           babajotai_code_shiba, babajotai_code_dirt,
-          tansho_ninkijun, tansho_odds, bataiju, corner1_norm
+          tansho_ninkijun, tansho_odds, bataiju, corner1_norm, seibetsu_code
         )
         """
     )
@@ -1663,13 +1663,13 @@ def test_build_target_table_emits_tansho_odds_and_ninkijun() -> None:
               1600, '11', 'A', '99', 12, null::int, null::double,
               'name_a', 'fukudai_a',
               null::double, null::double, null::double, null::double,
-              '1', '1', 2, 5.0, null::int, null::double),
+              '1', '1', 2, 5.0, null::int, null::double, '1'),
             ('jra', '20260607', date '2026-06-07', '2026', '0607', '05', '11',
               'horse_b', 5, 'jockey_b', 'trainer_b',
               1600, '11', 'A', '99', 12, null::int, null::double,
               'name_b', 'fukudai_b',
               null::double, null::double, null::double, null::double,
-              '1', '1', 1, 8.0, null::int, null::double)
+              '1', '1', 1, 8.0, null::int, null::double, '2')
         ) as v(
           source, race_date, race_dt, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
           ketto_toroku_bango, umaban, kishumei_ryakusho, chokyoshimei_ryakusho,
@@ -1678,7 +1678,7 @@ def test_build_target_table_emits_tansho_odds_and_ninkijun() -> None:
           kyosomei_hondai, kyosomei_fukudai,
           time_sa, kohan_3f, corner3_norm, corner4_norm,
           babajotai_code_shiba, babajotai_code_dirt,
-          tansho_ninkijun, tansho_odds, bataiju, corner1_norm
+          tansho_ninkijun, tansho_odds, bataiju, corner1_norm, seibetsu_code
         )
         """
     )
@@ -1696,3 +1696,273 @@ def test_build_target_table_emits_tansho_odds_and_ninkijun() -> None:
     assert rows[0] == ("horse_a", 5.0, 2)
     assert rows[1] == ("horse_b", 8.0, 1)
     con.close()
+
+
+def test_base_features_select_sql_includes_kaisai_month() -> None:
+    """base_features_select_sql() must reference t.kaisai_month so the month
+    feature flows through to the output parquet without a BinderException.
+    """
+    sql = subject.base_features_select_sql("jra")
+    assert "t.kaisai_month" in sql, "t.kaisai_month missing from base_features_select_sql"
+
+
+def test_build_target_table_emits_kaisai_month_from_mmdd_via_duckdb() -> None:
+    """build_target_table() must project kaisai_month as the integer month
+    parsed from the MMDD kaisai_tsukihi string into the target table.
+    """
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        """
+        create or replace temp table rec as
+        select * from (
+          values
+            ('jra', '20250607', date '2025-06-07', '2025', '0607', '05', '11',
+              'horse_a', 3, 'jockey_a', 'trainer_a',
+              1600, '11', 'A', '99', 12, null::int, null::double,
+              'name_a', 'fukudai_a',
+              null::double, null::double, null::double, null::double,
+              '1', '1', 2, 5.0, null::int, null::double, '1'),
+            ('jra', '20251225', date '2025-12-25', '2025', '1225', '05', '11',
+              'horse_b', 5, 'jockey_b', 'trainer_b',
+              1600, '11', 'A', '99', 12, null::int, null::double,
+              'name_b', 'fukudai_b',
+              null::double, null::double, null::double, null::double,
+              '1', '1', 1, 8.0, null::int, null::double, '2')
+        ) as v(
+          source, race_date, race_dt, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+          ketto_toroku_bango, umaban, kishumei_ryakusho, chokyoshimei_ryakusho,
+          kyori, track_code, grade_code, kyoso_joken_code, shusso_tosu,
+          finish_position, finish_norm,
+          kyosomei_hondai, kyosomei_fukudai,
+          time_sa, kohan_3f, corner3_norm, corner4_norm,
+          babajotai_code_shiba, babajotai_code_dirt,
+          tansho_ninkijun, tansho_odds, bataiju, corner1_norm, seibetsu_code
+        )
+        """
+    )
+    subject.build_target_table(con, "jra", "20250101", "20251231")
+    col_names = [c[0] for c in con.execute("describe target").fetchall()]
+    assert "kaisai_month" in col_names, "kaisai_month not in target"
+    rows = con.execute(
+        "select kaisai_tsukihi, kaisai_month from target order by kaisai_tsukihi"
+    ).fetchall()
+    assert rows == [("0607", 6), ("1225", 12)]
+    con.close()
+
+
+def _eval_kaisai_month(kaisai_tsukihi: str | None) -> int | None:
+    """Evaluate the kaisai_month guard expression against one kaisai_tsukihi
+    value via DuckDB, mirroring the case expression in build_target_table.
+    """
+    import duckdb
+
+    con = duckdb.connect()
+    row = con.execute(
+        """
+        with v(kaisai_tsukihi) as (select cast(?::varchar as varchar))
+        select case when v.kaisai_tsukihi is null or length(v.kaisai_tsukihi) < 2 then null
+                    else cast(substr(v.kaisai_tsukihi, 1, 2) as int) end as kaisai_month
+        from v
+        """,
+        (kaisai_tsukihi,),
+    ).fetchone()
+    con.close()
+    assert row is not None
+    return row[0]
+
+
+def test_kaisai_month_guard_returns_null_when_kaisai_tsukihi_is_null() -> None:
+    assert _eval_kaisai_month(None) is None
+
+
+def test_kaisai_month_guard_returns_null_when_kaisai_tsukihi_too_short() -> None:
+    assert _eval_kaisai_month("1") is None
+
+
+def test_kaisai_month_guard_parses_month_from_mmdd() -> None:
+    assert _eval_kaisai_month("0607") == 6
+
+
+def _eval_signed_zogen_sa(fugo: str | None, sa: str | None) -> int | None:
+    """Evaluate signed_zogen_sa_sql() against one (fugo, sa) row via DuckDB."""
+    import duckdb
+
+    con = duckdb.connect()
+    expr = subject.signed_zogen_sa_sql("v.fugo", "v.sa")
+    row = con.execute(
+        f"""
+        with v(fugo, sa) as (select cast(?::varchar as varchar), cast(?::varchar as varchar))
+        select {expr} as zogen_sa from v
+        """,
+        (fugo, sa),
+    ).fetchone()
+    con.close()
+    assert row is not None
+    return row[0]
+
+
+def test_signed_zogen_sa_sql_returns_null_for_zero_sentinel() -> None:
+    assert _eval_signed_zogen_sa("+", "000") is None
+
+
+def test_signed_zogen_sa_sql_returns_null_for_fff_uppercase_sentinel() -> None:
+    assert _eval_signed_zogen_sa("-", "FFF") is None
+
+
+def test_signed_zogen_sa_sql_returns_null_for_fff_lowercase_sentinel() -> None:
+    assert _eval_signed_zogen_sa("-", "fff") is None
+
+
+def test_signed_zogen_sa_sql_returns_null_for_blank_magnitude() -> None:
+    assert _eval_signed_zogen_sa("+", "   ") is None
+
+
+def test_signed_zogen_sa_sql_returns_null_for_empty_magnitude() -> None:
+    assert _eval_signed_zogen_sa("+", "") is None
+
+
+def test_signed_zogen_sa_sql_returns_negative_when_fugo_is_minus() -> None:
+    assert _eval_signed_zogen_sa("-", "004") == -4
+
+
+def test_signed_zogen_sa_sql_returns_positive_when_fugo_is_plus() -> None:
+    assert _eval_signed_zogen_sa("+", "002") == 2
+
+
+def test_signed_zogen_sa_sql_returns_positive_when_fugo_is_blank() -> None:
+    assert _eval_signed_zogen_sa("", "006") == 6
+
+
+def test_rec_select_from_corner_features_emits_seibetsu_code() -> None:
+    sql = subject.build_rec_select_sql("nar", "20210101", "20251231")
+    assert "as seibetsu_code" in sql
+    assert "from pg.race_entry_corner_features" in sql
+
+
+def test_upcoming_target_union_sql_jra_emits_seibetsu_code() -> None:
+    sql = subject.upcoming_target_union_sql("jra", "20260603", "20260603")
+    assert "try_cast(nullif(trim(se.seibetsu_code), '') as int) as seibetsu_code" in sql
+
+
+def test_rec_select_from_ban_ei_emits_seibetsu_code() -> None:
+    sql = subject.build_rec_select_sql("ban-ei", "20210101", "20251231")
+    assert "try_cast(nullif(trim(se.seibetsu_code), '') as int) as seibetsu_code" in sql
+
+
+def test_base_features_select_sql_emits_seibetsu_code_and_zogen_sa() -> None:
+    sql = subject.base_features_select_sql("jra")
+    assert "t.seibetsu_code" in sql
+    assert "wa.zogen_sa as zogen_sa" in sql
+
+
+def test_weight_cte_carries_target_zogen_sa() -> None:
+    cte = subject.weight_cte()
+    assert "max(tcb.target_zogen_sa) as zogen_sa" in cte
+
+
+def test_build_target_table_emits_seibetsu_code_via_duckdb() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        """
+        create or replace temp table rec as
+        select * from (
+          values
+            ('jra', '20250101', date '2025-01-01', '2025', '0101', '05', '01',
+              '2020100009', 4, 'jockey_z', 'trainer_z',
+              1600, '11', 'A', '99', 10, 2, 2.0/10,
+              'name_z', 'fukudai_z',
+              null::double, null::double, null::double, null::double,
+              '1', '1', 2, 90.0, null::int, 0.10, 2)
+        ) as v(
+          source, race_date, race_dt, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+          ketto_toroku_bango, umaban, kishumei_ryakusho, chokyoshimei_ryakusho,
+          kyori, track_code, grade_code, kyoso_joken_code, shusso_tosu, finish_position, finish_norm,
+          kyosomei_hondai, kyosomei_fukudai,
+          time_sa, kohan_3f, corner3_norm, corner4_norm,
+          babajotai_code_shiba, babajotai_code_dirt,
+          tansho_ninkijun, tansho_odds, bataiju, corner1_norm, seibetsu_code
+        )
+        """
+    )
+    subject.build_target_table(con, "jra", "20250101", "20251231")
+    col_names = [c[0] for c in con.execute("describe target").fetchall()]
+    assert "seibetsu_code" in col_names
+    row = con.execute("select seibetsu_code from target").fetchone()
+    con.close()
+    assert row == (2,)
+
+
+def test_materialize_se_lookup_emits_signed_zogen_sa_via_duckdb() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        """
+        create or replace temp table jra_se as
+        select '2025' as kaisai_nen, '0101' as kaisai_tsukihi, '05' as keibajo_code,
+               '01' as race_bango, '2020100001' as ketto_toroku_bango,
+               480 as bataiju, '004' as zogen_sa, '-' as zogen_fugo
+        """
+    )
+    con.execute(
+        """
+        create or replace temp table nar_se as
+        select '2025' as kaisai_nen, '0101' as kaisai_tsukihi, '30' as keibajo_code,
+               '02' as race_bango, '2020100002' as ketto_toroku_bango,
+               460 as bataiju, '006' as zogen_sa, '+' as zogen_fugo
+        """
+    )
+    subject.materialize_se_lookup(con)
+    col_names = [c[0] for c in con.execute("describe se_lookup").fetchall()]
+    assert "zogen_sa" in col_names
+    rows = con.execute(
+        "select source, zogen_sa from se_lookup order by source"
+    ).fetchall()
+    con.close()
+    assert rows == [("jra", -4), ("nar", 6)]
+
+
+def test_stage_empty_jra_stubs_adds_zogen_columns_via_duckdb() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    stage_empty_jra_stubs = getattr(subject, "_stage_empty_jra_stubs")
+    stage_empty_jra_stubs(con)
+    col_names = [c[0] for c in con.execute("describe jra_se").fetchall()]
+    con.close()
+    assert "zogen_sa" in col_names
+    assert "zogen_fugo" in col_names
+
+
+def test_materialize_target_current_bataiju_exposes_target_zogen_sa() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        """
+        create or replace temp table target as
+        select 'nar' as source, '2025' as kaisai_nen, '0101' as kaisai_tsukihi,
+               '30' as keibajo_code, '02' as race_bango,
+               '2020100002' as ketto_toroku_bango
+        """
+    )
+    con.execute(
+        """
+        create or replace temp table se_lookup as
+        select 'nar' as source, '2025' as kaisai_nen, '0101' as kaisai_tsukihi,
+               '30' as keibajo_code, '02' as race_bango,
+               '2020100002' as ketto_toroku_bango, 460 as bataiju, -8 as zogen_sa
+        """
+    )
+    subject.materialize_target_current_bataiju(con)
+    col_names = [
+        c[0] for c in con.execute("describe target_current_bataiju").fetchall()
+    ]
+    assert "target_zogen_sa" in col_names
+    row = con.execute("select target_zogen_sa from target_current_bataiju").fetchone()
+    con.close()
+    assert row == (-8,)
