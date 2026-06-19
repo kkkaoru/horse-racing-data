@@ -17,11 +17,18 @@ from predict_lib.model_meta import (
     JRA_ETOP2_XGB_MODEL_VERSION,
     LGB_MODEL_FILE_NAME,
     MODEL_FILE_NAME,
+    NAR_ETOP2_ADOPT_CLASSES,
+    NAR_ETOP2_CB_MODEL_VERSION,
+    NAR_ETOP2_ENABLED,
+    NAR_ETOP2_MODEL_VERSION,
+    PER_CLASS_TRAIN_START_YEAR,
     R2_KEY_PREFIX,
     architecture_for,
+    build_r2_nar_etop2_key,
     build_r2_object_key,
     build_r2_xgb_etop2_key,
     feature_count_for,
+    get_train_start_year,
     is_category,
     is_lightgbm_model_version,
     member_model_file_name,
@@ -167,3 +174,90 @@ def test_build_r2_xgb_etop2_key_model_json() -> None:
 def test_build_r2_xgb_etop2_key_metadata_json() -> None:
     key = build_r2_xgb_etop2_key("metadata.json")
     assert key == f"{R2_KEY_PREFIX}/jra/xgb-jra-2013-v8/metadata.json"
+
+
+# ---------------------------------------------------------------------------
+# NAR E-top2 constants and helpers (iter23-nar-etop2)
+
+
+def test_nar_etop2_enabled_is_false_pre_training() -> None:
+    """NAR_ETOP2_ENABLED stays False until CB-2013 is trained + smoke2 PASS."""
+    assert NAR_ETOP2_ENABLED is False
+
+
+def test_nar_etop2_model_version() -> None:
+    assert NAR_ETOP2_MODEL_VERSION == "iter23-nar-etop2"
+
+
+def test_nar_etop2_cb_model_version() -> None:
+    assert NAR_ETOP2_CB_MODEL_VERSION == "cb-nar-2013-v8"
+
+
+def test_nar_etop2_adopt_classes_membership() -> None:
+    assert set(NAR_ETOP2_ADOPT_CLASSES) == {"A", "B", "NEW", "other"}
+
+
+def test_nar_etop2_adopt_classes_excludes_regression_classes() -> None:
+    # C, OP, MUKATSU regressed on place2 and must NOT be in the allowlist.
+    assert "C" not in NAR_ETOP2_ADOPT_CLASSES
+    assert "OP" not in NAR_ETOP2_ADOPT_CLASSES
+    assert "MUKATSU" not in NAR_ETOP2_ADOPT_CLASSES
+
+
+def test_build_r2_nar_etop2_key_model_json() -> None:
+    key = build_r2_nar_etop2_key("model.json")
+    assert key == f"{R2_KEY_PREFIX}/nar/cb-nar-2013-v8/model.json"
+
+
+def test_build_r2_nar_etop2_key_metadata_json() -> None:
+    key = build_r2_nar_etop2_key("metadata.json")
+    assert key == f"{R2_KEY_PREFIX}/nar/cb-nar-2013-v8/metadata.json"
+
+
+# ---------------------------------------------------------------------------
+# PER_CLASS_TRAIN_START_YEAR + get_train_start_year
+# ---------------------------------------------------------------------------
+
+
+def test_per_class_train_start_year_nar_new_is_defined() -> None:
+    assert ("nar", "NEW") in PER_CLASS_TRAIN_START_YEAR
+
+
+def test_per_class_train_start_year_nar_new_is_int() -> None:
+    assert isinstance(PER_CLASS_TRAIN_START_YEAR[("nar", "NEW")], int)
+
+
+def test_per_class_train_start_year_covers_all_nar_classes() -> None:
+    expected = {"NEW", "MUKATSU", "C", "B", "A", "OP", "other"}
+    defined = {code for cat, code in PER_CLASS_TRAIN_START_YEAR if cat == "nar"}
+    assert defined == expected
+
+
+def test_get_train_start_year_registered_nar_new() -> None:
+    year = get_train_start_year("nar", "NEW")
+    assert year == PER_CLASS_TRAIN_START_YEAR[("nar", "NEW")]
+
+
+def test_get_train_start_year_registered_nar_other() -> None:
+    year = get_train_start_year("nar", "other")
+    assert year == PER_CLASS_TRAIN_START_YEAR[("nar", "other")]
+
+
+def test_get_train_start_year_fallback_unknown_class_uses_category_default() -> None:
+    # An unregistered class code for a known category falls back to the
+    # category-wide default (NAR: 2006).
+    year = get_train_start_year("nar", "UNKNOWN")
+    assert year == 2006
+
+
+def test_get_train_start_year_fallback_jra_uses_category_default() -> None:
+    # JRA has no per-class overrides registered yet; any code returns the JRA
+    # category default (2013, matching iter20 train start).
+    year = get_train_start_year("jra", "005")
+    assert year == 2013
+
+
+def test_get_train_start_year_fallback_unknown_category() -> None:
+    # A completely unknown category falls back to the global default (2006).
+    year = get_train_start_year("unknown", "X")
+    assert year == 2006
