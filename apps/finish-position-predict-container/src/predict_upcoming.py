@@ -287,6 +287,21 @@ def extract_race_class_code(
     return text
 
 
+def _representative_entry(
+    entries: Sequence[Mapping[str, object]],
+) -> Mapping[str, object] | None:
+    """Return one entry standing in for the race's row-level subgroup metadata.
+
+    Every horse in a race shares the same race-level metadata (distance, field
+    size, surface, class, venue), so the first entry is representative. An empty
+    race yields ``None`` and the subgroup classifier falls back to ``None`` for
+    every dimension.
+    """
+    if not entries:
+        return None
+    return entries[0]
+
+
 def _score_one_race(
     fallback_booster: BoosterLike,
     pool: BoosterPool,
@@ -316,7 +331,9 @@ def _score_one_race(
             file=sys.stderr,
         )
     ranked = rank_race_entries(entries, outcome.scores)
-    return build_prediction_rows(race_id, category, ranked, outcome.model_version)
+    return build_prediction_rows(
+        race_id, category, ranked, outcome.model_version, _representative_entry(entries)
+    )
 
 
 def _score_one_race_etop2(
@@ -353,7 +370,9 @@ def _score_one_race_etop2(
         )
 
     ranked = rank_race_entries(entries, override_scores)
-    return build_prediction_rows(race_id, "jra", ranked, JRA_ETOP2_MODEL_VERSION)
+    return build_prediction_rows(
+        race_id, "jra", ranked, JRA_ETOP2_MODEL_VERSION, _representative_entry(entries)
+    )
 
 
 def _row_to_pk_map(row: Sequence[object]) -> Mapping[str, object]:

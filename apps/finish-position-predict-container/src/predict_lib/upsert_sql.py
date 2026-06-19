@@ -30,6 +30,22 @@ PRIMARY_KEY_COLUMNS: Final[tuple[str, ...]] = (
     "ketto_toroku_bango",
 )
 
+# Race-level subgroup metadata columns persisted alongside each prediction. This
+# is the subset of ``subgroup.SUBGROUP_DIMENSIONS`` that the predictions table
+# stores; ``venue`` is intentionally omitted because the race's keibajo is
+# already a primary-key column (``keibajo_code``), so a separate ``venue`` column
+# would be redundant. The order here MUST match the viewer TS mirror
+# ``import-predictions-sql.ts`` INSERT_COLUMNS and the values appended by
+# ``upcoming.build_prediction_rows``. These are the same value for every horse in
+# a race and are NOT part of the primary key — INSERT + UPDATABLE only.
+PREDICTION_SUBGROUP_COLUMNS: Final[tuple[str, ...]] = (
+    "distance_band",
+    "field_size_band",
+    "season_band",
+    "class_code",
+    "surface",
+)
+
 INSERT_COLUMNS: Final[tuple[str, ...]] = (
     *PRIMARY_KEY_COLUMNS,
     "umaban",
@@ -38,6 +54,7 @@ INSERT_COLUMNS: Final[tuple[str, ...]] = (
     "predicted_top1_prob",
     "predicted_top3_prob",
     "predicted_finish_position",
+    *PREDICTION_SUBGROUP_COLUMNS,
 )
 
 UPDATABLE_COLUMNS: Final[tuple[str, ...]] = (
@@ -47,6 +64,7 @@ UPDATABLE_COLUMNS: Final[tuple[str, ...]] = (
     "predicted_top1_prob",
     "predicted_top3_prob",
     "predicted_finish_position",
+    *PREDICTION_SUBGROUP_COLUMNS,
 )
 
 DEFAULT_CHUNK_SIZE: Final[int] = 500

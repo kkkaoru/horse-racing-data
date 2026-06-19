@@ -11,7 +11,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from predict_lib.upsert_sql import (
     INSERT_COLUMNS,
+    PREDICTION_SUBGROUP_COLUMNS,
     PRIMARY_KEY_COLUMNS,
+    UPDATABLE_COLUMNS,
     build_upsert_sql,
     chunk_rows,
     flatten_params,
@@ -19,7 +21,47 @@ from predict_lib.upsert_sql import (
 
 
 def test_insert_columns_count() -> None:
-    assert len(INSERT_COLUMNS) == 13
+    assert len(INSERT_COLUMNS) == 18
+
+
+def test_subgroup_columns_exclude_venue() -> None:
+    assert PREDICTION_SUBGROUP_COLUMNS == (
+        "distance_band",
+        "field_size_band",
+        "season_band",
+        "class_code",
+        "surface",
+    )
+
+
+def test_insert_columns_end_with_subgroup_columns() -> None:
+    assert INSERT_COLUMNS[-5:] == (
+        "distance_band",
+        "field_size_band",
+        "season_band",
+        "class_code",
+        "surface",
+    )
+
+
+def test_updatable_columns_include_subgroup_columns() -> None:
+    assert UPDATABLE_COLUMNS == (
+        "umaban",
+        "predicted_score",
+        "predicted_rank",
+        "predicted_top1_prob",
+        "predicted_top3_prob",
+        "predicted_finish_position",
+        "distance_band",
+        "field_size_band",
+        "season_band",
+        "class_code",
+        "surface",
+    )
+
+
+def test_subgroup_columns_not_in_primary_key() -> None:
+    assert all(column not in PRIMARY_KEY_COLUMNS for column in PREDICTION_SUBGROUP_COLUMNS)
 
 
 def test_primary_key_columns() -> None:
@@ -36,14 +78,20 @@ def test_primary_key_columns() -> None:
 
 def test_build_upsert_sql_single_row_uses_psycopg_placeholders() -> None:
     sql = build_upsert_sql(1)
-    # 13 INSERT columns, all bound with psycopg3 %s.
-    assert sql.count("%s") == 13
+    # 18 INSERT columns (13 prediction + 5 subgroup), all bound with psycopg3 %s.
+    assert sql.count("%s") == 18
     assert "$1" not in sql
 
 
 def test_build_upsert_sql_multi_row_placeholder_count() -> None:
     sql = build_upsert_sql(3)
-    assert sql.count("%s") == 39
+    assert sql.count("%s") == 54
+
+
+def test_build_upsert_sql_sets_subgroup_columns_on_conflict() -> None:
+    sql = build_upsert_sql(1)
+    assert "distance_band = excluded.distance_band" in sql
+    assert "surface = excluded.surface" in sql
 
 
 def test_build_upsert_sql_has_on_conflict_do_update() -> None:
