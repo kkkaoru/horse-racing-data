@@ -23,6 +23,7 @@ export default defineConfig({
         "src/finish-position-lite-pool.ts",
         "src/scripts/backfill-nar-realtime-date.ts",
         "scripts/backfill-premium-data-top.ts",
+        "scripts/sync-running-style-d1-to-neon.ts",
       ],
       thresholds: {
         lines: COVERAGE_THRESHOLD,

@@ -1,6 +1,8 @@
 // Run with bun. Queue consumer for per-race running-style inference.
 // The Worker reads the per-race feature Parquet from R2 first and only rebuilds
-// it from PostgreSQL on a miss, then writes flatbin model predictions to D1.
+// it from PostgreSQL on a miss, then writes flatbin model predictions to D1
+// and mirrors them to the Neon race_running_style_model_predictions table so
+// the viewer can read predictions without a separate sync step.
 
 import { markFinishPositionFeaturesCached } from "./finish-position-d1";
 import { formatError } from "./format-error";
@@ -33,6 +35,7 @@ import {
   loadCalibratorsFromR2,
   type RunningStyleCalibrationTable,
 } from "./running-style-calibration";
+import { upsertRunningStylePredictionsToNeon } from "./running-style-neon";
 import { getLatestRaceEntries } from "./storage";
 import type { Env, RunningStylePredictionJob } from "./types";
 
@@ -57,30 +60,48 @@ export interface RunningStylePredictionJobSummary {
   featuresR2Key: string;
   horseCount: number;
   modelVersion: string;
+  neonError?: string;
+  neonWrittenCount?: number;
   skipped?: boolean;
   writtenCount: number;
 }
 
-const cacheCompletedRunningStyles = async (
+const cacheAndSyncCompletedRunningStyles = async (
   env: Env,
   job: RunningStylePredictionJob,
-): Promise<{ cacheError?: string; cacheWritten: boolean }> => {
+): Promise<{
+  cacheError?: string;
+  cacheWritten: boolean;
+  neonError?: string;
+  neonWrittenCount: number;
+}> => {
+  const pool = getFinishPositionPool(env);
   try {
     const rows = await listRaceRunningStylesForRace(env.REALTIME_DB, buildRunningStyleRaceKey(job));
     if (rows.length === 0) {
-      return { cacheWritten: false };
+      return { cacheWritten: false, neonWrittenCount: 0 };
     }
-    return {
-      cacheWritten: await putViewerRunningStyleRaceCache({
-        env,
-        race: job,
-        rows,
+    const [cacheWritten, neonResult] = await Promise.all([
+      putViewerRunningStyleRaceCache({ env, race: job, rows }).catch((error: unknown) => {
+        console.error("Running-style cache write failed:", formatError(error));
+        return false;
       }),
+      upsertRunningStylePredictionsToNeon(pool, rows).catch((error: unknown) => {
+        console.error("Running-style Neon write failed:", formatError(error));
+        return formatError(error);
+      }),
+    ]);
+    const neonFailed = typeof neonResult === "string";
+    return {
+      cacheWritten,
+      neonError: neonFailed ? neonResult : undefined,
+      neonWrittenCount: neonFailed ? 0 : neonResult,
     };
   } catch (error) {
     return {
       cacheError: formatError(error),
       cacheWritten: false,
+      neonWrittenCount: 0,
     };
   }
 };
@@ -100,7 +121,7 @@ export const handleRunningStylePredictionJob = async (
     state.writtenHorseCount !== null &&
     state.writtenHorseCount >= state.expectedHorseCount
   ) {
-    const cacheResult = await cacheCompletedRunningStyles(env, job);
+    const cacheResult = await cacheAndSyncCompletedRunningStyles(env, job);
     return {
       ...cacheResult,
       featuresR2Key: state.featuresR2Key ?? "",
@@ -171,8 +192,8 @@ export const handleRunningStylePredictionJob = async (
     });
     const cacheResult =
       summary.writtenCount >= expectedHorseCount
-        ? await cacheCompletedRunningStyles(env, job)
-        : { cacheWritten: false };
+        ? await cacheAndSyncCompletedRunningStyles(env, job)
+        : { cacheWritten: false, neonWrittenCount: 0 };
     return {
       ...cacheResult,
       featuresR2Key: loadOrBuild.featuresR2Key,
