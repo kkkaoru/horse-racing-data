@@ -91,9 +91,14 @@ def _first_qs(params: dict[str, list[str]], key: str) -> str | None:
 
 @final
 class PredictParams:
-    """Parsed + validated query parameters for ``GET /predict``."""
+    """Parsed + validated query parameters for ``GET /predict``.
 
-    __slots__ = ("category", "days_ahead", "mode", "run_date")
+    ``keibajo_code`` / ``race_bango`` are the optional race-scope filter for the
+    Stage-2 per-race rescore: when set, only the matching race(s) are rescored.
+    Both ``None`` (the default, full path) means "all races for the category".
+    """
+
+    __slots__ = ("category", "days_ahead", "keibajo_code", "mode", "race_bango", "run_date")
 
     def __init__(
         self,
@@ -101,11 +106,15 @@ class PredictParams:
         run_date: str,
         days_ahead: int,
         mode: PredictMode = "full",
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
     ) -> None:
         self.category: str = category
         self.run_date: str = run_date
         self.days_ahead: int = days_ahead
         self.mode: PredictMode = mode
+        self.keibajo_code: str | None = keibajo_code
+        self.race_bango: str | None = race_bango
 
 
 def parse_predict_params(query_string: str) -> PredictParams | str:
@@ -154,7 +163,33 @@ def parse_predict_params(query_string: str) -> PredictParams | str:
     else:
         return f"invalid mode: {raw_mode!r}; must be one of full, rescore"
 
-    return PredictParams(category=category, run_date=run_date, days_ahead=days_ahead, mode=mode)
+    keibajo_code = _optional_scope_value(_first_qs(qs, "keibajoCode"))
+    race_bango = _optional_scope_value(_first_qs(qs, "raceBango"))
+
+    return PredictParams(
+        category=category,
+        run_date=run_date,
+        days_ahead=days_ahead,
+        mode=mode,
+        keibajo_code=keibajo_code,
+        race_bango=race_bango,
+    )
+
+
+def _optional_scope_value(raw: str | None) -> str | None:
+    """Normalize an optional race-scope query value (absent / blank -> None).
+
+    A present non-blank value is kept verbatim (stripped of surrounding
+    whitespace) so the worker can pass a zero-padded or un-padded keibajo /
+    race number — ``rescore.race_matches_scope`` normalizes padding at compare
+    time, so no strict 2-digit validation is enforced here.
+    """
+    if raw is None:
+        return None
+    text = raw.strip()
+    if text == "":
+        return None
+    return text
 
 
 def parse_request_path(raw_path: str) -> tuple[str, str]:

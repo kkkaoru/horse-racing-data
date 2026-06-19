@@ -70,6 +70,18 @@ _SOURCE_BY_CATEGORY: dict[str, str] = {
     "nar": "nar",
     "ban-ei": "nar",
 }
+_DEFAULT_SOURCE: str = "nar"
+
+
+def source_for_category(category: str) -> str:
+    """Return the realtime-feed source token for a prediction ``category``.
+
+    Ban-ei rides the NAR feed (its odds live in the same D1 store), so it maps
+    to ``"nar"``; an unknown category also defers to the NAR source.  Public
+    wrapper over ``_SOURCE_BY_CATEGORY`` so callers do not reach into a private
+    module attribute.
+    """
+    return _SOURCE_BY_CATEGORY.get(category, _DEFAULT_SOURCE)
 
 
 @runtime_checkable

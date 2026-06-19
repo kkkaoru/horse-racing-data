@@ -522,6 +522,72 @@ def test_predict_params_mode_stored_correctly() -> None:
 
 
 # ---------------------------------------------------------------------------
+# parse_predict_params — race-scope (keibajoCode / raceBango) parameters
+# ---------------------------------------------------------------------------
+
+
+def test_parse_predict_params_keibajo_code_parsed() -> None:
+    result = parse_predict_params(
+        "category=nar&runDate=20260619&mode=rescore&keibajoCode=44&raceBango=01"
+    )
+    assert isinstance(result, PredictParams)
+    assert result.keibajo_code == "44"
+
+
+def test_parse_predict_params_race_bango_parsed() -> None:
+    result = parse_predict_params(
+        "category=nar&runDate=20260619&mode=rescore&keibajoCode=44&raceBango=01"
+    )
+    assert isinstance(result, PredictParams)
+    assert result.race_bango == "01"
+
+
+def test_parse_predict_params_scope_absent_is_none() -> None:
+    result = parse_predict_params("category=nar&runDate=20260619")
+    assert isinstance(result, PredictParams)
+    assert result.keibajo_code is None
+    assert result.race_bango is None
+
+
+def test_parse_predict_params_keibajo_code_blank_is_none() -> None:
+    result = parse_predict_params("category=nar&runDate=20260619&keibajoCode=")
+    assert isinstance(result, PredictParams)
+    assert result.keibajo_code is None
+
+
+def test_parse_predict_params_race_bango_blank_is_none() -> None:
+    result = parse_predict_params("category=nar&runDate=20260619&raceBango=")
+    assert isinstance(result, PredictParams)
+    assert result.race_bango is None
+
+
+def test_parse_predict_params_keibajo_code_only() -> None:
+    result = parse_predict_params("category=nar&runDate=20260619&keibajoCode=30")
+    assert isinstance(result, PredictParams)
+    assert result.keibajo_code == "30"
+    assert result.race_bango is None
+
+
+def test_parse_predict_params_scope_whitespace_is_none() -> None:
+    result = parse_predict_params("category=nar&runDate=20260619&raceBango=%20%20")
+    assert isinstance(result, PredictParams)
+    assert result.race_bango is None
+
+
+def test_predict_params_scope_stored_correctly() -> None:
+    params = PredictParams(
+        category="nar",
+        run_date="20260619",
+        days_ahead=0,
+        mode="rescore",
+        keibajo_code="44",
+        race_bango="01",
+    )
+    assert params.keibajo_code == "44"
+    assert params.race_bango == "01"
+
+
+# ---------------------------------------------------------------------------
 # build_r2_feat_cache_key
 # ---------------------------------------------------------------------------
 
