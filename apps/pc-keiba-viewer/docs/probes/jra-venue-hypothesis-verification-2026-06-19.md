@@ -94,3 +94,47 @@
 - 4 parallel SubAgents (H1-H4)
 - RS column: `jvd_se.kyakushitsu_hantei` (NOT kyakushitsu_kubun)
 - E-top2 proxy: iter14 (CB) + win5-xgb-v7-lineage-v1 (XGB) — structurally invalid for deployed pair
+
+## Round 2 — User 5 Focus Directives (2026-06-20)
+
+### H4 — Venue × distance interaction feature: REJECT
+
+- keibajo_code + kyori は既にモデルの feature set に含まれる
+- CatBoost は sequential splits で venue×distance interaction を暗黙学習可能
+- 最大偏差: 阪神 2200m −3.86pp / 函館 1000m +6.65pp (対 global avg)
+- Explicit interaction term は冗長
+
+### H5 — 騎手×競馬場パフォーマンス: REJECT
+
+- `jockey_keibajo_win_rate` (features_duckdb.py:985) が既に feature として存在
+- 18 jockey features (career/recent/venue/distance/track/grade + within-race rank/diff)
+- 残差 = elite jockey over-trust (ルメール −14pp@東京, 川田 −14.6pp@阪神) = 市場効率の壁
+- Nakayama +1.13pp は venue-idiosyncratic → 3 場には汎化しない
+
+### H6 — 体重変動 × 距離帯/馬場: REJECT
+
+- `bataiju`, `weight_avg_5`, `weight_diff_from_avg` (features_duckdb.py:1589) が既存
+- Distance × weight: win-rate-when-picked が 37-41% で flat (2-3pp ノイズ)
+- Surface × weight: variation は surface 由来、weight ではない
+- Counterfactual re-rank proof: weight-bucket adjustment で top1 40.09% → 39.88% (**−0.21pp**)
+
+### H7 — 季節 × 性別 interaction: REJECT
+
+- 全 12 cells (4 season × 3 sex) で precision 38.59-45.09%
+- Season 内 spread: 牡 0.55pp / 牝 0.87pp / セン 2.65pp — flat
+- seibetsu_code は feature set 不在だが体重経由で暗黙 capture 済
+- Season×sex interaction は存在しない
+
+## 最終総括 — 全 7 仮説 + User 5 Focus 全項目
+
+| Directive             | 仮説        | Verdict | 根拠                                 |
+| --------------------- | ----------- | ------- | ------------------------------------ |
+| 騎手×競馬場×距離×芝ダ | H5          | REJECT  | jockey_keibajo_win_rate 既存         |
+| 脚質×同               | H2          | REJECT  | RS = optimal base-rate concentration |
+| 季節×性別×体重        | H6+H7       | REJECT  | features 既存 + flat calibration     |
+| 着順×体重×増減        | H6          | REJECT  | weight_diff_from_avg 既存            |
+| トラックバイアス      | prior probe | REJECT  | ρ≈0.028                              |
+
+**結論**: 東京/函館/阪神の着順予測精度向上は empirical frontier に到達。
+7/7 仮説 REJECT。全ての tactical lever (feature interaction / calibration / post-scoring adjustment) は
+モデルが既に吸収済みか、補正で精度が悪化する。残る改善経路は新データ (nvd_um #254) のみ。
