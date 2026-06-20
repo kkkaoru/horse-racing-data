@@ -394,6 +394,8 @@ test("PaddockSection recent-results wakuban uses FrameNumberBadge with frame-3 c
     />,
   );
 
+  const textButton = await screen.findByRole("button", { name: "テキスト" });
+  textButton.click();
   const wrapper = await screen.findByLabelText("枠番");
   const badge = wrapper.querySelector("span.frame-number-badge");
   expect(badge?.className).toBe("frame-number-badge frame-3");
@@ -412,6 +414,8 @@ test("PaddockSection recent-results wakuban renders frame-1 badge for the white 
     />,
   );
 
+  const textButton = await screen.findByRole("button", { name: "テキスト" });
+  textButton.click();
   const wrapper = await screen.findByLabelText("枠番");
   const badge = wrapper.querySelector("span.frame-number-badge");
   expect(badge?.className).toBe("frame-number-badge frame-1");
@@ -429,6 +433,8 @@ test("PaddockSection recent-results wakuban renders frame-8 badge for the pink f
     />,
   );
 
+  const textButton = await screen.findByRole("button", { name: "テキスト" });
+  textButton.click();
   const wrapper = await screen.findByLabelText("枠番");
   const badge = wrapper.querySelector("span.frame-number-badge");
   expect(badge?.className).toBe("frame-number-badge frame-8");
@@ -451,6 +457,8 @@ test("PaddockSection recent-results shows the jockey name of the past race row",
     />,
   );
 
+  const textButton = await screen.findByRole("button", { name: "テキスト" });
+  textButton.click();
   const jockeyCell = await screen.findByLabelText("騎手");
   expect(jockeyCell.textContent).toBe("騎手 ルメール");
 });
@@ -472,6 +480,8 @@ test("PaddockSection recent-results falls back to dash when past jockey name is 
     />,
   );
 
+  const textButton = await screen.findByRole("button", { name: "テキスト" });
+  textButton.click();
   const jockeyCell = await screen.findByLabelText("騎手");
   expect(jockeyCell.textContent).toBe("騎手 -");
 });
@@ -480,7 +490,7 @@ test("PaddockSection recent-results shows the ブリンカー token for a past r
   getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
   fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
 
-  const { container } = render(
+  render(
     <PaddockSection
       {...baseProps}
       recentResults={[
@@ -493,18 +503,17 @@ test("PaddockSection recent-results shows the ブリンカー token for a past r
     />,
   );
 
-  await waitFor(() => {
-    expect(screen.getAllByRole("article").length).toBe(1);
-  });
-  const blinkerMark = container.querySelector(".paddock-recent-blinker");
-  expect(blinkerMark?.textContent).toBe("ブリンカー");
+  const textButton = await screen.findByRole("button", { name: "テキスト" });
+  textButton.click();
+  const blinkerMark = await screen.findByLabelText("ブリンカー");
+  expect(blinkerMark.textContent).toBe("ブリンカー");
 });
 
 test("PaddockSection recent-results omits the ブリンカー token for a past race without a blinker", async () => {
   getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
   fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
 
-  const { container } = render(
+  render(
     <PaddockSection
       {...baseProps}
       recentResults={[
@@ -517,11 +526,10 @@ test("PaddockSection recent-results omits the ブリンカー token for a past r
     />,
   );
 
-  await waitFor(() => {
-    expect(screen.getAllByRole("article").length).toBe(1);
-  });
-  const blinkerMark = container.querySelector(".paddock-recent-blinker");
-  expect(blinkerMark?.textContent).toBe("");
+  const textButton = await screen.findByRole("button", { name: "テキスト" });
+  textButton.click();
+  const blinkerMark = await screen.findByLabelText("ブリンカー");
+  expect(blinkerMark.textContent).toBe("");
 });
 
 test("PaddockSection renders the first-attachment blinker pattern badge for a debut wearing horse", async () => {
@@ -731,10 +739,9 @@ test("PaddockSection recent runs include 枠番 and 馬番 columns", async () =>
     />,
   );
 
-  await waitFor(() => {
-    expect(screen.getAllByRole("article").length).toBe(1);
-  });
-  const frameCell = screen.getByLabelText("枠番");
+  const textButton = await screen.findByRole("button", { name: "テキスト" });
+  textButton.click();
+  const frameCell = await screen.findByLabelText("枠番");
   expect(frameCell.textContent).toBe("4");
   const umaCell = screen.getByLabelText("馬番");
   expect(umaCell.textContent).toBe("7");
@@ -1231,7 +1238,7 @@ test("PaddockSection disables 注目- and keeps 注目+ enabled at the lower cap
   expect(plusButton.hasAttribute("disabled")).toStrictEqual(false);
 });
 
-test("PaddockSection 近走 defaults to text mode showing the past race row and no chart", async () => {
+test("PaddockSection 近走 defaults to graph mode showing the chart and no past race text", async () => {
   getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
   fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
 
@@ -1245,10 +1252,10 @@ test("PaddockSection 近走 defaults to text mode showing the past race row and 
 
   const textButton = await screen.findByRole("button", { name: "テキスト" });
   const graphButton = await screen.findByRole("button", { name: "グラフ" });
-  expect(textButton.getAttribute("aria-pressed")).toBe("true");
-  expect(graphButton.getAttribute("aria-pressed")).toBe("false");
-  expect(screen.getByText("過去レース").tagName).toBe("STRONG");
-  expect(screen.queryByTestId("paddock-recent-chart-stub")).toBeNull();
+  expect(graphButton.getAttribute("aria-pressed")).toBe("true");
+  expect(textButton.getAttribute("aria-pressed")).toBe("false");
+  expect(screen.queryByText("過去レース")).toBeNull();
+  expect(screen.queryByTestId("paddock-recent-chart-stub")).not.toBeNull();
 });
 
 test("PaddockSection 近走 graph button switches to chart and hides the past race text", async () => {

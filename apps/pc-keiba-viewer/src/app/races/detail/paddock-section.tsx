@@ -520,7 +520,7 @@ interface PaddockRecentResultsProps {
 
 const PADDOCK_RECENT_RESULTS_SKELETON_COUNT = 3;
 const PADDOCK_RECENT_RESULTS_TEXT_LIMIT = 3;
-const PADDOCK_RECENT_RESULTS_DEFAULT_VIEW_MODE: PaddockRecentResultsViewMode = "text";
+const PADDOCK_RECENT_RESULTS_DEFAULT_VIEW_MODE: PaddockRecentResultsViewMode = "graph";
 // Comfortable inline gap so the テキスト / グラフ toggles are not cramped.
 const PADDOCK_RECENT_VIEW_CONTROLS_STYLE: CSSProperties = { display: "flex", gap: 8 };
 
