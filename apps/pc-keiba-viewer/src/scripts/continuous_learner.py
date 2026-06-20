@@ -70,6 +70,7 @@ _TRAINING_SCRIPT: Final[dict[str, str]] = {
 DEFAULT_DOCKER_TAG: Final[str] = "finish-position-predict-local:split2"
 DEFAULT_DEPLOY_THRESHOLD: Final[float] = 0.005
 DEFAULT_N_TRIALS: Final[int] = 20
+DEFAULT_DOCKER_BUILD_TIMEOUT_S: Final[int] = 3600
 
 _CONTAINER_MODELS_ROOT: Final[str] = (
     "apps/finish-position-predict-container/models/finish-position"
@@ -393,6 +394,7 @@ class ContinuousLearner:
                 str(self._repo_root),
             ],
             check=True,
+            timeout=DEFAULT_DOCKER_BUILD_TIMEOUT_S,
         )
         _logger.info("│    Docker build succeeded")
 

@@ -27,7 +27,6 @@
 | 最大試行数 | `--max-trials` | — | `50` | 低負荷時の上限 |
 | デプロイ閾値 | `--deploy-threshold` | — | `0.005` | NDCG@3 の改善幅がこの値を超えたらデプロイ |
 | 最大ラウンド数 | `--max-rounds` | — | なし (無限) | 指定すると N ラウンドで自動停止 |
-| PostgreSQL DSN | `--pg-dsn` | — | なし | Colima PG の接続文字列 (負荷制御に使用) |
 
 ---
 
@@ -71,8 +70,7 @@ uv run python src/scripts/continuous_learner.py \
   [--min-trials <int>] \
   [--max-trials <int>] \
   [--deploy-threshold <float>] \
-  [--max-rounds <int>] \
-  [--pg-dsn <dsn>]
+  [--max-rounds <int>]
 ```
 
 ### 実行例 (JRA、無制限ループ)

@@ -204,7 +204,7 @@ def test_run_stops_when_stop_flag_set_mid_loop() -> None:
         learner = _make_learner(registry=reg)
         call_count = 0
 
-        def _fake_explore(round_num: int, n_trials: int | None = None) -> None:
+        def _fake_explore(round_num: int, n_trials: int) -> None:
             nonlocal call_count
             call_count += 1
             learner.request_stop()
@@ -705,6 +705,14 @@ def test_rebuild_docker_passes_dockerfile_and_build_context() -> None:
         assert "/repo" in cmd
 
 
+def test_rebuild_docker_passes_timeout_to_subprocess() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, repo_root=Path("/repo"))
+        with patch("subprocess.run") as mock_run:
+            learner._rebuild_docker()
+        assert mock_run.call_args.kwargs["timeout"] == subject.DEFAULT_DOCKER_BUILD_TIMEOUT_S
+
+
 # ---------------------------------------------------------------------------
 # setup_logging
 # ---------------------------------------------------------------------------
@@ -788,7 +796,7 @@ def test_main_runs_and_stops_after_max_rounds(tmp_path: Path) -> None:
 
     explore_calls: list[int] = []
 
-    def fake_explore(round_num: int, n_trials: int | None = None) -> None:
+    def fake_explore(round_num: int, n_trials: int) -> None:
         explore_calls.append(round_num)
 
     with (
@@ -830,6 +838,54 @@ def test_main_default_constants() -> None:
     assert subject.DEFAULT_DEPLOY_THRESHOLD == 0.005
     assert subject.DEFAULT_N_TRIALS == 20
 
+
+def test_main_wires_trial_counts_into_controller(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().to_parquet(parquet_path, index=False)
+    registry_path = tmp_path / "reg.duckdb"
+
+    created_controllers: list[subject.AdaptiveLoadController] = []
+    original_init = subject.AdaptiveLoadController.__init__
+
+    def capturing_init(
+        self: subject.AdaptiveLoadController, *args: object, **kwargs: object
+    ) -> None:
+        original_init(self, *args, **kwargs)
+        created_controllers.append(self)
+
+    with (
+        patch.object(subject.AdaptiveLoadController, "__init__", capturing_init),
+        patch.object(subject.ContinuousLearner, "_explore_round"),
+        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
+        patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
+    ):
+        subject.main(
+            [
+                "--features-parquet",
+                str(parquet_path),
+                "--category",
+                "jra",
+                "--repo-root",
+                str(tmp_path),
+                "--registry-path",
+                str(registry_path),
+                "--max-rounds",
+                "1",
+                "--n-trials",
+                "15",
+                "--min-trials",
+                "3",
+                "--max-trials",
+                "40",
+            ]
+        )
+
+    assert len(created_controllers) == 1
+    ctrl = created_controllers[0]
+    assert ctrl._base_n_trials == 15
+    assert ctrl._min_n_trials == 3
+    assert ctrl._max_n_trials == 40
 
 
 # ---------------------------------------------------------------------------
