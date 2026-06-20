@@ -906,6 +906,24 @@ def _split_parquet_by_race(
     return payloads
 
 
+def _write_refreshed_to_parquet(
+    final_dir: Path,
+    refreshed: dict[str, list[dict[str, object]]],
+) -> None:
+    """Overwrite the cached parquet in ``final_dir`` with the refreshed entries.
+
+    Flattens the race_id->entries map into a single DataFrame and writes it as
+    ``features.parquet`` so the per-race split reads updated features.
+    """
+    import pandas as pd
+
+    all_entries = [entry for entries in refreshed.values() for entry in entries]
+    if not all_entries:
+        return
+    target = final_dir / "features.parquet"
+    pd.DataFrame(all_entries).to_parquet(target, index=False)
+
+
 def _make_predict_fn(
     database_url: str,
     models_dir: Path,
@@ -1109,8 +1127,8 @@ def _fetch_fresh_snapshots(
     return snapshots
 
 
-RescoreFactory = Callable[[RaceScope], PredictCategoryFn]
-"""Builds a scope-bound rescore ``PredictCategoryFn`` for a single request."""
+RescoreFactory = Callable[[RaceScope], tuple[PredictCategoryFn, PerRaceParquetPayloadFn]]
+"""Builds a scope-bound rescore ``PredictCategoryFn`` + per-race payload fn for a request."""
 
 
 def _make_rescore_fn(
@@ -1119,8 +1137,8 @@ def _make_rescore_fn(
     source_url: str,
     r2: R2Config | None,
     scope: RaceScope,
-) -> PredictCategoryFn:
-    """Build the rescore-path ``rescore_fn`` adapter for :func:`iter_predict_chunks`.
+) -> tuple[PredictCategoryFn, PerRaceParquetPayloadFn]:
+    """Build the rescore-path ``rescore_fn`` + per-race parquet payload fn.
 
     The rescore path (Stage 2 of the per-race rebuild):
     1. Ensures the pre-built feature parquet from a prior ``mode=full`` run is
@@ -1131,14 +1149,21 @@ def _make_rescore_fn(
     3. Fetches the latest tansho odds + bataiju for the in-scope races and
        recomputes the 5 late-binding columns (odds_score / popularity_score /
        tansho_odds / tansho_ninkijun / weight_diff_from_avg) per horse.
-    4. Filters to the requested race scope (a single race or whole keibajo when
+    4. Writes the weight/odds-refreshed entries back to ``features.parquet`` so the
+       per-race split seeds R2 with the rebuilt features.
+    5. Filters to the requested race scope (a single race or whole keibajo when
        ``keibajoCode`` / ``raceBango`` are set; all races otherwise).
-    5. Scores (NAR ensemble routing / JRA E-top2) and UPSERTs the predictions.
+    6. Scores (NAR ensemble routing / JRA E-top2) and UPSERTs the predictions.
+
+    Returns ``(rescore_fn, per_race_payloads_fn)``; the second fn re-splits the
+    refreshed parquet by ``race_id`` so :func:`iter_predict_chunks` can embed the
+    per-race payloads in the result line for both full and rescore modes.
 
     ``source_url`` is unused on this path (no Neon feature scan) but kept in the
     signature for parity with :func:`_make_predict_fn`.
     """
     del source_url  # no Neon feature scan on the rescore path
+    _last: list[tuple[str, str]] = []
 
     def _rescore(category_str: str, run_date: str, days_ahead: int) -> int:
         del days_ahead  # the cache already spans the morning build window
@@ -1153,10 +1178,31 @@ def _make_rescore_fn(
         race_keys = _scope_race_keys(races, scope)
         snapshots = _fetch_fresh_snapshots(category_str, run_date, race_keys)
         refreshed = apply_fresh_snapshots(races, snapshots, category)
+
+        _write_refreshed_to_parquet(final_dir, refreshed)
+        _last.clear()
+        _last.append((category_str, run_date))
+
         scoped = filter_races_by_scope(refreshed, scope)
         return _score_and_flush_races(database_url, category, models_dir, scoped)
 
-    return _rescore
+    def _per_race_payloads() -> list[dict[str, str]] | None:
+        if not _last:
+            return None
+        from pipeline_runner import WORK_DIR  # bundled in image
+
+        cat_str, rd = _last[-1]
+        final_dir = WORK_DIR / f"feat-{cat_str}-v7-final"
+        try:
+            return _split_parquet_by_race(final_dir, cat_str, rd)
+        except BaseException as err:
+            print(
+                f"[predict-serve] rescore per_race_parquet split failed: {err}",
+                file=sys.stderr,
+            )
+            return None
+
+    return _rescore, _per_race_payloads
 
 
 def _make_rescore_factory(
@@ -1172,7 +1218,7 @@ def _make_rescore_factory(
     binding serves every per-race rescore request.
     """
 
-    def _factory(scope: RaceScope) -> PredictCategoryFn:
+    def _factory(scope: RaceScope) -> tuple[PredictCategoryFn, PerRaceParquetPayloadFn]:
         return _make_rescore_fn(database_url, models_dir, source_url, r2, scope)
 
     return _factory
@@ -1228,17 +1274,23 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
 
             # Bind the request's race scope (keibajoCode / raceBango) to a fresh
             # rescore fn so each per-race rescore request only touches its races.
-            rescore_fn: PredictCategoryFn | None = (
-                self.rescore_factory(_scope_from_params(result))
-                if self.rescore_factory is not None
-                else None
+            rescore_fn: PredictCategoryFn | None = None
+            rescore_per_race_fn: PerRaceParquetPayloadFn | None = None
+            if self.rescore_factory is not None:
+                rescore_fn, rescore_per_race_fn = self.rescore_factory(
+                    _scope_from_params(result)
+                )
+            effective_per_race_fn: PerRaceParquetPayloadFn | None = (
+                rescore_per_race_fn
+                if result.mode == "rescore" and rescore_per_race_fn is not None
+                else self.per_race_parquet_payload_fn
             )
             for chunk in iter_predict_chunks(
                 result,
                 self.predict_fn,
                 rescore_fn=rescore_fn,
                 parquet_payload_fn=self.parquet_payload_fn,
-                per_race_parquet_payload_fn=self.per_race_parquet_payload_fn,
+                per_race_parquet_payload_fn=effective_per_race_fn,
             ):
                 # HTTP/1.1 chunked encoding: hex length + CRLF + data + CRLF
                 size_line = f"{len(chunk):X}\r\n".encode()

@@ -351,10 +351,16 @@ def _fake_rescore(category: str, run_date: str, days_ahead: int) -> int:
     return 99
 
 
-def _fake_rescore_factory(scope: RaceScope) -> PredictCategoryFn:
-    """Dummy rescore_factory that ignores the scope and returns a fixed fn."""
+def _fake_rescore_factory(
+    scope: RaceScope,
+) -> tuple[PredictCategoryFn, PerRaceParquetPayloadFn]:
+    """Dummy rescore_factory that ignores the scope and returns a fixed fn + payload fn."""
     del scope
-    return _fake_rescore
+
+    def _per_race() -> list[dict[str, str]] | None:
+        return None
+
+    return _fake_rescore, _per_race
 
 
 def test_make_handler_class_predict_fn_callable_without_instance() -> None:
@@ -394,9 +400,10 @@ def test_make_handler_class_rescore_factory_callable_without_instance() -> None:
     )
     factory = handler_cls.rescore_factory
     assert factory is not None
-    rescore = factory(RaceScope())
+    rescore, per_race = factory(RaceScope())
     result = rescore("jra", "20260618", 1)
     assert result == 99
+    assert per_race() is None
 
 
 def test_make_handler_class_rescore_factory_none_when_not_provided() -> None:

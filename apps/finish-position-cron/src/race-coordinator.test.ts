@@ -324,34 +324,132 @@ test("runRaceCoordinatorTick is a shadow no-op when the coordinator is disabled"
   ]);
 });
 
-test("triggerWeightRebuildIfNeeded claims synthetic WR:00 race in the DO", async () => {
+test("triggerWeightRebuildIfNeeded claims a synthetic WR race keyed by the JST half-hour slot in the DO", async () => {
   await triggerWeightRebuildIfNeeded({
     category: "jra",
-    date: "2026-06-19",
+    date: "2026-06-05",
     env: makeEnv(),
-    runYmd: "20260619",
+    now: new Date("2026-06-05T01:00:00.000Z"),
+    runYmd: "20260605",
   });
   expect(claimRescoreRaceMock).toHaveBeenCalledWith({
     category: "jra",
     env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
     keibajoCode: "WR",
-    raceBango: "00",
-    runYmd: "20260619",
+    raceBango: "1000",
+    runYmd: "20260605",
   });
 });
 
-test("triggerWeightRebuildIfNeeded sends a full-mode skipDedup message when claim proceeds", async () => {
+test("triggerWeightRebuildIfNeeded uses different dedup keys for different JST half-hour slots", async () => {
+  await triggerWeightRebuildIfNeeded({
+    category: "jra",
+    date: "2026-06-05",
+    env: makeEnv(),
+    now: new Date("2026-06-05T01:00:00.000Z"),
+    runYmd: "20260605",
+  });
+  await triggerWeightRebuildIfNeeded({
+    category: "jra",
+    date: "2026-06-05",
+    env: makeEnv(),
+    now: new Date("2026-06-05T01:30:00.000Z"),
+    runYmd: "20260605",
+  });
+  expect(claimRescoreRaceMock).toHaveBeenNthCalledWith(1, {
+    category: "jra",
+    env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
+    keibajoCode: "WR",
+    raceBango: "1000",
+    runYmd: "20260605",
+  });
+  expect(claimRescoreRaceMock).toHaveBeenNthCalledWith(2, {
+    category: "jra",
+    env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
+    keibajoCode: "WR",
+    raceBango: "1030",
+    runYmd: "20260605",
+  });
+});
+
+test("triggerWeightRebuildIfNeeded uses the same dedup key within a single half-hour slot", async () => {
+  await triggerWeightRebuildIfNeeded({
+    category: "jra",
+    date: "2026-06-05",
+    env: makeEnv(),
+    now: new Date("2026-06-05T01:00:00.000Z"),
+    runYmd: "20260605",
+  });
+  await triggerWeightRebuildIfNeeded({
+    category: "jra",
+    date: "2026-06-05",
+    env: makeEnv(),
+    now: new Date("2026-06-05T01:17:00.000Z"),
+    runYmd: "20260605",
+  });
+  expect(claimRescoreRaceMock).toHaveBeenNthCalledWith(1, {
+    category: "jra",
+    env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
+    keibajoCode: "WR",
+    raceBango: "1000",
+    runYmd: "20260605",
+  });
+  expect(claimRescoreRaceMock).toHaveBeenNthCalledWith(2, {
+    category: "jra",
+    env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
+    keibajoCode: "WR",
+    raceBango: "1000",
+    runYmd: "20260605",
+  });
+});
+
+test("triggerWeightRebuildIfNeeded floors to the lower slot just before the half-hour boundary", async () => {
+  await triggerWeightRebuildIfNeeded({
+    category: "jra",
+    date: "2026-06-05",
+    env: makeEnv(),
+    now: new Date("2026-06-05T01:29:00.000Z"),
+    runYmd: "20260605",
+  });
+  expect(claimRescoreRaceMock).toHaveBeenCalledWith({
+    category: "jra",
+    env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
+    keibajoCode: "WR",
+    raceBango: "1000",
+    runYmd: "20260605",
+  });
+});
+
+test("triggerWeightRebuildIfNeeded uses the upper slot at the half-hour boundary", async () => {
+  await triggerWeightRebuildIfNeeded({
+    category: "jra",
+    date: "2026-06-05",
+    env: makeEnv(),
+    now: new Date("2026-06-05T01:30:00.000Z"),
+    runYmd: "20260605",
+  });
+  expect(claimRescoreRaceMock).toHaveBeenCalledWith({
+    category: "jra",
+    env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
+    keibajoCode: "WR",
+    raceBango: "1030",
+    runYmd: "20260605",
+  });
+});
+
+test("triggerWeightRebuildIfNeeded sends a rescore-mode skipDedup message when claim proceeds", async () => {
   claimRescoreRaceMock.mockResolvedValue({ proceed: true });
   const enqueued = await triggerWeightRebuildIfNeeded({
     category: "jra",
     date: "2026-06-19",
     env: makeEnv(),
+    now: new Date("2026-06-19T05:00:00.000Z"),
     runYmd: "20260619",
   });
   expect(sendMock).toHaveBeenCalledWith({
     category: "jra",
     daysAhead: 0,
-    mode: "full",
+    mode: "rescore",
     runDate: "2026-06-19",
     runDateIso: "2026-06-19",
     runYmd: "20260619",
@@ -366,6 +464,7 @@ test("triggerWeightRebuildIfNeeded does not send when claim is rejected", async 
     category: "jra",
     date: "2026-06-19",
     env: makeEnv(),
+    now: new Date("2026-06-19T05:00:00.000Z"),
     runYmd: "20260619",
   });
   expect(sendMock).not.toHaveBeenCalled();
@@ -385,13 +484,13 @@ test("runRaceCoordinatorTick triggers weight rebuild for categories with enqueue
     category: "jra",
     env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
     keibajoCode: "WR",
-    raceBango: "00",
+    raceBango: "1400",
     runYmd: "20260619",
   });
   expect(sendMock).toHaveBeenCalledWith({
     category: "jra",
     daysAhead: 0,
-    mode: "full",
+    mode: "rescore",
     runDate: "2026-06-19",
     runDateIso: "2026-06-19",
     runYmd: "20260619",

@@ -26,9 +26,7 @@ const COORDINATOR_ENABLED_FLAG = "1";
 const RESCORE_MODE: PredictMode = "rescore";
 const RESCORE_DAYS_AHEAD = 0;
 const WEIGHT_REBUILD_KEIBAJO = "WR";
-const WEIGHT_REBUILD_RACE = "00";
 const WEIGHT_REBUILD_DAYS_AHEAD = 0;
-const FULL_MODE: PredictMode = "full";
 const MS_PER_MINUTE = 60 * 1000;
 const JST_OFFSET_HOURS = 9;
 const JST_OFFSET_MS = JST_OFFSET_HOURS * 60 * 60 * 1000;
@@ -36,6 +34,8 @@ const ISO_DATE_LENGTH = 10;
 const DATE_SEPARATOR = "-";
 const KEIBAJO_PAD_WIDTH = 2;
 const RACE_BANGO_PAD_WIDTH = 2;
+const MINUTES_PER_HALF_HOUR = 30;
+const HALF_HOUR_SLOT_PAD_WIDTH = 2;
 // realtime_race_sources stores per-source rows; finish-position rescore targets
 // the same jra/nar/ban-ei categories the predict pipeline produces. JRA/NAR map
 // 1:1 to source; ban-ei rows live under the nar source with keibajo_code 65/83
@@ -111,6 +111,7 @@ interface WeightRebuildParams {
   category: PredictCategory;
   date: string;
   env: Env;
+  now: Date;
   runYmd: string;
 }
 
@@ -130,6 +131,18 @@ export const formatRunDateJst = (now: Date): string =>
 // "YYYYMMDD" (JST) form used for DO dedup keys and the queue runYmd field.
 export const formatRunYmdJst = (now: Date): string =>
   formatRunDateJst(now).split(DATE_SEPARATOR).join("");
+
+// Four-digit JST half-hour slot ("0900", "0930", ..), used as the synthetic
+// weight-rebuild raceBango so the DO dedup key changes once per 30 minutes.
+// Minutes are floored to the nearest half hour (e.g. 10:17 -> "1000", 10:45 ->
+// "1030").
+export const getJstHalfHourSlot = (now: Date): string => {
+  const jst = new Date(now.getTime() + JST_OFFSET_MS);
+  const hours = String(jst.getUTCHours()).padStart(HALF_HOUR_SLOT_PAD_WIDTH, "0");
+  const slotMinutes = jst.getUTCMinutes() < MINUTES_PER_HALF_HOUR ? 0 : MINUTES_PER_HALF_HOUR;
+  const minutes = String(slotMinutes).padStart(HALF_HOUR_SLOT_PAD_WIDTH, "0");
+  return `${hours}${minutes}`;
+};
 
 const buildPlaceholders = (count: number): string =>
   Array.from({ length: count }, () => "?").join(", ");
@@ -257,10 +270,12 @@ const buildShadowSummary = (category: PredictCategory, date: string): RaceCoordi
 export const isCoordinatorEnabled = (env: Env): boolean =>
   env.COORDINATOR_ENABLED === COORDINATOR_ENABLED_FLAG;
 
-// Claim a synthetic WR:00 race in the DO (strong consistency) and, when this is
-// the first claim of the day for the category, enqueue a full-mode build so the
-// Container re-runs the DuckDB pipeline with the now-available weight data.
-// Deduped per-category per-day. Returns true when the full build was enqueued.
+// Claim a synthetic WR race in the DO (strong consistency) and, when this is the
+// first claim of the half-hour slot for the category, enqueue a rescore-mode
+// build so the Container re-scores from the cached R2 parquet with the
+// now-available weight data (no Neon 21y scan). Deduped per-category
+// per-half-hour (the JST half-hour slot is the synthetic raceBango). Returns
+// true when the rescore build was enqueued.
 export const triggerWeightRebuildIfNeeded = async (
   params: WeightRebuildParams,
 ): Promise<boolean> => {
@@ -268,7 +283,7 @@ export const triggerWeightRebuildIfNeeded = async (
     category: params.category,
     env: params.env,
     keibajoCode: WEIGHT_REBUILD_KEIBAJO,
-    raceBango: WEIGHT_REBUILD_RACE,
+    raceBango: getJstHalfHourSlot(params.now),
     runYmd: params.runYmd,
   });
   if (!claim.proceed) {
@@ -277,7 +292,7 @@ export const triggerWeightRebuildIfNeeded = async (
   await params.env.PREDICT_QUEUE.send({
     category: params.category,
     daysAhead: WEIGHT_REBUILD_DAYS_AHEAD,
-    mode: FULL_MODE,
+    mode: RESCORE_MODE,
     runDate: params.date,
     runDateIso: params.date,
     runYmd: params.runYmd,
@@ -308,9 +323,10 @@ export const runRaceCoordinatorTick = async (
       }),
     ),
   );
-  // Trigger a Container full rebuild (with fresh weight data) for categories
-  // that had at least one race newly enqueued. Deduped per-category per-day via
-  // claimRescoreRace with synthetic key WR:00 — only fires once per day.
+  // Trigger a Container rescore rebuild (with fresh weight data) for categories
+  // that had at least one race newly enqueued. Deduped per-category
+  // per-half-hour via claimRescoreRace with synthetic key WR:<JST half-hour
+  // slot> — one rescore rebuild per category per half-hour.
   await Promise.all(
     summaries
       .filter((summary) => summary.enqueued > 0)
@@ -319,6 +335,7 @@ export const runRaceCoordinatorTick = async (
           category: summary.category,
           date: summary.date,
           env: params.env,
+          now: params.now,
           runYmd,
         }),
       ),

@@ -1189,8 +1189,8 @@ def test_iter_predict_chunks_full_mode_calls_per_race_payload_fn() -> None:
     assert last.get("perRaceParquets") == per_race
 
 
-def test_iter_predict_chunks_rescore_mode_does_not_call_per_race_payload_fn() -> None:
-    """On mode=rescore, per_race_parquet_payload_fn must NOT be called (full-only)."""
+def test_iter_predict_chunks_rescore_mode_calls_per_race_payload_fn() -> None:
+    """On mode=rescore, per_race_parquet_payload_fn must be called (both modes)."""
     called = [False]
 
     def _per_race_payload() -> list[dict[str, str]] | None:
@@ -1207,7 +1207,34 @@ def test_iter_predict_chunks_rescore_mode_does_not_call_per_race_payload_fn() ->
             sleep_fn=_noop_sleep,
         )
     )
-    assert not called[0]
+    assert called[0]
+
+
+def test_iter_predict_chunks_rescore_mode_per_race_payload_embedded_in_result() -> None:
+    """On mode=rescore success, per_race_parquet_payload_fn result is embedded."""
+    per_race = [
+        {
+            "parquetBase64": "cmVzY29yZQ==",
+            "parquetKey": "feat-cache/jra/20260619/05/01/features.parquet",
+        }
+    ]
+
+    def _per_race_payload() -> list[dict[str, str]] | None:
+        return per_race
+
+    params = PredictParams(category="jra", run_date="20260619", days_ahead=0, mode="rescore")
+    chunks = list(
+        iter_predict_chunks(
+            params,
+            _mock_predict_ok,
+            rescore_fn=_mock_rescore_ok,
+            per_race_parquet_payload_fn=_per_race_payload,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "success"
+    assert last.get("perRaceParquets") == per_race
 
 
 def test_iter_predict_chunks_per_race_payload_fn_error_swallowed() -> None:

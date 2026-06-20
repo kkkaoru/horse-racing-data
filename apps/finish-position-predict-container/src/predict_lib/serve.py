@@ -457,12 +457,14 @@ without requiring a write-capable S3 token in the Container environment.
 PerRaceParquetPayloadFn = Callable[[], list[dict[str, str]] | None]
 """Returns a list of per-race ``{"parquetBase64", "parquetKey"}`` dicts, or ``None``.
 
-Called by ``iter_predict_chunks`` once after the full-pipeline thread completes
-successfully (same gate as :data:`ParquetPayloadFn`).  Each element carries one
-race's feature parquet (split from the whole-day parquet by ``race_id``) and the
-per-race R2 key from :func:`build_r2_per_race_feat_cache_key`, so the Worker DO
-can proxy every per-race object to R2.  ``None`` means no per-race split was
-produced (non-blocking — a missing per-race cache must not fail predictions).
+Called by ``iter_predict_chunks`` once after the pipeline thread completes
+successfully, for **both** ``mode=full`` and ``mode=rescore``.  Each element
+carries one race's feature parquet (split from the whole-day parquet by
+``race_id``) and the per-race R2 key from :func:`build_r2_per_race_feat_cache_key`,
+so the Worker DO can proxy every per-race object to R2 — letting the rescore path
+also seed weight/odds-refreshed per-race objects.  ``None`` means no per-race
+split was produced (non-blocking — a missing per-race cache must not fail
+predictions).
 """
 
 
@@ -527,11 +529,11 @@ def iter_predict_chunks(
                              success result line so the Worker DO can proxy the bytes to
                              R2 without a write-capable S3 token.
         per_race_parquet_payload_fn: Optional callable invoked after a successful
-                             full-pipeline run (same gate as *parquet_payload_fn*).
-                             Returns a list of per-race ``{"parquetBase64", "parquetKey"}``
-                             dicts (or ``None``) embedded in the result line as
-                             ``perRaceParquets`` so the Worker DO can proxy each per-race
-                             object to R2.
+                             pipeline run for **both** ``mode=full`` and
+                             ``mode=rescore``.  Returns a list of per-race
+                             ``{"parquetBase64", "parquetKey"}`` dicts (or ``None``)
+                             embedded in the result line as ``perRaceParquets`` so the
+                             Worker DO can proxy each per-race object to R2.
         time_fn:             Monotonic clock (injectable for deterministic tests).
         sleep_fn:            Sleep callable (injectable for deterministic tests).
         progress_interval_s: Minimum seconds between progress keepalive lines.
@@ -671,7 +673,7 @@ def iter_predict_chunks(
             pass
 
     per_race_parquets: list[dict[str, str]] | None = None
-    if per_race_parquet_payload_fn is not None and params.mode == "full":
+    if per_race_parquet_payload_fn is not None:
         try:
             per_race_parquets = per_race_parquet_payload_fn()
         except BaseException:
