@@ -34,6 +34,7 @@ import { putPremiumDataTopCache } from "./premium-data-top-cache";
 import {
   buildPremiumUrl,
   buildPremiumRaceLinkFromRace,
+  detectPremiumLoginPrompt,
   discoverPremiumRaceLinks,
   fetchPremiumHtml,
   fetchPremiumHtmlAttempts,
@@ -45,6 +46,7 @@ import {
   parsePremiumDataTopHorses,
   parsePremiumPaddockBulletins,
   parsePremiumStableComments,
+  parsePremiumStateMessage,
   parsePremiumTrainingReviews,
   summarizePremiumStableCommentHtml,
   type PremiumPaddockBulletin,
@@ -71,6 +73,7 @@ import {
   getPremiumRacePayload,
   getPremiumPaddockFetchState,
   getPremiumPaddockNotificationState,
+  getPremiumRaceDataFetchState,
   getRaceSource,
   deleteDailyRaceEntriesChunk,
   deleteOddsSnapshotsChunk,
@@ -238,6 +241,14 @@ export const RESULT_POLL_CRON = "*/2 0-13 * * *";
 const TRACK_CONDITION_FETCH_LOCK_MINUTES = 15;
 const QUEUE_RETRY_DELAY_SECONDS = 60;
 const PREMIUM_RACE_DATA_RETRY_DELAY_SECONDS = 20 * 60;
+// Proxy session expiries auto-recover within minutes; keep the auth re-queue
+// gap short so a flaky session does not block a whole race-day window. Cap
+// total attempts so a permanently broken upstream cannot loop forever — past
+// the cap we keep the row in `auth_required` but back off to an hourly retry
+// so the next session-recovery window still picks the race up.
+const PREMIUM_RACE_DATA_AUTH_RETRY_DELAY_SECONDS = 5 * 60;
+const PREMIUM_RACE_DATA_AUTH_RETRY_BACKOFF_SECONDS = 60 * 60;
+const PREMIUM_RACE_DATA_AUTH_RETRY_MAX_ATTEMPTS = 5;
 const PREMIUM_PADDOCK_RETRY_DELAY_SECONDS = 120;
 const PREMIUM_PADDOCK_RETRY_DELAY_HOT_SECONDS = 15;
 const PREMIUM_PADDOCK_RETRY_DELAY_WARM_SECONDS = 30;
@@ -3210,25 +3221,37 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
     : undefined;
   const dataTopHorses = dataTopHtml ? parsePremiumDataTopHorses(dataTopHtml, env) : undefined;
   const commentAuthorized = commentHtml ? isPremiumStableCommentHtmlAuthorized(commentHtml) : false;
+  // Detect the netkeiba subscription-prompt page across all three HTMLs.
+  // Production verified 2026-06-20: HTTP 200 responses occasionally contain
+  // only the login gate, and used to be persisted as `status='ok'` with zero
+  // stable_comments. We treat any of the three fetched bodies hitting the
+  // gate text as proof the proxy session was unauthenticated.
+  const loginPromptDetected =
+    detectPremiumLoginPrompt(workHtml) ||
+    detectPremiumLoginPrompt(commentHtml) ||
+    detectPremiumLoginPrompt(dataTopHtml);
   // Suppress the stable-comment replace when the proxy returned the preview
   // (unauthenticated) page: otherwise the unauth response (typically 3 rows)
   // would overwrite a previously stored authenticated snapshot (full field).
   // The fetch state below still records `commentAuthRequired: true` so the
   // planner re-queues the race.
   const stableComments = commentHtml && !commentAuthorized ? undefined : parsedStableComments;
+  // Suppress data_top replace as well when the login prompt was hit, so we
+  // do not wipe a previously stored authenticated snapshot with an empty list.
+  const dataTopHorsesForReplace = loginPromptDetected ? undefined : dataTopHorses;
   await replacePremiumRaceData(env.REALTIME_DB, {
-    dataTopHorses,
+    dataTopHorses: dataTopHorsesForReplace,
     fetchedAt,
     link,
     raceKey,
     stableComments,
     trainingReviews,
   });
-  if (dataTopHorses && dataTopHorses.length > 0) {
+  if (dataTopHorsesForReplace && dataTopHorsesForReplace.length > 0) {
     await putPremiumDataTopCache({
       env,
       race,
-      rows: dataTopHorses.map((row) => ({ ...row, fetchedAt })),
+      rows: dataTopHorsesForReplace.map((row) => ({ ...row, fetchedAt })),
     });
   }
   const hasAnyData =
@@ -3236,9 +3259,24 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
     (parsedStableComments?.length ?? 0) > 0 ||
     (dataTopHorses?.length ?? 0) > 0;
   const commentAuthRequired = Boolean(commentHtml) && !commentAuthorized;
+  const previousState = await getPremiumRaceDataFetchState(env.REALTIME_DB, raceKey);
+  const previousMessage = parsePremiumStateMessage(previousState?.message ?? null);
+  const nextAuthRetryCount = loginPromptDetected ? previousMessage.authRetryCount + 1 : 0;
+  const authRetryExhausted = nextAuthRetryCount > PREMIUM_RACE_DATA_AUTH_RETRY_MAX_ATTEMPTS;
+  const authRetryAfter = loginPromptDetected
+    ? toJstIsoString(
+        new Date(getNow(env).getTime() + resolveAuthRetryDelaySeconds(authRetryExhausted) * 1000),
+      )
+    : null;
+  const resolvedStatus = resolvePremiumRaceDataStatus({
+    commentAuthRequired,
+    hasAnyData,
+    loginPromptDetected,
+  });
   await updatePremiumRaceDataFetchState(env.REALTIME_DB, {
     fetchedAt,
     message: JSON.stringify({
+      authRetryCount: nextAuthRetryCount,
       commentAuthRequired,
       commentError:
         commentResult.status === "rejected"
@@ -3261,6 +3299,7 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
       dataTopHasIconLogin: dataTopHtml ? dataTopHtml.includes("Icon_Login") : null,
       dataTopHasLogout: dataTopHtml ? dataTopHtml.includes("ログアウト") : null,
       dataTopDlBlockCount: dataTopHtml ? (dataTopHtml.match(/<dl\b/giu)?.length ?? 0) : null,
+      loginPromptDetected,
       stableCommentCount: parsedStableComments?.length ?? null,
       stableCommentPersisted: stableComments !== undefined,
       stableCommentSample:
@@ -3277,9 +3316,28 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
       workHtmlLength: workHtml.length,
     }),
     raceKey,
-    status: commentAuthRequired ? "auth_required" : hasAnyData ? "ok" : "empty",
+    retryAfter: authRetryAfter,
+    status: resolvedStatus,
   });
 };
+
+interface ResolvePremiumStatusInput {
+  commentAuthRequired: boolean;
+  hasAnyData: boolean;
+  loginPromptDetected: boolean;
+}
+
+const resolvePremiumRaceDataStatus = (input: ResolvePremiumStatusInput): string => {
+  if (input.loginPromptDetected || input.commentAuthRequired) {
+    return "auth_required";
+  }
+  return input.hasAnyData ? "ok" : "empty";
+};
+
+const resolveAuthRetryDelaySeconds = (exhausted: boolean): number =>
+  exhausted
+    ? PREMIUM_RACE_DATA_AUTH_RETRY_BACKOFF_SECONDS
+    : PREMIUM_RACE_DATA_AUTH_RETRY_DELAY_SECONDS;
 
 const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<void> => {
   const race = await getRaceSource(env.REALTIME_DB, raceKey);
