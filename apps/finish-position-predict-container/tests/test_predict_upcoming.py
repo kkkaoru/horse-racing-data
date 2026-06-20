@@ -550,6 +550,7 @@ def test_score_races_loads_cb_override_booster_for_nar() -> None:
         patch("predict_upcoming._load_booster", return_value=xgb),
         patch("predict_upcoming.init_member_pool", return_value=object()),
         patch("predict_upcoming._load_cb_nar_etop2_booster", side_effect=_fake_load_cb),
+        patch("predict_upcoming.NAR_ETOP2_ENABLED", True),
     ):
         scored = score_races(races, "nar", Path("/models"), ["feat"])
 

@@ -87,7 +87,7 @@ JRA_ETOP2_MODEL_VERSION: Final[str] = "iter22-jra-etop2"
 # loop loads both XGB iter12 AND CB cb-nar-2013-v8, applies the per-class
 # override, and writes predictions under NAR_ETOP2_MODEL_VERSION for ADOPT-class
 # races. Held at False until the CB-2013 model is trained + smoke2 PASS.
-NAR_ETOP2_ENABLED: Final[bool] = True
+NAR_ETOP2_ENABLED: Final[bool] = False
 
 # The CatBoost CB-2013 model version baked at
 # models/finish-position/nar/cb-nar-2013-v8/. Used to build the R2 object key
