@@ -21,13 +21,17 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 # Import the cross-module helpers directly so the tests stay I/O-free.
+from predict_lib.model_meta import NAR_ETOP2_MODEL_VERSION
 from predict_lib.rescore import RaceScope
+from predict_lib.scorer import BoosterLike
 from predict_lib.serve import ParquetPayloadFn, PredictCategoryFn
 from predict_upcoming import (
     execute,
     extract_race_class_code,
     flush_predictions,
     make_handler_class,
+    score_one_race_nar_etop2,
+    score_races,
 )
 
 # ---------------------------------------------------------------------------
@@ -402,3 +406,121 @@ def test_make_handler_class_predict_fn_accepts_exactly_3_args() -> None:
         f"predict_fn must have exactly 3 parameters (category, run_date, days_ahead), "
         f"got {len(params)}: {[p.name for p in params]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# NAR E-top2 per-class override wiring (iter23-nar-etop2)
+# ---------------------------------------------------------------------------
+#
+# NAR production scores with XGBoost as the BASE and the CatBoost CB-2013 model
+# supplies the override signal (mirror image of the JRA path). These tests pin
+# the wiring of ``score_one_race_nar_etop2`` (the per-race override) and the
+# ``score_races`` branch that loads the CB override booster only for NAR when
+# NAR_ETOP2_ENABLED is True.
+
+
+@final
+class _ScoreByUmaban:
+    """Fake booster that returns a per-row score keyed by the row's umaban.
+
+    ``build_feature_matrix`` projects each entry onto the numeric feature order,
+    dropping the umaban / ketto columns, so the fake instead consults a closure
+    map indexed by the row's position in the race. The scores are supplied as a
+    parallel list in entry order at construction time.
+    """
+
+    def __init__(self, scores: list[float]) -> None:
+        self._scores = scores
+
+    def predict(self, matrix: object) -> list[float]:
+        del matrix  # scores are positional, not feature-derived
+        return list(self._scores)
+
+
+_NAR_RACE_ID: str = "nar:20260620:30:02:11"
+
+
+def _nar_entries() -> list[dict[str, object]]:
+    """Three NAR entries (umaban 1/2/3) in class ``A`` (an ADOPT class)."""
+    return [
+        {"ketto_toroku_bango": "H1", "umaban": 1, "nar_subclass": "A", "feat": 0.1},
+        {"ketto_toroku_bango": "H2", "umaban": 2, "nar_subclass": "A", "feat": 0.2},
+        {"ketto_toroku_bango": "H3", "umaban": 3, "nar_subclass": "A", "feat": 0.3},
+    ]
+
+
+def _run_nar_etop2(
+    xgb: BoosterLike,
+    cb: BoosterLike,
+    entries: list[dict[str, object]],
+) -> list[list[object]]:
+    """Invoke ``score_one_race_nar_etop2`` for the shared NAR test race."""
+    return score_one_race_nar_etop2(xgb, cb, _NAR_RACE_ID, "nar", entries, ["feat"])
+
+
+def test_score_one_race_nar_etop2_override_promotes_xgb_rank2() -> None:
+    """When CB#1 == XGB#2 in an ADOPT class, XGB#2 is promoted to rank-1."""
+    # XGB base ranking: H1 (0.9) > H2 (0.5) > H3 (0.1) -> XGB#2 = H2 (umaban 2).
+    xgb = _ScoreByUmaban([0.9, 0.5, 0.1])
+    # CB rank-1 = H2 (umaban 2) -> equals XGB#2, so the override fires.
+    cb = _ScoreByUmaban([0.2, 0.8, 0.1])
+
+    rows = _run_nar_etop2(xgb, cb, _nar_entries())
+
+    by_rank = {row[9]: row[7] for row in rows}  # predicted_rank -> umaban
+    assert by_rank[1] == 2, "XGB#2 (umaban 2) must be promoted to rank-1"
+    assert by_rank[2] == 1, "XGB#1 (umaban 1) must be demoted to rank-2"
+    assert by_rank[3] == 3, "rank-3 (umaban 3) must be preserved"
+
+
+def test_score_one_race_nar_etop2_writes_iter23_model_version() -> None:
+    """Every emitted row is labelled with NAR_ETOP2_MODEL_VERSION."""
+    xgb = _ScoreByUmaban([0.9, 0.5, 0.1])
+    cb = _ScoreByUmaban([0.2, 0.8, 0.1])
+
+    rows = _run_nar_etop2(xgb, cb, _nar_entries())
+
+    assert rows, "at least one prediction row must be emitted"
+    assert all(row[0] == NAR_ETOP2_MODEL_VERSION for row in rows)
+    assert NAR_ETOP2_MODEL_VERSION == "iter23-nar-etop2"
+
+
+def test_score_one_race_nar_etop2_no_override_for_reject_class() -> None:
+    """A non-ADOPT class (``C``) keeps the pure XGB base ranking."""
+    entries = [dict(entry, nar_subclass="C") for entry in _nar_entries()]
+    xgb = _ScoreByUmaban([0.9, 0.5, 0.1])
+    cb = _ScoreByUmaban([0.2, 0.8, 0.1])
+
+    rows = _run_nar_etop2(xgb, cb, entries)
+
+    by_rank = {row[9]: row[7] for row in rows}
+    assert by_rank[1] == 1, "REJECT class must keep XGB#1 (umaban 1) at rank-1"
+    assert by_rank[2] == 2
+    assert by_rank[3] == 3
+
+
+def test_score_races_loads_cb_override_booster_for_nar() -> None:
+    """score_races loads the CB override booster for NAR and routes via the override."""
+    entries = _nar_entries()
+    races = {"nar:20260620:30:02:11": entries}
+    xgb = _ScoreByUmaban([0.9, 0.5, 0.1])
+    cb = _ScoreByUmaban([0.2, 0.8, 0.1])
+    loaded: list[str] = []
+
+    def _fake_load_cb(models_dir: Path) -> BoosterLike:
+        del models_dir
+        loaded.append("cb")
+        return cb
+
+    with (
+        patch("predict_upcoming._load_booster", return_value=xgb),
+        patch("predict_upcoming.init_member_pool", return_value=object()),
+        patch("predict_upcoming._load_cb_nar_etop2_booster", side_effect=_fake_load_cb),
+    ):
+        scored = score_races(races, "nar", Path("/models"), ["feat"])
+
+    assert loaded == ["cb"], "the CB override booster must be loaded exactly once for NAR"
+    rows = scored[0]
+    assert all(row[0] == NAR_ETOP2_MODEL_VERSION for row in rows)
+    by_rank = {row[9]: row[7] for row in rows}
+    assert by_rank[1] == 2, "override must promote XGB#2 (umaban 2) to rank-1"

@@ -78,12 +78,19 @@ from predict_lib.model_meta import (
     JRA_ETOP2_MODEL_VERSION,
     METADATA_FILE_NAME,
     MODEL_FILE_NAME,
+    NAR_ETOP2_ENABLED,
+    NAR_ETOP2_MODEL_VERSION,
     Category,
     architecture_for,
+    build_r2_nar_etop2_key,
     build_r2_object_key,
     build_r2_xgb_etop2_key,
     feature_count_for,
     model_version_for,
+)
+from predict_lib.nar_etop2_override import (
+    apply_nar_etop2_scores,
+    is_nar_etop2_override_active,
 )
 from predict_lib.per_class import resolve_per_class_resolution
 from predict_lib.rescore import (
@@ -375,6 +382,47 @@ def _score_one_race_etop2(
     )
 
 
+def score_one_race_nar_etop2(
+    xgb_booster: BoosterLike,
+    cb_booster: BoosterLike,
+    race_id: str,
+    category: Category,
+    entries: Sequence[Mapping[str, object]],
+    feature_names: Sequence[str],
+) -> list[list[object]]:
+    """Score one NAR race with the E-top2 per-class place-preserving override.
+
+    Mirror image of :func:`_score_one_race_etop2`: NAR production scores with
+    XGBoost (``iter12-nar-xgb-hpo-v8``) as the BASE, and the CatBoost CB-2013
+    model (``cb-nar-2013-v8``) supplies the override signal. Both score the same
+    192-feature matrix. The override fires per race only for ADOPT classes when
+    CB#1 == XGB#2 (CB#3 stays at rank-3, preserving place3).
+
+    The class code is read from the ``nar_subclass`` column of the first entry
+    (same field used by :func:`extract_race_class_code` for NAR). When the column
+    is absent / class is not in the ADOPT set, the pure XGB ranking is emitted.
+    """
+    xgb_matrix = build_feature_matrix(entries, feature_names, "xgboost")
+    cb_matrix = build_feature_matrix(entries, feature_names, "catboost")
+    xgb_scores = score_matrix(xgb_booster, xgb_matrix)
+    cb_scores = score_matrix(cb_booster, cb_matrix)
+
+    nar_class = extract_race_class_code("nar", entries)
+    override_scores = apply_nar_etop2_scores(xgb_scores, cb_scores, nar_class)
+
+    fired = is_nar_etop2_override_active(xgb_scores, cb_scores, nar_class)
+    if fired:
+        print(
+            f"[nar-etop2] override fired race_id={race_id} class={nar_class}",
+            file=sys.stderr,
+        )
+
+    ranked = rank_race_entries(entries, override_scores)
+    return build_prediction_rows(
+        race_id, "nar", ranked, NAR_ETOP2_MODEL_VERSION, _representative_entry(entries)
+    )
+
+
 def _row_to_pk_map(row: Sequence[object]) -> Mapping[str, object]:
     race_id = ":".join(str(row[index]) for index in RACE_ID_PART_RANGE)
     return {"race_id": race_id, "ketto_toroku_bango": row[RACE_ID_KETTO_INDEX]}
@@ -458,7 +506,7 @@ def _record_audit(
     execute(connection, build_audit_insert_sql(), audit_params(record), database_url)
 
 
-def _score_races(
+def score_races(
     races: Mapping[str, Sequence[Mapping[str, object]]],
     category: Category,
     models_dir: Path,
@@ -467,7 +515,8 @@ def _score_races(
     """Score every race in ``races`` into per-race prediction rows.
 
     Builds the (per-category) booster pool + E-top2 companion once, then routes
-    each race through the JRA E-top2 override or the ensemble/per-class path.
+    each race through the JRA E-top2 override, the NAR E-top2 per-class override,
+    or the ensemble/per-class path.
     Connection-free and CPU-bound so the caller can defer the Neon connect until
     the first write (avoiding Neon autosuspend during the long score phase).
     """
@@ -476,6 +525,9 @@ def _score_races(
     xgb_etop2_booster: BoosterLike | None = None
     if JRA_ETOP2_ENABLED and category == "jra":
         xgb_etop2_booster = _load_xgb_etop2_booster(models_dir)
+    cb_nar_etop2_booster: BoosterLike | None = None
+    if NAR_ETOP2_ENABLED and category == "nar":
+        cb_nar_etop2_booster = _load_cb_nar_etop2_booster(models_dir)
     scored: list[list[list[object]]] = []
     for race_id, entries in races.items():
         if xgb_etop2_booster is not None:
@@ -483,6 +535,15 @@ def _score_races(
                 fallback_booster,
                 xgb_etop2_booster,
                 race_id,
+                entries,
+                feature_names,
+            )
+        elif cb_nar_etop2_booster is not None:
+            rows = score_one_race_nar_etop2(
+                fallback_booster,
+                cb_nar_etop2_booster,
+                race_id,
+                category,
                 entries,
                 feature_names,
             )
@@ -535,7 +596,7 @@ def _score_and_flush_races(
     late-binding columns refreshed) on the rescore path.
     """
     feature_names = _load_model_metadata(models_dir, category)
-    scored = _score_races(races, category, models_dir, feature_names)
+    scored = score_races(races, category, models_dir, feature_names)
     return _flush_scored(database_url, category, scored)
 
 
@@ -576,6 +637,19 @@ def _load_xgb_etop2_booster(models_dir: Path) -> BoosterLike:
     from xgboost_adapter import load_xgboost_booster  # bundled in image
 
     return load_xgboost_booster(str(model_path))
+
+
+def _load_cb_nar_etop2_booster(models_dir: Path) -> BoosterLike:
+    """Load the CatBoost CB-2013 override model for E-top2 NAR override.
+
+    Resolves the artifact at ``models/finish-position/nar/cb-nar-2013-v8/
+    model.json`` (same path as baked into the image alongside XGB iter12).
+    Called once at category startup when NAR_ETOP2_ENABLED is True.
+    """
+    model_path = models_dir / build_r2_nar_etop2_key(MODEL_FILE_NAME)
+    from catboost_adapter import load_catboost_booster  # bundled in image
+
+    return load_catboost_booster(str(model_path))
 
 
 def _build_feature_rows(
