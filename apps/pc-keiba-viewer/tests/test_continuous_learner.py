@@ -7,7 +7,7 @@ import signal as sig_mod
 from collections.abc import Callable
 from pathlib import Path
 from typing import cast
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -74,6 +74,7 @@ def _make_learner(
     validation_years: list[int] | None = None,
     train_start: str = "20160101",
     deploy_threshold: float = subject.DEFAULT_DEPLOY_THRESHOLD,
+    load_controller: subject.AdaptiveLoadController | None = None,
 ) -> subject.ContinuousLearner:
     return subject.ContinuousLearner(
         registry=registry
@@ -88,6 +89,7 @@ def _make_learner(
         validation_years=validation_years,
         train_start=train_start,
         deploy_threshold=deploy_threshold,
+        load_controller=load_controller,
     )
 
 
@@ -202,7 +204,7 @@ def test_run_stops_when_stop_flag_set_mid_loop() -> None:
         learner = _make_learner(registry=reg)
         call_count = 0
 
-        def _fake_explore(round_num: int) -> None:
+        def _fake_explore(round_num: int, n_trials: int | None = None) -> None:
             nonlocal call_count
             call_count += 1
             learner.request_stop()
@@ -223,7 +225,9 @@ def test_run_calls_maybe_deploy_after_each_explore() -> None:
 
         with (
             patch.object(
-                learner, "_explore_round", side_effect=lambda _: order.append("explore")
+                learner,
+                "_explore_round",
+                side_effect=lambda *a, **kw: order.append("explore"),
             ),
             patch.object(
                 learner, "_maybe_deploy", side_effect=lambda: order.append("deploy")
@@ -259,6 +263,15 @@ def test_explore_round_study_name_includes_category_and_round() -> None:
             learner._explore_round(3)
             study_name = mock_run.call_args.kwargs["study_name"]
             assert study_name.startswith("auto-nar-r3-")
+
+
+def test_explore_round_uses_override_n_trials() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, n_trials_per_round=20)
+        with patch("continuous_learner.run_exploration") as mock_run:
+            learner._explore_round(0, n_trials=3)
+            kwargs = mock_run.call_args.kwargs
+            assert kwargs["n_trials"] == 3
 
 
 # ---------------------------------------------------------------------------
@@ -733,7 +746,7 @@ def test_main_runs_and_stops_after_max_rounds(tmp_path: Path) -> None:
 
     explore_calls: list[int] = []
 
-    def fake_explore(round_num: int) -> None:
+    def fake_explore(round_num: int, n_trials: int | None = None) -> None:
         explore_calls.append(round_num)
 
     with (
@@ -741,6 +754,16 @@ def test_main_runs_and_stops_after_max_rounds(tmp_path: Path) -> None:
             subject.ContinuousLearner, "_explore_round", side_effect=fake_explore
         ),
         patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(
+            subject.AdaptiveLoadController,
+            "_cpu_percent",
+            return_value=60.0,
+        ),
+        patch.object(
+            subject.AdaptiveLoadController,
+            "_mem_percent",
+            return_value=70.0,
+        ),
     ):
         subject.main(
             [
@@ -764,3 +787,202 @@ def test_main_default_constants() -> None:
     assert subject.DEFAULT_DOCKER_TAG == "finish-position-predict-local:split2"
     assert subject.DEFAULT_DEPLOY_THRESHOLD == 0.005
     assert subject.DEFAULT_N_TRIALS == 20
+
+
+def test_main_passes_pg_dsn_to_controller(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().to_parquet(parquet_path, index=False)
+    registry_path = tmp_path / "reg.duckdb"
+
+    created_controllers: list[subject.AdaptiveLoadController] = []
+    original_init = subject.AdaptiveLoadController.__init__
+
+    def capturing_init(
+        self: subject.AdaptiveLoadController, *args: object, **kwargs: object
+    ) -> None:
+        original_init(self, *args, **kwargs)
+        created_controllers.append(self)
+
+    with (
+        patch.object(subject.AdaptiveLoadController, "__init__", capturing_init),
+        patch.object(subject.ContinuousLearner, "_explore_round"),
+        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
+        patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
+    ):
+        subject.main(
+            [
+                "--features-parquet",
+                str(parquet_path),
+                "--category",
+                "jra",
+                "--repo-root",
+                str(tmp_path),
+                "--registry-path",
+                str(registry_path),
+                "--max-rounds",
+                "1",
+                "--pg-dsn",
+                "postgresql://user:pass@localhost/db",
+            ]
+        )
+
+    assert len(created_controllers) == 1
+    assert created_controllers[0]._pg_dsn == "postgresql://user:pass@localhost/db"
+
+
+# ---------------------------------------------------------------------------
+# AdaptiveLoadController
+# ---------------------------------------------------------------------------
+
+
+def test_adaptive_controller_returns_base_when_load_is_moderate() -> None:
+    ctrl = subject.AdaptiveLoadController(base_n_trials=20)
+    with (
+        patch.object(ctrl, "_cpu_percent", return_value=60.0),
+        patch.object(ctrl, "_mem_percent", return_value=70.0),
+    ):
+        result = ctrl.adjusted_n_trials()
+    assert result == 20
+
+
+def test_adaptive_controller_reduces_trials_when_cpu_high() -> None:
+    ctrl = subject.AdaptiveLoadController(base_n_trials=20, min_n_trials=5)
+    with (
+        patch.object(ctrl, "_cpu_percent", return_value=85.0),
+        patch.object(ctrl, "_mem_percent", return_value=40.0),
+    ):
+        result = ctrl.adjusted_n_trials()
+    assert result == max(round(20 * 0.5), 5)
+
+
+def test_adaptive_controller_reduces_trials_when_mem_high() -> None:
+    ctrl = subject.AdaptiveLoadController(base_n_trials=20, min_n_trials=5)
+    with (
+        patch.object(ctrl, "_cpu_percent", return_value=40.0),
+        patch.object(ctrl, "_mem_percent", return_value=85.0),
+    ):
+        result = ctrl.adjusted_n_trials()
+    assert result == max(round(20 * 0.5), 5)
+
+
+def test_adaptive_controller_increases_trials_when_both_low() -> None:
+    ctrl = subject.AdaptiveLoadController(
+        base_n_trials=20, max_n_trials=50, cpu_low_pct=50.0, mem_low_pct=60.0
+    )
+    with (
+        patch.object(ctrl, "_cpu_percent", return_value=40.0),
+        patch.object(ctrl, "_mem_percent", return_value=50.0),
+    ):
+        result = ctrl.adjusted_n_trials()
+    assert result == min(round(20 * 1.25), 50)
+
+
+def test_adaptive_controller_clamps_to_min() -> None:
+    ctrl = subject.AdaptiveLoadController(base_n_trials=6, min_n_trials=5)
+    with (
+        patch.object(ctrl, "_cpu_percent", return_value=85.0),
+        patch.object(ctrl, "_mem_percent", return_value=40.0),
+    ):
+        result = ctrl.adjusted_n_trials()
+    assert result >= 5
+
+
+def test_adaptive_controller_clamps_to_max() -> None:
+    ctrl = subject.AdaptiveLoadController(base_n_trials=40, max_n_trials=50)
+    with (
+        patch.object(ctrl, "_cpu_percent", return_value=30.0),
+        patch.object(ctrl, "_mem_percent", return_value=30.0),
+    ):
+        result = ctrl.adjusted_n_trials()
+    assert result <= 50
+
+
+def test_adaptive_controller_sleep_seconds_zero_when_normal() -> None:
+    ctrl = subject.AdaptiveLoadController(base_n_trials=20)
+    with (
+        patch.object(ctrl, "_cpu_percent", return_value=60.0),
+        patch.object(ctrl, "_mem_percent", return_value=70.0),
+    ):
+        result = ctrl.inter_round_sleep_seconds()
+    assert result == 0.0
+
+
+def test_adaptive_controller_sleep_seconds_nonzero_when_high() -> None:
+    ctrl = subject.AdaptiveLoadController(base_n_trials=20)
+    with (
+        patch.object(ctrl, "_cpu_percent", return_value=85.0),
+        patch.object(ctrl, "_mem_percent", return_value=40.0),
+    ):
+        result = ctrl.inter_round_sleep_seconds()
+    assert result == 5.0
+
+
+def test_adaptive_controller_pg_active_count_returns_none_when_no_dsn() -> None:
+    ctrl = subject.AdaptiveLoadController(base_n_trials=20, pg_dsn=None)
+    result = ctrl._pg_active_count()
+    assert result is None
+
+
+def test_adaptive_controller_cpu_percent_returns_zero_without_psutil() -> None:
+    ctrl = subject.AdaptiveLoadController(base_n_trials=20)
+    with patch.object(subject, "_PSUTIL_AVAILABLE", False):
+        result = ctrl._cpu_percent()
+    assert result == 0.0
+
+
+def test_adaptive_controller_mem_percent_returns_zero_without_psutil() -> None:
+    ctrl = subject.AdaptiveLoadController(base_n_trials=20)
+    with patch.object(subject, "_PSUTIL_AVAILABLE", False):
+        result = ctrl._mem_percent()
+    assert result == 0.0
+
+
+# ---------------------------------------------------------------------------
+# ContinuousLearner with controller
+# ---------------------------------------------------------------------------
+
+
+def test_run_with_controller_calls_adjusted_n_trials() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        ctrl = MagicMock(spec=subject.AdaptiveLoadController)
+        ctrl.adjusted_n_trials.return_value = 15
+        ctrl.inter_round_sleep_seconds.return_value = 0.0
+        learner = _make_learner(
+            registry=reg, n_trials_per_round=20, load_controller=ctrl
+        )
+        with (
+            patch.object(learner, "_explore_round"),
+            patch.object(learner, "_maybe_deploy"),
+        ):
+            learner.run(max_rounds=1)
+        ctrl.adjusted_n_trials.assert_called_once()
+
+
+def test_run_with_controller_sleeps_when_nonzero() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        ctrl = MagicMock(spec=subject.AdaptiveLoadController)
+        ctrl.adjusted_n_trials.return_value = 20
+        ctrl.inter_round_sleep_seconds.return_value = 5.0
+        learner = _make_learner(
+            registry=reg, n_trials_per_round=20, load_controller=ctrl
+        )
+        with (
+            patch.object(learner, "_explore_round"),
+            patch.object(learner, "_maybe_deploy"),
+            patch("continuous_learner.time.sleep") as mock_sleep,
+        ):
+            learner.run(max_rounds=1)
+        mock_sleep.assert_called_once_with(5.0)
+
+
+def test_run_without_controller_no_sleep() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, load_controller=None)
+        with (
+            patch.object(learner, "_explore_round"),
+            patch.object(learner, "_maybe_deploy"),
+            patch("continuous_learner.time.sleep") as mock_sleep,
+        ):
+            learner.run(max_rounds=2)
+        mock_sleep.assert_not_called()

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +27,16 @@ from feature_explorer import (
 )
 from feature_registry import FeatureEntry, FeatureRegistry
 from finish_position_lightgbm import META_COLUMNS
+
+try:
+    import psutil as _psutil
+
+    _PSUTIL_AVAILABLE: bool = True
+except ImportError:
+    _psutil = None  # type: ignore[assignment]
+    _PSUTIL_AVAILABLE = False
+
+_logger = logging.getLogger(__name__)
 
 _LABEL_COLS: Final[frozenset[str]] = frozenset(
     {
@@ -66,6 +78,89 @@ def write_filtered_parquet(
     return out
 
 
+class AdaptiveLoadController:
+    def __init__(
+        self,
+        base_n_trials: int,
+        min_n_trials: int = 5,
+        max_n_trials: int = 50,
+        cpu_high_pct: float = 80.0,
+        cpu_low_pct: float = 50.0,
+        mem_high_pct: float = 80.0,
+        mem_low_pct: float = 60.0,
+        pg_dsn: str | None = None,
+        pg_connections_high: int = 10,
+    ) -> None:
+        self._base_n_trials = base_n_trials
+        self._min_n_trials = min_n_trials
+        self._max_n_trials = max_n_trials
+        self._cpu_high_pct = cpu_high_pct
+        self._cpu_low_pct = cpu_low_pct
+        self._mem_high_pct = mem_high_pct
+        self._mem_low_pct = mem_low_pct
+        self._pg_dsn = pg_dsn
+        self._pg_connections_high = pg_connections_high
+
+    def adjusted_n_trials(self) -> int:
+        """Return trial count scaled by current system load.
+
+        - Both CPU and MEM below low threshold → min(base*1.25, max_n_trials)
+        - CPU or MEM above high threshold → max(base*0.5, min_n_trials)
+        - Otherwise → base_n_trials
+        Integer result (round to nearest).
+        """
+        cpu = self._cpu_percent()
+        mem = self._mem_percent()
+
+        if cpu > self._cpu_high_pct or mem > self._mem_high_pct:
+            return max(round(self._base_n_trials * 0.5), self._min_n_trials)
+        if cpu < self._cpu_low_pct and mem < self._mem_low_pct:
+            return min(round(self._base_n_trials * 1.25), self._max_n_trials)
+        return self._base_n_trials
+
+    def inter_round_sleep_seconds(self) -> float:
+        """Return 0.0 normally, 5.0 when CPU or MEM is above high threshold."""
+        cpu = self._cpu_percent()
+        mem = self._mem_percent()
+        if cpu > self._cpu_high_pct or mem > self._mem_high_pct:
+            return 5.0
+        return 0.0
+
+    def _cpu_percent(self) -> float:
+        """psutil.cpu_percent(interval=0.5). Returns 0.0 if psutil not installed."""
+        if not _PSUTIL_AVAILABLE:
+            return 0.0
+        return float(_psutil.cpu_percent(interval=0.5))
+
+    def _mem_percent(self) -> float:
+        """psutil.virtual_memory().percent. Returns 0.0 if psutil not installed."""
+        if not _PSUTIL_AVAILABLE:
+            return 0.0
+        return float(_psutil.virtual_memory().percent)
+
+    def _pg_active_count(self) -> int | None:
+        """Query pg_stat_activity for active non-idle connections.
+        Returns None if pg_dsn is None or connection fails.
+        Uses: SELECT count(*) FROM pg_stat_activity WHERE state != 'idle'
+        """
+        if self._pg_dsn is None:
+            return None
+        try:
+            import psycopg
+
+            with psycopg.connect(self._pg_dsn) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT count(*) FROM pg_stat_activity WHERE state != 'idle'"
+                    )
+                    row = cur.fetchone()
+                    if row is None:
+                        return None
+                    return int(row[0])
+        except Exception:
+            return None
+
+
 class ContinuousLearner:
     def __init__(
         self,
@@ -80,6 +175,7 @@ class ContinuousLearner:
         train_start: str = DEFAULT_TRAIN_START,
         deploy_threshold: float = DEFAULT_DEPLOY_THRESHOLD,
         backends: tuple[ModelBackend, ...] = DEFAULT_BACKENDS,
+        load_controller: AdaptiveLoadController | None = None,
     ) -> None:
         self._registry: FeatureRegistry = registry
         self._df: pd.DataFrame = df
@@ -97,26 +193,48 @@ class ContinuousLearner:
         self._deploy_threshold: float = deploy_threshold
         self._backends: tuple[ModelBackend, ...] = backends
         self._stop: bool = False
+        self._load_controller: AdaptiveLoadController | None = load_controller
 
     def request_stop(self) -> None:
         self._stop = True
 
     def run(self, max_rounds: int | None = None) -> None:
+        _logger.info("学習ループ開始 (最大ラウンド数: %s)", max_rounds)
         round_num = 0
         while not self._stop:
             if max_rounds is not None and round_num >= max_rounds:
                 break
-            self._explore_round(round_num)
+
+            actual_trials = self._n_trials
+            if self._load_controller is not None:
+                adjusted = self._load_controller.adjusted_n_trials()
+                if adjusted != self._n_trials:
+                    _logger.info(
+                        "試行数を調整しました (%d → %d)", self._n_trials, adjusted
+                    )
+                actual_trials = adjusted
+
+            _logger.info("ラウンド %d 開始 (試行数: %d)", round_num, actual_trials)
+            self._explore_round(round_num, n_trials=actual_trials)
             self._maybe_deploy()
+            _logger.info("ラウンド %d 完了", round_num)
+
+            if self._load_controller is not None:
+                sleep_secs = self._load_controller.inter_round_sleep_seconds()
+                if sleep_secs > 0:
+                    _logger.info("システム負荷が高いため %.1f 秒待機します", sleep_secs)
+                    time.sleep(sleep_secs)
+
             round_num += 1
 
-    def _explore_round(self, round_num: int) -> None:
+    def _explore_round(self, round_num: int, n_trials: int | None = None) -> None:
         study_name = f"auto-{self._category}-r{round_num}-{uuid.uuid4().hex[:8]}"
+        effective_trials = n_trials if n_trials is not None else self._n_trials
         run_exploration(
             df=self._df,
             registry=self._registry,
             study_name=study_name,
-            n_trials=self._n_trials,
+            n_trials=effective_trials,
             validation_years=self._validation_years,
             train_start=self._train_start,
             backends=self._backends,
@@ -125,15 +243,27 @@ class ContinuousLearner:
     def _maybe_deploy(self) -> None:
         active = self._registry.get_active_entry()
         if active is None:
+            _logger.debug("アクティブエントリなし: デプロイをスキップします")
             return
         deployed_ndcg = self._registry.get_deployed_ndcg()
         if active["ndcg_at_3"] <= deployed_ndcg + self._deploy_threshold:
+            _logger.info(
+                "改善不足のためデプロイをスキップします (active=%.4f, deployed=%.4f, threshold=%.4f)",
+                active["ndcg_at_3"],
+                deployed_ndcg,
+                self._deploy_threshold,
+            )
             return
         self._deploy(active)
 
     def _deploy(self, entry: FeatureEntry) -> None:
         feature_names = entry["feature_names"]
         model_version = self._make_model_version()
+        _logger.info(
+            "デプロイを開始します (model_version=%s, ndcg=%.4f)",
+            model_version,
+            entry["ndcg_at_3"],
+        )
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             filtered_parquet = write_filtered_parquet(
@@ -146,6 +276,7 @@ class ContinuousLearner:
         self._update_model_meta_json(model_version, len(feature_names))
         self._rebuild_docker()
         self._registry.record_deployment(entry["ndcg_at_3"], len(feature_names))
+        _logger.info("デプロイが完了しました")
 
     def _make_model_version(self) -> str:
         ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
@@ -264,10 +395,20 @@ def main(argv: list[str] | None = None) -> None:
         "--deploy-threshold", type=float, default=DEFAULT_DEPLOY_THRESHOLD
     )
     parser.add_argument("--max-rounds", type=int, default=None)
+    parser.add_argument("--pg-dsn", type=str, default=None)
+    parser.add_argument("--min-trials", type=int, default=5)
+    parser.add_argument("--max-trials", type=int, default=50)
     args = parser.parse_args(argv)
 
     df = pd.read_parquet(str(args.features_parquet))
     scripts_dir = Path(__file__).parent
+
+    load_controller = AdaptiveLoadController(
+        base_n_trials=int(args.n_trials),
+        min_n_trials=int(args.min_trials),
+        max_n_trials=int(args.max_trials),
+        pg_dsn=args.pg_dsn,
+    )
 
     with FeatureRegistry(args.registry_path) as registry:
         learner = ContinuousLearner(
@@ -279,6 +420,7 @@ def main(argv: list[str] | None = None) -> None:
             docker_image_tag=str(args.docker_tag),
             n_trials_per_round=int(args.n_trials),
             deploy_threshold=float(args.deploy_threshold),
+            load_controller=load_controller,
         )
         _setup_signal_handler(learner)
         learner.run(max_rounds=args.max_rounds)
