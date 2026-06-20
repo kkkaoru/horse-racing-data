@@ -969,6 +969,14 @@ def test_adaptive_controller_cpu_percent_returns_zero_without_psutil() -> None:
     assert result == 0.0
 
 
+def test_adaptive_controller_cpu_percent_returns_float_when_psutil_available() -> None:
+    ctrl = subject.AdaptiveLoadController(base_n_trials=20)
+    with patch.object(subject, "_PSUTIL_AVAILABLE", True):
+        result = ctrl._cpu_percent()
+    assert isinstance(result, float)
+    assert 0.0 <= result <= 100.0
+
+
 def test_adaptive_controller_mem_percent_returns_zero_without_psutil() -> None:
     ctrl = subject.AdaptiveLoadController(base_n_trials=20)
     with patch.object(subject, "_PSUTIL_AVAILABLE", False):
@@ -976,16 +984,31 @@ def test_adaptive_controller_mem_percent_returns_zero_without_psutil() -> None:
     assert result == 0.0
 
 
+def test_adaptive_controller_mem_percent_returns_float_when_psutil_available() -> None:
+    ctrl = subject.AdaptiveLoadController(base_n_trials=20)
+    with patch.object(subject, "_PSUTIL_AVAILABLE", True):
+        result = ctrl._mem_percent()
+    assert isinstance(result, float)
+    assert 0.0 <= result <= 100.0
+
+
+def test_adaptive_controller_pg_active_count_returns_none_when_connection_fails() -> None:
+    ctrl = subject.AdaptiveLoadController(
+        base_n_trials=20, pg_dsn="postgresql://localhost:59999/nonexistent_db"
+    )
+    result = ctrl._pg_active_count()
+    assert result is None
+
+
 # ---------------------------------------------------------------------------
 # ContinuousLearner with controller
 # ---------------------------------------------------------------------------
 
 
-def test_run_with_controller_calls_adjusted_n_trials() -> None:
+def test_run_with_controller_calls_round_params() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         ctrl = MagicMock(spec=subject.AdaptiveLoadController)
-        ctrl.adjusted_n_trials.return_value = 15
-        ctrl.inter_round_sleep_seconds.return_value = 0.0
+        ctrl.round_params.return_value = (15, 0.0)
         learner = _make_learner(
             registry=reg, n_trials_per_round=20, load_controller=ctrl
         )
@@ -994,14 +1017,13 @@ def test_run_with_controller_calls_adjusted_n_trials() -> None:
             patch.object(learner, "_maybe_deploy"),
         ):
             learner.run(max_rounds=1)
-        ctrl.adjusted_n_trials.assert_called_once()
+        ctrl.round_params.assert_called_once()
 
 
 def test_run_with_controller_sleeps_when_nonzero() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         ctrl = MagicMock(spec=subject.AdaptiveLoadController)
-        ctrl.adjusted_n_trials.return_value = 20
-        ctrl.inter_round_sleep_seconds.return_value = 5.0
+        ctrl.round_params.return_value = (20, 5.0)
         learner = _make_learner(
             registry=reg, n_trials_per_round=20, load_controller=ctrl
         )
@@ -1024,3 +1046,219 @@ def test_run_without_controller_no_sleep() -> None:
         ):
             learner.run(max_rounds=2)
         mock_sleep.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# AdaptiveLoadController.round_params
+# ---------------------------------------------------------------------------
+
+
+def test_adaptive_controller_round_params_high_load_reduces_trials_and_returns_sleep() -> None:
+    ctrl = subject.AdaptiveLoadController(base_n_trials=20, min_n_trials=5)
+    with (
+        patch.object(ctrl, "_cpu_percent", return_value=85.0),
+        patch.object(ctrl, "_mem_percent", return_value=40.0),
+    ):
+        n_trials, sleep_secs = ctrl.round_params()
+    assert n_trials == max(round(20 * 0.5), 5)
+    assert sleep_secs == 5.0
+
+
+def test_adaptive_controller_round_params_low_load_increases_trials_and_no_sleep() -> None:
+    ctrl = subject.AdaptiveLoadController(
+        base_n_trials=20, max_n_trials=50, cpu_low_pct=50.0, mem_low_pct=60.0
+    )
+    with (
+        patch.object(ctrl, "_cpu_percent", return_value=40.0),
+        patch.object(ctrl, "_mem_percent", return_value=50.0),
+    ):
+        n_trials, sleep_secs = ctrl.round_params()
+    assert n_trials == min(round(20 * 1.25), 50)
+    assert sleep_secs == 0.0
+
+
+def test_adaptive_controller_round_params_moderate_load_returns_base_and_no_sleep() -> None:
+    ctrl = subject.AdaptiveLoadController(base_n_trials=20)
+    with (
+        patch.object(ctrl, "_cpu_percent", return_value=60.0),
+        patch.object(ctrl, "_mem_percent", return_value=70.0),
+    ):
+        n_trials, sleep_secs = ctrl.round_params()
+    assert n_trials == 20
+    assert sleep_secs == 0.0
+
+
+def test_adaptive_controller_round_params_polls_cpu_mem_once() -> None:
+    ctrl = subject.AdaptiveLoadController(base_n_trials=20)
+    with (
+        patch.object(ctrl, "_cpu_percent", return_value=60.0) as mock_cpu,
+        patch.object(ctrl, "_mem_percent", return_value=70.0) as mock_mem,
+    ):
+        ctrl.round_params()
+    assert mock_cpu.call_count == 1
+    assert mock_mem.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# _stage_model returns Path / _update_model_meta_json returns prev content
+# ---------------------------------------------------------------------------
+
+
+def test_stage_model_returns_dest_path(tmp_path: Path) -> None:
+    model_dir = tmp_path / "model_dir"
+    model_dir.mkdir()
+    (model_dir / "model.json").write_text("{}", encoding="utf-8")
+
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, category="jra", repo_root=tmp_path)
+        result = learner._stage_model(model_dir, ["feat_speed"], "auto-jra-20260101000000")
+
+    expected = tmp_path / subject._CONTAINER_MODELS_ROOT / "jra" / "auto-jra-20260101000000"
+    assert result == expected
+
+
+def test_update_model_meta_json_returns_previous_content(tmp_path: Path) -> None:
+    import json as _json
+
+    json_path = tmp_path / subject._MODEL_META_JSON_PATH
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    original = _json.dumps({"model_versions": {"nar": "old-v"}, "feature_counts": {"nar": 50}})
+    json_path.write_text(original, encoding="utf-8")
+
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, category="jra", repo_root=tmp_path)
+        prev = learner._update_model_meta_json("auto-jra-v1", 100)
+
+    assert prev == original
+
+
+# ---------------------------------------------------------------------------
+# _rollback_deploy
+# ---------------------------------------------------------------------------
+
+
+def test_rollback_deploy_removes_staged_dir(tmp_path: Path) -> None:
+    staged = tmp_path / "staged_model"
+    staged.mkdir()
+    (staged / "model.json").write_text("{}", encoding="utf-8")
+
+    json_path = tmp_path / subject._MODEL_META_JSON_PATH
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text("{}", encoding="utf-8")
+
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, repo_root=tmp_path)
+        learner._rollback_deploy(staged, "{}")
+
+    assert not staged.exists()
+
+
+def test_rollback_deploy_restores_meta_json(tmp_path: Path) -> None:
+    staged = tmp_path / "staged_model"
+    staged.mkdir()
+
+    json_path = tmp_path / subject._MODEL_META_JSON_PATH
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text('{"after": true}', encoding="utf-8")
+
+    original_content = '{"before": true}'
+
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, repo_root=tmp_path)
+        learner._rollback_deploy(staged, original_content)
+
+    assert json_path.read_text(encoding="utf-8") == original_content
+
+
+def test_rollback_deploy_tolerates_missing_staged_dir(tmp_path: Path) -> None:
+    staged = tmp_path / "nonexistent_dir"
+
+    json_path = tmp_path / subject._MODEL_META_JSON_PATH
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text("{}", encoding="utf-8")
+
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, repo_root=tmp_path)
+        learner._rollback_deploy(staged, "{}")
+
+    assert json_path.read_text(encoding="utf-8") == "{}"
+
+
+def test_rollback_deploy_handles_rmtree_error(tmp_path: Path) -> None:
+    staged = tmp_path / "staged_model"
+    staged.mkdir()
+
+    json_path = tmp_path / subject._MODEL_META_JSON_PATH
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text("{}", encoding="utf-8")
+
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, repo_root=tmp_path)
+        with patch("continuous_learner.shutil.rmtree", side_effect=OSError("cannot remove")):
+            learner._rollback_deploy(staged, "{}")
+
+    assert json_path.read_text(encoding="utf-8") == "{}"
+
+
+def test_rollback_deploy_handles_write_error(tmp_path: Path) -> None:
+    staged = tmp_path / "nonexistent_dir"
+
+    json_path = tmp_path / subject._MODEL_META_JSON_PATH
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text('{"current": true}', encoding="utf-8")
+
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, repo_root=tmp_path)
+        with patch.object(Path, "write_text", side_effect=OSError("disk full")):
+            learner._rollback_deploy(staged, '{"original": true}')
+
+
+def test_deploy_rollback_when_docker_fails(tmp_path: Path) -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        entry = _make_entry(ndcg=0.75, feature_names=["feat_speed"])
+
+        staged_path = tmp_path / "staged"
+
+        with (
+            patch(
+                "continuous_learner.write_filtered_parquet",
+                return_value=Path("/tmp/f.parquet"),
+            ),
+            patch.object(
+                learner, "_train_production_model", return_value=Path("/tmp/model")
+            ),
+            patch.object(learner, "_stage_model", return_value=staged_path),
+            patch.object(learner, "_update_model_meta_json", return_value='{"prev": true}'),
+            patch.object(
+                learner, "_rebuild_docker", side_effect=RuntimeError("docker failed")
+            ),
+            patch.object(learner, "_rollback_deploy") as mock_rollback,
+        ):
+            with pytest.raises(RuntimeError, match="docker failed"):
+                learner._deploy(entry)
+
+        mock_rollback.assert_called_once_with(staged_path, '{"prev": true}')
+
+
+def test_deploy_does_not_rollback_on_success(tmp_path: Path) -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        entry = _make_entry(ndcg=0.75, feature_names=["feat_speed"])
+
+        with (
+            patch(
+                "continuous_learner.write_filtered_parquet",
+                return_value=Path("/tmp/f.parquet"),
+            ),
+            patch.object(
+                learner, "_train_production_model", return_value=Path("/tmp/model")
+            ),
+            patch.object(learner, "_stage_model", return_value=Path("/tmp/staged")),
+            patch.object(learner, "_update_model_meta_json", return_value='{"prev": true}'),
+            patch.object(learner, "_rebuild_docker"),
+            patch.object(learner, "_rollback_deploy") as mock_rollback,
+        ):
+            learner._deploy(entry)
+
+        mock_rollback.assert_not_called()

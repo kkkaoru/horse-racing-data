@@ -68,11 +68,13 @@ class FeatureRegistry:
             )
         """)
 
-    def _next_id(self) -> int:
+    def _next_id(self, table: str = "feature_trials") -> int:
         assert self._con is not None
-        row = self._con.execute(
-            "SELECT COALESCE(MAX(id), 0) + 1 FROM feature_trials"
-        ).fetchone()
+        sql = {
+            "feature_trials": "SELECT COALESCE(MAX(id), 0) + 1 FROM feature_trials",
+            "deployments": "SELECT COALESCE(MAX(id), 0) + 1 FROM deployments",
+        }[table]
+        row = self._con.execute(sql).fetchone()
         assert row is not None
         return int(row[0])
 
@@ -142,12 +144,7 @@ class FeatureRegistry:
         return False
 
     def _next_deployment_id(self) -> int:
-        assert self._con is not None
-        row = self._con.execute(
-            "SELECT COALESCE(MAX(id), 0) + 1 FROM deployments"
-        ).fetchone()
-        assert row is not None
-        return int(row[0])
+        return self._next_id("deployments")
 
     def get_deployed_ndcg(self) -> float:
         assert self._con is not None

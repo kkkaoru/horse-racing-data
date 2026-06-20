@@ -15,6 +15,7 @@ import pandas as pd
 from feature_registry import FeatureRegistry
 from finish_position_catboost import train_catboost_ranker
 from finish_position_lightgbm import (
+    LABEL_COLUMNS,
     META_COLUMNS,
     OBJECTIVE_LAMBDARANK,
     FoldSplit,
@@ -69,11 +70,7 @@ _CB_ARGS: Final[argparse.Namespace] = argparse.Namespace(
     no_cat_features=False,
 )
 
-_LABEL_COLS: Final[frozenset[str]] = frozenset({
-    "finish_position", "finish_norm",
-    "target_corner_1_norm", "target_corner_3_norm", "target_corner_4_norm",
-    "target_running_style_class",
-})
+_LABEL_COLS: Final[frozenset[str]] = frozenset(LABEL_COLUMNS)
 
 _RELEVANCE_MAP: Final[dict[int, float]] = {1: 3.0, 2: 2.0, 3: 1.0}
 _IDEAL_DCG_AT_3: Final[float] = (

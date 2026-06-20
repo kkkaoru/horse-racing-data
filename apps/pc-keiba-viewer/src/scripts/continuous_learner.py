@@ -26,7 +26,7 @@ from feature_explorer import (
     run_exploration,
 )
 from feature_registry import FeatureEntry, FeatureRegistry
-from finish_position_lightgbm import META_COLUMNS
+from finish_position_lightgbm import LABEL_COLUMNS, META_COLUMNS
 
 try:
     import psutil as _psutil
@@ -57,16 +57,7 @@ def setup_logging() -> None:
     root.setLevel(logging.INFO)
     root.addHandler(handler)
 
-_LABEL_COLS: Final[frozenset[str]] = frozenset(
-    {
-        "finish_position",
-        "finish_norm",
-        "target_corner_1_norm",
-        "target_corner_3_norm",
-        "target_corner_4_norm",
-        "target_running_style_class",
-    }
-)
+_LABEL_COLS: Final[frozenset[str]] = frozenset(LABEL_COLUMNS)
 
 _TRAINING_SCRIPT: Final[dict[str, str]] = {
     "jra": "train_finish_position_catboost_walk_forward.py",
@@ -144,6 +135,16 @@ class AdaptiveLoadController:
         if cpu > self._cpu_high_pct or mem > self._mem_high_pct:
             return 5.0
         return 0.0
+
+    def round_params(self) -> tuple[int, float]:
+        """Read CPU/mem once and return (n_trials, sleep_secs) for the upcoming round."""
+        cpu = self._cpu_percent()
+        mem = self._mem_percent()
+        if cpu > self._cpu_high_pct or mem > self._mem_high_pct:
+            return max(round(self._base_n_trials * 0.5), self._min_n_trials), 5.0
+        if cpu < self._cpu_low_pct and mem < self._mem_low_pct:
+            return min(round(self._base_n_trials * 1.25), self._max_n_trials), 0.0
+        return self._base_n_trials, 0.0
 
     def _cpu_percent(self) -> float:
         """psutil.cpu_percent(interval=0.5). Returns 0.0 if psutil not installed."""
@@ -232,15 +233,15 @@ class ContinuousLearner:
                 break
 
             actual_trials = self._n_trials
+            sleep_secs = 0.0
             if self._load_controller is not None:
-                adjusted = self._load_controller.adjusted_n_trials()
-                if adjusted != self._n_trials:
+                actual_trials, sleep_secs = self._load_controller.round_params()
+                if actual_trials != self._n_trials:
                     _logger.info(
                         "n_trials adjusted for system load: %d → %d",
                         self._n_trials,
-                        adjusted,
+                        actual_trials,
                     )
-                actual_trials = adjusted
 
             progress = (
                 f"{round_num + 1}/{max_rounds}" if max_rounds else f"#{round_num + 1}"
@@ -254,14 +255,12 @@ class ContinuousLearner:
                 "─── round %s done (elapsed: %.1fs) ───", progress, _elapsed
             )
 
-            if self._load_controller is not None:
-                sleep_secs = self._load_controller.inter_round_sleep_seconds()
-                if sleep_secs > 0:
-                    _logger.info(
-                        "system load high — sleeping %.1fs before next round",
-                        sleep_secs,
-                    )
-                    time.sleep(sleep_secs)
+            if sleep_secs > 0:
+                _logger.info(
+                    "system load high — sleeping %.1fs before next round",
+                    sleep_secs,
+                )
+                time.sleep(sleep_secs)
 
             round_num += 1
 
@@ -326,11 +325,16 @@ class ContinuousLearner:
                 filtered_parquet, tmp_path / "models", model_version
             )
             _logger.info("│  [3/5] staging model artifacts ...")
-            self._stage_model(model_dir, feature_names, model_version)
+            staged_dest = self._stage_model(model_dir, feature_names, model_version)
         _logger.info("│  [4/5] updating model_meta.json ...")
-        self._update_model_meta_json(model_version, len(feature_names))
+        prev_meta_content = self._update_model_meta_json(model_version, len(feature_names))
         _logger.info("│  [5/5] rebuilding Docker image ...")
-        self._rebuild_docker()
+        try:
+            self._rebuild_docker()
+        except Exception:
+            _logger.error("│  Docker build failed — rolling back staged artifacts")
+            self._rollback_deploy(staged_dest, prev_meta_content)
+            raise
         self._registry.record_deployment(entry["ndcg_at_3"], len(feature_names))
         _logger.info("└── deploy finished %s", "─" * 44)
 
@@ -371,7 +375,7 @@ class ContinuousLearner:
 
     def _stage_model(
         self, model_dir: Path, feature_names: list[str], model_version: str
-    ) -> None:
+    ) -> Path:
         dest = self._repo_root / _CONTAINER_MODELS_ROOT / self._category / model_version
         dest.mkdir(parents=True, exist_ok=True)
         shutil.copy2(model_dir / "model.json", dest / "model.json")
@@ -380,12 +384,14 @@ class ContinuousLearner:
             encoding="utf-8",
         )
         _logger.info("│    staged to: %s", dest)
+        return dest
 
-    def _update_model_meta_json(self, model_version: str, feature_count: int) -> None:
+    def _update_model_meta_json(self, model_version: str, feature_count: int) -> str:
         json_path = self._repo_root / _MODEL_META_JSON_PATH
         if not json_path.exists():
             raise FileNotFoundError(f"model_meta.json not found: {json_path}")
-        payload = json.loads(json_path.read_text(encoding="utf-8"))
+        prev_content = json_path.read_text(encoding="utf-8")
+        payload = json.loads(prev_content)
         if not isinstance(payload, dict):
             raise ValueError(f"model_meta.json must be a JSON object: {json_path}")
         raw_mv = payload.get("model_versions")
@@ -408,6 +414,7 @@ class ContinuousLearner:
             ),
             encoding="utf-8",
         )
+        return prev_content
 
     def _rebuild_docker(self) -> None:
         dockerfile = (
@@ -430,6 +437,21 @@ class ContinuousLearner:
             check=True,
         )
         _logger.info("│    Docker build succeeded")
+
+    def _rollback_deploy(self, staged_dest: Path, prev_meta_content: str) -> None:
+        """Remove staged artifacts and restore model_meta.json after a failed Docker build."""
+        try:
+            if staged_dest.exists():
+                shutil.rmtree(staged_dest)
+                _logger.info("│    [rollback] removed staged dir: %s", staged_dest)
+        except Exception as exc:
+            _logger.warning("│    [rollback] failed to remove staged dir: %s", exc)
+        try:
+            json_path = self._repo_root / _MODEL_META_JSON_PATH
+            json_path.write_text(prev_meta_content, encoding="utf-8")
+            _logger.info("│    [rollback] restored model_meta.json")
+        except Exception as exc:
+            _logger.warning("│    [rollback] failed to restore model_meta.json: %s", exc)
 
 
 def _setup_signal_handler(learner: ContinuousLearner) -> None:
