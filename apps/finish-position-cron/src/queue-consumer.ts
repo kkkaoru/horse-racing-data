@@ -147,10 +147,12 @@ const processPerRaceRescore = (
 const processMessage = async (message: Message<PredictQueueMessage>, env: Env): Promise<void> => {
   if (isPerRaceRescore(message)) return processPerRaceRescore(message, env);
   const { category, runYmd, daysAhead, mode } = message.body;
-  const claimed = await claimRun({ category, env, runYmd });
-  if (!claimed.proceed) {
-    message.ack();
-    return;
+  if (!message.body.skipDedup) {
+    const claimed = await claimRun({ category, env, runYmd });
+    if (!claimed.proceed) {
+      message.ack();
+      return;
+    }
   }
   const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(
     `${PREDICT_DO_NAME_PREFIX}${category}`,

@@ -15,6 +15,7 @@ import {
   planRescoreForCategory,
   runRaceCoordinatorTick,
   selectRacesWithinWindow,
+  triggerWeightRebuildIfNeeded,
 } from "./race-coordinator";
 import type { Env } from "./types";
 
@@ -321,4 +322,99 @@ test("runRaceCoordinatorTick is a shadow no-op when the coordinator is disabled"
       withinWindow: 0,
     },
   ]);
+});
+
+test("triggerWeightRebuildIfNeeded claims synthetic WR:00 race in the DO", async () => {
+  await triggerWeightRebuildIfNeeded({
+    category: "jra",
+    date: "2026-06-19",
+    env: makeEnv(),
+    runYmd: "20260619",
+  });
+  expect(claimRescoreRaceMock).toHaveBeenCalledWith({
+    category: "jra",
+    env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
+    keibajoCode: "WR",
+    raceBango: "00",
+    runYmd: "20260619",
+  });
+});
+
+test("triggerWeightRebuildIfNeeded sends a full-mode skipDedup message when claim proceeds", async () => {
+  claimRescoreRaceMock.mockResolvedValue({ proceed: true });
+  const enqueued = await triggerWeightRebuildIfNeeded({
+    category: "jra",
+    date: "2026-06-19",
+    env: makeEnv(),
+    runYmd: "20260619",
+  });
+  expect(sendMock).toHaveBeenCalledWith({
+    category: "jra",
+    daysAhead: 0,
+    mode: "full",
+    runDate: "2026-06-19",
+    runDateIso: "2026-06-19",
+    runYmd: "20260619",
+    skipDedup: true,
+  });
+  expect(enqueued).toBe(true);
+});
+
+test("triggerWeightRebuildIfNeeded does not send when claim is rejected", async () => {
+  claimRescoreRaceMock.mockResolvedValue({ proceed: false, state: "enqueued" });
+  const enqueued = await triggerWeightRebuildIfNeeded({
+    category: "jra",
+    date: "2026-06-19",
+    env: makeEnv(),
+    runYmd: "20260619",
+  });
+  expect(sendMock).not.toHaveBeenCalled();
+  expect(enqueued).toBe(false);
+});
+
+test("runRaceCoordinatorTick triggers weight rebuild for categories with enqueued races", async () => {
+  stubD1Rows([
+    { keibajo_code: "05", race_bango: "11", race_start_at_jst: "2026-06-19T14:10:00+09:00" },
+  ]);
+  await runRaceCoordinatorTick({
+    env: makeEnv(),
+    leadMinutes: 25,
+    now: new Date("2026-06-19T05:00:00.000Z"),
+  });
+  expect(claimRescoreRaceMock).toHaveBeenCalledWith({
+    category: "jra",
+    env: expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
+    keibajoCode: "WR",
+    raceBango: "00",
+    runYmd: "20260619",
+  });
+  expect(sendMock).toHaveBeenCalledWith({
+    category: "jra",
+    daysAhead: 0,
+    mode: "full",
+    runDate: "2026-06-19",
+    runDateIso: "2026-06-19",
+    runYmd: "20260619",
+    skipDedup: true,
+  });
+});
+
+test("runRaceCoordinatorTick does not trigger weight rebuild when no races are enqueued", async () => {
+  stubD1Rows([]);
+  await runRaceCoordinatorTick({
+    env: makeEnv(),
+    leadMinutes: 25,
+    now: new Date("2026-06-19T05:00:00.000Z"),
+  });
+  expect(sendMock).not.toHaveBeenCalled();
+});
+
+test("runRaceCoordinatorTick does not trigger weight rebuild when the coordinator is disabled", async () => {
+  await runRaceCoordinatorTick({
+    env: makeEnv({ COORDINATOR_ENABLED: undefined }),
+    leadMinutes: 25,
+    now: new Date("2026-06-19T05:00:00.000Z"),
+  });
+  expect(claimRescoreRaceMock).not.toHaveBeenCalled();
+  expect(sendMock).not.toHaveBeenCalled();
 });

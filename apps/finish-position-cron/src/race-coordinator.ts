@@ -25,6 +25,10 @@ export const DEFAULT_RESCORE_LEAD_MINUTES = 25;
 const COORDINATOR_ENABLED_FLAG = "1";
 const RESCORE_MODE: PredictMode = "rescore";
 const RESCORE_DAYS_AHEAD = 0;
+const WEIGHT_REBUILD_KEIBAJO = "WR";
+const WEIGHT_REBUILD_RACE = "00";
+const WEIGHT_REBUILD_DAYS_AHEAD = 0;
+const FULL_MODE: PredictMode = "full";
 const MS_PER_MINUTE = 60 * 1000;
 const JST_OFFSET_HOURS = 9;
 const JST_OFFSET_MS = JST_OFFSET_HOURS * 60 * 60 * 1000;
@@ -101,6 +105,13 @@ interface RaceCoordinatorTickParams {
   env: Env;
   now: Date;
   leadMinutes: number;
+}
+
+interface WeightRebuildParams {
+  category: PredictCategory;
+  date: string;
+  env: Env;
+  runYmd: string;
 }
 
 const pad = (value: string, width: number): string => value.padStart(width, "0");
@@ -246,6 +257,35 @@ const buildShadowSummary = (category: PredictCategory, date: string): RaceCoordi
 export const isCoordinatorEnabled = (env: Env): boolean =>
   env.COORDINATOR_ENABLED === COORDINATOR_ENABLED_FLAG;
 
+// Claim a synthetic WR:00 race in the DO (strong consistency) and, when this is
+// the first claim of the day for the category, enqueue a full-mode build so the
+// Container re-runs the DuckDB pipeline with the now-available weight data.
+// Deduped per-category per-day. Returns true when the full build was enqueued.
+export const triggerWeightRebuildIfNeeded = async (
+  params: WeightRebuildParams,
+): Promise<boolean> => {
+  const claim = await claimRescoreRace({
+    category: params.category,
+    env: params.env,
+    keibajoCode: WEIGHT_REBUILD_KEIBAJO,
+    raceBango: WEIGHT_REBUILD_RACE,
+    runYmd: params.runYmd,
+  });
+  if (!claim.proceed) {
+    return false;
+  }
+  await params.env.PREDICT_QUEUE.send({
+    category: params.category,
+    daysAhead: WEIGHT_REBUILD_DAYS_AHEAD,
+    mode: FULL_MODE,
+    runDate: params.date,
+    runDateIso: params.date,
+    runYmd: params.runYmd,
+    skipDedup: true,
+  } satisfies PredictQueueMessage);
+  return true;
+};
+
 export const runRaceCoordinatorTick = async (
   params: RaceCoordinatorTickParams,
 ): Promise<RaceCoordinatorSummary[]> => {
@@ -256,7 +296,7 @@ export const runRaceCoordinatorTick = async (
     return ALL_CATEGORIES.map((category) => buildShadowSummary(category, date));
   }
   const runYmd = formatRunYmdJst(params.now);
-  return Promise.all(
+  const summaries = await Promise.all(
     ALL_CATEGORIES.map((category) =>
       planRescoreForCategory({
         category,
@@ -268,4 +308,20 @@ export const runRaceCoordinatorTick = async (
       }),
     ),
   );
+  // Trigger a Container full rebuild (with fresh weight data) for categories
+  // that had at least one race newly enqueued. Deduped per-category per-day via
+  // claimRescoreRace with synthetic key WR:00 — only fires once per day.
+  await Promise.all(
+    summaries
+      .filter((summary) => summary.enqueued > 0)
+      .map((summary) =>
+        triggerWeightRebuildIfNeeded({
+          category: summary.category,
+          date: summary.date,
+          env: params.env,
+          runYmd,
+        }),
+      ),
+  );
+  return summaries;
 };

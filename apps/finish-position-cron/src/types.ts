@@ -78,6 +78,12 @@ export interface PredictQueueMessage {
   // per-category messages, so the existing consumer is unaffected.
   keibajoCode?: string;
   raceBango?: string;
+  // Gates the weight-rebuild full build bypass: when the per-race coordinator
+  // detects races within the window (weight is now available), it triggers a
+  // second full build for that category with skipDedup=true so the queue
+  // consumer skips the per-category claimRun dedup gate and processes the
+  // Container full build identically. Absent/false keeps the normal dedup path.
+  skipDedup?: boolean;
 }
 
 export interface PredictRunState {

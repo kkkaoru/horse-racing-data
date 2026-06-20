@@ -423,3 +423,41 @@ test("keeps a per-category rescore (no keibajo) on the container path", async ()
   expect(stubFetchMock).toHaveBeenCalledTimes(1);
   expect(ackMock).toHaveBeenCalledTimes(1);
 });
+
+test("skips claimRun and processes via container when skipDedup is true", async () => {
+  await handleQueue(makeBatch([makeMessage({ mode: "full", skipDedup: true })]), makeEnv());
+  expect(claimRunMock).not.toHaveBeenCalled();
+  expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  expect(completeRunMock).toHaveBeenCalledWith(expect.objectContaining({ status: "success" }));
+  expect(ackMock).toHaveBeenCalledTimes(1);
+});
+
+test("retries a skipDedup message when container fetch fails", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  stubFetchMock.mockRejectedValue(new Error("container down"));
+  await handleQueue(makeBatch([makeMessage({ mode: "full", skipDedup: true })]), makeEnv());
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  expect(completeRunMock).toHaveBeenCalledWith(expect.objectContaining({ status: "error" }));
+  errorSpy.mockRestore();
+});
+
+test("does not treat per-race rescore as skipDedup even if skipDedup is set", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "05",
+        mode: "rescore",
+        raceBango: "11",
+        runYmd: "20260619",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(rescoreJraRaceMock).toHaveBeenCalledTimes(1);
+  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  consoleSpy.mockRestore();
+});
