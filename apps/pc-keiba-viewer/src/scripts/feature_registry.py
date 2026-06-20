@@ -59,6 +59,14 @@ class FeatureRegistry:
                 created_at      TEXT    NOT NULL
             )
         """)
+        self._con.execute("""
+            CREATE TABLE IF NOT EXISTS deployments (
+                id            INTEGER PRIMARY KEY,
+                ndcg_at_3     DOUBLE  NOT NULL,
+                feature_count INTEGER NOT NULL,
+                deployed_at   TEXT    NOT NULL
+            )
+        """)
 
     def _next_id(self) -> int:
         assert self._con is not None
@@ -70,9 +78,7 @@ class FeatureRegistry:
 
     def get_best_ndcg(self) -> float:
         assert self._con is not None
-        row = self._con.execute(
-            "SELECT MAX(ndcg_at_3) FROM feature_trials"
-        ).fetchone()
+        row = self._con.execute("SELECT MAX(ndcg_at_3) FROM feature_trials").fetchone()
         if row is None or row[0] is None:
             return 0.0
         return float(row[0])
@@ -127,11 +133,41 @@ class FeatureRegistry:
         threshold: float = NDCG_IMPROVEMENT_THRESHOLD,
     ) -> bool:
         current_best = self.get_best_ndcg()
-        entry_id = self.record_trial(trial_id, ndcg_at_3, feature_names, definition_json)
+        entry_id = self.record_trial(
+            trial_id, ndcg_at_3, feature_names, definition_json
+        )
         if ndcg_at_3 > current_best + threshold:
             self.activate(entry_id)
             return True
         return False
+
+    def _next_deployment_id(self) -> int:
+        assert self._con is not None
+        row = self._con.execute(
+            "SELECT COALESCE(MAX(id), 0) + 1 FROM deployments"
+        ).fetchone()
+        assert row is not None
+        return int(row[0])
+
+    def get_deployed_ndcg(self) -> float:
+        assert self._con is not None
+        row = self._con.execute("SELECT MAX(ndcg_at_3) FROM deployments").fetchone()
+        if row is None or row[0] is None:
+            return 0.0
+        return float(row[0])
+
+    def record_deployment(self, ndcg_at_3: float, feature_count: int) -> None:
+        assert self._con is not None
+        entry_id = self._next_deployment_id()
+        self._con.execute(
+            "INSERT INTO deployments (id, ndcg_at_3, feature_count, deployed_at) VALUES (?, ?, ?, ?)",
+            [
+                entry_id,
+                ndcg_at_3,
+                feature_count,
+                datetime.now(timezone.utc).isoformat(),
+            ],
+        )
 
     def list_trials(self, limit: int = 20) -> list[FeatureEntry]:
         assert self._con is not None

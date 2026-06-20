@@ -14,6 +14,8 @@ Ban-ei is unchanged from v7-lineage — v8 only retrained the JRA + NAR boosters
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Final, Literal, get_args
 
 Category = Literal["jra", "nar", "ban-ei"]
@@ -21,14 +23,54 @@ Architecture = Literal["catboost", "xgboost", "lightgbm"]
 
 CATEGORIES: Final[tuple[Category, ...]] = get_args(Category)
 
-# Per-class JRA model registry — see predict_lib/per_class.py for routing logic.
-# MODEL_VERSION_BY_CATEGORY['jra'] is the fallback model when no class-specific
-# model is registered.
-MODEL_VERSION_BY_CATEGORY: Final[dict[Category, str]] = {
+_OVERRIDE_PATH: Final[Path] = Path(__file__).parent / "model_meta_override.json"
+
+_DEFAULT_MODEL_VERSIONS: Final[dict[Category, str]] = {
     "jra": "iter20-jra-cb-2013-v8",
     "nar": "iter12-nar-xgb-hpo-v8",
     "ban-ei": "banei-cb-v7-lineage-wf-21y",
 }
+
+_DEFAULT_FEATURE_COUNTS: Final[dict[Category, int]] = {
+    "jra": 244,
+    "nar": 192,
+    "ban-ei": 111,
+}
+
+
+def _load_overrides() -> tuple[dict[Category, str], dict[Category, int]]:
+    """Load optional model_meta_override.json written by the continuous learner."""
+    versions: dict[Category, str] = dict(_DEFAULT_MODEL_VERSIONS)
+    counts: dict[Category, int] = dict(_DEFAULT_FEATURE_COUNTS)
+    if not _OVERRIDE_PATH.exists():
+        return versions, counts
+    try:
+        payload = json.loads(_OVERRIDE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return versions, counts
+    if not isinstance(payload, dict):
+        return versions, counts
+    mv = payload.get("model_versions")
+    if isinstance(mv, dict):
+        for cat in get_args(Category):
+            val = mv.get(cat)
+            if isinstance(val, str):
+                versions[cat] = val
+    fc = payload.get("feature_counts")
+    if isinstance(fc, dict):
+        for cat in get_args(Category):
+            val = fc.get(cat)
+            if isinstance(val, int):
+                counts[cat] = val
+    return versions, counts
+
+
+_resolved_versions, _resolved_counts = _load_overrides()
+
+# Per-class JRA model registry — see predict_lib/per_class.py for routing logic.
+# MODEL_VERSION_BY_CATEGORY['jra'] is the fallback model when no class-specific
+# model is registered.
+MODEL_VERSION_BY_CATEGORY: Final[dict[Category, str]] = _resolved_versions
 
 ARCHITECTURE_BY_CATEGORY: Final[dict[Category, Architecture]] = {
     "jra": "catboost",
@@ -36,11 +78,7 @@ ARCHITECTURE_BY_CATEGORY: Final[dict[Category, Architecture]] = {
     "ban-ei": "catboost",
 }
 
-FEATURE_COUNT_BY_CATEGORY: Final[dict[Category, int]] = {
-    "jra": 244,
-    "nar": 192,
-    "ban-ei": 111,
-}
+FEATURE_COUNT_BY_CATEGORY: Final[dict[Category, int]] = _resolved_counts
 
 R2_KEY_PREFIX: Final[str] = "finish-position"
 MODEL_FILE_NAME: Final[str] = "model.json"

@@ -57,7 +57,9 @@ def test_maybe_promote_when_ndcg_exceeds_threshold_promotes_and_returns_true() -
         assert active["trial_id"] == "trial-2"
 
 
-def test_maybe_promote_when_ndcg_does_not_exceed_threshold_records_but_no_promote() -> None:
+def test_maybe_promote_when_ndcg_does_not_exceed_threshold_records_but_no_promote() -> (
+    None
+):
     with subject.FeatureRegistry(Path(":memory:")) as reg:
         reg.record_trial("trial-1", 0.5, ["feat_a"])
         reg.activate(1)
@@ -186,3 +188,38 @@ def test_record_trial_default_definition_json_is_empty_object() -> None:
 def test_list_trials_empty_registry_returns_empty_list() -> None:
     with subject.FeatureRegistry(Path(":memory:")) as reg:
         assert reg.list_trials() == []
+
+
+def test_get_deployed_ndcg_on_empty_registry_returns_zero() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        assert reg.get_deployed_ndcg() == 0.0
+
+
+def test_record_deployment_stores_ndcg_and_feature_count() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_deployment(0.75, 50)
+        assert reg.get_deployed_ndcg() == 0.75
+
+
+def test_record_deployment_multiple_get_deployed_ndcg_returns_max() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_deployment(0.60, 30)
+        reg.record_deployment(0.80, 45)
+        reg.record_deployment(0.70, 40)
+        assert reg.get_deployed_ndcg() == 0.80
+
+
+def test_next_deployment_id_increments_each_time() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_deployment(0.50, 10)
+        reg.record_deployment(0.60, 20)
+        assert reg.get_deployed_ndcg() == 0.60
+
+
+def test_record_deployment_stores_timestamp() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_deployment(0.55, 25)
+        assert reg._con is not None
+        row = reg._con.execute("SELECT deployed_at FROM deployments").fetchone()
+        assert row is not None
+        assert row[0] != ""
