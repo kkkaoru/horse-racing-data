@@ -40,9 +40,9 @@ _logger = logging.getLogger(__name__)
 
 
 def setup_logging() -> None:
-    """標準出力へ ISO タイムスタンプ付きで INFO ログを出力するよう root logger を設定する。
+    """Configure the root logger to write INFO-level logs to stdout with ISO timestamps.
 
-    既にハンドラが登録済みの場合（pytest など）は何もしない。
+    No-ops when handlers are already registered (e.g. pytest captures).
     """
     root = logging.getLogger()
     if root.handlers:
@@ -218,9 +218,9 @@ class ContinuousLearner:
         self._stop = True
 
     def run(self, max_rounds: int | None = None) -> None:
-        round_label = f"最大 {max_rounds} ラウンド" if max_rounds is not None else "無制限"
+        round_label = f"max {max_rounds} rounds" if max_rounds is not None else "unlimited"
         _logger.info(
-            "━━━ 連続学習ループ 開始 ━━━  カテゴリ: %s | %s | 基本試行数: %d",
+            "━━━ continuous learning loop started ━━━  category: %s | %s | base trials: %d",
             self._category,
             round_label,
             self._n_trials,
@@ -228,7 +228,7 @@ class ContinuousLearner:
         round_num = 0
         while not self._stop:
             if max_rounds is not None and round_num >= max_rounds:
-                _logger.info("指定ラウンド数 (%d) に達したため終了します", max_rounds)
+                _logger.info("reached max rounds (%d) — stopping", max_rounds)
                 break
 
             actual_trials = self._n_trials
@@ -236,7 +236,7 @@ class ContinuousLearner:
                 adjusted = self._load_controller.adjusted_n_trials()
                 if adjusted != self._n_trials:
                     _logger.info(
-                        "システム負荷に応じて試行数を調整しました: %d → %d",
+                        "n_trials adjusted for system load: %d → %d",
                         self._n_trials,
                         adjusted,
                     )
@@ -245,20 +245,20 @@ class ContinuousLearner:
             progress = (
                 f"{round_num + 1}/{max_rounds}" if max_rounds else f"#{round_num + 1}"
             )
-            _logger.info("─── ラウンド %s 開始 (試行数: %d) ───", progress, actual_trials)
+            _logger.info("─── round %s started (trials: %d) ───", progress, actual_trials)
             _round_t0 = time.perf_counter()
             self._explore_round(round_num, n_trials=actual_trials)
             self._maybe_deploy()
             _elapsed = time.perf_counter() - _round_t0
             _logger.info(
-                "─── ラウンド %s 完了 (所要時間: %.1f 秒) ───", progress, _elapsed
+                "─── round %s done (elapsed: %.1fs) ───", progress, _elapsed
             )
 
             if self._load_controller is not None:
                 sleep_secs = self._load_controller.inter_round_sleep_seconds()
                 if sleep_secs > 0:
                     _logger.info(
-                        "システム負荷が高いため次ラウンドまで %.1f 秒待機します",
+                        "system load high — sleeping %.1fs before next round",
                         sleep_secs,
                     )
                     time.sleep(sleep_secs)
@@ -266,7 +266,7 @@ class ContinuousLearner:
             round_num += 1
 
         _logger.info(
-            "━━━ 連続学習ループ 終了 ━━━  完了ラウンド数: %d", round_num
+            "━━━ continuous learning loop finished ━━━  completed rounds: %d", round_num
         )
 
     def _explore_round(self, round_num: int, n_trials: int | None = None) -> None:
@@ -285,14 +285,14 @@ class ContinuousLearner:
     def _maybe_deploy(self) -> None:
         active = self._registry.get_active_entry()
         if active is None:
-            _logger.debug("アクティブエントリなし: デプロイをスキップします")
+            _logger.debug("no active entry — skipping deploy")
             return
         deployed_ndcg = self._registry.get_deployed_ndcg()
         delta = active["ndcg_at_3"] - deployed_ndcg
         if delta <= self._deploy_threshold:
             _logger.info(
-                "デプロイ閾値未満のためスキップします  "
-                "現在: %.4f | デプロイ済み: %.4f | 差分: %+.4f | 必要改善幅: %.4f",
+                "deploy skipped: improvement below threshold  "
+                "current: %.4f | deployed: %.4f | delta: %+.4f | gap to threshold: %.4f",
                 active["ndcg_at_3"],
                 deployed_ndcg,
                 delta,
@@ -300,7 +300,7 @@ class ContinuousLearner:
             )
             return
         _logger.info(
-            "NDCG@3 が %+.4f 改善しました (%.4f → %.4f): デプロイを開始します",
+            "NDCG@3 improved by %+.4f (%.4f → %.4f) — triggering deploy",
             delta,
             deployed_ndcg,
             active["ndcg_at_3"],
@@ -310,29 +310,29 @@ class ContinuousLearner:
     def _deploy(self, entry: FeatureEntry) -> None:
         feature_names = entry["feature_names"]
         model_version = self._make_model_version()
-        _logger.info("┌── デプロイ開始 %s", "─" * 46)
-        _logger.info("│  バージョン : %s", model_version)
-        _logger.info("│  NDCG@3    : %.4f", entry["ndcg_at_3"])
-        _logger.info("│  特徴量数  : %d 列", len(feature_names))
+        _logger.info("┌── deploy started %s", "─" * 44)
+        _logger.info("│  version    : %s", model_version)
+        _logger.info("│  ndcg@3     : %.4f", entry["ndcg_at_3"])
+        _logger.info("│  features   : %d columns", len(feature_names))
         _logger.info("│")
-        _logger.info("│  [1/5] 特徴量 parquet を絞り込み中 ...")
+        _logger.info("│  [1/5] filtering feature parquet ...")
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             filtered_parquet = write_filtered_parquet(
                 self._df, feature_names, tmp_path / "parquet"
             )
-            _logger.info("│  [2/5] 本番モデルを訓練中 ...")
+            _logger.info("│  [2/5] training production model ...")
             model_dir = self._train_production_model(
                 filtered_parquet, tmp_path / "models", model_version
             )
-            _logger.info("│  [3/5] モデルをステージングディレクトリへコピー中 ...")
+            _logger.info("│  [3/5] staging model artifacts ...")
             self._stage_model(model_dir, feature_names, model_version)
-        _logger.info("│  [4/5] model_meta.json を更新中 ...")
+        _logger.info("│  [4/5] updating model_meta.json ...")
         self._update_model_meta_json(model_version, len(feature_names))
-        _logger.info("│  [5/5] Docker イメージをビルド中 ...")
+        _logger.info("│  [5/5] rebuilding Docker image ...")
         self._rebuild_docker()
         self._registry.record_deployment(entry["ndcg_at_3"], len(feature_names))
-        _logger.info("└── デプロイ完了 %s", "─" * 46)
+        _logger.info("└── deploy finished %s", "─" * 44)
 
     def _make_model_version(self) -> str:
         ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
@@ -345,11 +345,7 @@ class ContinuousLearner:
             self._category, "train_finish_position_catboost_walk_forward.py"
         )
         year_to = max(self._validation_years)
-        _logger.info(
-            "│    スクリプト: %s  対象年: %d",
-            script_name,
-            year_to,
-        )
+        _logger.info("│    script: %s  target year: %d", script_name, year_to)
         cmd = [
             sys.executable,
             str(self._scripts_dir / script_name),
@@ -383,7 +379,7 @@ class ContinuousLearner:
             json.dumps({"feature_names": feature_names}, ensure_ascii=False),
             encoding="utf-8",
         )
-        _logger.info("│    ステージング先: %s", dest)
+        _logger.info("│    staged to: %s", dest)
 
     def _update_model_meta_json(self, model_version: str, feature_count: int) -> None:
         json_path = self._repo_root / _MODEL_META_JSON_PATH
@@ -400,12 +396,10 @@ class ContinuousLearner:
         feature_counts: dict[str, int] = (
             dict(raw_fc) if isinstance(raw_fc, dict) else {}
         )
-        prev_version = model_versions.get(self._category, "なし")
+        prev_version = model_versions.get(self._category, "none")
         model_versions[self._category] = model_version
         feature_counts[self._category] = feature_count
-        _logger.info(
-            "│    モデルバージョン更新: %s → %s", prev_version, model_version
-        )
+        _logger.info("│    model version: %s → %s", prev_version, model_version)
         json_path.write_text(
             json.dumps(
                 {"model_versions": model_versions, "feature_counts": feature_counts},
@@ -422,7 +416,7 @@ class ContinuousLearner:
             / "finish-position-predict-container"
             / "Dockerfile"
         )
-        _logger.info("│    ビルド対象イメージ: %s", self._docker_image_tag)
+        _logger.info("│    building image: %s", self._docker_image_tag)
         subprocess.run(
             [
                 "docker",
@@ -435,7 +429,7 @@ class ContinuousLearner:
             ],
             check=True,
         )
-        _logger.info("│    Docker ビルド成功")
+        _logger.info("│    Docker build succeeded")
 
 
 def _setup_signal_handler(learner: ContinuousLearner) -> None:
