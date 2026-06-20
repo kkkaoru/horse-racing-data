@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
+import pytest
+
 import pandas as pd
 
 import continuous_learner as subject
@@ -331,7 +333,7 @@ def test_deploy_calls_pipeline_steps_in_correct_order() -> None:
             ),
             patch.object(
                 learner,
-                "_write_model_meta_override",
+                "_update_model_meta_json",
                 side_effect=lambda *a, **kw: order.append("meta"),
             ),
             patch.object(
@@ -357,7 +359,7 @@ def test_deploy_records_deployment_in_registry() -> None:
                 learner, "_train_production_model", return_value=Path("/tmp/model")
             ),
             patch.object(learner, "_stage_model"),
-            patch.object(learner, "_write_model_meta_override"),
+            patch.object(learner, "_update_model_meta_json"),
             patch.object(learner, "_rebuild_docker"),
         ):
             learner._deploy(entry)
@@ -541,26 +543,36 @@ def test_stage_model_creates_destination_directory(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# _write_model_meta_override
+# _update_model_meta_json
 # ---------------------------------------------------------------------------
 
 
-def test_write_model_meta_override_creates_new_file(tmp_path: Path) -> None:
+def test_update_model_meta_json_raises_when_file_missing(tmp_path: Path) -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(registry=reg, category="jra", repo_root=tmp_path)
-        learner._write_model_meta_override("auto-jra-v1", 150)
+        with pytest.raises(FileNotFoundError):
+            learner._update_model_meta_json("auto-jra-v1", 150)
 
-    override_path = tmp_path / subject._MODEL_META_OVERRIDE_PATH
-    assert override_path.exists()
-    data = json.loads(override_path.read_text(encoding="utf-8"))
+
+def test_update_model_meta_json_writes_updated_file(tmp_path: Path) -> None:
+    json_path = tmp_path / subject._MODEL_META_JSON_PATH
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(
+        json.dumps({"model_versions": {}, "feature_counts": {}}),
+        encoding="utf-8",
+    )
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, category="jra", repo_root=tmp_path)
+        learner._update_model_meta_json("auto-jra-v1", 150)
+    data = json.loads(json_path.read_text(encoding="utf-8"))
     assert data["model_versions"]["jra"] == "auto-jra-v1"
     assert data["feature_counts"]["jra"] == 150
 
 
-def test_write_model_meta_override_merges_with_existing_file(tmp_path: Path) -> None:
-    override_path = tmp_path / subject._MODEL_META_OVERRIDE_PATH
-    override_path.parent.mkdir(parents=True, exist_ok=True)
-    override_path.write_text(
+def test_update_model_meta_json_merges_with_existing_file(tmp_path: Path) -> None:
+    json_path = tmp_path / subject._MODEL_META_JSON_PATH
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(
         json.dumps(
             {
                 "model_versions": {"nar": "auto-nar-v0"},
@@ -569,22 +581,20 @@ def test_write_model_meta_override_merges_with_existing_file(tmp_path: Path) -> 
         ),
         encoding="utf-8",
     )
-
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(registry=reg, category="jra", repo_root=tmp_path)
-        learner._write_model_meta_override("auto-jra-v1", 150)
-
-    data = json.loads(override_path.read_text(encoding="utf-8"))
+        learner._update_model_meta_json("auto-jra-v1", 150)
+    data = json.loads(json_path.read_text(encoding="utf-8"))
     assert data["model_versions"]["jra"] == "auto-jra-v1"
     assert data["model_versions"]["nar"] == "auto-nar-v0"
     assert data["feature_counts"]["jra"] == 150
     assert data["feature_counts"]["nar"] == 120
 
 
-def test_write_model_meta_override_updates_existing_category(tmp_path: Path) -> None:
-    override_path = tmp_path / subject._MODEL_META_OVERRIDE_PATH
-    override_path.parent.mkdir(parents=True, exist_ok=True)
-    override_path.write_text(
+def test_update_model_meta_json_updates_existing_category(tmp_path: Path) -> None:
+    json_path = tmp_path / subject._MODEL_META_JSON_PATH
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(
         json.dumps(
             {
                 "model_versions": {"jra": "auto-jra-old"},
@@ -593,65 +603,55 @@ def test_write_model_meta_override_updates_existing_category(tmp_path: Path) -> 
         ),
         encoding="utf-8",
     )
-
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(registry=reg, category="jra", repo_root=tmp_path)
-        learner._write_model_meta_override("auto-jra-new", 200)
-
-    data = json.loads(override_path.read_text(encoding="utf-8"))
+        learner._update_model_meta_json("auto-jra-new", 200)
+    data = json.loads(json_path.read_text(encoding="utf-8"))
     assert data["model_versions"]["jra"] == "auto-jra-new"
     assert data["feature_counts"]["jra"] == 200
 
 
-def test_write_model_meta_override_ignores_non_dict_root_json(tmp_path: Path) -> None:
-    override_path = tmp_path / subject._MODEL_META_OVERRIDE_PATH
-    override_path.parent.mkdir(parents=True, exist_ok=True)
-    override_path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
-
+def test_update_model_meta_json_raises_for_non_dict_root_json(tmp_path: Path) -> None:
+    json_path = tmp_path / subject._MODEL_META_JSON_PATH
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(registry=reg, category="jra", repo_root=tmp_path)
-        learner._write_model_meta_override("auto-jra-v1", 150)
-
-    data = json.loads(override_path.read_text(encoding="utf-8"))
-    assert data["model_versions"]["jra"] == "auto-jra-v1"
-    assert data["feature_counts"]["jra"] == 150
+        with pytest.raises(ValueError):
+            learner._update_model_meta_json("auto-jra-v1", 150)
 
 
-def test_write_model_meta_override_ignores_non_dict_model_versions(
+def test_update_model_meta_json_handles_non_dict_model_versions(
     tmp_path: Path,
 ) -> None:
-    override_path = tmp_path / subject._MODEL_META_OVERRIDE_PATH
-    override_path.parent.mkdir(parents=True, exist_ok=True)
-    override_path.write_text(
+    json_path = tmp_path / subject._MODEL_META_JSON_PATH
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(
         json.dumps({"model_versions": "not-a-dict", "feature_counts": {"nar": 100}}),
         encoding="utf-8",
     )
-
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(registry=reg, category="jra", repo_root=tmp_path)
-        learner._write_model_meta_override("auto-jra-v1", 150)
-
-    data = json.loads(override_path.read_text(encoding="utf-8"))
+        learner._update_model_meta_json("auto-jra-v1", 150)
+    data = json.loads(json_path.read_text(encoding="utf-8"))
     assert data["model_versions"]["jra"] == "auto-jra-v1"
     assert "nar" not in data["model_versions"]
     assert data["feature_counts"]["nar"] == 100
 
 
-def test_write_model_meta_override_ignores_non_dict_feature_counts(
+def test_update_model_meta_json_handles_non_dict_feature_counts(
     tmp_path: Path,
 ) -> None:
-    override_path = tmp_path / subject._MODEL_META_OVERRIDE_PATH
-    override_path.parent.mkdir(parents=True, exist_ok=True)
-    override_path.write_text(
+    json_path = tmp_path / subject._MODEL_META_JSON_PATH
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(
         json.dumps({"model_versions": {"nar": "auto-nar-v0"}, "feature_counts": "bad"}),
         encoding="utf-8",
     )
-
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(registry=reg, category="jra", repo_root=tmp_path)
-        learner._write_model_meta_override("auto-jra-v1", 150)
-
-    data = json.loads(override_path.read_text(encoding="utf-8"))
+        learner._update_model_meta_json("auto-jra-v1", 150)
+    data = json.loads(json_path.read_text(encoding="utf-8"))
     assert data["model_versions"]["nar"] == "auto-nar-v0"
     assert "nar" not in data["feature_counts"]
     assert data["feature_counts"]["jra"] == 150

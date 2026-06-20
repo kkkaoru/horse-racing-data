@@ -50,8 +50,8 @@ DEFAULT_N_TRIALS: Final[int] = 20
 _CONTAINER_MODELS_ROOT: Final[str] = (
     "apps/finish-position-predict-container/models/finish-position"
 )
-_MODEL_META_OVERRIDE_PATH: Final[str] = (
-    "apps/finish-position-predict-container/src/predict_lib/model_meta_override.json"
+_MODEL_META_JSON_PATH: Final[str] = (
+    "apps/finish-position-predict-container/src/predict_lib/model_meta.json"
 )
 
 
@@ -143,7 +143,7 @@ class ContinuousLearner:
                 filtered_parquet, tmp_path / "models", model_version
             )
             self._stage_model(model_dir, feature_names, model_version)
-        self._write_model_meta_override(model_version, len(feature_names))
+        self._update_model_meta_json(model_version, len(feature_names))
         self._rebuild_docker()
         self._registry.record_deployment(entry["ndcg_at_3"], len(feature_names))
 
@@ -192,25 +192,24 @@ class ContinuousLearner:
             encoding="utf-8",
         )
 
-    def _write_model_meta_override(
-        self, model_version: str, feature_count: int
-    ) -> None:
-        override_path = self._repo_root / _MODEL_META_OVERRIDE_PATH
-        model_versions: dict[str, str] = {}
-        feature_counts: dict[str, int] = {}
-        if override_path.exists():
-            payload = json.loads(override_path.read_text(encoding="utf-8"))
-            if isinstance(payload, dict):
-                mv = payload.get("model_versions")
-                if isinstance(mv, dict):
-                    model_versions = {str(k): str(v) for k, v in mv.items()}
-                fc = payload.get("feature_counts")
-                if isinstance(fc, dict):
-                    feature_counts = {str(k): int(v) for k, v in fc.items()}
+    def _update_model_meta_json(self, model_version: str, feature_count: int) -> None:
+        json_path = self._repo_root / _MODEL_META_JSON_PATH
+        if not json_path.exists():
+            raise FileNotFoundError(f"model_meta.json not found: {json_path}")
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError(f"model_meta.json must be a JSON object: {json_path}")
+        raw_mv = payload.get("model_versions")
+        model_versions: dict[str, str] = (
+            dict(raw_mv) if isinstance(raw_mv, dict) else {}
+        )
+        raw_fc = payload.get("feature_counts")
+        feature_counts: dict[str, int] = (
+            dict(raw_fc) if isinstance(raw_fc, dict) else {}
+        )
         model_versions[self._category] = model_version
         feature_counts[self._category] = feature_count
-        override_path.parent.mkdir(parents=True, exist_ok=True)
-        override_path.write_text(
+        json_path.write_text(
             json.dumps(
                 {"model_versions": model_versions, "feature_counts": feature_counts},
                 ensure_ascii=False,

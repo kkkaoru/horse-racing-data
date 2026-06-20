@@ -23,49 +23,39 @@ Architecture = Literal["catboost", "xgboost", "lightgbm"]
 
 CATEGORIES: Final[tuple[Category, ...]] = get_args(Category)
 
-_OVERRIDE_PATH: Final[Path] = Path(__file__).parent / "model_meta_override.json"
-
-_DEFAULT_MODEL_VERSIONS: Final[dict[Category, str]] = {
-    "jra": "iter20-jra-cb-2013-v8",
-    "nar": "iter12-nar-xgb-hpo-v8",
-    "ban-ei": "banei-cb-v7-lineage-wf-21y",
-}
-
-_DEFAULT_FEATURE_COUNTS: Final[dict[Category, int]] = {
-    "jra": 244,
-    "nar": 192,
-    "ban-ei": 111,
-}
+MODEL_META_JSON_PATH: Final[Path] = Path(__file__).parent / "model_meta.json"
 
 
-def _load_overrides() -> tuple[dict[Category, str], dict[Category, int]]:
-    """Load optional model_meta_override.json written by the continuous learner."""
-    versions: dict[Category, str] = dict(_DEFAULT_MODEL_VERSIONS)
-    counts: dict[Category, int] = dict(_DEFAULT_FEATURE_COUNTS)
-    if not _OVERRIDE_PATH.exists():
-        return versions, counts
-    try:
-        payload = json.loads(_OVERRIDE_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return versions, counts
+def _load_model_meta(
+    path: Path = MODEL_META_JSON_PATH,
+) -> tuple[dict[Category, str], dict[Category, int]]:
+    """Load model_meta.json; raises FileNotFoundError if missing, ValueError if malformed."""
+    if not path.exists():
+        raise FileNotFoundError(f"model_meta.json not found: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
-        return versions, counts
+        raise ValueError(f"model_meta.json must be a JSON object: {path}")
     mv = payload.get("model_versions")
-    if isinstance(mv, dict):
-        for cat in get_args(Category):
-            val = mv.get(cat)
-            if isinstance(val, str):
-                versions[cat] = val
+    if not isinstance(mv, dict):
+        raise ValueError(f"model_meta.json missing 'model_versions' dict: {path}")
     fc = payload.get("feature_counts")
-    if isinstance(fc, dict):
-        for cat in get_args(Category):
-            val = fc.get(cat)
-            if isinstance(val, int):
-                counts[cat] = val
+    if not isinstance(fc, dict):
+        raise ValueError(f"model_meta.json missing 'feature_counts' dict: {path}")
+    versions: dict[Category, str] = {}
+    counts: dict[Category, int] = {}
+    for cat in get_args(Category):
+        val = mv.get(cat)
+        if not isinstance(val, str):
+            raise ValueError(f"model_meta.json missing model_version for '{cat}': {path}")
+        versions[cat] = val
+        cnt = fc.get(cat)
+        if not isinstance(cnt, int):
+            raise ValueError(f"model_meta.json missing feature_count for '{cat}': {path}")
+        counts[cat] = cnt
     return versions, counts
 
 
-_resolved_versions, _resolved_counts = _load_overrides()
+_resolved_versions, _resolved_counts = _load_model_meta()
 
 # Per-class JRA model registry — see predict_lib/per_class.py for routing logic.
 # MODEL_VERSION_BY_CATEGORY['jra'] is the fallback model when no class-specific
