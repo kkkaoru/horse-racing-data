@@ -22,6 +22,7 @@
     "crons": [
       "55 17 * * *", // JST 02:55 — Neon pre-wake (NAR/Ban-ei)
       "25 0 * * *", // JST 09:25 — Neon pre-wake (JRA)
+      "30 0 * * *", // JST 09:30 — feature build via Container (per-race parquets to R2)
       "*/30 1-11 * * *", // JST 10:00-20:59 — Neon keep-warm during race hours
       // Per-race coordinator cron (every 5 min, JST 10:00-20:59): inspects
       // realtime_race_sources.race_start_at_jst and enqueues a per-race rescore

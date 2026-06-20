@@ -2,6 +2,7 @@
 
 import { expect, test } from "vitest";
 import { parseNdjsonStream } from "./ndjson-stream";
+import type { PerRaceParquetEntry } from "./ndjson-stream";
 
 const makeStream = (text: string): ReadableStream<Uint8Array> => {
   const encoder = new TextEncoder();
@@ -59,4 +60,38 @@ test("parseNdjsonStream returns undefined parquetBase64/parquetKey when absent",
   const result = await parseNdjsonStream(makeStream(resultLine));
   expect(result.parquetBase64).toBeUndefined();
   expect(result.parquetKey).toBeUndefined();
+});
+
+test("parseNdjsonStream returns perRaceParquets array when present in result line", async () => {
+  const resultLine = JSON.stringify({
+    type: "result",
+    racesPredicted: 3,
+    category: "jra",
+    perRaceParquets: [
+      { parquetBase64: "YWFh", parquetKey: "feat-cache/jra/20260620/01.parquet" },
+      { parquetBase64: "YmJi", parquetKey: "feat-cache/jra/20260620/02.parquet" },
+    ],
+  });
+  const result = await parseNdjsonStream(makeStream(resultLine));
+  expect(result.perRaceParquets).toStrictEqual([
+    { parquetBase64: "YWFh", parquetKey: "feat-cache/jra/20260620/01.parquet" },
+    { parquetBase64: "YmJi", parquetKey: "feat-cache/jra/20260620/02.parquet" },
+  ]);
+});
+
+test("parseNdjsonStream returns undefined perRaceParquets when absent", async () => {
+  const resultLine = JSON.stringify({ type: "result", racesPredicted: 5, category: "nar" });
+  const result = await parseNdjsonStream(makeStream(resultLine));
+  expect(result.perRaceParquets).toBeUndefined();
+});
+
+test("PerRaceParquetEntry type shape holds the expected fields", () => {
+  const entry: PerRaceParquetEntry = {
+    parquetBase64: "Y2Nj",
+    parquetKey: "feat-cache/nar/20260620/03.parquet",
+  };
+  expect(entry).toStrictEqual({
+    parquetBase64: "Y2Nj",
+    parquetKey: "feat-cache/nar/20260620/03.parquet",
+  });
 });

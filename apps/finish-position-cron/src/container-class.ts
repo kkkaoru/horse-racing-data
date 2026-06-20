@@ -6,7 +6,7 @@
 // excluded from the coverage gate (see vitest.config.ts).
 
 import { Container } from "@cloudflare/containers";
-import type { PredictResultLine } from "./ndjson-stream";
+import type { PerRaceParquetEntry, PredictResultLine } from "./ndjson-stream";
 import type { Env } from "./types";
 
 const DEFAULT_PORT = 8080;
@@ -34,6 +34,32 @@ const proxyParquetToR2 = async (result: PredictResultLine, env: Env): Promise<vo
     // R2 proxy failure must never block predictions — log and continue.
     console.error(`[container-class] R2 proxy failed key=${parquetKey}: ${String(err)}`);
   }
+};
+
+// Proxy each per-race feature parquet embedded in the NDJSON result line to R2
+// via the Worker's FEATURES_CACHE binding, for the same read-only-S3-token reason
+// as proxyParquetToR2 above. Failures are logged and never block the response.
+const proxyPerRaceParquetsToR2 = async (
+  parquets: ReadonlyArray<PerRaceParquetEntry>,
+  env: Env,
+): Promise<void> => {
+  await Promise.all(
+    parquets.map(async (entry) => {
+      try {
+        const bytes = Uint8Array.from(atob(entry.parquetBase64), (c) => c.charCodeAt(0));
+        await env.FEATURES_CACHE.put(entry.parquetKey, bytes.buffer, {
+          httpMetadata: { contentType: "application/octet-stream" },
+        });
+        console.log(
+          `[container-class] R2 per-race proxy ok key=${entry.parquetKey} bytes=${bytes.length}`,
+        );
+      } catch (err) {
+        console.error(
+          `[container-class] R2 per-race proxy failed key=${entry.parquetKey}: ${String(err)}`,
+        );
+      }
+    }),
+  );
 };
 
 // Parse the NDJSON body to find the result line and proxy parquet if present,
@@ -69,7 +95,11 @@ const proxyParquetFromNdjson = async (response: Response, env: Env): Promise<Res
     try {
       const parsed = JSON.parse(lastLine) as { type: string };
       if (parsed.type === RESULT_LINE_TYPE) {
-        void proxyParquetToR2(parsed as PredictResultLine, env);
+        const resultLine = parsed as PredictResultLine;
+        void proxyParquetToR2(resultLine, env);
+        if (resultLine.perRaceParquets && resultLine.perRaceParquets.length > 0) {
+          void proxyPerRaceParquetsToR2(resultLine.perRaceParquets, env);
+        }
       }
     } catch {
       // Malformed JSON — ignore; parseNdjsonStream will surface the error.

@@ -9,6 +9,11 @@ interface NdjsonLine {
   type: string;
 }
 
+export interface PerRaceParquetEntry {
+  parquetBase64: string;
+  parquetKey: string;
+}
+
 export interface PredictResultLine extends NdjsonLine {
   type: "result";
   racesPredicted: number;
@@ -20,6 +25,9 @@ export interface PredictResultLine extends NdjsonLine {
   // token in the Container env.
   parquetBase64?: string;
   parquetKey?: string;
+  // Per-race feature parquets embedded by the Container; the Worker DO PUTs each
+  // to FEATURES_CACHE (R2) for the same reason as the single-parquet fields above.
+  perRaceParquets?: PerRaceParquetEntry[];
 }
 
 const isResultLine = (line: NdjsonLine): line is PredictResultLine => line.type === RESULT_TYPE;

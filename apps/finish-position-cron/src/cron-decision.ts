@@ -33,6 +33,12 @@ export const RESCORE_CRON_RACE_HOURS = "*/20 1-11 * * *";
 // the predict / warm crons. Mirrors the running-style "*/10" coordinator.
 export const COORDINATOR_CRON_RACE_HOURS = "*/5 1-11 * * *";
 
+// Feature-build cron: 00:30 UTC == JST 09:30 — triggers the Container full
+// pipeline for all categories so per-race feature parquets are uploaded to R2
+// before race hours. Replaces the manual Docker batch that previously was the
+// only way to generate feature parquets.
+export const FEATURE_BUILD_CRON = "30 0 * * *";
+
 const WARM_CRONS: ReadonlySet<string> = new Set([
   WARM_CRON_PRE_NAR,
   WARM_CRON_PRE_JRA,
@@ -42,6 +48,8 @@ const WARM_CRONS: ReadonlySet<string> = new Set([
 const RESCORE_CRONS: ReadonlySet<string> = new Set([RESCORE_CRON_RACE_HOURS]);
 
 const COORDINATOR_CRONS: ReadonlySet<string> = new Set([COORDINATOR_CRON_RACE_HOURS]);
+
+const FEATURE_BUILD_CRONS: ReadonlySet<string> = new Set([FEATURE_BUILD_CRON]);
 
 // Only the configured cron triggers a prediction run. Any other cron string
 // (or no cron at all, which is the deployed state) is ignored.
@@ -55,3 +63,6 @@ export const shouldRunRescoreCron = (cron: string): boolean => RESCORE_CRONS.has
 
 // Returns true when the cron string matches the per-race coordinator schedule.
 export const shouldRunCoordinatorCron = (cron: string): boolean => COORDINATOR_CRONS.has(cron);
+
+// Returns true when the cron string matches the feature-build (Container full pipeline) schedule.
+export const shouldRunFeatureBuildCron = (cron: string): boolean => FEATURE_BUILD_CRONS.has(cron);

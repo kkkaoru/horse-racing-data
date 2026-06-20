@@ -46,6 +46,13 @@ import {
 
 const SAMPLE_PARQUET_PATH = join(import.meta.dirname, "__fixtures__", "sample-cache.parquet");
 const sampleBytes = new Uint8Array(readFileSync(SAMPLE_PARQUET_PATH));
+const EMPTY_PARQUET_PATH = join(import.meta.dirname, "__fixtures__", "empty-cache.parquet");
+const emptyBytes = new Uint8Array(readFileSync(EMPTY_PARQUET_PATH));
+const PER_RACE_PARQUET_PATH = join(import.meta.dirname, "__fixtures__", "per-race-cache.parquet");
+const threeRaceBytes = new Uint8Array(readFileSync(PER_RACE_PARQUET_PATH));
+
+const PER_RACE_CACHE_KEY = "feat-cache/jra/20260614/05/11/features.parquet";
+const WHOLE_DAY_CACHE_KEY = "feat-cache/jra/20260614/features.parquet";
 
 const cbModel = parseCatBoostJsonModel(cbSmall);
 const xgbModel = parseXgboostJsonModel(xgbSmall);
@@ -54,12 +61,18 @@ const featureNames = golden.featureNames;
 const cacheObject = {
   arrayBuffer: async () => sampleBytes.buffer.slice(0),
 };
+const emptyCacheObject = {
+  arrayBuffer: async () => emptyBytes.buffer.slice(0),
+};
 
-const makeEnv = (getImpl: () => Promise<unknown>): Env =>
+const makeEnv = (getImpl: (key: string) => Promise<unknown>): Env =>
   ({
     FEATURES_CACHE: { get: vi.fn(getImpl) } as unknown as R2Bucket,
     NEON_DATABASE_URL: "postgres://example",
   }) as unknown as Env;
+
+const makeKeyedEnv = (objectsByKey: Map<string, unknown>): Env =>
+  makeEnv(async (key: string) => objectsByKey.get(key) ?? null);
 
 const makeMessage = (overrides: Partial<PredictQueueMessage> = {}): PredictQueueMessage => ({
   category: "jra",
@@ -182,7 +195,7 @@ test("buildUpsertParams flattens predictions into positional params with the E-t
   ]);
 });
 
-test("rescoreJraRace returns cache_miss when the R2 cache object is absent", async () => {
+test("rescoreJraRace returns cache_miss when neither the per-race nor whole-day cache exists", async () => {
   const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   const env = makeEnv(async () => null);
   const result = await rescoreJraRace({ env, fetchImpl: fetch, message: makeMessage() });
@@ -191,9 +204,9 @@ test("rescoreJraRace returns cache_miss when the R2 cache object is absent", asy
   warnSpy.mockRestore();
 });
 
-test("rescoreJraRace returns race_not_found when the target race is absent from the cache", async () => {
+test("rescoreJraRace returns race_not_found when the target race is absent from the whole-day cache", async () => {
   const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-  const env = makeEnv(async () => cacheObject);
+  const env = makeKeyedEnv(new Map([[WHOLE_DAY_CACHE_KEY, cacheObject]]));
   const result = await rescoreJraRace({
     env,
     fetchImpl: fetch,
@@ -204,20 +217,39 @@ test("rescoreJraRace returns race_not_found when the target race is absent from 
   warnSpy.mockRestore();
 });
 
-test("rescoreJraRace scores the target race and UPSERTs the predictions on the happy path", async () => {
+test("rescoreJraRace reads the per-race cache key directly without whole-day grouping", async () => {
   fetchOddsMock.mockResolvedValue(new Map([[1, { tanshoNinkijun: 1, tanshoOdds: 2.5 }]]));
   fetchWeightMock.mockResolvedValue(new Map([[1, 484]]));
-  const env = makeEnv(async () => cacheObject);
+  const perRaceObject = { arrayBuffer: async () => threeRaceBytes.buffer.slice(0) };
+  const env = makeKeyedEnv(new Map([[PER_RACE_CACHE_KEY, perRaceObject]]));
   const result = await rescoreJraRace({ env, fetchImpl: fetch, message: makeMessage() });
   expect(result.status).toBe("ok");
   expect(result.racesPredicted).toBe(1);
   expect(result.predictionCount).toBe(3);
   expect(queryMock).toHaveBeenCalledTimes(1);
-  expect(neonMock).toHaveBeenCalledWith("postgres://example");
+});
+
+test("rescoreJraRace falls back to the whole-day cache when the per-race key is absent", async () => {
+  fetchOddsMock.mockResolvedValue(new Map([[1, { tanshoNinkijun: 1, tanshoOdds: 2.5 }]]));
+  fetchWeightMock.mockResolvedValue(new Map([[1, 484]]));
+  const env = makeKeyedEnv(new Map([[WHOLE_DAY_CACHE_KEY, cacheObject]]));
+  const result = await rescoreJraRace({ env, fetchImpl: fetch, message: makeMessage() });
+  expect(result.status).toBe("ok");
+  expect(result.predictionCount).toBe(3);
+  expect(queryMock).toHaveBeenCalledTimes(1);
+});
+
+test("rescoreJraRace returns race_not_found when the per-race cache parquet is empty", async () => {
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const env = makeKeyedEnv(new Map([[PER_RACE_CACHE_KEY, emptyCacheObject]]));
+  const result = await rescoreJraRace({ env, fetchImpl: fetch, message: makeMessage() });
+  expect(result.status).toBe("race_not_found");
+  expect(queryMock).not.toHaveBeenCalled();
+  warnSpy.mockRestore();
 });
 
 test("rescoreJraRace passes a 39-element params list for the 3-horse target race", async () => {
-  const env = makeEnv(async () => cacheObject);
+  const env = makeKeyedEnv(new Map([[WHOLE_DAY_CACHE_KEY, cacheObject]]));
   await rescoreJraRace({ env, fetchImpl: fetch, message: makeMessage() });
   const call = queryMock.mock.calls[0] as unknown as [string, (string | number | null)[]];
   expect(call[1].length).toBe(39);
@@ -227,7 +259,7 @@ test("rescoreJraRace passes a 39-element params list for the 3-horse target race
 test("rescoreJraRace still scores when the realtime odds + weight maps are empty", async () => {
   fetchOddsMock.mockResolvedValue(new Map());
   fetchWeightMock.mockResolvedValue(new Map());
-  const env = makeEnv(async () => cacheObject);
+  const env = makeKeyedEnv(new Map([[WHOLE_DAY_CACHE_KEY, cacheObject]]));
   const result = await rescoreJraRace({ env, fetchImpl: fetch, message: makeMessage() });
   expect(result.status).toBe("ok");
   expect(result.predictionCount).toBe(3);
@@ -242,7 +274,7 @@ test("rescoreJraRace uses the odds-map size as runner_count so popularity is per
     ]),
   );
   fetchWeightMock.mockResolvedValue(new Map());
-  const env = makeEnv(async () => cacheObject);
+  const env = makeKeyedEnv(new Map([[WHOLE_DAY_CACHE_KEY, cacheObject]]));
   await rescoreJraRace({ env, fetchImpl: fetch, message: makeMessage() });
   const call = queryMock.mock.calls[0] as unknown as [string, (string | number | null)[]];
   const predictedScores = [call[1][8], call[1][21], call[1][34]];

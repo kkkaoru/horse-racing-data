@@ -6,6 +6,7 @@ import { FinishPositionPredictContainer } from "./container-class";
 import {
   PREDICT_CRON,
   shouldRunCoordinatorCron,
+  shouldRunFeatureBuildCron,
   shouldRunPredictCron,
   shouldRunRescoreCron,
   shouldRunWarmCron,
@@ -35,6 +36,7 @@ const CATEGORY_FIELD = "category";
 const KEIBAJO_CODE_FIELD = "keibajoCode";
 const RACE_BANGO_FIELD = "raceBango";
 const DEFAULT_MODE: PredictMode = "full";
+const FULL_MODE: PredictMode = "full";
 const VALID_MODES: ReadonlySet<string> = new Set(["full", "rescore"]);
 const VALID_CATEGORIES: ReadonlySet<string> = new Set(["jra", "nar", "ban-ei"]);
 const RESCORE_DAYS_AHEAD = 0;
@@ -165,6 +167,20 @@ export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<
       env,
       leadMinutes: DEFAULT_RESCORE_LEAD_MINUTES,
       now: new Date(event.scheduledTime),
+    });
+    return;
+  }
+  if (shouldRunFeatureBuildCron(event.cron)) {
+    // Enqueue the full-mode Container pipeline for all categories so per-race
+    // feature parquets are generated and uploaded to R2 before race hours.
+    // Omitting category fans out to every category in a single call.
+    const scheduledAt = new Date(event.scheduledTime);
+    await enqueuePredict({
+      daysAhead: Number(env.PREDICT_DAYS_AHEAD),
+      env,
+      mode: FULL_MODE,
+      runDate: getRunDateJst(scheduledAt),
+      runYmd: getRunYmdJst(scheduledAt),
     });
     return;
   }

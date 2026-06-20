@@ -253,6 +253,7 @@ def build_result_line(
     error: str | None = None,
     parquet_base64: str | None = None,
     parquet_key: str | None = None,
+    per_race_parquets: list[dict[str, str]] | None = None,
 ) -> bytes:
     """Return a single UTF-8 NDJSON result line (newline-terminated).
 
@@ -265,6 +266,12 @@ def build_result_line(
     parquet bytes to R2 via its FEATURES_CACHE binding — bypassing the
     read-only S3 token limitation in the Container.
 
+    When ``per_race_parquets`` is provided (only on ``mode=full`` success), each
+    element is a ``{"parquetBase64": ..., "parquetKey": ...}`` dict for one race;
+    the Worker DO proxies every per-race parquet to R2 under the per-race key
+    (``build_r2_per_race_feat_cache_key``) so a Stage-2 rescore can hit a single
+    race object even when the whole-day parquet upload was skipped.
+
     Args:
         category:        The category that was predicted (e.g. ``"jra"``).
         run_date:        The YYYYMMDD run date.
@@ -273,6 +280,7 @@ def build_result_line(
         error:           Optional exception message; credentials will be masked.
         parquet_base64:  Optional base64-encoded feature parquet bytes for Worker R2 proxy.
         parquet_key:     Optional R2 object key matching ``build_r2_feat_cache_key``.
+        per_race_parquets: Optional list of per-race ``{"parquetBase64", "parquetKey"}`` dicts.
     """
     payload: dict[str, object] = {
         "type": "result",
@@ -287,6 +295,8 @@ def build_result_line(
         payload["parquetBase64"] = parquet_base64
     if parquet_key is not None:
         payload["parquetKey"] = parquet_key
+    if per_race_parquets is not None:
+        payload["perRaceParquets"] = per_race_parquets
     return (json.dumps(payload, ensure_ascii=False) + "\n").encode()
 
 
@@ -326,6 +336,19 @@ def build_r2_feat_cache_key(category: str, run_date: str) -> str:
         run_date: YYYYMMDD string (e.g. ``"20260619"``).
     """
     return f"{R2_FEAT_CACHE_PREFIX}/{category}/{run_date}/features.parquet"
+
+
+def build_r2_per_race_feat_cache_key(
+    category: str, run_date: str, keibajo_code: str, race_bango: str
+) -> str:
+    """Return the R2 object key for a per-race feature-parquet cache.
+
+    Key format: ``feat-cache/{category}/{runDate}/{keibajoCode}/{raceBango}/features.parquet``
+    """
+    return (
+        f"{R2_FEAT_CACHE_PREFIX}/{category}/{run_date}/"
+        f"{keibajo_code}/{race_bango}/features.parquet"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +454,17 @@ into the final result line so the Worker DO can proxy the parquet bytes to R2
 without requiring a write-capable S3 token in the Container environment.
 """
 
+PerRaceParquetPayloadFn = Callable[[], list[dict[str, str]] | None]
+"""Returns a list of per-race ``{"parquetBase64", "parquetKey"}`` dicts, or ``None``.
+
+Called by ``iter_predict_chunks`` once after the full-pipeline thread completes
+successfully (same gate as :data:`ParquetPayloadFn`).  Each element carries one
+race's feature parquet (split from the whole-day parquet by ``race_id``) and the
+per-race R2 key from :func:`build_r2_per_race_feat_cache_key`, so the Worker DO
+can proxy every per-race object to R2.  ``None`` means no per-race split was
+produced (non-blocking — a missing per-race cache must not fail predictions).
+"""
+
 
 def iter_predict_chunks(
     params: PredictParams,
@@ -438,6 +472,7 @@ def iter_predict_chunks(
     *,
     rescore_fn: PredictCategoryFn | None = None,
     parquet_payload_fn: ParquetPayloadFn | None = None,
+    per_race_parquet_payload_fn: PerRaceParquetPayloadFn | None = None,
     time_fn: TimeFn = time.monotonic,
     sleep_fn: SleepFn = time.sleep,
     progress_interval_s: float = PROGRESS_INTERVAL_S,
@@ -491,6 +526,12 @@ def iter_predict_chunks(
                              when no parquet is available.  The result is embedded in the
                              success result line so the Worker DO can proxy the bytes to
                              R2 without a write-capable S3 token.
+        per_race_parquet_payload_fn: Optional callable invoked after a successful
+                             full-pipeline run (same gate as *parquet_payload_fn*).
+                             Returns a list of per-race ``{"parquetBase64", "parquetKey"}``
+                             dicts (or ``None``) embedded in the result line as
+                             ``perRaceParquets`` so the Worker DO can proxy each per-race
+                             object to R2.
         time_fn:             Monotonic clock (injectable for deterministic tests).
         sleep_fn:            Sleep callable (injectable for deterministic tests).
         progress_interval_s: Minimum seconds between progress keepalive lines.
@@ -629,6 +670,13 @@ def iter_predict_chunks(
         except BaseException:
             pass
 
+    per_race_parquets: list[dict[str, str]] | None = None
+    if per_race_parquet_payload_fn is not None and params.mode == "full":
+        try:
+            per_race_parquets = per_race_parquet_payload_fn()
+        except BaseException:
+            per_race_parquets = None
+
     yield build_result_line(
         params.category,
         params.run_date,
@@ -636,4 +684,5 @@ def iter_predict_chunks(
         status="success",
         parquet_base64=parquet_b64,
         parquet_key=parquet_key_val,
+        per_race_parquets=per_race_parquets,
     )

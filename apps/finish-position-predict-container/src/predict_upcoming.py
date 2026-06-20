@@ -103,10 +103,12 @@ from predict_lib.scorer import BoosterLike, assert_feature_count, build_feature_
 from predict_lib.serve import (
     CacheMissError,
     ParquetPayloadFn,
+    PerRaceParquetPayloadFn,
     PredictCategoryFn,
     PredictParams,
     R2Config,
     build_r2_feat_cache_key,
+    build_r2_per_race_feat_cache_key,
     iter_predict_chunks,
     parse_predict_params,
     parse_request_path,
@@ -836,13 +838,81 @@ def _r2_get_parquet(r2: R2Config, object_key: str, dest_path: Path) -> bool:
     return True
 
 
+RACE_ID_KEIBAJO_INDEX: int = 3
+RACE_ID_BANGO_INDEX: int = 4
+RACE_ID_MIN_PARTS: int = 5
+
+
+def _split_parquet_by_race(
+    final_dir: Path,
+    category_str: str,
+    run_date: str,
+) -> list[dict[str, str]]:
+    """Split the whole-day feature parquet under ``final_dir`` into per-race payloads.
+
+    Uses DuckDB (bundled in the image) to read every parquet under ``final_dir``,
+    enumerate the distinct ``race_id`` values, and COPY each race's rows to a
+    temp parquet. ``race_id`` has the form
+    ``source:nen:tsukihi:keibajo_code:race_bango``; the keibajo / bango parts are
+    extracted by a plain ``:`` split. Each per-race parquet is base64-encoded and
+    paired with its per-race R2 key from :func:`build_r2_per_race_feat_cache_key`.
+    Races whose ``race_id`` does not split into at least 5 parts are skipped.
+    """
+    import tempfile
+
+    import duckdb  # bundled in image
+
+    payloads: list[dict[str, str]] = []
+    glob_path = str(final_dir / "**" / "*.parquet")
+    con = duckdb.connect(":memory:")
+    try:
+        race_ids = [
+            str(row[0])
+            for row in con.execute(
+                "SELECT DISTINCT race_id FROM read_parquet(?, hive_partitioning = false)",
+                [glob_path],
+            ).fetchall()
+        ]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            for race_id in race_ids:
+                parts = race_id.split(":")
+                if len(parts) < RACE_ID_MIN_PARTS:
+                    print(
+                        f"[predict-serve] per_race_parquet skip malformed race_id={race_id}",
+                        file=sys.stderr,
+                    )
+                    continue
+                keibajo_code = parts[RACE_ID_KEIBAJO_INDEX]
+                race_bango = parts[RACE_ID_BANGO_INDEX]
+                out_path = Path(tmp_dir) / f"{keibajo_code}_{race_bango}.parquet"
+                con.execute(
+                    "COPY (SELECT * FROM read_parquet(?, hive_partitioning = false) "
+                    "WHERE race_id = ?) TO ? (FORMAT PARQUET)",
+                    [glob_path, race_id, str(out_path)],
+                )
+                data = out_path.read_bytes()
+                encoded = base64.b64encode(data).decode("ascii")
+                parquet_key = build_r2_per_race_feat_cache_key(
+                    category_str, run_date, keibajo_code, race_bango
+                )
+                payloads.append({"parquetBase64": encoded, "parquetKey": parquet_key})
+    finally:
+        con.close()
+    print(
+        f"[predict-serve] per_race_parquet ready races={len(payloads)} "
+        f"category={category_str} run_date={run_date}",
+        file=sys.stderr,
+    )
+    return payloads
+
+
 def _make_predict_fn(
     database_url: str,
     models_dir: Path,
     source_url: str,
     r2: R2Config | None,
-) -> tuple[PredictCategoryFn, ParquetPayloadFn]:
-    """Build the full-pipeline ``predict_fn`` and ``parquet_payload_fn`` adapters.
+) -> tuple[PredictCategoryFn, ParquetPayloadFn, PerRaceParquetPayloadFn]:
+    """Build the full-pipeline ``predict_fn`` + the two parquet payload adapters.
 
     Returns a tuple of:
     - ``predict_fn``: the prediction callable passed to ``iter_predict_chunks``.
@@ -852,9 +922,14 @@ def _make_predict_fn(
       read-only S3 token limitation in the Container env.  Falls back silently to
       the legacy ``_try_r2_put`` (SigV4 PUT) when both R2 credentials AND the
       parquet file exist.
+    - ``per_race_parquet_payload_fn``: splits that same whole-day parquet by
+      ``race_id`` (via DuckDB) into one parquet per race and returns a list of
+      ``{"parquetBase64", "parquetKey"}`` dicts so the Worker DO can also seed a
+      per-race R2 object, letting a Stage-2 rescore hit a single race even when
+      the whole-day parquet upload was skipped.
 
-    Both functions share a thread-safe ``_last_run`` state box so the payload fn
-    can retrieve category/run_date after the predict thread completes.
+    All three functions share a thread-safe ``_last_run`` state box so the payload
+    fns can retrieve category/run_date after the predict thread completes.
     """
     _last_run: list[tuple[str, str]] = []
 
@@ -895,7 +970,38 @@ def _make_predict_fn(
         )
         return encoded, parquet_key
 
-    return _predict, _parquet_payload
+    def _per_race_parquet_payloads() -> list[dict[str, str]] | None:
+        """Split the whole-day parquet by ``race_id`` into per-race payloads.
+
+        Reads the same parquet directory as :func:`_parquet_payload`, groups its
+        rows by ``race_id`` with DuckDB, writes each group to a temp parquet,
+        base64-encodes it, and pairs it with the per-race R2 key. Returns ``None``
+        (non-blocking) when there is no last run, no parquet on disk, or the split
+        fails for any reason — a missing per-race cache must never fail predictions.
+        """
+        from pipeline_runner import WORK_DIR  # bundled in image
+
+        if not _last_run:
+            return None
+        category_str, run_date = _last_run[-1]
+        final_dir = WORK_DIR / f"feat-{category_str}-v7-final"
+        parquet_files = list(final_dir.rglob("*.parquet"))
+        if not parquet_files:
+            print(
+                f"[predict-serve] per_race_parquet skip: no parquet in {final_dir}",
+                file=sys.stderr,
+            )
+            return None
+        try:
+            return _split_parquet_by_race(final_dir, category_str, run_date)
+        except BaseException as split_error:
+            print(
+                f"[predict-serve] per_race_parquet split failed: {split_error}",
+                file=sys.stderr,
+            )
+            return None
+
+    return _predict, _parquet_payload, _per_race_parquet_payloads
 
 
 def _ensure_cached_parquet(
@@ -1082,6 +1188,7 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
 
     predict_fn: PredictCategoryFn  # injected by make_handler_class
     parquet_payload_fn: ParquetPayloadFn  # injected by make_handler_class
+    per_race_parquet_payload_fn: PerRaceParquetPayloadFn  # injected by make_handler_class
     rescore_factory: RescoreFactory | None  # injected by make_handler_class
 
     @override
@@ -1131,6 +1238,7 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
                 self.predict_fn,
                 rescore_fn=rescore_fn,
                 parquet_payload_fn=self.parquet_payload_fn,
+                per_race_parquet_payload_fn=self.per_race_parquet_payload_fn,
             ):
                 # HTTP/1.1 chunked encoding: hex length + CRLF + data + CRLF
                 size_line = f"{len(chunk):X}\r\n".encode()
@@ -1161,24 +1269,27 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
 def make_handler_class(
     predict_fn: PredictCategoryFn,
     parquet_payload_fn: ParquetPayloadFn,
+    per_race_parquet_payload_fn: PerRaceParquetPayloadFn,
     rescore_factory: RescoreFactory | None,
 ) -> type[_PredictHandler]:
     """Return a ``_PredictHandler`` subclass with bound callables.
 
-    ``predict_fn`` and ``parquet_payload_fn`` are stored as ``staticmethod``
-    objects so Python's descriptor protocol does NOT inject ``self`` when
-    accessed on an instance.  ``rescore_factory`` is invoked per request inside
-    ``do_GET`` with the request's race scope, so it is also stored as a
-    ``staticmethod`` to avoid the same ``self`` injection.
+    ``predict_fn`` / ``parquet_payload_fn`` / ``per_race_parquet_payload_fn`` are
+    stored as ``staticmethod`` objects so Python's descriptor protocol does NOT
+    inject ``self`` when accessed on an instance.  ``rescore_factory`` is invoked
+    per request inside ``do_GET`` with the request's race scope, so it is also
+    stored as a ``staticmethod`` to avoid the same ``self`` injection.
     """
     _predict: PredictCategoryFn = predict_fn
     _parquet_payload: ParquetPayloadFn = parquet_payload_fn
+    _per_race_parquet_payload: PerRaceParquetPayloadFn = per_race_parquet_payload_fn
     _rescore_factory: RescoreFactory | None = rescore_factory
 
     @final
     class _BoundHandler(_PredictHandler):
         predict_fn = staticmethod(_predict)
         parquet_payload_fn = staticmethod(_parquet_payload)
+        per_race_parquet_payload_fn = staticmethod(_per_race_parquet_payload)
         rescore_factory = staticmethod(_rescore_factory) if _rescore_factory is not None else None
 
     return _BoundHandler
@@ -1188,6 +1299,7 @@ def serve_http(
     port: int,
     predict_fn: PredictCategoryFn,
     parquet_payload_fn: ParquetPayloadFn,
+    per_race_parquet_payload_fn: PerRaceParquetPayloadFn,
     rescore_factory: RescoreFactory | None = None,
 ) -> None:
     """Start the blocking HTTP server on *port*.
@@ -1198,7 +1310,9 @@ def serve_http(
     to (``iter_predict_chunks``, ``parse_predict_params``, etc.) is fully tested
     in ``tests/test_serve.py``.
     """
-    handler_cls = make_handler_class(predict_fn, parquet_payload_fn, rescore_factory)
+    handler_cls = make_handler_class(
+        predict_fn, parquet_payload_fn, per_race_parquet_payload_fn, rescore_factory
+    )
     with http.server.HTTPServer(("0.0.0.0", port), handler_cls) as httpd:
         print(f"[predict-serve] listening on :{port}", file=sys.stderr)
         httpd.serve_forever()
@@ -1233,9 +1347,13 @@ def main() -> int:
             print(f"[predict-serve] bootstrap failed: {bootstrap_error}", file=sys.stderr)
             return 1
         r2 = _load_r2_config()
-        predict_fn, parquet_payload_fn = _make_predict_fn(database_url, models_dir, source_url, r2)
+        predict_fn, parquet_payload_fn, per_race_payload_fn = _make_predict_fn(
+            database_url, models_dir, source_url, r2
+        )
         rescore_factory = _make_rescore_factory(database_url, models_dir, source_url, r2)
-        serve_http(HTTP_PORT, predict_fn, parquet_payload_fn, rescore_factory)
+        serve_http(
+            HTTP_PORT, predict_fn, parquet_payload_fn, per_race_payload_fn, rescore_factory
+        )
         return 0  # unreachable but satisfies the return type
 
     started = time.monotonic()

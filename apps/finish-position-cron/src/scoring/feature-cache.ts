@@ -34,6 +34,16 @@ const WEIGHT_DIFF_FIELD = "weight_diff_from_avg";
 export const buildFeatCacheKey = (category: string, runDate: string): string =>
   `${FEAT_CACHE_PREFIX}/${category}/${runDate}/${CACHE_FILE_NAME}`;
 
+// feat-cache/{category}/{runDate}/{keibajoCode}/{raceBango}/features.parquet —
+// the per-race cache parquet holding only one race's rows (no grouping needed).
+export const buildPerRaceFeatCacheKey = (
+  category: string,
+  runDate: string,
+  keibajoCode: string,
+  raceBango: string,
+): string =>
+  `${FEAT_CACHE_PREFIX}/${category}/${runDate}/${keibajoCode}/${raceBango}/${CACHE_FILE_NAME}`;
+
 export interface CachedRaceRows {
   raceId: string;
   rows: FeatureEntry[];

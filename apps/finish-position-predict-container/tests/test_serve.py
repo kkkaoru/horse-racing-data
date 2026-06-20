@@ -35,6 +35,7 @@ from predict_lib.serve import (
     TimeFn,
     build_progress_line,
     build_r2_feat_cache_key,
+    build_r2_per_race_feat_cache_key,
     build_result_line,
     iter_predict_chunks,
     mask_error_message,
@@ -615,6 +616,33 @@ def test_build_r2_feat_cache_key_deterministic() -> None:
 
 
 # ---------------------------------------------------------------------------
+# build_r2_per_race_feat_cache_key
+# ---------------------------------------------------------------------------
+
+
+def test_build_r2_per_race_feat_cache_key_format() -> None:
+    key = build_r2_per_race_feat_cache_key("jra", "20260619", "05", "09")
+    assert key == "feat-cache/jra/20260619/05/09/features.parquet"
+
+
+def test_build_r2_per_race_feat_cache_key_nar() -> None:
+    key = build_r2_per_race_feat_cache_key("nar", "20260101", "30", "11")
+    assert key == "feat-cache/nar/20260101/30/11/features.parquet"
+
+
+def test_build_r2_per_race_feat_cache_key_banei() -> None:
+    key = build_r2_per_race_feat_cache_key("ban-ei", "20260619", "83", "01")
+    assert key == "feat-cache/ban-ei/20260619/83/01/features.parquet"
+
+
+def test_build_r2_per_race_feat_cache_key_deterministic() -> None:
+    """Same inputs must produce the same per-race key (idempotent cache update)."""
+    key1 = build_r2_per_race_feat_cache_key("jra", "20260619", "05", "09")
+    key2 = build_r2_per_race_feat_cache_key("jra", "20260619", "05", "09")
+    assert key1 == key2
+
+
+# ---------------------------------------------------------------------------
 # R2Config dataclass
 # ---------------------------------------------------------------------------
 
@@ -1003,6 +1031,39 @@ def test_build_result_line_parquet_key_only_excluded() -> None:
     assert "parquetBase64" not in parsed
 
 
+def test_build_result_line_with_per_race_parquets() -> None:
+    """When per_race_parquets is provided, it appears in the result as perRaceParquets."""
+    per_race = [
+        {
+            "parquetBase64": "dGVzdA==",
+            "parquetKey": "feat-cache/jra/20260619/05/09/features.parquet",
+        },
+        {
+            "parquetBase64": "Zm9vYg==",
+            "parquetKey": "feat-cache/jra/20260619/05/10/features.parquet",
+        },
+    ]
+    line = build_result_line(
+        "jra", "20260619", 2, status="success", per_race_parquets=per_race
+    )
+    parsed = json.loads(line.decode())
+    assert parsed["perRaceParquets"] == per_race
+
+
+def test_build_result_line_per_race_parquets_empty_list_included() -> None:
+    """An explicit empty list is still included (distinguishes 'split produced 0' from None)."""
+    line = build_result_line("nar", "20260619", 0, status="success", per_race_parquets=[])
+    parsed = json.loads(line.decode())
+    assert parsed["perRaceParquets"] == []
+
+
+def test_build_result_line_without_per_race_parquets() -> None:
+    """When per_race_parquets is absent, the result line must not include the field."""
+    line = build_result_line("jra", "20260619", 5, status="success")
+    parsed = json.loads(line.decode())
+    assert "perRaceParquets" not in parsed
+
+
 # ---------------------------------------------------------------------------
 # iter_predict_chunks — parquet_payload_fn injection
 # ---------------------------------------------------------------------------
@@ -1092,6 +1153,124 @@ def test_iter_predict_chunks_no_parquet_payload_fn_no_fields() -> None:
     )
     last = json.loads(chunks[-1].decode())
     assert "parquetBase64" not in last
+
+
+# ---------------------------------------------------------------------------
+# iter_predict_chunks — per_race_parquet_payload_fn injection
+# ---------------------------------------------------------------------------
+
+
+def test_iter_predict_chunks_full_mode_calls_per_race_payload_fn() -> None:
+    """On mode=full success, per_race_parquet_payload_fn must be called and embedded."""
+    called = [False]
+    per_race = [
+        {
+            "parquetBase64": "dGVzdA==",
+            "parquetKey": "feat-cache/nar/20260619/30/11/features.parquet",
+        }
+    ]
+
+    def _per_race_payload() -> list[dict[str, str]] | None:
+        called[0] = True
+        return per_race
+
+    params = PredictParams(category="nar", run_date="20260619", days_ahead=0, mode="full")
+    chunks = list(
+        iter_predict_chunks(
+            params,
+            _mock_predict_ok,
+            per_race_parquet_payload_fn=_per_race_payload,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    assert called[0]
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "success"
+    assert last.get("perRaceParquets") == per_race
+
+
+def test_iter_predict_chunks_rescore_mode_does_not_call_per_race_payload_fn() -> None:
+    """On mode=rescore, per_race_parquet_payload_fn must NOT be called (full-only)."""
+    called = [False]
+
+    def _per_race_payload() -> list[dict[str, str]] | None:
+        called[0] = True
+        return []
+
+    params = PredictParams(category="nar", run_date="20260619", days_ahead=0, mode="rescore")
+    list(
+        iter_predict_chunks(
+            params,
+            _mock_predict_ok,
+            rescore_fn=_mock_rescore_ok,
+            per_race_parquet_payload_fn=_per_race_payload,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    assert not called[0]
+
+
+def test_iter_predict_chunks_per_race_payload_fn_error_swallowed() -> None:
+    """An exception from per_race_parquet_payload_fn must not block the success result."""
+
+    def _failing_payload() -> list[dict[str, str]] | None:
+        raise RuntimeError("duckdb split failed")
+
+    params = PredictParams(category="nar", run_date="20260619", days_ahead=0, mode="full")
+    chunks = list(
+        iter_predict_chunks(
+            params,
+            _mock_predict_ok,
+            per_race_parquet_payload_fn=_failing_payload,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "success"
+    assert "perRaceParquets" not in last
+
+
+def test_iter_predict_chunks_per_race_payload_fn_none_result() -> None:
+    """When per_race_parquet_payload_fn returns None, no perRaceParquets field appears."""
+
+    def _no_per_race() -> list[dict[str, str]] | None:
+        return None
+
+    params = PredictParams(category="jra", run_date="20260619", days_ahead=0, mode="full")
+    chunks = list(
+        iter_predict_chunks(
+            params, _mock_predict_ok, per_race_parquet_payload_fn=_no_per_race, sleep_fn=_noop_sleep
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert "perRaceParquets" not in last
+
+
+def test_iter_predict_chunks_per_race_payload_fn_empty_list_embedded() -> None:
+    """An empty per-race list is still embedded (distinguishes 0 races from None)."""
+
+    def _empty_per_race() -> list[dict[str, str]] | None:
+        return []
+
+    params = PredictParams(category="jra", run_date="20260619", days_ahead=0, mode="full")
+    chunks = list(
+        iter_predict_chunks(
+            params,
+            _mock_predict_ok,
+            per_race_parquet_payload_fn=_empty_per_race,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["perRaceParquets"] == []
+
+
+def test_iter_predict_chunks_no_per_race_payload_fn_no_field() -> None:
+    """When per_race_parquet_payload_fn is not provided (None), no perRaceParquets field."""
+    params = PredictParams(category="jra", run_date="20260619", days_ahead=0, mode="full")
+    chunks = list(iter_predict_chunks(params, _mock_predict_ok, sleep_fn=_noop_sleep))
+    last = json.loads(chunks[-1].decode())
+    assert "perRaceParquets" not in last
 
 
 def test_iter_predict_chunks_result_after_keepalive_has_correct_races_predicted() -> None:

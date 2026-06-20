@@ -13,7 +13,7 @@ const {
 } = vi.hoisted(() => {
   const start = vi.fn(async () => undefined);
   const warmNeon = vi.fn(async () => undefined);
-  const enqueuePredict = vi.fn(async () => ["jra", "nar", "ban-ei"]);
+  const enqueuePredict = vi.fn(async (_p: Record<string, unknown>) => ["jra", "nar", "ban-ei"]);
   const handleQueue = vi.fn(async () => undefined);
   const runRaceCoordinatorTick = vi.fn(async () => []);
   return {
@@ -239,6 +239,27 @@ test("handleScheduled coordinator cron does not start container or warm or enque
 
 test("handleScheduled does not run the coordinator for the rescore cron", async () => {
   await handleScheduled(makeEvent("*/20 1-11 * * *"), makeEnv());
+  expect(coordinatorTickMock).not.toHaveBeenCalled();
+});
+
+test("handleScheduled enqueues full-mode for all categories for the feature-build cron", async () => {
+  await handleScheduled(makeEvent("30 0 * * *"), makeEnv());
+  expect(enqueueMock).toHaveBeenCalledTimes(1);
+  expect(enqueueMock).toHaveBeenCalledWith(
+    expect.objectContaining({ daysAhead: 2, mode: "full", runDate: "2026-06-03" }),
+  );
+});
+
+test("handleScheduled feature-build cron enqueues without a single-category target", async () => {
+  await handleScheduled(makeEvent("30 0 * * *"), makeEnv());
+  expect(enqueueMock.mock.calls[0]?.[0]?.category).toBe(undefined);
+});
+
+test("handleScheduled feature-build cron does not start container or warm or coordinate", async () => {
+  await handleScheduled(makeEvent("30 0 * * *"), makeEnv());
+  expect(startMock).not.toHaveBeenCalled();
+  expect(prepareMock).not.toHaveBeenCalled();
+  expect(warmNeonMock).not.toHaveBeenCalled();
   expect(coordinatorTickMock).not.toHaveBeenCalled();
 });
 

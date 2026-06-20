@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import {
   buildFeatCacheKey,
+  buildPerRaceFeatCacheKey,
   decodeCacheParquet,
   groupRowsByRace,
   refreshLateBindingColumns,
@@ -15,6 +16,12 @@ const sampleBytes = new Uint8Array(readFileSync(SAMPLE_PARQUET_PATH));
 
 test("buildFeatCacheKey mirrors the container feat-cache key layout", () => {
   expect(buildFeatCacheKey("jra", "20260619")).toBe("feat-cache/jra/20260619/features.parquet");
+});
+
+test("buildPerRaceFeatCacheKey nests keibajoCode + raceBango under the run date", () => {
+  expect(buildPerRaceFeatCacheKey("jra", "20260620", "05", "09")).toBe(
+    "feat-cache/jra/20260620/05/09/features.parquet",
+  );
 });
 
 test("decodeCacheParquet reads every cached row from the sample parquet", async () => {

@@ -18,6 +18,7 @@ import { neon } from "@neondatabase/serverless";
 
 import {
   buildFeatCacheKey,
+  buildPerRaceFeatCacheKey,
   decodeCacheParquet,
   groupRowsByRace,
   refreshLateBindingColumns,
@@ -240,18 +241,45 @@ interface TargetRaceRows {
   rows: FeatureEntry[];
 }
 
-const loadTargetRaceRows = async (
+const decodeR2Object = async (object: R2ObjectBody): Promise<FeatureEntry[]> =>
+  decodeCacheParquet(new Uint8Array(await object.arrayBuffer()));
+
+// The per-race cache parquet already contains exactly one race's rows, so it is
+// returned directly (no groupRowsByRace filtering) — empty means the race row set
+// was not materialised, mirroring the whole-day race_not_found contract.
+const loadPerRaceRows = async (object: R2ObjectBody): Promise<TargetRaceRows> => {
+  const rows = await decodeR2Object(object);
+  return rows.length > 0 ? { rows, status: "ok" } : { rows: [], status: "race_not_found" };
+};
+
+const loadWholeDayRows = async (
   env: Env,
   message: PredictQueueMessage,
 ): Promise<TargetRaceRows> => {
-  const cacheKey = buildFeatCacheKey(JRA_CATEGORY, message.runYmd);
-  const object = await env.FEATURES_CACHE.get(cacheKey);
+  const object = await env.FEATURES_CACHE.get(buildFeatCacheKey(JRA_CATEGORY, message.runYmd));
   if (object === null) return { rows: [], status: "cache_miss" };
-  const rows = await decodeCacheParquet(new Uint8Array(await object.arrayBuffer()));
+  const rows = await decodeR2Object(object);
   const targetRaceId = buildTargetRaceId(message);
   const group = groupRowsByRace(rows).find((race) => race.raceId === targetRaceId);
   if (group === undefined) return { rows: [], status: "race_not_found" };
   return { rows: group.rows, status: "ok" };
+};
+
+// Prefer the smaller per-race cache key (no day-wide decode + grouping); fall
+// back to the whole-day key when the per-race parquet has not been written yet.
+const loadTargetRaceRows = async (
+  env: Env,
+  message: PredictQueueMessage,
+): Promise<TargetRaceRows> => {
+  const perRaceKey = buildPerRaceFeatCacheKey(
+    JRA_CATEGORY,
+    message.runYmd,
+    message.keibajoCode ?? "",
+    message.raceBango ?? "",
+  );
+  const perRaceObject = await env.FEATURES_CACHE.get(perRaceKey);
+  if (perRaceObject !== null) return loadPerRaceRows(perRaceObject);
+  return loadWholeDayRows(env, message);
 };
 
 interface ScoreAndWriteInput {
