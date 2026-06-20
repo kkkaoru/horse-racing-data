@@ -35,6 +35,7 @@ import {
   premiumRaceKeyFromRequest,
   raceKeyFromRequest,
   raceTrendDailyTrackQueryFromRequest,
+  resolveResultFetchIsComplete,
   resolveResultFetchOutcome,
   resolveRetryLockMinutes,
   RESULT_POLL_CRON,
@@ -1022,14 +1023,14 @@ it("resolveResultFetchOutcome returns complete when expectedHorseCount is zero (
   expect(outcome).toBe("complete");
 });
 
-it("resolveResultFetchOutcome returns complete for JRA partial (no progressive-publish retry on JRA)", () => {
+it("resolveResultFetchOutcome retries JRA partial within first 10 minutes (was complete pre-2026-06-20)", () => {
   const outcome = resolveResultFetchOutcome({
     expectedHorseCount: 11,
     inserted: 3,
     minutesAfterRaceStart: 5,
     source: "jra",
   });
-  expect(outcome).toBe("complete");
+  expect(outcome).toBe("retry-short");
 });
 
 it("resolveResultFetchOutcome returns complete for JRA full publish past the legacy backstop window", () => {
@@ -1098,6 +1099,146 @@ it("resolveResultFetchOutcome routes NAR partial at exactly 24h to give-up", () 
     source: "nar",
   });
   expect(outcome).toBe("give-up");
+});
+
+// 2026-06-20 regression guard: production traps where JRA Playwright returned a
+// partial result HTML (saved=5 of 16) caused resolveResultFetchOutcome to mark
+// the race "complete" — locking it forever at top-5. The new logic retries JRA
+// through the same phases as NAR until the 24h give-up window.
+
+it("resolveResultFetchOutcome retries JRA when expected is 0 but some results were parsed", () => {
+  const outcome = resolveResultFetchOutcome({
+    expectedHorseCount: 0,
+    inserted: 5,
+    minutesAfterRaceStart: 2,
+    source: "jra",
+  });
+  expect(outcome).toBe("retry-short");
+});
+
+it("resolveResultFetchOutcome retries JRA when expected exceeds inserted", () => {
+  const outcome = resolveResultFetchOutcome({
+    expectedHorseCount: 14,
+    inserted: 5,
+    minutesAfterRaceStart: 2,
+    source: "jra",
+  });
+  expect(outcome).toBe("retry-short");
+});
+
+it("resolveResultFetchOutcome completes JRA when inserted matches expected", () => {
+  const outcome = resolveResultFetchOutcome({
+    expectedHorseCount: 16,
+    inserted: 16,
+    minutesAfterRaceStart: 2,
+    source: "jra",
+  });
+  expect(outcome).toBe("complete");
+});
+
+it("resolveResultFetchOutcome completes NAR when expected is 0 and entry failed", () => {
+  const outcome = resolveResultFetchOutcome({
+    expectedHorseCount: 0,
+    inserted: 0,
+    minutesAfterRaceStart: 2,
+    source: "nar",
+  });
+  expect(outcome).toBe("complete");
+});
+
+it("resolveResultFetchOutcome routes JRA partial between 10 and 60 minutes to retry-medium", () => {
+  const outcome = resolveResultFetchOutcome({
+    expectedHorseCount: 14,
+    inserted: 5,
+    minutesAfterRaceStart: 30,
+    source: "jra",
+  });
+  expect(outcome).toBe("retry-medium");
+});
+
+it("resolveResultFetchOutcome routes JRA partial between 60 minutes and 24h to retry-long", () => {
+  const outcome = resolveResultFetchOutcome({
+    expectedHorseCount: 14,
+    inserted: 5,
+    minutesAfterRaceStart: 120,
+    source: "jra",
+  });
+  expect(outcome).toBe("retry-long");
+});
+
+it("resolveResultFetchOutcome gives up JRA partial past 24 hours after race start", () => {
+  const outcome = resolveResultFetchOutcome({
+    expectedHorseCount: 14,
+    inserted: 5,
+    minutesAfterRaceStart: 1450,
+    source: "jra",
+  });
+  expect(outcome).toBe("give-up");
+});
+
+it("resolveResultFetchOutcome completes JRA partial when minutesAfterRaceStart is null", () => {
+  const outcome = resolveResultFetchOutcome({
+    expectedHorseCount: 14,
+    inserted: 5,
+    minutesAfterRaceStart: null,
+    source: "jra",
+  });
+  expect(outcome).toBe("complete");
+});
+
+// resolveResultFetchIsComplete truth table — verifies the new pure helper that
+// handleCompleteResultFetch delegates to. The critical row is JRA + expected=0:
+// pre-2026-06-20 it returned true and locked the race; now it returns false so
+// the planner keeps re-enqueuing.
+
+it("resolveResultFetchIsComplete returns false for JRA when expectedHorseCount is 0", () => {
+  const isComplete = resolveResultFetchIsComplete({
+    expectedHorseCount: 0,
+    inserted: 0,
+    outcome: "complete",
+    source: "jra",
+  });
+  expect(isComplete).toBe(false);
+});
+
+it("resolveResultFetchIsComplete returns true for NAR when expectedHorseCount is 0", () => {
+  const isComplete = resolveResultFetchIsComplete({
+    expectedHorseCount: 0,
+    inserted: 0,
+    outcome: "complete",
+    source: "nar",
+  });
+  expect(isComplete).toBe(true);
+});
+
+it("resolveResultFetchIsComplete returns true when give-up forces completion regardless of source", () => {
+  const isComplete = resolveResultFetchIsComplete({
+    expectedHorseCount: 14,
+    inserted: 5,
+    outcome: "give-up",
+    source: "jra",
+  });
+  expect(isComplete).toBe(true);
+});
+
+it("resolveResultFetchIsComplete returns true when inserted matches expected", () => {
+  const isComplete = resolveResultFetchIsComplete({
+    expectedHorseCount: 16,
+    inserted: 16,
+    outcome: "complete",
+    source: "jra",
+  });
+  expect(isComplete).toBe(true);
+});
+
+it("resolveResultFetchIsComplete returns false for JRA partial below expected", () => {
+  const isComplete = resolveResultFetchIsComplete({
+    expectedHorseCount: 16,
+    inserted: 5,
+    outcome: "complete",
+    source: "jra",
+  });
+  expect(isComplete).toBe(false);
 });
 
 // resolveRetryLockMinutes truth table — pins the per-phase lock duration
