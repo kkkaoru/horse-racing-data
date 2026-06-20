@@ -121,10 +121,12 @@ class FeatureRegistry:
 
     def activate(self, entry_id: int) -> None:
         assert self._con is not None
+        self._con.begin()
         self._con.execute("UPDATE feature_trials SET is_active = FALSE")
         self._con.execute(
             "UPDATE feature_trials SET is_active = TRUE WHERE id = ?", [entry_id]
         )
+        self._con.commit()
 
     def maybe_promote(
         self,

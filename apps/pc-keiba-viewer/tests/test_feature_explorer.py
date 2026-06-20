@@ -681,3 +681,15 @@ def test_run_exploration_excludes_trials_with_none_value() -> None:
     assert len(results) == 1
     assert results[0]["trial_id"] == "test_exploration_trial_0"
     assert results[0]["ndcg_at_3"] == pytest.approx(0.75)
+
+
+def test_run_exploration_uses_default_validation_years_when_not_specified() -> None:
+    df = _make_df()
+    mock_study = MagicMock()
+    mock_study.trials = []
+
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with patch("feature_explorer.optuna.create_study", return_value=mock_study):
+            results = subject.run_exploration(df, registry, n_trials=1)
+
+    assert results == []

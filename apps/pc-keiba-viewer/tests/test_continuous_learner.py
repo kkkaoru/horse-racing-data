@@ -354,7 +354,7 @@ def test_deploy_calls_pipeline_steps_in_correct_order() -> None:
             patch.object(
                 learner,
                 "_stage_model",
-                side_effect=lambda *a, **kw: order.append("stage"),
+                side_effect=lambda *a, **kw: (order.append("stage"), Path("/tmp/staged"))[1],
             ),
             patch.object(
                 learner,
@@ -729,7 +729,8 @@ def test_setup_logging_adds_stdout_handler_when_no_handlers_exist() -> None:
         subject.setup_logging()
         assert len(root.handlers) == 1
         import sys
-        assert root.handlers[0].stream is sys.stdout  # type: ignore[attr-defined]
+        assert isinstance(root.handlers[0], logging.StreamHandler)
+        assert root.handlers[0].stream is sys.stdout
         assert root.level == logging.INFO
     finally:
         root.handlers.clear()
@@ -1318,3 +1319,30 @@ def test_rollback_deploy_skips_meta_restore_when_prev_content_is_none(tmp_path: 
 
     assert not staged.exists()
     assert json_path.read_text(encoding="utf-8") == '{"current": true}'
+
+
+def test_rollback_deploy_skips_staged_removal_when_staged_dest_is_none(tmp_path: Path) -> None:
+    json_path = tmp_path / subject._MODEL_META_JSON_PATH
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text('{"current": true}', encoding="utf-8")
+
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, repo_root=tmp_path)
+        learner._rollback_deploy(None, None)
+
+    assert json_path.read_text(encoding="utf-8") == '{"current": true}'
+
+
+def test_adaptive_controller_pg_active_count_returns_none_when_fetchone_is_none() -> None:
+    ctrl = subject.AdaptiveLoadController(base_n_trials=10, pg_dsn="postgresql://test")
+    mock_cur = MagicMock()
+    mock_cur.__enter__ = MagicMock(return_value=mock_cur)
+    mock_cur.__exit__ = MagicMock(return_value=False)
+    mock_cur.fetchone.return_value = None
+    mock_conn = MagicMock()
+    mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+    mock_conn.__exit__ = MagicMock(return_value=False)
+    mock_conn.cursor.return_value = mock_cur
+    with patch("psycopg.connect", return_value=mock_conn):
+        result = ctrl._pg_active_count()
+    assert result is None

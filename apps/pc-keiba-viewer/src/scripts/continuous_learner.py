@@ -298,20 +298,21 @@ class ContinuousLearner:
         _logger.info("│  features   : %d columns", len(feature_names))
         _logger.info("│")
         _logger.info("│  [1/5] filtering feature parquet ...")
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            filtered_parquet = write_filtered_parquet(
-                self._df, feature_names, tmp_path / "parquet"
-            )
-            _logger.info("│  [2/5] training production model ...")
-            model_dir = self._train_production_model(
-                filtered_parquet, tmp_path / "models", model_version
-            )
-            _logger.info("│  [3/5] staging model artifacts ...")
-            staged_dest = self._stage_model(model_dir, feature_names, model_version)
-        _logger.info("│  [4/5] updating model_meta.json ...")
+        staged_dest: Path | None = None
         prev_meta_content: str | None = None
         try:
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                filtered_parquet = write_filtered_parquet(
+                    self._df, feature_names, tmp_path / "parquet"
+                )
+                _logger.info("│  [2/5] training production model ...")
+                model_dir = self._train_production_model(
+                    filtered_parquet, tmp_path / "models", model_version
+                )
+                _logger.info("│  [3/5] staging model artifacts ...")
+                staged_dest = self._stage_model(model_dir, feature_names, model_version)
+            _logger.info("│  [4/5] updating model_meta.json ...")
             prev_meta_content = self._update_model_meta_json(model_version, len(feature_names))
             _logger.info("│  [5/5] rebuilding Docker image ...")
             self._rebuild_docker()
@@ -422,14 +423,15 @@ class ContinuousLearner:
         )
         _logger.info("│    Docker build succeeded")
 
-    def _rollback_deploy(self, staged_dest: Path, prev_meta_content: str | None) -> None:
+    def _rollback_deploy(self, staged_dest: Path | None, prev_meta_content: str | None) -> None:
         """Remove staged artifacts and restore model_meta.json after a failed deploy."""
-        try:
-            if staged_dest.exists():
-                shutil.rmtree(staged_dest)
-                _logger.info("│    [rollback] removed staged dir: %s", staged_dest)
-        except Exception as exc:
-            _logger.warning("│    [rollback] failed to remove staged dir: %s", exc)
+        if staged_dest is not None:
+            try:
+                if staged_dest.exists():
+                    shutil.rmtree(staged_dest)
+                    _logger.info("│    [rollback] removed staged dir: %s", staged_dest)
+            except Exception as exc:
+                _logger.warning("│    [rollback] failed to remove staged dir: %s", exc)
         if prev_meta_content is None:
             return
         try:

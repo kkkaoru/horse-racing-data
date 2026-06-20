@@ -220,18 +220,19 @@ def run_exploration(
     df: pd.DataFrame,
     registry: FeatureRegistry,
     n_trials: int = 50,
-    validation_years: list[int] = DEFAULT_VALIDATION_YEARS,
+    validation_years: list[int] | None = None,
     train_start: str = DEFAULT_TRAIN_START,
     params: TrainingParams = DEFAULT_PARAMS,
     study_name: str = "feature_exploration",
     storage: str | None = None,
     backends: tuple[ModelBackend, ...] = DEFAULT_BACKENDS,
 ) -> list[ExplorationResult]:
+    effective_years = list(validation_years) if validation_years is not None else list(DEFAULT_VALIDATION_YEARS)
     candidate_features = resolve_feature_columns(list(df.columns))
     objective = build_objective(
         df,
         candidate_features,
-        validation_years,
+        effective_years,
         train_start,
         params,
         registry,
