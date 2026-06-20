@@ -2827,23 +2827,30 @@ interface ResolveResultFetchOutcomeInput {
 
 // 2026-06-05: replaces the old NAR-only completion backstop + partial-retry
 // helper pair with a single resolver that returns the routing decision for
-// fetchAndStoreResults. JRA always returns "complete" because the JRA result
-// HTML publishes the full field atomically (no progressive publish) — same
-// behavior as before. NAR partial results route through a progressive retry
+// fetchAndStoreResults. NAR partial results route through a progressive retry
 // (retry-short / retry-medium / retry-long) up to RESULT_FETCH_GIVE_UP_HOURS,
 // after which "give-up" force-completes with whatever rows have been saved.
 // This eliminates the previous 60-min backstop force-complete window that
 // permanently dropped finishers the upstream eventually published.
+// 2026-06-20: JRA no longer auto-completes on partial. Two production traps
+// (jra:2026:0620:05:01 = locked at top-5, jra:2026:0620:02:02 = saved 5/14)
+// proved that JRA Playwright sometimes returns a partial result HTML even
+// though the upstream publishes the full field atomically. The previous code
+// also returned "complete" when expectedHorseCount === 0 (entry HTML parse
+// failure) regardless of how many result rows landed, which locked the race
+// at the partial snapshot forever. The new logic:
+//   - JRA with expected===0 AND inserted>0 → retry-short (cannot disambiguate
+//     "true empty entry list" from "entry parser failed but result has rows")
+//   - JRA partial (expected>0 AND inserted<expected) flows through the same
+//     retry phases as NAR up to the 24h give-up window
+//   - NAR with expected===0 still returns "complete" (cancelled-race case)
 export const resolveResultFetchOutcome = (
   input: ResolveResultFetchOutcomeInput,
 ): ResultFetchOutcome => {
   if (input.expectedHorseCount <= 0) {
-    return "complete";
+    return input.source === "jra" && input.inserted > 0 ? "retry-short" : "complete";
   }
   if (input.inserted >= input.expectedHorseCount) {
-    return "complete";
-  }
-  if (input.source === "jra") {
     return "complete";
   }
   if (input.minutesAfterRaceStart === null) {
@@ -2858,6 +2865,32 @@ export const resolveResultFetchOutcome = (
   return input.minutesAfterRaceStart < RESULT_FETCH_RETRY_LONG_THRESHOLD_MINUTES
     ? "retry-medium"
     : "retry-long";
+};
+
+interface ResolveResultFetchIsCompleteInput {
+  expectedHorseCount: number;
+  inserted: number;
+  outcome: ResultFetchOutcome;
+  source: NarRaceSource["source"];
+}
+
+// 2026-06-20: Pure helper extracted from handleCompleteResultFetch so the
+// isComplete decision can be unit-tested in isolation. The rules are:
+//   - give-up always finalizes (force-complete after 24h)
+//   - matched fields (inserted >= expected && expected > 0) finalize
+//   - NAR with expected===0 finalizes (cancelled-race / true-empty case)
+//   - JRA with expected===0 does NOT finalize — resolveResultFetchOutcome
+//     reroutes that case to retry-short when inserted>0, so reaching this
+//     helper means inserted===0 (transient parse failure) and we want the
+//     planner to keep re-enqueuing instead of locking the race forever.
+export const resolveResultFetchIsComplete = (input: ResolveResultFetchIsCompleteInput): boolean => {
+  if (input.outcome === "give-up") {
+    return true;
+  }
+  if (input.expectedHorseCount > 0 && input.inserted >= input.expectedHorseCount) {
+    return true;
+  }
+  return input.expectedHorseCount === 0 && input.source === "nar";
 };
 
 const RETRY_LOCK_MINUTES_BY_OUTCOME: ReadonlyMap<ResultFetchOutcome, number> = new Map([
@@ -2946,16 +2979,12 @@ const handleRetryResultFetch = async (input: DispatchResultFetchOutcomeInput): P
 };
 
 const handleCompleteResultFetch = async (input: DispatchResultFetchOutcomeInput): Promise<void> => {
-  // baseComplete + give-up both finalize the race; both set isComplete=true so
-  // the planner stops re-enqueuing. JRA partial (saved<expected) is the one
-  // case where we complete with isComplete=false — preserves the pre-2026-06-05
-  // JRA behavior because JRA result HTML publishes the full field atomically
-  // so a saved<expected on JRA means the parser missed a row (different
-  // failure mode from the NAR progressive-publish gap).
-  const isComplete =
-    input.outcome === "give-up" ||
-    (input.expectedHorseCount > 0 && input.inserted >= input.expectedHorseCount) ||
-    input.expectedHorseCount === 0;
+  const isComplete = resolveResultFetchIsComplete({
+    expectedHorseCount: input.expectedHorseCount,
+    inserted: input.inserted,
+    outcome: input.outcome,
+    source: input.race.source,
+  });
   await completeResultFetch(input.env.REALTIME_DB, input.raceKey, input.fetchedAt, {
     expectedHorseCount: input.expectedHorseCount,
     isComplete,
