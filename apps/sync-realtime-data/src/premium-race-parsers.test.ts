@@ -522,6 +522,64 @@ it("isPremiumStableCommentHtmlAuthorized returns true only when full-table class
   expect(isPremiumStableCommentHtmlAuthorized("<div></div>")).toBe(false);
 });
 
+it("detectPremiumLoginPrompt fires when both subscription-gate markers appear", async () => {
+  const { detectPremiumLoginPrompt } = await import("./premium-race");
+  const html = "<div>プレミアムサービス 登録でご覧になれます</div>";
+  expect(detectPremiumLoginPrompt(html)).toBe(true);
+});
+
+it("detectPremiumLoginPrompt returns false on a fully authenticated detail page", async () => {
+  const { detectPremiumLoginPrompt } = await import("./premium-race");
+  const html =
+    '<div class="Icon_Account">user</div><table class="Comment_Table_Show_All">data</table>';
+  expect(detectPremiumLoginPrompt(html)).toBe(false);
+});
+
+it("detectPremiumLoginPrompt returns false when only the primary marker appears", async () => {
+  const { detectPremiumLoginPrompt } = await import("./premium-race");
+  expect(detectPremiumLoginPrompt("<div>プレミアムサービス案内ページ</div>")).toBe(false);
+});
+
+it("detectPremiumLoginPrompt returns false on an empty body", async () => {
+  const { detectPremiumLoginPrompt } = await import("./premium-race");
+  expect(detectPremiumLoginPrompt("")).toBe(false);
+});
+
+it("parsePremiumStateMessage returns zero count when message is null", async () => {
+  const { parsePremiumStateMessage } = await import("./premium-race");
+  expect(parsePremiumStateMessage(null)).toStrictEqual({ authRetryCount: 0 });
+});
+
+it("parsePremiumStateMessage returns zero count when JSON is malformed", async () => {
+  const { parsePremiumStateMessage } = await import("./premium-race");
+  expect(parsePremiumStateMessage("not-json")).toStrictEqual({ authRetryCount: 0 });
+});
+
+it("parsePremiumStateMessage returns zero count when JSON shape lacks authRetryCount", async () => {
+  const { parsePremiumStateMessage } = await import("./premium-race");
+  expect(parsePremiumStateMessage('{"other":"value"}')).toStrictEqual({ authRetryCount: 0 });
+});
+
+it("parsePremiumStateMessage returns zero count when authRetryCount is non-numeric", async () => {
+  const { parsePremiumStateMessage } = await import("./premium-race");
+  expect(parsePremiumStateMessage('{"authRetryCount":"3"}')).toStrictEqual({ authRetryCount: 0 });
+});
+
+it("parsePremiumStateMessage returns parsed authRetryCount when shape is valid", async () => {
+  const { parsePremiumStateMessage } = await import("./premium-race");
+  expect(parsePremiumStateMessage('{"authRetryCount":4}')).toStrictEqual({ authRetryCount: 4 });
+});
+
+it("parsePremiumStateMessage returns zero when JSON parses to a non-object primitive", async () => {
+  const { parsePremiumStateMessage } = await import("./premium-race");
+  expect(parsePremiumStateMessage("42")).toStrictEqual({ authRetryCount: 0 });
+});
+
+it("parsePremiumStateMessage returns zero when authRetryCount is NaN", async () => {
+  const { parsePremiumStateMessage } = await import("./premium-race");
+  expect(parsePremiumStateMessage('{"authRetryCount":null}')).toStrictEqual({ authRetryCount: 0 });
+});
+
 it("parsePremiumPaddockBulletins assigns favorite/value group based on table heading", () => {
   const html = `
     <h2>本命馬</h2>

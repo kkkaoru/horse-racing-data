@@ -641,6 +641,48 @@ const PREMIUM_STABLE_COMMENT_FULL_TABLE_CLASS = "Comment_Table_Show_All";
 export const isPremiumStableCommentHtmlAuthorized = (html: string): boolean =>
   html.includes(PREMIUM_STABLE_COMMENT_FULL_TABLE_CLASS);
 
+// netkeiba renders this gate text whenever the upstream session is unauthenticated.
+// Production verified 2026-06-20: the proxy intermittently returns HTTP 200 with the
+// subscription-prompt body, which we used to accept as a "successful" fetch and write
+// `status='ok'` with zero stable comments. We keep two substrings so the heuristic
+// stays specific (an authenticated detail page can mention "登録" in other contexts).
+const PREMIUM_LOGIN_PROMPT_MARKER_PRIMARY = "プレミアムサービス";
+const PREMIUM_LOGIN_PROMPT_MARKER_SECONDARY = "登録でご覧になれます";
+
+export const detectPremiumLoginPrompt = (html: string): boolean =>
+  html.includes(PREMIUM_LOGIN_PROMPT_MARKER_PRIMARY) &&
+  html.includes(PREMIUM_LOGIN_PROMPT_MARKER_SECONDARY);
+
+// Worker reads the previous fetch state's message JSON to lift the auth-retry
+// counter so we cap how many times we re-queue the same race while the proxy
+// session is broken. Keep the parse defensive so legacy non-JSON messages
+// (older error strings) do not crash the handler.
+interface PremiumStateMessageShape {
+  authRetryCount: number;
+}
+
+export const parsePremiumStateMessage = (message: string | null): PremiumStateMessageShape => {
+  if (!message) {
+    return { authRetryCount: 0 };
+  }
+  const parsed = safeParseJson(message);
+  if (!parsed || typeof parsed !== "object") {
+    return { authRetryCount: 0 };
+  }
+  const candidate = (parsed as Record<string, unknown>).authRetryCount;
+  return {
+    authRetryCount: typeof candidate === "number" && Number.isFinite(candidate) ? candidate : 0,
+  };
+};
+
+const safeParseJson = (value: string): unknown => {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+};
+
 export const summarizePremiumStableCommentHtml = (
   html: string,
 ): {
