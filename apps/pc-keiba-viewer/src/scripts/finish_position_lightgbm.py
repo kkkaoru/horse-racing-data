@@ -58,9 +58,18 @@ RELEVANCE_TIER_PRESETS: dict[str, dict[int, int]] = {
     "default": {1: 3, 2: 2, 3: 1},
     "place_weighted": {1: 2, 2: 3, 3: 2},
     "sequence_aware": {1: 1, 2: 2, 3: 3},
+    "graded_top6": {1: 6, 2: 5, 3: 4, 4: 3, 5: 2, 6: 1},
 }
 DEFAULT_RELEVANCE_TIER_NAME = "default"
 DEFAULT_RELEVANCE = 0
+
+DISTANCE_BAND_RANGES: dict[str, tuple[int, int]] = {
+    "sprint": (0, 1200),
+    "mile": (1200, 1600),
+    "intermediate": (1600, 2000),
+    "long": (2000, 2400),
+    "extended": (2400, 99999),
+}
 TOP3_K = 3
 MONOTONE_CONSTRAINTS: dict[str, int] = {
     "inverse_odds_implied_prob": 1,
@@ -215,6 +224,20 @@ def load_dataset(path: Path) -> pd.DataFrame:
 
 def sort_for_grouping(df: pd.DataFrame) -> pd.DataFrame:
     return df.sort_values(["race_id", "umaban"]).reset_index(drop=True)
+
+
+def filter_by_distance_band(df: pd.DataFrame, band: str) -> pd.DataFrame:
+    """Return rows whose ``kyori`` value falls within the named distance band.
+
+    Raises ``ValueError`` for an unknown band name. The upper bound is
+    exclusive so bands partition the space without overlap.
+    """
+    if band not in DISTANCE_BAND_RANGES:
+        raise ValueError(
+            f"Unknown distance band: {band!r}. Valid: {sorted(DISTANCE_BAND_RANGES)}"
+        )
+    lo, hi = DISTANCE_BAND_RANGES[band]
+    return df[(df["kyori"] >= lo) & (df["kyori"] < hi)].reset_index(drop=True)
 
 
 def select_feature_frame(df: pd.DataFrame, feature_columns: list[str]) -> pd.DataFrame:
