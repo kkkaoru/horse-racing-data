@@ -100,8 +100,6 @@ class AdaptiveLoadController:
         cpu_low_pct: float = 50.0,
         mem_high_pct: float = 80.0,
         mem_low_pct: float = 60.0,
-        pg_dsn: str | None = None,
-        pg_connections_high: int = 10,
     ) -> None:
         self._base_n_trials = base_n_trials
         self._min_n_trials = min_n_trials
@@ -110,8 +108,6 @@ class AdaptiveLoadController:
         self._cpu_low_pct = cpu_low_pct
         self._mem_high_pct = mem_high_pct
         self._mem_low_pct = mem_low_pct
-        self._pg_dsn = pg_dsn
-        self._pg_connections_high = pg_connections_high
 
     def adjusted_n_trials(self) -> int:
         """Return trial count scaled by current system load (delegates to round_params)."""
@@ -142,28 +138,6 @@ class AdaptiveLoadController:
         if not _PSUTIL_AVAILABLE:
             return 0.0
         return float(_psutil.virtual_memory().percent)
-
-    def _pg_active_count(self) -> int | None:
-        """Query pg_stat_activity for active non-idle connections.
-        Returns None if pg_dsn is None or connection fails.
-        Uses: SELECT count(*) FROM pg_stat_activity WHERE state != 'idle'
-        """
-        if self._pg_dsn is None:
-            return None
-        try:
-            import psycopg
-
-            with psycopg.connect(self._pg_dsn) as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT count(*) FROM pg_stat_activity WHERE state != 'idle'"
-                    )
-                    row = cur.fetchone()
-                    if row is None:
-                        return None
-                    return int(row[0])
-        except Exception:
-            return None
 
 
 class ContinuousLearner:
@@ -257,14 +231,13 @@ class ContinuousLearner:
             "━━━ continuous learning loop finished ━━━  completed rounds: %d", round_num
         )
 
-    def _explore_round(self, round_num: int, n_trials: int | None = None) -> None:
+    def _explore_round(self, round_num: int, n_trials: int) -> None:
         study_name = f"auto-{self._category}-r{round_num}-{uuid.uuid4().hex[:8]}"
-        effective_trials = n_trials if n_trials is not None else self._n_trials
         run_exploration(
             df=self._df,
             registry=self._registry,
             study_name=study_name,
-            n_trials=effective_trials,
+            n_trials=n_trials,
             validation_years=self._validation_years,
             train_start=self._train_start,
             backends=self._backends,
@@ -469,7 +442,6 @@ def main(argv: list[str] | None = None) -> None:
         "--deploy-threshold", type=float, default=DEFAULT_DEPLOY_THRESHOLD
     )
     parser.add_argument("--max-rounds", type=int, default=None)
-    parser.add_argument("--pg-dsn", type=str, default=None)
     parser.add_argument("--min-trials", type=int, default=5)
     parser.add_argument("--max-trials", type=int, default=50)
     args = parser.parse_args(argv)
@@ -482,7 +454,6 @@ def main(argv: list[str] | None = None) -> None:
         base_n_trials=int(args.n_trials),
         min_n_trials=int(args.min_trials),
         max_n_trials=int(args.max_trials),
-        pg_dsn=args.pg_dsn,
     )
 
     with FeatureRegistry(args.registry_path) as registry:

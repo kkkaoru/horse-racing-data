@@ -248,7 +248,7 @@ def test_explore_round_calls_run_exploration_with_registry_and_df() -> None:
         df = _make_df()
         learner = _make_learner(registry=reg, df=df, validation_years=[2024])
         with patch("continuous_learner.run_exploration") as mock_run:
-            learner._explore_round(0)
+            learner._explore_round(0, n_trials=20)
             mock_run.assert_called_once()
             kwargs = mock_run.call_args.kwargs
             assert kwargs["registry"] is reg
@@ -260,7 +260,7 @@ def test_explore_round_study_name_includes_category_and_round() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(registry=reg, category="nar")
         with patch("continuous_learner.run_exploration") as mock_run:
-            learner._explore_round(3)
+            learner._explore_round(3, n_trials=20)
             study_name = mock_run.call_args.kwargs["study_name"]
             assert study_name.startswith("auto-nar-r3-")
 
@@ -831,47 +831,6 @@ def test_main_default_constants() -> None:
     assert subject.DEFAULT_N_TRIALS == 20
 
 
-def test_main_passes_pg_dsn_to_controller(tmp_path: Path) -> None:
-    parquet_path = tmp_path / "features.parquet"
-    _make_df().to_parquet(parquet_path, index=False)
-    registry_path = tmp_path / "reg.duckdb"
-
-    created_controllers: list[subject.AdaptiveLoadController] = []
-    original_init = subject.AdaptiveLoadController.__init__
-
-    def capturing_init(
-        self: subject.AdaptiveLoadController, *args: object, **kwargs: object
-    ) -> None:
-        original_init(self, *args, **kwargs)
-        created_controllers.append(self)
-
-    with (
-        patch.object(subject.AdaptiveLoadController, "__init__", capturing_init),
-        patch.object(subject.ContinuousLearner, "_explore_round"),
-        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
-        patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
-        patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
-    ):
-        subject.main(
-            [
-                "--features-parquet",
-                str(parquet_path),
-                "--category",
-                "jra",
-                "--repo-root",
-                str(tmp_path),
-                "--registry-path",
-                str(registry_path),
-                "--max-rounds",
-                "1",
-                "--pg-dsn",
-                "postgresql://user:pass@localhost/db",
-            ]
-        )
-
-    assert len(created_controllers) == 1
-    assert created_controllers[0]._pg_dsn == "postgresql://user:pass@localhost/db"
-
 
 # ---------------------------------------------------------------------------
 # AdaptiveLoadController
@@ -960,12 +919,6 @@ def test_adaptive_controller_sleep_seconds_nonzero_when_high() -> None:
     assert result == 5.0
 
 
-def test_adaptive_controller_pg_active_count_returns_none_when_no_dsn() -> None:
-    ctrl = subject.AdaptiveLoadController(base_n_trials=20, pg_dsn=None)
-    result = ctrl._pg_active_count()
-    assert result is None
-
-
 def test_adaptive_controller_cpu_percent_returns_zero_without_psutil() -> None:
     ctrl = subject.AdaptiveLoadController(base_n_trials=20)
     with patch.object(subject, "_PSUTIL_AVAILABLE", False):
@@ -994,14 +947,6 @@ def test_adaptive_controller_mem_percent_returns_float_when_psutil_available() -
         result = ctrl._mem_percent()
     assert isinstance(result, float)
     assert 0.0 <= result <= 100.0
-
-
-def test_adaptive_controller_pg_active_count_returns_none_when_connection_fails() -> None:
-    ctrl = subject.AdaptiveLoadController(
-        base_n_trials=20, pg_dsn="postgresql://localhost:59999/nonexistent_db"
-    )
-    result = ctrl._pg_active_count()
-    assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -1324,16 +1269,3 @@ def test_rollback_deploy_skips_staged_removal_when_staged_dest_is_none(tmp_path:
     assert json_path.read_text(encoding="utf-8") == '{"current": true}'
 
 
-def test_adaptive_controller_pg_active_count_returns_none_when_fetchone_is_none() -> None:
-    ctrl = subject.AdaptiveLoadController(base_n_trials=10, pg_dsn="postgresql://test")
-    mock_cur = MagicMock()
-    mock_cur.__enter__ = MagicMock(return_value=mock_cur)
-    mock_cur.__exit__ = MagicMock(return_value=False)
-    mock_cur.fetchone.return_value = None
-    mock_conn = MagicMock()
-    mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-    mock_conn.__exit__ = MagicMock(return_value=False)
-    mock_conn.cursor.return_value = mock_cur
-    with patch("psycopg.connect", return_value=mock_conn):
-        result = ctrl._pg_active_count()
-    assert result is None
