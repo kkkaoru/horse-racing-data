@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import shutil
 import signal
 import subprocess
@@ -27,6 +28,7 @@ from feature_explorer import (
 )
 from feature_registry import FeatureEntry, FeatureRegistry
 from finish_position_lightgbm import LABEL_COLUMNS, META_COLUMNS
+from walk_forward_common import atomic_write_metadata
 
 try:
     import psutil as _psutil
@@ -180,6 +182,10 @@ class ContinuousLearner:
         backends: tuple[ModelBackend, ...] = DEFAULT_BACKENDS,
         load_controller: AdaptiveLoadController | None = None,
     ) -> None:
+        if category not in _TRAINING_SCRIPT:
+            raise ValueError(
+                f"Unknown category {category!r}. Valid categories: {sorted(_TRAINING_SCRIPT)}"
+            )
         self._registry: FeatureRegistry = registry
         self._df: pd.DataFrame = df
         self._category: str = category
@@ -330,9 +336,7 @@ class ContinuousLearner:
     def _train_production_model(
         self, parquet_path: Path, model_root: Path, model_version: str
     ) -> Path:
-        script_name = _TRAINING_SCRIPT.get(
-            self._category, "train_finish_position_catboost_walk_forward.py"
-        )
+        script_name = _TRAINING_SCRIPT[self._category]
         year_to = max(self._validation_years)
         _logger.info("│    script: %s  target year: %d", script_name, year_to)
         cmd = [
@@ -391,13 +395,9 @@ class ContinuousLearner:
         model_versions[self._category] = model_version
         feature_counts[self._category] = feature_count
         _logger.info("│    model version: %s → %s", prev_version, model_version)
-        json_path.write_text(
-            json.dumps(
-                {"model_versions": model_versions, "feature_counts": feature_counts},
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
+        atomic_write_metadata(
+            json_path,
+            {"model_versions": model_versions, "feature_counts": feature_counts},
         )
         return prev_content
 
@@ -436,7 +436,9 @@ class ContinuousLearner:
             return
         try:
             json_path = self._repo_root / _MODEL_META_JSON_PATH
-            json_path.write_text(prev_meta_content, encoding="utf-8")
+            temp_path = json_path.with_suffix(json_path.suffix + ".tmp")
+            temp_path.write_text(prev_meta_content, encoding="utf-8")
+            os.replace(temp_path, json_path)
             _logger.info("│    [rollback] restored model_meta.json")
         except Exception as exc:
             _logger.warning("│    [rollback] failed to restore model_meta.json: %s", exc)

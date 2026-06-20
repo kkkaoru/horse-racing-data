@@ -455,19 +455,10 @@ def test_train_production_model_uses_catboost_for_banei(tmp_path: Path) -> None:
         assert "train_finish_position_catboost_walk_forward.py" in cmd[1]
 
 
-def test_train_production_model_defaults_to_catboost_for_unknown_category(
-    tmp_path: Path,
-) -> None:
+def test_init_raises_for_unknown_category() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
-        learner = _make_learner(
-            registry=reg, category="unknown-cat", validation_years=[2024]
-        )
-        with patch("subprocess.run") as mock_run:
-            learner._train_production_model(
-                Path("/p/features.parquet"), tmp_path / "models", "auto-v1"
-            )
-        cmd = mock_run.call_args.args[0]
-        assert "train_finish_position_catboost_walk_forward.py" in cmd[1]
+        with pytest.raises(ValueError, match="unknown-cat"):
+            _make_learner(registry=reg, category="unknown-cat")
 
 
 def test_train_production_model_returns_path_to_final_fold(tmp_path: Path) -> None:

@@ -102,6 +102,72 @@ def _make_meta_only_fold() -> dict:
     return {"train_df": df, "valid_df": df.copy()}
 
 
+def _make_df_3years() -> pd.DataFrame:
+    """DataFrame spanning 2021-2023 for multi-fold evaluate_feature_set tests."""
+    rows = []
+    for year in [2021, 2022, 2023]:
+        for race in range(5):
+            for horse in range(4):
+                rows.append({
+                    "source": "jra",
+                    "race_date": f"{year}0601",
+                    "kaisai_nen": str(year),
+                    "kaisai_tsukihi": "0601",
+                    "keibajo_code": "10",
+                    "race_bango": f"{race:02d}",
+                    "ketto_toroku_bango": f"horse_{horse:03d}",
+                    "umaban": horse + 1,
+                    "category": "jra",
+                    "race_id": f"{year}_race_{race:02d}",
+                    "race_year": year,
+                    "feature_schema_version": "1",
+                    "finish_position": horse + 1,
+                    "finish_norm": 0.5,
+                    "target_corner_1_norm": 0.5,
+                    "target_corner_3_norm": 0.5,
+                    "target_corner_4_norm": 0.5,
+                    "target_running_style_class": 0,
+                    "feat_speed": float(horse),
+                    "feat_jockey": 0.3,
+                })
+    return pd.DataFrame(rows)
+
+
+def _make_df_6feats() -> pd.DataFrame:
+    """DataFrame with 6 feature columns for build_objective / run_exploration tests."""
+    rows = []
+    for year in [2022, 2023]:
+        for race in range(5):
+            for horse in range(4):
+                rows.append({
+                    "source": "jra",
+                    "race_date": f"{year}0601",
+                    "kaisai_nen": str(year),
+                    "kaisai_tsukihi": "0601",
+                    "keibajo_code": "10",
+                    "race_bango": f"{race:02d}",
+                    "ketto_toroku_bango": f"horse_{horse:03d}",
+                    "umaban": horse + 1,
+                    "category": "jra",
+                    "race_id": f"{year}_race_{race:02d}",
+                    "race_year": year,
+                    "feature_schema_version": "1",
+                    "finish_position": horse + 1,
+                    "finish_norm": 0.5,
+                    "target_corner_1_norm": 0.5,
+                    "target_corner_3_norm": 0.5,
+                    "target_corner_4_norm": 0.5,
+                    "target_running_style_class": 0,
+                    "feat_a": float(horse),
+                    "feat_b": 0.3,
+                    "feat_c": 0.1,
+                    "feat_d": 0.2,
+                    "feat_e": 0.4,
+                    "feat_f": 0.5,
+                })
+    return pd.DataFrame(rows)
+
+
 # --- _ndcg_at_3_from_valid_df ---
 
 def test_ndcg_at_3_from_valid_df_perfect_ranking_returns_one() -> None:
@@ -188,30 +254,29 @@ def test_xgb_numeric_features_returns_empty_when_only_meta_and_label() -> None:
 def test_xgb_numeric_features_excludes_all_meta_columns() -> None:
     df = _make_df()
     result = subject._xgb_numeric_features(df, list(df.columns))
-    for col in META_COLUMNS:
-        assert col not in result
+    assert not (set(result) & set(META_COLUMNS))
 
 
 # --- run_fold_with_backend ---
 
-def test_run_fold_with_backend_lightgbm_returns_ndcg_from_metrics() -> None:
+def test_run_fold_with_backend_lightgbm_computes_ndcg_from_predictions() -> None:
     fold = _make_fold()
     params = subject.DEFAULT_PARAMS
-    mock_metrics = {
-        "ndcg_at_3": 0.8,
-        "race_count": 5,
-        "top1_accuracy": 0.3,
-        "top3_box_accuracy": 0.1,
-        "top3_exact_accuracy": 0.02,
-        "valid_rows": 20,
-        "valid_year": 2022,
-    }
+    # score_dataset output: race_id + ketto_toroku_bango + predicted_rank (no finish_position)
+    preds_df = pd.DataFrame({
+        "race_id": ["2022_race_01", "2022_race_01", "2022_race_01", "2022_race_01"],
+        "ketto_toroku_bango": ["horse_000", "horse_001", "horse_002", "horse_003"],
+        "umaban": [1, 2, 3, 4],
+        "predicted_score": [4.0, 3.0, 2.0, 1.0],
+        "predicted_rank": [1, 2, 3, 4],  # perfect ranking → NDCG=1.0
+    })
     with patch(
         "feature_explorer.run_walk_forward_fold",
-        return_value=(MagicMock(), MagicMock(), mock_metrics),
+        return_value=(MagicMock(), preds_df, {"ndcg_at_3": 0.8}),
     ) as mock_fold:
         result = subject.run_fold_with_backend(fold, "lightgbm", params)
-    assert result == pytest.approx(0.8)
+    assert result is not None
+    assert result == pytest.approx(1.0)
     mock_fold.assert_called_once()
 
 
@@ -279,9 +344,8 @@ def test_select_features_always_keeps_meta_columns() -> None:
     df = _make_df()
     mask = {"feat_speed": False, "feat_jockey": False}
     result = subject.select_features(df, mask)
-    for col in META_COLUMNS:
-        if col in df.columns:
-            assert col in result.columns
+    expected = set(META_COLUMNS) & set(df.columns)
+    assert expected.issubset(set(result.columns))
 
 
 def test_select_features_keeps_label_columns() -> None:
@@ -313,58 +377,11 @@ def test_select_features_returns_copy_not_view() -> None:
 # --- evaluate_feature_set ---
 
 def test_evaluate_feature_set_returns_mean_of_both_folds() -> None:
-    rows = []
-    for year in [2021, 2022, 2023]:
-        for race in range(5):
-            for horse in range(4):
-                rows.append({
-                    "source": "jra",
-                    "race_date": f"{year}0601",
-                    "kaisai_nen": str(year),
-                    "kaisai_tsukihi": "0601",
-                    "keibajo_code": "10",
-                    "race_bango": f"{race:02d}",
-                    "ketto_toroku_bango": f"horse_{horse:03d}",
-                    "umaban": horse + 1,
-                    "category": "jra",
-                    "race_id": f"{year}_race_{race:02d}",
-                    "race_year": year,
-                    "feature_schema_version": "1",
-                    "finish_position": horse + 1,
-                    "finish_norm": 0.5,
-                    "target_corner_1_norm": 0.5,
-                    "target_corner_3_norm": 0.5,
-                    "target_corner_4_norm": 0.5,
-                    "target_running_style_class": 0,
-                    "feat_speed": float(horse),
-                    "feat_jockey": 0.3,
-                })
-    df = pd.DataFrame(rows)
-    mock_metrics_2022 = {
-        "ndcg_at_3": 0.60,
-        "race_count": 5,
-        "top1_accuracy": 0.3,
-        "top3_box_accuracy": 0.1,
-        "top3_exact_accuracy": 0.02,
-        "valid_rows": 20,
-        "valid_year": 2022,
-    }
-    mock_metrics_2023 = {
-        "ndcg_at_3": 0.90,
-        "race_count": 5,
-        "top1_accuracy": 0.3,
-        "top3_box_accuracy": 0.1,
-        "top3_exact_accuracy": 0.02,
-        "valid_rows": 20,
-        "valid_year": 2023,
-    }
+    df = _make_df_3years()
     params = subject.DEFAULT_PARAMS
     with patch(
-        "feature_explorer.run_walk_forward_fold",
-        side_effect=[
-            (MagicMock(), MagicMock(), mock_metrics_2022),
-            (MagicMock(), MagicMock(), mock_metrics_2023),
-        ],
+        "feature_explorer.run_fold_with_backend",
+        side_effect=[0.60, 0.90],
     ):
         result = subject.evaluate_feature_set(
             df, ["feat_speed", "feat_jockey"], [2022, 2023], "20160101", params,
@@ -375,19 +392,10 @@ def test_evaluate_feature_set_returns_mean_of_both_folds() -> None:
 
 def test_evaluate_feature_set_single_fold_returns_that_ndcg() -> None:
     df = _make_df()
-    mock_metrics = {
-        "ndcg_at_3": 0.75,
-        "race_count": 100,
-        "top1_accuracy": 0.3,
-        "top3_box_accuracy": 0.1,
-        "top3_exact_accuracy": 0.02,
-        "valid_rows": 1000,
-        "valid_year": 2023,
-    }
     params = subject.DEFAULT_PARAMS
     with patch(
-        "feature_explorer.run_walk_forward_fold",
-        return_value=(MagicMock(), MagicMock(), mock_metrics),
+        "feature_explorer.run_fold_with_backend",
+        return_value=0.75,
     ):
         result = subject.evaluate_feature_set(
             df, ["feat_speed"], [2023], "20160101", params,
@@ -397,52 +405,17 @@ def test_evaluate_feature_set_single_fold_returns_that_ndcg() -> None:
 
 
 def test_evaluate_feature_set_skips_year_with_empty_train() -> None:
-    rows = []
-    for year in [2022, 2023]:
-        for race in range(5):
-            for horse in range(4):
-                rows.append({
-                    "source": "jra",
-                    "race_date": f"{year}0601",
-                    "kaisai_nen": str(year),
-                    "kaisai_tsukihi": "0601",
-                    "keibajo_code": "10",
-                    "race_bango": f"{race:02d}",
-                    "ketto_toroku_bango": f"horse_{horse:03d}",
-                    "umaban": horse + 1,
-                    "category": "jra",
-                    "race_id": f"{year}_race_{race:02d}",
-                    "race_year": year,
-                    "feature_schema_version": "1",
-                    "finish_position": horse + 1,
-                    "finish_norm": 0.5,
-                    "target_corner_1_norm": 0.5,
-                    "target_corner_3_norm": 0.5,
-                    "target_corner_4_norm": 0.5,
-                    "target_running_style_class": 0,
-                    "feat_speed": float(horse),
-                    "feat_jockey": 0.3,
-                })
-    df = pd.DataFrame(rows)
-    mock_metrics = {
-        "ndcg_at_3": 0.75,
-        "race_count": 100,
-        "top1_accuracy": 0.3,
-        "top3_box_accuracy": 0.1,
-        "top3_exact_accuracy": 0.02,
-        "valid_rows": 1000,
-        "valid_year": 2023,
-    }
+    df = _make_df()  # data only for 2022+2023; 2022 fold has empty train → skipped
     params = subject.DEFAULT_PARAMS
     with patch(
-        "feature_explorer.run_walk_forward_fold",
-        return_value=(MagicMock(), MagicMock(), mock_metrics),
-    ) as mock_fold:
+        "feature_explorer.run_fold_with_backend",
+        return_value=0.75,
+    ) as mock_rfwb:
         result = subject.evaluate_feature_set(
             df, ["feat_speed"], [2022, 2023], "20160101", params,
             backends=("lightgbm",),
         )
-    assert mock_fold.call_count == 1
+    assert mock_rfwb.call_count == 1
     assert result == pytest.approx(0.75)
 
 
@@ -459,26 +432,17 @@ def test_evaluate_feature_set_no_valid_folds_returns_zero() -> None:
 
 def test_evaluate_feature_set_filters_to_correct_columns() -> None:
     df = _make_df()
-    mock_metrics = {
-        "ndcg_at_3": 0.80,
-        "race_count": 5,
-        "top1_accuracy": 0.4,
-        "top3_box_accuracy": 0.2,
-        "top3_exact_accuracy": 0.05,
-        "valid_rows": 20,
-        "valid_year": 2023,
-    }
     params = subject.DEFAULT_PARAMS
-    captured_fold: list[object] = []
+    captured_folds: list[object] = []
     with patch(
-        "feature_explorer.run_walk_forward_fold",
-        side_effect=lambda fold, p: captured_fold.append(fold) or (MagicMock(), MagicMock(), mock_metrics),
+        "feature_explorer.run_fold_with_backend",
+        side_effect=lambda fold, backend, p: (captured_folds.append(fold), 0.80)[1],
     ):
         subject.evaluate_feature_set(
             df, ["feat_speed"], [2023], "20160101", params,
             backends=("lightgbm",),
         )
-    assert len(captured_fold) == 1
+    assert len(captured_folds) == 1
 
 
 def test_evaluate_feature_set_multi_backend_averages_scores_across_backends() -> None:
@@ -522,54 +486,15 @@ def test_evaluate_feature_set_returns_zero_when_all_backend_scores_none() -> Non
 
 # --- build_objective ---
 
-def test_build_objective_triggers_run_walk_forward_fold_and_maybe_promote() -> None:
-    rows = []
-    for year in [2022, 2023]:
-        for race in range(5):
-            for horse in range(4):
-                rows.append({
-                    "source": "jra",
-                    "race_date": f"{year}0601",
-                    "kaisai_nen": str(year),
-                    "kaisai_tsukihi": "0601",
-                    "keibajo_code": "10",
-                    "race_bango": f"{race:02d}",
-                    "ketto_toroku_bango": f"horse_{horse:03d}",
-                    "umaban": horse + 1,
-                    "category": "jra",
-                    "race_id": f"{year}_race_{race:02d}",
-                    "race_year": year,
-                    "feature_schema_version": "1",
-                    "finish_position": horse + 1,
-                    "finish_norm": 0.5,
-                    "target_corner_1_norm": 0.5,
-                    "target_corner_3_norm": 0.5,
-                    "target_corner_4_norm": 0.5,
-                    "target_running_style_class": 0,
-                    "feat_a": float(horse),
-                    "feat_b": 0.3,
-                    "feat_c": 0.1,
-                    "feat_d": 0.2,
-                    "feat_e": 0.4,
-                    "feat_f": 0.5,
-                })
-    df = pd.DataFrame(rows)
-    mock_metrics = {
-        "ndcg_at_3": 0.75,
-        "race_count": 100,
-        "top1_accuracy": 0.3,
-        "top3_box_accuracy": 0.1,
-        "top3_exact_accuracy": 0.02,
-        "valid_rows": 1000,
-        "valid_year": 2023,
-    }
+def test_build_objective_triggers_run_fold_with_backend_and_maybe_promote() -> None:
+    df = _make_df_6feats()
     params = subject.DEFAULT_PARAMS
     candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_f"]
     with FeatureRegistry(Path(":memory:")) as registry:
         with patch(
-            "feature_explorer.run_walk_forward_fold",
-            return_value=(MagicMock(), MagicMock(), mock_metrics),
-        ) as mock_fold:
+            "feature_explorer.run_fold_with_backend",
+            return_value=0.75,
+        ) as mock_rfwb:
             objective = subject.build_objective(
                 df,
                 candidate_features,
@@ -584,7 +509,7 @@ def test_build_objective_triggers_run_walk_forward_fold_and_maybe_promote() -> N
             trial.number = 0
             trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
             result = objective(trial)
-        assert mock_fold.call_count >= 1
+        assert mock_rfwb.call_count >= 1
         assert result == pytest.approx(0.75)
         assert registry.get_best_ndcg() == pytest.approx(0.75)
 
@@ -616,21 +541,19 @@ def test_build_objective_returns_zero_when_selected_below_min_features() -> None
 
 def test_run_exploration_returns_list_of_exploration_results() -> None:
     df = _make_df()
-    mock_metrics = {
-        "ndcg_at_3": 0.75,
-        "race_count": 100,
-        "top1_accuracy": 0.3,
-        "top3_box_accuracy": 0.1,
-        "top3_exact_accuracy": 0.02,
-        "valid_rows": 1000,
-        "valid_year": 2023,
-    }
     params = subject.DEFAULT_PARAMS
+
+    mock_trial = MagicMock()
+    mock_trial.value = 0.75
+    mock_trial.number = 0
+    mock_trial.params = {}
+    mock_trial.user_attrs = {"promoted": True}
+
+    mock_study = MagicMock()
+    mock_study.trials = [mock_trial]
+
     with FeatureRegistry(Path(":memory:")) as registry:
-        with patch(
-            "feature_explorer.run_walk_forward_fold",
-            return_value=(MagicMock(), MagicMock(), mock_metrics),
-        ):
+        with patch("feature_explorer.optuna.create_study", return_value=mock_study):
             results = subject.run_exploration(
                 df,
                 registry,
@@ -641,13 +564,12 @@ def test_run_exploration_returns_list_of_exploration_results() -> None:
                 study_name="test_exploration",
                 backends=("lightgbm",),
             )
-    assert isinstance(results, list)
-    assert len(results) >= 0
-    for r in results:
-        assert "trial_id" in r
-        assert "ndcg_at_3" in r
-        assert "feature_names" in r
-        assert "promoted" in r
+
+    assert len(results) == 1
+    assert results[0]["trial_id"] == "test_exploration_trial_0"
+    assert results[0]["ndcg_at_3"] == pytest.approx(0.75)
+    assert "feature_names" in results[0]
+    assert results[0]["promoted"] is True
 
 
 def test_run_exploration_excludes_trials_with_none_value() -> None:

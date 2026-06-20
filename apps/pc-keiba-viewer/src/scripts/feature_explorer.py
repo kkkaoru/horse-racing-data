@@ -114,8 +114,13 @@ def _xgb_numeric_features(df: pd.DataFrame, feature_names: list[str]) -> list[st
 
 
 def _run_fold_lightgbm(fold: FoldSplit, params: TrainingParams) -> float:
-    _, _, metrics = run_walk_forward_fold(fold, params)
-    return metrics["ndcg_at_3"]
+    _, predictions, _ = run_walk_forward_fold(fold, params)
+    valid_with_pos = predictions.merge(
+        fold["valid_df"][["race_id", "ketto_toroku_bango", "finish_position"]],
+        on=["race_id", "ketto_toroku_bango"],
+        how="inner",
+    )
+    return _ndcg_at_3_from_valid_df(valid_with_pos)
 
 
 def _run_fold_xgboost(fold: FoldSplit) -> float | None:
@@ -210,7 +215,8 @@ def build_objective(
         )
         trial_id = f"{study_name}_trial_{trial.number}"
         definition = json.dumps({"features": selected, "trial": trial.number})
-        registry.maybe_promote(trial_id, ndcg, selected, definition)
+        promoted = registry.maybe_promote(trial_id, ndcg, selected, definition)
+        trial.set_user_attr("promoted", promoted)
         return ndcg
 
     return objective
@@ -260,7 +266,7 @@ def run_exploration(
                 trial_id=f"{study_name}_trial_{trial.number}",
                 ndcg_at_3=float(trial.value),
                 feature_names=selected,
-                promoted=False,
+                promoted=bool(trial.user_attrs.get("promoted", False)),
             )
         )
     return results
