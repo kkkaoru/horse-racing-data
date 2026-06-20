@@ -73,9 +73,6 @@ _CB_ARGS: Final[argparse.Namespace] = argparse.Namespace(
 _LABEL_COLS: Final[frozenset[str]] = frozenset(LABEL_COLUMNS)
 
 _RELEVANCE_MAP: Final[dict[int, float]] = {1: 3.0, 2: 2.0, 3: 1.0}
-_IDEAL_DCG_AT_3: Final[float] = (
-    3.0 / math.log2(2) + 2.0 / math.log2(3) + 1.0 / math.log2(4)
-)
 
 
 class ExplorationResult(TypedDict):
@@ -94,7 +91,17 @@ def _ndcg_at_3_from_valid_df(valid_df: pd.DataFrame) -> float:
             sorted_group["finish_position"].tolist()[:3], start=1
         ):
             dcg += _RELEVANCE_MAP.get(int(finish_pos), 0.0) / math.log2(rank_idx + 1)
-        ndcg_scores.append(dcg / _IDEAL_DCG_AT_3)
+        ideal_relevances = sorted(
+            (_RELEVANCE_MAP.get(int(fp), 0.0) for fp in group["finish_position"]),
+            reverse=True,
+        )[:3]
+        ideal_dcg = sum(
+            rel / math.log2(i + 2)
+            for i, rel in enumerate(ideal_relevances)
+            if rel > 0.0
+        )
+        if ideal_dcg > 0.0:
+            ndcg_scores.append(dcg / ideal_dcg)
     return sum(ndcg_scores) / len(ndcg_scores) if ndcg_scores else 0.0
 
 
@@ -164,9 +171,8 @@ def evaluate_feature_set(
     params: TrainingParams,
     backends: tuple[ModelBackend, ...] = DEFAULT_BACKENDS,
 ) -> float:
-    meta_and_label = set(META_COLUMNS) | _LABEL_COLS | {"race_id"}
-    keep_cols = [c for c in df.columns if c in meta_and_label or c in feature_names]
-    subset_df = df[keep_cols].copy()
+    feature_mask = {col: col in set(feature_names) for col in df.columns}
+    subset_df = select_features(df, feature_mask)
     ndcg_scores: list[float] = []
     for year in validation_years:
         fold = split_walk_forward(subset_df, train_start, year)

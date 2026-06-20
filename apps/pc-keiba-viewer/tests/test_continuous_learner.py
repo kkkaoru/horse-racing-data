@@ -287,12 +287,12 @@ def test_maybe_deploy_does_nothing_when_no_active_entry() -> None:
             mock_deploy.assert_not_called()
 
 
-def test_maybe_deploy_does_not_deploy_when_at_or_below_threshold() -> None:
+def test_maybe_deploy_does_not_deploy_when_below_threshold() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         reg.record_trial("t1", 0.50, ["feat_speed"])
         reg.activate(1)
         reg.record_deployment(0.497, 1)
-        # active = 0.50, deployed = 0.497, threshold = 0.005 → 0.50 <= 0.497 + 0.005 = 0.502
+        # active = 0.50, deployed = 0.497, delta = 0.003 < threshold 0.005 → skip
         learner = _make_learner(registry=reg, deploy_threshold=0.005)
         with patch.object(learner, "_deploy") as mock_deploy:
             learner._maybe_deploy()
@@ -310,6 +310,18 @@ def test_maybe_deploy_deploys_when_above_threshold() -> None:
             mock_deploy.assert_called_once()
             entry = mock_deploy.call_args.args[0]
             assert entry["trial_id"] == "t1"
+
+
+def test_maybe_deploy_deploys_when_delta_equals_threshold() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("t1", 0.505, ["feat_speed"])
+        reg.activate(1)
+        reg.record_deployment(0.50, 1)
+        # delta = 0.005 == threshold → deploys (strict < comparison)
+        learner = _make_learner(registry=reg, deploy_threshold=0.005)
+        with patch.object(learner, "_deploy") as mock_deploy:
+            learner._maybe_deploy()
+            mock_deploy.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -1262,3 +1274,47 @@ def test_deploy_does_not_rollback_on_success(tmp_path: Path) -> None:
             learner._deploy(entry)
 
         mock_rollback.assert_not_called()
+
+
+def test_deploy_rollback_when_update_meta_fails(tmp_path: Path) -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        entry = _make_entry(ndcg=0.75, feature_names=["feat_speed"])
+        staged_path = tmp_path / "staged"
+
+        with (
+            patch(
+                "continuous_learner.write_filtered_parquet",
+                return_value=Path("/tmp/f.parquet"),
+            ),
+            patch.object(
+                learner, "_train_production_model", return_value=Path("/tmp/model")
+            ),
+            patch.object(learner, "_stage_model", return_value=staged_path),
+            patch.object(
+                learner,
+                "_update_model_meta_json",
+                side_effect=RuntimeError("write failed"),
+            ),
+            patch.object(learner, "_rollback_deploy") as mock_rollback,
+        ):
+            with pytest.raises(RuntimeError, match="write failed"):
+                learner._deploy(entry)
+
+        mock_rollback.assert_called_once_with(staged_path, None)
+
+
+def test_rollback_deploy_skips_meta_restore_when_prev_content_is_none(tmp_path: Path) -> None:
+    staged = tmp_path / "staged_model"
+    staged.mkdir()
+
+    json_path = tmp_path / subject._MODEL_META_JSON_PATH
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text('{"current": true}', encoding="utf-8")
+
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, repo_root=tmp_path)
+        learner._rollback_deploy(staged, None)
+
+    assert not staged.exists()
+    assert json_path.read_text(encoding="utf-8") == '{"current": true}'

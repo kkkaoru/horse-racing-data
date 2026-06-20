@@ -112,29 +112,12 @@ class AdaptiveLoadController:
         self._pg_connections_high = pg_connections_high
 
     def adjusted_n_trials(self) -> int:
-        """Return trial count scaled by current system load.
-
-        - Both CPU and MEM below low threshold → min(base*1.25, max_n_trials)
-        - CPU or MEM above high threshold → max(base*0.5, min_n_trials)
-        - Otherwise → base_n_trials
-        Integer result (round to nearest).
-        """
-        cpu = self._cpu_percent()
-        mem = self._mem_percent()
-
-        if cpu > self._cpu_high_pct or mem > self._mem_high_pct:
-            return max(round(self._base_n_trials * 0.5), self._min_n_trials)
-        if cpu < self._cpu_low_pct and mem < self._mem_low_pct:
-            return min(round(self._base_n_trials * 1.25), self._max_n_trials)
-        return self._base_n_trials
+        """Return trial count scaled by current system load (delegates to round_params)."""
+        return self.round_params()[0]
 
     def inter_round_sleep_seconds(self) -> float:
-        """Return 0.0 normally, 5.0 when CPU or MEM is above high threshold."""
-        cpu = self._cpu_percent()
-        mem = self._mem_percent()
-        if cpu > self._cpu_high_pct or mem > self._mem_high_pct:
-            return 5.0
-        return 0.0
+        """Return 0.0 normally, 5.0 when load is high (delegates to round_params)."""
+        return self.round_params()[1]
 
     def round_params(self) -> tuple[int, float]:
         """Read CPU/mem once and return (n_trials, sleep_secs) for the upcoming round."""
@@ -288,7 +271,7 @@ class ContinuousLearner:
             return
         deployed_ndcg = self._registry.get_deployed_ndcg()
         delta = active["ndcg_at_3"] - deployed_ndcg
-        if delta <= self._deploy_threshold:
+        if delta < self._deploy_threshold:
             _logger.info(
                 "deploy skipped: improvement below threshold  "
                 "current: %.4f | deployed: %.4f | delta: %+.4f | gap to threshold: %.4f",
@@ -327,12 +310,13 @@ class ContinuousLearner:
             _logger.info("│  [3/5] staging model artifacts ...")
             staged_dest = self._stage_model(model_dir, feature_names, model_version)
         _logger.info("│  [4/5] updating model_meta.json ...")
-        prev_meta_content = self._update_model_meta_json(model_version, len(feature_names))
-        _logger.info("│  [5/5] rebuilding Docker image ...")
+        prev_meta_content: str | None = None
         try:
+            prev_meta_content = self._update_model_meta_json(model_version, len(feature_names))
+            _logger.info("│  [5/5] rebuilding Docker image ...")
             self._rebuild_docker()
         except Exception:
-            _logger.error("│  Docker build failed — rolling back staged artifacts")
+            _logger.error("│  deploy failed — rolling back staged artifacts")
             self._rollback_deploy(staged_dest, prev_meta_content)
             raise
         self._registry.record_deployment(entry["ndcg_at_3"], len(feature_names))
@@ -438,14 +422,16 @@ class ContinuousLearner:
         )
         _logger.info("│    Docker build succeeded")
 
-    def _rollback_deploy(self, staged_dest: Path, prev_meta_content: str) -> None:
-        """Remove staged artifacts and restore model_meta.json after a failed Docker build."""
+    def _rollback_deploy(self, staged_dest: Path, prev_meta_content: str | None) -> None:
+        """Remove staged artifacts and restore model_meta.json after a failed deploy."""
         try:
             if staged_dest.exists():
                 shutil.rmtree(staged_dest)
                 _logger.info("│    [rollback] removed staged dir: %s", staged_dest)
         except Exception as exc:
             _logger.warning("│    [rollback] failed to remove staged dir: %s", exc)
+        if prev_meta_content is None:
+            return
         try:
             json_path = self._repo_root / _MODEL_META_JSON_PATH
             json_path.write_text(prev_meta_content, encoding="utf-8")

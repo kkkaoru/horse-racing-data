@@ -201,12 +201,12 @@ def test_record_deployment_stores_ndcg_and_feature_count() -> None:
         assert reg.get_deployed_ndcg() == 0.75
 
 
-def test_record_deployment_multiple_get_deployed_ndcg_returns_max() -> None:
+def test_record_deployment_multiple_get_deployed_ndcg_returns_most_recent() -> None:
     with subject.FeatureRegistry(Path(":memory:")) as reg:
         reg.record_deployment(0.60, 30)
         reg.record_deployment(0.80, 45)
         reg.record_deployment(0.70, 40)
-        assert reg.get_deployed_ndcg() == 0.80
+        assert reg.get_deployed_ndcg() == 0.70
 
 
 def test_next_deployment_id_increments_each_time() -> None:

@@ -10,7 +10,7 @@ from typing import Final, TypedDict
 import duckdb
 
 DEFAULT_DB_PATH: Final[Path] = Path("feature_registry.duckdb")
-NDCG_IMPROVEMENT_THRESHOLD: Final[float] = 0.01
+NDCG_IMPROVEMENT_THRESHOLD: Final[float] = 0.005
 
 
 class FeatureEntry(TypedDict):
@@ -148,7 +148,9 @@ class FeatureRegistry:
 
     def get_deployed_ndcg(self) -> float:
         assert self._con is not None
-        row = self._con.execute("SELECT MAX(ndcg_at_3) FROM deployments").fetchone()
+        row = self._con.execute(
+            "SELECT ndcg_at_3 FROM deployments ORDER BY id DESC LIMIT 1"
+        ).fetchone()
         if row is None or row[0] is None:
             return 0.0
         return float(row[0])

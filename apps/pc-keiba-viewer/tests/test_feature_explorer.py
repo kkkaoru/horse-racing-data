@@ -143,6 +143,27 @@ def test_ndcg_at_3_from_valid_df_multiple_races_returns_mean() -> None:
     assert 0.0 < result <= 1.0
 
 
+def test_ndcg_at_3_from_valid_df_two_horse_race_perfect_returns_one() -> None:
+    df = pd.DataFrame({
+        "race_id": ["r1", "r1"],
+        "predicted_rank": [1, 2],
+        "finish_position": [1, 2],
+    })
+    result = subject._ndcg_at_3_from_valid_df(df)
+    assert result == pytest.approx(1.0)
+
+
+def test_ndcg_at_3_from_valid_df_skips_race_with_no_relevant_finishers() -> None:
+    # r1: all positions > 3 → ideal_dcg = 0 → race skipped; r2: perfect → 1.0
+    df = pd.DataFrame({
+        "race_id": ["r1", "r1", "r2", "r2", "r2", "r2"],
+        "predicted_rank": [1, 2, 1, 2, 3, 4],
+        "finish_position": [4, 5, 1, 2, 3, 4],
+    })
+    result = subject._ndcg_at_3_from_valid_df(df)
+    assert result == pytest.approx(1.0)
+
+
 # --- _xgb_numeric_features ---
 
 def test_xgb_numeric_features_includes_numeric_excludes_non_numeric_and_meta() -> None:
