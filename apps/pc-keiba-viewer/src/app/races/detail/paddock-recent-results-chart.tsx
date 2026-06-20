@@ -23,7 +23,7 @@ import {
 } from "recharts";
 
 import { isWearingBlinker } from "../../../lib/blinker-pattern";
-import { formatDistance, formatKeibajo } from "../../../lib/format";
+import { cleanText, formatDistance, formatKeibajo } from "../../../lib/format";
 import {
   formatHorseRaceChartDate,
   getCombinedWeightValue,
@@ -41,6 +41,9 @@ type PaddockChartMetricKey = "finish" | "popularity" | "weight" | "weightDelta" 
 
 export interface PaddockRecentResultsChartProps {
   results: HorseRaceResult[];
+  // Target-race blinker flag ("1" = wearing) for this horse; lets the synthetic
+  // upcoming point render the blinker ring just like a worn past race.
+  upcomingBlinker?: string | null;
   upcomingPopularity?: number | null;
   upcomingRaceDate?: string | null;
   upcomingWeight?: number | null;
@@ -75,10 +78,13 @@ interface PaddockRecentChartRowSource {
   row: PaddockRecentChartRow;
 }
 
-// The resolved upcoming weight/delta/popularity + date used to seed the
-// synthetic point. Each metric is independent: any of them may be null while
-// the row is still emitted as long as at least one resolved value remains.
+// The resolved upcoming weight/delta/popularity + date + target-race blinker used
+// to seed the synthetic point. Each metric is independent: any of them may be
+// null while the row is still emitted as long as at least one resolved value
+// remains. `blinker` carries "1" when the horse wears a blinker in the target
+// race so the synthetic point can show its ring.
 interface PaddockUpcomingPointInput {
+  blinker: string | null;
   popularity: number | null;
   raceDate: string;
   weight: number | null;
@@ -170,11 +176,13 @@ const CHART_HEIGHT = 340;
 const CHART_INITIAL_DIMENSION: ChartInitialDimension = { height: 1, width: 1 };
 const CHART_LINE_DOT: ChartLineDot = { r: 2 };
 const UPCOMING_DOT_RADIUS = 4;
-// A blinker-worn past race keeps its normal filled dot but gains an outer hollow
-// ring so the reader can SEE which races had a blinker without hovering. The ring
-// is drawn in the series stroke color (color identity preserved) at a radius
-// larger than the dot so it reads as a halo.
+// A blinker-worn race keeps its normal filled dot but gains an outer hollow ring
+// so the reader can SEE which races had a blinker without hovering. The ring is
+// drawn in the series stroke color (color identity preserved) at a radius larger
+// than the dot so it reads as a halo. The upcoming point uses a wider ring so the
+// halo still sits outside its larger r=4 dot.
 const BLINKER_RING_RADIUS = 5;
+const UPCOMING_BLINKER_RING_RADIUS = 7;
 const BLINKER_RING_STROKE_WIDTH = 1.5;
 const BLINKER_RING_FILL = "none";
 const RANK_AXIS_ID = "rank";
@@ -375,17 +383,18 @@ const toChartRowSource = (
 const UPCOMING_RACE_BANGO = "99";
 
 // Build the synthetic upcoming-race row source: the current-race latest weight +
-// delta + target-race popularity at the target date. Each metric is filled
-// independently (any may be null), so the popularity line can reach the upcoming
-// point even with no weight snapshot yet. finish/futan stay null so those lines
-// do not extend past the latest result (no result yet for the upcoming race).
+// delta + target-race popularity + target-race blinker at the target date. Each
+// metric is filled independently (any may be null), so the popularity line can
+// reach the upcoming point even with no weight snapshot yet. finish/futan stay
+// null so those lines do not extend past the latest result (no result yet for
+// the upcoming race); the blinker comes from the target-race entry.
 const toUpcomingRowSource = (input: PaddockUpcomingPointInput): PaddockRecentChartRowSource => {
   const dateValue = toDateValue(input.raceDate);
   return {
     dateValue,
     raceBango: UPCOMING_RACE_BANGO,
     row: {
-      blinker: null,
+      blinker: input.blinker,
       dateValue,
       finish: null,
       futan: null,
@@ -432,7 +441,13 @@ const resolveUpcomingPointInput = (
   if (weight === null && weightDelta === null && popularity === null) {
     return null;
   }
-  return { popularity, raceDate, weight, weightDelta };
+  return {
+    blinker: cleanText(props.upcomingBlinker, "") || null,
+    popularity,
+    raceDate,
+    weight,
+    weightDelta,
+  };
 };
 
 // Keep only the most-recent N past sources by date (ties resolved by raceBango),
@@ -468,16 +483,22 @@ const countValidResults = (props: PaddockRecentResultsChartProps): number =>
 const resolveDefaultRecentCount = (total: number): number =>
   Math.max(PERIOD_MIN_COUNT, Math.min(PERIOD_DEFAULT_COUNT, total));
 
-// Decide whether a point wears a blinker-marker ring. The upcoming synthetic
-// point never wears one (it has no recorded result), so a wearing flag only
-// matters on a past point. Pure so the marker decision is unit-testable.
-export const shouldRenderBlinkerRing = ({ blinker, isUpcoming }: ChartDotKindInput): boolean =>
-  isUpcoming !== true && isWearingBlinker(blinker);
+// Decide whether a point wears a blinker-marker ring: any wearing race gets one,
+// including the synthetic upcoming point when the horse wears a blinker in the
+// target race. Pure so the marker decision is unit-testable. `isUpcoming` is no
+// longer an exclusion; it only widens the ring radius (see resolveRingRadius).
+export const shouldRenderBlinkerRing = ({ blinker }: ChartDotKindInput): boolean =>
+  isWearingBlinker(blinker);
 
 // Resolve the filled-dot radius: the upcoming point uses the larger dot, every
 // past point keeps the normal small dot.
 const resolveDotRadius = (isUpcoming: boolean | undefined): number =>
   isUpcoming === true ? UPCOMING_DOT_RADIUS : CHART_LINE_DOT.r;
+
+// Resolve the blinker-ring radius so the halo always sits outside the dot: the
+// larger upcoming dot needs the wider ring, a past dot keeps the normal ring.
+const resolveRingRadius = (isUpcoming: boolean | undefined): number =>
+  isUpcoming === true ? UPCOMING_BLINKER_RING_RADIUS : BLINKER_RING_RADIUS;
 
 export const PaddockChartDot = ({
   cx,
@@ -496,7 +517,7 @@ export const PaddockChartDot = ({
           cx={cx}
           cy={cy}
           fill={BLINKER_RING_FILL}
-          r={BLINKER_RING_RADIUS}
+          r={resolveRingRadius(payload?.isUpcoming)}
           stroke={stroke}
           strokeWidth={BLINKER_RING_STROKE_WIDTH}
         />

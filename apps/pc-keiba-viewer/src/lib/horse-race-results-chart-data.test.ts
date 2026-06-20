@@ -585,7 +585,7 @@ describe("horse race results chart data", () => {
     ]);
   });
 
-  it("leaves the synthetic upcoming point blinker null", () => {
+  it("carries the wearing blinker flag from the runner onto the upcoming point", () => {
     const seriesList = buildHorseRaceChartSeriesList({
       metric: "weight",
       results: [
@@ -593,16 +593,81 @@ describe("horse race results chart data", () => {
           kaisaiNen: "2025",
           kaisaiTsukihi: "0112",
           bataiju: "480",
-          blinkerShiyoKubun: "1",
+          blinkerShiyoKubun: "0",
         }),
       ],
-      runners: [buildRunner({ kettoTorokuBango: "2020000001", bataiju: "486" })],
+      runners: [
+        buildRunner({ kettoTorokuBango: "2020000001", bataiju: "486", blinkerShiyoKubun: "1" }),
+      ],
       targetKeibajoCode: "05",
       targetRaceDate: "20260601",
     });
     expect(seriesList[0]?.points).toStrictEqual([
       {
+        blinker: "0",
+        dateValue: 1736640000000,
+        jockey: null,
+        kyori: null,
+        raceDate: "20250112",
+        value: 480,
+      },
+      {
         blinker: "1",
+        dateValue: 1780272000000,
+        isUpcoming: true,
+        jockey: null,
+        kyori: null,
+        raceDate: "20260601",
+        value: 486,
+      },
+    ]);
+  });
+
+  it("carries the not-wearing runner blinker flag onto the upcoming popularity point", () => {
+    const seriesList = buildHorseRaceChartSeriesList({
+      metric: "popularity",
+      results: [buildResult({ kaisaiNen: "2025", kaisaiTsukihi: "0112", tanshoNinkijun: "02" })],
+      runners: [
+        buildRunner({ kettoTorokuBango: "2020000001", umaban: "01", blinkerShiyoKubun: "0" }),
+      ],
+      targetKeibajoCode: "05",
+      targetRaceDate: "20260601",
+      upcomingWeights: [{ popularity: 3, umaban: "01", weight: null, weightDelta: null }],
+    });
+    expect(seriesList[0]?.points).toStrictEqual([
+      {
+        blinker: null,
+        dateValue: 1736640000000,
+        jockey: "山田",
+        kyori: "1200",
+        raceDate: "20250112",
+        value: 2,
+      },
+      {
+        blinker: "0",
+        dateValue: 1780272000000,
+        isUpcoming: true,
+        jockey: null,
+        kyori: null,
+        raceDate: "20260601",
+        value: 3,
+      },
+    ]);
+  });
+
+  it("treats a blank runner blinker flag as null on the upcoming point", () => {
+    const seriesList = buildHorseRaceChartSeriesList({
+      metric: "weight",
+      results: [buildResult({ kaisaiNen: "2025", kaisaiTsukihi: "0112", bataiju: "480" })],
+      runners: [
+        buildRunner({ kettoTorokuBango: "2020000001", bataiju: "486", blinkerShiyoKubun: " " }),
+      ],
+      targetKeibajoCode: "05",
+      targetRaceDate: "20260601",
+    });
+    expect(seriesList[0]?.points).toStrictEqual([
+      {
+        blinker: null,
         dateValue: 1736640000000,
         jockey: null,
         kyori: null,

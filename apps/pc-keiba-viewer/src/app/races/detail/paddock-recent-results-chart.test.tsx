@@ -900,7 +900,7 @@ test("PaddockChartDot draws only the normal dot when the blinker flag is null", 
   expect(circles[0]?.getAttribute("r")).toStrictEqual("2");
 });
 
-test("PaddockChartDot draws the larger dot without a ring for the upcoming point even when worn", () => {
+test("PaddockChartDot draws the wider ring around the larger dot for a worn upcoming point", () => {
   const { container } = render(
     <svg>
       <PaddockChartDot
@@ -912,8 +912,29 @@ test("PaddockChartDot draws the larger dot without a ring for the upcoming point
     </svg>,
   );
   const circles = container.querySelectorAll("circle");
+  expect(circles.length).toStrictEqual(2);
+  expect(circles[0]?.getAttribute("r")).toStrictEqual("7");
+  expect(circles[0]?.getAttribute("fill")).toStrictEqual("none");
+  expect(circles[0]?.getAttribute("stroke")).toStrictEqual("#0ca678");
+  expect(circles[1]?.getAttribute("r")).toStrictEqual("4");
+  expect(circles[1]?.getAttribute("fill")).toStrictEqual("#0ca678");
+});
+
+test("PaddockChartDot draws only the larger dot for a not-worn upcoming point", () => {
+  const { container } = render(
+    <svg>
+      <PaddockChartDot
+        cx={10}
+        cy={20}
+        payload={{ blinker: "0", isUpcoming: true }}
+        stroke="#1971c2"
+      />
+    </svg>,
+  );
+  const circles = container.querySelectorAll("circle");
   expect(circles.length).toStrictEqual(1);
   expect(circles[0]?.getAttribute("r")).toStrictEqual("4");
+  expect(circles[0]?.getAttribute("fill")).toStrictEqual("#1971c2");
 });
 
 test("shouldRenderBlinkerRing returns true for a worn past point", () => {
@@ -934,8 +955,12 @@ test("shouldRenderBlinkerRing returns false for an undefined blinker flag", () =
   );
 });
 
-test("shouldRenderBlinkerRing returns false for the worn upcoming point", () => {
-  expect(shouldRenderBlinkerRing({ blinker: "1", isUpcoming: true })).toStrictEqual(false);
+test("shouldRenderBlinkerRing returns true for the worn upcoming point", () => {
+  expect(shouldRenderBlinkerRing({ blinker: "1", isUpcoming: true })).toStrictEqual(true);
+});
+
+test("shouldRenderBlinkerRing returns false for a not-worn upcoming point", () => {
+  expect(shouldRenderBlinkerRing({ blinker: "0", isUpcoming: true })).toStrictEqual(false);
 });
 
 test("renders the on-chart blinker ring hint above the paddock chart", () => {
@@ -1120,10 +1145,40 @@ test("leaves the chart row blinker flag none when the result has no blinker valu
   ).toStrictEqual("none");
 });
 
-test("leaves the upcoming synthetic row blinker flag none", () => {
+test("leaves the upcoming synthetic row blinker flag none when no upcoming blinker is given", () => {
   render(
     <PaddockRecentResultsChart
       results={[chartResult({ blinkerShiyoKubun: "1", kaisaiTsukihi: "0322" })]}
+      upcomingRaceDate="20260614"
+      upcomingWeight={486}
+      upcomingWeightDelta={6}
+    />,
+  );
+  expect(screen.getByTestId("composed-chart-stub").getAttribute("data-last-blinker")).toStrictEqual(
+    "none",
+  );
+});
+
+test("carries the worn upcoming blinker flag onto the synthetic row", () => {
+  render(
+    <PaddockRecentResultsChart
+      results={[chartResult({ blinkerShiyoKubun: "0", kaisaiTsukihi: "0322" })]}
+      upcomingBlinker="1"
+      upcomingRaceDate="20260614"
+      upcomingWeight={486}
+      upcomingWeightDelta={6}
+    />,
+  );
+  expect(screen.getByTestId("composed-chart-stub").getAttribute("data-last-blinker")).toStrictEqual(
+    "1",
+  );
+});
+
+test("treats a blank upcoming blinker flag as none on the synthetic row", () => {
+  render(
+    <PaddockRecentResultsChart
+      results={[chartResult({ blinkerShiyoKubun: "0", kaisaiTsukihi: "0322" })]}
+      upcomingBlinker=" "
       upcomingRaceDate="20260614"
       upcomingWeight={486}
       upcomingWeightDelta={6}

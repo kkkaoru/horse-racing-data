@@ -38,6 +38,7 @@ vi.mock("next/link", () => ({
 }));
 
 interface PaddockRecentChartStubProps {
+  upcomingBlinker: string | null;
   upcomingPopularity: number | null;
   upcomingRaceDate: string;
   upcomingWeight: number | null;
@@ -46,6 +47,7 @@ interface PaddockRecentChartStubProps {
 
 vi.mock("./paddock-recent-results-chart", () => ({
   PaddockRecentResultsChart: ({
+    upcomingBlinker,
     upcomingPopularity,
     upcomingRaceDate,
     upcomingWeight,
@@ -53,6 +55,7 @@ vi.mock("./paddock-recent-results-chart", () => ({
   }: PaddockRecentChartStubProps) =>
     React.createElement("div", {
       "data-testid": "paddock-recent-chart-stub",
+      "data-upcoming-blinker": upcomingBlinker ?? "none",
       "data-upcoming-popularity": String(upcomingPopularity),
       "data-upcoming-race-date": upcomingRaceDate,
       "data-upcoming-weight": String(upcomingWeight),
@@ -1347,6 +1350,44 @@ test("PaddockSection 近走 chart receives the upcoming weight, delta and race d
   expect(chart.getAttribute("data-upcoming-weight")).toBe("486");
   expect(chart.getAttribute("data-upcoming-weight-delta")).toBe("4");
   expect(chart.getAttribute("data-upcoming-popularity")).toBe("null");
+});
+
+test("PaddockSection 近走 chart receives the runner's target-race blinker flag", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      recentResults={[buildPastResult({ currentUmaban: "01", kyosomeiHondai: "過去レース" })]}
+      runners={[buildRunner({ bamei: "テストホース", blinkerShiyoKubun: "1", umaban: "01" })]}
+    />,
+  );
+
+  const graphButton = await screen.findByRole("button", { name: "グラフ" });
+  graphButton.click();
+
+  const chart = await screen.findByTestId("paddock-recent-chart-stub");
+  expect(chart.getAttribute("data-upcoming-blinker")).toBe("1");
+});
+
+test("PaddockSection 近走 chart receives a none blinker flag when the runner is not wearing one", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      recentResults={[buildPastResult({ currentUmaban: "01", kyosomeiHondai: "過去レース" })]}
+      runners={[buildRunner({ bamei: "テストホース", blinkerShiyoKubun: null, umaban: "01" })]}
+    />,
+  );
+
+  const graphButton = await screen.findByRole("button", { name: "グラフ" });
+  graphButton.click();
+
+  const chart = await screen.findByTestId("paddock-recent-chart-stub");
+  expect(chart.getAttribute("data-upcoming-blinker")).toBe("none");
 });
 
 test("PaddockSection 近走 chart receives the realtime tansho popularity by umaban", async () => {

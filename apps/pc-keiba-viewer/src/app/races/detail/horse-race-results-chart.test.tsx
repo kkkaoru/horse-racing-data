@@ -57,6 +57,7 @@ interface TooltipStubProps {
 
 interface PaddockChartStubProps {
   results: HorseRaceResult[];
+  upcomingBlinker?: string | null;
   upcomingPopularity?: number | null;
   upcomingRaceDate?: string | null;
   upcomingWeight?: number | null;
@@ -119,6 +120,7 @@ vi.mock("recharts", () => ({
 vi.mock("./paddock-recent-results-chart", () => ({
   PaddockRecentResultsChart: ({
     results,
+    upcomingBlinker,
     upcomingPopularity,
     upcomingRaceDate,
     upcomingWeight,
@@ -127,6 +129,7 @@ vi.mock("./paddock-recent-results-chart", () => ({
     <div
       data-results-count={results.length}
       data-testid="paddock-recent-chart-stub"
+      data-upcoming-blinker={upcomingBlinker ?? "none"}
       data-upcoming-popularity={String(upcomingPopularity)}
       data-upcoming-race-date={upcomingRaceDate ?? ""}
       data-upcoming-weight={String(upcomingWeight)}
@@ -716,6 +719,35 @@ test("passes null upcoming values to the correlation paddock chart when no overr
   expect(chart.getAttribute("data-upcoming-popularity")).toStrictEqual("null");
 });
 
+test("passes the selected runner's target-race blinker to the correlation paddock chart", () => {
+  render(
+    <HorseRaceResultsChart
+      results={[chartResult({})]}
+      runners={[chartRunner({ blinkerShiyoKubun: "1" })]}
+      targetKeibajoCode="05"
+      targetRaceDate="20260613"
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "馬別（相関）" }));
+  expect(
+    screen.getByTestId("paddock-recent-chart-stub").getAttribute("data-upcoming-blinker"),
+  ).toStrictEqual("1");
+});
+
+test("passes a null blinker to the correlation paddock chart when the horse is not an entered runner", () => {
+  render(
+    <HorseRaceResultsChart
+      results={[chartResult({})]}
+      targetKeibajoCode="05"
+      targetRaceDate="20260613"
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "馬別（相関）" }));
+  expect(
+    screen.getByTestId("paddock-recent-chart-stub").getAttribute("data-upcoming-blinker"),
+  ).toStrictEqual("none");
+});
+
 test("hides the bulk buttons and single-selects the first horse in the correlation view", () => {
   render(
     <HorseRaceResultsChart
@@ -933,6 +965,42 @@ test("OverviewChartDot draws only the normal dot when the blinker flag is null",
   const circles = container.querySelectorAll("circle");
   expect(circles.length).toStrictEqual(1);
   expect(circles[0]?.getAttribute("r")).toStrictEqual("2");
+});
+
+test("OverviewChartDot draws the wider ring around the larger dot for a worn upcoming point", () => {
+  const { container } = render(
+    <svg>
+      <OverviewChartDot
+        cx={10}
+        cy={20}
+        payload={{ blinker: "1", isUpcoming: true }}
+        stroke="#e6194b"
+      />
+    </svg>,
+  );
+  const circles = container.querySelectorAll("circle");
+  expect(circles.length).toStrictEqual(2);
+  expect(circles[0]?.getAttribute("r")).toStrictEqual("7");
+  expect(circles[0]?.getAttribute("fill")).toStrictEqual("none");
+  expect(circles[1]?.getAttribute("r")).toStrictEqual("4");
+  expect(circles[1]?.getAttribute("fill")).toStrictEqual("#e6194b");
+});
+
+test("OverviewChartDot draws only the larger dot for a not-worn upcoming point", () => {
+  const { container } = render(
+    <svg>
+      <OverviewChartDot
+        cx={10}
+        cy={20}
+        payload={{ blinker: "0", isUpcoming: true }}
+        stroke="#0ca678"
+      />
+    </svg>,
+  );
+  const circles = container.querySelectorAll("circle");
+  expect(circles.length).toStrictEqual(1);
+  expect(circles[0]?.getAttribute("r")).toStrictEqual("4");
+  expect(circles[0]?.getAttribute("fill")).toStrictEqual("#0ca678");
 });
 
 test("OverviewChartDot renders nothing when the coordinates are missing", () => {
