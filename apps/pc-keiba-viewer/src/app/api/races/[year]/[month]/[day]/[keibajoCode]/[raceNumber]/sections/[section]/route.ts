@@ -11,6 +11,7 @@ import {
 import {
   buildDetailSectionCacheKey,
   isDefaultDetailSectionCacheRequest,
+  PREDICTION_REFRESH_PARAM,
   stripDetailSectionCacheWarmParams,
 } from "../../../../../../../../../../lib/race-detail-section-cache";
 import {
@@ -225,7 +226,8 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
     section === "finish-prediction" && defaultSectionRequest
       ? buildFinishPredictionInputsCacheKey({ day, keibajoCode, month, raceNumber, year })
       : null;
-  if (finishPredictionInputsCacheKey) {
+  const skipFinishPredictionInputsRead = requestUrl.searchParams.has(PREDICTION_REFRESH_PARAM);
+  if (finishPredictionInputsCacheKey && !skipFinishPredictionInputsRead) {
     const cachedStatic = await getCachedFinishPredictionInputs(finishPredictionInputsCacheKey);
     const cacheHitResponse = cachedStatic
       ? await buildFinishPredictionCacheHitResponse({

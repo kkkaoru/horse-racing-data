@@ -4,8 +4,20 @@
 
 import { claimRun, completeRun } from "./do-state";
 import { parseNdjsonStream } from "./ndjson-stream";
+import {
+  warmPredictionCacheForCategory,
+  warmPredictionCacheForRace,
+} from "./prediction-cache-warm";
 import { rescoreJraRace } from "./scoring/rescore-consumer";
 import type { Env, PredictQueueMessage } from "./types";
+
+const RUN_YMD_YEAR_START = 0;
+const RUN_YMD_YEAR_END = 4;
+const RUN_YMD_MONTH_START = 4;
+const RUN_YMD_MONTH_END = 6;
+const RUN_YMD_DAY_START = 6;
+const RUN_YMD_DAY_END = 8;
+const EMPTY_RACE_TARGET = "";
 
 const PREDICT_DO_NAME_PREFIX = "predict-";
 const PREDICT_PATH = "/predict";
@@ -116,13 +128,20 @@ const processJraPerRaceRescore = async (
   message: Message<PerRaceRescoreMessage>,
   env: Env,
 ): Promise<void> => {
-  const { runYmd } = message.body;
+  const { runYmd, keibajoCode, raceBango } = message.body;
   try {
     const result = await rescoreJraRace({ env, fetchImpl: fetch, message: message.body });
     console.log(
       `Rescore JRA runYmd=${runYmd} status=${result.status} predictions=${result.predictionCount} etop2=${result.etop2Fired}`,
     );
     message.ack();
+    void warmPredictionCacheForRace({
+      day: runYmd.slice(RUN_YMD_DAY_START, RUN_YMD_DAY_END),
+      keibajoCode: keibajoCode ?? EMPTY_RACE_TARGET,
+      month: runYmd.slice(RUN_YMD_MONTH_START, RUN_YMD_MONTH_END),
+      raceNumber: raceBango ?? EMPTY_RACE_TARGET,
+      year: runYmd.slice(RUN_YMD_YEAR_START, RUN_YMD_YEAR_END),
+    });
   } catch (err) {
     console.error(`Rescore JRA failed runYmd=${runYmd}:`, String(err));
     message.retry();
@@ -172,6 +191,14 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
       status: "success",
     });
     message.ack();
+    if (message.body.skipDedup) {
+      void warmPredictionCacheForCategory({
+        category,
+        env,
+        runDate: message.body.runDateIso ?? message.body.runDate,
+        runYmd,
+      });
+    }
   } catch (err) {
     console.error(`Predict failed for category=${category} runYmd=${runYmd}:`, String(err));
     await completeRun({

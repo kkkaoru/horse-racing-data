@@ -39,6 +39,7 @@ vi.mock("../../../../../../../../../../lib/finish-prediction-inputs-cache.server
 vi.mock("../../../../../../../../../../lib/race-detail-section-cache", () => ({
   buildDetailSectionCacheKey: mocks.buildDetailSectionCacheKeyMock,
   isDefaultDetailSectionCacheRequest: mocks.isDefaultDetailSectionCacheRequestMock,
+  PREDICTION_REFRESH_PARAM: "__predictionRefresh",
   stripDetailSectionCacheWarmParams: mocks.stripDetailSectionCacheWarmParamsMock,
 }));
 
@@ -353,6 +354,69 @@ it("returns full compute payload with bucket field when finish-prediction static
     },
     type: "finish-prediction",
   });
+});
+
+it("skips finish-prediction inputs cache read but still writes when __predictionRefresh is present", async () => {
+  stripDetailSectionCacheWarmParamsMock.mockImplementation((params: URLSearchParams) => {
+    const next = new URLSearchParams(params);
+    next.delete("__predictionRefresh");
+    return next;
+  });
+  getRaceSourceByRouteMock.mockResolvedValue("nar");
+  mocks.getRaceDetailMock.mockResolvedValue({ raceId: "race-detail" });
+  getDetailSectionPayloadMock.mockResolvedValue({
+    evaluation: {
+      category: "jra-graded",
+      categoryLabel: "JRA G",
+      fromDate: "2025-01-01",
+      pairScore: 25.5,
+      place1Accuracy: 30.1,
+      place2Accuracy: 45.2,
+      place3Accuracy: 60.3,
+      raceCount: 1000,
+      target: "place1",
+      toDate: "2025-12-31",
+      top1Accuracy: 30.1,
+      top3BoxAccuracy: 60.0,
+      top3ExactOrderAccuracy: 7.5,
+      top3PlaceRelation: 0.5,
+      top3WinnerCapture: 0.7,
+      top5WinnerCapture: 0.9,
+    },
+    inputs: {
+      currentDistance: 1600,
+      currentGradeCode: null,
+      currentKeibajoCode: "43",
+      currentKyosoJokenCode: "010",
+      currentKyosoJokenMeisho: "1勝",
+      currentRaceDate: "20260603",
+      currentSource: "nar",
+      currentTrackCode: "10",
+      modelPredictionFeatures: [],
+      results: [],
+      runners: [],
+      sameDayVenueJockeyWins: [],
+      similarityFeatures: [],
+    },
+    type: "finish-prediction",
+  });
+  mocks.putFinishPredictionInputsCacheMock.mockResolvedValue(undefined);
+  const request = new Request(
+    "https://example.com/api/races/2026/06/03/43/12/sections/finish-prediction?__predictionRefresh=1",
+  );
+  const response = await GET(request, {
+    params: Promise.resolve({
+      day: "03",
+      keibajoCode: "43",
+      month: "06",
+      raceNumber: "12",
+      section: "finish-prediction",
+      year: "2026",
+    }),
+  });
+  expect(response.status).toBe(200);
+  expect(getCachedFinishPredictionInputsMock).not.toHaveBeenCalled();
+  expect(mocks.putFinishPredictionInputsCacheMock).toHaveBeenCalledTimes(1);
 });
 
 it("skips finish-prediction cache shortcut when section is ability", async () => {

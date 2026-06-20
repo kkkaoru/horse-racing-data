@@ -15,31 +15,40 @@ interface RescoreResult {
   etop2Fired: boolean;
 }
 
-const { claimRunMock, completeRunMock, parseNdjsonStreamMock, rescoreJraRaceMock } = vi.hoisted(
-  () => {
-    const claimRun = vi.fn(async (): Promise<ClaimResult> => ({ proceed: true }));
-    const completeRun = vi.fn(async () => undefined);
-    const parseNdjsonStream = vi.fn(async () => ({
-      type: "result" as const,
-      racesPredicted: 5,
-      category: "jra",
-    }));
-    const rescoreJraRace = vi.fn(
-      async (): Promise<RescoreResult> => ({
-        etop2Fired: false,
-        predictionCount: 3,
-        racesPredicted: 1,
-        status: "ok",
-      }),
-    );
-    return {
-      claimRunMock: claimRun,
-      completeRunMock: completeRun,
-      parseNdjsonStreamMock: parseNdjsonStream,
-      rescoreJraRaceMock: rescoreJraRace,
-    };
-  },
-);
+const {
+  claimRunMock,
+  completeRunMock,
+  parseNdjsonStreamMock,
+  rescoreJraRaceMock,
+  warmPredictionCacheForRaceMock,
+  warmPredictionCacheForCategoryMock,
+} = vi.hoisted(() => {
+  const claimRun = vi.fn(async (): Promise<ClaimResult> => ({ proceed: true }));
+  const completeRun = vi.fn(async () => undefined);
+  const parseNdjsonStream = vi.fn(async () => ({
+    type: "result" as const,
+    racesPredicted: 5,
+    category: "jra",
+  }));
+  const rescoreJraRace = vi.fn(
+    async (): Promise<RescoreResult> => ({
+      etop2Fired: false,
+      predictionCount: 3,
+      racesPredicted: 1,
+      status: "ok",
+    }),
+  );
+  const warmPredictionCacheForRace = vi.fn(async (): Promise<boolean> => true);
+  const warmPredictionCacheForCategory = vi.fn(async (): Promise<number> => 0);
+  return {
+    claimRunMock: claimRun,
+    completeRunMock: completeRun,
+    parseNdjsonStreamMock: parseNdjsonStream,
+    rescoreJraRaceMock: rescoreJraRace,
+    warmPredictionCacheForCategoryMock: warmPredictionCacheForCategory,
+    warmPredictionCacheForRaceMock: warmPredictionCacheForRace,
+  };
+});
 
 vi.mock("./do-state", () => ({
   claimRun: claimRunMock,
@@ -52,6 +61,11 @@ vi.mock("./ndjson-stream", () => ({
 
 vi.mock("./scoring/rescore-consumer", () => ({
   rescoreJraRace: rescoreJraRaceMock,
+}));
+
+vi.mock("./prediction-cache-warm", () => ({
+  warmPredictionCacheForCategory: warmPredictionCacheForCategoryMock,
+  warmPredictionCacheForRace: warmPredictionCacheForRaceMock,
 }));
 
 import { handleQueue } from "./queue-consumer";
@@ -110,6 +124,10 @@ beforeEach(() => {
   completeRunMock.mockClear();
   parseNdjsonStreamMock.mockClear();
   rescoreJraRaceMock.mockClear();
+  warmPredictionCacheForRaceMock.mockClear();
+  warmPredictionCacheForCategoryMock.mockClear();
+  warmPredictionCacheForRaceMock.mockResolvedValue(true);
+  warmPredictionCacheForCategoryMock.mockResolvedValue(0);
   rescoreJraRaceMock.mockResolvedValue({
     etop2Fired: false,
     predictionCount: 3,
@@ -460,4 +478,89 @@ test("does not treat per-race rescore as skipDedup even if skipDedup is set", as
   expect(stubFetchMock).not.toHaveBeenCalled();
   expect(ackMock).toHaveBeenCalledTimes(1);
   consoleSpy.mockRestore();
+});
+
+test("warms the viewer cache for the race after a JRA per-race rescore succeeds", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "05",
+        mode: "rescore",
+        raceBango: "11",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(warmPredictionCacheForRaceMock).toHaveBeenCalledWith({
+    day: "19",
+    keibajoCode: "05",
+    month: "06",
+    raceNumber: "11",
+    year: "2026",
+  });
+  consoleSpy.mockRestore();
+});
+
+test("does not warm the race cache when a JRA per-race rescore throws", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  rescoreJraRaceMock.mockRejectedValue(new Error("neon down"));
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "05",
+        mode: "rescore",
+        raceBango: "11",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(warmPredictionCacheForRaceMock).not.toHaveBeenCalled();
+  errorSpy.mockRestore();
+});
+
+test("warms the viewer cache for the category after a skipDedup rescore succeeds", async () => {
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        mode: "rescore",
+        runDateIso: "2026-06-19",
+        runYmd: "20260619",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(warmPredictionCacheForCategoryMock).toHaveBeenCalledWith(
+    expect.objectContaining({ category: "nar", runDate: "2026-06-19", runYmd: "20260619" }),
+  );
+});
+
+test("does not warm the category cache for a non-skipDedup container run", async () => {
+  await handleQueue(makeBatch([makeMessage()]), makeEnv());
+  expect(warmPredictionCacheForCategoryMock).not.toHaveBeenCalled();
+});
+
+test("does not warm the category cache when a skipDedup rescore fails", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  stubFetchMock.mockRejectedValue(new Error("container down"));
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        mode: "full",
+        runDateIso: "2026-06-19",
+        runYmd: "20260619",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(warmPredictionCacheForCategoryMock).not.toHaveBeenCalled();
+  errorSpy.mockRestore();
 });
