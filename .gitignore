@@ -177,7 +177,9 @@ catboost_info/
 apps/finish-position-predict-container/models/
 
 # Claude Code internal artifacts (worktrees, memory caches, etc.)
-.claude/
+# skills/ だけはリポジトリで共有するため、ディレクトリ指定ではなくワイルドカードで除外する
+.claude/*
+!.claude/skills
 
 tmp
 .neon

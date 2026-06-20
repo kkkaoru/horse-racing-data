@@ -703,6 +703,44 @@ def test_rebuild_docker_passes_dockerfile_and_build_context() -> None:
 
 
 # ---------------------------------------------------------------------------
+# setup_logging
+# ---------------------------------------------------------------------------
+
+
+def test_setup_logging_adds_stdout_handler_when_no_handlers_exist() -> None:
+    import logging
+
+    root = logging.getLogger()
+    original_handlers = root.handlers[:]
+    root.handlers.clear()
+    try:
+        subject.setup_logging()
+        assert len(root.handlers) == 1
+        import sys
+        assert root.handlers[0].stream is sys.stdout  # type: ignore[attr-defined]
+        assert root.level == logging.INFO
+    finally:
+        root.handlers.clear()
+        root.handlers.extend(original_handlers)
+
+
+def test_setup_logging_is_idempotent_when_handlers_already_exist() -> None:
+    import logging
+
+    root = logging.getLogger()
+    original_handlers = root.handlers[:]
+    sentinel = logging.StreamHandler()
+    root.handlers.clear()
+    root.handlers.append(sentinel)
+    try:
+        subject.setup_logging()
+        assert len(root.handlers) == 1
+        assert root.handlers[0] is sentinel
+    finally:
+        root.handlers.clear()
+        root.handlers.extend(original_handlers)
+
+
 # _setup_signal_handler
 # ---------------------------------------------------------------------------
 
