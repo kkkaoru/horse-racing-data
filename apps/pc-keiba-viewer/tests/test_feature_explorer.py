@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -43,6 +44,208 @@ def _make_df() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _make_fold() -> dict:
+    """FoldSplit-compatible dict with numeric feature columns."""
+    rows = []
+    for i in range(4):
+        rows.append({
+            "source": "jra",
+            "race_date": "20220601",
+            "kaisai_nen": "2022",
+            "kaisai_tsukihi": "0601",
+            "keibajo_code": "10",
+            "race_bango": "01",
+            "ketto_toroku_bango": f"horse_{i:03d}",
+            "umaban": i + 1,
+            "category": "jra",
+            "race_id": "2022_race_01",
+            "race_year": 2022,
+            "feature_schema_version": "1",
+            "finish_position": i + 1,
+            "finish_norm": 0.5,
+            "target_corner_1_norm": 0.5,
+            "target_corner_3_norm": 0.5,
+            "target_corner_4_norm": 0.5,
+            "target_running_style_class": 0,
+            "feat_speed": float(i),
+            "feat_jockey": 0.3,
+        })
+    df = pd.DataFrame(rows)
+    return {"train_df": df, "valid_df": df.copy()}
+
+
+def _make_meta_only_fold() -> dict:
+    """FoldSplit-compatible dict with only meta and label columns — no feature columns."""
+    rows = []
+    for i in range(4):
+        rows.append({
+            "source": "jra",
+            "race_date": "20220601",
+            "kaisai_nen": "2022",
+            "kaisai_tsukihi": "0601",
+            "keibajo_code": "10",
+            "race_bango": "01",
+            "ketto_toroku_bango": f"horse_{i:03d}",
+            "umaban": i + 1,
+            "category": "jra",
+            "race_id": "2022_race_01",
+            "race_year": 2022,
+            "feature_schema_version": "1",
+            "finish_position": i + 1,
+            "finish_norm": 0.5,
+            "target_corner_1_norm": 0.5,
+            "target_corner_3_norm": 0.5,
+            "target_corner_4_norm": 0.5,
+            "target_running_style_class": 0,
+        })
+    df = pd.DataFrame(rows)
+    return {"train_df": df, "valid_df": df.copy()}
+
+
+# --- _ndcg_at_3_from_valid_df ---
+
+def test_ndcg_at_3_from_valid_df_perfect_ranking_returns_one() -> None:
+    df = pd.DataFrame({
+        "race_id": ["r1", "r1", "r1", "r1"],
+        "predicted_rank": [1, 2, 3, 4],
+        "finish_position": [1, 2, 3, 4],
+    })
+    result = subject._ndcg_at_3_from_valid_df(df)
+    assert result == pytest.approx(1.0)
+
+
+def test_ndcg_at_3_from_valid_df_empty_df_returns_zero() -> None:
+    df = pd.DataFrame(columns=["race_id", "predicted_rank", "finish_position"])
+    result = subject._ndcg_at_3_from_valid_df(df)
+    assert result == pytest.approx(0.0)
+
+
+def test_ndcg_at_3_from_valid_df_worst_ranking_is_less_than_one() -> None:
+    # Reverse order: horse finishing 4th predicted 1st, etc.
+    df = pd.DataFrame({
+        "race_id": ["r1", "r1", "r1", "r1"],
+        "predicted_rank": [4, 3, 2, 1],
+        "finish_position": [1, 2, 3, 4],
+    })
+    result = subject._ndcg_at_3_from_valid_df(df)
+    assert result < 1.0
+    assert result >= 0.0
+
+
+def test_ndcg_at_3_from_valid_df_multiple_races_returns_mean() -> None:
+    # Race r1: perfect → NDCG=1.0; Race r2: all wrong → some value
+    df = pd.DataFrame({
+        "race_id": ["r1", "r1", "r1", "r2", "r2", "r2"],
+        "predicted_rank": [1, 2, 3, 3, 2, 1],
+        "finish_position": [1, 2, 3, 1, 2, 3],
+    })
+    result = subject._ndcg_at_3_from_valid_df(df)
+    assert 0.0 < result <= 1.0
+
+
+# --- _xgb_numeric_features ---
+
+def test_xgb_numeric_features_includes_numeric_excludes_non_numeric_and_meta() -> None:
+    df = pd.DataFrame({
+        "race_id": ["r1"],
+        "feat_numeric": [1.0],
+        "feat_string": ["abc"],
+        "finish_position": [1],
+        "umaban": [1],
+    })
+    result = subject._xgb_numeric_features(df, list(df.columns))
+    assert result == ["feat_numeric"]
+
+
+def test_xgb_numeric_features_returns_empty_when_only_meta_and_label() -> None:
+    fold = _make_meta_only_fold()
+    df = fold["train_df"]
+    result = subject._xgb_numeric_features(df, list(df.columns))
+    assert result == []
+
+
+def test_xgb_numeric_features_excludes_all_meta_columns() -> None:
+    df = _make_df()
+    result = subject._xgb_numeric_features(df, list(df.columns))
+    for col in META_COLUMNS:
+        assert col not in result
+
+
+# --- run_fold_with_backend ---
+
+def test_run_fold_with_backend_lightgbm_returns_ndcg_from_metrics() -> None:
+    fold = _make_fold()
+    params = subject.DEFAULT_PARAMS
+    mock_metrics = {
+        "ndcg_at_3": 0.8,
+        "race_count": 5,
+        "top1_accuracy": 0.3,
+        "top3_box_accuracy": 0.1,
+        "top3_exact_accuracy": 0.02,
+        "valid_rows": 20,
+        "valid_year": 2022,
+    }
+    with patch(
+        "feature_explorer.run_walk_forward_fold",
+        return_value=(MagicMock(), MagicMock(), mock_metrics),
+    ) as mock_fold:
+        result = subject.run_fold_with_backend(fold, "lightgbm", params)
+    assert result == pytest.approx(0.8)
+    mock_fold.assert_called_once()
+
+
+def test_run_fold_with_backend_xgboost_returns_ndcg_from_predictions() -> None:
+    fold = _make_fold()
+    params = subject.DEFAULT_PARAMS
+    valid_preds = pd.DataFrame({
+        "race_id": ["r1", "r1", "r1", "r1"],
+        "predicted_rank": [1, 2, 3, 4],
+        "finish_position": [1, 2, 3, 4],
+    })
+    with patch(
+        "feature_explorer.train_xgboost_ranker",
+        return_value=(MagicMock(), {"valid_predictions": valid_preds}),
+    ) as mock_xgb:
+        result = subject.run_fold_with_backend(fold, "xgboost", params)
+    assert result is not None
+    assert result == pytest.approx(1.0)
+    mock_xgb.assert_called_once()
+
+
+def test_run_fold_with_backend_catboost_returns_ndcg_from_predictions() -> None:
+    fold = _make_fold()
+    params = subject.DEFAULT_PARAMS
+    valid_preds = pd.DataFrame({
+        "race_id": ["r1", "r1", "r1", "r1"],
+        "predicted_rank": [1, 2, 3, 4],
+        "finish_position": [1, 2, 3, 4],
+    })
+    with patch(
+        "feature_explorer.train_catboost_ranker",
+        return_value={"valid_predictions": valid_preds},
+    ) as mock_cb:
+        result = subject.run_fold_with_backend(fold, "catboost", params)
+    assert result is not None
+    assert result == pytest.approx(1.0)
+    mock_cb.assert_called_once()
+
+
+def test_run_fold_with_backend_xgboost_returns_none_when_no_numeric_features() -> None:
+    fold = _make_meta_only_fold()
+    params = subject.DEFAULT_PARAMS
+    result = subject.run_fold_with_backend(fold, "xgboost", params)
+    assert result is None
+
+
+def test_run_fold_with_backend_catboost_returns_none_when_no_feature_cols() -> None:
+    fold = _make_meta_only_fold()
+    params = subject.DEFAULT_PARAMS
+    result = subject.run_fold_with_backend(fold, "catboost", params)
+    assert result is None
+
+
+# --- select_features ---
+
 def test_select_features_keeps_selected_feature_columns() -> None:
     df = _make_df()
     mask = {"feat_speed": True, "feat_jockey": False}
@@ -77,6 +280,16 @@ def test_select_features_all_false_mask_returns_only_meta_label_cols() -> None:
     assert "finish_position" in result.columns
     assert "race_id" in result.columns
 
+
+def test_select_features_returns_copy_not_view() -> None:
+    df = _make_df()
+    mask = {"feat_speed": True, "feat_jockey": True}
+    result = subject.select_features(df, mask)
+    result["feat_speed"] = 999.0
+    assert df["feat_speed"].iloc[0] != 999.0
+
+
+# --- evaluate_feature_set ---
 
 def test_evaluate_feature_set_returns_mean_of_both_folds() -> None:
     rows = []
@@ -133,7 +346,8 @@ def test_evaluate_feature_set_returns_mean_of_both_folds() -> None:
         ],
     ):
         result = subject.evaluate_feature_set(
-            df, ["feat_speed", "feat_jockey"], [2022, 2023], "20160101", params
+            df, ["feat_speed", "feat_jockey"], [2022, 2023], "20160101", params,
+            backends=("lightgbm",),
         )
     assert result == pytest.approx(0.75)
 
@@ -155,7 +369,8 @@ def test_evaluate_feature_set_single_fold_returns_that_ndcg() -> None:
         return_value=(MagicMock(), MagicMock(), mock_metrics),
     ):
         result = subject.evaluate_feature_set(
-            df, ["feat_speed"], [2023], "20160101", params
+            df, ["feat_speed"], [2023], "20160101", params,
+            backends=("lightgbm",),
         )
     assert result == pytest.approx(0.75)
 
@@ -203,7 +418,8 @@ def test_evaluate_feature_set_skips_year_with_empty_train() -> None:
         return_value=(MagicMock(), MagicMock(), mock_metrics),
     ) as mock_fold:
         result = subject.evaluate_feature_set(
-            df, ["feat_speed"], [2022, 2023], "20160101", params
+            df, ["feat_speed"], [2022, 2023], "20160101", params,
+            backends=("lightgbm",),
         )
     assert mock_fold.call_count == 1
     assert result == pytest.approx(0.75)
@@ -219,6 +435,71 @@ def test_evaluate_feature_set_no_valid_folds_returns_zero() -> None:
     mock_fold.assert_not_called()
     assert result == 0.0
 
+
+def test_evaluate_feature_set_filters_to_correct_columns() -> None:
+    df = _make_df()
+    mock_metrics = {
+        "ndcg_at_3": 0.80,
+        "race_count": 5,
+        "top1_accuracy": 0.4,
+        "top3_box_accuracy": 0.2,
+        "top3_exact_accuracy": 0.05,
+        "valid_rows": 20,
+        "valid_year": 2023,
+    }
+    params = subject.DEFAULT_PARAMS
+    captured_fold: list[object] = []
+    with patch(
+        "feature_explorer.run_walk_forward_fold",
+        side_effect=lambda fold, p: captured_fold.append(fold) or (MagicMock(), MagicMock(), mock_metrics),
+    ):
+        subject.evaluate_feature_set(
+            df, ["feat_speed"], [2023], "20160101", params,
+            backends=("lightgbm",),
+        )
+    assert len(captured_fold) == 1
+
+
+def test_evaluate_feature_set_multi_backend_averages_scores_across_backends() -> None:
+    df = _make_df()
+    params = subject.DEFAULT_PARAMS
+    with patch(
+        "feature_explorer.run_fold_with_backend",
+        side_effect=[0.6, 0.7, 0.8],
+    ):
+        result = subject.evaluate_feature_set(
+            df, ["feat_speed"], [2023], "20160101", params,
+            backends=("lightgbm", "xgboost", "catboost"),
+        )
+    assert result == pytest.approx(0.7)
+
+
+def test_evaluate_feature_set_skips_none_scores_from_backend() -> None:
+    df = _make_df()
+    params = subject.DEFAULT_PARAMS
+    with patch(
+        "feature_explorer.run_fold_with_backend",
+        side_effect=[0.75, None],
+    ):
+        result = subject.evaluate_feature_set(
+            df, ["feat_speed"], [2023], "20160101", params,
+            backends=("lightgbm", "xgboost"),
+        )
+    assert result == pytest.approx(0.75)
+
+
+def test_evaluate_feature_set_returns_zero_when_all_backend_scores_none() -> None:
+    df = _make_df()
+    params = subject.DEFAULT_PARAMS
+    with patch("feature_explorer.run_fold_with_backend", return_value=None):
+        result = subject.evaluate_feature_set(
+            df, ["feat_speed"], [2023], "20160101", params,
+            backends=("lightgbm",),
+        )
+    assert result == pytest.approx(0.0)
+
+
+# --- build_objective ---
 
 def test_build_objective_triggers_run_walk_forward_fold_and_maybe_promote() -> None:
     rows = []
@@ -276,6 +557,7 @@ def test_build_objective_triggers_run_walk_forward_fold_and_maybe_promote() -> N
                 params,
                 registry,
                 "test_study",
+                backends=("lightgbm",),
             )
             trial = MagicMock()
             trial.number = 0
@@ -309,6 +591,8 @@ def test_build_objective_returns_zero_when_selected_below_min_features() -> None
     assert result == 0.0
 
 
+# --- run_exploration ---
+
 def test_run_exploration_returns_list_of_exploration_results() -> None:
     df = _make_df()
     mock_metrics = {
@@ -334,6 +618,7 @@ def test_run_exploration_returns_list_of_exploration_results() -> None:
                 train_start="20160101",
                 params=params,
                 study_name="test_exploration",
+                backends=("lightgbm",),
             )
     assert isinstance(results, list)
     assert len(results) >= 0
@@ -375,34 +660,3 @@ def test_run_exploration_excludes_trials_with_none_value() -> None:
     assert len(results) == 1
     assert results[0]["trial_id"] == "test_exploration_trial_0"
     assert results[0]["ndcg_at_3"] == pytest.approx(0.75)
-
-
-def test_select_features_returns_copy_not_view() -> None:
-    df = _make_df()
-    mask = {"feat_speed": True, "feat_jockey": True}
-    result = subject.select_features(df, mask)
-    result["feat_speed"] = 999.0
-    assert df["feat_speed"].iloc[0] != 999.0
-
-
-def test_evaluate_feature_set_filters_to_correct_columns() -> None:
-    df = _make_df()
-    mock_metrics = {
-        "ndcg_at_3": 0.80,
-        "race_count": 5,
-        "top1_accuracy": 0.4,
-        "top3_box_accuracy": 0.2,
-        "top3_exact_accuracy": 0.05,
-        "valid_rows": 20,
-        "valid_year": 2023,
-    }
-    params = subject.DEFAULT_PARAMS
-    captured_fold: list[object] = []
-    with patch(
-        "feature_explorer.run_walk_forward_fold",
-        side_effect=lambda fold, p: captured_fold.append(fold) or (MagicMock(), MagicMock(), mock_metrics),
-    ):
-        subject.evaluate_feature_set(
-            df, ["feat_speed"], [2023], "20160101", params
-        )
-    assert len(captured_fold) == 1
