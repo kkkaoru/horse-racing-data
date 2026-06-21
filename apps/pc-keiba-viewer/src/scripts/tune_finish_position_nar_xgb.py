@@ -291,7 +291,7 @@ def build_fold_frames(
     train_df = train_df.sort_values(["race_id", "umaban"]).reset_index(drop=True)
     valid_df = valid_df.sort_values(["race_id", "umaban"]).reset_index(drop=True)
     assert_no_race_overlap(train_df, valid_df)
-    available_cols = [c for c in feature_cols if c in valid_df.columns]
+    available_cols = [c for c in feature_cols if c in valid_df.columns and c in train_df.columns]
     bucket_df = None
     if bucket_root is not None:
         bucket_df = load_bucket_year(bucket_root, held_out_year)

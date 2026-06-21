@@ -168,7 +168,7 @@ def test_normalize_arguments_uses_300_iterations_for_banei_when_unset():
     assert normalized["relevance_rank3"] == 1
 
 
-def test_normalize_arguments_uses_xgb_relevance_222_for_nar():
+def test_normalize_arguments_uses_xgb_relevance_321_for_nar():
     raw = subject.parse_args([
         "--features-parquet",
         "tmp/feat-nar-v7-baba",
@@ -190,7 +190,7 @@ def test_normalize_arguments_uses_xgb_relevance_222_for_nar():
     normalized = subject.normalize_arguments(raw)
     assert normalized["relevance_rank1"] == 3
     assert normalized["relevance_rank2"] == 2
-    assert normalized["relevance_rank3"] == 2
+    assert normalized["relevance_rank3"] == 1
 
 
 def test_normalize_arguments_honors_explicit_iterations_override():

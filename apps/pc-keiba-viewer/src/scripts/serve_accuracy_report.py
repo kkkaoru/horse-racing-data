@@ -39,8 +39,8 @@ import psycopg
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-# 09:30 fix went live on 2026-06-11 (commit fe871a6)
-ERA_POSTFIX_CUTOFF_JST: Final[datetime] = datetime(2026, 6, 11, 0, 0, 0,
+# 09:30 fix went live on 2026-06-11 JST = 2026-06-11 00:30:00 UTC (commit fe871a6)
+ERA_POSTFIX_CUTOFF_JST: Final[datetime] = datetime(2026, 6, 11, 0, 30, 0,
                                                     tzinfo=timezone.utc)
 
 # Running-style class thresholds (must match running-style-feature-sql.ts)
@@ -320,16 +320,16 @@ def query_finish_position_metrics(
 
     cur = conn.cursor()
 
-    # Step 1: Get all served predictions per race (latest model_version per race)
+    # Step 1: Get all served predictions per race (latest prediction per horse)
     cur.execute(
         f"""
         WITH served AS (
-            SELECT DISTINCT ON (keibajo_code, race_bango)
+            SELECT DISTINCT ON (keibajo_code, race_bango, ketto_toroku_bango)
                 keibajo_code, race_bango, ketto_toroku_bango, predicted_rank,
                 model_version, prediction_generated_at
             FROM race_finish_position_model_predictions
             WHERE source = %s AND kaisai_nen = %s AND kaisai_tsukihi = %s
-            ORDER BY keibajo_code, race_bango, prediction_generated_at DESC
+            ORDER BY keibajo_code, race_bango, ketto_toroku_bango, prediction_generated_at DESC
         ),
         results AS (
             SELECT keibajo_code, race_bango, ketto_toroku_bango,

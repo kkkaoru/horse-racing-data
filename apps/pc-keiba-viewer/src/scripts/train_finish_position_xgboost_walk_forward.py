@@ -264,7 +264,7 @@ def build_fold_namespace(
         seed=resolve_fold_random_seed(fold_year),
         relevance_rank1=3,
         relevance_rank2=2,
-        relevance_rank3=2,
+        relevance_rank3=1,
         objective=args["objective"],
     )
     if args["objective"] == OBJECTIVE_NDCG:

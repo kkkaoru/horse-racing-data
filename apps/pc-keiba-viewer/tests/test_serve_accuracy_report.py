@@ -30,8 +30,15 @@ def test_infer_era_before_cutoff_returns_degraded() -> None:
     assert subject.infer_era(gen_at) == "DEGRADED"
 
 
+def test_infer_era_one_minute_before_cutoff_returns_degraded() -> None:
+    # 2026-06-11 00:29 UTC = 09:29 JST = before the 09:30 cron fix
+    gen_at = datetime(2026, 6, 11, 0, 29, 0, tzinfo=timezone.utc)
+    assert subject.infer_era(gen_at) == "DEGRADED"
+
+
 def test_infer_era_at_cutoff_returns_post_fix() -> None:
-    gen_at = datetime(2026, 6, 11, 0, 0, 0, tzinfo=timezone.utc)
+    # 2026-06-11 00:30 UTC = 09:30 JST = cron fix went live
+    gen_at = datetime(2026, 6, 11, 0, 30, 0, tzinfo=timezone.utc)
     assert subject.infer_era(gen_at) == "POST_FIX"
 
 
@@ -681,6 +688,17 @@ def test_query_fp_metrics_nar_category() -> None:
     assert result is not None
     assert result.category == "nar"
     assert result.top1_hits == 1
+
+
+def test_query_fp_metrics_sql_uses_per_horse_distinct_on() -> None:
+    mock_cur = MagicMock()
+    mock_cur.fetchall.return_value = []
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cur
+    subject.query_finish_position_metrics(mock_conn, "20260614", "jra")
+    sql_call = mock_cur.execute.call_args[0][0]
+    assert "DISTINCT ON (keibajo_code, race_bango, ketto_toroku_bango)" in sql_call
+    assert "ORDER BY keibajo_code, race_bango, ketto_toroku_bango, prediction_generated_at DESC" in sql_call
 
 
 # ── query_running_style_metrics (mocked) ──────────────────────────────────────

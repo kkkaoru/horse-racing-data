@@ -323,6 +323,14 @@ def test_relevance_from_finish_handles_nulls() -> None:
     assert rel[2] == 3
 
 
+def test_relevance_from_finish_clips_zero_finish_to_truncation_level() -> None:
+    series = pd.Series([0, 1, 2])
+    rel = subject.relevance_from_finish(series, truncation_level=5)
+    assert rel[0] == 5
+    assert rel[1] == 5
+    assert rel[2] == 4
+
+
 def test_rerank_within_race_descends_score() -> None:
     frame = pd.DataFrame(
         {

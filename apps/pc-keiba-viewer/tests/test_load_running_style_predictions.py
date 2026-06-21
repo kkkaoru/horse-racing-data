@@ -186,6 +186,7 @@ def test_build_version_mismatch_check_sql_counts_mismatched_rows():
     )
     sql = subject.build_version_mismatch_check_sql(args)
     assert "select count(*) from read_parquet('tmp/preds/category=nar')" in sql
+    assert "running_style_feature_version is null" in sql
     assert "running_style_feature_version <> 'rsX'" in sql
     assert "cast(kaisai_nen as integer) between 2020 and 2024" in sql
 

@@ -496,7 +496,7 @@ def relevance_from_finish(actuals: pd.Series, truncation_level: int) -> np.ndarr
     """
     actual = pd.to_numeric(actuals, errors="coerce").fillna(99).astype(int).to_numpy()
     rel = truncation_level + 1 - actual
-    rel = np.clip(rel, 0, truncation_level + 1)
+    rel = np.clip(rel, 0, truncation_level)
     return rel.astype(np.int64)
 
 

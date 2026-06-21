@@ -348,6 +348,51 @@ def test_build_fold_frames_with_bucket(tmp_path: Path) -> None:
     assert list(frames.bucket_df["bucket_grade_code"]) == ["A"]
 
 
+def test_build_fold_frames_leave_one_year_out_includes_future_non_held_years(tmp_path: Path) -> None:
+    features_root = tmp_path / "feats"
+    _write_year_parquet(features_root, 2023, ["r2023a"])
+    _write_year_parquet(features_root, 2024, ["r2024a"])
+    _write_year_parquet(features_root, 2025, ["r2025a"])
+    frames = mod.build_fold_frames(
+        features_root, None, (2023, 2024, 2025), 2023, ["feature_a"],
+    )
+    train_race_ids = set(frames.train_df["race_id"].tolist())
+    assert "r2023a" not in train_race_ids
+    assert "r2024a" in train_race_ids
+    assert "r2025a" in train_race_ids
+
+
+def test_build_fold_frames_excludes_col_missing_from_train(tmp_path: Path) -> None:
+    features_root = tmp_path / "feats"
+    train_dir = features_root / "race_year=2023"
+    train_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "race_id": ["r2023a"],
+            "ketto_toroku_bango": ["h0"],
+            "umaban": [1],
+            "finish_position": [1.0],
+            "feature_a": [0.1],
+        },
+    ).to_parquet(train_dir / "data_0.parquet", index=False)
+    valid_dir = features_root / "race_year=2024"
+    valid_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "race_id": ["r2024a"],
+            "ketto_toroku_bango": ["h1"],
+            "umaban": [1],
+            "finish_position": [1.0],
+            "feature_a": [0.2],
+            "feature_new": [0.3],
+        },
+    ).to_parquet(valid_dir / "data_0.parquet", index=False)
+    frames = mod.build_fold_frames(
+        features_root, None, (2023, 2024), 2024, ["feature_a", "feature_new"],
+    )
+    assert frames.feature_cols == ["feature_a"]
+
+
 def test_attach_bucket_keys_no_bucket_returns_all_default() -> None:
     valid_df = pd.DataFrame({"race_id": ["r1", "r1", "r2"]})
     keys = mod.attach_bucket_keys(valid_df, None)

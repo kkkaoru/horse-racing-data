@@ -217,7 +217,7 @@ def build_version_mismatch_check_sql(args: LoadArguments) -> str:
     return (
         f"select count(*) from read_parquet('{safe_glob}') "
         f"where cast(kaisai_nen as integer) between {args['year_from']} and {args['year_to']} "
-        f"and running_style_feature_version <> '{safe_rs}'"
+        f"and (running_style_feature_version is null or running_style_feature_version <> '{safe_rs}')"
     )
 
 

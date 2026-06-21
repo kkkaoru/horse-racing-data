@@ -267,6 +267,12 @@ def test_attach_sample_weights_raises_when_race_year_missing():
         subject.attach_sample_weights(train_df, alpha=0.0)
 
 
+def test_build_fold_namespace_sets_relevance_rank3_to_one(tmp_path: Path):
+    args = _base_args(tmp_path)
+    ns = subject.build_fold_namespace(args, 2024, [2024])
+    assert ns.relevance_rank3 == 1
+
+
 def test_build_fold_namespace_includes_lambdarank_extras_when_ndcg(tmp_path: Path):
     args = _base_args(tmp_path)
     args["objective"] = "ndcg"
