@@ -656,3 +656,24 @@ def test_evaluate_subgroup_top3_not_counted_when_fewer_than_3_valid_predicted_ra
     result = subject.evaluate_subgroup(joined)
     assert result["race_count"] == 1
     assert result["top3_box_accuracy"] == 0.0
+
+
+def test_compute_race_top1_returns_false_when_all_predicted_rank_nan():
+    group = pd.DataFrame({
+        "race_id": ["r1", "r1"],
+        "ketto_toroku_bango": ["a", "b"],
+        "predicted_rank": [float("nan"), float("nan")],
+        "finish_position": [1.0, 2.0],
+    })
+    assert subject.compute_race_top1(group) is False
+
+
+def test_compute_race_ndcg_excludes_nan_predicted_rank_horses():
+    group = pd.DataFrame({
+        "race_id": ["r1", "r1", "r1"],
+        "ketto_toroku_bango": ["a", "b", "c"],
+        "predicted_rank": [float("nan"), 1.0, 2.0],
+        "finish_position": [1.0, 2.0, 3.0],
+    })
+    result = subject.compute_race_ndcg(group)
+    assert abs(result - 1.0) < 1e-9

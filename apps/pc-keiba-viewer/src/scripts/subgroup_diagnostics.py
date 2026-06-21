@@ -90,11 +90,12 @@ def _dcg_at_3(sorted_finish_positions: list[int]) -> float:
 
 
 def compute_race_ndcg(group: pd.DataFrame) -> float:
-    sorted_group = group.sort_values("predicted_rank")
+    valid_group = group.dropna(subset=["predicted_rank"])
+    sorted_group = valid_group.sort_values("predicted_rank")
     finish_positions = sorted_group["finish_position"].tolist()
     dcg = _dcg_at_3(finish_positions)
     ideal_relevances = sorted(
-        (RELEVANCE_MAP.get(int(fp), 0.0) for fp in group["finish_position"] if pd.notna(fp)),
+        (RELEVANCE_MAP.get(int(fp), 0.0) for fp in valid_group["finish_position"] if pd.notna(fp)),
         reverse=True,
     )[:3]
     ideal_dcg = sum(rel / np.log2(i + 2) for i, rel in enumerate(ideal_relevances))
@@ -102,7 +103,10 @@ def compute_race_ndcg(group: pd.DataFrame) -> float:
 
 
 def compute_race_top1(group: pd.DataFrame) -> bool:
-    best = group.loc[group["predicted_rank"].idxmin()]
+    predicted_rank = group["predicted_rank"]
+    if predicted_rank.isna().all():
+        return False
+    best = group.loc[predicted_rank.idxmin()]
     fp = best["finish_position"]
     return pd.notna(fp) and int(fp) == 1
 
