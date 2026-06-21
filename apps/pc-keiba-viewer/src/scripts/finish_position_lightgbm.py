@@ -742,11 +742,14 @@ def evaluate_fold_set(
     train_start: str,
     validation_years: list[int],
     params: TrainingParams,
+    relevance_tier_name: str | None = None,
 ) -> dict[str, float | int]:
     fold_metrics: list[FoldMetrics] = []
     for valid_year in validation_years:
         fold = split_walk_forward(df, train_start, valid_year)
-        _booster, _predictions, metrics = run_walk_forward_fold(fold, params)
+        _booster, _predictions, metrics = run_walk_forward_fold(
+            fold, params, relevance_tier_name=relevance_tier_name
+        )
         fold_metrics.append(metrics)
     return aggregate_fold_metrics(fold_metrics)
 
@@ -772,10 +775,13 @@ def run_hpo_command(args: argparse.Namespace) -> HpoSummary:
     df = load_dataset(args.csv)
     validation_years = parse_year_list(args.validation_years)
     objective_value: str = getattr(args, "objective", OBJECTIVE_LAMBDARANK)
+    relevance_tier_name: str | None = getattr(args, "relevance_tier", None)
 
     def objective(trial: optuna.trial.Trial) -> float:
         params = suggest_hpo_params(trial, int(args.num_iterations), objective_value)
-        aggregate = evaluate_fold_set(df, args.train_start_date, validation_years, params)
+        aggregate = evaluate_fold_set(
+            df, args.train_start_date, validation_years, params, relevance_tier_name
+        )
         return float(aggregate["ndcg_at_3_mean"])
 
     sampler = optuna.samplers.TPESampler(seed=int(args.seed))

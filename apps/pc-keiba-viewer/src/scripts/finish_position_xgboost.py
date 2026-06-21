@@ -5,7 +5,7 @@
 Mirrors the I/O contract of finish_position_lightgbm.py:
   --csv (parquet dir), --train-start-date, --validation-years, --output-report, --output-predictions-dir
 
-Uses rank:pairwise objective with NDCG@3 metric.
+Supports rank:pairwise (default) and rank:ndcg objectives via args.objective.
 
 Run with:
   apps/pc-keiba-viewer/.venv/bin/python apps/pc-keiba-viewer/src/scripts/finish_position_xgboost.py walk-forward \\
@@ -125,8 +125,10 @@ def train_xgboost_ranker(
     dtrain.set_group(build_group_sizes(train_df))
     dvalid = xgb.DMatrix(valid_df[feature_cols], label=valid_labels)
     dvalid.set_group(build_group_sizes(valid_df))
-    params = {
-        "objective": "rank:pairwise",
+    objective_arg = getattr(args, "objective", "pairwise")
+    xgb_objective = "rank:ndcg" if objective_arg == "ndcg" else "rank:pairwise"
+    params: dict[str, object] = {
+        "objective": xgb_objective,
         "eval_metric": "ndcg@3",
         "learning_rate": args.learning_rate,
         "max_depth": args.max_depth,
@@ -136,6 +138,9 @@ def train_xgboost_ranker(
         "seed": args.seed,
         "verbosity": 1,
     }
+    if objective_arg == "ndcg":
+        params["lambdarank_pair_method"] = getattr(args, "lambdarank_pair_method", "topk")
+        params["lambdarank_num_pair_per_sample"] = getattr(args, "lambdarank_num_pair_per_sample", 3)
     evals_result: dict[str, dict[str, list[float]]] = {}
     booster = xgb.train(
         params,

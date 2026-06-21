@@ -631,3 +631,32 @@ def test_fit_normalization_stats_handles_missing_race_meta_columns():
     stats = fit_normalization_stats(df, cols)
     assert stats["race_categorical_vocab"]["keibajo_code"] == []
     assert stats["race_categorical_vocab"]["month"] == []
+
+
+def test_train_transformer_without_valid_trains_all_epochs():
+    """Training with no valid data must run all max_epochs, not revert to epoch-1 weights.
+
+    Without this fix, valid_score is permanently 0.0 when valid_arrays is None; epoch 1
+    saves best_params (0.0 > -inf), later epochs never improve (0.0 not > 0.0), and
+    early-stopping fires after early_stopping_epochs steps, restoring epoch-1 weights.
+    """
+    df = _make_synthetic_frame()
+    cols = resolve_transformer_feature_columns(list(df.columns))
+    stats = fit_normalization_stats(df, cols)
+    arrays = build_race_batches(df, stats)
+    vocab_sizes = [categorical_vocab_size(stats, column) for column in cols.categorical]
+    config = default_model_config(num_numeric_features=len(cols.numeric), categorical_vocab_sizes=vocab_sizes)
+    model = RaceSetTransformer(config)
+    mx.eval(model.parameters())
+    train_cfg = default_training_config()
+    train_cfg["max_epochs"] = 5
+    train_cfg["early_stopping_epochs"] = 2
+    train_cfg["warmup_steps"] = 1
+    train_cfg["batch_size"] = 4
+    # Pass valid_arrays=None — must train all 5 epochs, not stop at 1+2=3
+    result = train_transformer(model, arrays, None, train_cfg)
+    assert len(result["history"]) == 5, (
+        f"Expected 5 epochs of history but got {len(result['history'])} — "
+        "early-stopping may have fired incorrectly when no valid data was provided"
+    )
+    assert result["best_epoch"] == 5

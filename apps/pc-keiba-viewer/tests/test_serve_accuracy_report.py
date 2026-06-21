@@ -701,6 +701,16 @@ def test_query_fp_metrics_sql_uses_per_horse_distinct_on() -> None:
     assert "ORDER BY keibajo_code, race_bango, ketto_toroku_bango, prediction_generated_at DESC" in sql_call
 
 
+def test_query_fp_metrics_jst_display_converts_utc_to_jst() -> None:
+    # UTC 00:30 = JST 09:30; the displayed string must show 09:30 JST
+    gen_at = datetime(2026, 6, 14, 0, 30, 0, tzinfo=timezone.utc)
+    rows = [("05", "01", 1, 1, "iter14", gen_at)]
+    mock_conn = _make_mock_conn(rows)
+    result = subject.query_finish_position_metrics(mock_conn, "20260614", "jra")
+    assert result is not None
+    assert result.prediction_generated_at_jst == "2026-06-14 09:30:00 JST"
+
+
 # ── query_running_style_metrics (mocked) ──────────────────────────────────────
 
 
@@ -755,6 +765,18 @@ def test_query_rs_metrics_nar_category() -> None:
     result = subject.query_running_style_metrics(mock_conn, "20260614", "nar")
     assert result is not None
     assert result.category == "nar"
+
+
+def test_query_rs_metrics_jst_display_converts_utc_to_jst() -> None:
+    gen_at = datetime(2026, 6, 14, 0, 30, 0, tzinfo=timezone.utc)
+    rows = [
+        ("05", "01", "horse1", "nige", 0, 0.9, 0.05, 0.03, 0.02,
+         "jra-running-style-lgbm-prod-v3", gen_at, "01", 16),
+    ]
+    mock_conn = _make_mock_conn(rows)
+    result = subject.query_running_style_metrics(mock_conn, "20260614", "jra")
+    assert result is not None
+    assert result.prediction_generated_at_jst == "2026-06-14 09:30:00 JST"
 
 
 # ── run() integration (mocked) ────────────────────────────────────────────────

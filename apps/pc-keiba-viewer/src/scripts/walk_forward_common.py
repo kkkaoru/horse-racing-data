@@ -274,6 +274,8 @@ def stratified_kfold_indices(
         raise ValueError(f"n_folds must be >= {HPO_MIN_FOLDS}, got {n_folds}")
     if "race_id" not in df.columns:
         raise ValueError("df must contain a 'race_id' column")
+    if not strata_cols:
+        raise ValueError("strata_cols must not be empty")
     missing = [col for col in strata_cols if col not in df.columns]
     if missing:
         raise ValueError(f"strata_cols missing from df: {missing}")

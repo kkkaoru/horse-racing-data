@@ -32,7 +32,7 @@ import argparse
 import json
 import sys
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Final, Protocol, cast
 
 import psycopg
@@ -372,18 +372,14 @@ def query_finish_position_metrics(
     race_rows = list(races_dict.values())
     top1, place2, place3, fukusho_2p, top3_box = aggregate_fp_metrics(race_rows)
 
-    # Determine era from median gen_at
+    # Determine era from latest gen_at (most recent prediction determines data availability)
     latest_gen = max(gen_ats) if gen_ats else None
     era = infer_era(latest_gen)
 
     # JST display
     gen_jst = ""
     if latest_gen:
-        jst_offset = 9 * 3600
-        jst_dt = datetime.fromtimestamp(
-            latest_gen.timestamp() + jst_offset,
-            tz=timezone.utc,
-        )
+        jst_dt = latest_gen.astimezone(timezone(timedelta(hours=9)))
         gen_jst = jst_dt.strftime("%Y-%m-%d %H:%M:%S JST")
 
     # Count model versions
@@ -527,7 +523,7 @@ def format_fp_report(m: FinishPositionMetrics) -> str:
         f"  Era:           {m.era}",
         f"  Generated:     {m.prediction_generated_at_jst}",
         f"  Races:         {m.races}  |  Horses matched: {m.horses}",
-        f"",
+        "",
         f"  top1:          {m.top1_pct:6.2f}%  ({m.top1_hits}/{m.races})",
         f"  place2:        {m.place2_pct:6.2f}%  ({m.place2_hits}/{m.races})",
         f"  place3:        {m.place3_pct:6.2f}%  ({m.place3_hits}/{m.races})",
@@ -536,13 +532,13 @@ def format_fp_report(m: FinishPositionMetrics) -> str:
     ]
     if m.category == "jra":
         lines += [
-            f"",
-            f"  Baselines (population n=11703):",
-            f"    DEGRADED top1= 31.78%  place2= 15.25%  place3=  9.19%",
-            f"    FULL     top1= 44.71%  place2= 24.51%  place3= 15.48%",
+            "",
+            "  Baselines (population n=11703):",
+            "    DEGRADED top1= 31.78%  place2= 15.25%  place3=  9.19%",
+            "    FULL     top1= 44.71%  place2= 24.51%  place3= 15.48%",
         ]
     if m.model_version_counts:
-        lines += [f"", f"  Models served:"]
+        lines += ["", "  Models served:"]
         for mv, cnt in sorted(m.model_version_counts.items(), key=lambda x: -x[1]):
             lines.append(f"    {mv}: {cnt} horses")
     return "\n".join(lines)
@@ -558,7 +554,7 @@ def format_rs_report(m: RunningStyleMetrics) -> str:
         f"  Horses (cornered tracks): {m.total_horses}",
         f"  Overall acc:   {m.overall_accuracy * 100:.2f}%",
         f"  Macro-F1:      {m.macro_f1 * 100:.2f}%" if m.macro_f1 is not None else "  Macro-F1:      N/A",
-        f"",
+        "",
         f"  {'Class':<10} {'Pred%':>6} {'Act%':>6} {'Prec':>6} {'Rec':>6} {'F1':>6}",
         f"  {'-'*48}",
     ]

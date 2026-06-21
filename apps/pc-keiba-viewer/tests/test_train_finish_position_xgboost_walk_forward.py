@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -462,6 +463,66 @@ def test_main_prints_json(
     ])
     payload = json.loads(capsys.readouterr().out.strip())
     assert payload["category"] == "nar"
+
+
+def test_train_xgboost_ranker_uses_pairwise_objective_by_default(monkeypatch: pytest.MonkeyPatch):
+    import finish_position_xgboost as fp_xgb
+    import xgboost as xgb
+
+    captured_params: list[dict[str, object]] = []
+
+    def fake_train(params: dict[str, object], *args: object, **kwargs: object) -> object:
+        captured_params.append(dict(params))
+        fake_booster = MagicMock()
+        fake_booster.best_iteration = 5
+        fake_booster.predict.return_value = np.array([0.9, 0.5])
+        return fake_booster
+
+    monkeypatch.setattr(xgb, "train", fake_train)
+    df = pd.DataFrame({
+        "race_id": ["r1", "r1"],
+        "umaban": [1, 2],
+        "finish_position": [1.0, 2.0],
+    })
+    ns = argparse.Namespace(
+        relevance_rank1=3, relevance_rank2=2, relevance_rank3=1,
+        learning_rate=0.05, max_depth=6, min_child_weight=30, reg_lambda=1.0,
+        seed=42, verbosity=1, num_rounds=10, early_stopping_rounds=5,
+    )
+    fp_xgb.train_xgboost_ranker(df, df, [], ns)
+    assert captured_params[0]["objective"] == "rank:pairwise"
+    assert "lambdarank_pair_method" not in captured_params[0]
+
+
+def test_train_xgboost_ranker_uses_ndcg_objective_when_set(monkeypatch: pytest.MonkeyPatch):
+    import finish_position_xgboost as fp_xgb
+    import xgboost as xgb
+
+    captured_params: list[dict[str, object]] = []
+
+    def fake_train(params: dict[str, object], *args: object, **kwargs: object) -> object:
+        captured_params.append(dict(params))
+        fake_booster = MagicMock()
+        fake_booster.best_iteration = 5
+        fake_booster.predict.return_value = np.array([0.9, 0.5])
+        return fake_booster
+
+    monkeypatch.setattr(xgb, "train", fake_train)
+    df = pd.DataFrame({
+        "race_id": ["r1", "r1"],
+        "umaban": [1, 2],
+        "finish_position": [1.0, 2.0],
+    })
+    ns = argparse.Namespace(
+        relevance_rank1=3, relevance_rank2=2, relevance_rank3=1,
+        learning_rate=0.05, max_depth=6, min_child_weight=30, reg_lambda=1.0,
+        seed=42, verbosity=1, num_rounds=10, early_stopping_rounds=5,
+        objective="ndcg", lambdarank_pair_method="topk", lambdarank_num_pair_per_sample=3,
+    )
+    fp_xgb.train_xgboost_ranker(df, df, [], ns)
+    assert captured_params[0]["objective"] == "rank:ndcg"
+    assert captured_params[0]["lambdarank_pair_method"] == "topk"
+    assert captured_params[0]["lambdarank_num_pair_per_sample"] == 3
 
 
 def test_split_train_valid_filters_dates_and_labels():

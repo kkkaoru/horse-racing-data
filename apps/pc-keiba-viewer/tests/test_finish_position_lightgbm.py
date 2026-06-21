@@ -1189,3 +1189,28 @@ def test_main_dispatches_train_walk_forward_hpo_and_predict(
         ]
     )
     assert seen == ["train", "walk", "hpo", "predict"]
+
+
+def test_evaluate_fold_set_passes_relevance_tier_name_to_walk_forward_fold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """evaluate_fold_set must forward relevance_tier_name so HPO and final training use the same labels."""
+    df = make_walk_forward_dataset()
+    captured_tier: list[str | None] = []
+    original_fold = subject.run_walk_forward_fold
+
+    def capturing_fold(fold, params, **kwargs):
+        captured_tier.append(kwargs.get("relevance_tier_name"))
+        return original_fold(fold, params, **kwargs)
+
+    monkeypatch.setattr(subject, "run_walk_forward_fold", capturing_fold)
+    params: subject.TrainingParams = {
+        "lambda_l2": 0.1,
+        "learning_rate": 0.1,
+        "min_child_samples": 5,
+        "num_iterations": 3,
+        "num_leaves": 8,
+        "objective": subject.OBJECTIVE_LAMBDARANK,
+    }
+    subject.evaluate_fold_set(df, "20200101", [2021], params, relevance_tier_name="place_weighted")
+    assert captured_tier == ["place_weighted"]

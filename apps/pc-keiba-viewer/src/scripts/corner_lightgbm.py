@@ -1779,7 +1779,7 @@ def main() -> None:
         )
         train[ranker_score_column] = np.asarray(ranker.predict(train[FEATURE_COLUMNS]), dtype=float)
         train[ranker_prediction_column] = normalized_rank_prediction(train, ranker_score_column)
-        train[pairwise_prediction_column] = train[regression_column]
+        train[pairwise_prediction_column] = apply_pairwise_model(train, pairwise_model, target_column)
         stacker = train_stacking_model(
             train,
             target_column,
